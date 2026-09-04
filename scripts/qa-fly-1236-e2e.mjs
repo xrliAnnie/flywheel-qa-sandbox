@@ -203,6 +203,7 @@ try {
 						socketPath,
 						cwd: sandboxCwd,
 						threadId: tid,
+						executionId: EXEC_ID,
 						codexBin: tuiBin,
 					},
 					{ log: (m) => log(`  tui: ${m}`) },

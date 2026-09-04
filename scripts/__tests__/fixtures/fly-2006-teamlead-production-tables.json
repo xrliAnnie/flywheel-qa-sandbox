@@ -18,6 +18,7 @@
 	"doa_backoff",
 	"doa_backoff_participants",
 	"doa_backoff_reset_receipts",
+	"epic_page",
 	"flag_departures",
 	"flag_keep_anchor",
 	"flag_provenance",

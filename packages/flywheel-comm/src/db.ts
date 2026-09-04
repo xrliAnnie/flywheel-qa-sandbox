@@ -56,6 +56,23 @@ export const UNREAD_INSTRUCTIONS_SQL = `SELECT p.*
    AND datetime(p.expires_at) > datetime('now')
  ORDER BY p.created_at ASC`;
 
+export interface PendingRunnerMailboxSnapshot {
+	queued: number;
+	leased: number;
+	unpullableInstructions: number;
+	questionIds: string[];
+}
+
+export const PENDING_RUNNER_MAILBOX_SQL = `SELECT state, type, ref_id,
+       CASE WHEN type = 'instruction'
+                  AND COALESCE(datetime(expires_at) > datetime('now'), 0) = 0
+            THEN 1 ELSE 0 END AS unpullable_instruction
+  FROM mailbox
+ WHERE to_agent = ? AND recipient_kind = 'runner' AND carrier = 'inbox'
+   AND type IN ('instruction','response')
+   AND state IN ('QUEUED','LEASED')
+ ORDER BY seq`;
+
 export interface RunnerDeliveryProjectionRow {
 	id: string;
 	from_agent: string;
@@ -104,6 +121,7 @@ export interface RunnerTurnWakeProjectionRow {
 }
 
 const RUNNER_DELIVERY_TERMINAL_PROJECTION_MS = 72 * 60 * 60_000;
+const RUNNER_STOP_HEARTBEAT_MS = 30 * 60_000;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -133,10 +151,13 @@ CREATE TABLE IF NOT EXISTS runner_declared_states (
 );
 CREATE TABLE IF NOT EXISTS runner_stop_declarations (
   execution_id  TEXT PRIMARY KEY,
+  state_hash    TEXT NOT NULL,
+  state_key     TEXT NOT NULL,
   content_hash  TEXT NOT NULL,
   content       TEXT NOT NULL,
   question_id   TEXT NOT NULL,
   derived_at_ms INTEGER NOT NULL,
+  emitted_at_ms INTEGER NOT NULL,
   updated_at    TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS three_stage_turn (
@@ -1116,6 +1137,29 @@ export class CommDB {
 	}
 
 	private applyMigrations(): void {
+		const runnerStopColumns = this.db
+			.prepare("PRAGMA table_info(runner_stop_declarations)")
+			.all() as Array<{ name: string }>;
+		let migratedRunnerStop = false;
+		for (const [name, sqlType] of [
+			["state_hash", "TEXT NOT NULL DEFAULT ''"],
+			["state_key", "TEXT NOT NULL DEFAULT ''"],
+			["emitted_at_ms", "INTEGER NOT NULL DEFAULT 0"],
+		] as const) {
+			if (runnerStopColumns.some((column) => column.name === name)) continue;
+			this.db.exec(
+				`ALTER TABLE runner_stop_declarations ADD COLUMN ${name} ${sqlType}`,
+			);
+			migratedRunnerStop = true;
+		}
+		if (migratedRunnerStop) {
+			this.db.exec(`
+				UPDATE runner_stop_declarations
+				   SET state_hash = CASE WHEN state_hash = '' THEN content_hash ELSE state_hash END,
+				       state_key = CASE WHEN state_key = '' THEN content ELSE state_key END,
+				       emitted_at_ms = CASE WHEN emitted_at_ms = 0 THEN derived_at_ms ELSE emitted_at_ms END
+			`);
+		}
 		const sessionColumns = this.db
 			.prepare("PRAGMA table_info(sessions)")
 			.all() as Array<{ name: string }>;
@@ -1415,6 +1459,7 @@ export class CommDB {
 	recordRunnerStopDeclaration(input: {
 		executionId: string;
 		leadId: string;
+		stateKey: string;
 		content: string;
 		questionId: string;
 		derivedAtMs: number;
@@ -1426,6 +1471,12 @@ export class CommDB {
 		if (!Number.isSafeInteger(input.derivedAtMs) || input.derivedAtMs < 0) {
 			throw new Error("runner stop derivedAtMs must be a non-negative integer");
 		}
+		if (input.stateKey.length === 0) {
+			throw new Error("runner stop stateKey must be non-empty");
+		}
+		const stateDigest = createHash("sha256")
+			.update(input.stateKey)
+			.digest("hex");
 		const digest = createHash("sha256").update(input.content).digest("hex");
 		return this.db
 			.transaction(() => {
@@ -1433,55 +1484,74 @@ export class CommDB {
 					this.db
 						.prepare(
 							`INSERT INTO runner_stop_declarations
-							   (execution_id, content_hash, content, question_id, derived_at_ms, updated_at)
-							 VALUES (?, ?, ?, ?, ?, ?)
+							   (execution_id, state_hash, state_key, content_hash, content, question_id,
+							    derived_at_ms, emitted_at_ms, updated_at)
+							 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 							 ON CONFLICT(execution_id) DO UPDATE SET
+							   state_hash = excluded.state_hash,
+							   state_key = excluded.state_key,
 							   content_hash = excluded.content_hash,
 							   content = excluded.content,
 							   question_id = excluded.question_id,
 							   derived_at_ms = excluded.derived_at_ms,
+							   emitted_at_ms = excluded.emitted_at_ms,
 							   updated_at = excluded.updated_at`,
 						)
 						.run(
 							input.executionId,
+							stateDigest,
+							input.stateKey,
 							digest,
 							input.content,
 							input.questionId,
+							input.derivedAtMs,
 							input.derivedAtMs,
 							new Date().toISOString(),
 						);
 				};
 				const current = this.db
 					.prepare(
-						`SELECT content_hash, content, question_id, derived_at_ms
+						`SELECT state_hash, state_key, content_hash, content, question_id,
+						        derived_at_ms, emitted_at_ms
 						   FROM runner_stop_declarations WHERE execution_id = ?`,
 					)
 					.get(input.executionId) as
 					| {
+							state_hash: string;
+							state_key: string;
 							content_hash: string;
 							content: string;
 							question_id: string;
 							derived_at_ms: number;
+							emitted_at_ms: number;
 					  }
 					| undefined;
-				if (
+				const stateMatched = Boolean(
 					current &&
-					current.content_hash === digest &&
-					current.content === input.content
-				) {
-					if (input.derivedAtMs > current.derived_at_ms) {
-						this.db
-							.prepare(
-								`UPDATE runner_stop_declarations
-								    SET derived_at_ms = ?, updated_at = ?
-								  WHERE execution_id = ?`,
-							)
-							.run(
-								input.derivedAtMs,
-								new Date().toISOString(),
-								input.executionId,
-							);
-					}
+						current.state_hash === stateDigest &&
+						current.state_key === input.stateKey,
+				);
+				const contentMatched = Boolean(
+					current &&
+						current.content_hash === digest &&
+						current.content === input.content,
+				);
+				const advanceDerivedAt = (): void => {
+					if (!current || input.derivedAtMs <= current.derived_at_ms) return;
+					this.db
+						.prepare(
+							`UPDATE runner_stop_declarations
+							    SET derived_at_ms = ?, updated_at = ?
+							  WHERE execution_id = ?`,
+						)
+						.run(
+							input.derivedAtMs,
+							new Date().toISOString(),
+							input.executionId,
+						);
+				};
+				if (current && stateMatched && contentMatched) {
+					advanceDerivedAt();
 					return {
 						status: "duplicate" as const,
 						questionId: current.question_id,
@@ -1491,6 +1561,18 @@ export class CommDB {
 				if (current && input.derivedAtMs < current.derived_at_ms) {
 					return {
 						status: "stale" as const,
+						questionId: current.question_id,
+						contentMatched: false,
+					};
+				}
+				if (
+					current &&
+					stateMatched &&
+					input.derivedAtMs - current.emitted_at_ms < RUNNER_STOP_HEARTBEAT_MS
+				) {
+					advanceDerivedAt();
+					return {
+						status: "duplicate" as const,
 						questionId: current.question_id,
 						contentMatched: false,
 					};
@@ -3788,6 +3870,36 @@ export class CommDB {
 
 	getUnreadInstructions(agentId: string): Message[] {
 		return this.db.prepare(UNREAD_INSTRUCTIONS_SQL).all(agentId) as Message[];
+	}
+
+	getPendingRunnerMailboxSnapshot(
+		agentId: string,
+	): PendingRunnerMailboxSnapshot {
+		const snapshot: PendingRunnerMailboxSnapshot = {
+			queued: 0,
+			leased: 0,
+			unpullableInstructions: 0,
+			questionIds: [],
+		};
+		const rows = this.db
+			.prepare(PENDING_RUNNER_MAILBOX_SQL)
+			.all(agentId) as Array<{
+			state: "QUEUED" | "LEASED";
+			type: "instruction" | "response";
+			ref_id: string | null;
+			unpullable_instruction: 0 | 1;
+		}>;
+		const questionIds = new Set<string>();
+		for (const row of rows) {
+			if (row.state === "QUEUED") snapshot.queued += 1;
+			else snapshot.leased += 1;
+			snapshot.unpullableInstructions += row.unpullable_instruction;
+			if (row.type === "response" && row.ref_id) {
+				questionIds.add(row.ref_id);
+			}
+		}
+		snapshot.questionIds = [...questionIds];
+		return snapshot;
 	}
 
 	markInstructionRead(id: string): void {

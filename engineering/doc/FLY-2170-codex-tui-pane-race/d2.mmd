@@ -1,0 +1,20 @@
+sequenceDiagram
+  autonumber
+  participant A as CodexTmuxAdapter
+  participant E as ensure 开窗链
+  participant T as tmux
+  participant C as comm.db
+  A->>E: startOpenChain(出生 label)
+  E->>T: purge: 同名 或 同 @flywheel_exec_id 的窗按 @id 清掉, 再核零残留
+  E->>T: new-window -n <出生 label>
+  T-->>E: @N
+  E->>T: settle 800ms 后 display-message 验 "@N name 0"
+  E->>T: set-option @flywheel_exec_id = <execution>(新: 前置)
+  E->>T: display-message 读回 @flywheel_exec_id
+  alt 读回 = execution
+    E-->>A: created @N
+    A->>C: tmux_window = @N(唯一写者)
+  else 读回不符 / 写失败
+    E->>T: kill-window @N 并核实消失
+    E-->>A: marker_unproven → 同一条链重试
+  end

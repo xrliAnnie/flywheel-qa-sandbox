@@ -512,6 +512,73 @@ function pinRunnerPolicy(baseToml: string): string {
 	return body ? `${body}\n` : "";
 }
 
+/** FLY-2296: unattended runners must never stop on Codex's interactive
+ * rate-limit model-switch prompt. */
+export function pinRunnerNotice(baseToml: string): string {
+	const body = baseToml.trimEnd();
+	const parsed = parseTomlSanitized(body, "base");
+	const firstTableIndex = TABLE_HEADER_RE.exec(body)?.index ?? body.length;
+	const rootSegment = body.slice(0, firstTableIndex);
+	if (/^[ \t]*notice[ \t]*(?:=|\.)/m.test(rootSegment)) {
+		throw new Error(
+			"provisionCodexHome: notice is defined as a dotted/inline table in the seed config (~/.codex/config.toml) — rewrite it as a literal [notice] table header before dispatching Codex runners",
+		);
+	}
+	if (parsed.notice !== undefined && !isPlainTable(parsed.notice)) {
+		throw new Error(
+			"provisionCodexHome: notice is not a table; refusing to pin",
+		);
+	}
+	const noticeHeaders = [
+		...body.matchAll(/^[ \t]*\[notice\][ \t]*(?:#.*)?$/gm),
+	];
+	if (noticeHeaders.length > 1) {
+		throw new Error(
+			"provisionCodexHome: notice has multiple literal table headers; refusing to pin",
+		);
+	}
+
+	let candidate: string;
+	const noticeHeader = noticeHeaders[0];
+	if (noticeHeader !== undefined) {
+		const headerEnd = (noticeHeader.index ?? 0) + noticeHeader[0].length;
+		const tail = body.slice(headerEnd);
+		const nextHeader = /\n[ \t]*\[{1,2}[^\n]+/m.exec(tail);
+		const tableEnd =
+			nextHeader === null ? body.length : headerEnd + (nextHeader.index ?? 0);
+		const assignments = [
+			...body
+				.slice(headerEnd, tableEnd)
+				.matchAll(/^[ \t]*hide_rate_limit_model_nudge[ \t]*=.*$/gm),
+		];
+		if (assignments.length > 1) {
+			throw new Error(
+				"provisionCodexHome: notice has multiple rate-limit model nudge assignments; refusing to pin",
+			);
+		}
+		const assignment = assignments[0];
+		if (assignment !== undefined) {
+			const start = headerEnd + (assignment.index ?? 0);
+			candidate = `${body.slice(0, start)}hide_rate_limit_model_nudge = true${body.slice(start + assignment[0].length)}\n`;
+		} else {
+			candidate = `${body.slice(0, headerEnd)}\nhide_rate_limit_model_nudge = true${body.slice(headerEnd)}\n`;
+		}
+	} else {
+		candidate = `${body}${body ? "\n\n" : ""}[notice]\nhide_rate_limit_model_nudge = true\n`;
+	}
+
+	const rendered = parseTomlSanitized(candidate, "rendered");
+	if (
+		!isPlainTable(rendered.notice) ||
+		rendered.notice.hide_rate_limit_model_nudge !== true
+	) {
+		throw new Error(
+			"provisionCodexHome: notice pin did not take effect; refusing to provision",
+		);
+	}
+	return candidate;
+}
+
 function isPlainTable(v: unknown): v is Record<string, unknown> {
 	return (
 		typeof v === "object" &&
@@ -1023,8 +1090,22 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 			);
 		}
 	}
-	const home = codexHomeDir(opts.executionId, env);
 	const src = sourceCodexDir(env);
+	const srcConfig = join(src, "config.toml");
+	const baseToml = existsSync(srcConfig)
+		? readFileSync(srcConfig, "utf-8")
+		: "";
+	let runnerBaseToml: string;
+	try {
+		runnerBaseToml = pinRunnerNotice(pinRunnerPolicy(baseToml));
+	} catch (error) {
+		// A reprovision may be replacing a live home whose config still carries
+		// a managed GH_TOKEN. Pin rejection happens before this invocation owns
+		// the normal try/finally path, so retire that credential explicitly.
+		scrubCodexHomeCredential(opts.executionId, env);
+		throw error;
+	}
+	const home = codexHomeDir(opts.executionId, env);
 	mkdirSync(home, { recursive: true, mode: 0o700 });
 	// R1 MED #2: mkdir(recursive) does NOT repair a pre-existing dir mode
 	// (re-provision / crash-recovered home), so force 0700.
@@ -1044,11 +1125,6 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 	// config.toml = seeded global + GH_TOKEN block (0600). chmod AFTER write —
 	// writeFileSync mode only applies on CREATE, not to a pre-existing wider
 	// file (R1 MED #2).
-	const srcConfig = join(src, "config.toml");
-	const baseToml = existsSync(srcConfig)
-		? readFileSync(srcConfig, "utf-8")
-		: "";
-	const runnerBaseToml = pinRunnerPolicy(baseToml);
 	const cfgPath = join(home, "config.toml");
 	try {
 		writeFileSync(

@@ -1,0 +1,15 @@
+flowchart LR
+  subgraph EP["EpicPage 文档 v1"]
+    H["页头<br/>标题 · 状态 · 子单清单"]
+    I["每张子单(item)<br/>标题 · 状态 · 谁挡着它 · 批次<br/>验收原文 · 找她标记 · 六个执行格"]
+    D["推导格<br/>批次表 · 找她的清单 · 现在可以开始的 · 缺什么<br/>做完的定义"]
+  end
+  C["每一格(Cell)<br/>value 值<br/>provenance 出处<br/>observed_at 看到它的时间<br/>missing 缺了为什么"]
+  H --> C
+  I --> C
+  D --> C
+  C --> P1["出处:Linear<br/>issue / 关系 / 标签 / 子单"]
+  C --> P2["出处:StateStore<br/>点名一张表 + 键"]
+  C --> P3["出处:规则<br/>batch.v1 · next.v1 · founder.v1 · done.v1 · gaps.v1<br/>+ 它读了哪些格"]
+  style C fill:#e8f0fe,stroke:#1d4ed8
+  style P3 fill:#f3e8ff,stroke:#6b21a8

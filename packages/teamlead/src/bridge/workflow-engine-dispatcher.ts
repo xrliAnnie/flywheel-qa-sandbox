@@ -39,6 +39,7 @@ import {
 } from "../workflow-ship-ready.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import { workflowApprovalGate } from "../workflow-template.js";
+import type { DeadTerminalFinalizeOutcome } from "./commdb-session-prune.js";
 import {
 	captureDeadExecutionActivityBaseline,
 	probeDeadExecutionActivity,
@@ -106,6 +107,11 @@ interface WorkflowEngineDispatcherOptions {
 		watch: WorkflowDeadExecutionWatchRow,
 		sessionCommitCount: number | null,
 	) => Promise<WorkflowDeadExecutionActivityEvidence | null>;
+	finalizeDeadExecutionCommDb?: (input: {
+		projectName: string;
+		executionId: string;
+		issueId: string;
+	}) => Promise<DeadTerminalFinalizeOutcome>;
 	alertSink?: {
 		current?: { alert: (payload: AlertPayload) => Promise<AlertResult> };
 	};
@@ -136,10 +142,14 @@ export interface WorkflowEngineReconcileResult {
 }
 
 export const DEAD_EXECUTION_WATCH_TTL_MS = 24 * 60 * 60 * 1_000;
+export const NOT_WIRED_DEAD_EXECUTION_COMMDB_FINALIZER =
+	async (): Promise<"not_wired"> => "not_wired";
 const SHIP_READY_MAX_PER_TICK = 3;
 const SHIP_READY_FOUNDER_RETRY_BASE_MS = 30_000;
 const SHIP_READY_FOUNDER_RETRY_CAP_MS = 5 * 60_000;
 const SHIP_READY_FOUNDER_BUDGET_MS = 45 * 60_000;
+const DEAD_EXECUTION_COMMDB_RETRY_BASE_MS = 1_000;
+const DEAD_EXECUTION_COMMDB_RETRY_CAP_MS = 60_000;
 
 /**
  * Consumes only engine-owned dispatch outbox rows. The snapshot already chose
@@ -178,6 +188,9 @@ export class WorkflowEngineDispatcher {
 	private readonly probeDeadExecutionActivity: NonNullable<
 		WorkflowEngineDispatcherOptions["probeDeadExecutionActivity"]
 	>;
+	private readonly finalizeDeadExecutionCommDb: NonNullable<
+		WorkflowEngineDispatcherOptions["finalizeDeadExecutionCommDb"]
+	>;
 	private readonly alertSink: WorkflowEngineDispatcherOptions["alertSink"];
 	private readonly resolveRunAlertIdentity: NonNullable<
 		WorkflowEngineDispatcherOptions["resolveRunAlertIdentity"]
@@ -189,6 +202,17 @@ export class WorkflowEngineDispatcher {
 	>();
 	private readonly heldReworkRecoveryProbeAt = new Map<string, number>();
 	private readonly completionExceptionProbeAt = new Map<string, number>();
+	private readonly deadExecutionCommDbSettled = new Set<string>();
+	private readonly deadExecutionCommDbRetries = new Map<
+		string,
+		{
+			outcome: DeadTerminalFinalizeOutcome;
+			repeatCount: number;
+			nextAttemptAtMs: number;
+		}
+	>();
+	private readonly deadExecutionCommDbFailureLogged = new Set<string>();
+	private deadExecutionCommDbNotWiredLogged = false;
 	private deadExecutionWatchCursor:
 		| { observedAt: string; deadExecutionId: string }
 		| undefined;
@@ -263,6 +287,9 @@ export class WorkflowEngineDispatcher {
 					markerPath: join(this.stateRoot, watch.dead_execution_id),
 					sessionCommitCount,
 				}));
+		this.finalizeDeadExecutionCommDb =
+			options.finalizeDeadExecutionCommDb ??
+			NOT_WIRED_DEAD_EXECUTION_COMMDB_FINALIZER;
 		this.alertSink = options.alertSink;
 		this.resolveRunAlertIdentity =
 			options.resolveRunAlertIdentity ??
@@ -1115,6 +1142,38 @@ export class WorkflowEngineDispatcher {
 		this.shipReadyFounderRetries.delete(workflowShipReadyUid(notice));
 	}
 
+	private logDeadExecutionCommDbFailureOnce(
+		executionId: string,
+		detail: string,
+	): void {
+		if (this.deadExecutionCommDbFailureLogged.has(executionId)) return;
+		this.deadExecutionCommDbFailureLogged.add(executionId);
+		this.log(
+			`workflow engine dead-exec commdb finalize held for ${executionId}: ${detail}`,
+		);
+	}
+
+	private deferDeadExecutionCommDbRetry(
+		executionId: string,
+		outcome: DeadTerminalFinalizeOutcome,
+		nowMs: number,
+	): void {
+		const previous = this.deadExecutionCommDbRetries.get(executionId);
+		const repeatCount =
+			outcome !== "kept_turn_holder" && previous?.outcome === outcome
+				? previous.repeatCount + 1
+				: 0;
+		const delayMs = Math.min(
+			DEAD_EXECUTION_COMMDB_RETRY_CAP_MS,
+			DEAD_EXECUTION_COMMDB_RETRY_BASE_MS * 2 ** repeatCount,
+		);
+		this.deadExecutionCommDbRetries.set(executionId, {
+			outcome,
+			repeatCount,
+			nextAttemptAtMs: nowMs + delayMs,
+		});
+	}
+
 	private async reconcileDeadExecutionTripwires(): Promise<void> {
 		const store = this.options.store;
 		if (typeof store.pruneWorkflowDeadExecutionWatches === "function") {
@@ -1124,6 +1183,8 @@ export class WorkflowEngineDispatcher {
 				limit: 200,
 			});
 			if (pruned > 0) {
+				this.deadExecutionCommDbSettled.clear();
+				this.deadExecutionCommDbRetries.clear();
 				this.log(
 					`workflow engine pruned ${pruned} dead-exec tripwire watch(es)`,
 				);
@@ -1166,7 +1227,59 @@ export class WorkflowEngineDispatcher {
 				);
 				continue;
 			}
-			if (!evidence) continue;
+			if (!evidence) {
+				if (!this.deadExecutionCommDbSettled.has(watch.dead_execution_id)) {
+					const retry = this.deadExecutionCommDbRetries.get(
+						watch.dead_execution_id,
+					);
+					const nowMs = this.now().getTime();
+					if (retry && nowMs < retry.nextAttemptAtMs) continue;
+					let outcome: DeadTerminalFinalizeOutcome;
+					try {
+						outcome = await this.finalizeDeadExecutionCommDb({
+							projectName: watch.project_name,
+							executionId: watch.dead_execution_id,
+							issueId: watch.issue_id,
+						});
+						if (outcome === "not_wired") {
+							if (!this.deadExecutionCommDbNotWiredLogged) {
+								this.deadExecutionCommDbNotWiredLogged = true;
+								this.log(
+									"workflow engine dead-exec commdb finalizer not wired; registrations converge via hourly prune",
+								);
+							}
+						} else if (outcome === "finalized" || outcome === "no_row") {
+							this.deadExecutionCommDbSettled.add(watch.dead_execution_id);
+							this.deadExecutionCommDbRetries.delete(watch.dead_execution_id);
+							if (outcome === "finalized") {
+								this.log(
+									`workflow engine dead-exec commdb registration finalized for ${watch.dead_execution_id}`,
+								);
+							}
+						} else if (outcome === "failed") {
+							this.logDeadExecutionCommDbFailureOnce(
+								watch.dead_execution_id,
+								"failed",
+							);
+						}
+					} catch (error) {
+						outcome = "failed";
+						this.logDeadExecutionCommDbFailureOnce(
+							watch.dead_execution_id,
+							error instanceof Error ? error.message : String(error),
+						);
+					}
+					if (outcome !== "finalized" && outcome !== "no_row") {
+						this.deferDeadExecutionCommDbRetry(
+							watch.dead_execution_id,
+							outcome,
+							nowMs,
+						);
+					}
+				}
+				continue;
+			}
+			this.deadExecutionCommDbRetries.delete(watch.dead_execution_id);
 			if (evidence.kind === "tmux_output") {
 				this.log(
 					`workflow engine dead-exec tripwire tmux-only activity logged for ${watch.dead_execution_id}: ${evidence.detail}`,

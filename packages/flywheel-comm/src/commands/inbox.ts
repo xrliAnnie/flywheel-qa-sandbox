@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { CommDB } from "../db.js";
+import { CommDB, type PendingRunnerMailboxSnapshot } from "../db.js";
 import type { Message } from "../types.js";
 
 export interface InboxArgs {
@@ -12,6 +12,16 @@ export interface InboxArgs {
 
 export interface InboxResult {
 	instructions: Message[];
+	pendingMailbox: PendingRunnerMailboxSnapshot;
+}
+
+function emptyPendingMailbox(): PendingRunnerMailboxSnapshot {
+	return {
+		queued: 0,
+		leased: 0,
+		unpullableInstructions: 0,
+		questionIds: [],
+	};
 }
 
 function ageInMinutes(createdAt: string, observedAtMs: number): string {
@@ -36,7 +46,7 @@ export function renderInboxInstruction(
 export function inbox(args: InboxArgs): InboxResult {
 	const observedAtMs = (args.now ?? Date.now)();
 	if (!existsSync(args.dbPath)) {
-		return { instructions: [] };
+		return { instructions: [], pendingMailbox: emptyPendingMailbox() };
 	}
 	const db = new CommDB(args.dbPath, false);
 	try {
@@ -49,7 +59,10 @@ export function inbox(args: InboxArgs): InboxResult {
 			observedAtMs,
 			args.debugExecOverride ? "debug_override" : "exec_cli",
 		);
-		return { instructions };
+		return {
+			instructions,
+			pendingMailbox: db.getPendingRunnerMailboxSnapshot(args.execId),
+		};
 	} finally {
 		db.close();
 	}

@@ -54,6 +54,7 @@
 	"dependencies": {
 		"@linear/sdk": "60.0.0",
 		"@modelcontextprotocol/sdk": "^1.25.2",
+		"@vercel/blob": "2.8.0",
 		"better-sqlite3": "^12.8.0",
 		"chokidar": "^4.0.3",
 		"express": "^5.2.1",

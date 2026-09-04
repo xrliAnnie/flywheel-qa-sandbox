@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2096 设计:返工换体超过一小时不再被打成 held,已收工的体不再被当成卡住</title>
+<style>
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:26px; margin:8px 0 4px; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.green { border-left-color:#34c759; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; }
+  p, li { font-size:14.5px; line-height:1.75; }
+  .term { color:#007aff; }
+  .diagram { overflow-x:auto; background:#fff; padding:8px 0; }
+  .diagram svg { max-width:100%; height:auto; }
+  .caption { color:#86868b; font-size:12.5px; margin:4px 0 10px; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; margin:10px 0; }
+  th, td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; line-height:1.6; }
+  th { background:#f5f5f7; color:#1a365d; }
+  .mono { font-family:'SF Mono',monospace; font-size:12.5px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.reject { background:#fdecea; color:#ff3b30; }
+  .badge.keep { background:#e9f9ef; color:#248a3d; }
+  .badge.fix { background:#fff4e5; color:#c25e00; }
+  .comment-box { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .comment-box label { font-size:12.5px; color:#86868b; display:block; margin-bottom:6px; }
+  .comment-box textarea { width:100%; box-sizing:border-box; min-height:60px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-family:inherit; font-size:13.5px; resize:vertical; background:#fafafa; }
+  .comment-box textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  #summary-body { white-space:pre-wrap; font-size:13.5px; background:#fafafa; border:1px solid #e5e5ea; border-radius:8px; padding:12px; min-height:40px; }
+  .btn { display:inline-block; margin-top:10px; padding:8px 16px; border-radius:8px; border:none; background:#007aff; color:#fff; font-size:14px; cursor:pointer; }
+  .btn:active { opacity:.8; }
+  #copy-status { margin-left:10px; font-size:13px; color:#248a3d; }
+  .chunk { margin-top:10px; }
+  .chunk .btn { background:#1a365d; }
+  .tbl-wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2096:返工换体超过一小时不再被打成 held,已收工的体不再被当成卡住</h1>
+  <div class="meta">工程设计说明 · 2026-09-03 · 分支 flywheel-FLY-2096 · __REVIEW_META__ · 每个卡片下方都可以留意见,页底一键汇总复制</div>
+
+  <div class="card" data-section="一句话总结">
+    <h2>一句话总结</h2>
+    <p>这张单点名的病根——「返工换了一个新的工人之后,只要这一轮干活超过 60 分钟,系统就把整条 run 冻住,工人做完了也交不了工」——已经在今天下午合入的 FLY-2278 里被整体拆掉了;<strong>但生产还没换到新版本</strong>(今天 19:02Z 又发生了一次同样的冻结)。本单要做的是三件收尾:把「不会再冻」钉成一组能在旧代码上变红、在新代码上变绿的回归测试;顺手删掉拆机制时留下的死参数;补一个 FLY-2278 漏掉的口子——工人<strong>做完</strong>之后系统仍把它当成「还没收到交接的人」,过 30 分钟就发一条假的「投递卡住」告警。</p>
+    <p class="caption">名词:<span class="term">run</span> = 一张 issue 在自动流水线里的一次完整执行;<span class="term">rework / 返工</span> = QA 或 founder 打回后,把活重新交给一个工人再做一轮;<span class="term">换体</span> = 原来的工人已经不在了,系统另起一个新工人接这轮返工;<span class="term">held / 冻结</span> = 系统把一条 run 暂停、等人来决定;<span class="term">delivery / 交接</span> = 系统对「这份返工任务必须送到工人手里」的一条记录。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在你本机)</label><textarea data-ckey="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="发生了什么:生产里的 69 次">
+    <h2>发生了什么:生产里的 69 次</h2>
+    <p>从生产数据库的只读副本(2026-09-03 20:08Z)里数:系统一共 69 次因为「返工交接卡住」把 run 打成 held。其中 49 次(71%)的理由本质上是「工人活着、只是时间到了」——包括 6 次理由字段本身就写着「工人在收到交接后还活着」。issue 里的 FLY-2074 案例逐字对得上:19:28 换体上岗,20:28 被冻结。</p>
+    <div class="tbl-wrap">
+    <table>
+      <tr><th>冻结理由(系统原话)</th><th>次数</th><th>大白话</th></tr>
+      <tr><td class="mono">delivery_wake_delivered</td><td>30</td><td>交接已经送到工人手里,只是这一轮干得久</td></tr>
+      <tr><td class="mono">delivery_awaiting_receipt</td><td>13</td><td>还在等工人回一个「收到」;换体的工人从不回这个</td></tr>
+      <tr><td class="mono">actor_alive_after_receipt</td><td>6</td><td>系统自己每 3 分钟写一次「工人还活着」,然后把这句话当成冻结理由</td></tr>
+      <tr><td class="mono">worktree_not_ready / holder_activation_failed / 其他</td><td>20</td><td>真有问题的那部分,不是本单</td></tr>
+    </table>
+    </div>
+    <p><strong>为什么会这样:</strong>旧的巡检只看一件事——「交接记录最后一次更新是多久以前」。30 分钟发告警,60 分钟冻结。它不看工人的窗口是不是还在动、任务是不是已经交到手、甚至不看这个节点是不是已经做完了(8-31 的新证据:节点已完成、下一步 QA 已经在跑,照样冻)。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="核心流程:旧机制 vs 新机制">
+    <h2>核心流程:旧机制 vs 新机制</h2>
+    <p>左边是生产此刻仍在跑的旧机制;右边是 FLY-2278 之后 main 上的新机制。新机制的关键差别:超时之后先问「收件的工人活着吗」(看它的 <span class="term">heartbeat</span>——只要工人的终端窗口还在,系统每个周期都会刷新这个心跳——或者 10 分钟内有没有发过消息);活着就<strong>什么都不写</strong>,不活着也<strong>只告警不冻结</strong>。整个新路径里根本没有「把 run 打成 held」这一步。</p>
+    <div class="diagram">__SVG_D1__</div>
+    <p class="caption">图 1:旧机制按「交接记录的年龄」冻结;新机制按「工人活性」决定是否告警,且永远不冻结。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="新发现:做完了却被当成卡住">
+    <h2>新发现:做完了却被当成「投递卡住」</h2>
+    <p>核对 FLY-2278 之后的代码时发现一个漏掉的口子。系统给每条交接记一张 <span class="term">delivery attempt</span>(投递账本上的一行,记着「什么时候送出、什么时候收到、什么时候结清」)。另一种交接(<span class="term">carrier</span>,把 founder 的问题带给工人的那种)在工人做完的同一笔事务里就把这一行结清了;<strong>返工这种没有</strong>。结果是:工人做完、终端窗口关掉、心跳停了,系统 10 分钟后判它「不活」,再对照那张没结清的账——「30 分钟前就该收到,还没结清,人又不在」——于是给一个已经做完的节点发「投递卡住」告警,90 分钟后再升级一次。今晚 founder 频道里 FLY-2291 / FLY-2278 那几条 warning / severe 就是这个。</p>
+    <div class="diagram">__SVG_D3__</div>
+    <p class="caption">图 2:修前与修后的时间线。修法只有一处——工人做完的那笔事务里,顺手把返工的这一行账结清(复用 carrier 已经在用的同一个函数),不加任何新机制。</p>
+    <p>Lead 已裁决把这一处纳入本单,并明写这是<strong>推翻 FLY-2278 计划里「不为返工补写点」那一条</strong>:那条的前提「活性门会挡住误报」只对还在岗的工人成立,对做完的工人正好反过来;而且同一张账本、同一个结清函数,两种交接两套结果,本身就是缺陷。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="数据结构:涉及哪几张表">
+    <h2>数据结构:涉及哪几张表</h2>
+    <p>本单<strong>不加表、不加列、不加开关</strong>。图里标出了旧时钟看的字段(<span class="mono">updated_at</span>)、新活性门看的字段(<span class="mono">heartbeat_at</span>)、以及本单唯一要写的字段(<span class="mono">settlement_reason</span>,写「settled」)。</p>
+    <div class="diagram">__SVG_D2__</div>
+    <p class="caption">图 3:run → 返工请求 → 路由版本 → 交接 → 投递账本 → 告警 episode 的关系,以及工人会话表。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="怎么证明:先红后绿">
+    <h2>怎么证明:先红后绿</h2>
+    <p>Lead 的硬要求:回归测试必须先在<strong>旧代码</strong>上跑一遍并且变红,再在新代码上变绿——否则写出来的只是一条永远不会响的警报。做法是同一个测试文件拷进旧代码的临时副本里跑一次。测试脚本按 issue 里的真实时间线走:换体上岗 → 61 分钟 → 95 分钟 → 交工 → 3 小时后再巡检。</p>
+    <div class="diagram">__SVG_D4__</div>
+    <p class="caption">图 4:主线(两棵代码树共用的 API)在旧树上两条断言变红;黄底的 main 专属段在旧树上跳过而不是报错;「做完却被当成卡住」的修法同样先红后绿,并带一条对照组证明告警面没有被整个弄哑。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card gray" data-section="取舍与被否掉的方案">
+    <h2>取舍与被否掉的方案</h2>
+    <div class="tbl-wrap">
+    <table>
+      <tr><th>方案</th><th>结论</th><th>为什么</th></tr>
+      <tr><td>再修一次旧时钟(让它看 turn 已授、任务已投、窗口活跃)</td><td><span class="badge reject">否</span></td><td>旧时钟已经被 FLY-2278 整个删掉,再修等于复活它;而且新活性门已经做了更强的形式(活着连告警都不发)。</td></tr>
+      <tr><td>冻结改成只告警</td><td><span class="badge keep">已由 FLY-2278 完成</span></td><td>新路径里没有 hold 写点;本单用测试钉死这一点。</td></tr>
+      <tr><td>给返工补一个「消费时刻」时钟</td><td><span class="badge reject">否</span></td><td>那是再造一个阶段时钟;本单只结清账本行,不造时钟(与 FLY-2278 的零预算一致)。</td></tr>
+      <tr><td>返工做完时结清投递账本行</td><td><span class="badge fix">做</span></td><td>复用 carrier 已在用的同一个函数,零新机制;Lead 裁决并写明推翻 FLY-2278 那一条的理由。</td></tr>
+      <tr><td>顺手清掉每 3 分钟一次的「工人还活着」重探噪音</td><td><span class="badge reject">另开单</span></td><td>它不再驱动任何冻结,是独立的噪音问题;已向 Lead 点出。</td></tr>
+      <tr><td>把生产里那条还冻着的 FLY-2241 解开</td><td><span class="badge reject">本单不碰数据</span></td><td>处置权在 Lead / founder;而且现成的「解冻门」会把返工重新投给一个已经做完的节点,不是它需要的动作。本单只写一段可核对的处置建议。</td></tr>
+    </table>
+    </div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s7" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="诚实边界">
+    <h2>诚实边界:这个设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>一个测试文件,钉死本单精确形状:换体上岗超过 60 / 95 分钟且工人活着 → run 保持 active、零告警、交工被接受;对照组工人不活 → 只告警,仍不冻结,交工仍被接受。</li>
+      <li>同一文件在退役前代码上跑出红,两次输出贴进 PR。</li>
+      <li>删掉一个只有旧时钟在用的死参数(<span class="mono">includeDeferred</span>)。</li>
+      <li>返工做完时结清投递账本行(先红后绿,带对照组)。</li>
+    </ul>
+    <h3>不做</h3>
+    <ul>
+      <li><strong>不部署、不重启。</strong>生产 Bridge 此刻仍是 FLY-2278 之前的版本(buildSha 31da17817),修复只会随 00:00 PT 的自动更新班车生效;在那之前这类冻结还会发生,巡检照旧手工拨回。</li>
+      <li>不碰任何生产数据:FLY-2241 那条冻着的 run、以及 3 条已完成但账本行未结清的返工,都留给 Lead 处置或由引擎在 run 结束时自然结清。</li>
+      <li>不动 FLY-2278 定下的阈值(30 / 90 分钟、10 分钟活性窗),不加表、列、开关、告警层、冻结形状、事件种类。</li>
+      <li>不处理「工人还活着」3 分钟重探的事件噪音——另开单。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s8" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="意见汇总">
+    <h2>意见汇总</h2>
+    <p class="caption">下面实时汇总你在各卡片留下的意见。复制后贴到 Discord 即可;这是修订反馈,不是通过信号。</p>
+    <div id="summary-body">(还没有意见)</div>
+    <div id="chunk-area"></div>
+    <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = '【页面意见汇总】FLY-2096';
+  var PREFIX;
+  try { PREFIX = 'fly2096-comment:' + location.pathname + ':'; }
+  catch (e) { PREFIX = 'fly2096-comment:unknown:'; }
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 私密窗口等场景下静默降级 */ } }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-ckey]'));
+
+  function sectionTitleFor(area) {
+    var card = area.closest('.card');
+    return (card && card.getAttribute('data-section')) || '未命名小节';
+  }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var v = area.value.trim();
+      if (v) parts.push('【' + sectionTitleFor(area) + '】\n' + v);
+    });
+    return parts;
+  }
+
+  function buildFullText() {
+    var parts = collect();
+    if (parts.length === 0) return '';
+    return MARKER + '\n' + parts.join('\n\n');
+  }
+
+  function chunkText(full) {
+    if (full.length <= 1800) return [full];
+    var body = full.slice(MARKER.length + 1);
+    var chunks = [];
+    var budget = 1800 - MARKER.length - 20;
+    var pieces = body.split('\n\n');
+    var cur = '';
+    pieces.forEach(function (p) {
+      if (cur && (cur.length + p.length + 2) > budget) { chunks.push(cur); cur = ''; }
+      while (p.length > budget) { chunks.push(cur ? cur + '\n\n' + p.slice(0, budget - cur.length - 2) : p.slice(0, budget)); p = p.slice(budget); cur = ''; }
+      cur = cur ? cur + '\n\n' + p : p;
+    });
+    if (cur) chunks.push(cur);
+    return chunks.map(function (c, i) {
+      return MARKER + '(' + (i + 1) + '/' + chunks.length + ')\n' + c;
+    });
+  }
+
+  var summaryBody = document.getElementById('summary-body');
+  var chunkArea = document.getElementById('chunk-area');
+  var copyStatus = document.getElementById('copy-status');
+
+  function copyText(text, onDone) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        onDone(ok);
+      } catch (e) { onDone(false); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, fallback);
+    } else { fallback(); }
+  }
+
+  function renderSummary() {
+    var full = buildFullText();
+    if (!full) {
+      summaryBody.textContent = '(还没有意见)';
+      chunkArea.textContent = '';
+      return;
+    }
+    summaryBody.textContent = full;
+    chunkArea.textContent = '';
+    var chunks = chunkText(full);
+    if (chunks.length > 1) {
+      chunks.forEach(function (c, i) {
+        var div = document.createElement('div');
+        div.className = 'chunk';
+        var btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.textContent = '复制第 ' + (i + 1) + '/' + chunks.length + ' 段';
+        btn.addEventListener('click', function () {
+          copyText(c, function (ok) {
+            copyStatus.textContent = ok ? ('已复制第 ' + (i + 1) + ' 段') : '复制失败,请手动选择文本';
+          });
+        });
+        div.appendChild(btn);
+        chunkArea.appendChild(div);
+      });
+    }
+  }
+
+  areas.forEach(function (area) {
+    var key = PREFIX + area.getAttribute('data-ckey');
+    var saved = lsGet(key);
+    if (saved) area.value = saved;
+    area.addEventListener('input', function () {
+      lsSet(key, area.value);
+      renderSummary();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var full = buildFullText();
+    if (!full) { copyStatus.textContent = '还没有可复制的意见'; return; }
+    copyText(full, function (ok) {
+      copyStatus.textContent = ok ? '已复制' : '复制失败,请手动选择文本';
+    });
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

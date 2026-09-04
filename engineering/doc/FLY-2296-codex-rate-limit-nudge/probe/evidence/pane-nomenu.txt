@@ -1,0 +1,15 @@
+╭──────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.0)                       │
+│                                                  │
+│ model:     gpt-5.6-sol medium   /model to change │
+│ directory: /private/tmp/fly2296/run-nomenu/cwd   │
+╰──────────────────────────────────────────────────╯
+  To get started, describe a task or try one of these commands:
+  /init - create an AGENTS.md file with instructions for Codex
+  /status - show current session configuration
+  /permissions - choose what Codex is allowed to do
+  /model - choose what model and reasoning effort to use
+  /review - review any changes and find issues
+⚠ Heads up, you have less than 5% of your 5h limit left. Run /status for a breakdown.
+› Ask Codex to do anything
+  gpt-5.6-sol medium · /private/tmp/fly2296/run-nomenu/cwd

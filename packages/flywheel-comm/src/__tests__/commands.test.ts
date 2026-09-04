@@ -255,6 +255,29 @@ describe("send/inbox round-trip", () => {
 		expect(second.instructions).toHaveLength(0);
 	});
 
+	it("reports a queued response without consuming it", () => {
+		const db = new CommDB(dbPath);
+		const questionId = db.insertQuestion(
+			"exec-pending",
+			"product-lead",
+			"Question",
+		);
+		db.insertResponse(questionId, "product-lead", "Answer");
+		db.close();
+
+		const first = inbox({ execId: "exec-pending", dbPath });
+		const second = inbox({ execId: "exec-pending", dbPath });
+		expect(first).toMatchObject({
+			instructions: [],
+			pendingMailbox: {
+				queued: 1,
+				leased: 0,
+				questionIds: [questionId],
+			},
+		});
+		expect(second.pendingMailbox).toEqual(first.pendingMailbox);
+	});
+
 	it("renders absolute creation time with a dynamic age at pull", async () => {
 		await send({
 			fromAgent: "product-lead",
@@ -325,7 +348,15 @@ describe("send/inbox round-trip", () => {
 			execId: "exec-123",
 			dbPath: join(tmpDir, "nonexistent.db"),
 		});
-		expect(result.instructions).toHaveLength(0);
+		expect(result).toEqual({
+			instructions: [],
+			pendingMailbox: {
+				queued: 0,
+				leased: 0,
+				unpullableInstructions: 0,
+				questionIds: [],
+			},
+		});
 	});
 });
 

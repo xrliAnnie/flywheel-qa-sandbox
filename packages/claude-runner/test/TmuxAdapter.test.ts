@@ -294,6 +294,7 @@ describe("FLY-1869 launch command budget", () => {
 			"FLYWHEEL_MARKER_DIR",
 			"FLYWHEEL_PROGRESS_PATH",
 			"FLYWHEEL_PROJECT_NAME",
+			"FLYWHEEL_RUNNER_MEMORY_DIR",
 			"FLYWHEEL_RUNNER_STATE_DIR",
 			"FLYWHEEL_STATE_DB_PATH",
 			"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
@@ -301,6 +302,7 @@ describe("FLY-1869 launch command budget", () => {
 			"PROJECT_NAME",
 			"TMPDIR",
 		];
+		expect(names).not.toContain("CLAUDE_CODE_DISABLE_AUTO_MEMORY");
 		const longPath = `/${"x/".repeat(225)}file`;
 		const envArgs = names.flatMap((name) => [
 			"-e",
@@ -1082,6 +1084,86 @@ describe("TmuxAdapter", () => {
 			"discord@flywheel-plugins": false,
 			"discord@claude-plugins-official": false,
 		});
+	});
+
+	it("FLY-2147: mounted memory sets the explicit directory, enables auto memory, and exports pane env", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const dir = "/tmp/runner-memory/flywheel/qa";
+		await new TmuxAdapter("flywheel", fn, 10).execute(
+			makeCtx({ runnerMemory: { status: "mounted", dir } }),
+		);
+		const newWindow = calls.find((call) => call.args[0] === "new-window");
+		const settingsIndex = newWindow!.args.indexOf("--settings");
+		const settings = JSON.parse(
+			newWindow!.args[settingsIndex + 1] as string,
+		) as Record<string, unknown>;
+		expect(settings).toMatchObject({
+			autoMemoryDirectory: dir,
+			autoMemoryEnabled: true,
+			enabledPlugins: {
+				"discord@flywheel-plugins": false,
+				"discord@claude-plugins-official": false,
+			},
+		});
+		expect(paneEnvValues(newWindow!.args)).toContain(
+			`FLYWHEEL_RUNNER_MEMORY_DIR=${dir}`,
+		);
+	});
+
+	it("FLY-2147: disabled memory fails closed without a directory or pane env", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		await new TmuxAdapter("flywheel", fn, 10).execute(
+			makeCtx({
+				runnerMemory: { status: "disabled", reason: "no_project" },
+			}),
+		);
+		const newWindow = calls.find((call) => call.args[0] === "new-window");
+		const settingsIndex = newWindow!.args.indexOf("--settings");
+		const settings = JSON.parse(
+			newWindow!.args[settingsIndex + 1] as string,
+		) as Record<string, unknown>;
+		expect(settings.autoMemoryEnabled).toBe(false);
+		expect(settings).not.toHaveProperty("autoMemoryDirectory");
+		expect(paneEnvValues(newWindow!.args)).not.toEqual(
+			expect.arrayContaining([
+				expect.stringMatching(/^FLYWHEEL_RUNNER_MEMORY_DIR=/),
+			]),
+		);
+	});
+
+	it("FLY-2147: absent memory disposition preserves settings and pane env", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
+		const newWindow = calls.find((call) => call.args[0] === "new-window");
+		const settingsIndex = newWindow!.args.indexOf("--settings");
+		const settings = JSON.parse(
+			newWindow!.args[settingsIndex + 1] as string,
+		) as Record<string, unknown>;
+		expect(settings).not.toHaveProperty("autoMemoryDirectory");
+		expect(settings).not.toHaveProperty("autoMemoryEnabled");
+		expect(paneEnvValues(newWindow!.args)).not.toEqual(
+			expect.arrayContaining([
+				expect.stringMatching(/^FLYWHEEL_RUNNER_MEMORY_DIR=/),
+			]),
+		);
+	});
+
+	it("FLY-2147: worst-case encoded memory path stays inside launch budget", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const component = `${"p".repeat(128)}--${"f".repeat(32)}`;
+		const dir = `/${"r".repeat(119)}/${component}/${component}`;
+		expect(dir).toHaveLength(446);
+		await expect(
+			new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ runnerMemory: { status: "mounted", dir } }),
+			),
+		).resolves.toMatchObject({ success: true });
+		const newWindow = calls.find((call) => call.args[0] === "new-window");
+		const settingsIndex = newWindow!.args.indexOf("--settings");
+		expect(newWindow!.args[settingsIndex + 1]).toContain(dir);
+		expect(paneEnvValues(newWindow!.args)).toContain(
+			`FLYWHEEL_RUNNER_MEMORY_DIR=${dir}`,
+		);
 	});
 
 	it("FLY-1715: forbidden Discord entries override caller positive opt-ins", async () => {

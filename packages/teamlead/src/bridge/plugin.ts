@@ -210,6 +210,7 @@ import {
 	buildCodexRecoveryContext,
 	CodexSessionReowner,
 	isCodexReownExcluded,
+	resolveCodexRecoveryWindow,
 } from "./codex-session-reown.js";
 import { recordCodexTransportDeathSnapshot } from "./codex-transport-death-snapshot.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -220,6 +221,7 @@ import {
 } from "./commdb-probes.js";
 import {
 	finalizeCommDbSession,
+	finalizeDeadTerminalCommDbSessionById,
 	pruneDeadTerminalCommDbSessions,
 	resolveCommDbPath,
 } from "./commdb-session-prune.js";
@@ -267,6 +269,7 @@ import {
 	shouldReportDeadLetteredDrain,
 } from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
+import { createEpicPageRouter } from "./epic-page-route.js";
 import {
 	EventLoopAttribution,
 	type EventLoopHealthSnapshot,
@@ -504,14 +507,15 @@ import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
+	type ReportBlobStore,
+	VercelBlobReportStore,
+} from "./report-blob-store.js";
+import {
 	parseReportHostOverride,
 	type ReportHostOverride,
 } from "./report-host-override.js";
 import { resolveProjectIssueThread } from "./report-issue-thread-resolver.js";
-import {
-	DEFAULT_RETENTION_MAX_AGE_MS,
-	ReportRegistry,
-} from "./report-registry.js";
+import { ReportRegistry } from "./report-registry.js";
 import { createReportsRouter } from "./reports-route.js";
 import { isSafeResumeMenuForEnter } from "./rescue.js";
 import { createRescueRouter, type RescueRouteRuntime } from "./rescue-route.js";
@@ -623,6 +627,7 @@ import {
 	isTmuxWindowAlive,
 	killCmuxLinkedSession,
 	killTmuxWindow,
+	listTmuxWindowsByExecutionId,
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	probeTmuxServer,
@@ -635,6 +640,7 @@ import { createTmuxRescueClient } from "./tmux-rescue-client.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
+import { buildTuiWindowLostAlert } from "./tui-window-alert.js";
 import {
 	TurnBeltReconciler,
 	type WorktreeTurnRow,
@@ -1283,6 +1289,10 @@ export interface BridgeAppOptions {
 		snapshot(): unknown;
 	};
 	vercelToken?: string;
+	/** Private object storage used by hosted reports after the gateway cutover. */
+	reportBlobStore?: Pick<ReportBlobStore, "putReport" | "deleteReports">;
+	/** Shared registry seam used by the migration and route integration tests. */
+	reportRegistry?: ReportRegistry;
 	reportHostOverride?: ReportHostOverride;
 	/** FLY-1778: boot-snapshotted authority for managed call-time readers. */
 	flagStore?: FlagStoreRuntime;
@@ -4136,6 +4146,18 @@ export function createBridgeApp(
 		},
 	);
 
+	if (config.apiToken) {
+		app.use(
+			"/api/epic-page",
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+			createEpicPageRouter({
+				store,
+				projects,
+				linearApiKey: config.linearApiKey,
+			}),
+		);
+	}
+
 	const workflowRunCollector = transitionOpts
 		? createWorkflowRunCollector(store, transitionOpts)
 		: undefined;
@@ -4323,6 +4345,7 @@ export function createBridgeApp(
 		process.env.FLYWHEEL_REPORTS_DIR ??
 		resolve(homedir(), ".flywheel", "reports");
 	const reportsRouter = createReportsRouter({
+		blobStore: opts?.reportBlobStore,
 		vercelToken: opts?.vercelToken,
 		hostOverride: opts?.reportHostOverride,
 		// FLY-929 W3b ① + FLY-2104: resolve the sender for every delivery so a
@@ -4333,10 +4356,7 @@ export function createBridgeApp(
 		projects,
 		resolveIssueThread: (issueIdentifier, projectName) =>
 			resolveProjectIssueThread(store, projects, issueIdentifier, projectName),
-		registry: new ReportRegistry(reportsBaseDir, {
-			// FLY-203 follow-up (founder): report links expire after 7 days.
-			retentionMaxAgeMs: DEFAULT_RETENTION_MAX_AGE_MS,
-		}),
+		registry: opts?.reportRegistry ?? new ReportRegistry(reportsBaseDir),
 	});
 	app.use(
 		"/api/reports",
@@ -5664,6 +5684,41 @@ export async function startBridge(
 	if (vercelToken) {
 		console.log("[Bridge] HTML publishing configured (Vercel)");
 	}
+	const reportBlobToken = process.env.BLOB_READ_WRITE_TOKEN?.trim();
+	const hostedReportRegistry = new ReportRegistry(
+		process.env.FLYWHEEL_REPORTS_DIR ??
+			resolve(homedir(), ".flywheel", "reports"),
+	);
+	const reportBlobStore = reportBlobToken
+		? new VercelBlobReportStore(reportBlobToken)
+		: undefined;
+	let reportBlobSweepTimer: ReturnType<typeof setInterval> | undefined;
+	if (reportBlobStore) {
+		console.log("[Bridge] Report publishing configured (private Vercel Blob)");
+		const sweep = async (): Promise<void> => {
+			try {
+				const createdAtByToken = Object.fromEntries(
+					hostedReportRegistry
+						.list()
+						.map((entry) => [entry.token, entry.createdAt]),
+				);
+				const removed = await reportBlobStore.sweepExpiredReports(
+					Date.now(),
+					createdAtByToken,
+				);
+				if (removed > 0) {
+					console.log(
+						`[reports] removed ${removed} Blob object(s) at the fixed 14-day boundary`,
+					);
+				}
+			} catch {
+				console.warn("[reports] Blob retention sweep failed");
+			}
+		};
+		void sweep();
+		reportBlobSweepTimer = setInterval(() => void sweep(), 60 * 60 * 1000);
+		reportBlobSweepTimer.unref?.();
+	}
 
 	// FLY-91 Round 3: Create shared ChatThreadCreator at Bridge level (before run infra).
 	// Single instance shared by both DirectEventSink (via run-infra) and query router.
@@ -6683,6 +6738,23 @@ export async function startBridge(
 						kind: "retryable" as const,
 						reason: "carrier_handler_unavailable",
 					}),
+				finalizeDeadExecutionCommDb: ({ projectName, executionId, issueId }) =>
+					finalizeDeadTerminalCommDbSessionById(projectName, executionId, {
+						includeCrashPreserve: true,
+						onFinalizeOutcome: (execId, project, outcome) =>
+							store.recordCommDbFinalizeOutcome({
+								executionId: execId,
+								issueId,
+								projectName: project,
+								ok: outcome.ok,
+								error: outcome.error,
+								audit: {
+									retiredGateCount: outcome.retiredGateCount,
+									retiredAskCount: outcome.retiredAskCount,
+									source: "bridge.workflow-engine.dead-rollback",
+								},
+							}),
+					}),
 				probeUnlaunchedExternalEvidence,
 				cleanupUnlaunchedWorkflowWindow: (identity) =>
 					cleanupExactWorkflowTmuxWindow(identity),
@@ -6754,6 +6826,8 @@ export async function startBridge(
 		standupProjectName,
 		{
 			vercelToken,
+			reportBlobStore,
+			reportRegistry: hostedReportRegistry,
 			reportHostOverride,
 			flagStore,
 			flagProjectNames,
@@ -7177,6 +7251,28 @@ export async function startBridge(
 				);
 			}
 			const snapshot = readCodexLaunchSnapshot(session.execution_id);
+			let windowDecision: Awaited<
+				ReturnType<typeof resolveCodexRecoveryWindow>
+			>;
+			try {
+				windowDecision = await resolveCodexRecoveryWindow({
+					executionId: session.execution_id,
+					projectName: session.project_name,
+					snapshotLabel: snapshot.label,
+					listWindows: listTmuxWindowsByExecutionId,
+					lookupTarget: lookupTmuxTarget,
+				});
+			} catch {
+				windowDecision = {
+					founderWindow: "suppressed",
+					reason: "candidates_indeterminate",
+				};
+			}
+			if (windowDecision.founderWindow === "suppressed") {
+				console.warn(
+					`[codex-session-reown] label unavailable for ${session.execution_id}: ${windowDecision.reason}`,
+				);
+			}
 			let leadId: string | undefined;
 			try {
 				leadId = resolveLeadForIssue(
@@ -7200,6 +7296,11 @@ export async function startBridge(
 				session,
 				snapshot,
 				capabilities,
+				...(windowDecision.founderWindow === "open" &&
+				"label" in windowDecision &&
+				windowDecision.label
+					? { label: windowDecision.label }
+					: {}),
 				...(leadId ? { leadId } : {}),
 				...(mailboxIdentity
 					? {
@@ -7216,7 +7317,18 @@ export async function startBridge(
 				...(progressPath ? { progressPath } : {}),
 				onHeartbeat: (executionId) => store.updateHeartbeat(executionId),
 			});
-			return runtime.resume(context, { onRecoveryOwnershipEstablished });
+			return runtime.resume(
+				context,
+				{ onRecoveryOwnershipEstablished },
+				windowDecision.founderWindow === "open"
+					? {
+							founderWindow: "open",
+							...("windowName" in windowDecision && windowDecision.windowName
+								? { windowName: windowDecision.windowName }
+								: {}),
+						}
+					: { founderWindow: "suppressed" },
+			);
 		},
 		readTurnHolder: async (session) => {
 			const role = session.chat_thread_role ?? session.session_role;
@@ -9826,20 +9938,9 @@ export async function startBridge(
 		...resolveAlertDirsFromEnv(process.env),
 	});
 	tuiWindowAlertHolder.lost = async (evidence) => {
-		const reason = evidence.lastFailure
-			? `${evidence.lastFailure.category}/${evidence.lastFailure.reason}`
-			: "unknown";
-		await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
-			leadId: evidence.leadId,
-			projectName: evidence.projectName,
-			eventId: `tui-window-lost:${evidence.executionId}:${evidence.episodeStartedAt}`,
-			eventType: "tui_window_lost",
-			title: `Codex runner TUI not visible (${evidence.issueId})`,
-			body: `The founder-facing Codex pane never acquired an immutable tmux window id. trigger=${evidence.trigger}; attempts=${evidence.attempts}; last=${reason}. The resident run continued; inspect execution ${evidence.executionId}.`,
-			severity: "warning",
-			sessionKey: evidence.executionId,
-			episodeId: `tui-window-lost:${evidence.executionId}:${evidence.episodeStartedAt}`,
-		});
+		await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert(
+			buildTuiWindowLostAlert(evidence),
+		);
 	};
 	tuiWindowAlertHolder.restored = (executionId) => {
 		console.log(`[runner-tui-window] restored execution=${executionId}`);
@@ -11845,6 +11946,7 @@ export async function startBridge(
 		clearInterval(leadAlertDrainTimer);
 		clearInterval(doaBackoffMaintenanceTimer);
 		clearInterval(designReviewManifestTimer);
+		if (reportBlobSweepTimer) clearInterval(reportBlobSweepTimer);
 		if (chromeReaperTimer) clearInterval(chromeReaperTimer); // FLY-766
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
 		// are the same instance, only tear down once. If they differ (caller

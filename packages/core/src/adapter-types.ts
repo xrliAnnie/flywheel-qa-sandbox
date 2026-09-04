@@ -256,6 +256,16 @@ export interface AdapterExecutionContext {
 	leadId?: string;
 	/** Project name (for session registration) */
 	projectName?: string;
+	/**
+	 * FLY-2147: per-launch role-memory disposition. `disabled` asks the Claude
+	 * adapter to pass autoMemoryEnabled:false (fail-closed); for a
+	 * policy_conflict the effective state remains unknown because managed
+	 * settings can outrank the launch settings. Undefined is reserved for
+	 * backends whose spawn contract is untouched.
+	 */
+	runnerMemory?:
+		| { status: "mounted"; dir: string }
+		| { status: "disabled"; reason: string };
 
 	// -- FLY-142 Phase 0 PR 1.2: Agent Team transport identity --
 	//

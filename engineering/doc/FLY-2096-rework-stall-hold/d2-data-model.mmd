@@ -1,0 +1,40 @@
+erDiagram
+  workflow_run ||--o{ workflow_rework_request : "run_id"
+  workflow_rework_request ||--o{ workflow_rework_route_revision : "request_id"
+  workflow_rework_request ||--|| workflow_rework_delivery : "request_id"
+  workflow_rework_delivery ||--o| workflow_delivery_attempt : "contract_ref.pk + route_revision"
+  workflow_delivery_attempt ||--o{ workflow_delivery_contract_episode : "attempt_id"
+  sessions ||--o{ workflow_rework_route_revision : "preferred_actor_execution_id"
+  workflow_run {
+    text run_id PK
+    text status "active | held | completed | terminated"
+  }
+  workflow_rework_request {
+    text request_id PK
+    text run_id FK
+  }
+  workflow_rework_route_revision {
+    int revision PK
+    text target_node_id
+    text preferred_actor_execution_id "收件体"
+  }
+  workflow_rework_delivery {
+    text state "replacement_pending → wake_delivered → completed"
+    text updated_at "旧时钟的计龄起点"
+    text last_error "旧: actor_alive_after_receipt 等"
+  }
+  workflow_delivery_attempt {
+    text attempt_id PK
+    text family "rework"
+    text received_at "换体上岗时刻"
+    text settlement_reason "M3: 完成时写 settled"
+  }
+  workflow_delivery_contract_episode {
+    text stage "received | frozen | undeliverable"
+    text closed_reason "advanced | terminal:settled:settled ..."
+  }
+  sessions {
+    text execution_id PK
+    text heartbeat_at "tmux 窗口在就每周期刷新"
+    text last_activity_at
+  }

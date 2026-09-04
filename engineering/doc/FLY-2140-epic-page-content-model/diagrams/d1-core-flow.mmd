@@ -1,0 +1,14 @@
+flowchart LR
+  L["任意 Lead<br/>一条命令:epic-page generate"] --> B["Bridge 路由<br/>/api/epic-page/generate"]
+  B --> LI["Linear 一次快照<br/>Epic + 子单 + blocks 关系 + 标签"]
+  B --> SS["StateStore 事实<br/>会话 · 工作流 · 门 · 落地"]
+  LI --> G["生成器(纯函数)<br/>每格 = 值 + 出处 + 看到它的时间"]
+  SS --> G
+  G --> V["写入 epic_page 表<br/>版本 N(权威副本)"]
+  V --> MD["Lead 视图<br/>Markdown / JSON"]
+  V --> HT["founder 视图<br/>HTML 快照"]
+  HT --> PUB["publish-report<br/>托管链接(7 天)"]
+  style G fill:#e8f0fe,stroke:#1d4ed8
+  style V fill:#e6f9ed,stroke:#1d7a3d
+  style LI fill:#fff2dd,stroke:#8a5200
+  style SS fill:#fff2dd,stroke:#8a5200

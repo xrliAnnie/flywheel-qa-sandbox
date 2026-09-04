@@ -14,7 +14,6 @@
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 2_000;
-const MAX_POLL_ATTEMPTS = 15; // 30s max polling
 export const VERCEL_API_BASE_URL = "https://api.vercel.com";
 
 export interface VercelDeployResult {
@@ -104,6 +103,7 @@ export async function deployFilesToVercel(
 				vercelToken,
 				data.id,
 				controller.signal,
+				timeoutMs,
 				normalizedApiBaseUrl,
 			);
 		}
@@ -144,18 +144,29 @@ async function waitForReady(
 	token: string,
 	deploymentId: string,
 	signal: AbortSignal,
+	timeoutMs: number,
 	apiBaseUrl: string,
 ): Promise<void> {
-	for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
+	while (!signal.aborted) {
 		await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-
-		const res = await fetch(`${apiBaseUrl}/v13/deployments/${deploymentId}`, {
-			headers: { Authorization: `Bearer ${token}` },
-			signal,
-			...(apiBaseUrl !== VERCEL_API_BASE_URL
-				? { redirect: "error" as const }
-				: {}),
-		});
+		if (signal.aborted) break;
+		let res: Response;
+		try {
+			res = await fetch(`${apiBaseUrl}/v13/deployments/${deploymentId}`, {
+				headers: { Authorization: `Bearer ${token}` },
+				signal,
+				...(apiBaseUrl !== VERCEL_API_BASE_URL
+					? { redirect: "error" as const }
+					: {}),
+			});
+		} catch (error) {
+			if (signal.aborted) {
+				throw new Error(
+					`Vercel deployment not ready before ${timeoutMs / 1000}s timeout`,
+				);
+			}
+			throw error;
+		}
 
 		if (!res.ok) {
 			throw new Error(`Vercel deployment status check failed (${res.status})`);
@@ -169,6 +180,6 @@ async function waitForReady(
 	}
 
 	throw new Error(
-		`Vercel deployment not ready after ${(MAX_POLL_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s`,
+		`Vercel deployment not ready before ${timeoutMs / 1000}s timeout`,
 	);
 }

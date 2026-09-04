@@ -1,0 +1,17 @@
+flowchart TD
+    A["引擎每秒 tick:tripwire 循环<br/>遍历 workflow_dead_execution_watch(active)"] --> B{"死体有活动迹象?<br/>(commit / 消息数 / tmux 输出)"}
+    B -- "有" --> B1["交给 tripwire 报警<br/>不封账"]
+    B -- "无" --> C{"内存 Set 已记<br/>『行已封 / 本就无行』?"}
+    C -- "是" --> Z["跳过(零成本)"]
+    C -- "否" --> D["finalizeDeadTerminalCommDbSessionById<br/>(与每小时清扫同一个谓词)"]
+    D --> D1{"CommDB 有行?"}
+    D1 -- "无" --> Z1["no_row → 记入 Set"]
+    D1 -- "有" --> D2{"status 终态?<br/>(completed/timeout/failed/blocked)"}
+    D2 -- "否" --> K1["kept_status(不删)"]
+    D2 -- "是" --> D3{"tmux list-panes<br/>窗口证明已死?"}
+    D3 -- "alive / 不确定" --> K2["kept_alive / kept_indeterminate<br/>(Claude 体保留 pane 走这里)"]
+    D3 -- "dead" --> D4{"parked 声明? / TURN 持有者?"}
+    D4 -- "是" --> K3["kept_parked / kept_turn_holder<br/>下 tick 再试"]
+    D4 -- "否" --> D5["finalizePaneLossResidue<br/>目标未变 ⇒ DELETE 注册行"]
+    D5 --> R["recordCommDbFinalizeOutcome<br/>source=bridge.workflow-engine.dead-rollback"]
+    R --> Z2["finalized → 记入 Set"]

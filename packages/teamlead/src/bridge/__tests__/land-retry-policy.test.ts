@@ -59,7 +59,6 @@ describe("land retry policy", () => {
 		"workflow_pr_manifest_manifest_unavailable",
 		"founder_review_producer_ambiguous",
 		"founder_review_artifact_binding_missing",
-		"founder_review_authority_unavailable",
 		"land_source_session_unavailable",
 		"future_reason_not_yet_known",
 		"ship_workflow_failed:await_ci_timeout",
@@ -89,6 +88,7 @@ describe("land retry policy", () => {
 		"cool_trigger_receipt_corrupt",
 		"land_step_receipt_conflict",
 		"land_execution_error:land_step_receipt_conflict",
+		"founder_review_authority_unavailable",
 	])("classifies %s as terminal", (reason) => {
 		expect(classifyLandRetryReason(reason)).toBe("terminal");
 	});
@@ -267,6 +267,27 @@ describe("land retry policy", () => {
 			retryEpochKey: "1:authority_verified",
 			nextAttemptAt: null,
 			lastError: "pr_closed_unmerged",
+		});
+	});
+
+	it("holds an unavailable founder authority without spending another retry", () => {
+		expect(
+			nextLandRetry({
+				classification: classifyLandRetryReason(
+					"founder_review_authority_unavailable",
+				),
+				reason: "founder_review_authority_unavailable",
+				now: "2026-09-03T00:00:00.000Z",
+				epochKey: "5:terminal_notified",
+				priorRetryCount: 5,
+				priorRetryEpochKey: "5:terminal_notified",
+			}),
+		).toEqual({
+			state: "held",
+			retryCount: 5,
+			retryEpochKey: "5:terminal_notified",
+			nextAttemptAt: null,
+			lastError: "founder_review_authority_unavailable",
 		});
 	});
 });

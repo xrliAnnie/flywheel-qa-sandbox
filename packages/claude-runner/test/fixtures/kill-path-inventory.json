@@ -174,9 +174,21 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.real-tmux.test.ts:harness.run([\"kill-window\", \"-t\", createdWindowId]).status,#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.real-tmux.test.ts",
+		"code": "harness.run([\"kill-window\", \"-t\", createdWindowId]).status,",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:.filter((c) => c[1] === \"kill-window\")#1",
 		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
 		"code": ".filter((c) => c[1] === \"kill-window\")",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:.filter((call) => call[1] === \"kill-window\")#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": ".filter((call) => call[1] === \"kill-window\")",
 		"classification": "qa-only"
 	},
 	{
@@ -222,6 +234,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);#4",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);#5",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@2\"]);#1",
 		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
 		"code": "expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@2\"]);",
@@ -231,6 +255,18 @@
 		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:if (verb === \"kill-window\") {#1",
 		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
 		"code": "if (verb === \"kill-window\") {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-tui-nudge-support.test.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/codex-tui-nudge-support.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-tui-nudge-support.test.ts:child.kill(\"SIGTERM\");#1",
+		"path": "packages/claude-runner/test/codex-tui-nudge-support.test.ts",
+		"code": "child.kill(\"SIGTERM\");",
 		"classification": "qa-only"
 	},
 	{
@@ -2422,6 +2458,12 @@
 		"path": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
 		"code": "kill -STOP \"$PID_S\"",
 		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/codex-tui-nudge-probe.sh:kill -0 \"$SERVER_PID\" >/dev/null 2>&1 \\#1",
+		"path": "scripts/codex-tui-nudge-probe.sh",
+		"code": "kill -0 \"$SERVER_PID\" >/dev/null 2>&1 \\",
+		"classification": "signal-0-probe"
 	},
 	{
 		"key": "scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh:for item in $FLY2264_WAIT_PENDING; do kill -KILL \"${item%%:*}\" 2>/dev/null || true; done#1",

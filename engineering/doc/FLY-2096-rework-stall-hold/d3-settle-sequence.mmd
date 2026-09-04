@@ -1,0 +1,24 @@
+sequenceDiagram
+  participant B as 换体(qa-replacement-2)
+  participant SS as StateStore
+  participant HB as HeartbeatService
+  participant PJ as DeliveryProjector
+  participant W as DeliveryContractWatch
+  Note over B,SS: T0 换体上岗:delivery=wake_delivered, attempt.received_at=T0
+  B->>SS: T0+20m 完工 commitWorkflowTransitionTx
+  SS->>SS: delivery → completed
+  rect rgb(255,229,227)
+    Note over SS: 修前:attempt 不结算(carrier 有,rework 没有)
+  end
+  rect rgb(227,247,232)
+    Note over SS: M3 修后:同事务 settleWorkflowDeliveryAttemptIfPresentTx(reason=settled)
+  end
+  Note over B,HB: 体收工,tmux 窗口消失,heartbeat_at 停在 T0+20m
+  PJ->>SS: T0+61m runPass(rework 只在 run 终态结算 → 不动)
+  W->>SS: T0+61m runPass
+  alt 修前
+    W->>SS: attempt 仍 live、received 超期、活性 absent → 开 received episode + warning 告警
+    Note over W: T0+90m 再发 severe(给一个已 done 的节点)
+  else 修后
+    W-->>SS: attempt 已 settled,不在 live 列表 → 零写入
+  end

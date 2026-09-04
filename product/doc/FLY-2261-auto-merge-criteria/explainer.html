@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>「高置信」不是判断出来的,是定义出来的 — FLY-2261</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+line-height:1.55;font-size:15.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:32px 18px 90px}
+h1{font-size:27px;line-height:1.28;margin:0 0 6px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 24px}
+.card{background:var(--card);border-radius:12px;padding:17px 20px;margin:0 0 13px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card h2{font-size:18.5px;margin:0 0 5px;letter-spacing:-.2px}
+.kicker{font-size:11.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--dim);
+font-weight:600;margin:0 0 9px}
+p{margin:0 0 11px}
+ul{margin:0 0 11px;padding-left:20px}
+li{margin:0 0 6px}
+.lead{font-size:19px;line-height:1.5;font-weight:600;letter-spacing:-.2px}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 13px;color:#4a4a4f;margin:0 0 12px;font-size:14.5px}
+table{width:100%;border-collapse:collapse;margin:4px 0 13px;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.3px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.no{color:var(--red);font-weight:700}
+.yes{color:var(--green);font-weight:700}
+.warn{color:var(--amber);font-weight:700}
+.note{background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+font-size:13.5px;color:#4a4a4f;margin:0 0 11px}
+.opt{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 10px;background:#fcfcfe}
+.opt h3{font-size:15.5px;margin:0 0 6px}
+.opt .cost{font-size:13.5px;color:#8a4a00;background:#fff6e8;border-radius:7px;padding:8px 10px;margin:8px 0 0}
+.rec{font-size:14px;background:#eef6ff;border-radius:8px;padding:10px 12px;margin:2px 0 8px;color:#0a3f8a}
+.unsure{font-size:13.5px;background:#fbf0ff;border-radius:8px;padding:9px 12px;margin:0 0 4px;color:#5d1f77}
+.tree{font-family:"SF Mono",ui-monospace,monospace;font-size:12.5px;line-height:1.65;
+background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+white-space:pre;overflow-x:auto;margin:0 0 11px}
+.big{font-size:31px;font-weight:700;letter-spacing:-1px;line-height:1.1}
+.stat{display:flex;gap:22px;flex-wrap:wrap;margin:2px 0 13px}
+.stat > div{min-width:96px}
+.stat .lbl{font-size:12px;color:var(--dim);margin-top:2px}
+.cmt{margin:15px 0 0;padding-top:13px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin:0 0 5px;font-weight:600}
+textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+font:inherit;font-size:14px;background:#fcfcfe;color:var(--ink);resize:vertical}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+.bar{position:sticky;bottom:0;background:rgba(245,245,247,.94);
+backdrop-filter:saturate(160%) blur(12px);border-top:1px solid var(--line);
+margin:20px -18px -84px;padding:12px 18px 18px}
+button{font:inherit;font-size:14.5px;font-weight:600;border:0;border-radius:9px;
+padding:10px 17px;background:var(--blue);color:#fff;cursor:pointer}
+button.sec{background:#e8e8ed;color:var(--ink)}
+button:active{opacity:.75}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.status{font-size:13px;color:var(--dim)}
+.status.ok{color:#1a7f37;font-weight:600}
+.status.err{color:var(--red);font-weight:600}
+#dump{width:100%;min-height:110px;margin-top:10px;display:none;font-size:12.5px;
+font-family:"SF Mono",ui-monospace,monospace}
+code{font-family:"SF Mono",ui-monospace,monospace;font-size:13px;background:#f0f0f4;
+padding:1px 5px;border-radius:4px}
+@media (max-width:560px){.wrap{padding:22px 13px 84px}h1{font-size:23px}.lead{font-size:17px}
+.bar{margin:20px -13px -84px;padding:12px 13px 18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>「高置信」不是判断出来的,是<u>定义</u>出来的</h1>
+<p class="sub">FLY-2261 · <b>第五版</b>(前四版作废,别看旧链接) · 2026-09-03 · 你上一轮答了四格,并对「类」提了一条质疑。<b>那条质疑是对的,而且逼出了这一版最重要的一条规矩:一个类别只有「不需要判断」才有资格进自动道 —— 请重点看第 4 格下面那张红卡。</b>第 5、6 格你定的东西已经落成规矩。</p>
+
+<div class="card green" style="border-left-width:6px">
+<p class="kicker">本轮 · 你说「你先来,自己发挥吧」</p>
+<h2>所以这一版不是选项,是定案</h2>
+<p class="lead">你把三块都交给我发挥了。下面是我定的,以及为什么。<b>你随时可以推翻任何一条 —— 但在你推翻之前,我按这个往下写。</b></p>
+<div class="note" style="background:#f0fbf3;border-color:#c9ecd4;color:#1a5c31;margin:12px 0 0"><b>本轮更新:上一版之后你又答了四格 —— 三格是<u>确认</u>,一格是<u>问题</u>。</b><br>
+· <b>第 4 格「类是什么意思」</b> —— 你连着问了四遍。<b>那说明上一版根本没写清楚,是我的错,不是你没读。第 4 格整格重写了,请重点看那一格。</b><br>
+· <b>第 5 格「强度二」</b> —— 你定了,并把少数特殊单子的判断授权给我。<b>规矩和我给自己加的自律都写在第 5 格里。</b><br>
+· <b>第 6 格「补法 C」</b> —— 你认了,已从「我推荐」升级成<b>「已定」</b>。<br>
+· 第 8 格 —— 仍然是「你先来,自己发挥吧」。<br><br>
+<b>再之后你又对第 4 格提了一条质疑:「机器很难只通过文件来判断它属于哪一类」。</b><br>
+<b>那条质疑是对的,而且逼出了本轮最重要的一条规矩</b> —— 我给它单开了一格(在第 4 格下面那张红卡)。</div>
+<div class="scroll"><table>
+<tr><th style="width:24%">你上一版问的</th><th>我的定案</th></tr>
+<tr><td>① 判据的方向</td><td><b>认</b>。就按「改动属于一个说得清的<b>类别</b> + 有一条<b>在真环境跑过</b>的证据」写死。</td></tr>
+<tr><td>② 第一条自动道开多宽</td><td><b>先影子跑,而且只从最窄的一档起步</b> —— 只对<b>纯文档改动</b>(实测约 14%)算账,<b>一次都不真的自动合并</b>。</td></tr>
+<tr><td>③ 哪些块交给我发挥</td><td>全部。</td></tr>
+</table></div>
+
+<h3>① 为什么不走「置信度分数」那条路</h3>
+<p>最常见的做法是让系统给每一单打一个分,过线就自动合。<b>我们不走这条。</b>那等于<b>把一个可以争论的判断,伪装成一个数</b> —— 你没办法反驳一个 0.87,但你可以反驳「这一单到底算不算纯文档改动」。<b>判据必须是能吵架的,吵得起来才守得住。</b>这也是这一页标题那句话的意思:高置信不是判断出来的,是<u>定义</u>出来的。</p>
+
+<h3>② 为什么第一步是「先影子跑」,而且是最窄的一档</h3>
+<p class="lead">因为你真正的阻塞点<b>不是</b>「判据准不准」,是你自己那句<b>「我不太放心」</b>。</p>
+<p>这两件事得用不同的东西解决。判据准不准,我可以论证给你看;<b>但「放不放心」论证不了,只能拿真数据换。</b></p>
+<p>影子跑就是那个换法:系统照常算「这一单本来会不会被自动合并」,<b>但仍然拿给你看,你照常审</b>。两周之后你手上会有一张真表 ——</p>
+<div class="quote">被系统判成「本来可以自动合并」的那些单里,你原本会打回几条。</div>
+<p><b>顺序不能反。</b>先放手再补数据的话,你的不放心<b>永远没有东西可以消解</b> —— 一旦出事你只会更不放心,而那时已经出事了。<b>先跑两周,你付出的是两周不省时间;先放手,你赌的是这两周里不出事。</b></p>
+<div class="cmt"><label>本轮:这三条定案里有没有你想推翻的</label><textarea data-s="09 定案三条 你认不认" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card purple">
+<p class="kicker">本轮 · 第一步具体长什么样</p>
+<h2>两周之后,你手上会拿到什么</h2>
+<p>影子跑期间<b>你什么都不用改</b> —— 每一单照旧走你,你照旧点。系统只是在旁边多记一笔账。</p>
+<div class="scroll"><table>
+<tr><th style="width:30%">影子跑期间</th><th>你这边</th></tr>
+<tr><td>你要做的动作</td><td><b>没有变化</b>,照旧每单都过你</td></tr>
+<tr><td>你省下的时间</td><td><b>零</b> —— 这两周一点都不省</td></tr>
+<tr><td>系统在做什么</td><td>对每一单默默记一笔:「按新判据,这单会不会走自动道」</td></tr>
+<tr><td>出事的风险</td><td><b>零</b> —— 期间一次真实自动合并都不会发生</td></tr>
+</table></div>
+<p><b>两周后那张表长这样</b>(数字是示意,不是预测):</p>
+<div class="scroll"><table>
+<tr><th>本来会被自动合并的</th><th>你实际打回了</th><th>这意味着</th></tr>
+<tr><td>比如 40 单</td><td><b class="yes">0 条</b></td><td>判据在这一档站得住 → 可以真的放手</td></tr>
+<tr><td>比如 40 单</td><td><b class="warn">1~2 条</b></td><td>看那 1~2 条是什么 → 收窄判据,再跑一轮</td></tr>
+<tr><td>比如 40 单</td><td><b class="no">5 条以上</b></td><td>判据不成立 → 不放手,回来重想</td></tr>
+</table></div>
+<p class="note" style="margin-bottom:0"><b>这张表就是你要的那个答案。</b>你问「代码那块到底有多少可以交给系统」—— 影子跑给的是<b>实测</b>,不是我的估算。而且它<b>随时可以停</b>:期间一次真实合并都没发生过,停掉不留任何痕迹。</p>
+<div class="cmt"><label>本轮:这个第一步你愿不愿意起</label><textarea data-s="10 第一步具体长什么样" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="note" style="margin:0 0 13px"><b>↓ 以下 00–08 格是上一版的原样内容,作为上面两条定案的依据保留。</b>你已经看过一遍,不用重看 —— 但<b>第 6 格有一处更正必须看</b>:那个 2 / 7 的分法<b>你并没有核过</b>,我把它的状态改准确了。</div>
+
+<div class="card red" style="border-left-width:6px">
+<p class="kicker">先说最硬的一条</p>
+<h2>你看到的每一张卡,都已经「全绿」了</h2>
+<p class="lead">代码评审没过、或者 QA 没过的卡,系统<u>根本不会拿给你看</u>。<br>所以你那 <b>21 次打回,百分之百发生在两盏绿灯都亮了之后。</b></p>
+<p>这句话直接回答了你问的「他们怎么判断高置信」:<b>我们现在手上的「高置信」信号,历史上被你推翻过 21 次。</b></p>
+<p style="margin-bottom:0">这不是我从数据里统计出来的相关性,是<b>代码结构决定的</b> —— 所以它比任何比例都硬。详细在第 2 格。</p>
+</div>
+
+<div class="card blue">
+<p class="kicker">00 · 先核一件事</p>
+<h2>我理解你问的是三件事,不是一件</h2>
+<p>你的原话我拆成三个问题。如果我拆错了,后面整页都会偏,所以这格请先纠我:</p>
+<div class="scroll"><table>
+<tr><th style="width:34%">你问的</th><th>我理解这是什么问题</th></tr>
+<tr><td>「他们是怎么判断<b>高置信</b>的」</td><td><b>判据问题</b> —— 你不信任一个说不清判据的机制。这很对。</td></tr>
+<tr><td>「代码那块<b>到底有多少</b>可以自动合并」</td><td><b>规模问题</b> —— 你要一个能量化的答案,不是「可以做」。</td></tr>
+<tr><td>「只放在<b>真正需要我</b>的地方」</td><td><b>分工问题</b> —— 哪些 review 只有你能做,哪些不是。</td></tr>
+</table></div>
+<p>你自己已经把边界划好了:<b>PRD 必须你 review,这一页完全不碰。只谈代码。</b></p>
+<p class="note" style="margin-bottom:0"><b>另外先说清楚一件事:</b>这一页只是<b>提案</b>。今天的规矩(每次合并都要经过你)在你正式改它之前<b>一个字都不会变</b>。讨论不等于授权。</p>
+<div class="cmt"><label>第 0 格:我理解对了吗</label><textarea data-s="00 我理解的三个问题" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="kicker">01 · 你的 21 次打回</p>
+<h2>先更正一个数:不是 47 次,是 21 次</h2>
+<div class="note" style="background:#fff8ec;border-color:#ffe2b8;color:#7a4a00"><b>⚠️ 这也是一次更正。</b>我们先前跟你说过「你自己在 ship 卡上打回了 <b>47</b> 次」。<b>那句话是错的。</b>系统里那 47 条记的是<b>权限</b>(以你的名义发出),不是<b>谁做的判断</b>。逐条读完之后:</div>
+<div class="scroll"><table>
+<tr><th>类别</th><th style="width:16%">次数</th><th>什么意思</th></tr>
+<tr><td><b>A 你本人看了产物后打回</b></td><td><b class="warn">21</b></td><td>真的是你的判断</td></tr>
+<tr><td>B Lead / QA 打回</td><td>15</td><td>你根本没参与,只是挂在同一张卡上</td></tr>
+<tr><td>C 机械返工</td><td>11</td><td>解冲突、CI 没跑、换人接力 —— 没有人做过质量判断</td></tr>
+</table></div>
+<p>然后是关键的一步:那 <b>21 次你打回的<u>理由</u></b> 是什么。</p>
+<div class="stat">
+<div><div class="big" style="color:var(--purple)">9</div><div class="lbl">你加了新要求<br>(目标移动了)</div></div>
+<div><div class="big" style="color:var(--red)">8</div><div class="lbl">「说做完了,<br>但没在真环境跑过」</div></div>
+<div><div class="big" style="color:var(--blue)">4</div><div class="lbl">方向不对 /<br>我不喜欢</div></div>
+</div>
+<p><b>中间那 8 条,是唯一一个形状高度一致的类别 —— 而且它是唯一一条机器能查的。</b></p>
+<div class="cmt"><label>第 1 格:这个分类你认不认</label><textarea data-s="01 21次打回的分类" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<p class="kicker">02 · 接上面那条</p>
+<h2>那绿灯到底漏了什么?</h2>
+<p>「双绿之后你还是打回了 21 次」这句话把问题定死了:<b>现在这两盏绿灯,不足以替代你。</b>如果今天就照「双绿=自动合并」放手,<b>那 21 次会全部直接进 main</b>。</p>
+<p>所以真正的问题变成:<b>绿灯漏掉的是什么?</b>那 8 条(A2)说得非常清楚。你的原话:</p>
+<div class="scroll"><table>
+<tr><th style="width:15%">单号</th><th>你说的</th></tr>
+<tr><td>FLY-2074</td><td>「真 Discord 链路<b>没在真机跑过</b>,Launch 注册也没做,这些东西没有做完的话就不算做完呀」</td></tr>
+<tr><td>FLY-1814</td><td>「就只跑黑盒测试<b>不够</b>吧?…整个 e2e 的测试需要做一下」</td></tr>
+<tr><td>FLY-2080</td><td>「<b>没有真的</b>在 FLY-2072 底下建过子 issue…也<b>没有跑过一次真实的</b>定时巡检」</td></tr>
+<tr><td>FLY-2033</td><td>「这条<b>真实的链路必须要跑</b>…起码开一个真实的会」</td></tr>
+<tr><td>FLY-2178</td><td>「<b>我实际去测的时候,它根本就没有停</b>」</td></tr>
+<tr><td>FLY-2029</td><td>(你自己实测)重启后没自启,#raya 无人在岗</td></tr>
+<tr><td>FLY-1833</td><td>「<b>就算它现在全绿,也只是因为这是 flaky test</b>,这一次正好全绿」</td></tr>
+<tr><td>FLY-1925</td><td>「这不就说明 1925 没有把我们要改的东西<b>改清楚</b>吗?」</td></tr>
+</table></div>
+<p class="lead">你 review 实际在拦的,不是「代码写错了」,是<b>「这一单从没在真环境真跑过一次」</b>。</p>
+<p>这件事的好处是:它是<b>外部的、能变红的事实</b>,不是模型对自己的评价。正好是自动合并需要的那种判据。</p>
+<div class="cmt"><label>第 2 格:「你拦的是没真跑过」—— 这个读法准不准</label><textarea data-s="02 你拦的到底是什么" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="kicker">03 · 直接回答你的问题</p>
+<h2>「他们怎么判断高置信」—— 他们<u>根本不判断</u></h2>
+<p>我去查了外面成熟的做法(GitHub 自己的自动合并、依赖升级机器人 Dependabot)。诚实答案是:</p>
+<p class="lead">没有任何一家在「判断置信度」。他们在<b>定义类别</b>。</p>
+<ul>
+<li><b>GitHub 自动合并</b>:判据是「该跑的检查全绿 + 该批的人批了」。全是<b>外部能看见的检查结果</b>,没有一处是「这个改动看起来有多稳」。而且 2026 年 3 月他们还<b>收紧</b>了 —— 条件没齐,自动合并连开都开不了。</li>
+<li><b>Dependabot</b>:最常见的配置是<b>只对「补丁级依赖升级」这一类</b>开自动道。这是一个机器能声明的<b>类别</b>,不是一个分数。</li>
+</ul>
+<p>所以:「自动合并」是发给<b>一类改动</b>的通行证,不是发给<b>某一个改动</b>的信心评估。</p>
+<div class="rec"><b>我的推荐:</b>照这个形状做。任何形如「模型自评置信度 ≥ 0.9 就自动合并」的方案,方向是反的。<b>你「一直不太敢做」的直觉是对的</b> —— 因为你之前想象的判据是「置信度」,而那个东西确实不该被信任。</div>
+<div class="cmt"><label>第 3 格:换成「定义类别」这个思路,你接不接受</label><textarea data-s="03 类别而不是置信度" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card purple">
+<p class="kicker">04 · 判据长什么样</p>
+<h2>三道闸,全过才自动合并</h2>
+<div class="tree">今天:   做完 → 代码评审绿 → QA 绿 → <b>你看卡</b> → 合并
+                                        ↑ 100% 的卡都堵在这
+
+提案:   做完 → 代码评审绿 → QA 绿 → ┬─ 三道闸全过 ─→ 自动合并 → <b>事后通知你</b>
+                                     └─ 任一道不过 ─→ <b>你看卡</b>(跟今天一样)</div>
+<p><b>三道闸(全部机器可查,没有一处靠模型自评):</b></p>
+<div class="opt">
+<h3>闸① 改动属于一个我们事先画好的<b>类</b></h3>
+<div class="note" style="background:#eef6ff;border-color:#cfe4ff;color:#0a3f8a;margin:0 0 11px"><b>你问「类」到底是什么意思 —— 上一版我只说了「事先划好的某一类」,却<u>从头到尾没列过是哪几类</u>。是我没写清楚。一句话先说定义:</b><br><br>
+<b>「类」= 一台机器<u>光看这次改了哪些文件</u>,就能直接判出来的<u>改动种类</u>。</b><br>
+它<b>不是</b>「这一单稳不稳」的分数,里面<b>没有任何模型的判断</b>。</div>
+<p><b>具体是哪几类 —— 这就是我们要画的清单:</b></p>
+<div class="scroll"><table>
+<tr><th style="width:20%">类</th><th>机器怎么从这次改动里直接判出来</th><th style="width:17%">今天有没有</th></tr>
+<tr><td><b>纯文档类</b></td><td>这次改的文件<b>全部</b>落在 6 个文档目录里(<code>doc/</code> <code>docs/</code> <code>engineering/doc/</code> <code>product/doc/</code> <code>content/doc/</code> <code>marketing/doc/</code>),<b>而且</b>文件数不超过 50 个。<br><b>只要碰到任何一个别的文件 —— 哪怕只是一行 CI 配置 —— 立刻就不算。</b></td><td><b class="yes">今天就有</b><br>8 月实测跑了 202 次</td></tr>
+<tr><td>配置 / 开关类</td><td>只动了配置项或开关的默认值,没动会跑起来的逻辑。</td><td><b class="warn">要新建</b></td></tr>
+<tr><td>单点修改类</td><td>只碰一个模块,而且有对应的测试跟着一起改。</td><td><b class="warn">要新建</b></td></tr>
+<tr><td><b>新机制类</b></td><td>新加了一条别人会依赖的机制,或者改了对外的行为。</td><td><b class="no">永不自动</b><br>这一类<b>永远</b>回你手上</td></tr>
+</table></div>
+<div class="note" style="margin:0 0 11px"><b>第一步只用第一行。</b>影子跑那两周<b>只算「纯文档类」</b>,后面三类一个都不启用。<br><b>⚠️ 为什么只用第一行,理由比「保守」硬得多 —— 你提的那个质疑正好逼出了它,见下一格。</b></div>
+<p><b>那为什么非得用「类」,不用一个「置信度分数」?</b>差别只有一条,但是决定性的:</p>
+<div class="scroll"><table>
+<tr><th style="width:32%">系统告诉你</th><th>你能对它说什么</th></tr>
+<tr><td>「这一单置信度 <b>0.87</b>」</td><td><b>你说不出任何话。</b>你没法反驳一个数 —— 所以你永远不敢放手,这很合理。</td></tr>
+<tr><td>「这一单是<b>纯文档类</b>」</td><td><b>你可以说:「不算 —— 它碰了 CI 配置。」</b>然后<b>你赢,规则改。</b></td></tr>
+</table></div>
+<div class="rec" style="margin-bottom:0"><b>判据必须是能吵架的。</b>吵得起来,你才守得住它;吵不起来的判据,等于让你闭着眼签字 —— 那你当然不放心。</div>
+</div>
+<div class="opt">
+<h3>闸② 有一条「在真环境跑过一次」的证据</h3>
+<p>就是第 2 格那 8 条。这一闸是本提案的核心,也是最容易做歪的地方 —— 第 5 格专门谈它。</p>
+</div>
+<div class="opt">
+<h3>闸③ 这一单的<b>方向</b>你已经拍过</h3>
+<p>那 4 次「方向不对」应该在更早的门(PRD / 设计)被你拦住,不该拖到合并前一刻。<b>没经过方向门的单,不进自动道。</b></p>
+</div>
+<div class="cmt"><label>本轮:「类」现在讲清楚了吗 / 纯文档那条规则对不对 / 还该画哪一类</label><textarea data-s="11 类讲清楚了吗" placeholder="写在这里…"></textarea></div>
+<div class="cmt"><label>第 4 格:你上一轮写的(已收到,原样留着)</label><textarea data-s="04 三道闸" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red" style="border-left-width:6px">
+<p class="kicker">本轮最重要的一条 · 从你那句质疑长出来的</p>
+<h2>一个类别,只有「<u>不需要判断</u>」才有资格进自动道</h2>
+<p>你说的是:</p>
+<div class="quote">「这个分类我觉得是合理的。不过说句实话,挺难判断的吧?我觉得机器很难从 diff 里面判断说它到底是在哪一个类别。这里也许 Lead 本身可以根据仪器本身和 PR 里面的改动大概判断出来,但是机器的话,很难只通过文件来判断。」</div>
+<p class="lead">你有一半是对的 —— 而且是重要的那一半。我不绕这个弯。</p>
+<div class="scroll"><table>
+<tr><th style="width:22%">类</th><th>机器判得了吗</th></tr>
+<tr><td>新机制类</td><td><b class="no">判不了 —— 你说得对。</b>「这算不算一条别人会依赖的机制」得读懂改动的<b>意图</b>,机器做不到。</td></tr>
+<tr><td>单点修改类</td><td><b class="no">判不了 —— 你说得对。</b>「只碰一个模块」听着客观,实际上要先理解模块的边界在哪。</td></tr>
+<tr><td>配置 / 开关类</td><td><b class="warn">只判得了半个。</b>改了哪个文件看得出;「这个开关重不重要」看不出。</td></tr>
+<tr><td><b>纯文档类</b></td><td><b class="yes">判得了 —— 因为它<u>根本不需要判断</u>。</b>它问的不是「这个改动是什么性质」,而是一句<b>路径匹配</b>:<b>这次碰过的文件,是不是<u>全部</u>落在文档目录下?</b><br>碰到一个 <code>.ts</code>、一个 <code>.sh</code>、一行 CI 配置 —— <b>立刻不算</b>。这里面没有「大概」,也不需要谁读一眼。</td></tr>
+</table></div>
+<div class="rec"><b>所以我把你这句质疑,直接立成一条硬规矩:</b><br><br>
+<b>一个类别,只有在「不需要任何判断、光看改了哪些文件就能判定」的时候,才有资格进自动道。<br>
+只要它需要 Lead 读一眼才能定,它按定义就<u>不够格</u> —— 这不是「以后做准一点就能进」,是<u>永远不进</u>。</b></div>
+<div class="note" style="background:#fff8ec;border-color:#ffe2b8;color:#7a4a00"><b>⚠️ 由此要改掉一个你可能已经有的印象:</b><br>
+我们从纯文档类那 14% 起步,<b>不是因为我们保守</b>,是因为<b>目前只有它过得了这道门槛</b>。<br>
+上一格里另外三类是给你看全貌用的,<b>不是候选名单</b> —— 它们<b>不会「慢慢放开」</b>。要进来,得先有人想出一个不需要判断的判定法;想不出来,就永远在外面。</div>
+<h3>还有一条,让这道门槛更容易守住:错判的代价是<b>不对称</b>的</h3>
+<div class="scroll"><table>
+<tr><th style="width:32%">错判的方向</th><th>后果</th></tr>
+<tr><td>本来不该自动的,被判进去了</td><td><b class="no">真代价</b> —— 东西已经合进去了,只能事后 revert</td></tr>
+<tr><td>本来可以自动的,被判出去了</td><td><b class="yes">零代价</b> —— 落回你手上,跟今天一模一样</td></tr>
+</table></div>
+<p>两边根本不对等 ⇒ <b>规则只能往一边偏:有一丝拿不准,就不进自动道。</b><br>这也正是为什么纯文档那条规则写成「<b>碰到任何一个别的文件立刻不算</b>」,而不是「大部分是文档就算」。</p>
+<h3>最后:你这个质疑,我把它变成两周后的一个<b>数</b></h3>
+<p>影子跑那两周里,对每一单我<b>同时记两件事</b>:</p>
+<ul>
+<li><b>机器判的类</b>是什么</li>
+<li><b>人判的类</b>是什么</li>
+</ul>
+<p>两周后你会拿到一张<b>错判率表</b>,规则事先定死:</p>
+<div class="scroll"><table>
+<tr><th style="width:34%">纯文档类的错判率</th><th>怎么做</th></tr>
+<tr><td><b class="yes">0</b></td><td>放手,开这一条自动道</td></tr>
+<tr><td><b class="no">不为 0</b></td><td><b>连它也不开</b>,回来重想</td></tr>
+</table></div>
+<div class="note" style="margin-bottom:0"><b>⇒ 「机器到底判不判得准」这件事,我们不用现在猜。</b>你提的这个疑问,两周之后是一个<b>你能看见的数</b> —— 而且这条实验本身,是你这句话逼出来的。</div>
+<div class="cmt"><label>本轮:这条「不需要判断才够格」的规矩你认不认 / 错判率要求 0 是不是太严</label><textarea data-s="12 不需要判断才够格" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<p class="kicker">05 · 最容易做歪的一格</p>
+<h2>「真环境跑过一次」到底怎么算数?</h2>
+<p>这一闸定义松了,就是<b>新的假绿</b> —— 也就是你在 FLY-1833 说的那句「就算它现在全绿,也只是因为这是 flaky test」。所以我把三种强度摆出来给你选,不替你定:</p>
+<div class="opt">
+<h3>强度一(最松):跑了自动化测试,而且是绿的</h3>
+<p>= 今天就有的东西。</p>
+<div class="cost"><b>代价:</b>那 8 条<b>一条都拦不住</b>。FLY-2074 当时测试就是绿的,你照样打回了。<b>等于没做。</b></div>
+</div>
+<div class="opt">
+<h3>强度二(中):在 529 房把这条链路<b>从头到尾真跑一次</b>,并<b>留下一条外部可查、能被重跑的记录</b></h3>
+<div class="note" style="background:#fff3f2;border-color:#ffd9d5;color:#8a1c14;margin:0 0 10px"><b>⚠️ 你上一轮把它读成「在 529 房跑过一次」 —— 场地那一半你说对了,但那只是<u>一半</u>。</b>强度二是<b>两半,缺一半就不算</b>:</div>
+<ul>
+<li><b>第一半(场地):</b>在 529 房把这条链路<b>从头到尾真跑一次</b> —— 不是单元测试。<b>这一半就是你说的那句,对的。</b></li>
+<li><b>第二半(证据):</b>留下一条<b>外部可查、能被重跑</b>的记录。<br>
+<b>⚠️ 这一半才是真正挡住「模型自称跑过了」的那道墙。</b>少了它,强度二就退回成「它说它跑过了」—— 跟强度一没有区别,而强度一那 8 条<b>一条都拦不住</b>。</li>
+</ul>
+<div class="cost"><b>代价:</b>不是每种改动都跑得出这种证据。跑不出的就自动落回你手上 —— <b>这不是 bug,是设计</b>,但会让自动道比想象中窄。</div>
+</div>
+<div class="opt">
+<h3>强度三(最严):真链路 + 必须在<b>真实生产环境</b>里跑,而不是测试房</h3>
+<p>FLY-2029 那种(重启后到底自不自启)只有强度三拦得住。</p>
+<div class="cost"><b>代价:</b>很多改动根本没法在生产上先跑一遍再合并 —— 会把自动道压到很窄,可能窄到不值得做。</div>
+</div>
+<div class="rec"><b>已定:默认强度二。</b>你的原话:「这里我感觉强度 2 就可以了……大多数的东西跑到强度 2 就可以了」。</div>
+<div class="opt" style="background:#f4fbf5;border-color:#cdebd3">
+<h3>你授权给我的那一条,我落成规矩写在这里</h3>
+<p>你的原话:「只有少数(比如说像 2029 这一种),你可以自己去做判断。如果因为其本身的特殊性,你觉得强度 2 已经不够了,那样的话,可能就还是等着让我来 review 吧」</p>
+<p><b>落成规矩:</b></p>
+<ul>
+<li><b>默认强度二</b> —— 不用问你。</li>
+<li><b>开机 / 常驻 / 部署</b>那一类(FLY-2029 那种「重启之后到底自不自启」),<b>由我判定</b>。<b>如果强度二证明不了它,就不自动 —— 回你手上。</b></li>
+</ul>
+<div class="cost" style="background:#fff6e8;color:#8a4a00"><b>我给自己加一条自律,免得这条授权被我用歪:</b><br>
+<b>「我拿不准」不等于退回给你。</b>只有当<b>那一类改动的性质本身</b>决定了强度二证不了它(比如它要证的就是「重启之后会怎样」,而强度二根本不重启),我才退回 —— <b>而且必须写明是哪一条性质。</b><br>
+不然「退回给你」会变成我的免责按钮:我一含糊就往你桌上推,你的桌子又满了,这一单就白做了。</div>
+</div>
+<div class="unsure"><b>我不确定的:</b>我没法向你证明强度二一定挡得住 FLY-1833 那种 flaky —— 一个 flaky 的端到端测试<b>照样会偶然全绿</b>。这个洞我目前<b>没有干净的补法</b>,只能靠「同一条证据连续跑两次」之类的笨办法,那又会拖慢速度。<b>这是本提案最弱的一环,我不想瞒着你。</b></div>
+<div class="cmt"><label>第 5 格:选哪个强度 / flaky 这个洞你怎么看</label><textarea data-s="05 真环境证据的强度" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="kicker">06 · 真代价,请你权衡</p>
+<h2>自动合并会关掉你「顺手加需求」的那个入口</h2>
+<p>那 21 次里最大的一类是 <b>A3(9 次):你加了新要求</b> —— 产物本身没缺陷,是目标动了。例如:</p>
+<div class="quote">「QA 和 implement 的那个 loop 不要加最多 3 次的限制」「这里调节一下大模型吧」「只要加了 feature flag,默认就要打开」</div>
+<p class="lead">也就是说:那张卡对你不只是「批 / 不批」,<b>它还是你改需求的入口。</b></p>
+<p>自动合并会把这个入口关掉。这是真代价,不是我说说而已。我读完那 9 条的判断是:</p>
+<ul>
+<li><b>约 2 条</b>必须在合并前当场拦(例:FLY-1771 你明说「ship 前加」;FLY-2205「写死 + 删旋钮」—— 这些是「别把这版合进去」)。</li>
+<li><b>约 7 条</b>本可以是「下一单」,不必卡住这一版。</li>
+</ul>
+<div class="unsure"><b>⚠️ 更正一处状态:这个 2 / 7 的分法你<u>没有</u>核过 —— 到今天仍然没有。</b><br>上一版我请你核它,你的回答是「你先来,自己发挥吧」。<b>你把这一块交给我发挥,不等于你确认了这个分法。</b>它到现在为止仍然只是<b>我读你那 9 条原话得出的判断</b>,没有任何外部事实支撑,<b>你本人一个字都没有逐字确认过</b>。<br>所以后面每一处用到它的地方,我都按「未经你确认」处理。如果这 2 / 7 分错了,受影响的是「补法 A 会漏掉几条」这个估计 —— 而这正是我把第一步定成<b>影子跑</b>的另一个原因:影子跑期间这个分法会被<b>真实数据直接检验</b>,不用你现在拍。</div>
+<p><b>补法,三选一:</b></p>
+<div class="opt"><h3>补法 A:自动合并的单仍然给你一张<b>事后卡</b></h3><p>合并后通知你,你随时能在上面提新要求 → 直接开新单。<b>把「合并前阻塞的入口」换成「合并后的入口」。</b></p>
+<div class="cost"><b>代价:</b>那约 2 条「必须当场拦」的会漏进去,要靠 revert 而不是拦截。</div></div>
+<div class="opt"><h3>补法 B:自动道只开给你<b>明确标记过</b>的单</h3><p>你在单子上打一个标(比如「这单我不看了」),没打标的照旧走你。</p>
+<div class="cost"><b>代价:</b>你还是要逐单做一次动作,省下的时间比想象中少。但<b>最安全</b>。</div></div>
+<div class="opt"><h3>补法 C:先<b>影子跑</b>一段时间,不真的自动合并</h3><p>系统照常算「这单本来会不会被自动合并」,但仍然拿给你看。跑两周之后你就有一张真表:<b>被自动合并的那些里,你原本会打回几条。</b></p>
+<div class="cost"><b>代价:</b>这两周你一点时间都省不到。但它能把「放不放心」变成一个<b>看得见的数</b>。</div></div>
+<div class="rec"><b>已定:C 先跑,然后 A。</b>你的原话:「嗯,我觉得补法 C 不错」。先影子跑拿到真数,再放手 —— 顺序倒过来的话,你的「不太放心」永远没有东西可以消解。<b>C 直接回答了你的「到底有多少能自动合并」,而且是用实测,不是估算。</b></div>
+<div class="cmt"><label>第 6 格:这个代价你愿不愿意换 / 选哪个补法</label><textarea data-s="06 A3入口的代价和补法" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card blue">
+<p class="kicker">07 · 更正:我们上次给你的数是错的</p>
+<h2>「闸自己会漏」那个说法,我们要收回</h2>
+<div class="note" style="background:#fff3f2;border-color:#ffd9d5;color:#8a1c14">
+<b>⚠️ 这一格是一次更正,不是新发现。</b>9-02 04:39 我们在频道里跟你说过「<b>有 8 次没批准就合了</b>,一道自己会漏的闸不适合再往上加自动化」,
+并把它列成<b>放手前必须先查清的阻塞项</b>。<b>你手上现在拿着的就是这个错的数。</b>我去查了原始记录,<b>它是错的</b>,下面是正确的。
+</div>
+<p>那个「8」不是「没批准就合了」的次数。它是另一格:</p>
+<div class="scroll"><table>
+<tr><th>实际情况</th><th style="width:20%">次数</th></tr>
+<tr><td><b>真的「没有有效批准就合进去了」</b></td><td><b class="no">135</b></td></tr>
+<tr><td>批准是有效的,但 QA 那侧没过(其中恰好有 8 条是「QA 未通过」)</td><td>12</td></tr>
+<tr><td>合计被系统事后标记的</td><td>147</td></tr>
+</table></div>
+<p>「8」那个数字的真实含义是<b>「你批了,但 QA 那侧没过」</b>,<b>不是</b>「没批准就合了」。真正无批准合入的是 <b>135 次</b> —— 比我们上次告诉你的<b>严重得多</b>。</p><p class="note" style="margin-bottom:11px"><b>为什么会搞错:</b>我们把一个字段<b>名字看起来像的意思</b>,当成了它<b>实际记的东西</b>。同一个错这两天犯了两次 —— <b>上面第 1 格那处「47 其实是 21」,是同一个毛病</b>。</p>
+<p><b>但接下来是好消息,而且我做了对照确认它不是「探针坏了」:</b></p>
+<div class="note" style="background:#fff8ec;border-color:#ffe2b8;color:#7a4a00"><b>⚠️ 这张表我自己第一版也做错过,一并说明。</b>我第一次按「任务什么时候<b>开始</b>」分月,算出 8 月是 <b>0</b>、最后一次是 7-31。但要问的是「<b>这次漏发生在什么时候</b>」——一个 7 月底开始的任务,可以到 8 月才漏。换成正确的时间之后,<b>8 月还有 1 条</b>。错的方向是<b>偏乐观</b>,而且正好压在这一格的结论上,所以专门标出来。</div>
+<div class="scroll"><table>
+<tr><th>月份</th><th>无批准合入</th><th>说明</th></tr>
+<tr><td>2026-07</td><td><b class="no">134</b></td><td>集中爆发 —— 几乎全部挤在这一个月</td></tr>
+<tr><td>2026-08</td><td><b class="warn">1</b></td><td><b>8-01 09:50</b> 还有一条(FLY-1577,卡头身份对不上那一类)</td></tr>
+<tr><td>2026-08-01 之后 → 今天</td><td><b class="yes">0</b></td><td>31 天、跨 <b>960</b> 个任务</td></tr>
+</table></div>
+<div class="note"><b>为什么不是「不是没漏,是记录停了」:</b>①写这条记录的代码今天仍在;②同一道闸上的分类器 8 月实测算了 202 次、9 月 21 次 —— <b>闸是活的</b>;③最后一次是 <b>2026-08-01 09:50</b>。</div>
+<p class="lead">结论:这道闸历史上漏得很凶,而且几乎全挤在 7 月这一个窗口里。<b>最后一次是 8 月 1 日;从那之后 31 天、跨 960 个任务零漏。</b></p>
+<p>对你的意义:我们上次给你的那个<b>阻塞项(闸自己在漏,所以先别谈自动合并)不成立</b> —— 现在讨论自动合并,<b>不是往一道正在漏的闸上加自动化</b>。这个前置条件现在是满足的。</p>
+<div class="cmt"><label>第 7 格:这个体检结论 / 你还想先查什么</label><textarea data-s="07 闸自己漏不漏" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="kicker">08 · 上一轮问你的(你已经答了)</p>
+<h2>你的回答:「你先来,自己发挥吧」</h2>
+<div class="quote">你先来,自己发挥吧</div>
+<p style="margin-top:13px"><b>这一轮你又答了四格,原话原样留在这里:</b></p>
+<div class="quote"><b>【第 4 格】</b>「"改动属于一个说得清的类型"是什么意思?就是什么叫做"改动属于我们事先画好的某一类"?我们要画什么类啊?你这里的"类"怎么说?比如说是啥意思,你能讲清楚一点吗?」</div>
+<div class="quote"><b>【第 5 格】</b>「这里我感觉强度 2 就可以了。这里就是指说他在 529 房跑过一次,对不对?当然,大多数的东西跑到强度 2 就可以了。只有少数(比如说像 2029 这一种),你可以自己去做判断。如果因为其本身的特殊性,你觉得强度 2 已经不够了,那样的话,可能就还是等着让我来 review 吧」</div>
+<div class="quote"><b>【第 6 格】</b>「嗯,我觉得补法 C 不错」</div>
+<div class="quote"><b>【第 8 格】</b>「你先来,自己发挥吧」</div>
+<p style="margin-top:13px"><b>再之后你对第 4 格提的那条质疑,也原样留在这里:</b></p>
+<div class="quote"><b>【第 4 格 · 质疑】</b>「这个分类我觉得是合理的。不过说句实话,挺难判断的吧?我觉得机器很难从 diff 里面判断说它到底是在哪一个类别。这里也许 Lead 本身可以根据仪器本身和 PR 里面的改动大概判断出来,但是机器的话,很难只通过文件来判断。」</div>
+<p>我把它读成:<b>三块你都没有定见,连 ① ② 一起交给我定。</b>所以这一版最上面那两格就是我定的东西。<b>如果我这句话读错了,请在下面这一格纠我</b> —— 读错的话,上面整两格都要重来。</p>
+<p>下面这棵树是接下来的路,<b>← 本轮</b> 标的是这次要你看的:</p>
+<div class="tree">把你从合并审批里抽出去
+├─ T1 判据的形状:定义类别,而不是置信度分     ✅ 已定
+├─ T1b 一个类凭什么够格进自动道               ← 本轮重点(第 4 格下面那张红卡)
+├─ T2 「真环境跑过一次」怎么算数              ✅ 你已定:强度二(+ 特殊单授权我判)
+├─ T3 自动道能覆盖多少 / 剩下的仍走你          ✅ 已定(先只算纯文档,约 14%)
+├─ T4 关掉你「加需求入口」的代价怎么补          ✅ 你已定:补法 C
+├─ T5 闸自己的健康度                          ✅ 已查完(第 7 格)
+├─ T6 影子跑那两周具体怎么起                   ← 本轮(第二格)
+└─ T7 写成正式需求文档 + 规矩怎么改             (你点头之后我再写)</div>
+<p><b>上一轮那三个问题,现在的状态:</b></p>
+<ul>
+<li>① 判据方向认不认 —— <b>你交给我 → 我定:认</b>(最上面那格)</li>
+<li>② 第一条自动道开多宽 —— <b>你交给我 → 我定:最窄的一档,而且先影子跑</b></li>
+<li>③ 哪些交给我发挥 —— <b>你答:全部</b></li>
+</ul>
+<div class="cmt"><label>第 8 格:你上一轮写的(已收到,原样留着给你看)</label><textarea data-s="08 三个问题+你有定见吗" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="note" style="margin-top:18px">
+<b>怎么把意见给我:</b>上面每一格都能写。写完点下面的<b>「一键汇总复制」</b>,然后<b>贴回 issue 里</b> —— 我才收得到。
+<b>这一页的批注只存在你自己的浏览器里,不会自己传给我。</b>如果内容多,会自动分成几段,<b>每一段都要贴</b>。
+</div>
+
+<div class="bar">
+<div class="row">
+<button id="copy">一键汇总复制</button>
+<button id="clear" class="sec">清空我的批注</button>
+<span id="st" class="status">还没写意见</span>
+</div>
+<textarea id="dump" readonly></textarea>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK = "【页面意见汇总】FLY-2261";
+var LIMIT = 1800;
+var KEY = "fly2261-auto-merge-criteria-notes-v1";
+var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-s]"));
+var st = document.getElementById("st");
+var dump = document.getElementById("dump");
+
+function load(){
+  var raw = null;
+  try { raw = window.localStorage.getItem(KEY); } catch(e){ raw = null; }
+  if(!raw) return;
+  var data = null;
+  try { data = JSON.parse(raw); } catch(e){ return; }
+  if(!data || typeof data !== "object") return;
+  boxes.forEach(function(b){
+    var v = data[b.getAttribute("data-s")];
+    if(typeof v === "string") b.value = v;
+  });
+}
+function save(){
+  var data = {};
+  boxes.forEach(function(b){ if(b.value.trim()) data[b.getAttribute("data-s")] = b.value; });
+  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+}
+function filled(){
+  return boxes.filter(function(b){ return b.value.trim().length > 0; });
+}
+function refresh(){
+  var n = filled().length;
+  st.className = "status";
+  st.textContent = n === 0 ? "还没写意见" : ("已写 " + n + " 段意见");
+}
+function chunks(){
+  var parts = filled().map(function(b){
+    return "【" + b.getAttribute("data-s") + "】\n" + b.value.trim();
+  });
+  var out = [], cur = "";
+  parts.forEach(function(p){
+    var cand = cur ? (cur + "\n\n" + p) : p;
+    if(cur && (MARK.length + 1 + cand.length) > LIMIT){ out.push(cur); cur = p; }
+    else { cur = cand; }
+  });
+  if(cur) out.push(cur);
+  if(!out.length) return [];
+  return out.map(function(body, i){
+    var head = MARK;
+    if(out.length > 1) head = MARK + "  (" + (i+1) + "/" + out.length + ")";
+    return head + "\n" + body;
+  });
+}
+function showManual(text, msg){
+  dump.style.display = "block";
+  dump.value = text;
+  dump.focus();
+  dump.select();
+  st.className = "status err";
+  st.textContent = msg;
+}
+function doCopy(){
+  var cs = chunks();
+  if(!cs.length){
+    st.className = "status err";
+    st.textContent = "一条意见都没写,没东西可复制";
+    return;
+  }
+  var text = cs.join("\n\n----\n\n");
+  var manualMsg = cs.length > 1
+    ? "自动复制失败 — 请在下方框里手动全选复制(共 " + cs.length + " 段,每段都要贴)"
+    : "自动复制失败 — 请在下方框里手动全选复制";
+  var okMsg = cs.length > 1
+    ? "已复制(共 " + cs.length + " 段,都要贴回 issue)"
+    : "已复制 — 请贴回 issue 里";
+  var nav = window.navigator;
+  if(nav && nav.clipboard && nav.clipboard.writeText){
+    nav.clipboard.writeText(text).then(function(){
+      dump.style.display = "none";
+      st.className = "status ok";
+      st.textContent = okMsg;
+    }).catch(function(){ showManual(text, manualMsg); });
+  } else {
+    showManual(text, manualMsg);
+  }
+}
+boxes.forEach(function(b){
+  b.addEventListener("input", function(){ save(); refresh(); });
+});
+document.getElementById("copy").addEventListener("click", doCopy);
+document.getElementById("clear").addEventListener("click", function(){
+  boxes.forEach(function(b){ b.value = ""; });
+  try { window.localStorage.removeItem(KEY); } catch(e){}
+  dump.style.display = "none";
+  refresh();
+});
+load();
+refresh();
+})();
+</script>
+</body>
+</html>

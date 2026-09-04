@@ -129,7 +129,11 @@ export interface RunnerTuiWindowLostEvidence {
 	issueId: string;
 	projectName: string;
 	leadId: string;
-	trigger: "deadline-exhausted" | "permanent" | "run-ended";
+	trigger:
+		| "deadline-exhausted"
+		| "permanent"
+		| "run-ended"
+		| "label-unavailable";
 	episodeStartedAt: number;
 	attempts: number;
 	lastFailure?: RunnerTuiWindowFailureEvidence;
@@ -194,6 +198,7 @@ export interface CodexTranscriptSinkLike {
 export interface CodexLaunchSnapshot {
 	schemaVersion: 1;
 	executionId: string;
+	label?: string;
 	cwd: string;
 	objective: string;
 	kickText: string;
@@ -227,9 +232,15 @@ export interface CodexRecoveryCommitHooks {
 	>;
 }
 
+export type CodexRecoveryOptions =
+	| { founderWindow: "open"; windowName?: string }
+	| { founderWindow: "suppressed"; windowName?: never };
+
 interface CodexRecoveryExecution {
 	snapshot: CodexLaunchSnapshot;
 	hooks: CodexRecoveryCommitHooks;
+	founderWindow: CodexRecoveryOptions["founderWindow"];
+	windowName?: string;
 }
 
 function requireNullableString(value: unknown, field: string): string | null {
@@ -260,6 +271,13 @@ function parseCodexLaunchSnapshot(
 		throw new Error(
 			`invalid immutable launch snapshot content for ${executionId}`,
 		);
+	}
+	const label = snapshot.label;
+	if (
+		label !== undefined &&
+		(typeof label !== "string" || label.length === 0)
+	) {
+		throw new Error("invalid immutable launch snapshot field label");
 	}
 	if (
 		typeof snapshot.launchContext !== "object" ||
@@ -343,6 +361,7 @@ function parseCodexLaunchSnapshot(
 	return {
 		schemaVersion: 1,
 		executionId,
+		...(label ? { label } : {}),
 		cwd: snapshot.cwd,
 		objective: snapshot.objective,
 		kickText: snapshot.kickText,
@@ -673,6 +692,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	async resumeExistingExecution(
 		ctx: AdapterExecutionContext,
 		hooks: CodexRecoveryCommitHooks,
+		options?: CodexRecoveryOptions,
 	): Promise<AdapterExecutionResult> {
 		let snapshot: CodexLaunchSnapshot;
 		try {
@@ -680,7 +700,14 @@ export class CodexTmuxAdapter implements IAdapter {
 		} catch (error) {
 			return this.ownershipFailureResult(ctx, safeErr(error));
 		}
-		return this.runWithOwnership(ctx, "rescue", { snapshot, hooks });
+		return this.runWithOwnership(ctx, "rescue", {
+			snapshot,
+			hooks,
+			founderWindow: options?.founderWindow ?? "open",
+			...(options?.founderWindow === "open" && options.windowName
+				? { windowName: options.windowName }
+				: {}),
+		});
 	}
 
 	private async runWithOwnership(
@@ -742,6 +769,25 @@ export class CodexTmuxAdapter implements IAdapter {
 		const gateMarkerDir = defaultGateMarkerDir();
 		const daemonEnv = this.buildDaemonEnv(ctx, gateMarkerDir);
 		this.assertWorkflowCapabilities(ctx, daemonEnv);
+		const founderWindowSuppressed = recovery?.founderWindow === "suppressed";
+		const recoveredWindowName = recovery?.windowName;
+		if (!ctx.label && !recoveredWindowName && !founderWindowSuppressed) {
+			throw new Error(
+				`runner-tui-window: missing founder window label for ${ctx.executionId}`,
+			);
+		}
+		if (
+			recoveredWindowName &&
+			(!/^[A-Za-z0-9_.-]+$/.test(recoveredWindowName) ||
+				recoveredWindowName.length > 50)
+		) {
+			throw new Error(
+				`runner-tui-window: invalid recovered founder window name for ${ctx.executionId}`,
+			);
+		}
+		const windowName =
+			recoveredWindowName ??
+			(ctx.label ? sanitizeTmuxName(ctx.label) : undefined);
 		// FLY-2003: reject unknown/zombie/malformed source auth before `gh auth`
 		// or worktree git config can create any credential-bearing residue.
 		assertCodexSourceIdentity({
@@ -780,10 +826,6 @@ export class CodexTmuxAdapter implements IAdapter {
 			}),
 		});
 
-		// Founder cmux window name (a Linear identifier, FLY-272).
-		const windowName = sanitizeTmuxName(
-			ctx.label ?? `codex-${ctx.executionId.slice(0, 8)}`,
-		);
 		let tmuxWindow: string | undefined;
 		let founderWindowId: string | undefined;
 
@@ -912,6 +954,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				this.persistLaunchSnapshot({
 					schemaVersion: 1,
 					executionId: ctx.executionId,
+					...(ctx.label ? { label: ctx.label } : {}),
 					cwd: sandboxCwd,
 					objective,
 					kickText,
@@ -1011,6 +1054,9 @@ export class CodexTmuxAdapter implements IAdapter {
 				if (!tuiThreadId) {
 					throw new Error("runner-tui-window: thread is not ready");
 				}
+				if (!windowName) {
+					throw new Error("runner-tui-window: founder window is suppressed");
+				}
 				return {
 					tmuxSession: this.sessionName,
 					windowName,
@@ -1057,6 +1103,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			};
 
 			const wireCreated = (created: { windowId?: string }): boolean => {
+				if (!windowName) return false;
 				const windowId = created.windowId ?? this.resolveWindowId(windowName);
 				if (!windowId || !/^@[0-9]+$/.test(windowId)) return false;
 				tuiOpened = true;
@@ -1064,7 +1111,6 @@ export class CodexTmuxAdapter implements IAdapter {
 				founderWindowId = windowId;
 				tmuxWindow = `${this.sessionName}:${windowId}`;
 				cancelTuiDeadline?.();
-				this.publishWindowExecutionIdentity(ctx.executionId, `=${tmuxWindow}`);
 				this.pinCommDbSessionWindow(ctx, tmuxWindow);
 				this.persistSessionWindowState(ctx.executionId, tmuxWindow);
 				tuiEpisodeStartedAt = undefined;
@@ -1287,11 +1333,17 @@ export class CodexTmuxAdapter implements IAdapter {
 						`[CodexTmuxAdapter] transcript thread scope failed (ignored): ${safeErr(error)}`,
 					);
 				}
-				if (restarts > 0) {
+				if (restarts > 0 && !founderWindowSuppressed) {
 					tuiOpened = false;
 					tuiTerminalReported = false;
 					founderWindowId = undefined;
 					tmuxWindow = undefined;
+				}
+				if (founderWindowSuppressed) {
+					// FLY-2303 owns liveness-axis handling for this intentional :pending state.
+					this.pinCommDbSessionWindow(ctx, `${this.sessionName}:pending`);
+					emitTuiLost("label-unavailable");
+					return;
 				}
 				startOpenChain();
 			};
@@ -1474,6 +1526,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				});
 				if (!settledBeforeJoin) {
 					const cleanupLateWindow = async (): Promise<void> => {
+						if (!windowName) return;
 						try {
 							await this.cleanupWindows({
 								tmuxSession: this.sessionName,
@@ -1551,19 +1604,21 @@ export class CodexTmuxAdapter implements IAdapter {
 				} catch (err) {
 					teardownError ??= err;
 				}
-				try {
-					this.killWindow(
-						{
-							tmuxSession: this.sessionName,
-							windowName,
-							...(founderWindowId ? { windowId: founderWindowId } : {}),
-						},
-						{ log: (m) => this.log(m) },
-					);
-				} catch (error) {
-					this.log(
-						`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
-					);
+				if (windowName) {
+					try {
+						this.killWindow(
+							{
+								tmuxSession: this.sessionName,
+								windowName,
+								...(founderWindowId ? { windowId: founderWindowId } : {}),
+							},
+							{ log: (m) => this.log(m) },
+						);
+					} catch (error) {
+						this.log(
+							`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
+						);
+					}
 				}
 				try {
 					phaseLifecycle.ackShutdown(
@@ -1642,19 +1697,21 @@ export class CodexTmuxAdapter implements IAdapter {
 					}
 				}
 				this.scrubCredential(ctx.executionId);
-				try {
-					this.killWindow(
-						{
-							tmuxSession: this.sessionName,
-							windowName,
-							...(founderWindowId ? { windowId: founderWindowId } : {}),
-						},
-						{ log: (m) => this.log(m) },
-					);
-				} catch (error) {
-					this.log(
-						`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
-					);
+				if (windowName) {
+					try {
+						this.killWindow(
+							{
+								tmuxSession: this.sessionName,
+								windowName,
+								...(founderWindowId ? { windowId: founderWindowId } : {}),
+							},
+							{ log: (m) => this.log(m) },
+						);
+					} catch (error) {
+						this.log(
+							`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
+						);
+					}
 				}
 			}
 		}
@@ -2142,6 +2199,9 @@ export class CodexTmuxAdapter implements IAdapter {
 		if (ctx.stateDbPath) env.FLYWHEEL_STATE_DB_PATH = ctx.stateDbPath;
 		if (ctx.progressPath) env.FLYWHEEL_PROGRESS_PATH = ctx.progressPath; // FLY-795
 		if (ctx.projectName) env.FLYWHEEL_PROJECT_NAME = ctx.projectName;
+		if (ctx.runnerMemory?.status === "mounted") {
+			env.FLYWHEEL_RUNNER_MEMORY_DIR = ctx.runnerMemory.dir;
+		}
 		if (ctx.leadId) env.FLYWHEEL_LEAD_ID = ctx.leadId;
 		if (ctx.sentinelPath) env.FLYWHEEL_LAND_STATUS_PATH = ctx.sentinelPath;
 		try {
@@ -2259,33 +2319,6 @@ export class CodexTmuxAdapter implements IAdapter {
 			return false;
 		} finally {
 			commDb?.close();
-		}
-	}
-
-	/** Publish the exact identity needed to rebuild a lost CommDB holder row. */
-	private publishWindowExecutionIdentity(
-		executionId: string,
-		exactTmuxTarget: string,
-	): void {
-		try {
-			withSyncOpMarker("codex-adapter:publish-window-identity", () =>
-				this.execFileFn(
-					"tmux",
-					[
-						"set-option",
-						"-w",
-						"-t",
-						exactTmuxTarget,
-						"@flywheel_exec_id",
-						executionId,
-					],
-					{ timeoutMs: 5_000 },
-				),
-			);
-		} catch (error) {
-			console.warn(
-				`[CodexTmuxAdapter] execution identity publish failed for ${exactTmuxTarget}: ${(error as Error).message}`,
-			);
 		}
 	}
 

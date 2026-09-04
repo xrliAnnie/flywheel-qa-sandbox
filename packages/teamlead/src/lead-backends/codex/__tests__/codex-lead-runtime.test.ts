@@ -880,6 +880,7 @@ describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pa
 			FLYWHEEL_API_TOKEN: "leak",
 			SOME_OTHER_LEAD_BOT_TOKEN: "leak",
 			VERCEL_TOKEN: "leak",
+			BLOB_READ_WRITE_TOKEN: "leak",
 			AWS_SECRET_ACCESS_KEY: "leak",
 			RANDOM_VAR: "leak",
 		});
@@ -891,6 +892,7 @@ describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pa
 		expect(out.FLYWHEEL_API_TOKEN).toBeUndefined(); // extra token — dropped
 		expect(out.SOME_OTHER_LEAD_BOT_TOKEN).toBeUndefined();
 		expect(out.VERCEL_TOKEN).toBeUndefined();
+		expect(out.BLOB_READ_WRITE_TOKEN).toBeUndefined();
 		expect(out.AWS_SECRET_ACCESS_KEY).toBeUndefined();
 		expect(out.RANDOM_VAR).toBeUndefined();
 	});

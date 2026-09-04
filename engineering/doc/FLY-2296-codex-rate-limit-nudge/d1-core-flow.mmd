@@ -1,0 +1,11 @@
+%%{init: {"flowchart": {"htmlLabels": false, "wrappingWidth": 600}}}%%
+flowchart TD
+  A[账号额度快照<br/>5 小时窗或周窗用量 ≥ 90%] --> B[Codex TUI 记「待弹」状态]
+  B --> C[体完成一次 turn<br/>TurnComplete]
+  C --> D{config.toml 里<br/>notice.hide_rate_limit_model_nudge<br/>是 true 吗?}
+  D -->|否 · 修复前| E[弹菜单<br/>Approaching rate limits<br/>默认焦点在 Switch]
+  E --> F[停驻体的画面被盖住<br/>巡检 INTERACTIVE_MENU]
+  E --> G[任何一个误按 Enter<br/>整条线程换成 luna<br/>违反 founder 的模型决定]
+  F --> H[巡检人手 Down Down Enter<br/>选 never show again]
+  H --> I[Codex 把键写进 home<br/>但落在 managed 块内部<br/>下次 provision 被剥掉]
+  D -->|是 · 修复后| J[菜单状态直接归 Idle<br/>只留一行 Heads up 提示<br/>体照常 Pursuing goal]

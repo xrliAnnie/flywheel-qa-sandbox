@@ -1,8 +1,8 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage } from "flywheel-claude-runner";
-import { vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 
 // Keep Claude SDK debug output inside the test workspace to avoid HOME write restrictions.
 const claudeConfigDir =
@@ -10,6 +10,45 @@ const claudeConfigDir =
 	join(tmpdir(), "flywheel-edge-worker-test-claude");
 process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
 mkdirSync(join(claudeConfigDir, "debug"), { recursive: true });
+
+const originalHome = process.env.HOME;
+const originalRunnerMemoryRoot = process.env.FLYWHEEL_RUNNER_MEMORY_ROOT;
+const originalGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+let runnerMemoryTestDirs: string[] = [];
+
+beforeEach(() => {
+	const home = mkdtempSync(join(tmpdir(), "flywheel-edge-worker-home-"));
+	const root = mkdtempSync(join(tmpdir(), "flywheel-runner-memory-"));
+	runnerMemoryTestDirs = [home, root];
+	process.env.HOME = home;
+	process.env.FLYWHEEL_RUNNER_MEMORY_ROOT = root;
+	// HOME isolation must not hide the caller's configured Git identity from
+	// existing integration tests that create real commits.
+	if (originalGitConfigGlobal !== undefined) {
+		process.env.GIT_CONFIG_GLOBAL = originalGitConfigGlobal;
+	} else if (originalHome !== undefined) {
+		process.env.GIT_CONFIG_GLOBAL = join(originalHome, ".gitconfig");
+	}
+});
+
+afterEach(() => {
+	if (originalHome === undefined) delete process.env.HOME;
+	else process.env.HOME = originalHome;
+	if (originalRunnerMemoryRoot === undefined) {
+		delete process.env.FLYWHEEL_RUNNER_MEMORY_ROOT;
+	} else {
+		process.env.FLYWHEEL_RUNNER_MEMORY_ROOT = originalRunnerMemoryRoot;
+	}
+	if (originalGitConfigGlobal === undefined) {
+		delete process.env.GIT_CONFIG_GLOBAL;
+	} else {
+		process.env.GIT_CONFIG_GLOBAL = originalGitConfigGlobal;
+	}
+	for (const dir of runnerMemoryTestDirs) {
+		rmSync(dir, { recursive: true, force: true });
+	}
+	runnerMemoryTestDirs = [];
+});
 
 // Mock console methods to reduce noise in tests
 global.console = {

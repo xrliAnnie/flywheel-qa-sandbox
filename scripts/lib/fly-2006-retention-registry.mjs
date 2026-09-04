@@ -33,7 +33,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 	protectedCurrentOrReference: words(`
 		admission_pause alert_delivery_receipts auto_qa_record cleanup_ref_observations
 		commdb_finalize_failures dead_letter_alerts doa_backoff doa_backoff_participants
-		doa_backoff_reset_receipts flag_departures flag_keep_anchor flag_provenance
+		doa_backoff_reset_receipts epic_page flag_departures flag_keep_anchor flag_provenance
 		flag_scan_failure_alert_intents flag_scan_run_items flag_scan_run_legs flag_scan_runs
 		flag_scan_scope_state flag_scan_state flag_store_meta flag_value_changelog flag_values fleet_pressure_hold
 		founder_reply_retry land_alert_outbox land_operation land_operation_step

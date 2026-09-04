@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    participant A as Codex 适配器
+    participant C as CommDB 注册表
+    participant S as StateStore 状态库
+    participant E as 引擎回滚车道
+    participant P as Lead 巡检
+    participant H as 每小时清扫
+
+    A->>C: 写 status=blocked(ended_at 已盖)
+    A->>A: kill 自己的 tmux 窗口
+    A->>S: 上报 goal_blocked
+    S->>S: status=blocked + terminal_at 盖戳
+    E->>E: 终态 ∧ 探针死 ⇒ 回滚换体(seq 19-22)
+    Note over E,C: 回滚只写 workflow_* 表,不碰注册行
+    loop 每个巡检 tick(本例 41 分钟)
+        P->>C: 读 owner index(running|blocked)
+        P->>P: 有目标、无 pane ⇒ 假报 MISSING_PANE
+    end
+    H->>C: 终态 ∧ 窗口证明已死 ⇒ 删除注册行

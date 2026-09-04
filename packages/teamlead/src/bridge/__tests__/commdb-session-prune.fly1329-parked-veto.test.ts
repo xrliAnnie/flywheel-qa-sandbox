@@ -74,6 +74,9 @@ describe("FLY-1329 A4: CommDB prune respects a park declaration", () => {
 		expect(result.scanned).toBe(1);
 		expect(result.pruned).toBe(0);
 		expect(result.parkedVetoed).toBe(1);
+		expect(probeDead).toHaveBeenCalledExactlyOnceWith(
+			"runner-flywheel:parked-alive",
+		);
 
 		// The real proof: the row is still there.
 		const db = new CommDB(dbPath);
@@ -82,6 +85,23 @@ describe("FLY-1329 A4: CommDB prune respects a park declaration", () => {
 		} finally {
 			db.close();
 		}
+	});
+
+	it("counts a parked row with a live window as kept, not as a stale-mapping veto", async () => {
+		seedTerminal("parked-window-alive", true);
+		const probeAlive = vi.fn(async () => "alive" as const);
+
+		const result = await pruneDeadTerminalCommDbSessions("flywheel", {
+			dbPath,
+			probe: probeAlive,
+		});
+
+		expect(probeAlive).toHaveBeenCalledExactlyOnceWith(
+			"runner-flywheel:parked-window-alive",
+		);
+		expect(result.kept).toBe(1);
+		expect(result.parkedVetoed).toBe(0);
+		expect(result.pruned).toBe(0);
 	});
 
 	it("still prunes a terminal row with NO park declaration (normal teardown residue)", async () => {

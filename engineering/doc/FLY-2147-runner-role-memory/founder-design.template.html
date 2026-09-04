@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2147 · runner 按「角色 + 项目」挂记忆目录 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .diagram.tall svg { max-width:560px; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  pre { background:#f2f2f5; border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:12.5px; line-height:1.5; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2147 · runner 按「角色 + 项目」挂记忆目录</h1>
+<div class="meta">设计稿 · 2026-09-03 · 上游:FLY-1984 Epic PRD §B「runner 也要有记忆」+ §卡在哪 · 文档:<code>engineering/doc/FLY-2147-runner-role-memory/</code>(exploration / research / plan)· Codex 设计评审 8 轮后 APPROVED,期间 Tadashi 裁定 6 次(不加开关、fail-closed、目录编码证明式测试、设置探测收窄为「存在即冲突」等),都已写进 plan</div>
+
+<section class="card green" data-title="一句话">
+  <h2>一句话</h2>
+  <p class="summary-line">以后每个 runner(干活的 AI 执行体)起来时,会被指到一个只由「哪个项目 + 哪个角色」决定的记忆文件夹——所有在 flywheel 做 QA 的共用一份,第十次来的 QA 读得到前九次学到的;文件夹不随 issue、不随工作目录、不随一次性编号变;而且 Flywheel 在起 runner 之前会先量一次那份索引,超长时在日志和 runner 的提示词里都说出来「从第几行起没进来」,不再悄悄丢。</p>
+  <p class="note">范围只是 PRD 里她勾的 B0(「工程加上挂记忆目录的能力」)+ B1(「记忆挂在角色 + 项目上」)。备份到私有仓(A 线)、Codex 那边(C1)不在本单。</p>
+  <div class="cbox"><label for="c-summary">对「一句话」的意见</label><textarea id="c-summary" data-key="summary" data-title="一句话" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card amber" data-title="现状与三个实测">
+  <h2>现状与三个实测(2026-09-03 本机)</h2>
+  <h3>runner 今天不是「没有记忆」,是「记忆不按角色分」</h3>
+  <ul>
+    <li>Claude runner 今天有一个记忆文件夹,由 <span class="term">Claude Code</span>(Anthropic 的命令行工具,runner 就是它的一个会话)按「哪个 git 仓库」自动指定:<code>~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/</code>,里面已有 573 个文件。</li>
+    <li>所有角色(设计、实现、QA、PM …)和你本人在 <code>~/Dev/flywheel</code> 里开的会话,写的都是这同一份。所以「qa 记得所有 qa 学到的」那一格今天确实不存在——但「什么都没有」也不对,PRD 事实底稿已经纠过这一句。</li>
+    <li>worktree(每个 issue 的临时工作目录)删掉不会丢:231 个 worktree 目录里 0 条记忆,全在主仓那一份。这与 PRD 的担心相反,是好消息。</li>
+  </ul>
+  <h3>实测 1:「挂目录」的能力 Claude Code 已经有</h3>
+  <p>官方文档有一个设置键 <code>autoMemoryDirectory</code>。我用最小成本的模型跑了对照:不带这个键,模型报告的记忆目录是主仓那一份;带上这个键指向一个临时文件夹,模型报告的就是那个临时文件夹。<b>所以缺的不是「能力」,是 Flywheel 在起 runner 时把它算出来、传进去、守住边界。</b></p>
+  <h3>实测 2:「静默截断」在今天的版本里对模型不静默,但对人静默</h3>
+  <div class="scroll"><table>
+    <tr><th>造的索引</th><th>模型看到了什么</th></tr>
+    <tr><td>218 行 / 12KB(行数超)</td><td>第一条看得见,最后一条看不见;上下文里有一句 <code>MEMORY.md is 218 lines (limit: 200). Only part of it was loaded.</code></td></tr>
+    <tr><td>153 行 / 32.7KB(字节超)</td><td>同上;上下文里有一句 <code>WARNING: MEMORY.md is 31.7KB (limit: 24.4KB) … Only part of it was loaded.</code></td></tr>
+  </table></div>
+  <div class="callout amber">修正 PRD 一句话:Claude Code 2.1.259 超限时<b>会</b>给模型一条 WARNING,不是「不报错」。但三件事仍然成立,也正是本单要补的:① 这条 WARNING 只在模型脑子里,不进任何日志、事件、台账——Tadashi 的索引今天 152 行 / 32,998 字节已经超了 8.5KB,没有任何人被通知;② 没有东西阻止它发生,已超的存量每次开会话都丢后段;③ WARNING 不说丢了哪几条。</div>
+  <h3>实测 3:runner 的 11 个启动参数里确实没有一个是干这件事的</h3>
+  <p>读代码数出来:<code>--session-id · --permission-mode · --append-system-prompt-file · --model · --effort · --allowed-tools · --settings · --no-chrome · --name · [任务文本] · (+ Agent Team 身份参数)</code>。其中 <code>--settings</code> 已经在用(用来关某些插件),本单就往这个已有的参数里多放一个键。</p>
+  <div class="cbox"><label for="c-status">对「现状与三个实测」的意见</label><textarea id="c-status" data-key="status" data-title="现状与三个实测" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程:起一个 runner 时多做的那几步</h2>
+  <div class="diagram tall">__SVG_D1__</div>
+  <p class="cap">图 1 · 从派工到第二次读到记忆的完整链路(Mermaid 本地渲染)</p>
+  <p class="note">术语:<span class="term">Blueprint</span> = Bridge(调度进程)里负责把「issue + 角色文本 + 规则」拼成 runner 提示词并起进程的那一段代码;<span class="term">adapter</span> = 真正敲 <code>claude</code> 命令行的那一层。</p>
+  <div class="cbox"><label for="c-flow">对「核心流程」的意见</label><textarea id="c-flow" data-key="flow" data-title="核心流程" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card purple" data-title="数据与目录模型">
+  <h2>数据与目录模型:和 Lead 那边长一样</h2>
+  <div class="diagram">__SVG_D2__</div>
+  <p class="cap">图 2 · runner 侧新目录树、与 Lead 侧同形的索引/正文,以及对存量项目记忆的一行只读指针</p>
+  <div class="scroll"><table>
+    <tr><th>项</th><th>定案</th><th>为什么</th></tr>
+    <tr><td>根目录</td><td><code>~/.flywheel/runner-memory/</code>(隔离台架可用环境变量换根)</td><td>Flywheel 自有、不分厂商;两级路径直接念出「项目 / 角色」;避开已被占名的 <code>~/.flywheel/memories/</code></td></tr>
+    <tr><td>角色 id 来源</td><td>DAG 节点 id(<code>qa</code> / <code>eng_design</code> / <code>implement</code> …)或旧派工的 agent 名(<code>generic</code> / <code>qa</code>)</td><td>不新造一套词;新旧两种派工的 <code>qa</code> 同名即同一份——正是「所有 QA 共用一份」</td></tr>
+    <tr><td>盘上目录名</td><td>全小写的名字原样用(<code>flywheel/qa</code> 不变);含大写的名字用「小写 + <code>--</code> + 大写位置掩码」(<code>Sub</code> → <code>sub--1</code>),可以一一还原</td><td>Codex 评审两轮抓出来的:Mac 的磁盘不分大小写,配置里又允许 <code>Sub</code> 和 <code>sub</code> 同时存在,不编码就会把两个身份的记忆混成一份;第一版用哈希后缀又被抓到不是一一对应(合法小写名可能撞上它)。提示词和日志里仍显示原名</td></tr>
+    <tr><td>项目 id 来源</td><td>Bridge 已归一的项目名(<code>flywheel</code>)</td><td>缺了就不挂载,日志说明</td></tr>
+    <tr><td>索引形状</td><td><code>MEMORY.md</code> 一行一条指针 + 一事一文件(带 name / description / type 头)</td><td>与 Lead 侧逐字同形;由 Claude Code 原生装载与写入,Flywheel 不再造一套</td></tr>
+    <tr><td>存量 573 条</td><td>原样不动;runner 提示词里留一行「项目共享记忆在这里,需要时自己翻,不要往那里写」</td><td>不迁移、不拆;有界(一行)、可见</td></tr>
+  </table></div>
+  <div class="cbox"><label for="c-model">对「数据与目录模型」的意见</label><textarea id="c-model" data-key="model" data-title="数据与目录模型" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card red" data-title="有界且可见的守卫">
+  <h2>有界且可见:超界要说出来,而且是两面说</h2>
+  <div class="diagram">__SVG_D3__</div>
+  <p class="cap">图 3 · 起 runner 前的索引守卫时序:预算内也留痕,超预算时日志与提示词各说一遍</p>
+  <div class="scroll"><table>
+    <tr><th>数字</th><th>值</th><th>出处</th></tr>
+    <tr><td>硬上限(Claude Code 装载侧事实)</td><td>200 行 / 25,000 字节,先到先截</td><td>官方文档 + 本机实测</td></tr>
+    <tr><td>软预算(本单守卫阈值,可配)</td><td>160 行 / 20,000 字节</td><td>留 20% 余量,让「这次写会超」的原生报错先于「装载时丢后段」发生</td></tr>
+    <tr><td>超预算时</td><td>日志一行 <code>OVER BUDGET … first_dropped_line=K</code> + 提示词一行「约从第 K 行起没被加载,开工第一步先把索引压回预算内(搬正文,不删条目)」</td><td>K 按两个维度算出更早的那个;文案写「约」,因为 Claude Code 没公开精确切法</td></tr>
+    <tr><td>没超时</td><td>日志一行 <code>mounted … over_budget=false</code></td><td>「可见」不只在坏情况下可见</td></tr>
+    <tr><td>某份 Claude Code 设置文件(机器级、用户级或项目级)里出现了任何「自动记忆」相关的键——<b>每次起 runner 时探测,存在即冲突</b>,不去算谁赢</td><td>按失败处理:不挂载、尽力关掉这次执行的自动记忆,日志与提示词带上那份文件的路径和键名,提示词明说「这次的有效状态未知,报 Lead」;由 Tadashi 去处理那台机器</td><td>Tadashi 裁定:Codex 评审曾要求我们完整求解 Claude Code 的设置优先级(机器级 true/false、目录覆盖、目录合并、MDM…),那等于在 Flywheel 里再写一个设置引擎;收窄成「出现即冲突」既每次实测、又不长机制。探测不到的(MDM、服务器下发策略)明写为边界</td></tr>
+    <tr><td>挂载失败,或这次执行没有「项目 + 角色」身份</td><td><b>关掉这次执行的自动记忆</b>(fail-closed:什么都不装、写了也不留),日志 + 提示词 + 调度上下文三面可见,runner 照常起</td><td>Tadashi 裁定。我原稿写「退回项目共享记忆」,Codex 评审指出那会让「共享份只留只读指针」这条规矩在失败时悄悄失效。代价:极少数没有项目名的旧式派工从此没有自动记忆(今天有),Tadashi 已接受</td></tr>
+    <tr><td>回退</td><td>只有代码回滚,<b>没有运行时开关</b>;回滚后 runner 回到项目共享记忆,盘上已写的记忆不删</td><td>Tadashi 转达你的直令「不加旋钮,写死」;我原本设计了一个 off 开关,按裁定删掉。「不挂载时提示词与改前逐字相同」由测试锁住,这就是回滚后的形状</td></tr>
+  </table></div>
+  <div class="cbox"><label for="c-guard">对「有界且可见的守卫」的意见</label><textarea id="c-guard" data-key="guard" data-title="有界且可见的守卫" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card amber" data-title="关键取舍与否决的方案">
+  <h2>关键取舍与否决的方案</h2>
+  <div class="scroll"><table>
+    <tr><th>方案</th><th>处理</th><th>理由</th></tr>
+    <tr><td><b>A · 用 Claude Code 自己的 <code>autoMemoryDirectory</code> 挂目录 + Flywheel 在起进程前做守卫</b></td><td><span class="badge do">采用</span></td><td>代码最少(一个键 + 一段守卫);和 Lead 侧是同一套机制;runner 只有一个写入目标,不会被两套「记忆说明」搞糊涂;Claude Code 写入侧的格式指导免费拿到</td></tr>
+    <tr><td>B · Flywheel 自己读索引、自己截、自己塞进提示词,不动 Claude Code 的记忆</td><td><span class="badge no">否决</span></td><td>runner 会同时有两个记忆目录、两套写法,「第十次来的 QA 到底写哪边」没有单一答案;还要自己重写一遍 Claude Code 已做好的格式与写入守卫;违背「一个真相源」</td></tr>
+    <tr><td>C · 给每个「项目-角色」造一份 agent 定义,起 runner 时用 <code>--agent</code></td><td><span class="badge no">否决</span></td><td>要往机器级 <code>~/.claude/agents/</code> 写文件(触碰全局配置,项目规则禁止);<code>--agent</code> 会整体替换提示词 / 工具 / 权限,与现有角色注入打架</td></tr>
+    <tr><td>D · 把记忆放进项目仓 <code>.flywheel/memory/</code> 一起提交</td><td><span class="badge no">否决</span></td><td>并行 runner 在各自分支写同一批文件 = 共享写点,合一个其余全冲突(里程碑表那次已实测 100%);内容含内部判断,不该进公开仓</td></tr>
+    <tr><td>根放在 <code>~/.claude/agent-memory/</code> 里蹭 A 线备份</td><td><span class="badge no">否决</span></td><td>混进 Claude Code 自己管理的 Lead 目录树,「一个 Lead 一个文件夹」这句话被污染,名字还可能和 Lead id 撞;A 线备份多加一个根就够</td></tr>
+    <tr><td>写入时机写死进引擎(一个 issue 写一次)</td><td><span class="badge maybe">不写死</span></td><td>按你的原话留给 Tadashi;本单只在提示词里建议「收工前写、一次 ≤5 条、只写可复用的判断」,引擎不做回执</td></tr>
+  </table></div>
+  <div class="cbox"><label for="c-tradeoff">对「关键取舍与否决的方案」的意见</label><textarea id="c-tradeoff" data-key="tradeoff" data-title="关键取舍与否决的方案" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="怎么验收">
+  <h2>怎么验收(PRD §B 四条逐条对上)</h2>
+  <div class="scroll"><table>
+    <tr><th>PRD 说</th><th>怎么验</th></tr>
+    <tr><td>runner 起来能读到它这个角色 + 这个项目的记忆,不是空的</td><td>第二次起同「项目 + 角色」的 runner,提示词里的索引含第一次写下的那一行</td></tr>
+    <tr><td>第二次跑读得到第一次写的</td><td>同上(真命令行往返:第一次让模型把一个一次性随机码写进索引指针行,第二次在另一个目录里、提示词不含那个码,要它复述 ⇒ 必须逐字匹配)</td></tr>
+    <tr><td>换 issue、换工作目录,读到的还是同一份</td><td>目录路径只由「项目 + 角色」决定,代码里不含 issue 号 / 执行号 / 工作目录;第二次往返在另一个临时目录里跑</td></tr>
+    <tr><td>工作目录清掉之后写下的东西还在</td><td>删掉第一次的工作目录,在第三个目录再问一次,仍须逐字复述出那个码</td></tr>
+    <tr><td>(本单追加)超界要说出来</td><td>四种日志形状各一条测试逐字 grep;超行数与超字节各一个样本算 K</td></tr>
+  </table></div>
+  <div class="cbox"><label for="c-accept">对「怎么验收」的意见</label><textarea id="c-accept" data-key="accept" data-title="怎么验收" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card gray" data-title="诚实边界">
+  <h2>诚实边界:这个设计做什么、不做什么</h2>
+  <h3>做</h3>
+  <ul>
+    <li>Claude runner 的记忆目录只由「项目 + 角色」决定;索引由 Claude Code 原生装载,与 Lead 同机制。</li>
+    <li>起 runner 前的有界可见守卫:预算内留痕,超预算在日志与提示词两面说清起始行。</li>
+    <li>默认对所有 Claude runner 生效,没有运行时开关(按你的「不加旋钮」直令);回退只能代码回滚,盘上已写的记忆不删。</li>
+    <li>挂载失败或没有身份的 Claude runner,这次执行<b>没有任何自动记忆</b>(fail-closed),而且三面可见——这是 Tadashi 的裁定,也写进了 plan 防止以后被当 bug 改回去。</li>
+    <li>Codex runner 也拿到同一个目录的环境变量与说明段,至少<b>能翻</b>同角色的记忆。</li>
+  </ul>
+  <h3>不做 / 不能保证</h3>
+  <ul>
+    <li><b>不改变</b> Claude Code 装载侧的截断本身,只让它在发生前被看见;K 是近似值(官方没公开精确切法)。</li>
+    <li><b>同角色并行</b>的几个 runner 同时往索引追加一行,有极小的丢行窗口(正文一事一文件不受影响);不加锁——加锁是长机制,先看会不会真发生。</li>
+    <li><b>存量那 573 条</b>不再自动进 runner 上下文,只留一行只读指针。如果你更想让 runner 两边都自动读,那就要换成被否决的方案 B,是另一份设计。</li>
+    <li><b>Codex runner 没有原生挂载</b>(PRD 的 C1 你没勾)。注意:DAG 里「实现」节点默认走 Codex,所以 C1 之前「implement」这个角色的记忆主要由 Claude 系实现 runner 写、Codex runner 只能翻。</li>
+    <li><b>Codex runner 的说明段只说「目录在这、自己翻、自己写」</b>,不声称任何自动装载(Codex 评审抓出来的:同一段文案发给 Codex 就是假合同)。antigravity / kimi 这两种 runner 本单什么都不给。</li>
+    <li><b>守卫读索引最多读 64KB</b>:字节数永远精确,行数在索引超过 64KB 时只报「至少 N 行」;这是为了一个坏掉的超大索引不能把调度进程拖死。</li>
+    <li><b>不给角色名的三处配置加载器加文法校验</b>(范围纪律,Tadashi 裁定):不合文法的角色会被可见地跳过并关掉记忆;「今天没有这样的角色」由一条测试证明,不是假设。以后要加校验另开 issue。</li>
+    <li><b>不备份到远端</b>(A 线);<b>不做</b>跨角色能不能互读的策略(PRD 明说没讨论过);<b>不整理</b>任何人的既有索引——包括 Tadashi 那份已超限的。</li>
+  </ul>
+  <div class="cbox"><label for="c-boundary">对「诚实边界」的意见</label><textarea id="c-boundary" data-key="boundary" data-title="诚实边界" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页所有意见</button>
+    <span class="status" id="copy-status"></span>
+  </div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2147";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

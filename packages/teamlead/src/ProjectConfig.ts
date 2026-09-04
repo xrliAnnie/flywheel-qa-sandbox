@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SummaryRole } from "flywheel-comm/lead-identity";
 import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
+import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
 
@@ -414,7 +415,6 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 	// path components (manifests, plists, txn artifacts) and evidence-map
 	// keys. Enforce a safe identifier grammar and GLOBAL key uniqueness
 	// ("a-b"+"c" and "a"+"b-c" both produce "a-b-c") at the schema boundary.
-	const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 	const seenExactKeys = new Set<string>();
 	for (const entry of raw) {
 		if (
@@ -429,9 +429,9 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 			throw new Error(`Duplicate projectName: "${entry.projectName}"`);
 		}
 		seen.add(entry.projectName);
-		if (!SAFE_ID.test(entry.projectName)) {
+		if (!SAFE_IDENTIFIER_RE.test(entry.projectName)) {
 			throw new Error(
-				`Project "${entry.projectName}": projectName must match ${SAFE_ID} (it becomes a filesystem path component)`,
+				`Project "${entry.projectName}": projectName must match ${SAFE_IDENTIFIER_RE} (it becomes a filesystem path component)`,
 			);
 		}
 
@@ -622,9 +622,12 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 			}
 
 			// FLY-247 R5#6: agentId grammar + global exact-key uniqueness.
-			if (typeof lead.agentId === "string" && !SAFE_ID.test(lead.agentId)) {
+			if (
+				typeof lead.agentId === "string" &&
+				!SAFE_IDENTIFIER_RE.test(lead.agentId)
+			) {
 				throw new Error(
-					`Project "${entry.projectName}" leads[${i}].agentId: must match ${SAFE_ID} (it becomes a filesystem path component), got ${JSON.stringify(lead.agentId)}`,
+					`Project "${entry.projectName}" leads[${i}].agentId: must match ${SAFE_IDENTIFIER_RE} (it becomes a filesystem path component), got ${JSON.stringify(lead.agentId)}`,
 				);
 			}
 			// FLY-1501 W3: the launch wrapper derives this exact key and the

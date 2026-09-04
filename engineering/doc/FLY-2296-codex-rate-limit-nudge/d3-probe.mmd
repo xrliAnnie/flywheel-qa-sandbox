@@ -1,0 +1,16 @@
+sequenceDiagram
+  participant P as 探针脚本<br/>codex-tui-nudge-probe.sh
+  participant F as 假 app-server<br/>unix socket · JSON-RPC
+  participant T as 真 Codex TUI<br/>codex resume --remote
+  P->>F: 起服务,装载应答表
+  P->>T: 在 tmux 里用被测 CODEX_HOME 启动
+  T->>F: initialize / config/read / account/read
+  F-->>T: 信任目录 · chatgpt 账号
+  T->>F: thread/read · model/list · thread/resume
+  F-->>T: 线程 · 模型表(含 gpt-5.6-luna)
+  T->>F: account/rateLimits/read
+  F-->>T: usedPercent = 95(limitId codex)
+  F-->>T: turn/started · turn/completed
+  P->>T: tmux capture-pane
+  Note over P,T: 无键 → 期望弹菜单(红)<br/>键 = true → 期望不弹(绿)<br/>键 = false → 期望弹(对照)
+  P-->>P: 期望不符 exit 1 并打印 pane

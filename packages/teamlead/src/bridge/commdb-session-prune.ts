@@ -24,7 +24,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { CommDB } from "flywheel-comm/db";
+import { CommDB, type Session } from "flywheel-comm/db";
 import { commDbPathForProject } from "./commdb-path.js";
 import {
 	probeTmuxWindowLiveness,
@@ -136,6 +136,247 @@ export interface ProvenDeadTmuxTarget {
 	tmuxWindow: string;
 }
 
+export type DeadTerminalFinalizeOutcome =
+	| "finalized"
+	| "no_row"
+	| "kept_project_mismatch"
+	| "kept_status"
+	| "kept_turn_holder"
+	| "kept_alive"
+	| "kept_indeterminate"
+	| "kept_parked"
+	| "kept_target_changed"
+	| "failed"
+	| "not_wired";
+
+export interface FinalizeDeadTerminalOpts {
+	includeCrashPreserve?: boolean;
+	probe?: (tmuxWindow: string) => Promise<TmuxWindowProbe>;
+	onFinalizeOutcome?: (
+		executionId: string,
+		projectName: string,
+		result: FinalizeCommDbResult,
+	) => void;
+}
+
+type DeadTerminalInspectionOutcome =
+	| "eligible_dead"
+	| "kept_project_mismatch"
+	| "kept_status"
+	| "kept_turn_holder"
+	| "kept_alive"
+	| "kept_indeterminate"
+	| "kept_parked";
+
+async function inspectDeadTerminalCommDbSession(
+	db: CommDB,
+	projectName: string,
+	session: Session,
+	turnHolders: ReadonlySet<string>,
+	opts: FinalizeDeadTerminalOpts & { finalizeMode: "sweep" | "point" },
+): Promise<DeadTerminalInspectionOutcome> {
+	if (session.project_name !== projectName) {
+		return "kept_project_mismatch";
+	}
+	const eligibleStatuses: ReadonlySet<Session["status"]> =
+		opts.includeCrashPreserve
+			? new Set(["completed", "timeout", "failed", "blocked"])
+			: new Set(["completed", "timeout"]);
+	if (!eligibleStatuses.has(session.status)) {
+		return "kept_status";
+	}
+	if (turnHolders.has(session.execution_id)) {
+		if (opts.finalizeMode === "sweep") {
+			console.log(
+				`[commdb-prune] prune_skipped_turn_holder: ${session.execution_id} (${projectName}) owns the current TURN — KEEPING the row`,
+			);
+		}
+		return "kept_turn_holder";
+	}
+	const isParked = (): boolean => {
+		try {
+			return (
+				db.getEffectiveDeclaredState(session.execution_id, Date.now())?.kind ===
+				"parked"
+			);
+		} catch (error) {
+			if (opts.finalizeMode === "sweep") {
+				console.warn(
+					`[commdb-prune] declared-state lookup failed for ${session.execution_id}: ${(error as Error).message} — KEEPING the row (fail-closed)`,
+				);
+			}
+			return true;
+		}
+	};
+	if (opts.finalizeMode === "point" && isParked()) {
+		return "kept_parked";
+	}
+	const probe = opts.probe ?? probeTmuxWindowLiveness;
+	const state = await probe(session.tmux_window);
+	if (state === "alive") return "kept_alive";
+	if (state === "indeterminate") return "kept_indeterminate";
+	if (opts.finalizeMode === "sweep" && isParked()) {
+		console.log(
+			`[commdb-prune] prune_skipped_parked_conflict: ${session.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
+		);
+		return "kept_parked";
+	}
+	return "eligible_dead";
+}
+
+function reportFinalizeOutcome(
+	opts: FinalizeDeadTerminalOpts,
+	executionId: string,
+	projectName: string,
+	result: FinalizeCommDbResult,
+): void {
+	try {
+		opts.onFinalizeOutcome?.(executionId, projectName, result);
+	} catch (error) {
+		console.warn(
+			`[commdb-prune] audit ${result.ok ? "successful" : "failed"} finalize ${executionId} (${projectName}) failed (non-fatal): ${(error as Error).message}`,
+		);
+	}
+}
+
+function finalizeProvenDeadTerminalCommDbSession(
+	db: CommDB,
+	projectName: string,
+	session: Session,
+	opts: FinalizeDeadTerminalOpts & { finalizeMode: "sweep" | "point" },
+): {
+	outcome: DeadTerminalFinalizeOutcome;
+	result?: FinalizeCommDbResult;
+} {
+	let guarded: ReturnType<CommDB["finalizeSessionUnlessTurnHolder"]>;
+	try {
+		guarded =
+			opts.finalizeMode === "point"
+				? db.finalizePaneLossResidue(session.execution_id, session.tmux_window)
+				: db.finalizeSessionUnlessTurnHolder(session.execution_id);
+	} catch (error) {
+		const result: FinalizeCommDbResult = {
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+			error: (error as Error).message,
+		};
+		reportFinalizeOutcome(opts, session.execution_id, projectName, result);
+		return { outcome: "failed", result };
+	}
+	if (!guarded.finalized) {
+		if (opts.finalizeMode === "sweep" && guarded.reason === "turn_holder") {
+			console.log(
+				`[commdb-prune] prune_skipped_turn_holder_at_finalize: ${session.execution_id} (${projectName}) acquired the current TURN — KEEPING the row`,
+			);
+		}
+		return {
+			outcome:
+				guarded.reason === "target_changed"
+					? "kept_target_changed"
+					: "kept_turn_holder",
+		};
+	}
+	const result: FinalizeCommDbResult = {
+		ok: true,
+		outcome: "finalized",
+		retiredGateCount: guarded.result.retiredQuestionCount,
+		retiredAskCount: guarded.result.retiredAskCount,
+		deletedSessionCount: guarded.result.deletedSessionCount,
+	};
+	reportFinalizeOutcome(opts, session.execution_id, projectName, result);
+	return { outcome: "finalized", result };
+}
+
+export async function finalizeDeadTerminalCommDbSession(
+	db: CommDB,
+	projectName: string,
+	session: Session,
+	turnHolders: ReadonlySet<string>,
+	opts: FinalizeDeadTerminalOpts & { finalizeMode: "sweep" | "point" },
+): Promise<{
+	outcome: DeadTerminalFinalizeOutcome;
+	result?: FinalizeCommDbResult;
+}> {
+	const inspection = await inspectDeadTerminalCommDbSession(
+		db,
+		projectName,
+		session,
+		turnHolders,
+		opts,
+	);
+	if (inspection !== "eligible_dead") return { outcome: inspection };
+	return finalizeProvenDeadTerminalCommDbSession(
+		db,
+		projectName,
+		session,
+		opts,
+	);
+}
+
+export async function finalizeDeadTerminalCommDbSessionById(
+	projectName: string,
+	executionId: string,
+	opts: FinalizeDeadTerminalOpts & {
+		dbPath?: string;
+		openReadonly?: (dbPath: string) => CommDB;
+		openWritable?: (dbPath: string) => CommDB;
+	} = {},
+): Promise<DeadTerminalFinalizeOutcome> {
+	const dbPath = opts.dbPath ?? resolveCommDbPath(projectName);
+	if (!dbPath || !existsSync(dbPath)) return "no_row";
+	const openReadonly = opts.openReadonly ?? CommDB.openReadonly;
+	const openWritable =
+		opts.openWritable ?? ((path: string) => new CommDB(path));
+	let reader: CommDB | undefined;
+	let session: Session | undefined;
+	let inspection: DeadTerminalInspectionOutcome;
+	try {
+		reader = openReadonly(dbPath);
+		session = reader.getSession(executionId);
+		if (!session) return "no_row";
+		const turnHolders = new Set(
+			reader.listTurns().map((turn) => turn.holder_exec_id),
+		);
+		inspection = await inspectDeadTerminalCommDbSession(
+			reader,
+			projectName,
+			session,
+			turnHolders,
+			{ ...opts, finalizeMode: "point" },
+		);
+	} finally {
+		reader?.close();
+	}
+	if (inspection !== "eligible_dead") return inspection;
+
+	let writer: CommDB | undefined;
+	try {
+		writer = openWritable(dbPath);
+		return finalizeProvenDeadTerminalCommDbSession(
+			writer,
+			projectName,
+			session,
+			{ ...opts, finalizeMode: "point" },
+		).outcome;
+	} catch (error) {
+		const result: FinalizeCommDbResult = {
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+			error: (error as Error).message,
+		};
+		reportFinalizeOutcome(opts, executionId, projectName, result);
+		return "failed";
+	} finally {
+		writer?.close();
+	}
+}
+
 /**
  * Boot/maintenance sweep: delete eligible terminal CommDB session rows whose
  * tmux window is **provably** gone. Uses the tri-state
@@ -169,8 +410,6 @@ export async function pruneDeadTerminalCommDbSessions(
 	};
 	const dbPath = opts.dbPath ?? resolveCommDbPath(projectName);
 	if (!dbPath) return result;
-	const probe = opts.probe ?? probeTmuxWindowLiveness;
-
 	let db: CommDB | undefined;
 	try {
 		db = new CommDB(dbPath);
@@ -185,98 +424,37 @@ export async function pruneDeadTerminalCommDbSessions(
 		);
 		result.scanned = terminal.length;
 		for (const s of terminal) {
-			// FLY-1374: TURN is current writer authority. A stale tmux mapping can
-			// make a live parked holder's old target look dead; deleting its session
-			// row also deletes turn self-check + mailbox identity. The write path
-			// therefore vetoes before any liveness probe.
-			if (turnHolders.has(s.execution_id)) {
-				result.parkedVetoed++;
-				console.log(
-					`[commdb-prune] prune_skipped_turn_holder: ${s.execution_id} (${projectName}) owns the current TURN — KEEPING the row`,
-				);
-				continue;
-			}
-			// Delete ONLY on a proven-dead window. `alive` (parked) and
-			// `indeterminate` (we learned nothing) both keep the row.
-			const state = await probe(s.tmux_window);
-			if (state !== "dead") {
-				result.kept++;
-				continue;
-			}
-			// FLY-1329 (A4): `dead` here is `isTmuxAbsenceMessage` — tmux could not
-			// FIND the window at this name. That is NOT proof the process died: a
-			// stale `tmux_window` mapping produces it on a perfectly healthy runner,
-			// and deleting the row is how a live runner stopped being recognized in
-			// FLY-1319. An unexpired park declaration is the runner contradicting
-			// this reading, so it vetoes the delete. Fail-closed: a lookup that
-			// throws also keeps the row.
-			let parked: boolean;
-			try {
-				parked =
-					db.getEffectiveDeclaredState(s.execution_id, Date.now())?.kind ===
-					"parked";
-			} catch (err) {
-				parked = true;
-				console.warn(
-					`[commdb-prune] declared-state lookup failed for ${s.execution_id}: ${(err as Error).message} — KEEPING the row (fail-closed)`,
-				);
-			}
-			if (parked) {
-				result.parkedVetoed++;
-				console.log(
-					`[commdb-prune] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
-				);
-				continue;
-			}
-			try {
-				const guarded = db.finalizeSessionUnlessTurnHolder(s.execution_id);
-				if (!guarded.finalized) {
+			const finalized = await finalizeDeadTerminalCommDbSession(
+				db,
+				projectName,
+				s,
+				turnHolders,
+				{ ...opts, finalizeMode: "sweep" },
+			);
+			switch (finalized.outcome) {
+				case "finalized":
+					result.pruned++;
+					result.provenDeadTargets.push({
+						executionId: s.execution_id,
+						tmuxWindow: s.tmux_window,
+					});
+					break;
+				case "kept_turn_holder":
+				case "kept_parked":
 					result.parkedVetoed++;
-					console.log(
-						`[commdb-prune] prune_skipped_turn_holder_at_finalize: ${s.execution_id} (${projectName}) acquired the current TURN — KEEPING the row`,
-					);
-					continue;
-				}
-				const finalized = guarded.result;
-				const outcome: FinalizeCommDbResult = {
-					ok: true,
-					outcome: "finalized",
-					retiredGateCount: finalized.retiredQuestionCount,
-					retiredAskCount: finalized.retiredAskCount,
-					deletedSessionCount: finalized.deletedSessionCount,
-				};
-				result.pruned++;
-				result.provenDeadTargets.push({
-					executionId: s.execution_id,
-					tmuxWindow: s.tmux_window,
-				});
-				try {
-					opts.onFinalizeOutcome?.(s.execution_id, projectName, outcome);
-				} catch (err) {
+					break;
+				case "kept_alive":
+				case "kept_indeterminate":
+					result.kept++;
+					break;
+				case "failed":
+					result.failed++;
 					console.warn(
-						`[commdb-prune] audit successful finalize ${s.execution_id} (${projectName}) failed (non-fatal): ${(err as Error).message}`,
+						`[commdb-prune] boot finalize ${s.execution_id} (${projectName}) failed: ${finalized.result?.error ?? "unknown error"}`,
 					);
-				}
-			} catch (err) {
-				result.failed++;
-				const outcome: FinalizeCommDbResult = {
-					ok: false,
-					outcome: "failed",
-					retiredGateCount: 0,
-					retiredAskCount: 0,
-					deletedSessionCount: 0,
-					error: (err as Error).message,
-				};
-				try {
-					opts.onFinalizeOutcome?.(s.execution_id, projectName, outcome);
-				} catch (auditErr) {
-					console.warn(
-						`[commdb-prune] audit failed finalize ${s.execution_id} (${projectName}) failed (non-fatal): ${(auditErr as Error).message}`,
-					);
-				}
-				console.warn(
-					`[commdb-prune] boot finalize ${s.execution_id} (${projectName}) failed: ${(err as Error).message}`,
-				);
+					break;
+				default:
+					break;
 			}
 		}
 	} catch (err) {

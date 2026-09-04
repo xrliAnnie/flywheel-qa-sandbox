@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -62,6 +62,21 @@ function runCliSafe(
 			exitCode: e.status ?? 1,
 		};
 	}
+}
+
+function runCliCaptured(
+	args: string[],
+	env?: Record<string, string | undefined>,
+): { stdout: string; stderr: string; exitCode: number } {
+	const result = spawnSync("node", [CLI_PATH, ...args], {
+		encoding: "utf-8",
+		env: cliEnv(env),
+	});
+	return {
+		stdout: result.stdout.trim(),
+		stderr: result.stderr.trim(),
+		exitCode: result.status ?? 1,
+	};
 }
 
 describe("CLI", () => {
@@ -149,6 +164,60 @@ describe("CLI", () => {
 		);
 		db.close();
 	}
+
+	describe("runner-stopped", () => {
+		it("keeps qid on stdout and reports sent, duplicate, and stale on stderr", () => {
+			bindDefaultRunner();
+			const runStop = (turnId: string, lastMessage: string) =>
+				runCliCaptured([
+					"runner-stopped",
+					"--db",
+					dbPath,
+					"--exec-id",
+					"runner",
+					"--issue-id",
+					"issue-runner",
+					"--source",
+					"codex-notify",
+					"--ingress-ts",
+					"2026-08-04T12:00:10.000Z",
+					"--turn-id",
+					turnId,
+					"--last-message",
+					lastMessage,
+				]);
+
+			const sent = runStop("status-sent", "wording A");
+			const duplicate = runStop("status-duplicate", "wording B");
+			const db = new CommDB(dbPath);
+			db.recordRunnerStopDeclaration({
+				executionId: "runner",
+				leadId: "product-lead",
+				stateKey: "fallback\0idle_without_declared_completion",
+				content: "future observation",
+				questionId: `rstop-${"f".repeat(32)}`,
+				derivedAtMs: Date.now() + 60_000,
+			});
+			db.close();
+			const stale = runStop("status-stale", "wording C");
+
+			expect([sent.exitCode, duplicate.exitCode, stale.exitCode]).toEqual([
+				0, 0, 0,
+			]);
+			expect(sent.stdout).toMatch(/^rstop-[0-9a-f]{32}$/);
+			expect(duplicate.stdout).toBe(sent.stdout);
+			expect(stale.stdout).toBe(sent.stdout);
+			expect(sent.stderr).toBe(
+				`[runner-stopped] status=sent questionId=${sent.stdout}`,
+			);
+			expect(duplicate.stderr).toBe(
+				`[runner-stopped] status=duplicate questionId=${sent.stdout}`,
+			);
+			expect(stale.stderr).toBe(
+				`[runner-stopped] status=stale questionId=${sent.stdout}`,
+			);
+		});
+	});
 
 	describe("ask", () => {
 		it("should output question ID", () => {
@@ -819,6 +888,72 @@ globalThis.fetch = async () => {
 				dbPath,
 			]);
 			expect(result).toBe("No instructions.");
+		});
+
+		it("surfaces queued response backlog with its actionable question id", () => {
+			const db = new CommDB(dbPath);
+			const questionId = db.insertQuestion(
+				"exec-pending",
+				"product-lead",
+				"Question",
+			);
+			db.insertResponse(questionId, "product-lead", "Answer");
+			db.close();
+
+			const result = runCli([
+				"inbox",
+				"--exec-id",
+				"exec-pending",
+				"--db",
+				dbPath,
+			]);
+			expect(result).toContain("Runner mailbox pending: 1 queued, 0 leased.");
+			expect(result).toContain(
+				`Pending question response: run flywheel-comm check ${questionId}.`,
+			);
+			expect(result).not.toContain("No instructions.");
+		});
+
+		it("distinguishes an expired instruction from actionable pending responses", () => {
+			const db = new CommDB(dbPath);
+			const instructionId = db.insertInstruction(
+				"product-lead",
+				"exec-expired",
+				"Expired instruction",
+			);
+			(db as any).db
+				.prepare(
+					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+				)
+				.run(instructionId);
+			db.close();
+
+			const result = runCli([
+				"inbox",
+				"--exec-id",
+				"exec-expired",
+				"--db",
+				dbPath,
+			]);
+			expect(result).toContain("Runner mailbox pending: 1 queued, 0 leased.");
+			expect(result).toContain("Pending actionable question responses: 0.");
+			expect(result).toContain(
+				"Pending instructions not pullable by legacy inbox (expired or undated): 1.",
+			);
+		});
+
+		it("keeps the true-empty output byte-identical after an instruction is ACKED", () => {
+			const db = new CommDB(dbPath);
+			db.insertInstruction(
+				"product-lead",
+				"exec-acked",
+				"Delivered instruction",
+			);
+			db.close();
+
+			const args = ["inbox", "--exec-id", "exec-acked", "--db", dbPath];
+			expect(runCli(args)).toContain("Delivered instruction");
+			expect(runCli(args)).toBe("No instructions.");
 		});
 
 		it("should use FLYWHEEL_EXEC_ID when --exec-id is omitted", () => {

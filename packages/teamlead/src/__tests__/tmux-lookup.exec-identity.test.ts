@@ -3,11 +3,113 @@ import {
 	discoverTmuxTargetByExecutionId,
 	isTmuxWindowAlive,
 	killTmuxWindow,
+	listTmuxWindowsByExecutionId,
 	probeTmuxWindowLiveness,
 	sendKeysToWindow,
 } from "../bridge/tmux-lookup.js";
 
 describe("FLY-1374 tmux execution identity discovery", () => {
+	it("FLY-2170 lists one named window across base and linked-session aliases", async () => {
+		const runTmux = vi.fn(async () => ({
+			stdout: [
+				"exec-1|cmux-FLY-2170|@42|FLY-2170-implement-codex",
+				"exec-1|runner-flywheel|@42|FLY-2170-implement-codex",
+				"exec-other|runner-flywheel|@43|another-window",
+			].join("\n"),
+		}));
+
+		await expect(
+			listTmuxWindowsByExecutionId("exec-1", runTmux),
+		).resolves.toEqual({
+			kind: "ok",
+			windows: [
+				{
+					windowId: "@42",
+					windowName: "FLY-2170-implement-codex",
+					sessions: ["runner-flywheel", "cmux-FLY-2170"],
+				},
+			],
+		});
+		expect(runTmux).toHaveBeenCalledWith([
+			"list-windows",
+			"-a",
+			"-F",
+			"#{@flywheel_exec_id}|#{session_name}|#{window_id}|#{window_name}",
+		]);
+	});
+
+	it("FLY-2170 ignores malformed rows that do not carry the requested marker", async () => {
+		await expect(
+			listTmuxWindowsByExecutionId("exec-1", async () => ({
+				stdout: [
+					"exec-other|runner-flywheel|not-an-id|",
+					"exec-1|runner-flywheel|@42|birth-name",
+				].join("\n"),
+			})),
+		).resolves.toEqual({
+			kind: "ok",
+			windows: [
+				{
+					windowId: "@42",
+					windowName: "birth-name",
+					sessions: ["runner-flywheel"],
+				},
+			],
+		});
+	});
+
+	it.each([
+		{
+			name: "malformed row",
+			executionId: "exec-1",
+			runTmux: async () => ({ stdout: "exec-1|runner-flywheel|@42" }),
+			reason: "malformed_identity_row",
+		},
+		{
+			name: "invalid window id on a matching row",
+			executionId: "exec-1",
+			runTmux: async () => ({
+				stdout: "exec-1|runner-flywheel|not-an-id|other-window",
+			}),
+			reason: "malformed_identity_row",
+		},
+		{
+			name: "tmux failure",
+			executionId: "exec-1",
+			runTmux: async () => {
+				throw new Error("tmux timed out");
+			},
+			reason: "tmux_list_failed",
+		},
+		{
+			name: "separator in execution id",
+			executionId: "exec|1",
+			runTmux: async () => ({ stdout: "" }),
+			reason: "invalid_execution_id",
+		},
+	])("FLY-2170 inventory fails closed on $name", async (scenario) => {
+		await expect(
+			listTmuxWindowsByExecutionId(scenario.executionId, scenario.runTmux),
+		).resolves.toEqual({
+			kind: "indeterminate",
+			reason: scenario.reason,
+		});
+	});
+
+	it("FLY-2170 inventory rejects conflicting names for one immutable window", async () => {
+		await expect(
+			listTmuxWindowsByExecutionId("exec-1", async () => ({
+				stdout: [
+					"exec-1|runner-flywheel|@42|birth-name",
+					"exec-1|cmux-recovered-name|@42|recovered-name",
+				].join("\n"),
+			})),
+		).resolves.toEqual({
+			kind: "indeterminate",
+			reason: "window_name_conflict",
+		});
+	});
+
 	it("writes the kill receipt before mutating a runner window", async () => {
 		const order: string[] = [];
 		const result = await killTmuxWindow("runner-flywheel:@42", {
@@ -38,7 +140,9 @@ describe("FLY-1374 tmux execution identity discovery", () => {
 			const format = args.at(-1) ?? "";
 			const separator = format.includes("|") ? "|" : "_";
 			return {
-				stdout: ["runner-flywheel", "@42", "exec-1"].join(separator),
+				stdout: ["exec-1", "runner-flywheel", "@42", "FLY-1374-runner"].join(
+					separator,
+				),
 			};
 		});
 
@@ -53,9 +157,9 @@ describe("FLY-1374 tmux execution identity discovery", () => {
 	it("returns the canonical base-session target for one marked window", async () => {
 		const runTmux = vi.fn(async () => ({
 			stdout: [
-				"cmux-FLY-1374|@42|exec-1",
-				"runner-flywheel|@42|exec-1",
-				"runner-flywheel|@43|exec-other",
+				"exec-1|cmux-FLY-1374|@42|FLY-1374-runner",
+				"exec-1|runner-flywheel|@42|FLY-1374-runner",
+				"exec-other|runner-flywheel|@43|other-runner",
 			].join("\n"),
 		}));
 
@@ -69,15 +173,16 @@ describe("FLY-1374 tmux execution identity discovery", () => {
 			"list-windows",
 			"-a",
 			"-F",
-			"#{session_name}|#{window_id}|#{@flywheel_exec_id}",
+			"#{@flywheel_exec_id}|#{session_name}|#{window_id}|#{window_name}",
 		]);
 	});
 
 	it("fails closed when one execution id marks multiple window ids", async () => {
 		const runTmux = vi.fn(async () => ({
-			stdout: ["runner-flywheel|@42|exec-1", "runner-flywheel|@99|exec-1"].join(
-				"\n",
-			),
+			stdout: [
+				"exec-1|runner-flywheel|@42|birth-name",
+				"exec-1|runner-flywheel|@99|recovered-name",
+			].join("\n"),
 		}));
 
 		await expect(
@@ -88,7 +193,7 @@ describe("FLY-1374 tmux execution identity discovery", () => {
 	it("distinguishes missing identity from an indeterminate tmux read", async () => {
 		await expect(
 			discoverTmuxTargetByExecutionId("exec-1", async () => ({
-				stdout: "runner-flywheel|@42|exec-other\n",
+				stdout: "exec-other|runner-flywheel|@42|other-runner\n",
 			})),
 		).resolves.toEqual({ kind: "missing" });
 

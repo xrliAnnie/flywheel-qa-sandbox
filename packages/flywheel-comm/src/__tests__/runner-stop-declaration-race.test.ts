@@ -26,6 +26,7 @@ function runWorker(
 	workerPath: string,
 	input: {
 		dbPath: string;
+		stateKey: string;
 		content: string;
 		questionId: string;
 		derivedAtMs: number;
@@ -82,10 +83,11 @@ while (Date.now() < input.startAtMs) { /* shared barrier */ }
 if (input.delayMs) await new Promise((resolve) => setTimeout(resolve, input.delayMs));
 const db = new CommDB(input.dbPath, false);
 try {
-  const result = db.recordRunnerStopDeclaration({
-    executionId: ${JSON.stringify(EXEC_ID)},
-    leadId: ${JSON.stringify(LEAD_ID)},
-    content: input.content,
+	  const result = db.recordRunnerStopDeclaration({
+	    executionId: ${JSON.stringify(EXEC_ID)},
+	    leadId: ${JSON.stringify(LEAD_ID)},
+	    stateKey: input.stateKey,
+	    content: input.content,
     questionId: input.questionId,
     derivedAtMs: input.derivedAtMs,
   });
@@ -117,6 +119,7 @@ try {
 				["1", "2", "3", "4", "5", "6"].map((digit) =>
 					runWorker(workerPath, {
 						dbPath,
+						stateKey: "quiet-wait",
 						content: content("quiet-wait"),
 						questionId: qid(digit),
 						derivedAtMs: 100,
@@ -154,12 +157,83 @@ try {
 	);
 
 	maybe(
+		"serializes rewritten content for one state to one sent edge",
+		async () => {
+			const startAtMs = Date.now() + 400;
+			const outcomes = await Promise.all(
+				["1", "2", "3", "4", "5", "6"].map((digit) =>
+					runWorker(workerPath, {
+						dbPath,
+						stateKey: "stable-machine-state",
+						content: content(`rewritten-${digit}`),
+						questionId: qid(digit),
+						derivedAtMs: 100,
+						startAtMs,
+					}),
+				),
+			);
+			expect(outcomes.every(({ code }) => code === 0)).toBe(true);
+			expect(outcomes.map(({ stderr }) => stderr).join("\n")).not.toMatch(
+				/SQLITE_BUSY|locked/i,
+			);
+			expect(
+				outcomes.filter(({ result }) => result?.status === "sent"),
+			).toHaveLength(1);
+			expect(
+				outcomes.filter(({ result }) => result?.status === "duplicate"),
+			).toHaveLength(5);
+			const raw = new Database(dbPath, { readonly: true });
+			expect(
+				raw
+					.prepare(
+						"SELECT COUNT(*) AS count FROM mailbox WHERE kind = 'report'",
+					)
+					.get(),
+			).toEqual({ count: 1 });
+			raw.close();
+		},
+		20_000,
+	);
+
+	maybe(
+		"emits identical content for two concurrent structured states",
+		async () => {
+			const startAtMs = Date.now() + 300;
+			const outcomes = await Promise.all([
+				runWorker(workerPath, {
+					dbPath,
+					stateKey: "state-a",
+					content: content("same"),
+					questionId: qid("7"),
+					derivedAtMs: 100,
+					startAtMs,
+				}),
+				runWorker(workerPath, {
+					dbPath,
+					stateKey: "state-b",
+					content: content("same"),
+					questionId: qid("8"),
+					derivedAtMs: 100,
+					startAtMs,
+				}),
+			]);
+			expect(outcomes.every(({ code }) => code === 0)).toBe(true);
+			expect(outcomes.map(({ result }) => result?.status).sort()).toEqual([
+				"sent",
+				"sent",
+			]);
+		},
+		20_000,
+	);
+
+	maybe(
 		"rejects an older derivation that commits after the newer edge",
 		async () => {
 			const startAtMs = Date.now() + 300;
 			const [older, newer] = await Promise.all([
 				runWorker(workerPath, {
 					dbPath,
+					stateKey: "state-older",
 					content: content("older"),
 					questionId: qid("a"),
 					derivedAtMs: 100,
@@ -168,6 +242,7 @@ try {
 				}),
 				runWorker(workerPath, {
 					dbPath,
+					stateKey: "state-newer",
 					content: content("newer"),
 					questionId: qid("b"),
 					derivedAtMs: 200,
@@ -196,6 +271,7 @@ try {
 			const [older, newer] = await Promise.all([
 				runWorker(workerPath, {
 					dbPath,
+					stateKey: "state-older",
 					content: content("older"),
 					questionId: qid("c"),
 					derivedAtMs: 100,
@@ -203,6 +279,7 @@ try {
 				}),
 				runWorker(workerPath, {
 					dbPath,
+					stateKey: "state-newer",
 					content: content("newer"),
 					questionId: qid("d"),
 					derivedAtMs: 200,

@@ -1,0 +1,19 @@
+flowchart LR
+  subgraph Bridge["Bridge 进程"]
+    D[RunDispatcher<br/>预注册 comm.db<br/>tmux_window = :pending]
+    A[CodexTmuxAdapter<br/>开窗链 startOpenChain]
+    P[探针消费者<br/>zombie / patrol / crash-reaper / fsm-reconcile]
+  end
+  S[(codex app-server<br/>detached 子进程<br/>= 进程真相)]
+  W[[tmux 窗口 @N<br/>codex resume --remote<br/>= 视图]]
+  C[(comm.db sessions<br/>tmux_window 指针)]
+  D --> C
+  A -- "spawn" --> S
+  A -- "new-window → settle 验活 → pin @N" --> W
+  A -- "pin" --> C
+  W -. "socket 客户端" .-> S
+  P -- "旧: list-panes 看视图" --> W
+  P == "新: probeCodexDaemonLiveness 看真相" ==> S
+  style S fill:#e8f5e9,stroke:#34c759
+  style W fill:#fff8e1,stroke:#ff9500
+  style C fill:#e3f2fd,stroke:#007aff

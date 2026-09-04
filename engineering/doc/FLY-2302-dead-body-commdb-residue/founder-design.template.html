@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2302 设计：死体回滚后通信注册行残留</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, "PingFang SC", "Hiragino Sans GB", sans-serif; line-height: 1.6; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 26px; margin: 8px 0 4px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 20px; }
+  .meta code { font-family: "SF Mono", Menlo, monospace; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.06); padding: 20px 22px; margin: 18px 0; border-left: 4px solid #007aff; }
+  .card.red { border-left-color: #ff3b30; } .card.amber { border-left-color: #ff9500; } .card.green { border-left-color: #34c759; } .card.purple { border-left-color: #af52de; } .card.gray { border-left-color: #86868b; }
+  .card h2 { font-size: 18px; margin: 0 0 10px; }
+  .card h3 { font-size: 15px; margin: 16px 0 6px; }
+  .lead { font-size: 17px; }
+  .term { border-bottom: 1px dotted #86868b; }
+  .expl { color: #515154; font-size: 14px; }
+  .diagram { overflow-x: auto; background: #fff; border: 1px solid #e5e5ea; border-radius: 10px; padding: 8px; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 10px 0; }
+  th, td { border-bottom: 1px solid #e5e5ea; text-align: left; padding: 8px 6px; vertical-align: top; }
+  th { color: #1a365d; font-weight: 600; background: #fafafa; }
+  .tbl { overflow-x: auto; }
+  ul { padding-left: 20px; } li { margin: 4px 0; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 13px; background: #f2f2f7; padding: 1px 5px; border-radius: 4px; }
+  .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; color: #fff; margin-right: 6px; vertical-align: middle; }
+  .badge.red { background: #ff3b30; } .badge.green { background: #34c759; } .badge.amber { background: #ff9500; } .badge.gray { background: #86868b; } .badge.blue { background: #007aff; } .badge.purple { background: #af52de; }
+  .comment { margin-top: 14px; border-top: 1px dashed #e5e5ea; padding-top: 10px; }
+  .comment label { display: block; font-size: 13px; color: #86868b; margin-bottom: 4px; }
+  .comment textarea { width: 100%; box-sizing: border-box; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 14px; resize: vertical; background: #fbfbfd; }
+  .comment textarea:focus { outline: 2px solid #007aff33; border-color: #007aff; }
+  .summary pre { white-space: pre-wrap; word-break: break-word; background: #f2f2f7; border-radius: 8px; padding: 12px; font-size: 13px; max-height: 320px; overflow: auto; }
+  .btn { background: #007aff; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer; margin: 6px 8px 6px 0; }
+  .btn.gray { background: #86868b; }
+  .hint { color: #86868b; font-size: 13px; }
+  .kv { display: grid; grid-template-columns: 160px 1fr; gap: 6px 12px; font-size: 14px; }
+  .kv b { color: #1a365d; }
+  @media (max-width: 600px) { .kv { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2302 · 死体回滚换体后，通信注册行残留 41 分钟</h1>
+  <div class="meta">Issue <code>FLY-2302</code> · 设计节点 · 2026-09-03 · 文档：<code>engineering/doc/FLY-2302-dead-body-commdb-residue/</code>（exploration / research / plan）</div>
+
+  <section class="card red" data-section="一句话">
+    <h2>1. 一句话</h2>
+    <p class="lead">一个 Codex runner 报「blocked」死掉、被引擎换了新体之后，它在<span class="term">CommDB</span>（<span class="expl">各 runner 的通信注册表，Lead 巡检靠它知道「谁是我名下的」</span>）里的注册行没人封掉，于是巡检每一轮都把它当名下目标、报「MISSING_PANE」（<span class="expl">名册里有它、终端里却找不到它的窗口</span>）。本设计让引擎在证明它已死之后，用<b>和每小时清扫共用的同一份判据</b>（再加一道「目标没被改写」的校验）立刻封掉这条注册行，而不是等最长一小时。</p>
+    <div class="kv">
+      <b>issue 说的病根</b><span>「回滚车道不给死体写终态，两处状态库都停在 blocked、没有终态戳」</span>
+      <b>真库核出来的病根</b><span>StateStore（<span class="expl">引擎自己的状态库</span>）里死体<b>已经</b>是终态并盖了戳；残留只在 CommDB。真正没人做的事，是「kill 了窗口却不封注册」</span>
+      <b>影响面</b><span>每个报 blocked 的 Codex 体，都有一个最长约 1 小时的假 MISSING_PANE 窗口；本例 41 分钟内巡检恰好撞上一次，并因此开了这张单</span>
+    </div>
+    <div class="comment"><label for="c-1">对这一节的意见（自动保存在本机浏览器）</label><textarea id="c-1" data-title="一句话"></textarea></div>
+  </section>
+
+  <section class="card amber" data-section="事故是怎么发生的">
+    <h2>2. 事故是怎么发生的（真库时间线，2026-09-03）</h2>
+    <p class="expl">死体 <code>20a31b8b</code>，FLY-2145 的 implement 节点，Codex 体。下图每一步都对应一条真实的数据库记录或 Bridge 日志。</p>
+    <div class="diagram"><!--SVG:d1--></div>
+    <div class="tbl"><table>
+      <tr><th>时刻 (UTC)</th><th>发生了什么</th><th>证据</th></tr>
+      <tr><td>18:20:42</td><td>Codex 适配器（<span class="expl">Bridge 里负责起 Codex 进程、开 tmux 窗口的那层</span>）把 CommDB 注册行写成 blocked，然后 kill 自己的 tmux 窗口</td><td>Bridge 日志 <code>runner-tail-window: killed</code> / <code>goal ended non-complete: blocked</code></td></tr>
+      <tr><td>18:20:42</td><td>StateStore 写 status=blocked，并盖 <code>terminal_at</code>（终态时间戳）</td><td><code>teamlead.db sessions</code> 行：<code>terminal_at=18:20:42</code></td></tr>
+      <tr><td>18:20:43</td><td>引擎判「已终态 + 探针说死」，回滚换体（<span class="expl">workflow_run_event seq 19-22</span>），铸出替换体 <code>470e0afd</code></td><td>事件 <code>generalized_teardown_recorded → writer_replacement → execution_dead_rolled_back</code></td></tr>
+      <tr><td>18:20:49</td><td>TURN（<span class="expl">同一 issue 上「谁有权写共享分支」的令牌</span>）移交给替换体</td><td>事件 <code>turn_granted</code>；<code>three_stage_turn</code> 表现持有者 = 470e0afd</td></tr>
+      <tr><td>18:45:01</td><td>Lead 巡检读 owner index，发现死体的注册行还在、窗口没了，报 MISSING_PANE，开出本单</td><td>本 issue 首见时间</td></tr>
+      <tr><td>19:01:44</td><td>Bridge 重启，boot 清扫按「终态 + 窗口证明已死」删掉这条注册行</td><td>日志 <code>CommDB terminal prune (flywheel): scanned=5 pruned=1</code>；现在 CommDB 已无此行</td></tr>
+    </table></div>
+    <p><span class="badge red">与 issue 不同</span>issue 写「两处 sessions.status 都停在 blocked，无 terminal 戳」。查库结果：StateStore 一侧<b>有</b>戳，blocked 在它的三套终态词表里都算终态；「永不终结」实际是「最长一小时」（本例 41 分钟，被 Bridge 重启提前结束）。</p>
+    <div class="comment"><label for="c-2">对这一节的意见</label><textarea id="c-2" data-title="事故是怎么发生的"></textarea></div>
+  </section>
+
+  <section class="card purple" data-section="数据结构">
+    <h2>3. 数据 / 结构模型：两本账、一个名册</h2>
+    <p class="expl">Flywheel 有两本互不相同的账：StateStore 是引擎的账本（<span class="expl">节点、回滚、TURN 事件都记这里</span>）；CommDB 是通信注册表（<span class="expl">每个 runner 一行，记它的 tmux 窗口、所属 Lead、状态；Lead 巡检与 Bridge 的孤儿清扫都拿它当「名下名册」</span>）。注册行离场的唯一方式是 DELETE。</p>
+    <div class="diagram"><!--SVG:d2--></div>
+    <h3>关键事实：blocked 在各处的含义并不冲突，冲突的是「窗口留不留」</h3>
+    <div class="tbl"><table>
+      <tr><th>消费者</th><th>blocked 算什么</th></tr>
+      <tr><td>StateStore / 引擎回滚车道</td><td>不可逆终态（消费它，不生产它）</td></tr>
+      <tr><td>CommDB 状态约束</td><td>终态（<code>ended_at</code> 已写）</td></tr>
+      <tr><td>close-runner（Lead 手动关体）</td><td>CRASH_PRESERVE：终态但<b>保留</b> tmux 窗口做取证现场（Claude 体的合同）</td></tr>
+      <tr><td>Lead 巡检 owner index</td><td>名下活目标 —— 前提正是「blocked 体的窗口被保留了」</td></tr>
+      <tr><td>Codex 适配器</td><td>写 blocked 之后<b>kill 掉</b>自己的窗口，但不封注册行 —— 系统里唯一「kill 了不封账」的写点</td></tr>
+    </table></div>
+    <div class="comment"><label for="c-3">对这一节的意见</label><textarea id="c-3" data-title="数据结构"></textarea></div>
+  </section>
+
+  <section class="card green" data-section="修法">
+    <h2>4. 修法：引擎证明它死了，就用清扫的判据当场封账</h2>
+    <p>引擎每秒跑一次「死体误报 tripwire」（<span class="expl">回滚之后继续盯着死体 24 小时，看它有没有 commit、发消息、终端输出，防止把活体误判成死体</span>）。本设计在这个已有循环里加一步：死体没有任何活动迹象时，调用一个<b>从每小时清扫里抽出来的单行函数</b>去封它的注册行。资格与否决逻辑与清扫共用同一个函数：终态 ∧ tmux 窗口证明已死 ∧ 没有 parked 声明 ∧ 不是 TURN 持有者；定点路径在此之上<b>多一道</b>「目标没被改写」的校验（清扫路径本身没有这一道，本设计也不给它加）。</p>
+    <div class="diagram"><!--SVG:d3--></div>
+    <h3>为什么挂在这里，而不是回滚那一刻或适配器</h3>
+    <ul>
+      <li><b>回滚那一刻封不了</b>：死体当时仍是 TURN 持有者（本例 6 秒后才移交），封账会被 TURN 否决。放进每秒循环里，被否决就下一秒再来。</li>
+      <li><b>适配器封不了</b>：同样在 TURN 移交之前；而且适配器所在的包没有引擎的审计写点。</li>
+      <li><b>成本几乎为零</b>：tripwire 循环本来每秒就要打开 CommDB 数消息；多读一行、多探一次 tmux，行一删就停（内存里记一个集合）。</li>
+      <li><b>不削弱 tripwire</b>：它的四类活动证据（commit 标记、commit 计数、消息计数、终端输出）在删行后一类不少 —— 消息计数不看行状态，终端目标已固化在 watch 表的 baseline 里（真库里就是 <code>@401</code>）。</li>
+    </ul>
+    <h3>改动范围</h3>
+    <ul>
+      <li><code>commdb-session-prune.ts</code>：把清扫循环体抽成单行函数；清扫改为逐行调用它（行为不变，现有三组 veto 测试原样通过是门槛）。</li>
+      <li><code>workflow-engine-dispatcher.ts</code>：tripwire 循环里加封账调用 + 内存集合；调用包在 try/catch 里，任何异常只记日志、绝不拖垮引擎每秒的 reconcile；依赖可注入，未注入时什么都不做（单元测试保持隔离）。</li>
+      <li><code>plugin.ts</code>：在引擎构造处显式接上真实的封账闭包（审计来源 <code>bridge.workflow-engine.dead-rollback</code>），与现有每小时清扫的审计闭包同形。</li>
+      <li><b>不改</b>：巡检脚本、owner index、Codex 适配器、StateStore、CommDB 表结构、每小时清扫节奏。不新增表或事件种类。</li>
+    </ul>
+    <div class="comment"><label for="c-4">对这一节的意见</label><textarea id="c-4" data-title="修法"></textarea></div>
+  </section>
+
+  <section class="card amber" data-section="取舍与被否决的方案">
+    <h2>5. 关键取舍与被否决的方案</h2>
+    <div class="tbl"><table>
+      <tr><th>方案</th><th>结论</th><th>原因</th></tr>
+      <tr><td><span class="badge green">选</span>A. 引擎 tripwire 循环里用清扫判据定点封账</td><td>采纳</td><td>单一判据、两个调用者；只改删除时刻，不改任何语义；可单文件回退</td></tr>
+      <tr><td><span class="badge red">否</span>B. 把 blocked 踢出巡检名册（issue 建议之二）</td><td>否决</td><td>Claude 体 blocked 后窗口是被保留的取证现场；踢出后巡检不再盯它，Bridge 孤儿清扫还会把保留的窗口当孤儿。把一个假阳性换成真阴性</td></tr>
+      <tr><td><span class="badge red">否</span>C. 回滚车道给死体写 failed + terminal_at（issue 建议之一）</td><td>否决</td><td>StateStore 行已是 blocked 且有戳；改成 failed 是覆盖 runner 自己申报的结局，撞 FLY-1427「终态免疫」规则；对 CommDB 残留毫无作用</td></tr>
+      <tr><td><span class="badge red">否</span>D. Codex 适配器 kill 完窗口自己封账</td><td>否决</td><td>那一刻死体仍持 TURN，必被否决；且无审计写点</td></tr>
+      <tr><td><span class="badge gray">备</span>E. 每小时清扫改成每 5 分钟</td><td>不采纳</td><td>一行常量能把窗口压到 5 分钟，但每 5 分钟对全部终态行探一遍 tmux，且窗口不归零；A 已把窗口压到「TURN 移交 + 1 秒」</td></tr>
+      <tr><td><span class="badge red">否</span>F. Codex 体 blocked 时不 kill 窗口（对齐 Claude）</td><td>否决</td><td>founder 在 cmux 里会看到死 Codex 窗口堆积，并引入新的窗口回收责任</td></tr>
+    </table></div>
+    <div class="comment"><label for="c-5">对这一节的意见</label><textarea id="c-5" data-title="取舍与被否决的方案"></textarea></div>
+  </section>
+
+  <section class="card gray" data-section="诚实边界">
+    <h2>6. 诚实边界：这个设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>Codex 体报 blocked、窗口被 kill、被引擎换体之后，其 CommDB 注册行在 TURN 移交后、该死体下一次被 tripwire 巡到时（无积压即下一秒）被封；巡检不再对它报 MISSING_PANE。</li>
+      <li>issue 收尾时对这具死体走的是 close-runner 的「CommDB 无目标 ⇒ 视为已走」分支，通信账幂等封掉，收尾记 <code>already_gone</code>；集成测试专门断言这条路径。</li>
+      <li>Claude 体 blocked、窗口保留的情况<b>不受影响</b>（判据说 alive 就不删），这是测试里的阳性对照。</li>
+      <li>封账动作有审计记录（<code>recordCommDbFinalizeOutcome</code>，来源 <code>bridge.workflow-engine.dead-rollback</code>）。</li>
+    </ul>
+    <h3>不做 / 不承诺</h3>
+    <ul>
+      <li><b>FLY-2091 的效果未核对</b>：本节点读不到 Linear（MCP 401），仓内也没有 FLY-2091 文本。从代码看，ship 收尾的通信封账在行已被删时走「无行即完成」分支，所以本残留最多影响那一小时窗口内的收尾路径，不构成「永不终结」。这是推断，不是验证。</li>
+      <li>不修 Codex 孤儿进程 reaper 对这两具死体每 5 分钟一条的 identity-mismatch 日志（另开 issue）。</li>
+      <li>不改巡检规则文档；A 落地后该形状消失。</li>
+      <li>若探针说「不确定」（tmux 超时或服务器不在）就不删，行留给每小时清扫兜底 —— 保守方向。</li>
+    </ul>
+    <h3>验收怎么核（QA 节点按此）</h3>
+    <ul>
+      <li>隔离 Bridge（状态目录、通信目录全部指向临时目录）里复现：Codex 体 blocked → 换体 → TURN 移交 → 2 秒内 CommDB 行消失，日志出现 <code>dead-exec commdb registration finalized</code>。</li>
+      <li>同环境 Claude 体 blocked、窗口保留 → 行不消失，巡检快照 <code>live_panes=1 findings=none</code>。</li>
+      <li>StateStore 行 blocked 与 terminal_at 前后一致；watch 行仍 active 且注入活动后能 trip。</li>
+      <li>plan §2.6 的测试命令全绿，且 PR 的 exact head 上 CI 绿。</li>
+    </ul>
+    <div class="comment"><label for="c-6">对这一节的意见</label><textarea id="c-6" data-title="诚实边界"></textarea></div>
+  </section>
+
+  <section class="card blue summary" data-section="意见汇总">
+    <h2>7. 页面意见汇总</h2>
+    <p class="hint">下面实时汇总上面每一节非空的意见。点「复制全部」可整段发给设计节点；超过约 1800 字会自动分段，每段都带同样的标记行。</p>
+    <div id="summary-chunks"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button>
+    <button class="btn gray" id="clear-all" type="button">清空本机保存的意见</button>
+    <span class="hint" id="copy-status"></span>
+  </section>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2302";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var PREFIX = "fly-comment:" + ISSUE + ":" + location.pathname + ":";
+  var CHUNK = 1800;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-title]"));
+
+  function load(key) { try { return localStorage.getItem(PREFIX + key) || ""; } catch (e) { return ""; } }
+  function save(key, val) { try { localStorage.setItem(PREFIX + key, val); } catch (e) {} }
+  function remove(key) { try { localStorage.removeItem(PREFIX + key); } catch (e) {} }
+
+  function buildText() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = (ta.value || "").trim();
+      if (!v) return;
+      parts.push("■ " + ta.getAttribute("data-title") + "\n" + v);
+    });
+    return parts;
+  }
+  function chunkify(parts) {
+    var chunks = [], cur = "";
+    parts.forEach(function (p) {
+      var next = cur ? cur + "\n\n" + p : p;
+      if (next.length > CHUNK && cur) { chunks.push(cur); cur = p; } else { cur = next; }
+    });
+    if (cur) chunks.push(cur);
+    if (chunks.length === 0) return [];
+    var total = chunks.length;
+    return chunks.map(function (c, i) {
+      var head = total > 1 ? MARKER + " (" + (i + 1) + "/" + total + ")" : MARKER;
+      return head + "\n" + c;
+    });
+  }
+  var chunkTexts = [];
+  function render() {
+    chunkTexts = chunkify(buildText());
+    var box = document.getElementById("summary-chunks");
+    while (box.firstChild) box.removeChild(box.firstChild);
+    if (chunkTexts.length === 0) {
+      var empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "（还没有意见）";
+      box.appendChild(empty);
+      return;
+    }
+    chunkTexts.forEach(function (t, i) {
+      var pre = document.createElement("pre");
+      pre.textContent = t;
+      box.appendChild(pre);
+      if (chunkTexts.length > 1) {
+        var b = document.createElement("button");
+        b.type = "button"; b.className = "btn";
+        b.textContent = "复制第 " + (i + 1) + " 段";
+        b.addEventListener("click", function () { copyText(t); });
+        box.appendChild(b);
+      }
+    });
+  }
+  function setStatus(msg) { document.getElementById("copy-status").textContent = msg; }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.left = "-9999px";
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    setStatus(ok ? "已复制" : "复制失败，请手动选择文本复制");
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { setStatus("已复制"); }, function () { fallbackCopy(text); });
+    } else { fallbackCopy(text); }
+  }
+
+  areas.forEach(function (ta) {
+    ta.value = load(ta.id);
+    ta.addEventListener("input", function () { save(ta.id, ta.value); render(); });
+  });
+  document.getElementById("copy-all").addEventListener("click", function () {
+    if (chunkTexts.length === 0) { setStatus("还没有意见可复制"); return; }
+    copyText(chunkTexts.join("\n\n"));
+  });
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; remove(ta.id); });
+    render(); setStatus("已清空");
+  });
+  render();
+})();
+</script>
+</body>
+</html>

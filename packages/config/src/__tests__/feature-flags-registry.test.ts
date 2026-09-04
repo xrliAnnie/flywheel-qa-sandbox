@@ -242,6 +242,22 @@ describe("feature-flag registry invariants", () => {
 		}
 	});
 
+	it("FLY-2147 registers runner memory as a temporary four-state experiment", () => {
+		expect(
+			FEATURE_FLAGS.find((flag) => flag.name === "runner_memory_mode"),
+		).toMatchObject({
+			category: "feature",
+			source: "env",
+			scope: "bridge_global",
+			envVar: "FLYWHEEL_RUNNER_MEMORY_MODE",
+			valueKind: "enum",
+			enumValues: ["off", "split", "role", "shared"],
+			default: "off",
+			toggleable: "direct",
+			retireWhen: expect.stringMatching(/founder.*role.*shared/i),
+		});
+	});
+
 	it("FLY-2103 retires fixed project-config declarations", () => {
 		for (const name of ["checkpoint_enabled", "xiaohongshu_auto_create"]) {
 			expect(

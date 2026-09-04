@@ -465,6 +465,12 @@ describe("feature-flag drift guard", () => {
 					"storeDocFlowEnabled",
 				],
 				[
+					"runner_memory_mode",
+					"packages/teamlead/src/bridge/run-infra.ts",
+					"setupRunInfrastructure",
+					"storeRunnerMemoryMode",
+				],
+				[
 					"skill_framework_mode",
 					"packages/teamlead/src/bridge/plugin.ts",
 					"runsRouter",

@@ -460,6 +460,30 @@ describe("FLY-1393 flag truth", () => {
 		).toEqual({ ok: true, errors: [] });
 	});
 
+	it("registers FLY-2147 runner-memory paths without creating runtime switches", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_RUNNER_MEMORY_DIR).toMatch(
+			/FLY-2147.*mount.*output.*not.*switch/i,
+		);
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_RUNNER_MEMORY_ROOT).toMatch(
+			/FLY-2147.*test-only.*path.*not.*switch/i,
+		);
+		for (const envVar of [
+			"FLYWHEEL_RUNNER_MEMORY_DIR",
+			"FLYWHEEL_RUNNER_MEMORY_ROOT",
+		]) {
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.envVar === envVar),
+				envVar,
+			).toBe(false);
+		}
+		expect(
+			validateFlagTruthEnvironment([
+				"FLYWHEEL_RUNNER_MEMORY_DIR=/tmp/mounted-memory",
+				"FLYWHEEL_RUNNER_MEMORY_ROOT=/tmp/test-memory-root",
+			]),
+		).toEqual({ ok: true, errors: [] });
+	});
+
 	it("registers the FLY-2190 host-tmux hermetic test inputs as non-flags", () => {
 		for (const envVar of [
 			"FLYWHEEL_HOST_TMUX_CENSUS_PLIST_DIR",

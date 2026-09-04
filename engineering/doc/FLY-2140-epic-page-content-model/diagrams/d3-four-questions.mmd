@@ -1,0 +1,11 @@
+flowchart LR
+  Q1["① 要做的事有哪些"] --> S1["Linear:Epic 的子单<br/>(不含已归档;取消 = 不做了)"]
+  S1 --> N["现在可以开始的<br/>默认规则 next.v1(未获裁定)"]
+  Q2["② 它们的先后(批次)"] --> S2["Linear:子单之间的 blocks 关系<br/>→ 规则 batch.v1 分层"]
+  S2 --> N
+  Q3["③ 每件做完算什么样"] --> S3["Linear:状态 Done<br/>+ 子单描述里的「验收」段原文"]
+  Q4["④ 要回来找她的那几件"] --> S4["Linear:子单标签 founder-review<br/>(0 件也明示)"]
+  X["账面执行体<br/>StateStore 六格"] --> N
+  Z["页面不做的事<br/>不从正文猜依赖<br/>不自己总结「做完」<br/>不定义「位子空了」"]
+  style Z fill:#ffe5e5,stroke:#c0392b
+  style N fill:#f3e8ff,stroke:#6b21a8

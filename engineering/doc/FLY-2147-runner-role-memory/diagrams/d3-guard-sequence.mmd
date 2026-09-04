@@ -1,0 +1,21 @@
+sequenceDiagram
+  participant BP as Blueprint(Bridge 进程)
+  participant FS as 磁盘 runner-memory/
+  participant LOG as Bridge 日志
+  participant CLI as claude CLI
+  participant RN as runner(模型)
+  BP->>FS: mkdir -p flywheel/qa/ 首跑写空索引头
+  BP->>FS: 读 MEMORY.md
+  FS-->>BP: 152 行 / 32,998 字节
+  BP->>BP: 对照预算 160 行 / 20,000 字节<br/>与硬上限 200 行 / 25,000 字节,算出 K
+  alt 预算内
+    BP->>LOG: runner-memory mounted … over_budget=false
+  else 超预算
+    BP->>LOG: runner-memory OVER BUDGET … first_dropped_line=K
+  end
+  BP->>CLI: --settings autoMemoryDirectory=…/flywheel/qa<br/>+ 环境变量 FLYWHEEL_RUNNER_MEMORY_DIR<br/>+ prompt 段 Runner Memory(路径 / 数字 / K)
+  CLI->>FS: 原生装载 MEMORY.md 前 200 行 / 25,000 字节
+  CLI-->>RN: 索引进上下文(超限时 Claude Code 自带一条 WARNING 给模型)
+  RN->>RN: 看到 Runner Memory 段,若超预算先整理索引再开工
+  RN->>FS: 收工前写 ≤5 条一事一文件 + 索引指针行
+  Note over LOG,RN: 可见的两面:运维看日志行,runner 看 prompt 行。Lead 侧今天两面都没有

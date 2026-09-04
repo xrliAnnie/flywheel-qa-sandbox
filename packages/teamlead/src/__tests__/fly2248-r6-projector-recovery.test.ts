@@ -282,29 +282,88 @@ describe("FLY-2248 R6#2 projector crash-window recovery", () => {
 		).toEqual({ count: 3 });
 	});
 
-	it("settles a native launch obligation when its owning run completes", async () => {
+	it("FLY-2307 A closes an unbound received launch episode after its run terminates without a binding", async () => {
 		const commDb = new CommDB(":memory:");
 		commDbs.push(commDb);
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
 		store.createWorkflowRun({
 			runId: "run-terminal-launch",
-			issueId: "FLY-2248",
+			issueId: "FLY-2307",
 			projectName: "flywheel",
 			claimsReadEnrolled: true,
 		});
+		store.upsertWorkflowRunNode({
+			runId: "run-terminal-launch",
+			nodeId: "worker",
+			attempt: 1,
+			state: "running",
+			executionId: "terminal-launch-exec",
+		});
+		store.upsertSession({
+			execution_id: "terminal-launch-exec",
+			issue_id: "FLY-2307",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "worker",
+		});
+		const attemptId = "flywheel:FLY-2307:launch:terminal-launch-exec:g1:a1";
+		rawDb(store)
+			.prepare(
+				`INSERT INTO workflow_delivery_attempt (
+				   root_id, generation, attempt, attempt_id, family,
+				   contract_ref_json, minted_at, granted_at, sent_at, received_at
+				 ) VALUES (?, 1, 1, ?, 'launch', ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				"flywheel:FLY-2307:launch:terminal-launch-exec",
+				attemptId,
+				JSON.stringify({
+					table: "workflow_execution_binding",
+					pk: "terminal-launch-exec",
+					runId: "run-terminal-launch",
+				}),
+				"2026-09-02T05:00:00.000Z",
+				"2026-09-02T05:00:00.000Z",
+				"2026-09-02T05:00:00.000Z",
+				"2026-09-02T05:00:00.000Z",
+			);
+		const attempt = store
+			.listLiveWorkflowDeliveryAttempts()
+			.find(({ family }) => family === "launch");
+		expect(attempt).toBeDefined();
+		expect(JSON.parse(attempt!.contract_ref_json)).toMatchObject({
+			table: "workflow_execution_binding",
+			pk: "terminal-launch-exec",
+			runId: "run-terminal-launch",
+		});
+		rawDb(store)
+			.prepare("UPDATE workflow_run SET status = 'completed' WHERE run_id = ?")
+			.run("run-terminal-launch");
+		store.upsertWorkflowRunNode({
+			runId: "run-terminal-launch",
+			nodeId: "worker",
+			attempt: 1,
+			state: "done",
+			endedAt: "2026-09-02T05:29:00.000Z",
+		});
+		rawDb(store)
+			.prepare("DELETE FROM sessions WHERE execution_id = ?")
+			.run("terminal-launch-exec");
+		expect(store.getWorkflowRun("run-terminal-launch")?.status).toBe(
+			"completed",
+		);
 		expect(
-			store.admitWorkflowExecution({
-				runId: "run-terminal-launch",
-				nodeId: "worker",
-				executionId: "terminal-launch-exec",
-				attempt: 1,
-				family: "review_verdict",
-				expiresAt: "2026-09-02T06:00:00.000Z",
-				absoluteDeadlineAt: "2026-09-02T07:00:00.000Z",
-				now: "2026-09-02T05:00:00.000Z",
-			}),
-		).toMatchObject({ ok: true });
+			store.getWorkflowRunNode("run-terminal-launch", "worker", 1),
+		).toMatchObject({
+			state: "done",
+			ended_at: "2026-09-02T05:29:00.000Z",
+		});
+		expect(store.getSession("terminal-launch-exec")).toBeUndefined();
+		expect(
+			store.getWorkflowExecutionBinding("terminal-launch-exec"),
+		).toBeUndefined();
+		const unboundEvents: string[] = [];
 		const projector = new DeliveryProjector({
 			store,
 			commDb,
@@ -314,29 +373,49 @@ describe("FLY-2248 R6#2 projector crash-window recovery", () => {
 			store,
 			projectName: "flywheel",
 			resolveAlertIdentity,
-			enqueueUnboundAlert,
+			enqueueUnboundAlert: ({ eventId }) => {
+				unboundEvents.push(eventId);
+				return { eventId, state: "sent" };
+			},
 		});
-		expect(watch.runPass("2026-09-02T05:05:00.001Z")).toEqual({
+		expect(watch.runPass("2026-09-02T05:30:00.001Z")).toEqual({
 			observed: 1,
 			opened: 1,
 			closed: 0,
 			alerted: 1,
 		});
-		rawDb(store)
-			.prepare("UPDATE workflow_run SET status = 'completed' WHERE run_id = ?")
-			.run("run-terminal-launch");
+		expect(unboundEvents).toHaveLength(1);
+		expect(
+			rawDb(store)
+				.prepare(
+					`SELECT stage, run_id, closed_at
+					   FROM workflow_delivery_contract_episode
+					  WHERE attempt_id = ?`,
+				)
+				.get(attempt!.attempt_id),
+		).toEqual({ stage: "received", run_id: null, closed_at: null });
+		expect(
+			rawDb(store)
+				.prepare(
+					`SELECT count(*) AS count
+					   FROM workflow_delivery_contract_episode
+					  WHERE attempt_id = ? AND run_id IS NOT NULL`,
+				)
+				.get(attempt!.attempt_id),
+		).toEqual({ count: 0 });
 
-		expect(projector.runPass("2026-09-02T05:06:00.000Z")).toEqual({
+		expect(projector.runPass("2026-09-02T05:31:00.000Z")).toEqual({
 			examined: 0,
 			minted: 0,
 			advanced: 1,
 		});
-		expect(watch.runPass("2026-09-02T05:06:00.000Z")).toEqual({
+		expect(watch.runPass("2026-09-02T05:31:00.001Z")).toEqual({
 			observed: 0,
 			opened: 0,
 			closed: 0,
 			alerted: 0,
 		});
+		expect(unboundEvents).toHaveLength(1);
 		expect(
 			rawDb(store)
 				.prepare(
@@ -351,12 +430,12 @@ describe("FLY-2248 R6#2 projector crash-window recovery", () => {
 				)
 				.get(),
 		).toEqual({
-			closed_at: "2026-09-02T05:06:00.000Z",
+			closed_at: "2026-09-02T05:31:00.000Z",
 			closed_reason: "terminal:settled:run_terminal",
 		});
 	});
 
-	it("keeps a native launch obligation open while its owning run is active", async () => {
+	it("FLY-2307 B keeps an active received launch stall open through severe escalation", async () => {
 		const commDb = new CommDB(":memory:");
 		commDbs.push(commDb);
 		const store = await StateStore.create(":memory:");
@@ -379,19 +458,76 @@ describe("FLY-2248 R6#2 projector crash-window recovery", () => {
 				now: "2026-09-02T05:00:00.000Z",
 			}),
 		).toMatchObject({ ok: true });
+		const attempt = store
+			.listLiveWorkflowDeliveryAttempts()
+			.find(({ family }) => family === "launch");
+		expect(attempt).toBeDefined();
+		expect(JSON.parse(attempt!.contract_ref_json)).toMatchObject({
+			table: "workflow_execution_binding",
+			pk: "active-launch-exec",
+			runId: "run-active-launch",
+		});
+		rawDb(store)
+			.prepare(
+				"UPDATE workflow_delivery_attempt SET received_at = ? WHERE attempt_id = ?",
+			)
+			.run("2026-09-02T05:00:00.000Z", attempt!.attempt_id);
 
+		const projector = new DeliveryProjector({
+			store,
+			commDb,
+			projectName: "flywheel",
+		});
+		const watch = new DeliveryContractWatch({
+			store,
+			projectName: "flywheel",
+			resolveAlertIdentity,
+			enqueueUnboundAlert,
+		});
+		expect(projector.runPass("2026-09-02T05:30:00.000Z")).toEqual({
+			examined: 0,
+			minted: 0,
+			advanced: 0,
+		});
+		expect(watch.runPass("2026-09-02T05:30:00.001Z")).toEqual({
+			observed: 1,
+			opened: 1,
+			closed: 0,
+			alerted: 1,
+		});
+		expect(watch.runPass("2026-09-02T06:30:00.001Z")).toEqual({
+			observed: 1,
+			opened: 0,
+			closed: 0,
+			alerted: 1,
+		});
 		expect(
-			new DeliveryProjector({
-				store,
-				commDb,
-				projectName: "flywheel",
-			}).runPass("2026-09-02T05:06:00.000Z"),
-		).toEqual({ examined: 0, minted: 0, advanced: 0 });
+			rawDb(store)
+				.prepare(
+					`SELECT stage, run_id, alerted_at, severe_alerted_at, closed_at
+					   FROM workflow_delivery_contract_episode
+					  WHERE attempt_id = ?`,
+				)
+				.get(attempt!.attempt_id),
+		).toEqual({
+			stage: "received",
+			run_id: "run-active-launch",
+			alerted_at: "2026-09-02T05:30:00.001Z",
+			severe_alerted_at: "2026-09-02T06:30:00.001Z",
+			closed_at: null,
+		});
+		expect(
+			store
+				.listWorkflowAlertOutbox()
+				.map(({ payload }) => payload.severity)
+				.sort(),
+		).toEqual(["severe", "warning"]);
 		expect(
 			store
 				.listLiveWorkflowDeliveryAttempts()
 				.find(({ family }) => family === "launch"),
 		).toMatchObject({ settlement_reason: null });
+		expect(store.getWorkflowRun("run-active-launch")?.status).toBe("active");
 	});
 
 	it("observes an orphan attempt even when its CommDB row was never written", async () => {

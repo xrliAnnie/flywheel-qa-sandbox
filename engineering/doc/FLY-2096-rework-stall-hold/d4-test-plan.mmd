@@ -1,0 +1,21 @@
+flowchart TB
+  T0["铸 run-1 + 换体<br/>markReplacementLaunched(T0)"] --> T1["dispatcher.reconcile()<br/>now = T0+61m / T0+95m"]
+  T1 --> T2["断言 A<br/>run active · delivery wake_delivered<br/>零 stalled 事件"]
+  T2 --> T3["commitWorkflowTransitionTx<br/>qa_pass @ T0+96m"]
+  T3 --> T4["断言 B<br/>ok:true · delivery completed"]
+  T4 --> T5["reconcile @ T0+3h<br/>仍 active"]
+  subgraph OLD["同一文件拷进 069013b25^ 旧树"]
+    O1["断言 A 红<br/>run 被打 held"]
+    O2["断言 B 红<br/>engine_run_not_active"]
+  end
+  subgraph MAINONLY["main 专属段(旧树 skip)"]
+    M1["watch.runPass @ T0+61m<br/>体 alive → 零 episode 零告警"]
+    M2["对照:体 absent<br/>→ 1 episode + 1 warning,仍不 hold"]
+    M3["M3:完工后体收工<br/>修前 1 episode + 告警 → 红<br/>修后 0 → 绿"]
+  end
+  T2 -.-> O1
+  T4 -.-> O2
+  style O1 fill:#ffe5e3,stroke:#ff3b30
+  style O2 fill:#ffe5e3,stroke:#ff3b30
+  style M1 fill:#e3f7e8,stroke:#34c759
+  style M3 fill:#fff4e0,stroke:#ff9500

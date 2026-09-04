@@ -1,0 +1,18 @@
+flowchart LR
+  subgraph LEAD["Lead 侧(今天已在用,本单不动)"]
+    L1["~/.claude/agent-memory/&lt;lead-id&gt;/"] --> L2["MEMORY.md 短索引<br/>(一行一条指针)"]
+    L1 --> L3["一事一文件<br/>frontmatter: name / description / type"]
+  end
+  subgraph RUNNER["runner 侧(本单新增)"]
+    R0["根 ~/.flywheel/runner-memory/<br/>(FLYWHEEL_RUNNER_MEMORY_ROOT 可覆盖)"] --> R1["&lt;project&gt;/  例: flywheel"]
+    R1 --> R2["&lt;role&gt;/  例: qa · eng_design · implement · generic"]
+    R2 --> R3["MEMORY.md 短索引<br/>Claude Code 装到 200 行 / 25,000 字节为止"]
+    R2 --> R4["一事一文件<br/>同 Lead 的 frontmatter 形状"]
+  end
+  subgraph LEGACY["项目共享记忆(原样不动)"]
+    P1["~/.claude/projects/-Users-…-Dev-flywheel/memory/"]
+  end
+  R3 -. "同一形状" .- L2
+  R2 -. "prompt 里一行只读指针" .-> P1
+  X["身份来源(不新造词表)<br/>role = DAG 节点 id 或 legacy agent 名<br/>project = 归一后的项目名"] --> R1
+  X --> R2

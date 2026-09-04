@@ -51,6 +51,7 @@ export interface RunnerTuiWindowFailureEvidence {
 		| "new_window_failed"
 		| "window_id_unproven"
 		| "window_died"
+		| "marker_unproven"
 		| "tmux_absent"
 		| "config_invalid"
 		| "ipc_exception"
@@ -76,7 +77,7 @@ export interface RunnerTuiWindowSpec {
 	cwd: string;
 	/** The App Server-owned thread to rejoin. */
 	threadId: string;
-	executionId?: string;
+	executionId: string;
 	stateDbPath?: string;
 	codexBin?: string;
 }
@@ -87,15 +88,14 @@ export function buildRunnerTuiCommand(spec: RunnerTuiWindowSpec): string {
 	assertShellSafe("socketPath", spec.socketPath, SAFE_PATH);
 	assertShellSafe("cwd", spec.cwd, SAFE_PATH);
 	assertShellSafe("threadId", spec.threadId, SAFE_ID);
-	if (spec.executionId)
-		assertShellSafe("executionId", spec.executionId, SAFE_ID);
+	assertShellSafe("executionId", spec.executionId, SAFE_ID);
 	if (spec.stateDbPath)
 		assertShellSafe("stateDbPath", spec.stateDbPath, SAFE_PATH);
 	if (spec.codexBin) assertShellSafe("codexBin", spec.codexBin, SAFE_PATH);
 	return [
 		`exec ${buildRunnerPaneEnvironmentPrefix()}`,
 		`CODEX_HOME="${spec.codexHome}"`,
-		...(spec.executionId ? [`FLYWHEEL_EXEC_ID="${spec.executionId}"`] : []),
+		`FLYWHEEL_EXEC_ID="${spec.executionId}"`,
 		...(spec.stateDbPath
 			? [`FLYWHEEL_STATE_DB_PATH="${spec.stateDbPath}"`]
 			: []),
@@ -697,6 +697,43 @@ function parseWindowList(out: string): Array<{ id: string; name: string }> {
 	});
 }
 
+function parseProvableWindowList(
+	out: string,
+): Array<{ id: string; name: string }> | undefined {
+	const windows = parseWindowList(out);
+	// tmux permits an empty window name. It cannot match this runner's validated
+	// non-empty name, so it is unrelated evidence rather than a reason to poison
+	// the shared base-session inventory.
+	return windows.every((window) => SAFE_WINDOW_ID.test(window.id))
+		? windows
+		: undefined;
+}
+
+function parseExecutionWindowList(
+	out: string,
+	expectedExecutionId: string,
+): Array<{ id: string; executionId: string }> | undefined {
+	if (out === "") return [];
+	const ids = new Set<string>();
+	for (const line of out.split("\n")) {
+		const markerEnd = line.indexOf("|");
+		if (markerEnd < 0) return undefined;
+		const executionId = line.slice(0, markerEnd);
+		if (executionId !== expectedExecutionId) continue;
+		const fields = line.slice(markerEnd + 1).split("|");
+		const [session = "", id = ""] = fields;
+		if (
+			fields.length !== 2 ||
+			session.length === 0 ||
+			!SAFE_WINDOW_ID.test(id)
+		) {
+			return undefined;
+		}
+		ids.add(id);
+	}
+	return [...ids].map((id) => ({ id, executionId: expectedExecutionId }));
+}
+
 function abortCause(signal: AbortSignal | undefined): RunnerTuiAbortCause {
 	const reason = signal?.reason;
 	return reason === "deadline" || reason === "run-ended"
@@ -798,12 +835,12 @@ export async function scanAndKillSameNameWindows(
 }
 
 async function purgeSameNameWindowsAsync(
-	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName">,
+	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName" | "executionId">,
 	deps: AsyncWindowExecDeps & {
 		ensureSession: (session: string, signal?: AbortSignal) => Promise<boolean>;
 	},
 ): Promise<boolean> {
-	const listWindows = async (): Promise<
+	const listSameNameAxis = async (): Promise<
 		Array<{ id: string; name: string }> | undefined
 	> => {
 		const out = await deps.execOut(
@@ -817,18 +854,47 @@ async function purgeSameNameWindowsAsync(
 			],
 			{ timeoutMs: 5_000, ...(deps.signal ? { signal: deps.signal } : {}) },
 		);
-		return out === undefined ? undefined : parseWindowList(out);
+		return out === undefined ? undefined : parseProvableWindowList(out);
+	};
+	const listExecutionAxis = async (): Promise<
+		Array<{ id: string; executionId: string }> | undefined
+	> => {
+		const out = await deps.execOut(
+			"tmux",
+			[
+				"list-windows",
+				"-a",
+				"-F",
+				"#{@flywheel_exec_id}|#{session_name}|#{window_id}",
+			],
+			{ timeoutMs: 5_000, ...(deps.signal ? { signal: deps.signal } : {}) },
+		);
+		return out === undefined
+			? undefined
+			: parseExecutionWindowList(out, spec.executionId);
 	};
 
-	const before = await listWindows();
-	if (before === undefined || deps.signal?.aborted) return false;
-	for (const window of before) {
-		if (window.name !== spec.windowName || !SAFE_WINDOW_ID.test(window.id))
-			continue;
+	const beforeNames = await listSameNameAxis();
+	const beforeExecutions = await listExecutionAxis();
+	if (
+		beforeNames === undefined ||
+		beforeExecutions === undefined ||
+		deps.signal?.aborted
+	)
+		return false;
+	const staleWindowIds = new Set(
+		beforeNames
+			.filter((window) => window.name === spec.windowName)
+			.map((window) => window.id),
+	);
+	for (const window of beforeExecutions) {
+		if (window.executionId === spec.executionId) staleWindowIds.add(window.id);
+	}
+	for (const windowId of staleWindowIds) {
 		await auditedAsyncTuiWindowKill(
 			deps.exec,
-			window.id,
-			"precreate_same_name_cleanup",
+			windowId,
+			"precreate_identity_cleanup",
 			{
 				timeoutMs: 10_000,
 				...(deps.signal ? { signal: deps.signal } : {}),
@@ -837,11 +903,14 @@ async function purgeSameNameWindowsAsync(
 		if (deps.signal?.aborted) return false;
 	}
 	if (!(await deps.ensureSession(spec.tmuxSession, deps.signal))) return false;
-	const after = await listWindows();
+	const afterNames = await listSameNameAxis();
+	const afterExecutions = await listExecutionAxis();
 	return (
-		after !== undefined &&
+		afterNames !== undefined &&
+		afterExecutions !== undefined &&
 		!deps.signal?.aborted &&
-		!after.some((window) => window.name === spec.windowName)
+		!afterNames.some((window) => window.name === spec.windowName) &&
+		!afterExecutions.some((window) => window.executionId === spec.executionId)
 	);
 }
 
@@ -850,9 +919,9 @@ async function purgeSameNameWindowsAsync(
  *   1. `tmux -V` probe — absent → `{ created:false, reason:"tmux-absent" }`
  *      (headless box: the run continues, only the terminal view is missing).
  *   2. ensure the runner's session (idempotent attach-or-create).
- *   3. FLY-1239 PROVABLE purge: kill every same-named window by immutable id,
- *      re-ensure the session, and verify none remain — else `create-failed`
- *      (never create over a stale/ambiguous same-named window → ≤1 window).
+ *   3. FLY-1239/2170 PROVABLE purge: kill base-session same-name windows
+ *      plus global same-execution windows by immutable id, re-ensure the
+ *      session, and verify both identity axes are empty.
  *   4. create the window running `codex resume --remote` on the owned thread.
  *   5. settle + liveness probe: a pane gone after settle → `{ reason:"died" }`
  *      (a transient tmux/filesystem failure the caller may retry).
@@ -1004,7 +1073,7 @@ async function ensureRunnerTuiWindowAsync(
 					"display-message",
 					"-p",
 					"-t",
-					`=${spec.tmuxSession}:${windowId}`,
+					windowId,
 					"#{window_id} #{window_name} #{pane_dead}",
 				],
 				{
@@ -1023,6 +1092,72 @@ async function ensureRunnerTuiWindowAsync(
 				});
 			}
 			return tuiFailure("retryable-transient-ipc", "window_died");
+		}
+		// A session-qualified `=<session>:@N` target is not exact in tmux: once
+		// @N disappears, tmux silently falls back to the session's active window.
+		// Marker publication is identity-bearing and must therefore use the bare
+		// immutable id, which fails closed when the just-created window has died.
+		const exactWindow = windowId;
+		const markerWritten = await exec(
+			"tmux",
+			[
+				"set-option",
+				"-w",
+				"-t",
+				exactWindow,
+				"@flywheel_exec_id",
+				spec.executionId,
+			],
+			{
+				timeoutMs: 10_000,
+				...(signal ? { signal } : {}),
+			},
+		);
+		const marker = markerWritten.ok
+			? await execOut(
+					"tmux",
+					["display-message", "-p", "-t", exactWindow, "#{@flywheel_exec_id}"],
+					{
+						timeoutMs: 10_000,
+						...(signal ? { signal } : {}),
+					},
+				)
+			: undefined;
+		if (marker !== spec.executionId) {
+			try {
+				await auditedAsyncTuiWindowKill(
+					exec,
+					windowId,
+					"marker_unproven_rollback",
+					{
+						timeoutMs: 10_000,
+						...(signal ? { signal } : {}),
+					},
+				);
+				const residualWindowId = await execOut(
+					"tmux",
+					["display-message", "-p", "-t", exactWindow, "#{window_id}"],
+					{
+						timeoutMs: 5_000,
+						...(signal ? { signal } : {}),
+					},
+				);
+				if (residualWindowId === undefined) {
+					safeLog(
+						deps.log,
+						`runner-tui-window: marker rollback probe failed for ${windowId}`,
+					);
+				} else if (residualWindowId !== "") {
+					safeLog(
+						deps.log,
+						`runner-tui-window: marker rollback could not prove ${windowId} disappeared`,
+					);
+				}
+			} catch {
+				// The next same-name/exec-id purge retries cleanup. Window visibility
+				// remains fail-open, but an unproven marker is never published.
+			}
+			return tuiFailure("retryable-transient-ipc", "marker_unproven");
 		}
 		safeLog(
 			deps.log,

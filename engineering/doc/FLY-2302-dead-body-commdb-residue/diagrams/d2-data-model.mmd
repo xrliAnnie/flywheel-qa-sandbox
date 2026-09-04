@@ -1,0 +1,17 @@
+flowchart TB
+    subgraph SS["StateStore 状态库(引擎账本)"]
+        S1["sessions 行<br/>status=blocked<br/>terminal_at=18:20:42 ✔"]
+        W1["workflow_dead_execution_watch<br/>死体 → 替换体<br/>baseline 固化 tmux 目标 @401"]
+    end
+    subgraph CD["CommDB 通信注册表"]
+        C1["sessions 行<br/>status=blocked, ended_at ✔<br/>tmux_window=@401(窗口已被 kill)"]
+        T1["three_stage_turn<br/>issue → 当前持有者<br/>(6 秒后移交给替换体)"]
+    end
+    subgraph PT["Lead 巡检 owner index"]
+        O1["SELECT tmux_window<br/>WHERE status IN (running, blocked)<br/>AND 已绑窗"]
+    end
+    S1 -. "回滚车道只读它是否终态" .-> W1
+    C1 == "被计入名下目标" ==> O1
+    O1 -- "tmux 无此 pane" --> F["假报 MISSING_PANE"]
+    T1 -. "TURN 持有者否决删除" .-> C1
+    W1 -. "本方案:tripwire 循环里<br/>对死体定点封账" .-> C1

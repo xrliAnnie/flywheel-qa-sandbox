@@ -93,6 +93,91 @@ export type RunnerTmuxTargetDiscovery =
 	| { kind: "found"; tmuxWindow: string }
 	| { kind: "missing" | "ambiguous" | "indeterminate" };
 
+export type RunnerTmuxWindowInventory =
+	| {
+			kind: "ok";
+			windows: Array<{
+				windowId: string;
+				windowName: string;
+				sessions: string[];
+			}>;
+	  }
+	| { kind: "indeterminate"; reason: string };
+
+function compareTmuxSessions(left: string, right: string): number {
+	const leftLinked = left.startsWith("cmux-") ? 1 : 0;
+	const rightLinked = right.startsWith("cmux-") ? 1 : 0;
+	return leftLinked - rightLinked || left.localeCompare(right);
+}
+
+/** Read-only inventory of every distinct live window carrying one execution. */
+export async function listTmuxWindowsByExecutionId(
+	executionId: string,
+	runTmux: TmuxRunner = defaultTmuxRunner,
+): Promise<RunnerTmuxWindowInventory> {
+	if (
+		!executionId.trim() ||
+		executionId.includes(TMUX_IDENTITY_SEPARATOR) ||
+		/[\t\r\n]/.test(executionId)
+	) {
+		return { kind: "indeterminate", reason: "invalid_execution_id" };
+	}
+	let stdout: string;
+	try {
+		({ stdout } = await runTmux([
+			"list-windows",
+			"-a",
+			"-F",
+			`#{@flywheel_exec_id}${TMUX_IDENTITY_SEPARATOR}#{session_name}${TMUX_IDENTITY_SEPARATOR}#{window_id}${TMUX_IDENTITY_SEPARATOR}#{window_name}`,
+		]));
+	} catch {
+		return { kind: "indeterminate", reason: "tmux_list_failed" };
+	}
+
+	const windowsById = new Map<
+		string,
+		{ windowName: string; sessions: Set<string> }
+	>();
+	for (const line of stdout.split("\n")) {
+		if (line === "") continue;
+		const markerEnd = line.indexOf(TMUX_IDENTITY_SEPARATOR);
+		if (markerEnd < 0) {
+			return { kind: "indeterminate", reason: "malformed_identity_row" };
+		}
+		const marker = line.slice(0, markerEnd);
+		// The listing is machine-global. An unrelated malformed name/id must not
+		// disable recovery for every execution; validate the identity columns only
+		// after the first, execution-bound field selects this caller's rows.
+		if (marker !== executionId) continue;
+		const fields = line
+			.slice(markerEnd + TMUX_IDENTITY_SEPARATOR.length)
+			.split(TMUX_IDENTITY_SEPARATOR);
+		if (fields.length !== 3) {
+			return { kind: "indeterminate", reason: "malformed_identity_row" };
+		}
+		const [sessionName, windowId, windowName] = fields;
+		if (!sessionName || !windowId || !windowName || !/^@\d+$/.test(windowId)) {
+			return { kind: "indeterminate", reason: "malformed_identity_row" };
+		}
+		const existing = windowsById.get(windowId);
+		if (existing && existing.windowName !== windowName) {
+			return { kind: "indeterminate", reason: "window_name_conflict" };
+		}
+		const window = existing ?? { windowName, sessions: new Set<string>() };
+		window.sessions.add(sessionName);
+		windowsById.set(windowId, window);
+	}
+
+	return {
+		kind: "ok",
+		windows: [...windowsById].map(([windowId, window]) => ({
+			windowId,
+			windowName: window.windowName,
+			sessions: [...window.sessions].sort(compareTmuxSessions),
+		})),
+	};
+}
+
 /**
  * FLY-1374: recover an exact tmux target from the execution marker published
  * on the window at creation time. This inventory runs only in the WAKE path
@@ -106,52 +191,18 @@ export async function discoverTmuxTargetByExecutionId(
 	executionId: string,
 	runTmux: TmuxRunner = defaultTmuxRunner,
 ): Promise<RunnerTmuxTargetDiscovery> {
-	if (!executionId.trim() || /[\t\r\n]/.test(executionId)) {
-		return { kind: "indeterminate" };
-	}
-	let stdout: string;
-	try {
-		({ stdout } = await runTmux([
-			"list-windows",
-			"-a",
-			"-F",
-			`#{session_name}${TMUX_IDENTITY_SEPARATOR}#{window_id}${TMUX_IDENTITY_SEPARATOR}#{@flywheel_exec_id}`,
-		]));
-	} catch {
-		return { kind: "indeterminate" };
-	}
-
-	const sessionsByWindow = new Map<string, Set<string>>();
-	for (const line of stdout.split("\n")) {
-		const [sessionName, windowId, marker, ...extra] = line.split(
-			TMUX_IDENTITY_SEPARATOR,
-		);
-		if (marker !== executionId) continue;
-		if (
-			extra.length > 0 ||
-			!sessionName ||
-			!windowId ||
-			!/^@\d+$/.test(windowId)
-		) {
-			return { kind: "indeterminate" };
-		}
-		const sessions = sessionsByWindow.get(windowId) ?? new Set<string>();
-		sessions.add(sessionName);
-		sessionsByWindow.set(windowId, sessions);
-	}
-	if (sessionsByWindow.size === 0) return { kind: "missing" };
-	if (sessionsByWindow.size > 1) return { kind: "ambiguous" };
-
-	const onlyWindow = sessionsByWindow.entries().next().value;
-	if (!onlyWindow) return { kind: "indeterminate" };
-	const [windowId, sessions] = onlyWindow;
-	const sessionName = [...sessions].sort((left, right) => {
-		const leftLinked = left.startsWith("cmux-") ? 1 : 0;
-		const rightLinked = right.startsWith("cmux-") ? 1 : 0;
-		return leftLinked - rightLinked || left.localeCompare(right);
-	})[0];
+	const inventory = await listTmuxWindowsByExecutionId(executionId, runTmux);
+	if (inventory.kind === "indeterminate") return { kind: "indeterminate" };
+	if (inventory.windows.length === 0) return { kind: "missing" };
+	if (inventory.windows.length > 1) return { kind: "ambiguous" };
+	const [window] = inventory.windows;
+	if (!window) return { kind: "indeterminate" };
+	const sessionName = window.sessions[0];
 	if (!sessionName) return { kind: "indeterminate" };
-	return { kind: "found", tmuxWindow: `${sessionName}:${windowId}` };
+	return {
+		kind: "found",
+		tmuxWindow: `${sessionName}:${window.windowId}`,
+	};
 }
 
 /**

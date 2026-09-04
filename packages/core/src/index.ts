@@ -4,6 +4,7 @@
 export type { IHookCallbackServer } from "./hook-callback-types.js";
 export { ProjectLock } from "./ProjectLock.js";
 export { Semaphore } from "./Semaphore.js";
+export { SAFE_IDENTIFIER_RE } from "./safe-identifier.js";
 
 // Logging
 

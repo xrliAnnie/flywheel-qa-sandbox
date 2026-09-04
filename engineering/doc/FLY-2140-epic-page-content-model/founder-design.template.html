@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2140 · Epic 页面:装什么、每格从哪来、什么时候的 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  .badge.q { background:#f3e8ff; color:#6b21a8; }
+  .badge.new { background:#e8f0fe; color:#1d4ed8; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+  .mock { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#fbfbfd; border:1px solid #e5e5ea; border-radius:8px; padding:12px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2140 · Epic 页面:装什么、每格从哪来、什么时候的</h1>
+<div class="meta">
+  设计交付 · 2026-09-03 · Epic FLY-2108 的第一张子单(A)· 依据 FLY-1969 PRD v2.4 的 R1 与 R5 静态半边<br/>
+  证据基线:仓库 <code>main 63154c214</code> · PRD <code>2ad4cc491</code> · Linear 实读 2026-09-03 02:37Z<br/>
+  文档:<code>engineering/doc/FLY-2140-epic-page-content-model/</code>{exploration, research, plan}.md · 本页只讲结论与取舍,细节在 plan(round 5:五轮独立评审共 31 条全部处置,第五轮 APPROVED;第四、五轮为 Lead 授权的范围写死复核轮)
+</div>
+
+<section class="card green" data-title="一句话结论">
+  <h2>一句话结论</h2>
+  <p class="summary-line">给任何一个 Lead 一条命令,他就能拿到这个 <span class="term" title="Epic:一组相关子任务的母单;这里指 Linear 里带子单的那张 issue">Epic</span> 的一页:上面写着要做的事、先后批次、每件做完算什么样、哪几件要回来找你 —— 而且页上每一格都能说出「我从哪儿来、我是什么时候看到的」,没有一个数只存在于页面里。</p>
+  <p>这一单只做「静态半边」:定义页面装什么,并生成第一版。让页面自己活起来(做完一件就更新、过期自报)是 FLY-2143 的事;定时回头看还剩什么、空位拉活是 FLY-2141 的事。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:30%">你的要求(PRD 原文)</th><th>本设计怎么落</th></tr>
+    <tr><td>R1:页面要回答四件事</td><td>四件事各有唯一来源,全在 <span class="term" title="Linear:我们记任务、拆单的那个工具">Linear</span> 上(下文第 4 节)</td></tr>
+    <tr><td>R1 验收:Lead 不问「现在该做哪件」能一直推到做完</td><td>页面上直接列出「现在可以开始的」,并附一条可执行的演练测试:一个只读页面、不知道任何上下文的读者,每一步都能说出下一件</td></tr>
+    <tr><td>R5:每一格都有出处;过期要说出来</td><td>每一格 = 值 + 出处 + 看到它的时间;没有这三样的格根本存不进去(有一道守卫)</td></tr>
+    <tr><td>不写死谁用谁不用</td><td>代码里零处出现具体 Lead 或具体 Epic;命令只收「项目 + Epic 号」</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「一句话结论」的意见</label><textarea data-key="s01" data-title="一句话结论"></textarea></div>
+</section>
+
+<section class="card red" data-title="她今天撞到的墙">
+  <h2>今天撞到的墙,以及这一单补哪一块</h2>
+  <p>PRD 写得很直白:Epic 定完之后,Lead 手上没有一份东西告诉他先做哪件、后做哪件;想知道做到哪了只能开口问。于是这三件事今天靠你随时说「该做这个了」撑着 —— 正是你说不该由你做的那件事。</p>
+  <p><b>一个真实的小证据(2026-09-03 当天发生的):</b>Epic FLY-2108 的五张子单,拆单时「D 依赖 A 和 B」只写在正文里,Linear 上一条连线都没有。页面若从正文去猜依赖,就是在制造「只存在于页面里的事实」。本单向 Lead 提出后,他 02:35 在 Linear 上把连线登记好了 —— 依赖回到了它唯一该在的地方。这件事本身就是本设计最重要的判据:<b>页面不猜,页面如实显示「未登记」,人就会去把它登记到唯一真相里。</b></p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:22%">子单</th><th>做什么</th><th style="width:14%">本单?</th></tr>
+    <tr><td><b>A · FLY-2140</b></td><td>页面装什么(内容模型)+ 从拆完的 Epic 生成第一版</td><td><span class="badge do">本单</span></td></tr>
+    <tr><td>B · FLY-2141</td><td>巡检时回头看 Epic 还剩什么、有空位就拉一件</td><td><span class="badge no">不做</span></td></tr>
+    <tr><td>C · FLY-2142</td><td>依赖账本:初始批次 + 执行中三类更新(减法不许丢)</td><td><span class="badge no">不做</span></td></tr>
+    <tr><td>D · FLY-2143</td><td>页面活化:做完就更新 + 到点扫描;过期自报;卡住上页可见</td><td><span class="badge no">不做</span></td></tr>
+    <tr><td>E · FLY-2144</td><td>派发判断的容量输入(额度、内存);顺带退役旧的 dag-resolver</td><td><span class="badge no">不做</span></td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「她今天撞到的墙」的意见</label><textarea data-key="s02" data-title="她今天撞到的墙"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程:一条命令之后发生了什么</h2>
+  <div class="diagram"><!--DIAGRAM_1--></div>
+  <div class="cap">图 1 · 从 Lead 的一条命令到两种视图。橙色 = 两个事实来源;蓝色 = 生成;绿色 = 权威副本</div>
+  <ol>
+    <li>Lead 跑 <code>epic-page generate</code>(任意项目、任意 Epic 号)。命令打到 <span class="term" title="Bridge:Flywheel 的后台服务,所有执行事实都经过它">Bridge</span>。</li>
+    <li>Bridge 一次性从 Linear 读下这个 Epic 的快照:子单、子单之间的 <span class="term" title="blocks 关系:Linear 里「A 挡着 B」那条连线,表示 B 要排在 A 之后">blocks 连线</span>、标签。读不到(网络、超时、Epic 不存在、子单多到不正常)⇒ 整次失败,<b>什么都不写</b>。</li>
+    <li>再从自己的数据库(<span class="term" title="StateStore:Bridge 的本地数据库,记着每次派工、每个工作流走到哪一步、门开没开、PR 落地没有">StateStore</span>)读每张子单的「账面执行体」:有没有会话在跑、工作流走到哪个节点、门开着没、PR 落地没。某一格读失败 ⇒ 只那一格标「缺」,页面照出。</li>
+    <li>生成器是纯函数:两份事实进去,一份文档出来,每格都带出处与时间;不合规矩的文档过不了守卫,不会存。</li>
+    <li>存一版(版本号只增不减,保留最近 20 版);同一文档渲染成 Lead 读的 <span class="term" title="Markdown:纯文本表格格式,Lead(AI)读它最顺">Markdown</span> 和你看的 HTML;要给你看时用现有的 publish-report 发一个托管链接(快照,7 天过期,这是已知边界)。</li>
+  </ol>
+  <div class="cbox"><label>给「核心流程」的意见</label><textarea data-key="s03" data-title="核心流程"></textarea></div>
+</section>
+
+<section class="card purple" data-title="四件事各从哪来">
+  <h2>四件事各从哪来(每一件都只认一个来源)</h2>
+  <div class="diagram"><!--DIAGRAM_3--></div>
+  <div class="cap">图 3 · R1 的四问 → 各自唯一的 Linear 来源;红框是页面明确不做的事</div>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:24%">必须回答</th><th style="width:38%">来源(唯一)</th><th>页面上怎么写</th></tr>
+    <tr><td><b>① 要做的事有哪些</b></td><td>Linear:这个 Epic 的全部子单(不含已归档)</td><td>一张表,每张子单一行;被取消的单归到「不做了」—— 这就是 PRD 说的「减法」</td></tr>
+    <tr><td><b>② 它们的先后(批次)</b></td><td>Linear:子单之间的 blocks 连线(Lead 拆单时本来就在 Linear 上画)</td><td>「第 1 批 / 第 2 批 / …」:没人挡的是第 1 批,被第 1 批挡的是第 2 批,以此类推;连线成环时不猜顺序,直接点名环上的单</td></tr>
+    <tr><td><b>③ 每件做完算什么样</b></td><td>Linear:状态到 Done + 子单描述里以「验收」开头的那一段<b>原文</b></td><td>逐字引用,不摘要不改写;没有验收段的单显式标「缺」—— 这正是「他不知道什么时候可以往下一件走」的提前告警</td></tr>
+    <tr><td><b>④ 要回来找她的那几件</b></td><td>Linear:子单上打了 <code>founder-review</code> 标签的</td><td>一份清单;<b>0 件也明写「0 件」</b>,不隐藏这一格(Lead 的硬约束)</td></tr>
+  </table>
+  </div>
+  <div class="callout amber"><b>为什么不从正文里抽?</b> 正文是给人读的。页面一旦从正文「理解」出依赖或验收标准,那就是页面自己造的事实 —— 正是你点名的那个坏处。所以页面只认结构化的东西:子单、连线、状态、标签、以及一段被明确标题圈出来的原文。</div>
+  <div class="cbox"><label>给「四件事各从哪来」的意见</label><textarea data-key="s04" data-title="四件事各从哪来"></textarea></div>
+</section>
+
+<section class="card gray" data-title="每一格长什么样">
+  <h2>每一格长什么样:值 + 出处 + 看到它的时间</h2>
+  <div class="diagram"><!--DIAGRAM_2--></div>
+  <div class="cap">图 2 · 页面上任何一个值都是一个「格」;格只有三种出处</div>
+  <p>你说过:<b>「一个说不出自己多旧的页面,和一个错的页面,在她眼里长得一模一样。」</b>所以每一格都带两个时间:来源自己说它上次什么时候变的(比如 Linear 的更新时间),以及我们什么时候去看它的。后者就是「这一格是什么时候的」。</p>
+  <ul>
+    <li><b>出处只有三种:</b>Linear(哪张单、哪个字段、链接)、StateStore(点名哪张表、哪个键)、规则(编号 + 它读了哪几格)。</li>
+    <li><b>「没有」也是值:</b>零阻塞、零执行体、零命中标签都存成空集合,照样带出处和时间;只有「读不到」才叫「缺」,并且必须写明缺的原因。</li>
+    <li><b>守卫:</b>没有出处或时间的格、藏在值里的第二套时间、只存在于页面里的字段 —— 都过不了守卫,存不进去。这不是约定,是一道测试。</li>
+    <li><b><span class="term" title="digest:一段内容的指纹;内容一变指纹就变">内容指纹</span>去掉时间再算:</b>这样以后 D 单能分辨「内容真变了」和「只是刷新了时间」。</li>
+  </ul>
+  <div class="cbox"><label>给「每一格长什么样」的意见</label><textarea data-key="s05" data-title="每一格长什么样"></textarea></div>
+</section>
+
+<section class="card amber" data-title="现在可以开始的">
+  <h2>「现在可以开始的」怎么算 —— 一条默认规则,不是裁定</h2>
+  <p>四件事齐了,Lead 仍要自己拼出「所以现在做哪件」。这一步能确定地推出来,页面就替他推,并<b>标明这是推导、标明规则编号 <code>next.v1</code></b>:</p>
+  <div class="mock">还没开始(backlog / 未开始)
+∧ 挡着它的单全部已完成或已取消(兄弟单和 Epic 外的单都算)
+∧ 账面上没有执行体:没有活着的会话、没有在跑的工作流、没有未收尾的落地
+∧ 上面这些事实一格都不「缺」   ← 缺一格就不推荐(宁可少推荐,不冒推错)</div>
+  <div class="callout red"><b>诚实标注:</b>PRD §8 里「哪些算还没做、可以往外放」「怎么算一件事做完了」两个问题<b>你还没拍</b>。这条规则是默认值,页面每次显示这一节都带一句「未获 founder 裁定的默认规则」。它说的是「候选」,不是「可以派发」—— 派不派还要看容量,那是 B 单和 E 单的事。</div>
+  <p class="note">「账面执行体」指的是数据库里登记的记录,不是去探进程活没活着 —— 页面用词也只说「账面上还有执行体」,不说「进程活着 / 死了」。</p>
+  <div class="cbox"><label>给「现在可以开始的」的意见</label><textarea data-key="s06" data-title="现在可以开始的"></textarea></div>
+</section>
+
+<section class="card" data-title="页面放哪与关键取舍">
+  <h2>页面放哪,以及被否决的两条路</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:26%">方案</th><th style="width:12%">裁决</th><th>为什么</th></tr>
+    <tr><td><b>放进 Bridge 的数据库,Bridge 出 Markdown / JSON / HTML;给你看的用托管快照</b></td><td><span class="badge do">采纳</span></td><td>Bridge 已经持有全部执行事实和 Linear 的钥匙;新加一张表不动任何旧东西;D 单的「做完就更新」= 再生成一版。Lead 2026-09-03 已裁定。代价:页面是事实的投影副本 —— 正是你点名的坏处,所以用上一节的「每格出处 + 时间」正面回答,而不是绕过去。</td></tr>
+    <tr><td>放进项目仓库当文件</td><td><span class="badge no">否决</span></td><td>仓库铁律是一切改动走 PR;活页面每次更新都要一个 PR,做不成;而且让 Bridge 往项目仓写文件是新一类副作用。(本页这份设计 HTML 仍按流程进仓库,那是另一回事。)</td></tr>
+    <tr><td>不存,每次现算</td><td><span class="badge no">否决</span></td><td>来源不可达时说不出「上次是什么」;没有历史;D 单的「更新」没有对象;给你看的快照还是得物化一份。</td></tr>
+    <tr><td>用 Linear 标签表示「要回来找她的」</td><td><span class="badge do">采纳</span></td><td>结构化、可查、任意 Lead 给任意 Epic 都能打;不解析正文;非 issue 形态的问题(比如 PRD 那三条开放问题)由 Lead 建成带标签的子单。</td></tr>
+    <tr><td>用 Epic 描述里的某个固定小节表示同一件事</td><td><span class="badge no">否决</span></td><td>又要解析正文,而且和标签是两套并存的说法。</td></tr>
+    <tr><td>加一个开关控制这一切</td><td><span class="badge no">否决</span></td><td>不加新 flag 是铁律;这里也没有需要开关的行为:不调用就什么都不发生,回滚 = 撤销 PR。</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「页面放哪与关键取舍」的意见</label><textarea data-key="s07" data-title="页面放哪与关键取舍"></textarea></div>
+</section>
+
+<section class="card green" data-title="对 FLY-2108 会长什么样">
+  <h2>对 FLY-2108 本身,第一版会长什么样</h2>
+  <p>按 Lead 02:35 登记的连线(A 挡着 B、C、D;B 和 C 各挡着 D),规则算出来:</p>
+  <div class="mock">现在可以开始的(默认规则 next.v1,未获 founder 裁定):FLY-2140、FLY-2144
+第 1 批:FLY-2140(A)· FLY-2144(E)
+第 2 批:FLY-2141(B)· FLY-2142(C)      ← 要等 A 做完
+第 3 批:FLY-2143(D)                    ← 要等 B、C 做完
+要回来找她的:0 件(标签 founder-review 当前无命中)
+缺什么:五张子单的描述里都没有以「验收」开头的段落 → 各标「缺」</div>
+  <p class="note">最后一行是页面替 Lead 提前指出的:今天这五张子单都没写验收段,所以「做完算什么样」这一问,页面只能回答「状态到 Done」。要不要补验收段,是 Lead 在 Linear 上的事,不是页面的事。</p>
+  <p class="note">本单实现期间 FLY-2140 自己就在跑,所以真数据演练时它会被「账面执行体」挡掉,不再出现在可开始清单里 —— 验收里已经把这一点写进去了,不写死答案。</p>
+  <div class="cbox"><label>给「对 FLY-2108 会长什么样」的意见</label><textarea data-key="s08" data-title="对 FLY-2108 会长什么样"></textarea></div>
+</section>
+
+<section class="card red" data-title="诚实边界">
+  <h2>诚实边界:这个设计做到了什么、没做什么</h2>
+  <h3>做到了</h3>
+  <ul>
+    <li>四件事都有唯一来源,都是 Linear 上已有的结构,不新造词汇、不解析正文。</li>
+    <li>每一格有出处和时间,并且是守卫强制的,不是靠自觉。</li>
+    <li>失败时不装:来源整体读不到就不写版本;某格读不到就标缺;推荐规则在信息缺失时宁可不推荐。</li>
+    <li>通用主语:任意 Lead、任意 Epic;代码里零处写死谁用。</li>
+    <li>五轮独立评审 31 条全部处置,最终 APPROVED;没有为了过审新增机制。</li>
+  </ul>
+  <h3>没做(有意的)</h3>
+  <ul>
+    <li><b>页面不会自己更新。</b>做完一件要 Lead 再跑一次命令;做完就自动刷新、过期自报归 FLY-2143。</li>
+    <li><b>给你看的链接是快照,7 天过期。</b>这是现有托管方式的边界;活页面归 FLY-2143。</li>
+    <li><b>不判断「位子空了没」、不管额度和内存。</b>那是 FLY-2141 / FLY-2144;这里的「现在可以开始的」只是候选。</li>
+    <li><b>不替你拍 PRD §8 那两个开放问题。</b>规则是默认值,页面上明写。</li>
+    <li><b>标签 <code>founder-review</code> 今天还不存在</b>,要 Lead 一次性创建;创建前页面会老实显示「0 件」。</li>
+    <li><b>只看一层子单</b>,孙单不展开;已归档的单不读也不计数。</li>
+    <li><b>只用真数据跑过 Linear 读取那一段</b>(两种查询形状都返回 200);生成、存储、渲染的真数据演练由实现节点做,验收里写成「同一时刻记证据、按规则手算、再比对」。</li>
+  </ul>
+  <div class="cbox"><label>给「诚实边界」的意见</label><textarea data-key="s09" data-title="诚实边界"></textarea></div>
+</section>
+
+<section class="card purple" data-title="需要你知道的事">
+  <h2>需要你知道的 3 件事(不阻塞实施)</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:8%">#</th><th style="width:46%">事</th><th>现状 / 建议</th></tr>
+    <tr><td><b>1</b></td><td>「哪些算可以往外放」「怎么算做完了」(PRD §8-2 / §8-3)</td><td>仍开放;页面按默认规则 next.v1 推候选,并明写「未获裁定」。你什么时候想拍都行,规则换了页面跟着换。</td></tr>
+    <tr><td><b>2</b></td><td>「要回来找她的」靠子单上的 <code>founder-review</code> 标签</td><td>Lead 一次性建标签、给你点过名的子单打上;PRD §8 那三条问题若要上页,就建成带标签的子单。</td></tr>
+    <tr><td><b>3</b></td><td>给你看的链接 7 天过期</td><td>已知边界;想看就让 Lead 再发一次;活页面在 FLY-2143。</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「需要你知道的事」的意见</label><textarea data-key="s10" data-title="需要你知道的事"></textarea></div>
+</section>
+
+<section class="card gray" data-title="评审记录">
+  <h2>独立设计评审记录</h2>
+  <!--REVIEW_LOG-->
+  <div class="cbox"><label>给「评审记录」的意见</label><textarea data-key="s11" data-title="评审记录"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页所有意见</button>
+    <span class="status" id="copy-status"></span>
+  </div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2140";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

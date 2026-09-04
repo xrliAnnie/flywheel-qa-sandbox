@@ -7,6 +7,7 @@ import {
 	readFileSync,
 	rmSync,
 	symlinkSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,6 +78,21 @@ describe("runner-stopped", () => {
 		}
 	}
 
+	function declarationStateKey(executionId = execId): string | undefined {
+		const raw = new Database(dbPath, { readonly: true });
+		try {
+			return (
+				raw
+					.prepare(
+						"SELECT state_key FROM runner_stop_declarations WHERE execution_id = ?",
+					)
+					.get(executionId) as { state_key: string } | undefined
+			)?.state_key;
+		} finally {
+			raw.close();
+		}
+	}
+
 	function writeCompletion(
 		route: string,
 		opts: { summary?: string; pr?: number; eventId?: string } = {},
@@ -115,6 +131,38 @@ describe("runner-stopped", () => {
 		expect(
 			readFileSync(join(stateDir, "consumed", completionEventId), "utf8"),
 		).toBe("");
+	});
+
+	it("collapses changed summary for the same blocked completion event", async () => {
+		const completionEventId = randomUUID();
+		writeCompletion("blocked", {
+			eventId: completionEventId,
+			summary: "blocked wording A",
+		});
+		const first = await emit({
+			turnId: "blocked-summary-a",
+			derivedAtMs: 100,
+		});
+		unlinkSync(join(stateDir, "consumed", completionEventId));
+		writeCompletion("blocked", {
+			eventId: completionEventId,
+			summary: "blocked wording B",
+		});
+		const second = await emit({
+			turnId: "blocked-summary-b",
+			derivedAtMs: 200,
+		});
+
+		expect(first).toMatchObject({ status: "sent", reason: "blocked" });
+		expect(second).toMatchObject({ status: "duplicate", reason: "blocked" });
+		expect(reports()).toHaveLength(1);
+		expect(reports()[0]!.content).toContain("detail=blocked wording A");
+		expect(declarationStateKey()).toBe(
+			`completion\0${completionEventId}\0blocked\0-`,
+		);
+		expect(existsSync(join(stateDir, "consumed", completionEventId))).toBe(
+			false,
+		);
 	});
 
 	it("uses the native StopFailure fixture shape for quota and context_full", async () => {
@@ -178,6 +226,50 @@ describe("runner-stopped", () => {
 		expect(result.reason).toBe("error");
 	});
 
+	it("collapses changed StopFailure detail under the same structured error", async () => {
+		const first = await emit({
+			source: "claude-stop-failure",
+			turnId: "failure-detail-a",
+			stopFailure: {
+				error: "server_error",
+				errorDetails: "backend wording A",
+			},
+			derivedAtMs: 100,
+		});
+		const second = await emit({
+			source: "claude-stop-failure",
+			turnId: "failure-detail-b",
+			stopFailure: {
+				error: "server_error",
+				errorDetails: "backend wording B",
+			},
+			derivedAtMs: 200,
+		});
+
+		expect(first.status).toBe("sent");
+		expect(second.status).toBe("duplicate");
+		expect(reports()).toHaveLength(1);
+		expect(declarationStateKey()).toBe("stop_failure\0server_error\0error");
+	});
+
+	it("collapses different Codex messages with the same quota classification", async () => {
+		const first = await emit({
+			turnId: "quota-wording-a",
+			lastMessage: "Rate limit reached; retry later.",
+			derivedAtMs: 100,
+		});
+		const second = await emit({
+			turnId: "quota-wording-b",
+			lastMessage: "Usage limit exhausted for this account.",
+			derivedAtMs: 200,
+		});
+
+		expect(first).toMatchObject({ status: "sent", reason: "quota" });
+		expect(second).toMatchObject({ status: "duplicate", reason: "quota" });
+		expect(reports()).toHaveLength(1);
+		expect(declarationStateKey()).toBe("codex_classification\0quota");
+	});
+
 	it("prefers a checkpoint over earlier ordinary asks and ignores prior reports", async () => {
 		const raw = new Database(dbPath);
 		for (let i = 0; i < 5; i += 1) {
@@ -200,6 +292,9 @@ describe("runner-stopped", () => {
 			reason: "awaiting_approval",
 			detail: `waiting on gate ${gateId}`,
 		});
+		expect(declarationStateKey()).toBe(
+			`pending_gate\0${gateId}\0approve_to_ship`,
+		);
 	});
 
 	it("excludes answered and superseded questions from the stop reason", async () => {
@@ -224,6 +319,7 @@ describe("runner-stopped", () => {
 	it("maps session terminal state and an active park declaration", async () => {
 		db.markSessionTerminalStatus(execId, "failed");
 		expect((await emit({ turnId: "turn-failed" })).reason).toBe("error");
+		expect(declarationStateKey()).toBe("session\0failed");
 
 		const exec2 = "exec-parked";
 		db.registerSession(exec2, "runner:2", "flywheel", issueId, leadId);
@@ -269,16 +365,16 @@ describe("runner-stopped", () => {
 			.prepare("UPDATE mailbox SET created_at = ? WHERE id = ?")
 			.run("2026-08-04 12:00:05", askId);
 		raw.close();
-		expect(
-			await emit({
-				execId: exec2,
-				turnId: "turn-parked-at-ask",
-				prevIngress: "2026-08-04T12:00:00.000Z",
-			}),
-		).toMatchObject({
+		const waitingOnAnswer = await emit({
+			execId: exec2,
+			turnId: "turn-parked-at-ask",
+			prevIngress: "2026-08-04T12:00:00.000Z",
+		});
+		expect(waitingOnAnswer).toMatchObject({
 			reason: "blocked",
 			detail: `waiting on answer to ${askId}`,
 		});
+		expect(declarationStateKey(exec2)).toBe(`pending_question\0${askId}`);
 
 		db.insertResponse(askId, leadId, "answered");
 		expect(
@@ -359,6 +455,89 @@ describe("runner-stopped", () => {
 		expect(row).toBeUndefined();
 	});
 
+	it("migrates an existing declaration once without overwriting new state on reopen", () => {
+		db.close();
+		const legacy = new Database(dbPath);
+		legacy.exec(`
+			DROP TABLE runner_stop_declarations;
+			CREATE TABLE runner_stop_declarations (
+				execution_id TEXT PRIMARY KEY,
+				content_hash TEXT NOT NULL,
+				content TEXT NOT NULL,
+				question_id TEXT NOT NULL,
+				derived_at_ms INTEGER NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+		`);
+		const legacyContent = "legacy canonical content";
+		legacy
+			.prepare(
+				`INSERT INTO runner_stop_declarations
+				   (execution_id, content_hash, content, question_id, derived_at_ms, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				execId,
+				"a".repeat(64),
+				legacyContent,
+				`rstop-${"a".repeat(32)}`,
+				100,
+				ingressTs,
+			);
+		legacy.close();
+
+		db = new CommDB(dbPath);
+		const migrated = new Database(dbPath, { readonly: true });
+		const columns = migrated
+			.prepare("PRAGMA table_info(runner_stop_declarations)")
+			.all() as Array<{ name: string }>;
+		const migratedRow = migrated
+			.prepare(
+				`SELECT state_hash, state_key, content_hash, derived_at_ms, emitted_at_ms
+				   FROM runner_stop_declarations WHERE execution_id = ?`,
+			)
+			.get(execId) as {
+			state_hash: string;
+			state_key: string;
+			content_hash: string;
+			derived_at_ms: number;
+			emitted_at_ms: number;
+		};
+		migrated.close();
+
+		expect(columns.map(({ name }) => name)).toEqual(
+			expect.arrayContaining(["state_hash", "state_key", "emitted_at_ms"]),
+		);
+		expect(migratedRow).toMatchObject({
+			state_hash: migratedRow.content_hash,
+			state_key: legacyContent,
+			derived_at_ms: 100,
+			emitted_at_ms: 100,
+		});
+
+		db.recordRunnerStopDeclaration({
+			executionId: execId,
+			leadId,
+			stateKey: "machine-state",
+			content: "new canonical content",
+			questionId: `rstop-${"b".repeat(32)}`,
+			derivedAtMs: 200,
+		});
+		db.close();
+		db = new CommDB(dbPath);
+
+		expect(declarationStateKey()).toBe("machine-state");
+		const reopened = new Database(dbPath, { readonly: true });
+		expect(
+			reopened
+				.prepare(
+					"SELECT derived_at_ms, emitted_at_ms FROM runner_stop_declarations WHERE execution_id = ?",
+				)
+				.get(execId),
+		).toEqual({ derived_at_ms: 200, emitted_at_ms: 200 });
+		reopened.close();
+	});
+
 	it("fails closed on identity disagreement without inserting a report", async () => {
 		await expect(
 			emit({ envIssueId: "FLY-9999", turnId: "turn-wrong-identity" }),
@@ -373,6 +552,29 @@ describe("runner-stopped", () => {
 		expect(reports()).toHaveLength(1);
 	});
 
+	it("collapses rewritten fallback detail across distinct Codex turns", async () => {
+		const first = await emit({
+			turnId: "fallback-wording-a",
+			lastMessage: "No state change; still waiting.",
+			derivedAtMs: 100,
+		});
+		const second = await emit({
+			turnId: "fallback-wording-b",
+			lastMessage: "Still waiting because state remains unchanged.",
+			derivedAtMs: 200,
+		});
+
+		expect(first.status).toBe("sent");
+		expect(second).toMatchObject({
+			status: "duplicate",
+			questionId: first.questionId,
+		});
+		expect(reports()).toHaveLength(1);
+		expect(declarationStateKey()).toBe(
+			"fallback\0idle_without_declared_completion",
+		);
+	});
+
 	it("suppresses an unchanged parked declaration across distinct Codex turns", async () => {
 		db.upsertDeclaredState(execId, "parked", "quiet-wait", Date.now(), null);
 
@@ -385,7 +587,142 @@ describe("runner-stopped", () => {
 		expect(reports()).toHaveLength(1);
 	});
 
-	it("emits A to B to A while superseding only an already delivered edge", async () => {
+	it("collapses free-text park reason rewrites within the window", async () => {
+		db.upsertDeclaredState(execId, "parked", "wording A", Date.now(), null);
+		const first = await emit({ turnId: "park-wording-a", derivedAtMs: 100 });
+		db.upsertDeclaredState(execId, "parked", "wording B", Date.now(), null);
+		const second = await emit({ turnId: "park-wording-b", derivedAtMs: 200 });
+
+		expect(first.status).toBe("sent");
+		expect(second).toMatchObject({
+			status: "duplicate",
+			questionId: first.questionId,
+		});
+		expect(reports()).toHaveLength(1);
+		expect(reports()[0]!.content).toContain("detail=parked: wording A");
+		expect(declarationStateKey()).toBe("declared\0parked");
+	});
+
+	it("emits identical content immediately when structured state changes", () => {
+		const content =
+			"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-1571 exec=exec-fly1571 route=- detail=same";
+		const first = db.recordRunnerStopDeclaration({
+			executionId: execId,
+			leadId,
+			stateKey: "state-a",
+			content,
+			questionId: `rstop-${"1".repeat(32)}`,
+			derivedAtMs: 100,
+		});
+		const second = db.recordRunnerStopDeclaration({
+			executionId: execId,
+			leadId,
+			stateKey: "state-b",
+			content,
+			questionId: `rstop-${"2".repeat(32)}`,
+			derivedAtMs: 101,
+		});
+
+		expect([first.status, second.status]).toEqual(["sent", "sent"]);
+		expect(reports()).toHaveLength(2);
+	});
+
+	it("collapses changed content while structured state is unchanged", () => {
+		const first = db.recordRunnerStopDeclaration({
+			executionId: execId,
+			leadId,
+			stateKey: "same-state",
+			content:
+				"RUNNER-STOPPED kind=runner_stopped reason=blocked issue=FLY-1571 exec=exec-fly1571 route=- detail=wording-a",
+			questionId: `rstop-${"3".repeat(32)}`,
+			derivedAtMs: 100,
+		});
+		const second = db.recordRunnerStopDeclaration({
+			executionId: execId,
+			leadId,
+			stateKey: "same-state",
+			content:
+				"RUNNER-STOPPED kind=runner_stopped reason=blocked issue=FLY-1571 exec=exec-fly1571 route=- detail=wording-b",
+			questionId: `rstop-${"4".repeat(32)}`,
+			derivedAtMs: 200,
+		});
+
+		expect(first.status).toBe("sent");
+		expect(second).toMatchObject({
+			status: "duplicate",
+			questionId: first.questionId,
+			contentMatched: false,
+		});
+		expect(reports()).toHaveLength(1);
+	});
+
+	it("allows changed-content heartbeats at the boundary but keeps exact content collapsed", () => {
+		const windowMs = 30 * 60_000;
+		const record = (content: string, digit: string, derivedAtMs: number) =>
+			db.recordRunnerStopDeclaration({
+				executionId: execId,
+				leadId,
+				stateKey: "heartbeat-state",
+				content,
+				questionId: `rstop-${digit.repeat(32)}`,
+				derivedAtMs,
+			});
+
+		const first = record("content-a", "5", 100);
+		const beforeBoundary = record("content-b", "6", 100 + windowMs - 1);
+		const atBoundary = record("content-c", "7", 100 + windowMs);
+		const exactLater = record("content-c", "8", 100 + 2 * windowMs);
+
+		expect([
+			first.status,
+			beforeBoundary.status,
+			atBoundary.status,
+			exactLater.status,
+		]).toEqual(["sent", "duplicate", "sent", "duplicate"]);
+		expect(reports()).toHaveLength(2);
+	});
+
+	it("rejects an older same-state rewrite before evaluating the heartbeat window", () => {
+		const current = db.recordRunnerStopDeclaration({
+			executionId: execId,
+			leadId,
+			stateKey: "same-state",
+			content: "newer wording",
+			questionId: `rstop-${"9".repeat(32)}`,
+			derivedAtMs: 200,
+		});
+		const stale = db.recordRunnerStopDeclaration({
+			executionId: execId,
+			leadId,
+			stateKey: "same-state",
+			content: "older wording",
+			questionId: `rstop-${"0".repeat(32)}`,
+			derivedAtMs: 100,
+		});
+
+		expect(current.status).toBe("sent");
+		expect(stale).toMatchObject({
+			status: "stale",
+			questionId: current.questionId,
+			contentMatched: false,
+		});
+		expect(reports()).toHaveLength(1);
+	});
+
+	it("rejects an empty structured state key", () => {
+		expect(() =>
+			db.recordRunnerStopDeclaration({
+				executionId: execId,
+				leadId,
+				stateKey: "",
+				content: "content",
+				questionId: `rstop-${"e".repeat(32)}`,
+				derivedAtMs: 100,
+			}),
+		).toThrow("runner stop stateKey must be non-empty");
+	});
+
+	it("emits parked to completion to parked while superseding only a delivered edge", async () => {
 		db.upsertDeclaredState(execId, "parked", "A", Date.now(), null);
 		const firstA = await emit({
 			turnId: "edge-a-1",
@@ -400,13 +737,12 @@ describe("runner-stopped", () => {
 			.run(ingressTs, ingressTs, firstA.questionId);
 		raw.close();
 
-		db.upsertDeclaredState(execId, "parked", "B", Date.now(), null);
+		writeCompletion("needs_review", { pr: 73 });
 		const edgeB = await emit({ turnId: "edge-b", derivedAtMs: 200 });
 		expect(db.getMessageById(firstA.questionId)).toMatchObject({
 			relay_state: "terminal_disposed",
 			superseded_by: edgeB.questionId,
 		});
-		db.upsertDeclaredState(execId, "parked", "A", Date.now(), null);
 		const secondA = await emit({
 			turnId: "edge-a-2",
 			derivedAtMs: 300,
@@ -420,7 +756,7 @@ describe("runner-stopped", () => {
 		const rows = reports();
 		expect(
 			rows.map(({ content }) => content.match(/detail=(.*)$/)?.[1]),
-		).toEqual(["parked: B", "parked: A"]);
+		).toEqual(["PR #73 ready, awaiting founder approval", "parked: A"]);
 		expect(rows[0]).toMatchObject({
 			state: "QUEUED",
 			relay_state: "open",
@@ -435,6 +771,7 @@ describe("runner-stopped", () => {
 		const current = db.recordRunnerStopDeclaration({
 			executionId: execId,
 			leadId,
+			stateKey: "state-newer",
 			content:
 				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-1571 exec=exec-fly1571 route=- detail=newer",
 			questionId: `rstop-${"a".repeat(32)}`,
@@ -443,6 +780,7 @@ describe("runner-stopped", () => {
 		const stale = db.recordRunnerStopDeclaration({
 			executionId: execId,
 			leadId,
+			stateKey: "state-older",
 			content:
 				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-1571 exec=exec-fly1571 route=- detail=older",
 			questionId: `rstop-${"b".repeat(32)}`,
@@ -499,6 +837,7 @@ describe("runner-stopped", () => {
 		const current = db.recordRunnerStopDeclaration({
 			executionId: execId,
 			leadId,
+			stateKey: "state-newer-observation",
 			content:
 				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-1571 exec=exec-fly1571 route=- detail=newer observation",
 			questionId: `rstop-${"c".repeat(32)}`,
@@ -537,6 +876,46 @@ describe("runner-stopped", () => {
 			reason: "blocked",
 			detail: "idle without declared completion",
 		});
+	});
+
+	it("emits every genuine fallback and pending-question state transition", async () => {
+		const fallbackA = await emit({
+			turnId: "flap-fallback-a",
+			derivedAtMs: 100,
+		});
+		const askA = db.insertQuestion(execId, leadId, "first wait target");
+		const raw = new Database(dbPath);
+		raw
+			.prepare("UPDATE mailbox SET created_at = ? WHERE id = ?")
+			.run("2026-08-04 12:00:05", askA);
+		const pendingA = await emit({
+			turnId: "flap-pending-a",
+			prevIngress: "2026-08-04T12:00:00.000Z",
+			derivedAtMs: 200,
+		});
+		db.insertResponse(askA, leadId, "answered");
+		const fallbackB = await emit({
+			turnId: "flap-fallback-b",
+			derivedAtMs: 300,
+		});
+		const askB = db.insertQuestion(execId, leadId, "second wait target");
+		raw
+			.prepare("UPDATE mailbox SET created_at = ? WHERE id = ?")
+			.run("2026-08-04 12:00:06", askB);
+		raw.close();
+		const pendingB = await emit({
+			turnId: "flap-pending-b",
+			prevIngress: "2026-08-04T12:00:00.000Z",
+			derivedAtMs: 400,
+		});
+
+		expect([
+			fallbackA.status,
+			pendingA.status,
+			fallbackB.status,
+			pendingB.status,
+		]).toEqual(["sent", "sent", "sent", "sent"]);
+		expect(reports()).toHaveLength(4);
 	});
 
 	it("does not reuse consumed completion state on a later turn", async () => {

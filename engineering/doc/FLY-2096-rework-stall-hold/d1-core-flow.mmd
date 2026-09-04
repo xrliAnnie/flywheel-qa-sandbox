@@ -1,0 +1,27 @@
+flowchart LR
+  subgraph OLD[" "]
+    OT["旧机制:退役前<br/>(生产此刻仍在跑 31da17817)"]:::title
+    direction TB
+    OT --> A1["rework 换体上岗<br/>delivery = wake_delivered<br/>updated_at = T0"] --> A2["巡检每 tick 算龄<br/>age = now − updated_at"]
+    A2 -->|"age ≥ 30 分钟"| A3["告警 rework_activation_stalled_alerted"]
+    A2 -->|"age ≥ 60 分钟<br/>且没撞上 3 分钟重探的空档"| A4["run.status = held<br/>delivery = held"]
+    A4 --> A5["体完工提交<br/>commitWorkflowTransitionTx"]
+    A5 --> A6["被拒 engine_run_not_active"]
+  end
+  subgraph NEW[" "]
+    NT["新机制:FLY-2278 之后的 main<br/>(069013b25,待 00:00 PT 班车部署)"]:::title
+    direction TB
+    NT --> B1["rework 换体上岗<br/>delivery = wake_delivered<br/>attempt.received_at = T0"] --> B2["投递合同 watch<br/>received 阶段 30 分钟到期"]
+    B2 --> B3{"收件体活着吗?<br/>heartbeat / CommDB<br/>10 分钟窗"}
+    B3 -->|"alive"| B4["零写入<br/>不开 episode 不告警 不 hold"]
+    B3 -->|"absent"| B5["只告警<br/>delivery_contract_stalled<br/>run 仍 active"]
+    B4 --> B6["体完工提交"]
+    B5 --> B6
+    B6 --> B7["接受 ok:true<br/>delivery = completed"]
+  end
+  OLD ~~~ NEW
+  classDef title fill:#1a365d,color:#fff,stroke:#1a365d
+  style A4 fill:#ffe5e3,stroke:#ff3b30
+  style A6 fill:#ffe5e3,stroke:#ff3b30
+  style B4 fill:#e3f7e8,stroke:#34c759
+  style B7 fill:#e3f7e8,stroke:#34c759

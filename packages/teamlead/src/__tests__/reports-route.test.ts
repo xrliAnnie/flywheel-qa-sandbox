@@ -1,6 +1,6 @@
 /**
  * FLY-203: /api/reports router tests — real ReportRegistry on tmp fs,
- * mocked Vercel deploy + Discord post seams, real HTTP via express app.
+ * mocked private Blob + Discord post seams, real HTTP via express app.
  */
 
 import { execSync } from "node:child_process";
@@ -8,6 +8,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
 	symlinkSync,
 	truncateSync,
@@ -51,6 +52,8 @@ describe("reports-route", () => {
 	let registry: ReportRegistry;
 	let server: Server | undefined;
 	let baseUrl: string;
+	let blobPutMock: ReturnType<typeof vi.fn>;
+	let blobDeleteMock: ReturnType<typeof vi.fn>;
 	let deployMock: ReturnType<typeof vi.fn>;
 	let postWithFileMock: ReturnType<typeof vi.fn>;
 	let postTextMock: ReturnType<typeof vi.fn>;
@@ -58,7 +61,25 @@ describe("reports-route", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly203-route-"));
 		registry = new ReportRegistry(dir, { warn: () => {} });
-		deployMock = vi.fn().mockResolvedValue({ deploymentId: "dpl_x" });
+		writeFileSync(
+			join(dir, "registry.json"),
+			JSON.stringify({
+				vercelProjectName: "fw-reports-a1b2c3",
+				reports: [],
+			}),
+			"utf8",
+		);
+		registry.markHostingMigrated({
+			provider: "vercel-blob",
+			migratedAt: "2026-09-03T16:00:00.000Z",
+			gatewayDeploymentId: "dpl_gateway",
+		});
+		blobPutMock = vi.fn().mockImplementation(async (token: string) => ({
+			pathname: `r/${token}/index.html`,
+			url: `https://store.private.blob.vercel-storage.com/r/${token}/index.html`,
+		}));
+		blobDeleteMock = vi.fn().mockResolvedValue(undefined);
+		deployMock = vi.fn().mockResolvedValue({ deploymentId: "dpl_local" });
 		postWithFileMock = vi
 			.fn()
 			.mockResolvedValue({ ok: true, messageId: "msg_file" });
@@ -90,6 +111,10 @@ describe("reports-route", () => {
 		app.use(
 			"/api/reports",
 			createReportsRouter({
+				blobStore: {
+					putReport: blobPutMock,
+					deleteReports: blobDeleteMock,
+				},
 				vercelToken: "vt",
 				discordBotToken: "bt",
 				projects,
@@ -126,13 +151,31 @@ describe("reports-route", () => {
 
 	// ── publish ─────────────────────────────────────────────────────────
 
-	it("publish: 501 without VERCEL_TOKEN", async () => {
-		await startApp({ vercelToken: undefined });
+	it("FLY-2283: publish fails closed without private Blob storage", async () => {
+		await startApp({ blobStore: undefined });
 		const r = await post("/api/reports/publish", {
 			projectName: "x",
 			html: HTML,
 		});
+
 		expect(r.status).toBe(501);
+		expect(String(r.json.error)).toContain("BLOB_READ_WRITE_TOKEN");
+		expect(blobPutMock).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2283: publish refuses to strand old links before the gateway migration is committed", async () => {
+		rmSync(dir, { recursive: true, force: true });
+		registry = new ReportRegistry(dir, { warn: () => {} });
+		await startApp();
+
+		const r = await post("/api/reports/publish", {
+			projectName: "flywheel",
+			html: HTML,
+		});
+
+		expect(r.status).toBe(503);
+		expect(String(r.json.error)).toContain("hosting migration");
+		expect(blobPutMock).not.toHaveBeenCalled();
 	});
 
 	it("FLY-1715: publish fails closed without a server-owned credential tier", async () => {
@@ -143,7 +186,7 @@ describe("reports-route", () => {
 			reportCredentialTier: "master",
 		});
 		expect(r.status).toBe(401);
-		expect(deployMock).not.toHaveBeenCalled();
+		expect(blobPutMock).not.toHaveBeenCalled();
 	});
 
 	it("FLY-1715: ingest publish accepts configured projects and rejects unknown projects", async () => {
@@ -153,7 +196,7 @@ describe("reports-route", () => {
 			html: HTML,
 		});
 		expect(denied.status).toBe(403);
-		expect(deployMock).not.toHaveBeenCalled();
+		expect(blobPutMock).not.toHaveBeenCalled();
 		const allowed = await post("/api/reports/publish", {
 			projectName: "withGeneral",
 			html: HTML,
@@ -163,12 +206,15 @@ describe("reports-route", () => {
 
 	it("FLY-1715: outstanding publish cap returns 429 and releases capacity after drain", async () => {
 		let releaseFirst: (() => void) | undefined;
-		const firstDeploy = new Promise<void>((resolve) => {
+		const firstUpload = new Promise<void>((resolve) => {
 			releaseFirst = resolve;
 		});
-		deployMock.mockImplementation(async () => {
-			await firstDeploy;
-			return { deploymentId: "dpl_x" };
+		blobPutMock.mockImplementation(async (token: string) => {
+			await firstUpload;
+			return {
+				pathname: `r/${token}/index.html`,
+				url: `https://store.private.blob.vercel-storage.com/r/${token}/index.html`,
+			};
 		});
 		await startApp();
 		const queued = Array.from(
@@ -224,10 +270,10 @@ describe("reports-route", () => {
 		});
 		expect(noHead.status).toBe(400);
 		expect(String(noHead.json.error)).toContain("<head>");
-		expect(deployMock).not.toHaveBeenCalled();
+		expect(blobPutMock).not.toHaveBeenCalled();
 	});
 
-	it("publish: inline event handlers fail loud before deploy", async () => {
+	it("publish: inline event handlers fail loud before Blob upload", async () => {
 		await startApp();
 		const result = await post("/api/reports/publish", {
 			projectName: "withGeneral",
@@ -238,10 +284,30 @@ describe("reports-route", () => {
 		expect(String(result.json.error)).toMatch(
 			/inline event handler.*addEventListener/i,
 		);
-		expect(deployMock).not.toHaveBeenCalled();
+		expect(blobPutMock).not.toHaveBeenCalled();
 	});
 
-	it("publish: happy path deploys staged files and commits", async () => {
+	it("FLY-2283: publish rejects gateway-unservable HTML without Blob or registry writes", async () => {
+		const registryBefore = readFileSync(join(dir, "registry.json"), "utf8");
+		await startApp();
+		const result = await post("/api/reports/publish", {
+			projectName: "flywheel",
+			html: '<html><head><meta http-equiv="Content-Security-Policy"></head><body>report</body></html>',
+		});
+
+		expect(result.status).toBe(400);
+		expect(String(result.json.error)).toContain(
+			"non-empty Content-Security-Policy",
+		);
+		expect(blobPutMock).not.toHaveBeenCalled();
+		expect(readFileSync(join(dir, "registry.json"), "utf8")).toBe(
+			registryBefore,
+		);
+		expect(registry.list()).toEqual([]);
+		expect(existsSync(join(dir, "files"))).toBe(false);
+	});
+
+	it("publish: happy path uploads hardened HTML and commits", async () => {
 		await startApp();
 		const r = await post("/api/reports/publish", {
 			projectName: "flywheel",
@@ -254,21 +320,17 @@ describe("reports-route", () => {
 			/^https:\/\/fw-reports-[0-9a-f]{6}\.vercel\.app\/r\/[0-9a-f]{32}\/$/,
 		);
 		expect(r.json.reportId).toMatch(/^[0-9a-f]{32}$/);
-		// deploy received robots.txt + the report
-		const [, name, files] = deployMock.mock.calls[0] as [
-			string,
-			string,
-			{ file: string }[],
-		];
-		expect(name).toMatch(/^fw-reports-[0-9a-f]{6}$/);
-		expect(files.map((f) => f.file)).toContain("robots.txt");
+		const [token, uploadedHtml] = blobPutMock.mock.calls[0] as [string, string];
+		expect(token).toBe(r.json.reportId);
+		expect(uploadedHtml).toContain('name="robots" content="noindex"');
+		expect(uploadedHtml).toContain("Content-Security-Policy");
 		// committed
 		expect(registry.list()).toHaveLength(1);
-		expect(registry.vercelProjectName()).toBe(name);
-		expect(deployMock.mock.calls[0]?.[4]).toBeUndefined();
+		expect(registry.vercelProjectName()).toMatch(/^fw-reports-[0-9a-f]{6}$/);
+		expect(deployMock).not.toHaveBeenCalled();
 	});
 
-	it("publish: uses the loopback report host for deploy and public URL", async () => {
+	it("publish: keeps the loopback report host complete without touching private Blob", async () => {
 		await startApp({
 			hostOverride: {
 				apiBaseUrl: "http://127.0.0.1:4321",
@@ -279,27 +341,94 @@ describe("reports-route", () => {
 			projectName: "flywheel",
 			html: HTML,
 		});
+		const next = await post("/api/reports/publish", {
+			projectName: "flywheel",
+			html: HTML,
+		});
 
 		expect(result.status).toBe(200);
+		expect(next.status).toBe(200);
 		expect(String(result.json.url)).toMatch(
 			/^http:\/\/127\.0\.0\.1:4321\/fw-reports-[0-9a-f]{6}\/r\/[0-9a-f]{32}\/$/,
 		);
 		expect(deployMock.mock.calls[0]?.[4]).toBe("http://127.0.0.1:4321");
+		const secondFiles = deployMock.mock.calls[1]?.[2] as Array<{
+			file: string;
+		}>;
+		expect(secondFiles.map((file) => file.file)).toEqual([
+			"robots.txt",
+			`r/${String(result.json.reportId)}/index.html`,
+			`r/${String(next.json.reportId)}/index.html`,
+		]);
+		expect(blobPutMock).not.toHaveBeenCalled();
 	});
 
-	it("publish: deploy failure → 502, zero disk change on first publish", async () => {
-		deployMock.mockRejectedValueOnce(new Error("vercel down"));
+	it("FLY-2283: each publish uploads one private blob and the publish path has no deployment call", async () => {
+		await startApp();
+
+		const published = await Promise.all(
+			["menu", "cart", "comparison"].map((title) =>
+				post("/api/reports/publish", {
+					projectName: "flywheel",
+					html: HTML,
+					title,
+				}),
+			),
+		);
+
+		expect(published.every((result) => result.status === 200)).toBe(true);
+		expect(blobPutMock).toHaveBeenCalledTimes(3);
+		expect(registry.list()).toHaveLength(3);
+		expect(deployMock).not.toHaveBeenCalled();
+	});
+
+	it("publish: staging failure does not log Blob credentials", async () => {
+		const blobCredential = "blob-secret";
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		vi.spyOn(registry, "stagePublish").mockImplementationOnce(() => {
+			throw new Error(`staging failed with credential ${blobCredential}`);
+		});
+		await startApp();
+
+		const result = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+
+		expect(result.status).toBe(500);
+		expect(consoleError.mock.calls.flat().join(" ")).not.toContain(
+			blobCredential,
+		);
+		consoleError.mockRestore();
+	});
+
+	it("publish: Blob upload failure → 502 and leaves the registry unchanged", async () => {
+		const blobCredential = "blob-secret";
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		blobPutMock.mockRejectedValueOnce(
+			new Error(`blob down with credential ${blobCredential}`),
+		);
 		await startApp();
 		const r = await post("/api/reports/publish", {
 			projectName: "p",
 			html: HTML,
 		});
 		expect(r.status).toBe(502);
-		expect(existsSync(join(dir, "registry.json"))).toBe(false);
-		expect(registry.vercelProjectName()).toBeUndefined();
+		expect(existsSync(join(dir, "registry.json"))).toBe(true);
+		expect(registry.vercelProjectName()).toBe("fw-reports-a1b2c3");
+		expect(registry.hosting()?.gatewayDeploymentId).toBe("dpl_gateway");
+		expect(registry.list()).toEqual([]);
+		expect(consoleError.mock.calls.flat().join(" ")).not.toContain(
+			blobCredential,
+		);
+		consoleError.mockRestore();
 	});
 
-	it("publish: commit failure after successful deploy → 502, registry stays old", async () => {
+	it("publish: commit failure after successful Blob upload → 502, registry stays old", async () => {
 		await startApp();
 		// sabotage atomic write: registry.json.tmp as a directory
 		mkdirSync(join(dir, "registry.json.tmp"), { recursive: true });
@@ -312,15 +441,51 @@ describe("reports-route", () => {
 		expect(registry.list()).toEqual([]);
 	});
 
+	it("publish: commit failure does not log Blob credentials", async () => {
+		const blobCredential = "blob-secret";
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		blobDeleteMock.mockRejectedValueOnce(
+			new Error(`cleanup failed with credential ${blobCredential}`),
+		);
+		const stagePublish = registry.stagePublish.bind(registry);
+		vi.spyOn(registry, "stagePublish").mockImplementationOnce(
+			(projectName, html, title) => ({
+				...stagePublish(projectName, html, title),
+				commit: () => {
+					throw new Error(`commit failed with credential ${blobCredential}`);
+				},
+			}),
+		);
+		await startApp();
+
+		const result = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+
+		expect(result.status).toBe(502);
+		expect(
+			[...consoleError.mock.calls, ...consoleWarn.mock.calls].flat().join(" "),
+		).not.toContain(blobCredential);
+		consoleError.mockRestore();
+		consoleWarn.mockRestore();
+	});
+
 	it("publish: concurrent publishes are serialized by the mutex", async () => {
 		let inFlight = 0;
 		let maxInFlight = 0;
-		deployMock.mockImplementation(async () => {
+		blobPutMock.mockImplementation(async (token: string) => {
 			inFlight += 1;
 			maxInFlight = Math.max(maxInFlight, inFlight);
 			await new Promise((r) => setTimeout(r, 30));
 			inFlight -= 1;
-			return { deploymentId: "dpl_c" };
+			return {
+				pathname: `r/${token}/index.html`,
+				url: `https://store.private.blob.vercel-storage.com/r/${token}/index.html`,
+			};
 		});
 		await startApp();
 		const [a, b] = await Promise.all([
@@ -331,11 +496,105 @@ describe("reports-route", () => {
 		expect(b.status).toBe(200);
 		expect(maxInFlight).toBe(1);
 		expect(registry.list()).toHaveLength(2);
-		// second deploy must contain the first report (registry consistency)
-		const secondFiles = (
-			deployMock.mock.calls[1] as [string, string, { file: string }[]]
-		)[2];
-		expect(secondFiles.length).toBe(3); // robots + 2 reports
+		expect(blobPutMock).toHaveBeenCalledTimes(2);
+		expect(blobPutMock.mock.calls[0]?.[0]).not.toBe(
+			blobPutMock.mock.calls[1]?.[0],
+		);
+	});
+
+	it("FLY-2283: a successful publish deletes objects that reached 14 days, never younger objects", async () => {
+		let now = Date.parse("2026-06-04T00:00:00.000Z");
+		registry = new ReportRegistry(dir, { now: () => now });
+		registry.markHostingMigrated({
+			provider: "vercel-blob",
+			migratedAt: new Date(now).toISOString(),
+			gatewayDeploymentId: "dpl_gateway",
+		});
+		await startApp();
+		const old = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+		now += 14 * 24 * 60 * 60 * 1000;
+
+		const next = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+
+		expect(old.status).toBe(200);
+		expect(next.status).toBe(200);
+		expect(blobDeleteMock).toHaveBeenCalledOnce();
+		expect(blobDeleteMock).toHaveBeenCalledWith([old.json.reportId]);
+	});
+
+	it("publish: removes malformed registry entries from accounting without deleting their Blobs", async () => {
+		const now = Date.parse("2026-06-04T00:00:00.000Z");
+		registry = new ReportRegistry(dir, { now: () => now });
+		registry.markHostingMigrated({
+			provider: "vercel-blob",
+			migratedAt: new Date(now).toISOString(),
+			gatewayDeploymentId: "dpl_gateway",
+		});
+		await startApp();
+		const old = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+		const registryPath = join(dir, "registry.json");
+		const data = JSON.parse(readFileSync(registryPath, "utf8")) as {
+			reports: Array<{ createdAt: string }>;
+		};
+		data.reports[0]!.createdAt = "not-a-date";
+		writeFileSync(registryPath, JSON.stringify(data), "utf8");
+
+		const next = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+
+		expect(old.status).toBe(200);
+		expect(next.status).toBe(200);
+		expect(registry.list().map((entry) => entry.token)).toEqual([
+			next.json.reportId,
+		]);
+		expect(blobDeleteMock).not.toHaveBeenCalled();
+	});
+
+	it("publish: deferred expired-object cleanup does not log Blob credentials", async () => {
+		const blobCredential = "blob-secret";
+		const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		let now = Date.parse("2026-06-04T00:00:00.000Z");
+		registry = new ReportRegistry(dir, { now: () => now });
+		registry.markHostingMigrated({
+			provider: "vercel-blob",
+			migratedAt: new Date(now).toISOString(),
+			gatewayDeploymentId: "dpl_gateway",
+		});
+		await startApp();
+		expect(
+			(
+				await post("/api/reports/publish", {
+					projectName: "p",
+					html: HTML,
+				})
+			).status,
+		).toBe(200);
+		now += 14 * 24 * 60 * 60 * 1000;
+		blobDeleteMock.mockRejectedValueOnce(
+			new Error(`cleanup failed with credential ${blobCredential}`),
+		);
+
+		const result = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+
+		expect(result.status).toBe(200);
+		expect(consoleWarn.mock.calls.flat().join(" ")).not.toContain(
+			blobCredential,
+		);
+		consoleWarn.mockRestore();
 	});
 
 	// ── deliver ─────────────────────────────────────────────────────────
