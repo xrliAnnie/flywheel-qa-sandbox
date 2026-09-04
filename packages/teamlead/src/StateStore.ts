@@ -8342,6 +8342,7 @@ export class StateStore {
 				? this.workflowCredentialRotationExpiryTx(
 						"workflow_output_credential",
 						executionId,
+						context.binding.activation_id,
 						nowIso,
 						requestedWindow.expiresAt,
 					)
@@ -8350,6 +8351,7 @@ export class StateStore {
 				? this.workflowCredentialRotationExpiryTx(
 						"workflow_submission_credential",
 						executionId,
+						context.binding.activation_id,
 						nowIso,
 						requestedWindow.expiresAt,
 					)
@@ -28479,14 +28481,11 @@ export class StateStore {
 		return result;
 	}
 
-	/**
-	 * Re-issues the plaintext output ticket after a pre-launch crash. The durable
-	 * launch owner is the serialization fence: only its current, unexpired,
-	 * uncommitted generation may revoke the lost ticket and create one replacement.
-	 */
+	/** Keep every rotated credential inside the activation's original hard stop. */
 	private workflowCredentialRotationExpiryTx(
 		table: "workflow_output_credential" | "workflow_submission_credential",
 		executionId: string,
+		activationId: string,
 		now: string,
 		requestedExpiresAt: string,
 	): { expiresAt: string; absoluteDeadlineAt: string } | undefined {
@@ -28496,10 +28495,10 @@ export class StateStore {
 		const query =
 			table === "workflow_output_credential"
 				? `SELECT absolute_deadline_at FROM workflow_output_credential
-				     WHERE execution_id = ?`
+				     WHERE execution_id = ? AND activation_id = ?`
 				: `SELECT absolute_deadline_at FROM workflow_submission_credential
-				     WHERE execution_id = ?`;
-		const rows = this.workflowSelectAll(query, [executionId]);
+				     WHERE execution_id = ? AND activation_id = ?`;
+		const rows = this.workflowSelectAll(query, [executionId, activationId]);
 		if (rows.length === 0) return undefined;
 		let absoluteDeadlineMs = Number.POSITIVE_INFINITY;
 		for (const row of rows) {
@@ -28520,8 +28519,61 @@ export class StateStore {
 		};
 	}
 
+	private workflowCredentialRotationFenceTx(input: {
+		executionId: string;
+		binding: WorkflowExecutionBindingRow;
+		ownerId: string;
+		generation: number;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		const reworkRequestId = input.binding.rework_request_id;
+		if (input.binding.mode === "wake" && reworkRequestId) {
+			const request = this.getWorkflowReworkRequest(reworkRequestId);
+			const delivery = this.getWorkflowReworkDelivery(reworkRequestId);
+			const route = this.getLatestWorkflowReworkRoute(reworkRequestId);
+			if (
+				!request ||
+				!delivery ||
+				!route ||
+				request.run_id !== input.binding.run_id ||
+				delivery.owner_id !== input.ownerId ||
+				delivery.generation !== input.generation ||
+				!delivery.lease_expires_at ||
+				!StateStore.workflowFiniteTimestamp(delivery.lease_expires_at) ||
+				Date.parse(input.now) >= Date.parse(delivery.lease_expires_at) ||
+				delivery.route_revision !== route.revision ||
+				!(delivery.state === "pending" || delivery.state === "turn_granted") ||
+				route.preferred_actor_execution_id !== input.executionId ||
+				route.target_node_id !== input.binding.node_id ||
+				route.target_attempt !== input.binding.attempt
+			) {
+				return { ok: false, reason: "stale_rework_owner" };
+			}
+			return { ok: true };
+		}
+
+		const owner = this.getWorkflowLaunchOwner(input.executionId);
+		if (owner?.committed_generation != null) {
+			return { ok: false, reason: "launch_committed" };
+		}
+		if (
+			!owner ||
+			owner.owner_id !== input.ownerId ||
+			owner.owner_generation !== input.generation ||
+			Date.parse(input.now) >= Date.parse(owner.lease_expires_at)
+		) {
+			return { ok: false, reason: "stale_launch_owner" };
+		}
+		return { ok: true };
+	}
+
+	/**
+	 * Re-issues a lost plaintext output ticket before delivery. A spawn uses its
+	 * launch-owner fence; a rework wake uses its exact live delivery claim.
+	 */
 	rotateGeneralizedWorkflowOutputCredential(input: {
 		executionId: string;
+		activationId?: string;
 		ownerId: string;
 		generation: number;
 		now: string;
@@ -28537,8 +28589,12 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_expiry" };
 		}
-		const context = this.generalizedExecutionContext(input.executionId);
-		if (!context) return { ok: false, reason: "not_enrolled" };
+		const context = input.activationId
+			? this.generalizedExecutionContextForActivation(input.activationId)
+			: this.generalizedExecutionContext(input.executionId);
+		if (!context || context.binding.execution_id !== input.executionId) {
+			return { ok: false, reason: "not_enrolled" };
+		}
 		if (!context.node.capabilities.produces_output) {
 			return { ok: false, reason: "node_does_not_produce_output" };
 		}
@@ -28553,17 +28609,15 @@ export class StateStore {
 				result = { ok: false, reason: "launch_cancelled" };
 				return;
 			}
-			const owner = this.getWorkflowLaunchOwner(input.executionId);
-			if (owner?.committed_generation != null) {
-				result = { ok: false, reason: "launch_committed" };
-				return;
-			}
-			if (
-				!owner ||
-				owner.owner_id !== input.ownerId ||
-				owner.owner_generation !== input.generation ||
-				Date.parse(input.now) >= Date.parse(owner.lease_expires_at)
-			) {
+			const fence = this.workflowCredentialRotationFenceTx({
+				executionId: input.executionId,
+				binding: context.binding,
+				ownerId: input.ownerId,
+				generation: input.generation,
+				now: input.now,
+			});
+			if (!fence.ok) {
+				result = fence;
 				return;
 			}
 			const unexpectedDecisionTicket = this.workflowSelectAll(
@@ -28579,6 +28633,7 @@ export class StateStore {
 			const expiry = this.workflowCredentialRotationExpiryTx(
 				"workflow_output_credential",
 				input.executionId,
+				context.binding.activation_id,
 				input.now,
 				input.expiresAt,
 			);
@@ -28705,6 +28760,7 @@ export class StateStore {
 			const expiry = this.workflowCredentialRotationExpiryTx(
 				"workflow_output_credential",
 				input.executionId,
+				context.binding.activation_id,
 				input.now,
 				input.expiresAt,
 			);
@@ -28755,12 +28811,12 @@ export class StateStore {
 	}
 
 	/**
-	 * Re-issues the plaintext QA/review decision ticket after a pre-launch
-	 * crash. As with output-ticket rotation, only the current uncommitted launch
-	 * owner may replace the lost capability.
+	 * Re-issues a lost plaintext QA/review ticket before delivery. A spawn uses
+	 * its launch-owner fence; a rework wake uses its exact live delivery claim.
 	 */
 	rotateGeneralizedWorkflowSubmissionCredential(input: {
 		executionId: string;
+		activationId?: string;
 		ownerId: string;
 		generation: number;
 		now: string;
@@ -28778,8 +28834,12 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_expiry" };
 		}
-		const context = this.generalizedExecutionContext(input.executionId);
-		if (!context) return { ok: false, reason: "not_enrolled" };
+		const context = input.activationId
+			? this.generalizedExecutionContextForActivation(input.activationId)
+			: this.generalizedExecutionContext(input.executionId);
+		if (!context || context.binding.execution_id !== input.executionId) {
+			return { ok: false, reason: "not_enrolled" };
+		}
 		const family = resolveWorkflowDecisionContract(
 			context.snapshot,
 			context.binding.node_id,
@@ -28792,22 +28852,21 @@ export class StateStore {
 			reason: "stale_launch_owner",
 		};
 		this.db.transaction(() => {
-			const owner = this.getWorkflowLaunchOwner(input.executionId);
-			if (owner?.committed_generation != null) {
-				result = { ok: false, reason: "launch_committed" };
-				return;
-			}
-			if (
-				!owner ||
-				owner.owner_id !== input.ownerId ||
-				owner.owner_generation !== input.generation ||
-				Date.parse(input.now) >= Date.parse(owner.lease_expires_at)
-			) {
+			const fence = this.workflowCredentialRotationFenceTx({
+				executionId: input.executionId,
+				binding: context.binding,
+				ownerId: input.ownerId,
+				generation: input.generation,
+				now: input.now,
+			});
+			if (!fence.ok) {
+				result = fence;
 				return;
 			}
 			const expiry = this.workflowCredentialRotationExpiryTx(
 				"workflow_submission_credential",
 				input.executionId,
+				context.binding.activation_id,
 				input.now,
 				input.expiresAt,
 			);
@@ -28937,6 +28996,7 @@ export class StateStore {
 			const expiry = this.workflowCredentialRotationExpiryTx(
 				"workflow_submission_credential",
 				input.executionId,
+				context.binding.activation_id,
 				input.now,
 				input.expiresAt,
 			);

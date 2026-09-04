@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +52,9 @@ async function createHarness(
 		closeActorForReworkSupersession?: () => Promise<
 			{ ok: true } | { ok: false; error: string }
 		>;
+		failGrantOnceFor?: string;
+		failWakeOnceFor?: string;
+		implementProducesOutput?: boolean;
 	} = {},
 ) {
 	const root = mkdtempSync(join(tmpdir(), "fly1423-rework-e2e-"));
@@ -79,6 +83,22 @@ async function createHarness(
 	const qaSeed = seed.manifest.nodes.find((node) => node.id === "qa");
 	if (!qaSeed) throw new Error("tpl_eng_heavy QA node missing");
 	delete qaSeed.submissionWindowMinutes;
+	if (options.implementProducesOutput) {
+		const implementSeed = seed.manifest.nodes.find(
+			(node) => node.id === "implement",
+		);
+		if (!implementSeed) throw new Error("tpl_eng_heavy implement node missing");
+		Object.assign(implementSeed, {
+			type: "generic",
+			produces_output: true,
+			output: { schema: "json_v1", max_bytes: 262_144 },
+		});
+		const implementEdge = seed.manifest.edges.find(
+			(edge) => edge.from === "implement",
+		);
+		if (!implementEdge) throw new Error("tpl_eng_heavy implement edge missing");
+		implementEdge.condition = "node_done";
+	}
 	seed.contentHash = workflowSeedContentHash(seed);
 	store.importWorkflowTemplateSeed(seed);
 	store.bindWorkflowCategory({
@@ -145,7 +165,7 @@ async function createHarness(
 		nodeId: "implement",
 		attempt: 1,
 		executionId: "implement-exec",
-		outcome: "implement_done",
+		outcome: options.implementProducesOutput ? "node_done" : "implement_done",
 		successorExecutionId: "qa-exec",
 		now: "2026-07-23T00:04:00.000Z",
 	});
@@ -206,6 +226,12 @@ async function createHarness(
 		context: unknown;
 	}> = [];
 	const supersessions: unknown[] = [];
+	const failedGrantExecutions = new Set(
+		options.failGrantOnceFor ? [options.failGrantOnceFor] : [],
+	);
+	const failedWakeExecutions = new Set(
+		options.failWakeOnceFor ? [options.failWakeOnceFor] : [],
+	);
 	const coordinator = new WorkflowReworkCoordinator({
 		store,
 		ownerId: "e2e-coordinator",
@@ -232,7 +258,14 @@ async function createHarness(
 					? { ok: true }
 					: { ok: false, reason: `head_mismatch:${actual}:${expectedHeadSha}` };
 			},
+			hasTurnSource: async ({ issueId, sourceEventId }) =>
+				comm
+					.listTurnSourceHistory(issueId)
+					.some((source) => source.source_event_id === sourceEventId),
 			grantTurn: async (input) => {
+				if (failedGrantExecutions.delete(input.executionId)) {
+					throw new Error("execution mutation lease refused: lease_held");
+				}
 				const grantedAt = NOW.toISOString();
 				const epoch = comm.grantTurn(
 					input.issueId,
@@ -257,6 +290,9 @@ async function createHarness(
 				return { epoch, grantedAt };
 			},
 			wakeActor: async ({ session, activationId, epoch, context }) => {
+				if (failedWakeExecutions.delete(session.execution_id)) {
+					return { ok: false, error: "wake_pipe_closed" };
+				}
 				wakes.push({
 					executionId: session.execution_id,
 					activationId,
@@ -289,6 +325,313 @@ async function createHarness(
 }
 
 describe("FLY-1423 capability-level rework flow", () => {
+	it("preserves an already-granted submission credential across a wake retry", async () => {
+		let current = new Date("2026-07-23T00:20:00.000Z");
+		const { store, comm, coordinator, baseHead } = await createHarness({
+			now: () => current,
+			failWakeOnceFor: "qa-exec",
+		});
+		const rawStore = store as unknown as {
+			db: {
+				run(sql: string, params?: unknown[]): void;
+				exec(sql: string): Array<{ columns: string[]; values: unknown[][] }>;
+			};
+		};
+		try {
+			store.upsertWorkflowRunNode({
+				runId: "run-e2e",
+				nodeId: "qa",
+				attempt: 2,
+				state: "pending",
+				executionId: "qa-exec",
+			});
+			rawStore.db.run(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, requested_at)
+				 VALUES ('rework-qa-wake', 'run-e2e', 'implement-done-wake', 'qa',
+				         'implement', 1, ?, '{"authority":"qa"}', 'digest-qa-wake', ?)`,
+				[baseHead, current.toISOString()],
+			);
+			rawStore.db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES ('rework-qa-wake', 1, 'qa', 2, 'qa-exec', '["qa"]',
+				         '["qa_retest"]', 'engine:test', 'wake failure', ?)`,
+				[current.toISOString()],
+			);
+			rawStore.db.run(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES ('rework-qa-wake', 1, 'pending', ?)`,
+				[current.toISOString()],
+			);
+
+			await expect(coordinator.reconcile("rework-qa-wake")).resolves.toEqual({
+				kind: "retryable",
+				reason: "wake_failed:wake_pipe_closed",
+			});
+			const firstActivation =
+				comm.getCurrentRunnerWorkflowActivation("qa-exec");
+			expect(firstActivation?.submission_credential).toEqual(
+				expect.any(String),
+			);
+			expect(
+				store.getWorkflowSubmissionCredentialByToken(
+					firstActivation!.submission_credential!,
+				),
+			).toMatchObject({ revoked: 0 });
+
+			current = new Date("2026-07-23T00:21:00.000Z");
+			await expect(
+				coordinator.reconcile("rework-qa-wake"),
+			).resolves.toMatchObject({
+				kind: "awaiting_receipt",
+				executionId: "qa-exec",
+			});
+
+			const replayedActivation =
+				comm.getCurrentRunnerWorkflowActivation("qa-exec");
+			expect(replayedActivation?.submission_credential).toBe(
+				firstActivation!.submission_credential,
+			);
+			const credentialHash = createHash("sha256")
+				.update(replayedActivation!.submission_credential!)
+				.digest("hex");
+			expect(
+				store.getWorkflowSubmissionCredentialByToken(
+					replayedActivation!.submission_credential!,
+				),
+			).toMatchObject({ credential_hash: credentialHash, revoked: 0 });
+			expect(
+				rawStore.db.exec(
+					`SELECT credential_hash, revoked
+					   FROM workflow_submission_credential
+					  WHERE execution_id = 'qa-exec'
+					  ORDER BY id DESC`,
+				)[0]?.values,
+			).toEqual([[credentialHash, 0]]);
+		} finally {
+			comm.close();
+			store.close();
+		}
+	});
+
+	it("rotates submission credential after a lease-held replay", async () => {
+		let current = new Date("2026-07-23T00:20:00.000Z");
+		const { store, comm, coordinator, baseHead } = await createHarness({
+			now: () => current,
+			failGrantOnceFor: "qa-exec",
+		});
+		const rawStore = store as unknown as {
+			db: {
+				run(sql: string, params?: unknown[]): void;
+				exec(sql: string): Array<{
+					columns: string[];
+					values: unknown[][];
+				}>;
+			};
+		};
+		try {
+			const staleAdmission = store.admitGeneralizedWorkflowExecution({
+				runId: "run-e2e",
+				nodeId: "qa",
+				executionId: "qa-exec",
+				attempt: 1,
+				activationId: "activation:qa-stale",
+				expiresAt: "2026-07-20T01:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-21T00:00:00.000Z",
+				now: "2026-07-20T00:00:00.000Z",
+				env: WORKFLOW_ON,
+			});
+			expect(staleAdmission).toMatchObject({ ok: true });
+			rawStore.db.run(
+				`UPDATE workflow_submission_credential
+				    SET revoked = 1, revoked_reason = 'superseded_attempt'
+				  WHERE activation_id = 'activation:qa-stale'`,
+			);
+			store.upsertWorkflowRunNode({
+				runId: "run-e2e",
+				nodeId: "qa",
+				attempt: 2,
+				state: "pending",
+				executionId: "qa-exec",
+			});
+			rawStore.db.run(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, requested_at)
+				 VALUES ('rework-qa-replay', 'run-e2e', 'implement-done-replay', 'qa',
+				         'implement', 1, ?, '{"authority":"qa"}', 'digest-qa-replay', ?)`,
+				[baseHead, current.toISOString()],
+			);
+			rawStore.db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES ('rework-qa-replay', 1, 'qa', 2, 'qa-exec', '["qa"]',
+				         '["qa_retest"]', 'engine:test', 'lease-held replay', ?)`,
+				[current.toISOString()],
+			);
+			rawStore.db.run(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES ('rework-qa-replay', 1, 'pending', ?)`,
+				[current.toISOString()],
+			);
+
+			await expect(coordinator.reconcile("rework-qa-replay")).resolves.toEqual({
+				kind: "retryable",
+				reason:
+					"turn_grant_failed:execution mutation lease refused: lease_held",
+			});
+			expect(
+				store.rotateGeneralizedWorkflowSubmissionCredential({
+					executionId: "qa-exec",
+					activationId: "activation:rework-qa-replay",
+					ownerId: "stale-coordinator",
+					generation: 1,
+					now: current.toISOString(),
+					expiresAt: "2026-07-23T06:20:00.000Z",
+					absoluteDeadlineAt: "2026-07-24T00:20:00.000Z",
+				}),
+			).toEqual({ ok: false, reason: "stale_rework_owner" });
+
+			current = new Date("2026-07-23T00:21:00.000Z");
+			await expect(
+				coordinator.reconcile("rework-qa-replay"),
+			).resolves.toMatchObject({
+				kind: "awaiting_receipt",
+				executionId: "qa-exec",
+			});
+
+			const activation = comm.getCurrentRunnerWorkflowActivation("qa-exec");
+			expect(activation).toMatchObject({
+				activation_id: "activation:rework-qa-replay",
+				node_id: "qa",
+				attempt: 2,
+			});
+			expect(activation?.submission_credential).toEqual(expect.any(String));
+			const credentialHash = createHash("sha256")
+				.update(activation!.submission_credential!)
+				.digest("hex");
+			const rows = rawStore.db.exec(
+				`SELECT credential_hash, revoked
+				   FROM workflow_submission_credential
+				  WHERE execution_id = 'qa-exec'
+				  ORDER BY id DESC`,
+			)[0]?.values;
+			expect(rows).toEqual([
+				[credentialHash, 0],
+				[expect.any(String), 1],
+				[expect.any(String), 1],
+			]);
+			expect(
+				store.getWorkflowSubmissionCredentialByToken(
+					activation!.submission_credential!,
+				),
+			).toMatchObject({
+				activation_id: activation!.activation_id,
+				credential_hash: credentialHash,
+				revoked: 0,
+			});
+		} finally {
+			comm.close();
+			store.close();
+		}
+	});
+
+	it("rotates output credential after a lease-held replay", async () => {
+		let current = new Date("2026-07-23T00:11:00.000Z");
+		const { store, comm, coordinator, baseHead } = await createHarness({
+			now: () => current,
+			failGrantOnceFor: "implement-exec",
+			implementProducesOutput: true,
+		});
+		const rawStore = store as unknown as {
+			db: {
+				exec(sql: string): Array<{
+					columns: string[];
+					values: unknown[][];
+				}>;
+			};
+		};
+		try {
+			const failed = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
+				runId: "run-e2e",
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: baseHead,
+				now: "2026-07-23T00:10:00.000Z",
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("QA fail did not create a rework request");
+			}
+
+			await expect(
+				coordinator.reconcile(failed.reworkRequestId),
+			).resolves.toEqual({
+				kind: "retryable",
+				reason:
+					"turn_grant_failed:execution mutation lease refused: lease_held",
+			});
+			expect(
+				store.rotateGeneralizedWorkflowOutputCredential({
+					executionId: "implement-exec",
+					activationId: `activation:${failed.reworkRequestId}`,
+					ownerId: "stale-coordinator",
+					generation: 1,
+					now: current.toISOString(),
+					expiresAt: "2026-07-23T06:11:00.000Z",
+					absoluteDeadlineAt: "2026-07-24T00:11:00.000Z",
+				}),
+			).toEqual({ ok: false, reason: "stale_rework_owner" });
+
+			current = new Date("2026-07-23T00:12:00.000Z");
+			await expect(
+				coordinator.reconcile(failed.reworkRequestId),
+			).resolves.toMatchObject({
+				kind: "awaiting_receipt",
+				executionId: "implement-exec",
+			});
+
+			const activation =
+				comm.getCurrentRunnerWorkflowActivation("implement-exec");
+			expect(activation).toMatchObject({
+				activation_id: `activation:${failed.reworkRequestId}`,
+				node_id: "implement",
+				attempt: 2,
+			});
+			expect(activation?.output_credential).toEqual(expect.any(String));
+			const credentialHash = createHash("sha256")
+				.update(activation!.output_credential!)
+				.digest("hex");
+			const rows = rawStore.db.exec(
+				`SELECT credential_hash, revoked
+				   FROM workflow_output_credential
+				  WHERE execution_id = 'implement-exec'
+				  ORDER BY id DESC`,
+			)[0]?.values;
+			expect(rows).toEqual([
+				[credentialHash, 0],
+				[expect.any(String), 1],
+			]);
+		} finally {
+			comm.close();
+			store.close();
+		}
+	});
+
 	it("closes a legacy terminal implement, then converges through proven-dead replacement", async () => {
 		let current = new Date("2026-07-23T00:11:00.000Z");
 		let liveness: PhaseLiveness = "alive";

@@ -687,6 +687,135 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("rejects stale rework credential rotation fences without changing credentials", async () => {
+		const store = await StateStore.create(":memory:");
+		createRun(store, { output: true });
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 2,
+			state: "pending",
+			executionId: "exec-1",
+		});
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		raw
+			.prepare(
+				`INSERT INTO workflow_actor
+				   (execution_id, project_name, issue_id, role, created_at)
+				 VALUES ('exec-1', 'flywheel', 'FLY-X', 'execute',
+				         '2026-07-15T00:00:00.000Z')`,
+			)
+			.run();
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, requested_at)
+				 VALUES ('rework-1', 'run-1', 'rework-source-1', 'engine', 'execute', 1,
+				         ?, '{"authority":"engine"}', 'rework-digest-1',
+				         '2026-07-15T00:00:00.000Z')`,
+			)
+			.run("a".repeat(40));
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES ('rework-1', 1, 'execute', 2, 'exec-1', '["execute"]',
+				         '["code_review"]', 'engine:test', 'test route',
+				         '2026-07-15T00:00:00.000Z')`,
+			)
+			.run();
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES ('rework-1', 1, 'pending', '2026-07-15T00:00:00.000Z')`,
+			)
+			.run();
+		const admitted = store.admitGeneralizedWorkflowExecution({
+			runId: "run-1",
+			nodeId: "execute",
+			executionId: "exec-1",
+			attempt: 2,
+			activationId: "activation-rework-1",
+			activationMode: "wake",
+			reworkRequestId: "rework-1",
+			expiresAt: "2026-07-15T00:20:00.000Z",
+			absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			now: "2026-07-15T00:00:00.000Z",
+			env: enabled,
+		});
+		if (!admitted.ok)
+			throw new Error(`rework admission failed: ${admitted.reason}`);
+		expect(admitted).toMatchObject({ ok: true });
+		const claim = store.claimWorkflowReworkDelivery({
+			requestId: "rework-1",
+			ownerId: "coordinator-a",
+			now: "2026-07-15T00:01:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:10:00.000Z",
+		});
+		expect(claim).toMatchObject({ ok: true, generation: 1 });
+		if (!claim.ok) throw new Error(claim.reason);
+
+		const credentialRows = () =>
+			raw
+				.prepare(
+					`SELECT activation_id, credential_hash, revoked, revoked_reason
+					   FROM workflow_output_credential
+					  WHERE execution_id = 'exec-1'
+					  ORDER BY id`,
+				)
+				.all();
+		const originalRows = credentialRows();
+		const rotate = (overrides: {
+			activationId?: string;
+			ownerId?: string;
+			generation?: number;
+			now?: string;
+		}) =>
+			store.rotateGeneralizedWorkflowOutputCredential({
+				executionId: "exec-1",
+				activationId: overrides.activationId ?? "activation-rework-1",
+				ownerId: overrides.ownerId ?? "coordinator-a",
+				generation: overrides.generation ?? claim.generation,
+				now: overrides.now ?? "2026-07-15T00:02:00.000Z",
+				expiresAt: "2026-07-15T00:22:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			});
+		for (const [overrides, expected] of [
+			[{ activationId: "activation-missing" }, "not_enrolled"],
+			[{ ownerId: "coordinator-stale" }, "stale_rework_owner"],
+			[{ generation: claim.generation + 1 }, "stale_rework_owner"],
+			[{ now: "2026-07-15T00:10:00.000Z" }, "stale_rework_owner"],
+		] as const) {
+			expect(rotate(overrides)).toEqual({ ok: false, reason: expected });
+			expect(credentialRows()).toEqual(originalRows);
+		}
+
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES ('rework-1', 2, 'execute', 3, 'exec-1', '["execute"]',
+				         '["code_review"]', 'engine:test', 'drifted route',
+				         '2026-07-15T00:03:00.000Z')`,
+			)
+			.run();
+		expect(rotate({})).toEqual({
+			ok: false,
+			reason: "stale_rework_owner",
+		});
+		expect(credentialRows()).toEqual(originalRows);
+		store.close();
+	});
+
 	it("commits prepared issue delivery evidence when adopting a marker-after crash", async () => {
 		const store = await StateStore.create(":memory:");
 		const admitted = createAdmittedEngineRun(store);

@@ -10607,6 +10607,16 @@ export async function startBridge(
 						...(result.error ? { error: result.error } : {}),
 					};
 				},
+				hasTurnSource: async ({ issueId, projectName, sourceEventId }) => {
+					const db = new CommDB(commDbPathForProject(projectName));
+					try {
+						return db
+							.listTurnSourceHistory(issueId)
+							.some((source) => source.source_event_id === sourceEventId);
+					} finally {
+						db.close();
+					}
+				},
 				grantTurn: async (input) => {
 					const grantedAtMs = Date.now();
 					const db = new CommDB(commDbPathForProject(input.projectName));

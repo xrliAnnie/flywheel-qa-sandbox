@@ -1,13 +1,19 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CommDB } from "flywheel-comm/db";
 import { describe, expect, it, vi } from "vitest";
+import {
+	legacyEngineeringSeed,
+	pinLegacyWorkflowSeedAgents,
+} from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type {
 	WorkflowReworkDeliveryRow,
 	WorkflowReworkRequestRow,
 	WorkflowReworkRouteRevisionRow,
 } from "../../StateStore.js";
+import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import {
 	classifyPhaseActorReentry,
 	type PhaseActorReentryDecision,
@@ -20,6 +26,37 @@ import {
 
 const NOW = "2026-07-23T00:00:00.000Z";
 const HEAD = "a".repeat(40);
+const REPO_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
+
+function buildSnapshot(implementProducesOutput = false) {
+	const seed = pinLegacyWorkflowSeedAgents(legacyEngineeringSeed());
+	if (implementProducesOutput) {
+		const implementNode = seed.manifest.nodes.find(
+			(node) => node.id === "implement",
+		);
+		if (!implementNode)
+			throw new Error("implement node missing from test seed");
+		Object.assign(implementNode, {
+			type: "generic",
+			produces_output: true,
+			output: { schema: "json_v1", max_bytes: 262_144 },
+		});
+		const implementEdge = seed.manifest.edges.find(
+			(edge) => edge.from === "implement",
+		);
+		if (!implementEdge)
+			throw new Error("implement edge missing from test seed");
+		implementEdge.condition = "node_done";
+	}
+	return buildWorkflowRunSnapshotV2({
+		template: { id: "tpl-rework-coordinator-unit", revision: 1 },
+		canonicalRoot: REPO_ROOT,
+		manifest: seed.manifest,
+	});
+}
+
+const SNAPSHOT = buildSnapshot();
+const OUTPUT_SNAPSHOT = buildSnapshot(true);
 
 const session = {
 	execution_id: "implement-exec",
@@ -99,7 +136,11 @@ function makeHarness(input: {
 	failTurnProjectionOnce?: boolean;
 	reentryEnabled?: boolean;
 	initialState?: WorkflowReworkDeliveryRow["state"];
+	targetNode?: "implement" | "qa";
+	implementProducesOutput?: boolean;
+	turnSourceProbeError?: string;
 }) {
+	const targetNode = input.targetNode ?? "implement";
 	const request: WorkflowReworkRequestRow = {
 		request_id: "rework-1",
 		run_id: "run-1",
@@ -119,7 +160,7 @@ function makeHarness(input: {
 	const route: WorkflowReworkRouteRevisionRow = {
 		request_id: request.request_id,
 		revision: 1,
-		target_node_id: "implement",
+		target_node_id: targetNode,
 		target_attempt: 2,
 		preferred_actor_execution_id: session.execution_id,
 		invalidation_scope: ["implement", "qa"],
@@ -143,6 +184,7 @@ function makeHarness(input: {
 	};
 	let activationAdmitted = delivery.state !== "pending";
 	let projected = false;
+	let turnSourceFrozen = false;
 	let failProjection = input.failTurnProjectionOnce ?? false;
 
 	const store: WorkflowReworkCoordinatorStore = {
@@ -154,10 +196,13 @@ function makeHarness(input: {
 			issue_id: "FLY-1423",
 			project_name: "flywheel",
 			status: "active",
+			snapshot: JSON.stringify(
+				input.implementProducesOutput ? OUTPUT_SNAPSHOT : SNAPSHOT,
+			),
 		})),
 		getWorkflowRunNode: vi.fn(() => ({
 			run_id: "run-1",
-			node_id: "implement",
+			node_id: targetNode,
 			attempt: 2,
 			state:
 				delivery.state === "wake_delivered"
@@ -281,9 +326,21 @@ function makeHarness(input: {
 				idempotentReplay: replay,
 				activationId: "activation:rework-1",
 				snapshotDigest: "snapshot-1",
-				...(replay ? {} : { outputCredential: "output-ticket" }),
+				...(replay
+					? {}
+					: targetNode === "qa"
+						? { submissionCredential: "submission-ticket" }
+						: { outputCredential: "output-ticket" }),
 			};
 		}),
+		rotateGeneralizedWorkflowOutputCredential: vi.fn(() => ({
+			ok: true as const,
+			outputCredential: "rotated-output-ticket",
+		})),
+		rotateGeneralizedWorkflowSubmissionCredential: vi.fn(() => ({
+			ok: true as const,
+			submissionCredential: "rotated-submission-ticket",
+		})),
 		recordWorkflowActivationTurn: vi.fn(() => {
 			if (failProjection) {
 				failProjection = false;
@@ -303,7 +360,16 @@ function makeHarness(input: {
 		assertWorktreeReady: vi.fn(async () => input.ready ?? { ok: true }),
 		activateActorForWake: vi.fn(async () => ({ ok: true })),
 		closeActorForReworkSupersession: vi.fn(async () => ({ ok: true })),
-		grantTurn: vi.fn(async () => ({ epoch: 4, grantedAt: NOW })),
+		hasTurnSource: vi.fn(async () => {
+			if (input.turnSourceProbeError) {
+				throw new Error(input.turnSourceProbeError);
+			}
+			return turnSourceFrozen;
+		}),
+		grantTurn: vi.fn(async () => {
+			turnSourceFrozen = true;
+			return { epoch: 4, grantedAt: NOW };
+		}),
 		wakeActor: vi.fn(async () => wakeResults.shift() ?? { ok: true }),
 	};
 	const env = {
@@ -393,7 +459,10 @@ describe("WorkflowReworkCoordinator", () => {
 	});
 
 	it("admits a same-exec activation, grants a new epoch, and wakes the original actor", async () => {
-		const h = makeHarness({ registered: "alive" });
+		const h = makeHarness({
+			registered: "alive",
+			implementProducesOutput: true,
+		});
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toEqual({
 			kind: "awaiting_receipt",
 			executionId: "implement-exec",
@@ -770,6 +839,91 @@ describe("WorkflowReworkCoordinator", () => {
 		expect(h.effects.grantTurn.mock.calls[0]?.[0].sourceEventId).toBe(
 			h.effects.grantTurn.mock.calls[1]?.[0].sourceEventId,
 		);
+	});
+
+	it("fails closed before TURN when replay output rotation loses its claim", async () => {
+		const h = makeHarness({
+			registered: "alive",
+			implementProducesOutput: true,
+		});
+		h.effects.grantTurn.mockRejectedValueOnce(new Error("lease_held"));
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "turn_grant_failed:lease_held",
+		});
+		vi.mocked(
+			h.store.rotateGeneralizedWorkflowOutputCredential,
+		).mockReturnValue({ ok: false, reason: "stale_rework_owner" });
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "engine_output_rotation_stale_rework_owner",
+		});
+		expect(h.effects.grantTurn).toHaveBeenCalledOnce();
+	});
+
+	it("fails closed before TURN when replay submission rotation loses its claim", async () => {
+		const h = makeHarness({ registered: "alive", targetNode: "qa" });
+		h.effects.grantTurn.mockRejectedValueOnce(new Error("lease_held"));
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "turn_grant_failed:lease_held",
+		});
+		vi.mocked(
+			h.store.rotateGeneralizedWorkflowSubmissionCredential,
+		).mockReturnValue({ ok: false, reason: "stale_rework_owner" });
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "engine_submission_rotation_stale_rework_owner",
+		});
+		expect(h.effects.grantTurn).toHaveBeenCalledOnce();
+	});
+
+	it("preserves the credential when TURN froze but its StateStore projection failed", async () => {
+		const h = makeHarness({
+			registered: "alive",
+			targetNode: "qa",
+			failTurnProjectionOnce: true,
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "turn_projection_failed:projection_crash",
+		});
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "awaiting_receipt",
+		});
+
+		expect(h.effects.hasTurnSource).toHaveBeenCalledOnce();
+		expect(
+			h.store.rotateGeneralizedWorkflowSubmissionCredential,
+		).not.toHaveBeenCalled();
+	});
+
+	it("fails closed when the frozen TURN source cannot be checked before rotation", async () => {
+		const h = makeHarness({
+			registered: "alive",
+			targetNode: "qa",
+			turnSourceProbeError: "comm unavailable",
+		});
+		h.effects.grantTurn.mockRejectedValueOnce(new Error("lease_held"));
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "turn_grant_failed:lease_held",
+		});
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "turn_source_probe_failed:comm unavailable",
+		});
+
+		expect(
+			h.store.rotateGeneralizedWorkflowSubmissionCredential,
+		).not.toHaveBeenCalled();
+		expect(h.effects.grantTurn).toHaveBeenCalledOnce();
 	});
 
 	it("retries a failed mailbox on the same actor and with the same wake identity", async () => {
