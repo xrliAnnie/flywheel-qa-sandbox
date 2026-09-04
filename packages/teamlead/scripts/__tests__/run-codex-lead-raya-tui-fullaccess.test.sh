@@ -7,6 +7,7 @@ fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SUT="$SCRIPT_DIR/run-codex-lead-raya-tui-fullaccess.sh"
 REAL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$REAL_ROOT/../.." && pwd)"
 T=$(mktemp -d /tmp/raya-tui.XXXXX) || exit 1
 trap 'rm -rf "$T"' EXIT
 
@@ -19,7 +20,8 @@ unset FLYWHEEL_LEAD_MODEL FLYWHEEL_LEAD_EFFORT \
 	FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST \
 	FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST \
 	DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID DISCORD_IDENTITY_MODE \
-	FLYWHEEL_ROOT FLYWHEEL_LEAD_ALERT_SH
+	FLYWHEEL_ROOT FLYWHEEL_LEAD_ALERT_SH CODEX_HOME FLYWHEEL_CODEX_BIN \
+	FLYWHEEL_CODEX_LEAD_HOME_KEY
 
 REPO="$T/repo"
 RT="$REPO/packages/teamlead"
@@ -36,6 +38,8 @@ printf '#!/bin/bash\nexit 0\n' > "$RT/scripts/codex-lead-tui-home.sh"
 chmod +x "$RT/scripts/codex-lead-tui-home.sh"
 ln -s "$REAL_ROOT/lead-rules-base" "$RT/lead-rules-base"
 ln -s "$REAL_ROOT/scripts/lib/canonical-lead-identity.sh" "$RT/scripts/lib/canonical-lead-identity.sh"
+mkdir -p "$REPO/scripts/lib"
+ln -s "$REPO_ROOT/scripts/lib/lead-address.sh" "$REPO/scripts/lib/lead-address.sh"
 
 mkdir -p "$T/bin"
 cat > "$T/bin/node" <<'EOF'
@@ -48,11 +52,11 @@ env > "$ENVDUMP"
 EOF
 chmod +x "$T/bin/node"
 
-ENVDUMP="$T/envdump" PATH="$T/bin:$PATH" \
+ENVDUMP="$T/envdump" HOME="$T/home" PATH="$T/bin:$PATH" \
 	FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
 	FLYWHEEL_COMM_CLI="$REPO/packages/flywheel-comm/dist/index.js" \
 	RAYA_CODE_ROOT="$T/raya-code" RAYA_LEAD_WORKSPACE="$T/workspace" \
-	RAYA_METRICS_DIR="$T/metrics" CODEX_HOME="$T/codex-home" \
+	RAYA_METRICS_DIR="$T/metrics" \
 	RAYA_BOT_TOKEN=DRY ENVDUMP="$T/envdump" \
 	CANONICAL_JSON='{"schemaVersion":1,"leadId":"raya","projectName":"raya","leadKey":"raya-raya","agentTeamName":"raya","botUserId":"1542068543645024257","botTokenEnv":"RAYA_BOT_TOKEN","discordStateDir":"/tmp/discord-raya","backend":"codex-app-server","model":"gpt-5.6-sol","effort":"xhigh","modelContextWindow":1000000,"role":"cos","summaryRole":"recipient","summaryGranularity":"per-lead","hasSummaryDuty":false,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 	/bin/bash "$SUT" >/dev/null 2>&1
@@ -69,6 +73,7 @@ else
 	[ "$(envval "$T/envdump" FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW)" = 1000000 ] && pass "canonical context window" || fail "context window"
 	[ "$(envval "$T/envdump" FLYWHEEL_CODEX_TUI_CWD)" = "$T/workspace" ] && pass "workspace is TUI cwd" || fail "workspace cwd"
 	[ "$(envval "$T/envdump" RAYA_METRICS_DIR)" = "$T/metrics" ] && pass "metrics path projected" || fail "metrics"
+	[ "$(envval "$T/envdump" CODEX_HOME)" = "$T/home/.codex-raya" ] && pass "shared rule derives the Raya Lead home" || fail "Raya CODEX_HOME"
 	[ "$(envval "$T/envdump" FLYWHEEL_ROOT)" = "$REPO" ] && [ -f "$REPO/scripts/lead-alert.sh" ] \
 		&& pass "repo-shaped launcher root resolves the real alert-script contract" \
 		|| fail "FLYWHEEL_ROOT/lead-alert contract"

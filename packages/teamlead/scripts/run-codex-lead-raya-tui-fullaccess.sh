@@ -24,12 +24,15 @@ fi
 
 . "${TEAMLEAD_ROOT}/scripts/lib/canonical-lead-identity.sh"
 canonical_lead_identity_resolve "raya" "raya"
+. "${FLYWHEEL_ROOT}/scripts/lib/lead-address.sh"
 
 export FLYWHEEL_COMM_DB="${FLYWHEEL_COMM_DB:-${HOME}/.flywheel/comm/raya/comm.db}"
 export FLYWHEEL_LEAD_CHAT_CHANNEL_ID="${FLYWHEEL_LEAD_CHAT_CHANNEL_ID:-1542079099928059987}"
 export FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-1512578695468941333}"
 export FLYWHEEL_CODEX_LEAD_STATE_DIR="${HOME}/.flywheel/state/codex-lead/raya"
-export CODEX_HOME="${CODEX_HOME:-${HOME}/.flywheel/raya/codex-home}"
+export FLYWHEEL_CODEX_LEAD_HOME_KEY=raya
+codex_home_default="$(derive_codex_lead_home "$FLYWHEEL_CODEX_LEAD_HOME_KEY")" || exit $?
+export CODEX_HOME="${CODEX_HOME:-$codex_home_default}"
 export FLYWHEEL_CODEX_BIN="${FLYWHEEL_CODEX_BIN:-${CODEX_HOME}/packages/standalone/current/codex}"
 export FLYWHEEL_CODEX_LEAD_MODE=tui
 

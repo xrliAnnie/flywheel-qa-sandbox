@@ -1,0 +1,28 @@
+flowchart LR
+  subgraph PRE["窗口前·不依赖部署"]
+    Z0["⓪ founder 登录一次<br/>~/.codex-raya"]
+    Z4["④ 装 standalone codex<br/>进 ~/.codex-raya"]
+    Z3["③ Tadashi 写一份真 summary<br/>开 PR 到 raya 仓"]
+  end
+  subgraph CODE["本 PR → 班车 N 部署"]
+    C1["一条通用规则:每个 Codex Lead 的凭证目录<br/>= ~/.codex-「名字」;raya 套用得 ~/.codex-raya"]
+    C2["3 个生产启动脚本 + 自愈脚本<br/>统一调这条规则"]
+  end
+  subgraph WIN["激活窗口·founder 在场"]
+    W1["① 名册加 raya 行"] --> W5["⑤ 刷新 summary 名册回执"]
+    W5 --> W2["② 建工作区 + 搬记忆仓<br/>+ 改 raya.env 两处"]
+    W2 --> P1["preflight 只读检查"]
+    P1 --> P2["converge 装 wrapper"]
+    P2 --> P3["装 plist,launchd 拉起"]
+    P3 --> P4["活了:pid / pane / 心跳<br/>+ 你说一句她回一句"]
+    P4 --> P8["退应急观察窗"]
+  end
+  subgraph POST["班车 N+1 之后"]
+    Q1["Bridge 巡视覆盖 raya"] --> Q2["假死演练:SIGSTOP<br/>→ 告警 → 自愈"]
+    Q2 --> Q3["关窗 → 20 秒重建"]
+    Q3 --> Q4["语音对照:<br/>老 home 一字未改 + /voice 正常"]
+  end
+  PRE --> WIN
+  C1 --> C2
+  CODE --> WIN
+  WIN --> POST

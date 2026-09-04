@@ -1620,6 +1620,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly2259-raya-cutover-materials.test.sh:kill -CONT \"$T0_pid\"#1",
+		"path": "scripts/__tests__/fly2259-raya-cutover-materials.test.sh",
+		"code": "kill -CONT \"$T0_pid\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2259-raya-cutover-materials.test.sh:kill -STOP \"$T0_pid\"#1",
+		"path": "scripts/__tests__/fly2259-raya-cutover-materials.test.sh",
+		"code": "kill -STOP \"$T0_pid\"",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/fly2264-stop-old-tmux-real.test.sh:if kill -0 \"$pid\" 2>/dev/null; then#1",
 		"path": "scripts/__tests__/fly2264-stop-old-tmux-real.test.sh",
 		"code": "if kill -0 \"$pid\" 2>/dev/null; then",

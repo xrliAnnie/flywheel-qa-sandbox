@@ -1,0 +1,32 @@
+{
+  "projectName": "raya",
+  "projectRoot": "/Users/xiaorongli/Dev/raya-lead-workspace",
+  "projectRepo": "xrliAnnie/raya",
+  "memoryAllowedUsers": [
+    "annie",
+    "raya"
+  ],
+  "generalChannel": "1542079099928059987",
+  "leads": [
+    {
+      "agentId": "raya",
+      "chatChannel": "1542079099928059987",
+      "botTokenEnv": "RAYA_BOT_TOKEN",
+      "botUserId": "1542068543645024257",
+      "canSpawnRunners": false,
+      "backend": "codex-app-server",
+      "codexProfile": "full-access",
+      "role": "cos",
+      "model": "gpt-5.6-sol",
+      "effort": "xhigh",
+      "modelContextWindow": 1000000,
+      "summaryRole": "recipient",
+      "codexResidencyPatrol": true,
+      "match": {
+        "labels": [
+          "raya-lead"
+        ]
+      }
+    }
+  ]
+}

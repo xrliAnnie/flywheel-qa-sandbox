@@ -1,0 +1,22 @@
+sequenceDiagram
+  participant Op as 操作者(窗口后演练)
+  participant Job as raya-raya 进程
+  participant HB as 心跳文件
+  participant Patrol as Bridge 巡视(60s)
+  participant Alert as flywheel-alerts 频道
+  participant Helper as 恢复 helper
+  participant Launchd as launchd
+  Op->>Job: kill -STOP <exact pid>(假死,可逆)
+  Note over HB: updatedAt 停止推进
+  Patrol->>HB: 读快照(第 1 次:stale ≥120s)
+  Patrol->>HB: 第 2 次
+  Patrol->>HB: 第 3 次(连败阈值到)
+  Patrol->>Alert: codex_lead_residency_stalled(lead key raya-raya)
+  Patrol->>Helper: --recover(pid, lstart, generation, carrier)
+  Helper->>Helper: 三方 digest + pid/lstart/argv/CODEX_HOME 二次核验
+  Helper->>Helper: 写 recovery-receipts.jsonl(pre_mutation)
+  Helper->>Launchd: kickstart -k gui/<uid>/com.flywheel.lead.raya-raya(有界)
+  Launchd->>Job: 换新进程(新 pid)
+  Job->>HB: 新 generation 心跳
+  Helper-->>Patrol: converged
+  Note over Op: 全程 grep com.xrli.raya.brain = 0

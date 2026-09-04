@@ -13,7 +13,7 @@ fail() { FAIL=$((FAIL + 1)); printf '[TEST] FAIL - %s\n' "$1" >&2; }
 
 make_fixture() {
 	local t="$1"
-	mkdir -p "$t/home/.flywheel/raya/codex-home" "$t/bin" \
+	mkdir -p "$t/home/.codex-raya" "$t/bin" \
 		"$t/repo/packages/teamlead/dist/lead-backends/codex" "$t/home/Library/LaunchAgents"
 	printf '4242\n' > "$t/pid"
 	cat > "$t/projects.json" <<JSON
@@ -64,7 +64,7 @@ fi
 pid=""
 for arg in "$@"; do case "$arg" in [1-9][0-9]*) pid="$arg" ;; esac; done
 [ -n "$pid" ] || exit 2
-codex_home="${CODEX_RESIDENCY_FAKE_CODEX_HOME:-$CODEX_RESIDENCY_FAKE_ROOT/home/.flywheel/raya/codex-home}"
+codex_home="${CODEX_RESIDENCY_FAKE_CODEX_HOME:-$CODEX_RESIDENCY_FAKE_ROOT/home/.codex-raya}"
 if printf '%s\n' "$*" | grep -q 'lstart='; then
 	if [ "$pid" = 4242 ]; then printf 'Tue Sep  1 05:00:00 2026\n'; else printf 'Tue Sep  1 06:01:00 2026\n'; fi
 else
@@ -103,7 +103,7 @@ run_helper() {
 
 T1="$TMP_ROOT/success"; make_fixture "$T1"
 PROBE="$(run_helper "$T1" --probe 2>/dev/null || true)"
-if jq -e --arg home "$T1/home/.flywheel/raya/codex-home" '
+if jq -e --arg home "$T1/home/.codex-raya" '
 	.state == "exact" and .pid == 4242 and .codexHome == $home
 	and .label == "com.flywheel.lead.raya-raya"
 	and .wrapper == "flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh"
@@ -111,6 +111,24 @@ if jq -e --arg home "$T1/home/.flywheel/raya/codex-home" '
 	pass "probe returns only the exact Raya process identity"
 else
 	fail "exact probe contract failed: $PROBE"
+fi
+
+T_OLD_HOME="$TMP_ROOT/old-shared-home"; make_fixture "$T_OLD_HOME"
+CODEX_RESIDENCY_FAKE_CODEX_HOME="$T_OLD_HOME/home/.flywheel/raya/codex-home" \
+	run_helper "$T_OLD_HOME" --probe >/dev/null 2>&1
+old_probe_rc=$?
+CODEX_RESIDENCY_FAKE_CODEX_HOME="$T_OLD_HOME/home/.flywheel/raya/codex-home" \
+	run_helper "$T_OLD_HOME" --recover --expected-pid 4242 \
+		--expected-lstart 'Tue Sep  1 05:00:00 2026' \
+		--expected-generation generation-a --expected-carrier-instance carrier-a >/dev/null 2>&1
+old_recover_rc=$?
+if [ "$old_probe_rc" -eq 21 ] && [ "$old_recover_rc" -eq 21 ] \
+	&& [ "$(grep -cv '^launchctl print gui/' "$T_OLD_HOME/calls" || true)" -eq 0 ] \
+	&& ! grep -q 'kickstart\|^bounded ' "$T_OLD_HOME/calls" \
+	&& [ ! -e "$T_OLD_HOME/recovery-receipts.jsonl" ]; then
+	pass "Raya's retired shared CODEX_HOME is rejected before mutation"
+else
+	fail "retired shared CODEX_HOME was not zero-mutation (probe=$old_probe_rc recover=$old_recover_rc calls=$(cat "$T_OLD_HOME/calls" 2>/dev/null))"
 fi
 
 T_MUFASA="$TMP_ROOT/mufasa-probe"; make_fixture "$T_MUFASA"

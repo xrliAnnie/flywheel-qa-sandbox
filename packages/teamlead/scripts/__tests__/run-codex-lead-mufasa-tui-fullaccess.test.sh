@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SUT="$SCRIPT_DIR/run-codex-lead-mufasa-tui-fullaccess.sh"
 [ -x "$SUT" ] || { echo "FATAL: $SUT not executable"; exit 1; }
 REAL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)" # the real teamlead package root (for lead-rules-base)
+REPO_ROOT="$(cd "$REAL_ROOT/../.." && pwd)"
 
 T=$(mktemp -d /tmp/clfa.XXXXX) || { echo "FATAL: mktemp"; exit 1; }
 trap 'rm -rf "$T"' EXIT
@@ -35,21 +36,24 @@ unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
 	FLYWHEEL_LEAD_ROLE FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY \
 	FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST \
 	FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST \
-	DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID FLYWHEEL_LEAD_BOT_USER_ID
+	DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID FLYWHEEL_LEAD_BOT_USER_ID \
+	CODEX_HOME FLYWHEEL_CODEX_BIN FLYWHEEL_CODEX_LEAD_HOME_KEY
 
 # Fake TEAMLEAD_ROOT: stub dist runtime + lead-actions + tui-home; REAL lead-rules-base
 # (symlinked) so assemble_full_access_governance resolves founder-only-authority for real.
-RT="$T/teamlead"
+REPO="$T/repo"
+RT="$REPO/packages/teamlead"
 mkdir -p "$RT/dist/lead-backends/codex/lead-actions" "$RT/scripts" \
-	"$T/flywheel-comm/dist"
+	"$REPO/packages/flywheel-comm/dist" "$REPO/scripts/lib"
 printf '// stub\n' > "$RT/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 printf '// stub\n' > "$RT/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
-printf '// stub\n' > "$T/flywheel-comm/dist/index.js"
+printf '// stub\n' > "$REPO/packages/flywheel-comm/dist/index.js"
 printf '#!/bin/bash\nexit 0\n' > "$RT/scripts/codex-lead-tui-home.sh"
 chmod +x "$RT/scripts/codex-lead-tui-home.sh"
 ln -s "$REAL_ROOT/lead-rules-base" "$RT/lead-rules-base"
 mkdir -p "$RT/scripts/lib"
 ln -s "$REAL_ROOT/scripts/lib/canonical-lead-identity.sh" "$RT/scripts/lib/canonical-lead-identity.sh"
+ln -s "$REPO_ROOT/scripts/lib/lead-address.sh" "$REPO/scripts/lib/lead-address.sh"
 
 # Mock `node`: dump the env it was exec'd with, then exit 0.
 mkdir -p "$T/bin"
@@ -68,7 +72,7 @@ mkdir -p "$T/proj"
 run_dry() {
 	ENVDUMP="$T/envdump.$$.$RANDOM"
 	export ENVDUMP
-	PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
+	HOME="$T/home" PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
 		CANONICAL_JSON='{"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 		FLYWHEEL_CODEX_TUI_CWD="$T/proj" FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
 		MUFASA_BOT_TOKEN=DRY \
@@ -84,7 +88,7 @@ if [ -f "$D" ]; then
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_SANDBOX)" = "workspace-write" ] && pass "SANDBOX=workspace-write" || fail "SANDBOX wrong"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_MODE)" = "tui" ] && pass "MODE=tui (windowed)" || fail "MODE not tui"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_OUTBOUND)" = "direct" ] && pass "outbound=direct (preserves roundtable)" || fail "outbound not direct"
-	[ "$(envval "$D" FLYWHEEL_COMM_CLI)" = "$T/flywheel-comm/dist/index.js" ] \
+	[ "$(envval "$D" FLYWHEEL_COMM_CLI)" = "$REPO/packages/flywheel-comm/dist/index.js" ] \
 		&& pass "founder-time CLI path reaches production TUI runtime" \
 		|| fail "FLYWHEEL_COMM_CLI missing/wrong ($(envval "$D" FLYWHEEL_COMM_CLI))"
 	pd=$(envval "$D" FLYWHEEL_CODEX_LEAD_PROJECT_DIR)
@@ -108,6 +112,7 @@ fi
 	case "$sd" in */codex-lead/mufasa-lead) pass "lead_actions STATE_DIR = pinned mufasa state" ;; *) fail "STATE_DIR wrong ($sd)" ;; esac
 	csd=$(envval "$D" FLYWHEEL_CODEX_LEAD_STATE_DIR)
 	case "$csd" in */codex-lead/mufasa-lead) pass "state dir pinned (memory continuity)" ;; *) fail "state dir not pinned ($csd)" ;; esac
+	[ "$(envval "$D" CODEX_HOME)" = "$T/home/.codex-mufasa" ] && pass "shared rule preserves Mufasa CODEX_HOME bytes" || fail "Mufasa CODEX_HOME changed"
 	sp=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
 	case "$sp" in *founder-only-authority.md*) pass "governance: founder-only-authority appended" ;; *) fail "founder-only-authority not in SYSTEM_PROMPT_FILES ($sp)" ;; esac
 	case "$sp" in *founder-local-time.md*) pass "governance: founder-local rule appended" ;; *) fail "founder-local rule not in SYSTEM_PROMPT_FILES ($sp)" ;; esac

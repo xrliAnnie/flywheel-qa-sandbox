@@ -621,6 +621,8 @@ jobs:
         run: |
           bash scripts/__tests__/raya-resident-carrier.test.sh
           bash scripts/__tests__/resident-codex-lead-recover.test.sh
+          # FLY-2259: pure-shell generic Codex Lead home rule + production wiring.
+          bash scripts/__tests__/codex-lead-home-rule.test.sh
 
       # FLY-1062: npm distribution layer — hermetic suites: the packaging
       # pipeline over a fixture mini-monorepo (assembly / dependency union /

@@ -51,6 +51,7 @@ export FLYWHEEL_ROOT
 # ── Infra Bot identity: selectors in launcher, coordinates from registry ──
 . "${TEAMLEAD_ROOT}/scripts/lib/canonical-lead-identity.sh"
 canonical_lead_identity_resolve "flywheel" "codex-infra-bot-lead"
+. "${FLYWHEEL_ROOT}/scripts/lib/lead-address.sh"
 # FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
 # (same derivation claude-lead.sh:481 uses). These launchers predate that change —
 # Mufasa + codex-infra-bot crash-looped 205 times each on "missing required env".
@@ -64,7 +65,9 @@ export FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID
 # Memory continuity: HARD-pinned state dir (a stray .env value must never redirect
 # the bot onto a fresh thread = memory loss).
 export FLYWHEEL_CODEX_LEAD_STATE_DIR="${HOME}/.flywheel/state/codex-lead/codex-infra-bot-lead"
-export CODEX_HOME="${CODEX_HOME:-${HOME}/.codex-infra-bot}"     # ISOLATED per-Lead auth
+export FLYWHEEL_CODEX_LEAD_HOME_KEY=infra-bot
+codex_home_default="$(derive_codex_lead_home "$FLYWHEEL_CODEX_LEAD_HOME_KEY")" || exit $?
+export CODEX_HOME="${CODEX_HOME:-$codex_home_default}"     # ISOLATED per-Lead auth
 export FLYWHEEL_CODEX_BIN="${FLYWHEEL_CODEX_BIN:-${CODEX_HOME}/packages/standalone/current/codex}"
 export FLYWHEEL_CODEX_LEAD_MODE=tui
 

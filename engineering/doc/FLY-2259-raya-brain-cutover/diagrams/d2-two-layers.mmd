@@ -1,0 +1,25 @@
+flowchart TB
+  A["Annie 在 #raya 频道"]
+  subgraph GW["产品层·原样保留"]
+    G1["语音网关 com.xrli.raya.brain<br/>/voice /endvoice<br/>「进入/退出语音模式」"]
+    G2["会议网关<br/>(现未配置,停用)"]
+    G3["资源采样 + voice_down 告警"]
+    G1 --> V["com.xrli.raya.voice<br/>按需语音进程<br/>自己的 Codex 腿 + 自己的 CODEX_HOME"]
+  end
+  subgraph LEAD["新增·受管文本脑"]
+    L1["com.flywheel.lead.raya-raya<br/>launchd 常驻"]
+    L2["tmux 窗 raya-raya<br/>真 codex 会话(自己的 ~/.codex-raya)"]
+    L3["心跳文件<br/>heartbeat.json / lifecycle.jsonl"]
+    L4["工作区 ~/Dev/raya-lead-workspace<br/>memory/ + state/"]
+    L1 --> L2 --> L3
+    L2 --> L4
+  end
+  subgraph BR["Bridge 巡视·机制不改"]
+    B1["每 60 秒读心跳"] --> B2{"假死?"}
+    B2 -- "连续 3 次" --> B3["告警到 #flywheel-alerts"]
+    B3 --> B4["原地换体<br/>只认这一个 launchd label"]
+  end
+  A -- "文本(REST 轮询)" --> L2
+  A -- "斜杠命令 / 触发语(gateway)" --> G1
+  L3 --> B1
+  B4 -. "绝不碰" .-> GW

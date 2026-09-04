@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2259 · Raya 的文本脑搬进「有人看着」的体制 — 设计方案</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .meta .mono { font-family: 'SF Mono', monospace; }
+  .section { margin-bottom: 34px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15.5px; color: #1a365d; margin-bottom: 8px; }
+  .card p { margin-bottom: 8px; font-size: 14.5px; }
+  .card ul, .card ol { margin: 6px 0 8px 20px; font-size: 14.5px; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 17px; font-weight: 600; color: #1d1d1f; }
+  .jargon { color: #515154; font-size: 13.5px; background: #f5f5f7; border-radius: 8px; padding: 8px 12px; }
+  .badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin-right: 6px; vertical-align: middle; white-space: nowrap; }
+  .badge.new { background: #e3f6e8; color: #1f7a3a; }
+  .badge.update { background: #fff1dc; color: #a35a00; }
+  .badge.candidate { background: #f1e6fb; color: #6b2fa3; }
+  .badge.close { background: #ffe3e0; color: #b3261e; }
+  .badge.existing { background: #ececef; color: #515154; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 8px 0 10px; }
+  th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .diagram { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 12px; margin: 10px 0 14px; overflow-x: auto; }
+  .diagram svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  .caption { color: #86868b; font-size: 12.5px; margin: -6px 0 12px 4px; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 13.5px; color: #1d1d1f; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; }
+  #summary-card { border-left-color: #af52de; }
+  #summary-body { white-space: pre-wrap; font-size: 13px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin: 10px 0; min-height: 40px; font-family: 'SF Mono', monospace; }
+  .btn { background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn:hover { background: #0066d6; }
+  #copy-status { color: #34c759; font-size: 13px; margin-left: 10px; }
+  .chunk { margin: 10px 0; }
+  .kv { display: grid; grid-template-columns: 150px 1fr; gap: 6px 12px; font-size: 13.5px; }
+  .kv .k { color: #86868b; }
+  @media (max-width: 640px) { .kv { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2259 · Raya 的文本脑搬进「有人看着」的体制</h1>
+  <div class="meta">设计方案(design 节点交付)· 2026-09-02,09-03 按你的「每个 codex lead 都 generic」要求修订 · Issue <span class="mono">FLY-2259</span> · 分支 <span class="mono">flywheel-FLY-2259</span> · 上游 FLY-2216 / FLY-2131 / FLY-2239</div>
+
+  <!-- ===== 1. 一句话 ===== -->
+  <div class="section" data-section="1. 一句话总结">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span> 1. 一句话总结</div>
+    <div class="card green">
+      <p class="lede">把 Raya 的文本脑(Codex 会话)以 <span class="mono">com.flywheel.lead.raya-raya</span> 这个身份正式「上岗」——常驻一个窗口、每 3 秒写心跳、假死时 Bridge 自动换体并告警;为此先补齐七样前提、走一次 founder 在场的激活窗口;她现有的语音网关一字不动,不存在「两个脑子抢话」。为此要改的那一点代码<b>不是为 raya 单写的</b>:每个 Codex Lead 的独立凭证目录走同一条规则,raya 只是第一个套用的配置。</p>
+      <p class="jargon">名词:<b>文本脑</b> = 在 #raya 频道用文字跟你对话的那个 Codex 会话。<b>受管常驻体制</b>(FLY-2216)= Flywheel 给每个 Codex Lead 配的一套「常驻窗口 + 心跳 + 假死自愈 + 告警」。<b>launchd</b> = macOS 的系统级进程保姆,进程挂了它会拉起来。<b>激活窗口</b> = 一段你在场、按手册逐步操作生产机器的时间段。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s1" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- ===== 2. 现状与两个纠正 ===== -->
+  <div class="section" data-section="2. 现状实核与两个纠正">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span> 2. 现状实核与两个纠正(Tadashi 已裁)</div>
+    <div class="card red">
+      <h3><span class="badge close">纠正 1</span>「旧脑」不是脑,是语音网关</h3>
+      <p>issue 里要「退旧脑」的对象 <span class="mono">com.xrli.raya.brain</span>,读它的源码确认:它只做三件事——听 <span class="mono">/voice</span>、<span class="mono">/endvoice</span> 和「进入/退出语音模式」这几句话去拉起语音进程;会议命令(现在没配置,停用);每 60 秒记一次资源占用并在语音掉线时告警。<b>它一句自然语言都不会回。</b>本机现在也<b>没有任何</b> Raya 文本对话进程在跑——#raya 的文字面目前其实是空的。</p>
+      <p><b>后果:</b>把它退掉 = 你失去语音入口。所以裁定为 A:产品网关原样保留;「退旧脑」改成「退应急观察窗」(一个只会 tail 日志的临时脚本)。新脑上线后不存在双脑——一个管语音开关,一个管文字对话,是两层不是两个。</p>
+      <p class="jargon">已知边界:你打「进入语音模式」这句<b>文字</b>时,网关会拉起语音,新脑可能同时用文字回你一句。用斜杠命令 <span class="mono">/voice</span> 则零重叠(斜杠命令是 Discord 的「交互事件」,新脑的轮询看不到)。</p>
+    </div>
+    <div class="card red">
+      <h3><span class="badge close">纠正 2</span>新脑要有自己的 Codex 凭证目录</h3>
+      <p>原设计让新脑和语音进程共用同一个 <span class="mono">CODEX_HOME</span>(Codex 的凭证 + 配置目录)。实核发现:新脑首次启动会<b>整体重写</b>那里的 <span class="mono">config.toml</span>,语音进程的 Codex 线程会跟着继承新的沙箱设置,还会多出一套它用不了的工具。Tadashi 按你的铁律「凭证一体一号」裁定:新脑用独立的 <span class="mono">~/.codex-raya</span>;语音那份原样不动、前后 sha256 必须相同。按你 09-03 的要求,这个目录名不是给 raya 单写的常量,而是「每个 Codex Lead 的凭证目录 = <span class="mono">~/.codex-&lt;名字&gt;</span>」这条<b>通用规则</b>算出来的:mufasa 与 InfraBot 今天用的 <span class="mono">~/.codex-mufasa</span>、<span class="mono">~/.codex-infra-bot</span> 也套同一条规则,算出来和现在一字不差。</p>
+      <p><b>代价:需要你登录一次 Codex</b>(进那个新目录),用哪个账号由你定。这是前提清单第一条,Tadashi 会在 plan 定稿后向你申请。具体就三步,在<b>生产那台 Mac(MacBook-Pro,跑 Bridge 的那台)</b>你自己的终端里做:</p>
+      <ol>
+        <li>建目录:<span class="mono">install -d -m 700 ~/.codex-raya</span></li>
+        <li>登录(会弹浏览器让你选账号):<span class="mono">CODEX_HOME=~/.codex-raya codex login</span></li>
+        <li>验一下:<span class="mono">CODEX_HOME=~/.codex-raya codex login status</span> 应打印 <span class="mono">Logged in using ChatGPT</span>;<span class="mono">stat -f '%Lp %Su' ~/.codex-raya/auth.json</span> 应是 <span class="mono">600 xiaorongli</span>。</li>
+      </ol>
+      <p class="jargon">同一个 ChatGPT 账号可以在多个目录各登一次,每个目录自己一对令牌;绝不复制 auth.json(两处共用同一刷新令牌会互相作废)。登完只记「已登录 + 账号别名 + 时间」进台账,不记令牌。</p>
+    </div>
+    <div class="card amber">
+      <h3><span class="badge update">补两样</span>issue 没列的隐藏前提</h3>
+      <ul>
+        <li><b>standalone codex</b>(Codex 的独立安装包,常驻窗口这种「远程控制」模式只能用它)没装在新目录——装配脚本会直接拒启,不会自动装。要在窗口前显式装,版本与 mufasa / InfraBot 对齐(现在是 0.153.0)。</li>
+        <li><b>summary 名册回执会失配</b>:往名册里加 raya 这一行,会改变一个摘要指纹;每次系统重启前的检查要求指纹与回执一致,不一致就<b>拒绝整舰重启</b>。已在副本上验证:注册后紧接着刷新回执,检查就通过,名册内容一字节不变。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s2" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- ===== 3. 核心流程 ===== -->
+  <div class="section" data-section="3. 核心流程">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span> 3. 核心流程:前提 → 窗口 → 活了 → 巡视覆盖 → 演练</div>
+    <div class="diagram"><!--SVG:d1--></div>
+    <div class="caption">图 1 · 四段:窗口前能先做的三样;本 PR 合入并由班车(每天 00:00 / 12:00 的自动部署)装上;你在场的激活窗口;下一班车之后 Bridge 开始巡视,再做假死演练。</div>
+    <div class="card">
+      <h3>七样前提(全齐才开窗)</h3>
+      <table>
+        <tr><th>#</th><th>前提</th><th>谁做</th><th>怎么证明</th></tr>
+        <tr><td>⓪</td><td><span class="mono">~/.codex-raya</span> 已登录</td><td><b>你</b>(登录一次)</td><td>auth 文件存在;账号别名记入台账,凭证文件绝不复制</td></tr>
+        <tr><td>①</td><td>名册里加 raya 这一行</td><td>Tadashi,窗口内</td><td>身份解析结果逐字段核对(角色 cos、模型 gpt-5.6-sol、xhigh、100 万上下文、summary 角色 recipient)</td></tr>
+        <tr><td>②</td><td>工作区 <span class="mono">~/Dev/raya-lead-workspace</span>:搬记忆仓 + 改 raya.env 两处</td><td>Tadashi,窗口内,<b>你在场</b></td><td>记忆仓干净;产品网关换体后仍 running、日志无配置错误</td></tr>
+        <tr><td>③</td><td>一份真 summary PR(open)</td><td><b>Tadashi 本人</b>写事实 + 判断</td><td>PR 号;它同时是 Raya 上线后第一轮真实吸收的输入</td></tr>
+        <tr><td>④</td><td>standalone codex 装进新目录</td><td>操作者,窗口前</td><td>版本号;全局 codex 指向未被改动</td></tr>
+        <tr><td>⑤</td><td>刷新 summary 名册回执</td><td>Tadashi,紧接 ①</td><td>检查命令返回 ok</td></tr>
+        <tr><td>⑥</td><td>本 PR 已部署到生产 checkout</td><td>班车</td><td>启动脚本与自愈脚本里都能 grep 到那条通用规则的函数名,装进系统目录的规则库与仓库同字节——<b>没部署就注册 = 新脑落进语音的凭证目录,硬停止线</b></td></tr>
+      </table>
+      <p class="jargon">名词:<b>preflight</b> = 只读的激活前检查,任何一格不过就不注册不启动;<b>converge</b> = 把仓库里的启动脚本装到系统目录并校验字节一致;<b>plist</b> = 交给 launchd 的任务说明书;<b>summary PR</b> = 各项目 Lead 写给 Raya 的「事实 + 判断」短文,以 PR 形式送进她的仓库,开着 = 未读,她 merge = 已阅。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s3" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- ===== 4. 两层结构 ===== -->
+  <div class="section" data-section="4. 两层结构:产品网关 vs 新脑">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span> 4. 两层结构:产品网关 vs 受管文本脑(为什么不是双脑)</div>
+    <div class="diagram"><!--SVG:d2--></div>
+    <div class="caption">图 2 · 你的文字走 REST 轮询进新脑;斜杠命令和触发语走 Discord 网关进产品层。Bridge 巡视只认新脑那一个 launchd 身份,对产品层「绝不碰」。</div>
+    <div class="card purple">
+      <h3>各自负责什么</h3>
+      <div class="kv">
+        <div class="k">产品层(不动)</div><div><span class="mono">com.xrli.raya.brain</span> 语音网关 + 会议网关 + 资源采样;<span class="mono">com.xrli.raya.voice</span> 按需语音进程,有自己的 Codex 腿和自己的凭证目录。</div>
+        <div class="k">新脑(本单上岗)</div><div><span class="mono">com.flywheel.lead.raya-raya</span>:launchd 常驻 → tmux 窗口 <span class="mono">raya-raya</span> 里一个真 Codex 会话(cmux 里同名 workspace 自动出现)→ 每 3 秒轮询 #raya、每次写心跳。</div>
+        <div class="k">巡视(不改)</div><div>Bridge 每 60 秒读心跳;只有「轮询停了 / 一轮对话卡死 / 心跳停更」三种业务级假死、连续 3 次,才告警并原地换体;上游 Discord 故障只告警不换体。</div>
+      </div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s4" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- ===== 5. 数据 / 结构模型 ===== -->
+  <div class="section" data-section="5. 数据与结构模型">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span> 5. 数据与结构模型:落地后机器上有哪些东西</div>
+    <div class="diagram"><!--SVG:d4--></div>
+    <div class="caption">图 3 · 七个对象与它们之间的依赖。新脑的凭证目录与语音的凭证目录是两具体、两套凭证。</div>
+    <div class="card">
+      <h3>代码改动:一条通用规则,三处接线(不是为 raya 单写)</h3>
+      <ul>
+        <li><b>规则</b>(唯一来源,放在已有的共享库 <span class="mono">scripts/lib/lead-address.sh</span>):给一个 Lead 的名字,算出它的凭证目录 <span class="mono">~/.codex-&lt;名字&gt;</span>。纯函数,不读名册、不读环境,名字不合法就拒绝。</li>
+        <li><b>三个在跑/将跑的 Codex Lead 启动脚本</b>(mufasa、InfraBot、raya)各自只声明自己的名字,统一调这条规则取默认目录。mufasa/InfraBot 算出来与今天完全一样(有测试盯着这一点),raya 由此得到 <span class="mono">~/.codex-raya</span>。</li>
+        <li><b>自愈脚本</b> <span class="mono">resident-codex-lead-recover.sh</span>:核验「这个进程真的是那个 Lead」时的期望目录也用同一条规则算,不再手写三份;并新增一条负例测试——进程若还挂在旧的共享目录,自愈拒绝动手(零 mutation)。</li>
+        <li>再加一份对「全部 Codex Lead」的结构测试:任何一个启动脚本偷偷写回字面量、或自愈脚本与启动脚本的名字对不上,测试就红。</li>
+        <li>其余全是文档、手册和物料(名册行 JSON、回执清单、一段通用的持锁原子写脚本)。<b>FLY-2216 的巡视/心跳/告警机制一行不改。</b></li>
+      </ul>
+      <p class="jargon">名词:<b>通用规则</b> = 不针对某一个 Lead 写死路径,而是一条对所有 Codex Lead 都成立的算法;<b>mutation</b> = 对生产机器的任何改写动作;<b>零 mutation</b> = 检查不过就什么都不碰。<b>持锁原子写</b> = 改名册时先拿系统级的排他锁,写到临时文件再一次性换名,别的进程要么看到旧文件要么看到新文件,不会看到半截。</p>
+      <p class="jargon">一处诚实说明:mufasa 与 InfraBot 的目录名(<span class="mono">.codex-mufasa</span>、<span class="mono">.codex-infra-bot</span>)早于这条规则,与名册里的正式 id(<span class="mono">mufasa-lead</span>、<span class="mono">codex-infra-bot-lead</span>)不完全一样。规则用的「名字」是每个 Lead 自己声明的一个短名,新 Lead 约定用正式 id(raya 就是);要把两位老 Lead 的目录也改成正式 id,要搬两位正在跑的 Lead 的凭证目录,是另一张单。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s5" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- ===== 6. 自愈演练 ===== -->
+  <div class="section" data-section="6. 真机自愈演练">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span> 6. 真机自愈演练:怎么证明「假死有人管」</div>
+    <div class="diagram"><!--SVG:d3--></div>
+    <div class="caption">图 4 · 用 SIGSTOP(把进程「冻住」,可随时解冻)制造 FLY-2216 病案那种活体假死;预计 5–8 分钟走完:心跳停 → 三次判定 → 真告警进 #flywheel-alerts → 自愈脚本二次核验并留回执 → launchd 原地换新进程 → 新一代心跳。</div>
+    <div class="card amber">
+      <h3>为什么不是直接 kill</h3>
+      <p>被 kill 的进程 launchd 会立刻拉回来,巡视根本看不到「假死」——那验的是 launchd 不是本单的机制。SIGSTOP 才是 8-31 那天的病:进程还在、什么都不干。</p>
+      <h3>时机</h3>
+      <p>巡视名单在 Bridge 启动时定死,所以注册后要等下一班车重启 Bridge 才覆盖 raya(≤12 小时;想立刻覆盖只能你单次批一张 <span class="mono">request-restart.sh</span> 票)。这段空窗里进程崩溃仍由 launchd 管,只是假死没人巡视——如实写进台账。</p>
+      <h3>另外两格</h3>
+      <ul>
+        <li><b>关窗重建</b>:把 tmux 窗口杀掉,20 秒内新脑自己把同名窗口建回来,cmux 同名 workspace 复用不开第二个。</li>
+        <li><b>语音对照</b>:语音那份凭证目录的 <span class="mono">config.toml</span> 前后 sha256 相同 + 你开关一次 <span class="mono">/voice</span> 正常——这就是「raya 产品行为零改」的直接证据。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s6" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- ===== 7. 取舍 ===== -->
+  <div class="section" data-section="7. 关键取舍与否决的方案">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span> 7. 关键取舍与否决的方案</div>
+    <div class="card gray">
+      <table>
+        <tr><th>方案</th><th>结论</th><th>理由</th></tr>
+        <tr><td>只给 raya 改两个常量(R1–R5 五轮评审时的形状)</td><td><span class="badge close">否决</span></td><td>你 09-03 06:44Z 原话:「不是为 raya 专门写一套,而是每个 codex lead 都是 generic 的」。改成一条对全部 Codex Lead 通用的规则,raya 只是配置;mufasa/InfraBot 零行为变化由测试保证。</td></tr>
+        <tr><td>写一个「一键激活」脚本把五步串起来</td><td><span class="badge close">否决</span></td><td>只删不加;五步各有 fail-closed 门,串起来反而把人从判断里赶走。窗口就跑五次,手工留证。</td></tr>
+        <tr><td>共用语音的凭证目录(原 FLY-2131 形状)</td><td><span class="badge close">否决</span></td><td>首启会整体重写 config.toml,语音线程跟着变;违反「凭证一体一号」。</td></tr>
+        <tr><td>用符号链接免改 raya.env(记忆仓搬家)</td><td><span class="badge close">否决</span></td><td>产品进程会把根解析到新位置,等于悄悄改了产品根却没人看见;路径卫生扫描也会报异常。按 FLY-2131 原设计:两处同改 + 产品网关原地换体,你在场。</td></tr>
+        <tr><td>造一张假的 summary PR 过检查</td><td><span class="badge close">否决</span></td><td>它会成为 Raya 第一轮真实吸收的输入,假内容会进她的记忆。由 Tadashi 写真的。</td></tr>
+        <tr><td>给 raya 加专属告警频道</td><td><span class="badge close">否决</span></td><td>统一告警通道已生效(全部进 #flywheel-alerts),加了也不读;把基础设施告警发进你的 #raya 是噪音。</td></tr>
+        <tr><td>占位路由标签 <span class="mono">raya-lead</span></td><td><span class="badge update">采用</span></td><td>名册校验强制每个 Lead 有匹配标签;Linear 里没有任何 raya 标签,现有未占用标签全是通用词(docs、qa、blocked…),借用会把那些 issue 派给不能派工的 raya。占位名 Linear 不存在,永不命中;若日后有人建同名标签会开始命中,已写进手册。</td></tr>
+        <tr><td>拆掉产品网关,让新脑接管语音入口</td><td><span class="badge candidate">另立单</span></td><td>是 raya 产品变更,不在本单;如果你想要,是 raya 侧的一张新单。</td></tr>
+      </table>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s7" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- ===== 8. 诚实边界 ===== -->
+  <div class="section" data-section="8. 诚实边界">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span> 8. 诚实边界:这单做什么、不做什么</div>
+    <div class="card green">
+      <h3>做</h3>
+      <ul>
+        <li>一条对全部 Codex Lead 通用的凭证目录规则 + 三处启动脚本接线 + 自愈脚本同源 + 通用结构测试与负例测试 + 完整手册与物料,走 Codex 设计评审与代码评审后合入(这张 flywheel PR 就是你 ship 卡的锚)。</li>
+        <li>七样前提清单,谁做、怎么证,逐条写死;窗口内每一步都有断言、证据落点、停止线和回滚。</li>
+        <li>班车之后的三格真机演练(假死自愈、关窗重建、语音对照)与证据文档。</li>
+        <li>2239 遗留两项如实记录:InfraBot 纳入取你 9-02 06:37Z / 06:38Z 的原话;pane 丢失告警对 raya 生效(它在白名单里),但仍是写死的两个身份、未名册化——其它未来上岗的 Lead 不会自动获得。</li>
+      </ul>
+    </div>
+    <div class="card red">
+      <h3>不做</h3>
+      <ul>
+        <li>不改 FLY-2216 的巡视、心跳、自愈、告警机制;不把 pane 告警改成名册驱动。</li>
+        <li>不动 raya 产品:语音网关、语音进程、它们的凭证目录、IDENTITY.md 都原样;唯一碰到的是 raya.env 两行路径 + 网关换体,而且要你在场。</li>
+        <li>实现节点不做任何生产 mutation;窗口由 Tadashi 手工执行;Bridge 重启只走班车或你的单次票。</li>
+        <li>不清理 FLY-2031 留下的两个 QA 测试 job(<span class="mono">com.xrli.raya.approval.fly2031.qa</span> 在跑、<span class="mono">com.xrli.raya.voice.fly2031.qa</span> 已装载),建议 QA 侧另清。</li>
+        <li>不在生产上故意拆 tmux 逼 pane 丢失告警投递;那条告警的投递靠 FLY-2216 的测试 + 首启「已武装」日志作证。</li>
+        <li>不给 raya-memory 仓改分支(它的记忆文件在功能分支上,远端 main 只有 README),搬家只搬本地 checkout。</li>
+        <li>不动 mufasa 的四个非生产启动脚本(FLY-398 保留的低层/回滚形态,不在生产载体集合里);通用规则只接进三个生产 launcher。</li>
+        <li>不修一个顺带发现的旧缺口:装进系统目录的那份自愈脚本副本缺一个库文件跑不起来(FLY-2216 的既有问题),巡视实际用的是仓库里那份;本单手册全部用仓库路径,只把缺口如实记录。</li>
+      </ul>
+    </div>
+    <div class="card amber">
+      <h3>需要你的三件事</h3>
+      <ol>
+        <li>登录一次 Codex 到 <span class="mono">~/.codex-raya</span>(账号你定,Tadashi 会来申请;三条命令见第 2 节「纠正 2」)。</li>
+        <li>择一个两班车之间的安静窗口在场——改 raya.env 和换体产品网关那一步必须你在。</li>
+        <li>激活后在 #raya 说一句话,看她回;之后开关一次 <span class="mono">/voice</span> 作语音对照。</li>
+      </ol>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s8" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- ===== 意见汇总 ===== -->
+  <div class="section" data-section="意见汇总">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span> 页面意见汇总</div>
+    <div class="card" id="summary-card">
+      <p>上面每一节的意见会自动汇总到这里(带节标题)。点一下按钮复制全部,贴回 Discord thread 即可;这是修订反馈,不是通过信号。</p>
+      <div id="summary-body">(还没有意见)</div>
+      <div id="chunks"></div>
+      <button class="btn" id="copy-all" type="button">复制全部意见</button><span id="copy-status"></span>
+    </div>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2259";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly2259-comments:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly2259-comments:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitleFor(t) {
+    var sec = t.closest ? t.closest("[data-section]") : null;
+    return sec ? sec.getAttribute("data-section") : t.getAttribute("data-key");
+  }
+
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (t) {
+      var v = (t.value || "").trim();
+      if (v) parts.push("【" + sectionTitleFor(t) + "】\n" + v);
+    });
+    return parts;
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function doCopy(text, doneMsg) {
+    function done(ok) {
+      copyStatus.textContent = ok ? doneMsg : "复制失败,请手动全选复制上面的文字";
+      setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  function render() {
+    var parts = collect();
+    chunksDiv.textContent = "";
+    if (!parts.length) { summaryBody.textContent = "(还没有意见)"; return; }
+    var chunks = chunkText(parts);
+    if (chunks.length === 1) {
+      summaryBody.textContent = chunks[0];
+    } else {
+      summaryBody.textContent = "意见较长,已拆成 " + chunks.length + " 段,请逐段复制:";
+      chunks.forEach(function (c, i) {
+        var d = document.createElement("div");
+        d.className = "chunk";
+        var pre = document.createElement("div");
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.fontFamily = "'SF Mono', monospace";
+        pre.style.fontSize = "12.5px";
+        pre.style.background = "#f5f5f7";
+        pre.style.borderRadius = "10px";
+        pre.style.padding = "10px";
+        pre.textContent = c;
+        var b = document.createElement("button");
+        b.className = "btn";
+        b.type = "button";
+        b.textContent = "复制第 " + (i + 1) + " 段";
+        b.addEventListener("click", function () { doCopy(c, "第 " + (i + 1) + " 段已复制"); });
+        d.appendChild(pre);
+        d.appendChild(b);
+        chunksDiv.appendChild(d);
+      });
+    }
+  }
+
+  boxes.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-key"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-key"), t.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) { doCopy(MARKER + "\n\n(无意见)", "已复制(无意见)"); return; }
+    doCopy(chunkText(parts).join("\n\n"), "已复制全部意见");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

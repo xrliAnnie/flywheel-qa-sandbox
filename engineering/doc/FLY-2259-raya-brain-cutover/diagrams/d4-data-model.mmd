@@ -1,0 +1,48 @@
+classDiagram
+  class 名册行_projects_json {
+    projectName = raya
+    leadId = raya
+    backend = codex-app-server
+    codexProfile = full-access
+    canSpawnRunners = false
+    summaryRole = recipient
+    codexResidencyPatrol = true
+    match.labels = [raya-lead] 占位·零路由
+  }
+  class 回执_migration_receipt {
+    summaryAssignmentDigest 随名册变
+    assignments = 16 条 + raya
+    与名册不符 → 班车拒绝重启
+  }
+  class 工作区_raya_lead_workspace {
+    memory/  ← 整体搬自 ~/.flywheel/raya/memory
+    state/   ← 回执 JSONL 等运行产物
+    = Lead 唯一可写根
+  }
+  class Lead_CODEX_HOME_codex_raya {
+    = 通用规则 ~/.codex-「名字」的 raya 实例
+    auth.json ← founder 登录一次
+    packages/standalone/current/codex
+    config.toml ← 首启自动生成 full-access
+  }
+  class 语音_CODEX_HOME_flywheel_raya_codex_home {
+    原样,零改
+    sha256 前后必须相同
+  }
+  class launchd_job {
+    label = com.flywheel.lead.raya-raya
+    wrapper ← ~/.flywheel/bin 由 converge 装
+    plist ← 模板复制
+  }
+  class 状态目录_codex_lead_raya {
+    brain/heartbeat.json
+    brain/lifecycle.jsonl
+    brain/recovery-receipts.jsonl
+    brain/patrol-observed-generation.json
+  }
+  名册行_projects_json --> 回执_migration_receipt : 同事务刷新
+  名册行_projects_json --> launchd_job : preflight 通过后才装
+  launchd_job --> Lead_CODEX_HOME_codex_raya : launcher 读
+  launchd_job --> 工作区_raya_lead_workspace : cwd / 可写根
+  launchd_job --> 状态目录_codex_lead_raya : 心跳写入
+  Lead_CODEX_HOME_codex_raya .. 语音_CODEX_HOME_flywheel_raya_codex_home : 两具体,两套凭证

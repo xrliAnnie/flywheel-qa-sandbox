@@ -17,6 +17,26 @@ _lead_socket_prefix() {
   printf '%s' "$prefix"
 }
 
+# derive_codex_lead_home <codex-home-key> [home-root]
+# Prints the isolated home shared by every production Codex Lead launcher.
+derive_codex_lead_home() {
+  local codex_home_key="${1:-}"
+  local home_root="${2:-${HOME:-}}"
+  if ! [[ "$codex_home_key" =~ ^[a-z][a-z0-9-]{0,31}$ ]]; then
+    echo "Codex Lead home key must match ^[a-z][a-z0-9-]{0,31}$" >&2
+    return 2
+  fi
+  case "$home_root" in
+    /*) : ;;
+    *) echo "Codex Lead home root must be absolute: $home_root" >&2; return 2 ;;
+  esac
+  if [ "$home_root" = / ]; then
+    printf '/.codex-%s\n' "$codex_home_key"
+  else
+    printf '%s/.codex-%s\n' "${home_root%/}" "$codex_home_key"
+  fi
+}
+
 # derive_lead_socket <exact-key> [state-dir]
 # Prints the canonical absolute socket path. The complete path budget is kept
 # below 90 bytes, leaving margin under macOS sockaddr_un.sun_path.
