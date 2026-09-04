@@ -54,11 +54,27 @@ else
   fail "metadata snapshot canonical manifest"
 fi
 
-if snapshot_again=$(python3 "$snapshotter" "$TMP/home" 2>/dev/null) \
-    && [[ "$snapshot_again" == "$snapshot_json" ]]; then
-  pass "metadata snapshot serialization is byte-stable across repeated enumeration"
+if snapshot_again=$(python3 - "$snapshotter" "$TMP/home" <<'PY'
+import os
+import runpy
+import sys
+
+snapshotter, root = sys.argv[1:]
+real_scandir = os.scandir
+
+
+def reversed_scandir(path):
+    return list(reversed(list(real_scandir(path))))
+
+
+os.scandir = reversed_scandir
+sys.argv = [snapshotter, root]
+runpy.run_path(snapshotter, run_name="__main__")
+PY
+) && [[ "$snapshot_again" == "$snapshot_json" ]]; then
+  pass "metadata snapshot bytes and hash ignore filesystem enumeration order"
 else
-  fail "metadata snapshot canonical serialization changed without a metadata mutation"
+  fail "metadata snapshot canonical serialization depends on enumeration order"
 fi
 
 mutant="$TMP/qa-metadata-snapshot-mutant.py"

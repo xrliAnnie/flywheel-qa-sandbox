@@ -1078,10 +1078,10 @@ qa_launchd_process_incarnation() {
 qa_launchd_wait_process_gone() {
   local pid="$1" incarnation="$2" i observed
   [[ -n "$pid" && -n "$incarnation" ]] || return 0
-  for i in $(seq 1 "${FLYWHEEL_QA_STOP_POLLS:-150}"); do
+  for i in $(seq 1 150); do
     observed=$(qa_launchd_process_incarnation "$pid" || true)
     [[ "$observed" != "$incarnation" ]] && return 0
-    sleep "${FLYWHEEL_QA_STOP_INTERVAL:-0.2}"
+    sleep 0.2
   done
   return 1
 }
@@ -1089,18 +1089,18 @@ qa_launchd_wait_process_gone() {
 qa_launchd_wait_job_gone() {
   local label="$1" launchctl_bin="${FLYWHEEL_QA_LAUNCHCTL:-launchctl}" domain i
   domain=$(qa_launchd_domain) || return 1
-  for i in $(seq 1 "${FLYWHEEL_QA_STOP_POLLS:-150}"); do
+  for i in $(seq 1 150); do
     "$launchctl_bin" print "${domain}/${label}" >/dev/null 2>&1 || return 0
-    sleep "${FLYWHEEL_QA_STOP_INTERVAL:-0.2}"
+    sleep 0.2
   done
   return 1
 }
 
 qa_launchd_wait_path_gone() {
   local path="$1" i
-  for i in $(seq 1 "${FLYWHEEL_QA_STOP_POLLS:-150}"); do
+  for i in $(seq 1 150); do
     [[ ! -e "$path" && ! -L "$path" ]] && return 0
-    sleep "${FLYWHEEL_QA_STOP_INTERVAL:-0.2}"
+    sleep 0.2
   done
   return 1
 }
@@ -1252,7 +1252,7 @@ qa_launchd_converge_codex_tmux_socket() {
   if "$tmux_bin" -S "$socket_path" has-session >/dev/null 2>&1; then
     "$tmux_bin" -S "$socket_path" kill-server >/dev/null 2>&1 || true
   fi
-  for i in $(seq 1 "${FLYWHEEL_QA_STOP_POLLS:-150}"); do
+  for i in $(seq 1 150); do
     if ! "$tmux_bin" -S "$socket_path" has-session >/dev/null 2>&1; then
       if [[ -e "$socket_path" || -L "$socket_path" ]]; then
         qa_launchd_validate_codex_tmux_socket "$socket_path" || return 1
@@ -1262,7 +1262,7 @@ qa_launchd_converge_codex_tmux_socket() {
       fi
       [[ ! -e "$socket_path" && ! -L "$socket_path" ]] && return 0
     fi
-    sleep "${FLYWHEEL_QA_STOP_INTERVAL:-0.2}"
+    sleep 0.2
   done
   return 1
 }

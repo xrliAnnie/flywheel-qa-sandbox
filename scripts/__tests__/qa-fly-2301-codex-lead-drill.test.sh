@@ -86,10 +86,15 @@ run_invalid() {
 for field in label projectName agentId stateDir codexHome tmuxSocket tuiWindow; do
   run_invalid "del(.codexLead.${field})"
 done
+run_invalid 'del(.mainLeadLabel)'
 run_invalid ".codexLead.label = \"com.flywheel.qa.lead.slot-$((SLOT + 1)).${agent}\""
 run_invalid ".mainLeadLabel = \"com.flywheel.qa.lead.slot-$((SLOT + 1)).${agent}\""
 run_invalid ".codexLead.projectName = \"test-slot-$((SLOT + 1))\""
+run_invalid '.codexLead.agentId = "qa-other"'
 run_invalid ".codexLead.stateDir = \"/tmp/flywheel-test-slot-$((SLOT + 1))/q/${SLOT}/state\""
+run_invalid ".codexLead.codexHome = \"/tmp/flywheel-test-slot-$((SLOT + 1))/cdxh/${agent}\""
+run_invalid ".codexLead.tmuxSocket = \"/tmp/flywheel-test-slot-$((SLOT + 1))/tmux-$(id -u)/default\""
+run_invalid '.codexLead.tuiWindow = "absent"'
 run_invalid '.leadCarrier = "launchd-v2"'
 
 if [[ "$invalid_ok" == 1 && ! -s "$mutation_log" ]]; then

@@ -327,8 +327,8 @@ body = body.replace(
 )
 path.write_text(body)
 PY
-if ! FLYWHEEL_QA_STOP_POLLS=1 FLYWHEEL_QA_STOP_INTERVAL=0 \
-      HOME="$stuck_home" qa_launchd_mint_codex_home \
+sleep() { :; }
+if ! HOME="$stuck_home" qa_launchd_mint_codex_home \
       "$stuck_source" "$stuck_dest" "$MINT_SLOT" \
       > /dev/null 2> "$TMP/stuck-daemon.err" \
     && grep -Fxq '[qa-launchd] ERROR: Codex QA credential daemon preflight failed' \
@@ -339,6 +339,7 @@ if ! FLYWHEEL_QA_STOP_POLLS=1 FLYWHEEL_QA_STOP_INTERVAL=0 \
 else
   fail "Codex home false-success daemon convergence"
 fi
+unset -f sleep
 rm -rf "$stuck_source/.flywheel-qa-auth-lease" \
   "$stuck_source/app-server-daemon/.fixture-daemon-alive" "$stuck_dest"
 
@@ -830,6 +831,37 @@ else
   fail "pending topology verifier still creates a process probe storm"
 fi
 
+# Teardown convergence is a fixed 30-second production contract. Ambient test
+# variables must not be able to shorten the proof or change its cadence.
+stop_budget_calls="$TMP/stop-budget-calls"
+stop_budget_sleeps="$TMP/stop-budget-sleeps"
+: > "$stop_budget_calls"
+: > "$stop_budget_sleeps"
+original_process_incarnation=$(declare -f qa_launchd_process_incarnation)
+qa_launchd_process_incarnation() {
+  printf '%s\n' observed >> "$stop_budget_calls"
+  if [[ "$(wc -l < "$stop_budget_calls" | tr -d ' ')" == 1 ]]; then
+    printf '%s\n' fixed-incarnation
+  else
+    printf '%s\n' replacement-incarnation
+  fi
+}
+sleep() { printf '%s\n' "$1" >> "$stop_budget_sleeps"; }
+stop_budget_result=0
+FLYWHEEL_QA_STOP_POLLS=1 FLYWHEEL_QA_STOP_INTERVAL=9 \
+  qa_launchd_wait_process_gone 4242 fixed-incarnation >/dev/null 2>&1 \
+  || stop_budget_result=$?
+unset -f qa_launchd_process_incarnation sleep
+eval "$original_process_incarnation"
+if [[ "$stop_budget_result" == 0 ]] \
+    && [[ "$(wc -l < "$stop_budget_calls" | tr -d ' ')" == 2 ]] \
+    && [[ "$(wc -l < "$stop_budget_sleeps" | tr -d ' ')" == 1 ]] \
+    && ! grep -Ev '^0\.2$' "$stop_budget_sleeps" >/dev/null; then
+  pass "Codex teardown convergence ignores ambient polling knobs"
+else
+  fail "Codex teardown convergence exposes an environment-controlled budget"
+fi
+
 if qa_launchd_register "$registry" "$label" "$plist" "$manifest" \
     && qa_launchd_register "$registry" "$label" "$plist" "$manifest" \
     && [ "$(jq length "$registry")" = 1 ] \
@@ -1259,8 +1291,7 @@ CODEX
   : > "$home/app-server-control/app-server-control.sock"
 }
 
-export FLYWHEEL_QA_STOP_POLLS=1
-export FLYWHEEL_QA_STOP_INTERVAL=0
+sleep() { :; }
 stop_matrix_root="/tmp/flywheel-test-slot-$((950000 + $$))"
 stop_matrix_registry="$stop_matrix_root/launchd-leads.json"
 stop_invalid_home="$stop_matrix_root/cdxh/invalid"
@@ -1420,7 +1451,7 @@ fi
 export FLYWHEEL_QA_TMUX="$saved_qa_tmux"
 unset FLY1663_QA_STALE_TMUX_STATE FLY1663_QA_STALE_TMUX_CALLS
 
-unset FLYWHEEL_QA_STOP_POLLS FLYWHEEL_QA_STOP_INTERVAL
+unset -f sleep
 rm -rf "$stop_matrix_root" "$stop_alive_root" "$stop_bootout_root"
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
