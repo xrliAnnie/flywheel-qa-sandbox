@@ -66,56 +66,32 @@ Codex-converged 行由载体字段直接声明，不另加命令行开关：
 {
   "id": 4,
   "backend": "codex-app-server",
-  "codexSourceHome": "/Users/<you>/.codex-259-qa",
   "codexProfile": "companion"
 }
 ```
 
-`codexSourceHome` 只提供已登录的 `auth.json` 和 standalone release；起房会
-把它们事务性复制到 `/tmp/flywheel-test-slot-4/cdxh/<agentId>`。运行中的
+不要写 `codexSourceHome`；这个旧字段现在会在创建 Lead artifact 前被拒绝。
+起房直接调用普通 Codex dispatch 使用的 `provisionCodexHome`，从当前 active
+Hub 身份为每条 Lead 生成 `/tmp/flywheel-test-slot-4/cdxh/<agentId>`。因此不需要
+单独给 529 房登录，且 slot 配置没有 credential 路径或测试专用开关。运行中的
 `CODEX_HOME`、state、daemon socket、projects、wrapper env 和 tmux socket
-必须全部留在 slot 内。真实用户目录只允许精确的 `~/.codex-259-qa`；所有
-其它 home（包括 `.codex-mufasa-med3`）都会在创建 Lead artifact 前被拒绝。
-测试代码另有一条精确命名的 `/tmp/flywheel-test-codex-fixture-N/.codex-259-qa`
-fixture 路径类。
+仍必须全部留在 slot 内。
 
-起房会先独占 source credential lease，再执行有界的真实 daemon start/stop；
-`codex login status` 只检查本地形状，无法识别已经消费过的 refresh token，
-不能作为前置验收。手工诊断时也必须实际 start/stop（确认没有房持有该
-source lease）：
+前置检查与普通 Codex runner 相同：active Hub 身份必须可被固定 registry 识别，
+PATH 上的 `codex` 必须解析到带 `codex` 入口的 standalone release：
 
 ```bash
-test -f ~/.codex-259-qa/auth.json
-test -x ~/.codex-259-qa/packages/standalone/current/codex
-CODEX_HOME="$HOME/.codex-259-qa" \
-  ~/.codex-259-qa/packages/standalone/current/codex remote-control start --json
-CODEX_HOME="$HOME/.codex-259-qa" \
-  ~/.codex-259-qa/packages/standalone/current/codex remote-control stop --json
-test ! -S ~/.codex-259-qa/app-server-control/app-server-control.sock
+packages/claude-runner/bin/flywheel-codex-profile status --json
+command -v codex
 ```
 
-daemon 预检可能刷新 `auth.json`，因此铸造快照发生在预检收敛之后。拆房必须
-先收敛 launchd runtime、daemon 与精确 argv 的 updater，再以原始 auth
-快照做 compare-and-swap，把 slot 中刷新的凭据原子写回 source 并释放 lease；
-source 被外部改动时保留现值与 lease、报错且不重试。日志只报告步骤和结果，
-不打印 source 路径或 token 片段。这样同一 source 可以连续起第二间房。
-写回前还会把 baseline 与 slot `auth.json` 都解析为非空 JSON object，并要求
-顶层 key 集合一致；截断、空文件或结构漂移报 `result=invalid`，source 原字节、
-lease 和 slot 内 baseline 都保留，禁止用坏 payload 覆盖 source。
-
-lease 保留表示收敛或凭据一致性尚未证明，不是可忽略的脏文件。先按日志中的
-`carrier=codex-tui step=...` 修复并重跑 `scripts/test-teardown.sh <slot>`；
-`result=conflict` / `result=invalid` 必须先人工核对 source、slot auth 与 baseline，
-不得直接删 lease。只有 owner 所指 slot 已不存在，并且 launchd label、runtime、
-daemon、精确 argv updater 与私有 tmux 都被独立证明不存在时，才能删除 lease 的
-`owner` 后 `rmdir ~/.codex-259-qa/.flywheel-qa-auth-lease`。任一证据不确定就保留。
-
-**明示决定：**一旦 slot 写入 launch-attempt marker，teardown 的 updater census
-为零也必须保留 lease 并 fail-closed。零匹配不能证明「从未启动」：runtime 可能
-在 updater 发布身份前退出，或现存 updater 的 argv / `CODEX_HOME` 已漂移而未被
-安全归属。此时释放 lease 会向下一间房错误宣告 credential source 已空闲，使两个
-未收敛生命周期共享同一 source。只有没有 launch-attempt marker 的已铸造条目，才
-可在其它缺席证据全部成立后走未启动回收路径释放 lease。
+生产 provisioner 只负责身份选择与 credential 隔离；adapter 再从 PATH 上已安装的
+standalone release 复制 daemon 可执行层，并交给 resident Lead 的 `ensure-home`
+生成 carrier policy。拆房先收敛 launchd runtime、daemon、精确 argv updater 和
+私有 tmux，全部成功后删除整条 slot home。slot 内 token refresh 永不写回 active
+Hub；若 Hub 身份本身失效，按普通 Codex profile 修复流程恢复 Hub 后重建房，不在
+529 台架内另做 credential 修补。任一进程收敛证据不确定时仍保留房间和 lock，避免
+删除一个可能仍在运行的 credential home。
 
 Codex daemon PID 的生产 JSON reader 依赖 Bash >= 4（macOS 需可用的 Homebrew
 Bash，如 `/opt/homebrew/bin/bash`）。只剩系统 Bash 3.2 时 reader 返回 2，
@@ -153,11 +129,10 @@ scripts/qa-fly-2301-codex-lead-drill.sh 4 kickstart \
 
 `--extra-lead` 行本身支持 Codex 载体；每条 Lead 必须有独立
 home/state/window，teardown 按 `launchd-leads.json` 聚合收敛 runtime、daemon
-和私有 tmux。但当前真实 source 白名单只有 `~/.codex-259-qa`，且一个 source
-只能持有一个独占 lease，所以一次真实 campaign 最多一条 Codex 行（可放 main
-或 extra）；不得让 main 与 extra 并发共享该 source。测试里的第二个 `/tmp`
-source 只证明多载体坐标隔离，不是可照抄的真实凭据入口。Codex Lead 不支持
-`mirror` / `roundtable`，会 fail-loud；这些既有拓扑继续使用 Claude carrier。
+和私有 tmux。main 与 extra 可以从同一个 active Hub 并发出生；production
+provisioner 会给每条 Lead 写各自独立的 home，任何一条都不向 Hub 写回。Codex
+Lead 不支持 `mirror` / `roundtable`，会 fail-loud；这些既有拓扑继续使用 Claude
+carrier。
 
 teardown 不负责删 sandbox remote PR / branch；同一房内下一次 driver 启动时会先用上一轮 `owner.json` 证明 exact run。stub 的 design、implement 与 fixture PR 从第一笔 commit 起都使用 `qa529-<issue>-<runId>` run-scoped branch，不复用 WorktreeManager 的稳定 issue branch，因此不会接管或改写历史人工 PR；同一 run 的 implement attempt / replacement 才复用该 branch。dead-exec recovery 若在这个已证明的 run 内换体，driver 会从 `workflow_run_node` / run-scoped binding 动态吸收 replacement execution，同时保留全部历史 execution；已证明 execution 消失仍 fail-closed。active / held 轮先 terminate，已 completed / terminated 轮直接进入收敛，随后等待进程与 durable launch 全部 settled，再关闭 marker-owned、expected-head 未漂移的 PR。GitHub REST 没有 ref delete CAS；driver 不伪装 `If-Match`，而是在 durable drain 后重读 exact head、漂移即停手，再删除该 run-scoped sandbox branch。
 

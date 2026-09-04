@@ -602,6 +602,12 @@ cleanup_on_failure() {
       echo "ERROR: extra Lead cleanup did not converge; retaining campaign locks" >&2
     fi
   fi
+  if [[ "${SLOT_DIR:-}" == "/tmp/flywheel-test-slot-${SLOT}" ]] \
+      && find "${SLOT_DIR}/cdxh" -type f -name auth.json -print -quit \
+        2>/dev/null | grep -q .; then
+    qa_registry_stopped=0
+    echo "ERROR: provisioned Codex credential residue remains; retaining slot ${SLOT} lock" >&2
+  fi
   lock_pid=$(cat "$lock/pid" 2>/dev/null || echo "")
   # Only clean up if still in "claiming" state (Bridge PID not yet written)
   if [[ "$lock_pid" == "claiming" ]]; then
@@ -659,10 +665,10 @@ BOT_ID=$(jq -r ".slots[${SLOT_IDX}].botAppId" "$SLOTS_FILE")
 CHAT_CHANNEL_ID=$(jq -r ".slots[${SLOT_IDX}].channelId" "$SLOTS_FILE")
 SLOT_ROLE=$(jq -r ".slots[${SLOT_IDX}].role" "$SLOTS_FILE")
 SLOT_BACKEND=$(jq -r ".slots[${SLOT_IDX}].backend // empty" "$SLOTS_FILE")
-SLOT_CODEX_SOURCE_HOME=$(jq -r ".slots[${SLOT_IDX}].codexSourceHome // empty" "$SLOTS_FILE")
+SLOT_RETIRED_CODEX_SOURCE_HOME=$(jq -r ".slots[${SLOT_IDX}].codexSourceHome // empty" "$SLOTS_FILE")
 SLOT_CODEX_PROFILE=$(jq -r ".slots[${SLOT_IDX}].codexProfile // empty" "$SLOTS_FILE")
 if ! MAIN_LEAD_SHAPE=$(qa_multilead_validate_lead_shape \
-    "$SLOT_BACKEND" "$SLOT_CODEX_SOURCE_HOME" "$SLOT_CODEX_PROFILE"); then
+    "$SLOT_BACKEND" "$SLOT_RETIRED_CODEX_SOURCE_HOME" "$SLOT_CODEX_PROFILE"); then
   echo "ERROR: slots[${SLOT_IDX}] has an invalid Lead carrier shape" >&2
   rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
   exit 1
@@ -1469,7 +1475,7 @@ qa_slot_start_lead() {
   local projects="${state}/projects.json" env_file="${state}/.env"
   local manifest="${runtime}/manifest.json" plist="${runtime}/lead.plist"
   local pid_file="${runtime}/pid" label wrapper launch_env topology launch_pid socket
-  local lead_row mcp_exclude backend codex_source codex_profile lead_chat_channel
+  local lead_row mcp_exclude backend codex_profile lead_chat_channel
   local codex_home codex_bin codex_state codex_wrapper codex_comm_db
   local profile_assignments profile_assignment
   local QA_CODEX_ENV_RENDERER="${REPO_ROOT}/scripts/lib/qa-launchd-env.py"
@@ -1501,12 +1507,8 @@ qa_slot_start_lead() {
       return 1
     fi
     if [[ "$carrier_slot" == "$SLOT" && "$agent" == "$AGENT_ID" ]]; then
-      codex_source=$(jq -r '.codexSourceHome' <<<"$MAIN_LEAD_SHAPE") || return 1
       codex_profile=$(jq -r '.codexProfile' <<<"$MAIN_LEAD_SHAPE") || return 1
     else
-      codex_source=$(jq -cer --arg agent "$agent" \
-        '[.[] | select(.agentId == $agent)] | if length == 1 then .[0].codexSourceHome else error("expected one Codex source") end' \
-        <<<"$EXTRA_LEADS_JSON") || return 1
       codex_profile=$(jq -cer --arg agent "$agent" \
         '[.[] | select(.agentId == $agent)] | if length == 1 then .[0].codexProfile else error("expected one Codex profile") end' \
         <<<"$EXTRA_LEADS_JSON") || return 1
@@ -1548,10 +1550,12 @@ qa_slot_start_lead() {
 
   label=$(qa_launchd_label "$carrier_slot" "$agent") || return 1
   if [[ "$backend" == codex-app-server ]]; then
-    qa_launchd_mint_codex_home "$codex_source" "$codex_home" "$SLOT_DIR" || return 1
+    qa_launchd_provision_codex_home "$REPO_ROOT" "$codex_home" "$SLOT_DIR" || return 1
     if ! qa_launchd_register "$QA_LEAD_REGISTRY" "$label" "$plist" "" \
         codex-tui "$codex_home" "$codex_bin" "$codex_state" "$pid_file"; then
-      qa_launchd_report_codex_auth_recovery "$codex_home" "registry-register" || :
+      if ! qa_launchd_retire_codex_home "$codex_home" "$SLOT_DIR"; then
+        log "ERROR: failed to retire an unregistered Codex home"
+      fi
       return 1
     fi
     mkdir -p "$(dirname "$codex_comm_db")" || return 1

@@ -14,17 +14,17 @@
 # empty object so an explicit claude-code declaration is byte-equivalent to an
 # omitted backend.
 qa_multilead_validate_lead_shape() {
-	local backend="${1:-}" codex_source_home="${2:-}" codex_profile="${3:-}"
+	local backend="${1:-}" retired_codex_source_home="${2:-}" codex_profile="${3:-}"
 	case "$backend" in
 		""|claude-code)
-			if [[ -n "$codex_source_home" || -n "$codex_profile" ]]; then
+			if [[ -n "$retired_codex_source_home" || -n "$codex_profile" ]]; then
 				echo "[qa-multilead] orphan codex metadata" >&2
 				return 1
 			fi
 			printf '{}\n'
 			;;
 		codex-app-server)
-			if [[ -n "$codex_source_home" ]]; then
+			if [[ -n "$retired_codex_source_home" ]]; then
 				echo "[qa-multilead] codexSourceHome" >&2
 				return 1
 			fi
@@ -233,11 +233,11 @@ qa_multilead_parse_spec() {
 qa_multilead_slot_fields() {
 	local slots_file="$1" slot="$2"
 	local idx=$((slot - 1))
-	local json backend codex_source_home codex_profile shape
+	local json backend retired_codex_source_home codex_profile shape
 	backend=$(jq -r ".slots[${idx}].backend // empty" "$slots_file" 2>/dev/null) || return 1
-	codex_source_home=$(jq -r ".slots[${idx}].codexSourceHome // empty" "$slots_file" 2>/dev/null) || return 1
+	retired_codex_source_home=$(jq -r ".slots[${idx}].codexSourceHome // empty" "$slots_file" 2>/dev/null) || return 1
 	codex_profile=$(jq -r ".slots[${idx}].codexProfile // empty" "$slots_file" 2>/dev/null) || return 1
-	shape=$(qa_multilead_validate_lead_shape "$backend" "$codex_source_home" "$codex_profile") || return 1
+	shape=$(qa_multilead_validate_lead_shape "$backend" "$retired_codex_source_home" "$codex_profile") || return 1
 	json=$(jq -e ".slots[${idx}] // empty | {agentId: .botName, botAppId: .botAppId, tokenEnvVar: .tokenEnvVar, chatChannel: .channelId, role: .role, identitySource: (.identitySource // \"\")}" "$slots_file" 2>/dev/null) || {
 		echo "[qa-multilead] slot ${slot} not found in ${slots_file}" >&2
 		return 1

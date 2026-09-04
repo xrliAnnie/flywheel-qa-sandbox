@@ -87,6 +87,7 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-lead.sh" \
   "${SCRIPT_DIR}/lib/qa-lead-artifacts.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-env.py" \
+  "${SCRIPT_DIR}/lib/qa-codex-home-provision.mjs" \
   "${SCRIPT_DIR}/lib/qa-codex-lead-render.py" \
   "${SCRIPT_DIR}/lib/qa-codex-lead-wrapper.template.sh" \
   "${SCRIPT_DIR}/lib/bounded-run.sh" \
@@ -100,6 +101,7 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
 echo "// fixture" > "$FR/scripts/run-bridge.ts"
 echo "FLYWHEEL_RUNNER_START_POINT fixture" > "$FR/packages/edge-worker/dist/WorktreeManager.js"
 echo "fake-binding" > "$FR/node_modules/.pnpm/better-sqlite3@11.0.0/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+ln -s "${SCRIPT_DIR}/../packages/claude-runner" "$FR/packages/claude-runner"
 cat > "$FR/scripts/lib/qa-reap-codex-slot-daemons.mjs" <<'REAPSTUB'
 // This fixture starts no Bridge-owned codex-tmux worker daemon. The separate
 // launchd Codex Lead daemon is exercised and reaped through launchd-leads.json.
@@ -639,21 +641,44 @@ FWR="$SB/worktrees/fly-2237"
 mkdir -p "$(dirname "$FWR")"
 cp -R "$FR" "$FWR"
 
-# Codex source homes are login-bearing inputs only. The real-home positive
-# control is the exact documented QA source; the extra Lead uses the explicit
-# /tmp fixture path class accepted only by the hermetic harness.
+# Codex homes are born from the same active Hub credential that production
+# dispatch reads. The standalone release is a separate executable fixture:
+# no slot field selects or copies a credential source.
 FH1="$SB/home1"
-CODEX_SOURCE_MAIN="$FH1/.codex-259-qa"
-CODEX_SOURCE_EXTRA="/tmp/flywheel-test-codex-fixture-${$}/.codex-259-qa"
+CODEX_ACTIVE_HUB="$FH1/.codex"
+CODEX_RELEASE_FIXTURE="$SB/codex-standalone"
 FLY1389_AUTH_LEDGER="$SB/codex-auth-ledger"
 : > "$FLY1389_AUTH_LEDGER"
-source_index=0
-for source_home in "$CODEX_SOURCE_MAIN" "$CODEX_SOURCE_EXTRA"; do
-  source_index=$((source_index + 1))
-  mkdir -p "$source_home/packages/standalone/releases/fixture"
-  printf '{"tokens":{"refresh_token":"fixture-refresh-%s-1"}}\n' "$source_index" \
-    > "$source_home/auth.json"
-  cat > "$source_home/packages/standalone/releases/fixture/codex" <<'CODEXBIN'
+mkdir -p "$CODEX_ACTIVE_HUB" "$CODEX_RELEASE_FIXTURE"
+python3 - "$CODEX_ACTIVE_HUB/auth.json" <<'PY'
+import base64
+import json
+from pathlib import Path
+import sys
+
+def encoded(value):
+    return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+token = ".".join((
+    encoded({"alg": "none"}),
+    encoded({
+        "email": "xrliannie.b@gmail.com",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-fixture-business",
+            "chatgpt_plan_type": "pro",
+        },
+    }),
+    "fixture-signature",
+))
+Path(sys.argv[1]).write_text(json.dumps({"tokens": {
+    "id_token": token,
+    "access_token": "fixture-access",
+    "refresh_token": "fixture-refresh",
+}}) + "\n", encoding="utf-8")
+PY
+chmod 600 "$CODEX_ACTIVE_HUB/auth.json"
+CODEX_ACTIVE_HUB_HASH=$(shasum -a 256 "$CODEX_ACTIVE_HUB/auth.json" | awk '{print $1}')
+cat > "$CODEX_RELEASE_FIXTURE/codex" <<'CODEXBIN'
 #!/bin/bash
 set -euo pipefail
 home="${CODEX_HOME:?}"
@@ -697,8 +722,6 @@ with ledger_path.open("a+", encoding="utf-8") as ledger:
     if not isinstance(token, str) or not token:
         raise SystemExit(2)
     ledger.seek(0)
-    if token in set(ledger.read().splitlines()):
-        raise SystemExit(3)
     ledger.write(token + "\n")
     ledger.flush()
     os.fsync(ledger.fileno())
@@ -768,9 +791,8 @@ PY
   *) exit 64 ;;
 esac
 CODEXBIN
-  chmod +x "$source_home/packages/standalone/releases/fixture/codex"
-  ln -s releases/fixture "$source_home/packages/standalone/current"
-done
+chmod +x "$CODEX_RELEASE_FIXTURE/codex"
+ln -s "$CODEX_RELEASE_FIXTURE/codex" "$CODEX_TOOL_BIN/codex"
 
 # Fake HOME #1 (Lead-ful): identity + shared rules present.
 mkdir -p "$FH1/.flywheel/claude-sessions" \
@@ -785,8 +807,7 @@ FH2="$SB/home2"
 mkdir -p "$FH2/.flywheel/claude-sessions"
 
 make_slots_json() {  # slots 30..35 carry real fixture values
-  jq -n --argjson leadPort "$LEAD_PORT" --argjson noLeadPort "$NOLEAD_PORT" \
-    --arg codexMain "$CODEX_SOURCE_MAIN" --arg codexExtra "$CODEX_SOURCE_EXTRA" '
+  jq -n --argjson leadPort "$LEAD_PORT" --argjson noLeadPort "$NOLEAD_PORT" '
     { guildId: "g-fixture",
       alertChannel: {
         channelId: "alert-fixture",
@@ -812,13 +833,11 @@ make_slots_json() {  # slots 30..35 carry real fixture values
             { id: 34, bridgePort: ($leadPort + 4), botName: "flywheel-test-34",
               tokenEnvVar: "TEST_BOT_TOKEN_34", botAppId: "34343434343434343",
               channelId: "34343434343434344", role: "lead", identitySource: "product-lead",
-              backend: "codex-app-server", codexSourceHome: $codexMain,
-              codexProfile: "companion" },
+              backend: "codex-app-server", codexProfile: "companion" },
             { id: 35, bridgePort: ($leadPort + 5), botName: "flywheel-test-35",
               tokenEnvVar: "TEST_BOT_TOKEN_35", botAppId: "35353535353535353",
               channelId: "35353535353535354", role: "lead", identitySource: "ops-lead",
-              backend: "codex-app-server", codexSourceHome: $codexExtra,
-              codexProfile: "companion" } ] )
+              backend: "codex-app-server", codexProfile: "companion" } ] )
     }'
 }
 for H in "$FH1" "$FH2"; do
@@ -1650,7 +1669,7 @@ PY
       && "$(cat "$CX_SLOT_DIR/launchd/flywheel-test-34/pid")" == "$CX_PID" ]] \
     || { CX_OK=0; fail "CX: launchd PID and heartbeat PID disagree"; }
   [[ "$CX_HOME" == "$CX_SLOT_DIR/cdxh/flywheel-test-34" \
-      && "$CX_HOME" != "$CODEX_SOURCE_MAIN" \
+      && "$CX_HOME" != "$CODEX_ACTIVE_HUB" \
       && -f "$CX_HOME/auth.json" && -S "$CX_HOME/app-server-control/app-server-control.sock" ]] \
     || { CX_OK=0; fail "CX: Codex home was not minted and daemonized inside the slot"; }
   [[ "$($REAL_TMUX -S "$CX_SOCKET" list-windows -t '=flywheel' -F '#{window_name}')" == \
@@ -1759,27 +1778,32 @@ else
     run_teardown "$FH1" "$CODEX_SLOT" || true
 fi
 
-# A production Lead source home is denied before any per-Lead artifact is made.
-PROD_CODEX_SOURCE="$FH1/.codex-mufasa"
-rm -rf "$PROD_CODEX_SOURCE"
-cp -R "$CODEX_SOURCE_MAIN" "$PROD_CODEX_SOURCE"
-jq --arg source "$PROD_CODEX_SOURCE" '.slots[33].codexSourceHome = $source' \
+if [[ "$(shasum -a 256 "$CODEX_ACTIVE_HUB/auth.json" | awk '{print $1}')" == \
+    "$CODEX_ACTIVE_HUB_HASH" ]]; then
+  pass "CXX2: concurrent slot homes never write rotated credentials back to the active Hub"
+else
+  fail "CXX2: active Hub credential changed during the Codex room lifecycle"
+fi
+
+# The retired per-slot credential-source field is denied before any per-Lead
+# artifact is made; account selection belongs solely to production dispatch.
+jq '.slots[33].codexSourceHome = "/tmp/retired-codex-source"' \
   "$FH1/.flywheel/test-slots.json" > "$SB/slots-production-source.json"
 mv "$SB/slots-production-source.json" "$FH1/.flywheel/test-slots.json"
 rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}"
 CXP_OUT="$SB/cxp-out"; CXP_ERR="$SB/cxp-err"
 if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
     run_deploy "$FH1" "$CODEX_SLOT" "$CXP_OUT" "$CXP_ERR" --lead-ready-timeout 1; then
-  fail "CXP: production Codex source home must be rejected"
+  fail "CXP: retired Codex source field must be rejected"
   FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
     run_teardown "$FH1" "$CODEX_SLOT" || true
-elif grep -q 'refusing production Lead codex home' "$CXP_ERR" \
+elif grep -q 'invalid Lead carrier shape' "$CXP_ERR" \
     && [[ ! -e "/tmp/flywheel-test-slot-${CODEX_SLOT}/cdxh" \
         && ! -e "/tmp/flywheel-test-slot-${CODEX_SLOT}/launchd/flywheel-test-34" \
         && ! -e "/tmp/flywheel-test-slot-${CODEX_SLOT}/q/34" ]]; then
-  pass "CXP: production Codex source home is rejected before Lead artifacts"
+  pass "CXP: retired Codex source field is rejected before Lead artifacts"
 else
-  fail "CXP: production-home rejection was late or ambiguous" "$(tail -30 "$CXP_ERR")"
+  fail "CXP: retired source-field rejection was late or ambiguous" "$(tail -30 "$CXP_ERR")"
 fi
 make_slots_json > "$FH1/.flywheel/test-slots.json"
 rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}"
@@ -1856,15 +1880,17 @@ grep -q 'launch_env=$(qa_slot_launch_env_json' "$TD_SRC" \
 [[ "$X3_OK" == "1" ]] && pass "X3: extra-lead explicit launch env + manifest workspace sentinels"
 
 ROLLBACK_OK=1
-grep -q 'qa_launchd_report_codex_auth_recovery "$codex_home" "registry-register"' \
+grep -q 'if ! qa_launchd_retire_codex_home "$codex_home" "$SLOT_DIR"; then' \
+  "$TD_SRC" || ROLLBACK_OK=0
+grep -q 'provisioned Codex credential residue remains; retaining slot' \
   "$TD_SRC" || ROLLBACK_OK=0
 grep -q 'qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true' \
   "$TD_SRC" && ROLLBACK_OK=0
 grep -q 'qa_registry_stopped' "$TD_SRC" || ROLLBACK_OK=0
 if [[ "$ROLLBACK_OK" == 1 ]]; then
-  pass "X4: Codex rollback reports auth conflicts and retains the slot on teardown failure"
+  pass "X4: Codex rollback retires provisioned homes and retains the slot on teardown failure"
 else
-  fail "X4: Codex rollback must not suppress credential recovery failures"
+  fail "X4: Codex rollback must not suppress provisioned-home retirement failures"
 fi
 
 echo ""

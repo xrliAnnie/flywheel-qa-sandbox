@@ -251,397 +251,89 @@ CODEX
   chmod +x "$target"
 }
 
-mint_ps_bin="$TMP/mint-bin"
-mkdir -p "$mint_ps_bin"
-cat > "$mint_ps_bin/ps" <<'PS'
-#!/bin/bash
-case "$*" in
-  '-o stat= -p 7001'|'-o stat= -p 7002')
-    find "$FLY1663_QA_FIXTURE_ROOT" -name .fixture-daemon-alive -print -quit \
-      | grep -q . && printf 'S\n'
-    ;;
-  '-o lstart= -p 7001'|'-o lstart= -p 7002')
-    find "$FLY1663_QA_FIXTURE_ROOT" -name .fixture-daemon-alive -print -quit \
-      | grep -q . && printf 'Wed Sep  3 12:00:00 2026\n'
-    ;;
-  '-ww -axo pid=,command=') exit 0 ;;
-  *) exec /bin/ps "$@" ;;
-esac
-PS
-chmod +x "$mint_ps_bin/ps"
-export FLY1663_QA_FIXTURE_ROOT="$TMP"
-export PATH="$mint_ps_bin:$PATH"
 
-mint_source="$HOME/.codex-259-qa"
+mint_source="$HOME/.codex"
 mint_dest="$MINT_SLOT/cdxh/qa-lead"
-mint_preflight_calls="$TMP/mint-preflight.calls"
-mkdir -p "$mint_source/packages/standalone/releases/release-1"
-printf '%s\n' '{"tokens":{"refresh_token":"fixture-refresh-1"}}' \
-  > "$mint_source/auth.json"
-write_mint_codex_fixture "$mint_source/packages/standalone/releases/release-1/codex"
-ln -s releases/release-1 "$mint_source/packages/standalone/current"
-export FLY1663_QA_CODEX_PREFLIGHT_CALLS="$mint_preflight_calls"
-: > "$mint_preflight_calls"
-if qa_launchd_mint_codex_home "$mint_source" "$mint_dest" "$MINT_SLOT" \
+mint_release="$TMP/codex-release"
+mint_bin="$TMP/mint-bin"
+mkdir -p "$mint_source" "$mint_release" "$mint_bin" "$MINT_SLOT"
+python3 - "$mint_source/auth.json" <<'PY'
+import base64
+import json
+from pathlib import Path
+import sys
+
+def encoded(value):
+    return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+token = ".".join((
+    encoded({"alg": "none"}),
+    encoded({
+        "email": "xrliannie.b@gmail.com",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-fly1663-fixture",
+            "chatgpt_plan_type": "pro",
+        },
+    }),
+    "fixture-signature",
+))
+Path(sys.argv[1]).write_text(json.dumps({"tokens": {
+    "id_token": token,
+    "access_token": "fixture-access",
+    "refresh_token": "fixture-refresh",
+}}) + "\n", encoding="utf-8")
+PY
+chmod 600 "$mint_source/auth.json"
+mint_source_hash=$(shasum -a 256 "$mint_source/auth.json" | awk '{print $1}')
+write_mint_codex_fixture "$mint_release/codex"
+ln -s "$mint_release/codex" "$mint_bin/codex"
+export PATH="$mint_bin:$PATH"
+if qa_launchd_provision_codex_home "$ROOT" "$mint_dest" "$MINT_SLOT" \
     && [ -x "$mint_dest/packages/standalone/current/codex" ] \
-    && [ "$(cat "$mint_dest/auth.json")" = \
-      '{"tokens":{"refresh_token":"fixture-refresh-1"}}' ] \
     && [ "$(qa_test_file_mode "$mint_dest/auth.json")" = 600 ] \
-    && [ "$(cat "$mint_preflight_calls")" = $'remote-control start --json\nremote-control stop --json' ] \
-    && [ ! -e "$mint_dest/history.jsonl" ] \
-    && [ -z "$(find "$MINT_SLOT/cdxh" -maxdepth 1 -name '.cdxh-stage.*' -print -quit)" ]; then
-  pass "Codex home mint clones only standalone plus auth into the slot atomically"
+    && [ "$(cat "$mint_dest/.active")" = business ] \
+    && [ ! -e "$mint_dest/.flywheel-qa-source-home" ] \
+    && [ ! -e "$mint_dest/.flywheel-qa-source-auth-baseline" ] \
+    && [ ! -e "$mint_source/.flywheel-qa-auth-lease" ] \
+    && [ ! -e "$mint_dest/AGENTS.md" ] \
+    && [ ! -e "$mint_dest/config.toml" ] \
+    && [ "$(shasum -a 256 "$mint_source/auth.json" | awk '{print $1}')" = \
+      "$mint_source_hash" ]; then
+  pass "Codex home birth delegates credential selection to the production provisioner"
 else
-  fail "Codex home transactional mint"
-fi
-lease_collision_dest="$MINT_SLOT/cdxh/qa-lead-collision"
-if ! qa_launchd_mint_codex_home "$mint_source" "$lease_collision_dest" "$MINT_SLOT" \
-      > /dev/null 2> "$TMP/mint-lease.err" \
-    && grep -Fxq '[qa-launchd] ERROR: Codex QA credential source is already leased' \
-      "$TMP/mint-lease.err" \
-    && ! grep -Fq 'fixture-refresh-1' "$TMP/mint-lease.err" \
-    && [ ! -e "$lease_collision_dest" ] \
-    && ! find "$MINT_SLOT/cdxh" -maxdepth 1 -name '.cdxh-stage.*' -print -quit | grep -q .; then
-  pass "Codex home mint holds one exclusive credential-source lease per live room"
-else
-  fail "Codex home source lease exclusivity"
-fi
-mint_rejects=0
-reject_index=0
-for production_home in "$HOME/.codex-mufasa" "$HOME/.codex-infra-bot" \
-    "$HOME/.codex-242" "$HOME/.flywheel/raya/codex-home" \
-    "$HOME/.codex-mufasa-med3" "$HOME/.codex-unlisted"; do
-  mkdir -p "$production_home/packages/standalone/releases/release-1"
-  printf '%s\n' 'production-auth-sentinel' > "$production_home/auth.json"
-  cp "$mint_source/packages/standalone/releases/release-1/codex" \
-    "$production_home/packages/standalone/releases/release-1/codex"
-  ln -s releases/release-1 "$production_home/packages/standalone/current"
-  reject_dest="$MINT_SLOT/cdxh/reject-${reject_index}"
-  reject_index=$((reject_index + 1))
-  if ! qa_launchd_mint_codex_home "$production_home" "$reject_dest" "$MINT_SLOT" \
-      > /dev/null 2> "$TMP/mint-reject.err" \
-      && grep -Fxq '[qa-launchd] ERROR: refusing production Lead codex home' "$TMP/mint-reject.err" \
-      && [ ! -e "$reject_dest" ]; then
-    mint_rejects=$((mint_rejects + 1))
-  fi
-done
-if [ "$mint_rejects" = 6 ]; then
-  pass "Codex home mint allows only the documented QA source and refuses unlisted homes"
-else
-  fail "Codex home positive source allowlist"
+  fail "Codex home production birth adapter"
 fi
 
-make_mint_source() {
-  local target="$1" auth_kind="${2:-file}" current_target="${3:-releases/release-1}"
-  mkdir -p "$target/packages/standalone/releases/release-1"
-  write_mint_codex_fixture "$target/packages/standalone/releases/release-1/codex"
-  ln -s "$current_target" "$target/packages/standalone/current"
-  if [ "$auth_kind" = symlink ]; then
-    printf '%s\n' '{"tokens":{"refresh_token":"fixture-auth-secret"}}' \
-      > "$target/auth-target.json"
-    ln -s auth-target.json "$target/auth.json"
-  else
-    printf '%s\n' '{"tokens":{"refresh_token":"fixture-auth-secret"}}' \
-      > "$target/auth.json"
-  fi
-}
-
-unproven_home="$TMP/unproven-home"
-unproven_source="$unproven_home/.codex-259-qa"
-unproven_dest="$MINT_SLOT/cdxh/unproven-daemon"
-make_mint_source "$unproven_source"
-printf '%s\n' '#!/bin/bash' 'exit 0' \
-  > "$unproven_source/packages/standalone/releases/release-1/codex"
-chmod +x "$unproven_source/packages/standalone/releases/release-1/codex"
-if ! HOME="$unproven_home" qa_launchd_mint_codex_home \
-      "$unproven_source" "$unproven_dest" "$MINT_SLOT" \
-      > /dev/null 2> "$TMP/unproven-daemon.err" \
-    && grep -Fxq '[qa-launchd] ERROR: Codex QA credential daemon preflight failed' \
-      "$TMP/unproven-daemon.err" \
-    && [ ! -e "$unproven_dest" ] \
-    && [ -d "$unproven_source/.flywheel-qa-auth-lease" ]; then
-  pass "Codex home mint retains its lease when start success has no daemon proof"
+bad_source="$TMP/bad-source"
+bad_dest="$MINT_SLOT/cdxh/bad-source"
+mkdir -p "$bad_source"
+ln -s "$mint_source/auth.json" "$bad_source/auth.json"
+if ! FLYWHEEL_CODEX_SOURCE_HOME="$bad_source" \
+      qa_launchd_provision_codex_home "$ROOT" "$bad_dest" "$MINT_SLOT" \
+      >/dev/null 2>"$TMP/bad-source.err" \
+    && [ ! -e "$bad_dest" ] \
+    && ! grep -Fq fixture-refresh "$TMP/bad-source.err"; then
+  pass "production birth rejects a symlink credential with zero slot residue"
 else
-  fail "Codex home daemon-start postcondition"
-fi
-rm -rf "$unproven_source/.flywheel-qa-auth-lease" "$unproven_dest"
-
-stuck_home="$TMP/stuck-home"
-stuck_source="$stuck_home/.codex-259-qa"
-stuck_dest="$MINT_SLOT/cdxh/stuck-daemon"
-make_mint_source "$stuck_source"
-python3 - "$stuck_source/packages/standalone/releases/release-1/codex" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-body = path.read_text()
-body = body.replace("daemon_pid=7001", "daemon_pid=7002")
-body = body.replace(
-    '    rm -f "$pid_file" "$socket" \\\n'
-    '      "$CODEX_HOME/app-server-daemon/.fixture-daemon-alive"',
-    '    rm -f "$pid_file" "$socket"',
-)
-path.write_text(body)
-PY
-sleep() { :; }
-if ! HOME="$stuck_home" qa_launchd_mint_codex_home \
-      "$stuck_source" "$stuck_dest" "$MINT_SLOT" \
-      > /dev/null 2> "$TMP/stuck-daemon.err" \
-    && grep -Fxq '[qa-launchd] ERROR: Codex QA credential daemon preflight failed' \
-      "$TMP/stuck-daemon.err" \
-    && [ ! -e "$stuck_dest" ] \
-    && [ -d "$stuck_source/.flywheel-qa-auth-lease" ]; then
-  pass "Codex home mint retains its lease when stop hides a live daemon"
-else
-  fail "Codex home false-success daemon convergence"
-fi
-unset -f sleep
-rm -rf "$stuck_source/.flywheel-qa-auth-lease" \
-  "$stuck_source/app-server-daemon/.fixture-daemon-alive" "$stuck_dest"
-
-burned_home="$TMP/burned-home"
-burned_source="$burned_home/.codex-259-qa"
-burned_dest="$MINT_SLOT/cdxh/burned-token"
-burned_calls="$TMP/burned-token.calls"
-make_mint_source "$burned_source"
-cat > "$burned_source/packages/standalone/releases/release-1/codex" <<'CODEX'
-#!/bin/bash
-printf '%s\n' "$*" >> "$FLY1663_QA_BURNED_CALLS"
-case "$*" in
-  'remote-control start --json') exit 42 ;;
-  'remote-control stop --json') exit 0 ;;
-  *) exit 64 ;;
-esac
-CODEX
-chmod +x "$burned_source/packages/standalone/releases/release-1/codex"
-export FLY1663_QA_BURNED_CALLS="$burned_calls"
-: > "$burned_calls"
-if ! HOME="$burned_home" qa_launchd_mint_codex_home \
-      "$burned_source" "$burned_dest" "$MINT_SLOT" \
-      > /dev/null 2> "$TMP/burned-token.err" \
-    && [ "$(cat "$burned_calls")" = \
-      $'remote-control start --json\nremote-control stop --json' ] \
-    && grep -Fxq '[qa-launchd] ERROR: Codex QA credential daemon preflight failed' \
-      "$TMP/burned-token.err" \
-    && ! grep -Fq 'fixture-auth-secret' "$TMP/burned-token.err" \
-    && [ ! -e "$burned_dest" ] \
-    && [ ! -e "$burned_source/.flywheel-qa-auth-lease" ]; then
-  pass "Codex home mint rejects a burned credential through a real daemon-start preflight"
-else
-  fail "Codex home burned-token negative control"
+  fail "Codex home production birth negative guard"
 fi
 
-mint_shells=(/bin/bash)
-ci_bash=$(command -v bash)
-if [ "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$ci_bash")" != \
-    "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' /bin/bash)" ]; then
-  mint_shells+=("$ci_bash")
-fi
-mint_matrix_ok=1
-for mint_shell in "${mint_shells[@]}"; do
-  shell_tag=$(printf '%s' "$mint_shell" | tr '/' '_')
-  shell_root="/tmp/flywheel-test-slot-$((920000 + $$ + ${#shell_tag}))"
-  rm -rf "$shell_root"
-
-  matrix_home="$TMP/matrix-home-${shell_tag}"
-  matrix_source="$matrix_home/.codex-259-qa"
-  make_mint_source "$matrix_source"
-  if ! HOME="$matrix_home" "$mint_shell" -c \
-      'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
-      "$ROOT/scripts/lib/qa-launchd-lead.sh" "$matrix_source" \
-      "$shell_root/cdxh/success" "$shell_root" \
-      || [ ! -x "$shell_root/cdxh/success/packages/standalone/current/codex" ]; then
-    mint_matrix_ok=0
-  fi
-
-  mkdir -p "$shell_root/cdxh/existing"
-  HOME="$matrix_home" "$mint_shell" -c \
-    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
-    "$ROOT/scripts/lib/qa-launchd-lead.sh" "$matrix_source" \
-    "$shell_root/cdxh/existing" "$shell_root" >/dev/null 2>&1 \
-    && mint_matrix_ok=0
-
-  outside_parent="$TMP/outside-${shell_tag}"
-  mkdir -p "$outside_parent"
-  ln -s "$outside_parent" "$shell_root/escape"
-  HOME="$matrix_home" "$mint_shell" -c \
-    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
-    "$ROOT/scripts/lib/qa-launchd-lead.sh" "$matrix_source" \
-    "$shell_root/escape/escaped" "$shell_root" >/dev/null 2>&1 \
-    && mint_matrix_ok=0
-
-  outside_release="$TMP/outside-release-${shell_tag}"
-  mkdir -p "$outside_release"
-  cp "$matrix_source/packages/standalone/releases/release-1/codex" "$outside_release/codex"
-  bad_current_home="$TMP/bad-current-home-${shell_tag}"
-  bad_current="$bad_current_home/.codex-259-qa"
-  make_mint_source "$bad_current" file "$outside_release"
-  HOME="$bad_current_home" "$mint_shell" -c \
-    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
-    "$ROOT/scripts/lib/qa-launchd-lead.sh" "$bad_current" \
-    "$shell_root/cdxh/bad-current" "$shell_root" >/dev/null 2>&1 \
-    && mint_matrix_ok=0
-
-  symlink_auth_home="$TMP/symlink-auth-home-${shell_tag}"
-  symlink_auth="$symlink_auth_home/.codex-259-qa"
-  make_mint_source "$symlink_auth" symlink
-  HOME="$symlink_auth_home" "$mint_shell" -c \
-    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
-    "$ROOT/scripts/lib/qa-launchd-lead.sh" "$symlink_auth" \
-    "$shell_root/cdxh/symlink-auth" "$shell_root" >/dev/null 2>&1 \
-    && mint_matrix_ok=0
-
-  long_name=$(printf '%0110d' 0)
-  HOME="$matrix_home" "$mint_shell" -c \
-    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
-    "$ROOT/scripts/lib/qa-launchd-lead.sh" "$matrix_source" \
-    "$shell_root/cdxh/$long_name" "$shell_root" >/dev/null 2>&1 \
-    && mint_matrix_ok=0
-
-  if find "$shell_root" -name '.cdxh-stage.*' -print -quit | grep -q .; then
-    mint_matrix_ok=0
-  fi
-  rm -rf "$shell_root"
-done
-if [ "$mint_matrix_ok" = 1 ]; then
-  pass "Codex home mint success and negative matrix is portable across Bash 3.2 and CI Bash"
+long_agent=$(printf 'agent-%090d' 0)
+long_dest="$MINT_SLOT/cdxh/$long_agent"
+outside_home="$TMP/outside-codex-home"
+mkdir -p "$outside_home"
+: > "$outside_home/sentinel"
+ln -s "$outside_home" "$MINT_SLOT/cdxh/escape"
+if ! qa_launchd_provision_codex_home "$ROOT" "$long_dest" "$MINT_SLOT" \
+      >/dev/null 2>"$TMP/long-agent.err" \
+    && grep -Fq 'socket path exceeds 100 bytes' "$TMP/long-agent.err" \
+    && [ ! -e "$long_dest" ] \
+    && ! qa_launchd_retire_codex_home "$MINT_SLOT/cdxh/escape" "$MINT_SLOT" \
+      >/dev/null 2>&1 \
+    && [ -f "$outside_home/sentinel" ]; then
+  pass "Codex home birth and retirement reject long sockets and symlink escapes"
 else
-  fail "Codex home mint portable success/negative matrix"
-fi
-
-false_tree="$TMP/mutant-tree"
-mkdir -p "$false_tree/scripts/lib" "$false_tree/packages/teamlead/scripts"
-cp "$ROOT/scripts/lib/bounded-run.sh" "$false_tree/scripts/lib/bounded-run.sh"
-cp "$ROOT/packages/teamlead/scripts/codex-lead-tui-home.sh" \
-  "$false_tree/packages/teamlead/scripts/codex-lead-tui-home.sh"
-false_lib="$false_tree/scripts/lib/qa-launchd-lead-false.sh"
-python3 - "$ROOT/scripts/lib/qa-launchd-lead.sh" "$false_lib" <<'PY'
-from pathlib import Path
-import sys
-
-source, target = map(Path, sys.argv[1:])
-body = source.read_text()
-old = '  mv "$stage" "$dest"'
-new = '  false # forced post-auth/pre-rename failure'
-if body.count(old) != 1:
-    raise SystemExit(f"mv mutation count was {body.count(old)}, expected 1")
-target.write_text(body.replace(old, new))
-PY
-false_root="/tmp/flywheel-test-slot-$((930000 + $$))"
-false_dest="$false_root/cdxh/post-auth"
-false_home="$TMP/false-home"
-false_source="$false_home/.codex-259-qa"
-make_mint_source "$false_source"
-if ! HOME="$false_home" /bin/bash -c \
-    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
-    "$false_lib" "$false_source" "$false_dest" "$false_root" >/dev/null 2>&1 \
-    && [ ! -e "$false_dest" ] \
-    && ! find "$false_root" -name '.cdxh-stage.*' -print -quit | grep -q . \
-    && ! grep -R -Fq 'fixture-auth-secret' "$false_root" 2>/dev/null \
-    && [ ! -e "$false_source/.flywheel-qa-auth-lease" ]; then
-  pass "Codex home mint scrubs staged credentials after a post-auth failure"
-else
-  fail "Codex home post-auth failure cleanup"
-fi
-rm -rf "$false_root"
-
-signal_lib="$false_tree/scripts/lib/qa-launchd-lead-signal.sh"
-python3 - "$ROOT/scripts/lib/qa-launchd-lead.sh" "$signal_lib" <<'PY'
-from pathlib import Path
-import sys
-
-source, target = map(Path, sys.argv[1:])
-body = source.read_text()
-old = '  mv "$stage" "$dest"'
-new = '''  /bin/sh -c 'printf "%s\\n" "$PPID"' > "$(dirname "$dest")/.fly2301-barrier"
-  while :; do sleep 0.2; done'''
-if body.count(old) != 1:
-    raise SystemExit(f"signal mutation count was {body.count(old)}, expected 1")
-target.write_text(body.replace(old, new))
-PY
-signal_driver="$TMP/mint-signal-driver.py"
-cat > "$signal_driver" <<'PY'
-import os
-from pathlib import Path
-import signal
-import subprocess
-import sys
-import time
-
-shell, library, source, dest, slot_root, signal_name = sys.argv[1:]
-proc = subprocess.Popen(
-    [shell, "-c", 'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"',
-     "_", library, source, dest, slot_root],
-    start_new_session=True,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-)
-pgid = os.getpgid(proc.pid)
-barrier = Path(dest).parent / ".fly2301-barrier"
-deadline = time.monotonic() + 30
-inner_pid = None
-try:
-    while time.monotonic() < deadline:
-        if barrier.is_file() and list(Path(dest).parent.glob(".cdxh-stage.*/auth.json")):
-            try:
-                inner_pid = int(barrier.read_text().strip())
-            except (OSError, ValueError):
-                pass
-            if inner_pid:
-                break
-        if proc.poll() is not None:
-            raise RuntimeError(f"harness exited before barrier: {proc.returncode}")
-        time.sleep(0.02)
-    if inner_pid is None:
-        raise RuntimeError("timed out waiting for staged credential barrier")
-
-    os.kill(inner_pid, 0)
-    if inner_pid == proc.pid or os.getpgid(inner_pid) != pgid:
-        raise RuntimeError(f"published pid {inner_pid} is outside the harness process group")
-
-    os.kill(inner_pid, getattr(signal, signal_name))
-    rc = proc.wait(timeout=30)
-    expected = 130 if signal_name == "SIGINT" else 143
-    if rc != expected:
-        raise RuntimeError(f"wrong harness exit: {rc}, expected {expected}")
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        pass
-    else:
-        raise RuntimeError("signal harness process group still has survivors")
-    parent = Path(dest).parent
-    if Path(dest).exists() or list(parent.glob(".cdxh-stage.*")):
-        raise RuntimeError("signal cleanup left destination or stage")
-    for path in parent.rglob("*"):
-        if path.is_file() and b"fixture-auth-secret" in path.read_bytes():
-            raise RuntimeError("signal cleanup left staged credential bytes")
-finally:
-    if proc.poll() is None:
-        os.killpg(pgid, signal.SIGKILL)
-        proc.wait()
-PY
-signal_matrix_ok=1
-signal_home="$TMP/signal-home"
-signal_source="$signal_home/.codex-259-qa"
-make_mint_source "$signal_source"
-for mint_shell in "${mint_shells[@]}"; do
-  for signal_name in SIGINT SIGTERM; do
-    signal_root="/tmp/flywheel-test-slot-$((940000 + $$ + ${#signal_name} + ${#mint_shell}))"
-    rm -rf "$signal_root"
-    if ! HOME="$signal_home" python3 "$signal_driver" "$mint_shell" "$signal_lib" \
-        "$signal_source" "$signal_root/cdxh/signaled" "$signal_root" "$signal_name" \
-        || [ -e "$signal_source/.flywheel-qa-auth-lease" ]; then
-      signal_matrix_ok=0
-    fi
-    rm -rf "$signal_root"
-  done
-done
-if [ "$signal_matrix_ok" = 1 ]; then
-  pass "Codex home mint INT/TERM traps exit 130/143 and scrub credentials on both Bash families"
-else
-  fail "Codex home mint signal cleanup matrix"
+  fail "Codex home path confinement guards"
 fi
 
 launchctl_state="$TMP/launchctl-state"
@@ -1156,7 +848,6 @@ qa_launchd_register "$codex_stop_registry" "$label" "$codex_plist" '' \
   codex-tui "$mint_dest" "$codex_bin" "$stop_state" "$runtime_pid_file"
 printf '%s\n' '{"tokens":{"refresh_token":"fixture-refresh-2"}}' \
   > "$mint_dest/auth.json"
-second_mint_dest="$MINT_SLOT/cdxh/qa-lead-second-run"
 : > "$launchctl_state"
 ps() {
   case "$*" in
@@ -1203,167 +894,15 @@ if (unset FLYWHEEL_DIR; qa_launchd_stop_registry "$codex_stop_registry") \
     && [[ ! -e "$launchctl_state" && ! -e "$daemon_pid_file" && ! -e "$daemon_socket" \
       && ! -e "$updater_state" ]] \
     && grep -Eq '^-TERM( --)? 6262$' "$updater_kills" \
-    && [[ "$(cat "$mint_source/auth.json")" == \
-      '{"tokens":{"refresh_token":"fixture-refresh-2"}}' ]] \
-    && qa_launchd_mint_codex_home "$mint_source" "$second_mint_dest" "$MINT_SLOT" \
-    && [[ "$(cat "$second_mint_dest/auth.json")" == \
-      '{"tokens":{"refresh_token":"fixture-refresh-2"}}' ]]; then
-  pass "Codex registry stop converges processes and preserves rotated auth for a second mint"
+    && [[ ! -e "$mint_dest" ]] \
+    && [[ "$(shasum -a 256 "$mint_source/auth.json" | awk '{print $1}')" == \
+      "$mint_source_hash" ]]; then
+  pass "Codex registry stop converges processes, retires the slot home, and leaves Hub auth unchanged"
 else
-  fail "Codex registry convergent teardown and second-use auth handoff"
+  fail "Codex registry convergent teardown and production-auth isolation"
 fi
 unset -f ps kill
 
-conflict_root="/tmp/flywheel-test-slot-$((945000 + $$))"
-conflict_registry="$conflict_root/launchd-leads.json"
-conflict_home="$TMP/conflict-home"
-conflict_source="$conflict_home/.codex-259-qa"
-conflict_dest="$conflict_root/cdxh/conflict"
-make_mint_source "$conflict_source"
-HOME="$conflict_home" qa_launchd_mint_codex_home \
-  "$conflict_source" "$conflict_dest" "$conflict_root"
-printf '%s\n' '{"tokens":{"refresh_token":"slot-rotated-sentinel"}}' \
-  > "$conflict_dest/auth.json"
-printf '%s\n' '{"tokens":{"refresh_token":"external-change-sentinel"}}' \
-  > "$conflict_source/auth.json"
-qa_launchd_register "$conflict_registry" com.flywheel.qa.lead.slot-94.conflict \
-  /tmp/conflict.plist '' codex-tui "$conflict_dest" \
-  "$conflict_dest/packages/standalone/current/codex" "$conflict_root/q/conflict" \
-  "$conflict_root/launchd/conflict/pid"
-original_updater_stop_definition=$(declare -f qa_launchd_stop_codex_updaters)
-qa_launchd_stop_codex_updaters() { return 0; }
-if ! HOME="$conflict_home" qa_launchd_stop_registry "$conflict_registry" \
-      > /dev/null 2> "$TMP/auth-conflict.err" \
-    && grep -Fxq \
-      '[qa-launchd] ERROR: carrier=codex-tui step=auth-writeback result=conflict' \
-      "$TMP/auth-conflict.err" \
-    && grep -Fq 'external-change-sentinel' "$conflict_source/auth.json" \
-    && [ -d "$conflict_source/.flywheel-qa-auth-lease" ] \
-    && ! grep -Fq "$conflict_source" "$TMP/auth-conflict.err" \
-    && ! grep -Eq 'slot-rotated-sentinel|external-change-sentinel' \
-      "$TMP/auth-conflict.err"; then
-  pass "Codex auth write-back CAS preserves an external change and its recovery lease"
-else
-  fail "Codex auth write-back compare-and-swap conflict"
-fi
-if ! HOME="$conflict_home" qa_launchd_report_codex_auth_recovery \
-      "$conflict_dest" registry-register \
-      > /dev/null 2> "$TMP/auth-recovery-conflict.err" \
-    && grep -Fxq \
-      '[qa-launchd] ERROR: carrier=codex-tui step=auth-recovery phase=registry-register result=conflict' \
-      "$TMP/auth-recovery-conflict.err" \
-    && ! grep -Fq "$conflict_source" "$TMP/auth-recovery-conflict.err" \
-    && ! grep -Eq 'slot-rotated-sentinel|external-change-sentinel' \
-      "$TMP/auth-recovery-conflict.err"; then
-  pass "Codex deploy rollback reports a CAS conflict without credential or path data"
-else
-  fail "Codex deploy rollback CAS diagnostic"
-fi
-eval "$original_updater_stop_definition"
-rm -rf "$conflict_root"
-
-invalid_auth_root="/tmp/flywheel-test-slot-$((945500 + $$))"
-invalid_auth_home="$TMP/invalid-auth-home"
-invalid_auth_source="$invalid_auth_home/.codex-259-qa"
-invalid_auth_dest="$invalid_auth_root/cdxh/invalid-auth"
-invalid_auth_registry="$invalid_auth_root/launchd-leads.json"
-make_mint_source "$invalid_auth_source"
-HOME="$invalid_auth_home" qa_launchd_mint_codex_home \
-  "$invalid_auth_source" "$invalid_auth_dest" "$invalid_auth_root"
-invalid_auth_before=$(cat "$invalid_auth_source/auth.json")
-: > "$invalid_auth_dest/auth.json"
-HOME="$invalid_auth_home" qa_launchd_writeback_codex_auth "$invalid_auth_dest"
-invalid_auth_rc=$?
-if [[ "$invalid_auth_rc" == 3 \
-    && "$(cat "$invalid_auth_source/auth.json")" == "$invalid_auth_before" \
-    && -d "$invalid_auth_source/.flywheel-qa-auth-lease" ]]; then
-  pass "Codex auth write-back rejects a truncated payload and preserves recovery state"
-else
-  fail "Codex auth write-back invalid-payload guard"
-fi
-qa_launchd_register "$invalid_auth_registry" \
-  com.flywheel.qa.lead.slot-94.invalid-auth /tmp/invalid-auth.plist '' codex-tui \
-  "$invalid_auth_dest" \
-  "$invalid_auth_dest/packages/standalone/current/codex" \
-  "$invalid_auth_root/q/invalid-auth" "$invalid_auth_root/launchd/invalid-auth/pid"
-original_updater_stop_definition=$(declare -f qa_launchd_stop_codex_updaters)
-qa_launchd_stop_codex_updaters() { return 0; }
-if ! HOME="$invalid_auth_home" qa_launchd_stop_registry "$invalid_auth_registry" \
-      > /dev/null 2> "$TMP/invalid-auth-stop.err" \
-    && grep -Fxq \
-      '[qa-launchd] ERROR: carrier=codex-tui step=auth-writeback result=invalid' \
-      "$TMP/invalid-auth-stop.err" \
-    && [ "$(cat "$invalid_auth_source/auth.json")" = "$invalid_auth_before" ] \
-    && [ -d "$invalid_auth_source/.flywheel-qa-auth-lease" ] \
-    && ! grep -Fq "$invalid_auth_source" "$TMP/invalid-auth-stop.err" \
-    && ! grep -Fq 'fixture-auth-secret' "$TMP/invalid-auth-stop.err"; then
-  pass "Codex teardown classifies invalid auth without destroying its recovery copy"
-else
-  fail "Codex teardown invalid-auth classification"
-fi
-eval "$original_updater_stop_definition"
-rm -rf "$invalid_auth_root" "$invalid_auth_source/.flywheel-qa-auth-lease"
-
-unstarted_root="/tmp/flywheel-test-slot-$((946000 + $$))"
-unstarted_registry="$unstarted_root/launchd-leads.json"
-unstarted_source_home="$TMP/unstarted-home"
-unstarted_source="$unstarted_source_home/.codex-259-qa"
-unstarted_dest="$unstarted_root/cdxh/unstarted"
-make_mint_source "$unstarted_source"
-HOME="$unstarted_source_home" qa_launchd_mint_codex_home \
-  "$unstarted_source" "$unstarted_dest" "$unstarted_root"
-qa_launchd_register "$unstarted_registry" com.flywheel.qa.lead.slot-94.unstarted \
-  "$unstarted_root/launchd/unstarted/lead.plist" '' codex-tui "$unstarted_dest" \
-  "$unstarted_dest/packages/standalone/current/codex" "$unstarted_root/q/unstarted" \
-  "$unstarted_root/launchd/unstarted/pid"
-ps() {
-  [[ "$*" == '-ww -axo pid=,command=' ]] && return 0
-  return 1
-}
-if HOME="$unstarted_source_home" qa_launchd_stop_registry "$unstarted_registry" \
-      > /dev/null 2> "$TMP/unstarted-stop.err" \
-    && [ ! -e "$unstarted_source/.flywheel-qa-auth-lease" ] \
-    && ! grep -Fq 'fixture-auth-secret' "$TMP/unstarted-stop.err"; then
-  pass "Codex teardown releases a minted credential lease when launch never started"
-else
-  fail "Codex unstarted-mint lease recovery"
-fi
-unset -f ps
-rm -rf "$unstarted_root"
-
-started_nomatch_root="/tmp/flywheel-test-slot-$((947000 + $$))"
-started_nomatch_registry="$started_nomatch_root/launchd-leads.json"
-started_nomatch_home="$TMP/started-nomatch-home"
-started_nomatch_source="$started_nomatch_home/.codex-259-qa"
-started_nomatch_dest="$started_nomatch_root/cdxh/started-nomatch"
-make_mint_source "$started_nomatch_source"
-HOME="$started_nomatch_home" qa_launchd_mint_codex_home \
-  "$started_nomatch_source" "$started_nomatch_dest" "$started_nomatch_root"
-qa_launchd_register "$started_nomatch_registry" \
-  com.flywheel.qa.lead.slot-94.started-nomatch \
-  "$started_nomatch_root/launchd/started-nomatch/lead.plist" '' codex-tui \
-  "$started_nomatch_dest" \
-  "$started_nomatch_dest/packages/standalone/current/codex" \
-  "$started_nomatch_root/q/started-nomatch" \
-  "$started_nomatch_root/launchd/started-nomatch/pid"
-: > "$started_nomatch_dest/.flywheel-qa-launch-started"
-ps() {
-  [[ "$*" == '-ww -axo pid=,command=' ]] && return 0
-  return 1
-}
-if ! HOME="$started_nomatch_home" \
-      qa_launchd_stop_registry "$started_nomatch_registry" \
-      > /dev/null 2> "$TMP/started-nomatch.err" \
-    && grep -Fxq \
-      '[qa-launchd] ERROR: carrier=codex-tui step=updater-converge result=not-found' \
-      "$TMP/started-nomatch.err" \
-    && [ -d "$started_nomatch_source/.flywheel-qa-auth-lease" ]; then
-  pass "Codex started-runtime teardown rejects a zero-match updater census"
-else
-  fail "Codex started-runtime updater zero-match boundary"
-fi
-unset -f ps
-rm -rf "$started_nomatch_root" "$started_nomatch_source/.flywheel-qa-auth-lease"
 
 make_stop_home() {
   local home="$1" behavior="$2" marker="$3"

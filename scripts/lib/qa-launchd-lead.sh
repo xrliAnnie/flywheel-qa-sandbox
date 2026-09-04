@@ -188,375 +188,63 @@ qa_launchd_render_codex_plist() {
   return 1
 }
 
-qa_launchd_codex_source_preflight() {
-  local source="$1" codex_bin="$2" bounded_run updater_rc cleanup_failed=0
-  local start_ok=0 observed_runtime=0 daemon_proven=0 convergence_unproven=0
-  local daemon_pid="" daemon_incarnation="" daemon_pid_file daemon_socket
-  bounded_run="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-run.sh"
-  daemon_pid_file="${source}/app-server-daemon/app-server.pid"
-  daemon_socket="${source}/app-server-control/app-server-control.sock"
-  if [[ -x "$bounded_run" ]] && "$bounded_run" 30 env \
-      CODEX_HOME="$source" "$codex_bin" remote-control start --json \
-      >/dev/null 2>&1; then
-    start_ok=1
-  fi
-  if [[ -e "$daemon_pid_file" || -L "$daemon_pid_file" \
-      || -e "$daemon_socket" || -L "$daemon_socket" ]]; then
-    observed_runtime=1
-  fi
-  if [[ -f "$daemon_pid_file" && ! -L "$daemon_pid_file" \
-      && -e "$daemon_socket" && ! -L "$daemon_socket" ]] \
-      && daemon_pid=$(qa_launchd_read_codex_daemon_pid "$source") \
-      && daemon_incarnation=$(qa_launchd_process_incarnation "$daemon_pid"); then
-    daemon_proven=1
-  elif [[ "$start_ok" == 1 || "$observed_runtime" == 1 ]]; then
-    convergence_unproven=1
-  fi
-  if [[ ! -x "$bounded_run" ]] || ! "$bounded_run" 30 env \
-      CODEX_HOME="$source" "$codex_bin" remote-control stop --json \
-      >/dev/null 2>&1; then
-    cleanup_failed=1
-  fi
-  qa_launchd_wait_process_gone "$daemon_pid" "$daemon_incarnation" \
-    || cleanup_failed=1
-  qa_launchd_wait_path_gone "$daemon_socket" || cleanup_failed=1
-  qa_launchd_stop_codex_updaters "$codex_bin" "$source"
-  updater_rc=$?
-  case "$updater_rc" in
-    0|"$QA_LAUNCHD_CODEX_UPDATER_NOT_FOUND") ;;
-    *) cleanup_failed=1 ;;
-  esac
-  if [[ "$start_ok" != 1 || "$daemon_proven" != 1 \
-      || "$cleanup_failed" != 0 || "$convergence_unproven" != 0 ]]; then
-    qa_launchd_err "Codex QA credential daemon preflight failed"
-    if [[ "$cleanup_failed" != 0 || "$convergence_unproven" != 0 ]]; then
-      return 2
-    fi
-    return 1
-  fi
-}
-
-qa_launchd_mint_codex_home() (
-  local source="$1" dest="$2" slot_root="$3" stage="" validation
-  local source_real slot_real release_real release_name parent socket_path_bytes move_rc
-  local lease_dir="" lease_acquired=0 preflight_rc
-  cleanup() {
-    if [ -n "$stage" ] && [ -d "$stage" ]; then
-      rm -rf "$stage"
-    fi
-    if [ "$lease_acquired" = 1 ] && [ -n "$lease_dir" ]; then
-      rm -f "$lease_dir/owner"
-      rmdir "$lease_dir" 2>/dev/null || true
-    fi
-  }
-  trap cleanup EXIT
-  trap 'cleanup; exit 130' INT
-  trap 'cleanup; exit 143' TERM
-
-  validation=$(python3 - "$source" "$dest" "$slot_root" "$HOME" <<'PY'
+# Provision the slot Codex home through the same package API used by ordinary
+# Codex dispatch. Slot configuration selects only the carrier/profile; account
+# selection remains owned by the active Hub credential and the production
+# provisioner. The standalone executable is copied independently by the Node
+# adapter because the production per-runner home intentionally carries no
+# daemon release.
+qa_launchd_provision_codex_home() (
+  local repo_root="$1" dest="$2" slot_root="$3" node_bin codex_command agent
+  node_bin="${FLYWHEEL_QA_NODE:-node}"
+  codex_command=$(command -v codex) \
+    || { qa_launchd_err "Codex command is unavailable"; return 1; }
+  codex_command=$(python3 - "$codex_command" <<'PY'
 import os
-from pathlib import Path
-import re
-import stat
 import sys
-
-source, dest, slot_root, home = map(Path, sys.argv[1:])
-if not source.is_absolute() or not dest.is_absolute() or not slot_root.is_absolute():
-    raise SystemExit(1)
-if not re.fullmatch(r"/(?:private/)?tmp/flywheel-test-slot-[1-9][0-9]*", str(slot_root)):
-    raise SystemExit(1)
-if dest.exists() or dest.is_symlink():
-    raise SystemExit(1)
-try:
-    source_info = source.lstat()
-except OSError:
-    raise SystemExit(1)
-if not stat.S_ISDIR(source_info.st_mode) or source.is_symlink():
-    raise SystemExit(1)
-
-source_real = Path(os.path.realpath(source))
-slot_real = Path(os.path.realpath(slot_root))
-dest_real = Path(os.path.realpath(dest))
-try:
-    if os.path.commonpath((str(slot_real), str(dest_real))) != str(slot_real):
-        raise SystemExit(1)
-    if os.path.commonpath((str(source_real), str(dest_real))) in {str(source_real), str(dest_real)}:
-        raise SystemExit(1)
-except ValueError:
-    raise SystemExit(1)
-
-ancestor = dest.parent
-while not ancestor.exists() and not ancestor.is_symlink():
-    if ancestor == ancestor.parent:
-        raise SystemExit(1)
-    ancestor = ancestor.parent
-try:
-    ancestor_info = ancestor.lstat()
-except OSError:
-    raise SystemExit(1)
-if not (stat.S_ISDIR(ancestor_info.st_mode) or (str(ancestor) == "/tmp" and ancestor.is_symlink())):
-    raise SystemExit(1)
-if os.path.commonpath((str(slot_real), os.path.realpath(ancestor))) != str(Path(os.path.realpath(slot_root.parent))):
-    # Before slot_root exists, its nearest ancestor is /tmp; after it exists,
-    # the ancestor must resolve within the slot itself.
-    if os.path.commonpath((str(slot_real), os.path.realpath(ancestor))) != str(slot_real):
-        raise SystemExit(1)
-
-documented_qa_source = Path(os.path.realpath(home / ".codex-259-qa"))
-test_fixture = re.fullmatch(
-    r"/(?:private/)?tmp/flywheel-test-codex-fixture-[1-9][0-9]*/\.codex-259-qa",
-    str(source_real),
-)
-if source_real != documented_qa_source and test_fixture is None:
-    print("[qa-launchd] ERROR: refusing production Lead codex home", file=sys.stderr)
-    raise SystemExit(1)
-
-auth = source / "auth.json"
-try:
-    auth_info = auth.lstat()
-except OSError:
-    raise SystemExit(1)
-if not stat.S_ISREG(auth_info.st_mode) or auth.is_symlink():
-    raise SystemExit(1)
-current = source / "packages/standalone/current"
-try:
-    release = current.resolve(strict=True)
-except OSError:
-    raise SystemExit(1)
-releases = (source_real / "packages/standalone/releases").resolve(strict=True)
-if release.parent != releases or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", release.name):
-    raise SystemExit(1)
-codex = release / "codex"
-if not codex.is_file() or not os.access(codex, os.X_OK):
-    raise SystemExit(1)
-print("\t".join((str(source_real), str(slot_real), str(release), release.name)))
+print(os.path.abspath(sys.argv[1]))
 PY
   ) || return 1
-  IFS=$'\t' read -r source_real slot_real release_real release_name <<<"$validation"
-
-  umask 077
-  parent=$(dirname "$dest")
-  mkdir -p "$parent" || return 1
-  chmod 700 "$parent" || return 1
-  python3 - "$parent" "$slot_real" <<'PY' || return 1
-import os
-from pathlib import Path
-import stat
-import sys
-
-parent, slot = map(Path, sys.argv[1:])
-info = parent.lstat()
-if not stat.S_ISDIR(info.st_mode) or parent.is_symlink():
-    raise SystemExit(1)
-if os.path.commonpath((os.path.realpath(parent), str(slot))) != str(slot):
-    raise SystemExit(1)
-PY
-
-  stage=$(mktemp -d "${parent}/.cdxh-stage.XXXXXX") || return 1
-  mkdir -p "$stage/packages/standalone/releases" || return 1
-  if ! cp -Rc "$release_real" "$stage/packages/standalone/releases/$release_name" 2>/dev/null; then
-    rm -rf "$stage/packages/standalone/releases/$release_name"
-    cp -R "$release_real" "$stage/packages/standalone/releases/$release_name" || return 1
-  fi
-  ln -s "releases/$release_name" "$stage/packages/standalone/current" || return 1
-  python3 - "$stage" <<'PY' || return 1
-import os
-from pathlib import Path
-import sys
-
-stage = Path(sys.argv[1]).resolve(strict=True)
-codex = (stage / "packages/standalone/current/codex").resolve(strict=True)
-if os.path.commonpath((str(stage), str(codex))) != str(stage) or not os.access(codex, os.X_OK):
-    raise SystemExit(1)
-PY
-  socket_path_bytes=$(LC_ALL=C printf '%s' "$dest/app-server-control/app-server-control.sock" | wc -c | tr -d ' ')
-  [ "$socket_path_bytes" -le 100 ] \
-    || { qa_launchd_err "Codex daemon socket path exceeds 100 bytes"; return 1; }
-  lease_dir="${source_real}/.flywheel-qa-auth-lease"
-  if ! mkdir "$lease_dir" 2>/dev/null; then
-    qa_launchd_err "Codex QA credential source is already leased"
+  agent=$(basename "$dest")
+  if ! "$node_bin" "${repo_root}/scripts/lib/qa-codex-home-provision.mjs" \
+      "$repo_root" "$slot_root" "$agent" "$codex_command" >/dev/null; then
+    qa_launchd_err "Codex home production provisioning failed"
     return 1
   fi
-  lease_acquired=1
-  chmod 700 "$lease_dir" || return 1
-  printf '%s\n' "$dest" > "$lease_dir/owner" || return 1
-  chmod 600 "$lease_dir/owner" || return 1
-  qa_launchd_codex_source_preflight "$source_real" "$release_real/codex"
-  preflight_rc=$?
-  if [[ "$preflight_rc" != 0 ]]; then
-    # rc=2 means a process or successful start could not be proven converged.
-    # Retain the exclusive lease for operator recovery instead of authorizing
-    # another room to race a possibly live credential writer.
-    [[ "$preflight_rc" != 2 ]] || lease_acquired=0
-    return 1
-  fi
-  cp "$source_real/auth.json" "$stage/auth.json" || return 1
-  cp "$source_real/auth.json" "$stage/.flywheel-qa-source-auth-baseline" || return 1
-  printf '%s\n' "$source_real" > "$stage/.flywheel-qa-source-home" || return 1
-  chmod 600 "$stage/auth.json" "$stage/.flywheel-qa-source-auth-baseline" \
-    "$stage/.flywheel-qa-source-home" || return 1
-  mv "$stage" "$dest"
-  move_rc=$?
-  [ "$move_rc" -eq 0 ] || return "$move_rc"
-  stage=""
-  lease_acquired=0
+  [[ "$dest" == "${slot_root}/cdxh/${agent}" && -f "$dest/auth.json" \
+      && -x "$dest/packages/standalone/current/codex" ]] \
+    || { qa_launchd_err "Codex home production provisioning was incomplete"; return 1; }
 )
 
-qa_launchd_writeback_codex_auth() {
-  local codex_home="$1"
-  python3 - "$codex_home" "$HOME" <<'PY'
-import json
+# Remove a provisioned credential only after proving the exact slot-owned home
+# coordinate. Failure leaves the room lock/home intact for operator recovery.
+qa_launchd_retire_codex_home() {
+  local codex_home="$1" slot_root="$2"
+  [[ -e "$codex_home" || -L "$codex_home" ]] || return 0
+  python3 - "$codex_home" "$slot_root" <<'PY' || return 1
 import os
 from pathlib import Path
 import re
 import stat
 import sys
 
-home = Path(sys.argv[1])
-runtime_home = Path(sys.argv[2])
+home, slot = map(Path, sys.argv[1:])
+if not home.is_absolute() or not slot.is_absolute():
+    raise SystemExit(1)
+slot_real = Path(os.path.realpath(slot))
+if not re.fullmatch(r"/(?:private/)?tmp/flywheel-test-slot-[1-9][0-9]*", str(slot_real)):
+    raise SystemExit(1)
 try:
-    home_info = home.lstat()
+    info = home.lstat()
 except OSError:
     raise SystemExit(1)
-if not stat.S_ISDIR(home_info.st_mode) or home.is_symlink():
+if not stat.S_ISDIR(info.st_mode) or home.is_symlink():
     raise SystemExit(1)
 home_real = Path(os.path.realpath(home))
-if not re.fullmatch(
-    r"/(?:private/)?tmp/flywheel-test-slot-[1-9][0-9]*/cdxh/[a-z0-9][a-z0-9-]*",
-    str(home_real),
-):
-    raise SystemExit(1)
-
-source_marker = home / ".flywheel-qa-source-home"
-baseline_path = home / ".flywheel-qa-source-auth-baseline"
-slot_auth = home / "auth.json"
-for path in (source_marker, baseline_path, slot_auth):
-    try:
-        info = path.lstat()
-    except OSError:
-        raise SystemExit(1)
-    if not stat.S_ISREG(info.st_mode) or path.is_symlink():
-        raise SystemExit(1)
-
-try:
-    source_text = source_marker.read_text(encoding="utf-8")
-except (OSError, UnicodeError):
-    raise SystemExit(1)
-if not source_text.endswith("\n") or "\n" in source_text[:-1]:
-    raise SystemExit(1)
-source = Path(source_text[:-1])
-if not source.is_absolute():
-    raise SystemExit(1)
-try:
-    source_info = source.lstat()
-except OSError:
-    raise SystemExit(1)
-if not stat.S_ISDIR(source_info.st_mode) or source.is_symlink():
-    raise SystemExit(1)
-source_real = Path(os.path.realpath(source))
-if source_real != source:
-    raise SystemExit(1)
-documented_qa_source = Path(os.path.realpath(runtime_home / ".codex-259-qa"))
-test_fixture = re.fullmatch(
-    r"/(?:private/)?tmp/flywheel-test-codex-fixture-[1-9][0-9]*/\.codex-259-qa",
-    str(source_real),
-)
-if source_real != documented_qa_source and test_fixture is None:
-    raise SystemExit(1)
-
-source_auth = source / "auth.json"
-lease = source / ".flywheel-qa-auth-lease"
-owner = lease / "owner"
-for path, kind in ((source_auth, "file"), (lease, "dir"), (owner, "file")):
-    try:
-        info = path.lstat()
-    except OSError:
-        raise SystemExit(1)
-    if path.is_symlink():
-        raise SystemExit(1)
-    if kind == "file" and not stat.S_ISREG(info.st_mode):
-        raise SystemExit(1)
-    if kind == "dir" and not stat.S_ISDIR(info.st_mode):
-        raise SystemExit(1)
-try:
-    owner_text = owner.read_text(encoding="utf-8")
-except (OSError, UnicodeError):
-    raise SystemExit(1)
-if owner_text != str(home) + "\n":
-    raise SystemExit(1)
-
-try:
-    baseline = baseline_path.read_bytes()
-    current = source_auth.read_bytes()
-    rotated = slot_auth.read_bytes()
-except OSError:
-    raise SystemExit(1)
-
-try:
-    baseline_value = json.loads(baseline.decode("utf-8"))
-    rotated_value = json.loads(rotated.decode("utf-8"))
-except (UnicodeError, json.JSONDecodeError):
-    raise SystemExit(3)
-if (not isinstance(baseline_value, dict) or not baseline_value
-        or not isinstance(rotated_value, dict) or not rotated_value
-        or set(rotated_value) != set(baseline_value)):
-    raise SystemExit(3)
-if current != baseline and current != rotated:
-    raise SystemExit(2)
-if current != rotated:
-    temp = source / (".auth.json.flywheel-writeback-" + str(os.getpid()))
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = None
-    try:
-        fd = os.open(temp, flags, 0o600)
-        with os.fdopen(fd, "wb", closefd=True) as stream:
-            fd = None
-            stream.write(rotated)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temp, 0o600)
-        os.replace(temp, source_auth)
-        directory_fd = os.open(source, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    except OSError:
-        if fd is not None:
-            os.close(fd)
-        try:
-            temp.unlink()
-        except OSError:
-            pass
-        raise SystemExit(1)
-
-try:
-    owner.unlink()
-    lease.rmdir()
-except OSError:
+if home_real.parent != slot_real / "cdxh" or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", home_real.name):
     raise SystemExit(1)
 PY
-}
-
-qa_launchd_report_codex_auth_recovery() {
-  local codex_home="$1" phase="$2" writeback_rc
-  case "$phase" in
-    registry-register|deploy-cleanup) ;;
-    *) return 1 ;;
-  esac
-  qa_launchd_writeback_codex_auth "$codex_home"
-  writeback_rc=$?
-  if [[ "$writeback_rc" == 0 ]]; then
-    return 0
-  fi
-  case "$writeback_rc" in
-    2) qa_launchd_err "carrier=codex-tui step=auth-recovery phase=${phase} result=conflict" ;;
-    3) qa_launchd_err "carrier=codex-tui step=auth-recovery phase=${phase} result=invalid" ;;
-    *) qa_launchd_err "carrier=codex-tui step=auth-recovery phase=${phase} result=failed" ;;
-  esac
-  return "$writeback_rc"
+  rm -rf -- "$codex_home"
 }
 
 qa_launchd_lead_pid() {
@@ -1346,7 +1034,7 @@ qa_launchd_stop_codex_entry() {
   local registry="$1" entry="$2" validated label codex_home codex_bin state_dir runtime_pid_file
   local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
   local daemon_pid_file daemon_socket launch_marker bounded_run updater_rc
-  local writeback_rc runtime_started=0 failed=0
+  local slot_root runtime_started=0 failed=0
   validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
     || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
   IFS=$'\t' read -r label codex_home codex_bin state_dir runtime_pid_file <<<"$validated"
@@ -1421,15 +1109,9 @@ qa_launchd_stop_codex_entry() {
       ;;
   esac
   if [[ "$failed" == 0 ]]; then
-    if qa_launchd_writeback_codex_auth "$codex_home"; then
-      :
-    else
-      writeback_rc=$?
-      case "$writeback_rc" in
-        2) qa_launchd_err "carrier=codex-tui step=auth-writeback result=conflict" ;;
-        3) qa_launchd_err "carrier=codex-tui step=auth-writeback result=invalid" ;;
-        *) qa_launchd_err "carrier=codex-tui step=auth-writeback result=failed" ;;
-      esac
+    slot_root=$(dirname "$registry")
+    if ! qa_launchd_retire_codex_home "$codex_home" "$slot_root"; then
+      qa_launchd_err "carrier=codex-tui step=home-retire result=failed"
       failed=1
     fi
   fi

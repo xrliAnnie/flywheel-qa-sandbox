@@ -152,7 +152,7 @@ mkdir -p "$layer_home/.flywheel" "$layer_project_root" "$layer_state" "$layer_wo
 printf '%s\n' '# QA Lead identity' > "$layer_identity"
 printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-09-03T00:00:00.000Z"}' \
   > "$layer_home/.flywheel/summary-config.json"
-layer_shape='{"backend":"codex-app-server","codexSourceHome":"/tmp/codex-source-not-projected","codexProfile":"companion"}'
+layer_shape='{"backend":"codex-app-server","codexProfile":"companion"}'
 qa_multilead_build_projects test-slot-7 "$layer_project_root" repo qa-lead \
   12345678901234567 TEST_BOT_TOKEN_7 lead '["*"]' '[]' \
   12345678901234567 "$layer_state" "$layer_shape" > "$layer_projects"
