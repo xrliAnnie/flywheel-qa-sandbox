@@ -24,6 +24,7 @@ const spec: RunnerTuiWindowSpec = {
 	socketPath: "/home/x/.flywheel/cdx-sock/abc.sock",
 	cwd: "/home/x/Dev/flywheel-FLY-1188",
 	threadId: "019f5740-57f6-76e1-9526-7f37de6c997c",
+	executionId: "exec-1",
 	codexBin: "/bin/codex",
 };
 
@@ -453,12 +454,21 @@ function recorder(okFor: (args: string[]) => boolean = () => true) {
  */
 function fakeTmux(
 	opts: {
-		initial?: Array<{ id: string; name: string }>; // pre-existing windows (id → name)
+		initial?: Array<{
+			id: string;
+			name: string;
+			session?: string;
+			executionId?: string;
+		}>; // pre-existing windows (id → name/session/marker)
 		sessionExists?: boolean; // default true
 		tmuxAvailable?: boolean; // -V result (default true)
 		createOk?: boolean; // new-window result (default true)
 		killEffective?: boolean; // whether kill-window actually removes (default true)
 		paneAlive?: boolean; // liveness of the created window (default true)
+		markerSetOk?: boolean;
+		markerReadMode?: "stored" | "mismatch" | "missing";
+		rollbackProbeFails?: boolean;
+		globalListRows?: string[]; // extra rows from unrelated tmux sessions
 		listFails?: boolean; // list-windows always returns undefined (default false)
 		verifyListFails?: boolean; // only the SECOND+ (verify) list returns undefined
 	} = {},
@@ -468,14 +478,27 @@ function fakeTmux(
 	let seq = 0;
 	const newId = () => `@${++seq}`;
 	const windows = new Map<string, string>(); // id → name
-	for (const w of opts.initial ?? []) windows.set(w.id, w.name);
+	const windowSessions = new Map<string, Set<string>>();
+	const executionMarkers = new Map<string, string>();
+	for (const w of opts.initial ?? []) {
+		windows.set(w.id, w.name);
+		const sessions = windowSessions.get(w.id) ?? new Set<string>();
+		sessions.add(w.session ?? spec.tmuxSession);
+		windowSessions.set(w.id, sessions);
+		if (w.executionId) executionMarkers.set(w.id, w.executionId);
+		const numericId = Number(w.id.slice(1));
+		if (Number.isSafeInteger(numericId)) seq = Math.max(seq, numericId);
+	}
 	let sessionExists = opts.sessionExists ?? true;
 	const execCalls: string[][] = [];
 	const outCalls: string[][] = [];
 	let pileUp = false; // set true if new-window is ever called over an existing same-name window
 	let createdOverResidual = false;
 	const sameNameCount = () =>
-		[...windows.values()].filter((n) => n === WINDOW).length;
+		[...windows].filter(
+			([id, name]) =>
+				name === WINDOW && windowSessions.get(id)?.has(spec.tmuxSession),
+		).length;
 	// peak same-named count the CODE ever ESTABLISHES via new-window (starts at 0,
 	// NOT the pre-seeded stale count — those preloaded duplicates are the bad input
 	// the purge must clean, not a pile-up the code created).
@@ -488,7 +511,9 @@ function fakeTmux(
 		if (verb === "new-session") {
 			if (!sessionExists) {
 				sessionExists = true;
-				windows.set(newId(), "zsh"); // recreated scaffold window (DIFFERENT name)
+				const id = newId();
+				windows.set(id, "zsh"); // recreated scaffold window (DIFFERENT name)
+				windowSessions.set(id, new Set([spec.tmuxSession]));
 			}
 			return { ok: true };
 		}
@@ -496,8 +521,23 @@ function fakeTmux(
 			const id = args[args.indexOf("-t") + 1];
 			if (opts.killEffective !== false) {
 				windows.delete(id);
-				if (windows.size === 0) sessionExists = false; // tmux: last window → session gone
+				windowSessions.delete(id);
+				executionMarkers.delete(id);
+				if (
+					![...windowSessions.values()].some((sessions) =>
+						sessions.has(spec.tmuxSession),
+					)
+				)
+					sessionExists = false; // tmux: last base-session window → session gone
 			}
+			return { ok: true };
+		}
+		if (verb === "set-option") {
+			if (opts.markerSetOk === false) return { ok: false };
+			const target = args[args.indexOf("-t") + 1];
+			const id = target?.split(":").at(-1);
+			const marker = args.at(-1);
+			if (id && windows.has(id) && marker) executionMarkers.set(id, marker);
 			return { ok: true };
 		}
 		if (verb === "new-window") {
@@ -510,6 +550,7 @@ function fakeTmux(
 			if (!sessionExists) sessionExists = true;
 			const id = newId();
 			windows.set(id, name);
+			windowSessions.set(id, new Set([spec.tmuxSession]));
 			if (sameNameCount() > maxSameName) maxSameName = sameNameCount();
 			return { ok: true, stdout: id };
 		}
@@ -521,13 +562,38 @@ function fakeTmux(
 		if (args.includes("list-windows")) {
 			listCalls++;
 			if (opts.listFails) return undefined;
-			if (opts.verifyListFails && listCalls >= 2) return undefined; // the verify list fails
-			if (!sessionExists) return undefined; // "no server running" / session destroyed
-			return [...windows].map(([id, name]) => `${id} ${name}`).join("\n");
+			if (opts.verifyListFails && listCalls >= 3) return undefined; // a verify list fails
+			if (args.includes("-a")) {
+				return [
+					...[...windows].flatMap(([id]) =>
+						[...(windowSessions.get(id) ?? [])].map(
+							(session) => `${executionMarkers.get(id) ?? ""}|${session}|${id}`,
+						),
+					),
+					...(opts.globalListRows ?? []),
+				].join("\n");
+			}
+			if (!sessionExists) return undefined; // "no server running" / base session destroyed
+			return [...windows]
+				.filter(([id]) => windowSessions.get(id)?.has(spec.tmuxSession))
+				.map(([id, name]) => `${id} ${name}`)
+				.join("\n");
 		}
 		if (args.includes("display-message")) {
 			const target = args[args.indexOf("-t") + 1];
 			const id = target?.split(":").at(-1);
+			const format = args.at(-1);
+			if (format === "#{@flywheel_exec_id}") {
+				if (opts.markerReadMode === "missing") return undefined;
+				if (opts.markerReadMode === "mismatch") return "wrong-execution";
+				return id ? executionMarkers.get(id) : undefined;
+			}
+			if (format === "#{window_id}") {
+				if (opts.rollbackProbeFails && (!id || !windows.has(id))) {
+					return undefined;
+				}
+				return id && windows.has(id) ? id : "";
+			}
 			const name = id ? windows.get(id) : undefined;
 			return name === WINDOW && (opts.paneAlive ?? true)
 				? `${id} ${WINDOW} 0`
@@ -554,6 +620,7 @@ function fakeTmux(
 		get sameNameNow() {
 			return sameNameCount();
 		},
+		hasWindow: (id: string) => windows.has(id),
 		verbs: () => execCalls.map((c) => `${c[1]}`),
 		newWindowCalled: () => execCalls.some((c) => c[1] === "new-window"),
 	};
@@ -653,15 +720,16 @@ describe("ensureRunnerTuiWindow", () => {
 			created: true,
 			windowId: expect.any(String),
 		});
-		// No stale same-named window → no kill; the verb sequence is
-		// probe → ensure → re-ensure → create (list-windows go through execOut).
+		// No stale identity → no kill; the verb sequence is probe → ensure →
+		// re-ensure → create → publish marker (list-windows/readback use execOut).
 		expect(t.verbs()).toEqual([
 			"-V",
 			"new-session",
 			"new-session",
 			"new-window",
+			"set-option",
 		]);
-		expect(t.outCalls.filter((c) => c[1] === "list-windows")).toHaveLength(2);
+		expect(t.outCalls.filter((c) => c[1] === "list-windows")).toHaveLength(4);
 		const createCall = t.execCalls.find((c) => c[1] === "new-window");
 		expect(createCall).toContain("FLY-1188");
 		expect(createCall?.some((a) => a.includes("codex resume"))).toBe(true);
@@ -676,6 +744,103 @@ describe("ensureRunnerTuiWindow", () => {
 			expect(env).not.toHaveProperty("OPENAI_API_KEY");
 		}
 		expect(t.pileUp).toBe(false);
+	});
+
+	it("FLY-2170 proves the execution marker before reporting a created window", async () => {
+		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] });
+
+		const outcome = await ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+
+		expect(outcome).toMatchObject({ created: true });
+		expect(t.execCalls).toContainEqual([
+			"tmux",
+			"set-option",
+			"-w",
+			"-t",
+			"@1",
+			"@flywheel_exec_id",
+			"exec-1",
+		]);
+		expect(t.outCalls).toContainEqual([
+			"tmux",
+			"display-message",
+			"-p",
+			"-t",
+			"@1",
+			"#{@flywheel_exec_id}",
+		]);
+	});
+
+	it("FLY-2170 ignores an unrelated empty-named base-session window", async () => {
+		const t = fakeTmux({ initial: [{ id: "@0", name: "" }] });
+
+		await expect(
+			ensureRunnerTuiWindow(spec, {
+				exec: t.exec,
+				execOut: t.execOut,
+				sleep: t.sleep,
+			}),
+		).resolves.toMatchObject({ created: true });
+	});
+
+	it.each([
+		{ name: "set-option failure", markerSetOk: false },
+		{ name: "mismatched readback", markerReadMode: "mismatch" as const },
+		{ name: "readback timeout", markerReadMode: "missing" as const },
+	])("FLY-2170 rolls back a new window after $name", async (scenario) => {
+		const t = fakeTmux({
+			initial: [{ id: "@0", name: "zsh" }],
+			...scenario,
+		});
+
+		const outcome = await ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+		});
+
+		expect(outcome).toEqual({
+			created: false,
+			category: "retryable-transient-ipc",
+			reason: "marker_unproven",
+		});
+		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@1"]);
+		expect(t.outCalls).toContainEqual([
+			"tmux",
+			"display-message",
+			"-p",
+			"-t",
+			"@1",
+			"#{window_id}",
+		]);
+		expect(t.sameNameNow).toBe(0);
+	});
+
+	it("FLY-2170 distinguishes rollback probe failure from confirmed empty absence", async () => {
+		const logs: string[] = [];
+		const t = fakeTmux({
+			initial: [{ id: "@0", name: "zsh" }],
+			markerSetOk: false,
+			rollbackProbeFails: true,
+		});
+
+		await ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
+			execOut: t.execOut,
+			sleep: t.sleep,
+			log: (message) => logs.push(message),
+		});
+
+		expect(logs).toContain(
+			"runner-tui-window: marker rollback probe failed for @1",
+		);
+		expect(logs.some((message) => message.includes("could not prove"))).toBe(
+			false,
+		);
 	});
 
 	it("returns tmux-absent when tmux is unavailable — the run is unaffected", async () => {
@@ -777,6 +942,93 @@ describe("scanAndKillSameNameWindows", () => {
 // fake so duplicates are representable and the "kill last window destroys the
 // session" rule is modeled — the properties a Set-by-name fake could not test.
 describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
+	it("FLY-2170 ignores an unrelated malformed global row before validating the matching execution", async () => {
+		const t = fakeTmux({
+			initial: [
+				{ id: "@0", name: "zsh" },
+				{
+					id: "@1",
+					name: "old-recovery-label",
+					session: "another-base",
+					executionId: spec.executionId,
+				},
+			],
+			globalListRows: ["other-exec||not-a-window-id"],
+		});
+
+		await expect(
+			ensureRunnerTuiWindow(spec, {
+				exec: t.exec,
+				execOut: t.execOut,
+				sleep: t.sleep,
+			}),
+		).resolves.toMatchObject({ created: true });
+		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@1"]);
+	});
+
+	it("FLY-2170 fails closed when the matching global execution row is malformed", async () => {
+		const t = fakeTmux({
+			initial: [{ id: "@0", name: "zsh" }],
+			globalListRows: [`${spec.executionId}|another-base|not-a-window-id`],
+		});
+
+		await expect(
+			ensureRunnerTuiWindow(spec, {
+				exec: t.exec,
+				execOut: t.execOut,
+				sleep: t.sleep,
+			}),
+		).resolves.toMatchObject({
+			created: false,
+			category: "retryable-transient-ipc",
+			reason: "stale_window_unproven",
+		});
+		expect(t.newWindowCalled()).toBe(false);
+	});
+
+	it("FLY-2170 purges the base-session name axis and global execution-id axis only", async () => {
+		const t = fakeTmux({
+			initial: [
+				{ id: "@1", name: spec.windowName, executionId: "old-exec" },
+				{ id: "@2", name: "old-recovery-label", executionId: spec.executionId },
+				{ id: "@3", name: "unrelated", executionId: "other-exec" },
+				{
+					id: "@4",
+					name: spec.windowName,
+					session: "another-base",
+					executionId: "other-exec",
+				},
+				{
+					id: "@5",
+					name: "cross-session-old-label",
+					session: "another-base",
+					executionId: spec.executionId,
+				},
+				{
+					id: "@5",
+					name: "cross-session-old-label",
+					session: "cmux-linked-alias",
+					executionId: spec.executionId,
+				},
+			],
+		});
+
+		await expect(
+			ensureRunnerTuiWindow(spec, {
+				exec: t.exec,
+				execOut: t.execOut,
+				sleep: t.sleep,
+			}),
+		).resolves.toMatchObject({ created: true });
+
+		const killed = t.execCalls
+			.filter((call) => call[1] === "kill-window")
+			.map((call) => call[call.indexOf("-t") + 1]);
+		expect(killed).toEqual(["@1", "@2", "@5"]);
+		expect(t.hasWindow("@3")).toBe(true);
+		expect(t.hasWindow("@4")).toBe(true);
+	});
+
 	it("kills a single stale same-named window by immutable id, verifies clean, then creates", async () => {
 		const t = fakeTmux({
 			initial: [

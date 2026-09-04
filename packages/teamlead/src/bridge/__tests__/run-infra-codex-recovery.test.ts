@@ -17,6 +17,32 @@ const context: AdapterExecutionContext = {
 };
 
 describe("FLY-2211 run-infra recovery owner", () => {
+	it("FLY-2170 threads founder-window suppression to the adapter", async () => {
+		const resumeExistingExecution = vi.fn(async () => ({
+			success: false,
+			sessionId: "exec-recovery",
+			durationMs: 0,
+			timedOut: false,
+		}));
+		const runtime = createCodexRecoveryRuntime({
+			adapter: { resumeExistingExecution },
+			sink: { emitCompleted: vi.fn(), emitFailed: vi.fn() },
+		});
+		const hooks = {
+			onRecoveryOwnershipEstablished: vi.fn(async () => undefined),
+		};
+
+		await runtime.resume(context, hooks, { founderWindow: "suppressed" });
+
+		expect(resumeExistingExecution).toHaveBeenCalledWith(
+			context,
+			expect.objectContaining({
+				onRecoveryOwnershipEstablished: expect.any(Function),
+			}),
+			{ founderWindow: "suppressed" },
+		);
+	});
+
 	it("routes exhausted recovery through the canonical failure sink", async () => {
 		const emitFailed = vi.fn(async () => undefined);
 		const runtime = createCodexRecoveryRuntime({

@@ -210,6 +210,7 @@ import {
 	buildCodexRecoveryContext,
 	CodexSessionReowner,
 	isCodexReownExcluded,
+	resolveCodexRecoveryWindow,
 } from "./codex-session-reown.js";
 import { recordCodexTransportDeathSnapshot } from "./codex-transport-death-snapshot.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -623,6 +624,7 @@ import {
 	isTmuxWindowAlive,
 	killCmuxLinkedSession,
 	killTmuxWindow,
+	listTmuxWindowsByExecutionId,
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	probeTmuxServer,
@@ -635,6 +637,7 @@ import { createTmuxRescueClient } from "./tmux-rescue-client.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
+import { buildTuiWindowLostAlert } from "./tui-window-alert.js";
 import {
 	TurnBeltReconciler,
 	type WorktreeTurnRow,
@@ -7177,6 +7180,28 @@ export async function startBridge(
 				);
 			}
 			const snapshot = readCodexLaunchSnapshot(session.execution_id);
+			let windowDecision: Awaited<
+				ReturnType<typeof resolveCodexRecoveryWindow>
+			>;
+			try {
+				windowDecision = await resolveCodexRecoveryWindow({
+					executionId: session.execution_id,
+					projectName: session.project_name,
+					snapshotLabel: snapshot.label,
+					listWindows: listTmuxWindowsByExecutionId,
+					lookupTarget: lookupTmuxTarget,
+				});
+			} catch {
+				windowDecision = {
+					founderWindow: "suppressed",
+					reason: "candidates_indeterminate",
+				};
+			}
+			if (windowDecision.founderWindow === "suppressed") {
+				console.warn(
+					`[codex-session-reown] label unavailable for ${session.execution_id}: ${windowDecision.reason}`,
+				);
+			}
 			let leadId: string | undefined;
 			try {
 				leadId = resolveLeadForIssue(
@@ -7200,6 +7225,11 @@ export async function startBridge(
 				session,
 				snapshot,
 				capabilities,
+				...(windowDecision.founderWindow === "open" &&
+				"label" in windowDecision &&
+				windowDecision.label
+					? { label: windowDecision.label }
+					: {}),
 				...(leadId ? { leadId } : {}),
 				...(mailboxIdentity
 					? {
@@ -7216,7 +7246,18 @@ export async function startBridge(
 				...(progressPath ? { progressPath } : {}),
 				onHeartbeat: (executionId) => store.updateHeartbeat(executionId),
 			});
-			return runtime.resume(context, { onRecoveryOwnershipEstablished });
+			return runtime.resume(
+				context,
+				{ onRecoveryOwnershipEstablished },
+				windowDecision.founderWindow === "open"
+					? {
+							founderWindow: "open",
+							...("windowName" in windowDecision && windowDecision.windowName
+								? { windowName: windowDecision.windowName }
+								: {}),
+						}
+					: { founderWindow: "suppressed" },
+			);
 		},
 		readTurnHolder: async (session) => {
 			const role = session.chat_thread_role ?? session.session_role;
@@ -9826,20 +9867,9 @@ export async function startBridge(
 		...resolveAlertDirsFromEnv(process.env),
 	});
 	tuiWindowAlertHolder.lost = async (evidence) => {
-		const reason = evidence.lastFailure
-			? `${evidence.lastFailure.category}/${evidence.lastFailure.reason}`
-			: "unknown";
-		await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
-			leadId: evidence.leadId,
-			projectName: evidence.projectName,
-			eventId: `tui-window-lost:${evidence.executionId}:${evidence.episodeStartedAt}`,
-			eventType: "tui_window_lost",
-			title: `Codex runner TUI not visible (${evidence.issueId})`,
-			body: `The founder-facing Codex pane never acquired an immutable tmux window id. trigger=${evidence.trigger}; attempts=${evidence.attempts}; last=${reason}. The resident run continued; inspect execution ${evidence.executionId}.`,
-			severity: "warning",
-			sessionKey: evidence.executionId,
-			episodeId: `tui-window-lost:${evidence.executionId}:${evidence.episodeStartedAt}`,
-		});
+		await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert(
+			buildTuiWindowLostAlert(evidence),
+		);
 	};
 	tuiWindowAlertHolder.restored = (executionId) => {
 		console.log(`[runner-tui-window] restored execution=${executionId}`);

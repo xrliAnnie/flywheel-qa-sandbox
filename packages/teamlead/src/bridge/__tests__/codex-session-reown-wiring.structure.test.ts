@@ -68,4 +68,16 @@ describe("FLY-2211 Bridge recovery wiring", () => {
 			"mutate: () => grantPrelaunchWorkflowTurn(turnInput)",
 		);
 	});
+
+	it("FLY-2170 resolves one founder-window decision before recovery resume", () => {
+		expect(source).toContain("resolveCodexRecoveryWindow({");
+		expect(source).toContain("listWindows: listTmuxWindowsByExecutionId");
+		expect(source).toContain("lookupTarget: lookupTmuxTarget");
+		expect(source).toContain('founderWindow: "open"');
+		expect(source).toContain("windowName: windowDecision.windowName");
+		expect(source).toContain('founderWindow: "suppressed"');
+		expect(source).toContain(
+			["label unavailable for $", "{session.execution_id}"].join(""),
+		);
+	});
 });

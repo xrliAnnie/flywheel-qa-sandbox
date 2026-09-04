@@ -18,6 +18,7 @@ export { AbortError, ClaudeRunner } from "./ClaudeRunner.js";
 export {
 	type CodexLaunchSnapshot,
 	type CodexRecoveryCommitHooks,
+	type CodexRecoveryOptions,
 	type CodexRunnerTransport,
 	CodexTmuxAdapter,
 	type CodexWakeWatcher,

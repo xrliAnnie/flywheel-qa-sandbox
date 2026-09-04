@@ -1,0 +1,13 @@
+flowchart TB
+  B0["Bridge 重启 → FLY-2211 re-own"]
+  B0 --> L1{"快照里有 label?"}
+  L1 -- "有" --> N["窗口名 = 出生 label"]
+  L1 -- "无 / 老快照" --> L2{"有带本 execution<br/>@flywheel_exec_id 的活窗?"}
+  L2 -- "有" --> N2["窗口名 = 那扇活窗的名字"]
+  L2 -- "无" --> F["fail closed: 不开窗<br/>tui_window_lost / label_unavailable<br/>run 照常恢复"]
+  N --> PG["purge: 同名 或 同 exec-id 的窗按 @id 清掉"]
+  N2 --> PG
+  PG --> NW["new-window 同名 → pin"]
+  X["删除: codex-session-reown.ts<br/>issue_identifier + issue_title 拼名"]
+  style X fill:#ffebee,stroke:#ff3b30
+  style F fill:#fff8e1,stroke:#ff9500

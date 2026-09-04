@@ -11,6 +11,10 @@ import type {
 	AdapterExecutionResult,
 } from "flywheel-core";
 import type { Session, StateStore } from "../StateStore.js";
+import type {
+	RunnerTmuxWindowInventory,
+	TmuxTargetLookup,
+} from "./tmux-lookup.js";
 
 export const CODEX_REOWN_EVENT_SOURCE = "bridge.codex-session-reown";
 export const CODEX_RECOVERY_CLAIM_TTL_MS = 60_000;
@@ -83,11 +87,87 @@ export interface CodexReownPassResult {
 	activeExecutionIds: ReadonlySet<string>;
 }
 
+export type CodexRecoveryWindowDecision =
+	| { founderWindow: "open"; label: string; windowName?: string }
+	| { founderWindow: "suppressed"; reason: string };
+
+function recoverableWindowName(windowName: string): boolean {
+	return /^[A-Za-z0-9_.-]{1,50}$/.test(windowName);
+}
+
+export async function resolveCodexRecoveryWindow(input: {
+	executionId: string;
+	projectName: string;
+	snapshotLabel?: string;
+	listWindows(executionId: string): Promise<RunnerTmuxWindowInventory>;
+	lookupTarget(executionId: string, projectName: string): TmuxTargetLookup;
+}): Promise<CodexRecoveryWindowDecision> {
+	if (input.snapshotLabel) {
+		return { founderWindow: "open", label: input.snapshotLabel };
+	}
+	let inventory: RunnerTmuxWindowInventory;
+	try {
+		inventory = await input.listWindows(input.executionId);
+	} catch {
+		return {
+			founderWindow: "suppressed",
+			reason: "candidates_indeterminate",
+		};
+	}
+	if (inventory.kind === "indeterminate") {
+		return {
+			founderWindow: "suppressed",
+			reason: "candidates_indeterminate",
+		};
+	}
+	if (inventory.windows.length === 0) {
+		return { founderWindow: "suppressed", reason: "no_candidates" };
+	}
+	const names = new Set(inventory.windows.map((window) => window.windowName));
+	if (names.size === 1) {
+		const [windowName] = names;
+		if (windowName && recoverableWindowName(windowName)) {
+			return { founderWindow: "open", label: windowName, windowName };
+		}
+		return { founderWindow: "suppressed", reason: "unsafe_window_name" };
+	}
+	let lookup: TmuxTargetLookup;
+	try {
+		lookup = input.lookupTarget(input.executionId, input.projectName);
+	} catch {
+		return { founderWindow: "suppressed", reason: "commdb_lookup_error" };
+	}
+	if (lookup.kind === "error") {
+		return { founderWindow: "suppressed", reason: "commdb_lookup_error" };
+	}
+	if (lookup.kind === "found") {
+		const separator = lookup.target.tmuxWindow.lastIndexOf(":");
+		const windowId = lookup.target.tmuxWindow.slice(separator + 1);
+		const selected = inventory.windows.find(
+			(window) => window.windowId === windowId,
+		);
+		if (selected) {
+			return recoverableWindowName(selected.windowName)
+				? {
+						founderWindow: "open",
+						label: selected.windowName,
+						windowName: selected.windowName,
+					}
+				: { founderWindow: "suppressed", reason: "unsafe_window_name" };
+		}
+	}
+	return {
+		founderWindow: "suppressed",
+		reason: "commdb_pointer_not_in_candidates",
+	};
+}
+
 /** Rebuild the adapter input exclusively from immutable + freshly fenced data. */
 export function buildCodexRecoveryContext(input: {
 	session: Session;
 	snapshot: CodexLaunchSnapshot;
 	capabilities: PreparedCodexRecoveryCapabilities;
+	label?: string;
 	leadId?: string;
 	agentName?: string;
 	teamName?: string;
@@ -114,19 +194,13 @@ export function buildCodexRecoveryContext(input: {
 		);
 	}
 	const launch = input.snapshot.launchContext;
-	const label = [
-		input.session.issue_identifier ?? input.session.issue_id,
-		input.session.issue_title,
-	]
-		.filter((value): value is string => Boolean(value?.trim()))
-		.join("-");
 	return {
 		executionId: input.session.execution_id,
 		issueId: input.session.issue_id,
 		prompt: input.snapshot.kickText,
 		cwd: input.snapshot.cwd,
 		pretrustWorkspace: true,
-		label,
+		...(input.label ? { label: input.label } : {}),
 		permissionMode: "bypassPermissions",
 		allowedTools: [...raw.allowedTools],
 		enablePonytail: raw.enablePonytail,

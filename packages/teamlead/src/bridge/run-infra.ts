@@ -15,6 +15,7 @@ import {
 	AntigravityTmuxAdapter,
 	CodexExecutionOwnershipRegistry,
 	type CodexRecoveryCommitHooks,
+	type CodexRecoveryOptions,
 	CodexTmuxAdapter,
 	type CodexTransportCloseEvidence,
 	KimiTmuxAdapter,
@@ -129,6 +130,7 @@ export interface CodexRecoveryRuntime {
 	resume(
 		context: AdapterExecutionContext,
 		hooks: CodexRecoveryCommitHooks,
+		options?: CodexRecoveryOptions,
 	): Promise<AdapterExecutionResult>;
 	failExhausted(session: Session, attempts: number): Promise<void>;
 }
@@ -142,12 +144,13 @@ export function createCodexRecoveryRuntime(
 	input: CodexRecoveryRuntimeInput,
 ): CodexRecoveryRuntime {
 	return {
-		resume: (context, hooks) =>
+		resume: (context, hooks, options) =>
 			runCodexRecoveryOwner({
 				adapter: input.adapter,
 				sink: input.sink,
 				context,
 				hooks,
+				options,
 			}),
 		failExhausted: async (session, attempts) => {
 			const reason = `Codex recovery exhausted after ${attempts} attempts`;
@@ -190,14 +193,19 @@ export async function runCodexRecoveryOwner(input: {
 	sink: Pick<DirectEventSink, "emitCompleted" | "emitFailed">;
 	context: AdapterExecutionContext;
 	hooks: CodexRecoveryCommitHooks;
+	options?: CodexRecoveryOptions;
 }): Promise<AdapterExecutionResult> {
 	let committed = false;
-	const result = await input.adapter.resumeExistingExecution(input.context, {
-		onRecoveryOwnershipEstablished: async (receipt) => {
-			await input.hooks.onRecoveryOwnershipEstablished(receipt);
-			committed = true;
+	const result = await input.adapter.resumeExistingExecution(
+		input.context,
+		{
+			onRecoveryOwnershipEstablished: async (receipt) => {
+				await input.hooks.onRecoveryOwnershipEstablished(receipt);
+				committed = true;
+			},
 		},
-	});
+		input.options,
+	);
 	if (!committed) return result;
 	const env = {
 		executionId: input.context.executionId,

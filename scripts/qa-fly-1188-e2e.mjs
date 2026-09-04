@@ -199,6 +199,7 @@ try {
 						socketPath,
 						cwd: sandboxCwd,
 						threadId: tid,
+						executionId: EXEC_ID,
 						// MIRROR PRODUCTION (CodexTmuxAdapter): TUI = raw codex, daemon = shim.
 						// An earlier cut of this harness passed the SHIM here and produced a
 						// FAIL that was the harness's fault, not the product's. A QA rig must

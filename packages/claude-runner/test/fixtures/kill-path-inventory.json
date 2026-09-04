@@ -174,9 +174,21 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.real-tmux.test.ts:harness.run([\"kill-window\", \"-t\", createdWindowId]).status,#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.real-tmux.test.ts",
+		"code": "harness.run([\"kill-window\", \"-t\", createdWindowId]).status,",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:.filter((c) => c[1] === \"kill-window\")#1",
 		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
 		"code": ".filter((c) => c[1] === \"kill-window\")",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:.filter((call) => call[1] === \"kill-window\")#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": ".filter((call) => call[1] === \"kill-window\")",
 		"classification": "qa-only"
 	},
 	{
@@ -217,6 +229,18 @@
 	},
 	{
 		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);#3",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);#4",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);#5",
 		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
 		"code": "expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);",
 		"classification": "qa-only"

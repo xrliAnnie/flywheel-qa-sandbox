@@ -360,6 +360,15 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(existsSync(ledgerRoot)).toBe(false);
 	});
 
+	it("FLY-2170: fresh dispatch rejects a missing founder label before credential provisioning", async () => {
+		await expect(
+			makeAdapter().execute(ctx({ label: undefined })),
+		).rejects.toThrow(/missing founder window label/);
+
+		expect(fake.ghCalls).toEqual([]);
+		expect(existsSync(join(homesRoot, execId))).toBe(false);
+	});
+
 	it("FLY-1961 trusts the real cwd in this execution's CODEX_HOME", async () => {
 		await makeAdapter().execute(ctx({ pretrustWorkspace: true }));
 
@@ -487,19 +496,12 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(runtime.drainedCalls).toBe(1);
 	});
 
-	it("publishes the execution id on the exact founder window", async () => {
+	it("FLY-2170 does not post-publish identity after a verified window result", async () => {
 		await makeAdapter().execute(ctx());
 
 		expect(
 			fake.tmuxCalls.find((args) => args.includes("@flywheel_exec_id")),
-		).toEqual([
-			"set-option",
-			"-w",
-			"-t",
-			"=testsess:@7",
-			"@flywheel_exec_id",
-			execId,
-		]);
+		).toBeUndefined();
 	});
 
 	it("does not start a visibility episode before the authoritative thread exists", async () => {
@@ -1416,6 +1418,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 	it("reopens one replacement TUI for every daemon restart generation", async () => {
 		runtime = new FakeRuntime(async (input) => {
 			input.onThreadReady?.(THREAD_ID, 0);
+			input.onThreadReady?.(THREAD_ID, 1);
 			await Promise.resolve();
 			input.onThreadReady?.(THREAD_ID, 1); // a daemon restart re-fires
 			await Promise.resolve();
@@ -1674,6 +1677,27 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			const res = await makeAdapter().execute(ctx());
 			expect(res.success).toBe(true);
 			expect(ensureWindowCalls.length).toBe(3); // died, died, created
+		});
+
+		it("FLY-2170 consumes a retry attempt when marker publication is unproven", async () => {
+			ensureWindowSeq = [
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "marker_unproven",
+				},
+				{ created: true, windowId: WINDOW_ID },
+			];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+				return complete();
+			});
+
+			await expect(makeAdapter().execute(ctx())).resolves.toMatchObject({
+				success: true,
+			});
+			expect(ensureWindowCalls).toHaveLength(2);
 		});
 
 		it("stops at exactly TUI_OPEN_MAX_ATTEMPTS when every attempt dies (fail-loud, not infinite)", async () => {
@@ -2177,6 +2201,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(snapshot).toMatchObject({
 			schemaVersion: 1,
 			executionId: execId,
+			label: "FLY-1188",
 			objective: runtime.runGoalInputs[0]?.objective,
 			kickText: runtime.runGoalInputs[0]?.kickText,
 			launchContext: {
@@ -2231,6 +2256,35 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 	});
 
+	it.each(["", 7])(
+		"FLY-2170: strict snapshot reader rejects invalid label %j",
+		async (label) => {
+			await makeAdapter().execute(ctx());
+			const statePath = join(dir, "codex-sessions", execId, "session.json");
+			const state = JSON.parse(readFileSync(statePath, "utf8")) as {
+				launchSnapshot: Record<string, unknown>;
+			};
+			state.launchSnapshot.label = label;
+			writeFileSync(statePath, JSON.stringify(state));
+
+			expect(() => readCodexLaunchSnapshot(execId)).toThrow(
+				/invalid immutable launch snapshot field label/,
+			);
+		},
+	);
+
+	it("FLY-2170: strict snapshot reader accepts an older snapshot without label", async () => {
+		await makeAdapter().execute(ctx());
+		const statePath = join(dir, "codex-sessions", execId, "session.json");
+		const state = JSON.parse(readFileSync(statePath, "utf8")) as {
+			launchSnapshot: Record<string, unknown>;
+		};
+		delete state.launchSnapshot.label;
+		writeFileSync(statePath, JSON.stringify(state));
+
+		expect(readCodexLaunchSnapshot(execId)).not.toHaveProperty("label");
+	});
+
 	it("FLY-2211: shared ownership rejects a parallel adapter for the same execution", async () => {
 		let settleFirst: ((outcome: RunGoalOutcome) => void) | undefined;
 		let calls = 0;
@@ -2283,6 +2337,80 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			turnId: "turn-rescued",
 		});
 		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+	});
+
+	it("FLY-2170: recovery preserves an already-sanitized live window name byte-for-byte", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original recovery kick" }));
+		ensureWindowCalls = [];
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			return complete();
+		});
+		const recoveredWindowName =
+			"FLY-2269-implement-codex-G-visual-capture-publish-";
+
+		const result = await makeAdapter().resumeExistingExecution(
+			ctx({ label: undefined }),
+			{ onRecoveryOwnershipEstablished: vi.fn(async () => undefined) },
+			{ founderWindow: "open", windowName: recoveredWindowName },
+		);
+
+		expect(result.success).toBe(true);
+		expect(ensureWindowCalls).toHaveLength(1);
+		expect(ensureWindowCalls[0]).toMatchObject({
+			windowName: recoveredWindowName,
+		});
+	});
+
+	it("FLY-2170: suppressed recovery resumes the daemon without opening a founder window", async () => {
+		const lost = vi.fn();
+		const deps = makeDeps();
+		deps.onTuiWindowLost = lost;
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			deps,
+		);
+		await adapter.execute(ctx());
+		ensureWindowCalls = [];
+		killWindowCalls = [];
+		lost.mockClear();
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			input.onThreadReady?.(THREAD_ID, 1);
+			const pendingDb = new CommDB(dbPath);
+			try {
+				expect(pendingDb.getSession(execId)?.tmux_window).toBe(
+					"testsess:pending",
+				);
+			} finally {
+				pendingDb.close();
+			}
+			return complete();
+		});
+
+		const result = await adapter.resumeExistingExecution(
+			ctx({ label: undefined }),
+			{ onRecoveryOwnershipEstablished: vi.fn(async () => undefined) },
+			{ founderWindow: "suppressed" },
+		);
+
+		expect(result.success).toBe(true);
+		expect(runtime.runGoalInputs).toHaveLength(1);
+		expect(ensureWindowCalls).toHaveLength(0);
+		expect(killWindowCalls).toHaveLength(0);
+		expect(lost).toHaveBeenCalledTimes(1);
+		expect(lost).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: execId,
+				trigger: "label-unavailable",
+				attempts: 0,
+			}),
+		);
 	});
 
 	it("FLY-2211: a failed recovery commit tears down and releases ownership", async () => {
