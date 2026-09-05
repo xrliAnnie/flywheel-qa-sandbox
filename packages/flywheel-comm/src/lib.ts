@@ -27,6 +27,11 @@ export type {
 export { search } from "./commands/search.js";
 export type { SessionsArgs } from "./commands/sessions.js";
 export { sessions } from "./commands/sessions.js";
+export {
+	CommDbPreflightStaleError,
+	type Fly2268CommDbRebuildReceipt,
+} from "./commdb-open-gate.js";
+export { prepareFly2268CommDbRebuild } from "./commdb-rebuild-preflight.js";
 export type {
 	GateSupersedeRow,
 	PatrolJudgmentFingerprintRead,

@@ -1,0 +1,15 @@
+flowchart LR
+    subgraph SRC["三个来源"]
+        A["Linear<br/>状态 · 优先级 · 等谁(blocked_by) · label"]
+        B["StateStore 账本<br/>ledger_live_count(账面在跑)"]
+        C["容量快照(FLY-2144)<br/>在跑 N · 停车 M · 额度"]
+    end
+    A --> P["Epic 页面文档(FLY-2140)<br/>ready_items = 规则 ready.v1"]
+    B --> P
+    P --> R["还剩什么(本单新增,payload.epic)<br/>remaining · ready · blocked · running<br/>归你的可开始 ≤5(只给单号+优先级)<br/>linearObservedAt · generatedAt<br/>trigger = roster | scope"]
+    P --> Q[("epic_page 回执<br/>trigger = scan<br/>只记来源与时间")]
+    R --> T["巡检邮件正文<br/>容量三行 + 还剩什么三行<br/>缺席 ⇒ 逐字节不变"]
+    C --> T
+    T --> J{"Lead 的判断<br/>位子够不够"}
+    J -->|够 且 有活| D["POST /api/runs/start"]
+    J -->|不够 或 没活| N["照常巡检其余步骤"]

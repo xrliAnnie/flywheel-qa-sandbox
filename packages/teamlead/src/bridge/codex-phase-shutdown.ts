@@ -204,7 +204,7 @@ export async function prepareCodexPhaseShutdown(
 	let db: RunnerShutdownDb | undefined;
 	try {
 		db = openDb(dbPath);
-		let control = db.getRunnerShutdown(input.executionId);
+		let control = db.listPendingRunnerShutdowns(input.executionId)[0];
 		if (!control) {
 			control = db.requestRunnerShutdown(
 				input.executionId,
@@ -238,7 +238,7 @@ export async function prepareCodexPhaseShutdown(
 			const elapsed = now() - startedAt;
 			if (elapsed >= ackTimeoutMs) break;
 			await sleep(Math.min(pollIntervalMs, ackTimeoutMs - elapsed));
-			const next = db.getRunnerShutdown(input.executionId);
+			const next = db.getRunnerShutdownRequest(input.executionId, requestId);
 			if (!next) {
 				return {
 					kind: "blocked",

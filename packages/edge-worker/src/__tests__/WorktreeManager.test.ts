@@ -93,6 +93,43 @@ describe("WorktreeManager", () => {
 		vi.unstubAllEnvs();
 	});
 
+	it("applies the default async executor deadline without blocking the event loop", async () => {
+		const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "wtm-slow-git-"));
+		const fakeGit = path.join(fakeBin, "git");
+		const grandchildPidFile = path.join(fakeBin, "grandchild.pid");
+		fs.writeFileSync(
+			fakeGit,
+			[
+				"#!/bin/sh",
+				"trap '' TERM",
+				"( sleep 30 ) &",
+				'printf "%s" "$!" > "$FLYWHEEL_TEST_GRANDCHILD_PID"',
+				"wait",
+			].join("\n"),
+		);
+		fs.chmodSync(fakeGit, 0o700);
+		vi.stubEnv("PATH", `${fakeBin}:${process.env.PATH ?? ""}`);
+		vi.stubEnv("FLYWHEEL_TEST_GRANDCHILD_PID", grandchildPidFile);
+		const mgr = new WorktreeManager({ execTimeoutMs: 500 });
+		let intervalTicks = 0;
+		const interval = setInterval(() => intervalTicks++, 1);
+
+		try {
+			await expect(
+				mgr.isRegistered(fakeBin, "/tmp/missing-worktree"),
+			).rejects.toMatchObject({ code: "ETIMEDOUT", timedOut: true });
+			expect(intervalTicks).toBeGreaterThan(0);
+			const grandchildPid = Number(fs.readFileSync(grandchildPidFile, "utf8"));
+			await vi.waitFor(
+				() => expect(() => process.kill(grandchildPid, 0)).toThrow(),
+				{ timeout: 1_000, interval: 20 },
+			);
+		} finally {
+			clearInterval(interval);
+			fs.rmSync(fakeBin, { recursive: true, force: true });
+		}
+	});
+
 	// ── create() ──
 
 	describe("create()", () => {
@@ -287,7 +324,7 @@ describe("WorktreeManager", () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		});
 
-		it("FLY-1718 rolls back the new worktree and branch when guard config fails", async () => {
+		it("FLY-2331 rolls back the new worktree and branch when guard config times out", async () => {
 			const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-push-guard-rb-"));
 			const baseDir = path.join(root, "worktrees");
 			const worktreePath = path.join(baseDir, "proj", "repo-GEO-42");
@@ -296,7 +333,10 @@ describe("WorktreeManager", () => {
 				{ stdout: "" },
 				{ stdout: "" },
 				{ stdout: "" },
-				new Error("worktree config refused"),
+				Object.assign(new Error("worktree config timed out"), {
+					code: "ETIMEDOUT",
+					timedOut: true,
+				}),
 				{ stdout: PORCELAIN_SINGLE },
 				{ stdout: "" },
 				{ stdout: "" },
@@ -312,7 +352,7 @@ describe("WorktreeManager", () => {
 					projectName: "proj",
 					issueId: "GEO-42",
 				}),
-			).rejects.toThrow("worktree config refused");
+			).rejects.toThrow("worktree config timed out");
 			expect(fs.existsSync(worktreePath)).toBe(false);
 			expect(
 				calls.some(

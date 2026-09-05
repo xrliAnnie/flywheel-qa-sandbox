@@ -34,7 +34,7 @@ const enqueueUnboundAlert = (payload: { eventId: string }) => ({
 });
 
 describe("FLY-2248 R6#2 projector crash-window recovery", () => {
-	it("keeps terminal-unacked CommDB obligations live until consumed or explicitly replaced", async () => {
+	it("keeps live unbound CommDB obligations and filters terminal recipients", async () => {
 		const commDb = new CommDB(":memory:");
 		commDbs.push(commDb);
 		for (const executionId of [
@@ -131,30 +131,21 @@ describe("FLY-2248 R6#2 projector crash-window recovery", () => {
 			projectName: "flywheel",
 		}).runPass("2026-09-02T05:05:00.000Z");
 
-		expect(result).toEqual({ examined: 15, minted: 15, advanced: 2 });
+		expect(result).toEqual({ examined: 15, minted: 6, advanced: 2 });
 		expect(
 			store
 				.listLiveWorkflowDeliveryAttempts()
 				.map((attempt) => JSON.parse(attempt.contract_ref_json).pk)
 				.sort(),
 		).toEqual([
-			"mailbox-blocked",
 			"mailbox-dead",
 			"mailbox-live",
-			"mailbox-terminal",
-			"mailbox-timeout",
-			"phase-runner-blocked",
 			"phase-runner-live",
-			"phase-runner-terminal",
-			"phase-runner-timeout",
-			"turn-runner-blocked",
 			"turn-runner-live",
-			"turn-runner-terminal",
-			"turn-runner-timeout",
 		]);
 	});
 
-	it("does not settle on recipient terminal and closes all episodes on physical terminal", async () => {
+	it("closes unbound episodes as soon as their recipient becomes terminal", async () => {
 		const commDb = new CommDB(":memory:");
 		commDbs.push(commDb);
 		commDb.registerSession(
@@ -232,14 +223,9 @@ describe("FLY-2248 R6#2 projector crash-window recovery", () => {
 		expect(projector.runPass("2026-09-02T05:12:00.000Z")).toEqual({
 			examined: 3,
 			minted: 0,
-			advanced: 0,
+			advanced: 3,
 		});
-		expect(
-			store
-				.listLiveWorkflowDeliveryAttempts()
-				.map(({ family }) => family)
-				.sort(),
-		).toEqual(["mailbox", "phase_wake", "turn_wake"]);
+		expect(store.listLiveWorkflowDeliveryAttempts()).toEqual([]);
 
 		raw
 			.prepare("UPDATE mailbox SET state = 'ACKED', acked_at = ? WHERE id = ?")
@@ -264,7 +250,7 @@ describe("FLY-2248 R6#2 projector crash-window recovery", () => {
 		expect(projector.runPass("2026-09-02T05:14:00.000Z")).toEqual({
 			examined: 3,
 			minted: 0,
-			advanced: 7,
+			advanced: 0,
 		});
 		expect(store.listLiveWorkflowDeliveryAttempts()).toEqual([]);
 		expect(
@@ -274,9 +260,9 @@ describe("FLY-2248 R6#2 projector crash-window recovery", () => {
 					   FROM workflow_delivery_contract_episode episode
 					   JOIN workflow_delivery_attempt attempt
 					     ON attempt.attempt_id = episode.attempt_id
-					  WHERE attempt.settlement_reason = 'source_terminal'
-					    AND episode.closed_at = '2026-09-02T05:14:00.000Z'
-					    AND episode.closed_reason = 'terminal:settled:source_terminal'`,
+					  WHERE attempt.settlement_reason = 'legacy_unreachable'
+					    AND episode.closed_at = '2026-09-02T05:12:00.000Z'
+					    AND episode.closed_reason = 'legacy_unreachable'`,
 				)
 				.get(),
 		).toEqual({ count: 3 });

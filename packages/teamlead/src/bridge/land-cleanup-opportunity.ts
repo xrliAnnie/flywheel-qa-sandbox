@@ -43,10 +43,13 @@ export async function requestLandCleanupOpportunities(
 		const deadline = nowMs() + graceMs;
 		let acked = 0;
 		while (true) {
-			acked = sessions.filter(
-				(session) =>
-					db.getRunnerShutdown(session.execution_id)?.state === "acked",
-			).length;
+			acked = sessions.filter((session) => {
+				const requestId = `${operation.operation_id}:${session.execution_id}`;
+				return (
+					db.getRunnerShutdownRequest(session.execution_id, requestId)
+						?.state === "acked"
+				);
+			}).length;
 			if (acked === sessions.length || nowMs() >= deadline) break;
 			await sleep(Math.min(500, Math.max(1, deadline - nowMs())));
 		}

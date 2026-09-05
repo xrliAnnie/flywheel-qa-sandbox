@@ -11,7 +11,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { measureRunnerMemoryIndex } from "flywheel-config";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommDB } from "../../db.js";
 import {
 	buildGitHubAuthEnvironment,
@@ -23,6 +24,11 @@ import {
 	qaResult,
 	type WorkflowQaDecisionBody,
 } from "../qa-result.js";
+
+beforeEach(() => {
+	vi.stubEnv("FLYWHEEL_RUNNER_MEMORY_DIR", "");
+	vi.stubEnv("FLYWHEEL_RUNNER_MEMORY_SNAPSHOT", "");
+});
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -138,6 +144,53 @@ describe("FLY-1686 GitHub credential boundary", () => {
 });
 
 describe("credential-backed qa-result delivery", () => {
+	it("attaches the runner-memory closeout receipt to the workflow decision", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2148-qa-closeout-"));
+		writeFileSync(join(dir, "MEMORY.md"), "# Memory\n\nIndex.\n");
+		const spawn = measureRunnerMemoryIndex(dir).snapshot;
+		vi.stubEnv("FLYWHEEL_COMM_DB", "");
+		vi.stubEnv("FLYWHEEL_EXEC_ID", "qa-memory");
+		vi.stubEnv("FLYWHEEL_ISSUE_ID", "FLY-2148");
+		vi.stubEnv("FLYWHEEL_PROJECT_NAME", "flywheel");
+		vi.stubEnv("FLYWHEEL_BRIDGE_URL", "http://127.0.0.1:9876");
+		vi.stubEnv("FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL", "scoped-secret");
+		vi.stubEnv("FLYWHEEL_RUNNER_MEMORY_DIR", dir);
+		vi.stubEnv("FLYWHEEL_RUNNER_MEMORY_SNAPSHOT", JSON.stringify(spawn));
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					ok: true,
+					claimId: 1,
+					serverSeq: 1,
+					idempotentReplay: false,
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await qaResult({
+			status: "pass",
+			targetExec: "impl-1",
+			prHeadSha: "a".repeat(40),
+		});
+
+		const [, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+		expect(JSON.parse(init.body).runner_memory_closeout).toMatchObject({
+			v: 1,
+			state: "unchanged",
+			dir,
+			spawn,
+		});
+		expect(error).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"[qa-result] runner-memory closeout state=unchanged",
+			),
+		);
+		rmSync(dir, { recursive: true, force: true });
+	});
+
 	it("uses the current TURN activation credential instead of the stale process env", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly1423-qa-activation-"));
 		const dbPath = join(dir, "comm.db");
@@ -225,13 +278,19 @@ describe("credential-backed qa-result delivery", () => {
 		];
 		expect(url).toBe("http://127.0.0.1:9876/api/workflow/decision");
 		expect(init.headers.Authorization).toBeUndefined();
-		expect(JSON.parse(init.body)).toMatchObject({
-			credential: "scoped-secret",
-			status: "pass",
-			summary: "all checks passed",
-			client_pr_head_sha: "a".repeat(40),
-			client_request_id: expect.any(String),
-		});
+		const body = JSON.parse(init.body);
+		body.client_request_id = "<CLIENT_REQUEST_ID>";
+		expect(body).toEqual(
+			JSON.parse(
+				readFileSync(
+					new URL(
+						"./fixtures/fly2148-decision-body-no-memory.json",
+						import.meta.url,
+					),
+					"utf8",
+				),
+			),
+		);
 	});
 
 	it("fails loudly without a DAG submission credential and never falls back to /events", async () => {

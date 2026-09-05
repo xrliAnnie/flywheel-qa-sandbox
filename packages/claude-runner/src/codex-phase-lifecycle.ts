@@ -11,25 +11,11 @@ import {
 	writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import {
-	CommDB,
-	type PhaseWakeInput,
-	type RunnerDoorbellWakeResult,
-	type RunnerPhaseWake,
-} from "flywheel-comm/db";
+import { CommDB, type RunnerPhaseWake } from "flywheel-comm/db";
 
 export type CodexPhaseRole = "design" | "implement" | "qa";
 
-export interface CodexWakeMessage extends PhaseWakeInput {}
-
-export interface CodexWakeWatcher {
-	start(): Promise<void>;
-	stop(): Promise<void>;
-	health(): Promise<{ ok: boolean; lastEventTs?: number }>;
-	onDelivered?: (message: CodexWakeMessage) => void | Promise<void>;
-}
-
-export interface PhaseHoldState {
+export interface LegacyPhaseHoldState {
 	schemaVersion: 1;
 	role: CodexPhaseRole;
 	state: "entering" | "paused" | "reactivating";
@@ -37,6 +23,19 @@ export interface PhaseHoldState {
 	deadlineRemainingMs: number;
 	hardDeadlineRemainingMs: number;
 }
+
+export interface ResidentPhaseHoldState {
+	schemaVersion: 2;
+	nodeId: string;
+	residentRevision: number;
+	graceExpiresAt: string;
+	state: "entering" | "paused" | "reactivating";
+	enteredAt: string;
+	deadlineRemainingMs: number;
+	hardDeadlineRemainingMs: number;
+}
+
+export type PhaseHoldState = LegacyPhaseHoldState | ResidentPhaseHoldState;
 
 export type PhaseLifecycleObservation =
 	| { kind: "active" }
@@ -70,10 +69,25 @@ function isFiniteNonNegative(value: unknown): value is number {
 
 function assertValidPhaseHold(value: unknown): asserts value is PhaseHoldState {
 	if (!isPlainObject(value)) throw new Error("invalid phaseHold object");
-	if (value.schemaVersion !== 1)
+	if (value.schemaVersion === 1) {
+		if (!(["design", "implement", "qa"] as unknown[]).includes(value.role)) {
+			throw new Error("invalid phaseHold role");
+		}
+	} else if (value.schemaVersion === 2) {
+		if (typeof value.nodeId !== "string" || !value.nodeId) {
+			throw new Error("invalid resident phaseHold nodeId");
+		}
+		if (
+			!Number.isSafeInteger(value.residentRevision) ||
+			(value.residentRevision as number) <= 0
+		) {
+			throw new Error("invalid resident phaseHold revision");
+		}
+		if (typeof value.graceExpiresAt !== "string" || !value.graceExpiresAt) {
+			throw new Error("invalid resident phaseHold grace expiry");
+		}
+	} else {
 		throw new Error("invalid phaseHold schemaVersion");
-	if (!(["design", "implement", "qa"] as unknown[]).includes(value.role)) {
-		throw new Error("invalid phaseHold role");
 	}
 	if (
 		!(["entering", "paused", "reactivating"] as unknown[]).includes(value.state)
@@ -139,25 +153,15 @@ export function atomicMergeCodexSessionState(
 }
 
 interface PhaseLifecycleDb {
-	getRunnerShutdown(executionId: string): {
+	listPendingRunnerShutdowns(executionId: string): Array<{
 		request_id: string;
 		state: "requested" | "acked" | "failed";
-	} | null;
+	}>;
 	listRunnerPhaseWakes(executionId: string): RunnerPhaseWake[];
 	getEffectiveDeclaredState(
 		executionId: string,
 		nowMs: number,
 	): { kind: "parked" | "long_task"; reason: string | null } | null;
-	enqueueRunnerPhaseWake(
-		executionId: string,
-		message: PhaseWakeInput,
-		nowMs: number,
-	): unknown;
-	enqueueRunnerDoorbellWake(
-		executionId: string,
-		message: PhaseWakeInput,
-		nowMs: number,
-	): RunnerDoorbellWakeResult;
 	markRunnerPhaseWakeStarted(
 		executionId: string,
 		messageId: string,
@@ -174,17 +178,66 @@ interface PhaseLifecycleDb {
 		result: { ok: true } | { ok: false; error: string },
 		nowMs: number,
 	): boolean;
+	finishAllPendingRunnerShutdowns(
+		executionId: string,
+		result: { ok: true } | { ok: false; error: string },
+		nowMs: number,
+	): number;
 	clearDeclaredState(executionId: string): void;
 	close?(): void;
 }
 
 export interface CodexPhaseLifecycleControllerOptions {
 	executionId: string;
-	role: CodexPhaseRole;
+	role?: CodexPhaseRole;
+	residentHold?: {
+		activationId: string;
+		nodeId: string;
+		enter(input: {
+			executionId: string;
+			activationId: string;
+			nodeId: string;
+			boundarySeq: number;
+		}):
+			| Promise<
+					| { ok: true; revision: number; graceExpiresAt: string }
+					| { ok: false; reason: string }
+			  >
+			| { ok: true; revision: number; graceExpiresAt: string }
+			| { ok: false; reason: string };
+		close(input: {
+			executionId: string;
+			revision: number;
+			reason: "local_hold_failed";
+		}): boolean | Promise<boolean>;
+		current(input: { executionId: string }):
+			| Promise<
+					| {
+							activationId: string;
+							nodeId: string;
+							state: "resident" | "woken" | "closed";
+							boundarySeq: number;
+							revision: number;
+							graceExpiresAt: string;
+					  }
+					| undefined
+			  >
+			| {
+					activationId: string;
+					nodeId: string;
+					state: "resident" | "woken" | "closed";
+					boundarySeq: number;
+					revision: number;
+					graceExpiresAt: string;
+			  }
+			| undefined;
+	};
+	recoveryBudget?: {
+		deadlineRemainingMs: number;
+		hardDeadlineRemainingMs: number;
+	};
 	commDbPath: string;
 	sessionStatePath: string;
-	mailboxAgentName?: string;
-	watcher?: CodexWakeWatcher | null;
 	shutdownPollIntervalMs?: number;
 	now?: () => number;
 	db?: PhaseLifecycleDb;
@@ -214,6 +267,9 @@ export interface CodexPhaseLifecycle {
 		requestId: string,
 		result: { ok: true } | { ok: false; error: string },
 	): void;
+	ackAllPendingShutdowns(
+		result: { ok: true } | { ok: false; error: string },
+	): void;
 }
 
 export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
@@ -228,7 +284,6 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 	private readonly shutdownPromise: Promise<{ requestId: string }>;
 	private started = false;
 	private stopped = false;
-	private watcherStarted = false;
 	private readonly activityWaiters = new Set<() => void>();
 
 	constructor(private readonly options: CodexPhaseLifecycleControllerOptions) {
@@ -248,6 +303,7 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 		if (this.started) return;
 		if (this.stopped)
 			throw new Error("phase lifecycle controller already stopped");
+		await this.adoptResidentHold();
 		this.started = true;
 		this.pollShutdown();
 		this.shutdownTimer = setInterval(
@@ -255,6 +311,44 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 			this.shutdownPollIntervalMs,
 		);
 		(this.shutdownTimer as { unref?: () => void }).unref?.();
+	}
+
+	private async adoptResidentHold(): Promise<void> {
+		const coordinator = this.options.residentHold;
+		if (!coordinator) return;
+		const local = readSessionState(this.options.sessionStatePath);
+		if (local.phaseHold !== undefined) return;
+		const current = await coordinator.current({
+			executionId: this.options.executionId,
+		});
+		if (!current || current.state !== "resident") return;
+		if (
+			current.activationId !== coordinator.activationId ||
+			current.nodeId !== coordinator.nodeId
+		) {
+			throw new Error("resident hold recovery identity mismatch");
+		}
+		const budget = this.options.recoveryBudget;
+		if (
+			!budget ||
+			!isFiniteNonNegative(budget.deadlineRemainingMs) ||
+			!isFiniteNonNegative(budget.hardDeadlineRemainingMs)
+		) {
+			throw new Error("resident hold recovery budget missing");
+		}
+		atomicMergeCodexSessionState(this.options.sessionStatePath, {
+			residentBoundarySeq: current.boundarySeq,
+			phaseHold: {
+				schemaVersion: 2,
+				nodeId: current.nodeId,
+				residentRevision: current.revision,
+				graceExpiresAt: current.graceExpiresAt,
+				state: "paused",
+				enteredAt: new Date(this.now()).toISOString(),
+				deadlineRemainingMs: budget.deadlineRemainingMs,
+				hardDeadlineRemainingMs: budget.hardDeadlineRemainingMs,
+			},
+		});
 	}
 
 	async stop(): Promise<void> {
@@ -271,12 +365,7 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 	}
 
 	async stopIntake(): Promise<void> {
-		if (!this.watcherStarted) return;
-		try {
-			await this.options.watcher?.stop();
-		} finally {
-			this.watcherStarted = false;
-		}
+		// Mailbox intake is Bridge-owned for the full worker lifecycle.
 	}
 
 	waitForShutdown(): Promise<{ requestId: string }> {
@@ -286,8 +375,10 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 
 	observe(): PhaseLifecycleObservation {
 		try {
-			const shutdown = this.db.getRunnerShutdown(this.options.executionId);
-			if (shutdown?.state === "requested") {
+			const shutdown = this.db.listPendingRunnerShutdowns(
+				this.options.executionId,
+			)[0];
+			if (shutdown) {
 				return { kind: "shutdown", requestId: shutdown.request_id };
 			}
 			const wake = this.db
@@ -357,7 +448,51 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 			throw new Error("invalid hard deadline remainder");
 		}
 		const enteredAt = new Date(this.now()).toISOString();
-		const base: Omit<PhaseHoldState, "state"> = {
+		if (this.options.residentHold) {
+			const current = readSessionState(this.options.sessionStatePath);
+			const priorBoundary = current.residentBoundarySeq ?? 0;
+			if (
+				!Number.isSafeInteger(priorBoundary) ||
+				(priorBoundary as number) < 0
+			) {
+				throw new Error("invalid resident boundary sequence");
+			}
+			const boundarySeq = (priorBoundary as number) + 1;
+			const resident = await this.options.residentHold.enter({
+				executionId: this.options.executionId,
+				activationId: this.options.residentHold.activationId,
+				nodeId: this.options.residentHold.nodeId,
+				boundarySeq,
+			});
+			if (!resident.ok) {
+				throw new Error(`resident hold refused: ${resident.reason}`);
+			}
+			try {
+				atomicMergeCodexSessionState(this.options.sessionStatePath, {
+					residentBoundarySeq: boundarySeq,
+					phaseHold: {
+						schemaVersion: 2,
+						nodeId: this.options.residentHold.nodeId,
+						residentRevision: resident.revision,
+						graceExpiresAt: resident.graceExpiresAt,
+						state: "entering",
+						enteredAt,
+						deadlineRemainingMs: budget.deadlineRemainingMs,
+						hardDeadlineRemainingMs: budget.hardDeadlineRemainingMs,
+					},
+				});
+			} catch (error) {
+				await this.options.residentHold.close({
+					executionId: this.options.executionId,
+					revision: resident.revision,
+					reason: "local_hold_failed",
+				});
+				throw error;
+			}
+			return;
+		}
+		if (!this.options.role) throw new Error("phase lifecycle role missing");
+		const base: Omit<LegacyPhaseHoldState, "state"> = {
 			schemaVersion: 1,
 			role: this.options.role,
 			enteredAt,
@@ -375,55 +510,6 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 		atomicMergeCodexSessionState(this.options.sessionStatePath, {
 			phaseHold: { ...hold, state: "paused" },
 		});
-		if (this.options.watcher && !this.watcherStarted) {
-			this.options.watcher.onDelivered = async (message) => {
-				if (
-					this.options.mailboxAgentName &&
-					message.to !== this.options.mailboxAgentName
-				) {
-					throw new Error(
-						`phase wake recipient mismatch: expected ${this.options.mailboxAgentName}, got ${message.to}`,
-					);
-				}
-				const flywheelId = message.metadata?.flywheelId;
-				const queueBatch =
-					typeof flywheelId === "string" &&
-					flywheelId.startsWith("mailbox-batch:");
-				if (!queueBatch) {
-					this.db.enqueueRunnerPhaseWake(
-						this.options.executionId,
-						message,
-						this.now(),
-					);
-					this.signalActivity();
-					return;
-				}
-				const result = this.db.enqueueRunnerDoorbellWake(
-					this.options.executionId,
-					message,
-					this.now(),
-				);
-				if (
-					result.kind === "queued" ||
-					result.kind === "reused" ||
-					(result.kind === "already_covered" &&
-						result.wake.state !== "finished")
-				) {
-					this.signalActivity();
-				}
-			};
-			this.watcherStarted = true;
-			try {
-				await this.options.watcher.start();
-			} catch (error) {
-				try {
-					await this.options.watcher.stop();
-				} finally {
-					this.watcherStarted = false;
-				}
-				throw error;
-			}
-		}
 	}
 
 	waitForActivity(timeoutMs: number): Promise<void> {
@@ -445,10 +531,6 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 			atomicMergeCodexSessionState(this.options.sessionStatePath, {
 				phaseHold: { ...current.phaseHold, state: "reactivating" },
 			});
-		}
-		if (this.watcherStarted) {
-			await this.options.watcher?.stop();
-			this.watcherStarted = false;
 		}
 		this.db.clearDeclaredState(this.options.executionId);
 		atomicMergeCodexSessionState(this.options.sessionStatePath, {
@@ -508,11 +590,29 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 		}
 	}
 
+	ackAllPendingShutdowns(
+		result: { ok: true } | { ok: false; error: string },
+	): void {
+		if (
+			this.db.finishAllPendingRunnerShutdowns(
+				this.options.executionId,
+				result,
+				this.now(),
+			) === 0
+		) {
+			throw new Error(
+				`shutdown acknowledgement refused for ${this.options.executionId}: no pending requests`,
+			);
+		}
+	}
+
 	private pollShutdown(): void {
 		if (this.stopped || !this.shutdownResolve) return;
 		try {
-			const shutdown = this.db.getRunnerShutdown(this.options.executionId);
-			if (shutdown?.state === "requested") {
+			const shutdown = this.db.listPendingRunnerShutdowns(
+				this.options.executionId,
+			)[0];
+			if (shutdown) {
 				const resolve = this.shutdownResolve;
 				this.shutdownResolve = undefined;
 				resolve({ requestId: shutdown.request_id });

@@ -23,6 +23,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
@@ -1540,7 +1541,9 @@ export function buildCodexLeadRuntime(
 				identityDigest: config.identityDigest,
 				rawCarrierInstanceId: carrierInstanceId,
 				pid: process.pid,
-				lstart: getProcessStart(process.pid),
+				lstart: withSyncOpMarker("codex-lead:process-start", () =>
+					getProcessStart(process.pid),
+				),
 			});
 			const transport = spawnCodexAppServer({
 				codexBin: config.codexBin,

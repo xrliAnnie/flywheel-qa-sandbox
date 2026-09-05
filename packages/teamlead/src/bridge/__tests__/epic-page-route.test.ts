@@ -192,6 +192,23 @@ describe("Epic page router", () => {
 		},
 	);
 
+	it("returns internal_error without a document when receipt insertion fails", async () => {
+		insert.mockImplementation(() => {
+			throw new Error("receipt write failed");
+		});
+
+		const response = await request(app(), {
+			token: "master",
+			body: { projectName: "example" },
+		});
+
+		expect(response).toMatchObject({
+			status: 500,
+			body: { error: "internal_error" },
+		});
+		expect(response.body).not.toHaveProperty("document");
+	});
+
 	it("fails without Linear config and rejects an oversized returned scope", async () => {
 		const missingKey = await request(app({ linearApiKey: undefined }), {
 			token: "master",

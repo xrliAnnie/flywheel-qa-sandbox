@@ -11,6 +11,7 @@
 
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -18,6 +19,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { measureRunnerMemoryIndex } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock node:child_process so we can control git output
@@ -93,6 +95,8 @@ describe("complete command", () => {
 		delete process.env.FLYWHEEL_RUNNER_STATE_DIR;
 		delete process.env.FLYWHEEL_COMM_DB;
 		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
+		delete process.env.FLYWHEEL_RUNNER_MEMORY_DIR;
+		delete process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT;
 
 		mockFetch = vi
 			.fn()
@@ -161,6 +165,18 @@ describe("complete command", () => {
 		expect(opts.method).toBe("POST");
 
 		const body = JSON.parse(opts.body);
+		body.event_id = "<EVENT_ID>";
+		expect(body).toEqual(
+			JSON.parse(
+				readFileSync(
+					new URL(
+						"./fixtures/fly2148-complete-payload-no-memory.json",
+						import.meta.url,
+					),
+					"utf8",
+				),
+			),
+		);
 		expect(body.event_type).toBe("session_completed");
 		expect(body.source).toBe("flywheel-comm");
 		expect(body.execution_id).toBe("exec-108");
@@ -203,6 +219,65 @@ describe("complete command", () => {
 		// FLY-191 Phase 2 (§5.5.2): completion binds the exact worktree HEAD —
 		// the Bridge persists it as pr_head_sha for verify-approval.
 		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("sends a drain receipt and prints the exact retry guidance", async () => {
+		await complete({
+			route: "needs_review",
+			merged: false,
+			drainReceipt: "drain:exec-108:activation-1:abcdef",
+		});
+		const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
+		expect(body.payload.drainReceipt).toEqual({
+			challengeId: "drain:exec-108:activation-1:abcdef",
+		});
+
+		mockFetch.mockResolvedValue({
+			ok: false,
+			status: 409,
+			text: async () =>
+				JSON.stringify({
+					error: "workflow_completion_rejected",
+					reason: "consume_pending_mail",
+					challengeId: "drain-next",
+					mailbox: ["mail-1"],
+					phaseWakes: ["wake-1"],
+				}),
+		});
+		await expect(
+			complete({ route: "needs_review", merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("--drain-receipt drain-next"),
+		);
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining('mailbox ["mail-1"] / phase-wake ["wake-1"]'),
+		);
+	});
+
+	it("attaches a non-blocking runner-memory closeout receipt to session_completed", async () => {
+		const dir = join(tmpHome, "runner-memory");
+		mkdirSync(dir);
+		writeFileSync(join(dir, "MEMORY.md"), "# Memory\n\nIndex.\n");
+		const spawn = measureRunnerMemoryIndex(dir).snapshot;
+		process.env.FLYWHEEL_RUNNER_MEMORY_DIR = dir;
+		process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT = JSON.stringify(spawn);
+
+		await complete({ route: "auto_approve", merged: false });
+
+		const [, request] = mockFetch.mock.calls[0] as [string, { body: string }];
+		const body = JSON.parse(request.body);
+		expect(body.payload.runnerMemoryCloseout).toMatchObject({
+			v: 1,
+			state: "unchanged",
+			dir,
+			spawn,
+		});
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"[complete] runner-memory closeout state=unchanged",
+			),
+		);
 	});
 
 	it("blocks product completion for missing/pending/rejected review and allows only pass", () => {
@@ -260,6 +335,10 @@ describe("complete command", () => {
 			"run 已进入 engine-owned gate;本节点已终结,不会有 approve/ship 环节找你;不要等待、不要跑 verify-approval,立即收尾退出。",
 		],
 		["runner_ship_park", "已 park 等待 ship gate;等 wake,勿自行轮询。"],
+		[
+			"loop_park",
+			"已 park 等待返工唤醒(常驻宽限 30 分钟);等 wake,勿自行轮询。",
+		],
 	] as const)(
 		"prints %s completion guidance",
 		async (disposition, guidance) => {

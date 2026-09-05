@@ -137,6 +137,8 @@ export interface RetryRequest {
 	 * shared-branch behavior. Absent → role-aware worktree key (byte-compatible).
 	 */
 	shareParentBranch?: boolean;
+	/** Bridge-derived pinned-graph identity; never accepted from public HTTP. */
+	loopTarget?: { nodeId: string };
 	/**
 	 * FLY-887 R2 (Codex R1 #2): carried on the retry path for PHASE rows
 	 * (`chat_thread_role` ∈ design/implement/qa) so a refreshed Linear label
@@ -283,6 +285,8 @@ export interface StartRequest {
 	 * worktree key (byte-compatible).
 	 */
 	shareParentBranch?: boolean;
+	/** Bridge-derived pinned-graph identity; never accepted from public HTTP. */
+	loopTarget?: { nodeId: string };
 	/**
 	 * FLY-859: fix-round context for an Implement-fix dispatch after a
 	 * DAG workflow QA FAIL. Bridge-INTERNAL — set ONLY by the workflow engine;

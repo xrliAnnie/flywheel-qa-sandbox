@@ -209,6 +209,34 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 	}
 
+	it("FLY-2331: awaits injected child probes instead of blocking the event loop", async () => {
+		let releaseTmux!: (value: { stdout: string }) => void;
+		const calls: string[] = [];
+		const injectedExec = ((cmd: string) => {
+			calls.push(cmd);
+			if (cmd === "tmux") {
+				return new Promise<{ stdout: string }>((resolve) => {
+					releaseTmux = resolve;
+				});
+			}
+			return Promise.resolve({ stdout: "codex-cli 0.144.1" });
+		}) as unknown as ConstructorParameters<typeof CodexTmuxAdapter>[1];
+		const adapter = new CodexTmuxAdapter("testsess", injectedExec);
+		let settled = false;
+
+		const healthPromise = adapter.checkEnvironment().then((health) => {
+			settled = true;
+			return health;
+		});
+		await Promise.resolve();
+
+		expect(calls).toEqual(["tmux"]);
+		expect(settled).toBe(false);
+		releaseTmux({ stdout: "tmux 3.4" });
+		await expect(healthPromise).resolves.toMatchObject({ healthy: true });
+		expect(calls).toEqual(["tmux", "codex"]);
+	});
+
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1188-codex-adapter-"));
 		markerDir = join(dir, "codex-gates");
@@ -552,6 +580,12 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		});
 	});
 
+	it("provides a durable turn lifecycle to every CommDB-backed Codex worker", async () => {
+		await makeAdapter().execute(ctx());
+
+		expect(runtime.runGoalInputs[0]?.turnLifecycle).toBeDefined();
+	});
+
 	it("forwards owned App Server notifications into the transcript sink", async () => {
 		const params = {
 			threadId: THREAD_ID,
@@ -670,7 +704,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 	});
 
-	it("phase keep-alive starts one controller without starting mailbox intake before hold", async () => {
+	it("phase keep-alive starts one controller while Bridge retains mailbox intake", async () => {
 		const watcher = {
 			start: vi.fn(async () => {}),
 			stop: vi.fn(async () => {}),
@@ -694,6 +728,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			markWakeStarted: vi.fn(),
 			finishWake: vi.fn(),
 			ackShutdown: vi.fn(),
+			ackAllPendingShutdowns: vi.fn(),
 		};
 		const deps = {
 			...makeDeps(),
@@ -719,13 +754,91 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 		expect(result.success).toBe(true);
 		expect(deps.phaseLifecycleFactory).toHaveBeenCalledOnce();
-		expect(transport.createReceiver).toHaveBeenCalledOnce();
+		expect(transport.createReceiver).not.toHaveBeenCalled();
+		expect(deps.phaseLifecycleFactory.mock.calls[0]?.[0]).not.toHaveProperty(
+			"watcher",
+		);
 		expect(lifecycle.start).toHaveBeenCalledOnce();
 		expect(lifecycle.stop).toHaveBeenCalledOnce();
 		expect(watcher.start).not.toHaveBeenCalled();
 		expect(runtime.runGoalInputs[0]?.phaseLifecycle).toBe(lifecycle);
 		expect(runtime.stopped).toBe(1);
 		expect(runtime.drainedCalls).toBe(1);
+		const comm = new CommDB(dbPath);
+		try {
+			expect(comm.getSession(execId)?.phase_keep_alive).toBe(1);
+		} finally {
+			comm.close();
+		}
+	});
+
+	it("starts the lifecycle controller for an arbitrary resident loop target", async () => {
+		const lifecycle = {
+			start: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			stopIntake: vi.fn(async () => {}),
+			waitForShutdown: vi.fn(() => new Promise(() => {})),
+			observe: vi.fn(() => ({ kind: "active" as const })),
+			observeBoundary: vi.fn(() => ({ kind: "active" as const })),
+			getPhaseHold: vi.fn(() => null),
+			enterHold: vi.fn(async () => {}),
+			confirmHoldPaused: vi.fn(async () => {}),
+			waitForActivity: vi.fn(async () => {}),
+			leaveHold: vi.fn(async () => {}),
+			markWakeStarted: vi.fn(),
+			finishWake: vi.fn(),
+			ackShutdown: vi.fn(),
+			ackAllPendingShutdowns: vi.fn(),
+		};
+		const residentHold = {
+			enter: vi.fn(async () => ({
+				ok: true as const,
+				revision: 1,
+				graceExpiresAt: "2026-09-04T11:00:00.000Z",
+			})),
+			close: vi.fn(async () => true),
+			current: vi.fn(async () => undefined),
+		};
+		const deps = {
+			...makeDeps(),
+			residentHold,
+			phaseLifecycleFactory: vi.fn(() => lifecycle),
+		};
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			deps,
+		);
+
+		const result = await adapter.execute(
+			ctx({
+				residentLoopTarget: { nodeId: "repair-any-name" },
+				workflowActivationId: "activation-1",
+			}),
+		);
+
+		expect(result.success).toBe(true);
+		expect(deps.phaseLifecycleFactory).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: execId,
+				residentHold: {
+					activationId: "activation-1",
+					nodeId: "repair-any-name",
+					enter: residentHold.enter,
+					close: residentHold.close,
+					current: residentHold.current,
+				},
+			}),
+		);
+		expect(runtime.runGoalInputs[0]?.phaseLifecycle).toBe(lifecycle);
+		expect(readCodexLaunchSnapshot(execId).launchContext).toMatchObject({
+			phaseRole: null,
+			loopTargetNodeId: "repair-any-name",
+		});
 		const comm = new CommDB(dbPath);
 		try {
 			expect(comm.getSession(execId)?.phase_keep_alive).toBe(1);
@@ -834,7 +947,8 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			leaveHold: vi.fn(async () => {}),
 			markWakeStarted: vi.fn(),
 			finishWake: vi.fn(),
-			ackShutdown: vi.fn(() => {
+			ackShutdown: vi.fn(),
+			ackAllPendingShutdowns: vi.fn(() => {
 				const db = new CommDB(dbPath);
 				try {
 					expect(db.getSession(execId)?.status).toBe("completed");
@@ -867,7 +981,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 
 		expect(result.success).toBe(true);
-		expect(lifecycle.ackShutdown).toHaveBeenCalledWith("shutdown-1", {
+		expect(lifecycle.ackAllPendingShutdowns).toHaveBeenCalledWith({
 			ok: true,
 		});
 		expect(order).toEqual([
@@ -916,7 +1030,8 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			leaveHold: vi.fn(async () => {}),
 			markWakeStarted: vi.fn(),
 			finishWake: vi.fn(),
-			ackShutdown: vi.fn(() => order.push("shutdown.ack")),
+			ackShutdown: vi.fn(),
+			ackAllPendingShutdowns: vi.fn(() => order.push("shutdown.ack")),
 		};
 		const adapter = new CodexTmuxAdapter(
 			"testsess",
@@ -940,7 +1055,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 
 		expect(result.success).toBe(false);
-		expect(lifecycle.ackShutdown).toHaveBeenCalledWith("shutdown-fail", {
+		expect(lifecycle.ackAllPendingShutdowns).toHaveBeenCalledWith({
 			ok: false,
 			error: "SIGKILL unconfirmed",
 		});
@@ -1140,19 +1255,44 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 	it("FLY-2147: exports mounted memory only, without Claude settings", async () => {
 		const dir = "/tmp/runner-memory/flywheel/qa";
+		const snapshot = {
+			lines: 3,
+			linesExact: true,
+			bytes: 112,
+			sha16: "0123456789abcdef",
+			topicFiles: 0,
+		};
 		await makeAdapter().execute(
-			ctx({ runnerMemory: { status: "mounted", dir } }),
+			ctx({ runnerMemory: { status: "mounted", dir, snapshot } }),
 		);
 		const options = capturedOpts as CodexDaemonGoalRuntimeOptions;
 		expect(options.env?.FLYWHEEL_RUNNER_MEMORY_DIR).toBe(dir);
+		expect(
+			JSON.parse(options.env?.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT ?? "null"),
+		).toEqual(snapshot);
 		expect(JSON.stringify(options)).not.toContain("autoMemoryDirectory");
 		expect(JSON.stringify(options)).not.toContain("autoMemoryEnabled");
 	});
 
+	it("FLY-2148: mounted memory without a snapshot preserves the B0 env shape", async () => {
+		await makeAdapter().execute(
+			ctx({
+				runnerMemory: {
+					status: "mounted",
+					dir: "/tmp/runner-memory/flywheel/qa",
+				},
+			}),
+		);
+		const options = capturedOpts as CodexDaemonGoalRuntimeOptions;
+		expect(options.env?.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT).toBeUndefined();
+	});
+
 	it("FLY-2147: disabled memory exports no directory and scrubs an inherited stale value", async () => {
 		const prior = process.env.FLYWHEEL_RUNNER_MEMORY_DIR;
+		const priorSnapshot = process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT;
 		try {
 			process.env.FLYWHEEL_RUNNER_MEMORY_DIR = "/stale/shared-memory";
+			process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT = "stale-snapshot";
 			await makeAdapter().execute(
 				ctx({
 					runnerMemory: { status: "disabled", reason: "policy_conflict" },
@@ -1160,11 +1300,15 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			);
 			const options = capturedOpts as CodexDaemonGoalRuntimeOptions;
 			expect(options.env?.FLYWHEEL_RUNNER_MEMORY_DIR).toBeUndefined();
+			expect(options.env?.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT).toBeUndefined();
 			expect(JSON.stringify(options)).not.toContain("autoMemoryDirectory");
 			expect(JSON.stringify(options)).not.toContain("autoMemoryEnabled");
 		} finally {
 			if (prior === undefined) delete process.env.FLYWHEEL_RUNNER_MEMORY_DIR;
 			else process.env.FLYWHEEL_RUNNER_MEMORY_DIR = prior;
+			if (priorSnapshot === undefined)
+				delete process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT;
+			else process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT = priorSnapshot;
 		}
 	});
 
@@ -1219,6 +1363,13 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				runnerMemory: {
 					status: "mounted",
 					dir: "/runner-memory/flywheel/qa",
+					snapshot: {
+						lines: 3,
+						linesExact: true,
+						bytes: 112,
+						sha16: "0123456789abcdef",
+						topicFiles: 0,
+					},
 				},
 				sentinelPath: "/land.json",
 				workflowSubmissionCredential: "decision-ticket",
@@ -1249,6 +1400,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				"FLYWHEEL_PROGRESS_PATH",
 				"FLYWHEEL_PROJECT_NAME",
 				"FLYWHEEL_RUNNER_MEMORY_DIR",
+				"FLYWHEEL_RUNNER_MEMORY_SNAPSHOT",
 				"FLYWHEEL_RUNNER_BACKEND_ID",
 				"FLYWHEEL_RUNNER_VENDOR_ID",
 				"FLYWHEEL_STATE_DB_PATH",
@@ -1956,6 +2108,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				markWakeStarted: vi.fn(),
 				finishWake: vi.fn(),
 				ackShutdown: vi.fn(),
+				ackAllPendingShutdowns: vi.fn(),
 			};
 			const deps = makeDeps();
 			deps.runtimeFactory = () => controlledRuntime;
@@ -2245,6 +2398,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				appsApprovalMode: "never",
 				skillFrameworkMode: "bare",
 				phaseRole: "implement",
+				loopTargetNodeId: null,
 			},
 			rehydrationContext: {
 				allowedTools: ["Read(**)", "Bash"],

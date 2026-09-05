@@ -244,6 +244,7 @@ describe("FLY-2302 dead workflow body CommDB convergence", () => {
 							projectName: project,
 							ok: outcome.ok,
 							error: outcome.error,
+							runnerDeathProven: true,
 							audit: {
 								retiredGateCount: outcome.retiredGateCount,
 								retiredAskCount: outcome.retiredAskCount,

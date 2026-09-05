@@ -346,6 +346,30 @@ export {
 	resolveRunnerMcpProfile,
 } from "./runner-mcp-profile.js";
 export type {
+	RunnerMemoryCloseoutDelta,
+	RunnerMemoryCloseoutMeasurement,
+	RunnerMemoryCloseoutReceipt,
+	RunnerMemoryCloseoutState,
+	RunnerMemoryIndexMeasurement,
+	RunnerMemoryIndexStats,
+	RunnerMemorySnapshot,
+} from "./runner-memory-index.js";
+export {
+	countTopicFiles,
+	formatRunnerMemoryCloseoutLine,
+	measureIndexPrefix,
+	measureRunnerMemoryIndex,
+	parseRunnerMemoryCloseoutReceipt,
+	parseRunnerMemorySnapshot,
+	RUNNER_MEMORY_DEFAULT_BUDGET,
+	RUNNER_MEMORY_HARD_LIMIT,
+	RUNNER_MEMORY_SCAN_CEILING_BYTES,
+	RUNNER_MEMORY_SNAPSHOT_ENV,
+	readIndexPrefixBounded,
+	resolveRunnerMemoryCloseoutState,
+	sanitizeOneLine,
+} from "./runner-memory-index.js";
+export type {
 	RunnerMemoryArm,
 	RunnerMemoryMode,
 	RunnerMemorySelection,

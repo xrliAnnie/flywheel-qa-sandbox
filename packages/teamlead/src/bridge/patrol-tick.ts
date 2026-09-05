@@ -6,9 +6,11 @@ import {
 	getProjectPatrolConfigSnapshot,
 	type PatrolConfig,
 } from "flywheel-config";
+import type { EpicResidualTrigger } from "../epic-page/residual.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type { CapacitySnapshot } from "./capacity-snapshot.js";
+import type { EpicScanMaterialized } from "./epic-residual-scan.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 import type { HookPayload, PatrolRosterEntry } from "./hook-payload.js";
 import { canonicalLeadEventDeliveryId } from "./lead-event-queue.js";
@@ -53,6 +55,14 @@ export interface PatrolTickDeps {
 	getGlobalConfig?: () => Readonly<PatrolConfig>;
 	getProjectConfig?: (projectRoot: string) => Readonly<PatrolConfig>;
 	capacity?: () => Promise<CapacitySnapshot>;
+	epicResidual?: {
+		materializeForScan(project: ProjectEntry): Promise<EpicScanMaterialized>;
+		summarizeForLead(
+			materialized: EpicScanMaterialized,
+			leadId: string,
+			trigger: EpicResidualTrigger,
+		): HookPayload["epic"];
+	};
 	now?: () => number;
 	alertFailure?: (failure: PatrolFailure) => Promise<void>;
 	log?: (message: string) => void;
@@ -171,6 +181,7 @@ async function alertUnownedRoster(
 async function runLeadPatrolTickPass(
 	deps: PatrolTickDeps,
 	failures: FailureTracker,
+	emptySlotSeen: Map<string, number>,
 ): Promise<void> {
 	const nowMs = deps.now?.() ?? Date.now();
 	const globalConfig =
@@ -183,6 +194,32 @@ async function runLeadPatrolTickPass(
 				.catch(() => undefined);
 		}
 		return capacityPromise;
+	};
+	const epicByProject = new Map<string, Promise<EpicScanMaterialized>>();
+	const epicOnce = (project: ProjectEntry): Promise<EpicScanMaterialized> => {
+		const existing = epicByProject.get(project.projectName);
+		if (existing) return existing;
+		const materialized = Promise.resolve()
+			.then(() => deps.epicResidual?.materializeForScan(project))
+			.catch(() => undefined);
+		epicByProject.set(project.projectName, materialized);
+		return materialized;
+	};
+	const epicForLead = async (
+		project: ProjectEntry,
+		leadId: string,
+		trigger: EpicResidualTrigger,
+	): Promise<HookPayload["epic"]> => {
+		if (!deps.epicResidual) return undefined;
+		try {
+			return deps.epicResidual.summarizeForLead(
+				await epicOnce(project),
+				leadId,
+				trigger,
+			);
+		} catch {
+			return undefined;
+		}
 	};
 	for (const project of deps.projects) {
 		let sessions: Session[];
@@ -241,7 +278,8 @@ async function runLeadPatrolTickPass(
 		for (const lead of eligibleLeads) {
 			try {
 				const roster = rosterByLead.get(lead.agentId) ?? [];
-				if (roster.length === 0) {
+				const emptyRoster = roster.length === 0;
+				if (emptyRoster && !deps.epicResidual) {
 					failures.succeeded(project.projectName, lead.agentId);
 					continue;
 				}
@@ -250,6 +288,14 @@ async function runLeadPatrolTickPass(
 					lead.agentId,
 					intervalMs,
 				);
+				const emptySlotKey = `${project.projectName}:${lead.agentId}`;
+				if (
+					emptyRoster &&
+					emptySlotSeen.get(emptySlotKey) === currentScheduledAt
+				) {
+					failures.succeeded(project.projectName, lead.agentId);
+					continue;
+				}
 
 				const sessionKey = patrolSessionKey(project.projectName, lead.agentId);
 				const previous = deps.store.getLatestPatrolTickEvent(
@@ -327,6 +373,20 @@ async function runLeadPatrolTickPass(
 					}
 				}
 
+				let emptyRosterEpic: HookPayload["epic"];
+				if (emptyRoster) {
+					emptyRosterEpic = await epicForLead(project, lead.agentId, "scope");
+					if (
+						!emptyRosterEpic ||
+						emptyRosterEpic.kind !== "available" ||
+						emptyRosterEpic.remainingForLead === 0
+					) {
+						emptySlotSeen.set(emptySlotKey, currentScheduledAt);
+						failures.succeeded(project.projectName, lead.agentId);
+						continue;
+					}
+				}
+
 				const loopRoster = roster.map((session) => ({
 					issueId: session.issue_id,
 					identifier:
@@ -335,7 +395,7 @@ async function runLeadPatrolTickPass(
 					status: session.status,
 				}));
 				let loops: HookPayload["loops"];
-				if (deps.openCommReadonly) {
+				if (!emptyRoster && deps.openCommReadonly) {
 					let reader: PatrolCommReader | null = null;
 					try {
 						reader = deps.openCommReadonly(project.projectName);
@@ -366,7 +426,12 @@ async function runLeadPatrolTickPass(
 				}
 
 				const eventId = `patrol_tick:${project.projectName}:${lead.agentId}:after-${previous?.seq ?? "genesis"}`;
-				const capacity = await capacityOnce();
+				const [capacity, epic] = emptyRoster
+					? [await capacityOnce(), emptyRosterEpic]
+					: await Promise.all([
+							capacityOnce(),
+							epicForLead(project, lead.agentId, "roster"),
+						]);
 				const payload: HookPayload = {
 					event_type: "patrol_tick",
 					execution_id: sessionKey,
@@ -375,6 +440,7 @@ async function runLeadPatrolTickPass(
 					roster: roster.map(rosterEntry),
 					...(loops ? { loops } : {}),
 					...(capacity ? { capacity } : {}),
+					...(epic ? { epic } : {}),
 					generated_at: new Date(nowMs).toISOString(),
 					scheduled_at: new Date(currentScheduledAt).toISOString(),
 				};
@@ -409,6 +475,7 @@ export function createLeadPatrolTickPass(
 	const consecutiveFailures = new Map<string, number>();
 	const episodeCounts = new Map<string, number>();
 	const lastFailureAlertAt = new Map<string, number>();
+	const emptySlotSeen = new Map<string, number>();
 	const failures: FailureTracker = {
 		succeeded: (projectName, leadId) => {
 			consecutiveFailures.delete(`${projectName}:${leadId}`);
@@ -447,7 +514,7 @@ export function createLeadPatrolTickPass(
 	return () => {
 		if (inFlight) return inFlight;
 		const pass = Promise.resolve().then(() =>
-			runLeadPatrolTickPass(deps, failures),
+			runLeadPatrolTickPass(deps, failures, emptySlotSeen),
 		);
 		const guarded = pass.finally(() => {
 			if (inFlight === guarded) inFlight = null;

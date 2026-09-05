@@ -42,8 +42,22 @@ function makeDeps(over: Partial<ProgressResumeDeps> = {}): ProgressResumeDeps {
 }
 
 describe("computeProgressResume (FLY-795)", () => {
-	it("returns the resume params when a prior execution + branch progress.md exist", () => {
-		const r = computeProgressResume(
+	it("awaits asynchronous branch reads before deciding resume", async () => {
+		const result = await computeProgressResume(
+			"issue-uuid",
+			"implement",
+			"restart",
+			makeDeps({
+				readBranchFile: async () => ledger,
+				branchTip: async () => "c".repeat(40),
+			}),
+		);
+
+		expect(result?.startPoint).toBe("c".repeat(40));
+	});
+
+	it("returns the resume params when a prior execution + branch progress.md exist", async () => {
+		const r = await computeProgressResume(
 			"issue-uuid",
 			"implement",
 			"terminate",
@@ -58,9 +72,9 @@ describe("computeProgressResume (FLY-795)", () => {
 		expect(r!.shareParentBranch).toBe(true);
 	});
 
-	it("reads the BRANCH blob, not the worktree fs (worktree may be gone on reboot)", () => {
+	it("reads the BRANCH blob, not the worktree fs (worktree may be gone on reboot)", async () => {
 		const readBranchFile = vi.fn(() => ledger);
-		computeProgressResume(
+		await computeProgressResume(
 			"issue-uuid",
 			"implement",
 			"reboot",
@@ -73,9 +87,9 @@ describe("computeProgressResume (FLY-795)", () => {
 		);
 	});
 
-	it("no resume when there is no prior execution", () => {
+	it("no resume when there is no prior execution", async () => {
 		expect(
-			computeProgressResume(
+			await computeProgressResume(
 				"i",
 				"implement",
 				"terminate",
@@ -84,9 +98,9 @@ describe("computeProgressResume (FLY-795)", () => {
 		).toBeNull();
 	});
 
-	it("no resume when progress.md is not committed on the branch (→ fresh)", () => {
+	it("no resume when progress.md is not committed on the branch (→ fresh)", async () => {
 		expect(
-			computeProgressResume(
+			await computeProgressResume(
 				"i",
 				"implement",
 				"terminate",
@@ -95,14 +109,19 @@ describe("computeProgressResume (FLY-795)", () => {
 		).toBeNull();
 	});
 
-	it("effectiveStage from StateStore session_stage when it agrees with the ledger phase", () => {
-		const r = computeProgressResume("i", "implement", "terminate", makeDeps());
+	it("effectiveStage from StateStore session_stage when it agrees with the ledger phase", async () => {
+		const r = await computeProgressResume(
+			"i",
+			"implement",
+			"terminate",
+			makeDeps(),
+		);
 		expect(r!.effectiveStage).toBe("implement");
 	});
 
-	it("fail-closed: effectiveStage is undefined (no suppression) when StateStore stage disagrees with ledger phase", () => {
+	it("fail-closed: effectiveStage is undefined (no suppression) when StateStore stage disagrees with ledger phase", async () => {
 		// StateStore says design, ledger says implement → mismatch → no suppression
-		const r = computeProgressResume(
+		const r = await computeProgressResume(
 			"i",
 			"implement",
 			"terminate",
@@ -117,10 +136,10 @@ describe("computeProgressResume (FLY-795)", () => {
 		expect(r!.effectiveStage).toBeUndefined();
 	});
 
-	it("MED-4: with no plan_path, uses a discovered slug-named doc dir on the branch", () => {
+	it("MED-4: with no plan_path, uses a discovered slug-named doc dir on the branch", async () => {
 		const readBranchFile = vi.fn(() => ledger);
 		const discoverDocDir = vi.fn(() => "engineering/doc/FLY-795-restart-slug");
-		const r = computeProgressResume(
+		const r = await computeProgressResume(
 			"i",
 			"implement",
 			"terminate",
@@ -143,9 +162,9 @@ describe("computeProgressResume (FLY-795)", () => {
 		);
 	});
 
-	it("MED-4: plan_path (when present) still wins over branch discovery", () => {
+	it("MED-4: plan_path (when present) still wins over branch discovery", async () => {
 		const discoverDocDir = vi.fn(() => "engineering/doc/FLY-795-other");
-		const r = computeProgressResume(
+		const r = await computeProgressResume(
 			"i",
 			"implement",
 			"terminate",
@@ -168,7 +187,53 @@ describe("computeProgressResume (FLY-795)", () => {
 });
 
 describe("FLY-1718 pinned resume refs", () => {
-	it("never combines a remote ledger with a stale local startPoint", () => {
+	it("awaits each branch read and pins tree/blob reads to the resolved SHA", async () => {
+		const ref = "refs/heads/flywheel-FLY-795";
+		const sha = "c".repeat(40);
+		const events: string[] = [];
+		const git = async (args: string[]): Promise<string | null> => {
+			const rendered = args.join(" ");
+			events.push(`start:${rendered}`);
+			await new Promise((resolve) => setTimeout(resolve, 1));
+			events.push(`end:${rendered}`);
+			if (rendered === `rev-parse ${ref}^{commit}`) return sha;
+			if (rendered === `ls-tree -r --name-only ${sha}`) {
+				return "engineering/doc/FLY-795-async/progress.md\n";
+			}
+			if (
+				rendered === `show ${sha}:engineering/doc/FLY-795-async/progress.md`
+			) {
+				return ledger;
+			}
+			return null;
+		};
+
+		const result = await computeProgressResumeAcrossRefs({
+			issueId: "issue-uuid",
+			role: "implement",
+			docBaseDir: "engineering/doc",
+			issueIdentifier: "FLY-795",
+			branch: "flywheel-FLY-795",
+			refs: [ref],
+			prior: {
+				execution_id: "old-exec",
+				session_stage: "implement",
+			},
+			git,
+		});
+
+		expect(result?.startPoint).toBe(sha);
+		expect(events).toEqual([
+			`start:rev-parse ${ref}^{commit}`,
+			`end:rev-parse ${ref}^{commit}`,
+			`start:ls-tree -r --name-only ${sha}`,
+			`end:ls-tree -r --name-only ${sha}`,
+			`start:show ${sha}:engineering/doc/FLY-795-async/progress.md`,
+			`end:show ${sha}:engineering/doc/FLY-795-async/progress.md`,
+		]);
+	});
+
+	it("never combines a remote ledger with a stale local startPoint", async () => {
 		const localRef = "refs/heads/flywheel-FLY-795";
 		const remoteRef = "refs/remotes/origin/flywheel-FLY-795";
 		const localSha = "a".repeat(40);
@@ -179,16 +244,16 @@ describe("FLY-1718 pinned resume refs", () => {
 			const rendered = args.join(" ");
 			if (rendered === `rev-parse ${localRef}^{commit}`) return localSha;
 			if (rendered === `rev-parse ${remoteRef}^{commit}`) return remoteSha;
-			if (rendered === `show ${localRef}:engineering/doc/FLY-795-x/progress.md`)
+			if (rendered === `show ${localSha}:engineering/doc/FLY-795-x/progress.md`)
 				return null;
 			if (
-				rendered === `show ${remoteRef}:engineering/doc/FLY-795-x/progress.md`
+				rendered === `show ${remoteSha}:engineering/doc/FLY-795-x/progress.md`
 			)
 				return ledger;
 			return null;
 		};
 
-		const result = computeProgressResumeAcrossRefs({
+		const result = await computeProgressResumeAcrossRefs({
 			issueId: "issue-uuid",
 			role: "implement",
 			docBaseDir: "engineering/doc",
@@ -206,11 +271,11 @@ describe("FLY-1718 pinned resume refs", () => {
 		expect(result?.startPoint).toBe(remoteSha);
 		expect(calls).toContainEqual([
 			"show",
-			`${localRef}:engineering/doc/FLY-795-x/progress.md`,
+			`${localSha}:engineering/doc/FLY-795-x/progress.md`,
 		]);
 		expect(calls).toContainEqual([
 			"show",
-			`${remoteRef}:engineering/doc/FLY-795-x/progress.md`,
+			`${remoteSha}:engineering/doc/FLY-795-x/progress.md`,
 		]);
 	});
 });

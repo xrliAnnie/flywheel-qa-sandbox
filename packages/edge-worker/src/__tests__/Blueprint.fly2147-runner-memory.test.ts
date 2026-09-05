@@ -262,6 +262,12 @@ function normalizeMachinePaths(prompt: string): string {
 	);
 }
 
+function expectPromptGolden(actual: string, fixtureName: string): void {
+	expect(normalizeMachinePaths(actual)).toBe(
+		normalizeMachinePaths(goldenFixture(fixtureName)),
+	);
+}
+
 function expectSelectionLogs(expected: string[]): void {
 	const actual = vi
 		.mocked(console.info)
@@ -274,6 +280,10 @@ function expectSelectionLogs(expected: string[]): void {
 }
 
 describe("FLY-2147 Blueprint runner-memory assembly", () => {
+	it("keeps the FLY-2148 byte goldens tied to their pre-change baseline", () => {
+		expect(goldenFixture("fly2148/BASELINE")).toMatch(/^[0-9a-f]{9}$/);
+	});
+
 	it("keeps off byte-identical to the pre-memory Claude spawn path", async () => {
 		const preparer = vi.fn(absentManagedPreparer);
 		const { adapterContext, prompt } = await runBlueprint({
@@ -281,11 +291,7 @@ describe("FLY-2147 Blueprint runner-memory assembly", () => {
 			memoryMode: "off",
 			preparer,
 		});
-		expect(normalizeMachinePaths(prompt)).toBe(
-			normalizeMachinePaths(
-				goldenFixture("fly2147-prompt-golden-unsupported-backend.txt"),
-			),
-		);
+		expectPromptGolden(prompt, "fly2148-prompt-off.txt");
 		expect(preparer).not.toHaveBeenCalled();
 		expect(adapterContext.runnerMemory).toBeUndefined();
 		expect(adapterContext).not.toHaveProperty("runnerMemory");
@@ -303,11 +309,7 @@ describe("FLY-2147 Blueprint runner-memory assembly", () => {
 			memoryMode: "shared",
 			preparer,
 		});
-		expect(normalizeMachinePaths(prompt)).toBe(
-			normalizeMachinePaths(
-				goldenFixture("fly2147-prompt-golden-unsupported-backend.txt"),
-			),
-		);
+		expectPromptGolden(prompt, "fly2148-prompt-shared.txt");
 		expect(preparer).not.toHaveBeenCalled();
 		expect(adapterContext).not.toHaveProperty("runnerMemory");
 		expectSelectionLogs([
@@ -349,7 +351,10 @@ describe("FLY-2147 Blueprint runner-memory assembly", () => {
 			ctx: generalizedQa("claude-tmux"),
 		});
 		const dir = join(root, "flywheel", "qa");
-		expect(adapterContext.runnerMemory).toEqual({ status: "mounted", dir });
+		expect(adapterContext.runnerMemory).toMatchObject({
+			status: "mounted",
+			dir,
+		});
 		expect(prompt).toContain("## Runner Memory");
 		expect(prompt.indexOf("## Agent Role")).toBeLessThan(
 			prompt.indexOf("## Runner Memory"),
@@ -397,7 +402,7 @@ describe("FLY-2147 Blueprint runner-memory assembly", () => {
 		});
 		const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]?.[0] as AdapterExecutionContext;
-		expect(call.runnerMemory).toEqual({
+		expect(call.runnerMemory).toMatchObject({
 			status: "mounted",
 			dir: join(
 				process.env.FLYWHEEL_RUNNER_MEMORY_ROOT as string,
@@ -476,7 +481,7 @@ describe("FLY-2147 Blueprint runner-memory assembly", () => {
 		const { adapterContext, prompt } = await runBlueprint({
 			ctx: generalizedQa("codex-tmux"),
 		});
-		expect(adapterContext.runnerMemory).toEqual({
+		expect(adapterContext.runnerMemory).toMatchObject({
 			status: "mounted",
 			dir: join(root, "flywheel", "qa"),
 		});
@@ -493,7 +498,7 @@ describe("FLY-2147 Blueprint runner-memory assembly", () => {
 		const { adapterContext } = await runBlueprint({
 			ctx: generalizedQa("claude-tmux"),
 		});
-		expect(adapterContext.runnerMemory).toEqual({
+		expect(adapterContext.runnerMemory).toMatchObject({
 			status: "mounted",
 			dir: join(root, "flywheel", "qa"),
 		});

@@ -35,6 +35,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { cpus, freemem, loadavg } from "node:os";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 
 export type AdmissionReason =
 	| "load_pressure"
@@ -140,7 +141,13 @@ export function availableMemBytes(): number {
 			if (v != null) return v;
 		} else if (process.platform === "darwin") {
 			const v = parseDarwinReclaimableBytes(
-				execFileSync("vm_stat", { encoding: "utf8", timeout: 2000 }),
+				withSyncOpMarker("runner-admission:vm-stat", () =>
+					execFileSync("vm_stat", {
+						encoding: "utf8",
+						timeout: 2000,
+						killSignal: "SIGKILL",
+					}),
+				),
 			);
 			if (v != null) return v;
 		}

@@ -100,7 +100,6 @@ import {
 	type CodexPhaseLifecycle,
 	CodexPhaseLifecycleController,
 	type CodexPhaseLifecycleControllerOptions,
-	type CodexWakeWatcher,
 } from "./codex-phase-lifecycle.js";
 import {
 	ensureRunnerTuiWindow,
@@ -140,8 +139,8 @@ export interface RunnerTuiWindowLostEvidence {
 }
 
 import { withSyncOpMarker } from "./sync-op-marker.js";
-import type { ExecFileFn } from "./TmuxAdapter.js";
-import { defaultExecFile } from "./TmuxAdapter.js";
+import type { AsyncExecFileFn, ExecFileFn } from "./TmuxAdapter.js";
+import { defaultAsyncExecFile, defaultExecFile } from "./TmuxAdapter.js";
 
 /**
  * Structural surface of the codex transport this executor needs. Kept
@@ -156,15 +155,7 @@ export interface CodexRunnerTransport {
 		teamName: string;
 		[key: string]: unknown;
 	}): { args: string[]; env: Record<string, string> };
-	createReceiver(ctx: {
-		leadName: string;
-		runnerName: string;
-		teamName: string;
-		[key: string]: unknown;
-	}): CodexWakeWatcher | null;
 }
-
-export type { CodexWakeWatcher } from "./codex-phase-lifecycle.js";
 
 /**
  * FLY-1188 M4d: the resident-/goal runtime surface execute() drives — injected
@@ -209,6 +200,7 @@ export interface CodexLaunchSnapshot {
 		appsApprovalMode: "never";
 		skillFrameworkMode: "superpowers" | "matt" | "bare" | null;
 		phaseRole: "design" | "implement" | "qa" | null;
+		loopTargetNodeId?: string | null;
 		capabilityDigest: string;
 	};
 	/**
@@ -322,6 +314,14 @@ function parseCodexLaunchSnapshot(
 	) {
 		throw new Error(`invalid immutable launch snapshot field phaseRole`);
 	}
+	const loopTargetNodeId = launchContext.loopTargetNodeId;
+	if (
+		loopTargetNodeId !== undefined &&
+		loopTargetNodeId !== null &&
+		(typeof loopTargetNodeId !== "string" || loopTargetNodeId.length === 0)
+	) {
+		throw new Error(`invalid immutable launch snapshot field loopTargetNodeId`);
+	}
 	let rehydrationContext: CodexLaunchSnapshot["rehydrationContext"];
 	if (snapshot.rehydrationContext !== undefined) {
 		if (
@@ -372,6 +372,7 @@ function parseCodexLaunchSnapshot(
 			appsApprovalMode: "never",
 			skillFrameworkMode,
 			phaseRole,
+			...(loopTargetNodeId !== undefined ? { loopTargetNodeId } : {}),
 			capabilityDigest: launchContext.capabilityDigest,
 		},
 		...(rehydrationContext ? { rehydrationContext } : {}),
@@ -410,14 +411,19 @@ export function readCodexGateHoldLatch(executionId: string): boolean {
 	return state.gateHold;
 }
 
-function capabilityDigest(ctx: AdapterExecutionContext): string {
+function capabilityDigest(
+	ctx: AdapterExecutionContext,
+	overrides: { phaseRole?: "design" | "implement" | "qa" | null } = {},
+): string {
 	const stableCapabilities = {
 		allowedTools: [...(ctx.allowedTools ?? [])].sort(),
 		enablePonytail: ctx.enablePonytail === true,
 		skillFrameworkMode: ctx.skillFrameworkMode ?? null,
 		codexSkillDisableNames: [...(ctx.codexSkillDisableNames ?? [])].sort(),
 		hasMattSkillsSource: Boolean(ctx.codexMattSkillsSourceDir),
-		phaseRole: ctx.phaseKeepAlive?.role ?? null,
+		phaseRole: Object.hasOwn(overrides, "phaseRole")
+			? (overrides.phaseRole ?? null)
+			: (ctx.phaseKeepAlive?.role ?? null),
 		workflowSubmissionExpected: ctx.workflowSubmissionExpected === true,
 		founderReviewRequired: ctx.founderReviewRequired === true,
 	};
@@ -469,6 +475,11 @@ export interface CodexDaemonAdapterDeps {
 	phaseLifecycleFactory?: (
 		options: CodexPhaseLifecycleControllerOptions,
 	) => CodexPhaseLifecycle;
+	/** Bridge-owned durable resident hold coordinator for workflow loop targets. */
+	residentHold?: Pick<
+		NonNullable<CodexPhaseLifecycleControllerOptions["residentHold"]>,
+		"enter" | "close" | "current"
+	>;
 	/** FLY-1269: heartbeat lifetime seam. Controlled phase shutdown keeps this
 	 * running through drain/TUI cleanup/ack; tests pin the stop boundary. */
 	startHeartbeat?: (heartbeat: () => void, intervalMs: number) => () => void;
@@ -509,6 +520,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly phaseLifecycleFactory: NonNullable<
 		CodexDaemonAdapterDeps["phaseLifecycleFactory"]
 	>;
+	private readonly residentHold?: CodexDaemonAdapterDeps["residentHold"];
 	private readonly startHeartbeat: NonNullable<
 		CodexDaemonAdapterDeps["startHeartbeat"]
 	>;
@@ -518,6 +530,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly codexAccountRegistryPath?: string;
 	private readonly codexAccountLedgerRoot?: string;
 	private readonly executionOwners?: CodexExecutionOwnershipRegistry;
+	private readonly asyncExecFileFn: AsyncExecFileFn;
 
 	constructor(
 		private sessionName: string = "flywheel",
@@ -533,6 +546,17 @@ export class CodexTmuxAdapter implements IAdapter {
 		private transport?: CodexRunnerTransport,
 		deps: CodexDaemonAdapterDeps = {},
 	) {
+		this.asyncExecFileFn =
+			execFileFn === defaultExecFile
+				? defaultAsyncExecFile
+				: async (cmd, args, opts) => {
+						const result = await Promise.resolve(
+							execFileFn(cmd, args, opts) as
+								| { stdout: string }
+								| Promise<{ stdout: string }>,
+						);
+						return { stdout: result.stdout, stderr: "" };
+					};
 		this.runtimeFactory =
 			deps.runtimeFactory ?? ((opts) => new CodexDaemonGoalRuntime(opts));
 		this.ensureWindow = deps.ensureWindow ?? ensureRunnerTuiWindow;
@@ -563,6 +587,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		this.phaseLifecycleFactory =
 			deps.phaseLifecycleFactory ??
 			((options) => new CodexPhaseLifecycleController(options));
+		this.residentHold = deps.residentHold;
 		this.startHeartbeat =
 			deps.startHeartbeat ??
 			((heartbeat, intervalMs) => {
@@ -583,11 +608,13 @@ export class CodexTmuxAdapter implements IAdapter {
 		// in a git worktree (WorktreeManager) or the project root (git repo),
 		// so this holds; any future non-git execution path must address it.
 		try {
-			const tmux = withSyncOpMarker("codex-adapter:health-tmux", () =>
-				this.execFileFn("tmux", ["-V"], { timeoutMs: 10_000 }),
+			const tmux = (
+				await this.asyncExecFileFn("tmux", ["-V"], { timeoutMs: 10_000 })
 			).stdout.trim();
-			const codex = withSyncOpMarker("codex-adapter:health-codex", () =>
-				this.execFileFn("codex", ["--version"], { timeoutMs: 10_000 }),
+			const codex = (
+				await this.asyncExecFileFn("codex", ["--version"], {
+					timeoutMs: 10_000,
+				})
 			).stdout.trim();
 			// FLY-2003: runners use the repo-owned, CODEX_HOME-aware direct daemon
 			// launcher (via FLYWHEEL_CODEX_BIN), not the global one-shot guard.
@@ -619,13 +646,15 @@ export class CodexTmuxAdapter implements IAdapter {
 	 * a corrupted value never reaches the codex `-c` TOML string (the helper
 	 * re-validates with the same charset, defense in depth).
 	 */
-	private provisionGitHubCredential(
+	private async provisionGitHubCredential(
 		ctx: AdapterExecutionContext,
-	): string | undefined {
+	): Promise<string | undefined> {
 		let token: string;
 		try {
-			token = withSyncOpMarker("codex-adapter:gh-token", () =>
-				this.execFileFn("gh", ["auth", "token"], { timeoutMs: 10_000 }),
+			token = (
+				await this.asyncExecFileFn("gh", ["auth", "token"], {
+					timeoutMs: 10_000,
+				})
 			).stdout.trim();
 		} catch {
 			console.warn(
@@ -645,31 +674,27 @@ export class CodexTmuxAdapter implements IAdapter {
 		// is an ssh remote — the ssh agent socket is sandbox-blocked, so ssh
 		// can never work for a Codex runner. Scoped to github.com; best-effort.
 		try {
-			withSyncOpMarker("codex-adapter:git-credential", () =>
-				this.execFileFn(
-					"git",
-					[
-						"-C",
-						ctx.cwd,
-						"config",
-						"credential.https://github.com.helper",
-						"!gh auth git-credential",
-					],
-					{ timeoutMs: 10_000 },
-				),
+			await this.asyncExecFileFn(
+				"git",
+				[
+					"-C",
+					ctx.cwd,
+					"config",
+					"credential.https://github.com.helper",
+					"!gh auth git-credential",
+				],
+				{ timeoutMs: 10_000 },
 			);
-			withSyncOpMarker("codex-adapter:git-url-rewrite", () =>
-				this.execFileFn(
-					"git",
-					[
-						"-C",
-						ctx.cwd,
-						"config",
-						"url.https://github.com/.insteadOf",
-						"git@github.com:",
-					],
-					{ timeoutMs: 10_000 },
-				),
+			await this.asyncExecFileFn(
+				"git",
+				[
+					"-C",
+					ctx.cwd,
+					"config",
+					"url.https://github.com/.insteadOf",
+					"git@github.com:",
+				],
+				{ timeoutMs: 10_000 },
 			);
 		} catch (err) {
 			console.warn(
@@ -748,12 +773,10 @@ export class CodexTmuxAdapter implements IAdapter {
 		recovery?: CodexRecoveryExecution,
 	): Promise<AdapterExecutionResult> {
 		if (!this.preflightDone) {
-			withSyncOpMarker("codex-adapter:preflight-tmux", () =>
-				this.execFileFn("tmux", ["-V"], { timeoutMs: 10_000 }),
-			);
-			withSyncOpMarker("codex-adapter:preflight-codex", () =>
-				this.execFileFn("codex", ["--version"], { timeoutMs: 10_000 }),
-			);
+			await this.asyncExecFileFn("tmux", ["-V"], { timeoutMs: 10_000 });
+			await this.asyncExecFileFn("codex", ["--version"], {
+				timeoutMs: 10_000,
+			});
 			this.preflightDone = true;
 		}
 
@@ -763,7 +786,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		// metadata dirs FIRST (fail-loud — a runner that cannot commit is
 		// crippled; see resolveGitWritableDirs for the FLY-793 detail).
 		const sandboxCwd = realpathSync(ctx.cwd);
-		const gitWritableDirs = this.resolveGitWritableDirs(sandboxCwd);
+		const gitWritableDirs = await this.resolveGitWritableDirs(sandboxCwd);
 		// Build and validate in the fail-loud zone. This must stay before GitHub
 		// credential/CODEX_HOME provisioning so a rejection cannot leak a live token.
 		const gateMarkerDir = defaultGateMarkerDir();
@@ -795,7 +818,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		});
 
 		// FLY-209 (credentials): host gh token + worktree git credential helper.
-		const ghToken = this.provisionGitHubCredential(ctx);
+		const ghToken = await this.provisionGitHubCredential(ctx);
 
 		// FLY-123 (isolation): per-runner CODEX_HOME. From this point the home
 		// holds a LIVE GH_TOKEN, so EVERY exit must scrub it (P5) — the whole rest
@@ -927,7 +950,11 @@ export class CodexTmuxAdapter implements IAdapter {
 					expectedContext.skillFrameworkMode !==
 						(ctx.skillFrameworkMode ?? null) ||
 					expectedContext.phaseRole !== (ctx.phaseKeepAlive?.role ?? null) ||
-					expectedContext.capabilityDigest !== capabilityDigest(ctx) ||
+					(expectedContext.loopTargetNodeId !== undefined &&
+						expectedContext.loopTargetNodeId !==
+							(ctx.residentLoopTarget?.nodeId ?? null)) ||
+					expectedContext.capabilityDigest !==
+						capabilityDigest(ctx, { phaseRole: expectedContext.phaseRole }) ||
 					JSON.stringify(expectedContext.sandboxWritableRoots) !==
 						JSON.stringify(writableRoots)
 				) {
@@ -965,6 +992,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						appsApprovalMode: "never",
 						skillFrameworkMode: ctx.skillFrameworkMode ?? null,
 						phaseRole: ctx.phaseKeepAlive?.role ?? null,
+						loopTargetNodeId: ctx.residentLoopTarget?.nodeId ?? null,
 						capabilityDigest: capabilityDigest(ctx),
 					},
 					rehydrationContext: {
@@ -1022,30 +1050,48 @@ export class CodexTmuxAdapter implements IAdapter {
 					: {}),
 			});
 
-			if (ctx.phaseKeepAlive) {
+			if (ctx.phaseKeepAlive || ctx.residentLoopTarget) {
 				if (!ctx.commDbPath) {
 					throw new Error(
-						`phase keep-alive requires commDbPath for ${ctx.executionId}`,
+						`resident lifecycle requires commDbPath for ${ctx.executionId}`,
 					);
 				}
-				const watcher =
-					this.transport && ctx.agentName && ctx.teamName
-						? this.transport.createReceiver({
-								leadName: ctx.leadId ?? ctx.teamName,
-								runnerName: ctx.agentName,
-								teamName: ctx.teamName,
-							})
-						: null;
+				if (
+					ctx.residentLoopTarget &&
+					(!ctx.workflowActivationId || !this.residentHold)
+				) {
+					throw new Error(
+						`resident loop target requires activation and hold coordinator for ${ctx.executionId}`,
+					);
+				}
 				phaseLifecycle = this.phaseLifecycleFactory({
 					executionId: ctx.executionId,
-					role: ctx.phaseKeepAlive.role,
+					...(ctx.phaseKeepAlive ? { role: ctx.phaseKeepAlive.role } : {}),
+					...(ctx.residentLoopTarget &&
+					ctx.workflowActivationId &&
+					this.residentHold
+						? {
+								residentHold: {
+									activationId: ctx.workflowActivationId,
+									nodeId: ctx.residentLoopTarget.nodeId,
+									enter: this.residentHold.enter,
+									close: this.residentHold.close,
+									current: this.residentHold.current,
+								},
+							}
+						: {}),
 					commDbPath: ctx.commDbPath,
 					sessionStatePath: join(
 						codexSessionStateDir(ctx.executionId),
 						"session.json",
 					),
-					...(ctx.agentName ? { mailboxAgentName: ctx.agentName } : {}),
-					watcher,
+					recoveryBudget: {
+						deadlineRemainingMs: ctx.timeoutMs ?? this.defaultTimeoutMs,
+						hardDeadlineRemainingMs: Math.max(
+							ctx.timeoutMs ?? this.defaultTimeoutMs,
+							ctx.waitingTimeoutMs ?? 176_400_000,
+						),
+					},
 				});
 				await phaseLifecycle.start();
 			}
@@ -1383,6 +1429,27 @@ export class CodexTmuxAdapter implements IAdapter {
 					? (ctx.previousSession.threadId as string)
 					: undefined) ?? this.readPersistedThreadId(ctx.executionId);
 			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
+			const turnDbPath = ctx.commDbPath;
+			const turnLifecycle = turnDbPath
+				? {
+						markTurnStarted: (turnId: string): void => {
+							const db = new CommDB(turnDbPath);
+							try {
+								db.markTurnStarted(ctx.executionId, turnId);
+							} finally {
+								db.close();
+							}
+						},
+						markTurnCompleted: (turnId: string): void => {
+							const db = new CommDB(turnDbPath);
+							try {
+								db.markTurnCompleted(ctx.executionId, turnId);
+							} finally {
+								db.close();
+							}
+						},
+					}
+				: undefined;
 			const goalPromise = runtime.runGoal(
 				{
 					objective,
@@ -1440,6 +1507,7 @@ export class CodexTmuxAdapter implements IAdapter {
 							}
 						: {}),
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
+					...(turnLifecycle ? { turnLifecycle } : {}),
 				},
 				{
 					onNotification: (method, params) => {
@@ -1621,8 +1689,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					}
 				}
 				try {
-					phaseLifecycle.ackShutdown(
-						controlledShutdownRequestId,
+					phaseLifecycle.ackAllPendingShutdowns(
 						controlledShutdownSucceeded()
 							? { ok: true }
 							: {
@@ -2201,6 +2268,11 @@ export class CodexTmuxAdapter implements IAdapter {
 		if (ctx.projectName) env.FLYWHEEL_PROJECT_NAME = ctx.projectName;
 		if (ctx.runnerMemory?.status === "mounted") {
 			env.FLYWHEEL_RUNNER_MEMORY_DIR = ctx.runnerMemory.dir;
+			if (ctx.runnerMemory.snapshot) {
+				env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT = JSON.stringify(
+					ctx.runnerMemory.snapshot,
+				);
+			}
 		}
 		if (ctx.leadId) env.FLYWHEEL_LEAD_ID = ctx.leadId;
 		if (ctx.sentinelPath) env.FLYWHEEL_LAND_STATUS_PATH = ctx.sentinelPath;
@@ -2269,10 +2341,13 @@ export class CodexTmuxAdapter implements IAdapter {
 	 * doorbell fence depends on this row.
 	 */
 	private registerCommDbSession(ctx: AdapterExecutionContext): boolean {
+		const residentLifecycle = Boolean(
+			ctx.phaseKeepAlive || ctx.residentLoopTarget,
+		);
 		if (!ctx.commDbPath) {
-			if (ctx.phaseKeepAlive) {
+			if (residentLifecycle) {
 				throw new Error(
-					`phase keep-alive requires CommDB registration for ${ctx.executionId}`,
+					`resident lifecycle requires CommDB registration for ${ctx.executionId}`,
 				);
 			}
 			return false;
@@ -2289,14 +2364,14 @@ export class CodexTmuxAdapter implements IAdapter {
 				// FLY-1188: vendor routes `flywheel-comm send` wakes to the codex
 				// mailbox (the claude-code env default misrouted them).
 				"codex",
-				ctx.phaseKeepAlive !== undefined,
+				residentLifecycle,
 			);
-			if (ctx.phaseKeepAlive) {
+			if (residentLifecycle) {
 				commDb.assertPhaseKeepAliveSessionRunning(ctx.executionId);
 			}
 			return true;
 		} catch (error) {
-			if (ctx.phaseKeepAlive) throw error;
+			if (residentLifecycle) throw error;
 			return false; // non-fatal (same as TmuxAdapter)
 		} finally {
 			commDb?.close();
@@ -2364,11 +2439,11 @@ export class CodexTmuxAdapter implements IAdapter {
 	 * (mirrors GitService.getGitMetadataDirectories, which the legacy
 	 * EdgeWorker path already feeds into allowedDirectories).
 	 */
-	private resolveGitWritableDirs(cwd: string): string[] {
+	private async resolveGitWritableDirs(cwd: string): Promise<string[]> {
 		let stdout: string;
 		try {
-			stdout = withSyncOpMarker("codex-adapter:resolve-git-dirs", () =>
-				this.execFileFn(
+			stdout = (
+				await this.asyncExecFileFn(
 					"git",
 					[
 						"-C",
@@ -2379,7 +2454,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						"--git-common-dir",
 					],
 					{ timeoutMs: 10_000 },
-				),
+				)
 			).stdout;
 		} catch (err) {
 			throw new Error(

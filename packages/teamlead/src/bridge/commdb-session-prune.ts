@@ -42,13 +42,53 @@ export function resolveCommDbPath(projectName: string): string | undefined {
 	return existsSync(dbPath) ? dbPath : undefined;
 }
 
+const COMM_DB_ENDED_STATUSES: ReadonlySet<string> = new Set([
+	"completed",
+	"timeout",
+	"failed",
+	"blocked",
+]);
+
+/** Read-only lifecycle evidence for callers deciding whether a terminal-only
+ * cleanup path is even eligible. Read failures are uncertainty and fail closed. */
+export function hasEndedCommDbSession(
+	executionId: string,
+	projectName: string,
+): boolean {
+	const dbPath = resolveCommDbPath(projectName);
+	if (!dbPath) return false;
+	let db: CommDB | undefined;
+	try {
+		db = CommDB.openReadonly(dbPath);
+		const session = db.getSession(executionId);
+		return Boolean(
+			session?.ended_at && COMM_DB_ENDED_STATUSES.has(session.status),
+		);
+	} catch (error) {
+		console.warn(
+			`[commdb-prune] terminal evidence unavailable for ${executionId}: ${(error as Error).message}`,
+		);
+		return false;
+	} finally {
+		db?.close();
+	}
+}
+
 /**
  * Live cleanup: atomically retire one runner's unresolved gates and session
  * after teardown. Best-effort; never throws. `dbPath` is injectable for tests.
  */
 export interface FinalizeCommDbResult {
 	ok: boolean;
-	outcome: "finalized" | "no_db" | "failed";
+	outcome:
+		| "finalized"
+		| "no_db"
+		| "target_changed"
+		| "terminal_evidence_changed"
+		| "turn_holder"
+		| "parked"
+		| "founder_wake_pending"
+		| "failed";
 	retiredGateCount: number;
 	/**
 	 * FLY-1328: checkpoint-less asks cascade-retired by this teardown. Required
@@ -100,6 +140,91 @@ export function finalizeCommDbSession(
 	} finally {
 		db?.close();
 	}
+}
+
+/**
+ * FLY-2313: retire a terminal runner's communication obligations without
+ * deleting its only tmux identity. The expected target is checked in the same
+ * transaction as the ledger writes; target drift fails closed with zero writes.
+ */
+export function finalizeCommDbSessionCommunications(
+	executionId: string,
+	projectName: string,
+	expectedTmuxWindow: string,
+	dbPath: string | undefined = resolveCommDbPath(projectName),
+	deleteSessionIdentity = false,
+	authoritativeTerminalStatus?: "failed" | "blocked",
+): FinalizeCommDbResult {
+	if (!dbPath) {
+		return {
+			ok: true,
+			outcome: "no_db",
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+		};
+	}
+	let db: CommDB | undefined;
+	try {
+		db = new CommDB(dbPath, false);
+		const finalized = db.finalizeSessionCommunications(
+			executionId,
+			expectedTmuxWindow,
+			deleteSessionIdentity,
+			authoritativeTerminalStatus,
+		);
+		if (!finalized.finalized) {
+			return {
+				ok: false,
+				outcome: finalized.reason,
+				retiredGateCount: 0,
+				retiredAskCount: 0,
+				deletedSessionCount: 0,
+				error: finalized.reason,
+			};
+		}
+		return {
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: finalized.result.retiredQuestionCount,
+			retiredAskCount: finalized.result.retiredAskCount,
+			deletedSessionCount: finalized.result.deletedSessionCount,
+		};
+	} catch (err) {
+		console.warn(
+			`[commdb-prune] finalize communications ${executionId} (${projectName}) failed: ${(err as Error).message}`,
+		);
+		return {
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+			error: (err as Error).message,
+		};
+	} finally {
+		db?.close();
+	}
+}
+
+/** Full identity deletion after an external execution-level death proof, using
+ * the same atomic terminal/TURN/parked/founder-wake guards as ledger-only
+ * settlement. */
+export function finalizeCommDbTerminalSession(
+	executionId: string,
+	projectName: string,
+	expectedTmuxWindow: string,
+	authoritativeTerminalStatus?: "failed" | "blocked",
+	dbPath: string | undefined = resolveCommDbPath(projectName),
+): FinalizeCommDbResult {
+	return finalizeCommDbSessionCommunications(
+		executionId,
+		projectName,
+		expectedTmuxWindow,
+		dbPath,
+		true,
+		authoritativeTerminalStatus,
+	);
 }
 
 export interface CommDbPruneResult {

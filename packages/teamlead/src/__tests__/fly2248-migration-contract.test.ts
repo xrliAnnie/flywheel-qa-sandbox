@@ -112,7 +112,7 @@ function existingColumnAdditions(
 }
 
 describe("FLY-2248 additive migration contract", () => {
-	it("migrates a VACUUM INTO StateStore snapshot with exactly three tables and three indexes", async () => {
+	it("migrates a VACUUM INTO StateStore snapshot with exactly three tables and seven indexes", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2248-state-migration-"));
 		tempRoots.push(root);
 		const currentPath = join(root, "current.db");
@@ -143,12 +143,32 @@ describe("FLY-2248 additive migration contract", () => {
 			},
 			{
 				type: "index",
+				name: "idx_wda_projection_source",
+				tbl_name: "workflow_delivery_attempt",
+			},
+			{
+				type: "index",
+				name: "idx_wda_projection_source_all",
+				tbl_name: "workflow_delivery_attempt",
+			},
+			{
+				type: "index",
 				name: "idx_wdce_open_by_root",
 				tbl_name: "workflow_delivery_contract_episode",
 			},
 			{
 				type: "index",
+				name: "idx_wdce_open_undeliverable_by_root",
+				tbl_name: "workflow_delivery_contract_episode",
+			},
+			{
+				type: "index",
 				name: "idx_wdo_client_request",
+				tbl_name: "workflow_delivery_operation",
+			},
+			{
+				type: "index",
+				name: "idx_wdo_pending_hold_by_id",
 				tbl_name: "workflow_delivery_operation",
 			},
 			{

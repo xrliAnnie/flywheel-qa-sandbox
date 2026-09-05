@@ -10,13 +10,14 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		detection_escalations lead_event_delivery_attempts lead_events
 		legacy_cutover_quarantine legacy_render_fallback legacy_stock_suppressed
 		phase_chat_threads quiet_wake_notified roundtable_topic_threads session_events
-		tmux_hold workflow_run_event
+		tmux_hold workflow_completion_drain_challenge workflow_run_event
 	`),
 	retiredOptional: words(`
 		founder_page_ledger runbook_issues ticket_escalations
 	`),
 	protectedAuthority: words(`
-		codex_review_job codex_review_record delivery_secret_state design_review_manifest
+		codex_review_job codex_review_record codex_review_reuse_binding
+		delivery_secret_state design_review_manifest
 		disposition_receipts founder_action_ledger founder_decision_convergence
 		founder_deferred_approval founder_review_card_binding issue_disposition_intents
 		land_cool_adjudication_receipt land_cool_attempt receipt_root_lineage
@@ -61,10 +62,11 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		workflow_node_outputs workflow_node_pr_binding workflow_operator_close_intent
 		workflow_pr_finalization workflow_pr_manifest workflow_resume_admission
 		workflow_resume_attachment workflow_resume_attachment_state workflow_resume_probe
+		workflow_resident_hold
 		workflow_resume_response workflow_rework_delivery workflow_rework_request
 		workflow_rework_route_revision workflow_rework_verification_path
 		workflow_route_decision workflow_route_reminder_outbox workflow_run
-		workflow_run_collect_alias workflow_run_collect_receipt workflow_run_node
+		workflow_run_collect_alias workflow_run_collect_receipt workflow_run_issue_alias workflow_run_node
 		workflow_side_effect_ledger workflow_source_cursor workflow_source_deadletter
 		workflow_template workflow_template_audit workflow_template_publication
 		workflow_template_revision workflow_wake_send_claim

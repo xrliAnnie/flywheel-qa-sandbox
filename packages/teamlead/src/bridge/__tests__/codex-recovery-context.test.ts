@@ -268,6 +268,9 @@ describe("FLY-2211 recovery context", () => {
 			bridgeUrl: "http://127.0.0.1:4100",
 			bridgeIngestToken: "runner-visible-ingest",
 			progressPath: "/repo/engineering/doc/FLY-2211/progress.md",
+			loopTarget: { nodeId: "repair-any-name" },
+			sessionRole: "repair-any-name",
+			workflowActivationId: "activation:exec-1:run-1:repair-any-name:2",
 			onHeartbeat: heartbeat,
 		});
 
@@ -284,6 +287,8 @@ describe("FLY-2211 recovery context", () => {
 			skillFrameworkMode: "bare",
 			codexSkillDisableNames: ["superpowers:using-superpowers"],
 			phaseKeepAlive: { role: "implement" },
+			residentLoopTarget: { nodeId: "repair-any-name" },
+			workflowActivationId: "activation:exec-1:run-1:repair-any-name:2",
 			workflowSubmissionExpected: true,
 			workflowOutputCredential: "fresh-output",
 			founderReviewRequired: false,

@@ -154,6 +154,85 @@ describe("FLY-1774 Codex idle doorbell wakes", () => {
 		expect(db.listRunnerPhaseWakes("exec-1")).toHaveLength(1);
 	});
 
+	it("keeps batch doorbells live for an existing non-loop phase worker", () => {
+		// Loop-target identity lives outside CommDB's legacy phase capability.
+		// A non-loop shared Codex phase therefore still registers this bit.
+		registerPhase();
+		const instruction = db.insertInstruction("lead", "exec-1", "handoff");
+		const batchId = "mailbox-batch:non-loop";
+		const memberIds = leaseBatch([instruction], batchId);
+
+		expect(
+			db.enqueueRunnerDoorbellWake(
+				"exec-1",
+				batchEnvelope(batchId, memberIds),
+				1_001,
+			).kind,
+		).toBe("queued");
+	});
+
+	it("receiver ingress never bypasses the durable doorbell consumer fence", () => {
+		db.registerSession(
+			"exec-1",
+			"flywheel:@1",
+			"flywheel",
+			"FLY-1774",
+			"flywheel-eng-lead",
+			"codex",
+			false,
+		);
+		db.updateSessionStatusIfRunning("exec-1", "completed");
+		const instruction = db.insertInstruction("lead", "exec-1", "handoff");
+		const batchId = "mailbox-batch:state-store-candidate";
+		const memberIds = leaseBatch([instruction], batchId);
+
+		expect(
+			db.enqueueRunnerReceiverDelivery(
+				"exec-1",
+				batchEnvelope(batchId, memberIds),
+				1_002,
+			),
+		).toEqual({ kind: "no_consumer" });
+		expect(db.listRunnerPhaseWakes("exec-1")).toEqual([]);
+		expect(
+			raw()
+				.prepare("SELECT state, acked_at FROM mailbox WHERE id = ?")
+				.get(instruction),
+		).toEqual({ state: "LEASED", acked_at: null });
+	});
+
+	it("receiver ingress leaves a single instruction unread without a consumer", () => {
+		db.registerSession(
+			"exec-1",
+			"flywheel:@1",
+			"flywheel",
+			"FLY-1774",
+			"flywheel-eng-lead",
+			"codex",
+			false,
+		);
+		const instruction = db.insertInstruction("lead", "exec-1", "handoff");
+
+		expect(
+			db.enqueueRunnerReceiverDelivery(
+				"exec-1",
+				{
+					id: "transport-single",
+					to: "exec-1",
+					content: "handoff",
+					metadata: { flywheelId: instruction, execId: "exec-1" },
+				},
+				1_003,
+			),
+		).toEqual({ kind: "no_consumer" });
+		expect(db.listRunnerPhaseWakes("exec-1")).toEqual([]);
+		expect(
+			raw()
+				.prepare("SELECT state, acked_at FROM mailbox WHERE id = ?")
+				.get(instruction),
+		).toEqual({ state: "QUEUED", acked_at: null });
+	});
+
 	it("durably covers a reused attempt and merges response check pointers", () => {
 		registerPhase();
 		const instruction = db.insertInstruction("lead", "exec-1", "first");

@@ -29,6 +29,7 @@ import { promisify } from "node:util";
 import { adapterTypeToFamily, type RoleEffort } from "flywheel-config";
 import type {
 	CodexReviewJob,
+	CodexReviewReuseBinding,
 	ReviewFindingRuling,
 	Session,
 	StateStore,
@@ -150,6 +151,8 @@ export interface ReviewCoordinatorDeps {
 	reviewRound?: typeof runClaudeReviewRound;
 	/** Trusted head derivation (test seam; default = rev-parse, no shell). */
 	deriveHead?: (worktreePath: string) => Promise<string>;
+	/** Real owner/repo identity derivation for cross-worktree reuse. */
+	deriveRepoIdentity?: (worktreePath: string) => Promise<string>;
 	/**
 	 * FLY-1257 defect ① × ④ (Codex code review HIGH-1): flip the answered review
 	 * gate's MARKER to answered so a resident codex `/goal` resumes at once. The
@@ -431,6 +434,17 @@ export async function deriveWorktreeHead(
 	return head;
 }
 
+export async function deriveRepositoryIdentity(
+	worktreePath: string,
+): Promise<string> {
+	const { stdout } = await execFileAsync(
+		"git",
+		["-C", worktreePath, "remote", "get-url", "origin"],
+		{ timeout: 15_000 },
+	);
+	return normalizeRepoIdentity(stdout.trim());
+}
+
 export class ReviewRequestCoordinator {
 	private readonly store: StateStore;
 	private readonly deps: ReviewCoordinatorDeps;
@@ -651,6 +665,20 @@ export class ReviewRequestCoordinator {
 				`invalid review target: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
+		let reuseRepoIdentity = reviewTarget.identity;
+		if (reviewType === "code" && reuseRepoIdentity === "__main__") {
+			const derived = await this.tryDeriveRepoIdentity(
+				executionId,
+				reviewTarget.path,
+			);
+			if (!derived) {
+				return reject(
+					422,
+					`cannot derive repository identity for ${executionId} (target ${reviewTarget.path})`,
+				);
+			}
+			reuseRepoIdentity = derived;
+		}
 
 		// R12 HIGH-3: this lane enforces the reviewer-inversion invariant for
 		// NON-claude authors. A claude-family author must stay on the legacy
@@ -673,6 +701,8 @@ export class ReviewRequestCoordinator {
 				existing.execution_id !== executionId ||
 				existing.review_type !== reviewType ||
 				existing.target_repo_identity !== reviewTarget.identity ||
+				(existing.reuse_repo_identity !== "__main__" &&
+					existing.reuse_repo_identity !== reuseRepoIdentity) ||
 				(existing.target_repo_path ?? worktreeBinding.path) !==
 					reviewTarget.path
 			) {
@@ -726,6 +756,103 @@ export class ReviewRequestCoordinator {
 				accepted: true,
 				requestId,
 				skipped: existing.status === "skipped",
+				duplicate: true,
+			};
+		}
+		const existingReuse = this.store.getCodexReviewReuseBinding(requestId);
+		if (existingReuse) {
+			const source = this.store.getCodexReviewJob(
+				existingReuse.source_request_id,
+			);
+			if (
+				!source ||
+				existingReuse.question_id !== questionId ||
+				existingReuse.execution_id !== executionId ||
+				source.review_type !== reviewType ||
+				source.target_repo_identity !== reviewTarget.identity ||
+				(source.reuse_repo_identity !== "__main__" &&
+					source.reuse_repo_identity !== reuseRepoIdentity) ||
+				existingReuse.target_repo_identity !== reviewTarget.identity ||
+				(existingReuse.reuse_repo_identity !== "__main__" &&
+					existingReuse.reuse_repo_identity !== reuseRepoIdentity) ||
+				(existingReuse.target_repo_path ?? reviewTarget.path) !==
+					reviewTarget.path
+			) {
+				return reject(
+					409,
+					`requestId ${requestId} is already bound to a different reused review request`,
+				);
+			}
+			if (existingReuse.released_at) {
+				return reject(
+					409,
+					`reused request ${requestId} was released without a runnable review job`,
+				);
+			}
+
+			const reuseGate = this.checkGate(
+				projectName,
+				questionId,
+				executionId,
+				reviewType,
+			);
+			if (reuseGate !== "open" && !existingReuse.responded_at) {
+				return reject(
+					409,
+					`retry refused for reused request ${requestId}: gate ${reuseGate} (question ${questionId})`,
+				);
+			}
+			if (reviewType === "code") {
+				const current = await this.tryDeriveHead(
+					executionId,
+					reviewTarget.path,
+				);
+				const frozen = (
+					existingReuse.frozen_head_sha ?? source.frozen_head_sha
+				)?.toLowerCase();
+				if (!current || !frozen || current !== frozen) {
+					const released = await this.releaseReuseBindingToOwnLane(
+						source,
+						existingReuse,
+						"head_moved",
+						current,
+					);
+					if (!released) {
+						return reject(
+							409,
+							`reused request ${requestId} could not be released on its current head`,
+						);
+					}
+					return {
+						accepted: true,
+						requestId,
+						skipped: false,
+						duplicate: true,
+					};
+				}
+			}
+
+			if (source.status === "done" && !existingReuse.responded_at) {
+				await this.deliverReuseBinding(source, existingReuse);
+			} else if (source.status === "pending") {
+				this.enqueue(source.request_id, source.execution_id);
+			} else if (source.status === "failed" || source.status === "skipped") {
+				const released = await this.releaseReuseBindingToOwnLane(
+					source,
+					existingReuse,
+					source.failure_reason ?? `source_${source.status}`,
+				);
+				if (!released) {
+					return reject(
+						409,
+						`reused source ${source.request_id} is unavailable`,
+					);
+				}
+			}
+			return {
+				accepted: true,
+				requestId,
+				skipped: false,
 				duplicate: true,
 			};
 		}
@@ -790,6 +917,7 @@ export class ReviewRequestCoordinator {
 				questionId,
 				targetRepoPath: reviewTarget.path,
 				targetRepoIdentity: reviewTarget.identity,
+				reuseRepoIdentity,
 				frozenHeadSha,
 				authorFamily,
 				status: "skipped",
@@ -841,6 +969,46 @@ export class ReviewRequestCoordinator {
 			return { accepted: true, requestId, skipped: true, duplicate: false };
 		}
 
+		if (reviewType === "code" && frozenHeadSha) {
+			const running = this.store.findRunningCodexReviewJobForHead({
+				projectName,
+				issueId: session.issue_id,
+				reuseRepoIdentity,
+				frozenHeadSha,
+			});
+			if (running) {
+				const reuse = this.store.insertCodexReviewReuseBinding({
+					requestId,
+					sourceRequestId: running.request_id,
+					executionId,
+					questionId,
+					targetRepoPath: reviewTarget.path,
+					targetRepoIdentity: reviewTarget.identity,
+					reuseRepoIdentity,
+					frozenHeadSha,
+				});
+				if (
+					reuse.binding.source_request_id !== running.request_id ||
+					reuse.binding.execution_id !== executionId ||
+					reuse.binding.question_id !== questionId
+				) {
+					return reject(
+						409,
+						`requestId ${requestId} is already bound to a different reused review request`,
+					);
+				}
+				this.log(
+					`review request ${requestId}: reusing running job ${running.request_id} for ${session.issue_id} at ${frozenHeadSha}`,
+				);
+				return {
+					accepted: true,
+					requestId,
+					skipped: false,
+					duplicate: true,
+				};
+			}
+		}
+
 		const round =
 			this.store.countCodexReviewJobs(
 				executionId,
@@ -863,6 +1031,7 @@ export class ReviewRequestCoordinator {
 			targetPath: reviewType === "design" ? planPath : undefined,
 			targetRepoPath: reviewTarget.path,
 			targetRepoIdentity: reviewTarget.identity,
+			reuseRepoIdentity,
 			frozenHeadSha,
 			reviewerSessionUuid: priorSession.sessionUuid,
 			reviewerSessionGeneration: priorSession.generation,
@@ -878,6 +1047,7 @@ export class ReviewRequestCoordinator {
 				insert.job.execution_id !== executionId ||
 				insert.job.review_type !== reviewType ||
 				insert.job.target_repo_identity !== reviewTarget.identity ||
+				insert.job.reuse_repo_identity !== reuseRepoIdentity ||
 				(insert.job.target_repo_path ?? worktreeBinding.path) !==
 					reviewTarget.path
 			) {
@@ -916,6 +1086,36 @@ export class ReviewRequestCoordinator {
 					`outbox re-delivery failed for ${job.request_id}: ${err instanceof Error ? err.message : String(err)}`,
 				);
 			});
+		}
+		for (const binding of this.store.listUndeliveredCodexReviewReuseBindings()) {
+			const source = this.store.getCodexReviewJob(binding.source_request_id);
+			if (!source) {
+				this.store.retireCodexReviewReuseBinding(
+					binding.request_id,
+					"source_missing",
+				);
+				this.alert(
+					`review reuse ${binding.request_id}: durable source ${binding.source_request_id} is missing; binding retired without authority.`,
+				);
+				continue;
+			}
+			if (source.status === "done") {
+				void this.deliverReuseBinding(source, binding).catch((err) => {
+					this.log(
+						`reuse outbox delivery failed for ${binding.request_id}: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				});
+			} else if (source.status === "failed" || source.status === "skipped") {
+				void this.releaseReuseBindingToOwnLane(
+					source,
+					binding,
+					source.failure_reason ?? `source_${source.status}`,
+				).catch((err) => {
+					this.log(
+						`reuse release failed for ${binding.request_id}: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				});
+			}
 		}
 		const reset = this.store.resetRunningCodexReviewJobs();
 		if (reset > 0) this.log(`boot: reset ${reset} in-flight job(s) → pending`);
@@ -1002,6 +1202,112 @@ export class ReviewRequestCoordinator {
 		}
 	}
 
+	private reuseResponseContent(
+		job: CodexReviewJob,
+		binding: CodexReviewReuseBinding,
+	): Record<string, unknown> | string | null {
+		if (job.status !== "done") return null;
+		if (job.payload_version === 2) {
+			if (!job.response_json) return null;
+			try {
+				const parsed = JSON.parse(job.response_json) as unknown;
+				if (
+					typeof parsed !== "object" ||
+					parsed === null ||
+					Array.isArray(parsed)
+				) {
+					return null;
+				}
+				return JSON.stringify({
+					...(parsed as Record<string, unknown>),
+					requestId: binding.request_id,
+					deliveryNonce: binding.delivery_nonce,
+				});
+			} catch {
+				return null;
+			}
+		}
+		return {
+			reviewVerdict: job.verdict ?? "CHANGES_REQUESTED",
+			requestId: binding.request_id,
+			round: job.round,
+			findings: safeParseArray(job.findings_json),
+			...(job.frozen_head_sha ? { reviewedHeadSha: job.frozen_head_sha } : {}),
+			deliveryNonce: binding.delivery_nonce,
+		};
+	}
+
+	private async deliverReuseBinding(
+		job: CodexReviewJob,
+		binding: CodexReviewReuseBinding,
+	): Promise<void> {
+		if (binding.responded_at || binding.released_at) return;
+		if (job.status !== "done") return;
+		const session = this.store.getSession(binding.execution_id);
+		if (!session) {
+			this.store.retireCodexReviewReuseBinding(
+				binding.request_id,
+				"session_missing",
+			);
+			this.alert(
+				`review reuse ${binding.request_id}: execution ${binding.execution_id} is missing; binding retired without authority.`,
+			);
+			return;
+		}
+		if (job.review_type === "code") {
+			const cwd =
+				binding.target_repo_path ??
+				this.store.getWorktreeBinding(binding.execution_id)?.path;
+			const frozen = (
+				binding.frozen_head_sha ?? job.frozen_head_sha
+			)?.toLowerCase();
+			const current = cwd
+				? await this.tryDeriveHead(binding.execution_id, cwd)
+				: null;
+			if (!cwd || !current || !frozen || current !== frozen) {
+				await this.releaseReuseBindingToOwnLane(
+					job,
+					binding,
+					!cwd ? "worktree_missing" : "head_moved",
+					current,
+				);
+				return;
+			}
+		}
+		const content = this.reuseResponseContent(job, binding);
+		if (content === null) {
+			this.alert(
+				`review reuse ${binding.request_id}: source ${job.request_id} has no valid canonical response — verdict not delivered.`,
+			);
+			return;
+		}
+		const owned = await this.respond(session, binding.question_id, content, {
+			executionId: binding.execution_id,
+			reviewType: job.review_type,
+		});
+		if (!owned) {
+			this.alert(
+				`review reuse ${binding.request_id}: gate ${binding.question_id} already carries a FOREIGN answer — verdict not delivered.`,
+			);
+			return;
+		}
+		this.commitAuthorityIfApproved(job, {
+			executionId: binding.execution_id,
+			requestId: binding.request_id,
+			targetRepoIdentity: binding.target_repo_identity,
+			targetPrHeadSha: binding.frozen_head_sha,
+		});
+		this.store.stampCodexReviewReuseBindingResponded(binding.request_id);
+	}
+
+	private async deliverReuseBindings(job: CodexReviewJob): Promise<void> {
+		for (const binding of this.store.listCodexReviewReuseBindings(
+			job.request_id,
+		)) {
+			if (!binding.released_at) await this.deliverReuseBinding(job, binding);
+		}
+	}
+
 	// ── scheduling ─────────────────────────────────────────────────────────
 
 	private enqueue(requestId: string, executionId: string): void {
@@ -1067,7 +1373,10 @@ export class ReviewRequestCoordinator {
 					job.findings_json ?? "[]",
 				);
 				const restored = this.store.getCodexReviewJob(requestId);
-				if (restored) await this.deliverStoredResponse(restored);
+				if (restored) {
+					await this.deliverStoredResponse(restored);
+					await this.deliverReuseBindings(restored);
+				}
 				return;
 			}
 		}
@@ -1380,13 +1689,15 @@ export class ReviewRequestCoordinator {
 			this.alert(
 				`review ${requestId}: gate ${job.question_id} answered externally after the verdict landed — delivery withheld, no authority written.`,
 			);
-			return;
+		} else {
+			this.commitAuthorityIfApproved({
+				...job,
+				verdict: policyResult.effectiveVerdict,
+			});
+			this.store.stampCodexReviewJobResponded(requestId);
 		}
-		this.commitAuthorityIfApproved({
-			...job,
-			verdict: policyResult.effectiveVerdict,
-		});
-		this.store.stampCodexReviewJobResponded(requestId);
+		const completed = this.store.getCodexReviewJob(requestId);
+		if (completed) await this.deliverReuseBindings(completed);
 	}
 
 	private failReviewerOutcome(
@@ -1433,6 +1744,7 @@ export class ReviewRequestCoordinator {
 		}
 		if (persisted.updated && persisted.job) {
 			this.emitReviewJobFailureAlert(persisted.job);
+			this.releaseReuseBindingsForSource(persisted.job);
 		}
 		const summary = sanitizeFailureSummary(failureRaw);
 		const persistedGate = persisted.job
@@ -1490,6 +1802,83 @@ export class ReviewRequestCoordinator {
 		});
 	}
 
+	private async releaseReuseBindingToOwnLane(
+		job: CodexReviewJob,
+		binding: CodexReviewReuseBinding,
+		reason: string,
+		knownCurrentHead?: string | null,
+	): Promise<CodexReviewJob | null> {
+		if (binding.responded_at) return null;
+		const existing = this.store.getCodexReviewJob(binding.request_id);
+		if (existing) {
+			if (existing.status === "pending") {
+				this.enqueue(existing.request_id, existing.execution_id);
+			}
+			return existing;
+		}
+		const gate = this.inspectGate(
+			job.project_name,
+			binding.question_id,
+			binding.execution_id,
+			job.review_type,
+		);
+		if (gate.state !== "open") {
+			this.store.retireCodexReviewReuseBinding(
+				binding.request_id,
+				`bound_gate_${gate.state}`,
+			);
+			this.alert(
+				`review reuse ${binding.request_id}: bound gate is ${gate.state}; binding retired without authority.`,
+			);
+			return null;
+		}
+		const cwd =
+			binding.target_repo_path ??
+			this.store.getWorktreeBinding(binding.execution_id)?.path;
+		const currentHead =
+			knownCurrentHead ??
+			(cwd ? await this.tryDeriveHead(binding.execution_id, cwd) : null);
+		if (!cwd || !currentHead) {
+			this.store.retireCodexReviewReuseBinding(
+				binding.request_id,
+				!cwd ? "worktree_missing" : "head_unavailable",
+			);
+			this.alert(
+				`review reuse ${binding.request_id}: cannot derive the bound execution's current head; binding retired without authority.`,
+			);
+			return null;
+		}
+		const released = this.store.releaseCodexReviewReuseBinding({
+			requestId: binding.request_id,
+			reason,
+			frozenHeadSha: currentHead,
+		});
+		if (released.job.status === "pending") {
+			this.enqueue(released.job.request_id, released.job.execution_id);
+		}
+		this.log(
+			`review reuse ${binding.request_id}: source ${job.request_id} became ${reason}; released to execution ${binding.execution_id}'s own review lane at ${currentHead}`,
+		);
+		return released.job;
+	}
+
+	private releaseReuseBindingsForSource(job: CodexReviewJob): void {
+		for (const binding of this.store.listCodexReviewReuseBindings(
+			job.request_id,
+		)) {
+			if (binding.responded_at || binding.released_at) continue;
+			void this.releaseReuseBindingToOwnLane(
+				job,
+				binding,
+				job.failure_reason ?? `source_${job.status}`,
+			).catch((err) => {
+				this.log(
+					`reuse release failed for ${binding.request_id}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
+		}
+	}
+
 	private handleHeadMoved(
 		job: CodexReviewJob,
 		currentHead: string | null,
@@ -1510,12 +1899,14 @@ export class ReviewRequestCoordinator {
 				result.parent,
 				"Automatic head-move retries are exhausted. Open a new review gate and submit a new request for the current head.",
 			);
+			this.releaseReuseBindingsForSource(result.parent);
 			return;
 		}
 		this.emitReviewJobFailureAlert(
 			result.parent,
 			`The stale review was automatically requeued as ${result.successor.request_id} on head ${result.successor.frozen_head_sha}; the original gate remains bound.`,
 		);
+		this.releaseReuseBindingsForSource(result.parent);
 		if (result.successor.status === "pending") {
 			this.enqueue(result.successor.request_id, result.successor.execution_id);
 		}
@@ -1581,6 +1972,7 @@ export class ReviewRequestCoordinator {
 		});
 		if (persisted.updated && persisted.job) {
 			this.emitReviewJobFailureAlert(persisted.job);
+			this.releaseReuseBindingsForSource(persisted.job);
 		}
 	}
 
@@ -1673,7 +2065,18 @@ export class ReviewRequestCoordinator {
 	 * gate delivery. Idempotent (recordCodexReviewApproved same-request replay
 	 * preserves anchors) — shared by the live path and the outbox recovery.
 	 */
-	private commitAuthorityIfApproved(job: CodexReviewJob): void {
+	private commitAuthorityIfApproved(
+		job: CodexReviewJob,
+		binding: {
+			executionId: string;
+			requestId: string;
+			targetRepoIdentity?: string;
+			targetPrHeadSha?: string;
+		} = {
+			executionId: job.execution_id,
+			requestId: job.request_id,
+		},
+	): void {
 		if (
 			job.verdict !== "APPROVED" ||
 			job.review_type !== "code" ||
@@ -1682,16 +2085,17 @@ export class ReviewRequestCoordinator {
 			return;
 		}
 		this.store.recordCodexReviewApproved({
-			executionId: job.execution_id,
-			targetPrHeadSha: job.frozen_head_sha,
-			targetRepoIdentity: job.target_repo_identity,
+			executionId: binding.executionId,
+			targetPrHeadSha: binding.targetPrHeadSha ?? job.frozen_head_sha,
+			targetRepoIdentity:
+				binding.targetRepoIdentity ?? job.target_repo_identity,
 			issueId: job.issue_id ?? job.execution_id,
 			projectName: job.project_name,
 			verdictEventId: `review-job:${job.request_id}`,
 			reviewedTarget: "claude-review:code",
 			authorFamily: job.author_family,
 			reviewerFamily: "claude",
-			requestId: job.request_id,
+			requestId: binding.requestId,
 		});
 	}
 
@@ -1714,6 +2118,7 @@ export class ReviewRequestCoordinator {
 			`You are the CROSS-FAMILY REVIEWER for ${job.issue_id ?? job.execution_id} ` +
 			`(a codex-authored change; you are the independent Claude lane). ` +
 			`Actively explore this repository — do not rely on any diff alone. ` +
+			`Run only single-package tests for the changed package and related test files. Never run \`pnpm -r\`. ` +
 			`When done, output ONLY a JSON object: {"verdict": "APPROVED" | "CHANGES_REQUESTED", ` +
 			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
 			`"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"}. ` +
@@ -1895,6 +2300,21 @@ export class ReviewRequestCoordinator {
 		} catch (err) {
 			this.log(
 				`head derivation failed for ${executionId}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			return null;
+		}
+	}
+
+	private async tryDeriveRepoIdentity(
+		executionId: string,
+		targetRepoPath: string,
+	): Promise<string | null> {
+		const derive = this.deps.deriveRepoIdentity ?? deriveRepositoryIdentity;
+		try {
+			return await derive(targetRepoPath);
+		} catch (err) {
+			this.log(
+				`repository identity derivation failed for ${executionId}: ${err instanceof Error ? err.message : String(err)}`,
 			);
 			return null;
 		}

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	hashCarrierInstanceId,
+	ProcessProbeTimeoutError,
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -131,6 +132,50 @@ describe("FLY-1309 FleetPoller carrier evidence single-writer path", () => {
 				readFileSync(env.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE!, "utf8"),
 			),
 		).toMatchObject({ leads: {} });
+	});
+
+	it("FLY-2331: preserves the previous evidence byte-for-byte on ps timeout", async () => {
+		publishCarrierRuntimeAssertion({
+			env,
+			leadKey: "flywheel-codex-lead",
+			identityDigest: IDENTITY_DIGEST,
+			rawCarrierInstanceId: RAW_CLAIM,
+			pid: 777,
+			lstart: "carrier-start",
+		});
+		const poller = makePoller();
+		await poller.collectOnce();
+		const before = readFileSync(
+			env.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE!,
+			"utf8",
+		);
+		const timingOut = new FleetPoller({
+			provider: new ConfigSnapshotProvider(projects, {
+				loadProjects: () => projects,
+				envPinned: false,
+			}),
+			legacyBackendOf: () => undefined,
+			deps: {
+				readFile: (path) => readFileSync(path, "utf8"),
+				fileExists: existsSync,
+				pidAlive: () => true,
+				launchdPrint: async () => ({ loaded: false, pid: 0 }),
+				listPanes: async () => [],
+				processCommandsOf: async () => [],
+				homeDir: () => dir,
+				now: () => new Date(NOW),
+			},
+			carrierEnv: env,
+			processAliveWithStart: () => {
+				throw new ProcessProbeTimeoutError(777, "lstart");
+			},
+		});
+
+		await timingOut.collectOnce();
+
+		expect(readFileSync(env.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE!, "utf8")).toBe(
+			before,
+		);
 	});
 
 	it("rejects assertions copied under another canonical identity", async () => {

@@ -257,11 +257,14 @@ describe("FLY-2006 retention registry", () => {
 			"ticket_escalations",
 		];
 
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(16);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toHaveLength(36);
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(17);
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toContain(
+			"workflow_completion_drain_challenge",
+		);
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toHaveLength(37);
 		expect(
 			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
-		).toHaveLength(111);
+		).toHaveLength(113);
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
 			"flag_scan_scope_state",
 		);
@@ -271,6 +274,12 @@ describe("FLY-2006 retention registry", () => {
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
 			"recovery_claim",
 		);
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toEqual(
+			expect.arrayContaining(["workflow_resident_hold"]),
+		);
+		expect(
+			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
+		).not.toContain("workflow_completion_drain_challenge");
 		expect(
 			(TEAMLEAD_TABLE_CLASSIFICATION as Record<string, readonly string[]>)
 				.retiredOptional,
@@ -288,13 +297,13 @@ describe("FLY-2006 retention registry", () => {
 
 		const teamleadNames = Object.values(TEAMLEAD_TABLE_CLASSIFICATION).flat();
 		const commNames = Object.values(COMM_TABLE_CLASSIFICATION).flat();
-		expect(new Set(teamleadNames).size).toBe(166);
+		expect(new Set(teamleadNames).size).toBe(170);
 		expect(TEAMLEAD_PRODUCTION_TABLES).toEqual([...teamleadNames].sort());
 		expect(new Set(commNames).size).toBe(27);
 		expect(
 			assertClassifiedSchema("teamlead", TEAMLEAD_PRODUCTION_TABLES),
 		).toMatchObject({
-			total: 166,
+			total: 170,
 		});
 		expect(
 			assertClassifiedSchema(
@@ -303,7 +312,7 @@ describe("FLY-2006 retention registry", () => {
 					(name) => !retiredNames.includes(name),
 				),
 			),
-		).toMatchObject({ total: 163 });
+		).toMatchObject({ total: 167 });
 		expect(assertClassifiedSchema("comm", commNames)).toMatchObject({
 			total: 27,
 		});
@@ -743,6 +752,60 @@ describe("FLY-2006 multi-target inventory", () => {
 					.map((policy) => policy.table)
 					.sort(),
 			).toEqual([...expected].sort());
+		}
+	});
+
+	it("sweeps only old terminal completion-drain challenges", () => {
+		const db = new Database(":memory:");
+		try {
+			db.exec(`CREATE TABLE workflow_completion_drain_challenge(
+				challenge_id TEXT PRIMARY KEY,
+				state TEXT NOT NULL,
+				issued_at TEXT NOT NULL,
+				consumed_at TEXT
+			)`);
+			const insert = db.prepare(
+				"INSERT INTO workflow_completion_drain_challenge VALUES (?, ?, ?, ?)",
+			);
+			insert.run(
+				"old-consumed",
+				"consumed",
+				"2000-01-01T00:00:00.000Z",
+				"2000-01-02T00:00:00.000Z",
+			);
+			insert.run(
+				"old-superseded",
+				"superseded",
+				"2000-01-01T00:00:00.000Z",
+				null,
+			);
+			insert.run("old-issued", "issued", "2000-01-01T00:00:00.000Z", null);
+			insert.run(
+				"recent-consumed",
+				"consumed",
+				"2026-08-20T00:00:00.000Z",
+				"2026-08-21T00:00:00.000Z",
+			);
+			const policy = RETENTION_TARGET_POLICIES.find(
+				(candidate) => candidate.key === "workflowCompletionDrainChallenge",
+			);
+			const candidate = policy?.candidate({
+				cutoff14: "2026-08-01T00:00:00.000Z",
+			});
+
+			expect(
+				db
+					.prepare(
+						`SELECT t.challenge_id FROM workflow_completion_drain_challenge t
+						 WHERE ${candidate?.sql} ORDER BY t.challenge_id`,
+					)
+					.all(...(candidate?.params ?? [])),
+			).toEqual([
+				{ challenge_id: "old-consumed" },
+				{ challenge_id: "old-superseded" },
+			]);
+		} finally {
+			db.close();
 		}
 	});
 

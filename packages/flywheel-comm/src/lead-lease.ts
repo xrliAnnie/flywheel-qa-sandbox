@@ -291,14 +291,44 @@ function leaseRowFormat(row: RawLeaseRow): LeadLeaseRowFormat {
 }
 
 /** Match both PID and immutable OS launch time, so PID reuse is not liveness. */
+export class ProcessProbeTimeoutError extends Error {
+	readonly code = "PROCESS_PROBE_TIMEOUT";
+	constructor(
+		readonly pid: number,
+		readonly probe: "lstart" | "state" | "env",
+	) {
+		super(`process ${pid} ${probe} probe timed out`);
+		this.name = "ProcessProbeTimeoutError";
+	}
+}
+
+function rethrowProcessProbeTimeout(
+	error: unknown,
+	pid: number,
+	probe: "lstart" | "state" | "env",
+): never {
+	const detail = error as NodeJS.ErrnoException & { signal?: string };
+	if (detail.code === "ETIMEDOUT") {
+		throw new ProcessProbeTimeoutError(pid, probe);
+	}
+	throw error;
+}
+
 export function getProcessStart(pid: number): string {
 	if (!Number.isSafeInteger(pid) || pid <= 0) {
 		throw new Error(`invalid pid: ${pid}`);
 	}
-	const actual = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "ignore"],
-	}).trim();
+	let actual: string;
+	try {
+		actual = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 2_000,
+			killSignal: "SIGKILL",
+		}).trim();
+	} catch (error) {
+		rethrowProcessProbeTimeout(error, pid, "lstart");
+	}
 	if (!actual) throw new Error(`process ${pid} has no lstart`);
 	return actual;
 }
@@ -311,10 +341,17 @@ export function getProcessState(pid: number): string {
 	if (!Number.isSafeInteger(pid) || pid <= 0) {
 		throw new Error(`invalid pid: ${pid}`);
 	}
-	const state = execFileSync("ps", ["-o", "state=", "-p", String(pid)], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "ignore"],
-	}).trim();
+	let state: string;
+	try {
+		state = execFileSync("ps", ["-o", "state=", "-p", String(pid)], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 2_000,
+			killSignal: "SIGKILL",
+		}).trim();
+	} catch (error) {
+		rethrowProcessProbeTimeout(error, pid, "state");
+	}
 	if (!state) throw new Error(`process ${pid} has no state`);
 	return state;
 }
@@ -322,13 +359,15 @@ export function getProcessState(pid: number): string {
 export function processAliveWithStart(
 	pid: number,
 	expectedStart: string,
+	processStart: (pid: number) => string = getProcessStart,
 ): boolean {
 	if (!Number.isSafeInteger(pid) || pid <= 0 || expectedStart.length === 0) {
 		return false;
 	}
 	try {
-		return getProcessStart(pid) === expectedStart.trim();
-	} catch {
+		return processStart(pid) === expectedStart.trim();
+	} catch (error) {
+		if (error instanceof ProcessProbeTimeoutError) throw error;
 		return false;
 	}
 }
@@ -340,6 +379,10 @@ export function processAliveWithStart(
 export function processTupleStateWithStart(
 	pid: number,
 	expectedStart: string,
+	probes: {
+		processStart?: (pid: number) => string;
+		processState?: (pid: number) => string;
+	} = {},
 ): ProcessTupleState {
 	if (
 		!Number.isSafeInteger(pid) ||
@@ -356,8 +399,14 @@ export function processTupleStateWithStart(
 			: "sensor_error";
 	}
 	try {
-		if (getProcessStart(pid) !== expectedStart.trim()) return "dead";
-		return processStateIsZombie(getProcessState(pid)) ? "dead" : "alive";
+		if (
+			(probes.processStart ?? getProcessStart)(pid) !== expectedStart.trim()
+		) {
+			return "dead";
+		}
+		return processStateIsZombie((probes.processState ?? getProcessState)(pid))
+			? "dead"
+			: "alive";
 	} catch {
 		try {
 			process.kill(pid, 0);
@@ -370,7 +419,7 @@ export function processTupleStateWithStart(
 	}
 }
 
-function processEnvHas(pid: number, name: string): boolean | null {
+export function processEnvHas(pid: number, name: string): boolean | null {
 	if (!Number.isSafeInteger(pid) || pid <= 0 || !/^[A-Z0-9_]+$/.test(name)) {
 		return null;
 	}
@@ -381,10 +430,15 @@ function processEnvHas(pid: number, name: string): boolean | null {
 			{
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "ignore"],
+				timeout: 2_000,
+				killSignal: "SIGKILL",
 			},
 		);
 		return new RegExp(`(?:^|\\s)${name}=`).test(command);
-	} catch {
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+			return null;
+		}
 		return null;
 	}
 }
@@ -1332,7 +1386,11 @@ function readCarrierEvidence(
 	nowMs: number,
 	isAlive: (pid: number, start: string) => boolean,
 ):
-	| { valid: true; evidence: CarrierEvidenceEntry }
+	| {
+			valid: true;
+			evidence: CarrierEvidenceEntry;
+			processIndeterminate?: true;
+	  }
 	| { valid: false; reason: string } {
 	if (!rawClaim) return { valid: false, reason: "carrier_claim_missing" };
 	let document: CarrierEvidenceDocument;
@@ -1363,13 +1421,20 @@ function readCarrierEvidence(
 	if (!safeDigestMatch(evidence.identityDigest, identityDigest)) {
 		return { valid: false, reason: "identity_digest_mismatch" };
 	}
-	if (!isAlive(evidence.pid, evidence.lstart)) {
-		return { valid: false, reason: "carrier_process_stale" };
-	}
 	if (
 		!safeDigestMatch(hashCarrierInstanceId(rawClaim), evidence.instanceDigest)
 	) {
 		return { valid: false, reason: "carrier_claim_wrong" };
+	}
+	try {
+		if (!isAlive(evidence.pid, evidence.lstart)) {
+			return { valid: false, reason: "carrier_process_stale" };
+		}
+	} catch (error) {
+		if (error instanceof ProcessProbeTimeoutError) {
+			return { valid: true, evidence, processIndeterminate: true };
+		}
+		throw error;
 	}
 	return { valid: true, evidence };
 }
@@ -1380,6 +1445,7 @@ export type LeadCarrierValidation =
 			disposition: "carrier_passthrough";
 			leadKey: string;
 			carrier: CarrierEvidenceEntry;
+			processIndeterminate?: true;
 	  }
 	| { valid: false; reason: string };
 
@@ -1438,6 +1504,9 @@ export function validateLeadCarrierAuthorization(
 		disposition: "carrier_passthrough",
 		leadKey: identity.leadKey,
 		carrier: carrier.evidence,
+		...(carrier.processIndeterminate
+			? { processIndeterminate: true as const }
+			: {}),
 	};
 }
 
@@ -2876,6 +2945,9 @@ export function authorizeLeadWrite(
 				`backend_drift:${carrier.reason}`,
 				"lead_backend_drift",
 			);
+		}
+		if (carrier.processIndeterminate) {
+			persistFault("would_block", "carrier_process_indeterminate");
 		}
 		recoverRecurringLeaseAlert(env, "lead_backend_drift", { leadKey });
 		return {

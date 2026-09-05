@@ -1,6 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import {
 	closeRunnerTerminalView,
 	WORKFLOW_TRANSITIONS,
@@ -13,6 +20,8 @@ import {
 	type CloseRunnerResult,
 	closeRunner,
 } from "../bridge/close-runner.js";
+import { commDbPathForProject } from "../bridge/commdb-path.js";
+import * as commDbSessionPrune from "../bridge/commdb-session-prune.js";
 import { StateStore } from "../StateStore.js";
 
 // FLY-1238: omission must stay a compile error; otherwise callers can silently
@@ -24,6 +33,9 @@ const _missingFinalizationContract: CloseRunnerResult = { closed: true };
 
 const mockGetTmuxTarget = vi.fn();
 const mockKillTmuxWindow = vi.fn();
+const mockProbeRunnerProcessLiveness = vi.fn();
+const mockHasHostProcessByExecutionId = vi.fn();
+const mockProbeRunExecutionLiveness = vi.fn();
 
 const mockKillCmuxLinkedSession = vi.fn(async () => ({ killed: true }));
 const mockPrepareCodexPhaseShutdown = vi.fn();
@@ -58,8 +70,20 @@ vi.mock("../bridge/codex-phase-shutdown.js", () => ({
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
 	killTmuxWindow: (...args: unknown[]) => mockKillTmuxWindow(...args),
+	probeRunnerProcessLiveness: (...args: unknown[]) =>
+		mockProbeRunnerProcessLiveness(...args),
 	killCmuxLinkedSession: (...args: unknown[]) =>
 		mockKillCmuxLinkedSession(...args),
+}));
+
+vi.mock("../bridge/generalized-launch-recovery.js", () => ({
+	hasHostProcessByExecutionId: (...args: unknown[]) =>
+		mockHasHostProcessByExecutionId(...args),
+}));
+
+vi.mock("../bridge/run-quiescence.js", () => ({
+	probeRunExecutionLiveness: (...args: unknown[]) =>
+		mockProbeRunExecutionLiveness(...args),
 }));
 
 // FLY-1238: stub the atomic CommDB finalizer so tests never touch the real
@@ -68,12 +92,36 @@ const mockFinalizeCommDbSession = vi.fn(() => ({
 	ok: true as const,
 	outcome: "finalized" as const,
 	retiredGateCount: 2,
+	retiredAskCount: 0,
 	deletedSessionCount: 1,
 }));
-vi.mock("../bridge/commdb-session-prune.js", () => ({
-	finalizeCommDbSession: (...args: unknown[]) =>
-		mockFinalizeCommDbSession(...args),
+const mockFinalizeCommDbTerminalSession = vi.fn(() => ({
+	ok: true as const,
+	outcome: "finalized" as const,
+	retiredGateCount: 2,
+	retiredAskCount: 0,
+	deletedSessionCount: 1,
 }));
+const mockFinalizeCommDbSessionCommunications = vi.fn(() => ({
+	ok: true as const,
+	outcome: "finalized" as const,
+	retiredGateCount: 2,
+	retiredAskCount: 0,
+	deletedSessionCount: 0,
+}));
+vi.mock("../bridge/commdb-session-prune.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../bridge/commdb-session-prune.js")>();
+	return {
+		...actual,
+		finalizeCommDbSession: (...args: unknown[]) =>
+			mockFinalizeCommDbSession(...args),
+		finalizeCommDbTerminalSession: (...args: unknown[]) =>
+			mockFinalizeCommDbTerminalSession(...args),
+		finalizeCommDbSessionCommunications: (...args: unknown[]) =>
+			mockFinalizeCommDbSessionCommunications(...args),
+	};
+});
 
 function makeOpts(overrides: Record<string, unknown> = {}) {
 	return {
@@ -95,6 +143,30 @@ function seedSession(store: StateStore, status: string): void {
 	});
 }
 
+function seedCommSession(
+	status: "running" | "completed" | "timeout" | "failed" | "blocked",
+): void {
+	const dbPath = commDbPathForProject("flywheel");
+	mkdirSync(dirname(dbPath), { recursive: true });
+	const db = new CommDB(dbPath);
+	try {
+		db.registerSession(
+			"exec-1",
+			"runner-flywheel:pending",
+			"flywheel",
+			"FLY-102",
+			"lead-a",
+		);
+		if (status === "completed" || status === "timeout") {
+			db.updateSessionStatus("exec-1", status);
+		} else if (status === "failed" || status === "blocked") {
+			db.markSessionTerminalStatus("exec-1", status);
+		}
+	} finally {
+		db.close();
+	}
+}
+
 describe("closeRunner", () => {
 	let store: StateStore;
 
@@ -102,12 +174,37 @@ describe("closeRunner", () => {
 		store = await StateStore.create(":memory:");
 		mockGetTmuxTarget.mockReset();
 		mockKillTmuxWindow.mockReset();
+		mockHasHostProcessByExecutionId.mockReset();
+		mockHasHostProcessByExecutionId.mockResolvedValue(true);
+		mockProbeRunExecutionLiveness.mockReset();
+		mockProbeRunExecutionLiveness.mockImplementation(async () =>
+			(await mockHasHostProcessByExecutionId()) ? "alive" : "dead",
+		);
+		mockProbeRunnerProcessLiveness.mockReset();
+		mockProbeRunnerProcessLiveness.mockResolvedValue("indeterminate");
 		mockFinalizeCommDbSession.mockReset();
 		mockFinalizeCommDbSession.mockReturnValue({
 			ok: true,
 			outcome: "finalized",
 			retiredGateCount: 2,
+			retiredAskCount: 0,
 			deletedSessionCount: 1,
+		});
+		mockFinalizeCommDbTerminalSession.mockReset();
+		mockFinalizeCommDbTerminalSession.mockReturnValue({
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: 2,
+			retiredAskCount: 0,
+			deletedSessionCount: 1,
+		});
+		mockFinalizeCommDbSessionCommunications.mockReset();
+		mockFinalizeCommDbSessionCommunications.mockReturnValue({
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: 2,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
 		});
 		mockPrepareCodexPhaseShutdown.mockReset();
 		mockPrepareCodexPhaseShutdown.mockResolvedValue({
@@ -282,6 +379,7 @@ describe("closeRunner", () => {
 		});
 		mockKillTmuxWindow.mockResolvedValue({ killed: true });
 
+		const resolveCommDbPath = vi.spyOn(commDbSessionPrune, "resolveCommDbPath");
 		const result = await closeRunner(makeOpts(), store);
 
 		expect(result).toEqual({
@@ -290,9 +388,464 @@ describe("closeRunner", () => {
 			retiredGateCount: 2,
 			error: undefined,
 		});
+		expect(JSON.stringify(result)).toBe(
+			'{"closed":true,"commDbFinalized":true,"retiredGateCount":2}',
+		);
+		expect(mockProbeRunnerProcessLiveness).not.toHaveBeenCalled();
+		expect(resolveCommDbPath).not.toHaveBeenCalled();
+		resolveCommDbPath.mockRestore();
 		expect(mockKillTmuxWindow).toHaveBeenCalledWith("FLY-102:@0");
 		const events = store.getEventsByExecution("exec-1");
 		expect(events.some((e) => e.event_type === "lead_close_runner")).toBe(true);
+	});
+
+	it("FLY-2313: host-process absence proves a terminal pending runner is gone", async () => {
+		seedSession(store, "completed");
+		seedCommSession("completed");
+		mockHasHostProcessByExecutionId.mockResolvedValue(false);
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:pending",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "tmux window identity is still pending",
+		});
+		const archiveFn = vi.fn();
+
+		const result = await closeRunner(
+			makeOpts({ archive: { projects: [], archiveFn } }),
+			store,
+		);
+
+		expect(result).toEqual({
+			closed: false,
+			physicalGone: true,
+			runnerDeathProven: true,
+			commDbFinalized: true,
+			retiredGateCount: 2,
+			error: "tmux window identity is still pending",
+		});
+		expect(mockProbeRunExecutionLiveness).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "exec-1" }),
+			"exec-1",
+			"flywheel",
+		);
+		expect(mockFinalizeCommDbTerminalSession).toHaveBeenCalledWith(
+			"exec-1",
+			"flywheel",
+			"runner-flywheel:pending",
+		);
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+		expect(mockProbeRunnerProcessLiveness).not.toHaveBeenCalled();
+		expect(mockCloseRunnerTerminalView).not.toHaveBeenCalled();
+		expect(archiveFn).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2313: a host process keeps a terminal pending runner unknown", async () => {
+		seedSession(store, "completed");
+		seedCommSession("completed");
+		mockHasHostProcessByExecutionId.mockResolvedValue(true);
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:pending",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "tmux window identity is still pending",
+		});
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toEqual({
+			closed: false,
+			physicalGone: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "commdb_finalize_skipped:tmux window identity is still pending",
+		});
+		expect(mockProbeRunExecutionLiveness).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "exec-1" }),
+			"exec-1",
+			"flywheel",
+		);
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2313: a live Codex daemon vetoes a misleading pgrep no-match", async () => {
+		seedSession(store, "completed");
+		store.patchSessionMetadata("exec-1", { adapter_type: "codex-tmux" });
+		seedCommSession("completed");
+		mockHasHostProcessByExecutionId.mockResolvedValue(false);
+		mockProbeRunExecutionLiveness.mockResolvedValue("alive");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:pending",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "tmux window identity is still pending",
+		});
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			physicalGone: false,
+			commDbFinalized: false,
+		});
+		expect(mockProbeRunExecutionLiveness).toHaveBeenCalledWith(
+			expect.objectContaining({ adapter_type: "codex-tmux" }),
+			"exec-1",
+			"flywheel",
+		);
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2313: keeps a running pending session even when the probe seam would say absent", async () => {
+		seedSession(store, "running");
+		seedCommSession("running");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:pending",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "tmux window identity is still pending",
+		});
+		mockProbeRunnerProcessLiveness.mockResolvedValue("absent");
+
+		const result = await closeRunner(
+			makeOpts({ issueTerminalOverride: true }),
+			store,
+		);
+
+		expect(result).toEqual({
+			closed: false,
+			physicalGone: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "commdb_finalize_skipped:tmux window identity is still pending",
+		});
+		expect(mockProbeRunnerProcessLiveness).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2313: rechecks authority before finalizing without a successful kill", async () => {
+		seedSession(store, "completed");
+		seedCommSession("completed");
+		mockHasHostProcessByExecutionId.mockResolvedValue(false);
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:pending",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "tmux window identity is still pending",
+		});
+		let authorityChecks = 0;
+		const authorityCheck = vi.fn(async () => {
+			authorityChecks += 1;
+			return authorityChecks < 4
+				? { ok: true }
+				: { ok: false, reason: "authority_reopened" };
+		});
+
+		const result = await closeRunner(makeOpts({ authorityCheck }), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			commDbFinalized: false,
+			error: "authority_lost:pre_commdb_finalize:authority_reopened",
+		});
+		expect(authorityCheck).toHaveBeenCalledTimes(4);
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["timeout", { issueTerminalOverride: true }],
+		["failed", { forcePreserved: true }],
+		["blocked", { forcePreserved: true }],
+	] as const)(
+		"FLY-2313: finalizes terminal pending CommDB status=%s",
+		async (status, overrides) => {
+			seedSession(store, status);
+			seedCommSession(status);
+			mockHasHostProcessByExecutionId.mockResolvedValue(false);
+			mockGetTmuxTarget.mockReturnValue({
+				tmuxWindow: "runner-flywheel:pending",
+				sessionName: "runner-flywheel",
+			});
+			mockKillTmuxWindow.mockResolvedValue({
+				killed: false,
+				error: "tmux window identity is still pending",
+			});
+
+			const result = await closeRunner(makeOpts(overrides), store);
+
+			expect(result).toMatchObject({
+				closed: false,
+				physicalGone: true,
+				commDbFinalized: true,
+				error: "tmux window identity is still pending",
+			});
+			expect(mockProbeRunnerProcessLiveness).not.toHaveBeenCalled();
+			const expectedFinalizeArgs: unknown[] = [
+				"exec-1",
+				"flywheel",
+				"runner-flywheel:pending",
+			];
+			if (status === "failed" || status === "blocked") {
+				expectedFinalizeArgs.push(status);
+			}
+			expect(mockFinalizeCommDbTerminalSession).toHaveBeenCalledWith(
+				...expectedFinalizeArgs,
+			);
+			expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+			expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["failed", "blocked"] as const)(
+		"FLY-2313: death proof promotes an unmirrored pending CommDB row to StateStore status=%s",
+		async (status) => {
+			seedSession(store, status);
+			seedCommSession("running");
+			mockHasHostProcessByExecutionId.mockResolvedValue(false);
+			mockGetTmuxTarget.mockReturnValue({
+				tmuxWindow: "runner-flywheel:pending",
+				sessionName: "runner-flywheel",
+			});
+			mockKillTmuxWindow.mockResolvedValue({
+				killed: false,
+				error: "tmux window identity is still pending",
+			});
+
+			const result = await closeRunner(
+				makeOpts({ forcePreserved: true }),
+				store,
+			);
+
+			expect(result).toMatchObject({
+				closed: false,
+				physicalGone: true,
+				commDbFinalized: true,
+				error: "tmux window identity is still pending",
+			});
+			expect(mockFinalizeCommDbTerminalSession).toHaveBeenCalledWith(
+				"exec-1",
+				"flywheel",
+				"runner-flywheel:pending",
+				status,
+			);
+		},
+	);
+
+	it("FLY-2313: refuses crash-authorized finalization when StateStore leaves terminal status during the death probe", async () => {
+		seedSession(store, "failed");
+		seedCommSession("running");
+		mockProbeRunExecutionLiveness.mockImplementationOnce(async () => {
+			store.forceStatus("exec-1", "running", new Date().toISOString());
+			return "dead";
+		});
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:pending",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "tmux window identity is still pending",
+		});
+
+		const result = await closeRunner(makeOpts({ forcePreserved: true }), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			physicalGone: true,
+			runnerDeathProven: true,
+			commDbFinalized: false,
+			error:
+				"commdb_finalize_failed:state_store_terminal_changed; tmux window identity is still pending",
+		});
+		expect(mockFinalizeCommDbTerminalSession).not.toHaveBeenCalled();
+	});
+
+	it.each(["absent", "dead_pin"] as const)(
+		"FLY-2313: does not delete a nonterminal identity when its registered target is %s",
+		async (liveness) => {
+			seedSession(store, "completed");
+			seedCommSession("running");
+			mockGetTmuxTarget.mockReturnValue({
+				tmuxWindow: "runner-flywheel:@42",
+				sessionName: "runner-flywheel",
+			});
+			mockKillTmuxWindow.mockResolvedValue({
+				killed: false,
+				error: "permission denied",
+			});
+			mockProbeRunnerProcessLiveness.mockResolvedValue(liveness);
+
+			const result = await closeRunner(makeOpts(), store);
+
+			expect(result).toEqual({
+				closed: false,
+				physicalGone: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+				error: "commdb_finalize_skipped:permission denied",
+			});
+			expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+			expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["alive", "indeterminate"] as const)(
+		"FLY-2313: does not finalize a nonterminal row when liveness is %s",
+		async (liveness) => {
+			seedSession(store, "completed");
+			seedCommSession("running");
+			mockGetTmuxTarget.mockReturnValue({
+				tmuxWindow: "runner-flywheel:@42",
+				sessionName: "runner-flywheel",
+			});
+			mockKillTmuxWindow.mockResolvedValue({
+				killed: false,
+				error: "permission denied",
+			});
+			mockProbeRunnerProcessLiveness.mockResolvedValue(liveness);
+
+			const result = await closeRunner(makeOpts(), store);
+
+			expect(result).toEqual({
+				closed: false,
+				physicalGone: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+				error: "commdb_finalize_skipped:permission denied",
+			});
+			expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+			expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+		},
+	);
+
+	it("FLY-2313: an alive probe vetoes terminal CommDB evidence", async () => {
+		seedSession(store, "completed");
+		seedCommSession("completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:@42",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "permission denied",
+		});
+		mockProbeRunnerProcessLiveness.mockResolvedValue("alive");
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			physicalGone: false,
+			commDbFinalized: false,
+			error: "commdb_finalize_skipped:permission denied",
+		});
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2313: indeterminate liveness cannot finalize terminal communications", async () => {
+		seedSession(store, "completed");
+		seedCommSession("completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:@42",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "probe unavailable",
+		});
+		mockProbeRunnerProcessLiveness.mockResolvedValue("indeterminate");
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			physicalGone: false,
+			commDbFinalized: false,
+			error: "commdb_finalize_skipped:probe unavailable",
+		});
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSessionCommunications).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2313: preserves both a finalizer failure and the pending kill refusal", async () => {
+		seedSession(store, "completed");
+		seedCommSession("completed");
+		mockHasHostProcessByExecutionId.mockResolvedValue(false);
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:pending",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "tmux window identity is still pending",
+		});
+		mockFinalizeCommDbTerminalSession.mockReturnValue({
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+			error: "sqlite busy",
+		});
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			physicalGone: true,
+			commDbFinalized: false,
+			error:
+				"commdb_finalize_failed:sqlite busy; tmux window identity is still pending",
+		});
+		expect(store.getCommDbFinalizeFailure("exec-1")?.attempts).toBe(1);
+	});
+
+	it("FLY-2313: stale target absence cannot create a proven-death failure episode", async () => {
+		seedSession(store, "completed");
+		seedCommSession("completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:@42",
+			sessionName: "runner-flywheel",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "permission denied",
+		});
+		mockProbeRunnerProcessLiveness.mockResolvedValue("absent");
+		mockFinalizeCommDbSessionCommunications.mockReturnValue({
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+			error: "sqlite busy",
+		});
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			physicalGone: false,
+			commDbFinalized: false,
+		});
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(store.getCommDbFinalizeFailure("exec-1")).toBeUndefined();
 	});
 
 	it("returns alreadyGone=true when no tmux target (idempotent)", async () => {
@@ -415,9 +968,10 @@ describe("closeRunner", () => {
 
 		expect(result).toEqual({
 			closed: false,
+			physicalGone: false,
 			commDbFinalized: false,
 			retiredGateCount: 0,
-			error: "permission denied",
+			error: "commdb_finalize_skipped:permission denied",
 		});
 		const events = store.getEventsByExecution("exec-1");
 		expect(
@@ -610,11 +1164,12 @@ describe("closeRunner", () => {
 		).toHaveLength(1);
 	});
 
-	it("FLY-369: a tmux kill failure does NOT archive (cascade only on success)", async () => {
+	it("FLY-2313: stale non-pending absence does not authorize archive", async () => {
 		// Seed a FULLY RESOLVABLE archive context (project + registered thread)
 		// so that the PRE-fix placement (cascade before the kill) WOULD have
 		// called archiveFn — i.e. this test actually exercises the success-gate.
 		seedSession(store, "completed");
+		seedCommSession("completed");
 		store.upsertChatThread("t-x", "ch-x", "FLY-102", "lead-a");
 		const project = {
 			projectName: "flywheel",
@@ -636,20 +1191,51 @@ describe("closeRunner", () => {
 			killed: false,
 			error: "permission denied",
 		});
+		mockProbeRunnerProcessLiveness.mockResolvedValue("absent");
 		const archiveFn = vi.fn().mockResolvedValue({ archived: true });
 
 		const result = await closeRunner(
-			makeOpts({ archive: { projects: [project], archiveFn } }),
+			makeOpts({
+				archive: {
+					projects: [project],
+					archiveFn,
+					probeFn: vi
+						.fn()
+						.mockResolvedValueOnce({
+							ok: true,
+							name: "thread",
+							archived: false,
+						})
+						.mockResolvedValueOnce({
+							ok: true,
+							name: "thread",
+							archived: true,
+						}),
+					frontierFn: vi.fn().mockResolvedValue({
+						ok: true,
+						messageId: "100000000000000000",
+					}),
+				},
+			}),
 			store,
 		);
 
-		// Close failed → thread must NOT be archived (premature-archive guard).
+		// The registered target is absent, but its CommDB mapping may be stale.
+		// That can settle terminal communications only; it is not execution-death
+		// proof and therefore cannot delete the identity or archive the thread.
 		expect(result).toEqual({
 			closed: false,
-			commDbFinalized: false,
-			retiredGateCount: 0,
+			physicalGone: false,
+			commDbFinalized: true,
+			retiredGateCount: 2,
 			error: "permission denied",
 		});
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSessionCommunications).toHaveBeenCalledWith(
+			"exec-1",
+			"flywheel",
+			"FLY-102:@0",
+		);
 		expect(archiveFn).not.toHaveBeenCalled();
 	});
 

@@ -1,10 +1,11 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { defaultAsyncExecFile } from "flywheel-claude-runner";
 import { createLogger } from "flywheel-core";
 import { canonicalizeWorktreePath } from "./worktree-paths.js";
 import {
@@ -52,6 +53,8 @@ export interface WorktreeReapRecord {
 
 export interface WorktreeConfig {
 	baseDir?: string;
+	/** @internal — shorten the production child deadline in executable tests. */
+	execTimeoutMs?: number;
 	/** @internal — override background delete for testing */
 	bgDeleteFn?: BgDeleteFn;
 	/** @internal — override process reaping for deterministic tests. */
@@ -168,24 +171,42 @@ export function resolveWorktreeKey(
 
 // ─── Default exec ────────────────────────────────
 
-// Uses execFile (array args, no shell) — safe from injection by design.
-const defaultExec: WorktreeExecFn = (cmd, args, cwd, options) =>
-	new Promise((resolve, reject) => {
-		execFile(cmd, args, { cwd, env: options?.env }, (err, stdout) => {
-			if (err) return reject(err);
-			resolve({ stdout });
+export const WORKTREE_EXEC_TIMEOUT_MS = 120_000;
+
+// Uses array args and the shared process-group runner — safe from shell
+// injection and bounded even when a descendant inherits stdout/stderr.
+function createDefaultExec(timeoutMs: number): WorktreeExecFn {
+	return async (cmd, args, cwd, options) => {
+		const { stdout } = await defaultAsyncExecFile(cmd, args, {
+			cwd,
+			timeoutMs,
+			...(options?.env && {
+				env: options.env,
+				envMode: "replace" as const,
+			}),
 		});
-	});
+		return { stdout };
+	};
+}
 
 // Uses spawn with array args — no shell injection risk.
 function defaultBgDelete(cmd: string, args: string[]): void {
 	const proc = spawn(cmd, args, { detached: true, stdio: "ignore" });
 	proc.unref();
-	proc.on("error", (err) => {
+	proc.once("error", (err) => {
 		logger.warn("Background rm failed (non-critical)", {
 			cmd,
 			args,
 			error: err.message,
+		});
+	});
+	proc.once("exit", (code, signal) => {
+		if (code === 0 && signal === null) return;
+		logger.warn("Background rm exited unsuccessfully (non-critical)", {
+			cmd,
+			args,
+			code,
+			signal,
 		});
 	});
 }
@@ -291,7 +312,9 @@ export class WorktreeManager {
 
 	constructor(config?: WorktreeConfig, execFn?: WorktreeExecFn) {
 		this.baseDir = config?.baseDir;
-		this.exec = execFn ?? defaultExec;
+		this.exec =
+			execFn ??
+			createDefaultExec(config?.execTimeoutMs ?? WORKTREE_EXEC_TIMEOUT_MS);
 		this.bgDelete = config?.bgDeleteFn ?? defaultBgDelete;
 		this.reaper = config?.reaperFn ?? reapWorktreeProcesses;
 		this.cwdScanner = config?.cwdScannerFn ?? listSystemCwds;

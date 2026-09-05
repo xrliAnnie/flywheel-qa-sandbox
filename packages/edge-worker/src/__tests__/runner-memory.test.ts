@@ -485,9 +485,19 @@ describe("FLY-2147 runner memory", () => {
 				role: "qa",
 				dir: join(root, "flywheel", "qa"),
 				index: { firstRun: true, lines: 3, overBudget: false },
+				snapshot: {
+					lines: 3,
+					linesExact: true,
+					bytes: expect.any(Number),
+					sha16: expect.stringMatching(/^[0-9a-f]{16}$/),
+					topicFiles: 0,
+				},
 				policy: { conflicts: [], unreadable: [] },
 			});
 			if (first.status !== "mounted") throw new Error("expected mounted");
+			expect(first.snapshot.lines).toBe(first.index.lines);
+			expect(first.snapshot.linesExact).toBe(first.index.linesExact);
+			expect(first.snapshot.bytes).toBe(first.index.bytes);
 			const indexPath = join(first.dir, "MEMORY.md");
 			expect(fs.statSync(first.dir).mode & 0o777).toBe(0o700);
 			expect(fs.statSync(indexPath).mode & 0o777).toBe(0o600);
@@ -677,6 +687,7 @@ describe("FLY-2147 runner memory", () => {
 			fs.writeSync(fd, "x\n".repeat(300));
 			fs.ftruncateSync(fd, 8 * 1024 * 1024);
 			fs.closeSync(fd);
+			const openSpy = vi.spyOn(fs, "openSync");
 			const readSpy = vi.spyOn(fs, "readSync");
 			const closeSpy = vi.spyOn(fs, "closeSync");
 			const result = prepareRunnerMemoryMount({
@@ -694,12 +705,22 @@ describe("FLY-2147 runner memory", () => {
 					linesExact: false,
 					firstDroppedLine: 201,
 				},
+				snapshot: {
+					bytes: 8 * 1024 * 1024,
+					linesExact: false,
+					sha16: expect.stringMatching(/^[0-9a-f]{16}$/),
+					topicFiles: 0,
+				},
 			});
+			if (result.status !== "mounted") throw new Error("expected mounted");
+			expect(result.snapshot.lines).toBe(result.index.lines);
+			expect(result.snapshot.bytes).toBe(result.index.bytes);
 			const requested = readSpy.mock.calls.reduce(
 				(sum, call) => sum + Number(call[3]),
 				0,
 			);
 			expect(requested).toBeLessThanOrEqual(RUNNER_MEMORY_SCAN_CEILING_BYTES);
+			expect(openSpy).toHaveBeenCalledTimes(1);
 			expect(closeSpy).toHaveBeenCalledTimes(1);
 		} finally {
 			vi.restoreAllMocks();

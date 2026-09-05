@@ -32,6 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # TUI runtime + home script from the DEPLOYED main dist (not a worktree).
 TEAMLEAD_ROOT="${FLYWHEEL_TEAMLEAD_ROOT:-/Users/xiaorongli/Dev/flywheel/packages/teamlead}"
+export FLYWHEEL_ROOT="$(cd "${TEAMLEAD_ROOT}/../.." && pwd)"
 TUI_RUNTIME="${TEAMLEAD_ROOT}/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 TUI_HOME_SH="${TEAMLEAD_ROOT}/scripts/codex-lead-tui-home.sh"
 # This launcher bypasses claude-lead.sh, so bind the founder-time rule's CLI
@@ -50,6 +51,7 @@ fi
 # ── Mufasa identity: selectors in launcher, coordinates from registry ──
 . "${TEAMLEAD_ROOT}/scripts/lib/canonical-lead-identity.sh"
 canonical_lead_identity_resolve "growth" "mufasa-lead"
+. "${FLYWHEEL_ROOT}/scripts/lib/lead-address.sh"
 # FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
 # (same derivation claude-lead.sh:481 uses). These launchers predate that change —
 # Mufasa + codex-infra-bot crash-looped 205 times each on "missing required env".
@@ -62,7 +64,9 @@ export FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_
 # env-overridable): a stray FLYWHEEL_CODEX_LEAD_STATE_DIR in the sourced .env must
 # never silently redirect Mufasa onto a fresh thread (= memory loss).
 export FLYWHEEL_CODEX_LEAD_STATE_DIR="${HOME}/.flywheel/state/codex-lead/mufasa-lead"
-export CODEX_HOME="${CODEX_HOME:-${HOME}/.codex-mufasa}"    # ISOLATED per-Lead auth
+export FLYWHEEL_CODEX_LEAD_HOME_KEY=mufasa
+codex_home_default="$(derive_codex_lead_home "$FLYWHEEL_CODEX_LEAD_HOME_KEY")" || exit $?
+export CODEX_HOME="${CODEX_HOME:-$codex_home_default}"    # ISOLATED per-Lead auth
 # TUI/daemon backend REQUIRES the standalone codex; npm codex has no daemon backend.
 export FLYWHEEL_CODEX_BIN="${FLYWHEEL_CODEX_BIN:-${CODEX_HOME}/packages/standalone/current/codex}"
 # The founder's interactive TUI working dir (`codex resume --remote -C <cwd>`) = the

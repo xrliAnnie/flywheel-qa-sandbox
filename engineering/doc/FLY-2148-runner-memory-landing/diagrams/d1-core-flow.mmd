@@ -1,0 +1,19 @@
+flowchart TD
+  A["Bridge 派工一个 DAG 节点<br/>(issue + 项目 + 角色 qa / eng_design / implement)"] --> B{"分流实验开关<br/>runner_memory_mode<br/>(默认 off)"}
+  B -- "off / shared 臂" --> B1["不挂角色记忆<br/>提示词 / 启动参数逐字节不变"]
+  B -- "role 臂" --> C["B0 已有: 挂载角色目录<br/>~/.flywheel/runner-memory/flywheel/qa/<br/>量索引(≤64KB), 超预算两面说明"]
+  C --> D["B1 新增: 拍一张 spawn 快照<br/>行数 / 字节 / 前缀哈希 / 正文文件数"]
+  D --> E["快照随 runner 环境变量下发<br/>FLYWHEEL_RUNNER_MEMORY_SNAPSHOT"]
+  B1 --> F
+  D --> F["B1 新增: 臂 + 目录 + 快照<br/>写进 sessions 表(只走 Bridge 进程内通道)"]
+  E --> G["runner 干活<br/>Claude: 原生 auto memory 随手写<br/>Codex: 手写同形状"]
+  G --> H["收口合同: 跑完成命令之前<br/>写下 ≤5 条可复用判断<br/>(没学到就不写, 报告里说一句)"]
+  H --> I["complete / qa-result 命令<br/>再量一次索引, 与快照比对"]
+  I --> J{"三态"}
+  J -- "变了" --> K["written"]
+  J -- "没变" --> L["unchanged<br/>终端提示: 学到了就现在写"]
+  J -- "超预算" --> M["over_budget<br/>终端提示: 先整理, 否则下一个 runner<br/>从第 K 行起读不到"]
+  K --> N["回执随完成事件送到 Bridge<br/>落 sessions 独立列, 可直接 SQL 查"]
+  L --> N
+  M --> N
+  N --> O["第二次派同角色 + 同项目<br/>(换 issue / 换 worktree)<br/>读到第一次写下的内容"]

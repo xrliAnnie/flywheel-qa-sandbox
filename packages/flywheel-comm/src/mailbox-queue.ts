@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { canonicalJsonString } from "flywheel-config";
+import { openCommDbWritable } from "./commdb-open-gate.js";
 import { formatDeadLetterNotice } from "./dead-letter-format.js";
 import {
 	assertNoLoneSurrogate,
@@ -360,6 +361,10 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 			db.exec(`CREATE INDEX IF NOT EXISTS mailbox_dead_scan
 				ON mailbox(recipient_kind, to_agent, seq)
 				WHERE state = 'DEAD' AND carrier = 'inbox';
+				CREATE INDEX IF NOT EXISTS mailbox_runner_inflight_by_recipient
+				ON mailbox(to_agent, claim_expires_at, batch_id, delivered_at)
+				WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+				  AND state = 'LEASED' AND delivered_at IS NOT NULL AND batch_id IS NOT NULL;
 				CREATE INDEX IF NOT EXISTS mailbox_dead_notice_lookup
 				ON mailbox(source_ref, seq)
 				WHERE type = 'dead_letter_notice' AND source_kind = 'dead_letter';
@@ -465,7 +470,7 @@ export class MailboxQueue {
 		if (dbPathOrConnection !== ":memory:") {
 			mkdirSync(dirname(dbPathOrConnection), { recursive: true });
 		}
-		this.db = new Database(dbPathOrConnection);
+		this.db = openCommDbWritable(dbPathOrConnection);
 		this.ownsConnection = true;
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");

@@ -25,6 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SUT="$SCRIPT_DIR/run-codex-infra-bot-tui.sh"
 [ -f "$SUT" ] || { echo "FATAL: $SUT missing"; exit 1; }
 REAL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)" # real teamlead package root (for lead-rules-base)
+REPO_ROOT="$(cd "$REAL_ROOT/../.." && pwd)"
 
 T=$(mktemp -d /tmp/clibt.XXXXX) || { echo "FATAL: mktemp"; exit 1; }
 trap 'rm -rf "$T"' EXIT
@@ -39,16 +40,18 @@ unset FLYWHEEL_CODEX_LEAD_PROFILE FLYWHEEL_CODEX_LEAD_SANDBOX \
 	FLYWHEEL_LEAD_PROJECTS_DIGEST FLYWHEEL_LEAD_SUMMARY_ROLE \
 	FLYWHEEL_LEAD_HAS_SUMMARY_DUTY FLYWHEEL_SUMMARY_GRANULARITY \
 	FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID \
-	FLYWHEEL_LEAD_BOT_USER_ID FLYWHEEL_TUI_WINDOW_ALERT
+	FLYWHEEL_LEAD_BOT_USER_ID FLYWHEEL_TUI_WINDOW_ALERT CODEX_HOME \
+	FLYWHEEL_CODEX_BIN FLYWHEEL_CODEX_LEAD_HOME_KEY
 
 # Fake TEAMLEAD_ROOT: stub dist runtime + lead-actions + tui-home; REAL lead-rules-base
 # (symlinked) so assemble_full_access_governance resolves founder-only-authority for real.
-RT="$T/teamlead"
+REPO="$T/repo"
+RT="$REPO/packages/teamlead"
 mkdir -p "$RT/dist/lead-backends/codex/lead-actions" "$RT/scripts" \
-	"$T/flywheel-comm/dist"
+	"$REPO/packages/flywheel-comm/dist" "$REPO/scripts/lib"
 printf '// stub\n' > "$RT/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 printf '// stub\n' > "$RT/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
-printf '// stub\n' > "$T/flywheel-comm/dist/index.js"
+printf '// stub\n' > "$REPO/packages/flywheel-comm/dist/index.js"
 printf '#!/bin/bash\nexit 0\n' > "$RT/scripts/codex-lead-tui-home.sh"
 chmod +x "$RT/scripts/codex-lead-tui-home.sh"
 ln -s "$REAL_ROOT/lead-rules-base" "$RT/lead-rules-base"
@@ -56,6 +59,7 @@ ln -s "$REAL_ROOT/lead-rules-base" "$RT/lead-rules-base"
 ln -s "$REAL_ROOT/scripts/lead-rules-bundle.sh" "$RT/scripts/lead-rules-bundle.sh"
 mkdir -p "$RT/scripts/lib"
 ln -s "$REAL_ROOT/scripts/lib/canonical-lead-identity.sh" "$RT/scripts/lib/canonical-lead-identity.sh"
+ln -s "$REPO_ROOT/scripts/lib/lead-address.sh" "$REPO/scripts/lib/lead-address.sh"
 
 # Mock `node`: dump the env it was exec'd with, then exit 0.
 mkdir -p "$T/bin"
@@ -74,7 +78,7 @@ mkdir -p "$T/proj"
 run_dry() {
 	ENVDUMP="$T/envdump.$$.$RANDOM"
 	export ENVDUMP
-	PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
+	HOME="$T/home" PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
 		CANONICAL_JSON='{"schemaVersion":1,"leadId":"codex-infra-bot-lead","projectName":"flywheel","leadKey":"flywheel-codex-infra-bot-lead","agentTeamName":"codex-infra-bot-lead","botUserId":"12345678901234567","botTokenEnv":"CODEX_INFRA_BOT_TOKEN","discordStateDir":"/tmp/discord-infra","backend":"codex-app-server","role":"dept","summaryRole":"exempt","summaryGranularity":"per-lead","hasSummaryDuty":false,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 		FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
 		FLYWHEEL_INFRA_BOT_USER_ID=U123 \
@@ -93,7 +97,7 @@ if [ -f "$D" ]; then
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_SANDBOX)" = "workspace-write" ] && pass "SANDBOX=workspace-write" || fail "SANDBOX wrong"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_MODE)" = "tui" ] && pass "MODE=tui (windowed)" || fail "MODE not tui"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_OUTBOUND)" = "direct" ] && pass "outbound=direct (preserves alerts channel)" || fail "outbound not direct"
-	[ "$(envval "$D" FLYWHEEL_COMM_CLI)" = "$T/flywheel-comm/dist/index.js" ] \
+	[ "$(envval "$D" FLYWHEEL_COMM_CLI)" = "$REPO/packages/flywheel-comm/dist/index.js" ] \
 		&& pass "founder-time CLI path reaches production TUI runtime" \
 		|| fail "FLYWHEEL_COMM_CLI missing/wrong ($(envval "$D" FLYWHEEL_COMM_CLI))"
 	pd=$(envval "$D" FLYWHEEL_CODEX_LEAD_PROJECT_DIR)
@@ -104,6 +108,7 @@ if [ -f "$D" ]; then
 	case "$sd" in */codex-lead/codex-infra-bot-lead) pass "lead_actions STATE_DIR = pinned infra-bot state" ;; *) fail "STATE_DIR wrong ($sd)" ;; esac
 	csd=$(envval "$D" FLYWHEEL_CODEX_LEAD_STATE_DIR)
 	case "$csd" in */codex-lead/codex-infra-bot-lead) pass "state dir pinned (memory continuity)" ;; *) fail "state dir not pinned ($csd)" ;; esac
+	[ "$(envval "$D" CODEX_HOME)" = "$T/home/.codex-infra-bot" ] && pass "shared rule preserves InfraBot CODEX_HOME bytes" || fail "InfraBot CODEX_HOME changed"
 	# token BY NAME (env-token path; full-access has no broker) — the child receives DISCORD_BOT_TOKEN.
 	[ -n "$(envval "$D" DISCORD_BOT_TOKEN)" ] && pass "DISCORD_BOT_TOKEN present (token by name, no broker)" || fail "DISCORD_BOT_TOKEN absent"
 	sp=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)

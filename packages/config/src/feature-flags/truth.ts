@@ -271,6 +271,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_RUNNER_VENDOR_ID: "context: runner vendor id",
 	FLYWHEEL_RUNNER_MEMORY_DIR:
 		"FLY-2147 mounted role-memory directory output plumbing, not a runtime switch",
+	FLYWHEEL_RUNNER_MEMORY_SNAPSHOT:
+		"FLY-2148 mounted role-memory index snapshot output plumbing, not a runtime switch",
 	FLYWHEEL_RUNNER_MEMORY_ROOT:
 		"FLY-2147 test-only root path for hermetic runner-memory isolation, not a runtime switch",
 	FLYWHEEL_AGENT_BACKEND: "context: agent backend",

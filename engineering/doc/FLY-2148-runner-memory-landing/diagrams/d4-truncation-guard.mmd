@@ -1,0 +1,15 @@
+flowchart TB
+  subgraph SPAWN["起 runner 时(B0 已有, 读侧)"]
+    S1["量索引 ≤64KB"] --> S2{"超 160 行 / 20KB?"}
+    S2 -- "没超" --> S3["日志: mounted … over_budget=false<br/>提示词: within budget"]
+    S2 -- "超了" --> S4["日志: OVER BUDGET first_dropped_line=K<br/>提示词: 约从第 K 行起没被加载,<br/>开工第一件事先压回预算内"]
+  end
+  subgraph CLOSE["收口时(B1 新增, 写侧)"]
+    W1["再量一次索引"] --> W2{"超预算?"}
+    W2 -- "没超" --> W3["written / unchanged<br/>Δ 行数与 Δ 正文文件数"]
+    W2 -- "超了" --> W4["over_budget + first_dropped_line=K<br/>终端: 先整理再收工,<br/>下一个 runner 从第 K 行起读不到"]
+  end
+  S4 -. "两面夹住: 任一面漏了另一面兜" .-> W1
+  W3 --> DB["sessions.runner_memory_closeout<br/>独立列, 可直接查"]
+  W4 --> DB
+  DB ~~~ N["Claude 原生: 写超时 CLI 立刻报错要求重写索引<br/>Codex: 没有原生守卫, 收口面是唯一一道"]

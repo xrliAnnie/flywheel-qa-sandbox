@@ -7,25 +7,20 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CommDB } from "flywheel-comm/db";
+import { CommDB, type PhaseWakeInput } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	atomicMergeCodexSessionState,
 	CodexPhaseLifecycleController,
-	type CodexWakeWatcher,
 } from "../src/codex-phase-lifecycle.js";
 
-type WakeMessage = Parameters<NonNullable<CodexWakeWatcher["onDelivered"]>>[0];
-
-class FakeWatcher implements CodexWakeWatcher {
+class FakeWatcher {
 	started = 0;
 	stopped = 0;
-	onDelivered?: (message: WakeMessage) => void | Promise<void>;
-	constructor(private readonly initial: WakeMessage[] = []) {}
+	onDelivered?: (message: PhaseWakeInput) => void | Promise<void>;
 
 	async start(): Promise<void> {
 		this.started += 1;
-		for (const message of this.initial) await this.onDelivered?.(message);
 	}
 
 	async stop(): Promise<void> {
@@ -34,10 +29,6 @@ class FakeWatcher implements CodexWakeWatcher {
 
 	async health(): Promise<{ ok: boolean }> {
 		return { ok: this.started > this.stopped };
-	}
-
-	async emit(message: WakeMessage): Promise<void> {
-		await this.onDelivered?.(message);
 	}
 }
 
@@ -60,7 +51,7 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 	});
 
 	function controller(
-		watcher: CodexWakeWatcher | null = null,
+		watcher: FakeWatcher | null = null,
 		overrides: Partial<
 			ConstructorParameters<typeof CodexPhaseLifecycleController>[0]
 		> = {},
@@ -70,12 +61,13 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 			role: "design",
 			commDbPath: dbPath,
 			sessionStatePath: statePath,
-			mailboxAgentName: "runner-agent",
-			watcher,
 			shutdownPollIntervalMs: 5,
 			now: () => 1_000,
+			// A legacy caller may still carry stale watcher fields during rollout;
+			// the lifecycle must ignore them rather than reclaim ownership.
+			...(watcher ? { watcher } : {}),
 			...overrides,
-		});
+		} as ConstructorParameters<typeof CodexPhaseLifecycleController>[0]);
 	}
 
 	it("observes declared parked, cleared active, and DB errors as unknown", () => {
@@ -90,7 +82,7 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 
 		const broken = controller(null, {
 			db: {
-				getRunnerShutdown: () => {
+				listPendingRunnerShutdowns: () => {
 					throw new Error("sqlite unavailable");
 				},
 				getEffectiveDeclaredState: () => {
@@ -122,16 +114,8 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 		await lifecycle.stop();
 	});
 
-	it("enterHold persists entering before pause confirmation starts mailbox intake", async () => {
-		const instructionId = db.insertInstruction("lead", "exec-1", "revise");
-		const watcher = new FakeWatcher([
-			{
-				id: "vendor-1",
-				to: "runner-agent",
-				content: "revise",
-				metadata: { flywheelId: instructionId, execId: "exec-1" },
-			},
-		]);
+	it("never owns mailbox intake across hold and shutdown transitions", async () => {
+		const watcher = new FakeWatcher();
 		const lifecycle = controller(watcher);
 		await lifecycle.start();
 		await lifecycle.enterHold({
@@ -146,12 +130,7 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 		);
 		await lifecycle.confirmHoldPaused();
 
-		expect(watcher.started).toBe(1);
-		expect(lifecycle.observe()).toMatchObject({
-			kind: "wake",
-			message: { id: "vendor-1", content: "revise" },
-		});
-		expect(db.getUnreadInstructions("exec-1")).toEqual([]);
+		expect(watcher.started).toBe(0);
 		expect(JSON.parse(readFileSync(statePath, "utf8")).phaseHold).toMatchObject(
 			{
 				state: "paused",
@@ -161,148 +140,100 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 		);
 
 		await lifecycle.leaveHold();
-		expect(watcher.stopped).toBe(1);
+		expect(watcher.stopped).toBe(0);
 		await lifecycle.enterHold({
 			deadlineRemainingMs: 20_000,
 			hardDeadlineRemainingMs: 50_000,
 		});
-		expect(watcher.started).toBe(1);
 		await lifecycle.confirmHoldPaused();
-		expect(watcher.started).toBe(2);
+		await lifecycle.stopIntake();
 		await lifecycle.stop();
+		expect(watcher.started).toBe(0);
+		expect(watcher.stopped).toBe(0);
 	});
 
-	it("watcher callback resolves only after durable enqueue and preserves order/dedupe", async () => {
-		const watcher = new FakeWatcher();
-		const lifecycle = controller(watcher);
-		await lifecycle.start();
-		await lifecycle.enterHold({
-			deadlineRemainingMs: 1,
-			hardDeadlineRemainingMs: 2,
-		});
-		await lifecycle.confirmHoldPaused();
-
-		await watcher.emit({
-			id: "v-1",
-			to: "runner-agent",
-			content: "first",
-		});
-		expect(db.listRunnerPhaseWakes("exec-1")).toHaveLength(1);
-		await watcher.emit({
-			id: "v-1",
-			to: "runner-agent",
-			content: "first",
-		});
-		await watcher.emit({
-			id: "v-2",
-			to: "runner-agent",
-			content: "second",
-		});
-		expect(
-			db.listRunnerPhaseWakes("exec-1").map((wake) => wake.message_id),
-		).toEqual(["v-1", "v-2"]);
-		await lifecycle.stop();
-	});
-
-	it("routes queue batches through the zero-settlement doorbell path", async () => {
-		db.registerSession(
-			"exec-1",
-			"flywheel:@1",
-			"flywheel",
-			"FLY-1774",
-			"flywheel-eng-lead",
-			"codex",
-			true,
-		);
-		const first = db.insertInstruction("lead", "exec-1", "first");
-		const second = db.insertInstruction("lead", "exec-1", "second");
-		const raw = (db as unknown as { db: import("better-sqlite3").Database }).db;
-		raw
-			.prepare(
-				`UPDATE mailbox SET state='LEASED', batch_id='mailbox-batch:batch-a',
-				 claimed_by='bridge:1', claim_expires_at='2099-01-01T00:00:00.000Z'
-				 WHERE id IN (?, ?)`,
-			)
-			.run(first, second);
-		const memberIds = (
-			raw
-				.prepare(
-					"SELECT delivery_id FROM mailbox WHERE id IN (?, ?) ORDER BY seq",
-				)
-				.all(first, second) as Array<{ delivery_id: string }>
-		).map((row) => row.delivery_id);
-		const watcher = new FakeWatcher();
-		const lifecycle = controller(watcher);
-		await lifecycle.start();
-		await lifecycle.enterHold({
-			deadlineRemainingMs: 1,
-			hardDeadlineRemainingMs: 2,
-		});
-		await lifecycle.confirmHoldPaused();
-
-		await watcher.emit({
-			id: "transport-batch-a",
-			to: "runner-agent",
-			content: "full transport body",
-			metadata: {
-				flywheelId: "mailbox-batch:batch-a#r0",
-				durableBatchId: "mailbox-batch:batch-a",
-				memberIds,
-				execId: "exec-1",
+	it("persists the durable resident revision before pausing a loop target", async () => {
+		const enters: Array<Record<string, unknown>> = [];
+		const lifecycle = controller(null, {
+			residentHold: {
+				activationId: "activation-1",
+				nodeId: "repair-any-name",
+				enter: async (input) => {
+					enters.push(input);
+					return {
+						ok: true as const,
+						revision: 7,
+						graceExpiresAt: "2026-09-04T11:00:00.000Z",
+					};
+				},
+				close: async () => true,
+				current: async () => undefined,
 			},
 		});
 
-		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+		await lifecycle.enterHold({
+			deadlineRemainingMs: 30_000,
+			hardDeadlineRemainingMs: 60_000,
+		});
+
+		expect(enters).toEqual([
 			{
-				message_id: "doorbell:mailbox-batch:batch-a#r0",
-				source_instruction_id: null,
+				executionId: "exec-1",
+				activationId: "activation-1",
+				nodeId: "repair-any-name",
+				boundarySeq: 1,
 			},
 		]);
-		expect(db.getUnreadInstructions("exec-1").map((row) => row.id)).toEqual([
-			first,
-			second,
-		]);
-		await lifecycle.stop();
+		expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+			residentBoundarySeq: 1,
+			phaseHold: {
+				schemaVersion: 2,
+				nodeId: "repair-any-name",
+				residentRevision: 7,
+				graceExpiresAt: "2026-09-04T11:00:00.000Z",
+				state: "entering",
+				deadlineRemainingMs: 30_000,
+				hardDeadlineRemainingMs: 60_000,
+			},
+		});
 	});
 
-	it("queues an instruction envelope even after the active runner listed it", async () => {
-		const instructionId = db.insertInstruction("lead", "exec-1", "listed");
-		db.markInstructionRead(instructionId);
-		const watcher = new FakeWatcher();
-		const lifecycle = controller(watcher);
-		await lifecycle.start();
-		await lifecycle.enterHold({
-			deadlineRemainingMs: 1,
-			hardDeadlineRemainingMs: 2,
+	it("rebuilds a missing local hold from the current resident row on restart", async () => {
+		const lifecycle = controller(null, {
+			residentHold: {
+				activationId: "activation-1",
+				nodeId: "repair-any-name",
+				enter: async () => ({ ok: false as const, reason: "unexpected" }),
+				close: async () => true,
+				current: async () => ({
+					activationId: "activation-1",
+					nodeId: "repair-any-name",
+					state: "resident" as const,
+					boundarySeq: 3,
+					revision: 9,
+					graceExpiresAt: "2026-09-04T11:30:00.000Z",
+				}),
+			},
+			recoveryBudget: {
+				deadlineRemainingMs: 40_000,
+				hardDeadlineRemainingMs: 80_000,
+			},
 		});
-		await lifecycle.confirmHoldPaused();
-		await watcher.emit({
-			id: "listed-vendor",
-			to: "runner-agent",
-			content: "listed",
-			metadata: { flywheelId: instructionId, execId: "exec-1" },
-		});
-		expect(db.listRunnerPhaseWakes("exec-1")).toHaveLength(1);
-		await lifecycle.stop();
-	});
 
-	it("rejects a mailbox envelope addressed to another runner before enqueue", async () => {
-		const watcher = new FakeWatcher();
-		const lifecycle = controller(watcher);
 		await lifecycle.start();
-		await lifecycle.enterHold({
-			deadlineRemainingMs: 1,
-			hardDeadlineRemainingMs: 2,
+
+		expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+			residentBoundarySeq: 3,
+			phaseHold: {
+				schemaVersion: 2,
+				nodeId: "repair-any-name",
+				residentRevision: 9,
+				graceExpiresAt: "2026-09-04T11:30:00.000Z",
+				state: "paused",
+				deadlineRemainingMs: 40_000,
+				hardDeadlineRemainingMs: 80_000,
+			},
 		});
-		await lifecycle.confirmHoldPaused();
-		await expect(
-			watcher.emit({
-				id: "wrong-recipient",
-				to: "runner-other",
-				content: "no",
-			}),
-		).rejects.toThrow("recipient mismatch");
-		expect(db.listRunnerPhaseWakes("exec-1")).toEqual([]);
 		await lifecycle.stop();
 	});
 
@@ -365,6 +296,21 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 			state: "failed",
 			error: "drain",
 		});
+	});
+
+	it("settles every pending shutdown request with the same exit result", () => {
+		db.requestRunnerShutdown("exec-1", "shutdown-first", 1_400);
+		db.requestRunnerShutdown("exec-1", "shutdown-second", 1_401);
+		const lifecycle = controller();
+
+		lifecycle.ackAllPendingShutdowns({ ok: true });
+
+		expect(
+			db.getRunnerShutdownRequest("exec-1", "shutdown-first"),
+		).toMatchObject({ state: "acked" });
+		expect(
+			db.getRunnerShutdownRequest("exec-1", "shutdown-second"),
+		).toMatchObject({ state: "acked" });
 	});
 
 	it("atomic session merges preserve metadata and phaseHold in either writer order", () => {

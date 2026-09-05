@@ -567,6 +567,72 @@ describe("StateStore — FLY-1254 review failure evidence", () => {
 	});
 });
 
+describe("StateStore — FLY-2334 review reuse release", () => {
+	it("atomically releases a reused binding into an idempotent standalone job", async () => {
+		const store = await StateStore.create(":memory:");
+		store.bindWorktreeOnce(
+			"exec-substitute",
+			{
+				path: "/worktree/substitute",
+				branch: "flywheel-substitute",
+				generation: "generation-substitute",
+			},
+			{ issueId: "FLY-2334", projectName: "flywheel" },
+		);
+		store.insertCodexReviewJob({
+			requestId: "source",
+			executionId: "exec-source",
+			issueId: "FLY-2334",
+			projectName: "flywheel",
+			reviewType: "code",
+			questionId: "question-source",
+			targetRepoPath: "/worktree/source",
+			targetRepoIdentity: "__main__",
+			reuseRepoIdentity: "geoforge3d/flywheel",
+			frozenHeadSha: SHA_A,
+			authorFamily: "codex",
+		});
+		store.claimCodexReviewJobRunning("source");
+		store.insertCodexReviewReuseBinding({
+			requestId: "substitute",
+			sourceRequestId: "source",
+			executionId: "exec-substitute",
+			questionId: "question-substitute",
+			targetRepoPath: "/worktree/substitute",
+			targetRepoIdentity: "__main__",
+			reuseRepoIdentity: "geoforge3d/flywheel",
+			frozenHeadSha: SHA_A,
+		});
+
+		const first = store.releaseCodexReviewReuseBinding({
+			requestId: "substitute",
+			reason: "source_failed",
+			frozenHeadSha: SHA_B,
+		});
+		const replay = store.releaseCodexReviewReuseBinding({
+			requestId: "substitute",
+			reason: "ignored-replay",
+			frozenHeadSha: SHA_B,
+		});
+
+		expect(first.released).toBe(true);
+		expect(replay.released).toBe(false);
+		expect(store.getCodexReviewReuseBinding("substitute")).toMatchObject({
+			release_reason: "source_failed",
+			released_at: expect.any(String),
+		});
+		expect(store.getCodexReviewJob("substitute")).toMatchObject({
+			execution_id: "exec-substitute",
+			question_id: "question-substitute",
+			target_repo_path: "/worktree/substitute",
+			target_repo_identity: "__main__",
+			reuse_repo_identity: "geoforge3d/flywheel",
+			frozen_head_sha: SHA_B,
+			status: "pending",
+		});
+	});
+});
+
 describe("StateStore — FLY-2228 moved-head successor", () => {
 	it("migrates and reopens a legacy review-job database with lineage intact", async () => {
 		const fs = await import("node:fs");
@@ -611,6 +677,15 @@ describe("StateStore — FLY-2228 moved-head successor", () => {
 				responded_at TEXT,
 				delivery_nonce TEXT
 			)`);
+			seed.run(`CREATE TABLE codex_review_reuse_binding (
+				request_id TEXT PRIMARY KEY,
+				source_request_id TEXT NOT NULL,
+				execution_id TEXT NOT NULL,
+				question_id TEXT NOT NULL,
+				delivery_nonce TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				responded_at TEXT
+			)`);
 			seed.run(
 				`INSERT INTO codex_review_job
 				 (request_id, execution_id, issue_id, project_name, review_type,
@@ -625,6 +700,12 @@ describe("StateStore — FLY-2228 moved-head successor", () => {
 					SHA_A,
 				],
 			);
+			seed.run(
+				`INSERT INTO codex_review_reuse_binding
+				 (request_id, source_request_id, execution_id, question_id, delivery_nonce)
+				 VALUES ('legacy-reuse', 'legacy-parent', 'exec-substitute',
+				         'question-substitute', 'legacy-nonce')`,
+			);
 			fs.writeFileSync(dbPath, Buffer.from(seed.export()));
 			seed.close();
 
@@ -636,7 +717,16 @@ describe("StateStore — FLY-2228 moved-head successor", () => {
 				reviewer_session_generation: 0,
 				reviewer_session_failure_streak: 0,
 				retired_reviewer_session_uuid: undefined,
+				reuse_repo_identity: "__main__",
 			});
+			expect(migrated.getCodexReviewReuseBinding("legacy-reuse")).toMatchObject(
+				{
+					target_repo_identity: "__main__",
+					reuse_repo_identity: "__main__",
+					release_reason: undefined,
+					released_at: undefined,
+				},
+			);
 			migrated.failAndRequeueCodexReviewJobForHeadMove({
 				requestId: "legacy-parent",
 				successorRequestId: "migrated-child",

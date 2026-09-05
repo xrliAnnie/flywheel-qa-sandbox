@@ -14,6 +14,7 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
+import { openCommDbWritable } from "./commdb-open-gate.js";
 import {
 	type IngestDiscordChatArgs,
 	ingestDiscordChatOnQueue,
@@ -53,7 +54,7 @@ export const UNREAD_INSTRUCTIONS_SQL = `SELECT p.*
  WHERE m.to_agent = ? AND m.type = 'instruction'
    AND m.state IN ('QUEUED','LEASED')
    AND p.read_at IS NULL
-   AND datetime(p.expires_at) > datetime('now')
+   AND (p.expires_at IS NULL OR datetime(p.expires_at) > datetime('now'))
  ORDER BY p.created_at ASC`;
 
 export interface PendingRunnerMailboxSnapshot {
@@ -74,6 +75,7 @@ export const PENDING_RUNNER_MAILBOX_SQL = `SELECT state, type, ref_id,
  ORDER BY seq`;
 
 export interface RunnerDeliveryProjectionRow {
+	seq: number;
 	id: string;
 	from_agent: string;
 	to_agent: string;
@@ -95,6 +97,7 @@ export interface RunnerDeliveryProjectionRow {
 }
 
 export interface RunnerPhaseWakeProjectionRow {
+	queue_seq: number;
 	execution_id: string;
 	message_id: string;
 	metadata_json: string | null;
@@ -108,6 +111,7 @@ export interface RunnerPhaseWakeProjectionRow {
 }
 
 export interface RunnerTurnWakeProjectionRow {
+	queue_seq: number;
 	wake_id: string;
 	execution_id: string;
 	issue_id: string;
@@ -122,6 +126,48 @@ export interface RunnerTurnWakeProjectionRow {
 
 const RUNNER_DELIVERY_TERMINAL_PROJECTION_MS = 72 * 60 * 60_000;
 const RUNNER_STOP_HEARTBEAT_MS = 30 * 60_000;
+
+export const RUNNER_DELIVERY_PROJECTION_ROW_SQL = `SELECT m.seq, m.id, m.from_agent, m.to_agent, m.type, m.content,
+       m.ref_id, m.source_ref, m.created_at, m.delivered_at,
+       m.notified_at, m.acked_at, m.superseded_by,
+       m.dead_reason, m.state,
+       sessions.status AS recipient_status,
+       COALESCE(sessions.issue_id, lineage.issue_id) AS issue_id,
+       (
+         SELECT COUNT(DISTINCT active.batch_id)
+           FROM mailbox active
+          WHERE active.to_agent = m.to_agent
+            AND active.recipient_kind = 'runner'
+            AND active.carrier = 'inbox'
+            AND active.state = 'LEASED'
+            AND active.delivered_at IS NOT NULL
+            AND active.claim_expires_at > ?
+            AND active.batch_id IS NOT NULL
+       ) AS inflight_batch_count,
+       (
+         SELECT MIN(active.delivered_at)
+           FROM mailbox active
+          WHERE active.to_agent = m.to_agent
+            AND active.recipient_kind = 'runner'
+            AND active.carrier = 'inbox'
+            AND active.state = 'LEASED'
+            AND active.delivered_at IS NOT NULL
+            AND active.claim_expires_at > ?
+            AND active.batch_id IS NOT NULL
+       ) AS oldest_inflight_delivered_at
+  FROM mailbox m
+  LEFT JOIN sessions ON sessions.execution_id = m.to_agent
+  LEFT JOIN session_receipt_lineage lineage
+    ON lineage.execution_id = m.to_agent
+ WHERE m.id = ?
+   AND m.recipient_kind = 'runner'
+   AND m.type IN ('instruction','response')
+   AND (? = 1 OR (
+	     (m.state IN ('QUEUED','LEASED','DEAD')
+	      AND m.acked_at IS NULL AND m.superseded_by IS NULL)
+	     OR ((m.state = 'ACKED' OR m.acked_at IS NOT NULL OR m.superseded_by IS NOT NULL)
+	         AND COALESCE(m.acked_at, m.notified_at, m.delivered_at, m.created_at) >= ?)
+	   ))`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -169,7 +215,9 @@ CREATE TABLE IF NOT EXISTS three_stage_turn (
   target_run_id   TEXT,
   target_node_id  TEXT,
   target_attempt  INTEGER,
-  activation_id   TEXT
+  activation_id   TEXT,
+  active_turn_id  TEXT,
+  turn_generation INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS turn_wait_ledger (
   execution_id       TEXT NOT NULL,
@@ -268,6 +316,7 @@ CREATE TABLE IF NOT EXISTS runner_phase_wakes (
 	escalation_outbox_id    TEXT,
 	started_ack_scope       TEXT,
 	purpose                 TEXT CHECK(purpose IN ('message_traffic','gate_response','park_wake')),
+	turn_generation         INTEGER,
   UNIQUE (execution_id, message_id)
 );
 CREATE TABLE IF NOT EXISTS runner_wake_failure_episode (
@@ -301,13 +350,17 @@ CREATE TABLE IF NOT EXISTS workflow_engine_park_cursor (
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS runner_shutdown_controls (
-  execution_id TEXT PRIMARY KEY,
-  request_id   TEXT NOT NULL UNIQUE,
+  execution_id TEXT NOT NULL,
+  request_id   TEXT NOT NULL,
   state        TEXT NOT NULL CHECK(state IN ('requested','acked','failed')),
   requested_at INTEGER NOT NULL,
   finished_at  INTEGER,
-  error        TEXT
+  error        TEXT,
+  settlement_reason TEXT,
+  PRIMARY KEY (execution_id, request_id)
 );
+CREATE INDEX IF NOT EXISTS idx_rsc_pending
+  ON runner_shutdown_controls(execution_id, state, requested_at, request_id);
 CREATE TRIGGER IF NOT EXISTS workflow_source_event_no_update
 BEFORE UPDATE ON workflow_source_event
 BEGIN SELECT RAISE(ABORT, 'workflow_source_event is append-only'); END;
@@ -374,6 +427,8 @@ export interface WorktreeTurn {
 	target_node_id: string | null;
 	target_attempt: number | null;
 	activation_id: string | null;
+	active_turn_id: string | null;
+	turn_generation: number;
 }
 
 export interface RunnerWorkflowActivation {
@@ -534,6 +589,14 @@ export type GuardedFinalizeSessionResult =
 	| { finalized: false; reason: "target_changed" }
 	| { finalized: true; result: FinalizeSessionResult };
 
+export type FinalizeSessionCommunicationsResult =
+	| { finalized: false; reason: "target_changed" }
+	| { finalized: false; reason: "terminal_evidence_changed" }
+	| { finalized: false; reason: "turn_holder" }
+	| { finalized: false; reason: "parked" }
+	| { finalized: false; reason: "founder_wake_pending" }
+	| { finalized: true; result: FinalizeSessionResult };
+
 /**
  * FLY-1328: an ask younger than this at teardown is spared. It kills the
  * "written → first relay tick" race: GatePoller relays every ~3s, so a
@@ -614,6 +677,7 @@ export interface RunnerPhaseWake {
 	finished_at: number | null;
 	admission_state:
 		| "queued"
+		| "deferred_midturn"
 		| "duplicate"
 		| "suppressed_cap"
 		| "skipped_no_transport"
@@ -636,6 +700,7 @@ export interface RunnerPhaseWake {
 		| "terminal"
 		| null;
 	purpose: "message_traffic" | "gate_response" | "park_wake" | null;
+	turn_generation: number | null;
 }
 
 export type RunnerDoorbellWakeResult =
@@ -825,6 +890,7 @@ export interface RunnerShutdownControl {
 	requested_at: number;
 	finished_at: number | null;
 	error: string | null;
+	settlement_reason: string | null;
 }
 
 export interface WorkflowEngineParkProjectionEvent {
@@ -1073,7 +1139,7 @@ export class CommDB {
 		try {
 			mkdirSync(dirname(dbPath), { recursive: true });
 			phase = "database-open";
-			opened = new Database(dbPath);
+			opened = openCommDbWritable(dbPath);
 			this.db = opened;
 			phase = "pragma";
 			this.db.pragma("journal_mode = WAL");
@@ -1284,6 +1350,8 @@ export class CommDB {
 			["target_node_id", "TEXT"],
 			["target_attempt", "INTEGER"],
 			["activation_id", "TEXT"],
+			["active_turn_id", "TEXT"],
+			["turn_generation", "INTEGER NOT NULL DEFAULT 0"],
 		] as const) {
 			if (turnColumns.some((column) => column.name === name)) continue;
 			try {
@@ -1314,6 +1382,11 @@ export class CommDB {
 		if (!phaseWakeColumns.some((column) => column.name === "first_push_at")) {
 			this.db.exec(
 				"ALTER TABLE runner_phase_wakes ADD COLUMN first_push_at TEXT",
+			);
+		}
+		if (!phaseWakeColumns.some((column) => column.name === "turn_generation")) {
+			this.db.exec(
+				"ALTER TABLE runner_phase_wakes ADD COLUMN turn_generation INTEGER",
 			);
 		}
 		const waitColumns = this.db
@@ -2706,40 +2779,58 @@ export class CommDB {
 
 	listRunnerDeliveryProjectionRows(
 		now = new Date().toISOString(),
+		page?: { afterSeq?: number; limit?: number; includeInflight?: boolean },
 	): RunnerDeliveryProjectionRow[] {
+		if (
+			(page?.afterSeq !== undefined &&
+				(!Number.isSafeInteger(page.afterSeq) || page.afterSeq < 0)) ||
+			(page?.limit !== undefined &&
+				(!Number.isSafeInteger(page.limit) || page.limit < 1))
+		) {
+			throw new Error("invalid_runner_delivery_projection_page");
+		}
 		const terminalCutoff = new Date(
 			Date.parse(now) - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS,
 		).toISOString();
+		const includeInflight = page?.includeInflight !== false;
+		const inflightColumns = includeInflight
+			? `(
+			     SELECT COUNT(DISTINCT active.batch_id)
+			       FROM mailbox active
+			      WHERE active.to_agent = m.to_agent
+			        AND active.recipient_kind = 'runner'
+			        AND active.carrier = 'inbox'
+			        AND active.state = 'LEASED'
+			        AND active.delivered_at IS NOT NULL
+			        AND active.claim_expires_at > ?
+			        AND active.batch_id IS NOT NULL
+			   ) AS inflight_batch_count,
+			   (
+			     SELECT MIN(active.delivered_at)
+			       FROM mailbox active
+			      WHERE active.to_agent = m.to_agent
+			        AND active.recipient_kind = 'runner'
+			        AND active.carrier = 'inbox'
+			        AND active.state = 'LEASED'
+			        AND active.delivered_at IS NOT NULL
+			        AND active.claim_expires_at > ?
+			        AND active.batch_id IS NOT NULL
+			   ) AS oldest_inflight_delivered_at`
+			: "0 AS inflight_batch_count, NULL AS oldest_inflight_delivered_at";
+		const params: unknown[] = includeInflight
+			? [now, now, terminalCutoff]
+			: [terminalCutoff];
+		if (page?.afterSeq !== undefined) params.push(page.afterSeq);
+		if (page?.limit !== undefined) params.push(page.limit);
 		return this.db
 			.prepare(
-				`SELECT m.id, m.from_agent, m.to_agent, m.type, m.content,
+				`SELECT m.seq, m.id, m.from_agent, m.to_agent, m.type, m.content,
 				        m.ref_id, m.source_ref, m.created_at, m.delivered_at,
 				        m.notified_at, m.acked_at, m.superseded_by,
 				        m.dead_reason, m.state,
 				        sessions.status AS recipient_status,
 				        COALESCE(sessions.issue_id, lineage.issue_id) AS issue_id,
-				        (
-				          SELECT COUNT(DISTINCT active.batch_id)
-				            FROM mailbox active
-				           WHERE active.to_agent = m.to_agent
-				             AND active.recipient_kind = 'runner'
-				             AND active.carrier = 'inbox'
-				             AND active.state = 'LEASED'
-				             AND active.delivered_at IS NOT NULL
-				             AND active.claim_expires_at > ?
-				             AND active.batch_id IS NOT NULL
-				        ) AS inflight_batch_count,
-				        (
-				          SELECT MIN(active.delivered_at)
-				            FROM mailbox active
-				           WHERE active.to_agent = m.to_agent
-				             AND active.recipient_kind = 'runner'
-				             AND active.carrier = 'inbox'
-				             AND active.state = 'LEASED'
-				             AND active.delivered_at IS NOT NULL
-				             AND active.claim_expires_at > ?
-				             AND active.batch_id IS NOT NULL
-				        ) AS oldest_inflight_delivered_at
+				        ${inflightColumns}
 				   FROM mailbox m
 				   LEFT JOIN sessions ON sessions.execution_id = m.to_agent
 				   LEFT JOIN session_receipt_lineage lineage
@@ -2752,40 +2843,48 @@ export class CommDB {
 				      OR ((m.state = 'ACKED' OR m.acked_at IS NOT NULL OR m.superseded_by IS NOT NULL)
 				          AND COALESCE(m.acked_at, m.notified_at, m.delivered_at, m.created_at) >= ?)
 				    )
-				  ORDER BY m.seq`,
+				  ${page?.afterSeq !== undefined ? "AND m.seq > ?" : ""}
+				  ORDER BY m.seq
+				  ${page?.limit !== undefined ? "LIMIT ?" : ""}`,
 			)
-			.all(now, now, terminalCutoff) as RunnerDeliveryProjectionRow[];
+			.all(...params) as RunnerDeliveryProjectionRow[];
 	}
 
 	getRunnerDeliveryProjectionRow(
 		id: string,
+		now = new Date().toISOString(),
+		applyTerminalCutoff = false,
 	): RunnerDeliveryProjectionRow | undefined {
+		const terminalCutoff = new Date(
+			Date.parse(now) - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS,
+		).toISOString();
 		return this.db
-			.prepare(
-				`SELECT m.id, m.from_agent, m.to_agent, m.type, m.content,
-				        m.ref_id, m.source_ref, m.created_at, m.delivered_at,
-				        m.notified_at, m.acked_at, m.superseded_by,
-				        m.dead_reason, m.state,
-				        sessions.status AS recipient_status,
-				        COALESCE(sessions.issue_id, lineage.issue_id) AS issue_id
-				   FROM mailbox m
-				   LEFT JOIN sessions ON sessions.execution_id = m.to_agent
-				   LEFT JOIN session_receipt_lineage lineage
-				     ON lineage.execution_id = m.to_agent
-				  WHERE m.id = ?
-				    AND m.recipient_kind = 'runner'
-				    AND m.type IN ('instruction','response')`,
-			)
-			.get(id) as RunnerDeliveryProjectionRow | undefined;
+			.prepare(RUNNER_DELIVERY_PROJECTION_ROW_SQL)
+			.get(now, now, id, applyTerminalCutoff ? 0 : 1, terminalCutoff) as
+			| RunnerDeliveryProjectionRow
+			| undefined;
 	}
 
 	listRunnerPhaseWakeProjectionRows(
 		nowMs = Date.now(),
+		page?: { afterQueueSeq?: number; limit?: number },
 	): RunnerPhaseWakeProjectionRow[] {
+		if (
+			(page?.afterQueueSeq !== undefined &&
+				(!Number.isSafeInteger(page.afterQueueSeq) ||
+					page.afterQueueSeq < 0)) ||
+			(page?.limit !== undefined &&
+				(!Number.isSafeInteger(page.limit) || page.limit < 1))
+		) {
+			throw new Error("invalid_runner_phase_wake_projection_page");
+		}
 		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
+		const params: unknown[] = [terminalCutoffMs];
+		if (page?.afterQueueSeq !== undefined) params.push(page.afterQueueSeq);
+		if (page?.limit !== undefined) params.push(page.limit);
 		return this.db
 			.prepare(
-				`SELECT wake.execution_id, wake.message_id, wake.metadata_json,
+				`SELECT wake.queue_seq, wake.execution_id, wake.message_id, wake.metadata_json,
 				        wake.queued_at, wake.first_push_at, wake.started_at,
 				        wake.finished_at, wake.state,
 				        session.status AS recipient_status,
@@ -2795,19 +2894,24 @@ export class CommDB {
 				     ON session.execution_id = wake.execution_id
 				   LEFT JOIN session_receipt_lineage lineage
 				     ON lineage.execution_id = wake.execution_id
-				  WHERE wake.state != 'finished'
-				     OR COALESCE(wake.finished_at, wake.started_at, wake.queued_at) >= ?
-				  ORDER BY wake.queue_seq`,
+				  WHERE (wake.state != 'finished'
+				     OR COALESCE(wake.finished_at, wake.started_at, wake.queued_at) >= ?)
+				  ${page?.afterQueueSeq !== undefined ? "AND wake.queue_seq > ?" : ""}
+				  ORDER BY wake.queue_seq
+				  ${page?.limit !== undefined ? "LIMIT ?" : ""}`,
 			)
-			.all(terminalCutoffMs) as RunnerPhaseWakeProjectionRow[];
+			.all(...params) as RunnerPhaseWakeProjectionRow[];
 	}
 
 	getRunnerPhaseWakeProjectionRow(
 		messageId: string,
+		nowMs = Date.now(),
+		applyTerminalCutoff = false,
 	): RunnerPhaseWakeProjectionRow | undefined {
+		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
 		return this.db
 			.prepare(
-				`SELECT wake.execution_id, wake.message_id, wake.metadata_json,
+				`SELECT wake.queue_seq, wake.execution_id, wake.message_id, wake.metadata_json,
 				        wake.queued_at, wake.first_push_at, wake.started_at,
 				        wake.finished_at, wake.state,
 				        session.status AS recipient_status,
@@ -2818,48 +2922,75 @@ export class CommDB {
 				   LEFT JOIN session_receipt_lineage lineage
 				     ON lineage.execution_id = wake.execution_id
 				  WHERE wake.message_id = ?
+				    AND (? = 1 OR wake.state != 'finished'
+				         OR COALESCE(wake.finished_at, wake.started_at, wake.queued_at) >= ?)
 				  ORDER BY wake.queue_seq DESC
 				  LIMIT 1`,
 			)
-			.get(messageId) as RunnerPhaseWakeProjectionRow | undefined;
+			.get(messageId, applyTerminalCutoff ? 0 : 1, terminalCutoffMs) as
+			| RunnerPhaseWakeProjectionRow
+			| undefined;
 	}
 
 	listRunnerTurnWakeProjectionRows(
 		nowMs = Date.now(),
+		page?: { afterQueueSeq?: number; limit?: number },
 	): RunnerTurnWakeProjectionRow[] {
+		if (
+			(page?.afterQueueSeq !== undefined &&
+				(!Number.isSafeInteger(page.afterQueueSeq) ||
+					page.afterQueueSeq < 0)) ||
+			(page?.limit !== undefined &&
+				(!Number.isSafeInteger(page.limit) || page.limit < 1))
+		) {
+			throw new Error("invalid_runner_turn_wake_projection_page");
+		}
 		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
+		const params: unknown[] = [terminalCutoffMs];
+		if (page?.afterQueueSeq !== undefined) params.push(page.afterQueueSeq);
+		if (page?.limit !== undefined) params.push(page.limit);
 		return this.db
 			.prepare(
-				`SELECT wake.wake_id, wake.execution_id, wake.issue_id,
+				`SELECT wake.rowid AS queue_seq, wake.wake_id, wake.execution_id, wake.issue_id,
 				        wake.created_at, wake.first_push_at, wake.acked_at,
 				        wake.last_push_at, wake.push_count, wake.state,
 				        session.status AS recipient_status
 				   FROM turn_wake_outbox wake
 				   LEFT JOIN sessions session
 				     ON session.execution_id = wake.execution_id
-				  WHERE (wake.state IN ('pending','sent') AND wake.acked_at IS NULL)
+				  WHERE ((wake.state IN ('pending','sent') AND wake.acked_at IS NULL)
 				     OR ((wake.state IN ('acked','cancelled') OR wake.acked_at IS NOT NULL)
-				         AND COALESCE(wake.acked_at, wake.last_push_at, wake.created_at) >= ?)
-				  ORDER BY wake.created_at, wake.wake_id`,
+				         AND COALESCE(wake.acked_at, wake.last_push_at, wake.created_at) >= ?))
+				  ${page?.afterQueueSeq !== undefined ? "AND wake.rowid > ?" : ""}
+				  ORDER BY ${page ? "wake.rowid" : "wake.created_at, wake.wake_id"}
+				  ${page?.limit !== undefined ? "LIMIT ?" : ""}`,
 			)
-			.all(terminalCutoffMs) as RunnerTurnWakeProjectionRow[];
+			.all(...params) as RunnerTurnWakeProjectionRow[];
 	}
 
 	getRunnerTurnWakeProjectionRow(
 		wakeId: string,
+		nowMs = Date.now(),
+		applyTerminalCutoff = false,
 	): RunnerTurnWakeProjectionRow | undefined {
+		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
 		return this.db
 			.prepare(
-				`SELECT wake.wake_id, wake.execution_id, wake.issue_id,
+				`SELECT wake.rowid AS queue_seq, wake.wake_id, wake.execution_id, wake.issue_id,
 				        wake.created_at, wake.first_push_at, wake.acked_at,
 				        wake.last_push_at, wake.push_count, wake.state,
 				        session.status AS recipient_status
 				   FROM turn_wake_outbox wake
 				   LEFT JOIN sessions session
 				     ON session.execution_id = wake.execution_id
-				  WHERE wake.wake_id = ?`,
+				  WHERE wake.wake_id = ?
+				    AND (? = 1 OR (wake.state IN ('pending','sent') AND wake.acked_at IS NULL)
+				      OR ((wake.state IN ('acked','cancelled') OR wake.acked_at IS NOT NULL)
+				          AND COALESCE(wake.acked_at, wake.last_push_at, wake.created_at) >= ?))`,
 			)
-			.get(wakeId) as RunnerTurnWakeProjectionRow | undefined;
+			.get(wakeId, applyTerminalCutoff ? 0 : 1, terminalCutoffMs) as
+			| RunnerTurnWakeProjectionRow
+			| undefined;
 	}
 
 	rerouteMailboxDelivery(input: {
@@ -3872,6 +4003,97 @@ export class CommDB {
 		return this.db.prepare(UNREAD_INSTRUCTIONS_SQL).all(agentId) as Message[];
 	}
 
+	getCompletionDrainPending(executionId: string): {
+		mailbox: string[];
+		phaseWakes: string[];
+		watermark: { mailboxCreatedAt: string | null; phaseWakeQueueSeq: number };
+	} {
+		if (!executionId) throw new Error("executionId is required");
+		const mailbox = this.db
+			.prepare(
+				`SELECT id, created_at FROM mailbox
+				  WHERE to_agent = ? AND recipient_kind = 'runner'
+				    AND carrier = 'inbox' AND state IN ('QUEUED','LEASED')
+				    AND type IN ('instruction','response')
+				    AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+				  ORDER BY created_at, id`,
+			)
+			.all(executionId) as Array<{ id: string; created_at: string }>;
+		const hasPhaseWakeLifecycle = Boolean(
+			this.db
+				.prepare(
+					`SELECT 1 FROM sessions
+					  WHERE execution_id = ? AND phase_keep_alive = 1`,
+				)
+				.get(executionId),
+		);
+		const phaseWakes = hasPhaseWakeLifecycle
+			? (this.db
+					.prepare(
+						`SELECT message_id, queue_seq FROM runner_phase_wakes
+						  WHERE execution_id = ? AND state = 'pending'
+						    AND admission_state IN ('queued','deferred_midturn')
+						  ORDER BY queue_seq`,
+					)
+					.all(executionId) as Array<{
+					message_id: string;
+					queue_seq: number;
+				}>)
+			: [];
+		return {
+			mailbox: mailbox.map((row) => row.id),
+			phaseWakes: phaseWakes.map((row) => row.message_id),
+			watermark: {
+				mailboxCreatedAt: mailbox.at(-1)?.created_at ?? null,
+				phaseWakeQueueSeq: phaseWakes.at(-1)?.queue_seq ?? 0,
+			},
+		};
+	}
+
+	getCompletionDrainVerification(
+		executionId: string,
+		mailboxIds: readonly string[],
+		phaseWakeIds: readonly string[],
+	): {
+		mailbox: Record<string, string>;
+		phaseWakes: Record<string, string>;
+	} {
+		if (!executionId) throw new Error("executionId is required");
+		const mailbox: Record<string, string> = Object.fromEntries(
+			mailboxIds.map((id) => [id, "missing"]),
+		);
+		const phaseWakes: Record<string, string> = Object.fromEntries(
+			phaseWakeIds.map((id) => [id, "missing"]),
+		);
+		if (mailboxIds.length > 0) {
+			const placeholders = mailboxIds.map(() => "?").join(",");
+			const rows = this.db
+				.prepare(
+					`SELECT id, state FROM mailbox
+					  WHERE id IN (${placeholders}) AND to_agent = ?`,
+				)
+				.all(...mailboxIds, executionId) as Array<{
+				id: string;
+				state: string;
+			}>;
+			for (const row of rows) mailbox[row.id] = row.state;
+		}
+		if (phaseWakeIds.length > 0) {
+			const placeholders = phaseWakeIds.map(() => "?").join(",");
+			const rows = this.db
+				.prepare(
+					`SELECT message_id, state FROM runner_phase_wakes
+					  WHERE execution_id = ? AND message_id IN (${placeholders})`,
+				)
+				.all(executionId, ...phaseWakeIds) as Array<{
+				message_id: string;
+				state: string;
+			}>;
+			for (const row of rows) phaseWakes[row.message_id] = row.state;
+		}
+		return { mailbox, phaseWakes };
+	}
+
 	getPendingRunnerMailboxSnapshot(
 		agentId: string,
 	): PendingRunnerMailboxSnapshot {
@@ -3917,11 +4139,30 @@ export class CommDB {
 		executionId: string,
 		message: PhaseWakeInput,
 		nowMs: number,
+		options: {
+			admissionState?: "queued" | "deferred_midturn";
+			turnGeneration?: number;
+		} = {},
 	): { kind: "queued" | "duplicate"; wake: RunnerPhaseWake } {
 		if (!executionId || !message.id || !message.content) {
 			throw new Error(
 				"phase wake requires executionId, message id, and content",
 			);
+		}
+		if (
+			options.turnGeneration !== undefined &&
+			(!Number.isSafeInteger(options.turnGeneration) ||
+				options.turnGeneration < 0)
+		) {
+			throw new Error(
+				"phase wake turnGeneration must be a non-negative safe integer",
+			);
+		}
+		if (
+			options.admissionState === "deferred_midturn" &&
+			options.turnGeneration === undefined
+		) {
+			throw new Error("deferred phase wake requires turnGeneration");
 		}
 		const metadataExecId = message.metadata?.execId;
 		if (metadataExecId !== undefined && metadataExecId !== executionId) {
@@ -3978,8 +4219,9 @@ export class CommDB {
 				.prepare(
 					`INSERT INTO runner_phase_wakes
 					   (execution_id, message_id, content, metadata_json,
-					    source_instruction_id, state, queued_at, purpose)
-					 VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+					    source_instruction_id, state, queued_at, purpose,
+					    admission_state, turn_generation)
+					 VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
 				)
 				.run(
 					executionId,
@@ -3989,6 +4231,8 @@ export class CommDB {
 					sourceInstructionId,
 					nowMs,
 					sourceInstructionId ? "message_traffic" : "park_wake",
+					options.admissionState ?? null,
+					options.turnGeneration ?? null,
 				);
 			if (sourceInstructionId) {
 				this.db
@@ -4013,6 +4257,90 @@ export class CommDB {
 	}
 
 	/**
+	 * Bridge receiver ingress. The durable turn classification and wake insert
+	 * share one IMMEDIATE transaction, so a completion racing delivery can only
+	 * produce one of the two valid boundary orders.
+	 */
+	enqueueRunnerReceiverWake(
+		executionId: string,
+		message: PhaseWakeInput,
+		nowMs: number,
+	): { kind: "queued" | "duplicate"; wake: RunnerPhaseWake } {
+		const enqueue = this.db.transaction(() => {
+			return this.enqueueRunnerPhaseWake(
+				executionId,
+				message,
+				nowMs,
+				this.runnerWakeAdmission(executionId),
+			);
+		});
+		return enqueue.immediate();
+	}
+
+	/**
+	 * StateStore proves lifecycle eligibility; CommDB independently proves that
+	 * a live durable wake reader exists before either ingress shape is consumed.
+	 */
+	enqueueRunnerReceiverDelivery(
+		executionId: string,
+		message: PhaseWakeInput,
+		nowMs: number,
+	):
+		| { kind: "queued" | "duplicate"; wake: RunnerPhaseWake }
+		| RunnerDoorbellWakeResult {
+		const enqueue = this.db.transaction(() => {
+			if (!this.runnerDoorbellConsumerIsLive(executionId)) {
+				return { kind: "no_consumer" as const };
+			}
+			const admission = this.runnerWakeAdmission(executionId);
+			const flywheelId = message.metadata?.flywheelId;
+			if (
+				typeof flywheelId === "string" &&
+				flywheelId.startsWith("mailbox-batch:")
+			) {
+				return this.enqueueRunnerDoorbellWake(executionId, message, nowMs, {
+					...admission,
+				});
+			}
+			return this.enqueueRunnerPhaseWake(
+				executionId,
+				message,
+				nowMs,
+				admission,
+			);
+		});
+		return enqueue.immediate();
+	}
+
+	private runnerWakeAdmission(executionId: string): {
+		admissionState: "queued" | "deferred_midturn";
+		turnGeneration?: number;
+	} {
+		const row = this.db
+			.prepare(
+				`SELECT turn.holder_exec_id, turn.active_turn_id, turn.turn_generation
+				   FROM sessions session
+				   LEFT JOIN three_stage_turn turn ON turn.issue_id = session.issue_id
+				  WHERE session.execution_id = ?`,
+			)
+			.get(executionId) as
+			| {
+					holder_exec_id: string | null;
+					active_turn_id: string | null;
+					turn_generation: number | null;
+			  }
+			| undefined;
+		const deferred =
+			row?.holder_exec_id === executionId && row.active_turn_id !== null;
+		return {
+			admissionState: deferred ? "deferred_midturn" : "queued",
+			...(row?.turn_generation !== null && row?.turn_generation !== undefined
+				? { turnGeneration: row.turn_generation }
+				: {}),
+		};
+	}
+
+	/**
 	 * FLY-1774: translate one queue-enabled Codex mailbox batch into a durable
 	 * phase-hold doorbell. Unlike the legacy single-message callback above, this
 	 * path never settles mailbox rows; the resumed agent remains the only ACKer.
@@ -4021,6 +4349,10 @@ export class CommDB {
 		executionId: string,
 		message: PhaseWakeInput,
 		nowMs: number,
+		options: {
+			admissionState?: "queued" | "deferred_midturn";
+			turnGeneration?: number;
+		} = {},
 	): RunnerDoorbellWakeResult {
 		if (!executionId || !message.id || !message.content) {
 			throw new Error(
@@ -4109,6 +4441,7 @@ export class CommDB {
 					durableBatchId,
 				}),
 				nowMs,
+				options,
 			);
 		});
 		return enqueue.immediate();
@@ -4217,6 +4550,10 @@ export class CommDB {
 		executionId: string,
 		obligation: RunnerDoorbellObligation,
 		nowMs: number,
+		admission: {
+			admissionState?: "queued" | "deferred_midturn";
+			turnGeneration?: number;
+		} = {},
 	): RunnerDoorbellWakeResult {
 		const doorbells = this.db
 			.prepare(
@@ -4289,8 +4626,9 @@ export class CommDB {
 			.prepare(
 				`INSERT INTO runner_phase_wakes
 				   (execution_id, message_id, content, metadata_json,
-				    source_instruction_id, state, queued_at, purpose)
-				 VALUES (?, ?, ?, ?, NULL, 'pending', ?, 'message_traffic')`,
+				    source_instruction_id, state, queued_at, purpose,
+				    admission_state, turn_generation)
+				 VALUES (?, ?, ?, ?, NULL, 'pending', ?, 'message_traffic', ?, ?)`,
 			)
 			.run(
 				executionId,
@@ -4302,6 +4640,8 @@ export class CommDB {
 				),
 				JSON.stringify(metadata),
 				nowMs,
+				admission.admissionState ?? null,
+				admission.turnGeneration ?? null,
 			);
 		const wake = this.db
 			.prepare(
@@ -5089,12 +5429,13 @@ export class CommDB {
 				.run(executionId, requestId, nowMs);
 			const row = this.db
 				.prepare(
-					"SELECT * FROM runner_shutdown_controls WHERE execution_id = ?",
+					`SELECT * FROM runner_shutdown_controls
+					  WHERE execution_id = ? AND request_id = ?`,
 				)
-				.get(executionId) as RunnerShutdownControl | undefined;
+				.get(executionId, requestId) as RunnerShutdownControl | undefined;
 			if (!row) {
 				throw new Error(
-					`shutdown request id ${requestId} is already bound to another execution`,
+					`shutdown request ${executionId}/${requestId} was not stored`,
 				);
 			}
 			return row;
@@ -5107,7 +5448,13 @@ export class CommDB {
 			return (
 				(this.db
 					.prepare(
-						"SELECT * FROM runner_shutdown_controls WHERE execution_id = ?",
+						`SELECT * FROM runner_shutdown_controls
+						  WHERE execution_id = ?
+						  ORDER BY CASE WHEN state = 'requested' THEN 0 ELSE 1 END,
+						           CASE WHEN state = 'requested' THEN requested_at END ASC,
+						           CASE WHEN state <> 'requested' THEN requested_at END DESC,
+						           request_id ASC
+						  LIMIT 1`,
 					)
 					.get(executionId) as RunnerShutdownControl | undefined) ?? null
 			);
@@ -5115,6 +5462,75 @@ export class CommDB {
 			if (isMissingTableError(error, "runner_shutdown_controls")) return null;
 			throw error;
 		}
+	}
+
+	getRunnerShutdownRequest(
+		executionId: string,
+		requestId: string,
+	): RunnerShutdownControl | null {
+		try {
+			return (
+				(this.db
+					.prepare(
+						`SELECT * FROM runner_shutdown_controls
+						  WHERE execution_id = ? AND request_id = ?`,
+					)
+					.get(executionId, requestId) as RunnerShutdownControl | undefined) ??
+				null
+			);
+		} catch (error) {
+			if (isMissingTableError(error, "runner_shutdown_controls")) return null;
+			throw error;
+		}
+	}
+
+	listPendingRunnerShutdowns(executionId: string): RunnerShutdownControl[] {
+		try {
+			return this.db
+				.prepare(
+					`SELECT * FROM runner_shutdown_controls
+					  WHERE execution_id = ? AND state = 'requested'
+					  ORDER BY requested_at ASC, request_id ASC`,
+				)
+				.all(executionId) as RunnerShutdownControl[];
+		} catch (error) {
+			if (isMissingTableError(error, "runner_shutdown_controls")) return [];
+			throw error;
+		}
+	}
+
+	finishAllPendingRunnerShutdowns(
+		executionId: string,
+		result: { ok: true } | { ok: false; error: string },
+		nowMs: number,
+	): number {
+		return this.db
+			.prepare(
+				`UPDATE runner_shutdown_controls
+				    SET state = ?, finished_at = ?, error = ?
+				  WHERE execution_id = ? AND state = 'requested'`,
+			)
+			.run(
+				result.ok ? "acked" : "failed",
+				nowMs,
+				result.ok ? null : result.error,
+				executionId,
+			).changes;
+	}
+
+	settleFailedRunnerShutdowns(executionId: string, reason: string): number {
+		if (!reason.trim()) {
+			throw new Error("runner shutdown settlement reason is required");
+		}
+		return this.db
+			.prepare(
+				`UPDATE runner_shutdown_controls
+				    SET settlement_reason = ?
+				  WHERE execution_id = ?
+				    AND state = 'failed'
+				    AND settlement_reason IS NULL`,
+			)
+			.run(reason, executionId).changes;
 	}
 
 	finishRunnerShutdown(
@@ -5466,8 +5882,9 @@ export class CommDB {
 					.prepare(
 						`INSERT INTO three_stage_turn
 						   (issue_id, holder_exec_id, phase, epoch, granted_at,
-						    target_run_id, target_node_id, target_attempt, activation_id)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+						    target_run_id, target_node_id, target_attempt, activation_id,
+						    active_turn_id, turn_generation)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
 						 ON CONFLICT(issue_id) DO UPDATE SET
 						   holder_exec_id = excluded.holder_exec_id,
 						   phase = excluded.phase,
@@ -5476,7 +5893,9 @@ export class CommDB {
 						   target_run_id = excluded.target_run_id,
 						   target_node_id = excluded.target_node_id,
 						   target_attempt = excluded.target_attempt,
-						   activation_id = excluded.activation_id`,
+						   activation_id = excluded.activation_id,
+						   active_turn_id = NULL,
+						   turn_generation = three_stage_turn.turn_generation + 1`,
 					)
 					.run(
 						issueId,
@@ -5489,6 +5908,17 @@ export class CommDB {
 						activation?.attempt ?? null,
 						activation?.activationId ?? null,
 					);
+				if (current?.holder_exec_id) {
+					this.db
+						.prepare(
+							`UPDATE runner_phase_wakes
+							    SET admission_state = 'queued'
+							  WHERE execution_id = ?
+							    AND state = 'pending'
+							    AND admission_state = 'deferred_midturn'`,
+						)
+						.run(current.holder_exec_id);
+				}
 				if (activation) {
 					this.db
 						.prepare(
@@ -5544,13 +5974,19 @@ export class CommDB {
 			})();
 		}
 		return this.db.transaction(() => {
+			const current = this.db
+				.prepare(
+					"SELECT holder_exec_id FROM three_stage_turn WHERE issue_id = ?",
+				)
+				.get(issueId) as { holder_exec_id: string } | undefined;
 			this.db
 				.prepare(
 					`INSERT INTO three_stage_turn
-				   (issue_id, holder_exec_id, phase, epoch, granted_at,
-				    target_run_id, target_node_id, target_attempt, activation_id)
-				 VALUES (?, ?, ?, 1, ?, NULL, NULL, NULL, NULL)
-				 ON CONFLICT(issue_id) DO UPDATE SET
+					   (issue_id, holder_exec_id, phase, epoch, granted_at,
+					    target_run_id, target_node_id, target_attempt, activation_id,
+					    active_turn_id, turn_generation)
+					 VALUES (?, ?, ?, 1, ?, NULL, NULL, NULL, NULL, NULL, 1)
+					 ON CONFLICT(issue_id) DO UPDATE SET
 				   holder_exec_id = excluded.holder_exec_id,
 				   phase = excluded.phase,
 				   epoch = three_stage_turn.epoch + 1,
@@ -5558,9 +5994,22 @@ export class CommDB {
 				   target_run_id = NULL,
 				   target_node_id = NULL,
 				   target_attempt = NULL,
-				   activation_id = NULL`,
+					   activation_id = NULL,
+					   active_turn_id = NULL,
+					   turn_generation = three_stage_turn.turn_generation + 1`,
 				)
 				.run(issueId, holderExecId, phase, grantedAtMs);
+			if (current?.holder_exec_id) {
+				this.db
+					.prepare(
+						`UPDATE runner_phase_wakes
+						    SET admission_state = 'queued'
+						  WHERE execution_id = ?
+						    AND state = 'pending'
+						    AND admission_state = 'deferred_midturn'`,
+					)
+					.run(current.holder_exec_id);
+			}
 			return Number(
 				(
 					this.db
@@ -5584,7 +6033,8 @@ export class CommDB {
 			row = this.db
 				.prepare(
 					`SELECT issue_id, holder_exec_id, phase, epoch, granted_at,
-					        target_run_id, target_node_id, target_attempt, activation_id
+					        target_run_id, target_node_id, target_attempt, activation_id,
+					        active_turn_id, turn_generation
            FROM three_stage_turn WHERE issue_id = ?`,
 				)
 				.get(issueId) as WorktreeTurn | undefined;
@@ -5605,6 +6055,8 @@ export class CommDB {
 							| "target_node_id"
 							| "target_attempt"
 							| "activation_id"
+							| "active_turn_id"
+							| "turn_generation"
 					  >
 					| undefined;
 				return legacy
@@ -5614,12 +6066,174 @@ export class CommDB {
 							target_node_id: null,
 							target_attempt: null,
 							activation_id: null,
+							active_turn_id: null,
+							turn_generation: 0,
 						}
 					: null;
 			}
 			throw err;
 		}
 		return row ?? null;
+	}
+
+	markTurnStarted(
+		executionId: string,
+		turnId: string,
+	):
+		| { ok: true; turnGeneration: number }
+		| { ok: false; reason: "not_holder" | "already_active" } {
+		if (!executionId || !turnId) {
+			throw new Error("turn start requires executionId and turnId");
+		}
+		return this.db.transaction(() => {
+			const updated = this.db
+				.prepare(
+					`UPDATE three_stage_turn
+					    SET active_turn_id = ?
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)
+					    AND holder_exec_id = ?
+					    AND active_turn_id IS NULL`,
+				)
+				.run(turnId, executionId, executionId);
+			const row = this.db
+				.prepare(
+					`SELECT holder_exec_id, active_turn_id, turn_generation
+					   FROM three_stage_turn
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)`,
+				)
+				.get(executionId) as
+				| {
+						holder_exec_id: string;
+						active_turn_id: string | null;
+						turn_generation: number;
+				  }
+				| undefined;
+			if (updated.changes === 1 && row) {
+				return { ok: true as const, turnGeneration: row.turn_generation };
+			}
+			if (row?.holder_exec_id === executionId && row.active_turn_id !== null) {
+				return { ok: false as const, reason: "already_active" as const };
+			}
+			return { ok: false as const, reason: "not_holder" as const };
+		})();
+	}
+
+	markTurnCompleted(
+		executionId: string,
+		turnId: string,
+	): { ok: true; promoted: number } | { ok: true; noop: true } {
+		if (!executionId || !turnId) {
+			throw new Error("turn completion requires executionId and turnId");
+		}
+		return this.db.transaction(() => {
+			const row = this.db
+				.prepare(
+					`SELECT turn_generation
+					   FROM three_stage_turn
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)
+					    AND holder_exec_id = ?
+					    AND active_turn_id = ?`,
+				)
+				.get(executionId, executionId, turnId) as
+				| { turn_generation: number }
+				| undefined;
+			if (!row) return { ok: true as const, noop: true as const };
+
+			this.db
+				.prepare(
+					`UPDATE three_stage_turn
+					    SET active_turn_id = NULL
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)
+					    AND holder_exec_id = ?
+					    AND active_turn_id = ?`,
+				)
+				.run(executionId, executionId, turnId);
+			const promoted = this.db
+				.prepare(
+					`UPDATE runner_phase_wakes
+					    SET admission_state = 'queued'
+					  WHERE execution_id = ?
+					    AND state = 'pending'
+					    AND admission_state = 'deferred_midturn'
+					    AND turn_generation <= ?`,
+				)
+				.run(executionId, row.turn_generation).changes;
+			return { ok: true as const, promoted };
+		})();
+	}
+
+	reconcileTurnState(
+		executionId: string,
+		activeTurnId: string | null,
+	):
+		| { ok: true; turnGeneration: number }
+		| { ok: true; promoted: number }
+		| { ok: false; reason: "not_holder" | "active_turn_mismatch" } {
+		if (!executionId || activeTurnId === "") {
+			throw new Error(
+				"turn reconciliation requires executionId and a non-empty turn id",
+			);
+		}
+		return this.db.transaction(() => {
+			const row = this.db
+				.prepare(
+					`SELECT holder_exec_id, active_turn_id, turn_generation
+					   FROM three_stage_turn
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)`,
+				)
+				.get(executionId) as
+				| {
+						holder_exec_id: string;
+						active_turn_id: string | null;
+						turn_generation: number;
+				  }
+				| undefined;
+			if (!row || row.holder_exec_id !== executionId) {
+				return { ok: false as const, reason: "not_holder" as const };
+			}
+
+			if (activeTurnId !== null) {
+				if (
+					row.active_turn_id !== null &&
+					row.active_turn_id !== activeTurnId
+				) {
+					return {
+						ok: false as const,
+						reason: "active_turn_mismatch" as const,
+					};
+				}
+				this.db
+					.prepare(
+						`UPDATE three_stage_turn
+						    SET active_turn_id = ?
+						  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)
+						    AND holder_exec_id = ?
+						    AND (active_turn_id IS NULL OR active_turn_id = ?)`,
+					)
+					.run(activeTurnId, executionId, executionId, activeTurnId);
+				return { ok: true as const, turnGeneration: row.turn_generation };
+			}
+
+			this.db
+				.prepare(
+					`UPDATE three_stage_turn
+					    SET active_turn_id = NULL
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)
+					    AND holder_exec_id = ?`,
+				)
+				.run(executionId, executionId);
+			const promoted = this.db
+				.prepare(
+					`UPDATE runner_phase_wakes
+					    SET admission_state = 'queued'
+					  WHERE execution_id = ?
+					    AND state = 'pending'
+					    AND admission_state = 'deferred_midturn'
+					    AND turn_generation <= ?`,
+				)
+				.run(executionId, row.turn_generation).changes;
+			return { ok: true as const, promoted };
+		})();
 	}
 
 	/** FLY-1925: one read transaction over the patrol-critical TURN ledgers. */
@@ -7004,10 +7618,11 @@ export class CommDB {
 	}
 
 	/**
-	 * FLY-1238: atomically retire every unanswered checkpoint gate owned by a
-	 * runner and remove its session registry row. An answered question is
-	 * immutable history. Errors deliberately propagate so teardown callers fail
-	 * closed and retry the whole transaction.
+	 * FLY-1238/FLY-2313: shared transaction body for settling a runner's
+	 * communication obligations and, only when independently authorized,
+	 * removing its session registry row. An answered question is immutable
+	 * history. Errors deliberately propagate so teardown callers fail closed and
+	 * retry the whole transaction.
 	 *
 	 * FLY-1328: the same teardown now also cascades to the runner's own aged,
 	 * unanswered checkpoint-less asks. Closing a runner closes its account —
@@ -7015,13 +7630,16 @@ export class CommDB {
 	 * outnumber live ones in the Lead's queue until `pending` stopped being worth
 	 * reading. Gate semantics (predicates, review-gate exemption) are untouched.
 	 */
-	finalizeSession(executionId: string): FinalizeSessionResult {
-		return this.db.transaction((targetExecutionId: string) => {
-			// A machine-proven terminal runner is an explicit H2 disposal condition:
-			// protection prevents TTL/hygiene loss, not intentional lifecycle closeout.
-			const retired = this.db
-				.prepare(
-					`UPDATE mailbox AS q SET
+	private finalizeSessionEffects(
+		targetExecutionId: string,
+		deleteSessionIdentity: boolean,
+	): FinalizeSessionResult {
+		// Intentional lifecycle closeout is an explicit H2 disposal condition:
+		// protection prevents TTL/hygiene loss, not settlement of communication
+		// obligations. Session-identity deletion is authorized separately.
+		const retired = this.db
+			.prepare(
+				`UPDATE mailbox AS q SET
 					   resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 					   state = 'ACKED',
 					   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -7042,16 +7660,16 @@ export class CommDB {
 					     SELECT 1 FROM mailbox_message_projection r
 					      WHERE r.parent_id = q.id AND r.type = 'response'
 					   )`,
-				)
-				.run(targetExecutionId).changes;
+			)
+			.run(targetExecutionId).changes;
 
-			// FLY-1328 A1 — cascade the owner's unanswered asks. An ask younger than
-			// the grace window is spared: it may not have reached the Lead yet, and
-			// the queue can afford one more tick far more than the founder can afford
-			// a swallowed report.
-			const retiredAsks = this.db
-				.prepare(
-					`UPDATE mailbox AS q SET
+		// FLY-1328 A1 — cascade the owner's unanswered asks. An ask younger than
+		// the grace window is spared: it may not have reached the Lead yet, and
+		// the queue can afford one more tick far more than the founder can afford
+		// a swallowed report.
+		const retiredAsks = this.db
+			.prepare(
+				`UPDATE mailbox AS q SET
 						   resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 						   state = 'ACKED',
 						   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -7068,9 +7686,14 @@ export class CommDB {
 						     SELECT 1 FROM mailbox_message_projection r
 						      WHERE r.parent_id = q.id AND r.type = 'response'
 						   )`,
-				)
-				.run(targetExecutionId, ASK_CASCADE_GRACE_SQL).changes;
+			)
+			.run(targetExecutionId, ASK_CASCADE_GRACE_SQL).changes;
 
+		// Wake and runner-control state belongs to the physical execution, not just
+		// its communication ledger. A ledger-only caller may hold only stale-target
+		// absence, so preserve those rows until independent death proof also
+		// authorizes deleting the session identity.
+		if (deleteSessionIdentity) {
 			this.pruneTerminalRunnerReceiptWakes(targetExecutionId);
 			this.db
 				.prepare("DELETE FROM runner_shutdown_controls WHERE execution_id = ?")
@@ -7078,15 +7701,140 @@ export class CommDB {
 			this.db
 				.prepare("DELETE FROM runner_stop_declarations WHERE execution_id = ?")
 				.run(targetExecutionId);
-			const deleted = this.db
-				.prepare("DELETE FROM sessions WHERE execution_id = ?")
-				.run(targetExecutionId).changes;
-			return {
-				retiredQuestionCount: retired,
-				retiredAskCount: retiredAsks,
-				deletedSessionCount: deleted,
-			};
-		})(executionId);
+		}
+		const deleted = deleteSessionIdentity
+			? this.db
+					.prepare("DELETE FROM sessions WHERE execution_id = ?")
+					.run(targetExecutionId).changes
+			: 0;
+		return {
+			retiredQuestionCount: retired,
+			retiredAskCount: retiredAsks,
+			deletedSessionCount: deleted,
+		};
+	}
+
+	/** Full teardown for callers that have independently proven runner death. */
+	finalizeSession(executionId: string): FinalizeSessionResult {
+		return this.db.transaction((targetExecutionId: string) =>
+			this.finalizeSessionEffects(targetExecutionId, true),
+		)(executionId);
+	}
+
+	/**
+	 * FLY-2313: close communication obligations while retaining the session's
+	 * only tmux identity by default. A caller with independent death proof may
+	 * request identity deletion through the same transaction. Terminal status
+	 * alone is not death proof and therefore cannot authorize deleting `sessions` or
+	 * disposing work still owned by a TURN holder / effectively parked runner,
+	 * or consuming an unread founder wake. The exact target, terminal lifecycle
+	 * state, TURN, declared state, and founder-wake state are checked in the same
+	 * transaction as the writes. The target is a CAS guard only; it rejects drift
+	 * and must never be interpreted as process-death evidence.
+	 */
+	finalizeSessionCommunications(
+		executionId: string,
+		expectedTmuxWindow: string,
+		deleteSessionIdentity = false,
+		authoritativeTerminalStatus?: "failed" | "blocked",
+	): FinalizeSessionCommunicationsResult {
+		const finalize = this.db.transaction(
+			(
+				targetExecutionId: string,
+				expectedTarget: string,
+				deleteIdentity: boolean,
+				expectedTerminalStatus?: "failed" | "blocked",
+			): FinalizeSessionCommunicationsResult => {
+				const session = this.db
+					.prepare(
+						"SELECT tmux_window, status, ended_at FROM sessions WHERE execution_id = ?",
+					)
+					.get(targetExecutionId) as
+					| { tmux_window?: string; status?: string; ended_at?: string | null }
+					| undefined;
+				if (session?.tmux_window !== expectedTarget) {
+					return { finalized: false, reason: "target_changed" };
+				}
+				const recordedTerminal = Boolean(
+					session.ended_at &&
+						(session.status === "completed" ||
+							session.status === "timeout" ||
+							session.status === "failed" ||
+							session.status === "blocked"),
+				);
+				const canPromoteAuthoritativeTerminal = Boolean(
+					deleteIdentity &&
+						session.status === "running" &&
+						!session.ended_at &&
+						(expectedTerminalStatus === "failed" ||
+							expectedTerminalStatus === "blocked"),
+				);
+				if (!recordedTerminal && !canPromoteAuthoritativeTerminal) {
+					return {
+						finalized: false,
+						reason: "terminal_evidence_changed",
+					};
+				}
+				const holdsTurn = this.db
+					.prepare(
+						"SELECT 1 FROM three_stage_turn WHERE holder_exec_id = ? LIMIT 1",
+					)
+					.get(targetExecutionId);
+				if (holdsTurn) {
+					return { finalized: false, reason: "turn_holder" };
+				}
+				if (
+					this.getEffectiveDeclaredState(targetExecutionId, Date.now())
+						?.kind === "parked"
+				) {
+					return { finalized: false, reason: "parked" };
+				}
+				const founderWakePending = (
+					this.db
+						.prepare(
+							"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND state = 'pending'",
+						)
+						.all(targetExecutionId) as RunnerPhaseWake[]
+				).some((wake) => runnerWakeMetadata(wake).origin === "founder");
+				if (founderWakePending) {
+					return { finalized: false, reason: "founder_wake_pending" };
+				}
+				if (canPromoteAuthoritativeTerminal) {
+					// StateStore's failed/blocked state plus independent death proof is
+					// authoritative when the async mirror has not landed yet. The IMMEDIATE
+					// transaction makes this exact-target running→terminal CAS atomic with
+					// every zero-write veto above and the identity deletion below.
+					const promoted = this.db
+						.prepare(
+							`UPDATE sessions
+							    SET status = ?, ended_at = datetime('now')
+							  WHERE execution_id = ? AND tmux_window = ?
+							    AND status = 'running' AND ended_at IS NULL`,
+						)
+						.run(
+							expectedTerminalStatus,
+							targetExecutionId,
+							expectedTarget,
+						).changes;
+					if (promoted !== 1) {
+						return { finalized: false, reason: "terminal_evidence_changed" };
+					}
+				}
+				return {
+					finalized: true,
+					result: this.finalizeSessionEffects(
+						targetExecutionId,
+						deleteIdentity,
+					),
+				};
+			},
+		);
+		return finalize.immediate(
+			executionId,
+			expectedTmuxWindow,
+			deleteSessionIdentity,
+			authoritativeTerminalStatus,
+		);
 	}
 
 	/**

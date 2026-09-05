@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import { isWorkflowPhaseRole } from "flywheel-config";
 import type {
 	WorkflowIssueDeliveryInput,
@@ -25,6 +26,7 @@ import {
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import { WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS } from "../workflow-replacement-policy.js";
 import {
+	isLoopTargetNode,
 	nodeRequiresFounderReview,
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
@@ -134,6 +136,10 @@ interface WorkflowEngineDispatcherOptions {
 	) => Promise<WorkflowShipCarrierDeliveryOutcome>;
 	/** FLY-1638: checked before durable execution admission/credential writes. */
 	admissionProbe?: () => AdmissionDecision;
+	armResidentReceiver?: (
+		executionId: string,
+		source: "admission",
+	) => Promise<void> | void;
 }
 
 export interface WorkflowEngineReconcileResult {
@@ -1732,23 +1738,25 @@ export class WorkflowEngineDispatcher {
 		) {
 			return;
 		}
-		for (const candidate of this.options.store.listWorkflowDivergenceCandidates()) {
-			try {
-				this.options.store.commitWorkflowDivergenceObservation({
-					runId: candidate.runId,
-					nodeId: candidate.nodeId,
-					attempt: candidate.attempt,
-					executionId: candidate.executionId,
-					observedStatus: candidate.sessionStatus,
-					observedLifecycleRevision: candidate.lifecycleRevision,
-					now: this.now().toISOString(),
-				});
-			} catch (error) {
-				this.log(
-					`workflow divergence observation held for ${candidate.executionId}: ${error instanceof Error ? error.message : String(error)}`,
-				);
+		withSyncOpMarker("workflow-engine:divergence-observation", () => {
+			for (const candidate of this.options.store.listWorkflowDivergenceCandidates()) {
+				try {
+					this.options.store.commitWorkflowDivergenceObservation({
+						runId: candidate.runId,
+						nodeId: candidate.nodeId,
+						attempt: candidate.attempt,
+						executionId: candidate.executionId,
+						observedStatus: candidate.sessionStatus,
+						observedLifecycleRevision: candidate.lifecycleRevision,
+						now: this.now().toISOString(),
+					});
+				} catch (error) {
+					this.log(
+						`workflow divergence observation held for ${candidate.executionId}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
 			}
-		}
+		});
 	}
 
 	private deferDeadExecutionForReadyResume(input: {
@@ -2748,6 +2756,9 @@ export class WorkflowEngineDispatcher {
 				...(leadId && { leadId }),
 				sessionRole: role,
 				shareParentBranch: isWorkflowPhaseRole(node.type) ? true : undefined,
+				...(isLoopTargetNode(snapshot, node.id)
+					? { loopTarget: { nodeId: node.id } }
+					: {}),
 				...(startPoint && { startPoint }),
 				...(workflowResume && { workflowResume }),
 				ignoreRunnerLabelSelection: true,
@@ -2846,6 +2857,16 @@ export class WorkflowEngineDispatcher {
 				}
 				return false;
 			}
+		}
+		try {
+			await this.options.armResidentReceiver?.(
+				intent.execution_id,
+				"admission",
+			);
+		} catch (error) {
+			this.log(
+				`resident receiver admission arm deferred for ${intent.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 		let delivered = await waitForGeneralizedLaunchDelivery(
 			store,

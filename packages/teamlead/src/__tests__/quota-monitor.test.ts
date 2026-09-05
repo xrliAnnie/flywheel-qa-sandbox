@@ -15,6 +15,7 @@ import {
 import { formatSwitchNotification } from "../account-heal/account-switch-notification.js";
 import { makeClaudeProfileSwitchDeps } from "../account-heal/claude-profile-cli.js";
 import {
+	attemptSwitchWithDriftRecovery,
 	formatModelBenchRetryNote,
 	pollOnce,
 	type QuotaMonitorAlert,
@@ -1607,6 +1608,126 @@ describe("pollOnce", () => {
 		expect(h.alerts.at(-1)?.body).toContain("shopping: switch_cooldown");
 	});
 
+	it("switches school to personal for 5h pressure, then back to the lowest-7d cooldown target when personal burns its 7d quota", async () => {
+		const initialStore: AccountStore = {
+			generation: 5,
+			activeAccount: "school",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{
+					name: "school",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: WEEK_RESET,
+					observedFiveHPct: 93,
+					observedSevenDPct: 33,
+					lastObservedAt: "2026-07-14T19:30:00.000Z",
+				},
+				{
+					name: "business",
+					quotaExhaustedUntil: null,
+					switchCooldownUntil: "2026-07-14T23:00:00.000Z",
+					weeklyResetAt: WEEK_RESET,
+					observedSevenDPct: 60,
+				},
+				{
+					name: "shopping",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: null,
+				},
+			],
+		};
+		h.credentials.personal = {
+			accessToken: "secret-personal",
+			expiresAt: NOW + 3_600_000,
+		};
+		h.setStore(initialStore);
+		h.setIdentity("school", 5);
+		h.deps.config = loadedConfig({
+			order: ["school", "personal", "business", "shopping"],
+		});
+		h.deps.state = emptyQuotaMonitorState(5);
+		h.usages.set("secret-school", usage(93, 33));
+		h.usages.set("secret-personal", usage(8, 98));
+		h.verifyCandidate.mockImplementation(async (name) =>
+			name === "shopping"
+				? { fresh: "stale", reason: "refresh refused (HTTP 400)" }
+				: { fresh: "refreshed", expiresAt: NOW + 3_600_000 },
+		);
+		h.switchImpl.mockImplementationOnce(async (input) => {
+			expect(input).toMatchObject({
+				trigger: { kind: "quota", scope: "5h" },
+				preferredOrder: ["personal"],
+			});
+			expect(input.cooldownFallbacks).toBeUndefined();
+			const switchedStore = structuredClone(initialStore);
+			switchedStore.generation = 6;
+			switchedStore.activeAccount = "personal";
+			const school = switchedStore.accounts.find(
+				(account) => account.name === "school",
+			);
+			if (school !== undefined) {
+				school.switchCooldownUntil = "2026-07-14T23:00:00.000Z";
+			}
+			h.setStore(switchedStore);
+			h.setIdentity("personal", 6);
+			return {
+				outcome: "switched",
+				from: "school",
+				to: "personal",
+				generation: 6,
+			};
+		});
+
+		const first = await pollOnce(h.deps);
+
+		expect(first.outcome).toBe("switched");
+		expect(first.state).toMatchObject({
+			observedGeneration: 6,
+			lastSwitchAt: NOW,
+		});
+		h.deps.state = structuredClone(first.state);
+		h.setNow(NOW + 30 * 60_000);
+		h.usages.set("secret-personal", usage(94, 100));
+		h.fetchUsage.mockClear();
+		h.verifyCandidate.mockClear();
+		h.switchImpl.mockResolvedValueOnce({
+			outcome: "switched",
+			from: "personal",
+			to: "school",
+			generation: 7,
+		});
+
+		const second = await pollOnce(h.deps);
+
+		expect(second.outcome).toBe("switched");
+		expect(h.verifyCandidate).toHaveBeenCalledWith("school", "personal");
+		expect(h.verifyCandidate).not.toHaveBeenCalledWith("business", "personal");
+		expect(
+			h.fetchUsage.mock.calls.filter(([token]) => token === "secret-school"),
+		).toHaveLength(1);
+		expect(h.switchImpl.mock.calls[1]?.[0]).toEqual(
+			expect.objectContaining({
+				trigger: expect.objectContaining({ kind: "quota", scope: "both" }),
+				preferredOrder: ["school"],
+				cooldownFallbacks: ["school"],
+				quotaPreverified: true,
+			}),
+		);
+		const decisionLog = vi
+			.mocked(h.deps.log)
+			.mock.calls.map(([line]) => line)
+			.filter((line) => line.includes('"event":"quota_switch_decision"'))
+			.at(-1);
+		expect(JSON.parse(decisionLog ?? "{}").selected).toBe("school");
+		expect(decisionLog).not.toContain("secret-");
+		expect(h.alerts.some((alert) => alert.kind === "quota_no_target")).toBe(
+			false,
+		);
+		expect(
+			h.alerts.some((alert) => alert.kind === "quota_blocked_recovered"),
+		).toBe(false);
+	});
+
 	it("keeps a live-verified candidate eligible when observation projection fails", async () => {
 		const nextStore = store();
 		nextStore.accounts.find((entry) => entry.name === "business")!.authExpired =
@@ -1781,6 +1902,59 @@ describe("pollOnce", () => {
 		);
 	});
 
+	it("maps a cooldown fallback rejected by the executor's locked quota reread to an explicit no-target alert", async () => {
+		const nextStore: AccountStore = {
+			generation: 5,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{
+					name: "school",
+					quotaExhaustedUntil: null,
+					switchCooldownUntil: "2026-07-14T23:00:00.000Z",
+					weeklyResetAt: WEEK_RESET,
+					observedSevenDPct: 33,
+				},
+				{
+					name: "business",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: null,
+					authExpired: true,
+				},
+			],
+		};
+		h.credentials.personal = {
+			accessToken: "secret-personal",
+			expiresAt: NOW + 3_600_000,
+		};
+		h.setStore(nextStore);
+		h.setIdentity("personal", 5);
+		h.deps.state = {
+			...emptyQuotaMonitorState(5),
+			lastSwitchAt: NOW - 30 * 60_000,
+		};
+		h.usages.set("secret-personal", usage(94, 100));
+		h.usages.set("secret-school", usage(93, 33));
+		h.switchImpl.mockResolvedValueOnce({
+			outcome: "no_account",
+			earliestReset: WEEK_RESET,
+			reasonCode: "target_quota_exhausted",
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("no_target");
+		expect(h.alerts.at(-1)).toMatchObject({
+			kind: "quota_no_target",
+			body: expect.stringContaining(
+				"fallback tried=school; refused=target_quota_exhausted",
+			),
+		});
+		expect(
+			h.alerts.some((alert) => alert.kind === "account_switch_failed"),
+		).toBe(false);
+	});
+
 	it("persists and reports atomic-apply contract evidence without attempting reconcile", async () => {
 		h.usages.set("secret-shopping", usage(95, 20));
 		const detail =
@@ -1947,6 +2121,58 @@ describe("pollOnce", () => {
 		expect(
 			h.alerts.some((alert) => alert.kind === "account_switch_failed"),
 		).toBe(false);
+	});
+
+	it("intersects cooldown fallback authority with the preferred targets left after drift reconciliation", async () => {
+		h.switchImpl
+			.mockResolvedValueOnce({
+				outcome: "failed",
+				reason: "drift",
+				reasonCode: "active_marker_drift",
+			})
+			.mockResolvedValueOnce({
+				outcome: "switched",
+				from: "school",
+				to: "business",
+				generation: 6,
+			});
+		h.reconcileMachine.mockImplementationOnce(async () => {
+			const next = store();
+			next.generation = 5;
+			next.activeAccount = "school";
+			h.setStore(next);
+			h.setIdentity("school", 5);
+			return {
+				ok: true,
+				outcome: "repaired",
+				from: "shopping",
+				to: "school",
+				exitCode: 0,
+				detail: "",
+			};
+		});
+
+		const result = await attemptSwitchWithDriftRecovery(h.deps, {
+			trigger: { kind: "quota", scope: "weekly", resetAt: WEEK_RESET },
+			observedAccount: "shopping",
+			observedGeneration: 4,
+			now: new Date(NOW),
+			preferredOrder: ["school", "business"],
+			verifiedAt: new Date(NOW).toISOString(),
+			quotaPreverified: true,
+			cooldownFallbacks: ["school"],
+		});
+
+		expect(result.switched).toMatchObject({
+			outcome: "switched",
+			to: "business",
+		});
+		expect(h.switchImpl.mock.calls[1]?.[0]).toMatchObject({
+			observedAccount: "school",
+			observedGeneration: 5,
+			preferredOrder: ["business"],
+		});
+		expect(h.switchImpl.mock.calls[1]?.[0].cooldownFallbacks).toBeUndefined();
 	});
 
 	it("does not retry when reconcile makes the sole preferred target active", async () => {
@@ -2237,6 +2463,95 @@ describe("pollOnce", () => {
 		const delivered = h.events.indexOf("alert:quota_no_target");
 		expect(persisted).toBeGreaterThanOrEqual(0);
 		expect(persisted).toBeLessThan(delivered);
+	});
+
+	it("persists a token-safe cooldown refusal and reuses it for a post-restart blocked delivery", async () => {
+		const nextStore: AccountStore = {
+			generation: 5,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{
+					name: "school",
+					quotaExhaustedUntil: null,
+					switchCooldownUntil: "2026-07-14T23:00:00.000Z",
+					weeklyResetAt: WEEK_RESET,
+					observedSevenDPct: 33,
+				},
+				{
+					name: "business",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: null,
+					authExpired: true,
+				},
+			],
+		};
+		h.credentials.personal = {
+			accessToken: "secret-personal",
+			expiresAt: NOW + 3_600_000,
+		};
+		h.setStore(nextStore);
+		h.setIdentity("personal", 5);
+		h.deps.state = {
+			...emptyQuotaMonitorState(5),
+			lastSwitchAt: NOW - 30 * 60_000,
+		};
+		h.usages.set("secret-personal", usage(94, 100));
+		h.verifyCandidate.mockImplementation(async (name) =>
+			name === "school"
+				? {
+						fresh: "stale",
+						reason: "refresh refused token=FAKETOKEN",
+					}
+				: { fresh: "refreshed", expiresAt: NOW + 3_600_000 },
+		);
+
+		let result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("no_target");
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(h.alerts.at(-1)?.body).toContain(
+			"no_target: all keys unusable, founder action needed",
+		);
+		expect(h.alerts.at(-1)?.body).toContain(
+			"fallback tried=school; refused=freshness_stale: refresh refused <redacted>",
+		);
+		expect(h.alerts.at(-1)?.body).not.toContain("FAKETOKEN");
+		expect(
+			vi
+				.mocked(h.deps.log)
+				.mock.calls.map(([line]) => line)
+				.join("\n"),
+		).not.toContain("FAKETOKEN");
+		expect(result.state.blockedEpisode).toMatchObject({
+			fallbackName: "school",
+			fallbackReason: "freshness_stale: refresh refused <redacted>",
+		});
+
+		const reloaded = structuredClone(result.state);
+		if (reloaded.blockedEpisode === null) throw new Error("missing episode");
+		reloaded.blockedEpisode.blockedRound += 1;
+		reloaded.blockedEpisode.activeDelivery = {
+			kind: "blocked",
+			round: reloaded.blockedEpisode.blockedRound,
+			attempts: 0,
+			lastAttemptAt: null,
+		};
+		h.setNow(NOW + 31 * 60_000);
+		reloaded.backoffUntilMs = NOW + 40 * 60_000;
+		h.deps.state = reloaded;
+
+		result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("backoff");
+		expect(h.alerts.at(-1)?.signature).toMatch(/-r2-a0$/);
+		expect(h.alerts.at(-1)?.body).toContain(
+			"no_target: all keys unusable, founder action needed",
+		);
+		expect(h.alerts.at(-1)?.body).toContain(
+			"fallback tried=school; refused=freshness_stale: refresh refused <redacted>",
+		);
+		expect(h.alerts.at(-1)?.body).not.toContain("FAKETOKEN");
 	});
 
 	it("retries an unconfirmed no-target round with a new attempt signature before backoff", async () => {

@@ -21,6 +21,7 @@ import {
 	relative,
 	resolve,
 } from "node:path";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import { getModelConfigSnapshot } from "flywheel-config";
 import type {
 	ManagedValue,
@@ -69,7 +70,14 @@ const DEFAULT_IO: ManagementCronWriterIo = {
 	unlink: (path) => unlinkSync(path),
 	chmod: (path, mode) => chmodSync(path, mode),
 	chown: (path, uid, gid) => chownSync(path, uid, gid),
-	execFile: (file, args) => execFileSync(file, [...args], { encoding: "utf8" }),
+	execFile: (file, args) =>
+		withSyncOpMarker("management-cron-writer:exec", () =>
+			execFileSync(file, [...args], {
+				encoding: "utf8",
+				timeout: 10_000,
+				killSignal: "SIGKILL",
+			}),
+		),
 	randomId: () => randomUUID(),
 	processAlive: (pid) => {
 		try {

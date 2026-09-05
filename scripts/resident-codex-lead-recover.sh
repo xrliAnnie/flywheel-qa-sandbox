@@ -76,6 +76,9 @@ done
 [ -r "$SCRIPT_DIR/lib/lead-restart-lifecycle.sh" ] || fail 10 "restart authority library is unavailable"
 # shellcheck source=lib/lead-restart-lifecycle.sh
 source "$SCRIPT_DIR/lib/lead-restart-lifecycle.sh"
+[ -r "$SCRIPT_DIR/lib/lead-address.sh" ] || fail 10 "lead address library is unavailable"
+# shellcheck source=lib/lead-address.sh
+source "$SCRIPT_DIR/lib/lead-address.sh"
 
 load_authority() {
 	lead_restart_validate_authority \
@@ -84,22 +87,23 @@ load_authority() {
 		&& [ "$LEAD_RESTART_PROJECT" = "$PROJECT" ] \
 		&& [ "$LEAD_RESTART_LEAD_ID" = "$LEAD_ID" ] \
 		&& [ "$LEAD_RESTART_LABEL" = "$LABEL" ] || return 1
-	local plist_wrapper
+	local plist_wrapper codex_home_key
 	plist_wrapper="$(_lead_restart_plist_json "$PLIST_FILE" | jq -er '.argv[1]')" || return 1
 	WRAPPER="${plist_wrapper##*/}"
 	[ "$plist_wrapper" = "$HOME_ROOT/.flywheel/bin/$WRAPPER" ] || return 1
 	case "$WRAPPER" in
 		flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh)
-			EXPECTED_CODEX_HOME="$HOME_ROOT/.codex-mufasa"
+			codex_home_key=mufasa
 			;;
 		flywheel-codex-lead-wrapper-codex-infra-bot.sh)
-			EXPECTED_CODEX_HOME="$HOME_ROOT/.codex-infra-bot"
+			codex_home_key=infra-bot
 			;;
 		flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh)
-			EXPECTED_CODEX_HOME="$HOME_ROOT/.flywheel/raya/codex-home"
+			codex_home_key=raya
 			;;
 		*) return 1 ;;
 	esac
+	EXPECTED_CODEX_HOME="$(derive_codex_lead_home "$codex_home_key" "$HOME_ROOT")" || return 1
 	jq -e --arg project "$PROJECT" --arg lead "$LEAD_ID" '
 		[.[] | select(.projectName == $project) | (.leads // [])[] |
 		 select(.agentId == $lead)] as $matches |

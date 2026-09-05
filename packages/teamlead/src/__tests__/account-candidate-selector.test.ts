@@ -254,6 +254,64 @@ describe("verifyAndRankCandidates", () => {
 		);
 	});
 
+	it("admits one live 5h cooldown fallback for a 7d-dominant source", async () => {
+		const h = harness();
+		const business = h.snapshot.store.accounts.find(
+			(account) => account.name === "business",
+		);
+		expect(business).toBeDefined();
+		if (!business) return;
+		business.switchCooldownUntil = new Date(NOW + 60_000).toISOString();
+		h.usages.set("secret-business", usage(95, 20, "2026-09-02T17:00:00.000Z"));
+
+		const result = await verifyAndRankCandidates(h.deps, h.snapshot, {
+			onlyNames: ["business"],
+			cooldownPolicy: "fallback_explicit_target",
+			cooldownFallbackSourceWindow: "7d",
+			headroomPolicy: { kind: "prefer_below_trigger", trigger5hPct: 90 },
+		});
+
+		expect(result.ranked).toEqual(["business"]);
+		expect(result.cooldownFallbacks).toEqual(["business"]);
+		expect(result.panorama).toContainEqual(
+			expect.objectContaining({
+				name: "business",
+				status: "qualified_low_headroom_cooldown_fallback",
+				excludedBy: null,
+				bypassed: { cooldown: true },
+			}),
+		);
+	});
+
+	it("refuses a cooldown fallback when source and target are both 5h-hot", async () => {
+		const h = harness();
+		const business = h.snapshot.store.accounts.find(
+			(account) => account.name === "business",
+		);
+		expect(business).toBeDefined();
+		if (!business) return;
+		business.switchCooldownUntil = "2026-09-01T21:00:00.000Z";
+		business.weeklyResetAt = "2026-09-04T21:00:00.000Z";
+		h.usages.set("secret-business", usage(95, 20, "2026-09-02T17:00:00.000Z"));
+
+		const result = await verifyAndRankCandidates(h.deps, h.snapshot, {
+			onlyNames: ["business"],
+			cooldownPolicy: "fallback_explicit_target",
+			cooldownFallbackSourceWindow: "5h",
+			headroomPolicy: { kind: "prefer_below_trigger", trigger5hPct: 90 },
+		});
+
+		expect(result.ranked).toEqual([]);
+		expect(result.cooldownFallbacks).toEqual([]);
+		expect(result.panorama).toContainEqual(
+			expect.objectContaining({
+				name: "business",
+				status: "cooldown_fallback_same_window",
+				excludedBy: "cooldown",
+			}),
+		);
+	});
+
 	it("uses high-5h candidates only when the healthy set is empty", async () => {
 		const h = harness();
 		h.usages.set("secret-school", usage(95, 20, "2026-09-02T15:00:00.000Z"));

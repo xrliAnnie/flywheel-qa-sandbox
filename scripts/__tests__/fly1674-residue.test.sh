@@ -39,6 +39,7 @@ allowed_hits=(
   'scripts/__tests__/lead-patrol-snapshot.test.sh|three_stage_turn'
   'packages/teamlead/src/__tests__/patrol-tick-loop.integration.test.ts|three_stage_turn'
   'packages/teamlead/src/bridge/hook-payload.ts|three_stage_turn'
+  'packages/teamlead/src/__tests__/fly2268-mechanism-guards.test.ts|three_stage_turn'
   # FLY-2278 keeps its approved turn-wake hold/event identifier stable while
   # leaving the old dispatcher implementation retired. Keep this exception exact by
   # path and token so no other live three-stage surface is admitted.

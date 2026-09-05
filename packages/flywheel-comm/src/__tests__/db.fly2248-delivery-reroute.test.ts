@@ -326,6 +326,43 @@ describe("FLY-2248 sanctioned CommDB hold recovery", () => {
 });
 
 describe("FLY-2278 bounded delivery projection", () => {
+	it("returns recipient inflight aggregates from a single mailbox lookup", () => {
+		const db = new CommDB(":memory:");
+		databases.push(db);
+		db.registerSession("recipient", "window", "flywheel", "FLY-2339", "lead");
+		db.insertInstructionWithId("mail-target", "lead", "recipient", "target");
+		db.insertInstructionWithId("mail-peer", "lead", "recipient", "peer");
+		const raw = (db as unknown as { db: Database.Database }).db;
+		const update = raw.prepare(
+			`UPDATE mailbox
+			    SET state = 'LEASED', delivered_at = ?, claim_expires_at = ?, batch_id = ?
+			  WHERE id = ?`,
+		);
+		update.run(
+			"2026-09-04T20:00:00.000Z",
+			"2026-09-04T21:00:00.000Z",
+			"batch-a",
+			"mail-target",
+		);
+		update.run(
+			"2026-09-04T20:01:00.000Z",
+			"2026-09-04T21:00:00.000Z",
+			"batch-b",
+			"mail-peer",
+		);
+
+		expect(
+			db.getRunnerDeliveryProjectionRow(
+				"mail-target",
+				"2026-09-04T20:30:00.000Z",
+			),
+		).toMatchObject({
+			id: "mail-target",
+			inflight_batch_count: 2,
+			oldest_inflight_delivered_at: "2026-09-04T20:00:00.000Z",
+		});
+	});
+
 	it("keeps recent terminal clocks visible but excludes terminal history past retention", () => {
 		const db = new CommDB(":memory:");
 		databases.push(db);
@@ -403,6 +440,36 @@ describe("FLY-2278 bounded delivery projection", () => {
 				)
 				.map(({ wake_id }) => wake_id),
 		).toEqual(["turn-acked", "turn-cancelled", "turn-live"]);
+		const mailboxPage = db.listRunnerDeliveryProjectionRows(
+			"2026-09-03T08:02:00.000Z",
+			{ limit: 2 },
+		);
+		expect(
+			db.listRunnerDeliveryProjectionRows("2026-09-03T08:02:00.000Z", {
+				afterSeq: mailboxPage[1]!.seq,
+				limit: 2,
+			}),
+		).toHaveLength(2);
+		const phasePage = db.listRunnerPhaseWakeProjectionRows(
+			Date.parse("2026-09-03T08:02:00.000Z"),
+			{ limit: 1 },
+		);
+		expect(
+			db.listRunnerPhaseWakeProjectionRows(
+				Date.parse("2026-09-03T08:02:00.000Z"),
+				{ afterQueueSeq: phasePage[0]!.queue_seq, limit: 1 },
+			),
+		).toHaveLength(1);
+		const turnPage = db.listRunnerTurnWakeProjectionRows(
+			Date.parse("2026-09-03T08:02:00.000Z"),
+			{ limit: 2 },
+		);
+		expect(
+			db.listRunnerTurnWakeProjectionRows(
+				Date.parse("2026-09-03T08:02:00.000Z"),
+				{ afterQueueSeq: turnPage[1]!.queue_seq, limit: 2 },
+			),
+		).toHaveLength(1);
 
 		raw
 			.prepare(
@@ -447,5 +514,32 @@ describe("FLY-2278 bounded delivery projection", () => {
 				)
 				.map(({ wake_id }) => wake_id),
 		).toEqual(["turn-live"]);
+		expect(
+			db.getRunnerDeliveryProjectionRow(
+				"mail-acked",
+				"2026-09-03T08:02:00.000Z",
+				true,
+			),
+		).toBeUndefined();
+		expect(
+			db.getRunnerPhaseWakeProjectionRow(
+				"phase-finished",
+				Date.parse("2026-09-03T08:02:00.000Z"),
+				true,
+			),
+		).toBeUndefined();
+		expect(
+			db.getRunnerTurnWakeProjectionRow(
+				"turn-acked",
+				Date.parse("2026-09-03T08:02:00.000Z"),
+				true,
+			),
+		).toBeUndefined();
+		expect(
+			db.getRunnerDeliveryProjectionRow(
+				"mail-acked",
+				"2026-09-03T08:02:00.000Z",
+			),
+		).toBeDefined();
 	});
 });

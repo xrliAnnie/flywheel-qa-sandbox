@@ -597,14 +597,24 @@ describe("Bridge maintenance wiring", () => {
 		);
 		const guard = source.indexOf("if (!worktreeAutocleanEnabled()) return;");
 		const candidateSnapshot = source.lastIndexOf(
-			"const codexCandidateSnapshot = store.getReadoptCandidateSessions();",
+			"const codexCandidateSnapshot = withSyncOpMarker(",
 			guard,
+		);
+		const candidateMarker = source.indexOf(
+			'"maintenance:readopt-candidates"',
+			candidateSnapshot,
+		);
+		const candidateRead = source.indexOf(
+			"store.getReadoptCandidateSessions()",
+			candidateMarker,
 		);
 		const codexSweep = source.indexOf("await sweepCodexRunnerOrphans(", guard);
 		const mcpSweep = source.indexOf("await reapMcpOrphans(", guard);
 
 		expect(candidateSnapshot).toBeGreaterThan(-1);
-		expect(candidateSnapshot).toBeLessThan(guard);
+		expect(candidateMarker).toBeGreaterThan(candidateSnapshot);
+		expect(candidateRead).toBeGreaterThan(candidateMarker);
+		expect(candidateRead).toBeLessThan(guard);
 		expect(guard).toBeGreaterThan(-1);
 		expect(codexSweep).toBeGreaterThan(guard);
 		expect(mcpSweep).toBeGreaterThan(codexSweep);

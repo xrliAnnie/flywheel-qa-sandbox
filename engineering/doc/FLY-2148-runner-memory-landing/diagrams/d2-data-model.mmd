@@ -1,0 +1,12 @@
+flowchart TB
+  ARM["Bridge 起 runner 时选臂<br/>off / role / shared"]
+  ARM -- "role 臂才挂载" --> R["盘上角色目录(B0 已有)<br/>~/.flywheel/runner-memory/flywheel/qa/"]
+  ARM -- "三个臂都记" --> C1["sessions.runner_memory_arm<br/>off / role / shared"]
+  R --> IDX["MEMORY.md 短索引<br/>一行一条指针<br/>启动只装前 200 行 / 25KB"]
+  R --> T1["topic-a.md / topic-b.md …<br/>一事一文件, 带 name / description / type 头"]
+  R -. "路径 → runner 环境变量" .-> E1["FLYWHEEL_RUNNER_MEMORY_DIR<br/>(B0 已有)"]
+  IDX -. "起跑时量一次 → runner 环境变量" .-> E2["FLYWHEEL_RUNNER_MEMORY_SNAPSHOT<br/>(B1 新增) 行数 / 字节 / 指纹 / 正文文件数"]
+  E1 -. "同一份路径" .-> C2["sessions.runner_memory_dir"]
+  E2 -. "同一份对象" .-> C3["sessions.runner_memory_spawn<br/>起跑快照 JSON"]
+  IDX -. "收口时再量一次, 与快照比对 ⇒ 三态" .-> C4["sessions.runner_memory_closeout<br/>written / unchanged / over_budget / unmeasurable<br/>(独立列, 可直接 SQL 查)"]
+  C4 -. "细节" .-> C5["sessions.runner_memory_receipt<br/>回执全文 JSON"]

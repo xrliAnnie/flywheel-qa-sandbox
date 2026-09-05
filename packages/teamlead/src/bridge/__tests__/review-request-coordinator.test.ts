@@ -115,6 +115,7 @@ interface Harness {
 		sessionId: string;
 		resume: boolean;
 		prompt: string;
+		cwd: string;
 		effort?: string;
 	}>;
 	/** FLY-1257 HIGH-1: capture of markGateAnswered(questionId, executionId). */
@@ -137,9 +138,11 @@ async function makeHarness(
 			sessionId: string;
 			resume: boolean;
 			prompt: string;
+			cwd: string;
 			effort?: string;
 		}) => Promise<ClaudeReviewOutcome>;
 		deriveHead?: (path: string) => Promise<string | null>;
+		deriveRepoIdentity?: (path: string) => Promise<string>;
 		quotaAutoRetryEnabled?: () => boolean;
 		openCommDb?: (comm: FakeCommDb) => ReviewCommDb;
 	} = {},
@@ -169,6 +172,7 @@ async function makeHarness(
 				sessionId: inv.sessionId,
 				resume: inv.resume,
 				prompt: inv.prompt,
+				cwd: inv.cwd,
 				effort: inv.effort,
 			};
 			invocations.push(invocation);
@@ -184,6 +188,8 @@ async function makeHarness(
 			if (harnessOpts.deriveHead) return harnessOpts.deriveHead(path);
 			return head;
 		},
+		deriveRepoIdentity:
+			harnessOpts.deriveRepoIdentity ?? (async () => "geoforge3d/flywheel"),
 		listActiveReviewFindingRulings: ({ projectName, issueId }) =>
 			store
 				.listActiveReviewFindingRulings(projectName, issueId)
@@ -668,6 +674,7 @@ describe("ReviewRequestCoordinator.accept — validation (fail-close)", () => {
 		expect(h.store.getCodexReviewJob("binding-authority")).toMatchObject({
 			target_repo_path: "/authority/worktree",
 			target_repo_identity: "__main__",
+			reuse_repo_identity: "geoforge3d/flywheel",
 		});
 	});
 });
@@ -935,6 +942,7 @@ describe("ReviewRequestCoordinator — job execution", () => {
 			`You are the CROSS-FAMILY REVIEWER for FLY-1188 ` +
 			`(a codex-authored change; you are the independent Claude lane). ` +
 			`Actively explore this repository — do not rely on any diff alone. ` +
+			`Run only single-package tests for the changed package and related test files. Never run \`pnpm -r\`. ` +
 			`When done, output ONLY a JSON object: {"verdict": "APPROVED" | "CHANGES_REQUESTED", ` +
 			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
 			`"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"}. ` +
@@ -966,6 +974,10 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		});
 		await settle();
 		const prompt = enabled.invocations[0]?.prompt ?? "";
+		expect(prompt).toContain(
+			"Run only single-package tests for the changed package and related test files.",
+		);
+		expect(prompt).toContain("Never run `pnpm -r`");
 		expect(prompt).toContain("CHANGES_REQUESTED ONLY");
 		expect(prompt).toContain(
 			"correctness, security, data loss, or authorization",
@@ -2806,6 +2818,7 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
 			deriveHead: async () => currentHead,
+			deriveRepoIdentity: async () => "geoforge3d/flywheel",
 			reviewRound: async () => {
 				calls += 1;
 				if (calls > 1) {
@@ -2855,6 +2868,141 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 });
 
 describe("ReviewRequestCoordinator — boot redrive", () => {
+	it("redelivers a completed job to an undelivered reused gate without re-review", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		registerSession(h.store, "e2");
+		openGate(h.comm, "q-e2", "e2", "review_code");
+		h.store.insertCodexReviewJob({
+			requestId: "source",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q-e1",
+			frozenHeadSha: HEAD,
+			authorFamily: "codex",
+		});
+		h.store.claimCodexReviewJobRunning("source");
+		h.store.completeCodexReviewJob("source", "APPROVED", "[]");
+		h.store.stampCodexReviewJobResponded("source");
+		h.store.insertCodexReviewReuseBinding({
+			requestId: "reused",
+			sourceRequestId: "source",
+			executionId: "e2",
+			questionId: "q-e2",
+		});
+
+		expect(h.coordinator.redriveOnBoot()).toBe(0);
+		await settle();
+
+		expect(h.invocations).toHaveLength(0);
+		expect(
+			JSON.parse(h.comm.getResponse("q-e2")?.content ?? "null"),
+		).toMatchObject({
+			reviewVerdict: "APPROVED",
+			requestId: "reused",
+			reviewedHeadSha: HEAD,
+		});
+		expect(h.store.isCodexCodeReviewApproved("e2", HEAD)).toBe(true);
+	});
+
+	it("does not inherit a skipped source verdict and releases the bound gate to its own lane", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		registerSession(h.store, "e2", { bindingPath: "/fake/e2" });
+		openGate(h.comm, "q-e2", "e2", "review_code");
+		h.store.insertCodexReviewJob({
+			requestId: "source-skipped",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q-e1",
+			frozenHeadSha: HEAD,
+			authorFamily: "codex",
+			status: "skipped",
+		});
+		h.store.insertCodexReviewReuseBinding({
+			requestId: "reused",
+			sourceRequestId: "source-skipped",
+			executionId: "e2",
+			questionId: "q-e2",
+			targetRepoPath: "/fake/e2",
+			frozenHeadSha: HEAD,
+		});
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+
+		h.coordinator.redriveOnBoot();
+		await settle();
+
+		expect(h.invocations).toHaveLength(1);
+		expect(h.store.getCodexReviewReuseBinding("reused")).toMatchObject({
+			release_reason: "source_skipped",
+			released_at: expect.any(String),
+		});
+		expect(
+			JSON.parse(h.comm.getResponse("q-e2")?.content ?? "null"),
+		).toMatchObject({ reviewVerdict: "APPROVED", requestId: "reused" });
+	});
+
+	it("releases a failed source binding after a Bridge restart", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		registerSession(h.store, "e2", { bindingPath: "/fake/e2" });
+		openGate(h.comm, "q-e2", "e2", "review_code");
+		h.store.insertCodexReviewJob({
+			requestId: "source-failed",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q-e1",
+			frozenHeadSha: HEAD,
+			authorFamily: "codex",
+		});
+		h.store.claimCodexReviewJobRunning("source-failed");
+		h.store.failCodexReviewJob("source-failed", "timeout");
+		h.store.insertCodexReviewReuseBinding({
+			requestId: "reused-after-boot",
+			sourceRequestId: "source-failed",
+			executionId: "e2",
+			questionId: "q-e2",
+			targetRepoPath: "/fake/e2",
+			frozenHeadSha: HEAD,
+		});
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+
+		h.coordinator.redriveOnBoot();
+		await settle();
+
+		expect(
+			h.store.getCodexReviewReuseBinding("reused-after-boot"),
+		).toMatchObject({
+			release_reason: "timeout",
+			released_at: expect.any(String),
+		});
+		expect(h.store.getCodexReviewJob("reused-after-boot")?.status).toBe("done");
+		expect(
+			JSON.parse(h.comm.getResponse("q-e2")?.content ?? "null"),
+		).toMatchObject({
+			reviewVerdict: "APPROVED",
+			requestId: "reused-after-boot",
+		});
+	});
+
 	it("stops self-healing after two moved-head successors", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
@@ -3038,6 +3186,425 @@ describe("ReviewRequestCoordinator — boot redrive", () => {
 });
 
 describe("ReviewRequestCoordinator — scheduling", () => {
+	it("reuses one running code-review job for two executions on the same issue and head", async () => {
+		const round = deferred<ClaudeReviewOutcome>();
+		const h = await makeHarness({ reviewRound: async () => round.promise });
+		for (const executionId of ["e1", "e2"]) {
+			registerSession(h.store, executionId, {
+				bindingPath: `/fake/${executionId}`,
+			});
+			openGate(h.comm, `q-${executionId}`, executionId, "review_code");
+		}
+
+		expect(
+			await h.coordinator.accept({
+				executionId: "e1",
+				requestId: "r1",
+				reviewType: "code",
+				questionId: "q-e1",
+			}),
+		).toMatchObject({ accepted: true, duplicate: false });
+		await settle();
+		expect(h.store.getCodexReviewJob("r1")?.status).toBe("running");
+
+		expect(
+			await h.coordinator.accept({
+				executionId: "e2",
+				requestId: "r2",
+				reviewType: "code",
+				questionId: "q-e2",
+			}),
+		).toMatchObject({ accepted: true, duplicate: true });
+		expect(
+			await h.coordinator.accept({
+				executionId: "e2",
+				requestId: "r2",
+				reviewType: "code",
+				questionId: "q-e2",
+			}),
+		).toMatchObject({ accepted: true, duplicate: true });
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		expect(h.store.getCodexReviewJob("r2")).toBeNull();
+		expect(h.store.getCodexReviewJobByQuestionId("q-e2")?.request_id).toBe(
+			"r1",
+		);
+
+		round.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await settle();
+
+		for (const [executionId, requestId] of [
+			["e1", "r1"],
+			["e2", "r2"],
+		] as const) {
+			const response = h.comm.getResponse(`q-${executionId}`);
+			expect(JSON.parse(response?.content ?? "null")).toMatchObject({
+				reviewVerdict: "APPROVED",
+				requestId,
+				reviewedHeadSha: HEAD,
+			});
+			expect(h.store.isCodexCodeReviewApproved(executionId, HEAD)).toBe(true);
+		}
+		expect(h.gateAnswers).toEqual([
+			{ questionId: "q-e1", executionId: "e1" },
+			{ questionId: "q-e2", executionId: "e2" },
+		]);
+	});
+
+	it("releases a reused request to its own lane when the source reviewer fails", async () => {
+		const rounds = [
+			deferred<ClaudeReviewOutcome>(),
+			deferred<ClaudeReviewOutcome>(),
+		];
+		let started = 0;
+		const h = await makeHarness({
+			reviewRound: async () => rounds[started++]!.promise,
+		});
+		for (const executionId of ["e1", "e2"]) {
+			registerSession(h.store, executionId, {
+				bindingPath: `/fake/${executionId}`,
+			});
+			openGate(h.comm, `q-${executionId}`, executionId, "review_code");
+		}
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q-e1",
+		});
+		await settle();
+		await h.coordinator.accept({
+			executionId: "e2",
+			requestId: "r2",
+			reviewType: "code",
+			questionId: "q-e2",
+		});
+
+		rounds[0]!.resolve({
+			kind: "failed",
+			reason: "timeout",
+			detail: "reviewer timed out",
+			exitCode: null,
+			timedOut: true,
+			raw: "timeout",
+		});
+		await settle();
+		await settle();
+		expect(h.invocations).toHaveLength(2);
+		expect(h.store.getCodexReviewReuseBinding("r2")).toMatchObject({
+			source_request_id: "r1",
+			release_reason: "timeout",
+			released_at: expect.any(String),
+		});
+		expect(h.store.getCodexReviewJob("r2")).toMatchObject({
+			execution_id: "e2",
+			question_id: "q-e2",
+			status: "running",
+			frozen_head_sha: HEAD,
+		});
+		rounds[1]!.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			repairedTrailingBrace: false,
+			raw: "",
+		});
+		await settle();
+
+		expect(
+			JSON.parse(h.comm.getResponse("q-e2")?.content ?? "null"),
+		).toMatchObject({
+			reviewVerdict: "APPROVED",
+			requestId: "r2",
+			reviewedHeadSha: HEAD,
+		});
+		expect(h.store.getCodexReviewReuseBinding("r2")?.released_at).toBeTruthy();
+		expect(h.store.getCodexReviewJob("r2")?.responded_at).toBeTruthy();
+	});
+
+	it("releases reuse bindings instead of following a source head-move successor", async () => {
+		const nextHead = "b".repeat(40);
+		const sourceRound = deferred<ClaudeReviewOutcome>();
+		const sourceSuccessorRound = deferred<ClaudeReviewOutcome>();
+		const reusedStandaloneRound = deferred<ClaudeReviewOutcome>();
+		const heads = new Map([
+			["/fake/e1", HEAD],
+			["/fake/e2", HEAD],
+		]);
+		const h = await makeHarness({
+			deriveHead: async (path) => heads.get(path) ?? null,
+			reviewRound: async ({ cwd }) => {
+				if (h.invocations.length === 1) return sourceRound.promise;
+				return cwd === "/fake/e1"
+					? sourceSuccessorRound.promise
+					: reusedStandaloneRound.promise;
+			},
+		});
+		for (const executionId of ["e1", "e2"]) {
+			registerSession(h.store, executionId, {
+				bindingPath: `/fake/${executionId}`,
+			});
+			openGate(h.comm, `q-${executionId}`, executionId, "review_code");
+		}
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q-e1",
+		});
+		await settle();
+		await h.coordinator.accept({
+			executionId: "e2",
+			requestId: "r2",
+			reviewType: "code",
+			questionId: "q-e2",
+		});
+		heads.set("/fake/e1", nextHead);
+		sourceRound.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			repairedTrailingBrace: false,
+			raw: "",
+		});
+		await settle();
+
+		const successor = h.store.getCodexReviewHeadMoveSuccessor("r1");
+		expect(successor).toMatchObject({
+			status: "running",
+			frozen_head_sha: nextHead,
+		});
+		expect(h.store.getCodexReviewReuseBinding("r2")).toMatchObject({
+			source_request_id: "r1",
+			release_reason: "head_moved",
+			released_at: expect.any(String),
+		});
+		expect(h.store.getCodexReviewJob("r2")).toMatchObject({
+			execution_id: "e2",
+			status: "running",
+			frozen_head_sha: HEAD,
+		});
+		expect(h.invocations).toHaveLength(3);
+
+		reusedStandaloneRound.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			repairedTrailingBrace: false,
+			raw: "",
+		});
+		await settle();
+		expect(
+			JSON.parse(h.comm.getResponse("q-e2")?.content ?? "null"),
+		).toMatchObject({
+			reviewVerdict: "APPROVED",
+			requestId: "r2",
+			reviewedHeadSha: HEAD,
+		});
+		sourceSuccessorRound.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: nextHead,
+			repairedTrailingBrace: false,
+			raw: "",
+		});
+		await settle();
+	});
+
+	it("releases a reused request when the source gate is cancelled", async () => {
+		const rounds = [
+			deferred<ClaudeReviewOutcome>(),
+			deferred<ClaudeReviewOutcome>(),
+		];
+		let started = 0;
+		const h = await makeHarness({
+			reviewRound: async () => rounds[started++]!.promise,
+		});
+		for (const executionId of ["e1", "e2"]) {
+			registerSession(h.store, executionId, {
+				bindingPath: `/fake/${executionId}`,
+			});
+			openGate(h.comm, `q-${executionId}`, executionId, "review_code");
+		}
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q-e1",
+		});
+		await settle();
+		await h.coordinator.accept({
+			executionId: "e2",
+			requestId: "r2",
+			reviewType: "code",
+			questionId: "q-e2",
+		});
+
+		h.comm.insertResponse("q-e1", "lead", "cancelled");
+		rounds[0]!.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			repairedTrailingBrace: false,
+			raw: "",
+		});
+		await settle();
+
+		expect(h.store.getCodexReviewJob("r1")).toMatchObject({
+			status: "failed",
+			failure_reason: "gate_answered_externally",
+		});
+		expect(h.store.getCodexReviewJob("r2")).toMatchObject({
+			execution_id: "e2",
+			status: "running",
+		});
+		expect(h.store.getCodexReviewReuseBinding("r2")).toMatchObject({
+			release_reason: "gate_answered_externally",
+			released_at: expect.any(String),
+		});
+
+		rounds[1]!.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			repairedTrailingBrace: false,
+			raw: "",
+		});
+		await settle();
+		expect(
+			JSON.parse(h.comm.getResponse("q-e2")?.content ?? "null"),
+		).toMatchObject({ reviewVerdict: "APPROVED", requestId: "r2" });
+	});
+
+	it("rechecks the bound execution head and reviews its moved head independently", async () => {
+		const movedHead = "b".repeat(40);
+		const heads = new Map([
+			["/fake/e1", HEAD],
+			["/fake/e2", HEAD],
+		]);
+		const rounds = [
+			deferred<ClaudeReviewOutcome>(),
+			deferred<ClaudeReviewOutcome>(),
+		];
+		let started = 0;
+		const h = await makeHarness({
+			deriveHead: async (path) => heads.get(path) ?? null,
+			reviewRound: async () => rounds[started++]!.promise,
+		});
+		for (const executionId of ["e1", "e2"]) {
+			registerSession(h.store, executionId, {
+				bindingPath: `/fake/${executionId}`,
+			});
+			openGate(h.comm, `q-${executionId}`, executionId, "review_code");
+		}
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q-e1",
+		});
+		await settle();
+		await h.coordinator.accept({
+			executionId: "e2",
+			requestId: "r2",
+			reviewType: "code",
+			questionId: "q-e2",
+		});
+
+		heads.set("/fake/e2", movedHead);
+		rounds[0]!.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			repairedTrailingBrace: false,
+			raw: "",
+		});
+		await settle();
+
+		expect(h.comm.getResponse("q-e1")).toBeDefined();
+		expect(h.comm.getResponse("q-e2")).toBeUndefined();
+		expect(h.store.isCodexCodeReviewApproved("e2", HEAD)).toBe(false);
+		expect(h.store.getCodexReviewReuseBinding("r2")).toMatchObject({
+			release_reason: "head_moved",
+			released_at: expect.any(String),
+		});
+		expect(h.store.getCodexReviewJob("r2")).toMatchObject({
+			status: "running",
+			frozen_head_sha: movedHead,
+		});
+
+		rounds[1]!.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: movedHead,
+			repairedTrailingBrace: false,
+			raw: "",
+		});
+		await settle();
+		expect(
+			JSON.parse(h.comm.getResponse("q-e2")?.content ?? "null"),
+		).toMatchObject({
+			reviewVerdict: "APPROVED",
+			requestId: "r2",
+			reviewedHeadSha: movedHead,
+		});
+		expect(h.store.isCodexCodeReviewApproved("e2", movedHead)).toBe(true);
+	});
+
+	it("does not reuse a running code-review job for a different frozen head", async () => {
+		const otherHead = "b".repeat(40);
+		const rounds = [
+			deferred<ClaudeReviewOutcome>(),
+			deferred<ClaudeReviewOutcome>(),
+		];
+		let started = 0;
+		const h = await makeHarness({
+			deriveHead: async (path) => (path.endsWith("e2") ? otherHead : HEAD),
+			reviewRound: async () => rounds[started++]!.promise,
+		});
+		for (const executionId of ["e1", "e2"]) {
+			registerSession(h.store, executionId, {
+				bindingPath: `/fake/${executionId}`,
+			});
+			openGate(h.comm, `q-${executionId}`, executionId, "review_code");
+			await h.coordinator.accept({
+				executionId,
+				requestId: `r-${executionId}`,
+				reviewType: "code",
+				questionId: `q-${executionId}`,
+			});
+			await settle();
+		}
+
+		expect(h.invocations).toHaveLength(2);
+		for (const [index, reviewedHeadSha] of [HEAD, otherHead].entries()) {
+			rounds[index]!.resolve({
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha,
+				raw: "",
+			});
+		}
+		await settle();
+	});
+
 	it("starts ten distinct executions without a coordinator-wide concurrency ceiling", async () => {
 		const rounds = Array.from({ length: 10 }, () =>
 			deferred<ClaudeReviewOutcome>(),
@@ -3076,6 +3643,52 @@ describe("ReviewRequestCoordinator — scheduling", () => {
 		for (let index = 0; index < rounds.length; index += 1) {
 			expect(h.store.getCodexReviewJob(`r${index}`)?.status).toBe("done");
 		}
+	});
+
+	it("does not reuse matching heads from different main repositories", async () => {
+		const rounds = [
+			deferred<ClaudeReviewOutcome>(),
+			deferred<ClaudeReviewOutcome>(),
+		];
+		let started = 0;
+		const h = await makeHarness({
+			deriveRepoIdentity: async (path) =>
+				path.endsWith("e1") ? "geoforge3d/flywheel" : "geoforge3d/other",
+			reviewRound: async () => rounds[started++]!.promise,
+		});
+		for (const executionId of ["e1", "e2"]) {
+			registerSession(h.store, executionId, {
+				bindingPath: `/fake/${executionId}`,
+			});
+			openGate(h.comm, `q-${executionId}`, executionId, "review_code");
+			await h.coordinator.accept({
+				executionId,
+				requestId: `r-${executionId}`,
+				reviewType: "code",
+				questionId: `q-${executionId}`,
+			});
+			await settle();
+		}
+
+		expect(h.invocations).toHaveLength(2);
+		expect(h.store.getCodexReviewReuseBinding("r-e2")).toBeNull();
+		expect(h.store.getCodexReviewJob("r-e1")?.reuse_repo_identity).toBe(
+			"geoforge3d/flywheel",
+		);
+		expect(h.store.getCodexReviewJob("r-e2")?.reuse_repo_identity).toBe(
+			"geoforge3d/other",
+		);
+		for (const round of rounds) {
+			round.resolve({
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: HEAD,
+				repairedTrailingBrace: false,
+				raw: "",
+			});
+		}
+		await settle();
 	});
 
 	it("keeps two requests from the same execution serial", async () => {
@@ -3690,7 +4303,9 @@ describe("R13 — terminal-state and delivery invariants", () => {
 	it("HIGH-2: committed request-bound authority is restored deterministically (no re-review)", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
+		registerSession(h.store, "e2", { bindingPath: "/fake/e2" });
 		openGate(h.comm, "q1");
+		openGate(h.comm, "q2", "e2", "review_code");
 		// simulate the crash window: authority committed, job still running
 		h.store.insertCodexReviewJob({
 			requestId: "r1",
@@ -3703,6 +4318,15 @@ describe("R13 — terminal-state and delivery invariants", () => {
 			authorFamily: "codex",
 		});
 		h.store.claimCodexReviewJobRunning("r1");
+		h.store.insertCodexReviewReuseBinding({
+			requestId: "r2",
+			sourceRequestId: "r1",
+			executionId: "e2",
+			questionId: "q2",
+			targetRepoPath: "/fake/e2",
+			targetRepoIdentity: "__main__",
+			frozenHeadSha: HEAD,
+		});
 		h.store.recordCodexReviewApproved({
 			executionId: "e1",
 			targetPrHeadSha: HEAD,
@@ -3720,6 +4344,13 @@ describe("R13 — terminal-state and delivery invariants", () => {
 		expect(job?.verdict).toBe("APPROVED");
 		const resp = h.comm.getResponse("q1");
 		expect(resp && JSON.parse(resp.content).reviewVerdict).toBe("APPROVED");
+		expect(
+			JSON.parse(h.comm.getResponse("q2")?.content ?? "null"),
+		).toMatchObject({
+			reviewVerdict: "APPROVED",
+			requestId: "r2",
+			reviewedHeadSha: HEAD,
+		});
 	});
 
 	it("MEDIUM-1: gate answered EXTERNALLY while the reviewer ran → verdict discarded, no authority", async () => {
@@ -3745,6 +4376,7 @@ describe("R13 — terminal-state and delivery invariants", () => {
 				};
 			},
 			deriveHead: async () => HEAD,
+			deriveRepoIdentity: async () => "geoforge3d/flywheel",
 			alertLead: (m) => h.alerts.push(m),
 			logger: () => {},
 		});
@@ -3888,6 +4520,7 @@ describe("R14 — ownership provenance + full post-review gate re-validation", (
 				};
 			},
 			deriveHead: async () => HEAD,
+			deriveRepoIdentity: async () => "geoforge3d/flywheel",
 			alertLead: (m) => h.alerts.push(m),
 			logger: () => {},
 		});
@@ -3935,6 +4568,7 @@ describe("R14 — ownership provenance + full post-review gate re-validation", (
 				};
 			},
 			deriveHead: async () => HEAD,
+			deriveRepoIdentity: async () => "geoforge3d/flywheel",
 			alertLead: (m) => h.alerts.push(m),
 			logger: () => {},
 		});
@@ -4055,6 +4689,7 @@ describe("R15 — unforgeable delivery + authority-follows-delivery", () => {
 				}
 				return HEAD;
 			},
+			deriveRepoIdentity: async () => "geoforge3d/flywheel",
 			alertLead: (m) => h.alerts.push(m),
 			logger: () => {},
 		});

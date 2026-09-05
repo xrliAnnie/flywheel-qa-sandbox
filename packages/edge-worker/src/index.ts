@@ -81,6 +81,7 @@ export { EdgeWorker } from "./EdgeWorker.js";
 export type {
 	EventEnvelope,
 	ExecutionEventEmitter,
+	RunnerMemorySelectionRecord,
 } from "./ExecutionEventEmitter.js";
 export { NoOpEventEmitter, TeamLeadClient } from "./ExecutionEventEmitter.js";
 export type { ExecutionEvidence } from "./ExecutionEvidenceCollector.js";

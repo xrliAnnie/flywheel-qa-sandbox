@@ -24,7 +24,12 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { normalizeOptionalBearer } from "flywheel-config";
+import {
+	formatRunnerMemoryCloseoutLine,
+	normalizeOptionalBearer,
+	type RunnerMemoryCloseoutReceipt,
+	sanitizeOneLine,
+} from "flywheel-config";
 import { CommDB } from "../db.js";
 import {
 	type DesignHtmlEvidence,
@@ -36,6 +41,7 @@ import {
 	resolveFounderReviewVerdictAtCommit,
 } from "../founder-review.js";
 import { createReadonlySqliteFounderReviewStateReader } from "../founder-review-sqlite.js";
+import { collectRunnerMemoryCloseout } from "../runner-memory-closeout.js";
 import { resolveRunnerStateDir } from "../runner-state.js";
 import { truncateCodePoints } from "../text-truncate.js";
 import { resolveStateDbPath } from "./verify-approval.js";
@@ -114,6 +120,8 @@ type Payload = {
 	reviewQuestionId?: string;
 	/** FLY-1404: minted only after the CLI proves committed issue-scoped HTML. */
 	designHtmlEvidence?: DesignHtmlEvidence;
+	/** FLY-2268: exact completion-drain challenge being acknowledged. */
+	drainReceipt?: { challengeId: string };
 	workflowActivation?: {
 		activationId: string;
 		runId: string;
@@ -121,6 +129,8 @@ type Payload = {
 		attempt: number;
 		turnEpoch: number;
 	};
+	/** FLY-2148: non-blocking runner-reported closeout measurement. */
+	runnerMemoryCloseout?: RunnerMemoryCloseoutReceipt;
 };
 
 export interface CompleteOpts {
@@ -134,6 +144,8 @@ export interface CompleteOpts {
 	targetRepo?: string;
 	/** FLY-191 Phase 2: questionId from `gate --no-block` (route=needs_review). */
 	questionId?: string;
+	/** FLY-2268: challenge id returned by a deferred completion attempt. */
+	drainReceipt?: string;
 }
 
 export function founderReviewCompletionBlockReason(input: {
@@ -175,6 +187,10 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	}
 	if (opts.targetRepo && opts.pr === undefined) {
 		console.error("--target-repo requires --pr");
+		process.exit(1);
+	}
+	if (opts.drainReceipt !== undefined && !opts.drainReceipt.trim()) {
+		console.error("--drain-receipt must be a non-empty challenge id");
 		process.exit(1);
 	}
 	// FLY-222 #1: no_code is a no-merge completion — reject contradictory flags
@@ -374,15 +390,36 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		}
 	}
 
+	let memoryReceipt: RunnerMemoryCloseoutReceipt | undefined;
+	try {
+		memoryReceipt = collectRunnerMemoryCloseout(process.env, {
+			prefix: "[complete]",
+		});
+		if (memoryReceipt) {
+			console.error(
+				formatRunnerMemoryCloseoutLine("[complete]", memoryReceipt),
+			);
+		}
+	} catch (error) {
+		console.error(
+			`[complete] runner-memory closeout skipped: ${sanitizeOneLine(error instanceof Error ? error.message : String(error), 200)}`,
+		);
+		memoryReceipt = undefined;
+	}
+
 	const payload: Payload = {
 		decision: { route: opts.route },
 		evidence,
 		sessionRole,
 		exitReason,
+		...(memoryReceipt ? { runnerMemoryCloseout: memoryReceipt } : {}),
 	};
 	if (summary) payload.summary = summary;
 	if (issueIdentifier) payload.issueIdentifier = issueIdentifier;
 	if (designHtmlEvidence) payload.designHtmlEvidence = designHtmlEvidence;
+	if (opts.drainReceipt?.trim()) {
+		payload.drainReceipt = { challengeId: opts.drainReceipt.trim() };
+	}
 	if (workflowActivation) {
 		payload.workflowActivation = {
 			activationId: workflowActivation.activation_id,
@@ -463,6 +500,10 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 						);
 					} else if (parsed.completionDisposition === "runner_ship_park") {
 						console.log("已 park 等待 ship gate;等 wake,勿自行轮询。");
+					} else if (parsed.completionDisposition === "loop_park") {
+						console.log(
+							"已 park 等待返工唤醒(常驻宽限 30 分钟);等 wake,勿自行轮询。",
+						);
 					}
 				} catch {
 					// A 2xx is authoritative; receipt guidance is best-effort compatibility.
@@ -487,6 +528,12 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 						? responseJson.error
 						: responseText.trim();
 			lastError = `Bridge returned ${response.status}${detail ? `: ${detail}` : ""}`;
+			if (
+				response.status === 409 &&
+				responseJson?.reason === "consume_pending_mail"
+			) {
+				printDrainRetryGuidance(responseJson, opts);
+			}
 			console.error(
 				`[complete] attempt ${attempt}/${ATTEMPT_COUNT} failed: ${lastError}`,
 			);
@@ -526,6 +573,45 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		`[complete] FAIL-CLOSE: ${attemptsMade} attempts failed. ${markerStatus} Last error: ${lastError}`,
 	);
 	process.exit(1);
+}
+
+function printDrainRetryGuidance(
+	response: Record<string, unknown>,
+	opts: CompleteOpts,
+): void {
+	const challengeId = response.challengeId;
+	if (
+		typeof challengeId !== "string" ||
+		!/^[A-Za-z0-9:._-]{1,512}$/.test(challengeId)
+	) {
+		console.error(
+			"[complete] completion is waiting for pending mail, but the Bridge returned an invalid drain challenge id",
+		);
+		return;
+	}
+	const mailbox = Array.isArray(response.mailbox)
+		? response.mailbox.filter((id): id is string => typeof id === "string")
+		: [];
+	const phaseWakes = Array.isArray(response.phaseWakes)
+		? response.phaseWakes.filter((id): id is string => typeof id === "string")
+		: [];
+	const retry = [
+		'node "$FLYWHEEL_COMM_CLI" complete',
+		`--route ${opts.route}`,
+		...(opts.pr !== undefined ? [`--pr ${opts.pr}`] : []),
+		...(opts.merged ? ["--merged"] : []),
+		...(opts.targetRepo
+			? [`--target-repo ${JSON.stringify(opts.targetRepo)}`]
+			: []),
+		...(opts.questionId
+			? [`--question-id ${JSON.stringify(opts.questionId)}`]
+			: []),
+		`--drain-receipt ${challengeId}`,
+	].join(" ");
+	console.error(
+		`[complete] completion deferred: acknowledge ${mailbox.length} mailbox item(s) and ${phaseWakes.length} wake(s) ` +
+			`(mailbox ${JSON.stringify(mailbox)} / phase-wake ${JSON.stringify(phaseWakes)}), then retry the exact challenge:\n  ${retry}`,
+	);
 }
 
 function writeRunnerStopBreadcrumb(args: {

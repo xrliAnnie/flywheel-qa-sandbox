@@ -42,6 +42,7 @@ import {
 	deliveryOperationStalledCopy,
 	deliveryRerouteOutcomeCopy,
 } from "./bridge/alert-kind-copy.js";
+import { RESIDENT_GRACE_MS } from "./bridge/resident-hold.js";
 import type {
 	DeliveryContractClassification,
 	WorkflowDeliveryAttemptRow,
@@ -57,6 +58,7 @@ import {
 	type HoldShapeDescriptor,
 } from "./bridge/hold-shape-registry.js";
 import {
+	DELIVERY_MAINTENANCE_PAGE_SIZE,
 	MAX_REROUTES_PER_ROOT,
 	STAGE_DEADLINES_MS,
 	UNDELIVERABLE_GRACE_MS,
@@ -286,6 +288,33 @@ export const WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS = 10 * 60_000;
 export const WORKFLOW_LAUNCH_HEARTBEAT_MS = 60_000;
 /** One durable cadence shared by rework and ship-carrier receipt probes. */
 export const WORKFLOW_DELIVERY_RECEIPT_REPROBE_MS = 3 * 60_000;
+export interface WorkflowResidentHoldRow {
+	execution_id: string;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	activation_id: string;
+	vendor: "claude" | "codex";
+	revision: number;
+	boundary_seq: number;
+	state: "resident" | "woken" | "expired" | "closed";
+	grace_started_at: string;
+	grace_expires_at: string;
+	closed_reason: string | null;
+	updated_at: string;
+}
+
+export interface WorkflowResidentExpiryOperation {
+	operationId: string;
+	executionId: string;
+	runId: string;
+	activationId: string;
+	nodeId: string;
+	attempt: number;
+	revision: number;
+	vendor: "claude" | "codex";
+	state: "staged" | "applied" | "sent";
+}
 
 export type WorkflowDeliveryAttemptVersion =
 	| { routeRevision: number }
@@ -1139,6 +1168,16 @@ export interface SessionUpsert {
 	merge_block_head?: string;
 	/** FLY-869 B-3: ISO timestamp the merge_block marker was written. */
 	merge_block_at?: string;
+	/** FLY-2148: runner-memory experiment arm and bounded evidence. */
+	runner_memory_arm?: "off" | "role" | "shared";
+	runner_memory_dir?: string;
+	runner_memory_spawn?: string;
+	runner_memory_closeout?:
+		| "written"
+		| "unchanged"
+		| "over_budget"
+		| "unmeasurable";
+	runner_memory_receipt?: string;
 }
 
 export interface Session {
@@ -1227,6 +1266,16 @@ export interface Session {
 	merge_block_head?: string;
 	/** FLY-869 B-3: ISO timestamp the merge_block marker was written. */
 	merge_block_at?: string;
+	/** FLY-2148: runner-memory experiment arm and bounded evidence. */
+	runner_memory_arm?: "off" | "role" | "shared";
+	runner_memory_dir?: string;
+	runner_memory_spawn?: string;
+	runner_memory_closeout?:
+		| "written"
+		| "unchanged"
+		| "over_budget"
+		| "unmeasurable";
+	runner_memory_receipt?: string;
 	/** FLY-245 D-a: monotonic revision incremented on every status transition.
 	 * The runner-lifecycle founder credential snapshots this; a stale confirmation
 	 * is rejected once it changes (plan §5.1). Defaults 0. */
@@ -1581,6 +1630,8 @@ export interface CodexReviewJob {
 	target_repo_path?: string;
 	/** `__main__` or a server-derived normalized owner/repo. */
 	target_repo_identity: string;
+	/** Real owner/repo identity used only to coalesce equivalent worktrees. */
+	reuse_repo_identity: string;
 	/** code review: server-frozen head at accept time. */
 	frozen_head_sha?: string;
 	status: "pending" | "running" | "done" | "failed" | "skipped";
@@ -1630,6 +1681,26 @@ export interface CodexReviewJob {
 	 * "bridge" response and have it mistaken for the Bridge's delivery.
 	 */
 	delivery_nonce?: string;
+}
+
+/**
+ * FLY-2334: an additional review request whose gate shares an already-running
+ * code-review job for the same issue/repository/head.
+ */
+export interface CodexReviewReuseBinding {
+	request_id: string;
+	source_request_id: string;
+	execution_id: string;
+	question_id: string;
+	target_repo_path?: string;
+	target_repo_identity: string;
+	reuse_repo_identity: string;
+	frozen_head_sha?: string;
+	release_reason?: string;
+	released_at?: string;
+	delivery_nonce: string;
+	created_at: string;
+	responded_at?: string;
 }
 
 export interface ReviewFindingRuling {
@@ -3743,6 +3814,22 @@ export class StateStore {
 			}
 		}
 
+		// FLY-2148: nullable attribution + closeout columns. Keeping the state in
+		// its own TEXT column makes over-budget sessions directly queryable.
+		for (const col of [
+			"runner_memory_arm",
+			"runner_memory_dir",
+			"runner_memory_spawn",
+			"runner_memory_closeout",
+			"runner_memory_receipt",
+		]) {
+			try {
+				this.db.run(`ALTER TABLE sessions ADD COLUMN ${col} TEXT`);
+			} catch {
+				/* exists */
+			}
+		}
+
 		// FLY-163: drop legacy conversation_threads index (table is gone).
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
 
@@ -4486,6 +4573,7 @@ export class StateStore {
 				target_path           TEXT,
 				target_repo_path      TEXT,
 				target_repo_identity  TEXT NOT NULL DEFAULT '__main__',
+				reuse_repo_identity   TEXT NOT NULL DEFAULT '__main__',
 				frozen_head_sha       TEXT,
 				status                TEXT NOT NULL DEFAULT 'pending'
 				                      CHECK(status IN ('pending','running','done','failed','skipped')),
@@ -4553,6 +4641,7 @@ export class StateStore {
 			["payload_version", "INTEGER"],
 			["target_repo_path", "TEXT"],
 			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
 			["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
 			["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
 			["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
@@ -4577,6 +4666,48 @@ export class StateStore {
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_codex_review_job_head_move_parent
 			   ON codex_review_job(head_move_parent_request_id)
 			 WHERE head_move_parent_request_id IS NOT NULL`,
+		);
+		// FLY-2334: substitute executions reviewing the same issue/head attach
+		// their own request+gate to one live reviewer job. The per-binding nonce
+		// preserves response ownership and responded_at is the crash-safe outbox.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS codex_review_reuse_binding (
+				request_id       TEXT PRIMARY KEY,
+				source_request_id TEXT NOT NULL,
+				execution_id     TEXT NOT NULL,
+				question_id      TEXT NOT NULL,
+				target_repo_path TEXT,
+				target_repo_identity TEXT NOT NULL DEFAULT '__main__',
+				reuse_repo_identity TEXT NOT NULL DEFAULT '__main__',
+				frozen_head_sha  TEXT,
+				release_reason   TEXT,
+				released_at      TEXT,
+				delivery_nonce   TEXT NOT NULL,
+				created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+				responded_at     TEXT
+			)
+		`);
+		const reuseBindingInfo = this.db.exec(
+			"PRAGMA table_info(codex_review_reuse_binding)",
+		);
+		const reuseBindingColumns =
+			reuseBindingInfo[0]?.values.map((row) => row[1] as string) ?? [];
+		for (const [column, type] of [
+			["target_repo_path", "TEXT"],
+			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+			["frozen_head_sha", "TEXT"],
+			["release_reason", "TEXT"],
+			["released_at", "TEXT"],
+		] as const) {
+			if (!reuseBindingColumns.includes(column)) {
+				this.db.run(
+					`ALTER TABLE codex_review_reuse_binding ADD COLUMN ${column} ${type}`,
+				);
+			}
+		}
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_codex_review_reuse_source ON codex_review_reuse_binding(source_request_id)",
 		);
 
 		// FLY-1278: Lead-authoritative, per-finding governance rulings. Rows are
@@ -7563,8 +7694,9 @@ export class StateStore {
 				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, design_backend, ponytail_condition, skill_framework_mode, skill_framework_mode_via, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
-				doc_tier, issue_url, chat_thread_role, workflow_node_id
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				doc_tier, issue_url, chat_thread_role, workflow_node_id,
+				runner_memory_arm, runner_memory_dir, runner_memory_spawn, runner_memory_closeout, runner_memory_receipt
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -7610,7 +7742,12 @@ export class StateStore {
 					workflow_node_id = CASE
 						WHEN workflow_node_id IS NULL THEN excluded.workflow_node_id
 						ELSE workflow_node_id
-					END
+					END,
+				runner_memory_arm = COALESCE(excluded.runner_memory_arm, runner_memory_arm),
+				runner_memory_dir = COALESCE(excluded.runner_memory_dir, runner_memory_dir),
+				runner_memory_spawn = COALESCE(excluded.runner_memory_spawn, runner_memory_spawn),
+				runner_memory_closeout = COALESCE(excluded.runner_memory_closeout, runner_memory_closeout),
+				runner_memory_receipt = COALESCE(excluded.runner_memory_receipt, runner_memory_receipt)
 			`,
 				[
 					session.execution_id,
@@ -7660,6 +7797,11 @@ export class StateStore {
 					// fixed at dispatch). `?? "main"` keeps the NOT NULL column satisfied.
 					session.chat_thread_role ?? "main",
 					session.workflow_node_id ?? null,
+					session.runner_memory_arm ?? null,
+					session.runner_memory_dir ?? null,
+					session.runner_memory_spawn ?? null,
+					session.runner_memory_closeout ?? null,
+					session.runner_memory_receipt ?? null,
 				],
 			);
 			// FLY-1372 (Codex design R4-1): the two NOT NULL DEFAULT 0 behavior
@@ -7763,6 +7905,15 @@ export class StateStore {
 
 		const wasOperationalTerminal = isOperationalTerminalStatus(previousStatus);
 		const isOperationalTerminal = isOperationalTerminalStatus(nextStatus);
+		if (isOperationalTerminal) {
+			this.db.run(
+				`UPDATE workflow_resident_hold
+				    SET state = 'closed', closed_reason = 'terminal',
+				        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				  WHERE execution_id = ? AND state = 'woken'`,
+				[executionId],
+			);
+		}
 		if (isOperationalTerminal && !wasOperationalTerminal) {
 			this.db.run(
 				`UPDATE workflow_submission_credential
@@ -8276,6 +8427,7 @@ export class StateStore {
 				? this.workflowCredentialRotationExpiryTx(
 						"workflow_output_credential",
 						executionId,
+						context.binding.activation_id,
 						nowIso,
 						requestedWindow.expiresAt,
 					)
@@ -8284,6 +8436,7 @@ export class StateStore {
 				? this.workflowCredentialRotationExpiryTx(
 						"workflow_submission_credential",
 						executionId,
+						context.binding.activation_id,
 						nowIso,
 						requestedWindow.expiresAt,
 					)
@@ -8631,8 +8784,9 @@ export class StateStore {
 				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, design_backend, ponytail_condition, skill_framework_mode, skill_framework_mode_via, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
-				doc_tier, issue_url, chat_thread_role, workflow_node_id
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				doc_tier, issue_url, chat_thread_role, workflow_node_id,
+				runner_memory_arm, runner_memory_dir, runner_memory_spawn, runner_memory_closeout, runner_memory_receipt
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -8678,7 +8832,12 @@ export class StateStore {
 					workflow_node_id = CASE
 						WHEN workflow_node_id IS NULL THEN excluded.workflow_node_id
 						ELSE workflow_node_id
-					END
+					END,
+				runner_memory_arm = COALESCE(excluded.runner_memory_arm, runner_memory_arm),
+				runner_memory_dir = COALESCE(excluded.runner_memory_dir, runner_memory_dir),
+				runner_memory_spawn = COALESCE(excluded.runner_memory_spawn, runner_memory_spawn),
+				runner_memory_closeout = COALESCE(excluded.runner_memory_closeout, runner_memory_closeout),
+				runner_memory_receipt = COALESCE(excluded.runner_memory_receipt, runner_memory_receipt)
 			`,
 				[
 					executionId,
@@ -8727,6 +8886,11 @@ export class StateStore {
 					// the ON CONFLICT update (see the sibling upsert above).
 					fields.chat_thread_role ?? "main",
 					fields.workflow_node_id ?? null,
+					fields.runner_memory_arm ?? null,
+					fields.runner_memory_dir ?? null,
+					fields.runner_memory_spawn ?? null,
+					fields.runner_memory_closeout ?? null,
+					fields.runner_memory_receipt ?? null,
 				],
 			);
 			this.applyTerminalTimestamp(executionId, preStatus, status);
@@ -8852,6 +9016,11 @@ export class StateStore {
 			merge_block_reason: "merge_block_reason",
 			merge_block_head: "merge_block_head",
 			merge_block_at: "merge_block_at",
+			runner_memory_arm: "runner_memory_arm",
+			runner_memory_dir: "runner_memory_dir",
+			runner_memory_spawn: "runner_memory_spawn",
+			runner_memory_closeout: "runner_memory_closeout",
+			runner_memory_receipt: "runner_memory_receipt",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -8869,6 +9038,26 @@ export class StateStore {
 			values,
 		);
 		this.save();
+	}
+
+	/** FLY-2148: atomically replace all spawn-attribution fields, including NULL clears. */
+	patchRunnerMemorySelection(
+		executionId: string,
+		selection: {
+			arm: "off" | "role" | "shared";
+			dir: string | null;
+			spawn: string | null;
+		},
+	): boolean {
+		this.db.run(
+			`UPDATE sessions
+			 SET runner_memory_arm = ?, runner_memory_dir = ?, runner_memory_spawn = ?
+			 WHERE execution_id = ?`,
+			[selection.arm, selection.dir, selection.spawn, executionId],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		if (changed) this.save();
+		return changed;
 	}
 
 	/**
@@ -9162,6 +9351,38 @@ export class StateStore {
 			    AND status IN ('active','held')
 			  ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, rowid`,
 			[projectName, issueId],
+		).map((row) => ({
+			runId: String(row.run_id),
+			status: row.status as PatrolLoopRun["status"],
+			currentNodeId:
+				typeof row.current_node_id === "string" ? row.current_node_id : null,
+		}));
+	}
+
+	/** FLY-2324-only run lookup. Durable aliases protect legacy deliveries after
+	 * their source session rows have been pruned without changing dispatch,
+	 * resume, template-selection, or patrol identity semantics. */
+	getWorkflowDeliveryReachabilityRuns(
+		projectName: string,
+		issueAliases: string[],
+	): PatrolLoopRun[] {
+		const aliases = [...new Set(issueAliases.map((alias) => alias.trim()))].filter(
+			Boolean,
+		);
+		if (aliases.length === 0) return [];
+		const placeholders = aliases.map(() => "?").join(", ");
+		return this.workflowSelectAll(
+			`SELECT DISTINCT run.run_id, run.status, run.current_node_id
+			   FROM workflow_run run
+			  WHERE run.project_name = ?
+			    AND run.status IN ('active','held')
+			    AND (run.issue_id IN (${placeholders}) OR EXISTS (
+			      SELECT 1 FROM workflow_run_issue_alias alias
+			       WHERE alias.run_id = run.run_id
+			         AND alias.issue_alias IN (${placeholders})
+			    ))
+			  ORDER BY CASE run.status WHEN 'active' THEN 0 ELSE 1 END, run.rowid`,
+			[projectName, ...aliases, ...aliases],
 		).map((row) => ({
 			runId: String(row.run_id),
 			status: row.status as PatrolLoopRun["status"],
@@ -11258,6 +11479,10 @@ export class StateStore {
 			target_path: (row.target_path as string) ?? undefined,
 			target_repo_path: (row.target_repo_path as string) ?? undefined,
 			target_repo_identity: (row.target_repo_identity as string) || "__main__",
+			reuse_repo_identity:
+				(row.reuse_repo_identity as string) ||
+				(row.target_repo_identity as string) ||
+				"__main__",
 			frozen_head_sha: (row.frozen_head_sha as string) ?? undefined,
 			status: row.status as CodexReviewJob["status"],
 			reviewer_session_uuid: (row.reviewer_session_uuid as string) ?? undefined,
@@ -11312,6 +11537,282 @@ export class StateStore {
 		return job;
 	}
 
+	private rowToCodexReviewReuseBinding(
+		row: Record<string, unknown>,
+	): CodexReviewReuseBinding {
+		return {
+			request_id: row.request_id as string,
+			source_request_id: row.source_request_id as string,
+			execution_id: row.execution_id as string,
+			question_id: row.question_id as string,
+			target_repo_path: (row.target_repo_path as string) ?? undefined,
+			target_repo_identity:
+				(row.target_repo_identity as string) || "__main__",
+			reuse_repo_identity:
+				(row.reuse_repo_identity as string) ||
+				(row.target_repo_identity as string) ||
+				"__main__",
+			frozen_head_sha: (row.frozen_head_sha as string) ?? undefined,
+			release_reason: (row.release_reason as string) ?? undefined,
+			released_at: (row.released_at as string) ?? undefined,
+			delivery_nonce: row.delivery_nonce as string,
+			created_at: row.created_at as string,
+			responded_at: (row.responded_at as string) ?? undefined,
+		};
+	}
+
+	getCodexReviewReuseBinding(
+		requestId: string,
+	): CodexReviewReuseBinding | null {
+		const stmt = this.db.prepare(
+			"SELECT * FROM codex_review_reuse_binding WHERE request_id = ?",
+		);
+		stmt.bind([requestId]);
+		const binding = stmt.step()
+			? this.rowToCodexReviewReuseBinding(
+					stmt.getAsObject() as Record<string, unknown>,
+				)
+			: null;
+		stmt.free();
+		return binding;
+	}
+
+	findRunningCodexReviewJobForHead(input: {
+		projectName: string;
+		issueId: string;
+		reuseRepoIdentity: string;
+		frozenHeadSha: string;
+	}): CodexReviewJob | null {
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_job
+			  WHERE project_name = ? AND issue_id = ? AND review_type = 'code'
+			    AND reuse_repo_identity = ? AND lower(frozen_head_sha) = ?
+			    AND status = 'running'
+			  ORDER BY created_at ASC, request_id ASC
+			  LIMIT 1`,
+		);
+		stmt.bind([
+			input.projectName,
+			input.issueId,
+			input.reuseRepoIdentity,
+			input.frozenHeadSha.toLowerCase(),
+		]);
+		const job = stmt.step()
+			? this.rowToCodexReviewJob(
+					stmt.getAsObject() as Record<string, unknown>,
+				)
+			: null;
+		stmt.free();
+		return job;
+	}
+
+	insertCodexReviewReuseBinding(input: {
+		requestId: string;
+		sourceRequestId: string;
+		executionId: string;
+		questionId: string;
+		targetRepoPath?: string;
+		targetRepoIdentity?: string;
+		reuseRepoIdentity?: string;
+		frozenHeadSha?: string;
+	}): { inserted: boolean; binding: CodexReviewReuseBinding } {
+		const source = this.getCodexReviewJob(input.sourceRequestId);
+		const targetRepoIdentity =
+			input.targetRepoIdentity ?? source?.target_repo_identity ?? "__main__";
+		const targetRepoPath =
+			input.targetRepoPath ??
+			(targetRepoIdentity === "__main__"
+				? this.getWorktreeBinding(input.executionId)?.path
+				: undefined);
+		const frozenHeadSha =
+			input.frozenHeadSha ?? source?.frozen_head_sha ?? undefined;
+		const reuseRepoIdentity =
+			input.reuseRepoIdentity ??
+			source?.reuse_repo_identity ??
+			targetRepoIdentity;
+		this.db.run(
+			`INSERT OR IGNORE INTO codex_review_reuse_binding
+			   (request_id, source_request_id, execution_id, question_id,
+			    target_repo_path, target_repo_identity, reuse_repo_identity,
+			    frozen_head_sha,
+			    delivery_nonce, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			[
+				input.requestId,
+				input.sourceRequestId,
+				input.executionId,
+				input.questionId,
+				targetRepoPath ?? null,
+				targetRepoIdentity,
+				reuseRepoIdentity,
+				frozenHeadSha ?? null,
+				randomUUID(),
+			],
+		);
+		const inserted = this.db.getRowsModified() > 0;
+		this.save();
+		const binding = this.getCodexReviewReuseBinding(input.requestId);
+		if (!binding) throw new Error(`review reuse binding ${input.requestId} vanished`);
+		return { inserted, binding };
+	}
+
+	listCodexReviewReuseBindings(
+		sourceRequestId: string,
+	): CodexReviewReuseBinding[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_reuse_binding
+			  WHERE source_request_id = ?
+			  ORDER BY created_at ASC, request_id ASC`,
+		);
+		stmt.bind([sourceRequestId]);
+		const bindings: CodexReviewReuseBinding[] = [];
+		while (stmt.step()) {
+			bindings.push(
+				this.rowToCodexReviewReuseBinding(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return bindings;
+	}
+
+	listUndeliveredCodexReviewReuseBindings(): CodexReviewReuseBinding[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_reuse_binding
+			  WHERE responded_at IS NULL AND released_at IS NULL
+			  ORDER BY created_at ASC, request_id ASC`,
+		);
+		const bindings: CodexReviewReuseBinding[] = [];
+		while (stmt.step()) {
+			bindings.push(
+				this.rowToCodexReviewReuseBinding(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return bindings;
+	}
+
+	releaseCodexReviewReuseBinding(input: {
+		requestId: string;
+		reason: string;
+		frozenHeadSha: string;
+	}): { released: boolean; binding: CodexReviewReuseBinding; job: CodexReviewJob } {
+		const frozenHeadSha = input.frozenHeadSha.trim().toLowerCase();
+		if (!/^[0-9a-f]{40}$/.test(frozenHeadSha)) {
+			throw new Error("released review binding requires a trusted 40-char SHA");
+		}
+		let released = false;
+		this.db.raw.exec("BEGIN IMMEDIATE");
+		try {
+			const binding = this.getCodexReviewReuseBinding(input.requestId);
+			if (!binding) {
+				throw new Error(`review reuse binding ${input.requestId} is missing`);
+			}
+			const source = this.getCodexReviewJob(binding.source_request_id);
+			if (!source) {
+				throw new Error(`review reuse source ${binding.source_request_id} is missing`);
+			}
+			const targetRepoPath =
+				binding.target_repo_path ??
+				this.getWorktreeBinding(binding.execution_id)?.path;
+			if (!targetRepoPath) {
+				throw new Error(`review reuse execution ${binding.execution_id} has no worktree`);
+			}
+			const priorSession = this.latestCodexReviewerSessionState(
+				binding.execution_id,
+				source.review_type,
+				binding.target_repo_identity,
+			);
+			const round =
+				this.countCodexReviewJobs(
+					binding.execution_id,
+					source.review_type,
+					binding.target_repo_identity,
+				) + 1;
+			this.db.run(
+				`INSERT OR IGNORE INTO codex_review_job
+				   (request_id, execution_id, issue_id, project_name, review_type,
+				    round, question_id, target_path, target_repo_path,
+				    target_repo_identity, reuse_repo_identity, frozen_head_sha,
+				    reviewer_session_uuid, reviewer_session_generation,
+				    reviewer_session_failure_streak, author_family, status,
+				    delivery_nonce, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))`,
+				[
+					binding.request_id,
+					binding.execution_id,
+					source.issue_id ?? null,
+					source.project_name,
+					source.review_type,
+					round,
+					binding.question_id,
+					source.target_path ?? null,
+					targetRepoPath,
+					binding.target_repo_identity,
+					binding.reuse_repo_identity,
+					frozenHeadSha,
+					priorSession.sessionUuid ?? null,
+					priorSession.generation,
+					priorSession.failureStreak,
+					source.author_family ?? null,
+					randomUUID(),
+				],
+			);
+			const job = this.getCodexReviewJob(binding.request_id);
+			if (
+				!job ||
+				job.execution_id !== binding.execution_id ||
+				job.question_id !== binding.question_id ||
+				job.review_type !== source.review_type
+			) {
+				throw new Error(`released review job ${binding.request_id} conflicts`);
+			}
+			if (!binding.released_at && !binding.responded_at) {
+				this.db.run(
+					`UPDATE codex_review_reuse_binding
+					    SET release_reason = ?, released_at = datetime('now')
+					  WHERE request_id = ? AND responded_at IS NULL AND released_at IS NULL`,
+					[input.reason, binding.request_id],
+				);
+				released = this.db.getRowsModified() > 0;
+			}
+			this.db.raw.exec("COMMIT");
+			this.save();
+		} catch (error) {
+			if (this.db.raw.inTransaction) this.db.raw.exec("ROLLBACK");
+			throw error;
+		}
+		const binding = this.getCodexReviewReuseBinding(input.requestId);
+		const job = this.getCodexReviewJob(input.requestId);
+		if (!binding || !job) {
+			throw new Error(`released review binding ${input.requestId} vanished`);
+		}
+		return { released, binding, job };
+	}
+
+	retireCodexReviewReuseBinding(requestId: string, reason: string): void {
+		this.db.run(
+			`UPDATE codex_review_reuse_binding
+			    SET release_reason = ?, released_at = datetime('now')
+			  WHERE request_id = ? AND responded_at IS NULL AND released_at IS NULL`,
+			[reason, requestId],
+		);
+		this.save();
+	}
+
+	stampCodexReviewReuseBindingResponded(requestId: string): void {
+		this.db.run(
+			`UPDATE codex_review_reuse_binding
+			    SET responded_at = datetime('now')
+			  WHERE request_id = ? AND released_at IS NULL`,
+			[requestId],
+		);
+		this.save();
+	}
+
 	getCodexReviewHeadMoveSuccessor(parentRequestId: string): CodexReviewJob | null {
 		const stmt = this.db.prepare(
 			"SELECT * FROM codex_review_job WHERE head_move_parent_request_id = ? LIMIT 1",
@@ -11345,7 +11846,24 @@ export class StateStore {
 			);
 		}
 		stmt.free();
-		if (jobs.length <= 1) return jobs[0] ?? null;
+		if (jobs.length === 1) return jobs[0] ?? null;
+		if (jobs.length === 0) {
+			const bindingStmt = this.db.prepare(
+				`SELECT source_request_id FROM codex_review_reuse_binding
+				  WHERE question_id = ? AND responded_at IS NULL AND released_at IS NULL
+				  ORDER BY request_id`,
+			);
+			bindingStmt.bind([questionId]);
+			const sourceIds: string[] = [];
+			while (bindingStmt.step()) {
+				const row = bindingStmt.getAsObject() as Record<string, unknown>;
+				sourceIds.push(row.source_request_id as string);
+			}
+			bindingStmt.free();
+			return sourceIds.length === 1
+				? this.getCodexReviewJob(sourceIds[0]!)
+				: null;
+		}
 		const byId = new Map(jobs.map((job) => [job.request_id, job]));
 		const roots = jobs.filter(
 			(job) =>
@@ -11385,6 +11903,7 @@ export class StateStore {
 		targetPath?: string;
 		targetRepoPath?: string;
 		targetRepoIdentity?: string;
+		reuseRepoIdentity?: string;
 		frozenHeadSha?: string;
 		reviewerSessionUuid?: string;
 		reviewerSessionGeneration?: number;
@@ -11397,11 +11916,11 @@ export class StateStore {
 			`INSERT OR IGNORE INTO codex_review_job
 			   (request_id, execution_id, issue_id, project_name, review_type,
 			    round, question_id, target_path, target_repo_path,
-			    target_repo_identity, frozen_head_sha,
+			    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 			    reviewer_session_uuid, reviewer_session_generation,
 			    reviewer_session_failure_streak, author_family, status, delivery_nonce,
 			    created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 			[
 				input.requestId,
 				input.executionId,
@@ -11413,6 +11932,7 @@ export class StateStore {
 				input.targetPath ?? null,
 				input.targetRepoPath ?? null,
 				input.targetRepoIdentity ?? "__main__",
+				input.reuseRepoIdentity ?? input.targetRepoIdentity ?? "__main__",
 				input.frozenHeadSha ?? null,
 				input.reviewerSessionUuid ?? null,
 				input.reviewerSessionGeneration ?? 0,
@@ -11495,11 +12015,12 @@ export class StateStore {
 					`INSERT INTO codex_review_job
 				 (request_id, execution_id, issue_id, project_name, review_type,
 				  round, question_id, target_path, target_repo_path,
-				  target_repo_identity, frozen_head_sha, reviewer_session_uuid,
+				  target_repo_identity, reuse_repo_identity, frozen_head_sha,
+				  reviewer_session_uuid,
 				  reviewer_session_generation, reviewer_session_failure_streak,
 				  author_family, status, delivery_nonce,
 				  head_move_parent_request_id, head_move_retry_count, created_at)
-				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, datetime('now'))`,
+				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, datetime('now'))`,
 					[
 						input.successorRequestId,
 						parent.execution_id,
@@ -11510,6 +12031,7 @@ export class StateStore {
 						parent.target_path ?? null,
 						parent.target_repo_path ?? null,
 						parent.target_repo_identity,
+						parent.reuse_repo_identity,
 						currentHeadSha,
 						parent.reviewer_session_uuid ?? null,
 						parent.reviewer_session_generation,
@@ -11521,6 +12043,7 @@ export class StateStore {
 				);
 			}
 			this.db.raw.exec("COMMIT");
+			this.save();
 		} catch (error) {
 			if (this.db.raw.inTransaction) this.db.raw.exec("ROLLBACK");
 			throw error;
@@ -14362,6 +14885,23 @@ export class StateStore {
 			merge_block_reason: (row.merge_block_reason as string) ?? undefined,
 			merge_block_head: (row.merge_block_head as string) ?? undefined,
 			merge_block_at: (row.merge_block_at as string) ?? undefined,
+			runner_memory_arm:
+				row.runner_memory_arm === "off" ||
+				row.runner_memory_arm === "role" ||
+				row.runner_memory_arm === "shared"
+					? row.runner_memory_arm
+					: undefined,
+			runner_memory_dir: (row.runner_memory_dir as string) ?? undefined,
+			runner_memory_spawn: (row.runner_memory_spawn as string) ?? undefined,
+			runner_memory_closeout:
+				row.runner_memory_closeout === "written" ||
+				row.runner_memory_closeout === "unchanged" ||
+				row.runner_memory_closeout === "over_budget" ||
+				row.runner_memory_closeout === "unmeasurable"
+					? row.runner_memory_closeout
+					: undefined,
+			runner_memory_receipt:
+				(row.runner_memory_receipt as string) ?? undefined,
 			// FLY-245 D-a: monotonic lifecycle revision (defaults 0).
 			lifecycle_revision:
 				typeof row.lifecycle_revision === "number" ? row.lifecycle_revision : 0,
@@ -17949,6 +18489,8 @@ export class StateStore {
 		projectName: string;
 		ok: boolean;
 		error?: string;
+		/** Whether this finalizer was authorized by independent runner-death proof. */
+		runnerDeathProven: boolean;
 		nowMs?: number;
 		audit?: {
 			retiredGateCount: number;
@@ -17977,6 +18519,14 @@ export class StateStore {
 					source: input.audit.source,
 				},
 			});
+		}
+		// FLY-2313: the durable retry ledger and its founder alert are specifically
+		// for cleanup that is blocked after physical death was established. A
+		// terminal CommDB row alone cannot make that claim. Keeping ledger-only
+		// outcomes outside this state also prevents a later ledger-only success from
+		// resolving a still-actionable proven-death failure episode.
+		if (input.runnerDeathProven === false) {
+			return this.getCommDbFinalizeFailure(input.executionId);
 		}
 		if (input.ok) {
 			this.db.run(
@@ -20529,6 +21079,51 @@ export class StateStore {
 			)
 		`);
 		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_run_issue_alias (
+				run_id TEXT NOT NULL,
+				issue_alias TEXT NOT NULL,
+				PRIMARY KEY (run_id, issue_alias),
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_run_issue_alias ON workflow_run_issue_alias(issue_alias, run_id)",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS state_store_migration (
+				migration_id TEXT PRIMARY KEY,
+				applied_at TEXT NOT NULL
+			)
+		`);
+		this.db.raw.transaction(() => {
+			this.db.run(
+				"INSERT OR IGNORE INTO state_store_migration (migration_id, applied_at) VALUES (?, datetime('now'))",
+				["fly-2324-workflow-run-issue-alias-v1"],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_run_issue_alias (run_id, issue_alias)
+				 SELECT run_id, issue_id FROM workflow_run`,
+			);
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_run_issue_alias (run_id, issue_alias)
+				 SELECT run.run_id, session.issue_id
+				   FROM workflow_run run
+				   JOIN sessions session
+				     ON session.project_name = run.project_name
+				    AND (session.issue_id = run.issue_id OR session.issue_identifier = run.issue_id)`,
+			);
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_run_issue_alias (run_id, issue_alias)
+				 SELECT run.run_id, session.issue_identifier
+				   FROM workflow_run run
+				   JOIN sessions session
+				     ON session.project_name = run.project_name
+				    AND (session.issue_id = run.issue_id OR session.issue_identifier = run.issue_id)
+				  WHERE session.issue_identifier IS NOT NULL`,
+			);
+		})();
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS founder_review_card_binding (
 				question_id TEXT PRIMARY KEY,
 				message_id TEXT NOT NULL UNIQUE,
@@ -20727,6 +21322,31 @@ export class StateStore {
 			WHERE superseded_by_attempt_id IS NULL AND settlement_reason IS NULL
 		`);
 		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_wda_projection_source
+			ON workflow_delivery_attempt(
+			  family,
+			  CASE WHEN json_valid(contract_ref_json)
+			       THEN json_extract(contract_ref_json, '$.table') END,
+			  CASE WHEN json_valid(contract_ref_json)
+			       THEN json_extract(contract_ref_json, '$.pk') END,
+			  generation DESC,
+			  attempt DESC
+			)
+			WHERE superseded_by_attempt_id IS NULL
+			  AND (settlement_reason IS NULL OR settlement_reason = 'legacy_unreachable')
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_wda_projection_source_all
+			ON workflow_delivery_attempt(
+			  family,
+			  CASE WHEN json_valid(contract_ref_json)
+			       THEN json_extract(contract_ref_json, '$.table') END,
+			  CASE WHEN json_valid(contract_ref_json)
+			       THEN json_extract(contract_ref_json, '$.pk') END
+			)
+			WHERE superseded_by_attempt_id IS NULL
+		`);
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_delivery_contract_episode (
 				episode_id TEXT PRIMARY KEY,
 				family TEXT NOT NULL,
@@ -20749,6 +21369,11 @@ export class StateStore {
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_wdce_open_by_root
 			ON workflow_delivery_contract_episode(family, root_id)
 			WHERE closed_at IS NULL
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_wdce_open_undeliverable_by_root
+			ON workflow_delivery_contract_episode(root_id, family)
+			WHERE closed_at IS NULL AND stage = 'undeliverable'
 		`);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_delivery_operation (
@@ -20775,6 +21400,52 @@ export class StateStore {
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_wdo_client_request
 			ON workflow_delivery_operation(client_request_id)
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_wdo_pending_hold_by_id
+			ON workflow_delivery_operation(operation_id)
+			WHERE kind = 'hold_resume' AND state IN ('staged','applied')
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_resident_hold (
+				execution_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				activation_id TEXT NOT NULL,
+				vendor TEXT NOT NULL CHECK (vendor IN ('claude','codex')),
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				boundary_seq INTEGER NOT NULL CHECK (boundary_seq > 0),
+				state TEXT NOT NULL CHECK (state IN ('resident','woken','expired','closed')),
+				grace_started_at TEXT NOT NULL,
+				grace_expires_at TEXT NOT NULL,
+				closed_reason TEXT,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
+			)
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_wrh_expiring
+			ON workflow_resident_hold(state, grace_expires_at)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_completion_drain_challenge (
+				challenge_id TEXT PRIMARY KEY,
+				execution_id TEXT NOT NULL,
+				activation_id TEXT NOT NULL,
+				business_digest TEXT NOT NULL,
+				mail_set_json TEXT NOT NULL,
+				watermark_json TEXT NOT NULL,
+				state TEXT NOT NULL CHECK (state IN ('issued','consumed','superseded')),
+				issued_at TEXT NOT NULL,
+				consumed_at TEXT
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_wcdc_issued_by_submission
+			ON workflow_completion_drain_challenge(
+				execution_id, activation_id, business_digest
+			) WHERE state = 'issued'
 		`);
 		// FLY-1375: approval authority survives the QA process lifecycle. The
 		// source execution is attribution only; materialization and founder
@@ -24475,6 +25146,15 @@ export class StateStore {
 					input.startReservation ? 1 : 0,
 				],
 			);
+			this.captureWorkflowRunIssueAliasesTx(
+				input.runId,
+				input.projectName,
+				input.issueId,
+				[
+					...(input.entryIssueAliases ?? []),
+					...(input.entryRootKey ? [input.entryRootKey] : []),
+				],
+			);
 			if (input.startReservation) {
 				const startReservation = input.startReservation;
 				this.db.run(
@@ -24631,6 +25311,33 @@ export class StateStore {
 		return this.getWorkflowRun(input.runId)!;
 	}
 
+	private captureWorkflowRunIssueAliasesTx(
+		runId: string,
+		projectName: string,
+		issueId: string,
+		explicitAliases: string[] = [],
+	): void {
+		const aliases = new Set(
+			[issueId, ...explicitAliases]
+				.map((alias) => alias.trim())
+				.filter(Boolean),
+		);
+		for (const session of this.getSessionsForIssueAliases([...aliases])) {
+			if (session.project_name !== projectName) continue;
+			for (const alias of [session.issue_id, session.issue_identifier]) {
+				const normalized = alias?.trim();
+				if (normalized) aliases.add(normalized);
+			}
+		}
+		for (const alias of aliases) {
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_run_issue_alias (run_id, issue_alias)
+				 VALUES (?, ?)`,
+				[runId, alias],
+			);
+		}
+	}
+
 	/**
 	 * Create a workflow run with its TYPED enrollment marker (plan §3.2):
 	 * whether this run's gates read the claims ledger is an explicit per-run
@@ -24646,22 +25353,29 @@ export class StateStore {
 		claimsReadEnrolled: boolean;
 		gateCarrierEpoch?: 0 | 1;
 	}): void {
-		this.db.run(
-			`INSERT INTO workflow_run
-			   (run_id, issue_id, project_name, template_id, template_revision, snapshot,
-			    claims_read_enrolled, gate_carrier_epoch)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO workflow_run
+				   (run_id, issue_id, project_name, template_id, template_revision, snapshot,
+				    claims_read_enrolled, gate_carrier_epoch)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.runId,
+					input.issueId,
+					input.projectName,
+					input.templateId ?? null,
+					input.templateRevision ?? null,
+					input.snapshotJson ?? null,
+					input.claimsReadEnrolled ? 1 : 0,
+					input.gateCarrierEpoch ?? 0,
+				],
+			);
+			this.captureWorkflowRunIssueAliasesTx(
 				input.runId,
-				input.issueId,
 				input.projectName,
-				input.templateId ?? null,
-				input.templateRevision ?? null,
-				input.snapshotJson ?? null,
-				input.claimsReadEnrolled ? 1 : 0,
-				input.gateCarrierEpoch ?? 0,
-			],
-		);
+				input.issueId,
+			);
+		});
 		this.save();
 	}
 
@@ -28111,14 +28825,11 @@ export class StateStore {
 		return result;
 	}
 
-	/**
-	 * Re-issues the plaintext output ticket after a pre-launch crash. The durable
-	 * launch owner is the serialization fence: only its current, unexpired,
-	 * uncommitted generation may revoke the lost ticket and create one replacement.
-	 */
+	/** Keep every rotated credential inside the activation's original hard stop. */
 	private workflowCredentialRotationExpiryTx(
 		table: "workflow_output_credential" | "workflow_submission_credential",
 		executionId: string,
+		activationId: string,
 		now: string,
 		requestedExpiresAt: string,
 	): { expiresAt: string; absoluteDeadlineAt: string } | undefined {
@@ -28128,10 +28839,10 @@ export class StateStore {
 		const query =
 			table === "workflow_output_credential"
 				? `SELECT absolute_deadline_at FROM workflow_output_credential
-				     WHERE execution_id = ?`
+				     WHERE execution_id = ? AND activation_id = ?`
 				: `SELECT absolute_deadline_at FROM workflow_submission_credential
-				     WHERE execution_id = ?`;
-		const rows = this.workflowSelectAll(query, [executionId]);
+				     WHERE execution_id = ? AND activation_id = ?`;
+		const rows = this.workflowSelectAll(query, [executionId, activationId]);
 		if (rows.length === 0) return undefined;
 		let absoluteDeadlineMs = Number.POSITIVE_INFINITY;
 		for (const row of rows) {
@@ -28152,8 +28863,61 @@ export class StateStore {
 		};
 	}
 
+	private workflowCredentialRotationFenceTx(input: {
+		executionId: string;
+		binding: WorkflowExecutionBindingRow;
+		ownerId: string;
+		generation: number;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		const reworkRequestId = input.binding.rework_request_id;
+		if (input.binding.mode === "wake" && reworkRequestId) {
+			const request = this.getWorkflowReworkRequest(reworkRequestId);
+			const delivery = this.getWorkflowReworkDelivery(reworkRequestId);
+			const route = this.getLatestWorkflowReworkRoute(reworkRequestId);
+			if (
+				!request ||
+				!delivery ||
+				!route ||
+				request.run_id !== input.binding.run_id ||
+				delivery.owner_id !== input.ownerId ||
+				delivery.generation !== input.generation ||
+				!delivery.lease_expires_at ||
+				!StateStore.workflowFiniteTimestamp(delivery.lease_expires_at) ||
+				Date.parse(input.now) >= Date.parse(delivery.lease_expires_at) ||
+				delivery.route_revision !== route.revision ||
+				!(delivery.state === "pending" || delivery.state === "turn_granted") ||
+				route.preferred_actor_execution_id !== input.executionId ||
+				route.target_node_id !== input.binding.node_id ||
+				route.target_attempt !== input.binding.attempt
+			) {
+				return { ok: false, reason: "stale_rework_owner" };
+			}
+			return { ok: true };
+		}
+
+		const owner = this.getWorkflowLaunchOwner(input.executionId);
+		if (owner?.committed_generation != null) {
+			return { ok: false, reason: "launch_committed" };
+		}
+		if (
+			!owner ||
+			owner.owner_id !== input.ownerId ||
+			owner.owner_generation !== input.generation ||
+			Date.parse(input.now) >= Date.parse(owner.lease_expires_at)
+		) {
+			return { ok: false, reason: "stale_launch_owner" };
+		}
+		return { ok: true };
+	}
+
+	/**
+	 * Re-issues a lost plaintext output ticket before delivery. A spawn uses its
+	 * launch-owner fence; a rework wake uses its exact live delivery claim.
+	 */
 	rotateGeneralizedWorkflowOutputCredential(input: {
 		executionId: string;
+		activationId?: string;
 		ownerId: string;
 		generation: number;
 		now: string;
@@ -28169,8 +28933,12 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_expiry" };
 		}
-		const context = this.generalizedExecutionContext(input.executionId);
-		if (!context) return { ok: false, reason: "not_enrolled" };
+		const context = input.activationId
+			? this.generalizedExecutionContextForActivation(input.activationId)
+			: this.generalizedExecutionContext(input.executionId);
+		if (!context || context.binding.execution_id !== input.executionId) {
+			return { ok: false, reason: "not_enrolled" };
+		}
 		if (!context.node.capabilities.produces_output) {
 			return { ok: false, reason: "node_does_not_produce_output" };
 		}
@@ -28185,17 +28953,15 @@ export class StateStore {
 				result = { ok: false, reason: "launch_cancelled" };
 				return;
 			}
-			const owner = this.getWorkflowLaunchOwner(input.executionId);
-			if (owner?.committed_generation != null) {
-				result = { ok: false, reason: "launch_committed" };
-				return;
-			}
-			if (
-				!owner ||
-				owner.owner_id !== input.ownerId ||
-				owner.owner_generation !== input.generation ||
-				Date.parse(input.now) >= Date.parse(owner.lease_expires_at)
-			) {
+			const fence = this.workflowCredentialRotationFenceTx({
+				executionId: input.executionId,
+				binding: context.binding,
+				ownerId: input.ownerId,
+				generation: input.generation,
+				now: input.now,
+			});
+			if (!fence.ok) {
+				result = fence;
 				return;
 			}
 			const unexpectedDecisionTicket = this.workflowSelectAll(
@@ -28211,6 +28977,7 @@ export class StateStore {
 			const expiry = this.workflowCredentialRotationExpiryTx(
 				"workflow_output_credential",
 				input.executionId,
+				context.binding.activation_id,
 				input.now,
 				input.expiresAt,
 			);
@@ -28337,6 +29104,7 @@ export class StateStore {
 			const expiry = this.workflowCredentialRotationExpiryTx(
 				"workflow_output_credential",
 				input.executionId,
+				context.binding.activation_id,
 				input.now,
 				input.expiresAt,
 			);
@@ -28387,12 +29155,12 @@ export class StateStore {
 	}
 
 	/**
-	 * Re-issues the plaintext QA/review decision ticket after a pre-launch
-	 * crash. As with output-ticket rotation, only the current uncommitted launch
-	 * owner may replace the lost capability.
+	 * Re-issues a lost plaintext QA/review ticket before delivery. A spawn uses
+	 * its launch-owner fence; a rework wake uses its exact live delivery claim.
 	 */
 	rotateGeneralizedWorkflowSubmissionCredential(input: {
 		executionId: string;
+		activationId?: string;
 		ownerId: string;
 		generation: number;
 		now: string;
@@ -28410,8 +29178,12 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_expiry" };
 		}
-		const context = this.generalizedExecutionContext(input.executionId);
-		if (!context) return { ok: false, reason: "not_enrolled" };
+		const context = input.activationId
+			? this.generalizedExecutionContextForActivation(input.activationId)
+			: this.generalizedExecutionContext(input.executionId);
+		if (!context || context.binding.execution_id !== input.executionId) {
+			return { ok: false, reason: "not_enrolled" };
+		}
 		const family = resolveWorkflowDecisionContract(
 			context.snapshot,
 			context.binding.node_id,
@@ -28424,22 +29196,21 @@ export class StateStore {
 			reason: "stale_launch_owner",
 		};
 		this.db.transaction(() => {
-			const owner = this.getWorkflowLaunchOwner(input.executionId);
-			if (owner?.committed_generation != null) {
-				result = { ok: false, reason: "launch_committed" };
-				return;
-			}
-			if (
-				!owner ||
-				owner.owner_id !== input.ownerId ||
-				owner.owner_generation !== input.generation ||
-				Date.parse(input.now) >= Date.parse(owner.lease_expires_at)
-			) {
+			const fence = this.workflowCredentialRotationFenceTx({
+				executionId: input.executionId,
+				binding: context.binding,
+				ownerId: input.ownerId,
+				generation: input.generation,
+				now: input.now,
+			});
+			if (!fence.ok) {
+				result = fence;
 				return;
 			}
 			const expiry = this.workflowCredentialRotationExpiryTx(
 				"workflow_submission_credential",
 				input.executionId,
+				context.binding.activation_id,
 				input.now,
 				input.expiresAt,
 			);
@@ -28569,6 +29340,7 @@ export class StateStore {
 			const expiry = this.workflowCredentialRotationExpiryTx(
 				"workflow_submission_credential",
 				input.executionId,
+				context.binding.activation_id,
 				input.now,
 				input.expiresAt,
 			);
@@ -32577,6 +33349,799 @@ export class StateStore {
 		return { kind: "current", ...context };
 	}
 
+	getResidentHold(executionId: string): WorkflowResidentHoldRow | undefined {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_resident_hold WHERE execution_id = ?",
+			[executionId],
+		)[0] as WorkflowResidentHoldRow | undefined;
+	}
+
+	issueDrainChallenge(input: {
+		executionId: string;
+		activationId: string;
+		businessDigest: string;
+		mailSet: { mailbox: string[]; phaseWakes: string[] };
+		watermark: Record<string, unknown>;
+		now?: string;
+	}): { challengeId: string; mailbox: string[]; phaseWakes: string[] } {
+		const now = input.now ?? new Date().toISOString();
+		if (
+			!input.executionId ||
+			!input.activationId ||
+			!/^[0-9a-f]{64}$/.test(input.businessDigest) ||
+			!StateStore.workflowFiniteTimestamp(now)
+		) {
+			throw new Error("invalid drain challenge input");
+		}
+		const binding = this.getWorkflowActivation(input.activationId);
+		if (!binding || binding.execution_id !== input.executionId) {
+			throw new Error("invalid drain challenge identity");
+		}
+		const mailbox = [...new Set(input.mailSet.mailbox)].sort();
+		const phaseWakes = [...new Set(input.mailSet.phaseWakes)].sort();
+		if (
+			mailbox.some((id) => !id) ||
+			phaseWakes.some((id) => !id) ||
+			mailbox.length + phaseWakes.length === 0
+		) {
+			throw new Error("invalid drain challenge mail set");
+		}
+		const existing = this.workflowSelectAll(
+			`SELECT challenge_id, mail_set_json
+			   FROM workflow_completion_drain_challenge
+			  WHERE execution_id = ? AND activation_id = ? AND business_digest = ?
+			    AND state = 'issued'`,
+			[input.executionId, input.activationId, input.businessDigest],
+		)[0];
+		if (existing) {
+			const prior = JSON.parse(existing.mail_set_json as string) as {
+				mailbox: string[];
+				phaseWakes: string[];
+			};
+			return {
+				challengeId: existing.challenge_id as string,
+				mailbox: prior.mailbox,
+				phaseWakes: prior.phaseWakes,
+			};
+		}
+		const challengeId = `drain:${input.executionId}:${input.activationId}:${input.businessDigest.slice(0, 16)}`;
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO workflow_completion_drain_challenge (
+				   challenge_id, execution_id, activation_id, business_digest,
+				   mail_set_json, watermark_json, state, issued_at
+				 ) VALUES (?, ?, ?, ?, ?, ?, 'issued', ?)`,
+				[
+					challengeId,
+					input.executionId,
+					input.activationId,
+					input.businessDigest,
+					canonicalJsonString({ mailbox, phaseWakes }),
+					canonicalJsonString(input.watermark),
+					now,
+				],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: binding.run_id,
+				eventUid: `completion_drain_issued:${challengeId}`,
+				kind: "completion_drain_issued",
+				nodeId: binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					challengeId,
+					activationId: input.activationId,
+					businessDigest: input.businessDigest,
+					mailbox,
+					phaseWakes,
+					watermark: input.watermark,
+					issuedAt: now,
+				},
+			});
+		});
+		this.save();
+		return { challengeId, mailbox, phaseWakes };
+	}
+
+	getIssuedDrainChallenge(input: {
+		challengeId: string;
+		executionId: string;
+		activationId: string;
+		businessDigest: string;
+	}): { mailbox: string[]; phaseWakes: string[] } | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT mail_set_json FROM workflow_completion_drain_challenge
+			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
+			    AND business_digest = ? AND state = 'issued'`,
+			[
+				input.challengeId,
+				input.executionId,
+				input.activationId,
+				input.businessDigest,
+			],
+		)[0];
+		if (!row) return undefined;
+		try {
+			const parsed = JSON.parse(row.mail_set_json as string) as {
+				mailbox: string[];
+				phaseWakes: string[];
+			};
+			if (!Array.isArray(parsed.mailbox) || !Array.isArray(parsed.phaseWakes)) {
+				return undefined;
+			}
+			return parsed;
+		} catch {
+			return undefined;
+		}
+	}
+
+	findIssuedDrainChallenge(input: {
+		executionId: string;
+		activationId: string;
+		businessDigest: string;
+	}):
+		| { challengeId: string; mailbox: string[]; phaseWakes: string[] }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT challenge_id, mail_set_json
+			   FROM workflow_completion_drain_challenge
+			  WHERE execution_id = ? AND activation_id = ? AND business_digest = ?
+			    AND state = 'issued'`,
+			[input.executionId, input.activationId, input.businessDigest],
+		)[0];
+		if (!row) return undefined;
+		try {
+			const parsed = JSON.parse(row.mail_set_json as string) as {
+				mailbox: string[];
+				phaseWakes: string[];
+			};
+			if (!Array.isArray(parsed.mailbox) || !Array.isArray(parsed.phaseWakes)) {
+				return undefined;
+			}
+			return {
+				challengeId: row.challenge_id as string,
+				mailbox: parsed.mailbox,
+				phaseWakes: parsed.phaseWakes,
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	private consumeDrainChallengeTx(input: {
+		challengeId: string;
+		executionId: string;
+		activationId: string;
+		businessDigest: string;
+		verification: {
+			mailbox: Record<string, string>;
+			phaseWakes: Record<string, string>;
+		};
+		now: string;
+	}): boolean {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_completion_drain_challenge
+			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
+			    AND business_digest = ? AND state = 'issued'`,
+			[
+				input.challengeId,
+				input.executionId,
+				input.activationId,
+				input.businessDigest,
+			],
+		)[0];
+		if (!row) return false;
+		let mailSet: { mailbox: string[]; phaseWakes: string[] };
+		try {
+			mailSet = JSON.parse(row.mail_set_json as string) as typeof mailSet;
+		} catch {
+			return false;
+		}
+		if (
+			!Array.isArray(mailSet.mailbox) ||
+			!Array.isArray(mailSet.phaseWakes) ||
+			!mailSet.mailbox.every(
+				(id) => input.verification.mailbox[id] === "ACKED",
+			) ||
+			!mailSet.phaseWakes.every((id) =>
+				["started", "finished"].includes(input.verification.phaseWakes[id] ?? ""),
+			)
+		) {
+			return false;
+		}
+		this.db.run(
+			`UPDATE workflow_completion_drain_challenge
+			    SET state = 'consumed', consumed_at = ?
+			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
+			    AND business_digest = ? AND state = 'issued'`,
+			[
+				input.now,
+				input.challengeId,
+				input.executionId,
+				input.activationId,
+				input.businessDigest,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) return false;
+		const binding = this.getWorkflowActivation(input.activationId);
+		if (!binding || binding.execution_id !== input.executionId) {
+			throw new WorkflowEngineInvariantError(
+				`completion_drain_activation_conflict:${input.challengeId}`,
+			);
+		}
+		this.appendWorkflowRunEventCheckedTx({
+			runId: binding.run_id,
+			eventUid: `completion_drain_consumed:${input.challengeId}`,
+			kind: "completion_drain_consumed",
+			nodeId: binding.node_id,
+			executionId: input.executionId,
+			payload: {
+				challengeId: input.challengeId,
+				activationId: input.activationId,
+				businessDigest: input.businessDigest,
+				consumedAt: input.now,
+			},
+		});
+		return true;
+	}
+
+	enterResidentHold(input: {
+		executionId: string;
+		activationId: string;
+		nodeId: string;
+		boundarySeq: number;
+		nowMs?: number;
+	}):
+		| { ok: true; revision: number; graceExpiresAt: string }
+		| {
+				ok: false;
+				reason:
+					| "invalid_input"
+					| "activation_mismatch"
+					| "stale_boundary";
+		  } {
+		if (
+			!input.executionId ||
+			!input.activationId ||
+			!input.nodeId ||
+			!Number.isSafeInteger(input.boundarySeq) ||
+			input.boundarySeq <= 0
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		const nowMs = input.nowMs ?? Date.now();
+		if (!Number.isFinite(nowMs)) return { ok: false, reason: "invalid_input" };
+		const now = new Date(nowMs).toISOString();
+		const graceExpiresAt = new Date(nowMs + RESIDENT_GRACE_MS).toISOString();
+		let result:
+			| { ok: true; revision: number; graceExpiresAt: string }
+			| {
+					ok: false;
+					reason:
+						| "invalid_input"
+						| "activation_mismatch"
+						| "stale_boundary";
+			  } = { ok: false, reason: "activation_mismatch" };
+		this.db.transaction(() => {
+			const binding = this.workflowSelectAll(
+				`SELECT b.run_id, b.node_id, b.attempt, s.adapter_type
+				   FROM workflow_execution_binding b
+				   LEFT JOIN sessions s ON s.execution_id = b.execution_id
+				  WHERE b.execution_id = ? AND b.activation_id = ? AND b.node_id = ?`,
+				[input.executionId, input.activationId, input.nodeId],
+			)[0];
+			if (!binding) {
+				result = { ok: false, reason: "activation_mismatch" };
+				return;
+			}
+			const adapterType =
+				typeof binding.adapter_type === "string"
+					? binding.adapter_type.trim()
+					: "";
+			const vendor =
+				adapterType === "codex-tmux"
+					? "codex"
+					: adapterType.startsWith("claude")
+						? "claude"
+						: undefined;
+			if (!vendor) {
+				result = { ok: false, reason: "invalid_input" };
+				return;
+			}
+			const existing = this.getResidentHold(input.executionId);
+			if (existing && existing.activation_id !== input.activationId) {
+				result = { ok: false, reason: "activation_mismatch" };
+				return;
+			}
+			if (
+				existing?.state === "resident" &&
+				existing.boundary_seq === input.boundarySeq
+			) {
+				result = {
+					ok: true,
+					revision: existing.revision,
+					graceExpiresAt: existing.grace_expires_at,
+				};
+				return;
+			}
+			if (!existing) {
+				this.db.run(
+					`INSERT INTO workflow_resident_hold (
+					   execution_id, run_id, node_id, attempt, activation_id, vendor,
+					   revision, boundary_seq, state, grace_started_at,
+					   grace_expires_at, closed_reason, updated_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'resident', ?, ?, NULL, ?)`,
+					[
+						input.executionId,
+						String(binding.run_id),
+						input.nodeId,
+						Number(binding.attempt),
+						input.activationId,
+						vendor,
+						input.boundarySeq,
+						now,
+						graceExpiresAt,
+						now,
+					],
+				);
+				result = { ok: true, revision: 1, graceExpiresAt };
+				return;
+			}
+			if (
+				existing.state === "woken" &&
+				existing.boundary_seq < input.boundarySeq
+			) {
+				const revision = existing.revision + 1;
+				this.db.run(
+					`UPDATE workflow_resident_hold
+					    SET revision = ?, boundary_seq = ?, state = 'resident',
+					        grace_started_at = ?, grace_expires_at = ?,
+					        closed_reason = NULL, updated_at = ?
+					  WHERE execution_id = ? AND revision = ? AND state = 'woken'`,
+					[
+						revision,
+						input.boundarySeq,
+						now,
+						graceExpiresAt,
+						now,
+						input.executionId,
+						existing.revision,
+					],
+				);
+				result = { ok: true, revision, graceExpiresAt };
+				return;
+			}
+			result = { ok: false, reason: "stale_boundary" };
+		});
+		this.save();
+		return result;
+	}
+
+	wakeResidentHold(executionId: string, revision: number, nowMs = Date.now()): boolean {
+		if (!executionId || !Number.isSafeInteger(revision) || revision <= 0) {
+			return false;
+		}
+		const changed = this.db.raw
+			.prepare(
+			`UPDATE workflow_resident_hold
+			    SET state = 'woken', updated_at = ?
+			  WHERE execution_id = ? AND revision = ? AND state = 'resident'`,
+			)
+			.run(new Date(nowMs).toISOString(), executionId, revision).changes;
+		if (changed > 0) this.save();
+		return changed === 1;
+	}
+
+	closeResidentHold(input: {
+		executionId: string;
+		revision: number;
+		reason:
+			| "expired"
+			| "terminal"
+			| "superseded"
+			| "replaced"
+			| "run_terminated"
+			| "local_hold_failed";
+		nowMs?: number;
+	}): boolean {
+		const nowMs = input.nowMs ?? Date.now();
+		if (
+			!input.executionId ||
+			!Number.isSafeInteger(input.revision) ||
+			input.revision <= 0 ||
+			!Number.isFinite(nowMs)
+		) {
+			return false;
+		}
+		const changed = this.db.raw
+			.prepare(
+				`UPDATE workflow_resident_hold
+				    SET state = 'closed', closed_reason = ?, updated_at = ?
+				  WHERE execution_id = ? AND revision = ?
+				    AND state IN ('resident', 'woken')`,
+			)
+			.run(
+				input.reason,
+				new Date(nowMs).toISOString(),
+				input.executionId,
+				input.revision,
+			).changes;
+		if (changed > 0) this.save();
+		return changed === 1;
+	}
+
+	expireResidentHoldsTx(now: string): string[] {
+		if (!StateStore.workflowFiniteTimestamp(now)) return [];
+		const expiredOperationIds: string[] = [];
+		this.db.transaction(() => {
+			const candidates = this.workflowSelectAll(
+				`SELECT * FROM workflow_resident_hold
+				  WHERE state = 'resident' AND grace_expires_at < ?
+				  ORDER BY grace_expires_at, execution_id`,
+				[now],
+			) as unknown as WorkflowResidentHoldRow[];
+			for (const hold of candidates) {
+				const operationId = `resident-expiry:${hold.execution_id}:r${hold.revision}`;
+				const canonicalDigest = canonicalSubmissionDigest({
+					kind: "resident_expiry",
+					runId: hold.run_id,
+					executionId: hold.execution_id,
+					activationId: hold.activation_id,
+					nodeId: hold.node_id,
+					attempt: hold.attempt,
+					revision: hold.revision,
+				});
+				const existing = this.workflowSelectAll(
+					`SELECT operation_id, kind, run_id, family, root_id, generation,
+					        shape_id, hold_event_uid, source_attempt_id,
+					        target_activation_id, client_request_id, canonical_digest
+					   FROM workflow_delivery_operation
+					  WHERE client_request_id = ?`,
+					[operationId],
+				)[0];
+				if (
+					existing &&
+					(existing.operation_id !== operationId ||
+						existing.kind !== "resident_expiry" ||
+						existing.run_id !== hold.run_id ||
+						existing.family !== hold.vendor ||
+						existing.root_id !== hold.execution_id ||
+						Number(existing.generation) !== hold.revision ||
+						existing.shape_id !== hold.node_id ||
+						existing.hold_event_uid !== null ||
+						existing.source_attempt_id !== null ||
+						existing.target_activation_id !== hold.activation_id ||
+						existing.canonical_digest !== canonicalDigest)
+				) {
+					throw new WorkflowEngineInvariantError(
+						`resident_expiry_operation_poison:${operationId}`,
+					);
+				}
+				this.db.run(
+					`UPDATE workflow_resident_hold
+					    SET state = 'expired', updated_at = ?
+					  WHERE execution_id = ? AND revision = ? AND state = 'resident'
+					    AND grace_expires_at < ?`,
+					[now, hold.execution_id, hold.revision, now],
+				);
+				if (this.db.getRowsModified() !== 1) continue;
+				if (!existing) {
+					this.db.run(
+						`INSERT INTO workflow_delivery_operation (
+						   operation_id, kind, run_id, family, root_id, generation,
+						   shape_id, hold_event_uid, source_attempt_id,
+						   target_activation_id, client_request_id, canonical_digest,
+						   state, last_error, created_at, updated_at
+						 ) VALUES (?, 'resident_expiry', ?, ?, ?, ?, ?, NULL, NULL,
+						           ?, ?, ?, 'staged', NULL, ?, ?)`,
+						[
+							operationId,
+							hold.run_id,
+							hold.vendor,
+							hold.execution_id,
+							hold.revision,
+							hold.node_id,
+							hold.activation_id,
+							operationId,
+							canonicalDigest,
+							now,
+							now,
+						],
+					);
+				}
+				expiredOperationIds.push(operationId);
+			}
+		});
+		if (expiredOperationIds.length > 0) this.save();
+		return expiredOperationIds;
+	}
+
+	listPendingResidentExpiryOperations(): WorkflowResidentExpiryOperation[] {
+		return this.workflowSelectAll(
+			`SELECT operation.operation_id, operation.run_id, operation.family,
+			        operation.root_id, operation.generation, operation.shape_id,
+			        operation.target_activation_id, operation.state, hold.attempt
+			   FROM workflow_delivery_operation operation
+			   JOIN workflow_resident_hold hold
+			     ON hold.execution_id = operation.root_id
+			    AND hold.revision = operation.generation
+			  WHERE operation.kind = 'resident_expiry'
+			    AND operation.state IN ('staged','applied','sent')
+			  ORDER BY operation.created_at, operation.operation_id`,
+			[],
+		).map((row) => ({
+			operationId: String(row.operation_id),
+			executionId: String(row.root_id),
+			runId: String(row.run_id),
+			activationId: String(row.target_activation_id),
+			nodeId: String(row.shape_id),
+			attempt: Number(row.attempt),
+			revision: Number(row.generation),
+			vendor: row.family as "claude" | "codex",
+			state: row.state as "staged" | "applied" | "sent",
+		}));
+	}
+
+	applyResidentExpiry(input: {
+		operationId: string;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.operationId.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resident_expiry_application" };
+		}
+		const current = this.workflowSelectAll(
+			`SELECT state FROM workflow_delivery_operation
+			  WHERE operation_id = ? AND kind = 'resident_expiry'`,
+			[input.operationId],
+		)[0];
+		if (!current) return { ok: false, reason: "resident_expiry_missing" };
+		if (["applied", "sent", "projected"].includes(String(current.state))) {
+			return { ok: true, idempotentReplay: true };
+		}
+		if (current.state !== "staged") {
+			return { ok: false, reason: "resident_expiry_changed" };
+		}
+		this.db.run(
+			`UPDATE workflow_delivery_operation
+			    SET state = 'applied', updated_at = ?
+			  WHERE operation_id = ? AND kind = 'resident_expiry' AND state = 'staged'`,
+			[input.now, input.operationId],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "resident_expiry_changed" };
+		}
+		this.save();
+		return { ok: true, idempotentReplay: false };
+	}
+
+	markResidentExpirySent(input: {
+		operationId: string;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.operationId.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resident_expiry_send" };
+		}
+		const current = this.workflowSelectAll(
+			`SELECT state FROM workflow_delivery_operation
+			  WHERE operation_id = ? AND kind = 'resident_expiry'`,
+			[input.operationId],
+		)[0];
+		if (!current) return { ok: false, reason: "resident_expiry_missing" };
+		if (current.state === "sent" || current.state === "projected") {
+			return { ok: true, idempotentReplay: true };
+		}
+		if (current.state !== "applied") {
+			return { ok: false, reason: "resident_expiry_not_applied" };
+		}
+		this.db.run(
+			`UPDATE workflow_delivery_operation
+			    SET state = 'sent', updated_at = ?
+			  WHERE operation_id = ? AND kind = 'resident_expiry' AND state = 'applied'`,
+			[input.now, input.operationId],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "resident_expiry_changed" };
+		}
+		this.save();
+		return { ok: true, idempotentReplay: false };
+	}
+
+	projectResidentExpiry(input: {
+		operationId: string;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.operationId.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resident_expiry_projection" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "resident_expiry_not_projected",
+		};
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				`SELECT operation.run_id, operation.root_id, operation.generation,
+				        operation.shape_id, operation.target_activation_id,
+				        operation.state, hold.state AS hold_state
+				   FROM workflow_delivery_operation operation
+				   JOIN workflow_resident_hold hold
+				     ON hold.execution_id = operation.root_id
+				    AND hold.revision = operation.generation
+				  WHERE operation.operation_id = ?
+				    AND operation.kind = 'resident_expiry'`,
+				[input.operationId],
+			)[0];
+			if (!operation) {
+				result = { ok: false, reason: "resident_expiry_missing" };
+				return;
+			}
+			if (operation.state === "projected") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (operation.state !== "sent") {
+				result = { ok: false, reason: "resident_expiry_not_sent" };
+				return;
+			}
+			if (operation.hold_state !== "expired") {
+				result = { ok: false, reason: "resident_expiry_hold_changed" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_resident_hold
+				    SET state = 'closed', closed_reason = 'expired', updated_at = ?
+				  WHERE execution_id = ? AND revision = ? AND state = 'expired'`,
+				[input.now, operation.root_id, operation.generation],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new WorkflowEngineInvariantError(
+					`resident_expiry_hold_cas_failed:${input.operationId}`,
+				);
+			}
+			this.db.run(
+				`UPDATE workflow_delivery_operation
+				    SET state = 'projected', updated_at = ?
+				  WHERE operation_id = ? AND kind = 'resident_expiry' AND state = 'sent'`,
+				[input.now, input.operationId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new WorkflowEngineInvariantError(
+					`resident_expiry_projection_cas_failed:${input.operationId}`,
+				);
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: String(operation.run_id),
+				eventUid: input.operationId,
+				kind: "resident_hold_expired",
+				payload: {
+					executionId: operation.root_id,
+					activationId: operation.target_activation_id,
+					nodeId: operation.shape_id,
+					revision: Number(operation.generation),
+					requestId: input.operationId,
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	markResidentExpiryFailed(input: {
+		operationId: string;
+		now: string;
+		error: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.operationId.trim() ||
+			!input.error.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resident_expiry_failure" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "resident_expiry_not_failed",
+		};
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				`SELECT operation.run_id, operation.root_id, operation.state,
+				        run.issue_id
+				   FROM workflow_delivery_operation operation
+				   JOIN workflow_run run ON run.run_id = operation.run_id
+				  WHERE operation.operation_id = ?
+				    AND operation.kind = 'resident_expiry'`,
+				[input.operationId],
+			)[0];
+			if (!operation) {
+				result = { ok: false, reason: "resident_expiry_missing" };
+				return;
+			}
+			if (operation.state === "failed") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (!["staged", "applied", "sent"].includes(String(operation.state))) {
+				result = { ok: false, reason: "resident_expiry_changed" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_delivery_operation
+				    SET state = 'failed', last_error = ?, updated_at = ?
+				  WHERE operation_id = ? AND kind = 'resident_expiry'
+				    AND state IN ('staged','applied','sent')`,
+				[input.error.trim().slice(0, 1000), input.now, input.operationId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new WorkflowEngineInvariantError(
+					`resident_expiry_failure_cas_failed:${input.operationId}`,
+				);
+			}
+			const escalationUid = `delivery_operation_stalled:${input.operationId}`;
+			if (!this.getWorkflowAlertOutbox(escalationUid)) {
+				const copy = deliveryOperationStalledCopy({
+					issueId: String(operation.issue_id),
+					operationKind: "resident_expiry",
+					state: "failed",
+					ageMs: 0,
+					runId: String(operation.run_id),
+					evidenceAt: input.now,
+				});
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: String(operation.run_id),
+					now: input.now,
+					payload: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: escalationUid,
+						eventType: "workflow_engine_escalation",
+						severity: "warning",
+						sessionKey: `wf:${operation.run_id}`,
+						title: copy.title,
+						body: copy.body,
+						metadata: {
+							workflowEngine: {
+								runId: String(operation.run_id),
+								issueId: String(operation.issue_id),
+								nodeId: "delivery-contract",
+								executionId: String(operation.root_id),
+								disposition: "delivery_operation_stalled",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					},
+				});
+				this.appendWorkflowRunEventCheckedTx({
+					runId: String(operation.run_id),
+					eventUid: escalationUid,
+					kind: "delivery_operation_stalled",
+					payload: {
+						operationId: input.operationId,
+						kind: "resident_expiry",
+						state: "failed",
+						error: input.error.trim().slice(0, 1000),
+					},
+				});
+			}
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	/**
 	 * FLY-1441 single ownership fence for every founder/Lead ship surface.
 	 * Non-ship questions and true legacy executions pass byte-for-byte.
@@ -35785,30 +37350,65 @@ export class StateStore {
 		return result;
 	}
 
-	listLiveWorkflowDeliveryAttempts(): WorkflowDeliveryAttemptRow[] {
+	listLiveWorkflowDeliveryAttempts(options?: {
+		projectName?: string;
+		afterRootId?: string;
+		limit?: number;
+	}): WorkflowDeliveryAttemptRow[] {
+		if (!options) {
+			return this.workflowSelectAll(
+				`SELECT root_id, generation, attempt, attempt_id, family,
+				        contract_ref_json, parent_attempt_id, minted_at, granted_at,
+				        sent_at, received_at, consumed_at, settlement_reason,
+				        superseded_by_attempt_id
+				   FROM workflow_delivery_attempt
+				  WHERE superseded_by_attempt_id IS NULL
+				    AND settlement_reason IS NULL`,
+				[],
+			) as unknown as WorkflowDeliveryAttemptRow[];
+		}
+		if (
+			options.limit !== undefined &&
+			(!Number.isSafeInteger(options.limit) || options.limit < 1)
+		) {
+			throw new Error("invalid_workflow_delivery_attempt_limit");
+		}
+		const predicates = [
+			"superseded_by_attempt_id IS NULL",
+			"settlement_reason IS NULL",
+		];
+		const params: unknown[] = [];
+		if (options.projectName) {
+			predicates.push("root_id >= ?", "root_id < ?");
+			params.push(`${options.projectName}:`, `${options.projectName};`);
+		}
+		if (options.afterRootId) {
+			predicates.push("root_id > ?");
+			params.push(options.afterRootId);
+		}
+		let sql = `SELECT root_id, generation, attempt, attempt_id, family,
+		                  contract_ref_json, parent_attempt_id, minted_at, granted_at,
+		                  sent_at, received_at, consumed_at, settlement_reason,
+		                  superseded_by_attempt_id
+		             FROM workflow_delivery_attempt
+		            WHERE ${predicates.join(" AND ")}
+		            ORDER BY root_id`;
+		if (options.limit !== undefined) {
+			sql += " LIMIT ?";
+			params.push(options.limit);
+		}
 		return this.workflowSelectAll(
-			`SELECT root_id, generation, attempt, attempt_id, family,
-			        contract_ref_json, parent_attempt_id, minted_at, granted_at,
-			        sent_at, received_at, consumed_at, settlement_reason,
-			        superseded_by_attempt_id
-			   FROM workflow_delivery_attempt
-			  WHERE superseded_by_attempt_id IS NULL
-			    AND settlement_reason IS NULL`,
-			[],
+			sql,
+			params,
 		) as unknown as WorkflowDeliveryAttemptRow[];
 	}
 
-	listUnsettledWorkflowDeliveryAttempts(): WorkflowDeliveryAttemptRow[] {
-		return this.workflowSelectAll(
-			`SELECT root_id, generation, attempt, attempt_id, family,
-			        contract_ref_json, parent_attempt_id, minted_at, granted_at,
-			        sent_at, received_at, consumed_at, settlement_reason,
-			        superseded_by_attempt_id
-			   FROM workflow_delivery_attempt
-			  WHERE superseded_by_attempt_id IS NULL
-			    AND settlement_reason IS NULL`,
-			[],
-		) as unknown as WorkflowDeliveryAttemptRow[];
+	listUnsettledWorkflowDeliveryAttempts(options?: {
+		projectName?: string;
+		afterRootId?: string;
+		limit?: number;
+	}): WorkflowDeliveryAttemptRow[] {
+		return this.listLiveWorkflowDeliveryAttempts(options);
 	}
 
 	hasInFlightWorkflowDeliveryReroute(input: {
@@ -35843,25 +37443,20 @@ export class StateStore {
 		table: string;
 		physicalId: string;
 		fallbackRootId: string;
-	}): { rootId: string; attemptId: string } {
+	}): { rootId: string; attemptId: string; found: boolean } {
 		const matches = this.workflowSelectAll(
-			`SELECT root_id, attempt_id, contract_ref_json
+			`SELECT root_id, attempt_id
 			   FROM workflow_delivery_attempt
 			  WHERE family = ? AND superseded_by_attempt_id IS NULL
-			    AND settlement_reason IS NULL
-			  ORDER BY generation DESC, attempt DESC`,
-			[input.family],
-		).filter((row) => {
-			try {
-				const ref = JSON.parse(String(row.contract_ref_json)) as {
-					table?: unknown;
-					pk?: unknown;
-				};
-				return ref.table === input.table && ref.pk === input.physicalId;
-			} catch {
-				return false;
-			}
-		});
+			    AND (settlement_reason IS NULL OR settlement_reason = 'legacy_unreachable')
+			    AND CASE WHEN json_valid(contract_ref_json)
+			             THEN json_extract(contract_ref_json, '$.table') END = ?
+			    AND CASE WHEN json_valid(contract_ref_json)
+			             THEN json_extract(contract_ref_json, '$.pk') END = ?
+			  ORDER BY generation DESC, attempt DESC
+			  LIMIT 2`,
+			[input.family, input.table, input.physicalId],
+		);
 		if (matches.length > 1) {
 			throw new WorkflowEngineInvariantError(
 				`workflow_delivery_projection_identity_ambiguous:${input.family}:${input.physicalId}`,
@@ -35871,11 +37466,119 @@ export class StateStore {
 			? {
 					rootId: String(matches[0].root_id),
 					attemptId: String(matches[0].attempt_id),
+					found: true,
 				}
 			: {
 					rootId: input.fallbackRootId,
 					attemptId: `${input.fallbackRootId}:g1:a1`,
+					found: false,
 				};
+	}
+
+	resolveWorkflowDeliveryProjectionIdentities(
+		inputs: Array<{
+		family: WorkflowDeliveryAttemptRow["family"];
+		table: string;
+		physicalId: string;
+		fallbackRootId: string;
+		}>,
+	): Array<{
+		rootId: string;
+		attemptId: string;
+		found: boolean;
+		settled: boolean;
+		settlementReason: string | null;
+		generation: number;
+		contractRefJson: string;
+		mintedAt: string;
+		sentAt: string | null;
+		receivedAt: string | null;
+		consumedAt: string | null;
+	}> {
+		if (inputs.length === 0) return [];
+		if (inputs.length > DELIVERY_MAINTENANCE_PAGE_SIZE) {
+			throw new Error("workflow_delivery_projection_identity_page_too_large");
+		}
+		const rows = this.workflowSelectAll(
+			`WITH requested(ordinal, family, source_table, source_pk) AS (
+			   VALUES ${inputs.map(() => "(?, ?, ?, ?)").join(", ")}
+			 )
+			 SELECT requested.ordinal, attempt.root_id, attempt.attempt_id,
+			        attempt.settlement_reason, attempt.generation, attempt.attempt,
+			        attempt.contract_ref_json, attempt.minted_at, attempt.sent_at,
+			        attempt.received_at, attempt.consumed_at
+			   FROM requested
+			   LEFT JOIN workflow_delivery_attempt attempt
+			     ON attempt.family = requested.family
+			    AND attempt.superseded_by_attempt_id IS NULL
+			    AND CASE WHEN json_valid(attempt.contract_ref_json)
+			             THEN json_extract(attempt.contract_ref_json, '$.table') END = requested.source_table
+			    AND CASE WHEN json_valid(attempt.contract_ref_json)
+			             THEN json_extract(attempt.contract_ref_json, '$.pk') END = requested.source_pk
+			  ORDER BY requested.ordinal,
+			           CASE WHEN attempt.settlement_reason IS NULL
+			                  OR attempt.settlement_reason = 'legacy_unreachable'
+			                THEN 0 ELSE 1 END,
+			           attempt.generation DESC, attempt.attempt DESC`,
+			inputs.flatMap((input, ordinal) => [
+				ordinal,
+				input.family,
+				input.table,
+				input.physicalId,
+			]),
+		);
+		return inputs.map((input, ordinal) => {
+			const matches = rows.filter(
+				(row) => Number(row.ordinal) === ordinal && row.attempt_id !== null,
+			);
+			const current = matches.filter(
+				(row) =>
+					row.settlement_reason === null ||
+					row.settlement_reason === "legacy_unreachable",
+			);
+			if (current.length > 1) {
+				throw new WorkflowEngineInvariantError(
+					`workflow_delivery_projection_identity_ambiguous:${input.family}:${input.physicalId}`,
+				);
+			}
+			return current[0]
+				? {
+						rootId: String(current[0].root_id),
+						attemptId: String(current[0].attempt_id),
+						found: true,
+						settled: false,
+						settlementReason:
+							current[0].settlement_reason === null
+								? null
+								: String(current[0].settlement_reason),
+						generation: Number(current[0].generation),
+						contractRefJson: String(current[0].contract_ref_json),
+						mintedAt: String(current[0].minted_at),
+						sentAt:
+							current[0].sent_at === null ? null : String(current[0].sent_at),
+						receivedAt:
+							current[0].received_at === null
+								? null
+								: String(current[0].received_at),
+						consumedAt:
+							current[0].consumed_at === null
+								? null
+								: String(current[0].consumed_at),
+					}
+				: {
+						rootId: input.fallbackRootId,
+						attemptId: `${input.fallbackRootId}:g1:a1`,
+						found: false,
+						settled: matches.length > 0,
+						settlementReason: null,
+						generation: 1,
+						contractRefJson: "",
+						mintedAt: "",
+						sentAt: null,
+						receivedAt: null,
+						consumedAt: null,
+					};
+		});
 	}
 
 	resolveWorkflowDeliveryRecipient(
@@ -36605,7 +38308,9 @@ export class StateStore {
 			  WHERE attempt_id = ? AND closed_at IS NULL`,
 			[
 				input.now,
-				`terminal:settled:${input.reason}`,
+				input.reason === "legacy_unreachable"
+					? "legacy_unreachable"
+					: `terminal:settled:${input.reason}`,
 				attempt.attempt_id,
 			],
 		);
@@ -36706,62 +38411,127 @@ export class StateStore {
 		family: WorkflowDeliveryAttemptRow["family"];
 		contractRef: Record<string, unknown>;
 		mintedAt: string;
+		legacyRearmAt?: string;
 		sentAt?: string | null;
 		receivedAt?: string | null;
 		consumedAt?: string | null;
 	}): { minted: number; advanced: number } {
 		const result = { minted: 0, advanced: 0 };
 		this.db.transaction(() => {
-			this.db.run(
-				`INSERT OR IGNORE INTO workflow_delivery_attempt (
-				   root_id, generation, attempt, attempt_id, family,
-				   contract_ref_json, minted_at
-				 ) VALUES (?, 1, 1, ?, ?, ?, ?)`,
-				[
-					input.rootId,
-					input.attemptId,
-					input.family,
-					JSON.stringify(input.contractRef),
-					input.mintedAt,
-				],
-			);
-			result.minted = this.db.getRowsModified();
+			const contractRefJson = JSON.stringify(input.contractRef);
+			let effectiveAttemptId = input.attemptId;
+			let effectiveMintedAt = input.mintedAt;
+			const legacy = this.workflowSelectAll(
+				`SELECT root_id, generation, family, minted_at
+				   FROM workflow_delivery_attempt
+				  WHERE attempt_id = ? AND settlement_reason = 'legacy_unreachable'
+				    AND superseded_by_attempt_id IS NULL`,
+				[input.attemptId],
+			)[0];
+			if (legacy && input.legacyRearmAt) {
+				if (
+					legacy.root_id !== input.rootId ||
+					legacy.family !== input.family ||
+					(Number(legacy.generation) === 1 &&
+						legacy.minted_at !== input.mintedAt)
+				) {
+					throw new Error(`delivery_attempt_identity_conflict:${input.attemptId}`);
+				}
+				const generation = Number(legacy.generation) + 1;
+				effectiveAttemptId = `${input.rootId}:g${generation}:a1`;
+				effectiveMintedAt = input.legacyRearmAt;
+				this.db.run(
+					`INSERT INTO workflow_delivery_attempt (
+					   root_id, generation, attempt, attempt_id, family,
+					   contract_ref_json, minted_at
+					 ) VALUES (?, ?, 1, ?, ?, ?, ?)`,
+					[
+						input.rootId,
+						generation,
+						effectiveAttemptId,
+						input.family,
+						contractRefJson,
+						effectiveMintedAt,
+					],
+				);
+				this.db.run(
+					`UPDATE workflow_delivery_attempt
+					    SET superseded_by_attempt_id = ?
+					  WHERE attempt_id = ? AND settlement_reason = 'legacy_unreachable'
+					    AND superseded_by_attempt_id IS NULL`,
+					[effectiveAttemptId, input.attemptId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error(`delivery_attempt_rearm_conflict:${input.attemptId}`);
+				}
+				result.minted = 1;
+			} else {
+				const current = this.workflowSelectAll(
+					`SELECT generation, minted_at
+					   FROM workflow_delivery_attempt
+					  WHERE attempt_id = ?`,
+					[input.attemptId],
+				)[0];
+				if (current && Number(current.generation) > 1) {
+					effectiveMintedAt = String(current.minted_at);
+				}
+				this.db.run(
+					`INSERT OR IGNORE INTO workflow_delivery_attempt (
+					   root_id, generation, attempt, attempt_id, family,
+					   contract_ref_json, minted_at
+					 ) VALUES (?, 1, 1, ?, ?, ?, ?)`,
+					[
+						input.rootId,
+						input.attemptId,
+						input.family,
+						contractRefJson,
+						input.mintedAt,
+					],
+				);
+				result.minted = this.db.getRowsModified();
+			}
 			const existing = this.workflowSelectAll(
 				`SELECT root_id, family, minted_at, contract_ref_json
 				   FROM workflow_delivery_attempt WHERE attempt_id = ?`,
-				[input.attemptId],
+				[effectiveAttemptId],
 			)[0];
 			if (
 				!existing ||
 				existing.root_id !== input.rootId ||
 				existing.family !== input.family ||
-				existing.minted_at !== input.mintedAt
+				existing.minted_at !== effectiveMintedAt
 			) {
 				throw new Error(`delivery_attempt_identity_conflict:${input.attemptId}`);
 			}
-			const contractRefJson = JSON.stringify(input.contractRef);
 			if (existing.contract_ref_json !== contractRefJson) {
 				this.db.run(
 					`UPDATE workflow_delivery_attempt SET contract_ref_json = ?
 					  WHERE attempt_id = ? AND contract_ref_json = ?`,
-					[contractRefJson, input.attemptId, existing.contract_ref_json],
+					[contractRefJson, effectiveAttemptId, existing.contract_ref_json],
 				);
 				if (this.db.getRowsModified() !== 1) {
 					throw new Error(
-						`delivery_attempt_projection_conflict:${input.attemptId}`,
+						`delivery_attempt_projection_conflict:${effectiveAttemptId}`,
 					);
 				}
 			}
+			if (legacy && !input.legacyRearmAt) return;
 			for (const [column, value] of [
 				["sent_at", input.sentAt],
 				["received_at", input.receivedAt],
 				["consumed_at", input.consumedAt],
 			] as const) {
 				if (!value) continue;
+				const effectiveValue =
+					legacy &&
+					input.legacyRearmAt &&
+					Date.parse(value) < Date.parse(input.legacyRearmAt)
+						? input.legacyRearmAt
+						: value;
 				this.db.run(
 					`UPDATE workflow_delivery_attempt SET ${column} = ?
 					  WHERE attempt_id = ? AND ${column} IS NULL`,
-					[value, input.attemptId],
+					[effectiveValue, effectiveAttemptId],
 				);
 				result.advanced += this.db.getRowsModified();
 			}
@@ -36770,7 +38540,12 @@ export class StateStore {
 		return result;
 	}
 
-	listOpenUndeliverableDeliveryEpisodes(): Array<{
+	listOpenUndeliverableDeliveryEpisodes(options?: {
+		projectName?: string;
+		afterRootId?: string;
+		afterFamily?: WorkflowDeliveryAttemptRow["family"];
+		limit?: number;
+	}): Array<{
 		episode_id: string;
 		run_id: string;
 		family: WorkflowDeliveryAttemptRow["family"];
@@ -36778,6 +38553,23 @@ export class StateStore {
 		attempt_id: string;
 		contract_ref_json: string;
 	}> {
+		if (
+			options?.limit !== undefined &&
+			(!Number.isSafeInteger(options.limit) || options.limit < 1)
+		) {
+			throw new Error("invalid_workflow_delivery_episode_limit");
+		}
+		const params: unknown[] = [];
+		const optionalPredicates: string[] = [];
+		if (options?.projectName) {
+			optionalPredicates.push("episode.root_id >= ?", "episode.root_id < ?");
+			params.push(`${options.projectName}:`, `${options.projectName};`);
+		}
+		if (options?.afterRootId && options.afterFamily) {
+			optionalPredicates.push("(episode.root_id, episode.family) > (?, ?)");
+			params.push(options.afterRootId, options.afterFamily);
+		}
+		if (options?.limit !== undefined) params.push(options.limit);
 		return this.workflowSelectAll(
 			`SELECT episode.episode_id, episode.run_id, episode.family,
 			        episode.root_id, episode.attempt_id, attempt.contract_ref_json
@@ -36785,8 +38577,10 @@ export class StateStore {
 			   JOIN workflow_delivery_attempt attempt
 			     ON attempt.attempt_id = episode.attempt_id
 			  WHERE episode.closed_at IS NULL AND episode.stage = 'undeliverable'
-			  ORDER BY episode.opened_at, episode.episode_id`,
-			[],
+			  ${optionalPredicates.length ? `AND ${optionalPredicates.join(" AND ")}` : ""}
+			  ORDER BY ${options ? "episode.root_id, episode.family" : "episode.opened_at, episode.episode_id"}
+			  ${options?.limit !== undefined ? "LIMIT ?" : ""}`,
+			params,
 		) as unknown as Array<{
 			episode_id: string;
 			run_id: string;
@@ -38514,13 +40308,23 @@ export class StateStore {
 			issueId: string;
 			runId: string;
 		}) => WorkflowEngineAlertIdentity,
+		options?: { projectName?: string; limit?: number },
 	): number {
 		if (!StateStore.workflowFiniteTimestamp(now)) {
 			throw new Error("invalid_delivery_operation_observation_time");
 		}
+		if (
+			options?.limit !== undefined &&
+			(!Number.isSafeInteger(options.limit) || options.limit < 1)
+		) {
+			throw new Error("invalid_stalled_delivery_operation_limit");
+		}
 		const cutoff = new Date(
 			Date.parse(now) - STAGE_DEADLINES_MS.granted,
 		).toISOString();
+		const params: unknown[] = [cutoff];
+		if (options?.projectName) params.push(options.projectName);
+		if (options?.limit !== undefined) params.push(options.limit);
 		let alerted = 0;
 		this.db.transaction(() => {
 			const operations = this.workflowSelectAll(
@@ -38531,8 +40335,11 @@ export class StateStore {
 				   LEFT JOIN workflow_run run ON run.run_id = operation.run_id
 				  WHERE operation.state IN ('staged','applied')
 				    AND operation.updated_at < ?
-				  ORDER BY operation.updated_at, operation.operation_id`,
-				[cutoff],
+				    ${options?.projectName ? "AND run.project_name = ?" : ""}
+				    ${options ? "AND NOT EXISTS (SELECT 1 FROM workflow_alert_outbox alert WHERE alert.escalation_uid = 'delivery_operation_stalled:' || operation.operation_id)" : ""}
+				  ORDER BY operation.updated_at, operation.operation_id
+				  ${options?.limit !== undefined ? "LIMIT ?" : ""}`,
+				params,
 			);
 			for (const operation of operations) {
 				const escalationUid = `delivery_operation_stalled:${operation.operation_id}`;
@@ -39805,7 +41612,11 @@ export class StateStore {
 			: undefined;
 	}
 
-	listPendingWorkflowHoldResumeOperations(): Array<{
+	listPendingWorkflowHoldResumeOperations(options?: {
+		projectName?: string;
+		afterOperationId?: string;
+		limit?: number;
+	}): Array<{
 		operationId: string;
 		runId: string;
 		shape: string;
@@ -39818,6 +41629,25 @@ export class StateStore {
 		targetActivationId: string | null;
 		episodeId: string | null;
 	}> {
+		if (
+			options?.limit !== undefined &&
+			(!Number.isSafeInteger(options.limit) || options.limit < 1)
+		) {
+			throw new Error("invalid_workflow_hold_resume_operation_limit");
+		}
+		const params: unknown[] = [];
+		const optionalPredicates: string[] = [];
+		if (options?.projectName) {
+			optionalPredicates.push(
+				"EXISTS (SELECT 1 FROM workflow_run run WHERE run.run_id = operation.run_id AND run.project_name = ?)",
+			);
+			params.push(options.projectName);
+		}
+		if (options?.afterOperationId) {
+			optionalPredicates.push("operation.operation_id > ?");
+			params.push(options.afterOperationId);
+		}
+		if (options?.limit !== undefined) params.push(options.limit);
 		return this.workflowSelectAll(
 			`SELECT operation.operation_id, operation.run_id, operation.shape_id,
 			        operation.hold_event_uid, operation.state, operation.family,
@@ -39835,8 +41665,10 @@ export class StateStore {
 			    AND episode.closed_at IS NULL
 			  WHERE operation.kind = 'hold_resume'
 			    AND operation.state IN ('staged','applied')
-			  ORDER BY operation.created_at, operation.operation_id`,
-			[],
+			  ${optionalPredicates.length ? `AND ${optionalPredicates.join(" AND ")}` : ""}
+			  ORDER BY ${options ? "operation.operation_id" : "operation.created_at, operation.operation_id"}
+			  ${options?.limit !== undefined ? "LIMIT ?" : ""}`,
+			params,
 		).map((row) => {
 			let payload: Record<string, unknown> = {};
 			try {
@@ -40138,7 +41970,8 @@ export class StateStore {
 		}
 		let settled = false;
 		const allowVersionless =
-			input.reason === "run_terminal" &&
+			(input.reason === "run_terminal" ||
+				input.reason === "legacy_unreachable") &&
 			input.version === undefined &&
 			(input.family === "rework" || input.family === "carrier");
 		const settlementInput = {
@@ -41183,6 +43016,7 @@ export class StateStore {
 			   LEFT JOIN workflow_divergence_check c
 			     ON c.execution_id = n.execution_id
 			  WHERE n.state = 'done'
+			    AND r.status IN ('active','held')
 			    AND s.status IN (${statuses})
 			    AND s.lifecycle_revision > COALESCE(c.checked_lifecycle_revision, -1)
 			  ORDER BY s.lifecycle_revision, n.execution_id
@@ -41234,19 +43068,45 @@ export class StateStore {
 			}
 			let deduped = false;
 			if (session.status !== "completed") {
-				const appended = this.appendWorkflowRunEventCheckedTx({
-					runId: input.runId,
-					eventUid: `divergence:${input.runId}:${input.nodeId}:${input.attempt}`,
-					kind: "workflow_node_session_divergence",
-					nodeId: input.nodeId,
-					executionId: input.executionId,
-					payload: {
-						nodeState: "done",
-						sessionStatus: session.status,
-						lifecycleRevision: session.lifecycle_revision,
-					},
-				});
-				deduped = appended.deduped;
+				const divergenceEventUid = `divergence:${input.runId}:${input.nodeId}:${input.attempt}:${input.observedLifecycleRevision}`;
+				try {
+					const appended = this.appendWorkflowRunEventCheckedTx({
+						runId: input.runId,
+						eventUid: divergenceEventUid,
+						kind: "workflow_node_session_divergence",
+						nodeId: input.nodeId,
+						executionId: input.executionId,
+						payload: {
+							nodeState: "done",
+							sessionStatus: session.status,
+							lifecycleRevision: session.lifecycle_revision,
+						},
+					});
+					deduped = appended.deduped;
+				} catch (error) {
+					if (!(error instanceof WorkflowEventUidConflictError)) throw error;
+					try {
+						const conflict = this.appendWorkflowRunEventCheckedTx({
+							runId: input.runId,
+							eventUid: `divergence_conflict:${input.runId}:${input.nodeId}:${input.attempt}:${input.observedLifecycleRevision}`,
+							kind: "workflow_node_session_divergence_conflict",
+							nodeId: input.nodeId,
+							executionId: input.executionId,
+							payload: {
+								conflictedEventUid: divergenceEventUid,
+								nodeState: "done",
+								sessionStatus: session.status,
+								lifecycleRevision: session.lifecycle_revision,
+							},
+						});
+						deduped = conflict.deduped;
+					} catch (conflictError) {
+						if (!(conflictError instanceof WorkflowEventUidConflictError)) {
+							throw conflictError;
+						}
+						deduped = true;
+					}
+				}
 			}
 			this.db.run(
 				`INSERT INTO workflow_divergence_check
@@ -44344,7 +46204,16 @@ export class StateStore {
 			ReturnType<StateStore["generalizedExecutionContextForActivation"]>
 		>,
 		gateOpened: boolean,
+		residentHoldEntered: boolean,
 	): WorkflowCompletionDisposition {
+		if (
+			residentHoldEntered &&
+			context.snapshot.manifest.loops.some(
+				(loop) => loop.to === context.binding.node_id,
+			)
+		) {
+			return "loop_park";
+		}
 		if (!gateOpened) return "terminal_no_gate";
 		if (
 			context.run.engine_owned !== 1 ||
@@ -44394,6 +46263,7 @@ export class StateStore {
 			if (
 				payload.disposition === "engine_gate_handoff" ||
 				payload.disposition === "runner_ship_park" ||
+				payload.disposition === "loop_park" ||
 				payload.disposition === "terminal_no_gate"
 			) {
 				return { state: "valid", disposition: payload.disposition };
@@ -44402,6 +46272,85 @@ export class StateStore {
 			// Fail closed for corrupt immutable receipts.
 		}
 		return { state: "invalid" };
+	}
+
+	private enterResidentHoldForCompletionTx(
+		context: NonNullable<
+			ReturnType<StateStore["generalizedExecutionContextForActivation"]>
+		>,
+		now: string,
+	): boolean {
+		const session = this.getSession(context.binding.execution_id);
+		const adapterType = session?.adapter_type?.trim() ?? "";
+		const vendor =
+			adapterType === "codex-tmux"
+				? "codex"
+				: adapterType.startsWith("claude")
+					? "claude"
+					: undefined;
+		if (!vendor) {
+			return false;
+		}
+		const existing = this.getResidentHold(context.binding.execution_id);
+		if (existing) {
+			if (
+				existing.activation_id !== context.binding.activation_id ||
+				existing.node_id !== context.binding.node_id
+			) {
+				return false;
+			}
+			if (existing.state === "resident") return true;
+			if (existing.state !== "woken") {
+				return false;
+			}
+			const revision = existing.revision + 1;
+			const boundarySeq = existing.boundary_seq + 1;
+			const graceExpiresAt = new Date(
+				Date.parse(now) + RESIDENT_GRACE_MS,
+			).toISOString();
+			this.db.run(
+				`UPDATE workflow_resident_hold
+				    SET revision = ?, boundary_seq = ?, state = 'resident',
+				        grace_started_at = ?, grace_expires_at = ?,
+				        closed_reason = NULL, updated_at = ?
+				  WHERE execution_id = ? AND revision = ? AND state = 'woken'`,
+				[
+					revision,
+					boundarySeq,
+					now,
+					graceExpiresAt,
+					now,
+					context.binding.execution_id,
+					existing.revision,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				return false;
+			}
+			return true;
+		}
+		const graceExpiresAt = new Date(
+			Date.parse(now) + RESIDENT_GRACE_MS,
+		).toISOString();
+		this.db.run(
+			`INSERT INTO workflow_resident_hold (
+			   execution_id, run_id, node_id, attempt, activation_id, vendor,
+			   revision, boundary_seq, state, grace_started_at,
+			   grace_expires_at, closed_reason, updated_at
+			 ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'resident', ?, ?, NULL, ?)`,
+			[
+				context.binding.execution_id,
+				context.binding.run_id,
+				context.binding.node_id,
+				context.binding.attempt,
+				context.binding.activation_id,
+				vendor,
+				now,
+				graceExpiresAt,
+				now,
+			],
+		);
+		return true;
 	}
 
 	private reconstructWorkflowCompletionDispositionTx(
@@ -44434,9 +46383,14 @@ export class StateStore {
 				return undefined;
 			}
 			if (payload.sourceAttempt !== context.binding.attempt) continue;
+			const residentHold = this.getResidentHold(
+				context.binding.execution_id,
+			);
 			return this.workflowCompletionDispositionForContext(
 				context,
 				payload.gateOpened === true,
+				residentHold?.activation_id === context.binding.activation_id &&
+					residentHold.node_id === context.binding.node_id,
 			);
 		}
 		return undefined;
@@ -44580,6 +46534,13 @@ export class StateStore {
 		route: string;
 		sourceEventId: string;
 		completionSubmission: unknown;
+		drainChallenge?: {
+			challengeId: string;
+			verification: {
+				mailbox: Record<string, string>;
+				phaseWakes: Record<string, string>;
+			};
+		};
 		/** Current completion head carried by the trusted event envelope. */
 		subjectDigest?: string;
 		workflowActivation?: WorkflowCompletionActivationContext;
@@ -44996,6 +46957,9 @@ export class StateStore {
 				loop.from === context.binding.node_id &&
 				loop.loop_when !== "founder_feedback_kickback",
 		);
+		const residentLoopTarget = context.snapshot.manifest.loops.some(
+			(loop) => loop.to === context.binding.node_id,
+		);
 		const engineOutcome =
 			context.run.engine_owned !== 1
 				? undefined
@@ -45012,8 +46976,10 @@ export class StateStore {
 					: undefined;
 		let transitionRefusal: string | undefined;
 		let terminalImmuneRefusal = false;
+		let drainChallengeRefused = false;
 		let completionDisposition: WorkflowCompletionDisposition | undefined;
 		let transitionGateOpened = false;
+		let residentHoldEntered = false;
 		try {
 			this.db.transaction(() => {
 				const currentWriter = this.classifyCurrentWorkflowWriterTx({
@@ -45030,6 +46996,20 @@ export class StateStore {
 							: `${ENGINE_INVARIANT_REASON_PREFIX}${currentWriter.reason}`;
 					throw new Error("engine_completion_transition_refused");
 				}
+				if (
+					input.drainChallenge &&
+					!this.consumeDrainChallengeTx({
+						challengeId: input.drainChallenge.challengeId,
+						executionId: input.executionId,
+						activationId: context.binding.activation_id,
+						businessDigest: digest,
+						verification: input.drainChallenge.verification,
+						now,
+					})
+				) {
+					drainChallengeRefused = true;
+					throw new Error("workflow_completion_drain_refused");
+				}
 				const sessionStatus = this.getSession(input.executionId)?.status;
 				if (
 					isNoOutEdgeTerminalStatus(sessionStatus) &&
@@ -45037,6 +47017,12 @@ export class StateStore {
 				) {
 					terminalImmuneRefusal = true;
 					throw new Error("engine_completion_terminal_immune");
+				}
+				if (residentLoopTarget) {
+					residentHoldEntered = this.enterResidentHoldForCompletionTx(
+						context,
+						now,
+					);
 				}
 				if (input.prBinding) {
 					const completionEntersApprovalGate =
@@ -45212,6 +47198,7 @@ export class StateStore {
 				const disposition = this.workflowCompletionDispositionForContext(
 					context,
 					transitionGateOpened,
+					residentHoldEntered,
 				);
 				try {
 					this.appendWorkflowRunEventCheckedTx({
@@ -45235,6 +47222,9 @@ export class StateStore {
 				}
 			});
 		} catch (error) {
+			if (drainChallengeRefused) {
+				return { ok: false, reason: "drain_challenge_not_issued" };
+			}
 			if (terminalImmuneRefusal) {
 				return { ok: false, reason: "terminal_status_immune" };
 			}
@@ -51744,6 +53734,11 @@ export class StateStore {
 						`INSERT INTO workflow_run (run_id, issue_id, project_name, claims_read_enrolled)
 						 VALUES (?, ?, ?, 0)`,
 						[runId, input.issueId, input.projectName],
+					);
+					this.captureWorkflowRunIssueAliasesTx(
+						runId,
+						input.projectName,
+						input.issueId,
 					);
 					created = true;
 				}
@@ -62432,6 +64427,7 @@ export type WorkflowOutputSubmissionResult =
 export type WorkflowCompletionDisposition =
 	| "engine_gate_handoff"
 	| "runner_ship_park"
+	| "loop_park"
 	| "terminal_no_gate";
 
 export type WorkflowCompletionResult =
@@ -62465,6 +64461,7 @@ export type WorkflowCompletionResult =
 				| "no_code_artifact_present"
 				| "no_code_attestation_missing"
 				| "no_code_attestation_stale"
+				| "drain_challenge_not_issued"
 				| "terminal_status_immune"
 				| "stale_resubmission_identity_missing"
 				| "land_head_unavailable"

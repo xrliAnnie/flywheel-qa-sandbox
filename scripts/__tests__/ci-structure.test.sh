@@ -13,13 +13,14 @@ REAL_TMUX_E2E="$REPO_ROOT/scripts/__tests__/tmux-server-rescue-real-tmux.test.sh
 CMUX_TEST="$REPO_ROOT/scripts/test-cmux-sync.sh"
 HOOKS_E2E="$REPO_ROOT/scripts/test-cmux-sync-hooks-integration.sh"
 LIVE_E2E="$REPO_ROOT/scripts/__tests__/fly1364-live-e2e.test.sh"
+FLY2331_GUARD_TEST="$REPO_ROOT/scripts/__tests__/fly2331-bridge-async-child.test.sh"
 
 if grep -Fq -- ' -- --shard' "$WORKFLOW"; then
   echo "FAIL: ci.yml contains the swallowed pnpm shard form: -- --shard" >&2
   exit 1
 fi
 
-WORKFLOW="$WORKFLOW" CLASSIFIER="$CLASSIFIER" SUFFIX_LEDGER="$SUFFIX_LEDGER" REVIEW_GOVERNANCE_DOCS="$REVIEW_GOVERNANCE_DOCS" FLY1135_DOC_SENTINEL="$FLY1135_DOC_SENTINEL" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" python3 <<'PY'
+WORKFLOW="$WORKFLOW" CLASSIFIER="$CLASSIFIER" SUFFIX_LEDGER="$SUFFIX_LEDGER" REVIEW_GOVERNANCE_DOCS="$REVIEW_GOVERNANCE_DOCS" FLY1135_DOC_SENTINEL="$FLY1135_DOC_SENTINEL" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" FLY2331_GUARD_TEST="$FLY2331_GUARD_TEST" python3 <<'PY'
 import ast
 import os
 import re
@@ -146,6 +147,20 @@ workflow_path = os.environ["WORKFLOW"]
 repo_root = os.path.dirname(os.path.dirname(os.path.dirname(workflow_path)))
 classifier_source = read_utf8(os.environ["CLASSIFIER"], "ci-classify.sh")
 classifier_python = extract_classifier_python(classifier_source)
+fly2331_guard_source = read_utf8(
+    os.environ["FLY2331_GUARD_TEST"], "FLY-2331 guard regression"
+)
+fly2331_claude_build = fly2331_guard_source.find(
+    "pnpm --filter flywheel-claude-runner build"
+)
+fly2331_teamlead_build = fly2331_guard_source.find(
+    "pnpm --filter flywheel-teamlead build"
+)
+fly2331_fake_path = fly2331_guard_source.find('export PATH="$FAKE_BIN:$PATH"')
+require(
+    0 <= fly2331_claude_build < fly2331_teamlead_build < fly2331_fake_path,
+    "FLY-2331 fake git PATH must be installed only after both package builds",
+)
 
 expected_allowed_prefixes = (
     b"doc/",
@@ -320,6 +335,7 @@ expected_job_ids = {
     "script-tests-2",
     "script-tests-3",
     "script-tests-4",
+    "script-tests-5",
     "payload-distribution",
     "ci-ok",
 }
@@ -336,6 +352,7 @@ require(
         "script-tests-2",
         "script-tests-3",
         "script-tests-4",
+        "script-tests-5",
         "payload-distribution",
         "ci-ok",
     ],
@@ -349,6 +366,7 @@ script_tests = mapping(jobs["script-tests"], "script-tests")
 script_tests_2 = mapping(jobs["script-tests-2"], "script-tests-2")
 script_tests_3 = mapping(jobs["script-tests-3"], "script-tests-3")
 script_tests_4 = mapping(jobs["script-tests-4"], "script-tests-4")
+script_tests_5 = mapping(jobs["script-tests-5"], "script-tests-5")
 payload_distribution = mapping(jobs["payload-distribution"], "payload-distribution")
 ci_ok = mapping(jobs["ci-ok"], "ci-ok")
 
@@ -364,6 +382,7 @@ for job_id, job in (
     ("script-tests-2", script_tests_2),
     ("script-tests-3", script_tests_3),
     ("script-tests-4", script_tests_4),
+    ("script-tests-5", script_tests_5),
     ("payload-distribution", payload_distribution),
 ):
     require(job.get("needs") == ["classify"], f"{job_id} must depend only on classify")
@@ -492,6 +511,7 @@ expected_needs = {
     "script-tests-2",
     "script-tests-3",
     "script-tests-4",
+    "script-tests-5",
     "payload-distribution",
 }
 require(
@@ -525,7 +545,7 @@ for step in ci_ok_steps:
               | ($needs["quick-gate"].result == "success")
                 and ($needs.classify.result == "success")
                 and (
-                  ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "payload-distribution"]
+                  ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "script-tests-5", "payload-distribution"]
                   | all(
                       . as $job
                       | ($needs[$job].result == "success")
@@ -549,6 +569,7 @@ timeout_floors = {
     "script-tests-2": (script_tests_2, 20),
     "script-tests-3": (script_tests_3, 20),
     "script-tests-4": (script_tests_4, 20),
+    "script-tests-5": (script_tests_5, 20),
 }
 for job_id, (job, timeout_floor) in timeout_floors.items():
     timeout = job.get("timeout-minutes")
@@ -565,7 +586,9 @@ script_steps_3 = script_tests_3.get("steps")
 require(isinstance(script_steps_3, list), "script-tests-3.steps must be a list")
 script_steps_4 = script_tests_4.get("steps")
 require(isinstance(script_steps_4, list), "script-tests-4.steps must be a list")
-all_script_steps = (script_steps, script_steps_2, script_steps_3, script_steps_4)
+script_steps_5 = script_tests_5.get("steps")
+require(isinstance(script_steps_5, list), "script-tests-5.steps must be a list")
+all_script_steps = (script_steps, script_steps_2, script_steps_3, script_steps_4, script_steps_5)
 quick_steps = quick_gate.get("steps")
 require(isinstance(quick_steps, list), "quick-gate.steps must be a list")
 ci_structure_in_quick = sum(
@@ -713,6 +736,7 @@ expected_setup = [
 ]
 expected_shard_tests = {
     "script-tests": [
+        "Test — FLY-2331 Bridge async-child guard regression",
         "Test — FLY-1707 incident replay",
         "Test — FLY-1393 flag truth CLI",
         "Test — FLY-1436 work-kind cutover CLI",
@@ -800,7 +824,11 @@ expected_shard_tests = {
         "Test — FLY-1870 job elapsed tripwire contract",
     ],
     "script-tests-4": [
+        "Test — FLY-2145 Lead memory private repository",
         "Test — FLY-1364 cmux sync repair",
+    ],
+    "script-tests-5": [
+        "Test — FLY-2146 Lead memory remote sync",
     ],
 }
 script_shards = {
@@ -808,12 +836,14 @@ script_shards = {
     "script-tests-2": (script_tests_2, script_steps_2),
     "script-tests-3": (script_tests_3, script_steps_3),
     "script-tests-4": (script_tests_4, script_steps_4),
+    "script-tests-5": (script_tests_5, script_steps_5),
 }
 expected_shard_names = {
-    "script-tests": "Script Tests 1/4 — session/lifecycle (shell suites)",
-    "script-tests-2": "Script Tests 2/4 — fleet/setup/packaging A (shell suites)",
-    "script-tests-3": "Script Tests 3/4 — fleet/setup/packaging B (shell suites)",
-    "script-tests-4": "Script Tests 4/4 — cmux repair (shell suites)",
+    "script-tests": "Script Tests 1/5 — session/lifecycle (shell suites)",
+    "script-tests-2": "Script Tests 2/5 — fleet/setup/packaging A (shell suites)",
+    "script-tests-3": "Script Tests 3/5 — fleet/setup/packaging B (shell suites)",
+    "script-tests-4": "Script Tests 4/5 — cmux repair + Lead memory (shell suites)",
+    "script-tests-5": "Script Tests 5/5 — Lead memory remote sync",
 }
 
 all_expected_tests = [
@@ -895,6 +925,31 @@ for job_id, (job, steps) in script_shards.items():
         "--now-epoch" not in tripwire_tokens,
         f"{job_id} production tripwire must use the real clock",
     )
+
+fly2146_steps = [
+    step for step in script_steps_5
+    if isinstance(step, dict) and step.get("name") == "Test — FLY-2146 Lead memory remote sync"
+]
+require(len(fly2146_steps) == 1, "script-tests-5 must contain exactly one FLY-2146 step")
+fly2146_step = fly2146_steps[0]
+fly2146_commands = [
+    line.strip()
+    for line in str(fly2146_step.get("run", "")).splitlines()
+    if re.match(r"^(?:FLY2145_REAL_GITLEAKS_BIN=.* )?bash scripts/__tests__/", line.strip())
+]
+expected_fly2146_commands = [
+    'FLY2145_REAL_GITLEAKS_BIN="$install_dir/gitleaks" bash scripts/__tests__/test-lead-memory-sync.test.sh',
+    "bash scripts/__tests__/test-lead-memory-arrival-check.test.sh",
+    "bash scripts/__tests__/test-lead-memory-freshness-report.test.sh",
+    "bash scripts/__tests__/test-lead-memory-observe-workflow.test.sh",
+    "bash scripts/__tests__/test-lead-memory-retire.test.sh",
+]
+require(
+    fly2146_commands == expected_fly2146_commands,
+    f"FLY-2146 CI must run the five new suites exactly once and serially: {fly2146_commands}",
+)
+fly2146_env = mapping(fly2146_step.get("env"), "FLY-2146 shell suite env")
+require(str(fly2146_env.get("GITLEAKS_VERSION")) == "8.30.1", "FLY-2146 must pin gitleaks 8.30.1")
 
 repo_root = os.path.dirname(os.path.dirname(os.path.dirname(workflow_path)))
 missing_bash_paths = []

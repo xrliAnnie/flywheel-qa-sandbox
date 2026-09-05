@@ -30,7 +30,7 @@ export function hasHostProcessByExecutionId(
 ): Promise<boolean> {
 	return new Promise((resolve) => {
 		try {
-			execFile("pgrep", ["-f", executionId], (error) => {
+			execFile("pgrep", ["-f", executionId], { timeout: 5_000 }, (error) => {
 				if (!error) return resolve(true); // matches exist
 				const code = (error as { code?: number | string }).code;
 				resolve(code !== 1); // 1 = clean no-match → false; anything else → true
@@ -80,9 +80,22 @@ export async function probeGeneralizedLaunchLiveness(
 		// nothing to probe, so this branch returned "unknown" eternally and the
 		// dead-exec sweep never reclaimed the node (unknown = keep unchanged) —
 		// the run wedged and every later dispatch replayed STALE_START_RESPONSE.
-		// If NO process on this host references the execution id, the runner
-		// cannot be alive: that is death evidence, not uncertainty. Conservative
-		// direction: any matching process keeps the verdict at "unknown".
+		// Registration can lag behind materialization, so discover by execution
+		// identity before falling back to the host-wide process absence proof.
+		const discovery = await (deps.discover ?? discoverTmuxTargetByExecutionId)(
+			executionId,
+		);
+		if (discovery.kind === "found") {
+			const state = await (deps.probe ?? probeRunnerProcessLiveness)(
+				discovery.tmuxWindow,
+			);
+			if (state === "alive") return "alive";
+			if (state === "dead_pin" || state === "absent") return "dead";
+			return "unknown";
+		}
+		if (discovery.kind !== "missing") return "unknown";
+		// If neither discovery nor the host process table finds the execution,
+		// the runner cannot be alive. Any matching process stays unknown.
 		const hasProcess = await (
 			deps.hasHostProcess ?? hasHostProcessByExecutionId
 		)(executionId);

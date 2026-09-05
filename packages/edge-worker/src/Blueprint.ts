@@ -1,13 +1,16 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	type AsyncExecFileFn,
 	type AuditedSignalAsyncDeps,
 	type AuditedSignalInput,
 	type AuditedSignalResult,
 	auditedSignalAsync,
+	defaultAsyncExecFile,
+	withSyncOpMarker,
 } from "flywheel-claude-runner";
 import type {
 	CheckpointsConfig,
@@ -61,6 +64,7 @@ import type { IDecisionLayer } from "./decision/DecisionLayer.js";
 import type {
 	EventEnvelope,
 	ExecutionEventEmitter,
+	RunnerMemorySelectionRecord,
 } from "./ExecutionEventEmitter.js";
 import type {
 	ExecutionEvidence,
@@ -223,16 +227,18 @@ const ponytailReadyBackends = new Set<string>();
  * records an `unavailable` condition and skips the --settings flag (no silent
  * OFF data). Result cached per backend.
  */
-export function defaultPonytailReadiness(backend: string): boolean {
+export async function defaultPonytailReadiness(
+	backend: string,
+	execFile: AsyncExecFileFn = defaultAsyncExecFile,
+): Promise<boolean> {
 	if (!PONYTAIL_SUPPORTED_BACKENDS.has(backend)) return false;
 	if (ponytailReadyBackends.has(backend)) return true;
 	// codex-tmux: ruleset injection is plain text → always ready.
 	let ready = true;
 	if (backend === "claude-tmux") {
 		try {
-			execFileSync("claude", ["plugin", "details", PONYTAIL_PLUGIN], {
-				stdio: "ignore",
-				timeout: 20_000,
+			await execFile("claude", ["plugin", "details", PONYTAIL_PLUGIN], {
+				timeoutMs: 20_000,
 			});
 			ready = true;
 		} catch {
@@ -261,14 +267,16 @@ const mattSkillsReadyBackends = new Set<string>();
  * → not ready → the caller falls back to superpowers with
  * via=`fallback_superpowers` (red line #2: never silently run a crippled B).
  */
-export function defaultMattSkillsReadiness(backend: string): boolean {
+export async function defaultMattSkillsReadiness(
+	backend: string,
+	execFile: AsyncExecFileFn = defaultAsyncExecFile,
+): Promise<boolean> {
 	if (backend !== "claude-tmux") return false;
 	if (mattSkillsReadyBackends.has(backend)) return true;
 	let ready = false;
 	try {
-		execFileSync("claude", ["plugin", "details", MATT_SKILLS_PLUGIN_KEY], {
-			stdio: "ignore",
-			timeout: 20_000,
+		await execFile("claude", ["plugin", "details", MATT_SKILLS_PLUGIN_KEY], {
+			timeoutMs: 20_000,
 		});
 		ready = true;
 	} catch {
@@ -502,6 +510,8 @@ export interface BlueprintContext {
 	// regardless of sessionRole) so they hand off on one branch. Absent →
 	// role-aware worktree key (byte-compatible).
 	shareParentBranch?: boolean;
+	/** Bridge-derived identity for a node targeted by a pinned workflow loop. */
+	loopTarget?: { nodeId: string };
 	// FLY-859 — Bridge-INTERNAL fix-round context (workflow engine only; never
 	// from /api/runs/start or runner payload). Set on an Implement-fix dispatch
 	// after a DAG workflow QA FAIL: the implement prompt gains a "QA Fix Round"
@@ -684,6 +694,7 @@ export interface BlueprintContext {
 	workflowSubmissionExpected?: boolean;
 	/** FLY-1281: trusted generalized workflow context, never sourced from HTTP. */
 	generalizedExecutionContext?: {
+		activationId?: string;
 		runId: string;
 		nodeId: string;
 		attempt: number;
@@ -876,7 +887,7 @@ export class Blueprint {
 		// (plain text). `requested on` + NOT ready → effective "unavailable".
 		private ponytailReadiness: (
 			backend: string,
-		) => boolean = defaultPonytailReadiness,
+		) => boolean | Promise<boolean> = defaultPonytailReadiness,
 		// FLY-1356 — per-project split-participation reader (fresh read each
 		// resolution so a Lead's opt-out takes effect immediately). Consulted
 		// ONLY when the env flag is `split`. Absent → participate (default).
@@ -890,7 +901,7 @@ export class Blueprint {
 		// is picked up by the next run, no Bridge restart).
 		private skillFrameworkReadiness: (
 			backend: string,
-		) => boolean = defaultMattSkillsReadiness,
+		) => boolean | Promise<boolean> = defaultMattSkillsReadiness,
 		// FLY-1395 — one-shot Codex assembly probe. Its returned list is carried
 		// unchanged to the adapter so attribution and application share evidence.
 		private codexSkillAssemblyProbe: CodexSkillAssemblyProbe = defaultCodexSkillAssemblyProbe,
@@ -937,11 +948,14 @@ export class Blueprint {
 		// session_started carries `skill_framework_mode`/`_via` (the attribution
 		// join key). Returns undefined when the flag sits at its default —
 		// envelope stays byte-identical (red line #1).
-		const skillFramework = this.resolveSkillFrameworkForRun(ctx, hydrated);
+		const skillFramework = await this.resolveSkillFrameworkForRun(
+			ctx,
+			hydrated,
+		);
 
 		// FLY-615/1609: the final arm owns the optional D-arm injection, so resolve
 		// ponytail only after readiness/fallback has finalized the attribution mode.
-		const ponytailCondition = this.resolvePonytailCondition(
+		const ponytailCondition = await this.resolvePonytailCondition(
 			ctx,
 			hydrated,
 			skillFramework?.mode,
@@ -1030,11 +1044,11 @@ export class Blueprint {
 	 * is no ponytail involvement to record (e.g. a label conflict we refuse to
 	 * guess — logged, treated as off).
 	 */
-	private resolvePonytailCondition(
+	private async resolvePonytailCondition(
 		ctx: BlueprintContext,
 		hydrated: HydratedContext,
 		skillFrameworkMode?: SkillFrameworkMode,
-	): string | undefined {
+	): Promise<string | undefined> {
 		let input: PonytailInput;
 		if (ctx.ponytailRetry) {
 			const frozen = ctx.ponytailRetry.frozen;
@@ -1095,7 +1109,9 @@ export class Blueprint {
 			return toPonytailCondition(requested, false).encoded;
 		}
 		// want === "on" — consult readiness for the resolved backend.
-		const ready = this.ponytailReadiness(ctx.runnerBackend ?? "claude-tmux");
+		const ready = await this.ponytailReadiness(
+			ctx.runnerBackend ?? "claude-tmux",
+		);
 		return toPonytailCondition(requested, ready).encoded;
 	}
 
@@ -1109,10 +1125,10 @@ export class Blueprint {
 	 *  - resolved `matt` whose readiness probe fails → superpowers +
 	 *    `fallback_superpowers` (never silently run a crippled B — red line #2)
 	 */
-	private resolveSkillFrameworkForRun(
+	private async resolveSkillFrameworkForRun(
 		ctx: BlueprintContext,
 		hydrated: HydratedContext,
-	): ResolvedSkillFrameworkForRun | undefined {
+	): Promise<ResolvedSkillFrameworkForRun | undefined> {
 		const control = this.skillFrameworkModeControl();
 		const raw = control.hasOverride ? (control.raw ?? undefined) : undefined;
 		// Participation is only meaningful under `split`; skip the config read
@@ -1159,7 +1175,7 @@ export class Blueprint {
 		if (
 			backend === "claude-tmux" &&
 			resolved.mode === "matt" &&
-			!this.skillFrameworkReadiness(backend)
+			!(await this.skillFrameworkReadiness(backend))
 		) {
 			console.warn(
 				`[Blueprint] matt-skills plugin not ready for ${hydrated.issueId} — falling back to superpowers (run scripts/setup-matt-skills.sh to enable the B arm)`,
@@ -1427,8 +1443,9 @@ export class Blueprint {
 						ctx.workflowCapabilities?.allow_no_code_completion === true
 					) {
 						try {
-							repositoryBaseline = captureRepositoryBaselineSet(
-								worktreeInfo.worktreePath,
+							repositoryBaseline = withSyncOpMarker(
+								"blueprint:repository-baseline",
+								() => captureRepositoryBaselineSet(worktreeInfo!.worktreePath),
 							);
 						} catch (error) {
 							// Baseline proof is optional for launch but mandatory for no_code.
@@ -1634,8 +1651,6 @@ export class Blueprint {
 		// its independence coming from being its own session on the QA-tier model.
 		const isQaPhase =
 			ctx.shareParentBranch === true && ctx.sessionRole === "qa";
-		// Shared DAG workflow sessions always remain parked for same-context
-		// handoffs. The retired kill switch no longer creates a second lifecycle.
 		const sharedPhaseKeepAlive = ctx.shareParentBranch === true;
 		const phaseKeepAlive: AdapterExecutionContext["phaseKeepAlive"] =
 			isCodexRunner && sharedPhaseKeepAlive
@@ -1647,6 +1662,8 @@ export class Blueprint {
 							? { role: "qa" }
 							: undefined
 				: undefined;
+		const residentLoopTarget: AdapterExecutionContext["residentLoopTarget"] =
+			ctx.loopTarget ? { nodeId: ctx.loopTarget.nodeId } : undefined;
 		const codexPhaseWakeContract =
 			"Every `[phase-wake <id>]` message is context; TURN is authority. If the same id was already handled in this thread, do not repeat external or worktree side effects; re-check TURN, report and park idempotently, then end only the current turn.";
 
@@ -2731,6 +2748,23 @@ export class Blueprint {
 			if (memoryLog.level === "warn") console.warn(memoryLog.line);
 			else console.info(memoryLog.line);
 		}
+		if (backend === "claude-tmux" || backend === "codex-tmux") {
+			const memoryRecord: RunnerMemorySelectionRecord =
+				memoryMount?.status === "mounted"
+					? {
+							arm: memorySelection,
+							dir: memoryMount.dir,
+							spawn: memoryMount.snapshot,
+						}
+					: { arm: memorySelection };
+			try {
+				await this.eventEmitter?.emitRunnerMemorySelection?.(env, memoryRecord);
+			} catch (error) {
+				console.warn(
+					`[Blueprint] runner-memory selection attribution failed exec=${env.executionId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
 		const home = memoryMount ? process.env.HOME?.trim() : undefined;
 		const legacyProjectMemoryDir =
 			home && path.isAbsolute(home)
@@ -2859,6 +2893,8 @@ export class Blueprint {
 						}
 					: {}),
 				...(phaseKeepAlive && { phaseKeepAlive }),
+				...(residentLoopTarget && { residentLoopTarget }),
+				...(ctx.sessionRole && { sessionRole: ctx.sessionRole }),
 				timeoutMs,
 				sessionDisplayName: `${displayId} ${cleanIssueTitle(hydrated.issueTitle)}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
@@ -2874,6 +2910,12 @@ export class Blueprint {
 					process.env.TEAMLEAD_INGEST_TOKEN,
 				),
 				workflowSubmissionCredential: ctx.workflowSubmissionCredential,
+				...(ctx.generalizedExecutionContext?.activationId
+					? {
+							workflowActivationId:
+								ctx.generalizedExecutionContext.activationId,
+						}
+					: {}),
 				workflowSubmissionExpected: ctx.workflowSubmissionExpected,
 				workflowOutputCredential: ctx.workflowOutputCredential,
 				...(ctx.workflowCapabilities?.founder_review_required === true

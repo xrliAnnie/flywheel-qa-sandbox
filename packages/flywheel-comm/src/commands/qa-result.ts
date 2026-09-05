@@ -24,7 +24,13 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { parseGitHubPushEndpoint } from "flywheel-config";
+import {
+	formatRunnerMemoryCloseoutLine,
+	parseGitHubPushEndpoint,
+	type RunnerMemoryCloseoutReceipt,
+	sanitizeOneLine,
+} from "flywheel-config";
+import { collectRunnerMemoryCloseout } from "../runner-memory-closeout.js";
 import { currentWorkflowCredentialFromEnv } from "./workflow-activation.js";
 
 const VALID_STATUSES = new Set(["pass", "fail"]);
@@ -114,6 +120,7 @@ export interface WorkflowQaDecisionBody {
 	status: "pass" | "fail";
 	client_pr_head_sha?: string;
 	summary?: string;
+	runner_memory_closeout?: RunnerMemoryCloseoutReceipt;
 }
 
 /** Credential-free verdict projection persisted before any fallible context lookup. */
@@ -658,12 +665,30 @@ export async function qaResult(
 	}
 	if (prHeadSha) recoverableVerdict.prHeadSha = prHeadSha;
 
+	let memoryReceipt: RunnerMemoryCloseoutReceipt | undefined;
+	try {
+		memoryReceipt = collectRunnerMemoryCloseout(process.env, {
+			prefix: "[qa-result]",
+		});
+		if (memoryReceipt) {
+			console.error(
+				formatRunnerMemoryCloseoutLine("[qa-result]", memoryReceipt),
+			);
+		}
+	} catch (error) {
+		console.error(
+			`[qa-result] runner-memory closeout skipped: ${sanitizeOneLine(errorMessage(error), 200)}`,
+		);
+		memoryReceipt = undefined;
+	}
+
 	let submissionBody: WorkflowQaDecisionBody = {
 		credential: workflowCredential,
 		client_request_id: requestId,
 		status: status as "pass" | "fail",
 		...(prHeadSha ? { client_pr_head_sha: prHeadSha } : {}),
 		...(opts.summary?.trim() ? { summary: opts.summary.trim() } : {}),
+		...(memoryReceipt ? { runner_memory_closeout: memoryReceipt } : {}),
 	};
 	const endpoint = `${bridgeUrl.replace(/\/$/, "")}/api/workflow/decision`;
 

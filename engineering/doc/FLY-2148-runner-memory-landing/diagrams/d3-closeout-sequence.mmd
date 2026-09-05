@@ -1,0 +1,17 @@
+sequenceDiagram
+  autonumber
+  participant B as Bridge(Blueprint)
+  participant R as runner(Claude / Codex)
+  participant C as complete / qa-result 命令
+  participant S as sessions 表
+  B->>B: 选臂, role 臂则挂载目录并拍快照
+  B->>S: 臂 + 目录 + 快照(进程内通道, 不经 HTTP)
+  B->>R: 启动, 环境变量带目录与快照, 提示词带收口合同
+  R->>R: 干活, 收口前写 ≤5 条可复用判断
+  R->>C: 跑完成命令
+  C->>C: 量 MEMORY.md(≤64KB), 与快照比对, 判三态
+  C-->>R: 终端一行回执(written / unchanged / over_budget)
+  C->>B: 完成事件 + 回执(随既有 payload, 不阻塞完成)
+  B->>B: 校验回执形状(不合形就拒收并记日志)
+  B->>S: runner_memory_closeout(三态列) + runner_memory_receipt(JSON)
+  Note over S: founder / Lead 一条 SQL:<br/>WHERE runner_memory_closeout = 'over_budget'

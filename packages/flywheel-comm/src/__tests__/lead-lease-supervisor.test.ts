@@ -6,7 +6,9 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	LeadLeaseStore,
+	ProcessProbeTimeoutError,
 	type ProcessTupleState,
+	processAliveWithStart,
 	processStateIsZombie,
 	processTupleStateWithStart,
 } from "../lead-lease.js";
@@ -557,6 +559,17 @@ describe("FLY-1602 supervisor-aware Lead leases", () => {
 		expect(processTupleStateWithStart(2_000_000_000, "not-running")).toBe(
 			"dead",
 		);
+		const timeout = () => {
+			throw new ProcessProbeTimeoutError(process.pid, "lstart");
+		};
+		expect(() => processAliveWithStart(process.pid, "start", timeout)).toThrow(
+			ProcessProbeTimeoutError,
+		);
+		expect(
+			processTupleStateWithStart(process.pid, "start", {
+				processStart: timeout,
+			}),
+		).toBe("sensor_error");
 	});
 
 	it("reports typed verify-bound mismatches without false success", () => {

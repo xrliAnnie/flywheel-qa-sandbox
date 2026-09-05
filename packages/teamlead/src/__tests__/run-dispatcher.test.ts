@@ -31,10 +31,16 @@ vi.mock("flywheel-core", async (importOriginal) => {
 type PhaseRetryProbe = (
 	projectRoot: string,
 	branch: string,
-) =>
+	execFile?: (
+		cmd: string,
+		args: string[],
+		opts?: { cwd?: string; timeoutMs?: number },
+	) => Promise<{ stdout: string; stderr: string }>,
+) => Promise<
 	| { kind: "found"; sha: string }
 	| { kind: "missing" }
-	| { kind: "indeterminate"; error: string };
+	| { kind: "indeterminate"; error: string }
+>;
 
 describe("FLY-1257 phase retry branch-tip probe", () => {
 	const dirs: string[] = [];
@@ -66,37 +72,87 @@ describe("FLY-1257 phase retry branch-tip probe", () => {
 			rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("returns found with the fully-qualified local branch tip", () => {
+	it("awaits the async git seam with an explicit 20 second timeout", async () => {
+		const sha = "d".repeat(40);
+		const execFile = vi
+			.fn()
+			.mockResolvedValue({ stdout: `${sha}\n`, stderr: "" });
+
+		await expect(
+			probe()?.("/repo", "flywheel-FLY-1257", execFile),
+		).resolves.toEqual({ kind: "found", sha });
+		expect(execFile).toHaveBeenCalledWith(
+			"git",
+			[
+				"-C",
+				"/repo",
+				"rev-parse",
+				"--verify",
+				"--quiet",
+				"refs/heads/flywheel-FLY-1257^{commit}",
+			],
+			{ cwd: "/repo", timeoutMs: 20_000 },
+		);
+	});
+
+	it.each([
+		["timeout", Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })],
+		[
+			"missing binary",
+			Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" }),
+		],
+		[
+			"git exit 128",
+			Object.assign(new Error("fatal git error"), { status: 128 }),
+		],
+	])(
+		"classifies %s as indeterminate, never branch-missing",
+		async (_label, error) => {
+			const result = await probe()?.(
+				"/repo",
+				"flywheel-FLY-1257",
+				vi.fn().mockRejectedValue(error),
+			);
+			expect(result?.kind).toBe("indeterminate");
+		},
+	);
+
+	it("returns found with the fully-qualified local branch tip", async () => {
 		const dir = makeRepo();
 		const branch = "flywheel-FLY-1257";
 		git(dir, ["branch", branch]);
 		const expected = git(dir, ["rev-parse", "HEAD"]);
 		expect(probe()).toBeTypeOf("function");
-		expect(probe()?.(dir, branch)).toEqual({ kind: "found", sha: expected });
+		await expect(probe()?.(dir, branch)).resolves.toEqual({
+			kind: "found",
+			sha: expected,
+		});
 	});
 
-	it("returns missing for a confirmed absent branch", () => {
+	it("returns missing for a confirmed absent branch", async () => {
 		const dir = makeRepo();
 		expect(probe()).toBeTypeOf("function");
-		expect(probe()?.(dir, "flywheel-FLY-1257")).toEqual({ kind: "missing" });
+		await expect(probe()?.(dir, "flywheel-FLY-1257")).resolves.toEqual({
+			kind: "missing",
+		});
 	});
 
-	it("same-name tag cannot impersonate the missing refs/heads branch", () => {
+	it("same-name tag cannot impersonate the missing refs/heads branch", async () => {
 		const dir = makeRepo();
 		const name = "flywheel-FLY-1257";
 		git(dir, ["tag", name]);
 		expect(probe()).toBeTypeOf("function");
-		expect(probe()?.(dir, name)).toEqual({ kind: "missing" });
+		await expect(probe()?.(dir, name)).resolves.toEqual({ kind: "missing" });
 	});
 
-	it("fatal git/repository errors are indeterminate, never missing", () => {
+	it("fatal git/repository errors are indeterminate, never missing", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly1257-not-repo-"));
 		dirs.push(dir);
 		mkdirSync(join(dir, "nested"));
 		expect(probe()).toBeTypeOf("function");
-		expect(probe()?.(join(dir, "nested"), "flywheel-FLY-1257")).toMatchObject({
-			kind: "indeterminate",
-		});
+		await expect(
+			probe()?.(join(dir, "nested"), "flywheel-FLY-1257"),
+		).resolves.toMatchObject({ kind: "indeterminate" });
 	});
 });
 

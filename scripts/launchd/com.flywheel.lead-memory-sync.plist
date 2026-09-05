@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.flywheel.lead-memory-sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>set -a; [ -f "$HOME/.flywheel/.env" ] &amp;&amp; . "$HOME/.flywheel/.env"; set +a; exec /Users/xiaorongli/Dev/flywheel/scripts/lead-memory/sync.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>FLYWHEEL_SYNC_TRIGGER</key><string>launchd</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key><integer>17</integer>
+    </dict>
+    <key>StandardOutPath</key><string>/tmp/flywheel-lead-memory-sync.log</string>
+    <key>StandardErrorPath</key><string>/tmp/flywheel-lead-memory-sync.log</string>
+</dict>
+</plist>

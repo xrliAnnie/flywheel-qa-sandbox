@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
 	DesignBackend,
+	RunnerMemorySnapshot,
 	SkillFrameworkMode,
 	SkillFrameworkVia,
 } from "flywheel-config";
@@ -98,8 +99,23 @@ export interface WorktreeBindingInfo {
 	repoBaselineSetDigest?: string;
 }
 
+/** FLY-2148: Bridge-local spawn attribution for the runner-memory experiment. */
+export type RunnerMemorySelectionRecord = {
+	arm: "off" | "role" | "shared";
+	dir?: string;
+	spawn?: RunnerMemorySnapshot;
+};
+
 export interface ExecutionEventEmitter {
 	emitStarted(env: EventEnvelope): Promise<void>;
+	/**
+	 * Bridge-local authority only. HTTP emitters intentionally discard this
+	 * record because the shared runner event credential is not attribution authority.
+	 */
+	emitRunnerMemorySelection?(
+		env: EventEnvelope,
+		record: RunnerMemorySelectionRecord,
+	): Promise<void>;
 	/**
 	 * FLY-137: Notify Bridge that the worktree has been created so it can
 	 * persist `session.worktree_path` BEFORE the Runner can fire any stage
@@ -176,6 +192,12 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 		});
 		this.track(p);
 	}
+
+	/** Bridge-local authority only; never put runner-memory attribution on HTTP. */
+	async emitRunnerMemorySelection(
+		_env: EventEnvelope,
+		_record: RunnerMemorySelectionRecord,
+	): Promise<void> {}
 
 	/** GEO-261: Terminal event — awaits reliable delivery with retry. */
 	async emitCompleted(

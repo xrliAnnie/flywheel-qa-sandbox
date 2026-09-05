@@ -21,7 +21,6 @@ export {
 	type CodexRecoveryOptions,
 	type CodexRunnerTransport,
 	CodexTmuxAdapter,
-	type CodexWakeWatcher,
 	type RunnerTuiWindowLostEvidence,
 	readCodexGateHoldLatch,
 	readCodexLaunchSnapshot,
@@ -68,8 +67,11 @@ export {
 	type GoalRunResult,
 	type GoalStatus,
 	isTerminalGoalStatus,
+	parseThreadReadTurns,
 	type RecoveryOwnershipReceipt,
 	runGoalToTerminal,
+	type ThreadReadTurn,
+	type ThreadReadTurnStatus,
 } from "./codex-daemon-client.js"; // FLY-1188 M4
 export {
 	type ApprovalPolicy,
@@ -186,6 +188,9 @@ export {
 	withSyncOpMarker,
 } from "./sync-op-marker.js";
 export {
+	type AsyncExecFileFn,
+	defaultAsyncExecFile,
+	type ExecFileOpts,
 	RUNNER_PANE_BASE_ALLOWLIST,
 	TmuxAdapter,
 } from "./TmuxAdapter.js";

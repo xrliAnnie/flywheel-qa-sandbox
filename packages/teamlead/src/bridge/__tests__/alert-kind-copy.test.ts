@@ -241,6 +241,12 @@ describe("alert kind copy", () => {
 		);
 	});
 
+	it("FLY-2313 does not claim physical death in generic CommDB failure copy", () => {
+		const body = bodyFor("commdb_finalize_stuck", "ignored");
+		expect(body).not.toMatch(/physically gone/i);
+		expect(body).toContain("atomic finalization keeps failing");
+	});
+
 	it("keeps the historical auto_qa_stuck kind but gives it neutral recovery copy", () => {
 		expect(titleFor("auto_qa_stuck")).toBe("Review or ship authorization held");
 		const body = bodyFor("auto_qa_stuck", "ignored");

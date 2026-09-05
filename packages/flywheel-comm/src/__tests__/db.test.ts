@@ -1203,34 +1203,44 @@ describe("CommDB", () => {
 			);
 		});
 
-		it("uses idempotent request-bound shutdown CAS", () => {
+		it("keeps shutdown CAS idempotent per exact request", () => {
 			const requested = db.requestRunnerShutdown("exec-1", "shutdown-1", 8_000);
-			const duplicate = db.requestRunnerShutdown("exec-1", "shutdown-2", 8_001);
+			const second = db.requestRunnerShutdown("exec-1", "shutdown-2", 8_001);
+			const duplicate = db.requestRunnerShutdown("exec-1", "shutdown-1", 8_002);
 
 			expect(duplicate).toEqual(requested);
 			expect(db.getRunnerShutdown("exec-1")).toEqual(requested);
+			expect(second).toMatchObject({ request_id: "shutdown-2" });
 			expect(
 				db.finishRunnerShutdown("exec-1", "wrong", { ok: true }, 8_002),
 			).toBe(false);
 			expect(
 				db.finishRunnerShutdown("exec-1", "shutdown-1", { ok: true }, 8_003),
 			).toBe(true);
+			expect(db.getRunnerShutdownRequest("exec-1", "shutdown-1")).toMatchObject(
+				{
+					state: "acked",
+					finished_at: 8_003,
+					error: null,
+				},
+			);
 			expect(db.getRunnerShutdown("exec-1")).toMatchObject({
-				state: "acked",
-				finished_at: 8_003,
-				error: null,
+				request_id: "shutdown-2",
+				state: "requested",
 			});
 			expect(
 				db.finishRunnerShutdown("exec-1", "shutdown-1", { ok: true }, 8_004),
 			).toBe(false);
 		});
 
-		it("refuses to reuse a shutdown request id across executions", () => {
+		it("allows the same shutdown request id across executions", () => {
 			db.requestRunnerShutdown("exec-1", "shared-request", 8_100);
-			expect(() =>
+			expect(
 				db.requestRunnerShutdown("exec-2", "shared-request", 8_101),
-			).toThrow("already bound to another execution");
-			expect(db.getRunnerShutdown("exec-2")).toBeNull();
+			).toMatchObject({
+				execution_id: "exec-2",
+				request_id: "shared-request",
+			});
 		});
 
 		it("records a matching shutdown failure", () => {

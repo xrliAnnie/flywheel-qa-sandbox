@@ -13,7 +13,10 @@ import {
 	isStateStoreIrreversibleTerminalForZombie,
 	workflowDeliveryReceiptNextRetryAt,
 } from "../StateStore.js";
-import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
+import {
+	parseWorkflowRunSnapshot,
+	resolveWorkflowDecisionContract,
+} from "../workflow-run-snapshot.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import {
 	classifyPhaseActorReentry,
@@ -186,6 +189,26 @@ export interface WorkflowReworkCoordinatorStore {
 		now?: string;
 		env?: Record<string, string | undefined>;
 	}): GeneralizedWorkflowAdmissionResult;
+	rotateGeneralizedWorkflowOutputCredential(input: {
+		executionId: string;
+		activationId?: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+		expiresAt: string;
+		absoluteDeadlineAt: string;
+	}): { ok: true; outputCredential: string } | { ok: false; reason: string };
+	rotateGeneralizedWorkflowSubmissionCredential(input: {
+		executionId: string;
+		activationId?: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+		expiresAt: string;
+		absoluteDeadlineAt: string;
+	}):
+		| { ok: true; submissionCredential: string }
+		| { ok: false; reason: string };
 	recordWorkflowActivationTurn(input: {
 		activationId: string;
 		issueId: string;
@@ -216,6 +239,12 @@ export interface WorkflowReworkCoordinatorEffects {
 		routeRevision: number;
 		executionId: string;
 	}): Promise<{ ok: boolean; error?: string }>;
+	hasTurnSource(
+		input: Pick<
+			WorkflowReworkTurnInput,
+			"issueId" | "projectName" | "sourceEventId"
+		>,
+	): Promise<boolean>;
 	grantTurn(
 		input: WorkflowReworkTurnInput,
 	): Promise<{ epoch: number; grantedAt: string }>;
@@ -575,18 +604,32 @@ export class WorkflowReworkCoordinator {
 		}
 
 		const activationId = `activation:${requestId}`;
+		const sourceEventId = `rework-turn:${requestId}:${activationId}`;
+		let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+		let targetNode: ReturnType<
+			typeof parseWorkflowRunSnapshot
+		>["resolved"]["nodes"][number];
+		let decisionContract: ReturnType<typeof resolveWorkflowDecisionContract>;
 		let credentialWindow: {
 			expiresAt: string;
 			absoluteDeadlineAt: string;
 		};
 		try {
+			snapshot = parseWorkflowRunSnapshot(run.snapshot!);
+			const resolvedTarget = snapshot.resolved.nodes.find(
+				(candidate) => candidate.id === route.target_node_id,
+			);
+			if (!resolvedTarget) {
+				throw new Error(`workflow node ${route.target_node_id} is missing`);
+			}
+			targetNode = resolvedTarget;
+			decisionContract = resolveWorkflowDecisionContract(
+				snapshot,
+				route.target_node_id,
+			);
 			credentialWindow = this.deps.resolveCredentialWindow
 				? this.deps.resolveCredentialWindow(run, route.target_node_id, now)
-				: credentialWindowForNode(
-						parseWorkflowRunSnapshot(run.snapshot!),
-						route.target_node_id,
-						now,
-					);
+				: credentialWindowForNode(snapshot, route.target_node_id, now);
 		} catch (error) {
 			return this.releaseRetryable({
 				requestId,
@@ -614,6 +657,75 @@ export class WorkflowReworkCoordinator {
 				reason: `activation_admission_failed:${admission.reason}`,
 			});
 		}
+		let turnSourceFrozen = false;
+		if (admission.idempotentReplay) {
+			try {
+				turnSourceFrozen = await this.deps.effects.hasTurnSource({
+					issueId: run.issue_id,
+					projectName: run.project_name,
+					sourceEventId,
+				});
+			} catch (error) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `turn_source_probe_failed:${(error as Error).message}`,
+				});
+			}
+		}
+		let outputCredential = admission.outputCredential;
+		if (
+			admission.idempotentReplay &&
+			!turnSourceFrozen &&
+			targetNode.capabilities.produces_output &&
+			!outputCredential
+		) {
+			const rotated = this.deps.store.rotateGeneralizedWorkflowOutputCredential(
+				{
+					executionId: actor.execution_id,
+					activationId,
+					ownerId: this.deps.ownerId,
+					generation: claim.generation,
+					now: now.toISOString(),
+					expiresAt: credentialWindow.expiresAt,
+					absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
+				},
+			);
+			if (!rotated.ok) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `engine_output_rotation_${rotated.reason}`,
+				});
+			}
+			outputCredential = rotated.outputCredential;
+		}
+		let submissionCredential = admission.submissionCredential;
+		if (
+			admission.idempotentReplay &&
+			!turnSourceFrozen &&
+			decisionContract &&
+			!submissionCredential
+		) {
+			const rotated =
+				this.deps.store.rotateGeneralizedWorkflowSubmissionCredential({
+					executionId: actor.execution_id,
+					activationId,
+					ownerId: this.deps.ownerId,
+					generation: claim.generation,
+					now: now.toISOString(),
+					expiresAt: credentialWindow.expiresAt,
+					absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
+				});
+			if (!rotated.ok) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `engine_submission_rotation_${rotated.reason}`,
+				});
+			}
+			submissionCredential = rotated.submissionCredential;
+		}
 		let authorityContext: unknown;
 		try {
 			authorityContext = JSON.parse(request.authority_context_json);
@@ -635,7 +747,6 @@ export class WorkflowReworkCoordinator {
 				verificationPolicy: route.verification_policy,
 			},
 		};
-		const sourceEventId = `rework-turn:${requestId}:${activationId}`;
 		const grantStarted = this.deps.store.markWorkflowReworkGrantStarted({
 			requestId,
 			ownerId: this.deps.ownerId,
@@ -660,12 +771,8 @@ export class WorkflowReworkCoordinator {
 				attempt: route.target_attempt,
 				activationId,
 				sourceEventId,
-				...(admission.outputCredential
-					? { outputCredential: admission.outputCredential }
-					: {}),
-				...(admission.submissionCredential
-					? { submissionCredential: admission.submissionCredential }
-					: {}),
+				...(outputCredential ? { outputCredential } : {}),
+				...(submissionCredential ? { submissionCredential } : {}),
 				context,
 			});
 		} catch (error) {

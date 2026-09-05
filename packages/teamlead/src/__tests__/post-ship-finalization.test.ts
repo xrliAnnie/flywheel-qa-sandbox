@@ -12,6 +12,9 @@ import { StateStore } from "../StateStore.js";
 
 const mockGetTmuxTarget = vi.fn();
 const mockKillTmuxSession = vi.fn();
+const mockHasHostProcessByExecutionId = vi.fn();
+const mockProbeRunExecutionLiveness = vi.fn();
+const mockHasEndedCommDbSession = vi.fn();
 
 const mockKillCmuxLinkedSession = vi.fn(async () => ({ killed: true }));
 
@@ -24,6 +27,16 @@ vi.mock("../bridge/tmux-lookup.js", () => ({
 		mockKillCmuxLinkedSession(...args),
 }));
 
+vi.mock("../bridge/generalized-launch-recovery.js", () => ({
+	hasHostProcessByExecutionId: (...args: unknown[]) =>
+		mockHasHostProcessByExecutionId(...args),
+}));
+
+vi.mock("../bridge/run-quiescence.js", () => ({
+	probeRunExecutionLiveness: (...args: unknown[]) =>
+		mockProbeRunExecutionLiveness(...args),
+}));
+
 // FLY-1238: stub the atomic CommDB finalizer.
 const mockFinalizeCommDbSession = vi.fn(() => ({
 	ok: true as const,
@@ -34,6 +47,8 @@ const mockFinalizeCommDbSession = vi.fn(() => ({
 vi.mock("../bridge/commdb-session-prune.js", () => ({
 	finalizeCommDbSession: (...args: unknown[]) =>
 		mockFinalizeCommDbSession(...args),
+	hasEndedCommDbSession: (...args: unknown[]) =>
+		mockHasEndedCommDbSession(...args),
 	resolveCommDbPath: () => undefined,
 }));
 
@@ -413,6 +428,14 @@ describe("runPostShipFinalization", () => {
 		discordFrontierId = snowflakeAt(Date.now() - 2 * 60 * 60_000);
 		mockGetTmuxTarget.mockReset();
 		mockKillTmuxSession.mockReset();
+		mockHasHostProcessByExecutionId.mockReset();
+		mockHasHostProcessByExecutionId.mockResolvedValue(true);
+		mockProbeRunExecutionLiveness.mockReset();
+		mockProbeRunExecutionLiveness.mockImplementation(async () =>
+			(await mockHasHostProcessByExecutionId()) ? "alive" : "dead",
+		);
+		mockHasEndedCommDbSession.mockReset();
+		mockHasEndedCommDbSession.mockReturnValue(true);
 		mockFinalizeCommDbSession.mockReset();
 		mockFinalizeCommDbSession.mockReturnValue({
 			ok: true,
@@ -600,6 +623,71 @@ describe("runPostShipFinalization", () => {
 		expect(callOrder).toContain("discord:post-message");
 		expect(callOrder).not.toContain("discord:archive");
 		expect(callOrder).not.toContain("discord:remove-user");
+	});
+
+	it("FLY-2313: a dead terminal pending target reaches archive and Linear Done", async () => {
+		mockGetTmuxTarget.mockImplementation(() => {
+			callOrder.push("tmux:lookup");
+			return {
+				tmuxWindow: "runner-flywheel:pending",
+				sessionName: "runner-flywheel",
+			};
+		});
+		mockKillTmuxSession.mockImplementation(async () => {
+			callOrder.push("tmux:kill");
+			return {
+				killed: false,
+				error: "tmux window identity is still pending",
+			};
+		});
+		mockHasEndedCommDbSession.mockReturnValue(true);
+		mockHasHostProcessByExecutionId.mockResolvedValue(false);
+		const landOperation = seedLandOperationClaim(store);
+		const archiveFn = vi.fn().mockImplementation(async () => {
+			discordArchived = true;
+			return {
+				archived: true,
+				attempts: 1,
+				status: 200,
+				reason: "ok" as const,
+			};
+		});
+		const markIssueDone = vi.fn().mockResolvedValue({ done: true });
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				landOperation,
+			},
+			{
+				store,
+				projects: PROJECTS,
+				issueCloseout: vi.fn().mockResolvedValue({ outcome: "completed" }),
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone,
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+				archiveFn,
+				fetchImpl,
+			},
+		);
+
+		expect(result).toMatchObject({ complete: true, outcome: "completed" });
+		expect(mockFinalizeCommDbSession).toHaveBeenCalledWith(
+			"exec-1",
+			"flywheel",
+		);
+		expect(archiveFn).toHaveBeenCalledOnce();
+		expect(markIssueDone).toHaveBeenCalledOnce();
 	});
 
 	it("dual-path Promise.all: Discord post-message hit exactly once", async () => {

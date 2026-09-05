@@ -16,6 +16,7 @@
 		"roundtable_topic_threads",
 		"session_events",
 		"tmux_hold",
+		"workflow_completion_drain_challenge",
 		"workflow_run_event",
 		"content_ref_gc_outbox",
 		"mailbox",
@@ -26,6 +27,13 @@
 		"runner_wake_failure_episode"
 	],
 	"consumers": [
+		{
+			"file": "packages/flywheel-comm/src/commdb-open-gate.ts",
+			"relation": "runner_shutdown_controls",
+			"baseTable": "runner_shutdown_controls",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
 		{
 			"file": "packages/flywheel-comm/src/db.ts",
 			"relation": "mailbox_log",
@@ -268,6 +276,13 @@
 			"file": "packages/teamlead/src/StateStore.ts",
 			"relation": "tmux_hold",
 			"baseTable": "tmux_hold",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "workflow_completion_drain_challenge",
+			"baseTable": "workflow_completion_drain_challenge",
 			"usage": "read",
 			"disposition": "candidate_guarded"
 		},

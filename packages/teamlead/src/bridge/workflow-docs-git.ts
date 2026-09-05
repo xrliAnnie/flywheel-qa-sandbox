@@ -1,8 +1,7 @@
-import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withSyncOpMarker } from "flywheel-claude-runner";
+import { defaultAsyncExecFile } from "flywheel-claude-runner";
 import {
 	assertPushableBranch,
 	GIT_PUSH_SAFE_CONFIG,
@@ -23,6 +22,8 @@ export interface GitWorkflowDocsGitOptions {
 	remoteUrl?: (repo: string) => string;
 	/** Test seam; production network Git calls are capped at 10 seconds. */
 	networkTimeoutMs?: number;
+	/** Wall-span attribution sink; async child operations never hold sync markers. */
+	recordSpan?: (name: string, startMs: number, endMs: number) => void;
 }
 
 const SHA_RE = /^[0-9a-f]{40}$/;
@@ -49,6 +50,9 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 	private readonly token: string | undefined;
 	private readonly remoteUrl: (repo: string) => string;
 	private readonly networkTimeoutMs: number;
+	private readonly recordSpan:
+		| ((name: string, startMs: number, endMs: number) => void)
+		| undefined;
 	private askpassPath: string | undefined;
 
 	constructor(options: GitWorkflowDocsGitOptions = {}) {
@@ -56,6 +60,7 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		this.token =
 			options.token ?? process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
 		this.networkTimeoutMs = options.networkTimeoutMs ?? 10_000;
+		this.recordSpan = options.recordSpan;
 		this.remoteUrl =
 			options.remoteUrl ??
 			((repo) => {
@@ -70,19 +75,20 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		ref: string;
 	}): Promise<string> {
 		const remote = this.validatedRemote(input.repo, input.ref);
-		const branch = this.remoteHead(input.projectRoot, remote, input.ref);
+		const branch = await this.remoteHead(input.projectRoot, remote, input.ref);
 		await yieldToTimers();
-		const base = branch ?? this.remoteHead(input.projectRoot, remote, "HEAD");
+		const base =
+			branch ?? (await this.remoteHead(input.projectRoot, remote, "HEAD"));
 		if (!branch) await yieldToTimers();
 		if (!base) throw new Error("materializer_remote_base_unavailable");
-		this.runNetworkOrThrow(
+		await this.runNetworkOrThrow(
 			["fetch", "--quiet", "--no-tags", remote, base],
 			input.projectRoot,
 			undefined,
 			undefined,
 			"materializer fetch base",
 		);
-		this.runOrThrow(
+		await this.runOrThrow(
 			["cat-file", "-e", `${base}^{commit}`],
 			input.projectRoot,
 			undefined,
@@ -111,7 +117,7 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		}
 		const deterministicRef = `refs/flywheel/materializations/${input.effectId.slice(4)}`;
 		for (const operation of input.payload.operations) {
-			this.assertNoSymlinkAncestor(
+			await this.assertNoSymlinkAncestor(
 				input.projectRoot,
 				input.baseHead,
 				operation.path,
@@ -122,7 +128,7 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		const indexEnv = { GIT_INDEX_FILE: indexPath };
 		let treeHead: string;
 		try {
-			this.runOrThrow(
+			await this.runOrThrow(
 				["read-tree", input.baseHead],
 				input.projectRoot,
 				indexEnv,
@@ -131,7 +137,7 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 			);
 			for (const operation of input.payload.operations) {
 				if (operation.op === "delete") {
-					this.runOrThrow(
+					await this.runOrThrow(
 						["update-index", "--force-remove", "--", operation.path],
 						input.projectRoot,
 						indexEnv,
@@ -140,15 +146,17 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 					);
 					continue;
 				}
-				const blob = this.runOrThrow(
-					["hash-object", "-w", "--no-filters", "--stdin"],
-					input.projectRoot,
-					undefined,
-					operation.content,
-					"materializer hash content",
+				const blob = (
+					await this.runOrThrow(
+						["hash-object", "-w", "--no-filters", "--stdin"],
+						input.projectRoot,
+						undefined,
+						operation.content,
+						"materializer hash content",
+					)
 				).stdout.trim();
 				this.assertSha(blob, "blob head");
-				this.runOrThrow(
+				await this.runOrThrow(
 					[
 						"update-index",
 						"--add",
@@ -163,12 +171,14 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 					"materializer write path",
 				);
 			}
-			treeHead = this.runOrThrow(
-				["write-tree"],
-				input.projectRoot,
-				indexEnv,
-				undefined,
-				"materializer write tree",
+			treeHead = (
+				await this.runOrThrow(
+					["write-tree"],
+					input.projectRoot,
+					indexEnv,
+					undefined,
+					"materializer write tree",
+				)
 			).stdout.trim();
 			this.assertSha(treeHead, "tree head");
 		} finally {
@@ -190,26 +200,28 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 			GIT_COMMITTER_EMAIL: "materializer@flywheel.local",
 			GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
 		};
-		const commitHead = this.runOrThrow(
-			["commit-tree", treeHead, "-p", input.baseHead, "-m", message],
-			input.projectRoot,
-			commitEnv,
-			undefined,
-			"materializer create commit",
+		const commitHead = (
+			await this.runOrThrow(
+				["commit-tree", treeHead, "-p", input.baseHead, "-m", message],
+				input.projectRoot,
+				commitEnv,
+				undefined,
+				"materializer create commit",
+			)
 		).stdout.trim();
 		this.assertSha(commitHead, "commit head");
-		const update = this.run(
+		const update = await this.run(
 			["update-ref", deterministicRef, commitHead, "0".repeat(40)],
 			input.projectRoot,
 		);
 		if (update.status !== 0) {
-			const winner = this.readAndValidateCommit(input, deterministicRef);
+			const winner = await this.readAndValidateCommit(input, deterministicRef);
 			if (!winner)
 				throw new Error("materializer deterministic ref race failed");
 			this.assertExpectedCommit(winner, { treeHead, commitHead });
 			return winner;
 		}
-		const verified = this.readAndValidateCommit(input, deterministicRef);
+		const verified = await this.readAndValidateCommit(input, deterministicRef);
 		if (!verified) {
 			throw new Error("materializer deterministic commit verification failed");
 		}
@@ -223,7 +235,7 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		ref: string;
 	}): Promise<string | undefined> {
 		const remote = this.validatedRemote(input.repo, input.ref);
-		return this.remoteHead(input.projectRoot, remote, input.ref);
+		return await this.remoteHead(input.projectRoot, remote, input.ref);
 	}
 
 	async pushCommit(input: {
@@ -236,23 +248,25 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		const remote = this.validatedRemote(input.repo, input.ref);
 		this.assertSha(input.baseHead, "base head");
 		this.assertSha(input.commitHead, "commit head");
-		const parent = this.runOrThrow(
-			["rev-parse", `${input.commitHead}^`],
-			input.projectRoot,
-			undefined,
-			undefined,
-			"materializer verify commit parent",
+		const parent = (
+			await this.runOrThrow(
+				["rev-parse", `${input.commitHead}^`],
+				input.projectRoot,
+				undefined,
+				undefined,
+				"materializer verify commit parent",
+			)
 		).stdout.trim();
 		if (parent !== input.baseHead) {
 			throw new Error("materializer commit base mismatch");
 		}
-		const current = this.remoteHead(input.projectRoot, remote, input.ref);
+		const current = await this.remoteHead(input.projectRoot, remote, input.ref);
 		if (current === input.commitHead) return;
 		if (current !== undefined && current !== input.baseHead) {
 			throw new Error("materializer remote ref advanced; stale base refused");
 		}
 		await yieldToTimers();
-		this.runNetworkOrThrow(
+		await this.runNetworkOrThrow(
 			["push", "--porcelain", remote, `${input.commitHead}:${input.ref}`],
 			input.projectRoot,
 			undefined,
@@ -260,7 +274,11 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 			"materializer push",
 		);
 		await yieldToTimers();
-		const confirmed = this.remoteHead(input.projectRoot, remote, input.ref);
+		const confirmed = await this.remoteHead(
+			input.projectRoot,
+			remote,
+			input.ref,
+		);
 		if (confirmed !== input.commitHead) {
 			throw new Error("materializer remote head confirmation failed");
 		}
@@ -272,12 +290,12 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		return this.remoteUrl(repo);
 	}
 
-	private remoteHead(
+	private async remoteHead(
 		projectRoot: string,
 		remote: string,
 		ref: string,
-	): string | undefined {
-		const result = this.runNetwork(
+	): Promise<string | undefined> {
+		const result = await this.runNetwork(
 			["ls-remote", "--exit-code", remote, ref],
 			projectRoot,
 		);
@@ -294,7 +312,7 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		return head;
 	}
 
-	private readAndValidateCommit(
+	private async readAndValidateCommit(
 		input: {
 			projectRoot: string;
 			baseHead: string;
@@ -302,29 +320,33 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 			outputDigest: string;
 		},
 		ref: string,
-	): { treeHead: string; commitHead: string } | undefined {
-		const found = this.run(
+	): Promise<{ treeHead: string; commitHead: string } | undefined> {
+		const found = await this.run(
 			["show-ref", "--verify", "--hash", ref],
 			input.projectRoot,
 		);
 		if (found.status !== 0) return undefined;
 		const commitHead = found.stdout.trim();
 		this.assertSha(commitHead, "adopted commit head");
-		const parent = this.runOrThrow(
-			["rev-parse", `${commitHead}^`],
-			input.projectRoot,
-			undefined,
-			undefined,
-			"materializer inspect adopted parent",
+		const parent = (
+			await this.runOrThrow(
+				["rev-parse", `${commitHead}^`],
+				input.projectRoot,
+				undefined,
+				undefined,
+				"materializer inspect adopted parent",
+			)
 		).stdout.trim();
 		if (parent !== input.baseHead)
 			throw new Error("materializer adopted base mismatch");
-		const body = this.runOrThrow(
-			["show", "-s", "--format=%B", commitHead],
-			input.projectRoot,
-			undefined,
-			undefined,
-			"materializer inspect adopted commit",
+		const body = (
+			await this.runOrThrow(
+				["show", "-s", "--format=%B", commitHead],
+				input.projectRoot,
+				undefined,
+				undefined,
+				"materializer inspect adopted commit",
+			)
 		).stdout;
 		for (const trailer of [
 			`Flywheel-Materialization-Effect: ${input.effectId}`,
@@ -335,31 +357,35 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 				throw new Error("materializer adopted commit trailer mismatch");
 			}
 		}
-		const treeHead = this.runOrThrow(
-			["rev-parse", `${commitHead}^{tree}`],
-			input.projectRoot,
-			undefined,
-			undefined,
-			"materializer inspect adopted tree",
+		const treeHead = (
+			await this.runOrThrow(
+				["rev-parse", `${commitHead}^{tree}`],
+				input.projectRoot,
+				undefined,
+				undefined,
+				"materializer inspect adopted tree",
+			)
 		).stdout.trim();
 		this.assertSha(treeHead, "adopted tree head");
 		return { treeHead, commitHead };
 	}
 
-	private assertNoSymlinkAncestor(
+	private async assertNoSymlinkAncestor(
 		projectRoot: string,
 		baseHead: string,
 		path: string,
-	): void {
+	): Promise<void> {
 		const segments = path.split("/");
 		for (let length = 1; length <= segments.length; length += 1) {
 			const prefix = segments.slice(0, length).join("/");
-			const row = this.runOrThrow(
-				["ls-tree", baseHead, "--", prefix],
-				projectRoot,
-				undefined,
-				undefined,
-				"materializer inspect base path",
+			const row = (
+				await this.runOrThrow(
+					["ls-tree", baseHead, "--", prefix],
+					projectRoot,
+					undefined,
+					undefined,
+					"materializer inspect base path",
+				)
 			).stdout.trim();
 			if (row.startsWith("120000 ")) {
 				throw new Error(`materializer path has symlink semantics: ${prefix}`);
@@ -383,14 +409,14 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		}
 	}
 
-	private runOrThrow(
+	private async runOrThrow(
 		args: string[],
 		cwd: string,
 		extraEnv?: Record<string, string>,
 		input?: string,
 		label = "git",
-	): GitResult {
-		const result = this.run(args, cwd, extraEnv, input);
+	): Promise<GitResult> {
+		const result = await this.run(args, cwd, extraEnv, input);
 		if (result.status !== 0) {
 			throw new Error(
 				`${label} failed: ${result.stderr.trim() || `exit ${result.status}`}`,
@@ -399,14 +425,14 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		return result;
 	}
 
-	private runNetworkOrThrow(
+	private async runNetworkOrThrow(
 		args: string[],
 		cwd: string,
 		extraEnv?: Record<string, string>,
 		input?: string,
 		label = "git",
-	): GitResult {
-		const result = this.runNetwork(args, cwd, extraEnv, input);
+	): Promise<GitResult> {
+		const result = await this.runNetwork(args, cwd, extraEnv, input);
 		if (result.status !== 0) {
 			throw new Error(
 				`${label} failed: ${result.stderr.trim() || `exit ${result.status}`}`,
@@ -420,7 +446,7 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		cwd: string,
 		extraEnv?: Record<string, string>,
 		input?: string,
-	): GitResult {
+	): Promise<GitResult> {
 		return this.execute(args, cwd, extraEnv, input, 30_000);
 	}
 
@@ -429,54 +455,68 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		cwd: string,
 		extraEnv?: Record<string, string>,
 		input?: string,
-	): GitResult {
-		return this.execute(
-			args,
-			cwd,
-			extraEnv,
-			input,
-			this.networkTimeoutMs,
-			"SIGKILL",
-		);
+	): Promise<GitResult> {
+		return this.execute(args, cwd, extraEnv, input, this.networkTimeoutMs);
 	}
 
-	private execute(
+	private async execute(
 		args: string[],
 		cwd: string,
 		extraEnv: Record<string, string> | undefined,
 		input: string | undefined,
 		timeout: number,
-		killSignal?: NodeJS.Signals,
-	): GitResult {
+	): Promise<GitResult> {
 		const credentialEnv = this.token ? this.gitCredentialEnv() : {};
 		const label = gitSubcommand(args);
-		const result = withSyncOpMarker(`workflow-docs-git:${label}`, () =>
-			spawnSync(this.gitPath, [...GIT_PUSH_SAFE_CONFIG, ...args], {
-				cwd,
-				encoding: "utf8",
-				timeout,
-				...(killSignal ? { killSignal } : {}),
-				input,
-				env: {
-					PATH: `${this.gitPath.replace(/\/[^/]+$/, "")}:/usr/bin:/bin`,
-					LC_ALL: "C",
-					GIT_CONFIG_GLOBAL: "/dev/null",
-					GIT_CONFIG_SYSTEM: "/dev/null",
-					GIT_TERMINAL_PROMPT: "0",
-					GIT_OPTIONAL_LOCKS: "0",
-					...credentialEnv,
-					...(extraEnv ?? {}),
+		const startedAt = Date.now();
+		try {
+			const result = await defaultAsyncExecFile(
+				this.gitPath,
+				[...GIT_PUSH_SAFE_CONFIG, ...args],
+				{
+					cwd,
+					timeoutMs: timeout,
+					input,
+					envMode: "replace",
+					env: {
+						PATH: `${this.gitPath.replace(/\/[^/]+$/, "")}:/usr/bin:/bin`,
+						LC_ALL: "C",
+						GIT_CONFIG_GLOBAL: "/dev/null",
+						GIT_CONFIG_SYSTEM: "/dev/null",
+						GIT_TERMINAL_PROMPT: "0",
+						GIT_OPTIONAL_LOCKS: "0",
+						...credentialEnv,
+						...(extraEnv ?? {}),
+					},
 				},
-			}),
-		);
-		return {
-			status: result.status ?? 1,
-			stdout: result.stdout ?? "",
-			stderr: result.stderr || result.error?.message || "",
-			timedOut:
-				(result.error as NodeJS.ErrnoException | undefined)?.code ===
-				"ETIMEDOUT",
-		};
+			);
+			return { status: 0, stdout: result.stdout, stderr: result.stderr };
+		} catch (error) {
+			const failure = error as Error & {
+				code?: unknown;
+				status?: unknown;
+				stdout?: unknown;
+				stderr?: unknown;
+				timedOut?: unknown;
+			};
+			const status =
+				typeof failure.status === "number"
+					? failure.status
+					: typeof failure.code === "number"
+						? failure.code
+						: 1;
+			return {
+				status,
+				stdout: typeof failure.stdout === "string" ? failure.stdout : "",
+				stderr:
+					typeof failure.stderr === "string" && failure.stderr
+						? failure.stderr
+						: failure.message,
+				timedOut: failure.timedOut === true || failure.code === "ETIMEDOUT",
+			};
+		} finally {
+			this.recordSpan?.(`workflow-docs-git:${label}`, startedAt, Date.now());
+		}
 	}
 
 	private gitCredentialEnv(): Record<string, string> {

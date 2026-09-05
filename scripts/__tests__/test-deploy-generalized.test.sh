@@ -180,8 +180,8 @@ assert_contains "$test_deploy_source" \
 ingest_unset_count="$(
 	rg -F -c -- '-u TEAMLEAD_INGEST_TOKEN' "$ROOT/scripts/test-deploy.sh" || true
 )"
-assert_eq "${ingest_unset_count:-0}" '2' \
-	'default and reply Bridge branches scrub ambient ingest auth'
+assert_eq "${ingest_unset_count:-0}" '3' \
+	'all three Bridge branches scrub ambient ingest auth before assignment'
 for codex_root_assignment in \
 	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOMES_ROOT=${SLOT_DIR}/state/codex-homes")' \
 	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_SESSION_DIR=${SLOT_DIR}/state/codex-sessions")' \
@@ -202,6 +202,8 @@ generalized_bridge_launch="$(awk '
 	END { printf "%s", selected }
 ' "$ROOT/scripts/test-deploy.sh")"
 if [[ "$generalized_bridge_launch" == *'( qa_generalized_exec_with_ingest_token "$TEST_TEAMLEAD_INGEST_TOKEN" env'* \
+	&& "$generalized_bridge_launch" == *'-u TEAMLEAD_INGEST_TOKEN'* \
+	&& "$generalized_bridge_launch" == *'TEAMLEAD_INGEST_TOKEN="${TEST_TEAMLEAD_INGEST_TOKEN}"'* \
 	&& "$generalized_bridge_launch" == *'qa-slot-bridge-spec.mjs" capture'* \
 	&& "$test_deploy_source" == *'qa_slot_bridge_exec_spec "$BRIDGE_LAUNCH_SPEC"'* \
 	&& "$test_deploy_source" == *'>> "${SLOT_DIR}/bridge.log" 2>&1 &'* ]]; then
@@ -231,6 +233,12 @@ fi
 # Evaluate the exact repo-owned array append against a fake production root,
 # then exercise a real state writer. Nothing here touches ~/.flywheel or the
 # desktop notification channel.
+linear_started_assignment='BRIDGE_EXTRA_ENV+=("FLYWHEEL_LINEAR_STARTED_SYNC=0")'
+linear_started_assignment_count="$(
+	rg -F -x -c "$linear_started_assignment" "$ROOT/scripts/test-deploy.sh" || true
+)"
+assert_eq "${linear_started_assignment_count:-0}" '1' \
+	'QA Bridge disables Linear started-state writes exactly once'
 bridge_state_assignment='BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")'
 bridge_state_assignment_count="$(
 	rg -F -x -c "$bridge_state_assignment" "$ROOT/scripts/test-deploy.sh" || true
@@ -242,6 +250,21 @@ bridge_last_append="$(
 )"
 assert_eq "$bridge_last_append" "$bridge_state_assignment" \
 	'Bridge state root is the final later-wins environment append'
+linear_started_assignment_line="$(
+	rg -F -x -n "$linear_started_assignment" "$ROOT/scripts/test-deploy.sh" \
+		| cut -d: -f1 || true
+)"
+bridge_state_assignment_line="$(
+	rg -F -x -n "$bridge_state_assignment" "$ROOT/scripts/test-deploy.sh" \
+		| cut -d: -f1 || true
+)"
+if [[ -n "$linear_started_assignment_line" \
+	&& "$linear_started_assignment_line" -lt "$bridge_state_assignment_line" ]]; then
+	echo 'PASS: Linear started-state kill switch precedes the final state-dir append'
+else
+	echo 'FAIL: Linear started-state kill switch must precede the final state-dir append' >&2
+	failures=$((failures + 1))
+fi
 bridge_env_expansion_count="$(
 	rg -F -c '${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"}' \
 		"$ROOT/scripts/test-deploy.sh" || true

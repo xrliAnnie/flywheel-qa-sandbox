@@ -345,7 +345,7 @@ describe("FLY-1981 final governance ledgers", () => {
 		expect(LEGACY_FLAG_EXEMPTION_BASELINE).toEqual([]);
 		expect(Object.isFrozen(LEGACY_FLAG_EXEMPTION_BASELINE)).toBe(true);
 		// FLY-2240 retired the Claude freshness and quota bypass exemptions.
-		expect(FLAG_EXEMPTIONS).toHaveLength(27);
+		expect(FLAG_EXEMPTIONS).toHaveLength(28);
 		for (const exemption of FLAG_EXEMPTIONS) {
 			expect(exemption.persistentEnvAllowed, exemption.name).toBe(false);
 			expect(exemption.reason, exemption.name).toMatch(/\S/);

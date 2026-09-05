@@ -3,6 +3,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import express from "express";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import { parse } from "yaml";
 import type {
 	StateStore,
@@ -863,19 +864,25 @@ export function readFly1436ActivationEvidence(
 		deployedSha = (
 			options.gitHead ??
 			((root: string) =>
-				execFileSync(
-					"git",
-					[
-						"-c",
-						"core.hooksPath=/dev/null",
-						"-c",
-						"core.fsmonitor=false",
-						"-C",
-						root,
-						"rev-parse",
-						"HEAD",
-					],
-					{ encoding: "utf8", timeout: 10_000 },
+				withSyncOpMarker("workkind-cutover:git-head", () =>
+					execFileSync(
+						"git",
+						[
+							"-c",
+							"core.hooksPath=/dev/null",
+							"-c",
+							"core.fsmonitor=false",
+							"-C",
+							root,
+							"rev-parse",
+							"HEAD",
+						],
+						{
+							encoding: "utf8",
+							timeout: 10_000,
+							killSignal: "SIGKILL",
+						},
+					),
 				).trim())
 		)(options.projectRoot);
 	} catch (error) {

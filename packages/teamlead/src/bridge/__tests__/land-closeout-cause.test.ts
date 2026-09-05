@@ -10,6 +10,23 @@ import {
 } from "../land-closeout-cause.js";
 
 describe("land closeout cause", () => {
+	it("FLY-2313: classifies a pending window identity without masking a CommDB failure", () => {
+		expect(
+			inferLandCloseoutCause([
+				"commdb_finalize_skipped:tmux window identity is still pending",
+			]),
+		).toBe("window_identity_pending");
+		expect(describeLandCloseoutCause("window_identity_pending")).toContain(
+			"身份",
+		);
+		expect(
+			inferLandCloseoutCause([
+				"tmux window identity is still pending",
+				"commdb_finalize_failed:sqlite busy",
+			]),
+		).toBe("window_identity_pending");
+	});
+
 	it("keeps a bounded machine token in the retry-compatible reason", () => {
 		const reason = landCloseoutReason("husk_lease_stale");
 		expect(reason).toBe("issue_closeout_incomplete:cause=husk_lease_stale");

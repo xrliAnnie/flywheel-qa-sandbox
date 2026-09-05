@@ -32,12 +32,12 @@ Issue: FLY-2139 (https://linear.app/geoforge3d/issue/FLY-2139/bridge-稳定全�
 | tracing window | captures | unique SQL | named indexes | temp B-trees after indexed access |
 |---|---:|---:|---|---:|
 | gate-poller | 2 | 2 | idx_founder_action_status, idx_sessions_status_revision | 1 |
-| lead-inbox-admit | 30 | 19 | content_ref_gc_due, idx_sessions_status_revision, mailbox_archive_acked, mailbox_archive_dead, mailbox_batch_lookup, mailbox_bridge_reclaim, mailbox_claim_bridge, mailbox_claim_runner, mailbox_dead_scan, mailbox_deliverable_by_agent, mailbox_lead_reclaim, mailbox_lease_expiry, mailbox_lease_expiry_order, sqlite_autoindex_dead_letter_alerts_2 | 8 |
-| runner-mailbox | 14 | 9 | mailbox_batch_lookup, mailbox_claim_runner, mailbox_deliverable_by_agent, mailbox_lease_expiry, mailbox_lease_expiry_order | 3 |
+| lead-inbox-admit | 30 | 19 | content_ref_gc_due, idx_sessions_status_revision, mailbox_archive_acked, mailbox_archive_dead, mailbox_bridge_reclaim, mailbox_claim_bridge, mailbox_claim_runner, mailbox_dead_scan, mailbox_deliverable_by_agent, mailbox_lead_reclaim, mailbox_lease_expiry, mailbox_lease_expiry_order, mailbox_runner_inflight_by_recipient, sqlite_autoindex_dead_letter_alerts_2 | 10 |
+| runner-mailbox | 14 | 9 | mailbox_batch_lookup, mailbox_claim_runner, mailbox_deliverable_by_agent, mailbox_lease_expiry, mailbox_lease_expiry_order, mailbox_runner_inflight_by_recipient | 5 |
 | patrol-tick | 4 | 4 | idx_lead_events_patrol, idx_sessions_status_revision | 0 |
 | workflow-transition | 3 | 3 | sqlite_autoindex_workflow_rework_delivery_1, sqlite_autoindex_workflow_rework_request_1, sqlite_autoindex_workflow_rework_route_revision_1 | 0 |
 | outbox-dead-letter | 2 | 2 | idx_dead_letter_alert_due, idx_workflow_alert_delivery, sqlite_autoindex_alert_delivery_receipts_1 | 2 |
-capture-set-sha256: `225188124ac39050712a7824f35fe21742cd3fcbc19dfeecf488883e45af00d5`
+capture-set-sha256: `cce7b82d555c05c58442ef539fda5d7ac9503053c21a97151aca081ce8ef0abe`
 <!-- FLY-2139 GENERATED QUERY-AUDIT EVIDENCE: END -->
 
 ## 防真空负控制

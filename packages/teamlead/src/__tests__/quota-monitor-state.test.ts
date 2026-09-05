@@ -146,6 +146,58 @@ describe("quota monitor persistent state", () => {
 		expect(loaded.pendingSwitchFailure?.detail).toBeUndefined();
 	});
 
+	it("round-trips optional cooldown fallback context while still accepting older blocked episodes", () => {
+		const older = populatedState();
+		writeQuotaMonitorState(older, path);
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }),
+		).toEqual({ state: older });
+
+		const current = populatedState();
+		if (current.blockedEpisode === null) throw new Error("missing fixture");
+		Object.assign(current.blockedEpisode, {
+			fallbackName: "school",
+			fallbackReason: "freshness_stale: refresh refused (HTTP 400)",
+			detail: "school: freshness_stale; business: auth_unusable",
+		});
+		writeQuotaMonitorState(current, path);
+
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }),
+		).toEqual({ state: current });
+	});
+
+	it.each([
+		{
+			label: "unpaired fallback name",
+			context: { fallbackName: "school" },
+		},
+		{
+			label: "invalid fallback name",
+			context: { fallbackName: "../school", fallbackReason: "stale" },
+		},
+		{
+			label: "control-bearing fallback reason",
+			context: { fallbackName: "school", fallbackReason: "stale\nforged" },
+		},
+		{
+			label: "oversized detail",
+			context: { detail: "x".repeat(4_001) },
+		},
+	])("rejects blocked episode context with $label", ({ context }) => {
+		const state = populatedState();
+		if (state.blockedEpisode === null) throw new Error("missing fixture");
+		Object.assign(state.blockedEpisode, context);
+		writeFileSync(path, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+
+		const loaded = loadQuotaMonitorState(path, {
+			nowMs: NOW,
+			storeGeneration: 7,
+		});
+		expect(loaded.recovery).toBe("corrupt");
+		expect(loaded.state.blockedEpisode).toBeNull();
+	});
+
 	it.each([
 		["oversized detail", "x".repeat(601)],
 		["control characters", "marker\nforged"],

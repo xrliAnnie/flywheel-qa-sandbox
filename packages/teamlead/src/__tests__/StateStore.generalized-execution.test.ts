@@ -42,10 +42,11 @@ afterEach(() => {
 
 function createRun(
 	store: StateStore,
-	options: { output?: boolean; templateId?: string } = {},
+	options: { output?: boolean; templateId?: string; loopTarget?: boolean } = {},
 ) {
 	const root = mkdtempSync(join(tmpdir(), "flywheel-generalized-"));
 	cleanups.push(root);
+	if (options.loopTarget) installSelfHostedWorkflowAgentProject(root);
 	mkdirSync(join(root, "agents"));
 	writeFileSync(join(root, "agents", "generic.md"), "Execute safely.\n");
 	const node = {
@@ -55,7 +56,7 @@ function createRun(
 		model: "gpt-5.6-sol",
 		effort: "low" as const,
 		agent_file: "agents/generic.md",
-		...(options.output
+		...(options.output || options.loopTarget
 			? {
 					produces_output: true as const,
 					output: { schema: "json_v1" as const, max_bytes: 128 },
@@ -67,18 +68,62 @@ function createRun(
 		canonicalRoot: root,
 		manifest: {
 			schema_version: 2,
-			nodes: [node, { id: "founder_gate", type: "gate" }],
-			edges: [
-				{
-					id: "done",
-					from: "execute",
-					to: "founder_gate",
-					condition: "node_done",
-				},
+			nodes: [
+				node,
+				...(options.loopTarget
+					? [
+							{
+								id: "review-any-name",
+								type: "review" as const,
+								role: "general",
+								vendor: "claude" as const,
+								model: "claude-sonnet-4-5",
+								effort: "high" as const,
+							},
+						]
+					: []),
+				{ id: "founder_gate", type: "gate" },
 			],
-			loops: [],
+			edges: options.loopTarget
+				? [
+						{
+							id: "produced",
+							from: "execute",
+							to: "review-any-name",
+							condition: "node_done" as const,
+						},
+						{
+							id: "reviewed",
+							from: "review-any-name",
+							to: "founder_gate",
+							condition: "review_pass" as const,
+						},
+					]
+				: [
+						{
+							id: "done",
+							from: "execute",
+							to: "founder_gate",
+							condition: "node_done" as const,
+						},
+					],
+			loops: options.loopTarget
+				? [
+						{
+							id: "founder_retry",
+							from: "review-any-name",
+							to: "execute",
+							loop_when: "review_fail" as const,
+							exit_when: "review_pass" as const,
+							max_iterations: 2,
+							on_limit: "escalate" as const,
+						},
+					]
+				: [],
 			terminal_gate: { node: "founder_gate", predicate: "founder_approved" },
-			ship_claims: ["founder_approved"],
+			ship_claims: options.loopTarget
+				? ["design_review_approved", "founder_approved"]
+				: ["founder_approved"],
 		},
 	});
 	store.createWorkflowRun({
@@ -93,7 +138,7 @@ function createRun(
 
 function createAdmittedEngineRun(
 	store: StateStore,
-	options: { output?: boolean; templateId?: string } = {},
+	options: { output?: boolean; templateId?: string; loopTarget?: boolean } = {},
 ): { markerPath: string; outputCredential?: string; activationId: string } {
 	createRun(store, options);
 	const db = (
@@ -208,6 +253,277 @@ describe("generalized execution admission and terminal contracts", () => {
 			store.close();
 		},
 	);
+
+	it("parks an arbitrary loop target and enters its resident hold in the completion transaction", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store, { loopTarget: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			adapter_type: "codex-tmux",
+		});
+		if (!admitted.outputCredential)
+			throw new Error("output credential missing");
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential,
+				clientRequestId: "loop-output",
+				payload: '{"ok":true}',
+				now: "2026-07-15T00:05:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		const completion = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
+			executionId: "exec-1",
+			route: "needs_review",
+			sourceEventId: "loop-target-complete",
+			completionSubmission: { decision: { route: "needs_review" } },
+			now: "2026-07-15T00:10:00.000Z",
+		});
+
+		expect(completion).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+			completionDisposition: "loop_park",
+		});
+		expect(store.getResidentHold("exec-1")).toMatchObject({
+			run_id: "run-1",
+			node_id: "execute",
+			activation_id: admitted.activationId,
+			revision: 1,
+			boundary_seq: 1,
+			state: "resident",
+		});
+		store.close();
+	});
+
+	it("falls back to the original terminal disposition when resident hold entry has no runtime vendor", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store, { loopTarget: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 1 WHERE run_id = 'run-1'",
+		);
+		if (!admitted.outputCredential)
+			throw new Error("output credential missing");
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential,
+				clientRequestId: "loop-output-without-vendor",
+				payload: '{"ok":true}',
+				now: "2026-07-15T00:05:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		const completion = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
+			executionId: "exec-1",
+			route: "needs_review",
+			sourceEventId: "loop-target-complete-without-vendor",
+			completionSubmission: { decision: { route: "needs_review" } },
+			now: "2026-07-15T00:10:00.000Z",
+		});
+
+		expect(completion).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+			completionDisposition: "terminal_no_gate",
+		});
+		expect(store.getResidentHold("exec-1")).toBeUndefined();
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(`
+			DROP TRIGGER workflow_run_event_no_delete;
+			DELETE FROM workflow_run_event
+			 WHERE run_id = 'run-1' AND kind = 'completion_disposition';
+			CREATE TRIGGER workflow_run_event_no_delete
+			BEFORE DELETE ON workflow_run_event
+			BEGIN SELECT RAISE(ABORT, 'workflow_run_event is append-only'); END
+		`);
+
+		expect(
+			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "loop-target-complete-without-vendor-replay",
+				completionSubmission: { decision: { route: "needs_review" } },
+				now: "2026-07-15T00:11:00.000Z",
+			}),
+		).toMatchObject({
+			ok: true,
+			idempotentReplay: true,
+			completionDisposition: "terminal_no_gate",
+		});
+		store.close();
+	});
+
+	it("consumes a verified drain challenge in the completion transaction", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			adapter_type: "codex-tmux",
+		});
+		const submission = { decision: { route: "needs_review" }, round: 1 };
+		const businessDigest = canonicalSubmissionDigest(submission);
+		expect(() =>
+			store.issueDrainChallenge({
+				executionId: "other-execution",
+				activationId: admitted.activationId,
+				businessDigest,
+				mailSet: { mailbox: ["mail-other"], phaseWakes: [] },
+				watermark: {},
+				now: "2026-07-15T00:04:00.000Z",
+			}),
+		).toThrow("invalid drain challenge identity");
+		const challenge = store.issueDrainChallenge({
+			executionId: "exec-1",
+			activationId: admitted.activationId,
+			businessDigest,
+			mailSet: { mailbox: ["mail-1"], phaseWakes: ["wake-1"] },
+			watermark: { mailbox: "mail-1", phaseWake: "wake-1" },
+			now: "2026-07-15T00:05:00.000Z",
+		});
+
+		const refused = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
+			executionId: "exec-1",
+			route: "needs_review",
+			sourceEventId: "drain-refused",
+			completionSubmission: submission,
+			drainChallenge: {
+				challengeId: challenge.challengeId,
+				verification: {
+					mailbox: { "mail-1": "LEASED" },
+					phaseWakes: { "wake-1": "finished" },
+				},
+			},
+			now: "2026-07-15T00:06:00.000Z",
+		});
+		expect(refused).toEqual({
+			ok: false,
+			reason: "drain_challenge_not_issued",
+		});
+
+		const completed = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
+			executionId: "exec-1",
+			route: "needs_review",
+			sourceEventId: "drain-complete",
+			completionSubmission: submission,
+			drainChallenge: {
+				challengeId: challenge.challengeId,
+				verification: {
+					mailbox: { "mail-1": "ACKED" },
+					phaseWakes: { "wake-1": "started" },
+				},
+			},
+			now: "2026-07-15T00:07:00.000Z",
+		});
+		expect(completed).toMatchObject({ ok: true, idempotentReplay: false });
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		expect(
+			raw
+				.prepare(
+					"SELECT state, consumed_at FROM workflow_completion_drain_challenge WHERE challenge_id = ?",
+				)
+				.get(challenge.challengeId),
+		).toMatchObject({
+			state: "consumed",
+			consumed_at: "2026-07-15T00:07:00.000Z",
+		});
+		expect(
+			raw
+				.prepare(
+					"SELECT completion_submission_digest FROM workflow_node_completion WHERE execution_id = ?",
+				)
+				.get("exec-1"),
+		).toEqual({ completion_submission_digest: businessDigest });
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.map((event) => event.kind)
+				.filter((kind) => kind.startsWith("completion_drain_")),
+		).toEqual(["completion_drain_issued", "completion_drain_consumed"]);
+		store.close();
+	});
+
+	it("rolls a consumed drain challenge back when completion insertion fails", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			adapter_type: "codex-tmux",
+		});
+		const submission = { decision: { route: "needs_review" } };
+		const businessDigest = canonicalSubmissionDigest(submission);
+		const challenge = store.issueDrainChallenge({
+			executionId: "exec-1",
+			activationId: admitted.activationId,
+			businessDigest,
+			mailSet: { mailbox: ["mail-1"], phaseWakes: [] },
+			watermark: {},
+			now: "2026-07-15T00:05:00.000Z",
+		});
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		raw.exec(`
+			CREATE TRIGGER reject_completion_for_drain_test
+			BEFORE INSERT ON workflow_node_completion
+			BEGIN SELECT RAISE(ABORT, 'injected completion failure'); END
+		`);
+
+		expect(() =>
+			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "drain-rollback",
+				completionSubmission: submission,
+				drainChallenge: {
+					challengeId: challenge.challengeId,
+					verification: {
+						mailbox: { "mail-1": "ACKED" },
+						phaseWakes: {},
+					},
+				},
+				now: "2026-07-15T00:06:00.000Z",
+			}),
+		).toThrow("injected completion failure");
+		expect(
+			raw
+				.prepare(
+					"SELECT state, consumed_at FROM workflow_completion_drain_challenge WHERE challenge_id = ?",
+				)
+				.get(challenge.challengeId),
+		).toEqual({ state: "issued", consumed_at: null });
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "completion_drain_consumed"),
+		).toHaveLength(0);
+		store.close();
+	});
 
 	it("rejects a review node whose direct predecessor is not an output producer", async () => {
 		const store = await StateStore.create(":memory:");
@@ -684,6 +1000,135 @@ describe("generalized execution admission and terminal contracts", () => {
 				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
 			}),
 		).toEqual({ ok: false, reason: "launch_committed" });
+		store.close();
+	});
+
+	it("rejects stale rework credential rotation fences without changing credentials", async () => {
+		const store = await StateStore.create(":memory:");
+		createRun(store, { output: true });
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 2,
+			state: "pending",
+			executionId: "exec-1",
+		});
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		raw
+			.prepare(
+				`INSERT INTO workflow_actor
+				   (execution_id, project_name, issue_id, role, created_at)
+				 VALUES ('exec-1', 'flywheel', 'FLY-X', 'execute',
+				         '2026-07-15T00:00:00.000Z')`,
+			)
+			.run();
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, requested_at)
+				 VALUES ('rework-1', 'run-1', 'rework-source-1', 'engine', 'execute', 1,
+				         ?, '{"authority":"engine"}', 'rework-digest-1',
+				         '2026-07-15T00:00:00.000Z')`,
+			)
+			.run("a".repeat(40));
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES ('rework-1', 1, 'execute', 2, 'exec-1', '["execute"]',
+				         '["code_review"]', 'engine:test', 'test route',
+				         '2026-07-15T00:00:00.000Z')`,
+			)
+			.run();
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES ('rework-1', 1, 'pending', '2026-07-15T00:00:00.000Z')`,
+			)
+			.run();
+		const admitted = store.admitGeneralizedWorkflowExecution({
+			runId: "run-1",
+			nodeId: "execute",
+			executionId: "exec-1",
+			attempt: 2,
+			activationId: "activation-rework-1",
+			activationMode: "wake",
+			reworkRequestId: "rework-1",
+			expiresAt: "2026-07-15T00:20:00.000Z",
+			absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			now: "2026-07-15T00:00:00.000Z",
+			env: enabled,
+		});
+		if (!admitted.ok)
+			throw new Error(`rework admission failed: ${admitted.reason}`);
+		expect(admitted).toMatchObject({ ok: true });
+		const claim = store.claimWorkflowReworkDelivery({
+			requestId: "rework-1",
+			ownerId: "coordinator-a",
+			now: "2026-07-15T00:01:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:10:00.000Z",
+		});
+		expect(claim).toMatchObject({ ok: true, generation: 1 });
+		if (!claim.ok) throw new Error(claim.reason);
+
+		const credentialRows = () =>
+			raw
+				.prepare(
+					`SELECT activation_id, credential_hash, revoked, revoked_reason
+					   FROM workflow_output_credential
+					  WHERE execution_id = 'exec-1'
+					  ORDER BY id`,
+				)
+				.all();
+		const originalRows = credentialRows();
+		const rotate = (overrides: {
+			activationId?: string;
+			ownerId?: string;
+			generation?: number;
+			now?: string;
+		}) =>
+			store.rotateGeneralizedWorkflowOutputCredential({
+				executionId: "exec-1",
+				activationId: overrides.activationId ?? "activation-rework-1",
+				ownerId: overrides.ownerId ?? "coordinator-a",
+				generation: overrides.generation ?? claim.generation,
+				now: overrides.now ?? "2026-07-15T00:02:00.000Z",
+				expiresAt: "2026-07-15T00:22:00.000Z",
+				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
+			});
+		for (const [overrides, expected] of [
+			[{ activationId: "activation-missing" }, "not_enrolled"],
+			[{ ownerId: "coordinator-stale" }, "stale_rework_owner"],
+			[{ generation: claim.generation + 1 }, "stale_rework_owner"],
+			[{ now: "2026-07-15T00:10:00.000Z" }, "stale_rework_owner"],
+		] as const) {
+			expect(rotate(overrides)).toEqual({ ok: false, reason: expected });
+			expect(credentialRows()).toEqual(originalRows);
+		}
+
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES ('rework-1', 2, 'execute', 3, 'exec-1', '["execute"]',
+				         '["code_review"]', 'engine:test', 'drifted route',
+				         '2026-07-15T00:03:00.000Z')`,
+			)
+			.run();
+		expect(rotate({})).toEqual({
+			ok: false,
+			reason: "stale_rework_owner",
+		});
+		expect(credentialRows()).toEqual(originalRows);
 		store.close();
 	});
 

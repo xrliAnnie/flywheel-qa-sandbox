@@ -1,4 +1,4 @@
-import { execFile as execFileCallback, execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
 	chmodSync,
@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import {
 	buildNonLeadClaudeSettings,
@@ -32,6 +32,11 @@ import type {
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
 import { auditedSignal } from "./kill-ledger.js";
+import {
+	readSyncOpMarker,
+	syncOpMarkerPath,
+	withSyncOpMarker,
+} from "./sync-op-marker.js";
 import { parseTmuxEnsureSuccess } from "./tmux-ensure-result.js";
 import { pretrustClaudeWorkspace } from "./workspace-trust.js";
 
@@ -43,13 +48,24 @@ import { pretrustClaudeWorkspace } from "./workspace-trust.js";
  * - `env` is MERGED over the parent `process.env` for that one call (used to
  *   force `NODE_OPTIONS=--dns-result-order=ipv4first` for kimi's IPv6-stall
  *   prone startup). Merged — NOT replaced — so PATH etc. survive.
- * Backward-compatible: every existing caller and mock omits both (so behavior is
- * byte-identical — no timeout, inherited env).
+ * - synchronous callers that omit `timeoutMs` use the named 20s ceiling below.
+ *   These legacy probes are expected to be sub-second; the finite default is
+ *   deliberate so a future slow CLI cannot wedge the Bridge event loop.
  */
 export interface ExecFileOpts {
 	timeoutMs?: number;
 	env?: Record<string, string | undefined>;
+	/** Working directory for this invocation. */
+	cwd?: string;
+	/** Optional stdin payload; stdin is closed after it is written. */
+	input?: string | Buffer;
+	/** Combined per-stream byte ceiling. Defaults to one MiB. */
+	maxBuffer?: number;
+	/** Merge over process.env by default; replace preserves hermetic callers. */
+	envMode?: "merge" | "replace";
 }
+
+export const DEFAULT_SYNC_EXEC_TIMEOUT_MS = 20_000;
 
 export type ExecFileFn = (
 	cmd: string,
@@ -717,6 +733,12 @@ export class TmuxAdapter implements IAdapter {
 		}
 		if (ctx.runnerMemory?.status === "mounted") {
 			appendPaneEnv("FLYWHEEL_RUNNER_MEMORY_DIR", ctx.runnerMemory.dir);
+			if (ctx.runnerMemory.snapshot) {
+				appendPaneEnv(
+					"FLYWHEEL_RUNNER_MEMORY_SNAPSHOT",
+					JSON.stringify(ctx.runnerMemory.snapshot),
+				);
+			}
 		}
 		// FLY-1726: tmux inherits its server-global environment unless each key is
 		// explicitly replaced. A Runner owns a Lead lane (FLYWHEEL_LEAD_ID) but is
@@ -1353,6 +1375,7 @@ export class TmuxAdapter implements IAdapter {
 		normalTimeoutMs: number,
 		commDbHandle: { db: CommDB | null },
 		waitState: { totalWaitingMs: number; lastWaitStart: number | null },
+		residentCompletionObserved: boolean,
 	): { shouldTimeout: boolean; isWaiting: boolean } {
 		let isWaiting = false;
 
@@ -1373,6 +1396,9 @@ export class TmuxAdapter implements IAdapter {
 				// Query failed — fall back to normal timeout
 				isWaiting = false;
 			}
+		}
+		if (ctx.residentLoopTarget && residentCompletionObserved) {
+			return { shouldTimeout: false, isWaiting };
 		}
 
 		const now = Date.now();
@@ -1422,6 +1448,7 @@ export class TmuxAdapter implements IAdapter {
 			let poller: ReturnType<typeof setInterval> | null = null;
 			let gracePollerRef: ReturnType<typeof setInterval> | null = null;
 			const start = Date.now();
+			let residentCompletionObserved = false;
 
 			// GEO-206 Phase 2: Lazy-opened readonly DB handle for dynamic timeout
 			const commDbHandle: { db: CommDB | null } = { db: null };
@@ -1483,7 +1510,12 @@ export class TmuxAdapter implements IAdapter {
 				this.hookServer
 					.waitForCompletion(callbackToken, hardTimeoutMs, claudeSessionId)
 					.then((event) => {
-						if (event) settle(false);
+						if (!event) return;
+						if (ctx.residentLoopTarget) {
+							residentCompletionObserved = true;
+						} else {
+							settle(false);
+						}
 					});
 
 				// Path 2: pane_dead poller + sentinel check (fallback — races with callback)
@@ -1501,6 +1533,7 @@ export class TmuxAdapter implements IAdapter {
 							timeoutMs,
 							commDbHandle,
 							waitState,
+							residentCompletionObserved,
 						);
 						if (shouldTimeout) {
 							console.warn(
@@ -1606,6 +1639,7 @@ export class TmuxAdapter implements IAdapter {
 							timeoutMs,
 							commDbHandle,
 							waitState,
+							residentCompletionObserved,
 						);
 						if (shouldTimeout) {
 							console.warn(
@@ -2144,61 +2178,81 @@ export function defaultExecFile(
 	args: string[],
 	opts?: ExecFileOpts,
 ): { stdout: string } {
-	try {
-		const result = execFileSync(cmd, args, {
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-			// FLY-494: undefined → Node's default (0 = no timeout) = byte-identical
-			// for every existing call site that omits opts. A positive value kills
-			// the child on timeout so a bounded probe can fail closed.
-			timeout: opts?.timeoutMs,
-			// FLY-494: MERGE over process.env (never replace — PATH etc. must
-			// survive) so a caller can force e.g. NODE_OPTIONS for one exec.
-			// undefined → execFileSync inherits process.env = byte-identical.
-			env: opts?.env ? { ...process.env, ...opts.env } : undefined,
-		});
-		return { stdout: result };
-	} catch (err) {
-		// FLY-154 hotfix: execFileSync's default error.message is just
-		// `Command failed: <cmd>` — it does NOT include stderr, even though
-		// `error.stderr` is populated. qa-fly-372 spent a full Bridge restart
-		// cycle guessing the cause of a "tmux command too long" failure
-		// because Bridge logs only saw the truncated cmd line. Wrap to surface
-		// stderr (+ stdout if non-empty) in the thrown message so future
-		// failures are observable without re-running. Preserves all other
-		// fields (.stderr, .stdout, .status, .signal) for callers that read
-		// them programmatically.
-		if (err instanceof Error) {
-			const e = err as Error & {
-				stderr?: string | Buffer;
-				stdout?: string | Buffer;
-				status?: number;
-				signal?: string | null;
-			};
-			const stderrStr = e.stderr
-				? Buffer.isBuffer(e.stderr)
-					? e.stderr.toString("utf-8")
-					: String(e.stderr)
-				: "";
-			const stdoutStr = e.stdout
-				? Buffer.isBuffer(e.stdout)
-					? e.stdout.toString("utf-8")
-					: String(e.stdout)
-				: "";
-			const detail = [
-				stderrStr.trim() ? `stderr: ${stderrStr.trim()}` : "",
-				stdoutStr.trim() ? `stdout: ${stdoutStr.trim()}` : "",
-				e.status != null ? `status: ${e.status}` : "",
-				e.signal ? `signal: ${e.signal}` : "",
-			]
-				.filter(Boolean)
-				.join(" | ");
-			if (detail) {
-				e.message = `${e.message} (${detail})`;
+	const invoke = (): { stdout: string } => {
+		try {
+			const result = execFileSync(cmd, args, {
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+				timeout: opts?.timeoutMs ?? DEFAULT_SYNC_EXEC_TIMEOUT_MS,
+				killSignal: "SIGKILL",
+				cwd: opts?.cwd,
+				input: opts?.input,
+				maxBuffer: opts?.maxBuffer,
+				// FLY-494: MERGE over process.env (never replace — PATH etc. must
+				// survive) so a caller can force e.g. NODE_OPTIONS for one exec.
+				// undefined → execFileSync inherits process.env = byte-identical.
+				env: opts?.env
+					? opts.envMode === "replace"
+						? opts.env
+						: { ...process.env, ...opts.env }
+					: undefined,
+			});
+			return { stdout: result };
+		} catch (err) {
+			// FLY-154 hotfix: execFileSync's default error.message is just
+			// `Command failed: <cmd>` — it does NOT include stderr, even though
+			// `error.stderr` is populated. qa-fly-372 spent a full Bridge restart
+			// cycle guessing the cause of a "tmux command too long" failure
+			// because Bridge logs only saw the truncated cmd line. Wrap to surface
+			// stderr (+ stdout if non-empty) in the thrown message so future
+			// failures are observable without re-running. Preserves all other
+			// fields (.stderr, .stdout, .status, .signal) for callers that read
+			// them programmatically.
+			if (err instanceof Error) {
+				const e = err as Error & {
+					stderr?: string | Buffer;
+					stdout?: string | Buffer;
+					status?: number;
+					signal?: string | null;
+				};
+				const stderrStr = e.stderr
+					? Buffer.isBuffer(e.stderr)
+						? e.stderr.toString("utf-8")
+						: String(e.stderr)
+					: "";
+				const stdoutStr = e.stdout
+					? Buffer.isBuffer(e.stdout)
+						? e.stdout.toString("utf-8")
+						: String(e.stdout)
+					: "";
+				const detail = [
+					stderrStr.trim() ? `stderr: ${stderrStr.trim()}` : "",
+					stdoutStr.trim() ? `stdout: ${stdoutStr.trim()}` : "",
+					e.status != null ? `status: ${e.status}` : "",
+					e.signal ? `signal: ${e.signal}` : "",
+				]
+					.filter(Boolean)
+					.join(" | ");
+				if (detail) {
+					e.message = `${e.message} (${detail})`;
+				}
 			}
+			throw err;
 		}
-		throw err;
-	}
+	};
+	if (readSyncOpMarker(syncOpMarkerPath())) return invoke();
+	const family = new Set([
+		"agy",
+		"claude",
+		"codex",
+		"gh",
+		"git",
+		"kimi",
+		"tmux",
+	]).has(basename(cmd))
+		? basename(cmd)
+		: "other";
+	return withSyncOpMarker(`tmux-adapter:${family}`, invoke);
 }
 
 export function defaultAsyncExecFile(
@@ -2206,30 +2260,162 @@ export function defaultAsyncExecFile(
 	args: string[],
 	opts?: ExecFileOpts,
 ): Promise<{ stdout: string; stderr: string }> {
+	const maxBuffer = opts?.maxBuffer ?? 1024 * 1024;
+	const drainTimeoutMs = 250;
 	return new Promise((resolve, reject) => {
-		execFileCallback(
-			cmd,
-			args,
-			{
-				encoding: "utf8",
-				timeout: opts?.timeoutMs,
-				killSignal: "SIGKILL",
-				maxBuffer: 1024 * 1024,
-				env: opts?.env ? { ...process.env, ...opts.env } : undefined,
-			},
-			(error, stdout, stderr) => {
-				if (error) {
-					const enriched = error as Error & {
-						stdout?: string;
-						stderr?: string;
-					};
-					enriched.stdout = stdout;
-					enriched.stderr = stderr;
-					reject(enriched);
+		let stdout = Buffer.alloc(0);
+		let stderr = Buffer.alloc(0);
+		let exitCode: number | null = null;
+		let exitSignal: NodeJS.Signals | null = null;
+		let exitSeen = false;
+		let closeSeen = false;
+		let settled = false;
+		let timedOut = false;
+		let killed = false;
+		let drainTimer: ReturnType<typeof setTimeout> | undefined;
+		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+
+		const child = spawn(cmd, args, {
+			cwd: opts?.cwd,
+			env: opts?.env
+				? opts.envMode === "replace"
+					? opts.env
+					: { ...process.env, ...opts.env }
+				: undefined,
+			detached: process.platform !== "win32",
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+
+		const output = () => ({
+			stdout: stdout.toString("utf8"),
+			stderr: stderr.toString("utf8"),
+		});
+		const enrich = (
+			error: Error,
+			code?: string | number,
+		): Error & {
+			code?: string | number;
+			status?: number | null;
+			signal?: NodeJS.Signals | null;
+			killed: boolean;
+			timedOut: boolean;
+			stdout: string;
+			stderr: string;
+		} => {
+			const enriched = error as Error & {
+				code?: string | number;
+				status?: number | null;
+				signal?: NodeJS.Signals | null;
+				killed: boolean;
+				timedOut: boolean;
+				stdout: string;
+				stderr: string;
+			};
+			if (code !== undefined) enriched.code = code;
+			enriched.status = exitCode;
+			enriched.signal = exitSignal;
+			enriched.killed = killed;
+			enriched.timedOut = timedOut;
+			Object.assign(enriched, output());
+			return enriched;
+		};
+		const settleReject = (error: Error, code?: string | number) => {
+			if (settled) return;
+			settled = true;
+			if (deadlineTimer) clearTimeout(deadlineTimer);
+			if (drainTimer) clearTimeout(drainTimer);
+			reject(enrich(error, code));
+		};
+		const settleFromTerminal = () => {
+			if (settled || !exitSeen || !closeSeen) return;
+			if (deadlineTimer) clearTimeout(deadlineTimer);
+			if (drainTimer) clearTimeout(drainTimer);
+			if (exitCode === 0 && exitSignal === null) {
+				settled = true;
+				resolve(output());
+				return;
+			}
+			const stderrDetail = output().stderr.trim();
+			settleReject(
+				new Error(
+					`Command failed: ${cmd}${exitCode !== null ? ` (exit ${exitCode})` : ""}${exitSignal ? ` (signal ${exitSignal})` : ""}${stderrDetail ? `\n${stderrDetail}` : ""}`,
+				),
+				exitCode ?? undefined,
+			);
+		};
+		const killGroup = () => {
+			killed = true;
+			exitSignal ??= "SIGKILL";
+			if (!exitSeen && child.pid && process.platform !== "win32") {
+				try {
+					process.kill(-child.pid, "SIGKILL");
 					return;
+				} catch {
+					// The group may already be gone; fall back to the direct child.
 				}
-				resolve({ stdout, stderr });
-			},
-		);
+			}
+			try {
+				// Once `exit` fires Node has reaped the pid; never address `-pid`
+				// again because the numeric id may already name a recycled group.
+				child.kill("SIGKILL");
+			} catch {
+				// Best-effort after a terminal child event.
+			}
+		};
+		const terminate = (error: Error, code: string) => {
+			killGroup();
+			child.stdin?.destroy();
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+			settleReject(error, code);
+		};
+		const append = (stream: "stdout" | "stderr", chunk: Buffer) => {
+			if (stream === "stdout") stdout = Buffer.concat([stdout, chunk]);
+			else stderr = Buffer.concat([stderr, chunk]);
+			if (stdout.length > maxBuffer || stderr.length > maxBuffer) {
+				terminate(
+					new Error(`${stream} maxBuffer length exceeded`),
+					"ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+				);
+			}
+		};
+
+		child.stdout?.on("data", (chunk: Buffer) => append("stdout", chunk));
+		child.stderr?.on("data", (chunk: Buffer) => append("stderr", chunk));
+		child.stdin?.on("error", () => {
+			// A child that exits before consuming stdin is classified by exit/close.
+		});
+		child.once("error", (error) => settleReject(error));
+		child.once("exit", (code, signal) => {
+			exitSeen = true;
+			exitCode = code;
+			exitSignal = signal;
+			if (!closeSeen && !settled) {
+				drainTimer = setTimeout(() => {
+					terminate(
+						new Error(`Child stdio did not close within ${drainTimeoutMs}ms`),
+						"ERR_CHILD_STDIO_DRAIN_TIMEOUT",
+					);
+				}, drainTimeoutMs);
+				drainTimer.unref?.();
+			}
+			settleFromTerminal();
+		});
+		child.once("close", () => {
+			closeSeen = true;
+			settleFromTerminal();
+		});
+
+		if (opts?.timeoutMs !== undefined && opts.timeoutMs > 0) {
+			deadlineTimer = setTimeout(() => {
+				timedOut = true;
+				terminate(
+					new Error(`Command timed out after ${opts.timeoutMs}ms: ${cmd}`),
+					"ETIMEDOUT",
+				);
+			}, opts.timeoutMs);
+			deadlineTimer.unref?.();
+		}
+		child.stdin?.end(opts?.input);
 	});
 }

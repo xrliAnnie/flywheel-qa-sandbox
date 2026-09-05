@@ -1,0 +1,22 @@
+flowchart TB
+  subgraph REPO["私有仓 lead-memory"]
+    direction TB
+    subgraph TOP[顶层 · 只有 admin 能改]
+      H[.githooks/ 护栏脚本]
+      W[.github/workflows/guard.yml CI 审计]
+      T[.gitleaks.toml 扫描规则]
+      S[SCAN-LEDGER.md 扫描台账]
+      R[README.md 合同]
+    end
+    subgraph LEADS[12 个 Lead 夹 · 每夹只有夹主能改]
+      L1[flywheel-eng-lead/]
+      L2[flywheel-cos-lead/]
+      L3[sub-lead/]
+      L4[... 其余 9 夹]
+    end
+  end
+  E1[Lead 进程<br/>FLYWHEEL_LEAD_ID=flywheel-eng-lead] -->|读| LEADS
+  E1 -->|写 · 提交| L1
+  E1 -.->|写别夹 · 被 pre-commit 拒| L3
+  GH[GitHub 私有仓<br/>只认一个账号] <-->|https + gh 凭据| REPO
+  M2[另一台机器<br/>bootstrap.sh --clone] -->|拉下来接着用| GH

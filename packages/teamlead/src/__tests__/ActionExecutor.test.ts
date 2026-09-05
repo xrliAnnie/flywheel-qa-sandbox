@@ -1,5 +1,15 @@
+import {
+	chmodSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SlackAction as ChatAction } from "flywheel-edge-worker";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createReactionsEngine,
 	ProjectAwareApproveHandler,
@@ -50,6 +60,58 @@ const session: Session = {
 	status: "awaiting_review",
 };
 
+const tempDirs: string[] = [];
+const originalPath = process.env.PATH;
+
+afterEach(() => {
+	process.env.PATH = originalPath;
+	delete process.env.FLYWHEEL_TEST_GH_CALL_LOG;
+	delete process.env.FLYWHEEL_TEST_GH_FAIL;
+	for (const dir of tempDirs.splice(0)) {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+function makeDefaultGhFixture(): {
+	root: string;
+	callLog: string;
+	projects: ProjectEntry[];
+} {
+	const root = mkdtempSync(join(tmpdir(), "fly2331-action-exec-"));
+	tempDirs.push(root);
+	const gh = join(root, "gh");
+	const callLog = join(root, "gh-calls.log");
+	writeFileSync(
+		gh,
+		[
+			"#!/bin/sh",
+			'printf "%s|%s\\n" "$PWD" "$*" >> "$FLYWHEEL_TEST_GH_CALL_LOG"',
+			'if [ "$FLYWHEEL_TEST_GH_FAIL" = "$2" ]; then',
+			'  printf "forced %s failure\\n" "$2" >&2',
+			"  exit 7",
+			"fi",
+			"sleep 0.05",
+			'if [ "$2" = "list" ]; then',
+			'  printf \'%s\\n\' \'[{"number":42,"url":"https://github.com/pr/42"}]\'',
+			"fi",
+		].join("\n"),
+	);
+	chmodSync(gh, 0o755);
+	process.env.PATH = `${root}:${originalPath ?? ""}`;
+	process.env.FLYWHEEL_TEST_GH_CALL_LOG = callLog;
+	return {
+		root,
+		callLog,
+		projects: [
+			{
+				...projects[0]!,
+				projectRoot: root,
+				projectRepo: "xrliAnnie/GeoForge3D",
+			},
+		],
+	};
+}
+
 describe("ProjectAwareApproveHandler", () => {
 	it("looks up session + project and delegates to ApproveHandler", async () => {
 		const execFn = vi
@@ -94,6 +156,40 @@ describe("ProjectAwareApproveHandler", () => {
 });
 
 describe("createReactionsEngine", () => {
+	it("keeps the event loop live while the default gh list and merge commands run", async () => {
+		const fixture = makeDefaultGhFixture();
+		const engine = createReactionsEngine(fixture.projects, makeStore(session));
+		let intervalTicks = 0;
+		const interval = setInterval(() => intervalTicks++, 1);
+
+		const result = await engine.dispatch(
+			makeAction({ responseUrl: "invalid-response-url" }),
+		);
+		clearInterval(interval);
+
+		expect(result.success).toBe(true);
+		expect(intervalTicks).toBeGreaterThan(0);
+		const childCwd = realpathSync(fixture.root);
+		expect(readFileSync(fixture.callLog, "utf8").trim().split("\n")).toEqual([
+			`${childCwd}|pr list -R xrliAnnie/GeoForge3D --head flywheel-GEO-95 --json number,url --limit 1`,
+			`${childCwd}|pr merge 42 -R xrliAnnie/GeoForge3D --squash --delete-branch`,
+		]);
+	});
+
+	it("reports a default gh merge failure without asserting the remote state", async () => {
+		const fixture = makeDefaultGhFixture();
+		process.env.FLYWHEEL_TEST_GH_FAIL = "merge";
+		const engine = createReactionsEngine(fixture.projects, makeStore(session));
+
+		const result = await engine.dispatch(
+			makeAction({ responseUrl: "invalid-response-url" }),
+		);
+
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("Approve failed");
+		expect(result.message).not.toMatch(/not merged|merge did not happen/i);
+	});
+
 	it("returns engine with all handlers", () => {
 		const store = makeStore();
 		const engine = createReactionsEngine(projects, store);

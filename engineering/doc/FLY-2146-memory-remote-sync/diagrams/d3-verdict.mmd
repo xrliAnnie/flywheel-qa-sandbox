@@ -1,0 +1,20 @@
+flowchart TB
+  S([看者每小时 :40 开跑<br/>写者 :17 之后]) --> P{预检:仓根 / origin 三重校验<br/>gh · jq · git 在不在}
+  P -->|失败| X[退出 6<br/>不发帖 · 不写台账]
+  P -->|通过| R{远端 main 的 sha 与提交日期<br/>ls-remote + gh api}
+  R -->|读不到| V1[标签 remote_unreachable<br/>台账远端两列写 undetermined]
+  R -->|读到| O{本地对象库里<br/>有没有这个远端提交?}
+  O -->|没有:另一台机器推了<br/>写者还没 fetch| V5[标签 unfetched<br/>local_ahead = undetermined,不当 0]
+  O -->|有| A[算本地待送:<br/>未推提交取最早 · 脏文件 mtime<br/>删除项按首次观察时间<br/>取最老 = pending_age_h]
+  A --> Q1{pending_age_h > 26h ?}
+  Q1 -->|是| V2[标签 stale<br/>告警点名夹与小时数]
+  Q1 -->|否 或 没有待送| Q2{写者 receipt 3 小时内有新的?<br/>上一次观察也没有?}
+  Q2 -->|连续两次都没有| V3[标签 writer_silent<br/>远端最新也照报:没人跑]
+  Q2 -->|有| V4[无标签 = fresh]
+  V1 --> T[追加一行 checks.tsv<br/>固定表头 · 读不到写 undetermined]
+  V5 --> T
+  V2 --> T
+  V3 --> T
+  V4 --> T
+  T --> E{四本 episode 账各自独立<br/>新进入 → 发一条,发成功才记时<br/>持续 ≥24h → 再提<br/>观察到恢复且恢复帖发成功 → 才清<br/>undetermined 不清任何账}
+  E --> AL[#flywheel-alerts]

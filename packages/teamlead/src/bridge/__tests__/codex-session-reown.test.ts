@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../../StateStore.js";
 import {
+	acceptReownTurnReconciliation,
 	CODEX_REOWN_ROLLOUT_STALE_MS,
 	type CodexSessionReownDeps,
 	CodexSessionReowner,
@@ -61,6 +62,7 @@ function harness(
 	const onRecoveryExhausted = vi.fn(async () => {
 		order.push("terminal");
 	});
+	const reconcileTurn = vi.fn(async () => {});
 	const revive = vi.fn(
 		async (
 			_candidate: Session,
@@ -103,6 +105,7 @@ function harness(
 			};
 		}),
 		revive,
+		reconcileTurn,
 		readTurnHolder: vi.fn(async () => candidate.execution_id),
 		onRecoveryExhausted,
 		record: vi.fn((event) => {
@@ -122,6 +125,7 @@ function harness(
 		abort,
 		commit,
 		revive,
+		reconcileTurn,
 		onRecoveryExhausted,
 	};
 }
@@ -131,6 +135,18 @@ async function settle(): Promise<void> {
 }
 
 describe("FLY-2211 Codex session re-owner", () => {
+	it("treats a non-holder turn reconcile as a normal no-op", () => {
+		expect(() =>
+			acceptReownTurnReconciliation({ ok: false, reason: "not_holder" }),
+		).not.toThrow();
+		expect(() =>
+			acceptReownTurnReconciliation({
+				ok: false,
+				reason: "active_turn_mismatch",
+			}),
+		).toThrow("active_turn_mismatch");
+	});
+
 	it.each([
 		{
 			name: "running gate-free alive watches without touching the daemon",
@@ -205,6 +221,55 @@ describe("FLY-2211 Codex session re-owner", () => {
 		expect(h.claim).not.toHaveBeenCalled();
 		expect(h.deps.reap).not.toHaveBeenCalled();
 		expect(h.revive).not.toHaveBeenCalled();
+	});
+
+	it("reconciles a live daemon turn before publishing the watch-arm event", async () => {
+		const h = harness({ liveness: "alive", gateHeld: false });
+		const sequence: string[] = [];
+		h.reconcileTurn.mockImplementation(async () => {
+			sequence.push("reconcile");
+		});
+		h.deps.record = vi.fn((event) => {
+			if (event === "reown_watch_started") sequence.push("watch");
+		});
+
+		await new CodexSessionReowner(h.deps).runPass();
+
+		expect(sequence).toEqual(["reconcile", "watch"]);
+	});
+
+	it("does not publish a watch-arm event when turn reconciliation fails", async () => {
+		const h = harness({ liveness: "alive", gateHeld: false });
+		h.reconcileTurn.mockRejectedValue(new Error("thread/read malformed"));
+
+		await new CodexSessionReowner(h.deps).runPass();
+
+		expect(h.events).toContain("reown_turn_reconcile_failed");
+		expect(h.events).not.toContain("reown_watch_started");
+	});
+
+	it("reconciles a revived daemon turn after recovery commit and before its arm event", async () => {
+		const h = harness({ liveness: "absent", gateHeld: false });
+		h.reconcileTurn.mockImplementation(async () => {
+			h.order.push("reconcile");
+		});
+
+		await new CodexSessionReowner(h.deps).runPass();
+		await settle();
+
+		expect(h.order).toEqual(["claim", "revive", "commit", "reconcile"]);
+		expect(h.events).toContain("reown_revive_succeeded");
+	});
+
+	it("does not publish a revive-arm event when post-commit reconciliation fails", async () => {
+		const h = harness({ liveness: "absent", gateHeld: false });
+		h.reconcileTurn.mockRejectedValue(new Error("commdb unavailable"));
+
+		await new CodexSessionReowner(h.deps).runPass();
+		await settle();
+
+		expect(h.events).toContain("reown_turn_reconcile_failed");
+		expect(h.events).not.toContain("reown_revive_succeeded");
 	});
 
 	it("filters superseded, non-Codex, and explicit generalized-room rows before liveness", async () => {

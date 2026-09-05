@@ -447,6 +447,7 @@ export class CodexMailboxWatcher implements IMailboxWatcher {
 				leadName: this.teamName,
 				agentName: this.agentName,
 			});
+			this.lastEventTs = Date.now();
 			const fresh = unread.filter(
 				(m) => !this.delivered.has(this.adapter.dedupeKey(m)),
 			);

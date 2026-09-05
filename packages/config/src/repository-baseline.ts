@@ -35,6 +35,8 @@ function git(cwd: string, args: string[]): string {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		maxBuffer: 16 * 1024 * 1024,
+		timeout: 20_000,
+		killSignal: "SIGKILL",
 	}).trim();
 }
 

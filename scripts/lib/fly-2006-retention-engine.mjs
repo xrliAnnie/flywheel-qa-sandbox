@@ -274,6 +274,14 @@ export const RETENTION_TARGET_POLICIES = Object.freeze([
 		"julianday(t.resolved_at)<julianday(?)",
 	),
 	staticPolicy(
+		"workflowCompletionDrainChallenge",
+		"teamlead",
+		"workflow_completion_drain_challenge",
+		"challenge_id",
+		`t.state IN ('consumed','superseded')
+		 AND julianday(COALESCE(t.consumed_at,t.issued_at))<julianday(?)`,
+	),
+	staticPolicy(
 		"workflowRunEvent",
 		"teamlead",
 		"workflow_run_event",

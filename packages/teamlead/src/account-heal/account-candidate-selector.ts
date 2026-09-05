@@ -64,7 +64,11 @@ export interface CandidatePanoramaEntry {
 export interface CandidateSelectionOptions {
 	models?: readonly string[];
 	onlyNames?: readonly string[];
-	cooldownPolicy?: "exclude" | "ignore_explicit_target";
+	cooldownPolicy?:
+		| "exclude"
+		| "ignore_explicit_target"
+		| "fallback_explicit_target";
+	cooldownFallbackSourceWindow?: "5h" | "7d";
 	headroomPolicy?:
 		| { kind: "prefer_below_trigger"; trigger5hPct: number }
 		| { kind: "explicit_target" };
@@ -72,6 +76,7 @@ export interface CandidateSelectionOptions {
 
 export interface CandidateSelectionResult {
 	ranked: string[];
+	cooldownFallbacks: string[];
 	panorama: CandidatePanoramaEntry[];
 	usageByName: Map<string, SuccessfulUsage>;
 	malformedModelBenches: string[];
@@ -162,6 +167,7 @@ export async function verifyAndRankCandidates(
 	const malformedModelBenches: string[] = [];
 	const healthy: RankedCandidate[] = [];
 	const highFiveH: RankedCandidate[] = [];
+	const cooldownFallbacks: string[] = [];
 
 	const accountsByName = new Map(
 		snapshot.store.accounts.map((entry) => [entry.name, entry]),
@@ -195,11 +201,18 @@ export async function verifyAndRankCandidates(
 			continue;
 		}
 		const cooldownActive = isSwitchCooldownActive(entry, now);
-		const cooldownBypassed =
+		const manualCooldownBypassed =
 			cooldownActive &&
 			options.cooldownPolicy === "ignore_explicit_target" &&
 			only?.size === 1 &&
 			only.has(name);
+		const fallbackCooldownBypassed =
+			cooldownActive &&
+			options.cooldownPolicy === "fallback_explicit_target" &&
+			options.cooldownFallbackSourceWindow !== undefined &&
+			only?.size === 1 &&
+			only.has(name);
+		const cooldownBypassed = manualCooldownBypassed || fallbackCooldownBypassed;
 		if (cooldownActive && !cooldownBypassed) {
 			panorama.push({
 				name,
@@ -266,6 +279,19 @@ export async function verifyAndRankCandidates(
 			});
 			continue;
 		}
+		const fallbackTargetWindow = usage.ok.sevenD.pct >= 100 ? "7d" : "5h";
+		if (
+			fallbackCooldownBypassed &&
+			fallbackTargetWindow === options.cooldownFallbackSourceWindow
+		) {
+			panorama.push({
+				name,
+				status: "cooldown_fallback_same_window",
+				excludedBy: "cooldown",
+				usage: usage.ok,
+			});
+			continue;
+		}
 		const effectiveResetAt = usage.ok.sevenD.resetsAt ?? entry.weeklyResetAt;
 		const resetMs =
 			effectiveResetAt == null
@@ -284,7 +310,13 @@ export async function verifyAndRankCandidates(
 			usage.ok.fiveH.pct >= options.headroomPolicy.trigger5hPct;
 		panorama.push({
 			name,
-			status: isHighFiveH ? "qualified_low_headroom" : "qualified",
+			status: fallbackCooldownBypassed
+				? isHighFiveH
+					? "qualified_low_headroom_cooldown_fallback"
+					: "qualified_cooldown_fallback"
+				: isHighFiveH
+					? "qualified_low_headroom"
+					: "qualified",
 			excludedBy: null,
 			usage: usage.ok,
 			...(cooldownBypassed
@@ -294,12 +326,14 @@ export async function verifyAndRankCandidates(
 				: {}),
 			resetClass: usage.ok.sevenD.resetsAt === null ? "idleUnopened" : "dated",
 		});
+		if (fallbackCooldownBypassed) cooldownFallbacks.push(name);
 		(isHighFiveH ? highFiveH : healthy).push({ name, resetMs });
 	}
 
 	const headroomDegraded = healthy.length === 0 && highFiveH.length > 0;
 	return {
 		ranked: rank(headroomDegraded ? highFiveH : healthy),
+		cooldownFallbacks,
 		panorama,
 		usageByName,
 		malformedModelBenches,

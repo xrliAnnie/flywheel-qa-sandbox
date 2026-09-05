@@ -19,6 +19,7 @@ import {
 import type {
 	EventEnvelope,
 	ExecutionEventEmitter,
+	RunnerMemorySelectionRecord,
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
@@ -34,6 +35,10 @@ import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./bridge/linear-issue-finalizer.js";
+import {
+	type MarkStartedResult,
+	makeLinearIssueStarter,
+} from "./bridge/linear-issue-starter.js";
 import type { MaterializedHeadAuthority } from "./bridge/materialized-head-authority.js";
 import {
 	computeAuthoritativeShipDecision,
@@ -290,125 +295,208 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// binding (plan.md:145 violation). Activation moved to emitWorktreeReady,
 		// which runs AFTER bindWorktreeOnce makes the binding durable.
 
-		// GEO-151: Persist effective proofshot config into session_params so
-		// Bridge event-route handlers can read it without re-loading config.
-		// Uses patchSessionParams (read-modify-write) so a replayed session_started
-		// event does NOT clobber existing `proofshot.runs` or `last_artifact`
-		// state from prior captures in the same execution (Bridge restart safety).
-		this.persistProofShotConfig(env.executionId, env.projectName);
-		if (env.routeSummary) {
-			patchSessionParams(this.store, env.executionId, (cur) => ({
-				...cur,
-				workflowRoute: { summary: env.routeSummary },
-			}));
-		}
+		try {
+			// GEO-151: Persist effective proofshot config into session_params so
+			// Bridge event-route handlers can read it without re-loading config.
+			// Uses patchSessionParams (read-modify-write) so a replayed session_started
+			// event does NOT clobber existing `proofshot.runs` or `last_artifact`
+			// state from prior captures in the same execution (Bridge restart safety).
+			this.persistProofShotConfig(env.executionId, env.projectName);
+			if (env.routeSummary) {
+				patchSessionParams(this.store, env.executionId, (cur) => ({
+					...cur,
+					workflowRoute: { summary: env.routeSummary },
+				}));
+			}
 
-		// FLY-91: Await chat thread creation so first notification includes chat_thread_id.
-		// Unlike ForumPost (fire-and-forget), chat_thread_id doesn't affect EventFilter
-		// classification, so awaiting is safe and ensures first message goes to thread.
-		if (this.config.chatThreadsEnabled && this.chatThreadCreator) {
-			const eventLabels = env.labels ?? [];
-			try {
-				const { lead: ctLead } = resolveLeadForIssue(
-					this.projects,
-					env.projectName,
-					eventLabels,
-				);
-				if (ctLead.chatChannel) {
-					const botToken = ctLead.botToken ?? this.config.discordBotToken;
-					if (botToken) {
-						const existingThread = this.store.getChatThreadByIssue(
-							env.issueId,
-							ctLead.chatChannel,
-						);
-						const archivedAt = existingThread?.archived_at;
-						const archiveEpoch = archivedAt
-							? archiveEpochInterval(archivedAt)
-							: null;
-						const activationMs = stateTimestampMs(startedAt);
-						if (
-							existingThread &&
-							archiveEpoch &&
-							activationMs !== null &&
-							activationMs > archiveEpoch.endMs
-						) {
-							await reactivateChatThreadForStartedSession(
-								this.store,
-								{
-									threadId: existingThread.thread_id,
-									issueId: env.issueId,
-									projectName: env.projectName,
-									executionId: env.executionId,
-								},
-								botToken,
+			// FLY-91: Await chat thread creation so first notification includes chat_thread_id.
+			// Unlike ForumPost (fire-and-forget), chat_thread_id doesn't affect EventFilter
+			// classification, so awaiting is safe and ensures first message goes to thread.
+			if (this.config.chatThreadsEnabled && this.chatThreadCreator) {
+				const eventLabels = env.labels ?? [];
+				try {
+					const { lead: ctLead } = resolveLeadForIssue(
+						this.projects,
+						env.projectName,
+						eventLabels,
+					);
+					if (ctLead.chatChannel) {
+						const botToken = ctLead.botToken ?? this.config.discordBotToken;
+						if (botToken) {
+							const existingThread = this.store.getChatThreadByIssue(
+								env.issueId,
+								ctLead.chatChannel,
 							);
-						} else if (archivedAt) {
+							const archivedAt = existingThread?.archived_at;
+							const archiveEpoch = archivedAt
+								? archiveEpochInterval(archivedAt)
+								: null;
+							const activationMs = stateTimestampMs(startedAt);
+							if (
+								existingThread &&
+								archiveEpoch &&
+								activationMs !== null &&
+								activationMs > archiveEpoch.endMs
+							) {
+								await reactivateChatThreadForStartedSession(
+									this.store,
+									{
+										threadId: existingThread.thread_id,
+										issueId: env.issueId,
+										projectName: env.projectName,
+										executionId: env.executionId,
+									},
+									botToken,
+								);
+							} else if (archivedAt) {
+								console.warn(
+									`[DirectEventSink] cannot prove reactivation epoch for ${env.executionId}; archived thread remains protected (activation=${startedAt}, archive=${archivedAt})`,
+								);
+							}
+							const resolvedTitle =
+								env.issueTitle ??
+								this.store.getSessionByIssue(env.issueId)?.issue_title ??
+								undefined;
+							console.log(
+								`[DirectEventSink] ensureChatThread calling: issueId=${env.issueId} channel=${ctLead.chatChannel} lead=${ctLead.agentId} hasToken=true`,
+							);
+							const result = await this.chatThreadCreator.ensureChatThread({
+								chatChannelId: ctLead.chatChannel,
+								issueId: env.issueId,
+								issueIdentifier: env.issueIdentifier,
+								issueTitle: resolvedTitle,
+								routeSummary: env.routeSummary,
+								botToken,
+								leadId: ctLead.agentId,
+								ownerUserId: this.config.discordOwnerUserId,
+								// FLY-1255: stamp the resolved runner model at thread creation.
+								// `?? null` is authoritative and clears a stale marker when no
+								// model was selected.
+								modelMarker:
+									renderRunnerModelDisplay({
+										vendor: env.runnerBackend
+											? adapterTypeToFamily(env.runnerBackend)
+											: undefined,
+										model: env.runnerModel,
+									})?.threadMarker ?? null,
+								// FLY-892 (converge): one issue = one thread — no per-phase
+								// thread role is passed; the phase session and the Lead resolve
+								// the SAME (issue, channel) thread. `chat_thread_role` is still
+								// persisted on the session row (above) as the phase MARKER.
+							});
+							console.log(
+								`[DirectEventSink] ensureChatThread: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
+							);
+						} else {
 							console.warn(
-								`[DirectEventSink] cannot prove reactivation epoch for ${env.executionId}; archived thread remains protected (activation=${startedAt}, archive=${archivedAt})`,
+								`[DirectEventSink] chatThread skipped for ${env.issueId}: no botToken (lead=${ctLead.agentId}, globalToken=${!!this.config.discordBotToken})`,
 							);
 						}
-						const resolvedTitle =
-							env.issueTitle ??
-							this.store.getSessionByIssue(env.issueId)?.issue_title ??
-							undefined;
-						console.log(
-							`[DirectEventSink] ensureChatThread calling: issueId=${env.issueId} channel=${ctLead.chatChannel} lead=${ctLead.agentId} hasToken=true`,
-						);
-						const result = await this.chatThreadCreator.ensureChatThread({
-							chatChannelId: ctLead.chatChannel,
-							issueId: env.issueId,
-							issueIdentifier: env.issueIdentifier,
-							issueTitle: resolvedTitle,
-							routeSummary: env.routeSummary,
-							botToken,
-							leadId: ctLead.agentId,
-							ownerUserId: this.config.discordOwnerUserId,
-							// FLY-1255: stamp the resolved runner model at thread creation.
-							// `?? null` is authoritative and clears a stale marker when no
-							// model was selected.
-							modelMarker:
-								renderRunnerModelDisplay({
-									vendor: env.runnerBackend
-										? adapterTypeToFamily(env.runnerBackend)
-										: undefined,
-									model: env.runnerModel,
-								})?.threadMarker ?? null,
-							// FLY-892 (converge): one issue = one thread — no per-phase
-							// thread role is passed; the phase session and the Lead resolve
-							// the SAME (issue, channel) thread. `chat_thread_role` is still
-							// persisted on the session row (above) as the phase MARKER.
-						});
-						console.log(
-							`[DirectEventSink] ensureChatThread: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
-						);
 					} else {
 						console.warn(
-							`[DirectEventSink] chatThread skipped for ${env.issueId}: no botToken (lead=${ctLead.agentId}, globalToken=${!!this.config.discordBotToken})`,
+							`[DirectEventSink] chatThread skipped for ${env.issueId}: lead "${ctLead.agentId}" has no chatChannel`,
 						);
 					}
-				} else {
+				} catch (err) {
 					console.warn(
-						`[DirectEventSink] chatThread skipped for ${env.issueId}: lead "${ctLead.agentId}" has no chatChannel`,
+						`[DirectEventSink] ensureChatThread failed for ${env.issueId}:`,
+						(err as Error).message,
 					);
 				}
-			} catch (err) {
-				console.warn(
-					`[DirectEventSink] ensureChatThread failed for ${env.issueId}:`,
-					(err as Error).message,
+			} else {
+				console.log(
+					`[DirectEventSink] chatThread guard: enabled=${!!this.config.chatThreadsEnabled} hasCreator=${!!this.chatThreadCreator} — skipping for ${env.issueId}`,
 				);
 			}
-		} else {
-			console.log(
-				`[DirectEventSink] chatThread guard: enabled=${!!this.config.chatThreadsEnabled} hasCreator=${!!this.chatThreadCreator} — skipping for ${env.issueId}`,
-			);
+
+			// FLY-907: a fresh session row (incl. an operator-reset's replacement
+			// exec) changes what all three display faces should show.
+			this.notifyDisplayChanged(env.issueId);
+		} finally {
+			try {
+				this.pushNotification(env, "session_started");
+			} finally {
+				const starter = makeLinearIssueStarter(this.config);
+				if (starter) {
+					const controller = new AbortController();
+					let timeout: ReturnType<typeof setTimeout> | undefined;
+					const attempt = Promise.resolve()
+						.then(() => starter(env.issueId, identifier, controller.signal))
+						.catch((error): MarkStartedResult => {
+							const reason =
+								error instanceof Error ? error.message : String(error);
+							console.warn(
+								`[DirectEventSink] Linear start sync failed for ${identifier}: ${reason}`,
+							);
+							return {
+								started: false,
+								outcome: "failed",
+								reason,
+								errorClass:
+									error instanceof Error
+										? error.constructor.name
+										: "UnknownError",
+							};
+						});
+					const deadline = new Promise<MarkStartedResult>((resolve) => {
+						timeout = setTimeout(() => {
+							controller.abort();
+							console.warn(
+								`[DirectEventSink] Linear start sync timed out for ${identifier}`,
+							);
+							resolve({
+								started: false,
+								outcome: "failed",
+								reason: "linear_start_timeout",
+								errorClass: "linear_start_timeout",
+							});
+						}, 15_000);
+					});
+					let result: MarkStartedResult;
+					try {
+						result = await Promise.race([attempt, deadline]);
+					} finally {
+						if (timeout) clearTimeout(timeout);
+					}
+					this.store.insertEvent({
+						event_id: randomUUID(),
+						execution_id: env.executionId,
+						issue_id: env.issueId,
+						project_name: env.projectName,
+						event_type: "linear_issue_start_outcome",
+						severity: result.outcome === "failed" ? "warning" : "info",
+						payload: {
+							issueId: env.issueId,
+							executionId: env.executionId,
+							outcome: result.outcome,
+							...(result.errorClass ? { errorClass: result.errorClass } : {}),
+						},
+						source: "direct-event-sink",
+					});
+				}
+			}
 		}
+	}
 
-		// FLY-907: a fresh session row (incl. an operator-reset's replacement
-		// exec) changes what all three display faces should show.
-		this.notifyDisplayChanged(env.issueId);
-
-		// Notify agent
-		this.pushNotification(env, "session_started");
+	/** FLY-2148: persist Bridge-local arm attribution; never trust the HTTP lane. */
+	async emitRunnerMemorySelection(
+		env: EventEnvelope,
+		selection: RunnerMemorySelectionRecord,
+	): Promise<void> {
+		const persisted = this.store.patchRunnerMemorySelection(env.executionId, {
+			arm: selection.arm,
+			dir: selection.dir ?? null,
+			spawn: selection.spawn ? JSON.stringify(selection.spawn) : null,
+		});
+		if (!persisted) {
+			console.warn(
+				`[DirectEventSink] runner-memory selection dropped exec=${env.executionId} arm=${selection.arm} reason=session_missing`,
+			);
+			return;
+		}
+		console.info(
+			`[DirectEventSink] runner-memory selection persisted exec=${env.executionId} arm=${selection.arm}`,
+		);
 	}
 
 	/**

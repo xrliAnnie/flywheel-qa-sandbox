@@ -28,6 +28,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
@@ -973,7 +974,9 @@ export async function main(
 		identityDigest: config.identityDigest,
 		rawCarrierInstanceId: carrierInstanceId,
 		pid: process.pid,
-		lstart: getProcessStart(process.pid),
+		lstart: withSyncOpMarker("codex-lead-tui:process-start", () =>
+			getProcessStart(process.pid),
+		),
 	});
 	// Resolve the home script for BOTH layouts: from dist/lead-backends/codex
 	// it's ../../../scripts; from src/lead-backends/codex it's ../../scripts

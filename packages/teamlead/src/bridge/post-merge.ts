@@ -13,7 +13,8 @@
  *     via runPostShipFinalization orchestrator
  *   - actions.ts _onApproved callback is DEAD CODE — not relied on.
  *
- * Idempotent: killTmuxWindow returns success when window already gone.
+ * Idempotent: killTmuxWindow returns success when a real window is already gone;
+ * a terminal `:pending` placeholder additionally needs host-process absence.
  * Never throws — all errors are captured in the result and audit event.
  */
 
@@ -23,7 +24,11 @@ import {
 	isResidentCodexPhase,
 	prepareCodexPhaseShutdown,
 } from "./codex-phase-shutdown.js";
-import { finalizeCommDbSession } from "./commdb-session-prune.js";
+import {
+	finalizeCommDbSession,
+	hasEndedCommDbSession,
+} from "./commdb-session-prune.js";
+import { probeRunExecutionLiveness } from "./run-quiescence.js";
 import { reapRunnerMcp } from "./runner-teardown.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import {
@@ -61,6 +66,12 @@ export interface CleanupTmuxTargetInput {
 
 export interface CleanupTmuxTargetResult {
 	tmuxClosed: boolean;
+	/**
+	 * Required cleanup outcome: true on the normal killed/already-gone path.
+	 * This is not the same predicate as `CloseRunnerResult.physicalGone`, which
+	 * is optional, appears only after `killed:false`, and carries probe evidence
+	 * (`true`) versus an explicit lack of proof (`false`).
+	 */
 	physicalGone: boolean;
 	errors: string[];
 	strictFailure?: "window_identity_mismatch" | "authority_lost";
@@ -230,7 +241,32 @@ export async function postMergeTmuxCleanup(
 				const direct = await cleanupTmuxTarget({ target, session });
 				result.tmuxClosed = direct.tmuxClosed;
 				physicalGone = direct.physicalGone;
-				result.errors.push(...direct.errors);
+				let directErrors = direct.errors;
+				if (
+					!physicalGone &&
+					target.tmuxWindow.endsWith(":pending") &&
+					hasEndedCommDbSession(opts.executionId, opts.projectName)
+				) {
+					// A pending placeholder cannot be probed as a tmux identity. Reuse the
+					// family-aware quiescence policy: Codex first proves detached-daemon
+					// absence, then every family must prove tmux/discovery/host absence.
+					physicalGone =
+						(await probeRunExecutionLiveness(
+							session,
+							opts.executionId,
+							opts.projectName,
+						)) === "dead";
+					if (physicalGone) {
+						// The placeholder refusal remains a safety success: an independent
+						// execution-level probe, not the placeholder name, proved closure.
+						result.tmuxClosed = true;
+						directErrors = directErrors.filter(
+							(error) =>
+								error !== "tmux: tmux window identity is still pending",
+						);
+					}
+				}
+				result.errors.push(...directErrors);
 			} else {
 				physicalGone = true;
 			}
@@ -251,6 +287,7 @@ export async function postMergeTmuxCleanup(
 			projectName: opts.projectName,
 			ok: finalized.ok,
 			error: finalized.error,
+			runnerDeathProven: true,
 			audit: {
 				retiredGateCount: finalized.retiredGateCount,
 				retiredAskCount: finalized.retiredAskCount,

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
 import type {
 	DesignReviewManifest,
@@ -33,14 +34,18 @@ function safeRelativePath(path: string): boolean {
 }
 
 function git(worktree: string, args: string[]): string {
-	return execFileSync(
-		"git",
-		["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args],
-		{
-			cwd: worktree,
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-		},
+	return withSyncOpMarker("design-review-manifest:git", () =>
+		execFileSync(
+			"git",
+			["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args],
+			{
+				cwd: worktree,
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+				timeout: 20_000,
+				killSignal: "SIGKILL",
+			},
+		),
 	).trim();
 }
 

@@ -28,7 +28,18 @@ export type CodexReownEvent =
 	| "reown_skipped_superseded"
 	| "reown_skipped_not_turn_holder"
 	| "reown_probe_unknown"
-	| "reown_fence_lost";
+	| "reown_fence_lost"
+	| "reown_turn_reconcile_failed";
+
+export function acceptReownTurnReconciliation(result: {
+	ok: boolean;
+	reason?: string;
+}): void {
+	if (result.ok || result.reason === "not_holder") return;
+	throw new Error(
+		`CommDB turn reconcile refused: ${result.reason ?? "unknown"}`,
+	);
+}
 
 export interface CodexRecoveryReceiptHook {
 	onRecoveryOwnershipEstablished(
@@ -68,6 +79,7 @@ export interface CodexSessionReownDeps {
 			capabilities: PreparedCodexRecoveryCapabilities;
 		},
 	): Promise<AdapterExecutionResult>;
+	reconcileTurn(session: Session, threadId?: string): Promise<void>;
 	readTurnHolder(session: Session): Promise<string | null>;
 	onRecoveryExhausted(session: Session, attempts: number): Promise<void>;
 	record(
@@ -176,6 +188,9 @@ export function buildCodexRecoveryContext(input: {
 	bridgeUrl?: string;
 	bridgeIngestToken?: string;
 	progressPath?: string;
+	loopTarget?: { nodeId: string };
+	sessionRole?: string;
+	workflowActivationId?: string;
 	onHeartbeat?: (executionId: string) => void;
 }): AdapterExecutionContext {
 	const raw = input.snapshot.rehydrationContext;
@@ -219,6 +234,15 @@ export function buildCodexRecoveryContext(input: {
 			? { codexMattSkillsSourceDir: raw.codexMattSkillsSourceDir }
 			: {}),
 		...(launch.phaseRole ? { phaseKeepAlive: { role: launch.phaseRole } } : {}),
+		...(input.loopTarget
+			? {
+					residentLoopTarget: { nodeId: input.loopTarget.nodeId },
+				}
+			: {}),
+		...(input.sessionRole ? { sessionRole: input.sessionRole } : {}),
+		...(input.workflowActivationId
+			? { workflowActivationId: input.workflowActivationId }
+			: {}),
 		...(input.capabilities.workflowOutputCredential
 			? {
 					workflowOutputCredential: input.capabilities.workflowOutputCredential,
@@ -404,6 +428,7 @@ export class CodexSessionReowner {
 			}
 			this.unknownStreak.delete(session.execution_id);
 			if (!this.watched.has(session.execution_id)) {
+				if (!(await this.reconcileBeforeArm(session))) return;
 				this.watched.add(session.execution_id);
 				this.record("reown_watch_started", session, {
 					liveness,
@@ -628,6 +653,9 @@ export class CodexSessionReowner {
 						throw new Error(`recovery commit refused: ${result.reason}`);
 					}
 					committed = true;
+					if (!(await this.reconcileBeforeArm(session, threadId))) {
+						throw new Error("turn reconciliation failed after recovery commit");
+					}
 					this.record("reown_revive_succeeded", session, {
 						episodeId: claim.episodeId,
 						attempt: claim.attempt,
@@ -678,6 +706,22 @@ export class CodexSessionReowner {
 				}
 			},
 		);
+	}
+
+	private async reconcileBeforeArm(
+		session: Session,
+		threadId?: string,
+	): Promise<boolean> {
+		try {
+			await this.deps.reconcileTurn(session, threadId);
+			return true;
+		} catch (error) {
+			this.record("reown_turn_reconcile_failed", session, {
+				reason: error instanceof Error ? error.message : String(error),
+				...(threadId ? { threadId } : {}),
+			});
+			return false;
+		}
 	}
 
 	private record(

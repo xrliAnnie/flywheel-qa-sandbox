@@ -24,6 +24,7 @@ import { execFile } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import {
 	type CarrierEvidenceEntry,
 	processAliveWithStart as defaultProcessAliveWithStart,
@@ -833,18 +834,21 @@ export class FleetPoller {
 				this.opts.deps,
 				state,
 			);
-			if (this.opts.carrierEnv) {
-				materializeCarrierAuthorizationEvidence({
-					projects,
-					legacyBackendOf: this.opts.legacyBackendOf,
-					env: this.opts.carrierEnv,
-					collectedAt: snapshot.collectedAt,
-					...(this.opts.processAliveWithStart
-						? {
-								processAliveWithStart: this.opts.processAliveWithStart,
-							}
-						: {}),
-				});
+			const carrierEnv = this.opts.carrierEnv;
+			if (carrierEnv) {
+				withSyncOpMarker("fleet-poller:carrier-process-probe", () =>
+					materializeCarrierAuthorizationEvidence({
+						projects,
+						legacyBackendOf: this.opts.legacyBackendOf,
+						env: carrierEnv,
+						collectedAt: snapshot.collectedAt,
+						...(this.opts.processAliveWithStart
+							? {
+									processAliveWithStart: this.opts.processAliveWithStart,
+								}
+							: {}),
+					}),
+				);
 			}
 			this.last = snapshot;
 		} catch (err) {

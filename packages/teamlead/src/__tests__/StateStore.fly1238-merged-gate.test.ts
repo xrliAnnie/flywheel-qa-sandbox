@@ -172,6 +172,7 @@ describe("StateStore FLY-1238 merged gate cleanup", () => {
 				projectName: "flywheel",
 				ok: false,
 				error: `sqlite busy ${attempt}`,
+				runnerDeathProven: true,
 				nowMs: 1_000 + attempt,
 			});
 		}
@@ -199,6 +200,7 @@ describe("StateStore FLY-1238 merged gate cleanup", () => {
 			projectName: "flywheel",
 			ok: false,
 			error: "still stuck",
+			runnerDeathProven: true,
 			nowMs: 2_000,
 		});
 		expect(
@@ -214,6 +216,7 @@ describe("StateStore FLY-1238 merged gate cleanup", () => {
 			issueId: "FLY-1238",
 			projectName: "flywheel",
 			ok: true,
+			runnerDeathProven: true,
 			nowMs: 3_000,
 		});
 		expect(
@@ -228,6 +231,7 @@ describe("StateStore FLY-1238 merged gate cleanup", () => {
 			projectName: "flywheel",
 			ok: false,
 			error: "first",
+			runnerDeathProven: true,
 			nowMs: 10,
 		});
 		store.recordCommDbFinalizeOutcome({
@@ -236,6 +240,7 @@ describe("StateStore FLY-1238 merged gate cleanup", () => {
 			projectName: "flywheel",
 			ok: false,
 			error: "aged",
+			runnerDeathProven: true,
 			nowMs: 15 * 60_000 + 10,
 		});
 		expect(
@@ -243,6 +248,50 @@ describe("StateStore FLY-1238 merged gate cleanup", () => {
 				.listPendingFounderActions()
 				.some((row) => row.action_key === "commdb-finalize-stuck-exec-aged"),
 		).toBe(true);
+	});
+
+	it("keeps the proven-death failure ledger isolated from ledger-only outcomes", () => {
+		store.recordCommDbFinalizeOutcome({
+			executionId: "exec-proven-dead",
+			issueId: "FLY-2313",
+			projectName: "flywheel",
+			ok: false,
+			error: "sqlite busy",
+			nowMs: 1_000,
+			runnerDeathProven: true,
+		});
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			store.recordCommDbFinalizeOutcome({
+				executionId: "exec-ledger-only",
+				issueId: "FLY-2313",
+				projectName: "flywheel",
+				ok: false,
+				error: `ledger-only failure ${attempt}`,
+				nowMs: 2_000 + attempt,
+				runnerDeathProven: false,
+			});
+		}
+
+		expect(store.getCommDbFinalizeFailure("exec-ledger-only")).toBeUndefined();
+		expect(
+			store
+				.listPendingFounderActions()
+				.some(
+					(row) => row.action_key === "commdb-finalize-stuck-exec-ledger-only",
+				),
+		).toBe(false);
+
+		store.recordCommDbFinalizeOutcome({
+			executionId: "exec-proven-dead",
+			issueId: "FLY-2313",
+			projectName: "flywheel",
+			ok: true,
+			nowMs: 3_000,
+			runnerDeathProven: false,
+		});
+		expect(
+			store.getCommDbFinalizeFailure("exec-proven-dead")?.resolved_at,
+		).toBeUndefined();
 	});
 });
 

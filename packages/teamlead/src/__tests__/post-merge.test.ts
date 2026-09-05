@@ -9,6 +9,9 @@ import { StateStore } from "../StateStore.js";
 
 const mockGetTmuxTarget = vi.fn();
 const mockKillTmuxWindow = vi.fn();
+const mockHasHostProcessByExecutionId = vi.fn();
+const mockProbeRunExecutionLiveness = vi.fn();
+const mockHasEndedCommDbSession = vi.fn();
 
 const mockKillCmuxLinkedSession = vi.fn(async () => ({ killed: true }));
 const mockPrepareCodexPhaseShutdown = vi.fn();
@@ -46,6 +49,16 @@ vi.mock("../bridge/tmux-lookup.js", () => ({
 		mockKillCmuxLinkedSession(...args),
 }));
 
+vi.mock("../bridge/generalized-launch-recovery.js", () => ({
+	hasHostProcessByExecutionId: (...args: unknown[]) =>
+		mockHasHostProcessByExecutionId(...args),
+}));
+
+vi.mock("../bridge/run-quiescence.js", () => ({
+	probeRunExecutionLiveness: (...args: unknown[]) =>
+		mockProbeRunExecutionLiveness(...args),
+}));
+
 // FLY-1238: stub atomic gate/session finalization.
 const mockFinalizeCommDbSession = vi.fn(() => ({
 	ok: true as const,
@@ -56,6 +69,8 @@ const mockFinalizeCommDbSession = vi.fn(() => ({
 vi.mock("../bridge/commdb-session-prune.js", () => ({
 	finalizeCommDbSession: (...args: unknown[]) =>
 		mockFinalizeCommDbSession(...args),
+	hasEndedCommDbSession: (...args: unknown[]) =>
+		mockHasEndedCommDbSession(...args),
 }));
 
 // ── Helpers ─────────────────────────────────────────────
@@ -83,6 +98,16 @@ describe("postMergeTmuxCleanup", () => {
 		});
 		mockGetTmuxTarget.mockReset();
 		mockKillTmuxWindow.mockReset();
+		mockKillCmuxLinkedSession.mockReset();
+		mockKillCmuxLinkedSession.mockResolvedValue({ killed: true });
+		mockHasHostProcessByExecutionId.mockReset();
+		mockHasHostProcessByExecutionId.mockResolvedValue(true);
+		mockProbeRunExecutionLiveness.mockReset();
+		mockProbeRunExecutionLiveness.mockImplementation(async () =>
+			(await mockHasHostProcessByExecutionId()) ? "alive" : "dead",
+		);
+		mockHasEndedCommDbSession.mockReset();
+		mockHasEndedCommDbSession.mockReturnValue(true);
 		mockFinalizeCommDbSession.mockReset();
 		mockFinalizeCommDbSession.mockReturnValue({
 			ok: true,
@@ -227,6 +252,119 @@ describe("postMergeTmuxCleanup", () => {
 		expect(result.tmuxClosed).toBe(false);
 		expect(result.commDbFinalized).toBe(false);
 		expect(result.errors).toContain("tmux: permission denied");
+	});
+
+	it("FLY-2313: finalizes a terminal pending target when host-process absence proves death", async () => {
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-geoforge3d:pending",
+			sessionName: "runner-geoforge3d",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "tmux window identity is still pending",
+		});
+		mockHasEndedCommDbSession.mockReturnValue(true);
+		mockHasHostProcessByExecutionId.mockResolvedValue(false);
+
+		const result = await postMergeTmuxCleanup(makeOpts(), store);
+
+		expect(result).toEqual({
+			tmuxClosed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+			errors: [],
+		});
+		expect(mockProbeRunExecutionLiveness).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "exec-1" }),
+			"exec-1",
+			"geoforge3d",
+		);
+		expect(mockFinalizeCommDbSession).toHaveBeenCalledWith(
+			"exec-1",
+			"geoforge3d",
+		);
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((event) => event.event_type === "post_merge_completed"),
+		).toBe(true);
+	});
+
+	it("FLY-2313: pending death proof preserves unrelated cleanup errors", async () => {
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-geoforge3d:pending",
+			sessionName: "runner-geoforge3d",
+		});
+		mockKillCmuxLinkedSession.mockRejectedValueOnce(
+			new Error("viewer cleanup failed"),
+		);
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "tmux window identity is still pending",
+		});
+		mockHasEndedCommDbSession.mockReturnValue(true);
+		mockHasHostProcessByExecutionId.mockResolvedValue(false);
+
+		const result = await postMergeTmuxCleanup(makeOpts(), store);
+
+		expect(result).toEqual({
+			tmuxClosed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+			errors: ["cmux: viewer cleanup failed"],
+		});
+	});
+
+	it.each([
+		["a matching host process", true, true],
+		["nonterminal CommDB evidence", false, false],
+	] as const)(
+		"FLY-2313: keeps a pending target unresolved with %s",
+		async (_case, ended, hasHostProcess) => {
+			mockGetTmuxTarget.mockReturnValue({
+				tmuxWindow: "runner-geoforge3d:pending",
+				sessionName: "runner-geoforge3d",
+			});
+			mockKillTmuxWindow.mockResolvedValue({
+				killed: false,
+				error: "tmux window identity is still pending",
+			});
+			mockHasEndedCommDbSession.mockReturnValue(ended);
+			mockHasHostProcessByExecutionId.mockResolvedValue(hasHostProcess);
+
+			const result = await postMergeTmuxCleanup(makeOpts(), store);
+
+			expect(result.commDbFinalized).toBe(false);
+			expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+			expect(mockProbeRunExecutionLiveness).toHaveBeenCalledTimes(
+				ended ? 1 : 0,
+			);
+		},
+	);
+
+	it("FLY-2313: a live Codex daemon vetoes a misleading pgrep no-match after merge", async () => {
+		store.patchSessionMetadata("exec-1", { adapter_type: "codex-tmux" });
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-geoforge3d:pending",
+			sessionName: "runner-geoforge3d",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "tmux window identity is still pending",
+		});
+		mockHasEndedCommDbSession.mockReturnValue(true);
+		mockHasHostProcessByExecutionId.mockResolvedValue(false);
+		mockProbeRunExecutionLiveness.mockResolvedValue("alive");
+
+		const result = await postMergeTmuxCleanup(makeOpts(), store);
+
+		expect(result.commDbFinalized).toBe(false);
+		expect(mockProbeRunExecutionLiveness).toHaveBeenCalledWith(
+			expect.objectContaining({ adapter_type: "codex-tmux" }),
+			"exec-1",
+			"geoforge3d",
+		);
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
 	});
 
 	it("captures tmux lookup exception without throwing", async () => {

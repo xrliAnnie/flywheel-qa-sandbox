@@ -1,0 +1,39 @@
+{
+  "event_id": "<EVENT_ID>",
+  "execution_id": "exec-108",
+  "issue_id": "issue-108",
+  "project_name": "geoforge3d",
+  "event_type": "session_completed",
+  "source": "flywheel-comm",
+  "payload": {
+    "decision": {
+      "route": "auto_approve"
+    },
+    "evidence": {
+      "commitCount": 3,
+      "filesChangedCount": 3,
+      "linesAdded": 120,
+      "linesRemoved": 45,
+      "diffSummary": "3 files changed, 120 insertions(+), 45 deletions(-)",
+      "changedFilePaths": [
+        "file-a.ts",
+        "file-b.ts",
+        "file-c.ts"
+      ],
+      "commitMessages": [
+        "feat: complete cmd",
+        "test: add tests",
+        "refactor: cleanup"
+      ],
+      "headSha": "cccccccccccccccccccccccccccccccccccccccc",
+      "landingStatus": {
+        "status": "merged",
+        "prNumber": 123
+      }
+    },
+    "sessionRole": "main",
+    "exitReason": "completed",
+    "summary": "feat: complete cmd",
+    "issueIdentifier": "FLY-108"
+  }
+}

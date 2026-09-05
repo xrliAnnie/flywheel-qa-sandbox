@@ -22,8 +22,10 @@ describe("FLY-1309 Bridge lead lease diagnostics endpoint", () => {
 	let dir: string;
 	let env: NodeJS.ProcessEnv;
 	let server: Server;
+	let monotonicNow: () => number;
 
 	beforeEach(() => {
+		monotonicNow = () => 0;
 		dir = mkdtempSync(join(tmpdir(), "fly1309-diagnostics-route-"));
 		env = {
 			FLYWHEEL_PROJECTS_FILE: join(dir, "projects.json"),
@@ -87,6 +89,7 @@ describe("FLY-1309 Bridge lead lease diagnostics endpoint", () => {
 			tokenAuthMiddleware("token"),
 			createLeadLeaseDiagnosticsRouter({
 				env,
+				monotonicNow: () => monotonicNow(),
 				authorizationDeps: {
 					now: () => NOW,
 					processAliveWithStart: (pid, lstart) =>
@@ -123,6 +126,22 @@ describe("FLY-1309 Bridge lead lease diagnostics endpoint", () => {
 	it("requires the master bearer token", async () => {
 		expect((await get()).status).toBe(401);
 		expect((await get("wrong")).status).toBe(401);
+	});
+
+	it("FLY-2331: stops process probes at the request-local 20 second budget", async () => {
+		let calls = 0;
+		monotonicNow = () => (calls++ === 0 ? 0 : 20_000);
+
+		const result = await get("token");
+
+		expect(result).toEqual({
+			status: 503,
+			body: {
+				schemaVersion: 1,
+				healthy: false,
+				reason: "sensor_unavailable",
+			},
+		});
 	});
 
 	it("returns the full secret-free readiness schema", async () => {

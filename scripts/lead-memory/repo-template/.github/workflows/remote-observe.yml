@@ -1,0 +1,17 @@
+name: Lead memory remote observation
+
+on:
+  schedule:
+    - cron: "5 9 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record immutable GitHub observation
+        run: |
+          echo "observed_at=$(date -u +%FT%TZ) head_sha=$GITHUB_SHA run_id=$GITHUB_RUN_ID" >> "$GITHUB_STEP_SUMMARY"

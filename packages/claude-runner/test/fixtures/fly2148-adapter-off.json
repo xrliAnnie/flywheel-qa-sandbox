@@ -1,0 +1,55 @@
+{
+  "argv": [
+    "new-window",
+    "-P",
+    "-F",
+    "#{window_id}|#{socket_path}|#{start_time}",
+    "-t",
+    "=flywheel",
+    "-e",
+    "FLYWHEEL_MARKER_DIR=/tmp/flywheel/sessions",
+    "-e",
+    "FLYWHEEL_EXEC_ID=test-exec-1",
+    "-e",
+    "FLYWHEEL_RUNNER_STATE_DIR=<RUNNER_STATE_DIR>",
+    "-e",
+    "TMPDIR=<RUNNER_STATE_DIR>/browser-tmp",
+    "-e",
+    "LEAD_ID=",
+    "-e",
+    "DISCORD_STATE_DIR=",
+    "-e",
+    "DISCORD_IDENTITY_MODE=",
+    "-e",
+    "DISCORD_BOT_TOKEN=",
+    "-e",
+    "BASH_MAX_TIMEOUT_MS=176400000",
+    "-n",
+    "issue-<TIME>",
+    "-c",
+    "/project/geoforge3d",
+    "sh",
+    "-c",
+    "cf=\"$0\"; tok=\"$1\"; cleanup=\"$2\"; pf=\"$3\"; shift 3; n=0; while ! grep -qF \"$tok\" \"$cf\" 2>/dev/null; do [ \"$n\" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ \"$cleanup\" = \"unlink\" ] && rm -f -- \"$cf\"; if [ -n \"$pf\" ]; then p=\"$(cat -- \"$pf\")\" || { printf \"FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n\" \"$pf\" >&2; exit 78; }; [ -n \"$p\" ] || { printf \"FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n\" \"$pf\" >&2; exit 78; }; set -- \"$@\" \"$p\"; fi; exec /usr/bin/env -i ${BASH_MAX_TIMEOUT_MS+\"BASH_MAX_TIMEOUT_MS=$BASH_MAX_TIMEOUT_MS\"} ${COLUMNS+\"COLUMNS=$COLUMNS\"} ${DISCORD_BOT_TOKEN+\"DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN\"} ${DISCORD_IDENTITY_MODE+\"DISCORD_IDENTITY_MODE=$DISCORD_IDENTITY_MODE\"} ${DISCORD_STATE_DIR+\"DISCORD_STATE_DIR=$DISCORD_STATE_DIR\"} ${EDITOR+\"EDITOR=$EDITOR\"} ${FLYWHEEL_EXEC_ID+\"FLYWHEEL_EXEC_ID=$FLYWHEEL_EXEC_ID\"} ${FLYWHEEL_MARKER_DIR+\"FLYWHEEL_MARKER_DIR=$FLYWHEEL_MARKER_DIR\"} ${FLYWHEEL_RUNNER_STATE_DIR+\"FLYWHEEL_RUNNER_STATE_DIR=$FLYWHEEL_RUNNER_STATE_DIR\"} ${HOME+\"HOME=$HOME\"} ${LANG+\"LANG=$LANG\"} ${LANGUAGE+\"LANGUAGE=$LANGUAGE\"} ${LC_ALL+\"LC_ALL=$LC_ALL\"} ${LC_COLLATE+\"LC_COLLATE=$LC_COLLATE\"} ${LC_CTYPE+\"LC_CTYPE=$LC_CTYPE\"} ${LC_MESSAGES+\"LC_MESSAGES=$LC_MESSAGES\"} ${LC_MONETARY+\"LC_MONETARY=$LC_MONETARY\"} ${LC_NUMERIC+\"LC_NUMERIC=$LC_NUMERIC\"} ${LC_TIME+\"LC_TIME=$LC_TIME\"} ${LEAD_ID+\"LEAD_ID=$LEAD_ID\"} ${LINES+\"LINES=$LINES\"} ${LOGNAME+\"LOGNAME=$LOGNAME\"} ${PAGER+\"PAGER=$PAGER\"} ${PATH+\"PATH=$PATH\"} ${PWD+\"PWD=$PWD\"} ${SHELL+\"SHELL=$SHELL\"} ${TEMP+\"TEMP=$TEMP\"} ${TERM+\"TERM=$TERM\"} ${TMP+\"TMP=$TMP\"} ${TMPDIR+\"TMPDIR=$TMPDIR\"} ${TMUX+\"TMUX=$TMUX\"} ${TMUX_PANE+\"TMUX_PANE=$TMUX_PANE\"} ${TZ+\"TZ=$TZ\"} ${USER+\"USER=$USER\"} ${VISUAL+\"VISUAL=$VISUAL\"} ${XDG_CACHE_HOME+\"XDG_CACHE_HOME=$XDG_CACHE_HOME\"} ${XDG_CONFIG_HOME+\"XDG_CONFIG_HOME=$XDG_CONFIG_HOME\"} ${XDG_DATA_HOME+\"XDG_DATA_HOME=$XDG_DATA_HOME\"} ${XDG_RUNTIME_DIR+\"XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR\"} \"$@\"",
+    "<LAUNCH_GATE>",
+    "<UUID>",
+    "unlink",
+    "<PROMPT_FILE>",
+    "claude",
+    "--session-id",
+    "<UUID>",
+    "--settings",
+    "{\"enabledPlugins\":{\"discord@flywheel-plugins\":false,\"discord@claude-plugins-official\":false}}"
+  ],
+  "paneEnv": [
+    "FLYWHEEL_MARKER_DIR=/tmp/flywheel/sessions",
+    "FLYWHEEL_EXEC_ID=test-exec-1",
+    "FLYWHEEL_RUNNER_STATE_DIR=<RUNNER_STATE_DIR>"
+  ],
+  "settingsJson": {
+    "enabledPlugins": {
+      "discord@flywheel-plugins": false,
+      "discord@claude-plugins-official": false
+    }
+  }
+}

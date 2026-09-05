@@ -8,6 +8,11 @@ export const DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS = 60_000;
 
 export interface RunnerShutdownDb {
 	getRunnerShutdown(executionId: string): RunnerShutdownControl | null;
+	getRunnerShutdownRequest(
+		executionId: string,
+		requestId: string,
+	): RunnerShutdownControl | null;
+	listPendingRunnerShutdowns(executionId: string): RunnerShutdownControl[];
 	requestRunnerShutdown(
 		executionId: string,
 		requestId: string,

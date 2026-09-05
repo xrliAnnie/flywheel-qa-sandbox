@@ -9,6 +9,7 @@ fail() { echo "  ✗ $1"; FAIL=$((FAIL + 1)); }
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SUT="$SCRIPT_DIR/raya-activation-preflight.sh"
 REAL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$REAL_ROOT/../.." && pwd)"
 REAL_NODE="$(command -v node)"
 T="$(mktemp -d /tmp/raya-activation.XXXXX)" || exit 1
 trap 'rm -rf "$T"' EXIT
@@ -31,6 +32,8 @@ ln -s "$REAL_ROOT/lead-rules-base" "$RT/lead-rules-base"
 ln -s "$REAL_ROOT/scripts/lib/canonical-lead-identity.sh" "$RT/scripts/lib/canonical-lead-identity.sh"
 ln -s "$REAL_ROOT/scripts/lead-rules-bundle.sh" "$RT/scripts/lead-rules-bundle.sh"
 ln -s "$SCRIPT_DIR/run-codex-lead-raya-tui-fullaccess.sh" "$RT/scripts/run-codex-lead-raya-tui-fullaccess.sh"
+mkdir -p "$T/repo/scripts/lib"
+ln -s "$REPO_ROOT/scripts/lib/lead-address.sh" "$T/repo/scripts/lib/lead-address.sh"
 
 cat > "$T/bin/node" <<'EOF'
 #!/bin/bash
@@ -133,6 +136,15 @@ if PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_COMM_CLI="$COMM" \
 	fail "missing fixture PR"
 else
 	pass "fixture PR is mandatory"
+fi
+
+launcher="$SCRIPT_DIR/run-codex-lead-raya-tui-fullaccess.sh"
+if [ "$(grep -cFx 'export FLYWHEEL_CODEX_LEAD_HOME_KEY=raya' "$launcher" || true)" -eq 1 ] \
+	&& [ "$(grep -cF 'derive_codex_lead_home "$FLYWHEEL_CODEX_LEAD_HOME_KEY"' "$launcher" || true)" -eq 1 ] \
+	&& ! grep -Fq 'raya/codex-home' "$launcher"; then
+	pass "Raya launcher derives its default home through the shared rule"
+else
+	fail "Raya launcher still owns a private home-path rule"
 fi
 
 echo "Results: $PASS passed, $FAIL failed"

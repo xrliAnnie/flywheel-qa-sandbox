@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CanonicalRequest } from "../bridge/fleet-admin.js";
 import { FleetConsole } from "../bridge/fleet-console.js";
 import type { BatchJournal } from "../bridge/fleet-progress.js";
@@ -248,6 +248,24 @@ describe("FleetConsole — spawnEngine (detached, patches owner.pid)", () => {
 		expect(c.spawnEngine("nope", req("nope"))).toBe(false);
 		c.close();
 	});
+
+	it("FLY-2331: observes an asynchronous spawn ENOENT", async () => {
+		const logger = vi.fn();
+		const oldPath = process.env.PATH;
+		process.env.PATH = dir;
+		try {
+			const c = makeConsole(dir, { logger });
+			c.createLaunching("b-enoent", req("b-enoent"));
+			expect(c.spawnEngine("b-enoent", req("b-enoent"))).toBe(false);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(logger).toHaveBeenCalledWith(
+				expect.stringMatching(/child error:.*ENOENT/),
+			);
+			c.close();
+		} finally {
+			process.env.PATH = oldPath;
+		}
+	});
 });
 
 describe("FleetConsole — progress (§2.5)", () => {
@@ -311,7 +329,7 @@ describe("FleetConsole — SSE progress client teardown (R4 MEDIUM-1)", () => {
 });
 
 describe("FleetConsole — startup reconciliation (R8 #2)", () => {
-	it("leaves a LIVE engine's batch untouched", () => {
+	it("leaves a LIVE engine's batch untouched", async () => {
 		const recovered: string[] = [];
 		const c = makeConsole(dir, {
 			pidAlive: () => true,
@@ -324,12 +342,12 @@ describe("FleetConsole — startup reconciliation (R8 #2)", () => {
 		j.batchStatus = "running";
 		j.owner = { pid: 4242, created: 999 };
 		writeFileSync(jp, JSON.stringify(j));
-		c.reconcileOnStartup();
+		await c.reconcileOnStartup();
 		expect(recovered).toEqual([]); // never overwrite a live txn
 		c.close();
 	});
 
-	it("recovers a DEAD running batch via the engine's recover", () => {
+	it("recovers a DEAD running batch via the engine's recover", async () => {
 		const recovered: string[] = [];
 		const c = makeConsole(dir, {
 			pidAlive: () => false,
@@ -341,12 +359,38 @@ describe("FleetConsole — startup reconciliation (R8 #2)", () => {
 		j.batchStatus = "running";
 		j.owner = { pid: 999999, created: 1 };
 		writeFileSync(jp, JSON.stringify(j));
-		c.reconcileOnStartup();
+		await c.reconcileOnStartup();
 		expect(recovered).toEqual(["b-dead"]);
 		c.close();
 	});
 
-	it("recovers a DEAD launching batch at boot regardless of age (no deadline strand, MEDIUM-4)", () => {
+	it("FLY-2331: gives mutating recovery a dedicated 16 MiB output budget", async () => {
+		const recoverExec = vi.fn(async () => ({ stdout: "", stderr: "" }));
+		const c = makeConsole(dir, {
+			pidAlive: () => false,
+			recoverExec,
+		});
+		c.createLaunching("b-output-budget", req("b-output-budget"));
+		await c.reconcileOnStartup();
+
+		expect(recoverExec).toHaveBeenCalledWith(
+			"bash",
+			[
+				join(dir, "stub-fleet.sh"),
+				"recover",
+				"--batch",
+				"b-output-budget",
+				"--yes",
+			],
+			expect.objectContaining({
+				maxBuffer: 16 * 1024 * 1024,
+				timeoutMs: 120_000,
+			}),
+		);
+		c.close();
+	});
+
+	it("recovers a DEAD launching batch at boot regardless of age (no deadline strand, MEDIUM-4)", async () => {
 		const recovered: string[] = [];
 		const c = makeConsole(dir, {
 			now: () => 1_000_000,
@@ -360,12 +404,12 @@ describe("FleetConsole — startup reconciliation (R8 #2)", () => {
 		const j = JSON.parse(readFileSync(jp, "utf8")) as BatchJournal;
 		j.owner = { pid: 999999, created: Math.floor(1_000_000 / 1000) - 1 };
 		writeFileSync(jp, JSON.stringify(j));
-		c.reconcileOnStartup();
+		await c.reconcileOnStartup();
 		expect(recovered).toEqual(["b-young"]);
 		c.close();
 	});
 
-	it("uses the owner sidecar for liveness (live sidecar → batch left untouched)", () => {
+	it("uses the owner sidecar for liveness (live sidecar → batch left untouched)", async () => {
 		const recovered: string[] = [];
 		// pidAlive only returns true for the sidecar pid 4242 — proving the
 		// liveness check reads the sidecar, not the journal placeholder.
@@ -382,22 +426,64 @@ describe("FleetConsole — startup reconciliation (R8 #2)", () => {
 			join(dir, "fleet-txns", "owner-b-side.json"),
 			JSON.stringify({ pid: 4242, created: 1 }),
 		);
-		c.reconcileOnStartup();
+		await c.reconcileOnStartup();
 		expect(recovered).toEqual([]); // live engine via sidecar — never touched
 		c.close();
 	});
 
-	it("upserts apply-result audit for a terminal batch", () => {
+	it("upserts apply-result audit for a terminal batch", async () => {
 		const c = makeConsole(dir);
 		c.createLaunching("b-term", req("b-term"));
 		const jp = join(dir, "fleet-txns", "batch-b-term.json");
 		const j = JSON.parse(readFileSync(jp, "utf8")) as BatchJournal;
 		j.batchStatus = "applied";
 		writeFileSync(jp, JSON.stringify(j));
-		c.reconcileOnStartup();
+		await c.reconcileOnStartup();
 		const rows = c.audit.forBatch("b-term");
 		const applyResult = rows.find((r) => r.event === "apply-result");
 		expect(applyResult?.result).toBe("applied");
+		c.close();
+	});
+
+	it("FLY-2331: coalesces overlapping recovery passes", async () => {
+		let release!: () => void;
+		const deferred = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const recovered: string[] = [];
+		const c = makeConsole(dir, {
+			pidAlive: () => false,
+			recoverBatch: async (id: string) => {
+				recovered.push(id);
+				await deferred;
+			},
+		});
+		c.createLaunching("b-deferred", req("b-deferred"));
+
+		const first = c.reconcileOnStartup();
+		const overlapping = c.reconcileOnStartup();
+		await Promise.resolve();
+		expect(recovered).toEqual(["b-deferred"]);
+		release();
+		await Promise.all([first, overlapping]);
+		expect(recovered).toEqual(["b-deferred"]);
+		c.close();
+	});
+
+	it("FLY-2331: releases the recovery mutex after rejection", async () => {
+		let attempts = 0;
+		const c = makeConsole(dir, {
+			pidAlive: () => false,
+			recoverBatch: async () => {
+				attempts += 1;
+				if (attempts === 1) throw new Error("recover unavailable");
+			},
+		});
+		c.createLaunching("b-retry", req("b-retry"));
+
+		await expect(c.reconcileOnStartup()).rejects.toThrow("recover unavailable");
+		await expect(c.reconcileOnStartup()).resolves.toBeUndefined();
+		expect(attempts).toBe(2);
 		c.close();
 	});
 });

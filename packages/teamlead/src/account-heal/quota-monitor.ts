@@ -1,6 +1,7 @@
 import { resolveFounderTimezone } from "flywheel-config";
 import {
 	type CandidatePanoramaEntry,
+	type CandidateSelectionResult,
 	verifyAndRankCandidates as selectLiveCandidates,
 } from "./account-candidate-selector.js";
 import type {
@@ -18,6 +19,7 @@ import {
 import {
 	formatFailureDetail,
 	type ReconcileMachineResult,
+	redactSecrets,
 } from "./apply-child-evidence.js";
 import type { FreshnessVerdict } from "./freshness.js";
 import type { MachineAccountResolution } from "./machine-account.js";
@@ -29,6 +31,7 @@ import {
 import type { DeliveryReport } from "./quota-monitor-alert.js";
 import type { LoadedQuotaMonitorConfig } from "./quota-monitor-config.js";
 import type {
+	BlockedEpisode,
 	IdentityMismatchCheckpoint,
 	IdentityMismatchEpisode,
 	PendingSwitchFailure,
@@ -428,38 +431,106 @@ export async function verifyAndRankCandidates(
 	snapshot: AccountSnapshot,
 	models: readonly string[] = [],
 ): ReturnType<typeof selectLiveCandidates> {
-	return selectLiveCandidates(
-		{
-			now: deps.now,
-			withAccountsLock: deps.withAccountsLock,
-			readSnapshot: deps.readSnapshot,
-			verifyCandidate: deps.verifyCandidate,
-			readPoolCredential: deps.readPoolCredential,
-			fetchUsage: deps.fetchUsage,
-			recordObservation: async (name, observation, generation) => {
-				const projection = await deps.recordObservation(
-					name,
-					observation,
-					generation,
-				);
-				if (projection !== "updated") {
-					deps.log(
-						`quota observation projection account=${name} result=${projection}`,
-					);
-				}
-				return projection;
-			},
+	return selectLiveCandidates(candidateSelectionDeps(deps), snapshot, {
+		models,
+		cooldownPolicy: "exclude",
+		headroomPolicy: {
+			kind: "prefer_below_trigger",
+			trigger5hPct: deps.config.config.trigger5hPct,
 		},
+	});
+}
+
+function candidateSelectionDeps(deps: QuotaMonitorDeps) {
+	return {
+		now: deps.now,
+		withAccountsLock: deps.withAccountsLock,
+		readSnapshot: deps.readSnapshot,
+		verifyCandidate: deps.verifyCandidate,
+		readPoolCredential: deps.readPoolCredential,
+		fetchUsage: deps.fetchUsage,
+		recordObservation: async (
+			name: string,
+			observation: AccountQuotaObservation,
+			generation: number,
+		) => {
+			const projection = await deps.recordObservation(
+				name,
+				observation,
+				generation,
+			);
+			if (projection !== "updated") {
+				deps.log(
+					`quota observation projection account=${name} result=${projection}`,
+				);
+			}
+			return projection;
+		},
+	};
+}
+
+function dominantWindow(usage: SuccessfulUsage): "5h" | "7d" {
+	return usage.sevenD.pct >= 100 ? "7d" : "5h";
+}
+
+function firstCooldownFallbackName(
+	snapshot: AccountSnapshot,
+	panorama: readonly PanoramaEntry[],
+): string | null {
+	const cooldownNames = new Set(
+		panorama
+			.filter((entry) => entry.excludedBy === "cooldown")
+			.map((entry) => entry.name),
+	);
+	return (
+		[...snapshot.store.accounts]
+			.filter((account) => cooldownNames.has(account.name))
+			.sort((a, b) => {
+				const aSevenD = Number.isFinite(a.observedSevenDPct)
+					? (a.observedSevenDPct as number)
+					: Number.POSITIVE_INFINITY;
+				const bSevenD = Number.isFinite(b.observedSevenDPct)
+					? (b.observedSevenDPct as number)
+					: Number.POSITIVE_INFINITY;
+				return aSevenD - bSevenD || a.name.localeCompare(b.name, "en-US");
+			})[0]?.name ?? null
+	);
+}
+
+async function verifyCooldownFallback(
+	deps: QuotaMonitorDeps,
+	snapshot: AccountSnapshot,
+	regular: CandidateSelectionResult,
+	name: string,
+): Promise<CandidateSelectionResult> {
+	const fallback = await selectLiveCandidates(
+		candidateSelectionDeps(deps),
 		snapshot,
 		{
-			models,
-			cooldownPolicy: "exclude",
+			onlyNames: [name],
+			cooldownPolicy: "fallback_explicit_target",
+			cooldownFallbackSourceWindow: "7d",
 			headroomPolicy: {
 				kind: "prefer_below_trigger",
 				trigger5hPct: deps.config.config.trigger5hPct,
 			},
 		},
 	);
+	const fallbackEntry = fallback.panorama[0];
+	return {
+		...fallback,
+		panorama: regular.panorama.map((entry) =>
+			entry.name === name && fallbackEntry !== undefined
+				? fallbackEntry
+				: entry,
+		),
+		malformedModelBenches: [
+			...new Set([
+				...regular.malformedModelBenches,
+				...fallback.malformedModelBenches,
+			]),
+		],
+	};
 }
 
 function panoramaBody(panorama: PanoramaEntry[]): string {
@@ -694,6 +765,49 @@ async function consumeApplyIdentityReports(
 	}
 }
 
+interface NoTargetContext {
+	detail?: string;
+	fallbackName?: string;
+	fallbackReason?: string;
+}
+
+function safeNoTargetText(value: string, maxBytes: number): string {
+	const normalized = value.replace(/\p{Cc}+/gu, " ").trim();
+	return formatFailureDetail("", redactSecrets(normalized), maxBytes);
+}
+
+function setNoTargetContext(
+	episode: BlockedEpisode,
+	context: NoTargetContext,
+): void {
+	delete episode.fallbackName;
+	delete episode.fallbackReason;
+	delete episode.detail;
+	if (
+		context.fallbackName !== undefined &&
+		context.fallbackReason !== undefined
+	) {
+		episode.fallbackName = context.fallbackName;
+		episode.fallbackReason = safeNoTargetText(context.fallbackReason, 600);
+	}
+	if (context.detail !== undefined) {
+		episode.detail = safeNoTargetText(context.detail, 4_000);
+	}
+}
+
+function buildNoTargetBody(episode: BlockedEpisode): string {
+	return [
+		"no_target: all keys unusable, founder action needed",
+		`scope=${episode.scope}; blocked_since=${episode.startedAt}`,
+		episode.fallbackName === undefined || episode.fallbackReason === undefined
+			? ""
+			: `fallback tried=${episode.fallbackName}; refused=${episode.fallbackReason}`,
+		episode.detail ?? "",
+	]
+		.filter(Boolean)
+		.join("\n");
+}
+
 async function attemptBlockedDelivery(
 	deps: QuotaMonitorDeps,
 	state: QuotaMonitorState,
@@ -726,9 +840,7 @@ async function attemptBlockedDelivery(
 					kind,
 					severity: "severe",
 					title: "No verified Claude account has quota",
-					body:
-						bodyOverride ??
-						`scope=${episode.scope}; blocked_since=${episode.startedAt}`,
+					body: buildNoTargetBody(episode),
 					signature: `quota-no-target-${episode.scope}-${episode.startedAt}-r${delivery.round}-a${delivery.attempts}`,
 				}
 			: {
@@ -760,7 +872,7 @@ async function openBlockedEpisode(
 	state: QuotaMonitorState,
 	scope: "5h" | "weekly" | "both",
 	attemptedKinds: Set<QuotaMonitorAlertKind>,
-	body: string,
+	context: NoTargetContext,
 ): Promise<void> {
 	const now = deps.now();
 	const nowIso = new Date(now).toISOString();
@@ -781,6 +893,7 @@ async function openBlockedEpisode(
 			},
 		};
 		state.blockedEpisode = episode;
+		setNoTargetContext(episode, context);
 	} else if (episode.activeDelivery?.kind === "recovered") {
 		episode.blockedRound += 1;
 		episode.activeDelivery = {
@@ -789,6 +902,7 @@ async function openBlockedEpisode(
 			attempts: 0,
 			lastAttemptAt: null,
 		};
+		setNoTargetContext(episode, context);
 	} else if (episode.activeDelivery !== null) {
 		return;
 	} else {
@@ -810,9 +924,10 @@ async function openBlockedEpisode(
 			attempts: 0,
 			lastAttemptAt: null,
 		};
+		setNoTargetContext(episode, context);
 	}
 	await deps.persistState(state);
-	await attemptBlockedDelivery(deps, state, attemptedKinds, body);
+	await attemptBlockedDelivery(deps, state, attemptedKinds);
 }
 
 async function openBlockedRecovery(
@@ -988,14 +1103,19 @@ function mergeApplyReports(
 	return merged.length === 0 ? undefined : merged;
 }
 
-async function attemptSwitchWithDriftRecovery(
+export async function attemptSwitchWithDriftRecovery(
 	deps: QuotaMonitorDeps,
 	input: SwitchInput,
-): Promise<{ switched: SwitchResult; detailPrefix: string }> {
+): Promise<{
+	switched: SwitchResult;
+	detailPrefix: string;
+	cooldownFallbacks: readonly string[] | undefined;
+}> {
 	const first = await deps.switchAccount(input);
 	let switched = first;
 	let retried: SwitchResult | undefined;
 	let detailPrefix = "";
+	let cooldownFallbacks = input.cooldownFallbacks;
 	if (
 		first.outcome === "failed" &&
 		first.reasonCode === "active_marker_drift"
@@ -1013,6 +1133,13 @@ async function attemptSwitchWithDriftRecovery(
 			const preferredOrder = (input.preferredOrder ?? []).filter(
 				(name) => name !== snapshot.activeName,
 			);
+			const narrowedCooldownFallbacks = input.cooldownFallbacks?.filter(
+				(name) => preferredOrder.includes(name),
+			);
+			cooldownFallbacks =
+				narrowedCooldownFallbacks?.length === 1
+					? narrowedCooldownFallbacks
+					: undefined;
 			if (snapshot.activeName !== null && preferredOrder.length === 0) {
 				retried = {
 					outcome: "noop_already_switched",
@@ -1024,6 +1151,7 @@ async function attemptSwitchWithDriftRecovery(
 					observedAccount: snapshot.activeName ?? "",
 					observedGeneration: snapshot.store.generation,
 					preferredOrder,
+					cooldownFallbacks,
 				});
 			}
 			switched = retried;
@@ -1047,6 +1175,7 @@ async function attemptSwitchWithDriftRecovery(
 		switched:
 			applyReports === undefined ? switched : { ...switched, applyReports },
 		detailPrefix,
+		cooldownFallbacks,
 	};
 }
 
@@ -1502,13 +1631,9 @@ export async function pollOnce(
 	if (deps.config.monitorOnly) {
 		if (modelDetection === null) {
 			if (scope === null) throw new Error("missing quota trigger scope");
-			await openBlockedEpisode(
-				deps,
-				state,
-				scope,
-				attemptedKinds,
-				`scope=${scope}; monitor-only: configured account order is empty or invalid`,
-			);
+			await openBlockedEpisode(deps, state, scope, attemptedKinds, {
+				detail: "monitor-only: configured account order is empty or invalid",
+			});
 		} else {
 			await deps.alert({
 				kind: "quota_no_target",
@@ -1521,11 +1646,35 @@ export async function pollOnce(
 		return finish("no_target");
 	}
 	const triggerModels = modelDetection?.models ?? [];
-	const candidates = await verifyAndRankCandidates(
-		deps,
-		snapshot,
-		triggerModels,
-	);
+	let candidates = await verifyAndRankCandidates(deps, snapshot, triggerModels);
+	let fallbackAttempt: { name: string; reason: string } | null = null;
+	if (
+		modelDetection === null &&
+		scope !== null &&
+		candidates.ranked.length === 0 &&
+		dominantWindow(currentUsage.ok) === "7d"
+	) {
+		const fallbackName = firstCooldownFallbackName(
+			snapshot,
+			candidates.panorama,
+		);
+		if (fallbackName !== null) {
+			candidates = await verifyCooldownFallback(
+				deps,
+				snapshot,
+				candidates,
+				fallbackName,
+			);
+			if (!candidates.cooldownFallbacks.includes(fallbackName)) {
+				fallbackAttempt = {
+					name: fallbackName,
+					reason:
+						candidates.panorama.find((entry) => entry.name === fallbackName)
+							?.status ?? "unavailable",
+				};
+			}
+		}
+	}
 	deps.log(
 		JSON.stringify({
 			event: "quota_switch_decision",
@@ -1538,7 +1687,9 @@ export async function pollOnce(
 		}),
 	);
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
-	panorama = candidates.panorama.map(({ name, status }) => `${name}:${status}`);
+	panorama = candidates.panorama.map(({ name, status }) =>
+		safeNoTargetText(`${name}:${status}`, 600),
+	);
 	if (modelDetection !== null && candidates.malformedModelBenches.length > 0) {
 		const malformed = [...candidates.malformedModelBenches].sort();
 		await deps.alert({
@@ -1558,13 +1709,15 @@ export async function pollOnce(
 		);
 		if (modelDetection === null) {
 			if (scope === null) throw new Error("missing quota trigger scope");
-			await openBlockedEpisode(
-				deps,
-				state,
-				scope,
-				attemptedKinds,
-				`scope=${scope}\n${panoramaBody(candidates.panorama)}`,
-			);
+			await openBlockedEpisode(deps, state, scope, attemptedKinds, {
+				detail: panoramaBody(candidates.panorama),
+				...(fallbackAttempt === null
+					? {}
+					: {
+							fallbackName: fallbackAttempt.name,
+							fallbackReason: fallbackAttempt.reason,
+						}),
+			});
 		} else {
 			await deps.alert({
 				kind: "quota_no_target",
@@ -1608,6 +1761,7 @@ export async function pollOnce(
 		identityByName,
 		panorama: candidates.panorama,
 		headroomDegraded: candidates.headroomDegraded,
+		cooldownFallbackName: candidates.cooldownFallbacks[0],
 	};
 
 	let switchInput: SwitchInput;
@@ -1627,6 +1781,9 @@ export async function pollOnce(
 			preferredOrder,
 			verifiedAt: candidates.verifiedAt,
 			quotaPreverified: true,
+			...(candidates.cooldownFallbacks.length === 0
+				? {}
+				: { cooldownFallbacks: candidates.cooldownFallbacks }),
 			notificationContext,
 		};
 	} else {
@@ -1659,6 +1816,24 @@ export async function pollOnce(
 		state.identityAlertCursor = null;
 		await deps.persistState(state);
 		return finish("noop_already_switched");
+	}
+	if (
+		switched.outcome === "no_account" &&
+		switchAttempt.cooldownFallbacks?.length === 1
+	) {
+		if (accountTrigger === null) throw new Error("missing quota trigger scope");
+		await openBlockedEpisode(
+			deps,
+			state,
+			accountTrigger.scope,
+			attemptedKinds,
+			{
+				detail: panoramaBody(candidates.panorama),
+				fallbackName: switchAttempt.cooldownFallbacks[0] as string,
+				fallbackReason: switched.reasonCode,
+			},
+		);
+		return finish("no_target");
 	}
 	if (switched.outcome === "no_account" || switched.outcome === "failed") {
 		const reasonCode = switched.reasonCode;

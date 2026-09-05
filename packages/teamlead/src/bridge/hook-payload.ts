@@ -5,6 +5,10 @@ import {
 	truncateCodePointsFromEnd,
 } from "flywheel-comm/text-truncate";
 import type { DesignBackend } from "flywheel-config";
+import {
+	assertEpicResidualFact,
+	type EpicResidualFact,
+} from "../epic-page/residual.js";
 import { WORKFLOW_RUN_NODE_STATES } from "../workflow-ledger-states.js";
 import {
 	type CapacitySnapshot,
@@ -35,6 +39,8 @@ export interface HookPayload {
 	loops?: PatrolLoopEntry[];
 	/** FLY-2144: Bridge-sampled dispatch inputs; facts only, never an admission gate. */
 	capacity?: CapacitySnapshot;
+	/** FLY-2141: Bridge's Linear Epic scan; facts only, never a dispatch order. */
+	epic?: EpicResidualFact;
 	generated_at?: string;
 	/** FLY-2018: stable informational outbox identity and retry projection. */
 	workflow_event_id?: string;
@@ -464,16 +470,66 @@ function legacyPatrolBody(
 		executionId8: string;
 	}>,
 	capacityLines: string[],
+	epicTriggerLines: string[],
+	epicFactLines: string[],
 ): string {
 	return [
 		"[patrol_tick] 巡检时间到。",
+		...epicTriggerLines,
 		...capacityLines,
+		...epicFactLines,
 		`按 Bridge 的账,你名下有 ${roster.length} 个未终结 runner(此名册是待核声明,不是结论):`,
 		...roster.map(
 			(item) =>
 				`- ${item.identifier} [${item.executionId8}] (${item.sessionRole}, ${item.status})`,
 		),
 	].join("\n");
+}
+
+function renderEpicResidualSection(epic: EpicResidualFact | undefined): {
+	triggerLines: string[];
+	factLines: string[];
+} {
+	if (epic === undefined) return { triggerLines: [], factLines: [] };
+	try {
+		assertEpicResidualFact(epic);
+		if (epic.kind === "unavailable") {
+			return {
+				triggerLines: [],
+				factLines: [`还剩什么=?(${epic.token})`],
+			};
+		}
+		const linearObservedAt = new Date(epic.linearObservedAt).toISOString();
+		const generatedAt = new Date(epic.generatedAt).toISOString();
+		const renderedReady = epic.readyForLead.map((item) => {
+			const priority = item.priority === 0 ? "P-" : `P${item.priority}`;
+			const ownership = item.ownership === "general" ? ",general" : "";
+			return `${item.identifier}(${priority}${ownership})`;
+		});
+		const remainingReady = epic.readyForLeadTotal - renderedReady.length;
+		const readyLine =
+			epic.readyForLeadTotal === 0
+				? "- 现在可以开始且归你(按 Lead 归属规则)0 张"
+				: `- 现在可以开始且归你(按 Lead 归属规则)${epic.readyForLeadTotal} 张:${renderedReady.join(" · ")}${remainingReady > 0 ? `(+${remainingReady} more,见 flywheel-comm epic-page show --format md)` : ""}`;
+		return {
+			triggerLines:
+				epic.trigger === "scope" && epic.remainingForLead > 0
+					? [
+							`(本轮由 Epic 范围触发:你名下账面没有未终结 runner,但范围内还有 ${epic.remainingForLead} 件归你。)`,
+						]
+					: [],
+			factLines: [
+				`还剩什么(Bridge 按 Linear 扫 · 规则 ${epic.rule} 已获 founder 裁定 · 判断输入,不是派单;Linear 观测 ${linearObservedAt};生成 ${generatedAt};范围=${epic.roots} 个 active 父单):`,
+				`- 范围内 ${epic.remaining} 张未完成:现在可以开始的 ${epic.ready}(已剔除账面在跑)· 等前置的 ${epic.blocked} · 账面在跑的 ${epic.running} · 未命中 Lead label ${epic.generalCount}`,
+				readyLine,
+			],
+		};
+	} catch {
+		return {
+			triggerLines: [],
+			factLines: ["还剩什么=⚠️ 账面不可读(invalid_epic_residual)"],
+		};
+	}
 }
 
 function capacityNumber(
@@ -877,6 +933,7 @@ function renderLoopGroup(
 /** Founder-fixed body: alarm + Bridge roster claim, with zero judgment/action. */
 export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
 	const capacityLines = renderCapacityLines(env.event.capacity);
+	const epicLines = renderEpicResidualSection(env.event.epic);
 	const rawRoster = Array.isArray(env.event.roster) ? env.event.roster : [];
 	const roster = rawRoster.map((item) => ({
 		issueId: typeof item?.issueId === "string" ? item.issueId : undefined,
@@ -900,7 +957,12 @@ export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
 			(session) => !session.issueId || !loopsByIssue.has(session.issueId),
 		)
 	) {
-		return legacyPatrolBody(roster, capacityLines);
+		return legacyPatrolBody(
+			roster,
+			capacityLines,
+			epicLines.triggerLines,
+			epicLines.factLines,
+		);
 	}
 
 	const redLoops = loops.filter((loop) => loop.light === "red");
@@ -1016,7 +1078,9 @@ export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
 	});
 	return [
 		"[patrol_tick] 巡检时间到。",
+		...epicLines.triggerLines,
 		...capacityLines,
+		...epicLines.factLines,
 		...summary,
 		`按 Bridge 的账,你名下有 ${roster.length} 个未终结 runner(此名册是待核声明,不是结论):`,
 		...groupLines,

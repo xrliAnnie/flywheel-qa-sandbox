@@ -24,6 +24,8 @@ scripts/__tests__/flywheel-config-lock.test.sh
 scripts/__tests__/flywheel-daemon-plist-env.test.sh
 scripts/__tests__/flywheel-daemon-restart-refusal.test.sh
 scripts/__tests__/fly2264-stop-old-tmux-real.test.sh
+# FLY-2259: requires macOS plutil plus a prebuilt flywheel-comm dist.
+scripts/__tests__/fly2259-raya-cutover-materials.test.sh
 scripts/__tests__/host-config.test.sh
 scripts/__tests__/host-path-allowlist.test.sh
 scripts/__tests__/lead-alert-dirs.test.sh
@@ -63,6 +65,10 @@ scripts/__tests__/script-sanity.test.sh
 scripts/__tests__/setup-mcp-on-demand.test.sh
 scripts/__tests__/test-push-guard-package.test.sh
 scripts/__tests__/test-push-guard.test.sh
+
+# Requires both exact host-installed scanners; the CI-capable scan suite runs
+# real pinned gitleaks plus a hermetic TruffleHog double.
+scripts/__tests__/test-lead-memory-scan-real.test.sh
 
 # Operator drills outside scripts/__tests__; run manually against an explicit
 # isolated fixture instead of the required Linux shell lane.

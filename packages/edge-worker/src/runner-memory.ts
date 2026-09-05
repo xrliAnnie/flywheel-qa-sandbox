@@ -1,34 +1,25 @@
 import fs from "node:fs";
 import { isAbsolute, join } from "node:path";
+import {
+	measureRunnerMemoryIndex,
+	type RunnerMemoryIndexStats,
+	type RunnerMemorySnapshot,
+} from "flywheel-config";
 import type { AdapterExecutionContext } from "flywheel-core";
 import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 
-/** Claude Code's documented auto-memory load limits. */
-export const RUNNER_MEMORY_HARD_LIMIT = {
-	lines: 200,
-	bytes: 25_000,
-} as const;
-
-/** Flywheel's visible soft budget, leaving headroom before truncation. */
-export const RUNNER_MEMORY_DEFAULT_BUDGET = {
-	lines: 160,
-	bytes: 20_000,
-} as const;
+export type { RunnerMemoryIndexStats } from "flywheel-config";
+export {
+	measureIndexPrefix,
+	RUNNER_MEMORY_DEFAULT_BUDGET,
+	RUNNER_MEMORY_HARD_LIMIT,
+	RUNNER_MEMORY_SCAN_CEILING_BYTES,
+} from "flywheel-config";
 
 export const RUNNER_MEMORY_ID_MAX_LENGTH = 128;
-export const RUNNER_MEMORY_SCAN_CEILING_BYTES = 65_536;
 
 export type RunnerMemoryBackend = "claude-tmux" | "codex-tmux";
 export type RunnerMemoryIdentity = { project: string; role: string };
-export type RunnerMemoryIndexStats = {
-	lines: number;
-	linesExact: boolean;
-	bytes: number;
-	firstRun: boolean;
-	overBudget: boolean;
-	overHard: boolean;
-	firstDroppedLine: number | undefined;
-};
 export type RunnerMemorySkipReason =
 	| "no_project"
 	| "no_role"
@@ -47,6 +38,7 @@ export type RunnerMemoryMount =
 			role: string;
 			dir: string;
 			index: RunnerMemoryIndexStats;
+			snapshot: RunnerMemorySnapshot;
 			policy?: RunnerMemoryPolicyProbe;
 	  }
 	| {
@@ -180,63 +172,6 @@ export function decodeMemoryPathComponent(encoded: string): string {
 			? character.toUpperCase()
 			: character,
 	).join("");
-}
-
-/** Measure the exact file size and the line count visible in a bounded prefix. */
-export function measureIndexPrefix(input: {
-	prefix: Buffer;
-	size: number;
-}): Omit<RunnerMemoryIndexStats, "firstRun"> {
-	const { prefix, size } = input;
-	let lines = 0;
-	for (const byte of prefix) {
-		if (byte === 0x0a) lines += 1;
-	}
-	if (prefix.length > 0 && prefix[prefix.length - 1] !== 0x0a) lines += 1;
-
-	const linesExact = prefix.length === size;
-	const overBudget =
-		lines > RUNNER_MEMORY_DEFAULT_BUDGET.lines ||
-		size > RUNNER_MEMORY_DEFAULT_BUDGET.bytes;
-	const overHard =
-		lines > RUNNER_MEMORY_HARD_LIMIT.lines ||
-		size > RUNNER_MEMORY_HARD_LIMIT.bytes;
-
-	let firstDroppedLine: number | undefined;
-	if (overHard) {
-		let line = 1;
-		let lineStart = 0;
-		for (let index = 0; index < prefix.length; index += 1) {
-			if (prefix[index] !== 0x0a) continue;
-			const cumulativeBytes = index + 1;
-			if (
-				line > RUNNER_MEMORY_HARD_LIMIT.lines ||
-				cumulativeBytes > RUNNER_MEMORY_HARD_LIMIT.bytes
-			) {
-				firstDroppedLine = line;
-				break;
-			}
-			line += 1;
-			lineStart = index + 1;
-		}
-		if (
-			firstDroppedLine === undefined &&
-			lineStart < prefix.length &&
-			(line > RUNNER_MEMORY_HARD_LIMIT.lines ||
-				prefix.length > RUNNER_MEMORY_HARD_LIMIT.bytes)
-		) {
-			firstDroppedLine = line;
-		}
-	}
-
-	return {
-		lines,
-		linesExact,
-		bytes: size,
-		overBudget,
-		overHard,
-		firstDroppedLine,
-	};
 }
 
 type SettingsSource = {
@@ -411,33 +346,6 @@ function initializeMemoryIndex(
 	}
 }
 
-function readMemoryIndex(
-	indexPath: string,
-): Omit<RunnerMemoryIndexStats, "firstRun"> {
-	const fd = fs.openSync(indexPath, "r");
-	try {
-		const size = fs.fstatSync(fd).size;
-		const buffer = Buffer.alloc(
-			Math.min(size, RUNNER_MEMORY_SCAN_CEILING_BYTES),
-		);
-		let filled = 0;
-		while (filled < buffer.length) {
-			const count = fs.readSync(
-				fd,
-				buffer,
-				filled,
-				buffer.length - filled,
-				filled,
-			);
-			if (count === 0) break;
-			filled += count;
-		}
-		return measureIndexPrefix({ prefix: buffer.subarray(0, filled), size });
-	} finally {
-		fs.closeSync(fd);
-	}
-}
-
 /** Prepare the persistent role-memory directory before a runner is spawned. */
 export function prepareRunnerMemoryMount(input: {
 	env: NodeJS.ProcessEnv;
@@ -509,7 +417,8 @@ export function prepareRunnerMemoryMount(input: {
 		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 		const indexPath = join(dir, "MEMORY.md");
 		const firstRun = initializeMemoryIndex(indexPath, project, resolvedRole);
-		const index = { ...readMemoryIndex(indexPath), firstRun };
+		const measured = measureRunnerMemoryIndex(dir);
+		const index = { ...measured.stats, firstRun };
 		return {
 			status: "mounted",
 			backend,
@@ -517,6 +426,7 @@ export function prepareRunnerMemoryMount(input: {
 			role: resolvedRole,
 			dir,
 			index,
+			snapshot: measured.snapshot,
 			...(policy && { policy }),
 		};
 	} catch (error) {
@@ -584,6 +494,7 @@ export function buildRunnerMemoryPromptSection(
 	if (mount.backend === "codex-tmux") {
 		lines.push(
 			`- Role memory directory (${mount.project}/${mount.role}): ${mount.dir} (also in env FLYWHEEL_RUNNER_MEMORY_DIR). It is shared with the Claude runners of the same project/role. Native loading for Codex is deferred (FLY-1984 C1): nothing from it is loaded automatically — read ${mount.dir}/MEMORY.md yourself when you need this role's past lessons, and write new lessons there in the same shape (one fact per topic file, one pointer line in MEMORY.md).`,
+			`- Closeout contract (FLY-2148): BEFORE you run your completion command (\`complete\` / \`qa-result\`), write what this role learned in this execution into ${mount.dir} — at most ~5 durable, reusable judgments, one topic file each plus one pointer line in MEMORY.md; if you learned nothing durable, write nothing and say so in your final report. Keep MEMORY.md under 160 lines / 20,000 bytes: Codex has no native index guard, so the completion command measures it for you and prints a \`runner-memory closeout\` receipt (written / unchanged / over_budget) — an over_budget receipt means consolidate before you finish. Never store tokens, keys or secrets.`,
 		);
 		const legacy = legacyMemoryLine(mount.backend, opts.legacyProjectMemoryDir);
 		if (legacy) lines.push(legacy);
@@ -611,7 +522,7 @@ export function buildRunnerMemoryPromptSection(
 		);
 	}
 	lines.push(
-		"- Write rule: one fact per topic file with frontmatter (name/description/type), one pointer line in MEMORY.md. Prefer writing at the end of your work, at most ~5 durable, reusable judgments per execution. Never store tokens, keys or secrets.",
+		"- Write rule (closeout contract, FLY-2148): one fact per topic file with frontmatter (name/description/type), one pointer line in MEMORY.md. BEFORE you run your completion command (`complete` / `qa-result`), write what this role learned in this execution — at most ~5 durable, reusable judgments; if you learned nothing durable, write nothing and say so in your final report. The completion command measures MEMORY.md, prints a `runner-memory closeout` receipt line (written / unchanged / over_budget) and records it for your Lead. Never store tokens, keys or secrets.",
 	);
 	const legacy = legacyMemoryLine(mount.backend, opts.legacyProjectMemoryDir);
 	if (legacy) lines.push(legacy);
@@ -660,7 +571,7 @@ export function toRunnerMemoryDisposition(
 	mount: RunnerMemoryMount,
 ): AdapterExecutionContext["runnerMemory"] {
 	if (mount.status === "mounted") {
-		return { status: "mounted", dir: mount.dir };
+		return { status: "mounted", dir: mount.dir, snapshot: mount.snapshot };
 	}
 	if (mount.status === "skipped" && mount.reason === "unsupported_backend") {
 		return undefined;

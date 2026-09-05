@@ -1,6 +1,8 @@
 import express from "express";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import {
 	type LeadWriteAuthorizationDeps,
+	processAliveWithStart,
 	validateLeadCarrierAuthorization,
 } from "flywheel-comm/lead-lease";
 import { loopbackSelfOrigin } from "./loopback-origin.js";
@@ -51,9 +53,19 @@ export function createLeadLeaseSelfCheckRouter(
 		}
 
 		try {
+			const authorizationDeps: LeadWriteAuthorizationDeps = {
+				...deps.authorizationDeps,
+				processAliveWithStart: (pid, start) =>
+					withSyncOpMarker("lead-lease-self-check:process-alive", () =>
+						(
+							deps.authorizationDeps?.processAliveWithStart ??
+							processAliveWithStart
+						)(pid, start),
+					),
+			};
 			const validation = validateLeadCarrierAuthorization(
 				{ claimedLeadId: leadId, env },
-				deps.authorizationDeps,
+				authorizationDeps,
 			);
 			if (!validation.valid) {
 				res.status(409).json({ ok: false, reason: validation.reason });

@@ -32,6 +32,7 @@ export interface SwitchNotificationFormatInput {
 	timezone: string;
 	panorama: readonly CandidatePanoramaEntry[];
 	headroomDegraded?: boolean;
+	cooldownFallbackName?: string;
 }
 
 interface LocalDateTime {
@@ -168,6 +169,9 @@ export function formatSwitchNotification(
 		.map((entry) => `${entry.name}:${entry.status}`);
 	const body = [
 		`Claude 已切号：**${input.from.name} → ${input.to.name}**（${triggerLabel(input.trigger)}）`,
+		...(input.cooldownFallbackName === undefined
+			? []
+			: ["", `cooldown fallback to ${input.cooldownFallbackName}`]),
 		...(input.headroomDegraded
 			? ["", "weekly 有粮但 5h 已过 trigger；已按最早 weekly reset 切换。"]
 			: []),

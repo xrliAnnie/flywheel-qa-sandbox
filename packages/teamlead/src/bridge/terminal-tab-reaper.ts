@@ -17,6 +17,7 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import { parseViewTitle } from "flywheel-core";
 import type { StateStore } from "../StateStore.js";
 import { isTmuxWindowAlive } from "./tmux-lookup.js";
@@ -154,10 +155,17 @@ export async function reapTerminalTabs(store: StateStore): Promise<ReapResult> {
 
 			// Also kill the linked viewer session for this exec (best-effort).
 			try {
-				execFileSync("tmux", ["kill-session", "-t", `=viewer-${executionId}`], {
-					stdio: "ignore",
-					timeout: 3000,
-				});
+				withSyncOpMarker("terminal-reaper:tmux-kill", () =>
+					execFileSync(
+						"tmux",
+						["kill-session", "-t", `=viewer-${executionId}`],
+						{
+							stdio: "ignore",
+							timeout: 3000,
+							killSignal: "SIGKILL",
+						},
+					),
+				);
 			} catch {
 				/* benign — viewer session may already be gone */
 			}

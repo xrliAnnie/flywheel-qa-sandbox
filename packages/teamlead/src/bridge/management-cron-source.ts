@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import {
 	canonicalSubmissionDigest,
 	getModelConfigSnapshot,
@@ -232,7 +233,14 @@ const DEFAULT_IO: ManagementCronIo = {
 	lstat: (path) => lstatSync(path),
 	realpath: (path) => realpathSync(path),
 	readFile: (path) => readFileSync(path),
-	execFile: (file, args) => execFileSync(file, [...args], { encoding: "utf8" }),
+	execFile: (file, args) =>
+		withSyncOpMarker("management-cron-source:exec", () =>
+			execFileSync(file, [...args], {
+				encoding: "utf8",
+				timeout: 10_000,
+				killSignal: "SIGKILL",
+			}),
+		),
 };
 
 function readonlyCapability(reason: string) {

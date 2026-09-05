@@ -1,0 +1,18 @@
+sequenceDiagram
+  autonumber
+  participant L as Lead 进程<br/>(随时写记忆文件)
+  participant W as 写者 sync.sh<br/>launchd 每小时 :17
+  participant H as A1 钩子<br/>guard + gitleaks
+  participant R as 远端 GitHub<br/>xrliAnnie/lead-memory
+  participant S as receipt<br/>last-receipt.json
+  L->>L: 往自家夹写 .md
+  W->>W: 预检 · 加锁 · 记 remote_head_before
+  loop 每个 Lead 夹
+    W->>H: git add 该夹 → git commit(sync 身份)
+    H-->>W: 放行(一夹一提交 + 归属标记)<br/>或 拒绝(该夹 reset 回原样,继续下一夹)
+  end
+  W->>R: fetch · 若远端领先且工作树干净 → rebase
+  W->>R: git push origin main(只在有新提交时)
+  W->>R: git ls-remote refs/heads/main
+  R-->>W: 远端 main 的 sha
+  W->>S: arrived = (远端 sha == 推之前的本地 HEAD)<br/>这是 arrived 唯一的赋值点

@@ -1,0 +1,15 @@
+flowchart TB
+    subgraph F["Bridge 只做:事实"]
+        direction LR
+        F1["扫:范围内还剩什么<br/>(按 Linear)"] --> F2["算:现在可以开始的<br/>(ready.v1,founder 已裁)"] --> F3["读:在跑 / 停车 / 额度<br/>(FLY-2144)"] --> F4["送:同一封信,同一时刻<br/>两个时间戳"]
+    end
+    subgraph J["Lead 才做:判断与动作"]
+        direction LR
+        J1["位子够不够<br/>(PRD §8-3 未定 N,由 Lead 判)"] --> J2["拉哪一张<br/>(ready 顺序:优先级 → 单号)"] --> J3["taskCategory 是什么<br/>(FLY-1436)"] --> J4["POST /api/runs/start"]
+    end
+    subgraph X["本单不做"]
+        direction LR
+        X1["自动派单 / 排队"] ~~~ X2["新 flag · 新钟 · 新配置<br/>新路由 · 新告警"] ~~~ X3["改 ready.v1<br/>改 Epic 页面模型"] ~~~ X4["分层调频<br/>(§8-3 新需求)"] ~~~ X5["标题/正文进邮件<br/>(注入面)"]
+    end
+    F --> J
+    J ~~~ X

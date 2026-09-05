@@ -196,6 +196,12 @@ def validate_repo_manifest(text):
         "com.flywheel.token-usage-daily": ("com.flywheel.token-usage-daily.plist", "copy", "0", None),
         "com.flywheel.bridge-liveness-probe": ("com.flywheel.bridge-liveness-probe.plist", "copy", "0", None),
         "com.flywheel.codex-log-guard": ("com.flywheel.codex-log-guard.plist", "copy", "0", "never-installed-copy-exception"),
+        "com.flywheel.lead-memory-sync": (
+            "com.flywheel.lead-memory-sync.plist", "copy", "0,2,3,4,5,7,75", "remote arrival"
+        ),
+        "com.flywheel.lead-memory-arrival-check": (
+            "com.flywheel.lead-memory-arrival-check.plist", "copy", "0", "remote observer"
+        ),
         # FLY-1929: IPC-voucher watcher (panic recurrence + remediation health).
         # policy=copy so the checked-in bytes stay authoritative and the existing
         # non-Lead convergence path installs/bootstraps it — no second installer.
@@ -252,6 +258,35 @@ def validate_repo_manifest(text):
     expected_liveness = host_prefix + "scripts/bridge-liveness-probe.sh"
     reject(resolved.get("com.flywheel.bridge-liveness-probe") != expected_liveness,
            "liveness shell -c inline exec did not resolve to its literal repo payload")
+    memory_units = {
+        "com.flywheel.lead-memory-sync": (
+            host_prefix + "scripts/lead-memory/sync.sh",
+            17,
+            "/tmp/flywheel-lead-memory-sync.log",
+        ),
+        "com.flywheel.lead-memory-arrival-check": (
+            host_prefix + "scripts/lead-memory/arrival-check.sh",
+            40,
+            "/tmp/flywheel-lead-memory-arrival-check.log",
+        ),
+    }
+    for label, (expected_payload, minute, expected_log) in memory_units.items():
+        reject(resolved.get(label) != expected_payload,
+               f"{label}: shell -c payload did not resolve to {expected_payload}")
+        source = by_label[label]["source"]
+        data = plist_data(launchd_dir / source)
+        reject(data.get("StartCalendarInterval") != {"Minute": minute},
+               f"{label}: wrong hourly minute")
+        reject(data.get("EnvironmentVariables", {}).get("FLYWHEEL_SYNC_TRIGGER") != "launchd",
+               f"{label}: launchd trigger evidence is missing")
+        reject(data.get("EnvironmentVariables", {}).get("PATH") !=
+               "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+               f"{label}: PATH is not the approved fixed toolchain path")
+        for key in ("StandardOutPath", "StandardErrorPath"):
+            value = data.get(key)
+            reject(value != expected_log, f"{label}: {key} is not the approved literal path")
+            reject("$HOME" in value or "~" in value,
+                   f"{label}: {key} contains a launchd-unexpanded home token")
     return host_prefix, census_scopes, rows
 
 

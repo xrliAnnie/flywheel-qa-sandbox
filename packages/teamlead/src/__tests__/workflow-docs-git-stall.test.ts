@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+	appendFileSync,
 	mkdtempSync,
 	readdirSync,
 	readFile,
@@ -11,7 +12,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { EventLoopAttribution } from "../bridge/event-loop-attribution.js";
 import {
 	GitWorkflowDocsGit,
 	yieldToTimers,
@@ -46,7 +48,7 @@ function scriptedMaterializer(options: {
 	const callsPath = join(root, "network-calls.jsonl");
 	const heartbeatPath = join(root, "heartbeat");
 	const fakeGit = join(root, "git.cjs");
-	writeFileSync(heartbeatPath, "0");
+	writeFileSync(heartbeatPath, "");
 	writeFileSync(statePath, JSON.stringify({ ordinal: 0, pushedHead: null }));
 	writeFileSync(
 		fakeGit,
@@ -69,7 +71,7 @@ if (["ls-remote", "fetch", "push"].includes(sub)) {
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   state.ordinal += 1;
   fs.writeFileSync(statePath, JSON.stringify(state));
-  const beat = Number(fs.readFileSync(${JSON.stringify(heartbeatPath)}, "utf8"));
+	const beat = fs.statSync(${JSON.stringify(heartbeatPath)}).size;
   fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({ ordinal: state.ordinal, sub, beat }) + "\\n");
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, state.ordinal === ${options.timeoutOrdinal ?? -1} ? 5000 : 25);
   if (state.ordinal === 1) process.exit(2);
@@ -239,7 +241,7 @@ describe("workflow docs Git event-loop bounds", () => {
 		});
 	});
 
-	it("network timeout uses an uncatchable kill signal", () => {
+	it("network timeout is hard-bounded without blocking the event loop", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly2058-network-kill-"));
 		try {
 			const fakeGit = join(dir, "git.cjs");
@@ -248,25 +250,102 @@ describe("workflow docs Git event-loop bounds", () => {
 				`#!${process.execPath}\nprocess.on("SIGTERM", () => {});\nsetInterval(() => {}, 1000);\n`,
 				{ mode: 0o755 },
 			);
+			const recordSpan = vi.fn();
 			const docs = new GitWorkflowDocsGit({
 				gitPath: fakeGit,
 				networkTimeoutMs: 100,
+				recordSpan,
 			});
 			const startedAt = Date.now();
-			const result = (
+			let intervalTicks = 0;
+			const interval = setInterval(() => intervalTicks++, 5);
+			const result = await (
 				docs as unknown as {
 					runNetwork(
 						args: string[],
 						cwd: string,
-					): {
+					): Promise<{
 						status: number;
 						timedOut?: boolean;
-					};
+					}>;
 				}
 			).runNetwork(["ls-remote", "https://example.test/repo"], dir);
+			clearInterval(interval);
 			expect(Date.now() - startedAt).toBeLessThan(2_000);
 			expect(result.status).not.toBe(0);
 			expect(result.timedOut).toBe(true);
+			expect(intervalTicks).toBeGreaterThan(0);
+			expect(recordSpan).toHaveBeenCalledOnce();
+			expect(recordSpan).toHaveBeenCalledWith(
+				"workflow-docs-git:ls-remote",
+				expect.any(Number),
+				expect.any(Number),
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("local git children also leave timers live", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2331-doc-local-"));
+		try {
+			const fakeGit = join(dir, "git.cjs");
+			writeFileSync(
+				fakeGit,
+				`#!${process.execPath}\nsetTimeout(() => process.stdout.write("done"), 100);\n`,
+				{ mode: 0o755 },
+			);
+			const docs = new GitWorkflowDocsGit({ gitPath: fakeGit });
+			let intervalTicks = 0;
+			const interval = setInterval(() => intervalTicks++, 5);
+			const result = await (
+				docs as unknown as {
+					run(
+						args: string[],
+						cwd: string,
+					): Promise<{ status: number; stdout: string }>;
+				}
+			).run(["status", "--porcelain"], dir);
+			clearInterval(interval);
+
+			expect(result).toMatchObject({ status: 0, stdout: "done" });
+			expect(intervalTicks).toBeGreaterThan(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("retains a production attribution span for a genuinely long async git child", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2331-doc-span-"));
+		try {
+			const fakeGit = join(dir, "git.cjs");
+			const sha = "a".repeat(40);
+			writeFileSync(
+				fakeGit,
+				`#!${process.execPath}\nsetTimeout(() => process.stdout.write(${JSON.stringify(`${sha}\trefs/heads/main\n`)}), 550);\n`,
+				{ mode: 0o755 },
+			);
+			const attribution = new EventLoopAttribution({
+				diagnosticsDir: join(dir, "diagnostics"),
+				profilerEnabled: false,
+			});
+			const docs = new GitWorkflowDocsGit({
+				gitPath: fakeGit,
+				remoteUrl: () => "https://example.test/repo.git",
+				recordSpan: (name, startMs, endMs) =>
+					attribution.recordSpan(name, startMs, endMs),
+			});
+
+			await expect(
+				docs.readRemoteHead({
+					projectRoot: dir,
+					repo: "owner/repo",
+					ref: "refs/heads/flywheel/docs/flywheel/FLY-2331",
+				}),
+			).resolves.toBe(sha);
+			expect(attribution.snapshot().long_wall_spans).toEqual([
+				expect.objectContaining({ name: "workflow-docs-git:ls-remote" }),
+			]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -274,10 +353,8 @@ describe("workflow docs Git event-loop bounds", () => {
 
 	it("the full eight-network-step materialization advances heartbeat between every pair", async () => {
 		const fixture = scriptedMaterializer({});
-		let beat = 0;
 		const heartbeat = setInterval(() => {
-			beat += 1;
-			writeFileSync(fixture.heartbeatPath, String(beat));
+			appendFileSync(fixture.heartbeatPath, "x");
 		}, 2);
 		try {
 			await expect(fixture.materializer.reconcile()).resolves.toEqual({
@@ -333,7 +410,7 @@ describe("workflow docs Git event-loop bounds", () => {
 		}
 	}, 120_000);
 
-	it("a real Git fetch converges without lock/temp residue after SIGKILL timeout", () => {
+	it("a real Git fetch converges without lock/temp residue after SIGKILL timeout", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2058-real-fetch-"));
 		try {
 			const source = join(root, "source");
@@ -359,15 +436,15 @@ describe("workflow docs Git event-loop bounds", () => {
 				gitPath: "/usr/bin/git",
 				networkTimeoutMs: 1,
 			});
-			const killed = (
+			const killed = await (
 				docs as unknown as {
 					runNetwork(
 						args: string[],
 						cwd: string,
-					): {
+					): Promise<{
 						status: number;
 						timedOut?: boolean;
-					};
+					}>;
 				}
 			).runNetwork(["fetch", "--quiet", "--no-tags", remote, head], client);
 			expect(killed.status).not.toBe(0);

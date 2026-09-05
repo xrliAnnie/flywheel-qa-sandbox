@@ -23,7 +23,7 @@
  * on boot.
  */
 
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	closeSync,
@@ -37,6 +37,10 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+	type AsyncExecFileFn,
+	defaultAsyncExecFile,
+} from "flywheel-claude-runner";
 import {
 	EXECUTOR_BACKENDS,
 	type FlagView,
@@ -96,7 +100,9 @@ export interface FleetConsoleOptions {
 	/** Injectable liveness probe (kill(pid,0)-style). */
 	pidAlive?: (pid: number) => boolean;
 	/** Injectable batch recovery (defaults to spawning `recover --batch`). */
-	recoverBatch?: (batchId: string) => void;
+	recoverBatch?: (batchId: string) => void | Promise<void>;
+	/** Injectable async child seam for the default recovery implementation. */
+	recoverExec?: AsyncExecFileFn;
 	/**
 	 * FLY-709: resolved feature-flag views (from flywheel-config resolveAllFlags,
 	 * ctx = process.env + per-project config). Optional — omitted → no flags section.
@@ -167,6 +173,7 @@ export class FleetConsole {
 	> &
 		FleetConsoleOptions;
 	private managementCoordinator?: ManagementChangeCoordinator;
+	private reconcileInFlight: Promise<void> | null = null;
 
 	constructor(opts: FleetConsoleOptions) {
 		this.o = {
@@ -476,6 +483,16 @@ export class FleetConsole {
 		}
 		// The parent's copy of the log fd is no longer needed once handed off.
 		closeSync(logFd);
+		child.once("error", (error) => {
+			this.o.logger(
+				`[fleet-console] spawnEngine(${batchId}) child error: ${error.message}`,
+			);
+		});
+		child.once("exit", (code, signal) => {
+			this.o.logger(
+				`[fleet-console] spawnEngine(${batchId}) exited: code=${code ?? "null"} signal=${signal ?? "null"}`,
+			);
+		});
 		if (typeof child.pid !== "number") {
 			this.o.logger(`[fleet-console] spawnEngine(${batchId}): no pid`);
 			return false;
@@ -615,10 +632,20 @@ export class FleetConsole {
 	 * A dead engine at boot means the engine is definitively gone (this is a fresh
 	 * process), so it is reconciled regardless of age — there is no later pass
 	 * (Codex R1 MEDIUM-4: a deadline "leave for later" would strand it forever).
-	 * recover is synchronous so the subsequent `apply-result` reconcile sees the
+	 * recover is awaited so the subsequent `apply-result` reconcile sees the
 	 * post-recovery terminal state (Codex R1 HIGH-3).
 	 */
-	reconcileOnStartup(): void {
+	reconcileOnStartup(): Promise<void> {
+		if (this.reconcileInFlight) return this.reconcileInFlight;
+		const run = this.reconcileOnStartupPass();
+		const owner = run.finally(() => {
+			if (this.reconcileInFlight === owner) this.reconcileInFlight = null;
+		});
+		this.reconcileInFlight = owner;
+		return owner;
+	}
+
+	private async reconcileOnStartupPass(): Promise<void> {
 		let files: string[];
 		try {
 			files = readdirSync(this.o.txnDir).filter(
@@ -642,28 +669,33 @@ export class FleetConsole {
 			}
 			// Dead engine at boot → reconcile now (recover is synchronous so the
 			// terminal state is settled before the audit reconcile reads it).
-			this.runRecover(batchId);
+			await this.runRecover(batchId);
 			this.reconcileTerminalAudit(batchId);
 		}
 	}
 
 	/**
-	 * Invoke the engine's own batch reconciliation SYNCHRONOUSLY (boot-time).
+	 * Invoke the engine's own batch reconciliation with a bounded async child.
 	 * `--yes` is mandatory — `recover --batch` is mutating and dies without it
 	 * (Codex R1 HIGH-3: omitting it made every startup recovery a no-op).
 	 */
-	private runRecover(batchId: string): void {
+	private async runRecover(batchId: string): Promise<void> {
 		if (this.o.recoverBatch) {
-			this.o.recoverBatch(batchId);
+			await this.o.recoverBatch(batchId);
 			return;
 		}
 		try {
-			execFileSync(
+			await (this.o.recoverExec ?? defaultAsyncExecFile)(
 				"bash",
 				[this.o.fleetScriptPath, "recover", "--batch", batchId, "--yes"],
 				{
 					env: { ...process.env, FLEET_TXN_DIR: this.o.txnDir },
-					stdio: "ignore",
+					envMode: "replace",
+					// Recovery is a mutating multi-project operation. Preserve a finite
+					// memory ceiling, but do not let the shared 1 MiB probe default kill
+					// an otherwise healthy recovery merely because a sub-tool is chatty.
+					maxBuffer: 16 * 1024 * 1024,
+					timeoutMs: 120_000,
 				},
 			);
 		} catch (err) {

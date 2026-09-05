@@ -95,6 +95,14 @@ export interface WorkflowRunSnapshotV1 extends WorkflowSnapshotWorkKind {
 
 export type WorkflowRunSnapshot = WorkflowRunSnapshotV1 | WorkflowRunSnapshotV2;
 
+/** Residency is a graph fact: only nodes with an inbound pinned loop qualify. */
+export function isLoopTargetNode(
+	snapshot: WorkflowRunSnapshot,
+	nodeId: string,
+): boolean {
+	return snapshot.manifest.loops.some((loop) => loop.to === nodeId);
+}
+
 /** Read only the sealed manifest; a missing field is byte-compatible false. */
 export function nodeRequiresFounderReview(
 	snapshot: WorkflowRunSnapshot,

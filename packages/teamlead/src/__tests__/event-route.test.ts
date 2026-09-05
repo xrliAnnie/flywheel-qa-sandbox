@@ -306,6 +306,10 @@ describe("Event route", () => {
 
 	beforeEach(async () => {
 		stateRoot = mkdtempSync(join(tmpdir(), "event-route-state-"));
+		process.env.FLYWHEEL_COMM_DIR = join(stateRoot, "comm");
+		const commPath = commDbPathForProject("geoforge3d");
+		mkdirSync(dirname(commPath), { recursive: true });
+		new CommDB(commPath).close();
 		store = await StateStore.create(join(stateRoot, "teamlead.db"));
 		const flagStore = initializeFlagStore(store, {});
 		const config = makeConfig();
@@ -355,6 +359,7 @@ describe("Event route", () => {
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
+		delete process.env.FLYWHEEL_COMM_DIR;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -613,6 +618,241 @@ describe("Event route", () => {
 		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
 	});
 
+	it("defers generalized completion until the exact drain receipt is consumed", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const commPath = commDbPathForProject("geoforge3d");
+		mkdirSync(dirname(commPath), { recursive: true });
+		const comm = new CommDB(commPath);
+		const mailId = comm.insertInstruction(
+			"product-lead",
+			"exec-1",
+			"read before completion",
+		);
+
+		const first = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "drain-first",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "needs_review" } },
+				}),
+			),
+		});
+		expect(first.status).toBe(409);
+		const challenge = (await first.json()) as {
+			challengeId: string;
+			mailbox: string[];
+		};
+		expect(challenge).toMatchObject({
+			challengeId: expect.stringMatching(/^drain:exec-1:/),
+			mailbox: [mailId],
+		});
+		const repeated = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "drain-repeated",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "needs_review" } },
+				}),
+			),
+		});
+		expect(repeated.status).toBe(409);
+		expect(await repeated.json()).toMatchObject({
+			challengeId: challenge.challengeId,
+			mailbox: [mailId],
+		});
+		const wrong = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "drain-wrong",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "needs_review" },
+						drainReceipt: { challengeId: "drain:someone-else" },
+					},
+				}),
+			),
+		});
+		expect(wrong.status).toBe(409);
+		expect(await wrong.json()).toMatchObject({
+			error: "workflow_completion_rejected",
+			reason: "drain_receipt_rejected",
+		});
+		const unacked = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "drain-unacked",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "needs_review" },
+						drainReceipt: { challengeId: challenge.challengeId },
+					},
+				}),
+			),
+		});
+		expect(unacked.status).toBe(409);
+		expect(await unacked.json()).toMatchObject({
+			reason: "drain_receipt_rejected",
+			unacked: [mailId],
+		});
+
+		const laterMailId = comm.insertInstruction(
+			"product-lead",
+			"exec-1",
+			"arrived after the challenge watermark",
+		);
+		comm.markInstructionRead(mailId);
+		const second = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "drain-second",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "needs_review" },
+						drainReceipt: { challengeId: challenge.challengeId },
+					},
+				}),
+			),
+		});
+		expect(second.status).toBe(200);
+		expect(await second.json()).toMatchObject({ ok: true, generalized: true });
+		expect(comm.getCompletionDrainPending("exec-1").mailbox).toEqual([
+			laterMailId,
+		]);
+		comm.close();
+		rmSync(commPath, { force: true });
+
+		const replay = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "drain-replay",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "needs_review" },
+						drainReceipt: { challengeId: challenge.challengeId },
+					},
+				}),
+			),
+		});
+		expect(replay.status).toBe(200);
+		expect(await replay.json()).toMatchObject({
+			ok: true,
+			generalized: true,
+			duplicate: true,
+		});
+	});
+
+	it("fails closed when completion drain authority is unreadable", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		rmSync(commDbPathForProject("geoforge3d"), { force: true });
+
+		const response = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "drain-unreadable",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "needs_review" } },
+				}),
+			),
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({
+			error: "workflow_completion_rejected",
+			reason: "completion_deferred_pending_mail",
+			detail: "commdb_unreadable",
+		});
+	});
+
+	it("persists runner-memory closeout for an accepted generalized completion", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const snapshot = {
+			lines: 3,
+			linesExact: true,
+			bytes: 113,
+			sha16: "0123456789abcdef",
+			topicFiles: 0,
+		};
+		const receipt = {
+			v: 1,
+			state: "unchanged",
+			dir: "/tmp/flywheel/generic",
+			measuredAt: "2026-09-04T00:00:00.000Z",
+			spawn: snapshot,
+			closeout: { ...snapshot, overBudget: false, overHard: false },
+			delta: { indexChanged: false, lines: 0, topicFiles: 0 },
+		};
+
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "explicit-complete-with-runner-memory",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "needs_review" },
+						runnerMemoryCloseout: receipt,
+					},
+				}),
+			),
+		});
+
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")).toMatchObject({
+			runner_memory_closeout: "unchanged",
+		});
+		expect(
+			JSON.parse(store.getSession("exec-1")!.runner_memory_receipt!),
+		).toEqual(receipt);
+	});
+
 	it("reads workflow node reuse from the flag store for every generalized completion", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const commit = vi.spyOn(store, "commitEnrolledCompletion");
@@ -835,7 +1075,7 @@ describe("Event route", () => {
 			testProjects[0]!.projectRoot = repo;
 			process.env.FLYWHEEL_COMM_DIR = commRoot;
 
-			const complete = (eventId: string) =>
+			const complete = (eventId: string, challengeId?: string) =>
 				fetch(`${baseUrl}/events`, {
 					method: "POST",
 					headers: {
@@ -847,7 +1087,10 @@ describe("Event route", () => {
 							event_id: eventId,
 							event_type: "session_completed",
 							source: "flywheel-comm",
-							payload: { decision: { route: "needs_review" } },
+							payload: {
+								decision: { route: "needs_review" },
+								...(challengeId ? { drainReceipt: { challengeId } } : {}),
+							},
 						}),
 					),
 				});
@@ -906,7 +1149,29 @@ describe("Event route", () => {
 				commDb.close();
 			}
 
-			const accepted = await complete("founder-review-pass");
+			const pending = await complete("founder-review-pass");
+			expect(pending.status).toBe(409);
+			const drain = (await pending.json()) as {
+				challengeId: string;
+				mailbox: string[];
+				phaseWakes: string[];
+			};
+			expect(drain).toMatchObject({
+				challengeId: expect.stringMatching(/^drain:exec-1:/),
+			});
+			const drainDb = new CommDB(commDbPathForProject("geoforge3d"));
+			try {
+				for (const id of drain.mailbox) drainDb.markInstructionRead(id);
+				for (const id of drain.phaseWakes) {
+					drainDb.markRunnerPhaseWakeStarted("exec-1", id, Date.now());
+				}
+			} finally {
+				drainDb.close();
+			}
+			const accepted = await complete(
+				"founder-review-pass-drained",
+				drain.challengeId,
+			);
 			expect(accepted.status).toBe(200);
 			expect(await accepted.json()).toMatchObject({
 				ok: true,
@@ -1699,6 +1964,76 @@ describe("Event route", () => {
 				status: "awaiting_review",
 			}),
 		);
+	});
+
+	it("FLY-2148 persists a valid completion receipt but rejects HTTP spawn attribution", async () => {
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: {
+						issueIdentifier: "GEO-95",
+						runner_memory_arm: "role",
+						runner_memory_dir: "/tmp/evil",
+					},
+				}),
+			),
+		});
+		const snapshot = {
+			lines: 3,
+			linesExact: true,
+			bytes: 113,
+			sha16: "0123456789abcdef",
+			topicFiles: 0,
+		};
+		const receipt = {
+			v: 1,
+			state: "unchanged",
+			dir: "/tmp/flywheel/qa",
+			measuredAt: "2026-09-04T00:00:00.000Z",
+			spawn: snapshot,
+			closeout: { ...snapshot, overBudget: false, overHard: false },
+			delta: { indexChanged: false, lines: 0, topicFiles: 0 },
+		};
+		const memoryInfo = vi.spyOn(console, "info").mockImplementation(() => {});
+		const memoryWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const response = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "evt-fly2148-completed",
+					event_type: "session_completed",
+					payload: {
+						decision: { route: "needs_review" },
+						evidence: { commitCount: 1 },
+						runnerMemoryCloseout: receipt,
+					},
+				}),
+			),
+		});
+		expect(response.status).toBe(200);
+		const session = store.getSession("exec-1")!;
+		expect(session.status).toBe("awaiting_review");
+		expect(session.commit_count).toBe(1);
+		expect(session.runner_memory_arm).toBeUndefined();
+		expect(session.runner_memory_dir).toBeUndefined();
+		expect(memoryWarn.mock.calls).toEqual([]);
+		expect(memoryInfo).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"[event-route] runner-memory closeout state=unchanged",
+			),
+		);
+		expect(session.runner_memory_closeout).toBe("unchanged");
+		expect(JSON.parse(session.runner_memory_receipt!)).toEqual(receipt);
 	});
 
 	it("POST /events with session_failed records error", async () => {
