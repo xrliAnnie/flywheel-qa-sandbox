@@ -276,6 +276,9 @@ export class LeadInboxRuntime {
 				isTerminalDeliveryObligation: (row) =>
 					isCurrentDesignReviewManifestInstruction(opts.store, row),
 				resolveOwningLead,
+				...(project.leads[0]
+					? { fallbackLeadId: project.leads[0].agentId }
+					: {}),
 				probeFactsByRecipient: () => this.runnerProbeFacts(project.projectName),
 			});
 			for (const [leadIndex, lead] of project.leads.entries()) {

@@ -23,7 +23,10 @@ function rawDb(store: StateStore): Database.Database {
 	return (store as unknown as { db: { raw: Database.Database } }).db.raw;
 }
 
-async function stateFixture(family: "phase_wake" | "turn_wake") {
+async function stateFixture(
+	family: "phase_wake" | "turn_wake",
+	targetState: "running" | "deferred" = "running",
+) {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
 	const commDb = new CommDB(":memory:");
@@ -38,13 +41,15 @@ async function stateFixture(family: "phase_wake" | "turn_wake") {
 			"FLY-2278",
 			"flywheel-eng-lead",
 		);
-		store.upsertSession({
-			execution_id: executionId,
-			issue_id: "FLY-2278",
-			project_name: "flywheel",
-			status: executionId === source ? "completed" : "running",
-			workflow_node_id: "worker",
-		});
+		if (executionId === source || targetState === "running") {
+			store.upsertSession({
+				execution_id: executionId,
+				issue_id: "FLY-2278",
+				project_name: "flywheel",
+				status: executionId === source ? "completed" : "running",
+				workflow_node_id: "worker",
+			});
+		}
 	}
 	commDb.markSessionTerminalStatus(source, "completed");
 	const runId = `run-${family}`;
@@ -61,17 +66,136 @@ async function stateFixture(family: "phase_wake" | "turn_wake") {
 		state: "completed",
 		executionId: source,
 	});
-	store.upsertWorkflowRunNode({
-		runId,
-		nodeId: "worker",
-		attempt: 2,
-		state: "running",
-		executionId: target,
-	});
+	if (targetState === "running") {
+		store.upsertWorkflowRunNode({
+			runId,
+			nodeId: "worker",
+			attempt: 2,
+			state: "running",
+			executionId: target,
+		});
+	}
 	return { store, commDb, source, target, runId };
 }
 
 describe("FLY-2278 CommDB reroute event flow", () => {
+	it("keeps a run-level non-mailbox operator hold authoritative when a successor appears", async () => {
+		const fixture = await stateFixture("turn_wake", "deferred");
+		const physicalId = "turn-wake-held-successor";
+		fixture.commDb.enqueueTurnWake({
+			wakeId: physicalId,
+			executionId: fixture.source,
+			issueId: "FLY-2278",
+			epoch: 1,
+			purpose: "workflow_transition",
+			envelope: { fromAgent: "bridge", content: "continue" },
+			backend: "codex",
+			createdAtMs: Date.parse("2026-09-03T18:00:00.000Z"),
+		});
+		const projector = new DeliveryProjector({
+			store: fixture.store,
+			commDb: fixture.commDb,
+			projectName: "flywheel",
+		});
+		expect(projector.runPass("2026-09-03T18:01:00.000Z")).toMatchObject({
+			minted: 1,
+		});
+		const watch = new DeliveryContractWatch({
+			store: fixture.store,
+			commDb: fixture.commDb,
+			projectName: "flywheel",
+			resolveAlertIdentity: () => alertIdentity,
+		});
+		expect(watch.runPass("2026-09-03T18:02:00.000Z")).toMatchObject({
+			opened: 1,
+		});
+		const runner = new DeliveryOperations({
+			store: fixture.store,
+			commDb: fixture.commDb,
+			projectName: "flywheel",
+			resolveRecipient: ({ rootId, sourceExecutionId }) =>
+				fixture.store.resolveWorkflowDeliveryRecipient(
+					rootId,
+					sourceExecutionId,
+				),
+			resolveAlertIdentity: () => alertIdentity,
+		});
+		expect(runner.runPass("2026-09-03T18:18:00.000Z")).toEqual({
+			examined: 1,
+			rerouted: 0,
+			operatorRequired: 1,
+		});
+		expect(fixture.store.getWorkflowRun(fixture.runId)?.status).toBe("held");
+		const holdBefore = fixture.store
+			.listWorkflowHolds(fixture.runId)
+			.find(({ runLevel }) => runLevel);
+		expect(holdBefore).toMatchObject({ resumable: true });
+		const episodeId =
+			fixture.store.listOpenUndeliverableDeliveryEpisodes()[0]?.episode_id;
+		expect(episodeId).toBeDefined();
+
+		fixture.store.upsertSession({
+			execution_id: fixture.target,
+			issue_id: "FLY-2278",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "worker",
+		});
+		fixture.store.upsertWorkflowRunNode({
+			runId: fixture.runId,
+			nodeId: "worker",
+			attempt: 2,
+			state: "running",
+			executionId: fixture.target,
+		});
+		fixture.commDb.grantTurn(
+			"FLY-2278",
+			fixture.target,
+			"worker",
+			Date.parse("2026-09-03T18:19:00.000Z"),
+			{
+				project: "flywheel",
+				sourceEventId: "turn-held-successor-current",
+				activation: {
+					activationId: "activation-held-successor",
+					runId: fixture.runId,
+					nodeId: "worker",
+					attempt: 2,
+					context: { source: "test" },
+				},
+			},
+		);
+		const successorRunner = new DeliveryOperations({
+			store: fixture.store,
+			commDb: fixture.commDb,
+			projectName: "flywheel",
+			resolveRecipient: () => fixture.target,
+			resolveAlertIdentity: () => alertIdentity,
+		});
+
+		expect(successorRunner.runPass("2026-09-03T18:19:00.000Z")).toEqual({
+			examined: 1,
+			rerouted: 0,
+			operatorRequired: 0,
+		});
+		expect(fixture.store.getWorkflowRun(fixture.runId)?.status).toBe("held");
+		expect(
+			fixture.store
+				.listWorkflowHolds(fixture.runId)
+				.find(({ runLevel }) => runLevel),
+		).toMatchObject({
+			holdEventUid: holdBefore?.holdEventUid,
+			resumable: true,
+		});
+		expect(
+			rawDb(fixture.store)
+				.prepare(
+					"SELECT closed_at FROM workflow_delivery_contract_episode WHERE episode_id = ?",
+				)
+				.get(episodeId),
+		).toEqual({ closed_at: null });
+	});
+
 	it.each(["staged", "applied"] as const)(
 		"keeps an %s reroute child live until operations replay materializes its CommDB row",
 		async (operationState) => {

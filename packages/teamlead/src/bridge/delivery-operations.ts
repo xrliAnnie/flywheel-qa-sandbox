@@ -227,16 +227,67 @@ export class DeliveryOperations {
 							continue;
 						}
 						if (operation.shape === "delivery_undeliverable_no_recipient") {
+							if (!operation.family || !operation.rootId) {
+								continue;
+							}
+							if (operation.state === "applied") {
+								this.deps.store.projectWorkflowHoldResume({
+									operationId: operation.operationId,
+									now: _now,
+								});
+								continue;
+							}
 							if (
 								!operation.physicalId ||
-								!operation.family ||
-								!operation.rootId ||
 								!operation.sourceAttemptId ||
 								!operation.episodeId
 							) {
 								continue;
 							}
 							if (operation.state === "staged") {
+								const mailboxSource =
+									operation.family === "mailbox"
+										? this.deps.commDb.getRunnerDeliveryProjectionRow(
+												operation.physicalId,
+												_now,
+												true,
+											)
+										: undefined;
+								if (
+									mailboxSource?.state === "DEAD" &&
+									mailboxSource.type === "response"
+								) {
+									const run = this.deps.store.getWorkflowRun(operation.runId);
+									const rootParts = operation.rootId.split(":");
+									const terminalized =
+										this.deps.store.terminalizeUnsupportedWorkflowMailboxResponse(
+											{
+												episodeId: operation.episodeId,
+												recipientExecutionId: mailboxSource.to_agent,
+												now: _now,
+												alertIdentity: this.deps.resolveAlertIdentity({
+													projectName:
+														run?.project_name ?? rootParts[0] ?? "unknown",
+													issueId: run?.issue_id ?? rootParts[1] ?? "unknown",
+													runId: operation.runId,
+												}),
+											},
+										);
+									if (!terminalized.ok) continue;
+									const applied = this.deps.store.markWorkflowHoldResumeApplied(
+										{
+											operationId: operation.operationId,
+											now: _now,
+										},
+									);
+									if (!applied.ok) continue;
+									this.deps.store.projectWorkflowHoldResume({
+										operationId: operation.operationId,
+										now: _now,
+									});
+									result.operatorRequired++;
+									continue;
+								}
 								if (operation.targetActivationId) {
 									const staged = this.deps.store.stageWorkflowDeliveryReroute({
 										episodeId: operation.episodeId,
@@ -448,10 +499,18 @@ export class DeliveryOperations {
 							continue;
 						}
 						result.examined++;
-						if (
+						const hasOperatorRequired =
 							this.deps.store.hasWorkflowDeliveryRerouteOperatorRequired(
 								episode.episode_id,
-							)
+							);
+						const hasTerminalRecipientWarning =
+							hasOperatorRequired &&
+							this.deps.store.hasWorkflowDeliveryNonHoldingTerminalRecipientWarning(
+								episode.episode_id,
+							);
+						if (
+							hasOperatorRequired &&
+							(run?.status !== "active" || !hasTerminalRecipientWarning)
 						) {
 							continue;
 						}
@@ -486,11 +545,37 @@ export class DeliveryOperations {
 													)?.source_execution_id
 												: undefined
 							: undefined;
-						const targetExecutionId = this.deps.resolveRecipient({
-							family: episode.family,
-							rootId: episode.root_id,
-							...(sourceExecutionId ? { sourceExecutionId } : {}),
-						});
+						const mailboxSource =
+							episode.family === "mailbox" && sourcePhysicalId
+								? this.deps.commDb.getRunnerDeliveryProjectionRow(
+										sourcePhysicalId,
+										_now,
+										true,
+									)
+								: undefined;
+						const responseRerouteUnsupported =
+							mailboxSource?.state === "DEAD" &&
+							mailboxSource.type === "response";
+						if (responseRerouteUnsupported && sourceExecutionId) {
+							const terminalized =
+								this.deps.store.terminalizeUnsupportedWorkflowMailboxResponse({
+									episodeId: episode.episode_id,
+									recipientExecutionId: sourceExecutionId,
+									now: _now,
+									alertIdentity,
+								});
+							if (terminalized.ok && !terminalized.idempotentReplay) {
+								result.operatorRequired++;
+							}
+							continue;
+						}
+						const targetExecutionId = hasTerminalRecipientWarning
+							? undefined
+							: this.deps.resolveRecipient({
+									family: episode.family,
+									rootId: episode.root_id,
+									...(sourceExecutionId ? { sourceExecutionId } : {}),
+								});
 						if (!targetExecutionId) {
 							if (sourceExecutionId) {
 								const evidence = collectRecipientLivenessEvidence({
@@ -499,14 +584,26 @@ export class DeliveryOperations {
 									executionId: sourceExecutionId,
 									nowMs: Date.parse(_now),
 								});
+								const terminalMailboxReason =
+									mailboxSource?.state !== "DEAD"
+										? undefined
+										: mailboxSource.dead_reason ===
+													"delivery_attempts_exhausted" ||
+												mailboxSource.dead_reason ===
+													"delivery_unconfirmed_exhausted"
+											? mailboxSource.dead_reason
+											: "delivery_undeliverable_no_recipient";
 								const held = this.deps.store.holdWorkflowUndeliverable({
 									episodeId: episode.episode_id,
 									recipientExecutionId: sourceExecutionId,
 									commEvidence: evidence,
 									now: _now,
 									alertIdentity,
+									terminalMailboxReason,
 								});
-								if (held.held) result.operatorRequired++;
+								if (held.held || held.reason === "operator_required") {
+									result.operatorRequired++;
+								}
 							}
 							continue;
 						}
@@ -550,6 +647,7 @@ export class DeliveryOperations {
 							now: _now,
 						});
 						if (staged.kind === "operator_required" && sourceExecutionId) {
+							if (hasOperatorRequired) continue;
 							const evidence = collectRecipientLivenessEvidence({
 								store: this.deps.store,
 								commDb: this.deps.commDb,

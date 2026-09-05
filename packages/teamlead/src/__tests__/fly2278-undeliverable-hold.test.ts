@@ -130,11 +130,12 @@ function holdAt(input: {
 		},
 		now: new Date(input.atMs).toISOString(),
 		alertIdentity,
+		terminalMailboxReason: "delivery_undeliverable_no_recipient",
 	});
 }
 
 describe("FLY-2278 M2 undeliverable hold writer", () => {
-	it("writes nothing before grace and one operator-required run hold at grace", async () => {
+	it("writes nothing before grace and one non-holding warning at grace", async () => {
 		const fixture = await setup({ caseId: "grace" });
 		const before = snapshotHoldWrites(fixture.store);
 		expect(
@@ -149,15 +150,19 @@ describe("FLY-2278 M2 undeliverable hold writer", () => {
 				...fixture,
 				atMs: openedAtMs + UNDELIVERABLE_GRACE_MS,
 			}),
-		).toEqual({ held: true, reason: "operator_required" });
-		expect(fixture.store.getWorkflowRun(fixture.runId)?.status).toBe("held");
-		expect(
-			rawDb(fixture.store)
-				.prepare(
-					"SELECT payload FROM workflow_run_event WHERE kind = 'delivery_reroute_operator_required'",
-				)
-				.all(),
-		).toHaveLength(1);
+		).toEqual({ held: false, reason: "operator_required" });
+		expect(fixture.store.getWorkflowRun(fixture.runId)?.status).toBe("active");
+		const events = rawDb(fixture.store)
+			.prepare(
+				"SELECT payload FROM workflow_run_event WHERE kind = 'delivery_reroute_operator_required'",
+			)
+			.all() as Array<{ payload: string }>;
+		expect(events).toHaveLength(1);
+		expect(JSON.parse(events[0]!.payload)).toMatchObject({
+			family: "mailbox",
+			reason: "delivery_undeliverable_no_recipient",
+			runHeld: false,
+		});
 		expect(
 			rawDb(fixture.store)
 				.prepare(
@@ -165,17 +170,15 @@ describe("FLY-2278 M2 undeliverable hold writer", () => {
 				)
 				.get(`delivery_reroute_outcome:${fixture.attemptId}`),
 		).toEqual({ count: 1 });
-		expect(
-			fixture.store
-				.listWorkflowAlertOutbox()
-				.find(
-					(row) =>
-						row.escalation_uid ===
-						`delivery_reroute_outcome:${fixture.attemptId}`,
-				)?.payload.body,
-		).toBe(
-			`FLY-2278 收件体已终结且 15 分钟内无后继、无活性证据(absent)，run 已冻结。runId ${fixture.runId}；证据戳 2026-09-03T16:15:00.000Z；正门：\`flywheel-comm hold list --run ${fixture.runId}\`；恢复：\`flywheel-comm hold resume --shape delivery_undeliverable_no_recipient --decision '<reroute_to <exec> | cancel>' --run ${fixture.runId} --hold-event delivery_reroute_operator_required:${fixture.episodeId} --reason 'operator-confirmed'\``,
-		);
+		const body = fixture.store
+			.listWorkflowAlertOutbox()
+			.find(
+				(row) =>
+					row.escalation_uid ===
+					`delivery_reroute_outcome:${fixture.attemptId}`,
+			)?.payload.body;
+		expect(body).toContain("run 未冻结");
+		expect(body).not.toContain("run 已冻结");
 	});
 
 	it("does not hold while evidence is alive and upgrades after it ages out", async () => {
@@ -194,7 +197,8 @@ describe("FLY-2278 M2 undeliverable hold writer", () => {
 				...fixture,
 				atMs: Date.parse("2026-09-03T16:24:00.001Z"),
 			}),
-		).toEqual({ held: true, reason: "operator_required" });
+		).toEqual({ held: false, reason: "operator_required" });
+		expect(fixture.store.getWorkflowRun(fixture.runId)?.status).toBe("active");
 	});
 
 	it("rechecks a successor admitted after observation and writes nothing", async () => {

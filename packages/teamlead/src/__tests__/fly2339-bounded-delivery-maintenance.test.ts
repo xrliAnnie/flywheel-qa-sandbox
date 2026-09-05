@@ -467,7 +467,10 @@ describe("FLY-2339 bounded delivery maintenance", () => {
 		})();
 		const operations = new DeliveryOperations({
 			store,
-			commDb: { getMessageById: () => undefined } as unknown as CommDB,
+			commDb: {
+				getMessageById: () => undefined,
+				getRunnerDeliveryProjectionRow: () => undefined,
+			} as unknown as CommDB,
 			resolveRecipient: () => null,
 			resolveAlertIdentity: () => ({
 				leadId: "flywheel-eng-lead",
@@ -507,7 +510,10 @@ describe("FLY-2339 bounded delivery maintenance", () => {
 		} as unknown as StateStore;
 		const operations = new DeliveryOperations({
 			store,
-			commDb: { getMessageById: () => undefined } as unknown as CommDB,
+			commDb: {
+				getMessageById: () => undefined,
+				getRunnerDeliveryProjectionRow: () => undefined,
+			} as unknown as CommDB,
 			resolveRecipient: () => null,
 			resolveAlertIdentity: () => ({
 				leadId: "flywheel-eng-lead",

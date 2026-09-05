@@ -161,6 +161,7 @@ export interface RunnerMailboxLaneOptions {
 	) => "alive" | "terminal_or_missing" | "unknown";
 	isTerminalDeliveryObligation?: (row: MailboxRow) => boolean;
 	resolveOwningLead?: (executionId: string) => string | undefined;
+	fallbackLeadId?: string;
 	probeFactsByRecipient?: () => ReadonlyMap<string, string>;
 }
 
@@ -263,6 +264,23 @@ export class RunnerMailboxLane {
 			maxTerminalRows: this.maxPerTick,
 		});
 		result.dead += reconciled.dead;
+		for (const warning of reconciled.terminalizationRefused) {
+			const leadId =
+				this.opts.resolveOwningLead?.(warning.toAgent) ??
+				this.opts.fallbackLeadId ??
+				warning.fromAgent;
+			try {
+				this.opts.queue.recordRunnerTerminalizationRefusedNotice({
+					...warning,
+					leadId,
+					now: this.now().toISOString(),
+				});
+			} catch (error) {
+				console.warn(
+					`[runner-mailbox] could not persist terminalization-refused warning for ${warning.sourceId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
 		if (this.opts.resolveOwningLead) {
 			const scanAtMs = this.now().getTime();
 			if (

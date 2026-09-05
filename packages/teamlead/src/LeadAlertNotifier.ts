@@ -461,6 +461,7 @@ export interface AlertMetadata {
 			| "delivery_contract_stalled"
 			| "delivery_contract_frozen"
 			| "delivery_reroute_outcome"
+			| "legacy_dead_mail_reconcile_exhausted"
 			| "delivery_operation_stalled"
 			| "observation_corrupt";
 		launchCount?: number;

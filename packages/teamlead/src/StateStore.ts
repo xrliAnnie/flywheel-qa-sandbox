@@ -48,6 +48,7 @@ import type {
 	WorkflowDeliveryAttemptRow,
 } from "./bridge/delivery-contract/types.js";
 import {
+	DELIVERY_FAMILIES,
 	DELIVERY_STAGES,
 	deliveryRootId,
 } from "./bridge/delivery-contract/types.js";
@@ -297,6 +298,7 @@ export const WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS = 10 * 60_000;
 export const WORKFLOW_LAUNCH_HEARTBEAT_MS = 60_000;
 /** One durable cadence shared by rework and ship-carrier receipt probes. */
 export const WORKFLOW_DELIVERY_RECEIPT_REPROBE_MS = 3 * 60_000;
+export const LEGACY_DEAD_MAIL_RECONCILE_MAX_ATTEMPTS = 2;
 export interface WorkflowResidentHoldRow {
 	execution_id: string;
 	run_id: string;
@@ -339,6 +341,16 @@ export interface WorkflowHoldResumeCanonical {
 	clientRequestId: string;
 }
 
+export type WorkflowHoldSourceResolution =
+	| "live_attempt"
+	| "already_settled"
+	| "superseded_or_missing";
+
+export type WorkflowTerminalMailboxReason =
+	| "delivery_undeliverable_no_recipient"
+	| "delivery_attempts_exhausted"
+	| "delivery_unconfirmed_exhausted";
+
 export interface WorkflowHoldRow {
 	shape: string;
 	scope: "run" | "delivery" | "run-derived";
@@ -350,6 +362,24 @@ export interface WorkflowHoldRow {
 	derivedFrom?: string;
 	requiredDecision?: readonly string[];
 	preconditions: Array<{ name: string; ok: boolean; detail: string }>;
+}
+
+export interface LegacyDeadMailboxHoldReconcileEvidence {
+	runId: string;
+	eventSeq: number;
+	holdEventUid: string;
+	attemptId: string;
+	rootId: string;
+	physicalId: string;
+	malformedReason?: string;
+}
+
+export interface LegacyDeadMailboxHoldReconcileCandidate
+	extends LegacyDeadMailboxHoldReconcileEvidence {
+	sourceResolution: WorkflowHoldSourceResolution;
+	resumeGeneration: number;
+	eligible: boolean;
+	reason: string;
 }
 
 export function workflowDeliveryReceiptNextRetryAt(now: string): string {
@@ -20971,6 +21001,10 @@ export class StateStore {
 					canonical_digest TEXT NOT NULL,
 					state TEXT NOT NULL CHECK (state IN ('staged','applied','sent','projected','failed')),
 					last_error TEXT,
+					resolution_reason TEXT CHECK (
+						resolution_reason IS NULL OR
+						resolution_reason IN ('already_settled','superseded_or_missing')
+					),
 					created_at TEXT NOT NULL,
 					updated_at TEXT NOT NULL,
 					FOREIGN KEY (source_attempt_id) REFERENCES workflow_delivery_attempt(attempt_id)
@@ -20981,11 +21015,13 @@ export class StateStore {
 					operation_id, kind, run_id, family, root_id, generation,
 					shape_id, hold_event_uid, source_attempt_id, target_activation_id,
 					client_request_id, canonical_digest, state, last_error,
+					resolution_reason,
 					created_at, updated_at
 				)
 				SELECT operation_id, kind, run_id, family, root_id, generation,
 				       shape_id, hold_event_uid, source_attempt_id, target_activation_id,
 				       client_request_id, canonical_digest, state, last_error,
+				       NULL,
 				       created_at, updated_at
 				  FROM workflow_delivery_operation
 			`);
@@ -21311,6 +21347,11 @@ export class StateStore {
 			)
 		`);
 		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_workflow_run_event_legacy_dead_mail_scan
+			ON workflow_run_event(run_id, seq)
+			WHERE kind = 'delivery_reroute_operator_required'
+		`);
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_delivery_attempt (
 				root_id TEXT NOT NULL,
 				generation INTEGER NOT NULL CHECK (generation > 0),
@@ -21407,12 +21448,21 @@ export class StateStore {
 				canonical_digest TEXT NOT NULL,
 				state TEXT NOT NULL CHECK (state IN ('staged','applied','sent','projected','failed')),
 				last_error TEXT,
+				resolution_reason TEXT CHECK (
+					resolution_reason IS NULL OR
+					resolution_reason IN ('already_settled','superseded_or_missing')
+				),
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
 				FOREIGN KEY (source_attempt_id) REFERENCES workflow_delivery_attempt(attempt_id)
 			)
 		`);
 		this.migrateWorkflowDeliveryOperationKinds();
+		this.addColumnIfMissing(
+			"workflow_delivery_operation",
+			"resolution_reason",
+			"TEXT CHECK (resolution_reason IS NULL OR resolution_reason IN ('already_settled','superseded_or_missing'))",
+		);
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_wdo_client_request
 			ON workflow_delivery_operation(client_request_id)
@@ -37604,6 +37654,7 @@ export class StateStore {
 	resolveWorkflowDeliveryRecipient(
 		rootId: string,
 		sourceExecutionId?: string,
+		options?: { allowHeldRun?: boolean; runId?: string },
 	): string | null {
 		const attempt = this.workflowSelectAll(
 			`SELECT contract_ref_json
@@ -37630,15 +37681,17 @@ export class StateStore {
 			typeof ref.issueId === "string" && ref.issueId.trim()
 				? ref.issueId
 				: rootParts[1];
-		const run =
-			typeof ref.runId === "string" && ref.runId.trim()
+		const run = options?.runId
+			? this.getWorkflowRun(options.runId)
+			: typeof ref.runId === "string" && ref.runId.trim()
 				? this.getWorkflowRun(ref.runId)
 				: issueId
 					? this.getActiveWorkflowRunForIssue(issueId)
 					: undefined;
 		if (
 			!run ||
-			run.status !== "active" ||
+			(run.status !== "active" &&
+				!(options?.allowHeldRun === true && run.status === "held")) ||
 			(typeof ref.projectName === "string" &&
 				ref.projectName.trim() &&
 				ref.projectName !== run.project_name)
@@ -39647,6 +39700,143 @@ export class StateStore {
 		this.save();
 	}
 
+	terminalizeUnsupportedWorkflowMailboxResponse(input: {
+		episodeId: string;
+		recipientExecutionId: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.episodeId.trim() ||
+			!input.recipientExecutionId.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_response_terminalization" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "response_terminalization_not_applied",
+		};
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				`SELECT episode.run_id, episode.root_id, episode.attempt_id,
+				        attempt.settlement_reason, attempt.contract_ref_json,
+				        run.project_name, run.issue_id
+				   FROM workflow_delivery_contract_episode episode
+				   JOIN workflow_delivery_attempt attempt
+				     ON attempt.attempt_id = episode.attempt_id
+				   JOIN workflow_run run ON run.run_id = episode.run_id
+				  WHERE episode.episode_id = ? AND episode.family = 'mailbox'`,
+				[input.episodeId],
+			)[0];
+			if (!row) {
+				result = { ok: false, reason: "response_episode_missing" };
+				return;
+			}
+			if (
+				row.settlement_reason !== null &&
+				row.settlement_reason !== "response_reroute_unsupported"
+			) {
+				result = { ok: false, reason: "response_attempt_changed" };
+				return;
+			}
+			let ref: { table?: unknown; pk?: unknown };
+			try {
+				ref = JSON.parse(String(row.contract_ref_json)) as {
+					table?: unknown;
+					pk?: unknown;
+				};
+			} catch {
+				result = { ok: false, reason: "response_attempt_ref_invalid" };
+				return;
+			}
+			if (ref.table !== "mailbox" || typeof ref.pk !== "string" || !ref.pk) {
+				result = { ok: false, reason: "response_attempt_ref_invalid" };
+				return;
+			}
+			const eventUid = `delivery_response_closed:${row.attempt_id}`;
+			const alreadyRecorded = Boolean(
+				this.workflowSelectAll(
+					"SELECT 1 AS present FROM workflow_run_event WHERE event_uid = ? LIMIT 1",
+					[eventUid],
+				)[0],
+			);
+			if (!alreadyRecorded) {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: String(row.run_id),
+					eventUid,
+					kind: "delivery_reroute_operator_required",
+					executionId: input.recipientExecutionId,
+					payload: {
+						shape: "delivery_undeliverable_no_recipient",
+						family: "mailbox",
+						rootId: row.root_id,
+						attemptId: row.attempt_id,
+						physicalId: ref.pk,
+						recipientExecutionId: input.recipientExecutionId,
+						reason: "response_reroute_unsupported",
+						runHeld: false,
+						decidedAt: input.now,
+					},
+				});
+				const copy = deliveryRerouteOutcomeCopy({
+					issueId: String(row.issue_id),
+					outcome: "operator_required",
+					family: "mailbox",
+					runHeld: false,
+					rerouteCount: 0,
+					reason: "response_reroute_unsupported",
+					runId: String(row.run_id),
+					evidenceAt: input.now,
+					holdEventUid: eventUid,
+				});
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid: eventUid,
+					runId: String(row.run_id),
+					now: input.now,
+					payload: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: eventUid,
+						eventType: "workflow_engine_escalation",
+						severity: "warning",
+						sessionKey: `wf:${row.run_id}`,
+						title: copy.title,
+						body: copy.body,
+						metadata: {
+							workflowEngine: {
+								runId: String(row.run_id),
+								issueId: String(row.issue_id),
+								nodeId: "delivery-contract",
+								executionId: String(row.attempt_id),
+								disposition: "delivery_reroute_outcome",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					},
+				});
+			}
+			const idempotentReplay =
+				row.settlement_reason === "response_reroute_unsupported";
+			if (!idempotentReplay) {
+				this.settleWorkflowDeliveryAttemptTx({
+					family: "mailbox",
+					table: "mailbox",
+					pk: ref.pk,
+					reason: "response_reroute_unsupported",
+					now: input.now,
+				});
+			}
+			result = { ok: true, idempotentReplay };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	hasWorkflowDeliveryRerouteOperatorRequired(episodeId: string): boolean {
 		return Boolean(
 			this.workflowSelectAll(
@@ -39657,6 +39847,34 @@ export class StateStore {
 				[`delivery_reroute_operator_required:${episodeId}`],
 			)[0],
 		);
+	}
+
+	hasWorkflowDeliveryNonHoldingTerminalRecipientWarning(
+		episodeId: string,
+	): boolean {
+		const row = this.workflowSelectAll(
+			`SELECT payload
+			   FROM workflow_run_event
+			  WHERE event_uid = ? AND kind = 'delivery_reroute_operator_required'
+			  LIMIT 1`,
+			[`delivery_reroute_operator_required:${episodeId}`],
+		)[0];
+		if (!row) return false;
+		try {
+			const payload = JSON.parse(String(row.payload)) as Record<string, unknown>;
+			return (
+				payload.family === "mailbox" &&
+				payload.runHeld === false &&
+				[
+					"delivery_undeliverable_no_recipient",
+					"delivery_attempts_exhausted",
+					"delivery_unconfirmed_exhausted",
+				].includes(String(payload.reason ?? ""))
+			);
+		} catch {
+			// Malformed evidence cannot authorize bypassing the operator door.
+			return false;
+		}
 	}
 
 	freezeWorkflowDelivery(input: {
@@ -39893,6 +40111,7 @@ export class StateStore {
 		>;
 		now: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
+		terminalMailboxReason?: WorkflowTerminalMailboxReason;
 	}): { held: boolean; reason: string } {
 		const nowMs = Date.parse(input.now);
 		if (
@@ -39907,7 +40126,13 @@ export class StateStore {
 		this.db.transaction(() => {
 			result = this.holdUndeliverableTx({ ...input, nowMs });
 		});
-		if (result.held) this.save();
+		if (
+			result.held ||
+			result.reason === "operator_required" ||
+			result.reason === "source_terminal"
+		) {
+			this.save();
+		}
 		return result;
 	}
 
@@ -39921,6 +40146,7 @@ export class StateStore {
 		now: string;
 		nowMs: number;
 		alertIdentity: WorkflowEngineAlertIdentity;
+		terminalMailboxReason?: WorkflowTerminalMailboxReason;
 	}): { held: boolean; reason: string } {
 		const row = this.workflowSelectAll(
 			`SELECT episode.run_id, episode.root_id, episode.attempt_id,
@@ -39941,18 +40167,28 @@ export class StateStore {
 			return { held: false, reason: "run_not_active" };
 		}
 		const eventUid = `delivery_reroute_operator_required:${input.episodeId}`;
-		if (
+		const operatorAlreadyRequired = Boolean(
 			this.workflowSelectAll(
 				"SELECT 1 AS present FROM workflow_run_event WHERE event_uid = ?",
 				[eventUid],
-			)[0]
+			)[0],
+		);
+		const terminalRecipientWarningAlreadyRecorded =
+			operatorAlreadyRequired &&
+			this.hasWorkflowDeliveryNonHoldingTerminalRecipientWarning(input.episodeId);
+		if (
+			operatorAlreadyRequired &&
+			!terminalRecipientWarningAlreadyRecorded
 		) {
 			return { held: false, reason: "operator_already_required" };
 		}
-		const successorExecutionId = this.resolveWorkflowDeliveryRecipient(
-			String(row.root_id),
-			input.recipientExecutionId,
-		);
+		const successorExecutionId =
+			terminalRecipientWarningAlreadyRecorded
+				? null
+			: this.resolveWorkflowDeliveryRecipient(
+					String(row.root_id),
+					input.recipientExecutionId,
+				);
 		if (successorExecutionId !== null) {
 			return { held: false, reason: "successor_available" };
 		}
@@ -39990,21 +40226,53 @@ export class StateStore {
 						: "undeliverable_predicate_false",
 			};
 		}
-		this.db.run(
-			"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
-			[row.run_id],
-		);
-		if (this.db.getRowsModified() !== 1) {
-			throw new WorkflowEngineInvariantError(
-				`undeliverable_hold_run_cas_failed:${row.run_id}`,
+		if (row.family === "mailbox" && input.terminalMailboxReason === undefined) {
+			return { held: false, reason: "source_not_terminal" };
+		}
+		const runHeld = row.family !== "mailbox";
+		if (runHeld) {
+			this.db.run(
+				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+				[row.run_id],
 			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new WorkflowEngineInvariantError(
+					`undeliverable_hold_run_cas_failed:${row.run_id}`,
+				);
+			}
 		}
 		let physicalId = "unknown";
+		let physicalTable = "unknown";
 		try {
-			const ref = JSON.parse(String(row.contract_ref_json)) as { pk?: unknown };
+			const ref = JSON.parse(String(row.contract_ref_json)) as {
+				pk?: unknown;
+				table?: unknown;
+			};
 			if (typeof ref.pk === "string") physicalId = ref.pk;
+			if (typeof ref.table === "string") physicalTable = ref.table;
 		} catch {
 			// The live attempt query already fences identity; retain a safe marker in evidence.
+		}
+		const warningReason =
+			input.terminalMailboxReason ?? "delivery_undeliverable_no_recipient";
+		const terminalSettlementReason = "source_terminal";
+		if (terminalRecipientWarningAlreadyRecorded) {
+			if (input.terminalMailboxReason !== undefined && row.family === "mailbox") {
+				if (physicalId === "unknown" || physicalTable === "unknown") {
+					throw new WorkflowEngineInvariantError(
+						`delivery_terminal_source_ref_invalid:${row.attempt_id}`,
+					);
+				}
+				this.settleWorkflowDeliveryAttemptTx({
+					family: "mailbox",
+					table: physicalTable,
+					pk: physicalId,
+					reason: terminalSettlementReason,
+					now: input.now,
+				});
+				return { held: false, reason: "source_terminal" };
+			}
+			return { held: false, reason: "operator_already_required" };
 		}
 		const payload = {
 			shape: "delivery_undeliverable_no_recipient",
@@ -40027,8 +40295,8 @@ export class StateStore {
 			thresholdMs: UNDELIVERABLE_GRACE_MS,
 			ageMs,
 			decidedAt: input.now,
-			reason: "delivery_undeliverable_no_recipient",
-			runHeld: true,
+			reason: warningReason,
+			runHeld,
 		};
 		this.appendWorkflowRunEventCheckedTx({
 			runId: String(row.run_id),
@@ -40037,16 +40305,28 @@ export class StateStore {
 			payload,
 		});
 		const outcomeUid = `delivery_reroute_outcome:${row.attempt_id}`;
-		const copy = deliveryRerouteOutcomeCopy({
-			issueId: String(row.issue_id),
-			outcome: "operator_required",
-			family: String(row.family),
-			runHeld: true,
-			liveness,
-			runId: String(row.run_id),
-			evidenceAt: input.now,
-			holdEventUid: eventUid,
-		});
+		const copy = runHeld
+			? deliveryRerouteOutcomeCopy({
+					issueId: String(row.issue_id),
+					outcome: "operator_required",
+					family: String(row.family),
+					runHeld: true,
+					liveness,
+					runId: String(row.run_id),
+					evidenceAt: input.now,
+					holdEventUid: eventUid,
+				})
+			: deliveryRerouteOutcomeCopy({
+					issueId: String(row.issue_id),
+					outcome: "operator_required",
+					family: String(row.family),
+					runHeld: false,
+					rerouteCount: 0,
+					reason: warningReason,
+					runId: String(row.run_id),
+					evidenceAt: input.now,
+					holdEventUid: eventUid,
+				});
 		this.enqueueWorkflowEngineAlertTx({
 			escalationUid: outcomeUid,
 			runId: String(row.run_id),
@@ -40072,7 +40352,21 @@ export class StateStore {
 				},
 			},
 		});
-		return { held: true, reason: "operator_required" };
+		if (input.terminalMailboxReason !== undefined && row.family === "mailbox") {
+			if (physicalId === "unknown" || physicalTable === "unknown") {
+				throw new WorkflowEngineInvariantError(
+					`delivery_terminal_source_ref_invalid:${row.attempt_id}`,
+				);
+			}
+			this.settleWorkflowDeliveryAttemptTx({
+				family: "mailbox",
+				table: physicalTable,
+				pk: physicalId,
+				reason: terminalSettlementReason,
+				now: input.now,
+			});
+		}
+		return { held: runHeld, reason: "operator_required" };
 	}
 
 	projectWorkflowDeliveryReroute(input: {
@@ -40429,6 +40723,22 @@ export class StateStore {
 		return alerted;
 	}
 
+	private workflowHoldSourceResolution(
+		attempt:
+			| Pick<
+					WorkflowDeliveryAttemptRow,
+					"settlement_reason" | "superseded_by_attempt_id"
+			  >
+			| undefined,
+	): WorkflowHoldSourceResolution {
+		if (!attempt) return "superseded_or_missing";
+		if (attempt.settlement_reason !== null) return "already_settled";
+		if (attempt.superseded_by_attempt_id !== null) {
+			return "superseded_or_missing";
+		}
+		return "live_attempt";
+	}
+
 	private workflowHoldAuthoritativePrecondition(input: {
 		runId: string;
 		descriptor: HoldShapeDescriptor;
@@ -40584,13 +40894,42 @@ export class StateStore {
 		if (input.descriptor.id === "delivery_undeliverable_no_recipient") {
 			const attemptId = payloadId("attemptId");
 			const rootId = payloadId("rootId");
+			const terminalMailbox = payloadId("family") === "mailbox";
+			if (!attemptId || !rootId) {
+				return result(false, "undeliverable hold has no delivery identity");
+			}
+			const attempt = this.workflowSelectAll(
+				`SELECT settlement_reason, superseded_by_attempt_id
+				   FROM workflow_delivery_attempt
+				  WHERE attempt_id = ? AND root_id = ?`,
+				[attemptId, rootId],
+			)[0];
+			if (!attempt) {
+				return result(
+					terminalMailbox,
+					terminalMailbox
+						? `mailbox delivery attempt ${attemptId} is terminal or missing`
+						: `delivery attempt ${attemptId} is missing`,
+				);
+			}
+			if (attempt.settlement_reason !== null) {
+				return result(
+					terminalMailbox,
+					`delivery attempt ${attemptId} is already settled`,
+				);
+			}
+			if (attempt.superseded_by_attempt_id !== null) {
+				return result(
+					terminalMailbox,
+					`delivery attempt ${attemptId} is already superseded`,
+				);
+			}
 			const episode = this.workflowSelectAll(
 				`SELECT episode_id FROM workflow_delivery_contract_episode
 				  WHERE run_id = ? AND stage = 'undeliverable' AND closed_at IS NULL
-				    AND (? IS NULL OR attempt_id = ?)
-				    AND (? IS NULL OR root_id = ?)
+				    AND attempt_id = ? AND root_id = ?
 				  ORDER BY opened_at DESC LIMIT 1`,
-				[input.runId, attemptId ?? null, attemptId ?? null, rootId ?? null, rootId ?? null],
+				[input.runId, attemptId, rootId],
 			)[0];
 			return result(
 				!!episode,
@@ -40748,6 +41087,355 @@ export class StateStore {
 			});
 		}
 		return holds;
+	}
+
+	listLegacyDeadMailboxHoldReconcileCandidates(
+		projectName: string,
+		options: {
+			cursor?: { runId: string; eventSeq: number };
+			limit?: number;
+			deferEvaluation: true;
+		},
+	): LegacyDeadMailboxHoldReconcileEvidence[];
+	listLegacyDeadMailboxHoldReconcileCandidates(
+		projectName: string,
+		options?: {
+			cursor?: { runId: string; eventSeq: number };
+			limit?: number;
+			deferEvaluation?: false;
+		},
+	): LegacyDeadMailboxHoldReconcileCandidate[];
+	listLegacyDeadMailboxHoldReconcileCandidates(
+		projectName: string,
+		options: {
+			cursor?: { runId: string; eventSeq: number };
+			limit?: number;
+			deferEvaluation?: boolean;
+		} = {},
+	):
+		| LegacyDeadMailboxHoldReconcileEvidence[]
+		| LegacyDeadMailboxHoldReconcileCandidate[] {
+		if (!projectName.trim()) return [];
+		const limit = Math.max(1, Math.floor(options.limit ?? 64));
+		const cursorPredicate = options.cursor
+			? "AND (event.run_id, event.seq) > (?, ?)"
+			: "";
+		const params: unknown[] = [projectName];
+		if (options.cursor) {
+			params.push(options.cursor.runId, options.cursor.eventSeq);
+		}
+		params.push(limit);
+		const decoded = this.workflowSelectAll(
+			`SELECT event.run_id, event.seq, event.event_uid, event.payload
+			   FROM workflow_run_event event
+			   JOIN workflow_run run ON run.run_id = event.run_id
+			  WHERE run.project_name = ?
+			    AND run.status = 'held'
+			    AND event.kind = 'delivery_reroute_operator_required'
+			    ${cursorPredicate}
+			    AND NOT EXISTS (
+			      SELECT 1 FROM workflow_run_event resumed
+			       WHERE resumed.run_id = event.run_id
+			         AND resumed.kind = 'hold_resumed'
+			         AND resumed.event_uid =
+			             'hold_resumed:delivery_undeliverable_no_recipient:' || event.event_uid
+			    )
+			  ORDER BY event.run_id, event.seq
+			  LIMIT ?`,
+			params,
+		).flatMap((row): LegacyDeadMailboxHoldReconcileEvidence[] => {
+			const evidenceIdentity = {
+				runId: String(row.run_id),
+				eventSeq: Number(row.seq),
+				holdEventUid: String(row.event_uid),
+			};
+			try {
+				const payload = JSON.parse(String(row.payload)) as Record<
+					string,
+					unknown
+				>;
+				const attemptId =
+					typeof payload.attemptId === "string" ? payload.attemptId.trim() : "";
+				const rootId =
+					typeof payload.rootId === "string" ? payload.rootId.trim() : "";
+				const physicalId =
+					typeof payload.physicalId === "string"
+						? payload.physicalId.trim()
+						: "";
+				if (
+					payload.family !== "mailbox" ||
+					payload.runHeld !== true ||
+					payload.reason !== "delivery_undeliverable_no_recipient" ||
+					!attemptId ||
+					!rootId ||
+					!physicalId
+				) {
+					return [
+						{
+							...evidenceIdentity,
+							attemptId,
+							rootId,
+							physicalId,
+							malformedReason: "invalid_payload_shape",
+						},
+					];
+				}
+				return [
+					{
+						...evidenceIdentity,
+						attemptId,
+						rootId,
+						physicalId,
+					},
+				];
+			} catch (error) {
+				console.warn(
+					`[delivery-contract] legacy dead-mail hold ${String(row.event_uid)} has malformed payload: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return [
+					{
+						...evidenceIdentity,
+						attemptId: "",
+						rootId: "",
+						physicalId: "",
+						malformedReason: "malformed_json",
+					},
+				];
+			}
+		});
+		if (options.deferEvaluation) return decoded;
+		return decoded
+			.filter((candidate) => !candidate.malformedReason)
+			.map((candidate) =>
+				this.resolveLegacyDeadMailboxHoldReconcileCandidate(
+					projectName,
+					candidate,
+				),
+			);
+	}
+
+	resolveLegacyDeadMailboxHoldReconcileCandidate(
+		projectName: string,
+		candidate: LegacyDeadMailboxHoldReconcileEvidence,
+	): LegacyDeadMailboxHoldReconcileCandidate {
+		if (candidate.malformedReason) {
+			return {
+				...candidate,
+				sourceResolution: "superseded_or_missing",
+				resumeGeneration: 0,
+				eligible: false,
+				reason: candidate.malformedReason,
+			};
+		}
+		const holds = this.listWorkflowHolds(candidate.runId);
+		const hold = holds.find(
+			(row) =>
+				row.shape === "delivery_undeliverable_no_recipient" &&
+				row.holdEventUid === candidate.holdEventUid &&
+				row.runLevel,
+		);
+		const guard = this.legacyDeadMailboxReconcilePreconditionTx({
+			runId: candidate.runId,
+			holdEventUid: candidate.holdEventUid,
+			projectName,
+		});
+		const attempt = this.workflowSelectAll(
+			`SELECT settlement_reason, superseded_by_attempt_id
+				   FROM workflow_delivery_attempt
+				  WHERE attempt_id = ? AND root_id = ? AND family = 'mailbox'`,
+			[candidate.attemptId, candidate.rootId],
+		)[0] as
+			| Pick<
+					WorkflowDeliveryAttemptRow,
+					"settlement_reason" | "superseded_by_attempt_id"
+			  >
+			| undefined;
+		const sourceResolution = this.workflowHoldSourceResolution(attempt);
+		const resumeGeneration = guard.resumeGeneration;
+		const reconcileResumable = Boolean(
+			hold &&
+				(hold.resumable ||
+					(sourceResolution !== "live_attempt" &&
+						hold.preconditions.every(
+							(precondition) =>
+								precondition.ok ||
+								precondition.name === "authoritative_object_current",
+						))),
+		);
+		const failedReason = !guard.ok
+			? guard.reason
+			: !reconcileResumable
+				? "hold_not_resumable"
+				: undefined;
+		return {
+			...candidate,
+			sourceResolution,
+			resumeGeneration,
+			eligible: failedReason === undefined,
+			reason: failedReason ?? "eligible",
+		};
+	}
+
+	private legacyDeadMailboxReconcilePreconditionTx(input: {
+		runId: string;
+		holdEventUid: string;
+		projectName: string;
+	}): {
+		ok: boolean;
+		reason: string;
+		resumeGeneration: number;
+	} {
+		const resumeGeneration = Number(
+			this.workflowSelectAll(
+				`SELECT COUNT(*) AS count
+				   FROM workflow_delivery_operation
+				  WHERE kind = 'hold_resume' AND run_id = ?
+				    AND hold_event_uid = ? AND state = 'failed'`,
+				[input.runId, input.holdEventUid],
+			)[0]?.count ?? 0,
+		);
+		const fail = (reason: string) => ({
+			ok: false,
+			reason,
+			resumeGeneration,
+		});
+		const run = this.getWorkflowRun(input.runId);
+		if (
+			!run ||
+			run.project_name !== input.projectName ||
+			run.status !== "held"
+		) {
+			return fail("run_not_held");
+		}
+		if (
+			!this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_run_node
+				  WHERE run_id = ? AND state IN ('running','review') LIMIT 1`,
+				[input.runId],
+			)[0]
+		) {
+			return fail("no_running_or_review_node");
+		}
+		if (
+			this.workflowSelectAll(
+				`SELECT 1 AS present
+				   FROM workflow_rework_delivery delivery
+				   JOIN workflow_rework_request request
+				     ON request.request_id = delivery.request_id
+				  WHERE request.run_id = ?
+				    AND delivery.state IN ('held','needs_lead') LIMIT 1`,
+				[input.runId],
+			)[0]
+		) {
+			return fail("rework_blocked");
+		}
+		if (
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_carrier_delivery
+				  WHERE run_id = ? AND state IN ('held','needs_lead') LIMIT 1`,
+				[input.runId],
+			)[0]
+		) {
+			return fail("carrier_blocked");
+		}
+		const legacyHoldUids = new Set<string>();
+		for (const row of this.workflowSelectAll(
+			`SELECT event_uid, payload FROM workflow_run_event
+			  WHERE run_id = ? AND kind = 'delivery_reroute_operator_required'`,
+			[input.runId],
+		)) {
+			try {
+				const payload = JSON.parse(String(row.payload)) as Record<
+					string,
+					unknown
+				>;
+				if (
+					payload.family === "mailbox" &&
+					payload.runHeld === true &&
+					payload.reason === "delivery_undeliverable_no_recipient"
+				) {
+					legacyHoldUids.add(String(row.event_uid));
+				}
+			} catch {
+				// Malformed evidence cannot authorize automated recovery.
+			}
+		}
+		const holds = this.listWorkflowHolds(input.runId);
+		const targetHold = holds.find(
+			(hold) =>
+				hold.runLevel &&
+				hold.shape === "delivery_undeliverable_no_recipient" &&
+				hold.holdEventUid === input.holdEventUid,
+		);
+		if (!targetHold || !legacyHoldUids.has(input.holdEventUid)) {
+			return fail("hold_not_resumable");
+		}
+		if (
+			holds.some(
+				(hold) => hold.runLevel && !legacyHoldUids.has(hold.holdEventUid),
+			)
+		) {
+			return fail("other_run_hold");
+		}
+		if (resumeGeneration >= LEGACY_DEAD_MAIL_RECONCILE_MAX_ATTEMPTS) {
+			return fail("reconcile_retry_exhausted");
+		}
+		return { ok: true, reason: "eligible", resumeGeneration };
+	}
+
+	recordLegacyDeadMailboxHoldReconcileExhausted(input: {
+		runId: string;
+		holdEventUid: string;
+		attempts: number;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}): boolean {
+		if (
+			!input.runId.trim() ||
+			!input.holdEventUid.trim() ||
+			!Number.isSafeInteger(input.attempts) ||
+			input.attempts < LEGACY_DEAD_MAIL_RECONCILE_MAX_ATTEMPTS ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			throw new Error("invalid_legacy_dead_mail_reconcile_exhaustion");
+		}
+		const run = this.getWorkflowRun(input.runId);
+		if (!run) return false;
+		const escalationUid =
+			`legacy_dead_mail_reconcile_exhausted:${input.holdEventUid}`;
+		if (this.getWorkflowAlertOutbox(escalationUid)) return false;
+		let recorded = false;
+		this.db.transaction(() => {
+			if (this.getWorkflowAlertOutbox(escalationUid)) return;
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid,
+				runId: input.runId,
+				now: input.now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: escalationUid,
+					eventType: "workflow_engine_escalation",
+					severity: "warning",
+					sessionKey: `wf:${input.runId}`,
+					title: `${run.issue_id} legacy dead-mail recovery needs an operator`,
+					body: `${run.issue_id} legacy dead-mail recovery stopped after ${input.attempts} failed attempts; run remains held.`,
+					metadata: {
+						workflowEngine: {
+							runId: input.runId,
+							issueId: run.issue_id,
+							nodeId: "delivery-contract",
+							executionId: input.holdEventUid,
+							disposition: "legacy_dead_mail_reconcile_exhausted",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+			});
+			recorded = true;
+		});
+		if (recorded) this.save();
+		return recorded;
 	}
 
 	private applyStateWorkflowHoldResumeActionTx(input: {
@@ -41345,19 +42033,34 @@ export class StateStore {
 		canonical: WorkflowHoldResumeCanonical;
 		digest: string;
 		now: string;
+		sourceResolution?: WorkflowHoldSourceResolution;
+		legacyReconcileProjectName?: string;
 	}):
 		| {
 				ok: true;
 				idempotentReplay: boolean;
 				operationId: string;
-				state: "staged" | "projected";
+				state: "staged" | "applied" | "projected" | "failed";
 		  }
 		| { ok: false; reason: string } {
 		const normalized = StateStore.canonicalizeHoldResume(request.canonical);
 		if (
 			!normalized ||
 			request.digest !== normalized.digest ||
-			!StateStore.workflowFiniteTimestamp(request.now)
+			!StateStore.workflowFiniteTimestamp(request.now) ||
+			(request.sourceResolution !== undefined &&
+				!["live_attempt", "already_settled", "superseded_or_missing"].includes(
+					request.sourceResolution,
+				)) ||
+			(request.legacyReconcileProjectName !== undefined &&
+				(!request.legacyReconcileProjectName.trim() ||
+					normalized.canonical.shape !==
+						"delivery_undeliverable_no_recipient" ||
+					normalized.canonical.decision !== "cancel" ||
+					normalized.canonical.reason !== "fly2337_legacy_reconcile" ||
+					!normalized.canonical.clientRequestId.startsWith(
+						"fly2337:legacy:",
+					)))
 		) {
 			return { ok: false, reason: "invalid_hold_resume" };
 		}
@@ -41390,7 +42093,13 @@ export class StateStore {
 				idempotentReplay: true,
 				operationId,
 				state:
-					existing.state === "staged" ? "staged" : "projected",
+					existing.state === "staged"
+						? "staged"
+						: existing.state === "applied"
+							? "applied"
+							: existing.state === "projected"
+								? "projected"
+								: "failed",
 			};
 		}
 		const inFlight = this.workflowSelectAll(
@@ -41409,7 +42118,21 @@ export class StateStore {
 				candidate.shape === input.shape &&
 				candidate.holdEventUid === input.holdEventUid,
 		);
-		if (!hold || !hold.resumable || hold.preconditions.some(({ ok }) => !ok)) {
+		const inProcessMailboxTerminalNoop =
+			request.sourceResolution !== undefined &&
+			input.shape === "delivery_undeliverable_no_recipient";
+		if (
+			!hold ||
+			(!hold.resumable && !inProcessMailboxTerminalNoop) ||
+			hold.preconditions.some(
+				({ name, ok }) =>
+					!ok &&
+					!(
+						inProcessMailboxTerminalNoop &&
+						name === "authoritative_object_current"
+					),
+			)
+		) {
 			if (this.getWorkflowRun(input.runId)) {
 				this.db.transaction(() => {
 					this.appendWorkflowRunEventCheckedTx({
@@ -41431,9 +42154,13 @@ export class StateStore {
 			| {
 					family: WorkflowDeliveryAttemptRow["family"];
 					rootId: string;
-					episodeId: string;
-					sourceAttemptId: string;
+					episodeId: string | null;
+					sourceAttemptId: string | null;
 					targetActivationId: string | null;
+					resolutionReason: Exclude<
+						WorkflowHoldSourceResolution,
+						"live_attempt"
+					> | null;
 			  }
 			| undefined;
 		if (descriptor.resumeAction === "resume_undeliverable") {
@@ -41452,17 +42179,72 @@ export class StateStore {
 				return { ok: false, reason: "hold_changed" };
 			}
 			const attemptId =
-				typeof payload.attemptId === "string" ? payload.attemptId : "";
-			const episode = this.workflowSelectAll(
-				`SELECT episode_id, family, root_id, attempt_id
-				   FROM workflow_delivery_contract_episode
-				  WHERE run_id = ? AND attempt_id = ? AND stage = 'undeliverable'
-				    AND closed_at IS NULL
-				  ORDER BY opened_at DESC LIMIT 1`,
-				[input.runId, attemptId],
-			)[0];
-			if (!episode) return { ok: false, reason: "hold_changed" };
-			if (decision === "cancel" && episode.family === "phase_wake") {
+				typeof payload.attemptId === "string" ? payload.attemptId.trim() : "";
+			const payloadRootId =
+				typeof payload.rootId === "string" ? payload.rootId.trim() : "";
+			const payloadFamily =
+				typeof payload.family === "string" ? payload.family.trim() : "";
+			const attempt = attemptId
+				? this.workflowSelectAll(
+						`SELECT attempt_id, family, root_id, settlement_reason,
+						        superseded_by_attempt_id
+						   FROM workflow_delivery_attempt
+						  WHERE attempt_id = ?`,
+						[attemptId],
+					)[0]
+				: undefined;
+			const actualSourceResolution = this.workflowHoldSourceResolution(
+				attempt as
+					| Pick<
+							WorkflowDeliveryAttemptRow,
+							"settlement_reason" | "superseded_by_attempt_id"
+						  >
+					| undefined,
+			);
+			const sourceResolution =
+				request.sourceResolution ?? actualSourceResolution;
+			if (sourceResolution !== actualSourceResolution) {
+				return { ok: false, reason: "hold_changed" };
+			}
+			const family = String(attempt?.family ?? payloadFamily);
+			const rootId = String(attempt?.root_id ?? payloadRootId);
+			if (
+				!DELIVERY_FAMILIES.includes(
+					family as (typeof DELIVERY_FAMILIES)[number],
+				) ||
+				!rootId ||
+				(payloadFamily !== "" && payloadFamily !== family) ||
+				(payloadRootId !== "" && payloadRootId !== rootId)
+			) {
+				return { ok: false, reason: "hold_changed" };
+			}
+			if (
+				request.sourceResolution !== undefined &&
+				family !== "mailbox"
+			) {
+				return { ok: false, reason: "hold_changed" };
+			}
+			if (actualSourceResolution !== "live_attempt" && family !== "mailbox") {
+				return { ok: false, reason: "hold_changed" };
+			}
+			if (sourceResolution !== "live_attempt" && decision !== "cancel") {
+				return { ok: false, reason: "hold_changed" };
+			}
+			const episode =
+				sourceResolution === "live_attempt"
+					? this.workflowSelectAll(
+							`SELECT episode_id, family, root_id, attempt_id
+							   FROM workflow_delivery_contract_episode
+							  WHERE run_id = ? AND attempt_id = ? AND stage = 'undeliverable'
+							    AND closed_at IS NULL
+							  ORDER BY opened_at DESC LIMIT 1`,
+							[input.runId, attemptId],
+						)[0]
+					: undefined;
+			if (sourceResolution === "live_attempt" && !episode) {
+				return { ok: false, reason: "hold_changed" };
+			}
+			if (decision === "cancel" && family === "phase_wake") {
 				return { ok: false, reason: "cancel_not_supported_for_phase_wake" };
 			}
 			const targetActivationId = decision?.startsWith("reroute_to ")
@@ -41482,28 +42264,44 @@ export class StateStore {
 				}
 			}
 			deliveryResume = {
-				family: episode.family as WorkflowDeliveryAttemptRow["family"],
-				rootId: String(episode.root_id),
-				episodeId: String(episode.episode_id),
-				sourceAttemptId: String(episode.attempt_id),
+				family: family as WorkflowDeliveryAttemptRow["family"],
+				rootId,
+				episodeId: episode ? String(episode.episode_id) : null,
+				sourceAttemptId: attempt ? String(attempt.attempt_id) : null,
 				targetActivationId,
+				resolutionReason:
+					sourceResolution === "live_attempt" ? null : sourceResolution,
 			};
 		}
 		const stateNativeDelivery =
 			deliveryResume !== undefined &&
 			["rework", "carrier"].includes(deliveryResume.family);
-		const operationState =
-			descriptor.authoritativeStore === "state" &&
-			(!deliveryResume || stateNativeDelivery)
+		const operationState = deliveryResume?.resolutionReason
+			? "applied"
+			: descriptor.authoritativeStore === "state" &&
+					(!deliveryResume || stateNativeDelivery)
 				? "projected"
 				: "staged";
+		let legacyPreconditionChanged = false;
 		this.db.transaction(() => {
+			if (
+				request.legacyReconcileProjectName !== undefined &&
+				!this.legacyDeadMailboxReconcilePreconditionTx({
+					runId: input.runId,
+					holdEventUid: input.holdEventUid,
+					projectName: request.legacyReconcileProjectName,
+				}).ok
+			) {
+				legacyPreconditionChanged = true;
+				return;
+			}
 			this.db.run(
 				`INSERT INTO workflow_delivery_operation (
 				   operation_id, kind, run_id, family, root_id, shape_id, hold_event_uid,
 				   source_attempt_id, target_activation_id,
-				   client_request_id, canonical_digest, state, created_at, updated_at
-				 ) VALUES (?, 'hold_resume', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				   client_request_id, canonical_digest, state, resolution_reason,
+				   created_at, updated_at
+				 ) VALUES (?, 'hold_resume', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					operationId,
 					input.runId,
@@ -41516,6 +42314,7 @@ export class StateStore {
 					input.clientRequestId,
 					canonicalDigest,
 					operationState,
+					deliveryResume?.resolutionReason ?? null,
 					input.now,
 					input.now,
 				],
@@ -41529,6 +42328,11 @@ export class StateStore {
 					)
 					.map(({ holdEventUid }) => holdEventUid);
 				if (deliveryResume) {
+					if (!deliveryResume.episodeId || !deliveryResume.sourceAttemptId) {
+						throw new WorkflowEngineInvariantError(
+							`workflow_hold_undeliverable_live_source_missing:${input.holdEventUid}`,
+						);
+					}
 					if (deliveryResume.targetActivationId) {
 						const rerouted = this.rerouteWorkflowStateDelivery({
 							episodeId: deliveryResume.episodeId,
@@ -41599,6 +42403,9 @@ export class StateStore {
 				}
 			}
 		});
+		if (legacyPreconditionChanged) {
+			return { ok: false, reason: "hold_changed" };
+		}
 		this.save();
 		return {
 			ok: true,
@@ -41642,6 +42449,10 @@ export class StateStore {
 		shape: string;
 		holdEventUid: string;
 		state: "staged" | "applied";
+		resolutionReason: Exclude<
+			WorkflowHoldSourceResolution,
+			"live_attempt"
+		> | null;
 		physicalId: string | null;
 		family: WorkflowDeliveryAttemptRow["family"] | null;
 		rootId: string | null;
@@ -41672,7 +42483,8 @@ export class StateStore {
 			`SELECT operation.operation_id, operation.run_id, operation.shape_id,
 			        operation.hold_event_uid, operation.state, operation.family,
 			        operation.root_id, operation.source_attempt_id,
-			        operation.target_activation_id, event.payload,
+			        operation.target_activation_id, operation.resolution_reason,
+			        event.payload,
 			        attempt.contract_ref_json, episode.episode_id
 			   FROM workflow_delivery_operation operation
 			   JOIN workflow_run_event event
@@ -41721,6 +42533,12 @@ export class StateStore {
 				shape: String(row.shape_id),
 				holdEventUid: String(row.hold_event_uid),
 				state: row.state as "staged" | "applied",
+				resolutionReason: row.resolution_reason
+					? (String(row.resolution_reason) as Exclude<
+							WorkflowHoldSourceResolution,
+							"live_attempt"
+						>)
+					: null,
 				physicalId: physicalId ?? null,
 				family: row.family
 					? (String(row.family) as WorkflowDeliveryAttemptRow["family"])
@@ -41906,7 +42724,8 @@ export class StateStore {
 		};
 		this.db.transaction(() => {
 			const operation = this.workflowSelectAll(
-				`SELECT run_id, shape_id, hold_event_uid, state
+				`SELECT run_id, shape_id, hold_event_uid, state, resolution_reason,
+				        client_request_id
 				   FROM workflow_delivery_operation
 				  WHERE operation_id = ? AND kind = 'hold_resume'`,
 				[input.operationId],
@@ -41922,6 +42741,25 @@ export class StateStore {
 			if (operation.state !== "applied") {
 				result = { ok: false, reason: "hold_resume_operation_not_applied" };
 				return;
+			}
+			if (
+				String(operation.client_request_id).startsWith("fly2337:legacy:")
+			) {
+				const run = this.getWorkflowRun(String(operation.run_id));
+				if (
+					!run ||
+					!this.legacyDeadMailboxReconcilePreconditionTx({
+						runId: String(operation.run_id),
+						holdEventUid: String(operation.hold_event_uid),
+						projectName: run.project_name,
+					}).ok
+				) {
+					result = {
+						ok: false,
+						reason: "legacy_reconcile_precondition_changed",
+					};
+					return;
+				}
 			}
 			this.db.run(
 				`UPDATE workflow_delivery_operation SET state = 'projected', updated_at = ?
@@ -41952,6 +42790,9 @@ export class StateStore {
 					holdEventUid: operation.hold_event_uid,
 					operationId: input.operationId,
 					principal: "master",
+					...(operation.resolution_reason
+						? { resolutionReason: operation.resolution_reason }
+						: {}),
 					remainingRunHolds,
 				},
 			});
@@ -64783,6 +65624,7 @@ export interface WorkflowEngineAlertPayload {
 				| "delivery_contract_stalled"
 				| "delivery_contract_frozen"
 				| "delivery_reroute_outcome"
+				| "legacy_dead_mail_reconcile_exhausted"
 				| "delivery_operation_stalled"
 				| "observation_corrupt";
 			launchCount?: number;

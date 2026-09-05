@@ -103,9 +103,9 @@ export function deliveryRerouteOutcomeCopy(
 			body: `${input.issueId} 改派未能自动完成(${input.reason})，run 未冻结，下一轮重试。${deliveryEvidenceFooter(input)}`,
 		};
 	}
-	const command = deliveryUndeliverableResumeCommand(input);
-	const title = `${input.issueId} delivery reroute needs an operator`;
 	if (input.runHeld) {
+		const command = deliveryUndeliverableResumeCommand(input);
+		const title = `${input.issueId} delivery reroute needs an operator`;
 		const liveness =
 			input.liveness === "unknown" ? "无心跳记录" : input.liveness;
 		return {
@@ -113,6 +113,30 @@ export function deliveryRerouteOutcomeCopy(
 			body: `${input.issueId} 收件体已终结且 15 分钟内无后继、无活性证据(${liveness})，run 已冻结。${deliveryEvidenceFooter(input)}；恢复：\`${command}\``,
 		};
 	}
+	if (
+		input.family === "mailbox" &&
+		input.reason === "response_reroute_unsupported"
+	) {
+		return {
+			title: `${input.issueId} delivery response closed`,
+			body: `${input.issueId} response 投递的收件体已终态；该 response 已安全收口且 run 未冻结。Response 不会自动改派；如仍需传达内容，请 send a new instruction。${deliveryEvidenceFooter(input)}`,
+		};
+	}
+	if (
+		input.family === "mailbox" &&
+		[
+			"delivery_undeliverable_no_recipient",
+			"delivery_attempts_exhausted",
+			"delivery_unconfirmed_exhausted",
+		].includes(input.reason ?? "")
+	) {
+		return {
+			title: `${input.issueId} delivery skipped for terminal recipient`,
+			body: `${input.issueId} 发给已终态收件体的消息已标记终结；run 未冻结，无需人工恢复。${deliveryEvidenceFooter(input)}`,
+		};
+	}
+	const command = deliveryUndeliverableResumeCommand(input);
+	const title = `${input.issueId} delivery reroute needs an operator`;
 	const canCancel = deliveryUndeliverableRequiredDecisions(
 		input.family,
 	).includes("cancel");

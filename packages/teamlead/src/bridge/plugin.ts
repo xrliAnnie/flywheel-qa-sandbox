@@ -246,6 +246,7 @@ import {
 import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
+import { LegacyDeadMailboxHoldReconcileScheduler } from "./dead-mail-hold-reconciler.js";
 import {
 	DeliveryProjector,
 	type DeliveryProjectorCursor,
@@ -7786,6 +7787,8 @@ export async function startBridge(
 
 	let paneLossInitialDebt = true;
 	let deliveryBaselineComplete = false;
+	const legacyDeadMailboxHoldReconciler =
+		new LegacyDeadMailboxHoldReconcileScheduler();
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -7961,6 +7964,7 @@ export async function startBridge(
 						commDbPathForProject(project.projectName),
 						false,
 					);
+					const projectDeliveryCommDb = deliveryCommDb;
 					for (const session of deliveryCommDb.getActiveSessions(
 						project.projectName,
 					)) {
@@ -8059,6 +8063,29 @@ export async function startBridge(
 							},
 						},
 					});
+					try {
+						withSyncOpMarker(
+							"delivery-contract:legacy-dead-mail-reconcile",
+							() =>
+								legacyDeadMailboxHoldReconciler.runPass({
+									store,
+									commDb: projectDeliveryCommDb,
+									projectName: project.projectName,
+									now: deliveryNow,
+									resolveAlertIdentity: resolveDeliveryAlertIdentity,
+									emitEvent: (event) =>
+										console.info(
+											`[delivery-contract] ${JSON.stringify(event)}`,
+										),
+								}),
+						);
+					} catch (error) {
+						console.warn(
+							`[delivery-contract] legacy dead-mail hold reconcile failed closed for ${project.projectName}: ${
+								error instanceof Error ? error.message : String(error)
+							}`,
+						);
+					}
 					await drainSynchronousPages<DeliveryProjectorCursor>((cursor) =>
 						withSyncOpMarker("delivery-contract:projector", () =>
 							deliveryProjector.runPass(deliveryNow, cursor),

@@ -58,6 +58,8 @@ async function terminalUnackedMailbox(caseId: string) {
 	});
 	const commDb = new CommDB(dbPath);
 	commDbs.push(commDb);
+	const queue = new MailboxQueue(dbPath);
+	queues.push(queue);
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
 	const runId = `run-${caseId}`;
@@ -126,6 +128,7 @@ async function terminalUnackedMailbox(caseId: string) {
 	return {
 		store,
 		commDb,
+		queue,
 		runId,
 		recipient,
 		instructionId,
@@ -204,7 +207,7 @@ describe("FLY-2278 terminal-unacked mailbox event flow", () => {
 		expect(fixture.store.getWorkflowRun(fixture.runId)?.status).toBe("active");
 	});
 
-	it("waits the grace period and then holds exactly once without liveness", async () => {
+	it("waits for physical DEAD and then warns exactly once without holding the run", async () => {
 		const fixture = await terminalUnackedMailbox("grace-hold");
 		const runner = operations(fixture.store, fixture.commDb);
 		expect(runner.runPass("2026-09-03T18:15:59.999Z")).toMatchObject({
@@ -214,11 +217,22 @@ describe("FLY-2278 terminal-unacked mailbox event flow", () => {
 		expect(fixture.store.getWorkflowRun(fixture.runId)?.status).toBe("active");
 		expect(runner.runPass("2026-09-03T18:16:00.000Z")).toMatchObject({
 			examined: 1,
+			operatorRequired: 0,
+		});
+		expect(
+			fixture.queue.markDead(
+				fixture.instructionId,
+				"2026-09-03T18:16:00.001Z",
+				"recipient_terminal",
+			),
+		).toBe(true);
+		expect(runner.runPass("2026-09-03T18:16:00.001Z")).toMatchObject({
+			examined: 1,
 			operatorRequired: 1,
 		});
-		expect(fixture.store.getWorkflowRun(fixture.runId)?.status).toBe("held");
+		expect(fixture.store.getWorkflowRun(fixture.runId)?.status).toBe("active");
 		expect(runner.runPass("2026-09-03T18:17:00.000Z")).toMatchObject({
-			examined: 1,
+			examined: 0,
 			operatorRequired: 0,
 		});
 		expect(
@@ -228,6 +242,21 @@ describe("FLY-2278 terminal-unacked mailbox event flow", () => {
 				)
 				.get(),
 		).toEqual({ count: 1 });
+		const event = rawDb(fixture.store)
+			.prepare(
+				"SELECT payload FROM workflow_run_event WHERE kind = 'delivery_reroute_operator_required'",
+			)
+			.get() as { payload: string };
+		expect(JSON.parse(event.payload)).toMatchObject({
+			family: "mailbox",
+			reason: "delivery_undeliverable_no_recipient",
+			runHeld: false,
+		});
+		expect(
+			fixture.store
+				.listWorkflowHolds(fixture.runId)
+				.filter(({ runLevel }) => runLevel),
+		).toEqual([]);
 	});
 });
 

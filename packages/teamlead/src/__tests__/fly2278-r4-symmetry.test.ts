@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("FLY-2278 R4#2 operator-required symmetry", () => {
-	it("keeps a runHeld:true episode behind the official door when a successor appears", async () => {
+	it("keeps a terminal mailbox warning closed when a successor appears", async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
 		const commDb = new CommDB(":memory:");
@@ -95,18 +95,17 @@ describe("FLY-2278 R4#2 operator-required symmetry", () => {
 			listOpenUndeliverableDeliveryEpisodes?: () => Array<{
 				episode_id: string;
 			}>;
-			listWorkflowHolds?: (runId: string) => Array<{
-				shape: string;
-				holdEventUid: string;
-				resumable: boolean;
-			}>;
-			resumeWorkflowHold?: (input: Record<string, unknown>) => {
-				ok: boolean;
-				state?: string;
-			};
 		};
 		const episode = stateApi.listOpenUndeliverableDeliveryEpisodes?.()[0];
 		expect(episode).toBeDefined();
+		const commRaw = (commDb as unknown as { db: Database.Database }).db;
+		commRaw
+			.prepare(
+				`UPDATE mailbox
+				    SET state = 'DEAD', dead_reason = 'recipient_terminal', dead_at = ?
+				  WHERE id = ?`,
+			)
+			.run("2026-09-03T10:14:00.000Z", "mail-r4-symmetry");
 		expect(
 			store.holdWorkflowUndeliverable({
 				episodeId: episode!.episode_id,
@@ -121,9 +120,10 @@ describe("FLY-2278 R4#2 operator-required symmetry", () => {
 					projectName: "flywheel",
 					leadResolution: "resolved",
 				},
+				terminalMailboxReason: "delivery_undeliverable_no_recipient",
 			}),
-		).toEqual({ held: true, reason: "operator_required" });
-		expect(store.getWorkflowRun(runId)?.status).toBe("held");
+		).toEqual({ held: false, reason: "operator_required" });
+		expect(store.getWorkflowRun(runId)?.status).toBe("active");
 
 		store.upsertSession({
 			execution_id: "replacement-execution",
@@ -159,30 +159,7 @@ describe("FLY-2278 R4#2 operator-required symmetry", () => {
 			stateApi
 				.listOpenUndeliverableDeliveryEpisodes?.()
 				.map((row) => row.episode_id),
-		).toContain(episode!.episode_id);
-		expect(store.getWorkflowRun(runId)?.status).toBe("held");
-		const hold = stateApi
-			.listWorkflowHolds?.(runId)
-			.find(({ shape }) => shape === "delivery_undeliverable_no_recipient");
-		expect(hold).toMatchObject({ resumable: true });
-
-		const normalized = StateStore.canonicalizeHoldResume({
-			runId,
-			shape: "delivery_undeliverable_no_recipient",
-			holdEventUid: hold!.holdEventUid,
-			decision: "reroute_to replacement-execution",
-			reason: "operator confirmed the live successor",
-			principal: "master",
-			clientRequestId: "resume:r4-symmetry",
-		});
-		if (!normalized) throw new Error("invalid symmetry hold fixture");
-		const resumed = store.resumeWorkflowHold({
-			canonical: normalized.canonical,
-			digest: normalized.digest,
-			now: "2026-09-03T10:17:00.000Z",
-		});
-		expect(resumed).toMatchObject({ ok: true, state: "staged" });
-		operations.runPass("2026-09-03T10:17:01.000Z");
+		).not.toContain(episode!.episode_id);
 		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
 		expect(
 			raw
@@ -190,12 +167,15 @@ describe("FLY-2278 R4#2 operator-required symmetry", () => {
 					"SELECT closed_reason FROM workflow_delivery_contract_episode WHERE episode_id = ?",
 				)
 				.get(episode!.episode_id),
-		).toEqual({ closed_reason: "rerouted" });
+		).toEqual({ closed_reason: "terminal:settled:source_terminal" });
 		expect(
 			store
 				.listWorkflowRunEvents(runId)
 				.some(({ kind }) => kind === "hold_resumed"),
-		).toBe(true);
+		).toBe(false);
+		expect(
+			store.listWorkflowHolds(runId).filter(({ runLevel }) => runLevel),
+		).toEqual([]);
 		expect(store.getWorkflowRun(runId)?.status).toBe("active");
 	});
 });

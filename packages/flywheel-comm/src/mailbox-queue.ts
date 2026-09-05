@@ -67,6 +67,12 @@ export interface ReconcileExpiredLeasesResult {
 	dead: number;
 	frozenResend: string[];
 	skippedUnknown: number;
+	terminalizationRefused: Array<{
+		sourceId: string;
+		toAgent: string;
+		fromAgent: string;
+		reason: "protected_protocol_obligation" | "recipient_state_unknown";
+	}>;
 	remaining: boolean;
 }
 
@@ -730,6 +736,46 @@ export class MailboxQueue {
 		return this.db
 			.prepare("SELECT * FROM mailbox WHERE id = ? OR delivery_id = ?")
 			.get(idOrDeliveryId, idOrDeliveryId) as MailboxRow | undefined;
+	}
+
+	recordRunnerTerminalizationRefusedNotice(input: {
+		sourceId: string;
+		toAgent: string;
+		fromAgent: string;
+		leadId: string;
+		reason: "protected_protocol_obligation" | "recipient_state_unknown";
+		now: string;
+	}): { inserted: boolean } {
+		const sourceId = requiredText(input.sourceId, "sourceId");
+		const recipient = requiredText(input.toAgent, "toAgent");
+		const leadId = requiredText(input.leadId, "leadId");
+		const reason =
+			input.reason === "recipient_state_unknown"
+				? "recipient state is unknown"
+				: "the row is a protected protocol obligation";
+		const id = `terminalization_refused:${sourceId}`;
+		if (
+			this.db
+				.prepare("SELECT 1 FROM mailbox_identity WHERE id = ? LIMIT 1")
+				.get(id)
+		) {
+			return { inserted: false };
+		}
+		const inserted = this.enqueue({
+			id,
+			fromAgent: "bridge",
+			toAgent: leadId,
+			recipientKind: "lead",
+			sourceKind: "terminalization_refused",
+			sourceRef: sourceId,
+			type: "dead_letter_notice",
+			msgClass: "model",
+			content: `Runner mailbox row ${sourceId} for ${recipient} was not marked DEAD because ${reason}. The row remains live, and no workflow run was held. Review the recipient or protocol obligation before retrying or cancelling. Original sender: ${input.fromAgent}.`,
+			createdAt: input.now,
+			priority: 1,
+			senderRef: encodeSenderRef(),
+		});
+		return { inserted: inserted.outcome === "inserted" };
 	}
 
 	/**
@@ -1784,6 +1830,7 @@ export class MailboxQueue {
 					dead: 0,
 					frozenResend: [],
 					skippedUnknown: 0,
+					terminalizationRefused: [],
 					remaining: false,
 				};
 				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) {
@@ -1861,10 +1908,24 @@ export class MailboxQueue {
 						const state = input.recipientState(row.to_agent);
 						if (state === "unknown") {
 							result.skippedUnknown += 1;
+							result.terminalizationRefused.push({
+								sourceId: row.id,
+								toAgent: row.to_agent,
+								fromAgent: row.from_agent,
+								reason: "recipient_state_unknown",
+							});
 							continue;
 						}
 						if (state !== "terminal_or_missing") continue;
-						if (isTerminalDeliveryObligation(row)) continue;
+						if (isTerminalDeliveryObligation(row)) {
+							result.terminalizationRefused.push({
+								sourceId: row.id,
+								toAgent: row.to_agent,
+								fromAgent: row.from_agent,
+								reason: "protected_protocol_obligation",
+							});
+							continue;
+						}
 						const changed = this.db
 							.prepare(
 								`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
@@ -1922,10 +1983,6 @@ export class MailboxQueue {
 				}
 				for (const batch of expired) {
 					const recipientState = input.recipientState(batch.to_agent);
-					if (recipientState === "unknown") {
-						result.skippedUnknown += 1;
-						continue;
-					}
 					const members = this.db
 						.prepare(
 							`SELECT * FROM mailbox
@@ -1934,9 +1991,33 @@ export class MailboxQueue {
 						)
 						.all(batch.batch_id, input.now) as MailboxRow[];
 					if (members.length === 0) continue;
+					if (recipientState === "unknown") {
+						result.skippedUnknown += 1;
+						for (const row of members) {
+							result.terminalizationRefused.push({
+								sourceId: row.id,
+								toAgent: row.to_agent,
+								fromAgent: row.from_agent,
+								reason: "recipient_state_unknown",
+							});
+						}
+						continue;
+					}
+					const protectedMembers =
+						recipientState === "terminal_or_missing"
+							? members.filter(isTerminalDeliveryObligation)
+							: [];
+					for (const row of protectedMembers) {
+						result.terminalizationRefused.push({
+							sourceId: row.id,
+							toAgent: row.to_agent,
+							fromAgent: row.from_agent,
+							reason: "protected_protocol_obligation",
+						});
+					}
 					if (
 						recipientState === "terminal_or_missing" &&
-						!members.some(isTerminalDeliveryObligation)
+						protectedMembers.length === 0
 					) {
 						const changed = this.db
 							.prepare(

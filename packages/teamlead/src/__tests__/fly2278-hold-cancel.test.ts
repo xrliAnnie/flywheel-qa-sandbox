@@ -454,4 +454,38 @@ describe("FLY-2278 canonical undeliverable cancel", () => {
 			}),
 		).toEqual({ ok: false, reason: "cancel_not_supported_for_phase_wake" });
 	});
+
+	it("does not extend mailbox terminal no-op semantics to another delivery family", async () => {
+		const fixture = await commFixture("turn_wake");
+		const attempt = rawDb(fixture.store)
+			.prepare(
+				"SELECT contract_ref_json FROM workflow_delivery_attempt WHERE attempt_id = ?",
+			)
+			.get(fixture.episode.attempt_id) as { contract_ref_json: string };
+		const contractRef = JSON.parse(attempt.contract_ref_json) as {
+			table: string;
+			pk: string;
+		};
+		expect(
+			fixture.store.settleProjectedWorkflowDeliveryAttempt({
+				family: "turn_wake",
+				table: contractRef.table,
+				pk: contractRef.pk,
+				reason: "source_terminal",
+				now: "2026-09-03T22:00:30.000Z",
+			}),
+		).toBe(true);
+		expect(
+			resumeHold(fixture.store, {
+				runId: fixture.runId,
+				shape: "delivery_undeliverable_no_recipient",
+				holdEventUid: fixture.hold.holdEventUid,
+				decision: "cancel",
+				reason: "operator cancelled the terminal non-mailbox handoff",
+				principal: "master",
+				clientRequestId: "resume:cancel:turn-wake-terminal",
+				now: "2026-09-03T22:01:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "hold_changed" });
+	});
 });

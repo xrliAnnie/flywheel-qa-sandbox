@@ -3123,7 +3123,14 @@ export class CommDB {
 						noop: false,
 					};
 				}
-				if (row.state === "DEAD" || row.superseded_by !== null) {
+				if (row.state === "DEAD") {
+					return {
+						ok: true as const,
+						idempotentReplay: false,
+						noop: true,
+					};
+				}
+				if (row.superseded_by !== null) {
 					return { ok: false as const, reason: "mailbox_source_changed" };
 				}
 				const updated = this.db
