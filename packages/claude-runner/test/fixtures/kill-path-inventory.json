@@ -1470,6 +1470,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly1663-qa-launchd.test.sh:&& kill -0 \"$live_tmux_pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/fly1663-qa-launchd.test.sh",
+		"code": "&& kill -0 \"$live_tmux_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/fly1678-install-statusline.test.sh:kill -TERM \"\\$PPID\" 2>/dev/null#1",
 		"path": "scripts/__tests__/fly1678-install-statusline.test.sh",
 		"code": "kill -TERM \"\\$PPID\" 2>/dev/null",
