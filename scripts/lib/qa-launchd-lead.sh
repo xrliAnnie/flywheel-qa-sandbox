@@ -966,8 +966,26 @@ if not stat.S_ISSOCK(info.st_mode) or path.is_symlink():
 PY
 }
 
+qa_launchd_codex_tmux_socket_owner_state() {
+  local socket_path="$1" lsof_bin="${FLYWHEEL_QA_LSOF:-}" output rc pid
+  if [[ -z "$lsof_bin" ]]; then
+    lsof_bin=$(command -v lsof 2>/dev/null || true)
+  fi
+  [[ "$lsof_bin" == /* && -x "$lsof_bin" ]] || return 2
+  output=$("$lsof_bin" -nP -t -- "$socket_path" 2>/dev/null)
+  rc=$?
+  if [[ "$rc" == 1 && -z "$output" ]]; then
+    return 1
+  fi
+  [[ "$rc" == 0 && -n "$output" ]] || return 2
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 2
+  done <<<"$output"
+  return 0
+}
+
 qa_launchd_converge_codex_tmux_socket() {
-  local socket_path="$1" tmux_bin="${FLYWHEEL_QA_TMUX:-tmux}" i
+  local socket_path="$1" tmux_bin="${FLYWHEEL_QA_TMUX:-tmux}" i owner_state
   [[ "$socket_path" =~ ^/tmp/flywheel-test-slot-[1-9][0-9]*/tmux-[0-9]+/default$ ]] \
     || return 1
   if [[ ! -e "$socket_path" && ! -L "$socket_path" ]]; then
@@ -982,6 +1000,10 @@ qa_launchd_converge_codex_tmux_socket() {
       if [[ -e "$socket_path" || -L "$socket_path" ]]; then
         qa_launchd_validate_codex_tmux_socket "$socket_path" || return 1
         if ! "$tmux_bin" -S "$socket_path" list-sessions >/dev/null 2>&1; then
+          owner_state=0
+          qa_launchd_codex_tmux_socket_owner_state "$socket_path" \
+            || owner_state=$?
+          [[ "$owner_state" == 1 ]] || return 1
           rm -f -- "$socket_path" || return 1
         fi
       fi

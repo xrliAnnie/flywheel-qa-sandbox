@@ -1155,6 +1155,46 @@ fi
 rm -rf "$absent_tmux_root"
 unset FLY1663_QA_ABSENT_TMUX_CALLS
 
+live_tmux_root="/tmp/flywheel-test-slot-$((985000 + $$))"
+live_tmux_socket="$live_tmux_root/tmux-$(id -u)/default"
+live_tmux_ready="$TMP/live-tmux.ready"
+mkdir -p "$(dirname "$live_tmux_socket")"
+python3 - "$live_tmux_socket" "$live_tmux_ready" <<'PY' &
+import signal
+import socket
+import sys
+from pathlib import Path
+
+sock = socket.socket(socket.AF_UNIX)
+sock.bind(sys.argv[1])
+sock.listen(1)
+Path(sys.argv[2]).write_text("ready\n")
+signal.pause()
+PY
+live_tmux_pid=$!
+for _ in $(seq 1 100); do
+  [[ -f "$live_tmux_ready" ]] && break
+  command sleep 0.01
+done
+tmux_client_error_stub="$TMP/bin/tmux-client-error"
+cat > "$tmux_client_error_stub" <<'TMUX'
+#!/bin/bash
+exit 42
+TMUX
+chmod +x "$tmux_client_error_stub"
+export FLYWHEEL_QA_TMUX="$tmux_client_error_stub"
+live_converge_rc=0
+qa_launchd_converge_codex_tmux_socket "$live_tmux_socket" || live_converge_rc=$?
+if [[ "$live_converge_rc" != 0 && -S "$live_tmux_socket" ]] \
+    && kill -0 "$live_tmux_pid" 2>/dev/null; then
+  pass "Codex tmux convergence preserves a live server when the client errors"
+else
+  fail "Codex tmux live-server client-error guard"
+fi
+kill "$live_tmux_pid" 2>/dev/null || true
+wait "$live_tmux_pid" 2>/dev/null || true
+rm -rf "$live_tmux_root"
+
 stale_tmux_socket="$MINT_SLOT/tmux-$(id -u)/default"
 stale_tmux_state="$TMP/stale-tmux-server.alive"
 stale_tmux_calls="$TMP/stale-tmux.calls"
