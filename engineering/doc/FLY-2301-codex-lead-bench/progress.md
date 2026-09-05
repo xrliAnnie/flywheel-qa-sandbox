@@ -1,14 +1,14 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-05T04:09:52.548Z
-nextStep: "TDD HIGH 2: preserve a live tmux socket when the client errors; only
-  unlink on positive absence proof"
+phaseCursor: 2/4
+updated: 2026-09-05T04:12:57.515Z
+nextStep: "TDD HIGH 3: prune successful Codex teardown registry rows and make
+  already-retired rows idempotent"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (1/4)
-**next**: TDD HIGH 2: preserve a live tmux socket when the client errors; only unlink on positive absence proof
+**phase**: implement (2/4)
+**next**: TDD HIGH 3: prune successful Codex teardown registry rows and make already-retired rows idempotent
