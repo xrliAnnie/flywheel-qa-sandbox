@@ -74,6 +74,7 @@ export interface LeadInboxRuntimeOptions {
 	store: StateStore;
 	registry: RuntimeRegistry;
 	commDbPathForProject: (projectName: string) => string;
+	archiveEnabled?: (projectName: string) => boolean;
 	chatThreadsEnabled?: boolean;
 	secretProvider?: DeliverySecretProvider;
 	ownerEpoch?: string;
@@ -413,6 +414,16 @@ export class LeadInboxRuntime {
 										now: archiveAt,
 										maxFamilies: 5,
 									});
+									if (this.opts.archiveEnabled?.(project.projectName) ?? true) {
+										queue.compactArchivedIdentities({
+											now: archiveAt,
+											limit: 25,
+											onIdentityError: (id, error) =>
+												console.warn(
+													`[lead-inbox-runtime] mailbox identity archive failed for project=${project.projectName} id=${id}: ${error instanceof Error ? error.message : String(error)}`,
+												),
+										});
+									}
 									queue.drainContentRefGc({ now: archiveAt, limit: 1 });
 								} catch (error) {
 									console.warn(

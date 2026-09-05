@@ -36,6 +36,7 @@ import {
 import {
 	dropReceiptLedgerSchema,
 	installMailboxRelayInvariantTriggers,
+	installMailboxTerminalArchiveSchema,
 	MAILBOX_POISON_VIEWS,
 	MAILBOX_SCHEMA,
 	MAILBOX_SCHEMA_GENERATION,
@@ -1157,6 +1158,7 @@ export class CommDB {
 			phase = "generation-assert";
 			if (!isVirgin) assertMailboxGeneration(this.db, dbPath);
 			phase = "schema";
+			installMailboxTerminalArchiveSchema(this.db);
 			this.db.exec(SCHEMA);
 			ensureMailboxQueueSchema(this.db);
 			phase = "migrations";
@@ -3559,13 +3561,11 @@ export class CommDB {
 			};
 		}
 
-		const archived = this.db
-			.prepare(
-				`SELECT row_json FROM mailbox_log
-				 WHERE subject_id = ? AND event = 'archived'
-				 ORDER BY at, message_id`,
-			)
-			.all(questionId) as Array<{ row_json: string }>;
+		const archived = new MailboxQueue(this.db, {
+			readOnly: true,
+		})
+			.getArchivedFamilySnapshots(questionId)
+			.map((row_json) => ({ row_json }));
 		if (archived.length === 0) return undefined;
 		const snapshots = archived.map(({ row_json }) => {
 			let value: unknown;

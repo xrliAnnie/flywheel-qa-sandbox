@@ -75,6 +75,120 @@ SELECT
   kind
 FROM mailbox`;
 
+export const MAILBOX_TERMINAL_ARCHIVE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS mailbox_terminal_archive (
+  id TEXT PRIMARY KEY,
+  delivery_id TEXT NOT NULL UNIQUE,
+  insert_projection_hash TEXT NOT NULL,
+  subject_id TEXT,
+  terminal_at TEXT NOT NULL,
+  archived_at TEXT NOT NULL,
+  mailbox_json TEXT CHECK(mailbox_json IS NULL OR json_valid(mailbox_json)),
+  logs_json TEXT NOT NULL CHECK(json_valid(logs_json)),
+  payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256) = 64)
+);
+CREATE INDEX IF NOT EXISTS mailbox_terminal_archive_subject
+  ON mailbox_terminal_archive(subject_id) WHERE subject_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS mailbox_terminal_archive_time
+  ON mailbox_terminal_archive(terminal_at, id);
+CREATE INDEX IF NOT EXISTS mailbox_identity_terminal_archive
+  ON mailbox_identity(terminal_at, id)
+  WHERE archived_at IS NOT NULL AND terminal_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS mailbox_identity_terminal_backfill
+  ON mailbox_identity(id)
+  WHERE archived_at IS NOT NULL AND terminal_at IS NULL;
+CREATE INDEX IF NOT EXISTS mailbox_log_message_event
+  ON mailbox_log(message_id, event);
+CREATE TRIGGER IF NOT EXISTS mailbox_terminal_archive_no_update
+BEFORE UPDATE ON mailbox_terminal_archive
+BEGIN SELECT RAISE(ABORT, 'mailbox_terminal_archive is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS mailbox_terminal_archive_no_delete
+BEFORE DELETE ON mailbox_terminal_archive
+BEGIN SELECT RAISE(ABORT, 'mailbox_terminal_archive is immutable'); END;
+
+CREATE TRIGGER IF NOT EXISTS mailbox_identity_no_delete
+BEFORE DELETE ON mailbox_identity
+WHEN EXISTS (SELECT 1 FROM mailbox WHERE id=OLD.id)
+  OR NOT EXISTS (
+    SELECT 1 FROM mailbox_terminal_archive cold
+     WHERE cold.id=OLD.id
+       AND cold.delivery_id=OLD.delivery_id
+       AND cold.insert_projection_hash=OLD.insert_projection_hash
+       AND cold.archived_at IS OLD.archived_at
+  )
+BEGIN SELECT RAISE(ABORT, 'mailbox_identity is permanent without matching cold evidence'); END;
+CREATE TRIGGER IF NOT EXISTS mailbox_identity_update_guard
+BEFORE UPDATE ON mailbox_identity
+WHEN NOT (
+  OLD.id IS NEW.id
+  AND OLD.delivery_id IS NEW.delivery_id
+  AND OLD.insert_projection_hash IS NEW.insert_projection_hash
+  AND (
+    (OLD.archived_at IS NULL AND OLD.terminal_at IS NULL
+      AND NEW.archived_at IS NOT NULL)
+    OR
+    (OLD.archived_at IS NOT NULL AND NEW.archived_at IS OLD.archived_at
+      AND OLD.terminal_at IS NULL AND NEW.terminal_at IS NOT NULL)
+  )
+)
+BEGIN SELECT RAISE(ABORT, 'mailbox_identity is permanent'); END;
+
+CREATE TRIGGER IF NOT EXISTS mailbox_log_no_delete
+BEFORE DELETE ON mailbox_log
+WHEN EXISTS (SELECT 1 FROM mailbox WHERE id=OLD.message_id)
+  OR NOT EXISTS (
+    SELECT 1
+      FROM mailbox_terminal_archive cold, json_each(cold.logs_json) archived
+     WHERE cold.id=OLD.message_id
+       AND json_extract(archived.value,'$.log_seq') IS OLD.log_seq
+       AND json_extract(archived.value,'$.event_id') IS OLD.event_id
+       AND json_extract(archived.value,'$.schema_version') IS OLD.schema_version
+       AND json_extract(archived.value,'$.message_id') IS OLD.message_id
+       AND json_extract(archived.value,'$.subject_id') IS OLD.subject_id
+       AND json_extract(archived.value,'$.event') IS OLD.event
+       AND json_extract(archived.value,'$.at') IS OLD.at
+       AND json_extract(archived.value,'$.source_table') IS OLD.source_table
+       AND json_extract(archived.value,'$.row_json') IS OLD.row_json
+  )
+BEGIN SELECT RAISE(ABORT, 'mailbox_log is append-only without matching cold evidence'); END;
+`;
+
+export function installMailboxTerminalArchiveSchema(
+	db: Database.Database,
+): void {
+	const tables = new Set(
+		(
+			db
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('mailbox','mailbox_identity','mailbox_log','mailbox_terminal_archive')",
+				)
+				.all() as Array<{ name: string }>
+		).map(({ name }) => name),
+	);
+	if (!tables.has("mailbox_identity") || !tables.has("mailbox_log")) return;
+	const hasTerminalAt = Boolean(
+		db
+			.prepare(
+				"SELECT 1 FROM pragma_table_info('mailbox_identity') WHERE name='terminal_at'",
+			)
+			.get(),
+	);
+	if (hasTerminalAt && tables.has("mailbox_terminal_archive")) {
+		db.exec(
+			"CREATE INDEX IF NOT EXISTS mailbox_log_message_event ON mailbox_log(message_id, event)",
+		);
+		return;
+	}
+	if (!hasTerminalAt) {
+		db.exec("ALTER TABLE mailbox_identity ADD COLUMN terminal_at TEXT");
+	}
+	db.exec(`
+DROP TRIGGER IF EXISTS mailbox_identity_no_delete;
+DROP TRIGGER IF EXISTS mailbox_identity_update_guard;
+DROP TRIGGER IF EXISTS mailbox_log_no_delete;
+${MAILBOX_TERMINAL_ARCHIVE_SCHEMA}`);
+}
+
 export const MAILBOX_CORE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS mailbox (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -190,6 +304,7 @@ CREATE TABLE IF NOT EXISTS mailbox_identity (
   delivery_id TEXT NOT NULL UNIQUE,
   insert_projection_hash TEXT NOT NULL,
   archived_at TEXT,
+  terminal_at TEXT,
   UNIQUE(id, delivery_id)
 );
 CREATE TRIGGER IF NOT EXISTS mailbox_identity_guard
@@ -201,18 +316,6 @@ BEGIN
       WHERE id = NEW.id AND delivery_id = NEW.delivery_id AND archived_at IS NULL
    );
 END;
-CREATE TRIGGER IF NOT EXISTS mailbox_identity_no_delete
-BEFORE DELETE ON mailbox_identity
-BEGIN SELECT RAISE(ABORT, 'mailbox_identity is permanent'); END;
-CREATE TRIGGER IF NOT EXISTS mailbox_identity_update_guard
-BEFORE UPDATE ON mailbox_identity
-WHEN OLD.id != NEW.id
-  OR OLD.delivery_id != NEW.delivery_id
-  OR OLD.insert_projection_hash != NEW.insert_projection_hash
-  OR OLD.archived_at IS NOT NULL
-  OR NEW.archived_at IS NULL
-BEGIN SELECT RAISE(ABORT, 'mailbox_identity is permanent'); END;
-
 CREATE TABLE IF NOT EXISTS mailbox_log (
   log_seq INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id TEXT NOT NULL UNIQUE,
@@ -231,9 +334,8 @@ CREATE INDEX IF NOT EXISTS mailbox_log_subject
 CREATE TRIGGER IF NOT EXISTS mailbox_log_no_update
 BEFORE UPDATE ON mailbox_log
 BEGIN SELECT RAISE(ABORT, 'mailbox_log is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS mailbox_log_no_delete
-BEFORE DELETE ON mailbox_log
-BEGIN SELECT RAISE(ABORT, 'mailbox_log is append-only'); END;
+
+${MAILBOX_TERMINAL_ARCHIVE_SCHEMA}
 
 CREATE TRIGGER IF NOT EXISTS mailbox_delete_requires_archive
 BEFORE DELETE ON mailbox

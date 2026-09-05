@@ -79,7 +79,6 @@ const SESSION_EVENT_NARRATIVE_TYPES = Object.freeze([
 	"chat_thread_archive_failed",
 	"lifecycle_sweep_gh_unavailable",
 	"lead_close_runner_failed",
-	"external_merge_suspect",
 	"bridge_boot_stale_checkout",
 	"detection_suspicious",
 ]);
@@ -127,7 +126,6 @@ const LEAD_EVENT_NARRATIVE_TYPES = Object.freeze([
 	"zombie_session_backlog",
 	"runner_stuck_escalation",
 	"bridge_abnormal_exit",
-	"external_merge_suspect",
 	"checkpoint_park_nudge",
 ]);
 

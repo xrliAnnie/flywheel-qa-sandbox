@@ -115,6 +115,13 @@
 			"file": "packages/flywheel-comm/src/mailbox-queue.ts",
 			"relation": "mailbox_log",
 			"baseTable": "mailbox_log",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/flywheel-comm/src/mailbox-queue.ts",
+			"relation": "mailbox_log",
+			"baseTable": "mailbox_log",
 			"usage": "read",
 			"disposition": "protect"
 		},
@@ -129,6 +136,13 @@
 			"file": "packages/flywheel-comm/src/mailbox-schema.ts",
 			"relation": "mailbox_log",
 			"baseTable": "mailbox_log",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/flywheel-comm/src/mailbox-schema.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
 			"usage": "anti_join",
 			"disposition": "protect"
 		},
@@ -295,6 +309,55 @@
 		},
 		{
 			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/terminal-row-archive.ts",
+			"relation": "lead_event_delivery_attempts",
+			"baseTable": "lead_event_delivery_attempts",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/terminal-row-archive.ts",
+			"relation": "lead_events",
+			"baseTable": "lead_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/terminal-row-archive.ts",
+			"relation": "legacy_cutover_quarantine",
+			"baseTable": "legacy_cutover_quarantine",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/terminal-row-archive.ts",
+			"relation": "legacy_render_fallback",
+			"baseTable": "legacy_render_fallback",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/terminal-row-archive.ts",
+			"relation": "legacy_stock_suppressed",
+			"baseTable": "legacy_stock_suppressed",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/terminal-row-archive.ts",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/terminal-row-archive.ts",
 			"relation": "workflow_run_event",
 			"baseTable": "workflow_run_event",
 			"usage": "read",

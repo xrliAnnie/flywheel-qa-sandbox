@@ -336,6 +336,7 @@ describe("feature-flag drift guard", () => {
 		).toBe(false);
 
 		const projectStoreFlags = new Set([
+			"database_archive",
 			"node_dwell",
 			"node_dwell_threshold_hours",
 			"pipeline_dag",
@@ -361,6 +362,7 @@ describe("feature-flag drift guard", () => {
 				(flag) => flag.name,
 			),
 		).toEqual([
+			"database_archive",
 			"node_dwell",
 			"node_dwell_threshold_hours",
 			"pipeline_dag",
@@ -433,6 +435,12 @@ describe("feature-flag drift guard", () => {
 					"packages/teamlead/src/bridge/plugin.ts",
 					"workflowDecisionRoutes",
 					"storeWorkflowNodeReuseEnabled",
+				],
+				[
+					"database_archive",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"databaseArchiveEnabled",
+					"storeDatabaseArchiveEnabled",
 				],
 				[
 					"node_dwell",

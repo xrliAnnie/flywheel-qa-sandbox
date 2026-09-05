@@ -106,6 +106,15 @@ import {
 	OPERATIONAL_TERMINAL_STATUSES,
 } from "./operational-terminal-status.js";
 import {
+	archiveTerminalRows as archiveTerminalRowsInDatabase,
+	findArchivedTerminalRow,
+	installTerminalRowArchiveSchema,
+	maxArchivedWorkflowRunEventSeq,
+	restoreTerminalRow as restoreTerminalRowInDatabase,
+	type TerminalArchiveInput,
+	type TerminalArchiveResult,
+} from "./terminal-row-archive.js";
+import {
 	buildWorkflowSelectionDigestBody,
 	type CategorySource,
 	type EngTier,
@@ -5204,6 +5213,18 @@ export class StateStore {
 		this.migrateFlagRetirementScan();
 		this.migrateFly1427TerminalStatusCorrections();
 		this.migrateEpicPage();
+		installTerminalRowArchiveSchema(this.db.raw);
+	}
+
+	archiveTerminalRows(input: TerminalArchiveInput): TerminalArchiveResult {
+		return archiveTerminalRowsInDatabase(this.db.raw, input);
+	}
+
+	restoreTerminalRow(input: {
+		sourceTable: "session_events" | "workflow_run_event" | "lead_events";
+		sourceIdentity: string;
+	}): { outcome: "restored" | "idempotent" } {
+		return restoreTerminalRowInDatabase(this.db.raw, input);
 	}
 
 	private migrateEpicPage(): void {
@@ -7337,6 +7358,11 @@ export class StateStore {
 	}
 
 	insertEvent(event: SessionEvent): boolean {
+		if (
+			findArchivedTerminalRow(this.db.raw, "session_events", [event.event_id])
+		) {
+			return false;
+		}
 		try {
 			this.db.transaction(() => {
 				this.db.run(
@@ -13313,6 +13339,15 @@ export class StateStore {
 	commitThreadArchive(threadId: string, event: SessionEvent): void {
 		const archivedAt = new Date().toISOString();
 		this.db.transaction(() => {
+			const priorEvent =
+				this.workflowSelectAll(
+					"SELECT 1 AS present FROM session_events WHERE event_id = ?",
+					[event.event_id],
+				)[0] ??
+				findArchivedTerminalRow(this.db.raw, "session_events", [event.event_id]);
+			if (priorEvent) {
+				throw new Error(`session_event_replay:${event.event_id}`);
+			}
 			this.db.run(
 				`UPDATE chat_threads
 				 SET archived_at = ?, reopen_compensation_pending = NULL
@@ -14959,6 +14994,17 @@ export class StateStore {
 		payload: string,
 		sessionKey?: string,
 	): number {
+		const archived = findArchivedTerminalRow(this.db.raw, "lead_events", [
+			leadId,
+			eventId,
+		]);
+		if (archived) {
+			const seq = Number(archived.seq);
+			if (!Number.isSafeInteger(seq) || seq <= 0) {
+				throw new Error("invalid_archived_lead_event_seq");
+			}
+			return seq;
+		}
 		let hookPayload: HookPayload | null = null;
 		try {
 			const parsed = JSON.parse(payload) as unknown;
@@ -15032,7 +15078,12 @@ export class StateStore {
 			[leadId, eventId],
 		);
 		const count = (existing[0]?.values[0]?.[0] as number) ?? 0;
-		if (count > 0) return false;
+		if (
+			count > 0 ||
+			findArchivedTerminalRow(this.db.raw, "lead_events", [leadId, eventId])
+		) {
+			return false;
+		}
 		this.appendLeadEvent(leadId, eventId, eventType, payload, sessionKey);
 		return true;
 	}
@@ -17228,54 +17279,14 @@ export class StateStore {
 		// heartbeat can never see an event whose episode is still NEW.
 		let seq = 0;
 		let claimed = false;
-		let hookPayload: HookPayload | null = null;
-		try {
-			const parsed = JSON.parse(opts.payload) as unknown;
-			if (parsed && typeof parsed === "object") {
-				hookPayload = parsed as HookPayload;
-			}
-		} catch {
-			// Non-hook detection rows remain ACK-exempt.
-		}
-		const routingSnapshot = hookPayload
-			? routingSnapshotForLeadEvent(opts.leadId, hookPayload)
-			: null;
 		this.db.transaction(() => {
-			try {
-				this.db.run(
-					`INSERT INTO lead_events (
-					   lead_id, event_id, event_type, payload, session_key,
-					   ack_required, ack_policy, ack_protocol_version,
-					   routing_snapshot, ack_owner_lead_id
-					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					[
-						opts.leadId,
-						opts.eventId,
-						opts.eventType,
-						opts.payload,
-						opts.sessionKey ?? null,
-						0,
-						null,
-						null,
-						routingSnapshot,
-						opts.leadId,
-					],
-				);
-				const inserted = this.db.exec("SELECT last_insert_rowid()");
-				seq = (inserted[0]?.values[0]?.[0] as number) ?? 0;
-			} catch (err) {
-				// Idempotent per event id: a retry of the SAME occurrence reuses
-				// its row (an in-transaction catch does not roll back).
-				if ((err as Error).message?.includes("UNIQUE")) {
-					const existing = this.db.exec(
-						"SELECT seq FROM lead_events WHERE lead_id = ? AND event_id = ?",
-						[opts.leadId, opts.eventId],
-					);
-					seq = (existing[0]?.values[0]?.[0] as number) ?? 0;
-				} else {
-					throw err;
-				}
-			}
+			seq = this.appendLeadEvent(
+				opts.leadId,
+				opts.eventId,
+				opts.eventType,
+				opts.payload,
+				opts.sessionKey,
+			);
 			this.db.run(
 				`UPDATE detection_escalations
 				 SET status = 'LEAD_NOTIFIED',
@@ -17950,6 +17961,11 @@ export class StateStore {
 	}
 
 	private insertAuditEventRaw(event: SessionEvent): void {
+		if (
+			findArchivedTerminalRow(this.db.raw, "session_events", [event.event_id])
+		) {
+			return;
+		}
 		this.db.run(
 			`INSERT OR IGNORE INTO session_events
 			   (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
@@ -34491,10 +34507,14 @@ export class StateStore {
 		let statusPreserved = false;
 		let leadEventSeq: number | undefined;
 		this.db.transaction(() => {
-			const priorEvent = this.workflowSelectAll(
-				"SELECT * FROM session_events WHERE event_id = ?",
-				[input.sourceEventId],
-			)[0];
+			const priorEvent =
+				this.workflowSelectAll(
+					"SELECT * FROM session_events WHERE event_id = ?",
+					[input.sourceEventId],
+				)[0] ??
+				findArchivedTerminalRow(this.db.raw, "session_events", [
+					input.sourceEventId,
+				]);
 			if (priorEvent) {
 				let priorPayload: Record<string, unknown> | undefined;
 				try {
@@ -49604,11 +49624,15 @@ export class StateStore {
 		executionId?: string;
 		payload?: unknown;
 	}): { seq: number; deduped: boolean } {
-		const existing = this.workflowSelectAll(
-			`SELECT run_id, seq, kind, node_id, edge_id, execution_id, payload
-			   FROM workflow_run_event WHERE event_uid = ?`,
-			[input.eventUid],
-		)[0];
+		const existing =
+			this.workflowSelectAll(
+				`SELECT run_id, seq, kind, node_id, edge_id, execution_id, payload
+				   FROM workflow_run_event WHERE event_uid = ?`,
+				[input.eventUid],
+			)[0] ??
+			findArchivedTerminalRow(this.db.raw, "workflow_run_event", [
+				input.eventUid,
+			]);
 		if (!existing) return this.appendWorkflowRunEventTx(input);
 		let existingPayload: unknown = null;
 		try {
@@ -49653,17 +49677,24 @@ export class StateStore {
 		if (run.length === 0) {
 			throw new Error(`workflow run not found: ${input.runId}`);
 		}
-		const existing = this.workflowSelectAll(
-			"SELECT seq FROM workflow_run_event WHERE event_uid = ?",
-			[input.eventUid],
-		);
-		const first = existing[0];
+		const first =
+			this.workflowSelectAll(
+				"SELECT seq FROM workflow_run_event WHERE event_uid = ?",
+				[input.eventUid],
+			)[0] ??
+			findArchivedTerminalRow(this.db.raw, "workflow_run_event", [
+				input.eventUid,
+			]);
 		if (first) return { seq: Number(first.seq), deduped: true };
-		const next = this.workflowSelectAll(
-			"SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM workflow_run_event WHERE run_id = ?",
+		const hot = this.workflowSelectAll(
+			"SELECT COALESCE(MAX(seq), 0) AS max_seq FROM workflow_run_event WHERE run_id = ?",
 			[input.runId],
 		);
-		const seq = Number(next[0]?.next ?? 1);
+		const seq =
+			Math.max(
+				Number(hot[0]?.max_seq ?? 0),
+				maxArchivedWorkflowRunEventSeq(this.db.raw, input.runId),
+			) + 1;
 		this.db.run(
 			`INSERT INTO workflow_run_event
 			   (run_id, seq, event_uid, kind, node_id, edge_id, execution_id, payload)

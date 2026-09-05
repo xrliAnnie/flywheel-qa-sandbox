@@ -12,6 +12,7 @@ import {
 	storeAlertSystemEnabled,
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
+	storeDatabaseArchiveEnabled,
 	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
@@ -192,8 +193,9 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		expect(storeReviewQuotaAutoRetryEnabled(runtime)).toBe(false);
 	});
 
-	it("resolves all seven project flags from project row, star row, then registry default", () => {
+	it("resolves all project flags from project row, star row, then registry default", () => {
 		const runtime = initializeFlagStore(store, {});
+		expect(storeDatabaseArchiveEnabled(runtime, "flywheel")).toBe(true);
 		expect(storeDocFlowEnabled(runtime, "flywheel")).toBe(false);
 		expect(storePipelineDagEnabled(runtime, "flywheel")).toBe(true);
 		expect(storePipelineWorkKindEnabled(runtime, "flywheel")).toBe(false);
@@ -229,6 +231,23 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		).toMatchObject({ ok: true });
 		expect(storeDocFlowEnabled(runtime, "flywheel")).toBe(false);
 		expect(storeDocFlowEnabled(runtime, "geoforge3d")).toBe(true);
+	});
+
+	it("keeps database archive default-on and observes a project off write", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeDatabaseArchiveEnabled(runtime, "flywheel")).toBe(true);
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "database_archive",
+				scope: "flywheel",
+				op: "set",
+				rawTo: "0",
+				expectedChangeSeq: 0,
+				actor: "fixture",
+				reason: "pause cold archive during incident response",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeDatabaseArchiveEnabled(runtime, "flywheel")).toBe(false);
 	});
 
 	it("reads the node dwell scalar at call time with project, star, default precedence", () => {

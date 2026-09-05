@@ -1,0 +1,40 @@
+{
+  "issue": "FLY-2341",
+  "date": "2026-09-04",
+  "scope": "isolated-copy-only",
+  "checkpointElapsedMinutes": 129,
+  "rateTableLabel": "R1-pre-keyset head 2cd05f0ee",
+  "rateTable": [
+    { "table": "lead_events", "terminalCandidateUpperBound": 1724, "archived": 1616, "rowsPerMinute": 12.53, "projectedRemainingHours": 0.14 },
+    { "table": "session_events", "terminalCandidateUpperBound": 8547, "archived": 8155, "rowsPerMinute": 63.22, "projectedRemainingHours": 0.10 },
+    { "table": "workflow_run_event", "terminalCandidateUpperBound": 76716, "archived": 26417, "rowsPerMinute": 204.78, "projectedRemainingHours": 4.09 },
+    { "table": "comm_mailbox_identity_log", "terminalCandidateUpperBound": 116482, "archived": 116482, "rowsPerMinute": 902.96, "projectedRemainingHours": 0 }
+  ],
+  "stoppedInventory": {
+    "teamlead": { "bytes": 674164736, "hot": { "session_events": 361797, "workflow_run_event": 76506, "lead_events": 67203 }, "cold": 53772, "quickCheck": "ok" },
+    "comm": { "bytes": 876650496, "hot": { "mailbox": 20185, "mailbox_identity": 36059, "mailbox_log": 16525 }, "cold": 116482, "quickCheck": "ok" }
+  },
+  "baselinePassMs": { "projector": 39850, "watch": 28907, "operations": 200 },
+  "maxObservedBatchMs": { "teamlead": 1079, "comm": 185 },
+  "currentHeadBoundedRehearsal": {
+    "codeHead": "59469fc48d1714d81c8e2843cb60f04de5cb8719",
+    "pageSize": 64,
+    "teamleadSchemaInstallMsRange": [1275.9, 2937.2],
+    "queryPlan": { "indexOrdered": true, "usesTempBTreeForOrderBy": false },
+    "singlePageCalls": {
+      "session_events": { "archived": [64, 64, 64, 64, 64], "wallMs": [57.4, 23.0, 11.7, 8.3, 7.3] },
+      "workflow_run_event": { "archived": [64, 64, 64, 64, 64], "wallMs": [9.9, 6.9, 5.2, 4.4, 6.5] },
+      "lead_events": { "archived": [64, 64, 64, 64, 64], "wallMs": [14.4, 6.3, 9.1, 28.7, 10.8] }
+    },
+    "runtimeTickCalls": {
+      "session_events": { "archived": [100, 100, 100, 100, 100], "wallMs": [20.9, 30.6, 10.9, 7.6, 9.4] },
+      "workflow_run_event": { "archived": [100, 100, 100, 100, 100], "wallMs": [7.7, 8.9, 7.5, 10.3, 8.0] },
+      "lead_events": { "archived": [100, 100, 100, 100, 100], "wallMs": [34.7, 10.5, 15.6, 13.5, 9.3] }
+    },
+    "rowsPerTickVsR1": 1.0,
+    "aggregateRows": 1500,
+    "aggregateWallMs": 205.4,
+    "aggregateRowsPerMinute": 438169.43
+  },
+  "productionMutated": false
+}

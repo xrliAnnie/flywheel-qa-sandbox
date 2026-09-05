@@ -30,6 +30,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		workflow_ship_target_binding workflow_source_event workflow_source_receipt
 		workflow_start_reservation workflow_start_response workflow_start_stage
 		workflow_submission_credential workflow_turn_divergence_episode
+		workflow_terminal_archive
 	`),
 	protectedCurrentOrReference: words(`
 		admission_pause alert_delivery_receipts auto_qa_record cleanup_ref_observations
@@ -81,6 +82,7 @@ export const COMM_TABLE_CLASSIFICATION = Object.freeze({
 	protectedCurrentOrAuthority: words(`
 		lead_inbox_fenced_root lead_inbox_freeze_install lead_inbox_sanitation_audit
 		loop_heartbeat loop_owner mailbox_archive mailbox_identity mailbox_migration_meta
+		mailbox_terminal_archive
 		runner_declared_states runner_stop_declarations runner_workflow_activation session_receipt_lineage sessions
 		three_stage_turn turn_source_history turn_wait_ledger turn_wake_outbox
 		workflow_engine_park workflow_engine_park_cursor workflow_source_event

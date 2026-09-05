@@ -152,6 +152,13 @@ export function storeNodeDwellEnabled(
 	return readScopedBoolean(runtime, "node_dwell", projectName);
 }
 
+export function storeDatabaseArchiveEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "database_archive", projectName);
+}
+
 export function storeDocFlowEnabled(
 	runtime: FlagStoreRuntime,
 	projectName: string,

@@ -12,6 +12,7 @@ import {
 import {
 	dropReceiptLedgerSchema,
 	installMailboxRelayInvariantTriggers,
+	installMailboxTerminalArchiveSchema,
 	MAILBOX_MESSAGE_PROJECTION_SELECT,
 	MAILBOX_MESSAGE_PROJECTION_VERSION,
 	MAILBOX_SCHEMA,
@@ -223,6 +224,11 @@ export interface MailboxArchiveSweepResult {
 	busy: boolean;
 }
 
+export const MAILBOX_RETENTION_MS = 72 * 60 * 60_000;
+export const MAILBOX_IDENTITY_ARCHIVE_RETENTION_MS = 7 * 24 * 60 * 60_000;
+const MAX_IDENTITY_ARCHIVE_BATCH = 25;
+export const MAX_IDENTITY_ARCHIVE_DURATION_MS = 25;
+
 export type MailboxArchiveFamilyResult =
 	| "archived"
 	| "idempotent"
@@ -230,13 +236,33 @@ export type MailboxArchiveFamilyResult =
 	| "oversized"
 	| "invalid_content_ref";
 
+type MailboxIdentityRecord = {
+	id: string;
+	delivery_id: string;
+	insert_projection_hash: string;
+	archived_at: string | null;
+	terminal_at: string | null;
+};
+
+type MailboxTerminalArchiveRow = {
+	id: string;
+	delivery_id: string;
+	insert_projection_hash: string;
+	subject_id: string | null;
+	terminal_at: string;
+	archived_at: string;
+	mailbox_json: string | null;
+	logs_json: string;
+	payload_sha256: string;
+};
+
 function requiredText(value: string, field: string): string {
 	const trimmed = value.trim();
 	if (!trimmed) throw new Error(`${field} is required`);
 	return assertNoLoneSurrogate(field, trimmed);
 }
 
-const UTC_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+const UTC_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 
 export function assertUtcIsoTimestamp(value: string, field: string): void {
 	if (!UTC_ISO_PATTERN.test(value) || !Number.isFinite(Date.parse(value))) {
@@ -265,6 +291,12 @@ function placeholders(count: number): string {
 
 function mailboxProjectionHash(projection: unknown): string {
 	return createHash("sha256").update(JSON.stringify(projection)).digest("hex");
+}
+
+function terminalArchiveDigest(
+	row: Omit<MailboxTerminalArchiveRow, "payload_sha256">,
+): string {
+	return createHash("sha256").update(canonicalJsonString(row)).digest("hex");
 }
 
 function utf8Prefix(value: string, maxBytes: number): string {
@@ -338,8 +370,9 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 			"ALTER TABLE mailbox ADD COLUMN lease_retry_count INTEGER NOT NULL DEFAULT 0",
 		);
 		db.exec(`CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
-			ON mailbox(claim_expires_at)
-			WHERE state = 'LEASED' AND carrier = 'inbox'`);
+				ON mailbox(claim_expires_at)
+				WHERE state = 'LEASED' AND carrier = 'inbox'`);
+		installMailboxTerminalArchiveSchema(db);
 		// Caller-owned compatibility schemas may expose only the lease columns.
 		// Production FLY-1572 mailboxes have the full set and must receive the
 		// FLY-2136 indexes on their first writable open.
@@ -447,6 +480,8 @@ export class MailboxQueue {
 	};
 	private archiveAckedScanCursor?: { terminalAt: string; seq: number };
 	private archiveDeadScanCursor?: { terminalAt: string; seq: number };
+	private readyIdentityArchiveScanCursor?: { terminalAt: string; id: string };
+	private legacyIdentityArchiveScanAfterId = "";
 
 	constructor(
 		dbPathOrConnection: string | Database.Database,
@@ -474,10 +509,64 @@ export class MailboxQueue {
 		this.ownsConnection = true;
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");
+		installMailboxTerminalArchiveSchema(this.db);
 		this.db.exec(MAILBOX_SCHEMA);
 		ensureMailboxQueueSchema(this.db);
 		dropReceiptLedgerSchema(this.db);
 		installMailboxRelayInvariantTriggers(this.db);
+	}
+
+	private findIdentity(
+		id: string,
+		deliveryId = id,
+	): MailboxIdentityRecord | undefined {
+		const hot = this.db
+			.prepare(
+				"SELECT id,delivery_id,insert_projection_hash,archived_at,terminal_at FROM mailbox_identity WHERE id=? OR delivery_id=?",
+			)
+			.get(id, deliveryId) as MailboxIdentityRecord | undefined;
+		if (hot) return hot;
+		return this.db
+			.prepare(`SELECT id,delivery_id,insert_projection_hash,archived_at,terminal_at
+				FROM mailbox_terminal_archive WHERE id=? OR delivery_id=?`)
+			.get(id, deliveryId) as MailboxIdentityRecord | undefined;
+	}
+
+	private archivedMailboxJson(id: string): string | undefined {
+		const hot = this.db
+			.prepare(
+				"SELECT row_json FROM mailbox_log WHERE message_id=? AND event='archived' ORDER BY at DESC,log_seq DESC LIMIT 1",
+			)
+			.get(id) as { row_json: string } | undefined;
+		if (hot) return hot.row_json;
+		return (
+			(
+				this.db
+					.prepare(
+						"SELECT mailbox_json FROM mailbox_terminal_archive WHERE id=?",
+					)
+					.get(id) as { mailbox_json: string | null } | undefined
+			)?.mailbox_json ?? undefined
+		);
+	}
+
+	getArchivedFamilySnapshots(subjectId: string): string[] {
+		const hot = this.db
+			.prepare(`SELECT message_id AS id,row_json FROM mailbox_log
+				WHERE subject_id=? AND event='archived' ORDER BY at,message_id`)
+			.all(subjectId) as Array<{ id: string; row_json: string }>;
+		const snapshots = new Map(hot.map(({ id, row_json }) => [id, row_json]));
+		for (const { id, mailbox_json } of this.db
+			.prepare(`SELECT id,mailbox_json FROM mailbox_terminal_archive
+					WHERE subject_id=? AND mailbox_json IS NOT NULL
+					ORDER BY json_extract(mailbox_json,'$.seq')`)
+			.all(subjectId) as Array<{ id: string; mailbox_json: string }>) {
+			if (!snapshots.has(id)) snapshots.set(id, mailbox_json);
+		}
+		return [...snapshots.values()].sort(
+			(left, right) =>
+				Number(JSON.parse(left).seq) - Number(JSON.parse(right).seq),
+		);
 	}
 
 	enqueue(input: EnqueueMailboxInput): EnqueueMailboxResult {
@@ -541,18 +630,10 @@ export class MailboxQueue {
 
 		return this.db
 			.transaction((): EnqueueMailboxResult => {
-				const identity = this.db
-					.prepare(
-						"SELECT id, delivery_id, insert_projection_hash, archived_at FROM mailbox_identity WHERE id = ? OR delivery_id = ?",
-					)
-					.get(projection.id, projection.delivery_id) as
-					| {
-							id: string;
-							delivery_id: string;
-							insert_projection_hash: string;
-							archived_at: string | null;
-					  }
-					| undefined;
+				const identity = this.findIdentity(
+					projection.id,
+					projection.delivery_id,
+				);
 				if (identity) {
 					if (
 						identity.id !== projection.id ||
@@ -607,13 +688,10 @@ export class MailboxQueue {
 	): DiscordLaneVerdict {
 		return this.db
 			.transaction((): DiscordLaneVerdict => {
-				const identity = this.db
-					.prepare(
-						"SELECT id, archived_at FROM mailbox_identity WHERE id = ? OR delivery_id = ?",
-					)
-					.get(input.id, input.deliveryId ?? input.id) as
-					| { id: string; archived_at: string | null }
-					| undefined;
+				const identity = this.findIdentity(
+					input.id,
+					input.deliveryId ?? input.id,
+				);
 				if (identity?.archived_at !== null && identity !== undefined) {
 					return { lane: "archived" };
 				}
@@ -674,28 +752,14 @@ export class MailboxQueue {
 				...deliveryEvidence(live),
 			};
 		}
-		const identity = this.db
-			.prepare(
-				"SELECT id, archived_at FROM mailbox_identity WHERE id = ? OR delivery_id = ?",
-			)
-			.get(idOrDeliveryId, idOrDeliveryId) as
-			| { id: string; archived_at: string | null }
-			| undefined;
+		const identity = this.findIdentity(idOrDeliveryId);
 		if (!identity) return { kind: "absent_identity" };
 		if (!identity.archived_at) return { kind: "torn_identity" };
-		const archived = this.db
-			.prepare(
-				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC, log_seq DESC LIMIT 1",
-			)
-			.get(identity.id) as { row_json: string } | undefined;
-		if (!archived) {
-			throw new Error(
-				`archived mailbox identity has no snapshot: ${identity.id}`,
-			);
-		}
+		const archived = this.archivedMailboxJson(identity.id);
+		if (!archived) return { kind: "torn_identity" };
 		let snapshot: Partial<MailboxRow>;
 		try {
-			snapshot = JSON.parse(archived.row_json) as Partial<MailboxRow>;
+			snapshot = JSON.parse(archived) as Partial<MailboxRow>;
 		} catch {
 			throw new Error(`archived mailbox snapshot is malformed: ${identity.id}`);
 		}
@@ -733,24 +797,13 @@ export class MailboxQueue {
 	): "inbox" | "external" | "unknown_archived" | undefined {
 		const live = this.getById(idOrDeliveryId);
 		if (live) return live.carrier;
-		const identity = this.db
-			.prepare(
-				"SELECT id, archived_at FROM mailbox_identity WHERE id = ? OR delivery_id = ?",
-			)
-			.get(idOrDeliveryId, idOrDeliveryId) as
-			| { id: string; archived_at: string | null }
-			| undefined;
+		const identity = this.findIdentity(idOrDeliveryId);
 		if (!identity) return undefined;
 		if (!identity.archived_at) return undefined;
-		const archived = this.db
-			.prepare(
-				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC, log_seq DESC LIMIT 1",
-			)
-			.get(identity.id) as { row_json: string } | undefined;
+		const archived = this.archivedMailboxJson(identity.id);
 		if (!archived) return "unknown_archived";
 		try {
-			const carrier = (JSON.parse(archived.row_json) as { carrier?: unknown })
-				.carrier;
+			const carrier = (JSON.parse(archived) as { carrier?: unknown }).carrier;
 			return carrier === "inbox" || carrier === "external"
 				? carrier
 				: "unknown_archived";
@@ -2590,7 +2643,7 @@ export class MailboxQueue {
 		maxFamilies?: number;
 		maxFamilyBytes?: number;
 	}): MailboxArchiveSweepResult {
-		const retentionMs = input.retentionMs ?? 72 * 60 * 60_000;
+		const retentionMs = input.retentionMs ?? MAILBOX_RETENTION_MS;
 		const maxFamilies = input.maxFamilies ?? 10;
 		const maxFamilyBytes = input.maxFamilyBytes ?? 2 * 1024 * 1024;
 		assertUtcIsoTimestamp(input.now, "now");
@@ -2754,15 +2807,13 @@ export class MailboxQueue {
 		maxFamilyBytes?: number;
 	}): MailboxArchiveFamilyResult {
 		assertUtcIsoTimestamp(input.now, "now");
-		const retentionMs = input.retentionMs ?? 72 * 60 * 60_000;
+		const retentionMs = input.retentionMs ?? MAILBOX_RETENTION_MS;
 		if (!Number.isSafeInteger(retentionMs) || retentionMs < 0) {
 			throw new Error("retentionMs must be a non-negative safe integer");
 		}
 		const member = this.getById(input.id);
 		if (!member) {
-			const identity = this.db
-				.prepare("SELECT archived_at FROM mailbox_identity WHERE id = ?")
-				.get(input.id) as { archived_at: string | null } | undefined;
+			const identity = this.findIdentity(input.id);
 			if (identity?.archived_at) return "idempotent";
 			throw new Error(`mailbox row not found: ${input.id}`);
 		}
@@ -2799,6 +2850,7 @@ export class MailboxQueue {
 		const snapshots: Array<{
 			row: MailboxRow;
 			rowJson: string;
+			cold?: MailboxTerminalArchiveRow;
 			ref?: { path: string; hash: string };
 		}> = [];
 		let familyBytes = 0;
@@ -2832,10 +2884,24 @@ export class MailboxQueue {
 					? { content_ref_archive: contentRefArchive }
 					: {}),
 			});
+			const cold = this.db
+				.prepare("SELECT * FROM mailbox_terminal_archive WHERE id=?")
+				.get(row.id) as MailboxTerminalArchiveRow | undefined;
+			if (cold) {
+				const { payload_sha256: payloadSha256, ...payload } = cold;
+				if (
+					terminalArchiveDigest(payload) !== payloadSha256 ||
+					cold.subject_id !== rootId ||
+					cold.mailbox_json !== rowJson
+				) {
+					throw new Error(`mailbox restore hot conflict: ${row.id}`);
+				}
+			}
 			familyBytes += Buffer.byteLength(rowJson);
 			snapshots.push({
 				row,
 				rowJson,
+				...(cold ? { cold } : {}),
 				...(contentRefArchive
 					? {
 							ref: {
@@ -2857,38 +2923,64 @@ export class MailboxQueue {
 					return "not_due";
 				}
 				for (const snapshot of snapshots) {
-					this.db
-						.prepare(
-							"INSERT INTO mailbox_log (event_id, message_id, subject_id, event, at, row_json) VALUES (?, ?, ?, 'archived', ?, ?)",
-						)
-						.run(
-							`archived:${snapshot.row.id}`,
-							snapshot.row.id,
-							rootId,
-							input.now,
-							snapshot.rowJson,
-						);
-					if (snapshot.ref) {
+					if (snapshot.cold) {
+						const logs = this.db
+							.prepare(
+								"SELECT * FROM mailbox_log WHERE message_id=? ORDER BY log_seq",
+							)
+							.all(snapshot.row.id);
+						if (canonicalJsonString(logs) !== snapshot.cold.logs_json) {
+							throw new Error(
+								`mailbox restore log conflict: ${snapshot.row.id}`,
+							);
+						}
+					} else {
 						this.db
 							.prepare(
-								`INSERT INTO content_ref_gc_outbox
-								 (intent_id, message_id, path, content_hash, created_at)
-								 VALUES (?, ?, ?, ?, ?)`,
+								"INSERT INTO mailbox_log (event_id, message_id, subject_id, event, at, row_json) VALUES (?, ?, ?, 'archived', ?, ?)",
 							)
 							.run(
-								`gc:${snapshot.row.id}`,
+								`archived:${snapshot.row.id}`,
 								snapshot.row.id,
-								snapshot.ref.path,
-								snapshot.ref.hash,
+								rootId,
 								input.now,
+								snapshot.rowJson,
 							);
+						if (snapshot.ref) {
+							this.db
+								.prepare(
+									`INSERT INTO content_ref_gc_outbox
+									 (intent_id, message_id, path, content_hash, created_at)
+									 VALUES (?, ?, ?, ?, ?)`,
+								)
+								.run(
+									`gc:${snapshot.row.id}`,
+									snapshot.row.id,
+									snapshot.ref.path,
+									snapshot.ref.hash,
+									input.now,
+								);
+						}
+					}
+					const terminalAt =
+						snapshot.row.state === "ACKED"
+							? snapshot.row.acked_at
+							: snapshot.row.dead_at;
+					if (!terminalAt) {
+						throw new Error(
+							`mailbox terminal time missing: ${snapshot.row.id}`,
+						);
 					}
 					if (
 						this.db
 							.prepare(
-								"UPDATE mailbox_identity SET archived_at = ? WHERE id = ? AND archived_at IS NULL",
+								"UPDATE mailbox_identity SET archived_at = ?, terminal_at = ? WHERE id = ? AND archived_at IS NULL AND terminal_at IS NULL",
 							)
-							.run(input.now, snapshot.row.id).changes !== 1
+							.run(
+								snapshot.cold?.archived_at ?? input.now,
+								terminalAt,
+								snapshot.row.id,
+							).changes !== 1
 					) {
 						throw new Error(
 							`mailbox identity archive conflict: ${snapshot.row.id}`,
@@ -2899,6 +2991,407 @@ export class MailboxQueue {
 						.run(snapshot.row.id);
 				}
 				return "archived";
+			})
+			.immediate();
+	}
+
+	compactArchivedIdentities(input: {
+		now: string;
+		limit?: number;
+		onIdentityError?: (id: string, error: unknown) => void;
+	}): number {
+		assertUtcIsoTimestamp(input.now, "now");
+		const limit = input.limit ?? MAX_IDENTITY_ARCHIVE_BATCH;
+		if (
+			!Number.isSafeInteger(limit) ||
+			limit <= 0 ||
+			limit > MAX_IDENTITY_ARCHIVE_BATCH
+		) {
+			throw new Error(
+				"identity archive limit must be an integer from 1 through 25",
+			);
+		}
+		const cutoff = new Date(
+			Date.parse(input.now) - MAILBOX_IDENTITY_ARCHIVE_RETENTION_MS,
+		).toISOString();
+		const deadline = performance.now() + MAX_IDENTITY_ARCHIVE_DURATION_MS;
+		const ready = this.readyIdentityArchiveScanCursor
+			? (this.db
+					.prepare(`SELECT id,delivery_id,insert_projection_hash,archived_at,terminal_at
+						FROM mailbox_identity
+						WHERE archived_at IS NOT NULL AND terminal_at <= ?
+						  AND (terminal_at > ? OR (terminal_at = ? AND id > ?))
+						  AND NOT EXISTS (SELECT 1 FROM mailbox_log authority
+							WHERE authority.message_id=mailbox_identity.id AND authority.event='progress')
+						ORDER BY terminal_at,id LIMIT ?`)
+					.all(
+						cutoff,
+						this.readyIdentityArchiveScanCursor.terminalAt,
+						this.readyIdentityArchiveScanCursor.terminalAt,
+						this.readyIdentityArchiveScanCursor.id,
+						limit,
+					) as MailboxIdentityRecord[])
+			: (this.db
+					.prepare(`SELECT id,delivery_id,insert_projection_hash,archived_at,terminal_at
+						FROM mailbox_identity
+						WHERE archived_at IS NOT NULL AND terminal_at <= ?
+						  AND NOT EXISTS (SELECT 1 FROM mailbox_log authority
+							WHERE authority.message_id=mailbox_identity.id AND authority.event='progress')
+						ORDER BY terminal_at,id LIMIT ?`)
+					.all(cutoff, limit) as MailboxIdentityRecord[]);
+		if (ready.length < limit && this.readyIdentityArchiveScanCursor) {
+			ready.push(
+				...(this.db
+					.prepare(`SELECT id,delivery_id,insert_projection_hash,archived_at,terminal_at
+					FROM mailbox_identity
+					WHERE archived_at IS NOT NULL AND terminal_at <= ?
+					  AND (terminal_at < ? OR (terminal_at = ? AND id <= ?))
+					  AND NOT EXISTS (SELECT 1 FROM mailbox_log authority
+						WHERE authority.message_id=mailbox_identity.id AND authority.event='progress')
+					ORDER BY terminal_at,id LIMIT ?`)
+					.all(
+						cutoff,
+						this.readyIdentityArchiveScanCursor.terminalAt,
+						this.readyIdentityArchiveScanCursor.terminalAt,
+						this.readyIdentityArchiveScanCursor.id,
+						limit - ready.length,
+					) as MailboxIdentityRecord[]),
+			);
+		}
+		const candidates = [...ready];
+		if (candidates.length < limit) {
+			const remaining = limit - candidates.length;
+			const legacy = this.legacyIdentityArchiveScanAfterId
+				? (this.db
+						.prepare(`SELECT id,delivery_id,insert_projection_hash,archived_at,terminal_at
+								FROM mailbox_identity
+								WHERE archived_at IS NOT NULL AND terminal_at IS NULL
+								  AND id > ?
+								  AND NOT EXISTS (SELECT 1 FROM mailbox_log authority
+									WHERE authority.message_id=mailbox_identity.id AND authority.event='progress')
+								ORDER BY id LIMIT ?`)
+						.all(
+							this.legacyIdentityArchiveScanAfterId,
+							remaining,
+						) as MailboxIdentityRecord[])
+				: [];
+			if (legacy.length < remaining) {
+				legacy.push(
+					...(this.legacyIdentityArchiveScanAfterId
+						? (this.db
+								.prepare(`SELECT id,delivery_id,insert_projection_hash,archived_at,terminal_at
+									FROM mailbox_identity
+									WHERE archived_at IS NOT NULL AND terminal_at IS NULL
+									  AND id <= ?
+									  AND NOT EXISTS (SELECT 1 FROM mailbox_log authority
+										WHERE authority.message_id=mailbox_identity.id AND authority.event='progress')
+									ORDER BY id LIMIT ?`)
+								.all(
+									this.legacyIdentityArchiveScanAfterId,
+									remaining - legacy.length,
+								) as MailboxIdentityRecord[])
+						: (this.db
+								.prepare(`SELECT id,delivery_id,insert_projection_hash,archived_at,terminal_at
+									FROM mailbox_identity
+									WHERE archived_at IS NOT NULL AND terminal_at IS NULL
+									  AND NOT EXISTS (SELECT 1 FROM mailbox_log authority
+										WHERE authority.message_id=mailbox_identity.id AND authority.event='progress')
+									ORDER BY id LIMIT ?`)
+								.all(remaining - legacy.length) as MailboxIdentityRecord[])),
+				);
+			}
+			candidates.push(...legacy);
+		}
+		const compact = this.db.transaction(
+			(identity: MailboxIdentityRecord): boolean => {
+				if (!identity.archived_at) {
+					throw new Error(`archived identity missing time: ${identity.id}`);
+				}
+				const logs = this.db
+					.prepare(
+						"SELECT * FROM mailbox_log WHERE message_id=? ORDER BY log_seq",
+					)
+					.all(identity.id) as Array<Record<string, unknown>>;
+				const archivedLog = [...logs]
+					.reverse()
+					.find((row) => row.event === "archived");
+				const mailboxJson = archivedLog ? String(archivedLog.row_json) : null;
+				let terminalAt = identity.terminal_at;
+				if (!terminalAt) {
+					if (mailboxJson) {
+						let mailbox: Partial<MailboxRow>;
+						try {
+							mailbox = JSON.parse(mailboxJson) as Partial<MailboxRow>;
+						} catch {
+							throw new Error(
+								`archived mailbox snapshot is malformed: ${identity.id}`,
+							);
+						}
+						terminalAt =
+							mailbox.state === "ACKED"
+								? (mailbox.acked_at ?? null)
+								: mailbox.state === "DEAD"
+									? (mailbox.dead_at ?? null)
+									: null;
+						if (!terminalAt) {
+							throw new Error(
+								`archived mailbox snapshot is not terminal: ${identity.id}`,
+							);
+						}
+					} else {
+						terminalAt = identity.archived_at;
+					}
+					assertUtcIsoTimestamp(terminalAt, "terminalAt");
+					if (
+						this.db
+							.prepare(`UPDATE mailbox_identity SET terminal_at=?
+									WHERE id=? AND archived_at IS NOT NULL AND terminal_at IS NULL`)
+							.run(terminalAt, identity.id).changes !== 1
+					) {
+						throw new Error(
+							`mailbox identity backfill conflict: ${identity.id}`,
+						);
+					}
+				}
+				if (Date.parse(terminalAt) > Date.parse(cutoff)) return false;
+				const cold = {
+					id: identity.id,
+					delivery_id: identity.delivery_id,
+					insert_projection_hash: identity.insert_projection_hash,
+					subject_id:
+						typeof archivedLog?.subject_id === "string"
+							? archivedLog.subject_id
+							: null,
+					terminal_at: terminalAt,
+					archived_at: identity.archived_at,
+					mailbox_json: mailboxJson,
+					logs_json: canonicalJsonString(logs),
+				};
+				const payloadSha256 = terminalArchiveDigest(cold);
+				const existing = this.db
+					.prepare("SELECT * FROM mailbox_terminal_archive WHERE id=?")
+					.get(identity.id) as MailboxTerminalArchiveRow | undefined;
+				if (existing) {
+					const { payload_sha256, ...payload } = existing;
+					if (
+						payload_sha256 !== payloadSha256 ||
+						canonicalJsonString(payload) !== canonicalJsonString(cold)
+					) {
+						throw new Error(`mailbox cold archive conflict: ${identity.id}`);
+					}
+				} else {
+					this.db
+						.prepare(`INSERT INTO mailbox_terminal_archive
+								(id,delivery_id,insert_projection_hash,subject_id,terminal_at,
+								 archived_at,mailbox_json,logs_json,payload_sha256)
+								VALUES(?,?,?,?,?,?,?,?,?)`)
+						.run(
+							cold.id,
+							cold.delivery_id,
+							cold.insert_projection_hash,
+							cold.subject_id,
+							cold.terminal_at,
+							cold.archived_at,
+							cold.mailbox_json,
+							cold.logs_json,
+							payloadSha256,
+						);
+				}
+				this.db
+					.prepare("DELETE FROM mailbox_log WHERE message_id=?")
+					.run(identity.id);
+				if (
+					this.db
+						.prepare("DELETE FROM mailbox_identity WHERE id=?")
+						.run(identity.id).changes !== 1
+				) {
+					throw new Error(`mailbox identity archive conflict: ${identity.id}`);
+				}
+				return true;
+			},
+		);
+		let compacted = 0;
+		for (const identity of candidates) {
+			if (performance.now() >= deadline) break;
+			if (identity.terminal_at === null) {
+				this.legacyIdentityArchiveScanAfterId = identity.id;
+			} else {
+				this.readyIdentityArchiveScanCursor = {
+					terminalAt: identity.terminal_at,
+					id: identity.id,
+				};
+			}
+			try {
+				if (compact.immediate(identity)) compacted++;
+			} catch (error) {
+				if (!input.onIdentityError) throw error;
+				input.onIdentityError(identity.id, error);
+			}
+		}
+		return compacted;
+	}
+
+	restoreTerminalIdentity(idOrDeliveryId: string): "restored" | "idempotent" {
+		const cold = this.db
+			.prepare(
+				"SELECT * FROM mailbox_terminal_archive WHERE id=? OR delivery_id=?",
+			)
+			.get(idOrDeliveryId, idOrDeliveryId) as
+			| MailboxTerminalArchiveRow
+			| undefined;
+		if (!cold) throw new Error("mailbox terminal archive row not found");
+		const { payload_sha256: payloadSha256, ...payload } = cold;
+		if (terminalArchiveDigest(payload) !== payloadSha256) {
+			throw new Error(`mailbox terminal archive digest invalid: ${cold.id}`);
+		}
+		const logs = JSON.parse(cold.logs_json) as Array<Record<string, unknown>>;
+		if (
+			!Array.isArray(logs) ||
+			logs.some((log) => !log || typeof log !== "object" || Array.isArray(log))
+		) {
+			throw new Error("mailbox terminal logs are invalid");
+		}
+		let mailbox: Record<string, unknown> | undefined;
+		if (cold.mailbox_json) {
+			mailbox = JSON.parse(cold.mailbox_json) as Record<string, unknown>;
+			if (!mailbox || typeof mailbox !== "object" || Array.isArray(mailbox)) {
+				throw new Error("mailbox terminal snapshot is invalid");
+			}
+			const contentRefArchive = mailbox.content_ref_archive as
+				| {
+						path?: unknown;
+						bytes?: unknown;
+						sha256?: unknown;
+						content_base64?: unknown;
+				  }
+				| undefined;
+			delete mailbox.content_ref_archive;
+			if (mailbox.content_ref !== null) {
+				if (
+					typeof mailbox.content_ref !== "string" ||
+					!isValidRefPath(mailbox.content_ref) ||
+					contentRefArchive?.path !== mailbox.content_ref ||
+					typeof contentRefArchive.bytes !== "number" ||
+					typeof contentRefArchive.sha256 !== "string" ||
+					typeof contentRefArchive.content_base64 !== "string"
+				) {
+					throw new Error(
+						`mailbox restore content_ref unavailable: ${cold.id}`,
+					);
+				}
+				let bytes: Buffer;
+				try {
+					bytes = readFileSync(mailbox.content_ref);
+				} catch {
+					throw new Error(
+						`mailbox restore content_ref unavailable: ${cold.id}`,
+					);
+				}
+				const archivedBytes = Buffer.from(
+					contentRefArchive.content_base64,
+					"base64",
+				);
+				if (
+					bytes.length !== contentRefArchive.bytes ||
+					!bytes.equals(archivedBytes) ||
+					createHash("sha256").update(bytes).digest("hex") !==
+						contentRefArchive.sha256
+				) {
+					throw new Error(
+						`mailbox restore content_ref unavailable: ${cold.id}`,
+					);
+				}
+			}
+		}
+		const restoredLogs = logs;
+		const mailboxColumns = new Set(
+			(
+				this.db.prepare("PRAGMA table_info(mailbox)").all() as Array<{
+					name: string;
+				}>
+			).map(({ name }) => name),
+		);
+		const logColumns = new Set(
+			(
+				this.db.prepare("PRAGMA table_info(mailbox_log)").all() as Array<{
+					name: string;
+				}>
+			).map(({ name }) => name),
+		);
+		if (
+			(mailbox &&
+				(Object.keys(mailbox).length === 0 ||
+					Object.keys(mailbox).some(
+						(column) => !mailboxColumns.has(column),
+					))) ||
+			restoredLogs.some(
+				(log) =>
+					Object.keys(log).length === 0 ||
+					Object.keys(log).some((column) => !logColumns.has(column)),
+			)
+		) {
+			throw new Error("mailbox terminal archive schema mismatch");
+		}
+		return this.db
+			.transaction(() => {
+				const existingIdentity = this.db
+					.prepare(`SELECT id,delivery_id,insert_projection_hash,archived_at,terminal_at
+						FROM mailbox_identity WHERE id=? OR delivery_id=?`)
+					.get(cold.id, cold.delivery_id) as MailboxIdentityRecord | undefined;
+				if (existingIdentity) {
+					const expectedIdentity: MailboxIdentityRecord = {
+						id: cold.id,
+						delivery_id: cold.delivery_id,
+						insert_projection_hash: cold.insert_projection_hash,
+						archived_at: mailbox ? null : cold.archived_at,
+						terminal_at: mailbox ? null : cold.terminal_at,
+					};
+					const existingMailbox = this.getById(cold.id);
+					const existingLogs = this.db
+						.prepare(
+							"SELECT * FROM mailbox_log WHERE message_id=? ORDER BY log_seq",
+						)
+						.all(cold.id);
+					if (
+						canonicalJsonString(existingIdentity) !==
+							canonicalJsonString(expectedIdentity) ||
+						canonicalJsonString(existingMailbox) !==
+							canonicalJsonString(mailbox) ||
+						canonicalJsonString(existingLogs) !==
+							canonicalJsonString(restoredLogs)
+					) {
+						throw new Error(`mailbox restore hot conflict: ${cold.id}`);
+					}
+					return "idempotent" as const;
+				}
+				this.db
+					.prepare(`INSERT INTO mailbox_identity
+						(id,delivery_id,insert_projection_hash,archived_at,terminal_at)
+						VALUES(?,?,?,?,?)`)
+					.run(
+						cold.id,
+						cold.delivery_id,
+						cold.insert_projection_hash,
+						mailbox ? null : cold.archived_at,
+						mailbox ? null : cold.terminal_at,
+					);
+				for (const log of restoredLogs) {
+					const columns = Object.keys(log);
+					this.db
+						.prepare(`INSERT INTO mailbox_log
+							(${columns.map((column) => `"${column}"`).join(",")})
+							VALUES(${placeholders(columns.length)})`)
+						.run(...columns.map((column) => log[column]));
+				}
+				if (mailbox) {
+					const columns = Object.keys(mailbox);
+					this.db
+						.prepare(`INSERT INTO mailbox
+							(${columns.map((column) => `"${column}"`).join(",")})
+							VALUES(${placeholders(columns.length)})`)
+						.run(...columns.map((column) => mailbox?.[column]));
+				}
+				return "restored" as const;
 			})
 			.immediate();
 	}

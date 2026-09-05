@@ -167,6 +167,7 @@
 	"workflow_template_audit",
 	"workflow_template_publication",
 	"workflow_template_revision",
+	"workflow_terminal_archive",
 	"workflow_turn_divergence_episode",
 	"workflow_wake_send_claim"
 ]

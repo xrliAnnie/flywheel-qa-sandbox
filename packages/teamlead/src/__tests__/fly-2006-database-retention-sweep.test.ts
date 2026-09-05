@@ -261,7 +261,7 @@ describe("FLY-2006 retention registry", () => {
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toContain(
 			"workflow_completion_drain_challenge",
 		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toHaveLength(37);
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toHaveLength(38);
 		expect(
 			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
 		).toHaveLength(113);
@@ -286,7 +286,7 @@ describe("FLY-2006 retention registry", () => {
 		).toEqual(retiredNames);
 		expect(COMM_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(7);
 		expect(COMM_TABLE_CLASSIFICATION.protectedCurrentOrAuthority).toHaveLength(
-			20,
+			21,
 		);
 		expect(COMM_TABLE_CLASSIFICATION.protectedCurrentOrAuthority).toEqual(
 			expect.arrayContaining(["mailbox_archive", "runner_stop_declarations"]),
@@ -297,13 +297,13 @@ describe("FLY-2006 retention registry", () => {
 
 		const teamleadNames = Object.values(TEAMLEAD_TABLE_CLASSIFICATION).flat();
 		const commNames = Object.values(COMM_TABLE_CLASSIFICATION).flat();
-		expect(new Set(teamleadNames).size).toBe(170);
+		expect(new Set(teamleadNames).size).toBe(171);
 		expect(TEAMLEAD_PRODUCTION_TABLES).toEqual([...teamleadNames].sort());
-		expect(new Set(commNames).size).toBe(27);
+		expect(new Set(commNames).size).toBe(28);
 		expect(
 			assertClassifiedSchema("teamlead", TEAMLEAD_PRODUCTION_TABLES),
 		).toMatchObject({
-			total: 170,
+			total: 171,
 		});
 		expect(
 			assertClassifiedSchema(
@@ -312,9 +312,9 @@ describe("FLY-2006 retention registry", () => {
 					(name) => !retiredNames.includes(name),
 				),
 			),
-		).toMatchObject({ total: 167 });
+		).toMatchObject({ total: 168 });
 		expect(assertClassifiedSchema("comm", commNames)).toMatchObject({
-			total: 27,
+			total: 28,
 		});
 		expect(() =>
 			assertClassifiedSchema("teamlead", [...teamleadNames, "future_table"]),
@@ -938,7 +938,7 @@ describe("FLY-2006 multi-target inventory", () => {
 					suppressed_at TEXT NOT NULL
 				);
 				WITH RECURSIVE counter(seq) AS (
-					SELECT 1 UNION ALL SELECT seq+1 FROM counter WHERE seq<20003
+					SELECT 1 UNION ALL SELECT seq+1 FROM counter WHERE seq<20004
 				)
 				INSERT INTO lead_events
 				SELECT seq,'2000-01-01T00:00:00.000Z','session_completed',
@@ -950,6 +950,7 @@ describe("FLY-2006 multi-target inventory", () => {
 				INSERT INTO legacy_render_fallback VALUES(
 					1,'2000-01-01T00:02:00.000Z'
 				);
+				UPDATE lead_events SET event_type='external_merge_suspect' WHERE seq=20003;
 			`);
 			teamlead.close();
 			new Database(commPath).close();
@@ -1004,7 +1005,7 @@ describe("FLY-2006 multi-target inventory", () => {
 			const verified = new Database(teamleadPath, { readonly: true });
 			expect(
 				verified.prepare("SELECT seq FROM lead_events ORDER BY seq").all(),
-			).toEqual([{ seq: 1 }, { seq: 10000 }]);
+			).toEqual([{ seq: 1 }, { seq: 10000 }, { seq: 20003 }]);
 			expect(
 				verified.prepare("SELECT seq FROM legacy_render_fallback").all(),
 			).toEqual([]);
@@ -1118,6 +1119,18 @@ describe("FLY-2006 multi-target inventory", () => {
 				"info",
 				"{}",
 				"bridge.founder-thread-notifier",
+			);
+			insertEvent.run(
+				5,
+				"durable-claim",
+				"2026-08-02T00:00:00.000Z",
+				null,
+				null,
+				"flywheel",
+				"external_merge_suspect",
+				"warning",
+				"{}",
+				"bridge.external-merge-reconcile",
 			);
 
 			comm.exec(MAILBOX_SCHEMA);
@@ -1255,7 +1268,7 @@ describe("FLY-2006 multi-target inventory", () => {
 			).rejects.toThrow("injected_comm_failure");
 			expect(
 				teamlead.prepare("SELECT id FROM session_events ORDER BY id").all(),
-			).toEqual([{ id: 2 }, { id: 3 }, { id: 4 }]);
+			).toEqual([{ id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }]);
 			expect(comm.prepare("SELECT id FROM mailbox ORDER BY id").all()).toEqual([
 				{ id: "hl-exact" },
 				{ id: "near-miss" },

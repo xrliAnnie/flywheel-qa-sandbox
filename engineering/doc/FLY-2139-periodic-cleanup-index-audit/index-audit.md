@@ -6,11 +6,12 @@ Issue: FLY-2139 (https://linear.app/geoforge3d/issue/FLY-2139/bridge-稳定全�
 
 ## 结论
 
-六个 Bridge 热路径 tracing window 共执行 55 次 SELECT、覆盖 39 条不同 SQL。测试在每条查询真实执行前,用**该次调用的原始绑定参数**在同一 better-sqlite3 connection 上运行 `EXPLAIN QUERY PLAN`;六路都有非空捕获且命中预期 query family。结果:
+六个 Bridge 热路径 tracing window 共执行 57 次 SELECT、覆盖 41 条不同 SQL。测试在每条查询真实执行前,用**该次调用的原始绑定参数**在同一 better-sqlite3 connection 上运行 `EXPLAIN QUERY PLAN`;六路都有非空捕获且命中预期 query family。结果:
 
 - 审计的大表查询全部出现具名索引(含 SQLite 为 PRIMARY KEY 建的 `sqlite_autoindex_*`),无 bare `SCAN <大表>`。
 - 首轮 Bridge 热路径发现 CommDB 以 `batch_id` 回读已冻结 batch 的两条查询缺索引。补 `mailbox_batch_lookup(batch_id, priority, seq) WHERE batch_id IS NOT NULL` 后,两条都从全表扫描 + 临时排序变成具名索引搜索,且不再建临时排序树。全套 CommDB 回归另发现 SQLite 会让 frozen-lease scan 误选新索引,因此同时补 `mailbox_lease_expiry_order(priority, seq, claim_expires_at)` partial index,维持原 lease 热路径的有界顺序扫描。
 - QA 真规模复验又发现 retention 自身的 mailbox 候选查询未被首轮热路枚举覆盖:`NOT EXISTS` 的 `ref_id` 与 `superseded_by` 两个 correlated subquery 均逐行 `SCAN child`,使 66,272 行 inventory 达 510 秒。现补 `mailbox_ref_lookup(ref_id) WHERE ref_id IS NOT NULL` 与 `mailbox_superseded_by_lookup(superseded_by) WHERE superseded_by IS NOT NULL`;完整候选 EQP 的两路子查询均变为 `SEARCH child USING COVERING INDEX`。
+- FLY-2341 把终态 mailbox identity 与 ACKED/DEAD archive 查询纳入同一 tracing window;新增两条 SELECT 均命中对应 partial index,没有引入 bare scan。
 - 14 个 `TEMP B-TREE` 均出现在**先由具名索引缩小候选集以后**的有界 `GROUP BY` / `COUNT(DISTINCT)` / `ORDER BY MIN(seq)` 或多分支 `OR` 归并。它们不是全量陈旧数据扫描;在不改查询文本/业务语义的边界下保留。测试把「临时树但没有任何具名索引访问」列为硬失败。
 
 ## before / after
@@ -32,12 +33,12 @@ Issue: FLY-2139 (https://linear.app/geoforge3d/issue/FLY-2139/bridge-稳定全�
 | tracing window | captures | unique SQL | named indexes | temp B-trees after indexed access |
 |---|---:|---:|---|---:|
 | gate-poller | 2 | 2 | idx_founder_action_status, idx_sessions_status_revision | 1 |
-| lead-inbox-admit | 30 | 19 | content_ref_gc_due, idx_sessions_status_revision, mailbox_archive_acked, mailbox_archive_dead, mailbox_bridge_reclaim, mailbox_claim_bridge, mailbox_claim_runner, mailbox_dead_scan, mailbox_deliverable_by_agent, mailbox_lead_reclaim, mailbox_lease_expiry, mailbox_lease_expiry_order, mailbox_runner_inflight_by_recipient, sqlite_autoindex_dead_letter_alerts_2 | 10 |
+| lead-inbox-admit | 32 | 21 | content_ref_gc_due, idx_sessions_status_revision, mailbox_archive_acked, mailbox_archive_dead, mailbox_bridge_reclaim, mailbox_claim_bridge, mailbox_claim_runner, mailbox_dead_scan, mailbox_deliverable_by_agent, mailbox_identity_terminal_archive, mailbox_identity_terminal_backfill, mailbox_lead_reclaim, mailbox_lease_expiry, mailbox_lease_expiry_order, mailbox_log_message_event, mailbox_runner_inflight_by_recipient, sqlite_autoindex_dead_letter_alerts_2 | 10 |
 | runner-mailbox | 14 | 9 | mailbox_batch_lookup, mailbox_claim_runner, mailbox_deliverable_by_agent, mailbox_lease_expiry, mailbox_lease_expiry_order, mailbox_runner_inflight_by_recipient | 5 |
-| patrol-tick | 4 | 4 | idx_lead_events_patrol, idx_sessions_status_revision | 0 |
+| patrol-tick | 5 | 5 | idx_lead_events_patrol, idx_sessions_status_revision, idx_workflow_terminal_archive_lead_event_id | 0 |
 | workflow-transition | 3 | 3 | sqlite_autoindex_workflow_rework_delivery_1, sqlite_autoindex_workflow_rework_request_1, sqlite_autoindex_workflow_rework_route_revision_1 | 0 |
 | outbox-dead-letter | 2 | 2 | idx_dead_letter_alert_due, idx_workflow_alert_delivery, sqlite_autoindex_alert_delivery_receipts_1 | 2 |
-capture-set-sha256: `cce7b82d555c05c58442ef539fda5d7ac9503053c21a97151aca081ce8ef0abe`
+capture-set-sha256: `1052baeec2999ea526775b752b44760be058ca1ec63d0565eac624cd7e7bcdcc`
 <!-- FLY-2139 GENERATED QUERY-AUDIT EVIDENCE: END -->
 
 ## 防真空负控制

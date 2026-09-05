@@ -334,6 +334,7 @@ import {
 	storeAlertSystemEnabled,
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
+	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
 	storeReviewQuotaAutoRetryEnabled,
@@ -4753,6 +4754,16 @@ export async function startBridge(
 		else console.warn(message);
 	}
 	const flagStore = initializeFlagStore(store, process.env);
+	const databaseArchiveEnabled = (projectName: string): boolean => {
+		try {
+			return storeDatabaseArchiveEnabled(flagStore, projectName);
+		} catch (error) {
+			console.warn(
+				`[database-hygiene] archive flag unavailable for ${projectName}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return false;
+		}
+	};
 	// FLY-182/2103: construct the existing Discord-independent founder alert
 	// path before project runtime setup, so ConfigLoader rejection cannot remain
 	// a console-only boot failure.
@@ -5533,6 +5544,7 @@ export async function startBridge(
 		store,
 		registry,
 		commDbPathForProject,
+		archiveEnabled: databaseArchiveEnabled,
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		secretProvider: deliverySecretProvider,
 		...(qaStallLeadId
@@ -7877,13 +7889,24 @@ export async function startBridge(
 				}
 				await yieldToEventLoop();
 			}
+			const activeCommExecutionIds = new Set<string>();
+			const activeCommIssueIds = new Set<string>();
+			let activeCommSnapshotComplete = true;
 			await runSequentialChunks(projects, async (project) => {
 				let deliveryCommDb: CommDB | undefined;
+				let activeCommSnapshotRead = false;
 				try {
 					deliveryCommDb = new CommDB(
 						commDbPathForProject(project.projectName),
 						false,
 					);
+					for (const session of deliveryCommDb.getActiveSessions(
+						project.projectName,
+					)) {
+						activeCommExecutionIds.add(session.execution_id);
+						if (session.issue_id) activeCommIssueIds.add(session.issue_id);
+					}
+					activeCommSnapshotRead = true;
 					const resolveDeliveryAlertIdentity = (input: {
 						projectName: string;
 						issueId: string;
@@ -8002,6 +8025,7 @@ export async function startBridge(
 						}
 					}
 				} catch (error) {
+					if (!activeCommSnapshotRead) activeCommSnapshotComplete = false;
 					console.warn(
 						`[delivery-contract] maintenance pass failed closed for ${project.projectName}: ${
 							error instanceof Error ? error.message : String(error)
@@ -8011,6 +8035,45 @@ export async function startBridge(
 					deliveryCommDb?.close();
 				}
 			});
+			await yieldToEventLoop();
+			if (
+				projects.length > 0 &&
+				projects.every(({ projectName }) => databaseArchiveEnabled(projectName))
+			) {
+				try {
+					if (!activeCommSnapshotComplete) {
+						throw new Error("active CommDB snapshot incomplete");
+					}
+					const archived = withSyncOpMarker(
+						"database-hygiene:terminal-archive",
+						() =>
+							store.archiveTerminalRows({
+								now: deliveryNow,
+								limit: 100,
+								sourceTable: (
+									[
+										"session_events",
+										"workflow_run_event",
+										"lead_events",
+									] as const
+								)[tick % 3]!,
+								activeExecutionIds: [...activeCommExecutionIds],
+								activeIssueIds: [...activeCommIssueIds],
+							}),
+					);
+					if (archived.archived > 0) {
+						console.info(
+							`[database-hygiene] archived ${archived.archived} terminal narrative row(s)`,
+						);
+					}
+				} catch (error) {
+					console.warn(
+						`[database-hygiene] terminal archive deferred: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
+			}
 			// FLY-1066: ~hourly residue convergence rides this existing tick and is
 			// deliberately independent of the worktree-autoclean kill-switch.
 			if (residueHarvester) {

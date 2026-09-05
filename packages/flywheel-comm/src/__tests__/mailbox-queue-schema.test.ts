@@ -5,7 +5,10 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
 import { ensureMailboxQueueSchema, MailboxQueue } from "../mailbox-queue.js";
-import { MAILBOX_SCHEMA } from "../mailbox-schema.js";
+import {
+	installMailboxTerminalArchiveSchema,
+	MAILBOX_SCHEMA,
+} from "../mailbox-schema.js";
 
 const roots: string[] = [];
 
@@ -32,6 +35,85 @@ afterEach(() => {
 });
 
 describe("FLY-1573 mailbox queue schema upgrade", () => {
+	it.each(["CommDB", "MailboxQueue"] as const)(
+		"opens an on-disk %s database created before terminal_at",
+		(opener) => {
+			const root = mkdtempSync(join(tmpdir(), "fly2341-legacy-terminal-at-"));
+			roots.push(root);
+			const path = join(root, "comm.db");
+			const db = new Database(path);
+			db.exec(MAILBOX_SCHEMA);
+			db.exec(`
+				DROP VIEW messages;
+				DROP VIEW lead_inbox;
+				DROP TRIGGER mailbox_identity_no_delete;
+				DROP TRIGGER mailbox_identity_update_guard;
+				DROP TRIGGER mailbox_log_no_delete;
+				DROP INDEX mailbox_identity_terminal_archive;
+				DROP INDEX mailbox_identity_terminal_backfill;
+				DROP TABLE mailbox_terminal_archive;
+				ALTER TABLE mailbox_identity DROP COLUMN terminal_at;
+			`);
+			db.close();
+
+			expect(() =>
+				opener === "CommDB"
+					? new CommDB(path, false, false).close()
+					: new MailboxQueue(path).close(),
+			).not.toThrow();
+		},
+	);
+
+	it("upgrades an existing identity registry to the terminal cold schema", () => {
+		const db = new Database(":memory:");
+		db.exec(MAILBOX_SCHEMA);
+		db.exec(`
+			DROP VIEW messages;
+			DROP VIEW lead_inbox;
+			DROP TRIGGER mailbox_identity_no_delete;
+			DROP TRIGGER mailbox_identity_update_guard;
+			DROP TRIGGER mailbox_log_no_delete;
+			DROP INDEX mailbox_identity_terminal_archive;
+			DROP INDEX mailbox_identity_terminal_backfill;
+			DROP TABLE mailbox_terminal_archive;
+			ALTER TABLE mailbox_identity DROP COLUMN terminal_at;
+		`);
+
+		expect(() => ensureMailboxQueueSchema(db)).not.toThrow();
+		expect(
+			db
+				.prepare(
+					"SELECT name FROM pragma_table_info('mailbox_identity') WHERE name='terminal_at'",
+				)
+				.get(),
+		).toEqual({ name: "terminal_at" });
+		expect(
+			db
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type='table' AND name='mailbox_terminal_archive'",
+				)
+				.get(),
+		).toEqual({ name: "mailbox_terminal_archive" });
+		db.close();
+	});
+
+	it("repairs archive indexes when reopening an already-migrated database", () => {
+		const db = new Database(":memory:");
+		db.exec(MAILBOX_SCHEMA);
+		db.exec("DROP INDEX mailbox_log_message_event");
+
+		installMailboxTerminalArchiveSchema(db);
+
+		expect(
+			db
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type='index' AND name='mailbox_log_message_event'",
+				)
+				.get(),
+		).toEqual({ name: "mailbox_log_message_event" });
+		db.close();
+	});
+
 	it("creates delivered_at, notified_at, lease_retry_count, and the lease-expiry index for a new queue", () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1573-new-schema-"));
 		roots.push(root);

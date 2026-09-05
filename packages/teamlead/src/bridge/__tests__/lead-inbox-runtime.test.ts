@@ -80,6 +80,10 @@ describe("LeadInboxRuntime", () => {
 			MailboxQueue.prototype,
 			"archiveDueFamilies",
 		);
+		const compactArchivedIdentities = vi.spyOn(
+			MailboxQueue.prototype,
+			"compactArchivedIdentities",
+		);
 		const drainContentRefGc = vi.spyOn(
 			MailboxQueue.prototype,
 			"drainContentRefGc",
@@ -106,6 +110,11 @@ describe("LeadInboxRuntime", () => {
 				now: expect.any(String),
 				maxFamilies: 5,
 			});
+			expect(compactArchivedIdentities).toHaveBeenCalledWith({
+				now: expect.any(String),
+				limit: 25,
+				onIdentityError: expect.any(Function),
+			});
 			expect(drainContentRefGc).toHaveBeenCalledWith({
 				now: expect.any(String),
 				limit: 1,
@@ -116,22 +125,60 @@ describe("LeadInboxRuntime", () => {
 				expect(
 					verify
 						.prepare(
-							"SELECT event, subject_id FROM mailbox_log WHERE message_id = ?",
+							"SELECT terminal_at,subject_id FROM mailbox_terminal_archive WHERE id=?",
 						)
 						.get("fly2136-archive-me"),
-				).toEqual({ event: "archived", subject_id: "fly2136-archive-me" });
+				).toEqual({
+					terminal_at: "2026-08-01T00:00:00.000Z",
+					subject_id: "fly2136-archive-me",
+				});
 				expect(
-					verify
-						.prepare("SELECT archived_at FROM mailbox_identity WHERE id = ?")
-						.get("fly2136-archive-me"),
-				).toEqual({ archived_at: expect.any(String) });
+					verify.prepare("SELECT count(*) AS n FROM mailbox_identity").get(),
+				).toEqual({ n: 0 });
 			} finally {
 				verify.close();
 			}
 		} finally {
 			drainContentRefGc.mockRestore();
+			compactArchivedIdentities.mockRestore();
 			archiveDueFamilies.mockRestore();
 			queue.close();
+		}
+	});
+
+	it("can disable only the new cold compactor at runtime", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2341-runtime-disabled-"));
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => join(root, "project-a.db"),
+			ownerEpoch: "owner-fly2341-disabled",
+			archiveEnabled: () => false,
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+		});
+		runtimes.push(runtime);
+		const familyArchive = vi.spyOn(
+			MailboxQueue.prototype,
+			"archiveDueFamilies",
+		);
+		const coldCompact = vi.spyOn(
+			MailboxQueue.prototype,
+			"compactArchivedIdentities",
+		);
+		try {
+			runtime.start();
+			await vi.waitFor(() => expect(familyArchive).toHaveBeenCalledTimes(1));
+			expect(coldCompact).not.toHaveBeenCalled();
+		} finally {
+			coldCompact.mockRestore();
+			familyArchive.mockRestore();
 		}
 	});
 

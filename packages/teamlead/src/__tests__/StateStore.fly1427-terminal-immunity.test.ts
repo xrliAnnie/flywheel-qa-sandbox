@@ -243,6 +243,58 @@ describe("FLY-1427 enrolled terminal signal immunity", () => {
 		},
 	);
 
+	it("rejects an archived terminal-signal replay without blocking a fresh signal", async () => {
+		const store = await StateStore.create(":memory:");
+		const { runId, executionId } = createGeneralizedRun(store);
+		seedSession(store, executionId, "terminated");
+		const signal = {
+			executionId,
+			sourceEventId: "cold-terminal-signal",
+			signal: "completed" as const,
+			source: "direct-event-sink",
+			now: "2026-07-22T00:01:00.000Z",
+		};
+		expect(store.recordEnrolledTerminalSignal(signal)).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+		});
+		const raw = store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		raw.db.run("UPDATE workflow_run SET status='completed' WHERE run_id=?", [
+			runId,
+		]);
+		raw.db.run("UPDATE session_events SET ts=? WHERE event_id=?", [
+			"2026-07-22T00:01:00.000Z",
+			signal.sourceEventId,
+		]);
+		expect(
+			store.archiveTerminalRows({
+				now: "2026-08-01T00:00:00.000Z",
+				limit: 1,
+				sourceTable: "session_events",
+			}),
+		).toMatchObject({ archived: 1 });
+
+		expect(store.recordEnrolledTerminalSignal(signal)).toMatchObject({
+			ok: true,
+			idempotentReplay: true,
+			effectiveStatus: "terminated",
+			statusPreserved: true,
+		});
+		expect(store.getSession(executionId)?.status).toBe("terminated");
+		expect(store.getEventsByExecution(executionId)).toEqual([]);
+
+		expect(
+			store.recordEnrolledTerminalSignal({
+				...signal,
+				sourceEventId: "fresh-terminal-signal",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(store.getEventsByExecution(executionId)).toHaveLength(1);
+		store.close();
+	});
+
 	it.each([
 		["failed", "completed"],
 		["running", "completed"],

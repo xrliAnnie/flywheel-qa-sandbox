@@ -472,6 +472,27 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 
 	// ─── project config flags (per-project scope) ───
 	{
+		name: "database_archive",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "maintenance.database_archive_enabled",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2341: bounded cold compaction of terminal TeamLead and CommDB history",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"databaseArchiveEnabled",
+				"storeDatabaseArchiveEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "node_dwell",
 		category: "feature",
 		source: "project_config",
