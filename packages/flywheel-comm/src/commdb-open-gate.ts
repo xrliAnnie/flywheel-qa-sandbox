@@ -207,24 +207,31 @@ function rebuildRunnerShutdownControls(db: Database.Database): void {
 			count: number;
 		}
 	).count;
-	db.exec(`
-		CREATE TABLE runner_shutdown_controls_fly2268 (
-			execution_id TEXT NOT NULL,
-			request_id TEXT NOT NULL,
-			state TEXT NOT NULL CHECK(state IN ('requested','acked','failed')),
-			requested_at INTEGER NOT NULL,
-			finished_at INTEGER,
-			error TEXT,
-			settlement_reason TEXT,
-			PRIMARY KEY (execution_id, request_id)
-		);
-		INSERT INTO runner_shutdown_controls_fly2268
-			(execution_id, request_id, state, requested_at, finished_at, error, settlement_reason)
-		SELECT execution_id, request_id, state, requested_at, finished_at, error, NULL
-		FROM runner_shutdown_controls;
-		DROP TABLE runner_shutdown_controls;
-		ALTER TABLE runner_shutdown_controls_fly2268 RENAME TO runner_shutdown_controls;
-	`);
+	// FLY-1572 poison views intentionally reference missing tables. Legacy alter
+	// mode prevents this unrelated table rebuild from reparsing those views.
+	db.pragma("legacy_alter_table = ON");
+	try {
+		db.exec(`
+			CREATE TABLE runner_shutdown_controls_fly2268 (
+				execution_id TEXT NOT NULL,
+				request_id TEXT NOT NULL,
+				state TEXT NOT NULL CHECK(state IN ('requested','acked','failed')),
+				requested_at INTEGER NOT NULL,
+				finished_at INTEGER,
+				error TEXT,
+				settlement_reason TEXT,
+				PRIMARY KEY (execution_id, request_id)
+			);
+			INSERT INTO runner_shutdown_controls_fly2268
+				(execution_id, request_id, state, requested_at, finished_at, error, settlement_reason)
+			SELECT execution_id, request_id, state, requested_at, finished_at, error, NULL
+			FROM runner_shutdown_controls;
+			DROP TABLE runner_shutdown_controls;
+			ALTER TABLE runner_shutdown_controls_fly2268 RENAME TO runner_shutdown_controls;
+		`);
+	} finally {
+		db.pragma("legacy_alter_table = OFF");
+	}
 	const after = (
 		db
 			.prepare("SELECT COUNT(*) AS count FROM runner_shutdown_controls")

@@ -15,8 +15,12 @@ import { openCommDbWritable } from "../commdb-open-gate.js";
 import { prepareFly2268CommDbRebuild } from "../commdb-rebuild-preflight.js";
 import { CommDB } from "../db.js";
 import { MailboxQueue } from "../mailbox-queue.js";
+import { MAILBOX_POISON_VIEWS } from "../mailbox-schema.js";
 
-function downgradeShutdownSchema(dbPath: string): void {
+function downgradeShutdownSchema(
+	dbPath: string,
+	options: { poisonViews?: boolean } = {},
+): void {
 	const raw = new Database(dbPath);
 	raw.exec(`
 		DROP VIEW IF EXISTS messages;
@@ -37,8 +41,27 @@ function downgradeShutdownSchema(dbPath: string): void {
 		FROM runner_shutdown_controls_new;
 		DROP TABLE runner_shutdown_controls_new;
 	`);
+	if (options.poisonViews !== false) raw.exec(MAILBOX_POISON_VIEWS);
 	raw.pragma("wal_checkpoint(TRUNCATE)");
 	raw.close();
+}
+
+function readMailboxCompatibilityViews(
+	dbPath: string,
+): Array<{ name: string; type: string; sql: string }> {
+	const raw = new Database(dbPath, { readonly: true });
+	try {
+		return raw
+			.prepare(
+				`SELECT name, type, sql
+				   FROM sqlite_master
+				  WHERE name IN ('messages', 'lead_inbox')
+				  ORDER BY name`,
+			)
+			.all() as Array<{ name: string; type: string; sql: string }>;
+	} finally {
+		raw.close();
+	}
 }
 
 describe("FLY-2268 durable turn ledger", () => {
@@ -447,7 +470,7 @@ describe("FLY-2268 exact runner shutdown requests", () => {
 		db = new CommDB(dbPath);
 		db.requestRunnerShutdown("worker-a", "legacy-request", 100);
 		db.close();
-		downgradeShutdownSchema(dbPath);
+		downgradeShutdownSchema(dbPath, { poisonViews: false });
 		const queue = new MailboxQueue(dbPath);
 		expect(queue).toBeInstanceOf(MailboxQueue);
 		queue.close();
@@ -524,6 +547,119 @@ describe("FLY-2268 exact runner shutdown requests", () => {
 				name.includes("fly2268-rebuild-receipt.json.consumed-"),
 			),
 		).toBe(true);
+	});
+
+	it("rebuilds a legacy shutdown table with both FLY-1572 poison views present", async () => {
+		const dbPath = join(tmpDir, "poison-view-migration.db");
+		db.close();
+		db = new CommDB(dbPath);
+		db.requestRunnerShutdown("worker-a", "legacy-request", 100);
+		db.close();
+		downgradeShutdownSchema(dbPath);
+
+		const viewsBefore = readMailboxCompatibilityViews(dbPath);
+		expect(viewsBefore).toEqual([
+			expect.objectContaining({
+				name: "lead_inbox",
+				type: "view",
+				sql: expect.stringContaining("fly1572_poison_lead_inbox_use_mailbox"),
+			}),
+			expect.objectContaining({
+				name: "messages",
+				type: "view",
+				sql: expect.stringContaining("fly1572_poison_messages_use_mailbox"),
+			}),
+		]);
+		const legacy = new Database(dbPath, { readonly: true });
+		const legacyColumns = legacy
+			.prepare("PRAGMA table_info(runner_shutdown_controls)")
+			.all() as Array<{ name: string; pk: number }>;
+		legacy.close();
+		expect(
+			legacyColumns.find((column) => column.name === "execution_id")?.pk,
+		).toBe(1);
+		expect(
+			legacyColumns.find((column) => column.name === "request_id")?.pk,
+		).toBe(0);
+
+		await prepareFly2268CommDbRebuild(dbPath);
+		db = new CommDB(dbPath);
+		expect(
+			db.getRunnerShutdownRequest("worker-a", "legacy-request"),
+		).toMatchObject({ state: "requested", settlement_reason: null });
+		db.close();
+
+		const migrated = new Database(dbPath, { readonly: true });
+		const migratedColumns = migrated
+			.prepare("PRAGMA table_info(runner_shutdown_controls)")
+			.all() as Array<{ name: string; pk: number }>;
+		migrated.close();
+		expect(
+			migratedColumns.find((column) => column.name === "execution_id")?.pk,
+		).toBe(1);
+		expect(
+			migratedColumns.find((column) => column.name === "request_id")?.pk,
+		).toBe(2);
+		expect(
+			migratedColumns.some((column) => column.name === "settlement_reason"),
+		).toBe(true);
+		expect(readMailboxCompatibilityViews(dbPath)).toEqual(viewsBefore);
+		expect(existsSync(`${dbPath}.fly2268-rebuild-receipt.json`)).toBe(false);
+		expect(
+			readdirSync(tmpDir).some((name) =>
+				name.includes("fly2268-rebuild-receipt.json.consumed-"),
+			),
+		).toBe(true);
+
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			const reopened = new CommDB(dbPath);
+			reopened.close();
+		}
+	});
+
+	it("resets legacy ALTER mode before returning the migrated connection", async () => {
+		const dbPath = join(tmpDir, "legacy-alter-reset.db");
+		db.close();
+		db = new CommDB(dbPath);
+		db.requestRunnerShutdown("worker-a", "legacy-request", 100);
+		db.close();
+		downgradeShutdownSchema(dbPath);
+		const viewsBefore = readMailboxCompatibilityViews(dbPath);
+		await prepareFly2268CommDbRebuild(dbPath);
+
+		const opened = openCommDbWritable(dbPath);
+		expect(Number(opened.pragma("legacy_alter_table", { simple: true }))).toBe(
+			0,
+		);
+		opened.close();
+		expect(readMailboxCompatibilityViews(dbPath)).toEqual(viewsBefore);
+	});
+
+	it("rebuilds through a path-based MailboxQueue without touching poison views", async () => {
+		const dbPath = join(tmpDir, "poison-view-mailbox-queue.db");
+		db.close();
+		db = new CommDB(dbPath);
+		db.requestRunnerShutdown("worker-a", "legacy-request", 100);
+		db.close();
+		downgradeShutdownSchema(dbPath);
+		const viewsBefore = readMailboxCompatibilityViews(dbPath);
+		await prepareFly2268CommDbRebuild(dbPath);
+
+		const queue = new MailboxQueue(dbPath);
+		queue.close();
+		const inspected = new Database(dbPath, { readonly: true });
+		const columns = inspected
+			.prepare("PRAGMA table_info(runner_shutdown_controls)")
+			.all() as Array<{ name: string; pk: number }>;
+		inspected.close();
+		expect(columns.find((column) => column.name === "execution_id")?.pk).toBe(
+			1,
+		);
+		expect(columns.find((column) => column.name === "request_id")?.pk).toBe(2);
+		expect(readMailboxCompatibilityViews(dbPath)).toEqual(viewsBefore);
+
+		const reopened = new MailboxQueue(dbPath);
+		reopened.close();
 	});
 
 	it("lets the losing concurrent writer recheck the migrated schema after the lock", async () => {
