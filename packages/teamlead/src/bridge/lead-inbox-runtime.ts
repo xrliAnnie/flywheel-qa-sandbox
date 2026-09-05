@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { ClaudeCodeAdapter } from "flywheel-agent-team-transport";
 import { withSyncOpMarker } from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
@@ -926,8 +926,34 @@ function openLeadLeaseReader(dbPath: string | undefined): LeadLeaseReader {
 export function resolveCodexLeadStateDir(
 	projectName: string,
 	leadId: string,
-	root = join(homedir(), ".flywheel", "state", "codex-lead"),
+	root?: string,
 ): string {
+	if (root === undefined) {
+		const injected = process.env.FLYWHEEL_CODEX_LEAD_STATE_DIRS;
+		if (injected !== undefined) {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(injected);
+			} catch {
+				throw new Error("FLYWHEEL_CODEX_LEAD_STATE_DIRS must be valid JSON");
+			}
+			const project =
+				typeof parsed === "object" && parsed !== null
+					? (parsed as Record<string, unknown>)[projectName]
+					: undefined;
+			const stateDir =
+				typeof project === "object" && project !== null
+					? (project as Record<string, unknown>)[leadId]
+					: undefined;
+			if (typeof stateDir !== "string" || !isAbsolute(stateDir)) {
+				throw new Error(
+					`FLYWHEEL_CODEX_LEAD_STATE_DIRS has no absolute path for ${projectName}/${leadId}`,
+				);
+			}
+			return stateDir;
+		}
+		root = join(homedir(), ".flywheel", "state", "codex-lead");
+	}
 	const legacy = join(root, leadId);
 	if (existsSync(legacy)) return legacy;
 	const safe = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_");

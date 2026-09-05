@@ -1653,6 +1653,7 @@ LEAD_LAUNCHD_LABEL=""
 LEAD_PID_FILE=""
 LEAD_STATE_DIR=""
 LEAD_CODEX_HOME=""
+CODEX_LEAD_STATE_DIRS='{}'
 
 if [[ "$NO_LEAD" == "1" ]]; then
   log "--no-lead: skipping Lead startup + dev-channels confirm + lease wait (Bridge-only deploy)"
@@ -1704,6 +1705,9 @@ if [[ "$SLOT_BACKEND" == codex-app-server ]]; then
   LEAD_STATE_DIR="$_lead_coordinate"
   LEAD_CODEX_HOME="$_lead_carrier_home"
   LEAD_SOCKET=""
+  CODEX_LEAD_STATE_DIRS=$(qa_launchd_codex_state_dirs_add \
+    "$CODEX_LEAD_STATE_DIRS" "$TEST_PROJECT_NAME" "$AGENT_ID" "$LEAD_STATE_DIR") \
+    || campaign_abort "failed to bind main Codex Lead state directory for Bridge"
   log "Lead state dir: ${LEAD_STATE_DIR}; codex home: ${LEAD_CODEX_HOME}"
 else
   LEAD_SOCKET="$_lead_coordinate"
@@ -1906,6 +1910,9 @@ EOF
       XLEAD_STATE_DIR="$_xlead_coordinate"
       XLEAD_CODEX_HOME="$_xlead_carrier_home"
       XLEAD_SOCKET=""
+      CODEX_LEAD_STATE_DIRS=$(qa_launchd_codex_state_dirs_add \
+        "$CODEX_LEAD_STATE_DIRS" "$TEST_PROJECT_NAME" "$XAGENT" "$XLEAD_STATE_DIR") \
+        || campaign_abort "failed to bind extra Codex Lead ${XAGENT} state directory for Bridge"
       XLEAD_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"
       for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
         XLEAD_BG_PID=$(qa_launchd_lead_pid_exact "$_xlead_label" || true)
@@ -1948,6 +1955,9 @@ EOF
     [[ -z "$XTOKEN_ENV_NAME" ]] && continue
     BRIDGE_EXTRA_ENV+=("${XTOKEN_ENV_NAME}=${!XTOKEN_ENV_NAME}")
   done < <(jq -r '.[].tokenEnvVar' <<<"$EXTRA_LEADS_JSON")
+fi
+if jq -e 'length > 0' <<<"$CODEX_LEAD_STATE_DIRS" >/dev/null; then
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_LEAD_STATE_DIRS=${CODEX_LEAD_STATE_DIRS}")
 fi
 BRIDGE_EXTRA_ENV+=("DISCORD_GUILD_ID=${GUILD_ID}")
 BRIDGE_EXTRA_ENV+=("TEAMLEAD_ISSUE_PREFIXES=${TEAMLEAD_ISSUE_PREFIXES:-FLY,GEO}")

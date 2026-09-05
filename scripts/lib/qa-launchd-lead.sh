@@ -445,6 +445,22 @@ qa_launchd_codex_state_dir() {
     "${state_root%/}" "$safe_project" "$safe_lead" "$identity_hex"
 }
 
+qa_launchd_codex_state_dirs_add() {
+  local current="$1" project="$2" lead="$3" state_dir="$4"
+  qa_launchd_require_absolute "$state_dir" || return 1
+  [[ "$state_dir" != *$'\n'* && "$state_dir" != *$'\r'* ]] || return 1
+  [[ "$project" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [[ "$lead" =~ ^[a-z0-9][a-z0-9-]*$ ]] || return 1
+  jq -ce --arg project "$project" --arg lead "$lead" --arg state "$state_dir" '
+    if type != "object" then error("state directory map must be an object")
+    elif ((.[$project] // {}) | type) != "object" then
+      error("project state directory map must be an object")
+    else
+      .[$project] = ((.[$project] // {}) + {($lead): $state})
+    end
+  ' <<<"$current"
+}
+
 qa_launchd_codex_lead_verify() {
   local label="$1" codex_home="$2" state_dir="$3"
   local polls="${FLYWHEEL_QA_LEAD_VERIFY_POLLS:-$QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT}"

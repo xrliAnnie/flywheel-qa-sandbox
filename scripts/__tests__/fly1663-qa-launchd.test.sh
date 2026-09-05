@@ -555,6 +555,15 @@ else
   fail "Codex state path identity encoding"
 fi
 
+state_dirs=$(qa_launchd_codex_state_dirs_add '{}' test-slot-7 qa-lead "$state_path")
+if [[ "$(jq -r '.["test-slot-7"]["qa-lead"]' <<<"$state_dirs")" == "$state_path" ]] \
+    && ! qa_launchd_codex_state_dirs_add "$state_dirs" test-slot-7 qa-lead relative/path \
+      >/dev/null 2>&1; then
+  pass "slot Codex state map carries the Lead listening directory to Bridge"
+else
+  fail "slot Codex Bridge state-directory map"
+fi
+
 if [ "$(qa_launchd_lead_start "$label" "$plist")" = 4242 ] \
     && grep -qF "bootstrap gui/test $plist" "$launchctl_calls" \
     && ! qa_launchd_lead_start "$label" "$plist" >/dev/null 2>&1; then

@@ -10,6 +10,7 @@ import {
 	type AlertPayload,
 	LeadAlertNotifier,
 } from "../../LeadAlertNotifier.js";
+import { resolveCodexLeadInboxSocketPath } from "../../lead-backends/codex/CodexLeadInboxSocket.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
 import { LeadDeliveryUnavailableError } from "../lead-delivery-adapter.js";
@@ -944,6 +945,37 @@ describe("LeadInboxRuntime", () => {
 		expect(generated).toContain("project_x__lead_y-");
 		expect(generated).toContain(
 			Buffer.from("project/x\u001flead y").toString("hex"),
+		);
+	});
+
+	it("resolves the Bridge inbox socket to the slot Lead listening path", () => {
+		const slotLeadRoot = join(tmpdir(), "flywheel-test-slot-7", "q", "7");
+		const identityHex = Buffer.from("project-a\u001flead-a").toString("hex");
+		const leadListeningStateDir = join(
+			slotLeadRoot,
+			"state",
+			"codex-lead",
+			`project-a__lead-a-${identityHex}`,
+		);
+		vi.stubEnv(
+			"FLYWHEEL_CODEX_LEAD_STATE_DIRS",
+			JSON.stringify({
+				"project-a": { "lead-a": leadListeningStateDir },
+			}),
+		);
+
+		const bridgeStateDir = resolveCodexLeadStateDir("project-a", "lead-a");
+		expect(bridgeStateDir).toBe(leadListeningStateDir);
+		expect(resolveCodexLeadInboxSocketPath(bridgeStateDir)).toBe(
+			join(leadListeningStateDir, "lead-inbox.sock"),
+		);
+
+		vi.stubEnv(
+			"FLYWHEEL_CODEX_LEAD_STATE_DIRS",
+			JSON.stringify({ "project-a": {} }),
+		);
+		expect(() => resolveCodexLeadStateDir("project-a", "lead-a")).toThrow(
+			"has no absolute path for project-a/lead-a",
 		);
 	});
 
