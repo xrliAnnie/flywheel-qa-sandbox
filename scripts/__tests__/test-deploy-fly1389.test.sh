@@ -1708,7 +1708,7 @@ if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
       type == "array" and length == 1 and .[0].carrier == "codex-tui" and
       .[0].label == $label and .[0].codexHome == $home and .[0].stateDir == $state and
       (.[0].manifest == "") and
-      (.[0] | keys | sort) == ["carrier","codexBin","codexHome","label","manifest","plist","runtimePidFile","stateDir"]
+      (.[0] | keys | sort) == ["carrier","codexBin","codexHome","label","manifest","plist","runtimePidFile","stateDir","tmuxBin"]
     ' "$CX_SLOT_DIR/launchd-leads.json" >/dev/null 2>&1 \
     || { CX_OK=0; fail "CX: Codex registry lacks its lifecycle authority"; }
   python3 - "$CX_SLOT_DIR/launchd/flywheel-test-34/lead.plist" \
