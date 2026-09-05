@@ -246,9 +246,18 @@ import {
 import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
-import { DeliveryProjector } from "./delivery-contract/projector.js";
-import { DeliveryContractWatch } from "./delivery-contract/watch.js";
-import { DeliveryOperations } from "./delivery-operations.js";
+import {
+	DeliveryProjector,
+	type DeliveryProjectorCursor,
+} from "./delivery-contract/projector.js";
+import {
+	DeliveryContractWatch,
+	type DeliveryWatchCursor,
+} from "./delivery-contract/watch.js";
+import {
+	DeliveryOperations,
+	type DeliveryOperationsCursor,
+} from "./delivery-operations.js";
 import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
 import { reconcileDesignReviewInstructions } from "./design-review-manifest.js";
@@ -287,7 +296,11 @@ import {
 	EventLoopAttribution,
 	type EventLoopHealthSnapshot,
 } from "./event-loop-attribution.js";
-import { runSequentialChunks, yieldToEventLoop } from "./event-loop-yield.js";
+import {
+	drainSynchronousPages,
+	runSequentialChunks,
+	yieldToEventLoop,
+} from "./event-loop-yield.js";
 import { createEventRouter } from "./event-route.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
@@ -7962,16 +7975,32 @@ export async function startBridge(
 							},
 						},
 					});
-					withSyncOpMarker("delivery-contract:projector", () =>
-						deliveryProjector.runPass(deliveryNow),
+					await drainSynchronousPages<DeliveryProjectorCursor>((cursor) =>
+						withSyncOpMarker("delivery-contract:projector", () =>
+							deliveryProjector.runPass(deliveryNow, cursor),
+						),
 					);
-					withSyncOpMarker("delivery-contract:watch", () =>
-						deliveryContractWatch.runPass(deliveryNow),
+					await drainSynchronousPages<DeliveryWatchCursor>((cursor) =>
+						withSyncOpMarker("delivery-contract:watch", () =>
+							deliveryContractWatch.runPass(deliveryNow, cursor),
+						),
 					);
 					await deliveryOperations.runResidentExpiryPass(deliveryNow);
-					withSyncOpMarker("delivery-contract:operations", () =>
-						deliveryOperations.runPass(deliveryNow),
-					);
+					let deliveryOperationsCompleted = false;
+					try {
+						await drainSynchronousPages<DeliveryOperationsCursor>((cursor) =>
+							withSyncOpMarker("delivery-contract:operations", () =>
+								deliveryOperations.runPass(deliveryNow, cursor),
+							),
+						);
+						deliveryOperationsCompleted = true;
+					} finally {
+						if (!deliveryOperationsCompleted) {
+							withSyncOpMarker("delivery-contract:operations", () =>
+								deliveryOperations.runPass(deliveryNow, { lane: "stalled" }),
+							);
+						}
+					}
 				} catch (error) {
 					console.warn(
 						`[delivery-contract] maintenance pass failed closed for ${project.projectName}: ${

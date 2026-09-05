@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { CommDB, RUNNER_DELIVERY_PROJECTION_ROW_SQL } from "../db.js";
 import { MailboxQueue } from "../mailbox-queue.js";
 import { MAILBOX_SCHEMA } from "../mailbox-schema.js";
 
@@ -96,14 +97,43 @@ describe("FLY-2139 mailbox query plans", () => {
 		}
 	});
 
+	it("bounds runner inflight delivery aggregation by recipient", () => {
+		const commDb = new CommDB(":memory:");
+		db = (commDb as unknown as { db: Database.Database }).db;
+		const details = plan(
+			db,
+			RUNNER_DELIVERY_PROJECTION_ROW_SQL,
+			"2026-09-04T20:00:00.000Z",
+			"2026-09-04T20:00:00.000Z",
+			"mail-a",
+			0,
+			"2026-09-01T20:00:00.000Z",
+		);
+		expect(details.join("\n")).toContain(
+			"mailbox_runner_inflight_by_recipient",
+		);
+		expect(details.join("\n")).toContain("to_agent=?");
+		expect(details.join("\n")).not.toContain("mailbox_batch_lookup");
+		commDb.close();
+		db = undefined;
+	});
+
 	it("installs the index on an already-materialized writable mailbox", () => {
 		db = new Database(":memory:");
 		db.exec(MAILBOX_SCHEMA);
 		db.exec(`DROP INDEX mailbox_batch_lookup;
 			DROP INDEX mailbox_lease_expiry_order;
+			DROP INDEX mailbox_runner_inflight_by_recipient;
 			DROP INDEX mailbox_ref_lookup;
 			DROP INDEX mailbox_superseded_by_lookup`);
 		const queue = new MailboxQueue(db);
+		expect(
+			db
+				.prepare(
+					"SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'mailbox_runner_inflight_by_recipient'",
+				)
+				.get(),
+		).toBeDefined();
 		expect(
 			db
 				.prepare(

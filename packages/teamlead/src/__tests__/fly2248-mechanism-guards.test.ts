@@ -392,5 +392,9 @@ describe("FLY-2248 mechanism guards", () => {
 		expect(reowner).toBeLessThan(baseline);
 		expect(baseline).toBeLessThan(projector);
 		expect(projector).toBeLessThan(watch);
+		expect(source.match(/await drainSynchronousPages/g)).toHaveLength(3);
+		expect(source).toContain(
+			'deliveryOperations.runPass(deliveryNow, { lane: "stalled" })',
+		);
 	});
 });

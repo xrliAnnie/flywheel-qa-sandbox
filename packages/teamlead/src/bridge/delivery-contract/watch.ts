@@ -1,8 +1,4 @@
-import type {
-	CommDB,
-	RunnerDeliveryProjectionRow,
-	RunnerTurnWakeProjectionRow,
-} from "flywheel-comm/db";
+import type { CommDB } from "flywheel-comm/db";
 import {
 	CMUX_LIVE_SESSION_STATUSES,
 	isWakeTerminalStatus,
@@ -20,6 +16,7 @@ import {
 	collectRecipientLivenessEvidence,
 } from "./liveness.js";
 import {
+	DELIVERY_MAINTENANCE_PAGE_SIZE,
 	MAILBOX_SLOT_FREEZE_AFTER_MS,
 	TURN_WAKE_FREEZE_AFTER_MS,
 } from "./policy.js";
@@ -33,6 +30,18 @@ const TERMINAL_STATES = new Set<DeliveryTerminal>([
 	"cancelled",
 	"undeliverable",
 ]);
+
+export interface DeliveryWatchCursor {
+	afterRootId: string;
+}
+
+export interface DeliveryWatchPassResult {
+	observed: number;
+	opened: number;
+	closed: number;
+	alerted: number;
+	nextCursor?: DeliveryWatchCursor;
+}
 
 export class DeliveryContractWatch {
 	constructor(
@@ -51,27 +60,23 @@ export class DeliveryContractWatch {
 		},
 	) {}
 
-	runPass(_now: string): {
-		observed: number;
-		opened: number;
-		closed: number;
-		alerted: number;
-	} {
-		const result = { observed: 0, opened: 0, closed: 0, alerted: 0 };
+	runPass(_now: string, cursor?: DeliveryWatchCursor): DeliveryWatchPassResult {
+		const result: DeliveryWatchPassResult = {
+			observed: 0,
+			opened: 0,
+			closed: 0,
+			alerted: 0,
+		};
 		const legacyReachability = new LegacyDeliveryReachabilityGuard(
 			this.deps.store,
 		);
-		const mailboxRows = new Map<string, RunnerDeliveryProjectionRow>(
-			(this.deps.commDb?.listRunnerDeliveryProjectionRows(_now) ?? []).map(
-				(row) => [row.id, row],
-			),
-		);
-		const turnWakeRows = new Map<string, RunnerTurnWakeProjectionRow>(
-			(this.deps.commDb?.listRunnerTurnWakeProjectionRows() ?? []).map(
-				(row) => [row.wake_id, row],
-			),
-		);
-		for (const attempt of this.deps.store.listLiveWorkflowDeliveryAttempts()) {
+		const candidates = this.deps.store.listLiveWorkflowDeliveryAttempts({
+			...(this.deps.projectName ? { projectName: this.deps.projectName } : {}),
+			...(cursor ? { afterRootId: cursor.afterRootId } : {}),
+			limit: DELIVERY_MAINTENANCE_PAGE_SIZE + 1,
+		});
+		const attempts = candidates.slice(0, DELIVERY_MAINTENANCE_PAGE_SIZE);
+		for (const attempt of attempts) {
 			try {
 				const ref = JSON.parse(attempt.contract_ref_json) as {
 					runId?: string;
@@ -91,15 +96,27 @@ export class DeliveryContractWatch {
 				const classification = classifyDeliveryAttempt(attempt, _now);
 				const mailboxRow =
 					ref.table === "mailbox" && typeof ref.pk === "string"
-						? mailboxRows.get(ref.pk)
+						? this.deps.commDb?.getRunnerDeliveryProjectionRow(
+								ref.pk,
+								_now,
+								true,
+							)
 						: undefined;
 				const turnWakeRow =
 					ref.table === "turn_wake_outbox" && typeof ref.pk === "string"
-						? turnWakeRows.get(ref.pk)
+						? this.deps.commDb?.getRunnerTurnWakeProjectionRow(
+								ref.pk,
+								Date.parse(_now),
+								true,
+							)
 						: undefined;
 				const phaseWakeRow =
 					ref.table === "runner_phase_wakes" && typeof ref.pk === "string"
-						? this.deps.commDb?.getRunnerPhaseWakeProjectionRow(ref.pk)
+						? this.deps.commDb?.getRunnerPhaseWakeProjectionRow(
+								ref.pk,
+								Date.parse(_now),
+								true,
+							)
 						: undefined;
 				const reworkRoute =
 					attempt.family === "rework" && typeof ref.pk === "string"
@@ -299,6 +316,11 @@ export class DeliveryContractWatch {
 					}`,
 				);
 			}
+		}
+		if (candidates.length > DELIVERY_MAINTENANCE_PAGE_SIZE) {
+			result.nextCursor = {
+				afterRootId: attempts[attempts.length - 1]!.root_id,
+			};
 		}
 		return result;
 	}

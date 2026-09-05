@@ -75,6 +75,7 @@ export const PENDING_RUNNER_MAILBOX_SQL = `SELECT state, type, ref_id,
  ORDER BY seq`;
 
 export interface RunnerDeliveryProjectionRow {
+	seq: number;
 	id: string;
 	from_agent: string;
 	to_agent: string;
@@ -96,6 +97,7 @@ export interface RunnerDeliveryProjectionRow {
 }
 
 export interface RunnerPhaseWakeProjectionRow {
+	queue_seq: number;
 	execution_id: string;
 	message_id: string;
 	metadata_json: string | null;
@@ -109,6 +111,7 @@ export interface RunnerPhaseWakeProjectionRow {
 }
 
 export interface RunnerTurnWakeProjectionRow {
+	queue_seq: number;
 	wake_id: string;
 	execution_id: string;
 	issue_id: string;
@@ -123,6 +126,48 @@ export interface RunnerTurnWakeProjectionRow {
 
 const RUNNER_DELIVERY_TERMINAL_PROJECTION_MS = 72 * 60 * 60_000;
 const RUNNER_STOP_HEARTBEAT_MS = 30 * 60_000;
+
+export const RUNNER_DELIVERY_PROJECTION_ROW_SQL = `SELECT m.seq, m.id, m.from_agent, m.to_agent, m.type, m.content,
+       m.ref_id, m.source_ref, m.created_at, m.delivered_at,
+       m.notified_at, m.acked_at, m.superseded_by,
+       m.dead_reason, m.state,
+       sessions.status AS recipient_status,
+       COALESCE(sessions.issue_id, lineage.issue_id) AS issue_id,
+       (
+         SELECT COUNT(DISTINCT active.batch_id)
+           FROM mailbox active
+          WHERE active.to_agent = m.to_agent
+            AND active.recipient_kind = 'runner'
+            AND active.carrier = 'inbox'
+            AND active.state = 'LEASED'
+            AND active.delivered_at IS NOT NULL
+            AND active.claim_expires_at > ?
+            AND active.batch_id IS NOT NULL
+       ) AS inflight_batch_count,
+       (
+         SELECT MIN(active.delivered_at)
+           FROM mailbox active
+          WHERE active.to_agent = m.to_agent
+            AND active.recipient_kind = 'runner'
+            AND active.carrier = 'inbox'
+            AND active.state = 'LEASED'
+            AND active.delivered_at IS NOT NULL
+            AND active.claim_expires_at > ?
+            AND active.batch_id IS NOT NULL
+       ) AS oldest_inflight_delivered_at
+  FROM mailbox m
+  LEFT JOIN sessions ON sessions.execution_id = m.to_agent
+  LEFT JOIN session_receipt_lineage lineage
+    ON lineage.execution_id = m.to_agent
+ WHERE m.id = ?
+   AND m.recipient_kind = 'runner'
+   AND m.type IN ('instruction','response')
+   AND (? = 1 OR (
+	     (m.state IN ('QUEUED','LEASED','DEAD')
+	      AND m.acked_at IS NULL AND m.superseded_by IS NULL)
+	     OR ((m.state = 'ACKED' OR m.acked_at IS NOT NULL OR m.superseded_by IS NOT NULL)
+	         AND COALESCE(m.acked_at, m.notified_at, m.delivered_at, m.created_at) >= ?)
+	   ))`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -2734,40 +2779,58 @@ export class CommDB {
 
 	listRunnerDeliveryProjectionRows(
 		now = new Date().toISOString(),
+		page?: { afterSeq?: number; limit?: number; includeInflight?: boolean },
 	): RunnerDeliveryProjectionRow[] {
+		if (
+			(page?.afterSeq !== undefined &&
+				(!Number.isSafeInteger(page.afterSeq) || page.afterSeq < 0)) ||
+			(page?.limit !== undefined &&
+				(!Number.isSafeInteger(page.limit) || page.limit < 1))
+		) {
+			throw new Error("invalid_runner_delivery_projection_page");
+		}
 		const terminalCutoff = new Date(
 			Date.parse(now) - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS,
 		).toISOString();
+		const includeInflight = page?.includeInflight !== false;
+		const inflightColumns = includeInflight
+			? `(
+			     SELECT COUNT(DISTINCT active.batch_id)
+			       FROM mailbox active
+			      WHERE active.to_agent = m.to_agent
+			        AND active.recipient_kind = 'runner'
+			        AND active.carrier = 'inbox'
+			        AND active.state = 'LEASED'
+			        AND active.delivered_at IS NOT NULL
+			        AND active.claim_expires_at > ?
+			        AND active.batch_id IS NOT NULL
+			   ) AS inflight_batch_count,
+			   (
+			     SELECT MIN(active.delivered_at)
+			       FROM mailbox active
+			      WHERE active.to_agent = m.to_agent
+			        AND active.recipient_kind = 'runner'
+			        AND active.carrier = 'inbox'
+			        AND active.state = 'LEASED'
+			        AND active.delivered_at IS NOT NULL
+			        AND active.claim_expires_at > ?
+			        AND active.batch_id IS NOT NULL
+			   ) AS oldest_inflight_delivered_at`
+			: "0 AS inflight_batch_count, NULL AS oldest_inflight_delivered_at";
+		const params: unknown[] = includeInflight
+			? [now, now, terminalCutoff]
+			: [terminalCutoff];
+		if (page?.afterSeq !== undefined) params.push(page.afterSeq);
+		if (page?.limit !== undefined) params.push(page.limit);
 		return this.db
 			.prepare(
-				`SELECT m.id, m.from_agent, m.to_agent, m.type, m.content,
+				`SELECT m.seq, m.id, m.from_agent, m.to_agent, m.type, m.content,
 				        m.ref_id, m.source_ref, m.created_at, m.delivered_at,
 				        m.notified_at, m.acked_at, m.superseded_by,
 				        m.dead_reason, m.state,
 				        sessions.status AS recipient_status,
 				        COALESCE(sessions.issue_id, lineage.issue_id) AS issue_id,
-				        (
-				          SELECT COUNT(DISTINCT active.batch_id)
-				            FROM mailbox active
-				           WHERE active.to_agent = m.to_agent
-				             AND active.recipient_kind = 'runner'
-				             AND active.carrier = 'inbox'
-				             AND active.state = 'LEASED'
-				             AND active.delivered_at IS NOT NULL
-				             AND active.claim_expires_at > ?
-				             AND active.batch_id IS NOT NULL
-				        ) AS inflight_batch_count,
-				        (
-				          SELECT MIN(active.delivered_at)
-				            FROM mailbox active
-				           WHERE active.to_agent = m.to_agent
-				             AND active.recipient_kind = 'runner'
-				             AND active.carrier = 'inbox'
-				             AND active.state = 'LEASED'
-				             AND active.delivered_at IS NOT NULL
-				             AND active.claim_expires_at > ?
-				             AND active.batch_id IS NOT NULL
-				        ) AS oldest_inflight_delivered_at
+				        ${inflightColumns}
 				   FROM mailbox m
 				   LEFT JOIN sessions ON sessions.execution_id = m.to_agent
 				   LEFT JOIN session_receipt_lineage lineage
@@ -2780,40 +2843,48 @@ export class CommDB {
 				      OR ((m.state = 'ACKED' OR m.acked_at IS NOT NULL OR m.superseded_by IS NOT NULL)
 				          AND COALESCE(m.acked_at, m.notified_at, m.delivered_at, m.created_at) >= ?)
 				    )
-				  ORDER BY m.seq`,
+				  ${page?.afterSeq !== undefined ? "AND m.seq > ?" : ""}
+				  ORDER BY m.seq
+				  ${page?.limit !== undefined ? "LIMIT ?" : ""}`,
 			)
-			.all(now, now, terminalCutoff) as RunnerDeliveryProjectionRow[];
+			.all(...params) as RunnerDeliveryProjectionRow[];
 	}
 
 	getRunnerDeliveryProjectionRow(
 		id: string,
+		now = new Date().toISOString(),
+		applyTerminalCutoff = false,
 	): RunnerDeliveryProjectionRow | undefined {
+		const terminalCutoff = new Date(
+			Date.parse(now) - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS,
+		).toISOString();
 		return this.db
-			.prepare(
-				`SELECT m.id, m.from_agent, m.to_agent, m.type, m.content,
-				        m.ref_id, m.source_ref, m.created_at, m.delivered_at,
-				        m.notified_at, m.acked_at, m.superseded_by,
-				        m.dead_reason, m.state,
-				        sessions.status AS recipient_status,
-				        COALESCE(sessions.issue_id, lineage.issue_id) AS issue_id
-				   FROM mailbox m
-				   LEFT JOIN sessions ON sessions.execution_id = m.to_agent
-				   LEFT JOIN session_receipt_lineage lineage
-				     ON lineage.execution_id = m.to_agent
-				  WHERE m.id = ?
-				    AND m.recipient_kind = 'runner'
-				    AND m.type IN ('instruction','response')`,
-			)
-			.get(id) as RunnerDeliveryProjectionRow | undefined;
+			.prepare(RUNNER_DELIVERY_PROJECTION_ROW_SQL)
+			.get(now, now, id, applyTerminalCutoff ? 0 : 1, terminalCutoff) as
+			| RunnerDeliveryProjectionRow
+			| undefined;
 	}
 
 	listRunnerPhaseWakeProjectionRows(
 		nowMs = Date.now(),
+		page?: { afterQueueSeq?: number; limit?: number },
 	): RunnerPhaseWakeProjectionRow[] {
+		if (
+			(page?.afterQueueSeq !== undefined &&
+				(!Number.isSafeInteger(page.afterQueueSeq) ||
+					page.afterQueueSeq < 0)) ||
+			(page?.limit !== undefined &&
+				(!Number.isSafeInteger(page.limit) || page.limit < 1))
+		) {
+			throw new Error("invalid_runner_phase_wake_projection_page");
+		}
 		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
+		const params: unknown[] = [terminalCutoffMs];
+		if (page?.afterQueueSeq !== undefined) params.push(page.afterQueueSeq);
+		if (page?.limit !== undefined) params.push(page.limit);
 		return this.db
 			.prepare(
-				`SELECT wake.execution_id, wake.message_id, wake.metadata_json,
+				`SELECT wake.queue_seq, wake.execution_id, wake.message_id, wake.metadata_json,
 				        wake.queued_at, wake.first_push_at, wake.started_at,
 				        wake.finished_at, wake.state,
 				        session.status AS recipient_status,
@@ -2823,19 +2894,24 @@ export class CommDB {
 				     ON session.execution_id = wake.execution_id
 				   LEFT JOIN session_receipt_lineage lineage
 				     ON lineage.execution_id = wake.execution_id
-				  WHERE wake.state != 'finished'
-				     OR COALESCE(wake.finished_at, wake.started_at, wake.queued_at) >= ?
-				  ORDER BY wake.queue_seq`,
+				  WHERE (wake.state != 'finished'
+				     OR COALESCE(wake.finished_at, wake.started_at, wake.queued_at) >= ?)
+				  ${page?.afterQueueSeq !== undefined ? "AND wake.queue_seq > ?" : ""}
+				  ORDER BY wake.queue_seq
+				  ${page?.limit !== undefined ? "LIMIT ?" : ""}`,
 			)
-			.all(terminalCutoffMs) as RunnerPhaseWakeProjectionRow[];
+			.all(...params) as RunnerPhaseWakeProjectionRow[];
 	}
 
 	getRunnerPhaseWakeProjectionRow(
 		messageId: string,
+		nowMs = Date.now(),
+		applyTerminalCutoff = false,
 	): RunnerPhaseWakeProjectionRow | undefined {
+		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
 		return this.db
 			.prepare(
-				`SELECT wake.execution_id, wake.message_id, wake.metadata_json,
+				`SELECT wake.queue_seq, wake.execution_id, wake.message_id, wake.metadata_json,
 				        wake.queued_at, wake.first_push_at, wake.started_at,
 				        wake.finished_at, wake.state,
 				        session.status AS recipient_status,
@@ -2846,48 +2922,75 @@ export class CommDB {
 				   LEFT JOIN session_receipt_lineage lineage
 				     ON lineage.execution_id = wake.execution_id
 				  WHERE wake.message_id = ?
+				    AND (? = 1 OR wake.state != 'finished'
+				         OR COALESCE(wake.finished_at, wake.started_at, wake.queued_at) >= ?)
 				  ORDER BY wake.queue_seq DESC
 				  LIMIT 1`,
 			)
-			.get(messageId) as RunnerPhaseWakeProjectionRow | undefined;
+			.get(messageId, applyTerminalCutoff ? 0 : 1, terminalCutoffMs) as
+			| RunnerPhaseWakeProjectionRow
+			| undefined;
 	}
 
 	listRunnerTurnWakeProjectionRows(
 		nowMs = Date.now(),
+		page?: { afterQueueSeq?: number; limit?: number },
 	): RunnerTurnWakeProjectionRow[] {
+		if (
+			(page?.afterQueueSeq !== undefined &&
+				(!Number.isSafeInteger(page.afterQueueSeq) ||
+					page.afterQueueSeq < 0)) ||
+			(page?.limit !== undefined &&
+				(!Number.isSafeInteger(page.limit) || page.limit < 1))
+		) {
+			throw new Error("invalid_runner_turn_wake_projection_page");
+		}
 		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
+		const params: unknown[] = [terminalCutoffMs];
+		if (page?.afterQueueSeq !== undefined) params.push(page.afterQueueSeq);
+		if (page?.limit !== undefined) params.push(page.limit);
 		return this.db
 			.prepare(
-				`SELECT wake.wake_id, wake.execution_id, wake.issue_id,
+				`SELECT wake.rowid AS queue_seq, wake.wake_id, wake.execution_id, wake.issue_id,
 				        wake.created_at, wake.first_push_at, wake.acked_at,
 				        wake.last_push_at, wake.push_count, wake.state,
 				        session.status AS recipient_status
 				   FROM turn_wake_outbox wake
 				   LEFT JOIN sessions session
 				     ON session.execution_id = wake.execution_id
-				  WHERE (wake.state IN ('pending','sent') AND wake.acked_at IS NULL)
+				  WHERE ((wake.state IN ('pending','sent') AND wake.acked_at IS NULL)
 				     OR ((wake.state IN ('acked','cancelled') OR wake.acked_at IS NOT NULL)
-				         AND COALESCE(wake.acked_at, wake.last_push_at, wake.created_at) >= ?)
-				  ORDER BY wake.created_at, wake.wake_id`,
+				         AND COALESCE(wake.acked_at, wake.last_push_at, wake.created_at) >= ?))
+				  ${page?.afterQueueSeq !== undefined ? "AND wake.rowid > ?" : ""}
+				  ORDER BY ${page ? "wake.rowid" : "wake.created_at, wake.wake_id"}
+				  ${page?.limit !== undefined ? "LIMIT ?" : ""}`,
 			)
-			.all(terminalCutoffMs) as RunnerTurnWakeProjectionRow[];
+			.all(...params) as RunnerTurnWakeProjectionRow[];
 	}
 
 	getRunnerTurnWakeProjectionRow(
 		wakeId: string,
+		nowMs = Date.now(),
+		applyTerminalCutoff = false,
 	): RunnerTurnWakeProjectionRow | undefined {
+		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
 		return this.db
 			.prepare(
-				`SELECT wake.wake_id, wake.execution_id, wake.issue_id,
+				`SELECT wake.rowid AS queue_seq, wake.wake_id, wake.execution_id, wake.issue_id,
 				        wake.created_at, wake.first_push_at, wake.acked_at,
 				        wake.last_push_at, wake.push_count, wake.state,
 				        session.status AS recipient_status
 				   FROM turn_wake_outbox wake
 				   LEFT JOIN sessions session
 				     ON session.execution_id = wake.execution_id
-				  WHERE wake.wake_id = ?`,
+				  WHERE wake.wake_id = ?
+				    AND (? = 1 OR (wake.state IN ('pending','sent') AND wake.acked_at IS NULL)
+				      OR ((wake.state IN ('acked','cancelled') OR wake.acked_at IS NOT NULL)
+				          AND COALESCE(wake.acked_at, wake.last_push_at, wake.created_at) >= ?))`,
 			)
-			.get(wakeId) as RunnerTurnWakeProjectionRow | undefined;
+			.get(wakeId, applyTerminalCutoff ? 0 : 1, terminalCutoffMs) as
+			| RunnerTurnWakeProjectionRow
+			| undefined;
 	}
 
 	rerouteMailboxDelivery(input: {

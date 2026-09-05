@@ -25,3 +25,29 @@ export async function runSequentialChunks<T>(
 		await yieldToEventLoop(schedule);
 	}
 }
+
+/** Drain bounded synchronous pages while allowing timers to run between them. */
+export async function drainSynchronousPages<TCursor>(
+	run: (cursor?: TCursor) => { nextCursor?: TCursor },
+	schedule: EventLoopYieldScheduler = defaultScheduler,
+	options: { maxPages?: number } = {},
+): Promise<void> {
+	let cursor: TCursor | undefined;
+	const maxPages = options.maxPages ?? 10_000;
+	for (let page = 1; ; page++) {
+		const nextCursor = run(cursor).nextCursor;
+		if (
+			nextCursor !== undefined &&
+			cursor !== undefined &&
+			JSON.stringify(nextCursor) === JSON.stringify(cursor)
+		) {
+			throw new Error("maintenance_page_cursor_not_advanced");
+		}
+		if (nextCursor !== undefined && page >= maxPages) {
+			throw new Error(`maintenance_page_limit_exceeded:${maxPages}`);
+		}
+		cursor = nextCursor;
+		await yieldToEventLoop(schedule);
+		if (cursor === undefined) return;
+	}
+}

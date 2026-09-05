@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { runSequentialChunks } from "../bridge/event-loop-yield.js";
+import {
+	drainSynchronousPages,
+	runSequentialChunks,
+} from "../bridge/event-loop-yield.js";
 
 function busyFor(ms: number): void {
 	const end = performance.now() + ms;
@@ -49,5 +52,47 @@ describe("FLY-2331 sequential maintenance chunks", () => {
 			},
 		);
 		expect(observed).toEqual(["run:a", "yield", "run:b", "yield"]);
+	});
+
+	it("yields after every synchronous maintenance page", async () => {
+		const observed: string[] = [];
+		await drainSynchronousPages(
+			(cursor?: number) => {
+				const page = cursor ?? 1;
+				observed.push(`run:${page}`);
+				return page < 3 ? { nextCursor: page + 1 } : {};
+			},
+			(resume) => {
+				observed.push("yield");
+				resume();
+			},
+		);
+		expect(observed).toEqual([
+			"run:1",
+			"yield",
+			"run:2",
+			"yield",
+			"run:3",
+			"yield",
+		]);
+	});
+
+	it("rejects a cursor that does not advance", async () => {
+		await expect(
+			drainSynchronousPages(
+				(cursor?: number) => ({ nextCursor: cursor ?? 1 }),
+				(resume) => resume(),
+			),
+		).rejects.toThrow("maintenance_page_cursor_not_advanced");
+	});
+
+	it("stops at the configured hard page limit", async () => {
+		await expect(
+			drainSynchronousPages(
+				(cursor?: number) => ({ nextCursor: (cursor ?? 0) + 1 }),
+				(resume) => resume(),
+				{ maxPages: 2 },
+			),
+		).rejects.toThrow("maintenance_page_limit_exceeded:2");
 	});
 });

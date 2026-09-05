@@ -12,6 +12,7 @@ export const MAX_REROUTES_PER_ROOT = 2;
 export const MAILBOX_SLOT_FREEZE_AFTER_MS = 30 * 60_000;
 export const TURN_WAKE_FREEZE_AFTER_MS = 20 * 60_000;
 export const UNDELIVERABLE_GRACE_MS = STAGE_DEADLINES_MS.sent;
+export const DELIVERY_MAINTENANCE_PAGE_SIZE = 64;
 
 export const RECEIPT_CONSUMPTION_DEADLINE_FAMILIES = new Set<DeliveryFamily>([
 	"launch",

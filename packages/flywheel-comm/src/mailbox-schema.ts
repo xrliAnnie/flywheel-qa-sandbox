@@ -134,6 +134,10 @@ CREATE INDEX IF NOT EXISTS mailbox_lead_reclaim
 CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
   ON mailbox(claim_expires_at)
   WHERE state = 'LEASED' AND carrier = 'inbox';
+CREATE INDEX IF NOT EXISTS mailbox_runner_inflight_by_recipient
+  ON mailbox(to_agent, claim_expires_at, batch_id, delivered_at)
+  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+    AND state = 'LEASED' AND delivered_at IS NOT NULL AND batch_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS mailbox_batch_lookup
   ON mailbox(batch_id, priority, seq)
   WHERE batch_id IS NOT NULL;

@@ -58,6 +58,7 @@ import {
 	type HoldShapeDescriptor,
 } from "./bridge/hold-shape-registry.js";
 import {
+	DELIVERY_MAINTENANCE_PAGE_SIZE,
 	MAX_REROUTES_PER_ROOT,
 	STAGE_DEADLINES_MS,
 	UNDELIVERABLE_GRACE_MS,
@@ -21321,6 +21322,31 @@ export class StateStore {
 			WHERE superseded_by_attempt_id IS NULL AND settlement_reason IS NULL
 		`);
 		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_wda_projection_source
+			ON workflow_delivery_attempt(
+			  family,
+			  CASE WHEN json_valid(contract_ref_json)
+			       THEN json_extract(contract_ref_json, '$.table') END,
+			  CASE WHEN json_valid(contract_ref_json)
+			       THEN json_extract(contract_ref_json, '$.pk') END,
+			  generation DESC,
+			  attempt DESC
+			)
+			WHERE superseded_by_attempt_id IS NULL
+			  AND (settlement_reason IS NULL OR settlement_reason = 'legacy_unreachable')
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_wda_projection_source_all
+			ON workflow_delivery_attempt(
+			  family,
+			  CASE WHEN json_valid(contract_ref_json)
+			       THEN json_extract(contract_ref_json, '$.table') END,
+			  CASE WHEN json_valid(contract_ref_json)
+			       THEN json_extract(contract_ref_json, '$.pk') END
+			)
+			WHERE superseded_by_attempt_id IS NULL
+		`);
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_delivery_contract_episode (
 				episode_id TEXT PRIMARY KEY,
 				family TEXT NOT NULL,
@@ -21343,6 +21369,11 @@ export class StateStore {
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_wdce_open_by_root
 			ON workflow_delivery_contract_episode(family, root_id)
 			WHERE closed_at IS NULL
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_wdce_open_undeliverable_by_root
+			ON workflow_delivery_contract_episode(root_id, family)
+			WHERE closed_at IS NULL AND stage = 'undeliverable'
 		`);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_delivery_operation (
@@ -21369,6 +21400,11 @@ export class StateStore {
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_wdo_client_request
 			ON workflow_delivery_operation(client_request_id)
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_wdo_pending_hold_by_id
+			ON workflow_delivery_operation(operation_id)
+			WHERE kind = 'hold_resume' AND state IN ('staged','applied')
 		`);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_resident_hold (
@@ -37314,30 +37350,65 @@ export class StateStore {
 		return result;
 	}
 
-	listLiveWorkflowDeliveryAttempts(): WorkflowDeliveryAttemptRow[] {
+	listLiveWorkflowDeliveryAttempts(options?: {
+		projectName?: string;
+		afterRootId?: string;
+		limit?: number;
+	}): WorkflowDeliveryAttemptRow[] {
+		if (!options) {
+			return this.workflowSelectAll(
+				`SELECT root_id, generation, attempt, attempt_id, family,
+				        contract_ref_json, parent_attempt_id, minted_at, granted_at,
+				        sent_at, received_at, consumed_at, settlement_reason,
+				        superseded_by_attempt_id
+				   FROM workflow_delivery_attempt
+				  WHERE superseded_by_attempt_id IS NULL
+				    AND settlement_reason IS NULL`,
+				[],
+			) as unknown as WorkflowDeliveryAttemptRow[];
+		}
+		if (
+			options.limit !== undefined &&
+			(!Number.isSafeInteger(options.limit) || options.limit < 1)
+		) {
+			throw new Error("invalid_workflow_delivery_attempt_limit");
+		}
+		const predicates = [
+			"superseded_by_attempt_id IS NULL",
+			"settlement_reason IS NULL",
+		];
+		const params: unknown[] = [];
+		if (options.projectName) {
+			predicates.push("root_id >= ?", "root_id < ?");
+			params.push(`${options.projectName}:`, `${options.projectName};`);
+		}
+		if (options.afterRootId) {
+			predicates.push("root_id > ?");
+			params.push(options.afterRootId);
+		}
+		let sql = `SELECT root_id, generation, attempt, attempt_id, family,
+		                  contract_ref_json, parent_attempt_id, minted_at, granted_at,
+		                  sent_at, received_at, consumed_at, settlement_reason,
+		                  superseded_by_attempt_id
+		             FROM workflow_delivery_attempt
+		            WHERE ${predicates.join(" AND ")}
+		            ORDER BY root_id`;
+		if (options.limit !== undefined) {
+			sql += " LIMIT ?";
+			params.push(options.limit);
+		}
 		return this.workflowSelectAll(
-			`SELECT root_id, generation, attempt, attempt_id, family,
-			        contract_ref_json, parent_attempt_id, minted_at, granted_at,
-			        sent_at, received_at, consumed_at, settlement_reason,
-			        superseded_by_attempt_id
-			   FROM workflow_delivery_attempt
-			  WHERE superseded_by_attempt_id IS NULL
-			    AND settlement_reason IS NULL`,
-			[],
+			sql,
+			params,
 		) as unknown as WorkflowDeliveryAttemptRow[];
 	}
 
-	listUnsettledWorkflowDeliveryAttempts(): WorkflowDeliveryAttemptRow[] {
-		return this.workflowSelectAll(
-			`SELECT root_id, generation, attempt, attempt_id, family,
-			        contract_ref_json, parent_attempt_id, minted_at, granted_at,
-			        sent_at, received_at, consumed_at, settlement_reason,
-			        superseded_by_attempt_id
-			   FROM workflow_delivery_attempt
-			  WHERE superseded_by_attempt_id IS NULL
-			    AND settlement_reason IS NULL`,
-			[],
-		) as unknown as WorkflowDeliveryAttemptRow[];
+	listUnsettledWorkflowDeliveryAttempts(options?: {
+		projectName?: string;
+		afterRootId?: string;
+		limit?: number;
+	}): WorkflowDeliveryAttemptRow[] {
+		return this.listLiveWorkflowDeliveryAttempts(options);
 	}
 
 	hasInFlightWorkflowDeliveryReroute(input: {
@@ -37372,25 +37443,20 @@ export class StateStore {
 		table: string;
 		physicalId: string;
 		fallbackRootId: string;
-	}): { rootId: string; attemptId: string } {
+	}): { rootId: string; attemptId: string; found: boolean } {
 		const matches = this.workflowSelectAll(
-			`SELECT root_id, attempt_id, contract_ref_json
+			`SELECT root_id, attempt_id
 			   FROM workflow_delivery_attempt
 			  WHERE family = ? AND superseded_by_attempt_id IS NULL
 			    AND (settlement_reason IS NULL OR settlement_reason = 'legacy_unreachable')
-			  ORDER BY generation DESC, attempt DESC`,
-			[input.family],
-		).filter((row) => {
-			try {
-				const ref = JSON.parse(String(row.contract_ref_json)) as {
-					table?: unknown;
-					pk?: unknown;
-				};
-				return ref.table === input.table && ref.pk === input.physicalId;
-			} catch {
-				return false;
-			}
-		});
+			    AND CASE WHEN json_valid(contract_ref_json)
+			             THEN json_extract(contract_ref_json, '$.table') END = ?
+			    AND CASE WHEN json_valid(contract_ref_json)
+			             THEN json_extract(contract_ref_json, '$.pk') END = ?
+			  ORDER BY generation DESC, attempt DESC
+			  LIMIT 2`,
+			[input.family, input.table, input.physicalId],
+		);
 		if (matches.length > 1) {
 			throw new WorkflowEngineInvariantError(
 				`workflow_delivery_projection_identity_ambiguous:${input.family}:${input.physicalId}`,
@@ -37400,11 +37466,119 @@ export class StateStore {
 			? {
 					rootId: String(matches[0].root_id),
 					attemptId: String(matches[0].attempt_id),
+					found: true,
 				}
 			: {
 					rootId: input.fallbackRootId,
 					attemptId: `${input.fallbackRootId}:g1:a1`,
+					found: false,
 				};
+	}
+
+	resolveWorkflowDeliveryProjectionIdentities(
+		inputs: Array<{
+		family: WorkflowDeliveryAttemptRow["family"];
+		table: string;
+		physicalId: string;
+		fallbackRootId: string;
+		}>,
+	): Array<{
+		rootId: string;
+		attemptId: string;
+		found: boolean;
+		settled: boolean;
+		settlementReason: string | null;
+		generation: number;
+		contractRefJson: string;
+		mintedAt: string;
+		sentAt: string | null;
+		receivedAt: string | null;
+		consumedAt: string | null;
+	}> {
+		if (inputs.length === 0) return [];
+		if (inputs.length > DELIVERY_MAINTENANCE_PAGE_SIZE) {
+			throw new Error("workflow_delivery_projection_identity_page_too_large");
+		}
+		const rows = this.workflowSelectAll(
+			`WITH requested(ordinal, family, source_table, source_pk) AS (
+			   VALUES ${inputs.map(() => "(?, ?, ?, ?)").join(", ")}
+			 )
+			 SELECT requested.ordinal, attempt.root_id, attempt.attempt_id,
+			        attempt.settlement_reason, attempt.generation, attempt.attempt,
+			        attempt.contract_ref_json, attempt.minted_at, attempt.sent_at,
+			        attempt.received_at, attempt.consumed_at
+			   FROM requested
+			   LEFT JOIN workflow_delivery_attempt attempt
+			     ON attempt.family = requested.family
+			    AND attempt.superseded_by_attempt_id IS NULL
+			    AND CASE WHEN json_valid(attempt.contract_ref_json)
+			             THEN json_extract(attempt.contract_ref_json, '$.table') END = requested.source_table
+			    AND CASE WHEN json_valid(attempt.contract_ref_json)
+			             THEN json_extract(attempt.contract_ref_json, '$.pk') END = requested.source_pk
+			  ORDER BY requested.ordinal,
+			           CASE WHEN attempt.settlement_reason IS NULL
+			                  OR attempt.settlement_reason = 'legacy_unreachable'
+			                THEN 0 ELSE 1 END,
+			           attempt.generation DESC, attempt.attempt DESC`,
+			inputs.flatMap((input, ordinal) => [
+				ordinal,
+				input.family,
+				input.table,
+				input.physicalId,
+			]),
+		);
+		return inputs.map((input, ordinal) => {
+			const matches = rows.filter(
+				(row) => Number(row.ordinal) === ordinal && row.attempt_id !== null,
+			);
+			const current = matches.filter(
+				(row) =>
+					row.settlement_reason === null ||
+					row.settlement_reason === "legacy_unreachable",
+			);
+			if (current.length > 1) {
+				throw new WorkflowEngineInvariantError(
+					`workflow_delivery_projection_identity_ambiguous:${input.family}:${input.physicalId}`,
+				);
+			}
+			return current[0]
+				? {
+						rootId: String(current[0].root_id),
+						attemptId: String(current[0].attempt_id),
+						found: true,
+						settled: false,
+						settlementReason:
+							current[0].settlement_reason === null
+								? null
+								: String(current[0].settlement_reason),
+						generation: Number(current[0].generation),
+						contractRefJson: String(current[0].contract_ref_json),
+						mintedAt: String(current[0].minted_at),
+						sentAt:
+							current[0].sent_at === null ? null : String(current[0].sent_at),
+						receivedAt:
+							current[0].received_at === null
+								? null
+								: String(current[0].received_at),
+						consumedAt:
+							current[0].consumed_at === null
+								? null
+								: String(current[0].consumed_at),
+					}
+				: {
+						rootId: input.fallbackRootId,
+						attemptId: `${input.fallbackRootId}:g1:a1`,
+						found: false,
+						settled: matches.length > 0,
+						settlementReason: null,
+						generation: 1,
+						contractRefJson: "",
+						mintedAt: "",
+						sentAt: null,
+						receivedAt: null,
+						consumedAt: null,
+					};
+		});
 	}
 
 	resolveWorkflowDeliveryRecipient(
@@ -38366,7 +38540,12 @@ export class StateStore {
 		return result;
 	}
 
-	listOpenUndeliverableDeliveryEpisodes(): Array<{
+	listOpenUndeliverableDeliveryEpisodes(options?: {
+		projectName?: string;
+		afterRootId?: string;
+		afterFamily?: WorkflowDeliveryAttemptRow["family"];
+		limit?: number;
+	}): Array<{
 		episode_id: string;
 		run_id: string;
 		family: WorkflowDeliveryAttemptRow["family"];
@@ -38374,6 +38553,23 @@ export class StateStore {
 		attempt_id: string;
 		contract_ref_json: string;
 	}> {
+		if (
+			options?.limit !== undefined &&
+			(!Number.isSafeInteger(options.limit) || options.limit < 1)
+		) {
+			throw new Error("invalid_workflow_delivery_episode_limit");
+		}
+		const params: unknown[] = [];
+		const optionalPredicates: string[] = [];
+		if (options?.projectName) {
+			optionalPredicates.push("episode.root_id >= ?", "episode.root_id < ?");
+			params.push(`${options.projectName}:`, `${options.projectName};`);
+		}
+		if (options?.afterRootId && options.afterFamily) {
+			optionalPredicates.push("(episode.root_id, episode.family) > (?, ?)");
+			params.push(options.afterRootId, options.afterFamily);
+		}
+		if (options?.limit !== undefined) params.push(options.limit);
 		return this.workflowSelectAll(
 			`SELECT episode.episode_id, episode.run_id, episode.family,
 			        episode.root_id, episode.attempt_id, attempt.contract_ref_json
@@ -38381,8 +38577,10 @@ export class StateStore {
 			   JOIN workflow_delivery_attempt attempt
 			     ON attempt.attempt_id = episode.attempt_id
 			  WHERE episode.closed_at IS NULL AND episode.stage = 'undeliverable'
-			  ORDER BY episode.opened_at, episode.episode_id`,
-			[],
+			  ${optionalPredicates.length ? `AND ${optionalPredicates.join(" AND ")}` : ""}
+			  ORDER BY ${options ? "episode.root_id, episode.family" : "episode.opened_at, episode.episode_id"}
+			  ${options?.limit !== undefined ? "LIMIT ?" : ""}`,
+			params,
 		) as unknown as Array<{
 			episode_id: string;
 			run_id: string;
@@ -40110,13 +40308,23 @@ export class StateStore {
 			issueId: string;
 			runId: string;
 		}) => WorkflowEngineAlertIdentity,
+		options?: { projectName?: string; limit?: number },
 	): number {
 		if (!StateStore.workflowFiniteTimestamp(now)) {
 			throw new Error("invalid_delivery_operation_observation_time");
 		}
+		if (
+			options?.limit !== undefined &&
+			(!Number.isSafeInteger(options.limit) || options.limit < 1)
+		) {
+			throw new Error("invalid_stalled_delivery_operation_limit");
+		}
 		const cutoff = new Date(
 			Date.parse(now) - STAGE_DEADLINES_MS.granted,
 		).toISOString();
+		const params: unknown[] = [cutoff];
+		if (options?.projectName) params.push(options.projectName);
+		if (options?.limit !== undefined) params.push(options.limit);
 		let alerted = 0;
 		this.db.transaction(() => {
 			const operations = this.workflowSelectAll(
@@ -40127,8 +40335,11 @@ export class StateStore {
 				   LEFT JOIN workflow_run run ON run.run_id = operation.run_id
 				  WHERE operation.state IN ('staged','applied')
 				    AND operation.updated_at < ?
-				  ORDER BY operation.updated_at, operation.operation_id`,
-				[cutoff],
+				    ${options?.projectName ? "AND run.project_name = ?" : ""}
+				    ${options ? "AND NOT EXISTS (SELECT 1 FROM workflow_alert_outbox alert WHERE alert.escalation_uid = 'delivery_operation_stalled:' || operation.operation_id)" : ""}
+				  ORDER BY operation.updated_at, operation.operation_id
+				  ${options?.limit !== undefined ? "LIMIT ?" : ""}`,
+				params,
 			);
 			for (const operation of operations) {
 				const escalationUid = `delivery_operation_stalled:${operation.operation_id}`;
@@ -41401,7 +41612,11 @@ export class StateStore {
 			: undefined;
 	}
 
-	listPendingWorkflowHoldResumeOperations(): Array<{
+	listPendingWorkflowHoldResumeOperations(options?: {
+		projectName?: string;
+		afterOperationId?: string;
+		limit?: number;
+	}): Array<{
 		operationId: string;
 		runId: string;
 		shape: string;
@@ -41414,6 +41629,25 @@ export class StateStore {
 		targetActivationId: string | null;
 		episodeId: string | null;
 	}> {
+		if (
+			options?.limit !== undefined &&
+			(!Number.isSafeInteger(options.limit) || options.limit < 1)
+		) {
+			throw new Error("invalid_workflow_hold_resume_operation_limit");
+		}
+		const params: unknown[] = [];
+		const optionalPredicates: string[] = [];
+		if (options?.projectName) {
+			optionalPredicates.push(
+				"EXISTS (SELECT 1 FROM workflow_run run WHERE run.run_id = operation.run_id AND run.project_name = ?)",
+			);
+			params.push(options.projectName);
+		}
+		if (options?.afterOperationId) {
+			optionalPredicates.push("operation.operation_id > ?");
+			params.push(options.afterOperationId);
+		}
+		if (options?.limit !== undefined) params.push(options.limit);
 		return this.workflowSelectAll(
 			`SELECT operation.operation_id, operation.run_id, operation.shape_id,
 			        operation.hold_event_uid, operation.state, operation.family,
@@ -41431,8 +41665,10 @@ export class StateStore {
 			    AND episode.closed_at IS NULL
 			  WHERE operation.kind = 'hold_resume'
 			    AND operation.state IN ('staged','applied')
-			  ORDER BY operation.created_at, operation.operation_id`,
-			[],
+			  ${optionalPredicates.length ? `AND ${optionalPredicates.join(" AND ")}` : ""}
+			  ORDER BY ${options ? "operation.operation_id" : "operation.created_at, operation.operation_id"}
+			  ${options?.limit !== undefined ? "LIMIT ?" : ""}`,
+			params,
 		).map((row) => {
 			let payload: Record<string, unknown> = {};
 			try {

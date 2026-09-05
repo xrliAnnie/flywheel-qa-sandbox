@@ -266,7 +266,7 @@
 		},
 		{
 			"file": "packages/teamlead/src/bridge/plugin.ts",
-			"sync_marker": 6,
+			"sync_marker": 7,
 			"disposition": "bridge_sync_marker_timeout"
 		},
 		{
