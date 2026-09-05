@@ -98,6 +98,9 @@ describe("management console HTML", () => {
 		expect(html).toContain('.flag-read[data-tone="changed"]');
 		expect(html).toContain('.flag-read[data-tone="unknown"]');
 		expect(html).toContain("data-tone=\"'+rd.tone+'\"");
+		expect(html).toContain("打开 / 取值代表什么");
+		expect(html).toContain("flag.whenOn");
+		expect(html).not.toContain("esc(flag.description)");
 	});
 
 	it("ships syntactically valid dependency-free browser JavaScript", () => {

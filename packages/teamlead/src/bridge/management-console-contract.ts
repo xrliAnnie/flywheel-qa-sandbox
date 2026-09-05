@@ -270,6 +270,7 @@ export interface ManagementFlagView {
 	default: boolean | string;
 	valueKind: FlagValueKind;
 	onMeans: "enables" | "disables" | null;
+	whenOn: string | null;
 	global: ManagedValue<unknown>;
 	projectOverrides: Array<{
 		projectName: string;

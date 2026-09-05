@@ -81,6 +81,12 @@ export interface FeatureFlagSpec {
 	default: boolean | string;
 	/** One-line human description (what it controls). */
 	description: string;
+	/**
+	 * Founder-facing explanation of what enabling this flag (or choosing its
+	 * value) does. Optional on the interface for synthetic test specs; every
+	 * live registry entry is required to provide a non-blank value.
+	 */
+	whenOn?: string;
 	/** Every place the code reads this flag (timing evidence). */
 	readSites: FlagReadSite[];
 	toggleable: FlagToggleability;
@@ -190,12 +196,15 @@ export function validateOnMeansContract(spec: FeatureFlagSpec): string[] {
 	if (spec.valueKind !== "bool" && spec.onMeans !== undefined) {
 		violations.push(`${spec.name}: non-bool flags must not declare onMeans`);
 	}
-	if (spec.name.endsWith("_disabled") && spec.onMeans !== "disables") {
-		violations.push(
-			`${spec.name}: names ending in _disabled must declare onMeans as disables`,
-		);
-	}
 	return violations;
+}
+
+/** FLY-2368: every live registry row carries reviewed founder-facing copy. */
+export function validateWhenOnContract(spec: FeatureFlagSpec): string[] {
+	if (spec.whenOn?.trim()) return [];
+	return [
+		`${spec.name}: whenOn must be a non-blank founder-facing explanation`,
+	];
 }
 
 function flagStoreSite(
@@ -226,6 +235,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description:
 			"FLY-2207: emergency alert-only mode that suppresses launchd rebuild attempts while preserving watcher health tickets",
+		whenOn: "停止自动重建掉线的 cmux 监看窗口；健康检查和告警仍继续",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -250,6 +260,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description:
 			"FLY-2207: emergency stop for automatic reconstruction and reconnect of missing runner cmux views",
+		whenOn: "停止自动补建并重新连接丢失的 Runner cmux 窗口",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -273,6 +284,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: "21600000",
 		description:
 			"FLY-2131: cadence for Raya summary review and absorption rounds (default 6h)",
+		whenOn: "Raya 两轮总结复盘之间要等待的毫秒数；默认 21600000 毫秒（6 小时）",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -297,6 +309,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: true,
 		description:
 			"FLY-2076: gate alert delivery into Discord, ticket dispatch, and the Claw duty seat while preserving the intake ledger",
+		whenOn:
+			"把系统告警发到 Discord、创建处理工单，并通知值班 Claw；原始告警仍会留档",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -320,6 +334,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: true,
 		description:
 			"FLY-2177: automatically retry failed cross-family reviews after a proven Claude subscription reset while the bound gate remains valid",
+		whenOn: "Claude 额度恢复后，自动重试仍然有效的跨模型评审",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -343,6 +358,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: true,
 		description:
 			"FLY-1995: capture bounded Node CPU profiles for Bridge event-loop delay episodes",
+		whenOn: "Bridge 卡顿时自动抓取一份限时 CPU 分析，方便排查原因",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -367,6 +383,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: true,
 		description:
 			"FLY-1992: after one failed post-merge closeout, force-reap an evidence-proven stale workflow-node husk before thread archive; =0 restores cooperative-only shutdown",
+		whenOn: "合入后的节点正常关闭失败一次后，自动清理已确认无用的残留进程",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -392,6 +409,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: true,
 		description:
 			"每周日 08:00 America/Los_Angeles 扫描解析后生效值稳定满 7 天的 flag，生成一批留/清候选；扫描本身永不删除 flag",
+		whenOn: "每周检查长期没变的 flag，整理成「保留或清理」候选；不会自动删除",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -418,6 +436,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: true,
 		description:
 			"FLY-1423: re-enter the original workflow actor for QA/founder rework; =0 holds and alerts without evicting or spawning",
+		whenOn:
+			"QA 或 founder 要求返工时，让原来的执行节点继续修改；关闭后只暂停并告警",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -446,6 +466,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description:
 			"FLY-2155: turn a later QA verification round into a same-actor rework request; dead actors still materialize replacements",
+		whenOn:
+			"后续 QA 复验要求返工时，优先交回同一个仍在线的执行节点；节点已退出才新建",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -483,6 +505,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: true,
 		description:
 			"FLY-2341: bounded cold compaction of terminal TeamLead and CommDB history",
+		whenOn: "定期压缩已结束的 TeamLead 和 CommDB 历史记录，避免数据库一直变大",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -504,6 +527,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: true,
 		description:
 			"FLY-2210: project-level master switch for workflow node dwell patrol output and actions",
+		whenOn:
+			"检查仍在运行的工作流节点是否停留过久，并输出巡检结果或采取处理动作",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/node-dwell-control.ts",
@@ -524,6 +549,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: "3",
 		description:
 			"FLY-2210: elapsed hours before an active workflow node requires patrol review",
+		whenOn: "工作流节点持续运行多少小时后算「停留过久」；默认 3 小时",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/node-dwell-control.ts",
@@ -545,6 +571,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		onMeans: "enables",
 		default: true,
 		description: "项目级 DAG dispatch enrollment",
+		whenOn: "让这个项目的新任务按设计、实现、QA 等独立节点组成的 DAG 流程运行",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/pipeline-config-source.ts",
@@ -565,6 +592,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		onMeans: "enables",
 		default: false,
 		description: "项目级 dispatch work-kind enforcement",
+		whenOn:
+			"这个项目使用 DAG 流程派发时，检查任务类型是否符合当前节点，避免交给错误角色",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/pipeline-config-source.ts",
@@ -585,6 +614,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		onMeans: "enables",
 		default: false,
 		description: "DOC-FLOW 提示词块：Runner 写部门优先过程文档（per-project）",
+		whenOn: "要求这个项目的 Runner 随任务提交探索、调研、计划和进度文档",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/run-infra.ts",
@@ -606,6 +636,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: "off",
 		description:
 			"FLY-2147: temporary Runner memory experiment (off / issue-stable 50:50 split / forced role / forced shared)",
+		whenOn:
+			"决定新 Runner 使用哪种记忆方案；off 不注入实验记忆，其余选项用于对照实验",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/run-infra.ts",
@@ -640,6 +672,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: "superpowers",
 		description:
 			"FLY-1356/1609: Runner skill 框架四臂（superpowers=A / matt=B / bare=C / bare-ponytail=D / split=按 issue 稳定哈希分流）。kill = 设回 superpowers，秒级生效不重启；存量 in-flight session 不追改",
+		whenOn:
+			"决定新 Runner 尝试加载哪套技能框架；方案不兼容当前后端或就绪检查失败时会回退或不生效",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
@@ -679,6 +713,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: true,
 		description:
 			"FLY-1356: split 分流下该项目是否参与实验臂（false = 项目钉回 A/superpowers，via 记 project_opt_out；这是退出杠杆，不是启用开关）",
+		whenOn:
+			"只在技能框架处于分流模式时生效：关闭后这个项目退出分流、固定使用 superpowers；全局强制指定某个方案时这个开关不起作用",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/run-infra.ts",
@@ -699,6 +735,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		onMeans: "enables",
 		default: false,
 		description: "ProofShot 视觉验证 auto-trigger（per-project）",
+		whenOn: "这个项目有界面改动时，自动要求用 ProofShot 做视觉验收",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/run-infra.ts",
@@ -719,6 +756,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		onMeans: "enables",
 		default: false,
 		description: "定期小红书收藏学习管线（per-project）",
+		whenOn: "定期读取这个项目的小红书收藏，把可执行内容整理成后续任务草稿",
 		readSites: [
 			flagStoreSite(
 				"scripts/xiaohongshu-scheduler.ts",
@@ -740,6 +778,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description:
 			"代码极简 ponytail 逐项目 rollout（Annie-exception：默认 OFF）",
+		whenOn:
+			"让这个项目符合条件的新 Runner 使用更精简的 ponytail 流程；issue 标记关闭、标签冲突或当前后端未就绪时不启用",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/run-infra.ts",
@@ -762,6 +802,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description:
 			"FLY-1614: emit severe Lead alerts for durable engine/CommDB TURN divergence. Default off keeps detection and episode recording in shadow mode.",
+		whenOn:
+			"发现工作流引擎和 TURN 记录不一致时发送严重告警；关闭时仍检测并留证",
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",

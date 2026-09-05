@@ -46,30 +46,14 @@ function nodeMetrics(maxChain,availW){
 function flagDisplayValue(value){return typeof value==="boolean"?(value?"开":"关"):String(value);}
 function flagReading(flag,current){
   var defaultText=flagDisplayValue(flag.default);
-  if(current===null){return {state:"未知",text:"这个 flag 当前读不到值。",tone:"unknown",tail:"无法与默认比较(默认 "+defaultText+")"};}
-  var currentText=flagDisplayValue(current);
-  var same=stableUiValue(current)===stableUiValue(flag.default);
-  var tail=same?"维持默认":"已偏离默认(默认 "+defaultText+")";
-  if(flag.valueKind!=="bool"){
-    return {state:currentText,text:"当前取值 "+currentText+"(默认 "+defaultText+")。这不是开关,是一个数值/枚举。",tone:same?"normal":"changed",tail:tail};
-  }
-  if(flag.onMeans===null){return {state:"读不到",text:"这条 flag 没有登记「打开代表什么」(registry 缺项),这里不猜。",tone:"unknown",tail:tail};}
-  if(flag.onMeans==="disables"){
-    return current?
-      {state:"开",text:"这是一个【停用开关】,现在已经打开 —— 它管的那件事已经被停掉了。",tone:"changed",tail:tail}:
-      {state:"关",text:"这是一个【停用开关】,现在没有打开 —— 它管的那件事照常在跑。",tone:"normal",tail:tail};
-  }
-  if(flag.polarity==="default_on"){
-    return current?
-      {state:"开",text:"这个功能正常运行中(默认就是开着的)。",tone:"normal",tail:tail}:
-      {state:"关",text:"这个功能已经被关掉了 —— 默认是开着的,现在被关了。",tone:"changed",tail:tail};
-  }
-  if(flag.polarity==="opt_in"){
-    return current?
-      {state:"开",text:"这个功能已经启用 —— 默认是关着的,现在打开了。",tone:"changed",tail:tail}:
-      {state:"关",text:"这个功能没有启用(默认就是关着的)。",tone:"normal",tail:tail};
-  }
-  return {state:"读不到",text:"这条 flag 没有登记「打开代表什么」(registry 缺项),这里不猜。",tone:"unknown",tail:tail};
+  var known=current!==null;
+  var currentText=known?flagDisplayValue(current):"未知";
+  var same=known&&stableUiValue(current)===stableUiValue(flag.default);
+  var tail=known?"当前："+currentText+"；"+(same?"维持默认":"已偏离默认（默认 "+defaultText+"）"):"当前：未知；无法与默认比较（默认 "+defaultText+"）";
+  var whenOn=typeof flag.whenOn==="string"?flag.whenOn.trim():"";
+  if(!whenOn){return {state:"读不到",text:"这条 flag 没有登记「打开代表什么」的人话说明，这里不猜。",tone:"unknown",tail:tail};}
+  var text=(flag.valueKind==="bool"?"打开代表：":"这个设置决定：")+whenOn+(/[。！？!?]$/.test(whenOn)?"":"。");
+  return {state:currentText,text:text,tone:known?(same?"normal":"changed"):"unknown",tail:tail};
 }
 function scheduleLabel(days){
   var normalized=Array.from(new Set(days)).sort(function(a,b){return a-b;});
@@ -556,12 +540,12 @@ const MANAGEMENT_CONSOLE_APP = `
       html+='<div class="fl-n">点「改不了」原因可以看到系统给的逐字原文。</div></div>';
     }
     var all=snapshot.flags.slice().sort(function(a,b){return a.name<b.name?-1:a.name>b.name?1:0;});
-    html+='<section class="flag-group"><h2 class="flag-group-title"><span>Flag</span><span class="flag-count">'+all.length+'</span></h2><div class="flag-head"><span>开关名</span><span>它现在是什么状态</span><span>全局值 · 能不能在这里改</span><span>项目覆盖</span></div>';
+    html+='<section class="flag-group"><h2 class="flag-group-title"><span>Flag</span><span class="flag-count">'+all.length+'</span></h2><div class="flag-head"><span>开关名</span><span>打开 / 取值代表什么</span><span>当前全局值 · 能不能在这里改</span><span>项目覆盖</span></div>';
     all.forEach(function(flag){
       var canWrite=writable(flag.global);var lock=canWrite?null:lockKind(flag.global&&flag.global.writeCapability&&flag.global.writeCapability.reason);var rd=flagReading(flag,effective(flag.global));
       var actualOverrides=flag.projectOverrides.filter(function(item){return item.via==="project_row";});
       html+='<article class="flag-row'+(canWrite?' rw':'')+'" data-flag="'+esc(flag.name)+'" style="--lc:'+(lock?lock.color:'#1f9d4d')+'"><div class="flag-name">'+esc(flag.name)+'</div>';
-      html+='<div class="flag-copy"><div class="flag-read" data-tone="'+rd.tone+'" data-state="'+esc(rd.state)+'">'+esc(rd.text)+'</div><span class="flag-tail">'+esc(rd.tail)+'</span><div class="help">'+esc(flag.description)+'</div></div>';
+      html+='<div class="flag-copy"><div class="flag-read" data-tone="'+rd.tone+'" data-state="'+esc(rd.state)+'">'+esc(rd.text)+'</div><span class="flag-tail">'+esc(rd.tail)+'</span></div>';
       html+='<div class="flag-global">'+renderFlagValue(flag.global,false)+(canWrite?'<span class="flag-rw">可改</span>':'<button type="button" class="lock-chip" data-lock-why="'+esc((flag.global&&flag.global.writeCapability&&flag.global.writeCapability.reason)||"")+'" data-lock-hint="'+esc(lock.hint)+'">'+esc(lock.label)+'</button>')+'</div>';
       html+='<div class="flag-ovs">'+(actualOverrides.length?'<button type="button" class="ov-pill" data-ov-flag="'+esc(flag.name)+'">'+actualOverrides.length+' 个项目覆盖</button>':'<span class="ov-none">无覆盖</span>')+'</div></article>';
       if(actualOverrides.length){

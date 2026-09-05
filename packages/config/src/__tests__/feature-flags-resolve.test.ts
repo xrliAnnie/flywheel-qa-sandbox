@@ -20,7 +20,11 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 	it("resolves a default-on flag from env", () => {
 		const view = resolveFlag(loopProfiler(), { env: {} });
 		expect(view.effective).toBe(true);
-		expect(view).toMatchObject({ polarity: "default_on", onMeans: "enables" });
+		expect(view).toMatchObject({
+			polarity: "default_on",
+			onMeans: "enables",
+			whenOn: "Bridge 卡顿时自动抓取一份限时 CPU 分析，方便排查原因",
+		});
 		expect(
 			resolveFlag(loopProfiler(), { env: { [envVar]: "0" } }).effective,
 		).toBe(false);
@@ -35,6 +39,7 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 		).toMatchObject({
 			polarity: "opt_in",
 			onMeans: "disables",
+			whenOn: "停止自动补建并重新连接丢失的 Runner cmux 窗口",
 		});
 	});
 

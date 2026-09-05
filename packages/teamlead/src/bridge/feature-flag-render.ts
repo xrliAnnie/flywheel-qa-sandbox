@@ -55,28 +55,24 @@ export function categoryDefinition(cat: FlagView["category"]): string {
 }
 
 /**
- * A plain-language sentence for what toggling THIS flag does — derived from its
- * polarity / category / scope, so every flag reads clearly even when the registry
- * description is terse (④). This is the "让她知道具体在干嘛" line.
+ * Founder-facing meaning comes directly from the registry. Runtime metadata may
+ * add lifecycle hints, but must never be used to guess what ON means.
  */
 export function effectSentence(flag: FlagView): string {
-	if (flag.dormant) return "已登记但 runtime 暂不加载(预留项),只读。";
+	const whenOn = flag.whenOn?.trim();
+	if (!whenOn)
+		return "这条 flag 没有登记「打开代表什么」的人话说明，这里不猜。";
+	const meaning =
+		flag.valueKind === "bool"
+			? `打开代表：${whenOn}${/[。！？!?]$/.test(whenOn) ? "" : "。"}`
+			: `这个设置决定：${whenOn}${/[。！？!?]$/.test(whenOn) ? "" : "。"}`;
+	const hints: string[] = [];
+	if (flag.dormant) hints.push("已登记但 runtime 暂不加载(预留项),只读。");
+	if (flag.valueKind !== "bool") hints.push("这是取值型设置，当前值见上方。");
 	const proj =
 		flag.scope === "project" ? "每个项目单独设,改后对新 run 生效。" : "";
-	if (flag.valueKind !== "bool") {
-		return `取值型(非开关),当前值见上方。${proj}`;
-	}
-	// FlagView carries `default` (the spec default); for a bool flag, default===true
-	// means default-on (a kill-switch that's ON by default).
-	const defaultOn = flag.default === true;
-	const base = defaultOn
-		? flag.category === "kill_switch"
-			? "默认开着(保护生效);紧急时设 =0 关停。"
-			: "默认开着;设 =0 关掉这个功能。"
-		: flag.category === "kill_switch"
-			? "默认关;设 =1 启用这道保护。"
-			: "默认关;设 =1 打开这个功能。";
-	return `${base}${proj ? ` ${proj}` : ""}`;
+	if (proj) hints.push(proj);
+	return [meaning, ...hints].join(" ");
 }
 
 /** The category legend for legacy report consumers. */

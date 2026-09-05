@@ -163,6 +163,20 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		).toBe("热生效");
 	});
 
+	it("renders the registry's human meaning instead of deriving generic copy", () => {
+		const docFlow = FLAGS.find((flag) => flag.name === "doc_flow");
+		const dwellThreshold = FLAGS.find(
+			(flag) => flag.name === "node_dwell_threshold_hours",
+		);
+		if (!docFlow || !dwellThreshold) throw new Error("missing fixtures");
+		expect(renderFlagCard(docFlow)).toContain(
+			"打开代表：要求这个项目的 Runner 随任务提交探索、调研、计划和进度文档。",
+		);
+		expect(renderFlagCard(dwellThreshold)).toContain(
+			"这个设置决定：工作流节点持续运行多少小时后算「停留过久」；默认 3 小时。",
+		);
+	});
+
 	it.each([
 		["staged_restart", ".env 已改,待重启生效"],
 		["split_brain", "CLI 与 Bridge 见值不同"],
@@ -200,6 +214,7 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 			name: "x",
 			category: "feature",
 			description: "<script>alert(1)</script>",
+			whenOn: '<img src=x onerror="alert(2)">',
 			toggleable: "readonly",
 			valueKind: "bool",
 			scope: "bridge_global",
@@ -211,7 +226,29 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 			isDefault: true,
 		});
 		expect(html).not.toContain("<script>alert(1)</script>");
+		expect(html).not.toContain('<img src=x onerror="alert(2)">');
 		expect(html).toContain("&lt;script&gt;");
+		expect(html).toContain("&lt;img src=x onerror=&quot;alert(2)&quot;&gt;");
+	});
+
+	it("shows an explicit error when a synthetic flag has no human meaning", () => {
+		const html = renderFlagCard({
+			name: "missing_copy",
+			category: "feature",
+			description: "technical description",
+			toggleable: "readonly",
+			valueKind: "bool",
+			scope: "bridge_global",
+			source: "env",
+			envVar: "FLYWHEEL_MISSING_COPY",
+			readTimings: ["call_time"],
+			default: true,
+			effective: true,
+			isDefault: true,
+		});
+		expect(html).toContain(
+			"这条 flag 没有登记「打开代表什么」的人话说明，这里不猜。",
+		);
 	});
 
 	it("renders a bridge-global malformed value as a visible error, not blank", () => {

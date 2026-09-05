@@ -67,6 +67,7 @@ export interface FlagView {
 	name: string;
 	category: FlagCategory;
 	description: string;
+	whenOn?: string;
 	toggleable: FlagToggleability;
 	valueKind: FlagValueKind;
 	polarity: FlagPolarity;
@@ -265,6 +266,7 @@ export function resolveFlag(
 		name: spec.name,
 		category: spec.category,
 		description: spec.description,
+		whenOn: spec.whenOn,
 		toggleable: spec.toggleable,
 		valueKind: spec.valueKind,
 		polarity: spec.polarity,

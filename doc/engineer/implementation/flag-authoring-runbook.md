@@ -10,7 +10,7 @@
 新的产品 flag 必须按照这条路径一次完成。不得先放进 `.env` 或
 `config.yaml`，不得先登记为 legacy 直读，也不得另建第二套开关通道。
 
-1. 在 `packages/config/src/feature-flags/registry.ts` 登记 spec，并明确 `default`、`polarity`、`valueKind`、`scope` 与真实 read site。
+1. 在 `packages/config/src/feature-flags/registry.ts` 登记 spec，并明确 `default`、`polarity`、`valueKind`、`scope`、`whenOn` 与真实 read site。`whenOn` 给 founder 看：直接写打开后的结果，不带 issue 号，不拿实现术语当说明。
 2. 每个 registry 条目都加入 `STORE_MANAGED_FLAGS`，并提供与 `default`、`polarity` 完全一致的 store codec。Bridge-global flag 使用 `scope: bridge_global`；逐项目 flag 还必须加入 `PROJECT_STORE_MANAGED_FLAGS` 并使用 `scope: project`。
 3. 在 `flag-store-runtime.ts` 建立命名读取 wrapper。registry `readSites` 只以 `delegated` + `call_time` 指向精确 wrapper symbol；业务代码不读 `process.env.FLYWHEEL_*`，`config.yaml` 也不承载 flag key。
 4. Project scope 的显式 `0/1` 由 codec 解析为 false/true，读取优先级是项目行 → `*` 行 → registry default。project row 写时创建、clear 时删除；Bridge-global flag 必须拒绝项目行。

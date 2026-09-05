@@ -6,14 +6,81 @@ import {
 	FEATURE_FLAGS,
 	validateKeepFieldContract,
 	validateOnMeansContract,
+	validateWhenOnContract,
 } from "../feature-flags/registry.js";
 import { RETIRED_CONFIG_PATHS, RETIRED_FLAGS } from "../feature-flags/truth.js";
 import { auditFly1981LegacyLedger } from "./fly1981-legacy-snapshot.js";
+
+const EXPECTED_WHEN_ON = {
+	cmux_watcher_rebuild_disabled:
+		"停止自动重建掉线的 cmux 监看窗口；健康检查和告警仍继续",
+	cmux_rebind_disabled: "停止自动补建并重新连接丢失的 Runner cmux 窗口",
+	summary_absorption_cadence_ms:
+		"Raya 两轮总结复盘之间要等待的毫秒数；默认 21600000 毫秒（6 小时）",
+	alert_system:
+		"把系统告警发到 Discord、创建处理工单，并通知值班 Claw；原始告警仍会留档",
+	review_quota_auto_retry: "Claude 额度恢复后，自动重试仍然有效的跨模型评审",
+	loop_profiler: "Bridge 卡顿时自动抓取一份限时 CPU 分析，方便排查原因",
+	shipped_husk_force:
+		"合入后的节点正常关闭失败一次后，自动清理已确认无用的残留进程",
+	flag_retirement_scan:
+		"每周检查长期没变的 flag，整理成「保留或清理」候选；不会自动删除",
+	workflow_rework_reentry:
+		"QA 或 founder 要求返工时，让原来的执行节点继续修改；关闭后只暂停并告警",
+	workflow_node_reuse:
+		"后续 QA 复验要求返工时，优先交回同一个仍在线的执行节点；节点已退出才新建",
+	database_archive:
+		"定期压缩已结束的 TeamLead 和 CommDB 历史记录，避免数据库一直变大",
+	node_dwell:
+		"检查仍在运行的工作流节点是否停留过久，并输出巡检结果或采取处理动作",
+	node_dwell_threshold_hours:
+		"工作流节点持续运行多少小时后算「停留过久」；默认 3 小时",
+	pipeline_dag:
+		"让这个项目的新任务按设计、实现、QA 等独立节点组成的 DAG 流程运行",
+	pipeline_work_kind:
+		"这个项目使用 DAG 流程派发时，检查任务类型是否符合当前节点，避免交给错误角色",
+	doc_flow: "要求这个项目的 Runner 随任务提交探索、调研、计划和进度文档",
+	runner_memory_mode:
+		"决定新 Runner 使用哪种记忆方案；off 不注入实验记忆，其余选项用于对照实验",
+	skill_framework_mode:
+		"决定新 Runner 尝试加载哪套技能框架；方案不兼容当前后端或就绪检查失败时会回退或不生效",
+	skill_framework_split_participation:
+		"只在技能框架处于分流模式时生效：关闭后这个项目退出分流、固定使用 superpowers；全局强制指定某个方案时这个开关不起作用",
+	proofshot: "这个项目有界面改动时，自动要求用 ProofShot 做视觉验收",
+	xiaohongshu_learning:
+		"定期读取这个项目的小红书收藏，把可执行内容整理成后续任务草稿",
+	ponytail:
+		"让这个项目符合条件的新 Runner 使用更精简的 ponytail 流程；issue 标记关闭、标签冲突或当前后端未就绪时不启用",
+	workflow_turn_divergence_alerts:
+		"发现工作流引擎和 TURN 记录不一致时发送严重告警；关闭时仍检测并留证",
+} as const;
 
 // FLY-709: registry hard invariants keep `direct` toggles restricted to flags
 // the running Bridge will actually observe live.
 
 describe("feature-flag registry invariants", () => {
+	it("FLY-2368 exports the founder-copy authoring guard", () => {
+		expect(validateWhenOnContract).toBeTypeOf("function");
+	});
+
+	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
+		expect(FEATURE_FLAGS).toHaveLength(23);
+		expect(
+			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
+		).toEqual(EXPECTED_WHEN_ON);
+		for (const flag of FEATURE_FLAGS) {
+			expect(validateWhenOnContract(flag), flag.name).toEqual([]);
+		}
+	});
+
+	it("FLY-2368 rejects blank founder copy", () => {
+		expect(
+			validateWhenOnContract({ ...FEATURE_FLAGS[0]!, whenOn: "  \n " }),
+		).toEqual([
+			"cmux_watcher_rebuild_disabled: whenOn must be a non-blank founder-facing explanation",
+		]);
+	});
+
 	it("FLY-2257 exports the on-means authoring guard", () => {
 		expect(validateOnMeansContract).toBeTypeOf("function");
 	});
@@ -24,7 +91,7 @@ describe("feature-flag registry invariants", () => {
 		}
 	});
 
-	it("FLY-2257 rejects reversed, missing, and non-boolean on-means metadata", () => {
+	it("FLY-2257 rejects missing and non-boolean on-means metadata", () => {
 		const disabled = FEATURE_FLAGS.find(
 			(flag) => flag.name === "cmux_rebind_disabled",
 		);
@@ -36,10 +103,6 @@ describe("feature-flag registry invariants", () => {
 		expect(enabled).toBeDefined();
 		expect(scalar).toBeDefined();
 
-		const reversed = {
-			...disabled,
-			onMeans: "enables",
-		} as FeatureFlagSpec & { onMeans: "enables" };
 		const missing = { ...enabled } as FeatureFlagSpec & {
 			onMeans?: "enables" | "disables";
 		};
@@ -49,9 +112,20 @@ describe("feature-flag registry invariants", () => {
 			onMeans: "enables",
 		} as FeatureFlagSpec & { onMeans: "enables" };
 
-		expect(validateOnMeansContract(reversed).join(" ")).toContain("_disabled");
 		expect(validateOnMeansContract(missing).join(" ")).toContain("bool");
 		expect(validateOnMeansContract(nonBoolean).join(" ")).toContain("non-bool");
+	});
+
+	it("FLY-2368 never infers bool meaning from the flag name", () => {
+		const enabled = FEATURE_FLAGS.find((flag) => flag.name === "alert_system");
+		expect(enabled).toBeDefined();
+		const renamed = {
+			...enabled!,
+			name: "synthetic_disabled",
+		} satisfies FeatureFlagSpec;
+		expect(validateOnMeansContract(renamed)).toEqual(
+			validateOnMeansContract(enabled!),
+		);
 	});
 
 	it("exports the FLY-1981 authoring guard through the public feature-flags surface", () => {
@@ -68,6 +142,7 @@ describe("feature-flag registry invariants", () => {
 		expect(FeatureFlags.LEGACY_UNMANAGED_BASELINE).toHaveLength(0);
 		expect(FeatureFlags.STORE_MANAGED_FLAGS.size).toBe(FEATURE_FLAGS.length);
 		expect(FeatureFlags.validateFlagAuthoringPolicy).toBeTypeOf("function");
+		expect(FeatureFlags.validateWhenOnContract).toBeTypeOf("function");
 	});
 
 	it.each([

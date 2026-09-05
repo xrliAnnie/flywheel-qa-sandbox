@@ -332,6 +332,7 @@ function buildFlagView(
 		default: view.default,
 		valueKind: view.valueKind,
 		onMeans: view.onMeans ?? null,
+		whenOn: view.whenOn?.trim() ? view.whenOn.trim() : null,
 		global,
 		projectOverrides,
 	};

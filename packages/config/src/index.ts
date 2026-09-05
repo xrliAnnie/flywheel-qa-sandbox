@@ -113,6 +113,7 @@ export {
 	validateFlagAuthoringPolicy,
 	validateFlagTruthEnvironment,
 	validateLivenessManifest,
+	validateWhenOnContract,
 } from "./feature-flags/index.js";
 export type {
 	FounderTimezoneResolver,

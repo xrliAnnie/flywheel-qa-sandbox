@@ -278,6 +278,7 @@ describe("existing management writer adapters", () => {
 			default: true,
 			valueKind: "bool",
 			onMeans: "enables",
+			whenOn: "Bridge 卡顿时自动抓取一份限时 CPU 分析，方便排查原因",
 		});
 		expect(loopProfiler).not.toHaveProperty("category");
 		expect(loopProfiler?.global).toMatchObject({

@@ -16,6 +16,7 @@ export {
 	FEATURE_FLAGS,
 	validateKeepFieldContract,
 	validateOnMeansContract,
+	validateWhenOnContract,
 } from "./registry.js";
 export type {
 	FlagEffectiveByProject,

@@ -36,6 +36,7 @@ function flag(
 		default: boolean | string;
 		valueKind?: "bool" | "int" | "enum";
 		onMeans: "enables" | "disables" | null;
+		whenOn?: string | null;
 		global?: ReturnType<typeof managed> | ReturnType<typeof readOnlyManaged>;
 		projectOverrides?: Array<{
 			projectName: string;
@@ -53,6 +54,8 @@ function flag(
 		default: options.default,
 		valueKind: options.valueKind ?? "bool",
 		onMeans: options.onMeans,
+		whenOn:
+			options.whenOn === undefined ? `Meaning for ${name}` : options.whenOn,
 		global: options.global ?? managed(`flag-${name}`, current),
 		projectOverrides: options.projectOverrides ?? [],
 	};
@@ -431,16 +434,19 @@ function snapshot() {
 				default: "12",
 				valueKind: "int",
 				onMeans: null,
+				whenOn: "节点运行多少小时后算停留过久",
 				global: readOnlyManaged("flag-numeric", "18", "read-only registry"),
 			}),
 			flag("missing_semantics", true, {
 				default: true,
 				onMeans: null,
+				whenOn: null,
 				global: readOnlyManaged("flag-missing", true, "custom backend reason"),
 			}),
 			flag("unknown_value", null, {
 				default: false,
 				onMeans: null,
+				whenOn: "发送系统告警",
 				global: readOnlyManaged("flag-unknown", null),
 			}),
 		],
@@ -646,18 +652,16 @@ describe("management console browser interactions", () => {
 				`article.flag-row[data-flag="${name}"] .flag-read`,
 			)!;
 		const expected = {
-			disables_open:
-				"这是一个【停用开关】,现在已经打开 —— 它管的那件事已经被停掉了。",
-			disables_closed:
-				"这是一个【停用开关】,现在没有打开 —— 它管的那件事照常在跑。",
-			default_on_open: "这个功能正常运行中(默认就是开着的)。",
-			default_on_closed: "这个功能已经被关掉了 —— 默认是开着的,现在被关了。",
-			opt_in_open: "这个功能已经启用 —— 默认是关着的,现在打开了。",
-			opt_in_closed: "这个功能没有启用(默认就是关着的)。",
-			numeric: "当前取值 18(默认 12)。这不是开关,是一个数值/枚举。",
+			disables_open: "打开代表：Meaning for disables_open。",
+			disables_closed: "打开代表：Meaning for disables_closed。",
+			default_on_open: "打开代表：Meaning for default_on_open。",
+			default_on_closed: "打开代表：Meaning for default_on_closed。",
+			opt_in_open: "打开代表：Meaning for opt_in_open。",
+			opt_in_closed: "打开代表：Meaning for opt_in_closed。",
+			numeric: "这个设置决定：节点运行多少小时后算停留过久。",
 			missing_semantics:
-				"这条 flag 没有登记「打开代表什么」(registry 缺项),这里不猜。",
-			unknown_value: "这个 flag 当前读不到值。",
+				"这条 flag 没有登记「打开代表什么」的人话说明，这里不猜。",
+			unknown_value: "打开代表：发送系统告警。",
 		};
 		for (const [name, text] of Object.entries(expected)) {
 			expect(reading(name).textContent).toBe(text);
@@ -673,7 +677,7 @@ describe("management console browser interactions", () => {
 		expect(
 			reading("unknown_value").parentElement?.querySelector(".flag-tail")
 				?.textContent,
-		).toBe("无法与默认比较(默认 关)");
+		).toBe("当前：未知；无法与默认比较（默认 关）");
 		expect(
 			reading("opt_in_open").matches('.flag-read[data-tone="changed"]'),
 		).toBe(true);
@@ -683,12 +687,18 @@ describe("management console browser interactions", () => {
 		(document.querySelector('[data-nav="flags"]') as HTMLButtonElement).click();
 		const row = () =>
 			document.querySelector('article.flag-row[data-flag="opt_in_closed"]')!;
-		expect(row().querySelector(".flag-read")?.textContent).toContain(
-			"没有启用",
+		expect(row().querySelector(".flag-read")?.textContent).toBe(
+			"打开代表：Meaning for opt_in_closed。",
+		);
+		expect(row().querySelector(".flag-tail")?.textContent).toBe(
+			"当前：关；维持默认",
 		);
 		(row().querySelector(".flag-switch") as HTMLButtonElement).click();
-		expect(row().querySelector(".flag-read")?.textContent).toContain(
-			"已经启用",
+		expect(row().querySelector(".flag-read")?.textContent).toBe(
+			"打开代表：Meaning for opt_in_closed。",
+		);
+		expect(row().querySelector(".flag-tail")?.textContent).toBe(
+			"当前：开；已偏离默认（默认 关）",
 		);
 		(document.getElementById("flagStage") as HTMLButtonElement).click();
 		await vi.waitFor(() =>

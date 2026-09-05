@@ -63,6 +63,7 @@ function flag(): ManagementFlagView {
 		default: true,
 		valueKind: "bool",
 		onMeans: "enables",
+		whenOn: "打开代表什么",
 		global: {
 			targetId: buildTargetId("flag", ["FLYWHEEL_EXAMPLE", "global"]),
 			current: true,

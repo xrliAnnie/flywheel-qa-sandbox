@@ -20,6 +20,7 @@ type PureUi = {
 			polarity: "default_on" | "opt_in";
 			default: boolean | string | number;
 			onMeans: "enables" | "disables" | null;
+			whenOn: string | null;
 		},
 		current: boolean | string | number | null,
 	): { state: string; text: string; tone: string; tail: string };
@@ -121,13 +122,14 @@ describe("management console pure interaction contract", () => {
 				polarity: "default_on",
 				default: false,
 				onMeans: "disables",
+				whenOn: "停止自动补建丢失的窗口",
 			},
 			current: true,
 			expected: {
 				state: "开",
-				text: "这是一个【停用开关】,现在已经打开 —— 它管的那件事已经被停掉了。",
+				text: "打开代表：停止自动补建丢失的窗口。",
 				tone: "changed",
-				tail: "已偏离默认(默认 关)",
+				tail: "当前：开；已偏离默认（默认 关）",
 			},
 		},
 		{
@@ -137,13 +139,14 @@ describe("management console pure interaction contract", () => {
 				polarity: "default_on",
 				default: false,
 				onMeans: "disables",
+				whenOn: "停止自动补建丢失的窗口",
 			},
 			current: false,
 			expected: {
 				state: "关",
-				text: "这是一个【停用开关】,现在没有打开 —— 它管的那件事照常在跑。",
+				text: "打开代表：停止自动补建丢失的窗口。",
 				tone: "normal",
-				tail: "维持默认",
+				tail: "当前：关；维持默认",
 			},
 		},
 		{
@@ -153,13 +156,14 @@ describe("management console pure interaction contract", () => {
 				polarity: "default_on",
 				default: true,
 				onMeans: "enables",
+				whenOn: "发送系统告警",
 			},
 			current: true,
 			expected: {
 				state: "开",
-				text: "这个功能正常运行中(默认就是开着的)。",
+				text: "打开代表：发送系统告警。",
 				tone: "normal",
-				tail: "维持默认",
+				tail: "当前：开；维持默认",
 			},
 		},
 		{
@@ -169,13 +173,14 @@ describe("management console pure interaction contract", () => {
 				polarity: "default_on",
 				default: true,
 				onMeans: "enables",
+				whenOn: "发送系统告警",
 			},
 			current: false,
 			expected: {
 				state: "关",
-				text: "这个功能已经被关掉了 —— 默认是开着的,现在被关了。",
+				text: "打开代表：发送系统告警。",
 				tone: "changed",
-				tail: "已偏离默认(默认 开)",
+				tail: "当前：关；已偏离默认（默认 开）",
 			},
 		},
 		{
@@ -185,13 +190,14 @@ describe("management console pure interaction contract", () => {
 				polarity: "opt_in",
 				default: false,
 				onMeans: "enables",
+				whenOn: "让项目使用 DAG 流程",
 			},
 			current: true,
 			expected: {
 				state: "开",
-				text: "这个功能已经启用 —— 默认是关着的,现在打开了。",
+				text: "打开代表：让项目使用 DAG 流程。",
 				tone: "changed",
-				tail: "已偏离默认(默认 关)",
+				tail: "当前：开；已偏离默认（默认 关）",
 			},
 		},
 		{
@@ -201,13 +207,14 @@ describe("management console pure interaction contract", () => {
 				polarity: "opt_in",
 				default: false,
 				onMeans: "enables",
+				whenOn: "让项目使用 DAG 流程",
 			},
 			current: false,
 			expected: {
 				state: "关",
-				text: "这个功能没有启用(默认就是关着的)。",
+				text: "打开代表：让项目使用 DAG 流程。",
 				tone: "normal",
-				tail: "维持默认",
+				tail: "当前：关；维持默认",
 			},
 		},
 		{
@@ -217,13 +224,14 @@ describe("management console pure interaction contract", () => {
 				polarity: "opt_in",
 				default: 12,
 				onMeans: null,
+				whenOn: "节点运行多少小时后算停留过久",
 			},
 			current: 18,
 			expected: {
 				state: "18",
-				text: "当前取值 18(默认 12)。这不是开关,是一个数值/枚举。",
+				text: "这个设置决定：节点运行多少小时后算停留过久。",
 				tone: "changed",
-				tail: "已偏离默认(默认 12)",
+				tail: "当前：18；已偏离默认（默认 12）",
 			},
 		},
 	])(
@@ -239,17 +247,26 @@ describe("management console pure interaction contract", () => {
 			polarity: "default_on" as const,
 			default: true,
 			onMeans: null,
+			whenOn: null,
 		};
 		expect(ui.flagReading(missing, true)).toMatchObject({
 			state: "读不到",
-			text: "这条 flag 没有登记「打开代表什么」(registry 缺项),这里不猜。",
+			text: "这条 flag 没有登记「打开代表什么」的人话说明，这里不猜。",
 			tone: "unknown",
+			tail: "当前：开；维持默认",
 		});
-		expect(ui.flagReading(missing, null)).toMatchObject({
-			state: "未知",
-			text: "这个 flag 当前读不到值。",
+		expect(ui.flagReading({ ...missing, whenOn: "   " }, null)).toMatchObject({
+			state: "读不到",
+			text: "这条 flag 没有登记「打开代表什么」的人话说明，这里不猜。",
 			tone: "unknown",
-			tail: "无法与默认比较(默认 开)",
+			tail: "当前：未知；无法与默认比较（默认 开）",
+		});
+		const unknown = { ...missing, whenOn: "发送系统告警" };
+		expect(ui.flagReading(unknown, null)).toEqual({
+			state: "未知",
+			text: "打开代表：发送系统告警。",
+			tone: "unknown",
+			tail: "当前：未知；无法与默认比较（默认 开）",
 		});
 	});
 
@@ -259,9 +276,16 @@ describe("management console pure interaction contract", () => {
 			polarity: "opt_in" as const,
 			default: false,
 			onMeans: "enables" as const,
+			whenOn: "让项目使用 DAG 流程",
 		};
-		expect(ui.flagReading(flag, false).text).toContain("没有启用");
-		expect(ui.flagReading(flag, true).text).toContain("已经启用");
+		expect(ui.flagReading(flag, false)).toMatchObject({
+			text: "打开代表：让项目使用 DAG 流程。",
+			tail: "当前：关；维持默认",
+		});
+		expect(ui.flagReading(flag, true)).toMatchObject({
+			text: "打开代表：让项目使用 DAG 流程。",
+			tail: "当前：开；已偏离默认（默认 关）",
+		});
 	});
 
 	it("derives the four weekly labels and never allows zero selected days", () => {
