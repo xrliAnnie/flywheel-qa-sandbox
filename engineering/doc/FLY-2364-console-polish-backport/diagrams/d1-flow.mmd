@@ -1,0 +1,23 @@
+flowchart TB
+  P["原型分支<br/>console-next-html.ts<br/>(PR #1030,请勿合并)"]
+  A["设计段审计<br/>今天在 :9876 逐条实测"]
+  L["FLY-2257 已落地 5 条<br/>A1 中文名 · A2 按类型取色<br/>A5 说明一次 · C7 原因 · C8 去重"]
+  R["本单实做 4 处<br/>B6 项目栏 · D 列头与措辞<br/>A4 模板绑定 · A3 回环名"]
+  E["只出证据<br/>同一把尺子量 :9876"]
+  C["合回生产文件<br/>fleet-console-html.ts"]
+  T["tsc / lint / 测试 绿<br/>+ 尺子 4 项由红转绿"]
+  S["合入后 updater 部署<br/>再量一次 :9876 进 ship report"]
+  P --> A
+  A --> L
+  A --> R
+  L --> E
+  R --> C
+  C --> T
+  E --> S
+  T --> S
+  classDef done fill:#e9f8ef,stroke:#34c759,color:#14532d
+  classDef todo fill:#eef4ff,stroke:#007aff,color:#1a365d
+  classDef gray fill:#f5f5f7,stroke:#86868b,color:#1d1d1f
+  class L,E done
+  class R,C,T todo
+  class P,A,S gray

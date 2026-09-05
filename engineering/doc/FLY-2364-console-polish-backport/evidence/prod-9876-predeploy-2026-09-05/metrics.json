@@ -1,0 +1,455 @@
+{
+  "base": "http://127.0.0.1:9876/",
+  "target": "prod",
+  "rail": {
+    "groupTitleCount": 8,
+    "groupTitles": [
+      "flywheel",
+      "geoforge3d",
+      "growth",
+      "joycon-typeless",
+      "personal-assistant",
+      "tidal-echo",
+      "分组",
+      "基础设施"
+    ],
+    "projectCount": 6,
+    "allRealProjectsVisible": true,
+    "railScrollHeight": 928,
+    "railClientHeight": 928
+  },
+  "model": {
+    "leadRows": 3,
+    "leadHead": 0,
+    "leadHeadText": [],
+    "visiblePerRowLabelCount": 3,
+    "runnerCardLabelVisible": true,
+    "groupNote": "该项目的 Lead 统一展示在 Infra（2 个）"
+  },
+  "groupModel": {
+    "leadHead": 0,
+    "leadRows": 2
+  },
+  "dagEngineering": {
+    "primaryChipCount": 9,
+    "primaryNames": [
+      "设计(工程)",
+      "实现",
+      "QA 验证",
+      "创始人门",
+      "合入",
+      "实现",
+      "QA 验证",
+      "创始人门",
+      "合入"
+    ],
+    "stylesByType": {
+      "design": "rgb(212, 207, 247) / rgb(241, 239, 255)",
+      "implement": "rgb(200, 227, 247) / rgb(238, 247, 255)",
+      "qa": "rgb(200, 232, 209) / rgb(238, 249, 241)"
+    },
+    "dagRows": 5,
+    "bindTags": 0,
+    "bindSources": [],
+    "bindTitles": [],
+    "codeLoopTexts": [],
+    "legacyCardPresent": false,
+    "legacyLoopTexts": [],
+    "loopPaintOrder": false,
+    "unlimitedText": 0,
+    "founderGateEnglish": 0,
+    "landEnglish": 0,
+    "layNotes": 1,
+    "perCardReasons": 0,
+    "loopCount": 4
+  },
+  "dagProduct": {
+    "chipCount": 12,
+    "genericStyle": "rgb(228, 230, 236) / rgb(255, 255, 255)",
+    "layNotes": 1,
+    "perCardReasons": 0,
+    "founderGateEnglish": 0,
+    "landEnglish": 0
+  },
+  "flags": {
+    "rows": 23,
+    "pageScrollHeight": 2214,
+    "viewportHeight": 1000,
+    "screens": 2.21,
+    "visibleCliTextCount": 0,
+    "cliInAttributes": 10,
+    "noReasonVisible": 0,
+    "unmappedVisible": 0,
+    "fourKindsHardcoded": 0,
+    "categoryColumn": 0,
+    "categoryLabelRows": 0,
+    "headColumns": 4,
+    "lockChips": [
+      "归 flag store 管",
+      "归 flag store 管",
+      "归 flag store 管",
+      "要用命令行改",
+      "要用命令行改",
+      "归 flag store 管",
+      "归 flag store 管",
+      "要用命令行改",
+      "要用命令行改",
+      "要用命令行改",
+      "要用命令行改",
+      "要用命令行改",
+      "要用命令行改",
+      "归 flag store 管",
+      "归 flag store 管",
+      "归 flag store 管",
+      "归 flag store 管",
+      "要用命令行改",
+      "归 flag store 管",
+      "归 flag store 管",
+      "归 flag store 管",
+      "归 flag store 管",
+      "要用命令行改"
+    ],
+    "kindsLine": "「改不了」有 2 种，不是一种："
+  },
+  "narrowModel": {
+    "headPresent": false,
+    "headDisplay": null,
+    "visibleLeadLabelCount": 3,
+    "leadSelectAriaLabels": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    "runnerCardLabelVisible": true
+  },
+  "consoleErrors": [],
+  "pageErrors": [],
+  "nonGetRequests": [],
+  "lockKinds": {
+    "source": "packages/teamlead/dist/bridge/fleet-console-html.js",
+    "labels": [
+      "要走另一条流程",
+      "归 flag store 管",
+      "值按项目分别设",
+      "要用命令行改",
+      "登记表里锁死"
+    ]
+  },
+  "checks": [
+    {
+      "id": "B6",
+      "expected": {
+        "groupTitleCount": 2,
+        "projectCount": "dynamic",
+        "allRealProjectsVisible": true
+      },
+      "actual": {
+        "groupTitleCount": 8,
+        "groupTitles": [
+          "flywheel",
+          "geoforge3d",
+          "growth",
+          "joycon-typeless",
+          "personal-assistant",
+          "tidal-echo",
+          "分组",
+          "基础设施"
+        ],
+        "projectCount": 6,
+        "allRealProjectsVisible": true,
+        "railScrollHeight": 928,
+        "railClientHeight": 928
+      },
+      "ok": false,
+      "status": "PENDING_DEPLOY"
+    },
+    {
+      "id": "D",
+      "expected": {
+        "leadHead": 1,
+        "leadHeadText": [
+          "Lead",
+          "公司 → 型号 → effort"
+        ],
+        "groupNotePrefix": "另有 2 个 Lead 归在「Infra」分组下",
+        "narrowHeadDisplay": "none",
+        "narrowVisibleLeadLabelCount": 1
+      },
+      "actual": {
+        "model": {
+          "leadRows": 3,
+          "leadHead": 0,
+          "leadHeadText": [],
+          "visiblePerRowLabelCount": 3,
+          "runnerCardLabelVisible": true,
+          "groupNote": "该项目的 Lead 统一展示在 Infra（2 个）"
+        },
+        "groupModel": {
+          "leadHead": 0,
+          "leadRows": 2
+        },
+        "narrowModel": {
+          "headPresent": false,
+          "headDisplay": null,
+          "visibleLeadLabelCount": 3,
+          "leadSelectAriaLabels": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "runnerCardLabelVisible": true
+        }
+      },
+      "ok": false,
+      "status": "PENDING_DEPLOY"
+    },
+    {
+      "id": "A4",
+      "expected": "every editable DAG model row has a sourced 模板绑定 tag",
+      "actual": {
+        "dagRows": 5,
+        "bindTags": 0,
+        "bindSources": [],
+        "bindTitles": []
+      },
+      "ok": false,
+      "status": "PENDING_DEPLOY"
+    },
+    {
+      "id": "A3",
+      "expected": {
+        "codeLoopTexts": "non-empty runtime labels",
+        "loopPaintOrder": true,
+        "unlimitedText": 0
+      },
+      "actual": {
+        "codeLoopTexts": [],
+        "legacyCardPresent": false,
+        "legacyLoopTexts": [],
+        "loopPaintOrder": false,
+        "unlimitedText": 0
+      },
+      "ok": false,
+      "status": "PENDING_DEPLOY"
+    },
+    {
+      "id": "DAG",
+      "expected": {
+        "primaryChipCount": 9,
+        "loopCount": ">=3"
+      },
+      "actual": {
+        "primaryChipCount": 9,
+        "loopCount": 4
+      },
+      "ok": true,
+      "status": "PASS"
+    },
+    {
+      "id": "A1",
+      "expected": {
+        "primaryNames": [
+          "设计(工程)",
+          "实现",
+          "QA 验证",
+          "创始人门",
+          "合入",
+          "实现",
+          "QA 验证",
+          "创始人门",
+          "合入"
+        ],
+        "founderGateEnglish": 0,
+        "landEnglish": 0
+      },
+      "actual": {
+        "primaryNames": [
+          "设计(工程)",
+          "实现",
+          "QA 验证",
+          "创始人门",
+          "合入",
+          "实现",
+          "QA 验证",
+          "创始人门",
+          "合入"
+        ],
+        "engineeringFounderGateEnglish": 0,
+        "engineeringLandEnglish": 0,
+        "productFounderGateEnglish": 0,
+        "productLandEnglish": 0
+      },
+      "ok": true,
+      "status": "PASS"
+    },
+    {
+      "id": "A2",
+      "expected": "4 distinct non-null node.type styles",
+      "actual": [
+        "rgb(212, 207, 247) / rgb(241, 239, 255)",
+        "rgb(200, 227, 247) / rgb(238, 247, 255)",
+        "rgb(200, 232, 209) / rgb(238, 249, 241)",
+        "rgb(228, 230, 236) / rgb(255, 255, 255)"
+      ],
+      "ok": true,
+      "status": "PASS"
+    },
+    {
+      "id": "A5",
+      "expected": {
+        "engineering": {
+          "layNotes": 1,
+          "perCardReasons": 0
+        },
+        "product": {
+          "layNotes": 1,
+          "perCardReasons": 0
+        }
+      },
+      "actual": {
+        "engineering": {
+          "layNotes": 1,
+          "perCardReasons": 0
+        },
+        "product": {
+          "layNotes": 1,
+          "perCardReasons": 0
+        }
+      },
+      "ok": true,
+      "status": "PASS"
+    },
+    {
+      "id": "C7",
+      "expected": {
+        "noReasonVisible": 0,
+        "unmappedVisible": 0,
+        "lockLabelsFromArtifact": [
+          "要走另一条流程",
+          "归 flag store 管",
+          "值按项目分别设",
+          "要用命令行改",
+          "登记表里锁死"
+        ]
+      },
+      "actual": {
+        "noReasonVisible": 0,
+        "unmappedVisible": 0,
+        "lockChips": [
+          "归 flag store 管",
+          "归 flag store 管",
+          "归 flag store 管",
+          "要用命令行改",
+          "要用命令行改",
+          "归 flag store 管",
+          "归 flag store 管",
+          "要用命令行改",
+          "要用命令行改",
+          "要用命令行改",
+          "要用命令行改",
+          "要用命令行改",
+          "要用命令行改",
+          "归 flag store 管",
+          "归 flag store 管",
+          "归 flag store 管",
+          "归 flag store 管",
+          "要用命令行改",
+          "归 flag store 管",
+          "归 flag store 管",
+          "归 flag store 管",
+          "归 flag store 管",
+          "要用命令行改"
+        ]
+      },
+      "ok": true,
+      "status": "PENDING_DEPLOY"
+    },
+    {
+      "id": "C8",
+      "expected": {
+        "visibleCliTextCount": 0,
+        "categoryColumn": 0,
+        "categoryLabelRows": 0,
+        "fourKindsHardcoded": 0,
+        "headColumns": 4
+      },
+      "actual": {
+        "rows": 23,
+        "pageScrollHeight": 2214,
+        "viewportHeight": 1000,
+        "screens": 2.21,
+        "visibleCliTextCount": 0,
+        "cliInAttributes": 10,
+        "noReasonVisible": 0,
+        "unmappedVisible": 0,
+        "fourKindsHardcoded": 0,
+        "categoryColumn": 0,
+        "categoryLabelRows": 0,
+        "headColumns": 4,
+        "lockChips": [
+          "归 flag store 管",
+          "归 flag store 管",
+          "归 flag store 管",
+          "要用命令行改",
+          "要用命令行改",
+          "归 flag store 管",
+          "归 flag store 管",
+          "要用命令行改",
+          "要用命令行改",
+          "要用命令行改",
+          "要用命令行改",
+          "要用命令行改",
+          "要用命令行改",
+          "归 flag store 管",
+          "归 flag store 管",
+          "归 flag store 管",
+          "归 flag store 管",
+          "要用命令行改",
+          "归 flag store 管",
+          "归 flag store 管",
+          "归 flag store 管",
+          "归 flag store 管",
+          "要用命令行改"
+        ],
+        "kindsLine": "「改不了」有 2 种，不是一种："
+      },
+      "ok": true,
+      "status": "PASS"
+    },
+    {
+      "id": "ERRORS",
+      "expected": {
+        "consoleErrors": [],
+        "pageErrors": [],
+        "nonGetRequests": []
+      },
+      "actual": {
+        "consoleErrors": [],
+        "pageErrors": [],
+        "nonGetRequests": []
+      },
+      "ok": true,
+      "status": "PASS"
+    }
+  ],
+  "failed": [],
+  "pendingDeploy": [
+    "B6",
+    "D",
+    "A4",
+    "A3",
+    "C7"
+  ]
+}

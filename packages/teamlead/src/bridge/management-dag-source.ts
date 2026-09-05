@@ -7,7 +7,10 @@ import type {
 	WorkflowTemplateRevisionRow,
 	WorkflowTemplateRow,
 } from "../StateStore.js";
-import { workflowNodeDisplayLabel } from "../workflow-display-labels.js";
+import {
+	workflowLoopDisplayLabel,
+	workflowNodeDisplayLabel,
+} from "../workflow-display-labels.js";
 import { validateWorkflowManifest } from "../workflow-template.js";
 import {
 	buildTargetId,
@@ -111,6 +114,7 @@ function projectDag(
 			})),
 			loops: manifest.loops.map((loop) => ({
 				id: loop.id,
+				name: workflowLoopDisplayLabel(loop),
 				from: loop.from,
 				to: loop.to,
 				maxIterations: loop.max_iterations ?? null,

@@ -1,0 +1,171 @@
+{
+  "base": "http://127.0.0.1:18864/",
+  "rail": {
+    "groupTitleCount": 2,
+    "groupTitles": [
+      "分组",
+      "基础设施"
+    ],
+    "projectCount": 6,
+    "allRealProjectsVisible": true,
+    "railScrollHeight": 928,
+    "railClientHeight": 928
+  },
+  "model": {
+    "leadRows": 1,
+    "leadHead": 1,
+    "leadHeadText": [
+      "Lead",
+      "公司 → 型号 → effort"
+    ],
+    "visiblePerRowLabelCount": 0,
+    "runnerCardLabelVisible": true,
+    "groupNote": "另有 2 个 Lead 归在「Infra」分组下，不在这张表里。"
+  },
+  "groupModel": {
+    "leadHead": 1,
+    "leadRows": 2
+  },
+  "dagEngineering": {
+    "primaryChipCount": 9,
+    "primaryNames": [
+      "设计(工程)",
+      "实现",
+      "QA 验证",
+      "创始人门",
+      "合入",
+      "实现",
+      "QA 验证",
+      "创始人门",
+      "合入"
+    ],
+    "stylesByType": {
+      "design": "rgb(212, 207, 247) / rgb(241, 239, 255)",
+      "implement": "rgb(200, 227, 247) / rgb(238, 247, 255)",
+      "qa": "rgb(200, 232, 209) / rgb(238, 249, 241)"
+    },
+    "dagRows": 7,
+    "bindTags": 7,
+    "bindSources": [
+      "tpl_code@1",
+      "tpl_code@1",
+      "tpl_code@1",
+      "tpl_simple_code@1",
+      "tpl_simple_code@1",
+      "tpl_legacy_loop@1",
+      "tpl_legacy_loop@1"
+    ],
+    "bindTitles": [
+      "模板绑定 tpl_code@1 · anthropic / fable / high",
+      "模板绑定 tpl_code@1 · anthropic / fable / high",
+      "模板绑定 tpl_code@1 · anthropic / fable / high",
+      "模板绑定 tpl_simple_code@1 · anthropic / fable / high",
+      "模板绑定 tpl_simple_code@1 · anthropic / fable / high",
+      "模板绑定 tpl_legacy_loop@1 · anthropic / fable / high",
+      "模板绑定 tpl_legacy_loop@1 · anthropic / fable / high"
+    ],
+    "codeLoopTexts": [
+      "QA 失败重来 ×3",
+      "创始人打回重做"
+    ],
+    "legacyLoopTexts": [
+      "legacy_retry"
+    ],
+    "loopPaintOrder": true,
+    "unlimitedText": 0,
+    "founderGateEnglish": 0,
+    "landEnglish": 0,
+    "layNotes": 1,
+    "perCardReasons": 0,
+    "loopCount": 3
+  },
+  "dagProduct": {
+    "chipCount": 9,
+    "genericStyle": "rgb(228, 230, 236) / rgb(255, 255, 255)",
+    "layNotes": 1,
+    "perCardReasons": 0,
+    "founderGateEnglish": 0,
+    "landEnglish": 0
+  },
+  "flags": {
+    "rows": 4,
+    "pageScrollHeight": 928,
+    "viewportHeight": 1000,
+    "screens": 0.93,
+    "visibleCliTextCount": 0,
+    "cliInAttributes": 1,
+    "noReasonVisible": 0,
+    "unmappedVisible": 0,
+    "fourKindsHardcoded": 0,
+    "categoryColumn": 0,
+    "categoryLabelRows": 0,
+    "headColumns": 4,
+    "lockChips": [
+      "要用命令行改",
+      "值按项目分别设",
+      "登记表里锁死"
+    ],
+    "kindsLine": "「改不了」有 3 种，不是一种："
+  },
+  "narrowModel": {
+    "headPresent": true,
+    "headDisplay": "none",
+    "visibleLeadLabelCount": 1,
+    "leadSelectAriaLabels": [
+      "公司 → 型号 → effort：公司",
+      "公司 → 型号 → effort：型号",
+      "公司 → 型号 → effort：effort"
+    ],
+    "runnerCardLabelVisible": true
+  },
+  "consoleErrors": [],
+  "pageErrors": [],
+  "nonGetRequests": [],
+  "checks": [
+    {
+      "id": "B6",
+      "ok": true
+    },
+    {
+      "id": "D",
+      "ok": true
+    },
+    {
+      "id": "A4",
+      "ok": true
+    },
+    {
+      "id": "A3",
+      "ok": true
+    },
+    {
+      "id": "DAG",
+      "ok": true
+    },
+    {
+      "id": "A1",
+      "ok": true
+    },
+    {
+      "id": "A2",
+      "ok": true
+    },
+    {
+      "id": "A5",
+      "ok": true
+    },
+    {
+      "id": "C7",
+      "ok": true
+    },
+    {
+      "id": "C8",
+      "ok": true
+    },
+    {
+      "id": "ERRORS",
+      "ok": true
+    }
+  ],
+  "failed": []
+}

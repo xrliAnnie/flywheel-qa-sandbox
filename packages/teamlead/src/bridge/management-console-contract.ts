@@ -201,6 +201,8 @@ export interface ManagementDagGraphEdge {
 }
 
 export interface ManagementDagGraphLoop extends ManagementDagGraphEdge {
+	/** Backend-owned display label; additive so schema version 2 remains valid. */
+	name: string;
 	maxIterations: number | null;
 }
 

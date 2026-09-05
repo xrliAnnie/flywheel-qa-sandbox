@@ -1,0 +1,17 @@
+flowchart TB
+  C0["C0 环境 + 尺子先落<br/>改前 4 项必须红"]
+  C1["C1 B6<br/>项目栏去重标题"]
+  C2["C2 D<br/>列头 + 措辞"]
+  C3["C3 A4<br/>模板绑定小标"]
+  C4a["C4 后端<br/>回环加 name 字段"]
+  C4b["C4 前端<br/>回环画标签"]
+  C5["C5 证据<br/>尺子 4 项绿 + 全套测试绿"]
+  C0 --> C1 --> C2 --> C3 --> C4a --> C4b --> C5
+  R1["每个 chunk 一个 commit<br/>单独 revert 即回滚"]
+  R2["后端字段纯追加<br/>老页面忽略 · 新页面缺省退回 loop.id"]
+  C5 ~~~ R1
+  R1 ~~~ R2
+  classDef step fill:#eef4ff,stroke:#007aff,color:#1a365d
+  classDef note fill:#f5f5f7,stroke:#86868b,color:#1d1d1f
+  class C0,C1,C2,C3,C4a,C4b,C5 step
+  class R1,R2 note

@@ -88,7 +88,10 @@ describe("management DAG source", () => {
 				},
 			],
 		});
-		expect(flywheel.dags[0]!.graph?.loops[0]?.maxIterations).toBe(3);
+		expect(flywheel.dags[0]!.graph?.loops[0]).toMatchObject({
+			name: "QA 失败重来",
+			maxIterations: 3,
+		});
 		expect(
 			projection.projectDags.find(
 				(item) => item.projectName === "personal-assistant",
@@ -159,12 +162,14 @@ describe("management DAG source", () => {
 			loops: [
 				{
 					id: "qa_retry",
+					name: "QA 失败重来",
 					from: "qa",
 					to: "implement",
 					maxIterations: null,
 				},
 				{
 					id: "founder_rework",
+					name: "创始人打回重做",
 					from: "founder_gate",
 					to: "implement",
 					maxIterations: null,

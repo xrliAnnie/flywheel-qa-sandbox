@@ -1,0 +1,25 @@
+flowchart TB
+  M["模板 manifest(后端权威)<br/>nodes: id · label · type · vendor/model/effort<br/>loops: id · from · to · loop_when · max_iterations?"]
+  B["management-dag-source.ts<br/>生成只读快照 /api/fleet/snapshot(schema 2 不变)"]
+  G["graph.nodes: name(中文) · type<br/>graph.loops: id · maxIterations<br/><b>+ name(本单新增,后端起名)</b>"]
+  N["dag.nodes[].dispatch<br/>current = 模板绑定的 provider/model/effort<br/>source.hint = tpl_code@12"]
+  PG["页面 fleet-console-html.ts(只读这一个口)"]
+  X1["项目栏:同名单项目组不印标题"]
+  X2["模型页:列头说一次<br/>行内 label 隐藏"]
+  X3["DAG 行:「模板绑定」小标<br/>悬停显示逐字绑定值"]
+  X4["回环线:显示 name<br/>maxIterations 是数字才写 ×N"]
+  M --> B
+  B --> G
+  B --> N
+  G --> PG
+  N --> PG
+  PG --> X1
+  PG --> X2
+  PG --> X3
+  PG --> X4
+  classDef src fill:#fff6e6,stroke:#ff9500,color:#6f4200
+  classDef api fill:#f5f5f7,stroke:#86868b,color:#1d1d1f
+  classDef ui fill:#eef4ff,stroke:#007aff,color:#1a365d
+  class M src
+  class B,G,N api
+  class PG,X1,X2,X3,X4 ui

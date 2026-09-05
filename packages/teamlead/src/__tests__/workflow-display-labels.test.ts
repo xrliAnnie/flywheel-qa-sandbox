@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { workflowNodeDisplayLabel } from "../workflow-display-labels.js";
+import {
+	workflowLoopDisplayLabel,
+	workflowNodeDisplayLabel,
+} from "../workflow-display-labels.js";
 import {
 	buildWorkflowRunSnapshotV1,
 	parseWorkflowRunSnapshot,
@@ -7,6 +10,25 @@ import {
 import { legacyEngineeringManifest } from "./fixtures/legacy-workflow-manifests.js";
 
 describe("workflow display labels", () => {
+	it.each([
+		["qa_fail", "QA 失败重来"],
+		["review_fail", "评审失败重来"],
+		["founder_feedback_kickback", "创始人打回重做"],
+	] as const)("labels a %s loop from its backend enum", (loopWhen, label) => {
+		expect(workflowLoopDisplayLabel({ id: "retry", loop_when: loopWhen })).toBe(
+			label,
+		);
+	});
+
+	it("falls back to the loop id when the backend enum is absent or unknown", () => {
+		expect(workflowLoopDisplayLabel({ id: "legacy_retry" })).toBe(
+			"legacy_retry",
+		);
+		expect(
+			workflowLoopDisplayLabel({ id: "custom_retry", loop_when: "custom" }),
+		).toBe("custom_retry");
+	});
+
 	it.each([
 		["tpl_code", "design", "设计(工程)"],
 		["tpl_design", "produce", "产品设计"],

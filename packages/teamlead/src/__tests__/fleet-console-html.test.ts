@@ -64,6 +64,11 @@ describe("management console HTML", () => {
 		expect(html).toContain("esc(node.name)");
 		expect(html).toContain("graph.edges.forEach");
 		expect(html).toContain("graph.loops.forEach");
+		expect(html).toContain("loop.name||loop.id");
+		expect(html).toContain('typeof loop.maxIterations==="number"');
+		expect(html).toContain("data-loop-label");
+		expect(html).not.toContain("不限次");
+		expect(html).not.toContain('loop.id==="qa_retry"');
 		expect(html).not.toContain("for(var i=0;i<n.length-1;i++)");
 	});
 
@@ -85,6 +90,34 @@ describe("management console HTML", () => {
 		expect(html).toContain('data-kind="engineering"');
 		expect(html).toContain("ENG_NODE_TYPES");
 		expect(html).toContain("lay-note");
+	});
+
+	it("hides a group title that only repeats its single project name", () => {
+		expect(html).toContain(
+			"visible.length===1&&String(group.label).toLowerCase()===String(visible[0].name).toLowerCase()",
+		);
+		for (const fixedTitle of ["分组", "其他", "基础设施", "全局"]) {
+			expect(html).toContain(`<div class="group-title">${fixedTitle}</div>`);
+		}
+	});
+
+	it("uses one model heading for each lead list and keeps narrow layouts honest", () => {
+		expect(html).toContain(".lead-row .field>label{display:none}");
+		expect(html).toContain(".lead-head+.lead-row{border-top:0}");
+		expect(html).toContain(
+			'<div class="lead-head"><span>Lead</span><span>公司 → 型号 → effort</span></div>',
+		);
+		expect(html).toContain("另有 '+groupedCount+' 个 Lead 归在");
+		expect(html).not.toContain("该项目的 Lead 统一展示在");
+		expect(html.match(/\.lead-head\{display:none\}/g)).toHaveLength(2);
+	});
+
+	it("labels template-bound models from their persisted dispatch source", () => {
+		expect(html).toContain(".bind-tag{");
+		expect(html).toContain("managed.source&&managed.source.hint");
+		expect(html).toContain("data-bind-source=\"'+esc(hint)+'\"");
+		expect(html).toContain("esc(name)+bindTag(node.dispatch)");
+		expect(html).not.toContain("/api/console-next");
 	});
 
 	it("uses one aligned four-column Flag list and one data-tone contract", () => {

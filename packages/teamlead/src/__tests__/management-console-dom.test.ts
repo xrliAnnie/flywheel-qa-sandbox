@@ -110,6 +110,13 @@ function snapshot() {
 				derived: false,
 			},
 			{
+				id: "beta-portfolio",
+				label: "portfolio",
+				projectIds: ["project-2"],
+				leadIds: [],
+				derived: false,
+			},
+			{
 				id: "infra",
 				label: "Infra",
 				projectIds: ["project-1", "project-2"],
@@ -223,12 +230,14 @@ function snapshot() {
 							loops: [
 								{
 									id: "qa_retry",
+									name: "QA 失败重来",
 									from: "qa",
 									to: "implement",
 									maxIterations: 3,
 								},
 								{
 									id: "founder_rework",
+									name: "创始人打回重做",
 									from: "founder_gate",
 									to: "implement",
 									maxIterations: null,
@@ -237,6 +246,23 @@ function snapshot() {
 						},
 						nodes: [
 							{
+								id: "design",
+								name: "Design",
+								dispatch: {
+									...managed("dag-design-target", {
+										provider: "anthropic",
+										model: "claude-opus-4-8",
+										effort: "high",
+									}),
+									source: {
+										kind: "workflow_template",
+										revision: "revision:dag-design-target",
+										hint: "tpl_code@1",
+									},
+									canonicalModel: "claude-opus-4-8",
+								},
+							},
+							{
 								id: "implement",
 								name: "Implement",
 								dispatch: {
@@ -244,6 +270,18 @@ function snapshot() {
 										provider: "anthropic",
 										model: "fable",
 										effort: null,
+									}),
+									canonicalModel: "claude-fable-5-1",
+								},
+							},
+							{
+								id: "qa",
+								name: "QA",
+								dispatch: {
+									...managed("dag-qa-target", {
+										provider: "anthropic",
+										model: "fable",
+										effort: "xhigh",
 									}),
 									canonicalModel: "claude-fable-5-1",
 								},
@@ -521,7 +559,7 @@ describe("management console browser interactions", () => {
 		expect(detail.querySelector(".topline .subtitle")?.textContent).toBe(
 			"1 个可见 Lead · 4 个 DAG · 1 个 Cron",
 		);
-		expect(detail.textContent).toContain("该项目的 Lead 统一展示在 Infra");
+		expect(detail.textContent).toContain("另有 1 个 Lead 归在「Infra」分组下");
 		expect(detail.textContent).toContain("1 个");
 		expect(detail.textContent).not.toContain("真源 revision");
 
@@ -541,6 +579,45 @@ describe("management console browser interactions", () => {
 		expect(detail.querySelectorAll("[data-tab]")).toHaveLength(3);
 		expect(detail.textContent).toContain("Product Lead");
 		expect(detail.textContent).not.toContain("Flywheel Infra Lead");
+	});
+
+	it("omits redundant single-project group titles without hiding the project", () => {
+		const titles = Array.from(
+			document.querySelectorAll(".project-rail .group-title"),
+		).map((title) => title.textContent);
+		expect(titles).not.toContain("flywheel");
+		expect(titles).toContain("portfolio");
+		expect(titles).toContain("分组");
+		expect(
+			document.querySelectorAll('[data-project="project-1"]'),
+		).toHaveLength(1);
+	});
+
+	it("renders one shared heading for each Lead list and hides repeated row labels", () => {
+		const detail = document.getElementById("detail")!;
+		const head = detail.querySelector(".lead-list > .lead-head")!;
+		expect(head).not.toBeNull();
+		expect(
+			Array.from(head.querySelectorAll("span")).map((span) => span.textContent),
+		).toEqual(["Lead", "公司 → 型号 → effort"]);
+		const rowLabel = detail.querySelector(".lead-row .field>label")!;
+		expect(getComputedStyle(rowLabel).display).toBe("none");
+		expect(
+			Array.from(detail.querySelectorAll(".lead-row select")).map((select) =>
+				select.getAttribute("aria-label"),
+			),
+		).toEqual([
+			"公司 → 型号 → effort：公司",
+			"公司 → 型号 → effort：型号",
+			"公司 → 型号 → effort：effort",
+		]);
+		const runnerLabel = detail.querySelector(".grid .card .field>label")!;
+		expect(getComputedStyle(runnerLabel).display).not.toBe("none");
+
+		(
+			document.querySelector('[data-group="infra"]') as HTMLButtonElement
+		).click();
+		expect(detail.querySelectorAll(".lead-list > .lead-head")).toHaveLength(1);
 	});
 
 	it("renders a sourceLink-only roster and keeps missing links visibly inert", () => {
@@ -616,11 +693,88 @@ describe("management console browser interactions", () => {
 			["founder_gate", "implement"],
 		]);
 		expect(card.textContent).not.toContain("端点读不到");
-		expect(card.querySelectorAll("select[data-model-part]")).toHaveLength(3);
+		expect(card.querySelectorAll("select[data-model-part]")).toHaveLength(9);
 		expect(card.querySelectorAll(".dag-chip")).toHaveLength(5);
 		expect(card.querySelector('[data-node="tpl_code/land"]')).not.toBeNull();
 		expect(card.querySelectorAll(".dag-graphwrap .dag-row")).toHaveLength(0);
 		expect(card.querySelectorAll(".dag-scroll .dag-row")).toHaveLength(0);
+	});
+
+	it("renders backend loop labels after every path and falls back to old-backend ids", async () => {
+		(document.querySelector('[data-tab="dag"]') as HTMLButtonElement).click();
+		(
+			document.querySelector('[data-kind="engineering"]') as HTMLButtonElement
+		).click();
+		const loopTexts = () =>
+			Array.from(
+				document.querySelectorAll(
+					'article.squad[data-template="tpl_code"] text[data-loop-label]',
+				),
+			).map((label) => label.textContent);
+		expect(loopTexts()).toEqual(["QA 失败重来 ×3", "创始人打回重做"]);
+		const card = document.querySelector(
+			'article.squad[data-template="tpl_code"]',
+		)!;
+		const lastPath = card.querySelector("[data-loop]:last-of-type")!;
+		const firstLabelBox = card.querySelector("[data-loop-label-box]")!;
+		expect(
+			lastPath.compareDocumentPosition(firstLabelBox) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).not.toBe(0);
+		expect(card.querySelectorAll("[data-edge],[data-loop]")).toHaveLength(6);
+		expect(card.textContent).not.toContain("不限次");
+
+		const oldBackend = snapshot();
+		const oldLoops = oldBackend.projects[0]!.dags[0]!.graph!.loops;
+		for (const loop of oldLoops) Reflect.deleteProperty(loop, "name");
+		vi.mocked(fetch).mockImplementationOnce(
+			async () =>
+				new Response(JSON.stringify(oldBackend), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+		);
+		(document.getElementById("discard") as HTMLButtonElement).click();
+		await vi.waitFor(() => {
+			expect(loopTexts()).toEqual(["qa_retry ×3", "founder_rework"]);
+		});
+	});
+
+	it("labels every template-bound model row with its persisted binding", () => {
+		(document.querySelector('[data-tab="dag"]') as HTMLButtonElement).click();
+		(
+			document.querySelector('[data-kind="engineering"]') as HTMLButtonElement
+		).click();
+		const card = document.querySelector(
+			'article.squad[data-template="tpl_code"]',
+		)!;
+		const rows = Array.from(card.querySelectorAll(".dag-row"));
+		const tags = Array.from(
+			card.querySelectorAll(".dag-row strong > .bind-tag"),
+		);
+		expect(rows).toHaveLength(3);
+		expect(tags).toHaveLength(rows.length);
+
+		const tagFor = (name: string) =>
+			rows
+				.find((row) =>
+					row.querySelector("strong")?.textContent?.startsWith(name),
+				)
+				?.querySelector(".bind-tag")!;
+		expect(tagFor("Implement").getAttribute("title")).toContain("fable");
+		expect(tagFor("Implement").getAttribute("title")).not.toContain(
+			"claude-fable-5-1",
+		);
+		expect(tagFor("Design").getAttribute("data-bind-source")).toBe(
+			"tpl_code@1",
+		);
+		expect(tagFor("Design").getAttribute("title")).toContain("tpl_code@1 · ");
+		for (const name of ["Implement", "QA"]) {
+			const tag = tagFor(name);
+			expect(tag.getAttribute("data-bind-source")).toBe("");
+			expect(tag.getAttribute("title")).toMatch(/^模板绑定 [a-z]/);
+			expect(tag.getAttribute("title")).not.toContain(" · ");
+		}
 	});
 
 	it("uses a unique marker id when one template is bound twice", () => {
@@ -755,7 +909,7 @@ describe("management console browser interactions", () => {
 		expect(detail.textContent).toContain(
 			"0 个可见 Lead · 1 个 DAG · 0 个 Cron",
 		);
-		expect(detail.textContent).toContain("该项目的 Lead 统一展示在 Infra");
+		expect(detail.textContent).toContain("另有 1 个 Lead 归在「Infra」分组下");
 		expect(detail.textContent).not.toContain("Beta Infra Lead");
 	});
 

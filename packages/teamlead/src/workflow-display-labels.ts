@@ -3,6 +3,17 @@ interface WorkflowDisplayNode {
 	label?: string;
 }
 
+interface WorkflowDisplayLoop {
+	id: string;
+	loop_when?: string;
+}
+
+const LOOP_WHEN_LABELS: Readonly<Record<string, string>> = {
+	qa_fail: "QA 失败重来",
+	review_fail: "评审失败重来",
+	founder_feedback_kickback: "创始人打回重做",
+};
+
 // FLY-2121-history: completed snapshots predate manifest labels. Keep this
 // decoder keyed by template + node so overloaded ids never acquire one global
 // meaning. Historical rows remain immutable.
@@ -42,4 +53,9 @@ export function workflowNodeDisplayLabel(
 		LEGACY_NODE_LABELS[`${templateId}/${node.id}`] ||
 		node.id
 	);
+}
+
+/** Backend-owned loop display label, with a stable id fallback for old data. */
+export function workflowLoopDisplayLabel(loop: WorkflowDisplayLoop): string {
+	return LOOP_WHEN_LABELS[loop.loop_when ?? ""] ?? loop.id;
 }

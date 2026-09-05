@@ -56,6 +56,13 @@ describe("management console visual regression contract", () => {
 		expect(html).toContain("padding-right:28px");
 	});
 
+	it("restores visible Lead control labels below the shared-heading breakpoint", () => {
+		const html = getFleetConsoleHtml();
+		expect(html).toContain(
+			"@media(max-width:1050px){.lead-row{grid-template-columns:1fr}.three,.lead-row .three{grid-template-columns:1fr}.lead-row .field>label{display:block}",
+		);
+	});
+
 	it("makes the real-browser harness fail on any card or lead-row overflow", () => {
 		const capture = readFileSync(
 			resolve(
