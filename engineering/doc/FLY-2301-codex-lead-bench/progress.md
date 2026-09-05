@@ -1,14 +1,14 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 2/3
-updated: 2026-09-05T03:35:22.338Z
-nextStep: Update the milestone as the literal last commit, push exactly once,
-  then freeze for the head-moved code review verdict
+phaseCursor: 0/4
+updated: 2026-09-05T04:00:52.273Z
+nextStep: "TDD HIGH 1: prove Bridge and slot Codex Lead resolve the same
+  slot-local inbox socket, then minimally align the resolver"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (2/3)
-**next**: Update the milestone as the literal last commit, push exactly once, then freeze for the head-moved code review verdict
+**phase**: implement (0/4)
+**next**: TDD HIGH 1: prove Bridge and slot Codex Lead resolve the same slot-local inbox socket, then minimally align the resolver
