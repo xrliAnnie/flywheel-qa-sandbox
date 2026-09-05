@@ -9,6 +9,8 @@
 <key>FLYWHEEL_DIR</key><string>@ROOT@</string>
 <key>FLYWHEEL_STATE_DIR</key><string>@TMP@/state</string>
 <key>TMUX_TMPDIR</key><string>@TMP@</string>
+<key>FLYWHEEL_CODEX_TMUX_BIN</key><string>@TMP@/tmux-authority/tmux</string>
+<key>FLYWHEEL_CODEX_TMUX_VERSION</key><string>tmux 3.7c</string>
 </dict>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>ThrottleInterval</key><integer>3</integer>

@@ -1451,6 +1451,12 @@ fi
 # projections, so initial launch and cycle replay remain byte-identical.
 FLYWHEEL_PROJECTS=$(jq -c . <<<"$FLYWHEEL_PROJECTS") \
   || campaign_abort "failed to compact FLYWHEEL_PROJECTS"
+QA_CODEX_TMUX_BIN=""
+if jq -e 'any(.[].leads[]?; (.backend // "claude-code") == "codex-app-server")' \
+    <<<"$FLYWHEEL_PROJECTS" >/dev/null; then
+  QA_CODEX_TMUX_BIN=$(qa_launchd_resolve_codex_tmux_bin) \
+    || campaign_abort "Codex tmux authority could not be resolved"
+fi
 
 # FLY-153 R2 #3: persist FLYWHEEL_PROJECTS to disk so the smoke test (and any
 # operator) can deterministically inspect the routing config without scraping
@@ -1579,7 +1585,8 @@ qa_slot_start_lead() {
   if [[ "$backend" == codex-app-server ]]; then
     qa_launchd_provision_codex_home "$REPO_ROOT" "$codex_home" "$SLOT_DIR" || return 1
     if ! qa_launchd_register "$QA_LEAD_REGISTRY" "$label" "$plist" "" \
-        codex-tui "$codex_home" "$codex_bin" "$codex_state" "$pid_file"; then
+        codex-tui "$codex_home" "$codex_bin" "$codex_state" "$pid_file" \
+        "$QA_CODEX_TMUX_BIN"; then
       if ! qa_launchd_retire_codex_home "$codex_home" "$SLOT_DIR"; then
         log "ERROR: failed to retire an unregistered Codex home"
       fi
@@ -1604,7 +1611,7 @@ qa_slot_start_lead() {
       --project-name "$TEST_PROJECT_NAME" || return 1
     FLYWHEEL_DIR="$REPO_ROOT" qa_launchd_render_codex_plist \
       "$plist" "$label" "$codex_wrapper" "$HOME" "$state" "$lead_log" \
-      "$SLOT_DIR" || return 1
+      "$SLOT_DIR" "$QA_CODEX_TMUX_BIN" || return 1
     : > "$codex_home/.flywheel-qa-launch-started" || return 1
     chmod 600 "$codex_home/.flywheel-qa-launch-started" || return 1
     launch_pid=$(qa_launchd_lead_start "$label" "$plist") || return 1
@@ -1728,7 +1735,8 @@ if [[ "$SLOT_BACKEND" == codex-app-server ]]; then
     LEAD_BG_PID=$(qa_launchd_lead_pid_exact "$LEAD_LAUNCHD_LABEL" || true)
     if [[ -n "$LEAD_BG_PID" ]] \
         && qa_launchd_codex_lead_ready "$LEAD_STATE_DIR" "$LEAD_BG_PID" \
-          "$TEST_PROJECT_NAME" "$AGENT_ID" "$LEAD_TMUX_SOCKET"; then
+          "$TEST_PROJECT_NAME" "$AGENT_ID" "$LEAD_TMUX_SOCKET" \
+          "$QA_CODEX_TMUX_BIN"; then
       log "Lead ${AGENT_ID} ready (Codex heartbeat online; TUI window present)"
       LEAD_READY=true
       break
@@ -1918,7 +1926,8 @@ EOF
         XLEAD_BG_PID=$(qa_launchd_lead_pid_exact "$_xlead_label" || true)
         if [[ -n "$XLEAD_BG_PID" ]] \
             && qa_launchd_codex_lead_ready "$XLEAD_STATE_DIR" "$XLEAD_BG_PID" \
-              "$TEST_PROJECT_NAME" "$XAGENT" "$XLEAD_TMUX_SOCKET"; then
+              "$TEST_PROJECT_NAME" "$XAGENT" "$XLEAD_TMUX_SOCKET" \
+              "$QA_CODEX_TMUX_BIN"; then
           XLEAD_READY=true
           break
         fi
@@ -2300,8 +2309,9 @@ elif [[ "$SLOT_BACKEND" == codex-app-server ]]; then
     --arg label "$LEAD_LAUNCHD_LABEL" --arg projectName "$TEST_PROJECT_NAME" \
     --arg agentId "$AGENT_ID" --arg stateDir "$LEAD_STATE_DIR" \
     --arg codexHome "$LEAD_CODEX_HOME" --arg tmuxSocket "$LEAD_TMUX_SOCKET" \
+    --arg tmuxBin "$QA_CODEX_TMUX_BIN" \
     '{label:$label,projectName:$projectName,agentId:$agentId,stateDir:$stateDir,
-      codexHome:$codexHome,tmuxSocket:$tmuxSocket,tuiWindow:"present"}')
+      codexHome:$codexHome,tmuxSocket:$tmuxSocket,tmuxBin:$tmuxBin,tuiWindow:"present"}')
 else
   LEAD_CARRIER="launchd-v2"
 fi

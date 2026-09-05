@@ -38,6 +38,28 @@ qa_launchd_require_absolute() {
   esac
 }
 
+qa_launchd_require_tmux_bin() {
+  local tmux_bin="$1"
+  qa_launchd_require_absolute "$tmux_bin" || return 1
+  [[ "$tmux_bin" != *$'\n'* && "$tmux_bin" != *$'\r'* && -x "$tmux_bin" ]] \
+    || { qa_launchd_err "tmux binary must be an absolute executable: $tmux_bin"; return 1; }
+}
+
+qa_launchd_resolve_codex_tmux_bin() {
+  local candidate
+  # This is the same Homebrew-first authority the Codex wrapper historically
+  # expressed through PATH, now resolved once and passed explicitly.
+  for candidate in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux /bin/tmux; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  candidate=$(command -v tmux 2>/dev/null || true)
+  qa_launchd_require_tmux_bin "$candidate" || return 1
+  printf '%s\n' "$candidate"
+}
+
 qa_launchd_plist_open() {
   printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
   printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
@@ -71,12 +93,15 @@ qa_launchd_plist_env_claude() {
 
 qa_launchd_plist_env_codex() {
   local x_home="$1" x_path="$2" x_state="$3" x_slot_dir="$4"
+  local x_tmux_bin="$5" x_tmux_version="$6"
   printf '%s\n' '<key>EnvironmentVariables</key><dict>'
   printf '<key>HOME</key><string>%s</string>\n' "$x_home"
   printf '<key>PATH</key><string>%s</string>\n' "$x_path"
   printf '<key>FLYWHEEL_DIR</key><string>%s</string>\n' "$(printf '%s' "${FLYWHEEL_DIR:?}" | qa_launchd_xml_escape)"
   printf '<key>FLYWHEEL_STATE_DIR</key><string>%s</string>\n' "$x_state"
   printf '<key>TMUX_TMPDIR</key><string>%s</string>\n' "$x_slot_dir"
+  printf '<key>FLYWHEEL_CODEX_TMUX_BIN</key><string>%s</string>\n' "$x_tmux_bin"
+  printf '<key>FLYWHEEL_CODEX_TMUX_VERSION</key><string>%s</string>\n' "$x_tmux_version"
   printf '%s\n' '</dict>'
 }
 
@@ -145,26 +170,33 @@ qa_launchd_render_plist() {
   return 1
 }
 
-# Args: plist label wrapper home state log slotDir
+# Args: plist label wrapper home state log slotDir tmuxBin
 qa_launchd_render_codex_plist() {
   local plist="$1" label="$2" wrapper="$3" home="$4" state="$5"
-  local log_file="$6" slot_dir="$7" value tmp
+  local log_file="$6" slot_dir="$7" tmux_bin="$8" tmux_version value tmp
   [[ "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
     || { qa_launchd_err "invalid label: $label"; return 1; }
-  for value in "$plist" "$wrapper" "$home" "$state" "$log_file" "$slot_dir"; do
+  for value in "$plist" "$wrapper" "$home" "$state" "$log_file" "$slot_dir" "$tmux_bin"; do
     qa_launchd_require_absolute "$value" || return 1
     [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
       || { qa_launchd_err "control character in path"; return 1; }
   done
   [ -x "$wrapper" ] || { qa_launchd_err "wrapper is not executable: $wrapper"; return 1; }
+  qa_launchd_require_tmux_bin "$tmux_bin" || return 1
+  tmux_version=$("$tmux_bin" -V 2>/dev/null) \
+    || { qa_launchd_err "tmux version probe failed: $tmux_bin"; return 1; }
+  [[ "$tmux_version" =~ ^tmux[[:space:]][^[:space:]]+$ ]] \
+    || { qa_launchd_err "invalid tmux version: $tmux_bin"; return 1; }
 
-  local x_label x_wrapper x_home x_state x_log x_slot_dir x_path
+  local x_label x_wrapper x_home x_state x_log x_slot_dir x_path x_tmux_bin x_tmux_version
   x_label=$(printf '%s' "$label" | qa_launchd_xml_escape)
   x_wrapper=$(printf '%s' "$wrapper" | qa_launchd_xml_escape)
   x_home=$(printf '%s' "$home" | qa_launchd_xml_escape)
   x_state=$(printf '%s' "$state" | qa_launchd_xml_escape)
   x_log=$(printf '%s' "$log_file" | qa_launchd_xml_escape)
   x_slot_dir=$(printf '%s' "$slot_dir" | qa_launchd_xml_escape)
+  x_tmux_bin=$(printf '%s' "$tmux_bin" | qa_launchd_xml_escape)
+  x_tmux_version=$(printf '%s' "$tmux_version" | qa_launchd_xml_escape)
   x_path=$(printf '%s' "${FLYWHEEL_QA_LAUNCHD_PATH:-${home}/.local/bin:${home}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}" \
     | qa_launchd_xml_escape)
   tmp="${plist}.tmp.$$"
@@ -173,7 +205,8 @@ qa_launchd_render_codex_plist() {
   if ! {
     qa_launchd_plist_open "$x_label"
     qa_launchd_plist_argv_codex "$x_wrapper"
-    qa_launchd_plist_env_codex "$x_home" "$x_path" "$x_state" "$x_slot_dir"
+    qa_launchd_plist_env_codex "$x_home" "$x_path" "$x_state" "$x_slot_dir" \
+      "$x_tmux_bin" "$x_tmux_version"
     qa_launchd_plist_close "$x_log"
   } > "$tmp"; then
     rm -f "$tmp"
@@ -487,17 +520,18 @@ qa_launchd_codex_lead_verify() {
 }
 
 qa_launchd_codex_lead_ready() {
-  local state_dir="$1" pid="$2" project="$3" lead="$4" tmux_socket="$5"
+  local state_dir="$1" pid="$2" project="$3" lead="$4" tmux_socket="$5" tmux_bin="$6"
   local heartbeat heartbeat_pid _generation _carrier state _hash windows expected count
   qa_launchd_require_absolute "$state_dir" || return 1
   qa_launchd_require_absolute "$tmux_socket" || return 1
+  qa_launchd_require_tmux_bin "$tmux_bin" || return 1
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   [[ "$project" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
   [[ "$lead" =~ ^[a-z0-9][a-z0-9-]*$ ]] || return 1
   heartbeat=$(qa_launchd_read_heartbeat "${state_dir}/brain/heartbeat.json") || return 1
   IFS=$'\t' read -r heartbeat_pid _generation _carrier state _hash <<<"$heartbeat"
   [[ "$heartbeat_pid" == "$pid" && "$state" == online ]] || return 1
-  windows=$("${FLYWHEEL_QA_TMUX:-tmux}" -S "$tmux_socket" \
+  windows=$("$tmux_bin" -S "$tmux_socket" \
     list-windows -t '=flywheel' -F '#{window_name}' 2>/dev/null) || return 1
   expected="${project}-${lead}"
   count=$(printf '%s\n' "$windows" | grep -Fxc "$expected" || true)
@@ -558,7 +592,7 @@ PY
 
 qa_launchd_codex_observe_restart() {
   local label="$1" codex_home="$2" state_dir="$3" tmux_socket="$4"
-  local project="$5" lead="$6" evidence_stage="$7"
+  local project="$5" lead="$6" evidence_stage="$7" tmux_bin="$8"
   local pid incarnation heartbeat heartbeat_pid generation carrier state hash
   local windows expected count
   pid=$(qa_launchd_lead_pid_exact "$label") || return 1
@@ -569,7 +603,8 @@ qa_launchd_codex_observe_restart() {
     || return 1
   IFS=$'\t' read -r heartbeat_pid generation carrier state hash <<<"$heartbeat"
   [[ "$heartbeat_pid" == "$pid" && "$state" == online ]] || return 1
-  windows=$("${FLYWHEEL_QA_TMUX:-tmux}" -S "$tmux_socket" \
+  qa_launchd_require_tmux_bin "$tmux_bin" || return 1
+  windows=$("$tmux_bin" -S "$tmux_socket" \
     list-windows -t '=flywheel' -F '#{window_name}' 2>/dev/null) || return 1
   expected="${project}-${lead}"
   count=$(printf '%s\n' "$windows" | grep -Fxc "$expected" || true)
@@ -583,14 +618,16 @@ qa_launchd_codex_observe_restart() {
 qa_launchd_lead_restart_drill() {
   local label="$1" carrier="$2" mode="$3" codex_home="$4" state_dir="$5"
   local tmux_socket="$6" project="$7" lead="$8" evidence_stage="$9"
+  local tmux_bin="${10}"
   local heartbeat_path old new old_pid old_lstart old_generation old_carrier old_state old_hash
   local new_pid new_lstart new_generation new_carrier new_state new_hash domain i
   local started_at converged_at evidence_tmp hash
   heartbeat_path=$(qa_launchd_validate_restart_drill_args \
     "$label" "$carrier" "$mode" "$codex_home" "$state_dir" "$tmux_socket" \
     "$project" "$lead" "$evidence_stage") || return 1
+  qa_launchd_require_tmux_bin "$tmux_bin" || return 1
   old=$(qa_launchd_codex_observe_restart "$label" "$codex_home" "$state_dir" \
-    "$tmux_socket" "$project" "$lead" "$evidence_stage") || return 1
+    "$tmux_socket" "$project" "$lead" "$evidence_stage" "$tmux_bin") || return 1
   IFS=$'\t' read -r old_pid old_lstart old_generation old_carrier old_state old_hash <<<"$old"
   started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   case "$mode" in
@@ -607,7 +644,7 @@ qa_launchd_lead_restart_drill() {
   new=""
   for i in $(seq 1 "${FLYWHEEL_QA_LEAD_VERIFY_POLLS:-$QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT}"); do
     new=$(qa_launchd_codex_observe_restart "$label" "$codex_home" "$state_dir" \
-      "$tmux_socket" "$project" "$lead" "$evidence_stage" || true)
+      "$tmux_socket" "$project" "$lead" "$evidence_stage" "$tmux_bin" || true)
     if [[ -n "$new" ]]; then
       IFS=$'\t' read -r new_pid new_lstart new_generation new_carrier new_state new_hash <<<"$new"
       if [[ ( "$new_pid" != "$old_pid" || "$new_lstart" != "$old_lstart" ) \
@@ -722,7 +759,7 @@ qa_launchd_lead_verify() {
 }
 
 # Registry is the only teardown authority for KeepAlive jobs.
-# Args: registry label plist manifest [carrier codexHome codexBin stateDir runtimePidFile]
+# Args: registry label plist manifest [carrier codexHome codexBin stateDir runtimePidFile tmuxBin]
 qa_launchd_register() {
   local registry="$1" label="$2" plist="$3" manifest="$4" tmp
   tmp="${registry}.tmp.$$"
@@ -736,25 +773,27 @@ qa_launchd_register() {
       jq -n --arg label "$label" --arg plist "$plist" --arg manifest "$manifest" \
         '[{label:$label, plist:$plist, manifest:$manifest}]' > "$tmp"
     fi
-  elif [ "$#" -eq 9 ] && [ "$5" = codex-tui ]; then
+  elif [ "$#" -eq 10 ] && [ "$5" = codex-tui ]; then
     local carrier="$5" codex_home="$6" codex_bin="$7" state_dir="$8" runtime_pid_file="$9"
+    local tmux_bin="${10}"
+    qa_launchd_require_tmux_bin "$tmux_bin" || return 1
     if [ -f "$registry" ]; then
       jq --arg label "$label" --arg plist "$plist" --arg manifest "$manifest" \
         --arg carrier "$carrier" --arg codexHome "$codex_home" \
         --arg codexBin "$codex_bin" --arg stateDir "$state_dir" \
-        --arg runtimePidFile "$runtime_pid_file" \
+        --arg runtimePidFile "$runtime_pid_file" --arg tmuxBin "$tmux_bin" \
         '. + [{label:$label, plist:$plist, manifest:$manifest, carrier:$carrier,
           codexHome:$codexHome, codexBin:$codexBin, stateDir:$stateDir,
-          runtimePidFile:$runtimePidFile}] | unique_by(.label)' \
+          runtimePidFile:$runtimePidFile, tmuxBin:$tmuxBin}] | unique_by(.label)' \
         "$registry" > "$tmp"
     else
       jq -n --arg label "$label" --arg plist "$plist" --arg manifest "$manifest" \
         --arg carrier "$carrier" --arg codexHome "$codex_home" \
         --arg codexBin "$codex_bin" --arg stateDir "$state_dir" \
-        --arg runtimePidFile "$runtime_pid_file" \
+        --arg runtimePidFile "$runtime_pid_file" --arg tmuxBin "$tmux_bin" \
         '[{label:$label, plist:$plist, manifest:$manifest, carrier:$carrier,
           codexHome:$codexHome, codexBin:$codexBin, stateDir:$stateDir,
-          runtimePidFile:$runtimePidFile}]' > "$tmp"
+          runtimePidFile:$runtimePidFile, tmuxBin:$tmuxBin}]' > "$tmp"
     fi
   else
     qa_launchd_err "invalid registry entry shape"
@@ -998,7 +1037,8 @@ qa_launchd_codex_tmux_socket_owner_state() {
 }
 
 qa_launchd_converge_codex_tmux_socket() {
-  local socket_path="$1" tmux_bin="${FLYWHEEL_QA_TMUX:-tmux}" i owner_state
+  local socket_path="$1" tmux_bin="$2" i owner_state
+  qa_launchd_require_tmux_bin "$tmux_bin" || return 1
   [[ "$socket_path" =~ ^/tmp/flywheel-test-slot-[1-9][0-9]*/tmux-[0-9]+/default$ ]] \
     || return 1
   if [[ ! -e "$socket_path" && ! -L "$socket_path" ]]; then
@@ -1048,14 +1088,15 @@ slot = registry.parent
 slot_real = Path(os.path.realpath(slot))
 if not re.fullmatch(r"/(?:private/)?tmp/flywheel-test-slot-[1-9][0-9]*", str(slot_real)):
     raise SystemExit(1)
-required = ("label", "codexHome", "codexBin", "stateDir", "runtimePidFile")
+required = ("label", "codexHome", "codexBin", "stateDir", "runtimePidFile", "tmuxBin")
 if any(not isinstance(row.get(key), str) or not row[key] for key in required):
     raise SystemExit(1)
 home = Path(row["codexHome"])
 binary = Path(row["codexBin"])
 state = Path(row["stateDir"])
 pid_file = Path(row["runtimePidFile"])
-if any(not path.is_absolute() for path in (home, binary, state, pid_file)):
+tmux_bin = Path(row["tmuxBin"])
+if any(not path.is_absolute() for path in (home, binary, state, pid_file, tmux_bin)):
     raise SystemExit(1)
 home_present = True
 try:
@@ -1089,18 +1130,22 @@ else:
     ):
         raise SystemExit(1)
     status = "retired"
-print("\t".join((status, row["label"], str(home), str(binary_real), str(state), str(pid_file))))
+if not tmux_bin.is_file() or not os.access(tmux_bin, os.X_OK):
+    raise SystemExit(1)
+print("\t".join((
+    status, row["label"], str(home), str(binary_real), str(state), str(pid_file), str(tmux_bin)
+)))
 PY
 }
 
 qa_launchd_stop_codex_entry() {
-  local registry="$1" entry="$2" validated entry_state label codex_home codex_bin state_dir runtime_pid_file
+  local registry="$1" entry="$2" validated entry_state label codex_home codex_bin state_dir runtime_pid_file tmux_bin
   local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
   local daemon_pid_file daemon_socket launch_marker bounded_run updater_rc
   local slot_root runtime_started=0 failed=0
   validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
     || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
-  IFS=$'\t' read -r entry_state label codex_home codex_bin state_dir runtime_pid_file <<<"$validated"
+  IFS=$'\t' read -r entry_state label codex_home codex_bin state_dir runtime_pid_file tmux_bin <<<"$validated"
   if [[ "$entry_state" == retired ]]; then
     runtime_pid=$(qa_launchd_lead_pid_exact "$label" || true)
     runtime_incarnation=$(qa_launchd_process_incarnation "$runtime_pid" || true)

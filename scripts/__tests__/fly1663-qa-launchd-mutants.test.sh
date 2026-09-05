@@ -39,7 +39,7 @@ PY
 # remains byte-identical.
 render_surface_results() (
   local mirror="$1" work="$2" fixtures="$mirror/scripts/__tests__/fixtures/fly2301"
-  mkdir -p "$work/runtime" "$work/home" "$work/state"
+  mkdir -p "$work/runtime" "$work/home" "$work/state" "$work/tmux-authority"
   export HOME="$work/home"
   export FLYWHEEL_DIR="$mirror"
   export FLYWHEEL_STATE_DIR="$work/state"
@@ -56,8 +56,10 @@ render_surface_results() (
   local projects="$work/runtime/projects.json" env_input="$work/runtime/.env"
   local lead_log="$work/runtime/lead.log" claude_plist="$work/runtime/claude.plist"
   local codex_wrapper="$work/runtime/codex-wrapper.sh" codex_plist="$work/runtime/codex.plist"
+  local codex_tmux="$work/tmux-authority/tmux"
   printf '%s\n' '#!/bin/bash' 'exit 0' > "$codex_wrapper"
-  chmod +x "$codex_wrapper"
+  printf '%s\n' '#!/bin/bash' 'printf "tmux 3.7c\\n"' > "$codex_tmux"
+  chmod +x "$codex_wrapper" "$codex_tmux"
   printf '%s\n' '{}' > "$manifest_input"
   printf '%s\n' '[]' > "$projects"
   : > "$env_input"
@@ -75,7 +77,7 @@ render_surface_results() (
 
   qa_launchd_render_codex_plist "$codex_plist" \
     com.flywheel.qa.lead.slot-7.qa-lead "$codex_wrapper" "$HOME" \
-    "$FLYWHEEL_STATE_DIR" "$lead_log" "$work" >/dev/null 2>&1
+    "$FLYWHEEL_STATE_DIR" "$lead_log" "$work" "$codex_tmux" >/dev/null 2>&1
   sed -e "s#${work}#@TMP@#g" -e "s#${mirror}#@ROOT@#g" \
     "$codex_plist" > "$work/codex.normalized"
   if cmp -s "$fixtures/codex-lead.plist" "$work/codex.normalized"; then

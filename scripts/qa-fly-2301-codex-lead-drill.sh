@@ -76,7 +76,10 @@ except (UnicodeDecodeError, ValueError):
 if value.get("leadCarrier") != "launchd-codex-tui" or not isinstance(value.get("codexLead"), dict):
     raise SystemExit(1)
 row = value["codexLead"]
-required = ("label", "projectName", "agentId", "stateDir", "codexHome", "tmuxSocket", "tuiWindow")
+required = (
+    "label", "projectName", "agentId", "stateDir", "codexHome", "tmuxSocket",
+    "tmuxBin", "tuiWindow"
+)
 if any(not isinstance(row.get(key), str) or not row[key] for key in required):
     raise SystemExit(1)
 agent = row["agentId"]
@@ -86,6 +89,7 @@ project = f"test-slot-{slot_text}"
 label = f"com.flywheel.qa.lead.slot-{slot_text}.{agent}"
 home = slot_dir / "cdxh" / agent
 tmux_socket = slot_dir / f"tmux-{os.getuid()}" / "default"
+tmux_bin = Path(row["tmuxBin"])
 identity_hex = (project + "\x1f" + agent).encode().hex()
 safe_project = re.sub(r"[^A-Za-z0-9_-]", "_", project)
 safe_agent = re.sub(r"[^A-Za-z0-9_-]", "_", agent)
@@ -97,6 +101,7 @@ expected = {
     "stateDir": str(state),
     "codexHome": str(home),
     "tmuxSocket": str(tmux_socket),
+    "tmuxBin": str(tmux_bin),
     "tuiWindow": "present",
 }
 if row != expected or value.get("mainLeadLabel") != label:
@@ -108,20 +113,24 @@ try:
             raise SystemExit(1)
 except ValueError:
     raise SystemExit(1)
+if not tmux_bin.is_absolute() or not tmux_bin.is_file() or not os.access(tmux_bin, os.X_OK):
+    raise SystemExit(1)
 descriptor = os.open(snapshot_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(descriptor, "wb") as stream:
     stream.write(raw)
     stream.flush()
     os.fsync(stream.fileno())
-print("\t".join((label, project, agent, str(state), str(home), str(tmux_socket))))
+print("\t".join((
+    label, project, agent, str(state), str(home), str(tmux_socket), str(tmux_bin)
+)))
 PY
 )
-IFS=$'\t' read -r label project agent state_dir codex_home tmux_socket <<<"$coordinates"
+IFS=$'\t' read -r label project agent state_dir codex_home tmux_socket tmux_bin <<<"$coordinates"
 
 capture_windows() {
   local socket="$1" out="$2"
   if [[ -S "$socket" ]]; then
-    "${FLYWHEEL_QA_TMUX:-tmux}" -S "$socket" list-windows -a \
+    "$tmux_bin" -S "$socket" list-windows -a \
       -F '#{session_name}\t#{window_name}' > "$out" 2>/dev/null || : > "$out"
   else
     : > "$out"
@@ -134,7 +143,7 @@ capture_windows "$default_tmux_socket" "$default_windows_before"
 capture_windows "$tmux_socket" "$slot_windows_before"
 
 qa_launchd_lead_restart_drill "$label" codex-tui "$mode" "$codex_home" \
-  "$state_dir" "$tmux_socket" "$project" "$agent" "$stage"
+  "$state_dir" "$tmux_socket" "$project" "$agent" "$stage" "$tmux_bin"
 
 mv "$manifest_snapshot" "$stage/launch-manifest.json"
 manifest_snapshot=""

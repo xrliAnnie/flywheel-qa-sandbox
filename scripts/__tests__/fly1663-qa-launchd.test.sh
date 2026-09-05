@@ -81,29 +81,36 @@ fi
 
 codex_wrapper="$TMP/runtime/codex-wrapper.sh"
 codex_plist="$TMP/runtime/codex-lead.plist"
+codex_tmux_bin="$TMP/tmux-authority/tmux"
+mkdir -p "$(dirname "$codex_tmux_bin")"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "$codex_wrapper"
+printf '%s\n' '#!/bin/bash' 'printf "tmux 3.7c\\n"' > "$codex_tmux_bin"
 chmod +x "$codex_wrapper"
+chmod +x "$codex_tmux_bin"
 if qa_launchd_render_codex_plist "$codex_plist" "$label" "$codex_wrapper" \
-    "$HOME" "$FLYWHEEL_STATE_DIR" "$log_file" "$TMP" \
-    && python3 - "$codex_plist" "$codex_wrapper" "$HOME" "$FLYWHEEL_STATE_DIR" "$TMP" "$ROOT" <<'PY'
+    "$HOME" "$FLYWHEEL_STATE_DIR" "$log_file" "$TMP" "$codex_tmux_bin" \
+    && python3 - "$codex_plist" "$codex_wrapper" "$HOME" "$FLYWHEEL_STATE_DIR" "$TMP" "$ROOT" "$codex_tmux_bin" <<'PY'
 import plistlib
 import sys
 
-path, wrapper, home, state, slot_dir, root = sys.argv[1:]
+path, wrapper, home, state, slot_dir, root, tmux_bin = sys.argv[1:]
 with open(path, "rb") as fh:
     value = plistlib.load(fh)
 assert value["ProgramArguments"] == ["/bin/bash", wrapper]
 assert list(value["EnvironmentVariables"]) == [
-    "HOME", "PATH", "FLYWHEEL_DIR", "FLYWHEEL_STATE_DIR", "TMUX_TMPDIR"
+    "HOME", "PATH", "FLYWHEEL_DIR", "FLYWHEEL_STATE_DIR", "TMUX_TMPDIR",
+    "FLYWHEEL_CODEX_TMUX_BIN", "FLYWHEEL_CODEX_TMUX_VERSION"
 ]
 assert value["EnvironmentVariables"]["HOME"] == home
 assert value["EnvironmentVariables"]["FLYWHEEL_DIR"] == root
 assert value["EnvironmentVariables"]["FLYWHEEL_STATE_DIR"] == state
 assert value["EnvironmentVariables"]["TMUX_TMPDIR"] == slot_dir
+assert value["EnvironmentVariables"]["FLYWHEEL_CODEX_TMUX_BIN"] == tmux_bin
+assert value["EnvironmentVariables"]["FLYWHEEL_CODEX_TMUX_VERSION"] == "tmux 3.7c"
 assert value["RunAtLoad"] is True and value["KeepAlive"] is True
 PY
 then
-  pass "Codex launchd plist uses wrapper-only argv and the isolated five-key environment"
+  pass "Codex launchd plist pins one absolute tmux authority"
 else
   fail "Codex launchd plist carrier shape"
 fi
@@ -134,7 +141,8 @@ wrapper_scrub_root="$TMP/wrapper-scrub-root"
 wrapper_scrub_state="$TMP/wrapper-scrub-state"
 wrapper_scrub_calls="$TMP/wrapper-scrub.calls"
 mkdir -p "$wrapper_scrub_root/scripts" \
-  "$wrapper_scrub_root/packages/teamlead/scripts" "$wrapper_scrub_state"
+  "$wrapper_scrub_root/packages/teamlead/scripts" "$wrapper_scrub_root/bin" \
+  "$wrapper_scrub_state"
 cat > "$wrapper_scrub_root/scripts/host-tmux-selection-gate.sh" <<'SCRUB_GATE'
 #!/bin/bash
 set -euo pipefail
@@ -159,8 +167,13 @@ cat > "$wrapper_scrub_root/packages/teamlead/scripts/codex-lead.sh" <<'SCRUB_LEA
 #!/bin/bash
 printf 'lead:%s:%s:%s\n' "$1" "$2" "$3" >> "$FLY1663_WRAPPER_SCRUB_CALLS"
 SCRUB_LEAD
+cat > "$wrapper_scrub_root/bin/tmux" <<'SCRUB_TMUX'
+#!/bin/bash
+printf 'tmux 3.7c\n'
+SCRUB_TMUX
 chmod +x "$wrapper_scrub_root/scripts/host-tmux-selection-gate.sh" \
-  "$wrapper_scrub_root/packages/teamlead/scripts/codex-lead.sh"
+  "$wrapper_scrub_root/packages/teamlead/scripts/codex-lead.sh" \
+  "$wrapper_scrub_root/bin/tmux"
 cat > "$wrapper_scrub_state/.env" <<SCRUB_ENV
 FLYWHEEL_DIR='$wrapper_scrub_root'
 FLYWHEEL_STATE_DIR='$wrapper_scrub_state'
@@ -173,6 +186,8 @@ FLYWHEEL_HOST_TMUX_GATE_APPLICABILITY='applicable'
 FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH='1'
 FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS='999999'
 FLYWHEEL_HOST_TMUX_FUTURE_FIXTURE='must-not-leak'
+FLYWHEEL_CODEX_TMUX_BIN='$wrapper_scrub_root/bin/tmux'
+FLYWHEEL_CODEX_TMUX_VERSION='tmux 3.7c'
 SCRUB_ENV
 if FLYWHEEL_DIR="$wrapper_scrub_root" \
     FLYWHEEL_STATE_DIR="$wrapper_scrub_state" \
@@ -184,6 +199,29 @@ if FLYWHEEL_DIR="$wrapper_scrub_root" \
   pass "Codex slot wrapper scrubs inherited host-tmux fixture controls before its gate"
 else
   fail "Codex slot wrapper host-tmux environment scrub"
+fi
+
+wrapper_version_calls="$TMP/wrapper-version.calls"
+cat > "$wrapper_scrub_root/bin/tmux" <<VERSION_TMUX
+#!/bin/bash
+if [[ ! -f '$wrapper_version_calls' ]]; then
+  : > '$wrapper_version_calls'
+  printf 'tmux 3.7c\\n'
+else
+  printf 'tmux 3.5a\\n'
+fi
+VERSION_TMUX
+: > "$wrapper_scrub_calls"
+rm -f "$wrapper_version_calls"
+if ! FLYWHEEL_DIR="$wrapper_scrub_root" \
+    FLYWHEEL_STATE_DIR="$wrapper_scrub_state" \
+    FLY1663_WRAPPER_SCRUB_CALLS="$wrapper_scrub_calls" \
+    /bin/bash "$rendered_wrapper" 2>"$TMP/wrapper-version.err" \
+    && grep -Fq 'tmux version mismatch' "$TMP/wrapper-version.err" \
+    && ! grep -Fq 'lead:' "$wrapper_scrub_calls"; then
+  pass "Codex slot wrapper fails before Lead startup on tmux version mismatch"
+else
+  fail "Codex slot wrapper tmux version mismatch guard"
 fi
 
 mkdir -p "$TMP/space dir"
@@ -593,6 +631,10 @@ if [ "$(qa_launchd_lead_verify "$label" "$manifest")" = $'4242\t/tmp/private-qa.
 else
   fail "QA launchd topology verification"
 fi
+tmux_ambient_mismatch="$TMP/bin/tmux-ambient-mismatch"
+printf '%s\n' '#!/bin/bash' 'exit 91' > "$tmux_ambient_mismatch"
+chmod +x "$tmux_ambient_mismatch"
+export FLYWHEEL_QA_TMUX="$tmux_ambient_mismatch"
 
 codex_home="$TMP/flywheel-test-slot-7/cdxh/qa-lead"
 codex_state="${heartbeat_dir%/brain}"
@@ -606,12 +648,15 @@ ps() {
 }
 export FLY1663_QA_TMUX_WINDOWS='test-slot-7-qa-lead'
 if [[ "$(qa_launchd_codex_lead_verify "$label" "$codex_home" "$codex_state")" == $'4242\t'"$codex_state" ]] \
-    && qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead /tmp/slot-tmux.sock; then
+    && qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead \
+      /tmp/slot-tmux.sock "$tmux_stub"; then
   export FLY1663_QA_TMUX_WINDOWS=''
-  qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead /tmp/slot-tmux.sock \
+  qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead \
+    /tmp/slot-tmux.sock "$tmux_stub" \
     >/dev/null 2>&1 || no_window_rejected=1
   export FLY1663_QA_TMUX_WINDOWS=$'test-slot-7-qa-lead\ntest-slot-7-qa-lead'
-  qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead /tmp/slot-tmux.sock \
+  qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead \
+    /tmp/slot-tmux.sock "$tmux_stub" \
     >/dev/null 2>&1 || duplicate_window_rejected=1
   if [[ "${no_window_rejected:-0}" == 1 && "${duplicate_window_rejected:-0}" == 1 ]]; then
     pass "Codex topology verification binds launchd, runtime, environment, heartbeat, and exactly one TUI window"
@@ -701,12 +746,14 @@ codex_registry="$TMP/runtime/codex-launchd-leads.json"
 codex_bin="$mint_dest/packages/standalone/current/codex"
 if qa_launchd_register "$codex_registry" "$label" "$codex_plist" '' \
     codex-tui "$mint_dest" "$codex_bin" "$state_path" "$TMP/runtime/codex.pid" \
+    "$codex_tmux_bin" \
     && jq -e --arg label "$label" --arg plist "$codex_plist" \
       --arg home "$mint_dest" --arg bin "$codex_bin" --arg state "$state_path" \
-      --arg pidFile "$TMP/runtime/codex.pid" '
+      --arg pidFile "$TMP/runtime/codex.pid" --arg tmuxBin "$codex_tmux_bin" '
       length == 1 and .[0] == {
         label:$label, plist:$plist, manifest:"", carrier:"codex-tui",
-        codexHome:$home, codexBin:$bin, stateDir:$state, runtimePidFile:$pidFile
+        codexHome:$home, codexBin:$bin, stateDir:$state, runtimePidFile:$pidFile,
+        tmuxBin:$tmuxBin
       }' "$codex_registry" >/dev/null; then
   pass "launchd registry records the complete Codex carrier teardown coordinates"
 else
@@ -771,7 +818,8 @@ export FLY1663_QA_TMUX_WINDOWS='test-slot-7-qa-lead'
 export FLYWHEEL_QA_LEAD_VERIFY_POLLS=1
 if qa_launchd_lead_restart_drill \
     "com.flywheel.qa.lead.slot-${drill_slot_number}.qa-lead" codex-tui crash \
-    "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead "$drill_evidence" \
+    "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead \
+    "$drill_evidence" "$tmux_stub" \
     && jq -e '
       .mode == "crash" and .old.pid == 4101 and .new.pid == 4102 and
       .old.generationId == "gen-old" and .new.generationId == "gen-new" and
@@ -795,7 +843,7 @@ jq() { return 1; }
 if ! qa_launchd_lead_restart_drill \
     "com.flywheel.qa.lead.slot-${drill_slot_number}.qa-lead" codex-tui crash \
     "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead \
-    "$drill_failure_evidence" \
+    "$drill_failure_evidence" "$tmux_stub" \
     && [[ "$hash" == caller-sentinel ]] \
     && ! find "$drill_failure_evidence" -name 'restart-drill.json.tmp.*' -print -quit \
       | grep -q .; then
@@ -808,7 +856,8 @@ unset -f jq
 invalid_mutations_before=$(wc -l < "$drill_mutations" | tr -d ' ')
 if ! qa_launchd_lead_restart_drill \
     "com.flywheel.qa.lead.slot-$((drill_slot_number + 1)).qa-lead" codex-tui crash \
-    "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead "$drill_state" \
+    "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead \
+    "$drill_state" "$tmux_stub" \
     >/dev/null 2>&1 \
     && [[ "$(wc -l < "$drill_mutations" | tr -d ' ')" == "$invalid_mutations_before" ]]; then
   pass "Codex restart drill rejects mismatched/inside-room coordinates before mutation"
@@ -921,7 +970,8 @@ CODEX
 chmod +x "$codex_bin"
 export FLY1663_QA_CODEX_STOP_CALLS="$codex_stop_calls"
 qa_launchd_register "$codex_stop_registry" "$label" "$codex_plist" '' \
-  codex-tui "$mint_dest" "$codex_bin" "$stop_state" "$runtime_pid_file"
+  codex-tui "$mint_dest" "$codex_bin" "$stop_state" "$runtime_pid_file" \
+  "$codex_tmux_bin"
 printf '%s\n' '{"tokens":{"refresh_token":"fixture-refresh-2"}}' \
   > "$mint_dest/auth.json"
 : > "$launchctl_state"
@@ -1021,15 +1071,15 @@ make_stop_home "$stop_success_home" \
 qa_launchd_register "$stop_matrix_registry" com.flywheel.qa.lead.slot-95.invalid \
   /tmp/invalid.plist '' codex-tui "$stop_invalid_home" \
   "$TMP/outside-codex-bin/codex" "$stop_matrix_root/q/invalid" \
-  "$stop_matrix_root/launchd/invalid/pid"
+  "$stop_matrix_root/launchd/invalid/pid" "$codex_tmux_bin"
 qa_launchd_register "$stop_matrix_registry" com.flywheel.qa.lead.slot-95.fail \
   /tmp/fail.plist '' codex-tui "$stop_fail_home" \
   "$stop_fail_home/packages/standalone/current/codex" "$stop_matrix_root/q/fail" \
-  "$stop_matrix_root/launchd/fail/pid"
+  "$stop_matrix_root/launchd/fail/pid" "$codex_tmux_bin"
 qa_launchd_register "$stop_matrix_registry" com.flywheel.qa.lead.slot-95.success \
   /tmp/success.plist '' codex-tui "$stop_success_home" \
   "$stop_success_home/packages/standalone/current/codex" "$stop_matrix_root/q/success" \
-  "$stop_matrix_root/launchd/success/pid"
+  "$stop_matrix_root/launchd/success/pid" "$codex_tmux_bin"
 if ! qa_launchd_stop_registry "$stop_matrix_registry" >/dev/null 2>"$TMP/stop-matrix.err" \
     && ! grep -Fq invalid-executed "$TMP/stop-matrix.calls" \
     && grep -Fxq daemon-stop-failed "$TMP/stop-matrix.calls" \
@@ -1051,7 +1101,7 @@ make_stop_home "$stop_alive_home" \
 qa_launchd_register "$stop_alive_registry" com.flywheel.qa.lead.slot-96.alive \
   /tmp/alive.plist '' codex-tui "$stop_alive_home" \
   "$stop_alive_home/packages/standalone/current/codex" "$stop_alive_root/q/alive" \
-  "$stop_alive_root/launchd/alive/pid"
+  "$stop_alive_root/launchd/alive/pid" "$codex_tmux_bin"
 ps() {
   case "$*" in
     '-o stat= -p 6001') printf 'S\n' ;;
@@ -1089,7 +1139,7 @@ make_stop_home "$stop_bootout_home" \
 qa_launchd_register "$stop_bootout_registry" com.flywheel.qa.lead.slot-97.bootout \
   /tmp/bootout.plist '' codex-tui "$stop_bootout_home" \
   "$stop_bootout_home/packages/standalone/current/codex" "$stop_bootout_root/q/bootout" \
-  "$stop_bootout_root/launchd/bootout/pid"
+  "$stop_bootout_root/launchd/bootout/pid" "$codex_tmux_bin"
 saved_launchctl="$FLYWHEEL_QA_LAUNCHCTL"
 export FLYWHEEL_QA_LAUNCHCTL="$bootout_stub"
 if ! qa_launchd_stop_registry "$stop_bootout_registry" >/dev/null 2>"$TMP/stop-bootout.err" \
@@ -1118,7 +1168,8 @@ printf '%s\n' '{"tokens":{"refresh_token":"fixture-unstarted"}}' \
 qa_launchd_register "$stop_unstarted_registry" \
   com.flywheel.qa.lead.slot-98.unstarted /tmp/unstarted.plist '' codex-tui \
   "$stop_unstarted_home" "$stop_unstarted_home/packages/standalone/current/codex" \
-  "$stop_unstarted_root/q/unstarted" "$stop_unstarted_root/launchd/unstarted/pid"
+  "$stop_unstarted_root/q/unstarted" "$stop_unstarted_root/launchd/unstarted/pid" \
+  "$codex_tmux_bin"
 ps() {
   case "$*" in
     '-ww -axo pid=,command=') return 0 ;;
@@ -1146,7 +1197,8 @@ make_stop_home "$stop_retired_home" 'exit 99' must-not-run-retired
 qa_launchd_register "$stop_retired_registry" \
   com.flywheel.qa.lead.slot-982.retired /tmp/retired.plist '' codex-tui \
   "$stop_retired_home" "$stop_retired_home/packages/standalone/current/codex" \
-  "$stop_retired_root/q/retired" "$stop_retired_root/launchd/retired/pid"
+  "$stop_retired_root/q/retired" "$stop_retired_root/launchd/retired/pid" \
+  "$codex_tmux_bin"
 qa_launchd_retire_codex_home "$stop_retired_home" "$stop_retired_root"
 if qa_launchd_stop_registry "$stop_retired_registry" \
     >/dev/null 2>"$TMP/stop-retired.err" \
@@ -1171,7 +1223,7 @@ chmod +x "$tmux_absent_stub"
 : > "$absent_tmux_calls"
 export FLY1663_QA_ABSENT_TMUX_CALLS="$absent_tmux_calls"
 export FLYWHEEL_QA_TMUX="$tmux_absent_stub"
-if qa_launchd_converge_codex_tmux_socket "$absent_tmux_socket" \
+if qa_launchd_converge_codex_tmux_socket "$absent_tmux_socket" "$tmux_absent_stub" \
     && [[ ! -s "$absent_tmux_calls" ]]; then
   pass "Codex tmux convergence accepts an already-absent socket and parent"
 else
@@ -1209,7 +1261,8 @@ TMUX
 chmod +x "$tmux_client_error_stub"
 export FLYWHEEL_QA_TMUX="$tmux_client_error_stub"
 live_converge_rc=0
-qa_launchd_converge_codex_tmux_socket "$live_tmux_socket" || live_converge_rc=$?
+qa_launchd_converge_codex_tmux_socket "$live_tmux_socket" "$tmux_client_error_stub" \
+  || live_converge_rc=$?
 if [[ "$live_converge_rc" != 0 && -S "$live_tmux_socket" ]] \
     && kill -0 "$live_tmux_pid" 2>/dev/null; then
   pass "Codex tmux convergence preserves a live server when the client errors"
@@ -1249,7 +1302,7 @@ chmod +x "$tmux_cleanup_stub"
 export FLY1663_QA_STALE_TMUX_STATE="$stale_tmux_state"
 export FLY1663_QA_STALE_TMUX_CALLS="$stale_tmux_calls"
 export FLYWHEEL_QA_TMUX="$tmux_cleanup_stub"
-if qa_launchd_converge_codex_tmux_socket "$stale_tmux_socket" \
+if qa_launchd_converge_codex_tmux_socket "$stale_tmux_socket" "$tmux_cleanup_stub" \
     && [[ ! -e "$stale_tmux_socket" && ! -L "$stale_tmux_socket" ]] \
     && grep -Fq -- "-S $stale_tmux_socket kill-server" "$stale_tmux_calls"; then
   pass "Codex tmux convergence removes the exact stale socket after kill-server succeeds"
