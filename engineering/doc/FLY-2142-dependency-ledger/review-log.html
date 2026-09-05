@@ -1,0 +1,60 @@
+<p class="note">独立评审 = Codex(gpt-5 系,xhigh)以 Staff Engineer 身份读仓库与全部设计文档后逐轮评审;每轮的原始反馈文件与处置一并记录。「采纳」= 已改进 plan/research;「拒绝」= 说明理由。</p>
+<div class="scroll">
+<table>
+  <tr><th>轮次</th><th>结论</th><th>发现(严重度)</th><th>处置</th></tr>
+  <tr><td rowspan="8">R1<br/>2026-09-04</td><td rowspan="8">CHANGES REQUESTED<br/>2 HIGH · 5 MEDIUM · 1 LOW</td>
+      <td>HIGH · 「减法不许丢」被写成结构性保证,但页面只能看见三种快照形状;一条仍有效但已过时的边无法识别</td>
+      <td><span class="badge do">采纳</span>收窄措辞为「三种可观测坏形状每次完整生成必报」;<code>all_blocked</code> 改为列出前沿边(可行动);<span class="badge no">拒绝</span>其备选「在评论里记想删还没删的意图」—— 第二套状态机,且 Lead 已裁不做自动化,Lead 想删直接 remove</td></tr>
+  <tr><td>HIGH · 关系写 + 评论写两步没有完成态、歧义结果与可重试修复合同;502 不等于零写入</td>
+      <td><span class="badge do">采纳</span>引入 <code>operation_id</code>;写后必验 success 与回读;评论按 operation_id 幂等;评论失败 ⇒ 退出码 2 + <code>note</code> 补记路由;discover 不自动重试</td></tr>
+  <tr><td>MEDIUM · 环检查只在单进程内串行,不能无条件承诺「409 且零写入」</td>
+      <td><span class="badge do">采纳</span>定为 best-effort;写前 fresh read、写后再查一次;并发成环 ⇒ 回执点名、不自动删;A3 相应收窄</td></tr>
+  <tr><td>MEDIUM · 评论三行文本格式可被 reason 里的换行伪造字段;actor 只是声明;复用的评论查询没有 url 与作者</td>
+      <td><span class="badge do">采纳</span>机器体改为单行 canonical JSON(reason 在字符串内);<code>actor</code> 改名 <code>claimed_actor</code>,作者取 Linear 记录;评论查询自写(含 url/作者);坏记录标 unparseable 不丢</td></tr>
+  <tr><td>MEDIUM · 审阅格的 schema 自洽断言太弱(单节点伪环、乱写计数、重复条目都能过)</td>
+      <td><span class="badge do">采纳</span>守卫改为「重算比对」:审阅格必须与规则函数重算结果逐字节相等</td></tr>
+  <tr><td>MEDIUM · 「blocked_by 缺失就静默跳过」与现有模型相反(快照本来 fail-loud)</td>
+      <td><span class="badge do">采纳</span>state / blocked_by 必须已知,否则生成失败,不出半页</td></tr>
+  <tr><td>MEDIUM · 泄漏测试只保护 HTTP 响应,计划却把原始异常写进日志</td>
+      <td><span class="badge do">采纳</span>日志只记分类 + operation_id;测试同时 spy 日志</td></tr>
+  <tr><td>LOW · x-complexity 无来源、全仓门数量不一致、注入项数量写错</td>
+      <td><span class="badge do">采纳</span>三处已改</td></tr>
+  <tr><td rowspan="8">R2<br/>2026-09-04</td><td rowspan="8">CHANGES REQUESTED<br/>1 HIGH · 7 MEDIUM</td>
+      <td>HIGH · 「边已存在」时无法证明是本次操作建的,却会以本次名义补写「加了边」的记录,伪造归因</td>
+      <td><span class="badge do">采纳</span>加边时把本次操作编号交给 Linear 作这条边的 id;边已存在时比对 id:相同 = 本次上次写成功、补记;不同 = 别人建的、不记(Lead 要记理由用 note 显式断言)</td></tr>
+  <tr><td>MEDIUM · 「前沿边被截断」这个字段只在算法里出现,类型与冻结合同里没有</td>
+      <td><span class="badge do">采纳</span>类型里恒存在 <code>blocking_edges_truncated</code>,守卫、渲染、测试同步</td></tr>
+  <tr><td>MEDIUM · 写后环复查超界时命令以 0 退出,用户看不到「需复核」</td>
+      <td><span class="badge do">采纳</span>复查三态;超界也退出码 2 并提示生成页面核对</td></tr>
+  <tr><td>MEDIUM · 前沿边把范围外 / backlog 的依赖也列进「需要减法」,暗示该删</td>
+      <td><span class="badge do">采纳</span>每条边带范围内外与状态标记,措辞改中性「等它做完,还是删边——由你判断」</td></tr>
+  <tr><td>MEDIUM · 操作编号文法自相矛盾(discover 派生形状会被校验拒绝)</td>
+      <td><span class="badge do">采纳</span>统一为真 uuid v4;discover 每条边各一个,父操作另记 parent_op</td></tr>
+  <tr><td>MEDIUM · 单反引号包裹的机器行会被 reason 里的反引号提前闭合</td>
+      <td><span class="badge do">采纳</span>机器行改为 base64url 编码,字母表里没有任何 Markdown 元字符</td></tr>
+  <tr><td>MEDIUM · note 允许「不需要做 + 加了边」这类自相矛盾的组合进账本</td>
+      <td><span class="badge do">采纳</span>固定三种合法组合;路由拒绝,解析器把非法组合标 unparseable</td></tr>
+  <tr><td>MEDIUM · discover 的查重指令调了不读 query 的复数路由</td>
+      <td><span class="badge do">采纳</span>改为单数 <code>/api/linear/issue?query=…&amp;projectName=…</code></td></tr>
+  <tr><td rowspan="8">R3<br/>2026-09-04</td><td rowspan="8">CHANGES REQUESTED<br/>2 HIGH · 5 MEDIUM · 1 LOW</td>
+      <td>HIGH · 「Linear 不接受调用方 relation id」的备用路径写得不完整,而且能力验证被排在实现之后</td>
+      <td><span class="badge do">采纳</span>新增 M0 探针(实现第一步,Lead 授权的测试单上验三问);两条分支的合同现在都定死,探针只选分支、不改 plan</td></tr>
+  <tr><td>HIGH · 空态「0 处(当前没有该减没减的依赖)」对机器看不见的那类边作了虚假保证</td>
+      <td><span class="badge do">采纳</span>格子改名「依赖审阅:该减的、该判断的」;空态改为「0 个可观测警报。这不代表没有该减的边…只能由 Lead 用 remove 说出来」,测试断言该限定语</td></tr>
+  <tr><td>MEDIUM · 共享常量放在 teamlead 私有文件里,flywheel-comm 无法引用(依赖方向反了)</td>
+      <td><span class="badge do">采纳</span>常量移到两者共同依赖的 flywheel-config,单独测试</td></tr>
+  <tr><td>MEDIUM · discover 发的 parent_op 不在 add 的精确请求键集里,会被 400 拒</td>
+      <td><span class="badge do">采纳</span>加入键集,并与 kind 绑定:discovered 必填、其它必须缺席</td></tr>
+  <tr><td>MEDIUM · 幂等只看编号不看内容,同编号改内容会被当成重放</td>
+      <td><span class="badge do">采纳</span>比对去掉服务端字段后的完整内容,不同 ⇒ 409 冲突、零写入</td></tr>
+  <tr><td>MEDIUM · 评论没留成、边随后又被改掉时,补记命令永远 409,理由永远进不了账本</td>
+      <td><span class="badge do">采纳</span>note 分两种语义:默认核对当前状态;--backfill 由 Lead 显式认账,账本标 lead_ack</td></tr>
+  <tr><td>MEDIUM · CLI 打印给人复制的命令与 URL 没有规定 shell / URL 转义</td>
+      <td><span class="badge do">采纳</span>抽出仓内已有的 shellQuote 共用,URL 用 URLSearchParams,七种特殊字符各一测试</td></tr>
+  <tr><td>LOW · A7 还写着「反引号 JSON 行」;「base64url 无 Markdown 元字符」说法不准</td>
+      <td><span class="badge do">采纳</span>改为 dl1 行;字母表含 _ 的事实写清,显示层以真实渲染为证</td></tr>
+  <tr><td>R4<br/>2026-09-04</td><td>未执行</td>
+      <td>R3 的 8 条已全部改进 plan/research(round 4 稿已提交);Codex 侧全部账号撞用量上限(business 至 9/8、school 至 9/7、personal 需交互式重登),R4 一个字未审</td>
+      <td><span class="badge maybe">Lead acceptance</span>Lead 裁定(问题 ebd5ada1):评审不可得时接受当前稿进入实现,不伪造评审结论;实现节点起手第一件事 = 额度恢复后对当前 plan blob 跑一轮 exact-blob 复核,结果写进实现段报告</td></tr>
+</table>
+</div>

@@ -85,6 +85,21 @@ describe("generateEpicPage", () => {
 				"/items/0/blocked_by",
 			]),
 		});
+		expect(page.dependency_review).toEqual({
+			value: [],
+			provenance: {
+				kind: "derived",
+				rule: "subtraction.v1",
+				from: [
+					...page.items.flatMap((_item, index) => [
+						`/items/${index}/state`,
+						`/items/${index}/blocked_by`,
+					]),
+					"/ready_items",
+				],
+			},
+			observed_at: EPIC_SHAPE_NOW.toISOString(),
+		});
 		expect(page.founder_items.value).toEqual([]);
 		expect(page.gaps.value).toEqual([]);
 		expect(page.generator).toEqual({

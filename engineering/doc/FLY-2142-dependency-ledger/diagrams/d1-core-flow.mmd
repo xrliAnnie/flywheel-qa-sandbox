@@ -1,0 +1,21 @@
+flowchart TB
+  subgraph WRITE["写:三个动词,都落进 Linear"]
+    direction LR
+    L["Lead"] -->|"add 漏掉的<br/>remove 不需要做的<br/>discover 新发现的"| CLI["flywheel-comm<br/>dependency"]
+    CLI --> B["Bridge 检查<br/>项目边界 · 自边<br/>反向边 · 环"]
+    B -->|"通过才写"| REL[("Linear<br/>blocks 关系")]
+    B -->|"顺手记一条"| CMT[("Linear 评论<br/>类别 + 理由")]
+  end
+  subgraph READ["读:页面每次生成都重算"]
+    direction LR
+    PG["Epic 页面生成"] --> RD["现在可以开始的<br/>ready.v1(不变)"]
+    PG --> RV["依赖需要减法的地方<br/>subtraction.v1(新)"]
+    RD --> OUT["Lead 与 2108·B 拉活"]
+    RV --> OUT
+  end
+  REL --> PG
+  REL -. "Linear 自动记" .-> HIS[("Linear 变更历史<br/>谁 · 何时 · 加/删/解")]
+  HIS --> LOG["dependency log<br/>读回时间线"]
+  CMT --> LOG
+  RN["Runner 发现依赖"] -. "只提议 ask --report" .-> L
+  F["founder 直接在 Linear 改"] --> REL

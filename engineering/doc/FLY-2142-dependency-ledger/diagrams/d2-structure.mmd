@@ -1,0 +1,19 @@
+flowchart LR
+  subgraph LINEAR["Linear(唯一账本)"]
+    direction TB
+    E["一条边<br/>Y blocks X<br/>= 做 X 之前先做 Y"]
+    H["改动史条目(Linear 自动)<br/>码 ab 加 / br 解 / rb 删<br/>谁 · 何时"]
+    C["账本评论(本单新增)<br/>[dependency-ledger] 类别: Y blocks X<br/>reason 为什么 · by 谁 · 何时"]
+    E -. "自动" .-> H
+    E -. "本单 CLI" .-> C
+  end
+  subgraph PAGE["Epic 页面(只读投影)"]
+    direction TB
+    BB["每张子单的 blocked_by 格<br/>(A 单已有)"]
+    RI["ready_items 格<br/>ready.v1(不改)"]
+    DR["dependency_review 格(新)<br/>subtraction.v1<br/>canceled_blocker<br/>dependency_cycle<br/>all_blocked"]
+    BB --> RI
+    BB --> DR
+    RI --> DR
+  end
+  E --> BB

@@ -1,0 +1,18 @@
+flowchart LR
+  subgraph OLD["只加不减会怎样(今天 main 上的形状)"]
+    O1["Y blocks X 登记了"] --> O2["Y 取消了(不做了)"]
+    O2 --> O3["X 还在等 Y<br/>ready.v1 只认 completed"]
+    O3 --> O4["X 永远开始不了<br/>页面只在小字里写 状态:canceled"]
+    O4 --> O5["加得越多,能派的越少<br/>最后 0 件能开始"]
+  end
+  subgraph NEW["本单之后:减法被点名,不会丢"]
+    N1["Y blocks X 登记了"] --> N2["Y 取消了"]
+    N2 --> N3["页面『需要减法的地方』:<br/>X 还在等已取消的 Y"]
+    N3 --> N4{"Lead 判断"}
+    N4 -->|"确实不需要"| N5["dependency remove Y X --reason …<br/>边删了,理由留在 Linear"]
+    N4 -->|"其实要等 Z"| N6["dependency add Z X + remove Y X"]
+    N5 --> N7["X 进入『现在可以开始的』"]
+    N6 --> N7
+    N3 --> N8["0 件能开始却还有活?<br/>页面直接报 all_blocked"]
+  end
+  OLD -.-> NEW

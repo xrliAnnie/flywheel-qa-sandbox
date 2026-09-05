@@ -26,6 +26,7 @@ import {
 	declareState,
 	parseDuration,
 } from "./commands/declare-state.js";
+import { runDependency } from "./commands/dependency.js";
 import { runEpicPage } from "./commands/epic-page.js";
 import { runFeatureFlags } from "./commands/feature-flags.js";
 import { founderTime } from "./commands/founder-time.js";
@@ -176,6 +177,8 @@ Commands:
 	  epic-page  Generate, inspect, or render an Epic page. Subcommands:
 	            generate | show [--format json|md] | render --out <file>.
 	            Every command recomputes the active Linear scope live.
+  dependency  Maintain the live dependency ledger. Subcommands:
+              add | remove | note | discover | log | show.
   founder-time   Print Annie's current local time and timezone. Uses the host
             device timezone by default; --json emits {iso,tz,abbrev,offsetMinutes}.
   runner-config   Per-project runner defaults + cron model (FLY-709). Subcommand:
@@ -370,6 +373,9 @@ async function main(): Promise<void> {
 			break;
 		case "epic-page":
 			process.exitCode = await runEpicPage(commandArgs);
+			break;
+		case "dependency":
+			process.exitCode = await runDependency(commandArgs);
 			break;
 		case "founder-time":
 			founderTime(commandArgs);

@@ -133,6 +133,7 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 			"EPX-200",
 		]);
 		expect(snapshot.items.map((item) => item.identifier)).toEqual(["EPX-1"]);
+		expect(snapshot.descendantIds).toEqual(["EPX-1-uuid", "EPX-2-uuid"]);
 		expect(snapshot.items[0]?.blockedBy).toEqual([
 			expect.objectContaining({
 				identifier: "EPX-2",

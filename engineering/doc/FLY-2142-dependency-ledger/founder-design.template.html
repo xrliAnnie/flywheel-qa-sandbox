@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2142 · 依赖账本:减法不许丢 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  pre { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:10px 12px; border-radius:8px; overflow-x:auto; white-space:pre; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  blockquote { margin:10px 0; padding:8px 14px; border-left:3px solid #d2d2d7; color:#515154; background:#fbfbfd; border-radius:0 8px 8px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2142 · 依赖账本:减法不许丢</h1>
+<div class="meta">
+  设计交付 · 2026-09-04 · 依据 FLY-1969 PRD v2.4 的 R2(你定的 hybrid:拆 Epic 时先标定,执行中动态更新)与你 9 月 3 日的裁定(不分批次,只理清 dependency,Linear 是唯一真相)· 属于 Epic FLY-2108 的第 C 张单<br/>
+  文档:<code>engineering/doc/FLY-2142-dependency-ledger/</code>{exploration, research, plan}.md · 本页只讲结论与取舍,细节在 plan
+</div>
+
+<section class="card green" data-title="一句话结论">
+  <h2>一句话结论</h2>
+  <p class="summary-line">依赖账本不是一本新账:它就是 Linear 里已经有的「做 X 之前先做 Y」这种关系,加上 Linear 自带的改动记录。本单给它补三样东西:Lead(替你带队的 AI 主管)能用三个动词把「漏掉的 / 不需要做的 / 新发现的」写进 Linear 并说明为什么;能把一张单的依赖改动史读回来;以及一个守卫 —— Epic 页面每次生成都把「该减没减」的依赖点名,所以「只加不减、最后没有一件事能派出去」这件事在结构上不会再悄悄发生。</p>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s1" data-title="一句话结论" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card" data-title="你说过什么,今天缺什么">
+  <h2>你说过什么,今天缺什么</h2>
+  <blockquote>R2(PRD):一开始拆 Epic 时先做初步标定、划好批次;执行过程中 Lead 动态发现:漏掉的 / 不需要做的 / 新的 dependency,实时更新。<br/>⚠️「不需要做的」这一类不许漏 —— 另外两类是加,它是减;一个只能加不能减的 dependency 记录会随时间单调变紧,最后没有一件事能被派出去。</blockquote>
+  <blockquote>9 月 3 日你对 A 单的裁定:「基本上不用分所谓的 batch,做完一件补一件……唯一要理清的就是 dependency。」「对 Lead 来说,这其实是把 Linear 里的东西又拿出来做了一遍,增加了 multiple source of truth。」</blockquote>
+  <p><b>今天的情况</b>(本单自己核了代码和 Linear,不是转述):</p>
+  <ul>
+    <li><b>依赖已经在 Linear 里</b>:FLY-2108 下面五张子单之间的四条「谁挡着谁」关系,是 Lead 9 月 3 日手工在 Linear 登记的;Epic 页面(A 单,已合入)就是读它算出「现在可以开始的」。这一点是对的,本单不动。</li>
+    <li><b>Linear 自己会记谁在什么时候加了哪条关系</b>(本单查到了真实记录:三条「加」是 Lead 登记的,一条「解」是 A 单完成时系统自动记的)。它不记的只有两样:这次改动属于三类里的<b>哪一类</b>、以及<b>为什么</b>。</li>
+    <li><b>减法今天会丢</b>:A 单的规则(<span class="term">ready.v1</span>,就是「什么算现在可以开始」的那条规则)只认「前面那张做完了」;如果 Lead 把前面那张<b>取消</b>了(不做了),后面那张会<b>永远开始不了</b>,而页面只在小字里写一句「状态:canceled」,没有任何地方汇总提醒。这正是 R2 那句警告的实例,已经在今天的代码里。</li>
+    <li><b>Lead 没有工具</b>:今天加一条依赖要么在 Linear 网页上点,要么直接调接口;删一条依赖同样;都没有地方写「为什么」。</li>
+  </ul>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s2" data-title="你说过什么,今天缺什么" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程:三个动词进,两个格子出">
+  <h2>核心流程:三个动词进,两个格子出</h2>
+  <div class="diagram"><!--DIAGRAM_1--></div>
+  <p class="cap">图 1 · 左半边是「写」:Lead 用三个动词,经 Bridge(总调度服务)检查后写进 Linear。右半边是「读」:页面每次生成都从 Linear 重算两个格子;账本读回来时把 Linear 的改动记录和本单留的评论合在一起看。</p>
+  <ol>
+    <li><b>三类更新 = 三个动词</b>:漏掉的 → <code>add</code>(加一条边);不需要做的 → <code>remove</code>(删一条边);新发现的 → <code>discover</code>(建一张新子单并把它的边一起加上)。每个动词都要写理由。</li>
+    <li><b>写之前 Bridge 先查</b>:两张单都在这个项目里吗;不是自己挡自己吧;反过来那条边不是已经有了吧;加了会不会成环(A 等 B、B 等 A,谁都开始不了)。任一条不过,一个字不写。</li>
+    <li><b>写进去的只有 Linear</b>:关系本身 + 一条固定格式的评论(写在被挡的那张单上,记类别与理由)。不新建任何表。每次操作带一个编号(<span class="term">operation_id</span>,就是这一次意图的身份证):网络抖动重试时带同一个编号,不会记重;评论没留成时命令会告诉 Lead 用 <code>note</code> 补一条,边本身不动。</li>
+    <li><b>页面多一个格子</b>:「依赖审阅:该减的、该判断的」,放在「现在可以开始的」旁边。它列的是三种情况:某张单还在等一张已取消的单;几张单互相等;还有活没做完但 0 件能开始(并列出它们各自在等的边,范围外的会标出来)。0 条时它会写「0 个可观测警报」,并明说这不代表没有该减的边。</li>
+    <li><b>由谁来记</b>(PRD §8 转给工程侧的那个问题):Lead 记。Runner(干活的 AI 工人)发现依赖只能用现有的汇报渠道告诉 Lead;Bridge 永远不从 issue 正文里猜依赖 —— 让文字变成权限就是注入口。你直接在 Linear 里改的关系也算数,只是没有理由行。</li>
+  </ol>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s3" data-title="核心流程:三个动词进,两个格子出" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card purple" data-title="账本长什么样">
+  <h2>账本长什么样</h2>
+  <div class="diagram"><!--DIAGRAM_2--></div>
+  <p class="cap">图 2 · 上半是 Linear 里的三样东西(边、Linear 自动记的改动史、本单留的评论);下半是页面上由它们推出来的格子。箭头方向 = 谁从谁推出来。</p>
+  <div class="scroll">
+  <table>
+    <tr><th>东西</th><th>在哪</th><th>谁写</th><th>记什么</th></tr>
+    <tr><td>一条边</td><td>Linear 的「blocks」关系</td><td>Lead 经本单的动词;或你直接在 Linear 改</td><td>做 X 之前先做 Y</td></tr>
+    <tr><td>改动史</td><td>Linear 自带的 issue 历史</td><td>Linear 自动</td><td>谁、何时、加了/删了/解了哪条边(本单查到的真实码:<code>ab</code> = 加,<code>br</code> = 前面那张做完了;删的码实现时再实测)</td></tr>
+    <tr><td>账本评论</td><td>被挡那张单的评论区</td><td>本单的动词</td><td>第一行固定 <code>[dependency-ledger] 类别: Y blocks X — 动作</code> 给人看;第二行是一段机器可读的记录(编号、类别、动作、两张单、谁声明的、何时、理由),理由再长再怪也只是内容,伪造不了字段;真正的作者以 Linear 记的为准</td></tr>
+    <tr><td>「现在可以开始的」</td><td>Epic 页面(已有)</td><td>页面每次生成重算</td><td>规则 ready.v1,本单<b>不改</b></td></tr>
+    <tr><td>「依赖审阅:该减的、该判断的」</td><td>Epic 页面(新)</td><td>页面每次生成重算</td><td>规则 subtraction.v1(本单的默认规则,未经你裁定,页面上会写明);三种条目;0 条时显示「0 个可观测警报」并注明「不代表没有该减的边」,不隐藏</td></tr>
+  </table>
+  </div>
+  <p>Lead 用 <code>dependency log</code> 读回来的样子(示例,前四行是 FLY-2143 上的真实记录,最后一行是本单之后才会有的):</p>
+  <pre>2026-09-03T02:35:28Z  Xiaorong Li   加了 blocker FLY-2142
+2026-09-03T02:35:28Z  Xiaorong Li   加了 blocker FLY-2141
+2026-09-03T02:35:38Z  Xiaorong Li   加了 blocker FLY-2140
+2026-09-04T02:35:45Z  Linear(系统)  blocker FLY-2140 做完了
+2026-09-0x…           flywheel-eng-lead  not_needed:FLY-2141 blocks FLY-2143 — removed · reason: …</pre>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s4" data-title="账本长什么样" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card" data-title="一次「不需要做的」是怎么走完的">
+  <h2>一次「不需要做的」是怎么走完的</h2>
+  <div class="diagram"><!--DIAGRAM_3--></div>
+  <p class="cap">图 3 · 时序:先删真相(那条边)并回读确认,再留记录(评论);评论没留成也不把边加回去,只在回执里标出来并让命令以退出码 2 结束、打印补记命令。下一次生成页面时 X 自然进入「现在可以开始的」。</p>
+  <ul>
+    <li>删边是<b>一等公民</b>:它有自己的动词、必须写理由。取消一张单<b>不等于</b>减法 —— 被它挡着的单不会自己放行(见下一节为什么)。</li>
+    <li>每一次写都要<b>确认真的写进去了</b>:Linear 回「成功」还不算,Bridge 会再读一次那张单的依赖,看边是不是真的在(或真的没了)。对不上就报「写入未确认」,并且不留评论、不声称成功。</li>
+    <li>加边前要<b>查环</b>:从「挡人的那张」往上追它自己被谁挡,追到「被挡的那张」就是环,拒绝写入并把路径打出来。追的范围有上限(200 张),远大于一个 Epic 的规模。写完再查一次:如果有人在这几秒里从另一头加了反向边、恰好成环,回执会说「已成环」并让 Lead 删一条,不会自动删。</li>
+    <li>「新发现的」= 先在 Epic 下建子单,再逐条加边。建单成功、加边失败时<b>不删单</b>(删单是破坏性动作),回执里列出哪条没加上,Lead 补一次即可。</li>
+  </ul>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s5" data-title="一次「不需要做的」是怎么走完的" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card red" data-title="减法怎么保证不丢">
+  <h2>减法怎么保证不丢</h2>
+  <div class="diagram"><!--DIAGRAM_4--></div>
+  <p class="cap">图 4 · 上半是今天 main 上的形状:取消一张挡人的单,后面的单永远开始不了,而且没人知道。下半是本单之后:页面点名,Lead 决定删边还是改指别的单,减法落进 Linear、理由留在 Linear。</p>
+  <div class="callout green">一句话:<b>减法不靠记性,靠页面每次都点名。</b>页面不会替 Lead 删边(那是他的判断),但它不允许「该减的」藏在小字里。</div>
+  <div class="callout amber">诚实地说清楚它能看见什么:页面能点名的是三种<b>看得出来</b>的坏形状(前面那张已取消、互相等、全部收死)。「前面那张还活着、但 Lead 心里已经知道不用等它了」这种边,机器看不出来,只能靠 Lead 用 <code>remove</code> 说出来。这一版页面也只在 Lead 主动生成时重算(自动扫描是 B/D 两张单的事)。</div>
+  <p>为什么<b>不</b>让「取消 = 自动放行」(Lead 已裁定,理由照抄):自动放行是一种<b>看不见的减法</b> —— 有人取消一张单,下游就悄悄被放行了,而没有任何人做过「这条依赖不需要了」的决定。那恰好是本单要防的东西的反面。比如 Y 取消是因为被 Z 取代,X 应该改成等 Z,而不是直接放行。</p>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s6" data-title="减法怎么保证不丢" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card amber" data-title="关键取舍与否决的做法">
+  <h2>关键取舍与否决的做法</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>问题</th><th>采纳</th><th>否决了什么</th><th>为什么</th></tr>
+    <tr><td>账本放哪</td><td>Linear 关系 + Linear 改动史 + 固定前缀评论</td><td>Bridge 里新建一张依赖表;仓库文件;Epic 正文里维护一个列表</td><td>你点名的 multiple source of truth;Lead 裁定「Linear 是唯一账本」;正文里的依赖不是结构化事实,A 单已吃过这个亏</td></tr>
+    <tr><td>「不需要做的」落成什么</td><td>删边是专门的动词,必须写理由</td><td>改规则让「取消」自动放行;Bridge 自动删「前面那张已取消」的边</td><td>自动 = 看不见的减法;自动写 Linear 违反「Lead 是决策者」</td></tr>
+    <tr><td>减法不许丢怎么保证</td><td>页面新格子点名三种可观测情况;0 条时也显示,并明说机器看不见「还活着但不用等」的边</td><td>写在 Lead 规则里让他记得去看</td><td>靠记性的东西一定会丢;A 单的经验是「没有读者的存储,损坏不可能被发现」</td></tr>
+    <tr><td>由谁来记</td><td>Lead 用动词记;Runner 只提议;你可直接改 Linear</td><td>Runner 直接写;Bridge 从正文推断</td><td>Runner 的令牌本来就打不开这些接口;文本变权限是注入口(Lead 特别确认)</td></tr>
+    <tr><td>「初始批次」还要不要</td><td>读成「拆 Epic 时登记的初始边集合」,第一波由页面推出来</td><td>保留批次对象</td><td>你 9 月 3 日已废批次</td></tr>
+    <tr><td>加边要不要查环</td><td>查,有上限,超限拒绝</td><td>不查,靠页面事后发现</td><td>环 = 两张单永远开始不了,而且不会自己暴露;事后发现也留着(页面会报),但能拦在门口更好</td></tr>
+    <tr><td>「前面那张还在 backlog / 不在范围内」算不算减法候选</td><td>不单独算;只在「全部收死」时作为「阻塞前沿」中性列出,并标明「范围外」与状态,措辞是「等它做完,还是删边——由你判断」</td><td>把它们直接列成「该删的边」</td><td>那是「还没排」,不是「不需要」;直接列成待删会误导;但全部收死时 Lead 需要看见到底在等谁(独立评审 R2 提出)</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s7" data-title="关键取舍与否决的做法" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card red" data-title="诚实边界">
+  <h2>诚实边界:这一版做什么、不做什么</h2>
+  <h3>做</h3>
+  <ul>
+    <li>三个动词(加边 / 删边 / 建单加边),每次带理由、有人、有时间,都落进 Linear。</li>
+    <li>一个读口,把 Linear 的改动史和本单的评论合成一条时间线。</li>
+    <li>页面一个新格子,点名「该减没减」的三种情况。</li>
+    <li>Lead 规则里一小节:拆 Epic 时怎么登记、执行中三类各用哪个动词、看到点名先审边再拉活。</li>
+  </ul>
+  <h3>不做</h3>
+  <ul>
+    <li><span class="badge no">不做</span>自动删边、自动放行 —— Lead 裁定。</li>
+    <li><span class="badge no">不做</span>Bridge 里的账本副本 —— Lead 裁定。</li>
+    <li><span class="badge no">不改</span>A 单的规则(ready.v1)、页面范围规则、回执。</li>
+    <li><span class="badge no">不做</span>「到点扫一遍、有空位就拉活」—— 那是 B 单;本单的格子是给它读的。</li>
+    <li><span class="badge no">不做</span>页面自动更新、过期告警 —— 那是 D 单;本单写进 Linear 的东西天然在它的扫描面上。</li>
+    <li><span class="badge no">不做</span>删 issue、改状态、改标签、除「blocks」之外的关系类型、任何开关。</li>
+  </ul>
+  <h3>本单保证与不保证</h3>
+  <p>保证:每一次依赖变更都有编号、有动词、有理由、有时间、有人,写没写进去有确认,记录没留成能补;每一次生成页面都点名三种看得出来的坏形状。<b>不保证</b>:Lead 看到点名后一定去减 —— 那是你定的 R6「可见但不打扰」的边界,页面只负责可见;也不保证能看出「前面那张还活着但其实不用等」的边,那只能靠 Lead 说。本单也不判断某条依赖是不是真的不需要,那是 Lead 的判断;工具只让判断落地且可追溯。</p>
+  <h3>你会看到的变化</h3>
+  <p>Epic 页面上多一个格子「依赖审阅」,放在「现在可以开始的」旁边;Linear 上被挡的单会多几条固定格式的评论。其它和今天一样。</p>
+  <div class="callout amber">两条前置(Lead 已接手,不在本单代码里):① 项目配置里要给 flywheel 补上 Linear 绑定;② FLY 团队今天没有任何「进行中且有子单」的顶层父单,也没有「日常」父单(FLY-2108 自己还在 Backlog)—— 这两条不做,A 单的页面和本单的动词都会明确报错,不会生成错页。</div>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s8" data-title="诚实边界" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card gray" data-title="独立设计评审记录">
+  <h2>独立设计评审记录</h2>
+  <!--REVIEW_LOG-->
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s9" data-title="独立设计评审记录" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card green" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的留言会自动汇总到这里(存在你这台浏览器里,不会上传)。点「复制全部意见」后直接贴回给 Lead 即可。第一行固定是 <code>【页面意见汇总】FLY-2142</code>,这是修订反馈的标记,不是「通过」的信号。</p>
+  <button class="btn" id="copy-all" type="button">复制全部意见</button>
+  <button class="btn sec" id="clear-all" type="button">清空本页所有留言</button>
+  <div class="status" id="copy-status"></div>
+  <div class="chunks" id="summary-chunks"></div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2142";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

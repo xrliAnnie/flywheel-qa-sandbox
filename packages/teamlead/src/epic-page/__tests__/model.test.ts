@@ -8,6 +8,7 @@ import {
 	EpicPageSchemaError,
 	stripTimestamps,
 } from "../model.js";
+import { computeDependencyReview, computeReady } from "../rules.js";
 
 const NOW = "2026-09-03T04:00:00Z";
 
@@ -43,7 +44,7 @@ function validPage(withItem = true): EpicPage {
 					identifier: "EPX-1",
 					title: linearCell("Build it"),
 					url: linearCell("https://linear.app/example/issue/EPX-1"),
-					state: linearCell({ name: "Backlog", type: "backlog" }),
+					state: linearCell({ name: "Todo", type: "unstarted" }),
 					priority: linearCell(0),
 					blocked_by: {
 						...linearCell([]),
@@ -121,6 +122,16 @@ function validPage(withItem = true): EpicPage {
 					: [],
 			},
 		},
+		dependency_review: {
+			...derivedCell([]),
+			provenance: {
+				kind: "derived",
+				rule: "subtraction.v1",
+				from: withItem
+					? ["/items/0/state", "/items/0/blocked_by", "/ready_items"]
+					: ["/ready_items"],
+			},
+		},
 		gaps: derivedCell(
 			withItem
 				? []
@@ -146,6 +157,98 @@ function expectSchemaFailure(page: unknown, code = "invalid"): void {
 }
 
 describe("EpicPage v1 schema", () => {
+	it("accepts a derived dependency review cell and rejects its absence", () => {
+		const page = validPage() as any;
+		page.items[0].state = linearCell({ name: "Todo", type: "unstarted" });
+		page.dependency_review = {
+			...derivedCell([]),
+			provenance: {
+				kind: "derived",
+				rule: "subtraction.v1",
+				from: ["/items/0/state", "/items/0/blocked_by", "/ready_items"],
+			},
+		};
+		expect(assertEpicPage(page)).toBeUndefined();
+		delete page.dependency_review;
+		expectSchemaFailure(page);
+	});
+
+	it.each([
+		[
+			"the dependency rule id",
+			(page: any) => {
+				page.dependency_review.provenance.rule = "ready.v1";
+			},
+		],
+		[
+			"a fabricated cycle",
+			(page: any) => {
+				page.dependency_review.value = [
+					{ kind: "dependency_cycle", members: ["EPX-1"] },
+				];
+			},
+		],
+		[
+			"ready and dependency review together",
+			(page: any) => {
+				page.ready_items.value = [];
+				page.dependency_review.value = [
+					{
+						kind: "all_blocked",
+						non_terminal: 1,
+						blocking_edges: [],
+						blocking_edges_truncated: false,
+					},
+				];
+			},
+		],
+	] as const)("rejects a mutation of %s", (_name, mutate) => {
+		const page = validPage();
+		mutate(page);
+		expectSchemaFailure(page);
+	});
+
+	it("rejects missing dependency inputs with an invalid schema error", () => {
+		const page = validPage();
+		page.items[0]!.blocked_by = {
+			value: null,
+			provenance: {
+				kind: "linear",
+				entity: "relation",
+				id: "uuid-1",
+			},
+			observed_at: NOW,
+			missing: { reason: "statestore_error" },
+		};
+		page.ready_items.value = computeReady(page.items);
+		expectSchemaFailure(page, "invalid");
+	});
+
+	it("rejects a flipped all_blocked truncation bit", () => {
+		const page = validPage();
+		page.items[0]!.blocked_by.value = Array.from(
+			{ length: 51 },
+			(_entry, index) => ({
+				identifier: `GEO-${index + 1}`,
+				title: "External",
+				url: "https://linear.app/example/issue/GEO",
+				in_scope: false,
+				blocker_state_type: "unstarted",
+			}),
+		);
+		page.ready_items.value = computeReady(page.items);
+		page.dependency_review.value = computeDependencyReview(
+			page.items,
+			page.ready_items.value,
+		);
+		const allBlocked = page.dependency_review.value.find(
+			(entry) => entry.kind === "all_blocked",
+		);
+		if (allBlocked?.kind !== "all_blocked") throw new Error("fixture failure");
+		allBlocked.blocking_edges_truncated = false;
+		expectSchemaFailure(page);
+	});
+
 	it("accepts the active-root scope header and rejects the single-Epic header", () => {
 		expect(assertEpicPage(validPage())).toBeUndefined();
 		const legacy = structuredClone(validPage()) as any;

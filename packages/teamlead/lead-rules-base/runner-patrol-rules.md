@@ -1058,3 +1058,17 @@ Do not ACK individual rows in a batch. Until the batch ACK lands it occupies one
 of three in-flight slots; an expired lease re-delivers the same rows under the
 same durable batch id. ACK is therefore part of handling the delivery, not
 optional cleanup.
+
+## 7. 依赖账本 (FLY-2142)
+
+拆 Epic 时，先创建子 issue，再为每条先后关系执行 `flywheel-comm dependency add`，最后执行 `flywheel-comm dependency show`，核对第一批可拉活工作与 Epic 页面第一版一致。
+
+执行中由 Lead 实时维护三类变化：
+
+- 漏掉的依赖：`dependency add`；
+- 不需要做的依赖：`dependency remove`；
+- 新发现的工作：`dependency discover`。
+
+取消 issue 不等于依赖减法。只要 `dependency show` 的“依赖需要减法的地方”非空，Lead 必须先审查并用 `dependency remove` 移除已不需要的边，再拉活下一项；这一类记录不得遗漏，否则账本会单调变紧。
+
+Runner 不得直接写依赖账本，只能通过 `flywheel-comm ask --report` 向 Lead 提议变更；实际 add/remove/discover 及复核由 Lead 执行。

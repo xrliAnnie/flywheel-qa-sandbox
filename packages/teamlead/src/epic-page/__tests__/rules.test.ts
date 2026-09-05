@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Cell, EpicItem } from "../model.js";
+import { type Cell, type EpicItem, EpicPageSchemaError } from "../model.js";
 import {
+	computeDependencyReview,
 	computeGaps,
 	computeReady,
 	doneDefinition,
@@ -88,6 +89,168 @@ describe("ready.v1", () => {
 				completed,
 			]),
 		).toEqual(["EPX-1", "EPX-2", "EPX-0"]);
+	});
+});
+
+describe("subtraction.v1", () => {
+	it("reports a canceled blocker that still blocks a non-terminal item", () => {
+		const candidate = item("EPX-1", [blocker("EPX-0", true, "canceled")]);
+		candidate.state = cell({ name: "Todo", type: "unstarted" });
+
+		expect(
+			computeDependencyReview([candidate], [candidate.identifier]),
+		).toEqual([{ kind: "canceled_blocker", item: "EPX-1", blocker: "EPX-0" }]);
+	});
+
+	it("reports a deterministic cycle among in-scope items", () => {
+		const first = item("EPX-2", [blocker("EPX-1")]);
+		first.state = cell({ name: "Todo", type: "unstarted" });
+		const second = item("EPX-1", [blocker("EPX-2")]);
+		second.state = cell({ name: "Doing", type: "started" });
+
+		expect(computeDependencyReview([first, second], ["EPX-X"])).toEqual([
+			{ kind: "dependency_cycle", members: ["EPX-1", "EPX-2"] },
+		]);
+	});
+
+	it("reports the sorted blocking frontier when no non-terminal item is ready", () => {
+		const first = item("EPX-2", [blocker("GEO-9", false, "started")]);
+		first.state = cell({ name: "Todo", type: "unstarted" });
+		const second = item("EPX-1", [blocker("EPX-0", true, "backlog")]);
+		second.state = cell({ name: "Doing", type: "started" });
+
+		expect(computeDependencyReview([first, second], [])).toEqual([
+			{
+				kind: "all_blocked",
+				non_terminal: 2,
+				blocking_edges: [
+					{
+						blocker: "EPX-0",
+						blocked: "EPX-1",
+						blocker_state_type: "backlog",
+						in_scope: true,
+					},
+					{
+						blocker: "GEO-9",
+						blocked: "EPX-2",
+						blocker_state_type: "started",
+						in_scope: false,
+					},
+				],
+				blocking_edges_truncated: false,
+			},
+		]);
+	});
+
+	it("fails with a schema error when required dependency input is missing", () => {
+		const candidate = item("EPX-1");
+		candidate.state = {
+			value: null,
+			provenance: { kind: "linear", entity: "issue", id: "uuid-1" },
+			observed_at: NOW,
+			missing: { reason: "statestore_error" },
+		};
+
+		expect(() => computeDependencyReview([candidate], [])).toThrowError(
+			EpicPageSchemaError,
+		);
+	});
+
+	it("deduplicates repeated canceled blocker observations", () => {
+		const candidate = item("EPX-1", [
+			blocker("EPX-0", true, "canceled"),
+			blocker("EPX-0", true, "canceled"),
+		]);
+		candidate.state = cell({ name: "Todo", type: "unstarted" });
+
+		expect(
+			computeDependencyReview([candidate], [candidate.identifier]),
+		).toEqual([{ kind: "canceled_blocker", item: "EPX-1", blocker: "EPX-0" }]);
+	});
+
+	it("does not report canceled blockers on terminal items", () => {
+		const candidate = item("EPX-1", [blocker("EPX-0", true, "canceled")]);
+		candidate.state = cell({ name: "Done", type: "completed" });
+		expect(computeDependencyReview([candidate], [])).toEqual([]);
+	});
+
+	it("reports three-node cycles and self-loops but ignores external blockers", () => {
+		const first = item("EPX-3", [blocker("EPX-1")]);
+		const second = item("EPX-1", [blocker("EPX-2")]);
+		const third = item("EPX-2", [blocker("EPX-3")]);
+		const self = item("EPX-4", [blocker("EPX-4")]);
+		const external = item("EPX-5", [blocker("GEO-1", false)]);
+		for (const candidate of [first, second, third, self, external]) {
+			candidate.state = cell({ name: "Todo", type: "unstarted" });
+		}
+
+		expect(
+			computeDependencyReview(
+				[external, self, third, first, second],
+				["EPX-X"],
+			),
+		).toEqual([
+			{ kind: "dependency_cycle", members: ["EPX-1", "EPX-2", "EPX-3"] },
+			{ kind: "dependency_cycle", members: ["EPX-4"] },
+		]);
+	});
+
+	it("does not report all_blocked when every item is terminal", () => {
+		const completed = item("EPX-1");
+		completed.state = cell({ name: "Done", type: "completed" });
+		const canceled = item("EPX-2");
+		canceled.state = cell({ name: "Canceled", type: "canceled" });
+		expect(computeDependencyReview([completed, canceled], [])).toEqual([]);
+	});
+
+	it("caps the all_blocked frontier at fifty edges and marks truncation", () => {
+		const candidate = item(
+			"EPX-1",
+			Array.from({ length: 51 }, (_entry, index) =>
+				blocker(`EPX-${index + 2}`, true, "unstarted"),
+			),
+		);
+		candidate.state = cell({ name: "Todo", type: "unstarted" });
+		const review = computeDependencyReview([candidate], []);
+		const allBlocked = review.find((entry) => entry.kind === "all_blocked");
+		expect(allBlocked?.blocking_edges).toHaveLength(50);
+		expect(allBlocked?.blocking_edges_truncated).toBe(true);
+	});
+
+	it("returns byte-for-byte stable output for the same input", () => {
+		const candidate = item("EPX-1", [blocker("EPX-0", false, "started")]);
+		candidate.state = cell({ name: "Todo", type: "unstarted" });
+		expect(JSON.stringify(computeDependencyReview([candidate], []))).toBe(
+			JSON.stringify(computeDependencyReview([candidate], [])),
+		);
+	});
+
+	it("fails loudly instead of silently truncating an oversized review", () => {
+		const candidate = item(
+			"EPX-1",
+			Array.from({ length: 5001 }, (_entry, index) =>
+				blocker(`EXT-${index + 1}`, false, "canceled"),
+			),
+		);
+		candidate.state = cell({ name: "Todo", type: "unstarted" });
+
+		expect(() => computeDependencyReview([candidate], [])).toThrowError(
+			/dependency review exceeds 5000 entries/,
+		);
+	});
+
+	it("applies the review limit to the combined result", () => {
+		const candidate = item("EPX-1", [
+			...Array.from({ length: 4999 }, (_entry, index) =>
+				blocker(`EXT-${index + 1}`, false, "canceled"),
+			),
+			blocker("EPX-1", true, "unstarted"),
+		]);
+		candidate.state = cell({ name: "Todo", type: "unstarted" });
+
+		expect(() => computeDependencyReview([candidate], [])).toThrowError(
+			/dependency review exceeds 5000 entries/,
+		);
 	});
 });
 

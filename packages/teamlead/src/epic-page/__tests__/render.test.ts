@@ -4,6 +4,7 @@ import { escapeMarkdownTableCell } from "../escape.js";
 import { generateEpicPage } from "../generate.js";
 import { label } from "../labels.js";
 import type { Cell, EpicPage } from "../model.js";
+import { buildEpicPageRenderReceipt } from "../receipt.js";
 import { renderEpicPageHtml } from "../render-html.js";
 import { renderEpicPageMarkdown } from "../render-markdown.js";
 import {
@@ -109,6 +110,7 @@ const ROOT_PATHS = [
 	"/done_definition",
 	"/founder_items",
 	"/ready_items",
+	"/dependency_review",
 	"/gaps",
 ];
 const ITEM_PATHS = [
@@ -129,6 +131,75 @@ const ITEM_PATHS = [
 ].map((field) => `/items/0/${field}`);
 
 describe("Epic page render parity", () => {
+	it("renders an explicit empty dependency review between ready and scope", () => {
+		const document = page();
+		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
+		const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
+		expect(markdown).toContain("## 依赖需要减法的地方");
+
+		for (const output of [html, markdown]) {
+			const ready = output.indexOf(label("section.ready"));
+			const review = output.indexOf(label("section.review"));
+			const scope = output.indexOf(label("section.scope"));
+			expect(review).toBeGreaterThan(ready);
+			expect(review).toBeLessThan(scope);
+			expect(output).toContain(label("review.none"));
+			expect(output).toContain(
+				label("page.default_rule_note", { rule: "subtraction.v1" }),
+			);
+		}
+	});
+
+	it("renders every dependency review shape and escapes its identifiers", () => {
+		const document = page();
+		document.dependency_review.value = [
+			{
+				kind: "canceled_blocker",
+				item: "EPX-2<script>alert(1)</script>",
+				blocker: "EPX-1",
+			},
+			{ kind: "dependency_cycle", members: ["EPX-2", "EPX-3"] },
+			{
+				kind: "all_blocked",
+				non_terminal: 2,
+				blocking_edges: [
+					{
+						blocker: "EXT-1",
+						blocked: "EPX-2",
+						blocker_state_type: "backlog",
+						in_scope: false,
+					},
+				],
+				blocking_edges_truncated: true,
+			},
+		];
+
+		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
+		const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
+		for (const output of [html, markdown]) {
+			for (const marker of [
+				"EPX-1",
+				"EPX-2",
+				"EPX-3",
+				"EXT-1",
+				"范围外",
+				label("review.blocking_edges_truncated"),
+			]) {
+				expect(output).toContain(marker);
+			}
+			expect(output).not.toContain("<script>alert(1)</script>");
+			expect(output).toContain("&lt;script&gt;alert");
+		}
+	});
+
+	it("keeps derived dependency review data out of the render receipt", () => {
+		const receipt = buildEpicPageRenderReceipt(page());
+		expect(
+			receipt.sources.some(({ path }) => path === "/dependency_review"),
+		).toBe(false);
+		expect(receipt.sources).not.toEqual([]);
+	});
+
 	it("renders one concise card per item with two-way dependencies and no batch", () => {
 		const document = page();
 		document.items[1]!.acceptance.value = null;
@@ -227,7 +298,7 @@ describe("Epic page render parity", () => {
 		}
 	});
 
-	it("renders all 7 root and 14 item Cell paths with value, provenance, and time", () => {
+	it("renders all 8 root and 14 item Cell paths with value, provenance, and time", () => {
 		const document = page();
 		const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
 		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
@@ -266,6 +337,7 @@ describe("Epic page render parity", () => {
 		const markdown = renderEpicPageMarkdown(page(), EPIC_SHAPE_NOW);
 		const order = [
 			"section.ready",
+			"section.review",
 			"section.scope",
 			"section.founder",
 			"section.done",

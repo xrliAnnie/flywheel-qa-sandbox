@@ -1,6 +1,12 @@
 import { escapeHtml } from "../bridge/xhs-review-html.js";
 import { type LabelKey, label } from "./labels.js";
-import type { Cell, EpicItem, EpicPage, Provenance } from "./model.js";
+import type {
+	Cell,
+	DependencyReviewEntry,
+	EpicItem,
+	EpicPage,
+	Provenance,
+} from "./model.js";
 
 const FOUNDER_DECIDED_RULES = new Set([
 	"scope.v1",
@@ -256,6 +262,47 @@ function renderOverviewCell(
 </article>`;
 }
 
+function renderDependencyReview(entries: DependencyReviewEntry[]): string {
+	if (entries.length === 0) return escapeHtml(label("review.none"));
+	return entries
+		.map((entry) => {
+			if (entry.kind === "canceled_blocker") {
+				return `<p>${escapeHtml(
+					label("review.canceled_blocker", {
+						item: entry.item,
+						blocker: entry.blocker,
+					}),
+				)}</p>`;
+			}
+			if (entry.kind === "dependency_cycle") {
+				return `<p>${escapeHtml(
+					label("review.cycle", { members: entry.members.join(" ↔ ") }),
+				)}</p>`;
+			}
+			const edges = entry.blocking_edges
+				.map(
+					(edge) =>
+						`<li>${escapeHtml(
+							label("review.blocking_edge", {
+								blocked: edge.blocked,
+								blocker: edge.blocker,
+								state: edge.blocker_state_type,
+								scope: edge.in_scope ? "" : label("page.external_dependency"),
+							}),
+						)}</li>`,
+				)
+				.join("");
+			return `<p>${escapeHtml(
+				label("review.all_blocked", { n: entry.non_terminal }),
+			)}</p><ul>${edges}</ul>${
+				entry.blocking_edges_truncated
+					? `<p>${escapeHtml(label("review.blocking_edges_truncated"))}</p>`
+					: ""
+			}`;
+		})
+		.join("");
+}
+
 export function renderEpicPageHtml(page: EpicPage, now = new Date()): string {
 	const ready = page.ready_items.value ?? [];
 	const founder = page.founder_items.value ?? [];
@@ -308,6 +355,7 @@ export function renderEpicPageHtml(page: EpicPage, now = new Date()): string {
 		<details class="audit"><summary>${escapeHtml(label("page.all_cells", { count: headerCells.length }))}</summary><div class="audit-list">${headerCells.map(([field, name, cell]) => renderAuditCell(`/header/${field}`, name, cell, now)).join("")}</div></details>
 	</header>
 	${renderOverviewCell("/ready_items", label("section.ready"), readyContent, page.ready_items, now, "ready-card")}
+	${renderOverviewCell("/dependency_review", label("section.review"), renderDependencyReview(page.dependency_review.value ?? []), page.dependency_review, now)}
 	${renderOverviewCell("/header/roots", label("section.scope"), rootsContent || escapeHtml(label("page.none")), page.header.roots, now)}
 	<div class="overview-grid">
 		${renderOverviewCell("/founder_items", label("section.founder"), founder.length > 0 ? founder.map((id) => `<span class="root-pill">${escapeHtml(id)}</span>`).join("") : escapeHtml(label("founder.none")), page.founder_items, now)}

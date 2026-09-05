@@ -26,6 +26,7 @@ export class ActiveScopeNotFoundError extends Error {
 
 export interface LinearActiveScopeSnapshot {
 	fetchedAt: string;
+	descendantIds: string[];
 	boundary: {
 		teamKey: string;
 		project: string | null;
@@ -397,6 +398,7 @@ export async function fetchLinearActiveScopeSnapshot(
 
 	return {
 		fetchedAt: fetchedAtDate.toISOString(),
+		descendantIds: uniqueRawItems.map((item) => item.id),
 		boundary: {
 			teamKey: binding.team,
 			project: binding.project ?? null,

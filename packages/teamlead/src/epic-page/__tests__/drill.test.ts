@@ -51,4 +51,39 @@ describe("R1 continuous-progression drill", () => {
 			}
 		}
 	});
+
+	it("keeps a canceled blocker visible until the dependency edge is removed", () => {
+		const snapshot = epicShapeSnapshot();
+		snapshot.items[0]!.state = { name: "Canceled", type: "canceled" };
+		for (const child of snapshot.items) {
+			for (const blocker of child.blockedBy) {
+				if (blocker.identifier === "EPX-1") blocker.stateType = "canceled";
+			}
+		}
+		const generate = () =>
+			generateEpicPage({
+				snapshot,
+				itemFacts: snapshot.items.map(() => emptyItemFacts()),
+				now: EPIC_SHAPE_NOW,
+				projectName: "example",
+				trigger: "manual",
+			});
+
+		const beforeRemoval = generate();
+		expect(beforeRemoval.ready_items.value).not.toContain("EPX-2");
+		expect(beforeRemoval.dependency_review.value).toContainEqual({
+			kind: "canceled_blocker",
+			item: "EPX-2",
+			blocker: "EPX-1",
+		});
+
+		snapshot.items[1]!.blockedBy = [];
+		const afterRemoval = generate();
+		expect(afterRemoval.ready_items.value).toContain("EPX-2");
+		expect(afterRemoval.dependency_review.value).not.toContainEqual({
+			kind: "canceled_blocker",
+			item: "EPX-2",
+			blocker: "EPX-1",
+		});
+	});
 });

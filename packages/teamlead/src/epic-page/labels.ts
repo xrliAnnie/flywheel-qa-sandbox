@@ -1,5 +1,6 @@
 const LABELS = {
 	"section.ready": "现在可以开始的",
+	"section.review": "依赖需要减法的地方",
 	"section.scope": "当前范围",
 	"section.what": "要做的事",
 	"section.done": "每件做完算什么样",
@@ -52,6 +53,7 @@ const LABELS = {
 	"cell.done_definition": "做完定义",
 	"cell.founder_items": "回来找 founder 的子单",
 	"cell.ready_items": "现在可以开始的子单",
+	"cell.dependency_review": "依赖审阅",
 	"cell.gaps": "缺口集合",
 	"cell.item.title": "标题",
 	"cell.item.url": "链接",
@@ -73,6 +75,15 @@ const LABELS = {
 	"value.absent": "缺",
 	"time.minutes_ago": "{n} 分钟前",
 	"founder.none": "0 件(标签 founder-review 当前无命中)",
+	"review.canceled_blocker":
+		"{item} 还在等已取消的 {blocker} —— 删这条边,或改指别的单",
+	"review.cycle": "{members} 互相等,谁都不会开始 —— 至少删一条边",
+	"review.all_blocked":
+		"{n} 件没做完、0 件能开始 —— 下面是它们各自在等的边,逐条判断:等它做完,还是删边",
+	"review.blocking_edge": "{blocked} 在等 {blocker}(状态:{state}{scope})",
+	"review.blocking_edges_truncated": "…只列前 50 条",
+	"review.none":
+		"0 个可观测警报。这不代表没有该减的边:blocker 还活着、但已经不需要等它的那种,页面看不出来,只能由 Lead 用 remove 说出来",
 } as const;
 
 export type LabelKey = keyof typeof LABELS;

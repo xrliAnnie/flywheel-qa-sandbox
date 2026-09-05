@@ -7,7 +7,10 @@ export const RULE_IDS = {
 	founder: "founder.v1",
 	done: "done.v1",
 	gaps: "gaps.v1",
+	subtraction: "subtraction.v1",
 } as const;
+
+export { computeDependencyReview } from "./subtraction.js";
 
 function priorityRank(priority: number): number {
 	return priority === 0 ? Number.MAX_SAFE_INTEGER : priority;

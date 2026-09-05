@@ -42,6 +42,16 @@ export {
 export { normalizeOptionalBearer } from "./credentials.js";
 export type { DecisionMode, DecisionModeEnv } from "./decision-mode.js";
 export { resolveDecisionMode } from "./decision-mode.js";
+export {
+	DEPENDENCY_LEDGER_PREFIX,
+	KIND_ACTION_MATRIX,
+	LEDGER_ACTIONS,
+	LEDGER_COMMENT_KEYS,
+	LEDGER_EVIDENCE,
+	LEDGER_KINDS,
+	LEDGER_MACHINE_LINE_PREFIX,
+	OPERATION_ID_RE,
+} from "./dependency-ledger-contract.js";
 export { isUiDesignFlavored, UI_DESIGN_LABELS } from "./designer-labels.js";
 export type { EnvFileSource, EnvFileValue } from "./env-file.js";
 export {

@@ -1,0 +1,23 @@
+sequenceDiagram
+  participant L as Lead
+  participant CLI as flywheel-comm dependency
+  participant B as Bridge
+  participant LN as Linear
+  participant P as Epic 页面
+  L->>CLI: remove --blocker Y --blocked X --reason "Y 不做了,X 不用等它"
+  CLI->>B: POST /api/dependency/remove(项目名 · 口令 · operation_id)
+  B->>LN: 查两张单:在不在、在不在这个项目里
+  LN-->>B: 都在
+  B->>LN: 在 X 的「谁挡着我」里找 Y 那条边
+  LN-->>B: 找到边 id
+  B->>LN: 删这条边(deleteIssueRelation)
+  LN-->>B: success=true(历史自动多一条)
+  B->>LN: 再读一次 X 的「谁挡着我」确认 Y 已不在
+  LN-->>B: 已不在
+  B->>LN: 先查有没有同 operation_id 的账本评论,没有才在 X 上留一条
+  LN-->>B: 评论 id(没留成 ⇒ 回执 ledger.ok=false,边不回滚)
+  B-->>CLI: ok · removed · 边 id · 评论 id
+  CLI-->>L: 一行 JSON 回执(退出码 0,若评论没留成则 2 并打印 note 补记命令)
+  L->>P: 下次生成页面
+  P->>LN: 读全部边与状态
+  P-->>L: X 进入「现在可以开始的」,「需要减法的地方」不再点名 X

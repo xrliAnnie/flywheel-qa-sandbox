@@ -31,6 +31,13 @@ function child(
 export function epicShapeSnapshot(): LinearActiveScopeSnapshot {
 	return {
 		fetchedAt: OBSERVED_AT,
+		descendantIds: [
+			"child-uuid-1",
+			"child-uuid-2",
+			"child-uuid-3",
+			"child-uuid-4",
+			"child-uuid-5",
+		],
 		boundary: { teamKey: "EPX", project: "Example", label: "Example" },
 		roots: [
 			{

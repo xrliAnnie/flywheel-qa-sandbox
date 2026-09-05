@@ -11,6 +11,7 @@ import {
 	type EpicPage,
 } from "./model.js";
 import {
+	computeDependencyReview,
 	computeGaps,
 	computeReady,
 	doneDefinition,
@@ -227,6 +228,7 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 		items.flatMap((_item, index) =>
 			cells.map((cell) => `/items/${index}/${cell}`),
 		);
+	const readyItems = computeReady(items);
 	const page: EpicPage = {
 		schema_version: 1,
 		key: { project_name: input.projectName },
@@ -282,11 +284,20 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 			observed_at: generatedAt,
 		},
 		ready_items: {
-			value: computeReady(items),
+			value: readyItems,
 			provenance: {
 				kind: "derived",
 				rule: "ready.v1",
 				from: itemPointers(["state", "priority", "blocked_by"]),
+			},
+			observed_at: generatedAt,
+		},
+		dependency_review: {
+			value: computeDependencyReview(items, readyItems),
+			provenance: {
+				kind: "derived",
+				rule: "subtraction.v1",
+				from: [...itemPointers(["state", "blocked_by"]), "/ready_items"],
 			},
 			observed_at: generatedAt,
 		},

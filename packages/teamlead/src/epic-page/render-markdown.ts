@@ -1,6 +1,12 @@
 import { escapeMarkdownTableCell } from "./escape.js";
 import { type LabelKey, label } from "./labels.js";
-import type { Cell, EpicItem, EpicPage, Provenance } from "./model.js";
+import type {
+	Cell,
+	DependencyReviewEntry,
+	EpicItem,
+	EpicPage,
+	Provenance,
+} from "./model.js";
 
 const FOUNDER_DECIDED_RULES = new Set([
 	"scope.v1",
@@ -181,6 +187,50 @@ function renderItem(item: EpicItem, index: number, now: Date): string {
 	].join("\n");
 }
 
+function renderDependencyReview(entries: DependencyReviewEntry[]): string {
+	if (entries.length === 0) return label("review.none");
+	return entries
+		.flatMap((entry) => {
+			if (entry.kind === "canceled_blocker") {
+				return [
+					`- ${markdownText(
+						label("review.canceled_blocker", {
+							item: entry.item,
+							blocker: entry.blocker,
+						}),
+					)}`,
+				];
+			}
+			if (entry.kind === "dependency_cycle") {
+				return [
+					`- ${markdownText(
+						label("review.cycle", { members: entry.members.join(" ↔ ") }),
+					)}`,
+				];
+			}
+			return [
+				`- ${markdownText(
+					label("review.all_blocked", { n: entry.non_terminal }),
+				)}`,
+				...entry.blocking_edges.map(
+					(edge) =>
+						`  - ${markdownText(
+							label("review.blocking_edge", {
+								blocked: edge.blocked,
+								blocker: edge.blocker,
+								state: edge.blocker_state_type,
+								scope: edge.in_scope ? "" : label("page.external_dependency"),
+							}),
+						)}`,
+				),
+				...(entry.blocking_edges_truncated
+					? [`  - ${label("review.blocking_edges_truncated")}`]
+					: []),
+			];
+		})
+		.join("\n");
+}
+
 export function renderEpicPageMarkdown(
 	page: EpicPage,
 	now = new Date(),
@@ -211,6 +261,14 @@ export function renderEpicPageMarkdown(
 		label("page.ready_rule_note"),
 		readySummary,
 		renderCell("/ready_items", "cell.ready_items", page.ready_items, now),
+		`## ${label("section.review")}`,
+		renderDependencyReview(page.dependency_review.value ?? []),
+		renderCell(
+			"/dependency_review",
+			"cell.dependency_review",
+			page.dependency_review,
+			now,
+		),
 		`## ${label("section.scope")}`,
 		roots || label("page.none"),
 		renderCell(

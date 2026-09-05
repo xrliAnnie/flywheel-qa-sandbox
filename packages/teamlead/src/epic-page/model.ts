@@ -2,6 +2,11 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
+import { computeReady } from "./rules.js";
+import { EpicPageSchemaError } from "./schema-error.js";
+import { computeDependencyReview } from "./subtraction.js";
+
+export { EpicPageSchemaError } from "./schema-error.js";
 
 export const EPIC_PAGE_MAX_DOCUMENT_BYTES = 1_507_328;
 
@@ -12,6 +17,7 @@ export const RULE_IDS = [
 	"founder.v1",
 	"done.v1",
 	"gaps.v1",
+	"subtraction.v1",
 ] as const;
 export type RuleId = (typeof RULE_IDS)[number];
 
@@ -52,6 +58,21 @@ export interface BlockedByValue {
 	in_scope: boolean;
 	blocker_state_type: string;
 }
+
+export type DependencyReviewEntry =
+	| { kind: "canceled_blocker"; item: string; blocker: string }
+	| { kind: "dependency_cycle"; members: string[] }
+	| {
+			kind: "all_blocked";
+			non_terminal: number;
+			blocking_edges: Array<{
+				blocker: string;
+				blocked: string;
+				blocker_state_type: string;
+				in_scope: boolean;
+			}>;
+			blocking_edges_truncated: boolean;
+	  };
 
 export interface EpicItem {
 	identifier: string;
@@ -130,6 +151,7 @@ export interface EpicPage {
 	done_definition: Cell<{ terminal_state: "completed" }>;
 	founder_items: Cell<string[]>;
 	ready_items: Cell<string[]>;
+	dependency_review: Cell<DependencyReviewEntry[]>;
 	gaps: Cell<
 		Array<{
 			item: string;
@@ -146,16 +168,6 @@ export interface EpicPage {
 			reason: MissingReason;
 		}>
 	>;
-}
-
-export class EpicPageSchemaError extends Error {
-	constructor(
-		message: string,
-		public readonly code: "invalid" | "size" = "invalid",
-	) {
-		super(message);
-		this.name = "EpicPageSchemaError";
-	}
 }
 
 const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
@@ -337,6 +349,7 @@ const ROOT_CELLS = [
 	"done_definition",
 	"founder_items",
 	"ready_items",
+	"dependency_review",
 	"gaps",
 ] as const;
 const ITEM_CELLS = [
@@ -444,6 +457,38 @@ export function assertEpicPage(
 	}
 	if (JSON.stringify(childIds) !== JSON.stringify(itemIds)) {
 		fail("/header/items/value", "identifier set differs from items");
+	}
+	if (!Array.isArray(page.ready_items.value)) {
+		fail("/ready_items/value", "expected identifier array");
+	}
+	if (
+		canonicalJsonString(page.ready_items.value) !==
+		canonicalJsonString(computeReady(page.items))
+	) {
+		fail("/ready_items/value", "does not match ready.v1 recomputation");
+	}
+	if (
+		page.dependency_review.provenance.kind !== "derived" ||
+		page.dependency_review.provenance.rule !== "subtraction.v1"
+	) {
+		fail(
+			"/dependency_review/provenance",
+			"expected derived subtraction.v1 provenance",
+		);
+	}
+	if (!Array.isArray(page.dependency_review.value)) {
+		fail("/dependency_review/value", "expected array");
+	}
+	if (
+		canonicalJsonString(page.dependency_review.value) !==
+		canonicalJsonString(
+			computeDependencyReview(page.items, page.ready_items.value),
+		)
+	) {
+		fail(
+			"/dependency_review/value",
+			"does not match subtraction.v1 recomputation",
+		);
 	}
 
 	if (!Array.isArray(page.gaps.value)) fail("/gaps/value", "expected array");

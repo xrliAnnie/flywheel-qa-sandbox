@@ -16,6 +16,7 @@ const mockTeams = vi.fn();
 const mockProjects = vi.fn();
 const mockCreateIssue = vi.fn();
 const mockIssueLabels = vi.fn();
+const mockRawRequest = vi.fn();
 
 vi.mock("@linear/sdk", () => ({
 	LinearClient: vi.fn().mockImplementation(() => ({
@@ -23,6 +24,7 @@ vi.mock("@linear/sdk", () => ({
 		projects: mockProjects,
 		createIssue: mockCreateIssue,
 		issueLabels: mockIssueLabels,
+		client: { rawRequest: mockRawRequest },
 	})),
 }));
 
@@ -120,6 +122,33 @@ function mockIssueCreated(
 	});
 }
 
+function mockParentIssue(
+	identifier = "FLY-100",
+	id = "parent-uuid",
+	project: string | null = "Flywheel",
+	labels = ["Flywheel"],
+) {
+	mockRawRequest.mockResolvedValue({
+		data: {
+			issue: {
+				id,
+				identifier,
+				title: "Parent",
+				description: null,
+				priority: 0,
+				priorityLabel: "No priority",
+				url: `https://linear.app/test/issue/${identifier}`,
+				createdAt: "2026-09-04T00:00:00.000Z",
+				updatedAt: "2026-09-04T00:00:00.000Z",
+				state: { name: "In Progress", type: "started" },
+				labels: { nodes: labels.map((name) => ({ name })) },
+				assignee: null,
+				project: project ? { name: project } : null,
+			},
+		},
+	});
+}
+
 describe("POST /api/linear/create-issue (GEO-298)", () => {
 	let store: StateStore;
 	let server: http.Server;
@@ -130,11 +159,16 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 		mockProjects.mockReset();
 		mockCreateIssue.mockReset();
 		mockIssueLabels.mockReset();
+		mockRawRequest.mockReset();
 		store = await StateStore.create(":memory:");
 		const app = createBridgeApp(
 			store,
 			testProjects,
-			makeConfig({ linearApiKey: "test-linear-key", apiToken: "test-token" }),
+			makeConfig({
+				linearApiKey: "test-linear-key",
+				apiToken: "test-token",
+				geminiAgentToken: "scoped-token",
+			}),
 		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -148,12 +182,12 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 		store.close();
 	});
 
-	function post(body: Record<string, unknown>) {
+	function post(body: Record<string, unknown>, token = "test-token") {
 		return fetch(`${baseUrl}/api/linear/create-issue`, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				Authorization: "Bearer test-token",
+				Authorization: `Bearer ${token}`,
 			},
 			body: JSON.stringify(body),
 		});
@@ -316,6 +350,204 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 			labelIds: [CALLER_LABEL_UUID],
 			projectId: "project-flywheel-id",
 		});
+	});
+
+	it("resolves a parent identifier to its UUID", async () => {
+		mockMultiTeam();
+		mockProjects.mockResolvedValue({
+			nodes: [{ id: "proj-fly", name: "Flywheel" }],
+		});
+		mockIssueLabels.mockResolvedValue({
+			nodes: [{ id: "lbl-fly", name: "Flywheel" }],
+		});
+		mockParentIssue();
+		mockIssueCreated("FLY-101");
+
+		const res = await post({
+			title: "Discovered work",
+			projectName: "flywheel",
+			parentId: "FLY-100",
+		});
+
+		expect(res.status).toBe(200);
+		expect(mockCreateIssue).toHaveBeenCalledWith({
+			teamId: "team-fly-id",
+			title: "Discovered work",
+			description: "",
+			priority: 0,
+			labelIds: ["lbl-fly"],
+			projectId: "proj-fly",
+			parentId: "parent-uuid",
+		});
+	});
+
+	it("accepts a parent UUID", async () => {
+		mockMultiTeam();
+		mockProjects.mockResolvedValue({
+			nodes: [{ id: "proj-fly", name: "Flywheel" }],
+		});
+		mockIssueLabels.mockResolvedValue({
+			nodes: [{ id: "lbl-fly", name: "Flywheel" }],
+		});
+		mockParentIssue();
+		mockIssueCreated("FLY-101");
+		const parentUuid = "28fb94e6-10ad-4ace-b664-f9a1e8f38b4e";
+
+		const res = await post({
+			title: "Discovered work",
+			projectName: "flywheel",
+			parentId: parentUuid,
+		});
+
+		expect(res.status).toBe(200);
+		expect(mockRawRequest).toHaveBeenCalledWith(
+			expect.stringContaining("IssueByIdentifier"),
+			{ id: parentUuid },
+		);
+		expect(mockCreateIssue).toHaveBeenCalledWith(
+			expect.objectContaining({ parentId: "parent-uuid" }),
+		);
+	});
+
+	it("returns 400 for a non-string parentId", async () => {
+		const res = await post({
+			title: "Discovered work",
+			projectName: "flywheel",
+			parentId: 100,
+		});
+
+		expect(res.status).toBe(400);
+		expect((await res.json()).error).toBe("parentId must be a string");
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+	});
+
+	it("requires projectName when parentId is present", async () => {
+		const res = await post({ title: "Discovered work", parentId: "FLY-100" });
+
+		expect(res.status).toBe(400);
+		expect((await res.json()).error).toBe(
+			"projectName is required with parentId",
+		);
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+	});
+
+	it("returns 404 when the parent does not exist", async () => {
+		mockMultiTeam();
+		mockRawRequest.mockResolvedValue({ data: { issue: null } });
+
+		const res = await post({
+			title: "Discovered work",
+			projectName: "flywheel",
+			parentId: "FLY-999999",
+		});
+
+		expect(res.status).toBe(404);
+		expect((await res.json()).error).toBe('parent "FLY-999999" not found');
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+	});
+
+	it("returns 403 when the parent is outside the project binding", async () => {
+		mockMultiTeam();
+		mockParentIssue("FLY-100", "parent-uuid", "Other project");
+
+		const res = await post({
+			title: "Discovered work",
+			projectName: "flywheel",
+			parentId: "FLY-100",
+		});
+
+		expect(res.status).toBe(403);
+		expect((await res.json()).error).toMatch(
+			/outside.*flywheel.*project scope/,
+		);
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+	});
+
+	it("returns 400 when the parent and target teams differ", async () => {
+		mockMultiTeam();
+		mockParentIssue();
+
+		const res = await post({
+			title: "Discovered work",
+			projectName: "flywheel",
+			parentId: "FLY-100",
+			team: "GEO",
+		});
+
+		expect(res.status).toBe(400);
+		expect((await res.json()).error).toBe(
+			"parent is in team FLY, issue would be created in team GEO",
+		);
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+	});
+
+	it("rejects the scoped token when parentId is present", async () => {
+		const res = await post(
+			{
+				title: "Discovered work",
+				projectName: "flywheel",
+				parentId: "FLY-100",
+			},
+			"scoped-token",
+		);
+
+		expect(res.status).toBe(403);
+		expect((await res.json()).error).toBe("forbidden for scoped token");
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+	});
+
+	it("keeps no-parent create-issue available to the scoped token", async () => {
+		mockSingleTeam();
+		mockIssueCreated();
+
+		const res = await post({ title: "No parent" }, "scoped-token");
+
+		expect(res.status).toBe(200);
+		expect(mockCreateIssue).toHaveBeenCalledWith({
+			teamId: "team-geo-id",
+			title: "No parent",
+			description: "",
+			priority: 0,
+			labelIds: undefined,
+		});
+	});
+
+	it("returns 503 for parent creation when the master token is unconfigured", async () => {
+		const store2 = await StateStore.create(":memory:");
+		const app2 = createBridgeApp(
+			store2,
+			testProjects,
+			makeConfig({
+				linearApiKey: "test-linear-key",
+				geminiAgentToken: "scoped-token",
+			}),
+		);
+		const server2 = app2.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server2.once("listening", resolve));
+		const address = server2.address();
+		const port = typeof address === "object" && address ? address.port : 0;
+
+		const res = await fetch(
+			`http://127.0.0.1:${port}/api/linear/create-issue`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer scoped-token",
+				},
+				body: JSON.stringify({
+					title: "Discovered work",
+					projectName: "flywheel",
+					parentId: "FLY-100",
+				}),
+			},
+		);
+
+		expect(res.status).toBe(503);
+		expect((await res.json()).error).toBe("master_token_not_configured");
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+		await new Promise<void>((resolve) => server2.close(() => resolve()));
+		store2.close();
 	});
 
 	// --- Existing validations still work ---

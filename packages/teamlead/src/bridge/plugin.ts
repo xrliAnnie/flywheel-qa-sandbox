@@ -259,6 +259,10 @@ import {
 	type DeliveryOperationsCursor,
 } from "./delivery-operations.js";
 import { FileDeliverySecretProvider } from "./delivery-secret.js";
+import {
+	createDependencyRouter,
+	masterOnlyAuthMiddleware,
+} from "./dependency-route.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
 import { reconcileDesignReviewInstructions } from "./design-review-manifest.js";
 import { validateDesignReviewProjection } from "./design-review-validation.js";
@@ -3446,23 +3450,45 @@ export function createBridgeApp(
 	// team-scoped). A real label name is never UUID-shaped.
 	const UUID_SHAPED_LABEL_RE =
 		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+	const createIssueParentAuth = masterOnlyAuthMiddleware(
+		config.apiToken,
+		config.geminiAgentToken,
+	);
 
 	// Linear API proxy — agent doesn't hold LINEAR_API_KEY directly (GEO-187)
 	app.post(
 		"/api/linear/create-issue",
+		(req, res, next) =>
+			req.body?.parentId === undefined
+				? next()
+				: createIssueParentAuth(req, res, next),
 		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		async (req, res) => {
 			if (!config.linearApiKey) {
 				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
 				return;
 			}
-			const { title, description, priority, labels, team, project } =
+			const { title, description, priority, labels, team, project, parentId } =
 				req.body ?? {};
 			// FLY-371: optional Flywheel projectName → resolve a Linear binding
 			// (team / project / scope-label). Raw value validated inside the helper.
 			const projectNameRaw = req.body?.projectName;
 			if (!title || typeof title !== "string") {
 				res.status(400).json({ error: "title is required" });
+				return;
+			}
+			if (parentId !== undefined && typeof parentId !== "string") {
+				res.status(400).json({ error: "parentId must be a string" });
+				return;
+			}
+			if (
+				parentId !== undefined &&
+				(typeof projectNameRaw !== "string" ||
+					projectNameRaw.trim().length === 0)
+			) {
+				res
+					.status(400)
+					.json({ error: "projectName is required with parentId" });
 				return;
 			}
 			if (title.length > 500) {
@@ -3546,6 +3572,32 @@ export function createBridgeApp(
 				if (!targetTeam) {
 					res.status(500).json({ error: "No Linear team found" });
 					return;
+				}
+
+				let parentUuid: string | undefined;
+				if (parentId !== undefined) {
+					const parent = await lookupLinearIssueByIdentifier(
+						config.linearApiKey,
+						parentId,
+					);
+					if (!parent) {
+						res.status(404).json({ error: `parent "${parentId}" not found` });
+						return;
+					}
+					if (!issueMatchesBinding(parent, binding.binding!)) {
+						res.status(403).json({
+							error: `parent "${parent.identifier}" is outside the "${projectNameRaw}" project scope`,
+						});
+						return;
+					}
+					const parentTeam = parent.identifier.split("-")[0];
+					if (parentTeam !== targetTeam.key) {
+						res.status(400).json({
+							error: `parent is in team ${parentTeam}, issue would be created in team ${targetTeam.key}`,
+						});
+						return;
+					}
+					parentUuid = parent.id;
 				}
 
 				// GEO-298 / FLY-371: Project resolution — optional, by name.
@@ -3666,6 +3718,7 @@ export function createBridgeApp(
 					priority: priority ?? 0,
 					labelIds,
 					...(projectId && { projectId }),
+					...(parentUuid && { parentId: parentUuid }),
 				});
 
 				const created = await issue.issue;
@@ -4208,6 +4261,14 @@ export function createBridgeApp(
 			}),
 		);
 	}
+	app.use(
+		"/api/dependency",
+		masterOnlyAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		createDependencyRouter({
+			projects,
+			linearApiKey: config.linearApiKey,
+		}),
+	);
 
 	const workflowRunCollector = transitionOpts
 		? createWorkflowRunCollector(store, transitionOpts)
