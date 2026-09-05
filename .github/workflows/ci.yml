@@ -724,12 +724,13 @@ jobs:
       - name: Test — FLY-513 global-codex repoint apply-path
         run: bash packages/teamlead/scripts/__tests__/fly-513-repoint.test.sh
 
-      # FLY-1955/2211: remote-control's stale zombie pid deadlock and every
-      # runner signal's durable audit fence. Both are hermetic: the zombie
-      # suite uses a process-table model plus a Linux fixture; the ledger suite
-      # only targets its private temp root and suppresses the real mutation.
+      # FLY-1955/2211/2357: remote-control's stale zombie pid deadlock, the
+      # launcher-to-runtime config gate, and every runner signal's durable audit
+      # fence. The home suite intentionally fails when the dist built above is
+      # absent so its shell→runtime xcheck can never be silently skipped.
       - name: Test — FLY-1955/2211 Codex daemon mutation safety
         run: |
+          bash packages/teamlead/scripts/__tests__/codex-lead-tui-home.test.sh
           bash packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh
           bash scripts/__tests__/kill-ledger.test.sh
 

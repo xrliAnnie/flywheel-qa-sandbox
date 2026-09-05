@@ -11,7 +11,13 @@ fail() { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
 # Hermetic baseline: a Lead/runner parent may carry full-access profile and a
 # global binary override, but the default-path cases below must exercise the
 # companion home and its isolated standalone binary.
-unset FLYWHEEL_CODEX_LEAD_PROFILE FLYWHEEL_CODEX_BIN
+unset FLYWHEEL_CODEX_LEAD_PROFILE FLYWHEEL_CODEX_BIN \
+  FLYWHEEL_LEAD_ID FLYWHEEL_PROJECT_NAME \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID FLYWHEEL_LEAD_CORE_CHANNEL_ID \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_ROUNDTABLE_CHANNEL_ID \
+  FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS FLYWHEEL_LEAD_ACTIONS_NODE_BIN \
+  FLYWHEEL_LEAD_ACTIONS_STATE_DIR FLYWHEEL_COMM_DB
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SUT="$SCRIPT_DIR/codex-lead-tui-home.sh"
@@ -41,6 +47,30 @@ fresh_home() {
   echo "$h"
 }
 
+toml_table_block() {
+  python3 - "$1" "$2" <<'PYTABLE'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read().splitlines(keepends=True)
+target = f"[{sys.argv[2]}]"
+start = None
+for index, line in enumerate(text):
+    if line.split("#", 1)[0].strip() == target:
+        start = index
+        break
+if start is None:
+    sys.exit(1)
+end = len(text)
+for index in range(start + 1, len(text)):
+    if re.match(r"^[ \t]*\[", text[index]):
+        end = index
+        break
+block = text[start:end]
+while block and (not block[-1].strip() or block[-1].lstrip().startswith("#")):
+    block.pop()
+sys.stdout.write("".join(block).rstrip("\r\n"))
+PYTABLE
+}
+
 # ── ensure-home happy path: pins written, trust added, idempotent ──────────
 H=$(fresh_home 1)
 if FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" /bin/bash "$SUT" ensure-home >/dev/null 2>&1; then
@@ -54,9 +84,32 @@ command grep -q 'projects."/work/dir"' "$H/config.toml" && pass "cwd trusted" ||
 python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('notice',{}).get('hide_rate_limit_model_nudge') is True else 1)" "$H/config.toml" \
   && pass "FLY-2296: read-only home hides the rate-limit model nudge" \
   || fail "FLY-2296: read-only home notice pin missing"
+python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('features',{}).get('memories') is True and c.get('memories',{}).get('dedicated_tools') is True else 1)" "$H/config.toml" \
+  && pass "FLY-2357: read-only home pins memory master switch and dedicated tools in separate tables" \
+  || fail "FLY-2357: read-only home memory pins missing or misplaced"
 BEFORE=$(cat "$H/config.toml")
 FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" /bin/bash "$SUT" ensure-home >/dev/null 2>&1
 [ "$BEFORE" = "$(cat "$H/config.toml")" ] && pass "idempotent re-run (config unchanged)" || fail "re-run mutated config"
+
+# ── FLY-2357: validate both tables before appending either one ─────────────
+H=$(fresh_home 2357-readonly-atomic)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "read-only"
+approval_policy = "never"
+[projects."/w"]
+trust_level = "trusted"
+[memories]
+dedicated_tools = false
+[notice]
+hide_rate_limit_model_nudge = true
+TOML
+BEFORE=$(cat "$H/config.toml")
+OUT=$(FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/w" /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+command grep -q "rc=1" <<< "$OUT" \
+  && command grep -Fq "[memories] dedicated_tools = true" <<< "$OUT" \
+  && [ "$BEFORE" = "$(cat "$H/config.toml")" ] \
+  && pass "FLY-2357: read-only memory drift fails before either table is appended" \
+  || fail "FLY-2357: read-only drift must leave both memory tables unchanged; got: $OUT"
 
 # ── fail-close: drifted pre-existing config (write-capable) ────────────────
 H=$(fresh_home 2)
@@ -207,6 +260,10 @@ sandbox_mode = "read-only"
 approval_policy = "never"
 [projects."/w"]
 trust_level = "trusted"
+[features]
+memories = true
+[memories]
+dedicated_tools = true
 [notice]
 hide_rate_limit_model_nudge = true
 TOML
@@ -358,6 +415,203 @@ command grep -q 'env_vars = \["DISCORD_BOT_TOKEN"\]' "$H/config.toml" && pass "f
 python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('notice',{}).get('hide_rate_limit_model_nudge') is True else 1)" "$H/config.toml" \
   && pass "FLY-2296: full-access home hides the rate-limit model nudge" \
   || fail "FLY-2296: full-access home notice pin missing"
+python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('features',{}).get('memories') is True and c.get('memories',{}).get('dedicated_tools') is True else 1)" "$H/config.toml" \
+  && pass "FLY-2357: full-access home pins memory master switch and dedicated tools in separate tables" \
+  || fail "FLY-2357: full-access home memory pins missing or misplaced"
+FA_WHOLE_BEFORE=$(cat "$H/config.toml")
+if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+  FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+  FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+  FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" FLYWHEEL_COMM_DB="/state/comm.db" \
+  /bin/bash "$SUT" ensure-home >/dev/null 2>&1 \
+  && [ "$FA_WHOLE_BEFORE" = "$(cat "$H/config.toml")" ]; then
+  pass "FLY-2357: fresh full-access config is byte-identical after a second ensure"
+else
+  fail "FLY-2357: fresh full-access config must be byte-identical after a second ensure"
+fi
+
+# ── FLY-2357: full-access must see memory drift before its rewrite ─────────
+H=$(fresh_home 2357-drift)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+[features]
+memories = false
+[memories]
+dedicated_tools = true
+TOML
+BEFORE=$(cat "$H/config.toml")
+OUT=$(FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+  FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+  FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+  FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" FLYWHEEL_COMM_DB="/state/comm.db" \
+  /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+command grep -q "rc=1" <<< "$OUT" \
+  && command grep -Fq "[features] memories = true" <<< "$OUT" \
+  && command grep -Fq "Fix $H/config.toml manually" <<< "$OUT" \
+  && [ "$BEFORE" = "$(cat "$H/config.toml")" ] \
+  && pass "FLY-2357: full-access memory drift fails closed before rewrite" \
+  || fail "FLY-2357: full-access memory drift must fail before rewrite without changing config; got: $OUT"
+
+H=$(fresh_home 2357-tools-drift)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+[features]
+memories = true
+[memories]
+dedicated_tools = false
+TOML
+BEFORE=$(cat "$H/config.toml")
+OUT=$(FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+  FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+  FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+  FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" FLYWHEEL_COMM_DB="/state/comm.db" \
+  /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+command grep -q "rc=1" <<< "$OUT" \
+  && command grep -Fq "[memories] dedicated_tools = true" <<< "$OUT" \
+  && command grep -Fq "Fix $H/config.toml manually" <<< "$OUT" \
+  && [ "$BEFORE" = "$(cat "$H/config.toml")" ] \
+  && pass "FLY-2357: full-access dedicated-tools drift fails closed before rewrite" \
+  || fail "FLY-2357: full-access dedicated-tools drift must fail before rewrite without changing config; got: $OUT"
+
+# ── FLY-2357: `[memories].memories` is valid TOML but does not enable memory ──
+H=$(fresh_home 2357-wrong-master-table)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+[memories]
+memories = true
+dedicated_tools = true
+TOML
+BEFORE=$(cat "$H/config.toml")
+OUT=$(FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+  FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+  FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+  FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" FLYWHEEL_COMM_DB="/state/comm.db" \
+  /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+command grep -q "rc=1" <<< "$OUT" \
+  && command grep -Fq "[memories] memories" <<< "$OUT" \
+  && command grep -Fq "[features] memories = true" <<< "$OUT" \
+  && command grep -Fq "Fix $H/config.toml manually" <<< "$OUT" \
+  && [ "$BEFORE" = "$(cat "$H/config.toml")" ] \
+  && pass "FLY-2357: misplaced memory master switch fails closed before rewrite" \
+  || fail "FLY-2357: [memories] memories must fail before rewrite without changing config; got: $OUT"
+
+# ── FLY-2357: dedicated_tools belongs only in [memories] ──────────────────
+H=$(fresh_home 2357-wrong-tools-table)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+[features]
+memories = true
+dedicated_tools = true
+TOML
+BEFORE=$(cat "$H/config.toml")
+OUT=$(FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+  FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+  FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+  FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" FLYWHEEL_COMM_DB="/state/comm.db" \
+  /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+command grep -q "rc=1" <<< "$OUT" \
+  && command grep -Fq "[features] dedicated_tools" <<< "$OUT" \
+  && command grep -Fq "[memories] dedicated_tools = true" <<< "$OUT" \
+  && command grep -Fq "Fix $H/config.toml manually" <<< "$OUT" \
+  && [ "$BEFORE" = "$(cat "$H/config.toml")" ] \
+  && pass "FLY-2357: misplaced dedicated memory tools fail closed before rewrite" \
+  || fail "FLY-2357: [features] dedicated_tools must fail before rewrite without changing config; got: $OUT"
+
+# ── FLY-2357: full-access rewrite preserves the operator-owned tables verbatim ──
+H=$(fresh_home 2357-preserve)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+
+[features]
+# Preserve comments, ordering, and unknown future flat keys.
+memories = true
+future_memory_feature = "keep-me"
+
+[memories]
+# Non-default sentinels prove FLY-2357 never tunes FLY-2355·D controls.
+dedicated_tools = true
+max_rollouts_per_startup = 17
+min_rollout_idle_hours = 19
+max_rollout_age_days = 23
+min_rate_limit_remaining_percent = 29
+disable_on_external_context = true
+
+[projects."/already/trusted"]
+trust_level = "trusted"
+
+[notice]
+hide_rate_limit_model_nudge = true
+TOML
+FEATURES_BEFORE=$(toml_table_block "$H/config.toml" features)
+MEMORIES_BEFORE=$(toml_table_block "$H/config.toml" memories)
+if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+  FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+  FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+  FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" FLYWHEEL_COMM_DB="/state/comm.db" \
+  /bin/bash "$SUT" ensure-home >/dev/null 2>&1 \
+  && [ "$FEATURES_BEFORE" = "$(toml_table_block "$H/config.toml" features)" ] \
+  && [ "$MEMORIES_BEFORE" = "$(toml_table_block "$H/config.toml" memories)" ]; then
+  pass "FLY-2357: full-access rewrite preserves feature/memory tables verbatim"
+else
+  fail "FLY-2357: full-access rewrite must preserve feature/memory comments, unknown keys, and throttle sentinels verbatim"
+fi
+FA_SENTINEL_BEFORE=$(cat "$H/config.toml")
+if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+  FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+  FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+  FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" FLYWHEEL_COMM_DB="/state/comm.db" \
+  /bin/bash "$SUT" ensure-home >/dev/null 2>&1 \
+  && [ "$FA_SENTINEL_BEFORE" = "$(cat "$H/config.toml")" ]; then
+  pass "FLY-2357: sentinel full-access config is byte-identical after a second ensure"
+else
+  fail "FLY-2357: sentinel full-access config must be byte-identical after a second ensure"
+fi
+
+# Inline/dotted/nested table shapes cannot be carried through the flat-table
+# renderer losslessly. Fail closed, keep the original, and leave no staging files.
+H=$(fresh_home 2357-inline-shape)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+features = { memories = true }
+[memories]
+dedicated_tools = true
+TOML
+BEFORE=$(cat "$H/config.toml")
+OUT=$(FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+  FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+  FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+  FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" FLYWHEEL_COMM_DB="/state/comm.db" \
+  /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+STAGING_COUNT=$(find "$H" -maxdepth 1 -type f \( -name '.config.toml.fullaccess.*' -o -name '.config.toml.memory-source.*' \) | wc -l | tr -d ' ')
+command grep -q "rc=1" <<< "$OUT" \
+  && command grep -Fq "cannot preserve [features]/[memories] safely" <<< "$OUT" \
+  && command grep -Fq "Fix $H/config.toml manually" <<< "$OUT" \
+  && [ "$BEFORE" = "$(cat "$H/config.toml")" ] \
+  && [ "$STAGING_COUNT" = "0" ] \
+  && pass "FLY-2357: unsafe table shape fails closed and cleans staging files" \
+  || fail "FLY-2357: unsafe table shape must keep original config and clean staging files; got: $OUT (staging=$STAGING_COUNT)"
 
 # ── full-access ensure-daemon: STOP then START (pin ⑤ — daemon re-reads; no stale read-only daemon) ──
 H=$(fresh_home 31); : > "$MOCK_LOG"
@@ -366,9 +620,12 @@ command grep -q "remote-control stop" "$MOCK_LOG" && pass "full-access ensure-da
 command grep -q "remote-control start --json" "$MOCK_LOG" && pass "full-access ensure-daemon: start invoked after stop" || fail "full-access ensure-daemon: start not invoked"
 
 # ── shell→gate full-access xcheck: the SHELL-written config.toml passes the FULL-ACCESS runtime gate ──
-if [ -f "$GATE_JS" ]; then
+if [ ! -f "$GATE_JS" ] || [ ! -f "$RUNTIME_JS" ]; then
+  fail "shell→gate FA: required teamlead dist is missing (build before running this suite)"
+else
   run_fa_xcheck() {
-    local H; H=$(fresh_home "fa-$1")
+    local H xcheck_rc=0
+    H=$(fresh_home "fa-$1")
     FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
       FLYWHEEL_CODEX_LEAD_PROFILE=full-access \
       FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/Users/x/dist/lead-actions/lead-actions-main.js" \
@@ -380,10 +637,23 @@ if [ -f "$GATE_JS" ]; then
       FLYWHEEL_COMM_DB="/Users/x/.flywheel/comm/growth/comm.db" \
       FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES="$3" \
       /bin/bash "$SUT" ensure-home >/dev/null 2>&1 || { fail "shell→gate FA ($1): ensure-home failed"; return; }
+    if ! python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('features',{}).get('memories') is True and c.get('memories',{}).get('dedicated_tools') is True else 1)" "$H/config.toml"; then
+      fail "shell→gate FA ($1): memory pins are missing or misplaced before the runtime gate"
+      return
+    fi
     GATE_JS="$GATE_JS" RUNTIME_JS="$RUNTIME_JS" CFG="$H/config.toml" CROSS="$2" ALI="$3" node --input-type=module -e '
       import { readFileSync } from "node:fs";
-      const { assertFullAccessLeadActionsConfigGate, buildFullAccessLeadActionsMcpServerConfig, assertFullAccessSandboxConfig } = await import(process.env.GATE_JS);
-      const { parseCodexLeadRuntimeConfig } = await import(process.env.RUNTIME_JS);
+      let gateModule;
+      let runtimeModule;
+      try {
+        gateModule = await import(process.env.GATE_JS);
+        runtimeModule = await import(process.env.RUNTIME_JS);
+      } catch (error) {
+        console.error("shell→gate FA environment/module-load failure:", error);
+        process.exit(20);
+      }
+      const { assertFullAccessLeadActionsConfigGate, buildFullAccessLeadActionsMcpServerConfig, assertFullAccessSandboxConfig } = gateModule;
+      const { parseCodexLeadRuntimeConfig } = runtimeModule;
       // FLY-1243 (Codex R3): derive crossDeptChannelIds + effective roundtable autoContinue
       // through the REAL parser so the expected full-access config matches the runtime
       // EXACTLY; the shell now writes the same normalized/base-filtered value.
@@ -408,13 +678,23 @@ if [ -f "$GATE_JS" ]; then
         explicitAliases: process.env.ALI || undefined,
         roundtableAutoContinue: parsed.replyInThread?.autoContinue === true,
       });
-      const toml = readFileSync(process.env.CFG, "utf8");
-      assertFullAccessLeadActionsConfigGate(toml, expected);
-      // Codex R1 HIGH-2: the shell-written sandbox section + writable_roots must pass the
-      // runtime sandbox gate against the validated project root (here = the ensure-home cwd).
-      assertFullAccessSandboxConfig(toml, "/work/dir");
-    ' && pass "shell→gate FA ($1): full-access config.toml passes the runtime gate (MCP + sandbox/writable_roots)" \
-       || fail "shell→gate FA ($1): config.toml did NOT pass the full-access gate"
+      try {
+        const toml = readFileSync(process.env.CFG, "utf8");
+        assertFullAccessLeadActionsConfigGate(toml, expected);
+        // Codex R1 HIGH-2: the shell-written sandbox section + writable_roots must pass the
+        // runtime sandbox gate against the validated project root (here = the ensure-home cwd).
+        assertFullAccessSandboxConfig(toml, "/work/dir");
+      } catch (error) {
+        console.error("shell→gate FA runtime gate rejection:", error);
+        process.exit(21);
+      }
+    ' || xcheck_rc=$?
+    case "$xcheck_rc" in
+      0) pass "shell→gate FA ($1): full-access config.toml passes the runtime gate (MCP + sandbox/writable_roots)" ;;
+      20) fail "shell→gate FA ($1): environment/module-load failed before the runtime gate" ;;
+      21) fail "shell→gate FA ($1): config.toml was rejected by the full-access runtime gate" ;;
+      *) fail "shell→gate FA ($1): unexpected xcheck failure (rc=$xcheck_rc)" ;;
+    esac
   }
   run_fa_xcheck "one-crossdept" "1512578695468941333" ""
   run_fa_xcheck "with-aliases" "1512578695468941333,1517226183341904032" "roundtable:1512578695468941333"
