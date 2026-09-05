@@ -146,6 +146,9 @@ CMUX_WAL_BLOCKED_VIEWS="${CMUX_WAL_BLOCKED_VIEWS:-}"
 # Inconclusive cmux inventory reads leave it untouched; a conclusive reconcile
 # sweep replaces it with the refusals still present in that sweep.
 CMUX_TITLE_TOPOLOGY_REFUSED_KEYS="${CMUX_TITLE_TOPOLOGY_REFUSED_KEYS:-}"
+# FLY-2266: process-local consecutive missing-client passes for private Leads.
+# Newline-delimited because macOS Bash 3.2 has no associative arrays.
+V2_LEAD_ATTACH_MISSING_STREAKS=""
 
 # FLY-254: cmux app-reopen one-shot re-attach sweep.
 # Generation state file — single line `<identity>|<state>|<attempts>`,
@@ -3927,6 +3930,11 @@ recover_attach_surface() {
       _attach_state_upsert "$generation" "$ref" "$title" "$kind" "$attempts" "$phase" \
         "$first_epoch" "$now" "$round" || return 1
       _attach_set_status "$kind" "$generation" "$ref" "$title" "$surface" "$target" status "$row"
+      if [[ "$kind" == v2 ]]; then
+        roster_alert_unhealthy lead-attach-missing "$title" \
+          "cmux v2 Lead surface detached" \
+          "The v2 Lead pane $title did not attach after $max guarded attempts."
+      fi
       return 0
       ;;
     unclassified)
@@ -5311,8 +5319,47 @@ for w in json.load(sys.stdin).get("workspaces", []):
 }
 
 reconcile_v2_lead_workspaces() {
-  local carrier _label title socket
+  local carrier _label title socket count previous streak retry_limit threshold
+  local expected=0 attached=0 current="" missing="" next_streaks="" alert_subjects=""
   [[ "$LEAD_ROSTER_STATE" == "ok" ]] || return 0
+
+  retry_limit=$(_attach_retry_limit)
+  threshold=$((10#$retry_limit + 1))
+  while IFS='|' read -r carrier _label title socket; do
+    [[ "$carrier" == "claude-private" ]] || continue
+    expected=$((expected + 1))
+    current+="${current:+$'\n'}${title}"
+    count=$(_private_session_client_count "$socket") || count=""
+    if [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+      attached=$((attached + 1))
+      roster_mark_healthy lead-attach-missing "$title"
+      continue
+    fi
+    missing+="${missing:+,}${title}"
+    previous=$(printf '%s\n' "$V2_LEAD_ATTACH_MISSING_STREAKS" \
+      | awk -F'|' -v subject="$title" '$1 == subject { print $2; exit }' || true)
+    case "$previous" in ''|*[!0-9]*) previous=0 ;; esac
+    if (( 10#$previous < threshold )); then
+      streak=$((10#$previous + 1))
+    else
+      streak=$threshold
+    fi
+    next_streaks+="${next_streaks:+$'\n'}${title}|${streak}"
+    if (( streak >= threshold )); then
+      alert_subjects+="${alert_subjects:+$'\n'}${title}"
+    fi
+  done < <(printf '%s\n' "$LEAD_ROSTER_ROWS")
+  V2_LEAD_ATTACH_MISSING_STREAKS="$next_streaks"
+  roster_rearm_absent_subjects lead-attach-missing "$current"
+  [[ -n "$missing" ]] || missing=none
+  log "INFO: lead-attach census expected=$expected attached=$attached missing=$missing"
+  while IFS= read -r title; do
+    [[ -n "$title" ]] || continue
+    roster_alert_unhealthy lead-attach-missing "$title" \
+      "cmux v2 Lead surface detached" \
+      "The v2 Lead pane is not attached to a live private tmux server: expected=$expected attached=$attached missing=$missing."
+  done < <(printf '%s\n' "$alert_subjects")
+
   while IFS='|' read -r carrier _label title socket; do
     [[ "$carrier" == "claude-private" ]] || continue
     watcher_mutation_latch_clear || return 0

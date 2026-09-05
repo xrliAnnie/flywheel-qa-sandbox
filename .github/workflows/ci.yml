@@ -362,6 +362,7 @@ jobs:
           bash scripts/__tests__/fly1663-launchd-foundation.test.sh
           bash scripts/__tests__/fly1663-lead-v2-runtime.test.sh
           bash scripts/__tests__/fly1663-cmux-v2.test.sh
+          bash scripts/__tests__/fly2266-cmux-lead-attach-health.test.sh
           bash scripts/__tests__/fly1663-bridge-launchd.test.sh
           bash scripts/__tests__/fly1663-qa-launchd.test.sh
           bash scripts/__tests__/fly1679-dev-channels-v2.test.sh
