@@ -768,6 +768,19 @@ qa_launchd_register() {
   return 1
 }
 
+qa_launchd_registry_remove_entry() {
+  local registry="$1" entry="$2" tmp="${registry}.tmp.$$"
+  [[ -f "$registry" && ! -L "$registry" ]] || return 1
+  if jq --argjson retired "$entry" \
+      'if type == "array" then map(select(. != $retired)) else error("registry must be an array") end' \
+      "$registry" > "$tmp" \
+      && chmod 600 "$tmp" && mv "$tmp" "$registry"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
 qa_launchd_process_incarnation() {
   local pid="$1" status started
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -1044,11 +1057,14 @@ state = Path(row["stateDir"])
 pid_file = Path(row["runtimePidFile"])
 if any(not path.is_absolute() for path in (home, binary, state, pid_file)):
     raise SystemExit(1)
+home_present = True
 try:
     home_info = home.lstat()
+except FileNotFoundError:
+    home_present = False
 except OSError:
     raise SystemExit(1)
-if not stat.S_ISDIR(home_info.st_mode) or home.is_symlink():
+if home_present and (not stat.S_ISDIR(home_info.st_mode) or home.is_symlink()):
     raise SystemExit(1)
 home_real = Path(os.path.realpath(home))
 binary_real = Path(os.path.realpath(binary))
@@ -1063,20 +1079,39 @@ try:
             raise SystemExit(1)
 except ValueError:
     raise SystemExit(1)
-if not binary_real.is_file() or not os.access(binary_real, os.X_OK):
-    raise SystemExit(1)
-print("\t".join((row["label"], str(home), str(binary_real), str(state), str(pid_file))))
+if home_present:
+    if not binary_real.is_file() or not os.access(binary_real, os.X_OK):
+        raise SystemExit(1)
+    status = "present"
+else:
+    if home_real.parent != slot_real / "cdxh" or not re.fullmatch(
+        r"[a-z0-9][a-z0-9-]*", home_real.name
+    ):
+        raise SystemExit(1)
+    status = "retired"
+print("\t".join((status, row["label"], str(home), str(binary_real), str(state), str(pid_file))))
 PY
 }
 
 qa_launchd_stop_codex_entry() {
-  local registry="$1" entry="$2" validated label codex_home codex_bin state_dir runtime_pid_file
+  local registry="$1" entry="$2" validated entry_state label codex_home codex_bin state_dir runtime_pid_file
   local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
   local daemon_pid_file daemon_socket launch_marker bounded_run updater_rc
   local slot_root runtime_started=0 failed=0
   validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
     || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
-  IFS=$'\t' read -r label codex_home codex_bin state_dir runtime_pid_file <<<"$validated"
+  IFS=$'\t' read -r entry_state label codex_home codex_bin state_dir runtime_pid_file <<<"$validated"
+  if [[ "$entry_state" == retired ]]; then
+    runtime_pid=$(qa_launchd_lead_pid_exact "$label" || true)
+    runtime_incarnation=$(qa_launchd_process_incarnation "$runtime_pid" || true)
+    if ! qa_launchd_lead_stop "$label" \
+        || ! qa_launchd_wait_job_gone "$label" \
+        || ! qa_launchd_wait_process_gone "$runtime_pid" "$runtime_incarnation"; then
+      qa_launchd_err "carrier=codex-tui step=retired-runtime-converge"
+      return 1
+    fi
+    return 0
+  fi
   runtime_pid=$(qa_launchd_lead_pid_exact "$label" || true)
   if [[ -z "$runtime_pid" && -f "$runtime_pid_file" && ! -L "$runtime_pid_file" ]]; then
     runtime_pid=$(cat "$runtime_pid_file" 2>/dev/null || true)
@@ -1177,7 +1212,11 @@ qa_launchd_stop_registry() {
     carrier=$(jq -r '.carrier // ""' <<<"$entry") || { failed=1; continue; }
     case "$carrier" in
       codex-tui)
-        qa_launchd_stop_codex_entry "$registry" "$entry" || failed=1
+        if qa_launchd_stop_codex_entry "$registry" "$entry"; then
+          qa_launchd_registry_remove_entry "$registry" "$entry" || failed=1
+        else
+          failed=1
+        fi
         ;;
       "")
         label=$(jq -r '.label // ""' <<<"$entry")

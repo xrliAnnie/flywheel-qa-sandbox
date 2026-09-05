@@ -965,7 +965,14 @@ kill() {
     *) return 1 ;;
   esac
 }
-if (unset FLYWHEEL_DIR; qa_launchd_stop_registry "$codex_stop_registry") \
+codex_stop_first_rc=0
+(unset FLYWHEEL_DIR; qa_launchd_stop_registry "$codex_stop_registry") \
+  || codex_stop_first_rc=$?
+codex_stop_second_rc=0
+(unset FLYWHEEL_DIR; qa_launchd_stop_registry "$codex_stop_registry") \
+  || codex_stop_second_rc=$?
+if [[ "$codex_stop_first_rc" == 0 && "$codex_stop_second_rc" == 0 ]] \
+    && [[ "$(jq -c . "$codex_stop_registry")" == '[]' ]] \
     && grep -Fxq 'remote-control stop --json' "$codex_stop_calls" \
     && [[ ! -e "$launchctl_state" && ! -e "$daemon_pid_file" && ! -e "$daemon_socket" \
       && ! -e "$updater_state" ]] \
@@ -973,7 +980,7 @@ if (unset FLYWHEEL_DIR; qa_launchd_stop_registry "$codex_stop_registry") \
     && [[ ! -e "$mint_dest" ]] \
     && [[ "$(shasum -a 256 "$mint_source/auth.json" | awk '{print $1}')" == \
       "$mint_source_hash" ]]; then
-  pass "Codex registry stop converges processes, retires the slot home, and leaves Hub auth unchanged"
+  pass "Codex registry stop retires the home, prunes its row, and retries idempotently"
 else
   fail "Codex registry convergent teardown and production-auth isolation"
 fi
@@ -1132,6 +1139,24 @@ else
 fi
 unset -f ps
 
+stop_retired_root="/tmp/flywheel-test-slot-$((982000 + $$))"
+stop_retired_home="$stop_retired_root/cdxh/retired"
+stop_retired_registry="$stop_retired_root/launchd-leads.json"
+make_stop_home "$stop_retired_home" 'exit 99' must-not-run-retired
+qa_launchd_register "$stop_retired_registry" \
+  com.flywheel.qa.lead.slot-982.retired /tmp/retired.plist '' codex-tui \
+  "$stop_retired_home" "$stop_retired_home/packages/standalone/current/codex" \
+  "$stop_retired_root/q/retired" "$stop_retired_root/launchd/retired/pid"
+qa_launchd_retire_codex_home "$stop_retired_home" "$stop_retired_root"
+if qa_launchd_stop_registry "$stop_retired_registry" \
+    >/dev/null 2>"$TMP/stop-retired.err" \
+    && [[ "$(jq -c . "$stop_retired_registry")" == '[]' ]] \
+    && ! grep -Fq must-not-run-retired "$TMP/stop-matrix.calls"; then
+  pass "Codex registry prunes a crash-left row after its home is already retired"
+else
+  fail "Codex retired-home registry retry"
+fi
+
 saved_qa_tmux="$FLYWHEEL_QA_TMUX"
 absent_tmux_root="/tmp/flywheel-test-slot-$((980000 + $$))"
 absent_tmux_socket="$absent_tmux_root/tmux-$(id -u)/default"
@@ -1236,7 +1261,7 @@ unset FLY1663_QA_STALE_TMUX_STATE FLY1663_QA_STALE_TMUX_CALLS
 
 unset -f sleep
 rm -rf "$stop_matrix_root" "$stop_alive_root" "$stop_bootout_root" \
-  "$stop_unstarted_root"
+  "$stop_unstarted_root" "$stop_retired_root"
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
