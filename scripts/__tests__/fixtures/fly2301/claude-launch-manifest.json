@@ -1,0 +1,13 @@
+{
+  "campaignId": "",
+  "bridgePid": 1234,
+  "distSha": "deadbeef",
+  "fromBranch": "main",
+  "mode": "slot",
+  "leadLabel": "",
+  "extraLeads": [],
+  "leadCarrier": "launchd-v2",
+  "launchdRegistry": "/tmp/flywheel-test-slot-7/launchd-leads.json",
+  "mainLeadLabel": "com.flywheel.qa.lead.slot-7.flywheel-test-7",
+  "mainLeadSocket": "/tmp/flywheel-test-7.sock"
+}

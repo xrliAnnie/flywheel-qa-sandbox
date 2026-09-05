@@ -78,7 +78,7 @@ canonical_lead_identity_resolve "$SELECTED_PROJECT_NAME" "$SELECTED_LEAD_ID"
 SAFE_PROJECT=$(printf '%s' "$FLYWHEEL_PROJECT_NAME" | tr -c 'a-zA-Z0-9_-' '_')
 SAFE_LEAD=$(printf '%s' "$FLYWHEEL_LEAD_ID" | tr -c 'a-zA-Z0-9_-' '_')
 IDENTITY_HEX=$(printf '%s\037%s' "$FLYWHEEL_PROJECT_NAME" "$FLYWHEEL_LEAD_ID" | od -An -v -tx1 | tr -d ' \n')
-STATE_DIR="${HOME}/.flywheel/state/codex-lead/${SAFE_PROJECT}__${SAFE_LEAD}-${IDENTITY_HEX}"
+STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state/codex-lead/${SAFE_PROJECT}__${SAFE_LEAD}-${IDENTITY_HEX}"
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR" 2>/dev/null || true
 

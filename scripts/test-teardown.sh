@@ -664,6 +664,9 @@ teardown_slot() {
   fi
   local SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
   local SLOT_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"
+  local SLOT_TMUX_BIN
+  SLOT_TMUX_BIN=$(command -v tmux 2>/dev/null || true)
+  qa_launchd_require_tmux_bin "$SLOT_TMUX_BIN" || return 1
   local LOCK_FILE="/tmp/flywheel-test-slot-${SLOT}.lock"
   local CYCLE_GUARD_RC=0
   qa_slot_bridge_guard_acquire "$SLOT" || CYCLE_GUARD_RC=$?
@@ -731,7 +734,28 @@ teardown_slot() {
   # A signal cannot stop a KeepAlive service; launchd would immediately pull
   # it back up. Boot out every slot-owned label before any legacy PID/socket
   # cleanup. Missing registry remains compatible with pre-FLY-1663 slots.
+  local QA_SLOT_HAS_CODEX_LEAD=0
+  if jq -e 'type == "array" and any(.[]; .carrier == "codex-tui")' \
+      "${SLOT_DIR}/launchd-leads.json" >/dev/null 2>&1; then
+    QA_SLOT_HAS_CODEX_LEAD=1
+    SLOT_TMUX_BIN=$(jq -er '
+      [.[] | select(.carrier == "codex-tui") | .tmuxBin]
+      | unique
+      | if length == 1 then .[0] else error("Codex tmux authority mismatch") end
+    ' "${SLOT_DIR}/launchd-leads.json") || {
+      log "ERROR: carrier=codex-tui step=tmux-authority"
+      qa_slot_bridge_guard_release
+      return 1
+    }
+    qa_launchd_require_tmux_bin "$SLOT_TMUX_BIN" || {
+      qa_slot_bridge_guard_release
+      return 1
+    }
+  fi
   if ! qa_launchd_stop_registry "${SLOT_DIR}/launchd-leads.json"; then
+    if [[ "$QA_SLOT_HAS_CODEX_LEAD" == 1 ]]; then
+      log "ERROR: carrier=codex-tui step=registry-stop"
+    fi
     log "ERROR: failed to bootout one or more slot launchd Leads"
     qa_slot_bridge_guard_release
     return 1
@@ -768,9 +792,9 @@ teardown_slot() {
   #   (b) RUNNER_TMUX already dead when teardown starts   → crash recovery
   #   (c) two live slots colliding on the same window     → no false-kill
   local RUNNER_TMUX="runner-test-slot-${SLOT}"
-  if tmux -S "$SLOT_TMUX_SOCKET" has-session -t "$RUNNER_TMUX" 2>/dev/null; then
+  if "$SLOT_TMUX_BIN" -S "$SLOT_TMUX_SOCKET" has-session -t "$RUNNER_TMUX" 2>/dev/null; then
     log "Killing Runner tmux session: ${RUNNER_TMUX}"
-    tmux -S "$SLOT_TMUX_SOCKET" kill-session -t "$RUNNER_TMUX" 2>/dev/null || true
+    "$SLOT_TMUX_BIN" -S "$SLOT_TMUX_SOCKET" kill-session -t "$RUNNER_TMUX" 2>/dev/null || true
   fi
 
   # Unified display-session sweep. New isolated views and keepers persist the
@@ -948,9 +972,18 @@ teardown_slot() {
   # FLY-1999: test-deploy binds its Bridge and runners to this native per-slot
   # default socket. Retire that server after the Bridge is down; never sweep by
   # name on the resident default server.
-  if tmux -S "$SLOT_TMUX_SOCKET" has-session 2>/dev/null; then
-    log "Killing slot tmux server: ${SLOT_TMUX_SOCKET}"
-    tmux -S "$SLOT_TMUX_SOCKET" kill-server 2>/dev/null || true
+  if [[ "$QA_SLOT_HAS_CODEX_LEAD" == 1 ]]; then
+    log "Converging Codex slot tmux server: ${SLOT_TMUX_SOCKET}"
+    if ! qa_launchd_converge_codex_tmux_socket "$SLOT_TMUX_SOCKET" "$SLOT_TMUX_BIN"; then
+      log "ERROR: carrier=codex-tui step=tmux-converge socket=${SLOT_TMUX_SOCKET}"
+      qa_slot_bridge_guard_release
+      return 1
+    fi
+  else
+    if "$SLOT_TMUX_BIN" -S "$SLOT_TMUX_SOCKET" has-session 2>/dev/null; then
+      log "Killing slot tmux server: ${SLOT_TMUX_SOCKET}"
+      "$SLOT_TMUX_BIN" -S "$SLOT_TMUX_SOCKET" kill-server 2>/dev/null || true
+    fi
   fi
 
   # ── Step 5c (FLY-115 fix / Defect #3b): Port-based straggler kill ──

@@ -1,0 +1,26 @@
+classDiagram
+  class SlotEntry {
+    +id, botName, tokenEnvVar, channelId, role
+    +backend? codex-app-server
+    +codexSourceHome? 绝对路径
+    +codexProfile? companion 或 full-access
+  }
+  class ProjectsLeadRow {
+    +agentId, botTokenEnv, chatChannel, match
+    +backend codex-app-server
+    +canSpawnRunners false
+    +codexResidencyPatrol true
+    +companion true 或 codexProfile
+  }
+  class RegistryEntry {
+    +label, plist, manifest
+    +carrier? claude-v2 或 codex-tui
+    +codexHome?, codexBin?, stateDir?
+  }
+  class LaunchManifest {
+    +leadCarrier launchd-v2 或 launchd-codex-tui
+    +leadTuiWindow present 或 absent 或 n/a
+  }
+  SlotEntry --> ProjectsLeadRow : qa_multilead_build_projects
+  ProjectsLeadRow --> RegistryEntry : qa_slot_start_lead
+  RegistryEntry --> LaunchManifest

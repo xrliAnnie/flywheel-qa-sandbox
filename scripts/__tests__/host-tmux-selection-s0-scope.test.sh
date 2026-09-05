@@ -23,6 +23,7 @@ packages/teamlead/scripts/templates/flywheel-codex-lead-wrapper-mufasa-tui.sh
 packages/teamlead/scripts/rollback-codex-lead-mufasa-tui.sh
 scripts/launchd/com.flywheel.updater.plist
 scripts/lib/qa-launchd-lead.sh
+scripts/lib/qa-codex-lead-wrapper.template.sh
 scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
 "

@@ -3,7 +3,8 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP="$(mktemp -d /tmp/f1663-q.XXXXXX)"
-trap 'rm -rf "$TMP"' EXIT
+MINT_SLOT="/tmp/flywheel-test-slot-$((900000 + $$))"
+trap 'rm -rf "$TMP" "$MINT_SLOT"' EXIT
 export HOME="$TMP/home"
 export FLYWHEEL_DIR="$ROOT"
 export FLYWHEEL_STATE_DIR="$TMP/state"
@@ -14,6 +15,17 @@ export FLYWHEEL_QA_LEAD_VERIFY_POLLS=1
 passed=0; failed=0
 pass() { printf 'PASS: %s\n' "$1"; passed=$((passed + 1)); }
 fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
+qa_test_file_mode() {
+  local path="$1" mode=""
+  if mode="$(stat -c %a "$path" 2>/dev/null)" \
+      && [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s\n' "$mode"
+    return 0
+  fi
+  mode="$(stat -f %Lp "$path" 2>/dev/null)" \
+    && [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  printf '%s\n' "$mode"
+}
 
 # shellcheck source=../lib/qa-launchd-lead.sh
 source "$ROOT/scripts/lib/qa-launchd-lead.sh"
@@ -33,6 +45,7 @@ log_file="$TMP/runtime/lead.log"
 plist="$TMP/runtime/lead.plist"
 registry="$TMP/runtime/launchd-leads.json"
 summary_home="$TMP/runtime/identity-home"
+fixture_dir="$ROOT/scripts/__tests__/fixtures/fly2301"
 printf '%s\n' '{"leadId":"qa-lead","projectDir":"/tmp/project","projectName":"test-slot-7"}' > "$manifest"
 printf '%s\n' '[]' > "$projects"
 : > "$env_file"
@@ -59,6 +72,367 @@ else
   fail "QA launchd plist render"
 fi
 
+sed -e "s#${TMP}#@TMP@#g" -e "s#${ROOT}#@ROOT@#g" "$plist" > "$TMP/claude-lead.normalized.plist"
+if cmp -s "$fixture_dir/claude-lead.plist" "$TMP/claude-lead.normalized.plist"; then
+  pass "Claude launchd plist remains byte-identical to the frozen baseline"
+else
+  fail "Claude launchd plist byte baseline"
+fi
+
+codex_wrapper="$TMP/runtime/codex-wrapper.sh"
+codex_plist="$TMP/runtime/codex-lead.plist"
+codex_tmux_bin="$TMP/tmux-authority/tmux"
+mkdir -p "$(dirname "$codex_tmux_bin")"
+printf '%s\n' '#!/bin/bash' 'exit 0' > "$codex_wrapper"
+printf '%s\n' '#!/bin/bash' 'printf "tmux 3.7c\\n"' > "$codex_tmux_bin"
+chmod +x "$codex_wrapper"
+chmod +x "$codex_tmux_bin"
+if qa_launchd_render_codex_plist "$codex_plist" "$label" "$codex_wrapper" \
+    "$HOME" "$FLYWHEEL_STATE_DIR" "$log_file" "$TMP" "$codex_tmux_bin" \
+    && python3 - "$codex_plist" "$codex_wrapper" "$HOME" "$FLYWHEEL_STATE_DIR" "$TMP" "$ROOT" "$codex_tmux_bin" <<'PY'
+import plistlib
+import sys
+
+path, wrapper, home, state, slot_dir, root, tmux_bin = sys.argv[1:]
+with open(path, "rb") as fh:
+    value = plistlib.load(fh)
+assert value["ProgramArguments"] == ["/bin/bash", wrapper]
+assert list(value["EnvironmentVariables"]) == [
+    "HOME", "PATH", "FLYWHEEL_DIR", "FLYWHEEL_STATE_DIR", "TMUX_TMPDIR",
+    "FLYWHEEL_CODEX_TMUX_BIN", "FLYWHEEL_CODEX_TMUX_VERSION"
+]
+assert value["EnvironmentVariables"]["HOME"] == home
+assert value["EnvironmentVariables"]["FLYWHEEL_DIR"] == root
+assert value["EnvironmentVariables"]["FLYWHEEL_STATE_DIR"] == state
+assert value["EnvironmentVariables"]["TMUX_TMPDIR"] == slot_dir
+assert value["EnvironmentVariables"]["FLYWHEEL_CODEX_TMUX_BIN"] == tmux_bin
+assert value["EnvironmentVariables"]["FLYWHEEL_CODEX_TMUX_VERSION"] == "tmux 3.7c"
+assert value["RunAtLoad"] is True and value["KeepAlive"] is True
+PY
+then
+  pass "Codex launchd plist pins one absolute tmux authority"
+else
+  fail "Codex launchd plist carrier shape"
+fi
+sed -e "s#${TMP}#@TMP@#g" -e "s#${ROOT}#@ROOT@#g" "$codex_plist" > "$TMP/codex-lead.normalized.plist"
+if cmp -s "$fixture_dir/codex-lead.plist" "$TMP/codex-lead.normalized.plist"; then
+  pass "Codex launchd plist matches its frozen carrier baseline"
+else
+  fail "Codex launchd plist byte baseline"
+fi
+
+renderer="$ROOT/scripts/lib/qa-codex-lead-render.py"
+template="$ROOT/scripts/lib/qa-codex-lead-wrapper.template.sh"
+rendered_wrapper="$TMP/runtime/rendered-codex-wrapper.sh"
+workspace="$TMP/workspace"
+mkdir -p "$workspace"
+if python3 "$renderer" render --template "$template" --output "$rendered_wrapper" \
+      --lead-id qa-lead --project-dir "$workspace" --project-name test-slot-7 \
+    && python3 "$renderer" check --path "$rendered_wrapper" \
+      --lead-id qa-lead --project-dir "$workspace" --project-name test-slot-7 \
+    && bash -n "$rendered_wrapper" \
+    && [ "$(qa_test_file_mode "$rendered_wrapper")" = 700 ]; then
+  pass "Codex slot wrapper renders validated launcher argv as mode 700"
+else
+  fail "Codex slot wrapper renderer"
+fi
+
+wrapper_scrub_root="$TMP/wrapper-scrub-root"
+wrapper_scrub_state="$TMP/wrapper-scrub-state"
+wrapper_scrub_calls="$TMP/wrapper-scrub.calls"
+mkdir -p "$wrapper_scrub_root/scripts" \
+  "$wrapper_scrub_root/packages/teamlead/scripts" "$wrapper_scrub_root/bin" \
+  "$wrapper_scrub_state"
+cat > "$wrapper_scrub_root/scripts/host-tmux-selection-gate.sh" <<'SCRUB_GATE'
+#!/bin/bash
+set -euo pipefail
+for name in \
+  FLYWHEEL_HOST_TMUX_GATE_TEST_MODE \
+  FLYWHEEL_HOST_TMUX_POST_S1_PATH \
+  FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH \
+  FLYWHEEL_HOST_TMUX_FILE_BIN \
+  FLYWHEEL_HOST_TMUX_HOST_ID \
+  FLYWHEEL_HOST_TMUX_GATE_APPLICABILITY \
+  FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH \
+  FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS \
+  FLYWHEEL_HOST_TMUX_FUTURE_FIXTURE; do
+  if /usr/bin/env | /usr/bin/grep -q "^${name}="; then
+    printf 'leaked:%s\n' "$name" >> "$FLY1663_WRAPPER_SCRUB_CALLS"
+    exit 91
+  fi
+done
+printf '%s:%s\n' "$1" "$2" >> "$FLY1663_WRAPPER_SCRUB_CALLS"
+SCRUB_GATE
+cat > "$wrapper_scrub_root/packages/teamlead/scripts/codex-lead.sh" <<'SCRUB_LEAD'
+#!/bin/bash
+printf 'lead:%s:%s:%s\n' "$1" "$2" "$3" >> "$FLY1663_WRAPPER_SCRUB_CALLS"
+SCRUB_LEAD
+cat > "$wrapper_scrub_root/bin/tmux" <<'SCRUB_TMUX'
+#!/bin/bash
+printf 'tmux 3.7c\n'
+SCRUB_TMUX
+chmod +x "$wrapper_scrub_root/scripts/host-tmux-selection-gate.sh" \
+  "$wrapper_scrub_root/packages/teamlead/scripts/codex-lead.sh" \
+  "$wrapper_scrub_root/bin/tmux"
+cat > "$wrapper_scrub_state/.env" <<SCRUB_ENV
+FLYWHEEL_DIR='$wrapper_scrub_root'
+FLYWHEEL_STATE_DIR='$wrapper_scrub_state'
+FLYWHEEL_HOST_TMUX_GATE_TEST_MODE='1'
+FLYWHEEL_HOST_TMUX_POST_S1_PATH='/tmp/host-fixture'
+FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH='/tmp/host-tmux'
+FLYWHEEL_HOST_TMUX_FILE_BIN='/tmp/file-fixture'
+FLYWHEEL_HOST_TMUX_HOST_ID='host-fixture'
+FLYWHEEL_HOST_TMUX_GATE_APPLICABILITY='applicable'
+FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH='1'
+FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS='999999'
+FLYWHEEL_HOST_TMUX_FUTURE_FIXTURE='must-not-leak'
+FLYWHEEL_CODEX_TMUX_BIN='$wrapper_scrub_root/bin/tmux'
+FLYWHEEL_CODEX_TMUX_VERSION='tmux 3.7c'
+SCRUB_ENV
+if FLYWHEEL_DIR="$wrapper_scrub_root" \
+    FLYWHEEL_STATE_DIR="$wrapper_scrub_state" \
+    FLY1663_WRAPPER_SCRUB_CALLS="$wrapper_scrub_calls" \
+    /bin/bash "$rendered_wrapper" \
+    && printf '%s\n' 'gate:codex-tui' 'verify:codex-tui' \
+      "lead:qa-lead:$workspace:test-slot-7" \
+      | cmp -s - "$wrapper_scrub_calls"; then
+  pass "Codex slot wrapper scrubs inherited host-tmux fixture controls before its gate"
+else
+  fail "Codex slot wrapper host-tmux environment scrub"
+fi
+
+wrapper_version_calls="$TMP/wrapper-version.calls"
+cat > "$wrapper_scrub_root/bin/tmux" <<VERSION_TMUX
+#!/bin/bash
+if [[ ! -f '$wrapper_version_calls' ]]; then
+  : > '$wrapper_version_calls'
+  printf 'tmux 3.7c\\n'
+else
+  printf 'tmux 3.5a\\n'
+fi
+VERSION_TMUX
+: > "$wrapper_scrub_calls"
+rm -f "$wrapper_version_calls"
+if ! FLYWHEEL_DIR="$wrapper_scrub_root" \
+    FLYWHEEL_STATE_DIR="$wrapper_scrub_state" \
+    FLY1663_WRAPPER_SCRUB_CALLS="$wrapper_scrub_calls" \
+    /bin/bash "$rendered_wrapper" 2>"$TMP/wrapper-version.err" \
+    && grep -Fq 'tmux version mismatch' "$TMP/wrapper-version.err" \
+    && ! grep -Fq 'lead:' "$wrapper_scrub_calls"; then
+  pass "Codex slot wrapper fails before Lead startup on tmux version mismatch"
+else
+  fail "Codex slot wrapper tmux version mismatch guard"
+fi
+
+mkdir -p "$TMP/space dir"
+ln -s "$workspace" "$TMP/workspace-link"
+renderer_negatives=0
+python3 "$renderer" render --template "$template" --output "$TMP/runtime/bad-lead.sh" \
+  --lead-id Qa-lead --project-dir "$workspace" --project-name test-slot-7 >/dev/null 2>&1 \
+  || renderer_negatives=$((renderer_negatives + 1))
+python3 "$renderer" render --template "$template" --output "$TMP/runtime/bad-project.sh" \
+  --lead-id qa-lead --project-dir "$workspace" --project-name 'bad project' >/dev/null 2>&1 \
+  || renderer_negatives=$((renderer_negatives + 1))
+python3 "$renderer" render --template "$template" --output "$TMP/runtime/bad-path.sh" \
+  --lead-id qa-lead --project-dir "$TMP/space dir" --project-name test-slot-7 >/dev/null 2>&1 \
+  || renderer_negatives=$((renderer_negatives + 1))
+python3 "$renderer" render --template "$template" --output "$TMP/runtime/symlink-path.sh" \
+  --lead-id qa-lead --project-dir "$TMP/workspace-link" --project-name test-slot-7 >/dev/null 2>&1 \
+  || renderer_negatives=$((renderer_negatives + 1))
+if [ "$renderer_negatives" = 4 ] \
+    && [ ! -e "$TMP/runtime/bad-lead.sh" ] \
+    && [ ! -e "$TMP/runtime/bad-project.sh" ] \
+    && [ ! -e "$TMP/runtime/bad-path.sh" ] \
+    && [ ! -e "$TMP/runtime/symlink-path.sh" ]; then
+  pass "Codex wrapper renderer rejects malformed coordinates before output"
+else
+  fail "Codex wrapper renderer coordinate validation"
+fi
+
+write_mint_codex_fixture() {
+  local target="$1"
+  cat > "$target" <<'CODEX'
+#!/bin/bash
+set -u
+if [[ -n "${FLY1663_QA_CODEX_PREFLIGHT_CALLS:-}" ]]; then
+  printf '%s\n' "$*" >> "$FLY1663_QA_CODEX_PREFLIGHT_CALLS"
+fi
+pid_file="$CODEX_HOME/app-server-daemon/app-server.pid"
+socket="$CODEX_HOME/app-server-control/app-server-control.sock"
+case "$*" in
+  'remote-control start --json')
+    mkdir -p "$(dirname "$pid_file")" "$(dirname "$socket")"
+    daemon_pid=7001
+    python3 - "$pid_file" "$daemon_pid" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump({"pid": int(sys.argv[2]), "processStartTime": "fixture"}, fh)
+PY
+    : > "$socket"
+    : > "$CODEX_HOME/app-server-daemon/.fixture-daemon-alive"
+    ;;
+  'remote-control stop --json')
+    daemon_pid=$(python3 - "$pid_file" <<'PY' 2>/dev/null || true
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    print(json.load(fh)["pid"])
+PY
+)
+    rm -f "$pid_file" "$socket" \
+      "$CODEX_HOME/app-server-daemon/.fixture-daemon-alive"
+    ;;
+  *) exit 64 ;;
+esac
+CODEX
+  chmod +x "$target"
+}
+
+
+mint_source="$HOME/.codex"
+mint_dest="$MINT_SLOT/cdxh/qa-lead"
+mint_release="$TMP/codex-release"
+mint_bin="$TMP/mint-bin"
+mkdir -p "$mint_source" "$mint_release/bin" "$mint_bin" "$MINT_SLOT"
+python3 - "$mint_source/auth.json" <<'PY'
+import base64
+import json
+from pathlib import Path
+import sys
+
+def encoded(value):
+    return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+token = ".".join((
+    encoded({"alg": "none"}),
+    encoded({
+        "email": "xrliannie.b@gmail.com",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-fly1663-fixture",
+            "chatgpt_plan_type": "pro",
+        },
+    }),
+    "fixture-signature",
+))
+Path(sys.argv[1]).write_text(json.dumps({"tokens": {
+    "id_token": token,
+    "access_token": "fixture-access",
+    "refresh_token": "fixture-refresh",
+}}) + "\n", encoding="utf-8")
+PY
+chmod 600 "$mint_source/auth.json"
+mint_source_hash=$(shasum -a 256 "$mint_source/auth.json" | awk '{print $1}')
+write_mint_codex_fixture "$mint_release/bin/codex"
+ln -s bin/codex "$mint_release/codex"
+ln -s "$mint_release/codex" "$mint_bin/codex"
+export PATH="$mint_bin:$PATH"
+if qa_launchd_provision_codex_home "$ROOT" "$mint_dest" "$MINT_SLOT" \
+    && [ -x "$mint_dest/packages/standalone/current/codex" ] \
+    && [ "$(qa_test_file_mode "$mint_dest/auth.json")" = 600 ] \
+    && [ "$(cat "$mint_dest/.active")" = business ] \
+    && [ ! -e "$mint_dest/.flywheel-qa-source-home" ] \
+    && [ ! -e "$mint_dest/.flywheel-qa-source-auth-baseline" ] \
+    && [ ! -e "$mint_source/.flywheel-qa-auth-lease" ] \
+    && [ ! -e "$mint_dest/AGENTS.md" ] \
+    && [ ! -e "$mint_dest/config.toml" ] \
+    && [ "$(shasum -a 256 "$mint_source/auth.json" | awk '{print $1}')" = \
+      "$mint_source_hash" ]; then
+  pass "Codex home birth delegates credential selection to the production provisioner"
+else
+  fail "Codex home production birth adapter"
+fi
+
+mint_installed_link="$mint_dest/packages/standalone/releases/$(basename "$mint_release")/codex"
+if [ -L "$mint_installed_link" ] \
+    && [ "$(readlink "$mint_installed_link")" = bin/codex ] \
+    && python3 - "$mint_dest/packages/standalone" \
+      "$mint_dest/packages/standalone/current/codex" <<'PY'
+import os
+import sys
+
+standalone, installed = map(os.path.realpath, sys.argv[1:])
+if os.path.commonpath((standalone, installed)) != standalone:
+    raise SystemExit(1)
+PY
+then
+  pass "Codex home birth preserves the release-relative binary inside the slot"
+else
+  fail "Codex home standalone symlink containment"
+fi
+
+escape_repo="$TMP/escape-repo"
+escape_release="$TMP/escape-release"
+escape_bin="$TMP/escape-bin"
+escape_target="$TMP/outside-codex"
+escape_dest="$MINT_SLOT/cdxh/escape-agent"
+mkdir -p "$escape_repo/packages/claude-runner/dist" "$escape_release/bin" "$escape_bin"
+printf '%s\n' '{"type":"module"}' > "$escape_repo/package.json"
+cat > "$escape_repo/packages/claude-runner/dist/index.js" <<'JS'
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export function provisionCodexHome({ executionId, env }) {
+	const home = join(env.FLYWHEEL_CODEX_HOMES_ROOT, executionId);
+	mkdirSync(home, { recursive: true });
+	writeFileSync(join(home, "auth.json"), "{}\n", { mode: 0o600 });
+	rmSync(join(process.env.FLY1663_ESCAPE_RELEASE, "codex"));
+	symlinkSync(
+		process.env.FLY1663_ESCAPE_TARGET,
+		join(process.env.FLY1663_ESCAPE_RELEASE, "codex"),
+	);
+	return home;
+}
+JS
+write_mint_codex_fixture "$escape_release/bin/codex"
+ln -s bin/codex "$escape_release/codex"
+ln -s "$escape_release/codex" "$escape_bin/codex"
+write_mint_codex_fixture "$escape_target"
+if ! FLY1663_ESCAPE_RELEASE="$escape_release" \
+      FLY1663_ESCAPE_TARGET="$escape_target" \
+      node "$ROOT/scripts/lib/qa-codex-home-provision.mjs" \
+        "$escape_repo" "$MINT_SLOT" escape-agent "$escape_bin/codex" \
+        >/dev/null 2>"$TMP/escape-install.err" \
+    && [ ! -e "$escape_dest" ] \
+    && grep -Fq 'installed Codex command resolves outside slot standalone' \
+      "$TMP/escape-install.err"; then
+  pass "Codex home birth rejects an installed binary outside slot standalone"
+else
+  fail "Codex home post-install containment assertion"
+fi
+
+bad_source="$TMP/bad-source"
+bad_dest="$MINT_SLOT/cdxh/bad-source"
+mkdir -p "$bad_source"
+ln -s "$mint_source/auth.json" "$bad_source/auth.json"
+if ! FLYWHEEL_CODEX_SOURCE_HOME="$bad_source" \
+      qa_launchd_provision_codex_home "$ROOT" "$bad_dest" "$MINT_SLOT" \
+      >/dev/null 2>"$TMP/bad-source.err" \
+    && [ ! -e "$bad_dest" ] \
+    && ! grep -Fq fixture-refresh "$TMP/bad-source.err"; then
+  pass "production birth rejects a symlink credential with zero slot residue"
+else
+  fail "Codex home production birth negative guard"
+fi
+
+long_agent=$(printf 'agent-%090d' 0)
+long_dest="$MINT_SLOT/cdxh/$long_agent"
+outside_home="$TMP/outside-codex-home"
+mkdir -p "$outside_home"
+: > "$outside_home/sentinel"
+ln -s "$outside_home" "$MINT_SLOT/cdxh/escape"
+if ! qa_launchd_provision_codex_home "$ROOT" "$long_dest" "$MINT_SLOT" \
+      >/dev/null 2>"$TMP/long-agent.err" \
+    && grep -Fq 'socket path exceeds 100 bytes' "$TMP/long-agent.err" \
+    && [ ! -e "$long_dest" ] \
+    && ! qa_launchd_retire_codex_home "$MINT_SLOT/cdxh/escape" "$MINT_SLOT" \
+      >/dev/null 2>&1 \
+    && [ -f "$outside_home/sentinel" ]; then
+  pass "Codex home birth and retirement reject long sockets and symlink escapes"
+else
+  fail "Codex home path confinement guards"
+fi
+
 launchctl_state="$TMP/launchctl-state"
 launchctl_calls="$TMP/launchctl-calls"
 launchctl_stub="$TMP/bin/launchctl"
@@ -68,7 +442,7 @@ printf '%s\n' "$*" >> "$FLY1663_QA_LAUNCHCTL_CALLS"
 case "$1" in
   print)
     [ -f "$FLY1663_QA_LAUNCHCTL_STATE" ] || exit 113
-    printf 'pid = 4242\n'
+    printf '%b' "${FLY1663_QA_LAUNCHCTL_PID_LINES:-pid = 4242\\n}"
     ;;
   bootstrap)
     : > "$FLY1663_QA_LAUNCHCTL_STATE"
@@ -84,6 +458,149 @@ export FLYWHEEL_QA_LAUNCHCTL="$launchctl_stub"
 export FLY1663_QA_LAUNCHCTL_STATE="$launchctl_state"
 export FLY1663_QA_LAUNCHCTL_CALLS="$launchctl_calls"
 : > "$launchctl_calls"
+: > "$launchctl_state"
+
+if [ "$(qa_launchd_lead_pid_exact "$label")" = 4242 ]; then
+  export FLY1663_QA_LAUNCHCTL_PID_LINES=$'pid = 4242\npid = 4343\n'
+  if qa_launchd_lead_pid_exact "$label" >/dev/null 2>&1; then
+    fail "exact Codex launchd PID parser accepted multiple pid lines"
+  else
+    pass "exact Codex launchd PID parser requires one positive pid line"
+  fi
+  unset FLY1663_QA_LAUNCHCTL_PID_LINES
+else
+  fail "exact Codex launchd PID parser"
+fi
+rm -f "$launchctl_state"
+
+FLY1663_REAL_PYTHON3="$(command -v python3)"
+env_probe_python_argv="$TMP/env-probe-python.argv"
+: > "$env_probe_python_argv"
+python3() {
+  printf '<%s>\n' "$@" >> "$env_probe_python_argv"
+  command "$FLY1663_REAL_PYTHON3" "$@"
+}
+ps() {
+  if [[ "$*" == 'eww -p 987654 -o command=' ]]; then
+    printf 'node runtime.js CODEX_HOME=/tmp/flywheel-test-slot-7/cdxh/qa-lead OTHER=value DISCORD_BOT_TOKEN=fixture-secret-not-in-argv\n'
+    return 0
+  fi
+  return 1
+}
+if qa_launchd_process_env_has 987654 CODEX_HOME /tmp/flywheel-test-slot-7/cdxh/qa-lead \
+    >/dev/null 2>"$TMP/env-probe.err" \
+    && ! qa_launchd_process_env_has 987654 CODEX_HOME /wrong >/dev/null 2>&1 \
+    && [ "$(qa_launchd_process_env_has 987654 'BAD-NAME' value >/dev/null 2>&1; printf '%s' "$?")" = 2 ] \
+    && ! grep -Fq '/tmp/flywheel-test-slot-7/cdxh/qa-lead' "$TMP/env-probe.err" \
+    && ! grep -Fq 'fixture-secret-not-in-argv' "$env_probe_python_argv" \
+    && ! grep -Fq 'ERROR:' "$TMP/env-probe.err"; then
+  pass "Codex process environment probe matches one exact key without leaking values through diagnostics or argv"
+else
+  fail "Codex process environment probe"
+fi
+unset -f ps python3
+
+QA_PROCESS_COMMAND='/usr/local/bin/node /repo/packages/teamlead/scripts/../dist/lead-backends/codex/codex-lead-tui-runtime.js'
+QA_PROCESS_STATUS=S
+ps() {
+  case "$*" in
+    '-o stat= -p 987654') printf '%s\n' "$QA_PROCESS_STATUS" ;;
+    '-p 987654 -o command=') printf '%s\n' "$QA_PROCESS_COMMAND" ;;
+    *) return 1 ;;
+  esac
+}
+if qa_launchd_codex_process_matches 987654; then
+  matcher_negatives=0
+  QA_PROCESS_COMMAND='/usr/bin/python3 /repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js'
+  qa_launchd_codex_process_matches 987654 >/dev/null 2>&1 || matcher_negatives=$((matcher_negatives + 1))
+  QA_PROCESS_COMMAND='/usr/local/bin/node /repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js /other/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js'
+  qa_launchd_codex_process_matches 987654 >/dev/null 2>&1 || matcher_negatives=$((matcher_negatives + 1))
+  QA_PROCESS_COMMAND='/repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js'
+  qa_launchd_codex_process_matches 987654 >/dev/null 2>&1 || matcher_negatives=$((matcher_negatives + 1))
+  QA_PROCESS_COMMAND='/usr/local/bin/node /repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js'
+  QA_PROCESS_STATUS=Z
+  qa_launchd_codex_process_matches 987654 >/dev/null 2>&1 || matcher_negatives=$((matcher_negatives + 1))
+  if [[ "$matcher_negatives" == 4 ]]; then
+    pass "Codex process matcher requires one live node runtime entrypoint"
+  else
+    fail "Codex process matcher accepted a wrong predecessor, duplicate/index-0 runtime, or zombie"
+  fi
+else
+  fail "Codex process matcher"
+fi
+unset -f ps
+unset QA_PROCESS_COMMAND QA_PROCESS_STATUS
+
+heartbeat_dir="$TMP/flywheel-test-slot-7/q/7/state/codex-lead/demo/brain"
+heartbeat="$heartbeat_dir/heartbeat.json"
+evidence_dir="$TMP/evidence"
+mkdir -p "$heartbeat_dir" "$evidence_dir"
+printf '%s\n' '{"v":1,"generationId":"gen-1","threadId":"thread-1","processPid":4242,"carrierInstanceId":"carrier-1","state":"online","updatedAt":"2026-09-03T00:00:00.000Z"}' > "$heartbeat"
+heartbeat_hash=$(python3 - "$heartbeat" <<'PY'
+import hashlib
+import sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
+PY
+)
+heartbeat_one=$(qa_launchd_read_heartbeat "$heartbeat")
+single_snapshot_count=$(find "$evidence_dir" -type f | wc -l | tr -d ' ')
+heartbeat_two=$(qa_launchd_read_heartbeat "$heartbeat" "$evidence_dir")
+snapshot="$evidence_dir/heartbeat-${heartbeat_hash}.json"
+if [[ "$heartbeat_one" == $'4242\tgen-1\tcarrier-1\tonline\t'"$heartbeat_hash" ]] \
+    && [[ "$heartbeat_two" == "$heartbeat_one" ]] \
+    && [ "$single_snapshot_count" = 0 ] \
+    && cmp -s "$heartbeat" "$snapshot" \
+    && [ "$(qa_test_file_mode "$snapshot")" = 600 ]; then
+  pass "heartbeat reader validates one snapshot and archives those exact bytes on request"
+else
+  fail "Codex heartbeat reader and evidence snapshot"
+fi
+
+heartbeat_negatives=0
+printf '%s\n' '{"v":1,"generationId":"gen","threadId":"thread","processPid":4242,"carrierInstanceId":"carrier","updatedAt":"now"}' > "$TMP/missing-state.json"
+qa_launchd_read_heartbeat "$TMP/missing-state.json" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+printf '%s\n' '{"v":1,"generationId":"gen","threadId":"thread","processPid":4242,"carrierInstanceId":"carrier","state":"starting","updatedAt":"now"}' > "$TMP/invalid-state.json"
+qa_launchd_read_heartbeat "$TMP/invalid-state.json" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+ln -s "$heartbeat" "$TMP/heartbeat-link.json"
+qa_launchd_read_heartbeat "$TMP/heartbeat-link.json" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+python3 - "$TMP/oversized-heartbeat.json" <<'PY'
+from pathlib import Path
+import json
+import sys
+Path(sys.argv[1]).write_text(json.dumps({"padding": "x" * 65537}))
+PY
+qa_launchd_read_heartbeat "$TMP/oversized-heartbeat.json" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+mkdir -p "$heartbeat_dir/inside-evidence" "$TMP/real-evidence"
+ln -s "$TMP/real-evidence" "$TMP/evidence-link"
+qa_launchd_read_heartbeat "$heartbeat" "$heartbeat_dir/inside-evidence" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+qa_launchd_read_heartbeat "$heartbeat" "$TMP/evidence-link" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+if [[ "$heartbeat_negatives" == 6 ]]; then
+  pass "heartbeat reader rejects missing/invalid state, symlinks, oversized input, and unsafe evidence roots"
+else
+  fail "Codex heartbeat adversarial matrix (${heartbeat_negatives}/6 rejected)"
+fi
+
+state_path=$(qa_launchd_codex_state_dir /tmp/flywheel-test-slot-7/q/7 test-slot-7 qa-lead)
+if [[ "$state_path" == '/tmp/flywheel-test-slot-7/q/7/state/codex-lead/test-slot-7__qa-lead-746573742d736c6f742d371f71612d6c656164' ]]; then
+  pass "Codex state path matches the launcher's injective identity encoding"
+else
+  fail "Codex state path identity encoding"
+fi
+
+state_dirs=$(qa_launchd_codex_state_dirs_add '{}' test-slot-7 qa-lead "$state_path")
+if [[ "$(jq -r '.["test-slot-7"]["qa-lead"]' <<<"$state_dirs")" == "$state_path" ]] \
+    && ! qa_launchd_codex_state_dirs_add "$state_dirs" test-slot-7 qa-lead relative/path \
+      >/dev/null 2>&1; then
+  pass "slot Codex state map carries the Lead listening directory to Bridge"
+else
+  fail "slot Codex Bridge state-directory map"
+fi
 
 if [ "$(qa_launchd_lead_start "$label" "$plist")" = 4242 ] \
     && grep -qF "bootstrap gui/test $plist" "$launchctl_calls" \
@@ -96,7 +613,14 @@ fi
 tmux_stub="$TMP/bin/tmux"
 cat > "$tmux_stub" <<'TMUX'
 #!/bin/bash
-[[ "$1" == -S && "$3" == has-session && "$4" == -t && "$5" == =main ]]
+if [[ "$1" == -S && "$3" == has-session && "$4" == -t && "$5" == =main ]]; then
+  exit 0
+fi
+if [[ "$1" == -S && "$3" == list-windows && "$4" == -t && "$5" == =flywheel ]]; then
+  printf '%s\n' "${FLY1663_QA_TMUX_WINDOWS:-}"
+  exit 0
+fi
+exit 1
 TMUX
 chmod +x "$tmux_stub"
 export FLYWHEEL_QA_TMUX="$tmux_stub"
@@ -107,6 +631,52 @@ if [ "$(qa_launchd_lead_verify "$label" "$manifest")" = $'4242\t/tmp/private-qa.
 else
   fail "QA launchd topology verification"
 fi
+tmux_ambient_mismatch="$TMP/bin/tmux-ambient-mismatch"
+printf '%s\n' '#!/bin/bash' 'exit 91' > "$tmux_ambient_mismatch"
+chmod +x "$tmux_ambient_mismatch"
+export FLYWHEEL_QA_TMUX="$tmux_ambient_mismatch"
+
+codex_home="$TMP/flywheel-test-slot-7/cdxh/qa-lead"
+codex_state="${heartbeat_dir%/brain}"
+QA_PROCESS_COMMAND="/usr/local/bin/node /repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js CODEX_HOME=${codex_home}"
+ps() {
+  case "$*" in
+    '-o stat= -p 4242') printf 'S\n' ;;
+    '-p 4242 -o command='|'eww -p 4242 -o command=') printf '%s\n' "$QA_PROCESS_COMMAND" ;;
+    *) return 1 ;;
+  esac
+}
+export FLY1663_QA_TMUX_WINDOWS='test-slot-7-qa-lead'
+if [[ "$(qa_launchd_codex_lead_verify "$label" "$codex_home" "$codex_state")" == $'4242\t'"$codex_state" ]] \
+    && qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead \
+      /tmp/slot-tmux.sock "$tmux_stub"; then
+  export FLY1663_QA_TMUX_WINDOWS=''
+  qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead \
+    /tmp/slot-tmux.sock "$tmux_stub" \
+    >/dev/null 2>&1 || no_window_rejected=1
+  export FLY1663_QA_TMUX_WINDOWS=$'test-slot-7-qa-lead\ntest-slot-7-qa-lead'
+  qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead \
+    /tmp/slot-tmux.sock "$tmux_stub" \
+    >/dev/null 2>&1 || duplicate_window_rejected=1
+  if [[ "${no_window_rejected:-0}" == 1 && "${duplicate_window_rejected:-0}" == 1 ]]; then
+    pass "Codex topology verification binds launchd, runtime, environment, heartbeat, and exactly one TUI window"
+  else
+    fail "Codex readiness accepted zero or duplicate TUI windows"
+  fi
+else
+  fail "Codex topology verification and readiness"
+fi
+verify_definition=$(declare -f qa_launchd_codex_lead_verify)
+ready_definition=$(declare -f qa_launchd_codex_lead_ready)
+if [[ "$(grep -c 'qa_launchd_read_heartbeat.*heartbeat.json"' <<<"$verify_definition")" == 1 ]] \
+    && [[ "$(grep -c 'qa_launchd_read_heartbeat.*heartbeat.json"' <<<"$ready_definition")" == 1 ]] \
+    && ! grep -q 'evidence\|snapshot' <<<"$verify_definition$ready_definition"; then
+  pass "normal Codex verify/ready paths read one heartbeat and expose no snapshot output argument"
+else
+  fail "normal Codex verify/ready heartbeat call shape"
+fi
+unset -f ps
+unset QA_PROCESS_COMMAND FLY1663_QA_TMUX_WINDOWS no_window_rejected duplicate_window_rejected
 
 # A pending cold start must not inherit the 100ms PID-discovery cadence. The
 # old verifier ran launchctl + two jq processes ten times per second and could
@@ -131,6 +701,37 @@ else
   fail "pending topology verifier still creates a process probe storm"
 fi
 
+# Teardown convergence is a fixed 30-second production contract. Ambient test
+# variables must not be able to shorten the proof or change its cadence.
+stop_budget_calls="$TMP/stop-budget-calls"
+stop_budget_sleeps="$TMP/stop-budget-sleeps"
+: > "$stop_budget_calls"
+: > "$stop_budget_sleeps"
+original_process_incarnation=$(declare -f qa_launchd_process_incarnation)
+qa_launchd_process_incarnation() {
+  printf '%s\n' observed >> "$stop_budget_calls"
+  if [[ "$(wc -l < "$stop_budget_calls" | tr -d ' ')" == 1 ]]; then
+    printf '%s\n' fixed-incarnation
+  else
+    printf '%s\n' replacement-incarnation
+  fi
+}
+sleep() { printf '%s\n' "$1" >> "$stop_budget_sleeps"; }
+stop_budget_result=0
+FLYWHEEL_QA_STOP_POLLS=1 FLYWHEEL_QA_STOP_INTERVAL=9 \
+  qa_launchd_wait_process_gone 4242 fixed-incarnation >/dev/null 2>&1 \
+  || stop_budget_result=$?
+unset -f qa_launchd_process_incarnation sleep
+eval "$original_process_incarnation"
+if [[ "$stop_budget_result" == 0 ]] \
+    && [[ "$(wc -l < "$stop_budget_calls" | tr -d ' ')" == 2 ]] \
+    && [[ "$(wc -l < "$stop_budget_sleeps" | tr -d ' ')" == 1 ]] \
+    && ! grep -Ev '^0\.2$' "$stop_budget_sleeps" >/dev/null; then
+  pass "Codex teardown convergence ignores ambient polling knobs"
+else
+  fail "Codex teardown convergence exposes an environment-controlled budget"
+fi
+
 if qa_launchd_register "$registry" "$label" "$plist" "$manifest" \
     && qa_launchd_register "$registry" "$label" "$plist" "$manifest" \
     && [ "$(jq length "$registry")" = 1 ] \
@@ -140,6 +741,580 @@ if qa_launchd_register "$registry" "$label" "$plist" "$manifest" \
 else
   fail "QA launchd registry/teardown"
 fi
+
+codex_registry="$TMP/runtime/codex-launchd-leads.json"
+codex_bin="$mint_dest/packages/standalone/current/codex"
+if qa_launchd_register "$codex_registry" "$label" "$codex_plist" '' \
+    codex-tui "$mint_dest" "$codex_bin" "$state_path" "$TMP/runtime/codex.pid" \
+    "$codex_tmux_bin" \
+    && jq -e --arg label "$label" --arg plist "$codex_plist" \
+      --arg home "$mint_dest" --arg bin "$codex_bin" --arg state "$state_path" \
+      --arg pidFile "$TMP/runtime/codex.pid" --arg tmuxBin "$codex_tmux_bin" '
+      length == 1 and .[0] == {
+        label:$label, plist:$plist, manifest:"", carrier:"codex-tui",
+        codexHome:$home, codexBin:$bin, stateDir:$state, runtimePidFile:$pidFile,
+        tmuxBin:$tmuxBin
+      }' "$codex_registry" >/dev/null; then
+  pass "launchd registry records the complete Codex carrier teardown coordinates"
+else
+  fail "Codex launchd registry v2 coordinates"
+fi
+
+if declare -F qa_launchd_lead_restart_drill >/dev/null 2>&1; then
+  pass "Codex launchd restart drill helper is available"
+else
+  fail "Codex launchd restart drill helper"
+fi
+
+drill_slot_number=$((980000 + $$))
+drill_slot="/tmp/flywheel-test-slot-${drill_slot_number}"
+drill_home="$drill_slot/cdxh/qa-lead"
+drill_state="$drill_slot/q/7/state/codex-lead/test-slot-7__qa-lead"
+drill_socket="$drill_slot/tmux-$(id -u)/default"
+drill_evidence="$TMP/drill-evidence"
+drill_phase="$TMP/drill-phase"
+drill_mutations="$TMP/drill-mutations"
+mkdir -p "$drill_home" "$drill_state/brain" "$(dirname "$drill_socket")" "$drill_evidence"
+python3 - "$drill_socket" <<'PY'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_UNIX)
+sock.bind(sys.argv[1])
+sock.close()
+PY
+printf '%s\n' old > "$drill_phase"
+: > "$drill_mutations"
+write_drill_heartbeat() {
+  if [[ "$(cat "$drill_phase")" == old ]]; then
+    printf '%s\n' '{"v":1,"generationId":"gen-old","threadId":"thread-old","processPid":4101,"carrierInstanceId":"carrier-old","state":"online","updatedAt":"2026-09-03T00:00:00.000Z"}' > "$drill_state/brain/heartbeat.json"
+  else
+    printf '%s\n' '{"v":1,"generationId":"gen-new","threadId":"thread-new","processPid":4102,"carrierInstanceId":"carrier-new","state":"online","updatedAt":"2026-09-03T00:00:01.000Z"}' > "$drill_state/brain/heartbeat.json"
+  fi
+}
+write_drill_heartbeat
+original_pid_exact_definition=$(declare -f qa_launchd_lead_pid_exact)
+original_incarnation_definition=$(declare -f qa_launchd_process_incarnation)
+original_matches_definition=$(declare -f qa_launchd_codex_process_matches)
+original_env_has_definition=$(declare -f qa_launchd_process_env_has)
+qa_launchd_lead_pid_exact() {
+  [[ "$(cat "$drill_phase")" == old ]] && printf '4101\n' || printf '4102\n'
+}
+qa_launchd_process_incarnation() {
+  [[ "$1" == 4101 ]] && printf 'lstart-old\n' || printf 'lstart-new\n'
+}
+qa_launchd_codex_process_matches() { return 0; }
+qa_launchd_process_env_has() { return 0; }
+kill() {
+  printf '%s\n' "$*" >> "$drill_mutations"
+  if [[ "$1" == -9 && "$2" == 4101 ]]; then
+    printf '%s\n' new > "$drill_phase"
+    write_drill_heartbeat
+    return 0
+  fi
+  return 1
+}
+export FLY1663_QA_TMUX_WINDOWS='test-slot-7-qa-lead'
+export FLYWHEEL_QA_LEAD_VERIFY_POLLS=1
+if qa_launchd_lead_restart_drill \
+    "com.flywheel.qa.lead.slot-${drill_slot_number}.qa-lead" codex-tui crash \
+    "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead \
+    "$drill_evidence" "$tmux_stub" \
+    && jq -e '
+      .mode == "crash" and .old.pid == 4101 and .new.pid == 4102 and
+      .old.generationId == "gen-old" and .new.generationId == "gen-new" and
+      .old.carrierInstanceId == "carrier-old" and .new.carrierInstanceId == "carrier-new" and
+      .old.state == "online" and .new.state == "online" and
+      (.old.predicates | all(.[]; . == true)) and (.new.predicates | all(.[]; . == true))
+    ' "$drill_evidence/restart-drill.json" >/dev/null 2>&1 \
+    && [[ "$(find "$drill_evidence" -name 'heartbeat-*.json' | wc -l | tr -d ' ')" == 2 ]] \
+    && [[ "$(cat "$drill_mutations")" == '-9 4101' ]]; then
+  pass "Codex restart drill binds changed PID/identities to two exact heartbeat snapshots"
+else
+  fail "Codex restart drill convergent evidence"
+fi
+
+drill_failure_evidence="$TMP/drill-failure-evidence"
+mkdir -p "$drill_failure_evidence"
+printf '%s\n' old > "$drill_phase"
+write_drill_heartbeat
+hash=caller-sentinel
+jq() { return 1; }
+if ! qa_launchd_lead_restart_drill \
+    "com.flywheel.qa.lead.slot-${drill_slot_number}.qa-lead" codex-tui crash \
+    "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead \
+    "$drill_failure_evidence" "$tmux_stub" \
+    && [[ "$hash" == caller-sentinel ]] \
+    && ! find "$drill_failure_evidence" -name 'restart-drill.json.tmp.*' -print -quit \
+      | grep -q .; then
+  pass "Codex restart drill cleans failed JSON output without leaking loop state"
+else
+  fail "Codex restart drill failed-render cleanup"
+fi
+unset -f jq
+
+invalid_mutations_before=$(wc -l < "$drill_mutations" | tr -d ' ')
+if ! qa_launchd_lead_restart_drill \
+    "com.flywheel.qa.lead.slot-$((drill_slot_number + 1)).qa-lead" codex-tui crash \
+    "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead \
+    "$drill_state" "$tmux_stub" \
+    >/dev/null 2>&1 \
+    && [[ "$(wc -l < "$drill_mutations" | tr -d ' ')" == "$invalid_mutations_before" ]]; then
+  pass "Codex restart drill rejects mismatched/inside-room coordinates before mutation"
+else
+  fail "Codex restart drill pre-mutation coordinate validation"
+fi
+unset -f kill write_drill_heartbeat
+eval "$original_pid_exact_definition"
+eval "$original_incarnation_definition"
+eval "$original_matches_definition"
+eval "$original_env_has_definition"
+unset FLY1663_QA_TMUX_WINDOWS
+rm -rf "$drill_slot"
+
+legacy_stop_registry="$TMP/runtime/legacy-stop.json"
+jq -n '[
+  {label:"legacy-a",plist:"/tmp/a.plist",manifest:"/tmp/a.json"},
+  {label:"legacy-b",plist:"/tmp/b.plist",manifest:"/tmp/b.json"},
+  {label:"legacy-c",plist:"/tmp/c.plist",manifest:"/tmp/c.json"}
+]' > "$legacy_stop_registry"
+legacy_stop_calls="$TMP/legacy-stop.calls"
+: > "$legacy_stop_calls"
+original_stop_definition=$(declare -f qa_launchd_lead_stop)
+qa_launchd_lead_stop() {
+  printf '%s\n' "$1" >> "$legacy_stop_calls"
+  [[ "$1" != legacy-b ]]
+}
+if ! qa_launchd_stop_registry "$legacy_stop_registry" \
+    && [[ "$(cat "$legacy_stop_calls")" == $'legacy-a\nlegacy-b' ]]; then
+  pass "pure Claude registry keeps the legacy ordered fail-fast stop transcript"
+else
+  fail "pure Claude registry stop compatibility"
+fi
+eval "$original_stop_definition"
+
+updater_drift_kills="$TMP/updater-drift.kills"
+: > "$updater_drift_kills"
+ps() {
+  case "$*" in
+    '-ww -axo pid=,command=')
+      printf ' 6363 %s app-server daemon pid-update-loop-v2\n' "$codex_bin"
+      ;;
+    *) return 1 ;;
+  esac
+}
+kill() {
+  printf '%s\n' "$*" >> "$updater_drift_kills"
+  return 1
+}
+qa_launchd_stop_codex_updaters "$codex_bin" "$mint_dest"
+updater_drift_rc=$?
+if [[ "$updater_drift_rc" == 3 && ! -s "$updater_drift_kills" ]]; then
+  pass "Codex updater cleanup distinguishes argv drift from successful convergence"
+else
+  fail "Codex updater cleanup zero-match vacuity"
+fi
+unset -f ps kill
+
+shared_binary_candidates="$TMP/shared-binary-candidates"
+shared_binary_rc=0
+/bin/bash -e -c '
+  source "$1"
+  codex_bin="$2"
+  codex_home="$3"
+  ps() {
+    case "$*" in
+      "-ww -axo pid=,command=")
+        printf " 7373 %s app-server daemon pid-update-loop\\n" "$codex_bin"
+        printf " 7474 %s app-server daemon pid-update-loop\\n" "$codex_bin"
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  qa_launchd_process_env_has() {
+    [[ "$1" == 7373 && "$2" == CODEX_HOME && "$3" == "$codex_home" ]]
+  }
+  qa_launchd_codex_updater_pids "$codex_bin" "$codex_home"
+' _ "$ROOT/scripts/lib/qa-launchd-lead.sh" "$codex_bin" "$mint_dest" \
+  > "$shared_binary_candidates" || shared_binary_rc=$?
+if [[ "$shared_binary_rc" == 0 \
+    && "$(cat "$shared_binary_candidates")" == 7373 ]]; then
+  pass "Codex updater census binds a shared executable to the exact CODEX_HOME"
+else
+  fail "Codex updater census can select an unrelated home sharing the binary"
+fi
+
+codex_stop_registry="$MINT_SLOT/launchd-leads.json"
+runtime_pid_file="$MINT_SLOT/launchd/qa-lead/pid"
+stop_state="$MINT_SLOT/q/7/state/codex-lead/test-slot-7__qa-lead"
+daemon_pid_file="$mint_dest/app-server-daemon/app-server.pid"
+daemon_socket="$mint_dest/app-server-control/app-server-control.sock"
+codex_stop_calls="$TMP/codex-stop.calls"
+mkdir -p "$(dirname "$runtime_pid_file")" "$(dirname "$daemon_pid_file")" \
+  "$(dirname "$daemon_socket")"
+printf '%s\n' 4242 > "$runtime_pid_file"
+printf '%s\n' '{"pid":5252,"processStartTime":"Wed Sep  3 12:00:01 2026"}' \
+  > "$daemon_pid_file"
+: > "$daemon_socket"
+updater_state="$TMP/codex-updater.alive"
+updater_kills="$TMP/codex-updater.kills"
+: > "$updater_state"
+: > "$updater_kills"
+cat > "$codex_bin" <<'CODEX'
+#!/bin/bash
+printf '%s\n' "$*" >> "$FLY1663_QA_CODEX_STOP_CALLS"
+rm -f "$CODEX_HOME/app-server-daemon/app-server.pid"
+rm -f "$CODEX_HOME/app-server-control/app-server-control.sock"
+exit 0
+CODEX
+chmod +x "$codex_bin"
+export FLY1663_QA_CODEX_STOP_CALLS="$codex_stop_calls"
+qa_launchd_register "$codex_stop_registry" "$label" "$codex_plist" '' \
+  codex-tui "$mint_dest" "$codex_bin" "$stop_state" "$runtime_pid_file" \
+  "$codex_tmux_bin"
+printf '%s\n' '{"tokens":{"refresh_token":"fixture-refresh-2"}}' \
+  > "$mint_dest/auth.json"
+: > "$launchctl_state"
+ps() {
+  case "$*" in
+    '-o stat= -p 7001')
+      find "$FLY1663_QA_FIXTURE_ROOT" -name .fixture-daemon-alive -print -quit \
+        | grep -q . && printf 'S\n'
+      ;;
+    '-o lstart= -p 7001')
+      find "$FLY1663_QA_FIXTURE_ROOT" -name .fixture-daemon-alive -print -quit \
+        | grep -q . && printf 'Wed Sep  3 12:00:00 2026\n'
+      ;;
+    '-o stat= -p 4242') [[ -f "$launchctl_state" ]] && printf 'S\n' ;;
+    '-o lstart= -p 4242') [[ -f "$launchctl_state" ]] && printf 'Wed Sep  3 12:00:00 2026\n' ;;
+    '-o stat= -p 5252') [[ -f "$daemon_pid_file" ]] && printf 'S\n' ;;
+    '-o lstart= -p 5252') [[ -f "$daemon_pid_file" ]] && printf 'Wed Sep  3 12:00:01 2026\n' ;;
+    '-ww -axo pid=,command=')
+      [[ -f "$updater_state" ]] \
+        && printf ' 6262 %s app-server daemon pid-update-loop\n' "$codex_bin"
+      return 0
+      ;;
+    '-ww -o command= -p 6262')
+      [[ -f "$updater_state" ]] \
+        && printf '%s app-server daemon pid-update-loop\n' "$codex_bin"
+      ;;
+    'eww -p 6262 -o command=')
+      [[ -f "$updater_state" ]] \
+        && printf '%s app-server daemon pid-update-loop CODEX_HOME=%s\n' \
+          "$codex_bin" "$mint_dest"
+      ;;
+    '-o stat= -p 6262') [[ -f "$updater_state" ]] && printf 'S\n' ;;
+    '-o lstart= -p 6262') [[ -f "$updater_state" ]] && printf 'Wed Sep  3 12:00:02 2026\n' ;;
+    *) return 1 ;;
+  esac
+}
+kill() {
+  printf '%s\n' "$*" >> "$updater_kills"
+  case "$*" in
+    '-TERM 6262'|'-TERM -- 6262') rm -f "$updater_state"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+codex_stop_first_rc=0
+(unset FLYWHEEL_DIR; qa_launchd_stop_registry "$codex_stop_registry") \
+  || codex_stop_first_rc=$?
+codex_stop_second_rc=0
+(unset FLYWHEEL_DIR; qa_launchd_stop_registry "$codex_stop_registry") \
+  || codex_stop_second_rc=$?
+if [[ "$codex_stop_first_rc" == 0 && "$codex_stop_second_rc" == 0 ]] \
+    && [[ "$(jq -c . "$codex_stop_registry")" == '[]' ]] \
+    && grep -Fxq 'remote-control stop --json' "$codex_stop_calls" \
+    && [[ ! -e "$launchctl_state" && ! -e "$daemon_pid_file" && ! -e "$daemon_socket" \
+      && ! -e "$updater_state" ]] \
+    && grep -Eq '^-TERM( --)? 6262$' "$updater_kills" \
+    && [[ ! -e "$mint_dest" ]] \
+    && [[ "$(shasum -a 256 "$mint_source/auth.json" | awk '{print $1}')" == \
+      "$mint_source_hash" ]]; then
+  pass "Codex registry stop retires the home, prunes its row, and retries idempotently"
+else
+  fail "Codex registry convergent teardown and production-auth isolation"
+fi
+unset -f ps kill
+
+
+make_stop_home() {
+  local home="$1" behavior="$2" marker="$3"
+  mkdir -p "$home/packages/standalone/releases/r1" \
+    "$home/app-server-daemon" "$home/app-server-control"
+  cat > "$home/packages/standalone/releases/r1/codex" <<CODEX
+#!/bin/bash
+printf '%s\n' '$marker' >> '$TMP/stop-matrix.calls'
+$behavior
+CODEX
+  chmod +x "$home/packages/standalone/releases/r1/codex"
+  ln -s releases/r1 "$home/packages/standalone/current"
+  printf '%s\n' '{"pid":6001,"processStartTime":"Wed Sep  3 12:00:03 2026"}' \
+    > "$home/app-server-daemon/app-server.pid"
+  : > "$home/app-server-control/app-server-control.sock"
+}
+
+sleep() { :; }
+stop_matrix_root="/tmp/flywheel-test-slot-$((950000 + $$))"
+stop_matrix_registry="$stop_matrix_root/launchd-leads.json"
+stop_invalid_home="$stop_matrix_root/cdxh/invalid"
+stop_fail_home="$stop_matrix_root/cdxh/fail"
+stop_success_home="$stop_matrix_root/cdxh/success"
+mkdir -p "$stop_invalid_home" "$TMP/outside-codex-bin"
+printf '%s\n' '#!/bin/bash' "printf '%s\\n' invalid-executed >> '$TMP/stop-matrix.calls'" \
+  > "$TMP/outside-codex-bin/codex"
+chmod +x "$TMP/outside-codex-bin/codex"
+make_stop_home "$stop_fail_home" 'exit 7' daemon-stop-failed
+make_stop_home "$stop_success_home" \
+  'rm -f "$CODEX_HOME/app-server-daemon/app-server.pid" "$CODEX_HOME/app-server-control/app-server-control.sock"; exit 0' \
+  later-entry-processed
+: > "$TMP/stop-matrix.calls"
+qa_launchd_register "$stop_matrix_registry" com.flywheel.qa.lead.slot-95.invalid \
+  /tmp/invalid.plist '' codex-tui "$stop_invalid_home" \
+  "$TMP/outside-codex-bin/codex" "$stop_matrix_root/q/invalid" \
+  "$stop_matrix_root/launchd/invalid/pid" "$codex_tmux_bin"
+qa_launchd_register "$stop_matrix_registry" com.flywheel.qa.lead.slot-95.fail \
+  /tmp/fail.plist '' codex-tui "$stop_fail_home" \
+  "$stop_fail_home/packages/standalone/current/codex" "$stop_matrix_root/q/fail" \
+  "$stop_matrix_root/launchd/fail/pid" "$codex_tmux_bin"
+qa_launchd_register "$stop_matrix_registry" com.flywheel.qa.lead.slot-95.success \
+  /tmp/success.plist '' codex-tui "$stop_success_home" \
+  "$stop_success_home/packages/standalone/current/codex" "$stop_matrix_root/q/success" \
+  "$stop_matrix_root/launchd/success/pid" "$codex_tmux_bin"
+if ! qa_launchd_stop_registry "$stop_matrix_registry" >/dev/null 2>"$TMP/stop-matrix.err" \
+    && ! grep -Fq invalid-executed "$TMP/stop-matrix.calls" \
+    && grep -Fxq daemon-stop-failed "$TMP/stop-matrix.calls" \
+    && grep -Fxq later-entry-processed "$TMP/stop-matrix.calls" \
+    && [[ ! -e "$stop_success_home/app-server-daemon/app-server.pid" ]] \
+    && grep -Fq 'carrier=codex-tui step=validate' "$TMP/stop-matrix.err" \
+    && grep -Fq 'carrier=codex-tui step=daemon-stop' "$TMP/stop-matrix.err"; then
+  pass "Codex registry rejects escaped binaries and aggregates failures through later entries"
+else
+  fail "Codex registry validation/failure aggregation"
+fi
+
+stop_alive_root="/tmp/flywheel-test-slot-$((960000 + $$))"
+stop_alive_home="$stop_alive_root/cdxh/alive"
+stop_alive_registry="$stop_alive_root/launchd-leads.json"
+make_stop_home "$stop_alive_home" \
+  'rm -f "$CODEX_HOME/app-server-control/app-server-control.sock"; exit 0' \
+  stop-zero-daemon-live
+qa_launchd_register "$stop_alive_registry" com.flywheel.qa.lead.slot-96.alive \
+  /tmp/alive.plist '' codex-tui "$stop_alive_home" \
+  "$stop_alive_home/packages/standalone/current/codex" "$stop_alive_root/q/alive" \
+  "$stop_alive_root/launchd/alive/pid" "$codex_tmux_bin"
+ps() {
+  case "$*" in
+    '-o stat= -p 6001') printf 'S\n' ;;
+    '-o lstart= -p 6001') printf 'Wed Sep  3 12:00:03 2026\n' ;;
+    '-axo pid=,command=') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+if ! qa_launchd_stop_registry "$stop_alive_registry" >/dev/null 2>"$TMP/stop-alive.err" \
+    && grep -Fq 'carrier=codex-tui step=daemon-converge' "$TMP/stop-alive.err" \
+    && [[ -e "$stop_alive_home/app-server-daemon/app-server.pid" \
+      && ! -e "$stop_alive_home/app-server-control/app-server-control.sock" ]]; then
+  pass "Codex registry parses the production JSON pid record and rejects a live daemon"
+else
+  fail "Codex registry false-success daemon convergence"
+fi
+unset -f ps
+
+bootout_stub="$TMP/bin/launchctl-bootout-fails"
+cat > "$bootout_stub" <<'LAUNCHCTL'
+#!/bin/bash
+case "$1" in
+  print) printf 'pid = 4242\n' ;;
+  bootout) exit 9 ;;
+  *) exit 64 ;;
+esac
+LAUNCHCTL
+chmod +x "$bootout_stub"
+stop_bootout_root="/tmp/flywheel-test-slot-$((970000 + $$))"
+stop_bootout_home="$stop_bootout_root/cdxh/bootout"
+stop_bootout_registry="$stop_bootout_root/launchd-leads.json"
+make_stop_home "$stop_bootout_home" \
+  'rm -f "$CODEX_HOME/app-server-daemon/app-server.pid" "$CODEX_HOME/app-server-control/app-server-control.sock"; exit 0' \
+  bootout-failure-still-stopped-daemon
+qa_launchd_register "$stop_bootout_registry" com.flywheel.qa.lead.slot-97.bootout \
+  /tmp/bootout.plist '' codex-tui "$stop_bootout_home" \
+  "$stop_bootout_home/packages/standalone/current/codex" "$stop_bootout_root/q/bootout" \
+  "$stop_bootout_root/launchd/bootout/pid" "$codex_tmux_bin"
+saved_launchctl="$FLYWHEEL_QA_LAUNCHCTL"
+export FLYWHEEL_QA_LAUNCHCTL="$bootout_stub"
+if ! qa_launchd_stop_registry "$stop_bootout_registry" >/dev/null 2>"$TMP/stop-bootout.err" \
+    && grep -Fq 'carrier=codex-tui step=bootout' "$TMP/stop-bootout.err" \
+    && grep -Fxq bootout-failure-still-stopped-daemon "$TMP/stop-matrix.calls"; then
+  pass "Codex registry reports bootout non-convergence but still stops the daemon"
+else
+  fail "Codex registry bootout failure handling"
+fi
+export FLYWHEEL_QA_LAUNCHCTL="$saved_launchctl"
+
+stop_unstarted_root="/tmp/flywheel-test-slot-$((980000 + $$))"
+stop_unstarted_home="$stop_unstarted_root/cdxh/unstarted"
+stop_unstarted_registry="$stop_unstarted_root/launchd-leads.json"
+stop_unstarted_call="$TMP/stop-unstarted.called"
+mkdir -p "$stop_unstarted_home/packages/standalone/releases/r1"
+cat > "$stop_unstarted_home/packages/standalone/releases/r1/codex" <<CODEX
+#!/bin/bash
+: > '$stop_unstarted_call'
+exit 7
+CODEX
+chmod +x "$stop_unstarted_home/packages/standalone/releases/r1/codex"
+ln -s releases/r1 "$stop_unstarted_home/packages/standalone/current"
+printf '%s\n' '{"tokens":{"refresh_token":"fixture-unstarted"}}' \
+  > "$stop_unstarted_home/auth.json"
+qa_launchd_register "$stop_unstarted_registry" \
+  com.flywheel.qa.lead.slot-98.unstarted /tmp/unstarted.plist '' codex-tui \
+  "$stop_unstarted_home" "$stop_unstarted_home/packages/standalone/current/codex" \
+  "$stop_unstarted_root/q/unstarted" "$stop_unstarted_root/launchd/unstarted/pid" \
+  "$codex_tmux_bin"
+ps() {
+  case "$*" in
+    '-ww -axo pid=,command=') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+if qa_launchd_stop_registry "$stop_unstarted_registry" \
+    >/dev/null 2>"$TMP/stop-unstarted.err" \
+    && [[ -f "$stop_unstarted_call" && ! -e "$stop_unstarted_home" ]] \
+    && ! grep -Fq 'carrier=codex-tui step=daemon-stop' "$TMP/stop-unstarted.err"; then
+  pass "Codex registry retires a provisioned home when no runtime ever started and daemon stop reports absent"
+else
+  printf 'unstarted diagnostics: %s home=%s stop-called=%s\n' \
+    "$(tr '\n' ';' < "$TMP/stop-unstarted.err")" \
+    "$([[ -e "$stop_unstarted_home" ]] && printf yes || printf no)" \
+    "$([[ -f "$stop_unstarted_call" ]] && printf yes || printf no)" >&2
+  fail "Codex unstarted-home credential retirement"
+fi
+unset -f ps
+
+stop_retired_root="/tmp/flywheel-test-slot-$((982000 + $$))"
+stop_retired_home="$stop_retired_root/cdxh/retired"
+stop_retired_registry="$stop_retired_root/launchd-leads.json"
+make_stop_home "$stop_retired_home" 'exit 99' must-not-run-retired
+qa_launchd_register "$stop_retired_registry" \
+  com.flywheel.qa.lead.slot-982.retired /tmp/retired.plist '' codex-tui \
+  "$stop_retired_home" "$stop_retired_home/packages/standalone/current/codex" \
+  "$stop_retired_root/q/retired" "$stop_retired_root/launchd/retired/pid" \
+  "$codex_tmux_bin"
+qa_launchd_retire_codex_home "$stop_retired_home" "$stop_retired_root"
+if qa_launchd_stop_registry "$stop_retired_registry" \
+    >/dev/null 2>"$TMP/stop-retired.err" \
+    && [[ "$(jq -c . "$stop_retired_registry")" == '[]' ]] \
+    && ! grep -Fq must-not-run-retired "$TMP/stop-matrix.calls"; then
+  pass "Codex registry prunes a crash-left row after its home is already retired"
+else
+  fail "Codex retired-home registry retry"
+fi
+
+saved_qa_tmux="$FLYWHEEL_QA_TMUX"
+absent_tmux_root="/tmp/flywheel-test-slot-$((980000 + $$))"
+absent_tmux_socket="$absent_tmux_root/tmux-$(id -u)/default"
+absent_tmux_calls="$TMP/absent-tmux.calls"
+tmux_absent_stub="$TMP/bin/tmux-absent"
+cat > "$tmux_absent_stub" <<'TMUX'
+#!/bin/bash
+printf '%s\n' "$*" >> "$FLY1663_QA_ABSENT_TMUX_CALLS"
+exit 99
+TMUX
+chmod +x "$tmux_absent_stub"
+: > "$absent_tmux_calls"
+export FLY1663_QA_ABSENT_TMUX_CALLS="$absent_tmux_calls"
+export FLYWHEEL_QA_TMUX="$tmux_absent_stub"
+if qa_launchd_converge_codex_tmux_socket "$absent_tmux_socket" "$tmux_absent_stub" \
+    && [[ ! -s "$absent_tmux_calls" ]]; then
+  pass "Codex tmux convergence accepts an already-absent socket and parent"
+else
+  fail "Codex tmux absent socket convergence"
+fi
+rm -rf "$absent_tmux_root"
+unset FLY1663_QA_ABSENT_TMUX_CALLS
+
+live_tmux_root="/tmp/flywheel-test-slot-$((985000 + $$))"
+live_tmux_socket="$live_tmux_root/tmux-$(id -u)/default"
+live_tmux_ready="$TMP/live-tmux.ready"
+mkdir -p "$(dirname "$live_tmux_socket")"
+python3 - "$live_tmux_socket" "$live_tmux_ready" <<'PY' &
+import signal
+import socket
+import sys
+from pathlib import Path
+
+sock = socket.socket(socket.AF_UNIX)
+sock.bind(sys.argv[1])
+sock.listen(1)
+Path(sys.argv[2]).write_text("ready\n")
+signal.pause()
+PY
+live_tmux_pid=$!
+for _ in $(seq 1 100); do
+  [[ -f "$live_tmux_ready" ]] && break
+  command sleep 0.01
+done
+tmux_client_error_stub="$TMP/bin/tmux-client-error"
+cat > "$tmux_client_error_stub" <<'TMUX'
+#!/bin/bash
+exit 42
+TMUX
+chmod +x "$tmux_client_error_stub"
+export FLYWHEEL_QA_TMUX="$tmux_client_error_stub"
+live_converge_rc=0
+qa_launchd_converge_codex_tmux_socket "$live_tmux_socket" "$tmux_client_error_stub" \
+  || live_converge_rc=$?
+if [[ "$live_converge_rc" != 0 && -S "$live_tmux_socket" ]] \
+    && kill -0 "$live_tmux_pid" 2>/dev/null; then
+  pass "Codex tmux convergence preserves a live server when the client errors"
+else
+  fail "Codex tmux live-server client-error guard"
+fi
+kill "$live_tmux_pid" 2>/dev/null || true
+wait "$live_tmux_pid" 2>/dev/null || true
+rm -rf "$live_tmux_root"
+
+stale_tmux_socket="$MINT_SLOT/tmux-$(id -u)/default"
+stale_tmux_state="$TMP/stale-tmux-server.alive"
+stale_tmux_calls="$TMP/stale-tmux.calls"
+mkdir -p "$(dirname "$stale_tmux_socket")"
+python3 - "$stale_tmux_socket" <<'PY'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_UNIX)
+sock.bind(sys.argv[1])
+sock.close()
+PY
+: > "$stale_tmux_state"
+: > "$stale_tmux_calls"
+tmux_cleanup_stub="$TMP/bin/tmux-cleanup"
+cat > "$tmux_cleanup_stub" <<'TMUX'
+#!/bin/bash
+printf '%s\n' "$*" >> "$FLY1663_QA_STALE_TMUX_CALLS"
+case "$3" in
+  has-session) [[ -f "$FLY1663_QA_STALE_TMUX_STATE" ]] ;;
+  kill-server) rm -f "$FLY1663_QA_STALE_TMUX_STATE"; exit 0 ;;
+  list-sessions) [[ -f "$FLY1663_QA_STALE_TMUX_STATE" ]] ;;
+  *) exit 64 ;;
+esac
+TMUX
+chmod +x "$tmux_cleanup_stub"
+export FLY1663_QA_STALE_TMUX_STATE="$stale_tmux_state"
+export FLY1663_QA_STALE_TMUX_CALLS="$stale_tmux_calls"
+export FLYWHEEL_QA_TMUX="$tmux_cleanup_stub"
+if qa_launchd_converge_codex_tmux_socket "$stale_tmux_socket" "$tmux_cleanup_stub" \
+    && [[ ! -e "$stale_tmux_socket" && ! -L "$stale_tmux_socket" ]] \
+    && grep -Fq -- "-S $stale_tmux_socket kill-server" "$stale_tmux_calls"; then
+  pass "Codex tmux convergence removes the exact stale socket after kill-server succeeds"
+else
+  fail "Codex tmux stale socket convergence"
+fi
+export FLYWHEEL_QA_TMUX="$saved_qa_tmux"
+unset FLY1663_QA_STALE_TMUX_STATE FLY1663_QA_STALE_TMUX_CALLS
+
+unset -f sleep
+rm -rf "$stop_matrix_root" "$stop_alive_root" "$stop_bootout_root" \
+  "$stop_unstarted_root" "$stop_retired_root"
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
