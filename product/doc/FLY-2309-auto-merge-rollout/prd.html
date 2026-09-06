@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>自动合并怎么落地 — 影子跑之前先补一个洞 · FLY-2309</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+line-height:1.55;font-size:15.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:32px 18px 90px}
+h1{font-size:27px;line-height:1.28;margin:0 0 6px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 24px}
+.card{background:var(--card);border-radius:12px;padding:17px 20px;margin:0 0 13px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card h2{font-size:18.5px;margin:0 0 5px;letter-spacing:-.2px}
+.kicker{font-size:11.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--dim);
+font-weight:600;margin:0 0 9px}
+p{margin:0 0 11px}
+ul{margin:0 0 11px;padding-left:20px}
+li{margin:0 0 6px}
+.lead{font-size:19px;line-height:1.5;font-weight:600;letter-spacing:-.2px}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 13px;color:#4a4a4f;margin:0 0 12px;font-size:14.5px}
+table{width:100%;border-collapse:collapse;margin:4px 0 13px;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.3px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.no{color:var(--red);font-weight:700}
+.yes{color:var(--green);font-weight:700}
+.warn{color:var(--amber);font-weight:700}
+.note{background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+font-size:13.5px;color:#4a4a4f;margin:0 0 11px}
+.rec{font-size:14px;background:#eef6ff;border-radius:8px;padding:10px 12px;margin:2px 0 8px;color:#0a3f8a}
+.unsure{font-size:13.5px;background:#fbf0ff;border-radius:8px;padding:9px 12px;margin:0 0 4px;color:#5d1f77}
+.cost{font-size:13.5px;color:#8a4a00;background:#fff6e8;border-radius:8px;padding:9px 12px;margin:0 0 10px}
+.big{font-size:31px;font-weight:700;letter-spacing:-1px;line-height:1.1}
+.stat{display:flex;gap:22px;flex-wrap:wrap;margin:2px 0 13px}
+.stat > div{min-width:110px}
+.stat .lbl{font-size:12px;color:var(--dim);margin-top:2px}
+.flow{font-family:"SF Mono",ui-monospace,monospace;font-size:12.5px;line-height:1.7;
+background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+white-space:pre;overflow-x:auto;margin:0 0 11px}
+.cmt{margin:15px 0 0;padding-top:13px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin:0 0 5px;font-weight:600}
+textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+font:inherit;font-size:14px;background:#fcfcfe;color:var(--ink);resize:vertical}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+.bar{position:sticky;bottom:0;background:rgba(245,245,247,.94);
+backdrop-filter:saturate(160%) blur(12px);border-top:1px solid var(--line);
+margin:20px -18px -84px;padding:12px 18px 18px}
+button{font:inherit;font-size:14.5px;font-weight:600;border:0;border-radius:9px;
+padding:10px 17px;background:var(--blue);color:#fff;cursor:pointer}
+button.sec{background:#e8e8ed;color:var(--ink)}
+button:active{opacity:.75}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.status{font-size:13px;color:var(--dim)}
+.status.ok{color:#1a7f37;font-weight:600}
+.status.err{color:var(--red);font-weight:600}
+#dump{width:100%;min-height:110px;margin-top:10px;display:none;font-size:12.5px;
+font-family:"SF Mono",ui-monospace,monospace}
+code{font-family:"SF Mono",ui-monospace,monospace;font-size:13px;background:#f0f0f4;
+padding:1px 5px;border-radius:4px}
+@media (max-width:560px){.wrap{padding:22px 13px 84px}h1{font-size:23px}.lead{font-size:17px}
+.bar{margin:20px -13px -84px;padding:12px 13px 18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>自动合并怎么落地</h1>
+<p class="sub">FLY-2309 · 2026-09-03 · 接着 FLY-2261 往下做 —— 影子跑怎么跑、规矩改哪几条、拆成几张单</p>
+
+<div class="card blue">
+<div class="kicker">01 · 这一页是什么</div>
+<h2>判据你已经拍完了。这一页只讲「怎么真的跑起来」。</h2>
+<p>上一单(FLY-2261)你已经定下的五条,这一页<b>一条都不重开</b>:</p>
+<ul>
+<li>判据 = <b>改动类别 + 真环境证据</b>,不走打分</li>
+<li>默认<b>强度二</b> = 真跑一次 <b>+ 留下外部可查、能被重跑的记录</b>(两半缺一不可)</li>
+<li>先<b>影子跑</b>,宽度最保守 = 只算纯文档类</li>
+<li>一个类别只有在「<b>不需要任何判断、光看改了哪些文件就能判定</b>」时才有资格</li>
+<li>错判进自动道 = 真代价;错判出去 = 零代价 ⇒ 有一丝拿不准就不进</li>
+</ul>
+<p class="rec">这一页只有<b>一件新事</b>要你知道 —— 就是下面第 02 格。其余都是把你定的东西落成清单。</p>
+<div class="cmt"><label>第 01 格</label><textarea data-s="01 这一页是什么" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<div class="kicker">02 · 唯一的新事</div>
+<h2>不用等两周 —— 现在回头一算就能算出错判率。它不是 0。</h2>
+<p>我们本来打算「跑两周再看」。但那些数据其实<b>已经在库里了</b>,我就直接回头算了一次:</p>
+<div class="stat">
+<div><div class="big">30</div><div class="lbl">被机器判「纯文档」<br>并且走到你面前的单</div></div>
+<div><div class="big no">5</div><div class="lbl">在你那道门上<br>被打回了</div></div>
+<div><div class="big no">2</div><div class="lbl">其中<b>确认是你本人</b><br>的判断</div></div>
+</div>
+<p>那两条是你自己的原话:</p>
+<div class="quote">「只要加了 feature flag,默认就要打开」→「写死+删旋钮」(FLY-2205)</div>
+<div class="quote">「我实际去测的时候,它根本就没有停…打断的效果非常不好」(FLY-2178)</div>
+<p class="cost"><b>如果自动道当时是开着的,这两条你根本不会看到那张卡。</b>那条「写死+删旋钮」的规矩,就不会在那一刻被定下来。</p>
+<div class="cmt"><label>第 02 格:错判率不是 0</label><textarea data-s="02 回溯错判率不是0" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<div class="kicker">03 · 为什么会这样</div>
+<h2>机器没判错。它只看了一半 —— 代码在<b>另一个仓</b>里。</h2>
+<p>拿那条「写死+删旋钮」举例:</p>
+<div class="flow">这一单挂着的主仓 PR  ──▶  13 个文件,全部在文档目录下  ──▶  机器判「纯文档」  ✅ 判得完全正确
+
+可你那条要求是「删掉一个配置键」= 纯代码
+
+           真正的代码在哪?  ──▶  在另一个代码仓(raya)里,单独一个 PR
+                                  机器<b>从来没看过它</b></div>
+<p>核对了一下这个分类器至今的全部记录:<b>260 条里 259 条是主仓</b>。
+另一个仓里的 PR,它<b>一次都没有分类过</b>。</p>
+<p class="cost"><b>规模:</b>被判「纯文档」的 33 个单里,<b>8 个(24%)</b>其实在另一个仓里有真代码。
+作为对照,被判「有代码」的 212 个单里只有 3 个是这样 —— 说明这不是到处都有的噪音,
+它<b>恰好扎在纯文档这一类里</b>(主仓只放个文档锚点、代码进子仓,是这类单的常见长相)。</p>
+<div class="cmt"><label>第 03 格:代码在另一个仓</label><textarea data-s="03 代码在另一个仓" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<div class="kicker">04 · 补完之后</div>
+<h2>把「全部的仓都要看」补上,回头这个数就落到 0。</h2>
+<p>如果判定改成 —— <b>这一单的每一个 PR(主仓 + 每个子仓)都必须全是文档,才算纯文档</b> ——
+那 8 个带子仓代码的单会<b>全部被判出自动道</b>,你那 4 条真打回<b>全部拦住</b>。</p>
+<div class="stat">
+<div><div class="big yes">0 / 22</div><div class="lbl">补完之后,回头算<br>你本人的错判数</div></div>
+</div>
+<div class="unsure"><b>但这不能当成「已经达标」,三个理由我一条都不藏:</b>
+<ul style="margin-top:6px">
+<li>这是我把新规则<b>套回历史</b>算出来的「如果当初这么判会怎样」,<b>不是真跑出来的</b>;</li>
+<li>样本只有 30 个单,而且我用的对应关系是粗的(那两张表的键对不上,见第 06 格);</li>
+<li>你定死的放手判据是<b>影子跑两周后那张表为 0</b>,不是回头这张表为 0。</li>
+</ul>
+回头这一算,只能决定<b>先补哪个洞</b>,不能替代影子跑。</div>
+<div class="cmt"><label>第 04 格:补完之后</label><textarea data-s="04 补完之后是0" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<div class="kicker">05 · 因此顺序动一处 —— 这是我要你拍的第一件事</div>
+<h2>两周<b>从补完洞那天起算</b>,不是从今天起算。</h2>
+<p>如果拿今天这个「只看主仓」的分类器去跑两周,两周后那张表<b>一定是错的</b> ——
+而且错在<b>偏乐观</b>的方向(它会把带子仓代码的单算成纯文档,错判率看起来更好看)。
+偏乐观的错,正好落在承重的那一格上。</p>
+<p class="rec"><b>我的建议:</b>先做「全部仓都要看」这一件事(下面 B1),它落地那天开始计时两周。
+预计这件事本身不大 —— 它是给一个已经在跑的分类器加上「别的仓也要算进来」。</p>
+<div class="cmt"><label>第 05 格:两周从补完洞那天起算,你认不认?</label><textarea data-s="05 起跑时刻" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card purple">
+<div class="kicker">06 · 影子跑具体怎么跑</div>
+<h2>每一单记四样。今天<b>四样里三样根本不存在</b>。</h2>
+<p>影子跑的定义,一句话:<b>每一单照常走今天的流程、照常由你过卡、一次都不真的自动合并;
+系统在旁边把「如果自动道开着会发生什么」记下来。</b>你的动作零变化,省下的时间为零,出事风险为零。</p>
+<div class="scroll">
+<table>
+<tr><th>要记什么</th><th>今天有吗</th><th>缺什么</th></tr>
+<tr><td><b>① 机器判的类</b></td><td class="warn">半个</td><td>只看主仓,漏子仓(第 03 格)</td></tr>
+<tr><td><b>② 人判的类</b><br><span style="color:var(--dim);font-size:13px">Lead 认为这单属于哪一类</span></td><td class="no">没有</td><td>整个不存在。要新加一个<b>选项字段</b>(不是让人自由写字)</td></tr>
+<tr><td><b>③ 强度二的两半</b><br><span style="color:var(--dim);font-size:13px">(a) 真跑过 (b) 留下记录</span></td><td class="no">没有</td><td>现有的几张表里<b>一个字段都没有</b>表示「这是在真环境跑的」</td></tr>
+<tr><td><b>④ 你有没有打回</b></td><td class="warn">有,但对不上</td><td>打回的记录存在,但<b>绑不到</b>它当时看的那个版本上</td></tr>
+</table>
+</div>
+<p class="cost">🔴 <b>③ 的 (b) 是最容易被悄悄省掉的一格。</b>上一单你第一次读也只读到 (a)。
+少了 (b),强度二就退回成强度一 —— 而强度一对那 8 条「说做完了但没真跑过」<b>一条都拦不住</b>。
+所以实现时它必须是<b>单独一个字段</b>,并且要有一个专门的反面测试:一条「自称跑过但没有记录」的,必须被判不满足。</p>
+<p><b>所以影子跑不是「打开一个开关观察两周」</b> —— 它本身要先建三条记录线。这就是下面拆单的依据。</p>
+<div class="cmt"><label>第 06 格:影子跑记什么</label><textarea data-s="06 影子跑记什么" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card blue">
+<div class="kicker">07 · 两周后交给你的那张表</div>
+<h2>三个数,外加三个「这张表可不可信」的指标。</h2>
+<div class="scroll">
+<table>
+<tr><th></th><th>数</th><th>为什么要它</th></tr>
+<tr><td><b>N1</b></td><td><b>纯文档类错判率(你本人口径)</b><br>分母 = 被判纯文档并走到你面前的单;分子 = 其中<b>你本人</b>打回的</td><td>这就是放手判据本身</td></tr>
+<tr><td><b>N2</b></td><td><b>同一个率,放宽口径</b><br>分子放宽到「以 founder 权限打回」的全部</td><td>上界。因为「权限是你」不等于「是你判的」——
+这一点上一单已经栽过一次,<b>两个口径必须都报,不许只报好看的那个</b></td></tr>
+<tr><td><b>N3</b></td><td><b>那些本会被自动合并的单里,你原本会打回<u>哪几条</u></b></td><td>「率」会盖住「这一条有多严重」。你真正要看的是具体内容</td></tr>
+</table>
+</div>
+<p><b>另外必须同时报三个分母卫生指标</b>,否则一张漂亮的 0 可能只是「什么都没记上」:
+四条记录线各自的覆盖率(应该是 100%)、「没声明类别」的条数、「绑不上版本」的条数。</p>
+<div class="note">一张「错判率 = 0」的表,和一张「什么都没记上」的表,长得<b>一模一样</b>。
+所以报 0 的时候必须同时报出全集有多大 ——「<b>30 个里 0 条</b>」才是结论,单独一个「0」不是。</div>
+<div class="cmt"><label>第 07 格:两周后那张表</label><textarea data-s="07 两周后那张表" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<div class="kicker">08 · 放手判据(现在写死,两周后不许改)</div>
+<h2>N1 = 0 才放手。不为 0,连纯文档类也不开,回来重想。</h2>
+<ul>
+<li><b>N2 大于 0 但 N1 = 0 时:不自动放手</b> —— 把那几条拿给你看一眼再决定。因为「是不是你本人」是我读原文判的,不是外部事实。</li>
+<li><b>任一覆盖率不到 100%:这张表不作数</b>,补齐再跑。不许拿残缺的表来换放手。</li>
+</ul>
+<p class="cost">这三条<b>现在就写死</b>,就是为了两周后没法靠「解释」把不达标说成达标。
+两周后的报告会<b>逐字引用</b>这一格。</p>
+<div class="cmt"><label>第 08 格:放手判据</label><textarea data-s="08 放手判据" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<div class="kicker">09 · 你最关心的那条</div>
+<h2>⭐ 影子跑期间,<b>一条规矩都不用改</b>。</h2>
+<p>这是影子跑最大的好处,也是它值得先跑的原因。我逐条核过:</p>
+<div class="scroll">
+<table>
+<tr><th>规矩</th><th>影子跑要不要改</th></tr>
+<tr><td>合并授权契约(只有你能改的那份)</td><td class="yes">不改 —— 影子跑不合并任何东西</td></tr>
+<tr><td>什么时候把卡送到你面前</td><td class="yes">不改</td></tr>
+<tr><td>你过卡 / 打回的动作</td><td class="yes">不改</td></tr>
+<tr><td>Lead 的派工与验收规矩</td><td class="yes">不改 —— 只多一个「声明这单属于哪一类」的动作,那是<b>多记一笔</b>,不是改一条规矩</td></tr>
+</table>
+</div>
+<p class="rec">影子跑是<b>纯增记录</b>,不是改行为。这就是为什么它的风险是零。</p>
+<div class="cmt"><label>第 09 格:影子跑期间不改规矩</label><textarea data-s="09 不改规矩" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<div class="kicker">10 · 但这笔账要让你先看到</div>
+<h2>真放手那天,还有三条规矩要你拍。<b>现在一条都不动。</b></h2>
+<div class="scroll">
+<table>
+<tr><th></th><th>要改什么</th><th>谁能改</th></tr>
+<tr><td>M1</td><td>合并授权契约上开一个<b>窄口</b>:同时过三道闸的单可以不经你过卡直接合并</td><td class="no">只有你</td></tr>
+<tr><td>M2</td><td>走了自动道的单,事后要有一个<b>你看得见、能一键撤回</b>的入口</td><td>待建</td></tr>
+<tr><td>M3</td><td>「你在卡上加新要求」这个入口关掉之后,补一个事后入口</td><td>上一单 T4,未定案</td></tr>
+</table>
+</div>
+<p class="cost"><b>写在这里是为了让你知道:影子跑跑完 ≠ 第二天就能自动合并。</b>后面还有这三条。</p>
+<div class="cmt"><label>第 10 格:放手那天的账单</label><textarea data-s="10 放手那天要改的规矩" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card purple">
+<div class="kicker">11 · 拆成 5 张工程单</div>
+<h2>三张先做(影子跑前置),一张跑影子,一张两周后。</h2>
+<div class="flow">B1 ┐
+B2 ├──▶ B4 影子跑两周 ──▶ B5 放手那天要改的规矩清单
+B3 ┘</div>
+<div class="scroll">
+<table>
+<tr><th></th><th>做什么</th><th>验收里最硬的一条</th></tr>
+<tr><td><b>B1</b><br><span class="no">P0</span></td><td><b>纯文档的判定要看这一单的全部仓</b>(主仓 + 每个子仓)。任何一个仓拿不到分类 ⇒ 整单判「不知道」⇒ 不算纯文档</td><td>回头重跑那 33 个单,<b>8 个带子仓代码的必须全部翻成非纯文档</b>;而另外 22 个必须<b>仍然</b>判纯文档(不许靠一刀切全判「不知道」来假装达标)</td></tr>
+<tr><td><b>B2</b><br><span class="no">P0</span></td><td><b>你的每一次过卡/打回,要能绑到你当时看的那个版本</b>,并且要能分辨「是你本人」还是「Lead 以你的权限提交」</td><td>「权限是 founder」和「是她本人」必须是<b>两个能分开的字段</b>,并配一组「Lead 以 founder 权限提交」的样本做反面对照</td></tr>
+<tr><td><b>B3</b><br><span class="no">P0</span></td><td><b>强度二的证据台账</b>:绑哪个版本、在哪跑的、跑的哪条链路、<b>记录在哪、怎么重跑</b>。两半各一个字段</td><td>反面对照:一条「自称跑过但没有记录」的,必须判<b>不满足</b>;「有记录但记录打不开」的,也判不满足</td></tr>
+<tr><td><b>B4</b><br>P1</td><td><b>影子跑两周</b> + 产出第 07 格那张表。一次都不真的自动合并</td><td>你的动作变化量 = <b>0</b>;那张表要能被别人拿一份只读库副本独立重算出来</td></tr>
+<tr><td><b>B5</b><br>P2</td><td>把第 10 格的 M1/M2/M3 写成可执行提案<b>交你拍</b>。是一张文档单</td><td>⛔ 它<b>也不实际修改</b>那份契约 —— 改契约只有你本人能做</td></tr>
+</table>
+</div>
+<div class="cmt"><label>第 11 格:拆单</label><textarea data-s="11 拆成5张工程单" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card">
+<div class="kicker">12 · 我不确定的 / 没确认过的</div>
+<h2>四条,一条都不藏。</h2>
+<ul>
+<li><b>我用的那个对应关系是粗的。</b>「打回记录」和「分类记录」两张表的键对不上(你那道门在系统里是个<b>没有执行者</b>的节点,实测 358 条里 358 条都没有执行者编号)。第 02 格那 5 条我是<b>逐条打开原文人工核过</b>的,但分母「30」没有逐条核。精确的数只能等 B2 落地后由影子跑产出。</li>
+<li><b>「有哪些子仓」这份名单从哪来,我还没查死。</b>我是从代码评审记录里<b>反推</b>出「这单有子仓代码」的。反推不能当判定依据 —— 这条写进 B1 的未决项,不假装解决。</li>
+<li><b>flaky 仍然没解。</b>上一单就跟你说过:强度二挡不住那种「偶然全绿」的测试。<b>这一单没有新解法</b>,照旧明写。</li>
+<li>🔴 <b>那个「9 条里约 2 条必须当场拦、约 7 条可以下一单」的分法,你从来没有逐字确认过。</b>上一轮你说「你先来自己发挥吧」—— 那是授权发挥,<b>不等于确认事实</b>。这份文档任何结论都<b>不建立在它上面</b>;影子跑期间它会被真实数据直接检验。</li>
+</ul>
+<div class="cmt"><label>第 12 格:不确定的地方</label><textarea data-s="12 我不确定的" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card blue">
+<div class="kicker">13 · 需要你拍的</div>
+<h2>两件。其余的我照上一单你定的方向走。</h2>
+<ul>
+<li><b>Q1(挡着计时开始):</b>两周<b>从补完洞那天起算</b>,不是从今天起算 —— 认不认这个顺序?(第 05 格)</li>
+<li><b>Q2(两周后才挡):</b>如果 N2 大于 0 但 N1 = 0,是不是照第 08 格 —— 把那几条拿给你看一眼再决定?</li>
+</ul>
+<p class="note">另外两件是工程口的,我会走 Tadashi,不占你时间:「子仓名单从哪来」、「怎么在系统里区分你本人和 Lead 以你的权限提交」。</p>
+<div class="cmt"><label>第 13 格:Q1 / Q2</label><textarea data-s="13 需要你拍的 Q1 Q2" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="note" style="margin-top:18px">
+<b>怎么把意见给我:</b>上面每一格都能写。写完点下面的<b>「一键汇总复制」</b>,然后<b>贴回 issue 里</b> —— 我才收得到。
+<b>这一页的批注只存在你自己的浏览器里,不会自己传给我。</b>如果内容多,会自动分成几段,<b>每一段都要贴</b>。
+</div>
+
+<div class="bar">
+<div class="row">
+<button id="copy">一键汇总复制</button>
+<button id="clear" class="sec">清空我的批注</button>
+<span id="st" class="status">还没写意见</span>
+</div>
+<textarea id="dump" readonly></textarea>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK = "【页面意见汇总】FLY-2309";
+var LIMIT = 1800;
+var KEY = "fly2309-auto-merge-rollout-notes-v1";
+var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-s]"));
+var st = document.getElementById("st");
+var dump = document.getElementById("dump");
+
+function load(){
+  var raw = null;
+  try { raw = window.localStorage.getItem(KEY); } catch(e){ raw = null; }
+  if(!raw) return;
+  var data = null;
+  try { data = JSON.parse(raw); } catch(e){ return; }
+  if(!data || typeof data !== "object") return;
+  boxes.forEach(function(b){
+    var v = data[b.getAttribute("data-s")];
+    if(typeof v === "string") b.value = v;
+  });
+}
+function save(){
+  var data = {};
+  boxes.forEach(function(b){ if(b.value.trim()) data[b.getAttribute("data-s")] = b.value; });
+  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+}
+function filled(){
+  return boxes.filter(function(b){ return b.value.trim().length > 0; });
+}
+function refresh(){
+  var n = filled().length;
+  st.className = "status";
+  st.textContent = n === 0 ? "还没写意见" : ("已写 " + n + " 段意见");
+}
+function chunks(){
+  var parts = filled().map(function(b){
+    return "【" + b.getAttribute("data-s") + "】\n" + b.value.trim();
+  });
+  var out = [], cur = "";
+  parts.forEach(function(p){
+    var cand = cur ? (cur + "\n\n" + p) : p;
+    if(cur && (MARK.length + 1 + cand.length) > LIMIT){ out.push(cur); cur = p; }
+    else { cur = cand; }
+  });
+  if(cur) out.push(cur);
+  if(!out.length) return [];
+  return out.map(function(body, i){
+    var head = MARK;
+    if(out.length > 1) head = MARK + "  (" + (i+1) + "/" + out.length + ")";
+    return head + "\n" + body;
+  });
+}
+function showManual(text, msg){
+  dump.style.display = "block";
+  dump.value = text;
+  dump.focus();
+  dump.select();
+  st.className = "status err";
+  st.textContent = msg;
+}
+function doCopy(){
+  var cs = chunks();
+  if(!cs.length){
+    st.className = "status err";
+    st.textContent = "一条意见都没写,没东西可复制";
+    return;
+  }
+  var text = cs.join("\n\n----\n\n");
+  var manualMsg = cs.length > 1
+    ? "自动复制失败 — 请在下方框里手动全选复制(共 " + cs.length + " 段,每段都要贴)"
+    : "自动复制失败 — 请在下方框里手动全选复制";
+  var okMsg = cs.length > 1
+    ? "已复制(共 " + cs.length + " 段,都要贴回 issue)"
+    : "已复制 — 请贴回 issue 里";
+  var nav = window.navigator;
+  if(nav && nav.clipboard && nav.clipboard.writeText){
+    nav.clipboard.writeText(text).then(function(){
+      dump.style.display = "none";
+      st.className = "status ok";
+      st.textContent = okMsg;
+    }).catch(function(){ showManual(text, manualMsg); });
+  } else {
+    showManual(text, manualMsg);
+  }
+}
+boxes.forEach(function(b){
+  b.addEventListener("input", function(){ save(); refresh(); });
+});
+document.getElementById("copy").addEventListener("click", doCopy);
+document.getElementById("clear").addEventListener("click", function(){
+  boxes.forEach(function(b){ b.value = ""; });
+  try { window.localStorage.removeItem(KEY); } catch(e){}
+  dump.style.display = "none";
+  refresh();
+});
+load();
+refresh();
+})();
+</script>
+</body>
+</html>
