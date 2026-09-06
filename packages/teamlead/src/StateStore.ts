@@ -34868,7 +34868,10 @@ export class StateStore {
 		runId: string;
 		now: string;
 		reason: string;
-		eventSuffix: "operator_rework" | "operator_terminate";
+		eventSuffix:
+			| "operator_rework"
+			| "operator_terminate"
+			| "sessionless_closeout";
 	}): number {
 		const deliveries = this.workflowSelectAll(
 			`SELECT question_id, gate_node_id, source_execution_id, generation, state
@@ -34903,7 +34906,9 @@ export class StateStore {
 					generation,
 					previousState,
 					reason: input.reason,
-					operatorAction: input.eventSuffix,
+					...(input.eventSuffix === "sessionless_closeout"
+						? { closeoutCause: input.eventSuffix }
+						: { operatorAction: input.eventSuffix }),
 				},
 			});
 		}
@@ -35291,6 +35296,351 @@ export class StateStore {
 				return session && !isOperationalTerminalStatus(session.status);
 			})
 			.sort();
+	}
+
+	private sessionlessWorkflowGateCandidateRowsTx(input: {
+		limit: number;
+		runId?: string;
+		questionId?: string;
+	}): WorkflowSessionlessGateCandidate[] {
+		const terminalStatuses = [...OPERATIONAL_TERMINAL_STATUSES];
+		const predicates = [
+			"run.engine_owned = 1",
+			"run.status = 'active'",
+			"run.current_node_id = holder.gate_node_id",
+			"holder.state = 'awaiting_review'",
+			"holder.card_void_state IS NULL",
+			"node.state = 'review'",
+			"node.ended_at IS NULL",
+			`NOT EXISTS (
+			  SELECT 1 FROM workflow_gate_holder newer
+			   WHERE newer.run_id = holder.run_id
+			     AND newer.gate_node_id = holder.gate_node_id
+			     AND newer.attempt > holder.attempt
+			     AND newer.state IN ('materializing','awaiting_review','approved')
+			)`,
+			`NOT EXISTS (
+			  SELECT 1 FROM sessions session
+			   WHERE session.execution_id IN (
+			     SELECT attributed.execution_id FROM (
+			       SELECT execution_id FROM workflow_run_node
+			        WHERE run_id = run.run_id AND execution_id IS NOT NULL
+			       UNION
+			       SELECT execution_id FROM workflow_side_effect_ledger
+			        WHERE run_id = run.run_id
+			       UNION
+			       SELECT execution_id FROM workflow_execution_binding
+			        WHERE run_id = run.run_id
+			     ) attributed
+			   )
+			     AND session.status NOT IN (${terminalStatuses.map(() => "?").join(",")})
+			)`,
+			`NOT EXISTS (
+			  SELECT 1 FROM workflow_side_effect_ledger dispatch
+			   WHERE dispatch.run_id = run.run_id AND dispatch.kind = 'dispatch'
+			     AND dispatch.state IN ('intent_recorded','launch_committed')
+			)`,
+			`NOT EXISTS (
+			  SELECT 1
+			    FROM workflow_rework_delivery delivery
+			    JOIN workflow_rework_request request
+			      ON request.request_id = delivery.request_id
+			   WHERE request.run_id = run.run_id
+			     AND delivery.state IN (
+			       'pending','turn_granted','awaiting_receipt','wake_delivered',
+			       'replacement_pending'
+			     )
+			)`,
+			`NOT EXISTS (
+			  SELECT 1 FROM workflow_run_node running
+			   WHERE running.run_id = run.run_id
+			     AND running.state = 'running' AND running.ended_at IS NULL
+			)`,
+		];
+		const params: unknown[] = [...terminalStatuses];
+		if (input.runId) {
+			predicates.push("run.run_id = ?");
+			params.push(input.runId);
+		}
+		if (input.questionId) {
+			predicates.push("holder.question_id = ?");
+			params.push(input.questionId);
+		}
+		params.push(input.limit);
+		return this.workflowSelectAll(
+			`SELECT run.run_id, run.project_name, run.issue_id, run.created_at,
+			        holder.question_id, holder.gate_node_id, holder.attempt,
+			        holder.head_sha, holder.source_execution_id
+			   FROM workflow_gate_holder holder
+			   JOIN workflow_run run ON run.run_id = holder.run_id
+			   JOIN workflow_run_node node
+			     ON node.run_id = holder.run_id
+			    AND node.node_id = holder.gate_node_id
+			    AND node.attempt = holder.attempt
+			  WHERE ${predicates.join(" AND ")}
+			  ORDER BY run.created_at, run.run_id, holder.question_id
+			  LIMIT ?`,
+			params,
+		).map((row) => ({
+			runId: String(row.run_id),
+			projectName: String(row.project_name),
+			issueId: String(row.issue_id),
+			createdAt: String(row.created_at),
+			questionId: String(row.question_id),
+			gateNodeId: String(row.gate_node_id),
+			attempt: Number(row.attempt),
+			headSha: String(row.head_sha),
+			sourceExecutionId: String(row.source_execution_id),
+		}));
+	}
+
+	listSessionlessWorkflowGateCandidates(
+		limit = 20,
+	): WorkflowSessionlessGateCandidate[] {
+		const bounded = Math.max(1, Math.min(100, Math.floor(limit)));
+		return this.sessionlessWorkflowGateCandidateRowsTx({ limit: bounded });
+	}
+
+	private sessionlessWorkflowGateRefusalTx(input: {
+		runId: string;
+		questionId: string;
+	}): WorkflowSessionlessGateCloseoutRefusal {
+		const run = this.getWorkflowRun(input.runId);
+		if (!run) return { ok: false, reason: "run_not_found" };
+		if (run.engine_owned !== 1) {
+			return { ok: false, reason: "run_not_engine_owned" };
+		}
+		if (run.status !== "active") {
+			return { ok: false, reason: "run_not_active" };
+		}
+		const holder = this.getWorkflowGateHolderByQuestionId(input.questionId);
+		if (!holder || holder.run_id !== input.runId) {
+			return { ok: false, reason: "gate_holder_not_found" };
+		}
+		if (run.current_node_id !== holder.gate_node_id) {
+			return { ok: false, reason: "gate_not_current" };
+		}
+		if (holder.state !== "awaiting_review") {
+			return { ok: false, reason: "gate_not_awaiting_review" };
+		}
+		if (holder.card_void_state !== null) {
+			return { ok: false, reason: "gate_card_already_voiding" };
+		}
+		const node = this.getWorkflowRunNode(
+			input.runId,
+			holder.gate_node_id,
+			holder.attempt,
+		);
+		if (!node || node.state !== "review" || node.ended_at !== null) {
+			return { ok: false, reason: "gate_node_not_open_review" };
+		}
+		if (this.liveRunAttributedExecutionsTx(input.runId).length > 0) {
+			return { ok: false, reason: "live_session" };
+		}
+		if (
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND kind = 'dispatch'
+				    AND state IN ('intent_recorded','launch_committed') LIMIT 1`,
+				[input.runId],
+			).length > 0
+		) {
+			return { ok: false, reason: "pending_dispatch_intent" };
+		}
+		if (
+			this.workflowSelectAll(
+				`SELECT 1 AS present
+				   FROM workflow_rework_delivery delivery
+				   JOIN workflow_rework_request request
+				     ON request.request_id = delivery.request_id
+				  WHERE request.run_id = ?
+				    AND delivery.state IN (
+				      'pending','turn_granted','awaiting_receipt','wake_delivered',
+				      'replacement_pending'
+				    ) LIMIT 1`,
+				[input.runId],
+			).length > 0
+		) {
+			return { ok: false, reason: "rework_delivery_inflight" };
+		}
+		if (
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_run_node
+				  WHERE run_id = ? AND state = 'running' AND ended_at IS NULL LIMIT 1`,
+				[input.runId],
+			).length > 0
+		) {
+			return { ok: false, reason: "running_node" };
+		}
+		return { ok: false, reason: "gate_shape_changed" };
+	}
+
+	private sessionlessWorkflowGateReplayIsCompleteTx(input: {
+		runId: string;
+		questionId: string;
+	}): boolean {
+		const holder = this.getWorkflowGateHolderByQuestionId(input.questionId);
+		if (!holder || holder.run_id !== input.runId) return false;
+		const node = this.getWorkflowRunNode(
+			input.runId,
+			holder.gate_node_id,
+			holder.attempt,
+		);
+		if (
+			this.getWorkflowRun(input.runId)?.status !== "terminated" ||
+			holder.state !== "superseded" ||
+			holder.superseded_reason !== "run_sessionless" ||
+			(holder.card_message_id !== null && holder.card_void_state === null) ||
+			node?.state !== "superseded" ||
+			node.ended_at === null
+		) {
+			return false;
+		}
+		return (
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_ship_target_binding
+				  WHERE run_id = ? AND approve_question_id = ?
+				    AND superseded_at IS NULL LIMIT 1`,
+				[input.runId, input.questionId],
+			).length === 0
+		);
+	}
+
+	terminateSessionlessWorkflowGate(input: {
+		runId: string;
+		questionId: string;
+		now: string;
+	}): WorkflowSessionlessGateCloseoutResult {
+		if (
+			!input.runId ||
+			!input.questionId ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_sessionless_gate_closeout" };
+		}
+		const successEventUid = `run_terminated_sessionless_gate:${input.runId}:${input.questionId}`;
+		let result: WorkflowSessionlessGateCloseoutResult = {
+			ok: false,
+			reason: "gate_shape_changed",
+		};
+		let changed = false;
+		const rollback = new Error("sessionless_gate_closeout_raced");
+		try {
+			this.db.transaction(() => {
+				const existing = this.workflowSelectAll(
+					"SELECT 1 AS present FROM workflow_run_event WHERE event_uid = ?",
+					[successEventUid],
+				)[0];
+				if (existing) {
+					result = this.sessionlessWorkflowGateReplayIsCompleteTx(input)
+						? { ok: true, idempotentReplay: true }
+						: { ok: false, reason: "terminal_shape_conflict" };
+					return;
+				}
+				const candidate = this.sessionlessWorkflowGateCandidateRowsTx({
+					limit: 1,
+					runId: input.runId,
+					questionId: input.questionId,
+				})[0];
+				if (!candidate) {
+					result = this.sessionlessWorkflowGateRefusalTx(input);
+					return;
+				}
+				this.db.run(
+					`UPDATE workflow_run_node
+					    SET state = 'superseded', ended_at = ?
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?
+					    AND state = 'review' AND ended_at IS NULL`,
+					[
+						input.now,
+						candidate.runId,
+						candidate.gateNodeId,
+						candidate.attempt,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) throw rollback;
+				this.supersedeWorkflowShipTargetsForCurrentGateTx({
+					runId: candidate.runId,
+					gateNodeId: candidate.gateNodeId,
+					now: input.now,
+				});
+				const superseded = this.supersedeWorkflowGateHoldersTx({
+					runId: candidate.runId,
+					gateNodeId: candidate.gateNodeId,
+					questionId: candidate.questionId,
+					fromStates: ["awaiting_review"],
+					reason: "run_sessionless",
+					now: input.now,
+				});
+				if (superseded.updated !== 1) throw rollback;
+				this.cancelOpenWorkflowCarrierDeliveriesTx({
+					runId: candidate.runId,
+					now: input.now,
+					reason: "run_sessionless",
+					eventSuffix: "sessionless_closeout",
+				});
+				this.db.run(
+					`UPDATE workflow_run SET status = 'terminated'
+					  WHERE run_id = ? AND status = 'active' AND engine_owned = 1
+					    AND current_node_id = ?`,
+					[candidate.runId, candidate.gateNodeId],
+				);
+				if (this.db.getRowsModified() !== 1) throw rollback;
+				this.settleWorkflowEngineParksForRunTx(
+					candidate.runId,
+					input.now,
+					TERMINAL_PARK_SETTLEMENT_REASONS,
+				);
+				this.appendWorkflowRunEventCheckedTx({
+					runId: candidate.runId,
+					eventUid: successEventUid,
+					kind: "run_terminated_sessionless_gate",
+					nodeId: candidate.gateNodeId,
+					executionId: candidate.sourceExecutionId,
+					payload: {
+						reason: "run_sessionless",
+						questionId: candidate.questionId,
+						attempt: candidate.attempt,
+					},
+				});
+				changed = true;
+				result = { ok: true, idempotentReplay: false };
+			});
+		} catch (error) {
+			if (error !== rollback) throw error;
+			result = { ok: false, reason: "closeout_raced" };
+		}
+		if (changed) this.save();
+		return result;
+	}
+
+	listPendingSessionlessGateMailboxRetirements(
+		limit = 20,
+	): WorkflowSessionlessGateMailboxRetirement[] {
+		const bounded = Math.max(1, Math.min(100, Math.floor(limit)));
+		return this.workflowSelectAll(
+			`SELECT holder.run_id, holder.question_id, holder.gate_node_id,
+			        holder.source_execution_id, run.project_name, run.issue_id
+			   FROM workflow_gate_holder holder
+			   JOIN workflow_run run ON run.run_id = holder.run_id
+			  WHERE holder.state = 'superseded'
+			    AND holder.superseded_reason = 'run_sessionless'
+			    AND NOT EXISTS (
+			      SELECT 1 FROM workflow_run_event event
+			       WHERE event.event_uid =
+			             'sessionless_gate_mailbox_retired:' || holder.run_id || ':' || holder.question_id
+			    )
+			  ORDER BY holder.updated_at, holder.run_id, holder.question_id
+			  LIMIT ?`,
+			[bounded],
+		).map((row) => ({
+			runId: String(row.run_id),
+			questionId: String(row.question_id),
+			gateNodeId: String(row.gate_node_id),
+			sourceExecutionId: String(row.source_execution_id),
+			projectName: String(row.project_name),
+			issueId: String(row.issue_id),
+		}));
 	}
 
 	private createWorkflowRunCollectReceiptTx(input: {
@@ -45769,7 +46119,10 @@ export class StateStore {
 		const latestTerminationRow = this.workflowSelectAll(
 			`SELECT payload, at
 			   FROM workflow_run_event
-			  WHERE run_id = ? AND kind = 'run_terminated_by_operator'
+			  WHERE run_id = ?
+			    AND kind IN (
+			      'run_terminated_by_operator','run_terminated_sessionless_gate'
+			    )
 			  ORDER BY seq DESC LIMIT 1`,
 			[input.runId],
 		)[0];
@@ -54795,7 +55148,8 @@ export class StateStore {
 			| "new_gate_attempt"
 			| "operator_rework"
 			| "land_rework"
-			| "head_refresh_equivalent";
+			| "head_refresh_equivalent"
+			| "run_sessionless";
 		now: string;
 	}): { updated: number } {
 		const predicates = ["run_id = ?"];
@@ -63922,6 +64276,52 @@ export type WorkflowGateHolderState =
 	| "awaiting_review"
 	| "approved"
 	| "superseded";
+
+export interface WorkflowSessionlessGateCandidate {
+	runId: string;
+	projectName: string;
+	issueId: string;
+	createdAt: string;
+	questionId: string;
+	gateNodeId: string;
+	attempt: number;
+	headSha: string;
+	sourceExecutionId: string;
+}
+
+export interface WorkflowSessionlessGateMailboxRetirement {
+	runId: string;
+	questionId: string;
+	gateNodeId: string;
+	sourceExecutionId: string;
+	projectName: string;
+	issueId: string;
+}
+
+export interface WorkflowSessionlessGateCloseoutRefusal {
+	ok: false;
+	reason:
+		| "invalid_sessionless_gate_closeout"
+		| "run_not_found"
+		| "run_not_engine_owned"
+		| "run_not_active"
+		| "gate_holder_not_found"
+		| "gate_not_current"
+		| "gate_not_awaiting_review"
+		| "gate_card_already_voiding"
+		| "gate_node_not_open_review"
+		| "live_session"
+		| "pending_dispatch_intent"
+		| "rework_delivery_inflight"
+		| "running_node"
+		| "gate_shape_changed"
+		| "terminal_shape_conflict"
+		| "closeout_raced";
+}
+
+export type WorkflowSessionlessGateCloseoutResult =
+	| { ok: true; idempotentReplay: boolean }
+	| WorkflowSessionlessGateCloseoutRefusal;
 
 export type WorkflowGateCardVoidState =
 	| "pending"

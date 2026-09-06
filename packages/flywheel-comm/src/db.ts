@@ -1761,7 +1761,8 @@ export class CommDB {
 		reason:
 			| "superseded_session_terminal"
 			| "superseded_issue_done"
-			| "superseded_merged";
+			| "superseded_merged"
+			| "superseded_run_sessionless";
 		now: string;
 	}): {
 		kind: "retired" | "already_retired" | "response_won" | "missing";

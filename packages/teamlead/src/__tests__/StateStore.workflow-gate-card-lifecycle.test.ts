@@ -196,6 +196,30 @@ describe("workflow gate card lifecycle", () => {
 		expect(text).toContain("重新批准");
 	});
 
+	it("explains that a sessionless run makes the old card permanently inert", async () => {
+		const store = await createStore();
+		supersededPostedCard(store);
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_gate_holder SET superseded_reason = 'run_sessionless' WHERE question_id = ?",
+			["question-1"],
+		);
+		const holder = store.getWorkflowGateHolderByQuestionId("question-1");
+		if (!holder) throw new Error("holder missing");
+
+		const text = voidedWorkflowGateCardText({
+			holder,
+			issueId: "FLY-2112",
+		});
+		expect(text).toContain("已无存活 runner");
+		expect(text).toContain("本卡已作废");
+		expect(text).toContain("不会触发 ship");
+		expect(text).not.toContain("新的 ship 卡");
+	});
+
 	it("records the pre-supersede state and schedules a posted card for voiding", async () => {
 		const store = await createStore();
 		store.ensureWorkflowGateHolder({

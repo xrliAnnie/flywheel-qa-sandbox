@@ -619,6 +619,7 @@ import {
 	defaultGetCommDbPath,
 	isCaptureError,
 } from "./session-capture.js";
+import { reconcileSessionlessWorkflowGates } from "./sessionless-founder-gate-reconciler.js";
 import { createShipApprovalHandler } from "./ship-approval-route.js";
 import { ShipRelevantDiffService } from "./ship-relevant-diff.js";
 import { forceShippedHusks } from "./shipped-husk-escalation.js";
@@ -9231,6 +9232,11 @@ export async function startBridge(
 		if (workflowGateMaterializationRunning) return;
 		workflowGateMaterializationRunning = true;
 		try {
+			await reconcileSessionlessWorkflowGates({
+				store,
+				commDbPathForProject,
+				log: (message) => console.warn(message),
+			});
 			await voidSupersededWorkflowGateCards({
 				store,
 				resolveAlertIdentity: ({ run }) =>

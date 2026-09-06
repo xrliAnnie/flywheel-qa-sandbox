@@ -106,6 +106,8 @@ export function voidedWorkflowGateCardText(input: {
 			return `✅ 已自动换到内容等价的新 head\n${prior}\n引擎已验证这只是机械 rebase,原批准继续有效,无需再次批准。`;
 		case "land_rework":
 			return `⛔ 已进入冲突返工 — 本卡批准已作废\n${prior}\n引擎会驱动 implement 解冲突并重新通过 QA；随后会出新 ship 卡,需要 founder 重新批准。`;
+		case "run_sessionless":
+			return `⛔ run 已无存活 runner — 本卡已作废\n${prior}\n任何对本卡的批准都不会触发 ship。`;
 		default:
 			return `⛔ 已作废(head 已换代)— 新的 ship 卡见下\n${prior}\n请在最新的 ship 卡上操作。`;
 	}

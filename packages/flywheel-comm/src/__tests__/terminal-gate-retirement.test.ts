@@ -157,4 +157,28 @@ describe("terminal gate retirement", () => {
 			superseded_at: NOW,
 		});
 	});
+
+	it("retires a sessionless-run gate with an idempotent dedicated reason", () => {
+		const questionId = db.insertQuestion("exec-1", LEAD_ID, "founder review?", {
+			checkpoint: "founder_review",
+		});
+		expect(
+			db.retireGateForTerminalAuthority({
+				questionId,
+				reason: "superseded_run_sessionless",
+				now: NOW,
+			}),
+		).toEqual({ kind: "retired" });
+		expect(
+			db.retireGateForTerminalAuthority({
+				questionId,
+				reason: "superseded_run_sessionless",
+				now: "2026-07-24T00:02:00.000Z",
+			}),
+		).toEqual({ kind: "already_retired" });
+		expect(db.getMessageById(questionId)).toMatchObject({
+			resolved_via: "superseded_run_sessionless",
+			superseded_at: NOW,
+		});
+	});
 });
