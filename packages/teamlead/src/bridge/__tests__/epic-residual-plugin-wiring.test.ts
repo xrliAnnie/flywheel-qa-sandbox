@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { RunnerAdmissionController } from "../runner-admission.js";
@@ -125,6 +126,7 @@ describe("FLY-2141 production plugin wiring", () => {
 			projects,
 			linearApiKey: "linear-test-key",
 			resolveOwner: expect.any(Function),
+			runAttempt: expect.any(Function),
 			log: expect.any(Function),
 		});
 		expect(deps?.resolveOwner("test-project", ["Backend"])).toEqual({
@@ -144,5 +146,28 @@ describe("FLY-2141 production plugin wiring", () => {
 					epicResidualMocks.createEpicResidualScan.mock.results[0]?.value,
 			}),
 		);
+	});
+
+	it("FLY-2143 assembles one shared Epic refresh and report serialization graph", () => {
+		const source = readFileSync(
+			new URL("../plugin.ts", import.meta.url),
+			"utf8",
+		);
+		expect(source).toContain(
+			"const reportCriticalSection = createReportCriticalSection();",
+		);
+		expect(source).toContain(
+			"const epicPageSerializer = createEpicPageSerializer();",
+		);
+		expect(source).toContain(
+			"const epicPagePublisher = createEpicPagePublisher({",
+		);
+		expect(source).toContain(
+			"const epicPageRefresher = createEpicPageRefresher({",
+		);
+		expect(source).toContain("criticalSection: reportCriticalSection");
+		expect(source).toContain("serializer: epicPageSerializer");
+		expect(source).toContain("publisher: epicPagePublisher");
+		expect(source).toContain("epicPageRefresher");
 	});
 });

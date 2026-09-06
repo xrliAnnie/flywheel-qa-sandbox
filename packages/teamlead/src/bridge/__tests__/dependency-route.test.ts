@@ -206,7 +206,8 @@ describe("dependency route", () => {
 	});
 
 	it("adds an external blocker to a label-less active-scope child", async () => {
-		const routeDeps = deps();
+		const onEpicChange = vi.fn();
+		const routeDeps = deps({ onEpicChange });
 		const response = await request(
 			app({ deps: routeDeps }),
 			"/api/dependency/add",
@@ -231,6 +232,8 @@ describe("dependency route", () => {
 			blockedId: "child-uuid-2",
 		});
 		expect(routeDeps.createComment).toHaveBeenCalledOnce();
+		expect(onEpicChange).toHaveBeenCalledOnce();
+		expect(onEpicChange).toHaveBeenCalledWith("example", "dependency_changed");
 	});
 
 	it("allows dependency writes and log reads for a Backlog descendant", async () => {
@@ -411,7 +414,9 @@ describe("dependency route", () => {
 	});
 
 	it("rejects a blocked issue outside the current page scope", async () => {
+		const onEpicChange = vi.fn();
 		const routeDeps = deps({
+			onEpicChange,
 			fetchSnapshot: vi.fn(async () => ({
 				...epicShapeSnapshot(),
 				items: [],
@@ -428,6 +433,7 @@ describe("dependency route", () => {
 			body: { error: "issue_outside_project", which: "blocked" },
 		});
 		expect(routeDeps.createRelation).not.toHaveBeenCalled();
+		expect(onEpicChange).not.toHaveBeenCalled();
 	});
 
 	it("rejects a visible cycle and an unbounded traversal without writing", async () => {
@@ -470,6 +476,7 @@ describe("dependency route", () => {
 	});
 
 	it("replays this operation idempotently and refuses a conflicting payload", async () => {
+		const onEpicChange = vi.fn();
 		const recorded = buildLedgerComment({
 			v: 1,
 			op: OPERATION_ID,
@@ -509,7 +516,11 @@ describe("dependency route", () => {
 			hasNextPage: false,
 			endCursor: null,
 		}));
-		const routeDeps = deps({ listComments, listBlockedBy: existingRelation });
+		const routeDeps = deps({
+			listComments,
+			listBlockedBy: existingRelation,
+			onEpicChange,
+		});
 
 		const replay = await request(
 			app({ deps: routeDeps }),
@@ -525,6 +536,7 @@ describe("dependency route", () => {
 			},
 		});
 		expect(routeDeps.createRelation).not.toHaveBeenCalled();
+		expect(onEpicChange).not.toHaveBeenCalled();
 		expect(routeDeps.createComment).not.toHaveBeenCalled();
 
 		const conflict = await request(
@@ -1043,6 +1055,7 @@ describe("dependency route", () => {
 	});
 
 	it("removes an external blocker from a visible child and records not_needed", async () => {
+		const onEpicChange = vi.fn();
 		let exists = true;
 		const listBlockedBy = vi.fn(async (issueId: string) => ({
 			relations:
@@ -1062,7 +1075,7 @@ describe("dependency route", () => {
 			exists = false;
 			return { success: true };
 		});
-		const routeDeps = deps({ listBlockedBy, deleteRelation });
+		const routeDeps = deps({ listBlockedBy, deleteRelation, onEpicChange });
 		const response = await request(
 			app({ deps: routeDeps }),
 			"/api/dependency/remove",
@@ -1079,6 +1092,8 @@ describe("dependency route", () => {
 			},
 		});
 		expect(deleteRelation).toHaveBeenCalledWith("relation-1");
+		expect(onEpicChange).toHaveBeenCalledOnce();
+		expect(onEpicChange).toHaveBeenCalledWith("example", "dependency_changed");
 		const commentBody = vi.mocked(routeDeps.createComment!).mock.calls[0]?.[1];
 		expect(parseLedgerComment(commentBody ?? "")).toMatchObject({
 			kind: "not_needed",

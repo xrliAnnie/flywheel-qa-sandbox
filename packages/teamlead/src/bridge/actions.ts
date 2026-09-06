@@ -244,6 +244,7 @@ export async function approveExecution(
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	gateAuthorityView?: GateAuthorityView,
 	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission,
+	onEpicChange?: (projectName: string, reason: "linear_done") => void,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	const engineAuthority = gateAuthorityView?.resolveForExecution?.(executionId);
@@ -464,6 +465,7 @@ export async function approveExecution(
 			materializedHeadAuthority,
 			undefined,
 			terminalArchiveEnqueue,
+			onEpicChange,
 		);
 		if (completed) {
 			console.log(
@@ -1845,6 +1847,7 @@ export function createActionRouter(
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	gateAuthorityView?: GateAuthorityView,
 	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission,
+	onEpicChange?: (projectName: string, reason: "linear_done") => void,
 ): Router {
 	const router = Router();
 
@@ -1904,6 +1907,7 @@ export function createActionRouter(
 					materializedHeadAuthority,
 					gateAuthorityView,
 					terminalArchiveEnqueue,
+					onEpicChange,
 				);
 				if (result.success) {
 					res.json({

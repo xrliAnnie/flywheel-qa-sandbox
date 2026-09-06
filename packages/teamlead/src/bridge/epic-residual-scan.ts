@@ -3,7 +3,7 @@ import {
 	generateEpicPage,
 } from "../epic-page/generate.js";
 import { materializeEpicPage } from "../epic-page/materialize.js";
-import { type EpicPage, EpicPageSchemaError } from "../epic-page/model.js";
+import type { EpicPage } from "../epic-page/model.js";
 import {
 	buildEpicPageRenderReceipt,
 	type EpicPageRenderReceipt,
@@ -20,19 +20,22 @@ import {
 	EpicResidualSessionUnreadableError,
 	summarizeEpicResidual,
 } from "../epic-page/residual.js";
+import { readSignals } from "../epic-page/signals.js";
 import {
 	type ProjectEntry,
 	resolveProjectLinearBinding,
 } from "../ProjectConfig.js";
 import { readEpicItemFacts, type StateStore } from "../StateStore.js";
 import {
-	ActiveScopeNotFoundError,
-	EpicSnapshotTruncatedError,
-	EpicTooLargeError,
+	createEpicPageSerializer,
+	type EpicPageAttemptInput,
+	type EpicPageAttemptResult,
+	runEpicPageAttempt,
+} from "./epic-page-refresher.js";
+import {
 	fetchLinearActiveScopeSnapshot,
 	type LinearActiveScopeSnapshot,
 } from "./linear-epic-query.js";
-import { LinearUpstreamError } from "./linear-query.js";
 
 export type EpicScanMaterialized =
 	| { kind: "ok"; materialized: MaterializedEpicScope }
@@ -50,6 +53,7 @@ export interface EpicResidualScanDeps {
 	) => Promise<LinearActiveScopeSnapshot>;
 	generatePage?: (input: GenerateEpicPageInput) => EpicPage;
 	buildReceipt?: (page: EpicPage) => EpicPageRenderReceipt;
+	runAttempt?: (input: EpicPageAttemptInput) => Promise<EpicPageAttemptResult>;
 	now?: () => Date;
 	log?: (message: string) => void;
 }
@@ -83,6 +87,45 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 		trigger: EpicResidualTrigger,
 	): EpicResidualFact | undefined;
 } {
+	const now = deps.now ?? (() => new Date());
+	const fallbackSerializer = createEpicPageSerializer();
+	const runAttempt =
+		deps.runAttempt ??
+		((input: EpicPageAttemptInput) =>
+			runEpicPageAttempt(
+				{
+					store: deps.store,
+					serializer: fallbackSerializer,
+					publisher: {
+						publishHosted: async (page) =>
+							`ok_unpublished:${page.freshness.current.value!.version}:skipped_hosting_not_configured`,
+					},
+					materialize: (attempt) =>
+						materializeEpicPage(
+							{
+								fetchSnapshot:
+									deps.fetchSnapshot ?? fetchLinearActiveScopeSnapshot,
+								readItemFacts: (projectName, item) =>
+									readEpicItemFacts(deps.store, projectName, item),
+								readSignals: (projectName, items, generatedAt) =>
+									readSignals(
+										{ stateStore: deps.store },
+										{ projectName, items, now: generatedAt },
+									),
+								readFreshness: (projectName) => ({
+									history: deps.store.getEpicPageFreshness(projectName),
+									publication: deps.store.getEpicPagePublication(projectName),
+								}),
+								generatePage: deps.generatePage ?? generateEpicPage,
+								buildReceipt: deps.buildReceipt ?? buildEpicPageRenderReceipt,
+								now,
+							},
+							attempt,
+						),
+					now,
+				},
+				input,
+			));
 	return {
 		async materializeForScan(project) {
 			const binding = resolveProjectLinearBinding(
@@ -93,37 +136,17 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 				return undefined;
 			}
 			const startedAt = Date.now();
-			let materialized: Awaited<ReturnType<typeof materializeEpicPage>>;
+			let result: EpicPageAttemptResult;
 			try {
-				materialized = await materializeEpicPage(
-					{
-						fetchSnapshot: deps.fetchSnapshot ?? fetchLinearActiveScopeSnapshot,
-						readItemFacts: (projectName, item) =>
-							readEpicItemFacts(deps.store, projectName, item),
-						generatePage: deps.generatePage ?? generateEpicPage,
-						buildReceipt: deps.buildReceipt ?? buildEpicPageRenderReceipt,
-						now: deps.now ?? (() => new Date()),
-					},
-					{
-						projectName: project.projectName,
-						binding,
-						apiKey: deps.linearApiKey,
-						trigger: "scan",
-					},
-				);
+				result = await runAttempt({
+					projectName: project.projectName,
+					binding,
+					apiKey: deps.linearApiKey,
+					trigger: "scan",
+					reasons: ["scan"],
+				});
 			} catch (error) {
-				const token =
-					error instanceof LinearUpstreamError
-						? "transient: linear_unavailable"
-						: error instanceof ActiveScopeNotFoundError
-							? "structural: active_scope_not_found"
-							: error instanceof EpicTooLargeError
-								? "structural: scope_too_large"
-								: error instanceof EpicSnapshotTruncatedError
-									? "structural: scope_snapshot_truncated"
-									: error instanceof EpicPageSchemaError
-										? "structural: epic_page_invalid"
-										: "transient: epic_scan_failed";
+				const token = "transient: epic_scan_failed";
 				(deps.log ?? console.warn)(
 					`[patrol_tick] epic scan project=${project.projectName} unavailable=${token}: ${error instanceof Error ? error.message : String(error)}`,
 				);
@@ -132,18 +155,13 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 					token,
 				};
 			}
-			const { page, snapshot, receipt } = materialized;
-			try {
-				deps.store.insertEpicPageRenderReceipt({
-					projectName: project.projectName,
-					trigger: "scan",
-					receipt,
-				});
-			} catch (error) {
+			if (result.kind === "unavailable") {
 				(deps.log ?? console.warn)(
-					`[patrol_tick] epic scan project=${project.projectName} receipt_write_failed: ${error instanceof Error ? error.message : String(error)}`,
+					`[patrol_tick] epic scan project=${project.projectName} unavailable=${result.token}: ${result.error instanceof Error ? result.error.message : String(result.error)}`,
 				);
+				return { kind: "unavailable", token: result.token };
 			}
+			const { page, snapshot } = result.materialized;
 			(deps.log ?? console.log)(
 				`[patrol_tick] epic scan project=${project.projectName} items=${snapshot.items.length} ms=${Math.max(0, Date.now() - startedAt)}`,
 			);

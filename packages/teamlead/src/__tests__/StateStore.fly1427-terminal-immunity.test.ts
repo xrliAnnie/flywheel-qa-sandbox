@@ -115,6 +115,7 @@ describe("FLY-1427 enrolled terminal signal immunity", () => {
 		expect(store.recordEnrolledTerminalSignal(base)).toMatchObject({
 			ok: true,
 			idempotentReplay: false,
+			statusChanged: true,
 		});
 		expect(
 			store.recordEnrolledTerminalSignal({
@@ -200,6 +201,7 @@ describe("FLY-1427 enrolled terminal signal immunity", () => {
 				attemptedStatus: "completed",
 				effectiveStatus: terminalStatus,
 				statusPreserved: true,
+				statusChanged: false,
 			});
 			expect(store.getSession(executionId)).toMatchObject({
 				status: terminalStatus,
@@ -232,6 +234,7 @@ describe("FLY-1427 enrolled terminal signal immunity", () => {
 				attemptedStatus: "completed",
 				effectiveStatus: terminalStatus,
 				statusPreserved: true,
+				statusChanged: false,
 			});
 			expect(
 				store
@@ -281,6 +284,7 @@ describe("FLY-1427 enrolled terminal signal immunity", () => {
 			idempotentReplay: true,
 			effectiveStatus: "terminated",
 			statusPreserved: true,
+			statusChanged: false,
 		});
 		expect(store.getSession(executionId)?.status).toBe("terminated");
 		expect(store.getEventsByExecution(executionId)).toEqual([]);
@@ -315,6 +319,7 @@ describe("FLY-1427 enrolled terminal signal immunity", () => {
 				attemptedStatus,
 				effectiveStatus: attemptedStatus,
 				statusPreserved: false,
+				statusChanged: true,
 			});
 			expect(store.getSession(executionId)?.status).toBe(attemptedStatus);
 			store.close();

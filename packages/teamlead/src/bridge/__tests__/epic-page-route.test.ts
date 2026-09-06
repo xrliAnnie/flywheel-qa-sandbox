@@ -11,13 +11,18 @@ import { generateEpicPage } from "../../epic-page/generate.js";
 import { EpicPageSchemaError } from "../../epic-page/model.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
-import { createEpicPageRouter } from "../epic-page-route.js";
+import { masterOnlyAuthMiddleware } from "../dependency-route.js";
+import {
+	createEpicPageRouter,
+	createEpicPageStatusRouter,
+} from "../epic-page-route.js";
 import {
 	ActiveScopeNotFoundError,
 	EpicSnapshotTruncatedError,
 	EpicTooLargeError,
 } from "../linear-epic-query.js";
 import { LinearUpstreamError } from "../linear-query.js";
+import { scheduledAtOrBefore } from "../patrol-tick.js";
 import { tokenAuthMiddleware } from "../plugin.js";
 
 const projects: ProjectEntry[] = [
@@ -62,6 +67,34 @@ async function request(
 			body: response.headers.get("content-type")?.includes("json")
 				? (JSON.parse(text) as Record<string, unknown>)
 				: undefined,
+		};
+	} finally {
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+	}
+}
+
+async function requestStatus(
+	app: express.Application,
+	options: { token?: string; projectName?: string } = {},
+) {
+	const server = createServer(app);
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	try {
+		const query =
+			options.projectName === undefined
+				? ""
+				: `?projectName=${encodeURIComponent(options.projectName)}`;
+		const response = await fetch(`${base}/api/epic-page/status${query}`, {
+			headers: options.token
+				? { authorization: `Bearer ${options.token}` }
+				: {},
+		});
+		const text = await response.text();
+		return {
+			status: response.status,
+			text,
+			body: JSON.parse(text) as Record<string, unknown>,
 		};
 	} finally {
 		await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -161,6 +194,13 @@ describe("Epic page router", () => {
 		],
 		[new LinearUpstreamError("timeout"), 502, "linear_unavailable"],
 	] as const)("maps live scope failure %#", async (failure, status, error) => {
+		store.insertEpicPageRefresh({
+			projectName: "example",
+			attemptedAt: "2026-09-03T03:00:00.000Z",
+			trigger: "scan",
+			reasons: ["scan"],
+			outcome: "ok:2",
+		});
 		const response = await request(
 			app({
 				fetchSnapshot: vi.fn(async () => {
@@ -169,7 +209,22 @@ describe("Epic page router", () => {
 			}),
 			{ token: "master", body: { projectName: "example" } },
 		);
-		expect(response).toMatchObject({ status, body: { error } });
+		expect(response).toMatchObject({
+			status,
+			body: {
+				error,
+				last_generated: {
+					version: 2,
+					trigger: "scan",
+					attempted_at: "2026-09-03T03:00:00.000Z",
+				},
+				last_published: {
+					version: 2,
+					trigger: "scan",
+					attempted_at: "2026-09-03T03:00:00.000Z",
+				},
+			},
+		});
 		expect(insert).not.toHaveBeenCalled();
 	});
 
@@ -283,6 +338,66 @@ describe("Epic page router", () => {
 		}
 	});
 
+	it("records manual generation without invoking the hosted publisher", async () => {
+		const publishHosted = vi.fn(async () => "ok:1" as const);
+		const response = await request(app({ publisher: { publishHosted } }), {
+			token: "master",
+			body: { projectName: "example" },
+		});
+
+		expect(response.status).toBe(200);
+		expect(publishHosted).not.toHaveBeenCalled();
+		expect(
+			rawDb(store)
+				.prepare(
+					"SELECT trigger, reason, outcome FROM epic_page_refresh ORDER BY rowid",
+				)
+				.all(),
+		).toEqual([
+			{
+				trigger: "manual",
+				reason: "manual",
+				outcome: "ok_unpublished:1:manual",
+			},
+		]);
+	});
+
+	it("embeds the production patrol phase in manual page freshness", async () => {
+		const intervalMs = 30 * 60_000;
+		const response = await request(
+			app({
+				scanSchedule: () => ({
+					leadId: "example-eng-lead",
+					intervalMs,
+				}),
+			}),
+			{ token: "master", body: { projectName: "example" } },
+		);
+		const expectedSeconds = Math.ceil(
+			(scheduledAtOrBefore(
+				EPIC_SHAPE_NOW.getTime(),
+				"example-eng-lead",
+				intervalMs,
+			) +
+				intervalMs -
+				EPIC_SHAPE_NOW.getTime()) /
+				1_000,
+		);
+
+		expect(response).toMatchObject({
+			status: 200,
+			body: {
+				document: {
+					freshness: {
+						next_scan: {
+							value: { expected_in_seconds: expectedSeconds },
+						},
+					},
+				},
+			},
+		});
+	});
+
 	it("serializes concurrent live generation by project", async () => {
 		let active = 0;
 		let maxActive = 0;
@@ -311,5 +426,176 @@ describe("Epic page router", () => {
 			),
 		).toEqual([1, 2]);
 		expect(maxActive).toBe(1);
+	});
+
+	it("serves freshness, stable publication URL, and the next scan without generating", async () => {
+		store.insertEpicPageRefresh({
+			projectName: "example",
+			attemptedAt: "2026-09-03T03:00:00.000Z",
+			trigger: "scan",
+			reasons: ["scan"],
+			outcome: "ok:3",
+		});
+		const { token } = store.reserveEpicPageToken("example");
+		store.commitEpicPagePublication({
+			projectName: "example",
+			token,
+			publishedAt: "2026-09-03T03:00:01.000Z",
+			version: 3,
+		});
+		const statusApp = express();
+		const readFreshness = vi.spyOn(store, "getEpicPageFreshness");
+		const readPublication = vi.spyOn(store, "getEpicPagePublication");
+		statusApp.use(
+			"/api/epic-page/status",
+			masterOnlyAuthMiddleware("master", "scoped"),
+			createEpicPageStatusRouter({
+				store,
+				projects,
+				registry: {
+					hosting: () => ({
+						provider: "vercel-blob",
+						migratedAt: "2026-09-03T02:00:00.000Z",
+						gatewayDeploymentId: "dep-1",
+					}),
+					vercelProjectName: () => "fw-reports-test",
+				},
+				now: () => new Date("2026-09-03T04:00:00.000Z"),
+				scanSchedule: () => ({
+					leadId: "example-eng-lead",
+					intervalMs: 30 * 60_000,
+				}),
+			}),
+		);
+
+		const response = await requestStatus(statusApp, {
+			token: "master",
+			projectName: "example",
+		});
+
+		const nextScanExpectedAt = new Date(
+			scheduledAtOrBefore(
+				Date.parse("2026-09-03T04:00:00.000Z"),
+				"example-eng-lead",
+				30 * 60_000,
+			) +
+				30 * 60_000,
+		).toISOString();
+		expect(response).toMatchObject({
+			status: 200,
+			body: {
+				freshness: {
+					last_generated: { version: 3, trigger: "scan" },
+					last_published: { version: 3, trigger: "scan" },
+				},
+				publication: {
+					token8: token.slice(0, 8),
+					published: true,
+					url: `https://fw-reports-test.vercel.app/r/${token}/`,
+					last_published_at: "2026-09-03T03:00:01.000Z",
+					last_version: 3,
+				},
+				next_scan_expected_at: nextScanExpectedAt,
+			},
+		});
+		expect(response.text).not.toContain(`"token":"${token}"`);
+		expect(readFreshness).toHaveBeenCalledOnce();
+		expect(readPublication).toHaveBeenCalledOnce();
+		expect(insert).not.toHaveBeenCalled();
+	});
+
+	it("never advertises an unpublished or host-override Epic page", async () => {
+		const { token } = store.reserveEpicPageToken("example");
+		const statusApp = (hostOverride = false) => {
+			const application = express();
+			application.use(
+				"/api/epic-page/status",
+				masterOnlyAuthMiddleware("master", "scoped"),
+				createEpicPageStatusRouter({
+					store,
+					projects,
+					registry: {
+						hosting: () => ({
+							provider: "vercel-blob",
+							migratedAt: "2026-09-03T02:00:00.000Z",
+							gatewayDeploymentId: "dep-1",
+						}),
+						vercelProjectName: () => "fw-reports-test",
+					},
+					...(hostOverride
+						? {
+								hostOverride: {
+									apiBaseUrl: "http://127.0.0.1:9999",
+									publicBaseUrl: "http://127.0.0.1:9999",
+								},
+							}
+						: {}),
+				}),
+			);
+			return application;
+		};
+
+		expect(
+			await requestStatus(statusApp(), {
+				token: "master",
+				projectName: "example",
+			}),
+		).toMatchObject({
+			status: 200,
+			body: { publication: { published: false, url: null } },
+		});
+
+		store.commitEpicPagePublication({
+			projectName: "example",
+			token,
+			publishedAt: "2026-09-03T03:00:01.000Z",
+			version: 1,
+		});
+		expect(
+			await requestStatus(statusApp(true), {
+				token: "master",
+				projectName: "example",
+			}),
+		).toMatchObject({
+			status: 200,
+			body: { publication: { published: false, url: null } },
+		});
+	});
+
+	it("fails status closed for scoped credentials and missing master-token config", async () => {
+		const statusRouter = () =>
+			createEpicPageStatusRouter({
+				store,
+				projects,
+				registry: {
+					hosting: () => undefined,
+					vercelProjectName: () => undefined,
+				},
+			});
+		const scopedApp = express();
+		scopedApp.use(
+			"/api/epic-page/status",
+			masterOnlyAuthMiddleware("master", "scoped"),
+			statusRouter(),
+		);
+		const unconfiguredApp = express();
+		unconfiguredApp.use(
+			"/api/epic-page/status",
+			masterOnlyAuthMiddleware(undefined, "scoped"),
+			statusRouter(),
+		);
+
+		expect(
+			await requestStatus(scopedApp, {
+				token: "scoped",
+				projectName: "example",
+			}),
+		).toMatchObject({ status: 403 });
+		expect(
+			await requestStatus(unconfiguredApp, {
+				token: "master",
+				projectName: "example",
+			}),
+		).toMatchObject({ status: 503 });
 	});
 });

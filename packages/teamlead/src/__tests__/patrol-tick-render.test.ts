@@ -130,6 +130,8 @@ function availableEpic(
 		readyForLeadTotal: 2,
 		remainingForLead: 4,
 		generalCount: 1,
+		stuckForLead: 0,
+		stuckForLeadItems: [],
 		...overrides,
 	};
 }
@@ -215,6 +217,42 @@ describe("FLY-1687 patrol tick rendering", () => {
 				"按 Bridge 的账,你名下有 1 个未终结 runner(此名册是待核声明,不是结论):",
 			);
 		}
+	});
+
+	it("adds exactly one stuck line after ready only when Lead-owned stuck items exist", () => {
+		const base = formatPatrolTick(withEpic(envelope([]), availableEpic()));
+		const withStuck = formatPatrolTick(
+			withEpic(
+				envelope([]),
+				availableEpic({
+					stuckForLead: 2,
+					stuckForLeadItems: [
+						{
+							identifier: "FLY-2143",
+							kind: "declared_blocked",
+							since: "2026-09-03T02:00:00.000Z",
+						},
+						{
+							identifier: "FLY-2144",
+							kind: "question_pending",
+							since: "2026-09-03T03:00:00.000Z",
+						},
+					],
+				}),
+			),
+		);
+		const added = withStuck
+			.split("\n")
+			.filter((line) => !base.split("\n").includes(line));
+
+		expect(added).toEqual([
+			"- 卡住说了一声的 2 张:FLY-2143(declared_blocked,2026-09-03T02:00:00.000Z) · FLY-2144(question_pending,2026-09-03T03:00:00.000Z)",
+		]);
+		const lines = withStuck.split("\n");
+		const readyIndex = lines.findIndex((line) =>
+			line.startsWith("- 现在可以开始且归你"),
+		);
+		expect(lines[readyIndex + 1]).toBe(added[0]);
 	});
 
 	it("fails the whole Epic section closed without leaking an invalid scope trigger", () => {

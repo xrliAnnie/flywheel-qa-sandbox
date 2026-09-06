@@ -49,7 +49,12 @@ function archiveInstruction(
 	queue.ack(id, OLD);
 	expect(queue.archiveFamily({ id, now: NOW })).toBe("archived");
 	if (options.compact !== false) {
-		expect(queue.compactArchivedIdentities({ now: NOW, limit: 1 })).toBe(1);
+		const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+		try {
+			expect(queue.compactArchivedIdentities({ now: NOW, limit: 1 })).toBe(1);
+		} finally {
+			clock.mockRestore();
+		}
 	}
 }
 

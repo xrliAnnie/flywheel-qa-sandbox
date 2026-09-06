@@ -180,6 +180,8 @@ async function startHarness(options: {
 	menuMode?: boolean;
 	bindingTemplateId?: string;
 	launchBehavior?: { commit: boolean };
+	startError?: Error;
+	sessionPersistDelayMs?: number;
 	prepareIssueDelivery?: boolean;
 	afterSessionPersisted?: (input: {
 		executionId: string;
@@ -190,6 +192,7 @@ async function startHarness(options: {
 		effectiveAnchor: string;
 		project: ProjectEntry;
 	}) => boolean;
+	onEpicChange?: (projectName: string, reason: "run_started") => void;
 }): Promise<Harness> {
 	if (options.menuMode) linearMock.labels = ["Engineering"];
 	// Isolate HOME so launch-commit markers never touch the real ~/.flywheel.
@@ -308,18 +311,26 @@ async function startHarness(options: {
 		validateAgentName: () => ({ ok: true }),
 		start: async (req: StartRequest) => {
 			calls.push(req);
+			if (options.startError) throw options.startError;
 			const executionId =
 				req.generalizedExecution?.executionId ??
 				req.successorExecutionId ??
 				`legacy-${calls.length}`;
-			store.upsertSession({
-				execution_id: executionId,
-				issue_id: req.issueId,
-				project_name: req.projectName,
-				status: "running",
-				session_role: req.sessionRole ?? "main",
-			});
-			options.afterSessionPersisted?.({ executionId, store });
+			const persistSession = () => {
+				store.upsertSession({
+					execution_id: executionId,
+					issue_id: req.issueId,
+					project_name: req.projectName,
+					status: "running",
+					session_role: req.sessionRole ?? "main",
+				});
+				options.afterSessionPersisted?.({ executionId, store });
+			};
+			if (options.sessionPersistDelayMs === undefined) {
+				persistSession();
+			} else {
+				setTimeout(persistSession, options.sessionPersistDelayMs);
+			}
 			if (options.prepareIssueDelivery) {
 				req.generalizedExecution?.prepareWorkflowIssueDelivery?.({
 					sourceKind: "authoritative",
@@ -375,6 +386,7 @@ async function startHarness(options: {
 				masterToken: MASTER,
 				scopedToken: SCOPED,
 				verifyWorkflowResumeAnchor: options.verifyWorkflowResumeAnchor,
+				onEpicChange: options.onEpicChange,
 			},
 			() => ({
 				hasOverride: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE !== undefined,
@@ -728,6 +740,45 @@ describe("FLY-1436 staging cutover fixture", () => {
 });
 
 describe("FLY-1385 schema-v2 entry compatibility", () => {
+	it("FLY-2143 refreshes after one generalized materialization and not its replay", async () => {
+		const onEpicChange = vi.fn();
+		const h = await startHarness({ templateSchema: 2, onEpicChange });
+		const request = { idempotencyKey: "epic-run-start" };
+
+		expect((await post(h.url, request)).status).toBe(200);
+		expect((await post(h.url, request)).status).toBe(200);
+		expect(onEpicChange).toHaveBeenCalledOnce();
+		expect(onEpicChange).toHaveBeenCalledWith("flywheel", "run_started");
+	});
+
+	it.each([
+		{ retryAfterSeconds: undefined, expectedStatus: 409 },
+		{ retryAfterSeconds: 30, expectedStatus: 429 },
+	])(
+		"FLY-2143 refreshes after durable materialization when launch answers $expectedStatus",
+		async ({ retryAfterSeconds, expectedStatus }) => {
+			const onEpicChange = vi.fn();
+			const startError = Object.assign(new Error("launch held by DOA guard"), {
+				name: "DoaBackoffError",
+				retryAfterSeconds,
+			});
+			const h = await startHarness({
+				templateSchema: 2,
+				onEpicChange,
+				startError,
+			});
+
+			const response = await post(h.url, {
+				idempotencyKey: `epic-run-start-${expectedStatus}`,
+			});
+
+			expect(response.status).toBe(expectedStatus);
+			expect(response.json.code).toBe("DOA_BACKOFF");
+			expect(onEpicChange).toHaveBeenCalledOnce();
+			expect(onEpicChange).toHaveBeenCalledWith("flywheel", "run_started");
+		},
+	);
+
 	it("ignores the retired env knob when the module loads", async () => {
 		const previous = process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
 		process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = "500";
@@ -747,7 +798,12 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 
 	it("holds an in-lease keyless tpl_code re-drive and converges after lease expiry", async () => {
 		const launchBehavior = { commit: false };
-		const h = await startHarness({ menuMode: true, launchBehavior });
+		const onEpicChange = vi.fn();
+		const h = await startHarness({
+			menuMode: true,
+			launchBehavior,
+			onEpicChange,
+		});
 		const request = {
 			leadId: "flywheel-eng-lead",
 			taskCategory: "code",
@@ -759,6 +815,7 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 			code: "LAUNCH_PENDING",
 			workflowNodeId: "eng_design",
 		});
+		expect(onEpicChange).toHaveBeenCalledOnce();
 		const run = h.store.getWorkflowRun(first.json.workflowRunId as string)!;
 		expect(run).toMatchObject({ engine_owned: 1, entry_kind: "workflow_v2" });
 
@@ -766,6 +823,7 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		expect(held.status).toBe(409);
 		expect(held.json.code).toBe("GENERALIZED_LAUNCH_HELD");
 		expect(h.calls).toHaveLength(1);
+		expect(onEpicChange).toHaveBeenCalledOnce();
 
 		const internal = h.store as unknown as {
 			db: { run(sql: string, params?: unknown[]): void };
@@ -786,6 +844,7 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		expect(
 			h.calls.map((call) => call.generalizedExecution?.launchGeneration),
 		).toEqual([1, 2]);
+		expect(onEpicChange).toHaveBeenCalledOnce();
 	});
 
 	it("rejects a fresh code dispatch when pipeline.dag is explicitly false", async () => {
@@ -842,6 +901,20 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		expect(json.generalized).toBeUndefined();
 		expect(h.calls[0]!.sessionRole).toBe("main");
 		expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeUndefined();
+	});
+
+	it("FLY-2143 refreshes a legacy start after its delayed session becomes durable", async () => {
+		const onEpicChange = vi.fn();
+		const h = await startHarness({
+			seedBinding: false,
+			onEpicChange,
+			sessionPersistDelayMs: 20,
+		});
+		linearMock.labels = ["no-three-stage"];
+
+		expect((await post(h.url, {})).status).toBe(200);
+		expect(onEpicChange).toHaveBeenCalledOnce();
+		expect(onEpicChange).toHaveBeenCalledWith("flywheel", "run_started");
 	});
 
 	it("recovers a marked v2 run without re-validating work-kind input", async () => {

@@ -1367,6 +1367,7 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 			attemptedStatus: "failed",
 			effectiveStatus: "failed",
 			statusPreserved: false,
+			statusChanged: true,
 			runId: "run-1",
 			nodeId: "implement",
 		});

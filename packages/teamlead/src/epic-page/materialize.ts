@@ -5,6 +5,7 @@ import type { EpicItemFacts, EpicPageTrigger } from "../StateStore.js";
 import type { GenerateEpicPageInput } from "./generate.js";
 import { assertEpicPage, type EpicPage } from "./model.js";
 import type { EpicPageRenderReceipt } from "./receipt.js";
+import type { EpicPageItemSignals } from "./signals.js";
 
 export const MAX_EPIC_SCOPE_ITEMS = 500;
 
@@ -17,6 +18,14 @@ export interface MaterializeEpicPageDeps {
 		projectName: string,
 		item: { uuid: string; identifier: string },
 	) => EpicItemFacts;
+	readSignals: (
+		projectName: string,
+		items: Array<{ uuid: string; identifier: string }>,
+		now: Date,
+	) => EpicPageItemSignals[];
+	readFreshness: (
+		projectName: string,
+	) => NonNullable<GenerateEpicPageInput["freshness"]>;
 	generatePage: (input: GenerateEpicPageInput) => EpicPage;
 	buildReceipt: (page: EpicPage) => EpicPageRenderReceipt;
 	now: () => Date;
@@ -27,6 +36,9 @@ export interface MaterializeEpicPageInput {
 	binding: ProjectLinearBinding;
 	apiKey: string;
 	trigger: EpicPageTrigger;
+	version: number;
+	reasons: GenerateEpicPageInput["reasons"];
+	scanSchedule?: { leadId: string; intervalMs: number };
 }
 
 export async function materializeEpicPage(
@@ -49,12 +61,29 @@ export async function materializeEpicPage(
 			identifier: item.identifier,
 		}),
 	);
+	const generatedAt = deps.now();
+	const itemSignals = deps.readSignals(
+		input.projectName,
+		snapshot.items.map((item) => ({
+			uuid: item.id,
+			identifier: item.identifier,
+		})),
+		generatedAt,
+	);
+	const freshness = deps.readFreshness(input.projectName);
 	const page = deps.generatePage({
 		snapshot,
 		itemFacts,
-		now: deps.now(),
+		itemSignals,
+		freshness: {
+			...freshness,
+			...(input.scanSchedule ? { scanSchedule: input.scanSchedule } : {}),
+		},
+		now: generatedAt,
 		projectName: input.projectName,
 		trigger: input.trigger,
+		version: input.version,
+		reasons: input.reasons,
 	});
 	assertEpicPage(page);
 	return {

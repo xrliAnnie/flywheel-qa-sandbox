@@ -75,6 +75,76 @@ function makeEnvelope(overrides: Partial<EventEnvelope> = {}): EventEnvelope {
 	};
 }
 
+describe("DirectEventSink — FLY-2143 Epic refresh matrix", () => {
+	it("refreshes once for a new started session and not for its replay", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const sink = new DirectEventSink(store, makeConfig(), testProjects);
+			const onEpicChange = vi.fn();
+			sink.onEpicChange = onEpicChange;
+
+			await sink.emitStarted(makeEnvelope());
+			await sink.emitStarted(makeEnvelope());
+
+			expect(onEpicChange).toHaveBeenCalledOnce();
+			expect(onEpicChange).toHaveBeenCalledWith(
+				"geoforge3d",
+				"session_started",
+			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refreshes for a real ordinary completion but not a rejected no_code", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			store.upsertSession({
+				execution_id: "exec-1",
+				issue_id: "issue-1",
+				project_name: "geoforge3d",
+				status: "running",
+			});
+			const sink = new DirectEventSink(store, makeConfig(), testProjects);
+			const onEpicChange = vi.fn();
+			sink.onEpicChange = onEpicChange;
+			const noCode = {
+				success: true,
+				decision: { route: "no_code", reasoning: "done" },
+				evidence: { partial: false, durationMs: 1 },
+			} as unknown as BlueprintResult;
+
+			await sink.emitCompleted(makeEnvelope(), noCode);
+			await sink.emitCompleted(makeEnvelope(), noCode);
+
+			expect(onEpicChange).toHaveBeenCalledOnce();
+			expect(onEpicChange).toHaveBeenCalledWith(
+				"geoforge3d",
+				"session_completed",
+			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refreshes for a real failure and not for its terminal-immune replay", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const sink = new DirectEventSink(store, makeConfig(), testProjects);
+			const onEpicChange = vi.fn();
+			sink.onEpicChange = onEpicChange;
+
+			await sink.emitFailed(makeEnvelope(), "boom");
+			await sink.emitFailed(makeEnvelope(), "boom again");
+
+			expect(onEpicChange).toHaveBeenCalledOnce();
+			expect(onEpicChange).toHaveBeenCalledWith("geoforge3d", "session_failed");
+		} finally {
+			store.close();
+		}
+	});
+});
+
 describe("DirectEventSink — FLY-1609 D-arm attribution", () => {
 	it("persists bare-ponytail and effective on:arm together", async () => {
 		const store = await StateStore.create(":memory:");

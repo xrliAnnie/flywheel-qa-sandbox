@@ -654,6 +654,7 @@ async function reconcileResumableLinearDone(
 			deps.markIssueDone,
 			opts.issueId,
 			opts.issueIdentifier,
+			{ projectName: opts.projectName },
 			15_000,
 			{ timeoutReason: "mark_issue_done_timeout" },
 		)) ?? { done: false, reason: "linear_done_result_missing" };
@@ -1352,6 +1353,7 @@ async function runPostShipFinalizationInner(
 			deps.markIssueDone,
 			opts.issueId,
 			opts.issueIdentifier,
+			{ projectName: opts.projectName },
 			15_000,
 			{
 				timeoutReason: "mark_issue_done_timeout",

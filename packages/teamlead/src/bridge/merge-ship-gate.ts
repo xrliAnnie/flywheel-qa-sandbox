@@ -501,6 +501,7 @@ export async function finalizeRecoveredMerge(
 	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
 	ciProbe?: ShipEligibilityArgs["ciProbe"],
 	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission,
+	onEpicChange?: (projectName: string, reason: "linear_done") => void,
 ): Promise<boolean> {
 	const s = store.getSession(execId);
 	// Only a still-parked row (marker present) whose founder approval just landed.
@@ -569,7 +570,11 @@ export async function finalizeRecoveredMerge(
 				store,
 				projects,
 				removeCleanWorktree,
-				markIssueDone: makeLinearDoneFinalizer(config),
+				markIssueDone: makeLinearDoneFinalizer({
+					...config,
+					onChanged: ({ projectName }) =>
+						onEpicChange?.(projectName, "linear_done"),
+				}),
 				// FLY-907 Codex R1 MED-2: close parked phases + drop TURN before the
 				// terminal display refresh (runPostShipFinalization orders them).
 				finalizeWorkflowPhaseRoles,

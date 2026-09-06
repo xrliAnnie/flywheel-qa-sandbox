@@ -134,6 +134,7 @@ export function buildGateResponsePostWriteHook(deps: {
 	};
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission;
+	onEpicChange?: (projectName: string, reason: "linear_done") => void;
 }): (info: {
 	executionId: string;
 	questionId: string;
@@ -222,6 +223,7 @@ export function buildGateResponsePostWriteHook(deps: {
 					deps.materializedHeadAuthority,
 					undefined,
 					deps.terminalArchiveEnqueue,
+					deps.onEpicChange,
 				);
 				if (completed) {
 					log.warn(
@@ -277,6 +279,7 @@ export function buildFounderConsentWiring(
 	},
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission,
+	onEpicChange?: (projectName: string, reason: "linear_done") => void,
 ): FounderConsentWiring | null {
 	const fc = config.founderConsent;
 	if (!fc) return null; // Track 2 not compiled into this config at all.
@@ -463,6 +466,7 @@ export function buildFounderConsentWiring(
 		issueDisplayRefresh,
 		materializedHeadAuthority,
 		terminalArchiveEnqueue,
+		onEpicChange,
 	});
 
 	// FLY-191 Phase 2 (Codex PR R1 CRITICAL): the gate router rejects answers

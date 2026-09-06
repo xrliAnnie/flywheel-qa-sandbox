@@ -14,7 +14,7 @@
  * the plugin mount layer.
  *
  * Transaction semantics are documented in report-registry.ts. Publishes are
- * serialized through an in-process promise-chain mutex so registry
+ * serialized through a shared in-process critical section so registry
  * read-modify-write operations never interleave.
  */
 
@@ -43,11 +43,16 @@ import {
 } from "./discord-utils.js";
 import { writeTokenReportReceipt } from "./notify-receipts.js";
 import type { ReportBlobStore } from "./report-blob-store.js";
+import {
+	createReportCriticalSection,
+	type ReportCriticalSection,
+} from "./report-critical-section.js";
 import type { ReportHostOverride } from "./report-host-override.js";
 import {
 	ReportHtmlInvalidError,
 	type ReportRegistry,
 } from "./report-registry.js";
+import { reportUrlForToken } from "./report-url.js";
 import { deployFilesToVercel, type VercelDeployFile } from "./vercel-deploy.js";
 
 const MAX_HTML_SIZE = 512 * 1024; // 512 KB — same cap as /api/publish-html
@@ -72,6 +77,7 @@ export interface ReportsRouterOptions {
 	resolveDiscordBotToken?: () => string | undefined;
 	projects: ProjectEntry[];
 	registry: ReportRegistry;
+	criticalSection?: ReportCriticalSection;
 	hostOverride?: ReportHostOverride;
 	/** Resolve an issue identifier to its existing Lead-owned Discord thread. */
 	resolveIssueThread: (
@@ -237,8 +243,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 				origin: "automation",
 			}));
 
-	// In-process publish mutex (promise chain).
-	let publishChain: Promise<void> = Promise.resolve();
+	const criticalSection = opts.criticalSection ?? createReportCriticalSection();
 	let outstandingPublishes = 0;
 
 	router.post("/publish", (req, res) => {
@@ -385,11 +390,19 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			);
 
 			res.json({
-				url: publicReportUrl(
-					hostOverride,
-					staged.vercelProjectName,
-					staged.entry.token,
-				),
+				url:
+					(hostOverride
+						? publicReportUrl(
+								hostOverride,
+								staged.vercelProjectName,
+								staged.entry.token,
+							)
+						: reportUrlForToken(opts.registry, staged.entry.token)) ??
+					publicReportUrl(
+						undefined,
+						staged.vercelProjectName,
+						staged.entry.token,
+					),
 				reportId: staged.entry.token,
 			});
 		};
@@ -401,8 +414,8 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 		outstandingPublishes += 1;
 		// Serialize publishes; errors are already turned into responses inside
 		// run(), but guard the chain against unexpected rejections anyway.
-		publishChain = publishChain
-			.then(run)
+		void criticalSection
+			.run(run)
 			.catch(() => {
 				console.error("[reports] publish handler error");
 				if (!res.headersSent) {

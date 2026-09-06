@@ -37,6 +37,23 @@ function statestoreCell<T>(value: T, table = "sessions"): Cell<T> {
 	};
 }
 
+function missingStatestoreCell(
+	table: string,
+	reason:
+		| "no_prior_generation"
+		| "no_prior_publication"
+		| "no_prior_failure"
+		| "no_publication"
+		| "no_scan_schedule",
+): Cell<never> {
+	return {
+		value: null,
+		provenance: { kind: "statestore", table, key: { project_name: "example" } },
+		observed_at: NOW,
+		missing: { reason },
+	};
+}
+
 function validPage(withItem = true): EpicPage {
 	const items: EpicPage["items"] = withItem
 		? [
@@ -75,6 +92,18 @@ function validPage(withItem = true): EpicPage {
 					carriers: statestoreCell([], "workflow_carrier_delivery"),
 					land: statestoreCell([], "land_operation"),
 					signals: [],
+					signal_sources: {
+						statestore: statestoreCell({ signals: 0 }),
+						commdb: {
+							value: { signals: 0 },
+							provenance: {
+								kind: "commdb",
+								table: "questions",
+								key: { issue_id: "EPX-1" },
+							},
+							observed_at: NOW,
+						},
+					},
 				},
 			]
 		: [];
@@ -82,7 +111,11 @@ function validPage(withItem = true): EpicPage {
 		schema_version: 1,
 		key: { project_name: "example" },
 		generated_at: NOW,
-		generator: { version: "epic-page/1", trigger: "manual" },
+		generator: {
+			version: "epic-page/1",
+			trigger: "manual",
+			reasons: ["manual"],
+		},
 		header: {
 			scope_definition: {
 				...derivedCell({
@@ -132,6 +165,77 @@ function validPage(withItem = true): EpicPage {
 					: ["/ready_items"],
 			},
 		},
+		freshness: {
+			current: {
+				value: { version: 1, trigger: "manual", reasons: ["manual"] },
+				provenance: {
+					kind: "statestore",
+					table: "epic_page",
+					key: { project_name: "example", version: "1" },
+				},
+				observed_at: NOW,
+				source_updated_at: NOW,
+			},
+			last_generated: missingStatestoreCell(
+				"epic_page_refresh",
+				"no_prior_generation",
+			),
+			last_published: missingStatestoreCell(
+				"epic_page_refresh",
+				"no_prior_publication",
+			),
+			publish_failures: {
+				value: { count: 0 },
+				provenance: {
+					kind: "statestore",
+					table: "epic_page_refresh",
+					key: { project_name: "example" },
+				},
+				observed_at: NOW,
+			},
+			last_failure: missingStatestoreCell(
+				"epic_page_refresh",
+				"no_prior_failure",
+			),
+			last_publish_failure: missingStatestoreCell(
+				"epic_page_refresh",
+				"no_prior_failure",
+			),
+			hosted: missingStatestoreCell("epic_page_publication", "no_publication"),
+			oldest_source: {
+				value: { path: "/freshness/current" },
+				provenance: {
+					kind: "derived",
+					rule: "freshness.v1",
+					from: ["/freshness/current"],
+				},
+				observed_at: NOW,
+			},
+			next_scan: {
+				value: null,
+				provenance: {
+					kind: "derived",
+					rule: "freshness.v1",
+					from: ["/freshness/current"],
+				},
+				observed_at: NOW,
+				missing: { reason: "no_scan_schedule" },
+			},
+		},
+		stuck_items: {
+			value: [],
+			provenance: {
+				kind: "derived",
+				rule: "signals.v1",
+				from: withItem
+					? [
+							"/items/0/signal_sources/statestore",
+							"/items/0/signal_sources/commdb",
+						]
+					: [],
+			},
+			observed_at: NOW,
+		},
 		gaps: derivedCell(
 			withItem
 				? []
@@ -157,6 +261,200 @@ function expectSchemaFailure(page: unknown, code = "invalid"): void {
 }
 
 describe("EpicPage v1 schema", () => {
+	it("accepts sourced stuck signals while keeping waiting_founder separate", () => {
+		const page = validPage();
+		page.items[0]!.signals = [
+			{
+				kind: "declared_blocked",
+				since: "2026-09-03T03:30:00Z",
+				execution_id8: "exec-a-l",
+				provenance: {
+					kind: "statestore",
+					table: "sessions",
+					key: { execution_id: "exec-a-long" },
+				},
+				observed_at: NOW,
+			},
+			{
+				kind: "waiting_founder",
+				since: "2026-09-03T03:40:00Z",
+				execution_id8: "exec-b",
+				provenance: {
+					kind: "commdb",
+					table: "questions",
+					key: { execution_id: "exec-b" },
+				},
+				observed_at: NOW,
+			},
+		];
+		page.items[0]!.signal_sources.statestore.value = { signals: 1 };
+		page.items[0]!.signal_sources.commdb.value = { signals: 1 };
+		page.stuck_items.value = [
+			{
+				item: "EPX-1",
+				kind: "declared_blocked",
+				since: "2026-09-03T03:30:00Z",
+				execution_id8: "exec-a-l",
+			},
+		];
+		page.stuck_items.provenance.from = [
+			"/items/0/signals/0",
+			"/items/0/signal_sources/statestore",
+			"/items/0/signal_sources/commdb",
+		];
+		expect(assertEpicPage(page)).toBeUndefined();
+	});
+
+	it.each([
+		[
+			"a signal Cell",
+			(page: any) => {
+				page.items[0].signals = derivedCell([]);
+			},
+		],
+		[
+			"a leaked route",
+			(page: any) => {
+				page.items[0].signals[0].route = "blocked";
+			},
+		],
+		[
+			"a leaked question id",
+			(page: any) => {
+				page.items[0].signals[0].question_id = "q";
+			},
+		],
+		[
+			"an invalid id8",
+			(page: any) => {
+				page.items[0].signals[0].execution_id8 = "bad id";
+			},
+		],
+		[
+			"a timestamp-shaped business key",
+			(page: any) => {
+				page.items[0].signals[0].since_at = NOW;
+			},
+		],
+		[
+			"a non-runner reason",
+			(page: any) => {
+				page.items[0].signals[0].reason = "quota";
+			},
+		],
+	] as const)("rejects %s", (_name, mutate) => {
+		const page = validPage() as any;
+		page.items[0].signals = [
+			{
+				kind: "declared_blocked",
+				since: NOW,
+				execution_id8: "exec-a-l",
+				provenance: {
+					kind: "statestore",
+					table: "sessions",
+					key: { execution_id: "exec-a-long" },
+				},
+				observed_at: NOW,
+			},
+		];
+		page.items[0].signal_sources.statestore.value.signals = 1;
+		page.stuck_items.value = [
+			{
+				item: "EPX-1",
+				kind: "declared_blocked",
+				since: NOW,
+				execution_id8: "exec-a-l",
+			},
+		];
+		page.stuck_items.provenance.from.unshift("/items/0/signals/0");
+		mutate(page);
+		expectSchemaFailure(page);
+	});
+
+	it("requires signal-source health and exact stuck-item recomputation", () => {
+		const missing = validPage() as any;
+		delete missing.items[0].signal_sources;
+		expectSchemaFailure(missing);
+
+		const stale = validPage() as any;
+		stale.items[0].signals = [
+			{
+				kind: "runner_stopped",
+				reason: "quota",
+				since: NOW,
+				execution_id8: "exec-a",
+				provenance: {
+					kind: "commdb",
+					table: "questions",
+					key: { execution_id: "exec-a" },
+				},
+				observed_at: NOW,
+			},
+		];
+		stale.items[0].signal_sources.commdb.value.signals = 1;
+		expectSchemaFailure(stale);
+	});
+
+	it("accepts one missing signal source without erasing the healthy source", () => {
+		const page = validPage() as any;
+		page.items[0].signals = [
+			{
+				kind: "declared_blocked",
+				since: NOW,
+				execution_id8: "exec-a",
+				provenance: {
+					kind: "statestore",
+					table: "sessions",
+					key: { execution_id: "exec-a" },
+				},
+				observed_at: NOW,
+			},
+		];
+		page.items[0].signal_sources.statestore.value.signals = 1;
+		page.items[0].signal_sources.commdb = {
+			value: null,
+			provenance: {
+				kind: "commdb",
+				table: "questions",
+				key: { issue_id: "EPX-1" },
+			},
+			observed_at: NOW,
+			missing: { reason: "commdb_error" },
+		};
+		page.stuck_items.value = [
+			{
+				item: "EPX-1",
+				kind: "declared_blocked",
+				since: NOW,
+				execution_id8: "exec-a",
+			},
+		];
+		page.stuck_items.provenance.from.unshift("/items/0/signals/0");
+		page.gaps.value.push({
+			item: "EPX-1",
+			face: "signals_commdb",
+			reason: "commdb_error",
+		});
+		expect(assertEpicPage(page)).toBeUndefined();
+	});
+
+	it("rejects noncanonical refresh reasons and freshness drift", () => {
+		const duplicate = validPage() as any;
+		duplicate.generator.reasons = ["manual", "manual"];
+		expectSchemaFailure(duplicate);
+
+		const unknown = validPage() as any;
+		unknown.generator.reasons = ["new_mechanism"];
+		expectSchemaFailure(unknown);
+
+		const drift = validPage() as any;
+		drift.freshness.current.value.reasons = ["scan"];
+		expectSchemaFailure(drift);
+
+		const wrongTable = validPage() as any;
+		wrongTable.freshness.hosted.provenance.table = "reports";
+		expectSchemaFailure(wrongTable);
+	});
 	it("accepts a derived dependency review cell and rejects its absence", () => {
 		const page = validPage() as any;
 		page.items[0].state = linearCell({ name: "Todo", type: "unstarted" });

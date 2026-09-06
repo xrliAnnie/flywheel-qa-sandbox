@@ -143,6 +143,59 @@ describe("createEpicResidualScan", () => {
 			project_name: "example",
 			trigger: "scan",
 		});
+		const refresh = rawDb(store)
+			.prepare(
+				"SELECT trigger, reason, outcome FROM epic_page_refresh ORDER BY rowid",
+			)
+			.all();
+		expect(refresh).toEqual([
+			{
+				trigger: "scan",
+				reason: "scan",
+				outcome: "ok_unpublished:1:skipped_hosting_not_configured",
+			},
+		]);
+	});
+
+	it("delegates the scan to the injected shared attempt", async () => {
+		const snapshot = epicShapeSnapshot();
+		const page = generateEpicPage({
+			snapshot,
+			itemFacts: snapshot.items.map(() => emptyItemFacts()),
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "scan",
+		});
+		const runAttempt = vi.fn(async () => ({
+			kind: "materialized" as const,
+			materialized: { page, snapshot, receipt: {} as never },
+			inserted: {} as never,
+			outcome: "ok:1",
+		}));
+		const scan = createEpicResidualScan({
+			store,
+			projects,
+			linearApiKey: "linear-key",
+			resolveOwner: () => ({
+				agentId: "example-eng-lead",
+				matchMethod: "general",
+				canSpawn: true,
+			}),
+			runAttempt,
+		});
+
+		await expect(scan.materializeForScan(projects[0]!)).resolves.toMatchObject({
+			kind: "ok",
+			materialized: { page, snapshot },
+		});
+		expect(runAttempt).toHaveBeenCalledOnce();
+		expect(runAttempt).toHaveBeenCalledWith({
+			projectName: "example",
+			binding: projects[0]!.linear,
+			apiKey: "linear-key",
+			trigger: "scan",
+			reasons: ["scan"],
+		});
 	});
 
 	it("logs the project, item count, and elapsed time after a successful scan", async () => {
@@ -170,7 +223,7 @@ describe("createEpicResidualScan", () => {
 		);
 	});
 
-	it("keeps the materialized fact when writing the optional scan receipt fails", async () => {
+	it("records receipt failure and does not expose a partial materialization", async () => {
 		vi.spyOn(store, "insertEpicPageRenderReceipt").mockImplementation(() => {
 			throw new Error("receipt disk full");
 		});
@@ -189,12 +242,14 @@ describe("createEpicResidualScan", () => {
 			log,
 		});
 
-		await expect(scan.materializeForScan(projects[0]!)).resolves.toMatchObject({
-			kind: "ok",
+		await expect(scan.materializeForScan(projects[0]!)).resolves.toEqual({
+			kind: "unavailable",
+			token: "transient: epic_scan_failed",
 		});
-		expect(log).toHaveBeenCalledWith(
-			expect.stringContaining("receipt disk full"),
-		);
+		expect(store.getEpicPageFreshness("example").last_attempt).toMatchObject({
+			trigger: "scan",
+			outcome: "transient: epic_scan_failed",
+		});
 	});
 
 	it("turns a Linear failure into the canonical unavailable fact without leaking its message", async () => {

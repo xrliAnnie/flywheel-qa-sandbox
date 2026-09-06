@@ -9,6 +9,16 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const linearSdkClient = vi.hoisted(() => ({
+	issue: vi.fn(),
+	updateIssue: vi.fn(),
+}));
+
+vi.mock("@linear/sdk", () => ({
+	LinearClient: vi.fn(() => linearSdkClient),
+}));
+
 import {
 	makeLinearDoneFinalizer,
 	markLinearIssueDone,
@@ -47,10 +57,32 @@ describe("markLinearIssueDone", () => {
 	it("resolves the completed-type state and updates the issue's stateId", async () => {
 		const client = fakeClient();
 		const r = await markLinearIssueDone(client as never, "ISSUE-1");
-		expect(r.done).toBe(true);
+		expect(r).toEqual({ done: true, changed: true });
 		expect(client.updateIssue).toHaveBeenCalledWith("ISSUE-1", {
 			stateId: "s-done",
 		});
+	});
+
+	it("already completed is successful but does not report a projection change", async () => {
+		const client = fakeClient({
+			issue: vi.fn().mockResolvedValue({
+				team: Promise.resolve({ states: vi.fn() }),
+				state: Promise.resolve({
+					id: "s-done",
+					name: "Done",
+					type: "completed",
+				}),
+			}),
+		});
+
+		await expect(
+			markLinearIssueDone(client as never, "ISSUE-1"),
+		).resolves.toEqual({
+			done: true,
+			changed: false,
+			reason: "already_completed",
+		});
+		expect(client.updateIssue).not.toHaveBeenCalled();
 	});
 
 	it("prefers type=completed over a name match", async () => {
@@ -147,6 +179,63 @@ describe("makeLinearDoneFinalizer — gating", () => {
 	it("no api key → undefined (no client, no-op)", () => {
 		expect(makeLinearDoneFinalizer({})).toBeUndefined();
 	});
+
+	it("reports one project change only after a real Linear write", async () => {
+		linearSdkClient.issue.mockReset();
+		linearSdkClient.updateIssue.mockReset();
+		linearSdkClient.issue.mockResolvedValue({
+			state: Promise.resolve({
+				id: "s-started",
+				name: "Started",
+				type: "started",
+			}),
+			team: Promise.resolve({
+				states: vi.fn().mockResolvedValue({
+					nodes: [{ id: "s-done", name: "Done", type: "completed" }],
+				}),
+			}),
+		});
+		linearSdkClient.updateIssue.mockResolvedValue({ success: true });
+		const onChanged = vi.fn();
+		const finalizer = makeLinearDoneFinalizer({
+			linearApiKey: "k",
+			onChanged,
+		});
+
+		await expect(
+			finalizer?.("issue-1", "FLY-1", undefined, {
+				projectName: "flywheel",
+			}),
+		).resolves.toEqual({ done: true, changed: true });
+		expect(onChanged).toHaveBeenCalledOnce();
+		expect(onChanged).toHaveBeenCalledWith({ projectName: "flywheel" });
+	});
+
+	it("does not report a project change when Linear is already complete", async () => {
+		linearSdkClient.issue.mockReset();
+		linearSdkClient.updateIssue.mockReset();
+		linearSdkClient.issue.mockResolvedValue({
+			state: Promise.resolve({
+				id: "s-done",
+				name: "Done",
+				type: "completed",
+			}),
+			team: Promise.resolve({ states: vi.fn() }),
+		});
+		const onChanged = vi.fn();
+		const finalizer = makeLinearDoneFinalizer({
+			linearApiKey: "k",
+			onChanged,
+		});
+
+		await expect(
+			finalizer?.("issue-1", "FLY-1", undefined, {
+				projectName: "flywheel",
+			}),
+		).resolves.toMatchObject({ done: true, changed: false });
+		expect(linearSdkClient.updateIssue).not.toHaveBeenCalled();
+		expect(onChanged).not.toHaveBeenCalled();
+	});
 });
 
 describe("FLY-1185 Codex R2#9 — fail-closed + double-read", () => {
@@ -222,12 +311,14 @@ describe("bounded Linear Done finalization", () => {
 			finalizer,
 			"ISSUE-1",
 			"FLY-1",
+			{ projectName: "example" },
 			15_000,
 		);
 		await vi.advanceTimersByTimeAsync(15_000);
 
 		await expect(result).resolves.toEqual({
 			done: false,
+			changed: false,
 			reason: "linear_done_timeout",
 		});
 		expect(observedSignal?.aborted).toBe(true);
@@ -240,12 +331,14 @@ describe("bounded Linear Done finalization", () => {
 			vi.fn(async () => new Promise<never>(() => undefined)),
 			"ISSUE-timeout",
 			undefined,
+			{ projectName: "example" },
 			10,
 			{ onTimeout, timeoutReason: "mark_issue_done_timeout" },
 		);
 		await vi.advanceTimersByTimeAsync(10);
 		await expect(timeoutResult).resolves.toEqual({
 			done: false,
+			changed: false,
 			reason: "mark_issue_done_timeout",
 		});
 		expect(onTimeout).toHaveBeenCalledWith(10);
@@ -256,10 +349,15 @@ describe("bounded Linear Done finalization", () => {
 				vi.fn().mockRejectedValue(new Error("linear down")),
 				"ISSUE-reject",
 				undefined,
+				{ projectName: "example" },
 				10,
 				{ onRejected },
 			),
-		).resolves.toEqual({ done: false, reason: "linear down" });
+		).resolves.toEqual({
+			done: false,
+			changed: false,
+			reason: "linear down",
+		});
 		expect(onRejected).toHaveBeenCalledWith(expect.any(Error));
 	});
 
@@ -283,12 +381,14 @@ describe("bounded Linear Done finalization", () => {
 				markLinearIssueDone(client as never, issueId, signal),
 			"ISSUE-1",
 			undefined,
+			{ projectName: "example" },
 			15_000,
 		);
 
 		await vi.advanceTimersByTimeAsync(15_000);
 		await expect(result).resolves.toEqual({
 			done: false,
+			changed: false,
 			reason: "linear_done_timeout",
 		});
 		resolveIssue?.({

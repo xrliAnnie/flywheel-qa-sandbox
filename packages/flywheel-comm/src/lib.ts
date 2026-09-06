@@ -60,6 +60,16 @@ export {
 	renderDiscordChatContent,
 } from "./discord-chat-ingest.js";
 export type {
+	EpicPageSignalKind,
+	EpicPageSignalQueryResult,
+	EpicPageSignalRow,
+	EpicPageStopReason,
+} from "./epic-page-signals.js";
+export {
+	EPIC_PAGE_SIGNAL_KINDS,
+	EPIC_PAGE_STOP_REASONS,
+} from "./epic-page-signals.js";
+export type {
 	AuditDecision,
 	AuditDecisionSource,
 	FounderConsentAuditRow,

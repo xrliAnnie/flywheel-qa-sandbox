@@ -398,6 +398,43 @@ export class ReportRegistry {
 		html: string,
 		title?: string,
 	): StagedPublish {
+		return this.stageReport(
+			projectName,
+			html,
+			this.randomHex(16),
+			title,
+			false,
+		);
+	}
+
+	/** Replace one project's hosted Epic page at its reserved stable token. */
+	stageEpicPageRepublish(
+		projectName: string,
+		html: string,
+		token: string,
+		title?: string,
+	): StagedPublish {
+		if (!REPORT_TOKEN_RE.test(token)) {
+			throw new Error("[report-registry] invalid report token");
+		}
+		const existing = this.load().reports.find(
+			(report) => report.token === token,
+		);
+		if (existing && existing.projectName !== projectName) {
+			throw new Error(
+				"[report-registry] stable report token belongs to another project",
+			);
+		}
+		return this.stageReport(projectName, html, token, title, true);
+	}
+
+	private stageReport(
+		projectName: string,
+		html: string,
+		token: string,
+		title: string | undefined,
+		replaceToken: boolean,
+	): StagedPublish {
 		const hardened = injectHeadMeta(html);
 		const committed = this.load();
 
@@ -405,7 +442,7 @@ export class ReportRegistry {
 			committed.vercelProjectName ?? `fw-reports-${this.randomHex(3)}`;
 
 		const entry: ReportEntry = {
-			token: this.randomHex(16),
+			token,
 			projectName,
 			title,
 			createdAt: new Date(this.now()).toISOString(),
@@ -423,7 +460,10 @@ export class ReportRegistry {
 		const all: ReportEntry[] = [];
 		const pruned: ReportEntry[] = [];
 		const expired: ReportEntry[] = [];
-		for (const e of [...committed.reports, entry]) {
+		const priorReports = replaceToken
+			? committed.reports.filter((report) => report.token !== token)
+			: committed.reports;
+		for (const e of [...priorReports, entry]) {
 			// >= : the expiry instant itself counts as expired (Codex R1 — with
 			// lazy enforcement and an aligned publish cadence, a `>` here would
 			// stretch an exactly-14-day-old link a full extra cycle).

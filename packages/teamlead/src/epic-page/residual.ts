@@ -1,5 +1,5 @@
 import type { LinearActiveScopeSnapshot } from "../bridge/linear-epic-query.js";
-import type { EpicPage } from "./model.js";
+import { type EpicPage, SIGNAL_KINDS, type SignalKind } from "./model.js";
 
 export type EpicResidualTrigger = "roster" | "scope";
 
@@ -29,6 +29,12 @@ export interface EpicResidualAvailable {
 	readyForLeadTotal: number;
 	remainingForLead: number;
 	generalCount: number;
+	stuckForLead: number;
+	stuckForLeadItems: Array<{
+		identifier: string;
+		kind: Exclude<SignalKind, "waiting_founder">;
+		since: string;
+	}>;
 }
 
 export interface EpicResidualUnavailable {
@@ -122,6 +128,7 @@ export function assertEpicResidualFact(
 		"readyForLeadTotal",
 		"remainingForLead",
 		"generalCount",
+		"stuckForLead",
 	] as const;
 	for (const field of countFields) {
 		if (!isNonNegativeSafeInteger(value[field])) invalid(`/${field}`);
@@ -133,10 +140,12 @@ export function assertEpicResidualFact(
 	const remainingForLead = value.remainingForLead as number;
 	const generalCount = value.generalCount as number;
 	const readyForLeadTotal = value.readyForLeadTotal as number;
+	const stuckForLead = value.stuckForLead as number;
 	if (ready + running + blocked !== remaining) invalid("/remaining");
 	if (remainingForLead > remaining) invalid("/remainingForLead");
 	if (readyForLeadTotal > remainingForLead) invalid("/remainingForLead");
 	if (generalCount > remaining) invalid("/generalCount");
+	if (stuckForLead > remainingForLead) invalid("/stuckForLead");
 	if (!Array.isArray(value.readyForLead)) invalid("/readyForLead");
 	if (
 		value.readyForLead.length > 5 ||
@@ -168,6 +177,43 @@ export function assertEpicResidualFact(
 		if (rawItem.ownership !== "label" && rawItem.ownership !== "general") {
 			invalid(`/readyForLead/${index}/ownership`);
 		}
+	}
+	if (!Array.isArray(value.stuckForLeadItems)) invalid("/stuckForLeadItems");
+	if (
+		value.stuckForLeadItems.length !== Math.min(stuckForLead, 5) ||
+		value.stuckForLeadItems.length > 5
+	) {
+		invalid("/stuckForLeadItems");
+	}
+	const stuckIdentifiers = new Set<string>();
+	let priorSince = Number.NEGATIVE_INFINITY;
+	for (const [index, rawItem] of value.stuckForLeadItems.entries()) {
+		const path = `/stuckForLeadItems/${index}`;
+		if (!isRecord(rawItem)) invalid(path);
+		if (Object.keys(rawItem).sort().join(",") !== "identifier,kind,since") {
+			invalid(path);
+		}
+		const identifier = rawItem.identifier;
+		if (
+			typeof identifier !== "string" ||
+			!PATROL_TOKEN_GRAMMAR.test(identifier) ||
+			PATROL_DIRECTIVE_WORDS.test(identifier) ||
+			stuckIdentifiers.has(identifier)
+		) {
+			invalid(`${path}/identifier`);
+		}
+		stuckIdentifiers.add(identifier);
+		if (
+			typeof rawItem.kind !== "string" ||
+			rawItem.kind === "waiting_founder" ||
+			!SIGNAL_KINDS.includes(rawItem.kind as SignalKind)
+		) {
+			invalid(`${path}/kind`);
+		}
+		if (!isTimestamp(rawItem.since)) invalid(`${path}/since`);
+		const since = Date.parse(rawItem.since as string);
+		if (since < priorSince) invalid(`${path}/since`);
+		priorSince = since;
 	}
 }
 
@@ -240,6 +286,23 @@ export function summarizeEpicResidual(input: {
 				ownership: owner.matchMethod,
 			};
 		});
+	const stuckIdentifiers = new Set<string>();
+	const stuckForLeadAll: EpicResidualAvailable["stuckForLeadItems"] = [];
+	for (const item of page.stuck_items.value ?? []) {
+		if (
+			!remainingByIdentifier.has(item.item) ||
+			!eligibleForLead(item.item) ||
+			stuckIdentifiers.has(item.item)
+		) {
+			continue;
+		}
+		stuckIdentifiers.add(item.item);
+		stuckForLeadAll.push({
+			identifier: item.item,
+			kind: item.kind,
+			since: item.since,
+		});
+	}
 
 	const fact: EpicResidualAvailable = {
 		schemaVersion: 1,
@@ -262,6 +325,8 @@ export function summarizeEpicResidual(input: {
 		generalCount: remainingItems.filter(
 			(item) => ownerFor(item.identifier).matchMethod === "general",
 		).length,
+		stuckForLead: stuckForLeadAll.length,
+		stuckForLeadItems: stuckForLeadAll.slice(0, 5),
 	};
 	assertEpicResidualFact(fact);
 	return fact;

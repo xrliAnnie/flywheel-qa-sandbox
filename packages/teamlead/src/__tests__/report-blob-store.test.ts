@@ -36,6 +36,30 @@ describe("VercelBlobReportStore", () => {
 		);
 	});
 
+	it("allows overwrite only for a stable Epic page object", async () => {
+		const token = "0123456789abcdef0123456789abcdef";
+		const put = vi.fn().mockResolvedValue({
+			pathname: `r/${token}/index.html`,
+			url: `https://store.private.blob.vercel-storage.com/r/${token}/index.html`,
+		});
+		const store = new VercelBlobReportStore("blob-secret", {
+			put,
+			list: vi.fn(),
+			del: vi.fn(),
+		});
+
+		await store.putEpicPage(
+			token,
+			"<html><head></head><body>epic</body></html>",
+		);
+
+		expect(put).toHaveBeenCalledWith(
+			`r/${token}/index.html`,
+			"<html><head></head><body>epic</body></html>",
+			expect.objectContaining({ allowOverwrite: true }),
+		);
+	});
+
 	it("deletes only report objects whose Blob metadata is at least 14 days old", async () => {
 		const now = Date.parse("2026-09-03T16:00:00.000Z");
 		const list = vi

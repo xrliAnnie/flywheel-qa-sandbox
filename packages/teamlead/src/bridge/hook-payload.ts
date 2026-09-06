@@ -5,6 +5,7 @@ import {
 	truncateCodePointsFromEnd,
 } from "flywheel-comm/text-truncate";
 import type { DesignBackend } from "flywheel-config";
+import { label } from "../epic-page/labels.js";
 import {
 	assertEpicResidualFact,
 	type EpicResidualFact,
@@ -511,6 +512,15 @@ function renderEpicResidualSection(epic: EpicResidualFact | undefined): {
 			epic.readyForLeadTotal === 0
 				? "- 现在可以开始且归你(按 Lead 归属规则)0 张"
 				: `- 现在可以开始且归你(按 Lead 归属规则)${epic.readyForLeadTotal} 张:${renderedReady.join(" · ")}${remainingReady > 0 ? `(+${remainingReady} more,见 flywheel-comm epic-page show --format md)` : ""}`;
+		const stuckLine =
+			epic.stuckForLead > 0
+				? label("tick.stuck_line", {
+						n: epic.stuckForLead,
+						items: epic.stuckForLeadItems
+							.map((item) => `${item.identifier}(${item.kind},${item.since})`)
+							.join(" · "),
+					})
+				: undefined;
 		return {
 			triggerLines:
 				epic.trigger === "scope" && epic.remainingForLead > 0
@@ -522,6 +532,7 @@ function renderEpicResidualSection(epic: EpicResidualFact | undefined): {
 				`还剩什么(Bridge 按 Linear 扫 · 规则 ${epic.rule} 已获 founder 裁定 · 判断输入,不是派单;Linear 观测 ${linearObservedAt};生成 ${generatedAt};范围=${epic.roots} 个 active 父单):`,
 				`- 范围内 ${epic.remaining} 张未完成:现在可以开始的 ${epic.ready}(已剔除账面在跑)· 等前置的 ${epic.blocked} · 账面在跑的 ${epic.running} · 未命中 Lead label ${epic.generalCount}`,
 				readyLine,
+				...(stuckLine ? [stuckLine] : []),
 			],
 		};
 	} catch {

@@ -174,9 +174,9 @@ Commands:
 	            [--bridge-url <url>]  — copy/paste stage→apply commands. set/clear
 	            --project selects flag scope; report --project selects publishing.
 	            apply remains a set alias. clear is limited to SQLite-managed flags.
-	  epic-page  Generate, inspect, or render an Epic page. Subcommands:
-	            generate | show [--format json|md] | render --out <file>.
-	            Every command recomputes the active Linear scope live.
+	  epic-page  Inspect freshness or generate/render an Epic page. Subcommands:
+	            status | generate | show [--format json|md] | render --out <file>.
+	            status is read-only; generate/show/render recompute the active Linear scope.
   dependency  Maintain the live dependency ledger. Subcommands:
               add | remove | note | discover | log | show.
   founder-time   Print Annie's current local time and timezone. Uses the host

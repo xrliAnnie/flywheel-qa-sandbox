@@ -141,6 +141,7 @@ export interface ExternalMergeReconcileDeps {
 	store: StateStore;
 	config: BridgeConfig;
 	projects: ProjectEntry[];
+	onEpicChange?: (projectName: string, reason: "linear_done") => void;
 	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission;
 	/** FLY-603 worktree cleanup closure (same one the sinks thread through). */
 	removeCleanWorktree?: WorktreeCleanupFn;
@@ -489,7 +490,11 @@ export function createExternalMergeReconciler(
 				removeCleanWorktree: deps.removeCleanWorktree,
 				// FLY-1204: reclaim the parked DAG workflows on this ship path too.
 				finalizeWorkflowPhaseRoles: deps.finalizeWorkflowPhaseRoles,
-				markIssueDone: makeLinearDoneFinalizer(deps.config),
+				markIssueDone: makeLinearDoneFinalizer({
+					...deps.config,
+					onChanged: ({ projectName }) =>
+						deps.onEpicChange?.(projectName, "linear_done"),
+				}),
 				withIssueLifecycleMutex: deps.withIssueLifecycleMutex,
 				enqueueTerminalArchive: deps.terminalArchiveEnqueue,
 			},

@@ -139,6 +139,7 @@ export interface DependencyRouterDeps {
 	logger?: (message: string) => void;
 	relationIdMode?: "client" | "server";
 	writeDeadlineMs?: number;
+	onEpicChange?: (projectName: string, reason: "dependency_changed") => void;
 }
 
 async function withDeadline<T>(
@@ -774,6 +775,13 @@ export function createDependencyRouter(
 	const relationIdMode = deps.relationIdMode ?? "client";
 	const writeDeadlineMs = deps.writeDeadlineMs ?? DEFAULT_WRITE_DEADLINE_MS;
 	const mutationTails = new Map<string, Promise<void>>();
+	const notifyEpicChanged = (projectName: string): void => {
+		try {
+			deps.onEpicChange?.(projectName, "dependency_changed");
+		} catch {
+			// Epic refresh is best-effort and must not perturb dependency writes.
+		}
+	};
 
 	const resolveIssues = async (
 		input: CommonInput,
@@ -1113,6 +1121,14 @@ export function createDependencyRouter(
 		});
 		try {
 			const result = await operation;
+			if (
+				result.status >= 200 &&
+				result.status < 300 &&
+				"status" in result.body &&
+				result.body.status === "added"
+			) {
+				notifyEpicChanged(input.projectName);
+			}
 			res.status(result.status).json(result.body);
 		} catch {
 			logStage(logger, input.operationId, "validate", "upstream_error");
@@ -1255,6 +1271,13 @@ export function createDependencyRouter(
 					},
 				};
 			});
+			if (
+				result.status >= 200 &&
+				result.status < 300 &&
+				result.body.status === "removed"
+			) {
+				notifyEpicChanged(input.projectName);
+			}
 			res.status(result.status).json(result.body);
 		} catch {
 			logStage(logger, input.operationId, "validate", "upstream_error");

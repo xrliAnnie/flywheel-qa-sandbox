@@ -27,6 +27,7 @@ export interface EpicPageCliDeps {
 
 const USAGE = [
 	"usage:",
+	"  flywheel-comm epic-page status [--project <name>] [--bridge-url <url>]",
 	"  flywheel-comm epic-page generate [--project <name>] [--bridge-url <url>]",
 	"  flywheel-comm epic-page show [--project <name>] [--format json|md]",
 	"  flywheel-comm epic-page render [--project <name>] --out <file.html>",
@@ -67,7 +68,10 @@ export async function runEpicPage(
 
 	const subcommand = args[0];
 	const rest = args.slice(1);
-	if (!subcommand || !["generate", "show", "render"].includes(subcommand)) {
+	if (
+		!subcommand ||
+		!["status", "generate", "show", "render"].includes(subcommand)
+	) {
 		return fail("invalid_arguments", USAGE);
 	}
 	let values: Record<string, string | boolean | undefined>;
@@ -108,7 +112,10 @@ export async function runEpicPage(
 	).replace(/\/+$/, "");
 	const headers = { Authorization: `Bearer ${token}` };
 
-	const url = `${bridgeUrl}/api/epic-page/generate`;
+	const url =
+		subcommand === "status"
+			? `${bridgeUrl}/api/epic-page/status?projectName=${encodeURIComponent(project)}`
+			: `${bridgeUrl}/api/epic-page/generate`;
 	let init: {
 		method: string;
 		headers: Record<string, string>;
@@ -116,7 +123,10 @@ export async function runEpicPage(
 	};
 	let format: "json" | "md" | "html";
 	let out: string | undefined;
-	if (subcommand === "generate") {
+	if (subcommand === "status") {
+		init = { method: "GET", headers };
+		format = "json";
+	} else if (subcommand === "generate") {
 		init = {
 			method: "POST",
 			headers: { ...headers, "Content-Type": "application/json" },

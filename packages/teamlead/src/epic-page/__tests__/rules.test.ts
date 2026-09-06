@@ -44,6 +44,10 @@ function item(
 		carriers: cell([]),
 		land: cell([]),
 		signals: [],
+		signal_sources: {
+			statestore: cell({ signals: 0 }),
+			commdb: cell({ signals: 0 }),
+		},
 	};
 }
 

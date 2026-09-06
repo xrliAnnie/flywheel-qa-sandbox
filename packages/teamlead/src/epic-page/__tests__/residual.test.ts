@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { generateEpicPage } from "../generate.js";
+import type { Signal } from "../model.js";
 import {
 	assertEpicResidualFact,
 	EPIC_RESIDUAL_UNAVAILABLE_TOKENS,
@@ -58,7 +59,106 @@ describe("summarizeEpicResidual", () => {
 			readyForLeadTotal: 2,
 			remainingForLead: 5,
 			generalCount: 5,
+			stuckForLead: 0,
+			stuckForLeadItems: [],
 		});
+	});
+
+	it("counts Lead-owned stuck items once, sorts by since, and excludes founder waits", () => {
+		const snapshot = epicShapeSnapshot();
+		const observedAt = EPIC_SHAPE_NOW.toISOString();
+		const signal = (
+			kind: Signal["kind"],
+			since: string,
+			executionId8: string,
+			provenance: Signal["provenance"],
+		): Signal => ({
+			kind,
+			since,
+			execution_id8: executionId8,
+			provenance,
+			observed_at: observedAt,
+		});
+		const byItem: Signal[][] = [
+			[
+				signal("waiting_founder", "2026-09-03T01:00:00.000Z", "exec-one", {
+					kind: "commdb",
+					table: "mailbox",
+					key: { execution_id: "exec-one-full" },
+				}),
+				signal("question_pending", "2026-09-03T03:00:00.000Z", "exec-one", {
+					kind: "commdb",
+					table: "mailbox",
+					key: { execution_id: "exec-one-full" },
+				}),
+			],
+			[
+				signal("declared_blocked", "2026-09-03T02:00:00.000Z", "exec-two", {
+					kind: "statestore",
+					table: "sessions",
+					key: { execution_id: "exec-two-full" },
+				}),
+			],
+		];
+		const itemSignals = snapshot.items.map((item, index) => {
+			const signals = byItem[index] ?? [];
+			const statestoreCount = signals.filter(
+				(entry) => entry.provenance.kind === "statestore",
+			).length;
+			const commdbCount = signals.length - statestoreCount;
+			return {
+				signals,
+				signal_sources: {
+					statestore: {
+						value: { signals: statestoreCount },
+						provenance: {
+							kind: "statestore" as const,
+							table: "sessions",
+							key: { issue_id: item.id },
+						},
+						observed_at: observedAt,
+					},
+					commdb: {
+						value: { signals: commdbCount },
+						provenance: {
+							kind: "commdb" as const,
+							table: "mailbox",
+							key: { issue_identifier: item.identifier },
+						},
+						observed_at: observedAt,
+					},
+				},
+			};
+		});
+		const page = generateEpicPage({
+			snapshot,
+			itemFacts: snapshot.items.map(() => emptyItemFacts()),
+			itemSignals,
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "scan",
+		});
+
+		const fact = summarizeEpicResidual({
+			materialized: { page, snapshot },
+			leadId: "example-eng-lead",
+			resolveOwner: () => GENERAL_OWNER,
+			trigger: "roster",
+		});
+
+		expect(fact.stuckForLead).toBe(2);
+		expect(fact.stuckForLeadItems).toEqual([
+			{
+				identifier: "EPX-2",
+				kind: "declared_blocked",
+				since: "2026-09-03T02:00:00.000Z",
+			},
+			{
+				identifier: "EPX-1",
+				kind: "question_pending",
+				since: "2026-09-03T03:00:00.000Z",
+			},
+		]);
 	});
 
 	it("fails closed when a remaining item's session ledger is unreadable", () => {
@@ -233,6 +333,18 @@ describe("assertEpicResidualFact", () => {
 		});
 		const invalidFacts: unknown[] = [
 			{ ...valid, remaining: -1 },
+			{ ...valid, stuckForLead: -1, stuckForLeadItems: [] },
+			{
+				...valid,
+				stuckForLead: 1,
+				stuckForLeadItems: [
+					{
+						identifier: "EPX-1",
+						kind: "waiting_founder",
+						since: "2026-09-03T03:00:00.000Z",
+					},
+				],
+			},
 			{ ...valid, blocked: 4 },
 			{ ...valid, remainingForLead: 6 },
 			{ ...valid, generalCount: 6 },

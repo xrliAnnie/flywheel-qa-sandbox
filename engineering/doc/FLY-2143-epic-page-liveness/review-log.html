@@ -1,0 +1,8 @@
+<table>
+  <tr><th>轮次</th><th>结论</th><th>主要发现(已折入 plan)</th></tr>
+  <tr><td>R1</td><td>CHANGES REQUESTED(7 HIGH / 3 MEDIUM)</td><td>「说一声」信号不能改掉上一单冻结的数组形状,且要分开表达两个来源各自查没查到;信号字段收窄到 Lead 授权的四样;固定链接登记要能表示「已预留、还没发过」;普通报告发布、Epic 重传、过期清扫三者共用一把锁;账本一次尝试只记一行、只有真发出去才算成功;事件挂点按「真的写了账」判而不是按接口返回码;CommDB 要有专门的只读有界查询;状态命令要给出完整链接;手动生成的语义要冻结;验收计数自相矛盾。</td></tr>
+  <tr><td>R2</td><td>CHANGES REQUESTED(4 HIGH / 3 MEDIUM)</td><td>「这页多旧」不能塞进一个格(时间键会被既有守卫拒绝),改成九个各带出处的格;发布失败不能假称能回滚,按相位写清可观测事实;派单在写入 run 那一刻就该触发、延迟的 Linear Done 清扫也要挂;「成功生成」和「固定页成功发布」分成两条读数;缺一个「下一个版本号」的读接口;同一执行体多条问题要归并;reason 计数改成七种。</td></tr>
+  <tr><td>R3</td><td>CHANGES REQUESTED(3 HIGH / 2 MEDIUM / 1 LOW)</td><td>相位表改写成只陈述可观测事实(对象存储覆盖后状态未知、登记提交后不能再 abort);Linear Done 只在真实写入且状态变化时触发,并显式传项目;出处链闭合(原因写进回执、卡住列表指向真实信号节点);后端真值表(未迁移网关 / QA 覆盖模式不发布);最近失败原因与失败计数同口径;归并加总排序。</td></tr>
+  <tr><td>R4(收口轮)</td><td>CHANGES REQUESTED(2 HIGH / 3 MEDIUM)· 按 Lead 裁定停止、走 Lead acceptance</td><td>旧库迁移时回执缺「原因」要做迁移专用归一化;CommDB 上界按承诺基数定义、触界标为缺失而不是假健康;变更结果合同(statusChanged);原因词表闭集;若干章节对齐。均为前轮修正的延续,已折入;新增 §9 Residue。</td></tr>
+</table>
+<p class="note">Lead 裁定(2026-09-05):R4 为收口轮,仍有 HIGH ⇒ 不跑 R5,由 Lead acceptance 收口并把 leadAcceptance 写进收据;范围红线 = 本单只做四件事,预留态/临界区只做到「够本单正确」的最小形状。</p>

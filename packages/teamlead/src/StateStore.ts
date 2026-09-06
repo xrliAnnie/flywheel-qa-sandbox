@@ -100,7 +100,13 @@ import {
 	epicPageReceiptSourceDigest,
 	type EpicPageRenderReceipt,
 } from "./epic-page/receipt.js";
-import type { EpicPage } from "./epic-page/model.js";
+import {
+	normalizeRefreshReasons,
+	REFRESH_REASONS,
+	type EpicPage,
+	type RefreshReason,
+} from "./epic-page/model.js";
+import { EPIC_RESIDUAL_UNAVAILABLE_TOKENS } from "./epic-page/residual.js";
 import {
 	CMUX_LIVE_SESSION_STATUSES,
 	isOperationalTerminalStatus,
@@ -2034,6 +2040,66 @@ export class AdmissionPauseLeaseConflictError extends Error {
 
 export type EpicPageTrigger = "manual" | "event" | "scan";
 
+export const EPIC_PAGE_REFRESH_OUTCOMES = [
+	"ok:<version>",
+	"ok_unpublished:<version>:manual",
+	"ok_unpublished:<version>:skipped_hosting_not_configured",
+	"ok_unpublished:<version>:skipped_hosting_unsupported",
+	"transient: publish_failed:stage",
+	"transient: publish_failed:blob",
+	"transient: publish_failed:registry",
+	"transient: publish_failed:publication",
+	"structural: epic_html_too_large",
+	"skipped: project_unbound",
+	"skipped: linear_not_configured",
+	...EPIC_RESIDUAL_UNAVAILABLE_TOKENS,
+] as const;
+
+export function parseEpicPageRefreshOutcome(value: unknown): string {
+	if (typeof value !== "string") {
+		throw new Error("epic_page_refresh_outcome_invalid");
+	}
+	if (/^ok:[1-9]\d*$/.test(value)) return value;
+	if (
+		/^ok_unpublished:[1-9]\d*:(?:manual|skipped_hosting_not_configured|skipped_hosting_unsupported)$/.test(
+			value,
+		)
+	) {
+		return value;
+	}
+	if (new Set<string>(EPIC_PAGE_REFRESH_OUTCOMES).has(value)) return value;
+	throw new Error("epic_page_refresh_outcome_invalid");
+}
+
+export interface EpicPagePublicationRead {
+	token: string;
+	published: boolean;
+	first_published_at?: string;
+	last_published_at?: string;
+	last_version?: number;
+}
+
+export interface EpicPageFreshnessRead {
+	last_generated?: {
+		version: number;
+		attempted_at: string;
+		trigger: EpicPageTrigger;
+	};
+	last_published?: {
+		version: number;
+		attempted_at: string;
+		trigger: EpicPageTrigger;
+	};
+	publish_failures_since_last_published: number;
+	last_publish_failure?: { attempted_at: string; token: string };
+	last_failure?: { attempted_at: string; token: string };
+	last_attempt?: {
+		attempted_at: string;
+		trigger: EpicPageTrigger;
+		outcome: string;
+	};
+}
+
 export interface EpicPageRenderReceiptRow {
 	version: number;
 	generated_at: string;
@@ -2088,6 +2154,25 @@ export interface EpicItemFacts {
 	gates: EpicPageFactRead<Array<{ state: string }>>;
 	carriers: EpicPageFactRead<Array<{ state: string }>>;
 	land: EpicPageFactRead<EpicPageLandValue[]>;
+}
+
+export type EpicPageStateSignalFact =
+	| {
+			kind: "declared_blocked";
+			execution_id: string;
+			since: string;
+	  }
+	| {
+			kind: "run_held";
+			execution_id: string;
+			run_id: string;
+			since: string;
+	  };
+
+/** Internal full identities used to join narrow CommDB facts to one Epic item. */
+export interface EpicPageSignalFacts {
+	execution_ids: string[];
+	signals: EpicPageStateSignalFact[];
 }
 
 export class StateStore {
@@ -5297,10 +5382,45 @@ export class StateStore {
 				CREATE INDEX IF NOT EXISTS idx_epic_page_project_version
 				ON epic_page(project_name, version DESC)
 			`);
+			this.db.run(`
+				CREATE TABLE IF NOT EXISTS epic_page_publication (
+					project_name TEXT PRIMARY KEY,
+					token TEXT NOT NULL UNIQUE CHECK (length(token) = 32),
+					first_published_at TEXT,
+					last_published_at TEXT,
+					last_version INTEGER CHECK (last_version IS NULL OR last_version > 0),
+					CHECK ((first_published_at IS NULL) = (last_published_at IS NULL)
+					   AND (first_published_at IS NULL) = (last_version IS NULL))
+				)
+			`);
+			this.db.run(`
+				CREATE TABLE IF NOT EXISTS epic_page_refresh (
+					project_name TEXT NOT NULL,
+					attempted_at TEXT NOT NULL,
+					trigger TEXT NOT NULL CHECK (trigger IN ('manual','event','scan')),
+					reason TEXT NOT NULL,
+					outcome TEXT NOT NULL,
+					created_at TEXT NOT NULL DEFAULT (datetime('now'))
+				)
+			`);
+			this.db.run(`
+				CREATE INDEX IF NOT EXISTS idx_epic_page_refresh_project_at
+				ON epic_page_refresh(project_name, attempted_at DESC)
+			`);
 
 			const nextVersion = new Map<string, number>();
 			for (const row of legacyRows) {
 				const document = JSON.parse(row.document) as EpicPage;
+				// FLY-2143: legacy full documents predate generator.reasons. Keep the
+				// compatibility normalization local to this one-way migration so new
+				// receipts remain strict. An event receipt was never emitted by the
+				// legacy production path; retain a deterministic fallback for corrupt
+				// hand-authored fixtures without adding "event" to the reason grammar.
+				if (!Array.isArray(document.generator?.reasons)) {
+					document.generator.reasons = [
+						row.trigger === "event" ? "session_completed" : row.trigger,
+					];
+				}
 				const receipt = buildEpicPageRenderReceipt(document);
 				const version = (nextVersion.get(row.project_name) ?? 0) + 1;
 				nextVersion.set(row.project_name, version);
@@ -7707,7 +7827,7 @@ export class StateStore {
 		return rows;
 	}
 
-	upsertSession(session: SessionUpsert): void {
+	upsertSession(session: SessionUpsert): { statusChanged: boolean } {
 		// Check monotonic state: if existing session is terminal, ignore transition back to running
 		const existing = this.getSession(session.execution_id);
 		if (
@@ -7724,7 +7844,7 @@ export class StateStore {
 			TERMINAL_STATUSES.has(existing.status) &&
 			session.status === "running"
 		) {
-			return; // Ignore: terminal → running is not allowed
+			return { statusChanged: false }; // Ignore: terminal → running is not allowed
 		}
 
 		// FLY-191 Phase 2: stamp awaiting_review entry on this legacy write
@@ -7889,6 +8009,7 @@ export class StateStore {
 			}
 		});
 		this.save();
+		return { statusChanged: existing?.status !== session.status };
 	}
 
 	/** FLY-245 D-a: atomically increment a session's monotonic lifecycle revision.
@@ -9559,10 +9680,229 @@ export class StateStore {
 		}));
 	}
 
+	reserveEpicPageToken(projectName: string): { token: string } {
+		if (!projectName.trim()) throw new Error("epic_page_project_required");
+		const existing = this.getEpicPagePublication(projectName);
+		if (existing) return { token: existing.token };
+		let token: string | undefined;
+		this.db.transaction(() => {
+			const concurrent = this.getEpicPagePublication(projectName);
+			if (concurrent) {
+				token = concurrent.token;
+				return;
+			}
+			for (let attempt = 0; attempt < 3 && !token; attempt += 1) {
+				const candidate = randomUUID().replaceAll("-", "");
+				this.db.run(
+					`INSERT OR IGNORE INTO epic_page_publication (project_name, token)
+					 VALUES (?, ?)`,
+					[projectName, candidate],
+				);
+				if (this.db.getRowsModified() === 1) token = candidate;
+			}
+		});
+		if (!token) throw new Error("epic_page_publication_token_unavailable");
+		this.save();
+		return { token };
+	}
+
+	commitEpicPagePublication(input: {
+		projectName: string;
+		token: string;
+		publishedAt: string;
+		version: number;
+	}): void {
+		if (
+			!/^[a-f0-9]{32}$/.test(input.token) ||
+			!Number.isSafeInteger(input.version) ||
+			input.version < 1 ||
+			!Number.isFinite(Date.parse(input.publishedAt))
+		) {
+			throw new Error("epic_page_publication_invalid");
+		}
+		this.db.run(
+			`UPDATE epic_page_publication
+			    SET first_published_at = COALESCE(first_published_at, ?),
+			        last_published_at = ?, last_version = ?
+			  WHERE project_name = ? AND token = ?`,
+			[
+				input.publishedAt,
+				input.publishedAt,
+				input.version,
+				input.projectName,
+				input.token,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new Error("epic_page_publication_token_mismatch");
+		}
+		this.save();
+	}
+
+	getEpicPagePublication(
+		projectName: string,
+	): EpicPagePublicationRead | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT token, first_published_at, last_published_at, last_version
+			   FROM epic_page_publication
+			  WHERE project_name = ?`,
+			[projectName],
+		)[0];
+		if (!row) return undefined;
+		if (row.first_published_at == null) {
+			return { token: String(row.token), published: false };
+		}
+		return {
+			token: String(row.token),
+			published: true,
+			first_published_at: String(row.first_published_at),
+			last_published_at: String(row.last_published_at),
+			last_version: Number(row.last_version),
+		};
+	}
+
+	getNextEpicPageVersion(projectName: string): number {
+		const row = this.workflowSelectAll(
+			`SELECT COALESCE(MAX(version), 0) + 1 AS version
+			   FROM epic_page
+			  WHERE project_name = ?`,
+			[projectName],
+		)[0];
+		return Number(row?.version ?? 1);
+	}
+
+	insertEpicPageRefresh(input: {
+		projectName: string;
+		attemptedAt: string;
+		trigger: EpicPageTrigger;
+		reasons: RefreshReason[];
+		outcome: string;
+	}): void {
+		if (
+			!input.projectName.trim() ||
+			!Number.isFinite(Date.parse(input.attemptedAt)) ||
+			!["manual", "event", "scan"].includes(input.trigger)
+		) {
+			throw new Error("epic_page_refresh_invalid");
+		}
+		if (
+			input.reasons.length === 0 ||
+			input.reasons.some((reason) => !REFRESH_REASONS.includes(reason)) ||
+			canonicalJsonString(input.reasons) !==
+				canonicalJsonString(normalizeRefreshReasons(input.reasons)) ||
+			(input.trigger === "manual" &&
+				canonicalJsonString(input.reasons) !== '["manual"]') ||
+			(input.trigger === "scan" &&
+				canonicalJsonString(input.reasons) !== '["scan"]')
+		) {
+			throw new Error("epic_page_refresh_reason_invalid");
+		}
+		const outcome = parseEpicPageRefreshOutcome(input.outcome);
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO epic_page_refresh
+				 (project_name, attempted_at, trigger, reason, outcome)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					input.projectName,
+					input.attemptedAt,
+					input.trigger,
+					input.reasons.join(","),
+					outcome,
+				],
+			);
+			this.db.run(
+				`DELETE FROM epic_page_refresh
+				  WHERE rowid IN (
+				    SELECT rowid FROM epic_page_refresh
+				     WHERE project_name = ?
+				     ORDER BY attempted_at DESC, rowid DESC
+				     LIMIT -1 OFFSET 200
+				  )`,
+				[input.projectName],
+			);
+		});
+		this.save();
+	}
+
+	getEpicPageFreshness(projectName: string): EpicPageFreshnessRead {
+		const rows = this.workflowSelectAll(
+			`SELECT rowid, attempted_at, trigger, outcome
+			   FROM epic_page_refresh
+			  WHERE project_name = ?
+			  ORDER BY attempted_at DESC, rowid DESC
+			  LIMIT 200`,
+			[projectName],
+		).map((row) => ({
+			rowid: Number(row.rowid),
+			attempted_at: String(row.attempted_at),
+			trigger: row.trigger as EpicPageTrigger,
+			outcome: String(row.outcome),
+		}));
+		const parseVersion = (outcome: string): number | undefined => {
+			const match = outcome.match(/^ok(?:_unpublished)?:([1-9]\d*)/);
+			return match?.[1] ? Number(match[1]) : undefined;
+		};
+		const generatedRow = rows.find(
+			(row) =>
+				row.outcome.startsWith("ok:") ||
+				row.outcome.startsWith("ok_unpublished:"),
+		);
+		const publishedRow = rows.find((row) => row.outcome.startsWith("ok:"));
+		const publishFailures = rows.filter((row) => {
+			if (row.trigger === "manual" || row.outcome.startsWith("ok")) return false;
+			if (!publishedRow) return true;
+			return (
+				row.attempted_at > publishedRow.attempted_at ||
+				(row.attempted_at === publishedRow.attempted_at &&
+					row.rowid > publishedRow.rowid)
+			);
+		});
+		const lastFailure = rows.find((row) => !row.outcome.startsWith("ok"));
+		const result: EpicPageFreshnessRead = {
+			publish_failures_since_last_published: publishFailures.length,
+		};
+		if (generatedRow) {
+			result.last_generated = {
+				version: parseVersion(generatedRow.outcome)!,
+				attempted_at: generatedRow.attempted_at,
+				trigger: generatedRow.trigger,
+			};
+		}
+		if (publishedRow) {
+			result.last_published = {
+				version: parseVersion(publishedRow.outcome)!,
+				attempted_at: publishedRow.attempted_at,
+				trigger: publishedRow.trigger,
+			};
+		}
+		if (publishFailures[0]) {
+			result.last_publish_failure = {
+				attempted_at: publishFailures[0].attempted_at,
+				token: publishFailures[0].outcome,
+			};
+		}
+		if (lastFailure) {
+			result.last_failure = {
+				attempted_at: lastFailure.attempted_at,
+				token: lastFailure.outcome,
+			};
+		}
+		if (rows[0]) {
+			result.last_attempt = {
+				attempted_at: rows[0].attempted_at,
+				trigger: rows[0].trigger,
+				outcome: rows[0].outcome,
+			};
+		}
+		return result;
+	}
+
 	insertEpicPageRenderReceipt(input: {
 		projectName: string;
 		trigger: EpicPageTrigger;
 		receipt: EpicPageRenderReceipt;
+		expectedVersion?: number;
 	}): { version: number; generated_at: string; source_digest: string } {
 		assertEpicPageRenderReceipt(input.receipt);
 		if (input.receipt.project_name !== input.projectName) {
@@ -9582,6 +9922,12 @@ export class StateStore {
 				[input.projectName],
 			)[0];
 			version = Number(allocated?.version ?? 1);
+			if (
+				input.expectedVersion !== undefined &&
+				version !== input.expectedVersion
+			) {
+				throw new Error("epic_page_version_drift");
+			}
 			this.db.run(
 				`INSERT INTO epic_page
 				 (project_name, version, generated_at, trigger, source_digest, receipt)
@@ -9668,6 +10014,102 @@ export class StateStore {
 			...(typeof row?.source_updated_at === "string"
 				? { source_updated_at: row.source_updated_at }
 				: {}),
+		};
+	}
+
+	getEpicPageSignalFacts(
+		projectName: string,
+		keys: string[],
+	): EpicPageSignalFacts {
+		const aliases = normalizeIssueKeys(keys);
+		if (aliases.length === 0) return { execution_ids: [], signals: [] };
+		const placeholders = aliases.map(() => "?").join(", ");
+		const session = this.workflowSelectAll(
+			`SELECT execution_id, status, decision_route,
+			        strftime('%Y-%m-%dT%H:%M:%SZ', COALESCE(last_activity_at, started_at)) AS since
+			   FROM sessions
+			  WHERE project_name = ?
+			    AND (issue_id IN (${placeholders})
+			         OR issue_identifier IN (${placeholders}))
+			  ORDER BY julianday(COALESCE(last_activity_at, started_at)) DESC,
+			           execution_id ASC
+			  LIMIT 1`,
+			[projectName, ...aliases, ...aliases],
+		)[0];
+		const heldRun = this.workflowSelectAll(
+			`SELECT run.run_id, run.current_node_id,
+			        strftime('%Y-%m-%dT%H:%M:%SZ', run.created_at) AS since
+			   FROM workflow_run run
+			  WHERE run.project_name = ? AND run.status = 'held'
+			    AND (run.issue_id IN (${placeholders}) OR EXISTS (
+			      SELECT 1 FROM workflow_run_issue_alias alias
+			       WHERE alias.run_id = run.run_id
+			         AND alias.issue_alias IN (${placeholders})
+			    ))
+			  ORDER BY run.run_id ASC
+			  LIMIT 1`,
+			[projectName, ...aliases, ...aliases],
+		)[0];
+		let heldExecutionId: string | undefined;
+		let heldSince: string | undefined;
+		if (heldRun) {
+			const node =
+				typeof heldRun.current_node_id === "string"
+					? this.workflowSelectAll(
+							`SELECT execution_id
+							   FROM workflow_run_node
+							  WHERE run_id = ? AND node_id = ?
+							  ORDER BY attempt DESC LIMIT 1`,
+							[String(heldRun.run_id), heldRun.current_node_id],
+						)[0]
+					: undefined;
+			heldExecutionId =
+				typeof node?.execution_id === "string"
+					? node.execution_id
+					: String(heldRun.run_id);
+			const latestHold = this.listWorkflowHolds(String(heldRun.run_id))
+				.filter((hold) => hold.runLevel)
+				.at(-1);
+			const holdTime = latestHold
+				? this.workflowSelectAll(
+						`SELECT strftime('%Y-%m-%dT%H:%M:%SZ', at) AS since
+						   FROM workflow_run_event WHERE event_uid = ?`,
+						[latestHold.holdEventUid],
+					)[0]
+				: undefined;
+			heldSince =
+				typeof holdTime?.since === "string"
+					? holdTime.since
+					: String(heldRun.since);
+		}
+
+		const signals: EpicPageStateSignalFact[] = [];
+		if (
+			typeof session?.execution_id === "string" &&
+			typeof session.since === "string" &&
+			(session.status === "blocked" || session.decision_route === "blocked")
+		) {
+			signals.push({
+				kind: "declared_blocked",
+				execution_id: session.execution_id,
+				since: session.since,
+			});
+		}
+		if (heldRun && heldExecutionId && heldSince) {
+			signals.push({
+				kind: "run_held",
+				execution_id: heldExecutionId,
+				run_id: String(heldRun.run_id),
+				since: heldSince,
+			});
+		}
+		const commExecutionId =
+			typeof session?.execution_id === "string"
+				? session.execution_id
+				: heldExecutionId;
+		return {
+			execution_ids: commExecutionId ? [commExecutionId] : [],
+			signals,
 		};
 	}
 
@@ -34519,6 +34961,7 @@ export class StateStore {
 				attemptedStatus: "completed" | "failed" | "blocked";
 				effectiveStatus: string;
 				statusPreserved: boolean;
+				statusChanged: boolean;
 				runId: string;
 				nodeId: string;
 				leadEventSeq?: number;
@@ -34555,6 +34998,7 @@ export class StateStore {
 		let refusal: string | undefined;
 		let effectiveStatus: string = status;
 		let statusPreserved = false;
+		let statusChanged = false;
 		let leadEventSeq: number | undefined;
 		this.db.transaction(() => {
 			const priorEvent =
@@ -34633,6 +35077,7 @@ export class StateStore {
 			statusPreserved =
 				isNoOutEdgeTerminalStatus(previousStatus) && previousStatus !== status;
 			effectiveStatus = statusPreserved ? (previousStatus ?? status) : status;
+			statusChanged = !statusPreserved && previousStatus !== status;
 			if (statusPreserved) {
 				console.warn(
 					`[StateStore] FLY-1427 terminal-immune: refused ${previousStatus} → ${status} for ${input.executionId}; status preserved, teardown fact still recorded`,
@@ -34701,6 +35146,7 @@ export class StateStore {
 			attemptedStatus: status,
 			effectiveStatus,
 			statusPreserved,
+			statusChanged,
 			runId: context.binding.run_id,
 			nodeId: context.binding.node_id,
 			...(leadEventSeq !== undefined ? { leadEventSeq } : {}),

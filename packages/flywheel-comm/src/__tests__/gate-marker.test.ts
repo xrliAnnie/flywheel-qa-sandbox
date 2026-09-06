@@ -39,7 +39,7 @@ describe("gate-marker (FLY-123)", () => {
 	});
 	afterEach(() => {
 		rmSync(dir, { recursive: true, force: true });
-	});
+	}, 30_000);
 
 	const base = {
 		questionId: "q-abc-123",

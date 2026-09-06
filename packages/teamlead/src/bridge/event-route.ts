@@ -568,8 +568,27 @@ export function createEventRouter(
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	// FLY-2155: live store-backed decision switch, read for every completion.
 	workflowNodeReuseEnabled?: () => boolean,
+	// FLY-2143: best-effort invalidation after a real persisted Epic projection change.
+	onEpicChange?: (
+		projectName: string,
+		reason:
+			| "session_started"
+			| "session_completed"
+			| "session_failed"
+			| "linear_done",
+	) => void,
 ): Router {
 	const router = Router();
+	const notifyEpicChanged = (
+		projectName: string,
+		reason: "session_started" | "session_completed" | "session_failed",
+	): void => {
+		try {
+			onEpicChange?.(projectName, reason);
+		} catch {
+			// Epic refresh must never perturb event ingestion.
+		}
+	};
 	const issueStatusEmojiEnabled =
 		featureFlags?.issueStatusEmojiEnabled !== false;
 	const issueAttachPinEnabled = featureFlags?.issueAttachPinEnabled === true;
@@ -1197,6 +1216,9 @@ export function createEventRouter(
 						payload: event.payload,
 						source: "workflow-generalized-completion",
 					});
+					if (!completion.idempotentReplay) {
+						notifyEpicChanged(event.project_name, "session_completed");
+					}
 					res.json({
 						ok: true,
 						generalized: true,
@@ -1227,6 +1249,9 @@ export function createEventRouter(
 							reason: recorded.reason,
 						});
 						return;
+					}
+					if (recorded.statusChanged) {
+						notifyEpicChanged(event.project_name, "session_completed");
 					}
 					res.json({
 						ok: true,
@@ -1270,6 +1295,9 @@ export function createEventRouter(
 						reason: recorded.reason,
 					});
 					return;
+				}
+				if (recorded.statusChanged) {
+					notifyEpicChanged(event.project_name, "session_failed");
 				}
 				if (failure?.failureKind === "worktree_takeover_failed") {
 					const failedSession = store.getSession(event.execution_id);
@@ -1471,9 +1499,11 @@ export function createEventRouter(
 							`[event-route] FSM rejected ${event.event_type}: ${result.error}`,
 						);
 						transitionRejected = true;
+					} else {
+						notifyEpicChanged(event.project_name, "session_started");
 					}
 				} else {
-					store.upsertSession({
+					const started = store.upsertSession({
 						execution_id: event.execution_id,
 						issue_id: event.issue_id,
 						project_name: event.project_name,
@@ -1502,6 +1532,9 @@ export function createEventRouter(
 						}),
 						workflow_node_id: workflowNodeId,
 					});
+					if (started.statusChanged) {
+						notifyEpicChanged(event.project_name, "session_started");
+					}
 				}
 
 				// FLY-163: Forum thread inheritance + ForumPostCreator removed.
@@ -2217,6 +2250,7 @@ export function createEventRouter(
 						);
 						transitionRejected = true;
 					} else {
+						notifyEpicChanged(event.project_name, "session_completed");
 						// Metadata via patchSessionMetadata only on successful transition
 						const prNumber = asNumber(
 							(evidence?.landingStatus as Record<string, unknown> | undefined)
@@ -2271,7 +2305,7 @@ export function createEventRouter(
 						(evidence?.landingStatus as Record<string, unknown> | undefined)
 							?.prNumber,
 					);
-					store.upsertSession({
+					const completed = store.upsertSession({
 						execution_id: event.execution_id,
 						issue_id: event.issue_id,
 						project_name: event.project_name,
@@ -2304,6 +2338,9 @@ export function createEventRouter(
 								}
 							: {}),
 					});
+					if (completed.statusChanged) {
+						notifyEpicChanged(event.project_name, "session_completed");
+					}
 
 					// FLY-191 Phase 2: upsertSession's column list doesn't carry the
 					// review binding — write it separately on the legacy path too.
@@ -2390,7 +2427,11 @@ export function createEventRouter(
 							finalizeWorkflowPhaseRoles,
 							// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 							// by runPostShipFinalization's merge-evidence predicate).
-							markIssueDone: makeLinearDoneFinalizer(config),
+							markIssueDone: makeLinearDoneFinalizer({
+								...config,
+								onChanged: ({ projectName }) =>
+									onEpicChange?.(projectName, "linear_done"),
+							}),
 							// FLY-907: final terminal-state display refresh (before archive).
 							refreshIssueDisplay: (issueId) =>
 								issueDisplayRefresh?.current?.refresh(issueId) ??
@@ -2532,9 +2573,11 @@ export function createEventRouter(
 							`[event-route] FSM rejected ${event.event_type}: ${result.error}`,
 						);
 						transitionRejected = true;
+					} else {
+						notifyEpicChanged(event.project_name, "session_failed");
 					}
 				} else {
-					store.upsertSession({
+					const failed = store.upsertSession({
 						execution_id: event.execution_id,
 						issue_id: event.issue_id,
 						project_name: event.project_name,
@@ -2547,6 +2590,9 @@ export function createEventRouter(
 						session_role: failedSessionRole,
 						workflow_node_id: workflowNodeId,
 					});
+					if (failed.statusChanged) {
+						notifyEpicChanged(event.project_name, "session_failed");
+					}
 				}
 
 				// GEO-152: store labels on failed events (not just started)
@@ -2808,7 +2854,11 @@ export function createEventRouter(
 										finalizeWorkflowPhaseRoles,
 										// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 										// by runPostShipFinalization's merge-evidence predicate).
-										markIssueDone: makeLinearDoneFinalizer(config),
+										markIssueDone: makeLinearDoneFinalizer({
+											...config,
+											onChanged: ({ projectName }) =>
+												onEpicChange?.(projectName, "linear_done"),
+										}),
 										// FLY-907: final terminal-state display refresh (before archive).
 										refreshIssueDisplay: (issueId) =>
 											issueDisplayRefresh?.current?.refresh(issueId) ??

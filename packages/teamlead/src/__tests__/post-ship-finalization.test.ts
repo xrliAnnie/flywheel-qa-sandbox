@@ -982,6 +982,7 @@ describe("runPostShipFinalization", () => {
 			"FLY-102",
 			"FLY-102",
 			expect.any(AbortSignal),
+			{ projectName: "flywheel" },
 		);
 		// teardown still ran: the atomic claim event exists.
 		expect(

@@ -331,6 +331,10 @@ export function createRunsRouter(
 		collectWorkflowRun?: (
 			receiptKey: string,
 		) => Promise<WorkflowRunCollectReceiptRow>;
+		onEpicChange?: (
+			projectName: string,
+			reason: "run_started" | "run_resumed",
+		) => void;
 	},
 	skillFrameworkModeControl: () => {
 		hasOverride: boolean;
@@ -339,6 +343,16 @@ export function createRunsRouter(
 	__testOnly: { ghostGuardSessionWaitMs?: number } = {},
 ): Router {
 	const router = Router();
+	const notifyEpicChanged = (
+		projectName: string,
+		reason: "run_started" | "run_resumed",
+	): void => {
+		try {
+			auth?.onEpicChange?.(projectName, reason);
+		} catch {
+			// Epic refresh is best-effort and must not perturb run routes.
+		}
+	};
 	const ghostGuardSessionWaitMs =
 		__testOnly.ghostGuardSessionWaitMs ?? GHOST_GUARD_SESSION_WAIT_MS;
 	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
@@ -481,6 +495,10 @@ export function createRunsRouter(
 			digest: normalized.digest,
 			now: new Date().toISOString(),
 		});
+		if (result.ok && !result.idempotentReplay) {
+			const projectName = store.getWorkflowRun(runId)?.project_name;
+			if (projectName) notifyEpicChanged(projectName, "run_resumed");
+		}
 		res.status(result.ok ? 200 : 409).json(result);
 	});
 
@@ -2723,6 +2741,9 @@ export function createRunsRouter(
 				return;
 			}
 		}
+		if (generalizedSelection && !generalizedSelection.replayed) {
+			notifyEpicChanged(projectName, "run_started");
+		}
 		if (workKindActiveAtEntry && v2Entry && !generalizedSelection) {
 			res.status(409).json({
 				success: false,
@@ -3687,7 +3708,6 @@ export function createRunsRouter(
 					skillFrameworkMode: requestedSkillFrameworkMode,
 				}),
 			});
-
 			// FLY-91: Poll for chatThreadId. emitStarted() awaits chat thread
 			// creation, but we poll defensively in case of race or transient
 			// failure.
@@ -3786,6 +3806,7 @@ export function createRunsRouter(
 				});
 				return;
 			}
+			notifyEpicChanged(projectName, "run_started");
 			if (
 				workKindActiveAtEntry &&
 				!store.markWorkflowRouteDecisionLaunched({

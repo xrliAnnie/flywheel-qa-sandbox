@@ -11,6 +11,7 @@ export interface ReportBlobUpload {
 
 export interface ReportBlobStore {
 	putReport(token: string, html: string): Promise<ReportBlobUpload>;
+	putEpicPage(token: string, html: string): Promise<ReportBlobUpload>;
 	putMigratedReport(token: string, html: string): Promise<ReportBlobUpload>;
 	deleteReports(tokens: readonly string[]): Promise<void>;
 	sweepExpiredReports(
@@ -74,6 +75,11 @@ export class VercelBlobReportStore implements ReportBlobStore {
 
 	async putReport(token: string, html: string): Promise<ReportBlobUpload> {
 		return this.putReportObject(token, html, false);
+	}
+
+	/** Idempotent overwrite for one stable hosted Epic page token. */
+	async putEpicPage(token: string, html: string): Promise<ReportBlobUpload> {
+		return this.putReportObject(token, html, true);
 	}
 
 	/** Idempotent upload used only by the one-time legacy migration. */

@@ -11,8 +11,19 @@ import {
 } from "../epic-page/receipt.js";
 import { renderEpicPageHtml } from "../epic-page/render-html.js";
 import { renderEpicPageMarkdown } from "../epic-page/render-markdown.js";
+import { readSignals } from "../epic-page/signals.js";
 import type { ProjectEntry, ProjectLinearBinding } from "../ProjectConfig.js";
-import { readEpicItemFacts, type StateStore } from "../StateStore.js";
+import {
+	type EpicPageFreshnessRead,
+	readEpicItemFacts,
+	type StateStore,
+} from "../StateStore.js";
+import type { EpicPagePublisher } from "./epic-page-publisher.js";
+import {
+	createEpicPageSerializer,
+	type EpicPageSerializer,
+	runEpicPageAttempt,
+} from "./epic-page-refresher.js";
 import {
 	ActiveScopeNotFoundError,
 	EpicSnapshotTruncatedError,
@@ -21,6 +32,10 @@ import {
 } from "./linear-epic-query.js";
 import { LinearUpstreamError } from "./linear-query.js";
 import { resolveProjectNameParam } from "./linear-scope.js";
+import { scheduledAtOrBefore } from "./patrol-tick.js";
+import type { ReportHostOverride } from "./report-host-override.js";
+import type { ReportRegistry } from "./report-registry.js";
+import { reportUrlForToken } from "./report-url.js";
 
 type EpicPageFormat = "json" | "md" | "html";
 
@@ -32,6 +47,22 @@ export interface EpicPageRouterDeps {
 	now?: () => Date;
 	generatePage?: (input: GenerateEpicPageInput) => EpicPage;
 	buildReceipt?: (page: EpicPage) => EpicPageRenderReceipt;
+	serializer?: EpicPageSerializer;
+	publisher?: EpicPagePublisher;
+	scanSchedule?: (
+		projectName: string,
+	) => { leadId: string; intervalMs: number } | undefined;
+}
+
+export interface EpicPageStatusRouterDeps {
+	store: Pick<StateStore, "getEpicPageFreshness" | "getEpicPagePublication">;
+	projects: ProjectEntry[];
+	registry: Pick<ReportRegistry, "hosting" | "vercelProjectName">;
+	hostOverride?: ReportHostOverride;
+	now?: () => Date;
+	scanSchedule?: (
+		projectName: string,
+	) => { leadId: string; intervalMs: number } | undefined;
 }
 
 function projectError(error: string): string {
@@ -70,28 +101,36 @@ function resolveFormat(raw: unknown): EpicPageFormat | null {
 		: null;
 }
 
-function sendGenerateError(error: unknown, res: express.Response): void {
+function sendGenerateError(
+	error: unknown,
+	res: express.Response,
+	freshness: Pick<EpicPageFreshnessRead, "last_generated" | "last_published">,
+): void {
+	const body = (errorCode: string) => ({ error: errorCode, ...freshness });
 	if (error instanceof ActiveScopeNotFoundError) {
-		res.status(422).json({ error: "active_scope_not_found" });
+		res.status(422).json(body("active_scope_not_found"));
 		return;
 	}
 	if (error instanceof EpicTooLargeError) {
-		res.status(422).json({ error: "scope_too_large" });
+		res.status(422).json(body("scope_too_large"));
 		return;
 	}
 	if (error instanceof EpicSnapshotTruncatedError) {
-		res.status(422).json({ error: "scope_snapshot_truncated" });
+		res.status(422).json(body("scope_snapshot_truncated"));
 		return;
 	}
 	if (error instanceof LinearUpstreamError) {
-		res.status(502).json({ error: "linear_unavailable" });
+		res.status(502).json(body("linear_unavailable"));
 		return;
 	}
 	if (error instanceof EpicPageSchemaError) {
-		res.status(422).json({
-			error:
-				error.code === "size" ? "epic_page_too_large" : "epic_page_invalid",
-		});
+		res
+			.status(422)
+			.json(
+				body(
+					error.code === "size" ? "epic_page_too_large" : "epic_page_invalid",
+				),
+			);
 		return;
 	}
 	console.error(
@@ -101,13 +140,62 @@ function sendGenerateError(error: unknown, res: express.Response): void {
 	res.status(500).json({ error: "internal_error" });
 }
 
+export function createEpicPageStatusRouter(
+	deps: EpicPageStatusRouterDeps,
+): express.Router {
+	const router = express.Router();
+	const now = deps.now ?? (() => new Date());
+	router.get("/", (req, res) => {
+		const project = resolveProject(deps.projects, req.query.projectName);
+		if (!project.ok) {
+			res.status(project.status).json({ error: project.error });
+			return;
+		}
+		try {
+			const freshness = deps.store.getEpicPageFreshness(project.projectName);
+			const row = deps.store.getEpicPagePublication(project.projectName);
+			const schedule = deps.scanSchedule?.(project.projectName);
+			const nowMs = now().getTime();
+			const published = row?.published === true && !deps.hostOverride;
+			const nextScanExpectedAt = schedule
+				? new Date(
+						scheduledAtOrBefore(nowMs, schedule.leadId, schedule.intervalMs) +
+							schedule.intervalMs,
+					).toISOString()
+				: null;
+			res.json({
+				freshness,
+				publication: row
+					? {
+							token8: row.token.slice(0, 8),
+							published,
+							url: published
+								? reportUrlForToken(deps.registry, row.token)
+								: null,
+							last_published_at: row.last_published_at ?? null,
+							last_version: row.last_version ?? null,
+						}
+					: null,
+				next_scan_expected_at: nextScanExpectedAt,
+			});
+		} catch (error) {
+			console.error(
+				"[EpicPage] status read failed:",
+				error instanceof Error ? error.message : String(error),
+			);
+			res.status(500).json({ error: "internal_error" });
+		}
+	});
+	return router;
+}
+
 export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 	const router = express.Router();
 	const fetchSnapshot = deps.fetchSnapshot ?? fetchLinearActiveScopeSnapshot;
 	const generatePage = deps.generatePage ?? generateEpicPage;
 	const buildReceipt = deps.buildReceipt ?? buildEpicPageRenderReceipt;
 	const now = deps.now ?? (() => new Date());
-	const generationTails = new Map<string, Promise<void>>();
+	const serializer = deps.serializer ?? createEpicPageSerializer();
 
 	router.post("/generate", async (req, res) => {
 		const project = resolveProject(deps.projects, req.body?.projectName);
@@ -135,42 +223,47 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 			return;
 		}
 
-		const key = project.projectName;
-		const prior = generationTails.get(key) ?? Promise.resolve();
-		const operation = prior.then(async () => {
-			const { page: document, receipt } = await materializeEpicPage(
+		try {
+			const result = await runEpicPageAttempt(
 				{
-					fetchSnapshot,
-					readItemFacts: (projectName, item) =>
-						readEpicItemFacts(deps.store, projectName, item),
-					generatePage,
-					buildReceipt,
+					store: deps.store,
+					serializer,
+					publisher: deps.publisher,
 					now,
+					materialize: (input) =>
+						materializeEpicPage(
+							{
+								fetchSnapshot,
+								readItemFacts: (projectName, item) =>
+									readEpicItemFacts(deps.store, projectName, item),
+								readSignals: (projectName, items, generatedAt) =>
+									readSignals(
+										{ stateStore: deps.store },
+										{ projectName, items, now: generatedAt },
+									),
+								readFreshness: (projectName) => ({
+									history: deps.store.getEpicPageFreshness(projectName),
+									publication: deps.store.getEpicPagePublication(projectName),
+								}),
+								generatePage,
+								buildReceipt,
+								now,
+							},
+							input,
+						),
 				},
 				{
 					projectName: project.projectName,
 					binding: project.binding,
 					apiKey: deps.linearApiKey!,
 					trigger: "manual",
+					reasons: ["manual"],
+					scanSchedule: deps.scanSchedule?.(project.projectName),
 				},
 			);
-			const inserted = deps.store.insertEpicPageRenderReceipt({
-				projectName: project.projectName,
-				trigger: "manual",
-				receipt,
-			});
-			return { document, inserted };
-		});
-		const tail = operation.then(
-			() => undefined,
-			() => undefined,
-		);
-		generationTails.set(key, tail);
-		void tail.then(() => {
-			if (generationTails.get(key) === tail) generationTails.delete(key);
-		});
-		try {
-			const { document, inserted } = await operation;
+			if (result.kind === "unavailable") throw result.error;
+			const document = result.materialized.page;
+			const inserted = result.inserted;
 			if (format === "md") {
 				res.type("text/markdown").send(renderEpicPageMarkdown(document, now()));
 				return;
@@ -181,7 +274,11 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 			}
 			res.json({ receipt: inserted, document });
 		} catch (error) {
-			sendGenerateError(error, res);
+			const freshness = deps.store.getEpicPageFreshness(project.projectName);
+			sendGenerateError(error, res, {
+				last_generated: freshness.last_generated,
+				last_published: freshness.last_published,
+			});
 		}
 	});
 

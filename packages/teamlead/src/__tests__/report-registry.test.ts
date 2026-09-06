@@ -182,6 +182,79 @@ describe("ReportRegistry", () => {
 		]);
 	});
 
+	it("republishes one Epic at one stable token and replaces its bytes", () => {
+		let now = Date.parse("2026-06-04T00:00:00.000Z");
+		const registry = makeRegistry(() => now);
+		const token = "abcdefabcdefabcdefabcdefabcdefab";
+		registry
+			.stageEpicPageRepublish(
+				"flywheel",
+				"<html><head></head><body>v1</body></html>",
+				token,
+				"Epic v1",
+			)
+			.commit();
+		now += 1;
+		registry
+			.stageEpicPageRepublish(
+				"flywheel",
+				"<html><head></head><body>v2</body></html>",
+				token,
+				"Epic v2",
+			)
+			.commit();
+
+		expect(registry.list()).toHaveLength(1);
+		expect(registry.list()[0]).toMatchObject({
+			token,
+			projectName: "flywheel",
+			title: "Epic v2",
+			createdAt: new Date(now).toISOString(),
+		});
+		expect(registry.readReportHtml(token)).toContain("<body>v2</body>");
+	});
+
+	it("refuses to replace another project's stable Epic token", () => {
+		const registry = makeRegistry();
+		const token = "abcdefabcdefabcdefabcdefabcdefab";
+		registry.stageEpicPageRepublish("first", HTML, token).commit();
+		const before = registry.list();
+
+		expect(() =>
+			registry.stageEpicPageRepublish("second", HTML, token),
+		).toThrow("belongs to another project");
+		expect(registry.list()).toEqual(before);
+	});
+
+	it("replaces an exactly 14-day-old Epic before age pruning", () => {
+		let now = Date.parse("2026-06-04T00:00:00.000Z");
+		const registry = makeRegistry(() => now);
+		const token = "abcdefabcdefabcdefabcdefabcdefab";
+		registry.stageEpicPageRepublish("p", HTML, token, "old").commit();
+		now += 14 * DAY_MS;
+
+		const replacement = registry.stageEpicPageRepublish(
+			"p",
+			"<html><head></head><body>fresh</body></html>",
+			token,
+			"fresh",
+		);
+
+		expect(replacement.expired).toEqual([]);
+		replacement.commit();
+		expect(registry.list()).toHaveLength(1);
+		expect(registry.list()[0]?.createdAt).toBe(new Date(now).toISOString());
+		expect(registry.readReportHtml(token)).toContain("fresh");
+	});
+
+	it("rejects malformed fixed Epic tokens before staging", () => {
+		const registry = makeRegistry();
+		expect(() =>
+			registry.stageEpicPageRepublish("p", HTML, "../not-a-token"),
+		).toThrow("invalid report token");
+		expect(diskSnapshot()).toEqual([]);
+	});
+
 	it("commit and abort are single-shot", () => {
 		const registry = makeRegistry();
 		const committed = registry.stagePublish("flywheel", HTML);
@@ -220,6 +293,28 @@ describe("ReportRegistry", () => {
 		expect(registry.list()).toHaveLength(2501);
 		expect(registry.list()[0]?.token).toBe(reports[0]?.token);
 		expect(registry.list().at(-1)?.token).toBe(staged.entry.token);
+	});
+
+	it("keeps 1000 unexpired reports when adding a stable Epic page", () => {
+		const now = Date.parse("2026-09-03T16:00:00.000Z");
+		const reports = Array.from({ length: 1000 }, (_, index) => ({
+			token: index.toString(16).padStart(32, "0"),
+			projectName: "ordinary",
+			createdAt: new Date(now - index * 1000).toISOString(),
+			bytes: 100,
+		}));
+		writeFileSync(
+			join(dir, "registry.json"),
+			JSON.stringify({ reports }),
+			"utf8",
+		);
+		const registry = makeRegistry(() => now);
+
+		registry
+			.stageEpicPageRepublish("epic", HTML, "ffffffffffffffffffffffffffffffff")
+			.commit();
+
+		expect(registry.list()).toHaveLength(1001);
 	});
 
 	it("uses one fixed 14-day TTL even when the retired env is present", () => {

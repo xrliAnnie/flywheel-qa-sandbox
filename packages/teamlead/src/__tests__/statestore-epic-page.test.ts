@@ -26,6 +26,7 @@ function receiptAt(generatedAt: string): EpicPageRenderReceipt {
 		project_name: "example",
 		generated_at: generatedAt,
 		trigger: "manual",
+		reasons: ["manual"],
 		sources: [
 			{
 				path: "/items/0/title",
@@ -83,6 +84,218 @@ function customSnapshot(root: string): string {
 }
 
 describe("Epic page render receipts", () => {
+	it("reserves one stable publication token and commits it with CAS", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			expect(
+				rawDb(store)
+					.prepare("PRAGMA table_info(epic_page_publication)")
+					.all()
+					.map((row) => String((row as { name: string }).name)),
+			).toEqual([
+				"project_name",
+				"token",
+				"first_published_at",
+				"last_published_at",
+				"last_version",
+			]);
+			expect(
+				rawDb(store)
+					.prepare("PRAGMA table_info(epic_page_refresh)")
+					.all()
+					.map((row) => String((row as { name: string }).name)),
+			).toEqual([
+				"project_name",
+				"attempted_at",
+				"trigger",
+				"reason",
+				"outcome",
+				"created_at",
+			]);
+			const first = store.reserveEpicPageToken("example");
+			const second = store.reserveEpicPageToken("example");
+			expect(first).toEqual(second);
+			expect(first.token).toMatch(/^[a-f0-9]{32}$/);
+			expect(store.getEpicPagePublication("example")).toEqual({
+				token: first.token,
+				published: false,
+			});
+			expect(() =>
+				store.commitEpicPagePublication({
+					projectName: "example",
+					token: "f".repeat(32),
+					publishedAt: "2026-09-03T04:00:00Z",
+					version: 1,
+				}),
+			).toThrow("epic_page_publication_token_mismatch");
+			store.commitEpicPagePublication({
+				projectName: "example",
+				token: first.token,
+				publishedAt: "2026-09-03T04:00:00Z",
+				version: 1,
+			});
+			store.commitEpicPagePublication({
+				projectName: "example",
+				token: first.token,
+				publishedAt: "2026-09-03T05:00:00Z",
+				version: 2,
+			});
+			expect(store.getEpicPagePublication("example")).toEqual({
+				token: first.token,
+				published: true,
+				first_published_at: "2026-09-03T04:00:00Z",
+				last_published_at: "2026-09-03T05:00:00Z",
+				last_version: 2,
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("allocates prospective versions and rejects receipt drift", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			expect(store.getNextEpicPageVersion("example")).toBe(1);
+			expect(() =>
+				store.insertEpicPageRenderReceipt({
+					projectName: "example",
+					trigger: "manual",
+					expectedVersion: 2,
+					receipt: receiptAt("2026-09-03T04:00:00Z"),
+				}),
+			).toThrow("epic_page_version_drift");
+			const inserted = store.insertEpicPageRenderReceipt({
+				projectName: "example",
+				trigger: "manual",
+				expectedVersion: 1,
+				receipt: receiptAt("2026-09-03T04:00:00Z"),
+			});
+			expect(inserted.version).toBe(1);
+			expect(store.getNextEpicPageVersion("example")).toBe(2);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps generation and publication freshness as separate histories", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			expect(store.getEpicPageFreshness("example")).toEqual({
+				publish_failures_since_last_published: 0,
+			});
+			store.insertEpicPageRefresh({
+				projectName: "example",
+				attemptedAt: "2026-09-03T01:00:00Z",
+				trigger: "scan",
+				reasons: ["scan"],
+				outcome: "ok:1",
+			});
+			store.insertEpicPageRefresh({
+				projectName: "example",
+				attemptedAt: "2026-09-03T02:00:00Z",
+				trigger: "event",
+				reasons: ["session_completed"],
+				outcome: "transient: publish_failed:blob",
+			});
+			store.insertEpicPageRefresh({
+				projectName: "example",
+				attemptedAt: "2026-09-03T03:00:00Z",
+				trigger: "manual",
+				reasons: ["manual"],
+				outcome: "transient: linear_unavailable",
+			});
+			const freshness = store.getEpicPageFreshness("example");
+			expect(freshness.last_generated).toEqual({
+				version: 1,
+				attempted_at: "2026-09-03T01:00:00Z",
+				trigger: "scan",
+			});
+			expect(freshness.last_published).toEqual(freshness.last_generated);
+			expect(freshness.publish_failures_since_last_published).toBe(1);
+			expect(freshness.last_publish_failure).toEqual({
+				attempted_at: "2026-09-03T02:00:00Z",
+				token: "transient: publish_failed:blob",
+			});
+			expect(freshness.last_failure).toEqual({
+				attempted_at: "2026-09-03T03:00:00Z",
+				token: "transient: linear_unavailable",
+			});
+
+			store.insertEpicPageRefresh({
+				projectName: "example",
+				attemptedAt: "2026-09-03T04:00:00Z",
+				trigger: "manual",
+				reasons: ["manual"],
+				outcome: "ok_unpublished:2:manual",
+			});
+			const afterManual = store.getEpicPageFreshness("example");
+			expect(afterManual.last_generated?.version).toBe(2);
+			expect(afterManual.last_published?.version).toBe(1);
+			expect(afterManual.publish_failures_since_last_published).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("validates refresh vocabulary and retains exactly 200 attempts per project", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			for (const mutation of [
+				{ reasons: ["unknown"], outcome: "ok:1" },
+				{ reasons: ["scan"], outcome: "made_up" },
+			]) {
+				expect(() =>
+					store.insertEpicPageRefresh({
+						projectName: "example",
+						attemptedAt: "2026-09-03T04:00:00Z",
+						trigger: "scan",
+						reasons: mutation.reasons as any,
+						outcome: mutation.outcome,
+					}),
+				).toThrow();
+			}
+			for (let index = 0; index < 201; index += 1) {
+				store.insertEpicPageRefresh({
+					projectName: "example",
+					attemptedAt: new Date(
+						Date.parse("2026-09-03T04:00:00Z") + index,
+					).toISOString(),
+					trigger: "scan",
+					reasons: ["scan"],
+					outcome: `ok:${index + 1}`,
+				});
+			}
+			const row = rawDb(store)
+				.prepare(
+					"SELECT COUNT(*) AS count FROM epic_page_refresh WHERE project_name = ?",
+				)
+				.get("example") as { count: number };
+			expect(row.count).toBe(200);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("reports whether an upsert changed the page-relevant session status", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const base = {
+				execution_id: "exec-status-change",
+				issue_id: "issue-1",
+				project_name: "example",
+				status: "running",
+			};
+			expect(store.upsertSession(base)).toEqual({ statusChanged: true });
+			expect(store.upsertSession(base)).toEqual({ statusChanged: false });
+			expect(store.upsertSession({ ...base, status: "completed" })).toEqual({
+				statusChanged: true,
+			});
+			expect(store.upsertSession(base)).toEqual({ statusChanged: false });
+		} finally {
+			store.close();
+		}
+	});
+
 	it("stores source-only receipts, rejects computed order, and prunes to 20", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
@@ -106,6 +319,7 @@ describe("Epic page render receipts", () => {
 				receipt: {
 					...receiptAt("2026-09-03T05:00:00Z"),
 					trigger: "event",
+					reasons: ["session_completed"],
 				},
 			});
 			expect([first.version, second.version]).toEqual([1, 2]);
@@ -154,6 +368,7 @@ describe("Epic page render receipts", () => {
 							`2026-09-04T00:00:${String(version).padStart(2, "0")}Z`,
 						),
 						trigger: "scan",
+						reasons: ["scan"],
 					},
 				});
 			}
@@ -263,6 +478,7 @@ describe("Epic page render receipts", () => {
 				.prepare("SELECT receipt FROM epic_page WHERE project_name = ?")
 				.get("example") as { receipt: string };
 			const receipt = JSON.parse(stored.receipt) as EpicPageRenderReceipt;
+			expect(receipt.reasons).toEqual(["manual"]);
 			expect(receipt.sources).toHaveLength(1);
 			expect(receipt.sources[0]?.path).toBe("/items/0/title");
 			expect(stored.receipt).not.toMatch(/ready_items|EPX-2/);

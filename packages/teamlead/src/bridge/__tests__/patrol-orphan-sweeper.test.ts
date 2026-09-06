@@ -209,7 +209,7 @@ describe("FLY-2118 patrol orphan sweeper", () => {
 				"-t",
 				"my-scratch",
 				"-n",
-				"SCRATCH\tTAB",
+				"SCRATCH TAB",
 				"sleep 30",
 			]);
 			const panes = await listPatrolPanes(async (file, args, options) => {

@@ -928,6 +928,8 @@ export interface RunInfraOptions {
 	 * hook, so the sink triggers refreshes itself). Absent → byte-compatible.
 	 */
 	issueDisplayRefresh?: IssueDisplayRefreshHolder;
+	/** FLY-2143: shared event-driven Epic page invalidation callback. */
+	onEpicChange?: DirectEventSink["onEpicChange"];
 	/** FLY-1066: shared non-blocking failed/blocked CommDB sync queue. */
 	terminalCommDbSync?: Pick<TerminalCommDbSync, "enqueue">;
 	/**
@@ -1389,6 +1391,7 @@ export async function setupRunInfrastructure(
 				runInfraOpts?.finalizeWorkflowPhaseRoles;
 			// FLY-907: display-refresh holder for the in-process status writes.
 			directSink.issueDisplayRefresh = runInfraOpts?.issueDisplayRefresh;
+			directSink.onEpicChange = runInfraOpts?.onEpicChange;
 			// FLY-1066: DirectEventSink writes terminal StateStore rows directly.
 			directSink.terminalCommDbSync = runInfraOpts?.terminalCommDbSync;
 			// FLY-1185 (Codex R4#1): launch-claim activation at the emitStarted

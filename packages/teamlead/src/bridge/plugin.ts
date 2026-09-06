@@ -96,6 +96,10 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
+import { generateEpicPage } from "../epic-page/generate.js";
+import { materializeEpicPage } from "../epic-page/materialize.js";
+import { buildEpicPageRenderReceipt } from "../epic-page/receipt.js";
+import { readSignals } from "../epic-page/signals.js";
 import {
 	type HeartbeatNotifier,
 	HeartbeatService,
@@ -131,6 +135,7 @@ import { findResidentCodexLeadTargets } from "../resident-codex-lead-roster.js";
 import { resolveSelfIdentity } from "../roundtable-allowbots.js";
 import {
 	AdmissionPauseLeaseConflictError,
+	readEpicItemFacts,
 	type Session,
 	StateStore,
 	WorkflowCatalogMigrationIntegrityError,
@@ -298,7 +303,22 @@ import {
 	shouldReportDeadLetteredDrain,
 } from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
-import { createEpicPageRouter } from "./epic-page-route.js";
+import {
+	createEpicPagePublisher,
+	type EpicPagePublisher,
+} from "./epic-page-publisher.js";
+import {
+	createEpicPageRefresher,
+	createEpicPageSerializer,
+	type EpicPageAttemptInput,
+	type EpicPageRefresher,
+	type EpicPageSerializer,
+	runEpicPageAttempt,
+} from "./epic-page-refresher.js";
+import {
+	createEpicPageRouter,
+	createEpicPageStatusRouter,
+} from "./epic-page-route.js";
 import {
 	EventLoopAttribution,
 	type EventLoopHealthSnapshot,
@@ -471,6 +491,7 @@ import {
 	createLifecycleRouter,
 } from "./lifecycle-routes.js";
 import { sweepProjectLifecycle } from "./lifecycle-sweep.js";
+import { fetchLinearActiveScopeSnapshot } from "./linear-epic-query.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
 import {
 	listLinearIssueComments,
@@ -545,6 +566,10 @@ import {
 	type ReportBlobStore,
 	VercelBlobReportStore,
 } from "./report-blob-store.js";
+import {
+	createReportCriticalSection,
+	type ReportCriticalSection,
+} from "./report-critical-section.js";
 import {
 	parseReportHostOverride,
 	type ReportHostOverride,
@@ -1332,6 +1357,14 @@ export interface BridgeAppOptions {
 	/** Shared registry seam used by the migration and route integration tests. */
 	reportRegistry?: ReportRegistry;
 	reportHostOverride?: ReportHostOverride;
+	/** Shared event-driven Epic page refresher constructed by startBridge. */
+	epicPageRefresher?: Pick<EpicPageRefresher, "requestRefresh">;
+	epicPageSerializer?: EpicPageSerializer;
+	epicPagePublisher?: EpicPagePublisher;
+	reportCriticalSection?: ReportCriticalSection;
+	epicPageScanSchedule?: (
+		projectName: string,
+	) => { leadId: string; intervalMs: number } | undefined;
 	/** FLY-1778: boot-snapshotted authority for managed call-time readers. */
 	flagStore?: FlagStoreRuntime;
 	/** FLY-2100: hot projects.json roster used to authorize scoped flag writes. */
@@ -1613,6 +1646,23 @@ export function createBridgeApp(
 
 	app.use(express.json({ limit: "512kb" }));
 
+	const reportRegistry =
+		opts?.reportRegistry ??
+		new ReportRegistry(
+			process.env.FLYWHEEL_REPORTS_DIR ??
+				resolve(homedir(), ".flywheel", "reports"),
+		);
+	app.use(
+		"/api/epic-page/status",
+		masterOnlyAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		createEpicPageStatusRouter({
+			store,
+			projects,
+			registry: reportRegistry,
+			hostOverride: opts?.reportHostOverride,
+			scanSchedule: opts?.epicPageScanSchedule,
+		}),
+	);
 	if (config.apiToken) {
 		app.get(
 			"/api/capacity",
@@ -2051,6 +2101,7 @@ export function createBridgeApp(
 		opts?.issueDisplayRefresh,
 		opts?.materializedHeadAuthority,
 		opts?.terminalArchiveEnqueue,
+		opts?.epicPageRefresher?.requestRefresh,
 	);
 	const fcNoop: express.RequestHandler = (_q, _s, next) => next();
 	const fcMw = (
@@ -2242,6 +2293,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.terminalArchiveEnqueue,
+			opts?.epicPageRefresher?.requestRefresh,
 		),
 	);
 
@@ -2294,6 +2346,7 @@ export function createBridgeApp(
 			opts?.terminalArchiveEnqueue, // FLY-1282 Part C
 			opts?.materializedHeadAuthority, // FLY-1307 PR-7.5
 			eventRouterWorkflowCompletion, // FLY-2155 live QA actor reuse decision
+			opts?.epicPageRefresher?.requestRefresh,
 		),
 	);
 
@@ -2816,6 +2869,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.terminalArchiveEnqueue,
+			opts?.epicPageRefresher?.requestRefresh,
 		),
 	);
 
@@ -4272,6 +4326,9 @@ export function createBridgeApp(
 				store,
 				projects,
 				linearApiKey: config.linearApiKey,
+				serializer: opts?.epicPageSerializer,
+				publisher: opts?.epicPagePublisher,
+				scanSchedule: opts?.epicPageScanSchedule,
 			}),
 		);
 	}
@@ -4281,6 +4338,7 @@ export function createBridgeApp(
 		createDependencyRouter({
 			projects,
 			linearApiKey: config.linearApiKey,
+			onEpicChange: opts?.epicPageRefresher?.requestRefresh,
 		}),
 	);
 
@@ -4418,6 +4476,7 @@ export function createBridgeApp(
 				confirmTokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
 				authorizeRework: fcWiring?.authorizeWorkflowRework,
 				collectWorkflowRun: workflowRunCollector,
+				onEpicChange: opts?.epicPageRefresher?.requestRefresh,
 			},
 			flagStore ? () => storeSkillFrameworkModeControl(flagStore) : undefined,
 		);
@@ -4467,9 +4526,6 @@ export function createBridgeApp(
 	// Auth ownership (Codex R2#4): the plugin layer owns auth. Unlike
 	// publish-html, this surface posts as a bot and reads local files, so it
 	// NEVER runs unauthenticated — no apiToken → always 503.
-	const reportsBaseDir =
-		process.env.FLYWHEEL_REPORTS_DIR ??
-		resolve(homedir(), ".flywheel", "reports");
 	const reportsRouter = createReportsRouter({
 		blobStore: opts?.reportBlobStore,
 		vercelToken: opts?.vercelToken,
@@ -4482,7 +4538,8 @@ export function createBridgeApp(
 		projects,
 		resolveIssueThread: (issueIdentifier, projectName) =>
 			resolveProjectIssueThread(store, projects, issueIdentifier, projectName),
-		registry: opts?.reportRegistry ?? new ReportRegistry(reportsBaseDir),
+		registry: reportRegistry,
+		criticalSection: opts?.reportCriticalSection,
 	});
 	app.use(
 		"/api/reports",
@@ -5832,20 +5889,82 @@ export async function startBridge(
 	const reportBlobStore = reportBlobToken
 		? new VercelBlobReportStore(reportBlobToken)
 		: undefined;
+	const reportCriticalSection = createReportCriticalSection();
+	const epicPageSerializer = createEpicPageSerializer();
+	const epicPagePublisher = createEpicPagePublisher({
+		store,
+		registry: hostedReportRegistry,
+		blobStore: reportBlobStore,
+		criticalSection: reportCriticalSection,
+		hostOverride: reportHostOverride,
+	});
+	const epicPageScanSchedule = (
+		projectName: string,
+	): { leadId: string; intervalMs: number } | undefined => {
+		try {
+			return {
+				leadId: resolveLeadForIssue(projects, projectName, []).lead.agentId,
+				intervalMs: config.stuckCheckIntervalMs,
+			};
+		} catch {
+			return undefined;
+		}
+	};
+	const runEpicPageRefreshAttempt = (input: EpicPageAttemptInput) =>
+		runEpicPageAttempt(
+			{
+				store,
+				serializer: epicPageSerializer,
+				publisher: epicPagePublisher,
+				materialize: (attempt) =>
+					materializeEpicPage(
+						{
+							fetchSnapshot: fetchLinearActiveScopeSnapshot,
+							readItemFacts: (projectName, item) =>
+								readEpicItemFacts(store, projectName, item),
+							readSignals: (projectName, items, generatedAt) =>
+								readSignals(
+									{ stateStore: store },
+									{ projectName, items, now: generatedAt },
+								),
+							readFreshness: (projectName) => ({
+								history: store.getEpicPageFreshness(projectName),
+								publication: store.getEpicPagePublication(projectName),
+							}),
+							generatePage: generateEpicPage,
+							buildReceipt: buildEpicPageRenderReceipt,
+							now: () => new Date(),
+						},
+						{
+							...attempt,
+							scanSchedule: epicPageScanSchedule(attempt.projectName),
+						},
+					),
+			},
+			input,
+		);
+	const epicPageRefresher = createEpicPageRefresher({
+		store,
+		projects,
+		linearApiKey: config.linearApiKey,
+		runAttempt: runEpicPageRefreshAttempt,
+	});
 	let reportBlobSweepTimer: ReturnType<typeof setInterval> | undefined;
 	if (reportBlobStore) {
 		console.log("[Bridge] Report publishing configured (private Vercel Blob)");
 		const sweep = async (): Promise<void> => {
 			try {
-				const createdAtByToken = Object.fromEntries(
-					hostedReportRegistry
-						.list()
-						.map((entry) => [entry.token, entry.createdAt]),
-				);
-				const removed = await reportBlobStore.sweepExpiredReports(
-					Date.now(),
-					createdAtByToken,
-				);
+				const removed = await reportCriticalSection.run(async () => {
+					const createdAtByToken = Object.fromEntries(
+						hostedReportRegistry
+							.list()
+							.map((entry) => [entry.token, entry.createdAt]),
+					);
+					return reportBlobStore.sweepExpiredReports(
+						Date.now(),
+						createdAtByToken,
+					);
+				});
 				if (removed > 0) {
 					console.log(
 						`[reports] removed ${removed} Blob object(s) at the fixed 14-day boundary`,
@@ -6475,6 +6594,7 @@ export async function startBridge(
 					// FLY-907: the in-process sink's display-refresh holder (its
 					// upsertSession writes bypass the applyTransition hook).
 					issueDisplayRefresh: issueDisplayRefreshHolder,
+					onEpicChange: epicPageRefresher.requestRefresh,
 					terminalCommDbSync,
 					admissionCrossingBarrier,
 					onTuiWindowLost: (evidence) => tuiWindowAlertHolder.lost?.(evidence),
@@ -6542,7 +6662,11 @@ export async function startBridge(
 			db.close();
 		}
 	};
-	const landLinearDoneFinalizer = makeLinearDoneFinalizer(config);
+	const landLinearDoneFinalizer = makeLinearDoneFinalizer({
+		...config,
+		onChanged: ({ projectName }) =>
+			epicPageRefresher.requestRefresh(projectName, "linear_done"),
+	});
 	const landWorktreeCleanup = makeBridgeWorktreeCleanup(
 		store,
 		projects,
@@ -7087,6 +7211,11 @@ export async function startBridge(
 			reportBlobStore,
 			reportRegistry: hostedReportRegistry,
 			reportHostOverride,
+			reportCriticalSection,
+			epicPageSerializer,
+			epicPagePublisher,
+			epicPageRefresher,
+			epicPageScanSchedule,
 			flagStore,
 			flagProjectNames,
 			flagProjectConfigPath,
@@ -8949,6 +9078,7 @@ export async function startBridge(
 		// completed + Done on the founder-reply ship-approval path.
 		config,
 		projects,
+		onEpicChange: epicPageRefresher.requestRefresh,
 	});
 	const founderAutoApproveDenylist = new Set(
 		(process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE_DENYLIST ?? "")
@@ -9111,6 +9241,7 @@ export async function startBridge(
 		materializedHeadAuthority,
 		config,
 		projects,
+		onEpicChange: epicPageRefresher.requestRefresh,
 		terminalArchiveEnqueue,
 		removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
 		probeTurnHolderLiveness: async (session) => {
@@ -9690,6 +9821,7 @@ export async function startBridge(
 		store,
 		projects,
 		linearApiKey: config.linearApiKey,
+		runAttempt: runEpicPageRefreshAttempt,
 		resolveOwner: (projectName, labels) => {
 			const { lead, matchMethod } = resolveLeadForIssue(
 				projects,

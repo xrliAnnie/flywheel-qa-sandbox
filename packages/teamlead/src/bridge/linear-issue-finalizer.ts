@@ -40,13 +40,19 @@ export interface LinearIssueFinalizerClient {
 
 export interface MarkDoneResult {
 	done: boolean;
+	changed: boolean;
 	reason?: string;
+}
+
+export interface LinearDoneContext {
+	projectName: string;
 }
 
 export type LinearDoneFinalizer = (
 	issueId: string,
 	issueIdentifier?: string,
 	signal?: AbortSignal,
+	context?: LinearDoneContext,
 ) => Promise<MarkDoneResult>;
 
 function assertLinearDoneNotAborted(signal?: AbortSignal): void {
@@ -82,13 +88,21 @@ export async function markLinearIssueDone(
 	try {
 		const first = await readStateType().catch(() => undefined);
 		if (first === undefined) {
-			return { done: false, reason: "state_unreadable_fail_closed" };
+			return {
+				done: false,
+				changed: false,
+				reason: "state_unreadable_fail_closed",
+			};
 		}
 		if (first === "canceled") {
-			return { done: false, reason: "issue_canceled_never_overwritten" };
+			return {
+				done: false,
+				changed: false,
+				reason: "issue_canceled_never_overwritten",
+			};
 		}
 		if (first === "completed") {
-			return { done: true, reason: "already_completed" };
+			return { done: true, changed: false, reason: "already_completed" };
 		}
 
 		assertLinearDoneNotAborted(signal);
@@ -96,7 +110,7 @@ export async function markLinearIssueDone(
 		assertLinearDoneNotAborted(signal);
 		const team = await issue.team;
 		assertLinearDoneNotAborted(signal);
-		if (!team) return { done: false, reason: "no_team" };
+		if (!team) return { done: false, changed: false, reason: "no_team" };
 
 		assertLinearDoneNotAborted(signal);
 		const { nodes } = await team.states();
@@ -104,31 +118,41 @@ export async function markLinearIssueDone(
 		const doneState =
 			nodes.find((s) => s.type === "completed") ??
 			nodes.find((s) => s.name.toLowerCase() === "done");
-		if (!doneState) return { done: false, reason: "no_done_state" };
+		if (!doneState)
+			return { done: false, changed: false, reason: "no_done_state" };
 
 		// Second fresh read immediately before the write (TOCTOU guard).
 		const second = await readStateType().catch(() => undefined);
 		if (second === undefined) {
-			return { done: false, reason: "state_unreadable_fail_closed" };
+			return {
+				done: false,
+				changed: false,
+				reason: "state_unreadable_fail_closed",
+			};
 		}
 		if (second === "canceled") {
-			return { done: false, reason: "issue_canceled_never_overwritten" };
+			return {
+				done: false,
+				changed: false,
+				reason: "issue_canceled_never_overwritten",
+			};
 		}
 		if (second === "completed") {
-			return { done: true, reason: "already_completed" };
+			return { done: true, changed: false, reason: "already_completed" };
 		}
 		if (second !== first) {
 			return {
 				done: false,
+				changed: false,
 				reason: `state_changed_midflight:${first}->${second}`,
 			};
 		}
 
 		assertLinearDoneNotAborted(signal);
 		await client.updateIssue(issueId, { stateId: doneState.id });
-		return { done: true };
+		return { done: true, changed: true };
 	} catch (err) {
-		return { done: false, reason: (err as Error).message };
+		return { done: false, changed: false, reason: (err as Error).message };
 	}
 }
 
@@ -140,6 +164,7 @@ export async function raceMarkIssueDoneWithAbort(
 	finalizer: LinearDoneFinalizer,
 	issueId: string,
 	issueIdentifier?: string,
+	context?: LinearDoneContext,
 	timeoutMs = 15_000,
 	observer?: {
 		onRejected?: (error: Error) => void;
@@ -150,7 +175,7 @@ export async function raceMarkIssueDoneWithAbort(
 	const controller = new AbortController();
 	let timeout: ReturnType<typeof setTimeout> | undefined;
 	const attempt = Promise.resolve()
-		.then(() => finalizer(issueId, issueIdentifier, controller.signal))
+		.then(() => finalizer(issueId, issueIdentifier, controller.signal, context))
 		.catch((err): MarkDoneResult => {
 			const error = err instanceof Error ? err : new Error(String(err));
 			try {
@@ -158,7 +183,7 @@ export async function raceMarkIssueDoneWithAbort(
 			} catch {
 				// Observability must never perturb best-effort finalization.
 			}
-			return { done: false, reason: error.message };
+			return { done: false, changed: false, reason: error.message };
 		});
 	const deadline = new Promise<MarkDoneResult>((resolve) => {
 		timeout = setTimeout(() => {
@@ -170,6 +195,7 @@ export async function raceMarkIssueDoneWithAbort(
 			}
 			resolve({
 				done: false,
+				changed: false,
 				reason: observer?.timeoutReason ?? "linear_done_timeout",
 			});
 		}, timeoutMs);
@@ -191,10 +217,11 @@ export async function raceMarkIssueDoneWithAbort(
  */
 export function makeLinearDoneFinalizer(config: {
 	linearApiKey?: string;
+	onChanged?: (context: LinearDoneContext) => void;
 }): LinearDoneFinalizer | undefined {
 	const apiKey = config.linearApiKey;
 	if (!apiKey) return undefined;
-	return async (issueId, issueIdentifier, signal) => {
+	return async (issueId, issueIdentifier, signal, context) => {
 		try {
 			const { LinearClient } = await import("@linear/sdk");
 			const client = new LinearClient({ apiKey });
@@ -203,6 +230,13 @@ export function makeLinearDoneFinalizer(config: {
 				issueId,
 				signal,
 			);
+			if (r.changed && context) {
+				try {
+					config.onChanged?.(context);
+				} catch {
+					// Epic refresh is best-effort and must not perturb ship finalization.
+				}
+			}
 			if (r.done) {
 				console.log(
 					`[linear-finalizer] ${issueIdentifier ?? issueId} → Done (auto-finalize on ship)`,
@@ -217,7 +251,11 @@ export function makeLinearDoneFinalizer(config: {
 			console.warn(
 				`[linear-finalizer] markIssueDone threw for ${issueId} (non-fatal): ${(err as Error).message}`,
 			);
-			return { done: false, reason: (err as Error).message };
+			return {
+				done: false,
+				changed: false,
+				reason: (err as Error).message,
+			};
 		}
 	};
 }

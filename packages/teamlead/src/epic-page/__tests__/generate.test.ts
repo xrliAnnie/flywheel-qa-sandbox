@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EpicItemFacts } from "../../StateStore.js";
 import { generateEpicPage } from "../generate.js";
-import { assertEpicPage } from "../model.js";
+import { assertEpicPage, type Signal } from "../model.js";
 import {
 	EPIC_SHAPE_NOW,
 	emptyItemFacts,
@@ -105,6 +105,7 @@ describe("generateEpicPage", () => {
 		expect(page.generator).toEqual({
 			version: "epic-page/1",
 			trigger: "manual",
+			reasons: ["manual"],
 		});
 		expect(page.done_definition).toMatchObject({
 			value: { terminal_state: "completed" },
@@ -315,6 +316,92 @@ describe("generateEpicPage", () => {
 				"/items/0/carriers",
 				"/items/0/land",
 			]),
+		});
+		expect(() => assertEpicPage(page)).not.toThrow();
+	});
+
+	it("projects item signals, excludes founder waits from stuck items, and reports source gaps", () => {
+		const snapshot = epicShapeSnapshot();
+		const observedAt = EPIC_SHAPE_NOW.toISOString();
+		const signals: Signal[] = [
+			{
+				kind: "question_pending",
+				since: "2026-09-03T03:00:00.000Z",
+				execution_id8: "exec-one",
+				provenance: {
+					kind: "commdb",
+					table: "mailbox",
+					key: { execution_id: "exec-one-full" },
+				},
+				observed_at: observedAt,
+			},
+			{
+				kind: "waiting_founder",
+				since: "2026-09-03T03:30:00.000Z",
+				execution_id8: "exec-one",
+				provenance: {
+					kind: "commdb",
+					table: "mailbox",
+					key: { execution_id: "exec-one-full" },
+				},
+				observed_at: observedAt,
+			},
+		];
+		const itemSignals = snapshot.items.map((_item, index) => ({
+			signals: index === 0 ? signals : [],
+			signal_sources: {
+				statestore: {
+					value: null,
+					provenance: {
+						kind: "statestore" as const,
+						table: "sessions",
+						key: { issue_id: snapshot.items[index]!.id },
+					},
+					observed_at: observedAt,
+					missing: { reason: "statestore_error" as const },
+				},
+				commdb: {
+					value: { signals: index === 0 ? 2 : 0 },
+					provenance: {
+						kind: "commdb" as const,
+						table: "mailbox",
+						key: { issue_identifier: snapshot.items[index]!.identifier },
+					},
+					observed_at: observedAt,
+				},
+			},
+		}));
+
+		const page = generateEpicPage({
+			snapshot,
+			itemFacts: snapshot.items.map(() => emptyItemFacts()),
+			itemSignals,
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "manual",
+		});
+
+		expect(page.items[0]?.signals).toEqual(signals);
+		expect(page.stuck_items.value).toEqual([
+			{
+				item: "EPX-1",
+				kind: "question_pending",
+				since: "2026-09-03T03:00:00.000Z",
+				execution_id8: "exec-one",
+			},
+		]);
+		expect(page.stuck_items.provenance).toMatchObject({
+			rule: "signals.v1",
+			from: expect.arrayContaining([
+				"/items/0/signals/0",
+				"/items/0/signal_sources/statestore",
+				"/items/0/signal_sources/commdb",
+			]),
+		});
+		expect(page.gaps.value).toContainEqual({
+			item: "EPX-1",
+			face: "signals_statestore",
+			reason: "statestore_error",
 		});
 		expect(() => assertEpicPage(page)).not.toThrow();
 	});

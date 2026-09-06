@@ -20,6 +20,8 @@
 	"doa_backoff_participants",
 	"doa_backoff_reset_receipts",
 	"epic_page",
+	"epic_page_publication",
+	"epic_page_refresh",
 	"flag_departures",
 	"flag_keep_anchor",
 	"flag_provenance",

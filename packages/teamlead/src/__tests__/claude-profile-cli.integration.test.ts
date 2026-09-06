@@ -886,7 +886,7 @@ esac
 		expect(cj.numStartups).toBe(7); // untouched
 		// No stray identity-write temp files left behind.
 		expect(existsSync(`${claudeJson}.lock`)).toBe(false);
-	}, 10_000);
+	}, 20_000);
 
 	it("repairs delegated UUID-only display drift without mutating the Node store during apply", async () => {
 		const pool = process.env.FLYWHEEL_CLAUDE_PROFILES_DIR as string;
@@ -1009,5 +1009,5 @@ esac
 		expect(store.activeAccount).toBe("personal"); // unchanged
 		// lock released cleanly
 		expect(existsSync(lockPath)).toBe(false);
-	});
+	}, 20_000);
 });

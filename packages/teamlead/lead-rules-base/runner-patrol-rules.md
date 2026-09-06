@@ -899,6 +899,18 @@ tick 里「还剩什么」三行是 Bridge 在**这一轮**按 Linear 扫出的�
 - 收到「本轮由 Epic 范围触发」的 tick:名册为空是真的,不是统计坏了;照常做
   STEP 1–6(会是 0 pane),然后按上面拉活。
 
+### 0.10 Epic 页面新鲜度与卡住行(FLY-2143)
+
+- 第四行「卡住说了一声的 N 张」是 IC 自己声明卡住的 Bridge 读数,不是 Bridge 从沉默推断。
+  先去自己的收件箱读原话(`flywheel-comm pending` 或 rstop 报告),再决定
+  是否介入。「在等 founder」是另一种状态,不在这一行。
+- 固定链接从 `flywheel-comm epic-page status` 的 `url` 取(master token)。首次用
+  `founder-html-delivery` 发一次,之后不重复发。需要给「此刻快照」时仍用 `render` +
+  `publish-report`;它会得到新 token,保留 14 天。`show`、`render`、`generate` 都不刷新
+  固定页。
+- `status` 的 `publish_failures_since_last_published > 0` 时,先看失败 token,再看固定页;
+  手动生成不会清零这个计数。沿用 §0.9 的新鲜度边界:不引用超过一个巡检周期的读数。
+
 ---
 
 ## 1. Proactive patrol — sweep your Runners, don't wait to be paged (RC-3)

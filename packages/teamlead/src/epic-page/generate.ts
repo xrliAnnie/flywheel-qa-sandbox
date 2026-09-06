@@ -2,13 +2,17 @@ import type { LinearActiveScopeSnapshot } from "../bridge/linear-epic-query.js";
 import type {
 	EpicItemFacts,
 	EpicPageFactRead,
+	EpicPageFreshnessRead,
+	EpicPagePublicationRead,
 	EpicPageTrigger,
 } from "../StateStore.js";
+import { buildFreshness } from "./freshness.js";
 import {
 	assertEpicPage,
 	type Cell,
 	type EpicItem,
 	type EpicPage,
+	type RefreshReason,
 } from "./model.js";
 import {
 	computeDependencyReview,
@@ -17,6 +21,7 @@ import {
 	doneDefinition,
 	isFounderNamed,
 } from "./rules.js";
+import type { EpicPageItemSignals } from "./signals.js";
 
 export interface GenerateEpicPageInput {
 	snapshot: LinearActiveScopeSnapshot;
@@ -24,6 +29,14 @@ export interface GenerateEpicPageInput {
 	now: Date;
 	projectName: string;
 	trigger: EpicPageTrigger;
+	version?: number;
+	reasons?: RefreshReason[];
+	itemSignals?: EpicPageItemSignals[];
+	freshness?: {
+		history: EpicPageFreshnessRead;
+		publication?: EpicPagePublicationRead;
+		scanSchedule?: { leadId: string; intervalMs: number };
+	};
 }
 
 function linearCell<T>(
@@ -87,10 +100,23 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 	if (input.itemFacts.length !== input.snapshot.items.length) {
 		throw new Error("Epic item facts must match the Linear scope snapshot");
 	}
+	if (
+		input.itemSignals &&
+		input.itemSignals.length !== input.snapshot.items.length
+	) {
+		throw new Error("Epic item signals must match the Linear scope snapshot");
+	}
 	const generatedAt = input.now.toISOString();
+	const version = input.version ?? 1;
+	const reasons =
+		input.reasons ??
+		(input.trigger === "event"
+			? (["session_completed"] as const)
+			: ([input.trigger] as const));
 	const linearObservedAt = input.snapshot.fetchedAt;
 	const items: EpicItem[] = input.snapshot.items.map((child, index) => {
 		const facts = input.itemFacts[index]!;
+		const itemSignals = input.itemSignals?.[index];
 		const issueSource = {
 			id: child.id,
 			url: child.url,
@@ -183,7 +209,30 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				generatedAt,
 			),
 			land: statestoreCell(facts.land, "land_operation", child, generatedAt),
-			signals: [],
+			signals: itemSignals?.signals ?? [],
+			signal_sources: itemSignals?.signal_sources ?? {
+				statestore: {
+					value: { signals: 0 },
+					provenance: {
+						kind: "statestore",
+						table: "sessions",
+						key: {
+							issue_id: child.id,
+							issue_identifier: child.identifier,
+						},
+					},
+					observed_at: generatedAt,
+				},
+				commdb: {
+					value: { signals: 0 },
+					provenance: {
+						kind: "commdb",
+						table: "questions",
+						key: { issue_identifier: child.identifier },
+					},
+					observed_at: generatedAt,
+				},
+			},
 		};
 	});
 	for (const item of items) {
@@ -229,11 +278,102 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 			cells.map((cell) => `/items/${index}/${cell}`),
 		);
 	const readyItems = computeReady(items);
+	const stuckItems = items
+		.flatMap((item) =>
+			item.signals
+				.filter(
+					(
+						signal,
+					): signal is typeof signal & {
+						kind: Exclude<typeof signal.kind, "waiting_founder">;
+					} => signal.kind !== "waiting_founder",
+				)
+				.map((signal) => ({
+					item: item.identifier,
+					kind: signal.kind,
+					since: signal.since,
+					execution_id8: signal.execution_id8,
+				})),
+		)
+		.sort(
+			(left, right) =>
+				left.since.localeCompare(right.since) ||
+				left.item.localeCompare(right.item) ||
+				left.kind.localeCompare(right.kind),
+		);
+	const stuckPointers = items.flatMap((item, itemIndex) => [
+		...item.signals.flatMap((signal, signalIndex) =>
+			signal.kind === "waiting_founder"
+				? []
+				: [`/items/${itemIndex}/signals/${signalIndex}`],
+		),
+		`/items/${itemIndex}/signal_sources/statestore`,
+		`/items/${itemIndex}/signal_sources/commdb`,
+	]);
+	const sourceCells = [
+		{ path: "/header/roots", observedAt: linearObservedAt },
+		{ path: "/header/items", observedAt: linearObservedAt },
+		...items.flatMap((item, index) => [
+			{ path: `/items/${index}/title`, observedAt: item.title.observed_at },
+			{ path: `/items/${index}/url`, observedAt: item.url.observed_at },
+			{ path: `/items/${index}/state`, observedAt: item.state.observed_at },
+			{
+				path: `/items/${index}/priority`,
+				observedAt: item.priority.observed_at,
+			},
+			{
+				path: `/items/${index}/blocked_by`,
+				observedAt: item.blocked_by.observed_at,
+			},
+			{
+				path: `/items/${index}/acceptance`,
+				observedAt: item.acceptance.observed_at,
+			},
+			{
+				path: `/items/${index}/founder_named`,
+				observedAt: item.founder_named.observed_at,
+			},
+			{ path: `/items/${index}/session`, observedAt: item.session.observed_at },
+			{ path: `/items/${index}/run`, observedAt: item.run.observed_at },
+			{ path: `/items/${index}/attempt`, observedAt: item.attempt.observed_at },
+			{ path: `/items/${index}/gates`, observedAt: item.gates.observed_at },
+			{
+				path: `/items/${index}/carriers`,
+				observedAt: item.carriers.observed_at,
+			},
+			{ path: `/items/${index}/land`, observedAt: item.land.observed_at },
+			{
+				path: `/items/${index}/signal_sources/statestore`,
+				observedAt: item.signal_sources.statestore.observed_at,
+			},
+			{
+				path: `/items/${index}/signal_sources/commdb`,
+				observedAt: item.signal_sources.commdb.observed_at,
+			},
+		]),
+	];
+	const freshness = buildFreshness({
+		projectName: input.projectName,
+		generatedAt,
+		version,
+		trigger: input.trigger,
+		reasons: [...reasons].sort() as RefreshReason[],
+		history: input.freshness?.history ?? {
+			publish_failures_since_last_published: 0,
+		},
+		publication: input.freshness?.publication,
+		sourceCells,
+		scanSchedule: input.freshness?.scanSchedule,
+	});
 	const page: EpicPage = {
 		schema_version: 1,
 		key: { project_name: input.projectName },
 		generated_at: generatedAt,
-		generator: { version: "epic-page/1", trigger: input.trigger },
+		generator: {
+			version: "epic-page/1",
+			trigger: input.trigger,
+			reasons: [...reasons].sort() as RefreshReason[],
+		},
 		header: {
 			scope_definition: {
 				value: {
@@ -298,6 +438,16 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				kind: "derived",
 				rule: "subtraction.v1",
 				from: [...itemPointers(["state", "blocked_by"]), "/ready_items"],
+			},
+			observed_at: generatedAt,
+		},
+		freshness,
+		stuck_items: {
+			value: stuckItems,
+			provenance: {
+				kind: "derived",
+				rule: "signals.v1",
+				from: stuckPointers,
 			},
 			observed_at: generatedAt,
 		},

@@ -88,6 +88,7 @@ async function post(
 
 describe("runs-route run management", () => {
 	it("mounts the canonical hold door with master, loopback, path, digest, and replay fences", async () => {
+		const onEpicChange = vi.fn();
 		const store = await StateStore.create(":memory:");
 		store.createWorkflowRun({
 			runId: "run-1",
@@ -112,6 +113,7 @@ describe("runs-route run management", () => {
 			masterToken: "master-secret",
 			scopedToken: "scoped-secret",
 			confirmTokens: new ConfirmTokenStore(),
+			onEpicChange,
 		});
 		const url = `${baseUrl}/api/runs/run-1`;
 		expect((await fetch(`${url}/holds`)).status).toBe(401);
@@ -220,6 +222,8 @@ describe("runs-route run management", () => {
 		});
 		expect(conflict.status).toBe(409);
 		expect(await conflict.json()).toMatchObject({ reason: "request_conflict" });
+		expect(onEpicChange).toHaveBeenCalledOnce();
+		expect(onEpicChange).toHaveBeenCalledWith("flywheel", "run_resumed");
 		store.close();
 	});
 

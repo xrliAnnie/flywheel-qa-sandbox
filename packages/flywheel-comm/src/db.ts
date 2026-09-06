@@ -19,6 +19,11 @@ import {
 	type IngestDiscordChatArgs,
 	ingestDiscordChatOnQueue,
 } from "./discord-chat-ingest.js";
+import type {
+	EpicPageSignalKind,
+	EpicPageSignalQueryResult,
+	EpicPageStopReason,
+} from "./epic-page-signals.js";
 import { isTrustedApprovalAttribution } from "./founder-attribution.js";
 import {
 	FOUNDER_REVIEW_CHECKPOINT,
@@ -3692,6 +3697,143 @@ export class CommDB {
          ORDER BY q.created_at ASC`,
 			)
 			.all(leadId) as Message[];
+	}
+
+	/**
+	 * FLY-2143: expose only bounded, classified liveness facts to the Epic page.
+	 * The SQL performs classification and first-stage per-kind reduction before
+	 * LIMIT, so a noisy execution cannot starve the rest of the requested scope.
+	 */
+	listEpicPageSignals(input: {
+		executionIds: string[];
+		createdAfter: string;
+		limit: number;
+	}): EpicPageSignalQueryResult {
+		if (input.executionIds.length > 500) {
+			throw new Error("Epic page signal scope exceeds 500 executions");
+		}
+		if (
+			input.executionIds.some(
+				(executionId) =>
+					typeof executionId !== "string" ||
+					!executionId.trim() ||
+					executionId !== executionId.trim(),
+			)
+		) {
+			throw new Error(
+				"Epic page execution ids must be non-empty canonical strings",
+			);
+		}
+		assertUtcIsoTimestamp(input.createdAfter, "createdAfter");
+		if (!Number.isSafeInteger(input.limit) || input.limit <= 0) {
+			throw new Error("Epic page signal limit must be a positive safe integer");
+		}
+		const executionIds = [...new Set(input.executionIds)];
+		if (executionIds.length === 0) {
+			return { signals: [], truncated: false };
+		}
+		const outputBound = executionIds.length * 3;
+		const effectiveLimit = Math.min(input.limit, outputBound);
+		type SignalSqlRow = {
+			kind: EpicPageSignalKind;
+			execution_id: string;
+			since: string;
+			reason: EpicPageStopReason | null;
+			question_id_present: 1;
+		};
+		const rows = this.db
+			.prepare(
+				`WITH scope(execution_id) AS (
+				   SELECT CAST(value AS TEXT) FROM json_each(@execution_ids)
+				 ), classified AS (
+				   SELECT q.id,
+				          q.from_agent AS execution_id,
+				          q.created_at AS since,
+				          CASE
+				            WHEN length(q.id) = 38
+				             AND substr(q.id, 1, 6) = 'rstop-'
+				             AND substr(q.id, 7) NOT GLOB '*[^0-9a-f]*'
+				             AND q.kind = 'report'
+				             AND substr(q.content, 1, 42) = 'RUNNER-STOPPED kind=runner_stopped reason='
+				             AND (
+				               q.content LIKE 'RUNNER-STOPPED kind=runner_stopped reason=blocked %'
+				               OR q.content LIKE 'RUNNER-STOPPED kind=runner_stopped reason=quota %'
+				               OR q.content LIKE 'RUNNER-STOPPED kind=runner_stopped reason=context_full %'
+				               OR q.content LIKE 'RUNNER-STOPPED kind=runner_stopped reason=error %'
+				             ) THEN 'runner_stopped'
+				            WHEN length(q.id) = 38
+				             AND substr(q.id, 1, 6) = 'rstop-'
+				             AND substr(q.id, 7) NOT GLOB '*[^0-9a-f]*'
+				             AND q.kind = 'report'
+				             AND substr(q.content, 1, 42) = 'RUNNER-STOPPED kind=runner_stopped reason='
+				             AND (
+				               q.content LIKE 'RUNNER-STOPPED kind=runner_stopped reason=done %'
+				               OR q.content LIKE 'RUNNER-STOPPED kind=runner_stopped reason=awaiting_approval %'
+				             ) THEN NULL
+				            WHEN q.relay_state = 'protected'
+				             AND COALESCE(q.checkpoint, '') <> '' THEN 'waiting_founder'
+				            ELSE 'question_pending'
+				          END AS signal_kind,
+				          CASE
+				            WHEN q.content LIKE 'RUNNER-STOPPED kind=runner_stopped reason=blocked %' THEN 'blocked'
+				            WHEN q.content LIKE 'RUNNER-STOPPED kind=runner_stopped reason=quota %' THEN 'quota'
+				            WHEN q.content LIKE 'RUNNER-STOPPED kind=runner_stopped reason=context_full %' THEN 'context_full'
+				            WHEN q.content LIKE 'RUNNER-STOPPED kind=runner_stopped reason=error %' THEN 'error'
+				            ELSE NULL
+				          END AS reason
+				     FROM mailbox q
+				     JOIN scope ON scope.execution_id = q.from_agent
+				    WHERE q.type = 'question'
+				      AND q.created_at >= @created_after
+				      AND q.relay_state != 'terminal_disposed'
+				      AND q.superseded_at IS NULL
+				      AND NOT EXISTS (
+				        SELECT 1 FROM mailbox response
+				         WHERE response.ref_id = q.id AND response.type = 'response'
+				      )
+				 ), ranked AS (
+				   SELECT id, execution_id, since, signal_kind AS kind,
+				          CASE WHEN signal_kind = 'runner_stopped' THEN reason ELSE NULL END AS reason,
+				          ROW_NUMBER() OVER (
+				            PARTITION BY execution_id, signal_kind
+				            ORDER BY
+				              CASE WHEN signal_kind = 'runner_stopped' THEN since END DESC,
+				              CASE WHEN signal_kind != 'runner_stopped' THEN since END ASC,
+				              CASE WHEN signal_kind = 'runner_stopped' THEN id END DESC,
+				              id ASC
+				          ) AS signal_rank
+				     FROM classified
+				    WHERE signal_kind IS NOT NULL
+				 )
+				 SELECT kind, execution_id, since, reason, 1 AS question_id_present
+				   FROM ranked
+				  WHERE signal_rank = 1
+				  ORDER BY since ASC, id ASC
+				  LIMIT @limit`,
+			)
+			.all({
+				execution_ids: JSON.stringify(executionIds),
+				created_after: input.createdAfter,
+				limit: effectiveLimit,
+			}) as SignalSqlRow[];
+		const signals = rows.map(
+			({
+				kind,
+				execution_id,
+				since,
+				reason,
+			}): EpicPageSignalQueryResult["signals"][number] => ({
+				kind,
+				execution_id,
+				since,
+				...(reason ? { reason } : {}),
+				question_id_present: true,
+			}),
+		);
+		return {
+			signals,
+			truncated: signals.length === effectiveLimit,
+		};
 	}
 
 	/**

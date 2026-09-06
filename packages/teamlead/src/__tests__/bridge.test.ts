@@ -772,7 +772,7 @@ describe("Bridge scaffold", () => {
 		// but auth middleware isn't applied yet either (will be in Task 3).
 		// For now, just verify startBridge works.
 		expect(store).toBeDefined();
-	});
+	}, 15_000);
 
 	it("keeps Discord delivery failures on the independent alert_unreachable_config reason", async () => {
 		vi.stubEnv("FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID", "");

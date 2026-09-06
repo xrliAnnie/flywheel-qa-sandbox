@@ -1,0 +1,48 @@
+classDiagram
+  direction TB
+  class 页面 {
+    generated_at 生成时间
+    generator.trigger 事件/扫描/手动
+    generator.reasons 这次为什么刷
+    freshness 这页多旧(九格)
+    stuck_items 卡住说了一声的
+    items[] 每张子单
+  }
+  class 这页多旧 {
+    current 本版号
+    last_generated 上次成功生成
+    last_published 固定页上次成功发布
+    publish_failures 之后失败几次
+    last_publish_failure 最近失败原因
+    hosted 固定页 token 前 8 位
+    oldest_source 来源最旧的那格
+    next_scan 下一次扫描预计
+  }
+  class 子单 {
+    title / state / blocked_by ...(不变)
+    signals[] IC 说了一声(每条带出处)
+    signal_sources 两个来源查没查到
+  }
+  class 信号 {
+    kind 卡住的种类(5 种)
+    since 从什么时候起
+    execution_id8 哪个执行体
+    reason 停机原因(枚举)
+  }
+  class 刷新账本 {
+    attempted_at 什么时候试的
+    trigger 事件/扫描/手动
+    reasons 为什么
+    outcome ok:vN 或失败原因
+  }
+  class 固定链接登记 {
+    project_name
+    token 固定 32 位
+    last_published_at
+    last_version
+  }
+  页面 *-- 这页多旧
+  页面 *-- 子单
+  子单 *-- 信号
+  这页多旧 ..> 刷新账本 : 读
+  这页多旧 ..> 固定链接登记 : 读

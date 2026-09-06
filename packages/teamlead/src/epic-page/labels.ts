@@ -6,6 +6,8 @@ const LABELS = {
 	"section.done": "每件做完算什么样",
 	"section.founder": "要回来找 founder 的",
 	"section.gaps": "缺什么、缺在哪",
+	"section.stuck": "卡住说了一声的",
+	"section.waiting_founder": "在等 founder 的",
 	"cell.provenance": "出处",
 	"cell.observed_at": "看到它的时间",
 	"cell.ledger_note": "账面状态,不代表进程一定活着",
@@ -23,6 +25,8 @@ const LABELS = {
 	"page.decided_rule_note": "已获 founder 裁定的规则 {rule}",
 	"page.default_rule_note": "未获 founder 裁定的默认规则 {rule}",
 	"page.none": "无",
+	"page.signal_none": "无",
+	"page.freshness": "这页多旧",
 	"page.item_detail": "子单 {id}",
 	"page.what": "是什么",
 	"page.why": "为什么",
@@ -47,6 +51,24 @@ const LABELS = {
 	"page.blockers_all": "全部前置依赖",
 	"page.dependents_all": "全部下游",
 	"page.execution_facts": "执行事实",
+	"freshness.trigger.event": "事件触发",
+	"freshness.trigger.scan": "到点扫描",
+	"freshness.trigger.manual": "手动",
+	"freshness.current": "本版",
+	"freshness.last_generated": "上次成功生成",
+	"freshness.last_published": "固定页上次成功发布",
+	"freshness.failures":
+		"本版成功之前,上次成功发布之后失败 {n} 次,最近 {token} @ {at}",
+	"freshness.next_scan": "下一次到点扫描预计",
+	"freshness.oldest_source": "来源最旧观测",
+	"freshness.hosted": "固定页 {token8} 上次发布 {at}",
+	"freshness.opened_age": "你打开时它已 {minutes} 分钟旧",
+	"signal.kind.declared_blocked": "IC 声明卡住",
+	"signal.kind.runner_stopped": "runner 停机({reason})",
+	"signal.kind.question_pending": "有问题等 Lead 回",
+	"signal.kind.run_held": "run 被 hold",
+	"signal.kind.waiting_founder": "在等 founder",
+	"tick.stuck_line": "- 卡住说了一声的 {n} 张:{items}",
 	"cell.header.scope_definition": "范围规则",
 	"cell.header.roots": "active 父单",
 	"cell.header.items": "范围内子单",
@@ -55,6 +77,7 @@ const LABELS = {
 	"cell.ready_items": "现在可以开始的子单",
 	"cell.dependency_review": "依赖审阅",
 	"cell.gaps": "缺口集合",
+	"cell.stuck_items": "卡住信号集合",
 	"cell.item.title": "标题",
 	"cell.item.url": "链接",
 	"cell.item.state": "状态",
@@ -94,7 +117,7 @@ export function label(
 ): string {
 	const template = LABELS[key];
 	if (!template) throw new Error(`Unknown epic-page label: ${key}`);
-	return template.replace(/\{([a-z_]+)\}/g, (_match, name: string) => {
+	return template.replace(/\{([a-z0-9_]+)\}/g, (_match, name: string) => {
 		if (!(name in params)) {
 			throw new Error(`Missing epic-page label parameter: ${name}`);
 		}

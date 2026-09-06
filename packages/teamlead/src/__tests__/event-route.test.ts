@@ -302,6 +302,7 @@ describe("Event route", () => {
 	let turnBeltReconciler: { current: TurnBeltReconciler | undefined };
 	let onSessionAwaitingReview: ReturnType<typeof vi.fn>;
 	let onCodexReviewResult: ReturnType<typeof vi.fn>;
+	let onEpicChange: ReturnType<typeof vi.fn>;
 	let stateRoot: string;
 
 	beforeEach(async () => {
@@ -316,6 +317,7 @@ describe("Event route", () => {
 		turnBeltReconciler = { current: undefined };
 		onSessionAwaitingReview = vi.fn(async () => undefined);
 		onCodexReviewResult = vi.fn(async () => undefined);
+		onEpicChange = vi.fn();
 		const app = createBridgeApp(
 			store,
 			testProjects,
@@ -342,6 +344,7 @@ describe("Event route", () => {
 				codexReviewIngest: {
 					current: { onCodexReviewResult } as never,
 				},
+				epicPageRefresher: { requestRefresh: onEpicChange },
 			},
 		);
 		server = app.listen(0, "127.0.0.1");
@@ -354,6 +357,49 @@ describe("Event route", () => {
 		// FLY-1385: this block exercises legacy event semantics. The retired
 		// FORCE_LEGACY switch can no longer mask a host-level claims-read setting.
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
+	});
+
+	it("FLY-2143 refreshes session_started only when the persisted status changes", async () => {
+		const first = makeEvent({ event_id: "epic-start-1" });
+		const replay = makeEvent({ event_id: "epic-start-2" });
+		for (const event of [first, replay]) {
+			const response = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(event),
+			});
+			expect(response.status).toBe(200);
+		}
+
+		expect(onEpicChange).toHaveBeenCalledOnce();
+		expect(onEpicChange).toHaveBeenCalledWith("geoforge3d", "session_started");
+	});
+
+	it("FLY-2143 refreshes a generalized failure once and not on replay", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		for (const eventId of ["epic-failed-1", "epic-failed-2"]) {
+			const response = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: eventId,
+						event_type: "session_failed",
+						payload: { error: "boom" },
+					}),
+				),
+			});
+			expect(response.status).toBe(200);
+		}
+
+		expect(onEpicChange).toHaveBeenCalledOnce();
+		expect(onEpicChange).toHaveBeenCalledWith("geoforge3d", "session_failed");
 	});
 
 	afterEach(async () => {

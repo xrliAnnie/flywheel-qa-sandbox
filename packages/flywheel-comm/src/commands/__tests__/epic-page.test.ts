@@ -31,6 +31,35 @@ function deps(overrides: Partial<EpicPageCliDeps> = {}): EpicPageCliDeps {
 }
 
 describe("flywheel-comm epic-page", () => {
+	it("reads status without triggering page generation", async () => {
+		const fetchFn = vi.fn(async () =>
+			response({
+				freshness: { publish_failures_since_last_published: 0 },
+				publication: {
+					token8: "deadbeef",
+					published: true,
+					url: "https://fw-reports-test.vercel.app/r/token/",
+				},
+				next_scan_expected_at: "2026-09-03T04:30:00.000Z",
+			}),
+		);
+		const input = deps({ fetchFn });
+
+		expect(await runEpicPage(["status"], input)).toBe(0);
+		expect(fetchFn).toHaveBeenCalledWith(
+			"http://localhost:9876/api/epic-page/status?projectName=example",
+			{
+				method: "GET",
+				headers: { Authorization: "Bearer master" },
+			},
+		);
+		expect(JSON.parse(vi.mocked(input.log!).mock.calls[0]![0])).toMatchObject({
+			ok: true,
+			command: "status",
+			result: { publication: { token8: "deadbeef", published: true } },
+		});
+	});
+
 	it("generates the live project scope through the authenticated Bridge", async () => {
 		const fetchFn = vi.fn(async () => response({ receipt: { version: 1 } }));
 		const input = deps({ fetchFn });

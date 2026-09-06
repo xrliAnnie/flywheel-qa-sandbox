@@ -219,6 +219,7 @@ export async function sweepDeferredLandLinearDone(input: {
 						input.markIssueDone,
 						operation.issue_id,
 						undefined,
+						{ projectName: operation.project_name },
 					);
 					const reason =
 						result.reason ?? (result.done ? "done" : "linear_done_failed");

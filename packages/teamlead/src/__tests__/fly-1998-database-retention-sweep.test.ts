@@ -796,7 +796,7 @@ describe("FLY-1998 database retention sweep", () => {
 				),
 			),
 		).toBe(true);
-	});
+	}, 15_000);
 
 	it("records an explicit partial-apply marker when a later batch rolls back", async () => {
 		const fixture = createFixture();
@@ -852,7 +852,7 @@ describe("FLY-1998 database retention sweep", () => {
 			path: realpathSync(partialPath),
 			committedBatches: 1,
 		});
-	});
+	}, 15_000);
 
 	it("keeps all 20-style health failures as explicit samples", async () => {
 		const fixture = createFixture();

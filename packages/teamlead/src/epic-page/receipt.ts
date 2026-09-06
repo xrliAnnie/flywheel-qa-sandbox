@@ -1,5 +1,10 @@
 import { canonicalSubmissionDigest } from "flywheel-config";
-import type { EpicPage, Provenance } from "./model.js";
+import {
+	type EpicPage,
+	type Provenance,
+	REFRESH_REASONS,
+	type RefreshReason,
+} from "./model.js";
 
 type SourceProvenance = Exclude<Provenance, { kind: "derived" }>;
 
@@ -15,6 +20,7 @@ export interface EpicPageRenderReceipt {
 	project_name: string;
 	generated_at: string;
 	trigger: "manual" | "event" | "scan";
+	reasons: RefreshReason[];
 	sources: EpicPageRenderReceiptSource[];
 }
 
@@ -87,7 +93,14 @@ export function assertEpicPageRenderReceipt(
 	if (!isRecord(value)) throw new Error("render receipt: expected object");
 	requireExactKeys(
 		value,
-		["schema_version", "project_name", "generated_at", "trigger", "sources"],
+		[
+			"schema_version",
+			"project_name",
+			"generated_at",
+			"trigger",
+			"reasons",
+			"sources",
+		],
 		[],
 		"",
 	);
@@ -98,6 +111,32 @@ export function assertEpicPageRenderReceipt(
 	requireTimestamp(value.generated_at, "/generated_at");
 	if (!(["manual", "event", "scan"] as unknown[]).includes(value.trigger)) {
 		throw new Error("/trigger: unsupported trigger");
+	}
+	if (!Array.isArray(value.reasons) || value.reasons.length === 0) {
+		throw new Error("/reasons: expected non-empty array");
+	}
+	for (const reason of value.reasons) {
+		if (!REFRESH_REASONS.includes(reason as RefreshReason)) {
+			throw new Error("/reasons: unsupported reason");
+		}
+	}
+	if (
+		JSON.stringify(value.reasons) !==
+		JSON.stringify([...new Set(value.reasons)].sort())
+	) {
+		throw new Error("/reasons: must be unique and sorted");
+	}
+	if (
+		value.trigger === "manual" &&
+		JSON.stringify(value.reasons) !== '["manual"]'
+	) {
+		throw new Error("/reasons: manual trigger requires manual reason");
+	}
+	if (
+		value.trigger === "scan" &&
+		JSON.stringify(value.reasons) !== '["scan"]'
+	) {
+		throw new Error("/reasons: scan trigger requires scan reason");
 	}
 	if (!Array.isArray(value.sources))
 		throw new Error("/sources: expected array");
@@ -138,7 +177,10 @@ export function assertEpicPageRenderReceipt(
 			if (source.provenance.url !== undefined) {
 				requireString(source.provenance.url, `${path}/provenance/url`);
 			}
-		} else if (source.provenance.kind === "statestore") {
+		} else if (
+			source.provenance.kind === "statestore" ||
+			source.provenance.kind === "commdb"
+		) {
 			requireExactKeys(
 				source.provenance,
 				["kind", "table", "key"],
@@ -170,10 +212,12 @@ export function buildEpicPageRenderReceipt(
 		}
 		if (!isRecord(value)) return;
 		if (
-			"value" in value &&
 			isRecord(value.provenance) &&
 			(value.provenance.kind === "linear" ||
-				value.provenance.kind === "statestore")
+				value.provenance.kind === "statestore" ||
+				value.provenance.kind === "commdb") &&
+			("value" in value ||
+				("kind" in value && "since" in value && "execution_id8" in value))
 		) {
 			const source: EpicPageRenderReceiptSource = {
 				path,
@@ -196,6 +240,7 @@ export function buildEpicPageRenderReceipt(
 		project_name: page.key.project_name,
 		generated_at: page.generated_at,
 		trigger: page.generator.trigger,
+		reasons: page.generator.reasons,
 		sources,
 	};
 	assertEpicPageRenderReceipt(receipt);

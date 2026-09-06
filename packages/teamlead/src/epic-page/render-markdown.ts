@@ -6,6 +6,8 @@ import type {
 	EpicItem,
 	EpicPage,
 	Provenance,
+	Signal,
+	StuckItem,
 } from "./model.js";
 
 const FOUNDER_DECIDED_RULES = new Set([
@@ -47,7 +49,7 @@ function markdownProvenance(provenance: Provenance): string {
 				.join(" · "),
 		);
 	}
-	if (provenance.kind === "statestore") {
+	if (provenance.kind === "statestore" || provenance.kind === "commdb") {
 		return markdownText(
 			`${provenance.table} · ${JSON.stringify(provenance.key)}`,
 		);
@@ -134,6 +136,117 @@ function dependentSummary(item: EpicItem): string {
 		.join("; ");
 }
 
+function triggerLabel(trigger: EpicPage["generator"]["trigger"]): string {
+	return label(`freshness.trigger.${trigger}` as LabelKey);
+}
+
+function signalLabel(signal: Pick<Signal, "kind" | "reason">): string {
+	return signal.kind === "runner_stopped"
+		? label("signal.kind.runner_stopped", { reason: signal.reason ?? "error" })
+		: label(`signal.kind.${signal.kind}` as LabelKey);
+}
+
+function signalSummary(signal: Signal): string {
+	return markdownText(
+		`${signalLabel(signal)} · ${signal.execution_id8} · ${signal.since}`,
+	);
+}
+
+function stuckSignal(page: EpicPage, stuck: StuckItem): Signal | undefined {
+	return page.items
+		.find((item) => item.identifier === stuck.item)
+		?.signals.find(
+			(signal) =>
+				signal.kind === stuck.kind &&
+				signal.execution_id8 === stuck.execution_id8,
+		);
+}
+
+function stuckSummary(page: EpicPage): string {
+	const stuck = page.stuck_items.value ?? [];
+	return stuck.length > 0
+		? stuck
+				.map((entry) => {
+					const signal = stuckSignal(page, entry);
+					const kind = signal
+						? signalLabel(signal)
+						: label(`signal.kind.${entry.kind}` as LabelKey);
+					return `- ${markdownText(`${entry.item} · ${kind} · ${entry.execution_id8} · ${entry.since}`)}`;
+				})
+				.join("\n")
+		: label("page.signal_none");
+}
+
+function waitingFounderSummary(page: EpicPage): string {
+	const waiting = page.items.flatMap((item) =>
+		item.signals
+			.filter((signal) => signal.kind === "waiting_founder")
+			.map((signal) => ({ item: item.identifier, signal })),
+	);
+	return waiting.length > 0
+		? waiting
+				.map(
+					({ item, signal }) =>
+						`- ${markdownText(`${item} · ${signalLabel(signal)} · ${signal.execution_id8} · ${signal.since}`)}`,
+				)
+				.join("\n")
+		: label("page.signal_none");
+}
+
+function observedAtAtPath(page: EpicPage, path: string): string | undefined {
+	let cursor: unknown = page;
+	for (const part of path.split("/").filter(Boolean)) {
+		if (cursor === null || typeof cursor !== "object") return undefined;
+		cursor = Array.isArray(cursor)
+			? cursor[Number(part)]
+			: (cursor as Record<string, unknown>)[part];
+	}
+	if (cursor === null || typeof cursor !== "object") return undefined;
+	const observedAt = (cursor as Record<string, unknown>).observed_at;
+	return typeof observedAt === "string" ? observedAt : undefined;
+}
+
+function renderFreshness(page: EpicPage): string {
+	const freshness = page.freshness;
+	const current = freshness.current.value;
+	const lastGenerated = freshness.last_generated.value;
+	const lastPublished = freshness.last_published.value;
+	const failureCount = freshness.publish_failures.value?.count ?? 0;
+	const lastPublishFailure = freshness.last_publish_failure;
+	const hosted = freshness.hosted.value;
+	const oldestPath = freshness.oldest_source.value?.path;
+	const oldestObservedAt = oldestPath
+		? observedAtAtPath(page, oldestPath)
+		: undefined;
+	return [
+		`## ${label("page.freshness")}`,
+		`- **${label("freshness.current")}**: ${current ? markdownText(`v${current.version} · ${triggerLabel(current.trigger)} · ${current.reasons.join(", ")}`) : label("page.none")}`,
+		`- **${label("freshness.last_generated")}**: ${lastGenerated ? markdownText(`v${lastGenerated.version} · ${triggerLabel(lastGenerated.trigger)} · ${freshness.last_generated.source_updated_at ?? label("page.none")}`) : label("page.none")}`,
+		`- **${label("freshness.last_published")}**: ${lastPublished ? markdownText(`v${lastPublished.version} · ${triggerLabel(lastPublished.trigger)} · ${freshness.last_published.source_updated_at ?? label("page.none")}`) : label("page.none")}`,
+		`- ${markdownText(
+			label("freshness.failures", {
+				n: failureCount,
+				token:
+					failureCount > 0
+						? (lastPublishFailure.value?.token ?? label("page.none"))
+						: label("page.none"),
+				at:
+					failureCount > 0
+						? (lastPublishFailure.source_updated_at ?? label("page.none"))
+						: label("page.none"),
+			}),
+		)}`,
+		`- ${markdownText(
+			label("freshness.hosted", {
+				token8: hosted?.token8 ?? label("page.none"),
+				at: freshness.hosted.source_updated_at ?? label("page.none"),
+			}),
+		)}`,
+		`- **${label("freshness.oldest_source")}**: ${oldestPath ? markdownText(`${oldestPath} @ ${oldestObservedAt ?? label("page.none")}`) : label("page.none")}`,
+		`- **${label("freshness.next_scan")}**: ${freshness.next_scan.value ? `${freshness.next_scan.value.expected_in_seconds} 秒后` : label("page.none")}`,
+	].join("\n");
+}
+
 function itemCells(
 	item: EpicItem,
 ): Array<[field: string, name: LabelKey, cell: Cell<unknown>]> {
@@ -178,6 +291,24 @@ function renderItem(item: EpicItem, index: number, now: Date): string {
 		`- **${label("page.waiting_on_me")}**: ${dependents}`,
 		`- **${label("cell.item.state")}**: ${markdownText(`${state} (${item.state.value?.type ?? label("cell.missing")})`)}`,
 		`- **${label("page.accounted_execution")}**: ${markdownText(executionSummary(item))} · ${label("cell.ledger_note")}`,
+		`- **${label("section.stuck")}**: ${
+			item.signals.filter((signal) => signal.kind !== "waiting_founder")
+				.length > 0
+				? item.signals
+						.filter((signal) => signal.kind !== "waiting_founder")
+						.map(signalSummary)
+						.join("; ")
+				: label("page.signal_none")
+		}`,
+		`- **${label("section.waiting_founder")}**: ${
+			item.signals.filter((signal) => signal.kind === "waiting_founder")
+				.length > 0
+				? item.signals
+						.filter((signal) => signal.kind === "waiting_founder")
+						.map(signalSummary)
+						.join("; ")
+				: label("page.signal_none")
+		}`,
 		`- **founder**: ${item.founder_named.value ? label("page.founder_yes") : label("page.founder_no")}`,
 		`- **${label("page.source_link")}**: ${item.url.value ? markdownLink(item.url.value, item.url.value) : label("page.none")} · **${label("cell.observed_at")}**: ${item.title.observed_at}${item.title.source_updated_at ? ` · **${label("cell.source_updated_at")}**: ${item.title.source_updated_at}` : ""}`,
 		"",
@@ -257,10 +388,16 @@ export function renderEpicPageMarkdown(
 	return [
 		`# ${label("page.title")}: ${markdownText(page.key.project_name)}`,
 		`${label("page.generated_at")}: ${page.generated_at}`,
+		renderFreshness(page),
 		`## ${label("section.ready")}`,
 		label("page.ready_rule_note"),
 		readySummary,
 		renderCell("/ready_items", "cell.ready_items", page.ready_items, now),
+		`## ${label("section.stuck")}`,
+		stuckSummary(page),
+		renderCell("/stuck_items", "cell.stuck_items", page.stuck_items, now),
+		`## ${label("section.waiting_founder")}`,
+		waitingFounderSummary(page),
 		`## ${label("section.review")}`,
 		renderDependencyReview(page.dependency_review.value ?? []),
 		renderCell(

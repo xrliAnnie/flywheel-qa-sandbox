@@ -3,7 +3,7 @@ import { escapeHtml } from "../../bridge/xhs-review-html.js";
 import { escapeMarkdownTableCell } from "../escape.js";
 import { generateEpicPage } from "../generate.js";
 import { label } from "../labels.js";
-import type { Cell, EpicPage } from "../model.js";
+import type { Cell, EpicPage, Signal } from "../model.js";
 import { buildEpicPageRenderReceipt } from "../receipt.js";
 import { renderEpicPageHtml } from "../render-html.js";
 import { renderEpicPageMarkdown } from "../render-markdown.js";
@@ -50,6 +50,101 @@ function pageWithItemCount(count: number): EpicPage {
 		now: EPIC_SHAPE_NOW,
 		projectName: "example",
 		trigger: "manual",
+	});
+}
+
+function pageWithLiveness(): EpicPage {
+	const snapshot = epicShapeSnapshot();
+	const observedAt = EPIC_SHAPE_NOW.toISOString();
+	const signals: Signal[] = [
+		{
+			kind: "question_pending",
+			since: "2026-09-03T03:00:00.000Z",
+			execution_id8: "exec-one",
+			provenance: {
+				kind: "commdb",
+				table: "mailbox",
+				key: { execution_id: "exec-one-full" },
+			},
+			observed_at: observedAt,
+		},
+		{
+			kind: "waiting_founder",
+			since: "2026-09-03T03:30:00.000Z",
+			execution_id8: "exec-one",
+			provenance: {
+				kind: "commdb",
+				table: "mailbox",
+				key: { execution_id: "exec-one-full" },
+			},
+			observed_at: observedAt,
+		},
+	];
+	return generateEpicPage({
+		snapshot,
+		itemFacts: snapshot.items.map(() => emptyItemFacts()),
+		itemSignals: snapshot.items.map((item, index) => ({
+			signals: index === 0 ? signals : [],
+			signal_sources: {
+				statestore: {
+					value: { signals: 0 },
+					provenance: {
+						kind: "statestore" as const,
+						table: "sessions",
+						key: { issue_id: item.id },
+					},
+					observed_at: observedAt,
+				},
+				commdb: {
+					value: { signals: index === 0 ? 2 : 0 },
+					provenance: {
+						kind: "commdb" as const,
+						table: "mailbox",
+						key: { issue_identifier: item.identifier },
+					},
+					observed_at: observedAt,
+				},
+			},
+		})),
+		now: EPIC_SHAPE_NOW,
+		projectName: "example",
+		trigger: "event",
+		version: 3,
+		reasons: ["session_completed", "dependency_changed"],
+		freshness: {
+			history: {
+				last_generated: {
+					version: 2,
+					attempted_at: "2026-09-03T03:50:00.000Z",
+					trigger: "scan",
+				},
+				last_published: {
+					version: 1,
+					attempted_at: "2026-09-03T03:30:00.000Z",
+					trigger: "event",
+				},
+				publish_failures_since_last_published: 1,
+				last_publish_failure: {
+					attempted_at: "2026-09-03T03:45:00.000Z",
+					token: "transient: publish_failed:blob",
+				},
+				last_failure: {
+					attempted_at: "2026-09-03T03:55:00.000Z",
+					token: "FREE_TEXT_SENTINEL_MUST_NOT_RENDER",
+				},
+			},
+			publication: {
+				token: "0123456789abcdef0123456789abcdef",
+				published: true,
+				first_published_at: "2026-09-02T03:30:00.000Z",
+				last_published_at: "2026-09-03T03:30:00.000Z",
+				last_version: 1,
+			},
+			scanSchedule: {
+				leadId: "flywheel-eng-lead",
+				intervalMs: 30 * 60_000,
+			},
+		},
 	});
 }
 
@@ -131,6 +226,58 @@ const ITEM_PATHS = [
 ].map((field) => `/items/0/${field}`);
 
 describe("Epic page render parity", () => {
+	it("renders bounded freshness and distinct stuck/founder-wait signals", () => {
+		const document = pageWithLiveness();
+		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
+		const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
+
+		for (const output of [html, markdown]) {
+			expect(output).toContain(label("page.freshness"));
+			expect(output).toContain(label("section.stuck"));
+			expect(output).toContain(label("section.waiting_founder"));
+			expect(output).toContain(label("signal.kind.question_pending"));
+			expect(output).toContain(label("signal.kind.waiting_founder"));
+			expect(output).toContain("EPX-1");
+			expect(output).toContain("本版成功之前");
+			expect(output).toContain("失败 1 次");
+			expect(output).toContain("transient: publish_failed:blob");
+			expect(output).toContain("01234567");
+			expect(output).not.toContain("0123456789abcdef0123456789abcdef");
+			expect(output).not.toContain("FREE_TEXT_SENTINEL_MUST_NOT_RENDER");
+		}
+
+		const stuck = htmlBlock(html, "/stuck_items").split("</article>")[0]!;
+		expect(stuck).toContain(label("signal.kind.question_pending"));
+		expect(stuck).not.toContain(label("signal.kind.waiting_founder"));
+	});
+
+	it("uses one inert nonce script for reader age and no self-supplied CSP", () => {
+		const html = renderEpicPageHtml(pageWithLiveness(), EPIC_SHAPE_NOW);
+		const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/g) ?? [];
+
+		expect(html).not.toContain('http-equiv="Content-Security-Policy"');
+		expect(html).toContain(
+			`data-generated-at="${EPIC_SHAPE_NOW.toISOString()}"`,
+		);
+		expect(html).toContain(EPIC_SHAPE_NOW.toISOString());
+		expect(scripts).toHaveLength(1);
+		expect(scripts[0]).toContain('nonce="__CSP_NONCE__"');
+		expect(scripts[0]).toContain("textContent");
+		expect(scripts[0]).not.toMatch(/innerHTML|fetch\(|https?:\/\//);
+	});
+
+	it("says zero signals explicitly", () => {
+		const document = page();
+		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
+		const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
+
+		for (const output of [html, markdown]) {
+			expect(output).toContain(label("section.stuck"));
+			expect(output).toContain(label("section.waiting_founder"));
+			expect(output).toContain(label("page.signal_none"));
+		}
+	});
+
 	it("renders an explicit empty dependency review between ready and scope", () => {
 		const document = page();
 		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
@@ -363,7 +510,7 @@ describe("Epic page render parity", () => {
 		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
 		const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
 
-		expect(html).not.toContain("<script>");
+		expect(html).not.toContain("<script>alert(1)</script>");
 		expect(html).not.toContain("<img src=x onerror=");
 		expect(html).toContain("&lt;script&gt;");
 		expect(html).not.toContain('href="javascript:');

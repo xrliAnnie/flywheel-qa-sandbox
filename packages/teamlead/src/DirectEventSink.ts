@@ -82,6 +82,15 @@ function sqliteDatetime(): string {
 
 export class DirectEventSink implements ExecutionEventEmitter {
 	private pending: Promise<void>[] = [];
+	/** Best-effort Epic page invalidation after a real persisted projection change. */
+	public onEpicChange?: (
+		projectName: string,
+		reason:
+			| "session_started"
+			| "session_completed"
+			| "session_failed"
+			| "linear_done",
+	) => void;
 
 	/**
 	 * FLY-603 Layer A: worktree-cleanup closure, set by the Bridge composition
@@ -175,6 +184,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		}
 	}
 
+	private notifyEpicChanged(
+		projectName: string,
+		reason: "session_started" | "session_completed" | "session_failed",
+	): void {
+		try {
+			this.onEpicChange?.(projectName, reason);
+		} catch {
+			// Epic refresh must never perturb event persistence or delivery.
+		}
+	}
+
 	private enqueueTerminalCommDbStatus(
 		executionId: string,
 		status: "failed" | "blocked",
@@ -233,7 +253,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		});
 
 		// Upsert session
-		this.store.upsertSession({
+		const started = this.store.upsertSession({
 			execution_id: env.executionId,
 			issue_id: env.issueId,
 			project_name: env.projectName,
@@ -288,6 +308,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				env.codexSkip === undefined ? undefined : env.codexSkip ? 1 : 0,
 			workflow_node_id: workflowNodeId,
 		});
+		if (started.statusChanged) {
+			this.notifyEpicChanged(env.projectName, "session_started");
+		}
 
 		// FLY-1185 (Codex R5#1): the launch-claim starting→active CAS is NOT done
 		// here — emitStarted runs fire-and-forget BEFORE the worktree/binding are
@@ -676,6 +699,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					`[DirectEventSink] FLY-1427 terminal-immune: ignored generalized completion overwrite for ${env.executionId}; effective status remains ${recorded.effectiveStatus}`,
 				);
 			}
+			if (recorded.ok && recorded.statusChanged) {
+				this.notifyEpicChanged(env.projectName, "session_completed");
+			}
 			return;
 		}
 
@@ -991,6 +1017,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			preExistingSession !== undefined &&
 			preExistingSession.status !== "awaiting_review";
 
+		let completionStatusChanged = false;
 		if (evidenceOnly) {
 			// No status write, no entry stamp — metadata/evidence only.
 			this.store.patchSessionMetadata(env.executionId, {
@@ -1020,7 +1047,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				`[DirectEventSink] qid-less needs_review for Phase-2-bound ${env.executionId} while status="${preExistingSession?.status}" — evidence-only (status/binding/window owned by the HTTP binding path)`,
 			);
 		} else {
-			this.store.upsertSession({
+			const completed = this.store.upsertSession({
 				execution_id: env.executionId,
 				issue_id: env.issueId,
 				project_name: env.projectName,
@@ -1048,6 +1075,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				),
 				workflow_node_id: workflowNodeId,
 			});
+			completionStatusChanged = completed.statusChanged;
+		}
+		if (completionStatusChanged) {
+			this.notifyEpicChanged(env.projectName, "session_completed");
 		}
 		if (!evidenceOnly && status === "blocked") {
 			this.enqueueTerminalCommDbStatus(
@@ -1262,7 +1293,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						finalizeWorkflowPhaseRoles: this.finalizeWorkflowPhaseRoles,
 						// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 						// by runPostShipFinalization's merge-evidence predicate).
-						markIssueDone: makeLinearDoneFinalizer(this.config),
+						markIssueDone: makeLinearDoneFinalizer({
+							...this.config,
+							onChanged: ({ projectName }) =>
+								this.onEpicChange?.(projectName, "linear_done"),
+						}),
 						// FLY-907: final terminal-state display refresh — awaited inside
 						// the orchestrator AFTER phase finalization, BEFORE archive.
 						refreshIssueDisplay: (issueId) =>
@@ -1360,6 +1395,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				);
 				return;
 			}
+			if (recorded.statusChanged) {
+				this.notifyEpicChanged(env.projectName, "session_failed");
+			}
 			this.enqueueTerminalCommDbStatus(
 				env.executionId,
 				recorded.status === "blocked" ? "blocked" : "failed",
@@ -1380,7 +1418,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			source: "direct-event-sink",
 		});
 
-		this.store.upsertSession({
+		const failed = this.store.upsertSession({
 			execution_id: env.executionId,
 			issue_id: env.issueId,
 			project_name: env.projectName,
@@ -1396,6 +1434,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			),
 			workflow_node_id: workflowNodeId,
 		});
+		if (failed.statusChanged) {
+			this.notifyEpicChanged(env.projectName, "session_failed");
+		}
 		this.enqueueTerminalCommDbStatus(
 			env.executionId,
 			terminalStatus,

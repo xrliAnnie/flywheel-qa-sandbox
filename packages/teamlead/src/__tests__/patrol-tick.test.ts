@@ -162,6 +162,8 @@ function epicFact(
 		readyForLeadTotal: 1,
 		remainingForLead: 2,
 		generalCount: 0,
+		stuckForLead: 0,
+		stuckForLeadItems: [],
 		...overrides,
 	};
 }

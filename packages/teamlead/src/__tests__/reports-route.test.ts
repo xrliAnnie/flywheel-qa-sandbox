@@ -502,6 +502,19 @@ describe("reports-route", () => {
 		);
 	});
 
+	it("runs an ordinary publish inside the injected shared critical section", async () => {
+		const run = vi.fn(async <T>(operation: () => Promise<T>) => operation());
+		await startApp({ criticalSection: { run } });
+
+		const result = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+
+		expect(result.status).toBe(200);
+		expect(run).toHaveBeenCalledOnce();
+	});
+
 	it("FLY-2283: a successful publish deletes objects that reached 14 days, never younger objects", async () => {
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		registry = new ReportRegistry(dir, { now: () => now });

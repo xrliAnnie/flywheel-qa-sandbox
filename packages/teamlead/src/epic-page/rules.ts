@@ -181,7 +181,9 @@ export function computeGaps(items: EpicItem[]): Array<{
 		| "attempt"
 		| "gates"
 		| "carriers"
-		| "land";
+		| "land"
+		| "signals_statestore"
+		| "signals_commdb";
 	reason: MissingReason;
 }> {
 	const result: Array<{
@@ -195,7 +197,9 @@ export function computeGaps(items: EpicItem[]): Array<{
 			| "attempt"
 			| "gates"
 			| "carriers"
-			| "land";
+			| "land"
+			| "signals_statestore"
+			| "signals_commdb";
 		reason: MissingReason;
 	}> = [];
 	const faces = [
@@ -212,6 +216,19 @@ export function computeGaps(items: EpicItem[]): Array<{
 	for (const item of items) {
 		for (const [key, face] of faces) {
 			const cell = item[key];
+			if (cell.value === null && cell.missing) {
+				result.push({
+					item: item.identifier,
+					face,
+					reason: cell.missing.reason,
+				});
+			}
+		}
+		for (const [source, face] of [
+			["statestore", "signals_statestore"],
+			["commdb", "signals_commdb"],
+		] as const) {
+			const cell = item.signal_sources[source];
 			if (cell.value === null && cell.missing) {
 				result.push({
 					item: item.identifier,

@@ -109,7 +109,7 @@ export function patrolTickOffsetMs(leadId: string, intervalMs: number): number {
 	);
 }
 
-function scheduledAtOrBefore(
+export function scheduledAtOrBefore(
 	nowMs: number,
 	leadId: string,
 	intervalMs: number,
