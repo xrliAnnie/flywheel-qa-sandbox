@@ -297,7 +297,7 @@ export function titleFor(kind: AlertEventType): string {
 		// guard fires it directly via scripts/lead-alert.sh with its own title);
 		// case exists for switch exhaustiveness.
 		case "tui_window_lost":
-			return "Infra Bot TUI window not visible";
+			return "Codex Lead TUI window not visible";
 		// FLY-913: never routed through this table (the restart-guard hook fires it
 		// directly via scripts/lead-alert.sh --strict-delivery with its own
 		// title); case exists for switch exhaustiveness.

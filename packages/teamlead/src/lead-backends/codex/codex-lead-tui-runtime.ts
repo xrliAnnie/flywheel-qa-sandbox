@@ -158,7 +158,7 @@ export function loadResidentCodexLeadProjectsSafely(
 		return (options.load ?? loadProjects)();
 	} catch {
 		options.log?.(
-			"resident Codex Lead residency roster unavailable; observer disabled",
+			"resident Codex Lead residency roster unavailable; lifecycle observer and pane-loss guard disabled",
 		);
 		return [];
 	}
@@ -477,12 +477,14 @@ function buildTuiGeneration(
 	let ownedTuiThreadId: string | undefined;
 	// FLY-871 §12 W2: silent-no-pane guard. Process-scoped (declared here, outside
 	// the per-generation closure) so its consecutive-failure count + episode latch
-	// survive generation rebuilds. It is non-null only for the canonical InfraBot
-	// identity when lead-alert.sh resolves; `?.record` keeps other Leads no-op.
+	// survive generation rebuilds. It is non-null only for a roster opt-in target
+	// when lead-alert.sh resolves; `?.record` keeps other Leads no-op.
 	const tuiWindowAlertGuard = createTuiWindowAlertGuard({
 		stateDir: config.stateDir,
 		leadId: config.leadId,
 		projectName: config.projectName,
+		leadKey: config.leadKey,
+		projects: residentCodexLeadProjects,
 		env: process.env,
 		log: (m) => logger.warn(m),
 	});

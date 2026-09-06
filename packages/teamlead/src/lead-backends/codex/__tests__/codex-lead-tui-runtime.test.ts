@@ -3,6 +3,8 @@
  * and wireDemuxedProcess (demux ↔ executor facade contract).
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
 	type CodexLeadProcess,
@@ -22,6 +24,36 @@ import {
 } from "../codex-lead-tui-runtime.js";
 
 describe("FLY-2216 resident Codex Lead lifecycle assembly", () => {
+	it("passes one loaded roster and the canonical lead key to both residency protections", () => {
+		const source = readFileSync(
+			fileURLToPath(new URL("../codex-lead-tui-runtime.ts", import.meta.url)),
+			"utf8",
+		);
+		const guardStart = source.indexOf(
+			"const tuiWindowAlertGuard = createTuiWindowAlertGuard({",
+		);
+		const guardCall = source.slice(
+			guardStart,
+			source.indexOf("\n\t});", guardStart),
+		);
+		const lifecycleStart = source.indexOf(
+			"residencyLifecycle = createResidentCodexLeadLifecycleForGeneration({",
+		);
+		const lifecycleCall = source.slice(
+			lifecycleStart,
+			source.indexOf("const externalReceiptQueue", lifecycleStart),
+		);
+
+		expect(guardStart).toBeGreaterThan(
+			source.indexOf(
+				"const residentCodexLeadProjects = loadResidentCodexLeadProjectsSafely({",
+			),
+		);
+		expect(guardCall).toContain("leadKey: config.leadKey,");
+		expect(guardCall).toContain("projects: residentCodexLeadProjects,");
+		expect(lifecycleCall).toContain("projects: residentCodexLeadProjects,");
+	});
+
 	it("fails safe when the residency roster is invalid so an existing Lead still starts", () => {
 		const log = vi.fn();
 		expect(
@@ -33,7 +65,7 @@ describe("FLY-2216 resident Codex Lead lifecycle assembly", () => {
 			}),
 		).toEqual([]);
 		expect(log).toHaveBeenCalledWith(
-			"resident Codex Lead residency roster unavailable; observer disabled",
+			"resident Codex Lead residency roster unavailable; lifecycle observer and pane-loss guard disabled",
 		);
 	});
 

@@ -13,6 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { ProjectEntry } from "../../../ProjectConfig.js";
 import {
 	createTuiWindowAlertGuard,
 	DEFAULT_TUI_WINDOW_ALERT_THRESHOLD,
@@ -20,6 +21,57 @@ import {
 	TUI_WINDOW_EPISODE_FILE,
 	TuiWindowAlertGuard,
 } from "../tui-window-alert.js";
+
+const RESIDENT_PROJECTS = [
+	{
+		projectName: "flywheel",
+		projectRoot: "/flywheel",
+		leads: [
+			{
+				agentId: "codex-infra-bot-lead",
+				summaryRole: "exempt",
+				chatChannel: "1",
+				match: { labels: [] },
+				backend: "codex-app-server",
+				codexProfile: "full-access",
+				canSpawnRunners: false,
+				codexResidencyPatrol: true,
+			},
+		],
+	},
+	{
+		projectName: "raya",
+		projectRoot: "/raya",
+		leads: [
+			{
+				agentId: "raya",
+				summaryRole: "recipient",
+				chatChannel: "2",
+				match: { labels: [] },
+				backend: "codex-app-server",
+				codexProfile: "full-access",
+				canSpawnRunners: false,
+				codexResidencyPatrol: true,
+			},
+		],
+	},
+	{
+		projectName: "growth",
+		projectRoot: "/growth",
+		leads: [
+			{
+				agentId: "mufasa-lead",
+				summaryRole: "producer",
+				chatChannel: "3",
+				match: { labels: [] },
+				backend: "codex-app-server",
+				companion: true,
+				canSpawnRunners: false,
+				codexResidencyPatrol: true,
+			},
+		],
+	},
+] satisfies ProjectEntry[];
 
 const CONFIG = {
 	projectName: "flywheel",
@@ -124,7 +176,7 @@ describe("TuiWindowAlertGuard — episode-latched consecutive-failure state mach
 		);
 	});
 
-	it("uses distinct founder-facing titles for InfraBot and Raya", () => {
+	it("derives the founder-facing title from project and lead", () => {
 		const infraCalls: string[][] = [];
 		const rayaCalls: string[][] = [];
 		new TuiWindowAlertGuard(CONFIG, {
@@ -143,8 +195,12 @@ describe("TuiWindowAlertGuard — episode-latched consecutive-failure state mach
 			},
 		).record(false);
 		const title = (args: string[]) => args[args.indexOf("--title") + 1];
-		expect(title(infraCalls[0])).toBe("Infra Bot TUI window not visible");
-		expect(title(rayaCalls[0])).toBe("Raya brain TUI window not visible");
+		expect(title(infraCalls[0])).toBe(
+			"Codex Lead flywheel/codex-infra-bot-lead TUI window not visible",
+		);
+		expect(title(rayaCalls[0])).toBe(
+			"Codex Lead raya/raya TUI window not visible",
+		);
 	});
 
 	it("a throwing runAlert never propagates (runtime liveness must not break)", () => {
@@ -202,129 +258,225 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		tmpDirs.push(d);
 		return d;
 	}
-
-	it("enables the canonical InfraBot without an env flag", () => {
-		const guard = createTuiWindowAlertGuard({
+	type FactoryOptions = Parameters<typeof createTuiWindowAlertGuard>[0] & {
+		leadKey: string;
+		projects: ReadonlyArray<ProjectEntry>;
+	};
+	function opts(over: Partial<FactoryOptions> = {}): FactoryOptions {
+		return {
 			stateDir: stateDir(),
 			leadId: "codex-infra-bot-lead",
 			projectName: "flywheel",
+			leadKey: "flywheel-codex-infra-bot-lead",
+			projects: RESIDENT_PROJECTS,
 			env: { FLYWHEEL_ROOT: "/x" },
 			exists: () => true,
-		});
+			...over,
+		};
+	}
+
+	it("enables an opted-in full-access roster target", () => {
+		const guard = createTuiWindowAlertGuard(opts());
 		expect(guard).not.toBeNull();
 	});
 
-	it("enables only the exact canonical Raya identity", () => {
-		const exact = createTuiWindowAlertGuard({
-			stateDir: stateDir(),
-			leadId: "raya",
-			projectName: "raya",
-			env: { FLYWHEEL_ROOT: "/x" },
-			exists: () => true,
-		});
-		const wrongProject = createTuiWindowAlertGuard({
-			stateDir: stateDir(),
-			leadId: "raya",
-			projectName: "flywheel",
-			env: { FLYWHEEL_ROOT: "/x" },
-			exists: () => true,
-		});
-		const nearbyLead = createTuiWindowAlertGuard({
-			stateDir: stateDir(),
-			leadId: "raya-raya",
-			projectName: "raya",
-			env: { FLYWHEEL_ROOT: "/x" },
-			exists: () => true,
-		});
+	it("enables an opted-in companion roster target", () => {
+		const guard = createTuiWindowAlertGuard(
+			opts({
+				leadId: "mufasa-lead",
+				projectName: "growth",
+				leadKey: "growth-mufasa-lead",
+			}),
+		);
+		expect(guard).not.toBeNull();
+	});
+
+	it("enables only the exact roster project/lead tuple", () => {
+		const exact = createTuiWindowAlertGuard(
+			opts({
+				leadId: "raya",
+				projectName: "raya",
+				leadKey: "raya-raya",
+			}),
+		);
+		const wrongProject = createTuiWindowAlertGuard(
+			opts({
+				leadId: "raya",
+				projectName: "flywheel",
+				leadKey: "flywheel-raya",
+			}),
+		);
+		const nearbyLead = createTuiWindowAlertGuard(
+			opts({
+				leadId: "raya-raya",
+				projectName: "raya",
+				leadKey: "raya-raya-raya",
+			}),
+		);
 		expect(exact).not.toBeNull();
 		expect(wrongProject).toBeNull();
 		expect(nearbyLead).toBeNull();
 	});
 
-	it("does not enable a non-InfraBot Lead even with the retired env", () => {
-		const guard = createTuiWindowAlertGuard({
-			stateDir: stateDir(),
-			leadId: "other-lead",
-			projectName: "p",
-			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
-			exists: () => true,
-		});
+	it("rejects a runtime identity that is only a strict prefix of the roster target", () => {
+		const guard = createTuiWindowAlertGuard(
+			opts({
+				projectName: "flywheel",
+				leadId: "codex-infra-bot",
+				leadKey: "flywheel-codex-infra-bot",
+			}),
+		);
+		expect(guard).toBeNull();
+	});
+
+	it("rejects a mismatched lead key even when project and lead match", () => {
+		const guard = createTuiWindowAlertGuard(
+			opts({
+				leadId: "raya",
+				projectName: "raya",
+				leadKey: "raya-other",
+			}),
+		);
+		expect(guard).toBeNull();
+	});
+
+	it.each([
+		[
+			"full-access",
+			"codex-infra-bot-lead",
+			"flywheel",
+			"flywheel-codex-infra-bot-lead",
+		],
+		["companion", "mufasa-lead", "growth", "growth-mufasa-lead"],
+	])(
+		"does not enable a %s Lead absent from the opted-in roster",
+		(_tier, leadId, projectName, leadKey) => {
+			const guard = createTuiWindowAlertGuard(
+				opts({
+					leadId,
+					projectName,
+					leadKey,
+					projects: [],
+				}),
+			);
+			expect(guard).toBeNull();
+		},
+	);
+
+	it("does not enable an opted-in non-Codex backend", () => {
+		const projects = structuredClone(RESIDENT_PROJECTS);
+		projects[0].leads[0].backend = "claude-code";
+		const guard = createTuiWindowAlertGuard(opts({ projects }));
+		expect(guard).toBeNull();
+	});
+
+	it("returns null without logging when the roster is unavailable", () => {
+		const logs: string[] = [];
+		const guard = createTuiWindowAlertGuard(
+			opts({
+				projects: [],
+				log: (message) => logs.push(message),
+			}),
+		);
+		expect(guard).toBeNull();
+		expect(logs).toEqual([]);
+	});
+
+	it("logs positive evidence when the roster guard is armed", () => {
+		const logs: string[] = [];
+		const guard = createTuiWindowAlertGuard(
+			opts({
+				leadId: "raya",
+				projectName: "raya",
+				leadKey: "raya-raya",
+				log: (message) => logs.push(message),
+			}),
+		);
+		expect(guard).not.toBeNull();
+		expect(logs).toEqual([
+			"tui-window-alert: silent-no-pane guard ARMED for raya/raya (roster opt-in, threshold=9)",
+		]);
+	});
+
+	it("does not enable a Lead absent from the roster even with the retired env", () => {
+		const guard = createTuiWindowAlertGuard(
+			opts({
+				leadId: "other-lead",
+				projectName: "p",
+				env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
+				leadKey: "p-other-lead",
+			}),
+		);
 		expect(guard).toBeNull();
 	});
 
 	it("resolves the alert script from FLYWHEEL_ROOT (contract: <root>/scripts/lead-alert.sh)", () => {
 		let resolved = "";
-		const guard = createTuiWindowAlertGuard({
-			stateDir: stateDir(),
-			leadId: "codex-infra-bot-lead",
-			projectName: "flywheel",
-			env: {
-				FLYWHEEL_TUI_WINDOW_ALERT: "1",
-				FLYWHEEL_ROOT: "/Users/x/Dev/flywheel",
-			},
-			exists: (p) => {
-				resolved = p;
-				return true;
-			},
-		});
+		const guard = createTuiWindowAlertGuard(
+			opts({
+				env: {
+					FLYWHEEL_TUI_WINDOW_ALERT: "1",
+					FLYWHEEL_ROOT: "/Users/x/Dev/flywheel",
+				},
+				exists: (p) => {
+					resolved = p;
+					return true;
+				},
+			}),
+		);
 		expect(guard).not.toBeNull();
 		expect(resolved).toBe("/Users/x/Dev/flywheel/scripts/lead-alert.sh");
 	});
 
 	it("FLYWHEEL_LEAD_ALERT_SH overrides FLYWHEEL_ROOT", () => {
 		let resolved = "";
-		createTuiWindowAlertGuard({
-			stateDir: stateDir(),
-			leadId: "codex-infra-bot-lead",
-			projectName: "flywheel",
-			env: {
-				FLYWHEEL_TUI_WINDOW_ALERT: "1",
-				FLYWHEEL_ROOT: "/x",
-				FLYWHEEL_LEAD_ALERT_SH: "/custom/lead-alert.sh",
-			},
-			exists: (p) => {
-				resolved = p;
-				return true;
-			},
-		});
+		createTuiWindowAlertGuard(
+			opts({
+				env: {
+					FLYWHEEL_TUI_WINDOW_ALERT: "1",
+					FLYWHEEL_ROOT: "/x",
+					FLYWHEEL_LEAD_ALERT_SH: "/custom/lead-alert.sh",
+				},
+				exists: (p) => {
+					resolved = p;
+					return true;
+				},
+			}),
+		);
 		expect(resolved).toBe("/custom/lead-alert.sh");
 	});
 
 	it("disabled (null) when neither FLYWHEEL_ROOT nor override is set", () => {
-		const guard = createTuiWindowAlertGuard({
-			stateDir: stateDir(),
-			leadId: "codex-infra-bot-lead",
-			projectName: "flywheel",
-			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1" },
-			exists: () => true,
-		});
+		const guard = createTuiWindowAlertGuard(
+			opts({
+				env: { FLYWHEEL_TUI_WINDOW_ALERT: "1" },
+			}),
+		);
 		expect(guard).toBeNull();
 	});
 
 	it("disabled (null, fail-soft) when the resolved script does not exist", () => {
-		const guard = createTuiWindowAlertGuard({
-			stateDir: stateDir(),
-			leadId: "codex-infra-bot-lead",
-			projectName: "flywheel",
-			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
-			exists: () => false,
-		});
+		const guard = createTuiWindowAlertGuard(
+			opts({
+				env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
+				exists: () => false,
+			}),
+		);
 		expect(guard).toBeNull();
 	});
 
 	it("real-fs episode round-trip: writes the latch file on fire, deletes on recovery", () => {
 		const dir = stateDir();
 		const calls: string[][] = [];
-		const guard = createTuiWindowAlertGuard({
-			stateDir: dir,
-			leadId: "codex-infra-bot-lead",
-			projectName: "flywheel",
-			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
-			exists: () => true,
-			threshold: 2,
-			now: () => 42,
-			runAlert: (args) => calls.push(args),
-		});
+		const guard = createTuiWindowAlertGuard(
+			opts({
+				stateDir: dir,
+				env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
+				threshold: 2,
+				now: () => 42,
+				runAlert: (args) => calls.push(args),
+			}),
+		);
 		expect(guard).not.toBeNull();
 		const episodeFile = join(dir, TUI_WINDOW_EPISODE_FILE);
 
@@ -344,32 +496,30 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const dir = stateDir();
 		const env = { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" };
 		const calls1: string[][] = [];
-		const g1 = createTuiWindowAlertGuard({
-			stateDir: dir,
-			leadId: "codex-infra-bot-lead",
-			projectName: "flywheel",
-			env,
-			exists: () => true,
-			threshold: 2,
-			now: () => 100,
-			runAlert: (args) => calls1.push(args),
-		});
+		const g1 = createTuiWindowAlertGuard(
+			opts({
+				stateDir: dir,
+				env,
+				threshold: 2,
+				now: () => 100,
+				runAlert: (args) => calls1.push(args),
+			}),
+		);
 		g1?.record(false);
 		g1?.record(false);
 		expect(calls1).toHaveLength(1); // first incarnation alerted + persisted
 
 		// New process incarnation (KeepAlive restart), same state dir, window still down.
 		const calls2: string[][] = [];
-		const g2 = createTuiWindowAlertGuard({
-			stateDir: dir,
-			leadId: "codex-infra-bot-lead",
-			projectName: "flywheel",
-			env,
-			exists: () => true,
-			threshold: 2,
-			now: () => 200,
-			runAlert: (args) => calls2.push(args),
-		});
+		const g2 = createTuiWindowAlertGuard(
+			opts({
+				stateDir: dir,
+				env,
+				threshold: 2,
+				now: () => 200,
+				runAlert: (args) => calls2.push(args),
+			}),
+		);
 		g2?.record(false);
 		g2?.record(false);
 		expect(calls2).toHaveLength(0); // same unresolved episode → no double-report

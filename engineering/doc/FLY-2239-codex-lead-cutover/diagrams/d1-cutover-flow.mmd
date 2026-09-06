@@ -1,0 +1,13 @@
+flowchart TB
+  A["FLY-2216 已合入<br/>名册驱动的常驻体制(能力)"] --> B{"三个 Codex Lead<br/>今天在哪一步?"}
+  B --> M["growth / mufasa-lead<br/>已 opt-in · 巡逻在跑<br/>没有 pane 告警 · 从未演练"]
+  B --> I["flywheel / codex-infra-bot-lead<br/>已 opt-in · 巡逻在跑<br/>有 pane 告警(写死) · 从未演练"]
+  B --> R["raya / raya<br/>未注册 · 未出生"]
+  M --> P["本单代码改动(唯一)<br/>pane 告警改为名册驱动"]
+  I --> P
+  P --> S["班车部署"]
+  S --> DM["真机演练 mufasa<br/>假死 → 自愈 → 真告警"]
+  DM --> DI["真机演练 InfraBot<br/>(founder 已授权强停)"]
+  R --> RW["Raya 窗口<br/>按 FLY-2259 runbook 激活"]
+  DI --> RW
+  RW --> Z["收官状态卡<br/>每位:pane 活 · 自愈实测 · 告警 URL"]

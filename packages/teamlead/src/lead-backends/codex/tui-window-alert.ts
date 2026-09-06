@@ -4,9 +4,9 @@
  *
  * `ensureTuiWindow` is deliberately fail-open (a visibility loss must never take
  * down the Lead's Discord service — tui-window.ts §22). That is right for an
- * ordinary Lead, but the canonical Codex Infra Bot and Raya residents MUST stay
- * founder-visible: a silently-missing pane is exactly the FLY-871 incident
- * shape, and the runtime had ZERO alert wiring (R-10.4-1). This guard watches the
+ * ordinary Lead, but roster-opted resident Codex Leads MUST stay founder-visible:
+ * a silently-missing pane is exactly the FLY-871 incident shape, and the runtime
+ * had ZERO alert wiring (R-10.4-1). This guard watches the
  * runtime's own liveness cadence and, after K consecutive failures to (re)create
  * the window, fires ONE alert per episode via `scripts/lead-alert.sh` — the
  * FLY-83 Discord-independent path (works even when the Bridge is down; claims.db
@@ -22,8 +22,8 @@
  *      and clears the in-proc latch → the next episode gets a fresh startedAt =
  *      fresh signature = re-alertable. The file survives a KeepAlive restart so a
  *      new incarnation of the SAME unresolved episode does not double-report.
- *   2. Scoped to the exact canonical `(flywheel,codex-infra-bot-lead)` and
- *      `(raya,raya)` identities. Other TUI Leads remain byte-compatible.
+ *   2. Scoped to the exact canonical roster tuple `(projectName, leadId,
+ *      leadKey)`. Other TUI Leads remain byte-compatible.
  *
  * Fail-soft everywhere: an unresolved lead-alert.sh path (no FLYWHEEL_ROOT /
  * missing script) disables the guard with a warning (never throws); an alert
@@ -40,6 +40,8 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import type { ProjectEntry } from "../../ProjectConfig.js";
+import { findResidentCodexLeadTargets } from "../../resident-codex-lead-roster.js";
 
 /** The alert kind — mirrored in scripts/lead-alert.sh's kind allowlist AND in
  * LeadAlertNotifier.ts's AlertEventType union (shared type face, no drift). */
@@ -162,10 +164,6 @@ export class TuiWindowAlertGuard {
 	private fire(startedAt: number): void {
 		const minutes = Math.round((this.threshold * 20) / 60);
 		const signature = `${TUI_WINDOW_ALERT_KIND}:${startedAt}`;
-		const displayName =
-			this.config.projectName === "raya" && this.config.leadId === "raya"
-				? "Raya brain"
-				: "Infra Bot";
 		const args = [
 			"--lead",
 			this.config.leadId,
@@ -176,7 +174,7 @@ export class TuiWindowAlertGuard {
 			"--severity",
 			"warning",
 			"--title",
-			`${displayName} TUI window not visible`,
+			`Codex Lead ${this.config.projectName}/${this.config.leadId} TUI window not visible`,
 			"--body",
 			`The windowed codex resume --remote pane could not be (re)created after ${this.threshold} consecutive liveness checks (~${minutes} min). The founder-visible cmux tab may be missing. Bring-up check: verify-windowed-lead.sh ${this.config.projectName} ${this.config.leadId}`,
 			"--signature",
@@ -259,6 +257,8 @@ export interface CreateTuiWindowAlertGuardOptions {
 	stateDir: string;
 	leadId: string;
 	projectName: string;
+	leadKey: string;
+	projects: ReadonlyArray<ProjectEntry>;
 	env: NodeJS.ProcessEnv;
 	log?: (m: string) => void;
 	// Test seams (production defaults injected below).
@@ -269,11 +269,11 @@ export interface CreateTuiWindowAlertGuardOptions {
 }
 
 /**
- * Build the guard for an exact resident identity, or return null (disabled) — the runtime calls
- * `guard?.record(...)` so null is a no-op.
+ * Build the guard for an exact roster-opted resident identity, or return null
+ * (disabled) — the runtime calls `guard?.record(...)` so null is a no-op.
  *
  * Disabled when:
- *   - projectName + leadId are not one of the two canonical resident identities, OR
+ *   - projectName + leadId + leadKey are not an opted-in resident roster tuple, OR
  *   - lead-alert.sh cannot be resolved (no FLYWHEEL_LEAD_ALERT_SH override AND no
  *     FLYWHEEL_ROOT), OR the resolved script does not exist (fail-soft — Codex R1#4).
  *
@@ -288,10 +288,13 @@ export function createTuiWindowAlertGuard(
 	const log = opts.log ?? (() => {});
 	const exists = opts.exists ?? ((p: string) => existsSync(p));
 
-	const exactInfraBot =
-		opts.projectName === "flywheel" && opts.leadId === "codex-infra-bot-lead";
-	const exactRaya = opts.projectName === "raya" && opts.leadId === "raya";
-	if (!exactInfraBot && !exactRaya) return null;
+	const target = findResidentCodexLeadTargets(opts.projects).find(
+		(candidate) =>
+			candidate.projectName === opts.projectName &&
+			candidate.leadId === opts.leadId &&
+			candidate.leadKey === opts.leadKey,
+	);
+	if (!target) return null;
 
 	const override = opts.env.FLYWHEEL_LEAD_ALERT_SH?.trim();
 	const root = opts.env.FLYWHEEL_ROOT?.trim();
@@ -309,6 +312,9 @@ export function createTuiWindowAlertGuard(
 		);
 		return null;
 	}
+	log(
+		`tui-window-alert: silent-no-pane guard ARMED for ${opts.projectName}/${opts.leadId} (roster opt-in, threshold=${opts.threshold ?? DEFAULT_TUI_WINDOW_ALERT_THRESHOLD})`,
+	);
 
 	const episodePath = join(opts.stateDir, TUI_WINDOW_EPISODE_FILE);
 	return new TuiWindowAlertGuard(

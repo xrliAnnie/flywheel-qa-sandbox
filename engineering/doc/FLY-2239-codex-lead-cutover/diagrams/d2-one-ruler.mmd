@@ -1,0 +1,6 @@
+flowchart LR
+  J["~/.flywheel/projects.json<br/>codexResidencyPatrol: true"] --> F["findResidentCodexLeadTargets()<br/>唯一真相源(不改)"]
+  F --> B["Bridge 巡逻(已有)<br/>心跳/轮询停滞 → 有界 kickstart<br/>告警 codex_lead_residency_stalled"]
+  F --> O["Lead 进程内观察者(已有)<br/>lifecycle.jsonl + heartbeat.json"]
+  F --> G["Lead 进程内 pane 守卫(本单)<br/>连续 9 次窗口丢失 → 告警 tui_window_lost"]
+  X["写死的两个身份<br/>(flywheel,codex-infra-bot-lead)<br/>(raya,raya)"] -. 删除 .-> G

@@ -1,0 +1,11 @@
+stateDiagram-v2
+  [*] --> 读名册: Lead 进程启动
+  读名册 --> 不装守卫: 名册读失败 / 该 Lead 未 opt-in / 三元不匹配
+  读名册 --> 找脚本: 名册里有这个 (project, lead, leadKey)
+  找脚本 --> 不装守卫: 找不到 lead-alert.sh(打 DISABLED 日志)
+  找脚本 --> 已武装: 打 ARMED 日志
+  已武装 --> 计数: 每 20s 一次窗口活性检查
+  计数 --> 已武装: 窗口在 ⇒ 计数清零,结束当前 episode
+  计数 --> 告警一次: 连续 9 次丢失且无进行中 episode
+  告警一次 --> 计数: 写 episode latch 文件
+  不装守卫 --> [*]
