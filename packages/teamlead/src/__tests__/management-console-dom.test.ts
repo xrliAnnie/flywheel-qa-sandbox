@@ -265,6 +265,36 @@ function snapshot() {
 							{
 								id: "implement",
 								name: "Implement",
+								policy: {
+									status: "ready",
+									nodeId: "implement",
+									label: "实现",
+									type: "implement",
+									defaultModel: "codex",
+									source:
+										".flywheel/agents/registry.yaml#graphs.code.policies.implement",
+									models: [
+										{
+											alias: "fable",
+											provider: "anthropic",
+											vendor: "claude",
+											model: "claude-fable-5-1",
+											label: "Fable 5.1",
+											allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
+											defaultEffort: "high",
+										},
+										{
+											alias: "codex",
+											provider: "openai",
+											vendor: "codex",
+											model: "gpt-5.6-sol",
+											label: "GPT 5.6 Sol",
+											allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
+											defaultEffort: "xhigh",
+										},
+									],
+									allowedSelections: [],
+								},
 								dispatch: {
 									...managed("dag-target", {
 										provider: "anthropic",
@@ -989,6 +1019,70 @@ describe("management console browser interactions", () => {
 		});
 	});
 
+	it("applies a model change when a Lead already has a concrete model", async () => {
+		(
+			document.querySelector('[data-group="infra"]') as HTMLButtonElement
+		).click();
+		const model = document.querySelector(
+			'[data-model-target="lead-infra-target"] [data-model-part="model"]',
+		) as HTMLSelectElement;
+		model.value = "claude-fable-5";
+		model.dispatchEvent(new Event("change", { bubbles: true }));
+		(document.getElementById("stage") as HTMLButtonElement).click();
+
+		await vi.waitFor(() =>
+			expect(
+				requests.some((request) => request.path === "/api/fleet/changes/stage"),
+			).toBe(true),
+		);
+		const stage = requests.find(
+			(request) => request.path === "/api/fleet/changes/stage",
+		)!;
+		expect(stage.body).toMatchObject({
+			changes: [
+				{
+					targetId: "lead-infra-target",
+					desiredValue: {
+						provider: "anthropic",
+						model: "claude-fable-5",
+						effort: null,
+					},
+				},
+			],
+		});
+	});
+
+	it("applies a model change when a Cron already has a concrete model", async () => {
+		(document.querySelector('[data-tab="cron"]') as HTMLButtonElement).click();
+		const model = document.querySelector(
+			'[data-model-target="cron-model-target"] [data-model-part="model"]',
+		) as HTMLSelectElement;
+		model.value = "claude-opus-4-8";
+		model.dispatchEvent(new Event("change", { bubbles: true }));
+		(document.getElementById("stage") as HTMLButtonElement).click();
+
+		await vi.waitFor(() =>
+			expect(
+				requests.some((request) => request.path === "/api/fleet/changes/stage"),
+			).toBe(true),
+		);
+		const stage = requests.find(
+			(request) => request.path === "/api/fleet/changes/stage",
+		)!;
+		expect(stage.body).toMatchObject({
+			changes: [
+				{
+					targetId: "cron-model-target",
+					desiredValue: {
+						provider: "anthropic",
+						model: "claude-opus-4-8",
+						effort: null,
+					},
+				},
+			],
+		});
+	});
+
 	it("does not advertise nullable provider/model choices to concrete-only DAG and cron writers", () => {
 		(document.querySelector('[data-tab="dag"]') as HTMLButtonElement).click();
 		(
@@ -1014,7 +1108,7 @@ describe("management console browser interactions", () => {
 		expect([...cronEffort.options].map((option) => option.value)).toEqual([""]);
 	});
 
-	it("renders a persisted workflow alias as its canonical model and preserves the alias on effort edits", async () => {
+	it("renders a persisted workflow alias through its shape option and preserves it on effort edits", async () => {
 		(document.querySelector('[data-tab="dag"]') as HTMLButtonElement).click();
 		(
 			document.querySelector('[data-kind="engineering"]') as HTMLButtonElement
@@ -1023,7 +1117,7 @@ describe("management console browser interactions", () => {
 		const model = holder.querySelector(
 			'[data-model-part="model"]',
 		) as HTMLSelectElement;
-		expect(model.value).toBe("claude-fable-5-1");
+		expect(model.value).toBe("fable");
 		expect(
 			[...model.options].map((option) => option.textContent),
 		).not.toContain("已退役 · fable");
@@ -1047,6 +1141,44 @@ describe("management console browser interactions", () => {
 				{
 					targetId: "dag-target",
 					desiredValue: { model: "fable", effort: "high" },
+				},
+			],
+		});
+	});
+
+	it("derives DAG provider changes and default effort from the node policy", async () => {
+		(document.querySelector('[data-tab="dag"]') as HTMLButtonElement).click();
+		(
+			document.querySelector('[data-kind="engineering"]') as HTMLButtonElement
+		).click();
+		const provider = document.querySelector(
+			'[data-model-target="dag-target"] [data-model-part="provider"]',
+		) as HTMLSelectElement;
+		expect([...provider.options].map((option) => option.value)).toEqual([
+			"anthropic",
+			"openai",
+		]);
+
+		provider.value = "openai";
+		provider.dispatchEvent(new Event("change", { bubbles: true }));
+		(document.getElementById("stage") as HTMLButtonElement).click();
+		await vi.waitFor(() =>
+			expect(
+				requests.some((request) => request.path === "/api/fleet/changes/stage"),
+			).toBe(true),
+		);
+		const stage = requests.find(
+			(request) => request.path === "/api/fleet/changes/stage",
+		)!;
+		expect(stage.body).toMatchObject({
+			changes: [
+				{
+					targetId: "dag-target",
+					desiredValue: {
+						provider: "openai",
+						model: "codex",
+						effort: "xhigh",
+					},
 				},
 			],
 		});

@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
+import { parse, stringify } from "yaml";
 import { readManagementDags } from "../bridge/management-dag-source.js";
 import { applyManagementDagEdit } from "../bridge/management-dag-writer.js";
 import { createManagementDagWriter } from "../bridge/management-existing-writers.js";
@@ -27,6 +28,109 @@ async function setup() {
 }
 
 describe("management DAG writer", () => {
+	it("publishes the shape-supported max effort for code QA", async () => {
+		const store = await StateStore.create(":memory:");
+		const { importWorkflowMenuSeeds } = await import("../workflow-menu.js");
+		importWorkflowMenuSeeds(store);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "code",
+			templateId: "tpl_code",
+			updatedBy: "system:menu-binding-reconcile",
+		});
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags[0]!;
+		const qa = dag.nodes.find((node) => node.nodeId === "qa")!;
+
+		expect(
+			applyManagementDagEdit({
+				store,
+				targetId: qa.dispatch.targetId,
+				expectedRevision: dag.revision,
+				expectedDigest: dag.digest,
+				desired: {
+					provider: "anthropic",
+					model: "opus",
+					effort: "max",
+				},
+				actor: "founder",
+			}),
+		).toEqual({ status: "published", revision: 2 });
+		const manifest = JSON.parse(
+			store.getWorkflowTemplateRevision("tpl_code", 2)!.manifest,
+		) as { nodes: Array<Record<string, unknown>> };
+		expect(manifest.nodes.find((node) => node.id === "qa")).toMatchObject({
+			model: "opus",
+			effort: "max",
+		});
+		store.close();
+	});
+
+	it("refuses a founder-owned named binding when its shape has been removed", async () => {
+		const store = await StateStore.create(":memory:");
+		const { importWorkflowMenuSeeds } = await import("../workflow-menu.js");
+		importWorkflowMenuSeeds(store);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "code",
+			templateId: "tpl_code",
+			updatedBy: "system:menu-binding-reconcile",
+		});
+		const first = store.getWorkflowTemplateRevision("tpl_code", 1)!;
+		store.createAndPublishWorkflowTemplateRevision({
+			templateId: "tpl_code",
+			manifest: JSON.parse(first.manifest),
+			expectedRevision: 1,
+			createdBy: "founder",
+		});
+
+		const root = mkdtempSync(join(tmpdir(), "fly2366-writer-shape-removed-"));
+		const registryPath = join(root, "registry.yaml");
+		const bundledPath = new URL(
+			"../../../../.flywheel/agents/registry.yaml",
+			import.meta.url,
+		);
+		const registry = parse(readFileSync(bundledPath, "utf8")) as {
+			graphs: Record<string, unknown>;
+		};
+		delete registry.graphs.code;
+		writeFileSync(registryPath, stringify(registry));
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+			registryPath,
+		}).projectDags[0]!.dags[0]!;
+		const targetId = dag.nodes.find((node) => node.nodeId === "qa")!.dispatch
+			.targetId;
+		const writer = createManagementDagWriter({
+			store,
+			projectNames: () => ["flywheel"],
+			actor: "founder",
+			registryPath,
+		});
+		const target = await writer.resolve(targetId);
+		const before = store.listWorkflowTemplateRevisions("tpl_code").length;
+
+		expect(target?.writeCapability).toMatchObject({
+			writable: false,
+			reason: "policy_shape_removed",
+		});
+		expect(
+			await writer.preflight(
+				target!,
+				{ provider: "anthropic", model: "opus", effort: "high" },
+				target!.sourceRevision,
+			),
+		).toMatchObject({ ok: false, code: "readonly" });
+		expect(store.listWorkflowTemplateRevisions("tpl_code")).toHaveLength(
+			before,
+		);
+		store.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+
 	it("retains the alias through the unified management writer adapter", async () => {
 		const { store, dag } = await setup();
 		const writer = createManagementDagWriter({

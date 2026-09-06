@@ -5,6 +5,7 @@ import type {
 	ModelCatalog,
 	ModelSurface,
 } from "flywheel-config";
+import type { WorkflowMenuNodePolicy } from "../workflow-menu-policy.js";
 import type { WorkflowNodeType } from "../workflow-template.js";
 
 export const MANAGEMENT_SCHEMA_VERSION = 2 as const;
@@ -183,6 +184,10 @@ export interface ManagementDagNodeView {
 	id: string;
 	nodeId: string;
 	name: string;
+	policy:
+		| ({ status: "ready" } & WorkflowMenuNodePolicy)
+		| { status: "unavailable"; reason: string }
+		| { status: "not_applicable"; reason: string };
 	/** Canonical display identity while `current.model` retains source spelling. */
 	dispatch: ManagedValue<ModelSelection> & { canonicalModel: string };
 }

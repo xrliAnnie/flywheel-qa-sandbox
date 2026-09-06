@@ -807,11 +807,13 @@ export function createManagementDagWriter(input: {
 	store: StateStore;
 	projectNames(): readonly string[];
 	actor: string;
+	registryPath?: string;
 }): ManagementWriter {
 	const resolve = (targetId: string): ManagementResolvedTarget | null => {
 		for (const section of readManagementDags({
 			reader: input.store,
 			projectNames: input.projectNames(),
+			...(input.registryPath ? { registryPath: input.registryPath } : {}),
 		}).projectDags) {
 			for (const dag of section.dags) {
 				for (const node of dag.nodes) {

@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { parse, stringify } from "yaml";
 import {
 	createManagementDagProvider,
 	readManagementDags,
@@ -9,6 +13,13 @@ import {
 	importLegacyWorkflowSeeds,
 	legacyWorkflowSeeds,
 } from "./fixtures/legacy-workflow-manifests.js";
+
+const scratch: string[] = [];
+
+afterEach(() => {
+	vi.restoreAllMocks();
+	while (scratch.length > 0) rmSync(scratch.pop()!, { recursive: true });
+});
 
 async function catalog(templateId = "tpl_eng_heavy") {
 	const store = await StateStore.create(":memory:");
@@ -120,6 +131,18 @@ describe("management DAG source", () => {
 			["implement", "实现"],
 			["qa", "QA 验证"],
 		]);
+		expect(
+			dag.nodes.find((node) => node.nodeId === "qa")?.policy,
+		).toMatchObject({
+			status: "ready",
+			source: ".flywheel/agents/registry.yaml#graphs.code.policies.qa",
+			models: [
+				{
+					alias: "opus",
+					allowedEfforts: ["low", "medium", "high", "max"],
+				},
+			],
+		});
 		expect(dag.graph).toEqual({
 			nodes: [
 				{
@@ -176,6 +199,135 @@ describe("management DAG source", () => {
 				},
 			],
 		});
+		store.close();
+	});
+
+	it("fails closed when a named shape disappears after its template becomes founder-owned", async () => {
+		const store = await StateStore.create(":memory:");
+		const { importWorkflowMenuSeeds } = await import("../workflow-menu.js");
+		importWorkflowMenuSeeds(store);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "code",
+			templateId: "tpl_code",
+			updatedBy: "system:menu-binding-reconcile",
+		});
+		const first = store.getWorkflowTemplateRevision("tpl_code", 1)!;
+		expect(
+			store.createAndPublishWorkflowTemplateRevision({
+				templateId: "tpl_code",
+				manifest: JSON.parse(first.manifest),
+				expectedRevision: 1,
+				createdBy: "founder",
+			}),
+		).toEqual({ status: "published", revision: 2 });
+		expect(store.getWorkflowTemplate("tpl_code")?.seed_owner).toBe("founder");
+
+		const root = mkdtempSync(join(tmpdir(), "fly2366-shape-removed-"));
+		scratch.push(root);
+		const registryPath = join(root, "registry.yaml");
+		const bundledPath = new URL(
+			"../../../../.flywheel/agents/registry.yaml",
+			import.meta.url,
+		);
+		const registry = parse(readFileSync(bundledPath, "utf8")) as {
+			graphs: Record<string, unknown>;
+		};
+		delete registry.graphs.code;
+		writeFileSync(registryPath, stringify(registry));
+
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+			registryPath,
+		}).projectDags[0]!.dags[0]!;
+
+		expect(dag.nodes).not.toHaveLength(0);
+		expect(
+			dag.nodes.every(
+				(node) =>
+					node.policy.status === "unavailable" &&
+					node.policy.reason === "policy_shape_removed" &&
+					!node.dispatch.writeCapability.writable,
+			),
+		).toBe(true);
+		store.close();
+	});
+
+	it("fails closed when a named binding retains a stale template id", async () => {
+		const store = await StateStore.create(":memory:");
+		const { importWorkflowMenuSeeds } = await import("../workflow-menu.js");
+		importWorkflowMenuSeeds(store);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "code",
+			templateId: "tpl_code",
+			updatedBy: "system:menu-binding-reconcile",
+		});
+		const root = mkdtempSync(join(tmpdir(), "fly2366-template-drift-"));
+		scratch.push(root);
+		const registryPath = join(root, "registry.yaml");
+		const registry = parse(
+			readFileSync(
+				new URL("../../../../.flywheel/agents/registry.yaml", import.meta.url),
+				"utf8",
+			),
+		) as { graphs: { code: { templateId: string } } };
+		registry.graphs.code.templateId = "tpl_code_v2";
+		writeFileSync(registryPath, stringify(registry));
+
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+			registryPath,
+		}).projectDags[0]!.dags[0]!;
+
+		expect(
+			dag.nodes.every(
+				(node) =>
+					node.policy.status === "unavailable" &&
+					node.policy.reason === "policy_binding_drift" &&
+					!node.dispatch.writeCapability.writable,
+			),
+		).toBe(true);
+		store.close();
+	});
+
+	it("keeps named DAG values visible but readonly when policy parsing fails", async () => {
+		const report = vi.spyOn(console, "error").mockImplementation(() => {});
+		const store = await StateStore.create(":memory:");
+		const { importWorkflowMenuSeeds } = await import("../workflow-menu.js");
+		importWorkflowMenuSeeds(store);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "code",
+			templateId: "tpl_code",
+			updatedBy: "system:menu-binding-reconcile",
+		});
+		const root = mkdtempSync(join(tmpdir(), "fly2366-policy-invalid-"));
+		scratch.push(root);
+		const registryPath = join(root, "registry.yaml");
+		writeFileSync(registryPath, "graphs: [not-valid");
+
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+			registryPath,
+		}).projectDags[0]!.dags[0]!;
+
+		expect(dag.nodes).not.toHaveLength(0);
+		expect(report).toHaveBeenCalledWith(
+			"[management-dag-source] workflow menu policy unavailable",
+			expect.any(Error),
+		);
+		expect(
+			dag.nodes.every(
+				(node) =>
+					node.policy.status === "unavailable" &&
+					node.policy.reason === "policy_catalog_unavailable" &&
+					!node.dispatch.writeCapability.writable,
+			),
+		).toBe(true);
 		store.close();
 	});
 

@@ -45,6 +45,7 @@ function workflowEffort(
 		case "medium":
 		case "high":
 		case "xhigh":
+		case "max":
 			return value;
 		default:
 			throw new Error(`unsupported workflow effort: ${value}`);

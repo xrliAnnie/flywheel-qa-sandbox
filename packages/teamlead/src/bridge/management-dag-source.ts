@@ -11,6 +11,10 @@ import {
 	workflowLoopDisplayLabel,
 	workflowNodeDisplayLabel,
 } from "../workflow-display-labels.js";
+import {
+	buildWorkflowMenuPolicyCatalog,
+	type WorkflowMenuPolicyCatalog,
+} from "../workflow-menu-policy.js";
 import { validateWorkflowManifest } from "../workflow-template.js";
 import {
 	buildTargetId,
@@ -69,8 +73,9 @@ function projectDag(
 	projectName: string,
 	binding: WorkflowCategoryBindingRow,
 	reader: WorkflowCatalogReader,
+	policyCatalog: WorkflowMenuPolicyCatalog | undefined,
+	modelSnapshot: ReturnType<typeof getModelConfigSnapshot>,
 ): ManagementDagView {
-	const modelSnapshot = getModelConfigSnapshot();
 	const template = reader.getWorkflowTemplate(binding.template_id);
 	try {
 		if (!template) {
@@ -136,10 +141,44 @@ function projectDag(
 							runtimeVendor: node.vendor,
 						}),
 				);
+				const shapePolicy = policyCatalog?.taskCategories.find(
+					(category) => category.taskCategory === binding.task_category,
+				);
+				const categoryPolicy =
+					shapePolicy?.templateId === binding.template_id
+						? shapePolicy
+						: undefined;
+				const nodePolicy = categoryPolicy?.nodes.find(
+					(policy) => policy.nodeId === node.id,
+				);
+				const unavailableReason =
+					binding.task_category === "*"
+						? undefined
+						: !policyCatalog
+							? "policy_catalog_unavailable"
+							: !shapePolicy
+								? "policy_shape_removed"
+								: shapePolicy.templateId !== binding.template_id
+									? "policy_binding_drift"
+									: !nodePolicy
+										? "policy_node_missing"
+										: undefined;
+				const policy = nodePolicy
+					? ({ status: "ready", ...nodePolicy } as const)
+					: unavailableReason
+						? ({
+								status: "unavailable",
+								reason: unavailableReason,
+							} as const)
+						: ({
+								status: "not_applicable",
+								reason: "workflow binding has no matching shape policy",
+							} as const);
 				return {
 					id: `${template.template_id}/${node.id}`,
 					nodeId: node.id,
 					name: workflowNodeDisplayLabel(template.template_id, node),
+					policy,
 					dispatch: {
 						canonicalModel: supported ? registered!.id : node.model,
 						targetId: buildTargetId("dag", [
@@ -162,7 +201,10 @@ function projectDag(
 							hint: `${template.template_id}@${revision.revision}`,
 						},
 						writeCapability: {
-							writable: true,
+							writable: policy.status !== "unavailable",
+							...(policy.status === "unavailable"
+								? { reason: policy.reason }
+								: {}),
 							consequence: "new-run" as const,
 							requiresAcknowledgement: true,
 						},
@@ -187,14 +229,37 @@ function projectDag(
 export function readManagementDags(input: {
 	reader: WorkflowCatalogReader;
 	projectNames: readonly string[];
+	registryPath?: string;
 }): ManagementDagProjection {
+	const modelSnapshot = getModelConfigSnapshot();
+	let policyCatalog: WorkflowMenuPolicyCatalog | undefined;
+	try {
+		policyCatalog = buildWorkflowMenuPolicyCatalog({
+			...(input.registryPath ? { registryPath: input.registryPath } : {}),
+			modelSnapshot,
+		});
+	} catch (error) {
+		console.error(
+			"[management-dag-source] workflow menu policy unavailable",
+			error,
+		);
+		policyCatalog = undefined;
+	}
 	const projectDags = [...new Set(input.projectNames)]
 		.sort((a, b) => a.localeCompare(b))
 		.map((projectName) => ({
 			projectName,
 			dags: input.reader
 				.listWorkflowCategoryBindings(projectName)
-				.map((binding) => projectDag(projectName, binding, input.reader))
+				.map((binding) =>
+					projectDag(
+						projectName,
+						binding,
+						input.reader,
+						policyCatalog,
+						modelSnapshot,
+					),
+				)
 				.sort((a, b) => a.title.localeCompare(b.title)),
 		}));
 	return {

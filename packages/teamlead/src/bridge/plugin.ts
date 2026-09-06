@@ -143,6 +143,7 @@ import {
 	loadWorkflowMenuSeeds,
 	reconcileMenuCategoryBindings,
 } from "../workflow-menu.js";
+import { buildWorkflowMenuPolicyCatalog } from "../workflow-menu-policy.js";
 import {
 	isLoopTargetNode,
 	parseWorkflowRunSnapshot,
@@ -1616,10 +1617,20 @@ export function createBridgeApp(
 			tokenAuthMiddleware(config.apiToken),
 			async (_req, res) => res.json(await buildCapacitySnapshot(capacityDeps)),
 		);
+		app.get(
+			"/api/workflow/menu-policies",
+			tokenAuthMiddleware(config.apiToken),
+			(_req, res) => res.json(buildWorkflowMenuPolicyCatalog()),
+		);
 	} else {
 		app.use("/api/capacity", (_req, res) => {
 			res.status(503).json({
 				error: "capacity API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+		app.use("/api/workflow/menu-policies", (_req, res) => {
+			res.status(503).json({
+				error: "workflow menu policy API requires TEAMLEAD_API_TOKEN",
 			});
 		});
 	}
