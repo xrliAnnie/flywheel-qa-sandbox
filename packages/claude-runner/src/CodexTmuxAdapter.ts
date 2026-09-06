@@ -89,10 +89,16 @@ import type {
 } from "./codex-execution-ownership.js";
 import {
 	assertCodexSourceIdentity,
+	type CodexAgentHomeHandle,
+	type CodexAgentHomeIdentity,
 	flywheelCodexBin,
+	provisionCodexAgentHome,
 	provisionCodexHome,
 	rawCodexBin,
+	releaseCodexAgentHomeLease,
 	removeCodexHome,
+	resolveExecutionCodexHome,
+	retireCodexExecutionHome,
 	scrubCodexHomeCredential,
 	stripInheritedSecretEnv,
 } from "./codex-home.js";
@@ -723,6 +729,15 @@ export class CodexTmuxAdapter implements IAdapter {
 		try {
 			snapshot = readCodexLaunchSnapshot(ctx.executionId);
 		} catch (error) {
+			if (ctx.codexAgentHome?.createdLease) {
+				try {
+					await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+				} catch (releaseError) {
+					console.warn(
+						`[CodexTmuxAdapter] keyed_home_retire_failed exec=${ctx.executionId}: ${safeErr(releaseError)}`,
+					);
+				}
+			}
 			return this.ownershipFailureResult(ctx, safeErr(error));
 		}
 		return this.runWithOwnership(ctx, "rescue", {
@@ -742,16 +757,85 @@ export class CodexTmuxAdapter implements IAdapter {
 	): Promise<AdapterExecutionResult> {
 		const lease = this.executionOwners?.claim(ctx.executionId, kind);
 		if (this.executionOwners && !lease) {
+			if (ctx.codexAgentHome?.createdLease) {
+				try {
+					await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+				} catch (error) {
+					console.warn(
+						`[CodexTmuxAdapter] keyed_home_retire_failed exec=${ctx.executionId}: ${safeErr(error)}`,
+					);
+				}
+			}
 			return this.ownershipFailureResult(
 				ctx,
 				`execution ${ctx.executionId} already has a process-local owner`,
 			);
 		}
+		let retired = false;
+		let retirement: Promise<void> | undefined;
+		const retireOnce = async (): Promise<void> => {
+			if (retired) return;
+			if (retirement) return retirement;
+			retirement = this.retireExecutionCredential(ctx)
+				.then(() => {
+					retired = true;
+				})
+				.finally(() => {
+					retirement = undefined;
+				});
+			return retirement;
+		};
 		try {
-			return await this.executeOwned(ctx, recovery);
+			return await this.executeOwned(ctx, recovery, retireOnce);
 		} finally {
 			lease?.release();
+			if (!ctx.codexAgentHome) {
+				await retireOnce();
+			} else {
+				try {
+					await retireOnce();
+				} catch (error) {
+					console.warn(
+						`[CodexTmuxAdapter] keyed_home_retire_failed exec=${ctx.executionId}: ${safeErr(error)}`,
+					);
+				}
+			}
 		}
+	}
+
+	private agentHomeHandle(ctx: AdapterExecutionContext): CodexAgentHomeHandle {
+		const agentHome = ctx.codexAgentHome;
+		if (!agentHome) throw new Error("missing admitted codex agent home");
+		return {
+			project: agentHome.project,
+			role: agentHome.role,
+			home: agentHome.home,
+			executionId: ctx.executionId,
+			token: agentHome.token,
+		};
+	}
+
+	private async retireExecutionCredential(
+		ctx: AdapterExecutionContext,
+	): Promise<void> {
+		if (!ctx.codexAgentHome) {
+			await this.scrubCredential(ctx.executionId);
+			return;
+		}
+		const expected = {
+			project: ctx.codexAgentHome.project,
+			role: ctx.codexAgentHome.role,
+		};
+		const resolution = resolveExecutionCodexHome(ctx.executionId, expected);
+		if (resolution.kind === "prepublished") {
+			await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+			return;
+		}
+		if (resolution.kind === "unknown" && ctx.codexAgentHome.createdLease) {
+			await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+			return;
+		}
+		await retireCodexExecutionHome(ctx.executionId, expected);
 	}
 
 	private ownershipFailureResult(
@@ -771,7 +855,17 @@ export class CodexTmuxAdapter implements IAdapter {
 	private async executeOwned(
 		ctx: AdapterExecutionContext,
 		recovery?: CodexRecoveryExecution,
+		retireOnce: () => Promise<void> = () => this.retireExecutionCredential(ctx),
 	): Promise<AdapterExecutionResult> {
+		if (ctx.codexAgentHome) {
+			this.mergeSessionState(ctx.executionId, {
+				codexAgentHome: {
+					project: ctx.codexAgentHome.project,
+					role: ctx.codexAgentHome.role,
+					home: ctx.codexAgentHome.home,
+				},
+			});
+		}
 		if (!this.preflightDone) {
 			await this.asyncExecFileFn("tmux", ["-V"], { timeoutMs: 10_000 });
 			await this.asyncExecFileFn("codex", ["--version"], {
@@ -824,8 +918,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		// holds a LIVE GH_TOKEN, so EVERY exit must scrub it (P5) — the whole rest
 		// of execute() runs inside the try/finally below (Codex M4d HIGH-5: a
 		// throw between here and runGoal must not leak the token).
-		const codexHome = provisionCodexHome({
-			executionId: ctx.executionId,
+		const provisionOptions = {
 			ghToken,
 			registryPath: this.codexAccountRegistryPath,
 			ledgerRoot: this.codexAccountLedgerRoot,
@@ -847,7 +940,16 @@ export class CodexTmuxAdapter implements IAdapter {
 			...(ctx.codexMattSkillsSourceDir && {
 				codexMattSkillsSourceDir: ctx.codexMattSkillsSourceDir,
 			}),
-		});
+		};
+		const codexHome = ctx.codexAgentHome
+			? await provisionCodexAgentHome(this.agentHomeHandle(ctx), {
+					...provisionOptions,
+					skillFrameworkMode: ctx.codexAgentHome.assemblyArm,
+				})
+			: provisionCodexHome({
+					...provisionOptions,
+					executionId: ctx.executionId,
+				});
 
 		let tmuxWindow: string | undefined;
 		let founderWindowId: string | undefined;
@@ -1668,7 +1770,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					}
 				}
 				try {
-					this.scrubCredential(ctx.executionId);
+					await retireOnce();
 				} catch (err) {
 					teardownError ??= err;
 				}
@@ -1763,7 +1865,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						// non-fatal (legacy behavior)
 					}
 				}
-				this.scrubCredential(ctx.executionId);
+				await retireOnce();
 				if (windowName) {
 					try {
 						this.killWindow(
@@ -2008,6 +2110,31 @@ export class CodexTmuxAdapter implements IAdapter {
 				throw new Error(`invalid session state object in ${path}`);
 			}
 			current = parsed as Record<string, unknown>;
+		}
+		if (
+			Object.hasOwn(patch, "codexAgentHome") &&
+			Object.hasOwn(current, "codexAgentHome")
+		) {
+			const prior = current.codexAgentHome;
+			const next = patch.codexAgentHome;
+			const same =
+				typeof prior === "object" &&
+				prior !== null &&
+				!Array.isArray(prior) &&
+				typeof next === "object" &&
+				next !== null &&
+				!Array.isArray(next) &&
+				(prior as Record<string, unknown>).home ===
+					(next as Record<string, unknown>).home &&
+				(prior as Record<string, unknown>).project ===
+					(next as Record<string, unknown>).project &&
+				(prior as Record<string, unknown>).role ===
+					(next as Record<string, unknown>).role;
+			if (!same) {
+				throw new Error(
+					`codexAgentHome is set-once for ${executionId}; refusing drift`,
+				);
+			}
 		}
 		const tempPath = join(
 			stateDir,
@@ -2480,14 +2607,40 @@ export class CodexTmuxAdapter implements IAdapter {
 }
 
 // re-exported for tests that need to clean state dirs
-export function removeCodexSessionState(executionId: string): void {
+export function removeCodexSessionState(
+	executionId: string,
+	expected?: CodexAgentHomeIdentity,
+): ReturnType<typeof removeCodexHome> {
+	const resolution = resolveExecutionCodexHome(executionId, expected);
+	if (resolution.kind === "unknown") {
+		console.warn(
+			`[CodexTmuxAdapter] remove_home_unresolved exec=${executionId} reason=${resolution.reason}`,
+		);
+		return { removed: false, reason: "unresolved" };
+	}
+	if (resolution.kind === "keyed" || resolution.kind === "prepublished") {
+		const protectedResult = removeCodexHome(executionId, process.env, expected);
+		try {
+			rmSync(codexSessionStateDir(executionId), {
+				recursive: true,
+				force: true,
+			});
+		} catch (error) {
+			console.warn(
+				`[CodexTmuxAdapter] remove_session_state_failed exec=${executionId}: ${safeErr(error)}`,
+			);
+		}
+		return protectedResult;
+	}
 	try {
 		rmSync(codexSessionStateDir(executionId), { recursive: true, force: true });
-	} catch {
-		// best-effort
+	} catch (error) {
+		console.warn(
+			`[CodexTmuxAdapter] remove_session_state_failed exec=${executionId}: ${safeErr(error)}`,
+		);
 	}
 	// FLY-123 P5: full retirement also removes the per-runner CODEX_HOME
 	// (auth shell + sessions). Credential was already scrubbed at terminal;
 	// this reclaims the whole dir.
-	removeCodexHome(executionId);
+	return removeCodexHome(executionId);
 }

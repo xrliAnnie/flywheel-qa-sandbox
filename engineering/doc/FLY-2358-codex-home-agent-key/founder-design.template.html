@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex 角色家</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, "PingFang SC", "Helvetica Neue", sans-serif; line-height: 1.6; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; color: #1a365d; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; font-family: "SF Mono", Menlo, monospace; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin: 18px 0; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; } .card.amber { border-left-color: #ff9500; } .card.red { border-left-color: #ff3b30; } .card.purple { border-left-color: #af52de; } .card.gray { border-left-color: #86868b; }
+  .card h2 { font-size: 18px; margin: 0 0 10px; }
+  .card h3 { font-size: 15px; margin: 14px 0 6px; color: #1a365d; }
+  .lede { font-size: 17px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; background: #f2f2f7; padding: 1px 5px; border-radius: 4px; }
+  .term { border-bottom: 1px dotted #86868b; }
+  .note { color: #515154; font-size: 14px; }
+  .diagram { overflow-x: auto; background: #fff; border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px; margin: 10px 0; }
+  .diagram svg { display: block; height: auto; max-width: 100%; }
+  .diagram.wide svg { width: 1400px; max-width: none; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin-right: 6px; vertical-align: middle; }
+  .badge.keep { background: #e8f8ee; color: #1e7f3f; } .badge.new { background: #e7f0ff; color: #0a56c2; } .badge.no { background: #ffecec; color: #b3261e; } .badge.risk { background: #fff3e0; color: #a35a00; }
+  ul { padding-left: 20px; } li { margin: 4px 0; }
+  .comment { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e5e5ea; }
+  .comment label { display: block; font-size: 12px; color: #86868b; margin-bottom: 4px; }
+  .comment textarea { width: 100%; box-sizing: border-box; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 14px; resize: vertical; background: #fafafa; }
+  .comment textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  .summary pre { white-space: pre-wrap; word-break: break-word; background: #f2f2f7; border-radius: 8px; padding: 12px; font-size: 13px; max-height: 320px; overflow: auto; }
+  .btn { display: inline-block; background: #007aff; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer; margin: 6px 8px 6px 0; }
+  .btn.secondary { background: #e5e5ea; color: #1d1d1f; }
+  .status { font-size: 13px; color: #86868b; margin-left: 4px; }
+  .chunk { margin: 10px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Codex 角色家:一个 agent 在一个项目里,永远回到同一个家</h1>
+  <div class="meta">FLY-2358 · 设计说明 · 2026-09-05 · 分支 flywheel-FLY-2358 · Epic FLY-2355 · 上游 PRD FLY-2119 §5.2/§5.3/§5.5 · {{REVIEW_LINE}}</div>
+
+  <section class="card green" data-section="一句话总结">
+    <h2>一句话总结</h2>
+    <p class="lede">今天每张任务单的 Codex 都住在一个一次性的「家」(<span class="term">CODEX_HOME</span>:Codex 存放登录凭据、配置、会话记录和记忆的那个目录)里,任务结束家就被遗弃,攒下的记忆一起被遗弃。本设计把家改成按「<strong>哪个 agent × 哪个项目</strong>」分配:同一个角色在同一个项目里,每张单都回到同一个家;家第一次用到才建、永远不随任务删除;两张单同时跑也共用这一个家 —— 这样 Codex 自带的记忆机制不用改一行就能把上一单学到的东西带进下一单。</p>
+    <div class="comment"><label>对这一节的意见(自动保存在本机浏览器)</label><textarea data-comment-for="一句话总结" placeholder="写下你的意见…"></textarea></div>
+  </section>
+
+  <section class="card amber" data-section="背景:问题出在哪">
+    <h2>背景:问题出在哪</h2>
+    <p>本轮实测(2026-09-05):磁盘上有 <strong>867</strong> 个一次性家,其中 <strong>409</strong> 个真的攒出了原始记忆、<strong>383</strong> 个攒出了整理后的记忆索引。也就是说 Codex 的记忆机制一直在工作,问题不是「没开」,是「<strong>攒了但回不来</strong>」—— 下一张单换了家,什么都带不走。</p>
+    <p>PRD(FLY-2119)已经定了键 = <code>(agent, 项目)</code>,并要求两件事<strong>同批上线</strong>:改键,以及「角色家不随任务删除」的保护。原因很具体:删家的函数已经写好、<code>catch</code> 是空的,今天没删是因为没人调它;一旦以后接上「跑完清理」,而家已经按角色命名、保护又没做,第一次清理就会<strong>无声地删光那个角色的全部记忆</strong>。</p>
+    <p>本单是三段式(设计 → 实现 → QA)的设计段,除了把改法写清楚,还必须先回答一道题:<strong>同一个 (agent, 项目) 同时跑两张单时,家怎么办?</strong>(这是常态:写这份文档时,flywheel 项目里就有 4 个 implement 角色的 Codex 在同时跑。)</p>
+    <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="背景:问题出在哪" placeholder="写下你的意见…"></textarea></div>
+  </section>
+
+  <section class="card purple" data-section="并发裁定">
+    <h2>并发裁定:选「共享持久家」,不选「一次性家 + 共享记忆点」</h2>
+    <p>两条路都摆在桌上:<strong>(a)</strong> 一个 (agent, 项目) 一个家,几张单同时跑就同时住在里面;<strong>(b)</strong> 家仍然一次一个,只把记忆目录软链到一个跨任务的共享点。</p>
+    <div class="diagram">{{D3}}</div>
+    <p><strong>选 (a) 的决定性理由:</strong>Codex 的记忆流水线(<span class="term">phase1</span>:启动时从本家的会话记录里抽取「闲置超过 6 小时」的会话写成原始记忆;<span class="term">phase2</span>:拿一把全局锁把原始记忆整理进记忆索引)<strong>只在「同一个家的下一次启动」时才会处理上一轮的会话</strong>。(a) 让这件事零机制发生;(b) 的一次性家没有「下一次启动」,每张单最后 6 小时内的会话永远抽不到,要补就得再造一条回流路并且动 PRD 明令不许动的节流闸。</p>
+    <h3>证据表:哪些是旧证据、哪些是本轮实测</h3>
+    <table>
+      <thead><tr><th>问题</th><th>来源</th><th>结论</th></tr></thead>
+      <tbody>
+        <tr><td>几个进程共用一家时,记忆整理的全局锁串不串行</td><td>旧:FLY-2119 合成实验 + 真会话两臂(09-02);<strong>本轮</strong>:合成实验原样复现(E2)</td><td>串行:8 个进程同时抢,恰好 1 个拿到、7 个被挡,5 轮全部如此</td></tr>
+        <tr><td>真二进制(codex 0.153.2)下两个 <span class="term">app-server</span>(Codex 的常驻后台进程,runner 通过它下达任务)能否同时住一个家</td><td><strong>本轮</strong> E1,零凭据</td><td>能:双进程都活、各自的通信口都在、无锁冲突;阴性对照(同一个通信口起第二个)如期失败</td></tr>
+        <tr><td>同家两个真会话并发,登录凭据会不会互相打坏</td><td>旧:FLY-2119 真凭据三臂(09-02,business 账号)</td><td>正常使用下没撞:五个会话全部成功、无凭据类错误、且确认真的走到了刷新点</td></tr>
+        <tr><td>凭据文件写法有没有撕裂窗口</td><td>旧:源码 + 饱和写实验(09-02)</td><td>有,但形状是「瞬间读到空文件」而非坏文件;真实频率 = 几小时一次刷新 × 极窄窗口</td></tr>
+        <tr><td>(b) 路线的技术前提:软链的记忆数据库锁是否仍串行</td><td><strong>本轮</strong> E3</td><td>成立(5 轮恰好 1 个拿到锁);所以 (b) 不是因为「做不到」被否,是因为它更厚</td></tr>
+      </tbody>
+    </table>
+    <p class="note">真凭据臂没有重跑:上一轮已把实验账号的刷新票用旧,重跑需要 founder 再登录一次;工程 Lead 2026-09-05 裁定引用旧证据、不重登。剩余未证项写在「诚实边界」。</p>
+    <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="并发裁定" placeholder="写下你的意见…"></textarea></div>
+  </section>
+
+  <section class="card" data-section="核心流程">
+    <h2>核心流程:一张单从派发到收尾</h2>
+    <p>四个新动作:<strong>身份解析</strong>(把「哪个 agent × 哪个项目」算出来,直接复用 FLY-2147 给 Claude runner 做角色记忆时已经在用的同一条规则,不再发明第二套名字)、<strong>准入</strong>(在写数据库之前,拿着家里的一把毫秒级小锁一次性决定:建不建家、用哪个技能臂、登记本单的租约 —— 后面所有步骤只消费这个决定,不再第二次判断;那把小锁直接复用仓库里早已验证过的 mkdir 锁,不另造)、<strong>租约</strong>(<span class="term">lease</span>:家里为每张正在跑的单放一个空文件,数文件就知道家里有几个活的)、<strong>臂继承</strong>(见「关键取舍」)。Codex 两轮评审把这里磨细了:互斥由那把小锁负责,租约只负责计数;技能包只在「决定的臂 ≠ 已装好的臂」时安装一次,所以正在跑的单永远不会看到技能目录被换;换臂之后还会为生效的臂重跑一次装配检查,查不过就让这张单在写数据库之前就失败,绝不悄悄回落到别的臂。</p>
+    <div class="diagram wide">{{D1}}</div>
+    <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="核心流程" placeholder="写下你的意见…"></textarea></div>
+  </section>
+
+  <section class="card" data-section="数据与目录结构">
+    <h2>数据与目录结构</h2>
+    <p>旧的一次性家一个不动;新的角色家统一放进 <code>agents/</code> 子树,按结构而不是按名字区分(根目录下早就混着几个非 UUID 的测试家,按名字判会出错)。根目录仍由现有的 <code>codexHomesRoot()</code> 决定,测试房用环境变量整体改根。</p>
+    <div class="diagram">{{D2}}</div>
+    <h3>租约的一生</h3>
+    <p>共享家下「我们这一侧」会互相踩的七处冲突(擦令牌、Bridge 重启清扫、孤儿进程回收、恢复探针、工作区信任、技能臂、账号切换)由三样东西收口:<strong>小锁</strong>管互斥、<strong>租约</strong>管计数、<strong>session.json 里记下「家路径 + 项目 + 角色」</strong>管「这张单住在哪」(只许写一次;它在单子结束、租约删掉之后仍然在,所以删家保护永远认得出角色家;凡是要删东西、擦令牌的地方都必须拿数据库里这张单的项目和角色去核对这条记录,自洽但属于别人的家会被拒绝)。Bridge 重启后的恢复也先看这条记录:部署前起跑的单没有记录,就留在原来的一次性家里,绝不搬家。</p>
+    <div class="diagram">{{D4}}</div>
+    <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="数据与目录结构" placeholder="写下你的意见…"></textarea></div>
+  </section>
+
+  <section class="card amber" data-section="关键取舍与放弃的备选">
+    <h2>关键取舍与放弃的备选</h2>
+    <table>
+      <thead><tr><th>取舍</th><th>选了什么</th><th>放弃了什么、为什么</th></tr></thead>
+      <tbody>
+        <tr><td>并发</td><td><span class="badge new">选</span>共享持久家</td><td>一次性家 + 共享记忆点:技术上可行(E3),但要新造回流并动节流闸,每张单最后 6 小时的会话会丢</td></tr>
+        <tr><td>「agent」是谁</td><td><span class="badge keep">复用</span>FLY-2147 的 (project, role):role = DAG 节点 id,没有节点时用 agent 名</td><td>另造一套角色词表:PRD 明确要「一个来源」;解析不出身份时回落到今天的一次性家并记日志,不发明别名</td></tr>
+        <tr><td><span class="term">GH_TOKEN</span>(runner 用来推代码的 GitHub 令牌,写在家的配置里)什么时候擦</td><td><span class="badge new">选</span>租约计数:最后一个活单退出才擦</td><td>每单退出就擦(今天的做法):会把还在跑的同伴的令牌擦掉;永不擦:违反「退役的家不囤活令牌」这条早已定下的安全不变量</td></tr>
+        <tr><td>技能臂(<span class="term">A/B 臂</span>:FLY-1395 正在做的实验,给不同任务配不同的技能包;Codex 侧的技能包安装在家里)</td><td><span class="badge new">选</span>臂变成「家级属性」(只管装进家的三种技能包,不管每单自带的提示词附加态):家里有别的活单时沿用现有臂;这个决定在写数据库之前一次做完,所以 A/B 分析读的字段里就是<strong>实际生效的臂</strong>,并标记为 <code>inherited</code>(Lead 硬要求)</td><td>把臂搬到命令行参数并常驻安装所有技能包:更厚;按臂分家:会把记忆按臂切碎,违反键的定义</td></tr>
+        <tr><td>账号轮换期间两张单住同一家</td><td><span class="badge risk">接受</span>凭据文件在两个账号间来回翻,各进程自身一致,只记日志</td><td>按账号分家:同样违反键定义;阻止派发:会在额度最紧张的时候卡住整条流水线</td></tr>
+        <tr><td>删家</td><td><span class="badge new">选</span>角色家一律拒删并大声报错;旧家照删;空 <code>catch</code> 改成可见告警</td><td>只靠「没人调这个函数」:PRD 已经说明这把刀已上膛</td></tr>
+      </tbody>
+    </table>
+    <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="关键取舍与放弃的备选" placeholder="写下你的意见…"></textarea></div>
+  </section>
+
+  <section class="card green" data-section="怎么验收">
+    <h2>怎么验收(QA 段执行)</h2>
+    <ul>
+      <li><strong>同对同家、异对异家</strong>:同一个 (implement, flywheel) 连续两次派发解析到同一路径;换角色、换项目、换大小写共四组对照全部不同。</li>
+      <li><strong>删家保护</strong>:对角色家调删除函数 ⇒ 拒绝、目录仍在、错误日志一行;对旧家 ⇒ 行为不变;删除失败 ⇒ 告警而不是沉默。</li>
+      <li><strong>租约</strong>:两张单同住,第一张退出后令牌仍在、日志写「推迟擦除」;第二张退出后令牌消失、租约目录为空。</li>
+      <li><strong>实际生效臂</strong>:数据库里能查到 <code>skill_framework_mode_via = "inherited"</code> 的行,且每一行的臂等于家里记录的臂。</li>
+      <li><strong>真机或 529 房</strong>(<span class="term">529 房</span>:本机隔离出来的、用测试机器人跑真实 Flywheel 的演练环境):Codex runner 派发 → Bridge 重启后恢复 → 后台进程换号重起,三条路径各至少一次,三次都落在同一个家。</li>
+      <li><strong>零回归</strong>:全仓测试、类型检查、lint 绿;既有的家相关测试一个字不改。</li>
+    </ul>
+    <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="怎么验收" placeholder="写下你的意见…"></textarea></div>
+  </section>
+
+  <section class="card red" data-section="诚实边界">
+    <h2>诚实边界:这份设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>Codex runner 的家改键、懒建、不删、租约、启动清扫与孤儿回收适配、恢复与换号路径适配、实际生效臂写回数据库。</li>
+    </ul>
+    <h3>不做(交给谁)</h3>
+    <ul>
+      <li>不清理今天的 867 个一次性家(它们是唯一证据);不动 founder 自己的 <code>~/.codex</code> 与三个常驻 Lead 的家;不改记忆节流闸;不改凭据存储方式。</li>
+      <li>「种回去」(把旧家攒下的记忆迁进对应的角色家)与最终的记忆验收 → 同 Epic 的 B2 单,它因本裁定缩成「种回去 + 验收」。</li>
+      <li>常驻 Lead 的家仍由启动脚本管(PRD 说改配置即可);本单只让解析器能接 Lead 的名字。</li>
+    </ul>
+    <h3>已知限制(不隐藏)</h3>
+    <ul>
+      <li>回滚不是零条件:旧代码不认识角色家,所以 revert 之前必须先让所有住在角色家里的单跑完(计划里给了三条可执行的判据)。</li>
+      <li>没有 DAG 节点 id 的 Codex 运行(历史上只有 4 张「main」单)暂时还住一次性家。</li>
+      <li>runner 崩溃留下的租约要到下次 Bridge 启动才清掉,那段时间同家的令牌会多留一会儿(与今天「Bridge 被杀时来不及擦」同级)。</li>
+      <li>未证项:两个进程在同一毫秒同时写凭据文件会怎样;高频下服务端是否仍容忍同一张刷新票被重复兑换(只有一次实验)。</li>
+      <li>Codex 源码行号引用的是本机 2026-02 的源码副本,生产二进制更新;真二进制实验(E1)用的是生产版本。</li>
+    </ul>
+    <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="诚实边界" placeholder="写下你的意见…"></textarea></div>
+  </section>
+
+  <section class="card gray summary" data-section="意见汇总">
+    <h2>页面意见汇总</h2>
+    <p class="note">下面实时汇总你在每一节留下的意见。点「复制全部意见」把它贴回 Discord 即可;超长会自动分块,每块都带同样的开头标记。</p>
+    <div id="summary-chunks"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button>
+    <button class="btn secondary" id="clear-all" type="button">清空本页意见</button>
+    <span class="status" id="copy-status"></span>
+  </section>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = 'FLY-2358';
+  var MARKER = '【页面意见汇总】' + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = 'fly2358-comment:' + location.pathname + ':';
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-comment-for]'));
+
+  function lsGet(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} }
+  function lsDel(k) { try { window.localStorage.removeItem(k); } catch (e) {} }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = (ta.value || '').trim();
+      if (v) parts.push('## ' + ta.getAttribute('data-comment-for') + '\n' + v);
+    });
+    return parts;
+  }
+
+  function buildChunks() {
+    var parts = collect();
+    if (parts.length === 0) return [MARKER + '\n(暂无意见)'];
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + '\n\n' + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + '\n\n' + p;
+      } else {
+        cur = candidate;
+      }
+      while (cur.length > CHUNK_LIMIT) {
+        chunks.push(cur.slice(0, CHUNK_LIMIT));
+        cur = MARKER + '\n(续)\n' + cur.slice(CHUNK_LIMIT);
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  function render() {
+    var host = document.getElementById('summary-chunks');
+    while (host.firstChild) host.removeChild(host.firstChild);
+    buildChunks().forEach(function (text, i, all) {
+      var wrap = document.createElement('div');
+      wrap.className = 'chunk';
+      var label = document.createElement('div');
+      label.className = 'note';
+      label.textContent = all.length > 1 ? ('第 ' + (i + 1) + ' / ' + all.length + ' 块') : '';
+      var pre = document.createElement('pre');
+      pre.textContent = text;
+      wrap.appendChild(label);
+      wrap.appendChild(pre);
+      host.appendChild(wrap);
+    });
+  }
+
+  function setStatus(msg) {
+    var s = document.getElementById('copy-status');
+    s.textContent = msg;
+    setTimeout(function () { if (s.textContent === msg) s.textContent = ''; }, 3000);
+  }
+
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function copyAll() {
+    var text = buildChunks().join('\n\n');
+    var done = function () { setStatus('已复制 ' + text.length + ' 字'); };
+    var fail = function () { setStatus(legacyCopy(text) ? '已复制(兼容方式)' : '复制失败,请手动选择上方文本'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fail);
+    } else {
+      fail();
+    }
+  }
+
+  areas.forEach(function (ta) {
+    var key = prefix + ta.getAttribute('data-comment-for');
+    var saved = lsGet(key);
+    if (saved) ta.value = saved;
+    ta.addEventListener('input', function () {
+      lsSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', copyAll);
+  document.getElementById('clear-all').addEventListener('click', function () {
+    areas.forEach(function (ta) { ta.value = ''; lsDel(prefix + ta.getAttribute('data-comment-for')); });
+    render();
+    setStatus('已清空');
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

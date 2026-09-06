@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { admitCodexAgentHome } from "../src/codex-home.js";
 import { probeCodexRolloutMtime } from "../src/codex-rollout-probe.js";
 
 const roots: string[] = [];
@@ -30,6 +31,59 @@ function fixture() {
 }
 
 describe("probeCodexRolloutMtime", () => {
+	it("finds a rollout in the execution's keyed agent home", async () => {
+		const f = fixture();
+		const admission = await admitCodexAgentHome(
+			{
+				project: "flywheel",
+				role: "implement",
+				executionId: "exec-keyed",
+				requestedAssemblyArm: "bare",
+			},
+			f.env,
+		);
+		mkdirSync(join(f.sessionRoot, "exec-keyed"), { recursive: true });
+		writeFileSync(
+			join(f.sessionRoot, "exec-keyed", "session.json"),
+			JSON.stringify({
+				threadId: "thread-keyed",
+				codexAgentHome: {
+					home: admission.handle.home,
+					project: "flywheel",
+					role: "implement",
+				},
+			}),
+		);
+		const rollout = join(
+			admission.handle.home,
+			"sessions",
+			"rollout-thread-keyed.jsonl",
+		);
+		mkdirSync(join(admission.handle.home, "sessions"));
+		writeFileSync(rollout, "keyed");
+		utimesSync(rollout, new Date(3_000), new Date(3_000));
+
+		expect(probeCodexRolloutMtime("exec-keyed", f.env)).toEqual({
+			kind: "found",
+			mtimeMs: 3_000,
+		});
+	});
+
+	it("fails closed when the persisted keyed-home record is invalid", () => {
+		const f = fixture();
+		mkdirSync(join(f.sessionRoot, "exec-invalid"), { recursive: true });
+		writeFileSync(
+			join(f.sessionRoot, "exec-invalid", "session.json"),
+			JSON.stringify({
+				threadId: "thread-invalid",
+				codexAgentHome: { home: "/tmp/wrong", project: "flywheel", role: "qa" },
+			}),
+		);
+		expect(probeCodexRolloutMtime("exec-invalid", f.env)).toEqual({
+			kind: "unknown",
+		});
+	});
+
 	it("finds the newest rollout for the execution's persisted thread", () => {
 		const f = fixture();
 		mkdirSync(join(f.sessionRoot, "exec-1"), { recursive: true });

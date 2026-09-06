@@ -1,3 +1,5 @@
+import type { CodexLaunchSnapshot } from "flywheel-claude-runner";
+import type { AdapterExecutionContext } from "flywheel-core";
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../../StateStore.js";
 import {
@@ -6,6 +8,7 @@ import {
 	type CodexSessionReownDeps,
 	CodexSessionReowner,
 	isCodexReownExcluded,
+	prepareCodexRecoveryAgentHome,
 } from "../codex-session-reown.js";
 
 function session(overrides: Partial<Session> = {}): Session {
@@ -133,6 +136,169 @@ function harness(
 async function settle(): Promise<void> {
 	await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
+
+function recoveryContext(): AdapterExecutionContext {
+	return {
+		executionId: "exec-1",
+		issueId: "issue-1",
+		prompt: "resume",
+		cwd: "/tmp/worktree",
+	};
+}
+
+function recoverySnapshot(
+	skillFrameworkMode: "superpowers" | "matt" | "bare" | null = "bare",
+): CodexLaunchSnapshot {
+	return {
+		launchContext: { skillFrameworkMode },
+	} as CodexLaunchSnapshot;
+}
+
+describe("FLY-2358 Codex reown agent-home preparation", () => {
+	it("never migrates a deployment-era legacy execution home", async () => {
+		const admit = vi.fn();
+		const context = recoveryContext();
+		expect(
+			await prepareCodexRecoveryAgentHome(
+				{
+					session: session({ workflow_node_id: "implement" }),
+					snapshot: recoverySnapshot(),
+					context,
+				},
+				{
+					resolve: () => ({ kind: "legacy", home: "/tmp/legacy" }),
+					admit,
+					release: vi.fn(),
+				},
+			),
+		).toBe(context);
+		expect(admit).not.toHaveBeenCalled();
+	});
+
+	it.each(["keyed", "prepublished"] as const)(
+		"re-admits a %s execution and carries the exact handle into resume",
+		async (kind) => {
+			const admit = vi.fn(async () => ({
+				handle: {
+					project: "flywheel",
+					role: "implement",
+					home: "/tmp/keyed",
+					executionId: "exec-1",
+					token: "0123456789abcdef0123456789abcdef",
+				},
+				effectiveAssemblyArm: "bare" as const,
+				inherited: false,
+				liveLeases: 1,
+				createdLease: kind === "keyed",
+			}));
+			const result = await prepareCodexRecoveryAgentHome(
+				{
+					session: session({ workflow_node_id: "implement" }),
+					snapshot: recoverySnapshot("bare"),
+					context: recoveryContext(),
+				},
+				{
+					resolve: () => ({
+						kind,
+						project: "flywheel",
+						role: "implement",
+						home: "/tmp/keyed",
+					}),
+					admit,
+					release: vi.fn(),
+				},
+			);
+			expect(admit).toHaveBeenCalledWith({
+				project: "flywheel",
+				role: "implement",
+				executionId: "exec-1",
+				requestedAssemblyArm: "bare",
+			});
+			expect(result.codexAgentHome).toEqual({
+				project: "flywheel",
+				role: "implement",
+				home: "/tmp/keyed",
+				token: "0123456789abcdef0123456789abcdef",
+				assemblyArm: "bare",
+				createdLease: kind === "keyed",
+			});
+		},
+	);
+
+	it("fails closed and releases a newly-created lease when the immutable arm drifts", async () => {
+		const handle = {
+			project: "flywheel",
+			role: "implement",
+			home: "/tmp/keyed",
+			executionId: "exec-1",
+			token: "0123456789abcdef0123456789abcdef",
+		};
+		const release = vi.fn(async () => undefined);
+		await expect(
+			prepareCodexRecoveryAgentHome(
+				{
+					session: session({ workflow_node_id: "implement" }),
+					snapshot: recoverySnapshot("bare"),
+					context: recoveryContext(),
+				},
+				{
+					resolve: () => ({
+						kind: "keyed",
+						project: "flywheel",
+						role: "implement",
+						home: "/tmp/keyed",
+					}),
+					admit: async () => ({
+						handle,
+						effectiveAssemblyArm: "matt",
+						inherited: true,
+						liveLeases: 2,
+						createdLease: true,
+					}),
+					release,
+				},
+			),
+		).rejects.toThrow("keyed_home_reown_arm_mismatch");
+		expect(release).toHaveBeenCalledWith(handle);
+	});
+
+	it("fails closed for unresolved keyed state and skips admission without a role", async () => {
+		const admit = vi.fn();
+		await expect(
+			prepareCodexRecoveryAgentHome(
+				{
+					session: session({ workflow_node_id: "implement" }),
+					snapshot: recoverySnapshot(),
+					context: recoveryContext(),
+				},
+				{
+					resolve: () => ({
+						kind: "unknown",
+						reason: "invalid_agent_home_record",
+					}),
+					admit,
+					release: vi.fn(),
+				},
+			),
+		).rejects.toThrow("invalid_agent_home_record");
+
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const context = recoveryContext();
+		expect(
+			await prepareCodexRecoveryAgentHome(
+				{
+					session: session({ workflow_node_id: undefined }),
+					snapshot: recoverySnapshot(),
+					context,
+				},
+				{ resolve: vi.fn(), admit, release: vi.fn() },
+			),
+		).toBe(context);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("identity_unresolved reason=no_role"),
+		);
+	});
+});
 
 describe("FLY-2211 Codex session re-owner", () => {
 	it("treats a non-holder turn reconcile as a normal no-op", () => {

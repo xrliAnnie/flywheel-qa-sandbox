@@ -1,0 +1,13 @@
+PASS  baseline admit works  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a8-mrZm1J/homes/agents/flywheel/implement
+PASS  admission lock lives OUTSIDE the home (a wedged lock cannot corrupt memory)  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a8-mrZm1J/homes/agents/flywheel/.locks/implement
+PASS  a role named ".locks" cannot collide with the lock directory  :: rejected
+PASS  stale lock planted (10 min old)  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a8-mrZm1J/homes/agents/flywheel/.locks/implement mtime=2026-09-05T11:53:24.863Z
+PASS  a STALE lock is reclaimed, not a permanent wedge  :: home=/Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a8-mrZm1J/homes/agents/flywheel/implement
+PASS  stale reclaim is fast (well under the 10s lock timeout)  :: 2 ms
+PASS  both leases present after reclaim  :: exec-a8-1,exec-a8-2
+PASS  RULER: a FRESH lock is NOT stolen — admission fails closed instead  :: withMkdirLock: timeout acquiring /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a8-mrZm1J/homes/agents/flywheel/.locks/implement
+PASS  fail-closed happens at the 10s timeout, it does not hang forever  :: 10017 ms
+PASS  the failed admission left no lease behind  :: no exec-a8-3 lease
+PASS  once the holder releases, admission resumes normally  :: liveLeases=3
+
+--- A8: 11/11 passed ---

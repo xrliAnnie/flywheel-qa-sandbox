@@ -3,11 +3,13 @@
  * lockdown. Unit-covers the home module against a temp source ~/.codex and a
  * temp homes root (no real ~/.codex touched).
  */
+import { spawn } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -21,16 +23,23 @@ import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	admitCodexAgentHome,
 	assertCodexSourceIdentity,
+	codexAgentHomeDir,
 	codexHomeDir,
 	codexHomesRoot,
 	discoverAccountPool as discoverAccountPoolProduction,
 	pinRunnerNotice,
+	provisionCodexAgentHome,
 	provisionCodexHome as provisionCodexHomeProduction,
 	rawCodexBin,
+	releaseCodexAgentHomeLease,
 	removeCodexHome,
 	renderCodexHomeConfig,
+	resolveExecutionCodexHome,
+	retireCodexExecutionHome,
 	scrubCodexHomeCredential,
+	scrubOrphanedCodexAgentHomes,
 	scrubOrphanedCodexHomes,
 	sourceCodexDir,
 	stripInheritedSecretEnv,
@@ -130,6 +139,7 @@ beforeEach(() => {
 	env = {
 		FLYWHEEL_CODEX_HOMES_ROOT: join(tmp, "homes"),
 		FLYWHEEL_CODEX_SOURCE_HOME: src,
+		FLYWHEEL_CODEX_SESSION_DIR: join(tmp, "codex-sessions"),
 	};
 });
 
@@ -152,6 +162,762 @@ describe("path resolution (WS-E seam)", () => {
 
 	it("sourceCodexDir honors FLYWHEEL_CODEX_SOURCE_HOME", () => {
 		expect(sourceCodexDir(env)).toBe(join(tmp, "dotcodex"));
+	});
+});
+
+describe("FLY-2358 agent home path", () => {
+	it("maps the same project and role to the same persistent home", () => {
+		const identity = { project: "flywheel", role: "implement" };
+		expect(codexAgentHomeDir(identity, env)).toBe(
+			join(tmp, "homes", "agents", "flywheel", "implement"),
+		);
+		expect(codexAgentHomeDir(identity, env)).toBe(
+			codexAgentHomeDir({ ...identity }, env),
+		);
+	});
+
+	it("keeps different agents, projects, and case-distinct agents apart", () => {
+		const baseline = codexAgentHomeDir(
+			{ project: "flywheel", role: "implement" },
+			env,
+		);
+		const comparisons = [
+			{ project: "flywheel", role: "qa" },
+			{ project: "joycon-typeless", role: "implement" },
+			{ project: "flywheel", role: "design" },
+			{ project: "flywheel", role: "Implement" },
+		];
+		for (const identity of comparisons) {
+			expect(codexAgentHomeDir(identity, env)).not.toBe(baseline);
+		}
+	});
+
+	it.each([
+		[{ project: "bad/project", role: "implement" }],
+		[{ project: "flywheel", role: "bad/role" }],
+		[{ project: "x".repeat(129), role: "implement" }],
+		[{ project: "flywheel", role: "x".repeat(129) }],
+	])("rejects an unsafe identity before forming a path", (identity) => {
+		expect(() => codexAgentHomeDir(identity, env)).toThrow(
+			/invalid codex agent home (project|role)/,
+		);
+	});
+});
+
+describe("FLY-2358 agent home admission and provisioning", () => {
+	const identity = { project: "flywheel", role: "implement" };
+
+	it("creates a keyed home lazily and makes repeated admission idempotent", async () => {
+		expect(existsSync(join(tmp, "homes", "agents"))).toBe(false);
+		const first = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "superpowers",
+			},
+			env,
+		);
+		const markerPath = join(first.handle.home, ".flywheel-agent-home.json");
+		const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+		expect(first).toMatchObject({
+			effectiveAssemblyArm: "superpowers",
+			inherited: false,
+			liveLeases: 1,
+			createdLease: true,
+		});
+		expect(marker).toMatchObject({
+			version: 1,
+			...identity,
+			assemblyArm: "superpowers",
+			materializedArm: null,
+		});
+		expect(marker.createdAt).toEqual(expect.any(String));
+
+		const repeated = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "matt",
+			},
+			env,
+		);
+		expect(repeated.handle).toEqual(first.handle);
+		expect(repeated).toMatchObject({
+			effectiveAssemblyArm: "superpowers",
+			inherited: true,
+			liveLeases: 1,
+			createdLease: false,
+		});
+		expect(JSON.parse(readFileSync(markerPath, "utf8")).createdAt).toBe(
+			marker.createdAt,
+		);
+	});
+
+	it("inherits the home arm while another execution holds a lease", async () => {
+		const first = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "matt",
+			},
+			env,
+		);
+		const second = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-b",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		expect(second.handle.home).toBe(first.handle.home);
+		expect(second).toMatchObject({
+			effectiveAssemblyArm: "matt",
+			inherited: true,
+			liveLeases: 2,
+			createdLease: true,
+		});
+		expect(
+			readdirSync(join(first.handle.home, ".flywheel-leases")).sort(),
+		).toEqual(["exec-a", "exec-b"]);
+	});
+
+	it("ignores interrupted-write and foreign entries in the lease directory", async () => {
+		const admission = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		await provisionCodexAgentHome(admission.handle, {
+			env,
+			ghToken: TOKEN,
+			skillFrameworkMode: "bare",
+			registryPath,
+			ledgerRoot,
+		});
+		const leasesDir = join(admission.handle.home, ".flywheel-leases");
+		writeFileSync(
+			join(leasesDir, ".exec-a.1234.deadbeefdeadbeef.tmp"),
+			"stale",
+		);
+		writeFileSync(join(leasesDir, ".DS_Store"), "foreign");
+		mkdirSync(join(leasesDir, "foreign-dir"));
+
+		await expect(
+			releaseCodexAgentHomeLease(admission.handle, env),
+		).resolves.toBeUndefined();
+		expect(
+			readFileSync(join(admission.handle.home, "config.toml"), "utf8"),
+		).not.toContain("GH_TOKEN");
+		await expect(
+			admitCodexAgentHome(
+				{
+					...identity,
+					executionId: "exec-b",
+					requestedAssemblyArm: "matt",
+				},
+				env,
+			),
+		).resolves.toMatchObject({
+			effectiveAssemblyArm: "matt",
+			liveLeases: 1,
+		});
+	});
+
+	it("serializes eight simultaneous processes onto one arm, marker, and trust set", async () => {
+		const barrier = join(tmp, "concurrency-barrier");
+		const worker = fileURLToPath(
+			new URL(
+				"./fixtures/codex-agent-home-concurrent-worker.ts",
+				import.meta.url,
+			),
+		);
+		const repoRoot = resolve(
+			dirname(fileURLToPath(import.meta.url)),
+			"../../..",
+		);
+		const arms = [
+			"superpowers",
+			"matt",
+			"bare",
+			"superpowers",
+			"matt",
+			"bare",
+			"superpowers",
+			"matt",
+		] as const;
+		const children = arms.map((arm, index) => {
+			const executionId = `exec-concurrent-${index}`;
+			const ready = join(tmp, `ready-${index}`);
+			const worktree = join(tmp, `worktree-${index}`);
+			mkdirSync(worktree);
+			const child = spawn(process.execPath, ["--import", "tsx", worker], {
+				cwd: repoRoot,
+				env: {
+					...process.env,
+					...env,
+					FLY_TEST_EXECUTION_ID: executionId,
+					FLY_TEST_ASSEMBLY_ARM: arm,
+					FLY_TEST_READY: ready,
+					FLY_TEST_BARRIER: barrier,
+					FLY_TEST_WORKTREE: worktree,
+					FLY_TEST_REGISTRY: registryPath,
+					FLY_TEST_LEDGER: join(ledgerRoot, executionId),
+					FLY_TEST_GH_TOKEN: TOKEN,
+					FLY_TEST_MATT_SKILLS: join(
+						repoRoot,
+						"vendor",
+						"matt-skills",
+						"skills",
+					),
+				},
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			let stdout = "";
+			let stderr = "";
+			child.stdout.on("data", (chunk) => {
+				stdout += String(chunk);
+			});
+			child.stderr.on("data", (chunk) => {
+				stderr += String(chunk);
+			});
+			return {
+				arm,
+				executionId,
+				ready,
+				worktree,
+				done: new Promise<string>((resolveOutput, reject) => {
+					child.once("error", reject);
+					child.once("close", (code) => {
+						if (code === 0) resolveOutput(stdout.trim());
+						else reject(new Error(`worker ${index} exited ${code}: ${stderr}`));
+					});
+				}),
+			};
+		});
+		await vi.waitFor(
+			() => {
+				expect(children.every((child) => existsSync(child.ready))).toBe(true);
+			},
+			{ timeout: 10_000, interval: 10 },
+		);
+		writeFileSync(barrier, "go\n");
+		const results = await Promise.all(
+			children.map(async (child) => ({
+				...child,
+				result: JSON.parse(await child.done) as {
+					requestedAssemblyArm: string;
+					effectiveAssemblyArm: string;
+					inherited: boolean;
+				},
+			})),
+		);
+		const effectiveArm = results[0]!.result.effectiveAssemblyArm;
+		expect(
+			results.every(
+				({ result }) => result.effectiveAssemblyArm === effectiveArm,
+			),
+		).toBe(true);
+		for (const { result } of results) {
+			expect(result.inherited).toBe(
+				result.requestedAssemblyArm !== effectiveArm,
+			);
+		}
+		const home = codexAgentHomeDir(identity, env);
+		const marker = JSON.parse(
+			readFileSync(join(home, ".flywheel-agent-home.json"), "utf8"),
+		);
+		expect(marker.assemblyArm).toBe(effectiveArm);
+		expect(marker.materializedArm).toBe(effectiveArm);
+		expect(readdirSync(join(home, ".flywheel-leases"))).toHaveLength(8);
+		const config = readFileSync(join(home, "config.toml"), "utf8");
+		expect(() => parseToml(config)).not.toThrow();
+		for (const child of children) {
+			expect(config).toContain(JSON.stringify(child.worktree));
+		}
+	}, 30_000);
+
+	it("fails closed on a corrupt marker while a lease is live", async () => {
+		const first = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		writeFileSync(
+			join(first.handle.home, ".flywheel-agent-home.json"),
+			"not-json",
+		);
+		await expect(
+			admitCodexAgentHome(
+				{
+					...identity,
+					executionId: "exec-b",
+					requestedAssemblyArm: "bare",
+				},
+				env,
+			),
+		).rejects.toThrow(/agent home marker/);
+		expect(
+			existsSync(join(first.handle.home, ".flywheel-leases", "exec-b")),
+		).toBe(false);
+	});
+
+	it("provisions through the admitted home and materializes the contract", async () => {
+		const admission = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		await provisionCodexAgentHome(admission.handle, {
+			env,
+			ghToken: TOKEN,
+			skillFrameworkMode: "bare",
+			registryPath,
+			ledgerRoot,
+		});
+		expect(
+			readFileSync(join(admission.handle.home, "config.toml"), "utf8"),
+		).toContain(`GH_TOKEN = "${TOKEN}"`);
+		expect(
+			readFileSync(join(admission.handle.home, "AGENTS.md"), "utf8"),
+		).toContain("Flywheel Codex Runner Contract");
+		expect(
+			JSON.parse(
+				readFileSync(
+					join(admission.handle.home, ".flywheel-agent-home.json"),
+					"utf8",
+				),
+			).materializedArm,
+		).toBe("bare");
+	});
+
+	it("accumulates live worktree trust and prunes paths that disappear", async () => {
+		const worktreeA = join(tmp, "worktree-a");
+		const worktreeB = join(tmp, "worktree-b");
+		mkdirSync(worktreeA);
+		mkdirSync(worktreeB);
+		const first = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		const second = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-b",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		await provisionCodexAgentHome(first.handle, {
+			env,
+			skillFrameworkMode: "bare",
+			trustedProjectPath: worktreeA,
+			registryPath,
+			ledgerRoot,
+		});
+		await provisionCodexAgentHome(second.handle, {
+			env,
+			skillFrameworkMode: "bare",
+			trustedProjectPath: worktreeB,
+			registryPath,
+			ledgerRoot,
+		});
+		let config = readFileSync(join(first.handle.home, "config.toml"), "utf8");
+		expect(config).toContain(JSON.stringify(worktreeA));
+		expect(config).toContain(JSON.stringify(worktreeB));
+
+		rmSync(worktreeA, { recursive: true });
+		await provisionCodexAgentHome(second.handle, {
+			env,
+			skillFrameworkMode: "bare",
+			trustedProjectPath: worktreeB,
+			registryPath,
+			ledgerRoot,
+		});
+		config = readFileSync(join(first.handle.home, "config.toml"), "utf8");
+		expect(config).not.toContain(JSON.stringify(worktreeA));
+		expect(config).toContain(JSON.stringify(worktreeB));
+	});
+
+	it("rejects provisioning without the exact live lease and home arm", async () => {
+		const admission = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		await expect(
+			provisionCodexAgentHome(
+				{ ...admission.handle, token: "wrong" },
+				{ env, skillFrameworkMode: "bare", registryPath, ledgerRoot },
+			),
+		).rejects.toThrow(/lease token/);
+		await expect(
+			provisionCodexAgentHome(admission.handle, {
+				env,
+				skillFrameworkMode: "matt",
+				registryPath,
+				ledgerRoot,
+			}),
+		).rejects.toThrow(/assembly arm/);
+	});
+
+	it("releases only an exact lease and scrubs credentials after the last one", async () => {
+		const first = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		const second = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-b",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		await provisionCodexAgentHome(first.handle, {
+			env,
+			ghToken: TOKEN,
+			skillFrameworkMode: "bare",
+			registryPath,
+			ledgerRoot,
+		});
+		await expect(
+			releaseCodexAgentHomeLease({ ...first.handle, token: "wrong" }, env),
+		).rejects.toThrow(/lease token/);
+		await releaseCodexAgentHomeLease(first.handle, env);
+		expect(
+			readFileSync(join(first.handle.home, "config.toml"), "utf8"),
+		).toContain("GH_TOKEN");
+		await releaseCodexAgentHomeLease(second.handle, env);
+		expect(
+			readFileSync(join(first.handle.home, "config.toml"), "utf8"),
+		).not.toContain("GH_TOKEN");
+	});
+
+	it.each(["project-file", "project-symlink", "home-file", "home-symlink"])(
+		"rejects hostile path component %s",
+		async (shape) => {
+			const agents = join(tmp, "homes", "agents");
+			mkdirSync(agents, { recursive: true });
+			const project = join(agents, "flywheel");
+			const home = join(project, "implement");
+			const target = join(tmp, "target");
+			mkdirSync(target);
+			if (shape === "project-file") writeFileSync(project, "hostile");
+			if (shape === "project-symlink") symlinkSync(target, project);
+			if (shape.startsWith("home-")) mkdirSync(project);
+			if (shape === "home-file") writeFileSync(home, "hostile");
+			if (shape === "home-symlink") symlinkSync(target, home);
+			await expect(
+				admitCodexAgentHome(
+					{
+						...identity,
+						executionId: "exec-a",
+						requestedAssemblyArm: "bare",
+					},
+					env,
+				),
+			).rejects.toThrow(/unsafe codex agent home path/);
+		},
+	);
+});
+
+describe("FLY-2358 execution home resolution and retirement", () => {
+	const identity = { project: "flywheel", role: "implement" };
+	const writeSession = (executionId: string, codexAgentHome: unknown): void => {
+		const stateDir = join(env.FLYWHEEL_CODEX_SESSION_DIR!, executionId);
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(
+			join(stateDir, "session.json"),
+			JSON.stringify({ codexAgentHome }),
+		);
+	};
+
+	it("distinguishes keyed, prepublished, and legacy execution homes", async () => {
+		const admission = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-keyed",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		expect(
+			resolveExecutionCodexHome("exec-keyed", identity, env),
+		).toMatchObject({
+			kind: "prepublished",
+			...identity,
+			home: admission.handle.home,
+		});
+		writeSession("exec-keyed", { ...identity, home: admission.handle.home });
+		expect(resolveExecutionCodexHome("exec-keyed", identity, env)).toEqual({
+			kind: "keyed",
+			...identity,
+			home: admission.handle.home,
+		});
+		expect(resolveExecutionCodexHome("exec-legacy", identity, env)).toEqual({
+			kind: "legacy",
+			home: codexHomeDir("exec-legacy", env),
+		});
+	});
+
+	it("keeps recordless executions legacy when their expected identity cannot form a keyed path", () => {
+		expect(
+			resolveExecutionCodexHome(
+				"exec-legacy",
+				{ project: "my project", role: "impl/ement" },
+				env,
+			),
+		).toEqual({
+			kind: "legacy",
+			home: codexHomeDir("exec-legacy", env),
+		});
+	});
+
+	it.each([
+		"malformed-json",
+		"path-mismatch",
+		"identity-mismatch",
+		"expected-mismatch",
+	])("fails closed for unresolved session state: %s", async (shape) => {
+		const executionId = `exec-${shape}`;
+		const admission = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId,
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		const stateDir = join(env.FLYWHEEL_CODEX_SESSION_DIR!, executionId);
+		mkdirSync(stateDir, { recursive: true });
+		if (shape === "malformed-json") {
+			writeFileSync(join(stateDir, "session.json"), "not-json");
+		} else {
+			writeSession(executionId, {
+				home:
+					shape === "path-mismatch"
+						? join(tmp, "outside")
+						: admission.handle.home,
+				project: shape === "identity-mismatch" ? "other" : identity.project,
+				role: identity.role,
+			});
+		}
+		const expected =
+			shape === "expected-mismatch"
+				? { project: identity.project, role: "qa" }
+				: identity;
+		expect(resolveExecutionCodexHome(executionId, expected, env).kind).toBe(
+			"unknown",
+		);
+	});
+
+	it("retires shared leases one by one and scrubs only after the last", async () => {
+		const first = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		const second = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-b",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		for (const admission of [first, second]) {
+			writeSession(admission.handle.executionId, {
+				...identity,
+				home: admission.handle.home,
+			});
+		}
+		await provisionCodexAgentHome(first.handle, {
+			env,
+			ghToken: TOKEN,
+			skillFrameworkMode: "bare",
+			registryPath,
+			ledgerRoot,
+		});
+		await retireCodexExecutionHome("exec-a", identity, env);
+		expect(
+			readFileSync(join(first.handle.home, "config.toml"), "utf8"),
+		).toContain("GH_TOKEN");
+		await retireCodexExecutionHome("exec-b", identity, env);
+		expect(
+			readFileSync(join(first.handle.home, "config.toml"), "utf8"),
+		).not.toContain("GH_TOKEN");
+		expect(readdirSync(join(first.handle.home, ".flywheel-leases"))).toEqual(
+			[],
+		);
+	});
+
+	it("keeps legacy retirement behavior unchanged", async () => {
+		const home = provisionCodexHome({
+			executionId: "exec-legacy",
+			env,
+			ghToken: TOKEN,
+		});
+		await retireCodexExecutionHome("exec-legacy", identity, env);
+		expect(readFileSync(join(home, "config.toml"), "utf8")).not.toContain(
+			"GH_TOKEN",
+		);
+	});
+});
+
+describe("FLY-2358 persistent agent home deletion guard", () => {
+	const identity = { project: "flywheel", role: "implement" };
+
+	it("refuses to delete a keyed home after its final lease retires", async () => {
+		const admission = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-keyed",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		const stateDir = join(env.FLYWHEEL_CODEX_SESSION_DIR!, "exec-keyed");
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(
+			join(stateDir, "session.json"),
+			JSON.stringify({
+				codexAgentHome: { ...identity, home: admission.handle.home },
+			}),
+		);
+		await releaseCodexAgentHomeLease(admission.handle, env);
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		expect(removeCodexHome("exec-keyed", env, identity)).toEqual({
+			removed: false,
+			reason: "agent_home_protected",
+		});
+		expect(existsSync(admission.handle.home)).toBe(true);
+		expect(error).toHaveBeenCalledWith(
+			expect.stringContaining("refuse_remove_agent_home"),
+		);
+		error.mockRestore();
+	});
+
+	it("preserves legacy deletion and reports its result", () => {
+		const home = provisionCodexHome({ executionId: "exec-legacy", env });
+		expect(removeCodexHome("exec-legacy", env, identity)).toEqual({
+			removed: true,
+		});
+		expect(existsSync(home)).toBe(false);
+	});
+
+	it("fails closed for malformed state and the agents subtree fallback", () => {
+		const stateDir = join(env.FLYWHEEL_CODEX_SESSION_DIR!, "exec-unknown");
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(join(stateDir, "session.json"), "not-json");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		expect(removeCodexHome("exec-unknown", env, identity)).toEqual({
+			removed: false,
+			reason: "unresolved",
+		});
+		mkdirSync(join(tmp, "homes", "agents"), { recursive: true });
+		expect(removeCodexHome("agents", env)).toEqual({
+			removed: false,
+			reason: "agent_home_protected",
+		});
+		expect(existsSync(join(tmp, "homes", "agents"))).toBe(true);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("remove_home_unresolved"),
+		);
+		warn.mockRestore();
+	});
+});
+
+describe("FLY-2358 keyed-home startup janitor", () => {
+	const identity = { project: "flywheel", role: "implement" };
+
+	it("keeps reown candidates and removes terminal and orphan leases", async () => {
+		const admissions = await Promise.all(
+			[
+				["exec-design", "design_done"],
+				["exec-approved", "approved_to_ship"],
+				["exec-terminal", "completed"],
+				["exec-orphan", undefined],
+			].map(async ([executionId]) =>
+				admitCodexAgentHome(
+					{
+						...identity,
+						executionId: executionId!,
+						requestedAssemblyArm: "bare",
+					},
+					env,
+				),
+			),
+		);
+		await provisionCodexAgentHome(admissions[0].handle, {
+			env,
+			ghToken: TOKEN,
+			skillFrameworkMode: "bare",
+			registryPath,
+			ledgerRoot,
+		});
+		const sessions = new Map([
+			["exec-design", { status: "design_done", ...identity }],
+			["exec-approved", { status: "approved_to_ship", ...identity }],
+			["exec-terminal", { status: "completed", ...identity }],
+		]);
+		expect(await scrubOrphanedCodexAgentHomes(sessions, env)).toBe(2);
+		expect(
+			readdirSync(join(admissions[0].handle.home, ".flywheel-leases")).sort(),
+		).toEqual(["exec-approved", "exec-design"]);
+		expect(
+			readFileSync(join(admissions[0].handle.home, "config.toml"), "utf8"),
+		).toContain("GH_TOKEN");
+	});
+
+	it("fails closed when a live session identity does not match the home", async () => {
+		const admission = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-live",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		expect(
+			await scrubOrphanedCodexAgentHomes(
+				new Map([
+					["exec-live", { status: "running", project: "flywheel", role: "qa" }],
+				]),
+				env,
+			),
+		).toBe(0);
+		expect(
+			existsSync(join(admission.handle.home, ".flywheel-leases", "exec-live")),
+		).toBe(true);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("keyed_home_janitor_identity_mismatch"),
+		);
+		warn.mockRestore();
 	});
 });
 

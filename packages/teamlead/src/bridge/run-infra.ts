@@ -13,6 +13,7 @@ import {
 	AnthropicLLMClient,
 	AntigravityTmuxAdapter,
 	type AsyncExecFileFn,
+	type CodexAgentHomeSessionSnapshot,
 	CodexExecutionOwnershipRegistry,
 	type CodexRecoveryCommitHooks,
 	type CodexRecoveryOptions,
@@ -21,6 +22,7 @@ import {
 	defaultAsyncExecFile,
 	KimiTmuxAdapter,
 	type RunnerTuiWindowLostEvidence,
+	scrubOrphanedCodexAgentHomes,
 	scrubOrphanedCodexHomes,
 	TmuxAdapter,
 } from "flywheel-claude-runner";
@@ -374,6 +376,29 @@ export function liveCodexHomeExecutionIds(
 					session.status === "awaiting_review",
 			)
 			.map((session) => session.execution_id),
+	);
+}
+
+export function keyedCodexHomeSessionSnapshot(
+	store: Pick<StateStore, "getReadoptCandidateSessions">,
+): Map<string, CodexAgentHomeSessionSnapshot> {
+	return new Map(
+		store
+			.getReadoptCandidateSessions()
+			.filter(
+				(session) =>
+					session.adapter_type === "codex-tmux" &&
+					typeof session.workflow_node_id === "string" &&
+					session.workflow_node_id.length > 0,
+			)
+			.map((session) => [
+				session.execution_id,
+				{
+					status: session.status,
+					project: session.project_name,
+					role: session.workflow_node_id!,
+				},
+			]),
 	);
 }
 
@@ -1210,6 +1235,21 @@ export async function setupRunInfrastructure(
 	} catch (err) {
 		console.warn(
 			"[RunInfra] FLY-123: codex-home credential scrub failed:",
+			(err as Error).message,
+		);
+	}
+	try {
+		const scrubbedLeases = await scrubOrphanedCodexAgentHomes(
+			keyedCodexHomeSessionSnapshot(store),
+		);
+		if (scrubbedLeases > 0) {
+			console.log(
+				`[RunInfra] FLY-2358: scrubbed ${scrubbedLeases} orphaned keyed codex home lease(s) at startup`,
+			);
+		}
+	} catch (err) {
+		console.warn(
+			"[RunInfra] FLY-2358: keyed codex-home lease scrub failed:",
 			(err as Error).message,
 		);
 	}

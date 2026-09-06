@@ -1,0 +1,14 @@
+PASS  same (flywheel,implement) twice -> same path  :: /tmp/fly2358-qa-a1-root/agents/flywheel/implement
+PASS  same project, different role -> different path  :: /tmp/fly2358-qa-a1-root/agents/flywheel/qa
+PASS  different project, same role -> different path  :: /tmp/fly2358-qa-a1-root/agents/geoforge3d/implement
+PASS  both different -> distinct from all  :: /tmp/fly2358-qa-a1-root/agents/geoforge3d/design
+PASS  case-differing identity -> distinct encoded path  :: /tmp/fly2358-qa-a1-root/agents/flywheel--1/implement--1
+PASS  6 projects x 6 roles (incl. a Lead role) -> 36 distinct paths  :: 36 distinct
+PASS  FLYWHEEL_CODEX_HOMES_ROOT honored  :: /tmp/fly2358-qa-a1-root
+PASS  legacy codexHomeDir shape unchanged  :: /tmp/fly2358-qa-a1-root/exec-abc-123
+PASS  hostile identity rejected: {"project":"..","role":"implement"}  :: threw
+PASS  hostile identity rejected: {"project":"a/b","role":"implement"}  :: threw
+PASS  hostile identity rejected: {"project":"flywheel","role":"../../etc"}  :: threw
+PASS  hostile identity rejected: {"project":"flywheel","role":""}  :: threw
+
+--- A1: 12/12 passed ---

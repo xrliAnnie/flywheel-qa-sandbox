@@ -172,6 +172,16 @@ export interface AdapterExecutionContext {
 	enablePonytail?: boolean;
 	/** FLY-1395: resolved prompt/skill arm for a Codex runner. */
 	skillFrameworkMode?: "superpowers" | "matt" | "bare";
+	/** FLY-2358: admitted shared Codex home and its execution-scoped lease. */
+	codexAgentHome?: {
+		project: string;
+		role: string;
+		assemblyArm: "superpowers" | "matt" | "bare";
+		home: string;
+		token: string;
+		/** True only when this dispatch created the execution lease. */
+		createdLease?: boolean;
+	};
 	/** Fully-qualified machine-global Codex skill names disabled for this run. */
 	codexSkillDisableNames?: string[];
 	/** Verified vendored matt-skills source copied into this run's CODEX_HOME. */

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { codexSessionStateDir } from "./codex-daemon-runtime.js";
-import { codexHomeDir } from "./codex-home.js";
+import { resolveExecutionCodexHome } from "./codex-home.js";
 
 export type CodexRolloutMtimeProbe =
 	| { kind: "found"; mtimeMs: number }
@@ -37,7 +37,11 @@ export function probeCodexRolloutMtime(
 		return { kind: "unknown" };
 	}
 
-	const root = join(codexHomeDir(executionId, env), "sessions");
+	const resolution = resolveExecutionCodexHome(executionId, undefined, env);
+	if (resolution.kind === "unknown") {
+		return { kind: "unknown" };
+	}
+	const root = join(resolution.home, "sessions");
 	if (!existsSync(root)) return { kind: "absent" };
 	let newest: number | undefined;
 	const pending = [root];

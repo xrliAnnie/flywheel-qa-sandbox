@@ -1,0 +1,3 @@
+execution_id                          status   adapter_type  workflow_node_id  session_stage  started_at             
+------------------------------------  -------  ------------  ----------------  -------------  -----------------------
+6178ca57-5a67-4f5c-8829-332159d83c4b  running  claude-tmux   eng_design        design_review  2026-09-05 11:40:25.619

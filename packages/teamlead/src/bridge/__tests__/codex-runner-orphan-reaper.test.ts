@@ -1,13 +1,93 @@
-import { readFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveDaemonSocketPath } from "flywheel-claude-runner";
+import {
+	admitCodexAgentHome,
+	releaseCodexAgentHomeLease,
+	resolveDaemonSocketPath,
+} from "flywheel-claude-runner";
 import { describe, expect, it, vi } from "vitest";
 import {
 	CODEX_APP_SERVER_ORPHAN_MIN_ELAPSED_SECONDS,
 	type CodexAppServerProcess,
+	defaultListCodexHomeExecutionIds,
 	parseCodexAppServerProcessRow,
 	sweepCodexRunnerOrphans,
 } from "../codex-runner-orphan-reaper.js";
+
+describe("FLY-2358 keyed Codex home inventory", () => {
+	it("adds regular keyed lease names without treating agents as an execution", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2358-reaper-inventory-"));
+		const env = testEnv(root);
+		try {
+			mkdirSync(join(env.FLYWHEEL_CODEX_HOMES_ROOT!, "legacy-exec"), {
+				recursive: true,
+			});
+			const leases = join(
+				env.FLYWHEEL_CODEX_HOMES_ROOT!,
+				"agents",
+				"flywheel",
+				"implement",
+				".flywheel-leases",
+			);
+			mkdirSync(leases, { recursive: true });
+			writeFileSync(join(leases, "keyed-exec"), "token");
+			symlinkSync(join(leases, "keyed-exec"), join(leases, "symlink-exec"));
+			writeFileSync(join(leases, "bad name"), "ignored");
+
+			expect(await defaultListCodexHomeExecutionIds(env)).toEqual({
+				status: "ok",
+				executionIds: ["keyed-exec", "legacy-exec"],
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("retains keyed executions from their durable session record after lease retirement", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2358-reaper-retired-"));
+		const env = testEnv(root);
+		try {
+			const admission = await admitCodexAgentHome(
+				{
+					project: "flywheel",
+					role: "implement",
+					executionId: "keyed-retired",
+					requestedAssemblyArm: "bare",
+				},
+				env,
+			);
+			const sessionDir = join(env.FLYWHEEL_CODEX_SESSION_DIR!, "keyed-retired");
+			mkdirSync(sessionDir, { recursive: true });
+			writeFileSync(
+				join(sessionDir, "session.json"),
+				JSON.stringify({
+					executionId: "keyed-retired",
+					codexAgentHome: {
+						home: admission.handle.home,
+						project: admission.handle.project,
+						role: admission.handle.role,
+					},
+				}),
+			);
+			await releaseCodexAgentHomeLease(admission.handle, env);
+
+			expect(await defaultListCodexHomeExecutionIds(env)).toEqual({
+				status: "ok",
+				executionIds: ["keyed-retired"],
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
 
 function testEnv(root: string): NodeJS.ProcessEnv {
 	return {

@@ -7,8 +7,58 @@ import { type ProjectRuntime, RunDispatcher } from "../run-dispatcher.js";
 import {
 	createRunInfraDispatcher,
 	isMissingProjectConfigError,
+	keyedCodexHomeSessionSnapshot,
 	resolveWorkflowTmuxWindowAuthority,
 } from "../run-infra.js";
+
+describe("FLY-2358 keyed Codex home startup snapshot", () => {
+	it("includes every reown candidate with its durable project and workflow role", () => {
+		const candidates = [
+			"running",
+			"ship_parked",
+			"awaiting_review",
+			"design_done",
+			"approved_to_ship",
+		].map((status, index) => ({
+			execution_id: `exec-${index}`,
+			status,
+			project_name: "flywheel",
+			workflow_node_id: index === 4 ? "qa" : "implement",
+			adapter_type: "codex-tmux",
+		}));
+		const store = {
+			getReadoptCandidateSessions: () => [
+				...candidates,
+				{
+					execution_id: "exec-claude",
+					status: "running",
+					project_name: "flywheel",
+					workflow_node_id: "design",
+					adapter_type: "claude-tmux",
+				},
+				{
+					execution_id: "exec-no-role",
+					status: "running",
+					project_name: "flywheel",
+					adapter_type: "codex-tmux",
+				},
+			],
+		};
+
+		expect(keyedCodexHomeSessionSnapshot(store as never)).toEqual(
+			new Map(
+				candidates.map((session) => [
+					session.execution_id,
+					{
+						status: session.status,
+						project: session.project_name,
+						role: session.workflow_node_id,
+					},
+				]),
+			),
+		);
+	});
+});
 
 describe("project config ENOENT classification", () => {
 	it("allows fallback only when config.yaml itself is absent", () => {

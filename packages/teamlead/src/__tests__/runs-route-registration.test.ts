@@ -14,6 +14,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 
 // Mock heavy dependencies to keep the test lightweight
 vi.mock("flywheel-claude-runner", () => ({
+	admitCodexAgentHome: vi.fn(),
 	AnthropicLLMClient: vi.fn(),
 	buildTmuxServerBirthEnvironment: vi.fn(() => ({
 		PATH: "/usr/bin:/bin",
@@ -25,6 +26,10 @@ vi.mock("flywheel-claude-runner", () => ({
 		reserve: vi.fn(() => true),
 	})),
 	RUNNER_PANE_BASE_ALLOWLIST: [],
+	releaseCodexAgentHomeLease: vi.fn(),
+	resolveExecutionCodexHome: vi.fn(() => ({ kind: "legacy" })),
+	scrubOrphanedCodexAgentHomes: vi.fn().mockResolvedValue(0),
+	scrubOrphanedCodexHomes: vi.fn(() => 0),
 	sweepStaleSyncOpMarkers: vi.fn(),
 	syncOpMarkerPath: vi.fn((pid: number) => `/tmp/bridge-syncop.${pid}.json`),
 	TmuxAdapter: vi.fn().mockImplementation(() => ({

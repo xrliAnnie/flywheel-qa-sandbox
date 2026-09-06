@@ -22,6 +22,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { AdmitCodexAgentHomeResult } from "flywheel-claude-runner";
 import type { PonytailConfig } from "flywheel-config";
 import {
 	hashModeBucket,
@@ -111,6 +112,14 @@ interface RunOpts {
 	ponytailProjectLayer?: () => PonytailConfig | undefined;
 	codexProbe?: CodexSkillAssemblyProbe;
 	agentDispatcher?: AgentDispatcher;
+	codexAgentHomeAdmitter?: (
+		input: Parameters<
+			typeof import("flywheel-claude-runner").admitCodexAgentHome
+		>[0],
+	) => Promise<AdmitCodexAgentHomeResult>;
+	codexAgentHomeReleaser?: (
+		handle: AdmitCodexAgentHomeResult["handle"],
+	) => Promise<void>;
 	projectRoot?: string;
 	inspectPending?: (state: {
 		pending: Promise<unknown>;
@@ -189,13 +198,32 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 			hasOverride: opts.envValue !== undefined,
 			raw: opts.envValue ?? null,
 		}),
+		undefined,
+		undefined,
+		undefined,
+		undefined,
 	);
+	Object.assign(blueprint, {
+		...(opts.codexAgentHomeAdmitter && {
+			codexAgentHomeAdmitter: opts.codexAgentHomeAdmitter,
+		}),
+		...(opts.codexAgentHomeReleaser && {
+			codexAgentHomeReleaser: opts.codexAgentHomeReleaser,
+		}),
+	});
 	const ctx: BlueprintContext = {
 		teamName: "eng",
 		runnerName: "claude",
 		projectName: "testproj",
 		issueIdentifier: ID,
 		...opts.ctxExtra,
+		...(opts.ctxExtra?.generalizedExecutionContext && {
+			workflowCapabilities: opts.ctxExtra.workflowCapabilities ?? {
+				completion_route: "needs_review",
+			},
+			workflowAgentContent:
+				opts.ctxExtra.workflowAgentContent ?? "Pinned implement agent contract",
+		}),
 	};
 	const pending = blueprint.run(
 		makeNode(),
@@ -217,6 +245,184 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 afterEach(() => {
 	delete process.env[SKILL_FRAMEWORK_MODE_ENV];
 	vi.restoreAllMocks();
+});
+
+const generalizedImplement = {
+	activationId: "activation-1",
+	runId: "run-1",
+	nodeId: "implement",
+	attempt: 1,
+	snapshotDigest: "digest-1",
+};
+
+function admittedHome(
+	input: Partial<AdmitCodexAgentHomeResult> = {},
+): AdmitCodexAgentHomeResult {
+	return {
+		handle: {
+			project: "testproj",
+			role: "implement",
+			home: "/tmp/codex-agent-home",
+			executionId: ID,
+			token: "0123456789abcdef0123456789abcdef",
+		},
+		effectiveAssemblyArm: "bare",
+		inherited: false,
+		liveLeases: 1,
+		createdLease: true,
+		...input,
+	};
+}
+
+describe("FLY-2358 Blueprint keyed agent home admission", () => {
+	it("awaits admission before publishing started or invoking the adapter", async () => {
+		let resolveAdmission!: (value: AdmitCodexAgentHomeResult) => void;
+		const admit = vi.fn(
+			() =>
+				new Promise<AdmitCodexAgentHomeResult>((resolve) => {
+					resolveAdmission = resolve;
+				}),
+		);
+		const result = runBlueprint({
+			envValue: "bare",
+			ctxExtra: {
+				runnerBackend: "codex-tmux",
+				generalizedExecutionContext: generalizedImplement,
+			},
+			codexProbe: () => ({ disableNames: ["superpowers:tdd"] }),
+			codexAgentHomeAdmitter: admit,
+			inspectPending: async ({ startedCalls, executeCalls }) => {
+				await vi.waitFor(() => expect(admit).toHaveBeenCalledOnce());
+				expect(startedCalls()).toBe(0);
+				expect(executeCalls()).toBe(0);
+				resolveAdmission(admittedHome());
+			},
+		});
+
+		await expect(result).resolves.toMatchObject({
+			execArgs: {
+				codexAgentHome: {
+					project: "testproj",
+					role: "implement",
+					assemblyArm: "bare",
+					createdLease: true,
+				},
+			},
+		});
+	});
+
+	it("inherits the live home's arm and re-probes that effective assembly", async () => {
+		const probe = vi
+			.fn()
+			.mockReturnValueOnce({ disableNames: ["requested-bare"] })
+			.mockReturnValueOnce({
+				disableNames: ["effective-matt"],
+				mattSkillsSourceDir: "/tmp/matt-skills",
+			});
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "bare",
+			ctxExtra: {
+				runnerBackend: "codex-tmux",
+				generalizedExecutionContext: generalizedImplement,
+			},
+			codexProbe: probe,
+			codexAgentHomeAdmitter: async () =>
+				admittedHome({
+					effectiveAssemblyArm: "matt",
+					inherited: true,
+					liveLeases: 2,
+				}),
+		});
+
+		expect(probe).toHaveBeenCalledTimes(2);
+		expect(envelope).toMatchObject({
+			skillFrameworkMode: "matt",
+			skillFrameworkModeVia: "inherited",
+		});
+		expect(execArgs).toMatchObject({
+			skillFrameworkMode: "matt",
+			codexSkillDisableNames: ["effective-matt"],
+			codexMattSkillsSourceDir: "/tmp/matt-skills",
+			codexAgentHome: { assemblyArm: "matt" },
+		});
+	});
+
+	it("keeps bare-ponytail attribution when the active home already uses bare", async () => {
+		const { envelope, execArgs } = await runBlueprint({
+			envValue: "bare-ponytail",
+			ctxExtra: {
+				runnerBackend: "codex-tmux",
+				generalizedExecutionContext: generalizedImplement,
+			},
+			codexProbe: () => ({ disableNames: ["superpowers:tdd"] }),
+			codexAgentHomeAdmitter: async () => admittedHome(),
+		});
+		expect(envelope.skillFrameworkMode).toBe("bare-ponytail");
+		expect(envelope.skillFrameworkModeVia).toBe("forced");
+		expect(execArgs.enablePonytail).toBe(true);
+		expect(execArgs.codexAgentHome?.assemblyArm).toBe("bare");
+	});
+
+	it("uses the legacy execution home when the workflow role is unresolved", async () => {
+		const admit = vi.fn();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const { execArgs } = await runBlueprint({
+			envValue: "bare",
+			ctxExtra: { runnerBackend: "codex-tmux" },
+			codexProbe: () => ({ disableNames: [] }),
+			codexAgentHomeAdmitter: admit,
+		});
+		expect(admit).not.toHaveBeenCalled();
+		expect(execArgs.codexAgentHome).toBeUndefined();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("identity_unresolved reason=no_role"),
+		);
+	});
+
+	it("releases admission when inherited-arm probing fails before adapter handoff", async () => {
+		const release = vi.fn(async () => undefined);
+		const probe = vi
+			.fn()
+			.mockReturnValueOnce({ disableNames: ["requested-bare"] })
+			.mockImplementationOnce(() => {
+				throw new Error("effective matt probe failed");
+			});
+		const dispatcher = {
+			dispatch: vi.fn(),
+		} as unknown as AgentDispatcher;
+
+		await expect(
+			runBlueprint({
+				envValue: "bare",
+				ctxExtra: {
+					runnerBackend: "codex-tmux",
+					generalizedExecutionContext: generalizedImplement,
+				},
+				codexProbe: probe,
+				agentDispatcher: dispatcher,
+				codexAgentHomeAdmitter: async () =>
+					admittedHome({
+						effectiveAssemblyArm: "matt",
+						inherited: true,
+					}),
+				codexAgentHomeReleaser: release,
+			}),
+		).rejects.toThrow("effective matt probe failed");
+		expect(release).toHaveBeenCalledOnce();
+		expect(dispatcher.dispatch).not.toHaveBeenCalled();
+	});
+
+	it("never admits a home for a Claude runner", async () => {
+		const admit = vi.fn();
+		await runBlueprint({
+			ctxExtra: {
+				runnerBackend: "claude-tmux",
+				generalizedExecutionContext: generalizedImplement,
+			},
+			codexAgentHomeAdmitter: admit,
+		});
+		expect(admit).not.toHaveBeenCalled();
+	});
 });
 
 describe("FLY-1395 default Codex skill assembly probe", () => {

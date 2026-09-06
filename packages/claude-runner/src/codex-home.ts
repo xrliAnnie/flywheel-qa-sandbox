@@ -15,16 +15,24 @@
  * shell env WITHOUT riding the codex process argv (ps-visible) or the cycle
  * state file. The 0600 config is the single, minimal plaintext surface.
  *
- * Only the ~10KB account face (auth.json + config.toml) is isolated per
- * runner; everything else codex needs it creates inside the home itself
+ * FLY-2358 adds persistent keyed homes for generalized Codex runners. A
+ * resolved `(project, workflow-role)` pair shares one home across executions;
+ * unresolved and pre-rollout executions retain the legacy execution-scoped
+ * layout. Per-execution leases protect credential scrubbing while a keyed
+ * home is shared, and keyed homes are never removed by task cleanup.
+ *
+ * Only the account face (auth.json + config.toml) is copied into a newly
+ * created home; everything else codex needs it creates inside the home itself
  * (sessions/, logs, caches). We do NOT `cp -r ~/.codex` (that would be GBs).
  */
 
+import { randomBytes } from "node:crypto";
 import {
 	accessSync,
 	chmodSync,
 	closeSync,
 	cpSync,
+	type Dirent,
 	existsSync,
 	constants as fsConstants,
 	fstatSync,
@@ -33,13 +41,29 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve as resolvePath,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import {
+	encodeMemoryPathComponent,
+	RUNNER_MEMORY_ID_MAX_LENGTH,
+	type SkillAssemblyBaseArm,
+	withMkdirLock,
+} from "flywheel-config";
+import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import {
 	type CodexAuthIdentity,
@@ -274,6 +298,296 @@ export function codexHomeDir(
 	return join(codexHomesRoot(env), executionId);
 }
 
+export interface CodexAgentHomeIdentity {
+	project: string;
+	role: string;
+}
+
+/** Stable CODEX_HOME for one project/runner-role identity (FLY-2358). */
+export function codexAgentHomeDir(
+	identity: CodexAgentHomeIdentity,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	for (const [field, value] of [
+		["project", identity.project],
+		["role", identity.role],
+	] as const) {
+		if (
+			!SAFE_IDENTIFIER_RE.test(value) ||
+			value.length > RUNNER_MEMORY_ID_MAX_LENGTH
+		) {
+			throw new Error(`invalid codex agent home ${field}`);
+		}
+	}
+	return join(
+		codexHomesRoot(env),
+		"agents",
+		encodeMemoryPathComponent(identity.project),
+		encodeMemoryPathComponent(identity.role),
+	);
+}
+
+const CODEX_AGENT_HOME_MARKER = ".flywheel-agent-home.json";
+const CODEX_AGENT_HOME_LEASES = ".flywheel-leases";
+const CODEX_AGENT_HOME_LOCKS = ".locks";
+const CODEX_AGENT_HOME_LOCK_OPTS = {
+	timeoutMs: 10_000,
+	retryMs: 20,
+	staleMs: 60_000,
+} as const;
+
+interface CodexAgentHomeMarker extends CodexAgentHomeIdentity {
+	version: 1;
+	createdAt: string;
+	assemblyArm: SkillAssemblyBaseArm;
+	materializedArm: SkillAssemblyBaseArm | null;
+}
+
+export interface CodexAgentHomeHandle extends CodexAgentHomeIdentity {
+	home: string;
+	executionId: string;
+	token: string;
+}
+
+export interface AdmitCodexAgentHomeResult {
+	handle: CodexAgentHomeHandle;
+	effectiveAssemblyArm: SkillAssemblyBaseArm;
+	inherited: boolean;
+	liveLeases: number;
+	createdLease: boolean;
+}
+
+function assertSafeExecutionId(executionId: string): void {
+	if (
+		!SAFE_IDENTIFIER_RE.test(executionId) ||
+		executionId.length > RUNNER_MEMORY_ID_MAX_LENGTH
+	) {
+		throw new Error("invalid codex agent home execution id");
+	}
+}
+
+function ensurePlainDirectory(path: string, label: string): void {
+	try {
+		const stat = lstatSync(path);
+		if (!stat.isDirectory() || stat.isSymbolicLink()) {
+			throw new Error(`unsafe codex agent home path: ${label}`);
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		try {
+			mkdirSync(path, { mode: 0o700 });
+		} catch (mkdirError) {
+			if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") {
+				throw mkdirError;
+			}
+		}
+		const stat = lstatSync(path);
+		if (!stat.isDirectory() || stat.isSymbolicLink()) {
+			throw new Error(`unsafe codex agent home path: ${label}`);
+		}
+	}
+	chmodSync(path, 0o700);
+}
+
+function codexAgentHomeLockPath(
+	identity: CodexAgentHomeIdentity,
+	env: NodeJS.ProcessEnv,
+): string {
+	const home = codexAgentHomeDir(identity, env);
+	const projectDir = dirname(home);
+	return join(projectDir, CODEX_AGENT_HOME_LOCKS, basename(home));
+}
+
+function prepareCodexAgentHomeLock(
+	identity: CodexAgentHomeIdentity,
+	env: NodeJS.ProcessEnv,
+): string {
+	const root = codexHomesRoot(env);
+	mkdirSync(root, { recursive: true, mode: 0o700 });
+	const agentsDir = join(root, "agents");
+	ensurePlainDirectory(agentsDir, "agents");
+	const projectDir = dirname(codexAgentHomeDir(identity, env));
+	ensurePlainDirectory(projectDir, "project");
+	const locksDir = join(projectDir, CODEX_AGENT_HOME_LOCKS);
+	ensurePlainDirectory(locksDir, "locks");
+	const lockPath = codexAgentHomeLockPath(identity, env);
+	try {
+		const stat = lstatSync(lockPath);
+		if (!stat.isDirectory() || stat.isSymbolicLink()) {
+			throw new Error("unsafe codex agent home path: lock");
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	return lockPath;
+}
+
+function atomicWriteFile(path: string, content: string, mode = 0o600): void {
+	const tmp = join(
+		dirname(path),
+		`.${basename(path)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
+	);
+	try {
+		writeFileSync(tmp, content, { encoding: "utf8", mode, flag: "wx" });
+		chmodSync(tmp, mode);
+		renameSync(tmp, path);
+	} catch (error) {
+		try {
+			unlinkSync(tmp);
+		} catch {
+			// The temporary file was never created or was already renamed.
+		}
+		throw error;
+	}
+}
+
+function readCodexAgentHomeMarker(home: string): CodexAgentHomeMarker | null {
+	const path = join(home, CODEX_AGENT_HOME_MARKER);
+	if (!existsSync(path)) return null;
+	try {
+		const stat = lstatSync(path);
+		if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsafe");
+		const marker = JSON.parse(
+			readFileSync(path, "utf8"),
+		) as Partial<CodexAgentHomeMarker>;
+		if (
+			marker.version !== 1 ||
+			typeof marker.project !== "string" ||
+			typeof marker.role !== "string" ||
+			typeof marker.createdAt !== "string" ||
+			!(["superpowers", "matt", "bare"] as const).includes(
+				marker.assemblyArm as SkillAssemblyBaseArm,
+			) ||
+			(marker.materializedArm !== null &&
+				!(["superpowers", "matt", "bare"] as const).includes(
+					marker.materializedArm as SkillAssemblyBaseArm,
+				))
+		) {
+			throw new Error("invalid");
+		}
+		return marker as CodexAgentHomeMarker;
+	} catch {
+		throw new Error("invalid codex agent home marker");
+	}
+}
+
+function writeCodexAgentHomeMarker(
+	home: string,
+	marker: CodexAgentHomeMarker,
+): void {
+	atomicWriteFile(
+		join(home, CODEX_AGENT_HOME_MARKER),
+		`${JSON.stringify(marker, null, 2)}\n`,
+	);
+}
+
+function listCodexAgentHomeLeases(home: string): string[] {
+	const leasesDir = join(home, CODEX_AGENT_HOME_LEASES);
+	if (!existsSync(leasesDir)) return [];
+	const stat = lstatSync(leasesDir);
+	if (!stat.isDirectory() || stat.isSymbolicLink()) {
+		throw new Error("unsafe codex agent home path: leases");
+	}
+	const leases: string[] = [];
+	for (const entry of readdirSync(leasesDir, { withFileTypes: true })) {
+		if (
+			!entry.isFile() ||
+			entry.isSymbolicLink() ||
+			!SAFE_IDENTIFIER_RE.test(entry.name) ||
+			entry.name.length > RUNNER_MEMORY_ID_MAX_LENGTH
+		) {
+			// Atomic lease writes use a temp file in this directory. A hard kill
+			// can strand that file, and Finder or an operator may add unrelated
+			// entries. None of those names can be a canonical execution lease;
+			// ignore them without following or removing them so one foreign entry
+			// cannot wedge admission, retirement, or credential scrubbing.
+			continue;
+		}
+		leases.push(entry.name);
+	}
+	return leases.sort();
+}
+
+function validateMarkerIdentity(
+	marker: CodexAgentHomeMarker,
+	identity: CodexAgentHomeIdentity,
+): void {
+	if (marker.project !== identity.project || marker.role !== identity.role) {
+		throw new Error("codex agent home marker identity mismatch");
+	}
+}
+
+export async function admitCodexAgentHome(
+	input: CodexAgentHomeIdentity & {
+		executionId: string;
+		requestedAssemblyArm: SkillAssemblyBaseArm;
+	},
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<AdmitCodexAgentHomeResult> {
+	const identity = { project: input.project, role: input.role };
+	const home = codexAgentHomeDir(identity, env);
+	assertSafeExecutionId(input.executionId);
+	const lockPath = prepareCodexAgentHomeLock(identity, env);
+	return withMkdirLock(
+		lockPath,
+		async () => {
+			ensurePlainDirectory(home, "home");
+			const leasesDir = join(home, CODEX_AGENT_HOME_LEASES);
+			ensurePlainDirectory(leasesDir, "leases");
+			const leases = listCodexAgentHomeLeases(home);
+			let marker = readCodexAgentHomeMarker(home);
+			if (marker === null) {
+				if (leases.length > 0) {
+					throw new Error("missing codex agent home marker with live leases");
+				}
+				marker = {
+					version: 1,
+					...identity,
+					createdAt: new Date().toISOString(),
+					assemblyArm: input.requestedAssemblyArm,
+					materializedArm: null,
+				};
+				writeCodexAgentHomeMarker(home, marker);
+			} else {
+				validateMarkerIdentity(marker, identity);
+			}
+
+			const leasePath = join(leasesDir, input.executionId);
+			const existing = leases.includes(input.executionId);
+			if (
+				!existing &&
+				leases.length === 0 &&
+				marker.assemblyArm !== input.requestedAssemblyArm
+			) {
+				marker = { ...marker, assemblyArm: input.requestedAssemblyArm };
+				writeCodexAgentHomeMarker(home, marker);
+			}
+			let token: string;
+			if (existing) {
+				const stat = lstatSync(leasePath);
+				if (!stat.isFile() || stat.isSymbolicLink()) {
+					throw new Error("unsafe codex agent home lease entry");
+				}
+				token = readFileSync(leasePath, "utf8").trim();
+				if (!/^[a-f0-9]{32}$/.test(token)) {
+					throw new Error("invalid codex agent home lease token");
+				}
+			} else {
+				token = randomBytes(16).toString("hex");
+				atomicWriteFile(leasePath, `${token}\n`);
+			}
+			return {
+				handle: { ...identity, home, executionId: input.executionId, token },
+				effectiveAssemblyArm: marker.assemblyArm,
+				inherited: marker.assemblyArm !== input.requestedAssemblyArm,
+				liveLeases: leases.length + (existing ? 0 : 1),
+				createdLease: !existing,
+			};
+		},
+		CODEX_AGENT_HOME_LOCK_OPTS,
+	);
+}
+
 /** The source ~/.codex we seed auth.json + config.toml from (the host's
  * active account state). Configurable for tests / future remote pools. */
 export function sourceCodexDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -451,12 +765,46 @@ function stripManagedTrustBlock(toml: string): string {
 	return toml.replace(re, "\n");
 }
 
+function readManagedTrustedProjectPaths(toml: string): string[] {
+	const begin = toml.indexOf(MANAGED_TRUST_BEGIN);
+	const end = toml.indexOf(MANAGED_TRUST_END);
+	if (begin === -1 && end === -1) return [];
+	if (
+		begin === -1 ||
+		end < begin ||
+		begin !== toml.lastIndexOf(MANAGED_TRUST_BEGIN) ||
+		end !== toml.lastIndexOf(MANAGED_TRUST_END)
+	) {
+		throw new Error("invalid managed workspace trust block");
+	}
+	const managed = toml.slice(begin + MANAGED_TRUST_BEGIN.length, end).trim();
+	const parsed = parseTomlSanitized(managed, "base");
+	if (!isPlainTable(parsed.projects)) {
+		throw new Error("invalid managed workspace trust block");
+	}
+	const paths: string[] = [];
+	for (const [path, value] of Object.entries(parsed.projects)) {
+		if (
+			!isAbsolute(path) ||
+			path.includes("\0") ||
+			!isPlainTable(value) ||
+			value.trust_level !== "trusted"
+		) {
+			throw new Error("invalid managed workspace trust block");
+		}
+		paths.push(path);
+	}
+	return paths.sort();
+}
+
 export interface RenderCodexHomeConfigOptions {
 	skillDisableNames?: string[];
 	/** Absolute deployed hook path used by Codex's root-scope notify setting. */
 	notifyProgramPath?: string;
 	/** Canonical worktree Codex must trust before its TUI starts. */
 	trustedProjectPath?: string;
+	/** Canonical worktrees sharing one persistent agent home. */
+	trustedProjectPaths?: string[];
 }
 
 /** FLY-1604: fixed placeholder used during structural validation. Lexically
@@ -630,7 +978,13 @@ export function renderCodexHomeConfig(
 	opts: RenderCodexHomeConfigOptions = {},
 ): string {
 	const hasNotify = opts.notifyProgramPath !== undefined;
-	const hasTrust = opts.trustedProjectPath !== undefined;
+	const trustedProjectPaths = [
+		...(opts.trustedProjectPaths ?? []),
+		...(opts.trustedProjectPath ? [opts.trustedProjectPath] : []),
+	]
+		.filter((path, index, paths) => paths.indexOf(path) === index)
+		.sort();
+	const hasTrust = trustedProjectPaths.length > 0;
 	if (
 		hasNotify &&
 		(!opts.notifyProgramPath ||
@@ -641,15 +995,18 @@ export function renderCodexHomeConfig(
 			"renderCodexHomeConfig: notifyProgramPath must be a non-empty absolute path without NUL bytes",
 		);
 	}
-	if (
-		hasTrust &&
-		(!opts.trustedProjectPath ||
-			!isAbsolute(opts.trustedProjectPath) ||
-			opts.trustedProjectPath.includes("\0"))
-	) {
-		throw new Error(
-			"renderCodexHomeConfig: trustedProjectPath must be a non-empty absolute and NUL-free path",
-		);
+	if (hasTrust) {
+		for (const trustedProjectPath of trustedProjectPaths) {
+			if (
+				!trustedProjectPath ||
+				!isAbsolute(trustedProjectPath) ||
+				trustedProjectPath.includes("\0")
+			) {
+				throw new Error(
+					"renderCodexHomeConfig: trustedProjectPath must be a non-empty absolute and NUL-free path",
+				);
+			}
+		}
 	}
 	const base = stripManagedSkillsBlock(
 		stripManagedBlock(
@@ -709,7 +1066,7 @@ export function renderCodexHomeConfig(
 		}
 	}
 	const parsedBase = parseTomlSanitized(base, "base");
-	let addManagedTrust = false;
+	const managedTrustPaths: string[] = [];
 	if (hasTrust) {
 		const projects = parsedBase.projects;
 		if (projects !== undefined && !isPlainTable(projects)) {
@@ -717,19 +1074,21 @@ export function renderCodexHomeConfig(
 				"renderCodexHomeConfig: base config.toml projects must be a table",
 			);
 		}
-		const target =
-			projects === undefined ? undefined : projects[opts.trustedProjectPath!];
-		if (target !== undefined && !isPlainTable(target)) {
-			throw new Error(
-				"renderCodexHomeConfig: target project entry must be a table",
-			);
+		for (const trustedProjectPath of trustedProjectPaths) {
+			const target =
+				projects === undefined ? undefined : projects[trustedProjectPath];
+			if (target !== undefined && !isPlainTable(target)) {
+				throw new Error(
+					"renderCodexHomeConfig: target project entry must be a table",
+				);
+			}
+			if (target !== undefined && target.trust_level !== "trusted") {
+				throw new Error(
+					"renderCodexHomeConfig: target project trust_level must already be trusted or absent",
+				);
+			}
+			if (target === undefined) managedTrustPaths.push(trustedProjectPath);
 		}
-		if (target !== undefined && target.trust_level !== "trusted") {
-			throw new Error(
-				"renderCodexHomeConfig: target project trust_level must already be trusted or absent",
-			);
-		}
-		addManagedTrust = target === undefined;
 	}
 	let notifyAnchor: RegExpMatchArray | undefined;
 	if (hasNotify) {
@@ -880,11 +1239,11 @@ export function renderCodexHomeConfig(
 				`${MANAGED_SKILLS_BEGIN}\n${entries.join("\n\n")}\n${MANAGED_SKILLS_END}`,
 			);
 		}
-		if (addManagedTrust) {
+		if (managedTrustPaths.length > 0) {
 			const serialized = stringifyToml({
-				projects: {
-					[opts.trustedProjectPath!]: { trust_level: "trusted" },
-				},
+				projects: Object.fromEntries(
+					managedTrustPaths.map((path) => [path, { trust_level: "trusted" }]),
+				),
 			}).trim();
 			blocks.push(
 				`${MANAGED_TRUST_BEGIN}\n${serialized}\n${MANAGED_TRUST_END}`,
@@ -986,21 +1345,24 @@ export function renderCodexHomeConfig(
 	}
 	if (hasTrust) {
 		const outProjects = parsedOut.projects;
-		const outTarget =
-			isPlainTable(outProjects) && opts.trustedProjectPath
-				? outProjects[opts.trustedProjectPath]
+		for (const trustedProjectPath of trustedProjectPaths) {
+			const outTarget = isPlainTable(outProjects)
+				? outProjects[trustedProjectPath]
 				: undefined;
-		if (!isPlainTable(outTarget) || outTarget.trust_level !== "trusted") {
-			throw new Error(
-				"renderCodexHomeConfig: internal invariant violated — rendered config does not trust the target project",
-			);
+			if (!isPlainTable(outTarget) || outTarget.trust_level !== "trusted") {
+				throw new Error(
+					"renderCodexHomeConfig: internal invariant violated — rendered config does not trust the target project",
+				);
+			}
 		}
 		const outRest = { ...(outProjects as Record<string, unknown>) };
-		delete outRest[opts.trustedProjectPath!];
 		const baseProjects = isPlainTable(parsedBase.projects)
 			? { ...parsedBase.projects }
 			: {};
-		delete baseProjects[opts.trustedProjectPath!];
+		for (const trustedProjectPath of trustedProjectPaths) {
+			delete outRest[trustedProjectPath];
+			delete baseProjects[trustedProjectPath];
+		}
 		if (!isDeepStrictEqual(outRest, baseProjects)) {
 			throw new Error(
 				"renderCodexHomeConfig: internal invariant violated — workspace trust merge altered unrelated projects",
@@ -1027,6 +1389,8 @@ export interface ProvisionCodexHomeOptions {
 	notifyProgramPath?: string;
 	/** Canonical worktree written into this execution-scoped config.toml. */
 	trustedProjectPath?: string;
+	/** Internal multi-worktree form used by persistent shared homes. */
+	trustedProjectPaths?: string[];
 	/** Canonical Codex account registry override (tests / vendored deployment). */
 	registryPath?: string;
 	/** Account-ledger root override (tests / slot isolation). */
@@ -1040,6 +1404,23 @@ export interface ProvisionCodexHomeOptions {
  * auth/config in place (no stacking).
  */
 export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
+	const env = opts.env ?? process.env;
+	return provisionCodexHomeAt(opts, codexHomeDir(opts.executionId, env), {
+		scrubOnFailure: () => scrubCodexHomeCredential(opts.executionId, env),
+		materializeSkills: true,
+		atomicManagedWrites: false,
+	});
+}
+
+function provisionCodexHomeAt(
+	opts: ProvisionCodexHomeOptions,
+	home: string,
+	behavior: {
+		scrubOnFailure: () => void;
+		materializeSkills: boolean;
+		atomicManagedWrites: boolean;
+	},
+): string {
 	const env = opts.env ?? process.env;
 	if (opts.ghToken != null && !TOKEN_RE.test(opts.ghToken)) {
 		throw new Error(
@@ -1102,10 +1483,9 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 		// A reprovision may be replacing a live home whose config still carries
 		// a managed GH_TOKEN. Pin rejection happens before this invocation owns
 		// the normal try/finally path, so retire that credential explicitly.
-		scrubCodexHomeCredential(opts.executionId, env);
+		behavior.scrubOnFailure();
 		throw error;
 	}
-	const home = codexHomeDir(opts.executionId, env);
 	mkdirSync(home, { recursive: true, mode: 0o700 });
 	// R1 MED #2: mkdir(recursive) does NOT repair a pre-existing dir mode
 	// (re-provision / crash-recovered home), so force 0700.
@@ -1113,60 +1493,67 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 
 	// Seed the exact auth bytes validated from one O_NOFOLLOW file descriptor.
 	// This closes the validate→copy path race while keeping per-runner isolation.
+	const writeManagedFile = (
+		path: string,
+		content: string,
+		mode = 0o600,
+	): void => {
+		if (behavior.atomicManagedWrites) {
+			atomicWriteFile(path, content, mode);
+			return;
+		}
+		writeFileSync(path, content, { encoding: "utf8", mode });
+		chmodSync(path, mode);
+	};
 	const destAuth = join(home, "auth.json");
-	writeFileSync(destAuth, sourceAuth.raw, { encoding: "utf8", mode: 0o600 });
-	chmodSync(destAuth, 0o600);
-	writeFileSync(join(home, ".active"), `${sourceIdentity.profile}\n`, {
-		encoding: "utf8",
-		mode: 0o600,
-	});
-	chmodSync(join(home, ".active"), 0o600);
+	writeManagedFile(destAuth, sourceAuth.raw);
+	writeManagedFile(join(home, ".active"), `${sourceIdentity.profile}\n`);
 
 	// config.toml = seeded global + GH_TOKEN block (0600). chmod AFTER write —
 	// writeFileSync mode only applies on CREATE, not to a pre-existing wider
 	// file (R1 MED #2).
 	const cfgPath = join(home, "config.toml");
 	try {
-		writeFileSync(
+		writeManagedFile(
 			cfgPath,
 			renderCodexHomeConfig(runnerBaseToml, opts.ghToken, {
 				skillDisableNames: opts.codexSkillDisableNames,
 				notifyProgramPath: opts.notifyProgramPath,
 				trustedProjectPath: opts.trustedProjectPath,
+				trustedProjectPaths: opts.trustedProjectPaths,
 			}),
-			{
-				encoding: "utf-8",
-				mode: 0o600,
-			},
 		);
-		chmodSync(cfgPath, 0o600); // repair mode if the file pre-existed
 
 		// FLY-1395: these paths are Flywheel-owned inside the per-runner home. Codex
 		// discovers direct $CODEX_HOME/skills children and uses each SKILL.md name,
 		// so install stable namespaced copies rather than a nested collection (which
 		// Codex flattens to collision-prone names such as `tdd`). Clear both the
 		// current layout and the early nested-layout artifact on every provision.
-		const skillsRoot = join(home, "skills");
-		rmSync(join(skillsRoot, "matt-skills"), { recursive: true, force: true });
-		for (const skillDir of MATT_CODEX_SKILL_DIRS) {
-			rmSync(join(skillsRoot, `matt-skills:${skillDir}`), {
+		if (behavior.materializeSkills) {
+			const skillsRoot = join(home, "skills");
+			rmSync(join(skillsRoot, "matt-skills"), {
 				recursive: true,
 				force: true,
 			});
-		}
-		if (opts.skillFrameworkMode === "matt" && opts.codexMattSkillsSourceDir) {
-			mkdirSync(skillsRoot, { recursive: true });
 			for (const skillDir of MATT_CODEX_SKILL_DIRS) {
-				const destination = join(skillsRoot, `matt-skills:${skillDir}`);
-				cpSync(join(opts.codexMattSkillsSourceDir, skillDir), destination, {
+				rmSync(join(skillsRoot, `matt-skills:${skillDir}`), {
 					recursive: true,
 					force: true,
 				});
-				writeFileSync(
-					join(destination, "SKILL.md"),
-					namespacedMattSkills.get(skillDir)!,
-					"utf-8",
-				);
+			}
+			if (opts.skillFrameworkMode === "matt" && opts.codexMattSkillsSourceDir) {
+				mkdirSync(skillsRoot, { recursive: true });
+				for (const skillDir of MATT_CODEX_SKILL_DIRS) {
+					const destination = join(skillsRoot, `matt-skills:${skillDir}`);
+					cpSync(join(opts.codexMattSkillsSourceDir, skillDir), destination, {
+						recursive: true,
+						force: true,
+					});
+					writeManagedFile(
+						join(destination, "SKILL.md"),
+						namespacedMattSkills.get(skillDir)!,
+					);
+				}
 			}
 		}
 
@@ -1178,12 +1565,10 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 		// without its contract would silently run on whatever global AGENTS.md
 		// content leaked into the seed — worse than not spawning.
 		const agentsPath = join(home, "AGENTS.md");
-		writeFileSync(
+		writeManagedFile(
 			agentsPath,
 			`<!-- flywheel-managed (FLY-1188): materialized from ${contractSrc} at provisioning; do not edit — changes belong in the source file -->\n${contract}`,
-			{ encoding: "utf-8", mode: 0o600 },
 		);
-		chmodSync(agentsPath, 0o600); // repair mode if the file pre-existed
 		try {
 			recordCodexAccountObservation({
 				identity: sourceIdentity,
@@ -1204,9 +1589,432 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 		}
 		return home;
 	} catch (err) {
-		scrubCodexHomeCredential(opts.executionId, env);
+		behavior.scrubOnFailure();
 		throw err;
 	}
+}
+
+export type ProvisionCodexAgentHomeOptions = Omit<
+	ProvisionCodexHomeOptions,
+	"executionId" | "skillFrameworkMode"
+> & {
+	skillFrameworkMode: SkillAssemblyBaseArm;
+};
+
+function validateCodexAgentHomeHandle(
+	handle: CodexAgentHomeHandle,
+	env: NodeJS.ProcessEnv,
+): void {
+	assertSafeExecutionId(handle.executionId);
+	if (
+		handle.home !==
+		codexAgentHomeDir({ project: handle.project, role: handle.role }, env)
+	) {
+		throw new Error("codex agent home handle path mismatch");
+	}
+}
+
+function assertCodexAgentHomeLease(handle: CodexAgentHomeHandle): void {
+	const leasePath = join(
+		handle.home,
+		CODEX_AGENT_HOME_LEASES,
+		handle.executionId,
+	);
+	let stat: ReturnType<typeof lstatSync>;
+	try {
+		stat = lstatSync(leasePath);
+	} catch {
+		throw new Error("codex agent home lease missing");
+	}
+	if (!stat.isFile() || stat.isSymbolicLink()) {
+		throw new Error("unsafe codex agent home lease entry");
+	}
+	if (readFileSync(leasePath, "utf8").trim() !== handle.token) {
+		throw new Error("codex agent home lease token mismatch");
+	}
+}
+
+/** Provision a previously-admitted shared home while holding its short lock. */
+export async function provisionCodexAgentHome(
+	handle: CodexAgentHomeHandle,
+	opts: ProvisionCodexAgentHomeOptions,
+): Promise<string> {
+	const env = opts.env ?? process.env;
+	validateCodexAgentHomeHandle(handle, env);
+	const identity = { project: handle.project, role: handle.role };
+	const lockPath = prepareCodexAgentHomeLock(identity, env);
+	return withMkdirLock(
+		lockPath,
+		async () => {
+			ensurePlainDirectory(handle.home, "home");
+			const marker = readCodexAgentHomeMarker(handle.home);
+			if (marker === null) throw new Error("missing codex agent home marker");
+			validateMarkerIdentity(marker, identity);
+			assertCodexAgentHomeLease(handle);
+			if (marker.assemblyArm !== opts.skillFrameworkMode) {
+				throw new Error("codex agent home assembly arm mismatch");
+			}
+			const configPath = join(handle.home, "config.toml");
+			const requestedTrustPaths = [
+				...(opts.trustedProjectPaths ?? []),
+				...(opts.trustedProjectPath ? [opts.trustedProjectPath] : []),
+			];
+			const retainedTrustPaths = existsSync(configPath)
+				? readManagedTrustedProjectPaths(
+						readFileSync(configPath, "utf8"),
+					).filter((path) => existsSync(path))
+				: [];
+			const trustedProjectPaths = [
+				...new Set([...retainedTrustPaths, ...requestedTrustPaths]),
+			].sort();
+			const materializeSkills = marker.materializedArm !== marker.assemblyArm;
+			const home = provisionCodexHomeAt(
+				{
+					...opts,
+					executionId: handle.executionId,
+					trustedProjectPath: undefined,
+					trustedProjectPaths,
+				},
+				handle.home,
+				{
+					scrubOnFailure: () => undefined,
+					materializeSkills,
+					atomicManagedWrites: true,
+				},
+			);
+			if (materializeSkills) {
+				writeCodexAgentHomeMarker(handle.home, {
+					...marker,
+					materializedArm: marker.assemblyArm,
+				});
+			}
+			return home;
+		},
+		CODEX_AGENT_HOME_LOCK_OPTS,
+	);
+}
+
+/** Release exactly one admitted execution lease; scrub only after the last. */
+export async function releaseCodexAgentHomeLease(
+	handle: CodexAgentHomeHandle,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+	validateCodexAgentHomeHandle(handle, env);
+	const identity = { project: handle.project, role: handle.role };
+	const lockPath = prepareCodexAgentHomeLock(identity, env);
+	await withMkdirLock(
+		lockPath,
+		async () => {
+			const marker = readCodexAgentHomeMarker(handle.home);
+			if (marker === null) throw new Error("missing codex agent home marker");
+			validateMarkerIdentity(marker, identity);
+			assertCodexAgentHomeLease(handle);
+			unlinkSync(
+				join(handle.home, CODEX_AGENT_HOME_LEASES, handle.executionId),
+			);
+			const remaining = listCodexAgentHomeLeases(handle.home).length;
+			if (remaining === 0) {
+				scrubCodexHomeCredentialAt(handle.home, true);
+			} else {
+				console.warn(
+					`[codex-home] keyed_home_scrub_deferred exec=${handle.executionId} live_leases=${remaining}`,
+				);
+			}
+		},
+		CODEX_AGENT_HOME_LOCK_OPTS,
+	);
+}
+
+export interface CodexAgentHomeSessionSnapshot extends CodexAgentHomeIdentity {
+	status: string;
+}
+
+const CODEX_AGENT_HOME_REOWN_STATUSES = new Set([
+	"running",
+	"ship_parked",
+	"awaiting_review",
+	"design_done",
+	"approved_to_ship",
+]);
+
+/**
+ * Remove stale execution leases from persistent agent homes at Bridge startup.
+ *
+ * A live/reownable session is retained only when its durable identity matches
+ * the marker for the home containing the lease. Identity ambiguity fails
+ * closed: the lease is preserved and a visible warning is emitted. One bad
+ * home never prevents the remaining homes from being inspected.
+ */
+export async function scrubOrphanedCodexAgentHomes(
+	sessions: ReadonlyMap<string, CodexAgentHomeSessionSnapshot>,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<number> {
+	const agentsDir = join(codexHomesRoot(env), "agents");
+	if (!existsSync(agentsDir)) return 0;
+	let removed = 0;
+	let projects: Dirent[];
+	try {
+		const agentsStat = lstatSync(agentsDir);
+		if (!agentsStat.isDirectory() || agentsStat.isSymbolicLink()) {
+			throw new Error("unsafe agents directory");
+		}
+		projects = readdirSync(agentsDir, { withFileTypes: true });
+	} catch (error) {
+		console.warn(
+			`[codex-home] keyed_home_janitor_failed scope=agents error=${error instanceof Error ? error.message : String(error)}`,
+		);
+		return 0;
+	}
+
+	for (const projectEntry of projects) {
+		if (!projectEntry.isDirectory() || projectEntry.isSymbolicLink()) {
+			console.warn(
+				`[codex-home] keyed_home_janitor_failed scope=project entry=${projectEntry.name}`,
+			);
+			continue;
+		}
+		const projectDir = join(agentsDir, projectEntry.name);
+		let roleEntries: Dirent[];
+		try {
+			roleEntries = readdirSync(projectDir, { withFileTypes: true });
+		} catch (error) {
+			console.warn(
+				`[codex-home] keyed_home_janitor_failed scope=project entry=${projectEntry.name} error=${error instanceof Error ? error.message : String(error)}`,
+			);
+			continue;
+		}
+		for (const roleEntry of roleEntries) {
+			if (roleEntry.name === CODEX_AGENT_HOME_LOCKS) continue;
+			const home = join(projectDir, roleEntry.name);
+			try {
+				if (!roleEntry.isDirectory() || roleEntry.isSymbolicLink()) {
+					throw new Error("unsafe agent home entry");
+				}
+				const marker = readCodexAgentHomeMarker(home);
+				if (marker === null) throw new Error("missing agent home marker");
+				if (codexAgentHomeDir(marker, env) !== home) {
+					throw new Error("agent home marker path mismatch");
+				}
+				const lockPath = prepareCodexAgentHomeLock(marker, env);
+				await withMkdirLock(
+					lockPath,
+					async () => {
+						const lockedMarker = readCodexAgentHomeMarker(home);
+						if (lockedMarker === null) {
+							throw new Error("missing agent home marker");
+						}
+						validateMarkerIdentity(lockedMarker, marker);
+						for (const executionId of listCodexAgentHomeLeases(home)) {
+							const session = sessions.get(executionId);
+							if (
+								session &&
+								(session.project !== marker.project ||
+									session.role !== marker.role)
+							) {
+								console.warn(
+									`[codex-home] keyed_home_janitor_identity_mismatch exec=${executionId}`,
+								);
+								continue;
+							}
+							if (
+								session &&
+								CODEX_AGENT_HOME_REOWN_STATUSES.has(session.status)
+							) {
+								continue;
+							}
+							unlinkSync(join(home, CODEX_AGENT_HOME_LEASES, executionId));
+							removed += 1;
+						}
+						if (listCodexAgentHomeLeases(home).length === 0) {
+							scrubCodexHomeCredentialAt(home, true);
+						}
+					},
+					CODEX_AGENT_HOME_LOCK_OPTS,
+				);
+			} catch (error) {
+				console.warn(
+					`[codex-home] keyed_home_janitor_failed scope=home entry=${roleEntry.name} error=${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+	}
+	return removed;
+}
+
+export type ExecutionCodexHomeResolution =
+	| ({ kind: "keyed" | "prepublished" } & CodexAgentHomeIdentity & {
+				home: string;
+			})
+	| { kind: "legacy"; home: string }
+	| { kind: "unknown"; reason: string };
+
+function codexSessionStatePath(
+	executionId: string,
+	env: NodeJS.ProcessEnv,
+): string {
+	const root =
+		env.FLYWHEEL_CODEX_SESSION_DIR?.trim() ||
+		join(homedir(), ".flywheel", "state", "codex-sessions");
+	return join(root, executionId, "session.json");
+}
+
+function exactLeaseExists(
+	home: string,
+	executionId: string,
+): boolean | "unknown" {
+	const leasePath = join(home, CODEX_AGENT_HOME_LEASES, executionId);
+	try {
+		const stat = lstatSync(leasePath);
+		if (!stat.isFile() || stat.isSymbolicLink()) return "unknown";
+		return /^[a-f0-9]{32}$/.test(readFileSync(leasePath, "utf8").trim())
+			? true
+			: "unknown";
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT"
+			? false
+			: "unknown";
+	}
+}
+
+/** Resolve an execution to a keyed or legacy home without following symlinks. */
+export function resolveExecutionCodexHome(
+	executionId: string,
+	expected?: CodexAgentHomeIdentity,
+	env: NodeJS.ProcessEnv = process.env,
+): ExecutionCodexHomeResolution {
+	try {
+		assertSafeExecutionId(executionId);
+	} catch {
+		return { kind: "unknown", reason: "invalid_execution_id" };
+	}
+	const statePath = codexSessionStatePath(executionId, env);
+	let record: unknown;
+	if (existsSync(statePath)) {
+		try {
+			const stateStat = lstatSync(statePath);
+			if (!stateStat.isFile() || stateStat.isSymbolicLink()) {
+				return { kind: "unknown", reason: "unsafe_session_state" };
+			}
+			const state = JSON.parse(readFileSync(statePath, "utf8")) as unknown;
+			if (typeof state !== "object" || state === null || Array.isArray(state)) {
+				return { kind: "unknown", reason: "invalid_session_state" };
+			}
+			record = (state as Record<string, unknown>).codexAgentHome;
+		} catch {
+			return { kind: "unknown", reason: "invalid_session_state" };
+		}
+	}
+	if (record === undefined) {
+		if (expected) {
+			let home: string;
+			try {
+				home = codexAgentHomeDir(expected, env);
+			} catch {
+				// Dispatch deliberately falls back to an execution-scoped home when
+				// project/role cannot form a keyed path. With no published keyed
+				// record, recovery must preserve that same legacy classification.
+				return { kind: "legacy", home: codexHomeDir(executionId, env) };
+			}
+			const lease = exactLeaseExists(home, executionId);
+			if (lease === "unknown") {
+				return { kind: "unknown", reason: "unsafe_prepublished_lease" };
+			}
+			if (lease) return { kind: "prepublished", ...expected, home };
+		}
+		return { kind: "legacy", home: codexHomeDir(executionId, env) };
+	}
+	if (typeof record !== "object" || record === null || Array.isArray(record)) {
+		return { kind: "unknown", reason: "invalid_agent_home_record" };
+	}
+	const value = record as Record<string, unknown>;
+	if (
+		typeof value.home !== "string" ||
+		typeof value.project !== "string" ||
+		typeof value.role !== "string"
+	) {
+		return { kind: "unknown", reason: "invalid_agent_home_record" };
+	}
+	const identity = { project: value.project, role: value.role };
+	if (
+		expected &&
+		(expected.project !== identity.project || expected.role !== identity.role)
+	) {
+		return { kind: "unknown", reason: "expected_identity_mismatch" };
+	}
+	let exactHome: string;
+	try {
+		exactHome = codexAgentHomeDir(identity, env);
+	} catch {
+		return { kind: "unknown", reason: "invalid_agent_home_identity" };
+	}
+	if (value.home !== exactHome) {
+		return { kind: "unknown", reason: "agent_home_path_mismatch" };
+	}
+	try {
+		const homeStat = lstatSync(exactHome);
+		if (!homeStat.isDirectory() || homeStat.isSymbolicLink()) {
+			return { kind: "unknown", reason: "unsafe_agent_home" };
+		}
+		const marker = readCodexAgentHomeMarker(exactHome);
+		if (marker === null) {
+			return { kind: "unknown", reason: "missing_agent_home_marker" };
+		}
+		validateMarkerIdentity(marker, identity);
+	} catch {
+		return { kind: "unknown", reason: "invalid_agent_home_marker" };
+	}
+	return { kind: "keyed", ...identity, home: exactHome };
+}
+
+/** Retire one execution from its resolved home; persistent keyed homes remain. */
+export async function retireCodexExecutionHome(
+	executionId: string,
+	expected: CodexAgentHomeIdentity,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+	const resolution = resolveExecutionCodexHome(executionId, expected, env);
+	if (resolution.kind === "legacy") {
+		scrubCodexHomeCredential(executionId, env);
+		return;
+	}
+	if (resolution.kind !== "keyed") {
+		console.warn(
+			`[codex-home] keyed_home_scrub_unresolved exec=${executionId} reason=${resolution.kind === "unknown" ? resolution.reason : resolution.kind}`,
+		);
+		return;
+	}
+	const lockPath = prepareCodexAgentHomeLock(resolution, env);
+	await withMkdirLock(
+		lockPath,
+		async () => {
+			const marker = readCodexAgentHomeMarker(resolution.home);
+			if (marker === null) throw new Error("missing codex agent home marker");
+			validateMarkerIdentity(marker, resolution);
+			const leasePath = join(
+				resolution.home,
+				CODEX_AGENT_HOME_LEASES,
+				executionId,
+			);
+			try {
+				const stat = lstatSync(leasePath);
+				if (!stat.isFile() || stat.isSymbolicLink()) {
+					throw new Error("unsafe codex agent home lease entry");
+				}
+				unlinkSync(leasePath);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+			const remaining = listCodexAgentHomeLeases(resolution.home).length;
+			if (remaining === 0) {
+				scrubCodexHomeCredentialAt(resolution.home, true);
+			} else {
+				console.warn(
+					`[codex-home] keyed_home_scrub_deferred exec=${executionId} live_leases=${remaining}`,
+				);
+			}
+		},
+		CODEX_AGENT_HOME_LOCK_OPTS,
+	);
 }
 
 /**
@@ -1219,14 +2027,19 @@ export function scrubCodexHomeCredential(
 	executionId: string,
 	env: NodeJS.ProcessEnv = process.env,
 ): void {
-	const cfg = join(codexHomeDir(executionId, env), "config.toml");
+	scrubCodexHomeCredentialAt(codexHomeDir(executionId, env), false);
+}
+
+function scrubCodexHomeCredentialAt(home: string, atomic: boolean): void {
+	const cfg = join(home, "config.toml");
 	if (!existsSync(cfg)) return;
 	const stripped = stripManagedBlock(readFileSync(cfg, "utf-8")).trimEnd();
-	writeFileSync(cfg, stripped ? `${stripped}\n` : "", {
-		encoding: "utf-8",
-		mode: 0o600,
-	});
-	chmodSync(cfg, 0o600); // repair mode on the pre-existing file
+	const content = stripped ? `${stripped}\n` : "";
+	if (atomic) atomicWriteFile(cfg, content);
+	else {
+		writeFileSync(cfg, content, { encoding: "utf-8", mode: 0o600 });
+		chmodSync(cfg, 0o600); // repair mode on the pre-existing file
+	}
 }
 
 /**
@@ -1256,15 +2069,53 @@ export function scrubOrphanedCodexHomes(
 	return scrubbed;
 }
 
-/** P5 retirement: remove the entire per-runner home (auth + config +
- * sessions). Best-effort; safe to call when the home never existed. */
+export type RemoveCodexHomeResult =
+	| { removed: true }
+	| {
+			removed: false;
+			reason: "agent_home_protected" | "unresolved" | "rm_failed";
+	  };
+
+function isAgentHomeSubtreePath(
+	target: string,
+	env: NodeJS.ProcessEnv,
+): boolean {
+	const agents = resolvePath(codexHomesRoot(env), "agents");
+	const candidate = resolvePath(target);
+	const rel = relative(agents, candidate);
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/** P5 retirement: remove only an execution-scoped legacy home. */
 export function removeCodexHome(
 	executionId: string,
 	env: NodeJS.ProcessEnv = process.env,
-): void {
+	expected?: CodexAgentHomeIdentity,
+): RemoveCodexHomeResult {
+	const resolution = resolveExecutionCodexHome(executionId, expected, env);
+	if (
+		resolution.kind === "keyed" ||
+		resolution.kind === "prepublished" ||
+		isAgentHomeSubtreePath(codexHomeDir(executionId, env), env)
+	) {
+		console.error(
+			`[codex-home] refuse_remove_agent_home exec=${executionId} kind=${resolution.kind}`,
+		);
+		return { removed: false, reason: "agent_home_protected" };
+	}
+	if (resolution.kind === "unknown") {
+		console.warn(
+			`[codex-home] remove_home_unresolved exec=${executionId} reason=${resolution.reason}`,
+		);
+		return { removed: false, reason: "unresolved" };
+	}
 	try {
-		rmSync(codexHomeDir(executionId, env), { recursive: true, force: true });
-	} catch {
-		// best-effort (mirrors removeCodexSessionState)
+		rmSync(resolution.home, { recursive: true, force: true });
+		return { removed: true };
+	} catch (error) {
+		console.warn(
+			`[codex-home] remove_home_failed exec=${executionId}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return { removed: false, reason: "rm_failed" };
 	}
 }

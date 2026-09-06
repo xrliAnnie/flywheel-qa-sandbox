@@ -1,0 +1,19 @@
+# A7 keyed home materialization (同形先例核对)
+home: /tmp/f2358a7.JQp5/homes/agents/flywheel/implement
+--- skills/ ---
+/tmp/f2358a7.JQp5/homes/agents/flywheel/implement/skills
+/tmp/f2358a7.JQp5/homes/agents/flywheel/implement/skills/.system
+/tmp/f2358a7.JQp5/homes/agents/flywheel/implement/skills/.system/.codex-system-skills.marker
+/tmp/f2358a7.JQp5/homes/agents/flywheel/implement/skills/.system/skill-installer
+--- AGENTS.md (first 3 lines) ---
+<!-- flywheel-managed (FLY-1188): materialized from /tmp/f2358a7.JQp5/contract.md at provisioning; do not edit — changes belong in the source file -->
+# qa contract
+--- marker ---
+{
+  "version": 1,
+  "project": "flywheel",
+  "role": "implement",
+  "createdAt": "2026-09-05T11:50:08.591Z",
+  "assemblyArm": "superpowers",
+  "materializedArm": "superpowers"
+}

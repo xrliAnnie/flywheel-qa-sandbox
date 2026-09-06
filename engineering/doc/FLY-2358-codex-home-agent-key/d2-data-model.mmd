@@ -1,0 +1,14 @@
+flowchart TB
+    R["codexHomesRoot()<br/>~/.flywheel/codex-homes"] --> U["&lt;uuid&gt;/<br/>旧式执行家(一个不动)"]
+    R --> A["agents/"]
+    A --> P["&lt;project&gt;/<br/>例 flywheel"]
+    P --> O["&lt;role&gt;/<br/>例 implement = 键式家"]
+    P --> K[".locks/&lt;role&gt;/<br/>mkdir 锁,与家同级(家不存在也能锁)"]
+    O --> M[".flywheel-agent-home.json<br/>version · project · role · createdAt · assemblyArm"]
+    O --> L[".flywheel-leases/&lt;executionId&gt;<br/>一个活执行一个常规空文件"]
+    O --> C["auth.json · config.toml · AGENTS.md · skills/<br/>(我们写,临时文件+rename)"]
+    O --> S["sessions/ · memories/ · *.sqlite<br/>(Codex 自管,锁在 memories_1.sqlite)"]
+    SJ["~/.flywheel/state/codex-sessions/&lt;exec&gt;/session.json<br/>+ {home, project, role}:执行 → 家的持久反查(只许写一次)"] -. 指向 .-> O
+    style O fill:#e7f0ff,stroke:#007aff
+    style U fill:#f2f2f7,stroke:#86868b
+    style SJ fill:#fff3e0,stroke:#ff9500

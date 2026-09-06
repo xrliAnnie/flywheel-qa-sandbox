@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
+	encodeMemoryPathComponent,
 	measureRunnerMemoryIndex,
+	RUNNER_MEMORY_ID_MAX_LENGTH,
 	type RunnerMemoryIndexStats,
 	type RunnerMemorySnapshot,
 } from "flywheel-config";
@@ -10,13 +12,14 @@ import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 
 export type { RunnerMemoryIndexStats } from "flywheel-config";
 export {
+	decodeMemoryPathComponent,
+	encodeMemoryPathComponent,
 	measureIndexPrefix,
 	RUNNER_MEMORY_DEFAULT_BUDGET,
 	RUNNER_MEMORY_HARD_LIMIT,
+	RUNNER_MEMORY_ID_MAX_LENGTH,
 	RUNNER_MEMORY_SCAN_CEILING_BYTES,
 } from "flywheel-config";
-
-export const RUNNER_MEMORY_ID_MAX_LENGTH = 128;
 
 export type RunnerMemoryBackend = "claude-tmux" | "codex-tmux";
 export type RunnerMemoryIdentity = { project: string; role: string };
@@ -145,33 +148,6 @@ export function resolveRunnerMemoryRoot(env: NodeJS.ProcessEnv):
 	if (!home) return { ok: false, reason: "no_home" };
 	if (!isAbsolute(home)) return { ok: false, reason: "invalid_home" };
 	return { ok: true, root: join(home, ".flywheel", "runner-memory") };
-}
-
-/** Encode a safe identifier injectively on case-insensitive filesystems. */
-export function encodeMemoryPathComponent(name: string): string {
-	const lower = name.toLowerCase();
-	if (name === lower && !name.includes("--")) return name;
-	let uppercaseMask = 0n;
-	for (let index = 0; index < name.length; index += 1) {
-		if (name[index] !== lower[index]) {
-			uppercaseMask |= 1n << BigInt(index);
-		}
-	}
-	return `${lower}--${uppercaseMask.toString(16)}`;
-}
-
-/** Reverse a component produced by {@link encodeMemoryPathComponent}. */
-export function decodeMemoryPathComponent(encoded: string): string {
-	const separator = encoded.lastIndexOf("--");
-	if (separator === -1) return encoded;
-	const base = encoded.slice(0, separator);
-	const maskHex = encoded.slice(separator + 2);
-	const uppercaseMask = BigInt(`0x${maskHex}`);
-	return Array.from(base, (character, index) =>
-		(uppercaseMask & (1n << BigInt(index))) !== 0n
-			? character.toUpperCase()
-			: character,
-	).join("");
 }
 
 type SettingsSource = {

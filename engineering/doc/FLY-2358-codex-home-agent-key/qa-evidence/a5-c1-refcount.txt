@@ -1,0 +1,11 @@
+[codex-home] keyed_home_scrub_deferred exec=exec-A live_leases=1
+PASS  both runners provisioned; GH_TOKEN present  :: token present
+PASS  both worktrees trusted simultaneously (C5)  :: A+B trusted
+PASS  C1: A retiring did NOT strip the token still needed by live B  :: token retained
+PASS  C1: A retiring did NOT delete the home  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a5-LvBhHc/homes/agents/flywheel/implement
+PASS  A lease gone, B lease retained  :: exec-B
+PASS  last retire DOES strip the token (credential-residue invariant holds)  :: token scrubbed
+PASS  home + accumulated state still survive after the last retire  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a5-LvBhHc/homes/agents/flywheel/implement
+PASS  worktree trust survives the scrub  :: approval_policy = "never" | sandbox_mode = "workspace-write" | model = "gpt-5.4" |  | [notice] | hide_rate_limit_model_n
+
+--- A5: 8/8 passed ---

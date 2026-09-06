@@ -14,6 +14,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,6 +34,7 @@ import type {
 import {
 	CodexTmuxAdapter,
 	readCodexLaunchSnapshot,
+	removeCodexSessionState,
 	TUI_OPEN_DEADLINE_MS,
 	TUI_OPEN_MAX_ATTEMPTS,
 } from "../src/CodexTmuxAdapter.js";
@@ -44,6 +46,10 @@ import type {
 	RunGoalOutcome,
 } from "../src/codex-daemon-goal-runtime.js";
 import { CodexExecutionOwnershipRegistry } from "../src/codex-execution-ownership.js";
+import {
+	admitCodexAgentHome,
+	releaseCodexAgentHomeLease,
+} from "../src/codex-home.js";
 import type { RunnerTuiWindowOutcome } from "../src/codex-runner-tui-window.js";
 
 const THREAD_ID = "019e9006-0b8e-72b0-bb80-9100d85473cf";
@@ -372,6 +378,142 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			},
 		});
 	}
+
+	it("FLY-2358 provisions, records, and retires an admitted shared home", async () => {
+		const admission = await admitCodexAgentHome({
+			project: "flywheel",
+			role: "implement",
+			executionId: execId,
+			requestedAssemblyArm: "bare",
+		});
+		const result = await makeAdapter().execute(
+			ctx({
+				skillFrameworkMode: "bare",
+				codexAgentHome: {
+					...admission.handle,
+					assemblyArm: admission.effectiveAssemblyArm,
+					createdLease: admission.createdLease,
+				},
+			}),
+		);
+
+		expect(result.success).toBe(true);
+		expect(ensureWindowCalls[0]?.codexHome).toBe(admission.handle.home);
+		const state = JSON.parse(
+			readFileSync(
+				join(process.env.FLYWHEEL_CODEX_SESSION_DIR!, execId, "session.json"),
+				"utf8",
+			),
+		) as Record<string, unknown>;
+		expect(state.codexAgentHome).toEqual({
+			project: "flywheel",
+			role: "implement",
+			home: admission.handle.home,
+		});
+		expect(
+			readdirSync(join(admission.handle.home, ".flywheel-leases")),
+		).toEqual([]);
+		expect(existsSync(admission.handle.home)).toBe(true);
+	});
+
+	it("FLY-2358 refuses to overwrite a drifted agent-home session record", async () => {
+		const admission = await admitCodexAgentHome({
+			project: "flywheel",
+			role: "implement",
+			executionId: execId,
+			requestedAssemblyArm: "bare",
+		});
+		const stateDir = join(process.env.FLYWHEEL_CODEX_SESSION_DIR!, execId);
+		mkdirSync(stateDir, { recursive: true });
+		const drifted = {
+			project: "flywheel",
+			role: "qa",
+			home: join(homesRoot, "agents", "flywheel", "qa"),
+		};
+		writeFileSync(
+			join(stateDir, "session.json"),
+			JSON.stringify({ codexAgentHome: drifted }),
+		);
+
+		await expect(
+			makeAdapter().execute(
+				ctx({
+					skillFrameworkMode: "bare",
+					codexAgentHome: {
+						...admission.handle,
+						assemblyArm: admission.effectiveAssemblyArm,
+						createdLease: admission.createdLease,
+					},
+				}),
+			),
+		).rejects.toThrow(/codexAgentHome.*set-once/);
+		expect(
+			JSON.parse(readFileSync(join(stateDir, "session.json"), "utf8"))
+				.codexAgentHome,
+		).toEqual(drifted);
+		expect(
+			readdirSync(join(admission.handle.home, ".flywheel-leases")),
+		).toEqual([]);
+	});
+
+	it("FLY-2358 releases a newly admitted lease when recovery snapshot loading fails", async () => {
+		const admission = await admitCodexAgentHome({
+			project: "flywheel",
+			role: "implement",
+			executionId: execId,
+			requestedAssemblyArm: "bare",
+		});
+		const result = await makeAdapter().resumeExistingExecution(
+			ctx({
+				skillFrameworkMode: "bare",
+				codexAgentHome: {
+					...admission.handle,
+					assemblyArm: admission.effectiveAssemblyArm,
+					createdLease: admission.createdLease,
+				},
+			}),
+			{ onRecoveryOwnershipEstablished: vi.fn(async () => undefined) },
+		);
+
+		expect(result.success).toBe(false);
+		expect(
+			readdirSync(join(admission.handle.home, ".flywheel-leases")),
+		).toEqual([]);
+	});
+
+	it("FLY-2358 classifies before deleting keyed session state", async () => {
+		const admission = await admitCodexAgentHome({
+			project: "flywheel",
+			role: "implement",
+			executionId: execId,
+			requestedAssemblyArm: "bare",
+		});
+		const stateDir = join(process.env.FLYWHEEL_CODEX_SESSION_DIR!, execId);
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(
+			join(stateDir, "session.json"),
+			JSON.stringify({
+				codexAgentHome: {
+					project: "flywheel",
+					role: "implement",
+					home: admission.handle.home,
+				},
+			}),
+		);
+		await releaseCodexAgentHomeLease(admission.handle);
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		removeCodexSessionState(execId, {
+			project: "flywheel",
+			role: "implement",
+		});
+
+		expect(existsSync(stateDir)).toBe(false);
+		expect(existsSync(admission.handle.home)).toBe(true);
+		expect(error).toHaveBeenCalledWith(
+			expect.stringContaining("refuse_remove_agent_home"),
+		);
+	});
 
 	it("rejects an unknown Codex identity before GH/git credential or home writes", async () => {
 		writeFileSync(
@@ -2496,6 +2638,40 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		settleFirst?.(complete());
 		expect((await first).success).toBe(true);
 		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+	});
+
+	it("FLY-2358: ownership rejection stays a failure result when lease release fails", async () => {
+		const admission = await admitCodexAgentHome({
+			project: "flywheel",
+			role: "implement",
+			executionId: execId,
+			requestedAssemblyArm: "bare",
+		});
+		const owner = executionOwners.claim(execId, "dispatch");
+		expect(owner).not.toBeNull();
+		unlinkSync(
+			join(
+				admission.handle.home,
+				".flywheel-leases",
+				admission.handle.executionId,
+			),
+		);
+
+		const result = await makeAdapter().execute(
+			ctx({
+				codexAgentHome: {
+					...admission.handle,
+					assemblyArm: admission.effectiveAssemblyArm,
+					createdLease: true,
+				},
+			}),
+		);
+
+		expect(result).toMatchObject({ success: false });
+		expect(console.warn).toHaveBeenCalledWith(
+			expect.stringContaining("keyed_home_retire_failed"),
+		);
+		owner?.release();
 	});
 
 	it("FLY-2211: resumeExistingExecution reuses exact snapshot input and awaits the hard receipt commit", async () => {

@@ -11,15 +11,17 @@
  */
 
 import { execFile } from "node:child_process";
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { type Dirent, readdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
 	auditedSignal,
-	codexHomeDir,
 	codexHomesRoot,
 	codexSessionStateDir,
 	resolveDaemonSocketPath,
+	resolveExecutionCodexHome,
 } from "flywheel-claude-runner";
+import { RUNNER_MEMORY_ID_MAX_LENGTH } from "flywheel-config";
+import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 
 export const CODEX_APP_SERVER_ORPHAN_MIN_ELAPSED_SECONDS = 2 * 60 * 60;
 
@@ -240,11 +242,76 @@ export async function defaultListCodexHomeExecutionIds(
 ): Promise<CodexHomeProbeResult> {
 	const root = codexHomesRoot(env);
 	try {
+		const executionIds = new Set<string>();
+		const rootEntries = readdirSync(root, { withFileTypes: true });
+		for (const entry of rootEntries) {
+			if (
+				entry.name !== "agents" &&
+				entry.isDirectory() &&
+				!entry.isSymbolicLink()
+			) {
+				executionIds.add(entry.name);
+			}
+		}
+		const agentsEntry = rootEntries.find((entry) => entry.name === "agents");
+		if (agentsEntry) {
+			if (!agentsEntry.isDirectory() || agentsEntry.isSymbolicLink()) {
+				throw new Error("unsafe codex agent homes inventory");
+			}
+			const agentsDir = join(root, "agents");
+			for (const project of readdirSync(agentsDir, { withFileTypes: true })) {
+				if (!project.isDirectory() || project.isSymbolicLink()) continue;
+				const projectDir = join(agentsDir, project.name);
+				for (const role of readdirSync(projectDir, { withFileTypes: true })) {
+					if (
+						role.name === ".locks" ||
+						!role.isDirectory() ||
+						role.isSymbolicLink()
+					) {
+						continue;
+					}
+					const leasesDir = join(projectDir, role.name, ".flywheel-leases");
+					let leases: Dirent[];
+					try {
+						leases = readdirSync(leasesDir, { withFileTypes: true });
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+						throw error;
+					}
+					for (const lease of leases) {
+						if (
+							lease.isFile() &&
+							!lease.isSymbolicLink() &&
+							SAFE_IDENTIFIER_RE.test(String(lease.name)) &&
+							String(lease.name).length <= RUNNER_MEMORY_ID_MAX_LENGTH
+						) {
+							executionIds.add(String(lease.name));
+						}
+					}
+				}
+			}
+		}
+		// A keyed lease expires at terminal retirement, but the app-server can
+		// outlive its runner and only becomes reaper-eligible hours later. Keep
+		// the durable session reverse index in the canonical inventory so the
+		// forward and reverse identity axes can still prove that orphan.
+		const sessionsRoot = codexSessionStateDir("", env);
+		try {
+			for (const entry of readdirSync(sessionsRoot, { withFileTypes: true })) {
+				if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+				const resolution = resolveExecutionCodexHome(
+					entry.name,
+					undefined,
+					env,
+				);
+				if (resolution.kind === "keyed") executionIds.add(entry.name);
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
 		return {
 			status: "ok",
-			executionIds: readdirSync(root, { withFileTypes: true })
-				.filter((entry) => entry.isDirectory())
-				.map((entry) => entry.name),
+			executionIds: [...executionIds].sort(),
 		};
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
@@ -336,6 +403,14 @@ function exactIdentityForExecution(
 	if (!identity) return null;
 	const expectedSocket = resolve(resolveDaemonSocketPath(executionId, env));
 	return resolve(identity.socketPath) === expectedSocket ? identity : null;
+}
+
+function canonicalHomeForExecution(
+	executionId: string,
+	env: NodeJS.ProcessEnv,
+): string | null {
+	const resolution = resolveExecutionCodexHome(executionId, undefined, env);
+	return resolution.kind === "unknown" ? null : resolution.home;
 }
 
 function reverseExecutionIdentity(
@@ -742,10 +817,19 @@ export async function sweepCodexRunnerOrphans(
 				env,
 			);
 			if (!identity) continue;
+			const codexHome = canonicalHomeForExecution(ledger.executionId, env);
+			if (!codexHome) {
+				result.probeUnknown++;
+				audit("codex_app_server_orphan_probe_unknown", {
+					stage: "codex_home_resolution",
+					executionId: ledger.executionId,
+				});
+				continue;
+			}
 			candidates.set(ledger.daemonPgid, {
 				...identity,
 				executionId: ledger.executionId,
-				codexHome: codexHomeDir(ledger.executionId, env),
+				codexHome,
 				pid: exact.pid,
 				pgid: exact.pgid,
 				command: exact.command,
@@ -784,10 +868,19 @@ export async function sweepCodexRunnerOrphans(
 			continue;
 		}
 		result.processCandidates++;
+		const codexHome = canonicalHomeForExecution(reverse.executionId, env);
+		if (!codexHome) {
+			result.probeUnknown++;
+			audit("codex_app_server_orphan_probe_unknown", {
+				stage: "codex_home_resolution",
+				executionId: reverse.executionId,
+			});
+			continue;
+		}
 		candidates.set(row.pgid, {
 			...reverse.identity,
 			executionId: reverse.executionId,
-			codexHome: codexHomeDir(reverse.executionId, env),
+			codexHome,
 			pid: row.pid,
 			pgid: row.pgid,
 			command: row.command,

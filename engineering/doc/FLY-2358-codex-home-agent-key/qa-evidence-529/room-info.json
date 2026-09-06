@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "slot": 2,
+  "port": 19872,
+  "projectName": "test-slot-2",
+  "agentId": "flywheel-test-2",
+  "mode": "slot",
+  "generalized": true,
+  "runnerMode": "real",
+  "bridgeUrl": "http://localhost:19872",
+  "dbPath": "/tmp/flywheel-test-slot-2/teamlead.db",
+  "hostRepo": "/tmp/flywheel-test-slot-2/project-slot-2",
+  "flywheelRepo": "/Users/xiaorongli/Dev/flywheel-FLY-2358",
+  "buildSha": "08df92ff5c177cbd54cdbf646322ab6ef6d32d91",
+  "flywheelProjectsFile": "/tmp/flywheel-test-slot-2/flywheel-projects.json",
+  "summaryConfigHome": "/tmp/flywheel-test-slot-2/identity-home",
+  "apiTokenPath": "/tmp/flywheel-test-slot-2/state/api-token",
+  "bridgeLog": "/tmp/flywheel-test-slot-2/bridge.log"
+}

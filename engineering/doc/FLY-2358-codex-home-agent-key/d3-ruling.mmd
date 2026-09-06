@@ -1,0 +1,15 @@
+flowchart LR
+    subgraph A["(a) 共享持久家 ✅ 选它"]
+        direction TB
+        A1["第 N 单在家里跑<br/>会话落在 sessions/"] --> A2["第 N+1 单在同一家启动"]
+        A2 --> A3["Codex 自带 phase1<br/>抽取上一单 idle≥6h 的会话"]
+        A3 --> A4["phase2 拿全局锁合并<br/>进 memories/"]
+        A4 --> A5["记忆天然累积<br/>B2 缩成种回去+验收"]
+    end
+    subgraph B["(b) 执行级家 + 共享记忆点"]
+        direction TB
+        B1["第 N 单在一次性家跑"] --> B2["任务结束,家没有下一次启动"]
+        B2 --> B3["最后 6 小时内的会话<br/>永远抽不到"]
+        B3 --> B4["B2 要新造回流:<br/>收尾再起一次真会话<br/>并覆盖节流闸(PRD ⛔)"]
+    end
+    A ~~~ B

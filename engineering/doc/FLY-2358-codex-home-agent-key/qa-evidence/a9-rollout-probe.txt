@@ -1,0 +1,7 @@
+PASS  keyed home with no rollout yet -> absent (not unknown)  :: {"kind":"absent"}
+PASS  C4: probe FINDS the rollout inside the keyed home  :: {"kind":"found","mtimeMs":1788610062821.5535}
+PASS  RULER: the old <root>/<executionId>/sessions path does not even exist  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a9-sabNLT/homes/exec-a9-keyed/sessions
+PASS  legacy execution still probed at <root>/<executionId>/sessions (unchanged)  :: {"kind":"found","mtimeMs":1788610062822.7717}
+PASS  tampered record -> unknown, probe refuses to read an arbitrary path  :: {"kind":"unknown"}
+
+--- A9: 5/5 passed ---

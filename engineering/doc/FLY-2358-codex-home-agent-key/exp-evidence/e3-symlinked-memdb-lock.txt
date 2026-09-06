@@ -1,0 +1,16 @@
+阳性对照:各家各一份(锁必须失效,证明尺子数得出 8)
+(node:80238) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+  copy 第1轮                     Claimed=8 SkippedRunning=0 ERR=0 回收=8/8  wal@target=false wal@link=false
+  copy 第2轮                     Claimed=8 SkippedRunning=0 ERR=0 回收=8/8  wal@target=true wal@link=true
+  copy 第3轮                     Claimed=8 SkippedRunning=0 ERR=0 回收=8/8  wal@target=true wal@link=true
+  ✅ 尺子能数出多重 Claimed
+
+被测:8 个家各自的 memories_1.sqlite 都是 symlink → 同一个目标文件
+  symlink 第1轮                  Claimed=1 SkippedRunning=7 ERR=0 回收=8/8  wal@target=false wal@link=false
+  symlink 第2轮                  Claimed=1 SkippedRunning=7 ERR=0 回收=8/8  wal@target=true wal@link=false
+  symlink 第3轮                  Claimed=1 SkippedRunning=7 ERR=0 回收=8/8  wal@target=true wal@link=false
+  symlink 第4轮                  Claimed=1 SkippedRunning=7 ERR=0 回收=8/8  wal@target=true wal@link=false
+  symlink 第5轮                  Claimed=1 SkippedRunning=7 ERR=0 回收=8/8  wal@target=false wal@link=false
+
+⇒ symlink 到共享文件时锁【串行】(恰好 1 个 Claimed),且 -wal 落在目标旁边

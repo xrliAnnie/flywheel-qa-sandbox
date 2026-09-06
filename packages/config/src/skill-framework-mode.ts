@@ -51,7 +51,7 @@ export const SKILL_FRAMEWORK_VIAS = [
 	"default", // env unset or invalid (fail-closed)
 	"forced", // env explicitly one of the three modes (global force / kill)
 	"project_opt_out", // split, but project config skill_framework.split=false
-	"inherited", // historical attribution value; no fresh resolver path emits it
+	"inherited", // FLY-2358: keyed Codex home inherited its active assembly arm
 	"override", // split, per-dispatch override (529 eval; successor-carried)
 	"sticky", // split, same issue already stamped (sessions lookup by issue_id)
 	"hash", // split, first admission → stable hash bucket

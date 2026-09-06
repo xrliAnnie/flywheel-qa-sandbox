@@ -1,0 +1,15 @@
+[codex-session-reown] keyed_home_reown_arm_mismatch exec=exec-B
+[codex-session-reown] identity_unresolved reason=no_role exec=exec-legacy
+[codex-home] keyed_home_scrub_deferred exec=exec-A live_leases=1
+PASS  A first-in sets the home arm  :: matt
+PASS  B on a live shared home INHERITS the home arm (换体 request does not flip a live home)  :: effective=matt inherited=true
+PASS  both leases live on one home  :: liveLeases=2
+PASS  reown of B succeeds when the snapshot carries the EFFECTIVE (inherited) arm  :: {"home":true,"arm":"matt","createdLease":false}
+PASS  reown re-uses B existing lease (no duplicate)  :: createdLease=false
+PASS  RULER: a snapshot carrying the un-inherited requested arm fails CLOSED (arm mismatch)  :: keyed_home_reown_arm_mismatch
+PASS  failed reown did not leak a lease  :: exec-A,exec-B
+PASS  a session without a workflow role reowns unchanged (legacy path intact)  :: {"executionId":"x"}
+PASS  after ALL leases drain, a new arm IS adopted (换体 works on an idle home)  :: bare
+PASS  the home itself survived the drain (memory kept across the arm switch)  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a4-XIUmbZ/homes/agents/flywheel/implement
+
+--- A4: 10/10 passed --- (/Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a4-XIUmbZ)

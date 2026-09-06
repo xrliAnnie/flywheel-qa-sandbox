@@ -354,6 +354,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/config/src/mkdir-lock.ts:process.kill(pid, 0);#1",
+		"path": "packages/config/src/mkdir-lock.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/config/src/pidfile.ts:process.kill(pid, 0);#1",
+		"path": "packages/config/src/pidfile.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
 		"key": "packages/core/src/tmux-viewer.ts:execFileSync(tmuxPath, [\"kill-session\", \"-t\", `=${viewerSession}`], {#1",
 		"path": "packages/core/src/tmux-viewer.ts",
 		"code": "execFileSync(tmuxPath, [\"kill-session\", \"-t\", `=${viewerSession}`], {",
@@ -891,18 +903,6 @@
 		"key": "packages/teamlead/src/account-heal/claude-profile-cli.ts:process.kill(-child.pid, 0);#1",
 		"path": "packages/teamlead/src/account-heal/claude-profile-cli.ts",
 		"code": "process.kill(-child.pid, 0);",
-		"classification": "signal-0-probe"
-	},
-	{
-		"key": "packages/teamlead/src/account-heal/mkdir-lock.ts:process.kill(pid, 0);#1",
-		"path": "packages/teamlead/src/account-heal/mkdir-lock.ts",
-		"code": "process.kill(pid, 0);",
-		"classification": "signal-0-probe"
-	},
-	{
-		"key": "packages/teamlead/src/account-heal/pidfile.ts:process.kill(pid, 0);#1",
-		"path": "packages/teamlead/src/account-heal/pidfile.ts",
-		"code": "process.kill(pid, 0);",
 		"classification": "signal-0-probe"
 	},
 	{

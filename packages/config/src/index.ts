@@ -137,6 +137,13 @@ export {
 	DEFAULT_LOG_RETENTION,
 	rotateLogIfNeeded,
 } from "./log-rotate.js";
+export type { LeaseProof, MkdirLockOpts } from "./mkdir-lock.js";
+export {
+	getLeaseProof,
+	renewMkdirLock,
+	validateLeaseProof,
+	withMkdirLock,
+} from "./mkdir-lock.js";
 export type {
 	LeadLaunchSelection,
 	ModelConfigSnapshot,
@@ -247,6 +254,19 @@ export {
 	phaseThreadBadge,
 	resolveCompletionSessionRole,
 } from "./phase-roles.js";
+export type {
+	OwnProcessStartTimeDeps,
+	PidfileRecord,
+	SingletonPidfileDeps,
+} from "./pidfile.js";
+export {
+	acquireSingletonPidfile,
+	parsePidfile,
+	processAlive,
+	processStartTime,
+	resolveOwnProcessStartTime,
+	safeOwnedRegularFile,
+} from "./pidfile.js";
 export type {
 	PonytailCondition,
 	PonytailEffective,
@@ -392,6 +412,11 @@ export {
 	RUNNER_MEMORY_MODES,
 	resolveRunnerMemorySelection,
 } from "./runner-memory-mode.js";
+export {
+	decodeMemoryPathComponent,
+	encodeMemoryPathComponent,
+	RUNNER_MEMORY_ID_MAX_LENGTH,
+} from "./runner-memory-path.js";
 // FLY-1356: skill_framework_mode three-way switch (A/superpowers, B/matt, C/bare).
 export type {
 	BackendSkillAssembly,

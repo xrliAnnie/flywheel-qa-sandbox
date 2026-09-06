@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type {
+	AdmitCodexAgentHomeResult,
 	CodexDaemonLiveness,
 	CodexDaemonReapResult,
 	CodexExecutionOwnershipRegistry,
 	CodexLaunchSnapshot,
 	RecoveryOwnershipReceipt,
 } from "flywheel-claude-runner";
+import {
+	admitCodexAgentHome,
+	releaseCodexAgentHomeLease,
+	resolveExecutionCodexHome,
+} from "flywheel-claude-runner";
+import { skillAssemblyBaseArm } from "flywheel-config";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -266,6 +273,80 @@ export function buildCodexRecoveryContext(input: {
 		...(input.progressPath ? { progressPath: input.progressPath } : {}),
 		...(input.onHeartbeat ? { onHeartbeat: input.onHeartbeat } : {}),
 	};
+}
+
+export interface PrepareCodexRecoveryAgentHomeDeps {
+	resolve: typeof resolveExecutionCodexHome;
+	admit: typeof admitCodexAgentHome;
+	release: typeof releaseCodexAgentHomeLease;
+}
+
+const DEFAULT_PREPARE_CODEX_RECOVERY_AGENT_HOME_DEPS: PrepareCodexRecoveryAgentHomeDeps =
+	{
+		resolve: resolveExecutionCodexHome,
+		admit: admitCodexAgentHome,
+		release: releaseCodexAgentHomeLease,
+	};
+
+/** Restore the keyed-home lease before runtime.resume without migrating legacy runs. */
+export async function prepareCodexRecoveryAgentHome(
+	input: {
+		session: Session;
+		snapshot: CodexLaunchSnapshot;
+		context: AdapterExecutionContext;
+	},
+	deps: PrepareCodexRecoveryAgentHomeDeps = DEFAULT_PREPARE_CODEX_RECOVERY_AGENT_HOME_DEPS,
+): Promise<AdapterExecutionContext> {
+	const role = input.session.workflow_node_id?.trim();
+	if (!role) {
+		console.warn(
+			`[codex-session-reown] identity_unresolved reason=no_role exec=${input.session.execution_id}`,
+		);
+		return input.context;
+	}
+	const identity = { project: input.session.project_name, role };
+	const resolution = deps.resolve(input.session.execution_id, identity);
+	if (resolution.kind === "legacy") return input.context;
+	if (resolution.kind === "unknown") {
+		console.warn(
+			`[codex-session-reown] keyed_home_reown_unresolved exec=${input.session.execution_id} reason=${resolution.reason}`,
+		);
+		throw new Error(`keyed_home_reown_unresolved: ${resolution.reason}`);
+	}
+	const requestedAssemblyArm = skillAssemblyBaseArm(
+		input.snapshot.launchContext.skillFrameworkMode ?? "superpowers",
+	);
+	let admission: AdmitCodexAgentHomeResult | undefined;
+	try {
+		admission = await deps.admit({
+			...identity,
+			executionId: input.session.execution_id,
+			requestedAssemblyArm,
+		});
+		if (admission.handle.home !== resolution.home) {
+			throw new Error("keyed_home_reown_path_mismatch");
+		}
+		if (admission.effectiveAssemblyArm !== requestedAssemblyArm) {
+			throw new Error("keyed_home_reown_arm_mismatch");
+		}
+		return {
+			...input.context,
+			codexAgentHome: {
+				project: admission.handle.project,
+				role: admission.handle.role,
+				home: admission.handle.home,
+				token: admission.handle.token,
+				assemblyArm: admission.effectiveAssemblyArm,
+				createdLease: admission.createdLease,
+			},
+		};
+	} catch (error) {
+		if (admission?.createdLease) await deps.release(admission.handle);
+		console.warn(
+			`[codex-session-reown] ${error instanceof Error ? error.message : String(error)} exec=${input.session.execution_id}`,
+		);
+		throw error;
+	}
 }
 
 /**

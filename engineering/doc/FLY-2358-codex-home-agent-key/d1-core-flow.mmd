@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    participant BP as Blueprint(派发)
+    participant HM as codex-home.ts
+    participant FS as codex-homes/agents/
+    participant SS as StateStore<br/>sessions 表
+    participant AD as Codex 适配器
+    BP->>BP: 身份 = (项目名, 工作流节点 id)
+    BP->>HM: 准入:admitCodexAgentHome(项目, 角色, 本单 id, 请求的臂)
+    HM->>FS: mkdir -p agents/<项目>/.locks 引导,再 withMkdirLock(.locks/<角色>/)
+    HM->>FS: 家不存在 ⇒ 建家+写标记,有活租约 ⇒ 臂=标记里的,否则 标记臂=请求
+    HM->>FS: 写租约 .flywheel-leases/<本单 id>,放锁
+    HM-->>BP: {家路径, 生效臂, 是否继承}
+    Note over BP: 继承 ⇒ 生效臂 + via=inherited
+    BP->>SS: 写 session 行(臂已是实际装进家的)
+    BP->>AD: ctx 带 codexAgentHome{项目, 角色, 臂}
+    AD->>HM: provisionCodexHome(只消费准入,不再判臂)
+    HM->>FS: 锁内:trust 合并、skills 增删、config 原子写
+    AD->>FS: session.json 记下 {home, 项目, 角色}(执行→家的持久反查,只许写一次)
+    AD->>AD: 跑任务(同家可有多个 app-server)
+    AD->>HM: retireOnce(既有两个退休点 + 外层兜底,恰好一次)
+    HM->>FS: 锁内:删自己租约 → 计数 → 0 才剥 GH_TOKEN

@@ -1,0 +1,13 @@
+[codex-home] keyed_home_janitor_identity_mismatch exec=exec-drift
+PASS  three leases before sweep  :: exec-dead,exec-ghost,exec-live
+PASS  C2: the LIVE runner lease survives the Bridge startup sweep  :: exec-live
+PASS  C2: the LIVE runner GH_TOKEN survives the sweep  :: token retained
+PASS  terminal + orphan leases reclaimed  :: removed=2 left=exec-live
+PASS  the sweep NEVER deletes the keyed home  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a6-gNqV2V/homes/agents/flywheel/implement
+PASS  identity-drifted lease is REFUSED, not reclaimed  :: removed=0 left=exec-drift,exec-live
+PASS  legacy home provisioned with its token  :: ok
+PASS  legacy orphan sweep still scrubs the legacy home  :: scrubbed=1
+PASS  legacy sweep did NOT touch the keyed home token  :: keyed token intact
+PASS  legacy sweep did NOT delete anything under agents/  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-a6-gNqV2V/homes/agents/flywheel/implement
+
+--- A6: 10/10 passed ---

@@ -1,0 +1,5 @@
+[RunInfra] FLYWHEEL_REPO_ROOT resolved to "/Users/xiaorongli/Dev/flywheel-FLY-2358" (sentinel found).
+[RunInfra] test-slot-2: hasRegistry=true, hasGlobalBotToken=true, chatThreads=false
+[RunInfra] test-slot-2 ready
+[RunInfra] 1/1 project(s) ready (admission: resource-based, uncapped — FLY-123 WS-D)
+[bridge-boot] running HEAD=08df92ff5c177cbd54cdbf646322ab6ef6d32d91 (chore(progress): FLY-2358 implement 3/6)

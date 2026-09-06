@@ -223,6 +223,7 @@ import {
 	buildCodexRecoveryContext,
 	CodexSessionReowner,
 	isCodexReownExcluded,
+	prepareCodexRecoveryAgentHome,
 	resolveCodexRecoveryWindow,
 } from "./codex-session-reown.js";
 import { recordCodexTransportDeathSnapshot } from "./codex-transport-death-snapshot.js";
@@ -7561,7 +7562,7 @@ export async function startBridge(
 				isLoopTargetNode(activation.snapshot, activation.binding.node_id)
 					? { nodeId: activation.binding.node_id }
 					: undefined;
-			const context = buildCodexRecoveryContext({
+			const baseContext = buildCodexRecoveryContext({
 				session,
 				snapshot,
 				capabilities,
@@ -7590,6 +7591,11 @@ export async function startBridge(
 					: {}),
 				...(session.session_role ? { sessionRole: session.session_role } : {}),
 				onHeartbeat: (executionId) => store.updateHeartbeat(executionId),
+			});
+			const context = await prepareCodexRecoveryAgentHome({
+				session,
+				snapshot,
+				context: baseContext,
 			});
 			return runtime.resume(
 				context,

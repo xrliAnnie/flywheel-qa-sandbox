@@ -1,0 +1,8 @@
+[codex-home] manual_backup_active profile=business
+[codex-home] manual_backup_active profile=business
+HOME=/tmp/f2358a7.JQp5/homes/agents/flywheel/implement
+SAME_HOME=true
+EXPECTED=/tmp/f2358a7.JQp5/homes/agents/flywheel/implement
+LEASES=qa-a7-one,qa-a7-two
+HAS_AUTH=true
+HAS_AGENTS_MD=true

@@ -1,0 +1,35 @@
+socket a: present
+socket b: present
+pid a alive: yes
+pid b alive: yes
+lock file: drwx------   3 xiaorongli  wheel   96 Sep  5 04:29 .
+drwxr-xr-x  23 xiaorongli  wheel  736 Sep  5 04:29 ..
+-rw-r--r--   1 xiaorongli  wheel    0 Sep  5 04:29 app-server-startup.lock
+stderr a (lock/already lines):
+stderr b (lock/already lines):
+home listing:
+drwxr-xr-x  23 xiaorongli  wheel      736 Sep  5 04:29 .
+drwx------   5 xiaorongli  wheel      160 Sep  5 04:29 ..
+drwxr-xr-x   5 xiaorongli  wheel      160 Sep  5 04:29 .tmp
+drwx------   3 xiaorongli  wheel       96 Sep  5 04:29 app-server-control
+-rw-r--r--   1 xiaorongli  wheel       27 Sep  5 04:29 config.toml
+-rw-r--r--   1 xiaorongli  wheel     4096 Sep  5 04:29 goals_1.sqlite
+-rw-r--r--   1 xiaorongli  wheel    32768 Sep  5 04:29 goals_1.sqlite-shm
+-rw-r--r--   1 xiaorongli  wheel    78312 Sep  5 04:29 goals_1.sqlite-wal
+-rw-r--r--   1 xiaorongli  wheel       36 Sep  5 04:29 installation_id
+-rw-r--r--   1 xiaorongli  wheel    49152 Sep  5 04:29 logs_2.sqlite
+-rw-r--r--   1 xiaorongli  wheel    32768 Sep  5 04:29 logs_2.sqlite-shm
+-rw-r--r--   1 xiaorongli  wheel   119512 Sep  5 04:29 logs_2.sqlite-wal
+-rw-r--r--   1 xiaorongli  wheel     4096 Sep  5 04:29 memories_1.sqlite
+-rw-r--r--   1 xiaorongli  wheel    32768 Sep  5 04:29 memories_1.sqlite-shm
+-rw-r--r--   1 xiaorongli  wheel    65952 Sep  5 04:29 memories_1.sqlite-wal
+-rw-r--r--   1 xiaorongli  wheel     4096 Sep  5 04:29 queue_1.sqlite
+-rw-r--r--   1 xiaorongli  wheel    32768 Sep  5 04:29 queue_1.sqlite-shm
+-rw-r--r--   1 xiaorongli  wheel    86552 Sep  5 04:29 queue_1.sqlite-wal
+drwxr-xr-x   3 xiaorongli  wheel       96 Sep  5 04:29 skills
+-rw-r--r--   1 xiaorongli  wheel     4096 Sep  5 04:29 state_5.sqlite
+-rw-r--r--   1 xiaorongli  wheel    32768 Sep  5 04:29 state_5.sqlite-shm
+-rw-r--r--   1 xiaorongli  wheel  1837552 Sep  5 04:29 state_5.sqlite-wal
+drwxr-xr-x   3 xiaorongli  wheel       96 Sep  5 04:29 tmp
+negative control (same socket twice) pid c alive: no-as-expected
+Error: app-server control socket is already in use at /tmp/f2358e1.zxf7/a.sock

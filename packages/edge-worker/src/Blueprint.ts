@@ -4,12 +4,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	type AdmitCodexAgentHomeResult,
 	type AsyncExecFileFn,
 	type AuditedSignalAsyncDeps,
 	type AuditedSignalInput,
 	type AuditedSignalResult,
+	admitCodexAgentHome,
 	auditedSignalAsync,
 	defaultAsyncExecFile,
+	releaseCodexAgentHomeLease,
 	withSyncOpMarker,
 } from "flywheel-claude-runner";
 import type {
@@ -78,6 +81,7 @@ import {
 	formatRunnerMemoryLogLine,
 	prepareRunnerMemoryMount,
 	resolveLegacyProjectMemoryDir,
+	resolveRunnerMemoryIdentity,
 	toRunnerMemoryDisposition,
 } from "./runner-memory.js";
 import type { SkillInjector } from "./SkillInjector.js";
@@ -848,6 +852,11 @@ export interface ShellRunner {
  * v0.6: Agent dispatch (project-aware prompt assembly).
  */
 export class Blueprint {
+	private codexAgentHomeAdmitter: typeof admitCodexAgentHome =
+		admitCodexAgentHome;
+	private codexAgentHomeReleaser: typeof releaseCodexAgentHomeLease =
+		releaseCodexAgentHomeLease;
+
 	constructor(
 		private hydrator: PreHydrator,
 		private gitChecker: GitResultChecker,
@@ -948,78 +957,122 @@ export class Blueprint {
 		// session_started carries `skill_framework_mode`/`_via` (the attribution
 		// join key). Returns undefined when the flag sits at its default —
 		// envelope stays byte-identical (red line #1).
-		const skillFramework = await this.resolveSkillFrameworkForRun(
-			ctx,
-			hydrated,
-		);
-
-		// FLY-615/1609: the final arm owns the optional D-arm injection, so resolve
-		// ponytail only after readiness/fallback has finalized the attribution mode.
-		const ponytailCondition = await this.resolvePonytailCondition(
-			ctx,
-			hydrated,
-			skillFramework?.mode,
-		);
-
-		const env: EventEnvelope = {
-			executionId,
-			issueId: node.id,
-			projectName: projectScope,
-			// FLY-24: Pre-fetched metadata from runs-route takes precedence over PreHydrator
-			// (PreHydrator may fail Linear API and fall back to stub title)
-			issueIdentifier: ctx.issueIdentifier ?? hydrated.issueIdentifier,
-			issueTitle: ctx.issueTitle ?? hydrated.issueTitle,
-			...(ctx.routeSummary && { routeSummary: ctx.routeSummary }),
-			// FLY-807: caller-provided labels for an internal pinned dispatch (which drive
-			// Discord chat-thread routing via resolveLeadForIssue) take precedence
-			// over a fresh Linear re-fetch of THIS run's own issue — matching the same
-			// ctx.issueLabels ?? hydrated.labels precedence already used below for
-			// ponytail resolution and AgentDispatcher backend selection.
-			labels: ctx.issueLabels ?? hydrated.labels,
-			retryPredecessor: ctx.retryContext?.predecessorExecutionId,
-			runAttempt: ctx.retryContext?.attempt,
-			// FLY-59: Propagate session role from context to event envelope
-			sessionRole: ctx.sessionRole,
-			// FLY-1259: run-level design backend lock; successor phase contexts carry
-			// the same value even when this runner itself is implement or QA.
-			...(ctx.designBackend && { designBackend: ctx.designBackend }),
-			// FLY-793 (Step 11): compute the chat-thread role ONCE here (the only
-			// place shareParentBranch is known) — a DAG workflow carries its
-			// phase role; everything else (including historical separate-issue QA
-			// compatibility rows) is 'main'. Persisted by both started sinks.
-			chatThreadRole:
-				ctx.shareParentBranch && ctx.sessionRole ? ctx.sessionRole : "main",
-			// FLY-493: persist the resolved executor backend (→ session.adapter_type)
-			// so the no-transport wake-guard can recognize an antigravity session.
-			...(ctx.runnerBackend && { runnerBackend: ctx.runnerBackend }),
-			// FLY-728: persist the resolved runner model (→ session.runner_model) for
-			// per-issue model routing visibility. Absent → account default (no --model).
-			...(ctx.runnerModel && { runnerModel: ctx.runnerModel }),
-			// FLY-615: persisted ponytail condition (→ session.ponytail_condition).
-			...(ponytailCondition && { ponytailCondition }),
-			// FLY-1356: persisted skill-framework arm + attribution (→
-			// session.skill_framework_mode/_via). Absent when the flag sits at
-			// its default — envelope byte-identical (red line #1).
-			...(skillFramework && {
-				skillFrameworkMode: skillFramework.mode,
-				skillFrameworkModeVia: skillFramework.via,
-			}),
-			// FLY-1372 §2.5: Bridge-trusted behavior fields ride session creation
-			// ONLY for engine-owned generalized (pipeline.dag) starts — legacy
-			// dispatches keep the route-patch persistence timing byte-identical
-			// (Codex design R3-3b). Persisted by the Direct sink only; the HTTP
-			// client never transmits them (see EventEnvelope authority note).
-			...(ctx.generalizedExecutionContext && {
-				...(ctx.docTier && { docTier: ctx.docTier }),
-				...(ctx.issueUrl && { issueUrl: ctx.issueUrl }),
-				...(ctx.codexSkip !== undefined && { codexSkip: ctx.codexSkip }),
-			}),
+		let skillFramework = await this.resolveSkillFrameworkForRun(ctx, hydrated);
+		let codexAgentHome: AdmitCodexAgentHomeResult | undefined;
+		let codexAgentHomeHandedOff = false;
+		let env: EventEnvelope | undefined;
+		const releaseUnhandedCodexAgentHome = async (): Promise<void> => {
+			if (!codexAgentHome || codexAgentHomeHandedOff) return;
+			if (!codexAgentHome.createdLease) {
+				codexAgentHome = undefined;
+				return;
+			}
+			const handle = codexAgentHome.handle;
+			codexAgentHome = undefined;
+			await this.codexAgentHomeReleaser(handle);
 		};
 
-		// Fire-and-forget started event (labels now populated)
-		this.eventEmitter?.emitStarted(env).catch(() => {});
-
 		try {
+			const backend = ctx.runnerBackend ?? "claude-tmux";
+			if (backend === "codex-tmux") {
+				const resolvedIdentity = resolveRunnerMemoryIdentity({
+					backend,
+					projectName: ctx.projectName,
+					nodeId: ctx.generalizedExecutionContext?.nodeId,
+				});
+				if (resolvedIdentity.ok) {
+					codexAgentHome = await this.codexAgentHomeAdmitter({
+						...resolvedIdentity.identity,
+						executionId,
+						requestedAssemblyArm: skillAssemblyBaseArm(
+							skillFramework?.mode ?? "superpowers",
+						),
+					});
+					if (codexAgentHome.inherited) {
+						const effective = codexAgentHome.effectiveAssemblyArm;
+						const assembly =
+							effective === "superpowers"
+								? {}
+								: this.probeCodexAssembly(effective);
+						skillFramework = {
+							mode: effective,
+							via: "inherited",
+							...assembly,
+						};
+					}
+				} else {
+					console.warn(
+						`[Blueprint] codex agent home identity_unresolved reason=${resolvedIdentity.reason} exec=${executionId}`,
+					);
+				}
+			}
+
+			// FLY-615/1609: the final arm owns the optional D-arm injection, so resolve
+			// ponytail only after readiness/fallback has finalized the attribution mode.
+			const ponytailCondition = await this.resolvePonytailCondition(
+				ctx,
+				hydrated,
+				skillFramework?.mode,
+			);
+
+			env = {
+				executionId,
+				issueId: node.id,
+				projectName: projectScope,
+				// FLY-24: Pre-fetched metadata from runs-route takes precedence over PreHydrator
+				// (PreHydrator may fail Linear API and fall back to stub title)
+				issueIdentifier: ctx.issueIdentifier ?? hydrated.issueIdentifier,
+				issueTitle: ctx.issueTitle ?? hydrated.issueTitle,
+				...(ctx.routeSummary && { routeSummary: ctx.routeSummary }),
+				// FLY-807: caller-provided labels for an internal pinned dispatch (which drive
+				// Discord chat-thread routing via resolveLeadForIssue) take precedence
+				// over a fresh Linear re-fetch of THIS run's own issue — matching the same
+				// ctx.issueLabels ?? hydrated.labels precedence already used below for
+				// ponytail resolution and AgentDispatcher backend selection.
+				labels: ctx.issueLabels ?? hydrated.labels,
+				retryPredecessor: ctx.retryContext?.predecessorExecutionId,
+				runAttempt: ctx.retryContext?.attempt,
+				// FLY-59: Propagate session role from context to event envelope
+				sessionRole: ctx.sessionRole,
+				// FLY-1259: run-level design backend lock; successor phase contexts carry
+				// the same value even when this runner itself is implement or QA.
+				...(ctx.designBackend && { designBackend: ctx.designBackend }),
+				// FLY-793 (Step 11): compute the chat-thread role ONCE here (the only
+				// place shareParentBranch is known) — a DAG workflow carries its
+				// phase role; everything else (including historical separate-issue QA
+				// compatibility rows) is 'main'. Persisted by both started sinks.
+				chatThreadRole:
+					ctx.shareParentBranch && ctx.sessionRole ? ctx.sessionRole : "main",
+				// FLY-493: persist the resolved executor backend (→ session.adapter_type)
+				// so the no-transport wake-guard can recognize an antigravity session.
+				...(ctx.runnerBackend && { runnerBackend: ctx.runnerBackend }),
+				// FLY-728: persist the resolved runner model (→ session.runner_model) for
+				// per-issue model routing visibility. Absent → account default (no --model).
+				...(ctx.runnerModel && { runnerModel: ctx.runnerModel }),
+				// FLY-615: persisted ponytail condition (→ session.ponytail_condition).
+				...(ponytailCondition && { ponytailCondition }),
+				// FLY-1356: persisted skill-framework arm + attribution (→
+				// session.skill_framework_mode/_via). Absent when the flag sits at
+				// its default — envelope byte-identical (red line #1).
+				...(skillFramework && {
+					skillFrameworkMode: skillFramework.mode,
+					skillFrameworkModeVia: skillFramework.via,
+				}),
+				// FLY-1372 §2.5: Bridge-trusted behavior fields ride session creation
+				// ONLY for engine-owned generalized (pipeline.dag) starts — legacy
+				// dispatches keep the route-patch persistence timing byte-identical
+				// (Codex design R3-3b). Persisted by the Direct sink only; the HTTP
+				// client never transmits them (see EventEnvelope authority note).
+				...(ctx.generalizedExecutionContext && {
+					...(ctx.docTier && { docTier: ctx.docTier }),
+					...(ctx.issueUrl && { issueUrl: ctx.issueUrl }),
+					...(ctx.codexSkip !== undefined && { codexSkip: ctx.codexSkip }),
+				}),
+			};
+
+			// Fire-and-forget started event (labels now populated)
+			this.eventEmitter?.emitStarted(env).catch(() => {});
+
 			const result = await this.runInner(
 				node,
 				projectRoot,
@@ -1027,13 +1080,25 @@ export class Blueprint {
 				env,
 				hydrated,
 				skillFramework,
+				codexAgentHome,
+				() => {
+					codexAgentHomeHandedOff = true;
+				},
 			);
+			await releaseUnhandedCodexAgentHome();
 			await this.emitTerminal(env, result);
 			return result;
 		} catch (err) {
+			try {
+				await releaseUnhandedCodexAgentHome();
+			} catch (releaseError) {
+				console.warn(
+					`[Blueprint] keyed_home_release_failed exec=${executionId}: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
+				);
+			}
 			const errorMsg = err instanceof Error ? err.message : String(err);
 			const failResult: BlueprintResult = { success: false, error: errorMsg };
-			await this.emitTerminal(env, failResult);
+			if (env) await this.emitTerminal(env, failResult);
 			throw err;
 		}
 	}
@@ -1187,26 +1252,11 @@ export class Blueprint {
 			backend === "codex-tmux" &&
 			(assemblyMode === "matt" || assemblyMode === "bare")
 		) {
-			const repoRoot =
-				this.flywheelRepoRoot ??
-				path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 			try {
-				const probe = this.codexSkillAssemblyProbe({
-					mode: assemblyMode,
-					agentsSkillsDir: defaultAgentsSkillsDir(),
-					mattSkillsSourceDir: path.join(
-						repoRoot,
-						"vendor",
-						"matt-skills",
-						"skills",
-					),
-				});
+				const probe = this.probeCodexAssembly(assemblyMode);
 				return {
 					...resolved,
-					codexSkillDisableNames: probe.disableNames,
-					...(probe.mattSkillsSourceDir && {
-						codexMattSkillsSourceDir: probe.mattSkillsSourceDir,
-					}),
+					...probe,
 				};
 			} catch (err) {
 				console.warn(
@@ -1218,6 +1268,33 @@ export class Blueprint {
 		return resolved;
 	}
 
+	private probeCodexAssembly(
+		mode: "matt" | "bare",
+	): Pick<
+		ResolvedSkillFrameworkForRun,
+		"codexSkillDisableNames" | "codexMattSkillsSourceDir"
+	> {
+		const repoRoot =
+			this.flywheelRepoRoot ??
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+		const probe = this.codexSkillAssemblyProbe({
+			mode,
+			agentsSkillsDir: defaultAgentsSkillsDir(),
+			mattSkillsSourceDir: path.join(
+				repoRoot,
+				"vendor",
+				"matt-skills",
+				"skills",
+			),
+		});
+		return {
+			codexSkillDisableNames: probe.disableNames,
+			...(probe.mattSkillsSourceDir && {
+				codexMattSkillsSourceDir: probe.mattSkillsSourceDir,
+			}),
+		};
+	}
+
 	private async runInner(
 		node: DagNode,
 		projectRoot: string,
@@ -1225,6 +1302,8 @@ export class Blueprint {
 		env: EventEnvelope,
 		hydrated: HydratedContext,
 		skillFramework: ResolvedSkillFrameworkForRun | undefined,
+		codexAgentHome: AdmitCodexAgentHomeResult | undefined,
+		onCodexAgentHomeHandoff: () => void,
 	): Promise<BlueprintResult> {
 		// FLY-615: enable ponytail for this run iff the resolved condition is
 		// effectively on (encoded "on:<source>"). unavailable/off → no enablement.
@@ -2827,7 +2906,7 @@ export class Blueprint {
 			hydrated.issueId;
 		let result: AdapterExecutionResult;
 		try {
-			result = await adapter.execute({
+			const adapterContext: AdapterExecutionContext = {
 				executionId,
 				issueId: hydrated.issueId,
 				prompt,
@@ -2854,6 +2933,16 @@ export class Blueprint {
 							}),
 						}
 					: {}),
+				...(codexAgentHome && {
+					codexAgentHome: {
+						project: codexAgentHome.handle.project,
+						role: codexAgentHome.handle.role,
+						home: codexAgentHome.handle.home,
+						token: codexAgentHome.handle.token,
+						assemblyArm: codexAgentHome.effectiveAssemblyArm,
+						createdLease: codexAgentHome.createdLease,
+					},
+				}),
 				// FLY-123: model override resolved by RoleAdapterResolver
 				// (label / roles config). Claude path previously passed no
 				// model — absent stays absent (byte-compat).
@@ -2960,7 +3049,9 @@ export class Blueprint {
 				vendor: ctx.vendor,
 				leadSessionId: ctx.leadSessionId,
 				agentColor: ctx.agentColor,
-			});
+			};
+			if (codexAgentHome) onCodexAgentHomeHandoff();
+			result = await adapter.execute(adapterContext);
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
 			const held = err as {

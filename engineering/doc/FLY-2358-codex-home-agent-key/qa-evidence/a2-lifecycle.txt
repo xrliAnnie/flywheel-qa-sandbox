@@ -1,0 +1,30 @@
+[codex-home] refuse_remove_agent_home exec=exec-two kind=keyed
+[codex-home] keyed_home_scrub_deferred exec=exec-three live_leases=1
+[codex-home] remove_home_unresolved exec=exec-bogus reason=agent_home_path_mismatch
+PASS  home not pre-created before first admit  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-qa-a2-9BHyfb/codex-homes/agents/flywheel/implement
+PASS  spawn#1 created keyed home on first use  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-qa-a2-9BHyfb/codex-homes/agents/flywheel/implement
+PASS  spawn#1 marker written  :: {
+  "version": 1,
+  "project": "flywheel",
+  "role": "implement",
+  "createdAt": "2026-09-05T11:58:11.044Z",
+  "assemblyArm": "superpowers",
+  "materializedArm": "superpowers"
+}
+PASS  after last lease released the keyed home SURVIVES (not deleted with the task)  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-qa-a2-9BHyfb/codex-homes/agents/flywheel/implement
+PASS  GH_TOKEN managed block scrubbed on last-lease-exit  :: token gone
+PASS  OBSERVATION: auth.json persists in the keyed home between tasks  :: auth.json exists=true (mode 600)
+PASS  spawn#2 same (agent,project) resolves to the SAME path  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-qa-a2-9BHyfb/codex-homes/agents/flywheel/implement == /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-qa-a2-9BHyfb/codex-homes/agents/flywheel/implement
+PASS  spawn#2 sees spawn#1 accumulated memory  :: memory file present
+PASS  worktree trust accumulates across spawns  :: both worktrees trusted
+PASS  removeCodexHome on a KEYED execution is REFUSED  :: {"removed":false,"reason":"agent_home_protected"}
+PASS  refusal is visible in logs (refuse_remove_agent_home)  :: [codex-home] refuse_remove_agent_home exec=exec-two kind=keyed
+PASS  keyed home still on disk after refused delete  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-qa-a2-9BHyfb/codex-homes/agents/flywheel/implement
+PASS  two concurrent executions share ONE home  :: liveLeases=2
+PASS  releasing one of two leases keeps the home  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-qa-a2-9BHyfb/codex-homes/agents/flywheel/implement
+PASS  legacy execution-scoped home still provisions at <root>/<executionId>  :: /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-qa-a2-9BHyfb/codex-homes/exec-legacy-9
+PASS  legacy execution classified legacy  :: {"kind":"legacy","home":"/Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-qa-a2-9BHyfb/codex-homes/exec-legacy-9"}
+PASS  removeCodexHome on a LEGACY execution still deletes (behaviour unchanged)  :: {"removed":true}
+PASS  tampered/unknown record refuses deletion  :: {"removed":false,"reason":"unresolved"}
+
+--- A2+A3: 18/18 passed --- (sandbox /Users/xiaorongli/.flywheel/runner-state/5f1bd7a5-4013-41a7-8417-407a22b504e1/browser-tmp/fly2358-qa-a2-9BHyfb)

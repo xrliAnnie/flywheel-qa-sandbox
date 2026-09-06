@@ -46,6 +46,11 @@
 			"disposition": "marker_implementation"
 		},
 		{
+			"file": "packages/config/src/pidfile.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
 			"file": "packages/config/src/repository-baseline.ts",
 			"sync_child": 1,
 			"disposition": "bridge_sync_marker_timeout_at_caller"
@@ -179,11 +184,6 @@
 		{
 			"file": "packages/teamlead/src/account-heal/claude-profile-cli.ts",
 			"raw_spawn": 1,
-			"disposition": "one_shot_cli"
-		},
-		{
-			"file": "packages/teamlead/src/account-heal/pidfile.ts",
-			"sync_child": 1,
 			"disposition": "one_shot_cli"
 		},
 		{

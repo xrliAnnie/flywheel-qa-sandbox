@@ -1,0 +1,8 @@
+[qa529] replay pre-action: clean
+[qa529] step 0: pretrusted worktree binding verified
+[qa529] step 1: generalized run authority is durable
+[qa529] Error: step 2 design completion timed out after 1500000ms; last=false
+    at waitFor (file:///Users/xiaorongli/Dev/flywheel-FLY-2358/scripts/lib/qa-generalized-e2e-lib.mjs:52:8)
+    at async runDrillSteps (file:///Users/xiaorongli/Dev/flywheel-FLY-2358/scripts/qa-529-generalized-e2e.mjs:813:17)
+    at async runDrill (file:///Users/xiaorongli/Dev/flywheel-FLY-2358/scripts/qa-529-generalized-e2e.mjs:1305:10)
+    at async main (file:///Users/xiaorongli/Dev/flywheel-FLY-2358/scripts/qa-529-generalized-e2e.mjs:1397:16)
