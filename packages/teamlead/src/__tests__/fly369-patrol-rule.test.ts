@@ -262,9 +262,18 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"waiting_episode_reminded=yes",
 			"founder 在该 issue thread 发言",
 			"gate state/head",
+			"三个判据",
 			"node_id='founder_gate'",
 			"state='review'",
 			"checkpoint='approve_to_ship'",
+			"checkpoint='founder_review'",
+			"founder_review_card_binding",
+			"question_id",
+			"run_id",
+			"execution_id",
+			"不得把 `pm` 节点",
+			"一律视为等待 founder",
+			"新 founder_review 卡",
 			"同一 issue",
 			"waiting_founder",
 			"提醒投递成功后",
@@ -282,7 +291,8 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"same-attempt re-admission",
 			"multiple_unavailable 只允许 STEP 6",
 			"DWELL_ACTION",
-			'{"items":[{"runId":"<run>","nodeId":"<node>","attempt":<n>}]}',
+			'{"items":[{"runId":"<run>","nodeId":"<node>","attempt":<n>,"episodeStartedAt":"<该 NODE_DWELL 行的 episode>"}]}',
+			"episode_started_at",
 		]) {
 			expect(section0).toContain(anchor);
 		}

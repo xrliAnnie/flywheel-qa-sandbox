@@ -1029,6 +1029,7 @@ DWELL_THRESHOLD_OUTPUT=""
 DWELL_THRESHOLD_HOURS=""
 DWELL_THRESHOLD_SECONDS=""
 DWELL_OPEN_GATE_ROWS_SQL=""
+DWELL_OPEN_FOUNDER_REVIEW_ROWS_SQL=""
 DWELL_ENABLED=""
 if [ ! -x "$DWELL_CONTROL" ]; then
   STEP_DWELL_STATUS="UNAVAILABLE(structural: helper_unavailable)"
@@ -1088,6 +1089,47 @@ else
       STEP_DWELL_STATUS="UNAVAILABLE(structural: question_domain_invalid)"
       STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=question_domain_invalid"
     fi
+  fi
+  if [ "$STEP_DWELL_STATUS" = "OK" ]; then
+  DWELL_FOUNDER_REVIEW_OUTPUT="$("$DWELL_CONTROL" open-founder-review-gates --comm-db "$COMM_DB" 2>&1)"
+  DWELL_FOUNDER_REVIEW_RC=$?
+  if [ "$DWELL_FOUNDER_REVIEW_RC" -ne 0 ]; then
+    DWELL_TOKEN="$(printf '%s\n' "$DWELL_FOUNDER_REVIEW_OUTPUT" | awk '/^NODE_DWELL_UNAVAILABLE [A-Za-z0-9_]+/{print $2; exit}')"
+    [ -n "$DWELL_TOKEN" ] || DWELL_TOKEN="question_domain_unavailable"
+    STEP_DWELL_STATUS="UNAVAILABLE(structural: $DWELL_TOKEN)"
+    STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=$DWELL_TOKEN"
+  else
+    DWELL_OPEN_FOUNDER_REVIEW_ROWS_SQL="$(printf '%s\n' "$DWELL_FOUNDER_REVIEW_OUTPUT" | awk '
+      function valid_hex(value) { return value ~ /^([0-9a-f][0-9a-f])+$/ }
+      BEGIN { rows=0; summaries=0; expected=-1; quote=sprintf("%c",39); bad=0 }
+      $1 == "NODE_DWELL_OPEN_FOUNDER_REVIEW_GATE" {
+        id=$2; sender=$3
+        sub(/^id_hex=/,"",id); sub(/^from_hex=/,"",sender)
+        if (NF != 3 || !valid_hex(id) || !valid_hex(sender)) { bad=1; next }
+        if (rows > 0) print " UNION ALL"
+        printf "SELECT CAST(X%s%s%s AS TEXT) AS id, CAST(X%s%s%s AS TEXT) AS from_agent", quote,id,quote,quote,sender,quote
+        rows++
+        next
+      }
+      $1 == "NODE_DWELL_OPEN_FOUNDER_REVIEW_GATES" {
+        count=$2; sub(/^count=/,"",count)
+        if (NF != 2 || count !~ /^[0-9]+$/) { bad=1; next }
+        summaries++; expected=count + 0
+        next
+      }
+      NF > 0 { bad=1 }
+      END {
+        if (bad || summaries != 1 || expected != rows) exit 2
+        if (rows == 0) print "SELECT NULL AS id, NULL AS from_agent WHERE 0"
+        else print ""
+      }
+    ')"
+    DWELL_FOUNDER_REVIEW_PARSE_RC=$?
+    if [ "$DWELL_FOUNDER_REVIEW_PARSE_RC" -ne 0 ]; then
+      STEP_DWELL_STATUS="UNAVAILABLE(structural: question_domain_invalid)"
+      STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=question_domain_invalid"
+    fi
+  fi
   fi
   if [ "$STEP_DWELL_STATUS" = "OK" ]; then
   DWELL_THRESHOLD_OUTPUT="$("$DWELL_CONTROL" threshold --db "$STATE_DB" --project "$PROJECT_NAME" 2>&1)"
@@ -1164,14 +1206,23 @@ latest_receipt AS (
   FROM node_dwell_review
   GROUP BY run_id, node_id, attempt
 ),
-latest_waiting_receipt AS (
-  SELECT run_id, node_id, attempt, max(examined_at) AS examined_at
+ranked_waiting_receipt AS (
+  SELECT run_id, node_id, attempt, examined_at, episode_started_at,
+         row_number() OVER (
+           PARTITION BY run_id, node_id, attempt
+           ORDER BY julianday(examined_at) DESC, cycle_no DESC
+         ) AS receipt_rank
   FROM node_dwell_review
   WHERE verdict = 'waiting_founder'
-  GROUP BY run_id, node_id, attempt
+),
+latest_waiting_receipt AS (
+  SELECT run_id, node_id, attempt, examined_at, episode_started_at
+  FROM ranked_waiting_receipt
+  WHERE receipt_rank = 1
 ),
 dwell AS (
   SELECT a.*, waiting.examined_at AS waiting_examined_at,
+         waiting.episode_started_at AS waiting_episode_started_at,
          CASE
            WHEN r.examined_at IS NOT NULL
              AND julianday(r.examined_at) > julianday(a.started_at)
@@ -1189,6 +1240,14 @@ attribution_subjects AS (
 $DWELL_OWNER_ATTRIBUTION_CTES,
 open_approve_questions AS (
 $DWELL_OPEN_GATE_ROWS_SQL
+),
+open_founder_review_questions AS (
+$DWELL_OPEN_FOUNDER_REVIEW_ROWS_SQL
+),
+bound_open_founder_reviews AS (
+  SELECT q.id, q.from_agent, binding.run_id, binding.created_at
+  FROM open_founder_review_questions q
+  JOIN founder_review_card_binding binding ON binding.question_id = q.id
 ),
 historical_approve_questions AS (
   SELECT q.id, q.from_agent,
@@ -1244,6 +1303,11 @@ founder_gate_activity AS (
   WHERE gate_node_id = 'founder_gate'
   GROUP BY run_id
 ),
+founder_review_activity AS (
+  SELECT run_id, from_agent, max(created_at) AS episode_at
+  FROM bound_open_founder_reviews
+  GROUP BY run_id, from_agent
+),
 classified AS (
   SELECT d.*, o.attributed_lead, o.attribution_error,
          CASE
@@ -1267,6 +1331,11 @@ classified AS (
                  AND historical.project_name = d.project_name
                  AND historical.issue_id = d.issue_id
              )
+           )
+           OR EXISTS (
+             SELECT 1 FROM bound_open_founder_reviews founder_review
+             WHERE founder_review.run_id = d.run_id
+               AND founder_review.from_agent IS d.execution_id
            )
          THEN 'founder_reminder'
          WHEN NOT EXISTS (
@@ -1297,6 +1366,10 @@ routed_with_episode AS (
                 coalesce(
                   strftime('%Y-%m-%dT%H:%M:%fZ', thread_activity.episode_at),
                   strftime('%Y-%m-%dT%H:%M:%fZ', started_at)
+                ),
+                coalesce(
+                  strftime('%Y-%m-%dT%H:%M:%fZ', review_activity.episode_at),
+                  strftime('%Y-%m-%dT%H:%M:%fZ', started_at)
                 )
               )
               ELSE strftime('%Y-%m-%dT%H:%M:%fZ', started_at)
@@ -1306,6 +1379,9 @@ routed_with_episode AS (
     ON gate_activity.run_id = classified.run_id
   LEFT JOIN founder_thread_activity thread_activity
     ON thread_activity.issue_id = classified.issue_id
+  LEFT JOIN founder_review_activity review_activity
+    ON review_activity.run_id = classified.run_id
+    AND review_activity.from_agent IS classified.execution_id
 ),
 routed_with_baseline AS (
   SELECT routed_with_episode.*,
@@ -1315,7 +1391,9 @@ routed_with_baseline AS (
          ) AS effective_baseline_at,
          CASE WHEN route = 'founder_reminder'
                    AND waiting_examined_at IS NOT NULL
-                   AND julianday(waiting_examined_at) >= julianday(episode_started_at)
+                   AND waiting_episode_started_at IS NOT NULL
+                   AND strftime('%Y-%m-%dT%H:%M:%fZ',waiting_episode_started_at)
+                     = strftime('%Y-%m-%dT%H:%M:%fZ',episode_started_at)
               THEN 1 ELSE 0 END AS waiting_episode_reminded
   FROM routed_with_episode
 ),
@@ -1365,7 +1443,8 @@ SELECT 'NODE_DWELL issue=' || issue_id || ' run=' || run_id ||
        ' route=' || CASE
          WHEN dwell_seconds >= $DWELL_THRESHOLD_SECONDS
            AND NOT (route = 'founder_reminder' AND waiting_episode_reminded = 1)
-         THEN route ELSE 'none' END
+         THEN route ELSE 'none' END ||
+       ' episode=' || coalesce(strftime('%Y-%m-%dT%H:%M:%fZ',episode_started_at),'invalid')
 FROM owned_dwell
 WHERE output_row <= 500
 UNION ALL

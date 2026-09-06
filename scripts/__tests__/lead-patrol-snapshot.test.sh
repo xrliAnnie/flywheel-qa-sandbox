@@ -21,6 +21,19 @@ count_is() {
   actual="$(grep -Fc -- "$needle" "$file" || true)"
   [ "$actual" -eq "$expected" ] && pass "$label" || fail "$label (expected $expected, got $actual: $needle)"
 }
+episode_for_node() {
+  awk -v wanted_run="$2" -v wanted_node="$3" '
+    $1 == "NODE_DWELL" {
+      run=""; node=""; episode=""
+      for (i=1; i<=NF; i++) {
+        if ($i ~ /^run=/) { run=$i; sub(/^run=/,"",run) }
+        if ($i ~ /^node=/) { node=$i; sub(/^node=/,"",node) }
+        if ($i ~ /^episode=/) { episode=$i; sub(/^episode=/,"",episode) }
+      }
+      if (run == wanted_run && node == wanted_node) { print episode; exit }
+    }
+  ' "$1"
+}
 
 WRAPPER="$ROOT/scripts/flywheel-node-dwell-control.mjs"
 WRAPPER_INDEX_MODE="$(git -C "$ROOT" ls-files -s scripts/flywheel-node-dwell-control.mjs | awk '{print $1; exit}')"
@@ -970,6 +983,187 @@ count_is "$FOUNDER_DWELL_OUT" "over_threshold=yes route=founder_reminder" 2 "bot
 not_contains "$FOUNDER_DWELL_OUT" "over_threshold=yes route=deep_dive" "founder-wait nodes never route to deep dive"
 count_is "$FOUNDER_DWELL_OUT" "DWELL_ACTION step=DWELL issue=FLY-2210 route=founder_reminder action=REQUIRED result=UNSET" 1 "same-issue founder waits produce one reminder action"
 
+FOUNDER_REVIEW_DWELL="$TMP/founder-review-dwell"
+make_case "$FOUNDER_REVIEW_DWELL"
+sqlite3 "$FOUNDER_REVIEW_DWELL/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-founder-review','FLY-2298','flywheel','active',datetime('now','-11 hours'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
+ ('run-founder-review','pm',1,'running','exec-founder-review',datetime('now','-11 hours'));
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status) VALUES
+ ('exec-founder-review','FLY-2298','FLY-2298','founder review dwell','flywheel','running');
+INSERT INTO founder_review_card_binding(
+ question_id,message_id,run_id,artifact_digest,created_at
+) VALUES (
+ 'q-founder-review','m-founder-review','run-founder-review',
+ 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+ datetime('now','-11 hours')
+);
+SQL
+sqlite3 "$FOUNDER_REVIEW_DWELL/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-founder-review','runner-flywheel:pending','flywheel','FLY-2298','flywheel-eng-lead',datetime('now','-11 hours'),'running');
+SQL
+COMM_DB_PATH="$FOUNDER_REVIEW_DWELL/comm/flywheel/comm.db" node --input-type=module -e '
+  import { CommDB } from "./packages/flywheel-comm/dist/lib.js";
+  const db = new CommDB(process.env.COMM_DB_PATH);
+  db.insertQuestion(
+    "exec-founder-review", "flywheel-eng-lead",
+    "[content_ref: /tmp/fly2298-founder-review.json]",
+    { id: "q-founder-review", checkpoint: "founder_review", contentRef: "/tmp/fly2298-founder-review.json", contentType: "ref" },
+  );
+  db.close();'
+FOUNDER_REVIEW_DWELL_OUT="$FOUNDER_REVIEW_DWELL/out.txt"
+run_snapshot "$FOUNDER_REVIEW_DWELL" "$FOUNDER_REVIEW_DWELL_OUT" || fail "founder_review dwell snapshot exits zero"
+contains "$FOUNDER_REVIEW_DWELL_OUT" "issue=FLY-2298 run=run-founder-review node=pm" "ordinary pm node holding founder_review is included"
+contains "$FOUNDER_REVIEW_DWELL_OUT" "over_threshold=yes route=founder_reminder" "bound open founder_review routes to reminder"
+not_contains "$FOUNDER_REVIEW_DWELL_OUT" "over_threshold=yes route=deep_dive" "bound open founder_review never routes to deep dive"
+not_contains "$FOUNDER_REVIEW_DWELL_OUT" "UNAVAILABLE(structural: question_domain_invalid)" "content_ref founder_review does not degrade DWELL"
+count_is "$FOUNDER_REVIEW_DWELL_OUT" "DWELL_ACTION step=DWELL issue=FLY-2298 route=founder_reminder action=REQUIRED result=UNSET" 1 "founder_review produces one grouped reminder action"
+
+FOUNDER_REVIEW_RECEIPT_OUT="$FOUNDER_REVIEW_DWELL/receipt.txt"
+FOUNDER_REVIEW_EPISODE="$(episode_for_node "$FOUNDER_REVIEW_DWELL_OUT" run-founder-review pm)"
+if printf '%s\n' "{\"items\":[{\"runId\":\"run-founder-review\",\"nodeId\":\"pm\",\"attempt\":1,\"episodeStartedAt\":\"$FOUNDER_REVIEW_EPISODE\"}]}" | \
+  HOME="$FOUNDER_REVIEW_DWELL/home" PATH="$FOUNDER_REVIEW_DWELL/bin:$PATH" \
+  FLYWHEEL_STATE_DIR="$FOUNDER_REVIEW_DWELL/state" \
+  FLYWHEEL_STATE_DB_PATH="$FOUNDER_REVIEW_DWELL/teamlead.db" \
+  FLYWHEEL_PROJECTS_FILE="$FOUNDER_REVIEW_DWELL/state/projects.json" \
+  FLYWHEEL_COMM_DB="$FOUNDER_REVIEW_DWELL/comm/flywheel/comm.db" \
+  FLYWHEEL_LEAD_ID="flywheel-eng-lead" \
+  bash "$SCRIPT" --project flywheel --lead flywheel-eng-lead \
+    --record-dwell-receipts waiting_founder --note "founder_review reminder delivered" \
+    > "$FOUNDER_REVIEW_RECEIPT_OUT" 2>&1; then
+  pass "founder_review reminder receipt exits zero"
+else
+  fail "founder_review reminder receipt exits zero"
+fi
+sqlite3 "$FOUNDER_REVIEW_DWELL/teamlead.db" \
+  "UPDATE node_dwell_review SET examined_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-7 hours') WHERE run_id='run-founder-review';"
+FOUNDER_REVIEW_SILENT_OUT="$FOUNDER_REVIEW_DWELL/silent.txt"
+run_snapshot "$FOUNDER_REVIEW_DWELL" "$FOUNDER_REVIEW_SILENT_OUT" || fail "silent founder_review snapshot exits zero"
+contains "$FOUNDER_REVIEW_SILENT_OUT" "waiting_episode_reminded=yes over_threshold=no route=none" "same founder_review episode remains durably suppressed"
+not_contains "$FOUNDER_REVIEW_SILENT_OUT" "DWELL_ACTION step=DWELL issue=FLY-2298" "pure time does not re-notify founder_review"
+
+COMM_DB_PATH="$FOUNDER_REVIEW_DWELL/comm/flywheel/comm.db" node --input-type=module -e '
+  import { CommDB } from "./packages/flywheel-comm/dist/lib.js";
+  const db = new CommDB(process.env.COMM_DB_PATH);
+  db.insertResponse("q-founder-review", "founder", "revisions requested");
+  db.insertQuestion("exec-founder-review", "flywheel-eng-lead", "new review", {
+    id: "q-founder-review-fresh", checkpoint: "founder_review",
+  });
+  db.close();'
+sqlite3 "$FOUNDER_REVIEW_DWELL/teamlead.db" <<'SQL'
+INSERT INTO founder_review_card_binding(
+ question_id,message_id,run_id,artifact_digest,created_at
+) VALUES (
+ 'q-founder-review-fresh','m-founder-review-fresh','run-founder-review',
+ 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+ strftime('%Y-%m-%dT%H:%M:%fZ','now')
+);
+SQL
+FOUNDER_REVIEW_FRESH_OUT="$FOUNDER_REVIEW_DWELL/fresh.txt"
+run_snapshot "$FOUNDER_REVIEW_DWELL" "$FOUNDER_REVIEW_FRESH_OUT" || fail "fresh founder_review round snapshot exits zero"
+contains "$FOUNDER_REVIEW_FRESH_OUT" "waiting_episode_reminded=no over_threshold=no route=none" "fresh founder_review binding resets the threshold"
+not_contains "$FOUNDER_REVIEW_FRESH_OUT" "NODE_DWELL_BASELINE_INVALID" "founder_review episode keeps a valid baseline"
+
+COMM_DB_PATH="$FOUNDER_REVIEW_DWELL/comm/flywheel/comm.db" node --input-type=module -e '
+  import { CommDB } from "./packages/flywheel-comm/dist/lib.js";
+  const db = new CommDB(process.env.COMM_DB_PATH);
+  db.insertResponse("q-founder-review-fresh", "founder", "revisions requested again");
+  db.insertQuestion("exec-founder-review", "flywheel-eng-lead", "aged new review", {
+    id: "q-founder-review-rearmed", checkpoint: "founder_review",
+  });
+  db.close();'
+sqlite3 "$FOUNDER_REVIEW_DWELL/teamlead.db" <<'SQL'
+INSERT INTO founder_review_card_binding(
+ question_id,message_id,run_id,artifact_digest,created_at
+) VALUES (
+ 'q-founder-review-rearmed','m-founder-review-rearmed','run-founder-review',
+ 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+ strftime('%Y-%m-%dT%H:%M:%fZ','now','-4 hours')
+);
+SQL
+FOUNDER_REVIEW_REARMED_OUT="$FOUNDER_REVIEW_DWELL/rearmed.txt"
+run_snapshot "$FOUNDER_REVIEW_DWELL" "$FOUNDER_REVIEW_REARMED_OUT" || fail "rearmed founder_review round snapshot exits zero"
+contains "$FOUNDER_REVIEW_REARMED_OUT" "waiting_episode_reminded=no over_threshold=yes route=founder_reminder" "new aged founder_review round rearms one reminder"
+count_is "$FOUNDER_REVIEW_REARMED_OUT" "DWELL_ACTION step=DWELL issue=FLY-2298 route=founder_reminder action=REQUIRED result=UNSET" 1 "rearmed founder_review produces one grouped action"
+
+LAGGING_FOUNDER_REVIEW="$TMP/lagging-founder-review"
+make_case "$LAGGING_FOUNDER_REVIEW"
+sqlite3 "$LAGGING_FOUNDER_REVIEW/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-lagging-review','FLY-2298','flywheel','active',datetime('now','-12 hours'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
+ ('run-lagging-review','pm',1,'running','exec-lagging-review',datetime('now','-12 hours'));
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status) VALUES
+ ('exec-lagging-review','FLY-2298','FLY-2298','lagging founder review receipt','flywheel','running');
+INSERT INTO founder_review_card_binding(
+ question_id,message_id,run_id,artifact_digest,created_at
+) VALUES (
+ 'q-lagging-review-round-2','m-lagging-review-round-2','run-lagging-review',
+ 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+ strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 hours')
+);
+INSERT INTO node_dwell_review(
+ run_id,node_id,attempt,cycle_no,verdict,examined_at,examined_by,note
+) VALUES (
+ 'run-lagging-review','pm',1,1,'waiting_founder',
+ strftime('%Y-%m-%dT%H:%M:%fZ','now','-9 hours'),'flywheel-eng-lead',
+ 'round-1 reminder was recorded after round 2 opened'
+);
+SQL
+sqlite3 "$LAGGING_FOUNDER_REVIEW/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-lagging-review','runner-flywheel:pending','flywheel','FLY-2298','flywheel-eng-lead',datetime('now','-12 hours'),'running');
+SQL
+COMM_DB_PATH="$LAGGING_FOUNDER_REVIEW/comm/flywheel/comm.db" node --input-type=module -e '
+  import { CommDB } from "./packages/flywheel-comm/dist/lib.js";
+  const db = new CommDB(process.env.COMM_DB_PATH);
+  db.insertQuestion("exec-lagging-review", "flywheel-eng-lead", "round 2", {
+    id: "q-lagging-review-round-2", checkpoint: "founder_review",
+  });
+  db.close();'
+LAGGING_FOUNDER_REVIEW_OUT="$LAGGING_FOUNDER_REVIEW/out.txt"
+run_snapshot "$LAGGING_FOUNDER_REVIEW" "$LAGGING_FOUNDER_REVIEW_OUT" || fail "lagging founder_review receipt snapshot exits zero"
+contains "$LAGGING_FOUNDER_REVIEW_OUT" "waiting_episode_reminded=no over_threshold=yes route=founder_reminder" "late prior receipt cannot suppress the next founder_review episode"
+count_is "$LAGGING_FOUNDER_REVIEW_OUT" "DWELL_ACTION step=DWELL issue=FLY-2298 route=founder_reminder action=REQUIRED result=UNSET" 1 "lagging receipt rearmed episode produces one reminder"
+
+UNBOUND_FOUNDER_REVIEW="$TMP/unbound-founder-review"
+make_case "$UNBOUND_FOUNDER_REVIEW"
+sqlite3 "$UNBOUND_FOUNDER_REVIEW/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-unbound-founder-review','FLY-2299','flywheel','active',datetime('now','-4 hours'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
+ ('run-unbound-founder-review','pm',1,'running','exec-unbound-founder-review',datetime('now','-4 hours'));
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status) VALUES
+ ('exec-unbound-founder-review','FLY-2299','FLY-2299','unbound founder review','flywheel','running');
+INSERT INTO founder_review_card_binding(
+ question_id,message_id,run_id,artifact_digest,created_at
+) VALUES
+ ('q-wrong-run-founder-review','m-wrong-run-founder-review','run-other',
+  'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',datetime('now','-4 hours')),
+ ('q-wrong-exec-founder-review','m-wrong-exec-founder-review','run-unbound-founder-review',
+  'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',datetime('now','-4 hours'));
+SQL
+sqlite3 "$UNBOUND_FOUNDER_REVIEW/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-unbound-founder-review','runner-flywheel:pending','flywheel','FLY-2299','flywheel-eng-lead',datetime('now','-4 hours'),'running');
+SQL
+COMM_DB_PATH="$UNBOUND_FOUNDER_REVIEW/comm/flywheel/comm.db" node --input-type=module -e '
+  import { CommDB } from "./packages/flywheel-comm/dist/lib.js";
+  const db = new CommDB(process.env.COMM_DB_PATH);
+  db.insertQuestion("exec-unbound-founder-review", "flywheel-eng-lead", "wrong run", {
+    id: "q-wrong-run-founder-review", checkpoint: "founder_review",
+  });
+  db.insertQuestion("exec-other-founder-review", "flywheel-eng-lead", "wrong execution", {
+    id: "q-wrong-exec-founder-review", checkpoint: "founder_review",
+  });
+  db.close();'
+UNBOUND_FOUNDER_REVIEW_OUT="$UNBOUND_FOUNDER_REVIEW/out.txt"
+run_snapshot "$UNBOUND_FOUNDER_REVIEW" "$UNBOUND_FOUNDER_REVIEW_OUT" || fail "unbound founder_review snapshot exits zero"
+contains "$UNBOUND_FOUNDER_REVIEW_OUT" "over_threshold=yes route=deep_dive" "founder_review without a delivered card binding stays deep dive"
+not_contains "$UNBOUND_FOUNDER_REVIEW_OUT" "route=founder_reminder" "unbound founder_review cannot exempt a pm node"
+
 MIXED_TIMESTAMP_DWELL="$TMP/mixed-timestamp-dwell"
 make_case "$MIXED_TIMESTAMP_DWELL"
 sqlite3 "$MIXED_TIMESTAMP_DWELL/teamlead.db" <<'SQL'
@@ -988,10 +1182,11 @@ INSERT INTO workflow_gate_holder(
  '2026-08-31T03:51:25.000Z','2026-08-31T03:51:25.000Z'
 );
 INSERT INTO node_dwell_review(
- run_id,node_id,attempt,cycle_no,verdict,examined_at,examined_by,note
+ run_id,node_id,attempt,cycle_no,verdict,examined_at,examined_by,note,episode_started_at
 ) VALUES (
  'run-mixed-time','founder_gate',1,1,'waiting_founder',
- '2026-08-31T03:56:25.000Z','flywheel-eng-lead','previous episode reminder delivered'
+ '2026-08-31T04:02:25.000Z','flywheel-eng-lead','late previous episode reminder delivered',
+ '2026-08-31T03:51:25.000Z'
 );
 SQL
 sqlite3 "$MIXED_TIMESTAMP_DWELL/comm/flywheel/comm.db" <<'SQL'
@@ -1003,12 +1198,14 @@ VALUES (
 SQL
 MIXED_TIMESTAMP_DWELL_OUT="$MIXED_TIMESTAMP_DWELL/out.txt"
 run_snapshot "$MIXED_TIMESTAMP_DWELL" "$MIXED_TIMESTAMP_DWELL_OUT" || fail "mixed timestamp dwell snapshot exits zero"
-contains "$MIXED_TIMESTAMP_DWELL_OUT" "baseline=2026-08-31T04:01:25.000Z" "same-date episode ordering chooses the chronologically latest node admission"
+contains "$MIXED_TIMESTAMP_DWELL_OUT" "episode=2026-08-31T04:01:25.000Z" "same-date episode ordering chooses the chronologically latest node admission"
 contains "$MIXED_TIMESTAMP_DWELL_OUT" "waiting_episode_reminded=no over_threshold=yes route=founder_reminder" "new admission rearms a mixed-format founder episode"
 count_is "$MIXED_TIMESTAMP_DWELL_OUT" "DWELL_ACTION step=DWELL issue=FLY-9600 route=founder_reminder action=REQUIRED result=UNSET" 1 "mixed-format rearmed episode produces one founder reminder"
 
 FOUNDER_RECEIPT_OUT="$FOUNDER_DWELL/receipt.txt"
-if printf '%s\n' '{"items":[{"runId":"run-founder","nodeId":"founder_gate","attempt":1},{"runId":"run-founder","nodeId":"implement","attempt":1}]}' | \
+FOUNDER_GATE_EPISODE="$(episode_for_node "$FOUNDER_DWELL_OUT" run-founder founder_gate)"
+FOUNDER_IMPLEMENT_EPISODE="$(episode_for_node "$FOUNDER_DWELL_OUT" run-founder implement)"
+if printf '%s\n' "{\"items\":[{\"runId\":\"run-founder\",\"nodeId\":\"founder_gate\",\"attempt\":1,\"episodeStartedAt\":\"$FOUNDER_GATE_EPISODE\"},{\"runId\":\"run-founder\",\"nodeId\":\"implement\",\"attempt\":1,\"episodeStartedAt\":\"$FOUNDER_IMPLEMENT_EPISODE\"}]}" | \
   HOME="$FOUNDER_DWELL/home" PATH="$FOUNDER_DWELL/bin:$PATH" \
   FLYWHEEL_STATE_DIR="$FOUNDER_DWELL/state" \
   FLYWHEEL_STATE_DB_PATH="$FOUNDER_DWELL/teamlead.db" \
@@ -1055,7 +1252,9 @@ run_snapshot "$FOUNDER_DWELL" "$FOUNDER_REARMED_OUT" || fail "founder-message re
 count_is "$FOUNDER_REARMED_OUT" "over_threshold=yes route=founder_reminder" 2 "founder thread activity rearms both waiting nodes after a fresh threshold"
 count_is "$FOUNDER_REARMED_OUT" "DWELL_ACTION step=DWELL issue=FLY-2210 route=founder_reminder action=REQUIRED result=UNSET" 1 "founder thread activity permits one new grouped reminder"
 
-if printf '%s\n' '{"items":[{"runId":"run-founder","nodeId":"founder_gate","attempt":1},{"runId":"run-founder","nodeId":"implement","attempt":1}]}' | \
+FOUNDER_GATE_REARMED_EPISODE="$(episode_for_node "$FOUNDER_REARMED_OUT" run-founder founder_gate)"
+FOUNDER_IMPLEMENT_REARMED_EPISODE="$(episode_for_node "$FOUNDER_REARMED_OUT" run-founder implement)"
+if printf '%s\n' "{\"items\":[{\"runId\":\"run-founder\",\"nodeId\":\"founder_gate\",\"attempt\":1,\"episodeStartedAt\":\"$FOUNDER_GATE_REARMED_EPISODE\"},{\"runId\":\"run-founder\",\"nodeId\":\"implement\",\"attempt\":1,\"episodeStartedAt\":\"$FOUNDER_IMPLEMENT_REARMED_EPISODE\"}]}" | \
   HOME="$FOUNDER_DWELL/home" PATH="$FOUNDER_DWELL/bin:$PATH" \
   FLYWHEEL_STATE_DIR="$FOUNDER_DWELL/state" \
   FLYWHEEL_STATE_DB_PATH="$FOUNDER_DWELL/teamlead.db" \

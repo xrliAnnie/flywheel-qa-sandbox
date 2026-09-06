@@ -11,12 +11,17 @@ import {
 	readNodeDwellEnabled,
 	readNodeDwellThresholdHours,
 	readOpenApproveGates,
+	readOpenFounderReviewGates,
 	runNodeDwellControl,
 	writeNodeDwellReviewBatch,
 } from "../node-dwell-control.js";
 import { StateStore } from "../StateStore.js";
 
 const roots: string[] = [];
+
+function currentEpisodeStartedAt(): string {
+	return new Date(Date.now() - 1000).toISOString();
+}
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -182,14 +187,62 @@ describe("FLY-2210 node dwell control", () => {
 			id: "q-open",
 			checkpoint: "approve_to_ship",
 		});
+		comm.insertQuestion(
+			"exec-founder-review",
+			"flywheel-eng-lead",
+			"[content_ref: /tmp/fly2298-founder-review.json]",
+			{
+				id: "q-founder-review",
+				checkpoint: "founder_review",
+				contentRef: "/tmp/fly2298-founder-review.json",
+				contentType: "ref",
+			},
+		);
+		comm.insertQuestion(
+			"exec-answered-review",
+			"flywheel-eng-lead",
+			"answered review",
+			{ id: "q-answered-review", checkpoint: "founder_review" },
+		);
+		comm.insertResponse("q-answered-review", "founder", "approved");
+		comm.insertQuestion("exec-superseded", "flywheel-eng-lead", "old review", {
+			id: "q-superseded-review",
+			checkpoint: "founder_review",
+		});
+		comm.insertQuestion("exec-disposed", "flywheel-eng-lead", "dead review", {
+			id: "q-disposed-review",
+			checkpoint: "founder_review",
+		});
 		comm.close();
+		const retired = new Database(commDbPath);
+		retired
+			.prepare(
+				"UPDATE mailbox SET superseded_at = datetime('now'), superseded_by = 'q-founder-review' WHERE id = ?",
+			)
+			.run("q-superseded-review");
+		retired
+			.prepare(
+				"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
+			)
+			.run("q-disposed-review");
+		retired.close();
 		const openReadonly = vi.spyOn(CommDB, "openReadonly");
 		const getOpen = vi.spyOn(CommDB.prototype, "getOpenGatesByCheckpoint");
 		expect(readOpenApproveGates(commDbPath)).toEqual([
 			{ questionId: "q-open", fromAgent: "exec-open" },
 		]);
+		expect(readOpenFounderReviewGates(commDbPath)).toEqual([
+			{
+				questionId: "q-founder-review",
+				fromAgent: "exec-founder-review",
+			},
+		]);
+		expect(openReadonly).toHaveBeenCalledTimes(2);
 		expect(openReadonly).toHaveBeenCalledWith(commDbPath);
-		expect(getOpen).toHaveBeenCalledWith("approve_to_ship");
+		expect(getOpen.mock.calls).toEqual([
+			["approve_to_ship"],
+			["founder_review"],
+		]);
 	});
 
 	it("writes an atomic same-issue receipt batch after exact active-node and owner validation", async () => {
@@ -205,8 +258,8 @@ describe("FLY-2210 node dwell control", () => {
 			VALUES ('run-1','FLY-2210','flywheel','active',datetime('now'));
 			INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at)
 			VALUES
-			 ('run-1','implement',1,'running','exec-1',datetime('now','-4 hours')),
-			 ('run-1','founder_gate',1,'review','exec-2',datetime('now','-4 hours'));
+			 ('run-1','implement',1,'running','exec-1','2026-09-06T00:00:00.000Z'),
+			 ('run-1','founder_gate',1,'review','exec-2','2026-09-06T00:00:00.000Z');
 		`);
 		state.close();
 		const comm = new CommDB(commDbPath);
@@ -238,9 +291,51 @@ describe("FLY-2210 node dwell control", () => {
 		await expect(
 			writeNodeDwellReviewBatch({
 				...base,
+				items: [{ runId: "run-1", nodeId: "implement", attempt: 1 }],
+			}),
+		).rejects.toMatchObject({ token: "episode_missing" });
+		await expect(
+			writeNodeDwellReviewBatch({
+				...base,
 				items: [
-					{ runId: "run-1", nodeId: "implement", attempt: 1 },
-					{ runId: "run-1", nodeId: "missing", attempt: 1 },
+					{
+						runId: "run-1",
+						nodeId: "implement",
+						attempt: 1,
+						episodeStartedAt: "2026-09-05T23:59:59.999Z",
+					},
+				],
+			}),
+		).rejects.toMatchObject({ token: "episode_before_node" });
+		await expect(
+			writeNodeDwellReviewBatch({
+				...base,
+				items: [
+					{
+						runId: "run-1",
+						nodeId: "implement",
+						attempt: 1,
+						episodeStartedAt: "9999-12-31T23:59:59.999Z",
+					},
+				],
+			}),
+		).rejects.toMatchObject({ token: "episode_in_future" });
+		await expect(
+			writeNodeDwellReviewBatch({
+				...base,
+				items: [
+					{
+						runId: "run-1",
+						nodeId: "implement",
+						attempt: 1,
+						episodeStartedAt: currentEpisodeStartedAt(),
+					},
+					{
+						runId: "run-1",
+						nodeId: "missing",
+						attempt: 1,
+						episodeStartedAt: currentEpisodeStartedAt(),
+					},
 				],
 			}),
 		).rejects.toBeInstanceOf(ReceiptRejectedError);
@@ -251,8 +346,18 @@ describe("FLY-2210 node dwell control", () => {
 		const written = await writeNodeDwellReviewBatch({
 			...base,
 			items: [
-				{ runId: "run-1", nodeId: "implement", attempt: 1 },
-				{ runId: "run-1", nodeId: "founder_gate", attempt: 1 },
+				{
+					runId: "run-1",
+					nodeId: "implement",
+					attempt: 1,
+					episodeStartedAt: "2026-09-06T01:00:00.000Z",
+				},
+				{
+					runId: "run-1",
+					nodeId: "founder_gate",
+					attempt: 1,
+					episodeStartedAt: "2026-09-06T01:00:00.000Z",
+				},
 			],
 		});
 		expect(written).toMatchObject({
@@ -265,7 +370,7 @@ describe("FLY-2210 node dwell control", () => {
 		});
 		const receipts = new Database(dbPath, { readonly: true })
 			.prepare(
-				"SELECT node_id, cycle_no, verdict, examined_at, examined_by, note FROM node_dwell_review ORDER BY node_id",
+				"SELECT node_id, cycle_no, verdict, examined_at, examined_by, note, episode_started_at FROM node_dwell_review ORDER BY node_id",
 			)
 			.all();
 		expect(receipts).toEqual([
@@ -275,16 +380,28 @@ describe("FLY-2210 node dwell control", () => {
 				verdict: "waiting_founder",
 				examined_by: "flywheel-eng-lead",
 				note: "grouped founder reminder delivered",
+				episode_started_at: "2026-09-06T01:00:00.000Z",
 				examined_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
 			}),
-			expect.objectContaining({ node_id: "implement", cycle_no: 1 }),
+			expect.objectContaining({
+				node_id: "implement",
+				cycle_no: 1,
+				episode_started_at: "2026-09-06T01:00:00.000Z",
+			}),
 		]);
 
 		await expect(
 			writeNodeDwellReviewBatch({
 				...base,
 				callerLeadId: "other-lead",
-				items: [{ runId: "run-1", nodeId: "implement", attempt: 1 }],
+				items: [
+					{
+						runId: "run-1",
+						nodeId: "implement",
+						attempt: 1,
+						episodeStartedAt: currentEpisodeStartedAt(),
+					},
+				],
 			}),
 		).rejects.toBeInstanceOf(ReceiptRejectedError);
 	});
@@ -372,7 +489,14 @@ describe("FLY-2210 node dwell control", () => {
 				callerLeadId: "flywheel-eng-lead",
 				environmentLeadId: "flywheel-eng-lead",
 				verdict: "waiting_founder",
-				items: [{ runId: "run-pruned", nodeId: "founder_gate", attempt: 1 }],
+				items: [
+					{
+						runId: "run-pruned",
+						nodeId: "founder_gate",
+						attempt: 1,
+						episodeStartedAt: currentEpisodeStartedAt(),
+					},
+				],
 			}),
 		).resolves.toMatchObject({ written: 1 });
 	});
@@ -415,7 +539,14 @@ describe("FLY-2210 node dwell control", () => {
 				callerLeadId: "flywheel-eng-lead",
 				environmentLeadId: "flywheel-eng-lead",
 				verdict: "waiting_founder",
-				items: [{ runId: "run-null-exec", nodeId: "founder_gate", attempt: 1 }],
+				items: [
+					{
+						runId: "run-null-exec",
+						nodeId: "founder_gate",
+						attempt: 1,
+						episodeStartedAt: currentEpisodeStartedAt(),
+					},
+				],
 			}),
 		).resolves.toMatchObject({ written: 1 });
 
@@ -481,7 +612,12 @@ describe("FLY-2210 node dwell control", () => {
 				environmentLeadId: "flywheel-eng-lead",
 				verdict: "waiting_founder",
 				items: [
-					{ runId: "run-historical", nodeId: "founder_gate", attempt: 1 },
+					{
+						runId: "run-historical",
+						nodeId: "founder_gate",
+						attempt: 1,
+						episodeStartedAt: currentEpisodeStartedAt(),
+					},
 				],
 			}),
 		).resolves.toMatchObject({ written: 1 });

@@ -18,6 +18,7 @@ export interface NodeDwellReceiptTarget {
 	runId: string;
 	nodeId: string;
 	attempt: number;
+	episodeStartedAt?: string;
 }
 
 export interface WriteNodeDwellReviewBatchInput {
@@ -226,6 +227,17 @@ export async function writeNodeDwellReviewBatch(
 		) {
 			rejectReceipt("target_invalid");
 		}
+		if (
+			item.episodeStartedAt !== undefined &&
+			!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
+				item.episodeStartedAt,
+			)
+		) {
+			rejectReceipt("episode_invalid");
+		}
+		if (input.verdict === "waiting_founder" && !item.episodeStartedAt) {
+			rejectReceipt("episode_missing");
+		}
 	}
 
 	let state: Database.Database | undefined;
@@ -247,7 +259,7 @@ export async function writeNodeDwellReviewBatch(
 				const target = state!
 					.prepare(
 						`SELECT wr.issue_id, wr.project_name, wr.status AS run_status,
-						        n.state, n.execution_id, n.ended_at
+						        n.state, n.execution_id, n.started_at, n.ended_at
 						   FROM workflow_run wr
 						   JOIN workflow_run_node n ON n.run_id = wr.run_id
 						  WHERE wr.run_id = ? AND n.node_id = ? AND n.attempt = ?`,
@@ -259,6 +271,7 @@ export async function writeNodeDwellReviewBatch(
 							run_status: string;
 							state: string;
 							execution_id: string | null;
+							started_at: string;
 							ended_at: string | null;
 					  }
 					| undefined;
@@ -270,6 +283,18 @@ export async function writeNodeDwellReviewBatch(
 					!["running", "review", "admitted"].includes(target.state)
 				) {
 					rejectReceipt("target_not_active");
+				}
+				if (item.episodeStartedAt) {
+					const episodeMs = Date.parse(item.episodeStartedAt);
+					const nodeStartedAt = target.started_at.includes("T")
+						? target.started_at
+						: `${target.started_at.replace(" ", "T")}Z`;
+					const nodeStartedMs = Date.parse(nodeStartedAt);
+					if (!Number.isFinite(episodeMs) || !Number.isFinite(nodeStartedMs)) {
+						rejectReceipt("episode_invalid");
+					}
+					if (episodeMs < nodeStartedMs) rejectReceipt("episode_before_node");
+					if (episodeMs > Date.now()) rejectReceipt("episode_in_future");
 				}
 				if (issueId !== undefined && issueId !== target.issue_id) {
 					rejectReceipt("batch_cross_issue");
@@ -293,8 +318,8 @@ export async function writeNodeDwellReviewBatch(
 					.prepare(
 						`INSERT INTO node_dwell_review (
 						   run_id,node_id,attempt,cycle_no,verdict,
-						   examined_at,examined_by,note
-						 ) VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?,?)`,
+						   examined_at,examined_by,note,episode_started_at
+						 ) VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?,?,?)`,
 					)
 					.run(
 						item.runId,
@@ -304,6 +329,7 @@ export async function writeNodeDwellReviewBatch(
 						input.verdict,
 						input.callerLeadId,
 						input.note?.trim() || null,
+						item.episodeStartedAt ?? null,
 					);
 				cycles.push({ nodeId: item.nodeId, cycleNo });
 			}
@@ -340,11 +366,14 @@ export interface OpenApproveGate {
 	fromAgent: string;
 }
 
-export function readOpenApproveGates(commDbPath: string): OpenApproveGate[] {
+function readOpenGatesByCheckpoint(
+	commDbPath: string,
+	checkpoint: "approve_to_ship" | "founder_review",
+): OpenApproveGate[] {
 	let comm: CommDB | undefined;
 	try {
 		comm = CommDB.openReadonly(commDbPath);
-		return comm.getOpenGatesByCheckpoint("approve_to_ship").map((gate) => {
+		return comm.getOpenGatesByCheckpoint(checkpoint).map((gate) => {
 			if (!gate.id || !gate.from_agent) {
 				throw new Error("question_domain_invalid");
 			}
@@ -359,6 +388,22 @@ export function readOpenApproveGates(commDbPath: string): OpenApproveGate[] {
 	} finally {
 		comm?.close();
 	}
+}
+
+export function readOpenApproveGates(commDbPath: string): OpenApproveGate[] {
+	return readOpenGatesByCheckpoint(commDbPath, "approve_to_ship");
+}
+
+/**
+ * Project canonical unanswered founder-review questions without inspecting their
+ * raw content. A delivered-card binding in StateStore supplies the run identity
+ * and episode timestamp; avoiding content here keeps spilled content_ref rows
+ * equivalent to inline founder-review questions.
+ */
+export function readOpenFounderReviewGates(
+	commDbPath: string,
+): OpenApproveGate[] {
+	return readOpenGatesByCheckpoint(commDbPath, "founder_review");
 }
 
 /**
@@ -430,27 +475,39 @@ export async function runNodeDwellControl(
 		command !== "enabled" &&
 		command !== "threshold" &&
 		command !== "receipt-batch" &&
-		command !== "open-approve-gates"
+		command !== "open-approve-gates" &&
+		command !== "open-founder-review-gates"
 	) {
 		io.stderr(
-			"usage: flywheel-node-dwell-control enabled|threshold --db <teamlead.db> --project <name> | open-approve-gates --comm-db <comm.db> | receipt-batch --db <teamlead.db> --comm-db <comm.db> --project <name> --lead <id> --verdict <value> [--note <text>]",
+			"usage: flywheel-node-dwell-control enabled|threshold --db <teamlead.db> --project <name> | open-approve-gates|open-founder-review-gates --comm-db <comm.db> | receipt-batch --db <teamlead.db> --comm-db <comm.db> --project <name> --lead <id> --verdict <value> [--note <text>]",
 		);
 		return 64;
 	}
-	if (command === "open-approve-gates") {
+	if (
+		command === "open-approve-gates" ||
+		command === "open-founder-review-gates"
+	) {
 		const commDbPath = option(args, "--comm-db");
 		if (!commDbPath) {
 			io.stderr("NODE_DWELL_UNAVAILABLE invalid_arguments");
 			return 64;
 		}
 		try {
-			const gates = readOpenApproveGates(commDbPath);
+			const founderReview = command === "open-founder-review-gates";
+			const gates = founderReview
+				? readOpenFounderReviewGates(commDbPath)
+				: readOpenApproveGates(commDbPath);
+			const rowToken = founderReview
+				? "NODE_DWELL_OPEN_FOUNDER_REVIEW_GATE"
+				: "NODE_DWELL_OPEN_APPROVE_GATE";
 			for (const gate of gates) {
 				io.stdout(
-					`NODE_DWELL_OPEN_APPROVE_GATE id_hex=${Buffer.from(gate.questionId, "utf8").toString("hex")} from_hex=${Buffer.from(gate.fromAgent, "utf8").toString("hex")}`,
+					`${rowToken} id_hex=${Buffer.from(gate.questionId, "utf8").toString("hex")} from_hex=${Buffer.from(gate.fromAgent, "utf8").toString("hex")}`,
 				);
 			}
-			io.stdout(`NODE_DWELL_OPEN_APPROVE_GATES count=${gates.length}`);
+			io.stdout(
+				`${founderReview ? "NODE_DWELL_OPEN_FOUNDER_REVIEW_GATES" : "NODE_DWELL_OPEN_APPROVE_GATES"} count=${gates.length}`,
+			);
 			return 0;
 		} catch (error) {
 			io.stderr(error instanceof Error ? error.message : String(error));
@@ -497,7 +554,9 @@ export async function runNodeDwellControl(
 					typeof item === "object" &&
 					typeof Reflect.get(item, "runId") === "string" &&
 					typeof Reflect.get(item, "nodeId") === "string" &&
-					typeof Reflect.get(item, "attempt") === "number",
+					typeof Reflect.get(item, "attempt") === "number" &&
+					(Reflect.get(item, "episodeStartedAt") === undefined ||
+						typeof Reflect.get(item, "episodeStartedAt") === "string"),
 			)
 		) {
 			io.stderr("RECEIPT_REJECTED invalid_batch");

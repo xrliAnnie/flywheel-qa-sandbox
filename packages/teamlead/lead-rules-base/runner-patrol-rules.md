@@ -182,12 +182,16 @@ schema、owner 或历史 gate 映射不可读/不唯一都 fail closed 为 UNAVA
 
 超阈后按以下唯一顺序处置：
 
-1. **先判是否等待 founder(两个判据取或)**：① `node_id='founder_gate'` 且
+1. **先判是否等待 founder(三个判据取或)**：① `node_id='founder_gate'` 且
    `state='review'`；② canonical CommDB question 的
    `checkpoint='approve_to_ship'` 尚无 response 子消息，且以当前
    `workflow_gate_holder.run_id -> question_id` 精确绑定；仅旧数据缺 holder 时才准用
    `question.from_agent -> comm.sessions.execution_id -> issue_id` 的唯一映射，缺失或歧义
-   写 `gate_mapping_incomplete`，绝不误走 deep dive。命中等待 founder 时，对**同一 issue**
+   写 `gate_mapping_incomplete`，绝不误走 deep dive；③ canonical CommDB question 的
+   `checkpoint='founder_review'` 尚无 response、未 supersede 或 terminal dispose，且
+   `founder_review_card_binding.question_id` 精确绑定这张已投递卡、binding 的 `run_id`
+   等于当前 run、question `from_agent` 等于当前节点 `execution_id`。不得把 `pm` 节点
+   一律视为等待 founder，也不得仅按 issue 或节点类型猜测。命中等待 founder 时，对**同一 issue**
    的所有超阈节点合并成该单 thread **一条提醒**，不得逐节点刷屏；仍复用现有 patrol
    tick 与 thread 通道，禁止新增 daemon、timer 或独立告警器。更重要的是：
    **同一 waiting episode 只提醒一次**。提醒投递成功后写下的 `waiting_founder`
@@ -196,11 +200,16 @@ schema、owner 或历史 gate 映射不可读/不唯一都 fail closed 为 UNAVA
    永远不能重新武装提醒，也不再采用“每 3 小时再催一次”的旧语义。
 
    waiting episode 的持久起点取当前 node admission、canonical `gate state/head`
-   活动以及 founder 在该 issue thread 发言三类 durable 事实的最新值。只有 founder
+   活动、与 route 使用同一 open-question + card-binding + run + execution 精确连接的
+   最新 `founder_review_card_binding.created_at`，以及 founder 在该 issue thread 发言
+   四类 durable 事实的最新值。只有 founder
    已有动作后才重新武装：批准/打回造成 gate state 变化、新 head 再次进入等待，或
-   founder 在该 issue thread 发言；该动作先重置阈值计时，节点从新起点再次超阈后，
+   founder 在该 issue thread 发言，或新 founder_review 卡被绑定；该动作先重置阈值计时，节点从新起点再次超阈后，
    才允许新 episode 的一条 grouped reminder。live `mailbox` 与 append-only
    `mailbox_log` 同时覆盖消息在进程重启或归档后的证据。
+   `waiting_founder` receipt 会让 STEP DWELL 在本 episode 不再周期性复查节点 liveness；
+   这是既有 `approve_to_ship` 路径已接受并由 runner/engine liveness 机制承接的取舍，
+   不能把被抑制的 deep dive 描述成没有诊断价值。
 2. **非 founder 等待必须强制 deep dive**：先读该 run 的**最新 workflow transition**，
    再读目标 Runner 的**终端内容**与该节点的**工作日志**，把内容证据判成「推进中」或
    「原地空转」。**禁止只看画面刷不刷**、最后一行或 pane 指纹是否变化，或
@@ -215,11 +224,13 @@ schema、owner 或历史 gate 映射不可读/不唯一都 fail closed 为 UNAVA
 4. verdict domain 只有 `normal|cleared|fixed|waiting_founder`：deep dive 结论只用
    `normal|cleared|fixed`；提醒分支只用 `waiting_founder`。把同一
    issue 本轮所有节点组成一个 JSON batch，stdin 的唯一 schema 是
-   `{"items":[{"runId":"<run>","nodeId":"<node>","attempt":<n>}]}`；字段名和
+   `{"items":[{"runId":"<run>","nodeId":"<node>","attempt":<n>,"episodeStartedAt":"<该 NODE_DWELL 行的 episode>"}]}`；字段名和
    camelCase 逐字固定，禁止从报告字段自行猜 `nodes/run_id/node_id` 变体。经
    `${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/bin/flywheel-patrol-snapshot --project "$PROJECT_NAME" --lead "$LEAD_ID" --record-dwell-receipts <verdict> --note '<bounded conclusion>'`
    从 stdin 提交。只有内容核验完成，或 founder **提醒投递成功后**，才可 INSERT 收据；
-   发送失败不得先写 `waiting_founder`。收据的 DB-generated `examined_at` 是下轮计时基线；
+   发送失败不得先写 `waiting_founder`。`waiting_founder` 必须逐项原样回传快照的
+   `episode`；收据把它持久化为 `episode_started_at`，不能用更晚的 DB-generated
+   `examined_at` 猜 episode，否则上一轮的迟到收据会吞掉新卡。`examined_at` 仍是下轮计时基线；
    `normal|cleared|fixed` 在下一阈值窗后可再次 deep dive，而 `waiting_founder` 还作为
    当前 waiting episode 的持久去重凭据，纯时间流逝不再触发 founder 重报。
 

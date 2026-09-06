@@ -21693,9 +21693,17 @@ export class StateStore {
 				examined_at TEXT NOT NULL,
 				examined_by TEXT NOT NULL,
 				note TEXT,
+				episode_started_at TEXT,
 				PRIMARY KEY (run_id,node_id,attempt,cycle_no)
 			)
 		`);
+		try {
+			this.db.run(
+				"ALTER TABLE node_dwell_review ADD COLUMN episode_started_at TEXT",
+			);
+		} catch {
+			/* column already exists */
+		}
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_node_pr_binding (
 				run_id TEXT NOT NULL,
