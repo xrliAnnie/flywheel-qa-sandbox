@@ -1,13 +1,14 @@
 ---
 issue: FLY-2382
 phase: design
-phaseCursor: 5/8
-updated: 2026-09-07T00:25:17.528Z
-nextStep: codex design review R4 (final per Lead); then report to Lead regardless
+phaseCursor: 6/8
+updated: 2026-09-07T00:43:51.814Z
+nextStep: await Lead ruling on design gate (ask 00e1fcbc); then design_review
+  gate + report HTML URL + complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-2382 progress
-**phase**: design (5/8)
-**next**: codex design review R4 (final per Lead); then report to Lead regardless
+**phase**: design (6/8)
+**next**: await Lead ruling on design gate (ask 00e1fcbc); then design_review gate + report HTML URL + complete
