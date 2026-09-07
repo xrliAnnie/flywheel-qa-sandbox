@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SummaryGranularity } from "./summary-config.js";
 
 /** The single path prefix shared by the producer, verifier, and R1 exemption. */
@@ -32,6 +33,28 @@ export interface SummaryPathInput {
 	period: string;
 	sequence: number;
 	granularity: SummaryGranularity;
+}
+
+export interface SummaryDeliveryBranchInput {
+	project: string;
+	author: string;
+	period: string;
+}
+
+/** Stable idempotency branch shared by summary delivery and round accounting. */
+export function summaryDeliveryBranch(
+	input: SummaryDeliveryBranchInput,
+): string {
+	const digest = createHash("sha256")
+		.update(
+			JSON.stringify({
+				project: input.project,
+				author: input.author,
+				period: input.period,
+			}),
+		)
+		.digest("hex");
+	return `summary/${input.project}/${input.author}/${digest.slice(0, 16)}`;
 }
 
 export interface ValidateSummaryArtifactInput {

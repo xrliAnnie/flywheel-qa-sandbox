@@ -1,0 +1,16 @@
+sequenceDiagram
+  participant C as 节奏钟 每 6 小时一格 可在管理台改
+  participant B as Bridge 调度器 每 60 秒醒一次
+  participant L as 11 位部门 Lead 的收件箱
+  participant G as GitHub 上的 Raya 仓
+  participant Y as Raya 总管
+
+  C->>B: 到达一格的起点 T
+  B->>G: 查每位 Lead 上次交的 summary
+  B->>L: 第一拍 发 summary_due 含 period 与上次交付
+  L->>G: Lead 写 summary 并开 PR
+  Note over B: 等 30 分钟
+  B->>G: 第二拍 重新查一遍 谁的 PR 在
+  B->>B: 算出 已交 未交 未送达
+  B->>Y: 把对账行交给 Raya 无论有无其他活动都要发
+  Y-->>Y: 在 raya 频道说 本轮 10/11 已交 未交 mufasa-lead

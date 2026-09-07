@@ -21,6 +21,7 @@ import {
 } from "../summary-pr-verifier.js";
 
 const TARGET_REPO = "xrliAnnie/raya";
+export const SUMMARY_TARGET_REPOSITORY = TARGET_REPO;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export interface SummaryDeliveryKey {

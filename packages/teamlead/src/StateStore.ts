@@ -16016,6 +16016,54 @@ export class StateStore {
 		return (result[0]?.values[0]?.[0] as number) ?? 0;
 	}
 
+	/** FLY-2382: atomically materialize one summary cadence slot's producer roster. */
+	appendSummaryDueRows(
+		rows: Array<{ leadId: string; eventId: string; payload: string }>,
+	): void {
+		this.db.transaction(() => {
+			for (const row of rows) {
+				this.appendLeadEvent(
+					row.leadId,
+					row.eventId,
+					"summary_due",
+					row.payload,
+					"summary-due",
+				);
+			}
+		});
+	}
+
+	/** FLY-2382: read the immutable producer roster captured for one exact slot. */
+	listSummaryDueRows(slotStart: string): LeadEventRow[] {
+		const escapedSlot = slotStart
+			.replaceAll("\\", "\\\\")
+			.replaceAll("%", "\\%")
+			.replaceAll("_", "\\_");
+		return (
+			this.db.raw
+				.prepare(
+					`SELECT * FROM lead_events
+					 WHERE event_type = 'summary_due'
+					   AND event_id LIKE ? ESCAPE '\\'
+					 ORDER BY seq ASC`,
+				)
+				.all(`summary\\_due:%:${escapedSlot}`) as Record<string, unknown>[]
+		).map(mapLeadEventRow);
+	}
+
+	/** FLY-2382: exact lookup for a frozen slot result or producer due row. */
+	getLeadEventByLeadAndId(
+		leadId: string,
+		eventId: string,
+	): LeadEventRow | null {
+		const row = this.db.raw
+			.prepare(
+				"SELECT * FROM lead_events WHERE lead_id = ? AND event_id = ? LIMIT 1",
+			)
+			.get(leadId, eventId) as Record<string, unknown> | undefined;
+		return row ? mapLeadEventRow(row) : null;
+	}
+
 	/**
 	 * FLY-83: attempt to claim a (leadId, eventId) slot.
 	 * Returns true if this caller wrote the row, false if it already existed.

@@ -23,6 +23,7 @@ import type {
 import {
 	buildSummaryPath,
 	SummaryContractError,
+	summaryDeliveryBranch,
 	validateSummaryArtifact,
 } from "./summary-contract.js";
 
@@ -59,10 +60,6 @@ function keyDigest(key: SummaryDeliveryKey): string {
 			}),
 		)
 		.digest("hex");
-}
-
-function branchFor(key: SummaryDeliveryKey): string {
-	return `summary/${key.project}/${key.author}/${keyDigest(key).slice(0, 16)}`;
 }
 
 function parseJson<T>(raw: string, source: string): T {
@@ -224,7 +221,7 @@ class GitHubSummaryDelivery implements SummaryDelivery {
 	constructor(private readonly commands: CommandRunner) {}
 
 	async inspect(key: SummaryDeliveryKey): Promise<SummaryDeliveryState> {
-		const branch = branchFor(key);
+		const branch = summaryDeliveryBranch(key);
 		const raw = this.commands.run("gh", [
 			"pr",
 			"list",
@@ -294,7 +291,7 @@ class GitHubSummaryDelivery implements SummaryDelivery {
 				"--depth",
 				"1",
 			]);
-			const branch = branchFor(input);
+			const branch = summaryDeliveryBranch(input);
 			this.commands.run("git", ["checkout", "-b", branch], repoDir);
 			const path = buildSummaryPath({
 				project: input.project,

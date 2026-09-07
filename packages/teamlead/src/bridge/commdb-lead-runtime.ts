@@ -22,6 +22,7 @@ import {
 	formatSessionStuck,
 	formatShipApprovalRequest,
 	formatStuckEscalation,
+	formatSummaryDue,
 	formatWorkflowClaimRecorded,
 	formatWorkflowReplacementEligibility,
 } from "./hook-payload.js";
@@ -97,6 +98,7 @@ export class CommDBLeadRuntime implements LeadRuntime {
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
 		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
+		if (e.event_type === "summary_due") return formatSummaryDue(env);
 		if (e.event_type === "workflow_replacement_eligibility") {
 			return formatWorkflowReplacementEligibility(env);
 		}

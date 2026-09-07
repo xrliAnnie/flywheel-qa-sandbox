@@ -28,6 +28,7 @@
 		"./lead-identity": "./dist/lead-identity.js",
 		"./lead-identity-migration": "./dist/lead-identity-migration.js",
 		"./summary-config": "./dist/summary-config.js",
+		"./summary-command": "./dist/commands/summary.js",
 		"./summary-assignment": "./dist/summary-assignment.js",
 		"./summary-registry-migration": "./dist/summary-registry-migration.js",
 		"./summary-contract": "./dist/summary-contract.js",
