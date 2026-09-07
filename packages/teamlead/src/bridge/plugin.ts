@@ -52,6 +52,7 @@ import {
 	reconcileLeaseEpisodeQueue,
 	recoverLeaseEpisode,
 } from "flywheel-comm/lead-lease";
+import { readSummaryGranularity } from "flywheel-comm/summary-config";
 import { deliverDurableTurnWake } from "flywheel-comm/wake";
 // FLY-286 PR-2: web-local review route (固化 default-on since FLY-1243).
 import {
@@ -666,6 +667,7 @@ import {
 	createStuckRemanageRouter,
 } from "./stuck-remanage-routes.js";
 import { createSummaryAbsorptionPass } from "./summary-absorption-rider.js";
+import { listSummaryPulls } from "./summary-delivery-ledger.js";
 import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
@@ -9893,7 +9895,32 @@ export async function startBridge(
 		projects,
 		store,
 		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
+		inspectDeliveryState: (projectName, deliveryId) =>
+			leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
+		readSummaryGranularity: () => readSummaryGranularity(),
+		listSummaryPulls: () =>
+			listSummaryPulls(async (file, args, options) => {
+				const result = await execFileP(file, args, {
+					...options,
+					encoding: "utf8",
+				});
+				return {
+					stdout: String(result.stdout),
+					stderr: String(result.stderr),
+				};
+			}),
+		alertFailure: async (payload) => {
+			const sink = leadPendingAlertHolder.current;
+			if (!sink) {
+				console.warn(
+					`[summary_due] alert sink unavailable for ${payload.eventId}: ${payload.body}`,
+				);
+				return;
+			}
+			await sink.alert(payload);
+		},
 		cadenceMs: () => storeSummaryAbsorptionCadenceMs(flagStore),
+		log: (message) => console.warn(message),
 	});
 	const { activePatrolTargets, createPatrolOrphanSweeperPass } = await import(
 		"./patrol-orphan-sweeper.js"

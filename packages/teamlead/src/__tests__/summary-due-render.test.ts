@@ -98,4 +98,39 @@ describe("FLY-2382 summary_due rendering", () => {
 		expect(text).not.toContain("example.com");
 		expect(env.event.summary_due).toEqual(original);
 	});
+
+	it("keeps the full eleven-producer report in both final runtime strings", () => {
+		const producers = Array.from(
+			{ length: 11 },
+			(_, index) => `department-${index + 1}/producer-lead-${index + 1}`,
+		);
+		const reportLine =
+			`本轮 0/11 份已交;未交:${producers.join("、")} ` +
+			`未送达(机制问题,已告警):${producers.join("、")}`;
+		const context =
+			"【本轮对账(FLY-2382)】无论本轮有没有 review/吸收/追问活动,都要在 #raya 发一条汇报,\n" +
+			"并逐字包含下面这几行(不要改写、不要省略):\n" +
+			reportLine;
+		const env: LeadEventEnvelope = {
+			seq: 88,
+			leadId: "raya",
+			sessionKey: "summary-absorption",
+			timestamp: "2026-09-07T06:30:00.000Z",
+			event: {
+				event_type: "summary_absorption_round",
+				execution_id: "summary-absorption:2026-09-07T06:00:00.000Z",
+				issue_id: "FLY-2131",
+				summary: "x".repeat(1_000),
+				notification_context: context,
+				report_line: reportLine,
+			},
+		};
+
+		for (const runtime of [MailboxLeadRuntime, CommDBLeadRuntime]) {
+			const rendered = renderViaPrototype(runtime, env);
+			expect(rendered).toContain(context);
+			expect(rendered).toContain(reportLine);
+			expect(rendered).not.toContain("x".repeat(301));
+		}
+	});
 });

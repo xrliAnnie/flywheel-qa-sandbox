@@ -179,6 +179,25 @@ export interface HookPayload {
 			  };
 		command_hint: string;
 	};
+	/** FLY-2382: immutable reconciliation result copied onto Raya's round event. */
+	round_ledger?: "ok" | "unavailable";
+	producer_count?: number;
+	delivered_count?: number;
+	producers?: Array<{
+		project: string;
+		lead: string;
+		delivered: boolean | "unknown";
+		due_delivery: "delivered" | "undelivered" | "unknown";
+		delivered_pr?: {
+			number: number;
+			url: string;
+			state: "OPEN" | "MERGED" | "CLOSED";
+		};
+	}>;
+	absent?: string[];
+	undelivered?: string[];
+	delivery_unknown?: string[];
+	report_line?: string;
 	// FLY-91: Chat thread for per-issue conversation in chatChannel
 	chat_thread_id?: string;
 
