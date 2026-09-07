@@ -1,14 +1,14 @@
 ---
 issue: FLY-2382
 phase: implement
-phaseCursor: 0/9
-updated: 2026-09-07T01:04:08.887Z
-nextStep: Audit approved plan against current code, then TDD block 1 at
-  summaryDeliveryBranch seam
+phaseCursor: 1/9
+updated: 2026-09-07T01:08:29.396Z
+nextStep: "TDD block 2: StateStore summary due row transaction, slot query, and
+  exact getter"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2382 progress
-**phase**: implement (0/9)
-**next**: Audit approved plan against current code, then TDD block 1 at summaryDeliveryBranch seam
+**phase**: implement (1/9)
+**next**: TDD block 2: StateStore summary due row transaction, slot query, and exact getter
