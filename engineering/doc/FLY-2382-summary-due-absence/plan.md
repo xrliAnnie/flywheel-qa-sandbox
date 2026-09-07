@@ -3,7 +3,7 @@ Issue: FLY-2382 (https://linear.app/geoforge3d/issue/FLY-2382/raya回流-summary
 日期: 2026-09-06
 基于: research.md
 
-**Status**: draft(Codex design review R1、R2 均 CHANGES REQUESTED,13 项全部采纳;见 §7)
+**Status**: draft(Codex design review R1–R3 均 CHANGES REQUESTED,21 项全部采纳;见 §7)
 **方案**: exploration §3.1 方案 A · 同一口钟两拍,全部挂在既有 GatePoller summary rider 上
 
 ## 0. 目标与验收(与 issue 逐条对应)
@@ -38,25 +38,28 @@ sequenceDiagram
   else 无 slot 行 T 且 now ≥ T+grace
     R->>SL: insert slot T(missed),warn 一行,不叫不判
   end
-  loop 步骤 3 · 每个 open/prepared slot(≤8,oldest-first)× 每个 producer
+  loop 步骤 3 · 当前 slot T 每个 producer(专门预算)+ 步骤 4a · 到期 backlog(≤8,按 next_attempt_at)
     R->>S: 读 due 行,查队列身份 settlement
     R->>Q: absent_identity ⇒ enqueue(首投=补投)
     Q->>P: [summary_due] period · last_delivered · 指令
   end
-  loop 步骤 4 · 每个 now ≥ slot_start+grace 的 slot
+  loop 步骤 4b · backlog 中 now ≥ slot_start+grace 的 slot
     alt status=open
       R->>L: 快照② listSummaryPulls(pass 级 memo)
       R->>S: 逐 producer 读 due settlement
       R->>R: classifyRound ⇒ exact / period_mismatch / absent / undelivered / unknown
       R->>SL: prepare(CAS open→prepared,冻结 settle_result_json)
     end
-    R->>SL: 读冻结结果
-    R->>S: appendLeadEvent(raya, summary-absorption:<T>, payload 含 report_line)
-    R->>Q: enqueue(既有 write-ahead 语义不变)
-    Q->>Y: 指令:无论有无活动都在 #raya 发,逐字含「本轮 N/M 份已交;未交:…」
+    R->>SL: 读冻结结果(prepared 重放也从这里开始)
+    alt 有 Raya
+      R->>S: appendLeadEvent(raya, summary-absorption:<T>, payload 含 report_line)
+      R->>Q: enqueue(既有 write-ahead 语义不变)
+      Q->>Y: 指令:无论有无活动都在 #raya 发,逐字含「本轮 N/M 份已交;未交:…」
+    else 无 Raya
+      R->>R: warn 一行(best-effort,at-most-once-per-pass)
+    end
     R->>R: undelivered 非空 ⇒ 一条聚合 alert(eventId 含 slotISO)
-    R->>SL: settle(CAS prepared→settled)
-    R->>R: 无 Raya ⇒ 跳过 enqueue,warn 一行(at-most-once-per-pass),仍 settle
+    R->>SL: settle(CAS prepared→settled);任一步抛 ⇒ defer 退避,下个到期 pass 重放
   end
 ```
 
@@ -71,34 +74,48 @@ sequenceDiagram
 ```sql
 CREATE TABLE IF NOT EXISTS summary_due_slots (
   slot_start_ms      INTEGER PRIMARY KEY,
-  status             TEXT    NOT NULL CHECK(status IN ('open','prepared','settled','missed')),
-  first_seen_at      TEXT    NOT NULL,          -- 本进程第一次看见该 slot 的时刻(open 或 missed 都有)
-  cadence_ms         INTEGER NOT NULL,          -- 看见时的 flag 值
-  grace_ms           INTEGER NOT NULL,
+  status             TEXT    NOT NULL,
+  first_seen_at      TEXT    NOT NULL,          -- 第一次看见该 slot 的时刻(四态都有)
+  cadence_ms         INTEGER NOT NULL CHECK (cadence_ms > 0),
+  grace_ms           INTEGER NOT NULL CHECK (grace_ms >= 0),
   period             TEXT,                      -- founderLocalIso(T-cadence)/founderLocalIso(T)
-  granularity        TEXT,                      -- per-lead | per-project
-  producers_json     TEXT,                      -- [{project, lead, last_delivered}] 开 slot 时的名单 + 快照① per-producer 上下文
+  granularity        TEXT CHECK (granularity IS NULL OR granularity IN ('per-lead','per-project')),
+  producers_json     TEXT,                      -- [{project, lead, last_delivered}] 名单 + 快照① per-producer 上下文
   prepared_at        TEXT,
-  settle_result_json TEXT,                      -- classifyRound 冻结结果(快照② + 分类),prepared 时写入
+  settle_result_json TEXT,                      -- classifyRound 冻结结果(快照② + 分类)
   settled_at         TEXT,
-  CHECK (status = 'missed'
-         OR (period IS NOT NULL AND granularity IS NOT NULL AND producers_json IS NOT NULL)),
-  CHECK (status NOT IN ('prepared','settled') OR (prepared_at IS NOT NULL AND settle_result_json IS NOT NULL)),
-  CHECK (status <> 'settled' OR settled_at IS NOT NULL),
-  CHECK (status <> 'missed' OR (period IS NULL AND granularity IS NULL AND producers_json IS NULL
-                                AND prepared_at IS NULL AND settle_result_json IS NULL AND settled_at IS NULL))
+  next_attempt_at    TEXT,                      -- R3-1 公平调度:下次允许尝试(补投/结算)的时刻;open/prepared 非空
+  attempts           INTEGER NOT NULL DEFAULT 0,
+  -- R3-4:四个互斥且完整的 shape,用 OR 写死
+  CHECK (
+    (status = 'open'     AND period IS NOT NULL AND granularity IS NOT NULL AND producers_json IS NOT NULL
+                          AND prepared_at IS NULL     AND settle_result_json IS NULL     AND settled_at IS NULL
+                          AND next_attempt_at IS NOT NULL)
+ OR (status = 'prepared' AND period IS NOT NULL AND granularity IS NOT NULL AND producers_json IS NOT NULL
+                          AND prepared_at IS NOT NULL AND settle_result_json IS NOT NULL AND settled_at IS NULL
+                          AND next_attempt_at IS NOT NULL)
+ OR (status = 'settled'  AND period IS NOT NULL AND granularity IS NOT NULL AND producers_json IS NOT NULL
+                          AND prepared_at IS NOT NULL AND settle_result_json IS NOT NULL AND settled_at IS NOT NULL
+                          AND next_attempt_at IS NULL)
+ OR (status = 'missed'   AND period IS NULL     AND granularity IS NULL     AND producers_json IS NULL
+                          AND prepared_at IS NULL     AND settle_result_json IS NULL     AND settled_at IS NULL
+                          AND next_attempt_at IS NULL)
+  )
 );
+CREATE INDEX IF NOT EXISTS idx_summary_due_slots_due ON summary_due_slots(status, next_attempt_at);
 ```
 
-状态机:`open → prepared → settled`,或 `missed`(终态)。R2-6:missed 行不伪造名单/granularity,靠 CHECK 拒绝交叉状态脏数据。
+状态机:`open → prepared → settled`,或 `missed`(终态)。R2-6/R3-4:missed 行不伪造名单/granularity;open 不得带任何 lifecycle 字段;prepared 不得带 settled_at——G8d 对**最终 DDL 真跑**插入并断言 CHECK 失败。
 
-**StateStore API**(均带单测,含三种合法形状的 round-trip 与非法交叉形状被 CHECK 拒绝):
+**StateStore API(共 8 个,均带单测;事务在方法内部用 `this.db.transaction(...)` 封装——R3-5:`transaction` 是 `CompatDb` 内部能力,不暴露给调用方)**:
 - `getSummaryDueSlot(slotStartMs)`
-- `openSummaryDueSlotWithDues(slotRow, dueRows[])`:**一个事务**(`this.transaction`,`StateStore.ts:584`)里 INSERT slot(status open)+ 对每个 producer `appendLeadEvent(summary_due …)`。slot 已存在 ⇒ 整个事务不做、返回 false。R2-2(a):崩溃要么全有要么全无,不存在「slot 开了、部分 due 行缺失」。
+- `openSummaryDueSlotWithDues(slotRow, dueRows[])`:方法内部一个事务:INSERT slot(status open,`next_attempt_at = first_seen_at`)+ 对每个 producer `appendLeadEvent(summary_due …)`。slot 已存在 ⇒ 不做、返回 false。R2-2(a):崩溃要么全有要么全无。
 - `markSummaryDueSlotMissed(slotStartMs, cadence, grace, firstSeenAt)`
-- `listOpenSummaryDueSlots(limit)`:`status IN ('open','prepared')`,`ORDER BY slot_start_ms ASC LIMIT ?`(oldest-first,有界)。
-- `prepareSummaryDueSlotSettlement(slotStartMs, preparedAt, resultJson)`:CAS,仅 `status='open'` 可转 `prepared`;返回是否本次转换。R2-2(b):分类结果先冻结,再做任何 side effect;重试只读冻结结果。
-- `settleSummaryDueSlot(slotStartMs, settledAt)`:仅 `status='prepared'` 可转 settled。
+- `listDueSummarySlots(nowIso, limit)`:`status IN ('open','prepared') AND next_attempt_at <= ? ORDER BY next_attempt_at ASC, slot_start_ms ASC LIMIT ?`(按到期顺序,不是永远 oldest-first)。
+- `deferSummaryDueSlot(slotStartMs, nextAttemptAt)`:失败后回写 `next_attempt_at = now + min(5min × 2^attempts, 1h)`、`attempts += 1`(仅 open/prepared)。
+- `prepareSummaryDueSlotSettlement(slotStartMs, preparedAt, resultJson)`:CAS,仅 `status='open'` 可转 `prepared`;返回是否本次转换。R2-2(b)。
+- `settleSummaryDueSlot(slotStartMs, settledAt)`:仅 `status='prepared'` 可转 settled(同时 `next_attempt_at = NULL`)。
+- `getLeadEventByLeadAndId(leadId, eventId): LeadEventRow | null`(**新增**,exact `(lead_id, event_id)` 只读 getter;现仓只有 `getLeadEventBySeq`)。
 
 **每 pass 的算法(顺序即合同;R2-3)**:
 
@@ -106,9 +123,13 @@ CREATE TABLE IF NOT EXISTS summary_due_slots (
 2. **开 slot**(最多一次快照① gh 调用):若 `getSummaryDueSlot(T)` 为空:
    - `now < T + grace` ⇒ 读 granularity/名单(失败 ⇒ 本 pass 不开 slot,warn 一行;下个 pass 重试;拖到 `T+grace` 则走 missed);取快照①算每人 `last_delivered`;`openSummaryDueSlotWithDues(slot, dues)` 一个事务落地 slot + 全部 due journal 行。
    - `now ≥ T + grace` ⇒ `markSummaryDueSlotMissed(T, …)` + warn `[summary-due] slot <T> missed (first seen after grace); no due sent, no absence judged`。**不补叫、不补判**——对已过去的 period 叫人是噪音,判缺席是冤枉。
-3. **对账 due 投递(先于结算)**:对 `listOpenSummaryDueSlots(limit = 8)` 的每个 slot、每个 producer:`row = getLeadEventByLeadAndId(lead, dueEventId)`(事务保证必在);`settlement = inspectDeliveryState(project, canonicalLeadEventDeliveryId(envelope(row)))`;`absent_identity` ⇒ `enqueueLeadEvent(envelope(row))`(首投与崩溃补投是同一条路径)。R2-1:不再用 `tryClaimLeadEvent` 判新行——新行的队列身份天然 absent。
-4. **结算**(最多一次快照② gh 调用,pass 级 memo,多 slot 共用同一份新鲜快照):对同一批 slot 中 `now ≥ slot_start + grace_ms` 者,按 §2.3 执行 prepare → side effects → settle。
-5. 有界工作量:每 pass 最多处理 8 个 open/prepared slot(oldest-first);其余留给下一 pass。Raya enqueue 持续失败 + 60s cadence 时 open slot 会累积,每分钟至多多 1 个、每 pass 至多推进 8 个,不会失控;累积本身经 Raya round 的既有失败 warn 可见。
+3. **当前 slot 的 due 对账(专门预算,不受 backlog 挤占;R3-1)**:对 `getSummaryDueSlot(T)`(若为 open)每个 producer:`row = getLeadEventByLeadAndId(lead, dueEventId)`(事务保证必在;缺失 ⇒ 该 producer 记 unknown 并 warn);`settlement = inspectDeliveryState(project, canonicalLeadEventDeliveryId(envelope(row)))`;`absent_identity` ⇒ `enqueueLeadEvent(envelope(row))`。首投与崩溃补投是同一条路径(R2-1)。
+4. **backlog(公平、有界)**:`batch = listDueSummarySlots(now, limit = 8)`(按 `next_attempt_at` 到期顺序;当前 slot 若也在其中不重复处理步骤 3)。对 batch 中每个 slot:
+   a. 先做同步骤 3 的 due 对账;
+   b. 若 `now ≥ slot_start + grace_ms` ⇒ 按 §2.3 执行 prepare → side effects → settle;
+   c. 任一步抛 ⇒ `deferSummaryDueSlot(slot, now + min(5min × 2^attempts, 1h))`,继续下一个 slot。成功 settle 的行 `next_attempt_at = NULL`。
+   ⇒ 持续失败的 slot 被推到队尾(指数退避,上限 1h),不会永久占满批次;每个历史 slot 最终都能得到尝试。
+5. gh 调用上界:快照① 仅在开 slot 时(≤1 次/pass);快照② pass 级 memo、多 slot 共用(≤1 次/pass)。
 
 **热切换语义**(写进 G4 测试):改 cadence 只影响**新** slot 的开启;已开 slot 按自己的参数结算;新旧 slot 可能重叠(6h→1h 时旧 6h slot 与多个 1h slot 并存),各自独立结算,各自独立 roundId。改小到 60s 时 grace=30s,pass 间隔 60s:slot T 在下一 pass(now≥T+60s>T+30s)结算——不会永久漏。
 
@@ -186,9 +207,9 @@ Timestamp: <ts> | Session Key: summary-due
 
 ### 2.3 第二拍 · 结算与 Raya 轮事件
 
-**触发**:对每个 `status='open'` 且 `now ≥ slot_start + grace_ms` 的 slot 行。
+**触发**:对 batch 中每个 `status ∈ {open, prepared}` 且 `now ≥ slot_start + grace_ms` 的 slot 行(prepared 是崩溃后必须重放的状态,R3-8)。
 
-**快照②(R1-3)**:结算时**重新**调用 `listSummaryPulls()`;结果冻结进 `settle_result_json`。快照①只服务 `last_delivered`,两拍**不**共用。
+**快照②(R1-3 / R3-6)**:open 行结算时**重新**调用 `listSummaryPulls()`(pass 级 memo);结果——**包括 `unavailable`**——冻结进 `settle_result_json`。unavailable 是本轮 fail-closed 的终态结果:仍 prepare → 「不可得」轮报 → settle,下一 slot 再试;**不**让 slot 停在 open 等 gh 恢复(确定性的 500 行截断永远不会自愈,会变成永久 wedge)。快照①只服务 `last_delivered`,两拍**不**共用。
 
 **已交判据(R1-3:绑定 period 的权威身份)**——纯函数 `classifyRound(slot, pulls, settlements)`:
 
@@ -211,14 +232,21 @@ Timestamp: <ts> | Session Key: summary-due
 
 **分类(fail-closed)**:
 
+两条正交的轴(R3-3):**交付轴** `delivered ∈ {exact, period_mismatch, none, unknown}` 与 **投递健康轴** `due_delivery ∈ {delivered, undelivered, unknown}`。只有 `exact` 有「结果优先」的覆盖权。
+
 ```
-delivered = exact                              → delivered[]        (不看 due_delivery;结果优先;唯一计入 N)
-delivered = period_mismatch                    → period_mismatch[]  (不计 N;不进 absent;不看 due_delivery)
-delivered = none ∧ due_delivery = delivered    → absent[]
-delivered = none ∧ due_delivery = undelivered  → undelivered[]
-delivered = none ∧ due_delivery = unknown      → delivery_unknown[] (绝不进 absent)
-delivered = unknown(ledger 不可得)            → 不分类;counts 省略;absent/undelivered/period_mismatch 不产出
+delivered = exact                               → delivered[]       (唯一计入 N;due_delivery 不再记录任何诊断)
+delivered = period_mismatch                     → period_mismatch[] (不计 N;不进 absent)
+                                                  ∧ due_delivery = undelivered → 同时进 undelivered[](触发告警)
+                                                  ∧ due_delivery = unknown     → 同时进 delivery_unknown[]
+delivered = none ∧ due_delivery = delivered     → absent[]
+delivered = none ∧ due_delivery = undelivered   → undelivered[]
+delivered = none ∧ due_delivery = unknown       → delivery_unknown[] (绝不进 absent)
+delivered = unknown(ledger 不可得)             → 交付轴不分类、counts 省略、absent/period_mismatch 不产出;
+                                                  投递健康轴照常:undelivered[]/delivery_unknown[] 仍产出并告警
 ```
+
+**补投后立即结算的口径(R3-2)**:`enqueueLeadEvent` 只返回 durable queue receipt,投递是异步 loop;若步骤 3 刚补投、步骤 4 就结算,该 producer 的 settlement 通常是 `live.QUEUED, deliveredAt=null` ⇒ **如实记 `undelivered` 并告警**——越过 grace 还没有送达证据就是机制没在 grace 内把话送到,不用竞态、不伪造同步投递。
 
 **payload 增量**(旧字段一个不动,新字段全可选):
 
@@ -251,28 +279,30 @@ report_line?: string,        // 下表拼好的对账行(逐字),Raya 直接转�
 | ledger ok,absent 非空 | `本轮 ${N}/${M} 份已交;未交:${absent 短名…}` |
 | ledger ok,absent 空,N === M | `本轮 ${M}/${M} 份已交。` |
 | ledger ok,absent 空,N < M(差额全是 period_mismatch / undelivered / unknown) | `本轮 ${N}/${M} 份已交;无人「未交」——差额见下。` |
-| period_mismatch 非空 | `按其他 period 交付(不计本轮):${lead}(${title_period})…` |
+| period_mismatch 非空 | `按其他 period 交付(不计本轮):${lead}(${title_period ?? "period 不可读"})…` |
 | undelivered 非空 | `未送达(机制问题,已告警):${…}` |
 | delivery_unknown 非空 | `送达状态不可得(不计未交):${…}` |
-| ledger unavailable | `本轮交付状态不可得(gh 不可用),只报吸收不报缺席。`(无 N/M,无名单) |
+| ledger unavailable | `本轮交付状态不可得(${reason 短语}),只报吸收不报缺席。`(无 N/M,无交付轴名单;投递轴两行照常) |
 
 短名 = leadId;若同 slot 内 leadId 跨项目重名则显示 `project/lead`。
+
+**report_line 安全化(R3-7)**:所有进入 report_line 的外部文本只有两类——`title_period` 与 `reason`。`title_period` 仅在通过 summary-contract 的 period 语法(`<ISO>/<ISO>` 两端可 `Date.parse`,复用 `summary-contract.ts` 的 `parsePeriod` 校验函数,导出即可)时保留原文,否则置 null;`reason` 取自本单自己生成的固定短语表(`truncated at gh --limit 500` / `gh exit <code>` / `malformed gh output: <field>` / `timeout`),不透传 stderr。生成后再对整段做:单行化(`\r\n\t` → 空格)、剔除 C0/C1 控制字符与零宽字符、把 `@` 替换为 `@\u200b`(不触发 mention)。Raya 端拿到的是这段清洗后的字面量;测试含伪指令、@everyone、控制字符、非法 period 四种注入格。
 
 **Raya 轮事件写入(R1-2:不改 FLY-2131 语义)**:保持现有 `appendLeadEvent` + `enqueueLeadEvent(envelope)` 的 write-ahead 流程与既有测试(append 成功、enqueue 崩溃、下一 pass 重放)。差别只有两点:(a) 触发条件从「当前 slot」改为「open slot 且过 grace」;(b) payload 加字段。roundId 仍 `summary-absorption:<slotISO>`。
 
 **结算落账(R2-2b/c:先冻结,再副作用,最后 settled)**:
 
 ```
-1. status=open ⇒ 取快照②(pass 级 memo)、读各 due settlement、classifyRound ⇒ resultJson
+1. status=open ⇒ 取快照②(pass 级 memo;可能是 unavailable)、读各 due settlement、classifyRound ⇒ resultJson
    prepareSummaryDueSlotSettlement(T, now, resultJson)   // CAS open→prepared;失败(已 prepared)则读回冻结结果
 2. status=prepared ⇒ 只读 settle_result_json,不再分类(重试看到的永远是同一份 A)
    a. 有 Raya:appendLeadEvent(raya, roundId, payload(含 result)) + enqueueLeadEvent   // 既有 write-ahead 语义
-      无 Raya:跳过;warn 一行(best-effort at-most-once:仅在本次 pass 内首次进入 prepared→settled 尝试时打)
+      无 Raya:跳过 a;warn 一行(best-effort,at-most-once-per-pass:重放的 pass 可能再打一行)
    b. undelivered 非空:alert(eventId 稳定,一 slot 一条)
-3. a、b 都被 durable 接受 ⇒ settleSummaryDueSlot(T, now)   // prepared→settled
+3. a(若有 Raya)与 b 都被 durable 接受 ⇒ settleSummaryDueSlot(T, now)   // prepared→settled,next_attempt_at=NULL
 ```
 
-任一步抛 ⇒ slot 停在 prepared,下一 pass 从步骤 2 重放;Raya 侧 `appendLeadEvent` 冲突返回旧 row,其 payload 与冻结结果一致(同一份 A)。no-Raya 的 warn 不与 DB 原子,口径是 at-most-once-per-pass、通常恰一次。
+任一步抛 ⇒ slot 停在 prepared,`deferSummaryDueSlot` 退避,之后从步骤 2 重放;Raya 侧 `appendLeadEvent` 冲突返回旧 row,其 payload 与冻结结果一致(同一份 A)。
 
 **undelivered 告警(R1-6:明确 owner / severity / 扇出)**:
 - kind 复用 `inbox_loop_stalled`(owner `founder_direct`,arc `none_escalate`,`kind-contract.ts:94`)——语义就是「Bridge→Lead inbox 通路没送到」。**明确后果**:这是 founder-facing 告警;在 8/11 producer 通路未证明可达的现状下,首个生产 slot 很可能列出多名 Lead。这正是本单要暴露的静音失败,不做隐藏。
@@ -310,7 +340,7 @@ export async function listSummaryPulls(exec: ExecFileAsync, repo = "xrliAnnie/ra
 
 ```ts
 const summaryAbsorptionPass = createSummaryAbsorptionPass({
-  projects, store,                                   // store Pick 扩:getLeadEventByLeadAndId、summary_due_slots 六个方法、transaction
+  projects, store,                                   // store Pick 扩:getLeadEventByLeadAndId + summary_due_slots 七个方法(事务在 StateStore 内部)
   enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
   cadenceMs: () => storeSummaryAbsorptionCadenceMs(flagStore),
   readGranularity: () => readSummaryGranularity(),                      // flywheel-comm/summary-config
@@ -337,18 +367,21 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 | G1 granularity unselected / 配置非法 | 不开 slot、不结算;每 pass 一行 warn;到 `T+grace` 转 missed |
 | G2 同 slot 重跑 pass | 首投经 absent_identity 恰一次;settlement `live.LEASED+deliveredAt`/`ACKED` 不重投;队列身份再次 absent ⇒ 再投一次 |
 | G3 崩溃格(逐格) | 开 slot 事务中断 ⇒ slot 与 due 行全无;事务后 enqueue 前 ⇒ 下一 pass 补投;prepare 后 Raya append 前 / append 后 enqueue 前 / enqueue 后 alert 前 / alert 后 settle 前 ⇒ 重放只读冻结结果,Raya 行 payload 与 slot 结果一致;Raya round 既有崩溃测试原样保留 |
-| G3b 顺序 | 重启时 `now ≥ T+grace` 且 due 队列身份 absent ⇒ 本 pass 先补投再结算,该 producer 不被记 undelivered/unknown |
-| G3c 有界工作 | 20 个 open slot + Raya enqueue 持续抛 ⇒ 每 pass 恰处理 8 个(oldest-first)、gh 调用 ≤ 2 次、无 settled |
+| G3b 顺序 | 重启时 `now ≥ T+grace` 且 due 队列身份 absent ⇒ 本 pass 先补投(队列出现该身份)再结算;结算读到 `live.QUEUED` ⇒ **如实记 undelivered 并告警**;不依赖异步投递竞态 |
+| G3c 有界 + 公平 | 20 个 prepared slot(前 8 个 Raya enqueue 持续抛)+ 当前新 slot:跨 5 个 pass 断言——每 pass 处理 ≤ 8 个 backlog、当前 slot 的 due 当 pass 首投、失败者 `next_attempt_at` 退避后让位、20 个历史 slot 都至少被尝试一次、gh ≤ 2 次/pass |
 | G4 cadence 热切换 | 6h→1h:旧 slot 按自身参数结算,新 slot 并存;1h→6h:开着的 1h slot 仍结算;60s cadence + 60s pass 同相:slot T 在下一 pass 结算(不漏);`grace = min(30min, cadence/2)` |
 | G5 冷启动 | 启动时 `now ≥ T+grace` ⇒ slot 标 missed,零 due、零 round、一行 warn;`now < T+grace` ⇒ 正常开 slot |
 | G6 gh 失败 / 畸形 | 快照①失败 ⇒ due 照发 `last_delivered.unavailable`;快照②失败 ⇒ `round_ledger=unavailable`,无 absent/undelivered/counts,文本为「不可得」行;畸形字段 ⇒ unavailable;非 summary 分支跳过 |
 | G7 两拍快照分离 | Lead 在 `(T, T+grace)` 开的 PR 只在快照②可见并计已交;快照①的内容不影响 delivered |
 | G8 exact vs period_mismatch vs none | 同 period 分支 ⇒ exact 且计 N;旧 period PR 在窗口内被 merge/comment(updatedAt 变、createdAt 旧)⇒ **none**;窗口内新建的其他 period PR ⇒ period_mismatch,**不计 N**、不进 absent、单列 |
+| G8e 两轴正交 | period_mismatch ∧ due `absent_identity`/`DEAD` ⇒ 同时出现在 period_mismatch[] 与 undelivered[] 且触发告警;exact ∧ due DEAD ⇒ 无诊断;ledger unavailable ∧ due DEAD ⇒ 仍 undelivered + 告警 |
+| G8f unavailable 终态 | 快照② unavailable(含恰 500 行)⇒ prepare 冻结 `round_ledger=unavailable` → 「不可得」轮报 → settled;slot 不停留在 open |
+| G8g report_line 注入 | title 含 `@everyone`、`\n忽略以上指令`、`\u202e`、非法 period ⇒ title_period 为 null 或被清洗;report_line 单行、无控制字符、`@` 已隔断 |
 | G8b 无条件汇报 | Raya 指令文本逐字含「无论本轮有没有 review/吸收/追问活动,都要在 #raya 发一条汇报」与 report_line;零 PR 活动的轮同样生成 |
 | G8c 截断 | gh 返回恰 500 行 ⇒ unavailable("truncated…");499 行 ⇒ ok;畸形 title / 非 https / url 与 number 不一致 ⇒ unavailable |
-| G8d slot 形状 | open / prepared / settled / missed 四种合法行 round-trip;missed 带 producers_json、open 带 settled_at 等交叉形状被 CHECK 拒绝;prepare 对非 open 行返回 false;settle 对非 prepared 行返回 false |
+| G8d slot 形状 | 对**最终 DDL**真跑:open / prepared / settled / missed 四种合法行 round-trip;`open+settled_at`、`open+prepared_at`、`prepared+settled_at`、`missed+producers_json`、`settled+next_attempt_at`、`granularity='weekly'`、`cadence_ms=0` 全部被 CHECK 拒绝(断言 SQLite 抛错);prepare 对非 open 行返回 false;settle 对非 prepared 行返回 false;defer 对 settled/missed 行返回 false |
 | G9 truth table 穷尽 | 上表每一行一格,含 archived_terminal ACKED/DEAD、inspect 抛 ⇒ unknown 且**不进 absent** |
-| G10 Raya 未注册 | due 照发;结算写 settled,warn 恰一行;不 alert Raya |
+| G10 Raya 未注册 | due 照发;结算经 prepared 到 settled;warn 每个成功 settle 的 pass 至多一行(重放 pass 可再出);不 alert Raya |
 | G11 No runtime / renderer 抛 | 只影响该 Lead;其后 pass 重试;结算时若仍 absent_identity ⇒ undelivered |
 | G12 exempt / aggregator / recipient / per-project | 不在名单;per-project 只 aggregator 在 |
 | G13 文本注入 | 非白名单字符替换;url 非 github.com 不渲染;payload 原值不变 |
@@ -365,11 +398,11 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 | 新 | `packages/teamlead/src/bridge/summary-producer-roster.ts` |
 | 新 | `packages/teamlead/src/bridge/summary-delivery-ledger.ts` |
 | 新 | `packages/teamlead/src/bridge/summary-round-classify.ts`(`classifyRound` + 文本行) |
-| 改 | `packages/teamlead/src/StateStore.ts`(`summary_due_slots` 表 + 5 个方法) |
+| 改 | `packages/teamlead/src/StateStore.ts`(`summary_due_slots` 表 + 索引 + 7 个 slot 方法 + `getLeadEventByLeadAndId`) |
 | 改 | `packages/teamlead/src/bridge/hook-payload.ts`(可选字段;`formatSummaryDue`) |
 | 改 | `packages/teamlead/src/bridge/mailbox-lead-runtime.ts`、`commdb-lead-runtime.ts`(分派一行) |
 | 改 | `packages/teamlead/src/bridge/plugin.ts`(接线 §2.6) |
-| 改 | `packages/flywheel-comm/src/summary-contract.ts`(导出 `summaryDeliveryBranch`)、`summary-delivery.ts`(调用它) |
+| 改 | `packages/flywheel-comm/src/summary-contract.ts`(导出 `summaryDeliveryBranch`、导出既有 `parsePeriod` 校验)、`summary-delivery.ts`(调用 `summaryDeliveryBranch`) |
 | 改 | `packages/teamlead/lead-rules-base/summary-inflow.md` |
 | 测试 | `bridge/__tests__/summary-absorption-rider.test.ts`(扩,保留既有)、`summary-producer-roster.test.ts`、`summary-delivery-ledger.test.ts`、`summary-round-classify.test.ts`、`state-store-summary-due-slots.test.ts`、formatter parity 测试、`flywheel-comm/src/__tests__/summary-contract.test.ts`(G17) |
 | 新 | `engineering/doc/milestones/FLY-2382.md`(ship 时) |
@@ -381,12 +414,13 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 | # | 块 | 主要测试 |
 |---|---|---|
 | 1 | `summaryDeliveryBranch` 提取(flywheel-comm) | G17;`summary-delivery` 既有测试不变 |
-| 2 | `summary_due_slots` 表 + StateStore 方法 | G8d;`openSummaryDueSlotWithDues` 事务原子性(中途抛 ⇒ 零行) |
+| 2 | `summary_due_slots` 表 + 8 个 StateStore 方法(含 `getLeadEventByLeadAndId`) | G8d;`openSummaryDueSlotWithDues` 事务原子性(中途抛 ⇒ 零行);defer 退避计算 |
 | 3 | roster | 11 人 fixture;per-project;G12 |
 | 4 | ledger | 录制 gh JSON(含今晚 #15–#24 与非 summary 分支);G6 校验矩阵 |
 | 5 | classify | G8、G9 真值表、文本行全部分支、短名重名 |
 | 6 | formatter + 两 runtime 分派 | G13、G14、三种 last_delivered |
-| 7 | rider 两拍(slot 驱动) | 时间推进 harness:G1–G5、G3b、G3c、G7、G8b、G10、G11、G16;既有 FLY-2131 测试原样通过 |
+| 7 | rider 两拍(slot 驱动) | 时间推进 harness:G1–G5、G3b、G3c、G7、G8b、G8e、G8f、G10、G11、G16;既有 FLY-2131 测试原样通过 |
+| 5b | report_line 清洗 | G8g |
 | 8 | 接线 + 规则 | 编译;bundle 测试绿;`pnpm test:packages:run`(排除 macos 视图用例) |
 | 9 | 文档 | milestone、progress |
 
@@ -398,7 +432,7 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 | Raya 未激活 ⇒ A2 真机不可验 | §0 明确 rollout prerequisite;本单只钉单测与 settled 日志;A2 在 FLY-2131 激活后的第一个真实轮验收 |
 | founder-facing 告警在首个 slot 可能列多名 Lead | 有意为之(暴露静音失败);severity warning、聚合一条、无 DM |
 | Lead 不用事件给的 period | 记为 period_mismatch,**不计已交**,轮报单列并点名 title period;规则文本要求原样使用 |
-| gh 抖动 | 快照①失败不阻断叫人;快照②失败 slot 停在 open、下一 pass 重取(pass 级 memo,多 slot 共用);每 pass 最多两次 gh(开 slot 一次 + 结算一次) |
+| gh 抖动 | 快照①失败不阻断叫人;快照②失败是本轮的冻结结果(「不可得」轮报,仍 settled),下一 slot 再试;不区分 transient/truncated——两者都不该让 slot 无限 open;每 pass 最多两次 gh(开 slot 一次 + 结算一次) |
 | epoch 对齐的 6h 边界(17/23/05/11 PDT) | 不归本单;founder 改 cadence 即改相位 |
 
 ## 6. 验收剧本(A1/A3/A4 真机;A2 见 §0 口径)
@@ -430,3 +464,14 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 5. 旧指令允许无活动时不发汇报 → `summary` 末尾追加固定措辞「无论本轮有没有 review/吸收/追问活动,都要在 #raya 发一条汇报,并逐字包含 report_line」,formatter 测试逐字锁定(§2.3,G8b);真机 A2 仍按 §0 前置执行。
 6. missed 行与 NOT NULL schema 冲突 → `first_seen_at` 统一、slot 专属列可空、状态相关 CHECK 约束,四种形状 round-trip + 交叉形状被拒(§2.1,G8d)。
 7. `--limit 500` 在「exact 任何时间均算」下不 fail-closed;title 未校验 → 恰 500 行 ⇒ unavailable(truncated);title 长度、https、url 与 repo/number 一致性校验(§2.4,G8c)。
+
+**R3(2026-09-06,plan blob @ 8d9d3e035,反馈 `/tmp/codex-rescue-design-feedback-flywheel-FLY-2382-plan-round3.md`)= CHANGES REQUESTED,4 阻塞 + 3 高 + 1 中,全部采纳(三轮未过已按规则报备 Lead,ask `831b6c16`):**
+
+1. `LIMIT 8 ORDER BY slot_start` 饿死当前 slot 与后续 slot → 当前 slot 的 due 对账设为专门预算(步骤 3);backlog 改为 `next_attempt_at` 到期顺序 + 指数退避(5min×2^n,上限 1h)的 durable 公平调度(§2.1,G3c 跨 pass 断言)。
+2. G3b 把补投后 `live.QUEUED` 当 delivered → 撤回;越过 grace 无 `deliveredAt/ACKED` 证据即如实 `undelivered` 并告警(§2.3,G3b)。
+3. `period_mismatch` 遮蔽 inbox 故障 → 交付轴与投递健康轴正交,只有 exact 有覆盖权;mismatch ∧ undelivered 同时进两条诊断并告警;ledger unavailable 时投递轴照常(§2.3,G8e)。
+4. CHECK 未实现四态互斥 → DDL 改为四个互斥完整 shape 的 OR,加 granularity 枚举、cadence>0、grace≥0;G8d 对最终 DDL 真跑失败断言(§2.1)。
+5. `transaction` 是 `CompatDb` 内部能力、`getLeadEventByLeadAndId` 不存在 → 事务封装进 `openSummaryDueSlotWithDues` 内部,不进 Pick;正式新增并测试 exact getter;方法计数改为 8(§2.1、§2.6、§3)。
+6. 快照② unavailable 终态自相矛盾 → 选定「unavailable 冻结结算」:prepare → 不可得轮报 → settled,下一 slot 再试;§5 风险表同步(§2.3,G8f)。
+7. `titlePeriod` 未清洗即让 Raya 逐字转述 → 仅通过 summary period 语法者保留(复用 `parsePeriod`),reason 用固定短语表;report_line 单行化 / 去控制字符 / 隔断 `@`;注入测试四格(§2.3,G8g)。
+8. 规范文本未同步 → 触发条件含 prepared;时序图 no-Raya 分支与 settle 顺序修正;G10 口径改为 at-most-once-per-pass;文件清单计数修正。
