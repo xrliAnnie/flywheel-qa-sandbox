@@ -3,7 +3,7 @@ Issue: FLY-2382 (https://linear.app/geoforge3d/issue/FLY-2382/raya回流-summary
 日期: 2026-09-06
 基于: research.md
 
-**Status**: draft · v2(R3 后按 Lead 指令做减法重写;R1–R3 记录见 §7)
+**Status**: draft · v2.1(R3 后按 Lead 指令做减法重写;R4 三项局部修正已并入;R1–R4 记录见 §7;**待 Lead 裁定是否再开一轮确认**)
 **方案**: exploration §3.1 方案 A · 同一口钟两拍,全部挂在既有 GatePoller summary rider 上
 
 ## 0. 最小交付与验收
@@ -35,7 +35,7 @@ sequenceDiagram
   participant Y as Raya
 
   GP->>R: onSummaryAbsorptionTick
-  R->>R: cadence=flag(); grace=min(30min, cadence/2); T=floor(now/cadence)*cadence
+  R->>R: cadence=flag(); grace=min(30min, cadence); T=floor(now/cadence)*cadence
   loop 第一拍 · slot T(仅当 now < T+grace)
     R->>S: 已有 summary_due 行 ⇒ 跳过写入;否则 快照① → 一个事务 appendLeadEvent(summary_due ×N)
     R->>S: 每个 producer:查队列身份 settlement
@@ -67,7 +67,7 @@ sequenceDiagram
 
 ### 2.1 钟与窗口
 
-- `cadence = storeSummaryAbsorptionCadenceMs(flagStore)`(call-time);`grace = min(30min, floor(cadence/2))`;`T = floor(now/cadence)*cadence`。
+- `cadence = storeSummaryAbsorptionCadenceMs(flagStore)`(call-time);`grace = min(30min, cadence)`(R4-2:若用 `cadence/2`,60s cadence 下 rider 相位落在 30–59.999s 时每个 slot 都「过 grace」,永远零 due;取 `cadence` 上限后任何合法 cadence 至少有一次第一拍机会,而 `T−cadence` 仍在下一 pass 结算);`T = floor(now/cadence)*cadence`。
 - **第一拍只对当前 slot T,且只在 `now < T + grace` 时开**(过了 grace 才第一次看见 T ⇒ 不叫、不判,warn 一行;in-memory 记住 `lastMissedLoggedSlot` 避免每 60s 重复)。对已过去的 period 叫人是噪音,判缺席是冤枉。
 - **第二拍窗口固定为 `{T, T − cadence}`**:对其中 `now ≥ S + grace` 的 S 结算并重放副作用。60s cadence + 60s pass 同相时,S = T−cadence 满足 `now ≥ S + 60s > S + 30s`,不会饿死。
 - 窗口外的 slot 不再处理。⇒ **已知限制 L1**:Bridge 停机 > 1 个 cadence,期间 slot 既不叫也不判;**L2**:运行期改 cadence 时,正在进行的旧 slot 若落在新窗口外则不结算(其 due 行与可能已写的冻结结果留在 lead_events 供审计),下一 slot 起正常。
@@ -173,7 +173,7 @@ report_line: string,        // 下表拼好的对账行(逐字),Raya 直接转�
 
 进入 report_line 的外部文本只有 project/lead(白名单过滤)与 `reason`(本单固定短语表:`truncated at gh --limit 500` / `gh exit <code>` / `malformed gh output: <field>` / `timeout`,不透传 stderr)。生成后单行化、剔除控制字符。
 
-**Raya 指令文本**:在既有 `summary` 末尾追加固定措辞(测试逐字锁定;R2-5 —— 既有指令允许无活动时不发,而无活动恰是缺席最需要被看见的时候):
+**Raya 指令文本**(R4-1:两个 runtime 的通用 formatter 对 `summary` 只渲染前 300 码点,现有 FLY-2131 文本已占约 185,追加 11 人名单必被截掉;`notification_context` 不截断)——**固定措辞与完整 report_line 放进 `notification_context`**(追加在既有 roundId 说明之后),`summary` 不动;payload 同时保留结构化 `report_line`。G15 断言的是 mailbox 与 commdb 两个 runtime **最终渲染出的 envelope 字符串**在 11 人最长 fixture 下逐字含全部行,不是只断 raw payload(R2-5 —— 既有指令允许无活动时不发,而无活动恰是缺席最需要被看见的时候):
 
 ```
 【本轮对账(FLY-2382)】无论本轮有没有 review/吸收/追问活动,都要在 #raya 发一条汇报,
@@ -181,7 +181,7 @@ report_line: string,        // 下表拼好的对账行(逐字),Raya 直接转�
 <report_line 各行>
 ```
 
-**副作用(全部幂等,每 pass 在窗口内重放)**:
+**副作用(全部幂等,每 pass 在窗口内重放;R4-3:每个 slot、Raya append+enqueue、聚合 alert 三者**各自独立 `try/catch`**——`registry.enqueueLeadEvent` 在 runtime 缺失或 renderer 抛错时同步 throw,若不隔离,Raya 侧持续失败会让 alert 永远发不出、且不走 no-Raya 分支;失败只写一行含 slot 与 report_line 的规范化 warn,然后继续下一个副作用 / 下一个 slot)**:
 - 有 Raya:`appendLeadEvent(raya, "summary-absorption:<slotISO>", …payload)` + `enqueueLeadEvent` —— 与现 rider 完全相同的 write-ahead 语义与既有崩溃测试;roundId 不变。
 - 无 Raya(`resolveRaya` null):跳过;warn 一行 `[summary-due] slot <S> settled without Raya recipient: <report_line>`(in-memory 按 slot 去重,best-effort;这是 Raya 激活前唯一可见痕迹)。
 - undelivered 非空 ⇒ **一条**聚合 alert:kind 复用 `inbox_loop_stalled`(owner `founder_direct`,`kind-contract.ts:94`;语义就是 Bridge→Lead inbox 没送到),`eventId = summary_due_undelivered:<slotISO>`(sink 按 eventId 去重),`leadId: "patrol-roster:summary-due"`、`projectName: FLEET_ALERT_PROJECT`(沿用 patrol fleet-scoped 写法),`severity: "warning"`(无 DM),title `summary_due not delivered to N Lead inbox(es)`,body 逐行 `project/lead: <settlement kind/state>`。**明确后果**:这是 founder-facing 告警;8/11 producer 通路未证明可达(exploration §1.4),首个生产 slot 很可能列出多名 Lead——这正是要暴露的静音失败。alert sink 缺失 ⇒ warn。
@@ -240,8 +240,9 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 | G1 granularity unselected / 非法 | 不写 due;每 pass 一行 warn;过 grace 后该 slot 不叫不判 |
 | G2 同 slot 重跑 pass | 首投经 absent_identity 恰一次;`LEASED+deliveredAt` / `ACKED` 不重投;身份再次 absent ⇒ 再投一次;`appendSummaryDueRows` 不重复写 |
 | G3 崩溃格 | 写行事务中断 ⇒ 零行;写行后 enqueue 前 ⇒ 下一 pass 补投;冻结后 Raya append 前 / append 后 enqueue 前 / enqueue 后 alert 前 ⇒ 重放只读冻结结果,Raya 行 payload 与冻结结果一致;Raya round 既有崩溃测试原样保留 |
-| G4 cadence 热切换 | 6h→1h、1h→6h:新 slot 用新值;窗口外旧 slot 不结算(L2 被测试**钉住为已知行为**,不是偶然);60s cadence + 60s pass 同相:S=T−cadence 在下一 pass 结算 |
+| G4 cadence 热切换 + 相位 | 6h→1h、1h→6h:新 slot 用新值;窗口外旧 slot 不结算(L2 被测试**钉住为已知行为**,不是偶然);60s cadence + 60s pass,rider 相位取 0 / 29,999 / 30,000 / 59,999 ms 及 ±2s jitter:每个 slot 都有一次第一拍,S=T−cadence 在下一 pass 结算 |
 | G5 冷启动 | `now ≥ T+grace` ⇒ 零 due、零冻结、warn 一行且不重复;`now < T+grace` ⇒ 正常 |
+| G5b 副作用隔离 | Raya enqueue 每次 throw ⇒ alert 仍被调用且 eventId 稳定、warn 含 report_line;窗口内一个 slot 抛不阻塞另一个 slot |
 | G6 gh 失败 / 畸形 / 截断 | 快照①失败 ⇒ due 照发 `unavailable`;快照②失败 ⇒ `round_ledger=unavailable`,无 N/M、无 absent,投递轴仍产出;恰 500 行 ⇒ unavailable;畸形字段 ⇒ unavailable;非 summary 分支跳过 |
 | G7 两拍快照分离 | `(T, T+grace)` 内新开的精确分支 PR 只在快照②可见并计已交 |
 | G8 判据 | 精确分支 ⇒ 已交;同 Lead 其他 period 的 PR(即使在窗口内新建)⇒ 未交(L3 钉住);旧 PR 被 merge/comment 不影响 |
@@ -251,7 +252,7 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 | G12 合成 lead id | `summary-clock` 行永不被 enqueue;实现前 grep 投递循环 / 死信扫描 / patrol 的 lead 来源均为 roster,附证据到 PR |
 | G13 文本注入 | 非白名单字符替换;非 github.com url 不渲染;report_line 单行无控制字符;payload 原值不变 |
 | G14 formatter parity | mailbox 与 commdb 输出逐字相等 |
-| G15 无条件汇报 | Raya 指令逐字含「无论本轮有没有 review/吸收/追问活动…」与 report_line;零 PR 活动的轮同样生成 |
+| G15 无条件汇报(渲染级) | mailbox 与 commdb **最终渲染字符串**在 11 人最长 fixture 下逐字含「无论本轮有没有 review/吸收/追问活动…」与 report_line 全部行(经 `notification_context`,不受 `summary` 300 码点截断);零 PR 活动的轮同样生成 |
 | G16 alert 聚合 | 3 个 undelivered ⇒ 恰 1 条 alert,severity warning,eventId 含 slotISO;delivery_unknown 不告警;重放 pass 再调 alert 时 eventId 相同 |
 | G17 分支提取重构 | `summaryDeliveryBranch` 对今晚 10 张 PR 的 `{project, lead, titlePeriod}` 全部复现其 headRefName;`summary-delivery` 既有测试不变 |
 | G18 DST | `founderLocalIso` 在 2026-11-01 PDT→PST 两侧 offset 正确(若既有测试已盖则引用) |
@@ -299,6 +300,8 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 | L4 | 副作用只在窗口内重放;窗口外未完成的 Raya round / alert 不再补 | 与 L1/L2 同源 |
 | L5 | 补投只在 grace 内;结算后不再补投当轮 due | 越过 grace 的 due 已无意义;下一轮会再叫 |
 | L6 | 没有 per-Lead 「本轮无更新」回执通路 | 沉默是一等信号(§10.5);要留痕就交一份两行的极短 summary(既有命令、既有合同) |
+| L7 | 新行(`summary_due`、`summary_slot_settled`)不在 terminal-row archive 的 `LEAD_EVENT_TYPES` 白名单(`terminal-row-archive.ts:43-63`),`summary-clock` 行 `delivered_at` 永远为空,不会被现有 archive 收走;默认 6h ⇒ 每天 4×12 行可忽略;合法最小 60s ⇒ 约 18,720 行/天 | 本版不扩 archive;运维上限写明:cadence 低于 10 分钟运行超过一周前先把两类 event_type 加进 archive 白名单。`StateStore.listUndeliveredLeadEvents()` 是全表读(`StateStore.ts:15800-15825`),G12 改为**列举当前生产消费者**(lead inbox redrive 只取两个显式 event type;patrol 按 roster)并附 grep 证据,不笼统声称 |
+| L8 | 在 Raya 已激活的环境中途部署时,同 slot 若已被旧 rider 写过 `summary-absorption:<slotISO>` 行,`appendLeadEvent` 冲突只返回旧 seq、不更新 payload ⇒ 该轮没有 report_line,下一完整 slot 起恢复 | 不引入 upsert;A2 真机剧本限定为「部署/激活后首个此前未创建 round row 的完整 slot」。当前生产 Raya 未注册,本次实现不触发 |
 
 | 风险 | 应对 |
 |---|---|
@@ -314,7 +317,7 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 1. 等下一个 slot 边界(529 房可把 cadence 改到 600000 = 10min)。
 2. A1:`sqlite3 -readonly teamlead.db "select lead_id, delivered_at from lead_events where event_type='summary_due' and event_id like '%:<slotISO>'"` ⇒ 11 行。
 3. A4:已证可达 Lead(flywheel-eng-lead / flywheel-product-lead / belle-lead)inbox 出现 `[summary_due]`;Lead 据此跑命令开出 PR(链接);分支名 = `summaryDeliveryBranch` 预期值。
-4. T+grace:`lead_events` 出现 `summary_slot_settled:<slotISO>` 行,payload 含该 Lead `delivered:true` 与 report_line;bridge.log 一行 no-Raya warn(Raya 未注册)或 `summary_absorption_round` 行 `summary` 含「【本轮对账(FLY-2382)】」段。
+4. T+grace:`lead_events` 出现 `summary_slot_settled:<slotISO>` 行,payload 含该 Lead `delivered:true` 与 report_line;bridge.log 一行 no-Raya warn(Raya 未注册)或 `summary_absorption_round` 行 `notification_context` 含「【本轮对账(FLY-2382)】」段(A2 真机限定为激活后首个此前无 round row 的完整 slot,见 L8)。
 5. A3:管理台改 cadence,下一个新 slot 边界随之变化,无重启。
 
 ## 7. Codex design review 处理记录
@@ -333,3 +336,12 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 - 删 missed 标记行与「恰一次 warn」承诺 → in-memory 去重的 best-effort warn。
 - 删结算后的持续补投 → 只在 grace 内补投(L5)。
 - **保留**(是①②的必要条件或 R1–R3 指出的正确性):精确分支判据与 `summaryDeliveryBranch` 提取;两拍快照分离;穷尽真值表 + 两轴正交 + unknown 不进 absent;write-ahead 冻结结果;Raya round 既有 write-ahead 语义;无条件汇报指令;gh 严格校验 + 截断守卫;聚合 warning 告警;formatter parity;规则文本。
+
+**R4(plan blob @ cd0340dd9,反馈 `/tmp/codex-rescue-design-feedback-flywheel-FLY-2382-plan-round4.md`)= CHANGES REQUESTED,3 阻塞(均为局部修正)+ 2 建议限制;Codex 明示「没有发现还应删除的独立子系统」。三项阻塞已并入 v2.1**:
+1. `summary` 在两个 runtime 只渲染 300 码点,report_line 会被截 → 固定措辞与完整 report_line 放进不截断的 `notification_context`;G15 改为渲染级断言。
+2. `grace = cadence/2` 在 60s cadence + 60s pass 相位 30–59.999s 时每个 slot 永远过 grace → `grace = min(30min, cadence)`;G4 加四个相位 + jitter。
+3. Raya enqueue 同步 throw 会挡住 alert、且不走 no-Raya 分支 → 每 slot / Raya 副作用 / alert 各自 try/catch,失败 warn 后继续;G5b。
+4. (建议)新 event_type 不在 archive 白名单、小 cadence 下无 retention 出口 → L7 + G12 改为列举消费者。
+5. (建议)中途部署时同 slot 旧 round row 不更新 payload → L8 + A2 剧本限定。
+
+**按 Lead 裁定(ask `831b6c16`):R4 后停止,不开 R5、不自批;R4 剩余项原文与减法清单已报 Lead 裁(ask `61720808` DONE 报告 + 后续 ask)。**
