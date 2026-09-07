@@ -4,6 +4,7 @@ Issue: FLY-1062 (https://linear.app/geoforge3d/issue/FLY-1062/build-buddy-onboar
 日期: 2026-07-11
 基于: pr3-pr4-research.md
 
+> **合同迁移(FLY-2387)**:版本、channel、manifest 与身份绑定的现行合同正文已迁至 `packages/release-contract/CONTRACT.md`;本计划中的 B0 段只保留历史设计背景。
 > **方向(brainstorm gate 已过,Tadashi 批)**:本圈 = FLY-1062 收尾——PR3(= FLY-1098 B2:R2 托管 + 验 key 薄端点 + key 生命周期)+ PR4(= B1:发布流水线 + B0 版本断言);FLY-1143 留 B3-B6;上游合同 = FLY-1098 PRD 逐条对齐;PR2 客户端视图合同 byte-stable。
 > **红线(Tadashi gate 回复原话级)**:真 npm publish 与 promote-to-customer-release 是**不可逆公网动作 = founder gate**(§3);secret/黑话/byte-compat 红线逐字继承前两圈。
 > **形态更新(Annie 2026-07-11 直令,取代旧 fallback 形态;Codex design CRITICAL 已修正)**:发布**完全自动化、不依赖 Annie 本机**——但两把应用层 token **分处两个信任域**:beta-publish 在 GitHub CI(beta 每 6h 全自动无门),**customer-release 只在常驻 Bridge、绝不进 CI**(Codex 证明「两把 token 同处一个 CI」可组合绕过 Worker 推任意 payload 给客户)。**stable promote + shell npm publish 都 = Flywheel approve gate**(她一条 Discord approve → **broker** 核内存 founder-approval 登记(非 DB-backed verify-approval)+ 结构化单次消费 → 执行,审计留痕;两条对外发布完全对称)。**两把对外发布 token 只在 FLY-245 broker 父进程内存、永不落盘/不进 CI/不进子进程**(同 UID 0600 文件不是 boundary,Codex R3)。GitHub CI 只持 beta-publish(内部 beta)。Cloudflare API token 仍 founder custody(底线一)。**落地拆两 PR**:本 PR = 机器件 + beta/promote-prepare CI;broker 硬化 = 1062 底下下一个 PR(1062 不关单直到它落地;真发布在此前不发生)。详见重写的 §3。

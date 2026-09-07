@@ -1206,8 +1206,9 @@ jobs:
   # original Build & Test job above was split by FLY-1338; this payload job
   # mapping remains byte-untouched. Hermetic: the pure endpoint handler + its
   # in-process serve shell + the release/ops scripts + the PR2 contract-
-  # consistency rerun + the workflow structure lint. Zero wrangler, zero vendor
-  # credentials, zero network beyond loopback.
+  # consistency rerun + the workflow structure lint + a dry-run Worker bundle.
+  # Zero vendor credentials; test traffic is loopback-only, while Wrangler may
+  # perform its own update/telemetry checks during the dry-run bundle proof.
   payload-distribution:
     name: NPM payload distribution (endpoint + release pipeline)
     runs-on: ubuntu-latest
@@ -1232,8 +1233,45 @@ jobs:
       - name: Endpoint handler unit tests (validator / views / transitions / lifecycle)
         run: node --test packages/payload-endpoint/__tests__/*.test.mjs
 
+      - name: Release contract unit tests
+        run: node --test packages/release-contract/__tests__/*.test.mjs
+
+      - name: Release contract TypeScript declarations
+        run: pnpm exec tsc --noEmit -p packages/release-contract/__tests__/tsconfig.json
+
+      - name: Worker dry-run bundles the release contract
+        env:
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-payload-dry-run.log
+        run: |
+          pnpm exec wrangler deploy --dry-run \
+            --outdir "$RUNNER_TEMP/payload-worker" \
+            --metafile "$RUNNER_TEMP/payload-worker-meta.json" \
+            --config packages/payload-endpoint/wrangler.toml
+          node --input-type=module - <<'JS'
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const root = path.resolve(".");
+          const configDir = path.join(root, "packages/payload-endpoint");
+          const contractDir = path.join(root, "packages/release-contract/src") + path.sep;
+          const metafile = JSON.parse(
+            fs.readFileSync(process.env.RUNNER_TEMP + "/payload-worker-meta.json", "utf8"),
+          );
+          const resolvedInputs = Object.keys(metafile.inputs).map((input) =>
+            path.resolve(configDir, input),
+          );
+          if (!resolvedInputs.some((input) => input.startsWith(contractDir))) {
+            throw new Error(
+              `Worker bundle omitted release-contract sources: ${resolvedInputs.join(", ")}`,
+            );
+          }
+          JS
+
       - name: PO_RELEASE_VERSION injection sentinel (default path byte-stable)
         run: bash scripts/__tests__/package-onboard-version-injection.test.sh
+
+      - name: Release contract cross-language version vectors
+        run: bash scripts/__tests__/release-contract-vectors.test.sh
 
       - name: Contract consistency — PR2 shell suites vs the REAL handler
         run: bash packages/payload-endpoint/__tests__/contract-consistency.test.sh

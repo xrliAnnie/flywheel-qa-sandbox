@@ -1,0 +1,181 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://flywheel.local/schema/release-manifest-v1.json",
+	"title": "Flywheel payload release manifest v1",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schemaVersion",
+		"channels",
+		"versions",
+		"releaseOps",
+		"releaseLedger",
+		"tombstones"
+	],
+	"properties": {
+		"schemaVersion": { "const": 1 },
+		"channels": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["internal-beta", "customer-release"],
+			"properties": {
+				"internal-beta": { "$ref": "#/$defs/channelPointer" },
+				"customer-release": { "$ref": "#/$defs/channelPointer" }
+			}
+		},
+		"versions": {
+			"type": "object",
+			"propertyNames": {
+				"pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-beta\\.[1-9][0-9]*)?$"
+			},
+			"additionalProperties": { "$ref": "#/$defs/versionEntry" }
+		},
+		"releaseOps": {
+			"type": "object",
+			"propertyNames": { "type": "string", "minLength": 1 },
+			"additionalProperties": { "$ref": "#/$defs/releaseOp" }
+		},
+		"releaseLedger": {
+			"type": "object",
+			"propertyNames": {
+				"pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+			},
+			"additionalProperties": { "$ref": "#/$defs/ledgerRecord" }
+		},
+		"tombstones": {
+			"type": "array",
+			"uniqueItems": true,
+			"items": { "type": "string", "pattern": "^payloads/.+\\.tgz$" }
+		}
+	},
+	"$defs": {
+		"canonicalTimestamp": {
+			"type": "string",
+			"format": "date-time",
+			"pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$"
+		},
+		"channelPointer": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["latest"],
+			"properties": {
+				"latest": {
+					"anyOf": [{ "type": "string" }, { "type": "null" }]
+				}
+			}
+		},
+		"versionEntry": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"sha256",
+				"key",
+				"size",
+				"publishedAt",
+				"channel",
+				"status",
+				"sourceCommit",
+				"releaseId",
+				"derivedFromBeta",
+				"retentionSince",
+				"quarantinedAt"
+			],
+			"properties": {
+				"sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+				"key": { "type": "string" },
+				"size": { "type": "integer", "minimum": 1 },
+				"publishedAt": { "$ref": "#/$defs/canonicalTimestamp" },
+				"channel": { "enum": ["beta", "release"] },
+				"status": { "enum": ["active", "quarantined", "expired"] },
+				"sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+				"releaseId": { "type": "string", "minLength": 1 },
+				"derivedFromBeta": {
+					"anyOf": [
+						{
+							"type": "string",
+							"pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-beta\\.[1-9][0-9]*$"
+						},
+						{ "type": "null" }
+					]
+				},
+				"retentionSince": {
+					"anyOf": [
+						{ "$ref": "#/$defs/canonicalTimestamp" },
+						{ "type": "null" }
+					]
+				},
+				"quarantinedAt": {
+					"anyOf": [
+						{ "$ref": "#/$defs/canonicalTimestamp" },
+						{ "type": "null" }
+					]
+				}
+			},
+			"allOf": [
+				{
+					"if": { "properties": { "status": { "const": "quarantined" } } },
+					"then": {
+						"properties": {
+							"quarantinedAt": { "$ref": "#/$defs/canonicalTimestamp" }
+						}
+					}
+				}
+			]
+		},
+		"releaseOp": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"kind",
+				"state",
+				"ver",
+				"betaVersion",
+				"sourceCommit",
+				"sha256",
+				"objectKey",
+				"createdAt"
+			],
+			"properties": {
+				"kind": { "enum": ["beta", "release"] },
+				"state": { "enum": ["reserved", "prepared", "committed", "abandoned"] },
+				"ver": {
+					"type": "string",
+					"pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-beta\\.[1-9][0-9]*)?$"
+				},
+				"betaVersion": {
+					"anyOf": [
+						{
+							"type": "string",
+							"pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-beta\\.[1-9][0-9]*$"
+						},
+						{ "type": "null" }
+					]
+				},
+				"sourceCommit": {
+					"anyOf": [
+						{ "type": "string", "pattern": "^[0-9a-f]{40}$" },
+						{ "type": "null" }
+					]
+				},
+				"sha256": {
+					"anyOf": [
+						{ "type": "string", "pattern": "^[0-9a-f]{64}$" },
+						{ "type": "null" }
+					]
+				},
+				"objectKey": {
+					"anyOf": [{ "type": "string" }, { "type": "null" }]
+				},
+				"createdAt": { "$ref": "#/$defs/canonicalTimestamp" }
+			}
+		},
+		"ledgerRecord": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["nextBetaN"],
+			"properties": {
+				"nextBetaN": { "type": "integer", "minimum": 1 }
+			}
+		}
+	}
+}

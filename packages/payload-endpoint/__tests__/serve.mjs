@@ -18,7 +18,6 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import { handleRequest } from "../src/handler.mjs";
-import { payloadObjectKey } from "../src/manifest.mjs";
 import { MemoryBucket } from "./memory-bucket.mjs";
 
 const sha256Hex = (buf) => createHash("sha256").update(buf).digest("hex");
@@ -66,7 +65,10 @@ if (process.env.STUB_PAYLOAD_FILE) {
 		bytes = Buffer.from(bytes);
 		bytes[0] = bytes[0] ^ 0xff; // stored bytes no longer match the manifest sha
 	}
-	const objectKey = payloadObjectKey(ver, advertisedSha);
+	// Deliberately do not call the strict contract helper here: contract mode
+	// must be able to seed a hostile STUB_VER (for example "..") so the shipped
+	// client proves it rejects malformed remote input before path construction.
+	const objectKey = `payloads/${ver}/${advertisedSha}.tgz`;
 	const sourceCommit = "0".repeat(40);
 	const releaseId = `contract-${randomUUID().slice(0, 8)}`;
 	const t0 = new Date(0).toISOString();

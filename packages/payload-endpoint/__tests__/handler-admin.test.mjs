@@ -374,6 +374,27 @@ test("validator negatives through the endpoint: dangling latest / entry mutation
 	}
 });
 
+test("incomplete releaseOp tuple is a stable 422 C-7 response, never an opaque 500", async () => {
+	const { deps, bucket } = seeded();
+	const before = rawManifestBytes(bucket);
+	const { manifest, etag } = await getManifest(deps);
+	const candidate = reserveBetaDiff(manifest);
+	candidate.releaseOps["op-beta-2"].objectKey = payloadKeyOf(
+		"1.55.0-beta.2",
+		"d".repeat(64),
+	);
+
+	const response = await postManifest(deps, candidate, etag, TOKENS.beta);
+	assert.equal(response.status, 422);
+	const body = await response.json();
+	assert.ok(
+		body.violations.includes(
+			"C-7: releaseOps[op-beta-2]: sha256 and objectKey must be registered together",
+		),
+	);
+	assert.equal(rawManifestBytes(bucket), before);
+});
+
 test("PUT payload: no claim → 409; claimed → 200; duplicate → 409; sha-mismatch body → 400 nothing stored", async () => {
 	const { deps, bucket } = seeded();
 	const bytes = Buffer.from("new-beta-payload");

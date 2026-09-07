@@ -16,9 +16,11 @@
 //     error body (log() receives route TEMPLATES, never raw paths).
 
 import {
+	ENTITLEMENT_POINTER,
 	isPayloadSemver,
 	keyObjectKey,
 	MANIFEST_KEY,
+	POINTER_CAPABILITY,
 	payloadObjectKey,
 } from "./manifest.mjs";
 import { applyTransition, capabilityAllows } from "./transitions.mjs";
@@ -26,6 +28,8 @@ import { isEmptyInitialManifest, validateManifest } from "./validator.mjs";
 import { manifestView, visibleEntries } from "./views.mjs";
 
 const enc = new TextEncoder();
+const BETA_CAPABILITY = POINTER_CAPABILITY[ENTITLEMENT_POINTER.internal];
+const RELEASE_CAPABILITY = POINTER_CAPABILITY[ENTITLEMENT_POINTER.customer];
 
 async function sha256Hex(text) {
 	const digest = await crypto.subtle.digest("SHA-256", enc.encode(text));
@@ -78,8 +82,8 @@ async function capabilityOf(request, secrets) {
 	if (!token) return null;
 	const presented = await sha256Hex(token);
 	const table = [
-		["beta-publish", secrets.betaPublishTokenSha256],
-		["customer-release", secrets.customerReleaseTokenSha256],
+		[BETA_CAPABILITY, secrets.betaPublishTokenSha256],
+		[RELEASE_CAPABILITY, secrets.customerReleaseTokenSha256],
 		["ops-admin", secrets.opsAdminTokenSha256],
 	];
 	for (const [cap, hash] of table) {
@@ -144,7 +148,15 @@ export async function handleRequest(request, deps) {
 				return respond("/manifest", json(503, { error: "not activated" }));
 			const view = manifestView(cur.manifest, rec.entitlement);
 			if (view.empty)
-				return respond("/manifest", json(503, { error: "not activated" }));
+				return respond(
+					"/manifest",
+					json(503, {
+						error:
+							view.reason === "paused"
+								? "no-release-available"
+								: "not activated",
+					}),
+				);
 			return respond("/manifest", json(200, view.view));
 		}
 
@@ -308,7 +320,7 @@ export async function handleRequest(request, deps) {
 				const objectKey = payloadObjectKey(ver, sha);
 
 				if (method === "GET") {
-					if (cap !== "beta-publish" && cap !== "customer-release") {
+					if (cap !== BETA_CAPABILITY && cap !== RELEASE_CAPABILITY) {
 						return respond(route, json(403, { error: "forbidden" }));
 					}
 					const obj = await bucket.get(objectKey);
@@ -323,7 +335,7 @@ export async function handleRequest(request, deps) {
 				}
 
 				if (method === "PUT") {
-					if (cap !== "beta-publish" && cap !== "customer-release") {
+					if (cap !== BETA_CAPABILITY && cap !== RELEASE_CAPABILITY) {
 						return respond(route, json(403, { error: "forbidden" }));
 					}
 					const cur = await readManifest(bucket);
@@ -451,10 +463,7 @@ export async function handleRequest(request, deps) {
 					// pre-activation guard (plan §B0-4): no key issuance while the
 					// entitlement's channel has no published pointer.
 					const cur = await readManifest(bucket);
-					const pointer =
-						body.entitlement === "customer"
-							? "customer-release"
-							: "internal-beta";
+					const pointer = ENTITLEMENT_POINTER[body.entitlement];
 					if (!cur || cur.manifest.channels?.[pointer]?.latest == null) {
 						return respond(
 							route,

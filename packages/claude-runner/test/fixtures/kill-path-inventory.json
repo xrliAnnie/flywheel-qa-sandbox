@@ -1710,9 +1710,27 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/payload-release-pipeline.test.sh:kill -TERM \"$COLD_PID\" 2>/dev/null; wait \"$COLD_PID\" 2>/dev/null#1",
+		"path": "scripts/__tests__/payload-release-pipeline.test.sh",
+		"code": "kill -TERM \"$COLD_PID\" 2>/dev/null; wait \"$COLD_PID\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/payload-release-pipeline.test.sh:kill -TERM \"$PROXY_PID\" 2>/dev/null; wait \"$PROXY_PID\" 2>/dev/null#1",
 		"path": "scripts/__tests__/payload-release-pipeline.test.sh",
 		"code": "kill -TERM \"$PROXY_PID\" 2>/dev/null; wait \"$PROXY_PID\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/payload-release-pipeline.test.sh:kill -TERM \"$REREAD_PID\" 2>/dev/null; wait \"$REREAD_PID\" 2>/dev/null#1",
+		"path": "scripts/__tests__/payload-release-pipeline.test.sh",
+		"code": "kill -TERM \"$REREAD_PID\" 2>/dev/null; wait \"$REREAD_PID\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/payload-release-pipeline.test.sh:kill -TERM \"$REREAD_PID\" 2>/dev/null; wait \"$REREAD_PID\" 2>/dev/null#2",
+		"path": "scripts/__tests__/payload-release-pipeline.test.sh",
+		"code": "kill -TERM \"$REREAD_PID\" 2>/dev/null; wait \"$REREAD_PID\" 2>/dev/null",
 		"classification": "qa-only"
 	},
 	{

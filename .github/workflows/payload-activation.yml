@@ -203,16 +203,11 @@ jobs:
           FW_ENDPOINT_URL: ${{ steps.deploy.outputs.endpoint }}
         run: |
           node --input-type=module - <<'JS'
+          import { emptyManifest } from "./packages/release-contract/src/index.mjs";
+
           const url = `${process.env.FW_ENDPOINT_URL}/admin/manifest`;
           const auth = { authorization: `Bearer ${process.env.FW_BETA_PUBLISH_TOKEN}` };
-          const manifest = {
-            schemaVersion: 1,
-            channels: { "internal-beta": { latest: null }, "customer-release": { latest: null } },
-            versions: {},
-            releaseOps: {},
-            releaseLedger: {},
-            tombstones: [],
-          };
+          const manifest = emptyManifest();
           const post = await fetch(url, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },

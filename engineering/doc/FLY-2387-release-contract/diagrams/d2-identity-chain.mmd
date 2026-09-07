@@ -1,0 +1,12 @@
+flowchart TB
+  V["doc/VERSION<br/>只存 base:v1.56.0"]
+  L["manifest.releaseLedger<br/>分配 beta 序号 N"]
+  B["beta 产物<br/>1.56.0-beta.N · sourceCommit · sha256-A"]
+  P["promote prepare(窗口前)<br/>同一 commit 构建 clean 1.56.0<br/>证明内容等价 · 上传 staging · 回读验 sha256-B"]
+  W["否决窗口(B4)<br/>绑定 VetoBinding:<br/>beta 身份 + clean 身份 + sourceCommit"]
+  F{"C-6b 服务端围栏<br/>提交那一刻 beta 仍是 active?"}
+  K["manifest 单次 CAS 提交<br/>customer-release 指向 1.56.0"]
+  H["拒绝:422,指针不动<br/>本周期取消,不重开窗口"]
+  V --> L --> B --> P --> W --> F
+  F -- 是 --> K
+  F -- 否(beta 被隔离) --> H

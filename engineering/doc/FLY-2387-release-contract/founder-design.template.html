@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2387 · 先锁发布合同:版本 / 通道 / 发布清单 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .diagram.tall svg { max-width:600px; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2387 · 先锁发布合同:版本 / 通道 / 发布清单</h1>
+<div class="meta">设计稿 · 2026-09-06 · 上游:PRD FLY-1098 §6 / §7.2 / §7.3 / §14 B0 · Epic FLY-1143 · 文档:<code>engineering/doc/FLY-2387-release-contract/</code>(exploration / research / plan)· Codex 设计评审 4 轮后 APPROVED(8 → 4 → 2 → 0 项,全部采纳)</div>
+
+<section class="card green" data-title="一句话">
+  <h2>一句话</h2>
+  <p class="summary-line">给 Flywheel 对外发布这件事立一份「合同」:版本号怎么起、发布走哪条通道、发布清单里有什么字段、什么情况下绝不允许把东西推给客户——全部写成机器能自动核对的规则,放在一个地方;后面五张单(发布流水线、托管、健康判据、自动发布、客户更新器)都只认这一份,不再各抄一份。</p>
+  <p class="note">审计发现:这份合同的大半已经是运行中的代码(FLY-1062 / FLY-1323 落地并在 CI 里强制)。所以本单不是从零发明,而是把散在三份不互相引用的实现和一份 54KB 计划里的规则<b>收成一份</b>,顺手补上 9 个缺口和 1 条评审时发现的真漏洞。本单不做任何真实发布动作。</p>
+  <div class="cbox"><label for="c-summary">对「一句话」的意见</label><textarea id="c-summary" data-key="summary" data-title="一句话" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card amber" data-title="现状与缺口">
+  <h2>现状:哪些已经有了,哪些是本单要补的</h2>
+  <p class="note">先解释几个词。<span class="term">manifest</span> = 发布清单,一个 JSON 文件,记录「现在内部测试版指向哪个版本、客户正式版指向哪个版本、每个版本的内容指纹」;<span class="term">sha256</span> = 内容指纹,文件内容变一个字节指纹就变;<span class="term">CAS</span> = 「先比对再写」,写清单前先确认它没被别人改过,改过就重来,保证不会两个人互相覆盖;<span class="term">beta</span> = 内部先用的版本,写法 <code>1.56.0-beta.3</code>;<span class="term">clean</span> = 去掉 beta 后缀给客户的正式版 <code>1.56.0</code>。</p>
+  <div class="scroll"><table>
+    <tr><th>PRD 要求</th><th>现状</th><th>本单</th></tr>
+    <tr><td>§6.1 版本只有一个真相(<code>doc/VERSION</code> 存 base,beta / clean 由它派生)</td><td><span class="badge do">已落地</span>但派生规则有 <b>三份</b>互不引用的实现(bash 打包脚本、端点、发布脚本),且实测都放过了 <code>beta.0</code>、<code>beta.01</code> 这类不该出现的写法</td><td>一份真相 + 一组正反例向量同时锁三份实现</td></tr>
+    <tr><td>§6.2 两个身份(beta 产物 / 正式产物)+ 否决窗口绑真产物</td><td><span class="badge do">已落地</span>提交时必须报指纹、零重新构建;但没有具名的「候选 / 产物 / 绑定」类型给自动发布用</td><td>定义 <code>VetoBinding</code> 等三个类型和派生函数,全部从清单读,不另存副本</td></tr>
+    <tr><td>§7.2 一个通道真相(<code>internal-beta</code> / <code>customer-release</code>)</td><td><span class="badge do">已落地</span>但通道名硬编码在 8 处</td><td>常量出口 + 结构检查禁止再硬编码</td></tr>
+    <tr><td>§7.3 七条发布不变量</td><td><span class="badge do">已落地</span>六条半;「同一正式版本号绝不换内容重发」没有具名负例</td><td>逐条写成表:谓词 / 现有测试 / 新增负例 / 谁负责</td></tr>
+    <tr><td>manifest 字段合同(给 B1 切指针、B4 否决窗口、B5 更新器)</td><td><span class="badge no">缺</span>只有代码和计划散文,没有机器可读的 <span class="term">schema</span>(字段与类型的正式定义)和示例</td><td>JSON Schema + 6 个合法示例 + 两层坏例</td></tr>
+    <tr><td>§8.2 「无可用版本,更新暂停」状态</td><td><span class="badge no">缺</span>清单校验规则不允许「客户指针为空但有被隔离的版本」,所以「第一个正式版就坏」这种情况根本表达不了</td><td>放宽一条规则(C-1b),定义 paused 态和它的对外回应</td></tr>
+  </table></div>
+  <div class="cbox"><label for="c-status">对「现状与缺口」的意见</label><textarea id="c-status" data-key="status" data-title="现状与缺口" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程 ①:一份合同,谁来用</h2>
+  <div class="diagram">__SVG_D1__</div>
+  <p class="cap">图 1 · 合同包与它的消费者(Mermaid 本地渲染)</p>
+  <p class="note">能 import(直接引用代码)的都直接引用;两个不能引用的——bash 打包脚本(打包环境里没有 node 依赖)和发到 npm 的薄壳安装器(必须零依赖、字节稳定)——不改它们,改用「同一份测试数据」锁住:合同里的正反例向量喂给 bash,客户视图的 schema 喂给薄壳既有的测试。它们跟合同一漂移,CI 就红。</p>
+  <h2>核心流程 ②:一个版本从起号到给客户的身份链</h2>
+  <div class="diagram tall">__SVG_D2__</div>
+  <p class="cap">图 2 · 版本身份链与 C-6b 围栏(Mermaid 本地渲染)</p>
+  <p class="note">重点在菱形那一步。Codex 评审第一轮用现有代码真的构造出一条漏洞路径:先把一个候选 beta 隔离掉(标记为坏版),再提交由它派生的正式版——现有的所有检查都放行。这就是 <span class="term">TOCTOU</span>(检查时和使用时之间被人改了状态)。本单把「提交那一刻 beta 必须仍是好的」写进服务端规则 C-6b:不满足就拒绝,指针不动,本周期取消且不重开否决窗口。</p>
+  <div class="cbox"><label for="c-flow">对「核心流程」的意见</label><textarea id="c-flow" data-key="flow" data-title="核心流程" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card purple" data-title="数据与结构模型">
+  <h2>数据与结构模型:发布清单长什么样</h2>
+  <div class="diagram">__SVG_D3__</div>
+  <p class="cap">图 3 · manifest 五张表与它们之间的关系规则 C-1…C-8(Mermaid 本地渲染)</p>
+  <p class="note">一个 JSON 文件、五张表、一次 CAS 写入 = 一个事务。规则编号 C-0…C-10 会直接出现在校验器的报错里(例如 <code>C-1: channels[customer-release]: latest 1.55.0 has no entry</code>),测试按编号断言,文档和代码一一对应。</p>
+  <div class="diagram tall">__SVG_D4__</div>
+  <p class="cap">图 4 · 两台状态机:发布操作的状态、版本条目的状态(Mermaid 本地渲染)</p>
+  <h3>合同要点(细则见 plan §1)</h3>
+  <ul>
+    <li><b>版本</b>:<code>doc/VERSION</code> 只存 <code>vX.Y.Z</code>;清单和包里的版本号不带 <code>v</code>;beta 序号 N ≥ 1、不许前导零;N 只能由清单里的计数器分配,脚本不许自己算;正式版本号一旦切进清单永不换内容重发。</li>
+    <li><b>通道</b>:客户端只认指针,不许自己在版本列表里挑最大的(撤版时指针会往回退);npm 上的标签只描述薄壳安装器,永远不表达 payload 通道;不用 GitHub Release。</li>
+    <li><b>paused 态</b>:某通道指针为空 ⇔ 该通道没有 active 版本。从未启用和「有版本但都被隔离/过期」两种子态,对客户都是 503,但回应体分别是 <code>not activated</code> / <code>no-release-available</code>;这期间不给该通道签发新 key。</li>
+    <li><b>身份</b>:自动发布(B4)绑定的是 <code>VetoBinding</code> = beta 身份 + 正式产物身份 + 同一个 sourceCommit,六个字段全部逐字来自清单;提交接口保持现有的「releaseId + 预期指纹」两个参数不变。</li>
+    <li><b>REQ-0(两扇独立门)</b>:上线门的授权是 Discord 🆒;对外发布门的授权是否决窗口沉默或 founder 明确说发,不是 🆒、不是 merge、不读上线账本。三个发布 workflow 都只由定时或手动触发,merge 不会连带发布——这条也写成结构断言 S13 进 CI。</li>
+  </ul>
+  <div class="cbox"><label for="c-model">对「数据与结构模型」的意见</label><textarea id="c-model" data-key="model" data-title="数据与结构模型" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card amber" data-title="关键取舍与否决的方案">
+  <h2>关键取舍与否决的方案</h2>
+  <div class="scroll"><table>
+    <tr><th>决定</th><th>选了什么</th><th>否决了什么,为什么</th></tr>
+    <tr><td>合同放哪</td><td>新建一个零依赖的小包 <code>packages/release-contract/</code>,端点和发布脚本改为引用它</td><td><span class="badge no">否决</span>只写文档不改代码:三份实现照旧漂移,「示例通过 schema 校验」没有对象可校验。<span class="badge no">否决</span>把真相留在端点包里让别人引用:Bridge 侧要反向依赖一个 Cloudflare Worker 包,方向反了。</td></tr>
+    <tr><td>schema 怎么执行</td><td>JSON Schema 作为对外的机器可读文档;运行时不装校验库,由合同包内置的零依赖「键集合逐字相等」检查执行同一规则;测试断言两者对同一组例子判定一致</td><td><span class="badge no">否决</span>在 Worker 运行时引入 ajv / zod:端点包坚持零依赖,且现有手写校验器已经覆盖 schema 表达不了的跨字段关系。</td></tr>
+    <tr><td>paused 态放哪</td><td>放本单(合同层放宽 C-1b),撤版进 paused 的命令行归 B5</td><td><span class="badge no">否决</span>留给 B5:B5 会被合同堵死,验收第三种情况「第一个正式版就坏」在合同层不可表达。</td></tr>
+    <tr><td>提交时的 TOCTOU 围栏</td><td>服务端 transition 层做(C-6b),客户端提交回调再核一次;提交接口两个参数不变;已提交的重跑只核 releaseId + 指纹即幂等成功</td><td><span class="badge no">否决</span>只在否决窗口关闭前预检一次:Codex 证明窗口和最终提交之间可被改状态。<span class="badge no">否决</span>写成静态不变量:beta 14 天后合法过期而正式版还活 28 天,静态规则会误杀。</td></tr>
+    <tr><td>bash 打包脚本</td><td>保留 bash 实现,由共享向量文件锁一致</td><td><span class="badge no">否决</span>让 bash 调 node:打包环境可能没有 node 依赖。</td></tr>
+    <tr><td>清单版本号</td><td><code>schemaVersion</code> 保持 1,所有改动向后兼容,零数据迁移</td><td><span class="badge no">否决</span>借机升 2:没有不兼容字段,升了只会让 B1/B2 多一件事。</td></tr>
+  </table></div>
+  <div class="cbox"><label for="c-tradeoff">对「关键取舍」的意见</label><textarea id="c-tradeoff" data-key="tradeoff" data-title="关键取舍与否决的方案" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="怎么验收">
+  <h2>怎么验收(对 issue 的三条验收)</h2>
+  <ul>
+    <li><b>B1 / B2 能只依赖本合同并行开工</b>:合同文档、类型、schema、校验器全在一个包里自包含;B1 落最后一步「切客户指针」时唯一要重谈的旧断言(S4b)已在表里写明。</li>
+    <li><b>manifest 示例通过 schema 校验</b>:6 个合法示例过 schema 和关系校验;形状坏例被 schema 和运行时检查一致拒绝;关系坏例过 schema、被校验器按编号拒绝——全部在 CI。</li>
+    <li><b>REQ-0 对照表无违反项</b>:表在 plan §1.6;结构断言 S1 / S4 / S13 在 CI 绿。</li>
+  </ul>
+  <p class="note">另有:版本向量在 node 和 bash 两边跑同一份文件;类型声明用 <code>tsc --noEmit</code> 夹具锁;Worker 打包 dry-run 证明合同代码真的进了产物;既有六套发布层测试全部保留、不改断言。</p>
+  <div class="cbox"><label for="c-accept">对「怎么验收」的意见</label><textarea id="c-accept" data-key="accept" data-title="怎么验收" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card gray" data-title="诚实边界">
+  <h2>诚实边界:这份设计做什么、不做什么</h2>
+  <ul>
+    <li><span class="badge do">做</span>一份合同 + 一个合同包 + 消费者改引用 + 两条合同层加固(C-1b 放宽、C-6b 收紧)+ 断言测试 + CI 接线。</li>
+    <li><span class="badge no">不做</span>任何真实发布:不碰 npm、不碰 R2、不碰凭据、不新增 workflow、不动 broker、不改 FLY-1323 的凭据姿态。</li>
+    <li><span class="badge no">不做</span>B1 的薄壳 <code>next</code> 标签断言、B5 的撤版进 paused 命令与客户端话术、B4 的决策账本、<code>/v2/manifest</code>。</li>
+    <li><span class="badge no">不改</span>发到 npm 的薄壳安装器任何一个字节。</li>
+    <li><span class="badge maybe">假设</span>生产清单目前为空(FLY-1323 中间态);即便有内容,本单的规则放宽向后兼容,收紧只影响新写入。B1 启用前会用合同包对生产清单快照跑一次校验。</li>
+    <li><span class="badge maybe">已问 Lead、按默认继续</span>两个非阻塞问题:合同包是否独立成包(默认是)、C-1b 放宽是否放本单(默认是)。Lead 若改主意,implement 节点按 design-correction 增量改。</li>
+    <li><span class="badge maybe">本 worktree 限制</span>没有 node_modules,bash 的版本注入测试在这里没跑过;implement 节点先 <code>pnpm install</code> 再跑,不得把「没跑」记成绿。</li>
+  </ul>
+  <div class="cbox"><label for="c-boundary">对「诚实边界」的意见</label><textarea id="c-boundary" data-key="boundary" data-title="诚实边界" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页所有意见</button>
+    <span class="status" id="copy-status"></span>
+  </div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2387";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

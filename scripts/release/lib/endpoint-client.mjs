@@ -8,6 +8,13 @@
 // never logged and never enter argv.
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import {
+	baseOf,
+	payloadObjectKey,
+} from "../../../packages/release-contract/src/index.mjs";
+
+export { baseOf };
+export const payloadKeyOf = payloadObjectKey;
 
 export const CAS_RETRIES = 8;
 
@@ -152,14 +159,6 @@ export function sha256File(file) {
 			.on("end", () => resolve(hash.digest("hex")))
 			.on("error", reject);
 	});
-}
-
-export function payloadKeyOf(ver, sha) {
-	return `payloads/${ver}/${sha}.tgz`;
-}
-
-export function baseOf(ver) {
-	return ver.replace(/-beta\.\d+$/, "");
 }
 
 // tuple equality for the write-once idempotency judgments (plan §B0-9).

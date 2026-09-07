@@ -11,16 +11,23 @@ import {
 	payloadKeyOf,
 } from "./harness.mjs";
 
-test("empty manifest (dual null channels) is the ONLY valid empty state", () => {
+test("initial empty shape is unique while null pointers also allow a valid paused channel", () => {
 	assert.deepEqual(validateManifest(emptyManifest()), []);
 	assert.ok(isEmptyInitialManifest(emptyManifest()));
-	// null latest with entries present → violation (both directions)
+	// A hidden ACTIVE entry is still invalid.
 	const withEntries = edit(fixtureManifest(), (m) => {
 		m.channels["internal-beta"].latest = null;
+		m.versions["1.55.0-beta.1"].retentionSince = "2026-07-02T00:00:00.000Z";
 	});
-	assert.ok(
-		validateManifest(withEntries).some((e) => e.includes("latest null")),
-	);
+	assert.ok(validateManifest(withEntries).some((e) => e.startsWith("C-1b: ")));
+	// With no active entries in that channel, latest=null is the valid paused
+	// state — but it is not the conditional-create empty shape.
+	const paused = edit(withEntries, (m) => {
+		m.versions["1.55.0-beta.1"].status = "quarantined";
+		m.versions["1.55.0-beta.1"].quarantinedAt = "2026-07-02T00:00:00.000Z";
+	});
+	assert.deepEqual(validateManifest(paused), []);
+	assert.equal(isEmptyInitialManifest(paused), false);
 	assert.ok(!isEmptyInitialManifest(fixtureManifest()));
 });
 
@@ -88,7 +95,7 @@ test("releaseId uniqueness across versions", () => {
 	const m = edit(fixtureManifest(), (x) => {
 		x.versions["1.55.0"].releaseId = "op-beta-1"; // duplicate of the beta's
 	});
-	assert.ok(validateManifest(m).some((e) => e.includes("not unique")));
+	assert.ok(validateManifest(m).some((e) => e.includes("duplicates")));
 });
 
 test("tombstone set semantics + terminal-refs across BOTH layers", () => {

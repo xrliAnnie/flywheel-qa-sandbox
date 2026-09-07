@@ -163,10 +163,15 @@ po_pkg_npm_name() {
 
 # po_version <repo-root> → normalized version (doc/VERSION, leading v stripped).
 po_version() {
-  local root="$1" v
+  local root="$1" v normalized
   [ -f "$root/doc/VERSION" ] || { po_err "no doc/VERSION under $root"; return 1; }
   v="$(tr -d '[:space:]' < "$root/doc/VERSION")"
-  printf '%s' "${v#v}"
+  normalized="${v#v}"
+  if ! [[ "$normalized" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    po_err "doc/VERSION must contain a clean base version (vX.Y.Z or X.Y.Z)"
+    return 1
+  fi
+  printf '%s' "$normalized"
 }
 
 # po_version_is_derivation <base> <ver> — FLY-1062 PR4 (B0-3 contract):
@@ -174,9 +179,10 @@ po_version() {
 # clean base itself OR a beta derivation base-beta.N. Anything else fails.
 po_version_is_derivation() {
   local base="$1" ver="$2" n
+  [[ "$base" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || return 1
   [ "$ver" = "$base" ] && return 0
   n="${ver#"$base"-beta.}"
-  [ "$n" != "$ver" ] && [[ "$n" =~ ^[0-9]+$ ]] && return 0
+  [ "$n" != "$ver" ] && [[ "$n" =~ ^[1-9][0-9]*$ ]] && return 0
   return 1
 }
 

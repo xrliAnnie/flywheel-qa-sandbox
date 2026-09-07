@@ -26,6 +26,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { ENTITLEMENT_POINTER } from "../../packages/release-contract/src/index.mjs";
 import {
 	baseOf,
 	makeClient,
@@ -36,6 +37,7 @@ import {
 } from "./lib/endpoint-client.mjs";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
+const BETA_POINTER = ENTITLEMENT_POINTER.internal;
 
 function die(msg) {
 	console.error(`[payload-release] ${msg}`);
@@ -238,12 +240,12 @@ async function main() {
 			retentionSince: null,
 			quarantinedAt: null,
 		};
-		m.channels["internal-beta"].latest = pinnedVer;
+		m.channels[BETA_POINTER].latest = pinnedVer;
 		op.state = "committed";
 		return true;
 	}, "commit");
 	log(
-		`COMMITTED: internal-beta.latest = ${pinnedVer} (releaseId ${releaseId})`,
+		`COMMITTED: ${BETA_POINTER}.latest = ${pinnedVer} (releaseId ${releaseId})`,
 	);
 }
 

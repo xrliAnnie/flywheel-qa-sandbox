@@ -18,14 +18,15 @@
 // are retryable, so ③ failures are reported, never fatal.
 import process from "node:process";
 
+import {
+	latestSet,
+	RETENTION_WINDOW_MS,
+} from "../../packages/release-contract/src/index.mjs";
+
 const ENDPOINT = (process.env.FW_ENDPOINT || "").replace(/\/+$/, "");
 const TOKEN = process.env.FW_OPS_ADMIN_TOKEN || "";
 const APPLY = process.argv.includes("--apply");
 
-const WINDOW_MS = {
-	beta: 14 * 24 * 60 * 60 * 1000,
-	release: 28 * 24 * 60 * 60 * 1000,
-};
 const CAS_RETRIES = 5;
 
 function log(msg) {
@@ -59,14 +60,6 @@ async function readManifest() {
 	return { manifest: json, etag };
 }
 
-function latestSet(m) {
-	const s = new Set();
-	for (const ch of Object.values(m.channels ?? {})) {
-		if (typeof ch?.latest === "string") s.add(ch.latest);
-	}
-	return s;
-}
-
 // ── ① candidates: superseded past their window (endpoint re-enforces) ───────
 function expireCandidates(m, nowMs) {
 	const latest = latestSet(m);
@@ -77,7 +70,8 @@ function expireCandidates(m, nowMs) {
 			e.status === "quarantined" ? e.quarantinedAt : e.retentionSince;
 		if (e.status !== "active" && e.status !== "quarantined") continue;
 		if (!clockIso) continue;
-		if (nowMs - Date.parse(clockIso) >= WINDOW_MS[e.channel]) out.push(ver);
+		if (nowMs - Date.parse(clockIso) >= RETENTION_WINDOW_MS[e.channel])
+			out.push(ver);
 	}
 	return out;
 }

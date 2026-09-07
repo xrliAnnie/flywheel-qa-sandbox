@@ -1,0 +1,13 @@
+flowchart LR
+  subgraph M["manifest.json(唯一提交点,一次 CAS = 一个事务)"]
+    CH["channels<br/>internal-beta.latest<br/>customer-release.latest<br/>(指针 = 版本号 或 null)"]
+    VER["versions[版本号]<br/>sha256 · key · size · channel<br/>status · sourceCommit · releaseId<br/>derivedFromBeta · retentionSince · quarantinedAt"]
+    OPS["releaseOps[releaseId]<br/>kind · state · ver · betaVersion<br/>sourceCommit · sha256 · objectKey"]
+    LED["releaseLedger[base]<br/>nextBetaN"]
+    TB["tombstones[]<br/>已宣告删除的对象 key"]
+  end
+  CH -- "C-1 指向 active 条目<br/>C-1b null = 该通道无 active(paused)" --> VER
+  VER -- "C-7 互指:releaseId ↔ committed op" --> OPS
+  VER -- "C-6 血统:release 条目指回同 commit 的 beta" --> VER
+  LED -- "C-4 单调递增,只在预约时" --> OPS
+  TB -- "C-8 只允许终态引用" --> VER

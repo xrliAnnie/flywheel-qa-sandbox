@@ -6,6 +6,10 @@
 // customer  → latest = customer-release, versions = release ∧ active only
 // (a superseded-but-active old release stays visible = the documented
 // `flywheel install <old>` window).
+import {
+	CHANNEL_OF_POINTER,
+	ENTITLEMENT_POINTER,
+} from "flywheel-release-contract";
 
 export function visibleEntries(manifest, entitlement) {
 	const out = new Map();
@@ -20,10 +24,18 @@ export function visibleEntries(manifest, entitlement) {
 // manifestView → {empty:true} when the entitlement's channel has no current
 // pointer (pre-activation ops state, plan §B0-4: served as 503).
 export function manifestView(manifest, entitlement) {
-	const pointer =
-		entitlement === "customer" ? "customer-release" : "internal-beta";
+	const pointer = ENTITLEMENT_POINTER[entitlement];
 	const latest = manifest.channels?.[pointer]?.latest ?? null;
-	if (latest === null) return { empty: true };
+	if (latest === null) {
+		const entryChannel = CHANNEL_OF_POINTER[pointer];
+		const hasHistory = Object.values(manifest.versions ?? {}).some(
+			(entry) => entry?.channel === entryChannel,
+		);
+		return {
+			empty: true,
+			reason: hasHistory ? "paused" : "never-activated",
+		};
+	}
 	const versions = [...visibleEntries(manifest, entitlement)]
 		.map(([ver, e]) => ({ ver, sha256: e.sha256 }))
 		.sort((a, b) => (a.ver < b.ver ? -1 : a.ver > b.ver ? 1 : 0));

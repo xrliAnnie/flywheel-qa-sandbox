@@ -1,0 +1,36 @@
+{
+	"schemaVersion": 1,
+	"channels": {
+		"internal-beta": { "latest": null },
+		"customer-release": { "latest": null }
+	},
+	"versions": {
+		"1.55.0-beta.2": {
+			"sha256": "924356fadf749ede33bb35b16abe7c61a066352073d5a464d245cedf93b28367",
+			"key": "payloads/1.55.0-beta.2/924356fadf749ede33bb35b16abe7c61a066352073d5a464d245cedf93b28367.tgz",
+			"size": 1234,
+			"publishedAt": "2026-09-01T00:00:00.000Z",
+			"channel": "beta",
+			"status": "active",
+			"sourceCommit": "95400c4f1a7161ab32e84a5107befe5a0c78e7f3",
+			"releaseId": "beta-fixture",
+			"derivedFromBeta": null,
+			"retentionSince": "2026-09-02T00:00:00.000Z",
+			"quarantinedAt": null
+		}
+	},
+	"releaseOps": {
+		"beta-fixture": {
+			"kind": "beta",
+			"state": "committed",
+			"ver": "1.55.0-beta.2",
+			"betaVersion": null,
+			"sourceCommit": "95400c4f1a7161ab32e84a5107befe5a0c78e7f3",
+			"sha256": "924356fadf749ede33bb35b16abe7c61a066352073d5a464d245cedf93b28367",
+			"objectKey": "payloads/1.55.0-beta.2/924356fadf749ede33bb35b16abe7c61a066352073d5a464d245cedf93b28367.tgz",
+			"createdAt": "2026-09-01T00:00:00.000Z"
+		}
+	},
+	"releaseLedger": { "1.55.0": { "nextBetaN": 3 } },
+	"tombstones": []
+}

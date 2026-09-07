@@ -387,7 +387,11 @@ importers:
 
   packages/onboard-shell: {}
 
-  packages/payload-endpoint: {}
+  packages/payload-endpoint:
+    dependencies:
+      flywheel-release-contract:
+        specifier: workspace:*
+        version: link:../release-contract
 
   packages/qa-framework:
     dependencies:
@@ -413,6 +417,15 @@ importers:
       vitest:
         specifier: ^3.1.4
         version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+
+  packages/release-contract:
+    devDependencies:
+      ajv:
+        specifier: 8.17.1
+        version: 8.17.1
+      typescript:
+        specifier: ^5.3.3
+        version: 5.9.3
 
   packages/slack-event-transport:
     dependencies:

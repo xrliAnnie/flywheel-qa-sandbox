@@ -1,0 +1,108 @@
+{
+	"schemaVersion": 1,
+	"channels": {
+		"internal-beta": { "latest": "1.55.0-beta.2" },
+		"customer-release": { "latest": "1.54.0" }
+	},
+	"versions": {
+		"1.54.0-beta.1": {
+			"sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+			"key": "payloads/1.54.0-beta.1/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.tgz",
+			"size": 1111,
+			"publishedAt": "2026-08-01T00:00:00.000Z",
+			"channel": "beta",
+			"status": "active",
+			"sourceCommit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"releaseId": "beta-1.54.0-1",
+			"derivedFromBeta": null,
+			"retentionSince": "2026-09-01T00:00:00.000Z",
+			"quarantinedAt": null
+		},
+		"1.54.0": {
+			"sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+			"key": "payloads/1.54.0/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.tgz",
+			"size": 1111,
+			"publishedAt": "2026-08-03T00:00:00.000Z",
+			"channel": "release",
+			"status": "active",
+			"sourceCommit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"releaseId": "promo-1.54.0",
+			"derivedFromBeta": "1.54.0-beta.1",
+			"retentionSince": null,
+			"quarantinedAt": null
+		},
+		"1.55.0-beta.2": {
+			"sha256": "924356fadf749ede33bb35b16abe7c61a066352073d5a464d245cedf93b28367",
+			"key": "payloads/1.55.0-beta.2/924356fadf749ede33bb35b16abe7c61a066352073d5a464d245cedf93b28367.tgz",
+			"size": 1234,
+			"publishedAt": "2026-09-01T00:00:00.000Z",
+			"channel": "beta",
+			"status": "active",
+			"sourceCommit": "95400c4f1a7161ab32e84a5107befe5a0c78e7f3",
+			"releaseId": "beta-95400c4f1a7161ab32e84a5107befe5a0c78e7f3",
+			"derivedFromBeta": null,
+			"retentionSince": null,
+			"quarantinedAt": null
+		},
+		"1.55.0": {
+			"sha256": "9544ebb90c27a285f59a03f3af5fe8bfeb04cea01b3f3ac6673542f29f43d541",
+			"key": "payloads/1.55.0/9544ebb90c27a285f59a03f3af5fe8bfeb04cea01b3f3ac6673542f29f43d541.tgz",
+			"size": 1234,
+			"publishedAt": "2026-09-03T00:00:00.000Z",
+			"channel": "release",
+			"status": "quarantined",
+			"sourceCommit": "95400c4f1a7161ab32e84a5107befe5a0c78e7f3",
+			"releaseId": "promo-1",
+			"derivedFromBeta": "1.55.0-beta.2",
+			"retentionSince": "2026-09-04T00:00:00.000Z",
+			"quarantinedAt": "2026-09-04T00:00:00.000Z"
+		}
+	},
+	"releaseOps": {
+		"beta-1.54.0-1": {
+			"kind": "beta",
+			"state": "committed",
+			"ver": "1.54.0-beta.1",
+			"betaVersion": null,
+			"sourceCommit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+			"objectKey": "payloads/1.54.0-beta.1/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.tgz",
+			"createdAt": "2026-08-01T00:00:00.000Z"
+		},
+		"promo-1.54.0": {
+			"kind": "release",
+			"state": "committed",
+			"ver": "1.54.0",
+			"betaVersion": "1.54.0-beta.1",
+			"sourceCommit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+			"objectKey": "payloads/1.54.0/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff.tgz",
+			"createdAt": "2026-08-03T00:00:00.000Z"
+		},
+		"beta-95400c4f1a7161ab32e84a5107befe5a0c78e7f3": {
+			"kind": "beta",
+			"state": "committed",
+			"ver": "1.55.0-beta.2",
+			"betaVersion": null,
+			"sourceCommit": "95400c4f1a7161ab32e84a5107befe5a0c78e7f3",
+			"sha256": "924356fadf749ede33bb35b16abe7c61a066352073d5a464d245cedf93b28367",
+			"objectKey": "payloads/1.55.0-beta.2/924356fadf749ede33bb35b16abe7c61a066352073d5a464d245cedf93b28367.tgz",
+			"createdAt": "2026-09-01T00:00:00.000Z"
+		},
+		"promo-1": {
+			"kind": "release",
+			"state": "committed",
+			"ver": "1.55.0",
+			"betaVersion": "1.55.0-beta.2",
+			"sourceCommit": "95400c4f1a7161ab32e84a5107befe5a0c78e7f3",
+			"sha256": "9544ebb90c27a285f59a03f3af5fe8bfeb04cea01b3f3ac6673542f29f43d541",
+			"objectKey": "payloads/1.55.0/9544ebb90c27a285f59a03f3af5fe8bfeb04cea01b3f3ac6673542f29f43d541.tgz",
+			"createdAt": "2026-09-03T00:00:00.000Z"
+		}
+	},
+	"releaseLedger": {
+		"1.54.0": { "nextBetaN": 2 },
+		"1.55.0": { "nextBetaN": 3 }
+	},
+	"tombstones": []
+}

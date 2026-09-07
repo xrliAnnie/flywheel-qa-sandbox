@@ -571,6 +571,263 @@ else
   fi
 fi
 
+# ── P8 · FLY-2387 C-6b · retry-time veto binding and committed idempotency ──
+# The initial read is not authoritative: casUpdate re-reads before writing. A
+# concurrent executor may commit the SAME release in that window (idempotent),
+# or the identity may drift (fail closed). These proxies alter only the second
+# /admin/manifest GET and record whether the CLI attempted a manifest POST.
+echo "payload input v8" > "$FIX/content.txt"
+echo "v9.9.91" > "$FIX/doc/VERSION"
+git -C "$FIX" add -A && git -C "$FIX" -c user.email=t@t -c user.name=t commit -qm v8
+run_release "run-P8" >/dev/null 2>&1 || { echo "FATAL: beta for P8 failed"; exit 1; }
+BETA_P8="$(jq_manifest 'm.releaseOps["run-P8"].ver')"
+PREP8="$(env FW_ENDPOINT="$EP" FW_BETA_PUBLISH_TOKEN="$BETA_TOKEN" FW_PACKER="$PACKER" \
+  node "$PROMOTE" prepare --release-id "promo-8" --beta "$BETA_P8" --repo-root "$FIX" 2>&1)" \
+  || { echo "FATAL: P8 prepare failed: $PREP8"; exit 1; }
+GOOD_SHA_8="$(jq_manifest 'm.releaseOps["promo-8"].sha256')"
+
+REREAD_PROXY="$SANDBOX/commit-reread-proxy.cjs"
+cat > "$REREAD_PROXY" <<'JS'
+const http = require("node:http");
+
+const [target, id, mode] = process.argv.slice(2);
+let manifestGets = 0;
+let postSeen = false;
+const server = http.createServer(async (request, response) => {
+	const chunks = [];
+	for await (const chunk of request) chunks.push(chunk);
+	const body = Buffer.concat(chunks);
+	if (request.method === "POST" && request.url === "/admin/manifest") {
+		postSeen = true;
+	}
+	const upstream = await fetch(target + request.url, {
+		method: request.method,
+		headers: {
+			authorization: request.headers.authorization,
+			...(request.headers["content-type"]
+				? { "content-type": request.headers["content-type"] }
+				: {}),
+		},
+		...(body.length ? { body } : {}),
+	});
+	if (request.method === "GET" && request.url === "/admin/manifest") {
+		manifestGets++;
+		const manifest = await upstream.json();
+		if (manifestGets >= 2 && manifest.releaseOps?.[id]) {
+			const op = manifest.releaseOps[id];
+			if (mode === "same-commit") {
+				manifest.versions[op.ver] = {
+					sha256: op.sha256,
+					key: op.objectKey,
+					size: 1,
+					publishedAt: "2026-09-06T00:00:00.000Z",
+					channel: "release",
+					status: "active",
+					sourceCommit: op.sourceCommit,
+					releaseId: id,
+					derivedFromBeta: op.betaVersion,
+					retentionSince: null,
+					quarantinedAt: null,
+				};
+				manifest.channels["customer-release"].latest = op.ver;
+				op.state = "committed";
+			} else if (mode === "wrong-kind") {
+				op.kind = "beta";
+				op.state = "committed";
+			}
+		}
+		response.writeHead(upstream.status, {
+			"content-type": "application/json",
+			etag: upstream.headers.get("etag") || "",
+		});
+		response.end(JSON.stringify(manifest));
+		return;
+	}
+	const buffer = Buffer.from(await upstream.arrayBuffer());
+	const headers = {};
+	upstream.headers.forEach((value, key) => {
+		if (key !== "content-encoding" && key !== "content-length") {
+			headers[key] = value;
+		}
+	});
+	response.writeHead(upstream.status, headers);
+	response.end(buffer);
+});
+server.listen(0, "127.0.0.1", () =>
+	console.log(`PORT ${server.address().port}`),
+);
+process.on("SIGTERM", () => {
+	console.log(`POST_SEEN ${postSeen}`);
+	process.exit(0);
+});
+JS
+
+start_reread_proxy() {
+  local mode="$1" output="$2"
+  node "$REREAD_PROXY" "$EP" "promo-8" "$mode" > "$output" 2>&1 &
+  REREAD_PID=$!
+  REREAD_PORT=""
+  for _ in $(seq 1 50); do
+    REREAD_PORT="$(sed -n 's/^PORT //p' "$output" 2>/dev/null | head -1)"
+    [ -n "$REREAD_PORT" ] && break
+    sleep 0.1
+  done
+}
+
+# P8a: another executor commits the exact approved artifact between reads.
+# The retry sees committed, returns success, and performs no second write.
+P8A_PROXY_OUT="$SANDBOX/p8a-proxy.out"
+start_reread_proxy "same-commit" "$P8A_PROXY_OUT"
+if [ -z "$REREAD_PORT" ]; then
+  fail "P8a proxy never bound: $(cat "$P8A_PROXY_OUT")"
+else
+  P8A_PTR_BEFORE="$(jq_manifest 'm.channels["customer-release"].latest')"
+  OUT_8A="$(env FW_ENDPOINT="http://127.0.0.1:$REREAD_PORT" FW_CUSTOMER_RELEASE_TOKEN="$RELEASE_TOKEN" \
+    node "$PROMOTE" commit --release-id "promo-8" --expected-sha256 "$GOOD_SHA_8" 2>&1)" \
+    && RC_8A=0 || RC_8A=$?
+  P8A_PTR_AFTER="$(jq_manifest 'm.channels["customer-release"].latest')"
+  kill -TERM "$REREAD_PID" 2>/dev/null; wait "$REREAD_PID" 2>/dev/null
+  P8A_POST_SEEN="$(sed -n 's/^POST_SEEN //p' "$P8A_PROXY_OUT" | tail -1)"
+  if [ "$RC_8A" -eq 0 ] && grep -q "COMMITTED: customer-release.latest = 9.9.91" <<<"$OUT_8A" \
+     && [ "$P8A_POST_SEEN" = "false" ] && [ "$P8A_PTR_BEFORE" = "$P8A_PTR_AFTER" ]; then
+    pass "P8a CAS retry sees the same artifact committed concurrently: idempotent success, zero write"
+  else
+    fail "P8a concurrent identical commit was not idempotent (rc=$RC_8A, post=$P8A_POST_SEEN): $OUT_8A"
+  fi
+fi
+
+# P8b: releaseId/kind/sha are all part of the retry-time committed branch.
+# A same-sha record whose kind changed must not be treated as a release commit.
+P8B_PROXY_OUT="$SANDBOX/p8b-proxy.out"
+start_reread_proxy "wrong-kind" "$P8B_PROXY_OUT"
+if [ -z "$REREAD_PORT" ]; then
+  fail "P8b proxy never bound: $(cat "$P8B_PROXY_OUT")"
+else
+  OUT_8B="$(env FW_ENDPOINT="http://127.0.0.1:$REREAD_PORT" FW_CUSTOMER_RELEASE_TOKEN="$RELEASE_TOKEN" \
+    node "$PROMOTE" commit --release-id "promo-8" --expected-sha256 "$GOOD_SHA_8" 2>&1)" \
+    && RC_8B=0 || RC_8B=$?
+  kill -TERM "$REREAD_PID" 2>/dev/null; wait "$REREAD_PID" 2>/dev/null
+  P8B_POST_SEEN="$(sed -n 's/^POST_SEEN //p' "$P8B_PROXY_OUT" | tail -1)"
+  if [ "$RC_8B" -ne 0 ] && grep -q "kind release" <<<"$OUT_8B" \
+     && [ "$P8B_POST_SEEN" = "false" ]; then
+    pass "P8b CAS retry refuses a same-sha committed record whose kind is not release"
+  else
+    fail "P8b retry accepted non-release identity (rc=$RC_8B, post=$P8B_POST_SEEN): $OUT_8B"
+  fi
+fi
+
+# P8c: once P8 makes P7's beta non-latest, quarantine it in a prior CAS. The
+# prepared commit must re-derive its veto binding on the current CAS snapshot.
+P8C_QUARANTINE="$(node -e '
+const [endpoint, token, beta] = process.argv.slice(1);
+(async () => {
+  const get = await fetch(endpoint + "/admin/manifest", {headers:{authorization:"Bearer "+token}});
+  const etag = get.headers.get("etag");
+  const manifest = await get.json();
+  manifest.versions[beta].status = "quarantined";
+  const post = await fetch(endpoint + "/admin/manifest", {
+    method: "POST",
+    headers: {authorization:"Bearer "+token, "content-type":"application/json"},
+    body: JSON.stringify({baseEtag: etag, manifest}),
+  });
+  console.log("HTTP " + post.status + " " + (await post.text()));
+})();
+' "$EP" "$RELEASE_TOKEN" "$BETA_P7" 2>&1)"
+P8C_PTR_BEFORE="$(jq_manifest 'm.channels["customer-release"].latest')"
+P8C_OP_BEFORE="$(jq_manifest 'JSON.stringify(m.releaseOps["promo-7"])')"
+OUT_8C="$(env FW_ENDPOINT="$EP" FW_CUSTOMER_RELEASE_TOKEN="$RELEASE_TOKEN" \
+  node "$PROMOTE" commit --release-id "promo-7" --expected-sha256 "$GOOD_SHA_7" 2>&1)" \
+  && RC_8C=0 || RC_8C=$?
+P8C_PTR_AFTER="$(jq_manifest 'm.channels["customer-release"].latest')"
+P8C_OP_AFTER="$(jq_manifest 'JSON.stringify(m.releaseOps["promo-7"])')"
+if grep -q "HTTP 200" <<<"$P8C_QUARANTINE" && [ "$RC_8C" -ne 0 ] \
+   && grep -q "must be active" <<<"$OUT_8C" \
+   && [ "$P8C_PTR_BEFORE" = "$P8C_PTR_AFTER" ] \
+   && [ "$P8C_OP_BEFORE" = "$P8C_OP_AFTER" ] \
+   && [ "$(jq_manifest 'm.versions["9.9.90"] === undefined')" = "true" ]; then
+  pass "P8c prepared commit re-derives veto binding: quarantined beta refused, pointer/op byte-unchanged"
+else
+  fail "P8c quarantined-beta veto failed (rc=$RC_8C): quarantine=$P8C_QUARANTINE commit=$OUT_8C"
+fi
+
+# P8d/e: cold-start against an already-committed op whose source beta has
+# legally expired. The committed branch checks only releaseId/kind/sha: matching
+# is a zero-write success; mismatched sha is fail-closed and also zero-write.
+COLD_MANIFEST="$SANDBOX/cold-committed-manifest.json"
+manifest > "$COLD_MANIFEST"
+COLD_SERVER_OUT="$SANDBOX/cold-committed-server.out"
+node - "$COLD_MANIFEST" "promo-1" > "$COLD_SERVER_OUT" 2>&1 <<'JS' &
+const fs = require("node:fs");
+const http = require("node:http");
+
+const [manifestPath, id] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+const betaVersion = manifest.releaseOps[id].betaVersion;
+manifest.versions[betaVersion].status = "expired";
+manifest.versions[betaVersion].retentionSince ||= "2026-09-01T00:00:00.000Z";
+let postSeen = false;
+let otherSeen = false;
+const server = http.createServer((request, response) => {
+	if (request.method === "GET" && request.url === "/admin/manifest") {
+		response.writeHead(200, {
+			"content-type": "application/json",
+			etag: '"cold-committed"',
+		});
+		response.end(JSON.stringify(manifest));
+		return;
+	}
+	if (request.method === "POST" && request.url === "/admin/manifest") {
+		postSeen = true;
+	} else {
+		otherSeen = true;
+	}
+	response.writeHead(500);
+	response.end();
+});
+server.listen(0, "127.0.0.1", () => {
+	console.log(`PORT ${server.address().port}`);
+	console.log(`BETA_STATUS ${manifest.versions[betaVersion].status}`);
+});
+process.on("SIGTERM", () => {
+	console.log(`POST_SEEN ${postSeen}`);
+	console.log(`OTHER_SEEN ${otherSeen}`);
+	process.exit(0);
+});
+JS
+COLD_PID=$!
+COLD_PORT=""
+for _ in $(seq 1 50); do
+  COLD_PORT="$(sed -n 's/^PORT //p' "$COLD_SERVER_OUT" 2>/dev/null | head -1)"
+  [ -n "$COLD_PORT" ] && break
+  sleep 0.1
+done
+if [ -z "$COLD_PORT" ]; then
+  fail "P8d cold server never bound: $(cat "$COLD_SERVER_OUT")"
+else
+  OUT_8D="$(env FW_ENDPOINT="http://127.0.0.1:$COLD_PORT" FW_CUSTOMER_RELEASE_TOKEN="$RELEASE_TOKEN" \
+    node "$PROMOTE" commit --release-id "promo-1" --expected-sha256 "$SHA_P1" 2>&1)" \
+    && RC_8D=0 || RC_8D=$?
+  OUT_8E="$(env FW_ENDPOINT="http://127.0.0.1:$COLD_PORT" FW_CUSTOMER_RELEASE_TOKEN="$RELEASE_TOKEN" \
+    node "$PROMOTE" commit --release-id "promo-1" --expected-sha256 "$BAD" 2>&1)" \
+    && RC_8E=0 || RC_8E=$?
+  kill -TERM "$COLD_PID" 2>/dev/null; wait "$COLD_PID" 2>/dev/null
+  COLD_POST_SEEN="$(sed -n 's/^POST_SEEN //p' "$COLD_SERVER_OUT" | tail -1)"
+  COLD_OTHER_SEEN="$(sed -n 's/^OTHER_SEEN //p' "$COLD_SERVER_OUT" | tail -1)"
+  if grep -q "BETA_STATUS expired" "$COLD_SERVER_OUT" \
+     && [ "$RC_8D" -eq 0 ] && grep -q "already committed" <<<"$OUT_8D" \
+     && [ "$COLD_POST_SEEN" = "false" ] && [ "$COLD_OTHER_SEEN" = "false" ]; then
+    pass "P8d cold committed rerun ignores expired beta: id/kind/sha match, idempotent zero-write success"
+  else
+    fail "P8d cold committed rerun was not idempotent (rc=$RC_8D, post=$COLD_POST_SEEN, other=$COLD_OTHER_SEEN): $OUT_8D"
+  fi
+  if [ "$RC_8E" -ne 0 ] && grep -q "does not match candidate" <<<"$OUT_8E" \
+     && [ "$COLD_POST_SEEN" = "false" ] && [ "$COLD_OTHER_SEEN" = "false" ]; then
+    pass "P8e committed record with sha != expectedSha256 fails closed with zero write"
+  else
+    fail "P8e committed sha mismatch was accepted (rc=$RC_8E, post=$COLD_POST_SEEN): $OUT_8E"
+  fi
+fi
+
 # P6g · FLY-1323 (Codex code R1 MEDIUM-2) · DUPLICATE flags are refused.
 # argValue() resolves via indexOf → the FIRST occurrence wins and later ones are
 # silently dropped, so `--expected-sha256 <good> --expected-sha256 <evil>` was

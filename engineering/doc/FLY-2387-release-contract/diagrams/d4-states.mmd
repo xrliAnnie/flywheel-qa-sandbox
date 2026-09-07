@@ -1,0 +1,15 @@
+stateDiagram-v2
+  direction LR
+  state "发布操作 releaseOps.state" as OP {
+    [*] --> reserved: 预约(拿到版本号)
+    reserved --> prepared: 上传 + 回读验 hash
+    reserved --> abandoned: 放弃
+    prepared --> committed: 一次 CAS 提交(切指针)
+    prepared --> abandoned: 放弃或被否决
+  }
+  state "版本条目 versions.status" as VS {
+    [*] --> active: 提交
+    active --> quarantined: 隔离(止血)
+    active --> expired: 保留期满
+    quarantined --> expired: 保留期满
+  }

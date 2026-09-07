@@ -84,20 +84,33 @@ fi
                 || fail "S3 beta schedule/guard not structurally gating (steps=$STEP_STARTS gated=$GATED)"
 
 # ── S4 · credential scoping over ALL workflows (the FLY-1323 rewrite) ────────
-# S4a: vendor control-plane (Cloudflare) references may appear ONLY in
-# release-environment workflows; today that set is exactly {activation}.
-# Every other workflow keeps the original ZERO-reference contract.
+# S4a: vendor credentials/control-plane references may appear ONLY in the
+# release-environment workflow. CI has one explicit credentialless Worker
+# bundle proof, but it must remain `wrangler deploy --dry-run`; every other
+# workflow keeps the original zero-reference contract.
 bad_cf=""
 while IFS= read -r f; do
   if grep -qE "CLOUDFLARE|WRANGLER|CF_API" "$f"; then
     case "$f" in
       "$ACTIVATION") is_release_env_workflow "$f" || bad_cf="$bad_cf $f(not-env-gated)" ;;
+      "$WF/ci.yml")
+        normalized_ci="$(
+          grep -vE '^[[:space:]]*#' "$f" \
+            | awk '{ line=$0; while (sub(/\\[[:space:]]*$/, "", line)) { if ((getline nl) <= 0) break; line=line nl } print line }'
+        )"
+        ci_wrangler_count="$(grep -cE 'pnpm exec wrangler deploy' <<<"$normalized_ci" || true)"
+        ci_dry_run_count="$(grep -cE 'pnpm exec wrangler deploy --dry-run' <<<"$normalized_ci" || true)"
+        if grep -qE "CLOUDFLARE|CF_API" "$f" \
+           || [ "$ci_wrangler_count" -ne 1 ] || [ "$ci_dry_run_count" -ne 1 ]; then
+          bad_cf="$bad_cf $f(not-credentialless-dry-run)"
+        fi
+        ;;
       *) bad_cf="$bad_cf $f" ;;
     esac
   fi
 done < <(all_workflows)
 if [ -z "$bad_cf" ]; then
-  pass "S4a Cloudflare/vendor credential references only in the environment-gated activation workflow"
+  pass "S4a vendor credentials remain release-environment-only; CI has one credentialless wrangler dry-run"
 else
   fail "S4a vendor credential reference outside the release-environment contract:$bad_cf"
 fi
@@ -236,7 +249,7 @@ grep -q "^name: CI$" "$WF/ci.yml" || ok=0
 [ "$ok" -eq 1 ] && pass "S9 pre-existing workflows still present under their original names" \
                 || fail "S9 pre-existing workflow surface changed"
 
-# ── S10/S11/S12 · parsed-YAML contract (Codex R2: substring greps were
+# ── S10/S11/S12/S13 · parsed-YAML contract (Codex R2: substring greps were
 #    fooled two ways — a QUOTED trigger key ("push":) evaded the ^[a-z] key
 #    regex, and a COMMENTED-OUT gate line still matched the grep while GitHub
 #    treats the gate as absent. Comments and quoting do not survive a real
@@ -245,7 +258,9 @@ grep -q "^name: CI$" "$WF/ci.yml" || ok=0
 #          read-only token, ACTIVATE confirm in the guard step);
 #    S11 = any JOB in ANY workflow whose content references a vendor secret
 #          must itself declare environment: release + the main/dispatch gate;
-#    S12 = each named side-effect STEP carries its inputs.mode condition. ────
+#    S12 = each named side-effect STEP carries its inputs.mode condition;
+#    S13 = release triggers are their exact allowlisted sets (never merge
+#          side effects), and activation retains its confirm input. ──────────
 CONTRACT_OUT="$(python3 - "$WF" <<'PYEOF'
 import glob
 import json
@@ -256,6 +271,8 @@ import yaml
 
 wf_dir = sys.argv[1]
 ACT = os.path.join(wf_dir, "payload-activation.yml")
+BETA = os.path.join(wf_dir, "payload-beta-release.yml")
+PROMOTE = os.path.join(wf_dir, "payload-promote.yml")
 
 
 def load(p):
@@ -284,6 +301,23 @@ JOB_GATE = "github.ref == 'refs/heads/main' && github.event_name == 'workflow_di
 
 failures = []
 act = load(ACT)
+
+# S13: trigger sets are exact. A future push/pull_request addition would make
+# release a merge side effect and violate REQ-0 even if every job guard stayed.
+expected_triggers = {
+    BETA: ["schedule", "workflow_dispatch"],
+    PROMOTE: ["workflow_dispatch"],
+    ACT: ["workflow_dispatch"],
+}
+for workflow_path, expected in expected_triggers.items():
+    actual = triggers(load(workflow_path))
+    if actual != expected:
+        failures.append(
+            f"S13:{os.path.basename(workflow_path)}:triggers={actual},expected={expected}"
+        )
+activation_inputs = ((act.get("on", act.get(True)) or {}).get("workflow_dispatch") or {}).get("inputs") or {}
+if "confirm" not in activation_inputs:
+    failures.append("S13:activation-confirm-input-missing")
 
 # S10a: trigger allowlist on the PARSED key set — quoting cannot hide a key
 t = triggers(act)
@@ -359,8 +393,9 @@ if [ "$PY_RC" -eq 0 ] && [ "$CONTRACT_OUT" = "OK" ]; then
   pass "S10 activation shape (parsed): dispatch-only triggers + single job + environment release + job-level ref/event gate + read-only token + ACTIVATE confirm"
   pass "S11 (parsed, per-job): every job referencing a vendor secret declares environment: release + the main/dispatch job gate"
   pass "S12 (parsed, per-step): every side-effect step carries its inputs.mode condition (infra ×6, publish ×4)"
+  pass "S13 (parsed): release trigger sets are exact and activation retains confirm (release is never a merge side effect)"
 else
-  fail "S10/S11/S12 parsed contract failed (rc=$PY_RC): $CONTRACT_OUT"
+  fail "S10/S11/S12/S13 parsed contract failed (rc=$PY_RC): $CONTRACT_OUT"
 fi
 
 echo ""

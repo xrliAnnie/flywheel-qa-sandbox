@@ -3,6 +3,7 @@
 // real handler exactly the way the release scripts drive it.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
 	DAY,
@@ -20,6 +21,15 @@ import {
 import { MemoryBucket } from "./memory-bucket.mjs";
 
 const COMMIT = "c".repeat(40);
+const PREPARED_CANDIDATE = JSON.parse(
+	readFileSync(
+		new URL(
+			"../../release-contract/examples/prepared-candidate.json",
+			import.meta.url,
+		),
+		"utf8",
+	),
+);
 
 function seeded(manifest = fixtureManifest()) {
 	const bucket = new MemoryBucket();
@@ -27,6 +37,151 @@ function seeded(manifest = fixtureManifest()) {
 	const clock = makeClock("2026-07-11T00:00:00.000Z");
 	return { ...makeDeps({ bucket, clock }), manifest };
 }
+
+function preparedCandidateSeeded() {
+	const manifest = structuredClone(PREPARED_CANDIDATE);
+	const newerVersion = "1.56.0-beta.1";
+	const newerSha = "d".repeat(64);
+	manifest.versions["1.55.0-beta.2"].retentionSince =
+		"2026-09-02T00:00:00.000Z";
+	manifest.channels["internal-beta"].latest = newerVersion;
+	manifest.versions[newerVersion] = {
+		sha256: newerSha,
+		key: payloadKeyOf(newerVersion, newerSha),
+		size: 10,
+		publishedAt: "2026-09-02T00:00:00.000Z",
+		channel: "beta",
+		status: "active",
+		sourceCommit: "d".repeat(40),
+		releaseId: "newer-beta",
+		derivedFromBeta: null,
+		retentionSince: null,
+		quarantinedAt: null,
+	};
+	manifest.releaseOps["newer-beta"] = {
+		kind: "beta",
+		state: "committed",
+		ver: newerVersion,
+		betaVersion: null,
+		sourceCommit: "d".repeat(40),
+		sha256: newerSha,
+		objectKey: payloadKeyOf(newerVersion, newerSha),
+		createdAt: "2026-09-02T00:00:00.000Z",
+	};
+	manifest.releaseLedger["1.56.0"] = { nextBetaN: 2 };
+
+	const bucket = new MemoryBucket();
+	seedBucketForManifest(bucket, manifest);
+	const releaseBytes = Buffer.from("prepared-release-artifact");
+	const releaseOp = manifest.releaseOps["promo-1"];
+	bucket.seed(releaseOp.objectKey, releaseBytes, {
+		sha256: releaseOp.sha256,
+		ver: releaseOp.ver,
+	});
+	const clock = makeClock("2026-09-04T00:00:00.000Z");
+	return {
+		...makeDeps({ bucket, clock }),
+		manifest,
+		releaseSize: releaseBytes.length,
+	};
+}
+
+async function commitPreparedRelease(deps, releaseSize) {
+	const current = await getManifest(deps);
+	const candidate = edit(current.manifest, (manifest) => {
+		const op = manifest.releaseOps["promo-1"];
+		manifest.versions[op.ver] = {
+			sha256: op.sha256,
+			key: op.objectKey,
+			size: releaseSize,
+			publishedAt: "1999-01-01T00:00:00.000Z",
+			channel: "release",
+			status: "active",
+			sourceCommit: op.sourceCommit,
+			releaseId: "promo-1",
+			derivedFromBeta: op.betaVersion,
+			retentionSince: null,
+			quarantinedAt: null,
+		};
+		manifest.channels["customer-release"].latest = op.ver;
+		op.state = "committed";
+	});
+	return postManifest(deps, candidate, current.etag, TOKENS.release);
+}
+
+test("C-6b release commit is fenced to an active beta in the same CAS snapshot", async () => {
+	for (const quarantineInCommit of [false, true]) {
+		const { deps, releaseSize } = preparedCandidateSeeded();
+		if (!quarantineInCommit) {
+			const current = await getManifest(deps);
+			const quarantined = edit(current.manifest, (manifest) => {
+				manifest.versions["1.55.0-beta.2"].status = "quarantined";
+			});
+			assert.equal(
+				(await postManifest(deps, quarantined, current.etag, TOKENS.release))
+					.status,
+				200,
+			);
+		}
+
+		const before = await getManifest(deps);
+		let response;
+		if (quarantineInCommit) {
+			const candidate = edit(before.manifest, (manifest) => {
+				manifest.versions["1.55.0-beta.2"].status = "quarantined";
+				const op = manifest.releaseOps["promo-1"];
+				manifest.versions[op.ver] = {
+					sha256: op.sha256,
+					key: op.objectKey,
+					size: releaseSize,
+					publishedAt: "1999-01-01T00:00:00.000Z",
+					channel: "release",
+					status: "active",
+					sourceCommit: op.sourceCommit,
+					releaseId: "promo-1",
+					derivedFromBeta: op.betaVersion,
+					retentionSince: null,
+					quarantinedAt: null,
+				};
+				manifest.channels["customer-release"].latest = op.ver;
+				op.state = "committed";
+			});
+			response = await postManifest(
+				deps,
+				candidate,
+				before.etag,
+				TOKENS.release,
+			);
+		} else {
+			response = await commitPreparedRelease(deps, releaseSize);
+		}
+
+		assert.equal(response.status, 422);
+		const body = await response.json();
+		assert.ok(body.violations.some((error) => error.startsWith("C-6b: ")));
+		const after = await getManifest(deps);
+		assert.equal(after.manifest.channels["customer-release"].latest, null);
+		assert.equal(after.manifest.releaseOps["promo-1"].state, "prepared");
+		assert.equal(after.manifest.versions["1.55.0"], undefined);
+	}
+});
+
+test("C-6b is mutation-time only: committed release survives later beta quarantine", async () => {
+	const { deps, releaseSize } = preparedCandidateSeeded();
+	assert.equal((await commitPreparedRelease(deps, releaseSize)).status, 200);
+	const committed = await getManifest(deps);
+	const quarantined = edit(committed.manifest, (manifest) => {
+		manifest.versions["1.55.0-beta.2"].status = "quarantined";
+	});
+	assert.equal(
+		(await postManifest(deps, quarantined, committed.etag, TOKENS.release))
+			.status,
+		200,
+	);
+	const after = await getManifest(deps);
+	assert.equal(after.manifest.channels["customer-release"].latest, "1.55.0");
+	assert.equal(after.manifest.versions["1.55.0"].status, "active");
+});
 
 // drive one full beta publish through the handler, the way
 // payload-release.mjs does. Returns {ver, sha, objectKey}.
@@ -277,6 +432,58 @@ test("same id, different tuple → fail-closed (write-once tuple)", async () => 
 	});
 	const res = await postManifest(deps, mutated, g.etag, TOKENS.beta);
 	assert.equal(res.status, 422);
+});
+
+test("§7.3-6 clean semver cannot be reused with a different sha256", async () => {
+	const { deps } = seeded();
+	const before = await getManifest(deps);
+	const reused = edit(before.manifest, (manifest) => {
+		const sha256 = "0".repeat(64);
+		manifest.versions["1.55.0"].sha256 = sha256;
+		manifest.versions["1.55.0"].key = payloadKeyOf("1.55.0", sha256);
+	});
+	const response = await postManifest(
+		deps,
+		reused,
+		before.etag,
+		TOKENS.release,
+	);
+	assert.equal(response.status, 422);
+	const body = await response.json();
+	assert.ok(
+		body.violations.some((error) =>
+			error.includes("versions[1.55.0]: core field sha256 is immutable"),
+		),
+	);
+	assert.deepEqual((await getManifest(deps)).manifest, before.manifest);
+});
+
+test("§7.3-6 expired clean entry cannot be rebound to a different sha256", async () => {
+	const manifest = fixtureManifest();
+	manifest.channels["customer-release"].latest = null;
+	manifest.versions["1.55.0"].status = "expired";
+	manifest.versions["1.55.0"].retentionSince = "2026-07-02T00:00:00.000Z";
+	const { deps } = seeded(manifest);
+	const before = await getManifest(deps);
+	const rebound = edit(before.manifest, (candidate) => {
+		const sha256 = "0".repeat(64);
+		candidate.versions["1.55.0"].sha256 = sha256;
+		candidate.versions["1.55.0"].key = payloadKeyOf("1.55.0", sha256);
+	});
+	const response = await postManifest(
+		deps,
+		rebound,
+		before.etag,
+		TOKENS.release,
+	);
+	assert.equal(response.status, 422);
+	const body = await response.json();
+	assert.ok(
+		body.violations.some((error) =>
+			error.includes("versions[1.55.0]: core field sha256 is immutable"),
+		),
+	);
+	assert.deepEqual((await getManifest(deps)).manifest, before.manifest);
 });
 
 test("commit vs abandon race: CAS serializes; committed→abandon refused, abandoned→commit refused", async () => {

@@ -1,0 +1,22 @@
+{
+	"name": "flywheel-release-contract",
+	"version": "0.0.0",
+	"description": "FLY-2387 · machine-checkable payload release contract",
+	"type": "module",
+	"private": true,
+	"license": "UNLICENSED",
+	"main": "src/index.mjs",
+	"types": "index.d.ts",
+	"scripts": {
+		"test": "node --test __tests__/*.test.mjs",
+		"test:run": "node --test __tests__/*.test.mjs"
+	},
+	"dependencies": {},
+	"devDependencies": {
+		"ajv": "8.17.1",
+		"typescript": "^5.3.3"
+	},
+	"engines": {
+		"node": ">=20"
+	}
+}

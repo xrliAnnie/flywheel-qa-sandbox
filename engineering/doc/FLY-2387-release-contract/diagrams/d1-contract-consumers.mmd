@@ -1,0 +1,20 @@
+flowchart LR
+  C["合同包 release-contract<br/>版本语法 · 通道真相 · manifest 校验 · 身份派生<br/>CONTRACT.md · 类型 · JSON Schema · 测试向量"]
+  EP["发放端点 payload-endpoint<br/>客户取货和发布写入的唯一入口"]
+  RS["发布脚本 scripts/release<br/>beta 发布 · promote · 发 key"]
+  B3["B3 判据 c<br/>按版本聚合健康信号"]
+  B4["B4 自动发布 + 否决窗口"]
+  B5["B5 客户自动更新器 + 止血"]
+  SH["打包脚本 package-onboard.sh<br/>bash,不能 import"]
+  CL["薄壳 onboard 安装器<br/>发到 npm,必须零依赖"]
+  VEC[("共享测试向量<br/>version-derivation.json")]
+  VS[("客户视图 schema<br/>manifest-view.schema.json")]
+  C --> EP
+  C --> RS
+  C --> B3
+  C --> B4
+  C --> B5
+  C --- VEC
+  C --- VS
+  VEC -. "同一组正反例锁住 bash" .-> SH
+  VS -. "同一套测试锁住薄壳" .-> CL

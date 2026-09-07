@@ -18,6 +18,7 @@
 //   • the ops-admin token rides env → Authorization header only.
 import { createHash, randomBytes } from "node:crypto";
 import process from "node:process";
+import { ENTITLEMENT_POINTER } from "../../packages/release-contract/src/index.mjs";
 
 const ENDPOINT = (process.env.FW_ENDPOINT || "").replace(/\/+$/, "");
 const TOKEN = process.env.FW_OPS_ADMIN_TOKEN || "";
@@ -79,8 +80,7 @@ async function preflightEntitlement(entitlement) {
 	if (status === 404)
 		die("no manifest exists yet — publish a version first (pre-activation)");
 	if (status !== 200) die(`cannot read manifest (HTTP ${status})`);
-	const pointer =
-		entitlement === "customer" ? "customer-release" : "internal-beta";
+	const pointer = ENTITLEMENT_POINTER[entitlement];
 	if (!json?.channels?.[pointer] || json.channels[pointer].latest === null) {
 		die(
 			`entitlement '${entitlement}' has no published release yet (channel ${pointer} is empty) — publish first, then issue keys`,

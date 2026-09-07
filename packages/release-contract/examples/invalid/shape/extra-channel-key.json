@@ -1,0 +1,11 @@
+{
+	"schemaVersion": 1,
+	"channels": {
+		"internal-beta": { "latest": null, "extra": true },
+		"customer-release": { "latest": null }
+	},
+	"versions": {},
+	"releaseOps": {},
+	"releaseLedger": {},
+	"tombstones": []
+}

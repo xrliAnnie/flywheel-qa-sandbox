@@ -14,10 +14,15 @@
 import {
 	baseOf,
 	CHANNELS,
+	ENTITLEMENT_POINTER,
 	isBetaSemver,
 	latestSet,
+	POINTER_CAPABILITY,
 	RETENTION_WINDOW_MS,
 } from "./manifest.mjs";
+
+const BETA_CAPABILITY = POINTER_CAPABILITY[ENTITLEMENT_POINTER.internal];
+const RELEASE_CAPABILITY = POINTER_CAPABILITY[ENTITLEMENT_POINTER.customer];
 
 const VERSION_CORE_FIELDS = [
 	"sha256",
@@ -150,6 +155,34 @@ export function applyTransition(oldM, clientM, now) {
 		}
 	}
 
+	// C-6b · mutation-time lineage fence. Static validation cannot require a
+	// beta to remain active forever: the beta may expire after its clean release
+	// commits. But the CAS that adds/commits a clean release must still observe
+	// its exact beta identity as active in THAT result snapshot.
+	const releaseMutationIds = new Set();
+	for (const op of ops) {
+		if (op.type === "commitOp" && op.kind === "release") {
+			releaseMutationIds.add(op.id);
+		}
+		if (op.type === "addVersion" && op.channel === "release") {
+			const releaseId = newM.versions?.[op.ver]?.releaseId;
+			if (typeof releaseId === "string") releaseMutationIds.add(releaseId);
+		}
+	}
+	for (const releaseId of releaseMutationIds) {
+		const releaseOp = newM.releaseOps?.[releaseId];
+		const betaVersion = releaseOp?.betaVersion;
+		const betaEntry =
+			typeof betaVersion === "string"
+				? newM.versions?.[betaVersion]
+				: undefined;
+		if (betaEntry?.channel !== "beta" || betaEntry.status !== "active") {
+			err(
+				`C-6b: releaseOps[${releaseId}]: release commit requires an active beta identity in the same CAS snapshot`,
+			);
+		}
+	}
+
 	// ── releaseLedger: every change must be FUSED with a beta reservation ───
 	// (plan §B0-9-1: reservation + increment in ONE CAS, so "ledger advanced
 	// but reservation lost" is unrepresentable).
@@ -265,29 +298,27 @@ export function applyTransition(oldM, clientM, now) {
 export function capabilityAllows(capability, op) {
 	switch (op.type) {
 		case "pointer":
-			return op.channel === "internal-beta"
-				? capability === "beta-publish"
-				: capability === "customer-release";
+			return capability === POINTER_CAPABILITY[op.channel];
 		case "addVersion":
 			return op.channel === "beta"
-				? capability === "beta-publish"
-				: capability === "customer-release";
+				? capability === BETA_CAPABILITY
+				: capability === RELEASE_CAPABILITY;
 		case "commitOp":
 			return op.kind === "beta"
-				? capability === "beta-publish"
-				: capability === "customer-release";
+				? capability === BETA_CAPABILITY
+				: capability === RELEASE_CAPABILITY;
 		case "reserveBeta":
 		case "reserveRelease":
 		case "registerTuple":
 		case "toPrepared":
-			return capability === "beta-publish";
+			return capability === BETA_CAPABILITY;
 		case "abandon":
 			if (capability === "ops-admin") return true;
 			return op.kind === "beta"
-				? capability === "beta-publish"
-				: capability === "customer-release";
+				? capability === BETA_CAPABILITY
+				: capability === RELEASE_CAPABILITY;
 		case "quarantine":
-			return capability === "customer-release";
+			return capability === RELEASE_CAPABILITY;
 		case "expire":
 		case "tombstone":
 			return capability === "ops-admin";

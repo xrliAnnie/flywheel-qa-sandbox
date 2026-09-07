@@ -8,9 +8,11 @@ import { test } from "node:test";
 import {
 	edit,
 	fixtureManifest,
+	getManifest,
 	makeClock,
 	makeDeps,
 	payloadKeyOf,
+	postManifest,
 	request,
 	seedBucketForManifest,
 	seedKey,
@@ -37,12 +39,10 @@ test("valid customer key → customer-release view (latest + release-only versio
 	const res = await request(deps, "GET", "/manifest", { token: CUSTOMER_KEY });
 	assert.equal(res.status, 200);
 	const view = await res.json();
-	assert.equal(view.latest, "1.55.0");
-	assert.deepEqual(
-		view.versions.map((v) => v.ver),
-		["1.55.0"],
-	);
-	assert.equal(view.versions[0].sha256, "b".repeat(64));
+	assert.deepEqual(view, {
+		latest: "1.55.0",
+		versions: [{ ver: "1.55.0", sha256: "b".repeat(64) }],
+	});
 });
 
 test("valid internal key → internal-beta view (all active versions)", async () => {
@@ -350,6 +350,48 @@ test("empty state: entitlement with null latest → 503 on /manifest (both sides
 			.status,
 		503,
 	);
+});
+
+test("paused customer channel returns the frozen no-release wire and refuses new customer keys", async () => {
+	const { deps } = seededDeps();
+	const before = await getManifest(deps);
+	const paused = edit(before.manifest, (manifest) => {
+		manifest.versions["1.55.0"].status = "quarantined";
+		manifest.channels["customer-release"].latest = null;
+	});
+	const transition = await postManifest(
+		deps,
+		paused,
+		before.etag,
+		TOKENS.release,
+	);
+	assert.equal(transition.status, 200);
+
+	const after = await getManifest(deps);
+	assert.equal(
+		after.manifest.versions["1.55.0"].quarantinedAt,
+		"2026-07-11T00:00:00.000Z",
+	);
+	assert.equal(
+		after.manifest.versions["1.55.0"].retentionSince,
+		"2026-07-11T00:00:00.000Z",
+	);
+
+	const customerView = await request(deps, "GET", "/manifest", {
+		token: CUSTOMER_KEY,
+	});
+	assert.equal(customerView.status, 503);
+	assert.equal(await customerView.text(), '{"error":"no-release-available"}');
+
+	const keyIssue = await request(deps, "PUT", `/admin/key/${"9".repeat(64)}`, {
+		token: TOKENS.ops,
+		body: {
+			customerId: "paused-customer",
+			entitlement: "customer",
+			revoked: false,
+		},
+	});
+	assert.equal(keyIssue.status, 409);
 });
 
 test("zero-leak: keys, key hashes, and capability tokens never appear in logs or error bodies", async () => {

@@ -29,6 +29,10 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
+	deriveVetoBinding,
+	ENTITLEMENT_POINTER,
+} from "../../packages/release-contract/src/index.mjs";
+import {
 	baseOf,
 	makeClient,
 	payloadKeyOf,
@@ -38,6 +42,7 @@ import {
 } from "./lib/endpoint-client.mjs";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
+const CUSTOMER_POINTER = ENTITLEMENT_POINTER.customer;
 
 function die(msg) {
 	console.error(`[payload-promote] ${msg}`);
@@ -410,6 +415,11 @@ async function cmdCommit() {
 	let committedVer = null;
 	await client.casUpdate((m) => {
 		const cur = m.releaseOps[releaseId];
+		if (!cur || cur.kind !== "release") {
+			throw new Error(
+				`commit: candidate ${releaseId} must still exist with kind release on the CAS retry`,
+			);
+		}
 		// The binding is re-checked FIRST, unconditionally, against the tuple this
 		// attempt actually observes — before any early return can skip it. A
 		// concurrent commit of a DIFFERENT artifact must fail closed, not be
@@ -427,6 +437,13 @@ async function cmdCommit() {
 		}
 		if (cur.state !== "prepared")
 			throw new Error(`cannot commit from ${cur.state}`);
+		const binding = deriveVetoBinding(m, releaseId);
+		if (binding.releasePayloadSha256 !== expectedSha) {
+			throw new Error(
+				`commit: candidate ${releaseId} veto binding changed under us — approved sha256 ${expectedSha}, ` +
+					`binding now has ${binding.releasePayloadSha256}. Refusing fail-closed.`,
+			);
+		}
 		m.versions[cur.ver] = {
 			sha256: cur.sha256,
 			key: cur.objectKey,
@@ -440,7 +457,7 @@ async function cmdCommit() {
 			retentionSince: null,
 			quarantinedAt: null,
 		};
-		m.channels["customer-release"].latest = cur.ver;
+		m.channels[CUSTOMER_POINTER].latest = cur.ver;
 		committedVer = cur.ver;
 		cur.state = "committed";
 		return true;
@@ -452,7 +469,7 @@ async function cmdCommit() {
 	// still be evidence of the write itself rather than of a stale read — otherwise
 	// the next person to break the guard gets a reassuring lie instead of a symptom.
 	log(
-		`COMMITTED: customer-release.latest = ${committedVer} (releaseId ${releaseId})`,
+		`COMMITTED: ${CUSTOMER_POINTER}.latest = ${committedVer} (releaseId ${releaseId})`,
 	);
 }
 
@@ -468,7 +485,7 @@ async function cmdWithdraw() {
 		if (!e) throw new Error(`withdraw: no such version ${ver}`);
 		if (
 			e.status === "quarantined" &&
-			m.channels["customer-release"].latest === fallback
+			m.channels[CUSTOMER_POINTER].latest === fallback
 		) {
 			return false; // already withdrawn to this fallback (idempotent)
 		}
@@ -479,11 +496,11 @@ async function cmdWithdraw() {
 			);
 		}
 		e.status = "quarantined";
-		m.channels["customer-release"].latest = fallback;
+		m.channels[CUSTOMER_POINTER].latest = fallback;
 		return true;
 	}, "withdraw");
 	log(
-		`WITHDRAWN: ${ver} quarantined; customer-release.latest = ${fallback} (fallback re-pin resets its retention clock server-side)`,
+		`WITHDRAWN: ${ver} quarantined; ${CUSTOMER_POINTER}.latest = ${fallback} (fallback re-pin resets its retention clock server-side)`,
 	);
 }
 
