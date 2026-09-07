@@ -1,0 +1,12 @@
+flowchart TB
+  subgraph LE[lead_events 既有表]
+    direction TB
+    A["summary_due × 11 行<br/>一位 Lead 一行 id 含时间格 T<br/>内容 period · 上次交付 · 指令"]
+    S["summary_slot_settled × 1 行<br/>id 含 T<br/>内容 冻结的对账结果"]
+    R["summary_absorption_round × 1 行<br/>id 含 T 这是既有的 Raya 轮事件<br/>内容 原指令 + 对账行"]
+  end
+  A -->|"投到各 Lead 收件箱<br/>没送到就补投 只限 30 分钟内"| L[Lead 收件箱]
+  A -->|"第二拍以这 11 行为名单"| S
+  S -->|"只读 不重算"| R
+  R -->|"投给 Raya"| Y[Raya]
+  S -->|"有 未送达 时"| AL["一条告警<br/>id 含 T 重复不多发"]

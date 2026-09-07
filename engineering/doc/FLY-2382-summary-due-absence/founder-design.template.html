@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2382 · summary 回流:到点由机制叫、谁没交看得见 — 设计方案</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .meta .mono { font-family: 'SF Mono', monospace; }
+  .section { margin-bottom: 34px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; color: #1d1d1f; }
+  .card p, .card li { font-size: 14px; color: #3a3a3c; }
+  .card ul, .card ol { padding-left: 20px; margin-top: 6px; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 16px; font-weight: 600; color: #1d1d1f; }
+  .jargon { color: #86868b; font-size: 13px; }
+  .diagram { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 16px; margin-bottom: 14px; overflow-x: auto; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .diagram-caption { font-size: 13px; color: #86868b; margin-top: 8px; margin-bottom: 14px; text-align: center; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11.5px; font-weight: 600; margin-right: 6px; }
+  .badge.done { background: #e8f8ee; color: #1d8a43; }
+  .badge.pending { background: #fff3e0; color: #c77400; }
+  .badge.hard { background: #fdebea; color: #c62d23; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .quote { background: #f5f5f7; border-radius: 10px; padding: 10px 14px; font-family: 'SF Mono', monospace; font-size: 12.5px; white-space: pre-wrap; color: #1d1d1f; margin-top: 8px; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { display: block; font-size: 12.5px; color: #86868b; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 13.5px; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,0.15); }
+  .btn { display: inline-block; background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  .btn:hover { background: #0066d6; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  #summary-body { white-space: pre-wrap; font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin-top: 10px; min-height: 40px; color: #1d1d1f; }
+  .chunk { margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2382 · summary 回流:到点由机制叫人交、谁没交看得见</h1>
+  <div class="meta">Issue <span class="mono">FLY-2382</span> · 设计阶段 · 2026-09-06 · 出自 Tadashi 的工程设计节点 · 方案 A(同一口钟两拍)· Codex 设计评审 4 轮,减法版待 Lead 裁定</div>
+
+  <!-- S1 -->
+  <div class="section" data-section="一句话总结">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>一句话总结</div>
+    <div class="card">
+      <p class="lede">现在 summary 回流只有「读的钟」没有「写的钟」:没人到点去叫各位 Lead 交,谁没交也没人看得见。这一单让 Bridge 用同一口 6 小时的钟敲两拍——第一拍给 11 位 Lead 各发一条「该交了」,第二拍半小时后算出「谁交了、谁没交、谁根本没收到」,交给 Raya 在她的频道说出来。不新加任何定时器,节奏还是那一个、还是在管理台改。</p>
+      <p class="jargon" style="margin-top:8px;">summary = 各项目 Lead 定期写给总管 Raya 的情况汇总(事实 + 判断)。Bridge = Flywheel 的中枢调度程序,一直在跑。PR(pull request)= 一张「请把这份文件收进仓库」的提交单;Lead 交 summary 就是往 Raya 的仓库开一张 PR。Raya = 全局总管 AI,负责读这些 summary。</p>
+    </div>
+    <div class="card gray">
+      <h3>为什么今天是「假绿灯」——这次核实到的四件事</h3>
+      <table>
+        <tr><th>#</th><th>事实</th><th>怎么核的</th></tr>
+        <tr><td>1</td><td><b>写侧零触发。</b>今晚的 10 份 summary 是人一个个催出来的,代码里没有任何东西会在明天再叫一遍。</td><td>全仓搜「按节奏对 Lead 投事件」的代码:没有。规则文件写「按配置的节奏交」,但从没人把节奏告诉过 Lead。</td></tr>
+        <tr><td>2</td><td><b>读侧的钟在生产从未响过。</b>代码里 Raya 那口 6 小时的钟确实在,但生产数据库里它响过的记录是 0 条——因为 Raya 还没按 FLY-2131 的检查单注册成 Bridge 管的 Lead。</td><td>生产 teamlead.db 查「summary_absorption_round」= 0 行;projects.json 里没有 raya。</td></tr>
+        <tr><td>3</td><td><b>缺席不可见,而且今晚就发生了。</b>11 位应交的 Lead 里交了 10 位,mufasa-lead 没交——今天没有任何地方能读出这句话。</td><td>数 Raya 仓的 PR #15–#24,对照 11 人名单。</td></tr>
+        <tr><td>4</td><td><b>8/11 位 Lead 的「收件箱通路」没被证明过能送到。</b>过去 30 天只有 flywheel 的三位 Lead 和 Belle 真收到过 Bridge 的事件。</td><td>生产 lead_events 表按 Lead 统计 30 天已投递条数。</td></tr>
+      </table>
+      <p class="jargon" style="margin-top:8px;">第 2、4 条不是这一单要修的(Raya 激活归 FLY-2131 的检查单;通路故障归基础设施),但设计必须把它们算进去:第二拍要把「没送到」和「没交」分开说,不能把机制故障记在 Lead 头上。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s1" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S2 -->
+  <div class="section" data-section="核心流程:同一口钟两拍">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>核心流程:同一口钟两拍</div>
+    <div class="diagram"><!--SVG:d1--></div>
+    <div class="diagram-caption">钟就是现有的 6 小时节奏(你 8-18 圈选的 §8.7.2,管理台可改);Bridge 每 60 秒醒一次看表,到格子起点敲第一拍,半小时后敲第二拍。</div>
+    <div class="card green">
+      <h3>第一拍:叫</h3>
+      <ul>
+        <li><b>叫谁</b>:projects.json 里标了「producer」的 Lead,用的是 summary 名册那一套现成规则,不另抄一份——今天是 11 位,与 PRD §8.8.3 的数一致。</li>
+        <li><b>说什么</b>:一条 <span class="mono">summary_due</span> 收件箱消息,里面写好本轮的 period(时间段,按你的本地时区)、这位 Lead 上次交的那张 PR、以及要跑的命令。Lead 照抄 period 就行。</li>
+        <li><b>没东西说可以不交</b>(§6.3):消息里明说。没交会在 Raya 的轮报里出现「未交」——那是让你看见,不是催人。</li>
+        <li><b>只叫一次</b>:每个格子每位 Lead 只有一条,重启、重跑都不会重复(靠数据库里的唯一编号)。</li>
+      </ul>
+    </div>
+    <div class="card green">
+      <h3>第二拍:看</h3>
+      <ul>
+        <li><b>怎么算「交了」</b>:交 summary 的命令会按「项目 + Lead + period」算出一个确定的分支名(branch,GitHub 上一份改动的名字);Bridge 用同一个算法算出「本轮这位 Lead 该开的分支」,去 Raya 仓查有没有。有 = 交了。今晚 10 张 PR 的分支名全部能这样复现出来。</li>
+        <li><b>先记账再说话</b>:算出的结果先写进数据库(冻结),再发给 Raya、再发告警;中途断电重来读的还是同一份结果,不会前后说两个数。</li>
+        <li><b>Raya 必须说</b>:给 Raya 的指令明写「无论本轮有没有别的活动,都要在 #raya 发一条,逐字包含这几行」——因为「没有任何 PR 活动」恰恰是最需要被看见的一轮。</li>
+      </ul>
+      <div class="quote">本轮 10/11 份已交;未交:mufasa-lead
+未送达(机制问题,已告警):ops-lead</div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s2" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S3 -->
+  <div class="section" data-section="数据模型:只在既有账本里加三种行">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>数据模型:不加表,只在既有账本里加三种行</div>
+    <div class="diagram"><!--SVG:d2--></div>
+    <div class="diagram-caption">lead_events 是 Bridge 给各 Lead 发事件时一直在用的账本表。这一单不建新表、不加字段,只往里写三种带确定编号的行;编号里都含时间格 T,所以「同一格再写一次」会被数据库当成同一行。</div>
+    <div class="card purple">
+      <h3>三种行各管什么</h3>
+      <table>
+        <tr><th>行</th><th>谁收</th><th>作用</th></tr>
+        <tr><td><span class="mono">summary_due</span> × 11</td><td>每位 producer Lead</td><td>第一拍的消息本身;第二拍拿这 11 行当名单,所以「本轮该交的人」与「本轮叫过的人」永远是同一批</td></tr>
+        <tr><td><span class="mono">summary_slot_settled</span> × 1</td><td>不发给任何人(合成收件人 summary-clock)</td><td>第二拍算出的对账结果,写一次、之后只读;Raya 没激活时,这行 + 一行日志就是唯一可见痕迹</td></tr>
+        <tr><td><span class="mono">summary_absorption_round</span> × 1</td><td>Raya</td><td>FLY-2131 已有的「开始一轮吸收」事件,原字段一个不动,只在不截断的备注栏里追加对账行</td></tr>
+      </table>
+    </div>
+    <div class="card amber">
+      <h3>「没送到」怎么判、怎么报</h3>
+      <p>Bridge 投给 Lead 的每条消息在队列里有状态。第二拍逐个查 <span class="mono">summary_due</span> 的状态:已写进收件箱或已被 Lead 读走 = 送到了;队列里根本没有、或者排着没动、或者死信 = 没送到;查不出来 = 不知道。<b>只有「送到了却没交」才算未交</b>;「没送到」单列并发一条聚合告警(一个格子一条,警告级别,不会私信你);「不知道」也单列、不算在任何人头上。</p>
+    </div>
+    <div class="diagram"><!--SVG:d3--></div>
+    <div class="diagram-caption">每位 Lead 走一遍这张判断图;GitHub 查不到时整轮不判缺席,只报「交付状态不可得」,宁可这轮不说也不冤枉人。</div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s3" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S4 -->
+  <div class="section" data-section="关键取舍与否决的方案">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>关键取舍与被否决的方案</div>
+    <div class="card amber">
+      <h3>选了什么 · 为什么</h3>
+      <table>
+        <tr><th>取舍</th><th>选择</th><th>理由</th></tr>
+        <tr><td>钟</td><td>复用现有 6 小时 flag,同一口钟敲两拍</td><td>§8.7.2 说的是「一个」节奏;两口钟会漂,管理台改一处就够</td></tr>
+        <tr><td>第二拍偏移</td><td>固定 30 分钟(节奏更短时不超过一个节奏)</td><td>可改的是周期不是偏移;多一个旋钮就多一处会错</td></tr>
+        <tr><td>「交了」的判据</td><td>只认本轮 period 的精确分支</td><td>用 PR 的更新时间猜会把「旧 PR 被评论」误判成新交付;精确分支是机器能复现的唯一身份</td></tr>
+        <tr><td>Raya 没激活怎么办</td><td>第一拍照常叫人;第二拍结果落账本 + 日志,不另开旁路直接发频道</td><td>Raya 是 #raya 的声音;第二张嘴会让人不知道听谁的。激活归 FLY-2131 检查单</td></tr>
+        <tr><td>Lead 想说「本轮无更新」</td><td>不新开通路;要留痕就交一份两行的极短 summary</td><td>沉默本身是一等信号(§10.5);为第三态开一条 Lead→Bridge 写通路不是必要条件</td></tr>
+      </table>
+    </div>
+    <div class="card red">
+      <h3>否决的方案</h3>
+      <ul>
+        <li><b>方案 B · 用 launchd(macOS 的系统定时器)定时广播</b>:管理台只能改已有定时任务的时间,不能新建;而且 launchd 静默失效五周没人发现的事故就在眼前(Sub 的三个 cron)。</li>
+        <li><b>各 Lead 自己建 cron/launchd</b>:R4 硬禁;9 个 Lead = 9 种静音失败。</li>
+        <li><b>让 Raya 自己去 GitHub 数谁没交</b>:名单规则要在提示词里再抄一份、不确定;Raya 没激活时什么都没有。Bridge 已有名单和 GitHub 访问,算一次给所有人用。</li>
+        <li><b>Codex 评审前三轮长出来的东西</b>(新表 + 四态状态机 + 公平调度 + 指数退避 + 第三态「period 不匹配」):Tadashi 裁定「设计在长不是在收敛」,全部删掉,降为下面的已知限制。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s4" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S5 -->
+  <div class="section" data-section="诚实边界:做什么、不做什么">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>诚实边界:这一单做什么、不做什么</div>
+    <div class="card green">
+      <h3>做到的(可以真机验)</h3>
+      <ul>
+        <li><span class="badge done">A1</span>到节奏点每位 producer Lead 收件箱有一条 summary_due,含 period 与上次交付,不用任何人 ping。</li>
+        <li><span class="badge done">A3</span>节奏在管理台改就生效,不重启;没有新 launchd/crontab、没有新 flag、没有新表。</li>
+        <li><span class="badge done">A4</span>真机一轮:至少一位 Lead 由机制触发交付(选已证明收件箱能送到的 Lead 来验)。</li>
+      </ul>
+    </div>
+    <div class="card red">
+      <h3>做不到 / 有前置的</h3>
+      <ul>
+        <li><span class="badge hard">A2 前置</span>「Raya 在 #raya 说出谁没交」要等 Raya 按 FLY-2131 检查单激活。这一单可以合入,但<b>不会宣称 A2 完成</b>;激活后的第一个完整轮才验。</li>
+        <li><span class="badge pending">发现</span>8/11 位 Lead 的收件箱通路没被证明过。上线后第一个格子的告警很可能列出多位 Lead——这是要暴露的问题,不是这一单能修的;移交基础设施。</li>
+      </ul>
+    </div>
+    <div class="card gray">
+      <h3>有意不做的已知限制(减法版)</h3>
+      <table>
+        <tr><th>#</th><th>限制</th><th>为什么这版不做</th></tr>
+        <tr><td>L1</td><td>Bridge 停机超过一个节奏,期间的格子不补叫、不补判</td><td>对过去的时段叫人是噪音,补判要一套排队调度——不是「叫 / 看」的必要条件</td></tr>
+        <tr><td>L2</td><td>运行期改节奏时,正在进行的那一格可能不结算</td><td>下一格起正常;账本里的行留着可查</td></tr>
+        <tr><td>L3</td><td>Lead 没用消息给的 period 交 ⇒ 记「未交」</td><td>消息已给精确 period;Raya 仍会在待读 PR 里看到那张</td></tr>
+        <tr><td>L4/L5</td><td>只在当前和上一格的窗口内重试;补投只在 30 分钟内</td><td>同 L1</td></tr>
+        <tr><td>L6</td><td>没有「本轮无更新」的专用回执</td><td>见上表取舍</td></tr>
+        <tr><td>L7</td><td>节奏调到很短(如 60 秒)长期跑,账本行数会涨且没有自动归档</td><td>默认 6 小时每天几十行可忽略;低于 10 分钟跑超过一周前先补归档白名单</td></tr>
+        <tr><td>L8</td><td>Raya 已激活的环境里中途部署,当格的旧轮事件不会补上对账行</td><td>下一格恢复;不为此引入覆盖写</td></tr>
+      </table>
+    </div>
+    <div class="card gray">
+      <h3>评审状态(如实)</h3>
+      <p>Codex 设计评审 4 轮:R1–R3 每轮都全部采纳,但条数 6→7→8 在长;Tadashi 裁定先做减法。减法版送 R4,Codex 原话「没有发现还应删除的独立子系统」,余 3 个局部修正(对账行放进不截断的字段、节奏很短时的相位边界、三个副作用各自兜错)+ 2 条已知限制,已全部并入。按裁定不开第五轮、不自批,<b>此刻等 Tadashi 裁定怎么过设计门</b>。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s5" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- Summary card -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>页面意见汇总</div>
+    <div class="card" id="summary-card">
+      <p class="jargon">下面自动汇集你在各节写的意见;点按钮一键复制,贴回给 Tadashi 即可。这是修改意见,不是通过信号。</p>
+      <div id="summary-body">(还没有意见)</div>
+      <div id="chunks"></div>
+      <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2382";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly2382-comments:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly2382-comments:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitleFor(t) {
+    var sec = t.closest ? t.closest("[data-section]") : null;
+    return sec ? sec.getAttribute("data-section") : t.getAttribute("data-key");
+  }
+
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (t) {
+      var v = (t.value || "").trim();
+      if (v) parts.push("【" + sectionTitleFor(t) + "】\n" + v);
+    });
+    return parts;
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function doCopy(text, doneMsg) {
+    function done(ok) {
+      copyStatus.textContent = ok ? doneMsg : "复制失败,请手动全选复制上面的文字";
+      setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  function render() {
+    var parts = collect();
+    chunksDiv.textContent = "";
+    if (!parts.length) { summaryBody.textContent = "(还没有意见)"; return; }
+    var chunks = chunkText(parts);
+    if (chunks.length === 1) {
+      summaryBody.textContent = chunks[0];
+    } else {
+      summaryBody.textContent = "意见较长,已拆成 " + chunks.length + " 段,请逐段复制:";
+      chunks.forEach(function (c, i) {
+        var d = document.createElement("div");
+        d.className = "chunk";
+        var pre = document.createElement("div");
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.fontFamily = "'SF Mono', monospace";
+        pre.style.fontSize = "12.5px";
+        pre.style.background = "#f5f5f7";
+        pre.style.borderRadius = "10px";
+        pre.style.padding = "10px";
+        pre.textContent = c;
+        var b = document.createElement("button");
+        b.className = "btn";
+        b.textContent = "复制第 " + (i + 1) + " 段";
+        b.addEventListener("click", function () { doCopy(c, "第 " + (i + 1) + " 段已复制"); });
+        d.appendChild(pre);
+        d.appendChild(b);
+        chunksDiv.appendChild(d);
+      });
+    }
+  }
+
+  boxes.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-key"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-key"), t.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) { doCopy(MARKER + "\n\n(无意见)", "已复制(无意见)"); return; }
+    doCopy(chunkText(parts).join("\n\n"), "已复制全部意见");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
