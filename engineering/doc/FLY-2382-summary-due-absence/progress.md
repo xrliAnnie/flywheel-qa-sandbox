@@ -1,13 +1,14 @@
 ---
 issue: FLY-2382
 phase: implement
-phaseCursor: 8/9
-updated: 2026-09-07T02:39:22.612Z
-nextStep: Request exact-head code review R2 after R1 fix and main integration
+phaseCursor: 9/9
+updated: 2026-09-07T02:45:41.841Z
+nextStep: Create milestone as literal last commit; push; request final
+  exact-head review; open PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2382 progress
-**phase**: implement (8/9)
-**next**: Request exact-head code review R2 after R1 fix and main integration
+**phase**: implement (9/9)
+**next**: Create milestone as literal last commit; push; request final exact-head review; open PR
