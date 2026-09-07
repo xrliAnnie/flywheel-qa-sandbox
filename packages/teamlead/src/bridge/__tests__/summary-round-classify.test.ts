@@ -50,7 +50,7 @@ const pull = (row: SummaryDueRoundRow): SummaryPull => ({
 });
 
 describe("FLY-2382 summary round classification", () => {
-	it("counts only the exact due-period branch and lets delivery override a dead due signal", () => {
+	it("counts only the exact due-period branch while keeping inbox delivery orthogonal", () => {
 		const exact = due("eng-lead");
 		const wrongPeriod = due("product-lead");
 		const wrongPull = {
@@ -75,14 +75,36 @@ describe("FLY-2382 summary round classification", () => {
 			producer_count: 2,
 			delivered_count: 1,
 			absent: ["product-lead"],
-			undelivered: [],
-			report_line: "本轮 1/2 份已交;未交:product-lead",
+			undelivered: ["eng-lead"],
+			report_line:
+				"本轮 1/2 份已交;未交:product-lead 未送达(机制问题,已告警):eng-lead",
 		});
 		expect(result.producers[0]).toMatchObject({
 			delivered: true,
 			due_delivery: "undelivered",
 			delivered_pr: { number: 24 },
 		});
+	});
+
+	it("does not count a closed exact-branch PR as delivered", () => {
+		const row = due("eng-lead");
+		const result = classifyRound(
+			[row],
+			{ status: "ok", pulls: [{ ...pull(row), state: "CLOSED" }] },
+			new Map([[key(row), live("ACKED")]]),
+		);
+
+		expect(result).toMatchObject({
+			delivered_count: 0,
+			absent: ["eng-lead"],
+			undelivered: [],
+			report_line: "本轮 0/1 份已交;未交:eng-lead",
+		});
+		expect(result.producers[0]).toMatchObject({
+			delivered: false,
+			due_delivery: "delivered",
+		});
+		expect(result.producers[0]).not.toHaveProperty("delivered_pr");
 	});
 
 	it.each([

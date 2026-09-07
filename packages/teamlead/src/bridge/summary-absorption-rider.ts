@@ -224,6 +224,7 @@ function appendRayaRound(
 	const roundId = summaryAbsorptionRoundId(slotStartMs);
 	const generatedAt = new Date(nowMs).toISOString();
 	const payload = {
+		...result,
 		event_type: "summary_absorption_round",
 		execution_id: roundId,
 		issue_id: "FLY-2131",
@@ -240,7 +241,6 @@ function appendRayaRound(
 			"【本轮对账(FLY-2382)】无论本轮有没有 review/吸收/追问活动,都要在 #raya 发一条汇报,\n" +
 			"并逐字包含下面这几行(不要改写、不要省略):\n" +
 			result.report_line,
-		...result,
 	};
 	const seq = deps.store.appendLeadEvent(
 		raya.leadId,

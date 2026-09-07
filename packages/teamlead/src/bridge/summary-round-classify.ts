@@ -106,7 +106,10 @@ export function classifyRound(
 		});
 		const deliveredPull =
 			ledger.status === "ok"
-				? ledger.pulls.find((pull) => pull.headRefName === expectedBranch)
+				? ledger.pulls.find(
+						(pull) =>
+							pull.headRefName === expectedBranch && pull.state !== "CLOSED",
+					)
 				: undefined;
 		const delivered =
 			ledger.status === "unavailable" ? "unknown" : deliveredPull !== undefined;
@@ -116,6 +119,11 @@ export function classifyRound(
 			delivered,
 			due_delivery: dueState,
 		};
+		if (dueState === "undelivered") {
+			undelivered.push(displayName(row));
+		} else if (dueState === "unknown") {
+			deliveryUnknown.push(displayName(row));
+		}
 		if (deliveredPull) {
 			deliveredCount += 1;
 			producer.delivered_pr = {
@@ -123,11 +131,7 @@ export function classifyRound(
 				url: deliveredPull.url,
 				state: deliveredPull.state,
 			};
-		} else if (dueState === "undelivered") {
-			undelivered.push(displayName(row));
-		} else if (dueState === "unknown") {
-			deliveryUnknown.push(displayName(row));
-		} else if (delivered === false) {
+		} else if (dueState === "delivered" && delivered === false) {
 			absent.push(displayName(row));
 		}
 		producers.push(producer);

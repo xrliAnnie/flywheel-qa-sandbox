@@ -430,9 +430,22 @@ describe("FLY-2131 summary absorption GatePoller rider", () => {
 			summaryAbsorptionRoundId(180_000),
 		);
 		expect(rayaRound).not.toBeNull();
-		expect(JSON.parse(rayaRound!.payload).notification_context).toContain(
-			"本轮 0/1 份已交;未交:reflection-lead",
-		);
+		expect(JSON.parse(rayaRound!.payload)).toMatchObject({
+			event_type: "summary_absorption_round",
+			execution_id: summaryAbsorptionRoundId(180_000),
+			issue_id: "FLY-2131",
+			status: "scheduled",
+			notification_context: expect.stringContaining(
+				"本轮 0/1 份已交;未交:reflection-lead",
+			),
+		});
+		expect(enqueueLeadEvent.mock.calls.at(-1)?.[0]).toMatchObject({
+			eventId: summaryAbsorptionRoundId(180_000),
+			event: {
+				event_type: "summary_absorption_round",
+				execution_id: summaryAbsorptionRoundId(180_000),
+			},
+		});
 	});
 
 	it.each([0, 2_000, 27_999, 29_999, 30_000, 32_000, 57_999, 59_999])(
