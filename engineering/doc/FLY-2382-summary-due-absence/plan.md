@@ -11,7 +11,7 @@ Issue: FLY-2382 (https://linear.app/geoforge3d/issue/FLY-2382/raya回流-summary
 本单只交两件事,其余一律不做或列为已知限制(§5):
 
 1. **叫**:到节奏点,每个 producer Lead 的 inbox 收到一条 `summary_due`(含 period 与上次交付)。
-2. **看**:节奏点 + 30 分钟,机器算出「谁交了 / 谁没交 / 谁没收到」,以固定一行交给 Raya 在 #raya 转述;Raya 未激活时这一行只落 lead_events 与 bridge.log。
+2. **看**:节奏点 + 30 分钟,机器算出「谁交了 / 谁没交 / 谁没收到」,以固定一行交给 Raya 在 #raya 转述。**正常态 = Raya 在 #raya 说出这一行**;Raya 未激活时这一行只落 lead_events 与 bridge.log,这是**降级状态**(Lead 裁定 ask `835d4294`:不开 Bridge 直发 #raya 的旁路;Raya 激活缺口由 Lead 另起单跟,不进本单 scope)。
 
 | # | issue 验收 | 落点 | 状态口径 |
 |---|---|---|---|
@@ -183,7 +183,7 @@ report_line: string,        // 下表拼好的对账行(逐字),Raya 直接转�
 
 **副作用(全部幂等,每 pass 在窗口内重放;R4-3:每个 slot、Raya append+enqueue、聚合 alert 三者**各自独立 `try/catch`**——`registry.enqueueLeadEvent` 在 runtime 缺失或 renderer 抛错时同步 throw,若不隔离,Raya 侧持续失败会让 alert 永远发不出、且不走 no-Raya 分支;失败只写一行含 slot 与 report_line 的规范化 warn,然后继续下一个副作用 / 下一个 slot)**:
 - 有 Raya:`appendLeadEvent(raya, "summary-absorption:<slotISO>", …payload)` + `enqueueLeadEvent` —— 与现 rider 完全相同的 write-ahead 语义与既有崩溃测试;roundId 不变。
-- 无 Raya(`resolveRaya` null):跳过;warn 一行 `[summary-due] slot <S> settled without Raya recipient: <report_line>`(in-memory 按 slot 去重,best-effort;这是 Raya 激活前唯一可见痕迹)。
+- 无 Raya(`resolveRaya` null)= **降级状态,不是正常态**:跳过;warn 一行 `[summary-due] slot <S> settled without Raya recipient (DEGRADED: no #raya report): <report_line>`(in-memory 按 slot 去重,best-effort;这是 Raya 激活前唯一可见痕迹)。日志文本里带 `DEGRADED` 字样,让读日志的人一眼看出这不是设计目标形态。
 - undelivered 非空 ⇒ **一条**聚合 alert:kind 复用 `inbox_loop_stalled`(owner `founder_direct`,`kind-contract.ts:94`;语义就是 Bridge→Lead inbox 没送到),`eventId = summary_due_undelivered:<slotISO>`(sink 按 eventId 去重),`leadId: "patrol-roster:summary-due"`、`projectName: FLEET_ALERT_PROJECT`(沿用 patrol fleet-scoped 写法),`severity: "warning"`(无 DM),title `summary_due not delivered to N Lead inbox(es)`,body 逐行 `project/lead: <settlement kind/state>`。**明确后果**:这是 founder-facing 告警;8/11 producer 通路未证明可达(exploration §1.4),首个生产 slot 很可能列出多名 Lead——这正是要暴露的静音失败。alert sink 缺失 ⇒ warn。
 
 ### 2.4 gh 账本(`bridge/summary-delivery-ledger.ts`,新)
@@ -306,7 +306,7 @@ const summaryAbsorptionPass = createSummaryAbsorptionPass({
 | 风险 | 应对 |
 |---|---|
 | 8/11 producer inbox 通路生产未证明 | undelivered 单列 + 一 slot 一条 warning 告警;A4 选已证可达的 Lead;其余作为本单**发现**移交 infra |
-| Raya 未激活 ⇒ A2 真机不可验 | §0 rollout prerequisite;本单只钉单测与 no-Raya warn |
+| Raya 未激活 ⇒ A2 真机不可验 | §0 rollout prerequisite;本单只钉单测与标了 DEGRADED 的 no-Raya warn;Raya 激活缺口 Lead 另起单(ask `835d4294`) |
 | founder-facing 告警首个 slot 可能列多名 Lead | 有意为之;warning、聚合一条、无 DM |
 | gh 抖动 | 快照①失败不阻断叫人;快照②失败是该轮的冻结结果(不可得),下一 slot 自愈 |
 | epoch 对齐的 6h 边界(17/23/05/11 PDT) | 不归本单;founder 改 cadence 即改相位 |
