@@ -1,0 +1,10 @@
+{
+  "RAYA_MEMORY_FILE": "$HOME/Dev/raya-lead-workspace/memory/MEMORY.md",
+  "RAYA_WORKSPACE_ROOTS_JSON": [
+    "$HOME/.flywheel/raya/code",
+    "$HOME/Dev/raya-lead-workspace/memory"
+  ],
+  "RAYA_VOICE_OPTIONS_JSON": {
+    "startInstructionsFile": "$HOME/.flywheel/raya/code/apps/voice/assets/start-instructions.zh.md"
+  }
+}
