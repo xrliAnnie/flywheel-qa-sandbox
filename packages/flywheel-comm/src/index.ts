@@ -1245,6 +1245,7 @@ async function runComplete(args: string[]): Promise<void> {
 			"exit-reason": { type: "string" },
 			"base-ref": { type: "string" },
 			"target-repo": { type: "string" },
+			"declare-pr": { type: "string", multiple: true },
 			// FLY-191 Phase 2: bind the review request to the exact gate
 			// question from `gate --no-block` (route=needs_review).
 			"question-id": { type: "string" },
@@ -1262,6 +1263,7 @@ async function runComplete(args: string[]): Promise<void> {
 		exitReason: values["exit-reason"],
 		baseRef: values["base-ref"],
 		targetRepo: values["target-repo"],
+		declarePr: values["declare-pr"],
 		questionId: values["question-id"],
 		drainReceipt: values["drain-receipt"],
 	});

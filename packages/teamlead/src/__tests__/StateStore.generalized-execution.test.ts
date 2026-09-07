@@ -203,7 +203,133 @@ const enabled = {
 	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 };
 
+const DECLARED_NESTED_PR = {
+	repoIdentity: "owner/nested",
+	prNumber: 42,
+	probeRepoSlug: "owner/nested",
+	frozenHeadSha: "a".repeat(40),
+	targetRepoPath: "apps/nested",
+};
+
 describe("generalized execution admission and terminal contracts", () => {
+	it("commits declared PR evidence atomically and replays only the identical receipt set", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		const completion = {
+			nodeReuseEnabled: false,
+			executionId: "exec-1",
+			route: "needs_review",
+			sourceEventId: "complete-with-declarations",
+			completionSubmission: { decision: { route: "needs_review" } },
+			declaredPrs: [DECLARED_NESTED_PR],
+			now: "2026-09-06T00:00:00.000Z",
+		};
+
+		expect(store.commitEnrolledCompletion(completion)).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(
+			store.commitEnrolledCompletion({
+				...completion,
+				sourceEventId: "complete-with-declarations-retry",
+				now: "2026-09-06T01:00:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: true });
+		expect(store.listShipRelevantDeclarationsForRun("run-1")).toEqual([
+			expect.objectContaining({
+				receipt_id: "complete-with-declarations",
+				declaration_seq: 1,
+				declared_at: "2026-09-06T00:00:00.000Z",
+			}),
+		]);
+
+		expect(
+			store.commitEnrolledCompletion({
+				...completion,
+				sourceEventId: "complete-with-declarations-changed",
+				declaredPrs: [
+					DECLARED_NESTED_PR,
+					{
+						repoIdentity: "owner/second",
+						prNumber: 43,
+						probeRepoSlug: "owner/second",
+						frozenHeadSha: "b".repeat(40),
+						targetRepoPath: "apps/second",
+					},
+				],
+			}),
+		).toEqual({ ok: false, reason: "declaration_conflict" });
+		expect(store.listShipRelevantDeclarationsForRun("run-1")).toHaveLength(1);
+		store.close();
+	});
+
+	it("rolls declared PR evidence back when the completion transaction fails", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		raw.exec(`
+			CREATE TRIGGER reject_declared_completion_test
+			BEFORE INSERT ON workflow_node_completion
+			BEGIN SELECT RAISE(ABORT, 'injected declared completion failure'); END
+		`);
+
+		expect(() =>
+			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "complete-declared-rollback",
+				completionSubmission: { decision: { route: "needs_review" } },
+				declaredPrs: [DECLARED_NESTED_PR],
+			}),
+		).toThrow("injected declared completion failure");
+		expect(store.listShipRelevantDeclarationsForRun("run-1")).toEqual([]);
+		store.close();
+	});
+
+	it("does not persist declared PR evidence from a superseded execution", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 2,
+			state: "pending",
+			executionId: "exec-2",
+		});
+
+		expect(
+			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "complete-stale-declared",
+				completionSubmission: { decision: { route: "needs_review" } },
+				declaredPrs: [DECLARED_NESTED_PR],
+			}),
+		).toEqual({ ok: false, reason: "stale_execution_superseded" });
+		expect(store.listShipRelevantDeclarationsForRun("run-1")).toEqual([]);
+		store.close();
+	});
 	it.each([
 		[1, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
 		[1, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
@@ -2400,6 +2526,16 @@ describe("generalized execution admission and terminal contracts", () => {
 			project_name: "flywheel",
 			status: "running",
 		});
+		expect(
+			generic.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
+				executionId: "exec-1",
+				route: "no_code",
+				sourceEventId: "declared-pr-bypass",
+				completionSubmission: { decision: { route: "no_code" } },
+				declaredPrs: [DECLARED_NESTED_PR],
+			}),
+		).toEqual({ ok: false, reason: "no_code_artifact_present" });
 		expect(
 			generic.commitEnrolledCompletion({
 				nodeReuseEnabled: false,

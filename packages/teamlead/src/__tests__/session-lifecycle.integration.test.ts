@@ -313,17 +313,18 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 			pr_number: 42,
 			codex_skip: 1,
 		});
-		store.putShipRelevantDiffSnapshot({
+		store.putShipRelevantPrSnapshot({
 			execution_id: "exec-notify",
-			pr_head_sha: head,
-			repo: "test/test-proj",
+			repo_slug: "test/test-proj",
 			pr_number: 42,
+			pr_head_sha: head,
+			role: "primary",
 			base_ref: "main",
 			base_oid: "b".repeat(40),
-			classifier_version: 1,
+			classifier_version: 2,
 			ship_relevant: 0,
 			file_count: 1,
-			sample_paths: ["engineering/doc/TEST-NOTIFY-1/plan.md"],
+			commit_shas: [head],
 		});
 
 		await new Promise((r) => setTimeout(r, 200));

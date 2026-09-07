@@ -1,0 +1,25 @@
+erDiagram
+  WORKFLOW_RUN_NODE ||--o{ SHIP_RELEVANT_DECLARED_PR : "哪个节点尝试声明的"
+  SESSIONS ||--o{ SHIP_RELEVANT_PR_SNAPSHOT : "gate 会话拥有全部快照"
+  SHIP_RELEVANT_DECLARED_PR ||--o| SHIP_RELEVANT_PR_SNAPSHOT : "按 repo 与 PR 号刷新"
+  WORKFLOW_RUN_NODE ||--o{ CODEX_REVIEW_RECORD : "G1 证据"
+  SHIP_RELEVANT_DECLARED_PR {
+    TEXT receipt_id PK "哪次完工事件"
+    TEXT repo_identity PK "小写 owner/repo"
+    INTEGER pr_number PK "大于 0"
+    TEXT run_id "所属单"
+    INTEGER attempt "第几次尝试"
+    TEXT frozen_head_sha "声明时子仓 HEAD"
+    TEXT declared_at "只追加不改"
+  }
+  SHIP_RELEVANT_PR_SNAPSHOT {
+    TEXT execution_id PK "刷新它的 gate 会话"
+    TEXT repo_slug PK "主仓或子仓"
+    INTEGER pr_number PK
+    TEXT pr_head_sha "分类时的 head"
+    TEXT role "primary 或 declared"
+    INTEGER classifier_version "2"
+    INTEGER ship_relevant "0 纯文档 1 有代码"
+    INTEGER file_count "合计不超过 50"
+    TEXT commit_shas "PR 里全部 commit"
+  }

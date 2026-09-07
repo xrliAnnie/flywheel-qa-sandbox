@@ -73,6 +73,14 @@ const VALID_ROUTES = new Set([
 const ATTEMPT_COUNT = 4;
 const ATTEMPT_TIMEOUT_MS = 5000;
 const BACKOFF_MS = [1000, 2000, 4000] as const;
+const FULL_SHA = /^[0-9a-f]{40}$/;
+export const MAX_DECLARED_PRS_PER_COMPLETION = 8;
+
+interface DeclaredPrEvidence {
+	targetRepoPath: string;
+	prNumber: number;
+	headSha: string;
+}
 
 type Evidence = {
 	// FLY-493: `ready_to_merge` (pr_handoff) joins `merged` — a no-transport
@@ -102,6 +110,8 @@ type Evidence = {
 	 * producers stay field-aligned.
 	 */
 	headSha?: string;
+	/** FLY-2395: runner-declared nested PRs, frozen at completion time. */
+	declaredPrs?: DeclaredPrEvidence[];
 };
 
 type Payload = {
@@ -146,6 +156,8 @@ export interface CompleteOpts {
 	questionId?: string;
 	/** FLY-2268: challenge id returned by a deferred completion attempt. */
 	drainReceipt?: string;
+	/** Repeatable `<relative-repo-path>:<pr-number>` nested PR declarations. */
+	declarePr?: string[];
 }
 
 export function founderReviewCompletionBlockReason(input: {
@@ -187,6 +199,20 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	}
 	if (opts.targetRepo && opts.pr === undefined) {
 		console.error("--target-repo requires --pr");
+		process.exit(1);
+	}
+	if (
+		(opts.declarePr?.length ?? 0) > 0 &&
+		((opts.route !== "needs_review" && opts.route !== "pr_handoff") ||
+			opts.pr === undefined)
+	) {
+		console.error("--declare-pr requires --pr on a PR route");
+		process.exit(1);
+	}
+	if ((opts.declarePr?.length ?? 0) > MAX_DECLARED_PRS_PER_COMPLETION) {
+		console.error(
+			`--declare-pr accepts at most ${MAX_DECLARED_PRS_PER_COMPLETION} entries`,
+		);
 		process.exit(1);
 	}
 	if (opts.drainReceipt !== undefined && !opts.drainReceipt.trim()) {
@@ -307,6 +333,8 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		pr: opts.pr,
 		targetRepo: opts.targetRepo,
 	});
+	const declaredPrs = collectDeclaredPrEvidence(opts.declarePr ?? []);
+	if (declaredPrs.length > 0) evidence.declaredPrs = declaredPrs;
 	if (opts.route === "ship_attempt_failed" && opts.pr !== undefined) {
 		evidence.prNumber = opts.pr;
 	}
@@ -603,6 +631,9 @@ function printDrainRetryGuidance(
 		...(opts.targetRepo
 			? [`--target-repo ${JSON.stringify(opts.targetRepo)}`]
 			: []),
+		...(opts.declarePr ?? []).map(
+			(declaration) => `--declare-pr ${JSON.stringify(declaration)}`,
+		),
 		...(opts.questionId
 			? [`--question-id ${JSON.stringify(opts.questionId)}`]
 			: []),
@@ -911,6 +942,43 @@ function resolveEvidenceRepo(targetRepo?: string): string | undefined {
 		);
 		process.exit(1);
 	}
+}
+
+function collectDeclaredPrEvidence(
+	declarations: string[],
+): DeclaredPrEvidence[] {
+	return declarations.map((raw) => {
+		const declaration = raw.trim();
+		const separator = declaration.lastIndexOf(":");
+		const targetRepoPath = declaration.slice(0, separator).trim();
+		const rawPr = declaration.slice(separator + 1).trim();
+		if (
+			separator <= 0 ||
+			!targetRepoPath ||
+			!/^[1-9]\d*$/.test(rawPr) ||
+			!Number.isSafeInteger(Number(rawPr))
+		) {
+			console.error(
+				"--declare-pr must use <safe-relative-repo-path>:<positive-pr-number>",
+			);
+			process.exit(1);
+		}
+		const repoRoot = resolveEvidenceRepo(targetRepoPath);
+		const headSha = repoRoot
+			? gitAt(repoRoot, ["rev-parse", "HEAD"]).trim().toLowerCase()
+			: "";
+		if (!FULL_SHA.test(headSha)) {
+			console.error(
+				`--declare-pr cannot resolve a full git HEAD for ${targetRepoPath}`,
+			);
+			process.exit(1);
+		}
+		return {
+			targetRepoPath,
+			prNumber: Number(rawPr),
+			headSha,
+		};
+	});
 }
 
 /** True only when git proves that ref:path exists. Empty stdout is success. */

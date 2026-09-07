@@ -1,11 +1,11 @@
-import type { StateStore } from "../StateStore.js";
+import type { ShipRelevantPrSnapshot, StateStore } from "../StateStore.js";
 
-export const SHIP_RELEVANT_CLASSIFIER_VERSION = 1;
+export const SHIP_RELEVANT_CLASSIFIER_VERSION = 2;
 /** A docs-only exemption is authorization evidence, so it expires when the
  * async GitHub metadata refresher stops making progress. */
 export const SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS = 60_000;
 
-const MAX_DOCS_ONLY_FILES = 50;
+export const MAX_DOCS_ONLY_FILES = 50;
 const DOCS_PREFIXES = [
 	"doc/",
 	"docs/",
@@ -16,12 +16,16 @@ const DOCS_PREFIXES = [
 ] as const;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
-export type ShipRelevantGitHubApi = (path: string) => Promise<unknown>;
+export type ShipRelevantGitHubApi = (
+	path: string,
+	options: { signal: AbortSignal },
+) => Promise<unknown>;
 
 interface PullMetadata {
 	head: { sha: string };
 	base: { ref: string; sha: string };
 	changed_files: number;
+	commits: number;
 }
 
 interface PullFile {
@@ -36,6 +40,10 @@ interface GitTreeEntry {
 	type: string;
 }
 
+interface PullCommit {
+	sha: string;
+}
+
 export interface ShipRelevantClassificationSnapshot {
 	repo: string;
 	pr_number: number;
@@ -45,6 +53,7 @@ export interface ShipRelevantClassificationSnapshot {
 	classifier_version: number;
 	ship_relevant: 0 | 1;
 	file_count: number;
+	commit_shas: string[];
 	sample_paths?: string[];
 }
 
@@ -58,6 +67,7 @@ export type ShipRelevantClassification =
 				| "metadata_drift"
 				| "head_mismatch"
 				| "file_count_mismatch"
+				| "commit_count_mismatch"
 				| "tree_incomplete";
 	  };
 
@@ -73,6 +83,7 @@ function parseMetadata(value: unknown): PullMetadata | undefined {
 	const baseRef = value.base.ref;
 	const baseSha = value.base.sha;
 	const changedFiles = value.changed_files;
+	const commits = value.commits;
 	if (
 		typeof head !== "string" ||
 		!FULL_SHA.test(head.toLowerCase()) ||
@@ -82,7 +93,10 @@ function parseMetadata(value: unknown): PullMetadata | undefined {
 		!FULL_SHA.test(baseSha.toLowerCase()) ||
 		typeof changedFiles !== "number" ||
 		!Number.isSafeInteger(changedFiles) ||
-		changedFiles <= 0
+		changedFiles <= 0 ||
+		typeof commits !== "number" ||
+		!Number.isSafeInteger(commits) ||
+		commits <= 0
 	) {
 		return undefined;
 	}
@@ -90,7 +104,14 @@ function parseMetadata(value: unknown): PullMetadata | undefined {
 		head: { sha: head.toLowerCase() },
 		base: { ref: baseRef, sha: baseSha.toLowerCase() },
 		changed_files: changedFiles,
+		commits,
 	};
+}
+
+function parsePullCommit(value: unknown): PullCommit | undefined {
+	if (!isObject(value) || typeof value.sha !== "string") return undefined;
+	const sha = value.sha.toLowerCase();
+	return FULL_SHA.test(sha) ? { sha } : undefined;
 }
 
 function parsePullFile(value: unknown): PullFile | undefined {
@@ -169,6 +190,7 @@ export async function classifyShipRelevantDiff(input: {
 	prNumber: number;
 	prHeadSha: string;
 	api: ShipRelevantGitHubApi;
+	signal?: AbortSignal;
 }): Promise<ShipRelevantClassification> {
 	if (
 		!/^[^/]+\/[^/]+$/.test(input.repo) ||
@@ -180,9 +202,12 @@ export async function classifyShipRelevantDiff(input: {
 	}
 
 	let metadata: PullMetadata | undefined;
+	const signal = input.signal ?? new AbortController().signal;
 	try {
 		metadata = parseMetadata(
-			await input.api(`/repos/${input.repo}/pulls/${input.prNumber}`),
+			await input.api(`/repos/${input.repo}/pulls/${input.prNumber}`, {
+				signal,
+			}),
 		);
 	} catch {
 		return { kind: "unknown", reason: "api_error" };
@@ -190,6 +215,35 @@ export async function classifyShipRelevantDiff(input: {
 	if (!metadata) return { kind: "unknown", reason: "metadata_invalid" };
 	if (metadata.head.sha !== input.prHeadSha.toLowerCase()) {
 		return { kind: "unknown", reason: "head_mismatch" };
+	}
+	if (metadata.commits > 250) {
+		return { kind: "unknown", reason: "commit_count_mismatch" };
+	}
+
+	const commitShas: string[] = [];
+	try {
+		for (let page = 1; ; page++) {
+			const rawPage = await input.api(
+				`/repos/${input.repo}/pulls/${input.prNumber}/commits?per_page=100&page=${page}`,
+				{ signal },
+			);
+			if (!Array.isArray(rawPage)) {
+				return { kind: "unknown", reason: "api_error" };
+			}
+			if (rawPage.length === 0) break;
+			for (const raw of rawPage) {
+				const commit = parsePullCommit(raw);
+				if (!commit) {
+					return { kind: "unknown", reason: "commit_count_mismatch" };
+				}
+				commitShas.push(commit.sha);
+			}
+		}
+	} catch {
+		return { kind: "unknown", reason: "api_error" };
+	}
+	if (commitShas.length !== metadata.commits) {
+		return { kind: "unknown", reason: "commit_count_mismatch" };
 	}
 
 	const snapshotBase = {
@@ -200,6 +254,7 @@ export async function classifyShipRelevantDiff(input: {
 		base_oid: metadata.base.sha,
 		classifier_version: SHIP_RELEVANT_CLASSIFIER_VERSION,
 		file_count: metadata.changed_files,
+		commit_shas: commitShas,
 	};
 	if (metadata.changed_files > MAX_DOCS_ONLY_FILES) {
 		return {
@@ -213,6 +268,7 @@ export async function classifyShipRelevantDiff(input: {
 		for (let page = 1; ; page++) {
 			const rawPage = await input.api(
 				`/repos/${input.repo}/pulls/${input.prNumber}/files?per_page=100&page=${page}`,
+				{ signal },
 			);
 			if (!Array.isArray(rawPage)) {
 				return { kind: "unknown", reason: "api_error" };
@@ -259,6 +315,7 @@ export async function classifyShipRelevantDiff(input: {
 			headTree = parseTree(
 				await input.api(
 					`/repos/${input.repo}/git/trees/${metadata.head.sha}?recursive=1`,
+					{ signal },
 				),
 			);
 			if (!headTree) return { kind: "unknown", reason: "tree_incomplete" };
@@ -267,6 +324,7 @@ export async function classifyShipRelevantDiff(input: {
 			baseTree = parseTree(
 				await input.api(
 					`/repos/${input.repo}/git/trees/${metadata.base.sha}?recursive=1`,
+					{ signal },
 				),
 			);
 			if (!baseTree) return { kind: "unknown", reason: "tree_incomplete" };
@@ -299,7 +357,9 @@ export async function classifyShipRelevantDiff(input: {
 	let finalMetadata: PullMetadata | undefined;
 	try {
 		finalMetadata = parseMetadata(
-			await input.api(`/repos/${input.repo}/pulls/${input.prNumber}`),
+			await input.api(`/repos/${input.repo}/pulls/${input.prNumber}`, {
+				signal,
+			}),
 		);
 	} catch {
 		return { kind: "unknown", reason: "api_error" };
@@ -311,7 +371,8 @@ export async function classifyShipRelevantDiff(input: {
 	if (
 		finalMetadata.base.ref !== metadata.base.ref ||
 		finalMetadata.base.sha !== metadata.base.sha ||
-		finalMetadata.changed_files !== metadata.changed_files
+		finalMetadata.changed_files !== metadata.changed_files ||
+		finalMetadata.commits !== metadata.commits
 	) {
 		return { kind: "unknown", reason: "metadata_drift" };
 	}
@@ -322,11 +383,73 @@ export async function classifyShipRelevantDiff(input: {
 	};
 }
 
-/**
- * Async producer for the synchronous founder-hold predicate. Classifications
- * are coalesced per exact candidate and unknown refreshes remove any stale
- * exemption before entering a bounded retry backoff.
- */
+export const SHIP_RELEVANCE_GITHUB_BUDGET_PER_HOUR = 1_500;
+export const SHIP_RELEVANCE_REQUESTS_PER_PASS = 40;
+export const SHIP_RELEVANCE_MAX_CONCURRENCY = 4;
+
+export interface ShipRelevantRefreshCandidate {
+	executionId: string;
+	repoIdentity: string;
+	repoSlug: string;
+	prNumber: number;
+	prHeadSha: string;
+	role: "primary" | "declared";
+	api: ShipRelevantGitHubApi;
+}
+
+export interface ShipRelevantRunRefresh {
+	executionId: string;
+	primary: ShipRelevantRefreshCandidate;
+	declared: ShipRelevantRefreshCandidate[];
+}
+
+interface RefreshBudget {
+	controller: AbortController;
+	deadline: number;
+	requests: number;
+}
+
+function storedClassification(
+	snapshot: ShipRelevantPrSnapshot,
+): ShipRelevantClassification {
+	return {
+		kind: "snapshot",
+		snapshot: {
+			repo: snapshot.repo_slug,
+			pr_number: snapshot.pr_number,
+			pr_head_sha: snapshot.pr_head_sha,
+			base_ref: snapshot.base_ref,
+			base_oid: snapshot.base_oid,
+			classifier_version: snapshot.classifier_version,
+			ship_relevant: snapshot.ship_relevant,
+			file_count: snapshot.file_count,
+			commit_shas: snapshot.commit_shas,
+		},
+	};
+}
+
+async function mapWithConcurrency<T, R>(
+	items: T[],
+	concurrency: number,
+	worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let next = 0;
+	const workers = Array.from(
+		{ length: Math.min(concurrency, items.length) },
+		async () => {
+			for (;;) {
+				const index = next++;
+				if (index >= items.length) return;
+				results[index] = await worker(items[index]!);
+			}
+		},
+	);
+	await Promise.all(workers);
+	return results;
+}
+
+/** Async producer for the synchronous founder-hold predicate. */
 export class ShipRelevantDiffService {
 	private readonly inFlight = new Map<
 		string,
@@ -334,58 +457,105 @@ export class ShipRelevantDiffService {
 	>();
 	private readonly retryAfter = new Map<string, number>();
 	private readonly metadataAfter = new Map<string, number>();
+	private readonly lastAttemptAt = new Map<string, number>();
+	private readonly requestTimes: number[] = [];
+	private passInFlight: Promise<void> | undefined;
 
 	constructor(
 		private readonly store: Pick<
 			StateStore,
-			| "putShipRelevantDiffSnapshot"
-			| "deleteShipRelevantDiffSnapshot"
-			| "deleteOtherShipRelevantDiffSnapshots"
-			| "getShipRelevantDiffSnapshot"
+			| "putShipRelevantPrSnapshot"
+			| "deleteShipRelevantPrSnapshot"
+			| "deleteShipRelevantPrSnapshotsExcept"
+			| "getShipRelevantPrSnapshot"
 		>,
 		private readonly options: {
 			now?: () => number;
 			retryMs?: number;
 			metadataRetryMs?: number;
-			docsMetadataRetryMs?: number;
+			primaryDocsMetadataRetryMs?: number;
+			declaredDocsMetadataRetryMs?: number;
+			requestBudgetPerHour?: number;
+			requestsPerPass?: number;
+			maxConcurrency?: number;
+			maxDeclaredPrs?: number;
 		} = {},
 	) {}
 
-	ensure(input: {
-		executionId: string;
-		repo: string;
-		prNumber: number;
-		prHeadSha: string;
-		api: ShipRelevantGitHubApi;
-	}): Promise<ShipRelevantClassification> {
-		const key = `${input.executionId}:${input.prHeadSha.toLowerCase()}`;
+	private now(): number {
+		return this.options.now?.() ?? Date.now();
+	}
+
+	private key(input: ShipRelevantRefreshCandidate): string {
+		return `${input.executionId}:${input.repoSlug.toLowerCase()}:${input.prNumber}:${input.prHeadSha.toLowerCase()}`;
+	}
+
+	private deleteSnapshot(input: ShipRelevantRefreshCandidate): void {
+		this.store.deleteShipRelevantPrSnapshot(
+			input.executionId,
+			input.repoSlug,
+			input.prNumber,
+		);
+	}
+
+	private budgetedApi(
+		api: ShipRelevantGitHubApi,
+		budget: RefreshBudget,
+	): ShipRelevantGitHubApi {
+		return async (path) => {
+			const now = this.now();
+			while (
+				this.requestTimes.length > 0 &&
+				this.requestTimes[0]! <= now - 60 * 60_000
+			) {
+				this.requestTimes.shift();
+			}
+			if (now >= budget.deadline) budget.controller.abort();
+			if (
+				budget.controller.signal.aborted ||
+				budget.requests >=
+					(this.options.requestsPerPass ?? SHIP_RELEVANCE_REQUESTS_PER_PASS) ||
+				this.requestTimes.length >=
+					(this.options.requestBudgetPerHour ??
+						SHIP_RELEVANCE_GITHUB_BUDGET_PER_HOUR)
+			) {
+				throw new Error("ship_relevance_request_budget_exhausted");
+			}
+			budget.requests += 1;
+			this.requestTimes.push(now);
+			return api(path, { signal: budget.controller.signal });
+		};
+	}
+
+	private async ensureCandidate(
+		input: ShipRelevantRefreshCandidate,
+		budget: RefreshBudget,
+	): Promise<ShipRelevantClassification> {
+		const key = this.key(input);
 		const existing = this.inFlight.get(key);
 		if (existing) return existing;
-
-		const now = this.options.now?.() ?? Date.now();
+		const now = this.now();
+		this.lastAttemptAt.set(key, now);
 		for (const [candidate, retryAt] of this.retryAfter) {
 			if (retryAt <= now) this.retryAfter.delete(candidate);
 		}
 		for (const [candidate, retryAt] of this.metadataAfter) {
 			if (retryAt <= now) this.metadataAfter.delete(candidate);
 		}
-		this.store.deleteOtherShipRelevantDiffSnapshots(
+
+		let cached = this.store.getShipRelevantPrSnapshot(
 			input.executionId,
-			input.prHeadSha,
-		);
-		let cached = this.store.getShipRelevantDiffSnapshot(
-			input.executionId,
-			input.prHeadSha,
+			input.repoSlug,
+			input.prNumber,
 		);
 		let cachedMatches =
-			cached?.repo === input.repo &&
+			cached?.repo_slug.toLowerCase() === input.repoSlug.toLowerCase() &&
 			cached.pr_number === input.prNumber &&
+			cached.pr_head_sha.toLowerCase() === input.prHeadSha.toLowerCase() &&
+			cached.role === input.role &&
 			cached.classifier_version === SHIP_RELEVANT_CLASSIFIER_VERSION;
 		if (cached && !cachedMatches) {
-			this.store.deleteShipRelevantDiffSnapshot(
-				input.executionId,
-				input.prHeadSha,
-			);
+			this.deleteSnapshot(input);
 			this.retryAfter.delete(key);
 			this.metadataAfter.delete(key);
 			cached = undefined;
@@ -397,96 +567,68 @@ export class ShipRelevantDiffService {
 			this.options.metadataRetryMs ?? 30_000,
 			Math.floor(SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS / 2),
 		);
-		// A docs-only exemption is permissive authorization evidence, so it gets a
-		// SHORTER sub-lease than the safe-side ship-relevant result: it caps how
-		// long a retarget can go unnoticed while still cutting the per-tick /pulls
-		// load (~1200→~360 calls/hr for a 3s GatePoller tick). It is never longer
-		// than the ship-relevant lease.
-		//
-		// Bounded fail-open (Eng Lead adjudicated, FLY-1251): the actual
-		// retarget-detection latency is the sub-lease (10s) PLUS the GatePoller
-		// poll interval (~3s) ≈ 13s — NOT <=10s. A retarget is served through the
-		// current lease and re-evaluated on the first tick after it expires
-		// (see the "bounds the docs-only retarget fail-open" test). This is the
-		// accepted trade-off for the load reduction; a hard <=10s bound (the sync
-		// approval predicate enforcing the persisted deadline) is deferred to the
-		// PR-2 contract-level tightening.
 		const docsMetadataRetryMs = Math.min(
-			this.options.docsMetadataRetryMs ?? 10_000,
+			input.role === "declared"
+				? (this.options.declaredDocsMetadataRetryMs ?? 30_000)
+				: (this.options.primaryDocsMetadataRetryMs ?? 10_000),
 			metadataRetryMs,
 		);
-		const subLeaseMs = (shipRelevant: number): number =>
-			shipRelevant === 1 ? metadataRetryMs : docsMetadataRetryMs;
+		const api = this.budgetedApi(input.api, budget);
 		const work = (async (): Promise<ShipRelevantClassification> => {
-			// A cached result within its metadata sub-lease is trusted without a
-			// re-fetch. The lease length is side-specific and is granted only after
-			// a revalidation confirms the anchors (see below): the ship-relevant safe
-			// side leases longer; a docs-only exemption gets a short bounded lease so
-			// a retarget is still caught within it.
 			if (cachedMatches && cached) {
 				if ((this.metadataAfter.get(key) ?? 0) > now) {
-					const { execution_id, computed_at, ...snapshot } = cached;
-					void execution_id;
-					void computed_at;
-					return { kind: "snapshot", snapshot };
+					return storedClassification(cached);
 				}
 				let metadata: PullMetadata | undefined;
 				try {
 					metadata = parseMetadata(
-						await input.api(`/repos/${input.repo}/pulls/${input.prNumber}`),
+						await api(`/repos/${input.repoSlug}/pulls/${input.prNumber}`, {
+							signal: budget.controller.signal,
+						}),
 					);
 				} catch {
-					this.store.deleteShipRelevantDiffSnapshot(
-						input.executionId,
-						input.prHeadSha,
-					);
+					this.deleteSnapshot(input);
 					this.metadataAfter.delete(key);
 					this.retryAfter.set(key, now + retryMs);
 					return { kind: "unknown", reason: "api_error" };
 				}
 				if (!metadata) {
-					this.store.deleteShipRelevantDiffSnapshot(
-						input.executionId,
-						input.prHeadSha,
-					);
+					this.deleteSnapshot(input);
 					this.metadataAfter.delete(key);
 					this.retryAfter.set(key, now + retryMs);
 					return { kind: "unknown", reason: "metadata_invalid" };
 				}
 				if (metadata.head.sha !== input.prHeadSha.toLowerCase()) {
-					this.store.deleteShipRelevantDiffSnapshot(
-						input.executionId,
-						input.prHeadSha,
-					);
+					this.deleteSnapshot(input);
 					this.metadataAfter.delete(key);
 					this.retryAfter.set(key, now + retryMs);
 					return { kind: "unknown", reason: "head_mismatch" };
 				}
 				if (
 					metadata.base.ref !== cached.base_ref ||
-					metadata.base.sha !== cached.base_oid.toLowerCase()
+					metadata.base.sha !== cached.base_oid.toLowerCase() ||
+					metadata.changed_files !== cached.file_count ||
+					metadata.commits !== cached.commit_shas.length
 				) {
-					this.store.deleteShipRelevantDiffSnapshot(
-						input.executionId,
-						input.prHeadSha,
-					);
+					this.deleteSnapshot(input);
 					this.retryAfter.delete(key);
 					this.metadataAfter.delete(key);
 					cached = undefined;
 					cachedMatches = false;
 				} else {
-					// The content anchors are unchanged, so refresh the bounded
-					// authorization lease without re-fetching files and trees. The
-					// docs-only side gets the shorter lease (subLeaseMs).
-					this.store.putShipRelevantDiffSnapshot({
+					const refreshed = {
 						...cached,
 						computed_at: new Date(now).toISOString(),
-					});
-					this.metadataAfter.set(key, now + subLeaseMs(cached.ship_relevant));
-					const { execution_id, computed_at, ...snapshot } = cached;
-					void execution_id;
-					void computed_at;
-					return { kind: "snapshot", snapshot };
+					};
+					this.store.putShipRelevantPrSnapshot(refreshed);
+					this.metadataAfter.set(
+						key,
+						now +
+							(cached.ship_relevant === 1
+								? metadataRetryMs
+								: docsMetadataRetryMs),
+					);
+					return storedClassification(refreshed);
 				}
 			}
 			if ((this.retryAfter.get(key) ?? 0) > now) {
@@ -494,33 +636,29 @@ export class ShipRelevantDiffService {
 			}
 
 			const result = await classifyShipRelevantDiff({
-				repo: input.repo,
+				repo: input.repoSlug,
 				prNumber: input.prNumber,
 				prHeadSha: input.prHeadSha,
-				api: input.api,
+				api,
+				signal: budget.controller.signal,
 			});
 			if (result.kind === "snapshot") {
-				this.store.putShipRelevantDiffSnapshot({
+				const { repo, ...snapshot } = result.snapshot;
+				this.store.putShipRelevantPrSnapshot({
 					execution_id: input.executionId,
-					...result.snapshot,
+					repo_slug: repo,
+					role: input.role,
+					...snapshot,
 					computed_at: new Date(now).toISOString(),
 				});
 				this.retryAfter.set(key, now + retryMs);
-				// Only the safe-side ship-relevant result leases straight off a full
-				// classify. A docs-only exemption is granted its bounded sub-lease
-				// only AFTER the first consumer pass revalidates the anchors — so a
-				// retarget landing right after classify is caught on the next tick,
-				// not masked for the whole lease.
 				if (result.snapshot.ship_relevant === 1) {
 					this.metadataAfter.set(key, now + metadataRetryMs);
 				} else {
 					this.metadataAfter.delete(key);
 				}
 			} else {
-				this.store.deleteShipRelevantDiffSnapshot(
-					input.executionId,
-					input.prHeadSha,
-				);
+				this.deleteSnapshot(input);
 				this.retryAfter.set(key, now + retryMs);
 				this.metadataAfter.delete(key);
 			}
@@ -528,5 +666,154 @@ export class ShipRelevantDiffService {
 		})().finally(() => this.inFlight.delete(key));
 		this.inFlight.set(key, work);
 		return work;
+	}
+
+	ensure(input: {
+		executionId: string;
+		repo: string;
+		prNumber: number;
+		prHeadSha: string;
+		role?: "primary" | "declared";
+		api: ShipRelevantGitHubApi;
+	}): Promise<ShipRelevantClassification> {
+		const controller = new AbortController();
+		return this.ensureCandidate(
+			{
+				executionId: input.executionId,
+				repoIdentity: input.role === "declared" ? input.repo : "__main__",
+				repoSlug: input.repo,
+				prNumber: input.prNumber,
+				prHeadSha: input.prHeadSha,
+				role: input.role ?? "primary",
+				api: input.api,
+			},
+			{
+				controller,
+				deadline: Number.POSITIVE_INFINITY,
+				requests: 0,
+			},
+		);
+	}
+
+	private candidateOrder(
+		a: ShipRelevantRefreshCandidate,
+		b: ShipRelevantRefreshCandidate,
+	): number {
+		const snapshot = (candidate: ShipRelevantRefreshCandidate) =>
+			this.store.getShipRelevantPrSnapshot(
+				candidate.executionId,
+				candidate.repoSlug,
+				candidate.prNumber,
+			);
+		const aSnapshot = snapshot(a);
+		const bSnapshot = snapshot(b);
+		if (Boolean(aSnapshot) !== Boolean(bSnapshot)) return aSnapshot ? 1 : -1;
+		if (!aSnapshot && !bSnapshot) {
+			return (
+				(this.lastAttemptAt.get(this.key(a)) ?? Number.NEGATIVE_INFINITY) -
+				(this.lastAttemptAt.get(this.key(b)) ?? Number.NEGATIVE_INFINITY)
+			);
+		}
+		const computedOrder =
+			Date.parse(aSnapshot!.computed_at) - Date.parse(bSnapshot!.computed_at);
+		if (computedOrder !== 0) return computedOrder;
+		return this.key(a).localeCompare(this.key(b));
+	}
+
+	private async runRefreshPass(
+		runs: ShipRelevantRunRefresh[],
+		deadline: number,
+	): Promise<void> {
+		const controller = new AbortController();
+		const budget: RefreshBudget = { controller, deadline, requests: 0 };
+		const delay = Math.max(0, deadline - this.now());
+		const timeout = Number.isFinite(delay)
+			? setTimeout(() => controller.abort(), delay)
+			: undefined;
+		try {
+			const maxDeclaredPrs = this.options.maxDeclaredPrs ?? 8;
+			const eligible = runs.filter((run) => {
+				const candidates = [run.primary, ...run.declared];
+				this.store.deleteShipRelevantPrSnapshotsExcept(
+					run.executionId,
+					candidates.map((candidate) => ({
+						repoSlug: candidate.repoSlug,
+						prNumber: candidate.prNumber,
+					})),
+				);
+				return run.declared.length <= maxDeclaredPrs;
+			});
+			const primaryRuns = [...eligible].sort((a, b) =>
+				this.candidateOrder(a.primary, b.primary),
+			);
+			const primaryResults = await mapWithConcurrency(
+				primaryRuns,
+				this.options.maxConcurrency ?? SHIP_RELEVANCE_MAX_CONCURRENCY,
+				(run) => this.ensureCandidate(run.primary, budget),
+			);
+			const primaryByExecution = new Map(
+				primaryResults.map((result, index) => [
+					primaryRuns[index]!.executionId,
+					result,
+				]),
+			);
+			const pending = eligible
+				.filter((run) => {
+					const result = primaryByExecution.get(run.executionId);
+					return (
+						result?.kind === "snapshot" && result.snapshot.ship_relevant === 0
+					);
+				})
+				.map((run) => ({
+					executionId: run.executionId,
+					candidates: [...run.declared].sort((a, b) =>
+						this.candidateOrder(a, b),
+					),
+				}));
+			while (pending.length > 0 && !controller.signal.aborted) {
+				const round = pending
+					.map((run) => ({ run, candidate: run.candidates.shift() }))
+					.filter(
+						(
+							entry,
+						): entry is {
+							run: (typeof pending)[number];
+							candidate: ShipRelevantRefreshCandidate;
+						} => entry.candidate !== undefined,
+					)
+					.sort((a, b) => this.candidateOrder(a.candidate, b.candidate));
+				if (round.length === 0) break;
+				const results = await mapWithConcurrency(
+					round,
+					this.options.maxConcurrency ?? SHIP_RELEVANCE_MAX_CONCURRENCY,
+					(entry) => this.ensureCandidate(entry.candidate, budget),
+				);
+				for (let index = pending.length - 1; index >= 0; index--) {
+					const entry = round.find((item) => item.run === pending[index]);
+					const result = entry ? results[round.indexOf(entry)] : undefined;
+					if (
+						pending[index]!.candidates.length === 0 ||
+						result?.kind !== "snapshot" ||
+						result.snapshot.ship_relevant === 1
+					) {
+						pending.splice(index, 1);
+					}
+				}
+			}
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
+	}
+
+	async refresh(
+		runs: ShipRelevantRunRefresh[],
+		options: { deadline: number },
+	): Promise<void> {
+		if (this.passInFlight) return;
+		const pass = this.runRefreshPass(runs, options.deadline).finally(() => {
+			if (this.passInFlight === pass) this.passInFlight = undefined;
+		});
+		this.passInFlight = pass;
+		await pass;
 	}
 }

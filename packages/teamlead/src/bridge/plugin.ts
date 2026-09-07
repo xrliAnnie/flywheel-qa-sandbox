@@ -646,7 +646,14 @@ import {
 } from "./session-capture.js";
 import { reconcileSessionlessWorkflowGates } from "./sessionless-founder-gate-reconciler.js";
 import { createShipApprovalHandler } from "./ship-approval-route.js";
-import { ShipRelevantDiffService } from "./ship-relevant-diff.js";
+import {
+	buildWorkflowShipRelevantRunRefresh,
+	type ShipRelevantRunRefresh,
+} from "./ship-relevance-refresh.js";
+import {
+	ShipRelevantDiffService,
+	type ShipRelevantGitHubApi,
+} from "./ship-relevant-diff.js";
 import { forceShippedHusks } from "./shipped-husk-escalation.js";
 import {
 	alertStaleBlockerToLead,
@@ -4982,36 +4989,92 @@ export async function startBridge(
 	});
 
 	const shipRelevantDiffService = new ShipRelevantDiffService(store);
-	const ensureShipRelevantDiff = async (session: Session): Promise<void> => {
-		const head = session.pr_head_sha?.toLowerCase();
-		if (!head || !/^[0-9a-f]{40}$/.test(head)) return;
-		const project = projects.find(
-			(candidate) => candidate.projectName === session.project_name,
-		);
-		if (
-			!project ||
-			!project.projectRepo ||
-			!/^[^/]+\/[^/]+$/.test(project.projectRepo) ||
-			!Number.isSafeInteger(session.pr_number) ||
-			(session.pr_number ?? 0) <= 0
-		) {
-			store.deleteShipRelevantDiffSnapshot(session.execution_id, head);
-			return;
-		}
-		await shipRelevantDiffService.ensure({
-			executionId: session.execution_id,
-			repo: project.projectRepo,
-			prNumber: session.pr_number!,
-			prHeadSha: head,
-			api: async (path) => {
+	const refreshShipRelevance = async (
+		sessions: Session[],
+		options: { deadline: number },
+	): Promise<void> => {
+		const runs: ShipRelevantRunRefresh[] = [];
+		const apiFor =
+			(cwd: string): ShipRelevantGitHubApi =>
+			async (path, { signal }) => {
 				const { stdout } = await execFileP("gh", ["api", path], {
-					cwd: project.projectRoot,
+					cwd,
 					timeout: 15_000,
 					maxBuffer: 5 * 1024 * 1024,
+					signal,
 				});
 				return JSON.parse(stdout) as unknown;
-			},
-		});
+			};
+		for (const session of sessions) {
+			const executionId = session.execution_id;
+			const head = session.pr_head_sha?.toLowerCase();
+			const prNumber = session.pr_number;
+			const project = projects.find(
+				(candidate) => candidate.projectName === session.project_name,
+			);
+			if (
+				!head ||
+				!/^[0-9a-f]{40}$/.test(head) ||
+				!Number.isSafeInteger(prNumber) ||
+				(prNumber ?? 0) <= 0 ||
+				!project
+			) {
+				store.deleteShipRelevantPrSnapshotsExcept(executionId, []);
+				continue;
+			}
+			const run = store.resolveWorkflowRunForExecution(executionId);
+			if (run.kind === "many") {
+				store.deleteShipRelevantPrSnapshotsExcept(executionId, []);
+				continue;
+			}
+			if (run.kind === "none") {
+				if (
+					!project.projectRepo ||
+					!/^[^/]+\/[^/]+$/.test(project.projectRepo)
+				) {
+					store.deleteShipRelevantPrSnapshotsExcept(executionId, []);
+					continue;
+				}
+				const api = apiFor(project.projectRoot);
+				runs.push({
+					executionId,
+					primary: {
+						executionId,
+						repoIdentity: "__main__",
+						repoSlug: project.projectRepo,
+						prNumber: prNumber!,
+						prHeadSha: head,
+						role: "primary",
+						api,
+					},
+					declared: [],
+				});
+				continue;
+			}
+			const binding = store.resolveWorkflowNodePrBindingForSession(
+				executionId,
+				head,
+			);
+			if (
+				binding.kind !== "one" ||
+				binding.binding.run_id !== run.runId ||
+				binding.binding.pr_number !== prNumber
+			) {
+				store.deleteShipRelevantPrSnapshotsExcept(executionId, []);
+				continue;
+			}
+			const primaryBinding = binding.binding;
+			const declared = store.projectCurrentShipRelevantCandidates(run.runId);
+			runs.push(
+				buildWorkflowShipRelevantRunRefresh({
+					executionId,
+					primary: primaryBinding,
+					declared,
+					api: apiFor(project.projectRoot),
+				}),
+			);
+		}
+		await shipRelevantDiffService.refresh(runs, options);
 	};
 
 	// FLY-1082 (Task 2.2): the fleet pressure-hold gates runner admission —
@@ -10051,7 +10114,7 @@ export async function startBridge(
 		projects,
 		store,
 		runtimeRegistry: registry,
-		ensureShipRelevantDiff,
+		refreshShipRelevance,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,

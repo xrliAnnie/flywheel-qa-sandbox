@@ -37,6 +37,7 @@ export function normalizeGitHubRepoSlug(remote: string): string {
 export async function resolveBoundRepositoryAuthority(input: {
 	authorityRoot: string;
 	requestedRepoPath?: string;
+	signal?: AbortSignal;
 }): Promise<BoundRepositoryAuthority> {
 	const requested = input.requestedRepoPath?.trim();
 	const hasControlCharacter = requested
@@ -69,7 +70,7 @@ export async function resolveBoundRepositoryAuthority(input: {
 	const { stdout: toplevelOut } = await execFileAsync(
 		"git",
 		["-C", target, "rev-parse", "--show-toplevel"],
-		{ timeout: 15_000 },
+		{ timeout: 15_000, signal: input.signal },
 	);
 	const toplevel = await realpath(toplevelOut.trim());
 	if (toplevel !== target) {
@@ -78,9 +79,11 @@ export async function resolveBoundRepositoryAuthority(input: {
 	const [{ stdout: remoteOut }, { stdout: headOut }] = await Promise.all([
 		execFileAsync("git", ["-C", target, "remote", "get-url", "origin"], {
 			timeout: 15_000,
+			signal: input.signal,
 		}),
 		execFileAsync("git", ["-C", target, "rev-parse", "HEAD"], {
 			timeout: 15_000,
+			signal: input.signal,
 		}),
 	]);
 	const headSha = headOut.trim().toLowerCase();

@@ -1,0 +1,16 @@
+flowchart TB
+  s0["开始:主 PR + 全部声明 PR"] --> s1{"主 PR 快照在?版本 2?60 秒内?"}
+  s1 -->|"否"| u1["unknown"]
+  s1 -->|"是"| s2{"每个声明 PR 的快照都在?"}
+  s2 -->|"否"| u2["unknown"]
+  s2 -->|"是"| s3{"G1:子仓每条 Codex 评审的 commit 都落在主 PR 或某个声明 PR 里?"}
+  s3 -->|"否"| u3["unknown"]
+  s3 -->|"是"| s5{"任一 PR 有代码?"}
+  s5 -->|"是"| c1["有代码"]
+  s5 -->|"否"| s6{"合计文件数 > 50?"}
+  s6 -->|"是"| c2["有代码"]
+  s6 -->|"否"| d1["纯文档"]
+  classDef unk fill:#fff6e6,stroke:#ff9500,color:#6f4200;
+  classDef code fill:#ffebea,stroke:#ff3b30,color:#9f1717;
+  classDef docs fill:#e9f8ef,stroke:#34c759,color:#14532d;
+  class u1,u2,u3 unk; class c1,c2 code; class d1 docs;

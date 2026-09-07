@@ -128,6 +128,62 @@ function attachGitHeadAuthority(
 	return head;
 }
 
+function attachAllRepoHeadAuthority(
+	store: StateStore,
+	executionId = "exec-1",
+): { mainHead: string; nestedHead: string; root: string } {
+	const root = mkdtempSync(join(tmpdir(), "flywheel-event-all-repos-"));
+	headAuthorityRepos.push(root);
+	const git = (cwd: string, ...args: string[]) =>
+		execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+	git(root, "init", "-q");
+	git(root, "remote", "add", "origin", "https://github.com/example/main.git");
+	writeFileSync(join(root, "fixture.txt"), "main\n");
+	git(root, "add", "fixture.txt");
+	git(
+		root,
+		"-c",
+		"user.name=Test",
+		"-c",
+		"user.email=test@example.com",
+		"commit",
+		"-qm",
+		"main fixture",
+	);
+	const nested = join(root, "apps", "nested");
+	mkdirSync(nested, { recursive: true });
+	git(nested, "init", "-q");
+	git(
+		nested,
+		"remote",
+		"add",
+		"origin",
+		"https://github.com/example/nested.git",
+	);
+	writeFileSync(join(nested, "fixture.txt"), "nested\n");
+	git(nested, "add", "fixture.txt");
+	git(
+		nested,
+		"-c",
+		"user.name=Test",
+		"-c",
+		"user.email=test@example.com",
+		"commit",
+		"-qm",
+		"nested fixture",
+	);
+	store.bindWorktreeOnce(
+		executionId,
+		{ path: root, branch: "feature", generation: "all-repos-test" },
+		{ issueId: "issue-1", projectName: "geoforge3d" },
+	);
+	return {
+		mainHead: git(root, "rev-parse", "HEAD"),
+		nestedHead: git(nested, "rev-parse", "HEAD"),
+		root,
+	};
+}
+
 function bindGeneralizedExecution(
 	store: StateStore,
 	executionId: string,
@@ -1022,6 +1078,203 @@ describe("Event route", () => {
 			store.getWorkflowNodeCompletion("run-exec-1", "execute", 1),
 		).toBeUndefined();
 	});
+
+	it("rejects malformed and non-enrolled declared PR evidence before repository I/O", async () => {
+		const post = (eventId: string, declaredPrs: unknown) =>
+			fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: eventId,
+						event_type: "session_completed",
+						source: "flywheel-comm",
+						payload: {
+							decision: { route: "needs_review" },
+							evidence: { declaredPrs },
+						},
+					}),
+				),
+			});
+
+		const malformed = await post("declared-malformed", [
+			{ targetRepoPath: "apps/nested", prNumber: 42, headSha: "short" },
+		]);
+		expect(malformed.status).toBe(422);
+		expect(await malformed.json()).toEqual({
+			error: "declared_pr_rejected",
+			reason: "invalid_shape",
+		});
+
+		const nonEnrolled = await post("declared-non-enrolled", [
+			{
+				targetRepoPath: "does-not-exist",
+				prNumber: 42,
+				headSha: "a".repeat(40),
+			},
+		]);
+		expect(nonEnrolled.status).toBe(422);
+		expect(await nonEnrolled.json()).toEqual({
+			error: "declared_pr_rejected",
+			reason: "not_enrolled",
+		});
+	});
+
+	it("admits same-repository distinct PR declarations and freezes their authoritative heads", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const { mainHead, nestedHead } = attachAllRepoHeadAuthority(store);
+		const declaredPrs = [
+			{
+				targetRepoPath: "apps/nested",
+				prNumber: 42,
+				headSha: nestedHead,
+			},
+			{
+				targetRepoPath: "apps/nested",
+				prNumber: 43,
+				headSha: nestedHead,
+			},
+		];
+		const response = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "declared-pr-completion",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "needs_review" },
+						evidence: {
+							headSha: mainHead,
+							landingStatus: {
+								status: "ready_to_merge",
+								prNumber: 11,
+							},
+							declaredPrs,
+						},
+					},
+				}),
+			),
+		});
+
+		expect(response.status).toBe(200);
+		expect(store.listShipRelevantDeclarationsForRun("run-exec-1")).toEqual([
+			expect.objectContaining({
+				repo_identity: "example/nested",
+				pr_number: 42,
+				frozen_head_sha: nestedHead,
+			}),
+			expect.objectContaining({
+				repo_identity: "example/nested",
+				pr_number: 43,
+				frozen_head_sha: nestedHead,
+			}),
+		]);
+
+		const changed = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "declared-pr-completion-changed",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "needs_review" },
+						evidence: {
+							headSha: mainHead,
+							landingStatus: {
+								status: "ready_to_merge",
+								prNumber: 11,
+							},
+							declaredPrs: declaredPrs.slice(0, 1),
+						},
+					},
+				}),
+			),
+		});
+		expect(changed.status).toBe(409);
+		expect(await changed.json()).toMatchObject({
+			error: "workflow_completion_rejected",
+			reason: "declaration_conflict",
+		});
+		expect(store.listShipRelevantDeclarationsForRun("run-exec-1")).toHaveLength(
+			2,
+		);
+	});
+
+	it.each([
+		["head_mismatch", { nestedHead: "b".repeat(40), nestedOrigin: undefined }],
+		[
+			"duplicates_primary",
+			{
+				nestedHead: undefined,
+				nestedOrigin: "https://github.com/example/main.git",
+			},
+		],
+	] as const)(
+		"rejects declared PR authority when %s",
+		async (reason, override) => {
+			bindGeneralizedExecution(store, "exec-1");
+			const { mainHead, nestedHead, root } = attachAllRepoHeadAuthority(store);
+			if (override.nestedOrigin) {
+				execFileSync(
+					"git",
+					["remote", "set-url", "origin", override.nestedOrigin],
+					{ cwd: join(root, "apps", "nested") },
+				);
+			}
+			const response = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: `declared-${reason}`,
+						event_type: "session_completed",
+						source: "flywheel-comm",
+						payload: {
+							decision: { route: "needs_review" },
+							evidence: {
+								headSha: mainHead,
+								landingStatus: {
+									status: "ready_to_merge",
+									prNumber: 11,
+								},
+								declaredPrs: [
+									{
+										targetRepoPath: "apps/nested",
+										prNumber: 11,
+										headSha: override.nestedHead ?? nestedHead,
+									},
+								],
+							},
+						},
+					}),
+				),
+			});
+			expect(response.status).toBe(422);
+			expect(await response.json()).toMatchObject({
+				error: "declared_pr_rejected",
+				reason,
+			});
+			expect(store.listShipRelevantDeclarationsForRun("run-exec-1")).toEqual(
+				[],
+			);
+		},
+	);
 
 	it("rejects a forged generalized completion until the current artifact has founder_review pass", async () => {
 		const repo = mkdtempSync(join(tmpdir(), "fly1758-event-authority-"));
@@ -2503,17 +2756,18 @@ describe("Event route — EventFilter integration", () => {
 			author_family: "claude",
 			reviewer_family: "codex",
 		});
-		store.putShipRelevantDiffSnapshot({
+		store.putShipRelevantPrSnapshot({
 			execution_id: "exec-1",
-			pr_head_sha: head,
-			repo: "xrliAnnie/GeoForge3D",
+			repo_slug: "xrliannie/geoforge3d",
 			pr_number: 42,
+			pr_head_sha: head,
+			role: "primary",
 			base_ref: "main",
 			base_oid: "b".repeat(40),
-			classifier_version: 1,
+			classifier_version: 2,
 			ship_relevant: 0,
 			file_count: 1,
-			sample_paths: ["engineering/doc/GEO-95/plan.md"],
+			commit_shas: [head],
 		});
 		// Complete with needs_review
 		await postEvent({

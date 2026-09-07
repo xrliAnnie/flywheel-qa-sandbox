@@ -13,6 +13,7 @@ const BASE = "b".repeat(40);
 interface ApiFixture {
 	metadata?: unknown;
 	pages?: unknown[][];
+	commitPages?: unknown[][];
 	headTree?: unknown;
 	baseTree?: unknown;
 	failPath?: string;
@@ -36,10 +37,17 @@ function fakeApi(fixture: ApiFixture): {
 						head: { sha: HEAD },
 						base: { ref: "main", sha: BASE },
 						changed_files: fixture.pages?.flat().length ?? 1,
+						commits: fixture.commitPages?.flat().length ?? 1,
 					}
 				);
 			}
 			const pageMatch = path.match(/[?&]page=(\d+)/);
+			if (path.includes("/pulls/42/commits") && pageMatch) {
+				return (
+					fixture.commitPages?.[Number(pageMatch[1]) - 1] ??
+					(Number(pageMatch[1]) === 1 ? [{ sha: HEAD }] : [])
+				);
+			}
 			if (path.includes("/pulls/42/files") && pageMatch) {
 				return fixture.pages?.[Number(pageMatch[1]) - 1] ?? [];
 			}
@@ -64,6 +72,87 @@ function tree(path: string, mode = "100644", type = "blob") {
 }
 
 describe("classifyShipRelevantDiff", () => {
+	it("records every commit in the classified PR", async () => {
+		const second = "c".repeat(40);
+		const { api } = fakeApi({
+			pages: [[{ status: "modified", filename: "packages/app.ts" }], []],
+			commitPages: [[{ sha: HEAD }, { sha: second }], []],
+		});
+
+		await expect(
+			classifyShipRelevantDiff({
+				repo: "owner/repo",
+				prNumber: 42,
+				prHeadSha: HEAD,
+				api,
+			}),
+		).resolves.toMatchObject({
+			kind: "snapshot",
+			snapshot: { commit_shas: [HEAD, second] },
+		});
+	});
+
+	it("fails closed when the PR commit count is incomplete or exceeds the cap", async () => {
+		const incomplete = fakeApi({
+			metadata: {
+				head: { sha: HEAD },
+				base: { ref: "main", sha: BASE },
+				changed_files: 1,
+				commits: 2,
+			},
+			commitPages: [[{ sha: HEAD }], []],
+			pages: [[docFile], []],
+		});
+		await expect(
+			classifyShipRelevantDiff({
+				repo: "owner/repo",
+				prNumber: 42,
+				prHeadSha: HEAD,
+				api: incomplete.api,
+			}),
+		).resolves.toEqual({ kind: "unknown", reason: "commit_count_mismatch" });
+
+		const overCap = fakeApi({
+			metadata: {
+				head: { sha: HEAD },
+				base: { ref: "main", sha: BASE },
+				changed_files: 1,
+				commits: 251,
+			},
+		});
+		await expect(
+			classifyShipRelevantDiff({
+				repo: "owner/repo",
+				prNumber: 42,
+				prHeadSha: HEAD,
+				api: overCap.api,
+			}),
+		).resolves.toEqual({ kind: "unknown", reason: "commit_count_mismatch" });
+		expect(overCap.paths).toEqual(["/repos/owner/repo/pulls/42"]);
+	});
+
+	it("passes one abort signal through every GitHub request", async () => {
+		const signals: AbortSignal[] = [];
+		const fixture = fakeApi({
+			pages: [[{ status: "modified", filename: "packages/app.ts" }], []],
+		});
+		const api: ShipRelevantGitHubApi = async (path, options) => {
+			signals.push(options.signal);
+			return fixture.api(path, options);
+		};
+		const controller = new AbortController();
+		await classifyShipRelevantDiff({
+			repo: "owner/repo",
+			prNumber: 42,
+			prHeadSha: HEAD,
+			api,
+			signal: controller.signal,
+		});
+
+		expect(signals.length).toBeGreaterThan(1);
+		expect(new Set(signals)).toEqual(new Set([controller.signal]));
+	});
+
 	it("classifies a code path as ship-relevant without trusting file contents", async () => {
 		const { api, paths } = fakeApi({
 			pages: [[{ status: "modified", filename: "packages/app.ts" }], []],
@@ -243,6 +332,7 @@ describe("classifyShipRelevantDiff", () => {
 				head: { sha: HEAD },
 				base: { ref: "main", sha: BASE },
 				changed_files: 2,
+				commits: 1,
 			},
 			pages: [[docFile], []],
 		});
@@ -281,6 +371,7 @@ describe("classifyShipRelevantDiff", () => {
 				head: { sha: "f".repeat(40) },
 				base: { ref: "main", sha: BASE },
 				changed_files: 1,
+				commits: 1,
 			},
 			pages: [[docFile], []],
 		});
@@ -301,6 +392,7 @@ describe("classifyShipRelevantDiff", () => {
 				head: { sha: "f".repeat(40) },
 				base: { ref: "main", sha: BASE },
 				changed_files: 1,
+				commits: 1,
 			},
 			"head_mismatch",
 		],
@@ -310,6 +402,7 @@ describe("classifyShipRelevantDiff", () => {
 				head: { sha: HEAD },
 				base: { ref: "release", sha: BASE },
 				changed_files: 1,
+				commits: 1,
 			},
 			"metadata_drift",
 		],
@@ -319,6 +412,7 @@ describe("classifyShipRelevantDiff", () => {
 				head: { sha: HEAD },
 				base: { ref: "main", sha: "c".repeat(40) },
 				changed_files: 1,
+				commits: 1,
 			},
 			"metadata_drift",
 		],
@@ -328,6 +422,17 @@ describe("classifyShipRelevantDiff", () => {
 				head: { sha: HEAD },
 				base: { ref: "main", sha: BASE },
 				changed_files: 2,
+				commits: 1,
+			},
+			"metadata_drift",
+		],
+		[
+			"commit count",
+			{
+				head: { sha: HEAD },
+				base: { ref: "main", sha: BASE },
+				changed_files: 1,
+				commits: 2,
 			},
 			"metadata_drift",
 		],
@@ -343,8 +448,13 @@ describe("classifyShipRelevantDiff", () => {
 								head: { sha: HEAD },
 								base: { ref: "main", sha: BASE },
 								changed_files: 1,
+								commits: 1,
 							}
 						: finalMetadata;
+				}
+				if (path.includes("/pulls/42/commits")) {
+					const page = Number(path.match(/[?&]page=(\d+)/)?.[1]);
+					return page === 1 ? [{ sha: HEAD }] : [];
 				}
 				if (path.includes("/pulls/42/files")) {
 					const page = Number(path.match(/[?&]page=(\d+)/)?.[1]);
@@ -384,24 +494,29 @@ describe("ShipRelevantDiffService", () => {
 			api,
 		});
 
-		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
+		expect(
+			store.getShipRelevantPrSnapshot("exec-1", "owner/repo", 42),
+		).toMatchObject({
 			ship_relevant: 1,
 			base_oid: BASE,
+			commit_shas: [HEAD],
 		});
 	});
 
 	it("deletes a prior exemption when the authoritative refresh becomes unknown", async () => {
 		const store = await StateStore.create(":memory:");
-		store.putShipRelevantDiffSnapshot({
+		store.putShipRelevantPrSnapshot({
 			execution_id: "exec-1",
-			pr_head_sha: HEAD,
-			repo: "owner/repo",
+			repo_slug: "owner/repo",
 			pr_number: 42,
+			pr_head_sha: HEAD,
+			role: "primary",
 			base_ref: "main",
 			base_oid: BASE,
 			classifier_version: SHIP_RELEVANT_CLASSIFIER_VERSION,
 			ship_relevant: 0,
 			file_count: 1,
+			commit_shas: [HEAD],
 		});
 		const { api } = fakeApi({ failPath: "/pulls/42" });
 		const service = new ShipRelevantDiffService(store);
@@ -413,7 +528,9 @@ describe("ShipRelevantDiffService", () => {
 			api,
 		});
 
-		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toBeUndefined();
+		expect(
+			store.getShipRelevantPrSnapshot("exec-1", "owner/repo", 42),
+		).toBeUndefined();
 	});
 
 	it("revalidates a docs-only exemption every time and invalidates it immediately on retarget", async () => {
@@ -462,6 +579,7 @@ describe("ShipRelevantDiffService", () => {
 				head: { sha: HEAD },
 				base: { ref: "release", sha: nextBase },
 				changed_files: 1,
+				commits: 1,
 			},
 			pages: [[{ status: "modified", filename: "packages/app.ts" }], []],
 		});
@@ -472,8 +590,10 @@ describe("ShipRelevantDiffService", () => {
 			prHeadSha: HEAD,
 			api: refreshed.api,
 		});
-		expect(refreshed.paths).toHaveLength(4);
-		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
+		expect(refreshed.paths).toHaveLength(6);
+		expect(
+			store.getShipRelevantPrSnapshot("exec-1", "owner/repo", 42),
+		).toMatchObject({
 			base_ref: "release",
 			base_oid: nextBase,
 			ship_relevant: 1,
@@ -590,14 +710,19 @@ describe("ShipRelevantDiffService", () => {
 							head: { sha: HEAD },
 							base: { ref: "release", sha: "c".repeat(40) },
 							changed_files: 1,
+							commits: 1,
 						}
 					: {
 							head: { sha: HEAD },
 							base: { ref: "main", sha: BASE },
 							changed_files: 1,
+							commits: 1,
 						};
 			}
 			const pageMatch = path.match(/[?&]page=(\d+)/);
+			if (path.includes("/pulls/42/commits") && pageMatch) {
+				return Number(pageMatch[1]) === 1 ? [{ sha: HEAD }] : [];
+			}
 			if (path.includes("/pulls/42/files") && pageMatch) {
 				if (Number(pageMatch[1]) !== 1) return [];
 				// After the retarget the diff is a code file (ship-relevant);
@@ -629,7 +754,9 @@ describe("ShipRelevantDiffService", () => {
 		await ensure(); // t=0 full classify → docs-only
 		now = 3_000;
 		await ensure(); // t=3 first revalidation → grant 10s lease (expires 13s)
-		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
+		expect(
+			store.getShipRelevantPrSnapshot("exec-1", "owner/repo", 42),
+		).toMatchObject({
 			ship_relevant: 0,
 		});
 
@@ -645,7 +772,9 @@ describe("ShipRelevantDiffService", () => {
 		now = 12_000;
 		await ensure();
 		expect(paths).toHaveLength(afterRevalidate);
-		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
+		expect(
+			store.getShipRelevantPrSnapshot("exec-1", "owner/repo", 42),
+		).toMatchObject({
 			ship_relevant: 0,
 		});
 
@@ -654,7 +783,9 @@ describe("ShipRelevantDiffService", () => {
 		// so the window is bounded to ~13s (10s lease + 3s poll), never open.
 		now = 15_000;
 		await ensure();
-		expect(store.getShipRelevantDiffSnapshot("exec-1", HEAD)).toMatchObject({
+		expect(
+			store.getShipRelevantPrSnapshot("exec-1", "owner/repo", 42),
+		).toMatchObject({
 			ship_relevant: 1,
 		});
 	});
@@ -686,7 +817,7 @@ describe("ShipRelevantDiffService", () => {
 		const retryAfter = (
 			service as unknown as { retryAfter: Map<string, number> }
 		).retryAfter;
-		expect(retryAfter.has(`exec-old:${HEAD}`)).toBe(false);
-		expect(retryAfter.has(`exec-current:${HEAD}`)).toBe(true);
+		expect(retryAfter.has(`exec-old:owner/repo:42:${HEAD}`)).toBe(false);
+		expect(retryAfter.has(`exec-current:owner/repo:42:${HEAD}`)).toBe(true);
 	});
 });

@@ -114,8 +114,11 @@ export interface GatePollerConfig {
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
-	/** FLY-1251: async producer for the exact-head ship-diff hold snapshot. */
-	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
+	/** FLY-2395: one bounded all-repository refresh pass before hold reads. */
+	refreshShipRelevance?: (
+		sessions: Session[],
+		options: { deadline: number },
+	) => Promise<void> | void;
 	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
 	chatThreadsEnabled?: boolean;
 	/** FLY-208 A2: patrol cadence in poll ticks (default 20 ≈ 60s at 3s). */
@@ -524,6 +527,64 @@ export class GatePoller {
 		}
 	}
 
+	private async refreshShipRelevanceBeforeRelay(): Promise<void> {
+		if (!this.config.refreshShipRelevance) return;
+		const sessions = new Map<string, Session>();
+		for (const project of this.config.projects) {
+			const dbPath = defaultGetCommDbPath(project.projectName);
+			if (!this.ensureCommDbMigrated(dbPath, project)) continue;
+			for (const lead of project.leads) {
+				try {
+					for (const question of this.getPendingQuestions(
+						dbPath,
+						lead.agentId,
+					)) {
+						if (
+							question.checkpoint !== "approve_to_ship" ||
+							this.evictedGateIds.has(question.id) ||
+							this.evictionRetryAt.has(question.id)
+						) {
+							continue;
+						}
+						const session = this.config.store.getSession(question.from_agent);
+						if (!session) continue;
+						const ownership =
+							typeof this.config.store.workflowGatePresentationDisposition ===
+							"function"
+								? this.config.store.workflowGatePresentationDisposition({
+										executionId: question.from_agent,
+										checkpoint: question.checkpoint,
+										questionId: question.id,
+									})
+								: { allow: true as const, reason: "legacy" as const };
+						if (
+							!ownership.allow ||
+							this.maybeSweepSupersededShipGate(question, session, dbPath)
+						) {
+							continue;
+						}
+						sessions.set(session.execution_id, session);
+					}
+				} catch (error) {
+					console.warn(
+						`[GatePoller] ship-relevance discovery failed for ${project.projectName}/${lead.agentId}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					this.maybeRecoverStore(error);
+				}
+			}
+		}
+		if (sessions.size === 0) return;
+		try {
+			await this.config.refreshShipRelevance([...sessions.values()], {
+				deadline: Date.now() + 2_500,
+			});
+		} catch (error) {
+			console.warn(
+				`[GatePoller] ship-relevance refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
 	private async poll(): Promise<void> {
 		if (this.polling) return;
 		this.polling = true;
@@ -798,6 +859,10 @@ export class GatePoller {
 				}
 			}
 
+			// FLY-2395: refresh all authoritative approve_to_ship candidates once,
+			// before any synchronous reviewHoldReason read in the relay phase.
+			await this.refreshShipRelevanceBeforeRelay();
+
 			// FLY-161: iterate (project, lead) pairs directly instead of starting
 			// from getActiveSessions(). This lets runner_question survive Runner
 			// completion — a question whose source session has transitioned to
@@ -893,13 +958,6 @@ export class GatePoller {
 							// remains bound to it). Same isQaHeld predicate as event-route +
 							// HeartbeatService so the three surfaces cannot drift.
 							if (question.checkpoint === "approve_to_ship") {
-								try {
-									await this.config.ensureShipRelevantDiff?.(session);
-								} catch (err) {
-									console.warn(
-										`[GatePoller] ship-diff refresh failed for ${session.execution_id}: ${err instanceof Error ? err.message : String(err)}`,
-									);
-								}
 								const holdReason = reviewHoldReason(this.config.store, session);
 								if (holdReason !== null) {
 									await this.handleHeldReviewGate(lead, session, holdReason);

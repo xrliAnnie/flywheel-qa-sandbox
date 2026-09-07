@@ -1,0 +1,18 @@
+flowchart TB
+  subgraph A["今天:只看主仓那一个 PR"]
+    direction TB
+    a1["runner 完成:complete --pr 976(主仓文档 PR)"] --> a2["Bridge 每 3 秒问 GitHub:PR 976 改了哪些文件?"]
+    a2 --> a3["全是文档 ⇒ 判「纯文档」"]
+    a4["子仓 raya 的代码 PR"] -.->|"没有入口,从未被看"| a3
+  end
+  subgraph B["改后:全部 PR 一起看"]
+    direction TB
+    b1["runner 完成:complete --pr 976 --declare-pr apps/raya:123"] --> b2["Bridge 用 worktree 真 git 状态冻结子仓身份与 head"]
+    b2 --> b3[("声明表 ship_relevant_declared_pr(≤ 8 条,3 秒内校验完)")]
+    b3 --> b4["每 3 秒问 GitHub:主 PR 先;主 PR 有代码就不再问子仓"]
+    b4 --> b5{"全部纯文档且合计 ≤ 50 个文件?"}
+    b5 -->|"是"| b6["纯文档"]
+    b5 -->|"任一有代码"| b7["有代码"]
+    b5 -->|"任一拿不到 / 有子仓证据却没声明"| b8["unknown(按有代码处理)"]
+  end
+  A ~~~ B

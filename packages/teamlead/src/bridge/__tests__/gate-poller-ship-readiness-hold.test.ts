@@ -15,17 +15,17 @@ type PrivatePoller = {
 };
 
 function makePoller() {
-	const ensureShipRelevantDiff = vi.fn(async () => {});
+	const refreshShipRelevance = vi.fn(async () => {});
 	const alert = vi.fn(async () => ({ sent: true }));
 	const poller = new GatePoller({
 		pollIntervalMs: 3_000,
 		projects: [],
 		store: {} as GatePollerConfig["store"],
 		runtimeRegistry: {} as GatePollerConfig["runtimeRegistry"],
-		ensureShipRelevantDiff,
+		refreshShipRelevance,
 		leadAlertSink: { alert },
 	} as GatePollerConfig) as unknown as PrivatePoller;
-	return { poller, ensureShipRelevantDiff, alert };
+	return { poller, refreshShipRelevance, alert };
 }
 
 const lead = {
@@ -49,12 +49,12 @@ describe("GatePoller FLY-1251 ship-readiness hold discovery", () => {
 	it.each(["qa_evidence_missing", "qa_evidence_unknown"] as const)(
 		"%s produces a deterministic Lead-only alert after the poll refresh",
 		async (reason) => {
-			const { poller, ensureShipRelevantDiff, alert } = makePoller();
+			const { poller, refreshShipRelevance, alert } = makePoller();
 
 			await poller.handleHeldReviewGate(lead, session, reason);
 			await poller.handleHeldReviewGate(lead, session, reason);
 
-			expect(ensureShipRelevantDiff).not.toHaveBeenCalled();
+			expect(refreshShipRelevance).not.toHaveBeenCalled();
 			expect(alert).toHaveBeenCalledTimes(2);
 			const first = alert.mock.calls[0]![0];
 			const second = alert.mock.calls[1]![0];
@@ -71,11 +71,11 @@ describe("GatePoller FLY-1251 ship-readiness hold discovery", () => {
 	);
 
 	it("does not produce ship-diff work for an ordinary QA-in-progress hold", async () => {
-		const { poller, ensureShipRelevantDiff, alert } = makePoller();
+		const { poller, refreshShipRelevance, alert } = makePoller();
 
 		await poller.handleHeldReviewGate(lead, session, "qa_not_green");
 
-		expect(ensureShipRelevantDiff).not.toHaveBeenCalled();
+		expect(refreshShipRelevance).not.toHaveBeenCalled();
 		expect(alert).not.toHaveBeenCalled();
 	});
 });

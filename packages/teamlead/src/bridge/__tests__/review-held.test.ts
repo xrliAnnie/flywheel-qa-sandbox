@@ -41,23 +41,34 @@ function fakeStore(state: FakeState) {
 					} as AutoQaRecord)
 				: undefined;
 		},
-		getShipRelevantDiffSnapshot: () => {
+		resolveWorkflowRunForExecution: () => ({ kind: "none" as const }),
+		resolveWorkflowNodePrBindingForSession: () => ({ kind: "none" as const }),
+		projectCurrentShipRelevantCandidates: () => [],
+		listNestedCodexReviewHeadsForRun: () => [],
+		listNestedCodexReviewHeadsForExecution: () => [],
+		getShipRelevantPrSnapshot: () => undefined,
+		resolvePrimaryShipRelevantPrSnapshot: () => {
 			if (state.throwAt === "snapshot") {
 				throw new Error("snapshot read failed");
 			}
 			return state.shipRelevant === undefined
-				? undefined
+				? { kind: "none" as const }
 				: {
-						execution_id: "exec1",
-						pr_head_sha: SHA,
-						repo: "owner/repo",
-						pr_number: 42,
-						base_ref: "main",
-						base_oid: "b".repeat(40),
-						classifier_version: 1,
-						ship_relevant: state.shipRelevant,
-						file_count: 1,
-						computed_at: state.snapshotComputedAt ?? new Date().toISOString(),
+						kind: "one" as const,
+						snapshot: {
+							execution_id: "exec1",
+							repo_slug: "owner/repo",
+							pr_number: 42,
+							pr_head_sha: SHA,
+							role: "primary" as const,
+							base_ref: "main",
+							base_oid: "b".repeat(40),
+							classifier_version: 2,
+							ship_relevant: state.shipRelevant,
+							file_count: 1,
+							commit_shas: [SHA],
+							computed_at: state.snapshotComputedAt ?? new Date().toISOString(),
+						},
 					};
 		},
 	};
@@ -114,7 +125,7 @@ describe("FLY-827 isReviewHeld", () => {
 
 	it("E3: a missing diff snapshot fails closed until classification completes", () => {
 		const store = fakeStore({ codexApproved: true });
-		expect(reviewHoldReason(store, awaitingMain)).toBe("qa_evidence_missing");
+		expect(reviewHoldReason(store, awaitingMain)).toBe("qa_evidence_unknown");
 	});
 
 	it("E4: missing PR identity is an unknown-evidence hold", () => {

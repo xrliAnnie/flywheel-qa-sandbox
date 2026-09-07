@@ -122,8 +122,9 @@ describe("GatePoller (FLY-161)", () => {
 		circuitThreshold?: number;
 		circuitCooldownTicks?: number;
 		evictionRetryTicks?: number;
-		ensureShipRelevantDiff?: (
-			session: import("../StateStore.js").Session,
+		refreshShipRelevance?: (
+			sessions: import("../StateStore.js").Session[],
+			options: { deadline: number },
 		) => Promise<void>;
 		recordSpan?: (name: string, startMs: number, endMs: number) => void;
 	}): GatePoller {
@@ -136,7 +137,7 @@ describe("GatePoller (FLY-161)", () => {
 			circuitThreshold: opts?.circuitThreshold,
 			circuitCooldownTicks: opts?.circuitCooldownTicks,
 			evictionRetryTicks: opts?.evictionRetryTicks,
-			ensureShipRelevantDiff: opts?.ensureShipRelevantDiff,
+			refreshShipRelevance: opts?.refreshShipRelevance,
 			recordSpan: opts?.recordSpan,
 		});
 	}
@@ -295,6 +296,12 @@ describe("GatePoller (FLY-161)", () => {
 			content: "PR ready",
 			checkpoint: "approve_to_ship",
 		});
+		insertQuestion({
+			execId: "exec-held",
+			leadId: "ops-lead",
+			content: "duplicate carrier must not duplicate refresh work",
+			checkpoint: "approve_to_ship",
+		});
 		store.setReviewBinding("exec-held", {
 			questionId: qid,
 			prHeadSha: head,
@@ -303,25 +310,34 @@ describe("GatePoller (FLY-161)", () => {
 			pr_number: 42,
 			codex_skip: 1,
 		});
-		const ensureShipRelevantDiff = vi.fn(async () => {});
-		const poller = makePoller({ ensureShipRelevantDiff });
+		const refreshShipRelevance = vi.fn(async () => {});
+		const poller = makePoller({ refreshShipRelevance });
 
 		await runPoll(poller);
 
-		expect(ensureShipRelevantDiff).toHaveBeenCalledOnce();
+		expect(refreshShipRelevance).toHaveBeenCalledOnce();
+		expect(refreshShipRelevance.mock.calls[0]![0]).toHaveLength(1);
+		expect(refreshShipRelevance.mock.calls[0]![0][0]).toMatchObject({
+			execution_id: "exec-held",
+		});
+		expect(refreshShipRelevance.mock.calls[0]![1].deadline).toBeGreaterThan(
+			Date.now(),
+		);
 		expect(runtime.captured).toHaveLength(0);
 		expect(pendingFor("product-lead")).toHaveLength(1);
 
-		store.putShipRelevantDiffSnapshot({
+		store.putShipRelevantPrSnapshot({
 			execution_id: "exec-held",
-			pr_head_sha: head,
-			repo: "owner/repo",
+			repo_slug: "owner/repo",
 			pr_number: 42,
+			pr_head_sha: head,
+			role: "primary",
 			base_ref: "main",
 			base_oid: "b".repeat(40),
-			classifier_version: 1,
+			classifier_version: 2,
 			ship_relevant: 0,
 			file_count: 1,
+			commit_shas: [head],
 		});
 
 		await runPoll(poller);

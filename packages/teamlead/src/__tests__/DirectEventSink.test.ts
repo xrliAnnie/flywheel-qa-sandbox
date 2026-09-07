@@ -1370,17 +1370,18 @@ describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH
 			author_family: "claude",
 			reviewer_family: "codex",
 		});
-		store.putShipRelevantDiffSnapshot({
+		store.putShipRelevantPrSnapshot({
 			execution_id: "exec-1",
-			pr_head_sha: SHA,
-			repo: "xrliAnnie/GeoForge3D",
+			repo_slug: "xrliannie/geoforge3d",
 			pr_number: 42,
+			pr_head_sha: SHA,
+			role: "primary",
 			base_ref: "main",
 			base_oid: "b".repeat(40),
-			classifier_version: 1,
+			classifier_version: 2,
 			ship_relevant: 0,
 			file_count: 1,
-			sample_paths: ["engineering/doc/GEO-100/plan.md"],
+			commit_shas: [SHA],
 		});
 		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
 		expect(delivered).toContain("session_completed");

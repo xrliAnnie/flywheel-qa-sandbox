@@ -27,9 +27,9 @@ import {
 	isReviewableRole,
 } from "./codex-gate.js";
 import {
-	SHIP_RELEVANT_CLASSIFIER_VERSION,
-	SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS,
-} from "./ship-relevant-diff.js";
+	type RunShipRelevanceStore,
+	resolveRunShipRelevance,
+} from "./run-ship-relevance.js";
 
 /** Minimal read surface — keeps the predicate trivially unit-testable. */
 export interface AutoQaHeldStore {
@@ -37,18 +37,11 @@ export interface AutoQaHeldStore {
 		parentExecutionId: string,
 		targetPrHeadSha: string,
 	): AutoQaRecord | undefined;
-	getShipRelevantDiffSnapshot?(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-	):
-		| {
-				pr_number: number;
-				classifier_version: number;
-				ship_relevant: 0 | 1;
-				computed_at: string;
-		  }
-		| undefined;
 }
+
+export type ReviewHeldStore = AutoQaHeldStore &
+	CodexGateStore &
+	RunShipRelevanceStore;
 
 export interface QaHeldSession {
 	execution_id: string;
@@ -79,7 +72,7 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
  * Main sessions remain evidence-unknown because they also need PR identity for QA.
  */
 export function isReviewHeld(
-	store: AutoQaHeldStore & CodexGateStore,
+	store: ReviewHeldStore,
 	session: QaHeldSession | undefined,
 ): boolean {
 	// FLY-1099 §4.1: isReviewHeld and reviewHoldReason share ONE implementation
@@ -115,7 +108,7 @@ export function isDeferrableReviewHoldReason(
 }
 
 export function reviewHoldReason(
-	store: AutoQaHeldStore & CodexGateStore,
+	store: ReviewHeldStore,
 	session: QaHeldSession | undefined,
 ): ReviewHoldReason | null {
 	if (!session) return null;
@@ -153,27 +146,14 @@ export function reviewHoldReason(
 		// pipeline. FLY-1251's stopgap is intentionally main-only.
 		if (!mainRole) return null;
 
-		const snapshot = store.getShipRelevantDiffSnapshot?.(
-			session.execution_id,
-			sha,
-		);
-		if (
-			!snapshot ||
-			snapshot.pr_number !== session.pr_number ||
-			snapshot.classifier_version !== SHIP_RELEVANT_CLASSIFIER_VERSION
-		) {
+		const relevance = resolveRunShipRelevance(store, session);
+		if (relevance.verdict === "docs_only") return null;
+		if (relevance.verdict === "ship_relevant") {
 			return "qa_evidence_missing";
 		}
-		const computedAt = Date.parse(snapshot.computed_at);
-		const ageMs = Date.now() - computedAt;
-		if (
-			!Number.isFinite(computedAt) ||
-			ageMs < -SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS ||
-			ageMs > SHIP_RELEVANT_SNAPSHOT_MAX_AGE_MS
-		) {
-			return "qa_evidence_unknown";
-		}
-		return snapshot.ship_relevant === 0 ? null : "qa_evidence_missing";
+		return relevance.reason === "primary_snapshot_version_mismatch"
+			? "qa_evidence_missing"
+			: "qa_evidence_unknown";
 	} catch (error) {
 		// A main-session evidence read is an authorization predicate. Any read
 		// failure therefore closes the founder surface. Other roles retain their
@@ -194,7 +174,7 @@ export function reviewHoldReason(
  * Returns true = DECLINE the write (held).
  */
 export function founderApprovalHoldGuard(
-	store: AutoQaHeldStore & CodexGateStore,
+	store: ReviewHeldStore,
 	session: QaHeldSession | undefined,
 ): boolean {
 	return isReviewHeld(store, session);

@@ -101,16 +101,18 @@ async function accidentShapeStore() {
 }
 
 function codeBearingSnapshot(store: StateStore, shipRelevant: 0 | 1) {
-	store.putShipRelevantDiffSnapshot({
+	store.putShipRelevantPrSnapshot({
 		execution_id: "exec-1251",
-		pr_head_sha: HEAD,
-		repo: "xrliAnnie/flywheel",
+		repo_slug: "xrliannie/flywheel",
 		pr_number: 588,
+		pr_head_sha: HEAD,
+		role: "primary",
 		base_ref: "main",
 		base_oid: BASE,
 		classifier_version: SHIP_RELEVANT_CLASSIFIER_VERSION,
 		ship_relevant: shipRelevant,
 		file_count: 3,
+		commit_shas: [HEAD],
 	});
 }
 
@@ -177,7 +179,7 @@ describe("QA FLY-1251 · E1 accident replay against the real StateStore", () => 
 	it("holds when the classification has not been computed yet (fail-closed)", async () => {
 		const store = await accidentShapeStore();
 		const session = store.getSession("exec-1251");
-		expect(reviewHoldReason(store, session)).toBe("qa_evidence_missing");
+		expect(reviewHoldReason(store, session)).toBe("qa_evidence_unknown");
 	});
 
 	it("releases ONLY on a server-classified docs-only diff", async () => {
@@ -211,52 +213,58 @@ describe("QA FLY-1251 · E1 accident replay against the real StateStore", () => 
 
 	it("a docs-only exemption bound to a DIFFERENT head cannot release this head", async () => {
 		const store = await accidentShapeStore();
-		store.putShipRelevantDiffSnapshot({
+		store.putShipRelevantPrSnapshot({
 			execution_id: "exec-1251",
-			pr_head_sha: "c".repeat(40),
-			repo: "xrliAnnie/flywheel",
+			repo_slug: "xrliannie/flywheel",
 			pr_number: 588,
+			pr_head_sha: "c".repeat(40),
+			role: "primary",
 			base_ref: "main",
 			base_oid: BASE,
 			classifier_version: SHIP_RELEVANT_CLASSIFIER_VERSION,
 			ship_relevant: 0,
 			file_count: 1,
+			commit_shas: ["c".repeat(40)],
 		});
 		expect(reviewHoldReason(store, store.getSession("exec-1251"))).toBe(
-			"qa_evidence_missing",
+			"qa_evidence_unknown",
 		);
 	});
 
 	it("a docs-only exemption for a DIFFERENT PR number cannot release this session", async () => {
 		const store = await accidentShapeStore();
-		store.putShipRelevantDiffSnapshot({
+		store.putShipRelevantPrSnapshot({
 			execution_id: "exec-1251",
-			pr_head_sha: HEAD,
-			repo: "xrliAnnie/flywheel",
+			repo_slug: "xrliannie/flywheel",
 			pr_number: 1,
+			pr_head_sha: HEAD,
+			role: "primary",
 			base_ref: "main",
 			base_oid: BASE,
 			classifier_version: SHIP_RELEVANT_CLASSIFIER_VERSION,
 			ship_relevant: 0,
 			file_count: 1,
+			commit_shas: [HEAD],
 		});
 		expect(reviewHoldReason(store, store.getSession("exec-1251"))).toBe(
-			"qa_evidence_missing",
+			"qa_evidence_unknown",
 		);
 	});
 
 	it("a docs-only exemption from a superseded classifier version cannot release", async () => {
 		const store = await accidentShapeStore();
-		store.putShipRelevantDiffSnapshot({
+		store.putShipRelevantPrSnapshot({
 			execution_id: "exec-1251",
-			pr_head_sha: HEAD,
-			repo: "xrliAnnie/flywheel",
+			repo_slug: "xrliannie/flywheel",
 			pr_number: 588,
+			pr_head_sha: HEAD,
+			role: "primary",
 			base_ref: "main",
 			base_oid: BASE,
 			classifier_version: SHIP_RELEVANT_CLASSIFIER_VERSION + 1,
 			ship_relevant: 0,
 			file_count: 1,
+			commit_shas: [HEAD],
 		});
 		expect(reviewHoldReason(store, store.getSession("exec-1251"))).toBe(
 			"qa_evidence_missing",

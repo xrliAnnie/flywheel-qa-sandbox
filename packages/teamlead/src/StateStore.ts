@@ -1582,6 +1582,47 @@ export interface ShipRelevantDiffSnapshot {
 	computed_at: string;
 }
 
+/** FLY-2395: one exact PR classification owned by a gate execution. */
+export interface ShipRelevantPrSnapshot {
+	execution_id: string;
+	repo_slug: string;
+	pr_number: number;
+	pr_head_sha: string;
+	role: "primary" | "declared";
+	base_ref: string;
+	base_oid: string;
+	classifier_version: number;
+	ship_relevant: 0 | 1;
+	file_count: number;
+	sample_paths?: string[];
+	commit_shas: string[];
+	computed_at: string;
+}
+
+export interface ShipRelevantDeclarationInputRow {
+	repoIdentity: string;
+	prNumber: number;
+	probeRepoSlug: string;
+	frozenHeadSha: string;
+	targetRepoPath: string;
+}
+
+/** Append-only completion receipt evidence for one declared nested PR. */
+export interface ShipRelevantDeclaredPrRow {
+	receipt_id: string;
+	repo_identity: string;
+	pr_number: number;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	execution_id: string;
+	probe_repo_slug: string;
+	frozen_head_sha: string;
+	target_repo_path: string;
+	declaration_seq: number;
+	declared_at: string;
+}
+
 /**
  * FLY-827: the durable Codex code-review verdict record — the AUTHORITATIVE
  * source (NOT a PR comment) for "did Codex code review APPROVE this exact PR
@@ -4562,6 +4603,53 @@ export class StateStore {
 				PRIMARY KEY (execution_id, pr_head_sha)
 			)
 		`);
+
+		// FLY-2395: repo+PR identity prevents equal commit SHAs in distinct PRs
+		// from aliasing. The old v1 table remains frozen for historical evidence.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS ship_relevant_pr_snapshot (
+				execution_id TEXT NOT NULL,
+				repo_slug TEXT NOT NULL,
+				pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+				pr_head_sha TEXT NOT NULL CHECK (length(pr_head_sha) = 40),
+				role TEXT NOT NULL CHECK (role IN ('primary','declared')),
+				base_ref TEXT NOT NULL,
+				base_oid TEXT NOT NULL,
+				classifier_version INTEGER NOT NULL,
+				ship_relevant INTEGER NOT NULL CHECK (ship_relevant IN (0,1)),
+				file_count INTEGER NOT NULL,
+				sample_paths TEXT,
+				commit_shas TEXT NOT NULL,
+				computed_at TEXT NOT NULL,
+				PRIMARY KEY (execution_id, repo_slug, pr_number)
+			)
+		`);
+
+		// FLY-2395: classification evidence is deliberately separate from the
+		// workflow PR manifest, which remains merge/finalization authority.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS ship_relevant_declared_pr (
+				receipt_id TEXT NOT NULL,
+				repo_identity TEXT NOT NULL CHECK (repo_identity <> '__main__' AND length(repo_identity) > 0),
+				pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				execution_id TEXT NOT NULL,
+				probe_repo_slug TEXT NOT NULL CHECK (length(probe_repo_slug) > 0),
+				frozen_head_sha TEXT NOT NULL CHECK (length(frozen_head_sha) = 40),
+				target_repo_path TEXT NOT NULL,
+				declaration_seq INTEGER NOT NULL CHECK (declaration_seq > 0),
+				declared_at TEXT NOT NULL,
+				PRIMARY KEY (receipt_id, repo_identity, pr_number),
+				FOREIGN KEY (run_id, node_id, attempt)
+					REFERENCES workflow_run_node(run_id, node_id, attempt)
+			)
+		`);
+		this.db.run(
+			`CREATE INDEX IF NOT EXISTS idx_ship_relevant_declared_pr_run
+			   ON ship_relevant_declared_pr(run_id, declaration_seq)`,
+		);
 
 		// FLY-827: durable Codex code-review verdict — the authoritative gate record
 		// (keyed to the exact reviewed head, so a new head voids an older approval).
@@ -11503,6 +11591,361 @@ export class StateStore {
 		}
 		stmt.free();
 		return snapshot;
+	}
+
+	putShipRelevantPrSnapshot(
+		input: Omit<ShipRelevantPrSnapshot, "computed_at"> & {
+			computed_at?: string;
+		},
+	): void {
+		this.db.run(
+			`INSERT INTO ship_relevant_pr_snapshot
+			   (execution_id, repo_slug, pr_number, pr_head_sha, role, base_ref,
+			    base_oid, classifier_version, ship_relevant, file_count,
+			    sample_paths, commit_shas, computed_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(execution_id, repo_slug, pr_number) DO UPDATE SET
+			   pr_head_sha = excluded.pr_head_sha,
+			   role = excluded.role,
+			   base_ref = excluded.base_ref,
+			   base_oid = excluded.base_oid,
+			   classifier_version = excluded.classifier_version,
+			   ship_relevant = excluded.ship_relevant,
+			   file_count = excluded.file_count,
+			   sample_paths = excluded.sample_paths,
+			   commit_shas = excluded.commit_shas,
+			   computed_at = excluded.computed_at`,
+			[
+				input.execution_id,
+				input.repo_slug.toLowerCase(),
+				input.pr_number,
+				input.pr_head_sha.toLowerCase(),
+				input.role,
+				input.base_ref,
+				input.base_oid.toLowerCase(),
+				input.classifier_version,
+				input.ship_relevant,
+				input.file_count,
+				input.sample_paths ? JSON.stringify(input.sample_paths) : null,
+				JSON.stringify(input.commit_shas.map((sha) => sha.toLowerCase())),
+				input.computed_at ?? new Date().toISOString(),
+			],
+		);
+		this.save();
+	}
+
+	getShipRelevantPrSnapshot(
+		executionId: string,
+		repoSlug: string,
+		prNumber: number,
+	): ShipRelevantPrSnapshot | undefined {
+		const stmt = this.db.prepare(
+			`SELECT * FROM ship_relevant_pr_snapshot
+			  WHERE execution_id = ? AND lower(repo_slug) = lower(?) AND pr_number = ?`,
+		);
+		stmt.bind([executionId, repoSlug, prNumber]);
+		let snapshot: ShipRelevantPrSnapshot | undefined;
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			const parseStringArray = (value: unknown): string[] => {
+				if (typeof value !== "string") return [];
+				try {
+					const parsed = JSON.parse(value);
+					return Array.isArray(parsed) &&
+						parsed.every((entry) => typeof entry === "string")
+						? parsed
+						: [];
+				} catch {
+					return [];
+				}
+			};
+			const samplePaths = parseStringArray(row.sample_paths);
+			snapshot = {
+				execution_id: row.execution_id as string,
+				repo_slug: row.repo_slug as string,
+				pr_number: Number(row.pr_number),
+				pr_head_sha: row.pr_head_sha as string,
+				role: row.role as ShipRelevantPrSnapshot["role"],
+				base_ref: row.base_ref as string,
+				base_oid: row.base_oid as string,
+				classifier_version: Number(row.classifier_version),
+				ship_relevant: Number(row.ship_relevant) as 0 | 1,
+				file_count: Number(row.file_count),
+				...(samplePaths.length > 0 ? { sample_paths: samplePaths } : {}),
+				commit_shas: parseStringArray(row.commit_shas),
+				computed_at: row.computed_at as string,
+			};
+		}
+		stmt.free();
+		return snapshot;
+	}
+
+	resolvePrimaryShipRelevantPrSnapshot(
+		executionId: string,
+		prNumber: number,
+	):
+		| { kind: "none" }
+		| { kind: "one"; snapshot: ShipRelevantPrSnapshot }
+		| { kind: "many"; snapshots: ShipRelevantPrSnapshot[] } {
+		const snapshots = this.workflowSelectAll(
+			`SELECT repo_slug FROM ship_relevant_pr_snapshot
+			  WHERE execution_id = ? AND pr_number = ? AND role = 'primary'
+			  ORDER BY repo_slug`,
+			[executionId, prNumber],
+		)
+			.map((row) =>
+				this.getShipRelevantPrSnapshot(
+					executionId,
+					row.repo_slug as string,
+					prNumber,
+				),
+			)
+			.filter(
+				(snapshot): snapshot is ShipRelevantPrSnapshot => snapshot !== undefined,
+			);
+		if (snapshots.length === 0) return { kind: "none" };
+		if (snapshots.length === 1) {
+			return { kind: "one", snapshot: snapshots[0]! };
+		}
+		return { kind: "many", snapshots };
+	}
+
+	deleteShipRelevantPrSnapshot(
+		executionId: string,
+		repoSlug: string,
+		prNumber: number,
+	): boolean {
+		this.db.run(
+			`DELETE FROM ship_relevant_pr_snapshot
+			  WHERE execution_id = ? AND lower(repo_slug) = lower(?) AND pr_number = ?`,
+			[executionId, repoSlug, prNumber],
+		);
+		const deleted = this.db.getRowsModified() > 0;
+		if (deleted) this.save();
+		return deleted;
+	}
+
+	deleteShipRelevantPrSnapshotsExcept(
+		executionId: string,
+		keep: Array<{ repoSlug: string; prNumber: number }>,
+	): number {
+		const keepClause = keep
+			.map(() => "(lower(repo_slug) = lower(?) AND pr_number = ?)")
+			.join(" OR ");
+		const params: Array<string | number> = [executionId];
+		for (const candidate of keep) {
+			params.push(candidate.repoSlug, candidate.prNumber);
+		}
+		this.db.run(
+			`DELETE FROM ship_relevant_pr_snapshot
+			  WHERE execution_id = ?${keepClause ? ` AND NOT (${keepClause})` : ""}`,
+			params,
+		);
+		const deleted = this.db.getRowsModified();
+		if (deleted > 0) this.save();
+		return deleted;
+	}
+
+	private rowToShipRelevantDeclaredPr(
+		row: Record<string, unknown>,
+	): ShipRelevantDeclaredPrRow {
+		return {
+			receipt_id: row.receipt_id as string,
+			repo_identity: row.repo_identity as string,
+			pr_number: Number(row.pr_number),
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			execution_id: row.execution_id as string,
+			probe_repo_slug: row.probe_repo_slug as string,
+			frozen_head_sha: row.frozen_head_sha as string,
+			target_repo_path: row.target_repo_path as string,
+			declaration_seq: Number(row.declaration_seq),
+			declared_at: row.declared_at as string,
+		};
+	}
+
+	private canonicalShipRelevantDeclarations(input: {
+		receiptId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		rows: ShipRelevantDeclarationInputRow[];
+	}): string {
+		return canonicalJsonString(
+			input.rows
+				.map((row) => ({
+					receiptId: input.receiptId,
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+					executionId: input.executionId,
+					repoIdentity: row.repoIdentity.toLowerCase(),
+					prNumber: row.prNumber,
+					probeRepoSlug: row.probeRepoSlug.toLowerCase(),
+					frozenHeadSha: row.frozenHeadSha.toLowerCase(),
+					targetRepoPath: row.targetRepoPath,
+				}))
+				.sort((a, b) =>
+					`${a.repoIdentity}\0${a.prNumber}`.localeCompare(
+						`${b.repoIdentity}\0${b.prNumber}`,
+					),
+				),
+		);
+	}
+
+	private recordShipRelevantDeclarationsTx(input: {
+		receiptId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		rows: ShipRelevantDeclarationInputRow[];
+		now: string;
+	}): void {
+		const existing = this.workflowSelectAll(
+			`SELECT * FROM ship_relevant_declared_pr
+			  WHERE receipt_id = ?
+			  ORDER BY repo_identity, pr_number`,
+			[input.receiptId],
+		).map((row) => this.rowToShipRelevantDeclaredPr(row));
+		if (existing.length > 0) {
+			const existingCanonical = this.canonicalShipRelevantDeclarations({
+				receiptId: input.receiptId,
+				runId: existing[0]!.run_id,
+				nodeId: existing[0]!.node_id,
+				attempt: existing[0]!.attempt,
+				executionId: existing[0]!.execution_id,
+				rows: existing.map((row) => ({
+					repoIdentity: row.repo_identity,
+					prNumber: row.pr_number,
+					probeRepoSlug: row.probe_repo_slug,
+					frozenHeadSha: row.frozen_head_sha,
+					targetRepoPath: row.target_repo_path,
+				})),
+			});
+			if (existingCanonical !== this.canonicalShipRelevantDeclarations(input)) {
+				throw new Error("declaration_conflict");
+			}
+			return;
+		}
+		if (input.rows.length === 0) return;
+		const sequenceRow = this.workflowSelectAll(
+			`SELECT COALESCE(MAX(declaration_seq), 0) + 1 AS next_seq
+			   FROM ship_relevant_declared_pr WHERE run_id = ?`,
+			[input.runId],
+		)[0];
+		const declarationSeq = Number(sequenceRow?.next_seq ?? 1);
+		for (const row of input.rows) {
+			this.db.run(
+				`INSERT INTO ship_relevant_declared_pr
+				   (receipt_id, repo_identity, pr_number, run_id, node_id, attempt,
+				    execution_id, probe_repo_slug, frozen_head_sha, target_repo_path,
+				    declaration_seq, declared_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.receiptId,
+					row.repoIdentity.toLowerCase(),
+					row.prNumber,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					input.executionId,
+					row.probeRepoSlug.toLowerCase(),
+					row.frozenHeadSha.toLowerCase(),
+					row.targetRepoPath,
+					declarationSeq,
+					input.now,
+				],
+			);
+		}
+	}
+
+	private shipRelevantDeclarationReceiptMatches(input: {
+		receiptId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		rows: ShipRelevantDeclarationInputRow[];
+	}): boolean {
+		const existing = this.workflowSelectAll(
+			`SELECT * FROM ship_relevant_declared_pr
+			  WHERE receipt_id = ?
+			  ORDER BY repo_identity, pr_number`,
+			[input.receiptId],
+		).map((row) => this.rowToShipRelevantDeclaredPr(row));
+		if (existing.length === 0) return input.rows.length === 0;
+		const existingCanonical = canonicalJsonString(
+			existing
+				.map((row) => ({
+					receiptId: row.receipt_id,
+					runId: row.run_id,
+					nodeId: row.node_id,
+					attempt: row.attempt,
+					executionId: row.execution_id,
+					repoIdentity: row.repo_identity.toLowerCase(),
+					prNumber: row.pr_number,
+					probeRepoSlug: row.probe_repo_slug.toLowerCase(),
+					frozenHeadSha: row.frozen_head_sha.toLowerCase(),
+					targetRepoPath: row.target_repo_path,
+				}))
+				.sort((a, b) =>
+					`${a.repoIdentity}\0${a.prNumber}`.localeCompare(
+						`${b.repoIdentity}\0${b.prNumber}`,
+					),
+				),
+		);
+		return existingCanonical === this.canonicalShipRelevantDeclarations(input);
+	}
+
+	recordShipRelevantDeclarations(input: {
+		receiptId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		rows: ShipRelevantDeclarationInputRow[];
+		now?: string;
+	}): void {
+		this.db.transaction(() =>
+			this.recordShipRelevantDeclarationsTx({
+				...input,
+				now: input.now ?? new Date().toISOString(),
+			}),
+		);
+		this.save();
+	}
+
+	listShipRelevantDeclarationsForRun(
+		runId: string,
+	): ShipRelevantDeclaredPrRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM ship_relevant_declared_pr
+			  WHERE run_id = ?
+			  ORDER BY declaration_seq, repo_identity, pr_number`,
+			[runId],
+		).map((row) => this.rowToShipRelevantDeclaredPr(row));
+	}
+
+	projectCurrentShipRelevantCandidates(
+		runId: string,
+	): ShipRelevantDeclaredPrRow[] {
+		return this.workflowSelectAll(
+			`SELECT candidate.*
+			   FROM ship_relevant_declared_pr candidate
+			  WHERE candidate.run_id = ?
+			    AND NOT EXISTS (
+			      SELECT 1 FROM ship_relevant_declared_pr newer
+			       WHERE newer.run_id = candidate.run_id
+			         AND lower(newer.repo_identity) = lower(candidate.repo_identity)
+			         AND newer.pr_number = candidate.pr_number
+			         AND newer.declaration_seq > candidate.declaration_seq
+			    )
+			  ORDER BY candidate.repo_identity, candidate.pr_number`,
+			[runId],
+		).map((row) => this.rowToShipRelevantDeclaredPr(row));
 	}
 
 	deleteShipRelevantDiffSnapshot(
@@ -47460,6 +47903,103 @@ export class StateStore {
 		return rows.length === 1 ? (rows[0]!.run_id as string) : undefined;
 	}
 
+	resolveWorkflowRunForExecution(executionId: string):
+		| { kind: "none" }
+		| { kind: "one"; runId: string }
+		| { kind: "many"; runIds: string[] } {
+		const runIds = this.workflowSelectAll(
+			`SELECT run_id FROM workflow_execution_binding
+			  WHERE execution_id = ?
+			 UNION
+			 SELECT run_id FROM workflow_run_node
+			  WHERE execution_id = ?
+			 ORDER BY run_id`,
+			[executionId, executionId],
+		).map((row) => row.run_id as string);
+		if (runIds.length === 0) return { kind: "none" };
+		if (runIds.length === 1) return { kind: "one", runId: runIds[0]! };
+		return { kind: "many", runIds };
+	}
+
+	resolveWorkflowNodePrBindingForSession(
+		executionId: string,
+		headSha: string,
+	):
+		| { kind: "none" }
+		| { kind: "one"; binding: WorkflowNodePrBindingRow }
+		| { kind: "many"; bindings: WorkflowNodePrBindingRow[] } {
+		if (!/^[0-9a-f]{40}$/i.test(headSha)) return { kind: "none" };
+		const bindings = this.workflowSelectAll(
+			`SELECT binding.*
+			   FROM workflow_node_pr_binding binding
+			   JOIN workflow_run_node node
+			     ON node.run_id = binding.run_id
+			    AND node.node_id = binding.node_id
+			    AND node.attempt = binding.attempt
+			  WHERE node.execution_id = ? AND lower(binding.head_sha) = lower(?)
+			  ORDER BY binding.run_id, binding.node_id, binding.attempt`,
+			[executionId, headSha],
+		).map((row) => ({
+			run_id: row.run_id as string,
+			node_id: row.node_id as string,
+			attempt: Number(row.attempt),
+			pr_number: Number(row.pr_number),
+			head_sha: row.head_sha as string,
+			target_repo_identity: row.target_repo_identity as string,
+			probe_repo_slug: row.probe_repo_slug as string,
+			target_repo_path: row.target_repo_path as string,
+			worktree_binding_generation: row.worktree_binding_generation as string,
+			receipt_id: row.receipt_id as string,
+			bound_at: row.bound_at as string,
+		}));
+		if (bindings.length === 0) return { kind: "none" };
+		if (bindings.length === 1) {
+			return { kind: "one", binding: bindings[0]! };
+		}
+		return { kind: "many", bindings };
+	}
+
+	listNestedCodexReviewHeadsForExecution(
+		executionId: string,
+	): Array<{ repoIdentity: string; headSha: string }> {
+		return this.workflowSelectAll(
+			`SELECT DISTINCT lower(target_repo_identity) AS repo_identity,
+			                 lower(target_pr_head_sha) AS head_sha
+			   FROM codex_review_record
+			  WHERE execution_id = ? AND lower(target_repo_identity) <> '__main__'
+			  ORDER BY repo_identity, head_sha`,
+			[executionId],
+		).map((row) => ({
+			repoIdentity: row.repo_identity as string,
+			headSha: row.head_sha as string,
+		}));
+	}
+
+	listNestedCodexReviewHeadsForRun(
+		runId: string,
+	): Array<{ repoIdentity: string; headSha: string }> {
+		return this.workflowSelectAll(
+			`WITH run_execution AS (
+			   SELECT execution_id FROM workflow_run_node
+			    WHERE run_id = ? AND execution_id IS NOT NULL
+			   UNION
+			   SELECT execution_id FROM workflow_execution_binding
+			    WHERE run_id = ?
+			 )
+			 SELECT DISTINCT lower(review.target_repo_identity) AS repo_identity,
+			                 lower(review.target_pr_head_sha) AS head_sha
+			   FROM codex_review_record review
+			   JOIN run_execution execution
+			     ON execution.execution_id = review.execution_id
+			  WHERE lower(review.target_repo_identity) <> '__main__'
+			  ORDER BY repo_identity, head_sha`,
+			[runId, runId],
+		).map((row) => ({
+			repoIdentity: row.repo_identity as string,
+			headSha: row.head_sha as string,
+		}));
+	}
+
 	private revokeWorkflowQaProofForHeadChangeTx(input: {
 		runId: string;
 		producerNodeId: string;
@@ -48277,6 +48817,7 @@ export class StateStore {
 			targetRepoPath: string;
 			worktreeBindingGeneration: string;
 		};
+		declaredPrs?: ShipRelevantDeclarationInputRow[];
 		/** Bridge-derived proof; runner-visible completion payloads cannot set it. */
 		noCodeAttestation?: {
 			worktreeBindingGeneration: string;
@@ -48397,6 +48938,7 @@ export class StateStore {
 			const session = this.getSession(input.executionId);
 			if (
 				input.prBinding !== undefined ||
+				(input.declaredPrs?.length ?? 0) > 0 ||
 				Number.isInteger(evidence?.prNumber) ||
 				(evidence?.landingStatus !== undefined &&
 					evidence.landingStatus !== null) ||
@@ -48456,6 +48998,18 @@ export class StateStore {
 			],
 		)[0];
 		if (existing) {
+			if (
+				!this.shipRelevantDeclarationReceiptMatches({
+					receiptId: existing.source_event_id as string,
+					runId: context.binding.run_id,
+					nodeId: context.binding.node_id,
+					attempt: context.binding.attempt,
+					executionId: context.binding.execution_id,
+					rows: input.declaredPrs ?? [],
+				})
+			) {
+				return { ok: false, reason: "declaration_conflict" };
+			}
 			if (
 				(existing.activation_id != null &&
 					existing.activation_id !== context.binding.activation_id) ||
@@ -48815,6 +49369,17 @@ export class StateStore {
 							`[workflow-completion] PR evidence mirror rejected for ${context.binding.run_id}/${context.binding.node_id}/${context.binding.attempt}`,
 						);
 					}
+				}
+				if ((input.declaredPrs?.length ?? 0) > 0) {
+					this.recordShipRelevantDeclarationsTx({
+						receiptId: input.sourceEventId,
+						runId: context.binding.run_id,
+						nodeId: context.binding.node_id,
+						attempt: context.binding.attempt,
+						executionId: context.binding.execution_id,
+						rows: input.declaredPrs!,
+						now,
+					});
 				}
 				this.db.run(
 					`INSERT INTO workflow_node_completion
@@ -66239,6 +66804,7 @@ export type WorkflowCompletionResult =
 				| "not_enrolled"
 				| "route_mismatch"
 				| "completion_conflict"
+				| "declaration_conflict"
 				| "no_code_not_allowed"
 				| "no_code_artifact_present"
 				| "no_code_attestation_missing"

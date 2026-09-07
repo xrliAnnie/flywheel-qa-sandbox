@@ -99,6 +99,10 @@ import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
 import type { ReviewAuthorizationAlerts } from "./review-authorization-alerts.js";
 import { isReviewHeld } from "./review-hold.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
+import {
+	parseDeclaredPrEvidence,
+	resolveShipRelevantDeclarations,
+} from "./ship-relevant-declaration.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
 import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
@@ -761,6 +765,19 @@ export function createEventRouter(
 					completionHeadRaw && /^[0-9a-f]{40}$/.test(completionHeadRaw)
 						? completionHeadRaw
 						: undefined;
+				const parsedDeclaredPrs = parseDeclaredPrEvidence(
+					rawCompletionEvidence?.declaredPrs,
+				);
+				if (!parsedDeclaredPrs.ok) {
+					res.status(422).json({
+						error: "declared_pr_rejected",
+						reason: parsedDeclaredPrs.reason,
+						...(parsedDeclaredPrs.detail
+							? { detail: parsedDeclaredPrs.detail }
+							: {}),
+					});
+					return;
+				}
 				const workflowActivation = asWorkflowCompletionActivation(
 					rawWorkflowActivation,
 				);
@@ -776,6 +793,13 @@ export function createEventRouter(
 							workflowActivation.activationId,
 						)
 					: store.getGeneralizedWorkflowNodeForExecution(event.execution_id);
+				if (parsedDeclaredPrs.declarations.length > 0 && !generalizedContext) {
+					res.status(422).json({
+						error: "declared_pr_rejected",
+						reason: "not_enrolled",
+					});
+					return;
+				}
 				const completionSession = store.getSession(event.execution_id);
 				const completionRoute = asString(decision?.route) ?? "";
 				let completionHead = callerCompletionHead;
@@ -797,6 +821,15 @@ export function createEventRouter(
 							worktreeBindingGeneration: string;
 					  }
 					| undefined;
+				let declaredPrs:
+					| Array<{
+							repoIdentity: string;
+							prNumber: number;
+							probeRepoSlug: string;
+							frozenHeadSha: string;
+							targetRepoPath: string;
+					  }>
+					| undefined;
 				if (generalizedContext) {
 					const landing =
 						rawCompletionEvidence?.landingStatus &&
@@ -810,6 +843,13 @@ export function createEventRouter(
 						landing !== undefined &&
 						Number.isSafeInteger(prNumber) &&
 						prNumber > 0;
+					if (parsedDeclaredPrs.declarations.length > 0 && !hasPrEvidence) {
+						res.status(422).json({
+							error: "declared_pr_rejected",
+							reason: "primary_pr_missing",
+						});
+						return;
+					}
 					if (
 						landing &&
 						!hasPrEvidence &&
@@ -906,6 +946,32 @@ export function createEventRouter(
 						console.warn(
 							`[event-route] generalized PR evidence ignored for ${event.execution_id}: immutable worktree binding missing`,
 						);
+					}
+					if (parsedDeclaredPrs.declarations.length > 0) {
+						if (!worktreeBinding || !prBinding) {
+							res.status(422).json({
+								error: "declared_pr_rejected",
+								reason: "primary_pr_missing",
+							});
+							return;
+						}
+						const resolved = await resolveShipRelevantDeclarations({
+							authorityRoot: worktreeBinding.path,
+							declarations: parsedDeclaredPrs.declarations,
+							primary: {
+								repoIdentity: prBinding.probeRepoSlug,
+								prNumber: prBinding.prNumber,
+							},
+						});
+						if (!resolved.ok) {
+							res.status(422).json({
+								error: "declared_pr_rejected",
+								reason: resolved.reason,
+								...(resolved.detail ? { detail: resolved.detail } : {}),
+							});
+							return;
+						}
+						declaredPrs = resolved.declarations;
 					}
 				}
 				let alertIdentity:
@@ -1150,6 +1216,7 @@ export function createEventRouter(
 					...(completionHead ? { subjectDigest: completionHead } : {}),
 					...(workflowActivation ? { workflowActivation } : {}),
 					...(prBinding ? { prBinding } : {}),
+					...(declaredPrs?.length ? { declaredPrs } : {}),
 					...(noCodeAttestation ? { noCodeAttestation } : {}),
 					alertIdentity,
 				});

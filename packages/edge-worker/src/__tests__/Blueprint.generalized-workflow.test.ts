@@ -87,6 +87,28 @@ const generalized: BlueprintContext = {
 };
 
 describe("Blueprint generalized workflow capability contract", () => {
+	it("requires every nested PR to be declared on PR-producing completion", async () => {
+		const { blueprint, adapter } = harness();
+		await blueprint.run(node, "/tmp/fly2395-declared-pr", {
+			...generalized,
+			workflowCapabilities: {
+				...generalized.workflowCapabilities,
+				shared_branch_writer: true,
+				creates_pr: true,
+				produces_output: false,
+				completion_route: "needs_review",
+			},
+			workflowOutputCredential: undefined,
+		});
+		const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		const prompt = call.appendSystemPrompt ?? "";
+		expect(prompt).toContain("--declare-pr <relative-repo-path>:<PR-number>");
+		expect(prompt).toContain("declare every nested target-repository PR");
+		expect(prompt).toContain("at most 8 declarations");
+		expect(prompt).toContain("undeclared nested PR makes docs-only unknown");
+	});
+
 	it("prepares the exact hydrated issue body and launch anchor before dispatch", async () => {
 		const { blueprint, adapter } = harness();
 		const prepareWorkflowIssueDelivery = vi.fn();

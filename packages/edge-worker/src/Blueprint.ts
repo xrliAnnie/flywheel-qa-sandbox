@@ -1922,6 +1922,14 @@ export class Blueprint {
 						: `When the bounded work is complete, run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
 				);
 			}
+			if (
+				ctx.workflowCapabilities.creates_pr === true &&
+				completionRoute === "needs_review"
+			) {
+				systemPromptLines.push(
+					`If the issue has PRs in nested target repositories, declare every nested target-repository PR on the same completion command with a repeatable \`--declare-pr <relative-repo-path>:<PR-number>\` (at most 8 declarations). The server freezes each nested repository HEAD; an undeclared nested PR makes docs-only unknown and cannot bypass review.`,
+				);
+			}
 		} else if (isDesignerPhase) {
 			// FLY-1059: mockup-first Designer workflow for a UI/design-flavored
 			// Design phase. Self-contained (the loaded agent role may be engineer /

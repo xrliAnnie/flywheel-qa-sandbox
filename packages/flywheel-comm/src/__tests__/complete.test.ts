@@ -244,11 +244,39 @@ describe("complete command", () => {
 					phaseWakes: ["wake-1"],
 				}),
 		});
-		await expect(
-			complete({ route: "needs_review", merged: false }),
-		).rejects.toThrow("process.exit(1)");
+		const priorCwd = process.cwd();
+		const nested = join(tmpHome, "nested-repo");
+		mkdirSync(nested, { recursive: true });
+		process.chdir(tmpHome);
+		execFileSyncMock.mockImplementation((cmd, args) => {
+			if (cmd !== "git") throw new Error(`unexpected cmd ${cmd}`);
+			const a = (args ?? []) as string[];
+			if (a[0] === "-C" && a[2] === "rev-parse") return `${nested}\n`;
+			if (a[0] === "rev-parse" && a[1] === "HEAD") {
+				return `${"d".repeat(40)}\n`;
+			}
+			return "";
+		});
+		try {
+			await expect(
+				complete({
+					route: "needs_review",
+					pr: 42,
+					merged: false,
+					declarePr: ["nested-repo:77", "nested-repo:78"],
+				}),
+			).rejects.toThrow("process.exit(1)");
+		} finally {
+			process.chdir(priorCwd);
+		}
 		expect(errorSpy).toHaveBeenCalledWith(
 			expect.stringContaining("--drain-receipt drain-next"),
+		);
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining('--declare-pr "nested-repo:77"'),
+		);
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining('--declare-pr "nested-repo:78"'),
 		);
 		expect(errorSpy).toHaveBeenCalledWith(
 			expect.stringContaining('mailbox ["mail-1"] / phase-wake ["wake-1"]'),
@@ -926,6 +954,129 @@ describe("complete command", () => {
 			prNumber: 42,
 		});
 		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("FLY-2395: freezes every declared nested PR head into completion evidence", async () => {
+		const priorCwd = process.cwd();
+		const nested = join(tmpHome, "nested-repo");
+		mkdirSync(nested, { recursive: true });
+		process.chdir(tmpHome);
+		execFileSyncMock.mockImplementation((cmd, args) => {
+			if (cmd !== "git") throw new Error(`unexpected cmd ${cmd}`);
+			const a = (args ?? []) as string[];
+			if (a[0] === "-C" && a[2] === "rev-parse") return `${nested}\n`;
+			if (a[0] === "rev-parse" && a[1] === "HEAD") {
+				return `${"d".repeat(40)}\n`;
+			}
+			return "";
+		});
+		try {
+			await complete({
+				route: "needs_review",
+				pr: 42,
+				merged: false,
+				declarePr: ["nested-repo:77"],
+			} as Parameters<typeof complete>[0] & { declarePr: string[] });
+		} finally {
+			process.chdir(priorCwd);
+		}
+
+		const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
+		expect(body.payload.evidence.declaredPrs).toEqual([
+			{
+				targetRepoPath: "nested-repo",
+				prNumber: 77,
+				headSha: "d".repeat(40),
+			},
+		]);
+	});
+
+	it.each([
+		["the route is not a PR route", { route: "no_code", pr: 42 }],
+		["the primary PR is missing", { route: "needs_review" }],
+	] as const)(
+		"FLY-2395: rejects --declare-pr when %s",
+		async (_name, input) => {
+			await expect(
+				complete({
+					route: input.route,
+					pr: "pr" in input ? input.pr : undefined,
+					merged: false,
+					declarePr: ["nested-repo:77"],
+				}),
+			).rejects.toThrow("process.exit(1)");
+			expect(errorSpy).toHaveBeenCalledWith(
+				"--declare-pr requires --pr on a PR route",
+			);
+			expect(mockFetch).not.toHaveBeenCalled();
+		},
+	);
+
+	it("FLY-2395: rejects malformed, escaping, and over-limit declarations before delivery", async () => {
+		for (const declaration of [
+			"nested-repo",
+			":42",
+			"nested-repo:0",
+			"nested-repo:not-a-pr",
+		]) {
+			await expect(
+				complete({
+					route: "needs_review",
+					pr: 42,
+					merged: false,
+					declarePr: [declaration],
+				}),
+			).rejects.toThrow("process.exit(1)");
+		}
+		await expect(
+			complete({
+				route: "needs_review",
+				pr: 42,
+				merged: false,
+				declarePr: ["../outside:77"],
+			}),
+		).rejects.toThrow("process.exit(1)");
+		await expect(
+			complete({
+				route: "needs_review",
+				pr: 42,
+				merged: false,
+				declarePr: Array.from({ length: 9 }, (_, index) => `repo-${index}:77`),
+			}),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("accepts at most 8"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2395: rejects a declaration when nested HEAD cannot be frozen", async () => {
+		const priorCwd = process.cwd();
+		const nested = join(tmpHome, "nested-repo");
+		mkdirSync(nested, { recursive: true });
+		process.chdir(tmpHome);
+		execFileSyncMock.mockImplementation((cmd, args) => {
+			if (cmd !== "git") throw new Error(`unexpected cmd ${cmd}`);
+			const a = (args ?? []) as string[];
+			if (a[0] === "-C" && a[2] === "rev-parse") return `${nested}\n`;
+			return "";
+		});
+		try {
+			await expect(
+				complete({
+					route: "needs_review",
+					pr: 42,
+					merged: false,
+					declarePr: ["nested-repo:77"],
+				}),
+			).rejects.toThrow("process.exit(1)");
+		} finally {
+			process.chdir(priorCwd);
+		}
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("cannot resolve a full git HEAD"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
 	});
 
 	it("FLY-1434: --target-repo is only valid with a positive --pr", async () => {
