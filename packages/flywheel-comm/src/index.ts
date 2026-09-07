@@ -37,6 +37,7 @@ import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
 import { messageStatus } from "./commands/message-status.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
+import { runOncallDraftCommand } from "./commands/oncall-draft.js";
 import { pending } from "./commands/pending.js";
 import { progress } from "./commands/progress.js";
 import {
@@ -100,8 +101,9 @@ Commands:
   check     Check if a question has been answered
   ack-event Write a backend-neutral Lead-event ACK receipt. The bearer token
             MUST arrive on stdin: ack-event <seq> --project <name> --token-stdin
-  alert-ticket  Claw duty actions: ack|handoff|resolve|outstanding. Uses only
+  alert-ticket  Claw duty actions: lookup|ack|handoff|resolve|outstanding|board. Uses only
             FLYWHEEL_ALERT_DUTY_TOKEN against the Bridge /duty capability.
+  oncall-draft  Add, list, or harvest durable runbook/contact-book receipts.
   gate      Block at a checkpoint until Lead responds (ask+poll+resolve).
             With --no-block (FLY-191): park the question + return questionId
             JSON immediately; runner goes idle and is woken by mailbox.
@@ -251,6 +253,9 @@ async function main(): Promise<void> {
 			break;
 		case "alert-ticket":
 			process.exitCode = await runAlertTicketCommand(commandArgs);
+			break;
+		case "oncall-draft":
+			process.exitCode = await runOncallDraftCommand(commandArgs);
 			break;
 		case "gate":
 			await runGate(commandArgs);

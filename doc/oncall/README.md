@@ -37,6 +37,26 @@ doc/oncall/
 4. **怎么验**：开一个不带本机上下文的 Infra bot 会话，只给它告警文本、本 README 和类别页。它必须能自己说明值从哪里取、去哪里看 log、已有动作是什么、如何确认恢复、卡住时找谁。任何一步需要口头补充或猜测，都不算入册完成。
 5. **留下什么记录**：入册的 issue 或 PR 记录类别、真实告警的非敏感标识、页面路径和抽验结果。逐次 log、聊天、查询输出和临时文件不进仓库。
 
+### 机器入口
+
+本册子的机械入口只有三个：落草稿并拒绝本机值、按回执写页、数欠账。它们由
+FLY-2386 依 founder 2026-09-06 裁定加入；不加检测、对账、状态机。
+
+- ① 自己解决时用 `alert-ticket resolve --draft <file> --event-id <eventId>`。命令先定位
+  工单，再由 `oncall-draft add --book runbook` 校验通用写法并生成 `pending/` 回执；
+  Bridge 核验回执与当前工单一致、预绑 draft id 后才会 resolve。
+- ③ 册上无此类别时，`alert-ticket handoff --reason no_entry` 会先生成一张
+  `owed/` contact-book 回执。查清负责人后，用
+  `oncall-draft add --book contact-book --event-id <eventId> --to <leadId> --file <file>`
+  补全并移到 `pending/`。
+- `oncall-draft list` 数 `owed / pending / landed` 欠账；
+  `oncall-draft harvest --repo <worktree>` 按回执写页，并把成功回填的回执移到
+  `landed/`。页里的 `<!-- backfill:<eventId> -->` 表示该真实处置已经写入；重跑时不重复
+  加段，但仍会完成 pending → landed 的崩溃恢复。
+
+谁运行 harvest，谁负责检查 diff 并开 PR。命令不提交、不推送，也不替代本页的人工
+抽验。
+
 ## 新告警类别上线闸门
 
 **新告警类别上线前必须在册。** 上线它的变更必须同时满足：
@@ -45,7 +65,8 @@ doc/oncall/
 - `runbooks/<类别>.md` 已按模板落位，五栏齐全；
 - 一个不带本机上下文的 Infra bot 已按上一节走通并留下验收记录。
 
-本 README 定义闸门；FLY-2076 的值守流程负责执行和追踪。在该流程合入并启用前，新增告警类别的 PR reviewer 按本节人工核验，不能假设已有自动拦截。这里不增加检测代码、机械对账或新的处理流水。
+本 README 定义闸门；FLY-2076 的值守流程负责执行和追踪。新增告警类别的 PR reviewer
+仍按本节人工核验，不能把 FLY-2386 的三个机械入口当成上线检测、机械对账或新状态机。
 
 ## 通用写法
 
@@ -53,7 +74,8 @@ doc/oncall/
 - 机器特有的值写「从哪取」，例如「从服务启动配置取得 log 位置」「从告警正文取得时间和对象」「从项目名册取得 Lead」。
 - log 位置可能因部署而异时，写它的配置来源，不抄当前机器解析后的路径。
 - 不预设固定阈值或判断顺序。把当次真实动作和恢复证据写清；遇到不同证据就停下找负责人。
-- 不为了册子增加脚本、lint、生成器、状态探针或运行时检查。
+- 机械化只限 FLY-2386 的三个入口：落草稿并拒绝本机值、按回执写页、数欠账；不扩成
+  lint、告警检测、对账或册子状态机。
 - 不收录逐次告警 payload、整段 log、账号信息或任何凭据。
 
 ## 维护规则

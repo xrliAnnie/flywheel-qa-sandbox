@@ -9,9 +9,10 @@ _alert_duty_provision_main() {
   local seat_cli="${FLYWHEEL_ALERT_DUTY_SEAT_CLI:-${script_dir}/../dist/alert-duty-seat-cli.js}"
   local gate_script="${FLYWHEEL_ALERT_DUTY_GATE_SCRIPT:-${script_dir}/apply-alert-duty-gate.sh}"
   local state_dir="${DISCORD_STATE_DIR:-}"
+  local write_status="-"
 
   _alert_duty_status() {
-    echo "[alert-duty] seat=$1 lead=${lead_id:--} channel=$2 gate=$3 dispatcher=$4 token=$5"
+    echo "[alert-duty] seat=$1 lead=${lead_id:--} channel=$2 gate=$3 dispatcher=$4 token=$5 write=$write_status"
   }
 
   if [ -z "$lead_id" ] || [ -z "$project_name" ]; then
@@ -58,6 +59,12 @@ _alert_duty_provision_main() {
     _alert_duty_status false - - - unset
     return 0
   fi
+
+  write_status="$(printf '%s' "$cli_output" | jq -r '.dutyWritePath // "-"')"
+  case "$write_status" in
+    configured|unconfigured) ;;
+    *) write_status="-" ;;
+  esac
 
   token_status="unset"
   [ -n "${FLYWHEEL_ALERT_DUTY_TOKEN:-}" ] && token_status="set"

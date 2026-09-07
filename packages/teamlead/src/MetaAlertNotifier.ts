@@ -48,6 +48,8 @@ export type MetaAlertReason =
 	| "project_config_invalid"
 	// FLY-2211: detached Codex recovery is fail-closed or repeatedly unknown.
 	| "codex_reown_failed"
+	// FLY-2386: the alert disposition ledger failed before mailbox delivery.
+	| "alert_ledger_write_failed"
 	// FLY-513: the global `codex` binary the review gate resolves via PATH has
 	// drifted into a per-Lead CODEX_HOME (or CODEX_HOME env is bad). The codex
 	// review gate will transiently fail config-load; meta-alert so it is caught

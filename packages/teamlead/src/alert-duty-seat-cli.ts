@@ -7,6 +7,9 @@ import { loadProjects } from "./ProjectConfig.js";
 
 export interface AlertDutySeatProbe {
 	dispatcherBotUserId: string | null;
+	dutyWritePath: "configured" | "unconfigured";
+	ledgerWriteErrors: number;
+	reroutedCount: number;
 }
 
 export async function queryAlertDutySeat(
@@ -32,6 +35,20 @@ export async function queryAlertDutySeat(
 			body.dispatcherBotUserId.trim()
 				? body.dispatcherBotUserId.trim()
 				: null,
+		dutyWritePath:
+			body.dutyWritePath === "configured" ? "configured" : "unconfigured",
+		ledgerWriteErrors:
+			typeof body.ledgerWriteErrors === "number" &&
+			Number.isSafeInteger(body.ledgerWriteErrors) &&
+			body.ledgerWriteErrors >= 0
+				? body.ledgerWriteErrors
+				: 0,
+		reroutedCount:
+			typeof body.reroutedCount === "number" &&
+			Number.isSafeInteger(body.reroutedCount) &&
+			body.reroutedCount >= 0
+				? body.reroutedCount
+				: 0,
 	};
 }
 
@@ -119,21 +136,24 @@ export async function runAlertDutySeatCli(
 		env.FLYWHEEL_BRIDGE_URL?.trim() ||
 		`http://127.0.0.1:${env.TEAMLEAD_PORT?.trim() || "9876"}`;
 	const seat = resolveAlertDutySeat({ leadId, projectName, projects, env });
-	let dispatcherBotUserId: string | null = null;
+	let probe: AlertDutySeatProbe = {
+		dispatcherBotUserId: null,
+		dutyWritePath: "unconfigured",
+		ledgerWriteErrors: 0,
+		reroutedCount: 0,
+	};
 	try {
-		dispatcherBotUserId = (
-			await queryAlertDutySeat(
-				bridgeUrl,
-				opts.fetchImpl,
-				env.TEAMLEAD_API_TOKEN,
-			)
-		).dispatcherBotUserId;
+		probe = await queryAlertDutySeat(
+			bridgeUrl,
+			opts.fetchImpl,
+			env.TEAMLEAD_API_TOKEN,
+		);
 	} catch (error) {
 		writeStderr(
 			`[alert-duty] Bridge seat probe failed: ${error instanceof Error ? error.message : String(error)}\n`,
 		);
 	}
-	writeStdout(`${JSON.stringify({ ...seat, dispatcherBotUserId })}\n`);
+	writeStdout(`${JSON.stringify({ ...seat, ...probe })}\n`);
 	return 0;
 }
 

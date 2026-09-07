@@ -9,10 +9,18 @@ describe("queryAlertDutySeat", () => {
 	it("returns the dispatcher bot id from the Bridge seat probe", async () => {
 		const fetchImpl = vi.fn(
 			async () =>
-				new Response(JSON.stringify({ dispatcherBotUserId: "dispatcher-1" }), {
-					status: 200,
-					headers: { "content-type": "application/json" },
-				}),
+				new Response(
+					JSON.stringify({
+						dispatcherBotUserId: "dispatcher-1",
+						dutyWritePath: "configured",
+						ledgerWriteErrors: 2,
+						reroutedCount: 4,
+					}),
+					{
+						status: 200,
+						headers: { "content-type": "application/json" },
+					},
+				),
 		);
 
 		await expect(
@@ -21,7 +29,12 @@ describe("queryAlertDutySeat", () => {
 				fetchImpl,
 				"shared-api-token",
 			),
-		).resolves.toEqual({ dispatcherBotUserId: "dispatcher-1" });
+		).resolves.toEqual({
+			dispatcherBotUserId: "dispatcher-1",
+			dutyWritePath: "configured",
+			ledgerWriteErrors: 2,
+			reroutedCount: 4,
+		});
 		expect(fetchImpl).toHaveBeenCalledWith(
 			"http://127.0.0.1:9876/api/alert-duty/seat",
 			{
@@ -34,9 +47,15 @@ describe("queryAlertDutySeat", () => {
 	it("combines the roster seat decision with the Bridge dispatcher", async () => {
 		const fetchImpl = vi.fn(
 			async () =>
-				new Response(JSON.stringify({ dispatcherBotUserId: "dispatcher-1" }), {
-					status: 200,
-				}),
+				new Response(
+					JSON.stringify({
+						dispatcherBotUserId: "dispatcher-1",
+						dutyWritePath: "configured",
+						ledgerWriteErrors: 0,
+						reroutedCount: 7,
+					}),
+					{ status: 200 },
+				),
 		);
 		await expect(
 			buildAlertDutySeatReport({
@@ -61,6 +80,9 @@ describe("queryAlertDutySeat", () => {
 			isDutySeat: true,
 			alertChannelId: "alerts-1",
 			dispatcherBotUserId: "dispatcher-1",
+			dutyWritePath: "configured",
+			ledgerWriteErrors: 0,
+			reroutedCount: 7,
 		});
 	});
 
@@ -101,6 +123,9 @@ describe("queryAlertDutySeat", () => {
 			isDutySeat: true,
 			alertChannelId: "alerts-1",
 			dispatcherBotUserId: null,
+			dutyWritePath: "unconfigured",
+			ledgerWriteErrors: 0,
+			reroutedCount: 0,
 		});
 		expect(stderr.join("")).toContain("bridge unreachable");
 	});

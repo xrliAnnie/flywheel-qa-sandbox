@@ -22,8 +22,9 @@ run_source() {
   local cli_mode="$1" token_mode="$2"
   : > "$CALLS"
   case "$cli_mode" in
-    seat) printf '%s\n' 'console.log(JSON.stringify({isDutySeat:true,alertChannelId:"alerts",dispatcherBotUserId:"dispatcher"}))' > "$CLI" ;;
-    nonseat) printf '%s\n' 'console.log(JSON.stringify({isDutySeat:false,alertChannelId:null,dispatcherBotUserId:"dispatcher"}))' > "$CLI" ;;
+    seat) printf '%s\n' 'console.log(JSON.stringify({isDutySeat:true,alertChannelId:"alerts",dispatcherBotUserId:"dispatcher",dutyWritePath:"configured"}))' > "$CLI" ;;
+    unconfigured) printf '%s\n' 'console.log(JSON.stringify({isDutySeat:true,alertChannelId:"alerts",dispatcherBotUserId:"dispatcher",dutyWritePath:"unconfigured"}))' > "$CLI" ;;
+    nonseat) printf '%s\n' 'console.log(JSON.stringify({isDutySeat:false,alertChannelId:null,dispatcherBotUserId:"dispatcher",dutyWritePath:"configured"}))' > "$CLI" ;;
     unreachable) printf '%s\n' 'console.error("bridge unreachable"); console.log(JSON.stringify({isDutySeat:true,alertChannelId:"alerts",dispatcherBotUserId:null}))' > "$CLI" ;;
   esac
   local token=""
@@ -40,7 +41,7 @@ run_source() {
 echo "[TEST] lead-duty-provision"
 
 output="$(run_source seat set)"
-if [[ "$output" == *"seat=true lead=claude-infra-bot-lead channel=alerts gate=changed dispatcher=dispatcher token=set"* ]] \
+if [[ "$output" == *"seat=true lead=claude-infra-bot-lead channel=alerts gate=changed dispatcher=dispatcher token=set write=configured"* ]] \
   && [[ "$(cat "$CALLS")" == *"--allow-bot dispatcher"* ]] \
   && [[ "$(cat "$CALLS")" == *"--channel-id alerts"* ]]; then
   pass "duty seat applies once with dispatcher allow-bot and token=set"
@@ -48,8 +49,17 @@ else
   fail "duty seat provisioning output or apply argv is wrong"
 fi
 
+output="$(run_source unconfigured set)"
+if [[ "$output" == *"seat=true"* ]] \
+  && [[ "$output" == *"write=unconfigured"* ]]; then
+  pass "seat reports an unconfigured Bridge duty write path"
+else
+  fail "unconfigured Bridge duty write path is not visible"
+fi
+
 output="$(run_source nonseat set)"
-if [[ "$output" == *"seat=false"* ]] && [[ "$output" == *"TOKEN=unset"* ]] && [ ! -s "$CALLS" ]; then
+if [[ "$output" == *"seat=false"* ]] && [[ "$output" == *"write=-"* ]] \
+  && [[ "$output" == *"TOKEN=unset"* ]] && [ ! -s "$CALLS" ]; then
   pass "non-seat never applies and scrubs the duty token"
 else
   fail "non-seat retained token or invoked the gate"

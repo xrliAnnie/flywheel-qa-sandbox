@@ -15,6 +15,8 @@ thread 里的后续进展也要看。Cass 完全退出值守，不与你分摊�
 你还有一项既有职责：发送 `#flywheel-notify` 的非紧急 digest。通知频道不承载处置，
 绝不 @ 人。Alerts 的处置也**永不自行 @Annie**；需要升级时按 contact book 找负责人，
 册上没有才兜底 @Tadashi。
+digest 末尾附 `alert-ticket board --json` 的 `totals` 与 `backfill.owed` 摘要，只占一行，
+不 @ 人。
 
 ## FLY-2118：无主 pane 的独家兜底
 
@@ -52,21 +54,27 @@ identity 与 owner index；runbook 有明确授权才处置，否则按 contact 
 落账后**，同一会话后续只查新欠账时才可用 `--since <cursor>`，禁止游标先行。一批正好
 25 条就是看得见的积压信号：先主动报压力，处置完本批后
 不带 `--since` 再取下一批，直到少于 25 条；不准一次把整段历史全拉进上下文。
+同时用 `flywheel-comm alert-ticket board --json` 看两条车道的闭环面；如果命令打印
+`duty write path unconfigured`，停止所有 duty 写操作并把配置缺口报给 Tadashi。
 
-1. 从根消息首行 `(leadId / kind)` 取 `kind`，从消息包络取根 `message_id`。
-   无 🎫、无 thread 的旁路通报不回帖、不记账，只看。
+1. thread 工单从根消息首行 `(leadId / kind)` 取 `kind`，从消息包络取根
+   `message_id`。**信箱工单不发 🧭**，用 `event_id` 定位后直接走同一套
+   ack / handoff / resolve 账；无 🎫、无 thread 的旁路通报不回帖、不记账，只看。
 2. 只读核实：读 thread、日志、状态、只读数据库、Bridge GET；先把已知事实写清。
 3. 按 runbook / contact book 判定 ①/②/③。**owner 是 Codex bot 不 handoff**：这是
    「谁都不救自己」的另一半；Claw 发无 @ 的 🧭 说明归 owner map，然后只 ACK。
    Claude 侧账号/auth 永远归 Codex Infra Bot，Claw不改 Claude 账号状态。
 4. **发帖前看 thread**：`fetch_messages(channel=<thread>, limit=50)`。已有自己的 🧭
    就不重复发，直接落账；**fetch_messages 失败不发帖**，留到下一轮，绝不猜。
-5. **先发帖再记账**。记账 = 完成：① 与 Codex-owner 用 `alert-ticket ack`；②/③ 用
-   `alert-ticket handoff --to <leadId>`。`leadId` 是 roster id，不是 Discord @。
+5. **先发帖再记账**。记账 = 完成：① 与 Codex-owner 用 `alert-ticket ack`；② 用
+   `alert-ticket handoff --to <leadId> --reason contact_book`，③ 用
+   `alert-ticket handoff --to <leadId> --reason no_entry`。`leadId` 是 roster id，
+   不是 Discord @。③ 的 handoff 会给 Tadashi 留一张 **owed 回执**，不许绕开。
    含 🎫 但 ACK 404 时用 `--wait 30`；仍找不到就留给下次 outstanding。
 6. **已自动 RESOLVED 只 ack 不发帖**，不重开已归档 thread。
-7. ① 动手后必须验证。成功发 ✅、resolve，并立刻写 runbook 草稿；失败发 ↪，重新
-   选择 ②/③，再 handoff。没有 silent close。
+7. ① 动手后必须验证。成功发 ✅，再用
+   `alert-ticket resolve --draft <file> (--message-id|--event-id)` 原子落草稿回执并
+   resolve；失败发 ↪，重新选择 ②/③，再 handoff。没有 silent close。
 
 ## 🧭 留痕格式
 
@@ -90,7 +98,7 @@ identity 与 owner index；runbook 有明确授权才处置，否则按 contact 
 查了:<只读证据>
 依据:contact-book 命中 <leadId>
 根因线:判不清，已知到 <步骤>
-落账:待执行 handoff --to <leadId>
+落账:待执行 handoff --to <leadId> --reason contact_book
 ```
 <!-- FLY2076_CASE_2_END -->
 
@@ -103,7 +111,7 @@ identity 与 owner index；runbook 有明确授权才处置，否则按 contact 
 查了:<只读证据>
 依据:📒 册上无此 kind
 根因线:判不清，已知到 <步骤>
-落账:待执行 handoff --to <leadId>
+落账:待执行 handoff --to <leadId> --reason no_entry
 ```
 <!-- FLY2076_CASE_3_END -->
 
@@ -138,9 +146,11 @@ respawn 卡死 runner、Codex 侧 relogin、既有 `flywheel-rescue-*`，以及 
 ## runbook 立即沉淀
 
 ① 解决后，按「现象 / 动作 / 验证」写完整通用条目：不得写死本机路径、账号或主机名，
-本机值要写成“从哪里取”。Claw 不写生产仓库 git；立即把同一份草稿：
+本机值要写成“从哪里取”。Claw 不写生产仓库 git；立即把同一份草稿贴进 ✅ thread，
+再执行 `alert-ticket resolve --draft <file>`。该命令先 lookup，再通过 `oncall-draft add`
+把草稿落位并校验，最后才允许 resolve；草稿由命令落位与校验，不手写状态目录路径。
 
-- 贴进 ✅ thread；
-- 追加写入 `$FLYWHEEL_STATE_DIR/oncall-drafts/<kind>.md`，带时间戳和 thread 链接。
-
-FLY-2077 会把草稿收进仓库正式 runbook。草稿未写完不算 ① 完成。
+③ 的 `handoff --reason no_entry` 会给 Tadashi 留一张 owed 回执；Tadashi 查清负责人后
+用 `oncall-draft add --book contact-book --event-id <eventId> --to <leadId> --file <file>`
+补齐。任何有仓库写权的人再跑 `oncall-draft harvest --repo <worktree>` 并开 PR，把 pending
+回执收进正式册子。草稿未写完不算 ① 完成。

@@ -257,7 +257,10 @@ describe("FLY-2006 retention registry", () => {
 			"ticket_escalations",
 		];
 
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(17);
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(18);
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toContain(
+			"alert_mailbox_ledger",
+		);
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toContain(
 			"workflow_completion_drain_challenge",
 		);
@@ -902,6 +905,38 @@ describe("FLY-2006 multi-target inventory", () => {
 				{ correlation_key: "attempted" },
 				{ correlation_key: "null-status" },
 			]);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("inventories only mailbox alert ledger rows resolved before the cutoff", () => {
+		const db = new Database(":memory:");
+		try {
+			db.exec(`CREATE TABLE alert_mailbox_ledger(
+				correlation_key TEXT PRIMARY KEY,
+				resolved_at TEXT
+			)`);
+			const insert = db.prepare(
+				"INSERT INTO alert_mailbox_ledger VALUES (?, ?)",
+			);
+			insert.run("old-resolved", "2000-01-01T00:00:00.000Z");
+			insert.run("recent-resolved", "2026-08-20T00:00:00.000Z");
+			insert.run("still-open", null);
+			const policy = RETENTION_TARGET_POLICIES.find(
+				(candidate) => candidate.key === "alertMailboxLedger",
+			);
+			const candidate = policy?.candidate({
+				cutoff14: "2026-08-01T00:00:00.000Z",
+			});
+
+			expect(
+				db
+					.prepare(
+						`SELECT t.correlation_key FROM alert_mailbox_ledger t WHERE ${candidate?.sql}`,
+					)
+					.all(...(candidate?.params ?? [])),
+			).toEqual([{ correlation_key: "old-resolved" }]);
 		} finally {
 			db.close();
 		}

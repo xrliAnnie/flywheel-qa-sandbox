@@ -1,0 +1,17 @@
+stateDiagram-v2
+    [*] --> 未初审: 告警落账(NEW)
+    未初审 --> 值守处理中: Claw ack
+    未初审 --> 已转出: Claw handoff(② 或 ③)
+    值守处理中 --> 已解决: resolve + 核验过的草稿
+    值守处理中 --> 已转出: 修不好 → handoff
+    已转出 --> 已解决: 被点名的 Lead 修好后 resolve
+    已解决 --> 未初审: 同一问题再响 = 新一轮
+    note right of 已转出
+      看板同时显示转出信送达态
+      QUEUED / ACKED / DEAD / NOT_QUEUED
+      不解决就一直挂着可见
+    end note
+    note right of 已解决
+      带草稿回执 = 值守解决
+      不带 = 系统自动恢复(ARC)
+    end note

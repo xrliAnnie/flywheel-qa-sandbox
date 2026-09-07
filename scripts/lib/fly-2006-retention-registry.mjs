@@ -6,7 +6,7 @@ function words(value) {
 
 export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 	deleteTarget: words(`
-		alert_repair_attempts alert_threads chat_threads deployment_events
+		alert_mailbox_ledger alert_repair_attempts alert_threads chat_threads deployment_events
 		detection_escalations lead_event_delivery_attempts lead_events
 		legacy_cutover_quarantine legacy_render_fallback legacy_stock_suppressed
 		phase_chat_threads quiet_wake_notified roundtable_topic_threads session_events

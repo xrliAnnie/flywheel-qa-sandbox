@@ -1,0 +1,19 @@
+flowchart TD
+    A["告警产生<br/>(各发射源与 Dispatcher 都不动)"] --> C{"投递前分类<br/>classifyInfraLetter"}
+    C -->|"请求投 Claw"| K["Claw 的 durable 信箱<br/>(车道 A · 普通告警)"]
+    C -->|"合同已声明 owner 的 kind<br/>(review_job_failed / flag_scan_*)"| L["owner Lead 信箱<br/>点名档 · 账上直接记「已转出」"]
+    C -->|"非白名单 kind 请求投 Lead<br/>且值守写路径可用"| K
+    C -->|"非白名单 kind 请求投 Lead<br/>但值守写路径不可用"| L2["原 Lead 信箱<br/>fail-open · 账上记 duty_fallback"]
+    E["显式升级<br/>(带 founder @)"] --> T["Discord thread + alert_threads<br/>(车道 B · 2076 原样)"]
+    K --> G["去向账 alert_mailbox_ledger<br/>(每个问题一行 · NEW)"]
+    T --> H["去向账 alert_threads<br/>(2076 已有)"]
+    G --> D["Claw 值守初审<br/>outstanding 合并两条车道"]
+    H --> D
+    D -->|"① 自己解决"| R["resolve<br/>必带核验过的 runbook 草稿"]
+    D -->|"② 册上有人"| X["handoff --reason contact_book<br/>一封转出信给该 Lead"]
+    D -->|"③ 册上无人"| Y["handoff --reason no_entry<br/>先落 owed 回执 · 转出信给 Tadashi"]
+    R --> B["看板 alert-ticket board<br/>四档 · 挂着的全列 · 转出信送达态 · 册子欠账"]
+    X --> B
+    Y --> B
+    L --> B
+    L2 --> B

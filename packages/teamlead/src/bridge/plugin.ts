@@ -52,6 +52,7 @@ import {
 	reconcileLeaseEpisodeQueue,
 	recoverLeaseEpisode,
 } from "flywheel-comm/lead-lease";
+import { OncallReceiptStore } from "flywheel-comm/oncall-receipts";
 import { SUMMARY_TARGET_REPOSITORY } from "flywheel-comm/summary-command";
 import { readSummaryGranularity } from "flywheel-comm/summary-config";
 import { deliverDurableTurnWake } from "flywheel-comm/wake";
@@ -173,7 +174,11 @@ import {
 	buildRepairChain,
 	resolveFirstAvailableBotToken,
 } from "./alert-bot-chain.js";
-import { createAlertDutyRouter, dutyAuth } from "./alert-duty-router.js";
+import {
+	type AlertDutyRouterDeps,
+	createAlertDutyRouter,
+	dutyAuth,
+} from "./alert-duty-router.js";
 // FLY-927 (T1): unified-channel root-message rate cap.
 import {
 	createAlertRateLimiter,
@@ -1497,6 +1502,14 @@ export interface BridgeAppOptions {
 	alertDuty?: {
 		dispatcherBotUserId: { current: string | null };
 		alertHub: { current?: AlertChannelHub };
+		enqueueAlertHandoff?: AlertDutyRouterDeps["enqueueAlertHandoff"];
+		readHandoffSettlement?: AlertDutyRouterDeps["readHandoffSettlement"];
+		readDraftReceipt?: AlertDutyRouterDeps["readDraftReceipt"];
+		writeOwedReceipt?: AlertDutyRouterDeps["writeOwedReceipt"];
+		readBackfillDebt?: AlertDutyRouterDeps["readBackfillDebt"];
+		ledgerWriteErrors?: AlertDutyRouterDeps["ledgerWriteErrors"];
+		reroutedCount?: AlertDutyRouterDeps["reroutedCount"];
+		dutyWritePath?: () => "configured" | "unconfigured";
 	};
 }
 
@@ -1710,6 +1723,13 @@ export function createBridgeApp(
 			store,
 			projects,
 			getAlertHub: () => opts?.alertDuty?.alertHub.current,
+			enqueueAlertHandoff: opts?.alertDuty?.enqueueAlertHandoff,
+			readHandoffSettlement: opts?.alertDuty?.readHandoffSettlement,
+			readDraftReceipt: opts?.alertDuty?.readDraftReceipt,
+			writeOwedReceipt: opts?.alertDuty?.writeOwedReceipt,
+			readBackfillDebt: opts?.alertDuty?.readBackfillDebt,
+			ledgerWriteErrors: opts?.alertDuty?.ledgerWriteErrors,
+			reroutedCount: opts?.alertDuty?.reroutedCount,
 		}),
 	);
 
@@ -2858,6 +2878,9 @@ export function createBridgeApp(
 			apiTokenConfigured: Boolean(config.apiToken),
 			dispatcherBotUserId: () =>
 				opts?.alertDuty?.dispatcherBotUserId.current ?? null,
+			dutyWritePath: () => opts?.alertDuty?.dutyWritePath?.() ?? "unconfigured",
+			ledgerWriteErrors: () => opts?.alertDuty?.ledgerWriteErrors?.() ?? 0,
+			reroutedCount: () => opts?.alertDuty?.reroutedCount?.() ?? 0,
 		}),
 	);
 	app.use(
@@ -5752,6 +5775,16 @@ export async function startBridge(
 			if (!send) throw new Error("dead-letter alert sink not ready");
 			await send(input);
 		},
+		isDutyConfigured: () => Boolean(config.alertDutyToken),
+		onLedgerWriteFailure: (error) => {
+			void metaAlertNotifier
+				.notify({
+					reason: "alert_ledger_write_failed",
+					title: "Alert disposition ledger write failed",
+					body: `Bridge continued mailbox delivery after the alert ledger failed: ${error instanceof Error ? error.message : String(error)}`,
+				})
+				.catch(() => {});
+		},
 		projects,
 		store,
 		registry,
@@ -5779,6 +5812,7 @@ export async function startBridge(
 	);
 	leadInboxRuntime.start();
 	workflowSourceAlertFallback.current = async (payload) => {
+		// Recipient tiering stays centralized in classifyInfraLetter inside the runtime.
 		const receipt = leadInboxRuntime.enqueueInfraAlert(payload.leadId, payload);
 		return { accepted: receipt.queued };
 	};
@@ -7109,6 +7143,7 @@ export async function startBridge(
 		alert: (candidate, payload) => {
 			const episode = String(payload.episode ?? "unknown");
 			const eventId = `delivery_operation_stalled:receiver:${candidate.executionId}:${episode}`;
+			// Recipient tiering stays centralized in classifyInfraLetter inside the runtime.
 			const receipt = leadInboxRuntime.enqueueInfraAlert(
 				candidate.receiverContext.leadName,
 				{
@@ -7253,6 +7288,12 @@ export async function startBridge(
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
 	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const alertDutyHubHolder: { current?: AlertChannelHub } = {};
+	const oncallReceiptStore = new OncallReceiptStore(
+		join(
+			process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel"),
+			"oncall-drafts",
+		),
+	);
 	const flagScanRouteHolder: BridgeAppOptions["flagScanRoute"] = {};
 
 	// FLY-1456: the external daemon is permanently authoritative. Keep the mode
@@ -7535,6 +7576,18 @@ export async function startBridge(
 			alertDuty: {
 				dispatcherBotUserId: alertDutyDispatcherBotUserId,
 				alertHub: alertDutyHubHolder,
+				enqueueAlertHandoff: (leadId, input) =>
+					leadInboxRuntime.enqueueAlertHandoff(leadId, input),
+				readHandoffSettlement: (leadId, deliveryId) =>
+					leadInboxRuntime.readHandoffSettlement(leadId, deliveryId),
+				readDraftReceipt: (draftId) =>
+					oncallReceiptStore.readDraftReceipt(draftId),
+				writeOwedReceipt: (input) => oncallReceiptStore.writeOwedReceipt(input),
+				readBackfillDebt: () => oncallReceiptStore.readBackfillDebt(),
+				ledgerWriteErrors: () => leadInboxRuntime.ledgerWriteErrors,
+				reroutedCount: () => leadInboxRuntime.reroutedCount,
+				dutyWritePath: () =>
+					config.alertDutyToken ? "configured" : "unconfigured",
 			},
 			flagScanRoute: flagScanRouteHolder,
 			// FLY-907: unified issue-display refresher (populated post-listen).
@@ -8221,6 +8274,7 @@ export async function startBridge(
 						projectName: project.projectName,
 						resolveAlertIdentity: resolveDeliveryAlertIdentity,
 						enqueueUnboundAlert: (payload) => {
+							// Recipient tiering stays centralized in classifyInfraLetter inside the runtime.
 							const receipt = leadInboxRuntime.enqueueInfraAlert(
 								payload.leadId,
 								payload,

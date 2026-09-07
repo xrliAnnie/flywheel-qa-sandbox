@@ -5,6 +5,10 @@
  * Sweeps the WHOLE AlertEventType union so a future kind cannot silently
  * bypass the funnel.
  */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ALERT_EVENT_TYPES,
@@ -19,9 +23,12 @@ import { AlertChannelHub, correlationKeyFor } from "../AlertChannelHub.js";
 import { AutoRepairBot } from "../AutoRepairBot.js";
 import { buildInfraAlertRouting } from "../infra-alert-wiring.js";
 import {
+	ALERT_DUTY_LEAD_ID,
 	ISSUE_PROGRESS_KINDS,
 	LEAD_INBOX_KINDS,
 } from "../infra-event-router.js";
+import { LeadInboxRuntime } from "../lead-inbox-runtime.js";
+import { RuntimeRegistry } from "../runtime-registry.js";
 
 const projects = [
 	{
@@ -123,6 +130,174 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		expect(rawSink.alert).not.toHaveBeenCalled();
 		expect(ticketSink.alert).not.toHaveBeenCalled();
 	});
+
+	it("reseeds an owner delivery to duty when the outer owner-inbox catch observes no mailbox identity", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-wiring-fallback-"));
+		const dbPath = join(root, "flywheel.db");
+		const dutyProjects = [
+			{
+				...projects[0]!,
+				leads: [
+					...projects[0]!.leads.map((lead) => ({
+						...lead,
+						summaryRole: "producer" as const,
+					})),
+					{
+						agentId: ALERT_DUTY_LEAD_ID,
+						summaryRole: "recipient" as const,
+						chatChannel: "chan-alerts",
+						match: { labels: ["Infra"] },
+					},
+				],
+			},
+		] as ProjectEntry[];
+		const runtime = new LeadInboxRuntime({
+			projects: dutyProjects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => true,
+		});
+		const realEnqueue = MailboxQueue.prototype.enqueue;
+		const enqueue = vi
+			.spyOn(MailboxQueue.prototype, "enqueue")
+			.mockImplementation(function (input) {
+				if (input.toAgent === "flywheel-eng-lead") {
+					throw new Error("owner queue unavailable");
+				}
+				return realEnqueue.call(this, input);
+			});
+		const runtimeSink = (requestedOwner: (p: AlertPayload) => string) => ({
+			alert: async (p: AlertPayload): Promise<AlertResult> => ({
+				queued: runtime.enqueueInfraAlert(requestedOwner(p), p).queued,
+			}),
+		});
+		const sink = buildInfraAlertRouting({
+			store,
+			projects: dutyProjects,
+			rawSink,
+			ticketSink: runtimeSink(() => ALERT_DUTY_LEAD_ID),
+			leadInboxSink: runtimeSink((p) => p.leadId),
+			leadRecipientState: () => "alive",
+			routingEnabled: () => true,
+			logger: () => {},
+		});
+		const alert = {
+			...payload("review_job_failed"),
+			eventId: "review-owner-enqueue-failed",
+		};
+
+		try {
+			await expect(sink.alert(alert)).resolves.toEqual({ queued: true });
+			const queue = new MailboxQueue(dbPath);
+			try {
+				expect(
+					queue.getById(
+						`infra_alert:${ALERT_DUTY_LEAD_ID}:review_job_failed:${alert.eventId}`,
+					),
+				).toEqual(expect.objectContaining({ to_agent: ALERT_DUTY_LEAD_ID }));
+				expect(
+					queue.getById(
+						`infra_alert:flywheel-eng-lead:review_job_failed:${alert.eventId}`,
+					),
+				).toBeUndefined();
+			} finally {
+				queue.close();
+			}
+			expect(store.getMailboxLedgerByEventId(alert.eventId)).toEqual(
+				expect.objectContaining({
+					to_agent: ALERT_DUTY_LEAD_ID,
+					route_class: "duty",
+				}),
+			);
+			expect(enqueue).toHaveBeenCalledTimes(2);
+		} finally {
+			enqueue.mockRestore();
+			runtime.close();
+		}
+	});
+
+	it.each([
+		[true, ALERT_DUTY_LEAD_ID, "duty_reroute"],
+		[false, "flywheel-eng-lead", "duty_fallback"],
+	] as const)(
+		"tiers a workflow escalation requested for the owning Lead before mailbox delivery (duty=%s)",
+		async (dutyConfigured, expectedRecipient, expectedRoute) => {
+			const root = mkdtempSync(join(tmpdir(), "fly2386-wiring-tier-"));
+			const dbPath = join(root, "flywheel.db");
+			const dutyProjects = [
+				{
+					...projects[0]!,
+					leads: [
+						...projects[0]!.leads.map((lead) => ({
+							...lead,
+							summaryRole: "producer" as const,
+						})),
+						{
+							agentId: ALERT_DUTY_LEAD_ID,
+							summaryRole: "recipient" as const,
+							chatChannel: "chan-alerts",
+							match: { labels: ["Infra"] },
+						},
+					],
+				},
+			] as ProjectEntry[];
+			const runtime = new LeadInboxRuntime({
+				projects: dutyProjects,
+				store,
+				registry: new RuntimeRegistry(),
+				commDbPathForProject: () => dbPath,
+				isDutyConfigured: () => dutyConfigured,
+			});
+			const runtimeOwnerSink = {
+				alert: async (p: AlertPayload): Promise<AlertResult> => ({
+					queued: runtime.enqueueInfraAlert(p.leadId, p).queued,
+				}),
+			};
+			const sink = buildInfraAlertRouting({
+				store,
+				projects: dutyProjects,
+				rawSink: runtimeOwnerSink,
+				ticketSink: runtimeOwnerSink,
+				leadInboxSink: runtimeOwnerSink,
+				leadRecipientState: () => "alive",
+				founderUserId: "123456789012345678",
+				routingEnabled: () => true,
+				logger: () => {},
+			});
+			const alert = {
+				...payload("workflow_engine_escalation"),
+				eventId: `workflow-tier-${dutyConfigured}`,
+			};
+
+			try {
+				await expect(sink.alert(alert)).resolves.toEqual({ queued: true });
+				const queue = new MailboxQueue(dbPath);
+				try {
+					expect(
+						queue.getById(
+							`infra_alert:${expectedRecipient}:workflow_engine_escalation:${alert.eventId}`,
+						),
+					).toEqual(expect.objectContaining({ to_agent: expectedRecipient }));
+					expect(
+						queue.getById(
+							`infra_alert:${dutyConfigured ? "flywheel-eng-lead" : ALERT_DUTY_LEAD_ID}:workflow_engine_escalation:${alert.eventId}`,
+						),
+					).toBeUndefined();
+				} finally {
+					queue.close();
+				}
+				expect(store.getMailboxLedgerByEventId(alert.eventId)).toEqual(
+					expect.objectContaining({
+						to_agent: expectedRecipient,
+						route_class: expectedRoute,
+					}),
+				);
+			} finally {
+				runtime.close();
+			}
+		},
+	);
 
 	it("preserves a review failure in Claw when the owning Lead is not live", async () => {
 		const alert = payload("review_job_failed");

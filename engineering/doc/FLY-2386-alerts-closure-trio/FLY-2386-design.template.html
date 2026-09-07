@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2386 值守小版三件收口 — 设计</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, "PingFang SC", sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.75; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 20px; }
+  .meta code, code { font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; background: #f2f2f7; border-radius: 4px; padding: 0 4px; }
+  .card { background: #fff; border-radius: 12px; padding: 20px 22px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 18px; border-left: 4px solid #007aff; }
+  .card.hero { border-left-color: #1a365d; } .card.red { border-left-color: #ff3b30; } .card.green { border-left-color: #34c759; } .card.amber { border-left-color: #ff9500; } .card.purple { border-left-color: #af52de; } .card.gray { border-left-color: #86868b; }
+  .section-title { font-size: 18px; font-weight: 700; color: #1a365d; margin-bottom: 10px; }
+  .section-title .num { color: #86868b; font-weight: 600; margin-right: 6px; }
+  p { margin-bottom: 10px; }
+  .hero-line { font-size: 17px; font-weight: 600; }
+  .quote { background: #f7f7fa; border-left: 3px solid #86868b; border-radius: 6px; padding: 10px 14px; margin: 10px 0; color: #48484a; font-size: 14px; }
+  .gloss { color: #6e6e73; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #e5e5ea; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7fa; color: #1a365d; }
+  .tbl-wrap { overflow-x: auto; }
+  .diagram-box { overflow-x: auto; margin: 14px 0; background: #fff; border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px; }
+  .diagram-box svg { height: auto; display: block; margin: 0 auto; max-width: 100%; }
+  .diagram-caption { font-size: 13px; color: #86868b; margin-top: 4px; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 1px 8px; margin-right: 6px; vertical-align: middle; }
+  .badge.keep { background: #e8f7ee; color: #1d7a3e; } .badge.cut { background: #ffe9e7; color: #c22e24; } .badge.ask { background: #f3e8fb; color: #7d3bab; } .badge.fact { background: #e9f2ff; color: #0a5dc2; } .badge.warn { background: #fff1dc; color: #9a5b00; }
+  .comment-block { margin-top: 16px; border-top: 1px solid #f0f0f2; padding-top: 12px; }
+  .comment-block label { display: block; font-size: 13px; color: #86868b; margin-bottom: 6px; }
+  .comment-block textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 10px; font: inherit; font-size: 14px; resize: vertical; background: #fbfbfd; }
+  .comment-block textarea:focus { outline: 2px solid #007aff33; border-color: #007aff; }
+  #summary-list { font-size: 14px; }
+  .chunk { white-space: pre-wrap; background: #f7f7fa; border-radius: 8px; padding: 12px; margin-bottom: 10px; font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
+  .chunk-bar { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; }
+  .btn { background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn.secondary { background: #e5e5ea; color: #1d1d1f; }
+  .btn:active { opacity: .8; }
+  .status { font-size: 13px; color: #34c759; }
+  ul, ol { margin: 8px 0 10px 22px; } li { margin-bottom: 5px; }
+  .small { font-size: 13px; color: #6e6e73; }
+  .num-line { font-family: "SF Mono", Menlo, monospace; font-size: 14px; background: #f7f7fa; border-radius: 6px; padding: 6px 10px; margin: 6px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2386 值守小版三件收口:给每条告警补一本「去向账」</h1>
+  <div class="meta">Issue: <code>FLY-2386</code> · 上游 Epic <code>FLY-2073</code>(已收口)· PRD <code>FLY-2060</code> R3/R4/R6/R7 · 设计节点交付 · 2026-09-06 · 工程设计评审:Codex 6 轮,第 6 轮 APPROVED · 数据取自本机生产库(测于 2026-09-06 16:30~17:00 PT)· 详细文档:<code>engineering/doc/FLY-2386-alerts-closure-trio/{exploration,research,plan}.md</code></div>
+
+  <div class="card hero" data-section="0 一句话">
+    <div class="section-title"><span class="num">0</span>一句话</div>
+    <p class="hero-line">2073 把「席位、册子骨架、告警管道」都立起来了,但告警到今天只有「投递」没有「去向」—— 这一单补一本去向账,并在账上挂三个出口:处置一次就回填一条册子、每件事都有终态且挂着的看得见、Lead 只在被点名时收信。</p>
+    <p class="gloss">名词先说清:<b>值守</b> = Claw(Claude Infra Bot),负责先看每条告警的机器人;<b>信箱</b> = Flywheel 里 Bridge 给每个 Lead 投递消息的持久队列(Discord 之外的那条内部通道);<b>去向账</b> = 记录「这条告警最后怎么了、球在谁手上」的表;<b>册子</b> = 仓库里的 runbook(解法册)和 contact book(判理册)。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s0" placeholder="写批注…自动保存在你的浏览器里"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="1 今天怎么回事">
+    <div class="section-title"><span class="num">1</span>今天怎么回事:三件「还在咬」的事,根子是同一个</div>
+    <p>我逐条查了生产机器(不是读文档),三条事实:</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>事实</th><th>数字</th><th>意味着</th></tr>
+      <tr><td><span class="badge fact">实测</span>2076 交付的值守写路径(认领 / 转出 / 解决)在生产<b>从未通电</b></td><td>近 10 天显式升级账本 170 条,认领 0,解决 0;原因是一条环境变量(值守令牌)没设,门控脚本按合同「不翻」</td><td>Claw 在看,但一笔账都记不了;而且这件事没有任何地方报警</td></tr>
+      <tr><td><span class="badge fact">实测</span>普通告警那条车道<b>根本没有账本</b></td><td>近 10 天 Claw 信箱收 671 封,每封各自一个身份,没有 episode(同一问题连响)归并;信箱只有「已送达」态,没有「处理完」态</td><td>2075 把普通告警改进信箱时明写了这条接缝,2076 没接上</td></tr>
+      <tr><td><span class="badge fact">实测</span>Tadashi 的信箱被<b>未点名</b>的告警灌满</td><td>近 10 天 710 封告警信,其中 657 封是没有 run 编号的工作流升级,由三处代码直投,绕过 Claw 初审;而 19 个 Lead 里没有一个订阅了告警频道,所以 thread 里的 @ 没有任何机器收得到</td><td>R7「不被 @ 收不到、被 @ 必达」两头都不成立</td></tr>
+    </table></div>
+    <div class="quote">册子那边:骨架(README、99 类联络表、模板、三页底稿)在;Claw 角色文件承诺「解决后把草稿写到本机一个目录、由 2077 收进仓库」—— 那个目录不存在,2077 里没有收割步骤,仓库里没有读它的代码。<b>回填机制是零。</b></div>
+    <p>三件事看似不同,其实都卡在同一处:没有一本「这条告警最后怎么了」的账。没有账,就没法知道哪次处置该回填哪条;没有账,「信已送达」被误当成「事情解决了」;没有账,「被 @」只是 thread 里一段没人订阅的文字。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s1" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="2 核心流程">
+    <div class="section-title"><span class="num">2</span>核心流程:投递前分档 → 落账 → Claw 三个去向 → 看板</div>
+    <p>下图是一条告警从产生到「有终点」的路。发射源和转发组件一行不动;变化的是<b>投递前多了一次分档</b>(决定信投给谁)、投出去的同时<b>多记一笔账</b>、Claw 处置时<b>写回这笔账</b>。</p>
+    <div class="diagram-box"><!--SVG:d1-flow.svg--></div>
+    <div class="diagram-caption">图 1 · 核心流程。「车道 A / 车道 B」是 2075 定下的两条路:普通告警进 Claw 信箱(founder 看不到),显式升级才进 Discord thread。本单不改车道,只给车道 A 补账。</div>
+    <p><b>分档规则只有四种</b>,写死在一个纯函数里:请求投 Claw 的 → Claw(值守档);合同上已经声明 owner 的 kind(评审失败、旗标扫描)→ 那个 Lead(点名档);其他 kind 却请求投 Lead 的 → 改投 Claw(这就是那 657 封的新去向);值守写路径不可用时 → 保持现状投原 Lead,并在账上标明「fail-open」——<span class="gloss">fail-open 指系统出问题时宁可多送也不静默丢,这是 Tadashi 对本单的附加条件。</span></p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s2" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="3 数据与结构模型">
+    <div class="section-title"><span class="num">3</span>数据与结构模型:一本新账、一套旧词汇、三个回执目录</div>
+    <div class="diagram-box"><!--SVG:d2-model.svg--></div>
+    <div class="diagram-caption">图 2 · 四块东西各在哪。实线 = 数据从哪来到哪去;虚线 = 看板只读。</div>
+    <ul>
+      <li><b>新表只有一张</b>:车道 A 的去向账,和 2076 那张显式升级账用<b>同一套状态词</b>(新 / 已转出 / 已解决,认领时间、转出目标、解决时间)。每个「问题」一行,身份 = 项目 + Lead + 告警类别 + 会话;同一问题没解决又响 → 计数 +1、身份不变(这是既有的身份规则,不是「噪音判定」)。</li>
+      <li><b>2076 的旧账加四列</b>:转出理由、转出信编号、转出代数(第几次转)、解决时绑定的草稿编号。新旧两张账在看板上是一个查询。</li>
+      <li><b>信箱结构不动</b>:转出信只是一封普通信,只不过编号可预测(含代数),所以看板能逐封查它「排队 / 已读 / 死信」。</li>
+      <li><b>回执是文件不是表</b>:③ 兜底时 Bridge 先落一张「欠条」(owed),Tadashi 查明该找谁后补正文(pending),收割命令写进仓库后归档(landed)。三个目录都保留完整头信息,所以「册子欠了几条」直接数文件,不用从账里猜历史。</li>
+    </ul>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s3" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="4 册子怎么长">
+    <div class="section-title"><span class="num">4</span>册子怎么长:兜底一次 = 一张欠条,解决一次 = 一份草稿</div>
+    <div class="diagram-box"><!--SVG:d3-handoff.svg--></div>
+    <div class="diagram-caption">图 3 · ③ 兜底到 contact book 多一行的全过程。顺序是刻意的:先欠条、再记账、再投信 —— 任何一步崩溃都不会「转出了却没人记得要回填」。</div>
+    <div class="tbl-wrap"><table>
+      <tr><th>出口</th><th>触发</th><th>机制</th><th>为什么这样定</th></tr>
+      <tr><td>解法册(runbook)</td><td>Claw ① 自己解决</td><td><code>resolve</code> 必须带草稿;命令先把草稿落成回执,Bridge 再核验「回执真实存在、且写的就是这条告警」才允许标解决</td><td>PRD R4「解决之后立刻写,不是攒着」—— 不带草稿的解决在制度上不成立</td></tr>
+      <tr><td>判理册(contact book)</td><td>Claw ③ 册上查不到 → 转 Tadashi</td><td>Bridge 先落欠条;转出信里附现成的一行回填命令;Tadashi 查明后执行,欠条变草稿</td><td>PRD R3「兜底一次就回填一次」—— 欠条在看板上一直可见,直到收割进仓库</td></tr>
+      <tr><td>写进仓库</td><td>有仓库写权的人(Tadashi 或他派的 docs runner)</td><td>一条收割命令把草稿确定性地写进 <code>doc/oncall/</code>(追加一段 + 标记),幂等、不 commit、不开 PR;PR 由跑命令的人开</td><td>不给 Claw git 写权(2076 D2);Bridge 不自动开 PR(不为小单加凭据面)</td></tr>
+    </table></div>
+    <p><b>通用写法守卫</b>(PRD R4.0「读者是 Infra bot、不写死本机」)机械化成一条拒绝规则:草稿里出现本机路径、账号、Discord 编号、令牌前缀、邮箱 → 命令拒收并列出行号,只拒不改。</p>
+    <p class="small">⚠️ 这里有一处要 Tadashi 点头:2077 写进 <code>doc/oncall/README.md</code> 的「不为册子加脚本 / 生成器 / 状态探针」「不加新的处理流水」两句,与本单加的三个机械入口(落草稿并拒本机值 / 按回执写页 / 数欠账)冲突。我的判断是 founder 9-6「回填机制没有 → 做」已经推翻了那两句,本单把这个 supersession 明写进 README;不做检测、对账、状态机。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s4" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="5 每件事的终点">
+    <div class="section-title"><span class="num">5</span>每件事的终点:四档,没有第五档,挂着的全列</div>
+    <div class="diagram-box"><!--SVG:d4-states.svg--></div>
+    <div class="diagram-caption">图 4 · 一条告警的生命周期。「已转出」不是终点,是「球在某人手上、且看得见」。</div>
+    <p><b>看板</b>(<code>alert-ticket board</code>,也是一个 Bridge 接口)按每个问题一行列出:未初审 / 值守处理中 / 已转出(附转出信送达态)/ 已解决,外加「册子欠账」和「值守写路径是否配置」。三条硬规则:</p>
+    <ol>
+      <li><b>没解决的永远全列</b>,不受时间窗和分页截断(时间窗只裁「已解决」的历史);超长就翻页,总数另给。</li>
+      <li><b>没有第五档</b>。「被 fail-open 投给 Lead 的」「合同点名的」都归「已转出」,只是理由列不同。</li>
+      <li><b>不发告警、不 @ 任何人、没有阈值</b>。数字是清单计数,不是指标(founder 直令)。</li>
+    </ol>
+    <p>Claw 的例行 digest 末尾附一行看板摘要(四档数字 + 欠账类别),不 @。founder 想翻「挂着的」时,打开看板最老的在最上。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s5" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="6 被 @ 分档">
+    <div class="section-title"><span class="num">6</span>被 @ 分档:「被 @」= 你信箱里出现一封转出信,别的都不算</div>
+    <div class="tbl-wrap"><table>
+      <tr><th>PRD R7</th><th>本单怎么做</th><th>怎么验(529 房两个 Lead 身份对照)</th></tr>
+      <tr><td>不被 @ 收不到</td><td>非白名单 kind 请求投 Lead 时,投递前改投 Claw;Lead 信箱只可能出现三类告警信:合同点名的、Claw 转出的、fail-open 兜底的。以后新长出的直投代码自动落入同一规则,不需要维护清单</td><td>注入一条给 B 的无 run 编号升级 → B 信箱 0 封,Claw 1 封,账上一行</td></tr>
+      <tr><td>被 @ 必达</td><td>Claw <code>handoff --to X</code> 时,Bridge 在同一步给 X 投一封 <code>[alert_handoff]</code> 信,编号可预测;信的排队 / 已读 / 死信态逐封显示在看板上;再转一次 = 新一封(所以死信可以重投)</td><td>Claw 转给 A → A 恰 1 封,B 0 封;看板显示「已转出 · 已读」;再转一次 → A 第 2 封</td></tr>
+    </table></div>
+    <p><b>Discord 里的 @ 保留,但它是给人看的留痕,不是送达机制。</b>原因见第 7 节。</p>
+    <p><b>那 657 封升级信的新去向</b>:进 Claw 信箱,按身份落账(会话编号各不相同,所以多数各自一行,计数不会把它们并起来 —— 这是身份规则的如实结果);Claw 按 2076 的压力规则处置;Tadashi 只在 Claw 转出时收信。<b>投递量不变</b>(1409 封仍是 1409 封,账本只影响看板行数);它们每 15 分钟重发的源头不在本单,建议另开一张单(R8 根因线)。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s6" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="7 关键取舍与被否掉的方案">
+    <div class="section-title"><span class="num">7</span>关键取舍与被否掉的方案</div>
+    <div class="tbl-wrap"><table>
+      <tr><th>决定</th><th>选了什么</th><th>否掉了什么 · 为什么</th></tr>
+      <tr><td>去向账放哪</td><td><span class="badge keep">选</span>一张新表,和旧账同一套词汇;旧账不动</td><td><span class="badge cut">否</span>把普通告警也塞进旧账:要重建表、且旧账有十几处隐藏读者(自动修复、救援、Discord 同步)都得学会跳过新行,爆炸半径大。<span class="badge cut">否</span>用信箱自己的字段当账:信箱是投递账,每封一行、会被清理,「已送达」已有别的含义。<span class="badge cut">否</span>回到「只发 Discord」:founder 8-26 已裁普通告警不进 Discord</td></tr>
+      <tr><td>「被 @」是什么</td><td><span class="badge keep">选</span>一封走内部信箱的转出信(可查送达态、可在测试房验)</td><td><span class="badge cut">否</span>给 19 个 Lead 补 Discord 告警频道订阅 + 服务器层 @ 门控(FLY-898 那套):普通告警没有 thread 可以 @;要动 19 份配置和 bot 入频道;而 2076 自己那个门控翻转在生产都没生效</td></tr>
+      <tr><td>回填谁开 PR</td><td><span class="badge keep">选</span>草稿 + 欠条落本机,一条收割命令写页;PR 由有写权的人开</td><td><span class="badge cut">否</span>Claw 直接开 PR(违反不给 git 写权)。<span class="badge cut">否</span>Bridge 自动开 PR(新凭据面,不配小单)</td></tr>
+      <tr><td>同一问题连响</td><td><span class="badge keep">选</span>按既有身份规则(项目+Lead+类别+会话)并入当前一轮,计数 +1</td><td><span class="badge cut">否</span>按文本相似度归并:那是「噪音判定」,PRD 明说下一层。<span class="badge cut">否</span>减少投递量:本单不碰投递</td></tr>
+      <tr><td>值守写路径没配置时</td><td><span class="badge keep">选</span>Tadashi 附加条件:改投的告警退回直投原 Lead,账上标明;席位探针、启动日志、Claw 规则三处可见</td><td><span class="badge cut">否</span>静默进 Claw 信箱等死:这正是过去 10 天发生的事</td></tr>
+      <tr><td>设计评审要求的两条「重机制」</td><td><span class="badge keep">选</span>不做持久化对账循环、不做自动重投死信</td><td>理由:Bridge 主库写不进去是 Bridge 级故障,已有元告警通道;死信在看板可见,Claw 再转一次即重投。Codex 第 6 轮接受了这两条 scope cut</td></tr>
+    </table></div>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s7" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="8 上线前置与已拿到的裁定">
+    <div class="section-title"><span class="num">8</span>上线前置与已拿到的裁定</div>
+    <ul>
+      <li><span class="badge warn">前置</span><b>值守令牌</b>:Tadashi 已裁定由他设进生产环境、随班车重启生效,runner 不碰生产环境。缺这一步,本单的改投告警会退回直投 Lead(不失明),但验收只能记 INCONCLUSIVE。</li>
+      <li><span class="badge keep">已批</span><b>三处直投改投 Claw</b>:Tadashi 原则批准(属 Bridge 内部路由,不算 PRD「不动转发组件」),附加 fail-open 条件已落进设计。</li>
+      <li><span class="badge ask">待确认</span><b>README 两句的 supersession</b>(第 4 节末):我按 founder 9-6 裁定处理,已报 Tadashi;若他不同意,收割命令删掉、入册回人工,其余不变。</li>
+      <li><span class="badge ask">建议另开单</span>无 run 编号的工作流升级每 15 分钟重发(10 天 685 封,主要是 FLY-2366 一单)—— 源头修复不在本单。</li>
+    </ul>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s8" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card gray" data-section="9 诚实边界">
+    <div class="section-title"><span class="num">9</span>诚实边界:这个设计做什么、不做什么</div>
+    <div class="tbl-wrap"><table>
+      <tr><th>做</th><th>不做</th></tr>
+      <tr><td>给普通告警补一本去向账,和旧账同一套词汇;Claw 的认领 / 转出 / 解决扩到两条车道</td><td>不判噪音、不按相似度归并、不减少投递量</td></tr>
+      <tr><td>解决必带草稿回执;兜底必落欠条;一条收割命令写进仓库</td><td>不给 Claw git 写权;Bridge 不自动开 PR;不设计 Infra bot 本身</td></tr>
+      <tr><td>看板四档、挂着的全列、转出信送达态、册子欠账、写路径配置态</td><td>不设指标 / 阈值 / hard limit / 全局 QA 门;看板不发告警不 @</td></tr>
+      <tr><td>非白名单告警投递前改投 Claw;转出信是唯一「被 @」;fail-open 回退</td><td>不动 Dispatcher、各发射源、D1 分类表;不给 Lead 补 Discord 告警频道订阅;不自动重投死信</td></tr>
+      <tr><td>2076 三条已知缺口(偶尔多一帖 / 被取代的旧轮次 / 没建成 thread 的工单)原样沿用 founder 裁定</td><td>不修工作流升级每 15 分钟重发的源头(另开单)</td></tr>
+    </table></div>
+    <p class="small">我没证到的一条:Bridge 启动横幅里「值守令牌未设」那一行我没在日志里找到(日志可能已轮转);结论建立在环境文件、门控配置文件、账本三处文件级证据上,横幅留给实现 / QA 节点补。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s9" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card hero" data-section="批注汇总">
+    <div class="section-title">📋 你的全部批注(实时汇总)</div>
+    <p class="small">每段都以 <code>【页面意见汇总】FLY-2386</code> 开头;超过约 1800 字会自动分成几段,每段可单独复制。这是修改意见,不是通过信号。</p>
+    <div id="summary-list"></div>
+    <div class="chunk-bar"><button class="btn" id="copy-btn" type="button">复制全部批注</button><span class="status" id="copy-status"></span></div>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2386";
+  var CHUNK_LIMIT = 1800;
+  var PREFIX;
+  try { PREFIX = "fly2386-comments:v1:" + (location.pathname || "/") + ":"; } catch (e) { PREFIX = "fly2386-comments:v1:unknown:"; }
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  function load(key) { try { return localStorage.getItem(PREFIX + key) || ""; } catch (e) { return ""; } }
+  function save(key, val) { try { localStorage.setItem(PREFIX + key, val); } catch (e) { /* storage unavailable */ } }
+  function sectionTitleFor(el) { var card = el.closest("[data-section]"); return card ? card.getAttribute("data-section") : "未知小节"; }
+  function buildParts() {
+    var parts = [];
+    areas.forEach(function (ta) { var v = ta.value.trim(); if (v) parts.push("【" + sectionTitleFor(ta) + "】\n" + v); });
+    return parts;
+  }
+  function buildChunks() {
+    var parts = buildParts();
+    if (!parts.length) return [];
+    var whole = MARKER + "\n" + parts.join("\n\n");
+    if (whole.length <= CHUNK_LIMIT) return [whole];
+    var chunks = [], cur = [];
+    var curLen = 0;
+    parts.forEach(function (p) {
+      if (cur.length && curLen + p.length + 2 > CHUNK_LIMIT - 40) { chunks.push(cur); cur = []; curLen = 0; }
+      cur.push(p); curLen += p.length + 2;
+    });
+    if (cur.length) chunks.push(cur);
+    var n = chunks.length;
+    return chunks.map(function (c, i) { return MARKER + " (" + (i + 1) + "/" + n + ")\n" + c.join("\n\n"); });
+  }
+  function fallbackCopy(text) {
+    var tmp = document.createElement("textarea");
+    tmp.value = text; tmp.setAttribute("readonly", "");
+    tmp.style.position = "absolute"; tmp.style.left = "-9999px";
+    document.body.appendChild(tmp); tmp.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(tmp);
+    return ok;
+  }
+  function copyText(text, statusEl) {
+    function done(ok) { statusEl.textContent = ok ? "✓ 已复制" : "复制失败,请手动全选"; setTimeout(function () { statusEl.textContent = ""; }, 2500); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else { done(fallbackCopy(text)); }
+  }
+  function refreshSummary() {
+    var box = document.getElementById("summary-list");
+    while (box.firstChild) box.removeChild(box.firstChild);
+    var chunks = buildChunks();
+    if (!chunks.length) { var empty = document.createElement("div"); empty.className = "chunk"; empty.textContent = "(还没有批注)"; box.appendChild(empty); return; }
+    chunks.forEach(function (text, i) {
+      var pre = document.createElement("div"); pre.className = "chunk"; pre.textContent = text; box.appendChild(pre);
+      if (chunks.length > 1) {
+        var bar = document.createElement("div"); bar.className = "chunk-bar";
+        var btn = document.createElement("button"); btn.type = "button"; btn.className = "btn secondary"; btn.textContent = "复制第 " + (i + 1) + "/" + chunks.length + " 段";
+        var st = document.createElement("span"); st.className = "status";
+        btn.addEventListener("click", function () { copyText(text, st); });
+        bar.appendChild(btn); bar.appendChild(st); box.appendChild(bar);
+      }
+    });
+  }
+  areas.forEach(function (ta) {
+    ta.value = load(ta.getAttribute("data-key"));
+    ta.addEventListener("input", function () { save(ta.getAttribute("data-key"), ta.value); refreshSummary(); });
+  });
+  refreshSummary();
+  document.getElementById("copy-btn").addEventListener("click", function () {
+    var chunks = buildChunks();
+    var text = chunks.length ? chunks.join("\n\n") : MARKER + "\n(还没有批注)";
+    copyText(text, document.getElementById("copy-status"));
+  });
+})();
+</script>
+</body>
+</html>

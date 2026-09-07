@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant Claw as Claw 值守
+    participant Bridge as Bridge duty 路由
+    participant Rcpt as 回执目录
+    participant Ledger as 去向账
+    participant Mail as Tadashi 信箱
+    participant T as Tadashi
+    participant Repo as 仓库 doc/oncall
+    Claw->>Bridge: handoff --to Tadashi --reason no_entry
+    Bridge->>Rcpt: 先幂等写 owed 回执(失败则不转出)
+    Bridge->>Ledger: 一条 UPDATE:已转出 + owner + reason + 转出信 id(generation+1)
+    Bridge->>Mail: 投转出信 [alert_handoff](附回填命令行)
+    Bridge-->>Claw: 200(含转出信是否入队)
+    Mail-->>T: nudge → 进 pane
+    T->>T: 查明这类该找谁(比如 X)
+    T->>Rcpt: oncall-draft add --book contact-book --to X(owed → pending)
+    T->>Repo: oncall-draft harvest → 改一行 + 标记 → 开 PR
+    Repo-->>Rcpt: pending → landed
+    Note over Ledger,Repo: 看板:该项「已转出 · 信 ACKED」→ 欠账归零

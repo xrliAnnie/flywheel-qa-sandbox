@@ -1,0 +1,23 @@
+flowchart LR
+    subgraph LEDGER["去向账(Bridge 主库 · 同一套词汇)"]
+        AT["alert_threads<br/>车道 B · 2076 已有<br/>+ 4 列:handoff_reason / handoff_delivery_id /<br/>handoff_generation / resolve_draft_id"]
+        AM["alert_mailbox_ledger(新)<br/>车道 A · 主键 correlation_key<br/>event_id / route_class / requested_owner /<br/>ticket_status / acked_at / owner_ref /<br/>handoff_* / resolve_draft_id / fire_count"]
+    end
+    subgraph MAIL["信箱(投递账,结构不动)"]
+        M1["普通告警信 → Claw"]
+        M2["转出信 [alert_handoff] → 被点名的 Lead<br/>id 含 generation · 可查 QUEUED/ACKED/DEAD"]
+    end
+    subgraph RCPT["册子回执(状态目录文件,不进仓库)"]
+        O["owed/ · ③ 兜底时 Bridge 先写"] --> P["pending/ · oncall-draft add 补正文"] --> LD["landed/ · harvest 写页后移入"]
+    end
+    subgraph REPO["仓库 doc/oncall/(随 PR 长)"]
+        RB["runbooks/&lt;kind&gt;.md<br/>追加「处置记录」小节 + backfill 标记"]
+        CB["contact-book.md<br/>改「找谁」列 + backfill 标记"]
+    end
+    AM -. "同 key 同类再响:fire_count+1" .-> AM
+    AT --> BD["看板 /duty/alert-board<br/>UNION 两表 · 逐条读转出信送达态 · 读回执数欠账"]
+    AM --> BD
+    M2 -. "送达态" .-> BD
+    RCPT -. "欠账 = owed + pending" .-> BD
+    LD --> RB
+    LD --> CB

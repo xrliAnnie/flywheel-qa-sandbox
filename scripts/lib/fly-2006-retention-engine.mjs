@@ -144,6 +144,13 @@ function staticPolicy(key, database, table, primaryKey, predicate, params) {
 
 export const RETENTION_TARGET_POLICIES = Object.freeze([
 	staticPolicy(
+		"alertMailboxLedger",
+		"teamlead",
+		"alert_mailbox_ledger",
+		"correlation_key",
+		"julianday(t.resolved_at)<julianday(?)",
+	),
+	staticPolicy(
 		"alertRepairAttempts",
 		"teamlead",
 		"alert_repair_attempts",

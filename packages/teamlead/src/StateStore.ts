@@ -4471,6 +4471,10 @@ export class StateStore {
 			["attempt_count", "attempt_count INTEGER DEFAULT 0"],
 			["first_seen_at", "first_seen_at TEXT"],
 			["acked_at", "acked_at TEXT"],
+			["handoff_delivery_id", "handoff_delivery_id TEXT"],
+			["handoff_reason", "handoff_reason TEXT"],
+			["resolve_draft_id", "resolve_draft_id TEXT"],
+			["handoff_generation", "handoff_generation INTEGER DEFAULT 0"],
 		] as const) {
 			const has = this.db.exec(
 				`SELECT 1 FROM pragma_table_info('alert_threads') WHERE name='${col}'`,
@@ -4479,6 +4483,40 @@ export class StateStore {
 				this.db.run(`ALTER TABLE alert_threads ADD COLUMN ${ddl}`);
 			}
 		}
+
+		// FLY-2386: mailbox-lane disposition ledger. Mailbox ACK only means the
+		// letter reached a Lead pane; this table owns the alert's duty lifecycle.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS alert_mailbox_ledger (
+				correlation_key TEXT PRIMARY KEY,
+				event_id TEXT NOT NULL,
+				delivery_id TEXT NOT NULL,
+				to_agent TEXT NOT NULL,
+				requested_owner TEXT NOT NULL,
+				route_class TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				event_type TEXT NOT NULL,
+				session_key TEXT,
+				ticket_status TEXT NOT NULL DEFAULT 'NEW',
+				owner_ref TEXT,
+				handoff_reason TEXT,
+				handoff_delivery_id TEXT,
+				handoff_generation INTEGER NOT NULL DEFAULT 0,
+				resolve_draft_id TEXT,
+				fire_count INTEGER NOT NULL DEFAULT 1,
+				first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+				opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+				acked_at TEXT,
+				resolved_at TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_alert_mailbox_ledger_outstanding ON alert_mailbox_ledger(acked_at, opened_at, event_id)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_alert_mailbox_ledger_event ON alert_mailbox_ledger(event_id)",
+		);
 
 		// FLY-1082 (Task 2.2): the fleet pressure-hold — a SINGLE durable row
 		// (id=1 enforced). While present, runner admission defers every new
@@ -14828,6 +14866,421 @@ export class StateStore {
 
 	// ── FLY-368: alert_threads (unified-alert per-error thread, active-mapping) ──
 
+	/** Open the first mailbox-lane alert episode for a correlation key. */
+	upsertAlertMailboxLedger(
+		input: AlertMailboxLedgerInput,
+		_options: { allowReseed: boolean },
+	): AlertMailboxLedgerUpsertResult {
+		const existingStmt = this.db.prepare(
+			"SELECT * FROM alert_mailbox_ledger WHERE correlation_key = ?",
+		);
+		existingStmt.bind([input.correlationKey]);
+		const existing = existingStmt.step()
+			? rowToAlertMailboxLedger(
+					existingStmt.getAsObject() as Record<string, unknown>,
+				)
+			: undefined;
+		existingStmt.free();
+		if (
+			existing?.event_id === input.eventId &&
+			existing.delivery_id === input.deliveryId &&
+			existing.to_agent === input.toAgent &&
+			existing.requested_owner === input.requestedOwner &&
+			existing.route_class === input.routeClass
+		) {
+			return {
+				disposition: "replayed_same",
+				deliveryProjection: deliveryProjectionFromLedger(existing),
+				};
+		}
+		if (existing?.event_id === input.eventId) {
+			if (_options.allowReseed) {
+				const handedOff =
+					input.routeClass === "direct_owner" ||
+					input.routeClass === "duty_fallback";
+				this.db.run(
+					`UPDATE alert_mailbox_ledger SET
+						delivery_id = ?, to_agent = ?, requested_owner = ?, route_class = ?,
+						ticket_status = ?, owner_ref = ?, handoff_reason = ?,
+						handoff_delivery_id = ?, acked_at = ${handedOff ? "datetime('now')" : "NULL"}
+					 WHERE correlation_key = ? AND event_id = ?
+					   AND resolved_at IS NULL AND resolve_draft_id IS NULL
+					   AND handoff_generation = 0
+					   AND (acked_at IS NULL OR handoff_reason IN ('direct_owner','duty_fallback'))`,
+					[
+						input.deliveryId,
+						input.toAgent,
+						input.requestedOwner,
+						input.routeClass,
+						handedOff ? "ESCALATED" : "NEW",
+						handedOff ? `lead:${input.toAgent}` : "infra_bot:claude",
+						handedOff ? input.routeClass : null,
+						handedOff ? input.deliveryId : null,
+						input.correlationKey,
+						input.eventId,
+					],
+				);
+				if (this.db.getRowsModified() === 1) {
+					this.save();
+					return {
+						disposition: "reseeded",
+						deliveryProjection: deliveryProjectionFromInput(input),
+					};
+				}
+			}
+			return {
+				disposition: "locked_canonical",
+				deliveryProjection: deliveryProjectionFromLedger(existing),
+			};
+		}
+		if (
+			existing !== undefined &&
+			existing.resolved_at === null &&
+			existing.route_class === input.routeClass &&
+			existing.to_agent === input.toAgent
+		) {
+			this.db.run(
+				"UPDATE alert_mailbox_ledger SET fire_count = fire_count + 1 WHERE correlation_key = ? AND event_id = ? AND resolved_at IS NULL",
+				[input.correlationKey, existing.event_id],
+			);
+			this.save();
+			return {
+				disposition: "merged",
+				deliveryProjection: deliveryProjectionFromInput(input),
+				};
+		}
+		if (existing !== undefined) {
+			const handedOff =
+				input.routeClass === "direct_owner" ||
+				input.routeClass === "duty_fallback";
+			this.db.run(
+				`UPDATE alert_mailbox_ledger SET
+					event_id = ?, delivery_id = ?, to_agent = ?, requested_owner = ?,
+					route_class = ?, lead_id = ?, project_name = ?, event_type = ?,
+					session_key = ?, ticket_status = ?, owner_ref = ?, handoff_reason = ?,
+					handoff_delivery_id = ?, handoff_generation = 0,
+					resolve_draft_id = NULL, fire_count = 1,
+					first_seen_at = datetime('now'), opened_at = datetime('now'),
+					acked_at = ${handedOff ? "datetime('now')" : "NULL"}, resolved_at = NULL
+				 WHERE correlation_key = ?`,
+				[
+					input.eventId,
+					input.deliveryId,
+					input.toAgent,
+					input.requestedOwner,
+					input.routeClass,
+					input.leadId,
+					input.projectName,
+					input.eventType,
+					input.sessionKey ?? null,
+					handedOff ? "ESCALATED" : "NEW",
+					handedOff ? `lead:${input.toAgent}` : "infra_bot:claude",
+					handedOff ? input.routeClass : null,
+					handedOff ? input.deliveryId : null,
+					input.correlationKey,
+				],
+			);
+			this.save();
+			return {
+				disposition: "new_episode",
+				deliveryProjection: deliveryProjectionFromInput(input),
+			};
+		}
+		this.db.run(
+			`INSERT INTO alert_mailbox_ledger (
+				correlation_key, event_id, delivery_id, to_agent, requested_owner,
+				route_class, lead_id, project_name, event_type, session_key,
+				ticket_status, owner_ref, handoff_reason, handoff_delivery_id, acked_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+				CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END)`,
+			[
+				input.correlationKey,
+				input.eventId,
+				input.deliveryId,
+				input.toAgent,
+				input.requestedOwner,
+				input.routeClass,
+				input.leadId,
+				input.projectName,
+				input.eventType,
+				input.sessionKey ?? null,
+				input.routeClass === "direct_owner" ||
+				input.routeClass === "duty_fallback"
+					? "ESCALATED"
+					: "NEW",
+				input.routeClass === "direct_owner" ||
+				input.routeClass === "duty_fallback"
+					? `lead:${input.toAgent}`
+					: "infra_bot:claude",
+				input.routeClass === "direct_owner" ||
+				input.routeClass === "duty_fallback"
+					? input.routeClass
+					: null,
+				input.routeClass === "direct_owner" ||
+				input.routeClass === "duty_fallback"
+					? input.deliveryId
+					: null,
+				input.routeClass === "direct_owner" ||
+				input.routeClass === "duty_fallback"
+					? 1
+					: 0,
+			],
+		);
+		this.save();
+		return {
+				disposition: "inserted",
+			deliveryProjection: deliveryProjectionFromInput(input),
+		};
+	}
+
+	/** Mailbox-lane duty lookup by exact episode id, including resolved rows. */
+	getMailboxLedgerByEventId(
+		eventId: string,
+	): AlertMailboxLedgerRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM alert_mailbox_ledger WHERE event_id = ?",
+		);
+		stmt.bind([eventId]);
+		let out: AlertMailboxLedgerRow | undefined;
+		if (stmt.step()) {
+			out = rowToAlertMailboxLedger(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** A bounded newest-first mailbox duty work list. */
+	listMailboxLedgerOutstanding(
+		limit: number,
+		since?: Pick<AlertMailboxLedgerRow, "opened_at" | "event_id">,
+	): AlertMailboxLedgerRow[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM alert_mailbox_ledger
+			 WHERE acked_at IS NULL
+			   ${since ? "AND (opened_at > ? OR (opened_at = ? AND event_id > ?))" : ""}
+			 ORDER BY opened_at DESC, event_id DESC
+			 LIMIT ?`,
+		);
+		stmt.bind(
+			since
+				? [since.opened_at, since.opened_at, since.event_id, limit]
+				: [limit],
+		);
+		const out: AlertMailboxLedgerRow[] = [];
+		while (stmt.step()) {
+			out.push(
+				rowToAlertMailboxLedger(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** List both duty lanes without collapsing equal correlation keys. */
+	listAlertBoard(input: {
+		resolvedSinceIso: string;
+		limit: number;
+		cursor?: AlertBoardCursor;
+	}): AlertBoardPage {
+		const union = `
+			SELECT 'thread' AS lane, correlation_key, event_id, lead_id, project_name,
+				event_type, ticket_status, owner_ref, handoff_reason,
+				handoff_delivery_id, handoff_generation, resolve_draft_id,
+				NULL AS route_class, NULL AS requested_owner, NULL AS to_agent,
+				NULL AS fire_count, opened_at, acked_at, resolved_at,
+				thread_id, channel_id
+			FROM alert_threads
+			WHERE resolved_at IS NULL OR resolved_at >= ?
+			UNION ALL
+			SELECT 'mailbox' AS lane, correlation_key, event_id, lead_id, project_name,
+				event_type, ticket_status, owner_ref, handoff_reason,
+				handoff_delivery_id, handoff_generation, resolve_draft_id,
+				route_class, requested_owner, to_agent, fire_count,
+				opened_at, acked_at, resolved_at, NULL AS thread_id, NULL AS channel_id
+			FROM alert_mailbox_ledger
+			WHERE resolved_at IS NULL OR resolved_at >= ?`;
+		const cursorSql = input.cursor
+			? `WHERE opened_at > ?
+				OR (opened_at = ? AND event_id > ?)
+				OR (opened_at = ? AND event_id = ? AND lane > ?)`
+			: "";
+		const stmt = this.db.prepare(
+			`WITH board AS (${union})
+			 SELECT * FROM board ${cursorSql}
+			 ORDER BY opened_at ASC, event_id ASC, lane ASC LIMIT ?`,
+		);
+		stmt.bind([
+			input.resolvedSinceIso,
+			input.resolvedSinceIso,
+			...(input.cursor
+				? [
+						input.cursor.openedAt,
+						input.cursor.openedAt,
+						input.cursor.eventId,
+						input.cursor.openedAt,
+						input.cursor.eventId,
+						input.cursor.lane,
+					]
+				: []),
+			input.limit + 1,
+		]);
+		const rows: AlertBoardStoreRow[] = [];
+		while (stmt.step()) {
+			rows.push(
+				rowToAlertBoard(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+
+		const truncated = rows.length > input.limit;
+		const items = rows.slice(0, input.limit);
+		const last = truncated ? items.at(-1) : undefined;
+
+		const totalsStmt = this.db.prepare(
+			`WITH board AS (${union})
+			 SELECT
+				SUM(CASE WHEN resolved_at IS NULL AND ticket_status <> 'ESCALATED' AND acked_at IS NULL THEN 1 ELSE 0 END) AS unreviewed,
+				SUM(CASE WHEN resolved_at IS NULL AND ticket_status <> 'ESCALATED' AND acked_at IS NOT NULL THEN 1 ELSE 0 END) AS in_duty,
+				SUM(CASE WHEN resolved_at IS NULL AND ticket_status = 'ESCALATED' THEN 1 ELSE 0 END) AS handed_off,
+				SUM(CASE WHEN resolved_at IS NOT NULL THEN 1 ELSE 0 END) AS resolved_in_window
+			 FROM board`,
+		);
+		totalsStmt.bind([input.resolvedSinceIso, input.resolvedSinceIso]);
+		totalsStmt.step();
+		const totalsRow = totalsStmt.getAsObject() as Record<string, unknown>;
+		totalsStmt.free();
+		return {
+			items,
+			totals: {
+				unreviewed: Number(totalsRow.unreviewed ?? 0),
+				in_duty: Number(totalsRow.in_duty ?? 0),
+				handed_off: Number(totalsRow.handed_off ?? 0),
+				resolved_in_window: Number(totalsRow.resolved_in_window ?? 0),
+			},
+			nextCursor: last
+				? {
+						openedAt: last.opened_at,
+						eventId: last.event_id,
+						lane: last.lane,
+					}
+				: null,
+			truncated,
+		};
+	}
+
+	/** Mark one exact mailbox-lane episode as reviewed by duty. */
+	stampMailboxLedgerAck(correlationKey: string, eventId: string): boolean {
+		this.db.run(
+			`UPDATE alert_mailbox_ledger SET acked_at = COALESCE(acked_at, datetime('now'))
+			 WHERE correlation_key = ? AND event_id = ?`,
+			[correlationKey, eventId],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/** Transfer one exact duty episode and allocate its delivery generation. */
+	handoffLedger(
+		lane: "thread" | "mailbox",
+		correlationKey: string,
+		eventId: string,
+		input: {
+			ownerRef: string;
+			reason: "contact_book" | "no_entry";
+			deliveryIdPrefix: string;
+		},
+	): AlertThreadRow | AlertMailboxLedgerRow | undefined {
+		const table = lane === "thread" ? "alert_threads" : "alert_mailbox_ledger";
+		this.db.run(
+			`UPDATE ${table} SET
+				acked_at = COALESCE(acked_at, datetime('now')),
+				ticket_status = 'ESCALATED', owner_ref = ?, handoff_reason = ?,
+				handoff_generation = handoff_generation + 1,
+				handoff_delivery_id = ? || ':g' || (handoff_generation + 1)
+			 WHERE correlation_key = ? AND event_id = ?
+			   AND resolved_at IS NULL AND ticket_status <> 'RESOLVED'`,
+			[
+				input.ownerRef,
+				input.reason,
+				input.deliveryIdPrefix,
+				correlationKey,
+				eventId,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) return undefined;
+		this.save();
+		return lane === "thread"
+			? this.getAlertThreadByEventId(eventId)
+			: this.getMailboxLedgerByEventId(eventId);
+	}
+
+	/** Fence a duty resolution to one verified runbook draft. */
+	bindResolveDraft(
+		lane: "thread" | "mailbox",
+		correlationKey: string,
+		eventId: string,
+		draftId: string,
+	): AlertDraftBindResult {
+		const table = lane === "thread" ? "alert_threads" : "alert_mailbox_ledger";
+		this.db.run(
+			`UPDATE ${table} SET resolve_draft_id = ?
+			 WHERE correlation_key = ? AND event_id = ? AND resolved_at IS NULL
+			   AND (resolve_draft_id IS NULL OR resolve_draft_id = ?)`,
+			[draftId, correlationKey, eventId, draftId],
+		);
+		if (this.db.getRowsModified() === 1) {
+			this.save();
+			const row =
+				lane === "thread"
+					? this.getAlertThreadByEventId(eventId)
+					: this.getMailboxLedgerByEventId(eventId);
+			if (row !== undefined) return { ok: true, row };
+		}
+
+		const stmt = this.db.prepare(
+			`SELECT * FROM ${table} WHERE correlation_key = ?`,
+		);
+		stmt.bind([correlationKey]);
+		const row = stmt.step()
+			? lane === "thread"
+				? rowToAlertThread(stmt.getAsObject() as Record<string, unknown>)
+				: rowToAlertMailboxLedger(
+						stmt.getAsObject() as Record<string, unknown>,
+					)
+			: undefined;
+		stmt.free();
+		if (row === undefined || row.event_id !== eventId) {
+			return { ok: false, reason: "stale_episode" };
+		}
+		if (row.resolved_at !== null || row.ticket_status === "RESOLVED") {
+			return { ok: false, reason: "already_resolved" };
+		}
+		return { ok: false, reason: "draft_conflict" };
+	}
+
+	/** Resolve one mailbox-lane episode only with its pre-bound draft. */
+	resolveMailboxLedger(
+		correlationKey: string,
+		eventId: string,
+		draftId: string,
+	): boolean {
+		this.db.run(
+			`UPDATE alert_mailbox_ledger SET
+				ticket_status = 'RESOLVED', resolved_at = datetime('now')
+			 WHERE correlation_key = ? AND event_id = ? AND resolved_at IS NULL
+			   AND resolve_draft_id = ?`,
+			[correlationKey, eventId, draftId],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
+	}
+
 	/**
 	 * FLY-368: open OR replace the active alert thread for a correlation key.
 	 * Active-mapping semantics: a second call with a DIFFERENT event_id under the
@@ -14857,8 +15310,10 @@ export class StateStore {
 				correlation_key, event_id, episode_signature, thread_id, root_message_id,
 				channel_id, lead_id, project_name, event_type, session_key, repair_status,
 				ticket_status, owner_ref, first_seen_at, attempt_count, acked_at,
+				handoff_reason, handoff_delivery_id, handoff_generation, resolve_draft_id,
 				opened_at, resolved_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, datetime('now'), NULL)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL,
+				NULL, NULL, 0, NULL, datetime('now'), NULL)
 			ON CONFLICT(correlation_key) DO UPDATE SET
 				event_id = excluded.event_id,
 				episode_signature = excluded.episode_signature,
@@ -14875,6 +15330,10 @@ export class StateStore {
 				first_seen_at = excluded.first_seen_at,
 				attempt_count = 0,
 				acked_at = NULL,
+				handoff_reason = NULL,
+				handoff_delivery_id = NULL,
+				handoff_generation = 0,
+				resolve_draft_id = NULL,
 				opened_at = datetime('now'),
 				resolved_at = NULL`,
 			[
@@ -68472,6 +68931,121 @@ export interface AlertThreadRow {
 	attempt_count: number;
 	first_seen_at: string | null;
 	acked_at: string | null;
+	handoff_reason: string | null;
+	handoff_delivery_id: string | null;
+	handoff_generation: number;
+	resolve_draft_id: string | null;
+}
+
+export type AlertMailboxRouteClass =
+	| "duty"
+	| "direct_owner"
+	| "duty_reroute"
+	| "duty_fallback";
+
+export interface AlertMailboxLedgerInput {
+	correlationKey: string;
+	eventId: string;
+	deliveryId: string;
+	toAgent: string;
+	requestedOwner: string;
+	routeClass: AlertMailboxRouteClass;
+	leadId: string;
+	projectName: string;
+	eventType: string;
+	sessionKey?: string | null;
+}
+
+export interface AlertMailboxDeliveryProjection {
+	eventId: string;
+	deliveryId: string;
+	toAgent: string;
+	requestedOwner: string;
+	routeClass: AlertMailboxRouteClass;
+}
+
+export interface AlertMailboxLedgerUpsertResult {
+	disposition:
+		| "inserted"
+		| "replayed_same"
+		| "reseeded"
+		| "locked_canonical"
+		| "merged"
+		| "new_episode";
+	deliveryProjection: AlertMailboxDeliveryProjection;
+}
+
+export type AlertDraftBindResult =
+	| { ok: true; row: AlertThreadRow | AlertMailboxLedgerRow }
+	| {
+			ok: false;
+			reason: "draft_conflict" | "stale_episode" | "already_resolved";
+	  };
+
+export interface AlertMailboxLedgerRow {
+	correlation_key: string;
+	event_id: string;
+	delivery_id: string;
+	to_agent: string;
+	requested_owner: string;
+	route_class: AlertMailboxRouteClass;
+	lead_id: string;
+	project_name: string;
+	event_type: string;
+	session_key: string | null;
+	ticket_status: string;
+	owner_ref: string | null;
+	handoff_reason: string | null;
+	handoff_delivery_id: string | null;
+	handoff_generation: number;
+	resolve_draft_id: string | null;
+	fire_count: number;
+	first_seen_at: string;
+	opened_at: string;
+	acked_at: string | null;
+	resolved_at: string | null;
+}
+
+export interface AlertBoardCursor {
+	openedAt: string;
+	eventId: string;
+	lane: "thread" | "mailbox";
+}
+
+export interface AlertBoardStoreRow {
+	lane: "thread" | "mailbox";
+	correlation_key: string;
+	event_id: string;
+	lead_id: string;
+	project_name: string;
+	event_type: string;
+	ticket_status: string | null;
+	owner_ref: string | null;
+	handoff_reason: string | null;
+	handoff_delivery_id: string | null;
+	handoff_generation: number;
+	resolve_draft_id: string | null;
+	route_class: AlertMailboxRouteClass | null;
+	requested_owner: string | null;
+	to_agent: string | null;
+	fire_count: number | null;
+	opened_at: string;
+	acked_at: string | null;
+	resolved_at: string | null;
+	thread_id: string | null;
+	channel_id: string | null;
+}
+
+export interface AlertBoardPage {
+	items: AlertBoardStoreRow[];
+	totals: {
+		unreviewed: number;
+		in_duty: number;
+		handed_off: number;
+		resolved_in_window: number;
+	};
+	nextCursor: AlertBoardCursor | null;
+	truncated: boolean;
 }
 
 function workflowAlertOutboxRow(
@@ -68526,6 +69100,88 @@ function rowToAlertThread(row: Record<string, unknown>): AlertThreadRow {
 		attempt_count: (row.attempt_count as number) ?? 0,
 		first_seen_at: (row.first_seen_at as string) ?? null,
 		acked_at: (row.acked_at as string) ?? null,
+		handoff_reason: (row.handoff_reason as string) ?? null,
+		handoff_delivery_id: (row.handoff_delivery_id as string) ?? null,
+		handoff_generation: Number(row.handoff_generation ?? 0),
+		resolve_draft_id: (row.resolve_draft_id as string) ?? null,
+	};
+}
+
+function rowToAlertMailboxLedger(
+	row: Record<string, unknown>,
+): AlertMailboxLedgerRow {
+	return {
+		correlation_key: row.correlation_key as string,
+		event_id: row.event_id as string,
+		delivery_id: row.delivery_id as string,
+		to_agent: row.to_agent as string,
+		requested_owner: row.requested_owner as string,
+		route_class: row.route_class as AlertMailboxRouteClass,
+		lead_id: row.lead_id as string,
+		project_name: row.project_name as string,
+		event_type: row.event_type as string,
+		session_key: (row.session_key as string) ?? null,
+		ticket_status: row.ticket_status as string,
+		owner_ref: (row.owner_ref as string) ?? null,
+		handoff_reason: (row.handoff_reason as string) ?? null,
+		handoff_delivery_id: (row.handoff_delivery_id as string) ?? null,
+		handoff_generation: Number(row.handoff_generation ?? 0),
+		resolve_draft_id: (row.resolve_draft_id as string) ?? null,
+		fire_count: Number(row.fire_count ?? 1),
+		first_seen_at: row.first_seen_at as string,
+		opened_at: row.opened_at as string,
+		acked_at: (row.acked_at as string) ?? null,
+		resolved_at: (row.resolved_at as string) ?? null,
+	};
+}
+
+function rowToAlertBoard(row: Record<string, unknown>): AlertBoardStoreRow {
+	return {
+		lane: row.lane as "thread" | "mailbox",
+		correlation_key: row.correlation_key as string,
+		event_id: row.event_id as string,
+		lead_id: row.lead_id as string,
+		project_name: row.project_name as string,
+		event_type: row.event_type as string,
+		ticket_status: (row.ticket_status as string) ?? null,
+		owner_ref: (row.owner_ref as string) ?? null,
+		handoff_reason: (row.handoff_reason as string) ?? null,
+		handoff_delivery_id: (row.handoff_delivery_id as string) ?? null,
+		handoff_generation: Number(row.handoff_generation ?? 0),
+		resolve_draft_id: (row.resolve_draft_id as string) ?? null,
+		route_class: (row.route_class as AlertMailboxRouteClass) ?? null,
+		requested_owner: (row.requested_owner as string) ?? null,
+		to_agent: (row.to_agent as string) ?? null,
+		fire_count: row.fire_count == null ? null : Number(row.fire_count),
+		opened_at: row.opened_at as string,
+		acked_at: (row.acked_at as string) ?? null,
+		resolved_at: (row.resolved_at as string) ?? null,
+		thread_id: (row.thread_id as string) ?? null,
+		channel_id: (row.channel_id as string) ?? null,
+	};
+}
+
+function deliveryProjectionFromLedger(
+	row: AlertMailboxLedgerRow,
+): AlertMailboxDeliveryProjection {
+	return {
+		eventId: row.event_id,
+		deliveryId: row.delivery_id,
+		toAgent: row.to_agent,
+		requestedOwner: row.requested_owner,
+		routeClass: row.route_class,
+	};
+}
+
+function deliveryProjectionFromInput(
+	input: AlertMailboxLedgerInput,
+): AlertMailboxDeliveryProjection {
+	return {
+		eventId: input.eventId,
+		deliveryId: input.deliveryId,
+		toAgent: input.toAgent,
+		requestedOwner: input.requestedOwner,
+		routeClass: input.routeClass,
 	};
 }
 

@@ -35,6 +35,12 @@ required=(
   "claude-infra-bot-lead 是唯一责任席位"
   "不要求任何 Department Lead 扫全机"
   "Bridge orphan sweeper"
+  "--reason"
+  "--draft"
+  "oncall-draft add"
+  "duty write path unconfigured"
+  "信箱工单不发 🧭"
+  "owed 回执"
 )
 for phrase in "${required[@]}"; do
   if ! grep -qF -- "$phrase" "$IDENTITY"; then
@@ -50,6 +56,7 @@ forbidden=(
   "先 ack 再发帖"
   "账本:<回执"
   "--to <@"
+  "手写 oncall-drafts/<kind>.md"
 )
 for phrase in "${forbidden[@]}"; do
   if grep -qF -- "$phrase" "$IDENTITY"; then

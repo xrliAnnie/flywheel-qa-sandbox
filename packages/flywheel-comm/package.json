@@ -44,7 +44,8 @@
 		"./discord-chat-ingest": "./dist/discord-chat-ingest.js",
 		"./approval-intent": "./dist/approval-intent.js",
 		"./design-html-evidence": "./dist/design-html-evidence.js",
-		"./report-html": "./dist/report-html.js"
+		"./report-html": "./dist/report-html.js",
+		"./oncall-receipts": "./dist/oncall-receipts.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"

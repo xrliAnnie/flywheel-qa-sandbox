@@ -224,3 +224,19 @@ FLY-2075 修复后的 Discord 主消息管道，工单仍由既有 `AlertChannel
 `lead_events` 账本仍照常记录，待恢复后继续处理。操作只走本机 Fleet 管理面的
 `POST /api/fleet/flag/stage` → `POST /api/fleet/flag/apply`，值写入 `flag_values` 并在
 下一次读取时立即生效，无需重启 Bridge。
+
+## 13. 两车道闭环与收件人分档（FLY-2386）
+
+Discord thread 车道以 `alert_threads` 为账，durable mailbox 车道以
+`alert_mailbox_ledger` 为账；两边统一使用 `NEW / ACKED / ESCALATED / RESOLVED` 和
+ack、handoff、resolve 词汇。看板主键是 `(lane, correlation_key)`，因此相同 key 在两条
+车道上仍是两件独立且可追踪的事。
+
+信箱投递前按 `duty / direct_owner / duty_reroute / duty_fallback` 分类并决定实际收件人。
+非点名类别在 duty 可用时进 Claw；点名类别直达合同 owner；duty 不可用时才 fail-open
+回到请求的 Lead。值守 handoff 的唯一送达机制是带 generation 的 `[alert_handoff]`
+信，每次 handoff 生成新的 delivery identity，账本保留当前一代及其可查送达态。
+
+resolve 必带服务端核验过、与 lane/key/event/kind 完全一致的 runbook 草稿回执。Bridge
+先把 draft id 预绑到账本，再执行原有 resolve；失败可按同一 id 安全重试，也不会留下
+“已解决但没有回填依据”的终态。

@@ -103,6 +103,37 @@ export const ISSUE_PROGRESS_KINDS: ReadonlySet<AlertEventType> =
 export const LEAD_INBOX_KINDS: ReadonlySet<AlertEventType> =
 	new Set<AlertEventType>(["review_job_failed"]);
 
+/** The sole recipient that watches the whole alert queue. */
+export const ALERT_DUTY_LEAD_ID = "claude-infra-bot-lead";
+
+/** Kinds whose producer-selected Lead is already the contractual owner. */
+export const DIRECT_OWNER_KINDS: ReadonlySet<AlertEventType> =
+	new Set<AlertEventType>([
+		...LEAD_INBOX_KINDS,
+		"flag_scan_failed",
+		"flag_scan_no_clock",
+		"flag_scan_handoff",
+	]);
+
+export function classifyInfraLetter(input: {
+	requestedOwner: string;
+	eventType: AlertEventType;
+	dutyAvailable: boolean;
+}): {
+	routeClass: "duty" | "direct_owner" | "duty_reroute" | "duty_fallback";
+	toAgent: string;
+} {
+	if (input.requestedOwner === ALERT_DUTY_LEAD_ID) {
+		return { routeClass: "duty", toAgent: ALERT_DUTY_LEAD_ID };
+	}
+	if (DIRECT_OWNER_KINDS.has(input.eventType)) {
+		return { routeClass: "direct_owner", toAgent: input.requestedOwner };
+	}
+	return input.dutyAvailable
+		? { routeClass: "duty_reroute", toAgent: ALERT_DUTY_LEAD_ID }
+		: { routeClass: "duty_fallback", toAgent: input.requestedOwner };
+}
+
 /** The issue thread an event resolved to (sessions → issue → chat_threads). */
 export interface BoundIssueThread {
 	threadId: string;

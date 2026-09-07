@@ -1,6 +1,7 @@
 {
 	"version": 1,
 	"targetTables": [
+		"alert_mailbox_ledger",
 		"alert_repair_attempts",
 		"alert_threads",
 		"chat_threads",
@@ -164,6 +165,13 @@
 			"file": "packages/flywheel-comm/src/receipt-teardown-closeout.ts",
 			"relation": "mailbox",
 			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "alert_mailbox_ledger",
+			"baseTable": "alert_mailbox_ledger",
 			"usage": "read",
 			"disposition": "candidate_guarded"
 		},

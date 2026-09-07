@@ -90,6 +90,10 @@ export interface QueryRouterOptions {
 	lookupIssueForArchive?: ReconcileLinearLookup;
 	/** FLY-2076: late-bound alert dispatcher identity for Claw startup. */
 	dispatcherBotUserId?: () => string | null;
+	/** FLY-2386: whether the duty mutation path is actually configured. */
+	dutyWritePath?: () => "configured" | "unconfigured";
+	ledgerWriteErrors?: () => number;
+	reroutedCount?: () => number;
 }
 
 function omitIssueId(
@@ -139,6 +143,9 @@ export function createQueryRouter(
 	router.get("/alert-duty/seat", (_req, res) => {
 		res.status(200).json({
 			dispatcherBotUserId: opts?.dispatcherBotUserId?.() ?? null,
+			dutyWritePath: opts?.dutyWritePath?.() ?? "unconfigured",
+			ledgerWriteErrors: opts?.ledgerWriteErrors?.() ?? 0,
+			reroutedCount: opts?.reroutedCount?.() ?? 0,
 		});
 	});
 

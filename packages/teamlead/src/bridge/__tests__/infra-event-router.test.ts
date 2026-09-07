@@ -17,9 +17,12 @@ import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
 import { buildInfraAlertRouting } from "../infra-alert-wiring.js";
 import {
+	ALERT_DUTY_LEAD_ID,
 	type BoundIssueThread,
 	classifyInfraEvent,
+	classifyInfraLetter,
 	createInfraAlertSink,
+	DIRECT_OWNER_KINDS,
 	ISSUE_PROGRESS_KINDS,
 	LEAD_INBOX_KINDS,
 	TICKET_KINDS,
@@ -229,6 +232,58 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 				classifyInfraEvent({ eventType: kind, boundIssueThread: THREAD }),
 			).toBe("ticket");
 		}
+	});
+});
+
+describe("classifyInfraLetter (FLY-2386 recipient tiers)", () => {
+	it.each([
+		{
+			requestedOwner: ALERT_DUTY_LEAD_ID,
+			eventType: "bridge_abnormal_exit" as const,
+			dutyAvailable: true,
+			expected: { routeClass: "duty", toAgent: ALERT_DUTY_LEAD_ID },
+		},
+		{
+			requestedOwner: "flywheel-eng-lead",
+			eventType: "review_job_failed" as const,
+			dutyAvailable: true,
+			expected: {
+				routeClass: "direct_owner",
+				toAgent: "flywheel-eng-lead",
+			},
+		},
+		{
+			requestedOwner: "flywheel-eng-lead",
+			eventType: "bridge_abnormal_exit" as const,
+			dutyAvailable: true,
+			expected: {
+				routeClass: "duty_reroute",
+				toAgent: ALERT_DUTY_LEAD_ID,
+			},
+		},
+		{
+			requestedOwner: "flywheel-eng-lead",
+			eventType: "bridge_abnormal_exit" as const,
+			dutyAvailable: false,
+			expected: {
+				routeClass: "duty_fallback",
+				toAgent: "flywheel-eng-lead",
+			},
+		},
+	])(
+		"classifies $eventType for $requestedOwner as $expected.routeClass",
+		({ expected, ...input }) => {
+			expect(classifyInfraLetter(input)).toEqual(expected);
+		},
+	);
+
+	it("keeps the direct-owner contract explicit and small", () => {
+		expect([...DIRECT_OWNER_KINDS].sort()).toEqual([
+			"flag_scan_failed",
+			"flag_scan_handoff",
+			"flag_scan_no_clock",
+			"review_job_failed",
+		]);
 	});
 });
 

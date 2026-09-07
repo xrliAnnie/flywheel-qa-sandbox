@@ -14,3 +14,32 @@ export function formatInfraAlertMailboxContent(payload: AlertPayload): string {
 	].join(" ");
 	return [`[infra_alert] ${payload.title}`, payload.body, context].join("\n");
 }
+
+export interface AlertHandoffContentInput {
+	lane: "thread" | "mailbox";
+	correlationKey: string;
+	eventId: string;
+	kind: string;
+	reason: "contact_book" | "no_entry";
+	note?: string;
+	ref: string;
+	toLeadId: string;
+}
+
+export function formatAlertHandoffContent(
+	input: AlertHandoffContentInput,
+): string {
+	return [
+		`[alert_handoff] ${input.kind} · 来自值守 · 去向 ${input.reason === "no_entry" ? "③" : "②"}`,
+		`lane=${input.lane}`,
+		`event=${input.eventId}`,
+		`correlation=${input.correlationKey}`,
+		`note=${input.note ?? "-"}`,
+		`ref=${input.ref}`,
+		...(input.reason === "no_entry"
+			? [
+					`oncall-draft add --book contact-book --event-id ${input.eventId} --to ${input.toLeadId} --file -`,
+				]
+			: []),
+	].join("\n");
+}

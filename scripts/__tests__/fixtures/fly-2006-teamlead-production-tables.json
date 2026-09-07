@@ -1,6 +1,7 @@
 [
 	"admission_pause",
 	"alert_delivery_receipts",
+	"alert_mailbox_ledger",
 	"alert_repair_attempts",
 	"alert_threads",
 	"auto_qa_record",

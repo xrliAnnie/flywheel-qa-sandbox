@@ -39,6 +39,19 @@ function runtimeStoreStub(
 		createDeadLetterAlertIntent: vi.fn(),
 		listDueDeadLetterAlerts: () => [],
 		listUndeliveredLeadInboxEvents: () => [],
+		getMailboxLedgerByEventId: () => undefined,
+		upsertAlertMailboxLedger: vi.fn(
+			(input: {
+				eventId: string;
+				deliveryId: string;
+				toAgent: string;
+				requestedOwner: string;
+				routeClass: string;
+			}) => ({
+				disposition: "inserted",
+				deliveryProjection: input,
+			}),
+		),
 	};
 }
 
@@ -56,6 +69,23 @@ const projects: ProjectEntry[] = [
 		],
 	},
 ];
+
+function projectsWithDutyLead(): ProjectEntry[] {
+	return [
+		{
+			...projects[0]!,
+			leads: [
+				...projects[0]!.leads,
+				{
+					agentId: "claude-infra-bot-lead",
+					summaryRole: "recipient",
+					chatChannel: "chat-alerts",
+					match: { labels: ["Infra"] },
+				},
+			],
+		},
+	];
+}
 
 describe("LeadInboxRuntime", () => {
 	it("periodically archives terminal mailbox families with audit evidence", async () => {
@@ -717,6 +747,692 @@ describe("LeadInboxRuntime", () => {
 		}
 	});
 
+	it("reroutes an unowned alert to duty before writing the recipient mailbox", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-duty-reroute-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const dutyProjects = [
+			{
+				...projects[0]!,
+				leads: [
+					...projects[0]!.leads,
+					{
+						agentId: "claude-infra-bot-lead",
+						summaryRole: "recipient",
+						chatChannel: "chat-alerts",
+						match: { labels: ["Infra"] },
+					},
+				],
+			},
+		] as ProjectEntry[];
+		const runtime = new LeadInboxRuntime({
+			projects: dutyProjects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => true,
+		});
+		runtimes.push(runtime);
+		const result = runtime.enqueueInfraAlert("lead-a", {
+			leadId: "lead-a",
+			projectName: "project-a",
+			eventId: "bridge-exit-1",
+			eventType: "bridge_abnormal_exit",
+			title: "Bridge exited",
+			body: "unexpected exit",
+			severity: "severe",
+		});
+		const directDuty = runtime.enqueueInfraAlert("claude-infra-bot-lead", {
+			leadId: "lead-a",
+			projectName: "project-a",
+			sessionKey: "duty-direct",
+			eventId: "bridge-exit-duty",
+			eventType: "bridge_abnormal_exit",
+			title: "Bridge exited",
+			body: "already assigned to duty",
+			severity: "warning",
+		});
+
+		expect(result).toMatchObject({ queued: true });
+		expect(runtime.reroutedCount).toBe(1);
+		expect(runtime.isLeadQueueOpen("claude-infra-bot-lead")).toBe(true);
+		expect(runtime.isLeadQueueOpen("missing-lead")).toBe(false);
+		const queue = new MailboxQueue(dbPath);
+		try {
+			expect(queue.getById(result.deliveryId)).toEqual(
+				expect.objectContaining({ to_agent: "claude-infra-bot-lead" }),
+			);
+			expect(queue.getById(directDuty.deliveryId)).toEqual(
+				expect.objectContaining({ to_agent: "claude-infra-bot-lead" }),
+			);
+			const snapshot = new Database(dbPath, { readonly: true });
+			try {
+				expect(
+					snapshot
+						.prepare(
+							"SELECT COUNT(*) AS count FROM mailbox WHERE to_agent='lead-a' AND source_kind='infra_alert'",
+						)
+						.get(),
+				).toEqual({ count: 0 });
+			} finally {
+				snapshot.close();
+			}
+		} finally {
+			queue.close();
+		}
+		expect(store.getMailboxLedgerByEventId("bridge-exit-1")).toEqual(
+			expect.objectContaining({
+				to_agent: "claude-infra-bot-lead",
+				requested_owner: "lead-a",
+				route_class: "duty_reroute",
+				ticket_status: "NEW",
+			}),
+		);
+		expect(store.getMailboxLedgerByEventId("bridge-exit-duty")).toEqual(
+			expect.objectContaining({
+				to_agent: "claude-infra-bot-lead",
+				requested_owner: "claude-infra-bot-lead",
+				route_class: "duty",
+				ticket_status: "NEW",
+			}),
+		);
+		store.close();
+	});
+
+	it("keeps direct-owner alerts and duty-unconfigured fallbacks in the requested Lead inbox", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-owner-tiers-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const dutyProjects = [
+			{
+				...projects[0]!,
+				leads: [
+					...projects[0]!.leads,
+					{
+						agentId: "claude-infra-bot-lead",
+						summaryRole: "recipient",
+						chatChannel: "chat-alerts",
+						match: { labels: ["Infra"] },
+					},
+				],
+			},
+		] as ProjectEntry[];
+		const runtime = new LeadInboxRuntime({
+			projects: dutyProjects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => false,
+		});
+		runtimes.push(runtime);
+
+		const direct = runtime.enqueueInfraAlert("lead-a", {
+			leadId: "lead-a",
+			projectName: "project-a",
+			eventId: "review-failed-1",
+			eventType: "review_job_failed",
+			title: "Review failed",
+			body: "review owner action required",
+			severity: "warning",
+		});
+		const fallback = runtime.enqueueInfraAlert("lead-a", {
+			leadId: "lead-a",
+			projectName: "project-a",
+			eventId: "bridge-exit-2",
+			eventType: "bridge_abnormal_exit",
+			title: "Bridge exited",
+			body: "duty unavailable",
+			severity: "severe",
+		});
+
+		const queue = new MailboxQueue(dbPath);
+		try {
+			expect(queue.getById(direct.deliveryId)?.to_agent).toBe("lead-a");
+			expect(queue.getById(fallback.deliveryId)?.to_agent).toBe("lead-a");
+		} finally {
+			queue.close();
+		}
+		expect(store.getMailboxLedgerByEventId("review-failed-1")).toEqual(
+			expect.objectContaining({
+				route_class: "direct_owner",
+				ticket_status: "ESCALATED",
+				owner_ref: "lead:lead-a",
+				handoff_delivery_id: direct.deliveryId,
+			}),
+		);
+		expect(store.getMailboxLedgerByEventId("bridge-exit-2")).toEqual(
+			expect.objectContaining({
+				route_class: "duty_fallback",
+				ticket_status: "ESCALATED",
+				owner_ref: "lead:lead-a",
+				handoff_delivery_id: fallback.deliveryId,
+			}),
+		);
+		store.close();
+	});
+
+	it("reseeds a changed recipient only when the canonical mailbox identity is absent", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-absent-reseed-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const dutyProjects = [
+			{
+				...projects[0]!,
+				leads: [
+					...projects[0]!.leads,
+					{
+						agentId: "claude-infra-bot-lead",
+						summaryRole: "recipient",
+						chatChannel: "chat-alerts",
+						match: { labels: ["Infra"] },
+					},
+				],
+			},
+		] as ProjectEntry[];
+		store.upsertAlertMailboxLedger(
+			{
+				correlationKey: "project-a|lead-a|bridge_abnormal_exit|",
+				eventId: "bridge-exit-reseed",
+				deliveryId:
+					"infra_alert:claude-infra-bot-lead:bridge_abnormal_exit:bridge-exit-reseed",
+				toAgent: "claude-infra-bot-lead",
+				requestedOwner: "lead-a",
+				routeClass: "duty_reroute",
+				leadId: "lead-a",
+				projectName: "project-a",
+				eventType: "bridge_abnormal_exit",
+			},
+			{ allowReseed: false },
+		);
+		const runtime = new LeadInboxRuntime({
+			projects: dutyProjects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => false,
+		});
+		runtimes.push(runtime);
+
+		const result = runtime.enqueueInfraAlert("lead-a", {
+			leadId: "lead-a",
+			projectName: "project-a",
+			eventId: "bridge-exit-reseed",
+			eventType: "bridge_abnormal_exit",
+			title: "Bridge exited",
+			body: "retry after pre-enqueue crash",
+			severity: "severe",
+		});
+
+		expect(result.deliveryId).toBe(
+			"infra_alert:lead-a:bridge_abnormal_exit:bridge-exit-reseed",
+		);
+		expect(store.getMailboxLedgerByEventId("bridge-exit-reseed")).toEqual(
+			expect.objectContaining({
+				to_agent: "lead-a",
+				route_class: "duty_fallback",
+			}),
+		);
+		store.close();
+	});
+
+	it("falls back once to the requested Lead when the duty enqueue throws", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-duty-enqueue-fallback-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const dutyProjects = [
+			{
+				...projects[0]!,
+				leads: [
+					...projects[0]!.leads,
+					{
+						agentId: "claude-infra-bot-lead",
+						summaryRole: "recipient",
+						chatChannel: "chat-alerts",
+						match: { labels: ["Infra"] },
+					},
+				],
+			},
+		] as ProjectEntry[];
+		const runtime = new LeadInboxRuntime({
+			projects: dutyProjects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => true,
+		});
+		runtimes.push(runtime);
+		const realEnqueue = MailboxQueue.prototype.enqueue;
+		const enqueue = vi
+			.spyOn(MailboxQueue.prototype, "enqueue")
+			.mockImplementation(function (input) {
+				if (input.toAgent === "claude-infra-bot-lead") {
+					throw new Error("duty queue unavailable");
+				}
+				return realEnqueue.call(this, input);
+			});
+
+		try {
+			const result = runtime.enqueueInfraAlert("lead-a", {
+				leadId: "lead-a",
+				projectName: "project-a",
+				eventId: "bridge-exit-enqueue-fallback",
+				eventType: "bridge_abnormal_exit",
+				title: "Bridge exited",
+				body: "duty queue write failed",
+				severity: "severe",
+			});
+			expect(result.deliveryId).toBe(
+				"infra_alert:lead-a:bridge_abnormal_exit:bridge-exit-enqueue-fallback",
+			);
+			expect(
+				store.getMailboxLedgerByEventId(result.deliveryId.split(":").at(-1)!),
+			).toEqual(
+				expect.objectContaining({
+					to_agent: "lead-a",
+					route_class: "duty_fallback",
+					ticket_status: "ESCALATED",
+				}),
+			);
+			expect(enqueue).toHaveBeenCalledTimes(2);
+		} finally {
+			enqueue.mockRestore();
+			store.close();
+		}
+	});
+
+	it("attempts duty and requested owner exactly once when both enqueues throw", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-bounded-fallback-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const runtime = new LeadInboxRuntime({
+			projects: projectsWithDutyLead(),
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => true,
+		});
+		runtimes.push(runtime);
+		const recipients: string[] = [];
+		const enqueue = vi
+			.spyOn(MailboxQueue.prototype, "enqueue")
+			.mockImplementation((input) => {
+				recipients.push(input.toAgent);
+				throw new Error(`queue unavailable: ${input.toAgent}`);
+			});
+
+		try {
+			expect(() =>
+				runtime.enqueueInfraAlert("lead-a", {
+					leadId: "lead-a",
+					projectName: "project-a",
+					eventId: "bridge-exit-both-unavailable",
+					eventType: "bridge_abnormal_exit",
+					title: "Bridge exited",
+					body: "both queues unavailable",
+					severity: "severe",
+				}),
+			).toThrowError("queue unavailable: lead-a");
+			expect(recipients).toEqual(["claude-infra-bot-lead", "lead-a"]);
+			expect(
+				store.getMailboxLedgerByEventId("bridge-exit-both-unavailable"),
+			).toEqual(
+				expect.objectContaining({
+					to_agent: "lead-a",
+					route_class: "duty_fallback",
+					ticket_status: "ESCALATED",
+				}),
+			);
+		} finally {
+			enqueue.mockRestore();
+			store.close();
+		}
+	});
+
+	it("fails open to mailbox delivery when the ledger write fails and alerts once", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-ledger-fail-open-"));
+		const dbPath = join(root, "project-a.db");
+		const store = {
+			...runtimeStoreStub(),
+			upsertAlertMailboxLedger: vi.fn(() => {
+				throw new Error("ledger unavailable");
+			}),
+		};
+		const onLedgerWriteFailure = vi.fn(() => {
+			throw new Error("meta alert unavailable");
+		});
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: store as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => false,
+			onLedgerWriteFailure,
+		});
+		runtimes.push(runtime);
+
+		for (const suffix of ["one", "two"]) {
+			expect(
+				runtime.enqueueInfraAlert("lead-a", {
+					leadId: "lead-a",
+					projectName: "project-a",
+					eventId: `ledger-failure-${suffix}`,
+					eventType: "bridge_abnormal_exit",
+					title: "Bridge exited",
+					body: "ledger failed",
+					severity: "warning",
+				}),
+			).toMatchObject({ queued: true });
+		}
+		expect(runtime.ledgerWriteErrors).toBe(2);
+		expect(onLedgerWriteFailure).toHaveBeenCalledOnce();
+		const snapshot = new Database(dbPath, { readonly: true });
+		try {
+			expect(
+				snapshot
+					.prepare(
+						"SELECT COUNT(*) AS count FROM mailbox WHERE source_kind='infra_alert'",
+					)
+					.get(),
+			).toEqual({ count: 2 });
+		} finally {
+			snapshot.close();
+		}
+	});
+
+	it("records the disposition before attempting mailbox delivery", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-ledger-before-mailbox-"));
+		const dbPath = join(root, "project-a.db");
+		const order: string[] = [];
+		const baseStore = runtimeStoreStub();
+		const store = {
+			...baseStore,
+			upsertAlertMailboxLedger: vi.fn((input) => {
+				order.push("ledger");
+				return baseStore.upsertAlertMailboxLedger(input);
+			}),
+		};
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: store as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => false,
+		});
+		runtimes.push(runtime);
+		const realEnqueue = MailboxQueue.prototype.enqueue;
+		const enqueue = vi
+			.spyOn(MailboxQueue.prototype, "enqueue")
+			.mockImplementation(function (input) {
+				order.push("mailbox");
+				return realEnqueue.call(this, input);
+			});
+		try {
+			runtime.enqueueInfraAlert("lead-a", {
+				leadId: "lead-a",
+				projectName: "project-a",
+				eventId: "ordered-alert",
+				eventType: "bridge_abnormal_exit",
+				title: "Bridge exited",
+				body: "order proof",
+				severity: "warning",
+			});
+			expect(order).toEqual(["ledger", "mailbox"]);
+		} finally {
+			enqueue.mockRestore();
+		}
+	});
+
+	it("keeps the canonical live recipient when duty availability changes", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-canonical-recipient-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const dutyProjects = projectsWithDutyLead();
+		const alert: AlertPayload = {
+			leadId: "lead-a",
+			projectName: "project-a",
+			eventId: "bridge-exit-canonical-duty",
+			eventType: "bridge_abnormal_exit",
+			title: "Bridge exited",
+			body: "availability changed",
+			severity: "severe",
+		};
+		const dutyRuntime = new LeadInboxRuntime({
+			projects: dutyProjects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => true,
+		});
+		const first = dutyRuntime.enqueueInfraAlert("lead-a", alert);
+		dutyRuntime.close();
+		const ownerRuntime = new LeadInboxRuntime({
+			projects: dutyProjects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => false,
+		});
+		runtimes.push(ownerRuntime);
+
+		expect(ownerRuntime.enqueueInfraAlert("lead-a", alert)).toEqual(first);
+		const fallbackAlert: AlertPayload = {
+			...alert,
+			eventId: "bridge-exit-canonical-owner",
+		};
+		const fallback = ownerRuntime.enqueueInfraAlert("lead-a", fallbackAlert);
+		ownerRuntime.close();
+		runtimes.splice(runtimes.indexOf(ownerRuntime), 1);
+		const restoredDutyRuntime = new LeadInboxRuntime({
+			projects: dutyProjects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => true,
+		});
+		runtimes.push(restoredDutyRuntime);
+		expect(
+			restoredDutyRuntime.enqueueInfraAlert("lead-a", fallbackAlert),
+		).toEqual(fallback);
+		const snapshot = new Database(dbPath, { readonly: true });
+		try {
+			expect(
+				snapshot
+					.prepare(
+						"SELECT to_agent,COUNT(*) AS count FROM mailbox GROUP BY to_agent",
+					)
+					.all(),
+			).toEqual([
+				{ to_agent: "claude-infra-bot-lead", count: 1 },
+				{ to_agent: "lead-a", count: 1 },
+			]);
+		} finally {
+			snapshot.close();
+			store.close();
+		}
+	});
+
+	it("writes the canonical ledger before skipping an archived delivery", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-archived-canonical-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const deliveryId =
+			"infra_alert:claude-infra-bot-lead:bridge_abnormal_exit:archived-canonical";
+		store.upsertAlertMailboxLedger(
+			{
+				correlationKey: "project-a|lead-a|bridge_abnormal_exit|",
+				eventId: "archived-canonical",
+				deliveryId,
+				toAgent: "claude-infra-bot-lead",
+				requestedOwner: "lead-a",
+				routeClass: "duty_reroute",
+				leadId: "lead-a",
+				projectName: "project-a",
+				eventType: "bridge_abnormal_exit",
+			},
+			{ allowReseed: false },
+		);
+		const ledgerWrite = vi.spyOn(store, "upsertAlertMailboxLedger");
+		const runtime = new LeadInboxRuntime({
+			projects: projectsWithDutyLead(),
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			isDutyConfigured: () => false,
+		});
+		runtimes.push(runtime);
+		const inspect = vi
+			.spyOn(MailboxQueue.prototype, "inspectDeliveryState")
+			.mockReturnValue({
+				kind: "archived_terminal",
+				state: "ACKED",
+				settledAt: "2026-09-06T00:00:00.000Z",
+				deadReason: null,
+				lastError: null,
+				createdAt: "2026-09-05T00:00:00.000Z",
+				deliveredAt: "2026-09-05T00:01:00.000Z",
+				notifiedAt: null,
+			});
+		const enqueue = vi.spyOn(MailboxQueue.prototype, "enqueue");
+		try {
+			expect(
+				runtime.enqueueInfraAlert("lead-a", {
+					leadId: "lead-a",
+					projectName: "project-a",
+					eventId: "archived-canonical",
+					eventType: "bridge_abnormal_exit",
+					title: "Bridge exited",
+					body: "archived canonical replay",
+					severity: "warning",
+				}),
+			).toEqual({ queued: true, deliveryId });
+			expect(ledgerWrite).toHaveBeenCalledOnce();
+			expect(enqueue).not.toHaveBeenCalled();
+		} finally {
+			inspect.mockRestore();
+			enqueue.mockRestore();
+			store.close();
+		}
+	});
+
+	it.each(["torn", "throws"] as const)(
+		"fails closed when canonical settlement inspection %s",
+		async (failure) => {
+			const root = mkdtempSync(join(tmpdir(), `fly2386-${failure}-canonical-`));
+			const dbPath = join(root, "project-a.db");
+			const store = await StateStore.create(":memory:");
+			const deliveryId = `infra_alert:claude-infra-bot-lead:bridge_abnormal_exit:${failure}-canonical`;
+			store.upsertAlertMailboxLedger(
+				{
+					correlationKey: "project-a|lead-a|bridge_abnormal_exit|",
+					eventId: `${failure}-canonical`,
+					deliveryId,
+					toAgent: "claude-infra-bot-lead",
+					requestedOwner: "lead-a",
+					routeClass: "duty_reroute",
+					leadId: "lead-a",
+					projectName: "project-a",
+					eventType: "bridge_abnormal_exit",
+				},
+				{ allowReseed: false },
+			);
+			const runtime = new LeadInboxRuntime({
+				projects: projectsWithDutyLead(),
+				store,
+				registry: new RuntimeRegistry(),
+				commDbPathForProject: () => dbPath,
+				isDutyConfigured: () => false,
+			});
+			runtimes.push(runtime);
+			const inspect = vi.spyOn(MailboxQueue.prototype, "inspectDeliveryState");
+			if (failure === "torn") {
+				inspect.mockReturnValue({ kind: "torn_identity" });
+			} else {
+				inspect.mockImplementation(() => {
+					throw new Error("settlement unavailable");
+				});
+			}
+			const enqueue = vi.spyOn(MailboxQueue.prototype, "enqueue");
+			try {
+				expect(
+					runtime.enqueueInfraAlert("lead-a", {
+						leadId: "lead-a",
+						projectName: "project-a",
+						eventId: `${failure}-canonical`,
+						eventType: "bridge_abnormal_exit",
+						title: "Bridge exited",
+						body: "settlement failed",
+						severity: "warning",
+					}),
+				).toEqual({ queued: false, deliveryId, reason: "settlement_torn" });
+				expect(enqueue).not.toHaveBeenCalled();
+				expect(store.getMailboxLedgerByEventId(`${failure}-canonical`)).toEqual(
+					expect.objectContaining({
+						to_agent: "claude-infra-bot-lead",
+						route_class: "duty_reroute",
+					}),
+				);
+			} finally {
+				inspect.mockRestore();
+				enqueue.mockRestore();
+				store.close();
+			}
+		},
+	);
+
+	it("delivers an idempotent named handoff letter with the SQL-issued id", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-handoff-letter-"));
+		const dbPath = join(root, "project-a.db");
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+		});
+		runtimes.push(runtime);
+		const input = {
+			deliveryId: "alert_handoff:mailbox:key:event-1:lead-a:g1",
+			lane: "mailbox" as const,
+			correlationKey: "project-a|lead-b|bridge_abnormal_exit|",
+			eventId: "event-1",
+			kind: "bridge_abnormal_exit",
+			reason: "no_entry" as const,
+			note: "Inspect the Bridge exit.",
+			ref: "alert-ticket lookup --event-id event-1",
+		};
+
+		const first = runtime.enqueueAlertHandoff("lead-a", input);
+		const replay = runtime.enqueueAlertHandoff("lead-a", input);
+		const next = runtime.enqueueAlertHandoff("lead-a", {
+			...input,
+			deliveryId: "alert_handoff:mailbox:key:event-1:lead-a:g2",
+		});
+
+		expect(replay).toEqual(first);
+		expect(next.deliveryId).not.toBe(first.deliveryId);
+		const snapshot = new Database(dbPath, { readonly: true });
+		try {
+			expect(
+				snapshot
+					.prepare(
+						"SELECT delivery_id,to_agent,source_kind,type,collapse_key,content FROM mailbox WHERE delivery_id=?",
+					)
+					.get(input.deliveryId),
+			).toEqual({
+				delivery_id: input.deliveryId,
+				to_agent: "lead-a",
+				source_kind: "infra_alert",
+				type: "bridge_abnormal_exit",
+				collapse_key: input.deliveryId,
+				content: expect.stringContaining("[alert_handoff]"),
+			});
+			expect(
+				snapshot.prepare("SELECT COUNT(*) AS count FROM mailbox").get(),
+			).toEqual({ count: 2 });
+		} finally {
+			snapshot.close();
+		}
+	});
+
 	it("exposes the owning queue's typed settlement view for patrol recovery", () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1687-runtime-settlement-"));
 		const registry = new RuntimeRegistry();
@@ -753,6 +1469,50 @@ describe("LeadInboxRuntime", () => {
 		expect(
 			runtime.getLeadEventSettlement("project-a", receipt.deliveryId),
 		).toMatchObject({ kind: "live", state: "QUEUED" });
+	});
+
+	it("reads a handoff settlement from the target Lead's project", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2386-handoff-settlement-"));
+		const multiProject: ProjectEntry[] = [
+			...projects,
+			{
+				projectName: "project-b",
+				projectRoot: "/tmp/project-b",
+				leads: [
+					{
+						agentId: "lead-b",
+						summaryRole: "recipient",
+						chatChannel: "chat-b",
+						match: { labels: ["Machine"] },
+					},
+				],
+			},
+		];
+		const runtime = new LeadInboxRuntime({
+			projects: multiProject,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: (name) => join(root, `${name}.db`),
+		});
+		runtimes.push(runtime);
+		const deliveryId = "alert_handoff:mailbox:key:event-1:lead-b:g1";
+		runtime.enqueueAlertHandoff("lead-b", {
+			deliveryId,
+			lane: "mailbox",
+			correlationKey: "project-a|lead-a|bridge_abnormal_exit|",
+			eventId: "event-1",
+			kind: "bridge_abnormal_exit",
+			reason: "contact_book",
+			ref: "alert-ticket lookup --event-id event-1",
+		});
+
+		expect(runtime.readHandoffSettlement("lead-b", deliveryId)).toMatchObject({
+			kind: "live",
+			state: "QUEUED",
+		});
+		expect(runtime.readHandoffSettlement("missing-lead", deliveryId)).toEqual({
+			kind: "unknown_lead",
+		});
 	});
 	it("names the project and CommDB when project initialization fails", () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1649-runtime-open-"));

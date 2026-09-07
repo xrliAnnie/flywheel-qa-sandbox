@@ -302,7 +302,7 @@ export interface ProductionFlagScanEffectsOptions {
 	enqueueLeadInbox?: (
 		leadId: string,
 		payload: AlertPayload,
-	) => { queued: true; deliveryId: string };
+	) => { queued: boolean; deliveryId: string };
 	inspectLeadInbox?: (
 		projectName: string,
 		deliveryId: string,

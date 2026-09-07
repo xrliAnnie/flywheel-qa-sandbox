@@ -29,9 +29,21 @@ import {
 	type ProjectEntry,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
-import type { StateStore } from "../StateStore.js";
+import type {
+	AlertMailboxDeliveryProjection,
+	StateStore,
+} from "../StateStore.js";
+import { correlationKeyFor } from "./AlertChannelHub.js";
 import { isCurrentDesignReviewManifestInstruction } from "./design-review-manifest.js";
-import { formatInfraAlertMailboxContent } from "./infra-alert-mailbox.js";
+import {
+	type AlertHandoffContentInput,
+	formatAlertHandoffContent,
+	formatInfraAlertMailboxContent,
+} from "./infra-alert-mailbox.js";
+import {
+	ALERT_DUTY_LEAD_ID,
+	classifyInfraLetter,
+} from "./infra-event-router.js";
 import {
 	ClaudeLeadDeliveryAdapter,
 	CodexLeadDeliveryAdapter,
@@ -64,10 +76,20 @@ import type {
 } from "./runtime-registry.js";
 
 export interface InfraAlertQueueReceipt {
-	queued: true;
+	queued: boolean;
 	deliveryId: string;
 	seq?: number;
+	reason?: "settlement_torn";
 }
+
+export interface AlertHandoffInput
+	extends Omit<AlertHandoffContentInput, "toLeadId"> {
+	deliveryId: string;
+}
+
+export type AlertHandoffSettlement =
+	| MailboxSettlement
+	| { kind: "unknown_lead" };
 
 export interface LeadInboxRuntimeOptions {
 	projects: ProjectEntry[];
@@ -155,6 +177,10 @@ export interface LeadInboxRuntimeOptions {
 		error: string;
 		at: string;
 	}) => Promise<void>;
+	/** Whether the Bridge duty write token is loaded for this process. */
+	isDutyConfigured?: () => boolean;
+	/** One-shot best-effort escalation when the disposition ledger cannot write. */
+	onLedgerWriteFailure?: (error: unknown) => void | Promise<void>;
 	onDeadLetterAlert?: (input: {
 		eventId: string;
 		leadId: string;
@@ -186,6 +212,9 @@ export class LeadInboxRuntime {
 	private readonly lastArchiveAttemptAtMs = new Map<string, number>();
 	private retiredLeadReconcileRunning = false;
 	private cutoverPromise?: Promise<void>;
+	private ledgerWriteErrorCount = 0;
+	private ledgerWriteFailureNotified = false;
+	private alertReroutedCount = 0;
 
 	constructor(private readonly opts: LeadInboxRuntimeOptions) {
 		this.ownerEpoch = opts.ownerEpoch ?? randomUUID();
@@ -559,23 +588,188 @@ export class LeadInboxRuntime {
 
 	/** FLY-1764 Flow 2: one durable alert letter to the actionable owner. */
 	enqueueInfraAlert(
-		ownerLeadId: string,
+		requestedOwnerLeadId: string,
 		payload: AlertPayload,
 	): InfraAlertQueueReceipt {
-		const project = this.projectByLead.get(ownerLeadId);
-		if (!project) throw new Error(`unknown infra alert owner: ${ownerLeadId}`);
-		const queue = this.queues.get(project.projectName);
-		if (!queue)
-			throw new Error(`queue closed for project: ${project.projectName}`);
-		const deliveryId = [
+		const classification = classifyInfraLetter({
+			requestedOwner: requestedOwnerLeadId,
+			eventType: payload.eventType,
+			dutyAvailable:
+				Boolean(this.opts.isDutyConfigured?.()) &&
+				this.isLeadQueueOpen(ALERT_DUTY_LEAD_ID),
+		});
+		if (classification.routeClass === "duty_reroute") {
+			this.alertReroutedCount += 1;
+		}
+		const incomingDeliveryId = [
 			"infra_alert",
-			ownerLeadId,
+			classification.toAgent,
 			payload.eventType,
 			payload.eventId,
 		].join(":");
-		const settlement = queue.inspectDeliveryState(deliveryId);
-		if (settlement.kind === "archived_terminal") {
+		let delivery = {
+			eventId: payload.eventId,
+			deliveryId: incomingDeliveryId,
+			toAgent: classification.toAgent,
+			requestedOwner: requestedOwnerLeadId,
+			routeClass: classification.routeClass,
+		};
+		let allowReseed = false;
+		let canonicalArchived = false;
+		const canonical = this.opts.store.getMailboxLedgerByEventId(
+			payload.eventId,
+		);
+		if (
+			canonical !== undefined &&
+			(canonical.delivery_id !== incomingDeliveryId ||
+				canonical.to_agent !== classification.toAgent ||
+				canonical.requested_owner !== requestedOwnerLeadId ||
+				canonical.route_class !== classification.routeClass)
+		) {
+			try {
+				const canonicalProject = this.projectByLead.get(canonical.to_agent);
+				const canonicalQueue = canonicalProject
+					? this.queues.get(canonicalProject.projectName)
+					: undefined;
+				if (!canonicalQueue) throw new Error("canonical queue is unavailable");
+				const canonicalSettlement = canonicalQueue.inspectDeliveryState(
+					canonical.delivery_id,
+				);
+				switch (canonicalSettlement.kind) {
+					case "absent_identity":
+						allowReseed = true;
+						break;
+					case "archived_nonterminal":
+					case "archived_terminal":
+						canonicalArchived = true;
+						break;
+					case "torn_identity":
+						console.warn(
+							`[alert-ledger] torn canonical settlement event=${payload.eventId}`,
+						);
+						return {
+							queued: false,
+							deliveryId: canonical.delivery_id,
+							reason: "settlement_torn",
+						};
+					case "live":
+						break;
+				}
+			} catch (error) {
+				console.warn(
+					`[alert-ledger] canonical settlement failed event=${payload.eventId}: ${(error as Error).message}`,
+				);
+				return {
+					queued: false,
+					deliveryId: canonical.delivery_id,
+					reason: "settlement_torn",
+				};
+			}
+		}
+		try {
+			delivery = this.opts.store.upsertAlertMailboxLedger(
+				{
+					correlationKey: correlationKeyFor(payload),
+					eventId: payload.eventId,
+					deliveryId: incomingDeliveryId,
+					toAgent: classification.toAgent,
+					requestedOwner: requestedOwnerLeadId,
+					routeClass: classification.routeClass,
+					leadId: payload.leadId,
+					projectName: payload.projectName,
+					eventType: payload.eventType,
+					sessionKey: payload.sessionKey ?? null,
+				},
+				{ allowReseed },
+			).deliveryProjection;
+		} catch (error) {
+			this.ledgerWriteErrorCount += 1;
+			console.warn(
+				`[alert-ledger] failed event=${payload.eventId}: ${(error as Error).message}`,
+			);
+			if (!this.ledgerWriteFailureNotified) {
+				this.ledgerWriteFailureNotified = true;
+				try {
+					void Promise.resolve(this.opts.onLedgerWriteFailure?.(error)).catch(
+						() => {},
+					);
+				} catch {
+					// The alert letter remains the primary fail-open path.
+				}
+			}
+		}
+		if (canonicalArchived) {
+			return { queued: true, deliveryId: delivery.deliveryId };
+		}
+
+		try {
+			return this.enqueueInfraAlertDelivery(delivery, payload);
+		} catch (error) {
+			if (delivery.routeClass !== "duty_reroute") throw error;
+			const dutyProject = this.projectByLead.get(delivery.toAgent);
+			const dutyQueue = dutyProject
+				? this.queues.get(dutyProject.projectName)
+				: undefined;
+			if (
+				!dutyQueue ||
+				dutyQueue.inspectDeliveryState(delivery.deliveryId).kind !==
+					"absent_identity"
+			) {
+				throw error;
+			}
+			const fallbackDeliveryId = [
+				"infra_alert",
+				requestedOwnerLeadId,
+				payload.eventType,
+				payload.eventId,
+			].join(":");
+			const fallback = this.opts.store.upsertAlertMailboxLedger(
+				{
+					correlationKey: correlationKeyFor(payload),
+					eventId: payload.eventId,
+					deliveryId: fallbackDeliveryId,
+					toAgent: requestedOwnerLeadId,
+					requestedOwner: requestedOwnerLeadId,
+					routeClass: "duty_fallback",
+					leadId: payload.leadId,
+					projectName: payload.projectName,
+					eventType: payload.eventType,
+					sessionKey: payload.sessionKey ?? null,
+				},
+				{ allowReseed: true },
+			).deliveryProjection;
+			return this.enqueueInfraAlertDelivery(fallback, payload);
+		}
+	}
+
+	private enqueueInfraAlertDelivery(
+		delivery: AlertMailboxDeliveryProjection,
+		payload: AlertPayload,
+	): InfraAlertQueueReceipt {
+		const project = this.projectByLead.get(delivery.toAgent);
+		if (!project)
+			throw new Error(`unknown infra alert owner: ${delivery.toAgent}`);
+		const queue = this.queues.get(project.projectName);
+		if (!queue)
+			throw new Error(`queue closed for project: ${project.projectName}`);
+		const deliveryId = delivery.deliveryId;
+		let settlement: MailboxSettlement;
+		try {
+			settlement = queue.inspectDeliveryState(deliveryId);
+		} catch (error) {
+			console.warn(
+				`[alert-ledger] settlement read failed event=${payload.eventId}: ${(error as Error).message}`,
+			);
+			return { queued: false, deliveryId, reason: "settlement_torn" };
+		}
+		if (
+			settlement.kind === "archived_nonterminal" ||
+			settlement.kind === "archived_terminal"
+		) {
 			return { queued: true, deliveryId };
+		}
+		if (settlement.kind === "torn_identity") {
+			return { queued: false, deliveryId, reason: "settlement_torn" };
 		}
 		// Mailbox identity compares the whole producer projection. Reuse the first
 		// row's timestamp on an in-process retry so the same alert is idempotent.
@@ -584,7 +778,7 @@ export class LeadInboxRuntime {
 			id: deliveryId,
 			deliveryId,
 			fromAgent: "bridge",
-			toAgent: ownerLeadId,
+			toAgent: delivery.toAgent,
 			recipientKind: "lead",
 			sourceKind: "infra_alert",
 			sourceRef: payload.eventId,
@@ -601,12 +795,82 @@ export class LeadInboxRuntime {
 			senderRef: encodeSenderRef(),
 			collapseKey: `infra_alert:${payload.eventType}:${payload.episodeId ?? payload.eventId}`,
 		});
-		this.nudge(ownerLeadId, project.projectName);
+		this.nudge(delivery.toAgent, project.projectName);
 		return {
 			queued: true,
 			deliveryId,
 			...(result.outcome === "archived" ? {} : { seq: result.row.seq }),
 		};
+	}
+
+	enqueueAlertHandoff(
+		toLeadId: string,
+		input: AlertHandoffInput,
+	): InfraAlertQueueReceipt {
+		const project = this.projectByLead.get(toLeadId);
+		if (!project) throw new Error(`unknown alert handoff owner: ${toLeadId}`);
+		const queue = this.queues.get(project.projectName);
+		if (!queue)
+			throw new Error(`queue closed for project: ${project.projectName}`);
+		const settlement = queue.inspectDeliveryState(input.deliveryId);
+		if (
+			settlement.kind === "archived_nonterminal" ||
+			settlement.kind === "archived_terminal"
+		) {
+			return { queued: true, deliveryId: input.deliveryId };
+		}
+		if (settlement.kind === "torn_identity") {
+			return {
+				queued: false,
+				deliveryId: input.deliveryId,
+				reason: "settlement_torn",
+			};
+		}
+		const existing = queue.getById(input.deliveryId);
+		const result = queue.enqueue({
+			id: input.deliveryId,
+			deliveryId: input.deliveryId,
+			fromAgent: "bridge",
+			toAgent: toLeadId,
+			recipientKind: "lead",
+			sourceKind: "infra_alert",
+			sourceRef: input.eventId,
+			type: input.kind,
+			msgClass: "model",
+			priority: 2,
+			content: formatAlertHandoffContent({ ...input, toLeadId }),
+			createdAt: existing?.created_at,
+			senderRef: encodeSenderRef(),
+			collapseKey: input.deliveryId,
+		});
+		this.nudge(toLeadId, project.projectName);
+		return {
+			queued: true,
+			deliveryId: input.deliveryId,
+			...(result.outcome === "archived" ? {} : { seq: result.row.seq }),
+		};
+	}
+
+	readHandoffSettlement(
+		toLeadId: string,
+		deliveryId: string,
+	): AlertHandoffSettlement {
+		const project = this.projectByLead.get(toLeadId);
+		if (!project) return { kind: "unknown_lead" };
+		return this.getLeadEventSettlement(project.projectName, deliveryId);
+	}
+
+	isLeadQueueOpen(leadId: string): boolean {
+		const project = this.projectByLead.get(leadId);
+		return project !== undefined && this.queues.has(project.projectName);
+	}
+
+	get ledgerWriteErrors(): number {
+		return this.ledgerWriteErrorCount;
+	}
+
+	get reroutedCount(): number {
+		return this.alertReroutedCount;
 	}
 
 	getLeadEventSettlement(
