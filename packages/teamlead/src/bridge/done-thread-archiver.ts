@@ -36,6 +36,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type {
@@ -65,8 +66,15 @@ import {
 export interface ArchiveThreadDeps {
 	/** Caller-proven terminal issue state overrides the human-reopen veto. */
 	authority?: ArchiveAuthority;
+	/** Whether inactivity gates the archive. Immediate still keeps frontier fences. */
+	timing?: "quiet" | "immediate";
 	/** Minimum inactivity before an automatic archive. */
 	quietWindowMs?: number;
+	/** Optional deterministic success receipt supplied by a closeout caller. */
+	successReceipt?: {
+		eventId: string;
+		payload: Record<string, unknown>;
+	};
 	/** Test seam — defaults to the hardened `archiveChatThread`. */
 	archiveFn?: typeof archiveChatThread;
 	/** Test seam — defaults to `removeUserFromChatThread`. */
@@ -302,6 +310,7 @@ export async function archiveThreadAndRecord(
 	const unarchiveFn = deps.unarchiveFn ?? unarchiveChatThread;
 	const displayDeps = { fetchImpl: deps.fetchImpl };
 	const authority = deps.authority ?? "none";
+	const timing = deps.timing ?? "quiet";
 	const quietWindowMs = deps.quietWindowMs ?? ISSUE_THREAD_QUIET_WINDOW_MS;
 	const nowMs = deps.nowMs ?? Date.now;
 	const sleepImpl =
@@ -387,6 +396,10 @@ export async function archiveThreadAndRecord(
 		reason: "reopen_check_failed",
 		...(error ? { error } : {}),
 	});
+	const deferQuietOrRetry = (): ArchiveChatThreadResult =>
+		timing === "immediate"
+			? audit(reopenFailure("archive verification did not settle"))
+			: deferredQuietWindow();
 
 	const resultForCause = (
 		cause: ThreadArchiveCompensationCause,
@@ -505,13 +518,15 @@ export async function archiveThreadAndRecord(
 				archived: true,
 			};
 			store.commitThreadArchive(input.threadId, {
-				event_id: `chat-thread-rearchived-fly1709-${randomUUID()}`,
+				event_id:
+					deps.successReceipt?.eventId ??
+					`chat-thread-rearchived-fly1709-${randomUUID()}`,
 				execution_id: input.executionId,
 				issue_id: input.issueId,
 				project_name: input.projectName,
 				event_type: "chat_thread_archived",
 				source: auditSource,
-				payload: {
+				payload: deps.successReceipt?.payload ?? {
 					threadId: input.threadId,
 					attempts: result.attempts,
 					status: result.status ?? null,
@@ -525,7 +540,7 @@ export async function archiveThreadAndRecord(
 		if (metadata.ok && metadata.archived === false) {
 			store.clearChatThreadCompensationPending(input.threadId);
 			if (after.ok && after.messageId === frontier) {
-				if (authority === "terminal") return deferredQuietWindow();
+				if (authority === "terminal") return deferQuietOrRetry();
 				return audit(
 					{ archived: false, attempts: 0, reason: "founder_reopened" },
 					{ skip: true },
@@ -539,7 +554,7 @@ export async function archiveThreadAndRecord(
 			);
 			if (incremental.kind !== "human") return audit(reopenFailure());
 			return authority === "terminal"
-				? deferredQuietWindow()
+				? deferQuietOrRetry()
 				: audit(
 						{ archived: false, attempts: 0, reason: "founder_reopened" },
 						{ skip: true },
@@ -562,7 +577,7 @@ export async function archiveThreadAndRecord(
 			authority === "terminal" &&
 			!store.getChatThreadCompensationPending(input.threadId)
 		) {
-			return deferredQuietWindow();
+			return deferQuietOrRetry();
 		}
 		return cause === "human"
 			? audit(compensated, { skip: true })
@@ -572,6 +587,32 @@ export async function archiveThreadAndRecord(
 	const run = async (): Promise<ArchiveChatThreadResult> => {
 		if (store.getChatThreadCompensationPending(input.threadId)) {
 			return audit(await resumeCompensation());
+		}
+		if (deps.successReceipt) {
+			const receipt = store.lookupEventPayloadById(deps.successReceipt.eventId);
+			if (receipt.status === "valid") {
+				if (isDeepStrictEqual(receipt.payload, deps.successReceipt.payload)) {
+					return {
+						archived: true,
+						attempts: 0,
+						reason: "already_archived",
+					};
+				}
+				return audit({
+					archived: false,
+					attempts: 0,
+					reason: "error",
+					error: "archive receipt payload mismatch",
+				});
+			}
+			if (receipt.status === "invalid") {
+				return audit({
+					archived: false,
+					attempts: 0,
+					reason: "error",
+					error: "archive receipt payload invalid",
+				});
+			}
 		}
 
 		const archivedAtRaw = store.getChatThreadArchivedAt(input.threadId);
@@ -592,6 +633,38 @@ export async function archiveThreadAndRecord(
 				return audit(reopenFailure(probe.error));
 			}
 			if (probe.archived === true) {
+				if (deps.successReceipt) {
+					const inserted = store.insertEvent({
+						event_id: deps.successReceipt.eventId,
+						execution_id: input.executionId,
+						issue_id: input.issueId,
+						project_name: input.projectName,
+						event_type: "chat_thread_archived",
+						source: auditSource,
+						payload: deps.successReceipt.payload,
+					});
+					if (!inserted) {
+						const replay = store.lookupEventPayloadById(
+							deps.successReceipt.eventId,
+						);
+						if (
+							replay.status !== "valid" ||
+							!isDeepStrictEqual(replay.payload, deps.successReceipt.payload)
+						) {
+							return audit({
+								archived: false,
+								attempts: 0,
+								reason: "error",
+								error: "archive receipt payload mismatch",
+							});
+						}
+					}
+					return {
+						archived: true,
+						attempts: 0,
+						reason: "already_archived",
+					};
+				}
 				return audit(
 					{ archived: true, attempts: 0, reason: "already_archived" },
 					{ skip: true },
@@ -630,11 +703,13 @@ export async function archiveThreadAndRecord(
 						reopenFailure(frontier.ok ? "no message clock" : frontier.error),
 					);
 				}
-				const quiet = isQuiet(frontier.messageId, probe.archiveTimestamp);
-				if (quiet === null) {
-					return audit(reopenFailure("invalid message clock"));
+				if (timing === "quiet") {
+					const quiet = isQuiet(frontier.messageId, probe.archiveTimestamp);
+					if (quiet === null) {
+						return audit(reopenFailure("invalid message clock"));
+					}
+					if (!quiet) return deferredQuietWindow();
 				}
-				if (!quiet) return deferredQuietWindow();
 				return reArchiveWithQuietWindow(
 					archivedAtRaw,
 					afterMs,
@@ -673,7 +748,7 @@ export async function archiveThreadAndRecord(
 
 		const archiveFn = deps.archiveFn ?? archiveChatThread;
 		const removeUserFn = deps.removeUserFn ?? removeUserFromChatThread;
-		if (quietWindowMs > 0) {
+		if (quietWindowMs > 0 || timing === "immediate") {
 			const probe = await retryDiscordRead(() =>
 				probeFn(input.threadId, botToken, displayDeps),
 			);
@@ -693,13 +768,15 @@ export async function archiveThreadAndRecord(
 					reason: "already_archived",
 				};
 				store.commitThreadArchive(input.threadId, {
-					event_id: `chat-thread-archive-skip-fly1709-${randomUUID()}`,
+					event_id:
+						deps.successReceipt?.eventId ??
+						`chat-thread-archive-skip-fly1709-${randomUUID()}`,
 					execution_id: input.executionId,
 					issue_id: input.issueId,
 					project_name: input.projectName,
 					event_type: "chat_thread_archived",
 					source: auditSource,
-					payload: {
+					payload: deps.successReceipt?.payload ?? {
 						threadId: input.threadId,
 						attempts: 0,
 						status: null,
@@ -723,9 +800,12 @@ export async function archiveThreadAndRecord(
 					reopenFailure(frontier.ok ? "no message clock" : frontier.error),
 				);
 			}
-			const quiet = isQuiet(frontier.messageId, probe.archiveTimestamp);
-			if (quiet === null) return audit(reopenFailure("invalid message clock"));
-			if (!quiet) return deferredQuietWindow();
+			if (timing === "quiet") {
+				const quiet = isQuiet(frontier.messageId, probe.archiveTimestamp);
+				if (quiet === null)
+					return audit(reopenFailure("invalid message clock"));
+				if (!quiet) return deferredQuietWindow();
+			}
 
 			if (deps.discordOwnerUserId) {
 				await removeUserFn(input.threadId, deps.discordOwnerUserId, botToken, {
@@ -737,13 +817,15 @@ export async function archiveThreadAndRecord(
 				result: ArchiveChatThreadResult,
 			): ArchiveChatThreadResult => {
 				store.commitThreadArchive(input.threadId, {
-					event_id: `chat-thread-archived-fly2028-${input.threadId}-${archiveEpoch}`,
+					event_id:
+						deps.successReceipt?.eventId ??
+						`chat-thread-archived-fly2028-${input.threadId}-${archiveEpoch}`,
 					execution_id: input.executionId,
 					issue_id: input.issueId,
 					project_name: input.projectName,
 					event_type: "chat_thread_archived",
 					source: auditSource,
-					payload: {
+					payload: deps.successReceipt?.payload ?? {
 						threadId: input.threadId,
 						attempts: result.attempts,
 						status: result.status ?? null,
@@ -808,7 +890,7 @@ export async function archiveThreadAndRecord(
 								await compensateKnownArchived("verify_failed");
 							return store.getChatThreadCompensationPending(input.threadId)
 								? audit(compensated)
-								: deferredQuietWindow();
+								: deferQuietOrRetry();
 						}
 					}
 					return audit(await compensateKnownArchived("verify_failed"));
@@ -829,7 +911,7 @@ export async function archiveThreadAndRecord(
 			}
 			if (verification.ok && verification.archived === false) {
 				store.clearChatThreadCompensationPending(input.threadId);
-				return deferredQuietWindow();
+				return deferQuietOrRetry();
 			}
 			if (
 				verification.ok &&
@@ -840,7 +922,7 @@ export async function archiveThreadAndRecord(
 				const compensated = await compensateKnownArchived("verify_failed");
 				return store.getChatThreadCompensationPending(input.threadId)
 					? audit(compensated)
-					: deferredQuietWindow();
+					: deferQuietOrRetry();
 			}
 			return audit(
 				reopenFailure(
@@ -911,6 +993,22 @@ export async function archiveThreadAndRecord(
 		// Codex code R2 LOW: a thrown null/undefined must not re-throw here
 		// (accessing .message on null would break never-throws).
 		const message = err instanceof Error ? err.message : String(err);
+		if (
+			deps.successReceipt &&
+			message === `session_event_replay:${deps.successReceipt.eventId}`
+		) {
+			const replay = store.lookupEventPayloadById(deps.successReceipt.eventId);
+			if (
+				replay.status === "valid" &&
+				isDeepStrictEqual(replay.payload, deps.successReceipt.payload)
+			) {
+				return {
+					archived: true,
+					attempts: 0,
+					reason: "already_archived",
+				};
+			}
+		}
 		console.warn(
 			`[done-thread-archiver] archive of ${input.threadId} (${input.issueId}) threw: ${message}`,
 		);

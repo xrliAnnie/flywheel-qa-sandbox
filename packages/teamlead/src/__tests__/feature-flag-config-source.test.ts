@@ -2,6 +2,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	utimesSync,
 	writeFileSync,
@@ -105,7 +106,7 @@ describe("loadFeatureFlagProjectConfigs", () => {
 
 		const map = await loadFeatureFlagProjectConfigs([project], () => config);
 
-		expect(map.get("registry-project")?.config).toBeUndefined();
+		expect(map.get("registry-project")?.config).toBeDefined();
 		expect(map.get("registry-project")?.error).toMatch(/ENOENT|no such file/i);
 		expect(map.get("registry-project")?.revision).toMatch(/^file:/);
 	});
@@ -142,6 +143,182 @@ describe("loadFeatureFlagProjectConfigs", () => {
 			department: "engineering",
 			departments: ["engineering"],
 		});
+	});
+
+	it("resolves legacy ic-roster refs once and distinguishes them from an absent roster", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2365-legacy-roster-"));
+		try {
+			mkdirSync(join(root, ".flywheel", "agents", "life"), {
+				recursive: true,
+			});
+			mkdirSync(join(root, ".flywheel", "menus"), { recursive: true });
+			const handbook = join(
+				root,
+				".flywheel",
+				"agents",
+				"life",
+				"life-executor.md",
+			);
+			writeFileSync(handbook, "# Life\n");
+			writeFileSync(
+				join(root, ".flywheel", "config.yaml"),
+				[
+					"project: personal-assistant",
+					"linear: { team_id: FLY }",
+					"runners:",
+					"  default: claude",
+					"  available: { claude: { type: claude } }",
+					"teams: [{ name: default }]",
+					"decision_layer:",
+					"  autonomy_level: advisor",
+					"  escalation_channel: discord",
+					"agents:",
+					"  life:",
+					"    agent_file: .flywheel/agents/life/life-executor.md",
+					"    match: { labels: [life] }",
+					"",
+				].join("\n"),
+			);
+			writeFileSync(
+				join(root, ".flywheel", "menus", "ic-roster.yaml"),
+				"general: .flywheel/agents/life/life-executor.md\n",
+			);
+			const entry = {
+				projectName: "personal-assistant",
+				projectRoot: root,
+				leads: [],
+			} as unknown as ProjectEntry;
+
+			const loaded = (await loadFeatureFlagProjectConfigs([entry])).get(
+				"personal-assistant",
+			);
+			expect(loaded).toMatchObject({
+				handbookRegistryActive: false,
+				handbookRosterAvailable: true,
+				handbookRosterStatus: "ready",
+				handbookResolvedFiles: { general: realpathSync(handbook) },
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("uses the runtime registry predicate even when config agents still use agent_file", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2365-overlay-active-"));
+		try {
+			mkdirSync(join(root, ".flywheel", "agents", "nodes"), {
+				recursive: true,
+			});
+			writeFileSync(
+				join(root, ".flywheel", "agents", "nodes", "general.md"),
+				"# General\n",
+			);
+			writeFileSync(
+				join(root, ".flywheel", "agents", "registry.yaml"),
+				"nodes:\n  general:\n    file: nodes/general.md\n",
+			);
+			writeFileSync(
+				join(root, ".flywheel", "config.yaml"),
+				[
+					"project: managed",
+					"linear: { team_id: FLY }",
+					"runners:",
+					"  default: claude",
+					"  available: { claude: { type: claude } }",
+					"teams: [{ name: default }]",
+					"decision_layer:",
+					"  autonomy_level: advisor",
+					"  escalation_channel: discord",
+					"agents:",
+					"  legacy:",
+					"    agent_file: .flywheel/agents/nodes/general.md",
+					"    match: { labels: [legacy] }",
+					"",
+				].join("\n"),
+			);
+			const entry = {
+				projectName: "managed",
+				projectRoot: root,
+				leads: [],
+			} as unknown as ProjectEntry;
+
+			const loaded = (await loadFeatureFlagProjectConfigs([entry])).get(
+				"managed",
+			);
+			expect(loaded?.handbookRegistryActive).toBe(true);
+			expect(loaded?.resolvedRegistry?.nodes.general).toMatchObject({
+				name: "general",
+				label: "通用执行",
+			});
+			expect(loaded?.handbookRosterStatus).toBe("not_applicable");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("contains an unreadable overlay to its project and preserves the loaded config", async () => {
+		const brokenRoot = mkdtempSync(join(tmpdir(), "fly2365-overlay-broken-"));
+		const healthyRoot = mkdtempSync(join(tmpdir(), "fly2365-overlay-healthy-"));
+		try {
+			for (const [root, name] of [
+				[brokenRoot, "broken"],
+				[healthyRoot, "healthy"],
+			] as const) {
+				mkdirSync(join(root, ".flywheel", "agents"), { recursive: true });
+				writeFileSync(join(root, ".flywheel", "agents", "general.md"), "# G\n");
+				writeFileSync(
+					join(root, ".flywheel", "config.yaml"),
+					[
+						`project: ${name}`,
+						"linear: { team_id: FLY }",
+						"runners:",
+						"  default: claude",
+						"  available: { claude: { type: claude } }",
+						"teams: [{ name: default }]",
+						"decision_layer:",
+						"  autonomy_level: advisor",
+						"  escalation_channel: discord",
+						"agents:",
+						"  general:",
+						"    agent_file: .flywheel/agents/general.md",
+						"    match: { labels: [general] }",
+						"",
+					].join("\n"),
+				);
+			}
+			writeFileSync(
+				join(brokenRoot, ".flywheel", "agents", "registry.yaml"),
+				"nodes: [broken",
+			);
+			const projects = [
+				{
+					projectName: "broken",
+					projectRoot: brokenRoot,
+					leads: [],
+				},
+				{
+					projectName: "healthy",
+					projectRoot: healthyRoot,
+					leads: [],
+				},
+			] as unknown as ProjectEntry[];
+
+			const loaded = await loadFeatureFlagProjectConfigs(projects);
+			expect(loaded.get("broken")).toMatchObject({
+				config: expect.any(Object),
+				handbookRegistryActive: true,
+				handbookRosterStatus: "not_applicable",
+				handbookResolutionError: expect.any(String),
+			});
+			expect(loaded.get("healthy")).toMatchObject({
+				config: expect.any(Object),
+				handbookRegistryActive: false,
+				handbookRosterStatus: "absent",
+			});
+		} finally {
+			rmSync(brokenRoot, { recursive: true, force: true });
+			rmSync(healthyRoot, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -257,6 +434,98 @@ describe("ProjectConfigCache", () => {
 			expect(m1.has("ok")).toBe(true);
 			const m2 = await cache.get([]);
 			expect(m2.has("ok")).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("invalidates when an ic-roster appears without a config write", async () => {
+		const { root, configPath, entry } = tempProject();
+		try {
+			writeFileSync(configPath, OK);
+			const cache = new ProjectConfigCache();
+			const first = await cache.get([entry]);
+			expect(first.get("ok")?.handbookRosterStatus).toBe("absent");
+
+			mkdirSync(join(root, ".flywheel", "menus"), { recursive: true });
+			mkdirSync(join(root, ".flywheel", "agents"), { recursive: true });
+			writeFileSync(join(root, ".flywheel", "agents", "general.md"), "# G\n");
+			writeFileSync(
+				join(root, ".flywheel", "menus", "ic-roster.yaml"),
+				"general: .flywheel/agents/general.md\n",
+			);
+
+			const second = await cache.get([entry]);
+			expect(second.get("ok")?.handbookRosterStatus).toBe("ready");
+			expect(second.get("ok")?.handbookResolvedFiles).toHaveProperty("general");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("invalidates when a project registry overlay appears without a config write", async () => {
+		const { root, configPath, entry } = tempProject();
+		try {
+			writeFileSync(configPath, OK);
+			const cache = new ProjectConfigCache();
+			const first = await cache.get([entry]);
+			expect(first.get("ok")?.handbookRegistryActive).toBe(false);
+
+			mkdirSync(join(root, ".flywheel", "agents", "nodes"), {
+				recursive: true,
+			});
+			writeFileSync(
+				join(root, ".flywheel", "agents", "nodes", "general.md"),
+				"# G\n",
+			);
+			writeFileSync(
+				join(root, ".flywheel", "agents", "registry.yaml"),
+				"nodes:\n  general:\n    file: nodes/general.md\n",
+			);
+
+			const second = await cache.get([entry]);
+			expect(second.get("ok")?.handbookRegistryActive).toBe(true);
+			expect(second.get("ok")?.resolvedRegistry?.nodes.general).toBeDefined();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("invalidates on bundled registry stamp changes", async () => {
+		const { root, configPath, entry } = tempProject();
+		try {
+			writeFileSync(configPath, OK);
+			const registryPath = join(root, "bundled-registry.yaml");
+			writeFileSync(
+				registryPath,
+				readFileSync(
+					new URL(
+						"../../../../.flywheel/agents/registry.yaml",
+						import.meta.url,
+					),
+					"utf8",
+				),
+			);
+			let reads = 0;
+			const cache = new ProjectConfigCache(
+				(path) => {
+					reads++;
+					return readFileSync(path, "utf8");
+				},
+				undefined,
+				registryPath,
+			);
+			await cache.get([entry]);
+			expect(reads).toBe(1);
+			await cache.get([entry]);
+			expect(reads).toBe(1);
+
+			writeFileSync(
+				registryPath,
+				`${readFileSync(registryPath, "utf8")}\n# stamp change\n`,
+			);
+			await cache.get([entry]);
+			expect(reads).toBe(2);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

@@ -24,6 +24,10 @@ const BUNDLED_REGISTRY_PATH = fileURLToPath(
 	new URL("../../../.flywheel/agents/registry.yaml", import.meta.url),
 );
 
+export function bundledWorkflowRegistryPath(): string {
+	return BUNDLED_REGISTRY_PATH;
+}
+
 export interface WorkflowMenuModel {
 	model: string;
 	allowedEfforts: WorkflowEffort[];
@@ -262,7 +266,7 @@ export function compileWorkflowMenuSeed(
 		terminalNode = `${terminalNode}_`;
 	}
 	const manifest = validateWorkflowManifest({
-		schema_version: 2,
+		schema_version: 3,
 		nodes: [
 			...menu.nodes.map((node) => {
 				const type = node.type;
@@ -275,6 +279,7 @@ export function compileWorkflowMenuSeed(
 					id: node.id,
 					label: node.label,
 					type,
+					handbook_ref: node.id,
 					...(menu.founderReview === true ? { founder_review: true } : {}),
 					vendor: resolved.vendor,
 					model: resolved.model,
@@ -470,14 +475,16 @@ function projectNameFromConfig(projectRoot: string): string {
 	return nonempty(raw.project, "project config.project");
 }
 
-function projectUsesAgentRegistry(projectRoot: string): boolean {
+export function projectUsesAgentRegistry(projectRoot: string): boolean {
 	return (
 		projectNameFromConfig(projectRoot) === "flywheel" ||
 		existsSync(join(projectRoot, ".flywheel", "agents", "registry.yaml"))
 	);
 }
 
-function loadLegacyProjectRoster(projectRoot: string): Record<string, string> {
+export function loadLegacyProjectRoster(
+	projectRoot: string,
+): Record<string, string> {
 	const rosterPath = join(projectRoot, ".flywheel", "menus", "ic-roster.yaml");
 	const rosterRaw = asRecord(
 		parse(readFileSync(rosterPath, "utf8")),

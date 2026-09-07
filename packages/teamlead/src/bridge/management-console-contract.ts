@@ -176,6 +176,7 @@ export interface ManagementRoleView {
 	name: string;
 	department?: string;
 	agentFile: string;
+	handbookRefs: string[];
 	sourceLink: string | null;
 	error?: string;
 }
@@ -197,6 +198,7 @@ export interface ManagementDagGraphNode {
 	name: string;
 	type: WorkflowNodeType;
 	execution: "agent" | "gate" | "engine";
+	handbookRef: string | null;
 }
 
 export interface ManagementDagGraphEdge {
@@ -255,6 +257,11 @@ export interface ManagementProjectView {
 	sourceRevision: string;
 	leads: ManagementLeadView[];
 	roles: ManagementRoleView[];
+	handbookRegistryActive: boolean;
+	handbookRosterAvailable: boolean;
+	handbookRosterStatus: "not_applicable" | "ready" | "absent" | "unreadable";
+	handbookResolvedRefs: string[];
+	handbookResolutionError?: string;
 	dags: ManagementDagView[];
 	crons: ManagementCronView[];
 	runnerDefault?: ManagementRunnerDefaultView;

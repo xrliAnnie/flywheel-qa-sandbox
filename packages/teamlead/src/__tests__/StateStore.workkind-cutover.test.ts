@@ -329,4 +329,27 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 		});
 		store.close();
 	});
+
+	it("counts an active schema-3 run as generalized release state", async () => {
+		const store = await seededStore();
+		const raw = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		raw.run(
+			`INSERT INTO workflow_run
+			 (run_id, issue_id, project_name, template_id, template_revision,
+			  status, claims_read_enrolled, engine_owned)
+			 VALUES ('active-v3', 'issue-active-v3', 'flywheel',
+			         'tpl_generic_menu', 1, 'active', 1, 1)`,
+		);
+
+		expect(store.getGeneralizedWorkflowReleaseState()).toMatchObject({
+			activeSchema2Runs: 1,
+			releasable: false,
+			activeRunIds: ["active-v3"],
+		});
+		store.close();
+	});
 });

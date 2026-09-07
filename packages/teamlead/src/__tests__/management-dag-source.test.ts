@@ -150,30 +150,35 @@ describe("management DAG source", () => {
 					name: "设计(工程)",
 					type: "design",
 					execution: "agent",
+					handbookRef: "eng_design",
 				},
 				{
 					id: "implement",
 					name: "实现",
 					type: "implement",
 					execution: "agent",
+					handbookRef: "implement",
 				},
 				{
 					id: "qa",
 					name: "QA 验证",
 					type: "qa",
 					execution: "agent",
+					handbookRef: "qa",
 				},
 				{
 					id: "founder_gate",
 					name: "创始人门",
 					type: "gate",
 					execution: "gate",
+					handbookRef: null,
 				},
 				{
 					id: "land",
 					name: "合入",
 					type: "land",
 					execution: "engine",
+					handbookRef: null,
 				},
 			],
 			edges: [
@@ -199,6 +204,21 @@ describe("management DAG source", () => {
 				},
 			],
 		});
+		store.close();
+	});
+
+	it("renders a schema 2 graph with explicit null handbook references", async () => {
+		const store = await catalog("tpl_generic");
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags[0]!;
+
+		expect(dag.error).toBeUndefined();
+		expect(dag.graph?.nodes).not.toHaveLength(0);
+		expect(dag.graph?.nodes.every((node) => node.handbookRef === null)).toBe(
+			true,
+		);
 		store.close();
 	});
 
@@ -352,7 +372,7 @@ describe("management DAG source", () => {
 		const revision = store.createWorkflowTemplateRevision({
 			templateId: "tpl_code",
 			manifest,
-			schemaVersion: 2,
+			schemaVersion: 3,
 			createdBy: "test",
 		});
 		store.publishWorkflowTemplate({

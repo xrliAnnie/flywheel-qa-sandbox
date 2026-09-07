@@ -25,6 +25,7 @@ const { loadWorkflowMenuSeeds } = require(
 const {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
+	buildWorkflowRunSnapshotV3,
 	resolveWorkflowGateAuthority,
 } = require(join(teamleadDist, "workflow-run-snapshot.js"));
 const seeds = loadWorkflowMenuSeeds();
@@ -48,14 +49,33 @@ console.log("\nGate authority — compiled menu snapshots:");
 for (const seed of seeds) {
 	try {
 		const template = { id: seed.templateId, revision: 1 };
-		const snapshot =
-			seed.manifest.schema_version === 1
-				? buildWorkflowRunSnapshotV1({ template, manifest: seed.manifest })
-				: buildWorkflowRunSnapshotV2({
-						template,
-						manifest: seed.manifest,
-						canonicalRoot: repoRoot,
-					});
+		let snapshot;
+		switch (seed.manifest.schema_version) {
+			case 1:
+				snapshot = buildWorkflowRunSnapshotV1({
+					template,
+					manifest: seed.manifest,
+				});
+				break;
+			case 2:
+				snapshot = buildWorkflowRunSnapshotV2({
+					template,
+					manifest: seed.manifest,
+					canonicalRoot: repoRoot,
+				});
+				break;
+			case 3:
+				snapshot = buildWorkflowRunSnapshotV3({
+					template,
+					manifest: seed.manifest,
+					canonicalRoot: repoRoot,
+				});
+				break;
+			default:
+				throw new Error(
+					`unsupported workflow manifest schema ${seed.manifest.schema_version}`,
+				);
+		}
 		const authority = resolveWorkflowGateAuthority(snapshot);
 		console.log(`✅ ${seed.templateId}: ${authority.mode}`);
 	} catch (err) {

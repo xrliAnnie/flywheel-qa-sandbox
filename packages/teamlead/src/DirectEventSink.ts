@@ -1303,7 +1303,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						refreshIssueDisplay: (issueId) =>
 							this.issueDisplayRefresh?.current?.refresh(issueId) ??
 							Promise.resolve(),
-						enqueueTerminalArchive: this.terminalArchiveEnqueue,
 						// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
 						...this.lifecycleInfra,
 					},

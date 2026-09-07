@@ -203,6 +203,44 @@ describe("archiveThreadAndRecord", () => {
 		expect(removeUserFn).not.toHaveBeenCalled();
 	});
 
+	it("FLY-2377: verified already-archived records a receipt without advancing the epoch", async () => {
+		store.markChatThreadArchived("t-1");
+		const epoch = store.getChatThreadArchivedAt("t-1");
+		const receipt = {
+			eventId: "chat-thread-archived-fly2377-land-operation-1-t-1",
+			payload: {
+				receiptVersion: 1,
+				receiptKind: "post_ship_archive",
+				closeoutKind: "land",
+				closeoutId: "operation-1",
+				threadId: "t-1",
+				issueId: "FLY-100",
+			},
+		};
+		const archiveFn = vi.fn();
+
+		await expect(
+			archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+				authority: "terminal",
+				timing: "immediate",
+				successReceipt: receipt,
+				archiveFn,
+				probeFn: vi.fn().mockResolvedValue({
+					ok: true,
+					name: "thread",
+					archived: true,
+				}),
+			}),
+		).resolves.toMatchObject({
+			archived: true,
+			attempts: 0,
+			reason: "already_archived",
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(store.getChatThreadArchivedAt("t-1")).toBe(epoch);
+		expect(store.getEventPayloadById(receipt.eventId)).toEqual(receipt.payload);
+	});
+
 	it("FLY-1709: protects a founder-reopened thread and reports the no-op honestly", async () => {
 		store.markChatThreadArchived("t-1");
 		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
@@ -274,6 +312,47 @@ describe("archiveThreadAndRecord", () => {
 		expect(store.getEventsByExecution("exec-1")).toEqual([]);
 	});
 
+	it("FLY-2377: immediate authority re-archives a recent reopened epoch with the current receipt", async () => {
+		store.markChatThreadArchived("t-1");
+		const frontier = snowflakeAt(NOW - 5 * 60_000);
+		const receipt = {
+			eventId: "chat-thread-archived-fly2377-land-operation-1-t-1",
+			payload: {
+				receiptVersion: 1,
+				receiptKind: "post_ship_archive",
+				closeoutKind: "land",
+				closeoutId: "operation-1",
+				threadId: "t-1",
+				issueId: "FLY-100",
+			},
+		};
+		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
+		const probeFn = vi
+			.fn()
+			.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+			.mockResolvedValueOnce({ ok: true, name: "thread", archived: true });
+		const frontierFn = vi
+			.fn()
+			.mockResolvedValue({ ok: true, messageId: frontier });
+
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			timing: "immediate",
+			successReceipt: receipt,
+			quietWindowMs: 60 * 60_000,
+			nowMs: () => NOW,
+			archiveFn,
+			probeFn,
+			frontierFn,
+		});
+
+		expect(result).toMatchObject({ archived: true, reason: "ok" });
+		expect(archiveFn).toHaveBeenCalledOnce();
+		expect(probeFn).toHaveBeenCalledTimes(2);
+		expect(frontierFn).toHaveBeenCalledTimes(3);
+		expect(store.getEventPayloadById(receipt.eventId)).toEqual(receipt.payload);
+	});
+
 	it("FLY-2028: first automatic archive defers inside the quiet window", async () => {
 		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
 		const removeUserFn = vi.fn();
@@ -299,6 +378,294 @@ describe("archiveThreadAndRecord", () => {
 		expect(store.getChatThreadArchivedAt("t-1")).toBeNull();
 		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
 		expect(store.getEventsByExecution("exec-1")).toEqual([]);
+	});
+
+	it("FLY-2377: immediate archive ignores a recent message but keeps the frontier fence", async () => {
+		const frontier = snowflakeAt(NOW - 5 * 60_000);
+		const receipt = {
+			eventId: "chat-thread-archived-fly2377-land-operation-1-t-1",
+			payload: {
+				receiptVersion: 1,
+				receiptKind: "post_ship_archive",
+				closeoutKind: "land",
+				closeoutId: "operation-1",
+				threadId: "t-1",
+				issueId: "FLY-100",
+			},
+		};
+		const archiveFn = vi.fn(async () => {
+			expect(store.getChatThreadCompensationPending("t-1")).toMatchObject({
+				version: 1,
+				frontier,
+			});
+			return OK_ARCHIVE;
+		});
+		const probeFn = vi
+			.fn()
+			.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+			.mockResolvedValueOnce({ ok: true, name: "thread", archived: true });
+		const frontierFn = vi
+			.fn()
+			.mockResolvedValue({ ok: true, messageId: frontier });
+
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			timing: "immediate",
+			successReceipt: receipt,
+			quietWindowMs: 60 * 60_000,
+			nowMs: () => NOW,
+			archiveFn,
+			probeFn,
+			frontierFn,
+		});
+
+		expect(result).toMatchObject({ archived: true, reason: "ok" });
+		expect(probeFn).toHaveBeenCalledTimes(2);
+		expect(frontierFn).toHaveBeenCalledTimes(2);
+		expect(archiveFn).toHaveBeenCalledOnce();
+		expect(store.getChatThreadArchivedAt("t-1")).not.toBeNull();
+		expect(store.getEventPayloadById(receipt.eventId)).toEqual(receipt.payload);
+	});
+
+	it("FLY-2377: immediate post-PATCH verification failure is retryable, not a quiet defer", async () => {
+		const frontier = snowflakeAt(NOW - 5 * 60_000);
+		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
+
+		await expect(
+			archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+				authority: "terminal",
+				timing: "immediate",
+				quietWindowMs: 60 * 60_000,
+				nowMs: () => NOW,
+				archiveFn,
+				probeFn: vi
+					.fn()
+					.mockResolvedValue({ ok: true, name: "thread", archived: false }),
+				frontierFn: vi
+					.fn()
+					.mockResolvedValue({ ok: true, messageId: frontier }),
+			}),
+		).resolves.toMatchObject({
+			archived: false,
+			attempts: 0,
+			reason: "reopen_check_failed",
+		});
+		expect(archiveFn).toHaveBeenCalledOnce();
+		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
+	});
+
+	it("FLY-2377: a matching closeout receipt short-circuits Discord on replay", async () => {
+		const receipt = {
+			eventId: "chat-thread-archived-fly2377-land-operation-1-t-1",
+			payload: {
+				receiptVersion: 1,
+				receiptKind: "post_ship_archive",
+				closeoutKind: "land",
+				closeoutId: "operation-1",
+				threadId: "t-1",
+				issueId: "FLY-100",
+			},
+		};
+		store.commitThreadArchive("t-1", {
+			event_id: receipt.eventId,
+			execution_id: INPUT.executionId,
+			issue_id: INPUT.issueId,
+			project_name: INPUT.projectName,
+			event_type: "chat_thread_archived",
+			source: "test",
+			payload: receipt.payload,
+		});
+		const archiveFn = vi.fn();
+		const probeFn = vi.fn();
+		const frontierFn = vi.fn();
+
+		await expect(
+			archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+				authority: "terminal",
+				timing: "immediate",
+				successReceipt: receipt,
+				archiveFn,
+				probeFn,
+				frontierFn,
+			}),
+		).resolves.toMatchObject({
+			archived: true,
+			attempts: 0,
+			reason: "already_archived",
+		});
+		expect(probeFn).not.toHaveBeenCalled();
+		expect(frontierFn).not.toHaveBeenCalled();
+		expect(archiveFn).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2377: a cold archived receipt still short-circuits Discord", async () => {
+		const receipt = {
+			eventId: "chat-thread-archived-fly2377-land-operation-1-t-1",
+			payload: {
+				receiptVersion: 1,
+				receiptKind: "post_ship_archive",
+				closeoutKind: "land",
+				closeoutId: "operation-1",
+				threadId: "t-1",
+				issueId: "FLY-100",
+			},
+		};
+		store.upsertSession({
+			execution_id: INPUT.executionId,
+			issue_id: INPUT.issueId,
+			project_name: INPUT.projectName,
+			status: "completed",
+		});
+		store.commitThreadArchive("t-1", {
+			event_id: receipt.eventId,
+			execution_id: INPUT.executionId,
+			issue_id: INPUT.issueId,
+			project_name: INPUT.projectName,
+			event_type: "chat_thread_archived",
+			source: "test",
+			payload: receipt.payload,
+		});
+		const raw = (
+			store as unknown as {
+				db: {
+					raw: {
+						prepare(sql: string): {
+							run(...values: unknown[]): unknown;
+						};
+					};
+				};
+			}
+		).db.raw;
+		raw
+			.prepare("UPDATE session_events SET ts=? WHERE event_id=?")
+			.run("2026-08-20T00:00:00.000Z", receipt.eventId);
+		expect(
+			store.archiveTerminalRows({
+				now: "2026-09-06T22:00:00.000Z",
+				limit: 1,
+				sourceTable: "session_events",
+			}),
+		).toMatchObject({ archived: 1 });
+		expect(store.getEventPayloadById(receipt.eventId)).toBeUndefined();
+
+		const archiveFn = vi.fn();
+		const probeFn = vi.fn();
+		await expect(
+			archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+				authority: "terminal",
+				timing: "immediate",
+				successReceipt: receipt,
+				archiveFn,
+				probeFn,
+			}),
+		).resolves.toMatchObject({
+			archived: true,
+			attempts: 0,
+			reason: "already_archived",
+		});
+		expect(probeFn).not.toHaveBeenCalled();
+		expect(archiveFn).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["mismatched", { other: true }],
+		["invalid", undefined],
+	] as const)(
+		"FLY-2377: a %s receipt payload fails closed before Discord",
+		async (_case, storedPayload) => {
+			const receipt = {
+				eventId: "chat-thread-archived-fly2377-land-operation-1-t-1",
+				payload: {
+					receiptVersion: 1,
+					receiptKind: "post_ship_archive",
+					closeoutKind: "land",
+					closeoutId: "operation-1",
+					threadId: "t-1",
+					issueId: "FLY-100",
+				},
+			};
+			store.insertEvent({
+				event_id: receipt.eventId,
+				execution_id: INPUT.executionId,
+				issue_id: INPUT.issueId,
+				project_name: INPUT.projectName,
+				event_type: "chat_thread_archived",
+				source: "test",
+				payload: storedPayload,
+			});
+			const archiveFn = vi.fn();
+			const probeFn = vi.fn();
+
+			await expect(
+				archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+					authority: "terminal",
+					timing: "immediate",
+					successReceipt: receipt,
+					archiveFn,
+					probeFn,
+				}),
+			).resolves.toMatchObject({
+				archived: false,
+				attempts: 0,
+				reason: "error",
+			});
+			expect(probeFn).not.toHaveBeenCalled();
+			expect(archiveFn).not.toHaveBeenCalled();
+		},
+	);
+
+	it("FLY-2377: a matching receipt converges an exact cross-process replay race", async () => {
+		const frontier = snowflakeAt(NOW - 5 * 60_000);
+		const receipt = {
+			eventId: "chat-thread-archived-fly2377-land-operation-1-t-1",
+			payload: {
+				receiptVersion: 1,
+				receiptKind: "post_ship_archive",
+				closeoutKind: "land",
+				closeoutId: "operation-1",
+				threadId: "t-1",
+				issueId: "FLY-100",
+			},
+		};
+		vi.spyOn(store, "lookupEventPayloadById")
+			.mockReturnValueOnce({ status: "missing" })
+			.mockReturnValueOnce({ status: "valid", payload: receipt.payload });
+		vi.spyOn(store, "commitThreadArchive").mockImplementation(() => {
+			throw new Error(`session_event_replay:${receipt.eventId}`);
+		});
+
+		await expect(
+			archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+				authority: "terminal",
+				timing: "immediate",
+				successReceipt: receipt,
+				archiveFn: vi.fn().mockResolvedValue(OK_ARCHIVE),
+				probeFn: vi
+					.fn()
+					.mockResolvedValueOnce({
+						ok: true,
+						name: "thread",
+						archived: false,
+					})
+					.mockResolvedValueOnce({
+						ok: true,
+						name: "thread",
+						archived: true,
+					}),
+				frontierFn: vi
+					.fn()
+					.mockResolvedValue({ ok: true, messageId: frontier }),
+			}),
+		).resolves.toMatchObject({
+			archived: true,
+			attempts: 0,
+			reason: "already_archived",
+		});
+		expect(
+			store
+				.getEventsByExecution(INPUT.executionId)
+				.some((event) => event.event_type === "chat_thread_archive_failed"),
+		).toBe(false);
 	});
 
 	it("FLY-2028: first automatic archive fences and commits atomically after a quiet hour", async () => {
@@ -465,6 +832,39 @@ describe("archiveThreadAndRecord", () => {
 		const events = store.getEventsByExecution("exec-1");
 		expect(events).toHaveLength(1);
 		expect(events[0]?.event_id).toContain("chat-thread-archive-skip-fly1709-");
+	});
+
+	it("FLY-2377: an externally archived first probe atomically establishes the closeout receipt", async () => {
+		const receipt = {
+			eventId: "chat-thread-archived-fly2377-land-operation-1-t-1",
+			payload: {
+				receiptVersion: 1,
+				receiptKind: "post_ship_archive",
+				closeoutKind: "land",
+				closeoutId: "operation-1",
+				threadId: "t-1",
+				issueId: "FLY-100",
+			},
+		};
+		const archiveFn = vi.fn();
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			timing: "immediate",
+			successReceipt: receipt,
+			archiveFn,
+			probeFn: vi
+				.fn()
+				.mockResolvedValue({ ok: true, name: "thread", archived: true }),
+		});
+
+		expect(result).toEqual({
+			archived: true,
+			attempts: 0,
+			reason: "already_archived",
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(store.getChatThreadArchivedAt("t-1")).not.toBeNull();
+		expect(store.getEventPayloadById(receipt.eventId)).toEqual(receipt.payload);
 	});
 
 	it("FLY-2028: first-archive probe fails closed when archive state is absent", async () => {
@@ -804,6 +1204,26 @@ describe("archiveThreadAndRecord", () => {
 
 	it("FLY-1709: resumes a durable compensation receipt before the archived short-circuit", async () => {
 		store.markChatThreadArchived("t-1");
+		const successReceipt = {
+			eventId: "chat-thread-archived-fly2377-land-operation-1-t-1",
+			payload: {
+				receiptVersion: 1,
+				receiptKind: "post_ship_archive",
+				closeoutKind: "land",
+				closeoutId: "operation-1",
+				threadId: "t-1",
+				issueId: "FLY-100",
+			},
+		};
+		store.insertEvent({
+			event_id: successReceipt.eventId,
+			execution_id: INPUT.executionId,
+			issue_id: INPUT.issueId,
+			project_name: INPUT.projectName,
+			event_type: "chat_thread_archived",
+			source: "test",
+			payload: successReceipt.payload,
+		});
 		store.setChatThreadCompensationPending("t-1", {
 			version: 1,
 			state: "prepared",
@@ -818,6 +1238,7 @@ describe("archiveThreadAndRecord", () => {
 			.mockResolvedValue({ unarchived: true, attempts: 1, status: 200 });
 		const res = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
 			archiveFn,
+			successReceipt,
 			unarchiveFn,
 			probeFn: vi
 				.fn()

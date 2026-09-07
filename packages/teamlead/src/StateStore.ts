@@ -158,6 +158,7 @@ import {
 import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
+	buildWorkflowRunSnapshotV3,
 	nodeRequiresFounderReview,
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
@@ -10388,6 +10389,54 @@ export class StateStore {
 			return JSON.parse(row.payload as string) as Record<string, unknown>;
 		} catch {
 			return undefined;
+		}
+	}
+
+	/**
+	 * FLY-2377: lookup a session-event payload across both the hot table and
+	 * terminal-row archive without conflating absence with malformed payload.
+	 */
+	lookupEventPayloadById(
+		eventId: string,
+	):
+		| { status: "missing" }
+		| { status: "invalid" }
+		| { status: "valid"; payload: Record<string, unknown> } {
+		const rows = this.workflowSelectAll(
+			"SELECT payload FROM session_events WHERE event_id = ? LIMIT 1",
+			[eventId],
+		);
+		let rawPayload: unknown;
+		if (rows.length > 0) {
+			rawPayload = rows[0]?.payload;
+		} else {
+			let archived: Record<string, unknown> | undefined;
+			try {
+				archived = findArchivedTerminalRow(this.db.raw, "session_events", [
+					eventId,
+				]);
+			} catch {
+				return { status: "invalid" };
+			}
+			if (!archived) return { status: "missing" };
+			rawPayload = archived.payload;
+		}
+		if (typeof rawPayload !== "string") return { status: "invalid" };
+		try {
+			const payload = JSON.parse(rawPayload) as unknown;
+			if (
+				typeof payload !== "object" ||
+				payload === null ||
+				Array.isArray(payload)
+			) {
+				return { status: "invalid" };
+			}
+			return {
+				status: "valid",
+				payload: payload as Record<string, unknown>,
+			};
+		} catch {
+			return { status: "invalid" };
 		}
 	}
 
@@ -25255,7 +25304,7 @@ export class StateStore {
 			   JOIN workflow_template_revision rev
 			     ON rev.template_id = r.template_id
 			    AND rev.revision = r.template_revision
-			  WHERE r.status = 'active' AND rev.schema_version = 2
+			  WHERE r.status = 'active' AND rev.schema_version IN (2, 3)
 			  ORDER BY r.run_id`,
 			[],
 		);
@@ -25268,7 +25317,7 @@ export class StateStore {
 				     ON rev.template_id = r.template_id
 				    AND rev.revision = r.template_revision
 				  WHERE r.status = 'active'
-				    AND rev.schema_version = 2
+				    AND rev.schema_version IN (2, 3)
 				    AND effect.state IN ('intent_recorded','launch_committed')
 				  ORDER BY effect.execution_id`,
 			[],
@@ -25286,7 +25335,7 @@ export class StateStore {
 				   LEFT JOIN workflow_start_stage stage
 				     ON stage.idempotency_key = reservation.idempotency_key
 				  WHERE r.status = 'active'
-				    AND rev.schema_version = 2
+				    AND rev.schema_version IN (2, 3)
 				    AND (stage.stage IS NULL OR stage.stage <> 'responded')
 				  ORDER BY reservation.idempotency_key`,
 			[],
@@ -25304,7 +25353,7 @@ export class StateStore {
 				     ON rev.template_id = r.template_id
 				    AND rev.revision = r.template_revision
 				  WHERE r.status <> 'active'
-				    AND rev.schema_version = 2
+				    AND rev.schema_version IN (2, 3)
 				    AND (
 				      EXISTS (
 				        SELECT 1 FROM workflow_side_effect_ledger effect
@@ -25372,7 +25421,7 @@ export class StateStore {
 			templateId: string;
 			revision: number;
 			manifestDigest: string;
-			schemaVersion: 1 | 2;
+			schemaVersion: 1 | 2 | 3;
 			selectionSource: "lead" | "binding" | "default";
 			selectionDigest: string;
 		};
@@ -25447,13 +25496,19 @@ export class StateStore {
 		const applied = input.override
 			? applyWorkflowOverride(base, input.override, modelSnapshot)
 			: { manifest: base, override: undefined };
-		let generalizedSnapshot: ReturnType<
-			typeof buildWorkflowRunSnapshotV2
-		> | undefined;
+		let generalizedSnapshot:
+			| ReturnType<typeof buildWorkflowRunSnapshotV2>
+			| ReturnType<typeof buildWorkflowRunSnapshotV3>
+			| undefined;
 		try {
-			generalizedSnapshot =
+			const buildGeneralizedSnapshot =
 				applied.manifest.schema_version === 2
-					? buildWorkflowRunSnapshotV2({
+					? buildWorkflowRunSnapshotV2
+					: applied.manifest.schema_version === 3
+						? buildWorkflowRunSnapshotV3
+						: undefined;
+			generalizedSnapshot = buildGeneralizedSnapshot
+				? buildGeneralizedSnapshot({
 						template: {
 							id: template.template_id,
 							revision: template.current_published_revision,
@@ -33260,6 +33315,7 @@ export class StateStore {
 				: undefined;
 		if (
 			schemaVersion !== 2 &&
+			schemaVersion !== 3 &&
 			!(schemaVersion === 1 && run.engine_owned === 1)
 		) {
 			return undefined;
@@ -53125,7 +53181,7 @@ export class StateStore {
 						},
 					});
 				} else if (
-					snapshot.schema_version === 2 &&
+					(snapshot.schema_version === 2 || snapshot.schema_version === 3) &&
 					run.current_node_id === workflowApprovalGate(snapshot.manifest).node
 				) {
 					const ship = this.resolveEngineWorkflowShipClaims({

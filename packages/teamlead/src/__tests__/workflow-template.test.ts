@@ -69,6 +69,25 @@ const generalizedManifest = () => ({
 	ship_claims: ["design_review_approved", "founder_approved"],
 });
 
+const handbookManifest = () => {
+	const manifest = structuredClone(generalizedManifest()) as unknown as Record<
+		string,
+		unknown
+	>;
+	manifest.schema_version = 3;
+	manifest.nodes = (manifest.nodes as Array<Record<string, unknown>>).map(
+		(node) =>
+			node.type === "gate"
+				? node
+				: {
+						...node,
+						handbook_ref:
+							typeof node.agent_file === "string" ? node.agent_file : node.id,
+					},
+	);
+	return manifest;
+};
+
 describe("workflow template manifest v1", () => {
 	it("accepts a land_v1 engine node with binding-engine tier presets", () => {
 		const manifest = {
@@ -726,5 +745,70 @@ describe("workflow template manifest v2", () => {
 		expect(prototype).toContain("doable / not-doable");
 		expect(prototype).toContain("no answer → BLOCKED");
 		expect(prototype).toContain("not doable → drop");
+	});
+});
+
+describe("workflow template manifest v3 handbook references", () => {
+	it("accepts aligned node and custom-file references in authoring and pinned parsers", () => {
+		const parsed = validateWorkflowManifest(handbookManifest());
+		expect(parsed.schema_version).toBe(3);
+		expect(parsed.nodes[0]).toMatchObject({
+			id: "produce",
+			agent_file: "agents/product-producer.md",
+			handbook_ref: "agents/product-producer.md",
+		});
+		expect(parsed.nodes[1]).toMatchObject({
+			id: "review",
+			handbook_ref: "review",
+		});
+		expect(() =>
+			validatePinnedWorkflowManifest(handbookManifest()),
+		).not.toThrow();
+	});
+
+	it("requires aligned references and never restores role in schema 3", () => {
+		const missing = handbookManifest();
+		delete (missing.nodes as Array<Record<string, unknown>>)[0]!.handbook_ref;
+		expect(() => validateWorkflowManifest(missing)).toThrow(
+			/handbook_ref.*required/i,
+		);
+
+		const role = handbookManifest();
+		(role.nodes as Array<Record<string, unknown>>)[1]!.role = "qa";
+		expect(() => validateWorkflowManifest(role)).toThrow(/unknown key.*role/i);
+
+		const mismatchedNode = handbookManifest();
+		(mismatchedNode.nodes as Array<Record<string, unknown>>)[1]!.handbook_ref =
+			"qa";
+		expect(() => validateWorkflowManifest(mismatchedNode)).toThrow(
+			/handbook_ref.*node id/i,
+		);
+
+		const mismatchedFile = handbookManifest();
+		(mismatchedFile.nodes as Array<Record<string, unknown>>)[0]!.handbook_ref =
+			"agents/other.md";
+		expect(() => validateWorkflowManifest(mismatchedFile)).toThrow(
+			/handbook_ref.*agent_file/i,
+		);
+	});
+
+	it("forbids references on structural nodes without widening older schemas", () => {
+		const gate = handbookManifest();
+		(gate.nodes as Array<Record<string, unknown>>)[2]!.handbook_ref =
+			"founder_gate";
+		expect(() => validateWorkflowManifest(gate)).toThrow(
+			/gate node.*handbook_ref/i,
+		);
+
+		const v2 = generalizedManifest();
+		(v2.nodes[0] as unknown as Record<string, unknown>).handbook_ref =
+			"agents/product-producer.md";
+		expect(() => validateWorkflowManifest(v2)).toThrow(
+			/unknown key.*handbook_ref/i,
+		);
+
+		expect(() =>
+			validateWorkflowManifest({ ...handbookManifest(), schema_version: 4 }),
+		).toThrow(/supported versions.*1.*2.*3/i);
 	});
 });

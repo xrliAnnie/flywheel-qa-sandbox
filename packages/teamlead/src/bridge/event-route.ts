@@ -2436,7 +2436,6 @@ export function createEventRouter(
 							refreshIssueDisplay: (issueId) =>
 								issueDisplayRefresh?.current?.refresh(issueId) ??
 								Promise.resolve(),
-							enqueueTerminalArchive: terminalArchiveEnqueue,
 							// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
 							...lifecycleInfra,
 						},
@@ -2863,7 +2862,6 @@ export function createEventRouter(
 										refreshIssueDisplay: (issueId) =>
 											issueDisplayRefresh?.current?.refresh(issueId) ??
 											Promise.resolve(),
-										enqueueTerminalArchive: terminalArchiveEnqueue,
 										// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
 										...lifecycleInfra,
 									},

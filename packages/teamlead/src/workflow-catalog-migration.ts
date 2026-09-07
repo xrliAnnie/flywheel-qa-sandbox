@@ -38,7 +38,11 @@ function migrationInput(
 								? []
 								: [node.id];
 						})
-					: [],
+					: seed.manifest.schema_version === 3
+						? seed.manifest.nodes.flatMap((node) =>
+								node.handbook_ref ? [node.handbook_ref] : [],
+							)
+						: [],
 			),
 		),
 	];
