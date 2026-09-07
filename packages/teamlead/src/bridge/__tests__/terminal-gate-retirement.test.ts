@@ -285,6 +285,327 @@ describe("terminal gate retirement", () => {
 		store.close();
 	});
 
+	it("rejects a FLY-2394-shaped collision but accepts the exact main anchor", async () => {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-pr-anchor-collision-"));
+		roots.push(root);
+		const commPath = join(root, "comm.db");
+		const store = await StateStore.create(join(root, "state.db"));
+		store.createWorkflowRun({
+			runId: "run-2394",
+			issueId: "FLY-2394",
+			projectName: "flywheel",
+			snapshotJson: "{}",
+			claimsReadEnrolled: true,
+		});
+		store.upsertSession({
+			execution_id: "qa-exec-2394",
+			issue_id: "FLY-2394",
+			project_name: "flywheel",
+			status: "completed",
+			workflow_node_id: "qa",
+		});
+		const comm = new CommDB(commPath);
+		comm.registerSession(
+			"qa-exec-2394",
+			"session",
+			"flywheel",
+			"FLY-2394",
+			"flywheel-eng-lead",
+			"codex",
+		);
+		const questionId = comm.insertQuestion(
+			"qa-exec-2394",
+			"flywheel-eng-lead",
+			"ship FLY-2394?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		comm.close();
+
+		const anchorHead = "a".repeat(40);
+		const rawStore = store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		rawStore.db.run(
+			"UPDATE workflow_run SET current_node_id = 'founder_gate' WHERE run_id = 'run-2394'",
+		);
+		rawStore.db.run(
+			`INSERT INTO workflow_run_node
+			   (run_id, node_id, attempt, state, execution_id, started_at)
+			 VALUES ('run-2394', 'qa', 2, 'done', 'qa-exec-2394',
+			         '2026-09-07T02:59:00.000Z')`,
+		);
+		rawStore.db.run(
+			`INSERT INTO workflow_node_pr_binding
+			   (run_id, node_id, attempt, pr_number, head_sha,
+			    target_repo_identity, probe_repo_slug, target_repo_path,
+			    worktree_binding_generation, receipt_id, bound_at)
+			 VALUES ('run-2394', 'qa', 2, 1103, ?, '__main__',
+			         'xrliannie/flywheel', ?, 'generation-2394',
+			         'binding-2394', '2026-09-07T03:00:24.554Z')`,
+			[anchorHead, root],
+		);
+		rawStore.db.run(
+			`INSERT INTO workflow_gate_holder
+			   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+			    question_id, state, materialization_stage, created_at, updated_at,
+			    authority_mode, subject_kind)
+			 VALUES ('run-2394', 'founder_gate', 1, ?, 'qa-exec-2394', ?,
+			         'awaiting_review', 'completed',
+			         '2026-09-07T03:00:24.554Z', '2026-09-07T03:00:24.554Z',
+			         'land', 'git_head')`,
+			[anchorHead, questionId],
+		);
+		rawStore.db.run(
+			`INSERT INTO workflow_ship_target_binding
+			   (approve_question_id, run_id, target_repo_path, target_repo_identity,
+			    probe_repo_slug, frozen_head_sha, worktree_binding_generation)
+			 VALUES (?, 'run-2394', ?, '__main__', 'xrliannie/flywheel', ?,
+			         'generation-2394')`,
+			[questionId, root, anchorHead],
+		);
+
+		const revalidate = vi.fn(async () => "authorized" as const);
+		await new TerminalGateRetirement({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).retirePrMerged({
+			projectName: "flywheel",
+			canonicalIssueId: "FLY-2394",
+			issueAliases: [],
+			prNumber: 25,
+			authorityCredential: "flywheel:25:old-merged-pr",
+			revalidate,
+		});
+
+		const readonly = CommDB.openReadonly(commPath);
+		expect(readonly.getMessageById(questionId)).toMatchObject({
+			relay_state: "open",
+			resolved_at: null,
+		});
+		readonly.close();
+		expect(revalidate).not.toHaveBeenCalled();
+
+		await new TerminalGateRetirement({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).retirePrMerged({
+			projectName: "flywheel",
+			canonicalIssueId: "FLY-2394",
+			issueAliases: [],
+			prNumber: 1103,
+			authorityCredential: "flywheel:1103:exact-anchor-merge",
+			revalidate,
+		});
+
+		const retired = CommDB.openReadonly(commPath);
+		expect(retired.getMessageById(questionId)).toMatchObject({
+			relay_state: "terminal_disposed",
+			resolved_via: "superseded_merged",
+		});
+		retired.close();
+		expect(revalidate).toHaveBeenCalledTimes(1);
+		store.close();
+	});
+
+	it.each(["engine_terminal", null] as const)(
+		"keeps a current %s ship gate open when it has no PR authority",
+		async (authorityMode) => {
+			const root = mkdtempSync(join(tmpdir(), "flywheel-no-pr-authority-"));
+			roots.push(root);
+			const commPath = join(root, "comm.db");
+			const store = await StateStore.create(join(root, "state.db"));
+			store.createWorkflowRun({
+				runId: "run-no-pr-authority",
+				issueId: "FLY-2000",
+				projectName: "flywheel",
+				snapshotJson: "{}",
+				claimsReadEnrolled: true,
+			});
+			store.upsertSession({
+				execution_id: "engine-exec",
+				issue_id: "FLY-2000",
+				project_name: "flywheel",
+				status: "completed",
+			});
+			const comm = new CommDB(commPath);
+			comm.registerSession(
+				"engine-exec",
+				"session",
+				"flywheel",
+				"FLY-2000",
+				"flywheel-eng-lead",
+				"codex",
+			);
+			const questionId = comm.insertQuestion(
+				"engine-exec",
+				"flywheel-eng-lead",
+				"ship?",
+				{ checkpoint: "approve_to_ship" },
+			);
+			comm.close();
+			const rawStore = store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			};
+			rawStore.db.run(
+				"UPDATE workflow_run SET current_node_id = 'decision' WHERE run_id = 'run-no-pr-authority'",
+			);
+			rawStore.db.run(
+				`INSERT INTO workflow_gate_holder
+				   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+				    question_id, state, materialization_stage, created_at, updated_at,
+				    authority_mode, subject_kind)
+				 VALUES ('run-no-pr-authority', 'decision', 1, ?, 'engine-exec', ?,
+				         'awaiting_review', 'completed',
+				         '2026-09-07T03:00:00.000Z', '2026-09-07T03:00:00.000Z',
+				         ?, 'git_head')`,
+				["d".repeat(40), questionId, authorityMode],
+			);
+
+			const revalidate = vi.fn(async () => "authorized" as const);
+			await new TerminalGateRetirement({
+				store,
+				projectNames: ["flywheel"],
+				commDbPathForProject: () => commPath,
+			}).retirePrMerged({
+				projectName: "flywheel",
+				canonicalIssueId: "FLY-2000",
+				issueAliases: [],
+				prNumber: 3,
+				authorityCredential: "flywheel:3:merged",
+				revalidate,
+			});
+
+			const readonly = CommDB.openReadonly(commPath);
+			expect(readonly.getMessageById(questionId)).toMatchObject({
+				relay_state: "open",
+				resolved_at: null,
+			});
+			readonly.close();
+			expect(revalidate).not.toHaveBeenCalled();
+			store.close();
+		},
+	);
+
+	it("still retires a legacy ship gate with freshly revalidated merge authority", async () => {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-legacy-pr-merge-"));
+		roots.push(root);
+		const commPath = join(root, "comm.db");
+		const store = await StateStore.create(join(root, "state.db"));
+		store.upsertSession({
+			execution_id: "legacy-exec",
+			issue_id: "FLY-1687",
+			project_name: "flywheel",
+			status: "completed",
+		});
+		const comm = new CommDB(commPath);
+		comm.registerSession(
+			"legacy-exec",
+			"session",
+			"flywheel",
+			"FLY-1687",
+			"flywheel-eng-lead",
+			"codex",
+		);
+		const questionId = comm.insertQuestion(
+			"legacy-exec",
+			"flywheel-eng-lead",
+			"ship?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		comm.close();
+
+		const revalidate = vi.fn(async () => "authorized" as const);
+		await new TerminalGateRetirement({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).retirePrMerged({
+			projectName: "flywheel",
+			canonicalIssueId: "FLY-1687",
+			issueAliases: [],
+			prNumber: 827,
+			authorityCredential: "flywheel:827:merged",
+			revalidate,
+		});
+
+		const readonly = CommDB.openReadonly(commPath);
+		expect(readonly.getMessageById(questionId)).toMatchObject({
+			relay_state: "terminal_disposed",
+			resolved_via: "superseded_merged",
+		});
+		readonly.close();
+		expect(revalidate).toHaveBeenCalledTimes(1);
+		store.close();
+	});
+
+	it.each(["active", "held", "completed", "terminated"] as const)(
+		"never lets a merged PR retire a founder review when its run is %s",
+		async (runStatus) => {
+			const root = mkdtempSync(
+				join(tmpdir(), "flywheel-founder-review-merge-"),
+			);
+			roots.push(root);
+			const commPath = join(root, "comm.db");
+			const store = await StateStore.create(join(root, "state.db"));
+			const runId = `run-founder-${runStatus}`;
+			store.createWorkflowRun({
+				runId,
+				issueId: "FLY-2097",
+				projectName: "flywheel",
+				snapshotJson: "{}",
+				claimsReadEnrolled: true,
+			});
+			const rawStore = store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			};
+			rawStore.db.run("UPDATE workflow_run SET status = ? WHERE run_id = ?", [
+				runStatus,
+				runId,
+			]);
+
+			const comm = new CommDB(commPath);
+			const questionId = comm.insertQuestion(
+				`review-exec-${runStatus}`,
+				"flywheel-eng-lead",
+				JSON.stringify({
+					version: 1,
+					round: 1,
+					runId,
+					artifactDigest: "a".repeat(64),
+					hostedUrl: "https://example.test/review",
+					paths: ["report.html"],
+				}),
+				{ checkpoint: "founder_review" },
+			);
+			comm.close();
+
+			const revalidate = vi.fn(async () => "authorized" as const);
+			await new TerminalGateRetirement({
+				store,
+				projectNames: ["flywheel"],
+				commDbPathForProject: () => commPath,
+			}).retirePrMerged({
+				projectName: "flywheel",
+				canonicalIssueId: "FLY-2097",
+				issueAliases: [],
+				prNumber: 3,
+				authorityCredential: "flywheel:3:unrelated-old-merge",
+				revalidate,
+			});
+
+			const readonly = CommDB.openReadonly(commPath);
+			expect(readonly.getMessageById(questionId)).toMatchObject({
+				relay_state: "open",
+				resolved_at: null,
+			});
+			readonly.close();
+			expect(revalidate).not.toHaveBeenCalled();
+			store.close();
+		},
+	);
+
 	it("keeps the authoritative engine gate answerable after its source session ends", async () => {
 		const root = mkdtempSync(join(tmpdir(), "flywheel-terminal-gate-"));
 		roots.push(root);

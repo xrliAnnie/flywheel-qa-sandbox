@@ -45,6 +45,7 @@ import {
 	computeAuthoritativeShipDecision,
 	mergedPrCiProbe,
 } from "../merge-ship-gate.js";
+import { TerminalGateRetirement } from "../terminal-gate-retirement.js";
 
 let HEAD = "";
 const OTHER_HEAD = "b".repeat(40);
@@ -327,6 +328,102 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 			}),
 		);
 		expect(s.checkPr).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not retire a FLY-2394-shaped current gate through a colliding historical PR number", async () => {
+		const retirementRef: { current?: TerminalGateRetirement } = {};
+		const s = await setup({
+			prInfo: {
+				state: "merged",
+				mergeCommitOid: MERGE_OID,
+				headRefOid: OTHER_HEAD,
+			},
+			retireMergedGates: async (input) => {
+				if (!retirementRef.current)
+					throw new Error("retirement not initialized");
+				return retirementRef.current.retirePrMerged(input);
+			},
+		});
+		seedSession(s.store, { pr_number: 25, pr_head_sha: HEAD });
+		const commPath = join(tmpRoot, "comm", "proj", "comm.db");
+		const comm = new CommDB(commPath);
+		comm.registerSession(
+			"exec-1",
+			"session",
+			"proj",
+			"FLY-921",
+			"lead-1",
+			"codex",
+		);
+		const questionId = comm.insertQuestion("exec-1", "lead-1", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		comm.close();
+
+		s.store.createWorkflowRun({
+			runId: "run-collision",
+			issueId: "FLY-921",
+			projectName: "proj",
+			snapshotJson: "{}",
+			claimsReadEnrolled: true,
+		});
+		const rawStore = s.store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		rawStore.db.run(
+			"UPDATE workflow_run SET current_node_id = 'founder_gate' WHERE run_id = 'run-collision'",
+		);
+		rawStore.db.run(
+			`INSERT INTO workflow_run_node
+			   (run_id, node_id, attempt, state, execution_id, started_at)
+			 VALUES ('run-collision', 'qa', 2, 'done', 'exec-1',
+			         '2026-09-07T02:59:00.000Z')`,
+		);
+		rawStore.db.run(
+			`INSERT INTO workflow_node_pr_binding
+			   (run_id, node_id, attempt, pr_number, head_sha,
+			    target_repo_identity, probe_repo_slug, target_repo_path,
+			    worktree_binding_generation, receipt_id, bound_at)
+			 VALUES ('run-collision', 'qa', 2, 1103, ?, '__main__', 'x/proj', ?,
+			         'generation-collision', 'binding-collision',
+			         '2026-09-07T03:00:24.554Z')`,
+			[HEAD, worktreePath],
+		);
+		rawStore.db.run(
+			`INSERT INTO workflow_gate_holder
+			   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+			    question_id, state, materialization_stage, created_at, updated_at,
+			    authority_mode, subject_kind)
+			 VALUES ('run-collision', 'founder_gate', 1, ?, 'exec-1', ?,
+			         'awaiting_review', 'completed',
+			         '2026-09-07T03:00:24.554Z', '2026-09-07T03:00:24.554Z',
+			         'land', 'git_head')`,
+			[HEAD, questionId],
+		);
+		rawStore.db.run(
+			`INSERT INTO workflow_ship_target_binding
+			   (approve_question_id, run_id, target_repo_path, target_repo_identity,
+			    probe_repo_slug, frozen_head_sha, worktree_binding_generation)
+			 VALUES (?, 'run-collision', ?, '__main__', 'x/proj', ?,
+			         'generation-collision')`,
+			[questionId, worktreePath, HEAD],
+		);
+		retirementRef.current = new TerminalGateRetirement({
+			store: s.store,
+			projectNames: ["proj"],
+			commDbPathForProject: () => commPath,
+		});
+
+		await s.pass();
+
+		expect(s.checkPr).toHaveBeenCalledTimes(1);
+		expect(s.checkPr).toHaveBeenCalledWith("/tmp/proj", 25);
+		const readonly = CommDB.openReadonly(commPath);
+		expect(readonly.getMessageById(questionId)).toMatchObject({
+			relay_state: "open",
+			resolved_at: null,
+		});
+		readonly.close();
 	});
 
 	it("path 1: an already-merged PR does not re-run the open-PR CI probe", async () => {

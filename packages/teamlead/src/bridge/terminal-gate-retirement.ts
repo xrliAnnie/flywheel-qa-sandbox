@@ -189,6 +189,26 @@ export class TerminalGateRetirement {
 			for (const question of questions) {
 				const issueId = this.issueForQuestion(db, question);
 				if (!issueId || !aliases.has(issueId)) continue;
+				// A PR merge is never authority for an artifact review. Those gates
+				// converge through review-family supersede or issue-done authority.
+				if (
+					reason === "superseded_merged" &&
+					question.checkpoint === "founder_review"
+				) {
+					continue;
+				}
+				if (
+					reason === "superseded_merged" &&
+					question.checkpoint === "approve_to_ship" &&
+					!this.approveQuestionMatchesMergedPr({
+						questionId: question.id,
+						issueId,
+						projectName: input.projectName,
+						prNumber: (input as PrMergedGateRetirementInput).prNumber,
+					})
+				) {
+					continue;
+				}
 				let verdict: Awaited<ReturnType<TerminalAuthorityRevalidation>>;
 				try {
 					verdict = await input.revalidate();
@@ -209,6 +229,61 @@ export class TerminalGateRetirement {
 		} finally {
 			db?.close();
 		}
+	}
+
+	private approveQuestionMatchesMergedPr(input: {
+		questionId: string;
+		issueId: string;
+		projectName: string;
+		prNumber: number;
+	}): boolean {
+		const holder = this.options.store.getCurrentWorkflowGateHolderByQuestionId(
+			input.questionId,
+		);
+		if (!holder) return true;
+		if (
+			holder.authority_mode !== "land" &&
+			holder.authority_mode !== "runner_ship"
+		) {
+			return false;
+		}
+		const run = this.options.store.getWorkflowRun(holder.run_id);
+		if (
+			!run ||
+			run.status !== "active" ||
+			run.current_node_id !== holder.gate_node_id ||
+			run.issue_id !== input.issueId ||
+			run.project_name !== input.projectName
+		) {
+			return false;
+		}
+		const target = this.options.store.getWorkflowShipTargetBinding(
+			input.questionId,
+		);
+		if (
+			!target ||
+			target.superseded_at !== null ||
+			target.run_id !== holder.run_id ||
+			target.frozen_head_sha !== holder.head_sha ||
+			target.target_repo_identity !== "__main__"
+		) {
+			return false;
+		}
+		const nodeBinding =
+			this.options.store.getCurrentWorkflowNodePrBindingForHead(
+				holder.run_id,
+				holder.head_sha,
+			);
+		// Keep this identity chain aligned with gate-origin-preflight.ts; the
+		// retirement allow matrix is intentionally stricter and also binds PR no.
+		return !!(
+			nodeBinding &&
+			nodeBinding.run_id === holder.run_id &&
+			nodeBinding.head_sha === holder.head_sha &&
+			nodeBinding.target_repo_identity === target.target_repo_identity &&
+			nodeBinding.probe_repo_slug === target.probe_repo_slug &&
+			nodeBinding.pr_number === input.prNumber
+		);
 	}
 
 	private issueForQuestion(
