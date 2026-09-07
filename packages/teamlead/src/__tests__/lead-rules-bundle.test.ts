@@ -199,6 +199,10 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(summaryRule).toContain("FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=1");
 		expect(summaryRule).toContain("flywheel-comm summary --file");
 		expect(summaryRule).toContain("Judgment");
+		expect(summaryRule).toContain("## The due signal (FLY-2382)");
+		expect(summaryRule).toContain("原样使用事件里的 `--period`");
+		expect(summaryRule).toContain("唯一的节奏来源");
+		expect(summaryRule).toContain("可以不交");
 		const authority = readFileSync(
 			join(BASE_RULES_DIR, "founder-only-authority.md"),
 			"utf8",

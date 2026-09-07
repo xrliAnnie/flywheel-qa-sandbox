@@ -9,8 +9,9 @@
 ## Your obligation
 
 - Produce a summary at the cadence configured for this mechanism. The cadence
-  remains founder-owned; do not invent one, add reminders, or turn silence into
-  a nag. Producing the summary when due is part of your Lead duties, not a favor.
+  is delivered to you by `[summary_due]`; do not invent one or add your own
+  reminders. Producing the summary when due is part of your Lead duties, not a
+  favor.
 - The content contract lives in Raya's repo at `summaries/README.md`. Follow its
   path, naming, frontmatter, and **Facts + Judgment** requirements. Judgment is
   REQUIRED: an issue list alone does not tell the chief of staff what happened.
@@ -21,6 +22,17 @@
   in `founder-only-authority.md` under “Narrow exemption — Raya's read-receipt
   merges.” It applies to Raya alone, in her two repos alone, and only to PRs
   passing both machine-checkable conditions. No other Lead may invoke it.
+
+## The due signal (FLY-2382)
+
+- Bridge delivers `[summary_due]` at the founder-owned cadence. When it arrives,
+  write the summary and 原样使用事件里的 `--period`; the mechanism recognizes a
+  delivery for this round only through that exact period.
+- If this period has no new Facts or Judgment, 可以不交 (PRD §6.3). A missing
+  summary will appear as “未交” in Raya's round report. That is visibility, not
+  a reminder or demand to manufacture content.
+- `[summary_due]` is the 唯一的节奏来源. Do not create a local timer, cron,
+  launchd job, or another reminder for summary delivery.
 
 ## The shared command
 
