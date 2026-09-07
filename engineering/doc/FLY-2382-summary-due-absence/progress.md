@@ -1,13 +1,13 @@
 ---
 issue: FLY-2382
 phase: implement
-phaseCursor: 3/9
-updated: 2026-09-07T01:16:09.904Z
-nextStep: "TDD block 4: bounded strict GitHub summary delivery ledger"
+phaseCursor: 4/9
+updated: 2026-09-07T01:19:13.295Z
+nextStep: "TDD block 5: classify round truth axes and render absence report lines"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2382 progress
-**phase**: implement (3/9)
-**next**: TDD block 4: bounded strict GitHub summary delivery ledger
+**phase**: implement (4/9)
+**next**: TDD block 5: classify round truth axes and render absence report lines
