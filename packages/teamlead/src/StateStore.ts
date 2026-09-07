@@ -10392,6 +10392,54 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-2377: lookup a session-event payload across both the hot table and
+	 * terminal-row archive without conflating absence with malformed payload.
+	 */
+	lookupEventPayloadById(
+		eventId: string,
+	):
+		| { status: "missing" }
+		| { status: "invalid" }
+		| { status: "valid"; payload: Record<string, unknown> } {
+		const rows = this.workflowSelectAll(
+			"SELECT payload FROM session_events WHERE event_id = ? LIMIT 1",
+			[eventId],
+		);
+		let rawPayload: unknown;
+		if (rows.length > 0) {
+			rawPayload = rows[0]?.payload;
+		} else {
+			let archived: Record<string, unknown> | undefined;
+			try {
+				archived = findArchivedTerminalRow(this.db.raw, "session_events", [
+					eventId,
+				]);
+			} catch {
+				return { status: "invalid" };
+			}
+			if (!archived) return { status: "missing" };
+			rawPayload = archived.payload;
+		}
+		if (typeof rawPayload !== "string") return { status: "invalid" };
+		try {
+			const payload = JSON.parse(rawPayload) as unknown;
+			if (
+				typeof payload !== "object" ||
+				payload === null ||
+				Array.isArray(payload)
+			) {
+				return { status: "invalid" };
+			}
+			return {
+				status: "valid",
+				payload: payload as Record<string, unknown>,
+			};
+		} catch {
+			return { status: "invalid" };
+		}
+	}
+
+	/**
 	 * FLY-892 (Step 4): for the converged pipeline header, the LATEST session of
 	 * each DAG workflow role (design/implement/qa) on `issueId`. Keyed on
 	 * `chat_thread_role` (the persistent DAG workflow marker), NOT

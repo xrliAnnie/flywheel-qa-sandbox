@@ -41,8 +41,8 @@ const testProjects: ProjectEntry[] = [
 	},
 ] as unknown as ProjectEntry[];
 
-describe("FLY-2028 post-ship retry wiring", () => {
-	it("routes all six finalization entries through the one terminal archive buffer", () => {
+describe("FLY-2377 post-ship immediate archive wiring", () => {
+	it("removes quiet retry wiring from all finalization entries but keeps the non-ship buffer", () => {
 		const source = (path: string) =>
 			readFileSync(new URL(path, import.meta.url), "utf8");
 		const count = (text: string, needle: string) =>
@@ -53,34 +53,36 @@ describe("FLY-2028 post-ship retry wiring", () => {
 				source("../DirectEventSink.ts"),
 				"enqueueTerminalArchive: this.terminalArchiveEnqueue",
 			),
-		).toBe(1);
+		).toBe(0);
 		expect(
 			count(
 				source("../bridge/event-route.ts"),
 				"enqueueTerminalArchive: terminalArchiveEnqueue",
 			),
-		).toBe(2);
+		).toBe(0);
 		expect(
 			count(
 				source("../bridge/merge-ship-gate.ts"),
 				"enqueueTerminalArchive: terminalArchiveEnqueue",
 			),
-		).toBe(1);
+		).toBe(0);
 		expect(
 			count(
 				source("../bridge/external-merge-reconcile.ts"),
 				"enqueueTerminalArchive: deps.terminalArchiveEnqueue",
 			),
-		).toBe(1);
+		).toBe(0);
 		expect(
 			count(
 				source("../bridge/plugin.ts"),
 				"enqueueTerminalArchive: terminalArchiveEnqueue",
 			),
-		).toBeGreaterThanOrEqual(1);
-		expect(source("../bridge/actions.ts")).toContain("terminalArchiveEnqueue,");
-		expect(source("../bridge/founder-consent/wiring.ts")).toContain(
-			"deps.terminalArchiveEnqueue,",
+		).toBe(0);
+		expect(source("../bridge/actions.ts")).not.toContain(
+			"terminalArchiveEnqueue",
+		);
+		expect(source("../bridge/founder-consent/wiring.ts")).not.toContain(
+			"terminalArchiveEnqueue",
 		);
 		expect(source("../bridge/plugin.ts")).toContain(
 			"terminalArchiveBuffer.enqueue(issueId)",

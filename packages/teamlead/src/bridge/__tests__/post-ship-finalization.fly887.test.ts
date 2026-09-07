@@ -408,7 +408,7 @@ describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", (
 		expect(archivedEvent?.source).toBe("bridge.post-ship-finalization");
 	});
 
-	it("Discord-verified archived thread: ZERO PATCH + truthful already_archived audit", async () => {
+	it("Discord-verified archived thread: ZERO PATCH + deterministic closeout receipt", async () => {
 		const { store } = await makeStore();
 		seedShipped(store, "exec-s2", "FLY-11");
 		store.upsertChatThread("t-s2", "ch-eng", "FLY-11", "tadashi");
@@ -451,11 +451,20 @@ describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", (
 		expect(
 			events.some((e) => e.event_type === "chat_thread_archive_failed"),
 		).toBe(false);
-		const noop = events.find((e) => e.event_type === "chat_thread_archived");
-		expect(noop?.source).toBe("bridge.post-ship-finalization");
-		expect((noop?.payload as { reason?: string })?.reason).toBe(
-			"already_archived",
+		const receipt = events.find(
+			(e) =>
+				e.event_id === "chat-thread-archived-fly2377-execution-exec-s2-t-s2",
 		);
+		expect(receipt?.event_type).toBe("chat_thread_archived");
+		expect(receipt?.source).toBe("bridge.post-ship-finalization");
+		expect(receipt?.payload).toEqual({
+			receiptVersion: 1,
+			receiptKind: "post_ship_archive",
+			closeoutKind: "execution",
+			closeoutId: "exec-s2",
+			threadId: "t-s2",
+			issueId: "FLY-11",
+		});
 	});
 });
 

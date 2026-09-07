@@ -2100,7 +2100,6 @@ export function createBridgeApp(
 		// FLY-907: recovered-merge finalization display refresh (late-bound).
 		opts?.issueDisplayRefresh,
 		opts?.materializedHeadAuthority,
-		opts?.terminalArchiveEnqueue,
 		opts?.epicPageRefresher?.requestRefresh,
 	);
 	const fcNoop: express.RequestHandler = (_q, _s, next) => next();
@@ -2292,7 +2291,6 @@ export function createBridgeApp(
 			undefined, // cardAuthority
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
-			opts?.terminalArchiveEnqueue,
 			opts?.epicPageRefresher?.requestRefresh,
 		),
 	);
@@ -2868,7 +2866,6 @@ export function createBridgeApp(
 			undefined, // cardAuthority
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
-			opts?.terminalArchiveEnqueue,
 			opts?.epicPageRefresher?.requestRefresh,
 		),
 	);
@@ -6763,7 +6760,6 @@ export async function startBridge(
 						refreshIssueDisplay: (issueId) =>
 							issueDisplayRefreshHolder.current?.refresh(issueId) ??
 							Promise.resolve(),
-						enqueueTerminalArchive: terminalArchiveEnqueue,
 						...lifecycleInfra,
 					},
 				);
@@ -9242,7 +9238,6 @@ export async function startBridge(
 		config,
 		projects,
 		onEpicChange: epicPageRefresher.requestRefresh,
-		terminalArchiveEnqueue,
 		removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
 		probeTurnHolderLiveness: async (session) => {
 			if (!session.tmux_session) return "indeterminate";

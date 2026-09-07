@@ -29,7 +29,6 @@ import { finalizeRecoveredMerge } from "../merge-ship-gate.js";
 import { makeFinalizeWorkflowPhaseRoles } from "../post-ship-finalization.js";
 import { reviewHoldReason } from "../review-hold.js";
 import { sendRunnerWake } from "../runner-wake.js";
-import type { TerminalArchiveAdmission } from "../terminal-thread-archive.js";
 import { type BridgeConfig, sqliteDatetime } from "../types.js";
 import {
 	type FounderConsentAuditStore,
@@ -133,7 +132,6 @@ export function buildGateResponsePostWriteHook(deps: {
 		current?: { refresh(issueId: string): Promise<void> };
 	};
 	materializedHeadAuthority?: MaterializedHeadAuthority;
-	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission;
 	onEpicChange?: (projectName: string, reason: "linear_done") => void;
 }): (info: {
 	executionId: string;
@@ -222,7 +220,6 @@ export function buildGateResponsePostWriteHook(deps: {
 						: undefined,
 					deps.materializedHeadAuthority,
 					undefined,
-					deps.terminalArchiveEnqueue,
 					deps.onEpicChange,
 				);
 				if (completed) {
@@ -278,7 +275,6 @@ export function buildFounderConsentWiring(
 		current?: { refresh(issueId: string): Promise<void> };
 	},
 	materializedHeadAuthority?: MaterializedHeadAuthority,
-	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission,
 	onEpicChange?: (projectName: string, reason: "linear_done") => void,
 ): FounderConsentWiring | null {
 	const fc = config.founderConsent;
@@ -465,7 +461,6 @@ export function buildFounderConsentWiring(
 		// FLY-907: terminal-state display refresh on the recovered-merge path.
 		issueDisplayRefresh,
 		materializedHeadAuthority,
-		terminalArchiveEnqueue,
 		onEpicChange,
 	});
 

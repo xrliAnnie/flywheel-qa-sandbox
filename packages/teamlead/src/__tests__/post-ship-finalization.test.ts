@@ -1260,8 +1260,9 @@ describe("runPostShipFinalization", () => {
 		const landOperation = seedLandOperationClaim(store);
 		const order: string[] = [];
 		const postedBodies: string[] = [];
+		let frontierReads = 0;
 		let archived = false;
-		const frontier = snowflakeAt(Date.now() - 2 * 60 * 60_000);
+		const frontier = snowflakeAt(Date.now());
 		const fetchForThread = vi.fn(async (url: string, init: RequestInit) => {
 			if (init.method === "POST") {
 				const body = JSON.parse(init.body as string) as { content: string };
@@ -1276,6 +1277,7 @@ describe("runPostShipFinalization", () => {
 				});
 			}
 			if (url.includes("/messages?")) {
+				frontierReads += 1;
 				return new Response(JSON.stringify([{ id: frontier }]), {
 					status: 200,
 				});
@@ -1342,6 +1344,157 @@ describe("runPostShipFinalization", () => {
 				.listLandOperationSteps(landOperation.operationId)
 				.filter((step) => step.step === "terminal_notified"),
 		).toHaveLength(1);
+		expect(frontierReads).toBe(2);
+		expect(
+			store.getEventPayloadById(
+				`chat-thread-archived-fly2377-land-${landOperation.operationId}-thread-1`,
+			),
+		).toEqual({
+			receiptVersion: 1,
+			receiptKind: "post_ship_archive",
+			closeoutKind: "land",
+			closeoutId: landOperation.operationId,
+			threadId: "thread-1",
+			issueId: "FLY-102",
+		});
+	});
+
+	it("preserves a founder-reopened thread when the same land receipt replays", async () => {
+		const landOperation = seedLandOperationClaim(store);
+		const receiptId = `chat-thread-archived-fly2377-land-${landOperation.operationId}-thread-1`;
+		const receiptPayload = {
+			receiptVersion: 1,
+			receiptKind: "post_ship_archive",
+			closeoutKind: "land",
+			closeoutId: landOperation.operationId,
+			threadId: "thread-1",
+			issueId: "FLY-102",
+		};
+		store.commitThreadArchive("thread-1", {
+			event_id: receiptId,
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			event_type: "chat_thread_archived",
+			source: "test",
+			payload: receiptPayload,
+		});
+		const discordReadsOrPatches: string[] = [];
+		const archiveFn = vi.fn();
+		const fetchForThread = vi.fn(async (url: string, init: RequestInit) => {
+			if (init.method === "POST") {
+				return new Response(JSON.stringify({ id: "message" }), { status: 200 });
+			}
+			discordReadsOrPatches.push(`${init.method}:${url}`);
+			return new Response(
+				JSON.stringify({
+					name: "thread",
+					thread_metadata: { archived: false },
+				}),
+				{ status: 200 },
+			);
+		});
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				landOperation,
+			},
+			{
+				store,
+				projects: PROJECTS,
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone: vi.fn().mockResolvedValue({ done: true }),
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+				archiveFn,
+				fetchImpl: fetchForThread as unknown as typeof fetch,
+			},
+		);
+
+		expect(result).toMatchObject({ complete: true, outcome: "completed" });
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(discordReadsOrPatches).toEqual([]);
+		expect(store.getEventPayloadById(receiptId)).toEqual(receiptPayload);
+	});
+
+	it("does not let a stale archive epoch skip the current land archive", async () => {
+		store.markChatThreadArchived("thread-1");
+		const landOperation = seedLandOperationClaim(store);
+		const frontier = snowflakeAt(Date.now());
+		let archived = false;
+		const archiveFn = vi.fn(async () => {
+			archived = true;
+			return {
+				archived: true,
+				attempts: 1,
+				status: 200,
+				reason: "ok" as const,
+			};
+		});
+		const fetchForThread = vi.fn(async (url: string, init: RequestInit) => {
+			if (init.method === "POST") {
+				return new Response(JSON.stringify({ id: "message" }), { status: 200 });
+			}
+			if (url.includes("/messages?")) {
+				return new Response(JSON.stringify([{ id: frontier }]), {
+					status: 200,
+				});
+			}
+			return new Response(
+				JSON.stringify({
+					name: "thread",
+					thread_metadata: { archived },
+				}),
+				{ status: 200 },
+			);
+		});
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				landOperation,
+			},
+			{
+				store,
+				projects: PROJECTS,
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone: vi.fn().mockResolvedValue({ done: true }),
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+				archiveFn,
+				fetchImpl: fetchForThread as unknown as typeof fetch,
+			},
+		);
+
+		expect(result).toMatchObject({ complete: true, outcome: "completed" });
+		expect(archiveFn).toHaveBeenCalledOnce();
+		expect(
+			store.getEventPayloadById(
+				`chat-thread-archived-fly2377-land-${landOperation.operationId}-thread-1`,
+			),
+		).toMatchObject({
+			closeoutId: landOperation.operationId,
+			threadId: "thread-1",
+		});
 	});
 
 	it("keeps the thread open and Linear untouched when the terminal message fails", async () => {
@@ -1390,127 +1543,6 @@ describe("runPostShipFinalization", () => {
 		expect(archiveFn).not.toHaveBeenCalled();
 		expect(markIssueDone).not.toHaveBeenCalled();
 	});
-
-	it.each(["accepted", "deduped"] as const)(
-		"settles a quiet-window deferral only after targeted enqueue is %s",
-		async (admission) => {
-			const landOperation = seedLandOperationClaim(store);
-			const enqueueTerminalArchive = vi.fn(() => admission);
-			const fetchForThread = vi.fn(async (url: string, init: RequestInit) => {
-				if (init.method === "POST") {
-					return new Response(JSON.stringify({ id: "message" }), {
-						status: 200,
-					});
-				}
-				if (String(url).includes("/messages?")) {
-					return new Response(
-						JSON.stringify([{ id: snowflakeAt(Date.now()) }]),
-						{ status: 200 },
-					);
-				}
-				return new Response(
-					JSON.stringify({
-						name: "thread",
-						thread_metadata: { archived: false },
-					}),
-					{ status: 200 },
-				);
-			});
-
-			const result = await runResumablePostShipFinalization(
-				{
-					executionId: "exec-1",
-					issueId: "FLY-102",
-					issueIdentifier: "FLY-102",
-					projectName: "flywheel",
-					sessionStatus: "completed",
-					landOperation,
-				},
-				{
-					store,
-					projects: PROJECTS,
-					removeCleanWorktree: vi.fn().mockResolvedValue({
-						removed: true,
-						bindingVerified: true,
-					}),
-					markIssueDone: vi.fn().mockResolvedValue({ done: true }),
-					recordLinearDoneDisposition: vi.fn().mockReturnValue({
-						ok: true,
-						idempotentReplay: false,
-					}),
-					enqueueTerminalArchive,
-					fetchImpl: fetchForThread as unknown as typeof fetch,
-				},
-			);
-
-			expect(result).toMatchObject({ complete: true, outcome: "completed" });
-			expect(enqueueTerminalArchive).toHaveBeenCalledOnce();
-			expect(enqueueTerminalArchive).toHaveBeenCalledWith("FLY-102");
-		},
-	);
-
-	it.each([
-		["refused", vi.fn(() => "refused" as const)],
-		["missing", undefined],
-	] as const)(
-		"keeps land partial when a quiet-window deferral is %s from the targeted queue",
-		async (_case, enqueueTerminalArchive) => {
-			const landOperation = seedLandOperationClaim(store);
-			const fetchForThread = vi.fn(async (url: string, init: RequestInit) => {
-				if (init.method === "POST") {
-					return new Response(JSON.stringify({ id: "message" }), {
-						status: 200,
-					});
-				}
-				if (String(url).includes("/messages?")) {
-					return new Response(
-						JSON.stringify([{ id: snowflakeAt(Date.now()) }]),
-						{ status: 200 },
-					);
-				}
-				return new Response(
-					JSON.stringify({
-						name: "thread",
-						thread_metadata: { archived: false },
-					}),
-					{ status: 200 },
-				);
-			});
-
-			const result = await runResumablePostShipFinalization(
-				{
-					executionId: "exec-1",
-					issueId: "FLY-102",
-					issueIdentifier: "FLY-102",
-					projectName: "flywheel",
-					sessionStatus: "completed",
-					landOperation,
-				},
-				{
-					store,
-					projects: PROJECTS,
-					removeCleanWorktree: vi.fn().mockResolvedValue({
-						removed: true,
-						bindingVerified: true,
-					}),
-					markIssueDone: vi.fn().mockResolvedValue({ done: true }),
-					recordLinearDoneDisposition: vi.fn().mockReturnValue({
-						ok: true,
-						idempotentReplay: false,
-					}),
-					enqueueTerminalArchive,
-					fetchImpl: fetchForThread as unknown as typeof fetch,
-				},
-			);
-
-			expect(result).toMatchObject({
-				complete: false,
-				outcome: "partial",
-				reason: "land_archive_deferred_unqueued",
-				details: { threadArchived: false },
-			});
-		},
-	);
 
 	it("maps a thrown pre-arbitration read to retryable partial for resumable land", async () => {
 		const result = await runResumablePostShipFinalization(

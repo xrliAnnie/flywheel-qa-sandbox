@@ -64,7 +64,6 @@ import {
 } from "./merge-ship-gate.js";
 import { runPostShipFinalization } from "./post-ship-finalization.js";
 import { classifyBlockerLocal } from "./stale-blocker-guard.js";
-import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
@@ -142,7 +141,6 @@ export interface ExternalMergeReconcileDeps {
 	config: BridgeConfig;
 	projects: ProjectEntry[];
 	onEpicChange?: (projectName: string, reason: "linear_done") => void;
-	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission;
 	/** FLY-603 worktree cleanup closure (same one the sinks thread through). */
 	removeCleanWorktree?: WorktreeCleanupFn;
 	withIssueLifecycleMutex?: <T>(
@@ -496,7 +494,6 @@ export function createExternalMergeReconciler(
 						deps.onEpicChange?.(projectName, "linear_done"),
 				}),
 				withIssueLifecycleMutex: deps.withIssueLifecycleMutex,
-				enqueueTerminalArchive: deps.terminalArchiveEnqueue,
 			},
 		);
 		deps.store.insertEvent({
