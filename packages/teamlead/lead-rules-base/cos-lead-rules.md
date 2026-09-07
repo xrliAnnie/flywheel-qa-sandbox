@@ -231,7 +231,9 @@ Required behavior:
 | Annie framing | "Runner is waiting for you" | "Runner is asking (continues working)" |
 | Survive Runner completion | Skipped after session leaves active | Stays pending until answered or TTL |
 
-Only `gate_question` and `[ASK] runner_question` reply with `flywheel-comm respond`.
+Only non-`approve_to_ship` `gate_question` and `[ASK] runner_question` reply with `flywheel-comm respond`.
+For `approve_to_ship`, relay the Discord ship card to the founder; a Lead must
+not answer that gate on her behalf.
 The trusted `[REPORT]` runner-stop exception is ACK-only and never receives a response.
 
 This rule is intentionally parallel to the dept-lead `Runner Question Handling` rule — both ship as a unit so any Lead that owns a Runner can handle `runner_question`.

@@ -1034,8 +1034,10 @@ To drive or unblock a parked (awaiting-lead / idle) Runner, use a channel that
 **wakes** it. Do **not** use `flywheel-comm respond` to reply to a non-gate
 question as a way to "nudge" it — for a non-gate, markerless question `respond`
 writes CommDB but does **not** write the mailbox, so it **silently fails to wake**
-(no error). `respond` is for **gate answers only** (`approve_to_ship`,
-`clarify_question`, …).
+(no error). `respond` is for authorized **non-ship gate answers only**
+(`clarify_question`, project-specific gates, …). Never use it for
+`approve_to_ship`: relay that gate to the founder, who must act on the Discord
+ship card.
 
 **Backend-self-contained** (this file loads on both the mailbox path AND the
 `commdb` rollback path, where `runner-messaging-rules.md` is intentionally

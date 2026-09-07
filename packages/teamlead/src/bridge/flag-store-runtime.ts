@@ -159,6 +159,17 @@ export function storeDatabaseArchiveEnabled(
 	return readScopedBoolean(runtime, "database_archive", projectName);
 }
 
+export function storeWorkflowGateQuestionRecoveryEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(
+		runtime,
+		"workflow_gate_question_recovery",
+		projectName,
+	);
+}
+
 export function storeDocFlowEnabled(
 	runtime: FlagStoreRuntime,
 	projectName: string,

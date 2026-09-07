@@ -23038,6 +23038,9 @@ export class StateStore {
 				  CHECK (carrier_binding_state IN ('unbound','bound')),
 				approval_origin TEXT
 				  CHECK (approval_origin IS NULL OR approval_origin = 'engine_equivalence_carryover'),
+				recovery_source_question_id TEXT,
+				recovery_origin_receipt_digest TEXT,
+				recovery_origin_verified_at TEXT,
 				card_message_id TEXT,
 				card_post_intent_seq INTEGER NOT NULL DEFAULT 0
 				  CHECK (card_post_intent_seq >= 0),
@@ -23109,6 +23112,9 @@ export class StateStore {
 			"origin_probe_last_reason TEXT",
 			"origin_probe_verified_at TEXT",
 			"approval_origin TEXT CHECK (approval_origin IS NULL OR approval_origin = 'engine_equivalence_carryover')",
+			"recovery_source_question_id TEXT",
+			"recovery_origin_receipt_digest TEXT",
+			"recovery_origin_verified_at TEXT",
 		]) {
 			try {
 				this.db.run(`ALTER TABLE workflow_gate_holder ADD COLUMN ${column}`);
@@ -23156,6 +23162,31 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_workflow_gate_holder_question ON workflow_gate_holder(question_id, state)",
 		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_gate_holder_recovery_evidence (
+				question_id TEXT PRIMARY KEY,
+				source_question_id TEXT NOT NULL,
+				receipt_json TEXT NOT NULL,
+				receipt_digest TEXT NOT NULL,
+				verified_at TEXT NOT NULL,
+				FOREIGN KEY (question_id) REFERENCES workflow_gate_holder(question_id),
+				FOREIGN KEY (source_question_id) REFERENCES workflow_gate_holder(question_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_gate_holder_recovery_evidence_no_update
+			BEFORE UPDATE ON workflow_gate_holder_recovery_evidence
+			BEGIN
+				SELECT RAISE(ABORT, 'workflow_gate_holder_recovery_evidence is immutable');
+			END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_gate_holder_recovery_evidence_no_delete
+			BEFORE DELETE ON workflow_gate_holder_recovery_evidence
+			BEGIN
+				SELECT RAISE(ABORT, 'workflow_gate_holder_recovery_evidence is immutable');
+			END
+		`);
 		// FLY-1614: runner_ship approval is not complete until the approved
 		// carrier has a durable delivery intent. The coordinator may crash at
 		// any later point; this row is committed in the founder-approval
@@ -55104,6 +55135,11 @@ export class StateStore {
 		sourceExecutionId: string;
 		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
 		runnerShipHeadSha?: string;
+		recovery?: {
+			sourceQuestionId: string;
+			originReceipt: WorkflowGateOriginInspectionReceipt;
+		};
+		supersedeReason?: "new_gate_attempt" | "question_unanswerable_recovery";
 		alertIdentity?: WorkflowEngineAlertIdentity;
 		now: string;
 	}): WorkflowGateHolderRow {
@@ -55116,20 +55152,49 @@ export class StateStore {
 				);
 			}
 		}
-		const proof = this.resolveWorkflowGateEvidenceTx({
-			runId: input.runId,
-			snapshot: input.snapshot,
-			...(input.runnerShipHeadSha
-				? { runnerShipHeadSha: input.runnerShipHeadSha }
-				: {}),
-			now: input.now,
-		});
-		if (proof.subjectKind !== authority.subjectKind) {
+		const recoverySource = input.recovery
+			? this.getWorkflowGateHolderByQuestionId(
+					input.recovery.sourceQuestionId,
+				)
+			: undefined;
+		if (
+			input.recovery &&
+			(!recoverySource ||
+				recoverySource.run_id !== input.runId ||
+				recoverySource.gate_node_id !== input.gateNodeId ||
+				recoverySource.authority_mode !== "land" ||
+				(recoverySource.subject_kind ?? "git_head") !== "git_head")
+		) {
+			throw new Error("workflow_gate_recovery_source_invalid");
+		}
+		const resolvedProof = input.recovery
+			? undefined
+			: this.resolveWorkflowGateEvidenceTx({
+					runId: input.runId,
+					snapshot: input.snapshot,
+					...(input.runnerShipHeadSha
+						? { runnerShipHeadSha: input.runnerShipHeadSha }
+						: {}),
+					now: input.now,
+				});
+		const proofSubjectKind = input.recovery
+			? (recoverySource!.subject_kind ?? "git_head")
+			: resolvedProof!.subjectKind;
+		const proofSubjectDigest = input.recovery
+			? recoverySource!.head_sha
+			: resolvedProof!.subjectDigest;
+		const recoveryEvidence = input.recovery
+			? this.listWorkflowGateHolderEvidence(recoverySource!)
+			: [];
+		const evidenceClaimIds = input.recovery
+			? recoveryEvidence.map((entry) => entry.claim_id)
+			: resolvedProof!.evidence.map((entry) => entry.claim.id);
+		if (proofSubjectKind !== authority.subjectKind) {
 			throw new Error("workflow_gate_subject_contract_conflict");
 		}
 		if (authority.mode === "runner_ship") {
 			const runnerHead = input.runnerShipHeadSha!.trim().toLowerCase();
-			if (proof.subjectDigest.toLowerCase() !== runnerHead) {
+			if (proofSubjectDigest.toLowerCase() !== runnerHead) {
 				throw new WorkflowEngineInvariantError("runner_ship_qa_head_stale");
 			}
 		}
@@ -55137,8 +55202,8 @@ export class StateStore {
 			runId: input.runId,
 			gateNodeId: input.gateNodeId,
 			attempt: input.attempt,
-			subjectKind: proof.subjectKind,
-			subjectDigest: proof.subjectDigest,
+			subjectKind: proofSubjectKind,
+			subjectDigest: proofSubjectDigest,
 		})}`;
 		let holderSourceExecutionId = input.sourceExecutionId;
 		let carrierBindingState: "unbound" | "bound" =
@@ -55163,7 +55228,7 @@ export class StateStore {
 					: this.getSession(candidate.execution_id);
 			const prBinding = this.getCurrentWorkflowNodePrBindingForHead(
 				input.runId,
-				proof.subjectDigest,
+				proofSubjectDigest,
 			);
 			const mirrorFence = prBinding
 				? this.workflowGateEntryMirrorFenceTx({
@@ -55178,13 +55243,13 @@ export class StateStore {
 				(session?.pr_head_sha?.toLowerCase() ===
 					mirrorFence.expectedProducerMirrorHead ||
 					session?.pr_head_sha?.toLowerCase() ===
-						proof.subjectDigest.toLowerCase());
+						proofSubjectDigest.toLowerCase());
 			const carrierMatchesDirectBinding =
 				prBinding?.node_id === authority.carrierNodeId &&
 				prBinding?.attempt === candidate?.attempt &&
 				session?.pr_number === prBinding.pr_number &&
 				session.pr_head_sha?.toLowerCase() ===
-					proof.subjectDigest.toLowerCase();
+					proofSubjectDigest.toLowerCase();
 			if (
 				candidate?.execution_id &&
 				activation &&
@@ -55206,7 +55271,7 @@ export class StateStore {
 				    AND review_question_id IS NULL`,
 					[
 						questionId,
-						proof.subjectDigest,
+						proofSubjectDigest,
 						input.now,
 						input.now,
 						candidate.execution_id,
@@ -55227,26 +55292,31 @@ export class StateStore {
 		this.supersedeWorkflowGateHoldersTx({
 			runId: input.runId,
 			gateNodeId: input.gateNodeId,
-			reason: "new_gate_attempt",
+			reason: input.supersedeReason ?? "new_gate_attempt",
 			now: input.now,
 		});
 		this.db.run(
 			`INSERT INTO workflow_gate_holder
 			   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
 			    question_id, authority_mode, subject_kind, carrier_binding_state,
-			    state, materialization_stage, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'materializing',
+			    recovery_source_question_id, recovery_origin_receipt_digest,
+			    recovery_origin_verified_at, state, materialization_stage,
+			    created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'materializing',
 			         'question_intent', ?, ?)`,
 			[
 				input.runId,
 				input.gateNodeId,
 				input.attempt,
-				proof.subjectDigest,
+				proofSubjectDigest,
 				holderSourceExecutionId,
 				questionId,
 				authority.mode,
-				proof.subjectKind,
+				proofSubjectKind,
 				carrierBindingState,
+				input.recovery?.sourceQuestionId ?? null,
+				input.recovery?.originReceipt.digest ?? null,
+				input.recovery?.originReceipt.observedAt ?? null,
 				input.now,
 				input.now,
 			],
@@ -55258,7 +55328,7 @@ export class StateStore {
 			runId: input.runId,
 			mintedAt: input.now,
 		});
-		for (const entry of proof.evidence) {
+		for (const entry of resolvedProof?.evidence ?? []) {
 			this.db.run(
 				`INSERT INTO workflow_gate_holder_evidence
 				   (run_id, gate_node_id, holder_attempt, holder_subject_digest,
@@ -55269,7 +55339,7 @@ export class StateStore {
 					input.runId,
 					input.gateNodeId,
 					input.attempt,
-					proof.subjectDigest,
+					proofSubjectDigest,
 					entry.claim.id,
 					entry.predicate,
 					entry.decisionKind,
@@ -55281,11 +55351,26 @@ export class StateStore {
 				],
 			);
 		}
+		if (input.recovery) {
+			this.db.run(
+				`INSERT INTO workflow_gate_holder_recovery_evidence
+				   (question_id, source_question_id, receipt_json, receipt_digest,
+				    verified_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					questionId,
+					input.recovery.sourceQuestionId,
+					canonicalJsonString(input.recovery.originReceipt),
+					input.recovery.originReceipt.digest,
+					input.recovery.originReceipt.observedAt,
+				],
+			);
+		}
 		if (carrierBindingState === "bound") {
 			this.bindWorkflowShipTargetForGateTx({
 				runId: input.runId,
 				questionId,
-				headSha: proof.subjectDigest,
+				headSha: proofSubjectDigest,
 			});
 		}
 		this.appendWorkflowRunEventTx({
@@ -55298,10 +55383,17 @@ export class StateStore {
 				attempt: input.attempt,
 				questionId,
 				authorityMode: authority.mode,
-				subjectKind: proof.subjectKind,
-				subjectDigest: proof.subjectDigest,
+				subjectKind: proofSubjectKind,
+				subjectDigest: proofSubjectDigest,
 				carrierBindingState,
-				evidenceClaimIds: proof.evidence.map((entry) => entry.claim.id),
+				evidenceClaimIds,
+				...(input.recovery
+					? {
+							recoverySourceQuestionId: input.recovery.sourceQuestionId,
+							originReceiptDigest: input.recovery.originReceipt.digest,
+							originVerifiedAt: input.recovery.originReceipt.observedAt,
+						}
+					: {}),
 			},
 		});
 		if (carrierBindingState === "unbound") {
@@ -55317,7 +55409,7 @@ export class StateStore {
 				payload: {
 					questionId,
 					carrierNodeId: authority.carrierNodeId ?? null,
-					subjectDigest: proof.subjectDigest,
+					subjectDigest: proofSubjectDigest,
 				},
 			});
 			const alertIdentity = input.alertIdentity ?? {
@@ -55336,7 +55428,7 @@ export class StateStore {
 					nodeId: input.gateNodeId,
 					executionId: input.sourceExecutionId,
 					questionId,
-					subjectDigest: proof.subjectDigest,
+					subjectDigest: proofSubjectDigest,
 					carrierNodeId: authority.carrierNodeId ?? null,
 					identity: alertIdentity,
 				}),
@@ -57225,7 +57317,8 @@ export class StateStore {
 			| "operator_rework"
 			| "land_rework"
 			| "head_refresh_equivalent"
-			| "run_sessionless";
+			| "run_sessionless"
+			| "question_unanswerable_recovery";
 		now: string;
 	}): { updated: number } {
 		const predicates = ["run_id = ?"];
@@ -57364,6 +57457,406 @@ export class StateStore {
 		this.save();
 		if (!holder) throw new Error("workflow_gate_holder_not_created");
 		return holder;
+	}
+
+	listWorkflowGateQuestionRecoveryCandidates(
+		projectName: string,
+		limit = 20,
+	): WorkflowGateQuestionRecoveryCandidate[] {
+		if (!projectName.trim()) return [];
+		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+		return this.workflowSelectAll(
+			`SELECT holder.*, run.project_name, run.issue_id,
+			        (
+			          SELECT COUNT(*) FROM workflow_gate_holder prior
+			           WHERE prior.run_id = holder.run_id
+			             AND prior.gate_node_id = holder.gate_node_id
+			             AND prior.head_sha = holder.head_sha
+			             AND prior.superseded_reason = 'question_unanswerable_recovery'
+			        ) AS recovery_count
+			   FROM workflow_gate_holder holder
+			   JOIN workflow_run run ON run.run_id = holder.run_id
+			   JOIN workflow_ship_target_binding target
+			     ON target.approve_question_id = holder.question_id
+			  WHERE run.project_name = ?
+			    AND run.status = 'active'
+			    AND run.engine_owned = 1
+			    AND run.gate_carrier_epoch = 1
+			    AND run.current_node_id = holder.gate_node_id
+			    AND holder.state = 'awaiting_review'
+			    AND holder.authority_mode = 'land'
+			    AND holder.subject_kind = 'git_head'
+			    AND holder.carrier_binding_state = 'bound'
+			    AND holder.card_message_id IS NOT NULL
+			    AND target.run_id = holder.run_id
+			    AND target.frozen_head_sha = holder.head_sha
+			    AND target.superseded_at IS NULL
+			  ORDER BY holder.created_at, holder.question_id
+			  LIMIT ?`,
+			[projectName, boundedLimit],
+		).map((row) => ({
+			runId: String(row.run_id),
+			projectName: String(row.project_name),
+			issueId: String(row.issue_id),
+			questionId: String(row.question_id),
+			gateNodeId: String(row.gate_node_id),
+			attempt: Number(row.attempt),
+			headSha: String(row.head_sha),
+			sourceExecutionId: String(row.source_execution_id),
+			cardMessageId: String(row.card_message_id),
+			recoveryCount: Number(row.recovery_count),
+		}));
+	}
+
+	recoverUnanswerableWorkflowGate(input: {
+		runId: string;
+		gateNodeId: string;
+		questionId: string;
+		headSha: string;
+		originReceipt: WorkflowGateOriginInspectionReceipt;
+		now: string;
+	}): WorkflowGateQuestionRecoveryResult {
+		const headSha = input.headSha.trim().toLowerCase();
+		const { digest, ...receiptPayload } = input.originReceipt;
+		if (
+			!input.runId.trim() ||
+			!input.gateNodeId.trim() ||
+			!input.questionId.trim() ||
+			!/^[0-9a-f]{40}$/.test(headSha) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		if (
+			workflowGateOriginInspectionReceiptDigest(receiptPayload) !== digest ||
+			input.originReceipt.schemaVersion !== 1 ||
+			input.originReceipt.outcome !== "ok"
+		) {
+			return { ok: false, reason: "origin_receipt_invalid" };
+		}
+
+		const replay = this.workflowSelectAll(
+			`SELECT holder.*
+			   FROM workflow_gate_holder_recovery_evidence evidence
+			   JOIN workflow_gate_holder holder
+			     ON holder.question_id = evidence.question_id
+			  WHERE evidence.source_question_id = ?
+			    AND evidence.receipt_digest = ?
+			  LIMIT 1`,
+			[input.questionId, digest],
+		)[0];
+		if (
+			replay &&
+			replay.run_id === input.runId &&
+			replay.gate_node_id === input.gateNodeId &&
+			String(replay.head_sha).toLowerCase() === headSha
+		) {
+			return {
+				ok: true,
+				idempotentReplay: true,
+				questionId: String(replay.question_id),
+			};
+		}
+
+		const nowMs = Date.parse(input.now);
+		const observedAtMs = Date.parse(input.originReceipt.observedAt);
+		const expiresAtMs = Date.parse(input.originReceipt.expiresAt);
+		if (
+			!StateStore.workflowFiniteTimestamp(input.originReceipt.observedAt) ||
+			!StateStore.workflowFiniteTimestamp(input.originReceipt.expiresAt) ||
+			observedAtMs > nowMs ||
+			expiresAtMs < nowMs ||
+			expiresAtMs <= observedAtMs
+		) {
+			return { ok: false, reason: "origin_receipt_stale" };
+		}
+
+		const holder = this.getCurrentWorkflowGateHolderByQuestionId(
+			input.questionId,
+		);
+		const run = holder ? this.getWorkflowRun(holder.run_id) : undefined;
+		const target = holder
+			? this.getWorkflowShipTargetBinding(holder.question_id)
+			: undefined;
+		const prBinding = holder
+			? this.getCurrentWorkflowNodePrBindingForHead(
+					holder.run_id,
+					holder.head_sha,
+				)
+			: undefined;
+		if (
+			!holder ||
+			!run?.snapshot ||
+			holder.run_id !== input.runId ||
+			holder.gate_node_id !== input.gateNodeId ||
+			holder.state !== "awaiting_review" ||
+			holder.head_sha !== headSha ||
+			holder.authority_mode !== "land" ||
+			(holder.subject_kind ?? "git_head") !== "git_head" ||
+			holder.carrier_binding_state !== "bound" ||
+			run.status !== "active" ||
+			run.engine_owned !== 1 ||
+			run.gate_carrier_epoch !== 1 ||
+			run.current_node_id !== holder.gate_node_id ||
+			!target ||
+			target.superseded_at !== null ||
+			target.run_id !== run.run_id ||
+			target.frozen_head_sha !== headSha ||
+			!prBinding ||
+			input.originReceipt.projectName !== run.project_name ||
+			input.originReceipt.issueId !== run.issue_id ||
+			input.originReceipt.runId !== run.run_id ||
+			input.originReceipt.gateNodeId !== holder.gate_node_id ||
+			input.originReceipt.questionId !== holder.question_id ||
+			input.originReceipt.headSha !== headSha ||
+			input.originReceipt.prNumber !== prBinding.pr_number ||
+			input.originReceipt.targetRepoIdentity !==
+				target.target_repo_identity ||
+			input.originReceipt.probeRepoSlug !== target.probe_repo_slug ||
+			input.originReceipt.targetRepoPath !== target.target_repo_path ||
+			input.originReceipt.worktreeBindingGeneration !==
+				target.worktree_binding_generation ||
+			prBinding.target_repo_identity !== target.target_repo_identity ||
+			prBinding.probe_repo_slug !== target.probe_repo_slug ||
+			prBinding.target_repo_path !== target.target_repo_path ||
+			prBinding.worktree_binding_generation !==
+				target.worktree_binding_generation ||
+			prBinding.head_sha !== headSha
+		) {
+			return { ok: false, reason: "gate_not_recoverable" };
+		}
+		const priorRecoveries = this.workflowSelectAll(
+			`SELECT COUNT(*) AS count
+			   FROM workflow_gate_holder
+			  WHERE run_id = ? AND gate_node_id = ? AND head_sha = ?
+			    AND superseded_reason = 'question_unanswerable_recovery'`,
+			[input.runId, input.gateNodeId, headSha],
+		)[0];
+		if (Number(priorRecoveries?.count ?? 0) >= 3) {
+			return { ok: false, reason: "recovery_limit_reached" };
+		}
+
+		let result: WorkflowGateQuestionRecoveryResult = {
+			ok: false,
+			reason: "recovery_transaction_failed",
+		};
+		try {
+			this.db.transaction(() => {
+				const current = this.getCurrentWorkflowGateHolder(
+					input.runId,
+					input.gateNodeId,
+				);
+				const currentRun = this.getWorkflowRun(input.runId);
+				const currentTarget = this.getWorkflowShipTargetBinding(input.questionId);
+				const currentPr = this.getCurrentWorkflowNodePrBindingForHead(
+					input.runId,
+					headSha,
+				);
+				if (
+					current?.question_id !== input.questionId ||
+					current.state !== "awaiting_review" ||
+					current.head_sha !== headSha ||
+					currentRun?.status !== "active" ||
+					currentRun.current_node_id !== input.gateNodeId ||
+					currentRun.engine_owned !== 1 ||
+					currentRun.gate_carrier_epoch !== 1 ||
+					currentTarget?.superseded_at !== null ||
+					currentTarget?.frozen_head_sha !== headSha ||
+					currentPr?.pr_number !== input.originReceipt.prNumber ||
+					currentPr.head_sha !== headSha
+				) {
+					result = { ok: false, reason: "gate_not_recoverable" };
+					return;
+				}
+				const snapshot = parseWorkflowRunSnapshot(currentRun.snapshot!);
+				const replacementAttempt = current.attempt + 1;
+				this.upsertWorkflowRunNodeTx({
+					runId: input.runId,
+					nodeId: input.gateNodeId,
+					attempt: replacementAttempt,
+					state: "review",
+				});
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid: `gate_opened:${input.runId}:${input.gateNodeId}:${replacementAttempt}`,
+					kind: "gate_opened",
+					nodeId: input.gateNodeId,
+					payload: {
+						attempt: replacementAttempt,
+						predicate: workflowApprovalGate(snapshot.manifest).predicate,
+					},
+				});
+				const replacement = this.createWorkflowGateHolderTx({
+					runId: input.runId,
+					gateNodeId: input.gateNodeId,
+					attempt: replacementAttempt,
+					sourceExecutionId: current.source_execution_id,
+					snapshot,
+					recovery: {
+						sourceQuestionId: input.questionId,
+						originReceipt: input.originReceipt,
+					},
+					supersedeReason: "question_unanswerable_recovery",
+					now: input.now,
+				});
+				this.appendWorkflowRunEventTx({
+					runId: input.runId,
+					eventUid: `gate_question_recovered:${input.questionId}`,
+					kind: "gate_question_recovered",
+					nodeId: input.gateNodeId,
+					executionId: current.source_execution_id,
+					payload: {
+						oldQuestionId: input.questionId,
+						newQuestionId: replacement.question_id,
+						headSha,
+						originReceiptDigest: digest,
+						originVerifiedAt: input.originReceipt.observedAt,
+					},
+				});
+				result = {
+					ok: true,
+					idempotentReplay: false,
+					questionId: replacement.question_id,
+				};
+			});
+		} catch {
+			return { ok: false, reason: "recovery_transaction_failed" };
+		}
+		if (result.ok) this.save();
+		return result;
+	}
+
+	recordWorkflowGateQuestionRecoveryAlert(input: {
+		kind: "origin_inspection_blocked" | "recovery_limit_reached";
+		candidate: WorkflowGateQuestionRecoveryCandidate;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowAlertIdentityValid(input.alertIdentity) ||
+			input.alertIdentity.projectName !== input.candidate.projectName
+		) {
+			return { ok: false, reason: "invalid_gate_question_recovery_alert" };
+		}
+		const eventUid =
+			input.kind === "origin_inspection_blocked"
+				? `workflow_gate_question_recovery_origin_blocked:${input.candidate.questionId}`
+				: `workflow_gate_question_recovery_exhausted:${input.candidate.runId}:${input.candidate.gateNodeId}:${input.candidate.headSha}`;
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "gate_question_recovery_alert_not_committed",
+		};
+		try {
+			this.db.transaction(() => {
+				const prior = this.workflowSelectAll(
+					"SELECT kind FROM workflow_run_event WHERE event_uid = ?",
+					[eventUid],
+				)[0];
+				if (prior) {
+					if (prior.kind !== "gate_question_recovery_alerted") {
+						result = {
+							ok: false,
+							reason: "gate_question_recovery_alert_uid_conflict",
+						};
+						return;
+					}
+					result = { ok: true, idempotentReplay: true };
+					return;
+				}
+				const holder = this.getCurrentWorkflowGateHolder(
+					input.candidate.runId,
+					input.candidate.gateNodeId,
+				);
+				const run = this.getWorkflowRun(input.candidate.runId);
+				if (
+					!holder ||
+					!run ||
+					run.status !== "active" ||
+					run.engine_owned !== 1 ||
+					run.gate_carrier_epoch !== 1 ||
+					run.project_name !== input.candidate.projectName ||
+					run.issue_id !== input.candidate.issueId ||
+					run.current_node_id !== input.candidate.gateNodeId ||
+					holder.question_id !== input.candidate.questionId ||
+					holder.attempt !== input.candidate.attempt ||
+					holder.head_sha !== input.candidate.headSha ||
+					holder.source_execution_id !== input.candidate.sourceExecutionId ||
+					holder.card_message_id !== input.candidate.cardMessageId ||
+					holder.state !== "awaiting_review"
+				) {
+					result = {
+						ok: false,
+						reason: "gate_question_recovery_alert_context_changed",
+					};
+					return;
+				}
+				const payload = {
+					kind: input.kind,
+					questionId: input.candidate.questionId,
+					headSha: input.candidate.headSha,
+					recoveryCount: input.candidate.recoveryCount,
+					at: input.now,
+				};
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.candidate.runId,
+					eventUid,
+					kind: "gate_question_recovery_alerted",
+					nodeId: input.candidate.gateNodeId,
+					executionId: input.candidate.sourceExecutionId,
+					payload,
+				});
+				const capped = input.kind === "recovery_limit_reached";
+				const alertPayload: WorkflowEngineAlertPayload = {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_escalation",
+					severity: capped ? "severe" : "warning",
+					sessionKey: `wf:${input.candidate.runId}`,
+					title: capped
+						? `Founder ship gate recovery stopped for ${input.candidate.issueId}`
+						: `Founder ship gate origin inspection blocked for ${input.candidate.issueId}`,
+					body: capped
+						? `The founder ship gate for ${input.candidate.issueId} reached the same-head recovery limit. The current holder and card remain unchanged for Lead inspection.`
+						: `The founder ship gate for ${input.candidate.issueId} is unanswerable, but its PR origin could not be verified. The current holder and card remain unchanged; recovery will not guess across this boundary.`,
+					metadata: {
+						workflowEngine: {
+							runId: input.candidate.runId,
+							issueId: input.candidate.issueId,
+							nodeId: input.candidate.gateNodeId,
+							executionId: input.candidate.sourceExecutionId,
+							disposition: input.kind,
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				};
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid: eventUid,
+					runId: input.candidate.runId,
+					payload: alertPayload,
+					now: input.now,
+				});
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.candidate.runId,
+					eventUid: `alert_enqueued:${eventUid}`,
+					kind: "workflow_engine_alert_enqueued",
+					payload: { escalationUid: eventUid },
+				});
+				result = { ok: true, idempotentReplay: false };
+			});
+		} catch {
+			return { ok: false, reason: "gate_question_recovery_alert_failed" };
+		}
+		const settled = result as
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string };
+		if (settled.ok && !settled.idempotentReplay) this.save();
+		return settled;
 	}
 
 	advanceWorkflowGateHolderMaterialization(input: {
@@ -57898,10 +58391,25 @@ export class StateStore {
 		if (!StateStore.workflowFiniteTimestamp(now)) return [];
 		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
 		return this.workflowSelectAll(
-			`SELECT * FROM workflow_gate_holder
-			  WHERE state = 'superseded' AND card_void_state = 'pending'
-			    AND (card_void_next_at IS NULL OR card_void_next_at <= ?)
-			  ORDER BY card_void_next_at ASC, question_id ASC
+			`SELECT holder.* FROM workflow_gate_holder holder
+			  WHERE holder.state = 'superseded'
+			    AND holder.card_void_state = 'pending'
+			    AND (holder.card_void_next_at IS NULL OR holder.card_void_next_at <= ?)
+			    AND (
+			      holder.superseded_reason IS NULL
+			      OR holder.superseded_reason != 'question_unanswerable_recovery'
+			      OR EXISTS (
+			        SELECT 1 FROM workflow_gate_holder replacement
+			         WHERE replacement.recovery_source_question_id = holder.question_id
+			           AND replacement.run_id = holder.run_id
+			           AND replacement.gate_node_id = holder.gate_node_id
+			           AND replacement.head_sha = holder.head_sha
+			           AND replacement.state IN ('awaiting_review','approved')
+			           AND replacement.materialization_stage = 'completed'
+			           AND replacement.card_message_id IS NOT NULL
+			      )
+			    )
+			  ORDER BY holder.card_void_next_at ASC, holder.question_id ASC
 			  LIMIT ?`,
 			[now, boundedLimit],
 		) as unknown as WorkflowGateHolderRow[];
@@ -60116,15 +60624,35 @@ export class StateStore {
 		holder: Pick<
 			WorkflowGateHolderRow,
 			"run_id" | "gate_node_id" | "attempt" | "head_sha"
-		>,
+		> &
+			Partial<
+				Pick<
+					WorkflowGateHolderRow,
+					"question_id" | "recovery_source_question_id"
+				>
+			>,
 	): WorkflowGateHolderEvidenceRow[] {
-		return this.workflowSelectAll(
-			`SELECT * FROM workflow_gate_holder_evidence
-			  WHERE run_id = ? AND gate_node_id = ?
-			    AND holder_attempt = ? AND holder_subject_digest = ?
-			  ORDER BY predicate, claim_id`,
-			[holder.run_id, holder.gate_node_id, holder.attempt, holder.head_sha],
-		).map((row) => ({
+		let source = holder;
+		const visited = new Set<string>();
+		let rows: Record<string, unknown>[] = [];
+		for (let depth = 0; depth <= 3; depth += 1) {
+			if (source.question_id && visited.has(source.question_id)) break;
+			if (source.question_id) visited.add(source.question_id);
+			rows = this.workflowSelectAll(
+				`SELECT * FROM workflow_gate_holder_evidence
+				  WHERE run_id = ? AND gate_node_id = ?
+				    AND holder_attempt = ? AND holder_subject_digest = ?
+				  ORDER BY predicate, claim_id`,
+				[source.run_id, source.gate_node_id, source.attempt, source.head_sha],
+			);
+			if (rows.length > 0 || !source.recovery_source_question_id) break;
+			const inherited = this.getWorkflowGateHolderByQuestionId(
+				source.recovery_source_question_id,
+			);
+			if (!inherited) break;
+			source = inherited;
+		}
+		return rows.map((row) => ({
 			run_id: row.run_id as string,
 			gate_node_id: row.gate_node_id as string,
 			holder_attempt: Number(row.holder_attempt),
@@ -66391,6 +66919,19 @@ export interface WorkflowSessionlessGateCandidate {
 	sourceExecutionId: string;
 }
 
+export interface WorkflowGateQuestionRecoveryCandidate {
+	runId: string;
+	projectName: string;
+	issueId: string;
+	questionId: string;
+	gateNodeId: string;
+	attempt: number;
+	headSha: string;
+	sourceExecutionId: string;
+	cardMessageId: string;
+	recoveryCount: number;
+}
+
 export interface WorkflowSessionlessGateMailboxRetirement {
 	runId: string;
 	questionId: string;
@@ -66453,6 +66994,9 @@ export interface WorkflowGateHolderRow {
 	/** NULL is legacy bound compatibility. */
 	carrier_binding_state: "unbound" | "bound" | null;
 	approval_origin: "engine_equivalence_carryover" | null;
+	recovery_source_question_id: string | null;
+	recovery_origin_receipt_digest: string | null;
+	recovery_origin_verified_at: string | null;
 	card_message_id: string | null;
 	card_post_intent_seq: number;
 	card_post_intent_at: string | null;
@@ -66479,6 +67023,46 @@ export interface WorkflowGateHolderRow {
 	created_at: string;
 	updated_at: string;
 }
+
+export interface WorkflowGateOriginInspectionReceiptPayload {
+	schemaVersion: 1;
+	outcome: "ok";
+	projectName: string;
+	issueId: string;
+	runId: string;
+	gateNodeId: string;
+	questionId: string;
+	headSha: string;
+	prNumber: number;
+	targetRepoIdentity: string;
+	probeRepoSlug: string;
+	targetRepoPath: string;
+	worktreeBindingGeneration: string;
+	observedAt: string;
+	expiresAt: string;
+}
+
+export type WorkflowGateOriginInspectionReceipt =
+	WorkflowGateOriginInspectionReceiptPayload & { digest: string };
+
+export function workflowGateOriginInspectionReceiptDigest(
+	receipt: WorkflowGateOriginInspectionReceiptPayload,
+): string {
+	return canonicalSubmissionDigest(receipt);
+}
+
+export type WorkflowGateQuestionRecoveryResult =
+	| { ok: true; idempotentReplay: boolean; questionId: string }
+	| {
+			ok: false;
+			reason:
+				| "invalid_input"
+				| "origin_receipt_invalid"
+				| "origin_receipt_stale"
+				| "gate_not_recoverable"
+				| "recovery_limit_reached"
+				| "recovery_transaction_failed";
+	  };
 
 export interface WorkflowGateHolderEvidenceRow {
 	run_id: string;
@@ -68188,6 +68772,8 @@ export interface WorkflowEngineAlertPayload {
 				| "gate_carrier_unbound"
 				| "gate_materialization_stuck"
 				| "workflow_gate_origin_preflight_terminal"
+				| "origin_inspection_blocked"
+				| "recovery_limit_reached"
 				| "card_void_stuck"
 				| "founder_input_deadletter"
 				| "founder_rework_round_high"

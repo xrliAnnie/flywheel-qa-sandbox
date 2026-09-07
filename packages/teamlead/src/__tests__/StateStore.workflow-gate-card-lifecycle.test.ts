@@ -220,6 +220,28 @@ describe("workflow gate card lifecycle", () => {
 		expect(text).not.toContain("新的 ship 卡");
 	});
 
+	it("FLY-2427 directs founder from a broken recovered card to its replacement", async () => {
+		const store = await createStore();
+		supersededPostedCard(store);
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_gate_holder SET superseded_reason = 'question_unanswerable_recovery' WHERE question_id = ?",
+			["question-1"],
+		);
+		const holder = store.getWorkflowGateHolderByQuestionId("question-1");
+		if (!holder) throw new Error("holder missing");
+
+		const text = voidedWorkflowGateCardText({
+			holder,
+			issueId: "FLY-2427",
+		});
+		expect(text).toContain("旧卡已坏并自动重铸");
+		expect(text).toContain("请使用新卡");
+	});
+
 	it("records the pre-supersede state and schedules a posted card for voiding", async () => {
 		const store = await createStore();
 		store.ensureWorkflowGateHolder({

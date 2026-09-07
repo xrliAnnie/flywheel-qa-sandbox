@@ -155,7 +155,7 @@ describe("gate-response-router (Surface B)", () => {
 		},
 	);
 
-	it("ALLOW: writes an explicit kickback response", async () => {
+	it("ALLOW cannot authorize a Lead kickback response", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow"));
 		const res = await request(
@@ -168,9 +168,15 @@ describe("gate-response-router (Surface B)", () => {
 				executionId: "exec-1",
 			},
 		);
-		expect(res.status).toBe(200);
+		expect(res).toMatchObject({
+			status: 409,
+			body: {
+				error: "founder_approval_write_refused",
+				detail: "lead_ship_gate_response_forbidden",
+			},
+		});
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe("design: changes requested");
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
 	});
 
@@ -190,15 +196,15 @@ describe("gate-response-router (Surface B)", () => {
 
 		expect(res.status).toBe(409);
 		expect(res.body).toMatchObject({
-			error: "neutral_not_written",
-			detail: expect.stringContaining("--kickback"),
+			error: "founder_approval_write_refused",
+			detail: "lead_ship_gate_response_forbidden",
 		});
 		const db = new CommDB(commDbPath, false);
 		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
 	});
 
-	it("writes a Lead-confirmed kickback even when its text is not self-explicit", async () => {
+	it("rejects a Lead-confirmed kickback even when its text is not self-explicit", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow"));
 		const res = await request(
@@ -213,11 +219,9 @@ describe("gate-response-router (Surface B)", () => {
 			},
 		);
 
-		expect(res.status).toBe(200);
+		expect(res.status).toBe(409);
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe(
-			"Please revisit the proposed flow.",
-		);
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
 	});
 
@@ -241,7 +245,7 @@ describe("gate-response-router (Surface B)", () => {
 		db.close();
 	});
 
-	it("audit_only: writes response even when evaluator denies", async () => {
+	it("audit_only cannot authorize a Lead response when evaluator denies", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("deny", "audit_only"));
 		const res = await request(
@@ -255,15 +259,15 @@ describe("gate-response-router (Surface B)", () => {
 				executionId: "exec-1",
 			},
 		);
-		expect(res.status).toBe(200);
+		expect(res.status).toBe(409);
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe("changes requested");
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
 	});
 
 	// ── FLY-945 Fix E write-side attribution matrix (Codex R1 #2 / R2 #2) ──
 
-	it("FLY-1981: injected ENFORCE allow cannot mint the historical attribution", async () => {
+	it("FLY-1981: injected ENFORCE allow cannot write a Lead response", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow", "enforce"));
 		await request("POST", "/api/founder-consent/runner-gate-response", {
@@ -274,11 +278,11 @@ describe("gate-response-router (Surface B)", () => {
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.from_agent).toBe("lead-x");
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
 	});
 
-	it("FLY-1981: injected ENFORCE bypass also keeps Lead attribution", async () => {
+	it("FLY-1981: injected ENFORCE bypass also cannot write a Lead response", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("bypass", "enforce"));
 		await request("POST", "/api/founder-consent/runner-gate-response", {
@@ -289,14 +293,11 @@ describe("gate-response-router (Surface B)", () => {
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.from_agent).toBe("lead-x");
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
 	});
 
-	it("🔴 FLY-945: audit_only + evaluator DENY still writes — but attributed to the LEAD (read side then refuses)", async () => {
-		// audit_only allows EVERY write, even denied ones. If this write carried
-		// the trusted attribution, audit_only+deny would become a verify-passable
-		// approval and the Lead self-approval door would re-open (Codex R2 #2).
+	it("FLY-2427: audit_only + evaluator DENY cannot consume the gate", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("deny", "audit_only"));
 		const res = await request(
@@ -310,13 +311,13 @@ describe("gate-response-router (Surface B)", () => {
 				executionId: "exec-1",
 			},
 		);
-		expect(res.status).toBe(200);
+		expect(res.status).toBe(409);
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.from_agent).toBe("lead-x");
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
 	});
 
-	it("FLY-945: audit_only + evaluator ALLOW also keeps the LEAD attribution", async () => {
+	it("FLY-2427: audit_only + evaluator ALLOW cannot consume the gate", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow", "audit_only"));
 		await request("POST", "/api/founder-consent/runner-gate-response", {
@@ -327,7 +328,7 @@ describe("gate-response-router (Surface B)", () => {
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.from_agent).toBe("lead-x");
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
 	});
 
@@ -531,7 +532,7 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 		expect((res.body as { error?: string }).error).toBe("lead_ack_rejected");
 	});
 
-	it("pass-through + explicit feedback prefix → NO warning", async () => {
+	it("pass-through rejects explicit Lead feedback without writing", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkPassthroughServer();
 		const res = await request(
@@ -544,8 +545,16 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 				executionId: "exec-1",
 			},
 		);
-		expect(res.status).toBe(200);
-		expect((res.body as { warning?: string }).warning).toBeUndefined();
+		expect(res).toMatchObject({
+			status: 409,
+			body: {
+				error: "founder_approval_write_refused",
+				detail: "lead_ship_gate_response_forbidden",
+			},
+		});
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)).toBeUndefined();
+		db.close();
 	});
 
 	it("evaluator-allow cannot override Lead approval rejection", async () => {

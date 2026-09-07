@@ -16,35 +16,12 @@ import {
 	LeadLeaseModeStore,
 	LeadLeaseStore,
 } from "flywheel-comm/lead-lease";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-	EvaluateResult,
-	FounderConsentEvaluator,
-} from "../bridge/founder-consent/evaluator.js";
-import { createGateResponseRouter } from "../bridge/founder-consent/gate-response-router.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createFounderRoutingResponseRouter } from "../bridge/founder-routing-response-route.js";
 
 const PROJECT = "TestProj";
 const LEAD_ID = "eng-lead";
 const LEAD_KEY = `${PROJECT}-${LEAD_ID}`;
-const HEAD = "a".repeat(40);
-
-function allowEvaluator(
-	mode: "audit_only" | "enforce" = "enforce",
-): FounderConsentEvaluator {
-	return {
-		decisionMode: mode,
-		evaluate: vi.fn(async () => ({
-			decision: "allow" as EvaluateResult["decision"],
-			decisionSource: "llm",
-			confidence: 0.99,
-			thresholdApplied: 0.85,
-			evidenceMessageId: null,
-			evidenceExcerpt: null,
-			llmReason: "founder approved",
-			auditId: 1,
-		})),
-	} as unknown as FounderConsentEvaluator;
-}
 
 describe("FLY-1309 Bridge Lead lease write boundary", () => {
 	let dir: string;
@@ -52,7 +29,6 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 	let commDbPath: string;
 	let env: NodeJS.ProcessEnv;
 	let server: Server;
-	let currentQuestionId: string | undefined;
 	let currentIdentityDigest: string;
 
 	beforeEach(() => {
@@ -141,47 +117,36 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 
 	function seedQuestion(): string {
 		const db = new CommDB(commDbPath, true);
-		const id = db.insertQuestion("exec-1", LEAD_ID, "ship?", {
-			checkpoint: "approve_to_ship",
-		});
+		db.registerSession("exec-1", "runner", PROJECT, "issue-1", LEAD_ID);
+		const id = db.insertQuestion("exec-1", LEAD_ID, "review?");
 		db.close();
-		currentQuestionId = id;
 		return id;
 	}
 
-	function start(evaluator = allowEvaluator()): void {
+	function start(): void {
 		const app = express();
 		app.use(express.json());
 		app.use(
-			"/api/founder-consent/runner-gate-response",
-			createGateResponseRouter({
-				evaluator,
-				resolveContext: async () => ({
-					issueId: "issue-1",
-					issueIdentifier: "FLY-1309",
-					projectName: PROJECT,
-				}),
-				getSessionProject: () => ({ project_name: PROJECT }),
-				getCurrentReviewQuestionId: () => currentQuestionId,
-				writerStore: {
-					getSession: () => ({
-						status: "awaiting_review",
-						review_question_id: currentQuestionId,
-						project_name: PROJECT,
-						issue_id: "issue-1",
-						pr_head_sha: HEAD,
-					}),
-					getActiveWorkflowRun: () => ({ run_id: "run-1" }),
-				},
-				configuredProjects: new Set([PROJECT]),
-				commRoot,
+			"/api/founder-routing/runner-response",
+			createFounderRoutingResponseRouter({
+				getThreadById: (threadId) =>
+					threadId === "discord-thread"
+						? {
+								thread_id: threadId,
+								issue_id: "issue-1",
+								lead_id: LEAD_ID,
+								session_role: "main",
+							}
+						: undefined,
+				getSessionsByIssue: () => [{ project_name: PROJECT }],
+				commDbPathForProject: () => commDbPath,
 				leadLeaseEnv: env,
 				leadWriteAuthorizationDeps: {
 					processStart: () => "bridge-writer-start",
 					processAliveWithStart: (pid: number, start: string) =>
 						pid === 777 && start === "carrier-start",
 				},
-			} as never),
+			}),
 		);
 		server = createServer(app);
 		server.listen(0);
@@ -191,7 +156,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("not bound");
 		const response = await fetch(
-			`http://127.0.0.1:${address.port}/api/founder-consent/runner-gate-response`,
+			`http://127.0.0.1:${address.port}/api/founder-routing/runner-response`,
 			{
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -208,9 +173,10 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 		return {
 			questionId,
 			leadId: LEAD_ID,
-			answer: JSON.stringify({ approved: false, feedback: "lease test" }),
-			kickback: true,
-			executionId: "exec-1",
+			answer: "lease test",
+			sourceThread: "discord-thread",
+			expectedOwner: "exec-1",
+			expectedCheckpoint: null,
 			leaseClaim: { leaseKey: LEAD_KEY, generation: 1 },
 			identityDigest: currentIdentityDigest,
 			provenance: {
@@ -229,8 +195,8 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 			...baseRequest(questionId),
 			leaseClaim: { leaseKey: LEAD_KEY, generation: 99 },
 		});
-		expect(result.status).toBe(409);
-		expect(result.body).toMatchObject({ error: "lead_lease_denied" });
+		expect(result.status).toBe(403);
+		expect(result.body).toMatchObject({ error: "lead_write_unauthorized" });
 		const db = new CommDB(commDbPath, false);
 		expect(db.getResponse(questionId)).toBeUndefined();
 		expect(db.listWorkflowSourceEvents()).toEqual([]);
@@ -295,8 +261,8 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 			leaseClaim: undefined,
 			carrierClaim: undefined,
 		});
-		expect(intruder.status).toBe(409);
-		expect(intruder.body).toMatchObject({ error: "lead_lease_denied" });
+		expect(intruder.status).toBe(403);
+		expect(intruder.body).toMatchObject({ error: "lead_write_unauthorized" });
 		const db = new CommDB(commDbPath, false);
 		expect(db.getResponse(intruderQuestion)).toBeUndefined();
 		const persisted = JSON.stringify({
@@ -342,8 +308,8 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 				leaseClaim: undefined,
 				carrierClaim: rawClaim,
 			});
-			expect(result.status).toBe(409);
-			expect(result.body).toMatchObject({ error: "lead_lease_denied" });
+			expect(result.status).toBe(403);
+			expect(result.body).toMatchObject({ error: "lead_write_unauthorized" });
 			const db = new CommDB(commDbPath, false);
 			expect(db.getResponse(questionId)).toBeUndefined();
 			expect(db.listWorkflowSourceEvents()).toEqual([]);
@@ -358,7 +324,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 			"test",
 		);
 		const questionId = seedQuestion();
-		start(allowEvaluator("audit_only"));
+		start();
 
 		const result = await post({
 			...baseRequest(questionId),

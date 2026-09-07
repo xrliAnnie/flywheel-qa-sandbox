@@ -19,13 +19,9 @@
  */
 
 import { isTrustedApprovalAttribution } from "flywheel-comm/founder-attribution";
-import {
-	authorizeLeadWrite,
-	forwardedLeadAuthorizationEnv,
-	LeadLeaseDeniedError,
-	type LeadWriteAuthorization,
-	type LeadWriteAuthorizationDeps,
-	type MessageProvenance,
+import type {
+	LeadWriteAuthorizationDeps,
+	MessageProvenance,
 } from "flywheel-comm/lead-lease";
 import {
 	type FounderReworkHint,
@@ -191,44 +187,6 @@ export interface WriteGateResponseArgs {
 	}) => unknown;
 }
 
-function leadRequestEnv(
-	context: LeadRequestContext,
-	base: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
-	return forwardedLeadAuthorizationEnv(
-		{
-			claimedLeadId: context.requestingLeadId,
-			projectName: context.projectName,
-			identityDigest: context.identityDigest,
-			...(context.leaseClaim ? { leaseClaim: context.leaseClaim } : {}),
-			...(context.carrierClaim ? { carrierClaim: context.carrierClaim } : {}),
-		},
-		base,
-	);
-}
-
-function requestWriterProvenance(
-	authorization: LeadWriteAuthorization,
-	request: MessageProvenance | undefined,
-): MessageProvenance {
-	return {
-		senderLeaseKey: authorization.provenance?.senderLeaseKey,
-		senderGeneration: authorization.provenance?.senderGeneration,
-		senderHolderPid: authorization.provenance?.senderHolderPid,
-		senderHolderStart: authorization.provenance?.senderHolderStart,
-		writerPid:
-			typeof request?.writerPid === "number" &&
-			Number.isSafeInteger(request.writerPid) &&
-			request.writerPid > 0
-				? request.writerPid
-				: null,
-		writerStart:
-			typeof request?.writerStart === "string" && request.writerStart.length > 0
-				? request.writerStart
-				: null,
-	};
-}
-
 export interface WriteGateResponseResult {
 	written: boolean;
 	retrySafe: boolean;
@@ -316,8 +274,13 @@ async function runHook(args: WriteGateResponseArgs): Promise<boolean> {
 export async function writeGateResponseAndRunPostWrite(
 	args: WriteGateResponseArgs,
 ): Promise<WriteGateResponseResult> {
-	if (args.leadRequest && args.founderRework) {
-		throw new Error("lead requests cannot carry founder rework hints");
+	if (args.leadRequest) {
+		return {
+			written: false,
+			retrySafe: true,
+			disposition: "reject",
+			reason: "lead_ship_gate_response_forbidden",
+		};
 	}
 	const guardOk = (reason: string): WriteGateResponseResult => ({
 		written: false,
@@ -368,36 +331,6 @@ export async function writeGateResponseAndRunPostWrite(
 	const liveReviewQid = liveSession?.review_question_id;
 	if (!engineAuthority && liveReviewQid && liveReviewQid !== args.questionId) {
 		return guardOk("stale_review_question_live");
-	}
-
-	let leadProvenance: MessageProvenance | undefined;
-	if (args.leadRequest) {
-		try {
-			const authorization = authorizeLeadWrite(
-				{
-					claimedLeadId: args.leadRequest.requestingLeadId,
-					env: leadRequestEnv(
-						args.leadRequest,
-						args.leadLeaseEnv ?? process.env,
-					),
-				},
-				args.leadWriteAuthorizationDeps,
-			);
-			leadProvenance = requestWriterProvenance(
-				authorization,
-				args.leadRequest.provenance,
-			);
-		} catch (error) {
-			return {
-				written: false,
-				retrySafe: true,
-				disposition: "reject",
-				reason:
-					error instanceof LeadLeaseDeniedError
-						? `lead_lease_denied:${error.reason}`
-						: "lead_lease_authorization_error",
-			};
-		}
 	}
 
 	// Idempotent retry vs conflict.
@@ -609,7 +542,6 @@ export async function writeGateResponseAndRunPostWrite(
 				classification: source.classification,
 				authority_id: source.authorityId,
 			},
-			...(leadProvenance ? { provenance: leadProvenance } : {}),
 		});
 		if (!wrote) {
 			return {
@@ -620,14 +552,11 @@ export async function writeGateResponseAndRunPostWrite(
 			};
 		}
 	} else {
-		const writeResult = leadProvenance
-			? args.db.insertResponse(
-					args.questionId,
-					args.actor,
-					args.answer,
-					leadProvenance,
-				)
-			: args.db.insertResponse(args.questionId, args.actor, args.answer);
+		const writeResult = args.db.insertResponse(
+			args.questionId,
+			args.actor,
+			args.answer,
+		);
 		if (!writeResult.written) {
 			return {
 				written: false,

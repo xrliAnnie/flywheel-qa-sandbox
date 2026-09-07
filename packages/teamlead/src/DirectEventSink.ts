@@ -862,7 +862,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			status = "design_done";
 		} else if (route === "needs_review") {
 			// FLY-115 v1.24.5 (FLY-120): if the Runner already finished shipping
-			// (Lead unblocked the approve_to_ship gate via flywheel-comm respond,
+			// (legacy Lead flows unblocked approve_to_ship through a response;
 			// then the Runner self-merged), short-circuit to "completed". The
 			// previous mapping forced status back to "awaiting_review" even when
 			// landingStatus.status === "merged", leaving Lead telling Annie a PR

@@ -441,6 +441,8 @@ export interface AlertMetadata {
 			| "gate_carrier_unbound"
 			| "gate_materialization_stuck"
 			| "workflow_gate_origin_preflight_terminal"
+			| "origin_inspection_blocked"
+			| "recovery_limit_reached"
 			| "card_void_stuck"
 			| "founder_input_deadletter"
 			| "founder_rework_round_high"

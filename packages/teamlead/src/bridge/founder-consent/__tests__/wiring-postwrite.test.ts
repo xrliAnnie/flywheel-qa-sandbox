@@ -1,20 +1,13 @@
 /**
- * FLY-191 Phase 2 — wiring `onResponseWritten` behavior, integration through
- * the REAL gateRouter in pass-through (DECISION_MODE=off) mode:
+ * FLY-191 / FLY-2427 — integration through the REAL gateRouter in pass-through
+ * (DECISION_MODE=off) mode:
  *
- *  - structured {"approved": true} from a Lead is rejected before write/FSM/wake;
- *  - changes_requested feedback → status UNCHANGED
- *    (NOT terminal, plan §3.2(ii)) + a feedback wake telling the runner to
- *    fix + re-request review.
+ *  - every Lead-authored approve_to_ship answer is rejected before
+ *    write/FSM/wake;
+ *  - stale review-question protection remains intact.
  */
 
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,9 +49,6 @@ const inboxPath = () => {
 	const { agentName, teamName } = deriveRunnerMailboxIdentity(EXEC, LEAD);
 	return new ClaudeCodeAdapter().getInboxPath(teamName, agentName);
 };
-const readInbox = () =>
-	JSON.parse(readFileSync(inboxPath(), "utf-8")) as Array<{ text: string }>;
-
 async function post(body: unknown) {
 	const addr = server.address();
 	if (!addr || typeof addr === "string") throw new Error("not bound");
@@ -198,7 +188,7 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		expect(existsSync(inboxPath())).toBe(false);
 	});
 
-	it("feedback answer keeps awaiting_review (NOT terminal) + feedback wake CARRIES the feedback", async () => {
+	it("plain-text Lead feedback is rejected without consuming the founder gate", async () => {
 		const qid = seedQuestion();
 		const res = await post({
 			questionId: qid,
@@ -207,20 +197,15 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			kickback: true,
 			executionId: EXEC,
 		});
-		expect(res.status).toBe(200);
-
-		// §3.2(ii): feedback is a wake-to-fix, never a state change.
+		expect(res.status).toBe(409);
+		expect((res.body as { error?: string }).error).toBe(
+			"founder_approval_write_refused",
+		);
 		expect(store.getSession(EXEC)?.status).toBe("awaiting_review");
-
-		const entries = readInbox();
-		expect(entries).toHaveLength(1);
-		expect(entries[0]?.text).toContain("changes requested");
-		expect(entries[0]?.text).toContain("re-request review");
-		expect(entries[0]?.text).toContain("Do NOT ship");
-		// Codex PR R1 MEDIUM-5: the actual feedback text + questionId travel in
-		// the wake so the idle runner can act without hunting for context.
-		expect(entries[0]?.text).toContain("please add tests for the edge case");
-		expect(entries[0]?.text).toContain(qid);
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)).toBeUndefined();
+		db.close();
+		expect(existsSync(inboxPath())).toBe(false);
 	});
 
 	it("structured {approved:false} without explicit kickback stays neutral", async () => {
@@ -232,7 +217,9 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			executionId: EXEC,
 		});
 		expect(res.status).toBe(409);
-		expect((res.body as { error?: string }).error).toBe("neutral_not_written");
+		expect((res.body as { error?: string }).error).toBe(
+			"founder_approval_write_refused",
+		);
 		expect(store.getSession(EXEC)?.status).toBe("awaiting_review");
 		const db = new CommDB(commDbPath, false);
 		expect(db.getResponse(qid)).toBeUndefined();

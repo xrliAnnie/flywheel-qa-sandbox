@@ -437,6 +437,12 @@ describe("feature-flag drift guard", () => {
 					"storeWorkflowNodeReuseEnabled",
 				],
 				[
+					"workflow_gate_question_recovery",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"workflowGateQuestionRecoveryEnabled",
+					"storeWorkflowGateQuestionRecoveryEnabled",
+				],
+				[
 					"database_archive",
 					"packages/teamlead/src/bridge/plugin.ts",
 					"databaseArchiveEnabled",

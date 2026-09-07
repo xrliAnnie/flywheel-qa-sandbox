@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 describe("workflow gate card lifecycle wiring", () => {
-	it("closes sessionless gates, voids old cards, then materializes and watches", () => {
+	it("closes sessionless gates, recovers, materializes, voids old cards, then watches", () => {
 		const source = readFileSync(
 			fileURLToPath(new URL("../plugin.ts", import.meta.url)),
 			"utf8",
@@ -19,15 +19,20 @@ describe("workflow gate card lifecycle wiring", () => {
 		const reconcileIndex = tick.indexOf(
 			"await reconcileSessionlessWorkflowGates",
 		);
+		const recoveryIndex = tick.indexOf(
+			"await reconcileUnanswerableWorkflowGates",
+		);
 		const voidIndex = tick.indexOf("await voidSupersededWorkflowGateCards");
 		expect(source).toContain("reconcileSessionlessWorkflowGates");
+		expect(source).toContain("reconcileUnanswerableWorkflowGates");
 		expect(source).toContain("voidSupersededWorkflowGateCards,");
 		expect(source).toContain("watchVoidedWorkflowGateCards,");
 		expect(reconcileIndex).toBeGreaterThan(-1);
-		expect(voidIndex).toBeGreaterThan(reconcileIndex);
-		expect(voidIndex).toBeLessThan(materializationListIndex);
+		expect(recoveryIndex).toBeGreaterThan(reconcileIndex);
+		expect(materializationListIndex).toBeGreaterThan(recoveryIndex);
+		expect(voidIndex).toBeGreaterThan(materializationListIndex);
 		expect(tick.indexOf("await watchVoidedWorkflowGateCards")).toBeGreaterThan(
-			materializationListIndex,
+			voidIndex,
 		);
 	});
 });

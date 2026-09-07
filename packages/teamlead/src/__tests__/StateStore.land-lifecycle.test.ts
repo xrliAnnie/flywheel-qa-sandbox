@@ -182,13 +182,18 @@ function bindPr(
 	);
 }
 
-function prepareAwaitingFounderGate(store: StateStore, runId: string) {
+function prepareAwaitingFounderGate(
+	store: StateStore,
+	runId: string,
+	gateCarrierEpoch: 0 | 1 = 0,
+) {
 	store.createWorkflowRun({
 		runId,
 		issueId: "FLY-1375",
 		projectName: "flywheel",
 		snapshotJson: landSnapshot(),
 		claimsReadEnrolled: true,
+		gateCarrierEpoch,
 	});
 	(
 		store as unknown as {
@@ -258,6 +263,525 @@ function prepareAwaitingFounderGate(store: StateStore, runId: string) {
 	});
 	return holder;
 }
+
+function recoveryReceipt(store: StateStore, runId: string, questionId: string) {
+	const run = store.getWorkflowRun(runId)!;
+	const holder = store.getWorkflowGateHolderByQuestionId(questionId)!;
+	const target = store.getWorkflowShipTargetBinding(questionId)!;
+	const pr = store.getCurrentWorkflowNodePrBindingForHead(
+		runId,
+		holder.head_sha,
+	)!;
+	const payload = {
+		schemaVersion: 1 as const,
+		outcome: "ok" as const,
+		projectName: run.project_name,
+		issueId: run.issue_id,
+		runId,
+		gateNodeId: holder.gate_node_id,
+		questionId,
+		headSha: holder.head_sha,
+		prNumber: pr.pr_number,
+		targetRepoIdentity: target.target_repo_identity,
+		probeRepoSlug: target.probe_repo_slug,
+		targetRepoPath: target.target_repo_path,
+		worktreeBindingGeneration: target.worktree_binding_generation,
+		observedAt: "2026-07-21T20:02:00.000Z",
+		expiresAt: "2026-07-21T20:07:00.000Z",
+	};
+	return { ...payload, digest: canonicalSubmissionDigest(payload) };
+}
+
+function prepareClaimlessAwaitingFounderGate(store: StateStore, runId: string) {
+	store.createWorkflowRun({
+		runId,
+		issueId: "FLY-2427",
+		projectName: "flywheel",
+		snapshotJson: claimlessLandSnapshot(),
+		claimsReadEnrolled: true,
+		gateCarrierEpoch: 1,
+	});
+	(
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db.run(
+		"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'craft' WHERE run_id = ?",
+		[runId],
+	);
+	store.upsertWorkflowRunNode({
+		runId,
+		nodeId: "craft",
+		attempt: 1,
+		state: "running",
+		executionId: "craft-exec-fly2427",
+	});
+	bindPr(store, {
+		runId,
+		nodeId: "craft",
+		attempt: 1,
+		head: HEAD,
+		receiptId: `${runId}:craft:1`,
+	});
+	const transition = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
+		runId,
+		nodeId: "craft",
+		attempt: 1,
+		executionId: "craft-exec-fly2427",
+		outcome: "node_done",
+		subjectDigest: HEAD,
+		now: "2026-07-21T20:00:00.000Z",
+	});
+	if (!transition.ok) throw new Error(transition.reason);
+	const holder = store.getCurrentWorkflowGateHolder(runId, "decision")!;
+	store.advanceWorkflowGateHolderMaterialization({
+		questionId: holder.question_id,
+		stage: "card_bound",
+		cardMessageId: `card-${runId}`,
+		now: "2026-07-21T20:01:00.000Z",
+	});
+}
+
+it("FLY-2427 atomically replaces an unanswerable current land gate on the same head", async () => {
+	const store = await StateStore.create(":memory:");
+	prepareClaimlessAwaitingFounderGate(store, "run-fly2427-recovery");
+	const old = store.getCurrentWorkflowGateHolder(
+		"run-fly2427-recovery",
+		"decision",
+	)!;
+	const oldSnapshot = structuredClone(old);
+	const runBefore = structuredClone(
+		store.getWorkflowRun("run-fly2427-recovery"),
+	);
+	const evidenceBefore = store.listWorkflowGateHolderEvidence(old);
+	const eventCountBefore = store.listWorkflowRunEvents(
+		"run-fly2427-recovery",
+	).length;
+	const receipt = recoveryReceipt(
+		store,
+		"run-fly2427-recovery",
+		old.question_id,
+	);
+	expect(store.listWorkflowGateQuestionRecoveryCandidates("flywheel")).toEqual([
+		expect.objectContaining({
+			runId: old.run_id,
+			issueId: "FLY-2427",
+			questionId: old.question_id,
+			gateNodeId: old.gate_node_id,
+			headSha: old.head_sha,
+		}),
+	]);
+
+	const result = store.recoverUnanswerableWorkflowGate({
+		runId: old.run_id,
+		gateNodeId: old.gate_node_id,
+		questionId: old.question_id,
+		headSha: old.head_sha,
+		originReceipt: receipt,
+		now: "2026-07-21T20:03:00.000Z",
+	});
+
+	if (!result.ok) throw new Error(result.reason);
+	expect(result).toMatchObject({ ok: true, idempotentReplay: false });
+	const replacement = store.getCurrentWorkflowGateHolder(
+		old.run_id,
+		old.gate_node_id,
+	)!;
+	expect(replacement).toMatchObject({
+		attempt: old.attempt + 1,
+		head_sha: old.head_sha,
+		source_execution_id: old.source_execution_id,
+		authority_mode: "land",
+		subject_kind: "git_head",
+		carrier_binding_state: "bound",
+		state: "materializing",
+		materialization_stage: "question_intent",
+		recovery_source_question_id: old.question_id,
+		recovery_origin_receipt_digest: receipt.digest,
+		recovery_origin_verified_at: receipt.observedAt,
+	});
+	expect(replacement.question_id).not.toBe(old.question_id);
+	expect(
+		store.getWorkflowRunNode(old.run_id, old.gate_node_id, replacement.attempt),
+	).toMatchObject({
+		run_id: old.run_id,
+		node_id: old.gate_node_id,
+		attempt: replacement.attempt,
+		state: "review",
+	});
+	expect(store.listWorkflowGateHolderEvidence(replacement)).toEqual(
+		evidenceBefore,
+	);
+	expect(store.getWorkflowGateHolderByQuestionId(old.question_id)).toEqual({
+		...oldSnapshot,
+		state: "superseded",
+		superseded_reason: "question_unanswerable_recovery",
+		superseded_from_state: "awaiting_review",
+		card_void_state: "pending",
+		card_void_attempts: 0,
+		card_void_transient_attempts: 0,
+		card_void_next_at: null,
+		updated_at: "2026-07-21T20:03:00.000Z",
+	});
+	expect(store.getWorkflowRun("run-fly2427-recovery")).toEqual(runBefore);
+	expect(store.getWorkflowShipTargetBinding(old.question_id)).toMatchObject({
+		superseded_at: "2026-07-21T20:03:00.000Z",
+	});
+	expect(
+		store.getWorkflowShipTargetBinding(replacement.question_id),
+	).toMatchObject({
+		run_id: old.run_id,
+		frozen_head_sha: old.head_sha,
+		superseded_at: null,
+	});
+	expect(
+		store.listWorkflowRunEvents(old.run_id).slice(eventCountBefore),
+	).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ kind: "gate_holder_created" }),
+			expect.objectContaining({
+				kind: "gate_opened",
+				payload: expect.objectContaining({ attempt: replacement.attempt }),
+			}),
+			expect.objectContaining({
+				kind: "gate_question_recovered",
+				payload: expect.objectContaining({
+					oldQuestionId: old.question_id,
+					newQuestionId: replacement.question_id,
+					originReceiptDigest: receipt.digest,
+				}),
+			}),
+		]),
+	);
+
+	expect(
+		store.recoverUnanswerableWorkflowGate({
+			runId: old.run_id,
+			gateNodeId: old.gate_node_id,
+			questionId: old.question_id,
+			headSha: old.head_sha,
+			originReceipt: receipt,
+			now: "2026-07-21T20:04:00.000Z",
+		}),
+	).toEqual({
+		ok: true,
+		idempotentReplay: true,
+		questionId: replacement.question_id,
+	});
+	expect(store.listWorkflowRunEvents(old.run_id)).toHaveLength(
+		eventCountBefore + 3,
+	);
+	expect(store.listWorkflowGateQuestionRecoveryCandidates("flywheel")).toEqual(
+		[],
+	);
+	expect(
+		store.listWorkflowGateHoldersForCardVoid("2026-07-21T20:04:00.000Z"),
+	).toEqual([]);
+	for (const stage of [
+		"question_written",
+		"session_bound",
+		"card_posted",
+		"card_bound",
+		"completed",
+	] as const) {
+		expect(
+			store.advanceWorkflowGateHolderMaterialization({
+				questionId: replacement.question_id,
+				stage,
+				...(stage === "card_bound"
+					? { cardMessageId: "replacement-card-fly2427" }
+					: {}),
+				now: "2026-07-21T20:05:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+	}
+	expect(
+		store.listWorkflowGateHoldersForCardVoid("2026-07-21T20:05:00.000Z"),
+	).toEqual([expect.objectContaining({ question_id: old.question_id })]);
+	const founderApproval = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
+		runId: old.run_id,
+		nodeId: old.gate_node_id,
+		attempt: replacement.attempt,
+		executionId: replacement.source_execution_id,
+		outcome: "founder_approved",
+		subjectDigest: replacement.head_sha,
+		now: "2026-07-21T20:06:00.000Z",
+	});
+	expect(founderApproval).toMatchObject({
+		ok: true,
+		targetNodeId: "publish",
+	});
+	store.close();
+});
+
+it.each([
+	{
+		label: "holder",
+		sql: `CREATE TRIGGER fly2427_fail BEFORE INSERT ON workflow_gate_holder
+		      WHEN NEW.recovery_source_question_id IS NOT NULL
+		      BEGIN SELECT RAISE(ABORT, 'injected holder failure'); END`,
+	},
+	{
+		label: "recovery evidence",
+		sql: `CREATE TRIGGER fly2427_fail BEFORE INSERT ON workflow_gate_holder_recovery_evidence
+		      BEGIN SELECT RAISE(ABORT, 'injected evidence failure'); END`,
+	},
+	{
+		label: "ship binding",
+		sql: `CREATE TRIGGER fly2427_fail BEFORE INSERT ON workflow_ship_target_binding
+		      WHEN NEW.approve_question_id NOT LIKE 'never-the-old-question'
+		      BEGIN SELECT RAISE(ABORT, 'injected binding failure'); END`,
+	},
+	{
+		label: "recovery event",
+		sql: `CREATE TRIGGER fly2427_fail BEFORE INSERT ON workflow_run_event
+		      WHEN NEW.kind = 'gate_question_recovered'
+		      BEGIN SELECT RAISE(ABORT, 'injected event failure'); END`,
+	},
+])(
+	"FLY-2427 rolls back the whole replacement when $label fails",
+	async ({ sql }) => {
+		const store = await StateStore.create(":memory:");
+		prepareClaimlessAwaitingFounderGate(store, "run-fly2427-rollback");
+		const old = store.getCurrentWorkflowGateHolder(
+			"run-fly2427-rollback",
+			"decision",
+		)!;
+		const oldSnapshot = structuredClone(old);
+		const targetSnapshot = structuredClone(
+			store.getWorkflowShipTargetBinding(old.question_id),
+		);
+		const eventCount = store.listWorkflowRunEvents(old.run_id).length;
+		const receipt = recoveryReceipt(store, old.run_id, old.question_id);
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(sql);
+
+		expect(
+			store.recoverUnanswerableWorkflowGate({
+				runId: old.run_id,
+				gateNodeId: old.gate_node_id,
+				questionId: old.question_id,
+				headSha: old.head_sha,
+				originReceipt: receipt,
+				now: "2026-07-21T20:03:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "recovery_transaction_failed" });
+		expect(store.getWorkflowGateHolderByQuestionId(old.question_id)).toEqual(
+			oldSnapshot,
+		);
+		expect(
+			store.getCurrentWorkflowGateHolder(old.run_id, old.gate_node_id),
+		).toEqual(oldSnapshot);
+		expect(store.getWorkflowShipTargetBinding(old.question_id)).toEqual(
+			targetSnapshot,
+		);
+		expect(store.listWorkflowRunEvents(old.run_id)).toHaveLength(eventCount);
+		store.close();
+	},
+);
+
+it("FLY-2427 rejects stale, tampered, mismatched, and legacy receipts without mutation", async () => {
+	const store = await StateStore.create(":memory:");
+	prepareClaimlessAwaitingFounderGate(store, "run-fly2427-receipts");
+	const old = store.getCurrentWorkflowGateHolder(
+		"run-fly2427-receipts",
+		"decision",
+	)!;
+	const snapshot = structuredClone(old);
+	const valid = recoveryReceipt(store, old.run_id, old.question_id);
+	const { digest: _validDigest, ...validPayload } = valid;
+	const stalePayload = {
+		...validPayload,
+		expiresAt: "2026-07-21T20:02:30.000Z",
+	};
+	const mismatchedPayload = { ...validPayload, prNumber: valid.prNumber + 1 };
+
+	expect(
+		store.recoverUnanswerableWorkflowGate({
+			runId: old.run_id,
+			gateNodeId: old.gate_node_id,
+			questionId: old.question_id,
+			headSha: old.head_sha,
+			originReceipt: { ...valid, digest: "tampered" },
+			now: "2026-07-21T20:03:00.000Z",
+		}),
+	).toEqual({ ok: false, reason: "origin_receipt_invalid" });
+	expect(
+		store.recoverUnanswerableWorkflowGate({
+			runId: old.run_id,
+			gateNodeId: old.gate_node_id,
+			questionId: old.question_id,
+			headSha: old.head_sha,
+			originReceipt: {
+				...stalePayload,
+				digest: canonicalSubmissionDigest(stalePayload),
+			},
+			now: "2026-07-21T20:03:00.000Z",
+		}),
+	).toEqual({ ok: false, reason: "origin_receipt_stale" });
+	expect(
+		store.recoverUnanswerableWorkflowGate({
+			runId: old.run_id,
+			gateNodeId: old.gate_node_id,
+			questionId: old.question_id,
+			headSha: old.head_sha,
+			originReceipt: {
+				...mismatchedPayload,
+				digest: canonicalSubmissionDigest(mismatchedPayload),
+			},
+			now: "2026-07-21T20:03:00.000Z",
+		}),
+	).toEqual({ ok: false, reason: "gate_not_recoverable" });
+	expect(
+		store.getCurrentWorkflowGateHolder(old.run_id, old.gate_node_id),
+	).toEqual(snapshot);
+
+	(
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db.run("UPDATE workflow_run SET gate_carrier_epoch = 0 WHERE run_id = ?", [
+		old.run_id,
+	]);
+	expect(
+		store.recoverUnanswerableWorkflowGate({
+			runId: old.run_id,
+			gateNodeId: old.gate_node_id,
+			questionId: old.question_id,
+			headSha: old.head_sha,
+			originReceipt: valid,
+			now: "2026-07-21T20:03:00.000Z",
+		}),
+	).toEqual({ ok: false, reason: "gate_not_recoverable" });
+	expect(
+		store.getCurrentWorkflowGateHolder(old.run_id, old.gate_node_id),
+	).toEqual(snapshot);
+	store.close();
+});
+
+it("FLY-2427 permits exactly three same-head recoveries and refuses the fourth without mutation", async () => {
+	const store = await StateStore.create(":memory:");
+	const runId = "run-fly2427-recovery-cap";
+	prepareClaimlessAwaitingFounderGate(store, runId);
+	const questionIds: string[] = [];
+
+	for (let recovery = 0; recovery < 3; recovery += 1) {
+		const current = store.getCurrentWorkflowGateHolder(runId, "decision")!;
+		questionIds.push(current.question_id);
+		const result = store.recoverUnanswerableWorkflowGate({
+			runId,
+			gateNodeId: current.gate_node_id,
+			questionId: current.question_id,
+			headSha: current.head_sha,
+			originReceipt: recoveryReceipt(store, runId, current.question_id),
+			now: "2026-07-21T20:03:00.000Z",
+		});
+		if (!result.ok) throw new Error(result.reason);
+		for (const stage of [
+			"question_written",
+			"session_bound",
+			"card_posted",
+			"card_bound",
+			"completed",
+		] as const) {
+			store.advanceWorkflowGateHolderMaterialization({
+				questionId: result.questionId,
+				stage,
+				...(stage === "card_bound"
+					? { cardMessageId: `replacement-card-${recovery + 1}` }
+					: {}),
+				now: "2026-07-21T20:03:30.000Z",
+			});
+		}
+	}
+
+	const capped = store.getCurrentWorkflowGateHolder(runId, "decision")!;
+	const cappedSnapshot = structuredClone(capped);
+	const runNodesBefore = store.listWorkflowRunNodes(runId, "decision");
+	const eventCountBefore = store.listWorkflowRunEvents(runId).length;
+	expect(capped.attempt).toBe(4);
+	expect(questionIds).toHaveLength(3);
+	expect(
+		store.recoverUnanswerableWorkflowGate({
+			runId,
+			gateNodeId: capped.gate_node_id,
+			questionId: capped.question_id,
+			headSha: capped.head_sha,
+			originReceipt: recoveryReceipt(store, runId, capped.question_id),
+			now: "2026-07-21T20:04:00.000Z",
+		}),
+	).toEqual({ ok: false, reason: "recovery_limit_reached" });
+	expect(store.getCurrentWorkflowGateHolder(runId, "decision")).toEqual(
+		cappedSnapshot,
+	);
+	expect(store.listWorkflowRunNodes(runId, "decision")).toEqual(runNodesBefore);
+	expect(store.listWorkflowRunEvents(runId)).toHaveLength(eventCountBefore);
+	store.close();
+});
+
+it.each(["origin_inspection_blocked", "recovery_limit_reached"] as const)(
+	"FLY-2427 records one stable %s alert without mutating the current holder",
+	async (kind) => {
+		const store = await StateStore.create(":memory:");
+		prepareClaimlessAwaitingFounderGate(store, `run-fly2427-alert-${kind}`);
+		const candidate =
+			store.listWorkflowGateQuestionRecoveryCandidates("flywheel")[0]!;
+		const before = structuredClone(
+			store.getCurrentWorkflowGateHolder(candidate.runId, candidate.gateNodeId),
+		);
+		const input = {
+			kind,
+			candidate,
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved" as const,
+			},
+			now: "2026-07-21T20:03:00.000Z",
+		};
+
+		expect(store.recordWorkflowGateQuestionRecoveryAlert(input)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(store.recordWorkflowGateQuestionRecoveryAlert(input)).toEqual({
+			ok: true,
+			idempotentReplay: true,
+		});
+		expect(
+			store.getCurrentWorkflowGateHolder(candidate.runId, candidate.gateNodeId),
+		).toEqual(before);
+		const outbox = store.listWorkflowAlertOutbox();
+		expect(outbox).toHaveLength(1);
+		const payload = outbox[0]!.payload;
+		expect(payload).toMatchObject({
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			eventType: "workflow_engine_escalation",
+			metadata: {
+				workflowEngine: {
+					runId: candidate.runId,
+					issueId: candidate.issueId,
+					nodeId: candidate.gateNodeId,
+					executionId: candidate.sourceExecutionId,
+					disposition: kind,
+				},
+			},
+		});
+		expect(payload.body).not.toContain("dynamic-provider-reason");
+		expect(
+			store
+				.listWorkflowRunEvents(candidate.runId)
+				.filter((event) => event.kind === "gate_question_recovery_alerted"),
+		).toHaveLength(1);
+		store.close();
+	},
+);
 
 function activateFounderRework(
 	store: StateStore,

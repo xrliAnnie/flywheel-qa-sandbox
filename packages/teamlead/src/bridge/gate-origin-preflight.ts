@@ -1,4 +1,9 @@
-import type { StateStore, WorkflowEngineAlertIdentity } from "../StateStore.js";
+import {
+	type StateStore,
+	type WorkflowEngineAlertIdentity,
+	type WorkflowGateOriginInspectionReceipt,
+	workflowGateOriginInspectionReceiptDigest,
+} from "../StateStore.js";
 import {
 	probeWorkflowPr,
 	type WorkflowPrProbeResult,
@@ -6,8 +11,18 @@ import {
 
 const PROJECT_PROBE_BUDGET = 6;
 const PROJECT_PROBE_WINDOW_MS = 60_000;
+const RECEIPT_TTL_MS = 5 * 60_000;
 const BACKOFF_MS = [30_000, 60_000, 120_000, 240_000, 300_000] as const;
 const MERGE_BLOCKED_REASON = "workflow_gate_origin_probe_merge_blocked";
+
+export type WorkflowGateOriginInspectionResult =
+	| { ok: true; receipt?: WorkflowGateOriginInspectionReceipt }
+	| {
+			ok: false;
+			reason: string;
+			disposition: "defer" | "hold" | "stop" | "skip";
+			delayMs?: number;
+	  };
 
 export type WorkflowGateOriginPreflightResult =
 	| { ok: true }
@@ -29,6 +44,9 @@ export interface WorkflowGateOriginPreflightDeps {
 	}) => Promise<WorkflowPrProbeResult>;
 	alertIdentity?: AlertIdentityResolver;
 	now?: () => string;
+	inspector?: (
+		questionId: string,
+	) => Promise<WorkflowGateOriginInspectionResult>;
 }
 
 function alertIdentity(
@@ -44,43 +62,41 @@ function alertIdentity(
 		: resolver;
 }
 
-export function createWorkflowGateOriginPreflight(
+/** Read-only origin inspection shared by recovery and normal materialization. */
+export function createWorkflowGateOriginInspector(
 	deps: WorkflowGateOriginPreflightDeps,
-): (questionId: string) => Promise<WorkflowGateOriginPreflightResult> {
+): (questionId: string) => Promise<WorkflowGateOriginInspectionResult> {
 	const projectProbeTimes = new Map<string, number[]>();
 	const now = deps.now ?? (() => new Date().toISOString());
 	const prProbe = deps.prProbe ?? probeWorkflowPr;
+	const fail = (
+		reason: string,
+		disposition: "defer" | "hold" | "stop" | "skip",
+		delayMs?: number,
+	): WorkflowGateOriginInspectionResult => ({
+		ok: false,
+		reason,
+		disposition,
+		...(delayMs === undefined ? {} : { delayMs }),
+	});
 
 	return async (questionId) => {
 		const holder =
 			deps.store.getCurrentWorkflowGateHolderByQuestionId(questionId);
-		if (!holder) {
-			return { ok: false, reason: "workflow_gate_holder_not_found" };
-		}
+		if (!holder) return fail("workflow_gate_holder_not_found", "skip");
 		const run = deps.store.getWorkflowRun(holder.run_id);
-		if (!run) return { ok: false, reason: "workflow_gate_run_not_found" };
+		if (!run) return fail("workflow_gate_run_not_found", "skip");
 		if (run.status !== "active") {
-			return {
-				ok: false,
-				reason: "workflow_gate_origin_probe_run_not_active",
-			};
+			return fail("workflow_gate_origin_probe_run_not_active", "skip");
 		}
 		if (holder.authority_mode === "engine_terminal") return { ok: true };
 		const binding = deps.store.getWorkflowShipTargetBinding(questionId);
 		if (!binding && holder.authority_mode === null) return { ok: true };
 		if (holder.origin_probe_last_reason === MERGE_BLOCKED_REASON) {
-			return { ok: false, reason: MERGE_BLOCKED_REASON };
+			return fail(MERGE_BLOCKED_REASON, "skip");
 		}
 		const source = deps.store.getSession(holder.source_execution_id);
-		if (source?.merge_block_reason) {
-			const stopped = deps.store.stopWorkflowGateOriginProbe({
-				questionId,
-				reason: MERGE_BLOCKED_REASON,
-			});
-			return stopped.ok
-				? { ok: false, reason: MERGE_BLOCKED_REASON }
-				: { ok: false, reason: stopped.reason };
-		}
+		if (source?.merge_block_reason) return fail(MERGE_BLOCKED_REASON, "stop");
 
 		const observedNow = now();
 		const observedNowMs = Date.parse(observedNow);
@@ -88,49 +104,18 @@ export function createWorkflowGateOriginPreflight(
 			holder.origin_probe_next_at &&
 			observedNowMs < Date.parse(holder.origin_probe_next_at)
 		) {
-			return {
-				ok: false,
-				reason: "workflow_gate_origin_probe_deferred",
-			};
+			return fail("workflow_gate_origin_probe_deferred", "skip");
 		}
-		const hold = (reason: string): WorkflowGateOriginPreflightResult => {
-			const identity = alertIdentity(deps.alertIdentity, run);
-			if (!identity) {
-				return {
-					ok: false,
-					reason: "workflow_gate_origin_probe_alert_identity_missing",
-				};
-			}
-			const held = deps.store.holdWorkflowGateOriginProbeTerminal({
-				questionId,
-				reason,
-				now: observedNow,
-				alertIdentity: identity,
-			});
-			return held.ok
-				? { ok: false, reason }
-				: { ok: false, reason: held.reason };
-		};
 		const defer = (
 			reason: string,
 			delayMs: number = BACKOFF_MS[
 				Math.min(holder.origin_probe_attempts, BACKOFF_MS.length - 1)
 			]!,
-		): WorkflowGateOriginPreflightResult => {
-			const deferred = deps.store.deferWorkflowGateOriginProbe({
-				questionId,
-				reason,
-				now: observedNow,
-				delayMs,
-			});
-			return deferred.ok
-				? { ok: false, reason }
-				: { ok: false, reason: deferred.reason };
-		};
+		): WorkflowGateOriginInspectionResult => fail(reason, "defer", delayMs);
+		const hold = (reason: string): WorkflowGateOriginInspectionResult =>
+			fail(reason, "hold");
 
-		if (!binding) {
-			return hold("workflow_gate_origin_probe_binding_missing");
-		}
+		if (!binding) return hold("workflow_gate_origin_probe_binding_missing");
 		if (binding.superseded_at) {
 			return hold("workflow_gate_origin_probe_binding_superseded");
 		}
@@ -200,16 +185,96 @@ export function createWorkflowGateOriginPreflight(
 			default:
 				return defer("workflow_gate_origin_probe_pr_not_open");
 		}
-		if (probe.isDraft) {
-			return defer("workflow_gate_origin_probe_pr_draft");
-		}
+		if (probe.isDraft) return defer("workflow_gate_origin_probe_pr_draft");
 		if (probe.headRefOid.toLowerCase() !== holder.head_sha) {
 			return defer("workflow_gate_origin_probe_head_mismatch");
 		}
-		const verified = deps.store.markWorkflowGateOriginProbeVerified({
+		const receiptPayload = {
+			schemaVersion: 1 as const,
+			outcome: "ok" as const,
+			projectName: run.project_name,
+			issueId: run.issue_id,
+			runId: run.run_id,
+			gateNodeId: holder.gate_node_id,
 			questionId,
-			now: observedNow,
+			headSha: holder.head_sha,
+			prNumber: nodeBinding.pr_number,
+			targetRepoIdentity: binding.target_repo_identity,
+			probeRepoSlug: binding.probe_repo_slug,
+			targetRepoPath: binding.target_repo_path,
+			worktreeBindingGeneration: binding.worktree_binding_generation,
+			observedAt: observedNow,
+			expiresAt: new Date(observedNowMs + RECEIPT_TTL_MS).toISOString(),
+		};
+		return {
+			ok: true,
+			receipt: {
+				...receiptPayload,
+				digest: workflowGateOriginInspectionReceiptDigest(receiptPayload),
+			},
+		};
+	};
+}
+
+export function createWorkflowGateOriginPreflight(
+	deps: WorkflowGateOriginPreflightDeps,
+): (questionId: string) => Promise<WorkflowGateOriginPreflightResult> {
+	const inspect = deps.inspector ?? createWorkflowGateOriginInspector(deps);
+	const now = deps.now ?? (() => new Date().toISOString());
+
+	return async (questionId) => {
+		const result = await inspect(questionId);
+		if (result.ok) {
+			if (!result.receipt) return { ok: true };
+			const verified = deps.store.markWorkflowGateOriginProbeVerified({
+				questionId,
+				now: result.receipt.observedAt,
+			});
+			return verified.ok
+				? { ok: true }
+				: { ok: false, reason: verified.reason };
+		}
+		if (result.disposition === "skip") {
+			return { ok: false, reason: result.reason };
+		}
+		if (result.disposition === "stop") {
+			const stopped = deps.store.stopWorkflowGateOriginProbe({
+				questionId,
+				reason: result.reason,
+			});
+			return stopped.ok
+				? { ok: false, reason: result.reason }
+				: { ok: false, reason: stopped.reason };
+		}
+		if (result.disposition === "defer") {
+			const deferred = deps.store.deferWorkflowGateOriginProbe({
+				questionId,
+				reason: result.reason,
+				now: now(),
+				delayMs: result.delayMs ?? BACKOFF_MS[0],
+			});
+			return deferred.ok
+				? { ok: false, reason: result.reason }
+				: { ok: false, reason: deferred.reason };
+		}
+		const holder =
+			deps.store.getCurrentWorkflowGateHolderByQuestionId(questionId);
+		const run = holder ? deps.store.getWorkflowRun(holder.run_id) : undefined;
+		const identity = run ? alertIdentity(deps.alertIdentity, run) : undefined;
+		if (!identity) {
+			return {
+				ok: false,
+				reason: "workflow_gate_origin_probe_alert_identity_missing",
+			};
+		}
+		const held = deps.store.holdWorkflowGateOriginProbeTerminal({
+			questionId,
+			reason: result.reason,
+			now: now(),
+			alertIdentity: identity,
 		});
-		return verified.ok ? { ok: true } : { ok: false, reason: verified.reason };
+		return held.ok
+			? { ok: false, reason: result.reason }
+			: { ok: false, reason: held.reason };
 	};
 }

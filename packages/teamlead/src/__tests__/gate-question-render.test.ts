@@ -80,15 +80,13 @@ function mockTransport() {
 }
 
 describe("gate_question rendering (FLY-208 6a)", () => {
-	it("approve_to_ship: reply command shows the required JSON shape + APPROVAL SHAPE guidance", () => {
+	it("approve_to_ship: instructs the Lead to relay the founder-only Discord card instead of responding", () => {
 		const text = formatGateQuestion(envelope(gateEvent("approve_to_ship")));
-		expect(text).toContain(
-			`respond --db /tmp/comm.db --bridge-url $BRIDGE_URL --lead <your_id> q-e60b91b9 '{"approved": true}'`,
-		);
-		expect(text).toContain("APPROVAL SHAPE");
-		expect(text).toContain("recorded as FEEDBACK, not approval");
-		// The misleading generic placeholder is GONE for approve
-		expect(text).not.toContain('"your reply"');
+		expect(text).toContain("founder");
+		expect(text).toContain("Discord ship card");
+		expect(text).toContain("Do NOT run `flywheel-comm respond`");
+		expect(text).not.toContain("respond --db");
+		expect(text).not.toContain("APPROVAL SHAPE");
 	});
 
 	it("non-approve checkpoints keep the legacy direct command (no --bridge-url, no shape banner)", () => {

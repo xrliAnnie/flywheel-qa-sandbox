@@ -26,6 +26,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		workflow_claim_revocation workflow_claims workflow_decision_capability
 		workflow_gate_carrier_rebind_receipt workflow_gate_holder
 		workflow_gate_holder_carryover_evidence workflow_gate_holder_evidence
+		workflow_gate_holder_recovery_evidence
 		workflow_founder_gate_verdict
 		workflow_head_carryover_receipt workflow_output_credential
 		workflow_ship_target_binding workflow_source_event workflow_source_receipt

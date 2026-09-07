@@ -65,9 +65,35 @@ describe("respond() fail-closed gate (§11.2)", () => {
 				dbPath,
 				env: { FLYWHEEL_COMM_BYPASS_BRIDGE: "1" },
 			}),
-		).rejects.toThrow(/refusing to resolve approve_to_ship/);
+		).rejects.toThrow(/founder.*ship card/i);
 		expect(hasResponse(qid)).toBe(false);
 	});
+
+	it.each([
+		["plain feedback", "Please revise the second section.", false],
+		["explicit prefix", "qa: rerun the checks", false],
+		["--kickback", "Please revisit the proposed flow.", true],
+	] as const)(
+		"approve_to_ship + %s rejects before Bridge or CommDB write",
+		async (_shape, answer, kickback) => {
+			const qid = seed("approve_to_ship");
+			const fetchImpl = vi.fn();
+			await expect(
+				respond({
+					questionId: qid,
+					fromAgent: "lead-x",
+					answer,
+					kickback,
+					dbPath,
+					bridgeUrl: "http://localhost:9999",
+					env: { TEAMLEAD_API_TOKEN: "tok" },
+					fetchImpl: fetchImpl as typeof fetch,
+				}),
+			).rejects.toThrow(/founder.*ship card/i);
+			expect(fetchImpl).not.toHaveBeenCalled();
+			expect(hasResponse(qid)).toBe(false);
+		},
+	);
 
 	it.each([
 		["approval text", "approved"],
@@ -95,7 +121,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		},
 	);
 
-	it("approve_to_ship + bridgeUrl but missing TEAMLEAD_API_TOKEN → throws", async () => {
+	it("approve_to_ship rejects before Bridge token validation", async () => {
 		const qid = seed("approve_to_ship");
 		await expect(
 			respond({
@@ -106,86 +132,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 				bridgeUrl: "http://localhost:9999",
 				env: {},
 			}),
-		).rejects.toThrow(/TEAMLEAD_API_TOKEN required/);
-		expect(hasResponse(qid)).toBe(false);
-	});
-
-	it("approve_to_ship + bridge route: POSTs to wrapper, CLI does NOT write", async () => {
-		const qid = seed("approve_to_ship");
-		const fetchImpl = vi.fn(async () => ({
-			ok: true,
-			status: 200,
-			json: async () => ({ success: true }),
-		})) as unknown as typeof fetch;
-		await respond({
-			questionId: qid,
-			fromAgent: "lead-x",
-			answer: "changes requested",
-			dbPath,
-			projectName: "Proj",
-			bridgeUrl: "http://localhost:9999",
-			env: { TEAMLEAD_API_TOKEN: "tok" },
-			fetchImpl,
-		});
-		expect(fetchImpl).toHaveBeenCalledOnce();
-		const call = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
-		expect(String(call?.[0])).toContain(
-			"/api/founder-consent/runner-gate-response",
-		);
-		// CLI must NOT write — the wrapper owns the write on allow.
-		expect(hasResponse(qid)).toBe(false);
-	});
-
-	it("workflow-gate id completes markerless retirement after a successful bridge route", async () => {
-		const qid = seed("approve_to_ship", "workflow-gate:submission-digest");
-		const fetchImpl = vi.fn(async () => ({
-			ok: true,
-			status: 200,
-			json: async () => ({ success: true }),
-		})) as unknown as typeof fetch;
-
-		await expect(
-			respond({
-				questionId: qid,
-				fromAgent: "lead-x",
-				answer: "changes requested",
-				dbPath,
-				projectName: "Proj",
-				bridgeUrl: "http://localhost:9999",
-				env: {
-					FLYWHEEL_GATE_MARKER_DIR: join(dir, "markers"),
-					TEAMLEAD_API_TOKEN: "tok",
-				},
-				fetchImpl,
-			}),
-		).resolves.toBeUndefined();
-
-		const init = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
-		expect(JSON.parse(String(init?.body))).toMatchObject({ questionId: qid });
-		expect(hasResponse(qid)).toBe(false);
-	});
-
-	it("approve_to_ship + --kickback sends the explicit Lead confirmation", async () => {
-		const qid = seed("approve_to_ship");
-		const fetchImpl = vi.fn(async () => ({
-			ok: true,
-			status: 200,
-			json: async () => ({ success: true }),
-		})) as unknown as typeof fetch;
-		await respond({
-			questionId: qid,
-			fromAgent: "lead-x",
-			answer: "Please revisit the proposed flow.",
-			kickback: true,
-			dbPath,
-			projectName: "Proj",
-			bridgeUrl: "http://localhost:9999",
-			env: { TEAMLEAD_API_TOKEN: "tok" },
-			fetchImpl,
-		});
-
-		const init = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
-		expect(JSON.parse(String(init?.body))).toMatchObject({ kickback: true });
+		).rejects.toThrow(/founder.*ship card/i);
 		expect(hasResponse(qid)).toBe(false);
 	});
 
@@ -233,40 +180,12 @@ describe("respond() fail-closed gate (§11.2)", () => {
 				env: { TEAMLEAD_API_TOKEN: "tok" },
 				fetchImpl: fetchImpl as typeof fetch,
 			}),
-		).rejects.toThrow(/lead_ack_rejected/);
+		).rejects.toThrow(/founder.*ship card/i);
 		expect(fetchImpl).not.toHaveBeenCalled();
 		expect(hasResponse(qid)).toBe(false);
 	});
 
-	it("FLY-208 6b: no warning in bridge response → nothing extra on stderr", async () => {
-		const qid = seed("approve_to_ship");
-		const fetchImpl = vi.fn(async () => ({
-			ok: true,
-			status: 200,
-			json: async () => ({ success: true }),
-		})) as unknown as typeof fetch;
-		const stderrSpy = vi
-			.spyOn(process.stderr, "write")
-			.mockImplementation(() => true);
-		try {
-			await respond({
-				questionId: qid,
-				fromAgent: "lead-x",
-				answer: "changes requested",
-				dbPath,
-				projectName: "Proj",
-				bridgeUrl: "http://localhost:9999",
-				env: { TEAMLEAD_API_TOKEN: "tok" },
-				fetchImpl,
-			});
-			const writes = stderrSpy.mock.calls.map((c) => String(c[0])).join("");
-			expect(writes).not.toContain("WARNING:");
-		} finally {
-			stderrSpy.mockRestore();
-		}
-	});
-
-	it("approve_to_ship + bridge returns non-2xx → throws, no local write", async () => {
+	it("approve_to_ship rejects before a configured Bridge can respond", async () => {
 		const qid = seed("approve_to_ship");
 		const fetchImpl = vi.fn(async () => ({
 			ok: false,
@@ -283,7 +202,8 @@ describe("respond() fail-closed gate (§11.2)", () => {
 				env: { TEAMLEAD_API_TOKEN: "tok" },
 				fetchImpl,
 			}),
-		).rejects.toThrow(/Bridge refused/);
+		).rejects.toThrow(/founder.*ship card/i);
+		expect(fetchImpl).not.toHaveBeenCalled();
 		expect(hasResponse(qid)).toBe(false);
 	});
 
@@ -300,7 +220,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 					FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
 				},
 			}),
-		).rejects.toThrow(/lead_ack_rejected/);
+		).rejects.toThrow(/founder.*ship card/i);
 		expect(hasResponse(qid)).toBe(false);
 	});
 
@@ -329,7 +249,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 					FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
 				},
 			}),
-		).rejects.toThrow(/refusing to resolve approve_to_ship/);
+		).rejects.toThrow(/founder.*ship card/i);
 		expect(hasResponse(oldGate)).toBe(false);
 	});
 

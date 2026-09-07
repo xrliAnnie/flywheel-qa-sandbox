@@ -1,4 +1,3 @@
-import { hasApprovalIntent } from "../approval-intent.js";
 import { CommDB } from "../db.js";
 import { isReservedApprovalAttribution } from "../founder-attribution.js";
 import { isFounderReviewCheckpoint } from "../founder-review.js";
@@ -65,34 +64,8 @@ export async function respond(args: RespondArgs): Promise<void> {
 			args.authorizationDeps,
 		);
 		if (question.checkpoint && GATED_CHECKPOINTS.has(question.checkpoint)) {
-			if (hasApprovalIntent(args.answer)) {
-				throw new Error(
-					"flywheel-comm: lead_ack_rejected — Lead approval cannot resolve a founder-bound gate; only the trusted founder writer may approve.",
-				);
-			}
-			const bridgeUrl =
-				args.bridgeUrl?.trim() ||
-				env.BRIDGE_URL?.trim() ||
-				env.FLYWHEEL_BRIDGE_URL?.trim();
-			if (bridgeUrl) {
-				await routeThroughBridge({
-					bridgeUrl,
-					questionId: args.questionId,
-					leadId: args.fromAgent,
-					answer: args.answer,
-					executionId: question.from_agent,
-					projectName: args.projectName,
-					kickback: args.kickback,
-					authorization,
-					env,
-					fetchImpl: args.fetchImpl,
-				});
-				retireMarker(args.questionId, question.from_agent, env);
-				return;
-			}
 			throw new Error(
-				"flywheel-comm: refusing to resolve approve_to_ship gate directly. " +
-					"Set BRIDGE_URL or --bridge-url so the wrapper enforces founder consent.",
+				"flywheel-comm: approve_to_ship is founder-only; ask the founder to react or reply on the Discord ship card.",
 			);
 		}
 		if (args.sourceThread) {
@@ -217,71 +190,4 @@ function retireMarker(
 		return;
 	}
 	removeAskMarker(markerDir, questionId);
-}
-
-async function routeThroughBridge(opts: {
-	bridgeUrl: string;
-	questionId: string;
-	leadId: string;
-	answer: string;
-	executionId?: string;
-	projectName?: string;
-	kickback?: boolean;
-	authorization: LeadWriteAuthorization;
-	env: NodeJS.ProcessEnv;
-	fetchImpl?: typeof fetch;
-}): Promise<void> {
-	const token = opts.env.TEAMLEAD_API_TOKEN;
-	if (!token) {
-		throw new Error(
-			"flywheel-comm: TEAMLEAD_API_TOKEN required when routing approve_to_ship via Bridge.",
-		);
-	}
-	const url = `${opts.bridgeUrl.replace(/\/+$/, "")}/api/founder-consent/runner-gate-response`;
-	const body = {
-		questionId: opts.questionId,
-		leadId: opts.leadId,
-		answer: opts.answer,
-		executionId: opts.executionId,
-		projectName: opts.projectName,
-		...(opts.kickback === true ? { kickback: true } : {}),
-		leaseClaim: opts.authorization.leaseClaim,
-		identityDigest: opts.authorization.identityDigest,
-		provenance: opts.authorization.provenance,
-	};
-	const headers = {
-		"content-type": "application/json",
-		Authorization: `Bearer ${token}`,
-	};
-	const fetchImpl = opts.fetchImpl ?? fetch;
-	const response = opts.authorization.carrierClaim
-		? await postCarrierClaim({
-				url,
-				carrierClaim: opts.authorization.carrierClaim,
-				body,
-				headers,
-				fetchImpl,
-			})
-		: await fetchImpl(url, {
-				method: "POST",
-				headers,
-				body: JSON.stringify(body),
-			});
-	if (!response.ok) {
-		let detail = `HTTP ${response.status}`;
-		try {
-			detail = JSON.stringify(await response.json());
-		} catch {}
-		throw new Error(
-			`flywheel-comm: Bridge refused approve_to_ship gate (HTTP ${response.status}): ${detail}`,
-		);
-	}
-	try {
-		const result = (await response.json()) as { warning?: string };
-		if (result.warning) {
-			process.stderr.write(
-				`[flywheel-comm respond] WARNING: ${result.warning}\n`,
-			);
-		}
-	} catch {}
 }

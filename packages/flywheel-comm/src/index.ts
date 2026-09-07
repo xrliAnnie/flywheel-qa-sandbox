@@ -215,18 +215,16 @@ respond options:
 	[--expect-owner <execution-id>]
 	[--expect-checkpoint <checkpoint> | --expect-no-checkpoint]
 	[--source-thread <discord-thread-id>] [--bridge-url <url>] [--kickback]
-  --bridge-url <url>  Route an approve_to_ship gate response through the Bridge
-                      founder-consent wrapper (FLY-175). Required for the
-                      approve_to_ship checkpoint unless BRIDGE_URL env is set;
-                      omitting it for that gate is fail-closed (refuses to write).
-  --kickback          Explicitly confirm a non-approval answer as a kickback.
-                      Without this flag or a recognized kickback prefix, neutral
-                      discussion is relayed but no verdict is written.
+  --bridge-url <url>  Route ordinary scoped responses through the Bridge.
+                      Lead responses to approve_to_ship are always rejected;
+                      ask the founder to act on the Discord ship card.
+  --kickback          Parsed for compatibility only. It never lets a Lead answer
+                      the founder-only approve_to_ship checkpoint.
 
 Environment:
   FLYWHEEL_COMM_DB           DB path (overridden by --db)
-  BRIDGE_URL                 Default Bridge URL for the approve_to_ship gate route
-  TEAMLEAD_API_TOKEN         Bearer token for the Bridge gate-response endpoint
+  BRIDGE_URL                 Default Bridge URL for ordinary scoped responses
+  TEAMLEAD_API_TOKEN         Bearer token for Bridge response endpoints
 `);
 }
 
@@ -638,8 +636,7 @@ async function runRespond(args: string[]): Promise<void> {
 			lead: { type: "string" },
 			db: { type: "string" },
 			project: { type: "string" },
-			// FLY-175: route approve_to_ship gate responses through the Bridge
-			// founder-consent wrapper. Falls back to BRIDGE_URL env when unset.
+			// Retained for ordinary scoped Bridge responses and CLI compatibility.
 			"bridge-url": { type: "string" },
 			"source-thread": { type: "string" },
 			"expect-owner": { type: "string" },

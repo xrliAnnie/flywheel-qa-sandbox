@@ -156,6 +156,8 @@ describe("FLY-605 ambiguous handoff durability + in-memory cursor (Codex code-re
 			),
 		});
 		expect(hookPayload.action).toContain("--source-thread T1");
+		expect(hookPayload.action).toContain("non-approve_to_ship");
+		expect(hookPayload.action).toContain("Discord ship card");
 		expect(hookPayload.action).not.toContain("receipt");
 		expect(hookPayload.action).not.toContain("route-founder-reply");
 		expect(deliver).not.toHaveBeenCalled();

@@ -378,6 +378,7 @@ import {
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
 	storeSummaryAbsorptionCadenceMs,
+	storeWorkflowGateQuestionRecoveryEnabled,
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
@@ -729,6 +730,7 @@ import {
 } from "./turn-belt-reconcile.js";
 import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
+import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
 import { createVoiceRouter } from "./voice-routes.js";
 import type { WorkflowActorSession } from "./workflow-actor-session.js";
 import { createWorkflowCarrierRedriveRouter } from "./workflow-carrier-redrive-routes.js";
@@ -806,6 +808,24 @@ import { scanZombies } from "./zombie-scan.js";
 // `./plugin.js` — run-dispatcher.ts, run-infra.ts — keep working unchanged.
 export type { CommBackend };
 export const resolveCommBackend = resolveCommBackendShared;
+
+export function workflowGateQuestionRecoveryEnabled(input: {
+	flagStore: FlagStoreRuntime;
+	projectName: string;
+	log?: (message: string) => void;
+}): boolean {
+	try {
+		return storeWorkflowGateQuestionRecoveryEnabled(
+			input.flagStore,
+			input.projectName,
+		);
+	} catch (error) {
+		(input.log ?? console.warn)(
+			`[workflow-gate-question-recovery] flag unavailable for ${input.projectName}; recovery disabled: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return false;
+	}
+}
 
 export function resolveWorkflowRunAlertIdentity(input: {
 	store: Pick<
@@ -2936,12 +2956,10 @@ export function createBridgeApp(
 		createLeadLeaseDiagnosticsRouter(),
 	);
 
-	// FLY-175 Track 2 Surface B + debug endpoint (auth-required). The gate
-	// router is mounted whenever Track 2 is compiled in — INCLUDING when
-	// decisionMode=off, where it pass-through-writes the response. This is
-	// required because the patched `flywheel-comm respond` CLI always routes
-	// approve_to_ship through this endpoint; a 404 here would block every ship
-	// during the default-off rollout (Codex R1 HIGH). The audit debug endpoint
+	// FLY-175 Track 2 Surface B + debug endpoint (auth-required). Keep the
+	// historical endpoint mounted for compatibility and defense in depth;
+	// FLY-2427 rejects every Lead-authored approve_to_ship write at its shared
+	// writer boundary before any CommDB state changes. The audit debug endpoint
 	// only exists when the evaluator/audit store are constructed (mode != off).
 	if (fcWiring) {
 		app.use(
@@ -9474,12 +9492,21 @@ export async function startBridge(
 			}
 		}
 	};
-	const { createWorkflowGateOriginPreflight } = await import(
-		"./gate-origin-preflight.js"
-	);
-	const workflowGateOriginPreflight = createWorkflowGateOriginPreflight({
+	const {
+		createWorkflowGateOriginInspector,
+		createWorkflowGateOriginPreflight,
+	} = await import("./gate-origin-preflight.js");
+	const workflowGateOriginDeps = {
 		store,
-		alertIdentity: ({ runId, projectName, issueId }) =>
+		alertIdentity: ({
+			runId,
+			projectName,
+			issueId,
+		}: {
+			runId: string;
+			projectName: string;
+			issueId: string;
+		}) =>
 			resolveWorkflowRunAlertIdentity({
 				store,
 				projects,
@@ -9489,6 +9516,13 @@ export async function startBridge(
 				runId,
 				log: (message) => console.warn(`[workflow-gate] ${message}`),
 			}),
+	};
+	const workflowGateOriginInspector = createWorkflowGateOriginInspector(
+		workflowGateOriginDeps,
+	);
+	const workflowGateOriginPreflight = createWorkflowGateOriginPreflight({
+		...workflowGateOriginDeps,
+		inspector: workflowGateOriginInspector,
 	});
 	let workflowGateMaterializationRunning = false;
 	const workflowGateMaterializeTick = async (): Promise<void> => {
@@ -9500,42 +9534,30 @@ export async function startBridge(
 				commDbPathForProject,
 				log: (message) => console.warn(message),
 			});
-			await voidSupersededWorkflowGateCards({
-				store,
-				resolveAlertIdentity: ({ run }) =>
-					resolveWorkflowRunAlertIdentity({
-						store,
-						projects,
-						defaultLeadAgentId: config.defaultLeadAgentId,
-						projectName: run.project_name,
-						issueId: run.issue_id,
-						runId: run.run_id,
-						log: (message) => console.warn(`[workflow-gate-card] ${message}`),
+			for (const project of projects) {
+				await reconcileUnanswerableWorkflowGates({
+					enabled: workflowGateQuestionRecoveryEnabled({
+						flagStore,
+						projectName: project.projectName,
 					}),
-				resolveDelivery: ({ holder, run }) => {
-					const source = store.getSession(holder.source_execution_id);
-					const { lead } = resolveLeadForIssue(
-						projects,
-						run.project_name,
-						source ? store.getSessionLabels(holder.source_execution_id) : [],
-					);
-					const botToken = lead.botToken ?? config.discordBotToken;
-					if (!botToken) return undefined;
-					return {
-						botToken,
-						alertIdentity: resolveWorkflowRunAlertIdentity({
+					projectName: project.projectName,
+					commDbPath: commDbPathForProject(project.projectName),
+					store,
+					inspectOrigin: workflowGateOriginInspector,
+					resolveAlertIdentity: (candidate) =>
+						resolveWorkflowRunAlertIdentity({
 							store,
 							projects,
 							defaultLeadAgentId: config.defaultLeadAgentId,
-							projectName: run.project_name,
-							issueId: run.issue_id,
-							runId: run.run_id,
-							log: (message) => console.warn(`[workflow-gate-card] ${message}`),
+							projectName: candidate.projectName,
+							issueId: candidate.issueId,
+							runId: candidate.runId,
+							log: (message) =>
+								console.warn(`[workflow-gate-question-recovery] ${message}`),
 						}),
-					};
-				},
-				log: (message: string) => console.warn(message),
-			});
+					log: (message) => console.warn(message),
+				});
+			}
 			const materializeQuestion = async (
 				questionId: string,
 			): Promise<boolean> => {
@@ -9675,6 +9697,42 @@ export async function startBridge(
 					now: new Date().toISOString(),
 				});
 			}
+			await voidSupersededWorkflowGateCards({
+				store,
+				resolveAlertIdentity: ({ run }) =>
+					resolveWorkflowRunAlertIdentity({
+						store,
+						projects,
+						defaultLeadAgentId: config.defaultLeadAgentId,
+						projectName: run.project_name,
+						issueId: run.issue_id,
+						runId: run.run_id,
+						log: (message) => console.warn(`[workflow-gate-card] ${message}`),
+					}),
+				resolveDelivery: ({ holder, run }) => {
+					const source = store.getSession(holder.source_execution_id);
+					const { lead } = resolveLeadForIssue(
+						projects,
+						run.project_name,
+						source ? store.getSessionLabels(holder.source_execution_id) : [],
+					);
+					const botToken = lead.botToken ?? config.discordBotToken;
+					if (!botToken) return undefined;
+					return {
+						botToken,
+						alertIdentity: resolveWorkflowRunAlertIdentity({
+							store,
+							projects,
+							defaultLeadAgentId: config.defaultLeadAgentId,
+							projectName: run.project_name,
+							issueId: run.issue_id,
+							runId: run.run_id,
+							log: (message) => console.warn(`[workflow-gate-card] ${message}`),
+						}),
+					};
+				},
+				log: (message: string) => console.warn(message),
+			});
 			await watchVoidedWorkflowGateCards({
 				store,
 				founderId: config.discordOwnerUserId ?? "",

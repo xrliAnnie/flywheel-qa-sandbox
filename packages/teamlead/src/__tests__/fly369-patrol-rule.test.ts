@@ -820,6 +820,21 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(msg).toMatch(/wake/i);
 		// the matrix must keep the Codex marker-bearing no-block gate wake row
 		expect(msg).toMatch(/marker/i);
+		const founderGateRule = msg.slice(
+			msg.indexOf("approve_to_ship` is founder-gated"),
+			msg.indexOf("## Driving a parked"),
+		);
+		expect(founderGateRule).toContain("Discord ship card");
+		expect(founderGateRule).not.toContain("flywheel-comm respond --db");
+	});
+
+	it("runner-patrol rules exclude approve_to_ship from Lead respond authority", () => {
+		const drivingRule = patrol.slice(
+			patrol.indexOf("## 3. Driving a parked"),
+			patrol.indexOf("## 4. Continuation"),
+		);
+		expect(drivingRule).toMatch(/Discord\s+ship card/);
+		expect(drivingRule).toContain("approve_to_ship");
 	});
 
 	it("claude-lead.sh keeps runner-patrol on dispatch-capable department Leads", () => {

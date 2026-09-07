@@ -494,6 +494,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 
 	// ─── project config flags (per-project scope) ───
 	{
+		name: "workflow_gate_question_recovery",
+		category: "kill_switch",
+		source: "project_config",
+		scope: "project",
+		configKey: "workflow.gate_question_recovery_enabled",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2427: recover an active founder ship gate whose CommDB question became unanswerable without a founder decision source event",
+		whenOn:
+			"发现 founder ship 卡对应的问题已不可回答且没有真实 founder 决策时，校验同一 PR head 后自动重铸新卡",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"workflowGateQuestionRecoveryEnabled",
+				"storeWorkflowGateQuestionRecoveryEnabled",
+			),
+		],
+		toggleable: "conversational",
+		note: "Default on. A flag read failure fails closed before candidate or CommDB access; =0 disables only this recovery rider.",
+	},
+	{
 		name: "database_archive",
 		category: "feature",
 		source: "project_config",

@@ -1917,7 +1917,7 @@ export function createEventRouter(
 				if (route === "needs_review") {
 					// FLY-115 v1.24.5 (FLY-120): mirror the auto_approve+merged
 					// short-circuit so a Runner that self-merges after Lead
-					// unblocks `approve_to_ship` (e.g. via flywheel-comm respond)
+					// unblocks `approve_to_ship` through the authoritative founder path
 					// reaches "completed" instead of being stuck in
 					// "awaiting_review" with a PR already on main. Sister fix
 					// in DirectEventSink.emitCompleted; both paths must agree

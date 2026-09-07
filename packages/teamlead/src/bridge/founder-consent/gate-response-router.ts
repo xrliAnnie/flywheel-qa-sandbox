@@ -2,10 +2,9 @@
  * FLY-175 Track 2 — Surface B: POST /api/founder-consent/runner-gate-response
  * (plan Appendix C).
  *
- * The production `approve_to_ship` ship path: Lead's `flywheel-comm respond`
- * is patched (fail-closed) to POST here instead of writing CommDB directly.
- * The router evaluates founder consent, then writes the CommDB response on
- * allow using the SAME `db.insertResponse(...)` code `approveExecution` uses.
+ * Historical Lead relay for `approve_to_ship`. FLY-2427 keeps the endpoint
+ * mounted for compatibility, but the shared writer rejects every Lead-authored
+ * answer without consuming the founder question.
  *
  * Security (Codex R2 HIGH-2): the CommDB path is derived SERVER-SIDE from a
  * configured project; a caller-supplied `dbPath` is rejected, and the resolved
@@ -35,12 +34,8 @@ import type { ConsentContextResolver } from "./middleware.js";
 export interface GateResponseRouterDeps {
 	/**
 	 * The consent evaluator. **Optional**: when undefined (DECISION_MODE=off)
-	 * the route still mounts and operates in PASS-THROUGH mode — it derives the
-	 * CommDB path, verifies the checkpoint, and writes the response WITHOUT a
-	 * consent check. This is required for byte-compat: the patched
-	 * `flywheel-comm respond` CLI ALWAYS routes `approve_to_ship` through this
-	 * Bridge endpoint, so if the route 404'd while off, every production ship
-	 * would block during the Phase 0 default-off rollout.
+	 * the route still mounts and validates requests. The shared writer remains
+	 * the final fail-closed boundary when consent evaluation is disabled.
 	 */
 	evaluator?: FounderConsentEvaluator;
 	/** Resolve consent context by executionId (shared with middleware). */
@@ -78,10 +73,8 @@ export interface GateResponseRouterDeps {
 	/** Injectable OS liveness seams for carrier validation tests. */
 	leadWriteAuthorizationDeps?: LeadWriteAuthorizationDeps;
 	/**
-	 * FLY-191 Phase 2: invoked AFTER a successful CommDB response write (both
-	 * the pass-through and the consent-allow paths — this endpoint is the
-	 * production `flywheel-comm respond --bridge-url` ship path, so it must
-	 * have parity with `/api/actions/approve`):
+	 * Historical FLY-191 hook. FLY-2427 makes it unreachable for production
+	 * Lead-authored writes; it remains injectable for boundary unit tests:
 	 *   - approval answers (structured `{"approved": true}`) → flip
 	 *     awaiting_review → approved_to_ship (Codex R2 MEDIUM-1) + wake;
 	 *   - non-approval answers (changes_requested feedback) → wake only,
@@ -356,7 +349,7 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 					res.status(409).json({
 						error: "neutral_not_written",
 						detail:
-							"No verdict was written because this text is not an explicit kickback. Keep discussion in the thread; to confirm a rejection, rerun flywheel-comm respond with --kickback or use an explicit 打回 / design: / implement: / qa: prefix.",
+							"No verdict was written. A Lead cannot answer approve_to_ship; ask the founder to approve or request changes on the Discord ship card.",
 					});
 					return true;
 				}
@@ -385,9 +378,8 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 				return;
 			}
 
-			// PASS-THROUGH (DECISION_MODE=off): no evaluator → write the response
-			// without a consent check. Keeps the CLI→Bridge ship path functional
-			// during the default-off rollout (see GateResponseRouterDeps.evaluator).
+			// PASS-THROUGH (DECISION_MODE=off): still traverse the shared writer,
+			// whose Lead boundary rejects without consuming the question.
 			if (!deps.evaluator) {
 				const result = await writeThroughBoundary(leadId);
 				if (rejectBoundaryResult(result)) return;
@@ -443,11 +435,7 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 				return;
 			}
 
-			// 5. Allow: write the response (same path approveExecution uses).
-			//
-			// Production is permanently audit_only, so this Lead relay never mints
-			// trusted founder attribution. Directly injected evaluator modes retain
-			// their decision capability for unit tests but share this writer policy.
+			// 5. Even an allow verdict must traverse the writer's Lead rejection.
 			const result = await writeThroughBoundary(leadId);
 			if (rejectBoundaryResult(result)) return;
 			res.json({

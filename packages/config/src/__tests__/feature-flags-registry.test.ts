@@ -29,6 +29,8 @@ const EXPECTED_WHEN_ON = {
 		"QA 或 founder 要求返工时，让原来的执行节点继续修改；关闭后只暂停并告警",
 	workflow_node_reuse:
 		"后续 QA 复验要求返工时，优先交回同一个仍在线的执行节点；节点已退出才新建",
+	workflow_gate_question_recovery:
+		"发现 founder ship 卡对应的问题已不可回答且没有真实 founder 决策时，校验同一 PR head 后自动重铸新卡",
 	database_archive:
 		"定期压缩已结束的 TeamLead 和 CommDB 历史记录，避免数据库一直变大",
 	node_dwell:
@@ -64,7 +66,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(23);
+		expect(FEATURE_FLAGS).toHaveLength(24);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);

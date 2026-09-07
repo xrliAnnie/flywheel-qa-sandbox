@@ -684,10 +684,24 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 		);
 	});
 
-	it("fails closed before touching storage when a Lead relay carries a founder route hint", async () => {
-		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
-		await expect(
-			writeGateResponseAndRunPostWrite({
+	it.each([
+		{ founderRework: undefined, label: "plain feedback" },
+		{
+			founderRework: {
+				target: "qa" as const,
+				invalidationScope: ["qa" as const],
+				verificationPolicy: ["qa_retest" as const, "founder_gate" as const],
+				interpretedBy: "untrusted-lead-relay",
+				interpretationReason: "must never reach the projector",
+			},
+			label: "founder route hint",
+		},
+	])(
+		"rejects a Lead relay before touching storage: $label",
+		async ({ founderRework }) => {
+			const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+			const onResponseWritten = vi.fn();
+			const result = await writeGateResponseAndRunPostWrite({
 				...baseArgs,
 				db,
 				store: store("awaiting_review"),
@@ -696,18 +710,22 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 					projectName: "flywheel",
 					identityDigest: "digest",
 				},
-				founderRework: {
-					target: "qa",
-					invalidationScope: ["qa"],
-					verificationPolicy: ["qa_retest", "founder_gate"],
-					interpretedBy: "untrusted-lead-relay",
-					interpretationReason: "must never reach the projector",
-				},
-			}),
-		).rejects.toThrow("lead requests cannot carry founder rework hints");
-		expect(db.getMessageById).not.toHaveBeenCalled();
-		expect(db.insertResponse).not.toHaveBeenCalled();
-	});
+				...(founderRework ? { founderRework } : {}),
+				onResponseWritten,
+			});
+
+			expect(result).toEqual({
+				written: false,
+				retrySafe: true,
+				disposition: "reject",
+				reason: "lead_ship_gate_response_forbidden",
+			});
+			expect(db.getMessageById).not.toHaveBeenCalled();
+			expect(db.getResponse).not.toHaveBeenCalled();
+			expect(db.insertResponse).not.toHaveBeenCalled();
+			expect(onResponseWritten).not.toHaveBeenCalled();
+		},
+	);
 
 	it("never emits a founder source event for feedback or an untrusted actor", async () => {
 		const db = {

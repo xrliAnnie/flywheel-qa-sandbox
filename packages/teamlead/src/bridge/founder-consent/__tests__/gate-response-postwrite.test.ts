@@ -1,11 +1,9 @@
 /**
- * FLY-191 Phase 2 — gate-response-router post-write hook.
+ * FLY-191 Phase 2 / FLY-2427 — gate-response-router post-write hook.
  *
- * The Surface B endpoint is the production `flywheel-comm respond
- * --bridge-url` ship path; after a successful CommDB response write it must
- * invoke `onResponseWritten` (transition + wake in production wiring) on BOTH
- * the pass-through (DECISION_MODE=off) and consent-allow paths — and a hook
- * failure must NEVER fail the request (the response row is already durable).
+ * The Surface B endpoint no longer accepts any Lead-authored answer to an
+ * approve_to_ship gate. Rejections must never invoke the post-write hook or
+ * create the response row that terminally disposes the founder's question.
  */
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -129,7 +127,7 @@ afterEach(() => {
 });
 
 describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
-	it("PASS-THROUGH (off): hook invoked with executionId + answer after the write", async () => {
+	it("PASS-THROUGH (off): rejects before the hook or response write", async () => {
 		const qid = seedQuestion();
 		const hook = vi.fn(async () => {});
 		mkServer({ evaluator: undefined, onResponseWritten: hook });
@@ -141,20 +139,14 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			kickback: true,
 			executionId: "exec-1",
 		});
-		expect(res.status).toBe(200);
-		expect(hook).toHaveBeenCalledTimes(1);
-		const info = hook.mock.calls[0]?.[0] as {
-			executionId: string;
-			questionId: string;
-			leadId: string;
-			answer: string;
-		};
-		expect(info.executionId).toBe("exec-1");
-		expect(info.questionId).toBe(qid);
-		expect(info.answer).toBe(FEEDBACK);
+		expect(res.status).toBe(409);
+		expect(hook).not.toHaveBeenCalled();
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)).toBeUndefined();
+		db.close();
 	});
 
-	it("ALLOW (enforce): hook invoked after the consent-allowed write", async () => {
+	it("ALLOW (enforce): cannot authorize the hook or response write", async () => {
 		const qid = seedQuestion();
 		const hook = vi.fn(async () => {});
 		mkServer({ evaluator: fakeEvaluator("allow"), onResponseWritten: hook });
@@ -166,8 +158,8 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			kickback: true,
 			executionId: "exec-1",
 		});
-		expect(res.status).toBe(200);
-		expect(hook).toHaveBeenCalledTimes(1);
+		expect(res.status).toBe(409);
+		expect(hook).not.toHaveBeenCalled();
 	});
 
 	it("DENY: hook NOT invoked (no write happened)", async () => {
@@ -216,7 +208,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		db.close();
 	});
 
-	it("ALLOWS the answer when no binding exists (legacy blocking-gate byte-compat)", async () => {
+	it("rejects the answer when no binding exists", async () => {
 		const qid = seedQuestion();
 		const hook = vi.fn(async () => {});
 		mkServer({
@@ -232,13 +224,11 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			kickback: true,
 			executionId: "exec-1",
 		});
-		expect(res.status).toBe(200);
-		expect(hook).toHaveBeenCalledTimes(1);
+		expect(res.status).toBe(409);
+		expect(hook).not.toHaveBeenCalled();
 	});
 
-	// FLY-191 Phase 2 (Codex R2 HIGH-2): idempotent retry past the
-	// one-response-per-question unique index.
-	it("retry with a matching answer SKIPS the duplicate write but RE-RUNS the hook (200 alreadyResponded)", async () => {
+	it("a retry stays rejected without consuming the one-response slot", async () => {
 		const qid = seedQuestion();
 		const hook = vi.fn(async () => {});
 		mkServer({ evaluator: undefined, onResponseWritten: hook });
@@ -251,20 +241,18 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			executionId: "exec-1",
 		};
 		const r1 = await request("/api/founder-consent/runner-gate-response", body);
-		expect(r1.status).toBe(200);
-		expect(hook).toHaveBeenCalledTimes(1);
+		expect(r1.status).toBe(409);
+		expect(hook).not.toHaveBeenCalled();
 
-		// Retry (e.g. first call's transition failed downstream) — without the
-		// idempotent path this would hit idx_unique_response and 500.
 		const r2 = await request("/api/founder-consent/runner-gate-response", body);
-		expect(r2.status).toBe(200);
-		expect((r2.body as { alreadyResponded?: boolean }).alreadyResponded).toBe(
-			true,
-		);
-		expect(hook).toHaveBeenCalledTimes(2); // recovery hook re-ran
+		expect(r2.status).toBe(409);
+		expect(hook).not.toHaveBeenCalled();
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)).toBeUndefined();
+		db.close();
 	});
 
-	it("different feedback text is an idempotent changes-requested retry", async () => {
+	it("different feedback text cannot consume the same open gate", async () => {
 		const qid = seedQuestion();
 		const hook = vi.fn(async () => {});
 		mkServer({ evaluator: undefined, onResponseWritten: hook });
@@ -283,14 +271,11 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			kickback: true,
 			executionId: "exec-1",
 		});
-		expect(r2.status).toBe(200);
-		expect((r2.body as { alreadyResponded?: boolean }).alreadyResponded).toBe(
-			true,
-		);
-		expect(hook).toHaveBeenCalledTimes(2);
+		expect(r2.status).toBe(409);
+		expect(hook).not.toHaveBeenCalled();
 	});
 
-	it("hook failure does NOT fail the request — response row stays durable", async () => {
+	it("a hook failure is unreachable for a forbidden Lead response", async () => {
 		const qid = seedQuestion();
 		const hook = vi.fn(async () => {
 			throw new Error("transition exploded");
@@ -304,10 +289,11 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			kickback: true,
 			executionId: "exec-1",
 		});
-		expect(res.status).toBe(200);
+		expect(res.status).toBe(409);
+		expect(hook).not.toHaveBeenCalled();
 
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe(FEEDBACK);
+		expect(db.getResponse(qid)).toBeUndefined();
 		db.close();
 	});
 });

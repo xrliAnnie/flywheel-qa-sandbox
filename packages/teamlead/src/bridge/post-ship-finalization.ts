@@ -100,7 +100,7 @@ function postShipArchiveReceipt(
  *      action without an explicit Bridge approve.
  *   3. `route === "needs_review"` with `landingStatus.status === "merged"`
  *      — FLY-115 v1.24.5 (FLY-120). The Lead unblocked the
- *      `approve_to_ship` gate via `flywheel-comm respond` (production
+ *      `approve_to_ship` gate through the historical response path (production
  *      path; v1.24.4 test framework also uses this). Bridge's
  *      `approveExecution` was never called so `existingStatus` stayed at
  *      `running`; the Runner resumed, merged the PR, rewrote

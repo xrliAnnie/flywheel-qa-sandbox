@@ -7,11 +7,9 @@
  *
  * Returns `null` only when `config.founderConsent` is entirely absent. When
  * present-but-off (`decisionMode === "off"`) it returns a wiring with NO
- * evaluator/audit/debug, but STILL a (pass-through) gate router. This is
- * required for byte-compat: the patched `flywheel-comm respond` CLI always
- * routes `approve_to_ship` through the Bridge gate endpoint, so the route must
- * exist (and write the response) even while off — otherwise every production
- * ship would 404 during the default-off Phase 0 rollout (Codex R1 HIGH).
+ * evaluator/audit/debug, but STILL the historical gate router. FLY-2427 keeps
+ * that endpoint for compatibility while the shared writer refuses every
+ * Lead-authored approve_to_ship response before durable state changes.
  */
 
 import { type Request, type Response, Router } from "express";
@@ -447,10 +445,10 @@ export function buildFounderConsentWiring(
 		return authority ? { project_name: authority.projectName } : undefined;
 	};
 
-	// FLY-191 Phase 2 / FLY-799: post-write hook for the gate-response endpoint
-	// (the production `flywheel-comm respond --bridge-url` ship path). Shared with
-	// the founder-reply approval path (startBridge's ship-approval factory) via
-	// buildGateResponsePostWriteHook so the two can never drift.
+	// FLY-191 Phase 2 / FLY-799: post-write hook retained for the historical
+	// gate-response endpoint. Shared with the founder-reply approval path
+	// (startBridge's ship-approval factory) via buildGateResponsePostWriteHook so
+	// the two can never drift.
 	const onResponseWritten = buildGateResponsePostWriteHook({
 		store,
 		transitionOpts,

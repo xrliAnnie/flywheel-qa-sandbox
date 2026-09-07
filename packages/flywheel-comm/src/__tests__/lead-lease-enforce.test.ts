@@ -564,9 +564,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		setMode("off");
 		env.TEAMLEAD_API_TOKEN = "token";
 		const db = new CommDB(dbPath);
-		const questionId = db.insertQuestion("runner-1", "eng-lead", "ship?", {
-			checkpoint: "approve_to_ship",
-		});
+		const questionId = db.insertQuestion("runner-1", "eng-lead", "review?");
 		db.close();
 		let body = "";
 		const fetchImpl = vi.fn(
@@ -583,6 +581,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			dbPath,
 			env,
 			bridgeUrl: "http://127.0.0.1:9876",
+			sourceThread: "discord-thread",
 			fetchImpl: fetchImpl as typeof fetch,
 		});
 
@@ -591,7 +590,9 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				questionId,
 				leadId: "eng-lead",
 				answer: '{"approved":false}',
-				executionId: "runner-1",
+				sourceThread: "discord-thread",
+				expectedOwner: "runner-1",
+				expectedCheckpoint: null,
 				identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
 			}),
 		);
@@ -1071,14 +1072,12 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		verify.close();
 	});
 
-	it("sends lease claim and provenance to the Bridge for a gated response", async () => {
+	it("sends lease claim and provenance to the Bridge for a founder-thread response", async () => {
 		setMode("enforce");
 		bindLease();
 		env.TEAMLEAD_API_TOKEN = "token";
 		const db = new CommDB(dbPath);
-		const questionId = db.insertQuestion("runner-1", "eng-lead", "ship?", {
-			checkpoint: "approve_to_ship",
-		});
+		const questionId = db.insertQuestion("runner-1", "eng-lead", "review?");
 		db.close();
 		let posted: Record<string, unknown> | undefined;
 		const fetchImpl = vi.fn(
@@ -1099,6 +1098,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			env,
 			authorizationDeps,
 			bridgeUrl: "http://127.0.0.1:9876",
+			sourceThread: "discord-thread",
 			fetchImpl: fetchImpl as typeof fetch,
 		});
 		expect(posted).toMatchObject({
@@ -1139,12 +1139,8 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			}),
 		);
 		const db = new CommDB(dbPath);
-		const safeQuestion = db.insertQuestion("runner-1", "eng-lead", "ship?", {
-			checkpoint: "approve_to_ship",
-		});
-		const unsafeQuestion = db.insertQuestion("runner-1", "eng-lead", "ship?", {
-			checkpoint: "approve_to_ship",
-		});
+		const safeQuestion = db.insertQuestion("runner-1", "eng-lead", "review?");
+		const unsafeQuestion = db.insertQuestion("runner-1", "eng-lead", "review?");
 		db.close();
 		let posted: Record<string, unknown> | undefined;
 		let redirect: RequestInit["redirect"];
@@ -1164,6 +1160,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			env,
 			authorizationDeps,
 			bridgeUrl: "http://[::1]:9876",
+			sourceThread: "discord-thread",
 			fetchImpl: safeFetch as typeof fetch,
 		});
 		expect(posted).toMatchObject({ carrierClaim: rawClaim });
@@ -1179,6 +1176,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				env,
 				authorizationDeps,
 				bridgeUrl: "https://localhost.evil",
+				sourceThread: "discord-thread",
 				fetchImpl: unsafeFetch as typeof fetch,
 			}),
 		).rejects.toThrow(/loopback/i);

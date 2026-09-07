@@ -3237,10 +3237,10 @@ export class GatePoller {
 				founder_message_id: msgId,
 				comm_db_path: commDbPath,
 				action:
-					`Handle this founder message as Lead. If it answers a Runner question, route it with ` +
+					`Handle this founder message as Lead. If it answers a non-approve_to_ship Runner question, route it with ` +
 					`flywheel-comm respond <qid> "<founder-answer>" --lead ${lead.agentId} ` +
 					`--db ${commDbPath} --source-thread ${sourceThread} ` +
-					`--bridge-url "$BRIDGE_URL". If no Runner action is needed, close the ` +
+					`--bridge-url "$BRIDGE_URL". For approve_to_ship, do not run respond; the founder must act on the Discord ship card. If no Runner action is needed, close the ` +
 					`corresponding FLY-1575 task as no_action with a reason.`,
 			};
 			const seq = this.config.store.appendLeadEvent(

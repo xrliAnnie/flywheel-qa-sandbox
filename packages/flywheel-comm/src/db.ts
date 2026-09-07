@@ -576,6 +576,25 @@ export interface GateSupersedeRow {
 	pending: 0 | 1;
 }
 
+export type FounderShipGateQuestionUnanswerableReason =
+	| "question_missing"
+	| "terminal_disposed"
+	| "superseded"
+	| "resolved"
+	| "response_exists";
+
+export interface FounderShipGateQuestionInspection {
+	questionId: string;
+	questionExists: boolean;
+	terminalDisposed: boolean;
+	superseded: boolean;
+	resolved: boolean;
+	responseExists: boolean;
+	founderSourceEventExists: boolean;
+	answerable: boolean;
+	unanswerableReasons: FounderShipGateQuestionUnanswerableReason[];
+}
+
 export interface FinalizeSessionResult {
 	/** FLY-1238: checkpoint gates retired by this teardown. Gate count only. */
 	retiredQuestionCount: number;
@@ -2678,6 +2697,90 @@ export class CommDB {
 			return true;
 		});
 		return txn.immediate();
+	}
+
+	inspectFounderShipGateQuestion(
+		questionId: string,
+		project: string,
+	): FounderShipGateQuestionInspection {
+		if (!questionId.trim()) throw new Error("questionId is required");
+		if (!project.trim()) throw new Error("project is required");
+		const approvalBase = `founder-approval:${questionId}`;
+		const feedbackBase = `founder-feedback:${questionId}`;
+		const row = this.db
+			.prepare(
+				`WITH question AS (
+				   SELECT relay_state, resolved_at, superseded_at
+				     FROM mailbox_message_projection
+				    WHERE id = ? AND type = 'question'
+				      AND checkpoint = 'approve_to_ship'
+				    LIMIT 1
+				 )
+				 SELECT
+				   EXISTS(SELECT 1 FROM question) AS question_exists,
+				   COALESCE((SELECT relay_state = 'terminal_disposed' FROM question), 0)
+				     AS terminal_disposed,
+				   COALESCE((SELECT superseded_at IS NOT NULL FROM question), 0)
+				     AS superseded,
+				   COALESCE((SELECT resolved_at IS NOT NULL FROM question), 0)
+				     AS resolved,
+				   EXISTS(
+				     SELECT 1 FROM mailbox_message_projection response
+				      WHERE response.parent_id = ? AND response.type = 'response'
+				   ) AS response_exists,
+				   (
+				     EXISTS(
+				       SELECT 1 FROM workflow_source_event
+				        WHERE project = ?
+				          AND source_event_id >= ? AND source_event_id < ?
+				          AND (source_event_id = ? OR substr(source_event_id, length(?) + 1, 1) = ':')
+				     )
+				     OR EXISTS(
+				       SELECT 1 FROM workflow_source_event
+				        WHERE project = ?
+				          AND source_event_id >= ? AND source_event_id < ?
+				          AND (source_event_id = ? OR substr(source_event_id, length(?) + 1, 1) = ':')
+				     )
+				   ) AS founder_source_event_exists`,
+			)
+			.get(
+				questionId,
+				questionId,
+				project,
+				approvalBase,
+				`${approvalBase};`,
+				approvalBase,
+				approvalBase,
+				project,
+				feedbackBase,
+				`${feedbackBase};`,
+				feedbackBase,
+				feedbackBase,
+			) as {
+			question_exists: 0 | 1;
+			terminal_disposed: 0 | 1;
+			superseded: 0 | 1;
+			resolved: 0 | 1;
+			response_exists: 0 | 1;
+			founder_source_event_exists: 0 | 1;
+		};
+		const unanswerableReasons: FounderShipGateQuestionUnanswerableReason[] = [];
+		if (!row.question_exists) unanswerableReasons.push("question_missing");
+		if (row.terminal_disposed) unanswerableReasons.push("terminal_disposed");
+		if (row.superseded) unanswerableReasons.push("superseded");
+		if (row.resolved) unanswerableReasons.push("resolved");
+		if (row.response_exists) unanswerableReasons.push("response_exists");
+		return {
+			questionId,
+			questionExists: row.question_exists === 1,
+			terminalDisposed: row.terminal_disposed === 1,
+			superseded: row.superseded === 1,
+			resolved: row.resolved === 1,
+			responseExists: row.response_exists === 1,
+			founderSourceEventExists: row.founder_source_event_exists === 1,
+			answerable: unanswerableReasons.length === 0,
+			unanswerableReasons,
+		};
 	}
 
 	getResponse(questionId: string): Message | undefined {

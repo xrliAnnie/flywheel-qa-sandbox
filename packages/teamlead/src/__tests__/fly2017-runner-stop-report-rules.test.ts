@@ -27,8 +27,9 @@ describe("FLY-2017 runner-stop report Lead rules", () => {
 			const rule = readFileSync(join(BASE, file), "utf8");
 			expect(rule).toContain("`[ASK] runner_question`");
 			expect(rule).toContain(
-				"Only `gate_question` and `[ASK] runner_question` reply with `flywheel-comm respond`.",
+				"Only non-`approve_to_ship` `gate_question` and `[ASK] runner_question` reply with `flywheel-comm respond`.",
 			);
+			expect(rule).toContain("Discord ship card");
 		},
 	);
 });

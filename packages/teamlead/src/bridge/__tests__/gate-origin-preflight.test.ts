@@ -5,7 +5,10 @@ import type {
 	WorkflowNodePrBindingRow,
 	WorkflowShipTargetBindingRow,
 } from "../../StateStore.js";
-import { createWorkflowGateOriginPreflight } from "../gate-origin-preflight.js";
+import {
+	createWorkflowGateOriginInspector,
+	createWorkflowGateOriginPreflight,
+} from "../gate-origin-preflight.js";
 
 const HEAD = "a".repeat(40);
 
@@ -149,6 +152,50 @@ function fixture() {
 }
 
 describe("workflow gate origin preflight", () => {
+	it("returns a frozen exact-origin receipt without mutating StateStore", async () => {
+		const f = fixture();
+		const inspect = createWorkflowGateOriginInspector({
+			store: f.store,
+			prProbe: f.prProbe,
+			now: () => "2026-08-21T19:01:00.000Z",
+		});
+
+		await expect(inspect("question-1")).resolves.toMatchObject({
+			ok: true,
+			receipt: {
+				schemaVersion: 1,
+				outcome: "ok",
+				projectName: "flywheel",
+				issueId: "FLY-1757",
+				runId: "run-question-1",
+				questionId: "question-1",
+				headSha: HEAD,
+				prNumber: 42,
+				observedAt: "2026-08-21T19:01:00.000Z",
+				expiresAt: "2026-08-21T19:06:00.000Z",
+				digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+			},
+		});
+		expect(f.deferWorkflowGateOriginProbe).not.toHaveBeenCalled();
+		expect(f.markWorkflowGateOriginProbeVerified).not.toHaveBeenCalled();
+		expect(f.stopWorkflowGateOriginProbe).not.toHaveBeenCalled();
+		expect(f.holdWorkflowGateOriginProbeTerminal).not.toHaveBeenCalled();
+
+		f.prProbe.mockResolvedValueOnce({
+			state: "OPEN",
+			isDraft: false,
+			isCrossRepository: false,
+			headRefName: "feature",
+			headRefOid: "b".repeat(40),
+		});
+		await expect(inspect("question-1")).resolves.toMatchObject({
+			ok: false,
+			disposition: "defer",
+			reason: "workflow_gate_origin_probe_head_mismatch",
+		});
+		expect(f.deferWorkflowGateOriginProbe).not.toHaveBeenCalled();
+	});
+
 	it("passes only the exact current OPEN PR head", async () => {
 		const f = fixture();
 		const preflight = createWorkflowGateOriginPreflight({

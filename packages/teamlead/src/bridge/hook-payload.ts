@@ -1385,11 +1385,9 @@ export function formatMisroutedReport(
  * that bit FLY-195. Extracted BEFORE changing the approve command text so the
  * required-JSON-shape guidance cannot diverge between runtimes.
  *
- * The approve_to_ship reply guidance is the production-incident fix: the
- * founder-consent wiring only honors `{"approved": true}` (JSON), and a
- * plain-text "APPROVE — ..." reply was silently recorded as feedback,
- * forcing a ratify retry loop (FLY-208 finding 6). The template now states
- * the required shape instead of the misleading generic "your reply".
+ * FLY-2427 removes Lead authority from approve_to_ship responses entirely.
+ * The shared formatter must point the Lead at the founder's Discord ship card
+ * rather than generating a command that the CLI correctly rejects.
  */
 export function formatGateQuestion(env: StuckEscalationEnvelopeLike): string {
 	const e = env.event;
@@ -1399,12 +1397,11 @@ export function formatGateQuestion(env: StuckEscalationEnvelopeLike): string {
 		e.session_role && e.session_role !== "main"
 			? `[${e.session_role.toUpperCase()}] `
 			: "";
-	// FLY-175 Track 2: approve_to_ship MUST route through the Bridge
-	// founder-consent wrapper (--bridge-url). Other checkpoints keep the
-	// legacy direct command. The --db hint is always present.
+	// FLY-2427: approve_to_ship is answered only by the founder-facing Discord
+	// path. Other checkpoints keep the legacy direct command.
 	const isApprove = e.checkpoint === "approve_to_ship";
 	const replyCmd = isApprove
-		? `Reply via: flywheel-comm respond --db ${e.comm_db_path} --bridge-url $BRIDGE_URL --lead <your_id> ${e.question_id} '{"approved": true}'`
+		? "Action: relay this gate to the founder. Do NOT run `flywheel-comm respond`; the founder must approve or request changes on the Discord ship card."
 		: `Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`;
 	const lines = [
 		`[Event #${env.seq}] ${roleLabel}gate_question`,
@@ -1415,13 +1412,6 @@ export function formatGateQuestion(env: StuckEscalationEnvelopeLike): string {
 		"---",
 		replyCmd,
 	];
-	if (isApprove) {
-		lines.push(
-			`APPROVAL SHAPE: to approve you MUST answer with the exact JSON '{"approved": true}' — ` +
-				`any plain text (even starting with "APPROVE") is recorded as FEEDBACK, not approval. ` +
-				`To reject / request changes, answer with plain-text feedback.`,
-		);
-	}
 	lines.push(`Question ID: ${e.question_id}`, `CommDB: ${e.comm_db_path}`);
 	if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 	return lines.join("\n");

@@ -28,6 +28,7 @@ import {
 	storeSkillFrameworkModeControl,
 	storeSkillFrameworkSplitParticipation,
 	storeSummaryAbsorptionCadenceMs,
+	storeWorkflowGateQuestionRecoveryEnabled,
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
@@ -248,6 +249,27 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeDatabaseArchiveEnabled(runtime, "flywheel")).toBe(false);
+	});
+
+	it("FLY-2427 keeps gate question recovery default-on and observes the next project write", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeWorkflowGateQuestionRecoveryEnabled(runtime, "flywheel")).toBe(
+			true,
+		);
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "workflow_gate_question_recovery",
+				scope: "flywheel",
+				op: "set",
+				rawTo: "0",
+				expectedChangeSeq: 0,
+				actor: "fixture",
+				reason: "pause recovery during incident inspection",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeWorkflowGateQuestionRecoveryEnabled(runtime, "flywheel")).toBe(
+			false,
+		);
 	});
 
 	it("reads the node dwell scalar at call time with project, star, default precedence", () => {
