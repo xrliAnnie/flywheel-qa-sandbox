@@ -155,6 +155,30 @@ export interface HookPayload {
 	// EventFilter fields (GEO-187)
 	filter_priority?: "high" | "normal" | "low";
 	notification_context?: string;
+	/** FLY-2382: call-time summary cadence instruction for one producer. */
+	summary_due?: {
+		slot_start: string;
+		cadence_ms: number;
+		period: string;
+		last_delivered:
+			| {
+					status: "found";
+					pr: number;
+					url: string;
+					state: "OPEN" | "MERGED" | "CLOSED";
+					created_at: string;
+			  }
+			| { status: "none" }
+			| {
+					status: "unavailable";
+					reason:
+						| "truncated at gh --limit 500"
+						| `gh exit ${number}`
+						| `malformed gh output: ${string}`
+						| "timeout";
+			  };
+		command_hint: string;
+	};
 	// FLY-91: Chat thread for per-issue conversation in chatChannel
 	chat_thread_id?: string;
 
@@ -267,6 +291,85 @@ export function formatDurationMs(ms: number | undefined | null): string {
 	const hours = Math.floor(totalMin / 60);
 	const min = totalMin % 60;
 	return min === 0 ? `${hours}h` : `${hours}h ${min}m`;
+}
+
+function summaryDueToken(value: unknown): string {
+	return typeof value === "string"
+		? value.replace(/[^A-Za-z0-9._:/+-]/g, "?")
+		: "?";
+}
+
+function summaryDueReason(value: unknown): string {
+	if (value === "timeout" || value === "truncated at gh --limit 500") {
+		return value;
+	}
+	if (
+		typeof value === "string" &&
+		(/^(?:gh exit -?\d+)$/.test(value) ||
+			/^malformed gh output: [A-Za-z0-9._-]+$/.test(value))
+	) {
+		return value;
+	}
+	return "?";
+}
+
+function summaryDueUrl(value: unknown): string {
+	if (typeof value !== "string") return "?";
+	try {
+		const url = new URL(value);
+		return url.protocol === "https:" &&
+			url.host === "github.com" &&
+			url.username === "" &&
+			url.password === ""
+			? value
+			: "?";
+	} catch {
+		return "?";
+	}
+}
+
+/** Shared renderer so both Lead transports preserve the complete due contract. */
+export function formatSummaryDue(
+	env: StuckEscalationEnvelopeLike & { leadId: string },
+): string {
+	const e = env.event;
+	const due = e.summary_due;
+	if (!due) throw new Error("summary_due payload missing");
+	const project = summaryDueToken(e.project_name);
+	const lead = summaryDueToken(env.leadId);
+	const period = summaryDueToken(due.period);
+	let lastDelivered: string;
+	if (due.last_delivered.status === "found") {
+		const pr =
+			Number.isSafeInteger(due.last_delivered.pr) && due.last_delivered.pr > 0
+				? due.last_delivered.pr
+				: "?";
+		const state = ["OPEN", "MERGED", "CLOSED"].includes(
+			due.last_delivered.state,
+		)
+			? due.last_delivered.state
+			: "?";
+		lastDelivered = `PR #${pr} (${state}, ${summaryDueToken(due.last_delivered.created_at)}) ${summaryDueUrl(due.last_delivered.url)}`;
+	} else if (due.last_delivered.status === "none") {
+		lastDelivered = "从未交过";
+	} else {
+		lastDelivered = `不可得(${summaryDueReason(due.last_delivered.reason)})`;
+	}
+	const command = `flywheel-comm summary --file <your-summary.md> --project ${project} --period ${period}`;
+	return [
+		`[Event #${env.seq}] summary_due`,
+		`ID: summary_due:${project}/${lead}:${summaryDueToken(due.slot_start)} | Issue: FLY-2382`,
+		`[summary_due] 到 summary 节奏点(每 ${formatDurationMs(due.cadence_ms)};founder 可在管理台改)。`,
+		`Period: ${period}`,
+		`上次交付: ${lastDelivered}`,
+		"---",
+		"1. 写本 period 的 summary(Facts + Judgment;合同见 Raya 仓 summaries/README.md)。",
+		`2. 运行:${command}`,
+		"   （请原样使用上面的 period;机制只按它识别「本轮已交」。）",
+		"3. 没有新事实与判断可写时可以不交(PRD §6.3)。未交会在 Raya 的轮报里以「未交」出现——那是可见性,不是催促。",
+		"4. 这是唯一的节奏来源;不要自建定时器(R4)。",
+		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
+	].join("\n");
 }
 
 export function formatRunnerQuestion(env: StuckEscalationEnvelopeLike): string {
