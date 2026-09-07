@@ -21,37 +21,42 @@ Issue: FLY-2382 (https://linear.app/geoforge3d/issue/FLY-2382/raya回流-summary
 
 ```mermaid
 sequenceDiagram
-  participant GP as GatePoller(每 60s pass)
+  participant GP as GatePoller 每 60s 一次 pass
   participant R as summary-absorption-rider
-  participant SL as StateStore.summary_due_slots
-  participant L as summary-delivery-ledger(gh)
-  participant S as StateStore.lead_events
+  participant SL as StateStore summary_due_slots
+  participant L as summary-delivery-ledger gh
+  participant S as StateStore lead_events
   participant Q as registry.enqueueLeadEvent
   participant P as producer Lead ×11
   participant Y as Raya
 
   GP->>R: onSummaryAbsorptionTick
-  R->>R: cadence=flag(); T=floor(now/cadence)*cadence
-  alt 无 slot 行 T 且 now < T+grace(第一拍:开 slot)
+  R->>R: cadence=flag(); grace=min(30min, cadence/2); T=floor(now/cadence)*cadence
+  alt 步骤 2 · 无 slot 行 T 且 now < T+grace
     R->>L: 快照① listSummaryPulls(仅供 last_delivered)
-    R->>SL: insert slot T {cadence,grace,period,producers[],opened_at}
-    loop 每个 producer
-      R->>S: appendLeadEvent(lead, summary_due:…:<T>)
-      R->>Q: 新行 ⇒ enqueue;旧行且 settlement=absent_identity ⇒ 重投
-      Q->>P: [summary_due] period · last_delivered · 指令
-    end
+    R->>SL: 一个事务:insert slot T(open)+ appendLeadEvent(summary_due ×N)
   else 无 slot 行 T 且 now ≥ T+grace
-    R->>SL: insert slot T {status: missed}(一次,只 log)
+    R->>SL: insert slot T(missed),warn 一行,不叫不判
   end
-  loop 每个 status=open 且 now ≥ slot_start+grace 的 slot(第二拍:结算)
-    R->>L: 快照② listSummaryPulls(新鲜,随后冻结进 settle_result)
-    R->>S: 逐 producer 读 due 的 settlement
-    R->>R: classifyRound → delivered/absent/undelivered/unknown
-    R->>S: appendLeadEvent(raya, summary-absorption:<slot>)+enqueue(既有 write-ahead 语义不变)
-    Q->>Y: 指令文本含「本轮 N/M 份已交;未交:…」
-    R->>SL: update slot status=settled, settle_result_json
-    R->>R: 无 Raya ⇒ 一行 warn(随 settled 只出一次)
-    R->>R: undelivered 非空 ⇒ 一条聚合 alert(一 slot 一条)
+  loop 步骤 3 · 每个 open/prepared slot(≤8,oldest-first)× 每个 producer
+    R->>S: 读 due 行,查队列身份 settlement
+    R->>Q: absent_identity ⇒ enqueue(首投=补投)
+    Q->>P: [summary_due] period · last_delivered · 指令
+  end
+  loop 步骤 4 · 每个 now ≥ slot_start+grace 的 slot
+    alt status=open
+      R->>L: 快照② listSummaryPulls(pass 级 memo)
+      R->>S: 逐 producer 读 due settlement
+      R->>R: classifyRound ⇒ exact / period_mismatch / absent / undelivered / unknown
+      R->>SL: prepare(CAS open→prepared,冻结 settle_result_json)
+    end
+    R->>SL: 读冻结结果
+    R->>S: appendLeadEvent(raya, summary-absorption:<T>, payload 含 report_line)
+    R->>Q: enqueue(既有 write-ahead 语义不变)
+    Q->>Y: 指令:无论有无活动都在 #raya 发,逐字含「本轮 N/M 份已交;未交:…」
+    R->>R: undelivered 非空 ⇒ 一条聚合 alert(eventId 含 slotISO)
+    R->>SL: settle(CAS prepared→settled)
+    R->>R: 无 Raya ⇒ 跳过 enqueue,warn 一行(at-most-once-per-pass),仍 settle
   end
 ```
 
