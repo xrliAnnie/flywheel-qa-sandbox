@@ -1,0 +1,20 @@
+flowchart TB
+  S["一条 founder 门判决"] --> K{"从哪条路进来?"}
+  K -- "她在卡片上直接 ✅ / 写字" --> A["payload.actor == founder_id_at_capture ?"]
+  A -- "相等" --> A1["founder_authored = 1<br/>证据: gate_response"]
+  A -- "不等 (bridge / 代理身份)" --> A0["founder_authored = 0<br/>权限仍照旧放行"]
+  K -- "Lead 经 operator 通道" --> B{"附了 founder 消息引用?"}
+  B -- "没附" --> B0["founder_authored = 0<br/>证据: operator"]
+  B -- "附了, Bridge 核过三条" --> B1["founder_authored = 1<br/>证据: founder_message + 消息 id"]
+  B -- "附了, 核不过" --> B2["整条拒收 4xx<br/>不写 0, 不降级"]
+  K -- "2026-09 部署之前的 63 条遗留行" --> C{"在 spec 表里?"}
+  C -- "是 (5 条)" --> C1["人工 attestation<br/>来源 FLY-2309 B2"]
+  C -- "否 (58 条)" --> C0["未判定<br/>永远不猜"]
+  A0 ~~~ B
+  B0 ~~~ C
+  classDef yes fill:#e8f8ee,stroke:#34c759,color:#1d1d1f;
+  classDef no fill:#f2f2f7,stroke:#86868b,color:#1d1d1f;
+  classDef stop fill:#ffecec,stroke:#ff3b30,color:#1d1d1f;
+  class A1,B1,C1 yes;
+  class A0,B0,C0 no;
+  class B2 stop;

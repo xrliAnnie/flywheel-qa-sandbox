@@ -568,6 +568,9 @@ export async function writeGateResponseAndRunPostWrite(
 										},
 								...founderReworkPayload(args, approved),
 								actor: args.actor,
+								...(typeof args.founderId === "string"
+									? { founder_id_at_capture: args.founderId }
+									: {}),
 								approved_head: source.approvedHead,
 								classification: source.classification,
 								authority_id: source.authorityId,
@@ -599,6 +602,9 @@ export async function writeGateResponseAndRunPostWrite(
 						},
 				...founderReworkPayload(args, approved),
 				actor: args.actor,
+				...(typeof args.founderId === "string"
+					? { founder_id_at_capture: args.founderId }
+					: {}),
 				approved_head: source.approvedHead,
 				classification: source.classification,
 				authority_id: source.authorityId,

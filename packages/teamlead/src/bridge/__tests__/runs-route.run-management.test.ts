@@ -673,6 +673,8 @@ describe("runs-route run management", () => {
 		expect(await response.json()).toEqual({
 			success: false,
 			code: "INVALID_REWORK_REQUEST",
+			reason: "invalid rework request",
+			recorded: false,
 		});
 		expect(open).not.toHaveBeenCalled();
 	});

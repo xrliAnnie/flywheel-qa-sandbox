@@ -72,6 +72,85 @@ export interface PostDiscordPartial {
 
 export type PostDiscordResult = PostDiscordOk | PostDiscordPartial;
 
+export type FetchDiscordMessageResult =
+	| {
+			ok: true;
+			message: {
+				id: string;
+				channelId: string;
+				authorId: string;
+				timestampMs: number;
+			};
+	  }
+	| {
+			ok: false;
+			kind: "not_found" | "forbidden" | "rate_limited" | "server" | "network";
+			status?: number;
+	  };
+
+export async function fetchDiscordMessageFromChannel(
+	channelId: string,
+	messageId: string,
+	botToken: string,
+	fetchImpl: typeof fetch = fetch,
+): Promise<FetchDiscordMessageResult> {
+	let response: Response;
+	try {
+		response = await fetchImpl(
+			`${DISCORD_API}/channels/${channelId}/messages/${messageId}`,
+			{
+				method: "GET",
+				headers: { Authorization: `Bot ${botToken}` },
+			},
+		);
+	} catch {
+		return { ok: false, kind: "network" };
+	}
+	if (!response.ok) {
+		const kind =
+			response.status === 404
+				? "not_found"
+				: response.status === 403
+					? "forbidden"
+					: response.status === 429
+						? "rate_limited"
+						: "server";
+		return { ok: false, kind, status: response.status };
+	}
+	let payload: unknown;
+	try {
+		payload = await response.json();
+	} catch {
+		return { ok: false, kind: "server", status: response.status };
+	}
+	const message = payload as {
+		id?: unknown;
+		author?: { id?: unknown };
+		timestamp?: unknown;
+	};
+	const timestampMs =
+		typeof message.timestamp === "string"
+			? Date.parse(message.timestamp)
+			: Number.NaN;
+	if (
+		message.id !== messageId ||
+		typeof message.author?.id !== "string" ||
+		!message.author.id ||
+		!Number.isFinite(timestampMs)
+	) {
+		return { ok: false, kind: "server", status: response.status };
+	}
+	return {
+		ok: true,
+		message: {
+			id: message.id,
+			channelId,
+			authorId: message.author.id,
+			timestampMs,
+		},
+	};
+}
+
 export interface PostDiscordOptions {
 	/** Semantic author of the text; the bot token is only a transport identity. */
 	origin: DiscordMessageOrigin;

@@ -122,6 +122,7 @@
 	"workflow_engine_park_outbox",
 	"workflow_execution_binding",
 	"workflow_execution_runtime",
+	"workflow_founder_gate_verdict",
 	"workflow_gate_carrier_rebind_receipt",
 	"workflow_gate_holder",
 	"workflow_gate_holder_carryover_evidence",

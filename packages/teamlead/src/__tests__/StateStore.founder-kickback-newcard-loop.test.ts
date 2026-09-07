@@ -100,7 +100,7 @@ function gateEntryBinding(head: string, generation: string) {
 		prNumber: 1772,
 		headSha: head,
 		targetRepoIdentity: "__main__",
-		probeRepoSlug: "xrliAnnie/flywheel",
+		probeRepoSlug: "xrliannie/flywheel",
 		targetRepoPath: "/tmp/flywheel-FLY-1772",
 		worktreeBindingGeneration: generation,
 		expectedProducerMirrorHead: head,
@@ -134,7 +134,7 @@ function completeImplement(
 			prNumber: 1772,
 			headSha: input.head,
 			targetRepoIdentity: "__main__",
-			probeRepoSlug: "xrliAnnie/flywheel",
+			probeRepoSlug: "xrliannie/flywheel",
 			targetRepoPath: "/tmp/flywheel-FLY-1772",
 			worktreeBindingGeneration: `generation-${input.attempt}`,
 		},
@@ -497,6 +497,10 @@ describe("founder kickback new-card loop", () => {
 				feedback: "重新做工程设计",
 				clientRequestId: "semantic-design-replay",
 				principal: "master",
+				founderAuthorEvidence: {
+					kind: "operator" as const,
+					principal: "master",
+				},
 				evidence: [
 					{
 						executionId: "design-1",
@@ -599,6 +603,7 @@ describe("founder kickback new-card loop", () => {
 				question_id: holderA.question_id,
 				response: { approved: false, feedback: "fix the failure path" },
 				actor: "founder",
+				founder_id_at_capture: "founder",
 				approved_head: head1,
 				classification: "founder_direct_signal",
 				authority_id: holderA.question_id,
@@ -613,6 +618,19 @@ describe("founder kickback new-card loop", () => {
 					payloadDigest: canonicalSubmissionDigest(feedback),
 				}),
 			).toMatchObject({ status: "applied" });
+			expect(store.listFounderGateVerdicts({ runId: "run-1" })).toMatchObject([
+				{
+					verdict: "rework",
+					question_id: holderA.question_id,
+					repo_identity: "__main__",
+					repo_slug: "xrliannie/flywheel",
+					pr_number: 1772,
+					head_sha: head1,
+					founder_authored: 1,
+					claim_id: null,
+					rework_request_id: expect.stringMatching(/^rework:/),
+				},
+			]);
 			expect(
 				store.getWorkflowGateHolderByQuestionId(holderA.question_id),
 			).toMatchObject({

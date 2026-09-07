@@ -167,6 +167,512 @@ async function createHeavyEngineRun(dbPath = ":memory:"): Promise<StateStore> {
 	return store;
 }
 
+function snapshotUserTables(store: StateStore): string {
+	const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+	const tables = raw
+		.prepare(
+			`SELECT name FROM sqlite_master
+			  WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+			  ORDER BY name`,
+		)
+		.all() as Array<{ name: string }>;
+	return JSON.stringify(
+		tables.map(({ name }) => ({
+			name,
+			rows: raw.prepare(`SELECT * FROM "${name}"`).all(),
+		})),
+	);
+}
+
+describe("FLY-2396 legacy operator receipt replay", () => {
+	it("accepts only the legacy no-reference identity and makes no mutations", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			store.appendWorkflowRunEvent({
+				runId: "run-heavy",
+				eventUid: "operator_rework:run-heavy:legacy-replay",
+				kind: "operator_rework_requested",
+				nodeId: "implement",
+				executionId: "implement-exec",
+				payload: {
+					requestId: "rework:legacy",
+					targetNodeId: "implement",
+					targetAttempt: 2,
+					preferredActorExecutionId: "implement-exec",
+					feedback: "legacy operator feedback",
+					principal: "master",
+				},
+			});
+			const before = snapshotUserTables(store);
+			const baseInput = {
+				runId: "run-heavy",
+				targetNodeId: "implement",
+				feedback: "legacy operator feedback",
+				clientRequestId: "legacy-replay",
+				principal: "master",
+				evidence: [],
+				now: "2026-09-06T19:00:00.000Z",
+			};
+
+			expect(
+				store.openOperatorRework({
+					...baseInput,
+					founderAuthorEvidence: { kind: "operator", principal: "master" },
+				}),
+			).toEqual({
+				ok: true,
+				requestId: "rework:legacy",
+				targetNodeId: "implement",
+				targetAttempt: 2,
+				preferredActorExecutionId: "implement-exec",
+				idempotentReplay: true,
+			});
+			expect(snapshotUserTables(store)).toBe(before);
+
+			expect(
+				store.openOperatorRework({
+					...baseInput,
+					founderAuthorEvidence: {
+						kind: "founder_message",
+						channel_id: "12345678901234567",
+						message_id: "22345678901234567",
+						card_message_id: "32345678901234567",
+						author_user_id: "42345678901234567",
+						founder_id_at_capture: "42345678901234567",
+						message_ts: "2026-09-06T18:59:00.000Z",
+						card_message_ts: "2026-09-06T18:58:00.000Z",
+						verified_at: "2026-09-06T19:00:00.000Z",
+						question_id: "question-legacy",
+						head_sha: "a".repeat(40),
+					},
+				}),
+			).toEqual({ ok: false, reason: "operator_request_conflict" });
+			expect(snapshotUserTables(store)).toBe(before);
+		} finally {
+			store.close();
+		}
+	});
+});
+
+async function createOperatorFounderGate(
+	options: { missingPr?: boolean } = {},
+): Promise<StateStore> {
+	const store = await createHeavyEngineRun();
+	advanceHeavy(store, {
+		nodeId: "design",
+		attempt: 1,
+		executionId: "design-exec",
+		outcome: "design_done",
+		successorExecutionId: "implement-exec",
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-heavy",
+		nodeId: "implement",
+		attempt: 1,
+		state: "done",
+		executionId: "implement-exec",
+		endedAt: "2026-09-06T18:00:00.000Z",
+	});
+	bindActorHead(
+		store,
+		"implement-exec",
+		"implement",
+		"a".repeat(40),
+		"FLY-1423",
+		"ship_parked",
+	);
+	store.upsertWorkflowRunNode({
+		runId: "run-heavy",
+		nodeId: "founder_gate",
+		attempt: 1,
+		state: "pending",
+	});
+	const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+	raw
+		.prepare(
+			"UPDATE workflow_run SET status = 'active', current_node_id = 'founder_gate' WHERE run_id = 'run-heavy'",
+		)
+		.run();
+	raw
+		.prepare(
+			`INSERT INTO workflow_gate_holder
+			  (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+			   question_id, authority_mode, subject_kind, carrier_binding_state,
+			   card_message_id, state, materialization_stage, created_at, updated_at)
+			 VALUES ('run-heavy', 'founder_gate', 1, ?, 'implement-exec',
+			         'question-operator', 'land', 'git_head', 'bound',
+			         'card-operator', 'awaiting_review', 'completed',
+			         '2026-09-06T18:01:00.000Z', '2026-09-06T18:02:00.000Z')`,
+		)
+		.run("a".repeat(40));
+	raw
+		.prepare(
+			`INSERT INTO workflow_ship_target_binding
+			  (approve_question_id, run_id, target_repo_path, target_repo_identity,
+			   probe_repo_slug, frozen_head_sha, worktree_binding_generation)
+			 VALUES ('question-operator', 'run-heavy', '/repo', '__main__',
+			         'xrliAnnie/flywheel', ?, 'generation-operator')`,
+		)
+		.run("a".repeat(40));
+	if (!options.missingPr) {
+		raw
+			.prepare(
+				`INSERT INTO workflow_node_pr_binding
+				  (run_id, node_id, attempt, pr_number, head_sha, target_repo_identity,
+				   probe_repo_slug, target_repo_path, worktree_binding_generation,
+				   receipt_id, bound_at)
+				 VALUES ('run-heavy', 'implement', 1, 1063, ?, '__main__',
+				         'xrliAnnie/flywheel', '/repo', 'generation-operator',
+				         'receipt-operator', '2026-09-06T18:00:00.000Z')`,
+			)
+			.run("a".repeat(40));
+	}
+	return store;
+}
+
+function operatorEvidence(store: StateStore) {
+	return store.listRunAttributedExecutions("run-heavy").map((executionId) => {
+		const session = store.getSession(executionId);
+		return {
+			executionId,
+			sessionStatus: session?.status ?? null,
+			lifecycleRevision: session?.lifecycle_revision ?? null,
+			liveness: "dead" as const,
+			observedAt: "2026-09-06T18:03:00.000Z",
+		};
+	});
+}
+
+describe("FLY-2396 operator founder verdict", () => {
+	it("finds the founder gate from the pinned manifest instead of a node-name convention", async () => {
+		const store = await StateStore.create(":memory:");
+		const root = mkdtempSync(join(tmpdir(), "fly2396-custom-gate-"));
+		roots.push(root);
+		mkdirSync(join(root, "agents"));
+		writeFileSync(join(root, "agents", "generic.md"), "Execute safely.\n");
+		try {
+			const snapshot = buildWorkflowRunSnapshotV2({
+				template: { id: "tpl-custom-gate", revision: 1 },
+				canonicalRoot: root,
+				manifest: {
+					schema_version: 2,
+					nodes: [
+						{
+							id: "craft",
+							type: "generic",
+							vendor: "codex",
+							model: "gpt-5.6-sol",
+							effort: "low",
+							agent_file: "agents/generic.md",
+						},
+						{ id: "decision", type: "gate" },
+						{ id: "publish", type: "land", execution: "engine" },
+					],
+					edges: [
+						{
+							id: "crafted",
+							from: "craft",
+							to: "decision",
+							condition: "node_done",
+						},
+						{
+							id: "approved",
+							from: "decision",
+							to: "publish",
+							condition: "founder_approved",
+						},
+					],
+					loops: [],
+					approval_gate: {
+						node: "decision",
+						predicate: "founder_approved",
+					},
+					terminal_node: { node: "publish" },
+					ship_claims: ["founder_approved"],
+				},
+			});
+			store.createWorkflowRun({
+				runId: "run-custom-gate",
+				issueId: "FLY-2396",
+				projectName: "flywheel",
+				snapshotJson: JSON.stringify(snapshot),
+				claimsReadEnrolled: true,
+			});
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			raw
+				.prepare(
+					`INSERT INTO workflow_gate_holder
+					  (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+					   question_id, authority_mode, subject_kind, carrier_binding_state,
+					   card_message_id, state, materialization_stage, created_at, updated_at)
+					 VALUES ('run-custom-gate', 'decision', 1, ?, 'craft-exec',
+					         'question-custom-gate', 'land', 'git_head', 'bound',
+					         'card-custom-gate', 'awaiting_review', 'completed',
+					         '2026-09-06T18:01:00.000Z', '2026-09-06T18:02:00.000Z')`,
+				)
+				.run("a".repeat(40));
+
+			expect(store.currentFounderGateHolder("run-custom-gate")).toMatchObject({
+				status: "one",
+				holder: {
+					gate_node_id: "decision",
+					question_id: "question-custom-gate",
+				},
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("replays the same founder reference across a new verification time and rejects a changed reference", async () => {
+		const store = await createOperatorFounderGate();
+		try {
+			const evidence = {
+				kind: "founder_message" as const,
+				channel_id: "12345678901234567",
+				message_id: "22345678901234567",
+				card_message_id: "card-operator",
+				author_user_id: "42345678901234567",
+				founder_id_at_capture: "42345678901234567",
+				message_ts: "2026-09-06T18:02:30.000Z",
+				card_message_ts: "2026-09-06T18:02:00.000Z",
+				verified_at: "2026-09-06T18:03:00.000Z",
+				question_id: "question-operator",
+				head_sha: "a".repeat(40),
+			};
+			const base = {
+				runId: "run-heavy",
+				targetNodeId: "implement",
+				feedback: "stable founder reference",
+				clientRequestId: "operator-founder-replay",
+				principal: "master",
+				evidence: operatorEvidence(store),
+				now: "2026-09-06T18:03:00.000Z",
+			};
+			const opened = store.openOperatorRework({
+				...base,
+				founderAuthorEvidence: evidence,
+			});
+			expect(opened).toMatchObject({ ok: true, idempotentReplay: false });
+			const beforeReplay = snapshotUserTables(store);
+			expect(
+				store.openOperatorRework({
+					...base,
+					founderAuthorEvidence: {
+						...evidence,
+						verified_at: "2026-09-06T18:04:00.000Z",
+					},
+				}),
+			).toEqual({ ...opened, idempotentReplay: true });
+			expect(snapshotUserTables(store)).toBe(beforeReplay);
+			expect(
+				store.openOperatorRework({
+					...base,
+					founderAuthorEvidence: {
+						...evidence,
+						message_id: "52345678901234567",
+					},
+				}),
+			).toEqual({ ok: false, reason: "operator_request_conflict" });
+			expect(snapshotUserTables(store)).toBe(beforeReplay);
+		} finally {
+			store.close();
+		}
+	});
+
+	it.each([
+		["operator", { kind: "operator", principal: "master" } as const, 0],
+		[
+			"founder message",
+			{
+				kind: "founder_message",
+				channel_id: "12345678901234567",
+				message_id: "22345678901234567",
+				card_message_id: "card-operator",
+				author_user_id: "42345678901234567",
+				founder_id_at_capture: "42345678901234567",
+				message_ts: "2026-09-06T18:02:30.000Z",
+				card_message_ts: "2026-09-06T18:02:00.000Z",
+				verified_at: "2026-09-06T18:03:00.000Z",
+				question_id: "question-operator",
+				head_sha: "a".repeat(40),
+			} as const,
+			1,
+		],
+	] as const)(
+		"records %s authorship separately from founder authority",
+		async (_case, founderAuthorEvidence, authored) => {
+			const store = await createOperatorFounderGate();
+			try {
+				const opened = store.openOperatorRework({
+					runId: "run-heavy",
+					targetNodeId: "implement",
+					feedback: "operator founder gate rework",
+					clientRequestId: `operator-founder-${authored}`,
+					principal: "master",
+					founderAuthorEvidence,
+					evidence: operatorEvidence(store),
+					now: "2026-09-06T18:03:00.000Z",
+				});
+				expect(opened).toMatchObject({ ok: true, idempotentReplay: false });
+				if (!opened.ok) throw new Error(opened.reason);
+				expect(
+					store.listFounderGateVerdicts({ runId: "run-heavy" }),
+				).toMatchObject([
+					{
+						verdict: "rework",
+						question_id: "question-operator",
+						head_sha: "a".repeat(40),
+						pr_number: 1063,
+						founder_authored: authored,
+						rework_request_id: opened.requestId,
+						claim_id: null,
+					},
+				]);
+				const authorEvidence = JSON.parse(
+					store.listFounderGateVerdicts({ runId: "run-heavy" })[0]!
+						.author_evidence_json,
+				);
+				expect(authorEvidence).toMatchObject(
+					authored === 1
+						? { kind: "founder_message", message_id: "22345678901234567" }
+						: { kind: "operator", principal: "master" },
+				);
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it.each([
+		[
+			"holder changed",
+			{},
+			{
+				kind: "founder_message",
+				channel_id: "12345678901234567",
+				message_id: "22345678901234567",
+				card_message_id: "stale-card",
+				author_user_id: "42345678901234567",
+				founder_id_at_capture: "42345678901234567",
+				message_ts: "2026-09-06T18:02:30.000Z",
+				card_message_ts: "2026-09-06T18:02:00.000Z",
+				verified_at: "2026-09-06T18:03:00.000Z",
+				question_id: "question-operator",
+				head_sha: "a".repeat(40),
+			} as const,
+			"founder_gate_holder_changed",
+		],
+		[
+			"unbound verdict",
+			{ missingPr: true },
+			{
+				kind: "founder_message",
+				channel_id: "12345678901234567",
+				message_id: "22345678901234567",
+				card_message_id: "card-operator",
+				author_user_id: "42345678901234567",
+				founder_id_at_capture: "42345678901234567",
+				message_ts: "2026-09-06T18:02:30.000Z",
+				card_message_ts: "2026-09-06T18:02:00.000Z",
+				verified_at: "2026-09-06T18:03:00.000Z",
+				question_id: "question-operator",
+				head_sha: "a".repeat(40),
+			} as const,
+			"founder_gate_verdict_unbound",
+		],
+	] as const)(
+		"rejects %s before any mutation",
+		async (_case, fixture, founderAuthorEvidence, reason) => {
+			const store = await createOperatorFounderGate(fixture);
+			try {
+				const before = snapshotUserTables(store);
+				expect(
+					store.openOperatorRework({
+						runId: "run-heavy",
+						targetNodeId: "implement",
+						feedback: "must remain atomic",
+						clientRequestId: `operator-rejected-${reason}`,
+						principal: "master",
+						founderAuthorEvidence,
+						evidence: operatorEvidence(store),
+						now: "2026-09-06T18:03:00.000Z",
+					}),
+				).toEqual({ ok: false, reason });
+				expect(snapshotUserTables(store)).toBe(before);
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it.each([
+		["has no current holder", false],
+		["has no exact PR binding", true],
+	] as const)(
+		"preserves operator rework when the founder gate %s",
+		async (_case, retainHolder) => {
+			const store = await createOperatorFounderGate({ missingPr: true });
+			try {
+				if (!retainHolder) {
+					const raw = (store as unknown as { db: { raw: Database.Database } })
+						.db.raw;
+					raw
+						.prepare(
+							"UPDATE workflow_gate_holder SET state = 'superseded' WHERE question_id = 'question-operator'",
+						)
+						.run();
+				}
+				const opened = store.openOperatorRework({
+					runId: "run-heavy",
+					targetNodeId: "implement",
+					feedback: "operator rework without an exact founder reference",
+					clientRequestId: `operator-opportunistic-${retainHolder}`,
+					principal: "master",
+					founderAuthorEvidence: { kind: "operator", principal: "master" },
+					evidence: operatorEvidence(store),
+					now: "2026-09-06T18:03:00.000Z",
+				});
+				expect(opened).toMatchObject({ ok: true, idempotentReplay: false });
+				expect(store.listFounderGateVerdicts({ runId: "run-heavy" })).toEqual(
+					[],
+				);
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it("rolls back every write when the final workflow-run CAS loses", async () => {
+		const store = await createOperatorFounderGate();
+		try {
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			raw.exec(`CREATE TEMP TRIGGER fly2396_ignore_run_update
+				BEFORE UPDATE OF status, current_node_id ON workflow_run
+				WHEN OLD.run_id = 'run-heavy'
+				BEGIN SELECT RAISE(IGNORE); END`);
+			const before = snapshotUserTables(store);
+			expect(
+				store.openOperatorRework({
+					runId: "run-heavy",
+					targetNodeId: "implement",
+					feedback: "must roll back after a lost CAS",
+					clientRequestId: "operator-run-cas-lost",
+					principal: "master",
+					founderAuthorEvidence: { kind: "operator", principal: "master" },
+					evidence: operatorEvidence(store),
+					now: "2026-09-06T18:03:00.000Z",
+				}),
+			).toEqual({ ok: false, reason: "run_state_changed" });
+			expect(snapshotUserTables(store)).toBe(before);
+		} finally {
+			store.close();
+		}
+	});
+});
+
 async function createHeldTerminalLandRun(
 	error: "pr_head_mismatch" | "merge_failed",
 ): Promise<StateStore> {
@@ -420,6 +926,7 @@ async function createActiveOperatorRework(): Promise<{
 		feedback: "rework the implementation",
 		clientRequestId: "fly1912-operator-rework",
 		principal: "master",
+		founderAuthorEvidence: { kind: "operator", principal: "master" },
 		evidence: store
 			.listRunAttributedExecutions("run-heavy")
 			.map((executionId) => ({
@@ -1017,6 +1524,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 					feedback: "another rework",
 					clientRequestId: "fly1912-overlap",
 					principal: "master",
+					founderAuthorEvidence: { kind: "operator", principal: "master" },
 					evidence: store
 						.listRunAttributedExecutions("run-heavy")
 						.map((executionId) => ({
@@ -1122,6 +1630,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 				feedback: "rework with QA history",
 				clientRequestId: "fly1912-history",
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence: store
 					.listRunAttributedExecutions("run-heavy")
 					.map((executionId) => ({
@@ -1262,6 +1771,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 				feedback: "verify every downstream node",
 				clientRequestId: "fly1912-multi-fresh",
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence: [
 					{
 						executionId: "implement-exec",
@@ -2039,6 +2549,10 @@ describe("FLY-1423 durable unified rework request", () => {
 				feedback: "rework the implementation",
 				clientRequestId: "operator-rework-1",
 				principal: "master",
+				founderAuthorEvidence: {
+					kind: "operator" as const,
+					principal: "master",
+				},
 				evidence,
 				now: "2026-07-23T00:10:00.000Z",
 			};
@@ -2159,6 +2673,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				feedback: "rerun the acceptance checks",
 				clientRequestId: "operator-rework-qa",
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence,
 				now: "2026-07-23T00:10:00.000Z",
 			});
@@ -2242,6 +2757,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				feedback: "rerun QA in the existing actor",
 				clientRequestId: "operator-rework-prefers-live-qa",
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence: [],
 				now: "2026-07-23T00:10:00.000Z",
 			});
@@ -2304,6 +2820,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				feedback: "rerun QA against the implementation head",
 				clientRequestId: "operator-rework-qa-producer-head",
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence: [],
 				now: "2026-07-23T00:10:00.000Z",
 			});
@@ -2398,6 +2915,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				feedback: "recover the rolled-back QA attempt",
 				clientRequestId: "operator-rework-rollback-held-qa",
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence: [],
 				now: "2026-07-23T00:10:00.000Z",
 			});
@@ -2425,6 +2943,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				feedback: "adopt and verify the current PR head",
 				clientRequestId: "operator-land-head-mismatch",
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence: store
 					.listRunAttributedExecutions("run-held-land")
 					.map((executionId) => ({
@@ -2469,6 +2988,7 @@ describe("FLY-1423 durable unified rework request", () => {
 					feedback: "retry an unrelated land failure",
 					clientRequestId: "operator-land-merge-failed",
 					principal: "master",
+					founderAuthorEvidence: { kind: "operator", principal: "master" },
 					evidence: store
 						.listRunAttributedExecutions("run-held-land")
 						.map((executionId) => ({
@@ -2499,6 +3019,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				feedback: "start implementation",
 				clientRequestId: "operator-rework-no-actor",
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence: store
 					.listRunAttributedExecutions("run-heavy")
 					.map((executionId) => ({
@@ -3665,6 +4186,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				feedback: "retry after Lead inspection",
 				clientRequestId: "operator-needs-lead",
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence,
 				now: "2026-07-23T00:26:30.000Z",
 			});

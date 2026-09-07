@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>founder 门判决绑 head 与作者事实</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, "PingFang SC", "Helvetica Neue", sans-serif; line-height: 1.6; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; color: #1a365d; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; font-family: "SF Mono", Menlo, monospace; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin: 18px 0; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; } .card.amber { border-left-color: #ff9500; } .card.red { border-left-color: #ff3b30; } .card.purple { border-left-color: #af52de; } .card.gray { border-left-color: #86868b; }
+  .card h2 { font-size: 18px; margin: 0 0 10px; }
+  .card h3 { font-size: 15px; margin: 14px 0 6px; color: #1a365d; }
+  .lede { font-size: 17px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; background: #f2f2f7; padding: 1px 5px; border-radius: 4px; }
+  .note { color: #515154; font-size: 14px; }
+  .diagram { overflow-x: auto; background: #fff; border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px; margin: 10px 0; }
+  .diagram svg { display: block; height: auto; max-width: 100%; }
+  .diagram.wide svg { width: 1150px; max-width: none; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin-right: 6px; vertical-align: middle; }
+  .badge.keep { background: #e8f8ee; color: #1e7f3f; } .badge.new { background: #e7f0ff; color: #0a56c2; } .badge.no { background: #ffecec; color: #b3261e; } .badge.risk { background: #fff3e0; color: #a35a00; }
+  ul { padding-left: 20px; } li { margin: 4px 0; }
+  .num { font-family: "SF Mono", Menlo, monospace; }
+  .comment { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e5e5ea; }
+  .comment label { display: block; font-size: 12px; color: #86868b; margin-bottom: 4px; }
+  .comment textarea { width: 100%; box-sizing: border-box; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 14px; resize: vertical; background: #fafafa; }
+  .comment textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  .summary pre { white-space: pre-wrap; word-break: break-word; background: #f2f2f7; border-radius: 8px; padding: 12px; font-size: 13px; max-height: 320px; overflow: auto; }
+  .btn { display: inline-block; background: #007aff; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer; margin: 6px 8px 6px 0; }
+  .btn.secondary { background: #e5e5ea; color: #1d1d1f; }
+  .status { font-size: 13px; color: #86868b; margin-left: 4px; }
+  .chunk { margin: 10px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>founder 门判决:绑到她看的那个 head,并把「她本人」和「以 founder 权限提交」分开</h1>
+  <div class="meta">FLY-2396 · 设计说明 · 2026-09-06 · 分支 flywheel-FLY-2396 · 上游 FLY-2309 §B2(影子跑前置 P0)· {{REVIEW_LINE}}</div>
+
+  <section class="card green" data-section="一句话总结">
+    <h2>一句话总结</h2>
+    <p class="lede">以后 founder 门(你在 Discord 卡片上按 ✅ 或打回的那道关)每一次判决,系统都会在同一笔写入里记下「当时你看的是哪个仓库、哪个 PR、哪个 commit」,再单独记一格「这条判断是不是你本人的」——记不下来就整条不落库,绝不靠读文字去猜。</p>
+    <div class="comment"><label for="c-1">对这一节的意见</label><textarea id="c-1" data-comment-for="一句话总结" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+  </section>
+
+  <section class="card amber" data-section="问题出在哪">
+    <h2>问题出在哪(2026-09-06 在生产库只读副本上核过)</h2>
+    <table>
+      <tr><th>现象</th><th>数字</th><th>为什么</th></tr>
+      <tr><td>founder 门节点绑不到 head</td><td class="num">421 / 421 条 execution_id 为空(spec 写时 358 / 358)</td><td>门节点不是 runner,没有执行体;PR 绑定都挂在喂门的 qa / implement 节点上</td></tr>
+      <tr><td>「以 founder 权限」打回 ≠ 你本人</td><td class="num">63 条 founder 门打回,60 条走 Lead 的 operator 通道</td><td>那条通道的 SQL 把 <code>authority</code> 硬编码成 <code>founder</code>;它记的是权限,不是作者</td></tr>
+      <tr><td>spec 的 5 条阳性对照</td><td class="num">5 条全部是 Lead 打的字</td><td>「是她本人」指的是判断是不是你的(Lead 转述你的 thread 原话算是),不是谁按的回车</td></tr>
+    </table>
+    <p class="note">术语:<code>head</code> 就是「某个 PR 在某一刻的最新 commit 号」;<code>holder</code>(gate holder)是系统为每一次开卡记的一行,里面本来就存着 head 和卡片消息 id——只是判决行没有指向它。</p>
+    <div class="comment"><label for="c-2">对这一节的意见</label><textarea id="c-2" data-comment-for="问题出在哪" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+  </section>
+
+  <section class="card" data-section="核心流程">
+    <h2>核心流程:判决怎么被写下来</h2>
+    <p class="note">两条入口(你直接在卡上判 / Lead 经 operator 通道打回)最后汇到同一个「解析绑定 → 写判决快照」步骤。解析失败就整笔回滚,连判决本身都不落库,所以新数据按构造 100% 能绑到 (repo, pr_number, head_sha)。</p>
+    <div class="diagram">{{D1}}</div>
+    <div class="comment"><label for="c-3">对这一节的意见</label><textarea id="c-3" data-comment-for="核心流程" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+  </section>
+
+  <section class="card purple" data-section="是不是她本人的判定规则">
+    <h2>「是不是她本人」怎么定:只认事实,不读文字</h2>
+    <p class="note">新字段 <code>founder_authored</code>(0 / 1)与 <code>authority</code>(权限)完全分开。它的值只来自三种可核验的事实:你直接在卡上写的(作者 id 相等)、Lead 附了一条你在这张卡 thread 里、卡片发出之后说的消息(Bridge 去 Discord 核过作者)、或者什么都没附(记 0)。文本前缀、正则、语气判断一律不用。</p>
+    <div class="diagram">{{D3}}</div>
+    <p class="note">spec 的 5 条对照按这个规则分开:<code>c8f001a6</code> / <code>3f9f9f1c</code>(Lead 转述你的 thread 原话,可附引用)→ 是;<code>5ae599c6</code>(引的是另一张单 2074 的话,不在这张卡 thread)→ 不是;<code>54f0d683</code>(Lead 自己的打回)/ <code>f5bd6f2b</code>(机械换头)→ 不是。</p>
+    <div class="comment"><label for="c-4">对这一节的意见</label><textarea id="c-4" data-comment-for="是不是她本人的判定规则" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+  </section>
+
+  <section class="card" data-section="数据结构">
+    <h2>数据结构:一张新表,不改旧表</h2>
+    <p class="note">新表 <code>workflow_founder_gate_verdict</code> 是不可变的(数据库触发器禁止改和删),过卡 / 打回各写一行;它指向已有的 holder、claim(过卡凭证)、rework_request(打回原行),并把 repo / PR 号 / head 快照下来——因为 PR 绑定行以后可能被清理,事后再 join 不可靠。</p>
+    <div class="diagram">{{D2}}</div>
+    <div class="comment"><label for="c-5">对这一节的意见</label><textarea id="c-5" data-comment-for="数据结构" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+  </section>
+
+  <section class="card green" data-section="遗留数据与验收">
+    <h2>遗留 63 条怎么报,验收拿什么</h2>
+    <p class="note">回溯脚本只做等值 join(holder 按 run + attempt 唯一),不猜时间窗;在 SQLite online backup 快照上跑(不是 cp,cp 会漏掉未落盘的已提交写入)。</p>
+    <table>
+      <tr><th>集合</th><th>总数</th><th>能绑 head</th><th>能绑 (repo, pr, head)</th></tr>
+      <tr><td>打回,spec 冻结集</td><td class="num">55</td><td class="num">54</td><td class="num">53</td></tr>
+      <tr><td>打回,今天全集</td><td class="num">63</td><td class="num">62</td><td class="num">61</td></tr>
+      <tr><td>过卡</td><td class="num">285</td><td class="num">285</td><td class="num">281</td></tr>
+    </table>
+    <p class="note">绑不上的逐条有名:<code>f9529033</code>(7 月 24 日,git-head 时代之前,head 是文件摘要)、<code>bbaf0439</code>(holder 与 ship target 记的 head 不一致,不猜)、过卡 4 条是没有 PR 主体的旧 runner_ship 模式。</p>
+    <p><span class="badge new">founder_authored 遗留</span><strong class="num">63 条:5 attested / 58 未判定 / 0 猜测</strong>——5 条来自 spec §B2 那张表(人工 attestation),其余永远标未判定,不合并成比例(Lead 裁定)。阳性对照 5 条输出 1,1,0,0,0。</p>
+    <p class="note">新数据的验收:测试库跑五种判决(直接过卡 / 直接打回 / 门已离开的打回 / Lead 无引用 / Lead 有引用),判决数 = 新表行数,且表约束保证每行三元组非空;33 条负向守卫(G1–G33)全部有测试。</p>
+    <div class="comment"><label for="c-6">对这一节的意见</label><textarea id="c-6" data-comment-for="遗留数据与验收" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+  </section>
+
+  <section class="card amber" data-section="关键取舍与放弃的备选">
+    <h2>关键取舍与放弃的备选</h2>
+    <table>
+      <tr><th>选择</th><th>为什么</th><th>放弃了什么</th></tr>
+      <tr><td><span class="badge keep">选</span>独立不可变快照表</td><td>过卡 / 打回一个词汇,B4 两周表一张表读完;PR 号快照抗清理</td><td><span class="badge no">弃</span>在旧表加列(两套词汇、事后 join)/ 只做视图(100% 不是构造保证)</td></tr>
+      <tr><td><span class="badge keep">选</span>Lead 附「你的消息引用」,Bridge 在线核</td><td>「谁写的」变成可回查的事实(消息 id 落盘)</td><td><span class="badge no">弃</span>Lead 自报「这是 founder 的」枚举(把资格交回提交者自述)/ 解析 <code>[提交人=…]</code> 前缀(spec 明令禁止)</td></tr>
+      <tr><td><span class="badge keep">选</span>解析不出就整笔回滚</td><td>新数据 100% 由构造保证;旧的 runner_ship / engine_terminal 模式自 8 月 10 日起零新建</td><td><span class="badge no">弃</span>给没 PR 的主体留 git-only 口子(Codex R1 指出与硬验收矛盾)</td></tr>
+      <tr><td><span class="badge keep">选</span>遗留行只认人工 attestation</td><td>历史行没有作者事实;猜就是违反资格门槛</td><td><span class="badge no">弃</span>用文本回填 / 去 Discord 翻历史推断</td></tr>
+      <tr><td><span class="badge keep">选</span>引用核不过就 4xx 拒收</td><td>不悄悄写 0,Lead 立刻看到原因</td><td><span class="badge no">弃</span>核不过降级成 0 静默入库</td></tr>
+    </table>
+    <p class="note">Codex 设计评审四轮:10 → 8 → 5 → 2 条,逐轮收敛;主要改动是 resolver 必须从 ship target 出发并要求 PR 唯一、payload 保持 v1、新错误归入投影器的终态分类以免堵队头、operator 路径在任何写入之前做 CAS、回溯用 online backup。</p>
+    <div class="comment"><label for="c-7">对这一节的意见</label><textarea id="c-7" data-comment-for="关键取舍与放弃的备选" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+  </section>
+
+  <section class="card red" data-section="诚实边界">
+    <h2>诚实边界:这个设计做什么、不做什么</h2>
+    <ul>
+      <li><span class="badge risk">不动</span>merge 授权契约:<code>authority</code> 列、放行谓词一行不改;新字段没有任何读者拿它当放行条件(有 repo 级守卫测试)。</li>
+      <li><span class="badge risk">不修</span>operator 通道把 <code>authority</code> 硬编码成 founder 的问题(它参与返工授权契约);真相记在新表的 0 / operator 证据里。</li>
+      <li><span class="badge risk">不猜</span>遗留 63 条的作者;只有 5 条人工 attestation,58 条永远「未判定」。</li>
+      <li><span class="badge risk">语义</span>「她本人」= 判决绑到了一条经核实为你所发、在该卡 thread、卡片发出之后的消息。Lead 不附引用的转述记 0;Lead 附了你在该 thread 的无关消息,也会记 1——记的是绑定事实,不是意图判断。</li>
+      <li><span class="badge risk">依赖</span>Discord 接口不可用时,带引用的打回会被 503 拒(可重试);不带引用照常。</li>
+      <li><span class="badge risk">未查</span>插件 fork 源仓库的调用方 sweep(本机无 checkout);新字段是可选的,旧调用不受影响。</li>
+    </ul>
+    <div class="comment"><label for="c-8">对这一节的意见</label><textarea id="c-8" data-comment-for="诚实边界" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+  </section>
+
+  <section class="card gray summary" data-section="意见汇总">
+    <h2>页面意见汇总</h2>
+    <p class="note">下面实时汇总你在每一节留下的意见。点「复制全部意见」把它贴回 Discord 即可;超长会自动分块,每块都带同样的开头标记。</p>
+    <div id="summary-chunks"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button>
+    <button class="btn secondary" id="clear-all" type="button">清空本页意见</button>
+    <span class="status" id="copy-status"></span>
+  </section>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = 'FLY-2396';
+  var MARKER = '【页面意见汇总】' + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = 'fly2396-comment:' + location.pathname + ':';
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-comment-for]'));
+
+  function lsGet(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} }
+  function lsDel(k) { try { window.localStorage.removeItem(k); } catch (e) {} }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = (ta.value || '').trim();
+      if (v) parts.push('## ' + ta.getAttribute('data-comment-for') + '\n' + v);
+    });
+    return parts;
+  }
+
+  function buildChunks() {
+    var parts = collect();
+    if (parts.length === 0) return [MARKER + '\n(暂无意见)'];
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + '\n\n' + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + '\n\n' + p;
+      } else {
+        cur = candidate;
+      }
+      while (cur.length > CHUNK_LIMIT) {
+        chunks.push(cur.slice(0, CHUNK_LIMIT));
+        cur = MARKER + '\n(续)\n' + cur.slice(CHUNK_LIMIT);
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  function render() {
+    var host = document.getElementById('summary-chunks');
+    while (host.firstChild) host.removeChild(host.firstChild);
+    buildChunks().forEach(function (text, i, all) {
+      var wrap = document.createElement('div');
+      wrap.className = 'chunk';
+      var label = document.createElement('div');
+      label.className = 'note';
+      label.textContent = all.length > 1 ? ('第 ' + (i + 1) + ' / ' + all.length + ' 块') : '';
+      var pre = document.createElement('pre');
+      pre.textContent = text;
+      wrap.appendChild(label);
+      wrap.appendChild(pre);
+      host.appendChild(wrap);
+    });
+  }
+
+  function setStatus(msg) {
+    var s = document.getElementById('copy-status');
+    s.textContent = msg;
+    setTimeout(function () { if (s.textContent === msg) s.textContent = ''; }, 3000);
+  }
+
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function copyAll() {
+    var text = buildChunks().join('\n\n');
+    var done = function () { setStatus('已复制 ' + text.length + ' 字'); };
+    var fail = function () { setStatus(legacyCopy(text) ? '已复制(兼容方式)' : '复制失败,请手动选择上方文本'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fail);
+    } else {
+      fail();
+    }
+  }
+
+  areas.forEach(function (ta) {
+    var key = prefix + ta.getAttribute('data-comment-for');
+    var saved = lsGet(key);
+    if (saved) ta.value = saved;
+    ta.addEventListener('input', function () {
+      lsSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', copyAll);
+  document.getElementById('clear-all').addEventListener('click', function () {
+    areas.forEach(function (ta) { ta.value = ''; lsDel(prefix + ta.getAttribute('data-comment-for')); });
+    render();
+    setStatus('已清空');
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

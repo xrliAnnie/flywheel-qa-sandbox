@@ -915,6 +915,7 @@ describe("equivalent-head carryover authority", () => {
 					feedback: "Please revise the implementation.",
 				},
 				actor: "founder",
+				founder_id_at_capture: "founder",
 				approved_head: HEAD_A,
 				classification: "founder_reaction",
 				authority_id: holder.question_id,
@@ -944,6 +945,16 @@ describe("equivalent-head carryover authority", () => {
 			expect(request).toMatchObject({
 				authority: "founder",
 				founder_feedback_verbatim: "Please revise the implementation.",
+			});
+			expect(
+				store.listFounderGateVerdicts({ runId: "run-carryover" }).at(-1),
+			).toMatchObject({
+				verdict: "rework",
+				question_id: holder.question_id,
+				head_sha: HEAD_A,
+				founder_authored: 1,
+				rework_request_id: request?.request_id,
+				claim_id: null,
 			});
 
 			const cutoffPayload = {

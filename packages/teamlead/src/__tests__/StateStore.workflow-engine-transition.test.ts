@@ -3496,6 +3496,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			feedback: "replace the missing carrier actor",
 			clientRequestId: "operator-rework-for-pane-loss",
 			principal: "master",
+			founderAuthorEvidence: { kind: "operator", principal: "master" },
 			evidence: [],
 			now: "2026-07-16T01:18:00.000Z",
 		});
@@ -3652,6 +3653,7 @@ describe("engine-owned snapshot transition transaction", () => {
 				feedback: "replace the approved implementation",
 				clientRequestId: `operator-rework-carrier-${state}`,
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence: [],
 				now: "2026-07-16T01:18:00.000Z",
 			});
@@ -5024,6 +5026,7 @@ describe("engine-owned snapshot transition transaction", () => {
 				feedback: "continue after reviewing the loop limit",
 				clientRequestId,
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence: [],
 				now: "2026-07-16T01:10:00.000Z",
 				escalationAck,
@@ -5068,6 +5071,7 @@ describe("engine-owned snapshot transition transaction", () => {
 				feedback: "continue after reviewing the loop limit",
 				clientRequestId: "continue-4",
 				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
 				evidence: [],
 				now: "2026-07-16T01:10:00.000Z",
 				escalationAck: { ...ack, decision: "reclassify" },
@@ -5105,6 +5109,7 @@ describe("engine-owned snapshot transition transaction", () => {
 					feedback: "continue after reviewing the next loop limit",
 					clientRequestId: "continue-5",
 					principal: "master",
+					founderAuthorEvidence: { kind: "operator", principal: "master" },
 					evidence: [],
 					now: "2026-07-16T01:20:00.000Z",
 					escalationAck: {

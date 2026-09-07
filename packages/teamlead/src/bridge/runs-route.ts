@@ -40,9 +40,11 @@ import {
 } from "../ProjectConfig.js";
 import {
 	Fly2121PreservedTemplateUnrunnableError,
+	type FounderAuthorEvidence,
 	type Session,
 	StateStore,
 	WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+	type WorkflowGateHolderRow,
 	type WorkflowResumeAttachmentRow,
 	type WorkflowRunCollectReceiptRow,
 	type WorkflowStartReservationRow,
@@ -85,6 +87,7 @@ import {
 	WorkKindRouteError,
 } from "../workflow-template-selection.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
+import { fetchDiscordMessageFromChannel } from "./discord-utils.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import {
 	getGeneralizedLaunchDelivery,
@@ -257,6 +260,33 @@ function isGeneralizedSnapshot(snapshot: string | null | undefined): boolean {
 	return isSchemaSnapshot(snapshot, 2) || isSchemaSnapshot(snapshot, 3);
 }
 
+const DISCORD_SNOWFLAKE = /^\d{17,20}$/;
+
+function parseFounderMessageRef(
+	value: unknown,
+): { channelId: string; messageId: string } | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	if (Object.keys(record).length === 1 && typeof record.url === "string") {
+		const match = record.url.match(
+			/^https:\/\/discord\.com\/channels\/(\d{17,20})\/(\d{17,20})\/(\d{17,20})$/,
+		);
+		return match ? { channelId: match[2]!, messageId: match[3]! } : undefined;
+	}
+	if (
+		Object.keys(record).length === 2 &&
+		typeof record.channelId === "string" &&
+		typeof record.messageId === "string" &&
+		DISCORD_SNOWFLAKE.test(record.channelId) &&
+		DISCORD_SNOWFLAKE.test(record.messageId)
+	) {
+		return { channelId: record.channelId, messageId: record.messageId };
+	}
+	return undefined;
+}
+
 /**
  * FLY-127: Read the dept-scope reject feature flag.
  *
@@ -335,6 +365,9 @@ export function createRunsRouter(
 			projectName: string,
 			reason: "run_started" | "run_resumed",
 		) => void;
+		canonicalFounderId?: () => string | null;
+		gateBotToken?: (holder: WorkflowGateHolderRow) => string | undefined;
+		fetchImpl?: typeof fetch;
 	},
 	skillFrameworkModeControl: () => {
 		hasOverride: boolean;
@@ -706,6 +739,8 @@ export function createRunsRouter(
 			res.status(503).json({
 				success: false,
 				code: "MASTER_AUTH_NOT_CONFIGURED",
+				reason: "master authentication is not configured",
+				recorded: false,
 			});
 			return;
 		}
@@ -713,6 +748,8 @@ export function createRunsRouter(
 			res.status(403).json({
 				success: false,
 				code: "LOOPBACK_REQUIRED",
+				reason: "operator rework requires a loopback request",
+				recorded: false,
 			});
 			return;
 		}
@@ -732,6 +769,8 @@ export function createRunsRouter(
 			res.status(403).json({
 				success: false,
 				code: "MASTER_AUTH_REQUIRED",
+				reason: "operator rework requires master authentication",
+				recorded: false,
 			});
 			return;
 		}
@@ -995,6 +1034,11 @@ export function createRunsRouter(
 		const targetNodeId = req.body?.targetNodeId;
 		const feedback = req.body?.feedback;
 		const clientRequestId = req.body?.clientRequestId;
+		const founderMessageRefBody = req.body?.founderMessageRef;
+		const founderMessageRef =
+			founderMessageRefBody === undefined
+				? undefined
+				: parseFounderMessageRef(founderMessageRefBody);
 		const escalationAckBody = req.body?.escalationAck;
 		const escalationAck =
 			escalationAckBody === undefined
@@ -1021,19 +1065,162 @@ export function createRunsRouter(
 			feedback.length > 4_000 ||
 			typeof clientRequestId !== "string" ||
 			!clientRequestId.trim() ||
-			escalationAck === null
+			escalationAck === null ||
+			(founderMessageRefBody !== undefined && founderMessageRef === undefined)
 		) {
 			res.status(400).json({
 				success: false,
-				code: "INVALID_REWORK_REQUEST",
+				code:
+					founderMessageRefBody !== undefined && founderMessageRef === undefined
+						? "FOUNDER_MESSAGE_REF_INVALID"
+						: "INVALID_REWORK_REQUEST",
+				reason:
+					founderMessageRefBody !== undefined && founderMessageRef === undefined
+						? "founderMessageRef must be a Discord message URL or channelId/messageId pair"
+						: "invalid rework request",
+				recorded: false,
 			});
 			return;
 		}
 		if (!store.getWorkflowRun(runId)) {
-			res.status(404).json({ success: false, code: "RUN_NOT_FOUND" });
+			res.status(404).json({
+				success: false,
+				code: "RUN_NOT_FOUND",
+				reason: "workflow run not found",
+				recorded: false,
+			});
 			return;
 		}
 		try {
+			let founderAuthorEvidence: FounderAuthorEvidence = {
+				kind: "operator",
+				principal: "master",
+			};
+			if (founderMessageRef) {
+				const canonicalFounderId = auth.canonicalFounderId?.() ?? null;
+				if (!canonicalFounderId) {
+					res.status(503).json({
+						success: false,
+						code: "FOUNDER_IDENTITY_UNRESOLVED",
+						reason: "canonical founder identity is unavailable",
+						recorded: false,
+					});
+					return;
+				}
+				const current = store.currentFounderGateHolder(runId);
+				if (current.status !== "one") {
+					res.status(409).json({
+						success: false,
+						code:
+							current.status === "missing"
+								? "GATE_HOLDER_MISSING"
+								: "GATE_HOLDER_AMBIGUOUS",
+						reason: `current founder gate holder is ${current.status}`,
+						recorded: false,
+					});
+					return;
+				}
+				const holder = current.holder;
+				if (!holder.card_message_id) {
+					res.status(409).json({
+						success: false,
+						code: "GATE_CARD_NOT_BOUND",
+						reason: "current founder gate card is not bound",
+						recorded: false,
+					});
+					return;
+				}
+				const gateBotToken = auth.gateBotToken?.(holder);
+				if (!gateBotToken) {
+					res.status(503).json({
+						success: false,
+						code: "DISCORD_TOKEN_UNAVAILABLE",
+						reason: "founder gate bot token is unavailable",
+						recorded: false,
+					});
+					return;
+				}
+				const referenced = await fetchDiscordMessageFromChannel(
+					founderMessageRef.channelId,
+					founderMessageRef.messageId,
+					gateBotToken,
+					auth.fetchImpl,
+				);
+				if (!referenced.ok) {
+					const status = referenced.kind === "not_found" ? 404 : 503;
+					const code =
+						referenced.kind === "not_found"
+							? "FOUNDER_MESSAGE_REF_NOT_FOUND"
+							: referenced.kind === "forbidden"
+								? "DISCORD_TOKEN_UNAVAILABLE"
+								: "DISCORD_UNAVAILABLE";
+					res.status(status).json({
+						success: false,
+						code,
+						reason: `Discord founder message lookup failed: ${referenced.kind}`,
+						recorded: false,
+					});
+					return;
+				}
+				if (referenced.message.authorId !== canonicalFounderId) {
+					res.status(422).json({
+						success: false,
+						code: "FOUNDER_MESSAGE_REF_NOT_FOUNDER",
+						reason: "referenced message was not authored by the founder",
+						recorded: false,
+					});
+					return;
+				}
+				const card = await fetchDiscordMessageFromChannel(
+					founderMessageRef.channelId,
+					holder.card_message_id,
+					gateBotToken,
+					auth.fetchImpl,
+				);
+				if (!card.ok) {
+					const outsideThread = card.kind === "not_found";
+					res.status(outsideThread ? 422 : 503).json({
+						success: false,
+						code: outsideThread
+							? "FOUNDER_MESSAGE_REF_OUTSIDE_GATE_THREAD"
+							: card.kind === "forbidden"
+								? "DISCORD_TOKEN_UNAVAILABLE"
+								: "DISCORD_UNAVAILABLE",
+						reason: outsideThread
+							? "founder message is outside the current gate thread"
+							: `Discord gate card lookup failed: ${card.kind}`,
+						recorded: false,
+					});
+					return;
+				}
+				const holderCreatedAt = Date.parse(holder.created_at);
+				if (
+					referenced.message.timestampMs < card.message.timestampMs ||
+					!Number.isFinite(holderCreatedAt) ||
+					referenced.message.timestampMs < holderCreatedAt
+				) {
+					res.status(422).json({
+						success: false,
+						code: "FOUNDER_MESSAGE_REF_BEFORE_CARD",
+						reason: "founder message predates the current gate card",
+						recorded: false,
+					});
+					return;
+				}
+				founderAuthorEvidence = {
+					kind: "founder_message",
+					channel_id: founderMessageRef.channelId,
+					message_id: referenced.message.id,
+					card_message_id: holder.card_message_id,
+					author_user_id: referenced.message.authorId,
+					founder_id_at_capture: canonicalFounderId,
+					message_ts: new Date(referenced.message.timestampMs).toISOString(),
+					card_message_ts: new Date(card.message.timestampMs).toISOString(),
+					verified_at: new Date().toISOString(),
+					question_id: holder.question_id,
+					head_sha: holder.head_sha,
+				};
+			}
 			const consent = auth.authorizeRework
 				? await auth.authorizeRework({
 						runId,
@@ -1056,6 +1243,7 @@ export function createRunsRouter(
 					code: consent.code,
 					...(consent.reason ? { reason: consent.reason } : {}),
 					...(consent.auditId ? { auditId: consent.auditId } : {}),
+					recorded: false,
 				});
 				return;
 			}
@@ -1066,6 +1254,7 @@ export function createRunsRouter(
 				feedback: feedback.trim(),
 				clientRequestId: clientRequestId.trim(),
 				principal: "master",
+				founderAuthorEvidence,
 				evidence,
 				now: new Date().toISOString(),
 				...(escalationAck ? { escalationAck } : {}),
@@ -1079,12 +1268,21 @@ export function createRunsRouter(
 					.json({
 						success: false,
 						code:
-							result.reason === "target_not_quiescent"
-								? "REWORK_TARGET_NOT_QUIESCENT"
-								: result.reason === "target_actor_history_missing"
-									? "REWORK_TARGET_ACTOR_HISTORY_MISSING"
-									: "REWORK_REFUSED",
+							result.reason === "founder_gate_holder_changed"
+								? "GATE_HOLDER_CHANGED"
+								: result.reason === "founder_gate_holder_missing"
+									? "GATE_HOLDER_MISSING"
+									: result.reason === "founder_gate_holder_ambiguous"
+										? "GATE_HOLDER_AMBIGUOUS"
+										: result.reason === "founder_gate_verdict_unbound"
+											? "FOUNDER_GATE_VERDICT_UNBOUND"
+											: result.reason === "target_not_quiescent"
+												? "REWORK_TARGET_NOT_QUIESCENT"
+												: result.reason === "target_actor_history_missing"
+													? "REWORK_TARGET_ACTOR_HISTORY_MISSING"
+													: "REWORK_REFUSED",
 						reason: result.reason,
+						recorded: false,
 						...(result.executionIds
 							? { executionIds: result.executionIds }
 							: {}),
@@ -1104,7 +1302,8 @@ export function createRunsRouter(
 			res.status(503).json({
 				success: false,
 				code: "RUN_LIVENESS_UNAVAILABLE",
-				message: error instanceof Error ? error.message : String(error),
+				reason: error instanceof Error ? error.message : String(error),
+				recorded: false,
 			});
 		}
 	});

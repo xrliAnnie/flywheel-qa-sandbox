@@ -954,6 +954,7 @@ async function storeWithFreshVerificationIntent(): Promise<{
 		feedback: "rework before QA has ever run",
 		clientRequestId: "fly1912-dispatcher",
 		principal: "master",
+		founderAuthorEvidence: { kind: "operator", principal: "master" },
 		evidence: store.listRunAttributedExecutions("run-1").map((executionId) => ({
 			executionId,
 			sessionStatus: null,

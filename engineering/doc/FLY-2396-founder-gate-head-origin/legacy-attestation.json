@@ -1,0 +1,11 @@
+{
+  "$comment": "FLY-2396: human attestation of founder authorship for LEGACY founder-gate rework rows. Values are copied verbatim from product/doc/FLY-2309-auto-merge-rollout/build-issues.md §B2 (founder-approved 2026-09-06). Never derived from founder_feedback_verbatim text. Rows absent here are 未判定 (NULL), not 0. Append only with an attested_by that names a human-reviewed source.",
+  "source": "FLY-2309 build-issues §B2",
+  "rows": [
+    { "run_id_prefix": "c8f001a6", "requested_at": "2026-08-31T19:05:54.972Z", "founder_authored": 1, "attested_by": "FLY-2309 build-issues §B2", "note": "Lead relayed founder thread verbatim (2026-08-31 18:48 + 19:01)" },
+    { "run_id_prefix": "3f9f9f1c", "requested_at": "2026-09-01T00:32:30.282Z", "founder_authored": 1, "attested_by": "FLY-2309 build-issues §B2", "note": "founder hands-on test kickback (2026-09-01 00:31)" },
+    { "run_id_prefix": "5ae599c6", "requested_at": "2026-08-27T06:18:19.848Z", "founder_authored": 0, "attested_by": "FLY-2309 build-issues §B2", "note": "Lead submission citing FLY-2074 words from another thread" },
+    { "run_id_prefix": "54f0d683", "requested_at": "2026-09-01T10:45:26.386Z", "founder_authored": 0, "attested_by": "FLY-2309 build-issues §B2", "note": "Lead kickback after QA withdrew PASS" },
+    { "run_id_prefix": "f5bd6f2b", "requested_at": "2026-08-23T12:56:16.700Z", "founder_authored": 0, "attested_by": "FLY-2309 build-issues §B2", "note": "HEAD-FOLD RECOVERY, mechanical rework" }
+  ]
+}

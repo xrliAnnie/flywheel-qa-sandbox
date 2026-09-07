@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	editDiscordMessageInChannel,
+	fetchDiscordMessageFromChannel,
 	MAX_DISCORD_MESSAGE_LENGTH,
 	postDiscordMessageToChannel,
 	sendTypingToChannel,
@@ -30,6 +31,90 @@ function errResponse(status: number, body: object | string): Response {
 		headers: { "Content-Type": "application/json" },
 	});
 }
+
+describe("fetchDiscordMessageFromChannel (FLY-2396)", () => {
+	it("returns only immutable author and timestamp identity", async () => {
+		const fetchMock = vi.fn().mockResolvedValueOnce(
+			okResponse({
+				id: "22345678901234567",
+				author: { id: "42345678901234567" },
+				timestamp: "2026-09-06T18:59:00.123Z",
+				content: "must not enter author evidence",
+			}),
+		);
+		await expect(
+			fetchDiscordMessageFromChannel(
+				"12345678901234567",
+				"22345678901234567",
+				"bot-token",
+				fetchMock as unknown as typeof fetch,
+			),
+		).resolves.toEqual({
+			ok: true,
+			message: {
+				id: "22345678901234567",
+				channelId: "12345678901234567",
+				authorId: "42345678901234567",
+				timestampMs: Date.parse("2026-09-06T18:59:00.123Z"),
+			},
+		});
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://discord.com/api/v10/channels/12345678901234567/messages/22345678901234567",
+			expect.objectContaining({
+				method: "GET",
+				headers: { Authorization: "Bot bot-token" },
+			}),
+		);
+	});
+
+	it.each([
+		[404, "not_found"],
+		[403, "forbidden"],
+		[429, "rate_limited"],
+		[500, "server"],
+	] as const)("maps Discord %s to %s", async (status, kind) => {
+		const result = await fetchDiscordMessageFromChannel(
+			"channel",
+			"message",
+			"token",
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					errResponse(status, "failure"),
+				) as unknown as typeof fetch,
+		);
+		expect(result).toEqual({ ok: false, kind, status });
+	});
+
+	it("maps network and malformed payload failures without throwing", async () => {
+		await expect(
+			fetchDiscordMessageFromChannel(
+				"channel",
+				"message",
+				"token",
+				vi
+					.fn()
+					.mockRejectedValueOnce(
+						new Error("offline"),
+					) as unknown as typeof fetch,
+			),
+		).resolves.toEqual({ ok: false, kind: "network" });
+		await expect(
+			fetchDiscordMessageFromChannel(
+				"channel",
+				"message",
+				"token",
+				vi.fn().mockResolvedValueOnce(
+					okResponse({
+						id: "message",
+						author: { id: "founder" },
+						timestamp: "bad",
+					}),
+				) as unknown as typeof fetch,
+			),
+		).resolves.toEqual({ ok: false, kind: "server", status: 200 });
+	});
+});
 
 describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 	it("single chunk: returns messageIds + posts allowed_mentions: { parse: [] }", async () => {

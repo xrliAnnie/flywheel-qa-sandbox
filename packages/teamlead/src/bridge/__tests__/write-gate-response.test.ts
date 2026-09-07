@@ -510,7 +510,15 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 			},
 		});
 		expect(r).toMatchObject({ written: true, disposition: "written" });
-		expect(db.insertFounderApprovalResponseWithSource).toHaveBeenCalledOnce();
+		expect(db.insertFounderApprovalResponseWithSource).toHaveBeenCalledWith(
+			expect.objectContaining({
+				payload: expect.objectContaining({
+					schema_version: 1,
+					actor: "bridge",
+					founder_id_at_capture: "founder-discord",
+				}),
+			}),
+		);
 		expect(db.insertResponse).not.toHaveBeenCalled();
 	});
 
@@ -547,6 +555,11 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 				msgId: "M-1",
 				approvalSource: expect.objectContaining({
 					sourceEventId: "founder-approval:Q-1:M-1",
+					payload: expect.objectContaining({
+						schema_version: 1,
+						actor: "founder-discord",
+						founder_id_at_capture: "founder-discord",
+					}),
 				}),
 			}),
 		);

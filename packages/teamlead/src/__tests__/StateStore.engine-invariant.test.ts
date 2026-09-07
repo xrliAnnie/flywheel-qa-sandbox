@@ -98,6 +98,7 @@ async function createActiveOperatorRework(): Promise<{
 		feedback: "rework before QA has run",
 		clientRequestId: "fly1912-engine-invariant",
 		principal: "master",
+		founderAuthorEvidence: { kind: "operator", principal: "master" },
 		evidence: store
 			.listRunAttributedExecutions("run-heavy")
 			.map((executionId) => ({

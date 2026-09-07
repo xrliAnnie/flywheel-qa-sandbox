@@ -1,0 +1,20 @@
+flowchart TB
+  A["founder 在 Discord 卡片上 ✅ 或写打回"] --> B["Bridge 核对: 作者 == founder 的 Discord id"]
+  B --> C["source event 落 CommDB<br/>payload 带 actor + founder_id_at_capture"]
+  C --> D["projector 投影到 StateStore<br/>一个事务"]
+  L["Lead 经 operator 通道打回<br/>POST /api/runs/:id/rework"] --> M{"附了 founder 消息引用?"}
+  M -- "否" --> N["evidence = operator<br/>founder_authored = 0"]
+  M -- "是" --> O["Bridge 查 Discord: 作者是她? 在这张卡的 thread? 卡片发出之后?"]
+  O -- "任一不满足" --> P["4xx 拒收, 带 code + reason<br/>不写任何行"]
+  O -- "全部满足" --> Q["evidence = founder_message<br/>冻结 question_id + head + card"]
+  N --> R["openOperatorRework 一个事务"]
+  Q --> R
+  D --> S["解析绑定: holder → ship target → PR binding<br/>要求 head 一致且 PR 唯一"]
+  R --> S
+  S -- "解析失败" --> T["整笔回滚<br/>判决本身也不落库"]
+  S -- "解析成功" --> U["写 workflow_founder_gate_verdict<br/>(repo, pr_number, head_sha, founder_authored, 证据)"]
+  U --> V["判决原行照常: claim 或 rework_request"]
+  classDef stop fill:#ffecec,stroke:#ff3b30,color:#1d1d1f;
+  classDef ok fill:#e8f8ee,stroke:#34c759,color:#1d1d1f;
+  class P,T stop;
+  class U,V ok;

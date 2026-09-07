@@ -226,6 +226,13 @@ export class WorkflowCatalogMigrationIntegrityError extends Error {
 	}
 }
 
+class OperatorReworkRejected extends Error {
+	constructor(readonly reason: string) {
+		super(reason);
+		this.name = "OperatorReworkRejected";
+	}
+}
+
 function normalizeWorkflowCatalogForeignKeyViolations(
 	rows: readonly unknown[],
 ): WorkflowCatalogForeignKeyViolation[] {
@@ -3097,6 +3104,56 @@ export class StateStore {
 		} finally {
 			if (foreignKeys === 1) this.db.raw.pragma("foreign_keys = ON");
 		}
+	}
+
+	private migrateFounderGateVerdictLedger(): void {
+		this.db.raw.transaction(() => {
+			this.db.raw.exec(`
+				CREATE TABLE IF NOT EXISTS workflow_founder_gate_verdict (
+					verdict_id TEXT PRIMARY KEY,
+					source_event_id TEXT NOT NULL UNIQUE,
+					run_id TEXT NOT NULL,
+					gate_node_id TEXT NOT NULL,
+					attempt INTEGER NOT NULL CHECK (attempt > 0),
+					verdict TEXT NOT NULL CHECK (verdict IN ('approved','rework')),
+					question_id TEXT NOT NULL,
+					repo_identity TEXT NOT NULL CHECK (length(repo_identity) > 0),
+					repo_slug TEXT NOT NULL CHECK (length(repo_slug) > 0),
+					pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+					head_sha TEXT NOT NULL CHECK (
+						length(head_sha) = 40 AND head_sha NOT GLOB '*[^0-9a-f]*'
+					),
+					rework_request_id TEXT,
+					claim_id INTEGER,
+					founder_authored INTEGER NOT NULL CHECK (founder_authored IN (0, 1)),
+					author_evidence_json TEXT NOT NULL CHECK (json_valid(author_evidence_json)),
+					row_digest TEXT NOT NULL CHECK (length(row_digest) = 64),
+					recorded_at TEXT NOT NULL,
+					CHECK (
+						(verdict = 'rework' AND rework_request_id IS NOT NULL AND claim_id IS NULL)
+						OR
+						(verdict = 'approved' AND claim_id IS NOT NULL AND rework_request_id IS NULL)
+					),
+					FOREIGN KEY (run_id) REFERENCES workflow_run(run_id),
+					FOREIGN KEY (question_id) REFERENCES workflow_gate_holder(question_id),
+					FOREIGN KEY (rework_request_id) REFERENCES workflow_rework_request(request_id),
+					FOREIGN KEY (claim_id) REFERENCES workflow_claims(id)
+				);
+				CREATE INDEX IF NOT EXISTS workflow_founder_gate_verdict_run
+					ON workflow_founder_gate_verdict(run_id, gate_node_id, attempt);
+				CREATE TRIGGER IF NOT EXISTS workflow_founder_gate_verdict_no_update
+					BEFORE UPDATE ON workflow_founder_gate_verdict
+					BEGIN SELECT RAISE(ABORT, 'workflow_founder_gate_verdict is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS workflow_founder_gate_verdict_no_delete
+					BEFORE DELETE ON workflow_founder_gate_verdict
+					BEGIN SELECT RAISE(ABORT, 'workflow_founder_gate_verdict is immutable'); END;
+				INSERT OR IGNORE INTO state_store_migration (migration_id, applied_at)
+					VALUES (
+						'fly-2396-founder-gate-verdict-v1',
+						strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+					);
+			`);
+		})();
 	}
 
 	private migrateWorkflowReworkVerificationPathState(): void {
@@ -23414,6 +23471,7 @@ export class StateStore {
 			)
 		`);
 		this.migrateWorkflowReworkEngineAuthority();
+		this.migrateFounderGateVerdictLedger();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_rework_route_revision (
 				request_id TEXT NOT NULL,
@@ -31118,6 +31176,59 @@ export class StateStore {
 		};
 	}
 
+	private static workflowFounderGateVerdictFromRow(
+		row: Record<string, unknown>,
+	): WorkflowFounderGateVerdictRow {
+		return {
+			verdict_id: row.verdict_id as string,
+			source_event_id: row.source_event_id as string,
+			run_id: row.run_id as string,
+			gate_node_id: row.gate_node_id as string,
+			attempt: Number(row.attempt),
+			verdict: row.verdict as "approved" | "rework",
+			question_id: row.question_id as string,
+			repo_identity: row.repo_identity as string,
+			repo_slug: row.repo_slug as string,
+			pr_number: Number(row.pr_number),
+			head_sha: row.head_sha as string,
+			rework_request_id: (row.rework_request_id as string | null) ?? null,
+			claim_id: row.claim_id === null ? null : Number(row.claim_id),
+			founder_authored: Number(row.founder_authored) as 0 | 1,
+			author_evidence_json: row.author_evidence_json as string,
+			row_digest: row.row_digest as string,
+			recorded_at: row.recorded_at as string,
+		};
+	}
+
+	listFounderGateVerdicts(options: {
+		runId?: string;
+		since?: string;
+	} = {}): WorkflowFounderGateVerdictRow[] {
+		if (
+			(options.runId !== undefined && !options.runId.trim()) ||
+			(options.since !== undefined &&
+				!StateStore.workflowFiniteTimestamp(options.since))
+		) {
+			throw new Error("invalid_founder_gate_verdict_query");
+		}
+		const predicates: string[] = [];
+		const params: unknown[] = [];
+		if (options.runId !== undefined) {
+			predicates.push("run_id = ?");
+			params.push(options.runId);
+		}
+		if (options.since !== undefined) {
+			predicates.push("recorded_at >= ?");
+			params.push(options.since);
+		}
+		const where = predicates.length > 0 ? `WHERE ${predicates.join(" AND ")}` : "";
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_founder_gate_verdict ${where}
+			  ORDER BY recorded_at, verdict_id`,
+			params,
+		).map((row) => StateStore.workflowFounderGateVerdictFromRow(row));
+	}
+
 	listWorkflowReworkRequests(runId: string): WorkflowReworkRequestRow[] {
 		return this.workflowSelectAll(
 			`SELECT request_id FROM workflow_rework_request
@@ -37640,7 +37751,7 @@ export class StateStore {
 				    preferred_actor_execution_id, invalidation_scope_json,
 				    verification_policy_json, interpreted_by,
 				    interpretation_reason, created_at)
-				 VALUES (?, 1, ?, ?, ?, ?, ?, 'engine:land_conflict',
+					 VALUES (?, 1, ?, ?, ?, ?, ?, 'engine:land_conflict',
 				         'semantic_merge_conflict_requires_runner', ?)`,
 				[
 					requestId,
@@ -38005,6 +38116,16 @@ export class StateStore {
 			: undefined;
 	}
 
+	private runOperatorReworkTransaction(fn: () => void): string | undefined {
+		try {
+			this.db.transaction(fn);
+			return undefined;
+		} catch (error) {
+			if (error instanceof OperatorReworkRejected) return error.reason;
+			throw error;
+		}
+	}
+
 	/**
 	 * FLY-1434: master-authorized recovery entry for completed or quiescent
 	 * active engine runs. It writes the same request/route/delivery contract as
@@ -38017,6 +38138,7 @@ export class StateStore {
 		feedback: string;
 		clientRequestId: string;
 		principal: string;
+		founderAuthorEvidence: FounderAuthorEvidence;
 		evidence: RunQuiescenceEvidence[];
 		now: string;
 		escalationAck?: WorkflowLoopLimitEscalationAck;
@@ -38033,6 +38155,7 @@ export class StateStore {
 			input.feedback.length > 4_000 ||
 			!input.clientRequestId.trim() ||
 			!input.principal ||
+			!isFounderAuthorEvidence(input.founderAuthorEvidence) ||
 			!StateStore.workflowFiniteTimestamp(input.now) ||
 			(input.escalationAck !== undefined &&
 				(typeof input.escalationAck.holdEventUid !== "string" ||
@@ -38045,6 +38168,9 @@ export class StateStore {
 			return { ok: false, reason: "invalid_operator_rework_request" };
 		}
 		const sourceEventId = `operator_rework:${input.runId}:${input.clientRequestId}`;
+		const founderAuthorEvidenceIdentityDigest = canonicalSubmissionDigest(
+			founderAuthorEvidenceIdentity(input.founderAuthorEvidence),
+		);
 		const escalationAck = input.escalationAck
 			? {
 					holdEventUid: input.escalationAck.holdEventUid,
@@ -38056,7 +38182,7 @@ export class StateStore {
 			ok: false,
 			reason: "operator_rework_not_committed",
 		};
-		this.db.transaction(() => {
+		const operatorReworkRejection = this.runOperatorReworkTransaction(() => {
 			const prior = this.workflowSelectAll(
 				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
 				[sourceEventId],
@@ -38078,7 +38204,16 @@ export class StateStore {
 						feedback?: unknown;
 						principal?: unknown;
 						escalationAck?: unknown;
+						founderAuthorEvidenceIdentityDigest?: unknown;
 					};
+					const evidenceMatches =
+						payload.founderAuthorEvidenceIdentityDigest === undefined
+							? input.founderAuthorEvidence.kind === "operator" &&
+								input.founderAuthorEvidence.principal === payload.principal
+							: typeof payload.founderAuthorEvidenceIdentityDigest ===
+									"string" &&
+								payload.founderAuthorEvidenceIdentityDigest ===
+									founderAuthorEvidenceIdentityDigest;
 					if (
 						prior.kind !== "operator_rework_requested" ||
 						payload.targetNodeId !== requestedTargetNodeId ||
@@ -38086,6 +38221,7 @@ export class StateStore {
 						payload.principal !== input.principal ||
 						canonicalSubmissionDigest(payload.escalationAck ?? null) !==
 							canonicalSubmissionDigest(escalationAck ?? null) ||
+						!evidenceMatches ||
 						typeof payload.requestId !== "string" ||
 						typeof payload.targetAttempt !== "number" ||
 						typeof payload.preferredActorExecutionId !== "string"
@@ -38281,6 +38417,92 @@ export class StateStore {
 				};
 				return;
 			}
+			let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			} catch {
+				result = { ok: false, reason: "invalid_snapshot" };
+				return;
+			}
+			let target: ReturnType<typeof resolveWorkflowReworkTarget>;
+			try {
+				target = resolveWorkflowReworkTarget(snapshot, input.targetNodeId);
+			} catch {
+				result = { ok: false, reason: "invalid_rework_target" };
+				return;
+			}
+			const sourceNodeId = run.current_node_id ?? target.id;
+			const sourceNode = snapshot.resolved.nodes.find(
+				(candidate) => candidate.id === sourceNodeId,
+			);
+			let founderVerdictBinding:
+				| ReturnType<StateStore["resolveFounderGateBindingTx"]>
+				| undefined;
+			const founderGateNodeId = workflowApprovalGate(snapshot.manifest).node;
+			if (sourceNode?.type === "gate" && sourceNodeId === founderGateNodeId) {
+				const currentHolder = this.currentFounderGateHolder(input.runId);
+				if (input.founderAuthorEvidence.kind === "founder_message") {
+					if (currentHolder.status !== "one") {
+						throw new OperatorReworkRejected(
+							currentHolder.status === "missing"
+								? "founder_gate_holder_missing"
+								: "founder_gate_holder_ambiguous",
+						);
+					}
+					const holder = currentHolder.holder;
+					if (
+						holder.gate_node_id !== sourceNodeId ||
+						input.founderAuthorEvidence.question_id !== holder.question_id ||
+						input.founderAuthorEvidence.head_sha.toLowerCase() !==
+							holder.head_sha.toLowerCase() ||
+						input.founderAuthorEvidence.card_message_id !== holder.card_message_id
+					) {
+						throw new OperatorReworkRejected("founder_gate_holder_changed");
+					}
+					try {
+						founderVerdictBinding = this.resolveFounderGateBindingTx({
+							runId: input.runId,
+							questionId: holder.question_id,
+						});
+					} catch (error) {
+						if (
+							error instanceof Error &&
+							error.message.startsWith(
+								"founder decision source payload invalid: verdict unbound",
+							)
+						) {
+							throw new OperatorReworkRejected(
+								"founder_gate_verdict_unbound",
+							);
+						}
+						throw error;
+					}
+				} else if (
+					currentHolder.status === "one" &&
+					currentHolder.holder.authority_mode === "land" &&
+					currentHolder.holder.subject_kind === "git_head"
+				) {
+					try {
+						founderVerdictBinding = this.resolveFounderGateBindingTx({
+							runId: input.runId,
+							questionId: currentHolder.holder.question_id,
+						});
+					} catch (error) {
+						if (
+							!(
+								error instanceof Error &&
+								error.message.startsWith(
+									"founder decision source payload invalid: verdict unbound",
+								)
+							)
+						) {
+							throw error;
+						}
+					}
+				}
+			} else if (input.founderAuthorEvidence.kind === "founder_message") {
+				throw new OperatorReworkRejected("founder_gate_holder_changed");
+			}
 			if (heldNeedsLead && needsLeadRequestId && needsLeadRoute) {
 				const activation = this.getWorkflowActivationForAttempt({
 					executionId: needsLeadRoute.preferred_actor_execution_id,
@@ -38348,20 +38570,6 @@ export class StateStore {
 						principal: input.principal,
 					},
 				});
-			}
-			let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
-			try {
-				snapshot = parseWorkflowRunSnapshot(run.snapshot);
-			} catch {
-				result = { ok: false, reason: "invalid_snapshot" };
-				return;
-			}
-			let target: ReturnType<typeof resolveWorkflowReworkTarget>;
-			try {
-				target = resolveWorkflowReworkTarget(snapshot, input.targetNodeId);
-			} catch {
-				result = { ok: false, reason: "invalid_rework_target" };
-				return;
 			}
 			if (rollbackHoldTuple) {
 				const rolledBackNode = this.getWorkflowRunNode(
@@ -38455,7 +38663,6 @@ export class StateStore {
 					(max, candidate) => Math.max(max, candidate.attempt),
 					0,
 				) + 1;
-			const sourceNodeId = run.current_node_id ?? target.id;
 			const sourceAttempt =
 				this.listWorkflowRunNodes(input.runId, sourceNodeId).reduce(
 					(max, candidate) => Math.max(max, candidate.attempt),
@@ -38509,6 +38716,7 @@ export class StateStore {
 				baseRevision,
 				baseRevisionSource,
 				feedback: input.feedback.trim(),
+				founderAuthorEvidenceIdentityDigest,
 				...(escalationAck ? { escalationAck } : {}),
 			};
 			const authorityContextJson = JSON.stringify(authorityContext);
@@ -38552,6 +38760,19 @@ export class StateStore {
 					input.now,
 				],
 			);
+			if (founderVerdictBinding) {
+				this.recordFounderGateVerdictTx({
+					sourceEventId,
+					runId: input.runId,
+					binding: founderVerdictBinding,
+					verdict: "rework",
+					reworkRequestId: requestId,
+					founderAuthored:
+						input.founderAuthorEvidence.kind === "founder_message" ? 1 : 0,
+					authorEvidence: { ...input.founderAuthorEvidence },
+					recordedAt: input.now,
+				});
+			}
 			this.db.run(
 				`INSERT INTO workflow_rework_route_revision
 				   (request_id, revision, target_node_id, target_attempt,
@@ -38646,8 +38867,7 @@ export class StateStore {
 				[target.id, input.runId, run.status],
 			);
 			if (this.db.getRowsModified() !== 1) {
-				result = { ok: false, reason: "run_state_changed" };
-				return;
+				throw new OperatorReworkRejected("run_state_changed");
 			}
 			if (run.status === "completed") {
 				this.appendWorkflowRunEventCheckedTx({
@@ -38713,6 +38933,7 @@ export class StateStore {
 				baseRevisionSource,
 				feedback: input.feedback.trim(),
 				principal: input.principal,
+				founderAuthorEvidenceIdentityDigest,
 				...(escalationAck ? { escalationAck } : {}),
 				consent: input.consent ?? {
 					mode: "off",
@@ -38767,6 +38988,9 @@ export class StateStore {
 				idempotentReplay: false,
 			};
 		});
+		if (operatorReworkRejection !== undefined) {
+			return { ok: false, reason: operatorReworkRejection };
+		}
 		if (result.ok) this.save();
 		return result;
 	}
@@ -52554,6 +52778,8 @@ export class StateStore {
 		verificationPolicy: Array<
 			"design_review" | "code_review" | "qa_retest" | "founder_gate"
 		>;
+		founderAuthored: 0 | 1;
+		authorEvidence: Record<string, unknown>;
 		now: string;
 	}):
 		| {
@@ -52654,6 +52880,10 @@ export class StateStore {
 			targetNodeId: target.id,
 			targetAttempt,
 		})}`;
+		const verdictBinding = this.resolveFounderGateBindingTx({
+			runId: input.run.run_id,
+			questionId: input.questionId,
+		});
 		this.db.run(
 			`INSERT INTO workflow_rework_request
 			   (request_id, run_id, source_event_id, authority, source_node_id,
@@ -52673,6 +52903,16 @@ export class StateStore {
 				input.now,
 			],
 		);
+		this.recordFounderGateVerdictTx({
+			sourceEventId: input.sourceEventId,
+			runId: input.run.run_id,
+			binding: verdictBinding,
+			verdict: "rework",
+			reworkRequestId: requestId,
+			founderAuthored: input.founderAuthored,
+			authorEvidence: input.authorEvidence,
+			recordedAt: input.now,
+		});
 		this.db.run(
 			`INSERT INTO workflow_rework_route_revision
 			   (request_id, revision, target_node_id, target_attempt,
@@ -52818,6 +53058,154 @@ export class StateStore {
 			targetNodeId: target.id,
 			targetAttempt,
 			preferredActorExecutionId,
+		};
+	}
+
+	private resolveFounderGateBindingTx(input: {
+		runId: string;
+		questionId: string;
+	}): {
+		questionId: string;
+		gateNodeId: string;
+		attempt: number;
+		repoIdentity: string;
+		repoSlug: string;
+		prNumber: number;
+		headSha: string;
+	} {
+		const unbound = (reason: string): never => {
+			throw new Error(
+				`founder decision source payload invalid: verdict unbound (${reason})`,
+			);
+		};
+		const holder = this.workflowSelectAll(
+			`SELECT run_id, gate_node_id, attempt, question_id, head_sha
+			   FROM workflow_gate_holder
+			  WHERE question_id = ? AND run_id = ?`,
+			[input.questionId, input.runId],
+		)[0];
+		if (!holder) return unbound("holder_missing");
+		const headSha = String(holder.head_sha).toLowerCase();
+		if (!/^[0-9a-f]{40}$/.test(headSha)) unbound("head_not_git");
+		const shipTarget = this.workflowSelectAll(
+			`SELECT run_id, frozen_head_sha, target_repo_identity, probe_repo_slug
+			   FROM workflow_ship_target_binding
+			  WHERE approve_question_id = ?`,
+			[input.questionId],
+		)[0];
+		if (!shipTarget) return unbound("ship_target_missing");
+		if (shipTarget.run_id !== input.runId) {
+			unbound("ship_target_run_mismatch");
+		}
+		const repoIdentity = String(shipTarget.target_repo_identity ?? "").trim();
+		if (!repoIdentity) unbound("repo_identity_missing");
+		const repoSlug = String(shipTarget.probe_repo_slug ?? "").trim();
+		if (!repoSlug) unbound("repo_missing");
+		if (String(shipTarget.frozen_head_sha).toLowerCase() !== headSha) {
+			unbound("head_mismatch");
+		}
+		const prBindings = this.workflowSelectAll(
+			`SELECT DISTINCT pr_number, probe_repo_slug
+			   FROM workflow_node_pr_binding
+			  WHERE run_id = ? AND lower(head_sha) = ? AND target_repo_identity = ?`,
+			[input.runId, headSha, repoIdentity],
+		);
+		if (prBindings.length === 0) unbound("pr_missing");
+		if (prBindings.length > 1) unbound("pr_ambiguous");
+		const prBinding = prBindings[0]!;
+		if (
+			String(prBinding.probe_repo_slug).toLowerCase() !== repoSlug.toLowerCase()
+		) {
+			unbound("repo_mismatch");
+		}
+		return {
+			questionId: String(holder.question_id),
+			gateNodeId: String(holder.gate_node_id),
+			attempt: Number(holder.attempt),
+			repoIdentity,
+			repoSlug,
+			prNumber: Number(prBinding.pr_number),
+			headSha,
+		};
+	}
+
+	private recordFounderGateVerdictTx(input: {
+		sourceEventId: string;
+		runId: string;
+		binding: ReturnType<StateStore["resolveFounderGateBindingTx"]>;
+		verdict: "approved" | "rework";
+		reworkRequestId?: string;
+		claimId?: number;
+		founderAuthored: 0 | 1;
+		authorEvidence: Record<string, unknown>;
+		recordedAt: string;
+	}): WorkflowFounderGateVerdictRow {
+		const authorEvidenceJson = canonicalJsonString(input.authorEvidence);
+		const digestBody = {
+			source_event_id: input.sourceEventId,
+			run_id: input.runId,
+			gate_node_id: input.binding.gateNodeId,
+			attempt: input.binding.attempt,
+			verdict: input.verdict,
+			question_id: input.binding.questionId,
+			repo_identity: input.binding.repoIdentity,
+			repo_slug: input.binding.repoSlug,
+			pr_number: input.binding.prNumber,
+			head_sha: input.binding.headSha,
+			rework_request_id: input.reworkRequestId ?? null,
+			claim_id: input.claimId ?? null,
+			founder_authored: input.founderAuthored,
+			author_evidence_json: authorEvidenceJson,
+		};
+		const rowDigest = canonicalSubmissionDigest(digestBody);
+		const existingRow = this.workflowSelectAll(
+			"SELECT * FROM workflow_founder_gate_verdict WHERE source_event_id = ?",
+			[input.sourceEventId],
+		)[0];
+		if (existingRow) {
+			const existing = StateStore.workflowFounderGateVerdictFromRow(existingRow);
+			if (existing.row_digest !== rowDigest) {
+				throw new Error(
+					"founder decision source payload invalid: verdict replay mismatch",
+				);
+			}
+			return existing;
+		}
+		const verdictId = `fgv:${createHash("sha256")
+			.update(input.sourceEventId)
+			.digest("hex")}`;
+		this.db.run(
+			`INSERT INTO workflow_founder_gate_verdict
+			  (verdict_id, source_event_id, run_id, gate_node_id, attempt, verdict,
+			   question_id, repo_identity, repo_slug, pr_number, head_sha,
+			   rework_request_id, claim_id, founder_authored, author_evidence_json,
+			   row_digest, recorded_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				verdictId,
+				input.sourceEventId,
+				input.runId,
+				input.binding.gateNodeId,
+				input.binding.attempt,
+				input.verdict,
+				input.binding.questionId,
+				input.binding.repoIdentity,
+				input.binding.repoSlug,
+				input.binding.prNumber,
+				input.binding.headSha,
+				input.reworkRequestId ?? null,
+				input.claimId ?? null,
+				input.founderAuthored,
+				authorEvidenceJson,
+				rowDigest,
+				input.recordedAt,
+			],
+		);
+		return {
+			verdict_id: verdictId,
+			...digestBody,
+			row_digest: rowDigest,
+			recorded_at: input.recordedAt,
 		};
 	}
 
@@ -53251,6 +53639,32 @@ export class StateStore {
 						verificationPolicy:
 							resolvedFounderRework?.verificationPolicy ??
 							defaultRoute?.verificationPolicy ?? ["founder_gate"],
+						founderAuthored:
+							typeof payload.founder_id_at_capture === "string" &&
+							payload.actor === payload.founder_id_at_capture
+								? 1
+								: 0,
+						authorEvidence:
+							typeof payload.founder_id_at_capture === "string" &&
+							payload.founder_id_at_capture
+								? {
+										kind: "gate_response",
+										actor:
+											typeof payload.actor === "string"
+												? payload.actor
+												: "",
+										founder_id_at_capture:
+											payload.founder_id_at_capture,
+										source_event_id: input.sourceEventId,
+									}
+								: {
+										kind: "gate_response_legacy_payload",
+										actor:
+											typeof payload.actor === "string"
+												? payload.actor
+												: "",
+										source_event_id: input.sourceEventId,
+									},
 						now: input.at ?? new Date().toISOString(),
 					});
 					if (!early) {
@@ -53336,6 +53750,47 @@ export class StateStore {
 						`founder feedback kickback failed: ${transition.ok ? "wrong_target" : transition.reason}`,
 					);
 				}
+				if (!transition.reworkRequestId) {
+					throw new Error(
+						"founder feedback kickback failed: request_missing",
+					);
+				}
+				const verdictBinding = this.resolveFounderGateBindingTx({
+					runId,
+					questionId,
+				});
+				const verdictActor =
+					typeof payload.actor === "string" ? payload.actor : "";
+				const verdictFounderId =
+					typeof payload.founder_id_at_capture === "string" &&
+					payload.founder_id_at_capture
+						? payload.founder_id_at_capture
+						: undefined;
+				this.recordFounderGateVerdictTx({
+					sourceEventId: input.sourceEventId,
+					runId,
+					binding: verdictBinding,
+					verdict: "rework",
+					reworkRequestId: transition.reworkRequestId,
+					founderAuthored:
+						verdictFounderId !== undefined &&
+						verdictActor === verdictFounderId
+							? 1
+							: 0,
+					authorEvidence: verdictFounderId
+						? {
+								kind: "gate_response",
+								actor: verdictActor,
+								founder_id_at_capture: verdictFounderId,
+								source_event_id: input.sourceEventId,
+							}
+						: {
+								kind: "gate_response_legacy_payload",
+								actor: verdictActor,
+								source_event_id: input.sourceEventId,
+							},
+					recordedAt: input.at ?? now,
+				});
 				const superseded = this.supersedeWorkflowGateHoldersTx({
 					runId,
 					gateNodeId,
@@ -53521,6 +53976,45 @@ export class StateStore {
 				],
 			);
 			const claimId = this.workflowClaimIdBySeq(serverSeq);
+			const actor = typeof payload.actor === "string" ? payload.actor : "";
+			const founderIdAtCapture =
+				typeof payload.founder_id_at_capture === "string" &&
+				payload.founder_id_at_capture
+					? payload.founder_id_at_capture
+					: undefined;
+			if (
+				decisionHolder?.authority_mode === "land" &&
+				founderSubjectKind === "git_head"
+			) {
+				const binding = this.resolveFounderGateBindingTx({
+					runId,
+					questionId: decisionQuestionId,
+				});
+				this.recordFounderGateVerdictTx({
+					sourceEventId: input.sourceEventId,
+					runId,
+					binding,
+					verdict: "approved",
+					claimId,
+					founderAuthored:
+						founderIdAtCapture !== undefined && actor === founderIdAtCapture
+							? 1
+							: 0,
+					authorEvidence: founderIdAtCapture
+						? {
+								kind: "gate_response",
+								actor,
+								founder_id_at_capture: founderIdAtCapture,
+								source_event_id: input.sourceEventId,
+							}
+						: {
+								kind: "gate_response_legacy_payload",
+								actor,
+								source_event_id: input.sourceEventId,
+							},
+					recordedAt: input.at ?? new Date().toISOString(),
+				});
+			}
 			this.appendWorkflowRunEventTx({
 				runId,
 				eventUid: `source_claim:${input.project}:${input.sourceEventId}`,
@@ -57278,6 +57772,32 @@ export class StateStore {
 			    AND state IN ('materializing','awaiting_review','approved')`,
 			[runId, gateNodeId],
 		)[0] as unknown as WorkflowGateHolderRow | undefined;
+	}
+
+	currentFounderGateHolder(runId: string):
+		| { status: "missing" }
+		| { status: "ambiguous"; holders: WorkflowGateHolderRow[] }
+		| { status: "one"; holder: WorkflowGateHolderRow } {
+		const run = this.getWorkflowRun(runId);
+		if (!run?.snapshot) return { status: "missing" };
+		let gateNodeId: string;
+		try {
+			gateNodeId = workflowApprovalGate(
+				parseWorkflowRunSnapshot(run.snapshot).manifest,
+			).node;
+		} catch {
+			return { status: "missing" };
+		}
+		const holders = this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE run_id = ? AND gate_node_id = ?
+			    AND state IN ('materializing','awaiting_review','approved')
+			  ORDER BY attempt DESC, created_at DESC`,
+			[runId, gateNodeId],
+		) as unknown as WorkflowGateHolderRow[];
+		if (holders.length === 0) return { status: "missing" };
+		if (holders.length > 1) return { status: "ambiguous", holders };
+		return { status: "one", holder: holders[0]! };
 	}
 
 	getCurrentWorkflowGateHolderBySourceExecution(
@@ -66459,6 +66979,26 @@ export interface WorkflowReworkRequestRow {
 	requested_at: string;
 }
 
+export interface WorkflowFounderGateVerdictRow {
+	verdict_id: string;
+	source_event_id: string;
+	run_id: string;
+	gate_node_id: string;
+	attempt: number;
+	verdict: "approved" | "rework";
+	question_id: string;
+	repo_identity: string;
+	repo_slug: string;
+	pr_number: number;
+	head_sha: string;
+	rework_request_id: string | null;
+	claim_id: number | null;
+	founder_authored: 0 | 1;
+	author_evidence_json: string;
+	row_digest: string;
+	recorded_at: string;
+}
+
 export type WorkflowLandConflictReworkResult =
 	| {
 			ok: true;
@@ -66872,6 +67412,67 @@ export interface RunQuiescenceEvidence {
 	liveness: "alive" | "dead" | "unknown";
 	observedAt: string;
 	trustedZombieEventUid?: string;
+}
+
+export type FounderAuthorEvidence =
+	| {
+			kind: "operator";
+			principal: string;
+	  }
+	| {
+			kind: "founder_message";
+			channel_id: string;
+			message_id: string;
+			card_message_id: string;
+			author_user_id: string;
+			founder_id_at_capture: string;
+			message_ts: string;
+			card_message_ts: string;
+			verified_at: string;
+			question_id: string;
+			head_sha: string;
+	  };
+
+function isFounderAuthorEvidence(
+	value: FounderAuthorEvidence,
+): value is FounderAuthorEvidence {
+	if (!value || typeof value !== "object") return false;
+	if (value.kind === "operator") {
+		return typeof value.principal === "string" && value.principal.length > 0;
+	}
+	if (value.kind !== "founder_message") return false;
+	return (
+		[
+			value.channel_id,
+			value.message_id,
+			value.card_message_id,
+			value.author_user_id,
+			value.founder_id_at_capture,
+			value.question_id,
+		].every((candidate) =>
+			typeof candidate === "string" ? candidate.length > 0 : false,
+		) &&
+		/^[0-9a-f]{40}$/.test(value.head_sha) &&
+		value.author_user_id === value.founder_id_at_capture &&
+		[value.message_ts, value.card_message_ts, value.verified_at].every(
+			(candidate) =>
+				typeof candidate === "string" && Number.isFinite(Date.parse(candidate)),
+		) &&
+		Date.parse(value.message_ts) >= Date.parse(value.card_message_ts)
+	);
+}
+
+function founderAuthorEvidenceIdentity(
+	evidence: FounderAuthorEvidence,
+):
+	| Omit<
+			Extract<FounderAuthorEvidence, { kind: "founder_message" }>,
+			"verified_at"
+	  >
+	| FounderAuthorEvidence {
+	if (evidence.kind === "operator") return evidence;
+	const { verified_at: _verifiedAt, ...identity } = evidence;
+	return identity;
 }
 
 export interface WorkflowLoopLimitEscalationAck {

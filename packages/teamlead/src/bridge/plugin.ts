@@ -406,6 +406,7 @@ import {
 	recordFounderDecisionAck,
 	runFounderDecisionConvergencePass,
 } from "./founder-decision-convergence.js";
+import { resolveFounderGateBotToken } from "./founder-gate-bot-token.js";
 import { isDiscordSnowflake } from "./founder-notify-utils.js";
 import { createFounderRoutingResponseRouter } from "./founder-routing-response-route.js";
 import {
@@ -4484,6 +4485,19 @@ export function createBridgeApp(
 				authorizeRework: fcWiring?.authorizeWorkflowRework,
 				collectWorkflowRun: workflowRunCollector,
 				onEpicChange: opts?.epicPageRefresher?.requestRefresh,
+				canonicalFounderId: () =>
+					deriveCanonicalFounderId(
+						config.discordOwnerUserId,
+						config.founderConsent?.founderUserId,
+					),
+				gateBotToken: (holder) => {
+					return resolveFounderGateBotToken({
+						store,
+						projects,
+						holder,
+						fallbackToken: config.discordBotToken,
+					});
+				},
 			},
 			flagStore ? () => storeSkillFrameworkModeControl(flagStore) : undefined,
 		);

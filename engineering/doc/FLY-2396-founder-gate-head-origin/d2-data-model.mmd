@@ -1,0 +1,29 @@
+erDiagram
+  workflow_gate_holder ||--o{ workflow_founder_gate_verdict : "question_id 指向她看的那张卡"
+  workflow_rework_request ||--o| workflow_founder_gate_verdict : "打回时指向 rework 原行"
+  workflow_claims ||--o| workflow_founder_gate_verdict : "过卡时指向 claim 原行"
+  workflow_ship_target_binding ||--|| workflow_gate_holder : "同一 question, 冻结 head 必须相等"
+  workflow_node_pr_binding }o--|| workflow_gate_holder : "run + head + repo 找 PR 号, 必须唯一"
+  workflow_gate_holder {
+    TEXT question_id UK
+    TEXT head_sha
+    TEXT card_message_id
+    TEXT created_at
+  }
+  workflow_founder_gate_verdict {
+    TEXT verdict_id PK
+    TEXT verdict "approved 或 rework"
+    TEXT question_id FK
+    TEXT repo_slug
+    INTEGER pr_number
+    TEXT head_sha "40 位 git sha"
+    INTEGER founder_authored "0 或 1"
+    TEXT author_evidence_json "谁写的, 怎么核的"
+    TEXT row_digest
+    TEXT recorded_at
+  }
+  workflow_rework_request {
+    TEXT request_id PK
+    TEXT authority "权限, 不是作者"
+    TEXT founder_feedback_verbatim
+  }

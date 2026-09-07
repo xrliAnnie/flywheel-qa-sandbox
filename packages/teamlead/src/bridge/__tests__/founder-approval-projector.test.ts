@@ -181,6 +181,47 @@ describe("workflow source projector", () => {
 		expect(store.recordWorkflowSourceDeadletter).toHaveBeenCalledOnce();
 	});
 
+	it("deadletters an unbound exact-head verdict and continues to the next source row", async () => {
+		const valid = {
+			...EVENT,
+			row_id: 2,
+			source_event_id: "founder-approval:Q-2",
+		};
+		const { db, store } = harness([EVENT, valid]);
+		store.applyWorkflowSourceEvent
+			.mockImplementationOnce(() => {
+				throw new Error(
+					"founder decision source payload invalid: verdict unbound (pr_missing)",
+				);
+			})
+			.mockReturnValueOnce({
+				kind: "founder_claim",
+				status: "applied",
+				claimId: 2,
+			});
+
+		const result = await drainWorkflowSourceEvents({
+			projects: ["flywheel"],
+			openCommDb: () => db,
+			store,
+			resolveAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+
+		expect(result).toMatchObject({ deadlettered: 1, applied: 1 });
+		expect(store.recordWorkflowSourceDeadletter).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sourceEventId: EVENT.source_event_id,
+				reason:
+					"founder decision source payload invalid: verdict unbound (pr_missing)",
+			}),
+		);
+		expect(store.getWorkflowSourceCursor("flywheel")).toBe(2);
+	});
+
 	it("leaves transient destination failures retryable", async () => {
 		const { db, store } = harness();
 		store.applyWorkflowSourceEvent
