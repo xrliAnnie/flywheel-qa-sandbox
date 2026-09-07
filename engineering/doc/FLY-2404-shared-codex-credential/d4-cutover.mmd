@@ -1,0 +1,12 @@
+flowchart TB
+  S0[部署 WS-A/B/C 代码<br/>新 spawn 的家从此直接建链接] --> S1
+  S1[拉准入刹车<br/>POST /api/admission/pause<br/>拿到 leaseId, 每 10 分钟续租] --> S2
+  S2[等 quiescent = true<br/>再扫一次活体 legacy execution] --> G1{清单为空<br/>或每条有 owner?}
+  G1 -- 否 --> S2
+  G1 -- 是 --> S3[逐个 keyed 家: 等 lease 目录为空<br/>在准入锁内把副本换成链接]
+  S3 --> S4[resume 同一 leaseId<br/>Bridge 全程存活]
+  S4 --> S5[逐 home 清单<br/>Raya: raya 仓接入后切<br/>Mufasa / infra-bot: Lead 逐个批]
+  S5 --> S6[观察一个班车周期<br/>codex-global-health 无 credential severe]
+  S6 --> S7[一周后 sweep --apply<br/>自己拉独立刹车, 写 intent/applied 回执]
+  B[2026-09-12T03:22Z 前必须完成 keyed 家切换<br/>来不及: founder codex login 一次<br/>让真身先赢] -.-> S3
+  R[回滚: 同一刹车协议<br/>lease 归零后 --unlink 换回副本<br/>再部署旧代码] -.-> S3

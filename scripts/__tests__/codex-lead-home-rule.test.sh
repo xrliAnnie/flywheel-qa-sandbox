@@ -51,20 +51,22 @@ fi
 assert_launcher() {
 	local name="$1" key="$2" launcher
 	launcher="$ROOT/packages/teamlead/scripts/$name"
-	local key_count derive_count safe_default_count export_count legacy_count unsafe_export_count
+	local key_count derive_count safe_default_count export_count legacy_count unsafe_export_count link_count
 	key_count="$(grep -cFx "export FLYWHEEL_CODEX_LEAD_HOME_KEY=$key" "$launcher" || true)"
 	derive_count="$(grep -cF 'derive_codex_lead_home "$FLYWHEEL_CODEX_LEAD_HOME_KEY"' "$launcher" || true)"
 	safe_default_count="$(grep -cF 'codex_home_default="$(derive_codex_lead_home "$FLYWHEEL_CODEX_LEAD_HOME_KEY")" || exit $?' "$launcher" || true)"
 	export_count="$(grep -cF 'export CODEX_HOME="${CODEX_HOME:-$codex_home_default}"' "$launcher" || true)"
 	legacy_count="$(grep -cF 'CODEX_HOME:-${HOME}/' "$launcher" || true)"
 	unsafe_export_count="$(grep -cF 'export CODEX_HOME="${CODEX_HOME:-$(derive_codex_lead_home' "$launcher" || true)"
+	link_count="$(grep -cF '"$link_truth" --lead "$FLYWHEEL_PROJECT_NAME/$FLYWHEEL_LEAD_ID" "$CODEX_HOME"' "$launcher" || true)"
 	if [ "$key_count" -eq 1 ] && [ "$derive_count" -eq 1 ] \
 		&& [ "$safe_default_count" -eq 1 ] && [ "$export_count" -eq 1 ] \
 		&& [ "$legacy_count" -eq 0 ] && [ "$unsafe_export_count" -eq 0 ] \
+		&& [ "$link_count" -eq 1 ] \
 		&& ! grep -Fq 'raya/codex-home' "$launcher"; then
 		pass "$name fails closed while using the shared Codex Lead home rule with key $key"
 	else
-		fail "$name home wiring (key=$key key_count=$key_count derive_count=$derive_count safe_default_count=$safe_default_count export_count=$export_count legacy_count=$legacy_count unsafe_export_count=$unsafe_export_count)"
+		fail "$name home wiring (key=$key key_count=$key_count derive_count=$derive_count safe_default_count=$safe_default_count export_count=$export_count legacy_count=$legacy_count unsafe_export_count=$unsafe_export_count link_count=$link_count)"
 	fi
 }
 

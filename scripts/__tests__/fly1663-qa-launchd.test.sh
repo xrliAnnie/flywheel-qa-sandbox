@@ -329,7 +329,9 @@ ln -s "$mint_release/codex" "$mint_bin/codex"
 export PATH="$mint_bin:$PATH"
 if qa_launchd_provision_codex_home "$ROOT" "$mint_dest" "$MINT_SLOT" \
     && [ -x "$mint_dest/packages/standalone/current/codex" ] \
-    && [ "$(qa_test_file_mode "$mint_dest/auth.json")" = 600 ] \
+    && [ -L "$mint_dest/auth.json" ] \
+    && [ "$(readlink "$mint_dest/auth.json")" = "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$mint_source/auth.json")" ] \
+    && [ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$mint_dest/auth.json")" = 600 ] \
     && [ "$(cat "$mint_dest/.active")" = business ] \
     && [ ! -e "$mint_dest/.flywheel-qa-source-home" ] \
     && [ ! -e "$mint_dest/.flywheel-qa-source-auth-baseline" ] \
@@ -972,8 +974,8 @@ export FLY1663_QA_CODEX_STOP_CALLS="$codex_stop_calls"
 qa_launchd_register "$codex_stop_registry" "$label" "$codex_plist" '' \
   codex-tui "$mint_dest" "$codex_bin" "$stop_state" "$runtime_pid_file" \
   "$codex_tmux_bin"
-printf '%s\n' '{"tokens":{"refresh_token":"fixture-refresh-2"}}' \
-  > "$mint_dest/auth.json"
+# The managed auth path is the canonical link; teardown must never seed or
+# mutate a per-home credential copy.
 : > "$launchctl_state"
 ps() {
   case "$*" in

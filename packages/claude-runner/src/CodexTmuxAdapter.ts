@@ -2639,8 +2639,8 @@ export function removeCodexSessionState(
 			`[CodexTmuxAdapter] remove_session_state_failed exec=${executionId}: ${safeErr(error)}`,
 		);
 	}
-	// FLY-123 P5: full retirement also removes the per-runner CODEX_HOME
-	// (auth shell + sessions). Credential was already scrubbed at terminal;
-	// this reclaims the whole dir.
+	// FLY-123 P5: full retirement also removes the per-runner CODEX_HOME.
+	// auth.json is a link to the host truth, so removing the home removes only
+	// the link plus this execution's local sessions/configuration.
 	return removeCodexHome(executionId);
 }

@@ -1,0 +1,23 @@
+flowchart TB
+  subgraph BEFORE["现在:每个家一份副本"]
+    H0[(主机 ~/.codex/auth.json)]
+    C1[runner 家 A<br/>auth.json 副本]
+    C2[runner 家 B<br/>auth.json 副本]
+    C3[Lead 家<br/>auth.json 副本]
+    H0 -- 复制 --> C1
+    H0 -- 复制 --> C2
+    H0 -- 复制 --> C3
+    C1 -- 先刷新, 令牌轮换 --> X[[其余副本下次刷新<br/>撞 401 refresh_token_reused]]
+  end
+  subgraph AFTER["改后:每个家一条链接指向同一真身"]
+    T[(真身 ~/.codex/auth.json<br/>普通文件 0600)]
+    L1[runner 家 A<br/>auth.json → 真身]
+    L2[runner 家 B<br/>auth.json → 真身]
+    L3[Lead 家<br/>auth.json → 真身]
+    T -. 链接 .-> L1
+    T -. 链接 .-> L2
+    T -. 链接 .-> L3
+    L1 -- 刷新前先回读真身<br/>已有新令牌就不刷 --> T
+    F[founder 只登一次<br/>codex login] -- 原地写 --> T
+  end
+  BEFORE ~~~ AFTER

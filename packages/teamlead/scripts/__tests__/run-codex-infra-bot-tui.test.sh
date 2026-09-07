@@ -60,6 +60,13 @@ ln -s "$REAL_ROOT/scripts/lead-rules-bundle.sh" "$RT/scripts/lead-rules-bundle.s
 mkdir -p "$RT/scripts/lib"
 ln -s "$REAL_ROOT/scripts/lib/canonical-lead-identity.sh" "$RT/scripts/lib/canonical-lead-identity.sh"
 ln -s "$REPO_ROOT/scripts/lib/lead-address.sh" "$REPO/scripts/lib/lead-address.sh"
+cp "$SUT" "$RT/scripts/run-codex-infra-bot-tui.sh"
+cat > "$REPO/scripts/codex-home-link-truth.sh" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" > "$LINK_DUMP"
+exit "${LINK_TRUTH_RC:-0}"
+EOF
+chmod +x "$REPO/scripts/codex-home-link-truth.sh"
 
 # Mock `node`: dump the env it was exec'd with, then exit 0.
 mkdir -p "$T/bin"
@@ -130,6 +137,24 @@ if [ -f "$D" ]; then
 	else pass "FLY-2105: no retired TUI alert env pin"; fi
 else
 	fail "dry-run did not exec mock node (no env dump)"
+fi
+
+mkdir -p "$T/home/.codex-infra-bot/packages/standalone/current"
+printf '#!/bin/bash\nexit 0\n' > "$T/home/.codex-infra-bot/packages/standalone/current/codex"
+chmod +x "$T/home/.codex-infra-bot/packages/standalone/current/codex"
+LINK_DUMP="$T/link-dump" ENVDUMP="$T/real-envdump" \
+	HOME="$T/home" PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" \
+	FLYWHEEL_LEAD_DRY_RUN=0 FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
+	FLYWHEEL_INFRA_BOT_USER_ID=U123 FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID=C123 \
+	FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=C456 CODEX_INFRA_BOT_TOKEN=DRY \
+	CANONICAL_JSON='{"schemaVersion":1,"leadId":"codex-infra-bot-lead","projectName":"flywheel","leadKey":"flywheel-codex-infra-bot-lead","agentTeamName":"codex-infra-bot-lead","botUserId":"12345678901234567","botTokenEnv":"CODEX_INFRA_BOT_TOKEN","discordStateDir":"/tmp/discord-infra","backend":"codex-app-server","role":"dept","summaryRole":"exempt","summaryGranularity":"per-lead","hasSummaryDuty":false,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+	/bin/bash "$RT/scripts/run-codex-infra-bot-tui.sh" >/dev/null 2>&1
+real_rc=$?
+if [ "$real_rc" -eq 0 ] \
+	&& [ "$(cat "$T/link-dump" 2>/dev/null)" = "--lead flywheel/codex-infra-bot-lead $T/home/.codex-infra-bot" ]; then
+	pass "real launch gates InfraBot with the exact flywheel/codex-infra-bot-lead tuple"
+else
+	fail "real InfraBot link-truth gate contract (rc=$real_rc args=$(cat "$T/link-dump" 2>/dev/null))"
 fi
 
 # ── fail-loud when the runtime artifact is missing ──────────────────────────

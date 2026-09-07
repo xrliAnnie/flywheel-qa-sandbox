@@ -82,6 +82,43 @@ remaining_budget() {
   printf '%s\n' "$remaining"
 }
 
+# FLY-2404: a process can lose Codex's refresh-token race after another
+# process has already refreshed the one shared credential truth. Treat that
+# specific error as possibly benign only while the truth's access token is
+# still good for more than five minutes. This helper emits no credential material.
+codex_shared_truth_is_healthy() {
+  python3 - "${FLYWHEEL_CODEX_SOURCE_HOME:-$HOME/.codex}/auth.json" <<'PY' >/dev/null 2>&1
+import base64
+import datetime
+import json
+import os
+import stat
+import sys
+import time
+
+path = os.path.join(os.path.realpath(os.path.dirname(sys.argv[1])), "auth.json")
+entry = os.lstat(path)
+if not stat.S_ISREG(entry.st_mode) or stat.S_IMODE(entry.st_mode) != 0o600:
+    raise SystemExit(1)
+with open(path, "r", encoding="utf-8") as handle:
+    value = json.load(handle)
+token = value.get("tokens", {}).get("access_token")
+if token is None:
+    last_refresh = value.get("last_refresh")
+    if not isinstance(last_refresh, str):
+        raise SystemExit(1)
+    refreshed_at = datetime.datetime.fromisoformat(last_refresh.replace("Z", "+00:00")).timestamp()
+    expires_at = refreshed_at + 10 * 24 * 60 * 60
+else:
+    if not isinstance(token, str):
+        raise SystemExit(1)
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    expires_at = json.loads(base64.urlsafe_b64decode(payload))["exp"]
+raise SystemExit(0 if expires_at - time.time() > 300 else 1)
+PY
+}
+
 run_codex_attempt() {
   local label="$1"
   shift
@@ -121,11 +158,18 @@ if printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE 'not supported when using C
   done
   run_codex_attempt "model-fallback" -m gpt-5.5 "${new_args[@]}"
   exit $?
-elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE 'refresh_token_reused|token_expired|Please try signing in again|Please log out and sign in again'; then
-  printf '\n[codex-with-fallback] AUTH_EXPIRED on the selected account. Run codex-profile status; the Founder may manually select school/personal/business with the profile tool use command.\n' >&2
-  exit "$exit_code"
 elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE '429|rate.?limit|too many requests|capacity|usage.?limit'; then
   printf '\n[codex-with-fallback] RATE_LIMIT on the selected account. Run codex-profile status; the Founder may manually select school/personal/business with the profile tool use command.\n' >&2
+  exit "$exit_code"
+elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qi 'refresh_token_reused'; then
+  if codex_shared_truth_is_healthy; then
+    printf '\n[codex-with-fallback] POSSIBLE_BENIGN_REFRESH_RACE (truth healthy; see codex-global-health)\n' >&2
+  else
+    printf '\n[codex-with-fallback] AUTH_EXPIRED for the shared credential truth; founder must run codex login on the host once.\n' >&2
+  fi
+  exit "$exit_code"
+elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE 'token_expired|Please try signing in again|Please log out and sign in again'; then
+  printf '\n[codex-with-fallback] AUTH_EXPIRED for the shared credential truth; founder must run codex login on the host once.\n' >&2
   exit "$exit_code"
 fi
 

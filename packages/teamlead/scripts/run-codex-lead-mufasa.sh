@@ -53,7 +53,7 @@ export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:-$
 if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" != "1" ]; then
 	if [ -z "${FLYWHEEL_CODEX_BIN}" ]; then echo "codex CLI not found on PATH" >&2; exit 1; fi
 	if [ ! -d "${CODEX_HOME}" ]; then
-		echo "CODEX_HOME ${CODEX_HOME} missing — copy the School profile auth there first" >&2
+		echo "CODEX_HOME ${CODEX_HOME} missing — provision the managed credential link first" >&2
 		exit 1
 	fi
 fi

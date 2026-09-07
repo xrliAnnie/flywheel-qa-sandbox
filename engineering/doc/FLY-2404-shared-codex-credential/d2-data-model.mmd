@@ -1,0 +1,22 @@
+flowchart TB
+  T[(真身<br/>~/.codex/auth.json<br/>0600 普通文件<br/>全机唯一)]
+  subgraph MANAGED["受管的家(健康探针盯着)"]
+    R[新 spawn 的 runner 家<br/>auth.json = 链接]
+    K[持久 keyed 家<br/>agents/flywheel/implement<br/>auth.json = 链接]
+    M[Mufasa 家 ~/.codex-mufasa<br/>清单项, Lead 批后切]
+    I[infra-bot 家 ~/.codex-infra-bot<br/>清单项, Lead 批后切]
+    Y[Raya 家<br/>~/.flywheel/raya/codex-home<br/>raya 仓接入后切]
+  end
+  subgraph INVENTORY["只盘点, 不切不删"]
+    P[profile pool<br/>~/.codex/profiles/*/auth.json]
+    O[历史 ~/.codex-* 共 19 个]
+    E[旧 execution 家 ×879<br/>sweep 只删无活体的副本]
+  end
+  R -. readlink .-> T
+  K -. readlink .-> T
+  M -. 切后 .-> T
+  I -. 切后 .-> T
+  Y -. 切后 .-> T
+  HP[codex-global-health<br/>credential 维度] -- lstat 0600 exp --> T
+  HP -- 链接是否指向真身 --> MANAGED
+  SW[codex-home-credential-sweep] -- 盘点 --> INVENTORY

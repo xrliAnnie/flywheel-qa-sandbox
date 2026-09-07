@@ -220,7 +220,10 @@ import {
 	projectCmuxRebindDisabled,
 } from "./cmux-watcher-patrol.js";
 import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
-import { reportCodexGlobalHealth } from "./codex-global-health.js";
+import {
+	createCredentialProbe,
+	reportCodexGlobalHealth,
+} from "./codex-global-health.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import { CodexReviewIngest } from "./codex-review-ingest.js";
@@ -10113,6 +10116,14 @@ export async function startBridge(
 	const residentCodexLeadFlywheelRoot =
 		process.env.FLYWHEEL_REPO_ROOT?.trim() ||
 		resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+	// FLY-2404: one long-lived instance carries tear debounce and single-flight
+	// state across both the boot check and every GatePoller cadence.
+	const credentialProbe = createCredentialProbe({
+		env: process.env,
+		homeDir: homedir(),
+		flywheelRoot: residentCodexLeadFlywheelRoot,
+		targets: residentCodexLeadTargets,
+	});
 	const residentCodexLeadPatrols = residentCodexLeadTargets.map((target) => ({
 		target,
 		patrol: createHostResidentCodexLeadPatrol({
@@ -10567,7 +10578,9 @@ export async function startBridge(
 		// Always-on advisory probe; failures alert but never abort Bridge boot.
 		onHealthTick: codexHealthEnabled
 			? () => {
-					void reportCodexGlobalHealth(metaAlertNotifier);
+					void reportCodexGlobalHealth(metaAlertNotifier, {
+						credentialProbe,
+					});
 				}
 			: undefined,
 	});
@@ -10575,7 +10588,7 @@ export async function startBridge(
 	// immediately at startup (the periodic probe then covers the running window).
 	// Non-fatal: reportCodexGlobalHealth never throws.
 	if (codexHealthEnabled) {
-		void reportCodexGlobalHealth(metaAlertNotifier);
+		void reportCodexGlobalHealth(metaAlertNotifier, { credentialProbe });
 	}
 
 	// FLY-314: roundtable per-topic auto-thread (Phase 1). Default OFF —

@@ -473,8 +473,29 @@ else
     "rc=$rc calls=$(cat "$ROOT/rate-limit-calls" 2>/dev/null || echo missing) actions=$(cat "$ROOT/profile-actions" 2>/dev/null || echo none)"
 fi
 
-echo "== auth expiry fails on the current account without rotation =="
+echo "== shared-truth auth classification never rotates profiles =="
 rm -f "$ROOT/auth-expired-calls" "$ROOT/profile-actions"
+mkdir -p "$ROOT/source-home"
+python3 - "$ROOT/source-home/auth.json" <<'PY'
+import base64
+import json
+import os
+import sys
+import time
+
+id_payload = base64.urlsafe_b64encode(
+    json.dumps({"exp": int(time.time()) - 60}).encode()
+).decode().rstrip("=")
+access_payload = base64.urlsafe_b64encode(
+    json.dumps({"exp": int(time.time()) + 3600}).encode()
+).decode().rstrip("=")
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"tokens": {
+        "id_token": f"header.{id_payload}.sig",
+        "access_token": f"header.{access_payload}.sig",
+    }}, handle)
+os.chmod(sys.argv[1], 0o600)
+PY
 cat > "$ROOT/bin/codex" <<EOF
 #!/usr/bin/env bash
 count=0
@@ -493,16 +514,86 @@ env -i \
   FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=10 \
   FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
   FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+  FLYWHEEL_CODEX_SOURCE_HOME="$ROOT/source-home" \
   /bin/bash "$WRAPPER" exec --json - \
   >"$ROOT/auth-expired.stdout" 2>"$ROOT/auth-expired.stderr" || rc=$?
 if [[ "$rc" == "9" && "$(cat "$ROOT/auth-expired-calls" 2>/dev/null)" == "1" ]] \
   && [[ ! -e "$ROOT/profile-actions" ]] \
-  && grep -q 'codex-profile status' "$ROOT/auth-expired.stderr" \
-  && grep -q 'Founder may manually.*use' "$ROOT/auth-expired.stderr"; then
-  pass "auth expiry stays on the current account and gives a manual recovery hint"
+  && grep -q 'POSSIBLE_BENIGN_REFRESH_RACE (truth healthy; see codex-global-health)' "$ROOT/auth-expired.stderr" \
+  && ! grep -q 'AUTH_EXPIRED\|codex-profile' "$ROOT/auth-expired.stderr"; then
+  pass "healthy shared truth makes refresh_token_reused a possible benign race"
 else
-  fail "auth expiry stays on the current account and gives a manual recovery hint" \
+  fail "healthy shared truth must not be reported as auth expiry" \
     "rc=$rc calls=$(cat "$ROOT/auth-expired-calls" 2>/dev/null || echo missing) actions=$(cat "$ROOT/profile-actions" 2>/dev/null || echo none)"
+fi
+
+echo "== unhealthy shared truth requires one founder host login =="
+python3 - "$ROOT/source-home/auth.json" <<'PY'
+import base64
+import json
+import os
+import sys
+import time
+
+id_payload = base64.urlsafe_b64encode(
+    json.dumps({"exp": int(time.time()) + 3600}).encode()
+).decode().rstrip("=")
+access_payload = base64.urlsafe_b64encode(
+    json.dumps({"exp": int(time.time()) - 60}).encode()
+).decode().rstrip("=")
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"tokens": {
+        "id_token": f"header.{id_payload}.sig",
+        "access_token": f"header.{access_payload}.sig",
+    }}, handle)
+os.chmod(sys.argv[1], 0o600)
+PY
+rm -f "$ROOT/auth-expired-calls"
+rc=0
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+  FLYWHEEL_CODEX_SOURCE_HOME="$ROOT/source-home" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/auth-unhealthy.stdout" 2>"$ROOT/auth-unhealthy.stderr" || rc=$?
+if [[ "$rc" == "9" && "$(cat "$ROOT/auth-expired-calls" 2>/dev/null)" == "1" ]] \
+  && grep -q 'AUTH_EXPIRED' "$ROOT/auth-unhealthy.stderr" \
+  && grep -q 'founder.*codex login.*host' "$ROOT/auth-unhealthy.stderr" \
+  && ! grep -q 'codex-profile' "$ROOT/auth-unhealthy.stderr"; then
+  pass "unhealthy shared truth points to one founder host login"
+else
+  fail "unhealthy shared truth must point to the global recovery path" \
+    "rc=$rc stderr=$(cat "$ROOT/auth-unhealthy.stderr" 2>/dev/null)"
+fi
+
+echo "== usage limit wins over a refresh-race substring =="
+cat > "$ROOT/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '429 rate limit while previous error was refresh_token_reused' >&2
+exit 7
+EOF
+chmod +x "$ROOT/bin/codex"
+rc=0
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+  FLYWHEEL_CODEX_SOURCE_HOME="$ROOT/source-home" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/mixed.stdout" 2>"$ROOT/mixed.stderr" || rc=$?
+if [[ "$rc" == "7" ]] \
+  && grep -q 'RATE_LIMIT' "$ROOT/mixed.stderr" \
+  && ! grep -q 'AUTH_EXPIRED\|POSSIBLE_BENIGN_REFRESH_RACE' "$ROOT/mixed.stderr"; then
+  pass "usage-limit classification precedes auth-race classification"
+else
+  fail "usage-limit classification must win" "rc=$rc stderr=$(cat "$ROOT/mixed.stderr" 2>/dev/null)"
 fi
 
 echo "== rate-limit handling does not multiply the total budget across profiles =="

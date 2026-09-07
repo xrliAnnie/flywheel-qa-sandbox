@@ -102,6 +102,17 @@ run_helper() {
 }
 
 T1="$TMP_ROOT/success"; make_fixture "$T1"
+AUTHORITY="$(run_helper "$T1" --authority 2>/dev/null || true)"
+if jq -e --arg home "$T1/home/.codex-raya" '
+	.codexHome == $home
+	and .label == "com.flywheel.lead.raya-raya"
+	and .wrapper == "flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh"
+	and (keys | sort) == ["codexHome", "label", "wrapper"]' <<<"$AUTHORITY" >/dev/null; then
+	pass "authority resolves the configured home without process evidence"
+else
+	fail "authority-only contract failed: $AUTHORITY"
+fi
+
 PROBE="$(run_helper "$T1" --probe 2>/dev/null || true)"
 if jq -e --arg home "$T1/home/.codex-raya" '
 	.state == "exact" and .pid == 4242 and .codexHome == $home

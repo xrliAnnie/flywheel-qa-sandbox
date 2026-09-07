@@ -281,6 +281,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		writeFileSync(
 			join(srcCodex, "auth.json"),
 			codexAuth("personal@example.test", "acct-personal"),
+			{ mode: 0o600 },
 		);
 		writeFileSync(
 			join(srcCodex, "config.toml"),

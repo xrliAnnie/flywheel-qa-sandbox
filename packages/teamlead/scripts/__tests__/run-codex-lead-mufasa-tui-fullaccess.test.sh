@@ -54,6 +54,14 @@ ln -s "$REAL_ROOT/lead-rules-base" "$RT/lead-rules-base"
 mkdir -p "$RT/scripts/lib"
 ln -s "$REAL_ROOT/scripts/lib/canonical-lead-identity.sh" "$RT/scripts/lib/canonical-lead-identity.sh"
 ln -s "$REPO_ROOT/scripts/lib/lead-address.sh" "$REPO/scripts/lib/lead-address.sh"
+ln -s "$REAL_ROOT/scripts/lead-rules-bundle.sh" "$RT/scripts/lead-rules-bundle.sh"
+cp "$SUT" "$RT/scripts/run-codex-lead-mufasa-tui-fullaccess.sh"
+cat > "$REPO/scripts/codex-home-link-truth.sh" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" > "$LINK_DUMP"
+exit "${LINK_TRUTH_RC:-0}"
+EOF
+chmod +x "$REPO/scripts/codex-home-link-truth.sh"
 
 # Mock `node`: dump the env it was exec'd with, then exit 0.
 mkdir -p "$T/bin"
@@ -125,6 +133,24 @@ fi
 	case "$sp" in *identity.md*) pass "persona: identity.md present (before governance)" ;; *) fail "identity.md missing ($sp)" ;; esac
 else
 	fail "dry-run did not exec mock node (no env dump)"
+fi
+
+# ── FLY-2404: real branch calls link-truth with the canonical tuple ────────
+mkdir -p "$T/home/.codex-mufasa/packages/standalone/current"
+printf '#!/bin/bash\nexit 0\n' > "$T/home/.codex-mufasa/packages/standalone/current/codex"
+chmod +x "$T/home/.codex-mufasa/packages/standalone/current/codex"
+LINK_DUMP="$T/link-dump" ENVDUMP="$T/real-envdump" \
+	HOME="$T/home" PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" \
+	FLYWHEEL_LEAD_DRY_RUN=0 FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
+	MUFASA_BOT_TOKEN=DRY \
+	CANONICAL_JSON='{"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+	/bin/bash "$RT/scripts/run-codex-lead-mufasa-tui-fullaccess.sh" >/dev/null 2>&1
+real_rc=$?
+if [ "$real_rc" -eq 0 ] \
+	&& [ "$(cat "$T/link-dump" 2>/dev/null)" = "--lead growth/mufasa-lead $T/home/.codex-mufasa" ]; then
+	pass "real launch gates Mufasa with the exact growth/mufasa-lead tuple"
+else
+	fail "real Mufasa link-truth gate contract (rc=$real_rc args=$(cat "$T/link-dump" 2>/dev/null))"
 fi
 
 # ── fail-loud when the runtime artifact is missing ──────────────────────────

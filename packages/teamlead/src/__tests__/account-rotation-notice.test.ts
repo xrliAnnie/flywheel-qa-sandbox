@@ -26,7 +26,7 @@ describe("formatAccountRotationNotice", () => {
 				to: "b",
 				reason: "auth_expired",
 			}),
-		).toContain("认证过期");
+		).toContain("全机凭据异常；founder 在主机运行 codex login");
 		expect(
 			formatAccountRotationNotice({
 				provider: "codex",

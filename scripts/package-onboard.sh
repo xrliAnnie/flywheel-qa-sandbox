@@ -95,6 +95,9 @@ flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 flywheel-codex-lead-wrapper-codex-infra-bot.sh
 flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh
 resident-codex-lead-recover.sh
+codex-home-link-truth.sh
+codex-credential-cutover.sh
+codex-home-credential-sweep.mjs
 flywheel-lead-attach.sh
 flywheel-view-attach.sh
 flywheel-node-status.sh

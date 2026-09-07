@@ -228,6 +228,13 @@ probe_mode() {
 	printf '%s\n' "$snapshot"
 }
 
+authority_mode() {
+	load_authority || fail 20 "resident Codex Lead projects/manifest/plist authority failed"
+	jq -cn --arg codexHome "$EXPECTED_CODEX_HOME" --arg label "$LABEL" \
+		--arg wrapper "$WRAPPER" \
+		'{codexHome:$codexHome,label:$label,wrapper:$wrapper}'
+}
+
 recover_mode() {
 	local expected_pid="$1" expected_lstart="$2" expected_generation="$3" expected_carrier="$4"
 	local old second third new attempt verify_attempts verify_interval
@@ -281,6 +288,10 @@ recover_mode() {
 
 mode="${1:-}"
 case "$mode" in
+	--authority)
+		[ "$#" -eq 1 ] || fail 10 "--authority accepts no additional arguments"
+		authority_mode
+		;;
 	--probe)
 		[ "$#" -eq 1 ] || fail 10 "--probe accepts no additional arguments"
 		probe_mode
@@ -306,5 +317,5 @@ case "$mode" in
 		done
 		recover_mode "$expected_pid" "$expected_lstart" "$expected_generation" "$expected_carrier"
 		;;
-	*) fail 10 "usage: resident-codex-lead-recover.sh --project <name> --lead <id> --probe | --recover <fixed expected tuple>" ;;
+	*) fail 10 "usage: resident-codex-lead-recover.sh --project <name> --lead <id> --authority | --probe | --recover <fixed expected tuple>" ;;
 esac

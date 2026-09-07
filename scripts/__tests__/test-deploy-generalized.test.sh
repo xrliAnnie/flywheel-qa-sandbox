@@ -36,6 +36,12 @@ source "$ROOT/scripts/lib/qa-generalized.sh"
 test_deploy_source="$(<"$ROOT/scripts/test-deploy.sh")"
 qa_generalized_source="$(<"$ROOT/scripts/lib/qa-generalized.sh")"
 
+# FLY-2404: teardown must retain the slot lock for either legacy credential
+# copies or the new shared-truth symlinks until the Lead registry is stopped.
+assert_contains "$test_deploy_source" \
+	'find "${SLOT_DIR}/cdxh" \( -type f -o -type l \) -name auth.json' \
+	'credential residue guard covers regular files and shared-truth symlinks'
+
 # FLY-2174: generalized master auth and Runner ingest auth are separate
 # credentials. Invalid bearer shapes fail closed without logging bytes.
 if declare -F qa_generalized_resolve_ingest_token >/dev/null; then

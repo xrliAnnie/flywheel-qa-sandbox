@@ -808,6 +808,15 @@ jobs:
       - name: Test — FLY-1887 one-shot Codex hard timeout
         run: bash scripts/__tests__/codex-guard.test.sh
 
+      # FLY-2404: shared credential truth provisioning, fenced shuttle cutover,
+      # and conservative legacy-copy sweep. All three suites use fixture HOMEs,
+      # fake process/Bridge authorities, and synthetic credentials only.
+      - name: Test — FLY-2404 shared Codex credential truth
+        run: |
+          bash scripts/__tests__/codex-home-link-truth.test.sh
+          bash scripts/__tests__/codex-credential-cutover.test.sh
+          bash scripts/__tests__/codex-home-credential-sweep.test.sh
+
       # FLY-1887: bounded rename rotation for Flywheel-owned logs that open per
       # append. Includes concurrency, retention, fail-open, and wiring guards.
       - name: Test — FLY-1887 bounded Flywheel logs

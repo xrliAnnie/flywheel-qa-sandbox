@@ -607,7 +607,7 @@ cleanup_on_failure() {
     fi
   fi
   if [[ "${SLOT_DIR:-}" == "/tmp/flywheel-test-slot-${SLOT}" ]] \
-      && find "${SLOT_DIR}/cdxh" -type f -name auth.json -print -quit \
+      && find "${SLOT_DIR}/cdxh" \( -type f -o -type l \) -name auth.json -print -quit \
         2>/dev/null | grep -q .; then
     qa_registry_stopped=0
     echo "ERROR: provisioned Codex credential residue remains; retaining slot ${SLOT} lock" >&2

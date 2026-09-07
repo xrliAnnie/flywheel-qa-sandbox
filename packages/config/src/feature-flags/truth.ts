@@ -34,6 +34,7 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_CODEX_CLI_VERSION_ALLOWLIST",
 	"FLYWHEEL_CODEX_DAEMON_EXIT_WAIT_MS",
 	"FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT",
+	"FLYWHEEL_CODEX_EXTRA_HOMES",
 	"FLYWHEEL_CODEX_HOMES_ROOT",
 	"FLYWHEEL_CODEX_INFRA_BOT_JOB",
 	"FLYWHEEL_CODEX_INFRA_BOT_USER_ID",
@@ -44,6 +45,7 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_CODEX_LEAD_STATE_DIR",
 	"FLYWHEEL_CODEX_LEAD_SUBDIR",
 	"FLYWHEEL_CODEX_LEAD_WORKSPACE",
+	"FLYWHEEL_CODEX_LINK_DEADLINE",
 	"FLYWHEEL_CODEX_PROFILES_DIR",
 	"FLYWHEEL_CODEX_SESSION_DIR",
 	"FLYWHEEL_CODEX_SOURCE_HOME",
@@ -262,6 +264,32 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: trusted meeting-notes YAML path override for hermetic QA and deployment (FLY-2033), not an on/off gate",
 	FLYWHEEL_CODEX_LEAD_STATE_DIRS:
 		"FLY-2301 slot-injected Lead identity-to-state-directory path map, not an on/off gate",
+	FLYWHEEL_CODEX_ACCOUNT_REGISTRY_PATH:
+		"FLY-2404 plumbing: credential identity registry path override for the migration helper, not an on/off gate",
+	FLYWHEEL_CODEX_LINK_REPORT_PATH:
+		"FLY-2404 plumbing: credential-link migration report output path, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_BACKUP_ROOT:
+		"FLY-2404 plumbing: managed credential backup inventory root, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_BRIDGE_URL:
+		"FLY-2404 config value: Bridge authority endpoint for the one-shot sweep, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_COMM_ROOT:
+		"FLY-2404 plumbing: sharded CommDB authority root for the one-shot sweep, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_LEAD_HOMES:
+		"FLY-2404 plumbing: explicit read-only Lead-home inventory coordinates, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_POLL_MS:
+		"FLY-2404 numeric tuning: bounded quiescence polling cadence for the one-shot sweep, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_PS_BIN:
+		"FLY-2404 plumbing: process-authority executable path for the one-shot sweep, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_QUIESCENCE_TIMEOUT_MS:
+		"FLY-2404 numeric tuning: bounded quiescence wait for the one-shot sweep, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_RAYA_HOME:
+		"FLY-2404 plumbing: read-only Raya-home inventory coordinate, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_REPORT_ROOT:
+		"FLY-2404 plumbing: durable sweep receipt output directory, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_ROOT_COMM_DB:
+		"FLY-2404 plumbing: legacy root CommDB authority path for the one-shot sweep, not an on/off gate",
+	FLYWHEEL_CODEX_SWEEP_SQLITE_BIN:
+		"FLY-2404 plumbing: read-only SQLite executable path for the one-shot sweep, not an on/off gate",
 	// context / ids
 	FLYWHEEL_EXEC_ID: "context: runner execution id",
 	FLYWHEEL_ISSUE_ID: "context: linear issue id",

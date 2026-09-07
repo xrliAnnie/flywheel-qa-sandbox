@@ -7,10 +7,12 @@ import { spawn } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -26,9 +28,12 @@ import {
 	admitCodexAgentHome,
 	assertCodexSourceIdentity,
 	codexAgentHomeDir,
+	codexCredentialTruthPath,
 	codexHomeDir,
 	codexHomesRoot,
 	discoverAccountPool as discoverAccountPoolProduction,
+	migrateCodexAgentHomeCredential,
+	migrateCodexHomeCredential,
 	pinRunnerNotice,
 	provisionCodexAgentHome,
 	provisionCodexHome as provisionCodexHomeProduction,
@@ -135,8 +140,10 @@ beforeEach(() => {
 		}),
 	);
 	writeFileSync(join(src, "auth.json"), testAuth());
+	chmodSync(join(src, "auth.json"), 0o600);
 	writeFileSync(join(src, "config.toml"), GLOBAL_CONFIG);
 	env = {
+		HOME: tmp,
 		FLYWHEEL_CODEX_HOMES_ROOT: join(tmp, "homes"),
 		FLYWHEEL_CODEX_SOURCE_HOME: src,
 		FLYWHEEL_CODEX_SESSION_DIR: join(tmp, "codex-sessions"),
@@ -162,6 +169,12 @@ describe("path resolution (WS-E seam)", () => {
 
 	it("sourceCodexDir honors FLYWHEEL_CODEX_SOURCE_HOME", () => {
 		expect(sourceCodexDir(env)).toBe(join(tmp, "dotcodex"));
+	});
+
+	it("rejects a relative credential source home", () => {
+		expect(() =>
+			codexCredentialTruthPath({ FLYWHEEL_CODEX_SOURCE_HOME: "relative-home" }),
+		).toThrow(/credential source home must be absolute/);
 	});
 });
 
@@ -280,6 +293,49 @@ describe("FLY-2358 agent home admission and provisioning", () => {
 		expect(
 			readdirSync(join(first.handle.home, ".flywheel-leases")).sort(),
 		).toEqual(["exec-a", "exec-b"]);
+	});
+
+	it("keeps a keyed legacy credential copy ordinary across two live leases", async () => {
+		const first = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-copy-a",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		writeFileSync(join(first.handle.home, "auth.json"), "legacy-copy", {
+			mode: 0o600,
+		});
+		await provisionCodexAgentHome(first.handle, {
+			env,
+			skillFrameworkMode: "bare",
+			registryPath,
+			ledgerRoot,
+		});
+		const second = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-copy-b",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		await provisionCodexAgentHome(second.handle, {
+			env,
+			skillFrameworkMode: "bare",
+			registryPath,
+			ledgerRoot,
+		});
+
+		const authPath = join(first.handle.home, "auth.json");
+		expect(lstatSync(authPath).isSymbolicLink()).toBe(false);
+		expect(readFileSync(authPath)).toEqual(
+			readFileSync(codexCredentialTruthPath(env)),
+		);
+		expect(
+			existsSync(join(first.handle.home, ".credential-copy-pending")),
+		).toBe(true);
 	});
 
 	it("ignores interrupted-write and foreign entries in the lease directory", async () => {
@@ -1629,6 +1685,158 @@ describe("provisionCodexHome (WS-A)", () => {
 		});
 	});
 
+	it("links a new runner home to the canonical credential truth without changing it", () => {
+		const truthPath = codexCredentialTruthPath(env);
+		chmodSync(truthPath, 0o600);
+		const truthBefore = statSync(truthPath);
+		const truthBytes = readFileSync(truthPath);
+
+		const home = provisionCodexHome({ executionId: "exec-linked-truth", env });
+		const linkedAuth = join(home, "auth.json");
+
+		expect(lstatSync(linkedAuth).isSymbolicLink()).toBe(true);
+		expect(readlinkSync(linkedAuth)).toBe(truthPath);
+		expect(readFileSync(linkedAuth)).toEqual(truthBytes);
+		const truthAfter = statSync(truthPath);
+		expect(truthAfter.ino).toBe(truthBefore.ino);
+		expect(truthAfter.mode & 0o777).toBe(0o600);
+	});
+
+	it("scrubs a retained managed credential when fresh-home link installation fails", () => {
+		const executionId = "exec-link-install-failure";
+		const home = codexHomeDir(executionId, env);
+		mkdirSync(home, { recursive: true, mode: 0o700 });
+		writeFileSync(join(home, "config.toml"), renderCodexHomeConfig("", TOKEN), {
+			mode: 0o600,
+		});
+		const beforeSymlink = vi.fn(() => {
+			throw new Error("injected fresh-home link failure");
+		});
+
+		expect(() =>
+			provisionCodexHome({
+				executionId,
+				env,
+				testing: { beforeSymlink },
+			}),
+		).toThrow(/injected fresh-home link failure/);
+		expect(beforeSymlink).toHaveBeenCalledOnce();
+		expect(readFileSync(join(home, "config.toml"), "utf8")).not.toContain(
+			TOKEN,
+		);
+		expect(existsSync(join(home, "auth.json"))).toBe(false);
+		expect(
+			readdirSync(home).filter((name) => name.startsWith("auth.json.link.")),
+		).toEqual([]);
+	});
+
+	it("keeps an existing correct credential link without rewriting the truth", () => {
+		const truthPath = codexCredentialTruthPath(env);
+		const home = provisionCodexHome({
+			executionId: "exec-link-idempotent",
+			env,
+		});
+		const linkedAuth = join(home, "auth.json");
+		const fixedTime = new Date("2020-01-02T03:04:05.000Z");
+		utimesSync(truthPath, fixedTime, fixedTime);
+		const truthBefore = statSync(truthPath);
+
+		provisionCodexHome({ executionId: "exec-link-idempotent", env });
+
+		expect(lstatSync(linkedAuth).isSymbolicLink()).toBe(true);
+		expect(readlinkSync(linkedAuth)).toBe(truthPath);
+		const truthAfter = statSync(truthPath);
+		expect(truthAfter.ino).toBe(truthBefore.ino);
+		expect(truthAfter.mtimeMs).toBe(truthBefore.mtimeMs);
+	});
+
+	it.each([
+		["wrong", true],
+		["dangling", false],
+	] as const)(
+		"rejects an existing %s credential link without writing through it",
+		(_label, createTarget) => {
+			const executionId = `exec-${_label}-credential-link`;
+			const home = codexHomeDir(executionId, env);
+			const destination = join(home, "auth.json");
+			const wrongTarget = join(tmp, `${_label}-auth-target.json`);
+			mkdirSync(home, { recursive: true });
+			if (createTarget) writeFileSync(wrongTarget, "wrong-target-canary");
+			symlinkSync(wrongTarget, destination);
+			writeFileSync(join(home, "config.toml"), "config-canary");
+			const truthBefore = readFileSync(codexCredentialTruthPath(env));
+
+			expect(() => provisionCodexHome({ executionId, env })).toThrow(
+				/credential_link_drift/,
+			);
+			expect(readlinkSync(destination)).toBe(wrongTarget);
+			expect(existsSync(wrongTarget)).toBe(createTarget);
+			if (createTarget) {
+				expect(readFileSync(wrongTarget, "utf8")).toBe("wrong-target-canary");
+			}
+			expect(readFileSync(join(home, "config.toml"), "utf8")).toBe(
+				"config-canary\n",
+			);
+			expect(readFileSync(codexCredentialTruthPath(env))).toEqual(truthBefore);
+		},
+	);
+
+	it("keeps an existing legacy credential copy ordinary and marks it pending migration", () => {
+		const executionId = "exec-existing-credential-copy";
+		const home = codexHomeDir(executionId, env);
+		const destination = join(home, "auth.json");
+		mkdirSync(home, { recursive: true });
+		writeFileSync(destination, "old-copy");
+		const truthPath = codexCredentialTruthPath(env);
+		const truthBefore = readFileSync(truthPath);
+
+		provisionCodexHome({ executionId, env });
+
+		expect(lstatSync(destination).isFile()).toBe(true);
+		expect(lstatSync(destination).isSymbolicLink()).toBe(false);
+		expect(readFileSync(destination)).toEqual(truthBefore);
+		expect(existsSync(join(home, ".credential-copy-pending"))).toBe(true);
+		expect(readFileSync(truthPath)).toEqual(truthBefore);
+	});
+
+	it("rejects a symlinked legacy home without writing through it", () => {
+		const executionId = "exec-symlinked-home";
+		const home = codexHomeDir(executionId, env);
+		const foreignDirectory = join(tmp, "foreign-home-target");
+		mkdirSync(dirname(home), { recursive: true });
+		mkdirSync(foreignDirectory);
+		symlinkSync(foreignDirectory, home);
+
+		expect(() => provisionCodexHome({ executionId, env })).toThrow(
+			/unsafe codex home path/,
+		);
+		expect(readdirSync(foreignDirectory)).toEqual([]);
+	});
+
+	it("rejects a runner home inside the canonical credential source without creating it", () => {
+		const sourceHome = sourceCodexDir(env);
+		const nestedHomesRoot = join(sourceHome, "managed-homes");
+		const unsafeEnv = {
+			...env,
+			FLYWHEEL_CODEX_HOMES_ROOT: nestedHomesRoot,
+		};
+
+		expect(() =>
+			provisionCodexHome({ executionId: "exec-inside-source", env: unsafeEnv }),
+		).toThrow(/credential source directory/);
+		expect(existsSync(nestedHomesRoot)).toBe(false);
+	});
+
+	it("rejects a credential truth that is not mode 0600 before creating a home", () => {
+		const truthPath = codexCredentialTruthPath(env);
+		chmodSync(truthPath, 0o644);
+
+		expect(() =>
+			provisionCodexHome({ executionId: "exec-wide-truth", env }),
+		).toThrow(/credential truth must be a 0600 regular file/);
+		expect(existsSync(codexHomeDir("exec-wide-truth", env))).toBe(false);
+	});
+
 	it("FLY-2168 pins a requirements-compatible runner policy", () => {
 		writeFileSync(
 			join(sourceCodexDir(env), "config.toml"),
@@ -2115,6 +2323,194 @@ hide_full_access_warning = true
 			);
 			expect(agents.match(/flywheel-managed \(FLY-1188\)/g)?.length).toBe(1);
 		});
+	});
+});
+
+describe("Codex credential migration (WS-A)", () => {
+	it("atomically replaces an idle ordinary credential copy with the canonical link", async () => {
+		const home = join(tmp, "idle-legacy-home");
+		mkdirSync(home, { mode: 0o700 });
+		writeFileSync(join(home, "auth.json"), testAuth("old@example.test"), {
+			mode: 0o600,
+		});
+		writeFileSync(join(home, ".credential-copy-pending"), "pending\n", {
+			mode: 0o600,
+		});
+
+		const result = await migrateCodexHomeCredential({
+			home,
+			env,
+			registryPath,
+		});
+
+		expect(result.state).toBe("linked");
+		expect(lstatSync(join(home, "auth.json")).isSymbolicLink()).toBe(true);
+		expect(readlinkSync(join(home, "auth.json"))).toBe(
+			codexCredentialTruthPath(env),
+		);
+		expect(existsSync(join(home, ".credential-copy-pending"))).toBe(false);
+		expect(
+			readdirSync(home).filter((name) => name.startsWith("auth.json.link.")),
+		).toEqual([]);
+	});
+
+	it("migrates a drained keyed home while holding its admission lock", async () => {
+		const admission = await admitCodexAgentHome(
+			{
+				project: "flywheel",
+				role: "implement",
+				executionId: "exec-drained-migration",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		await releaseCodexAgentHomeLease(admission.handle, env);
+		writeFileSync(join(admission.handle.home, "auth.json"), "legacy-copy", {
+			mode: 0o600,
+		});
+
+		const result = await migrateCodexAgentHomeCredential({
+			home: admission.handle.home,
+			env,
+			registryPath,
+		});
+
+		expect(result.state).toBe("linked");
+		expect(readlinkSync(join(admission.handle.home, "auth.json"))).toBe(
+			codexCredentialTruthPath(env),
+		);
+	});
+
+	it("durably backs up an ordinary credential before replacing it when requested", () => {
+		const home = join(tmp, "backup-source-home");
+		const original = testAuth("old@example.test", "acct-old");
+		mkdirSync(home, { mode: 0o700 });
+		writeFileSync(join(home, "auth.json"), original, { mode: 0o600 });
+
+		const result = migrateCodexHomeCredential({
+			home,
+			env,
+			registryPath,
+			keepBackup: true,
+		});
+
+		expect(result.backupPath).toBeDefined();
+		expect(readFileSync(result.backupPath!, "utf8")).toBe(original);
+		expect(statSync(dirname(result.backupPath!)).mode & 0o777).toBe(0o700);
+		expect(statSync(result.backupPath!).mode & 0o777).toBe(0o600);
+		expect(lstatSync(join(home, "auth.json")).isSymbolicLink()).toBe(true);
+	});
+
+	it("returns uncertain when the home directory cannot be fsynced after link installation", () => {
+		const home = join(tmp, "uncertain-home");
+		mkdirSync(home, { mode: 0o700 });
+		writeFileSync(join(home, "auth.json"), "legacy-copy", { mode: 0o600 });
+
+		const result = migrateCodexHomeCredential({
+			home,
+			env,
+			registryPath,
+			testing: {
+				fsyncDirectory(path) {
+					if (path === home) throw new Error("injected home fsync failure");
+				},
+			},
+		});
+
+		expect(result.state).toBe("uncertain");
+		expect(readlinkSync(join(home, "auth.json"))).toBe(
+			codexCredentialTruthPath(env),
+		);
+	});
+
+	it("leaves the original credential in place and removes the temporary link when rename fails", () => {
+		const home = join(tmp, "rename-failure-home");
+		mkdirSync(home, { mode: 0o700 });
+		writeFileSync(join(home, "auth.json"), "original-copy", { mode: 0o600 });
+
+		expect(() =>
+			migrateCodexHomeCredential({
+				home,
+				env,
+				registryPath,
+				testing: {
+					beforeRename() {
+						throw new Error("injected rename failure");
+					},
+				},
+			}),
+		).toThrow(/injected rename failure/);
+		expect(readFileSync(join(home, "auth.json"), "utf8")).toBe("original-copy");
+		expect(
+			readdirSync(home).filter((name) => name.startsWith("auth.json.link.")),
+		).toEqual([]);
+	});
+
+	it("refuses keyed migration while any execution lease is live", async () => {
+		const admission = await admitCodexAgentHome(
+			{
+				project: "flywheel",
+				role: "qa",
+				executionId: "exec-live-migration",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		writeFileSync(join(admission.handle.home, "auth.json"), "legacy-copy", {
+			mode: 0o600,
+		});
+
+		await expect(
+			migrateCodexAgentHomeCredential({
+				home: admission.handle.home,
+				env,
+				registryPath,
+			}),
+		).rejects.toThrow(/live leases/);
+		expect(readFileSync(join(admission.handle.home, "auth.json"), "utf8")).toBe(
+			"legacy-copy",
+		);
+	});
+
+	it("repairs a missing credential in a drained home and can roll it back to a 0600 copy", () => {
+		const home = join(tmp, "missing-link-home");
+		mkdirSync(home, { mode: 0o700 });
+
+		const linked = migrateCodexHomeCredential({ home, env, registryPath });
+		expect(linked.state).toBe("linked");
+		expect(lstatSync(join(home, "auth.json")).isSymbolicLink()).toBe(true);
+
+		const unlinked = migrateCodexHomeCredential({
+			home,
+			env,
+			registryPath,
+			unlink: true,
+		});
+		expect(unlinked.state).toBe("unlinked");
+		expect(lstatSync(join(home, "auth.json")).isSymbolicLink()).toBe(false);
+		expect(statSync(join(home, "auth.json")).mode & 0o777).toBe(0o600);
+		expect(readFileSync(join(home, "auth.json"))).toEqual(
+			readFileSync(codexCredentialTruthPath(env)),
+		);
+		expect(existsSync(join(home, ".credential-copy-pending"))).toBe(true);
+	});
+
+	it("repairs a missing credential with keepBackup without inventing a backup", () => {
+		const home = join(tmp, "missing-link-with-backup-home");
+		mkdirSync(home, { mode: 0o700 });
+
+		const result = migrateCodexHomeCredential({
+			home,
+			env,
+			registryPath,
+			keepBackup: true,
+		});
+
+		expect(result.state).toBe("linked");
+		expect(result.backupPath).toBeUndefined();
+		expect(readlinkSync(join(home, "auth.json"))).toBe(
+			codexCredentialTruthPath(env),
+		);
 	});
 });
 

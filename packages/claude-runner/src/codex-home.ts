@@ -2,12 +2,9 @@
  * FLY-123 (parallelization + credentials): per-runner CODEX_HOME.
  *
  * THE root-cause fix for "Codex runner concurrency = 1": multiple Codex
- * runners sharing the single global `~/.codex` corrupt each other's
- * `auth.json` on manual selection / token refresh (concurrent writes to one
- * file). Giving each runner its own `CODEX_HOME` with an isolated
- * `auth.json` + `config.toml` kills that local file race — accounts can then
- * be shared safely across concurrent runners (same posture as Claude Code
- * sharing one account), exactly as the design delta (WS-A) specifies.
+ * runners need isolated mutable session/config state without duplicating the
+ * host credential. Each managed home therefore owns its `config.toml` and
+ * runtime files while `auth.json` links to one canonical host-owned truth.
  *
  * The per-runner `config.toml` is ALSO where the GitHub token now lives
  * (WS-C): `[shell_environment_policy.set] GH_TOKEN`. codex reads
@@ -21,9 +18,8 @@
  * layout. Per-execution leases protect credential scrubbing while a keyed
  * home is shared, and keyed homes are never removed by task cleanup.
  *
- * Only the account face (auth.json + config.toml) is copied into a newly
- * created home; everything else codex needs it creates inside the home itself
- * (sessions/, logs, caches). We do NOT `cp -r ~/.codex` (that would be GBs).
+ * Only config and contract artifacts are copied into a newly created home;
+ * everything else Codex needs it creates there (sessions/, logs, caches).
  */
 
 import { randomBytes } from "node:crypto";
@@ -36,13 +32,17 @@ import {
 	existsSync,
 	constants as fsConstants,
 	fstatSync,
+	fsyncSync,
 	lstatSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
+	realpathSync,
 	renameSync,
 	rmSync,
+	symlinkSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -52,6 +52,7 @@ import {
 	dirname,
 	isAbsolute,
 	join,
+	sep as pathSeparator,
 	relative,
 	resolve as resolvePath,
 } from "node:path";
@@ -389,6 +390,57 @@ function ensurePlainDirectory(path: string, label: string): void {
 	chmodSync(path, 0o700);
 }
 
+function canonicalPathWithMissingTail(path: string): string {
+	let cursor = resolvePath(path);
+	const tail: string[] = [];
+	for (;;) {
+		try {
+			lstatSync(cursor);
+			return resolvePath(realpathSync(cursor), ...tail.reverse());
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			const parent = dirname(cursor);
+			if (parent === cursor) throw error;
+			tail.push(basename(cursor));
+			cursor = parent;
+		}
+	}
+}
+
+function pathIsWithin(parent: string, candidate: string): boolean {
+	const delta = relative(parent, candidate);
+	return (
+		delta === "" ||
+		(delta !== ".." &&
+			!delta.startsWith(`..${pathSeparator}`) &&
+			!isAbsolute(delta))
+	);
+}
+
+function assertHomeIsPlainDirectory(
+	home: string,
+	env: NodeJS.ProcessEnv,
+): void {
+	const canonicalSource = realpathSync(sourceCodexDir(env));
+	const canonicalCandidate = canonicalPathWithMissingTail(home);
+	if (pathIsWithin(canonicalSource, canonicalCandidate)) {
+		throw new Error(
+			`unsafe codex home path inside credential source directory: ${home}`,
+		);
+	}
+	mkdirSync(home, { recursive: true, mode: 0o700 });
+	const stat = lstatSync(home);
+	if (!stat.isDirectory() || stat.isSymbolicLink()) {
+		throw new Error(`unsafe codex home path: ${home}`);
+	}
+	if (pathIsWithin(canonicalSource, realpathSync(home))) {
+		throw new Error(
+			`unsafe codex home path inside credential source directory: ${home}`,
+		);
+	}
+	chmodSync(home, 0o700);
+}
+
 function codexAgentHomeLockPath(
 	identity: CodexAgentHomeIdentity,
 	env: NodeJS.ProcessEnv,
@@ -594,6 +646,17 @@ export function sourceCodexDir(env: NodeJS.ProcessEnv = process.env): string {
 	return env.FLYWHEEL_CODEX_SOURCE_HOME?.trim() || join(homedir(), ".codex");
 }
 
+/** Canonical host-owned credential truth shared by managed Codex homes. */
+export function codexCredentialTruthPath(
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const sourceHome = sourceCodexDir(env);
+	if (!isAbsolute(sourceHome)) {
+		throw new Error("credential source home must be absolute");
+	}
+	return join(realpathSync(sourceHome), "auth.json");
+}
+
 /** Shared canonical manual-backup seed pool. Configurable so the pool stays a
  * single shared point, never copied wholesale into each execution home. */
 export function codexProfilesDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -641,7 +704,7 @@ function readCodexSourceAuth({
 	env: NodeJS.ProcessEnv;
 	registryPath?: string;
 }): { raw: string; identity: CodexAuthIdentity } {
-	const authPath = join(sourceCodexDir(env), "auth.json");
+	const authPath = codexCredentialTruthPath(env);
 	let pathStat: ReturnType<typeof lstatSync>;
 	try {
 		pathStat = lstatSync(authPath);
@@ -658,8 +721,11 @@ function readCodexSourceAuth({
 	let fd: number | undefined;
 	try {
 		fd = openSync(authPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-		if (!fstatSync(fd).isFile()) {
-			throw new Error(`Codex source auth must be a regular file: ${authPath}`);
+		const fileStat = fstatSync(fd);
+		if (!fileStat.isFile() || (fileStat.mode & 0o777) !== 0o600) {
+			throw new Error(
+				`credential truth must be a 0600 regular file: ${authPath}`,
+			);
 		}
 		const raw = readFileSync(fd, "utf8");
 		return {
@@ -669,6 +735,284 @@ function readCodexSourceAuth({
 	} finally {
 		if (fd !== undefined) closeSync(fd);
 	}
+}
+
+function placeCredentialLink(
+	home: string,
+	truthPath: string,
+	testing?: {
+		beforeSymlink?: () => void;
+		beforeRename?: () => void;
+	},
+): void {
+	const destination = join(home, "auth.json");
+	const temporary = join(
+		home,
+		`auth.json.link.${process.pid}.${randomBytes(8).toString("hex")}`,
+	);
+	try {
+		testing?.beforeSymlink?.();
+		symlinkSync(truthPath, temporary);
+		testing?.beforeRename?.();
+		renameSync(temporary, destination);
+		const installed = lstatSync(destination);
+		if (
+			!installed.isSymbolicLink() ||
+			readlinkSync(destination) !== truthPath
+		) {
+			throw new Error(`credential link verification failed: ${home}`);
+		}
+	} catch (error) {
+		try {
+			unlinkSync(temporary);
+		} catch {
+			// The temporary link was never created or was already renamed.
+		}
+		throw error;
+	}
+}
+
+export type CodexCredentialMigrationState =
+	| "already"
+	| "linked"
+	| "unlinked"
+	| "uncertain";
+
+export interface MigrateCodexHomeCredentialOptions {
+	home: string;
+	env?: NodeJS.ProcessEnv;
+	registryPath?: string;
+	keepBackup?: boolean;
+	unlink?: boolean;
+	/** Narrow deterministic fault seam for durability tests. */
+	testing?: {
+		fsyncDirectory?: (path: string) => void;
+		beforeSymlink?: () => void;
+		beforeRename?: () => void;
+	};
+}
+
+export interface CodexCredentialMigrationResult {
+	home: string;
+	state: CodexCredentialMigrationState;
+	profile: string;
+	backupPath?: string;
+}
+
+function fsyncDirectory(path: string): void {
+	const fd = openSync(path, fsConstants.O_RDONLY);
+	try {
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function durableCredentialBackup(
+	home: string,
+	destination: string,
+	env: NodeJS.ProcessEnv,
+	syncDirectory: (path: string) => void,
+): string {
+	const stat = lstatSync(destination);
+	if (
+		!stat.isFile() ||
+		stat.isSymbolicLink() ||
+		(stat.mode & 0o777) !== 0o600
+	) {
+		throw new Error("credential backup source must be a 0600 regular file");
+	}
+	const sourceFd = openSync(
+		destination,
+		fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+	);
+	let raw: Buffer;
+	try {
+		const opened = fstatSync(sourceFd);
+		if (!opened.isFile() || (opened.mode & 0o777) !== 0o600) {
+			throw new Error("credential backup source changed during validation");
+		}
+		raw = readFileSync(sourceFd);
+	} finally {
+		closeSync(sourceFd);
+	}
+
+	const backupDirectory = join(
+		env.HOME?.trim() || homedir(),
+		".flywheel",
+		"codex-credential-backups",
+	);
+	mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
+	chmodSync(backupDirectory, 0o700);
+	const slug = basename(home).replace(/[^A-Za-z0-9._-]/g, "_") || "home";
+	const backupPath = join(
+		backupDirectory,
+		`${slug}.${new Date().toISOString().replace(/[:.]/g, "-")}.${randomBytes(4).toString("hex")}.json`,
+	);
+	let backupFd: number | undefined;
+	try {
+		backupFd = openSync(
+			backupPath,
+			fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
+			0o600,
+		);
+		writeFileSync(backupFd, raw);
+		fsyncSync(backupFd);
+		closeSync(backupFd);
+		backupFd = undefined;
+		syncDirectory(backupDirectory);
+		return backupPath;
+	} catch (error) {
+		if (backupFd !== undefined) closeSync(backupFd);
+		try {
+			unlinkSync(backupPath);
+		} catch {
+			// The exclusive backup was never created or was already cleaned up.
+		}
+		throw error;
+	}
+}
+
+/**
+ * Replace one already-drained, non-keyed home's credential with the canonical
+ * link. Process and launchd fencing belongs to the caller; keyed homes must use
+ * migrateCodexAgentHomeCredential so lease validation occurs under admission's
+ * lock.
+ */
+function migrateCodexHomeCredentialAt(
+	opts: MigrateCodexHomeCredentialOptions,
+	allowKeyed: boolean,
+): CodexCredentialMigrationResult {
+	const env = opts.env ?? process.env;
+	if (!isAbsolute(opts.home)) {
+		throw new Error("credential migration home must be absolute");
+	}
+	assertHomeIsPlainDirectory(opts.home, env);
+	if (!allowKeyed && readCodexAgentHomeMarker(opts.home) !== null) {
+		throw new Error("keyed codex home requires keyed credential migration");
+	}
+	const source = readCodexSourceAuth({
+		env,
+		registryPath: opts.registryPath,
+	});
+	const truthPath = codexCredentialTruthPath(env);
+	const destination = join(opts.home, "auth.json");
+	let destinationStat: ReturnType<typeof lstatSync> | null = null;
+	try {
+		destinationStat = lstatSync(destination);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+
+	if (opts.unlink) {
+		if (destinationStat?.isFile() && !destinationStat.isSymbolicLink()) {
+			return {
+				home: opts.home,
+				state: "unlinked",
+				profile: source.identity.profile,
+			};
+		}
+		if (
+			!destinationStat?.isSymbolicLink() ||
+			readlinkSync(destination) !== truthPath
+		) {
+			throw new Error("credential rollback requires the canonical link");
+		}
+		atomicWriteFile(destination, source.raw, 0o600);
+		atomicWriteFile(
+			join(opts.home, ".credential-copy-pending"),
+			`${new Date().toISOString()}\n`,
+		);
+		return {
+			home: opts.home,
+			state: "unlinked",
+			profile: source.identity.profile,
+		};
+	}
+
+	if (
+		destinationStat?.isSymbolicLink() &&
+		readlinkSync(destination) === truthPath
+	) {
+		return {
+			home: opts.home,
+			state: "already",
+			profile: source.identity.profile,
+		};
+	}
+	if (
+		destinationStat &&
+		!destinationStat.isFile() &&
+		!destinationStat.isSymbolicLink()
+	) {
+		throw new Error("unsafe credential migration entry");
+	}
+	const backupPath =
+		opts.keepBackup && destinationStat?.isFile()
+			? durableCredentialBackup(
+					opts.home,
+					destination,
+					env,
+					opts.testing?.fsyncDirectory ?? fsyncDirectory,
+				)
+			: undefined;
+	placeCredentialLink(opts.home, truthPath, opts.testing);
+	try {
+		unlinkSync(join(opts.home, ".credential-copy-pending"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	let state: CodexCredentialMigrationState = "linked";
+	try {
+		(opts.testing?.fsyncDirectory ?? fsyncDirectory)(opts.home);
+	} catch {
+		state = "uncertain";
+	}
+	return {
+		home: opts.home,
+		state,
+		profile: source.identity.profile,
+		...(backupPath ? { backupPath } : {}),
+	};
+}
+
+export function migrateCodexHomeCredential(
+	opts: MigrateCodexHomeCredentialOptions,
+): CodexCredentialMigrationResult {
+	return migrateCodexHomeCredentialAt(opts, false);
+}
+
+/** Migrate a drained persistent agent home under its admission lock. */
+export async function migrateCodexAgentHomeCredential(
+	opts: MigrateCodexHomeCredentialOptions,
+): Promise<CodexCredentialMigrationResult> {
+	const env = opts.env ?? process.env;
+	if (!isAbsolute(opts.home)) {
+		throw new Error("credential migration home must be absolute");
+	}
+	assertHomeIsPlainDirectory(opts.home, env);
+	const marker = readCodexAgentHomeMarker(opts.home);
+	if (marker === null) throw new Error("missing codex agent home marker");
+	const identity = { project: marker.project, role: marker.role };
+	if (codexAgentHomeDir(identity, env) !== opts.home) {
+		throw new Error("codex agent home marker path mismatch");
+	}
+	const lockPath = prepareCodexAgentHomeLock(identity, env);
+	return withMkdirLock(
+		lockPath,
+		async () => {
+			const currentMarker = readCodexAgentHomeMarker(opts.home);
+			if (currentMarker === null) {
+				throw new Error("missing codex agent home marker");
+			}
+			validateMarkerIdentity(currentMarker, identity);
+			if (listCodexAgentHomeLeases(opts.home).length > 0) {
+				throw new Error("codex agent home has live leases");
+			}
+			return migrateCodexHomeCredentialAt(opts, true);
+		},
+		CODEX_AGENT_HOME_LOCK_OPTS,
+	);
 }
 
 /**
@@ -1377,6 +1721,11 @@ export interface ProvisionCodexHomeOptions {
 	/** Host gh token (from `gh auth token`); omitted = no credential injected. */
 	ghToken?: string;
 	env?: NodeJS.ProcessEnv;
+	/** Internal fault-injection seam for the atomic credential-link install. */
+	testing?: {
+		beforeSymlink?: () => void;
+		beforeRename?: () => void;
+	};
 	/** FLY-1188: contract source override (tests). Default: the package-shipped file. */
 	contractSourcePath?: string;
 	/** FLY-1395: resolved arm; absent keeps the pre-FLY-1395 call shape. */
@@ -1398,10 +1747,9 @@ export interface ProvisionCodexHomeOptions {
 }
 
 /**
- * Provision a per-runner CODEX_HOME: isolated `auth.json` (seeded from the
- * host's active account) + `config.toml` (seeded global config + GH_TOKEN).
- * Returns the absolute home path. Idempotent — re-provisioning overwrites
- * auth/config in place (no stacking).
+ * Provision a per-runner CODEX_HOME: canonical `auth.json` link plus isolated
+ * `config.toml` (seeded global config + GH_TOKEN). Existing regular-file auth
+ * copies stay regular until the fenced migration path drains that home.
  */
 export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 	const env = opts.env ?? process.env;
@@ -1486,10 +1834,10 @@ function provisionCodexHomeAt(
 		behavior.scrubOnFailure();
 		throw error;
 	}
-	mkdirSync(home, { recursive: true, mode: 0o700 });
 	// R1 MED #2: mkdir(recursive) does NOT repair a pre-existing dir mode
-	// (re-provision / crash-recovered home), so force 0700.
-	chmodSync(home, 0o700);
+	// (re-provision / crash-recovered home), so force 0700 after refusing a
+	// final-path symlink.
+	assertHomeIsPlainDirectory(home, env);
 
 	// Seed the exact auth bytes validated from one O_NOFOLLOW file descriptor.
 	// This closes the validate→copy path race while keeping per-runner isolation.
@@ -1506,7 +1854,45 @@ function provisionCodexHomeAt(
 		chmodSync(path, mode);
 	};
 	const destAuth = join(home, "auth.json");
-	writeManagedFile(destAuth, sourceAuth.raw);
+	let destinationStat: ReturnType<typeof lstatSync> | null;
+	try {
+		destinationStat = lstatSync(destAuth);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		destinationStat = null;
+	}
+	if (destinationStat) {
+		if (destinationStat.isSymbolicLink()) {
+			const target = readlinkSync(destAuth);
+			if (target !== codexCredentialTruthPath(env)) {
+				console.error(
+					`[codex-home] credential_link_drift home=${home} target=${target}`,
+				);
+				behavior.scrubOnFailure();
+				throw new Error(`credential_link_drift home=${home}`);
+			}
+		} else {
+			if (!destinationStat.isFile()) {
+				behavior.scrubOnFailure();
+				throw new Error(`unsafe credential entry home=${home}`);
+			}
+			writeManagedFile(destAuth, sourceAuth.raw);
+			writeManagedFile(
+				join(home, ".credential-copy-pending"),
+				`${new Date().toISOString()}\n`,
+			);
+			console.warn(
+				`[codex-home] credential_copy_pending_migration home=${home}`,
+			);
+		}
+	} else {
+		try {
+			placeCredentialLink(home, codexCredentialTruthPath(env), opts.testing);
+		} catch (error) {
+			behavior.scrubOnFailure();
+			throw error;
+		}
+	}
 	writeManagedFile(join(home, ".active"), `${sourceIdentity.profile}\n`);
 
 	// config.toml = seeded global + GH_TOKEN block (0600). chmod AFTER write —

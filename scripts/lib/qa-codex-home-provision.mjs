@@ -99,7 +99,7 @@ async function main() {
 		}
 		provisioned = true;
 
-		// The shared birth engine owns credential selection and copying. The
+		// The shared birth engine owns credential selection and truth-linking. The
 		// resident Lead layer owns its own policy, prompt, and skills, so discard
 		// only those non-credential runner artifacts before ensure-home assembles
 		// the carrier-specific config.

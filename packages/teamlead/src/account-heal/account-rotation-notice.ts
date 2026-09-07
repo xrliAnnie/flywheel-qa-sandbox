@@ -20,7 +20,7 @@ export interface AccountRotationNotice {
 /** Human labels for the fixed reasons `flywheel-codex-with-fallback` emits. */
 const REASON_LABEL: Record<string, string> = {
 	rate_limit: "额度/限流",
-	auth_expired: "认证过期",
+	auth_expired: "全机凭据异常；founder 在主机运行 codex login",
 	model_unsupported: "模型不支持",
 };
 

@@ -40,6 +40,14 @@ ln -s "$REAL_ROOT/lead-rules-base" "$RT/lead-rules-base"
 ln -s "$REAL_ROOT/scripts/lib/canonical-lead-identity.sh" "$RT/scripts/lib/canonical-lead-identity.sh"
 mkdir -p "$REPO/scripts/lib"
 ln -s "$REPO_ROOT/scripts/lib/lead-address.sh" "$REPO/scripts/lib/lead-address.sh"
+ln -s "$REAL_ROOT/scripts/lead-rules-bundle.sh" "$RT/scripts/lead-rules-bundle.sh"
+cp "$SUT" "$RT/scripts/run-codex-lead-raya-tui-fullaccess.sh"
+cat > "$REPO/scripts/codex-home-link-truth.sh" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" > "$LINK_DUMP"
+exit "${LINK_TRUTH_RC:-0}"
+EOF
+chmod +x "$REPO/scripts/codex-home-link-truth.sh"
 
 mkdir -p "$T/bin"
 cat > "$T/bin/node" <<'EOF'
@@ -79,6 +87,24 @@ else
 		|| fail "FLYWHEEL_ROOT/lead-alert contract"
 	sp=$(envval "$T/envdump" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
 	case "$sp" in "$T/raya-code/IDENTITY.md,$T/workspace/memory/MEMORY.md,"*founder-only-authority.md*) pass "identity + memory + governance order" ;; *) fail "prompt order ($sp)" ;; esac
+fi
+
+mkdir -p "$T/home/.codex-raya/packages/standalone/current"
+printf '#!/bin/bash\nexit 0\n' > "$T/home/.codex-raya/packages/standalone/current/codex"
+chmod +x "$T/home/.codex-raya/packages/standalone/current/codex"
+LINK_DUMP="$T/link-dump" ENVDUMP="$T/real-envdump" HOME="$T/home" PATH="$T/bin:$PATH" \
+	FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=0 \
+	FLYWHEEL_COMM_CLI="$REPO/packages/flywheel-comm/dist/index.js" \
+	RAYA_CODE_ROOT="$T/raya-code" RAYA_LEAD_WORKSPACE="$T/workspace" \
+	RAYA_METRICS_DIR="$T/metrics" RAYA_BOT_TOKEN=DRY \
+	CANONICAL_JSON='{"schemaVersion":1,"leadId":"raya","projectName":"raya","leadKey":"raya-raya","agentTeamName":"raya","botUserId":"1542068543645024257","botTokenEnv":"RAYA_BOT_TOKEN","discordStateDir":"/tmp/discord-raya","backend":"codex-app-server","model":"gpt-5.6-sol","effort":"xhigh","modelContextWindow":1000000,"role":"cos","summaryRole":"recipient","summaryGranularity":"per-lead","hasSummaryDuty":false,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+	/bin/bash "$RT/scripts/run-codex-lead-raya-tui-fullaccess.sh" >/dev/null 2>&1
+real_rc=$?
+if [ "$real_rc" -eq 0 ] \
+	&& [ "$(cat "$T/link-dump" 2>/dev/null)" = "--lead raya/raya $T/home/.codex-raya" ]; then
+	pass "real launch gates Raya with the exact raya/raya tuple"
+else
+	fail "real Raya link-truth gate contract (rc=$real_rc args=$(cat "$T/link-dump" 2>/dev/null))"
 fi
 
 echo "Results: $PASS passed, $FAIL failed"

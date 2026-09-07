@@ -1,6 +1,6 @@
 #!/bin/bash
 # FLY-259 PR-B — codex-lead-tui-home.sh: idempotent assembly + validation of a
-# Codex TUI Lead's isolated CODEX_HOME, and the remote-control daemon ensure.
+# Codex TUI Lead's isolated runtime home with a shared credential link, and the remote-control daemon ensure.
 #
 # Usage:
 #   codex-lead-tui-home.sh ensure-home   # assemble/validate $FLYWHEEL_CODEX_TUI_HOME
@@ -21,7 +21,7 @@
 #   - everything idempotent: re-running with a compliant home is a no-op.
 #
 # Env:
-#   FLYWHEEL_CODEX_TUI_HOME   (required) isolated CODEX_HOME path
+#   FLYWHEEL_CODEX_TUI_HOME   (required) managed CODEX_HOME path
 #   FLYWHEEL_CODEX_TUI_CWD    (required for ensure-home) Lead working dir to trust
 #   FLYWHEEL_CODEX_BIN        (optional) codex binary for ensure-daemon (default: codex)
 
@@ -141,6 +141,40 @@ AUTH_LOG_SNAPSHOT_INO=""
 AUTH_LOG_SNAPSHOT_SIZE=""
 AUTH_LOG_SNAPSHOT_DIGEST=""
 AUTH_DEAD_CODE=""
+AUTH_BENIGN_REFRESH_RACE=0
+
+fly2404_truth_healthy() {
+  python3 - "${FLYWHEEL_CODEX_SOURCE_HOME:-$HOME/.codex}/auth.json" <<'PY' >/dev/null 2>&1
+import base64
+import datetime
+import json
+import os
+import stat
+import sys
+import time
+
+path = os.path.join(os.path.realpath(os.path.dirname(sys.argv[1])), "auth.json")
+entry = os.lstat(path)
+if not stat.S_ISREG(entry.st_mode) or stat.S_IMODE(entry.st_mode) != 0o600:
+    raise SystemExit(1)
+with open(path, "r", encoding="utf-8") as handle:
+    value = json.load(handle)
+token = value.get("tokens", {}).get("access_token")
+if token is None:
+    last_refresh = value.get("last_refresh")
+    if not isinstance(last_refresh, str):
+        raise SystemExit(1)
+    refreshed_at = datetime.datetime.fromisoformat(last_refresh.replace("Z", "+00:00")).timestamp()
+    expires_at = refreshed_at + 10 * 24 * 60 * 60
+else:
+    if not isinstance(token, str):
+        raise SystemExit(1)
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    expires_at = json.loads(base64.urlsafe_b64decode(payload))["exp"]
+raise SystemExit(0 if expires_at - time.time() > 300 else 1)
+PY
+}
 
 snapshot_auth_log() {
   local log_file="$HOME_DIR/app-server-daemon/app-server.stderr.log" snapshot
@@ -189,6 +223,7 @@ PY
 classify_auth_dead() {
   local log_file="$HOME_DIR/app-server-daemon/app-server.stderr.log" matched
   AUTH_DEAD_CODE=""
+  AUTH_BENIGN_REFRESH_RACE=0
   [ "$AUTH_LOG_SNAPSHOT_VALID" -eq 1 ] || return 1
   if ! matched="$(python3 - "$log_file" "$AUTH_LOG_SNAPSHOT_EXISTS" \
     "$AUTH_LOG_SNAPSHOT_INO" "$AUTH_LOG_SNAPSHOT_SIZE" \
@@ -237,6 +272,11 @@ for code in (
 sys.exit(1)
 PY
 )"; then
+    return 1
+  fi
+  if [ "$matched" = refresh_token_reused ] && fly2404_truth_healthy; then
+    AUTH_BENIGN_REFRESH_RACE=1
+    log "benign refresh race, truth healthy; retrying remote-control start once"
     return 1
   fi
   AUTH_DEAD_CODE="$matched"
@@ -744,8 +784,8 @@ ensure_home() {
   [ -n "$cwd" ] || die "FLYWHEEL_CODEX_TUI_CWD is required for ensure-home"
   mkdir -p "$HOME_DIR"
 
-  # 1. auth must be provisioned already (operator / FLY-246) — fail-loud.
-  [ -f "$HOME_DIR/auth.json" ] || die "auth.json missing in $HOME_DIR — provision the Lead's Codex auth first (see FLY-246); this script never copies credentials"
+  # 1. auth must be a usable pre-provisioned link — -f also rejects dangling links.
+  [ -f "$HOME_DIR/auth.json" ] || die "auth.json missing or dangling in $HOME_DIR — run the FLY-2404 link-truth migration while the Lead is stopped; this script never copies credentials"
 
   # 2. standalone install required for the daemon backend — fail-loud, no auto-install.
   local standalone="$HOME_DIR/packages/standalone/current/codex"
@@ -1161,6 +1201,19 @@ ensure_daemon() {
       "FLY-1955: $HOME_DIR matched $AUTH_DEAD_CODE; follow the account runbook in engineering/doc/FLY-1955-codex-lead-crash-loop/plan.md section 6."
     auth_dead_hold
     daemon_die "remote-control start failed (home: $HOME_DIR) (codex auth revoked — re-login required)"
+  fi
+
+  if [ "$AUTH_BENIGN_REFRESH_RACE" -eq 1 ]; then
+    if CODEX_INSTALL_DIR="$HOME_DIR/.local/bin" CODEX_HOME="$HOME_DIR" \
+      "$codex_bin" remote-control start --json; then
+      [ -S "$sock" ] || daemon_die \
+        "daemon reported started after refresh-race retry but control socket missing: $sock"
+      clear_daemon_failcount
+      log "daemon OK after one benign refresh-race retry: $sock"
+      return 0
+    fi
+    daemon_die \
+      "remote-control start failed after one benign refresh-race retry (home: $HOME_DIR)"
   fi
 
   reap_zombie_daemon_if_proven

@@ -1,0 +1,20 @@
+sequenceDiagram
+  participant A as Codex 进程 A
+  participant T as 真身 auth.json
+  participant B as Codex 进程 B
+  participant S as OpenAI 刷新权威
+  Note over A,B: 两个进程都链接到同一真身, 令牌快到期
+  A->>T: 回读磁盘 (guarded reload)
+  T-->>A: 仍是旧令牌
+  A->>S: 用旧 refresh token 刷新
+  B->>T: 回读磁盘
+  T-->>B: 仍是旧令牌 (A 还没写回)
+  B->>S: 也用旧 refresh token 刷新
+  S-->>A: 新 access token + 新 refresh token
+  A->>T: 原地写回 (同一 inode, 链接完好)
+  S-->>B: 401 refresh_token_reused
+  Note over B: 失败只记在 B 手里的旧快照上
+  B->>T: 下一次请求前再回读
+  T-->>B: A 写回的新令牌
+  Note over B: 令牌变了, 失败记录清除, 直接用新令牌, 不再刷新
+  B->>S: 正常请求 200

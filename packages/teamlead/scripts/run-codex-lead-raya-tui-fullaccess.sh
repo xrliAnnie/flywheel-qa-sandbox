@@ -77,6 +77,11 @@ if ! assemble_full_access_governance "${FLYWHEEL_LEAD_ID}" "${TEAMLEAD_ROOT}/lea
 fi
 
 if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+	link_truth="${SCRIPT_DIR}/../../../scripts/codex-home-link-truth.sh"
+	[ -x "$link_truth" ] || { echo "codex-home-link-truth missing at $link_truth" >&2; exit 1; }
+	"$link_truth" --lead "$FLYWHEEL_PROJECT_NAME/$FLYWHEEL_LEAD_ID" "$CODEX_HOME" || {
+		rc=$?; echo "codex-home-link-truth failed rc=$rc" >&2; exit "$rc";
+	}
 	if [ ! -x "${FLYWHEEL_CODEX_BIN}" ]; then
 		echo "standalone codex not executable at ${FLYWHEEL_CODEX_BIN}" >&2
 		exit 1

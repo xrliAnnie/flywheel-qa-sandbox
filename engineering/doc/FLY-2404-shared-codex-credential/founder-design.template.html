@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>一份 Codex 凭据</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, "PingFang SC", "Helvetica Neue", sans-serif; line-height: 1.6; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; color: #1a365d; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; font-family: "SF Mono", Menlo, monospace; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin: 18px 0; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; } .card.amber { border-left-color: #ff9500; } .card.red { border-left-color: #ff3b30; } .card.purple { border-left-color: #af52de; } .card.gray { border-left-color: #86868b; }
+  .card h2 { font-size: 18px; margin: 0 0 10px; }
+  .card h3 { font-size: 15px; margin: 14px 0 6px; color: #1a365d; }
+  .lede { font-size: 17px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; background: #f2f2f7; padding: 1px 5px; border-radius: 4px; }
+  .term { border-bottom: 1px dotted #86868b; }
+  .expl { color: #515154; font-size: 13.5px; }
+  .diagram { overflow-x: auto; background: #fff; border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin-right: 6px; vertical-align: middle; }
+  .badge.red { background: #ffe5e3; color: #c0392b; } .badge.green { background: #e3f8e9; color: #1e7b3a; } .badge.amber { background: #fff1dd; color: #a35f00; } .badge.gray { background: #f2f2f7; color: #515154; } .badge.blue { background: #e3efff; color: #0a4fa8; }
+  ul { padding-left: 22px; } li { margin: 4px 0; }
+  .quote { border-left: 3px solid #af52de; padding: 6px 12px; background: #faf5ff; border-radius: 6px; color: #3a3a3c; }
+  .comment { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e5e5ea; }
+  .comment label { display: block; font-size: 12px; color: #86868b; margin-bottom: 4px; }
+  .comment textarea { width: 100%; box-sizing: border-box; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 14px; resize: vertical; background: #fbfbfd; }
+  .comment textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  .summary pre { white-space: pre-wrap; word-break: break-word; background: #f2f2f7; border-radius: 8px; padding: 12px; font-size: 13px; margin: 8px 0; }
+  .btn { background: #007aff; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer; }
+  .btn:active { opacity: .85; }
+  .btn.secondary { background: #e5e5ea; color: #1d1d1f; }
+  .status { font-size: 13px; color: #34c759; margin-left: 10px; }
+  .kv { display: grid; grid-template-columns: 160px 1fr; gap: 6px 12px; font-size: 14px; }
+  .kv dt { color: #86868b; } .kv dd { margin: 0; }
+  @media (max-width: 600px) { .kv { grid-template-columns: 1fr; } .wrap { padding: 20px 12px 60px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2404 · 全机只用一份 Codex 凭据</h1>
+  <div class="meta">设计节点交付 · 2026-09-07 · {{REVIEW_LINE}} · 文档: engineering/doc/FLY-2404-shared-codex-credential/</div>
+
+  <section class="card green" data-title="一句话">
+    <h2>一句话</h2>
+    <p class="lede">每个 Codex 家(<span class="term">CODEX_HOME</span>,即 Codex 命令行工具存放自己会话、配置、凭据的那个目录)保留自己的家,但里面的 <code>auth.json</code>(<span class="term">凭据文件</span>,存着登录后的令牌)不再是复制出来的副本,而是一条指向主机 <code>~/.codex/auth.json</code> 的链接;全机只有那一份「真身」,你在主机上 <code>codex login</code> 一次,所有家立刻都用上。</p>
+    <p class="expl">这是你 2026-09-06 在 [FLY-2394] thread 里的要求:「能够做到让他们有自己的 Codex Home,但是底端完全用同一套凭据吗?…只用一个凭据就行了,不要每个 Home 都有自己的凭据。」</p>
+    <div class="comment"><label for="c-1">对这一节的意见</label><textarea id="c-1" data-key="s1" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card red" data-title="为什么副本会死">
+    <h2>为什么「每家一份副本」会死</h2>
+    <p>Codex 的 <span class="term">refresh token</span>(刷新令牌,用来换取新的短期访问令牌的长期钥匙)是<strong>轮换式</strong>的:每刷新一次,服务器发一把新钥匙,旧钥匙立刻作废。把同一把钥匙复制到 100 个家,第一个去刷新的家拿到新钥匙,其余 99 个家下次刷新时全部撞上 <code>401 refresh_token_reused</code>(「这把钥匙已经用过了」)。9 月 6 日 Raya 和 10 个 runner 副本同时死,就是这个机制。</p>
+    <p>我们盘点了主机上 879 个 runner 家:<strong>全部是普通文件副本,无一是链接</strong>;其中 111 个家、外加一个正在跑着 8 个 Codex 进程的持久家,和主机 <code>~/.codex</code> 持有<strong>完全相同</strong>的一把钥匙。</p>
+    <div class="diagram">{{D1}}</div>
+    <p class="expl">上半:现在的复制世界,先刷新的一方让别人死。下半:改后的链接世界,所有家读写同一个文件;Codex 刷新前会先回读这个文件,发现别人已经换了新钥匙就不再刷。</p>
+    <div class="comment"><label for="c-2">对这一节的意见</label><textarea id="c-2" data-key="s2" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card amber" data-title="定时炸弹 9 月 12 日">
+    <h2>定时炸弹:2026-09-12 03:22 UTC(太平洋时间 9 月 11 日晚 20:22)</h2>
+    <p>主机那把 business 钥匙的访问令牌在 9 月 12 日 03:27 UTC 到期。Codex 只在到期前 5 分钟才主动刷新,届时主机、111 个旧家、那个 8 进程的持久家会<strong>同时</strong>抢着刷新,只有一个赢。如果主机输了,之后每一个新起的 runner 都会复制到一把死钥匙 —— 全机 Codex 停摆。</p>
+    <ul>
+      <li><strong>正路</strong>:在 9 月 12 日之前把「新起的家」和「持久家」切成链接(本设计的第一批工作),之后谁刷新真身都赢。</li>
+      <li><strong>来不及时</strong>:班车窗口先让真身赢一次 —— <strong>唯一受支持的动作是你在主机 <code>codex login</code> 一次</strong>(Lead 裁定:不做无人值守的强制刷新工具,任何脚本不得改写或输出令牌)。通过判据:真身的刷新时间前进、有效期 ≥ 9 天。</li>
+      <li><strong>不能做</strong>:普通地跑一次 <code>codex exec</code> —— 实验证明它不会提前刷新。</li>
+    </ul>
+    <div class="comment"><label for="c-3">对这一节的意见</label><textarea id="c-3" data-key="s3" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card green" data-title="已验证 共享一份是安全的">
+    <h2>已验证:多个进程共享一份凭据是安全的</h2>
+    <p>这是本单第一个要回答的问题。两方面证据:</p>
+    <h3>1. Codex 0.153.2 源码(<code>login/src/auth/manager.rs</code>)</h3>
+    <ul>
+      <li><strong>先回读再刷新</strong>:每次准备刷新前,Codex 先重新读一遍磁盘上的凭据文件;如果发现文件里已经是别人换好的新钥匙,就直接用,不再刷。</li>
+      <li><strong>失败只记在旧快照上</strong>:刷新撞 401 时,失败记录绑定在「当时那份旧钥匙」上;下一次回读到新钥匙,失败记录自动清除。</li>
+      <li><strong>写回是原地写</strong>:Codex 用「清空再写」的方式写同一个文件,不换文件、不重命名,所以链接不会被替换成普通文件;<code>codex logout</code> 只删链接本身,不碰真身。</li>
+    </ul>
+    <div class="diagram">{{D3}}</div>
+    <p class="expl">时序图:两个进程同时要刷新,A 赢,B 拿到 401;B 下一次请求前回读磁盘拿到 A 写回的新钥匙,自愈,不需要我们写任何代码。</p>
+    <h3>2. 真实并发实验(2026-09-07 00:24-00:28 UTC,6 个进程)</h3>
+    <table>
+      <tr><th>波次</th><th>设置</th><th>结果</th></tr>
+      <tr><td>A</td><td>6 个家的 auth.json 都链接到同一真身,无刷新条件</td><td>6 个全部通过鉴权;真身文件未变、链接完好</td></tr>
+      <tr><td>B2</td><td>把访问令牌改成已过期,6 个进程同时触发刷新</td><td><strong>真实轮换了一次</strong>(钥匙换新),文件仍是同一个,6 条链接完好,6 个进程零 401</td></tr>
+      <tr><td>C</td><td>接一个「严格假权威」:对已用过的钥匙一律回 401 reused,模拟 0.4 秒网络延迟</td><td>1 个进程赢、5 个被严判 reused,但<strong>6 个进程全部自愈</strong>,后续零 401,权威只被真正调用一次</td></tr>
+      <tr><td>D</td><td>刷新后稳态再跑一遍</td><td>零次权威调用,全部正常</td></tr>
+    </table>
+    <p class="expl">实验只动了一把没有任何活体在用的 school 池钥匙(19 个持有者里唯一活着的进程是 9 月 2 日已退役的孤儿),没碰主机、Raya、任何 Lead 的活钥匙;轮换后的钥匙已原地写回池里,池仍可用。脚本与账本在 <code>exp-evidence/</code>,已核对不含任何令牌字符串。</p>
+    <div class="comment"><label for="c-4">对这一节的意见</label><textarea id="c-4" data-key="s4" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card purple" data-title="数据结构 谁指向谁">
+    <h2>数据结构:谁指向谁、谁盯着谁</h2>
+    <div class="diagram">{{D2}}</div>
+    <ul>
+      <li><strong>真身</strong>只有一份:主机 <code>~/.codex/auth.json</code>,必须是 0600 权限(只有你能读写)的普通文件。它是全机唯一允许「不是链接」的凭据文件。</li>
+      <li><strong>受管的家</strong>:新起的 runner 家、持久家、Mufasa、infra-bot、Raya。健康探针(<span class="term">codex-global-health</span>,Bridge 里已有的一个定期体检,原来只查 codex 程序路径有没有被改坏)新增「凭据维度」:真身是否健康、每个受管家的链接是否指向真身。</li>
+      <li><strong>只盘点不动的</strong>:profile 池(你手动保存的几个账号快照)、19 个历史 <code>~/.codex-*</code> 目录、879 个旧 runner 家。它们里面 school / personal 账号的钥匙和 business 真身无关,不会因为真身换钥匙而失效。</li>
+    </ul>
+    <div class="comment"><label for="c-5">对这一节的意见</label><textarea id="c-5" data-key="s5" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card amber" data-title="逐 home 切换清单 配额后果">
+    <h2>逐 home 切换清单(Lead 裁定:不自动并入,逐个批)</h2>
+    <table>
+      <tr><th>家</th><th>现在的账号</th><th>动作</th><th>谁批</th></tr>
+      <tr><td>新起的 runner 家</td><td>随真身</td><td>代码上线后自动建链接</td><td>本单</td></tr>
+      <tr><td>持久家 agents/flywheel/implement</td><td>business(和真身同一把钥匙)</td><td>班车窗口自动迁移</td><td>本单</td></tr>
+      <tr><td>Raya</td><td>business(独立登录)</td><td>raya 仓库接入脚本后切</td><td>本单 + raya 仓</td></tr>
+      <tr><td>Mufasa</td><td><strong>school</strong></td><td>清单项:卸载 → 换链接 → 重新装载;切后用 business 配额</td><td>Lead 逐项批</td></tr>
+      <tr><td>infra-bot</td><td><strong>personal</strong></td><td>同上</td><td>Lead 逐项批</td></tr>
+      <tr><td>其他历史目录</td><td>各异</td><td>只盘点,不切</td><td>—</td></tr>
+    </table>
+    <h3>给你看的后果原文(Lead 要求写明)</h3>
+    <p class="quote">「配额集中到一个账号 = 更快打满」—— 今天 Codex 用量分散在 business / school / personal 三个 ChatGPT 账号上,每个账号各自有 usage limit;全机只用一份凭据后,runner、Lead、Raya 的所有 Codex 用量都记在同一个账号上,撞 usage limit 的时间会比现在早,撞上时是全机同时停,而不是只停一个 Lead。这是「只登一次」的直接代价,本单不解决配额问题。</p>
+    <div class="comment"><label for="c-6">对这一节的意见</label><textarea id="c-6" data-key="s6" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card blue" data-title="切换怎么做">
+    <h2>切换怎么做(班车窗口,Bridge 不停)</h2>
+    <div class="diagram">{{D4}}</div>
+    <ul>
+      <li><strong>不热切</strong>:正在跑的家绝不在跑的时候换链接。代码只对「还没有凭据文件的新家」建链接;已有副本的家原样保留、打个待迁移标记。</li>
+      <li><strong>准入刹车</strong>(<span class="term">admission pause</span>,Bridge 已有的「暂停派新任务」开关,带租约、要续租):切换全程拉着刹车,等所有任务安静下来、持久家的租约归零,再在同一把锁里把副本换成链接。Bridge 全程活着,因为刹车、续租、恢复的接口都在它身上。</li>
+      <li><strong>Lead 的家</strong>:先从 launchd(macOS 的后台服务管理器)卸载该 Lead,换链接,再装回去。之后每次启动,启动脚本会自检「已经是正确链接」并直接放行。</li>
+      <li><strong>回滚</strong>:同一套刹车协议,把链接换回副本,再部署旧代码。顺序不能反,否则旧代码会把副本内容写穿到真身里。</li>
+    </ul>
+    <div class="comment"><label for="c-7">对这一节的意见</label><textarea id="c-7" data-key="s7" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card green" data-title="出了事怎么知道 怎么恢复">
+    <h2>出了事怎么知道、怎么恢复</h2>
+    <p>一份凭据的代价是「一起死」。所以探针要能第一时间说清楚<strong>哪种死</strong>,并给出对应的一句话恢复动作:</p>
+    <table>
+      <tr><th>探针报什么</th><th>意思</th><th>恢复动作</th></tr>
+      <tr><td>truth-missing / truth-expired</td><td>真身没了或钥匙过期</td><td><strong>你在主机 <code>codex login</code> 一次</strong>,所有家立即用上,正在跑的进程不用重启</td></tr>
+      <tr><td>truth-mode</td><td>真身权限不是 0600</td><td>改权限,不用登录</td></tr>
+      <tr><td>link-drift / link-missing / copy-pending</td><td>某个家的链接指错了、被删了、或还是旧副本</td><td>班车窗口停那个家、跑一次迁移脚本、再启动;登录修不了这个</td></tr>
+      <tr><td>authority-unavailable</td><td>某个 Lead 的家在哪都查不出来</td><td>先修 Lead 的配置一致性</td></tr>
+    </table>
+    <p class="expl">探针绝不去跑真实 Codex 会话(那会消耗配额,而且「额度打满」和「钥匙死了」在结果上分不开);它只看文件:权限、能不能解析、令牌有效期、链接指向。一次性的读写撞车(Codex 写文件的那几微秒)会被「重读三次 + 连续两次体检才报严重」吸收。</p>
+    <div class="comment"><label for="c-8">对这一节的意见</label><textarea id="c-8" data-key="s8" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card gray" data-title="取舍与被否决的方案">
+    <h2>取舍与被否决的方案</h2>
+    <table>
+      <tr><th>方案</th><th>为什么不选</th></tr>
+      <tr><td><strong>每家一条链接指向真身(采用)</strong></td><td>零副本可失效;Codex 自己的刷新协议直接生效;你登录一次全机生效;删家、退出登录都只碰链接</td></tr>
+      <tr><td>硬链接(两个文件名共用一个底层文件)</td><td>我们自己的工具用「写临时文件再改名」的方式写真身,一改名底层文件就分叉了,而且分叉<strong>看不出来</strong></td></tr>
+      <tr><td>Codex 的钥匙串模式(存进 macOS 钥匙串)</td><td>它按每个家的路径分开存,天然隔离,没法共享</td></tr>
+      <tr><td>自建一个「刷新代理」,所有家都找它刷新</td><td>各家仍是副本,新钥匙还得推回每个家,等于再造一个同步器;实验证明没必要。留作 Codex 将来改坏协议时的退路</td></tr>
+      <tr><td>定时把真身复制到每个家</td><td>复制间隙里仍是副本,先刷新的一方照样打死别人</td></tr>
+    </table>
+    <div class="comment"><label for="c-9">对这一节的意见</label><textarea id="c-9" data-key="s9" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card red" data-title="诚实边界">
+    <h2>诚实边界:这个设计做什么、不做什么</h2>
+    <ul>
+      <li><strong>做</strong>:新家自动链接;持久家、Raya、你批准的 Lead 家在班车窗口切链接;探针盯真身与链接;一次性清理脚本只删无活体旧家的副本;9 月 12 日炸弹的处置路径。</li>
+      <li><strong>不做</strong>:不解决配额集中的问题;不自动把 Mufasa / infra-bot 并入(Lead 逐个批);不迁移 879 个旧家(只清理);不动 Claude 侧账号;不改合并权限;不引入已被撤销的读拒绝沙箱。</li>
+      <li><strong>消不掉的风险</strong>:Codex 写文件那几微秒里别的进程可能读到半截文件,概率极低、探针会吸收,但不能保证某一次请求不撞上。</li>
+      <li><strong>跨仓依赖</strong>:Raya 的家由 raya 仓库管理,本仓只交付脚本和合同;Raya 切换完成的验收由那边的 issue 采证。</li>
+      <li><strong>设计评审状态</strong>:Codex 设计评审 5 轮(11 → 8 → 6 → 6 → 见本页顶部状态行);每轮意见及处置都在 plan.md §9。</li>
+    </ul>
+    <div class="comment"><label for="c-10">对这一节的意见</label><textarea id="c-10" data-key="s10" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card blue summary" id="summary-card" data-title="页面意见汇总">
+    <h2>页面意见汇总</h2>
+    <p class="expl">上面每一节的意见框会自动保存在这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」后把文本贴回 thread 即可。超过约 1800 字会分成多段,每段都带同样的开头标记。</p>
+    <div id="summary-chunks"></div>
+    <p><button class="btn" id="copy-all" type="button">复制全部意见</button><button class="btn secondary" id="clear-all" type="button">清空本页意见</button><span class="status" id="copy-status"></span></p>
+  </section>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = "【页面意见汇总】FLY-2404";
+  var PREFIX = "fly2404-comment:" + location.pathname + ":";
+  var CHUNK = 1800;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  function load(key) { try { return localStorage.getItem(PREFIX + key) || ""; } catch (e) { return ""; } }
+  function save(key, value) { try { localStorage.setItem(PREFIX + key, value); } catch (e) {} }
+  function remove(key) { try { localStorage.removeItem(PREFIX + key); } catch (e) {} }
+  function sectionTitle(el) {
+    var sec = el.closest("section");
+    return sec && sec.getAttribute("data-title") ? sec.getAttribute("data-title") : "未命名";
+  }
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) lines.push("[" + sectionTitle(ta) + "] " + v);
+    });
+    return lines;
+  }
+  function chunks() {
+    var lines = collect();
+    if (!lines.length) return [MARKER + "\n(暂无意见)"];
+    var out = [], cur = MARKER;
+    lines.forEach(function (line) {
+      var candidate = cur + "\n" + line;
+      if (candidate.length > CHUNK && cur !== MARKER) { out.push(cur); cur = MARKER + "\n" + line; }
+      else cur = candidate;
+    });
+    out.push(cur);
+    return out;
+  }
+  function render() {
+    var host = document.getElementById("summary-chunks");
+    while (host.firstChild) host.removeChild(host.firstChild);
+    chunks().forEach(function (text, i, all) {
+      var pre = document.createElement("pre");
+      pre.textContent = all.length > 1 ? text + "\n(第 " + (i + 1) + "/" + all.length + " 段)" : text;
+      host.appendChild(pre);
+    });
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.top = "-1000px";
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function setStatus(msg) {
+    var s = document.getElementById("copy-status");
+    s.textContent = msg;
+    setTimeout(function () { s.textContent = ""; }, 2500);
+  }
+  function copyAll() {
+    var text = chunks().join("\n\n");
+    var done = function (ok) { setStatus(ok ? "已复制" : "复制失败,请手动选中上方文本"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+  areas.forEach(function (ta) {
+    ta.value = load(ta.getAttribute("data-key"));
+    ta.addEventListener("input", function () { save(ta.getAttribute("data-key"), ta.value); render(); });
+  });
+  document.getElementById("copy-all").addEventListener("click", copyAll);
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; remove(ta.getAttribute("data-key")); });
+    render(); setStatus("已清空");
+  });
+  render();
+})();
+</script>
+</body>
+</html>

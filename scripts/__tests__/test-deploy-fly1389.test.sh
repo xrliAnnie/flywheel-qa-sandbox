@@ -726,10 +726,13 @@ with ledger_path.open("a+", encoding="utf-8") as ledger:
     ledger.flush()
     os.fsync(ledger.fileno())
     value["tokens"]["refresh_token"] = "fixture-rotated-" + uuid.uuid4().hex
-    temp = auth_path.with_name("auth.json.tmp")
-    temp.write_text(json.dumps(value, separators=(",", ":")) + "\n", encoding="utf-8")
-    os.chmod(temp, 0o600)
-    os.replace(temp, auth_path)
+    # Codex 0.153.2 refreshes the credential in place; preserve a managed
+    # auth.json symlink and exercise the same truncate/write behavior.
+    with auth_path.open("w", encoding="utf-8") as auth:
+        auth.write(json.dumps(value, separators=(",", ":")) + "\n")
+        auth.flush()
+        os.fsync(auth.fileno())
+    os.chmod(auth_path, 0o600)
 PY
     mkdir -p "$(dirname "$socket")" "$(dirname "$pid_file")"
     python3 - "$socket" <<'PY' >/dev/null 2>&1 &
@@ -1821,7 +1824,10 @@ if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
       && [[ "$(grep -c ' app-server daemon pid-update-loop$' <<<"$CXX_UPDATER_CENSUS")" == 2 ]] \
       && [[ "$(wc -l <<<"$CXX_MATCHED_UPDATERS" | tr -d ' ')" == 2 ]] \
       && [[ -f "$CXX_DIR/q/34/codex-runtime-env.json" \
-          && -f "$CXX_DIR/q/35/codex-runtime-env.json" ]]; then
+          && -f "$CXX_DIR/q/35/codex-runtime-env.json" ]] \
+      && while IFS= read -r cxx_home; do
+        [[ -L "$cxx_home/auth.json" ]] || exit 1
+      done < <(jq -r '.[].codexHome' "$CXX_DIR/launchd-leads.json"); then
     pass "CXX: main + extra Codex Leads retain distinct home/state/window/updater coordinates"
   else
     fail "CXX: two-Lead Codex topology collided" \
@@ -1836,11 +1842,15 @@ else
     run_teardown "$FH1" "$CODEX_SLOT" || true
 fi
 
-if [[ "$(shasum -a 256 "$CODEX_ACTIVE_HUB/auth.json" | awk '{print $1}')" == \
-    "$CODEX_ACTIVE_HUB_HASH" ]]; then
-  pass "CXX2: concurrent slot homes never write rotated credentials back to the active Hub"
+auth_ledger_lines="$(wc -l < "$FLY1389_AUTH_LEDGER" | tr -d ' ')"
+auth_ledger_unique="$(sort -u "$FLY1389_AUTH_LEDGER" | wc -l | tr -d ' ')"
+if [[ "$(shasum -a 256 "$CODEX_ACTIVE_HUB/auth.json" | awk '{print $1}')" != \
+    "$CODEX_ACTIVE_HUB_HASH" && "$auth_ledger_lines" -gt 0 \
+    && "$auth_ledger_lines" == "$auth_ledger_unique" ]] \
+    && python3 -m json.tool "$CODEX_ACTIVE_HUB/auth.json" >/dev/null 2>&1; then
+  pass "CXX2: concurrent slot homes rotate one shared Hub credential without token reuse"
 else
-  fail "CXX2: active Hub credential changed during the Codex room lifecycle"
+  fail "CXX2: shared Hub credential refresh chain reused a token or became invalid"
 fi
 
 # The retired per-slot credential-source field is denied before any per-Lead

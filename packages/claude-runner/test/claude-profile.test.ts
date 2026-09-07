@@ -45,9 +45,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The suite's slowest normal subprocess case is ~7s. Preserve a bounded
-// timeout while allowing the same red-line matrix to run under CI contention.
-vi.setConfig({ testTimeout: 45_000 });
+// Multi-candidate `next` exercises two complete, serialized switch attempts and
+// can approach 50s on a contended CI host. Keep the suite bounded while leaving
+// enough headroom for that red-line path.
+vi.setConfig({ testTimeout: 60_000 });
 
 const PROFILE_BIN = join(
 	dirname(fileURLToPath(import.meta.url)),

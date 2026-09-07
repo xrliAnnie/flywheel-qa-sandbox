@@ -296,6 +296,62 @@ auth_classifier_case append-nonauth-stale unclassified "non-auth append cannot r
 auth_classifier_case new-network unclassified "fresh network-only failure is not auth-dead"
 auth_classifier_case read-race unclassified "stderr stat/read drift fails classification closed"
 
+# FLY-2404: refresh_token_reused is a possible loser of Codex's shared-truth
+# refresh race. A healthy truth gets exactly one start retry and no auth-dead
+# alert; the retry must still prove the control socket.
+AUTH_RACE_HOME="$TMP/auth-race-home"
+AUTH_RACE_SOURCE="$TMP/auth-race-source"
+AUTH_RACE_START_LOG="$TMP/auth-race-start.log"
+AUTH_RACE_ALERT_LOG="$TMP/auth-race-alert.log"
+mkdir -p "$AUTH_RACE_HOME/packages/standalone/current" \
+  "$AUTH_RACE_HOME/app-server-daemon" "$AUTH_RACE_SOURCE"
+printf '%s\n' 'old stderr' > "$AUTH_RACE_HOME/app-server-daemon/app-server.stderr.log"
+python3 - "$AUTH_RACE_SOURCE/auth.json" <<'PY'
+import base64, json, os, sys, time
+id_payload = base64.urlsafe_b64encode(json.dumps({"exp": int(time.time()) - 60}).encode()).decode().rstrip("=")
+access_payload = base64.urlsafe_b64encode(json.dumps({"exp": int(time.time()) + 3600}).encode()).decode().rstrip("=")
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"tokens": {
+        "id_token": f"header.{id_payload}.sig",
+        "access_token": f"header.{access_payload}.sig",
+    }}, handle)
+os.chmod(sys.argv[1], 0o600)
+PY
+cat > "$AUTH_RACE_HOME/packages/standalone/current/codex" <<'MOCK'
+#!/bin/bash
+echo "$@" >> "$AUTH_RACE_START_LOG"
+starts=$(grep -c '^remote-control start --json$' "$AUTH_RACE_START_LOG" || true)
+if [ "$starts" -eq 1 ]; then
+  printf '%s\n' refresh_token_reused > "$CODEX_HOME/app-server-daemon/app-server.stderr.log"
+  exit 1
+fi
+mkdir -p "$CODEX_HOME/app-server-control"
+python3 - "$CODEX_HOME/app-server-control/app-server-control.sock" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+PY
+MOCK
+chmod +x "$AUTH_RACE_HOME/packages/standalone/current/codex"
+: > "$AUTH_RACE_START_LOG"
+: > "$AUTH_RACE_ALERT_LOG"
+if FLYWHEEL_CODEX_TUI_HOME="$AUTH_RACE_HOME" \
+  FLYWHEEL_CODEX_SOURCE_HOME="$AUTH_RACE_SOURCE" \
+  AUTH_RACE_START_LOG="$AUTH_RACE_START_LOG" \
+  AUTH_RACE_ALERT_LOG="$AUTH_RACE_ALERT_LOG" \
+  "$MODERN_BASH" -c '
+    source "$1"
+    emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$AUTH_RACE_ALERT_LOG"; }
+    ensure_daemon
+  ' _ "$SUT" >/dev/null 2>"$TMP/auth-race.err" \
+  && [ "$(grep -c '^remote-control start --json$' "$AUTH_RACE_START_LOG" || true)" -eq 2 ] \
+  && [ ! -s "$AUTH_RACE_ALERT_LOG" ] \
+  && grep -q 'benign refresh race, truth healthy' "$TMP/auth-race.err"; then
+  pass "healthy shared truth retries one refresh race without an auth-dead alert"
+else
+  fail "healthy shared truth must authorize exactly one start retry"
+fi
+
 # A7: auth-dead failures participate in the same consecutive-failure episode.
 AUTH_REPEAT_HOME="$TMP/auth-repeat-home"
 AUTH_REPEAT_ALERT_LOG="$TMP/auth-repeat-alert.log"
