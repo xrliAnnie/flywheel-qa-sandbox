@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	buildSummaryPath,
 	SUMMARY_PREFIX,
+	summaryDeliveryBranch,
 	validateSummaryArtifact,
 } from "../summary-contract.js";
 
@@ -46,6 +47,74 @@ describe("FLY-2030 summary artifact contract", () => {
 			}),
 		).toBe("summaries/flywheel/2026-08-28--02.md");
 	});
+
+	it.each([
+		[
+			"growth",
+			"reflection-lead",
+			"2026-09-06/2026-09-06",
+			"summary/growth/reflection-lead/269dc60b2dd3fb93",
+		],
+		[
+			"geoforge3d",
+			"ops-lead",
+			"2026-09-06T00:00:00-07:00/2026-09-06T16:00:00-07:00",
+			"summary/geoforge3d/ops-lead/f2ff841c04d0fd3a",
+		],
+		[
+			"joycon-typeless",
+			"joycon-lead",
+			"2026-08-31/2026-09-06",
+			"summary/joycon-typeless/joycon-lead/9d03b88074cc42d6",
+		],
+		[
+			"tidal-echo",
+			"tidal-echo-content-lead",
+			"2026-09-06T00:00:00-07:00/2026-09-06T16:20:00-07:00",
+			"summary/tidal-echo/tidal-echo-content-lead/9660a326b4890a62",
+		],
+		[
+			"growth",
+			"rafiki-lead",
+			"2026-09-06T00:00:00-07:00/2026-09-06T23:59:59-07:00",
+			"summary/growth/rafiki-lead/9746b0095439c348",
+		],
+		[
+			"geoforge3d",
+			"product-lead",
+			"2026-09-02T00:00:00-07:00/2026-09-06T16:00:00-07:00",
+			"summary/geoforge3d/product-lead/0311962ba79ebb0c",
+		],
+		[
+			"personal-assistant",
+			"belle-lead",
+			"2026-09-06/2026-09-06",
+			"summary/personal-assistant/belle-lead/34876ba1064097a7",
+		],
+		[
+			"flywheel",
+			"flywheel-product-lead",
+			"2026-09-06T00:00:00-07:00/2026-09-06T23:59:59-07:00",
+			"summary/flywheel/flywheel-product-lead/7d30d374a698d7f6",
+		],
+		[
+			"tidal-echo",
+			"sub-lead",
+			"2026-09-06T00:00:00-07:00/2026-09-06T23:59:59-07:00",
+			"summary/tidal-echo/sub-lead/8d117823e9861c20",
+		],
+		[
+			"flywheel",
+			"flywheel-eng-lead",
+			"2026-09-06T00:00:00-07:00/2026-09-06T23:59:59-07:00",
+			"summary/flywheel/flywheel-eng-lead/99bcfcafbd3d8a3e",
+		],
+	])(
+		"reproduces the stable Raya branch for %s/%s",
+		(project, author, period, branch) => {
+			expect(summaryDeliveryBranch({ project, author, period })).toBe(branch);
+		},
+	);
 
 	it("accepts a complete per-lead artifact", () => {
 		expect(
