@@ -117,6 +117,15 @@ if [ -n "${FLYWHEEL_COMM_DB:-}" ] \
   && [ "$(basename "$(dirname "$FLYWHEEL_COMM_DB")")" = "$PROJECT_NAME" ]; then
   COMM_DB="$FLYWHEEL_COMM_DB"
 fi
+RAYA_SHUTTLE_STALE_SECONDS=$((13 * 3600))
+PATROL_NOW_EPOCH="${PATROL_NOW_EPOCH:-$(date +%s)}"
+case "$PATROL_NOW_EPOCH" in
+  ""|*[!0-9]*) PATROL_NOW_EPOCH="$(date +%s)" ;;
+esac
+RAYA_PATROL_HOME="$STATE_DIR/raya"
+RAYA_PATROL_CODE_DIR="$RAYA_PATROL_HOME/code"
+RAYA_PATROL_FACT=""
+RAYA_PATROL_UNAVAILABLE=""
 
 safe_sqlite_path() {
   case "$1" in
@@ -978,6 +987,130 @@ else
   STEP4_STATUS="OK-CANDIDATE"
 fi
 
+raya_patrol_git() {
+  GIT_OPTIONAL_LOCKS=0 git -C "$RAYA_PATROL_CODE_DIR" "$@"
+}
+
+raya_patrol_is_sha40() { [[ "${1:-}" =~ ^[0-9a-fA-F]{40}$ ]]; }
+
+raya_patrol_unavailable() {
+  RAYA_PATROL_UNAVAILABLE="$1"
+  RAYA_PATROL_FACT="raya checkout=UNAVAILABLE(structural: $1)"
+  return 1
+}
+
+raya_patrol_oldest_epoch() {
+  raya_patrol_git log --format=%ct "$1" 2>/dev/null | awk '
+    $0 !~ /^[0-9]+$/ { bad=1; next }
+    min == "" || $0 < min { min=$0 }
+    END { if (bad || min == "") exit 1; print min }
+  '
+}
+
+raya_collect_patrol_fact() {
+  local head="" head8="" origin="" origin8=none branch="" behind=unknown ahead=unknown
+  local checkout_drift=no ledger="" deployed_sha=missing ledger_ok=0 deploy_drift=yes
+  local checked="" receipt_age_h=missing receipt_age_seconds="" shuttle_stale=yes
+  local checkout_oldest="" deploy_oldest="" oldest="" drift_age_seconds="" drift_age_h=-
+  local overdue=no rc=0
+  RAYA_PATROL_FACT=""
+  RAYA_PATROL_UNAVAILABLE=""
+
+  [ -d "$RAYA_PATROL_CODE_DIR" ] || { raya_patrol_unavailable raya_checkout_missing; return; }
+  command -v git >/dev/null 2>&1 || { raya_patrol_unavailable raya_git_unreadable; return; }
+  [ "$(raya_patrol_git rev-parse --is-inside-work-tree 2>/dev/null || true)" = true ] \
+    || { raya_patrol_unavailable raya_git_unreadable; return; }
+  head="$(raya_patrol_git rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)"
+  raya_patrol_is_sha40 "$head" || { raya_patrol_unavailable raya_git_unreadable; return; }
+  head8="${head:0:8}"
+  branch="$(raya_patrol_git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  [ -n "$branch" ] || branch=detached
+
+  raya_patrol_git show-ref --verify --quiet refs/remotes/origin/main 2>/dev/null
+  rc=$?
+  case "$rc" in
+    0)
+      origin="$(raya_patrol_git rev-parse --verify 'refs/remotes/origin/main^{commit}' 2>/dev/null || true)"
+      raya_patrol_is_sha40 "$origin" \
+        || { raya_patrol_unavailable raya_git_unreadable; return; }
+      origin8="${origin:0:8}"
+      behind="$(raya_patrol_git rev-list --count "$head..$origin" 2>/dev/null || true)"
+      ahead="$(raya_patrol_git rev-list --count "$origin..$head" 2>/dev/null || true)"
+      case "$behind:$ahead" in
+        *[!0-9:]*|:*|*:) raya_patrol_unavailable raya_git_unreadable; return ;;
+      esac
+      if [ "$ahead" -gt 0 ]; then checkout_drift=diverged
+      elif [ "$behind" -gt 0 ]; then checkout_drift=behind
+      else checkout_drift=no
+      fi
+      ;;
+    1) origin=""; origin8=none; behind=unknown; checkout_drift=no ;;
+    *) raya_patrol_unavailable raya_git_unreadable; return ;;
+  esac
+
+  ledger="$(sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}' \
+    "$RAYA_PATROL_HOME/deployed-sha" 2>/dev/null || true)"
+  if [ -z "$ledger" ]; then
+    deployed_sha=missing
+  elif [[ ! "$ledger" =~ ^[0-9a-fA-F]{40}$ ]] \
+    || ! raya_patrol_git cat-file -e "${ledger}^{commit}" 2>/dev/null; then
+    deployed_sha=invalid
+  else
+    raya_patrol_git merge-base --is-ancestor "$ledger" "$head" 2>/dev/null
+    rc=$?
+    case "$rc" in
+      0) deployed_sha="${ledger:0:8}"; ledger_ok=1 ;;
+      1) deployed_sha=not_ancestor ;;
+      *) raya_patrol_unavailable raya_git_unreadable; return ;;
+    esac
+  fi
+  if [ "$ledger_ok" -eq 1 ] && [ "$ledger" = "$head" ]; then deploy_drift=no; fi
+
+  if [ -f "$RAYA_PATROL_HOME/deploy-receipt.json" ]; then
+    checked="$(jq -er '.checked_at | select(type == "number" and . == floor)' \
+      "$RAYA_PATROL_HOME/deploy-receipt.json" 2>/dev/null || true)"
+    if [[ "$checked" =~ ^[0-9]+$ ]] && [ "$checked" -le "$PATROL_NOW_EPOCH" ]; then
+      receipt_age_seconds=$((PATROL_NOW_EPOCH - checked))
+      receipt_age_h=$((receipt_age_seconds / 3600))
+      if [ "$receipt_age_seconds" -le "$RAYA_SHUTTLE_STALE_SECONDS" ]; then shuttle_stale=no; fi
+    else
+      receipt_age_h=malformed
+    fi
+  fi
+
+  if [ "$checkout_drift" = behind ]; then
+    checkout_oldest="$(raya_patrol_oldest_epoch "$head..$origin" || true)"
+    [[ "$checkout_oldest" =~ ^[0-9]+$ ]] \
+      || { raya_patrol_unavailable raya_git_unreadable; return; }
+    oldest="$checkout_oldest"
+  fi
+  if [ "$deploy_drift" = yes ] && [ "$ledger_ok" -eq 1 ]; then
+    deploy_oldest="$(raya_patrol_oldest_epoch "$ledger..$head" || true)"
+    [[ "$deploy_oldest" =~ ^[0-9]+$ ]] \
+      || { raya_patrol_unavailable raya_git_unreadable; return; }
+    if [ -z "$oldest" ] || [ "$deploy_oldest" -lt "$oldest" ]; then oldest="$deploy_oldest"; fi
+  fi
+  if [ -n "$oldest" ]; then
+    if [ "$oldest" -gt "$PATROL_NOW_EPOCH" ]; then
+      drift_age_seconds=0
+    else
+      drift_age_seconds=$((PATROL_NOW_EPOCH - oldest))
+    fi
+    drift_age_h=$((drift_age_seconds / 3600))
+  fi
+
+  if [ "$shuttle_stale" = yes ] || [ "$checkout_drift" = diverged ] \
+    || [ "$origin8" = none ] || [ "$branch" != main ] || [ "$ledger_ok" -ne 1 ]; then
+    overdue=yes
+  elif { [ "$checkout_drift" = behind ] || [ "$deploy_drift" = yes ]; } \
+    && [ -n "$drift_age_seconds" ] \
+    && [ "$drift_age_seconds" -gt "$RAYA_SHUTTLE_STALE_SECONDS" ]; then
+    overdue=yes
+  fi
+
+  RAYA_PATROL_FACT="raya checkout=$RAYA_PATROL_CODE_DIR head=$head8 origin_main=$origin8 branch=$branch behind=$behind deployed_sha=$deployed_sha receipt_age_h=$receipt_age_h drift_age_h=$drift_age_h checkout_drift=$checkout_drift deploy_drift=$deploy_drift shuttle_stale=$shuttle_stale overdue=$overdue"
+}
+
 STEP5_FACTS=""
 STEP5_STATUS="LEAD-JUDGMENT-REQUIRED"
 if [ "$PROJECTS_OK" != 1 ] || ! command -v gh >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
@@ -1015,6 +1148,20 @@ ${PR_FACTS:-PR none}
 ${RUN_FACTS:-RUN none}
 Discord: resolve at most 2 recent roster identifiers via /api/chat-threads, then run fetch_messages."
     fi
+  fi
+fi
+
+if [ "$PROJECT_NAME" = flywheel ]; then
+  raya_collect_patrol_fact || true
+  if [ -n "$RAYA_PATROL_FACT" ]; then
+    STEP5_FACTS="${STEP5_FACTS:+$STEP5_FACTS$'\n'}$RAYA_PATROL_FACT"
+  fi
+  if [ -n "$RAYA_PATROL_UNAVAILABLE" ]; then
+    STEP5_FACTS="${STEP5_FACTS:+$STEP5_FACTS$'\n'}UNAVAILABLE_CAUSE step=5 class=structural token=$RAYA_PATROL_UNAVAILABLE"
+    case "$STEP5_STATUS" in
+      UNAVAILABLE\(*) ;;
+      *) STEP5_STATUS="UNAVAILABLE(structural: $RAYA_PATROL_UNAVAILABLE)" ;;
+    esac
   fi
 fi
 

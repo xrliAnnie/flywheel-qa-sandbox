@@ -105,6 +105,41 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(section0).not.toMatch(/Authorization:\s*Bearer\s+\$\{/);
 	});
 
+	it("FLY-2385: STEP 5 turns overdue Raya checkout facts into a deduped warning and valid finding", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		for (const anchor of [
+			"Raya 生产 checkout（仅 flywheel 项目）",
+			"raya checkout=",
+			"overdue=yes",
+			"CHAT_CHANNEL_ID",
+			"FLY-2385",
+			"同一 UTC 日只发一次",
+			"连续两个 tick",
+			"raya_checkout_overdue",
+			"UNAVAILABLE_CAUSE step=5 class=structural",
+		]) {
+			expect(section0).toContain(anchor);
+		}
+
+		const findingProgram = section0.match(
+			/# FLY-2080-FINDING-GATE-BEGIN\nawk '\n([\s\S]*?)\n' "\$REPORT_PATH"\n# FLY-2080-FINDING-GATE-END/,
+		)?.[1];
+		expect(findingProgram).toBeDefined();
+		for (const finding of [
+			"FINDING step=5 bridge_problem=no result=advanced evidence=raya_checkout_overdue.aaaaaaaa.bbbbbbbb owner=n/a next=n/a epic=n/a epic_marker=n/a",
+			"FINDING step=5 bridge_problem=no result=escalated-with-plan evidence=raya_checkout_overdue.aaaaaaaa.bbbbbbbb owner=agent:flywheel-eng-lead next=retry:raya-overdue-warning epic=n/a epic_marker=n/a",
+		]) {
+			const result = spawnSync("awk", [findingProgram ?? ""], {
+				input: `STEP 5: FINDING\n${finding}\n`,
+				encoding: "utf8",
+			});
+			expect(result.status).toBe(0);
+		}
+	});
+
 	it("FLY-1855 founder increment: every canonical Runner pane has full-scrollback evidence and a closed action", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),

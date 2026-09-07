@@ -52,10 +52,14 @@ LAUNCHD_CENSUS_SOURCED=1
 # shellcheck source=launchd-census.sh
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/launchd-census.sh"
+# shellcheck source=lib/updater-raya-deploy.sh
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/updater-raya-deploy.sh"
 # launchd-census is a shared entrypoint and sources .env for standalone use.
 # Re-pin afterward so no direct path override can diverge this consumer from
 # the plist and founder producer in production.
 updater_configure_runtime_paths
+raya_configure_runtime_paths
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [flywheel-updater] $*"; }
 updater_now() { printf '%s\n' "${UPDATER_NOW:-$(date +%s)}"; }
@@ -90,6 +94,27 @@ updater_alert_urgent() { # $1=class $2=basename $3=body
 }
 updater_alert_scheduled() { # $1=class $2=body
   severe_alert "$(updater_scheduled_signature "$1")" "$2"
+}
+
+raya_alert_dispatch() { # $1=severity $2=class $3=requested title $4=body
+  local severity="$1" class="$2" body="$4" kind="" title="" level=""
+  local alert_args=()
+  case "$severity" in
+    severe) kind=deploy_failed; title="Raya deploy failed"; level=SEVERE ;;
+    warning) kind=deploy_degraded; title="Raya deploy degraded"; level=WARNING ;;
+    *) return 2 ;;
+  esac
+  alert_args=(
+    --project flywheel --lead updater
+    --kind "$kind" --severity "$severity"
+    --title "$title" --body "$body"
+    --signature "$(updater_scheduled_signature "$class")"
+  )
+  log "$level: $title: $body"
+  if [[ "$severity" == severe && -n "${FLYWHEEL_FOUNDER_USER_ID:-}" ]]; then
+    alert_args+=(--mention-user "$FLYWHEEL_FOUNDER_USER_ID")
+  fi
+  "${FLYWHEEL_DIR}/scripts/lead-alert.sh" "${alert_args[@]}" 1>&2 || true
 }
 
 # A token has already left QueueDirectories when this helper is called. Expose
@@ -366,6 +391,8 @@ UPDATER_COMPLETED=0
 UPDATER_ALERTED=0
 UPDATER_CLEANUP_DONE=0
 UPDATER_CLAIMED_BASENAMES=()
+UPDATER_WAKE_KIND=unknown
+UPDATER_CYCLE_RESULT=unknown
 
 updater_cleanup() {
   (( UPDATER_CLEANUP_DONE == 0 )) || return 0
@@ -382,6 +409,7 @@ updater_cleanup() {
       rm -rf -- "$UPDATER_CLAIM_DIR" 2>/dev/null || true
       ;;
   esac
+  raya_lock_release || true
   updater_lock_release
 }
 
@@ -407,8 +435,16 @@ updater_run_cycle() {
   local had_consumed_indeterminate=0
   local shape_valid=() valid=()
 
+  UPDATER_WAKE_KIND=unknown
+  UPDATER_CYCLE_RESULT=unknown
   updater_snapshot_tokens
+  if (( ${#UPDATER_SNAPSHOT[@]} == 0 )); then
+    UPDATER_WAKE_KIND=scheduled
+  else
+    UPDATER_WAKE_KIND=urgent
+  fi
   UPDATER_CLAIM_DIR="$(mktemp -d "${FLYWHEEL_HOME}/.urgent-claim.XXXXXX")" || {
+    UPDATER_CYCLE_RESULT=claim_dir_failed
     updater_alert_scheduled claim-dir-failed "Updater could not create its same-filesystem claim directory. No restart was attempted."
     return 1
   }
@@ -460,6 +496,13 @@ updater_run_cycle() {
         fi
       done
     fi
+    if [[ "$UPDATER_WAKE_KIND" == scheduled ]]; then
+      UPDATER_CYCLE_RESULT=fetch_failed
+    elif (( had_invalid == 1 )); then
+      UPDATER_CYCLE_RESULT=invalid
+    else
+      UPDATER_CYCLE_RESULT=indeterminate
+    fi
     (( fetch_rc == 127 )) && return 127
     return 2
   fi
@@ -497,7 +540,10 @@ updater_run_cycle() {
 
   # Only an entry that could not be atomically moved remains watched. Do not
   # execute a valid subset while that filesystem failure still re-arms launchd.
-  (( had_indeterminate == 0 )) || return 2
+  if (( had_indeterminate != 0 )); then
+    UPDATER_CYCLE_RESULT=indeterminate
+    return 2
+  fi
 
   if (( ${#valid[@]} > 0 )); then
     for path in ${valid[@]+"${valid[@]}"}; do
@@ -508,6 +554,7 @@ updater_run_cycle() {
       else
         updater_alert_urgent claim-failed "$base" \
           "Could not claim founder urgent token $base; no restart was attempted."
+        UPDATER_CYCLE_RESULT=indeterminate
         return 1
       fi
     done
@@ -515,6 +562,7 @@ updater_run_cycle() {
     rc=$?
     if (( rc == 0 )); then
       UPDATER_COMPLETED=1
+      UPDATER_CYCLE_RESULT=urgent_deployed
       return 0
     fi
     for base in ${UPDATER_CLAIMED_BASENAMES[@]+"${UPDATER_CLAIMED_BASENAMES[@]}"}; do
@@ -522,17 +570,26 @@ updater_run_cycle() {
         "Founder urgent restart token $base was claimed, but the single deploy attempt failed (rc=$rc). It will not auto-retry; inspect logs before submitting a new ticket."
     done
     UPDATER_ALERTED=1
+    UPDATER_CYCLE_RESULT=urgent_failed
     return "$rc"
   fi
 
-  (( had_invalid == 0 )) || return 1
-  (( had_consumed_indeterminate == 0 )) || return 2
+  if (( had_invalid != 0 )); then
+    UPDATER_CYCLE_RESULT=invalid
+    return 1
+  fi
+  if (( had_consumed_indeterminate != 0 )); then
+    UPDATER_CYCLE_RESULT=indeterminate
+    return 2
+  fi
   remote="$(updater_remote_sha)" || {
+    UPDATER_CYCLE_RESULT=scheduled_failed
     updater_alert_scheduled probe-failed "Scheduled updater fetched origin/main but could not resolve its SHA; no restart was attempted."
     return 2
   }
   if [[ "$(deployed_sha)" == "$remote" ]]; then
     log "scheduled shuttle: deployed-sha already matches origin/main (${remote:0:7})"
+    UPDATER_CYCLE_RESULT=scheduled_current
     return 0
   fi
   log "scheduled shuttle: deployed-sha is behind origin/main (${remote:0:7}) — deploying once"
@@ -541,6 +598,9 @@ updater_run_cycle() {
   if (( rc != 0 )); then
     updater_alert_scheduled deploy-failed \
       "Scheduled Flywheel deploy failed (rc=$rc, target=${remote:0:12}). The next daily alert/shuttle remains available."
+    UPDATER_CYCLE_RESULT=scheduled_failed
+  else
+    UPDATER_CYCLE_RESULT=scheduled_deployed
   fi
   return "$rc"
 }
@@ -555,6 +615,8 @@ updater_run_launchd_then_cycle() {
 
 update_main() {
   local lock_rc=0
+  UPDATER_WAKE_KIND=unknown
+  UPDATER_CYCLE_RESULT=unknown
   if ! updater_init_dirs; then
     log "could not initialize updater state directories"
     updater_alert_scheduled init-failed \
@@ -599,6 +661,21 @@ update_main() {
   fi
   updater_run_launchd_then_cycle
   rc=$?
+  log "updater cycle: wake=${UPDATER_WAKE_KIND:-unknown} result=${UPDATER_CYCLE_RESULT:-unknown}"
+  case "${UPDATER_WAKE_KIND:-unknown}" in
+    scheduled)
+      if raya_host_capable; then
+        updater_raya_pass || true
+      else
+        RAYA_DEPLOY_STATE=not_configured
+        RAYA_DEPLOY_DETAIL=host-capability-absent
+        log "raya shuttle: host capability absent — skipped"
+      fi
+      ;;
+    urgent) log "raya shuttle: skipped wake=urgent" ;;
+    *) log "raya shuttle: skipped wake=unknown (fail closed)" ;;
+  esac
+  log "raya shuttle: ${RAYA_DEPLOY_STATE:-not_run} ${RAYA_DEPLOY_DETAIL:-}"
   updater_cleanup
 
   if [[ -n "$previous_exit" ]]; then eval "$previous_exit"; else trap - EXIT; fi

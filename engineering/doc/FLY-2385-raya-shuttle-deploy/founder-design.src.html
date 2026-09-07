@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2385 Raya 班车部署与「合入≠上线」防线 — 设计稿</title>
+<style>
+  :root { --bg:#f5f5f7; --fg:#1d1d1f; --dim:#86868b; --card:#fff; --navy:#1a365d; --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.6; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:26px; margin:0 0 6px; color:var(--navy); }
+  h2 { font-size:19px; margin:0 0 10px; color:var(--navy); }
+  h3 { font-size:15px; margin:14px 0 6px; }
+  .meta { color:var(--dim); font-size:13px; margin-bottom:24px; }
+  .meta code, code { font-family:"SF Mono",Menlo,monospace; font-size:12.5px; background:#f0f0f3; padding:1px 5px; border-radius:4px; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:20px 22px; margin:0 0 20px; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); } .card.amber { border-left-color:var(--amber); } .card.green { border-left-color:var(--green); } .card.purple { border-left-color:var(--purple); } .card.navy { border-left-color:var(--navy); }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; margin-right:6px; vertical-align:middle; }
+  .badge.blue { background:#e5f0ff; color:var(--blue); } .badge.amber { background:#fff3e0; color:#c06500; } .badge.green { background:#e8f8ec; color:#1e7e34; } .badge.red { background:#ffe5e3; color:#b3261e; } .badge.purple { background:#f3e8fb; color:#7b2cbf; } .badge.gray { background:#eeeef0; color:#555; }
+  .lead { font-size:17px; font-weight:500; }
+  .diagram { overflow-x:auto; background:#fafafa; border:1px solid #ececef; border-radius:10px; padding:12px; margin:12px 0; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .diagram-note { color:var(--dim); font-size:12.5px; margin-top:6px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:10px 0; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #ececef; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  .tablewrap { overflow-x:auto; }
+  ul { padding-left:20px; } li { margin:4px 0; }
+  .term { border-bottom:1px dotted var(--dim); }
+  .comment { margin-top:16px; padding-top:12px; border-top:1px dashed #e3e3e6; }
+  .comment label { display:block; font-size:12.5px; color:var(--dim); margin-bottom:6px; }
+  .comment textarea { width:100%; min-height:64px; border:1px solid #d9d9de; border-radius:8px; padding:8px 10px; font:inherit; font-size:13.5px; resize:vertical; background:#fbfbfd; }
+  .comment textarea:focus { outline:2px solid #bcd6ff; border-color:var(--blue); }
+  .summary pre { white-space:pre-wrap; word-break:break-word; background:#f7f7fa; border:1px solid #e6e6ea; border-radius:8px; padding:10px 12px; font-size:12.5px; max-height:280px; overflow:auto; }
+  .btn { display:inline-block; background:var(--blue); color:#fff; border:0; border-radius:8px; padding:8px 14px; font:inherit; font-size:13.5px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#eeeef0; color:var(--fg); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .status { font-size:12.5px; color:var(--dim); margin-left:4px; }
+  .kv { display:grid; grid-template-columns:150px 1fr; gap:6px 12px; font-size:13.5px; }
+  .kv div:nth-child(odd) { color:var(--dim); }
+  @media (max-width:600px) { .kv { grid-template-columns:1fr; } .wrap { padding:20px 12px 60px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2385 Raya 仓纳入班车部署 + 「合入≠上线」防线</h1>
+  <div class="meta">
+    设计稿 v6（Codex 设计评审五轮；R5 剩余两项规范歧义已写死，由 Eng Lead 收口）· 2026-09-06 · eng_design 节点 · Issue <a href="https://linear.app/geoforge3d/issue/FLY-2385">FLY-2385</a> · 文档：<code>engineering/doc/FLY-2385-raya-shuttle-deploy/</code>（exploration / research / plan）<br>
+    阅读方式：每张卡片下方都有意见框，写了会自动保存在你的浏览器里；页尾「意见汇总」一键复制后贴回 Discord 即可。
+  </div>
+
+  <!-- 1. 一句话 -->
+  <section class="card navy" data-section="一句话总结">
+    <h2><span class="badge blue">1</span>一句话</h2>
+    <p class="lead">让已经存在的 <span class="term">班车</span>（<code>com.flywheel.updater</code>，每天 00:00/12:00 自动把 flywheel 主仓拉到生产并重启的定时任务）顺手多做一段「Raya 仓部署」，再给 Eng Lead 的巡检加一行「Raya 生产 checkout 落后 N」的事实，并把「合入 ≠ 上线」写进 Done 判据 —— 不改 Raya 代码，不新增任何调度器。</p>
+    <h3>事故是什么</h3>
+    <p>9-6 下午发现 Raya 的生产运行目录 <code>~/.flywheel/raya/code</code> 停在 8-28 的版本，落后 <code>origin/main</code>（GitHub 上的正式主分支）244 个提交；raya#9 和 raya#14 合入后从未真正跑起来，Linear 上却已标 Done。根因：班车只部署 flywheel 仓，Raya 仓从来没有部署者，也没有任何检测面盯着「合入与上线之间」这段真空。</p>
+    <div class="comment"><label for="c-1">对「一句话 / 事故」的意见</label><textarea id="c-1" data-key="s1" placeholder="有疑问、反对、补充都写这里…"></textarea></div>
+  </section>
+
+  <!-- 2. 核心流程 -->
+  <section class="card blue" data-section="核心流程：班车里的 Raya 段">
+    <h2><span class="badge blue">2</span>核心流程：班车里新增的 Raya 段</h2>
+    <p>班车<strong>定时</strong>醒来（00:00/12:00）先跑原有的 flywheel 周期（不改），然后独立跑一段 Raya 部署。它的成败<strong>不影响</strong> flywheel 那一段的结果，两个仓互不拖累。founder 的紧急重启票只授权 flywheel 的某个版本，<strong>不会</strong>顺带部署 Raya；无效或失败的紧急唤醒对 Raya 零动作。</p>
+    <div class="diagram">%%SVG_D1%%</div>
+    <div class="diagram-note">图 1 · 班车 Raya 段的完整分支。<span class="term">身份门</span> = 先用只读的 <code>launchctl print</code> 核对已加载服务的程序、入口、工作目录、环境文件四项都指向生产路径，不一致就拒绝部署；<span class="term">known-good 锚</span> = 上一次成功部署写下的 <code>deployed-sha</code>，回滚只回到它；<span class="term">ff-only</span> = 只允许「快进」式更新，生产目录若有自己的提交就拒绝，绝不合并；<span class="term">kickstart -k</span> = 让 launchd（macOS 的后台服务管家）先停再启该服务；<span class="term">preflight</span> = Raya 自带的自检命令，会真的去探一次 Discord 身份和 Codex 可用性，返回 ready 才算通过。</div>
+    <h3>几条硬规则</h3>
+    <ul>
+      <li><strong>触发条件是两级的</strong>：HEAD 落后 origin/main 就拉；账本（deployed-sha）不等于 HEAD 就重建并重启。第二级覆盖「有人手工 pull 过但没落账」的情形（今天就是这样），下一班车会把账本收敛。远端 URL 必须是 xrliAnnie/raya，分支必须是 main。</li>
+      <li><strong>先验身份再动手，重启前再验一次</strong>：任何写操作之前核对 brain/voice 两个已加载服务的运行身份（Node 程序 = 磁盘 plist 第一项、入口 = <code>code/apps/…/dist/cli.js</code>、恰好三个参数、工作目录、环境文件，以及 raya.env 里三个目录键仍指向生产位置）；服务显示在跑却读不到 pid 也算异常（<code>observe_failed</code>），绝不当成「冷启动」糊弄过去；构建可能长达两分钟，所以每次重启前再核一次。评审时顺手核出一条活的生产隐患：已加载的 voice 服务参数仍指向旧 worktree <code>raya-FLY-2074</code>，磁盘 plist 已改但从未重新加载——Lead 当天已重新加载修好，本节点复核通过。身份门作为长期防线保留。</li>
+      <li><strong>失败绝不静默</strong>：目录缺失、锁被占、工作区脏、fetch 失败 → warning（每日一次）；身份漂移、分叉、HEAD 被人动过、回滚、回滚失败 → severe 并 @founder。</li>
+      <li><strong>回滚只回到 known-good</strong>：锚是上次成功写下的 <code>deployed-sha</code>，不是「刚才那个 HEAD」（否则有人手工拉到坏版本再失败，会假报「已回滚」）。首次部署没有锚：失败就停手、不 reset、老进程照跑，账本记 <code>bootstrap-no-known-good</code>，绝不声称回滚成功。回滚时重建磁盘上的构建产物，因为 launchd 崩溃重拉跑的是磁盘上的 dist。</li>
+      <li><strong>围栏贯穿全程</strong>：fetch 前、merge 前、宽限后、kickstart 前各核一次「分支是 main、工作区干净、HEAD 没被人动过」，任何一道不过就停手（<code>mutated</code>，severe）。回滚也有两道：reset 前核一次（发现有人在构建期间改了文件就<strong>不 reset</strong>，报 <code>rollback_blocked_mutation</code> 等人处理），reset 并重建之后再核一次才允许重启或声称「已回滚」。回滚前还要逐个服务证明「代际」没变：brain 若在构建期间崩溃、被 launchd 用半成品拉起过，就不能说「没重启过所以没事」，而要用恢复好的旧版本受控地再重启并验证；voice 若是用户在此期间正常关掉的，则保持关闭，不会被班车硬拉起来。围栏不是只核一次：每次重启之前、写账本之前都再核一遍，因为验证窗口加起来可达两分钟。</li>
+      <li><strong>voice：重启那一刻在跑就换</strong>：voice 由 brain 自己按需拉起。班车在重启 brain 的那一刻重新采样：voice 在跑就一并重启（部署就是新字节，没有「改没改到 voice」的猜测），不在跑就不碰，brain 下次拉起的自然是新构建。重启后验证新 pid、voice 自己写的 pid 文件、连续两次采样同一个 pid（voice 先写 pid 文件再装配运行时，单次命中可能是个马上退出的进程）；失败进回滚、不落账。</li>
+      <li><strong>账本两份、单一出口写</strong>：<code>deploy-receipt.json</code>（带时间戳和结果，给巡检读）先写、<code>deployed-sha</code>（一行 sha，issue 指定）后写，都是先写临时文件再原子替换。任何失败路径都不写 deployed-sha；账本本身写失败也是 severe，下一班车会重新部署收敛。</li>
+      <li><strong>活跃会话最多等 10 分钟，而且等在「动手之前」</strong>（Lead 裁定）：拉取和只读判断之后、任何写入生产目录之前，若 Raya 正在语音或会议中（<code>voice-mode.requested</code> 存在、或 <code>meeting.json</code> 的状态是 starting/live/interrupted——只是排期中的会不算、或 voice 进程在跑），每 30 秒重查、最多等 10 分钟；到点照做。等待期间生产目录还是旧版本，brain 就算崩了被 launchd 拉起也是旧版本。等完之后（包括构建期间）新开始的会话按裁定直接打断；致歉只在最后一道围栏和身份重验都通过、马上要重启时才发到 #raya（发不出去只记 warning，不阻止部署）。宽限期间到达的 founder 紧急票只是被延迟到下一实例，不会丢。</li>
+      <li><strong>锁与信号</strong>：锁记的是持有者进程的启动时间（不是命令行字符串——生产里班车的命令行是 <code>/bin/bash …/update-flywheel.sh</code>，按字符串猜会把活着的班车当成僵尸驱逐）；库自己不设 trap；所有分支走同一个出口释放锁；班车原有的信号清理顺带释放 Raya 锁，紧急票逻辑不受影响。拿到锁之前的两个出口（目录缺失、锁被占）只记日志和告警，不碰共享账本。</li>
+    </ul>
+    <div class="comment"><label for="c-2">对「核心流程」的意见</label><textarea id="c-2" data-key="s2" placeholder="例如：回滚边界、voice 策略、告警级别…"></textarea></div>
+  </section>
+
+  <!-- 3. 数据/结构模型 -->
+  <section class="card purple" data-section="数据与结构模型">
+    <h2><span class="badge purple">3</span>数据与结构模型：谁写、谁读、真相在哪</h2>
+    <p>只有班车 Raya 段写生产目录和账本；巡检只读；brain 进程只写自己的 pid 文件。一个写者、多个读者，没有镜像的第二套词汇。</p>
+    <div class="diagram">%%SVG_D2%%</div>
+    <div class="diagram-note">图 2 · 编号 1–6 是班车写入的顺序：先 receipt 后 deployed-sha，保证巡检读到 sha 时 receipt 一定存在。<span class="term">brain.pid</span> 是 Raya brain 启动后自己写的进程号文件，班车拿它做「进程真的跑进运行时」的第一手证据。</div>
+    <div class="tablewrap"><table>
+      <tr><th>稳定标识</th><th>值</th></tr>
+      <tr><td>服务 label</td><td><code>com.xrli.raya.brain</code> / <code>com.xrli.raya.voice</code>（两张 plist 不改）</td></tr>
+      <tr><td>账本</td><td><code>~/.flywheel/raya/deployed-sha</code>（只在部署成功时写）、<code>~/.flywheel/raya/deploy-receipt.json</code>（schemaVersion 1，每班都写；<code>deployed_sha</code> 字段始终记「真实运行锚」，「本班没变化」也不会把它清空，Done 判据引用它）</td></tr>
+      <tr><td>锁</td><td><code>~/.flywheel/raya/deploy.lock.d</code>（pid + 进程启动时间 + created；与班车锁分离）</td></tr>
+      <tr><td>触发门</td><td><code>UPDATER_WAKE_KIND</code>：唤醒时紧急票目录为空即 <code>scheduled</code>，只有它会跑 Raya 段——与 flywheel 自己那段 fetch/部署成败无关</td></tr>
+      <tr><td>期望身份四元组</td><td>program（已加载 job 的 Node 二进制）· arguments[0]=<code>code/apps/{brain,voice}/dist/cli.js</code> · working directory=<code>code/</code> · <code>RAYA_ENV_FILE=~/.flywheel/raya/raya.env</code></td></tr>
+      <tr><td>告警签名</td><td><code>raya-&lt;class&gt;-scheduled-&lt;UTC 日&gt;</code>，复用现有 <code>lead-alert.sh</code> 去重表</td></tr>
+      <tr><td>巡检事实行</td><td><code>raya checkout=… head=… origin_main=… branch=… behind=N deployed_sha=… receipt_age_h=… drift_age_h=… checkout_drift=no|behind|diverged deploy_drift=yes|no shuttle_stale=yes|no overdue=yes|no</code></td></tr>
+      <tr><td>巡检 FINDING 证据</td><td><code>FINDING step=5 bridge_problem=no result=advanced evidence=raya_checkout_overdue.&lt;head8&gt;.&lt;origin8&gt; owner=n/a next=n/a epic=n/a epic_marker=n/a</code>（已用现有巡检验证器跑过：通过；去掉末两个字段则失败）</td></tr>
+    </table></div>
+    <div class="comment"><label for="c-3">对「数据模型」的意见</label><textarea id="c-3" data-key="s3" placeholder="例如：账本放哪、字段够不够…"></textarea></div>
+  </section>
+
+  <!-- 4. 检测面 -->
+  <section class="card amber" data-section="检测面：巡检 STEP 5 与告警">
+    <h2><span class="badge amber">4</span>检测面：巡检 STEP 5 多一行，Lead 负责发话</h2>
+    <p>Eng Lead 每个 <span class="term">patrol tick</span>（Bridge 定时叫醒 Lead 做的六步巡检）会跑一个快照脚本。第 5 步「外部真相」今天只看 GitHub 的 PR 和 CI；本设计让它多输出一行本地 git 事实（只读，不联网、不 fetch）。判定规则是确定性的，发不发话由 Lead 按规则执行。</p>
+    <div class="diagram">%%SVG_D3%%</div>
+    <div class="diagram-note">图 3 · 三个独立信号：<span class="term">checkout_drift</span>（生产目录落后或分叉）、<span class="term">deploy_drift</span>（生产目录到了新版本但账本没跟上，例如有人手工 pull 没重启）、<span class="term">shuttle_stale</span>（账本缺失或 13 小时没刷新 = 班车不再碰 Raya，正是这次事故的原形）。<span class="term">overdue=yes</span> = shuttle_stale，或分叉/分支不对，或「落后/未落账」已超过一班车（13 小时 = 12 小时一班 + 1 小时宽限，按秒比较）。只是落后但还没过一班车 → 正常态，不发话。</div>
+    <p>两层告警互补：班车自己拒绝/失败时走既有 <code>lead-alert.sh</code> 到 #flywheel-alerts（「我没做成」）；巡检的 overdue 走 Lead 的常规频道 #flywheel-engineer（「不管谁的锅，生产就是落后了」），并按既有六步巡检合同把第 5 步定稿为 FINDING、写标准证据行，发送失败也有记账形态，Lead 发没发都有痕。</p>
+    <div class="comment"><label for="c-4">对「检测面」的意见</label><textarea id="c-4" data-key="s4" placeholder="例如：13 小时阈值、要不要联网查远端…"></textarea></div>
+  </section>
+
+  <!-- 5. Done 判据 -->
+  <section class="card green" data-section="Done 判据：合入≠上线">
+    <h2><span class="badge green">5</span>Done 判据：把「合入 ≠ 上线」写进流程</h2>
+    <ul>
+      <li><strong>Runner 侧</strong>（implement / QA 节点都读）：每张 issue 自动生成的 Definition of Done 加第 7 条 —— 若改的是独立生产仓（如 xrliAnnie/raya），Done 还要求「生产 checkout 已到该 sha + <code>com.xrli.raya.brain</code> 已重启 + <code>raya preflight</code> ready」，证据是班车 receipt 或人工部署记录。</li>
+      <li><strong>Lead 侧</strong>：<code>founder-only-authority.md</code> R1（合入/上线授权）下加一小节「Raya 仓：merge 不等于 deploy」；<code>summary-inflow.md</code> 按 issue 要求加一句提醒。</li>
+      <li><strong>巡检规则</strong>：<code>runner-patrol-rules.md</code> 第 5 步加 overdue 的处置规则。</li>
+    </ul>
+    <div class="comment"><label for="c-5">对「Done 判据」的意见</label><textarea id="c-5" data-key="s5" placeholder="例如：措辞、放的位置…"></textarea></div>
+  </section>
+
+  <!-- 6. 取舍 -->
+  <section class="card red" data-section="关键取舍与被否决的方案">
+    <h2><span class="badge red">6</span>关键取舍与被否决的方案</h2>
+    <div class="tablewrap"><table>
+      <tr><th>决定</th><th>选了什么</th><th>否决了什么 / 为什么</th></tr>
+      <tr><td>部署步骤放哪</td><td>班车入口 <code>update-flywheel.sh</code> 里独立一段</td><td>否决「塞进 restart-services.sh 的全舰重启事务」：那段只在 flywheel 落后时才跑，Raya 单独变更永远等不到；且 Raya build 失败会把 flywheel 一起拖进回滚。否决「Raya 自建 launchd/cron」：违反 R4（唯一部署者是班车，不新增调度器）。</td></tr>
+      <tr><td>触发条件</td><td>HEAD 落后就拉；账本≠HEAD 就重建重启</td><td>issue 原话只有第一级；加第二级是为了让手工部署也能收敛到账本，而不是永远报 drift。</td></tr>
+      <tr><td>回滚锚</td><td>只用上次成功的 deployed-sha，且必须是 origin/main 的祖先</td><td>否决「回到进入时的 HEAD」：Codex 评审指出它不是 known-good，会假报回滚成功。没有锚的首次部署失败就停手不回滚。</td></tr>
+      <tr><td>紧急票是否顺带部署 Raya</td><td>不</td><td>紧急票只授权 flywheel 的一个具体版本；让它顺带上线最新 Raya 会越出 R4 的授权范围。Raya 只走定时班车；但定时班车里 flywheel 自己 fetch 失败不影响 Raya 段（两仓隔离）。</td></tr>
+      <tr><td>会话宽限放在哪</td><td>任何写入之前，只等一次</td><td>否决「构建完再等」：等待期间生产目录已是新字节，brain 崩溃会被 launchd 用半成品拉起；也否决「等完再等」：不能把写了一半的目录停放十分钟。</td></tr>
+      <tr><td>voice 要不要看改动范围</td><td>不看，重启那一刻在跑就换</td><td>否决「按 diff 判断是否碰到 voice 代码」：基线在收敛路径上会算成空集，正则又漏掉根 tsconfig/package.json 等构建输入；一律换更简单也更正确。</td></tr>
+      <tr><td>身份门</td><td>四项运行身份不符就拒绝部署</td><td>否决「只看 label 是否已加载 + 从 plist 猜 Node 路径」：评审当场核出 voice job 已漂移，证明这不是理论边界。</td></tr>
+      <tr><td>preflight 失败怎么办</td><td>视为失败进回滚（fail-closed，Lead 裁定）</td><td>否决 warning-only：「合入 ≠ 上线」这道防线的意义就在这里；开关只留作测试/应急。</td></tr>
+      <tr><td>检测面放哪</td><td>巡检 STEP 5 事实行 + Lead 规则</td><td>否决「Bridge liveness probe」：那是每分钟探 Bridge /health 的探针，语义和频道都不对。否决「巡检里 git ls-remote 联网查远端」：引入网络与凭据依赖；「班车不再碰 Raya」这类回归用账本年龄就能发现。</td></tr>
+      <tr><td>活跃语音会话是否顺延</td><td>不顺延；最多等 10 分钟后照重启并在 #raya 致歉（Lead 裁定）</td><td>否决「顺延到下一班」：那等于 12 小时不上线，而且多一个静默跳过的理由。</td></tr>
+      <tr><td>手工入口</td><td>本期没有任何人工生产入口</td><td>v1 曾提议 <code>scripts/update-raya.sh</code>，v2 又用「QA 手工调用」变相保留；评审两轮都指出这是第二条不受生产路径固定与精确目标约束的部署入口，「脚本能跑」不等于授权（founder-only-authority R1）。以后靠定时班车（最多 12 小时）；真要 break-glass 另开设计。</td></tr>
+      <tr><td>评审收口</td><td>五轮 Codex 设计评审，R1–R4 共 29 条全部接受；R5 剩两条纯规范歧义（成功账本前围栏失败的唯一去向、回滚代际对象的失败取值）已在 v6 写死，由 Eng Lead 以 leadAcceptance 收口</td><td>Lead 裁定不开第六轮：这单动的是生产 Raya 部署路径，Codex 已亲自确认 fence 时序与状态机的其余部分。</td></tr>
+      <tr><td>合入顺序</td><td>A 库 → D 判据 → B 接班车 → C 巡检</td><td>巡检的「账本缺失即告警」必须等班车先写下第一份账本，否则 C 先上线会立刻误报。</td></tr>
+    </table></div>
+    <div class="comment"><label for="c-6">对「取舍」的意见</label><textarea id="c-6" data-key="s6" placeholder="哪条取舍你不同意？"></textarea></div>
+  </section>
+
+  <!-- 7. 边界 -->
+  <section class="card gray" data-section="诚实边界：做什么与不做什么" style="border-left-color:#86868b">
+    <h2><span class="badge gray">7</span>诚实边界</h2>
+    <h3>这份设计做到的</h3>
+    <ul>
+      <li>下一班车起，Raya 仓落后就自动拉、建、自检、重启、落账；失败回滚并告警。</li>
+      <li>人为把 checkout 退一个提交后，下一个巡检 tick 的 STEP 5 就会出现 <code>behind=1</code>；若账本已过 13 小时或那批提交已老于 13 小时，Lead 当 tick 在 #flywheel-engineer 发 warning。</li>
+      <li>Done 判据里有了「合入 ≠ 上线」这一条。</li>
+    </ul>
+    <h3>这份设计不做的</h3>
+    <ul>
+      <li>不改 Raya 仓代码、plist、raya.env；不给 Raya 建任何 launchd/cron。</li>
+      <li>不把 <code>com.xrli.raya.*</code> 加进 launchd 舰队普查范围（会连带两个 FLY-2031 QA 残留 job 报异常，另开单）。</li>
+      <li>不激活 Codex Lead 版的「Raya 脑」<code>com.flywheel.lead.raya-raya</code>（FLY-2259 的事）；现有「自愈永不碰 com.xrli.raya.brain」的两条反向断言保持。</li>
+      <li>不做实时联网的远端探测；「落后但还没过一班车」是设计内的正常态，不发话。</li>
+      <li>不在紧急票唤醒时部署 Raya；不做 voice 改动范围判断；不提供任何人工部署入口。</li>
+      <li>brain plist 里硬编码的 <code>/opt/homebrew/Cellar/node/25.6.1/bin/node</code>：brew 升级 node 会让两张 plist一起失效，与本单无关，只在账本里记事实。</li>
+      <li>00:00/12:00 重启 brain 仍可能打断正在进行的 Raya 会议/语音：最多等 10 分钟，然后照重启并在 #raya 致歉（Lead 裁定）。</li>
+    </ul>
+    <h3>验收怎么核（QA 节点）</h3>
+    <ul>
+      <li>隔离台架的 shell 测试套件 + 模板测试 + 规则测试全绿，CI 在准确的 head 上绿。</li>
+      <li>生产只读：两个服务的运行身份向量、生产目录的分支/干净/HEAD/远端、巡检快照第 5 段出现 <code>raya checkout=</code> 行。</li>
+      <li><strong>本期不在生产做任何 mutation</strong>：不手工跑 Raya 段、不在生产 reset。「退一个提交后巡检报出」用隔离台架的用例证明，生产只做只读快照核对；真要生产演练由 Lead 另开带逐次授权与精确 sha 的演练单。</li>
+      <li>下一班车日志出现 <code>raya:</code> 行 —— 由 QA 在班车后核对，不提前伪造。</li>
+    </ul>
+    <div class="comment"><label for="c-7">对「边界 / 验收」的意见</label><textarea id="c-7" data-key="s7" placeholder="边界里有你不能接受的吗？"></textarea></div>
+  </section>
+
+  <!-- 意见汇总 -->
+  <section class="card navy summary" id="summary-card">
+    <h2><span class="badge blue">✎</span>页面意见汇总</h2>
+    <p style="color:var(--dim);font-size:13px;margin:0 0 8px">下面实时聚合你在各卡片写的意见（按小节前缀）。点「复制全部」后直接贴到 Discord。超过约 1800 字会分块，每块都带标记。</p>
+    <div id="summary-blocks"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button>
+    <button class="btn secondary" id="clear-all" type="button">清空本页意见</button>
+    <span class="status" id="copy-status"></span>
+  </section>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  'use strict';
+  var MARKER = '【页面意见汇总】FLY-2385';
+  var CHUNK = 1800;
+  var prefix = 'fly2385-comment:' + (function () { try { return location.pathname; } catch (e) { return 'unknown'; } })() + ':';
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { if (v) localStorage.setItem(prefix + k, v); else localStorage.removeItem(prefix + k); } catch (e) { /* storage unavailable */ } }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+  var blocks = document.getElementById('summary-blocks');
+  var status = document.getElementById('copy-status');
+
+  function sectionTitle(ta) {
+    var sec = ta.closest('section');
+    return (sec && sec.getAttribute('data-section')) || '未命名小节';
+  }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = (ta.value || '').trim();
+      if (v) parts.push('■ ' + sectionTitle(ta) + '\n' + v);
+    });
+    return parts;
+  }
+
+  function chunkify(parts) {
+    var chunks = [], cur = '';
+    parts.forEach(function (p) {
+      var candidate = cur ? cur + '\n\n' + p : p;
+      if (candidate.length > CHUNK && cur) { chunks.push(cur); cur = p; }
+      else cur = candidate;
+      while (cur.length > CHUNK) { chunks.push(cur.slice(0, CHUNK)); cur = cur.slice(CHUNK); }
+    });
+    if (cur) chunks.push(cur);
+    if (!chunks.length) return [MARKER + '\n（暂无意见）'];
+    return chunks.map(function (c, i) {
+      var head = chunks.length > 1 ? MARKER + ' (' + (i + 1) + '/' + chunks.length + ')' : MARKER;
+      return head + '\n' + c;
+    });
+  }
+
+  function render() {
+    var chunks = chunkify(collect());
+    while (blocks.firstChild) blocks.removeChild(blocks.firstChild);
+    chunks.forEach(function (text, i) {
+      var pre = document.createElement('pre');
+      pre.textContent = text;
+      blocks.appendChild(pre);
+      if (chunks.length > 1) {
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = 'btn secondary';
+        b.textContent = '复制第 ' + (i + 1) + ' 块';
+        b.addEventListener('click', function () { copyText(text); });
+        blocks.appendChild(b);
+      }
+    });
+  }
+
+  function setStatus(msg) {
+    status.textContent = msg;
+    setTimeout(function () { if (status.textContent === msg) status.textContent = ''; }, 2500);
+  }
+
+  function execCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.top = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function copyText(text) {
+    var fallback = function () { setStatus(execCopy(text) ? '已复制（兼容方式）' : '复制失败，请手动全选'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { setStatus('已复制'); }, fallback);
+    } else fallback();
+  }
+
+  areas.forEach(function (ta) {
+    ta.value = lsGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () {
+      lsSet(ta.getAttribute('data-key'), ta.value);
+      render();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    copyText(chunkify(collect()).join('\n\n'));
+  });
+  document.getElementById('clear-all').addEventListener('click', function () {
+    areas.forEach(function (ta) { ta.value = ''; lsSet(ta.getAttribute('data-key'), ''); });
+    render();
+    setStatus('已清空');
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

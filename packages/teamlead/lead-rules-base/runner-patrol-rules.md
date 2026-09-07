@@ -166,6 +166,22 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
    最后 run: Discord MCP `fetch_messages(chat_id=$THREAD_ID, limit=20)`。消息与
    archive 状态以 Discord 为真,`chat_threads` 不是状态 oracle。
 
+   **Raya 生产 checkout（仅 flywheel 项目）**。读取同段的 `raya checkout=` 事实行：
+
+   - `overdue=yes` 时，本 tick 必须在 `CHAT_CHANNEL_ID`（#flywheel-engineer）发 warning，
+     内容包含原事实行与 `FLY-2385`。以
+     `raya_checkout_overdue.<head8>.<origin8|none>` 为 evidence；同一 evidence 同一 UTC 日只发一次，
+     重复 tick 仍须留下事实但不得刷屏。投递成功后把 STEP 5 定稿为 `FINDING` 并写：
+     `FINDING step=5 bridge_problem=no result=advanced evidence=raya_checkout_overdue.<head8>.<origin8|none> owner=n/a next=n/a epic=n/a epic_marker=n/a`。
+     投递失败也必须定稿 `FINDING`，写：
+     `FINDING step=5 bridge_problem=no result=escalated-with-plan evidence=raya_checkout_overdue.<head8>.<origin8|none> owner=agent:flywheel-eng-lead next=retry:raya-overdue-warning epic=n/a epic_marker=n/a`。
+     连续两个 tick 仍 overdue 时，第 6 步按 token `raya_checkout_overdue` 搜重并建工程单。
+   - `raya checkout=UNAVAILABLE(structural: <token>)` 时，追加
+     `UNAVAILABLE_CAUSE step=5 class=structural token=<token>`；STEP 5 没有其他
+     UNAVAILABLE 时定稿 `STEP 5: UNAVAILABLE(structural: <token>)`。若 gh 同时不可用，
+     STEP 5 保留 gh 的 token，Raya cause 仍须单独记账并按 UNAVAILABLE 规则建单。
+   - `overdue=no` 是正常态，不发 warning，也不产生 Raya finding。
+
 **STEP DWELL — 节点停留处置维度(FLY-2210)** — run:
 `awk '/^## STEP DWELL$/{show=1; next} show' "$REPORT_PATH"`。这是独立命名维度，
 不是 numeric STEP 7；六个 numeric STEP 的既有编号、提取器和含义不变。快照只读

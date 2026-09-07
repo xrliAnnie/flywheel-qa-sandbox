@@ -29,6 +29,7 @@ metadata:
 4. 代码已 commit 到 feature branch
 5. PR 已创建并关联本 issue（{{issueId}}）
 6. PR description 包含：变更摘要 + 测试计划
+7. 若本 issue 改动的是独立生产仓（如 Raya 仓）：**合入 ≠ 上线**。Done 还要求生产 checkout 已到该 sha、\`com.xrli.raya.brain\` 已重启、\`raya preflight\` ready；证据为 \`~/.flywheel/raya/deploy-receipt.json\`（定时班车）
 
 ## What NOT to Do
 

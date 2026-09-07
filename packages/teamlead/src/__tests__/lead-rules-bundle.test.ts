@@ -211,6 +211,13 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"Narrow exemption — Raya's read-receipt merges",
 		);
 		expect(authority).toContain("single fixed prefix `summaries/`");
+		expect(summaryRule).toContain("Raya 代码 PR 的合入不等于部署");
+		expect(summaryRule).toContain("deploy-receipt.json");
+		expect(authority).toContain("Raya 仓：merge 不等于 deploy");
+		expect(authority).toContain("com.flywheel.updater");
+		expect(authority).toContain("com.xrli.raya.brain");
+		expect(authority).toContain("raya preflight");
+		expect(authority).toContain("deployed-sha");
 	});
 
 	it("dept (commdb) → SKIPS runner-messaging but STILL loads runner-patrol (FLY-369: patrol is backend-independent)", () => {

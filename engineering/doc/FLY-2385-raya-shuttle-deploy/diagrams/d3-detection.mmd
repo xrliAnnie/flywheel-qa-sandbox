@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant SH as 班车 Raya 段
+    participant FS as 账本 deployed-sha / receipt
+    participant PS as 巡检 STEP 5
+    participant LD as Eng Lead
+    participant CH as 频道 flywheel-engineer
+    participant AL as 频道 flywheel-alerts
+
+    Note over SH,FS: 每 12h 一班
+    SH->>FS: 成功：outcome=deployed，刷新 checked_at
+    SH-->>AL: 拒绝 / 失败 / 回滚才告警（每日签名去重）
+
+    Note over PS,LD: 每个 patrol tick（只读本地 git，不 fetch）
+    PS->>FS: 读 HEAD、origin/main、分支、deployed-sha、checked_at
+    PS-->>LD: 三个独立信号：checkout_drift · deploy_drift · shuttle_stale → overdue=?
+    alt overdue=no（没落后；或落后/未落账但还没过一班车）
+        LD-->>LD: 正常态，不发话
+    else overdue=yes（账本超 13h 没刷新 / 分叉 / 落后或未落账已超 13h）
+        LD->>CH: warning：原事实行 + FLY-2385
+        LD-->>LD: 第 5 步定稿 FINDING，evidence=raya_checkout_overdue.<head8>.<origin8>
+        LD-->>LD: 连续两个 tick → STEP 6 建工程单
+    else UNAVAILABLE(structural: raya_checkout_missing …)
+        LD-->>LD: UNAVAILABLE_CAUSE 行记账，STEP 6 建单
+    end

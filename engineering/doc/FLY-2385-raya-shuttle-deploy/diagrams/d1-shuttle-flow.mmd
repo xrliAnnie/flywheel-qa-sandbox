@@ -1,0 +1,41 @@
+flowchart TB
+    A["班车醒来<br/>com.flywheel.updater"] --> B["原有 flywheel 周期<br/>（fetch → 落后才全舰重启）<br/>不改"]
+    B --> TG{"触发门：这次是定时唤醒？<br/>（紧急票目录为空才算；<br/>与 flywheel 段成败无关）"}
+    TG -- 否 --> TG1["跳过 Raya 段，只记日志"]
+    TG -- 是 --> C["Raya 段 updater_raya_pass<br/>独立运行，结果不影响 flywheel 退出码"]
+    C --> LK{"拿到 Raya 锁？<br/>（按持有者进程启动时间判活）"}
+    LK -- 否 --> LK1["locked：warning<br/>不碰任何共享文件"]
+    LK -- 是 --> ID{"身份门（任何写操作之前）<br/>brain/voice 两个 job 已加载？<br/>程序·入口·工作目录·env 四项<br/>都指向生产路径？"}
+    ID -- 否 --> ID1["identity_drift：severe 告警<br/>停手，修复归 Raya 仓 install-launchd"]
+    ID -- 是 --> D{"围栏 #1：分支是 main？<br/>工作区干净？远端是 xrliAnnie/raya？"}
+    D -- 否 --> D1["拒绝：warning / severe<br/>不动任何文件"]
+    D -- 是 --> KG["读 known-good 锚<br/>deployed-sha 合法且是 origin/main 祖先 → 回滚锚<br/>缺失/非祖先 → bootstrap 模式（无锚）"]
+    KG --> E["fetch origin/main<br/>（20s 超时，3 次）"]
+    E -- 失败 --> E1["fetch_failed：warning<br/>下一班再试"]
+    E -- 成功 --> F2{"围栏 #2：HEAD 没被人动过？<br/>HEAD 与 origin/main 关系"}
+    F2 -- 被动过 --> F1["mutated / diverged：severe<br/>停手，等人看"]
+    F2 -- 已相同且账本一致 --> CUR["current：刷新账本时间戳<br/>（最常见出口）"]
+    F2 -- 落后 / 已相同但账本缺或不符 --> GR{"动手之前：Raya 正在语音/会议中？<br/>（voice-mode.requested / meeting 状态 live 等 / voice 在跑）"}
+    GR -- 是 --> GW["每 30s 重查，最多等 10 分钟<br/>期间生产目录仍是旧字节"]
+    GW --> GEN
+    GR -- 否 --> GEN["记录 brain/voice 代际（pid+启动时间）<br/>围栏 #2b：HEAD 仍未被动"]
+    GEN --> G["git merge --ff-only（落后时）"]
+    G --> H["pnpm install --frozen-lockfile<br/>pnpm build<br/>raya preflight（120s）<br/>围栏 #3：HEAD 仍未被动"]
+    H -- 任一失败 --> R1{"有 known-good 锚？"}
+    R1 -- 有 --> RF{"回滚围栏：<br/>分支/干净/HEAD 仍未被动？"}
+    RF -- 否 --> RFX["rollback_blocked_mutation<br/>不 reset、不重建，severe 等人"]
+    RF -- 是 --> RA["回滚路径 A<br/>reset 到 deployed-sha → 重建 dist<br/>围栏 #R2 + 代际证明<br/>代际未变则不重启，变了则受控重启并验证<br/>severe：rolled_back"]
+    R1 -- 无 --> RN["failed：bootstrap-no-known-good<br/>不 reset、不重建<br/>旧进程照旧，severe"]
+    H -- 通过 --> CV["围栏 #3 + 重验身份 + 此刻采样 pid<br/>此刻仍有会话 → #raya 留言致歉"]
+    CV --> I["kickstart -k com.xrli.raya.brain"]
+    I --> J{"60s 内验证：<br/>running、数字 pid、<br/>brain.pid 文件 == pid、<br/>pid ≠ 旧 pid（冷启动豁免）"}
+    J -- 失败 --> RB["回滚路径 B<br/>有锚：reset → 重建 → 再 kickstart → 再验证<br/>无锚：只再 kickstart 一次<br/>severe"]
+    J -- 通过 --> K{"重启那一刻 voice 在跑？"}
+    K -- 是 --> K1["重验身份 → kickstart -k com.xrli.raya.voice<br/>验证新 pid == voice.pid，连续两次采样稳定"]
+    K1 -- 失败 --> RB
+    K -- 否 --> L
+    K1 -- 通过 --> L["单一出口 raya_finish：<br/>先写 deploy-receipt.json（原子）<br/>再写 deployed-sha（原子）<br/>释放锁，日志 raya: deployed"]
+    RA --> X["不写 deployed-sha<br/>receipt 记 rolled_back / failed"]
+    RFX --> X
+    RN --> X
+    RB --> X

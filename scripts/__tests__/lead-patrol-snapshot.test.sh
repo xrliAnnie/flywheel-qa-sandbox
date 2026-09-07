@@ -45,6 +45,12 @@ SANITY_FLOOR="$(awk -F= '$1 == "FLYWHEEL_SCRIPT_MIN_BYTES" {print $2; exit}' "$R
   || fail "node dwell wrapper is executable in the checkout"
 [ "$WRAPPER_SIZE" -gt "$SANITY_FLOOR" ] && pass "node dwell wrapper clears the script sanity floor" \
   || fail "node dwell wrapper must exceed $SANITY_FLOOR bytes (got $WRAPPER_SIZE)"
+grep -Fq 'GIT_OPTIONAL_LOCKS=0 git -C "$RAYA_PATROL_CODE_DIR"' "$SCRIPT" \
+  && pass "Raya checkout inspection disables optional Git locks" \
+  || fail "Raya checkout inspection must remain read-only"
+[ "$(grep -c '^RAYA_SHUTTLE_STALE_SECONDS=' "$SCRIPT" || true)" -eq 1 ] \
+  && pass "Raya shuttle freshness threshold has one source of truth" \
+  || fail "Raya shuttle freshness threshold must be defined exactly once"
 
 if [ ! -f "$ROOT/packages/teamlead/dist/StateStore.js" ] \
   || [ ! -f "$ROOT/packages/flywheel-comm/dist/lib.js" ]; then
@@ -131,9 +137,53 @@ run_snapshot() {
   GH_FAIL="${GH_FAIL:-0}" \
   GH_SCHEMA="${GH_SCHEMA:-0}" \
   GH_EMPTY="${GH_EMPTY:-0}" \
+  PATROL_NOW_EPOCH="${PATROL_NOW_EPOCH:-}" \
   TMUX_CALL_LOG="${TMUX_CALL_LOG:-$dir/tmux-calls.log}" \
   TMUX_CAPTURE_FAIL="${TMUX_CAPTURE_FAIL:-}" \
     bash "$executable" --project flywheel --lead "$lead_id" > "$out" 2>&1
+}
+
+RAYA_TEST_NOW=2000000000
+RAYA_TEST_STALE_SECONDS=$((13 * 3600))
+
+make_raya_checkout() {
+  local dir="$1" repo=""
+  repo="$dir/state/raya/code"
+  mkdir -p "$repo"
+  git init -q -b main "$repo"
+  git -C "$repo" config user.email fly2385@example.test
+  git -C "$repo" config user.name FLY-2385
+  printf 'anchor\n' > "$repo/state.txt"
+  git -C "$repo" add state.txt
+  GIT_AUTHOR_DATE="@$((RAYA_TEST_NOW - 20 * 3600))" \
+    GIT_COMMITTER_DATE="@$((RAYA_TEST_NOW - 20 * 3600))" \
+    git -C "$repo" commit -qm anchor
+  RAYA_SHA_A="$(git -C "$repo" rev-parse HEAD)"
+  printf 'old undeployed\n' >> "$repo/state.txt"
+  git -C "$repo" add state.txt
+  GIT_AUTHOR_DATE="@$((RAYA_TEST_NOW - 15 * 3600))" \
+    GIT_COMMITTER_DATE="@$((RAYA_TEST_NOW - 15 * 3600))" \
+    git -C "$repo" commit -qm old-undeployed
+  RAYA_SHA_B="$(git -C "$repo" rev-parse HEAD)"
+  printf 'recent tip\n' >> "$repo/state.txt"
+  git -C "$repo" add state.txt
+  GIT_AUTHOR_DATE="@$((RAYA_TEST_NOW - 3600))" \
+    GIT_COMMITTER_DATE="@$((RAYA_TEST_NOW - 3600))" \
+    git -C "$repo" commit -qm recent-tip
+  RAYA_SHA_C="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" update-ref refs/remotes/origin/main "$RAYA_SHA_C"
+  raya_set_ledger "$dir" "$RAYA_SHA_C"
+  raya_set_receipt "$dir" "$RAYA_TEST_NOW"
+}
+
+raya_set_ledger() {
+  mkdir -p "$1/state/raya"
+  printf '%s\n' "$2" > "$1/state/raya/deployed-sha"
+}
+
+raya_set_receipt() {
+  mkdir -p "$1/state/raya"
+  jq -n --argjson checked "$2" '{checked_at:$checked}' > "$1/state/raya/deploy-receipt.json"
 }
 
 MAIN="$TMP/main"
@@ -1491,6 +1541,146 @@ GH_EMPTY_OUT="$GH_EMPTY_DIR/out.txt"
 GH_EMPTY=1 run_snapshot "$GH_EMPTY_DIR" "$GH_EMPTY_OUT" || fail "empty gh snapshot exits zero"
 contains "$GH_EMPTY_OUT" "PR none" "empty open PR collection remains a valid fact"
 contains "$GH_EMPTY_OUT" "RUN none" "empty action-run collection remains a valid fact"
+
+RAYA_CASE="$TMP/raya"
+make_case "$RAYA_CASE"
+make_raya_checkout "$RAYA_CASE"
+RAYA_REPO="$RAYA_CASE/state/raya/code"
+
+RAYA_CURRENT_OUT="$RAYA_CASE/current.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_CURRENT_OUT" || fail "current Raya snapshot exits zero"
+contains "$RAYA_CURRENT_OUT" "raya checkout=$RAYA_REPO head=${RAYA_SHA_C:0:8} origin_main=${RAYA_SHA_C:0:8} branch=main behind=0 deployed_sha=${RAYA_SHA_C:0:8} receipt_age_h=0 drift_age_h=- checkout_drift=no deploy_drift=no shuttle_stale=no overdue=no" "current Raya checkout is healthy"
+
+printf '  %s \r\n' "$RAYA_SHA_C" > "$RAYA_CASE/state/raya/deployed-sha"
+RAYA_PADDED_LEDGER_OUT="$RAYA_CASE/padded-ledger.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_PADDED_LEDGER_OUT" || fail "padded ledger Raya snapshot exits zero"
+contains "$RAYA_PADDED_LEDGER_OUT" "behind=0 deployed_sha=${RAYA_SHA_C:0:8}" "STEP 5 normalizes a padded deployed sha"
+contains "$RAYA_PADDED_LEDGER_OUT" "checkout_drift=no deploy_drift=no shuttle_stale=no overdue=no" "normalized deployed sha remains healthy"
+
+git -C "$RAYA_REPO" reset --hard -q "$RAYA_SHA_B"
+raya_set_ledger "$RAYA_CASE" "$RAYA_SHA_B"
+raya_set_receipt "$RAYA_CASE" "$RAYA_TEST_NOW"
+RAYA_BEHIND_FRESH_OUT="$RAYA_CASE/behind-fresh.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_BEHIND_FRESH_OUT" || fail "fresh behind Raya snapshot exits zero"
+contains "$RAYA_BEHIND_FRESH_OUT" "branch=main behind=1 deployed_sha=${RAYA_SHA_B:0:8} receipt_age_h=0 drift_age_h=1 checkout_drift=behind deploy_drift=no shuttle_stale=no overdue=no" "one fresh shuttle interval of checkout drift is not overdue"
+
+rm -f "$RAYA_CASE/state/raya/deploy-receipt.json"
+RAYA_BEHIND_MISSING_OUT="$RAYA_CASE/behind-missing.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_BEHIND_MISSING_OUT" || fail "missing receipt snapshot exits zero"
+contains "$RAYA_BEHIND_MISSING_OUT" "receipt_age_h=missing" "missing Raya receipt is explicit"
+contains "$RAYA_BEHIND_MISSING_OUT" "shuttle_stale=yes overdue=yes" "missing Raya receipt makes drift overdue"
+
+git -C "$RAYA_REPO" reset --hard -q "$RAYA_SHA_C"
+raya_set_ledger "$RAYA_CASE" "$RAYA_SHA_C"
+raya_set_receipt "$RAYA_CASE" "$((RAYA_TEST_NOW - RAYA_TEST_STALE_SECONDS + 1))"
+RAYA_RECEIPT_FRESH_OUT="$RAYA_CASE/receipt-fresh.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_RECEIPT_FRESH_OUT" || fail "13h-minus receipt snapshot exits zero"
+contains "$RAYA_RECEIPT_FRESH_OUT" "shuttle_stale=no overdue=no" "receipt at 13h minus 1s is fresh"
+raya_set_receipt "$RAYA_CASE" "$((RAYA_TEST_NOW - RAYA_TEST_STALE_SECONDS - 1))"
+RAYA_RECEIPT_STALE_OUT="$RAYA_CASE/receipt-stale.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_RECEIPT_STALE_OUT" || fail "13h-plus receipt snapshot exits zero"
+contains "$RAYA_RECEIPT_STALE_OUT" "behind=0" "stale receipt case keeps checkout current"
+contains "$RAYA_RECEIPT_STALE_OUT" "shuttle_stale=yes overdue=yes" "receipt at 13h plus 1s is overdue"
+
+raya_set_receipt "$RAYA_CASE" "$RAYA_TEST_NOW"
+raya_set_ledger "$RAYA_CASE" "$RAYA_SHA_A"
+RAYA_OLD_DEPLOY_OUT="$RAYA_CASE/old-deploy.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_OLD_DEPLOY_OUT" || fail "old deployed range snapshot exits zero"
+contains "$RAYA_OLD_DEPLOY_OUT" "head=${RAYA_SHA_C:0:8} origin_main=${RAYA_SHA_C:0:8} branch=main behind=0 deployed_sha=${RAYA_SHA_A:0:8}" "old deployed sha remains a valid ancestor"
+contains "$RAYA_OLD_DEPLOY_OUT" "drift_age_h=15 checkout_drift=no deploy_drift=yes shuttle_stale=no overdue=yes" "deploy drift age uses the oldest undeployed commit, not the recent tip"
+
+RAYA_TREE="$(git -C "$RAYA_REPO" rev-parse "${RAYA_SHA_C}^{tree}")"
+RAYA_SIDE_SHA="$(printf 'side\n' | GIT_AUTHOR_DATE="@$((RAYA_TEST_NOW - 1800))" GIT_COMMITTER_DATE="@$((RAYA_TEST_NOW - 1800))" git -C "$RAYA_REPO" commit-tree "$RAYA_TREE")"
+raya_set_ledger "$RAYA_CASE" "$RAYA_SIDE_SHA"
+RAYA_NONANCESTOR_OUT="$RAYA_CASE/nonancestor.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_NONANCESTOR_OUT" || fail "non-ancestor ledger snapshot exits zero"
+contains "$RAYA_NONANCESTOR_OUT" "deployed_sha=not_ancestor" "non-ancestor Raya ledger is explicit"
+contains "$RAYA_NONANCESTOR_OUT" "deploy_drift=yes shuttle_stale=no overdue=yes" "non-ancestor Raya ledger is immediately overdue"
+
+raya_set_ledger "$RAYA_CASE" not-a-sha
+RAYA_INVALID_LEDGER_OUT="$RAYA_CASE/invalid-ledger.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_INVALID_LEDGER_OUT" || fail "invalid ledger snapshot exits zero"
+contains "$RAYA_INVALID_LEDGER_OUT" "deployed_sha=invalid" "invalid Raya ledger is explicit"
+contains "$RAYA_INVALID_LEDGER_OUT" "deploy_drift=yes shuttle_stale=no overdue=yes" "invalid Raya ledger is immediately overdue"
+
+rm -f "$RAYA_CASE/state/raya/deployed-sha"
+RAYA_MISSING_LEDGER_OUT="$RAYA_CASE/missing-ledger.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_MISSING_LEDGER_OUT" || fail "missing ledger snapshot exits zero"
+contains "$RAYA_MISSING_LEDGER_OUT" "deployed_sha=missing" "missing Raya ledger is explicit"
+contains "$RAYA_MISSING_LEDGER_OUT" "deploy_drift=yes shuttle_stale=no overdue=yes" "missing Raya ledger is immediately overdue"
+
+git -C "$RAYA_REPO" reset --hard -q "$RAYA_SHA_B"
+printf 'local divergence\n' >> "$RAYA_REPO/state.txt"
+git -C "$RAYA_REPO" add state.txt
+GIT_AUTHOR_DATE="@$((RAYA_TEST_NOW - 1800))" GIT_COMMITTER_DATE="@$((RAYA_TEST_NOW - 1800))" git -C "$RAYA_REPO" commit -qm local-divergence
+RAYA_DIVERGED_SHA="$(git -C "$RAYA_REPO" rev-parse HEAD)"
+raya_set_ledger "$RAYA_CASE" "$RAYA_DIVERGED_SHA"
+raya_set_receipt "$RAYA_CASE" "$RAYA_TEST_NOW"
+RAYA_DIVERGED_OUT="$RAYA_CASE/diverged.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_DIVERGED_OUT" || fail "diverged Raya snapshot exits zero"
+contains "$RAYA_DIVERGED_OUT" "origin_main=${RAYA_SHA_C:0:8} branch=main behind=1 deployed_sha=${RAYA_DIVERGED_SHA:0:8}" "diverged Raya checkout keeps deterministic refs"
+contains "$RAYA_DIVERGED_OUT" "checkout_drift=diverged deploy_drift=no shuttle_stale=no overdue=yes" "diverged Raya checkout is immediately overdue"
+
+git -C "$RAYA_REPO" reset --hard -q "$RAYA_SHA_C"
+git -C "$RAYA_REPO" update-ref -d refs/remotes/origin/main
+raya_set_ledger "$RAYA_CASE" "$RAYA_SHA_C"
+RAYA_NO_ORIGIN_OUT="$RAYA_CASE/no-origin.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_NO_ORIGIN_OUT" || fail "missing origin/main snapshot exits zero"
+contains "$RAYA_NO_ORIGIN_OUT" "origin_main=none branch=main behind=unknown" "missing Raya origin/main is explicit"
+contains "$RAYA_NO_ORIGIN_OUT" "overdue=yes" "missing Raya origin/main is immediately overdue"
+git -C "$RAYA_REPO" update-ref refs/remotes/origin/main "$RAYA_SHA_C"
+
+git -C "$RAYA_REPO" checkout -q --detach "$RAYA_SHA_C"
+RAYA_DETACHED_OUT="$RAYA_CASE/detached.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_DETACHED_OUT" || fail "detached Raya snapshot exits zero"
+contains "$RAYA_DETACHED_OUT" "branch=detached" "detached Raya checkout is explicit"
+contains "$RAYA_DETACHED_OUT" "overdue=yes" "detached Raya checkout is immediately overdue"
+git -C "$RAYA_REPO" checkout -q -B other "$RAYA_SHA_C"
+RAYA_OTHER_BRANCH_OUT="$RAYA_CASE/other-branch.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_OTHER_BRANCH_OUT" || fail "non-main Raya snapshot exits zero"
+contains "$RAYA_OTHER_BRANCH_OUT" "branch=other" "non-main Raya checkout is explicit"
+contains "$RAYA_OTHER_BRANCH_OUT" "overdue=yes" "non-main Raya checkout is immediately overdue"
+git -C "$RAYA_REPO" checkout -q -B main "$RAYA_SHA_C"
+
+printf '{bad json\n' > "$RAYA_CASE/state/raya/deploy-receipt.json"
+RAYA_BAD_RECEIPT_OUT="$RAYA_CASE/bad-receipt.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_BAD_RECEIPT_OUT" || fail "malformed receipt snapshot exits zero"
+contains "$RAYA_BAD_RECEIPT_OUT" "receipt_age_h=malformed" "malformed Raya receipt is explicit"
+contains "$RAYA_BAD_RECEIPT_OUT" "shuttle_stale=yes overdue=yes" "malformed Raya receipt is overdue"
+raya_set_receipt "$RAYA_CASE" "$((RAYA_TEST_NOW + 1))"
+RAYA_FUTURE_RECEIPT_OUT="$RAYA_CASE/future-receipt.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_FUTURE_RECEIPT_OUT" || fail "future receipt snapshot exits zero"
+contains "$RAYA_FUTURE_RECEIPT_OUT" "receipt_age_h=malformed" "future Raya receipt is malformed"
+contains "$RAYA_FUTURE_RECEIPT_OUT" "shuttle_stale=yes overdue=yes" "future Raya receipt is overdue"
+
+RAYA_MISSING="$TMP/raya-missing"
+make_case "$RAYA_MISSING"
+RAYA_MISSING_OUT="$RAYA_MISSING/out.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_MISSING" "$RAYA_MISSING_OUT" || fail "missing Raya checkout snapshot exits zero"
+contains "$RAYA_MISSING_OUT" "raya checkout=UNAVAILABLE(structural: raya_checkout_missing)" "missing Raya checkout is structural"
+contains "$RAYA_MISSING_OUT" "UNAVAILABLE_CAUSE step=5 class=structural token=raya_checkout_missing" "missing Raya checkout emits its cause row"
+contains "$RAYA_MISSING_OUT" "STEP 5: UNAVAILABLE(structural: raya_checkout_missing)" "missing Raya checkout finalizes STEP 5 when gh is available"
+
+RAYA_UNREADABLE="$TMP/raya-unreadable"
+make_case "$RAYA_UNREADABLE"
+mkdir -p "$RAYA_UNREADABLE/state/raya/code"
+RAYA_UNREADABLE_OUT="$RAYA_UNREADABLE/out.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_UNREADABLE" "$RAYA_UNREADABLE_OUT" || fail "unreadable Raya git snapshot exits zero"
+contains "$RAYA_UNREADABLE_OUT" "raya checkout=UNAVAILABLE(structural: raya_git_unreadable)" "unreadable Raya git checkout is structural"
+contains "$RAYA_UNREADABLE_OUT" "UNAVAILABLE_CAUSE step=5 class=structural token=raya_git_unreadable" "unreadable Raya git emits its cause row"
+
+RAYA_NONFLYWHEEL_OUT="$RAYA_CASE/non-flywheel.txt"
+HOME="$RAYA_CASE/home" PATH="$RAYA_CASE/bin:$PATH" \
+  FLYWHEEL_STATE_DIR="$RAYA_CASE/state" \
+  FLYWHEEL_STATE_DB_PATH="$RAYA_CASE/teamlead.db" \
+  FLYWHEEL_PROJECTS_FILE="$RAYA_CASE/state/projects.json" \
+  FLYWHEEL_COMM_DB="$RAYA_CASE/state/comm/tidal-echo/comm.db" \
+  PATROL_NOW_EPOCH="$RAYA_TEST_NOW" \
+  bash "$SCRIPT" --project tidal-echo --lead flywheel-eng-lead > "$RAYA_NONFLYWHEEL_OUT" 2>&1 || fail "non-flywheel snapshot exits zero"
+not_contains "$RAYA_NONFLYWHEEL_OUT" "raya checkout=" "non-flywheel projects do not emit Raya production facts"
+
+contains "$GH_OUT" "STEP 5: UNAVAILABLE(structural: gh_unavailable)" "gh remains the primary STEP 5 unavailable token when Raya is also missing"
+contains "$GH_OUT" "UNAVAILABLE_CAUSE step=5 class=structural token=raya_checkout_missing" "gh failure still records independent Raya structural unavailability"
 
 DEFAULT="$TMP/default-path"
 make_case "$DEFAULT"

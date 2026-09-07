@@ -43,6 +43,7 @@ required_functions=(
   updater_init_dirs updater_lock_acquire updater_lock_release
   updater_token_shape_valid updater_claim_token updater_urgent_signature
   updater_scheduled_signature updater_sync_fable_model update_main
+  updater_raya_pass raya_configure_runtime_paths raya_host_capable raya_alert_dispatch
 )
 missing_functions=()
 for fn in "${required_functions[@]}"; do
@@ -54,14 +55,41 @@ if [ "${#missing_functions[@]}" -ne 0 ]; then
   exit 1
 fi
 
-last_library_source_line="$(rg -n '^source "\$\{SCRIPT_DIR\}/launchd-census\.sh"$' "$UPDATER" | tail -1 | cut -d: -f1)"
+bash3_guard='\$\{[^}]*[\^,]{1,2}\}|declare[[:space:]]+-A|local[[:space:]]+-n|readarray|mapfile|coproc|&>>|;;&'
+bash3_guard_complete=1
+for construct in '${severity^^}' '${severity,,}' '${severity^}' '${severity,}'; do
+  printf '%s\n' "$construct" | rg -q "$bash3_guard" || bash3_guard_complete=0
+done
+if [[ "$bash3_guard_complete" == 1 ]]; then
+  pass "Bash 3.2 guard recognizes every case-modification form"
+else
+  fail "Bash 3.2 guard misses a case-modification form"
+fi
+if ! rg -n "$bash3_guard" \
+  "$UPDATER" "$ROOT/scripts/lib/updater-raya-deploy.sh" \
+  "$ROOT/scripts/lead-patrol-snapshot.sh" >/dev/null; then
+  pass "Raya updater path stays compatible with production /bin/bash 3.2"
+else
+  fail "Raya updater path contains a bash 4+ construct"
+fi
+
+if grep -Fq 'bash scripts/__tests__/updater-raya-deploy.test.sh' "$ROOT/.github/workflows/ci.yml"; then
+  pass "CI runs the standalone Raya deploy transaction suite"
+else
+  fail "CI does not run updater-raya-deploy.test.sh"
+fi
+
+last_library_source_line="$(rg -n '^source "\$\{SCRIPT_DIR\}/lib/updater-raya-deploy\.sh"$' "$UPDATER" | tail -1 | cut -d: -f1)"
 last_runtime_pin_line="$(rg -n '^updater_configure_runtime_paths$' "$UPDATER" | tail -1 | cut -d: -f1)"
+last_raya_runtime_pin_line="$(rg -n '^raya_configure_runtime_paths$' "$UPDATER" | tail -1 | cut -d: -f1)"
 if [[ "$last_library_source_line" =~ ^[0-9]+$ \
   && "$last_runtime_pin_line" =~ ^[0-9]+$ \
-  && "$last_runtime_pin_line" -gt "$last_library_source_line" ]]; then
-  pass "production path pin runs after every library that may re-source .env"
+  && "$last_raya_runtime_pin_line" =~ ^[0-9]+$ \
+  && "$last_runtime_pin_line" -gt "$last_library_source_line" \
+  && "$last_raya_runtime_pin_line" -gt "$last_library_source_line" ]]; then
+  pass "Flywheel and Raya production path pins run after every library that may re-source .env"
 else
-  fail "runtime path pin can be overwritten by a later .env source (library=$last_library_source_line pin=$last_runtime_pin_line)"
+  fail "runtime paths can be overwritten by a later .env source (library=$last_library_source_line flywheel_pin=$last_runtime_pin_line raya_pin=$last_raya_runtime_pin_line)"
 fi
 
 if declare -F updater_configure_runtime_paths >/dev/null 2>&1; then
@@ -69,29 +97,91 @@ if declare -F updater_configure_runtime_paths >/dev/null 2>&1; then
   saved_home="$FLYWHEEL_HOME"
   saved_urgent="$SELF_SHIP_URGENT_DIR"
   saved_lock="$SELF_SHIP_LOCK_DIR"
+  saved_raya_home="$RAYA_HOME"
+  saved_raya_code="$RAYA_CODE_DIR"
+  saved_raya_state="$RAYA_STATE_DIR"
+  saved_raya_metrics="$RAYA_METRICS_DIR"
+  saved_raya_sha="$RAYA_DEPLOYED_SHA_FILE"
+  saved_raya_receipt="$RAYA_DEPLOY_RECEIPT"
+  saved_raya_lock="$RAYA_DEPLOY_LOCK_DIR"
+  saved_raya_brain_pid="$RAYA_BRAIN_PID_FILE"
+  saved_raya_voice_pid="$RAYA_VOICE_PID_FILE"
+  saved_raya_plists="$RAYA_PLIST_DIR"
   sandbox_home="$HOME"
   UPDATE_FLYWHEEL_SOURCED=0
   FLYWHEEL_HOME="$TMP/diverted-state"
   SELF_SHIP_URGENT_DIR="$TMP/diverted-urgent"
   SELF_SHIP_LOCK_DIR="$TMP/diverted-lock"
+  RAYA_HOME="$TMP/diverted-raya"
+  RAYA_CODE_DIR="$TMP/diverted-code"
+  RAYA_STATE_DIR="$TMP/diverted-raya-state"
+  RAYA_METRICS_DIR="$TMP/diverted-raya-metrics"
+  RAYA_DEPLOYED_SHA_FILE="$TMP/diverted-raya-sha"
+  RAYA_DEPLOY_RECEIPT="$TMP/diverted-raya-receipt"
+  RAYA_DEPLOY_LOCK_DIR="$TMP/diverted-raya-lock"
+  RAYA_BRAIN_PID_FILE="$TMP/diverted-brain-pid"
+  RAYA_VOICE_PID_FILE="$TMP/diverted-voice-pid"
+  RAYA_PLIST_DIR="$TMP/diverted-plists"
   updater_configure_runtime_paths
+  raya_configure_runtime_paths
   runtime_home="$FLYWHEEL_HOME"
   runtime_urgent="$SELF_SHIP_URGENT_DIR"
   runtime_lock="$SELF_SHIP_LOCK_DIR"
+  runtime_raya_home="$RAYA_HOME"
+  runtime_raya_code="$RAYA_CODE_DIR"
+  runtime_raya_state="$RAYA_STATE_DIR"
+  runtime_raya_metrics="$RAYA_METRICS_DIR"
+  runtime_raya_sha="$RAYA_DEPLOYED_SHA_FILE"
+  runtime_raya_receipt="$RAYA_DEPLOY_RECEIPT"
+  runtime_raya_lock="$RAYA_DEPLOY_LOCK_DIR"
+  runtime_raya_brain_pid="$RAYA_BRAIN_PID_FILE"
+  runtime_raya_voice_pid="$RAYA_VOICE_PID_FILE"
+  runtime_raya_plists="$RAYA_PLIST_DIR"
   UPDATE_FLYWHEEL_SOURCED=1
   FLYWHEEL_HOME="$saved_home"
   SELF_SHIP_URGENT_DIR="$saved_urgent"
   SELF_SHIP_LOCK_DIR="$saved_lock"
+  RAYA_HOME="$saved_raya_home"
+  RAYA_CODE_DIR="$saved_raya_code"
+  RAYA_STATE_DIR="$saved_raya_state"
+  RAYA_METRICS_DIR="$saved_raya_metrics"
+  RAYA_DEPLOYED_SHA_FILE="$saved_raya_sha"
+  RAYA_DEPLOY_RECEIPT="$saved_raya_receipt"
+  RAYA_DEPLOY_LOCK_DIR="$saved_raya_lock"
+  RAYA_BRAIN_PID_FILE="$saved_raya_brain_pid"
+  RAYA_VOICE_PID_FILE="$saved_raya_voice_pid"
+  RAYA_PLIST_DIR="$saved_raya_plists"
   updater_configure_runtime_paths
+  raya_configure_runtime_paths
   if [ "$runtime_home" = "$sandbox_home/.flywheel" ] \
     && [ "$runtime_urgent" = "$sandbox_home/.flywheel/self-ship-urgent.d" ] \
     && [ "$runtime_lock" = "$sandbox_home/.flywheel/self-ship-updater.lock.d" ] \
+    && [ "$runtime_raya_home" = "$sandbox_home/.flywheel/raya" ] \
+    && [ "$runtime_raya_code" = "$sandbox_home/.flywheel/raya/code" ] \
+    && [ "$runtime_raya_state" = "$sandbox_home/.flywheel/raya/data/state" ] \
+    && [ "$runtime_raya_metrics" = "$sandbox_home/.flywheel/raya/data/metrics" ] \
+    && [ "$runtime_raya_sha" = "$sandbox_home/.flywheel/raya/deployed-sha" ] \
+    && [ "$runtime_raya_receipt" = "$sandbox_home/.flywheel/raya/deploy-receipt.json" ] \
+    && [ "$runtime_raya_lock" = "$sandbox_home/.flywheel/raya/deploy.lock.d" ] \
+    && [ "$runtime_raya_brain_pid" = "$sandbox_home/.flywheel/raya/data/metrics/run/brain.pid" ] \
+    && [ "$runtime_raya_voice_pid" = "$sandbox_home/.flywheel/raya/data/metrics/run/voice.pid" ] \
+    && [ "$runtime_raya_plists" = "$sandbox_home/Library/LaunchAgents" ] \
     && [ "$FLYWHEEL_HOME" = "$saved_home" ] \
     && [ "$SELF_SHIP_URGENT_DIR" = "$saved_urgent" ] \
-    && [ "$SELF_SHIP_LOCK_DIR" = "$saved_lock" ]; then
-    pass "production pins plist-aligned state paths while sourced harnesses may override"
+    && [ "$SELF_SHIP_LOCK_DIR" = "$saved_lock" ] \
+    && [ "$RAYA_HOME" = "$saved_raya_home" ] \
+    && [ "$RAYA_CODE_DIR" = "$saved_raya_code" ] \
+    && [ "$RAYA_STATE_DIR" = "$saved_raya_state" ] \
+    && [ "$RAYA_METRICS_DIR" = "$saved_raya_metrics" ] \
+    && [ "$RAYA_DEPLOYED_SHA_FILE" = "$saved_raya_sha" ] \
+    && [ "$RAYA_DEPLOY_RECEIPT" = "$saved_raya_receipt" ] \
+    && [ "$RAYA_DEPLOY_LOCK_DIR" = "$saved_raya_lock" ] \
+    && [ "$RAYA_BRAIN_PID_FILE" = "$saved_raya_brain_pid" ] \
+    && [ "$RAYA_VOICE_PID_FILE" = "$saved_raya_voice_pid" ] \
+    && [ "$RAYA_PLIST_DIR" = "$saved_raya_plists" ]; then
+    pass "production pins Flywheel and Raya paths while sourced harnesses may override"
   else
-    fail "runtime path pinning drifted (runtime=$runtime_home/$runtime_urgent/$runtime_lock sourced=$FLYWHEEL_HOME/$SELF_SHIP_URGENT_DIR/$SELF_SHIP_LOCK_DIR)"
+    fail "runtime path pinning drifted (flywheel=$runtime_home/$runtime_urgent/$runtime_lock raya=$runtime_raya_home/$runtime_raya_code/$runtime_raya_state/$runtime_raya_metrics/$runtime_raya_sha/$runtime_raya_receipt/$runtime_raya_lock/$runtime_raya_brain_pid/$runtime_raya_voice_pid/$runtime_raya_plists)"
   fi
   UPDATE_FLYWHEEL_SOURCED="$saved_sourced"
 else
@@ -99,11 +189,13 @@ else
 fi
 
 DEPLOY_CALLS="$TMP/deploy.calls"
+RAYA_CALLS="$TMP/raya.calls"
 ALERT_CALLS="$TMP/alert.calls"
 FETCH_MODE=ok
 LAUNCHD_PASS_CALLS="$TMP/launchd-pass.calls"
 MODEL_SYNC_CALLS="$TMP/model-sync.calls"
 : > "$DEPLOY_CALLS"
+: > "$RAYA_CALLS"
 : > "$ALERT_CALLS"
 : > "$LAUNCHD_PASS_CALLS"
 : > "$MODEL_SYNC_CALLS"
@@ -122,6 +214,44 @@ updater_sync_fable_model() {
   [ "${MODEL_SYNC_MODE:-ok}" = ok ]
 }
 severe_alert() { printf '%s|%s\n' "$1" "$2" >> "$ALERT_CALLS"; }
+updater_raya_pass() {
+  printf 'call wake=%s result=%s\n' "${UPDATER_WAKE_KIND:-unknown}" "${UPDATER_CYCLE_RESULT:-unknown}" >> "$RAYA_CALLS"
+  RAYA_DEPLOY_STATE="${RAYA_STUB_STATE:-current}"
+  RAYA_DEPLOY_DETAIL="stub"
+  return "${RAYA_STUB_RC:-0}"
+}
+raya_host_capable() { return "${RAYA_HOST_CAPABLE_RC:-0}"; }
+
+export RAYA_ALERT_ARGV="$TMP/raya-alert.argv"
+mkdir -p "$FLYWHEEL_DIR/scripts"
+cat > "$FLYWHEEL_DIR/scripts/lead-alert.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${RAYA_ALERT_ARGV:?}"
+EOF
+chmod +x "$FLYWHEEL_DIR/scripts/lead-alert.sh"
+: > "$RAYA_ALERT_ARGV"
+UPDATER_UTC_DAY=20260821
+FLYWHEEL_FOUNDER_USER_ID=founder-123 raya_alert_dispatch warning raya-fetch-failed ignored warn-body >/dev/null 2>&1
+FLYWHEEL_FOUNDER_USER_ID=founder-123 raya_alert_dispatch severe raya-deploy-rolled-back ignored severe-body >/dev/null 2>&1
+warning_argv="$(sed -n '1p' "$RAYA_ALERT_ARGV")"
+severe_argv="$(sed -n '2p' "$RAYA_ALERT_ARGV")"
+: > "$RAYA_ALERT_ARGV"
+UPDATER_UTC_DAY=20260821 FLYWHEEL_FOUNDER_USER_ID=founder-123 \
+  /bin/bash -c 'source "$1"; raya_alert_dispatch warning raya-fetch-failed ignored compat-body' \
+  fly2385 "$UPDATER" >/dev/null 2>&1
+compat_argv="$(sed -n '1p' "$RAYA_ALERT_ARGV")"
+rm -rf "$FLYWHEEL_DIR/scripts"
+if [ "$warning_argv" = "--project flywheel --lead updater --kind deploy_degraded --severity warning --title Raya deploy degraded --body warn-body --signature raya-fetch-failed-scheduled-20260821" ] \
+  && [ "$severe_argv" = "--project flywheel --lead updater --kind deploy_failed --severity severe --title Raya deploy failed --body severe-body --signature raya-deploy-rolled-back-scheduled-20260821 --mention-user founder-123" ]; then
+  pass "Raya alerts use fixed kinds/titles, one class prefix, scheduled dedup, and severe founder mention"
+else
+  fail "Raya alert argv drifted (warning=$warning_argv severe=$severe_argv)"
+fi
+if [ "$compat_argv" = "--project flywheel --lead updater --kind deploy_degraded --severity warning --title Raya deploy degraded --body compat-body --signature raya-fetch-failed-scheduled-20260821" ]; then
+  pass "production /bin/bash executes the Raya alert path through lead-alert.sh"
+else
+  fail "production /bin/bash did not deliver the Raya alert path (argv=$compat_argv)"
+fi
 stub_deploy_ok() {
   printf 'call\n' >> "$DEPLOY_CALLS"
   git -C "$FLYWHEEL_DIR" rev-parse origin/main > "$DEPLOYED_SHA_FILE"
@@ -154,15 +284,20 @@ write_token() {
 urgent_count() { find "$SELF_SHIP_URGENT_DIR" -type f 2>/dev/null | wc -l | tr -d ' '; }
 urgent_entry_count() { find "$SELF_SHIP_URGENT_DIR" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' '; }
 deploy_count() { grep -c '^call' "$DEPLOY_CALLS" 2>/dev/null || true; }
+raya_count() { grep -c '^call' "$RAYA_CALLS" 2>/dev/null || true; }
 reset_case() {
   rm -rf "$SELF_SHIP_URGENT_DIR" "$SELF_SHIP_LOCK_DIR" "$FLYWHEEL_HOME"/.urgent-claim.*
   mkdir -p "$FLYWHEEL_HOME"
   : > "$DEPLOY_CALLS"
+  : > "$RAYA_CALLS"
   : > "$ALERT_CALLS"
   : > "$LAUNCHD_PASS_CALLS"
   : > "$MODEL_SYNC_CALLS"
   FETCH_MODE=ok
   MODEL_SYNC_MODE=ok
+  RAYA_STUB_STATE=current
+  RAYA_STUB_RC=0
+  RAYA_HOST_CAPABLE_RC=0
   SELF_SHIP_DEPLOY_CMD=stub_deploy_ok
   UPDATER_UTC_DAY=20260821
 }
@@ -171,10 +306,24 @@ reset_case
 printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
 update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ] \
-  && [ "$(grep -c '^call$' "$MODEL_SYNC_CALLS")" = 1 ]; then
-  pass "schedule runs one model sync inside the singleton and performs zero caught-up deploys"
+  && [ "$(grep -c '^call$' "$MODEL_SYNC_CALLS")" = 1 ] \
+  && [ "$(raya_count)" = 1 ] \
+  && grep -q '^call wake=scheduled result=scheduled_current$' "$RAYA_CALLS"; then
+  pass "caught-up schedule runs one independent Raya pass after the Flywheel cycle"
 else
-  fail "caught-up schedule/model sync drifted (rc=$rc deploys=$(deploy_count) syncs=$(cat "$MODEL_SYNC_CALLS"))"
+  fail "caught-up schedule/model sync/Raya wiring drifted (rc=$rc deploys=$(deploy_count) raya=$(cat "$RAYA_CALLS") syncs=$(cat "$MODEL_SYNC_CALLS"))"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+RAYA_HOST_CAPABLE_RC=1
+update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(raya_count)" = 0 ] \
+  && [ "$RAYA_DEPLOY_STATE" = not_configured ] \
+  && [ "$RAYA_DEPLOY_DETAIL" = host-capability-absent ]; then
+  pass "scheduled updater skips Raya silently on hosts without its installed brain job"
+else
+  fail "host capability gate ran or alerted Raya on an unrelated updater host (rc=$rc raya=$(raya_count) state=${RAYA_DEPLOY_STATE:-unset} detail=${RAYA_DEPLOY_DETAIL:-unset})"
 fi
 
 reset_case
@@ -183,10 +332,37 @@ MODEL_SYNC_MODE=fail
 update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ] \
   && [ "$(grep -c '^call$' "$MODEL_SYNC_CALLS")" = 1 ] \
-  && [ "$(grep -c '^pass$' "$LAUNCHD_PASS_CALLS")" = 1 ]; then
+  && [ "$(grep -c '^pass$' "$LAUNCHD_PASS_CALLS")" = 1 ] \
+  && [ "$(raya_count)" = 1 ]; then
   pass "model sync failure is non-fatal and does not suppress the existing updater cycle"
 else
-  fail "model sync failure changed updater semantics (rc=$rc deploys=$(deploy_count) syncs=$(cat "$MODEL_SYNC_CALLS") launchd=$(cat "$LAUNCHD_PASS_CALLS"))"
+  fail "model sync failure changed updater semantics (rc=$rc deploys=$(deploy_count) raya=$(raya_count) syncs=$(cat "$MODEL_SYNC_CALLS") launchd=$(cat "$LAUNCHD_PASS_CALLS"))"
+fi
+
+reset_case
+FETCH_MODE=fail
+update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 2 ] && [ "$(deploy_count)" = 0 ] && [ "$(raya_count)" = 1 ] \
+  && grep -q '^call wake=scheduled result=fetch_failed$' "$RAYA_CALLS"; then
+  pass "scheduled Flywheel fetch failure still runs exactly one independent Raya pass and preserves rc"
+else
+  fail "scheduled fetch failure suppressed or changed the Raya pass (rc=$rc deploys=$(deploy_count) raya=$(cat "$RAYA_CALLS"))"
+fi
+
+reset_case
+original_launchd_then_cycle="$(declare -f updater_run_launchd_then_cycle)"
+updater_run_launchd_then_cycle() {
+  printf 'cycle\n' >> "$RAYA_CALLS"
+  UPDATER_WAKE_KIND=unknown
+  UPDATER_CYCLE_RESULT=unknown
+  return 9
+}
+update_main >/dev/null 2>&1; rc=$?
+eval "$original_launchd_then_cycle"
+if [ "$rc" -eq 9 ] && [ "$(cat "$RAYA_CALLS")" = cycle ]; then
+  pass "unknown wake kind fails closed, skips Raya, and preserves the Flywheel cycle rc"
+else
+  fail "unknown wake kind ran Raya or changed rc (rc=$rc calls=$(cat "$RAYA_CALLS"))"
 fi
 
 if declare -F updater_fetch_origin_once >/dev/null 2>&1 \
@@ -330,10 +506,21 @@ fi
 reset_case
 printf '%040d\n' 0 > "$DEPLOYED_SHA_FILE"
 SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
-if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 1 ]; then
-  pass "schedule drift performs exactly one deploy"
+if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 1 ] && [ "$(raya_count)" = 1 ] \
+  && grep -q '^call wake=scheduled result=scheduled_deployed$' "$RAYA_CALLS"; then
+  pass "schedule drift performs exactly one Flywheel deploy then one Raya pass"
 else
-  fail "schedule drift did not deploy once (rc=$rc calls=$(deploy_count))"
+  fail "schedule drift wiring changed (rc=$rc deploys=$(deploy_count) raya=$(cat "$RAYA_CALLS"))"
+fi
+
+reset_case
+printf '%040d\n' 0 > "$DEPLOYED_SHA_FILE"
+SELF_SHIP_DEPLOY_CMD=stub_deploy_fail update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 3 ] && [ "$(deploy_count)" = 1 ] && [ "$(raya_count)" = 1 ] \
+  && grep -q '^call wake=scheduled result=scheduled_failed$' "$RAYA_CALLS"; then
+  pass "scheduled Flywheel deploy failure still runs Raya once without changing the cycle rc"
+else
+  fail "scheduled deploy failure suppressed Raya or changed rc (rc=$rc deploys=$(deploy_count) raya=$(cat "$RAYA_CALLS"))"
 fi
 
 reset_case
@@ -345,6 +532,7 @@ SELF_SHIP_DEPLOY_CMD=stub_deploy_observe_claim update_main >/dev/null 2>&1; rc=$
 after_status="$(git -C "$FLYWHEEL_DIR" status --porcelain)"
 if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 1 ] \
   && grep -q '^call watched=0 claimed=2$' "$DEPLOY_CALLS" \
+  && [ "$(raya_count)" = 0 ] \
   && [ -z "$before_status" ] && [ -z "$after_status" ] \
   && [ "$(find "$FLYWHEEL_HOME" -maxdepth 1 -name '.urgent-claim.*' | wc -l | tr -d ' ')" = 0 ]; then
   pass "urgent batch claims before one deploy without dirtying checkout"
@@ -371,6 +559,7 @@ reset_case
 write_token fail-once "$SHA1"
 SELF_SHIP_DEPLOY_CMD=stub_deploy_fail update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -ne 0 ] && [ "$(deploy_count)" = 1 ] && [ "$(urgent_count)" = 0 ] \
+  && [ "$(raya_count)" = 0 ] \
   && [ "$(find "$FLYWHEEL_HOME" -maxdepth 1 -name '.urgent-claim.*' | wc -l | tr -d ' ')" = 0 ] \
   && grep -q '^urgent-deploy-failed-fail-once.urgent.json|' "$ALERT_CALLS"; then
   pass "urgent deploy failure is claim-once, alerting, and non-retrying"
@@ -388,6 +577,7 @@ mkdir -p "$SELF_SHIP_URGENT_DIR/nested.urgent.json"
 printf 'must not survive claim cleanup\n' > "$SELF_SHIP_URGENT_DIR/nested.urgent.json/child"
 SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -ne 0 ] && [ "$(deploy_count)" = 0 ] && [ "$(urgent_entry_count)" = 0 ] \
+  && [ "$(raya_count)" = 0 ] \
   && [ "$(find "$FLYWHEEL_HOME" -maxdepth 1 -name '.urgent-claim.*' | wc -l | tr -d ' ')" = 0 ] \
   && [ "$(grep -c '^urgent-invalid-' "$ALERT_CALLS" || true)" = 5 ]; then
   pass "provably invalid entries are removed, alerted individually, and never deploy"
@@ -396,10 +586,25 @@ else
 fi
 
 reset_case
+write_token claim-failure "$SHA1"
+original_claim_token="$(declare -f updater_claim_token)"
+updater_claim_token() { return 1; }
+SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
+eval "$original_claim_token"
+if [ "$rc" -ne 0 ] && [ "$(deploy_count)" = 0 ] && [ "$(raya_count)" = 0 ] \
+  && [ "$(urgent_count)" = 1 ] \
+  && grep -q '^urgent-claim-failed-claim-failure.urgent.json|' "$ALERT_CALLS"; then
+  pass "urgent claim failure never authorizes a Raya pass"
+else
+  fail "urgent claim failure leaked into Raya (rc=$rc deploys=$(deploy_count) raya=$(cat "$RAYA_CALLS") urgent=$(urgent_count))"
+fi
+
+reset_case
 write_token hold-on-fetch "$SHA1"
 FETCH_MODE=fail
 SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -ne 0 ] && [ "$(deploy_count)" = 0 ] && [ "$(urgent_count)" = 0 ] \
+  && [ "$(raya_count)" = 0 ] \
   && grep -q '^urgent-probe-indeterminate-hold-on-fetch.urgent.json|' "$ALERT_CALLS"; then
   pass "indeterminate fetch failure consumes the claim once and cannot relaunch QueueDirectories"
 else
@@ -411,6 +616,7 @@ write_token missing-bounded-runner "$SHA1"
 FETCH_MODE=missing
 SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 127 ] && [ "$(deploy_count)" = 0 ] && [ "$(urgent_count)" = 0 ] \
+  && [ "$(raya_count)" = 0 ] \
   && grep -q '^urgent-probe-runtime-missing-missing-bounded-runner.urgent.json|' "$ALERT_CALLS"; then
   pass "missing bounded runner is fail-fast and reported without blaming the network"
 else
@@ -424,6 +630,7 @@ updater_token_target_state() { printf 'indeterminate\n'; }
 SELF_SHIP_DEPLOY_CMD=stub_deploy_ok update_main >/dev/null 2>&1; rc=$?
 eval "$original_target_state"
 if [ "$rc" -ne 0 ] && [ "$(deploy_count)" = 0 ] && [ "$(urgent_count)" = 0 ] \
+  && [ "$(raya_count)" = 0 ] \
   && grep -q '^urgent-probe-indeterminate-probe-error.urgent.json|' "$ALERT_CALLS"; then
   pass "indeterminate ancestry probe consumes the claim once and cannot wedge later tickets"
 else
@@ -481,6 +688,9 @@ fi
 reset_case
 UPDATER_CLAIM_DIR="$(mktemp -d "${FLYWHEEL_HOME}/.urgent-claim.XXXXXX")"
 printf '{}\n' > "$UPDATER_CLAIM_DIR/interrupted.urgent.json"
+mkdir -p "$RAYA_DEPLOY_LOCK_DIR"
+printf '%s\n' "$$" > "$RAYA_DEPLOY_LOCK_DIR/pid"
+RAYA_LOCK_OWNED=1
 UPDATER_CLAIMED=1
 UPDATER_COMPLETED=0
 UPDATER_ALERTED=0
@@ -489,11 +699,13 @@ UPDATER_CLAIMED_BASENAMES=(interrupted.urgent.json)
 ( updater_signal_cleanup ) >/dev/null 2>&1
 signal_rc=$?
 if [ "$signal_rc" -eq 130 ] && [ ! -e "$UPDATER_CLAIM_DIR" ] \
+  && [ ! -e "$RAYA_DEPLOY_LOCK_DIR" ] \
   && grep -q '^urgent-interrupted-interrupted.urgent.json|' "$ALERT_CALLS"; then
-  pass "TERM/INT cleanup alerts for a claimed but incomplete urgent ticket"
+  pass "TERM/INT cleanup releases the Raya lock and alerts for incomplete urgent intent"
 else
-  fail "signal cleanup lost the at-most-once warning (rc=$signal_rc dir=$([ -e "$UPDATER_CLAIM_DIR" ] && echo yes || echo no) alerts=$(cat "$ALERT_CALLS"))"
+  fail "signal cleanup lost the Raya lock or at-most-once warning (rc=$signal_rc claim_dir=$([ -e "$UPDATER_CLAIM_DIR" ] && echo yes || echo no) raya_lock=$([ -e "$RAYA_DEPLOY_LOCK_DIR" ] && echo yes || echo no) alerts=$(cat "$ALERT_CALLS"))"
 fi
+RAYA_LOCK_OWNED=0
 
 reset_case
 mkdir -p "$SELF_SHIP_LOCK_DIR"

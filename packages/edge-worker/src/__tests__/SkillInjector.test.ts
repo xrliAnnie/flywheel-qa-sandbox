@@ -108,6 +108,27 @@ describe("SkillInjector", () => {
 		expect(content).toContain("Add user authentication");
 	});
 
+	it("requires deployment evidence before closing an independent production repo issue", async () => {
+		const injector = new SkillInjector();
+		await injector.inject(tmpDir, makeCtx());
+
+		const content = fs.readFileSync(
+			path.join(
+				tmpDir,
+				".claude",
+				"skills",
+				"linear-issue-context",
+				"SKILL.md",
+			),
+			"utf-8",
+		);
+		expect(content).toContain("合入 ≠ 上线");
+		expect(content).toContain("生产 checkout");
+		expect(content).toContain("com.xrli.raya.brain");
+		expect(content).toContain("`raya preflight` ready");
+		expect(content).toContain("deploy-receipt.json");
+	});
+
 	it("replaces {{testCommand}} placeholder", async () => {
 		const injector = new SkillInjector();
 		await injector.inject(tmpDir, makeCtx({ testCommand: "npm test" }));

@@ -2550,6 +2550,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/updater-raya-deploy.test.sh:reset_guard='pkill|kill -9|bootout|bootstrap|launchctl[[:space:]]+load|reset --hard \"?\\$\\{?RAYA_(NEW_HEAD|TARGET|CHECKOUT_BEFORE)'#1",
+		"path": "scripts/__tests__/updater-raya-deploy.test.sh",
+		"code": "reset_guard='pkill|kill -9|bootout|bootstrap|launchctl[[:space:]]+load|reset --hard \"?\\$\\{?RAYA_(NEW_HEAD|TARGET|CHECKOUT_BEFORE)'",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/codex-tui-nudge-probe.sh:kill -0 \"$SERVER_PID\" >/dev/null 2>&1 \\#1",
 		"path": "scripts/codex-tui-nudge-probe.sh",
 		"code": "kill -0 \"$SERVER_PID\" >/dev/null 2>&1 \\",
@@ -3166,6 +3172,12 @@
 		"path": "scripts/lib/tmux-server-rescue.sh",
 		"code": "os.kill(os.getpid(), signal.SIGKILL)",
 		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/updater-raya-deploy.sh:if ! raya_is_pid \"$owner\" || ! kill -0 \"$owner\" 2>/dev/null; then#1",
+		"path": "scripts/lib/updater-raya-deploy.sh",
+		"code": "if ! raya_is_pid \"$owner\" || ! kill -0 \"$owner\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
 	},
 	{
 		"key": "scripts/linux-preflight.sh:( sleep \"$secs\"; kill -9 \"$p\" 2>/dev/null ) >/dev/null 2>&1 &#1",

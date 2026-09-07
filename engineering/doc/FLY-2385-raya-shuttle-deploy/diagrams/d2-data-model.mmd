@@ -1,0 +1,26 @@
+flowchart TB
+    OM["真相来源<br/>GitHub xrliAnnie/raya · origin/main"]
+    UPD["唯一写者：班车 Raya 段<br/>update-flywheel.sh"]
+    CODE["~/.flywheel/raya/code<br/>生产 checkout（git）<br/>HEAD · 本地 origin/main ref"]
+    DIST["code/apps/brain/dist · code/apps/voice/dist<br/>launchd 真正执行的构建产物"]
+    LOCK["~/.flywheel/raya/deploy.lock.d<br/>mkdir 原子锁 + pid"]
+    RCPT["~/.flywheel/raya/deploy-receipt.json（v1）<br/>checked_at · outcome · failure · old_head · head<br/>origin_main · brain_pid · voice · node_bin · preflight"]
+    SHA["~/.flywheel/raya/deployed-sha<br/>一行 40 位 sha（issue 指定）"]
+    BRAIN["com.xrli.raya.brain（launchd）<br/>启动时自己写 data/metrics/run/brain.pid"]
+    VOICE["com.xrli.raya.voice<br/>由 brain 按需拉起 / 收掉"]
+    PAT["读者：Eng Lead 巡检 STEP 5<br/>lead-patrol-snapshot.sh（只读、不 fetch）"]
+    LEAD["Eng Lead 按规则在 flywheel-engineer 频道发 warning"]
+
+    OM -- "fetch + ff-only" --> UPD
+    UPD -- "1 持锁" --> LOCK
+    UPD -- "2 更新 HEAD" --> CODE
+    UPD -- "3 install / build / preflight" --> DIST
+    UPD -- "4 kickstart -k，验证新 pid 与 brain.pid" --> BRAIN
+    BRAIN -. "voice 在跑且 voice 代码变了才重启" .-> VOICE
+    UPD -- "5 先写 receipt（原子 mv）" --> RCPT
+    UPD -- "6 再写 deployed-sha" --> SHA
+    DIST --> BRAIN
+    CODE -- "HEAD / origin/main / rev-list" --> PAT
+    SHA --> PAT
+    RCPT -- "checked_at → shuttle_stale" --> PAT
+    PAT -- "事实行 raya checkout=… behind=N overdue=yes|no" --> LEAD
