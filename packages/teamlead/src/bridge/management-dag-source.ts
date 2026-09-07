@@ -105,6 +105,8 @@ function projectDag(
 				id: node.id,
 				name: workflowNodeDisplayLabel(template.template_id, node),
 				type: node.type,
+				handbookRef:
+					manifest.schema_version === 3 ? (node.handbook_ref ?? null) : null,
 				execution:
 					node.type === "gate"
 						? "gate"

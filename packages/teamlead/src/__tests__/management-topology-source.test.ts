@@ -1,7 +1,13 @@
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ConfigLoader, type FlywheelConfig } from "flywheel-config";
+import {
+	ConfigLoader,
+	type FlywheelConfig,
+	type ResolvedProjectRegistry,
+} from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import {
 	buildTopologyView,
@@ -128,6 +134,127 @@ describe("management topology source", () => {
 					"https://github.com/xrliAnnie/flywheel/blob/main/.flywheel/agents/nodes/personal.md",
 			}),
 		]);
+	});
+
+	it("uses resolved registry nodes as unique handbook cards even with legacy config agents", async () => {
+		const loaded = (await loadedConfigs(["flywheel"])).get("flywheel")!;
+		loaded.handbookRegistryActive = true;
+		loaded.handbookRosterAvailable = false;
+		loaded.handbookRosterStatus = "not_applicable";
+		loaded.resolvedRegistry = {
+			projectName: "flywheel",
+			projectRoot: "/tmp/flywheel",
+			nodes: {
+				eng_design: {
+					name: "eng_design",
+					label: "设计(工程)",
+					type: "design",
+					agentFile: "/tmp/flywheel/.flywheel/agents/nodes/eng_design.md",
+					agentFileRoot: "/tmp/flywheel/.flywheel/agents",
+					department: "engineering",
+					departments: ["engineering"],
+				},
+				implement: {
+					name: "implement",
+					label: "实现",
+					type: "implement",
+					agentFile: "/tmp/flywheel/.flywheel/agents/nodes/implement.md",
+					agentFileRoot: "/tmp/flywheel/.flywheel/agents",
+					department: "engineering",
+					departments: ["engineering"],
+				},
+			},
+			structural: {},
+			graphs: {},
+		} as unknown as ResolvedProjectRegistry;
+		loaded.handbookResolvedFiles = {
+			eng_design: "/tmp/flywheel/.flywheel/agents/nodes/eng_design.md",
+			implement: "/tmp/flywheel/.flywheel/agents/nodes/implement.md",
+		};
+		const view = buildTopologyView({
+			projects: [project("flywheel", [])],
+			configs: new Map([["flywheel", loaded]]),
+			projectsRevision: "file:projects",
+		});
+
+		expect(view.projects[0]).toMatchObject({
+			handbookRegistryActive: true,
+			handbookRosterAvailable: false,
+			handbookRosterStatus: "not_applicable",
+			handbookResolvedRefs: ["eng_design", "implement"],
+		});
+		expect(view.projects[0]!.roles.map((role) => role.name)).toEqual([
+			"设计(工程)",
+			"实现",
+		]);
+		expect(view.projects[0]!.roles[0]!.handbookRefs).toContain("eng_design");
+		expect(view.projects[0]!.roles[1]!.handbookRefs).toContain("implement");
+	});
+
+	it("links a legacy roster ref only when exactly one role has the same canonical file", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2365-topology-legacy-"));
+		try {
+			const handbook = join(root, "life.md");
+			writeFileSync(handbook, "# Life\n");
+			const loaded = (await loadedConfigs(["personal-assistant"])).get(
+				"personal-assistant",
+			)!;
+			loaded.resolvedAgents = {
+				life: {
+					nodeName: "life",
+					label: "Life",
+					agentFile: handbook,
+					agentFileRoot: root,
+					department: "life",
+					departments: ["life"],
+					match: { labels: ["life"] },
+				},
+			};
+			loaded.handbookRegistryActive = false;
+			loaded.handbookRosterAvailable = true;
+			loaded.handbookRosterStatus = "ready";
+			loaded.handbookResolvedFiles = { general: realpathSync(handbook) };
+			const view = buildTopologyView({
+				projects: [
+					project("personal-assistant", [], {
+						projectRoot: root,
+					}),
+				],
+				configs: new Map([["personal-assistant", loaded]]),
+				projectsRevision: "file:projects",
+			});
+
+			expect(view.projects[0]).toMatchObject({
+				handbookRegistryActive: false,
+				handbookRosterAvailable: true,
+				handbookRosterStatus: "ready",
+				handbookResolvedRefs: ["general"],
+			});
+			expect(view.projects[0]!.roles[0]).toMatchObject({
+				name: "Life",
+				handbookRefs: ["general"],
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a registry-active resolution failure visible without legacy fallback", async () => {
+		const loaded = (await loadedConfigs(["managed"])).get("managed")!;
+		loaded.handbookRegistryActive = true;
+		loaded.handbookRosterStatus = "not_applicable";
+		loaded.handbookResolutionError = "registry overlay unreadable";
+		const view = buildTopologyView({
+			projects: [project("managed", [])],
+			configs: new Map([["managed", loaded]]),
+			projectsRevision: "file:projects",
+		});
+
+		expect(view.projects[0]).toMatchObject({
+			handbookRegistryActive: true,
+			roles: [],
+			error: "registry overlay unreadable",
+		});
 	});
 
 	it("shows a missing repository diagnostic instead of inventing a link", async () => {

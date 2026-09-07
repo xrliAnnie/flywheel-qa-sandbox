@@ -41,10 +41,27 @@ function currentRoleNames(): string[] {
 								? []
 								: [node.id];
 						})
-					: [],
+					: seed.manifest.schema_version === 3
+						? seed.manifest.nodes.flatMap((node) =>
+								node.handbook_ref ? [node.handbook_ref] : [],
+							)
+						: [],
 			),
 		),
 	];
+}
+
+function schema2Manifest(seed: ReturnType<typeof currentSeeds>[number]) {
+	return {
+		...seed.manifest,
+		schema_version: 2 as const,
+		nodes: seed.manifest.nodes.map((entry) => {
+			const { handbook_ref: _handbookRef, ...node } = entry as typeof entry & {
+				handbook_ref?: string;
+			};
+			return node;
+		}),
+	};
 }
 
 async function legacyCatalog(dbPath = ":memory:") {
@@ -326,17 +343,58 @@ describe("FLY-2121 workflow catalog startup migration", () => {
 		founderOwned.close();
 	});
 
+	it("derives protected schema 2 role compatibility from schema 3 handbook refs", async () => {
+		const founderOwned = await legacyCatalog();
+		const productDesignSeed = currentSeeds().find(
+			(seed) => seed.templateId === "tpl_design",
+		)!;
+		const schema2ProductDesign = schema2Manifest(productDesignSeed);
+		const preCutoverManifest = {
+			...schema2ProductDesign,
+			nodes: schema2ProductDesign.nodes.map((node) =>
+				node.id === "product_design"
+					? { ...node, role: "product_design" }
+					: node,
+			),
+		};
+		const founderRevision = founderOwned.createWorkflowTemplateRevision({
+			templateId: productDesignSeed.templateId,
+			manifest: preCutoverManifest,
+			schemaVersion: 2,
+			createdBy: "founder:test",
+		});
+		founderOwned.publishWorkflowTemplate({
+			templateId: productDesignSeed.templateId,
+			revision: founderRevision,
+			expectedRevision: 1,
+			publishedBy: "founder:test",
+		});
+
+		const result = preflightWorkflowCatalogMigration(
+			founderOwned,
+			currentSeeds(),
+		);
+
+		const productDesignPlan = result.seeds.find(
+			(seed) => seed.templateId === productDesignSeed.templateId,
+		);
+		expect(productDesignPlan).toMatchObject({
+			status: "skipped",
+			reason: "founder_owned",
+		});
+		expect(productDesignPlan).not.toHaveProperty("unresolvableRoles");
+		founderOwned.close();
+	});
+
 	it("marks a protected pre-cutover role manifest unrunnable and fails dispatch with an explicit FLY-2121 diagnostic", async () => {
 		const founderOwned = await legacyCatalog();
 		const productDesignSeed = currentSeeds().find(
 			(seed) => seed.templateId === "tpl_design",
 		)!;
-		if (productDesignSeed.manifest.schema_version !== 2) {
-			throw new Error("expected tpl_design schema v2");
-		}
+		const schema2ProductDesign = schema2Manifest(productDesignSeed);
 		const preCutoverManifest = {
-			...productDesignSeed.manifest,
-			nodes: productDesignSeed.manifest.nodes.map((node) =>
+			...schema2ProductDesign,
+			nodes: schema2ProductDesign.nodes.map((node) =>
 				node.id === "product_design" ? { ...node, role: "designer" } : node,
 			),
 		};
@@ -447,12 +505,10 @@ describe("FLY-2121 workflow catalog startup migration", () => {
 		const prdSeed = currentSeeds().find(
 			(seed) => seed.templateId === "tpl_prd",
 		)!;
-		if (prdSeed.manifest.schema_version !== 2) {
-			throw new Error("expected tpl_prd schema v2");
-		}
+		const schema2Prd = schema2Manifest(prdSeed);
 		const repairOnlyManifest = {
-			...prdSeed.manifest,
-			nodes: prdSeed.manifest.nodes.map((node) =>
+			...schema2Prd,
+			nodes: schema2Prd.nodes.map((node) =>
 				node.id === "pm"
 					? {
 							...node,

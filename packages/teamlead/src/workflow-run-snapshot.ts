@@ -26,6 +26,7 @@ import {
 	type WorkflowEffort,
 	type WorkflowManifestV1,
 	type WorkflowManifestV2,
+	type WorkflowManifestV3,
 	type WorkflowNodeType,
 	type WorkflowOutputContract,
 	type WorkflowVendor,
@@ -84,6 +85,15 @@ export interface WorkflowRunSnapshotV2 extends WorkflowSnapshotWorkKind {
 	snapshot_digest: string;
 }
 
+export interface WorkflowRunSnapshotV3 extends WorkflowSnapshotWorkKind {
+	schema_version: 3;
+	template: { id: string; revision: number };
+	manifest: WorkflowManifestV3;
+	manifest_digest: string;
+	resolved: { nodes: ResolvedWorkflowNode[] };
+	snapshot_digest: string;
+}
+
 export interface WorkflowRunSnapshotV1 extends WorkflowSnapshotWorkKind {
 	schema_version: 1;
 	template: { id: string; revision: number };
@@ -93,7 +103,10 @@ export interface WorkflowRunSnapshotV1 extends WorkflowSnapshotWorkKind {
 	snapshot_digest: string;
 }
 
-export type WorkflowRunSnapshot = WorkflowRunSnapshotV1 | WorkflowRunSnapshotV2;
+export type WorkflowRunSnapshot =
+	| WorkflowRunSnapshotV1
+	| WorkflowRunSnapshotV2
+	| WorkflowRunSnapshotV3;
 
 /** Residency is a graph fact: only nodes with an inbound pinned loop qualify. */
 export function isLoopTargetNode(
@@ -368,8 +381,7 @@ export function buildWorkflowRunSnapshotV1(input: {
 	return { ...body, snapshot_digest: canonicalSubmissionDigest(body) };
 }
 
-/** Materialize every live-registry decision into a self-contained v2 snapshot. */
-export function buildWorkflowRunSnapshotV2(input: {
+interface GeneralizedWorkflowRunSnapshotInput {
 	template: { id: string; revision: number };
 	manifest: unknown;
 	canonicalRoot: string;
@@ -380,12 +392,27 @@ export function buildWorkflowRunSnapshotV2(input: {
 	};
 	/** One registry generation for alias validation and canonicalization. */
 	modelSnapshot?: ModelConfigSnapshot;
-}): WorkflowRunSnapshotV2 {
+}
+
+function buildGeneralizedWorkflowRunSnapshot(
+	input: GeneralizedWorkflowRunSnapshotInput,
+	schemaVersion: 2,
+): WorkflowRunSnapshotV2;
+function buildGeneralizedWorkflowRunSnapshot(
+	input: GeneralizedWorkflowRunSnapshotInput,
+	schemaVersion: 3,
+): WorkflowRunSnapshotV3;
+function buildGeneralizedWorkflowRunSnapshot(
+	input: GeneralizedWorkflowRunSnapshotInput,
+	schemaVersion: 2 | 3,
+): WorkflowRunSnapshotV2 | WorkflowRunSnapshotV3 {
 	const validated = validateWorkflowManifest(input.manifest, {
 		...(input.modelSnapshot ? { modelSnapshot: input.modelSnapshot } : {}),
 	});
-	if (validated.schema_version !== 2) {
-		throw new Error("typed generalized snapshot requires schema_version 2");
+	if (validated.schema_version !== schemaVersion) {
+		throw new Error(
+			`typed generalized snapshot requires schema_version ${schemaVersion}`,
+		);
 	}
 	const hasArtifactProducingGeneric = validated.nodes.some(
 		(node) => node.type === "generic" && node.produces_output === true,
@@ -467,10 +494,8 @@ export function buildWorkflowRunSnapshotV2(input: {
 						})()),
 		};
 	});
-	const body = snapshotBody({
-		schema_version: 2,
+	const common = {
 		template: { ...input.template },
-		manifest: validated,
 		manifest_digest: canonicalSubmissionDigest(validated),
 		resolved: { nodes: resolved },
 		...(input.workKind
@@ -482,8 +507,38 @@ export function buildWorkflowRunSnapshotV2(input: {
 					...(input.workKind.tier ? { tier: input.workKind.tier } : {}),
 				}
 			: {}),
-	});
-	return { ...body, snapshot_digest: canonicalSubmissionDigest(body) };
+	};
+	if (schemaVersion === 2 && validated.schema_version === 2) {
+		const body = snapshotBody({
+			schema_version: 2 as const,
+			...common,
+			manifest: validated,
+		});
+		return { ...body, snapshot_digest: canonicalSubmissionDigest(body) };
+	}
+	if (schemaVersion === 3 && validated.schema_version === 3) {
+		const body = snapshotBody({
+			schema_version: 3 as const,
+			...common,
+			manifest: validated,
+		});
+		return { ...body, snapshot_digest: canonicalSubmissionDigest(body) };
+	}
+	throw new Error("workflow snapshot schema_version narrowing failed");
+}
+
+/** Materialize every live-registry decision into a self-contained v2 snapshot. */
+export function buildWorkflowRunSnapshotV2(
+	input: GeneralizedWorkflowRunSnapshotInput,
+): WorkflowRunSnapshotV2 {
+	return buildGeneralizedWorkflowRunSnapshot(input, 2);
+}
+
+/** Materialize schema-3 metadata without changing the existing agent resolver. */
+export function buildWorkflowRunSnapshotV3(
+	input: GeneralizedWorkflowRunSnapshotInput,
+): WorkflowRunSnapshotV3 {
+	return buildGeneralizedWorkflowRunSnapshot(input, 3);
 }
 
 const CAPABILITY_KEYS = [
@@ -571,8 +626,12 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 		],
 		"workflow snapshot",
 	);
-	if (root.schema_version !== 1 && root.schema_version !== 2) {
-		throw new Error("workflow snapshot schema_version must be 1 or 2");
+	if (
+		root.schema_version !== 1 &&
+		root.schema_version !== 2 &&
+		root.schema_version !== 3
+	) {
+		throw new Error("workflow snapshot schema_version must be 1, 2, or 3");
 	}
 	const taskCategory =
 		root.task_category === undefined
@@ -701,7 +760,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 			) {
 				throw new Error(`${path}.dispatch.effort is unknown`);
 			}
-			if (root.schema_version === 2 && dispatchRaw.effort === undefined) {
+			if (root.schema_version !== 1 && dispatchRaw.effort === undefined) {
 				throw new Error(`${path}.dispatch.effort is required`);
 			}
 			const node: ResolvedWorkflowNode = {
@@ -756,7 +815,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 					throw new Error(`${path}.agent digest mismatch`);
 				}
 				node.agent = { content, digest };
-			} else if (root.schema_version === 2 && manifestNode.type === "generic") {
+			} else if (root.schema_version !== 1 && manifestNode.type === "generic") {
 				throw new Error(`${path} generic node requires a pinned agent`);
 			}
 			if (capabilities.produces_output !== !!node.output) {
@@ -809,14 +868,23 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 					resolved: { nodes: resolved },
 					...workKind,
 				})
-			: snapshotBody({
-					schema_version: 2 as const,
-					template,
-					manifest: manifest as WorkflowManifestV2,
-					manifest_digest: manifestDigest,
-					resolved: { nodes: resolved },
-					...workKind,
-				});
+			: root.schema_version === 2 && manifest.schema_version === 2
+				? snapshotBody({
+						schema_version: 2 as const,
+						template,
+						manifest,
+						manifest_digest: manifestDigest,
+						resolved: { nodes: resolved },
+						...workKind,
+					})
+				: snapshotBody({
+						schema_version: 3 as const,
+						template,
+						manifest: manifest as WorkflowManifestV3,
+						manifest_digest: manifestDigest,
+						resolved: { nodes: resolved },
+						...workKind,
+					});
 	const digest = nonempty(
 		root.snapshot_digest,
 		"workflow snapshot.snapshot_digest",

@@ -13,17 +13,24 @@
  * (Codex R2-4).
  */
 
-import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import {
 	agentConfigsRequireRegistry,
 	ConfigLoader,
 	type FlywheelConfig,
 	type ResolvedAgentConfig,
+	type ResolvedProjectRegistry,
 	resolveAgentConfigs,
 } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import { resolveProjectAgentRegistry } from "../workflow-menu.js";
+import {
+	bundledWorkflowRegistryPath,
+	loadLegacyProjectRoster,
+	projectUsesAgentRegistry,
+	resolveNodeAgentFile,
+	resolveProjectAgentRegistry,
+} from "../workflow-menu.js";
 import {
 	fileSourceRevision,
 	registrySourceRevision,
@@ -32,13 +39,123 @@ import {
 export type ProjectConfigEntry = {
 	config?: FlywheelConfig;
 	resolvedAgents?: Readonly<Record<string, ResolvedAgentConfig>>;
+	resolvedRegistry?: ResolvedProjectRegistry;
+	handbookRegistryActive?: boolean;
+	handbookRosterAvailable?: boolean;
+	handbookRosterStatus?: "not_applicable" | "ready" | "absent" | "unreadable";
+	handbookResolvedFiles?: Readonly<Record<string, string>>;
+	handbookResolutionError?: string;
 	revision: string;
 	error?: string;
 };
 
+type ProjectHandbookState = Pick<
+	ProjectConfigEntry,
+	| "resolvedRegistry"
+	| "handbookRegistryActive"
+	| "handbookRosterAvailable"
+	| "handbookRosterStatus"
+	| "handbookResolvedFiles"
+	| "handbookResolutionError"
+>;
+
+function projectHandbookState(
+	project: ProjectEntry,
+	registryPath: string,
+): ProjectHandbookState {
+	let registryActive: boolean;
+	try {
+		registryActive = projectUsesAgentRegistry(project.projectRoot);
+	} catch (error) {
+		return {
+			handbookRegistryActive: existsSync(
+				join(project.projectRoot, ".flywheel", "agents", "registry.yaml"),
+			),
+			handbookRosterAvailable: false,
+			handbookRosterStatus: "unreadable",
+			handbookResolvedFiles: {},
+			handbookResolutionError:
+				error instanceof Error ? error.message : String(error),
+		};
+	}
+	if (registryActive) {
+		try {
+			const resolvedRegistry = resolveProjectAgentRegistry(
+				project.projectRoot,
+				registryPath,
+			);
+			return {
+				resolvedRegistry,
+				handbookRegistryActive: true,
+				handbookRosterAvailable: false,
+				handbookRosterStatus: "not_applicable",
+				handbookResolvedFiles: Object.fromEntries(
+					Object.entries(resolvedRegistry.nodes).map(([ref, node]) => [
+						ref,
+						realpathSync(node.agentFile),
+					]),
+				),
+			};
+		} catch (error) {
+			return {
+				handbookRegistryActive: true,
+				handbookRosterAvailable: false,
+				handbookRosterStatus: "not_applicable",
+				handbookResolvedFiles: {},
+				handbookResolutionError:
+					error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+
+	const rosterPath = join(
+		project.projectRoot,
+		".flywheel",
+		"menus",
+		"ic-roster.yaml",
+	);
+	if (!existsSync(rosterPath)) {
+		return {
+			handbookRegistryActive: false,
+			handbookRosterAvailable: false,
+			handbookRosterStatus: "absent",
+			handbookResolvedFiles: {},
+		};
+	}
+	try {
+		const roster = loadLegacyProjectRoster(project.projectRoot);
+		return {
+			handbookRegistryActive: false,
+			handbookRosterAvailable: true,
+			handbookRosterStatus: "ready",
+			handbookResolvedFiles: Object.fromEntries(
+				Object.keys(roster).map((ref) => [
+					ref,
+					realpathSync(
+						resolve(
+							project.projectRoot,
+							resolveNodeAgentFile(project.projectRoot, ref),
+						),
+					),
+				]),
+			),
+		};
+	} catch (error) {
+		return {
+			handbookRegistryActive: false,
+			handbookRosterAvailable: true,
+			handbookRosterStatus: "unreadable",
+			handbookResolvedFiles: {},
+			handbookResolutionError:
+				error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
 export async function loadFeatureFlagProjectConfigs(
 	projects: ProjectEntry[],
 	readFile: (p: string) => string = (p) => readFileSync(p, "utf-8"),
+	registryPath: string = bundledWorkflowRegistryPath(),
 ): Promise<Map<string, ProjectConfigEntry>> {
 	const map = new Map<string, ProjectConfigEntry>();
 	for (const project of projects) {
@@ -50,21 +167,37 @@ export async function loadFeatureFlagProjectConfigs(
 				return raw;
 			});
 			const cfg = await loader.load(configPath);
-			const resolvedAgents = cfg.agents
-				? resolveAgentConfigs(
-						cfg.agents,
-						agentConfigsRequireRegistry(cfg.agents)
-							? resolveProjectAgentRegistry(project.projectRoot)
-							: undefined,
-						project.projectRoot,
-					)
-				: undefined;
+			const handbook = projectHandbookState(project, registryPath);
+			let resolvedAgents:
+				| Readonly<Record<string, ResolvedAgentConfig>>
+				| undefined;
+			let agentResolutionError: string | undefined;
+			try {
+				resolvedAgents = cfg.agents
+					? resolveAgentConfigs(
+							cfg.agents,
+							agentConfigsRequireRegistry(cfg.agents)
+								? (handbook.resolvedRegistry ??
+										resolveProjectAgentRegistry(
+											project.projectRoot,
+											registryPath,
+										))
+								: undefined,
+							project.projectRoot,
+						)
+					: undefined;
+			} catch (error) {
+				agentResolutionError =
+					error instanceof Error ? error.message : String(error);
+			}
 			// ENOENT surfaces as ConfigLoader returning undefined / throwing below;
 			// a loaded config (even empty) is stored as the config.
 			map.set(project.projectName, {
 				config: cfg ?? undefined,
 				...(resolvedAgents ? { resolvedAgents } : {}),
+				...handbook,
 				revision: fileSourceRevision(Buffer.from(raw ?? "")),
+				...(agentResolutionError ? { error: agentResolutionError } : {}),
 			});
 		} catch (err) {
 			const code = (err as NodeJS.ErrnoException).code;
@@ -110,7 +243,26 @@ export class ProjectConfigCache {
 			size: number;
 			ino: number;
 		} = (p) => statSync(p),
+		private readonly registryPath: string = bundledWorkflowRegistryPath(),
 	) {}
+
+	private sourceStamp(projectRoot: string): string {
+		return [
+			join(projectRoot, ".flywheel", "config.yaml"),
+			join(projectRoot, ".flywheel", "agents", "registry.yaml"),
+			join(projectRoot, ".flywheel", "menus", "ic-roster.yaml"),
+			this.registryPath,
+		]
+			.map((path) => {
+				try {
+					const st = this.statFile(path);
+					return `${path}:${st.mtimeMs}:${st.size}:${st.ino}`;
+				} catch {
+					return `${path}:absent`;
+				}
+			})
+			.join("|");
+	}
 
 	/** The last materialized map (for sync consumers between refreshes). */
 	current(): Map<string, ProjectConfigEntry> {
@@ -123,18 +275,12 @@ export class ProjectConfigCache {
 		const seen = new Set<string>();
 		for (const project of projects) {
 			seen.add(project.projectName);
-			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
-			let stamp = "absent";
-			try {
-				const st = this.statFile(configPath);
-				stamp = `${st.mtimeMs}:${st.size}:${st.ino}`;
-			} catch {
-				// ENOENT (or stat failure) = absent semantics.
-			}
+			const stamp = this.sourceStamp(project.projectRoot);
 			if (this.stamps.get(project.projectName) === stamp) continue;
 			const loaded = await loadFeatureFlagProjectConfigs(
 				[project],
 				this.readFile,
+				this.registryPath,
 			);
 			this.entries.set(
 				project.projectName,

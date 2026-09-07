@@ -101,7 +101,7 @@ function resolveWorkflowTemplateCandidate(
 	);
 	if (!revision) throw new Error("workflow template revision not found");
 	const schemaVersion = revision.schema_version;
-	if (schemaVersion !== 1 && schemaVersion !== 2) {
+	if (schemaVersion !== 1 && schemaVersion !== 2 && schemaVersion !== 3) {
 		throw new Error("workflow template candidate schema is unsupported");
 	}
 	return {
@@ -109,7 +109,7 @@ function resolveWorkflowTemplateCandidate(
 		binding,
 		templateId,
 		revision,
-		schemaVersion: schemaVersion as 1 | 2,
+		schemaVersion: schemaVersion as 1 | 2 | 3,
 	};
 }
 
@@ -122,7 +122,7 @@ export function resolveWorkflowTemplateCandidateSchema(
 		leadTemplateId?: string;
 		workKindEnforced?: boolean;
 	},
-): 1 | 2 | null {
+): 1 | 2 | 3 | null {
 	return resolveWorkflowTemplateCandidate(store, input)?.schemaVersion ?? null;
 }
 
@@ -147,7 +147,7 @@ export async function resolveWorkflowTemplateSelection(
 		canonicalRoot: string;
 		idempotencyKey?: string;
 		/** Candidate schema observed before the route's entry-policy await. */
-		candidateSchemaAtEntry?: 1 | 2 | null;
+		candidateSchemaAtEntry?: 1 | 2 | 3 | null;
 		/**
 		 * FLY-1372: durable entry provenance, set ONLY by the pipeline.dag
 		 * dispatch entry — pinned atomically in the materialize transaction.

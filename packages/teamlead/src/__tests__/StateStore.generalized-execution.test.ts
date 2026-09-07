@@ -16,7 +16,10 @@ import {
 	compileWorkflowMenuSeed,
 	loadWorkflowMenuLibrary,
 } from "../workflow-menu.js";
-import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
+import {
+	buildWorkflowRunSnapshotV2,
+	buildWorkflowRunSnapshotV3,
+} from "../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
 import {
 	legacyWorkflowSeeds,
@@ -42,7 +45,12 @@ afterEach(() => {
 
 function createRun(
 	store: StateStore,
-	options: { output?: boolean; templateId?: string; loopTarget?: boolean } = {},
+	options: {
+		output?: boolean;
+		templateId?: string;
+		loopTarget?: boolean;
+		schemaVersion?: 2 | 3;
+	} = {},
 ) {
 	const root = mkdtempSync(join(tmpdir(), "flywheel-generalized-"));
 	cleanups.push(root);
@@ -63,68 +71,81 @@ function createRun(
 				}
 			: {}),
 	};
-	const snapshot = buildWorkflowRunSnapshotV2({
+	const schemaVersion = options.schemaVersion ?? 2;
+	const manifest = {
+		schema_version: schemaVersion,
+		nodes: [
+			...(schemaVersion === 3
+				? [{ ...node, handbook_ref: node.agent_file }]
+				: [node]),
+			...(options.loopTarget
+				? [
+						{
+							id: "review-any-name",
+							type: "review" as const,
+							...(schemaVersion === 2
+								? { role: "general" }
+								: { handbook_ref: "review-any-name" }),
+							vendor: "claude" as const,
+							model: "claude-sonnet-4-5",
+							effort: "high" as const,
+						},
+					]
+				: []),
+			{ id: "founder_gate", type: "gate" as const },
+		],
+		edges: options.loopTarget
+			? [
+					{
+						id: "produced",
+						from: "execute",
+						to: "review-any-name",
+						condition: "node_done" as const,
+					},
+					{
+						id: "reviewed",
+						from: "review-any-name",
+						to: "founder_gate",
+						condition: "review_pass" as const,
+					},
+				]
+			: [
+					{
+						id: "done",
+						from: "execute",
+						to: "founder_gate",
+						condition: "node_done" as const,
+					},
+				],
+		loops: options.loopTarget
+			? [
+					{
+						id: "founder_retry",
+						from: "review-any-name",
+						to: "execute",
+						loop_when: "review_fail" as const,
+						exit_when: "review_pass" as const,
+						max_iterations: 2,
+						on_limit: "escalate" as const,
+					},
+				]
+			: [],
+		terminal_gate: {
+			node: "founder_gate",
+			predicate: "founder_approved" as const,
+		},
+		ship_claims: options.loopTarget
+			? (["design_review_approved", "founder_approved"] as const)
+			: (["founder_approved"] as const),
+	};
+	const snapshot = (
+		schemaVersion === 3
+			? buildWorkflowRunSnapshotV3
+			: buildWorkflowRunSnapshotV2
+	)({
 		template: { id: options.templateId ?? "tpl-test", revision: 1 },
 		canonicalRoot: root,
-		manifest: {
-			schema_version: 2,
-			nodes: [
-				node,
-				...(options.loopTarget
-					? [
-							{
-								id: "review-any-name",
-								type: "review" as const,
-								role: "general",
-								vendor: "claude" as const,
-								model: "claude-sonnet-4-5",
-								effort: "high" as const,
-							},
-						]
-					: []),
-				{ id: "founder_gate", type: "gate" },
-			],
-			edges: options.loopTarget
-				? [
-						{
-							id: "produced",
-							from: "execute",
-							to: "review-any-name",
-							condition: "node_done" as const,
-						},
-						{
-							id: "reviewed",
-							from: "review-any-name",
-							to: "founder_gate",
-							condition: "review_pass" as const,
-						},
-					]
-				: [
-						{
-							id: "done",
-							from: "execute",
-							to: "founder_gate",
-							condition: "node_done" as const,
-						},
-					],
-			loops: options.loopTarget
-				? [
-						{
-							id: "founder_retry",
-							from: "review-any-name",
-							to: "execute",
-							loop_when: "review_fail" as const,
-							exit_when: "review_pass" as const,
-							max_iterations: 2,
-							on_limit: "escalate" as const,
-						},
-					]
-				: [],
-			terminal_gate: { node: "founder_gate", predicate: "founder_approved" },
-			ship_claims: options.loopTarget
-				? ["design_review_approved", "founder_approved"]
-				: ["founder_approved"],
-		},
+		manifest,
 	});
 	store.createWorkflowRun({
 		runId: "run-1",
@@ -191,6 +212,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		[2, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
 		[2, "FLYWHEEL_WORKFLOW_CLAIMS_READ"],
 		[2, "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES"],
+		[3, "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES"],
 	] as const)(
 		"schema v%s admission ignores retired %s=0",
 		async (schemaVersion, retired) => {
@@ -225,10 +247,10 @@ describe("generalized execution admission and terminal contracts", () => {
 				nodeId = "design";
 				executionId = "v1-design";
 			} else {
-				createRun(store);
+				createRun(store, { schemaVersion });
 				runId = "run-1";
 				nodeId = "execute";
-				executionId = "v2-execute";
+				executionId = `v${schemaVersion}-execute`;
 			}
 			const env = { ...enabled };
 			env[retired] = "0";
@@ -250,6 +272,14 @@ describe("generalized execution admission and terminal contracts", () => {
 				node_id: nodeId,
 			});
 			expect(store.getWorkflowExecutionRuntime(executionId)).toBeDefined();
+			if (schemaVersion === 3) {
+				expect(
+					store.getGeneralizedWorkflowNodeForExecution(executionId),
+				).toMatchObject({
+					snapshotDigest: expect.any(String),
+					node: { id: "execute", type: "generic" },
+				});
+			}
 			store.close();
 		},
 	);

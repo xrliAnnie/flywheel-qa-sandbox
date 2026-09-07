@@ -1,0 +1,198 @@
+{
+  "issue": "FLY-2365",
+  "baseline": {
+    "projects": [
+      "flywheel",
+      "geoforge3d",
+      "growth",
+      "joycon-typeless",
+      "personal-assistant",
+      "tidal-echo"
+    ],
+    "dagCounts": {
+      "flywheel": 6,
+      "geoforge3d": 6,
+      "growth": 6,
+      "joycon-typeless": 6,
+      "personal-assistant": 6,
+      "tidal-echo": 6
+    },
+    "handbookRefCount": 0,
+    "roleCounts": {
+      "flywheel": 7,
+      "geoforge3d": 8,
+      "growth": 2,
+      "joycon-typeless": 5,
+      "personal-assistant": 1,
+      "tidal-echo": 2
+    }
+  },
+  "fixture": {
+    "flywheelLinks": [
+      {
+        "node": "tpl_design/product_design",
+        "ref": "product_design",
+        "roleId": "flywheel/role/product_design",
+        "matches": 1
+      },
+      {
+        "node": "tpl_prd/pm",
+        "ref": "pm",
+        "roleId": "flywheel/role/pm",
+        "matches": 1
+      },
+      {
+        "node": "tpl_prototype/proto",
+        "ref": "proto",
+        "roleId": "flywheel/role/proto",
+        "matches": 1
+      },
+      {
+        "node": "tpl_generic_menu/general",
+        "ref": "general",
+        "roleId": "flywheel/role/general",
+        "matches": 1
+      },
+      {
+        "node": "tpl_code/eng_design",
+        "ref": "eng_design",
+        "roleId": "flywheel/role/eng_design",
+        "matches": 1
+      },
+      {
+        "node": "tpl_code/implement",
+        "ref": "implement",
+        "roleId": "flywheel/role/implement",
+        "matches": 1
+      },
+      {
+        "node": "tpl_code/qa",
+        "ref": "qa",
+        "roleId": "flywheel/role/qa",
+        "matches": 1
+      },
+      {
+        "node": "tpl_simple_code/implement",
+        "ref": "implement",
+        "roleId": "flywheel/role/implement",
+        "matches": 1
+      },
+      {
+        "node": "tpl_simple_code/qa",
+        "ref": "qa",
+        "roleId": "flywheel/role/qa",
+        "matches": 1
+      }
+    ],
+    "uniqueWorkflowRefs": 7,
+    "perProject": [
+      {
+        "name": "flywheel",
+        "linked": true,
+        "subtitle": "generic · 通用执行",
+        "title": "执行手册：通用执行",
+        "aria": "通用执行，执行手册：通用执行，点击定位到角色卡"
+      },
+      {
+        "name": "geoforge3d",
+        "linked": false,
+        "subtitle": "generic · 未关联",
+        "title": "该项目无 ic-roster / 无 overlay",
+        "aria": "通用执行，未关联：该项目无 ic-roster / 无 overlay"
+      },
+      {
+        "name": "growth",
+        "linked": false,
+        "subtitle": "generic · 未关联",
+        "title": "该项目无 ic-roster / 无 overlay",
+        "aria": "通用执行，未关联：该项目无 ic-roster / 无 overlay"
+      },
+      {
+        "name": "joycon-typeless",
+        "linked": false,
+        "subtitle": "generic · 未关联",
+        "title": "该项目无 ic-roster / 无 overlay",
+        "aria": "通用执行，未关联：该项目无 ic-roster / 无 overlay"
+      },
+      {
+        "name": "personal-assistant",
+        "linked": true,
+        "subtitle": "generic · life",
+        "title": "按项目 ic-roster 解析到同一手册：life",
+        "aria": "通用执行，按项目 ic-roster 解析到同一手册：life，点击定位到角色卡"
+      },
+      {
+        "name": "tidal-echo",
+        "linked": false,
+        "subtitle": "generic · 未关联",
+        "title": "该项目无 ic-roster / 无 overlay",
+        "aria": "通用执行，未关联：该项目无 ic-roster / 无 overlay"
+      }
+    ],
+    "schema2": {
+      "subtitle": "generic · 未关联",
+      "title": "模板未提供执行手册引用",
+      "linked": false
+    },
+    "noteCounts": {
+      "classification": 1,
+      "handbook": 1
+    },
+    "chipMetrics": [
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      },
+      {
+        "width": 116,
+        "subtitleFits": true
+      }
+    ]
+  },
+  "browser": {
+    "consoleErrors": [],
+    "pageErrors": [],
+    "nonGetRequests": []
+  },
+  "failures": []
+}

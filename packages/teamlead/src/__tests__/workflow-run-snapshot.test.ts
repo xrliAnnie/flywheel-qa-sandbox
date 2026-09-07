@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
+	buildWorkflowRunSnapshotV3,
 	isLoopTargetNode,
 	parseWorkflowRunSnapshot,
 	resolveWorkflowGateAuthority,
@@ -115,7 +116,61 @@ function terminalLandFixture() {
 	};
 }
 
+function handbookFixture() {
+	const { root, manifest } = fixture();
+	return {
+		root,
+		manifest: {
+			...manifest,
+			schema_version: 3 as const,
+			nodes: manifest.nodes.map((node) =>
+				node.type === "gate"
+					? node
+					: {
+							...node,
+							handbook_ref: node.agent_file ?? node.id,
+						},
+			),
+		},
+	};
+}
+
 describe("typed generalized workflow snapshot", () => {
+	it("builds and parses schema 3 while sealing the display-only handbook metadata", () => {
+		const { root, manifest } = handbookFixture();
+		const snapshot = buildWorkflowRunSnapshotV3({
+			template: { id: "tpl-handbook", revision: 1 },
+			manifest,
+			canonicalRoot: root,
+		});
+
+		expect(snapshot).toMatchObject({
+			schema_version: 3,
+			manifest: {
+				schema_version: 3,
+				nodes: [
+					expect.objectContaining({
+						id: "execute",
+						handbook_ref: "agents/generic.md",
+					}),
+					expect.objectContaining({ id: "founder_gate" }),
+				],
+			},
+		});
+		expect(snapshot.resolved.nodes[0]?.agent?.content).toBe(
+			"Do the bounded task.\n",
+		);
+		expect(parseWorkflowRunSnapshot(JSON.stringify(snapshot))).toEqual(
+			snapshot,
+		);
+		expect(() =>
+			buildWorkflowRunSnapshotV2({
+				template: { id: "tpl-handbook", revision: 1 },
+				manifest,
+				canonicalRoot: root,
+			}),
+		).toThrow(/schema_version 2/i);
+	});
 	it("pins the engineering Gate-feedback topology digest", () => {
 		const manifest = legacyWorkflowSeeds()[0]!.manifest;
 		const snapshot = buildWorkflowRunSnapshotV1({

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -18,7 +19,7 @@ import {
 	resolveLeadMenus,
 	resolveNodeAgentFile,
 } from "../workflow-menu.js";
-import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
+import { buildWorkflowRunSnapshotV3 } from "../workflow-run-snapshot.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const REGISTRY_PATH = join(REPO_ROOT, ".flywheel", "agents", "registry.yaml");
@@ -147,7 +148,7 @@ describe("FLY-2121 registry-backed workflow menus", () => {
 			(menu) => menu.shape === "code",
 		)!;
 		const seed = compileWorkflowMenuSeed(code);
-		const snapshot = buildWorkflowRunSnapshotV2({
+		const snapshot = buildWorkflowRunSnapshotV3({
 			template: { id: seed.templateId, revision: 2 },
 			manifest: seed.manifest,
 			canonicalRoot: REPO_ROOT,
@@ -160,6 +161,19 @@ describe("FLY-2121 registry-backed workflow menus", () => {
 			expect(node?.agent?.content.trim().length, nodeId).toBeGreaterThan(0);
 			expect(node?.agent?.digest, nodeId).toMatch(/^[a-f0-9]{64}$/);
 		}
+	});
+
+	it("keeps the production workflow-seed verifier compatible with schema 3 menu seeds", () => {
+		const output = execFileSync(
+			process.execPath,
+			[join(REPO_ROOT, "scripts", "verify-workflow-seeds.mjs")],
+			{
+				cwd: REPO_ROOT,
+				encoding: "utf8",
+			},
+		);
+
+		expect(output).toContain("ALL SEEDS PASS");
 	});
 
 	it("keeps the retained self-host roster canonical and non-dangling", () => {

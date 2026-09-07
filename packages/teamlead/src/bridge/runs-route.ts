@@ -242,7 +242,7 @@ function secureTokenEqual(
 
 function isSchemaSnapshot(
 	snapshot: string | null | undefined,
-	schemaVersion: 1 | 2,
+	schemaVersion: 1 | 2 | 3,
 ): boolean {
 	if (!snapshot) return false;
 	try {
@@ -253,8 +253,8 @@ function isSchemaSnapshot(
 	}
 }
 
-function isSchemaV2Snapshot(snapshot: string | null | undefined): boolean {
-	return isSchemaSnapshot(snapshot, 2);
+function isGeneralizedSnapshot(snapshot: string | null | undefined): boolean {
+	return isSchemaSnapshot(snapshot, 2) || isSchemaSnapshot(snapshot, 3);
 }
 
 /**
@@ -1522,7 +1522,7 @@ export function createRunsRouter(
 			requestAuthKind === "master" &&
 			replayReservation?.execution_id === alreadyActive?.execution_id &&
 			replayInspection?.ok === true &&
-			isSchemaV2Snapshot(
+			isGeneralizedSnapshot(
 				replayReservation
 					? store.getWorkflowRun(replayReservation.run_id)?.snapshot
 					: undefined,
@@ -2128,7 +2128,7 @@ export function createRunsRouter(
 					});
 					return;
 				}
-				let runSchema: 1 | 2;
+				let runSchema: 1 | 2 | 3;
 				try {
 					runSchema = parseWorkflowRunSnapshot(
 						activeRun.snapshot ?? "",
@@ -2144,9 +2144,9 @@ export function createRunsRouter(
 				const classifiedKind =
 					activeRun.entry_kind === "pipeline_dag_v1" && runSchema === 1
 						? "pipeline_dag_v1"
-						: activeRun.entry_kind === "workflow_v2" && runSchema === 2
+						: activeRun.entry_kind === "workflow_v2" && runSchema !== 1
 							? "workflow_v2"
-							: activeRun.entry_kind == null && reservation && runSchema === 2
+							: activeRun.entry_kind == null && reservation && runSchema !== 1
 								? "workflow_v2"
 								: undefined;
 				if (!classifiedKind) {
@@ -2559,7 +2559,7 @@ export function createRunsRouter(
 			(workKindActiveAtEntry
 				? noWorkflowPhaseOverride || genericFallback
 				: normalizedIssueLabels.includes(LEGACY_ROUTING_OVERRIDE_LABEL));
-		let candidateSchemaAtEntry: 1 | 2 | null;
+		let candidateSchemaAtEntry: 1 | 2 | 3 | null;
 		if (engineRecovery || freshLegacyEntry || freshNoWorkflowPhaseLegacy) {
 			// Recovery and a fresh explicit opt-out are
 			// candidate-free. A bad current binding/revision cannot strand recovery or
@@ -2673,13 +2673,14 @@ export function createRunsRouter(
 		// (random — a deterministic per-issue key would forever replay the FIRST
 		// run's cached response on later fresh dispatches). Keyless RETRY safety
 		// comes from the recovery domain above, not from key determinism.
-		const v2Entry =
+		const generalizedEntry =
 			!engineRecovery &&
 			!freshLegacyEntry &&
 			!freshNoWorkflowPhaseLegacy &&
-			candidateSchemaAtEntry === 2;
+			(candidateSchemaAtEntry === 2 || candidateSchemaAtEntry === 3);
 		const effectiveStartKey =
-			requestedStartKey ?? (v2Entry ? `wf2-auto-${randomUUID()}` : undefined);
+			requestedStartKey ??
+			(generalizedEntry ? `wf2-auto-${randomUUID()}` : undefined);
 		let generalizedSelection:
 			| WorkflowTemplateSelectionResult
 			| null
@@ -2713,7 +2714,7 @@ export function createRunsRouter(
 						: undefined,
 					tier: workKindActiveAtEntry ? canonicalTier : undefined,
 					override: menuTemplateOverride,
-					...(v2Entry ? { entryKind: "workflow_v2" as const } : {}),
+					...(generalizedEntry ? { entryKind: "workflow_v2" as const } : {}),
 				});
 			} catch (err) {
 				if (err instanceof WorkKindRouteError) {
@@ -2744,7 +2745,7 @@ export function createRunsRouter(
 		if (generalizedSelection && !generalizedSelection.replayed) {
 			notifyEpicChanged(projectName, "run_started");
 		}
-		if (workKindActiveAtEntry && v2Entry && !generalizedSelection) {
+		if (workKindActiveAtEntry && generalizedEntry && !generalizedSelection) {
 			res.status(409).json({
 				success: false,
 				code: "WORK_KIND_ENTRY_NOT_MATERIALIZED",

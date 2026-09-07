@@ -1,5 +1,10 @@
+import { realpathSync } from "node:fs";
 import { relative } from "node:path";
-import type { FlywheelConfig, ResolvedAgentConfig } from "flywheel-config";
+import type {
+	FlywheelConfig,
+	ResolvedAgentConfig,
+	ResolvedProjectRegistry,
+} from "flywheel-config";
 import { getModelRegistryEntry } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { computeLeadCapabilities } from "./fleet-capabilities.js";
@@ -15,6 +20,12 @@ import {
 export interface LoadedProjectConfig {
 	config?: FlywheelConfig;
 	resolvedAgents?: Readonly<Record<string, ResolvedAgentConfig>>;
+	resolvedRegistry?: ResolvedProjectRegistry;
+	handbookRegistryActive?: boolean;
+	handbookRosterAvailable?: boolean;
+	handbookRosterStatus?: "not_applicable" | "ready" | "absent" | "unreadable";
+	handbookResolvedFiles?: Readonly<Record<string, string>>;
+	handbookResolutionError?: string;
 	revision: string;
 	error?: string;
 }
@@ -128,6 +139,63 @@ function buildLead(
 	};
 }
 
+function canonicalFile(path: string): string | undefined {
+	try {
+		return realpathSync(path);
+	} catch {
+		return undefined;
+	}
+}
+
+function buildRoles(
+	project: ProjectEntry,
+	loaded: LoadedProjectConfig | undefined,
+): ManagementProjectView["roles"] {
+	const registryActive = loaded?.handbookRegistryActive === true;
+	const entries = registryActive
+		? Object.entries(loaded?.resolvedRegistry?.nodes ?? {})
+		: Object.entries(loaded?.resolvedAgents ?? {});
+	const candidates = entries.map(([name, agent]) => ({
+		name,
+		agent,
+		canonical: canonicalFile(agent.agentFile),
+	}));
+	const resolvedFiles = Object.entries(loaded?.handbookResolvedFiles ?? {});
+	const uniqueLegacyRefs = new Map<string, string>();
+	if (!registryActive) {
+		for (const [ref, file] of resolvedFiles) {
+			const matches = candidates.filter(
+				(candidate) =>
+					candidate.canonical !== undefined && candidate.canonical === file,
+			);
+			if (matches.length === 1) uniqueLegacyRefs.set(ref, matches[0]!.name);
+		}
+	}
+	return candidates
+		.sort((left, right) => left.name.localeCompare(right.name))
+		.map(({ name, agent }) => {
+			const agentFile = relative(project.projectRoot, agent.agentFile);
+			const source = githubSourceLink(project.projectRepo, agentFile);
+			const handbookRefs = registryActive
+				? [name, agentFile].filter(
+						(ref, index, all) => all.indexOf(ref) === index,
+					)
+				: [...uniqueLegacyRefs.entries()]
+						.filter(([, roleName]) => roleName === name)
+						.map(([ref]) => ref)
+						.sort();
+			return {
+				id: `${project.projectName}/role/${name}`,
+				name: agent.label,
+				department: agent.department,
+				agentFile,
+				handbookRefs,
+				sourceLink: source.link,
+				error: source.error,
+			};
+		});
+}
+
 export function buildTopologyView(input: BuildTopologyInput): TopologyView {
 	assertUniqueProjects(input.projects);
 	const projects: ManagementProjectView[] = [];
@@ -135,23 +203,16 @@ export function buildTopologyView(input: BuildTopologyInput): TopologyView {
 		a.projectName.localeCompare(b.projectName),
 	)) {
 		const loaded = input.configs.get(project.projectName);
-		const roles: ManagementProjectView["roles"] = [];
-		if (loaded?.config) {
-			for (const [name, agent] of Object.entries(
-				loaded.resolvedAgents ?? {},
-			).sort(([a], [b]) => a.localeCompare(b))) {
-				const agentFile = relative(project.projectRoot, agent.agentFile);
-				const source = githubSourceLink(project.projectRepo, agentFile);
-				roles.push({
-					id: `${project.projectName}/role/${name}`,
-					name: agent.label,
-					department: agent.department,
-					agentFile,
-					sourceLink: source.link,
-					error: source.error,
-				});
-			}
-		}
+		const roles = loaded?.config ? buildRoles(project, loaded) : [];
+		const handbookRegistryActive = loaded?.handbookRegistryActive === true;
+		const handbookRosterAvailable = loaded?.handbookRosterAvailable === true;
+		const handbookRosterStatus =
+			loaded?.handbookRosterStatus ??
+			(handbookRegistryActive ? "not_applicable" : "absent");
+		const handbookResolvedRefs = Object.keys(
+			loaded?.handbookResolvedFiles ?? {},
+		).sort();
+		const projectError = loaded?.error ?? loaded?.handbookResolutionError;
 		projects.push({
 			id: `project/${encodeURIComponent(project.projectName)}`,
 			name: project.projectName,
@@ -164,10 +225,17 @@ export function buildTopologyView(input: BuildTopologyInput): TopologyView {
 					buildLead(project, lead, input.projectsRevision, input.onlineByLead),
 				),
 			roles,
+			handbookRegistryActive,
+			handbookRosterAvailable,
+			handbookRosterStatus,
+			handbookResolvedRefs,
+			...(loaded?.handbookResolutionError
+				? { handbookResolutionError: loaded.handbookResolutionError }
+				: {}),
 			dags: [],
 			crons: [],
 			error:
-				loaded?.error ??
+				projectError ??
 				(!loaded
 					? "项目配置未加载"
 					: !loaded.config

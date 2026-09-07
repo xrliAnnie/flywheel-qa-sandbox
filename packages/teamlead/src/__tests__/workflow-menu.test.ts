@@ -15,6 +15,7 @@ import { StateStore } from "../StateStore.js";
 import {
 	compileWorkflowMenuSeed,
 	importWorkflowMenuSeeds,
+	loadBundledWorkflowNodeNames,
 	loadProjectMenuConfig,
 	loadWorkflowMenuLibrary,
 	reconcileMenuCategoryBindings,
@@ -25,7 +26,7 @@ import {
 	workflowMenuTemplateId,
 } from "../workflow-menu.js";
 import {
-	buildWorkflowRunSnapshotV2,
+	buildWorkflowRunSnapshotV3,
 	nodeRequiresFounderReview,
 	resolveWorkflowGateAuthority,
 } from "../workflow-run-snapshot.js";
@@ -360,7 +361,7 @@ describe("founder-approved workflow menu source", () => {
 			id: "pm",
 			founder_review: true,
 		});
-		const snapshot = buildWorkflowRunSnapshotV2({
+		const snapshot = buildWorkflowRunSnapshotV3({
 			template: { id: seed.templateId, revision: 1 },
 			manifest: seed.manifest,
 			canonicalRoot: REPO_ROOT,
@@ -368,21 +369,33 @@ describe("founder-approved workflow menu source", () => {
 		expect(nodeRequiresFounderReview(snapshot, producer!.id)).toBe(true);
 	});
 
-	it("compiles every graph into a label-bearing v2 seed with no role or agent_file", () => {
+	it("compiles every graph into a label-bearing v3 seed with stable handbook refs", () => {
+		const registered = new Set(loadBundledWorkflowNodeNames());
 		for (const menu of loadWorkflowMenuLibrary()) {
 			const seed = compileWorkflowMenuSeed(menu);
 			expect(seed.templateId).toBe(workflowMenuTemplateId(menu.shape));
 			expect(seed.projectScope).toBe("global");
-			expect(seed.manifest.schema_version).toBe(2);
+			expect(seed.manifest.schema_version).toBe(3);
 			expect(seed.manifest.nodes.some((node) => node.type === "review")).toBe(
 				false,
 			);
-			for (const node of seed.manifest.nodes.filter(
-				(candidate) => candidate.type !== "gate" && candidate.type !== "land",
-			)) {
+			const executable = seed.manifest.nodes.filter(
+				(node) => node.type !== "gate" && node.type !== "land",
+			);
+			expect(new Set(executable.map((node) => node.handbook_ref)).size).toBe(
+				executable.length,
+			);
+			for (const node of executable) {
 				expect(node.label).toBeTruthy();
 				expect(node).not.toHaveProperty("role");
 				expect(node.agent_file).toBeUndefined();
+				expect(node.handbook_ref).toBe(node.id);
+				expect(registered.has(node.handbook_ref!)).toBe(true);
+			}
+			for (const node of seed.manifest.nodes.filter(
+				(candidate) => candidate.type === "gate" || candidate.type === "land",
+			)) {
+				expect(node).not.toHaveProperty("handbook_ref");
 			}
 		}
 	});
@@ -399,7 +412,7 @@ describe("founder-approved workflow menu source", () => {
 			)!;
 			expect(executable.founder_review ?? false, menu.shape).toBe(expected);
 
-			const snapshot = buildWorkflowRunSnapshotV2({
+			const snapshot = buildWorkflowRunSnapshotV3({
 				template: { id: seed.templateId, revision: 1 },
 				manifest: seed.manifest,
 				canonicalRoot: REPO_ROOT,
@@ -454,7 +467,7 @@ describe("founder-approved workflow menu source", () => {
 	it("resolves coherent gate authority for every compiled menu snapshot", () => {
 		for (const menu of loadWorkflowMenuLibrary()) {
 			const seed = compileWorkflowMenuSeed(menu);
-			const snapshot = buildWorkflowRunSnapshotV2({
+			const snapshot = buildWorkflowRunSnapshotV3({
 				template: { id: seed.templateId, revision: 1 },
 				manifest: seed.manifest,
 				canonicalRoot: REPO_ROOT,
@@ -492,7 +505,7 @@ describe("founder-approved workflow menu source", () => {
 			expect(
 				store.getWorkflowTemplateRevision(binding.templateId, 1)
 					?.schema_version,
-			).toBe(2);
+			).toBe(3);
 		}
 		store.close();
 	});
@@ -576,7 +589,7 @@ describe("founder-approved workflow menu source", () => {
 		const seed = compileWorkflowMenuSeed(
 			loadWorkflowMenuLibrary().find((menu) => menu.shape === "code")!,
 		);
-		const snapshot = buildWorkflowRunSnapshotV2({
+		const snapshot = buildWorkflowRunSnapshotV3({
 			template: { id: seed.templateId, revision: 1 },
 			manifest: seed.manifest,
 			canonicalRoot: REPO_ROOT,
@@ -633,7 +646,7 @@ describe("founder-approved workflow menu source", () => {
 			authKind: "master",
 			canonicalRoot: REPO_ROOT,
 			idempotencyKey: "menu-start-1",
-			candidateSchemaAtEntry: 2,
+			candidateSchemaAtEntry: 3,
 			workKindEnforced: true,
 			categorySource: "task_category",
 			entryKind: "workflow_v2",
@@ -661,7 +674,7 @@ describe("founder-approved workflow menu source", () => {
 				authKind: "master",
 				canonicalRoot: REPO_ROOT,
 				idempotencyKey: "menu-start-1",
-				candidateSchemaAtEntry: 2,
+				candidateSchemaAtEntry: 3,
 				workKindEnforced: true,
 				categorySource: "task_category",
 				entryKind: "workflow_v2",

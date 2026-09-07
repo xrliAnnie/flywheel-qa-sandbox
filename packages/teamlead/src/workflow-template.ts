@@ -10,6 +10,7 @@ import { ENG_TIERS, type EngTier } from "./work-kind.js";
 
 export const WORKFLOW_MANIFEST_SCHEMA_VERSION = 1 as const;
 export const GENERALIZED_WORKFLOW_MANIFEST_SCHEMA_VERSION = 2 as const;
+export const HANDBOOK_WORKFLOW_MANIFEST_SCHEMA_VERSION = 3 as const;
 
 export const WORKFLOW_OUTCOME_VOCABULARY = {
 	qa_pass: { claim: "qa_passed", edge: "qa_pass" },
@@ -48,8 +49,10 @@ export interface WorkflowManifestNode {
 	/** Backend-owned display name; absent only on historical/custom manifests. */
 	label?: string;
 	type: WorkflowNodeType;
-	/** Menu-sourced nodes resolve this role through the project's IC roster. */
+	/** Historical schema-2 execution role, resolved through the project's IC roster. */
 	role?: string;
+	/** Stable management-only identity for the execution handbook. */
+	handbook_ref?: string;
 	vendor?: WorkflowVendor;
 	model?: string;
 	effort?: WorkflowEffort;
@@ -135,7 +138,39 @@ export type WorkflowManifestV2 =
 	| WorkflowManifestV2Legacy
 	| WorkflowManifestV2Land;
 
-export type WorkflowManifest = WorkflowManifestV1 | WorkflowManifestV2;
+export interface WorkflowManifestV3Legacy {
+	schema_version: 3;
+	nodes: WorkflowManifestNode[];
+	edges: WorkflowManifestEdge[];
+	loops: WorkflowManifestLoop[];
+	terminal_gate: { node: string; predicate: "founder_approved" };
+	ship_claims: Array<
+		"qa_passed" | "design_review_approved" | "founder_approved"
+	>;
+	tier_presets?: Partial<Record<EngTier, WorkflowTemplateOverride>>;
+}
+
+export interface WorkflowManifestV3Land {
+	schema_version: 3;
+	nodes: WorkflowManifestNode[];
+	edges: WorkflowManifestEdge[];
+	loops: WorkflowManifestLoop[];
+	approval_gate: { node: string; predicate: "founder_approved" };
+	terminal_node: { node: string };
+	ship_claims: Array<
+		"qa_passed" | "design_review_approved" | "founder_approved"
+	>;
+	tier_presets?: Partial<Record<EngTier, WorkflowTemplateOverride>>;
+}
+
+export type WorkflowManifestV3 =
+	| WorkflowManifestV3Legacy
+	| WorkflowManifestV3Land;
+
+export type WorkflowManifest =
+	| WorkflowManifestV1
+	| WorkflowManifestV2
+	| WorkflowManifestV3;
 
 export interface WorkflowTemplateOverride {
 	reason: string;
@@ -812,7 +847,7 @@ function validateWorkflowManifestV1(
 }
 
 export function isWorkflowManifestV1Land(
-	manifest: WorkflowManifestV1 | WorkflowManifestV2,
+	manifest: WorkflowManifest,
 ): manifest is WorkflowManifestV1Land {
 	return (
 		manifest.schema_version === 1 &&
@@ -822,22 +857,24 @@ export function isWorkflowManifestV1Land(
 }
 
 export function isWorkflowManifestLand(
-	manifest: WorkflowManifestV1 | WorkflowManifestV2,
-): manifest is WorkflowManifestV1Land | WorkflowManifestV2Land {
+	manifest: WorkflowManifest,
+): manifest is
+	| WorkflowManifestV1Land
+	| WorkflowManifestV2Land
+	| WorkflowManifestV3Land {
 	return isWorkflowManifestV1Land(manifest) || "approval_gate" in manifest;
 }
 
-export function workflowApprovalGate(
-	manifest: WorkflowManifestV1 | WorkflowManifestV2,
-): { node: string; predicate: "founder_approved" } {
+export function workflowApprovalGate(manifest: WorkflowManifest): {
+	node: string;
+	predicate: "founder_approved";
+} {
 	return isWorkflowManifestLand(manifest)
 		? manifest.approval_gate
 		: manifest.terminal_gate;
 }
 
-export function workflowTerminalNode(
-	manifest: WorkflowManifestV1 | WorkflowManifestV2,
-): string {
+export function workflowTerminalNode(manifest: WorkflowManifest): string {
 	return isWorkflowManifestLand(manifest)
 		? manifest.terminal_node.node
 		: manifest.terminal_gate.node;
@@ -856,6 +893,16 @@ function assertSafeAgentFile(value: unknown, path: string): string {
 	return relative;
 }
 
+function requiredHandbookRef(
+	node: Record<string, unknown>,
+	path: string,
+): string {
+	if (node.handbook_ref === undefined) {
+		throw new Error(`${path}.handbook_ref is required`);
+	}
+	return nonempty(node.handbook_ref, `${path}.handbook_ref`);
+}
+
 /**
  * The independent-QA requirement keys on the formal engineering pipeline (an
  * `implement` node), not on "can this node edit files". QA guards the merge
@@ -867,15 +914,26 @@ function requiresIndependentQa(type: WorkflowNodeType): boolean {
 	return type === "implement";
 }
 
-function validateWorkflowManifestV2(
+function validateGeneralizedWorkflowManifest(
 	value: unknown,
 	nodeRequiresIndependentQa: (
 		type: WorkflowNodeType,
 	) => boolean = requiresIndependentQa,
 	options: WorkflowManifestValidationOptions = {},
-): WorkflowManifestV2 {
+): WorkflowManifestV2 | WorkflowManifestV3 {
 	const modelSnapshot = options.modelSnapshot ?? getModelConfigSnapshot();
 	const root = record(value, "manifest");
+	if (
+		root.schema_version !== GENERALIZED_WORKFLOW_MANIFEST_SCHEMA_VERSION &&
+		root.schema_version !== HANDBOOK_WORKFLOW_MANIFEST_SCHEMA_VERSION
+	) {
+		throw new Error(
+			"manifest.schema_version must be the supported generalized version 2 or 3",
+		);
+	}
+	const schemaVersion = root.schema_version;
+	const hasHandbookRefs =
+		schemaVersion === HANDBOOK_WORKFLOW_MANIFEST_SCHEMA_VERSION;
 	const isLandVariant =
 		Object.hasOwn(root, "approval_gate") ||
 		Object.hasOwn(root, "terminal_node");
@@ -903,9 +961,6 @@ function validateWorkflowManifestV2(
 				],
 		"manifest",
 	);
-	if (root.schema_version !== GENERALIZED_WORKFLOW_MANIFEST_SCHEMA_VERSION) {
-		throw new Error("manifest.schema_version must be the supported version 2");
-	}
 	if (!Array.isArray(root.nodes) || root.nodes.length === 0) {
 		throw new Error("manifest.nodes must be a non-empty array");
 	}
@@ -927,7 +982,7 @@ function validateWorkflowManifestV2(
 				"id",
 				"label",
 				"type",
-				"role",
+				...(hasHandbookRefs ? ["handbook_ref"] : ["role"]),
 				"vendor",
 				"model",
 				"effort",
@@ -979,6 +1034,7 @@ function validateWorkflowManifestV2(
 			}
 			for (const key of [
 				"role",
+				"handbook_ref",
 				"vendor",
 				"model",
 				"effort",
@@ -1003,6 +1059,7 @@ function validateWorkflowManifestV2(
 		if (type === "gate") {
 			for (const key of [
 				"role",
+				"handbook_ref",
 				"vendor",
 				"model",
 				"effort",
@@ -1092,6 +1149,14 @@ function validateWorkflowManifestV2(
 			handoffPointer = { worktree: true, design_doc: true };
 		}
 		if (type !== "generic") {
+			const handbookRef = hasHandbookRefs
+				? requiredHandbookRef(node, nodePath)
+				: undefined;
+			if (handbookRef !== undefined && handbookRef !== id) {
+				throw new Error(
+					`${nodePath}.handbook_ref must equal the node id when agent_file is absent`,
+				);
+			}
 			return {
 				id,
 				...(label ? { label } : {}),
@@ -1101,6 +1166,7 @@ function validateWorkflowManifestV2(
 				...(effort ? { effort } : {}),
 				...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 				...(role ? { role } : {}),
+				...(handbookRef ? { handbook_ref: handbookRef } : {}),
 				...(founderReview !== undefined
 					? { founder_review: founderReview }
 					: {}),
@@ -1114,6 +1180,16 @@ function validateWorkflowManifestV2(
 		if ((role ? 1 : 0) + (agentFile ? 1 : 0) > 1) {
 			throw new Error(
 				`generic node ${id} cannot define both role and agent_file`,
+			);
+		}
+		const handbookRef = hasHandbookRefs
+			? requiredHandbookRef(node, nodePath)
+			: undefined;
+		if (handbookRef !== undefined && handbookRef !== (agentFile ?? id)) {
+			throw new Error(
+				agentFile
+					? `${nodePath}.handbook_ref must equal agent_file`
+					: `${nodePath}.handbook_ref must equal the node id when agent_file is absent`,
 			);
 		}
 		if (
@@ -1154,6 +1230,7 @@ function validateWorkflowManifestV2(
 			...(effort ? { effort } : {}),
 			...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 			...(role ? { role } : {}),
+			...(handbookRef ? { handbook_ref: handbookRef } : {}),
 			...(founderReview !== undefined ? { founder_review: founderReview } : {}),
 			...(agentFile ? { agent_file: agentFile } : {}),
 			...(producesOutput ? { produces_output: true, output } : {}),
@@ -1430,24 +1507,43 @@ function validateWorkflowManifestV2(
 		}
 	}
 
-	const manifest: WorkflowManifestV2 = isLandVariant
-		? {
-				schema_version: 2,
-				nodes,
-				edges,
-				loops,
-				approval_gate: approvalGate,
-				terminal_node: { node: terminalNode },
-				ship_claims: shipClaims,
-			}
-		: {
-				schema_version: 2,
-				nodes,
-				edges,
-				loops,
-				terminal_gate: approvalGate,
-				ship_claims: shipClaims,
-			};
+	const manifest: WorkflowManifestV2 | WorkflowManifestV3 = isLandVariant
+		? schemaVersion === GENERALIZED_WORKFLOW_MANIFEST_SCHEMA_VERSION
+			? {
+					schema_version: 2,
+					nodes,
+					edges,
+					loops,
+					approval_gate: approvalGate,
+					terminal_node: { node: terminalNode },
+					ship_claims: shipClaims,
+				}
+			: {
+					schema_version: 3,
+					nodes,
+					edges,
+					loops,
+					approval_gate: approvalGate,
+					terminal_node: { node: terminalNode },
+					ship_claims: shipClaims,
+				}
+		: schemaVersion === GENERALIZED_WORKFLOW_MANIFEST_SCHEMA_VERSION
+			? {
+					schema_version: 2,
+					nodes,
+					edges,
+					loops,
+					terminal_gate: approvalGate,
+					ship_claims: shipClaims,
+				}
+			: {
+					schema_version: 3,
+					nodes,
+					edges,
+					loops,
+					terminal_gate: approvalGate,
+					ship_claims: shipClaims,
+				};
 	const tierPresets = validateTierPresets(
 		manifest,
 		root.tier_presets,
@@ -1467,22 +1563,22 @@ export function validateWorkflowManifest(
 	if (root.schema_version === 1) {
 		return validateWorkflowManifestV1(value, { ...options, modelSnapshot });
 	}
-	if (root.schema_version === 2) {
-		return validateWorkflowManifestV2(value, requiresIndependentQa, {
+	if (root.schema_version === 2 || root.schema_version === 3) {
+		return validateGeneralizedWorkflowManifest(value, requiresIndependentQa, {
 			...options,
 			modelSnapshot,
 		});
 	}
 	throw new Error(
-		"manifest.schema_version must be one of the supported versions: 1, 2",
+		"manifest.schema_version must be one of the supported versions: 1, 2, 3",
 	);
 }
 
-/** Parse a pinned v2 manifest structurally; its frozen capabilities are checked by the snapshot parser. */
+/** Parse a pinned generalized manifest structurally; frozen capabilities are checked by the snapshot parser. */
 export function validatePinnedWorkflowManifest(
 	value: unknown,
-): WorkflowManifestV2 {
-	return validateWorkflowManifestV2(value, () => false, {
+): WorkflowManifestV2 | WorkflowManifestV3 {
+	return validateGeneralizedWorkflowManifest(value, () => false, {
 		allowUnsupportedModels: true,
 	});
 }
