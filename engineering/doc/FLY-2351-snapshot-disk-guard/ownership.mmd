@@ -1,0 +1,12 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'-apple-system, system-ui, sans-serif','fontSize':'17px','primaryColor':'#eef5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b','secondaryColor':'#f5f5f7','tertiaryColor':'#ffffff'},'flowchart':{'htmlLabels':false,'curve':'stepAfter','nodeSpacing':28,'rankSpacing':30}}}%%
+flowchart TB
+  accTitle: FLY-2351 删除前核对归属
+  accDescr: 完成凭据和目录归属必须指向同一次执行尝试，才能回收。后续尝试、未完成或身份不明的副本必须保留。
+  A[已接受的节点完成凭据] --> C{与目录记载的这次尝试一致?}
+  B[目录归属：执行 + 节点 + 尝试 + 激活] --> C
+  C -->|一致且已停止使用| D[回收 · 记录释放空间]
+  C -->|新尝试或归属不明| E[保留 · 记录原因]
+  D -->|删除失败| F[下一次维护重试并重新核对]
+  F --> C
+  classDef keep fill:#fff7eb,stroke:#ff9500,color:#1d1d1f;
+  class E keep;
