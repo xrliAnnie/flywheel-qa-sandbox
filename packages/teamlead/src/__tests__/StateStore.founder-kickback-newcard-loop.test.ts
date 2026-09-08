@@ -494,7 +494,9 @@ describe("founder kickback new-card loop", () => {
 			const input = {
 				runId: "run-1",
 				targetNodeId: "设计",
-				feedback: "重新做工程设计",
+				actor: "flywheel-eng-lead",
+				founderQuote: null,
+				leadFeedback: "重新做工程设计",
 				clientRequestId: "semantic-design-replay",
 				principal: "master",
 				founderAuthorEvidence: {

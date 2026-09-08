@@ -25,6 +25,17 @@ const enabled = {
 const roots: string[] = [];
 const HELD_LAND_ACTOR_HEAD = "b".repeat(40);
 
+function leadReworkFields(
+	leadFeedback: string,
+	founderQuote: { message_id: string; text: string } | null = null,
+) {
+	return {
+		actor: "flywheel-eng-lead",
+		founderQuote,
+		leadFeedback,
+	};
+}
+
 afterEach(() => {
 	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
@@ -207,7 +218,7 @@ describe("FLY-2396 legacy operator receipt replay", () => {
 			const baseInput = {
 				runId: "run-heavy",
 				targetNodeId: "implement",
-				feedback: "legacy operator feedback",
+				...leadReworkFields("legacy operator feedback"),
 				clientRequestId: "legacy-replay",
 				principal: "master",
 				evidence: [],
@@ -444,7 +455,10 @@ describe("FLY-2396 operator founder verdict", () => {
 			const base = {
 				runId: "run-heavy",
 				targetNodeId: "implement",
-				feedback: "stable founder reference",
+				...leadReworkFields("stable founder reference", {
+					message_id: evidence.message_id,
+					text: "founder correction verbatim",
+				}),
 				clientRequestId: "operator-founder-replay",
 				principal: "master",
 				evidence: operatorEvidence(store),
@@ -501,14 +515,22 @@ describe("FLY-2396 operator founder verdict", () => {
 			1,
 		],
 	] as const)(
-		"records %s authorship separately from founder authority",
+		"records %s gate evidence without turning Lead request attribution into founder",
 		async (_case, founderAuthorEvidence, authored) => {
 			const store = await createOperatorFounderGate();
 			try {
 				const opened = store.openOperatorRework({
 					runId: "run-heavy",
 					targetNodeId: "implement",
-					feedback: "operator founder gate rework",
+					...leadReworkFields(
+						"operator founder gate rework",
+						authored === 1
+							? {
+									message_id: "22345678901234567",
+									text: "founder correction verbatim",
+								}
+							: null,
+					),
 					clientRequestId: `operator-founder-${authored}`,
 					principal: "master",
 					founderAuthorEvidence,
@@ -539,6 +561,19 @@ describe("FLY-2396 operator founder verdict", () => {
 						? { kind: "founder_message", message_id: "22345678901234567" }
 						: { kind: "operator", principal: "master" },
 				);
+				expect(store.getWorkflowReworkRequest(opened.requestId)).toMatchObject({
+					authority: "lead",
+					actor_id: "flywheel-eng-lead",
+					founder_quote:
+						authored === 1
+							? {
+									message_id: "22345678901234567",
+									text: "founder correction verbatim",
+								}
+							: null,
+					lead_feedback: "operator founder gate rework",
+					founder_feedback_verbatim: null,
+				});
 			} finally {
 				store.close();
 			}
@@ -592,7 +627,7 @@ describe("FLY-2396 operator founder verdict", () => {
 					store.openOperatorRework({
 						runId: "run-heavy",
 						targetNodeId: "implement",
-						feedback: "must remain atomic",
+						...leadReworkFields("must remain atomic"),
 						clientRequestId: `operator-rejected-${reason}`,
 						principal: "master",
 						founderAuthorEvidence,
@@ -627,7 +662,9 @@ describe("FLY-2396 operator founder verdict", () => {
 				const opened = store.openOperatorRework({
 					runId: "run-heavy",
 					targetNodeId: "implement",
-					feedback: "operator rework without an exact founder reference",
+					...leadReworkFields(
+						"operator rework without an exact founder reference",
+					),
 					clientRequestId: `operator-opportunistic-${retainHolder}`,
 					principal: "master",
 					founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -658,7 +695,7 @@ describe("FLY-2396 operator founder verdict", () => {
 				store.openOperatorRework({
 					runId: "run-heavy",
 					targetNodeId: "implement",
-					feedback: "must roll back after a lost CAS",
+					...leadReworkFields("must roll back after a lost CAS"),
 					clientRequestId: "operator-run-cas-lost",
 					principal: "master",
 					founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -888,7 +925,9 @@ async function createPendingHeavyRework(): Promise<{
 	return { store, requestId: failed.reworkRequestId };
 }
 
-async function createActiveOperatorRework(): Promise<{
+async function createActiveOperatorRework(
+	leadFeedback = "rework the implementation",
+): Promise<{
 	store: StateStore;
 	requestId: string;
 }> {
@@ -923,7 +962,10 @@ async function createActiveOperatorRework(): Promise<{
 	const opened = store.openOperatorRework({
 		runId: "run-heavy",
 		targetNodeId: "implement",
-		feedback: "rework the implementation",
+		...leadReworkFields(leadFeedback, {
+			message_id: "22345678901234567",
+			text: "founder correction verbatim",
+		}),
 		clientRequestId: "fly1912-operator-rework",
 		principal: "master",
 		founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -1127,6 +1169,29 @@ async function freshDispatchOperatorRework(): Promise<{
 }
 
 describe("FLY-1912 verification chain fresh dispatch", () => {
+	it.each(["approve", '{"approved":true}'])(
+		"keeps approval-shaped Lead feedback as Lead rework: %s",
+		async (leadFeedback) => {
+			const { store, requestId } =
+				await createActiveOperatorRework(leadFeedback);
+			try {
+				expect(store.getWorkflowReworkRequest(requestId)).toMatchObject({
+					authority: "lead",
+					actor_id: "flywheel-eng-lead",
+					lead_feedback: leadFeedback,
+					founder_feedback_verbatim: null,
+				});
+				expect(
+					store
+						.listWorkflowRunEvents("run-heavy")
+						.some((event) => event.kind === "founder_approval"),
+				).toBe(false);
+			} finally {
+				store.close();
+			}
+		},
+	);
+
 	it("turns a later QA round into one same-actor engine reuse request when enabled", async () => {
 		const store = await createLaterQaRound();
 		try {
@@ -1521,7 +1586,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 				store.openOperatorRework({
 					runId: "run-heavy",
 					targetNodeId: "implement",
-					feedback: "another rework",
+					...leadReworkFields("another rework"),
 					clientRequestId: "fly1912-overlap",
 					principal: "master",
 					founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -1627,7 +1692,10 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 			const opened = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "implement",
-				feedback: "rework with QA history",
+				...leadReworkFields("rework with QA history", {
+					message_id: "22345678901234567",
+					text: "founder correction verbatim",
+				}),
 				clientRequestId: "fly1912-history",
 				principal: "master",
 				founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -1660,6 +1728,26 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 			if (!completed.ok || !completed.reworkRequestId) {
 				throw new Error("chained rework missing request");
 			}
+			const chained = store.getWorkflowReworkRequest(completed.reworkRequestId);
+			expect(chained).toMatchObject({
+				authority: "lead",
+				actor_id: "flywheel-eng-lead",
+				founder_quote: {
+					message_id: "22345678901234567",
+					text: "founder correction verbatim",
+				},
+				lead_feedback: "rework with QA history",
+				founder_feedback_verbatim: null,
+			});
+			expect(JSON.parse(chained!.authority_context_json)).toMatchObject({
+				authority: "lead",
+				actor: "flywheel-eng-lead",
+				founder_quote: {
+					message_id: "22345678901234567",
+					text: "founder correction verbatim",
+				},
+				lead_feedback: "rework with QA history",
+			});
 			expect(
 				store.getLatestWorkflowReworkRoute(completed.reworkRequestId),
 			).toMatchObject({
@@ -1768,7 +1856,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 			const opened = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "implement",
-				feedback: "verify every downstream node",
+				...leadReworkFields("verify every downstream node"),
 				clientRequestId: "fly1912-multi-fresh",
 				principal: "master",
 				founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -2069,6 +2157,152 @@ describe("FLY-1423 stable workflow actor activations", () => {
 });
 
 describe("FLY-1423 durable unified rework request", () => {
+	it.each([
+		"bridge",
+		"bridge-founder-consent",
+		"123456789012345678",
+		"unassigned",
+	])(
+		"rejects reserved Lead attribution %s before state lookup",
+		async (actor) => {
+			const store = await createHeavyEngineRun();
+			try {
+				expect(
+					store.openOperatorRework({
+						runId: "run-heavy",
+						targetNodeId: "implement",
+						actor,
+						founderQuote: null,
+						leadFeedback: "Lead correction",
+						clientRequestId: `reserved-${actor}`,
+						principal: "master",
+						founderAuthorEvidence: { kind: "operator", principal: "master" },
+						evidence: [],
+						now: "2026-09-07T00:00:00.000Z",
+					}),
+				).toEqual({ ok: false, reason: "invalid_operator_rework_request" });
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it("migrates an engine-era request table to the Lead attribution shape exactly once", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2430-rework-migration-"));
+		roots.push(root);
+		const dbPath = join(root, "state.db");
+		const original = await createHeavyEngineRun(dbPath);
+		original.close();
+
+		const raw = new Database(dbPath);
+		raw.pragma("foreign_keys = OFF");
+		raw.exec(`
+			DROP TRIGGER IF EXISTS workflow_rework_request_no_update;
+			DROP TRIGGER IF EXISTS workflow_rework_request_no_delete;
+			DROP TABLE workflow_rework_request;
+			CREATE TABLE workflow_rework_request (
+				request_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				source_event_id TEXT NOT NULL UNIQUE,
+				authority TEXT NOT NULL CHECK (authority IN ('qa','founder','engine')),
+				source_node_id TEXT NOT NULL,
+				source_attempt INTEGER NOT NULL CHECK (source_attempt > 0),
+				base_revision TEXT NOT NULL,
+				authority_context_json TEXT NOT NULL,
+				authority_context_digest TEXT NOT NULL,
+				founder_feedback_verbatim TEXT,
+				requested_at TEXT NOT NULL,
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			);
+			INSERT INTO workflow_rework_request
+				(request_id, run_id, source_event_id, authority, source_node_id,
+				 source_attempt, base_revision, authority_context_json,
+				 authority_context_digest, founder_feedback_verbatim, requested_at)
+			VALUES ('engine-era-row', 'run-heavy', 'engine-era-source', 'engine',
+			        'implement', 1, 'engine-base', '{}', 'engine-digest', NULL,
+			        '2026-09-07T00:00:00.000Z');
+		`);
+		raw.close();
+
+		for (let boot = 0; boot < 2; boot += 1) {
+			const migrated = await StateStore.create(dbPath);
+			try {
+				expect(
+					migrated.getWorkflowReworkRequest("engine-era-row"),
+				).toMatchObject({
+					authority: "engine",
+					base_revision: "engine-base",
+					actor_id: null,
+					founder_quote: null,
+					lead_feedback: null,
+				});
+				const migratedRaw = (
+					migrated as unknown as { db: { raw: Database.Database } }
+				).db.raw;
+				const sql = migratedRaw
+					.prepare(
+						"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_rework_request'",
+					)
+					.get() as { sql: string };
+				expect(sql.sql).toContain("'lead'");
+				expect(sql.sql).toContain("actor_id");
+				expect(sql.sql).toContain("founder_quote_json");
+				expect(sql.sql).toContain("lead_feedback");
+				expect(
+					migratedRaw
+						.prepare(
+							"SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ('workflow_rework_request_no_update','workflow_rework_request_no_delete') ORDER BY name",
+						)
+						.all(),
+				).toEqual([
+					{ name: "workflow_rework_request_no_delete" },
+					{ name: "workflow_rework_request_no_update" },
+				]);
+				expect(migratedRaw.pragma("foreign_key_check")).toEqual([]);
+			} finally {
+				migrated.close();
+			}
+		}
+	});
+
+	it("rejects malformed or founder-verbatim Lead rows at the database boundary", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			const insert = raw.prepare(`
+				INSERT INTO workflow_rework_request
+					(request_id, run_id, source_event_id, authority, source_node_id,
+					 source_attempt, base_revision, authority_context_json,
+					 authority_context_digest, founder_feedback_verbatim, actor_id,
+					 founder_quote_json, lead_feedback, requested_at)
+				VALUES (?, 'run-heavy', ?, 'lead', 'implement', 1, 'base', '{}',
+				        'digest', ?, ?, ?, ?, '2026-09-07T00:00:00.000Z')
+			`);
+			expect(() =>
+				insert.run(
+					"bad-founder-verbatim",
+					"bad-source-1",
+					"must never be founder verbatim",
+					"flywheel-eng-lead",
+					"null",
+					"Lead feedback",
+				),
+			).toThrow(/CHECK constraint failed/);
+			expect(() =>
+				insert.run(
+					"bad-quote",
+					"bad-source-2",
+					null,
+					"flywheel-eng-lead",
+					JSON.stringify({ message_id: "message" }),
+					"Lead feedback",
+				),
+			).toThrow(/CHECK constraint failed/);
+		} finally {
+			store.close();
+		}
+	});
 	it("preserves legacy qa and founder rows while adding engine rework authority", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1833-rework-authority-"));
 		roots.push(root);
@@ -2120,7 +2354,13 @@ describe("FLY-1423 durable unified rework request", () => {
 				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
 			);
 			INSERT INTO workflow_rework_request_legacy
-			SELECT * FROM workflow_rework_request;
+				(request_id, run_id, source_event_id, authority, source_node_id,
+				 source_attempt, base_revision, authority_context_json,
+				 authority_context_digest, founder_feedback_verbatim, requested_at)
+			SELECT request_id, run_id, source_event_id, authority, source_node_id,
+			       source_attempt, base_revision, authority_context_json,
+			       authority_context_digest, founder_feedback_verbatim, requested_at
+			  FROM workflow_rework_request;
 			DROP TABLE workflow_rework_request;
 			ALTER TABLE workflow_rework_request_legacy
 				RENAME TO workflow_rework_request;
@@ -2546,7 +2786,12 @@ describe("FLY-1423 durable unified rework request", () => {
 			const input = {
 				runId: "run-heavy",
 				targetNodeId: "implement",
-				feedback: "rework the implementation",
+				actor: "flywheel-eng-lead",
+				leadFeedback: "rework the implementation",
+				founderQuote: {
+					message_id: "22345678901234567",
+					text: "founder correction verbatim",
+				},
 				clientRequestId: "operator-rework-1",
 				principal: "master",
 				founderAuthorEvidence: {
@@ -2585,11 +2830,32 @@ describe("FLY-1423 durable unified rework request", () => {
 			});
 			expect(store.getWorkflowReworkRequest(opened.requestId)).toMatchObject({
 				source_event_id: "operator_rework:run-heavy:operator-rework-1",
-				founder_feedback_verbatim: "rework the implementation",
+				authority: "lead",
+				actor_id: "flywheel-eng-lead",
+				founder_quote: {
+					message_id: "22345678901234567",
+					text: "founder correction verbatim",
+				},
+				lead_feedback: "rework the implementation",
+				founder_feedback_verbatim: null,
 			});
 			expect(store.getWorkflowReworkDelivery(opened.requestId)).toMatchObject({
 				state: "pending",
 			});
+			const route = store.getLatestWorkflowReworkRoute(opened.requestId)!;
+			expect(
+				store.appendWorkflowReworkRouteRevision({
+					requestId: opened.requestId,
+					targetNodeId: route.target_node_id,
+					targetAttempt: route.target_attempt,
+					preferredActorExecutionId: route.preferred_actor_execution_id,
+					invalidationScope: route.invalidation_scope,
+					verificationPolicy: route.verification_policy,
+					interpretedBy: "flywheel-eng-lead",
+					interpretationReason: "Lead routes are already explicit",
+					now: "2026-07-23T00:10:30.000Z",
+				}),
+			).toEqual({ ok: false, reason: "rework_route_not_revisable" });
 			const resumeAttachment = store
 				.listWorkflowResumeAttachments({
 					runId: "run-heavy",
@@ -2613,11 +2879,45 @@ describe("FLY-1423 durable unified rework request", () => {
 			).toEqual(
 				expect.arrayContaining(["operator_rework_requested", "run_reopened"]),
 			);
+			const operatorEvent = store
+				.listWorkflowRunEvents("run-heavy")
+				.find((event) => event.kind === "operator_rework_requested");
+			expect(operatorEvent?.payload).toMatchObject({
+				authority: "lead",
+				actor: "flywheel-eng-lead",
+				lead_feedback: "rework the implementation",
+				founder_quote: {
+					message_id: "22345678901234567",
+					text: "founder correction verbatim",
+				},
+				feedback: "rework the implementation",
+				principal: "master",
+			});
 
 			expect(store.openOperatorRework(input)).toEqual({
 				...opened,
 				idempotentReplay: true,
 			});
+			const replaySnapshot = snapshotUserTables(store);
+			expect(
+				store.openOperatorRework({ ...input, actor: "other-lead" }),
+			).toEqual({ ok: false, reason: "operator_request_conflict" });
+			expect(
+				store.openOperatorRework({
+					...input,
+					leadFeedback: "different Lead instruction",
+				}),
+			).toEqual({ ok: false, reason: "operator_request_conflict" });
+			expect(
+				store.openOperatorRework({
+					...input,
+					founderQuote: {
+						message_id: "different-message",
+						text: "founder correction verbatim",
+					},
+				}),
+			).toEqual({ ok: false, reason: "operator_request_conflict" });
+			expect(snapshotUserTables(store)).toBe(replaySnapshot);
 		} finally {
 			store.close();
 		}
@@ -2670,7 +2970,7 @@ describe("FLY-1423 durable unified rework request", () => {
 			const opened = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "qa",
-				feedback: "rerun the acceptance checks",
+				...leadReworkFields("rerun the acceptance checks"),
 				clientRequestId: "operator-rework-qa",
 				principal: "master",
 				founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -2754,7 +3054,7 @@ describe("FLY-1423 durable unified rework request", () => {
 			const opened = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "qa",
-				feedback: "rerun QA in the existing actor",
+				...leadReworkFields("rerun QA in the existing actor"),
 				clientRequestId: "operator-rework-prefers-live-qa",
 				principal: "master",
 				founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -2817,7 +3117,7 @@ describe("FLY-1423 durable unified rework request", () => {
 			const opened = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "qa",
-				feedback: "rerun QA against the implementation head",
+				...leadReworkFields("rerun QA against the implementation head"),
 				clientRequestId: "operator-rework-qa-producer-head",
 				principal: "master",
 				founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -2912,7 +3212,7 @@ describe("FLY-1423 durable unified rework request", () => {
 			const opened = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "qa",
-				feedback: "recover the rolled-back QA attempt",
+				...leadReworkFields("recover the rolled-back QA attempt"),
 				clientRequestId: "operator-rework-rollback-held-qa",
 				principal: "master",
 				founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -2940,7 +3240,7 @@ describe("FLY-1423 durable unified rework request", () => {
 			const opened = store.openOperatorRework({
 				runId: "run-held-land",
 				targetNodeId: "craft",
-				feedback: "adopt and verify the current PR head",
+				...leadReworkFields("adopt and verify the current PR head"),
 				clientRequestId: "operator-land-head-mismatch",
 				principal: "master",
 				founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -2985,7 +3285,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				store.openOperatorRework({
 					runId: "run-held-land",
 					targetNodeId: "craft",
-					feedback: "retry an unrelated land failure",
+					...leadReworkFields("retry an unrelated land failure"),
 					clientRequestId: "operator-land-merge-failed",
 					principal: "master",
 					founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -3016,7 +3316,7 @@ describe("FLY-1423 durable unified rework request", () => {
 			const result = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "implement",
-				feedback: "start implementation",
+				...leadReworkFields("start implementation"),
 				clientRequestId: "operator-rework-no-actor",
 				principal: "master",
 				founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -4183,7 +4483,7 @@ describe("FLY-1423 durable unified rework request", () => {
 			const reopened = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "implement",
-				feedback: "retry after Lead inspection",
+				...leadReworkFields("retry after Lead inspection"),
 				clientRequestId: "operator-needs-lead",
 				principal: "master",
 				founderAuthorEvidence: { kind: "operator", principal: "master" },

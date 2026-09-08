@@ -95,7 +95,9 @@ async function createActiveOperatorRework(): Promise<{
 	const opened = store.openOperatorRework({
 		runId: "run-heavy",
 		targetNodeId: "implement",
-		feedback: "rework before QA has run",
+		actor: "flywheel-eng-lead",
+		founderQuote: null,
+		leadFeedback: "rework before QA has run",
 		clientRequestId: "fly1912-engine-invariant",
 		principal: "master",
 		founderAuthorEvidence: { kind: "operator", principal: "master" },

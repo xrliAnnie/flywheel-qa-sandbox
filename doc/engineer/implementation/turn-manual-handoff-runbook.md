@@ -8,7 +8,7 @@ Issue: FLY-1614 (https://linear.app/geoforge3d/issue/FLY-1614/巡检场景1-节�
 
 引擎拥有的 run **禁止直接改 SQL**。按故障类型走正规恢复面:
 
-1. `workflow_rework_delivery.state = needs_lead`:调用既有 `POST /api/runs/:runId/rework`,创建新的 operator rework request。它会重新执行 master 鉴权、quiescence、凭据撤销和 target attempt 分配。
+1. `workflow_rework_delivery.state = needs_lead`:调用既有 `POST /api/runs/:runId/rework`,创建新的 Lead 署名 rework request。请求体可显式传 `leadId`;未传时使用 run 的 `selected_by`。两者都必须是该 project roster 里的 Lead,而 legacy `selected_by = NULL/'unassigned'` 必须显式补 `leadId`,否则返回 `LEAD_ATTRIBUTION_REQUIRED`。`feedback` 按 `lead_feedback` 保存;可选 `founderMessageRef` 只会另存为 `founder_quote`,不会把 Lead 指令记成 founder 原话。端点仍会重新执行 master 鉴权、quiescence、凭据撤销和 target attempt 分配。
 2. `workflow_carrier_delivery` 未交到棒:调用 bearer-authenticated `POST /api/workflow/carrier-redrive/stage`,请求体只允许 `runId/questionId/approvedHead/reason`;用返回的 server canonical + `confirmToken` 调 `POST /api/workflow/carrier-redrive`。apply 会重新核对批准 tuple,写审计事件,再由既有 engine tick 投递。
 3. Bridge 可运行但两条正规路径都拒绝:停止,保留返回的 409/证据并升级 Lead;不要把 SQL 当成绕过 fail-close 的办法。
 

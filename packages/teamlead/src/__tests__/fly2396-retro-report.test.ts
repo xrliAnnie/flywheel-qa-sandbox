@@ -107,6 +107,14 @@ function createReportFixture(
 		const lateRun = "aaaaaaaa-late";
 		const lateHead = "b".repeat(40);
 		insertRework.run("rework:post-deploy", lateRun, "2026-09-06T20:00:00.001Z");
+		db.prepare(
+			`INSERT INTO workflow_rework_request
+			 VALUES (?, ?, ?, 1, 'lead', 'founder_gate')`,
+		).run(
+			"rework:post-deploy-lead",
+			"cccccccc-lead-late",
+			"2026-09-06T20:00:00.005Z",
+		);
 		insertNode.run(lateRun);
 		insertHolder.run(lateRun, lateHead, "question:post-deploy");
 		insertPr.run(lateRun, lateHead, 1063);
@@ -235,13 +243,16 @@ describe("FLY-2396 retro report cutoff", () => {
 		);
 		expect(output).toMatch(/rework_legacy_all\s+5\s+5\s+5/);
 		expect(output).toMatch(
-			/founder_verdict_unrecorded_post_cutoff\s+2\s+1\s+1\s+missing exact-head ledger = unknown/,
+			/founder_verdict_unrecorded_post_cutoff\s+3\s+1\s+2\s+missing exact-head ledger = unknown/,
 		);
 		expect(output).toMatch(
 			/founder_verdict_unrecorded_detail\s+approval\s+1\s+2026-09-06T20:00:00.002Z/,
 		);
 		expect(output).toMatch(
 			/founder_verdict_unrecorded_detail\s+rework\s+rework:post-deploy\s+2026-09-06T20:00:00.001Z/,
+		);
+		expect(output).toMatch(
+			/founder_verdict_unrecorded_detail\s+rework\s+rework:post-deploy-lead\s+2026-09-06T20:00:00.005Z/,
 		);
 		expect(output).not.toMatch(
 			/founder_verdict_unrecorded_detail\s+approval\s+2\s+2026-09-06T20:00:00.004Z/,

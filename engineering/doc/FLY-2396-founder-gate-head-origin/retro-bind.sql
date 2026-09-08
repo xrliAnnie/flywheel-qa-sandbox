@@ -93,7 +93,7 @@ SELECT 'rework' AS verdict_kind,
        r.request_id AS source_identity,
        r.requested_at AS occurred_at
   FROM workflow_rework_request r
- WHERE r.authority = 'founder'
+ WHERE r.authority IN ('founder','lead')
    AND r.source_node_id = 'founder_gate'
    AND julianday(r.requested_at) >= julianday(:legacy_cutoff)
    AND NOT EXISTS (

@@ -25,6 +25,12 @@ const REF = {
 	channelId: "12345678901234567",
 	messageId: "22345678901234567",
 };
+const PROJECTS = [
+	{
+		projectName: "flywheel",
+		leads: [{ agentId: "flywheel-eng-lead" }],
+	},
+] as unknown as Parameters<typeof createRunsRouter>[2];
 
 let server: Server | undefined;
 
@@ -47,7 +53,12 @@ function routeStore(
 	return {
 		getWorkflowRun: (runId: string) =>
 			runId === "run-ref"
-				? { run_id: runId, project_name: "flywheel", status: "active" }
+				? {
+						run_id: runId,
+						project_name: "flywheel",
+						status: "active",
+						selected_by: "flywheel-eng-lead",
+					}
 				: undefined,
 		currentFounderGateHolder: () => current,
 		listRunAttributedExecutions: () => [],
@@ -57,13 +68,14 @@ function routeStore(
 
 function discordMessage(
 	id: string,
-	options: { authorId?: string; timestamp?: string } = {},
+	options: { authorId?: string; timestamp?: string; content?: string } = {},
 ) {
 	return new Response(
 		JSON.stringify({
 			id,
 			author: { id: options.authorId ?? "42345678901234567" },
 			timestamp: options.timestamp ?? "2026-09-06T18:02:00.000Z",
+			content: options.content ?? "founder correction verbatim",
 		}),
 		{ status: 200, headers: { "content-type": "application/json" } },
 	);
@@ -82,7 +94,7 @@ async function startApp(options: {
 		createRunsRouter(
 			fakeDispatcher,
 			options.store,
-			[],
+			PROJECTS,
 			fakeAdmission,
 			undefined,
 			false,
@@ -140,6 +152,9 @@ describe("runs-route founder message reference", () => {
 		expect(response.status).toBe(200);
 		expect(open).toHaveBeenCalledWith(
 			expect.objectContaining({
+				actor: "flywheel-eng-lead",
+				leadFeedback: "apply founder correction",
+				founderQuote: null,
 				founderAuthorEvidence: { kind: "operator", principal: "master" },
 			}),
 		);
@@ -154,6 +169,10 @@ describe("runs-route founder message reference", () => {
 				JSON.stringify({
 					id,
 					author: { id: "42345678901234567" },
+					content:
+						id === HOLDER.card_message_id
+							? "ship gate card"
+							: "founder correction verbatim",
 					timestamp:
 						id === HOLDER.card_message_id
 							? "2026-09-06T18:01:00.000Z"
@@ -174,6 +193,12 @@ describe("runs-route founder message reference", () => {
 		expect(response.status).toBe(200);
 		expect(open).toHaveBeenCalledWith(
 			expect.objectContaining({
+				actor: "flywheel-eng-lead",
+				leadFeedback: "apply founder correction",
+				founderQuote: {
+					message_id: "22345678901234567",
+					text: "founder correction verbatim",
+				},
 				founderAuthorEvidence: {
 					kind: "founder_message",
 					channel_id: "12345678901234567",
@@ -190,6 +215,31 @@ describe("runs-route founder message reference", () => {
 			}),
 		);
 		expect(fetchImpl).toHaveBeenCalledTimes(2);
+	});
+
+	it("preserves an explicitly empty founder quote instead of dropping it", async () => {
+		const open = vi.fn(() => successResult());
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValueOnce(discordMessage(REF.messageId, { content: "" }))
+			.mockResolvedValueOnce(
+				discordMessage(HOLDER.card_message_id!, { content: "ship gate card" }),
+			);
+		const baseUrl = await startApp({
+			store: routeStore(open),
+			canonicalFounderId: () => "42345678901234567",
+			gateBotToken: () => "gate-token",
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+
+		const response = await request(baseUrl, REF);
+
+		expect(response.status).toBe(200);
+		expect(open).toHaveBeenCalledWith(
+			expect.objectContaining({
+				founderQuote: { message_id: REF.messageId, text: "" },
+			}),
+		);
 	});
 
 	it.each([
@@ -236,6 +286,7 @@ describe("runs-route founder message reference", () => {
 						id: "22345678901234567",
 						author: { id: "99999999999999999" },
 						timestamp: "2026-09-06T18:02:00.000Z",
+						content: "not founder",
 					}),
 					{ status: 200, headers: { "content-type": "application/json" } },
 				),

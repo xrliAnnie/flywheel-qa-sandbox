@@ -3,7 +3,10 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { withSyncOpMarker } from "flywheel-claude-runner";
-import { isWorkflowPhaseRole } from "flywheel-config";
+import {
+	canonicalSubmissionDigest,
+	isWorkflowPhaseRole,
+} from "flywheel-config";
 import type {
 	WorkflowIssueDeliveryInput,
 	WorkflowResumeContext,
@@ -2351,10 +2354,56 @@ export class WorkflowEngineDispatcher {
 					) {
 						throw new Error("engine_rework_replacement_context_invalid");
 					}
+					let leadAttribution:
+						| {
+								actor: string;
+								founderQuote: { message_id: string; text: string } | null;
+								leadFeedback: string;
+						  }
+						| undefined;
+					if (request.authority === "lead") {
+						let authorityContext: unknown;
+						try {
+							authorityContext = JSON.parse(request.authority_context_json);
+						} catch {
+							throw new Error("engine_rework_replacement_context_invalid");
+						}
+						if (
+							!request.actor_id ||
+							!request.lead_feedback ||
+							!authorityContext ||
+							typeof authorityContext !== "object" ||
+							Array.isArray(authorityContext)
+						) {
+							throw new Error("engine_rework_replacement_context_invalid");
+						}
+						const persisted = authorityContext as {
+							authority?: unknown;
+							actor?: unknown;
+							founder_quote?: unknown;
+							lead_feedback?: unknown;
+						};
+						if (
+							persisted.authority !== "lead" ||
+							persisted.actor !== request.actor_id ||
+							persisted.lead_feedback !== request.lead_feedback ||
+							canonicalSubmissionDigest(persisted.founder_quote ?? null) !==
+								canonicalSubmissionDigest(request.founder_quote)
+						) {
+							throw new Error("engine_rework_replacement_context_invalid");
+						}
+						leadAttribution = {
+							actor: request.actor_id,
+							founderQuote: request.founder_quote,
+							leadFeedback: request.lead_feedback,
+						};
+					}
 					return {
 						requestId: reworkReplacementRequestId,
 						startPoint: baseRevision,
+						leadAttribution,
 						founderFeedback:
+							request.authority === "founder" &&
 							typeof request.founder_feedback_verbatim === "string" &&
 							request.founder_feedback_verbatim.length > 0
 								? request.founder_feedback_verbatim
@@ -2473,9 +2522,21 @@ export class WorkflowEngineDispatcher {
 			)
 				?.trim()
 				.slice(0, 4_000) || undefined;
-		const contextualAgentContent = founderFeedback
-			? `${agentContent}\n\nFounder feedback for this revision:\n${founderFeedback}`
-			: agentContent;
+		const leadAttribution = replacementContext?.leadAttribution;
+		const leadAttributionContent = leadAttribution
+			? [
+					`Rework submitted by lead:${leadAttribution.actor}`,
+					`Lead feedback:\n${leadAttribution.leadFeedback}`,
+					leadAttribution.founderQuote === null
+						? "Founder quote: none (Lead submitted independently)"
+						: `Founder quote (message ${leadAttribution.founderQuote.message_id}):\n${leadAttribution.founderQuote.text || "[empty text]"}`,
+				].join("\n\n")
+			: undefined;
+		const contextualAgentContent = leadAttributionContent
+			? `${agentContent}\n\n${leadAttributionContent}`
+			: founderFeedback
+				? `${agentContent}\n\nFounder feedback for this revision:\n${founderFeedback}`
+				: agentContent;
 		let startPoint: string | undefined;
 		if (workflowResume) {
 			startPoint = workflowResume.anchorCommit;

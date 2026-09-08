@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join, isAbsolute as pathIsAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { type RequestHandler, Router } from "express";
+import { isReservedApprovalAttribution } from "flywheel-comm/founder-attribution";
 import type { PonytailInput, SkillFrameworkMode } from "flywheel-config";
 import {
 	canonicalSubmissionDigest,
@@ -1082,11 +1083,50 @@ export function createRunsRouter(
 			});
 			return;
 		}
-		if (!store.getWorkflowRun(runId)) {
+		const workflowRun = store.getWorkflowRun(runId);
+		if (!workflowRun) {
 			res.status(404).json({
 				success: false,
 				code: "RUN_NOT_FOUND",
 				reason: "workflow run not found",
+				recorded: false,
+			});
+			return;
+		}
+		const leadIdBody = req.body?.leadId;
+		const actor = (
+			leadIdBody === undefined
+				? workflowRun.selected_by
+				: typeof leadIdBody === "string"
+					? leadIdBody
+					: ""
+		)?.trim();
+		if (!actor || actor === "unassigned") {
+			res.status(400).json({
+				success: false,
+				code: "LEAD_ATTRIBUTION_REQUIRED",
+				reason: "a configured Lead attribution is required",
+				recorded: false,
+			});
+			return;
+		}
+		if (isReservedApprovalAttribution(actor)) {
+			res.status(403).json({
+				success: false,
+				code: "LEAD_ATTRIBUTION_RESERVED",
+				reason: "reserved approval attribution cannot submit Lead rework",
+				recorded: false,
+			});
+			return;
+		}
+		const project = projects.find(
+			(entry) => entry.projectName === workflowRun.project_name,
+		);
+		if (!project?.leads.some((lead) => lead.agentId === actor)) {
+			res.status(403).json({
+				success: false,
+				code: "LEAD_ATTRIBUTION_NOT_CONFIGURED",
+				reason: `Lead "${actor}" is not configured for project "${workflowRun.project_name}"`,
 				recorded: false,
 			});
 			return;
@@ -1096,6 +1136,7 @@ export function createRunsRouter(
 				kind: "operator",
 				principal: "master",
 			};
+			let founderQuote: { message_id: string; text: string } | null = null;
 			if (founderMessageRef) {
 				const canonicalFounderId = auth.canonicalFounderId?.() ?? null;
 				if (!canonicalFounderId) {
@@ -1220,15 +1261,16 @@ export function createRunsRouter(
 					question_id: holder.question_id,
 					head_sha: holder.head_sha,
 				};
+				founderQuote = {
+					message_id: referenced.message.id,
+					text: referenced.message.content,
+				};
 			}
 			const consent = auth.authorizeRework
 				? await auth.authorizeRework({
 						runId,
 						requestedReason: feedback.trim(),
-						leadId:
-							typeof req.body?.leadId === "string"
-								? req.body.leadId.trim() || undefined
-								: undefined,
+						leadId: actor,
 					})
 				: {
 						ok: true as const,
@@ -1251,7 +1293,9 @@ export function createRunsRouter(
 			const result = store.openOperatorRework({
 				runId,
 				targetNodeId: targetNodeId.trim(),
-				feedback: feedback.trim(),
+				actor,
+				leadFeedback: feedback.trim(),
+				founderQuote,
 				clientRequestId: clientRequestId.trim(),
 				principal: "master",
 				founderAuthorEvidence,

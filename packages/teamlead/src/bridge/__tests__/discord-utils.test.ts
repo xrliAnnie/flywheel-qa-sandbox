@@ -33,13 +33,13 @@ function errResponse(status: number, body: object | string): Response {
 }
 
 describe("fetchDiscordMessageFromChannel (FLY-2396)", () => {
-	it("returns only immutable author and timestamp identity", async () => {
+	it("returns immutable identity plus verbatim message content", async () => {
 		const fetchMock = vi.fn().mockResolvedValueOnce(
 			okResponse({
 				id: "22345678901234567",
 				author: { id: "42345678901234567" },
 				timestamp: "2026-09-06T18:59:00.123Z",
-				content: "must not enter author evidence",
+				content: "founder verbatim",
 			}),
 		);
 		await expect(
@@ -56,6 +56,7 @@ describe("fetchDiscordMessageFromChannel (FLY-2396)", () => {
 				channelId: "12345678901234567",
 				authorId: "42345678901234567",
 				timestampMs: Date.parse("2026-09-06T18:59:00.123Z"),
+				content: "founder verbatim",
 			},
 		});
 		expect(fetchMock).toHaveBeenCalledWith(
@@ -65,6 +66,26 @@ describe("fetchDiscordMessageFromChannel (FLY-2396)", () => {
 				headers: { Authorization: "Bot bot-token" },
 			}),
 		);
+	});
+
+	it("preserves an explicitly empty Discord message content string", async () => {
+		const result = await fetchDiscordMessageFromChannel(
+			"channel",
+			"message",
+			"token",
+			vi.fn().mockResolvedValueOnce(
+				okResponse({
+					id: "message",
+					author: { id: "founder" },
+					timestamp: "2026-09-06T18:59:00.123Z",
+					content: "",
+				}),
+			) as unknown as typeof fetch,
+		);
+		expect(result).toMatchObject({
+			ok: true,
+			message: { content: "" },
+		});
 	});
 
 	it.each([
@@ -109,6 +130,20 @@ describe("fetchDiscordMessageFromChannel (FLY-2396)", () => {
 						id: "message",
 						author: { id: "founder" },
 						timestamp: "bad",
+					}),
+				) as unknown as typeof fetch,
+			),
+		).resolves.toEqual({ ok: false, kind: "server", status: 200 });
+		await expect(
+			fetchDiscordMessageFromChannel(
+				"channel",
+				"message",
+				"token",
+				vi.fn().mockResolvedValueOnce(
+					okResponse({
+						id: "message",
+						author: { id: "founder" },
+						timestamp: "2026-09-06T18:59:00.123Z",
 					}),
 				) as unknown as typeof fetch,
 			),

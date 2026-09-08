@@ -80,6 +80,7 @@ export type FetchDiscordMessageResult =
 				channelId: string;
 				authorId: string;
 				timestampMs: number;
+				content: string;
 			};
 	  }
 	| {
@@ -127,6 +128,7 @@ export async function fetchDiscordMessageFromChannel(
 		id?: unknown;
 		author?: { id?: unknown };
 		timestamp?: unknown;
+		content?: unknown;
 	};
 	const timestampMs =
 		typeof message.timestamp === "string"
@@ -136,6 +138,7 @@ export async function fetchDiscordMessageFromChannel(
 		message.id !== messageId ||
 		typeof message.author?.id !== "string" ||
 		!message.author.id ||
+		typeof message.content !== "string" ||
 		!Number.isFinite(timestampMs)
 	) {
 		return { ok: false, kind: "server", status: response.status };
@@ -147,6 +150,7 @@ export async function fetchDiscordMessageFromChannel(
 			channelId,
 			authorId: message.author.id,
 			timestampMs,
+			content: message.content,
 		},
 	};
 }

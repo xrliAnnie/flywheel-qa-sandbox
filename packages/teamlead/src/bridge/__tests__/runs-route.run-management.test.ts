@@ -15,6 +15,12 @@ const fakeDispatcher = {
 const fakeAdmission = {
 	tryAdmit: () => ({ admit: false, reason: "load", detail: "unused" }),
 } as Parameters<typeof createRunsRouter>[3];
+const PROJECTS = [
+	{
+		projectName: "flywheel",
+		leads: [{ agentId: "flywheel-eng-lead" }],
+	},
+] as unknown as Parameters<typeof createRunsRouter>[2];
 
 let server: Server | undefined;
 
@@ -30,6 +36,7 @@ async function startApp(
 		masterToken: "master-secret",
 		scopedToken: "scoped-secret",
 	},
+	projects: Parameters<typeof createRunsRouter>[2] = PROJECTS,
 ): Promise<string> {
 	const app = express();
 	app.use(express.json());
@@ -38,7 +45,7 @@ async function startApp(
 		createRunsRouter(
 			fakeDispatcher,
 			store,
-			[],
+			projects,
 			fakeAdmission,
 			undefined,
 			false,
@@ -55,11 +62,19 @@ async function startApp(
 	return `http://127.0.0.1:${port}`;
 }
 
-function managementStore(result: ReturnType<typeof vi.fn>) {
+function managementStore(
+	result: ReturnType<typeof vi.fn>,
+	selectedBy: string | null = "flywheel-eng-lead",
+) {
 	return {
 		getWorkflowRun: (runId: string) =>
 			runId === "run-1"
-				? { run_id: runId, project_name: "flywheel", status: "active" }
+				? {
+						run_id: runId,
+						project_name: "flywheel",
+						status: "active",
+						selected_by: selectedBy,
+					}
 				: undefined,
 		listRunAttributedExecutions: () => [],
 		holdWorkflowRunByOperator: result,
@@ -87,6 +102,133 @@ async function post(
 }
 
 describe("runs-route run management", () => {
+	it.each([
+		["bridge", "bridge", 403, "LEAD_ATTRIBUTION_RESERVED"],
+		[
+			"founder consent bridge",
+			"bridge-founder-consent",
+			403,
+			"LEAD_ATTRIBUTION_RESERVED",
+		],
+		[
+			"Discord snowflake",
+			"123456789012345678",
+			403,
+			"LEAD_ATTRIBUTION_RESERVED",
+		],
+		["non-roster Lead", "other-lead", 403, "LEAD_ATTRIBUTION_NOT_CONFIGURED"],
+	] as const)(
+		"rejects %s attribution before Discord reads or durable work",
+		async (_case, leadId, status, code) => {
+			const open = vi.fn();
+			const fetchImpl = vi.fn();
+			const store = managementStore(open);
+			const quiescence = vi.spyOn(store, "listRunAttributedExecutions");
+			const baseUrl = await startApp(store, {
+				masterToken: "master-secret",
+				scopedToken: "scoped-secret",
+				canonicalFounderId: () => "42345678901234567",
+				gateBotToken: () => "gate-token",
+				fetchImpl: fetchImpl as unknown as typeof fetch,
+			});
+
+			const response = await fetch(`${baseUrl}/api/runs/run-1/rework`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					authorization: "Bearer master-secret",
+				},
+				body: JSON.stringify({
+					targetNodeId: "implement",
+					feedback: "Lead correction",
+					clientRequestId: `reject-${leadId}`,
+					leadId,
+					founderMessageRef: {
+						channelId: "12345678901234567",
+						messageId: "22345678901234567",
+					},
+				}),
+			});
+
+			expect(response.status).toBe(status);
+			expect(await response.json()).toMatchObject({
+				success: false,
+				code,
+				recorded: false,
+			});
+			expect(fetchImpl).not.toHaveBeenCalled();
+			expect(quiescence).not.toHaveBeenCalled();
+			expect(open).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([null, "unassigned"])(
+		"requires an explicit Lead id when selected_by is %s",
+		async (selectedBy) => {
+			const open = vi.fn();
+			const baseUrl = await startApp(managementStore(open, selectedBy));
+			const response = await fetch(`${baseUrl}/api/runs/run-1/rework`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					authorization: "Bearer master-secret",
+				},
+				body: JSON.stringify({
+					targetNodeId: "implement",
+					feedback: "Lead correction",
+					clientRequestId: `missing-${selectedBy}`,
+				}),
+			});
+
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({
+				code: "LEAD_ATTRIBUTION_REQUIRED",
+				recorded: false,
+			});
+			expect(open).not.toHaveBeenCalled();
+		},
+	);
+
+	it("allows an explicit configured Lead id for a legacy unassigned run", async () => {
+		const open = vi.fn(() => ({
+			ok: true as const,
+			requestId: "rework:explicit-lead",
+			targetNodeId: "implement",
+			targetAttempt: 2,
+			preferredActorExecutionId: "implement-exec",
+			idempotentReplay: false,
+		}));
+		const authorizeRework = vi.fn(async () => ({
+			ok: true as const,
+			consent: { mode: "off" as const, decision: "pass_through" },
+		}));
+		const baseUrl = await startApp(managementStore(open, "unassigned"), {
+			masterToken: "master-secret",
+			scopedToken: "scoped-secret",
+			authorizeRework,
+		});
+		const response = await fetch(`${baseUrl}/api/runs/run-1/rework`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				authorization: "Bearer master-secret",
+			},
+			body: JSON.stringify({
+				targetNodeId: "implement",
+				feedback: "Lead correction",
+				clientRequestId: "explicit-lead",
+				leadId: "flywheel-eng-lead",
+			}),
+		});
+
+		expect(response.status).toBe(200);
+		expect(open).toHaveBeenCalledWith(
+			expect.objectContaining({ actor: "flywheel-eng-lead" }),
+		);
+		expect(authorizeRework).toHaveBeenCalledWith(
+			expect.objectContaining({ leadId: "flywheel-eng-lead" }),
+		);
+	});
 	it("mounts the canonical hold door with master, loopback, path, digest, and replay fences", async () => {
 		const onEpicChange = vi.fn();
 		const store = await StateStore.create(":memory:");
@@ -624,7 +766,9 @@ describe("runs-route run management", () => {
 			expect.objectContaining({
 				runId: "run-1",
 				targetNodeId: "implement",
-				feedback: "repair the blocked implementation",
+				actor: "flywheel-eng-lead",
+				leadFeedback: "repair the blocked implementation",
+				founderQuote: null,
 				clientRequestId: "request-rework",
 				principal: "master",
 				evidence: [],

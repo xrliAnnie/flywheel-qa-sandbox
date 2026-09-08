@@ -34,6 +34,7 @@ import {
 	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
+import { isReservedApprovalAttribution } from "flywheel-comm/founder-attribution";
 import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import {
 	type RecordProbe,
@@ -3073,7 +3074,27 @@ export class StateStore {
 				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_rework_request'",
 			)
 			.get() as { sql?: string } | undefined;
-		if (!table?.sql || table.sql.includes("'engine'")) return;
+		if (!table?.sql) return;
+		const hasLeadShape =
+			table.sql.includes("'lead'") &&
+			table.sql.includes("actor_id") &&
+			table.sql.includes("founder_quote_json") &&
+			table.sql.includes("lead_feedback");
+		if (hasLeadShape) return;
+		const existingColumns = new Set(
+			(
+				this.db.raw.pragma("table_info(workflow_rework_request)") as Array<{
+					name: string;
+				}>
+			).map((column) => column.name),
+		);
+		const actorExpression = existingColumns.has("actor_id") ? "actor_id" : "NULL";
+		const founderQuoteExpression = existingColumns.has("founder_quote_json")
+			? "founder_quote_json"
+			: "NULL";
+		const leadFeedbackExpression = existingColumns.has("lead_feedback")
+			? "lead_feedback"
+			: "NULL";
 		const foreignKeys = Number(
 			this.db.raw.pragma("foreign_keys", { simple: true }),
 		);
@@ -3086,23 +3107,47 @@ export class StateStore {
 						request_id TEXT PRIMARY KEY,
 						run_id TEXT NOT NULL,
 						source_event_id TEXT NOT NULL UNIQUE,
-						authority TEXT NOT NULL CHECK (authority IN ('qa','founder','engine')),
+						authority TEXT NOT NULL CHECK (authority IN ('qa','founder','engine','lead')),
 						source_node_id TEXT NOT NULL,
 						source_attempt INTEGER NOT NULL CHECK (source_attempt > 0),
 						base_revision TEXT NOT NULL,
 						authority_context_json TEXT NOT NULL,
 						authority_context_digest TEXT NOT NULL,
 						founder_feedback_verbatim TEXT,
+						actor_id TEXT,
+						founder_quote_json TEXT,
+						lead_feedback TEXT,
 						requested_at TEXT NOT NULL,
+						CHECK (
+							(authority = 'lead'
+							 AND actor_id IS NOT NULL AND length(trim(actor_id)) > 0
+							 AND founder_quote_json IS NOT NULL
+							 AND json_valid(founder_quote_json)
+							 AND COALESCE(
+							      json_type(founder_quote_json) = 'null'
+							      OR (json_type(founder_quote_json) = 'object'
+							          AND json_type(founder_quote_json, '$.message_id') = 'text'
+							          AND length(json_extract(founder_quote_json, '$.message_id')) > 0
+							          AND json_type(founder_quote_json, '$.text') = 'text'),
+							      0)
+							 AND lead_feedback IS NOT NULL AND length(trim(lead_feedback)) > 0
+							 AND founder_feedback_verbatim IS NULL)
+							OR
+							(authority <> 'lead' AND actor_id IS NULL
+							 AND founder_quote_json IS NULL AND lead_feedback IS NULL)
+						),
 						FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
 					);
 					INSERT INTO workflow_rework_request_next
 						(request_id, run_id, source_event_id, authority, source_node_id,
 						 source_attempt, base_revision, authority_context_json,
-						 authority_context_digest, founder_feedback_verbatim, requested_at)
+						 authority_context_digest, founder_feedback_verbatim, actor_id,
+						 founder_quote_json, lead_feedback, requested_at)
 					SELECT request_id, run_id, source_event_id, authority, source_node_id,
 					       source_attempt, base_revision, authority_context_json,
-					       authority_context_digest, founder_feedback_verbatim, requested_at
+					       authority_context_digest, founder_feedback_verbatim,
+					       ${actorExpression}, ${founderQuoteExpression},
+					       ${leadFeedbackExpression}, requested_at
 					  FROM workflow_rework_request;
 					DROP TABLE workflow_rework_request;
 					ALTER TABLE workflow_rework_request_next RENAME TO workflow_rework_request;
@@ -24033,14 +24078,35 @@ export class StateStore {
 				request_id TEXT PRIMARY KEY,
 				run_id TEXT NOT NULL,
 				source_event_id TEXT NOT NULL UNIQUE,
-				authority TEXT NOT NULL CHECK (authority IN ('qa','founder','engine')),
+				authority TEXT NOT NULL CHECK (authority IN ('qa','founder','engine','lead')),
 				source_node_id TEXT NOT NULL,
 				source_attempt INTEGER NOT NULL CHECK (source_attempt > 0),
 				base_revision TEXT NOT NULL,
 				authority_context_json TEXT NOT NULL,
 				authority_context_digest TEXT NOT NULL,
 				founder_feedback_verbatim TEXT,
+				actor_id TEXT,
+				founder_quote_json TEXT,
+				lead_feedback TEXT,
 				requested_at TEXT NOT NULL,
+				CHECK (
+					(authority = 'lead'
+					 AND actor_id IS NOT NULL AND length(trim(actor_id)) > 0
+					 AND founder_quote_json IS NOT NULL
+					 AND json_valid(founder_quote_json)
+					 AND COALESCE(
+					      json_type(founder_quote_json) = 'null'
+					      OR (json_type(founder_quote_json) = 'object'
+					          AND json_type(founder_quote_json, '$.message_id') = 'text'
+					          AND length(json_extract(founder_quote_json, '$.message_id')) > 0
+					          AND json_type(founder_quote_json, '$.text') = 'text'),
+					      0)
+					 AND lead_feedback IS NOT NULL AND length(trim(lead_feedback)) > 0
+					 AND founder_feedback_verbatim IS NULL)
+					OR
+					(authority <> 'lead' AND actor_id IS NULL
+					 AND founder_quote_json IS NULL AND lead_feedback IS NULL)
+				),
 				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
 			)
 		`);
@@ -31738,7 +31804,7 @@ export class StateStore {
 			request_id: row.request_id as string,
 			run_id: row.run_id as string,
 			source_event_id: row.source_event_id as string,
-			authority: row.authority as "qa" | "founder" | "engine",
+			authority: row.authority as "qa" | "founder" | "engine" | "lead",
 			source_node_id: row.source_node_id as string,
 			source_attempt: Number(row.source_attempt),
 			base_revision: row.base_revision as string,
@@ -31746,6 +31812,12 @@ export class StateStore {
 			authority_context_digest: row.authority_context_digest as string,
 			founder_feedback_verbatim:
 				(row.founder_feedback_verbatim as string | null) ?? null,
+			actor_id: (row.actor_id as string | null) ?? null,
+			founder_quote:
+				row.founder_quote_json === null || row.founder_quote_json === undefined
+					? null
+					: (JSON.parse(String(row.founder_quote_json)) as WorkflowFounderQuote),
+			lead_feedback: (row.lead_feedback as string | null) ?? null,
 			requested_at: row.requested_at as string,
 		};
 	}
@@ -38709,7 +38781,9 @@ export class StateStore {
 	openOperatorRework(input: {
 		runId: string;
 		targetNodeId: string;
-		feedback: string;
+		actor: string;
+		founderQuote: WorkflowFounderQuote;
+		leadFeedback: string;
 		clientRequestId: string;
 		principal: string;
 		founderAuthorEvidence: FounderAuthorEvidence;
@@ -38722,11 +38796,21 @@ export class StateStore {
 			auditId?: number;
 		};
 	}): WorkflowOperatorReworkResult {
+		const validFounderQuote =
+			input.founderQuote === null ||
+			(typeof input.founderQuote === "object" &&
+				typeof input.founderQuote.message_id === "string" &&
+				input.founderQuote.message_id.trim().length > 0 &&
+				typeof input.founderQuote.text === "string");
 		if (
 			!input.runId ||
 			!input.targetNodeId ||
-			!input.feedback.trim() ||
-			input.feedback.length > 4_000 ||
+			!input.actor.trim() ||
+			input.actor.trim() === "unassigned" ||
+			isReservedApprovalAttribution(input.actor.trim()) ||
+			!validFounderQuote ||
+			!input.leadFeedback.trim() ||
+			input.leadFeedback.length > 4_000 ||
 			!input.clientRequestId.trim() ||
 			!input.principal ||
 			!isFounderAuthorEvidence(input.founderAuthorEvidence) ||
@@ -38775,6 +38859,10 @@ export class StateStore {
 						targetNodeId?: unknown;
 						targetAttempt?: unknown;
 						preferredActorExecutionId?: unknown;
+						authority?: unknown;
+						actor?: unknown;
+						lead_feedback?: unknown;
+						founder_quote?: unknown;
 						feedback?: unknown;
 						principal?: unknown;
 						escalationAck?: unknown;
@@ -38788,11 +38876,23 @@ export class StateStore {
 									"string" &&
 								payload.founderAuthorEvidenceIdentityDigest ===
 									founderAuthorEvidenceIdentityDigest;
+					const leadShape =
+						payload.authority === "lead" ||
+						payload.actor !== undefined ||
+						payload.lead_feedback !== undefined ||
+						payload.founder_quote !== undefined;
+					const attributionMatches = leadShape
+						? payload.authority === "lead" &&
+							payload.actor === input.actor.trim() &&
+							payload.lead_feedback === input.leadFeedback.trim() &&
+							canonicalSubmissionDigest(payload.founder_quote ?? null) ===
+								canonicalSubmissionDigest(input.founderQuote)
+						: payload.feedback === input.leadFeedback.trim() &&
+							payload.principal === input.principal;
 					if (
 						prior.kind !== "operator_rework_requested" ||
 						payload.targetNodeId !== requestedTargetNodeId ||
-						payload.feedback !== input.feedback.trim() ||
-						payload.principal !== input.principal ||
+						!attributionMatches ||
 						canonicalSubmissionDigest(payload.escalationAck ?? null) !==
 							canonicalSubmissionDigest(escalationAck ?? null) ||
 						!evidenceMatches ||
@@ -39280,8 +39380,8 @@ export class StateStore {
 				"founder_gate",
 			];
 			const authorityContext = {
-				authority: "operator",
-				principal: input.principal,
+				authority: "lead",
+				actor: input.actor.trim(),
 				sourceEventId,
 				sourceNodeId,
 				sourceAttempt,
@@ -39289,7 +39389,8 @@ export class StateStore {
 				targetAttempt,
 				baseRevision,
 				baseRevisionSource,
-				feedback: input.feedback.trim(),
+				founder_quote: input.founderQuote,
+				lead_feedback: input.leadFeedback.trim(),
 				founderAuthorEvidenceIdentityDigest,
 				...(escalationAck ? { escalationAck } : {}),
 			};
@@ -39319,8 +39420,9 @@ export class StateStore {
 				`INSERT INTO workflow_rework_request
 				   (request_id, run_id, source_event_id, authority, source_node_id,
 				    source_attempt, base_revision, authority_context_json,
-				    authority_context_digest, founder_feedback_verbatim, requested_at)
-				 VALUES (?, ?, ?, 'founder', ?, ?, ?, ?, ?, ?, ?)`,
+				    authority_context_digest, founder_feedback_verbatim, actor_id,
+				    founder_quote_json, lead_feedback, requested_at)
+				 VALUES (?, ?, ?, 'lead', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
 				[
 					requestId,
 					input.runId,
@@ -39330,7 +39432,9 @@ export class StateStore {
 					baseRevision,
 					authorityContextJson,
 					authorityContextDigest,
-					input.feedback.trim(),
+					input.actor.trim(),
+					JSON.stringify(input.founderQuote),
+					input.leadFeedback.trim(),
 					input.now,
 				],
 			);
@@ -39353,8 +39457,8 @@ export class StateStore {
 				    preferred_actor_execution_id, invalidation_scope_json,
 				    verification_policy_json, interpreted_by,
 				    interpretation_reason, created_at)
-				 VALUES (?, 1, ?, ?, ?, ?, ?, 'operator:master',
-				         'operator_requested_rework', ?)`,
+				 VALUES (?, 1, ?, ?, ?, ?, ?, ?,
+				         'lead_requested_rework', ?)`,
 				[
 					requestId,
 					target.id,
@@ -39362,6 +39466,7 @@ export class StateStore {
 					preferredActorExecutionId,
 					JSON.stringify(invalidationScope),
 					JSON.stringify(verificationPolicy),
+					`lead:${input.actor.trim()}`,
 					input.now,
 				],
 			);
@@ -39466,7 +39571,10 @@ export class StateStore {
 				executionId: preferredActorExecutionId,
 				payload: {
 					requestId,
-					authority: "operator",
+					authority: "lead",
+					actor: input.actor.trim(),
+					founder_quote: input.founderQuote,
+					lead_feedback: input.leadFeedback.trim(),
 					targetNodeId: target.id,
 					targetAttempt,
 					preferredActorExecutionId,
@@ -39505,7 +39613,13 @@ export class StateStore {
 				targetAttempt,
 				preferredActorExecutionId,
 				baseRevisionSource,
-				feedback: input.feedback.trim(),
+				authority: "lead",
+				actor: input.actor.trim(),
+				founder_quote: input.founderQuote,
+				lead_feedback: input.leadFeedback.trim(),
+				// Legacy aliases are retained only so old idempotency consumers can
+				// compare receipts across a rolling deploy. They are not attribution.
+				feedback: input.leadFeedback.trim(),
 				principal: input.principal,
 				founderAuthorEvidenceIdentityDigest,
 				...(escalationAck ? { escalationAck } : {}),
@@ -52232,6 +52346,23 @@ export class StateStore {
 			}
 			const effectiveReworkAuthority =
 				reworkAuthority ?? (nodeReuseActor ? "engine" : undefined);
+			const inheritedLeadAttribution =
+				effectiveReworkAuthority === "lead"
+					? activeRequest?.authority === "lead" &&
+						activeRequest.actor_id &&
+						activeRequest.lead_feedback
+						? {
+								actor: activeRequest.actor_id,
+								founderQuote: activeRequest.founder_quote,
+								leadFeedback: activeRequest.lead_feedback,
+							}
+						: undefined
+					: undefined;
+			if (effectiveReworkAuthority === "lead" && !inheritedLeadAttribution) {
+				throw new WorkflowEngineInvariantError(
+					"workflow_lead_rework_attribution_missing",
+				);
+			}
 			const successorExecutionId =
 				target.type === "gate"
 					? undefined
@@ -52385,6 +52516,15 @@ export class StateStore {
 								targetNodeId: target.id,
 								targetAttempt,
 								baseRevision,
+								...(inheritedLeadAttribution
+									? {
+											actor: inheritedLeadAttribution.actor,
+											founder_quote:
+												inheritedLeadAttribution.founderQuote,
+											lead_feedback:
+												inheritedLeadAttribution.leadFeedback,
+										}
+									: {}),
 							}
 						: {
 								authority: effectiveReworkAuthority,
@@ -52449,8 +52589,9 @@ export class StateStore {
 					`INSERT INTO workflow_rework_request
 					   (request_id, run_id, source_event_id, authority, source_node_id,
 					    source_attempt, base_revision, authority_context_json,
-					    authority_context_digest, founder_feedback_verbatim, requested_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					    authority_context_digest, founder_feedback_verbatim, actor_id,
+					    founder_quote_json, lead_feedback, requested_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					[
 						reworkRequestId,
 						input.runId,
@@ -52466,6 +52607,11 @@ export class StateStore {
 								activeRequest?.founder_feedback_verbatim ??
 								"")
 							: null,
+						inheritedLeadAttribution?.actor ?? null,
+						inheritedLeadAttribution
+							? JSON.stringify(inheritedLeadAttribution.founderQuote)
+							: null,
+						inheritedLeadAttribution?.leadFeedback ?? null,
 						now,
 					],
 				);
@@ -52533,6 +52679,13 @@ export class StateStore {
 						invalidationScope,
 						verificationPolicy,
 						authorityContextDigest,
+						...(inheritedLeadAttribution
+							? {
+									actor: inheritedLeadAttribution.actor,
+									founder_quote: inheritedLeadAttribution.founderQuote,
+									lead_feedback: inheritedLeadAttribution.leadFeedback,
+								}
+							: {}),
 					},
 				});
 				this.appendWorkflowRunEventCheckedTx({
@@ -68475,15 +68628,23 @@ export interface WorkflowReworkRequestRow {
 	request_id: string;
 	run_id: string;
 	source_event_id: string;
-	authority: "qa" | "founder" | "engine";
+	authority: "qa" | "founder" | "engine" | "lead";
 	source_node_id: string;
 	source_attempt: number;
 	base_revision: string;
 	authority_context_json: string;
 	authority_context_digest: string;
 	founder_feedback_verbatim: string | null;
+	actor_id: string | null;
+	founder_quote: WorkflowFounderQuote;
+	lead_feedback: string | null;
 	requested_at: string;
 }
+
+export type WorkflowFounderQuote = {
+	message_id: string;
+	text: string;
+} | null;
 
 export interface WorkflowFounderGateVerdictRow {
 	verdict_id: string;

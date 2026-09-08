@@ -735,6 +735,11 @@ function seedWorkflowBinding(
 
 async function storeWithMaterializedFounderReplacement(
 	target: "design" | "qa",
+	options: {
+		authority?: "founder" | "lead";
+		founderQuote?: { message_id: string; text: string } | null;
+		contextActor?: string;
+	} = {},
 ): Promise<{ store: StateStore; requestId: string; replacementId: string }> {
 	const store = await storeWithIntent(target);
 	const deadExecutionId = target === "design" ? "design-1" : "qa-1";
@@ -766,7 +771,8 @@ async function storeWithMaterializedFounderReplacement(
 		state: "pending",
 		executionId: deadExecutionId,
 	});
-	const requestId = `founder-rework-${target}`;
+	const authority = options.authority ?? "founder";
+	const requestId = `${authority}-rework-${target}`;
 	const db = (
 		store as unknown as {
 			db: { run(sql: string, params?: unknown[]): void };
@@ -781,21 +787,50 @@ async function storeWithMaterializedFounderReplacement(
 		 VALUES (?, 'flywheel', 'FLY-1307', ?, '2026-08-15T08:00:00.000Z')`,
 		[deadExecutionId, target],
 	);
-	db.run(
-		`INSERT INTO workflow_rework_request
-		   (request_id, run_id, source_event_id, authority, source_node_id,
-		    source_attempt, base_revision, authority_context_json,
-		    authority_context_digest, founder_feedback_verbatim, requested_at)
-		 VALUES (?, 'run-1', ?, 'founder', 'founder_gate', 1, ?, '{}', ?, ?,
-		         '2026-08-15T08:00:00.000Z')`,
-		[
-			requestId,
-			`founder-source-${target}`,
-			HEAD,
-			`digest-${target}`,
-			`${target}: keep  double spaces and punctuation!`,
-		],
-	);
+	if (authority === "lead") {
+		const founderQuote = options.founderQuote ?? null;
+		const leadFeedback = `${target}: Lead correction with  double spaces!`;
+		db.run(
+			`INSERT INTO workflow_rework_request
+			   (request_id, run_id, source_event_id, authority, source_node_id,
+			    source_attempt, base_revision, authority_context_json,
+			    authority_context_digest, founder_feedback_verbatim, actor_id,
+			    founder_quote_json, lead_feedback, requested_at)
+			 VALUES (?, 'run-1', ?, 'lead', 'founder_gate', 1, ?, ?, ?, NULL, ?, ?, ?,
+			         '2026-08-15T08:00:00.000Z')`,
+			[
+				requestId,
+				`lead-source-${target}`,
+				HEAD,
+				JSON.stringify({
+					authority: "lead",
+					actor: options.contextActor ?? "flywheel-eng-lead",
+					founder_quote: founderQuote,
+					lead_feedback: leadFeedback,
+				}),
+				`digest-${target}`,
+				"flywheel-eng-lead",
+				JSON.stringify(founderQuote),
+				leadFeedback,
+			],
+		);
+	} else {
+		db.run(
+			`INSERT INTO workflow_rework_request
+			   (request_id, run_id, source_event_id, authority, source_node_id,
+			    source_attempt, base_revision, authority_context_json,
+			    authority_context_digest, founder_feedback_verbatim, requested_at)
+			 VALUES (?, 'run-1', ?, 'founder', 'founder_gate', 1, ?, '{}', ?, ?,
+			         '2026-08-15T08:00:00.000Z')`,
+			[
+				requestId,
+				`founder-source-${target}`,
+				HEAD,
+				`digest-${target}`,
+				`${target}: keep  double spaces and punctuation!`,
+			],
+		);
+	}
 	const invalidationScope =
 		target === "design" ? ["design", "implement", "qa"] : ["qa"];
 	const verificationPolicy =
@@ -951,7 +986,9 @@ async function storeWithFreshVerificationIntent(): Promise<{
 	const opened = store.openOperatorRework({
 		runId: "run-1",
 		targetNodeId: "implement",
-		feedback: "rework before QA has ever run",
+		actor: "flywheel-eng-lead",
+		founderQuote: null,
+		leadFeedback: "rework before QA has ever run",
 		clientRequestId: "fly1912-dispatcher",
 		principal: "master",
 		founderAuthorEvidence: { kind: "operator", principal: "master" },
@@ -1176,6 +1213,89 @@ describe("WorkflowEngineDispatcher", () => {
 					expectedSourceExecutionId,
 				);
 			}
+			store.close();
+		},
+	);
+
+	it("fails closed before spawn when persisted Lead attribution disagrees", async () => {
+		const { store } = await storeWithMaterializedFounderReplacement("design", {
+			authority: "lead",
+			founderQuote: null,
+			contextActor: "other-lead",
+		});
+		const fake = fakeStartDispatcher(store);
+		const log = vi.fn();
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-08-15T08:02:00.000Z"),
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2430-invalid-attribution-")),
+			log,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(fake.requests).toEqual([]);
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining("engine_rework_replacement_context_invalid"),
+		);
+		store.close();
+	});
+
+	it.each([
+		{
+			name: "a founder quote",
+			founderQuote: {
+				message_id: "22345678901234567",
+				text: "founder verbatim with  double spaces!",
+			},
+			expectedQuote:
+				"Founder quote (message 22345678901234567):\nfounder verbatim with  double spaces!",
+		},
+		{
+			name: "no founder quote",
+			founderQuote: null,
+			expectedQuote: "Founder quote: none (Lead submitted independently)",
+		},
+		{
+			name: "an empty-text founder quote",
+			founderQuote: { message_id: "empty-message", text: "" },
+			expectedQuote: "Founder quote (message empty-message):\n[empty text]",
+		},
+	])(
+		"renders Lead attribution separately for replacement with $name",
+		async ({ founderQuote, expectedQuote }) => {
+			const { store } = await storeWithMaterializedFounderReplacement(
+				"design",
+				{
+					authority: "lead",
+					founderQuote,
+				},
+			);
+			const fake = fakeStartDispatcher(store);
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-08-15T08:02:00.000Z"),
+				stateRoot: mkdtempSync(join(tmpdir(), "fly2430-lead-replacement-")),
+				resolveReplacementLeadIntent: () => ({
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				}),
+			});
+
+			expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			const agentContent = fake.requests[0]?.generalizedExecution?.agentContent;
+			expect(agentContent).toContain(
+				"Rework submitted by lead:flywheel-eng-lead",
+			);
+			expect(agentContent).toContain(
+				"Lead feedback:\ndesign: Lead correction with  double spaces!",
+			);
+			expect(agentContent).toContain(expectedQuote);
+			expect(agentContent).not.toContain("Founder feedback for this revision");
 			store.close();
 		},
 	);
