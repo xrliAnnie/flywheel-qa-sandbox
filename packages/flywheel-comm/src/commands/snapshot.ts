@@ -21,6 +21,8 @@ export async function runSnapshotCommand(
 		pruneRepairSnapshots?: typeof pruneRepairSnapshots;
 		env?: NodeJS.ProcessEnv;
 		fetch?: typeof fetch;
+		sleep?: (ms: number) => Promise<void>;
+		now?: () => number;
 		stdout?: (text: string) => void;
 		stderr?: (text: string) => void;
 	} = {},
@@ -55,12 +57,16 @@ export async function runSnapshotCommand(
 			return 1;
 		}
 		try {
-			const result = await (deps.createRepairSnapshot ?? createRepairSnapshot)({
-				source: values.source,
-				issueIdentifier: values.issue,
-				databaseKind: values.kind,
-				project: values.project,
-			});
+			const result = await retrySnapshotLock(
+				() =>
+					(deps.createRepairSnapshot ?? createRepairSnapshot)({
+						source: values.source,
+						issueIdentifier: values.issue,
+						databaseKind: values.kind,
+						project: values.project,
+					}),
+				deps,
+			);
 			stdout(`${JSON.stringify({ ok: true, ...result })}\n`);
 			return 0;
 		} catch (error) {
@@ -110,14 +116,16 @@ export async function runSnapshotCommand(
 			return 1;
 		}
 		try {
-			const result = await (
-				deps.createManagedSnapshot ?? createManagedSnapshot
-			)({
-				source: values.source,
-				owner,
-				databaseKind: values.kind,
-				project: values.project,
-			});
+			const result = await retrySnapshotLock(
+				() =>
+					(deps.createManagedSnapshot ?? createManagedSnapshot)({
+						source: values.source,
+						owner,
+						databaseKind: values.kind,
+						project: values.project,
+					}),
+				deps,
+			);
 			stdout(`${JSON.stringify({ ok: true, ...result })}\n`);
 			return 0;
 		} catch (error) {
@@ -145,10 +153,14 @@ export async function runSnapshotCommand(
 			return 2;
 		}
 		try {
-			const result = await (deps.pruneRepairSnapshots ?? pruneRepairSnapshots)({
-				dryRun: !args.includes("--apply"),
-				now: new Date(),
-			});
+			const result = await retrySnapshotLock(
+				() =>
+					(deps.pruneRepairSnapshots ?? pruneRepairSnapshots)({
+						dryRun: !args.includes("--apply"),
+						now: new Date(),
+					}),
+				deps,
+			);
 			stdout(`${JSON.stringify({ ok: true, ...result })}\n`);
 			return 0;
 		} catch (error) {
@@ -177,14 +189,16 @@ export async function runSnapshotCommand(
 			return 1;
 		}
 		try {
-			const result = await (
-				deps.cleanupRunnerSnapshots ?? cleanupRunnerSnapshots
-			)({
-				executionId: owner.executionId,
-				expectedOwner: owner,
-				authorize: (freshOwner) =>
-					JSON.stringify(freshOwner) === JSON.stringify(owner),
-			});
+			const result = await retrySnapshotLock(
+				() =>
+					(deps.cleanupRunnerSnapshots ?? cleanupRunnerSnapshots)({
+						executionId: owner.executionId,
+						expectedOwner: owner,
+						authorize: (freshOwner) =>
+							JSON.stringify(freshOwner) === JSON.stringify(owner),
+					}),
+				deps,
+			);
 			stdout(`${JSON.stringify({ ok: true, ...result })}\n`);
 			return 0;
 		} catch (error) {
@@ -207,6 +221,36 @@ export async function runSnapshotCommand(
 	return 2;
 }
 
+async function retrySnapshotLock<T>(
+	operation: () => Promise<T>,
+	deps: {
+		sleep?: (ms: number) => Promise<void>;
+		now?: () => number;
+	},
+): Promise<T> {
+	const now = deps.now ?? Date.now;
+	const sleep =
+		deps.sleep ??
+		((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+	const startedAt = now();
+	for (let attempt = 1; ; attempt += 1) {
+		try {
+			return await operation();
+		} catch (error) {
+			const delay = Math.min(1_000 * 2 ** (attempt - 1), 5_000);
+			if (
+				!(error instanceof SnapshotStorageError) ||
+				error.reason !== "snapshot_lock_busy" ||
+				attempt >= 12 ||
+				now() - startedAt + delay >= 90_000
+			) {
+				throw error;
+			}
+			await sleep(delay);
+		}
+	}
+}
+
 function configuredDatabase(
 	kind: "teamlead" | "comm",
 	project: string | undefined,
@@ -215,6 +259,7 @@ function configuredDatabase(
 	return kind === "teamlead"
 		? env.FLYWHEEL_STATE_DB_PATH?.trim() ||
 				env.TEAMLEAD_DB_PATH?.trim() ||
+				env.FLYWHEEL_TEAMLEAD_DB?.trim() ||
 				join(homedir(), ".flywheel", "teamlead.db")
 		: env.FLYWHEEL_COMM_DB?.trim() ||
 				(project

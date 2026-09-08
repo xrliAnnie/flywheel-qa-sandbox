@@ -1,17 +1,12 @@
 #!/usr/bin/env node
 
-import { spawn, spawnSync } from "node:child_process";
-import {
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	realpathSync,
-	rmSync,
-	statSync,
-} from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { withManagedSnapshots } from "./flywheel-snapshot-control.mjs";
 
 const STRICT_UTC_INSTANT =
 	/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
@@ -207,29 +202,16 @@ function requireRegularFile(path, label) {
 
 export async function runFly2396RetroReport(options) {
 	const progress = options.onProgress ?? (() => {});
-	const dbPath = requireRegularFile(options.db, "database");
+	const snapshot = requireRegularFile(options.snapshot, "managed snapshot");
 	const sqlPath = requireRegularFile(options.sql ?? DEFAULT_SQL, "report SQL");
 	const attestationPath = requireRegularFile(
 		options.attestation ?? DEFAULT_ATTESTATION,
 		"attestation",
 	);
 	const sqlite = options.sqlite ?? "sqlite3";
-	const scratch = mkdtempSync(join(tmpdir(), "fly2396-retro-"));
-	const snapshot = join(scratch, "teamlead-snapshot.db");
 	let session;
 	try {
-		progress("creating WAL-safe online backup");
-		const backup = spawnSync(
-			sqlite,
-			["-readonly", dbPath, `.backup ${sqlLiteral(snapshot)}`],
-			{ encoding: "utf8" },
-		);
-		if (backup.error || backup.status !== 0) {
-			throw new Error(
-				`sqlite online backup failed: ${backup.error?.message ?? backup.stderr.trim()}`,
-			);
-		}
-		progress("online backup complete; opening immutable snapshot");
+		progress("opening managed immutable snapshot");
 		session = openSqliteSession(
 			sqlite,
 			`file:${encodeURI(snapshot)}?mode=ro&immutable=1`,
@@ -300,7 +282,6 @@ SELECT
 		return `${banner}\nFOREIGN KEY BASELINE: ${observedForeignKeys.length} FLY-2006 registered / 0 outside baseline\n${report.join("\n")}\n`;
 	} finally {
 		if (session) await session.close().catch(() => {});
-		rmSync(scratch, { recursive: true, force: true });
 	}
 }
 
@@ -325,11 +306,19 @@ if (
 			process.stdout.write(`${usage()}\n`);
 		} else {
 			process.stdout.write(
-				await runFly2396RetroReport({
-					...args,
-					onProgress: (message) =>
-						process.stderr.write(`fly2396-retro-report: ${message}\n`),
-				}),
+				await withManagedSnapshots(
+					{
+						label: "fly2396-retro-report",
+						sources: [{ name: "teamlead", source: args.db, kind: "teamlead" }],
+					},
+					({ paths }) =>
+						runFly2396RetroReport({
+							...args,
+							snapshot: paths.teamlead,
+							onProgress: (message) =>
+								process.stderr.write(`fly2396-retro-report: ${message}\n`),
+						}),
+				),
 			);
 		}
 	} catch (error) {

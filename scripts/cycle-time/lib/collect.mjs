@@ -4,11 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import {
-	backupSqliteSnapshot,
-	canonicalizeExtract,
-	querySqliteSnapshot,
-} from "./extract.mjs";
+import { canonicalizeExtract, querySqliteSnapshot } from "./extract.mjs";
 import { parseSystemHealthLog } from "./time.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -404,14 +400,11 @@ export async function collectSources({
 	asOf,
 	asOfIso,
 	project,
-	scratchDir,
-	teamDb,
-	commDb,
+	teamSnapshot,
+	commSnapshot,
 	linearApiKey,
 	healthRoot,
 }) {
-	const teamSnapshot = join(scratchDir, "snap-teamlead.db");
-	const commSnapshot = join(scratchDir, "snap-comm.db");
 	const qaLog = {
 		captured_at: new Date().toISOString(),
 		as_of: asOfIso,
@@ -445,10 +438,8 @@ export async function collectSources({
 		knownT0.length > 0 ? Math.min(...knownT0) : asOf - 7 * 86_400_000;
 
 	try {
-		await backupSqliteSnapshot(teamDb, teamSnapshot);
 		team = await collectTeam(teamSnapshot, issues, project, asOf, minT0);
 		qaLog.raw_sources.teamlead = {
-			snapshot_path: teamSnapshot,
 			raw_sha256: await fileSha256(teamSnapshot),
 		};
 		status.teamlead = "ok";
@@ -456,7 +447,6 @@ export async function collectSources({
 		errors.teamlead = error.message;
 	}
 	try {
-		await backupSqliteSnapshot(commDb, commSnapshot);
 		comm = await collectComm(
 			commSnapshot,
 			team.sessions.filter((session) =>
@@ -465,7 +455,6 @@ export async function collectSources({
 			asOf,
 		);
 		qaLog.raw_sources.commdb = {
-			snapshot_path: commSnapshot,
 			raw_sha256: await fileSha256(commSnapshot),
 		};
 		status.commdb = "ok";

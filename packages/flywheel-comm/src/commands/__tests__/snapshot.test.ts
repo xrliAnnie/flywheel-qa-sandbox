@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { SnapshotStorageError } from "../../snapshot-storage.js";
 import { runSnapshotCommand } from "../snapshot.js";
 
 describe("snapshot command", () => {
@@ -60,6 +61,41 @@ describe("snapshot command", () => {
 			ok: true,
 			path: "/snapshots/repair.db",
 		});
+	});
+
+	it("retries the shared lock with bounded backoff", async () => {
+		const sleep = vi.fn(async () => {});
+		const createRepairSnapshot = vi
+			.fn()
+			.mockRejectedValueOnce(
+				new SnapshotStorageError("snapshot_lock_busy", true),
+			)
+			.mockRejectedValueOnce(
+				new SnapshotStorageError("snapshot_lock_busy", true),
+			)
+			.mockResolvedValue({ path: "/snapshots/repair.db", bytes: 4_096 });
+
+		expect(
+			await runSnapshotCommand(
+				[
+					"repair",
+					"--source",
+					"/state/teamlead.db",
+					"--issue",
+					"FLY-2351",
+					"--kind",
+					"teamlead",
+				],
+				{
+					env: { TEAMLEAD_DB_PATH: "/state/teamlead.db" },
+					createRepairSnapshot,
+					sleep,
+					stdout: vi.fn(),
+				},
+			),
+		).toBe(0);
+		expect(createRepairSnapshot).toHaveBeenCalledTimes(3);
+		expect(sleep.mock.calls).toEqual([[1_000], [2_000]]);
 	});
 
 	it("binds runner snapshots to the authenticated current owner", async () => {

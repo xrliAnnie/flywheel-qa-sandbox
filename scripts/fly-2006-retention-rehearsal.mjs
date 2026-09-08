@@ -1,18 +1,11 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from "node:crypto";
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	realpathSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
+import { withManagedSnapshots } from "./flywheel-snapshot-control.mjs";
 import {
 	executeFly2006Apply,
 	executeFly2006Inventory,
@@ -75,39 +68,22 @@ function criticalCounts(db) {
 	return { tableCount: tables.length, critical: result };
 }
 
-async function backupAndVerify(sourcePath, backupPath) {
-	const source = new Database(sourcePath, {
+function verifyManagedSnapshot(path) {
+	const snapshot = new Database(path, {
 		readonly: true,
 		fileMustExist: true,
 	});
 	try {
-		source.pragma("query_only=ON");
-		const sourceQuickCheck = source.pragma("quick_check", { simple: true });
-		if (sourceQuickCheck !== "ok") throw new Error("source_quick_check_failed");
-		const sourceCounts = criticalCounts(source);
-		await source.backup(backupPath);
-		chmodSync(backupPath, 0o600);
-		const backup = new Database(backupPath, {
-			readonly: true,
-			fileMustExist: true,
-		});
-		try {
-			const backupQuickCheck = backup.pragma("quick_check", { simple: true });
-			if (backupQuickCheck !== "ok")
-				throw new Error("backup_quick_check_failed");
-			return {
-				sourcePath: realpathSync(sourcePath),
-				backupPath: realpathSync(backupPath),
-				sourceQuickCheck,
-				backupQuickCheck,
-				sourceCounts,
-				backupCounts: criticalCounts(backup),
-			};
-		} finally {
-			backup.close();
-		}
+		snapshot.pragma("query_only=ON");
+		const quickCheck = snapshot.pragma("quick_check", { simple: true });
+		if (quickCheck !== "ok") throw new Error("snapshot_quick_check_failed");
+		return {
+			sha256: sha256File(path),
+			quickCheck,
+			counts: criticalCounts(snapshot),
+		};
 	} finally {
-		source.close();
+		snapshot.close();
 	}
 }
 
@@ -115,18 +91,15 @@ export async function executeFly2006Rehearsal(input) {
 	if (existsSync(input.rehearsalDir))
 		throw new Error("rehearsal_dir_already_exists");
 	mkdirSync(input.rehearsalDir, { mode: 0o700 });
-	const copiesDir = join(input.rehearsalDir, "copies");
-	const evidenceDir = join(input.rehearsalDir, "evidence");
-	mkdirSync(copiesDir, { mode: 0o700 });
-	const teamleadDbPath = join(copiesDir, "teamlead.db");
-	const commDbPath = join(copiesDir, "comm.db");
-	const backups = {
-		teamlead: await backupAndVerify(input.teamleadDbPath, teamleadDbPath),
-		comm: await backupAndVerify(input.commDbPath, commDbPath),
+	const evidenceDir = join(input.snapshotDirectory, "fly-2006-evidence");
+	mkdirSync(evidenceDir, { mode: 0o700 });
+	const snapshots = {
+		teamlead: verifyManagedSnapshot(input.teamleadDbPath),
+		comm: verifyManagedSnapshot(input.commDbPath),
 	};
 	const inventory = await executeFly2006Inventory({
-		teamleadDbPath,
-		commDbPath,
+		teamleadDbPath: input.teamleadDbPath,
+		commDbPath: input.commDbPath,
 		evidenceDir,
 		allowFixturePaths: true,
 	});
@@ -184,9 +157,8 @@ export async function executeFly2006Rehearsal(input) {
 	const summary = {
 		issue: "FLY-2006",
 		status: "complete",
-		manifestPath: realpathSync(inventory.manifestPath),
 		manifestSha256,
-		backups,
+		snapshots,
 		targetCounts: Object.fromEntries(
 			Object.entries(inventory.manifest.targets).map(([key, target]) => [
 				key,
@@ -225,11 +197,29 @@ export async function executeFly2006Rehearsal(input) {
 async function runCli() {
 	try {
 		const args = parseArgs(process.argv.slice(2));
-		const result = await executeFly2006Rehearsal({
-			teamleadDbPath: args["--teamlead-db"],
-			commDbPath: args["--comm-db"],
-			rehearsalDir: args["--rehearsal-dir"],
-		});
+		const teamleadDbPath = args["--teamlead-db"];
+		const commDbPath = args["--comm-db"];
+		const result = await withManagedSnapshots(
+			{
+				label: "fly-2006-retention-rehearsal",
+				sources: [
+					{ name: "teamlead", source: teamleadDbPath, kind: "teamlead" },
+					{
+						name: "comm",
+						source: commDbPath,
+						kind: "comm",
+						project: basename(dirname(resolve(commDbPath))),
+					},
+				],
+			},
+			({ paths, directory }) =>
+				executeFly2006Rehearsal({
+					teamleadDbPath: paths.teamlead,
+					commDbPath: paths.comm,
+					snapshotDirectory: directory,
+					rehearsalDir: args["--rehearsal-dir"],
+				}),
+		);
 		process.stdout.write(
 			`${JSON.stringify({
 				status: result.status,
