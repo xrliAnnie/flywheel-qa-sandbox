@@ -825,6 +825,7 @@ function currentProcessStartIdentity(pid: number): string {
 	const observed = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
 		encoding: "utf8",
 		env: { ...process.env, LC_ALL: "C" },
+		timeout: 1_000,
 	}).trim();
 	if (!observed) {
 		throw new SnapshotStorageError("operator_process_identity_unavailable");
