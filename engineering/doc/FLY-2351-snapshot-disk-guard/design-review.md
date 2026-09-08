@@ -23,3 +23,18 @@ question `08b1d848-f68f-46db-8be9-fe083986f56e`，request `9ba71167-1600-49a8-bc
 | founder-html-diagrams-pending | §9 显式写待渲染及像素验证未完成。用户任务允许两次本地失败后的占位 fallback；不另请求远程渲染、不宣称 SVG 已交付。 |
 
 R2 必须重新注册正式 review gate/request，不能凭此修订表自批。
+
+## R2：APPROVED（有效 verdict）
+
+question `474fa11b-a184-4db6-a785-e96db921baa9`，request `59742f81-634b-439f-88a2-1d2da10b7227`。2026-09-08 20:01:21 UTC，effective/raw verdict 均 APPROVED，2 MEDIUM + 4 LOW advisories，无阻塞 finding。R1 HIGH 已明确消解；按 runner 合同继续交接，并把 advisories 汇报 Lead。
+
+以下是通过后的 advisory 处置与实施澄清，不声称这些作者修订已经经过另一个审查轮次：
+
+| findingKey | 最终处置 |
+|---|---|
+| snapshot-owner-endpoint-auth-shape (MEDIUM) | 实查 plugin.ts:1165 确认无 token 时 middleware 放行；plan §3.0 明确 if(config.apiToken) 注册路由、else 503 stub；CLI 复用既有地址/凭据变量。添加独立 route 无配置测试。 |
+| operator-owner-missing-process-start-identity (MEDIUM) | owner 与锁共用原生进程启动身份。记录 PID + processStartIdentity，PID消失/明确新启动身份说明原进程死亡；同秒/未知/异常保留。不凭年龄猜，不操作后来复用 PID 的进程。 |
+| cli-exit-code-convention-divergence (LOW) | 采纳更少惯例：最终采用现有0/1/2与 JSON reason/retryable，替代 R1 的 sysexits 数字；帮助和配方明确码表。 |
+| session-owner-started-at-nullable (LOW) | 明确 NULL/非法 started_at 拒绝，补 pending session 阴性。 |
+| retention-unbounded-group-count (LOW) | 保留每轮累计统计与原有20GB Data FINDING；没有未经需求定义的新 retained-bytes 阈值/年龄上限。建议由 Lead 决定后续指标门槛。 |
+| no-runtime-kill-switch-for-new-deleter (LOW) | 首轮由独立部署流程先执行实际目录 dry-run-only 并核账，再启动删除器；独立开关继续作为 Lead follow-up，无新增配置。 |

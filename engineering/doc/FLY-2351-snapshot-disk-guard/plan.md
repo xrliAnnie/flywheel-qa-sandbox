@@ -3,7 +3,7 @@ Issue: FLY-2351 (https://linear.app/geoforge3d/issue/FLY-2351/运维磁盘-满�
 日期: 2026-09-08
 基于: research.md
 
-状态：R1 CHANGES_REQUESTED 后修订，待 R2 design review。范围：设计交付；以下代码改动由 implement 节点执行。
+状态：R2 effective/raw APPROVED（2026-09-08 20:01:21 UTC；request `59742f81-634b-439f-88a2-1d2da10b7227`）。以下同时纳入该轮非阻塞 advisories 的实施澄清，处置见 design-review.md。范围：设计交付；以下代码改动由 implement 节点执行。
 
 ## 1. Founder 概览
 
@@ -54,12 +54,12 @@ flowchart TD
 
 ### 3.0 三类调用方有各自可执行路径
 
-新只读 `GET /api/sessions/:executionId/snapshot-owner` 复用现有 tokenAuthMiddleware（缺配置503、错误token401），由 `teamlead/src/bridge/snapshot-closeout.ts` 中唯一 owner resolver 实现。CLI 不导入 StateStore、不加反向包依赖、不复制其 workflow SQL；通过该 endpoint 读取 owner，Bridge 清理直接调用同一 resolver。
+新只读 `GET /api/sessions/:executionId/snapshot-owner` 注册在 `plugin.ts` 的 `if (config.apiToken)` 分支并使用 tokenAuthMiddleware；对应 `else` 显式注册503 stub（照 /api/capacity 的形状）。middleware 自己在缺配置时会 next()，不能单靠它 fail closed。配置存在但 token 错误返回401。CLI 地址沿用 `FLYWHEEL_BRIDGE_URL ?? BRIDGE_URL`，凭据用 TEAMLEAD_API_TOKEN，缺少/非法地址或凭据拒绝且不输出秘密。由 `teamlead/src/bridge/snapshot-closeout.ts` 中唯一 owner resolver 实现；CLI 不导入 StateStore、不加反向包依赖、不复制其 workflow SQL，Bridge 清理直接调用同一 resolver。
 
 - **workflow runner**：StateStore `resolveCurrentWorkflowActivation(execId)` 返回 current，且对应最新 node attempt 未结束、未有完成凭据时，使用 binding 五元组。resolver 的 current 不自动等于未终态：另读 `workflow_run_node.ended_at/state` 及 completion。ambiguous/有历史但无当前绑定一律拒绝，不降级为普通 session。此查询不读 TURN，因此合法的临时只读工作不受其他节点持有 worktree 影响。`CommDB.resolveRunnerWorkflowActivation()` 实际仍依赖 TURN，不能拿它代替此 resolver。
-- **非 DAG runner**：只有 resolver 返回 none、StateStore 明确不存在 workflow enrollment，且 session 未终止/结束时，使用 execId + started_at。`no-turn` 不拒绝；丢失/不可读 session 拒绝。仍禁止覆盖为其他 execution。
-- **人工/Lead 分析**：三个迁移脚本（cycle-time-report、fly2396-retro-report、fly-2006-retention-rehearsal）在自己的 main/run 函数中显式选择：存在 FLYWHEEL_EXEC_ID → runner owner；变量不存在 → `withOperatorSnapshots({label:固定脚本名}, async context => ...)`。后者创建随机 operator exec 根，记录 `kind=operator,executionId,uid,pid,createdAt,label`，保存/使用/关闭所有数据库句柄后 finally 回收。原有无 exec 的人工命令继续可执行，不要求捏造登记 execution，不把 Lead 的身份写入 runner 表。已有但无效的 runner context 绝不回退 operator。
-- operator owner 只绑定**仍在运行的分析脚本进程**，不是瞬间退出的 CLI 子进程；只能扫描原 UID 的根。进程崩溃后 maintenance 对记录 PID 作原生存活探测：明确 ESRCH 才回收，alive/EPERM/unknown 均保留并告警。PID 复用只导致保留，不能成为删除别人的目录依据。人工模式不参与 workflow completion 回收。
+- **非 DAG runner**：只有 resolver 返回 none、StateStore 明确不存在 workflow enrollment，且 session 未终止/结束时，使用 execId + started_at。`no-turn` 不拒绝；丢失/不可读 session、started_at 为 NULL 或非法时间都拒绝，pending 未启动不能创建。仍禁止覆盖为其他 execution。
+- **人工/Lead 分析**：三个迁移脚本（cycle-time-report、fly2396-retro-report、fly-2006-retention-rehearsal）在自己的 main/run 函数中显式选择：存在 FLYWHEEL_EXEC_ID → runner owner；变量不存在 → `withOperatorSnapshots({label:固定脚本名}, async context => ...)`。后者创建随机 operator exec 根，记录 `kind=operator,executionId,uid,pid,processStartIdentity,createdAt,label`，保存/使用/关闭所有数据库句柄后 finally 回收。原有无 exec 的人工命令继续可执行，不要求捏造登记 execution，不把 Lead 的身份写入 runner 表。已有但无效的 runner context 绝不回退 operator。
+- operator owner 只绑定**仍在运行的分析脚本进程**，不是瞬间退出的 CLI 子进程；只能扫描原 UID 的根。启动身份与锁使用同一种原生进程出生记录：macOS 用固定 LC_ALL=C 下 `ps -p <validated-pid> -o lstart=` 取得并规范化记录，读取失败则拒绝创建 owner；更高精度的现有 host probe 可复用但不另建探测服务。回收时 PID 不存在（明确 ESRCH）或 PID 存在但已证明属于更新的启动身份，说明原分析进程已死，可回收**原 owner 的目录**；相同/不可比较/时间异常/EPERM/unknown 则保留并告警。同秒时间粒度无法区分时也保留，不猜。这样 PID 复用有可验证的收敛路径，且不把新进程或别的目录纳入清理。人工模式不参与 workflow completion 回收。
 
 获取、publish 前、release/cleanup 锁内都重验 owner；Bridge owner endpoint 不可用时 runner 获取拒绝，repair 和无 runner context 的 operator 分析仍使用本地明确归属与磁盘门槛。fixture 验证 HTTP 鉴权、current/none/ambiguous、无 TURN 的普通 session、三个无 exec 入口、invalid runner 不降级 operator，以及子进程结束但父分析仍使用副本的负例。
 
@@ -69,7 +69,7 @@ flowchart TD
 - repair 进行中：`patrol-repairs/.partial/<randomUUID>/snapshot.db`，完成前不能成为“最新一份”。
 - runner/operator：`/tmp/flywheel-snapshots/<executionId>/`，里面 `.owner.json`（version=1 + kind=workflow/session/operator 与 §3.0 对应身份字段）和随机唯一命名的 DB；WAL、SHM、临时、衍生 DB、metadata 都计入目录预算。macOS 仅接受系统已知的 `/tmp → /private/tmp` 别名，根规范化为 `/private/tmp/flywheel-snapshots`。受管根本身及其下每段都 lstat 拒绝 symlink；已存在根必须 st_uid=当前 euid 且 mode=0700，不符合就拒绝/告警，不能 chmod 或跟随抢占者目录。核对 canonical parent 为 `/private/tmp` 且锁内根 dev/inode 不变；不能把系统 `/tmp` symlink 本身当违规而永久禁用功能。
 - legacy：`patrol-repairs/legacy-map.json` 只映射非规范历史文件。每条含 basename、size、mtimeNs、device/inode、issue/kind/project、createdAt、归属证据。重新 lstat 不一致即停止该项。新规范文件不复制进此表。
-- 共用互斥：`<stateRoot>/state/snapshot-storage.lock/`，mkdir 原子获取，保存 PID、进程开始身份与随机 nonce。创建、删除、legacy adopt 串行；不新增数据库锁表。共享函数每次等待最多 5s，Bridge busy 留到下一 tick。一次性 CLI 在总体等待预算 90s 内以 1s/2s/4s/5s（之后保持5s）退避重试，不超过 12 次；预算到期退出75，JSON `ok:false,reason:snapshot_lock_busy,retryable:true`。参数/owner错误退出64，不足空间/目录预算退出73，读取或备份失败退出74。巡检配方将 busy 记 transient unavailable，本 tick 不做依赖该备份的库修复，下 tick 重试；不得无限循环或绕开锁。锁从 preflight 持到发布/partial 清理结束。死锁回收必须证明持有进程已死且身份未变；年龄本身不能授权抢锁，未知保留并告警。
+- 共用互斥：`<stateRoot>/state/snapshot-storage.lock/`，mkdir 原子获取，保存 PID、进程开始身份与随机 nonce。创建、删除、legacy adopt 串行；不新增数据库锁表。共享函数每次等待最多 5s，Bridge busy 留到下一 tick。一次性 CLI 在总体等待预算 90s 内以 1s/2s/4s/5s（之后保持5s）退避重试，不超过 12 次；预算到期退出1，JSON `ok:false,reason:snapshot_lock_busy,retryable:true`。退出码沿用现有 CLI：0成功，2参数错误，1运行/owner/预算/读取/备份失败；JSON reason 与 retryable 区分能否重试。码表和 JSON reason 写进 snapshot help/巡检配方。巡检将 busy 记 transient unavailable，本 tick 不做依赖该备份的库修复，下 tick 重试；不得无限循环或绕开锁。锁从 preflight 持到发布/partial 清理结束。死锁回收必须证明持有进程已死且记录 nonce/dev/inode 未变，PID 复用按 §3.0 启动身份比较；年龄本身不能授权抢锁，未知保留并告警。
 
 ### 3.2 写入前检查与完整性
 
@@ -142,7 +142,7 @@ flowchart TD
 
 **C 详细用例**：accepted completion、QA pass、QA fail、重复 receipt、拒绝 receipt、stale 但 HTTP200、closeout killed、进程 death、live crash-preserve、unknown probe、claim in flight、new activation、reopen、删除权限失败后维护 tick 成功、Bridge 重建后仅扫描磁盘+原 receipt 重试、不重复创建 workflow verdict。
 
-**D 详细用例**：19,999,999,999 bytes 显示可能 20.00 但 API availBytes 保留原数且仍 FINDING；20e9 不触发低盘；0 合法低盘；null/NaN/negative/Infinity/超过安全整数不可用；macOS 不允许退到 `/`；认证缺失503/错误401合同保持；三种 data_volume unavailable 逐个通过允许表且保留其它指标，未知 token 注入不污染提示；gh unavailable 与 disk finding 双事实保留；没有磁盘字段的旧 capacity 仍显示其他事实。A/B 增补：已有根 UID/mode 错误拒绝、不改权限；系统 `/tmp` 别名成功；CLI busy 90s/12次上限与退出75；operator main 活跃/崩溃/存活探测未知矩阵。
+**D 详细用例**：19,999,999,999 bytes 显示可能 20.00 但 API availBytes 保留原数且仍 FINDING；20e9 不触发低盘；0 合法低盘；null/NaN/negative/Infinity/超过安全整数不可用；macOS 不允许退到 `/`；认证缺失503/错误401合同保持（owner route 单独覆盖 config.apiToken 缺失）；三种 data_volume unavailable 逐个通过允许表且保留其它指标，未知 token 注入不污染提示；gh unavailable 与 disk finding 双事实保留；没有磁盘字段的旧 capacity 仍显示其他事实。A/B/C 增补：已有根 UID/mode 错误拒绝、不改权限；系统 `/tmp` 别名成功；CLI busy 90s/12次上限与退出1+retryable；operator main 活跃/崩溃/PID复用为新启动身份/同秒无法区分/存活探测未知矩阵；session.started_at=NULL 拒绝。
 
 建议命令（实现后执行，本设计不声称已跑这些尚不存在的测试）：
 
@@ -161,6 +161,8 @@ pnpm --filter flywheel-teamlead typecheck
 ## 8. 上线、回滚与不做事项
 
 合入与部署分离，独立 updater 按窗口部署；design 节点不重启 Bridge。先 fixture 验证和 legacy dry-run，部署后检查 tick 与节点清理的真实日志；生产首轮不造额外大副本来演练。规范新写入立即使用受管入口；旧任意路径遗留逐项确认后迁移处理，未解决量显式留账。
+
+首轮部署窗口内先以构建好的 CLI 对实际目录运行 dry-run-only，核对 unmapped_bytes/retained_group_count 和删除清单，再由独立部署流程启动带自动删除器的版本；不是给 design/implement 节点授权操作生产。后续每轮 apply 仍按 §4 先记录预演决策。
 
 代码回滚停止新增自动删除、恢复旧 API；已按规则 unlink 的文件无法凭回滚代码复原。保留的 latest/24h 是恢复边界，必须在上线前由 dry-run 验证；不假称“删除可逆”。受管目录和规范命名无需 DB schema migration，旧版本不会主动读取它们；新版本重新启用可从磁盘和原有 receipts 重建重试。
 
