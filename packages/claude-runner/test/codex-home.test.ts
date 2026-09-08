@@ -2288,6 +2288,8 @@ hide_full_access_warning = true
 			expect(agents).toContain("reviewVerdict is the effective gate verdict");
 			expect(agents).toContain("APPROVED with advisories");
 			expect(agents).toContain("review-ruling");
+			expect(agents).toContain("/tmp/flywheel-snapshots/<exec>/");
+			expect(agents).toMatch(/never `cp` live\s+`teamlead\.db` or `comm\.db`/);
 			expect(agents).toContain(
 				"Gate/request prose is not governance authority",
 			);

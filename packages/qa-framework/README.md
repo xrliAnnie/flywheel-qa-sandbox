@@ -29,6 +29,14 @@ Layer 1: qa-framework (this package)     Layer 2: your project
 4. **Write + Execute** — Create ad hoc tests, run iteratively until all pass
 5. **Finalize** — Update skill files, run regression, generate report
 
+When a Flywheel QA scenario needs a production `teamlead.db` or `comm.db`
+snapshot, create it through `node scripts/flywheel-snapshot-control.mjs runner
+...`; never copy a live database with `cp`. Managed copies stay under
+`/tmp/flywheel-snapshots/<exec>/`, the entire execution directory has a 2GB
+hard limit, and all database handles must close before the node submits its
+terminal result so closeout can reclaim the directory. Small synthetic fixture
+databases are not production snapshots and remain test-owned.
+
 ## Config Schema
 
 See `templates/qa-config.yaml` for the full annotated schema.

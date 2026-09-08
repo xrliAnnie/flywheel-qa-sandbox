@@ -7,15 +7,6 @@ import { parseSqliteUtc } from "./time.mjs";
 const evidence = (source, key, summary) => [{ source, key, summary }];
 const execFileAsync = promisify(execFile);
 
-export async function backupSqliteSnapshot(sourcePath, snapshotPath) {
-	const escapedSnapshot = snapshotPath.replaceAll("'", "''");
-	await execFileAsync("sqlite3", [
-		"-readonly",
-		`file:${sourcePath}?mode=ro`,
-		`.backup '${escapedSnapshot}'`,
-	]);
-}
-
 export async function querySqliteSnapshot(snapshotPath, sql) {
 	const { stdout } = await execFileAsync(
 		"sqlite3",

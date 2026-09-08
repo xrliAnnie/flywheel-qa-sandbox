@@ -55,6 +55,11 @@ role, gate commands with exact ids); this contract carries the invariants.
 - Doc-flow: when your dynamic prompt carries a DOC-FLOW block, its folder,
   filenames, and tier are authoritative for process documents.
 - TDD for code changes: failing test → minimal code → refactor.
+- Production database snapshots: for a live `teamlead.db` or `comm.db` copy,
+  use `node scripts/flywheel-snapshot-control.mjs runner ...`; never `cp` live
+  `teamlead.db` or `comm.db`. Keep copies under
+  `/tmp/flywheel-snapshots/<exec>/`, honor the directory's 2GB hard limit, and
+  close database handles before terminal completion so closeout can remove it.
 
 ## Comm Protocol (how you talk to your Lead)
 

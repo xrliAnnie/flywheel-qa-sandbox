@@ -175,6 +175,7 @@ describe("Blueprint DAG workflow prompt (FLY-793)", () => {
 		expect(p).toContain("IMPLEMENT phase");
 		expect(p).toContain("committed design");
 		expect(p).toContain("create a GitHub PR");
+		expect(p).toContain("/tmp/flywheel-snapshots/<exec>/");
 		expect(p).not.toContain("Founder design HTML (MANDATORY)");
 		expect(p).not.toContain("INTERACTIVE COMMENT LAYER");
 		expect(p).not.toContain("DIAGRAMS AND LANGUAGE");
@@ -187,6 +188,7 @@ describe("Blueprint DAG workflow prompt (FLY-793)", () => {
 		});
 		expect(p).toContain("QA phase");
 		expect(p).toContain("qa-result");
+		expect(p).toContain("/tmp/flywheel-snapshots/<exec>/");
 		// QA inherits the Implement phase's open PR — it must NOT run the
 		// PR-create / land block (no "create a GitHub PR", no landing signal).
 		expect(p).not.toContain("create a GitHub PR");
