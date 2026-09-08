@@ -33,8 +33,10 @@ FLY2351_DOM_MODULE=/Users/xiaorongli/Dev/flywheel/node_modules/.pnpm/happy-dom@2
 
 ## 正式审查与交付
 
-- R1 question：`08b1d848-f68f-46db-8be9-fe083986f56e`；request：`9ba71167-1600-49a8-bc88-f3676e892748`，已受理，尚待 verdict。
+- R1 question：`08b1d848-f68f-46db-8be9-fe083986f56e`；request：`9ba71167-1600-49a8-bc88-f3676e892748`，effective/raw CHANGES_REQUESTED（2026-09-08 19:47:23 UTC）。修订与逐项处置见 design-review.md，提交 `afe86a548`。
 - Lead 问题 `ec87d39f-aa63-49cb-b098-e96790a1077b`：已确认分组、2GB managed acquisition 边界及“映射不上的库一律不删”。已在 plan/research/HTML 反映并 report-back。
 - HTML 已在提交 `c8203b08e` 后使用 publish-only 发布：<https://fw-reports-a53de2.vercel.app/r/57cec9a5c6673ec3c4e1037cd170e5d6/>；reportId=`57cec9a5c6673ec3c4e1037cd170e5d6`，messageId=null（未发频道消息）。已按 DESIGN-HTML ready 向 Lead 汇报，receipt=`0677164b-dce4-4d1f-ab3d-f9b08c64c227`。
 - hosted fetch 检查：HTTP 200、残余 __CSP_NONCE__=false、singleScript=true、noncePresent=true、cspPresent=true、cspAuthorizesNonce=true、diagramPlaceholders=2、sections=9。检查的是实际托管响应，不以本地文件代替。实际浏览器运行仍受上述权限限制。
+- R2 question：`474fa11b-a184-4db6-a785-e96db921baa9`；request：`59742f81-634b-439f-88a2-1d2da10b7227`，已受理，待 verdict。
+- R2 修订 HTML 已从提交 `afe86a548` 重新 publish-only，当前链接：<https://fw-reports-a53de2.vercel.app/r/92f5194d1fe896139bea00d42bf2bb7d/>。旧链接是 R1 草稿，不再是当前交付。新托管响应验证 HTTP200、nonce placeholder 无残留、唯一 script、CSP 允许实际 nonce、人工分析段和约五分钟说明已在、图待渲染占位仍为2。已再次 DESIGN-HTML ready 汇报 Lead。评论 DOM 套件在修订后再次通过。
 - 最终正式审查结果在完成前追加。
