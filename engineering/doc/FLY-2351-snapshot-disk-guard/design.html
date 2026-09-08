@@ -53,18 +53,20 @@
 <div class="tablewrap"><table><thead><tr><th>类别</th><th>保存位置</th><th>归属依据</th></tr></thead><tbody>
 <tr><td>修复恢复点</td><td><code>patrol-repairs/</code></td><td>任务编号、数据库类型、项目、创建时间</td></tr>
 <tr><td>实现／测试副本</td><td><code>/tmp/flywheel-snapshots/&lt;exec&gt;/</code></td><td>执行编号、节点、本次尝试、本次激活</td></tr>
+<tr><td>人工分析副本</td><td>同一受管根下的独立分析目录</td><td>本次分析编号、启动者、分析进程；不冒充 runner</td></tr>
 <tr><td>小型验证证据</td><td>任务文档／测试证据目录</td><td>结果、计数、校验摘要；在副本回收后继续保留</td></tr>
 </tbody></table></div>
 <p>runner 是自动执行工作的进程，<code>exec</code> 是一次执行的唯一编号。节点是设计、实现或测试等工作单元；同一执行进程可能多次接手同一节点，因此删除前还要核对是哪次尝试。</p>
 <div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>归属核对图也已按标准参数重试一次，仍被本地沙箱阻止。图稿 <code>ownership.mmd</code> 随设计保存。</p></div>
 <p>系统接受当前节点的完成凭据后，closeout（结束时的收尾程序）回收这次副本。只是在等待、仅报告“完成”但未被接受、或已进入新尝试时，都不能触发旧回调删除新文件。</p>
 <p class="muted">删除失败由既有维护周期重试。关闭进程和任务取消时，也会按当前身份与退出证据补清理；不凭文件年龄推断进程已死。</p>
+<p class="muted">人工分析脚本保留原来的启动方式，在自己的进程内登记临时身份，结束时立即回收。异常退出后的遗留仅在确认该进程已消失后回收；与共享工作目录的写入权限分开判断。</p>
 <label class="comment">这一节的意见<textarea data-comment="ownership" placeholder="回收时机和证据是否清楚"></textarea></label>
 </section>
 
 <section class="card" data-section="磁盘告警与读数">
 <div class="eyebrow">04 · 提前看见风险</div><h2>巡检和容量接口读同一块盘</h2>
-<p><code>disk_avail_gb</code> 表示 Data 卷可用空间。巡检 STEP 5 和 <code>/api/capacity</code>（供程序读取机器容量的接口）使用同一计算方法；判断用原始字节，显示才四舍五入。</p>
+<p><code>disk_avail_gb</code> 表示 Data 卷可用空间。巡检 STEP 5 和 <code>/api/capacity</code>（供程序读取机器容量的接口）使用同一计算方法；接口同时提供原始字节，判断用字节，显示才四舍五入。</p>
 <div class="tablewrap"><table><thead><tr><th>状态</th><th>结果</th></tr></thead><tbody>
 <tr><td>可用空间低于 20 GB</td><td>FINDING：记录需要处置的问题并通知 Lead</td></tr>
 <tr><td>恰好 20 GB 或更多</td><td>不触发低盘量问题；每次复制仍要过五倍检查</td></tr>
@@ -93,6 +95,7 @@
 <li><strong>旧文件先核对归属。</strong>本次只读清点看到 15 份旧修复库、约 12.1 GB；名称含糊的不能猜着删。旧 <code>/tmp</code> 遗留同样逐项确认。</li>
 <li><strong>删除无法靠回滚代码复原。</strong>上线前要核对预演清单；回滚不会重新生成已删除的历史副本。</li></ul>
 <p class="checks">实施验收需要真实证明：并发创建不会超预算；低盘与未知读数拒绝写入；节点完成后目录释放；旧回调不删新尝试；读取或删除失败可以重试；接口、提示词和巡检最终状态一致。</p>
+<p class="checks">低盘事故中先清点、回收已允许删除的副本；仍不足五倍时，先处理存储容量再修库，不降低门槛或跳过恢复点。失败回收通常在现有约五分钟维护周期重试，不承诺一分钟内完成。</p>
 <p class="muted">当前交付是设计。功能测试和生产上线由后续节点完成，合入代码与部署仍是两步。</p>
 <label class="comment">这一节的意见<textarea data-comment="boundaries" placeholder="哪些边界需要进一步收紧"></textarea></label>
 </section>

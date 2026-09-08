@@ -3,7 +3,7 @@ Issue: FLY-2351 (https://linear.app/geoforge3d/issue/FLY-2351/运维磁盘-满�
 日期: 2026-09-08
 基于: research.md
 
-状态：待正式 design review。范围：设计交付；以下代码改动由 implement 节点执行。
+状态：R1 CHANGES_REQUESTED 后修订，待 R2 design review。范围：设计交付；以下代码改动由 implement 节点执行。
 
 ## 1. Founder 概览
 
@@ -28,9 +28,9 @@ flowchart TD
 
 1. `GB = 1,000,000,000 bytes`，2GB=2,000,000,000 bytes，20GB=20,000,000,000 bytes。所有判断使用整数 bytes；界面可保留两位小数，不能以舍入后的 20.00 判断健康。
 2. macOS 路径固定 `/System/Volumes/Data`。读取 `fs.statfs(...,{bigint:true})` 的 `bavail*bsize`，不用 bfree，不从 `/` 推断。不支持的平台报告 `structural: data_volume_unsupported`；macOS 目标路径缺失报告 `structural: data_volume_missing`，读失败为 `transient: data_volume_unreadable`。不静默 fallback。
-3. `disk_avail_gb` 是唯一数值名。源元数据：`disk_volume`、`disk_observed_at`、`disk_unavailable`；容量读取失败时数值和 observed_at 为 null。容量失败不让 HTTP 500 或隐藏其他已有指标。
+3. 保留 issue 明确要求的顶层 `disk_avail_gb`（不舍入的 GB 派生值）；新增 `disk: {volume, availBytes, observedAt, unavailable?}`，其元数据沿用 CapacitySnapshot 的嵌套 camelCase 形状。availBytes 是唯一阈值事实，JSON 输出前校验非负安全整数；内部 BigInt 超出安全范围时 unavailable，禁止丢精度。容量读取失败时 availBytes、disk_avail_gb、observedAt 为 null。容量失败不让 HTTP 500 或隐藏其他已有指标。
 4. 修复快照分组键 `(issueIdentifier, databaseKind, project)`：`databaseKind ∈ teamlead | comm`，teamlead 的 project 用固定 `global`；comm 必须用实际 project。显示名称“FLY-xxxx · 调度库”或“FLY-xxxx · <project> 通信库”。修复动作、request id、runner vendor 不参与分组。
-5. runner 身份使用既有 `(executionId, runId, nodeId, attempt, activationId)`；不要新造 phase 状态词。其最终完成证据来自 `workflow_node_completion` 或已接受的 `workflow_founder_gate_verdict`/节点 decision，不能相信请求文字或 HTTP 200。
+5. workflow runner 身份使用既有 `(executionId, runId, nodeId, attempt, activationId)`；普通非 DAG session 使用 `(executionId, sessionStartedAt)`。人工分析使用本次分析的 `operator-<randomUUID>` 与 UID/PID，不冒充任何 runner。不要新造 phase 状态词；workflow 最终完成证据来自 `workflow_node_completion` 或已接受的 `workflow_founder_gate_verdict`/节点 decision，不能相信请求文字或 HTTP 200。TURN 只约束共享 worktree，不是临时副本的身份/准入源。
 
 ## 3. 最小实现落点与接口
 
@@ -38,26 +38,38 @@ flowchart TD
 
 | 接口/入口 | 输入与输出 |
 |---|---|
-| `readDataDisk()` | 返回上述四个 disk 字段与内部 availableBytes；同一实现服务 CLI/Bridge |
+| `readDataDisk()` | 返回 §2.3 的 disk 元数据、原始 bytes 与派生 disk_avail_gb；同一实现服务 CLI/Bridge |
 | `createRepairSnapshot({source,issueIdentifier,databaseKind,project})` | 只读源，返回 final path/bytes/createdAt/group；失败不留下 final DB |
-| `createRunnerSnapshot({source,owner,databaseKind,project})` | owner 来自既有执行上下文；返回受管 path/bytes/owner；不接受任意 destination |
+| `createManagedSnapshot({source,owner,databaseKind,project})` | owner 为 §3.0 的 workflow/session/operator 身份；返回受管 path/bytes/owner；三者共享预算/写入算法，不接受任意 destination |
+| `withOperatorSnapshots({label}, use)` | 当前分析进程创建 operator owner，把同一预算/写入 helper 交给 use；await use 后 finally 回收，本地审计记录 owner/label/result |
 | `pruneRepairSnapshots({dryRun,now})` | 扫描顶层规范 final 和经确认的 legacy 映射，返回逐项 reason 与汇总 bytes |
 | `cleanupRunnerSnapshots({executionId,expectedOwner,authorize})` | 路径在函数内部推导；锁内 fresh authorize，owner mismatch 返回 skipped；失败返回 retryable error |
 | `flywheel-comm snapshot disk` | JSON，只读、不依赖 Bridge 在线；patrol shell 用这个读取值 |
 | `snapshot repair --source <path> --issue <id> --kind teamlead\|comm [--project <key>]` | 仅允许修复用途；source 是实际配置库的规范路径；更新巡检配方用它获取 BACKUP_PATH |
-| `snapshot runner --source <path> --kind teamlead\|comm [--project <key>]` | 从 FLYWHEEL_EXEC_ID 和当前 run context 解析 owner；别的 exec 覆盖、无 TURN、终态 owner 拒绝 |
+| `snapshot runner --source <path> --kind teamlead\|comm [--project <key>]` | 仅取调用者 FLYWHEEL_EXEC_ID，经只读 owner endpoint 解析 workflow/session；不接受别的 exec 覆盖，未知/已结束 owner 拒绝；不检查 TURN |
 | `snapshot prune [--dry-run]` | 人工预演默认 dry-run；`--apply` 才删除；Bridge 自动回调明确 apply 并先生成同算法 dry-run 记录 |
 | `snapshot release` | 仅释放调用者 owner 的目录；短脚本 finally 使用，跨 exec 不可指定 |
 
-生产调用不提供 root/clock/probe override CLI 参数；测试直接注入函数依赖和小型 fixture 根。人工只读分析脚本无 runner context 时必须显式绑定一个已登记的执行，不能偷偷退回任意 `/tmp`。纯测试 fixture 不走生产路径判别，保留自己的临时测试根。
+生产调用不提供 root/clock/probe override CLI 参数；测试直接注入函数依赖和小型 fixture 根。纯测试 fixture 保留自己的临时测试根。
+
+### 3.0 三类调用方有各自可执行路径
+
+新只读 `GET /api/sessions/:executionId/snapshot-owner` 复用现有 tokenAuthMiddleware（缺配置503、错误token401），由 `teamlead/src/bridge/snapshot-closeout.ts` 中唯一 owner resolver 实现。CLI 不导入 StateStore、不加反向包依赖、不复制其 workflow SQL；通过该 endpoint 读取 owner，Bridge 清理直接调用同一 resolver。
+
+- **workflow runner**：StateStore `resolveCurrentWorkflowActivation(execId)` 返回 current，且对应最新 node attempt 未结束、未有完成凭据时，使用 binding 五元组。resolver 的 current 不自动等于未终态：另读 `workflow_run_node.ended_at/state` 及 completion。ambiguous/有历史但无当前绑定一律拒绝，不降级为普通 session。此查询不读 TURN，因此合法的临时只读工作不受其他节点持有 worktree 影响。`CommDB.resolveRunnerWorkflowActivation()` 实际仍依赖 TURN，不能拿它代替此 resolver。
+- **非 DAG runner**：只有 resolver 返回 none、StateStore 明确不存在 workflow enrollment，且 session 未终止/结束时，使用 execId + started_at。`no-turn` 不拒绝；丢失/不可读 session 拒绝。仍禁止覆盖为其他 execution。
+- **人工/Lead 分析**：三个迁移脚本（cycle-time-report、fly2396-retro-report、fly-2006-retention-rehearsal）在自己的 main/run 函数中显式选择：存在 FLYWHEEL_EXEC_ID → runner owner；变量不存在 → `withOperatorSnapshots({label:固定脚本名}, async context => ...)`。后者创建随机 operator exec 根，记录 `kind=operator,executionId,uid,pid,createdAt,label`，保存/使用/关闭所有数据库句柄后 finally 回收。原有无 exec 的人工命令继续可执行，不要求捏造登记 execution，不把 Lead 的身份写入 runner 表。已有但无效的 runner context 绝不回退 operator。
+- operator owner 只绑定**仍在运行的分析脚本进程**，不是瞬间退出的 CLI 子进程；只能扫描原 UID 的根。进程崩溃后 maintenance 对记录 PID 作原生存活探测：明确 ESRCH 才回收，alive/EPERM/unknown 均保留并告警。PID 复用只导致保留，不能成为删除别人的目录依据。人工模式不参与 workflow completion 回收。
+
+获取、publish 前、release/cleanup 锁内都重验 owner；Bridge owner endpoint 不可用时 runner 获取拒绝，repair 和无 runner context 的 operator 分析仍使用本地明确归属与磁盘门槛。fixture 验证 HTTP 鉴权、current/none/ambiguous、无 TURN 的普通 session、三个无 exec 入口、invalid runner 不降级 operator，以及子进程结束但父分析仍使用副本的负例。
 
 ### 3.1 文件布局：一处身份，禁止镜像词表
 
 - repair final：`<stateRoot>/patrol-repairs/<ISSUE>__<teamlead-global|comm-PROJECT>__<UTC-milliseconds>__<randomUUID>.db`。strict parser 是规范文件的唯一身份来源；不要另存可漂移的 sidecar 分组。
 - repair 进行中：`patrol-repairs/.partial/<randomUUID>/snapshot.db`，完成前不能成为“最新一份”。
-- runner：`/tmp/flywheel-snapshots/<executionId>/`，里面 `.owner.json`（version=1 + 五元 owner）和随机唯一命名的 DB；WAL、SHM、临时、衍生 DB、metadata 都计入目录预算。
+- runner/operator：`/tmp/flywheel-snapshots/<executionId>/`，里面 `.owner.json`（version=1 + kind=workflow/session/operator 与 §3.0 对应身份字段）和随机唯一命名的 DB；WAL、SHM、临时、衍生 DB、metadata 都计入目录预算。macOS 仅接受系统已知的 `/tmp → /private/tmp` 别名，根规范化为 `/private/tmp/flywheel-snapshots`。受管根本身及其下每段都 lstat 拒绝 symlink；已存在根必须 st_uid=当前 euid 且 mode=0700，不符合就拒绝/告警，不能 chmod 或跟随抢占者目录。核对 canonical parent 为 `/private/tmp` 且锁内根 dev/inode 不变；不能把系统 `/tmp` symlink 本身当违规而永久禁用功能。
 - legacy：`patrol-repairs/legacy-map.json` 只映射非规范历史文件。每条含 basename、size、mtimeNs、device/inode、issue/kind/project、createdAt、归属证据。重新 lstat 不一致即停止该项。新规范文件不复制进此表。
-- 共用互斥：`<stateRoot>/state/snapshot-storage.lock/`，mkdir 原子获取，保存 PID、进程开始身份与随机 nonce。创建、删除、legacy adopt 串行；不新增数据库锁表。等待有界 5s，争用返回 busy 由调用者/下一 tick 重试，不挤占 Bridge heartbeat。死锁回收必须证明持有进程已死且身份未变；年龄本身不能授权抢锁，未知保留并告警。
+- 共用互斥：`<stateRoot>/state/snapshot-storage.lock/`，mkdir 原子获取，保存 PID、进程开始身份与随机 nonce。创建、删除、legacy adopt 串行；不新增数据库锁表。共享函数每次等待最多 5s，Bridge busy 留到下一 tick。一次性 CLI 在总体等待预算 90s 内以 1s/2s/4s/5s（之后保持5s）退避重试，不超过 12 次；预算到期退出75，JSON `ok:false,reason:snapshot_lock_busy,retryable:true`。参数/owner错误退出64，不足空间/目录预算退出73，读取或备份失败退出74。巡检配方将 busy 记 transient unavailable，本 tick 不做依赖该备份的库修复，下 tick 重试；不得无限循环或绕开锁。锁从 preflight 持到发布/partial 清理结束。死锁回收必须证明持有进程已死且身份未变；年龄本身不能授权抢锁，未知保留并告警。
 
 ### 3.2 写入前检查与完整性
 
@@ -75,7 +87,7 @@ flowchart TD
 
 同一锁下固定 now，先排除 incomplete/链接/归属不明文件，再按 group 选最新完整文件。时间顺序用规范创建时间；相同时间按文件名做稳定 tie-break。保留条件：`createdAt >= now-24h OR file == latest[group]`。恰好 24h 保留；未来时间保留并报 clock_skew。取并集而非交集，绝不把 UUID 当 class。
 
-每次 apply 先输出 dry-run 决策：mode、path（仅受管相对名）、group、bytes、action/reason、candidate count/bytes。删除前重验文件 device/inode/size/mtime 与根身份；变化就 skip。删除逐文件 unlink，不用 glob rm、不递归整个 patrol-repairs。失败计数/残留可见，其它独立候选可继续；下一 tick 重试。不要复制整库作为“删除前备份”。
+每次 apply 先输出 dry-run 决策：mode、path（仅受管相对名）、group、bytes、action/reason、candidate count/bytes，以及 `patrol_repairs_total_bytes`、`retained_group_count`、`unmapped_bytes`。这些统计每轮输出，供 Lead 看清“每组最后一份”长期累积量；不增加未经任务授权的保留年龄上限。删除前重验文件 device/inode/size/mtime 与根身份；变化就 skip。删除逐文件 unlink，不用 glob rm、不递归整个 patrol-repairs。失败计数/残留可见，其它独立候选可继续；下一 tick 重试。不要复制整库作为“删除前备份”。
 
 在 Bridge `plugin.ts` 已有 detached maintenance callback 中每小时执行（tick 0 开机执行；真实时间间隔，不假设 heartbeat 固定），放在 `if (!worktreeAutocleanEnabled()) return` 之前；独立 try/catch。使用异步目录读取和分批 yield，文件操作失败不使 Bridge 退出。不新增 timer。自动路径默认启用；手动 dry-run 零删除。
 
@@ -93,23 +105,24 @@ flowchart TD
 
 | 路径 | 精确 hook 与删除依据 |
 |---|---|
-| generalized completion | `event-route.ts` 的 `commitEnrolledCompletion` 成功并确认确实有当前 owner 的 `workflow_node_completion` 后（当前约 :1277），DB transaction 外调用清理 |
-| QA pass/fail decision | `workflow-decision-routes.ts` 两处 `submitWorkflowDecisionByCredential` 真正接受之后（约 :793/:910）；验证已提交的节点终态与 owner |
+| generalized completion | `event-route.ts:1209` 的 `commitEnrolledCompletion` 成功并确认确实有当前 owner 的 `workflow_node_completion` 后，DB transaction 外调用清理（按符号与成功分支定位） |
+| QA pass/fail decision | `workflow-decision-routes.ts:769/:880` 两处 `submitWorkflowDecisionByCredential` 真正接受之后；验证已提交的节点终态与 owner |
 | complete marker replay | 已走同一 accepted HTTP 路径，不加 raw marker 删除分支 |
 | legacy/终止/取消/崩溃 | `close-runner.ts` 的成功关闭/独立 execution-death 分支，以及 `lifecycle-closeout.ts` per-node 确认后调用同一 helper；活跃/unknown/crash-preserve 不删 |
-| 延迟失败/Bridge 重启 | 每分钟复用 detached maintenance tick 扫受管 exec 根；对照现存 completion/decision 或终态+强死亡证据，重复清理 owner；没有新事件也能重试 |
+| 延迟失败/Bridge 重启 | 每次现有 detached maintenance tick 扫受管 exec 根（生产默认约5min，取决于 TEAMLEAD_STUCK_INTERVAL；没有1min SLA）；workflow 对照 completion/decision 或终态+强死亡证据，session 对照终态+强死亡证据，operator 按 §3.0 的 PID 明确死亡规则；没有新事件也能重试 |
 
 锁内先核对 `.owner.json` 与 expected owner，再 fresh 读取完成与 current activation。旧 attempt 的异步回调不得删新 attempt 文件。新 attempt 创建副本前先收口旧 owner：仅旧 owner 有完成/死亡证据且无使用者才清理、更换 owner；否则返回 previous_owner_pending。清理整个 exec 目录前重新验证无链接、不跨根、当前 owner 未变化。
 
 `snapshot release` 与正式 closeout 幂等：根/目录不存在视为 already_absent，但权限错误不是 absent。清理失败不得回滚已接受的 workflow receipt；记录 `snapshot_cleanup_pending` 并靠扫描重试，最终成功记录 bytes released。issue 终态 closeout 的报告增加存储项，残留使结果 partial，不能 claim complete。永久错误保持 operator finding；不删除节点身份来遮蔽它。
 
-强制阴性：单纯 park/not-yours、HTTP 200 stale/superseded completion、普通 stage completed 字符串、原始 DirectEventSink signal、当前 attempt 活跃、新 activation、claimInFlight、进程 alive/unknown、丢失 owner、authority reopen、符号链接根/子目录、未知 exec 都不能删除。目录名/mtime 不是归属和死亡证明。
+强制阴性：单纯 park/not-yours、HTTP 200 stale/superseded completion、普通 stage completed 字符串、原始 DirectEventSink signal、当前 attempt 活跃、新 activation、claimInFlight、进程 alive/unknown、丢失 owner、authority reopen、受管根或其子目录为符号链接、未知 exec 都不能删除。operator 不接受任何 workflow completion 作为删除理由；session 不接受其它 started_at 的结果。目录名/mtime 不是归属和死亡证明。这里的 park/not-yours 只是“不能单独授权删除”，不会反过来禁止合法临时只读获取。
 
 ## 6. 巡检、API、告警
 
-- `CapacitySnapshot` 新增顶层 `disk_avail_gb:number|null`、`disk_volume`、`disk_observed_at:string|null`、可选 `disk_unavailable:string[]`。Bridge builder 与 `snapshot disk` 共享 readDataDisk；`capacityProbes` 加可注入磁盘读取用于测试。
-- `hook-payload.ts` 显示“Data 可用 x.xx GB”；严格校验有限非负值/时间/固定 volume/token。不可信 token 沿用既有 allowlist/sanitization；旧 schema=1 envelope 缺磁盘字段只显示磁盘未知，不使其他容量栏全失效。
-- `lead-patrol-snapshot.sh` STEP 5 独立调用 `snapshot disk`，从已部署 `FLYWHEEL_COMM_CLI` 或既有受控 binary resolver 找入口；不能假设裸命令在 PATH 或去执行 main checkout 的新代码。输出 `disk_volume=/System/Volumes/Data disk_avail_gb=<value> disk_avail_bytes=<integer> disk_below_threshold=yes|no`；unknown 列 token，不输出 0。
+- `CapacitySnapshot` 使用 §2.3 精确形状：`disk_avail_gb:number|null` + `disk:{volume,availBytes:number|null,observedAt:string|null,unavailable?:string[]}`。GB 不舍入，界面自行格式化；API 消费者按整数 availBytes 判断。Bridge builder 与 `snapshot disk` 共享 readDataDisk；`capacityProbes` 加可注入磁盘读取用于测试。
+- `hook-payload.ts` 显示“Data 可用 x.xx GB”；严格校验有限非负值/时间/固定 volume/token。把 §2.2 三个 data_volume token 加入 `machine-free-pct.ts` 的现有闭合 `CAPACITY_UNAVAILABLE_TOKENS`；分别测试合法 unavailable 三项仍保留内存/额度，而未登记 token 不能进入提示。旧 schema=1 envelope 缺磁盘字段只显示磁盘未知，不使其他容量栏全失效。
+- 新可执行源码 `scripts/flywheel-snapshot-control.mjs` 仿照 node-dwell-control 的 trusted launcher：realpath 自身定位所属 checkout，只加载该 checkout 的 `packages/flywheel-comm/dist/commands/snapshot.js` 的 `runSnapshotCommand`，无 env executable override。巡检用 Node `fs.realpathSync(BASH_SOURCE[0])` 的 dirname 找到这个同目录源码 helper，再通过 `node <helper> disk` 调用。这样 source 调用和已安装的 `flywheel-patrol-snapshot` symlink 调用都落同一受信任 checkout，无需新增全局 binary，也不假设 Claude Lead 有 FLYWHEEL_COMM_CLI。Node/helper/dist/subcommand 缺失时报 `UNAVAILABLE(structural: snapshot_helper_missing)`，不读0；测试真实双入口、symlink、缺 dist 和错误导出。既有 converge-flywheel-bin 继续保证 patrol symlink 指向受信任 checkout，不改变该合同。
+- STEP 5 从 JSON 的 disk 元数据与顶层 GB 输出 `disk_volume=/System/Volumes/Data disk_avail_gb=<value> disk_avail_bytes=<integer> disk_below_threshold=yes|no`；unknown 列 token，不输出 0。
 - `<20e9` 原始 bytes 强制最终 STEP 5 FINDING。gh/Raya unavailable 同时存在时，保留每项 `UNAVAILABLE_CAUSE`，低盘量 FINDING 不能被后写状态吞掉；需扩展最终 awk gate，使“低盘量事实+STEP 5 OK”失败。数值 unavailable 时 STEP 5 按现有不可用流程，不能记 OK。
 - `runner-patrol-rules.md` STEP 5 追加精确低盘量处置和语法合法 FINDING detail；利用现有 Lead告警去重，低盘量事件每小时同机最多一次，恢复后下次低盘量是新事件。不重复创建新告警服务。
 - 写入拒绝立即 stderr JSON + 既有告警 sink（Bridge）/`meta-alert.sh`（CLI；argv 参数传递，禁止把 derived text 拼 shell）。告警发送失败仍拒绝写入，记录 stderr，不把失败当成功，也不为了告警继续写大日志。
@@ -120,16 +133,16 @@ flowchart TD
 | 块 | 文件与动作 | 验证 |
 |---|---|---|
 | A 存储原语 | 新 `flywheel-comm/src/snapshot-storage.ts`、`src/__tests__/snapshot-storage.test.ts`；package.json 子路径 export | 数据卷读取、5×与2GB边界、保留并集、路径/锁/partial 故障矩阵 |
-| B CLI/调用方 | 新 `commands/snapshot.ts`；`src/index.ts`；巡检附录；`scripts/fly-2006-retention-rehearsal.mjs`、`cycle-time/cycle-time-report.mjs`、`cycle-time/lib/collect.mjs`/`extract.mjs`、`fly2396-retro-report.mjs` | 小库集成，从采集到 finally 回收；证据不引用已删 DB；error path 也释放 |
-| C closeout/重试 | 新 `teamlead/src/bridge/snapshot-closeout.ts` 作现有 StateStore 身份适配；event-route、workflow-decision-routes、close-runner、lifecycle-closeout、plugin | 真 receipt/node 状态 + 临时目录断言；同 exec 新 attempt 不被旧 callback 删；失败重启重试 |
-| D 容量/巡检 | capacity-snapshot、types、plugin makeCapacitySnapshotDeps、hook-payload、lead-patrol-snapshot.sh、runner-patrol-rules、department-lead-rules | API 鉴权不变；旧 envelope 兼容；gh坏+低盘仍 FINDING；awk gate 阴性 |
-| E 注入/交付 | `packages/claude-runner/agents/codex-runner-contract.md` 与 `packages/edge-worker/src/Blueprint.ts` 通用 prompt 注入段；QA framework README；新增运维 runbook；检查 converge-flywheel-bin 部署入口 | Claude/Codex implement/QA prompt fixture 含统一规则；部署产物 resolver 使用同版 CLI |
+| B CLI/调用方 | 新 `commands/snapshot.ts`；`src/index.ts`；巡检附录；`scripts/fly-2006-retention-rehearsal.mjs`、`cycle-time/cycle-time-report.mjs`、`cycle-time/lib/collect.mjs`/`extract.mjs`、`fly2396-retro-report.mjs` | 小库集成，从采集到 finally 回收；三个无 exec 入口用 operator owner；无效 runner 不降级；证据不引用已删 DB；error path 也释放 |
+| C closeout/重试 | 新 `teamlead/src/bridge/snapshot-closeout.ts` 作唯一 StateStore 身份适配；plugin 注册只读 snapshot-owner endpoint；event-route、workflow-decision-routes、close-runner、lifecycle-closeout | endpoint 鉴权/owner 三态；真 receipt/node 状态 + 临时目录断言；同 exec 新 attempt 不被旧 callback 删；失败重启重试；operator 进程死亡回收 |
+| D 容量/巡检 | capacity-snapshot、types、plugin makeCapacitySnapshotDeps、hook-payload、machine-free-pct.ts 既有 token Set、lead-patrol-snapshot.sh、runner-patrol-rules、department-lead-rules | API 鉴权不变；原始 bytes 可用；三种合法 disk unavailable 不吞其它指标；旧 envelope 兼容；gh坏+低盘仍 FINDING；awk gate 阴性 |
+| E 注入/交付 | 新 `scripts/flywheel-snapshot-control.mjs` 和其 launcher 集成测试；`packages/claude-runner/agents/codex-runner-contract.md` 与 `packages/edge-worker/src/Blueprint.ts` 通用 prompt 注入段；QA framework README；新增运维 runbook | Claude/Codex implement/QA prompt fixture 含统一规则；source/已安装symlink巡检均找到同版 helper，Claude Lead 无 FLYWHEEL_COMM_CLI 也成功 |
 
 **A 详细用例**：23h59m、24h、24h+1ms、单文件 old 仍最新、多 issue、多 comm project、相同时间、未来时间；legacy 未映射/篡改；已有 DB/WAL/partial 加总；5*S-1 拒绝、5*S 允许；2e9 恰好允许（包括 metadata）、+1 拒绝；两创建者争用、创建vs清理；空 source/非法值/statfs 抛错；WAL pending 主文件偏小；中途失败/timeout/ENOSPC；source 和非受管 sentinel 始终未改；根/子路径 symlink、hardlink、权限错误、路径穿越、锁 owner unknown。
 
 **C 详细用例**：accepted completion、QA pass、QA fail、重复 receipt、拒绝 receipt、stale 但 HTTP200、closeout killed、进程 death、live crash-preserve、unknown probe、claim in flight、new activation、reopen、删除权限失败后维护 tick 成功、Bridge 重建后仅扫描磁盘+原 receipt 重试、不重复创建 workflow verdict。
 
-**D 详细用例**：19,999,999,999 bytes 显示可能 20.00 但仍 FINDING；20e9 不触发低盘；0 合法低盘；null/NaN/negative/Infinity 不可用；macOS 不允许退到 `/`；认证缺失503/错误401合同保持；未知 token 注入不污染提示；gh unavailable 与 disk finding 双事实保留；没有磁盘字段的旧 capacity 仍显示其他事实。
+**D 详细用例**：19,999,999,999 bytes 显示可能 20.00 但 API availBytes 保留原数且仍 FINDING；20e9 不触发低盘；0 合法低盘；null/NaN/negative/Infinity/超过安全整数不可用；macOS 不允许退到 `/`；认证缺失503/错误401合同保持；三种 data_volume unavailable 逐个通过允许表且保留其它指标，未知 token 注入不污染提示；gh unavailable 与 disk finding 双事实保留；没有磁盘字段的旧 capacity 仍显示其他事实。A/B 增补：已有根 UID/mode 错误拒绝、不改权限；系统 `/tmp` 别名成功；CLI busy 90s/12次上限与退出75；operator main 活跃/崩溃/存活探测未知矩阵。
 
 建议命令（实现后执行，本设计不声称已跑这些尚不存在的测试）：
 
@@ -153,6 +166,10 @@ pnpm --filter flywheel-teamlead typecheck
 
 不扩张到全磁盘清扫、日志轮转、生产库 retention/VACUUM、调度 admission 刹车、账号/权限体系或任意进程硬配额。任意 shell 能绕开工具是明示的执行合同边界，不能用本方案宣称 OS 强制隔离。
 
+**低盘修复顺序**：先只读 inventory，按已批准规则清理可删旧快照/已结束的受管副本；若仍不足五倍，停止会修改库的修复并把 measured avail/required bytes 与不可删除项汇报 Lead，由运维扩容或按各自既有合同清理其它存储。再测达标才建恢复点/修改库。不能降到2×、不能裸 sqlite 绕过门槛，也不能把需要更多空间的 db-maintenance 备份/VACUUM 当紧急腾空命令。
+
+R1 的独立运行期开关建议属于非阻塞 advisory，未擅自新增配置：现有 worktreeAutocleanEnabled 实际是恒 true，不能承诺它可止血。新删除器默认自动执行仍按任务要求；紧急停止依靠受控停用维护/回滚部署，需由有该权限的 Lead/运维执行。该操作边界与新增独立 prune 开关的后续建议已向 Lead 汇报，不能宣传为已有开关。
+
 ## 9. 需求—证据映射
 
 | 原要求 | 计划与验收证据 |
@@ -164,4 +181,4 @@ pnpm --filter flywheel-teamlead typecheck
 | 节点终态 closeout | §5/C accepted completion/QA decision/terminal death + 文件不存在，park/new attempt 负例保留 |
 | STEP5 与 capacity | §6/D 接口、提示投影、shell事实、最终 FINDING gate 全链证据 |
 | Data卷文档 | §6/E 活跃脚本/规则 sweep + 新 runbook，并验证实际路径参数 |
-| design-node 完成 | exploration/research/plan + APPROVED effective verdict + committed/pushed 可评论 HTML + publish-only URL + Lead report + phase_design_complete 后 park |
+| design-node 完成 | exploration/research/plan + APPROVED effective verdict + committed/pushed 可评论 HTML + publish-only URL + Lead report + phase_design_complete 后 park；两张图按任务明确允许的本地渲染失败 fallback 显示 DIAGRAM PENDING LOCAL RENDER，图像/像素验证未完成，不算已渲染 SVG |

@@ -24,7 +24,7 @@ Issue: FLY-2351 (https://linear.app/geoforge3d/issue/FLY-2351/运维磁盘-满�
 | `packages/teamlead/src/bridge/close-runner.ts:61,612,891` | success 状态、crash-preserve 与常驻 phase 的关闭语义不同；身份删除需强死亡证据 | 不能只凭 completed 文本或没有 tmux 窗口删目录 |
 | `packages/teamlead/src/bridge/lifecycle-closeout.ts:1182` | closeoutOneNode 先转态，再关闭，再确认进程状态，最后清通信记录 | 存储清理用共同 helper；不绕开现有节点状态/死亡守卫 |
 | `packages/teamlead/src/bridge/lifecycle-sweep.ts:1` | 现有 sweep 负责工作树/分支、含长期保留与 founder authority | 不借其“目录长得像”规则删数据库；存储根另有严格归属 |
-| `packages/flywheel-comm/src/index.ts:1043` 附近 | `turn` 使用 FLYWHEEL_EXEC_ID，返回阶段/activation 等身份 | 副本创建复用执行上下文，不能让用户任意指定别人的 exec |
+| `packages/flywheel-comm/src/commands/turn.ts:39` 与 `db.ts:7428` | `turn` 及 `resolveRunnerWorkflowActivation` 都依赖共享 worktree TURN | 不能当临时副本准入；R2 改用 StateStore `resolveCurrentWorkflowActivation:35162` 与普通 session fallback，只读 endpoint 共用 resolver，人工分析绑定自己的进程 |
 
 ## 副本生成消费者 sweep
 
@@ -42,7 +42,7 @@ Issue: FLY-2351 (https://linear.app/geoforge3d/issue/FLY-2351/运维磁盘-满�
 | 单测 fixture 的 copyFile/cp | 来源是测试自己创建的小库，保留 mkdtemp + finally/afterEach；绝不为本 issue 从生产库复制 fixture |
 | `packages/claude-runner/agents/codex-runner-contract.md` 与通用任务 prompt 注入源 | 新规则必须从源写入，覆盖 Claude/Codex implement+QA，不能只改本机 materialized AGENTS |
 
-实施阶段重新运行同族 sweep，尤其检查 `collect.mjs` 的 manifest 路径：证据不能引用 closeout 会删掉的唯一数据库。保存小型计数/校验摘要至 doc/QA evidence，再回收副本。
+实施阶段重新运行同族 sweep，尤其检查 `collect.mjs` 的 manifest 路径：证据不能引用 closeout 会删掉的唯一数据库。保存小型计数/校验摘要至 doc/QA evidence，再回收副本。R1 复核明确上述三个分析脚本同时是人工/Lead 入口；R2 的 withOperatorSnapshots 保留无 exec 的原调用，随机 operator 身份不写入 runner 表，finally 和进程死亡扫描回收。
 
 ## 本机与上游验证
 
