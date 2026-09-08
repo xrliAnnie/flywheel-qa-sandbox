@@ -20,6 +20,7 @@ import {
 	createRepairSnapshot,
 	pruneRepairSnapshots,
 	readDataDisk,
+	withOperatorSnapshots,
 } from "../snapshot-storage.js";
 
 describe("snapshot storage", () => {
@@ -491,5 +492,44 @@ describe("snapshot storage", () => {
 				{ stateRoot: root, managedRoot, readDataDisk: disk },
 			),
 		).rejects.toMatchObject({ reason: "managed_snapshot_budget_exceeded" });
+	});
+
+	it("releases operator snapshots in finally without impersonating a runner", async () => {
+		const source = join(root, "source.db");
+		const db = new Database(source);
+		db.exec("CREATE TABLE evidence (value TEXT)");
+		db.close();
+		const managedRoot = join(root, "flywheel-snapshots");
+		let executionDir = "";
+
+		await expect(
+			withOperatorSnapshots(
+				{ label: "test-analysis" },
+				async ({ owner, createSnapshot }) => {
+					expect(owner.kind).toBe("operator");
+					expect(owner.executionId.startsWith("operator-")).toBe(true);
+					executionDir = join(managedRoot, owner.executionId);
+					await createSnapshot({ source, databaseKind: "teamlead" });
+					expect(existsSync(executionDir)).toBe(true);
+					throw new Error("analysis failed");
+				},
+				{
+					stateRoot: root,
+					managedRoot,
+					uid: 501,
+					pid: 123,
+					processStartIdentity: () => "start-identity",
+					readDataDisk: () => ({
+						disk_avail_gb: 100,
+						disk: {
+							volume: "/System/Volumes/Data",
+							availBytes: 100_000_000_000,
+							observedAt: "2026-09-08T12:00:00.000Z",
+						},
+					}),
+				},
+			),
+		).rejects.toThrow("analysis failed");
+		expect(existsSync(executionDir)).toBe(false);
 	});
 });

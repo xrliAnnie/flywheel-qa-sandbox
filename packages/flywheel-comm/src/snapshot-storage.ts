@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -579,6 +580,88 @@ export async function cleanupRunnerSnapshots(
 		return { status: "deleted" as const, bytesReleased };
 	} finally {
 		releaseLock();
+	}
+}
+
+function currentProcessStartIdentity(pid: number): string {
+	const observed = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
+		encoding: "utf8",
+		env: { ...process.env, LC_ALL: "C" },
+	}).trim();
+	if (!observed) {
+		throw new SnapshotStorageError("operator_process_identity_unavailable");
+	}
+	return createHash("sha256").update(observed).digest("hex");
+}
+
+export async function withOperatorSnapshots<T>(
+	input: { label: string },
+	use: (context: {
+		owner: Extract<SnapshotOwner, { kind: "operator" }>;
+		createSnapshot: (snapshot: {
+			source: string;
+			databaseKind: "teamlead" | "comm";
+			project?: string;
+		}) => ReturnType<typeof createManagedSnapshot>;
+	}) => T | Promise<T>,
+	deps: {
+		stateRoot?: string;
+		managedRoot?: string;
+		readDataDisk?: typeof readDataDisk;
+		uuid?: () => string;
+		lockTimeoutMs?: number;
+		uid?: number;
+		pid?: number;
+		processStartIdentity?: (pid: number) => string;
+		now?: () => Date;
+	} = {},
+): Promise<T> {
+	const uid = deps.uid ?? process.geteuid?.();
+	const pid = deps.pid ?? process.pid;
+	if (uid === undefined) {
+		throw new SnapshotStorageError("operator_uid_unavailable");
+	}
+	const owner: Extract<SnapshotOwner, { kind: "operator" }> = {
+		kind: "operator",
+		executionId: `operator-${(deps.uuid ?? randomUUID)()}`,
+		uid,
+		pid,
+		processStartIdentity: (
+			deps.processStartIdentity ?? currentProcessStartIdentity
+		)(pid),
+		createdAt: (deps.now ?? (() => new Date()))().toISOString(),
+		label: input.label,
+	};
+	validateOwner(owner);
+	try {
+		return await use({
+			owner,
+			createSnapshot: (snapshot) =>
+				createManagedSnapshot(
+					{ ...snapshot, owner },
+					{
+						stateRoot: deps.stateRoot,
+						managedRoot: deps.managedRoot,
+						readDataDisk: deps.readDataDisk,
+						uuid: deps.uuid,
+						lockTimeoutMs: deps.lockTimeoutMs,
+					},
+				),
+		});
+	} finally {
+		await cleanupRunnerSnapshots(
+			{
+				executionId: owner.executionId,
+				expectedOwner: owner,
+				authorize: (freshOwner) =>
+					canonicalRecord(freshOwner) === canonicalRecord(owner),
+			},
+			{
+				stateRoot: deps.stateRoot,
+				managedRoot: deps.managedRoot,
+				lockTimeoutMs: deps.lockTimeoutMs,
+			},
+		);
 	}
 }
 
