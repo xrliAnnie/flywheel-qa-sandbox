@@ -35,4 +35,6 @@ FLY2351_DOM_MODULE=/Users/xiaorongli/Dev/flywheel/node_modules/.pnpm/happy-dom@2
 
 - R1 question：`08b1d848-f68f-46db-8be9-fe083986f56e`；request：`9ba71167-1600-49a8-bc88-f3676e892748`，已受理，尚待 verdict。
 - Lead 问题 `ec87d39f-aa63-49cb-b098-e96790a1077b`：已确认分组、2GB managed acquisition 边界及“映射不上的库一律不删”。已在 plan/research/HTML 反映并 report-back。
-- HTML 发布与最终审查结果在完成前追加权威输出。
+- HTML 已在提交 `c8203b08e` 后使用 publish-only 发布：<https://fw-reports-a53de2.vercel.app/r/57cec9a5c6673ec3c4e1037cd170e5d6/>；reportId=`57cec9a5c6673ec3c4e1037cd170e5d6`，messageId=null（未发频道消息）。已按 DESIGN-HTML ready 向 Lead 汇报，receipt=`0677164b-dce4-4d1f-ab3d-f9b08c64c227`。
+- hosted fetch 检查：HTTP 200、残余 __CSP_NONCE__=false、singleScript=true、noncePresent=true、cspPresent=true、cspAuthorizesNonce=true、diagramPlaceholders=2、sections=9。检查的是实际托管响应，不以本地文件代替。实际浏览器运行仍受上述权限限制。
+- 最终正式审查结果在完成前追加。
