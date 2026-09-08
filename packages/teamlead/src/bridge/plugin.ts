@@ -670,6 +670,10 @@ import {
 } from "./ship-relevant-diff.js";
 import { forceShippedHusks } from "./shipped-husk-escalation.js";
 import {
+	resolveActiveSnapshotOwner,
+	runSnapshotMaintenance,
+} from "./snapshot-closeout.js";
+import {
 	alertStaleBlockerToLead,
 	createStaleBlockerGuard,
 	finalizeStaleBlocker,
@@ -1720,6 +1724,31 @@ export function createBridgeApp(
 			async (_req, res) => res.json(await buildCapacitySnapshot(capacityDeps)),
 		);
 		app.get(
+			"/api/sessions/:executionId/snapshot-owner",
+			tokenAuthMiddleware(config.apiToken),
+			(req, res) => {
+				if (typeof req.params.executionId !== "string") {
+					res.status(400).json({ ok: false, error: "invalid execution id" });
+					return;
+				}
+				const resolution = resolveActiveSnapshotOwner(
+					store,
+					req.params.executionId,
+				);
+				if (resolution.kind === "current") {
+					res.json({ ok: true, owner: resolution.owner });
+					return;
+				}
+				res.status(resolution.kind === "ambiguous" ? 409 : 404).json({
+					ok: false,
+					error:
+						resolution.kind === "ambiguous"
+							? "snapshot owner ambiguous"
+							: "snapshot owner not active",
+				});
+			},
+		);
+		app.get(
 			"/api/workflow/menu-policies",
 			tokenAuthMiddleware(config.apiToken),
 			(_req, res) => res.json(buildWorkflowMenuPolicyCatalog()),
@@ -1728,6 +1757,11 @@ export function createBridgeApp(
 		app.use("/api/capacity", (_req, res) => {
 			res.status(503).json({
 				error: "capacity API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+		app.use("/api/sessions/:executionId/snapshot-owner", (_req, res) => {
+			res.status(503).json({
+				error: "snapshot owner API requires TEAMLEAD_API_TOKEN",
 			});
 		});
 		app.use("/api/workflow/menu-policies", (_req, res) => {
@@ -8261,6 +8295,19 @@ export async function startBridge(
 		async (tick) => {
 			codexMaintenanceTicks.push(new Date().toISOString());
 			if (codexMaintenanceTicks.length > 3) codexMaintenanceTicks.shift();
+			const snapshotEveryNTicks = Math.max(
+				1,
+				Math.round(3_600_000 / Math.max(config.stuckCheckIntervalMs, 1)),
+			);
+			if (tick % snapshotEveryNTicks === 0) {
+				try {
+					await runSnapshotMaintenance(store);
+				} catch (error) {
+					console.warn(
+						`[snapshot-maintenance] pass deferred: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
 			// FLY-2211: recovery is default-on and precedes the orphan mutator. Both
 			// lanes consume this exact candidate snapshot for the whole tick.
 			const codexCandidateSnapshot = withSyncOpMarker(

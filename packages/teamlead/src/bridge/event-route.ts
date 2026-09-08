@@ -103,6 +103,7 @@ import {
 	parseDeclaredPrEvidence,
 	resolveShipRelevantDeclarations,
 } from "./ship-relevant-declaration.js";
+import { cleanupExecutionSnapshots } from "./snapshot-closeout.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
 import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
@@ -186,6 +187,26 @@ function resolveIdentifier(
 /** Coerce a value to number or undefined. */
 function asNumber(v: unknown): number | undefined {
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+async function cleanupTerminalSnapshots(
+	store: StateStore,
+	executionId: string,
+): Promise<void> {
+	try {
+		const result = await cleanupExecutionSnapshots(store, executionId, {
+			terminalAuthority: true,
+		});
+		if (result.status !== "deleted" && result.status !== "already_absent") {
+			console.warn(
+				`[snapshot-closeout] cleanup pending for ${executionId}: ${result.status}`,
+			);
+		}
+	} catch (error) {
+		console.warn(
+			`[snapshot-closeout] cleanup failed for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 
 function asWorkflowCompletionActivation(
@@ -1283,6 +1304,7 @@ export function createEventRouter(
 						payload: event.payload,
 						source: "workflow-generalized-completion",
 					});
+					await cleanupTerminalSnapshots(store, event.execution_id);
 					if (!completion.idempotentReplay) {
 						notifyEpicChanged(event.project_name, "session_completed");
 					}
@@ -3075,6 +3097,12 @@ export function createEventRouter(
 					"FSM rejected transition — event stored but session not updated",
 			});
 			return;
+		}
+		if (
+			event.event_type === "session_completed" ||
+			event.event_type === "session_failed"
+		) {
+			await cleanupTerminalSnapshots(store, event.execution_id);
 		}
 
 		// GEO-202: Backfill null issue_identifier after upsert.

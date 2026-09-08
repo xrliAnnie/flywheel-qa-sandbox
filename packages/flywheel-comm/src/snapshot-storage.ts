@@ -307,6 +307,44 @@ function readOwnerFile(path: string): SnapshotOwner {
 	return owner as SnapshotOwner;
 }
 
+export function readManagedSnapshotOwner(
+	executionId: string,
+	deps: { managedRoot?: string } = {},
+): SnapshotOwner | undefined {
+	if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{0,255}$/.test(executionId)) {
+		throw new SnapshotStorageError("invalid_snapshot_owner");
+	}
+	const managedRoot = resolve(
+		deps.managedRoot ?? join(realpathSync("/tmp"), "flywheel-snapshots"),
+	);
+	if (!existsSync(managedRoot)) return undefined;
+	const rootStat = lstatSync(managedRoot);
+	if (
+		!rootStat.isDirectory() ||
+		rootStat.isSymbolicLink() ||
+		rootStat.uid !== process.geteuid?.() ||
+		(rootStat.mode & 0o777) !== 0o700
+	) {
+		throw new SnapshotStorageError("managed_snapshot_root_unsafe");
+	}
+	const executionDir = join(managedRoot, executionId);
+	if (!existsSync(executionDir)) return undefined;
+	const executionStat = lstatSync(executionDir);
+	if (
+		!executionStat.isDirectory() ||
+		executionStat.isSymbolicLink() ||
+		executionStat.uid !== rootStat.uid ||
+		(executionStat.mode & 0o777) !== 0o700
+	) {
+		throw new SnapshotStorageError("managed_snapshot_owner_directory_unsafe");
+	}
+	const owner = readOwnerFile(join(executionDir, ".owner.json"));
+	if (owner.executionId !== executionId) {
+		throw new SnapshotStorageError("managed_snapshot_owner_mismatch");
+	}
+	return owner;
+}
+
 function readDirectoryBytes(path: string): number {
 	let total = 0;
 	for (const entry of readdirSync(path, { withFileTypes: true })) {
@@ -323,6 +361,39 @@ function readDirectoryBytes(path: string): number {
 		}
 	}
 	return total;
+}
+
+export function inspectManagedSnapshotDirectories(
+	deps: { managedRoot?: string } = {},
+): Array<{ owner: SnapshotOwner; bytes: number }> {
+	const managedRoot = resolve(
+		deps.managedRoot ?? join(realpathSync("/tmp"), "flywheel-snapshots"),
+	);
+	if (!existsSync(managedRoot)) return [];
+	const rootStat = lstatSync(managedRoot);
+	if (
+		!rootStat.isDirectory() ||
+		rootStat.isSymbolicLink() ||
+		rootStat.uid !== process.geteuid?.() ||
+		(rootStat.mode & 0o777) !== 0o700
+	) {
+		throw new SnapshotStorageError("managed_snapshot_root_unsafe");
+	}
+	return readdirSync(managedRoot, { withFileTypes: true })
+		.sort((left, right) => left.name.localeCompare(right.name))
+		.map((entry) => {
+			if (!entry.isDirectory() || entry.isSymbolicLink()) {
+				throw new SnapshotStorageError("managed_snapshot_unknown_entry");
+			}
+			const owner = readManagedSnapshotOwner(entry.name, { managedRoot });
+			if (!owner) {
+				throw new SnapshotStorageError("managed_snapshot_owner_invalid");
+			}
+			return {
+				owner,
+				bytes: readDirectoryBytes(join(managedRoot, entry.name)),
+			};
+		});
 }
 
 function normalizeProject(
@@ -592,6 +663,30 @@ function currentProcessStartIdentity(pid: number): string {
 		throw new SnapshotStorageError("operator_process_identity_unavailable");
 	}
 	return createHash("sha256").update(observed).digest("hex");
+}
+
+export function isOperatorSnapshotOwnerDead(
+	owner: Extract<SnapshotOwner, { kind: "operator" }>,
+	deps: {
+		uid?: number;
+		signalProcess?: (pid: number) => void;
+		processStartIdentity?: (pid: number) => string;
+	} = {},
+): boolean {
+	if ((deps.uid ?? process.geteuid?.()) !== owner.uid) return false;
+	try {
+		(deps.signalProcess ?? ((pid) => process.kill(pid, 0)))(owner.pid);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException)?.code === "ESRCH";
+	}
+	try {
+		return (
+			(deps.processStartIdentity ?? currentProcessStartIdentity)(owner.pid) !==
+			owner.processStartIdentity
+		);
+	} catch {
+		return false;
+	}
 }
 
 export async function withOperatorSnapshots<T>(

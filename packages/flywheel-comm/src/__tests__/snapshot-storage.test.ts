@@ -18,8 +18,11 @@ import {
 	cleanupRunnerSnapshots,
 	createManagedSnapshot,
 	createRepairSnapshot,
+	inspectManagedSnapshotDirectories,
+	isOperatorSnapshotOwnerDead,
 	pruneRepairSnapshots,
 	readDataDisk,
+	readManagedSnapshotOwner,
 	withOperatorSnapshots,
 } from "../snapshot-storage.js";
 
@@ -427,6 +430,34 @@ describe("snapshot storage", () => {
 		expect(existsSync(join(managedRoot, owner.executionId))).toBe(false);
 	});
 
+	it("reads an owned directory without accepting a caller-supplied path", () => {
+		const managedRoot = join(root, "flywheel-snapshots");
+		const executionId = "db6e2cf5-d7df-4b87-9feb-2def287d71e0";
+		const owner = {
+			kind: "session" as const,
+			executionId,
+			sessionStartedAt: "2026-09-08T12:00:00.000Z",
+		};
+		const directory = join(managedRoot, executionId);
+		mkdirSync(directory, { recursive: true, mode: 0o700 });
+		writeFileSync(
+			join(directory, ".owner.json"),
+			`${JSON.stringify({ version: 1, ...owner })}\n`,
+			{ mode: 0o600 },
+		);
+
+		expect(readManagedSnapshotOwner(executionId, { managedRoot })).toEqual(
+			owner,
+		);
+		expect(() =>
+			readManagedSnapshotOwner("../escape", { managedRoot }),
+		).toThrowError("invalid_snapshot_owner");
+		writeFileSync(join(directory, "snapshot.db"), "evidence", { mode: 0o600 });
+		expect(inspectManagedSnapshotDirectories({ managedRoot })).toEqual([
+			expect.objectContaining({ owner, bytes: expect.any(Number) }),
+		]);
+	});
+
 	it("allows exactly 2GB of managed files and rejects one byte more", async () => {
 		const source = join(root, "source.db");
 		const db = new Database(source);
@@ -531,5 +562,39 @@ describe("snapshot storage", () => {
 			),
 		).rejects.toThrow("analysis failed");
 		expect(existsSync(executionDir)).toBe(false);
+	});
+
+	it("reclaims an operator owner only after death or PID-reuse proof", () => {
+		const owner = {
+			kind: "operator" as const,
+			executionId: "operator-1",
+			uid: 501,
+			pid: 123,
+			processStartIdentity: "original-start",
+			createdAt: "2026-09-08T12:00:00.000Z",
+			label: "analysis",
+		};
+		expect(
+			isOperatorSnapshotOwnerDead(owner, {
+				uid: 501,
+				signalProcess: () => {
+					throw Object.assign(new Error("gone"), { code: "ESRCH" });
+				},
+			}),
+		).toBe(true);
+		expect(
+			isOperatorSnapshotOwnerDead(owner, {
+				uid: 501,
+				signalProcess: () => {},
+				processStartIdentity: () => "reused-start",
+			}),
+		).toBe(true);
+		expect(
+			isOperatorSnapshotOwnerDead(owner, {
+				uid: 501,
+				signalProcess: () => {},
+				processStartIdentity: () => "original-start",
+			}),
+		).toBe(false);
 	});
 });
