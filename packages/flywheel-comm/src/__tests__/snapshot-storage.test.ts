@@ -220,6 +220,38 @@ describe("snapshot storage", () => {
 		).rejects.toMatchObject({ reason: "invalid_source" });
 	});
 
+	it("rejects a symlink repair root without writing through it", async () => {
+		const source = join(root, "source.db");
+		const db = new Database(source);
+		db.exec("CREATE TABLE evidence (value TEXT)");
+		db.close();
+		const external = join(root, "external-repairs");
+		mkdirSync(external, { mode: 0o700 });
+		symlinkSync(external, join(root, "patrol-repairs"));
+
+		await expect(
+			createRepairSnapshot(
+				{
+					source,
+					issueIdentifier: "FLY-2351",
+					databaseKind: "teamlead",
+				},
+				{
+					stateRoot: root,
+					readDataDisk: () => ({
+						disk_avail_gb: 100,
+						disk: {
+							volume: "/System/Volumes/Data",
+							availBytes: 100_000_000_000,
+							observedAt: "2026-09-08T12:00:00.000Z",
+						},
+					}),
+				},
+			),
+		).rejects.toMatchObject({ reason: "repair_snapshot_root_unsafe" });
+		expect(readdirSync(external)).toEqual([]);
+	});
+
 	it("fails retryably without writing when the shared snapshot lock is busy", async () => {
 		const source = join(root, "source.db");
 		const db = new Database(source);
@@ -243,6 +275,96 @@ describe("snapshot storage", () => {
 			retryable: true,
 		});
 		expect(existsSync(join(root, "patrol-repairs"))).toBe(false);
+	});
+
+	it("records process identity while holding the shared snapshot lock", async () => {
+		const source = join(root, "source.db");
+		const db = new Database(source);
+		db.exec("CREATE TABLE evidence (value TEXT)");
+		db.close();
+		const lockOwnerPath = join(
+			root,
+			"state",
+			"snapshot-storage.lock",
+			"owner.json",
+		);
+
+		await createRepairSnapshot(
+			{
+				source,
+				issueIdentifier: "FLY-2351",
+				databaseKind: "teamlead",
+			},
+			{
+				stateRoot: root,
+				readDataDisk: () => {
+					expect(statSync(lockOwnerPath).mode & 0o777).toBe(0o600);
+					expect(JSON.parse(readFileSync(lockOwnerPath, "utf8"))).toMatchObject(
+						{
+							version: 1,
+							pid: process.pid,
+							processStartIdentity: expect.stringMatching(
+								/^(?:[a-f0-9]{64}|unknown)$/,
+							),
+							nonce: expect.stringMatching(/^[a-f0-9-]{36}$/),
+						},
+					);
+					return {
+						disk_avail_gb: 100,
+						disk: {
+							volume: "/System/Volumes/Data",
+							availBytes: 100_000_000_000,
+							observedAt: "2026-09-08T12:00:00.000Z",
+						},
+					};
+				},
+			},
+		);
+
+		expect(existsSync(join(root, "state", "snapshot-storage.lock"))).toBe(
+			false,
+		);
+	});
+
+	it("reclaims a shared snapshot lock only when its recorded process is dead", async () => {
+		const source = join(root, "source.db");
+		const db = new Database(source);
+		db.exec("CREATE TABLE evidence (value TEXT)");
+		db.close();
+		const lockPath = join(root, "state", "snapshot-storage.lock");
+		mkdirSync(lockPath, { recursive: true, mode: 0o700 });
+		writeFileSync(
+			join(lockPath, "owner.json"),
+			`${JSON.stringify({
+				version: 1,
+				pid: 99_999_999,
+				processStartIdentity: "dead-process",
+				nonce: "11111111-1111-4111-8111-111111111111",
+			})}\n`,
+			{ mode: 0o600 },
+		);
+
+		await expect(
+			createRepairSnapshot(
+				{
+					source,
+					issueIdentifier: "FLY-2351",
+					databaseKind: "teamlead",
+				},
+				{
+					stateRoot: root,
+					lockTimeoutMs: 0,
+					readDataDisk: () => ({
+						disk_avail_gb: 100,
+						disk: {
+							volume: "/System/Volumes/Data",
+							availBytes: 100_000_000_000,
+							observedAt: "2026-09-08T12:00:00.000Z",
+						},
+					}),
+				},
+			),
+		).resolves.toMatchObject({ bytes: expect.any(Number) });
 	});
 
 	it("creates runner copies only inside the execution-owned snapshot directory", async () => {

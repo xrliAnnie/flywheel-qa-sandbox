@@ -9,6 +9,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	rmdirSync,
 	rmSync,
 	statfsSync,
 	statSync,
@@ -68,6 +69,88 @@ function unavailableDataDisk(reason: string) {
 	};
 }
 
+type SnapshotLockOwner = {
+	version: 1;
+	pid: number;
+	processStartIdentity: string;
+	nonce: string;
+};
+
+function readSnapshotLockOwner(path: string): SnapshotLockOwner | undefined {
+	try {
+		const stat = lstatSync(path);
+		if (
+			!stat.isFile() ||
+			stat.isSymbolicLink() ||
+			stat.nlink !== 1 ||
+			(stat.mode & 0o777) !== 0o600
+		) {
+			return undefined;
+		}
+		const owner = JSON.parse(readFileSync(path, "utf8")) as SnapshotLockOwner;
+		return owner.version === 1 &&
+			Number.isSafeInteger(owner.pid) &&
+			owner.pid > 0 &&
+			/^[A-Za-z0-9._-]{1,255}$/.test(owner.processStartIdentity) &&
+			/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+				owner.nonce,
+			)
+			? owner
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function snapshotLockOwnerDead(owner: SnapshotLockOwner): boolean {
+	try {
+		process.kill(owner.pid, 0);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException)?.code === "ESRCH";
+	}
+	if (owner.processStartIdentity === "unknown") return false;
+	try {
+		return (
+			currentProcessStartIdentity(owner.pid) !== owner.processStartIdentity
+		);
+	} catch {
+		return false;
+	}
+}
+
+function reclaimDeadSnapshotLock(lockPath: string): boolean {
+	try {
+		const lockStat = lstatSync(lockPath);
+		if (
+			!lockStat.isDirectory() ||
+			lockStat.isSymbolicLink() ||
+			lockStat.uid !== process.geteuid?.() ||
+			(lockStat.mode & 0o777) !== 0o700
+		) {
+			return false;
+		}
+		const entries = readdirSync(lockPath);
+		if (entries.length !== 1 || entries[0] !== "owner.json") return false;
+		const ownerPath = join(lockPath, "owner.json");
+		const owner = readSnapshotLockOwner(ownerPath);
+		if (!owner || !snapshotLockOwnerDead(owner)) return false;
+		const freshStat = lstatSync(lockPath);
+		const freshOwner = readSnapshotLockOwner(ownerPath);
+		if (
+			freshStat.dev !== lockStat.dev ||
+			freshStat.ino !== lockStat.ino ||
+			canonicalRecord(freshOwner) !== canonicalRecord(owner)
+		) {
+			return false;
+		}
+		unlinkSync(ownerPath);
+		rmdirSync(lockPath);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 async function acquireSnapshotLock(
 	stateRoot: string,
 	timeoutMs: number,
@@ -79,8 +162,47 @@ async function acquireSnapshotLock(
 	for (;;) {
 		try {
 			mkdirSync(lockPath, { mode: 0o700 });
-			return () => rmSync(lockPath, { recursive: true });
+			const owner: SnapshotLockOwner = {
+				version: 1,
+				pid: process.pid,
+				processStartIdentity: (() => {
+					try {
+						return currentProcessStartIdentity(process.pid);
+					} catch {
+						return "unknown";
+					}
+				})(),
+				nonce: randomUUID(),
+			};
+			const ownerPath = join(lockPath, "owner.json");
+			writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`, {
+				flag: "wx",
+				mode: 0o600,
+			});
+			const lockStat = lstatSync(lockPath);
+			return () => {
+				const freshStat = lstatSync(lockPath);
+				const freshOwner = readSnapshotLockOwner(ownerPath);
+				if (
+					freshStat.dev !== lockStat.dev ||
+					freshStat.ino !== lockStat.ino ||
+					canonicalRecord(freshOwner) !== canonicalRecord(owner)
+				) {
+					throw new SnapshotStorageError("snapshot_lock_changed", true);
+				}
+				unlinkSync(ownerPath);
+				rmdirSync(lockPath);
+			};
 		} catch (error) {
+			if ((error as NodeJS.ErrnoException)?.code === "EEXIST") {
+				if (reclaimDeadSnapshotLock(lockPath)) continue;
+			} else if (existsSync(lockPath)) {
+				try {
+					rmdirSync(lockPath);
+				} catch {
+					// Preserve a lock whose ownership could not be established.
+				}
+			}
 			if (
 				(error as NodeJS.ErrnoException)?.code !== "EEXIST" ||
 				Date.now() >= deadline
@@ -441,9 +563,29 @@ export async function createRepairSnapshot(
 		);
 		assertDataDisk(source.reservation, deps.readDataDisk ?? readDataDisk);
 		const repairRoot = join(stateRoot, "patrol-repairs");
+		mkdirSync(repairRoot, { recursive: true });
+		const repairRootStat = lstatSync(repairRoot);
+		if (
+			!repairRootStat.isDirectory() ||
+			repairRootStat.isSymbolicLink() ||
+			repairRootStat.uid !== process.geteuid?.()
+		) {
+			throw new SnapshotStorageError("repair_snapshot_root_unsafe");
+		}
+		const partialRoot = join(repairRoot, ".partial");
+		mkdirSync(partialRoot, { recursive: true, mode: 0o700 });
+		const partialRootStat = lstatSync(partialRoot);
+		if (
+			!partialRootStat.isDirectory() ||
+			partialRootStat.isSymbolicLink() ||
+			partialRootStat.uid !== repairRootStat.uid ||
+			(partialRootStat.mode & 0o777) !== 0o700
+		) {
+			throw new SnapshotStorageError("repair_snapshot_partial_root_unsafe");
+		}
 		const uuid = (deps.uuid ?? randomUUID)();
-		partialDir = join(repairRoot, ".partial", uuid);
-		mkdirSync(partialDir, { recursive: true, mode: 0o700 });
+		partialDir = join(partialRoot, uuid);
+		mkdirSync(partialDir, { mode: 0o700 });
 		const partialPath = join(partialDir, "snapshot.db");
 		const bytes = await writeVerifiedSnapshot(
 			source.db,
@@ -457,6 +599,13 @@ export async function createRepairSnapshot(
 			repairRoot,
 			`${input.issueIdentifier}__${group}__${createdAt}__${uuid}.db`,
 		);
+		const freshRepairRootStat = lstatSync(repairRoot);
+		if (
+			freshRepairRootStat.dev !== repairRootStat.dev ||
+			freshRepairRootStat.ino !== repairRootStat.ino
+		) {
+			throw new SnapshotStorageError("repair_snapshot_root_changed", true);
+		}
 		linkSync(partialPath, finalPath);
 		unlinkSync(partialPath);
 		rmSync(partialDir, { recursive: true, force: true });
@@ -565,6 +714,21 @@ export async function createManagedSnapshot(
 			partialPath,
 		);
 		const finalPath = join(executionDir, `${input.databaseKind}-${uuid}.db`);
+		const freshRootStat = lstatSync(managedRoot);
+		const freshExecutionStat = lstatSync(executionDir);
+		if (
+			freshRootStat.dev !== rootStat.dev ||
+			freshRootStat.ino !== rootStat.ino ||
+			freshExecutionStat.dev !== executionStat.dev ||
+			freshExecutionStat.ino !== executionStat.ino
+		) {
+			throw new SnapshotStorageError("managed_snapshot_root_changed", true);
+		}
+		if (
+			canonicalRecord(readOwnerFile(ownerPath)) !== canonicalRecord(input.owner)
+		) {
+			throw new SnapshotStorageError("managed_snapshot_owner_changed", true);
+		}
 		linkSync(partialPath, finalPath);
 		unlinkSync(partialPath);
 		partialPath = undefined;
@@ -573,7 +737,10 @@ export async function createManagedSnapshot(
 		if (partialPath !== undefined) rmSync(partialPath, { force: true });
 		if (createdExecutionDir && executionDir !== undefined) {
 			const entries = existsSync(executionDir) ? readdirSync(executionDir) : [];
-			if (entries.length === 1 && entries[0] === ".owner.json") {
+			if (
+				entries.length === 0 ||
+				(entries.length === 1 && entries[0] === ".owner.json")
+			) {
 				rmSync(executionDir, { recursive: true });
 			}
 		}
