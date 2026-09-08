@@ -80,6 +80,17 @@ describe("CodexLeadRuntime — stop ordering", () => {
 });
 
 describe("CodexLeadRuntime — start failure tears down what came up", () => {
+	it("a startProcess failure never advances or calls shutdownProcess", async () => {
+		const { runtime, order } = harness({
+			startProcess: async () => {
+				order.push("startProcess");
+				throw new Error("preflight refused");
+			},
+		});
+		await expect(runtime.start()).rejects.toThrow(/preflight refused/);
+		expect(order).toEqual(["startProcess"]);
+	});
+
 	it("gateway start failure → stops gateway + shuts down process, then rethrows", async () => {
 		const order: string[] = [];
 		const wiring: RuntimeWiring = {

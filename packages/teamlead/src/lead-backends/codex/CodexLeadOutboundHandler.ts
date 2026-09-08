@@ -34,12 +34,18 @@ export interface OutboundSendBody {
 	projectName?: unknown;
 	leadId?: unknown;
 	channelId?: unknown;
+	probe?: unknown;
 	text?: unknown;
 	idempotencyKey?: unknown;
 	nonce?: unknown;
 }
 
-export type OutboundSendStatus = "sent" | "deduped" | "ambiguous" | "rejected";
+export type OutboundSendStatus =
+	| "authorized"
+	| "sent"
+	| "deduped"
+	| "ambiguous"
+	| "rejected";
 
 export interface OutboundSendOutcome {
 	httpStatus: number;
@@ -89,7 +95,7 @@ export interface CodexLeadOutboundHandlerOptions {
 		projectName: string,
 		leadId: string,
 		channelId: string,
-	) => boolean;
+	) => boolean | "unavailable" | Promise<boolean | "unavailable">;
 	logger?: { warn: (m: string, c?: unknown) => void };
 }
 
@@ -101,7 +107,7 @@ export class CodexLeadOutboundHandler {
 		projectName: string,
 		leadId: string,
 		channelId: string,
-	) => boolean;
+	) => boolean | "unavailable" | Promise<boolean | "unavailable">;
 	private readonly logger: { warn: (m: string, c?: unknown) => void };
 
 	constructor(opts: CodexLeadOutboundHandlerOptions) {
@@ -134,16 +140,24 @@ export class CodexLeadOutboundHandler {
 		if (!v.ok) {
 			return { httpStatus: 400, status: "rejected", reason: v.reason };
 		}
-		const { projectName, leadId, channelId, text, idempotencyKey, nonce } =
-			v.value;
+		const { projectName, leadId, channelId } = v.value;
 
 		// 3. Anti-impersonation (defense-in-depth): the caller may only post as a
 		// (projectName, leadId, channelId) it actually owns — keyed by project because
 		// agentId isn't globally unique. Full fix = per-Lead auth (FLY-246).
-		if (
-			this.authorizeLeadChannel &&
-			!this.authorizeLeadChannel(projectName, leadId, channelId)
-		) {
+		const channelAuthorization = await this.authorizeLeadChannel?.(
+			projectName,
+			leadId,
+			channelId,
+		);
+		if (channelAuthorization === "unavailable") {
+			return {
+				httpStatus: 503,
+				status: "rejected",
+				reason: "channel_parent_lookup_unavailable",
+			};
+		}
+		if (channelAuthorization === false) {
 			this.logger.warn("lead-outbound rejected: lead/channel not authorized", {
 				leadId,
 				channelId,
@@ -154,6 +168,8 @@ export class CodexLeadOutboundHandler {
 				reason: "lead_channel_unauthorized",
 			};
 		}
+		if (v.probe) return { httpStatus: 200, status: "authorized" };
+		const { text, idempotencyKey, nonce } = v.value;
 
 		// 4. Durable dedup — fast path on an existing record.
 		const existing = this.store.get(idempotencyKey);
@@ -223,6 +239,16 @@ export class CodexLeadOutboundHandler {
 function validateBody(body: OutboundSendBody):
 	| {
 			ok: true;
+			probe: true;
+			value: {
+				projectName: string;
+				leadId: string;
+				channelId: string;
+			};
+	  }
+	| {
+			ok: true;
+			probe: false;
 			value: {
 				projectName: string;
 				leadId: string;
@@ -245,6 +271,13 @@ function validateBody(body: OutboundSendBody):
 		return { ok: false, reason: "leadId_required" };
 	if (typeof channelId !== "string" || channelId === "")
 		return { ok: false, reason: "channelId_required" };
+	if (body.probe === true) {
+		return {
+			ok: true,
+			probe: true,
+			value: { projectName, leadId, channelId },
+		};
+	}
 	if (typeof text !== "string" || text === "")
 		return { ok: false, reason: "text_required" };
 	if (typeof idempotencyKey !== "string" || idempotencyKey === "")
@@ -253,6 +286,7 @@ function validateBody(body: OutboundSendBody):
 		return { ok: false, reason: "nonce_required" };
 	return {
 		ok: true,
+		probe: false,
 		value: { projectName, leadId, channelId, text, idempotencyKey, nonce },
 	};
 }

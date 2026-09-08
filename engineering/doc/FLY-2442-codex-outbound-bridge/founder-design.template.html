@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mufasa 回复改走 Bridge</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, "PingFang SC", "Helvetica Neue", sans-serif; line-height: 1.65; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; color: #1a365d; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; font-family: "SF Mono", Menlo, monospace; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin: 18px 0; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; } .card.amber { border-left-color: #ff9500; } .card.red { border-left-color: #ff3b30; } .card.purple { border-left-color: #af52de; } .card.gray { border-left-color: #86868b; }
+  .card h2 { font-size: 18px; margin: 0 0 10px; }
+  .card h3 { font-size: 15px; margin: 14px 0 6px; color: #1a365d; }
+  .lede { font-size: 17px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; background: #f2f2f7; padding: 1px 5px; border-radius: 4px; }
+  .expl { color: #515154; font-size: 13.5px; }
+  .diagram { overflow-x: auto; background: #fff; border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  .diagram.wide svg { min-width: 900px; }
+  .quote { border-left: 3px solid #d2d2d7; margin: 10px 0; padding: 6px 12px; color: #3a3a3c; background: #fafafa; border-radius: 0 8px 8px 0; font-size: 13.5px; }
+  .quote code { background: transparent; padding: 0; }
+  .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin-right: 6px; vertical-align: middle; }
+  .tag.do { background: #e3f9e9; color: #1f7a37; } .tag.dont { background: #fde8e6; color: #b3261e; } .tag.later { background: #ede7f6; color: #5e35b1; }
+  ul { padding-left: 20px; } li { margin: 4px 0; }
+  .comment { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e5e5ea; }
+  .comment label { display: block; font-size: 12px; color: #86868b; margin-bottom: 4px; }
+  .comment textarea { width: 100%; box-sizing: border-box; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 14px; resize: vertical; background: #fbfbfd; }
+  .comment textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  .summary pre { white-space: pre-wrap; word-break: break-word; background: #f2f2f7; border-radius: 8px; padding: 12px; font-size: 13px; margin: 8px 0; }
+  .btn { background: #007aff; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer; }
+  .btn.secondary { background: #e5e5ea; color: #1d1d1f; }
+  #copy-status { margin-left: 10px; color: #34c759; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Mufasa 的回复改走 Bridge,顺手把「信箱 → 壳」的接口写成一页合同</h1>
+  <div class="meta">FLY-2442 · Epic FLY-2441 通路① · 设计稿 2026-09-08 · Codex 设计评审 4 轮已 APPROVED · Lead 裁定已落地</div>
+
+  <section class="card green" data-title="一句话">
+    <h2>一句话</h2>
+    <p class="lede">今天 Mufasa(跑在 Codex 上的那位 Lead)回你话时是拿自己的钥匙直接发到 Discord,绕过了 Bridge(所有 Lead 共用的那台「总机」);代码里早就有一条经总机代发的路,只是启动脚本没打开。本单打开它,并把中间挡路的一道门改对;同时把「信先进信箱、再按壳投递」这个形状写成一页合同,以后任何壳都照它接。</p>
+    <div class="comment"><label for="c-1">对这一节的意见</label><textarea id="c-1" data-key="s1" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card" data-title="这单要解决什么">
+    <h2>这单要解决什么</h2>
+    <p><b>现状(2026-09-08 逐行核过)</b>:Mufasa 的启动脚本(launcher,就是 launchd 每次拉起 Mufasa 时跑的那个 shell 文件)默认 <code>outbound=direct</code>,注释原话是「bypasses Bridge outbound authorization」——绕过总机的出站授权。生产日志三次启动都印着 <code>outbound=direct</code>。</p>
+    <p><b>已经存在的那条路</b>:Codex Lead 有一个「经 Bridge」的发送器 <code>CodexOutboundSender</code>,它把回复先写进本地一张持久小表(outbox,发件箱),再 POST 给总机的 <code>/api/lead-outbound/send</code>;总机核对身份与频道、按幂等键(idempotency key,一条回复唯一的编号,重复送达只发一次)去重、用服务端保管的钥匙代发。这条路两端代码都在,总机那张去重表今天是 <b>0 行</b>——生产从没用过。</p>
+    <p><b>真障碍</b>:Codex 的运行时里有一道硬门——「经 Bridge 出站」和「跨部门频道」不能同时开,开了就直接报错退出。原因是总机今天只授权 Lead 自己的两个频道,而 Mufasa 配了 #leads-roundtable(圆桌,跨部门共用频道),往圆桌回话会被总机 403(拒绝)。所以不改这道门,Mufasa 根本切不过去;丢掉圆桌又是回归。这单的核心就是把这道门改对。</p>
+    <div class="comment"><label for="c-2">对这一节的意见</label><textarea id="c-2" data-key="s2" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card" data-title="核心流程:现状 vs 之后">
+    <h2>核心流程:现状 vs 本单之后</h2>
+    <div class="diagram">@@SVG_D1@@</div>
+    <p class="expl">左:今天两种 Lead 都是自己直发,Claude 只是发之前先问一声总机的 reply-guard(回复守卫,一个「允不允许」的检查)。右:本单之后 Mufasa 的回复由总机代发;Claude 那边不动(那是 Epic 的 ②)。</p>
+    <h3>一条回复经总机的完整路径(含启动期的自检)</h3>
+    <div class="diagram wide">@@SVG_D3@@</div>
+    <p class="expl">启动期 Mufasa 先向总机「探测」(probe,只问「这几个频道我能发吗」,不真的发):总机说不行(403)、或者总机版本太旧/钥匙不对/路由不存在(400/401/404),Mufasa 一律当场报错退出,<b>绝不悄悄退回直发</b>;只有总机暂时打不通才有限重试、然后继续启动。每条回复:本地先记账 → 总机授权 → 去重 → 代发 → 两边都记「已发」。</p>
+    <div class="comment"><label for="c-3">对这一节的意见</label><textarea id="c-3" data-key="s3" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card purple" data-title="数据与结构">
+    <h2>数据与结构</h2>
+    <div class="diagram wide">@@SVG_D4@@</div>
+    <table>
+      <tr><th>新东西</th><th>在哪</th><th>做什么</th></tr>
+      <tr><td><code>roundtableChannel</code></td><td><code>~/.flywheel/projects.json</code> 里 Mufasa 这一行</td><td>声明「这位 Lead 可以往哪一个圆桌频道回话」。总机<b>只认这里声明的</b>,不认全局配置、不通配;没声明的 Lead 往圆桌发 → 403。圆桌下面的话题线程按「父频道在不在授权集」继承。</td></tr>
+      <tr><td><code>probe: true</code></td><td>总机 <code>/api/lead-outbound/send</code> 的请求体</td><td>只走到授权那一步就返回 <code>authorized</code>,不去重、不发送。启动期自检用它。</td></tr>
+      <tr><td><code>[lead-outbound]</code> 日志行</td><td>总机日志 <code>/tmp/flywheel-bridge.log</code></td><td>每次响应一行:项目、Lead、频道、结果、消息 id、幂等键。永远不含正文。这是验收「日志可证」的读取点。</td></tr>
+      <tr><td>启动脚本默认 <code>bridge</code></td><td><code>run-codex-lead-mufasa-tui-fullaccess.sh</code></td><td><code>direct</code> 只作显式回滚,启动时大写警告。总机的钥匙名从 <code>TEAMLEAD_API_TOKEN</code> 别名过来,不新增配置。</td></tr>
+    </table>
+    <div class="comment"><label for="c-4">对这一节的意见</label><textarea id="c-4" data-key="s4" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card" data-title="合同页:信箱到壳的五段">
+    <h2>合同页:「信箱 → 壳」的五段接口</h2>
+    <p>你在 FLY-2439 说的形状——「信件先投到 Mailbox,然后再 batch 投到 Claude Code 或 Codex,只是投递过程中因为 Harness 不同会有一些区别」——今天 Claude Lead 和 Codex Lead 就是这么跑的。合同页(仓库里 <code>mailbox-adapter-contract.md</code>)把它写成五段,每段给接口、不变量、两边实现、新壳要提供什么。</p>
+    <div class="diagram">@@SVG_D2@@</div>
+    <table>
+      <tr><th>段</th><th>谁拥有</th><th>Claude</th><th>Codex</th><th>新壳要提供</th></tr>
+      <tr><td>① ingest(取信)</td><td>各壳自带</td><td>Discord 插件 → 子进程写库</td><td>3 秒轮询 → 写库</td><td>一个会调 <code>ingestDiscordChat</code> 的取信器</td></tr>
+      <tr><td>② mailbox(信箱)</td><td>共用</td><td colspan="2">同一张 <code>mailbox</code> 表;权威一直在这里,直到拿到持久回执</td><td>无,不许绕过</td></tr>
+      <tr><td>③ 投递泵</td><td>共用(Bridge)</td><td colspan="2">活跃 1 秒 / 空闲 30 秒轮询;每批最多 10 条;<b>同时最多 3 批在飞</b>;30 分钟内没 ack 就重投,3 次到期进死信</td><td>无,不许自己写泵</td></tr>
+      <tr><td>④ 最后一跳</td><td>各壳一个适配器</td><td>两阶段写 JSON 文件 + 边车;Claude 二进制自带 poller 自己读</td><td>签名的 unix socket 交给 TUI 进程,由它入 journal(日记账)</td><td>一个 <code>LeadDeliveryAdapter</code> + 一个 ack 通道</td></tr>
+      <tr><td>⑤ 回程</td><td>总机授权;发送按壳</td><td>问 reply-guard,再自己直发</td><td>总机代发(本单起)</td><td>必须经总机授权;推荐直接复用总机代发</td></tr>
+    </table>
+    <h3>为什么 Codex 的第④段砍不掉(原注释)</h3>
+    <div class="quote"><code>agent-team-transport/src/types.ts:308</code> — <i>builtin-receiver: vendor binary polls mailbox itself (claude-code). external-watcher: needs IMailboxWatcher + tmux send-keys (codex).</i><br>Codex 二进制不会自己读文件,必须有人把包好的一轮推进去。</div>
+    <div class="quote"><code>CodexLeadInboxSocket.ts:4-7</code> — <i>The Codex Lead router lives in the windowed TUI sidecar process. The Bridge therefore cannot mutate journal.db directly: doing so would durably accept a row without waking the router's in-memory pump.</i><br>journal 属于 TUI 那个进程;总机是另一个进程,所以要一条 socket 把批交过去,由拥有它的进程自己入账。</div>
+    <div class="quote"><code>LeadJournal.ts:5-9</code> — <i>a Codex app-server thread can execute arbitrary shell/MCP side-effects (gh merge, flywheel-comm). On a crash, naively replaying an input could double-fire those side-effects.</i><br>journal 存的是「这条输入走到哪一步了」,让崩溃恢复能证明该不该重跑,而不是猜。Claude 侧对应物是 jsonl 边车,只是不是 sqlite。</div>
+    <div class="comment"><label for="c-5">对这一节的意见</label><textarea id="c-5" data-key="s5" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card amber" data-title="一个前提修正">
+    <h2>一个前提修正:Claude Lead 其实不是「经 Bridge 出站」</h2>
+    <p>issue 原文写「改为经 Bridge 出站(与 Claude Lead 一致)」。审计发现 Claude Lead 的回复其实是:<b>插件先 POST 总机的 <code>/api/discord/reply-guard</code> 问一声允不允许,允许后自己 <code>ch.send</code> 直发</b>(插件 <code>server.ts:375</code> 与 <code>:1342</code>);总机打不通时按内容分类 fail-open(放行)或 fail-closed(拦下)——这正是 Epic ② 要收紧的东西。而 Codex 的 bridge 模式是<b>总机代发</b>:钥匙只在总机、持久去重、403 硬拦,比 Claude 那条更强。</p>
+    <p>所以「与 Claude 一致」的准确说法是:<b>两边都必须经总机授权</b>。Tadashi 已裁定按这个理解做,不给 Codex 另造一套 reply-guard,并会据此向你更正昨晚的说法。</p>
+    <table>
+      <tr><th></th><th>Claude Lead(今天)</th><th>Codex Lead(本单后)</th></tr>
+      <tr><td>谁发</td><td>Lead 自己</td><td>总机代发</td></tr>
+      <tr><td>钥匙在哪</td><td>Lead 进程里</td><td>只在总机</td></tr>
+      <tr><td>总机打不通</td><td>按内容 fail-open / fail-closed(②)</td><td>发不出去,记 ambiguous,不会绕过总机</td></tr>
+      <tr><td>跨重启去重</td><td>无</td><td>有(持久表 + 永不盲重发)</td></tr>
+      <tr><td>授权粒度</td><td>只判「顶层是否含 issue 号」</td><td>按(项目、Lead、频道)判归属</td></tr>
+    </table>
+    <div class="comment"><label for="c-6">对这一节的意见</label><textarea id="c-6" data-key="s6" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card" data-title="关键取舍与被否决的方案">
+    <h2>关键取舍与被否决的方案</h2>
+    <table>
+      <tr><th>方案</th><th>结论</th><th>为什么</th></tr>
+      <tr><td>A · 翻 launcher,顺手把 Mufasa 的圆桌配置删掉</td><td><span class="tag dont">否决</span></td><td>零代码,但你在用圆桌;把 Mufasa 踢出圆桌是回归,不是「一致」。</td></tr>
+      <tr><td><b>B · 总机授权集加上「该 Lead 声明的圆桌 + 其线程」,运行时那道硬门改成「启动时问总机」</b></td><td><span class="tag do">选中</span></td><td>不动 journal、不动 Claude、不动 Raya;改动集中在总机授权与一处启动自检。Tadashi 加了三条约束:只认 projects.json 里为该 Lead 声明的圆桌(不通配)、必须有「未声明 → 403」的阴性测试、探测遇 403 必须报错退出、绝不静默退回直发。</td></tr>
+      <tr><td>C · 把「Lead 能发哪些共享频道」搬进 projects.json 做唯一真源,launcher 也从那里读</td><td><span class="tag later">以后</span></td><td>最干净,但要动 launcher 的频道来源和 Claude 侧同名配置的消费者,超出「launcher 配置选择」的范围。现在两处各声明,漂移靠启动探测 403 抓出来。</td></tr>
+      <tr><td>D · 让 Codex 也做成「问一声 reply-guard 再自己直发」(字面上和 Claude 一样)</td><td><span class="tag dont">否决</span></td><td>那是退化:放弃已有的持久去重和服务端钥匙。Epic 的方向是各壳都收敛到总机授权,② 是把 Claude 收紧,不是把 Codex 放松。</td></tr>
+    </table>
+    <h3>几个具体的小取舍</h3>
+    <ul>
+      <li><b>探测在进程起来之后做</b>:Codex 进程只有 start() 之后才接管那条 WebSocket;探测失败要能把它关干净,所以顺序是先起进程、再探测、失败就自己关掉再报错(Codex 评审第 3 轮抓到的资源泄漏点)。</li>
+      <li><b>探测有总时长上限</b>:每轮对所有频道并发问、单次 5 秒超时、最多 4 轮、间隔 10 秒 → 最坏 50 秒,与频道数无关。</li>
+      <li><b>总机打不通 ≠ 报错退出</b>:总机在更新窗口会停几秒再起;这时 Mufasa 若恰好重启,应该等一等再继续,而不是像 FLY-1597 那样崩 205 次。</li>
+    </ul>
+    <div class="comment"><label for="c-7">对这一节的意见</label><textarea id="c-7" data-key="s7" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card amber" data-title="上线顺序与回滚">
+    <h2>上线顺序与回滚</h2>
+    <ol>
+      <li><b>合并前</b>(你或 Tadashi 做):在 <code>~/.flywheel/projects.json</code> 给 mufasa-lead 加一行 <code>"roundtableChannel": "1512578695468941333"</code>。今天的总机会忽略这个未知键,零影响。有一条 <code>jq -e</code> 检查当门,现在是 false。</li>
+      <li>PR 合入 main → updater 窗口自动重启总机,带上新授权与探测分支。</li>
+      <li><b>Mufasa 不会自动重启</b>(启动脚本改动不在「重启全体 Lead」的名单里),它继续直发,直到下一次重启。</li>
+      <li>你的窗口重启 Mufasa → 读到新脚本 → 走总机 → 启动自检通过。</li>
+    </ol>
+    <p><b>回滚</b>:只想退出站 → <code>.env</code> 加 <code>FLYWHEEL_CODEX_LEAD_OUTBOUND=direct</code> 重启 Mufasa,记忆线程不受影响。想整单回滚 → <b>先</b>把 Mufasa 切回直发并重启,<b>再</b> revert 总机;反过来做会让在跑的 Mufasa 往圆桌回话被 403。</p>
+    <p><b>顺序错了会怎样</b>:Mufasa 若先于新总机重启,探测会拿到旧总机的 400(不是 403),同样报错退出、日志明示「总机比 FLY-2442 旧」;等总机更新后再重启即可。</p>
+    <div class="comment"><label for="c-8">对这一节的意见</label><textarea id="c-8" data-key="s8" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card green" data-title="验收怎么证明">
+    <h2>验收怎么证明「这条回复真的经了总机」</h2>
+    <p>三处证据必须按<b>同一个幂等键</b>串起来,不能各取「最新一行」:</p>
+    <ol>
+      <li>在 #mufasa 发一句带唯一标记的话,等回复。</li>
+      <li>总机日志里找这条回复的 <code>[lead-outbound] … status=sent</code> 行,记下频道、消息 id、幂等键。</li>
+      <li>总机去重表按这个键查 → <code>sent</code> + 同一个消息 id。</li>
+      <li>Mufasa 本地发件箱按这个键查 → <code>sent</code> + 同一个频道。</li>
+      <li>用 Discord REST 按频道 + 消息 id 查 → 200,内容就是那条回复。</li>
+      <li>圆桌再来一遍;另外对一个没声明的频道发探测 → 必须 403。</li>
+    </ol>
+    <div class="comment"><label for="c-9">对这一节的意见</label><textarea id="c-9" data-key="s9" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card red" data-title="诚实边界">
+    <h2>诚实边界:做什么、不做什么</h2>
+    <p><span class="tag do">做</span> Mufasa 启动脚本默认走总机;总机授权集加「该 Lead 声明的圆桌 + 其线程」;运行时硬门改成启动探测(403/400/401/404 一律报错退出,绝不退回直发);总机出站审计日志;合同页一页;本页。</p>
+    <p><span class="tag dont">不做</span></p>
+    <ul>
+      <li>不动 journal、不动 socket、不动 Claude 侧的 reply-guard 与 fail-open(②)、不动 Raya(④)。</li>
+      <li>另一位 Codex Lead <b>codex-infra-bot-lead</b>(Claw 的席位,跨部门频道是 Alerts)保持直发——机制通用,但翻它是另一张单。</li>
+      <li>Mufasa 的<b>主动发言</b> <code>lead_actions.discord_send</code>(FLY-350)保持直发,有自己的审计;本单只改「回复」。</li>
+      <li>Mufasa 的实际重启由你或 Tadashi 在窗口做;implement 与 QA 节点不自作。</li>
+      <li>Epic FLY-2441 里引用合同页:本机 Linear 凭据 401,由 Tadashi 补链接。</li>
+    </ul>
+    <p><b>没验证过的</b>:总机拿 Mufasa 的钥匙查圆桌线程的父频道是否总有权限(理论上有,QA 实测一次);Bridge 崩溃空窗的「恰好一次」仍靠去重表,既有限制不动。</p>
+    <div class="comment"><label for="c-10">对这一节的意见</label><textarea id="c-10" data-key="s10" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card gray" data-title="评审记录">
+    <h2>评审记录</h2>
+    <ul>
+      <li><b>Tadashi 裁定</b>(question c135988f):「一致」= 经总机授权;只翻 Mufasa;硬门在本单内改,三条约束见上;若要动 Claude 侧就停下报他——本设计没碰。</li>
+      <li><b>Codex 设计评审</b>:4 轮,问题数 6 → 4 → 2 → 0,全部采纳、零新增范围。第 1 轮修了探测把「总机太旧/钥匙错」误当成「暂时打不通」的漏洞;第 2 轮修了多频道探测的总时长和初启/重建两种失败形态;第 3 轮修了探测失败时 WebSocket 关不掉的泄漏;第 4 轮 APPROVED。</li>
+      <li>仓库文档:<code>engineering/doc/FLY-2442-codex-outbound-bridge/</code> 下 exploration / research / plan / mailbox-adapter-contract。</li>
+    </ul>
+    <div class="comment"><label for="c-11">对这一节的意见</label><textarea id="c-11" data-key="s11" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card blue summary" id="summary-card" data-title="页面意见汇总">
+    <h2>页面意见汇总</h2>
+    <p class="expl">下面实时汇总你在每一节留下的意见。点「复制全部意见」发回给 Tadashi;超过约 1800 字会自动分段,每段都带标记。这是修改反馈,不是通过信号。草稿只存在你这台设备的浏览器里。</p>
+    <div id="summary-chunks"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button>
+    <button class="btn secondary" id="clear-all" type="button">清空</button>
+    <span id="copy-status"></span>
+  </section>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = "【页面意见汇总】FLY-2442";
+  var PREFIX = "fly2442-comment:" + location.pathname + ":";
+  var CHUNK = 1800;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  function load(key) { try { return localStorage.getItem(PREFIX + key) || ""; } catch (e) { return ""; } }
+  function save(key, value) { try { localStorage.setItem(PREFIX + key, value); } catch (e) {} }
+  function remove(key) { try { localStorage.removeItem(PREFIX + key); } catch (e) {} }
+  function sectionTitle(el) {
+    var sec = el.closest("section");
+    return sec && sec.getAttribute("data-title") ? sec.getAttribute("data-title") : "未命名";
+  }
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) lines.push("[" + sectionTitle(ta) + "] " + v);
+    });
+    return lines;
+  }
+  function chunks() {
+    var lines = collect();
+    if (!lines.length) return [MARKER + "\n(暂无意见)"];
+    var out = [], cur = MARKER;
+    lines.forEach(function (line) {
+      var candidate = cur + "\n" + line;
+      if (candidate.length > CHUNK && cur !== MARKER) { out.push(cur); cur = MARKER + "\n" + line; }
+      else cur = candidate;
+    });
+    out.push(cur);
+    return out;
+  }
+  function render() {
+    var host = document.getElementById("summary-chunks");
+    while (host.firstChild) host.removeChild(host.firstChild);
+    chunks().forEach(function (text, i, all) {
+      var pre = document.createElement("pre");
+      pre.textContent = all.length > 1 ? text + "\n(第 " + (i + 1) + "/" + all.length + " 段)" : text;
+      host.appendChild(pre);
+    });
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.top = "-1000px";
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function setStatus(msg) {
+    var s = document.getElementById("copy-status");
+    s.textContent = msg;
+    setTimeout(function () { s.textContent = ""; }, 2500);
+  }
+  function copyAll() {
+    var text = chunks().join("\n\n");
+    var done = function (ok) { setStatus(ok ? "已复制" : "复制失败,请手动选中上方文本"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+  areas.forEach(function (ta) {
+    ta.value = load(ta.getAttribute("data-key"));
+    ta.addEventListener("input", function () { save(ta.getAttribute("data-key"), ta.value); render(); });
+  });
+  document.getElementById("copy-all").addEventListener("click", copyAll);
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; remove(ta.getAttribute("data-key")); });
+    render(); setStatus("已清空");
+  });
+  render();
+})();
+</script>
+</body>
+</html>

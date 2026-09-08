@@ -12,6 +12,7 @@
 # requires it (standalone codex daemon backend, FLYWHEEL_CODEX_TUI_CWD, the §10 config
 # gate runs against config.toml instead of `-c` argv, the runtime OWNS the daemon
 # stop/start so a stale read-only daemon can never satisfy a full-access boot).
+# Outbound defaults to Bridge; direct is an explicit rollback mode only.
 #
 # 🔴 FOUNDER-GATED: running this FLIPS production Mufasa to windowed full-access. Do NOT
 #    run it outside the founder cutover window. Pre-cutover acceptance MUST include the
@@ -98,10 +99,24 @@ if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" != "1" ] && [ ! -f "${FLYWHEEL_LEAD_ACTIONS_MA
 	exit 1
 fi
 
-# Outbound: DIRECT (Mufasa's production mode) — preserves #leads-roundtable (FLY-267
-# cross-dept) and bypasses Bridge outbound authorization (the original roundtable-403
-# fix). Bridge mode is mutually exclusive with cross-dept (the runtime fail-louds).
-export FLYWHEEL_CODEX_LEAD_OUTBOUND="${FLYWHEEL_CODEX_LEAD_OUTBOUND:-direct}"
+# Outbound: Bridge is the production path; direct remains only as an explicit rollback.
+export FLYWHEEL_CODEX_LEAD_OUTBOUND="${FLYWHEEL_CODEX_LEAD_OUTBOUND:-bridge}"
+case "$FLYWHEEL_CODEX_LEAD_OUTBOUND" in
+	bridge)
+		export FLYWHEEL_API_TOKEN="${FLYWHEEL_API_TOKEN:-${TEAMLEAD_API_TOKEN:-}}"
+		if [ -z "${FLYWHEEL_BRIDGE_URL:-}" ] || [ -z "$FLYWHEEL_API_TOKEN" ]; then
+			echo "[run-codex-lead-mufasa-tui-fullaccess] FATAL: outbound=bridge requires FLYWHEEL_BRIDGE_URL and FLYWHEEL_API_TOKEN (or TEAMLEAD_API_TOKEN)" >&2
+			exit 1
+		fi
+		;;
+	direct)
+		echo "[run-codex-lead-mufasa-tui-fullaccess] WARNING: outbound=DIRECT rollback mode bypasses Bridge authorization and audit" >&2
+		;;
+	*)
+		echo "[run-codex-lead-mufasa-tui-fullaccess] FATAL: FLYWHEEL_CODEX_LEAD_OUTBOUND must be bridge or direct" >&2
+		exit 1
+		;;
+esac
 
 # ── persona + founder-gate governance (the SAME contract a Claude Lead loads) ──
 # Persona first (identity.md), then the SHARED resolver appends the full-access

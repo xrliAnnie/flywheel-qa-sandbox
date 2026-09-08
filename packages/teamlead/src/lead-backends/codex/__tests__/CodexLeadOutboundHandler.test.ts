@@ -90,6 +90,67 @@ describe("CodexLeadOutboundHandler — body validation", () => {
 	}
 });
 
+describe("CodexLeadOutboundHandler — authorization probe (FLY-2442)", () => {
+	it("authorizes without outbound fields and never touches dedup or Discord", async () => {
+		const store = new InMemoryOutboundDedupStore();
+		const send = vi.fn(async () => "must-not-send");
+		const authorizeLeadChannel = vi.fn(async () => true);
+		const handler = new CodexLeadOutboundHandler({
+			store,
+			send,
+			expectedApiToken: TOKEN,
+			authorizeLeadChannel,
+		});
+
+		await expect(
+			handler.handle({
+				body: {
+					projectName: "proj-a",
+					leadId: "lead-a",
+					channelId: "chan-1",
+					probe: true,
+				},
+				providedToken: TOKEN,
+			}),
+		).resolves.toEqual({ httpStatus: 200, status: "authorized" });
+		expect(authorizeLeadChannel).toHaveBeenCalledWith(
+			"proj-a",
+			"lead-a",
+			"chan-1",
+		);
+		expect(store.get("e1:out")).toBeUndefined();
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it("keeps auth and channel authorization fail-closed", async () => {
+		const store = new InMemoryOutboundDedupStore();
+		const send = vi.fn(async () => "must-not-send");
+		const handler = new CodexLeadOutboundHandler({
+			store,
+			send,
+			expectedApiToken: TOKEN,
+			authorizeLeadChannel: async () => false,
+		});
+		const body = {
+			projectName: "proj-a",
+			leadId: "lead-a",
+			channelId: "chan-1",
+			probe: true,
+		};
+
+		await expect(
+			handler.handle({ body, providedToken: undefined }),
+		).resolves.toMatchObject({ httpStatus: 401, reason: "unauthorized" });
+		await expect(
+			handler.handle({ body, providedToken: TOKEN }),
+		).resolves.toMatchObject({
+			httpStatus: 403,
+			reason: "lead_channel_unauthorized",
+		});
+		expect(send).not.toHaveBeenCalled();
+	});
+});
+
 describe("CodexLeadOutboundHandler — exactly-once via durable dedup", () => {
 	it("fresh request sends once, marks sent, returns messageId + nonce passed", async () => {
 		const { handler, sendCalls } = make();

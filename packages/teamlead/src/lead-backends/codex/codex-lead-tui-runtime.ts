@@ -79,6 +79,7 @@ import {
 	buildFullAccessLeadActionsMcpServerConfig,
 } from "./lead-actions/mcp-config.js";
 import { buildMentionGate } from "./mention-gate.js";
+import { runOutboundPreflight } from "./outbound-preflight.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import { ResidentCodexLeadLifecycleObserver } from "./resident-codex-lead-lifecycle.js";
 import { buildReplyInThreadWiring } from "./roundtable-reply-in-thread-wiring.js";
@@ -454,13 +455,20 @@ export function requirePersona(
 
 // ── generation assembly (glue — validated by real bring-up) ────────────────
 
-function buildTuiGeneration(
+export interface TuiGenerationDeps {
+	connectDaemon?: typeof connectDaemonWs;
+	createSender?: (config: CodexLeadTuiRuntimeConfig) => OutboundSender;
+	preflight?: typeof runOutboundPreflight;
+}
+
+export function buildTuiGeneration(
 	config: CodexLeadTuiRuntimeConfig,
 	logger: {
 		info: (m: string, c?: unknown) => void;
 		warn: (m: string, c?: unknown) => void;
 		error: (m: string, c?: unknown) => void;
 	},
+	deps: TuiGenerationDeps = {},
 ) {
 	const journal = new LeadJournal({
 		store: new SqliteJournalStore(config.journalDbPath),
@@ -536,7 +544,9 @@ function buildTuiGeneration(
 				// this point `runtime` is unassigned, so stop() couldn't close it).
 				// Re-read on every (re)build so a persona edit takes effect on restart.
 				const baseInstructions = requirePersona(config);
-				const ws = await connectDaemonWs({ codexHome: config.codexHome });
+				const ws = await (deps.connectDaemon ?? connectDaemonWs)({
+					codexHome: config.codexHome,
+				});
 				const transport = new WsTransport(ws);
 				proc = new CodexLeadProcess({ spawnChild: () => transport });
 				if (lostCb) proc.on("exit", () => lostCb?.());
@@ -581,24 +591,46 @@ function buildTuiGeneration(
 				});
 
 				const builtSender: OutboundSender =
-					config.outboundMode === "bridge"
+					deps.createSender?.(config) ??
+					(config.outboundMode === "bridge"
 						? new CodexOutboundSender({
 								bridgeUrl: config.bridgeUrl,
 								apiToken: config.apiToken,
 								projectName: config.projectName,
+								leadId: config.leadId,
 								channelId: config.chatChannelId,
 								dbPath: config.outboxDbPath,
 							})
 						: new DirectDiscordOutboundSender({
 								botToken: config.botToken,
 								channelId: config.chatChannelId,
-							});
+							}));
 				sender = builtSender; // closure-tracked so stop() can close its DB handle
 
 				const threadParams = buildThreadParams(config, baseInstructions);
 				const p = proc;
 				runtime = new CodexLeadRuntime({
-					startProcess: () => p.start(), // initialize/initialized over WS
+					startProcess: async () => {
+						await p.start(); // initialize/initialized over WS
+						if (config.outboundMode === "bridge") {
+							try {
+								await (deps.preflight ?? runOutboundPreflight)({
+									probe: (channelId) =>
+										(
+											builtSender as unknown as Pick<
+												CodexOutboundSender,
+												"probeAuthorization"
+											>
+										).probeAuthorization(channelId),
+									channelIds: config.outboundProbeChannelIds,
+									log: logger,
+								});
+							} catch (error) {
+								await p.stop();
+								throw error;
+							}
+						}
+					},
 					ensureThread: async (): Promise<string> => {
 						const saved = readThreadId(config.threadIdPath);
 						if (saved) {

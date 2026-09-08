@@ -1,0 +1,30 @@
+sequenceDiagram
+  autonumber
+  participant R as LeadInputRouter<br/>Mufasa 进程
+  participant S as CodexOutboundSender<br/>outbox.db
+  participant B as Bridge<br/>lead-outbound send 路由
+  participant A as 授权集<br/>chat + core + roundtableChannel + 其线程
+  participant D as outbound_dedup.db
+  participant DC as Discord
+  Note over R,DC: 启动期,仅 bridge 模式
+  R->>S: probeAuthorization 对 chat 与 roundtable 并发
+  S->>B: POST probe true,5 秒超时
+  B->>A: 该 Lead 声明了这个频道吗
+  A-->>B: 是 或 否
+  B-->>S: 200 authorized,或 403,或 400 401 404
+  S-->>R: 403 400 401 404 都 throw,p.stop(),绝不回落 direct
+  Note over R,DC: 每一条回复
+  R->>S: enqueue text,key = 条目id 加 out,channelId
+  S->>S: 写 outbox 行 pending
+  R->>S: deliver key
+  S->>B: POST text + idempotencyKey + nonce
+  B->>A: 授权 project,lead,channel
+  A-->>B: 否 则 403 lead_channel_unauthorized
+  B->>D: 查 key,已 sent 则 200 deduped,in_flight 则 409 ambiguous
+  B->>D: 原子 claim in_flight
+  B->>DC: 用服务端解析的 Lead token 发送
+  DC-->>B: messageId
+  B->>D: markSent key,messageId
+  B-->>S: 200 sent
+  S->>S: outbox 行改为 sent
+  Note over B: 每次响应打一行 lead-outbound 日志,只含标识符

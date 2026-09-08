@@ -50,21 +50,25 @@ export interface DiscordExistenceDeps {
 	timeoutMs?: number;
 }
 
-/** Side-effect-free exact probe used by FLY-1927's same-root replay path. */
-export async function classifyThreadExistence(
-	threadId: string,
-	expectedParentId: string,
+export type ThreadParentLookup =
+	| { state: "resolved"; parentId: string }
+	| { state: "not_thread" }
+	| { state: "absent" }
+	| { state: "transient"; status?: number }
+	| { state: "denied"; status: 401 | 403 };
+
+/** Resolve a Discord thread's parent for fail-closed channel authorization. */
+export async function lookupThreadParent(
+	channelId: string,
 	botToken: string,
 	deps: DiscordExistenceDeps = {},
-): Promise<DiscordExistence> {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), deps.timeoutMs ?? 5_000);
+): Promise<ThreadParentLookup> {
 	try {
 		const res = await (deps.fetchImpl ?? fetch)(
-			`${DISCORD_API}/channels/${threadId}`,
+			`${DISCORD_API}/channels/${channelId}`,
 			{
 				headers: { Authorization: `Bot ${botToken}` },
-				signal: controller.signal,
+				signal: AbortSignal.timeout(deps.timeoutMs ?? 5_000),
 			},
 		);
 		if (res.status === 404) return { state: "absent" };
@@ -74,14 +78,29 @@ export async function classifyThreadExistence(
 		if (!res.ok) return { state: "transient", status: res.status };
 		const data = (await res.json()) as { type?: number; parent_id?: string };
 		const isThread = data.type === 10 || data.type === 11 || data.type === 12;
-		return isThread && data.parent_id === expectedParentId
-			? { state: "confirmed" }
-			: { state: "absent" };
+		return isThread && typeof data.parent_id === "string"
+			? { state: "resolved", parentId: data.parent_id }
+			: { state: "not_thread" };
 	} catch {
 		return { state: "transient" };
-	} finally {
-		clearTimeout(timeout);
 	}
+}
+
+/** Side-effect-free exact probe used by FLY-1927's same-root replay path. */
+export async function classifyThreadExistence(
+	threadId: string,
+	expectedParentId: string,
+	botToken: string,
+	deps: DiscordExistenceDeps = {},
+): Promise<DiscordExistence> {
+	const result = await lookupThreadParent(threadId, botToken, deps);
+	if (result.state === "resolved") {
+		return result.parentId === expectedParentId
+			? { state: "confirmed" }
+			: { state: "absent" };
+	}
+	if (result.state === "denied" || result.state === "transient") return result;
+	return { state: "absent" };
 }
 
 /** Side-effect-free root-message probe paired with classifyThreadExistence. */

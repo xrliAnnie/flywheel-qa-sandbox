@@ -3062,18 +3062,25 @@ export function createBridgeApp(
 	// Discord delivery via the per-Lead bot token). Additive; registered only when
 	// apiToken is configured (reserved endpoints require it) → no-op otherwise.
 	if (config.apiToken) {
+		const resolveCodexLeadBotToken = buildResolveBotToken(
+			projects,
+			process.env,
+		);
 		const codexLeadOutbound = buildLeadOutboundExpressHandler(
 			new CodexLeadOutboundHandler({
 				store: new SqliteOutboundDedupStore(
 					join(homedir(), ".flywheel", "codex-lead-outbound-dedup.db"),
 				),
 				send: buildLeadDiscordSend({
-					resolveBotToken: buildResolveBotToken(projects, process.env),
+					resolveBotToken: resolveCodexLeadBotToken,
 				}),
 				expectedApiToken: config.apiToken,
 				// Anti-impersonation: a Lead may only post to its own channels (FLY-246).
-				authorizeLeadChannel: buildAuthorizeLeadChannel(projects),
+				authorizeLeadChannel: buildAuthorizeLeadChannel(projects, {
+					resolveBotToken: resolveCodexLeadBotToken,
+				}),
 			}),
+			console,
 		);
 		app.post(
 			"/api/lead-outbound/send",

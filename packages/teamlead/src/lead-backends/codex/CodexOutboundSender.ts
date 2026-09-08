@@ -36,12 +36,14 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import type { OutboundSender } from "./LeadInputRouter.js";
+import type { ProbeResult } from "./outbound-preflight.js";
 
 /** Injectable HTTP transport (default: global fetch). Tests pass a fake. */
 export type HttpPost = (req: {
 	url: string;
 	headers: Record<string, string>;
 	body: string;
+	signal?: AbortSignal;
 }) => Promise<{ status: number; body: string }>;
 
 const defaultPost: HttpPost = async (req) => {
@@ -49,6 +51,7 @@ const defaultPost: HttpPost = async (req) => {
 		method: "POST",
 		headers: req.headers,
 		body: req.body,
+		signal: req.signal,
 	});
 	return { status: res.status, body: await res.text() };
 };
@@ -71,12 +74,15 @@ export interface CodexOutboundSenderOptions {
 	/** The Lead's project — scopes (projectName, leadId) server-side so a reused
 	 * agentId across projects can't impersonate (FLY-224 review). */
 	projectName: string;
+	/** Stable Lead identity used by the authorization-only startup probe. */
+	leadId: string;
 	/** Discord channel the Lead replies in (the Lead's chat channel). */
 	channelId: string;
 	/** SQLite path for the durable outbox, or ":memory:" for tests. */
 	dbPath: string;
 	post?: HttpPost;
 	now?: () => number;
+	probeTimeoutMs?: number;
 }
 
 export class CodexOutboundSender implements OutboundSender {
@@ -84,9 +90,11 @@ export class CodexOutboundSender implements OutboundSender {
 	private readonly bridgeUrl: string;
 	private readonly apiToken: string;
 	private readonly projectName: string;
+	private readonly leadId: string;
 	private readonly channelId: string;
 	private readonly post: HttpPost;
 	private readonly now: () => number;
+	private readonly probeTimeoutMs: number;
 
 	constructor(opts: CodexOutboundSenderOptions) {
 		// Validate at the boundary — these are required for any real delivery.
@@ -96,14 +104,17 @@ export class CodexOutboundSender implements OutboundSender {
 			throw new Error("CodexOutboundSender: apiToken required");
 		if (!opts.projectName)
 			throw new Error("CodexOutboundSender: projectName required");
+		if (!opts.leadId) throw new Error("CodexOutboundSender: leadId required");
 		if (!opts.channelId)
 			throw new Error("CodexOutboundSender: channelId required");
 		this.bridgeUrl = opts.bridgeUrl.replace(/\/+$/, "");
 		this.apiToken = opts.apiToken;
 		this.projectName = opts.projectName;
+		this.leadId = opts.leadId;
 		this.channelId = opts.channelId;
 		this.post = opts.post ?? defaultPost;
 		this.now = opts.now ?? (() => Date.now());
+		this.probeTimeoutMs = opts.probeTimeoutMs ?? 5_000;
 		this.db = new Database(opts.dbPath);
 		this.db.pragma("journal_mode = WAL");
 		this.db.exec(`
@@ -123,6 +134,46 @@ export class CodexOutboundSender implements OutboundSender {
 
 	close(): void {
 		this.db.close();
+	}
+
+	async probeAuthorization(channelId: string): Promise<ProbeResult> {
+		let res: { status: number; body: string };
+		try {
+			res = await this.post({
+				url: `${this.bridgeUrl}/api/lead-outbound/send`,
+				headers: {
+					"content-type": "application/json",
+					authorization: `Bearer ${this.apiToken}`,
+				},
+				body: JSON.stringify({
+					projectName: this.projectName,
+					leadId: this.leadId,
+					channelId,
+					probe: true,
+				}),
+				signal: AbortSignal.timeout(this.probeTimeoutMs),
+			});
+		} catch (error) {
+			return {
+				state: "unavailable",
+				reason: error instanceof Error ? error.message : "transport_error",
+			};
+		}
+		let body: { status?: unknown; reason?: unknown } = {};
+		try {
+			body = JSON.parse(res.body) as typeof body;
+		} catch {}
+		const reason =
+			typeof body.reason === "string" ? body.reason : "unexpected_response";
+		if (res.status === 200 && body.status === "authorized") {
+			return { state: "authorized" };
+		}
+		if (res.status === 403)
+			return { state: "unauthorized", status: 403, reason };
+		if (res.status === 408 || res.status === 429 || res.status >= 500) {
+			return { state: "unavailable", status: res.status, reason };
+		}
+		return { state: "incompatible", status: res.status, reason };
 	}
 
 	/**

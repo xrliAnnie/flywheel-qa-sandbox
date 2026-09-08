@@ -7,7 +7,7 @@
 # Contracts asserted:
 #   - full-access tier markers: PROFILE=full-access, SANDBOX=workspace-write,
 #     PROJECT_DIR set.
-#   - WINDOWED: MODE=tui, outbound=direct (preserves #leads-roundtable).
+#   - WINDOWED: MODE=tui, outbound=bridge (direct is rollback-only).
 #   - MEMORY CONTINUITY: state dir pins to .../codex-lead/mufasa-lead.
 #   - GOVERNANCE: founder-only-authority appended to SYSTEM_PROMPT_FILES (after persona).
 #   - lead_actions MCP coords (MAIN_JS, STATE_DIR) composed.
@@ -30,6 +30,7 @@ trap 'rm -rf "$T"' EXIT
 # may carry them) so a clean baseline is seen.
 unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
 	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND \
+	TEAMLEAD_API_TOKEN FLYWHEEL_API_TOKEN FLYWHEEL_BRIDGE_URL \
 	FLYWHEEL_CODEX_LEAD_PROJECT_DIR \
 	FLYWHEEL_CODEX_LEAD_SANDBOX FLYWHEEL_COMM_CLI FLYWHEEL_LEAD_ID LEAD_ID \
 	FLYWHEEL_PROJECT_NAME PROJECT_NAME FLYWHEEL_LEAD_KEY FLYWHEEL_LEAD_BACKEND \
@@ -81,11 +82,14 @@ run_dry() {
 	ENVDUMP="$T/envdump.$$.$RANDOM"
 	export ENVDUMP
 	HOME="$T/home" PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
+		FLYWHEEL_BRIDGE_URL=http://127.0.0.1:1 TEAMLEAD_API_TOKEN=DRY \
 		CANONICAL_JSON='{"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 		FLYWHEEL_CODEX_TUI_CWD="$T/proj" FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
 		MUFASA_BOT_TOKEN=DRY \
-		"$@" /bin/bash "$SUT" >/dev/null 2>&1
+		"$@" /bin/bash "$SUT" >/dev/null 2>"${RUN_STDERR:-/dev/null}"
+	rc=$?
 	echo "$ENVDUMP"
+	return "$rc"
 }
 envval() { grep "^$2=" "$1" | head -1 | cut -d= -f2-; }
 
@@ -95,7 +99,8 @@ if [ -f "$D" ]; then
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_PROFILE)" = "full-access" ] && pass "PROFILE=full-access" || fail "PROFILE not full-access"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_SANDBOX)" = "workspace-write" ] && pass "SANDBOX=workspace-write" || fail "SANDBOX wrong"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_MODE)" = "tui" ] && pass "MODE=tui (windowed)" || fail "MODE not tui"
-	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_OUTBOUND)" = "direct" ] && pass "outbound=direct (preserves roundtable)" || fail "outbound not direct"
+	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_OUTBOUND)" = "bridge" ] && pass "outbound=bridge" || fail "outbound not bridge"
+	[ "$(envval "$D" FLYWHEEL_API_TOKEN)" = "DRY" ] && pass "TEAMLEAD_API_TOKEN aliases to FLYWHEEL_API_TOKEN" || fail "Bridge API token alias missing"
 	[ "$(envval "$D" FLYWHEEL_COMM_CLI)" = "$REPO/packages/flywheel-comm/dist/index.js" ] \
 		&& pass "founder-time CLI path reaches production TUI runtime" \
 		|| fail "FLYWHEEL_COMM_CLI missing/wrong ($(envval "$D" FLYWHEEL_COMM_CLI))"
@@ -135,6 +140,34 @@ else
 	fail "dry-run did not exec mock node (no env dump)"
 fi
 
+# ── outbound mode guards ───────────────────────────────────────────────────
+direct_log="$T/direct.log"
+D3=$(RUN_STDERR="$direct_log" FLYWHEEL_CODEX_LEAD_OUTBOUND=direct run_dry env)
+if [ -f "$D3" ] && [ "$(envval "$D3" FLYWHEEL_CODEX_LEAD_OUTBOUND)" = "direct" ] \
+	&& grep -q "WARNING: outbound=DIRECT" "$direct_log"; then
+	pass "explicit direct rollback reaches exec with a warning"
+else
+	fail "explicit direct rollback contract"
+fi
+
+missing_log="$T/missing-token.log"
+RUN_STDERR="$missing_log" run_dry env -u TEAMLEAD_API_TOKEN -u FLYWHEEL_API_TOKEN >/dev/null
+missing_rc=$?
+if [ "$missing_rc" -ne 0 ] && grep -qi "requires" "$missing_log"; then
+	pass "bridge without either API token fails loud"
+else
+	fail "bridge missing-token guard (rc=$missing_rc)"
+fi
+
+invalid_log="$T/invalid-outbound.log"
+RUN_STDERR="$invalid_log" FLYWHEEL_CODEX_LEAD_OUTBOUND=weird run_dry env >/dev/null
+invalid_rc=$?
+if [ "$invalid_rc" -ne 0 ]; then
+	pass "invalid outbound mode fails loud"
+else
+	fail "invalid outbound mode accepted"
+fi
+
 # ── FLY-2404: real branch calls link-truth with the canonical tuple ────────
 mkdir -p "$T/home/.codex-mufasa/packages/standalone/current"
 printf '#!/bin/bash\nexit 0\n' > "$T/home/.codex-mufasa/packages/standalone/current/codex"
@@ -142,6 +175,7 @@ chmod +x "$T/home/.codex-mufasa/packages/standalone/current/codex"
 LINK_DUMP="$T/link-dump" ENVDUMP="$T/real-envdump" \
 	HOME="$T/home" PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" \
 	FLYWHEEL_LEAD_DRY_RUN=0 FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
+	FLYWHEEL_BRIDGE_URL=http://127.0.0.1:1 TEAMLEAD_API_TOKEN=DRY \
 	MUFASA_BOT_TOKEN=DRY \
 	CANONICAL_JSON='{"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 	/bin/bash "$RT/scripts/run-codex-lead-mufasa-tui-fullaccess.sh" >/dev/null 2>&1

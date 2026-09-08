@@ -31,6 +31,8 @@ export interface LeadConfig {
 	 * If omitted and alertFallbackToCore is false, alerts are skipped.
 	 */
 	alertChannel?: string;
+	/** The one configured roundtable channel this Lead may reply into via Bridge. */
+	roundtableChannel?: string;
 	/** Optional Discord user ID for severe follow-up DMs. */
 	alertDmUserId?: string;
 	/**
@@ -577,6 +579,7 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				"alertChannel",
 				"alertDmUserId",
 				"alertBotTokenEnv",
+				"roundtableChannel",
 			] as const) {
 				const value = (lead as Record<string, unknown>)[field];
 				if (

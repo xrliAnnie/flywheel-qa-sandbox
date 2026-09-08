@@ -63,6 +63,7 @@ import { LeadJournal } from "./LeadJournal.js";
 import { parseExplicitAliases } from "./lead-actions/alias-allowlist.js";
 import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { buildMentionGate } from "./mention-gate.js";
+import { runOutboundPreflight } from "./outbound-preflight.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import {
 	buildReplyInThreadWiring,
@@ -81,6 +82,8 @@ export interface CodexLeadRuntimeConfig {
 	chatChannelId: string;
 	coreChannelId?: string;
 	channelIds: string[];
+	/** Channels checked against Bridge authorization before Discord intake starts. */
+	outboundProbeChannelIds: string[];
 	/** FLY-267 收: cross-department / shared channel ids (e.g. #leads-roundtable),
 	 * merged into `channelIds` for inbound poll + gateway allowlist. ALSO the set
 	 * that is (判) mention-gated and (回) reply-routed. Empty (env unset) → the
@@ -616,21 +619,8 @@ export function parseCodexLeadRuntimeConfig(
 		crossDeptChannelIds.push(id);
 	}
 	const channelIds = [...baseChannels, ...crossDeptChannelIds];
-	// FLY-267 回 (Codex code-review R1 HIGH): a cross-dept reply in "bridge" outbound
-	// mode would be REJECTED by the Bridge — buildAuthorizeLeadChannel authorizes only
-	// the Lead's chatChannel + project generalChannel, so a roundtable send 403s and the
-	// journal row goes ambiguous. The Bridge can't authoritatively see this per-Lead
-	// runtime env, so we FAIL LOUD here rather than ship a silent 403. Cross-dept is
-	// supported in "direct" mode (Mufasa); server-side shared-channel authorization for
-	// bridge mode is a follow-up.
-	if (crossDeptChannelIds.length > 0 && outboundMode === "bridge") {
-		throw new Error(
-			"codex-lead-runtime: cross-dept channels (FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS) " +
-				"require DIRECT outbound mode — bridge mode would 403 a shared-channel reply " +
-				"(the Bridge authorizes only chat + generalChannel). Use direct mode, or wait " +
-				"for server-side shared-channel authorization (follow-up).",
-		);
-	}
+	const outboundProbeChannelIds =
+		outboundMode === "bridge" ? [chatChannelId, ...crossDeptChannelIds] : [];
 	// FLY-267 判: optional name-mention regexes (non-bot authors only; see isMentioned).
 	const mentionPatterns = (env.FLYWHEEL_LEAD_MENTION_PATTERNS ?? "")
 		.split(",")
@@ -879,6 +869,7 @@ export function parseCodexLeadRuntimeConfig(
 		chatChannelId,
 		coreChannelId,
 		channelIds,
+		outboundProbeChannelIds,
 		crossDeptChannelIds,
 		mentionPatterns,
 		coreMentionGated,
@@ -1588,19 +1579,23 @@ export function buildCodexLeadRuntime(
 	// Outbound: "direct" (default) posts to Discord with the Lead's own token — no
 	// Bridge route / restart (low-risk first bring-up). "bridge" uses the durable
 	// /api/lead-outbound/send exactly-once path (prod; needs the route deployed).
-	const sender: OutboundSender =
+	const bridgeSender =
 		config.outboundMode === "bridge"
 			? new CodexOutboundSender({
 					bridgeUrl: config.bridgeUrl,
 					apiToken: config.apiToken,
 					projectName: config.projectName,
+					leadId: config.leadId,
 					channelId: config.chatChannelId,
 					dbPath: config.outboxDbPath,
 				})
-			: new DirectDiscordOutboundSender({
-					botToken: config.botToken,
-					channelId: config.chatChannelId,
-				});
+			: undefined;
+	const sender: OutboundSender =
+		bridgeSender ??
+		new DirectDiscordOutboundSender({
+			botToken: config.botToken,
+			channelId: config.chatChannelId,
+		});
 	logger.info(`outbound mode: ${config.outboundMode}`);
 
 	// Persona injection: concatenate identity/persona files → thread baseInstructions
@@ -1633,7 +1628,19 @@ export function buildCodexLeadRuntime(
 			// ⑦ the broker must be listening BEFORE the app-server (and so the
 			// gateway child) comes up — the gateway fetches its secrets at startup.
 			if (broker) await broker.listen();
-			proc.start();
+			await proc.start();
+			if (bridgeSender) {
+				try {
+					await runOutboundPreflight({
+						probe: (channelId) => bridgeSender.probeAuthorization(channelId),
+						channelIds: config.outboundProbeChannelIds,
+						log: logger,
+					});
+				} catch (error) {
+					await proc.stop();
+					throw error;
+				}
+			}
 		},
 		ensureThread: async (): Promise<string> => {
 			const saved = readThreadId(config.threadIdPath);

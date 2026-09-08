@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	lookupThreadParent,
 	type ThreadValidationDeps,
 	validateThreadExists,
 } from "../bridge/thread-validator.js";
@@ -82,5 +83,57 @@ describe("validateThreadExists (GEO-200)", () => {
 
 		expect(result).toBe(true);
 		expect(deps.markDiscordMissing).not.toHaveBeenCalled();
+	});
+});
+
+describe("lookupThreadParent (FLY-2442)", () => {
+	it.each([10, 11, 12])("resolves Discord thread type %s", async (type) => {
+		const fetchImpl = vi.fn().mockResolvedValue({
+			status: 200,
+			ok: true,
+			json: async () => ({ type, parent_id: "roundtable" }),
+		});
+
+		await expect(
+			lookupThreadParent("thread", "bot-token", { fetchImpl }),
+		).resolves.toEqual({ state: "resolved", parentId: "roundtable" });
+		expect(fetchImpl).toHaveBeenCalledWith(
+			"https://discord.com/api/v10/channels/thread",
+			expect.objectContaining({
+				headers: { Authorization: "Bot bot-token" },
+				signal: expect.any(AbortSignal),
+			}),
+		);
+	});
+
+	it("rejects a non-thread response", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue({
+			status: 200,
+			ok: true,
+			json: async () => ({ type: 0, parent_id: "roundtable" }),
+		});
+		await expect(
+			lookupThreadParent("channel", "bot-token", { fetchImpl }),
+		).resolves.toEqual({ state: "not_thread" });
+	});
+
+	it.each([
+		[404, { state: "absent" }],
+		[401, { state: "denied", status: 401 }],
+		[403, { state: "denied", status: 403 }],
+		[429, { state: "transient", status: 429 }],
+		[500, { state: "transient", status: 500 }],
+	] as const)("classifies HTTP %s", async (status, expected) => {
+		const fetchImpl = vi.fn().mockResolvedValue({ status, ok: false });
+		await expect(
+			lookupThreadParent("thread", "bot-token", { fetchImpl }),
+		).resolves.toEqual(expected);
+	});
+
+	it("treats network failures as transient", async () => {
+		const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
+		await expect(
+			lookupThreadParent("thread", "bot-token", { fetchImpl }),
+		).resolves.toEqual({ state: "transient" });
 	});
 });

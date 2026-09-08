@@ -1,0 +1,12 @@
+flowchart LR
+  subgraph NOW["现状(2026-09-08)"]
+    M1["Mufasa<br/>Codex Lead"] -->|"自己的 bot token 直发<br/>DirectDiscordOutboundSender"| D1["Discord"]
+    C1["Claude Lead"] -->|"1 问 reply-guard 允不允许"| B1["Bridge"]
+    C1 -->|"2 自己 ch.send 直发"| D1
+  end
+  subgraph TARGET["本单之后"]
+    M2["Mufasa<br/>Codex Lead"] -->|"POST /api/lead-outbound/send<br/>CodexOutboundSender"| B2["Bridge<br/>授权 · 去重 · 代发"]
+    B2 -->|"服务端 token"| D2["Discord"]
+    C2["Claude Lead"] -->|"不变:问 reply-guard 再直发<br/>(Epic ② 另单)"| D2
+  end
+  NOW ~~~ TARGET

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CodexOutboundSender,
 	deterministicNonce,
@@ -41,6 +41,7 @@ function make(opts: { post?: HttpPost; dbPath?: string } = {}) {
 		bridgeUrl: "http://bridge.local/",
 		apiToken: "secret-token",
 		projectName: "proj-1",
+		leadId: "lead-1",
 		channelId: "chan-1",
 		dbPath: opts.dbPath ?? ":memory:",
 		post: opts.post,
@@ -49,11 +50,12 @@ function make(opts: { post?: HttpPost; dbPath?: string } = {}) {
 }
 
 describe("CodexOutboundSender — boundary validation", () => {
-	it("requires bridgeUrl, apiToken, projectName, channelId", () => {
+	it("requires bridgeUrl, apiToken, projectName, leadId, channelId", () => {
 		const base = {
 			bridgeUrl: "u",
 			apiToken: "t",
 			projectName: "p",
+			leadId: "l",
 			channelId: "c",
 			dbPath: ":memory:",
 		};
@@ -66,9 +68,129 @@ describe("CodexOutboundSender — boundary validation", () => {
 		expect(() => new CodexOutboundSender({ ...base, projectName: "" })).toThrow(
 			/projectName/,
 		);
+		expect(() => new CodexOutboundSender({ ...base, leadId: "" })).toThrow(
+			/leadId/,
+		);
 		expect(() => new CodexOutboundSender({ ...base, channelId: "" })).toThrow(
 			/channelId/,
 		);
+	});
+});
+
+describe("CodexOutboundSender — authorization probe (FLY-2442)", () => {
+	it.each([
+		[200, '{"status":"authorized"}', { state: "authorized" }],
+		[
+			200,
+			'{"status":"sent"}',
+			{ state: "incompatible", status: 200, reason: "unexpected_response" },
+		],
+		[
+			400,
+			'{"reason":"text_required"}',
+			{ state: "incompatible", status: 400, reason: "text_required" },
+		],
+		[
+			401,
+			'{"reason":"unauthorized"}',
+			{ state: "incompatible", status: 401, reason: "unauthorized" },
+		],
+		[
+			403,
+			'{"reason":"lead_channel_unauthorized"}',
+			{
+				state: "unauthorized",
+				status: 403,
+				reason: "lead_channel_unauthorized",
+			},
+		],
+		[
+			404,
+			'{"reason":"not_found"}',
+			{ state: "incompatible", status: 404, reason: "not_found" },
+		],
+		[
+			429,
+			'{"reason":"rate_limited"}',
+			{ state: "unavailable", status: 429, reason: "rate_limited" },
+		],
+		[
+			503,
+			'{"reason":"unavailable"}',
+			{ state: "unavailable", status: 503, reason: "unavailable" },
+		],
+	] as const)("maps HTTP %s with body %s", async (status, body, expected) => {
+		const calls: Posted[] = [];
+		const sender = make({
+			post: async (req) => {
+				calls.push(req);
+				return { status, body };
+			},
+		});
+
+		await expect(sender.probeAuthorization("roundtable")).resolves.toEqual(
+			expected,
+		);
+		expect(JSON.parse(calls[0]!.body)).toEqual({
+			projectName: "proj-1",
+			leadId: "lead-1",
+			channelId: "roundtable",
+			probe: true,
+		});
+		const row = (
+			sender as unknown as {
+				db: { prepare(sql: string): { get(): { count: number } } };
+			}
+		).db
+			.prepare("SELECT count(*) AS count FROM outbox")
+			.get();
+		expect(row.count).toBe(0);
+	});
+
+	it("maps malformed bodies and transport failures without throwing", async () => {
+		const malformed = make({
+			post: async () => ({ status: 200, body: "not-json" }),
+		});
+		await expect(malformed.probeAuthorization("chan")).resolves.toEqual({
+			state: "incompatible",
+			status: 200,
+			reason: "unexpected_response",
+		});
+
+		const failed = make({
+			post: async () => Promise.reject(new Error("ECONNRESET")),
+		});
+		await expect(failed.probeAuthorization("chan")).resolves.toMatchObject({
+			state: "unavailable",
+			reason: "ECONNRESET",
+		});
+	});
+
+	it("aborts a probe that exceeds its deadline", async () => {
+		const post = vi.fn<HttpPost>(
+			(req) =>
+				new Promise((_, reject) => {
+					if (!req.signal) return reject(new Error("missing abort signal"));
+					req.signal.addEventListener("abort", () =>
+						reject(new DOMException("aborted", "AbortError")),
+					);
+				}),
+		);
+		const sender = new CodexOutboundSender({
+			bridgeUrl: "http://bridge.local",
+			apiToken: "token",
+			projectName: "proj-1",
+			leadId: "lead-1",
+			channelId: "chan-1",
+			dbPath: ":memory:",
+			post,
+			probeTimeoutMs: 10,
+		});
+
+		await expect(sender.probeAuthorization("chan-1")).resolves.toMatchObject({
+			state: "unavailable",
+		});
+		expect(post).toHaveBeenCalledTimes(1);
 	});
 });
 

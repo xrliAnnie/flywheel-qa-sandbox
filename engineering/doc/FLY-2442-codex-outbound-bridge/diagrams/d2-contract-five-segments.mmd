@@ -1,0 +1,15 @@
+flowchart TB
+  DC["Discord 频道 / 线程"]
+  DC --> IA["① ingest · Claude<br/>Discord 插件 websocket → spool →<br/>spawn flywheel-comm chat-ingest"]
+  DC --> IB["① ingest · Codex<br/>TUI 进程内 REST 轮询 3 秒 →<br/>CodexDiscordMailboxStrategy"]
+  IA --> MB["② mailbox · comm.db 表 mailbox<br/>幂等键 = Discord messageId<br/>权威一直在这里,直到拿到持久回执"]
+  IB --> MB
+  MB --> PUMP["③ 投递泵 · Bridge LeadInboxLoop<br/>活跃 1 s / 空闲 30 s · 批窗 30 s · 批上限 10<br/>在飞批 3 槽 · ack 租约 30 min · 3 次到期即死信"]
+  PUMP --> ADA["④ 最后一跳 · LeadDeliveryAdapter.deliverBatch<br/>回执必须回显 batchId + memberIds"]
+  ADA --> A1["Claude · 两阶段写 JSON + jsonl 边车<br/>Claude Code 内置 poller 自己读"]
+  ADA --> A2["Codex · HMAC 签名 unix socket<br/>TUI 进程内 router 入 journal"]
+  A1 --> L1["Claude Lead 模型"]
+  A2 --> L2["Codex Lead 模型"]
+  L2 --> OUT["⑤ 回程 · 经 Bridge 授权<br/>Codex:POST /api/lead-outbound/send 代发<br/>Claude:reply-guard 后自己直发"]
+  L1 --> OUT
+  OUT --> DC

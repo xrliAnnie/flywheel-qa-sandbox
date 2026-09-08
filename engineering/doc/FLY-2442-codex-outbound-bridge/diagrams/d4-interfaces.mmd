@@ -1,0 +1,55 @@
+classDiagram
+  class LeadDeliveryBatch {
+    batchId: string
+    leadId: string
+    ownerEpoch: string
+    kind: discord_chat | model
+    members: deliveryId, content, priority, seq
+    modelPayload: string
+    replyChannelId?: string
+    replyRoute?: RoundtableReplyRoute
+  }
+  class DurableAcceptReceipt {
+    batchId: string
+    memberIds: string[]
+    status: BatchAcceptStatus
+  }
+  class LeadDeliveryAdapter {
+    <<interface>>
+    deliverBatch(batch) DurableAcceptReceipt
+  }
+  class ClaudeLeadDeliveryAdapter {
+    inboxPath, sidecarPath
+    writeMailboxBatch 两阶段
+  }
+  class CodexLeadDeliveryAdapter {
+    stateDir, leadId, authSecret
+    capabilities 探测 + submitBatch over socket
+  }
+  class OutboundSender {
+    <<interface>>
+    enqueue(leadId, text, idempotencyKey, channelId?) outboxId
+    deliver(outboxId)
+    close()?
+  }
+  class CodexOutboundSender {
+    outbox.db 持久 outbox
+    probeAuthorization(channelId) ProbeResult
+  }
+  class DirectDiscordOutboundSender {
+    进程内 sent-marker
+    仅作显式回滚
+  }
+  class LeadConfig {
+    agentId
+    chatChannel
+    roundtableChannel? 新增 FLY-2442
+    backend
+  }
+  LeadDeliveryAdapter <|.. ClaudeLeadDeliveryAdapter
+  LeadDeliveryAdapter <|.. CodexLeadDeliveryAdapter
+  LeadDeliveryAdapter ..> LeadDeliveryBatch : 输入
+  LeadDeliveryAdapter ..> DurableAcceptReceipt : 输出
+  OutboundSender <|.. CodexOutboundSender
+  OutboundSender <|.. DirectDiscordOutboundSender
+  LeadConfig ..> CodexOutboundSender : Bridge 授权集读它

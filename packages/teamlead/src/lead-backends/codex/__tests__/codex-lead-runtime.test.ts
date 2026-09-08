@@ -10,10 +10,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 
+import { CodexLeadProcess } from "../CodexLeadProcess.js";
+import { CodexOutboundSender } from "../CodexOutboundSender.js";
 import {
 	assertWriteCapableRelease,
 	buildActionSurfaceDisableArgv,
@@ -71,6 +73,7 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		expect(c.outboxDbPath).toBe("/var/state/mufasa/outbox.db");
 		expect(c.threadIdPath).toBe("/var/state/mufasa/thread-id");
 		expect(c.channelIds).toEqual(["chan-chat"]); // no core channel set
+		expect(c.outboundProbeChannelIds).toEqual([]); // direct mode does not probe
 		expect(c.chrome).toBeUndefined();
 	});
 
@@ -227,18 +230,15 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		]);
 	});
 
-	it("FLY-267: REFUSES bridge outbound mode + cross-dept channels (R1 HIGH — Bridge 403 footgun)", () => {
-		// The Bridge's buildAuthorizeLeadChannel only authorizes chat + generalChannel,
-		// so a roundtable reply in bridge mode would 403 → ambiguous. Fail loud at parse;
-		// server-side shared-channel authorization is a follow-up. (direct mode is fine.)
-		expect(() =>
-			parseCodexLeadRuntimeConfig(
-				fullEnv({
-					FLYWHEEL_CODEX_LEAD_OUTBOUND: "bridge",
-					FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "round-1",
-				}),
-			),
-		).toThrow(/cross-dept.*bridge|bridge.*cross-dept/i);
+	it("FLY-2442: bridge mode accepts cross-dept channels and exposes startup probes", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({
+				FLYWHEEL_CODEX_LEAD_OUTBOUND: "bridge",
+				FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "round-1",
+			}),
+		);
+		expect(c.crossDeptChannelIds).toEqual(["round-1"]);
+		expect(c.outboundProbeChannelIds).toEqual(["chan-chat", "round-1"]);
 	});
 
 	it("FLY-267: cross-dept channels ARE allowed in direct mode (default)", () => {
@@ -321,6 +321,52 @@ describe("parseCodexLeadRuntimeConfig", () => {
 			parseCodexLeadRuntimeConfig(env);
 		} catch (e) {
 			expect((e as Error).message).toContain("FLYWHEEL_API_TOKEN");
+		}
+	});
+});
+
+describe("buildCodexLeadRuntime — outbound preflight lifecycle", () => {
+	it("stops the started process and never reaches thread setup after a deterministic refusal", async () => {
+		const stateDir = mkdtempSync(join(tmpdir(), "fly2442-headless-"));
+		const start = vi
+			.spyOn(CodexLeadProcess.prototype, "start")
+			.mockResolvedValue();
+		const stop = vi
+			.spyOn(CodexLeadProcess.prototype, "stop")
+			.mockResolvedValue();
+		const startThread = vi
+			.spyOn(CodexLeadProcess.prototype, "startThread")
+			.mockRejectedValue(new Error("reached ensureThread"));
+		const probe = vi
+			.spyOn(CodexOutboundSender.prototype, "probeAuthorization")
+			.mockResolvedValue({
+				state: "unauthorized",
+				status: 403,
+				reason: "lead_channel_unauthorized",
+			});
+		try {
+			const runtime = buildCodexLeadRuntime(
+				parseCodexLeadRuntimeConfig(
+					fullEnv({
+						FLYWHEEL_CODEX_LEAD_OUTBOUND: "bridge",
+						FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "round-1",
+						FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
+					}),
+				),
+				silentLogger,
+			);
+
+			await expect(runtime.start()).rejects.toThrow(/no fallback to direct/i);
+			expect(start).toHaveBeenCalledTimes(1);
+			expect(probe.mock.calls.map(([channelId]) => channelId)).toEqual([
+				"chan-chat",
+				"round-1",
+			]);
+			expect(stop).toHaveBeenCalledTimes(1);
+			expect(startThread).not.toHaveBeenCalled();
+		} finally {
+			vi.restoreAllMocks();
+			rmSync(stateDir, { recursive: true, force: true });
 		}
 	});
 });

@@ -56,6 +56,49 @@ describe("LeadConfig type", () => {
 		expect(lead.discordStateDir).toBe("/tmp/discord-eng-lead");
 	});
 
+	it("accepts a declared roundtable channel", () => {
+		const projects = parseAndValidateProjects([
+			{
+				projectName: "growth",
+				projectRoot: "/tmp/growth",
+				leads: [
+					{
+						agentId: "growth-lead",
+						summaryRole: "producer",
+						chatChannel: "chat-channel",
+						roundtableChannel: "roundtable-channel",
+						match: { labels: ["Growth"] },
+					},
+				],
+			},
+		]);
+
+		expect(projects[0]!.leads[0]!.roundtableChannel).toBe("roundtable-channel");
+	});
+
+	it.each(["", 123])(
+		"rejects invalid roundtableChannel %j",
+		(roundtableChannel) => {
+			expect(() =>
+				parseAndValidateProjects([
+					{
+						projectName: "growth",
+						projectRoot: "/tmp/growth",
+						leads: [
+							{
+								agentId: "growth-lead",
+								summaryRole: "producer",
+								chatChannel: "chat-channel",
+								roundtableChannel,
+								match: { labels: ["Growth"] },
+							},
+						],
+					},
+				]),
+			).toThrow(/roundtableChannel: must be a non-empty string/);
+		},
+	);
+
 	it("LeadConfig exposes an identity-bound Playwright MCP opt-in", () => {
 		const lead: LeadConfig = {
 			agentId: "eng-lead",

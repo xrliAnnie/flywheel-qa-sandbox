@@ -3,7 +3,9 @@
  * and wireDemuxedProcess (demux ↔ executor facade contract).
  */
 
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -13,6 +15,7 @@ import {
 import type { CodexLeadRuntimeConfig } from "../codex-lead-runtime.js";
 import {
 	buildTuiDaemonEnv,
+	buildTuiGeneration,
 	type CodexLeadTuiRuntimeConfig,
 	createResidentCodexLeadLifecycleForGeneration,
 	isTurnlessRolloutError,
@@ -22,6 +25,127 @@ import {
 	requirePersona,
 	wireDemuxedProcess,
 } from "../codex-lead-tui-runtime.js";
+import { DaemonConnectionSupervisor } from "../DaemonConnectionSupervisor.js";
+
+function outboundPreflightHarness() {
+	const stateDir = mkdtempSync(join(tmpdir(), "fly2442-tui-"));
+	const handlers = new Map<string, Array<(value?: unknown) => void>>();
+	const close = vi.fn(() => {
+		for (const handler of handlers.get("close") ?? []) handler();
+	});
+	const terminate = vi.fn();
+	const methods: string[] = [];
+	const ws = {
+		send(data: string) {
+			const message = JSON.parse(data) as { id?: number; method?: string };
+			if (message.method) methods.push(message.method);
+			if (message.id !== undefined) {
+				queueMicrotask(() => {
+					for (const handler of handlers.get("message") ?? []) {
+						handler(JSON.stringify({ id: message.id, result: {} }));
+					}
+				});
+			}
+		},
+		close,
+		terminate,
+		on(event: string, handler: (value?: unknown) => void) {
+			const list = handlers.get(event) ?? [];
+			list.push(handler);
+			handlers.set(event, list);
+		},
+	};
+	const sender = {
+		enqueue: vi.fn(async () => "outbox"),
+		deliver: vi.fn(async () => {}),
+		close: vi.fn(),
+	};
+	const preflight = vi.fn(async () => {
+		throw new Error("Bridge refused outbound (403); no fallback to direct");
+	});
+	const config = parseCodexLeadTuiRuntimeConfig({
+		FLYWHEEL_LEAD_ID: "mufasa",
+		FLYWHEEL_PROJECT_NAME: "growth",
+		FLYWHEEL_LEAD_KEY: "growth-mufasa",
+		FLYWHEEL_LEAD_BACKEND: "codex-app-server",
+		FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64),
+		DISCORD_EXPECTED_BOT_USER_ID: "12345678901234567",
+		DISCORD_BOT_TOKEN: "bot-token",
+		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "chat",
+		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "roundtable",
+		FLYWHEEL_BRIDGE_URL: "http://bridge.local",
+		FLYWHEEL_API_TOKEN: "api-token",
+		FLYWHEEL_CODEX_LEAD_OUTBOUND: "bridge",
+		FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
+		FLYWHEEL_CODEX_BIN: "/usr/local/bin/codex",
+		CODEX_HOME: "/tmp/fly2442-codex-home",
+		FLYWHEEL_COMM_DB: join(stateDir, "comm.db"),
+		FLYWHEEL_CODEX_TUI_CWD: "/tmp",
+	});
+	const makeGeneration = buildTuiGeneration(
+		config,
+		{ info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+		{
+			connectDaemon: async () => ws as never,
+			createSender: () => sender,
+			preflight,
+		},
+	);
+	return {
+		close,
+		makeGeneration,
+		methods,
+		preflight,
+		remove: () => rmSync(stateDir, { recursive: true, force: true }),
+		sender,
+		terminate,
+	};
+}
+
+describe("buildTuiGeneration — outbound preflight lifecycle (FLY-2442)", () => {
+	it("closes the started WS before rejecting and closes the sender on generation stop", async () => {
+		const h = outboundPreflightHarness();
+		try {
+			const generation = h.makeGeneration();
+
+			await expect(generation.start()).rejects.toThrow(
+				/no fallback to direct/i,
+			);
+			expect(h.methods).toEqual(["initialize", "initialized"]);
+			expect(h.preflight).toHaveBeenCalledTimes(1);
+			const closes = h.close.mock.calls.length + h.terminate.mock.calls.length;
+			expect(closes).toBeGreaterThan(0);
+			await generation.stop();
+			expect(h.close.mock.calls.length + h.terminate.mock.calls.length).toBe(
+				closes,
+			);
+			expect(h.sender.close).toHaveBeenCalledTimes(1);
+		} finally {
+			h.remove();
+		}
+	});
+
+	it("lets supervisor.stop close the sender after initial preflight rejection", async () => {
+		const h = outboundPreflightHarness();
+		const supervisor = new DaemonConnectionSupervisor({
+			buildGeneration: () => h.makeGeneration(),
+			ensureDaemon: async () => {},
+		});
+		try {
+			await expect(supervisor.start()).rejects.toThrow(
+				/no fallback to direct/i,
+			);
+			await supervisor.stop();
+			expect(h.methods).toEqual(["initialize", "initialized"]);
+			expect(
+				h.close.mock.calls.length + h.terminate.mock.calls.length,
+			).toBeGreaterThan(0);
+			expect(h.sender.close).toHaveBeenCalledTimes(1);
+		} finally {
+			h.remove();
+		}
+	});
+});
 
 describe("FLY-2216 resident Codex Lead lifecycle assembly", () => {
 	it("passes one loaded roster and the canonical lead key to both residency protections", () => {
