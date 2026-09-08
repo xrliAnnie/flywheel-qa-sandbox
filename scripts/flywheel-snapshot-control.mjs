@@ -1,9 +1,32 @@
+#!/usr/bin/env node
+
+import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const scriptPath = realpathSync(fileURLToPath(import.meta.url));
 const repoRoot = resolve(dirname(scriptPath), "..");
+
+export function alertSnapshotRefusal(
+	result,
+	notify = (args) =>
+		spawnSync(resolve(repoRoot, "scripts/meta-alert.sh"), args, {
+			stdio: "ignore",
+			timeout: 15_000,
+		}),
+) {
+	if (
+		result?.reason !== "insufficient_data_volume" &&
+		result?.reason !== "data_volume_unavailable"
+	)
+		return;
+	notify([
+		"snapshot-storage-refused",
+		"Flywheel database snapshot refused",
+		`reason=${result.reason} volume=/System/Volumes/Data write_refused=yes`,
+	]);
+}
 
 async function runSnapshotCli(args, env) {
 	const module = await import(
@@ -26,6 +49,7 @@ async function runSnapshotCli(args, env) {
 	});
 	const result = JSON.parse(output.trim().split("\n").at(-1) || "null");
 	if (exitCode !== 0 || !result?.ok) {
+		alertSnapshotRefusal(result);
 		throw new Error(result?.reason || "snapshot_cli_failed");
 	}
 	return result;
@@ -58,6 +82,8 @@ export async function withManagedSnapshots(input, use, deps = {}) {
 	const runCli = deps.runCli ?? ((args) => runSnapshotCli(args, env));
 	if (Object.hasOwn(env, "FLYWHEEL_EXEC_ID")) {
 		const paths = {};
+		let primaryFailure;
+		let value;
 		try {
 			for (const source of input.sources) {
 				const args = [
@@ -73,14 +99,30 @@ export async function withManagedSnapshots(input, use, deps = {}) {
 			const directories = new Set(Object.values(paths).map(dirname));
 			if (directories.size !== 1)
 				throw new Error("snapshot paths span multiple owner directories");
-			return await use({
+			value = await use({
 				paths,
 				directory: directories.values().next().value,
 				ownerKind: "runner",
 			});
-		} finally {
-			await runCli(["release"]);
+		} catch (error) {
+			primaryFailure = error;
 		}
+		let cleanupFailure;
+		try {
+			await runCli(["release"]);
+		} catch (error) {
+			cleanupFailure = error;
+		}
+		if (primaryFailure) {
+			if (cleanupFailure) {
+				process.stderr.write(
+					`${JSON.stringify({ ok: false, reason: "snapshot_cleanup_pending", retryable: true })}\n`,
+				);
+			}
+			throw primaryFailure;
+		}
+		if (cleanupFailure) throw cleanupFailure;
+		return value;
 	}
 
 	const withOperatorSnapshots =
@@ -121,7 +163,22 @@ if (process.argv[1] && realpathSync(process.argv[1]) === scriptPath) {
 		if (typeof module.runSnapshotCommand !== "function") {
 			throw new Error("snapshot helper export missing");
 		}
-		process.exitCode = await module.runSnapshotCommand(process.argv.slice(2));
+		let diagnostic = "";
+		process.exitCode = await module.runSnapshotCommand(process.argv.slice(2), {
+			stderr: (text) => {
+				diagnostic += text;
+				process.stderr.write(text);
+			},
+		});
+		if (process.exitCode !== 0) {
+			try {
+				alertSnapshotRefusal(
+					JSON.parse(diagnostic.trim().split("\n").at(-1) || "null"),
+				);
+			} catch {
+				// The original structured failure remains authoritative.
+			}
+		}
 	} catch {
 		process.stderr.write(
 			`${JSON.stringify({

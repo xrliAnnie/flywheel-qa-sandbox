@@ -123,7 +123,35 @@ case "$*" in
   *) echo "unexpected gh args: $*" >&2; exit 2 ;;
 esac
 SH
-  chmod 0755 "$dir/bin/tmux" "$dir/bin/gh"
+  cat > "$dir/bin/flywheel-snapshot-control" <<'SH'
+#!/usr/bin/env node
+if (process.argv[2] !== "disk") process.exit(2);
+const unavailable = process.env.FAKE_DISK_UNAVAILABLE;
+if (unavailable) {
+  process.stdout.write(`${JSON.stringify({
+    ok: true,
+    disk_avail_gb: null,
+    disk: {
+      volume: "/System/Volumes/Data",
+      availBytes: null,
+      observedAt: null,
+      unavailable: [unavailable],
+    },
+  })}\n`);
+  process.exit(0);
+}
+const bytes = Number(process.env.DISK_AVAIL_BYTES || "50000000000");
+process.stdout.write(`${JSON.stringify({
+  ok: true,
+  disk_avail_gb: bytes / 1_000_000_000,
+  disk: {
+    volume: "/System/Volumes/Data",
+    availBytes: bytes,
+    observedAt: "2026-09-05T01:35:00.000Z",
+  },
+})}\n`);
+SH
+  chmod 0755 "$dir/bin/tmux" "$dir/bin/gh" "$dir/bin/flywheel-snapshot-control"
 }
 
 run_snapshot() {
@@ -137,6 +165,8 @@ run_snapshot() {
   GH_FAIL="${GH_FAIL:-0}" \
   GH_SCHEMA="${GH_SCHEMA:-0}" \
   GH_EMPTY="${GH_EMPTY:-0}" \
+  DISK_AVAIL_BYTES="${DISK_AVAIL_BYTES:-}" \
+  FAKE_DISK_UNAVAILABLE="${FAKE_DISK_UNAVAILABLE:-}" \
   PATROL_NOW_EPOCH="${PATROL_NOW_EPOCH:-}" \
   TMUX_CALL_LOG="${TMUX_CALL_LOG:-$dir/tmux-calls.log}" \
   TMUX_CAPTURE_FAIL="${TMUX_CAPTURE_FAIL:-}" \
@@ -1527,6 +1557,32 @@ else
 fi
 contains "$GH_OUT" "STEP 5: UNAVAILABLE(structural: gh_unavailable)" "gh failure is explicit"
 not_contains "$GH_OUT" "temporary gh failure" "raw changing gh error is not persisted"
+
+LOW_DISK="$TMP/low-disk"
+make_case "$LOW_DISK"
+mkdir -p "$LOW_DISK/source" "$LOW_DISK/bin/lib"
+cp "$SCRIPT" "$LOW_DISK/source/lead-patrol-snapshot.sh"
+ln -sfn "$LOW_DISK/bin/flywheel-snapshot-control" "$LOW_DISK/source/flywheel-snapshot-control.mjs"
+ln -sfn "$WRAPPER" "$LOW_DISK/bin/flywheel-node-dwell-control"
+ln -sfn "$ROOT/scripts/lib/bounded-run.sh" "$LOW_DISK/bin/lib/bounded-run.sh"
+ln -sfn "$LOW_DISK/source/lead-patrol-snapshot.sh" "$LOW_DISK/bin/flywheel-patrol-snapshot"
+LOW_DISK_OUT="$LOW_DISK/out.txt"
+GH_FAIL=1 DISK_AVAIL_BYTES=19999999999 run_snapshot "$LOW_DISK" "$LOW_DISK_OUT" flywheel-eng-lead "$LOW_DISK/bin/flywheel-patrol-snapshot" \
+  || fail "low disk snapshot exits zero"
+contains "$LOW_DISK_OUT" "STEP 5: FINDING" "low Data volume overrides an unavailable GitHub projection"
+contains "$LOW_DISK_OUT" "disk_avail_gb=19.999999999 disk_volume=/System/Volumes/Data disk_avail_bytes=19999999999 disk_below_threshold=yes" "STEP 5 reports the exact Data volume fact"
+contains "$LOW_DISK_OUT" "UNAVAILABLE_CAUSE step=5 class=structural token=gh_unavailable" "lower-priority GitHub unavailability remains visible"
+
+DISK_BOUNDARY_OUT="$LOW_DISK/boundary-out.txt"
+DISK_AVAIL_BYTES=20000000000 run_snapshot "$LOW_DISK" "$DISK_BOUNDARY_OUT" flywheel-eng-lead "$LOW_DISK/bin/flywheel-patrol-snapshot" \
+  || fail "exact disk threshold snapshot exits zero"
+contains "$DISK_BOUNDARY_OUT" "disk_avail_bytes=20000000000 disk_below_threshold=no" "exact 20GB Data volume is not below threshold"
+not_contains "$DISK_BOUNDARY_OUT" "STEP 5: FINDING" "exact 20GB Data volume does not force a disk finding"
+
+DISK_UNAVAILABLE_OUT="$LOW_DISK/unavailable-out.txt"
+FAKE_DISK_UNAVAILABLE="transient: data_volume_unreadable" run_snapshot "$LOW_DISK" "$DISK_UNAVAILABLE_OUT" flywheel-eng-lead "$LOW_DISK/bin/flywheel-patrol-snapshot" \
+  || fail "transient disk-unavailable snapshot exits zero"
+contains "$DISK_UNAVAILABLE_OUT" "UNAVAILABLE_CAUSE step=5 class=transient token=data_volume_unreadable" "disk unavailable preserves its source class"
 
 GH_SCHEMA_DIR="$TMP/gh-schema"
 make_case "$GH_SCHEMA_DIR"

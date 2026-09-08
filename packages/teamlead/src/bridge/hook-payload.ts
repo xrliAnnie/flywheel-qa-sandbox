@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isRunnerStopReport } from "flywheel-comm/runner-stop-report";
+import { DATA_VOLUME_PATH, GB_BYTES } from "flywheel-comm/snapshot-storage";
 import {
 	truncateCodePoints,
 	truncateCodePointsFromEnd,
@@ -744,6 +745,29 @@ function capacityUnavailable(value: unknown): string {
 function renderValidCapacityLines(capacity: CapacitySnapshot): string[] {
 	if (capacity.schemaVersion !== 1) throw new Error("invalid capacity schema");
 	const generatedAt = capacityInstant(capacity.generatedAt);
+	let disk: string;
+	if (!("disk" in capacity) && !("disk_avail_gb" in capacity)) {
+		disk = "?(旧快照未含字段)";
+	} else if (capacity.disk.volume !== DATA_VOLUME_PATH) {
+		throw new Error("invalid capacity disk volume");
+	} else if (capacity.disk.availBytes === null) {
+		if (capacity.disk_avail_gb !== null || capacity.disk.observedAt !== null) {
+			throw new Error("invalid unavailable disk cell");
+		}
+		disk = `?(${capacityUnavailable(capacity.disk.unavailable)})`;
+	} else {
+		const availBytes = capacityNumber(capacity.disk.availBytes, {
+			integer: true,
+		});
+		if (
+			capacityNumber(capacity.disk_avail_gb) !== availBytes / GB_BYTES ||
+			capacity.disk.unavailable !== undefined
+		) {
+			throw new Error("invalid capacity disk value");
+		}
+		capacityInstant(capacity.disk.observedAt);
+		disk = `${boundedDecimalCapacityNumber(capacity.disk_avail_gb)}GB`;
+	}
 	const tightBelowPct = roundedCapacityNumber(capacity.memory.tightBelowPct, {
 		max: 100,
 	});
@@ -935,7 +959,7 @@ function renderValidCapacityLines(capacity: CapacitySnapshot): string[] {
 
 	return [
 		`容量(Bridge 采样 · 判断输入,不是闸门;快照 ${generatedAt}):`,
-		`- 内存 free ${memory}| 负载 ${load}| 手刹=${pressureHold} | 部署暂停=${admissionPause} | 在跑 ${runners}`,
+		`- Data 可用 ${disk} | 内存 free ${memory}| 负载 ${load}| 手刹=${pressureHold} | 部署暂停=${admissionPause} | 在跑 ${runners}`,
 		`- 额度 Claude ${claude} | Codex 无数值源`,
 	];
 }

@@ -57,6 +57,20 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(patrol).toMatch(/不采信.*Bridge|Bridge.*不是事实/);
 	});
 
+	it("FLY-2351: STEP 5 uses the Data volume bytes and fails closed on a contradictory verdict", () => {
+		for (const anchor of [
+			"df -h /System/Volumes/Data",
+			"disk_avail_bytes=<integer>",
+			"disk_below_threshold=<yes|no>",
+			"<20000000000",
+			"data_volume_low",
+			'low&&status!="STEP 5: FINDING"',
+			'unknown&&status=="STEP 5: OK"',
+		]) {
+			expect(patrol).toContain(anchor);
+		}
+	});
+
 	it("FLY-2118: patrol_tick has an executable owner scope, orphan fallback, six-step artifact, and explicit UNAVAILABLE exit", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),

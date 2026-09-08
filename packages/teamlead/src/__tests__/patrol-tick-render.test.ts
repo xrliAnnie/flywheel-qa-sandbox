@@ -38,6 +38,12 @@ function capacitySnapshot(): CapacitySnapshot {
 	return {
 		schemaVersion: 1,
 		generatedAt: "2026-09-03T04:00:00.000Z",
+		disk_avail_gb: 20,
+		disk: {
+			volume: "/System/Volumes/Data",
+			availBytes: 20_000_000_000,
+			observedAt: "2026-09-03T03:59:58.000Z",
+		},
 		memory: {
 			source: "memory_pressure",
 			freePct: 14,
@@ -464,7 +470,7 @@ describe("FLY-1687 patrol tick rendering", () => {
 		];
 		const capacityLines = [
 			"容量(Bridge 采样 · 判断输入,不是闸门;快照 2026-09-03T04:00:00.000Z):",
-			"- 内存 free 14%(memory_pressure,参考线<15%)| 负载 18/18核=1(阈 8)| 手刹=置位(swap-sensor 自 2026-09-03T03:58:00.000Z) | 部署暂停=剩 90s | 在跑 1 · 停车 2",
+			"- Data 可用 20GB | 内存 free 14%(memory_pressure,参考线<15%)| 负载 18/18核=1(阈 8)| 手刹=置位(swap-sensor 自 2026-09-03T03:58:00.000Z) | 部署暂停=剩 90s | 在跑 1 · 停车 2",
 			"- 额度 Claude ★personal 5h 9%/7d 30%(120m 前) | Codex 无数值源",
 		];
 
@@ -557,7 +563,7 @@ describe("FLY-1687 patrol tick rendering", () => {
 		expect(lines).toHaveLength(6);
 		expect(lines[1]).toContain("容量(Bridge 采样 · 判断输入,不是闸门;");
 		expect(lines[2]).toBe(
-			"- 内存 free ?(structural: memory_pressure_missing)| 负载 ?(transient: load_probe_failed)| 手刹=?(transient: state_store_unreadable) | 部署暂停=?(transient: state_store_unreadable) | 在跑 ?(transient: session_store_unreadable)",
+			"- Data 可用 20GB | 内存 free ?(structural: memory_pressure_missing)| 负载 ?(transient: load_probe_failed)| 手刹=?(transient: state_store_unreadable) | 部署暂停=?(transient: state_store_unreadable) | 在跑 ?(transient: session_store_unreadable)",
 		);
 		expect(lines[3]).toBe(
 			"- 额度 Claude ?(structural: account_pool_not_provisioned) | Codex 无数值源",
@@ -676,8 +682,56 @@ describe("FLY-1687 patrol tick rendering", () => {
 		}
 	});
 
+	it("keeps legacy capacity facts visible when the disk cell is absent", () => {
+		const capacity = capacitySnapshot();
+		delete (capacity as Partial<CapacitySnapshot>).disk;
+		delete (capacity as Partial<CapacitySnapshot>).disk_avail_gb;
+
+		const body = formatPatrolTick(envelope([], undefined, capacity));
+
+		expect(body).toContain("Data 可用 ?(旧快照未含字段)");
+		expect(body).toContain("内存 free 14%(memory_pressure,参考线<15%)");
+		expect(body).not.toContain("容量=⚠️ 账面不可读");
+	});
+
+	it.each([
+		"structural: data_volume_unsupported",
+		"structural: data_volume_missing",
+		"transient: data_volume_unreadable",
+	])("keeps other capacity facts beside %s", (unavailable) => {
+		const capacity = capacitySnapshot();
+		capacity.disk_avail_gb = null;
+		capacity.disk = {
+			volume: "/System/Volumes/Data",
+			availBytes: null,
+			observedAt: null,
+			unavailable: [unavailable],
+		};
+
+		const body = formatPatrolTick(envelope([], undefined, capacity));
+
+		expect(body).toContain(`Data 可用 ?(${unavailable})`);
+		expect(body).toContain("内存 free 14%(memory_pressure,参考线<15%)");
+		expect(body).not.toContain("容量=⚠️ 账面不可读");
+	});
+
 	it("fails the capacity section closed on malformed values and unlisted tokens", () => {
 		const cases: Array<(capacity: CapacitySnapshot) => void> = [
+			(capacity) => {
+				capacity.disk.volume = "/" as never;
+			},
+			(capacity) => {
+				capacity.disk_avail_gb = 19;
+			},
+			(capacity) => {
+				capacity.disk_avail_gb = null;
+				capacity.disk = {
+					volume: "/System/Volumes/Data",
+					availBytes: null,
+					observedAt: null,
+					unavailable: ["transient: unlisted_disk_probe"],
+				};
+			},
 			(capacity) => {
 				capacity.memory.freePct = "rm -rf /" as never;
 			},

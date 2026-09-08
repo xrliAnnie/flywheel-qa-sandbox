@@ -33,6 +33,10 @@ export const CAPACITY_UNAVAILABLE_TOKENS: ReadonlySet<string> = new Set([
 	"transient: account_store_invalid",
 	"transient: account_entry_invalid",
 	"structural: codex_no_usage_api",
+	"structural: data_volume_unsupported",
+	"structural: data_volume_missing",
+	"transient: data_volume_unreadable",
+	"transient: data_volume_invalid",
 ]);
 
 const CAPACITY_UNAVAILABLE_GRAMMAR =

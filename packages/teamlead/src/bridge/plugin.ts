@@ -1636,6 +1636,7 @@ function makeCapacitySnapshotDeps(
 		admission: config.runnerAdmission ?? undefined,
 		readMemoryFreePct:
 			config.capacityProbes?.readMemoryFreePct ?? readMemoryFreePct,
+		readDataDisk: config.capacityProbes?.readDataDisk,
 		accountStorePath: config.capacityProbes?.accountStorePath,
 		quotaConfigPath: config.capacityProbes?.quotaConfigPath,
 	};

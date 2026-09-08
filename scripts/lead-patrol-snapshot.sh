@@ -12,6 +12,8 @@ case "$(basename "${BASH_SOURCE[0]}")" in
   flywheel-patrol-snapshot) DWELL_CONTROL="$SCRIPT_DIR/flywheel-node-dwell-control" ;;
   *) DWELL_CONTROL="" ;;
 esac
+SNAPSHOT_SOURCE_DIR="$(node -e 'const {dirname}=require("node:path");const {realpathSync}=require("node:fs");process.stdout.write(dirname(realpathSync(process.argv[1])))' "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+SNAPSHOT_CONTROL="${SNAPSHOT_SOURCE_DIR:+$SNAPSHOT_SOURCE_DIR/flywheel-snapshot-control.mjs}"
 WORK_TMP="$(mktemp -d "${TMPDIR:-/tmp}/flywheel-patrol.XXXXXX")" || {
   echo "[patrol-snapshot] ERROR: temp_directory_unavailable" >&2
   exit 1
@@ -1113,6 +1115,45 @@ raya_collect_patrol_fact() {
 
 STEP5_FACTS=""
 STEP5_STATUS="LEAD-JUDGMENT-REQUIRED"
+DISK_FACT=""
+DISK_LOW=0
+DISK_UNAVAILABLE=""
+DISK_UNAVAILABLE_CLASS=structural
+if [ ! -x "$SNAPSHOT_CONTROL" ]; then
+  DISK_UNAVAILABLE="snapshot_helper_missing"
+else
+  DISK_JSON="$(node "$SNAPSHOT_CONTROL" disk 2>/dev/null)"
+  DISK_RC=$?
+  if [ "$DISK_RC" -eq 0 ] && printf '%s' "$DISK_JSON" | jq -e '
+      .ok == true and
+      .disk.volume == "/System/Volumes/Data" and
+      ((.disk.availBytes | type) == "number" and .disk.availBytes >= 0 and
+        .disk.availBytes == (.disk.availBytes | floor)) and
+      ((.disk.observedAt | type) == "string") and
+      ((.disk_avail_gb | type) == "number" and
+        .disk_avail_gb == (.disk.availBytes / 1000000000)) and
+      (.disk.unavailable == null)' >/dev/null 2>&1; then
+    DISK_AVAIL_BYTES="$(printf '%s' "$DISK_JSON" | jq -er '.disk.availBytes')"
+    DISK_AVAIL_GB="$(printf '%s' "$DISK_JSON" | jq -er '.disk_avail_gb')"
+    DISK_BELOW_THRESHOLD=no
+    if [ "$DISK_AVAIL_BYTES" -lt 20000000000 ]; then
+      DISK_LOW=1
+      DISK_BELOW_THRESHOLD=yes
+    fi
+    DISK_FACT="disk_avail_gb=$DISK_AVAIL_GB disk_volume=/System/Volumes/Data disk_avail_bytes=$DISK_AVAIL_BYTES disk_below_threshold=$DISK_BELOW_THRESHOLD"
+  elif [ "$DISK_RC" -eq 0 ] && printf '%s' "$DISK_JSON" | jq -e '
+      .ok == true and .disk_avail_gb == null and
+      .disk.volume == "/System/Volumes/Data" and .disk.availBytes == null and
+      .disk.observedAt == null and
+      ((.disk.unavailable | type) == "array" and
+        (.disk.unavailable | length) == 1 and
+        (.disk.unavailable[0] | test("^(structural|transient): [a-z0-9_]+$")))' >/dev/null 2>&1; then
+    DISK_UNAVAILABLE_CLASS="$(printf '%s' "$DISK_JSON" | jq -er '.disk.unavailable[0] | split(": ")[0]')"
+    DISK_UNAVAILABLE="$(printf '%s' "$DISK_JSON" | jq -er '.disk.unavailable[0] | split(": ")[1]')"
+  else
+    DISK_UNAVAILABLE="data_volume_probe_invalid"
+  fi
+fi
 if [ "$PROJECTS_OK" != 1 ] || ! command -v gh >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
   STEP5_STATUS="UNAVAILABLE(structural: gh_unavailable)"
 else
@@ -1151,6 +1192,29 @@ Discord: resolve at most 2 recent roster identifiers via /api/chat-threads, then
   fi
 fi
 
+case "$STEP5_STATUS" in
+  "UNAVAILABLE(structural: gh_unavailable)")
+    STEP5_FACTS="${STEP5_FACTS:+$STEP5_FACTS$'\n'}UNAVAILABLE_CAUSE step=5 class=structural token=gh_unavailable"
+    ;;
+  "UNAVAILABLE(structural: gh_schema)")
+    STEP5_FACTS="${STEP5_FACTS:+$STEP5_FACTS$'\n'}UNAVAILABLE_CAUSE step=5 class=structural token=gh_schema"
+    ;;
+esac
+
+if [ -n "$DISK_FACT" ]; then
+  STEP5_FACTS="${STEP5_FACTS:+$STEP5_FACTS$'\n'}$DISK_FACT"
+fi
+if [ -n "$DISK_UNAVAILABLE" ]; then
+  STEP5_FACTS="${STEP5_FACTS:+$STEP5_FACTS$'\n'}UNAVAILABLE_CAUSE step=5 class=$DISK_UNAVAILABLE_CLASS token=$DISK_UNAVAILABLE"
+  case "$STEP5_STATUS" in
+    UNAVAILABLE\(*) ;;
+    *) STEP5_STATUS="UNAVAILABLE($DISK_UNAVAILABLE_CLASS: $DISK_UNAVAILABLE)" ;;
+  esac
+fi
+if [ "$DISK_LOW" -eq 1 ]; then
+  STEP5_STATUS="FINDING"
+fi
+
 if [ "$PROJECT_NAME" = flywheel ]; then
   raya_collect_patrol_fact || true
   if [ -n "$RAYA_PATROL_FACT" ]; then
@@ -1159,7 +1223,7 @@ if [ "$PROJECT_NAME" = flywheel ]; then
   if [ -n "$RAYA_PATROL_UNAVAILABLE" ]; then
     STEP5_FACTS="${STEP5_FACTS:+$STEP5_FACTS$'\n'}UNAVAILABLE_CAUSE step=5 class=structural token=$RAYA_PATROL_UNAVAILABLE"
     case "$STEP5_STATUS" in
-      UNAVAILABLE\(*) ;;
+      FINDING|UNAVAILABLE\(*) ;;
       *) STEP5_STATUS="UNAVAILABLE(structural: $RAYA_PATROL_UNAVAILABLE)" ;;
     esac
   fi
