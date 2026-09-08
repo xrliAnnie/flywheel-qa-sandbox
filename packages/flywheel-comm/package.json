@@ -47,7 +47,8 @@
 		"./approval-intent": "./dist/approval-intent.js",
 		"./design-html-evidence": "./dist/design-html-evidence.js",
 		"./report-html": "./dist/report-html.js",
-		"./oncall-receipts": "./dist/oncall-receipts.js"
+		"./oncall-receipts": "./dist/oncall-receipts.js",
+		"./snapshot-storage": "./dist/snapshot-storage.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"
