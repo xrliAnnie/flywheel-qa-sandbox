@@ -14,6 +14,7 @@
 import type { WorkflowPhaseRole } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import {
+	deriveFounderGateTitleState,
 	deriveIssueTitleBadge,
 	derivePhaseDisplayState,
 	PHASE_DISPLAY_GLYPH_PARTS,
@@ -429,6 +430,188 @@ describe("deriveIssueTitleBadge (plan 1b aggregation)", () => {
 			phase: "design",
 		});
 	});
+});
+
+describe("deriveFounderGateTitleState (FLY-2408)", () => {
+	it.each([
+		{
+			name: "active phase",
+			input: {
+				phaseStates: states({
+					design: "done",
+					implement: "done",
+					qa: "active",
+				}),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+					qa: "running",
+				}),
+				shipFinalizationClaimed: false,
+				founderGateActive: true,
+			},
+		},
+		{
+			name: "main-stage workflow",
+			input: {
+				phaseStates: new Map<WorkflowPhaseRole, PhaseDisplayState>(),
+				phaseStatuses: new Map<WorkflowPhaseRole, string>(),
+				shipFinalizationClaimed: false,
+				mainSessionStage: "implement",
+				mainSessionStatus: "running",
+				founderGateActive: true,
+			},
+		},
+	])(
+		"adds founder attention over every non-exception base: $name",
+		({ input }) => {
+			expect(deriveFounderGateTitleState(input)).toEqual({
+				badge: { kind: "stage", stage: "approve" },
+				founderGateAttention: true,
+			});
+		},
+	);
+
+	it("keeps a blocked badge above founder-gate attention", () => {
+		expect(
+			deriveFounderGateTitleState({
+				phaseStates: states({
+					design: "done",
+					implement: "blocked",
+					qa: "active",
+				}),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "failed",
+					qa: "running",
+				}),
+				shipFinalizationClaimed: false,
+				founderGateActive: true,
+			}),
+		).toEqual({
+			badge: { kind: "blocked" },
+			founderGateAttention: false,
+		});
+	});
+
+	it.each([
+		{ stage: "completed", expectedStage: "ship" },
+		{ stage: "pr_created", expectedStage: "pr_created" },
+	])(
+		"durable approval removes attention without widening the base mapping: $stage",
+		({ stage, expectedStage }) => {
+			expect(
+				deriveFounderGateTitleState({
+					phaseStates: new Map(),
+					phaseStatuses: new Map(),
+					shipFinalizationClaimed: false,
+					mainSessionStage: stage,
+					mainSessionStatus: "approved_to_ship",
+					founderGateActive: true,
+				}),
+			).toEqual({
+				badge: { kind: "stage", stage: expectedStage },
+				founderGateAttention: false,
+			});
+		},
+	);
+
+	it("keeps the same bell title while workflow/session gate writes settle", () => {
+		const expected = {
+			badge: { kind: "stage", stage: "approve" },
+			founderGateAttention: true,
+		} as const;
+		expect(
+			deriveFounderGateTitleState({
+				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+					qa: "awaiting_review",
+				}),
+				shipFinalizationClaimed: false,
+				founderGateActive: false,
+			}),
+		).toEqual(expected);
+		expect(
+			deriveFounderGateTitleState({
+				phaseStates: new Map(),
+				phaseStatuses: new Map(),
+				shipFinalizationClaimed: false,
+				mainSessionStage: "completed",
+				mainSessionStatus: "awaiting_review",
+				founderGateActive: false,
+			}),
+		).toEqual(expected);
+	});
+
+	it("does not let a premature ship stage label suppress gate attention", () => {
+		expect(
+			deriveFounderGateTitleState({
+				phaseStates: new Map(),
+				phaseStatuses: new Map(),
+				shipFinalizationClaimed: false,
+				mainSessionStage: "ship",
+				mainSessionStatus: "running",
+				founderGateActive: true,
+			}),
+		).toEqual({
+			badge: { kind: "stage", stage: "approve" },
+			founderGateAttention: true,
+		});
+	});
+
+	it("active gate attention outranks historical issue completion", () => {
+		expect(
+			deriveFounderGateTitleState({
+				phaseStates: new Map(),
+				phaseStatuses: new Map(),
+				shipFinalizationClaimed: true,
+				mainSessionStage: "completed",
+				mainSessionStatus: "terminated",
+				issueConcluded: true,
+				founderGateActive: true,
+			}),
+		).toEqual({
+			badge: { kind: "stage", stage: "approve" },
+			founderGateAttention: true,
+		});
+	});
+
+	it("durable phase approval removes attention at a still-lagging gate node", () => {
+		expect(
+			deriveFounderGateTitleState({
+				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
+				phaseStatuses: statuses({
+					design: "design_done",
+					implement: "awaiting_review",
+					qa: "approved_to_ship",
+				}),
+				shipFinalizationClaimed: false,
+				founderGateActive: true,
+			}),
+		).toEqual({
+			badge: { kind: "stage", stage: "ship" },
+			founderGateAttention: false,
+		});
+	});
+
+	it.each(["design", "implement", "qa"] as const)(
+		"leaving the gate restores active %s rework without attention",
+		(phase) => {
+			expect(
+				deriveFounderGateTitleState({
+					phaseStates: states({ [phase]: "active" }),
+					phaseStatuses: statuses({ [phase]: "running" }),
+					shipFinalizationClaimed: false,
+					founderGateActive: false,
+				}),
+			).toEqual({
+				badge: { kind: "phase", phase },
+				founderGateAttention: false,
+			});
+		},
+	);
 });
 
 describe("PHASE_DISPLAY_GLYPHS (plan 1c vocabulary — Annie's glyphs)", () => {

@@ -240,21 +240,22 @@ export function reconnectingBadge(withWord: boolean): string {
 		: RECONNECTING_EMOJI;
 }
 
-/**
- * Split a thread title into its leading status emoji (if any), the short status
- * word glued to it (emoji+word mode, if present), and the base title. Only a
- * single recognized status emoji is peeled; unrelated leading emoji (e.g. the
- * 🧵 thread glyph) are left untouched so they are not mistaken for status. The
- * word is peeled only when it is the exact word paired with that emoji and is
- * glued directly behind it — so plain emoji-only titles (`🔨 [FLY-XX] …`) and
- * emoji+word titles (`🔨实现中 [FLY-XX] …`) both reduce to the same base, which
- * keeps re-stamping idempotent and lets the mode flip without leaking a word.
- */
-export function splitStatusEmoji(name: string): {
+/** Line-leading attention overlay while a thread is waiting at founder gate. */
+export const FOUNDER_GATE_ATTENTION_EMOJI = "🔔";
+
+/** Preserve the existing primary status badge beneath the founder attention. */
+export function founderGateAttentionBadge(primaryBadge: string): string {
+	return `${FOUNDER_GATE_ATTENTION_EMOJI} ${primaryBadge}`;
+}
+
+type StatusEmojiSplit = {
+	attentionEmoji?: string;
 	emoji?: string;
 	word?: string;
 	base: string;
-} {
+};
+
+function splitPrimaryStatusEmoji(name: string): StatusEmojiSplit | undefined {
 	for (const emoji of ALL_STATUS_EMOJI) {
 		if (name.startsWith(emoji)) {
 			let rest = name.slice(emoji.length);
@@ -270,6 +271,29 @@ export function splitStatusEmoji(name: string): {
 			return word ? { emoji, word, base } : { emoji, base };
 		}
 	}
+	return undefined;
+}
+
+/**
+ * Split a thread title into its managed leading attention/status prefix and
+ * base title. Founder-gate attention is managed only when a recognized primary
+ * badge follows it, so a manually curated `🔔 literal title` remains intact.
+ */
+export function splitStatusEmoji(name: string): StatusEmojiSplit {
+	const attentionRest = name.startsWith(FOUNDER_GATE_ATTENTION_EMOJI)
+		? name.slice(FOUNDER_GATE_ATTENTION_EMOJI.length)
+		: "";
+	if (/^\s+/.test(attentionRest)) {
+		const primary = splitPrimaryStatusEmoji(attentionRest.replace(/^\s+/, ""));
+		if (primary) {
+			return {
+				attentionEmoji: FOUNDER_GATE_ATTENTION_EMOJI,
+				...primary,
+			};
+		}
+	}
+	const primary = splitPrimaryStatusEmoji(name);
+	if (primary) return primary;
 	return { base: name };
 }
 

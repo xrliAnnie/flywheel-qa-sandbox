@@ -35,8 +35,9 @@ import {
 	resolveAnnouncerBotToken,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
-import type { Session, StateStore } from "../StateStore.js";
+import type { Session, StateStore, WorkflowRunRow } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
+import { workflowApprovalGate } from "../workflow-template.js";
 import {
 	buildPipelineHeaderContent,
 	type ChatThreadContext,
@@ -47,14 +48,20 @@ import { commDbPathForProject } from "./commdb-path.js";
 import { deleteDiscordMessageInChannel } from "./discord-utils.js";
 import {
 	type DisplayWriteResult,
+	deriveFounderGateTitleState,
 	deriveIssueTitleBadge,
 	derivePhaseDisplayState,
 	type ParkProbe,
 	type PhaseDisplayState,
 } from "./issue-display.js";
-import { isQaHeld } from "./review-hold.js";
+import { isQaHeld, isReviewHeld } from "./review-hold.js";
 import { sessionModelDisplay } from "./runner-model-display.js";
-import { BLOCKED_EMOJI, BLOCKED_WORD } from "./stage-utils.js";
+import {
+	BLOCKED_EMOJI,
+	BLOCKED_WORD,
+	founderGateAttentionBadge,
+	stageBadge,
+} from "./stage-utils.js";
 import {
 	type AttachTarget,
 	buildAttachCommand,
@@ -142,6 +149,21 @@ function plannedPhaseModels(
 /** FLY-560: issue status badges always include their short status word. */
 export function issueStatusWordEnabled(): boolean {
 	return true;
+}
+
+/** Fail closed when a run cannot prove its snapshot-defined approval gate. */
+export function isWorkflowApprovalGateCurrent(
+	run: WorkflowRunRow | undefined,
+): boolean {
+	if (!run?.snapshot || run.status !== "active" || !run.current_node_id) {
+		return false;
+	}
+	try {
+		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		return run.current_node_id === workflowApprovalGate(snapshot.manifest).node;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -449,10 +471,12 @@ export function computeSessionsFingerprint(
 		StateStore,
 		| "hasFinalizationCompletedForIssue"
 		| "hasMergeConfirmedForIssue"
+		| "getActiveWorkflowRunForIssue"
 		| "getLatestPhaseSessionsForIssue"
 		| "getSessionByIssue"
 	>,
 	issueId: string,
+	activeWorkflowRun?: WorkflowRunRow | null,
 ): string {
 	const phases = store.getLatestPhaseSessionsForIssue(issueId).map((s) => ({
 		r: s.chat_thread_role ?? "",
@@ -460,9 +484,16 @@ export function computeSessionsFingerprint(
 		e: s.execution_id,
 	}));
 	const main = store.getSessionByIssue(issueId);
+	const workflowRun =
+		activeWorkflowRun === undefined
+			? store.getActiveWorkflowRunForIssue(issueId)
+			: (activeWorkflowRun ?? undefined);
 	const issueConcluded = hasDurableIssueConclusion(store, issueId);
 	return JSON.stringify({
 		p: phases,
+		w: workflowRun
+			? { id: workflowRun.run_id, n: workflowRun.current_node_id }
+			: null,
 		// `getLatestPhaseSessionsForIssue` only returns design/implement/qa rows,
 		// so a non-empty result is the same DAG workflow guard used by derivation.
 		// Single-session issues retain the pre-FLY-1225 zero-query path.
@@ -682,6 +713,7 @@ export class IssueDisplayRefresher {
 		const { store, projects, config, chatThreadCreator, flags } = this.deps;
 		const anySession = store.getSessionByIssue(issueId);
 		if (!anySession) return;
+		const activeWorkflowRun = store.getActiveWorkflowRunForIssue(issueId);
 
 		let chatChannel: string | undefined;
 		let botToken: string | undefined;
@@ -704,7 +736,11 @@ export class IssueDisplayRefresher {
 		const threadId = thread.thread_id;
 		if (thread.archived_at) {
 			const fingerprint: DisplayFingerprint = {
-				s: computeSessionsFingerprint(store, issueId),
+				s: computeSessionsFingerprint(
+					store,
+					issueId,
+					activeWorkflowRun ?? null,
+				),
 				c: JSON.stringify({ archived: true }),
 			};
 			store.setChatThreadDisplayFingerprint(
@@ -718,6 +754,7 @@ export class IssueDisplayRefresher {
 
 		const latestPhase = store.getLatestPhaseSessionsForIssue(issueId);
 		const isWorkflowPhase = latestPhase.length > 0;
+		const founderGateActive = isWorkflowApprovalGateCurrent(activeWorkflowRun);
 		const issueConcluded = hasDurableIssueConclusion(store, issueId);
 
 		// Park probes — once per involved exec (the map dedupes).
@@ -752,23 +789,30 @@ export class IssueDisplayRefresher {
 			isWorkflowPhase && store.hasFinalizationCompletedForIssue(issueId);
 
 		// ── Face A: title badge ──
-		let badge = deriveIssueTitleBadge({
+		const titleBadgeInput = {
 			phaseStates,
 			phaseStatuses,
 			shipFinalizationClaimed,
 			mainSessionStage: anySession.session_stage,
 			mainSessionStatus: anySession.status,
 			issueConcluded,
+		};
+		let { badge, founderGateAttention } = deriveFounderGateTitleState({
+			...titleBadgeInput,
+			founderGateActive,
 		});
-		// FLY-579/827 interaction (feedback: founder status must be QA-gated): a
-		// single-session issue whose independent auto-QA is in flight shows 🧪QA
-		// — the QA runs on a SEPARATE QA·FLY-XX issue, so it is not derivable
+		// Founder attention starts only after the existing code/QA/merge hold has
+		// cleared. Those holds gate every founder surface, so the title must not
+		// imply that founder action can advance the issue while one is active.
+		// Preserve the pre-FLY-2408 independent auto-QA title for single-session
+		// issues; that QA runs on a separate QA·FLY-XX issue and is not derivable
 		// from this issue's session rows.
-		if (
-			badge.kind === "stage" &&
-			!isWorkflowPhase &&
-			isQaHeld(store, anySession)
-		) {
+		const qaHeld = !isWorkflowPhase && isQaHeld(store, anySession);
+		if (founderGateAttention && (qaHeld || isReviewHeld(store, anySession))) {
+			founderGateAttention = false;
+			badge = deriveIssueTitleBadge(titleBadgeInput);
+		}
+		if (badge.kind === "stage" && qaHeld) {
 			badge = { kind: "stage", stage: "test" };
 		}
 
@@ -800,6 +844,17 @@ export class IssueDisplayRefresher {
 					threadId,
 					withWord ? `${BLOCKED_EMOJI}${BLOCKED_WORD}` : BLOCKED_EMOJI,
 				);
+			} else if (founderGateAttention) {
+				const primaryBadge = stageBadge("approve", withWord);
+				if (primaryBadge) {
+					resultA = await chatThreadCreator.stampStageEmojiResult(
+						titleCtx,
+						threadId,
+						"",
+						withWord,
+						founderGateAttentionBadge(primaryBadge),
+					);
+				}
 			} else if (badge.kind === "completed") {
 				resultA = await chatThreadCreator.stampStageEmojiResult(
 					titleCtx,
@@ -1001,7 +1056,11 @@ export class IssueDisplayRefresher {
 		const allLanded = faceResults.every((r) => r === "changed" || r === "noop");
 		if (allLanded) {
 			const fingerprint: DisplayFingerprint = {
-				s: computeSessionsFingerprint(store, issueId),
+				s: computeSessionsFingerprint(
+					store,
+					issueId,
+					activeWorkflowRun ?? null,
+				),
 				c: JSON.stringify({ park: parkComponent, tmux: commComponent }),
 			};
 			store.setChatThreadDisplayFingerprint(

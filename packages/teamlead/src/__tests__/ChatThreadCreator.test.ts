@@ -1409,6 +1409,103 @@ describe("FLY-892 Step 6: DAG workflow badge as stage-level title prefix", () =>
 			"🔨实现 [O] [FLY-892] One issue one thread",
 		);
 	});
+
+	it("removes the complete founder-gate prefix when rework restores a phase", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({
+						name: "🔔 ⏳待批 [G] [FLY-892] One issue one thread",
+					}),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({ modelMarker: "G" }),
+			"thread-1",
+			"implement",
+			true,
+			"🔨实现",
+		);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🔨实现 [G] [FLY-892] One issue one thread",
+		);
+	});
+
+	it("does not PATCH an already-current founder-gate title", async () => {
+		mockFetch.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			json: () =>
+				Promise.resolve({
+					name: "🔔 ⏳待批 [G] [FLY-892] One issue one thread",
+				}),
+		});
+
+		await creator.stampStageEmoji(
+			ctx({ modelMarker: "G" }),
+			"thread-1",
+			"",
+			true,
+			"🔔 ⏳待批",
+		);
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		expect(mockFetch.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(
+			false,
+		);
+	});
+
+	it("keeps the founder-gate and model prefixes inside the 100-character budget", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: `[FLY-892] ${"x".repeat(200)}` }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({ issueTitle: undefined, modelMarker: "G" }),
+			"thread-1",
+			"",
+			true,
+			"🔔 ⏳待批",
+		);
+
+		const name = JSON.parse(mockFetch.mock.calls[1]![1].body).name as string;
+		expect(name).toHaveLength(100);
+		expect(name.startsWith("🔔 ⏳待批 [G] [FLY-892]")).toBe(true);
+	});
+
+	it("enters founder gate with one target PATCH", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({
+						name: "🧪QA [G] [FLY-892] One issue one thread",
+					}),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({ modelMarker: "G" }),
+			"thread-1",
+			"",
+			true,
+			"🔔 ⏳待批",
+		);
+
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🔔 ⏳待批 [G] [FLY-892] One issue one thread",
+		);
+	});
 });
 
 describe("FLY-91: StateStore chat_threads CRUD", () => {

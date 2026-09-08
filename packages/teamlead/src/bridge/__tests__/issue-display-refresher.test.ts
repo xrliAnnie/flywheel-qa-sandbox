@@ -11,6 +11,7 @@
 
 import type { DesignBackend, WorkflowPhaseRole } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { insertHistoricalAutoQaRecord } from "../../__tests__/helpers/historical-qa.js";
 import { applyTransition } from "../../applyTransition.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
@@ -263,6 +264,97 @@ function storedFingerprint(store: StateStore): string | null {
 	);
 }
 
+type TestDb = {
+	run(sql: string, params?: unknown[]): void;
+};
+
+function testDb(store: StateStore): TestDb {
+	return (store as unknown as { db: TestDb }).db;
+}
+
+function seedWorkflowRunAt(
+	store: StateStore,
+	currentNodeId: "design" | "founder_gate",
+): void {
+	const snapshot = buildWorkflowRunSnapshotV1({
+		template: { id: "tpl-display-generic", revision: 1 },
+		manifest: {
+			schema_version: 1,
+			nodes: [
+				{
+					id: "design",
+					type: "design",
+					vendor: "codex",
+					model: "gpt-5.6-sol",
+					effort: "high",
+				},
+				{
+					id: "implement",
+					type: "implement",
+					vendor: "codex",
+					model: "gpt-5.6-sol",
+					effort: "high",
+				},
+				{
+					id: "qa",
+					type: "qa",
+					vendor: "claude",
+					model: "claude-opus-4-6",
+					effort: "high",
+				},
+				{ id: "founder_gate", type: "gate" },
+			],
+			edges: [
+				{
+					id: "design_done",
+					from: "design",
+					to: "implement",
+					condition: "design_done",
+				},
+				{
+					id: "implement_done",
+					from: "implement",
+					to: "qa",
+					condition: "implement_done",
+				},
+				{
+					id: "qa_pass",
+					from: "qa",
+					to: "founder_gate",
+					condition: "qa_pass",
+				},
+			],
+			loops: [
+				{
+					id: "qa_retry",
+					from: "qa",
+					to: "implement",
+					loop_when: "qa_fail",
+					exit_when: "qa_pass",
+					max_iterations: 3,
+					on_limit: "escalate",
+				},
+			],
+			terminal_gate: {
+				node: "founder_gate",
+				predicate: "founder_approved",
+			},
+			ship_claims: ["qa_passed", "founder_approved"],
+		},
+	});
+	store.createWorkflowRun({
+		runId: "run-founder-title",
+		issueId: ISSUE,
+		projectName: PROJECT,
+		snapshotJson: JSON.stringify(snapshot),
+		claimsReadEnrolled: false,
+	});
+	testDb(store).run(
+		"UPDATE workflow_run SET current_node_id = ? WHERE run_id = ?",
+		[currentNodeId, "run-founder-title"],
+	);
+}
+
 describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 	let store: StateStore;
 
@@ -488,6 +580,248 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		});
 	});
 
+	it("active-phase founder gate renders the bell over the wait badge", async () => {
+		seedWorkflowRunAt(store, "founder_gate");
+		seedSession(store, {
+			exec: "e-design",
+			role: "design",
+			status: "design_done",
+		});
+		seedSession(store, {
+			exec: "e-impl",
+			role: "implement",
+			status: "awaiting_review",
+		});
+		seedSession(store, { exec: "e-qa", role: "qa", status: "running" });
+		const { refresher, log } = makeRefresher(store, {
+			park: { "e-design": "parked", "e-impl": "parked" },
+		});
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([
+			{ via: "stage", stage: "", phaseBadge: "🔔 ⏳待批" },
+		]);
+		expectHeaderStates(log.header[0]!, {
+			design: "✅ 完成",
+			implement: "✅ 完成",
+			qa: "▶ 进行中",
+		});
+	});
+
+	it("main-stage founder gate renders the same bell without phase rows", async () => {
+		seedWorkflowRunAt(store, "founder_gate");
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "running",
+			stage: "implement",
+		});
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([
+			{ via: "stage", stage: "", phaseBadge: "🔔 ⏳待批" },
+		]);
+	});
+
+	it("active auto-QA keeps the existing QA title instead of ringing the founder bell", async () => {
+		const head = "a".repeat(40);
+		seedWorkflowRunAt(store, "founder_gate");
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "awaiting_review",
+		});
+		store.patchSessionMetadata("e-main", {
+			pr_head_sha: head,
+			pr_number: 907,
+		});
+		insertHistoricalAutoQaRecord(store, {
+			parentExecutionId: "e-main",
+			targetPrHeadSha: head,
+			issueId: ISSUE,
+			projectName: PROJECT,
+			status: "running",
+		});
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([{ via: "stage", stage: "test" }]);
+	});
+
+	it("Codex-pending review restores its real pre-gate stage without founder attention", async () => {
+		seedWorkflowRunAt(store, "founder_gate");
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "awaiting_review",
+			stage: "code_review",
+		});
+		store.patchSessionMetadata("e-main", {
+			pr_head_sha: "b".repeat(40),
+			pr_number: 907,
+		});
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([{ via: "stage", stage: "code_review" }]);
+	});
+
+	it("blocked founder-gate state keeps the higher-priority blocked badge", async () => {
+		seedWorkflowRunAt(store, "founder_gate");
+		seedSession(store, {
+			exec: "e-impl",
+			role: "implement",
+			status: "failed",
+		});
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([{ via: "statusBadge", badge: "🔴受阻" }]);
+	});
+
+	it("reconnect ownership defers founder-gate attention and keeps its fingerprint open", async () => {
+		seedWorkflowRunAt(store, "founder_gate");
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "running",
+			stage: "implement",
+		});
+		const { refresher, log } = makeRefresher(store, {
+			isReconnectTitleActive: () => true,
+		});
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([]);
+		expect(storedFingerprint(store)).toBeNull();
+	});
+
+	it("durable approval removes the bell even while the workflow node lags at the gate", async () => {
+		seedWorkflowRunAt(store, "founder_gate");
+		seedSession(store, {
+			exec: "e-design",
+			role: "design",
+			status: "design_done",
+		});
+		seedSession(store, {
+			exec: "e-impl",
+			role: "implement",
+			status: "awaiting_review",
+		});
+		seedSession(store, {
+			exec: "e-qa",
+			role: "qa",
+			status: "approved_to_ship",
+		});
+		const { refresher, log } = makeRefresher(store, {
+			park: {
+				"e-design": "parked",
+				"e-impl": "parked",
+				"e-qa": "parked",
+			},
+		});
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([{ via: "stage", stage: "ship" }]);
+	});
+
+	it("a premature ship stage label cannot suppress founder-gate attention", async () => {
+		seedWorkflowRunAt(store, "founder_gate");
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "running",
+			stage: "ship",
+		});
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([
+			{ via: "stage", stage: "", phaseBadge: "🔔 ⏳待批" },
+		]);
+	});
+
+	it("active founder gate outranks historical issue completion", async () => {
+		seedWorkflowRunAt(store, "founder_gate");
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "terminated",
+			stage: "completed",
+		});
+		vi.spyOn(store, "hasMergeConfirmedForIssue").mockReturnValue(true);
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([
+			{ via: "stage", stage: "", phaseBadge: "🔔 ⏳待批" },
+		]);
+	});
+
+	it("malformed workflow snapshot fails closed without inventing gate attention", async () => {
+		seedWorkflowRunAt(store, "founder_gate");
+		testDb(store).run("UPDATE workflow_run SET snapshot = ? WHERE run_id = ?", [
+			"{",
+			"run-founder-title",
+		]);
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "running",
+			stage: "implement",
+		});
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([{ via: "stage", stage: "implement" }]);
+	});
+
+	it.each(["design", "implement", "qa"] as const)(
+		"leaving founder gate for %s rework removes the bell and restores its phase",
+		async (phase) => {
+			seedWorkflowRunAt(store, "founder_gate");
+			seedSession(store, {
+				exec: `e-${phase}`,
+				role: phase,
+				status: "running",
+			});
+			const { refresher, log } = makeRefresher(store);
+			await refresher.refresh(ISSUE);
+			expect(log.title.at(-1)?.phaseBadge).toBe("🔔 ⏳待批");
+
+			testDb(store).run(
+				"UPDATE workflow_run SET current_node_id = ? WHERE run_id = ?",
+				[phase, "run-founder-title"],
+			);
+			log.title.length = 0;
+			await refresher.refresh(ISSUE);
+
+			expect(log.title).toEqual([
+				{
+					via: "stage",
+					stage: "",
+					phaseBadge:
+						phase === "design"
+							? "🎨设计"
+							: phase === "implement"
+								? "🔨实现"
+								: "🧪QA",
+				},
+			]);
+		},
+	);
+
 	it("qa FAIL → wake implement (park marker cleared) → 实现 flips BACK to ▶, title back to 🔨实现 (FLY-543 correction — never a fake ✅)", async () => {
 		seedSession(store, {
 			exec: "e-design",
@@ -548,7 +882,9 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 			implement: "✅ 完成",
 			qa: "✅ 完成",
 		});
-		expect(log.title).toEqual([{ via: "stage", stage: "approve" }]);
+		expect(log.title).toEqual([
+			{ via: "stage", stage: "", phaseBadge: "🔔 ⏳待批" },
+		]);
 	});
 
 	it("post-ship finalization completion → completed during the stale awaiting_review cleanup window", async () => {
@@ -603,6 +939,10 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 			event_type: "merge_block",
 			source: "test",
 		});
+		testDb(store).run(
+			"UPDATE sessions SET merge_block_reason = ? WHERE execution_id = ?",
+			["merge_without_approval", "e-qa"],
+		);
 		const { refresher, log } = makeRefresher(store, {
 			park: {
 				"e-design": "parked",
@@ -1045,6 +1385,7 @@ describe("IssueDisplayRefresher — sweep (plan Step 4.5)", () => {
 			{
 				hasFinalizationCompletedForIssue,
 				hasMergeConfirmedForIssue,
+				getActiveWorkflowRunForIssue: () => undefined,
 				getLatestPhaseSessionsForIssue: () => [],
 				getSessionByIssue: () => undefined,
 			},
@@ -1055,6 +1396,33 @@ describe("IssueDisplayRefresher — sweep (plan Step 4.5)", () => {
 		expect(JSON.parse(fingerprint).cc).toBe(true);
 		expect(hasFinalizationCompletedForIssue).toHaveBeenCalledOnce();
 		expect(hasMergeConfirmedForIssue).toHaveBeenCalledOnce();
+	});
+
+	it("layer 1 re-enqueues when only the active workflow node changes", async () => {
+		seedWorkflowRunAt(store, "design");
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "running",
+			stage: "implement",
+		});
+		const { refresher } = makeRefresher(store, {
+			flags: { issueAttachPinEnabled: false },
+		});
+		await refresher.refresh(ISSUE);
+		const before = computeSessionsFingerprint(store, ISSUE);
+		expect(storedFingerprint(store)).not.toBeNull();
+
+		testDb(store).run(
+			"UPDATE workflow_run SET current_node_id = ? WHERE run_id = ?",
+			["founder_gate", "run-founder-title"],
+		);
+
+		expect(computeSessionsFingerprint(store, ISSUE)).not.toBe(before);
+		vi.spyOn(store, "listDisplaySweepActiveIssues").mockReturnValue([]);
+		const enqueue = vi.spyOn(refresher, "enqueue").mockImplementation(() => {});
+		await refresher.runSweep();
+		expect(enqueue).toHaveBeenCalledWith(ISSUE);
 	});
 
 	it("layer 1: a sessions-status change after the stored fingerprint re-enqueues the issue", async () => {

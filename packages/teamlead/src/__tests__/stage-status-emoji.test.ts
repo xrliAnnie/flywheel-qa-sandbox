@@ -104,6 +104,16 @@ describe("FLY-560: splitStatusEmoji / stripStatusEmojiPrefix", () => {
 			"[FLY-560] Done",
 		);
 	});
+
+	it("peels founder-gate attention only when a managed primary badge follows", () => {
+		expect(splitStatusEmoji("🔔 ⏳待批 [G] [FLY-2408] Title")).toEqual({
+			attentionEmoji: "🔔",
+			emoji: "⏳",
+			word: "待批",
+			base: "[G] [FLY-2408] Title",
+		});
+		expect(stripStatusEmojiPrefix("🔔 literal title")).toBe("🔔 literal title");
+	});
 });
 
 describe("FLY-560 UX iteration: stage → status word", () => {

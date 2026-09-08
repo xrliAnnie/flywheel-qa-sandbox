@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	founderGateAttentionBadge,
 	splitStatusEmoji,
 	stageBadge,
 	stripStatusEmojiPrefix,
@@ -12,6 +13,10 @@ import {
  * for the real independent QA). Reverse-compat: old ⏳待批 titles still strip.
  */
 describe("stage-utils badges (FLY-795 pr_created split)", () => {
+	it("builds the founder-gate attention overlay without replacing the primary badge", () => {
+		expect(founderGateAttentionBadge("⏳待批")).toBe("🔔 ⏳待批");
+	});
+
 	it("pr_created renders 📬PR已开; approve keeps ⏳待批", () => {
 		expect(stageBadge("pr_created", true)).toBe("📬PR已开");
 		expect(stageBadge("approve", true)).toBe("⏳待批");

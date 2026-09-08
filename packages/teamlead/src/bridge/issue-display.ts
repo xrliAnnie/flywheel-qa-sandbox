@@ -141,7 +141,7 @@ const MAIN_BLOCKED_STATUSES: ReadonlySet<string> = new Set([
  * to the pre-FLY-907 behavior (sentinel-tested); kill/finalize moments are NEW
  * refreshes (the old code simply never refreshed there).
  */
-export function deriveIssueTitleBadge(args: {
+export interface IssueTitleBadgeInput {
 	phaseStates: ReadonlyMap<WorkflowPhaseRole, PhaseDisplayState>;
 	/** Raw per-phase session status. Display-state `done` also means a phase
 	 * handed off at the ship gate, so issue-level completion must inspect the
@@ -155,7 +155,11 @@ export function deriveIssueTitleBadge(args: {
 	issueConcluded?: boolean;
 	mainSessionStage?: string;
 	mainSessionStatus?: string;
-}): IssueTitleBadge {
+}
+
+export function deriveIssueTitleBadge(
+	args: IssueTitleBadgeInput,
+): IssueTitleBadge {
 	const { phaseStates } = args;
 	if (phaseStates.size === 0) {
 		const status = args.mainSessionStatus;
@@ -224,6 +228,37 @@ export function deriveIssueTitleBadge(args: {
 		}
 	}
 	return { kind: "phase", phase: lastPhase };
+}
+
+export interface FounderGateTitleState {
+	badge: IssueTitleBadge;
+	founderGateAttention: boolean;
+}
+
+/** Overlay the founder-gate attention state without changing base derivation. */
+export function deriveFounderGateTitleState(
+	args: IssueTitleBadgeInput & { founderGateActive: boolean },
+): FounderGateTitleState {
+	const badge = deriveIssueTitleBadge(args);
+	if (badge.kind === "blocked") {
+		return { badge, founderGateAttention: false };
+	}
+	const shipApproved =
+		args.mainSessionStatus === "approved_to_ship" ||
+		[...args.phaseStatuses.values()].includes("approved_to_ship");
+	if (shipApproved) {
+		return { badge, founderGateAttention: false };
+	}
+	if (
+		args.founderGateActive ||
+		(badge.kind === "stage" && badge.stage === "approve")
+	) {
+		return {
+			badge: { kind: "stage", stage: "approve" },
+			founderGateAttention: true,
+		};
+	}
+	return { badge, founderGateAttention: false };
 }
 
 /**
