@@ -34,10 +34,12 @@ export const MODEL_IDS = {
 	SONNET_5: "claude-sonnet-5",
 	HAIKU: "claude-haiku-4-5-20251001",
 	CODEX_STANDARD: "gpt-5.6-sol",
+	CODEX_ASTRA: "gpt-6-astra",
 } as const;
 
 export const MODEL_ALIASES = {
 	FABLE: "fable",
+	ASTRA: "astra",
 } as const;
 
 export interface DefaultOpusBindings {
@@ -292,6 +294,18 @@ export function buildModelRegistry(
 				runner: ["xhigh"],
 				workflow: ROLE_EFFORT_LEVELS,
 				cron: [],
+			},
+		},
+		{
+			id: MODEL_IDS.CODEX_ASTRA,
+			provider: "openai",
+			runtimeVendor: "codex",
+			label: "GPT-6 Astra",
+			aliases: [MODEL_ALIASES.ASTRA],
+			surfaces: ["runner", "workflow"],
+			effortsBySurface: {
+				runner: ["xhigh"],
+				workflow: ROLE_EFFORT_LEVELS,
 			},
 		},
 		...OPUS_IDENTITIES.filter(

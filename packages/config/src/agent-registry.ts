@@ -43,9 +43,23 @@ export interface RegistryModelPolicy {
 	defaultEffort: RegistryWorkflowEffort;
 }
 
+export interface RegistryModelSplitArm {
+	arm: string;
+	model: string;
+}
+
+export interface RegistryModelSplitPolicy {
+	enabled: boolean;
+	rule: "issue_number_parity";
+	version: string;
+	odd: RegistryModelSplitArm;
+	even: RegistryModelSplitArm;
+}
+
 export interface RegistryNodePolicy {
 	defaultModel: string;
 	models: RegistryModelPolicy[];
+	modelSplit?: RegistryModelSplitPolicy;
 }
 
 export interface BundledRegistryNode {
@@ -250,9 +264,54 @@ function parseModel(value: unknown, path: string): RegistryModelPolicy {
 	return { model, allowedEfforts, defaultEffort };
 }
 
+function parseModelSplitArm(
+	value: unknown,
+	path: string,
+	declaredModels: ReadonlySet<string>,
+): RegistryModelSplitArm {
+	const raw = record(value, path);
+	exactKeys(raw, ["arm", "model"], path);
+	const model = nonempty(raw.model, `${path}.model`);
+	if (!declaredModels.has(model)) {
+		throw new Error(`${path}.model must identify one declared model`);
+	}
+	return {
+		arm: nonempty(raw.arm, `${path}.arm`),
+		model,
+	};
+}
+
+function parseModelSplit(
+	value: unknown,
+	path: string,
+	models: RegistryModelPolicy[],
+): RegistryModelSplitPolicy {
+	const raw = record(value, path);
+	exactKeys(raw, ["enabled", "rule", "version", "odd", "even"], path);
+	if (typeof raw.enabled !== "boolean") {
+		throw new Error(`${path}.enabled must be boolean`);
+	}
+	const declaredModels = new Set(models.map((model) => model.model));
+	const odd = parseModelSplitArm(raw.odd, `${path}.odd`, declaredModels);
+	const even = parseModelSplitArm(raw.even, `${path}.even`, declaredModels);
+	if (odd.arm === even.arm) {
+		throw new Error(`${path} odd/even arms must be distinct`);
+	}
+	if (odd.model === even.model) {
+		throw new Error(`${path} odd/even models must be distinct`);
+	}
+	return {
+		enabled: raw.enabled,
+		rule: oneOf(raw.rule, ["issue_number_parity"] as const, `${path}.rule`),
+		version: nonempty(raw.version, `${path}.version`),
+		odd,
+		even,
+	};
+}
+
 function parsePolicy(value: unknown, path: string): RegistryNodePolicy {
 	const raw = record(value, path);
-	exactKeys(raw, ["defaultModel", "models"], path);
+	exactKeys(raw, ["defaultModel", "models", "modelSplit"], path);
 	const defaultModel = nonempty(raw.defaultModel, `${path}.defaultModel`);
 	if (!Array.isArray(raw.models) || raw.models.length === 0) {
 		throw new Error(`${path}.models must be a non-empty array`);
@@ -266,7 +325,11 @@ function parsePolicy(value: unknown, path: string): RegistryNodePolicy {
 	if (!models.some((model) => model.model === defaultModel)) {
 		throw new Error(`${path}.defaultModel must identify one declared model`);
 	}
-	return { defaultModel, models };
+	const modelSplit =
+		raw.modelSplit === undefined
+			? undefined
+			: parseModelSplit(raw.modelSplit, `${path}.modelSplit`, models);
+	return { defaultModel, models, ...(modelSplit ? { modelSplit } : {}) };
 }
 
 function parseBundledNode(

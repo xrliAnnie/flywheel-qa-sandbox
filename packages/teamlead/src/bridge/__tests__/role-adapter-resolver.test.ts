@@ -265,6 +265,33 @@ describe("resolveRoleAdapter — global env layer", () => {
 });
 
 describe("resolveRoleAdapter — project config layer", () => {
+	it("canonicalizes the Astra alias before the Codex runner adapter boundary", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			projectRoles: { runner: { backend: "codex-tmux", model: "astra" } },
+			env: EMPTY_ENV,
+		});
+
+		expect(resolved).toEqual({
+			backend: "codex-tmux",
+			transport: "codex",
+			vendor: "codex",
+			model: "gpt-6-astra",
+		});
+	});
+
+	it("rejects a registered Claude model on the Codex runner adapter boundary", () => {
+		expect(() =>
+			resolveRoleAdapter({
+				role: "runner",
+				projectRoles: {
+					runner: { backend: "codex-tmux", model: "fable" },
+				},
+				env: EMPTY_ENV,
+			}),
+		).toThrow(/unavailable for runner/i);
+	});
+
 	it("project roles beat global env", () => {
 		const env = { FLYWHEEL_RUNNER_BACKEND: "claude-tmux" } as NodeJS.ProcessEnv;
 		const resolved = resolveRoleAdapter({

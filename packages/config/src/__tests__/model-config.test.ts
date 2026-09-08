@@ -1,4 +1,5 @@
 import {
+	mkdirSync,
 	mkdtempSync,
 	renameSync,
 	rmSync,
@@ -77,10 +78,34 @@ describe("FLY-1496 model configuration snapshots", () => {
 			light: { id: "claude-opus-5", code: "O" },
 			trivial: { id: "claude-opus-5", code: "O" },
 		});
+		expect(snapshot.runtimeModelSplitStatus).toBe("absent");
 		// One warning per cached generation, not one per call.
 		getModelConfigSnapshot();
 		expect(warn).toHaveBeenCalledTimes(1);
 	});
+
+	it.each([
+		["malformed JSON", () => writeFileSync(configPath, "{")],
+		[
+			"an unsupported version",
+			() => writeFileSync(configPath, JSON.stringify({ version: 2 })),
+		],
+		["an unreadable path", () => mkdirSync(configPath)],
+	])(
+		"marks a present file with %s as an invalid runtime split",
+		(_label, setup) => {
+			setup();
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			const snapshot = getModelConfigSnapshot();
+
+			expect(snapshot.runtimeModelSplitStatus).toBe("invalid");
+			expect(snapshot.modelSplit).toBeUndefined();
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("using built-in model policy:"),
+			);
+		},
+	);
 
 	it("silently uses built-ins when the implicit optional file is absent", () => {
 		delete process.env.FLYWHEEL_MODELS_CONFIG;
@@ -122,6 +147,65 @@ describe("FLY-1496 model configuration snapshots", () => {
 		expect(after.normalizeDispatchModel("opus")).toBe("claude-fable-5-1");
 		// A business decision that already captured a snapshot stays one generation.
 		expect(before.normalizeDispatchModel("opus")).toBe("claude-opus-5");
+	});
+
+	it("exposes a runtime design model split policy from models.json", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				modelSplit: {
+					enabled: true,
+					rule: "issue_number_parity",
+					version: "runtime-v2",
+					odd: { arm: "A", model: "astra" },
+					even: { arm: "A", model: "astra" },
+				},
+			}),
+		);
+
+		const snapshot = getModelConfigSnapshot();
+		expect(snapshot.runtimeModelSplitStatus).toBe("valid");
+		expect(snapshot.modelSplit).toEqual({
+			enabled: true,
+			rule: "issue_number_parity",
+			version: "runtime-v2",
+			odd: { arm: "A", model: "astra" },
+			even: { arm: "A", model: "astra" },
+		});
+	});
+
+	it("distinguishes an absent runtime split from a present malformed split", () => {
+		writeFileSync(configPath, JSON.stringify({ version: 1 }));
+		expect(getModelConfigSnapshot().runtimeModelSplitStatus).toBe("absent");
+
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const replacement = join(root, "models.next");
+		writeFileSync(
+			replacement,
+			JSON.stringify({
+				version: 1,
+				modelSplit: {
+					enabled: "false",
+					rule: "issue_number_parity",
+					version: "runtime-broken",
+					odd: { arm: "A", model: "astra" },
+					even: { arm: "B", model: "fable" },
+				},
+			}),
+		);
+		renameSync(replacement, configPath);
+		const stat = statSync(configPath);
+		utimesSync(configPath, stat.atime, new Date(stat.mtimeMs + 5));
+
+		const invalid = getModelConfigSnapshot();
+		expect(invalid.runtimeModelSplitStatus).toBe("invalid");
+		expect(invalid.modelSplit).toBeUndefined();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"modelSplit segment ignored: enabled must be boolean",
+			),
+		);
 	});
 
 	it("merges a configured model and tier without a code change", () => {

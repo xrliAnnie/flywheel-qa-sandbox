@@ -1,9 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { resetModelConfigCacheForTests } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import { classifyDurableLaunchDrain } from "../../../../scripts/lib/qa-generalized-e2e-lib.mjs";
 import { StateStore } from "../StateStore.js";
+import { loadWorkflowMenuSeeds } from "../workflow-menu.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
 import {
@@ -13,6 +16,7 @@ import {
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const roots: string[] = [];
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 afterEach(() => {
 	for (const root of roots.splice(0))
 		rmSync(root, { recursive: true, force: true });
@@ -100,6 +104,120 @@ const enabled = {
 };
 
 describe("workflow template selection", () => {
+	it("applies the configured design split inside template selection even without menu-route receipts", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = loadWorkflowMenuSeeds().find(
+			(candidate) => candidate.templateId === "tpl_code",
+		)!;
+		store.importWorkflowTemplateSeed(seed);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "code",
+			templateId: seed.templateId,
+			updatedBy: "system:test",
+		});
+
+		const selected = await resolveWorkflowTemplateSelection(store, {
+			project: "flywheel",
+			issueId: "FLY-2403",
+			taskCategory: "code",
+			selectedBy: "eng-lead",
+			actor: "master",
+			authKind: "master",
+			canonicalRoot: REPO_ROOT,
+			idempotencyKey: "non-menu-code-start",
+			workKindEnforced: false,
+		});
+
+		const snapshot = parseWorkflowRunSnapshot(
+			store.getWorkflowRun(selected!.runId)!.snapshot!,
+		);
+		expect(
+			snapshot.resolved.nodes.find((node) => node.id === "eng_design")
+				?.dispatch,
+		).toMatchObject({ vendor: "codex", model: "gpt-6-astra" });
+		expect(
+			store
+				.listWorkflowRunEvents(selected!.runId)
+				.find((event) => event.kind === "design_model_arm_assigned")?.payload,
+		).toMatchObject({
+			arm: "A",
+			basis: { issueNumber: 2403, ruleVersion: "fly2403-v1" },
+		});
+		store.close();
+	});
+
+	it("persists the call-time models.json mapping on the engine selection path", async () => {
+		const configRoot = mkdtempSync(join(tmpdir(), "fly2403-selection-config-"));
+		roots.push(configRoot);
+		const configPath = join(configRoot, "models.json");
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				modelSplit: {
+					enabled: true,
+					rule: "issue_number_parity",
+					version: "runtime-constant-a",
+					odd: { arm: "A", model: "astra" },
+					even: { arm: "A", model: "astra" },
+				},
+			}),
+		);
+		const previousPath = process.env.FLYWHEEL_MODELS_CONFIG;
+		process.env.FLYWHEEL_MODELS_CONFIG = configPath;
+		resetModelConfigCacheForTests();
+		const store = await StateStore.create(":memory:");
+		try {
+			const seed = loadWorkflowMenuSeeds().find(
+				(candidate) => candidate.templateId === "tpl_code",
+			)!;
+			store.importWorkflowTemplateSeed(seed);
+			store.bindWorkflowCategory({
+				project: "flywheel",
+				taskCategory: "code",
+				templateId: seed.templateId,
+				updatedBy: "system:test",
+			});
+
+			const selected = await resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-2404",
+				taskCategory: "code",
+				selectedBy: "eng-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: REPO_ROOT,
+				idempotencyKey: "runtime-constant-a-start",
+				workKindEnforced: false,
+			});
+
+			const snapshot = parseWorkflowRunSnapshot(
+				store.getWorkflowRun(selected!.runId)!.snapshot!,
+			);
+			expect(
+				snapshot.resolved.nodes.find((node) => node.id === "eng_design")
+					?.dispatch,
+			).toMatchObject({ vendor: "codex", model: "gpt-6-astra" });
+			expect(
+				store
+					.listWorkflowRunEvents(selected!.runId)
+					.find((event) => event.kind === "design_model_arm_assigned")?.payload,
+			).toMatchObject({
+				arm: "A",
+				basis: { issueNumber: 2404, ruleVersion: "runtime-constant-a" },
+			});
+		} finally {
+			store.close();
+			if (previousPath === undefined) {
+				delete process.env.FLYWHEEL_MODELS_CONFIG;
+			} else {
+				process.env.FLYWHEEL_MODELS_CONFIG = previousPath;
+			}
+			resetModelConfigCacheForTests();
+		}
+	});
+
 	it("returns null for no candidate", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = setupRoot();

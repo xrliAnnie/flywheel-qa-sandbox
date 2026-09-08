@@ -3,8 +3,10 @@ import {
 	assertValidModelRegistry,
 	buildModelCatalog,
 	getModelRegistryEntry,
+	isModelSelectable,
 	isModelSelectionSupported,
 	MODEL_ALIASES,
+	MODEL_IDS,
 	MODEL_REGISTRY,
 	resolveCurrentModel,
 } from "../model-registry.js";
@@ -80,6 +82,39 @@ describe("model registry invariants", () => {
 			"max",
 		]);
 		expect(codex?.effortsBySurface.runner).toEqual(["xhigh"]);
+	});
+
+	it("registers Astra separately without changing the codex alias", () => {
+		expect(getModelRegistryEntry("codex")?.id).toBe("gpt-5.6-sol");
+		expect(MODEL_IDS.CODEX_ASTRA).toBe("gpt-6-astra");
+		expect(MODEL_ALIASES.ASTRA).toBe("astra");
+
+		const astra = getModelRegistryEntry("astra");
+		expect(astra).toMatchObject({
+			id: "gpt-6-astra",
+			provider: "openai",
+			runtimeVendor: "codex",
+			label: "GPT-6 Astra",
+			aliases: ["astra"],
+		});
+		expect(astra?.surfaces).toEqual(["runner", "workflow"]);
+		expect(astra?.effortsBySurface.runner).toEqual(["xhigh"]);
+		expect(astra?.effortsBySurface.workflow).toEqual([
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+		for (const surface of ["runner", "workflow"] as const) {
+			expect(isModelSelectable({ surface, model: "astra" })).toBe(true);
+			expect(
+				isModelSelectionSupported({ surface, model: "astra", effort: "xhigh" }),
+			).toBe(true);
+		}
+		for (const surface of ["lead", "cron", "dispatch"] as const) {
+			expect(isModelSelectable({ surface, model: "astra" })).toBe(false);
+		}
 	});
 
 	it("covers every built-in tier", () => {

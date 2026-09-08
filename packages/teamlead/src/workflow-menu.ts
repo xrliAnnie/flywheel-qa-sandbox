@@ -3,9 +3,11 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	type BundledRegistry,
-	getModelRegistryEntry,
+	getModelConfigSnapshot,
 	getNodeTypeRegistryEntry,
 	loadBundledRegistry,
+	type ModelConfigSnapshot,
+	type RegistryModelSplitPolicy,
 	resolveProjectRegistry,
 } from "flywheel-config";
 import { parse } from "yaml";
@@ -40,6 +42,20 @@ export interface WorkflowMenuNode {
 	type: "design" | "implement" | "qa" | "generic" | "gate";
 	defaultModel?: string;
 	models?: WorkflowMenuModel[];
+	modelSplit?: RegistryModelSplitPolicy;
+}
+
+export interface WorkflowModelAssignmentReceipt {
+	arm: string;
+	modelAlias: string;
+	model: string;
+	basis: {
+		issueIdentifier: string;
+		issueNumber: number;
+		parity: "odd" | "even";
+		rule: "issue_number_parity";
+		ruleVersion: string;
+	};
 }
 
 export interface WorkflowMenuEdge {
@@ -159,6 +175,7 @@ function menuFromGraph(
 					type: executable.type!,
 					defaultModel: policy.defaultModel,
 					models: policy.models,
+					...(policy.modelSplit ? { modelSplit: policy.modelSplit } : {}),
 				};
 			}
 			const structural = registry.structural[id];
@@ -204,11 +221,14 @@ export function loadBundledWorkflowNodeNames(): string[] {
 	return Object.keys(loadBundledRegistry(BUNDLED_REGISTRY_PATH).nodes).sort();
 }
 
-function resolveAlias(alias: string): {
+function resolveAlias(
+	alias: string,
+	modelConfig: ModelConfigSnapshot = getModelConfigSnapshot(),
+): {
 	vendor: "claude" | "codex";
 	model: string;
 } {
-	const entry = getModelRegistryEntry(alias);
+	const entry = modelConfig.getModelRegistryEntry(alias);
 	if (
 		!entry ||
 		!entry.aliases.some(
@@ -610,13 +630,16 @@ export function resolveNodeAgentFile(
 export function resolveMenuOverrides(
 	menu: WorkflowMenuShape,
 	overridesValue: unknown,
+	context: { issueIdentifier: string },
 ): {
 	templateOverride: WorkflowTemplateOverride;
 	receipts: Record<
 		string,
 		{ model: string; effort: WorkflowEffort; overridden: boolean }
 	>;
+	assignments: Record<string, WorkflowModelAssignmentReceipt>;
 } {
+	const modelConfig = getModelConfigSnapshot();
 	const overrides =
 		overridesValue === undefined ? {} : asRecord(overridesValue, "overrides");
 	const executable = menu.nodes.filter((node) => node.type !== "gate");
@@ -635,6 +658,7 @@ export function resolveMenuOverrides(
 		string,
 		{ model: string; effort: WorkflowEffort; overridden: boolean }
 	> = {};
+	const assignments: Record<string, WorkflowModelAssignmentReceipt> = {};
 	const selected = new Map<
 		string,
 		{ alias: string; vendor: "claude" | "codex" }
@@ -651,24 +675,99 @@ export function resolveMenuOverrides(
 				throw new Error(`overrides.${node.id} must set model or effort`);
 			}
 		}
-		const requestedModel =
+		const callerModel =
 			override?.model === undefined
 				? node.defaultModel!
 				: nonempty(override.model, `overrides.${node.id}.model`);
-		const modelPolicy = node.models!.find(
-			(model) => model.model === requestedModel,
+		const callerModelPolicy = node.models!.find(
+			(model) => model.model === callerModel,
 		);
-		if (!modelPolicy) {
+		if (!callerModelPolicy) {
+			const legal = node.models!.map((model) => model.model);
+			if (!modelConfig.getModelRegistryEntry(callerModel)) {
+				throw new WorkflowMenuValidationError(
+					"INVALID_MODEL",
+					`model ${callerModel} is not registered`,
+					legal,
+				);
+			}
 			throw new WorkflowMenuValidationError(
 				"MODEL_NOT_ALLOWED_FOR_NODE",
-				`model ${requestedModel} is not allowed for node ${node.id}`,
-				node.models!.map((model) => model.model),
+				`model ${callerModel} is not allowed for node ${node.id}`,
+				legal,
 			);
+		}
+		const callerEffort =
+			override?.effort === undefined
+				? callerModelPolicy.defaultEffort
+				: nonempty(override.effort, `overrides.${node.id}.effort`);
+		if (
+			!callerModelPolicy.allowedEfforts.includes(callerEffort as WorkflowEffort)
+		) {
+			throw new WorkflowMenuValidationError(
+				"EFFORT_NOT_ALLOWED_FOR_MODEL",
+				`effort ${callerEffort} is not allowed for ${callerModel} on node ${node.id}`,
+				callerModelPolicy.allowedEfforts,
+			);
+		}
+		let requestedModel = callerModel;
+		let modelPolicy = callerModelPolicy;
+		let automaticAssignment = false;
+		const modelSplit = node.modelSplit
+			? modelConfig.runtimeModelSplitStatus === "invalid"
+				? undefined
+				: (modelConfig.modelSplit ?? node.modelSplit)
+			: undefined;
+		if (modelSplit?.enabled) {
+			const match = /-(\d+)$/.exec(context.issueIdentifier.trim());
+			const issueNumber = match ? Number(match[1]) : Number.NaN;
+			if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+				throw new WorkflowMenuValidationError(
+					"MODEL_SPLIT_ISSUE_INVALID",
+					`issue ${context.issueIdentifier} has no positive numeric issue suffix`,
+					[],
+				);
+			}
+			const parity = issueNumber % 2 === 1 ? "odd" : "even";
+			const arm = modelSplit[parity];
+			if (override?.model !== undefined && callerModel !== arm.model) {
+				throw new WorkflowMenuValidationError(
+					"MODEL_SPLIT_OVERRIDE_CONFLICT",
+					`model ${callerModel} conflicts with ${modelSplit.version} ${parity} assignment ${arm.model}`,
+					[arm.model],
+				);
+			}
+			requestedModel = arm.model;
+			const configuredModelPolicy = node.models!.find(
+				(candidate) => candidate.model === requestedModel,
+			);
+			if (!configuredModelPolicy) {
+				throw new WorkflowMenuValidationError(
+					"MODEL_NOT_ALLOWED_FOR_NODE",
+					`runtime model split ${modelSplit.version} selects model ${requestedModel}, which is not allowed for node ${node.id}`,
+					node.models!.map((candidate) => candidate.model),
+				);
+			}
+			modelPolicy = configuredModelPolicy;
+			automaticAssignment = true;
+			const resolved = resolveAlias(requestedModel, modelConfig);
+			assignments[node.id] = {
+				arm: arm.arm,
+				modelAlias: requestedModel,
+				model: resolved.model,
+				basis: {
+					issueIdentifier: context.issueIdentifier.trim(),
+					issueNumber,
+					parity,
+					rule: modelSplit.rule,
+					ruleVersion: modelSplit.version,
+				},
+			};
 		}
 		const effort =
 			override?.effort === undefined
 				? modelPolicy.defaultEffort
-				: nonempty(override.effort, `overrides.${node.id}.effort`);
+				: (callerEffort as WorkflowEffort);
 		if (!modelPolicy.allowedEfforts.includes(effort as WorkflowEffort)) {
 			throw new WorkflowMenuValidationError(
 				"EFFORT_NOT_ALLOWED_FOR_MODEL",
@@ -676,12 +775,12 @@ export function resolveMenuOverrides(
 				modelPolicy.allowedEfforts,
 			);
 		}
-		const resolved = resolveAlias(requestedModel);
+		const resolved = resolveAlias(requestedModel, modelConfig);
 		selected.set(node.id, {
 			alias: requestedModel,
 			vendor: resolved.vendor,
 		});
-		if (override) {
+		if (override || automaticAssignment) {
 			nodes[node.id] = {
 				vendor: resolved.vendor,
 				model: resolved.model,
@@ -691,7 +790,7 @@ export function resolveMenuOverrides(
 		receipts[node.id] = {
 			model: `${requestedModel} (= ${resolved.model})`,
 			effort: effort as WorkflowEffort,
-			overridden: override !== undefined,
+			overridden: override !== undefined || automaticAssignment,
 		};
 	}
 	for (const { qa, producer } of menuReviewPairs(menu)) {
@@ -701,13 +800,16 @@ export function resolveMenuOverrides(
 			const legal = [
 				...producer
 					.models!.filter(
-						(model) => resolveAlias(model.model).vendor !== qaSelection.vendor,
+						(model) =>
+							resolveAlias(model.model, modelConfig).vendor !==
+							qaSelection.vendor,
 					)
 					.map((model) => `${producer.id}:${model.model}`),
 				...qa
 					.models!.filter(
 						(model) =>
-							resolveAlias(model.model).vendor !== producerSelection.vendor,
+							resolveAlias(model.model, modelConfig).vendor !==
+							producerSelection.vendor,
 					)
 					.map((model) => `${qa.id}:${model.model}`),
 			];
@@ -720,9 +822,13 @@ export function resolveMenuOverrides(
 	}
 	return {
 		templateOverride: {
-			reason: "menu_api_override",
+			reason:
+				Object.keys(assignments).length > 0
+					? "automatic_model_split"
+					: "menu_api_override",
 			...(Object.keys(nodes).length > 0 ? { nodes } : {}),
 		},
 		receipts,
+		assignments,
 	};
 }

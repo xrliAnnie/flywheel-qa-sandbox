@@ -1,5 +1,6 @@
 import { resolveAllowedEffort } from "flywheel-config";
 import type { StateStore } from "./StateStore.js";
+import type { WorkflowModelAssignmentReceipt } from "./workflow-menu.js";
 import { parseWorkflowRunSnapshot } from "./workflow-run-snapshot.js";
 import {
 	validateWorkflowManifest,
@@ -15,6 +16,36 @@ export interface WorkflowDispatchResolution {
 	};
 	source: "live_template" | "pinned_snapshot" | "snapshot_fallback";
 	audit: boolean;
+	modelAssignment?: WorkflowModelAssignmentReceipt;
+}
+
+function resolveModelAssignment(
+	store: StateStore,
+	input: { runId: string; nodeId: string; model: string },
+): WorkflowModelAssignmentReceipt | undefined {
+	const matches = store
+		.listWorkflowRunEvents(input.runId)
+		.filter(
+			(event) =>
+				event.kind === "design_model_arm_assigned" &&
+				event.node_id === input.nodeId,
+		);
+	if (matches.length === 0) return undefined;
+	if (matches.length !== 1) {
+		throw new Error("workflow_dispatch_model_assignment_ambiguous");
+	}
+	const assignment = matches[0]!.payload as
+		| WorkflowModelAssignmentReceipt
+		| undefined;
+	if (
+		!assignment ||
+		assignment.model !== input.model ||
+		assignment.basis?.rule !== "issue_number_parity" ||
+		!assignment.basis.ruleVersion
+	) {
+		throw new Error("workflow_dispatch_model_assignment_invalid");
+	}
+	return assignment;
 }
 
 /**
@@ -65,11 +96,17 @@ export function resolveNodeDispatchAtLaunch(
 	);
 	if (!node?.dispatch) throw new Error("workflow_dispatch_node_not_executable");
 	const pinned = { ...node.dispatch };
+	const modelAssignment = resolveModelAssignment(store, {
+		runId: input.runId,
+		nodeId: input.nodeId,
+		model: pinned.model,
+	});
 	if (node.dispatchPinned) {
 		return {
 			dispatch: narrowEffort(pinned),
 			source: "pinned_snapshot",
 			audit: true,
+			...(modelAssignment ? { modelAssignment } : {}),
 		};
 	}
 
@@ -94,12 +131,14 @@ export function resolveNodeDispatchAtLaunch(
 			}),
 			source: "live_template",
 			audit: true,
+			...(modelAssignment ? { modelAssignment } : {}),
 		};
 	} catch {
 		return {
 			dispatch: narrowEffort(pinned),
 			source: "snapshot_fallback",
 			audit: true,
+			...(modelAssignment ? { modelAssignment } : {}),
 		};
 	}
 }

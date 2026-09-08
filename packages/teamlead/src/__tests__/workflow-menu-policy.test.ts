@@ -11,6 +11,54 @@ afterEach(() => {
 });
 
 describe("workflow menu policy catalog", () => {
+	it("publishes Astra for both code producers and simple-code implement without changing defaults", () => {
+		const catalog = buildWorkflowMenuPolicyCatalog();
+		const code = catalog.taskCategories.find(
+			(category) => category.taskCategory === "code",
+		)!;
+		const simpleCode = catalog.taskCategories.find(
+			(category) => category.taskCategory === "simple_code",
+		)!;
+		const astra = {
+			alias: "astra",
+			provider: "openai",
+			vendor: "codex",
+			model: "gpt-6-astra",
+			label: "GPT-6 Astra",
+			allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
+			defaultEffort: "xhigh",
+		};
+
+		expect(
+			code.nodes.find((node) => node.nodeId === "eng_design"),
+		).toMatchObject({
+			defaultModel: "fable",
+			models: expect.arrayContaining([astra]),
+		});
+		expect(
+			code.nodes.find((node) => node.nodeId === "implement"),
+		).toMatchObject({
+			defaultModel: "codex",
+			models: expect.arrayContaining([astra]),
+		});
+		expect(simpleCode.nodes.map((node) => node.nodeId)).toEqual([
+			"implement",
+			"qa",
+		]);
+		expect(
+			simpleCode.nodes.find((node) => node.nodeId === "implement"),
+		).toMatchObject({
+			defaultModel: "codex",
+			models: expect.arrayContaining([astra]),
+		});
+		expect(code.nodes.find((node) => node.nodeId === "qa")?.defaultModel).toBe(
+			"opus",
+		);
+		expect(
+			simpleCode.nodes.find((node) => node.nodeId === "qa")?.defaultModel,
+		).toBe("opus");
+	});
+
 	it("projects the code QA shape allowlist as canonical runtime tuples", () => {
 		const catalog = buildWorkflowMenuPolicyCatalog();
 		const code = catalog.taskCategories.find(

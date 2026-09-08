@@ -12,6 +12,11 @@ import {
 	type EngTier,
 } from "./work-kind.js";
 import {
+	loadWorkflowMenuLibrary,
+	resolveMenuOverrides,
+	type WorkflowModelAssignmentReceipt,
+} from "./workflow-menu.js";
+import {
 	parseWorkflowRunSnapshot,
 	type ResolvedWorkflowNodeV2,
 } from "./workflow-run-snapshot.js";
@@ -49,6 +54,56 @@ export class WorkKindRouteError extends Error {
 		super(message);
 		this.name = "WorkKindRouteError";
 	}
+}
+
+function mergeAutomaticModelSplit(
+	base: WorkflowTemplateOverride | undefined,
+	automatic: WorkflowTemplateOverride | undefined,
+	assignments: Record<string, WorkflowModelAssignmentReceipt>,
+): WorkflowTemplateOverride | undefined {
+	if (!automatic || Object.keys(assignments).length === 0) return base;
+	const nodes = { ...(base?.nodes ?? {}) };
+	for (const [nodeId, assignment] of Object.entries(assignments)) {
+		const existing = nodes[nodeId];
+		const assigned = automatic.nodes?.[nodeId];
+		if (!assigned) {
+			throw new Error(`workflow model split missing override:${nodeId}`);
+		}
+		if (
+			(existing?.vendor !== undefined && existing.vendor !== assigned.vendor) ||
+			(existing?.model !== undefined && existing.model !== assignment.model)
+		) {
+			throw new Error(`workflow model split override conflict:${nodeId}`);
+		}
+		nodes[nodeId] = { ...assigned, ...existing };
+	}
+	return {
+		reason:
+			base && base.reason !== automatic.reason
+				? `${base.reason}; ${automatic.reason}`
+				: automatic.reason,
+		nodes,
+	};
+}
+
+function resolveAutomaticModelSplit(
+	templateId: string,
+	issueIdentifier: string,
+): {
+	override?: WorkflowTemplateOverride;
+	assignments: Record<string, WorkflowModelAssignmentReceipt>;
+} {
+	const menu = loadWorkflowMenuLibrary().find(
+		(candidate) => candidate.templateId === templateId,
+	);
+	if (!menu) return { assignments: {} };
+	const resolved = resolveMenuOverrides(menu, undefined, { issueIdentifier });
+	return Object.keys(resolved.assignments).length > 0
+		? {
+				override: resolved.templateOverride,
+				assignments: resolved.assignments,
+			}
+		: { assignments: {} };
 }
 
 function resolveWorkflowTemplateCandidate(
@@ -136,6 +191,8 @@ export async function resolveWorkflowTemplateSelection(
 	input: {
 		project: string;
 		issueId: string;
+		/** Human-readable issue identifier used by deterministic model policy. */
+		issueIdentifier?: string;
 		entryIssueAliases?: string[];
 		entryRootKey?: string;
 		taskCategory?: string;
@@ -220,6 +277,20 @@ export async function resolveWorkflowTemplateSelection(
 			"workflow selection cannot combine tier and menu overrides",
 		);
 	}
+	const automaticModelSplit = resolveAutomaticModelSplit(
+		templateId,
+		input.issueIdentifier ?? input.issueId,
+	);
+	const selectionOverride = mergeAutomaticModelSplit(
+		input.override,
+		automaticModelSplit.override,
+		automaticModelSplit.assignments,
+	);
+	const materializationOverride = mergeAutomaticModelSplit(
+		input.override ?? tierPreset,
+		automaticModelSplit.override,
+		automaticModelSplit.assignments,
+	);
 	const reportedCategory = input.leadTemplateId
 		? input.taskCategory?.trim() || undefined
 		: category;
@@ -238,11 +309,13 @@ export async function resolveWorkflowTemplateSelection(
 			? { categorySource: input.categorySource, tier: effectiveTier }
 			: undefined,
 	);
-	const selectionDigest = canonicalSubmissionDigest(
-		input.override
-			? { ...selectionDigestBody, override: input.override }
-			: selectionDigestBody,
-	);
+	const selectionDigest = canonicalSubmissionDigest({
+		...selectionDigestBody,
+		...(selectionOverride ? { override: selectionOverride } : {}),
+		...(Object.keys(automaticModelSplit.assignments).length > 0
+			? { modelAssignments: automaticModelSplit.assignments }
+			: {}),
+	});
 	const key = input.idempotencyKey.trim();
 	const resolveReplay = (
 		prior: NonNullable<ReturnType<StateStore["getWorkflowStartReservation"]>>,
@@ -332,14 +405,13 @@ export async function resolveWorkflowTemplateSelection(
 				)
 			: undefined;
 		const refreshedSelectionDigest = refreshedSelectionDigestBody
-			? canonicalSubmissionDigest(
-					input.override
-						? {
-								...refreshedSelectionDigestBody,
-								override: input.override,
-							}
-						: refreshedSelectionDigestBody,
-				)
+			? canonicalSubmissionDigest({
+					...refreshedSelectionDigestBody,
+					...(selectionOverride ? { override: selectionOverride } : {}),
+					...(Object.keys(automaticModelSplit.assignments).length > 0
+						? { modelAssignments: automaticModelSplit.assignments }
+						: {}),
+				})
 			: undefined;
 		if (
 			!refreshedCandidate ||
@@ -394,8 +466,9 @@ export async function resolveWorkflowTemplateSelection(
 		},
 		categorySource: input.categorySource,
 		tier: effectiveTier,
-		override: input.override ?? tierPreset,
-		selectionOverride: input.override,
+		override: materializationOverride,
+		selectionOverride,
+		modelAssignments: automaticModelSplit.assignments,
 		startReservation: {
 			idempotencyKey: key,
 			selectionDigest,

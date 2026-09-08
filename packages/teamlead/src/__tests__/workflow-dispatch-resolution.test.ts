@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import BetterSqlite3 from "better-sqlite3";
 import {
 	canonicalSubmissionDigest,
@@ -18,6 +19,8 @@ const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
 	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 };
+
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -151,6 +154,91 @@ async function v2Run(options: { legacyMutable?: boolean } = {}) {
 }
 
 describe("workflow dispatch resolution at launch", () => {
+	it("persists Astra's canonical model in runtime admission and its audit event", async () => {
+		const store = await StateStore.create(":memory:");
+		cleanups.push(() => store.close());
+		const base = v2Seed();
+		const seed = {
+			...base,
+			templateId: "tpl_fly2403_astra_admission",
+			manifest: {
+				...base.manifest,
+				nodes: base.manifest.nodes.map((node) => {
+					if (node.id === "work") {
+						const { agent_file: _agentFile, ...executable } = node;
+						return {
+							...executable,
+							id: "eng_design",
+							type: "design" as const,
+							model: "gpt-6-astra",
+							effort: "xhigh" as const,
+						};
+					}
+					return node;
+				}),
+				edges: base.manifest.edges.map((edge) => ({
+					...edge,
+					from: "eng_design",
+					condition: "design_done" as const,
+				})),
+			},
+		};
+		seed.contentHash = workflowSeedContentHash(seed);
+		store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
+		store.materializeWorkflowRun({
+			runId: "run-astra",
+			issueId: "FLY-2403",
+			projectName: "flywheel",
+			templateId: seed.templateId,
+			claimsReadEnrolled: true,
+			actor: "test",
+			canonicalRoot: REPO_ROOT,
+			entryKind: "workflow_v2",
+			startReservation: {
+				idempotencyKey: "start-astra",
+				selectionDigest: "selection-astra",
+				nodeId: "eng_design",
+				attempt: 1,
+				executionId: "eng-design-astra-1",
+				createdAt: "2026-09-06T00:00:00.000Z",
+			},
+			env: WORKFLOW_ON,
+		});
+		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
+			runId: "run-astra",
+			nodeId: "eng_design",
+			env: WORKFLOW_ON,
+		});
+		expect(dispatchResolution.dispatch).toEqual({
+			vendor: "codex",
+			model: "gpt-6-astra",
+			effort: "xhigh",
+		});
+
+		const admitted = store.admitGeneralizedWorkflowExecution({
+			runId: "run-astra",
+			nodeId: "eng_design",
+			executionId: "eng-design-astra-1",
+			attempt: 1,
+			now: "2026-09-06T00:05:00.000Z",
+			expiresAt: "2026-09-06T06:05:00.000Z",
+			absoluteDeadlineAt: "2026-09-07T00:05:00.000Z",
+			env: WORKFLOW_ON,
+			dispatchResolution,
+		});
+		expect(admitted.ok).toBe(true);
+		expect(store.getWorkflowExecutionRuntime("eng-design-astra-1")?.model).toBe(
+			"gpt-6-astra",
+		);
+		expect(
+			store
+				.listWorkflowRunEvents("run-astra")
+				.find((event) => event.kind === "dispatch_vendor_resolved")?.payload,
+		).toMatchObject({
+			dispatch: { model: "gpt-6-astra" },
+		});
+	});
+
 	// FLY-1650 (Codex R2 HIGH): admission writes the IMMUTABLE row the audit
 	// trail reports. Narrowing an unsupported effort only at the launch seam
 	// would leave that row claiming an effort the run never used. Opus 4.6 has

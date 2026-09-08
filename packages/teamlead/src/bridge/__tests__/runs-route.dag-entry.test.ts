@@ -1663,14 +1663,12 @@ describe("FLY-1436 menu start contract", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
-	it("applies a valid node model/effort override and returns alias/version receipts", async () => {
+	it("automatically assigns odd issues to Astra and persists arm provenance", async () => {
 		const h = await startHarness({ menuMode: true });
 		const { status, json } = await post(h.url, {
+			issueId: "FLY-803",
 			leadId: "flywheel-eng-lead",
 			taskCategory: "code",
-			overrides: {
-				eng_design: { model: "codex", effort: "max" },
-			},
 		});
 		expect(status).toBe(200);
 		expect(json).toMatchObject({
@@ -1680,8 +1678,8 @@ describe("FLY-1436 menu start contract", () => {
 			resolved: {
 				nodeModels: {
 					eng_design: {
-						model: "codex (= gpt-5.6-sol)",
-						effort: "max",
+						model: "astra (= gpt-6-astra)",
+						effort: "xhigh",
 						overridden: true,
 					},
 					implement: {
@@ -1699,8 +1697,66 @@ describe("FLY-1436 menu start contract", () => {
 		});
 		expect(h.calls[0]!.generalizedExecution?.dispatch).toEqual({
 			vendor: "codex",
-			model: "gpt-5.6-sol",
-			effort: "max",
+			model: "gpt-6-astra",
+			effort: "xhigh",
+		});
+		const events = h.store.listWorkflowRunEvents(json.workflowRunId as string);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				kind: "design_model_arm_assigned",
+				node_id: "eng_design",
+				payload: {
+					arm: "A",
+					modelAlias: "astra",
+					model: "gpt-6-astra",
+					basis: {
+						issueIdentifier: "FLY-803",
+						issueNumber: 803,
+						parity: "odd",
+						rule: "issue_number_parity",
+						ruleVersion: "fly2403-v1",
+					},
+				},
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				kind: "dispatch_vendor_resolved",
+				node_id: "eng_design",
+				payload: expect.objectContaining({
+					modelAssignment: expect.objectContaining({
+						arm: "A",
+						basis: expect.objectContaining({ ruleVersion: "fly2403-v1" }),
+					}),
+				}),
+			}),
+		);
+	});
+
+	it("automatically assigns even issues to Fable without a Lead override", async () => {
+		const h = await startHarness({ menuMode: true });
+		const { status, json } = await post(h.url, {
+			issueId: "FLY-802",
+			leadId: "flywheel-eng-lead",
+			taskCategory: "code",
+		});
+
+		expect(status).toBe(200);
+		expect(json).toMatchObject({
+			resolved: {
+				nodeModels: {
+					eng_design: {
+						model: "fable (= claude-fable-5-1)",
+						effort: "high",
+						overridden: true,
+					},
+				},
+			},
+		});
+		expect(h.calls[0]!.generalizedExecution?.dispatch).toEqual({
+			vendor: "claude",
+			model: "claude-fable-5-1",
+			effort: "high",
 		});
 	});
 
@@ -1713,7 +1769,12 @@ describe("FLY-1436 menu start contract", () => {
 		[
 			{ overrides: { eng_design: { model: "opus" } } },
 			"MODEL_NOT_ALLOWED_FOR_NODE",
-			["fable", "codex"],
+			["fable", "codex", "astra"],
+		],
+		[
+			{ overrides: { eng_design: { model: "atsra" } } },
+			"INVALID_MODEL",
+			["fable", "codex", "astra"],
 		],
 		[
 			{ overrides: { eng_design: { model: "fable", effort: "ultra" } } },

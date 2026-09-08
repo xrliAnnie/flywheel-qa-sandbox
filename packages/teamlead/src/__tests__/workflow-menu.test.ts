@@ -127,6 +127,28 @@ describe("founder-approved workflow menu source", () => {
 				exitWhen: "founder_approved",
 			},
 		]);
+		expect(menu.nodes.find((node) => node.id === "implement")?.models).toEqual([
+			{
+				model: "opus",
+				allowedEfforts: OPUS_EFFORTS,
+				defaultEffort: "high",
+			},
+			{
+				model: "fable",
+				allowedEfforts: ALL_EFFORTS,
+				defaultEffort: "high",
+			},
+			{
+				model: "codex",
+				allowedEfforts: ALL_EFFORTS,
+				defaultEffort: "xhigh",
+			},
+			{
+				model: "astra",
+				allowedEfforts: ALL_EFFORTS,
+				defaultEffort: "xhigh",
+			},
+		]);
 
 		const seed = compileWorkflowMenuSeed(menu);
 		expect(seed).toMatchObject({
@@ -209,8 +231,8 @@ describe("founder-approved workflow menu source", () => {
 			},
 		]);
 		for (const [nodeId, models, defaultModel] of [
-			["eng_design", ["fable", "codex"], "fable"],
-			["implement", ["fable", "codex"], "codex"],
+			["eng_design", ["fable", "codex", "astra"], "fable"],
+			["implement", ["fable", "codex", "astra"], "codex"],
 			["qa", ["opus"], "opus"],
 		] as const) {
 			const node = code.nodes.find((candidate) => candidate.id === nodeId)!;
@@ -221,7 +243,7 @@ describe("founder-approved workflow menu source", () => {
 					model.model === "opus" ? OPUS_EFFORTS : ALL_EFFORTS,
 				);
 				expect(model.defaultEffort).toBe(
-					model.model === "codex" ? "xhigh" : "high",
+					["codex", "astra"].includes(model.model) ? "xhigh" : "high",
 				);
 			}
 		}
@@ -633,13 +655,17 @@ describe("founder-approved workflow menu source", () => {
 		const menu = loadWorkflowMenuLibrary().find(
 			(candidate) => candidate.shape === "code",
 		)!;
-		const firstOverride = resolveMenuOverrides(menu, {
-			eng_design: { model: "codex", effort: "max" },
-		});
+		const firstOverride = resolveMenuOverrides(
+			menu,
+			{
+				eng_design: { model: "astra", effort: "max" },
+			},
+			{ issueIdentifier: "FLY-803" },
+		);
 		const ids = ["run-menu", "exec-menu"];
 		const first = await resolveWorkflowTemplateSelection(store, {
 			project: "flywheel",
-			issueId: "FLY-MENU",
+			issueId: "FLY-803",
 			taskCategory: "code",
 			selectedBy: "flywheel-eng-lead",
 			actor: "master",
@@ -661,13 +687,13 @@ describe("founder-approved workflow menu source", () => {
 		});
 		expect(first?.node.dispatch).toEqual({
 			vendor: "codex",
-			model: "gpt-5.6-sol",
+			model: "gpt-6-astra",
 			effort: "max",
 		});
 		await expect(
 			resolveWorkflowTemplateSelection(store, {
 				project: "flywheel",
-				issueId: "FLY-MENU",
+				issueId: "FLY-803",
 				taskCategory: "code",
 				selectedBy: "flywheel-eng-lead",
 				actor: "master",
@@ -678,9 +704,13 @@ describe("founder-approved workflow menu source", () => {
 				workKindEnforced: true,
 				categorySource: "task_category",
 				entryKind: "workflow_v2",
-				override: resolveMenuOverrides(menu, {
-					eng_design: { model: "fable" },
-				}).templateOverride,
+				override: resolveMenuOverrides(
+					menu,
+					{
+						eng_design: { model: "astra" },
+					},
+					{ issueIdentifier: "FLY-803" },
+				).templateOverride,
 				env: {
 					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
 					FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
@@ -697,24 +727,28 @@ describe("workflow menu override validation", () => {
 	const code = () =>
 		loadWorkflowMenuLibrary().find((menu) => menu.shape === "code")!;
 
-	it("resolves aliases through the canonical registry and emits truthful receipts", () => {
-		const resolved = resolveMenuOverrides(code(), {
-			eng_design: { model: "codex", effort: "max" },
-		});
+	it("resolves the Astra alias through the canonical registry and emits truthful receipts", () => {
+		const resolved = resolveMenuOverrides(
+			code(),
+			{
+				eng_design: { model: "astra" },
+			},
+			{ issueIdentifier: "FLY-803" },
+		);
 		expect(resolved.templateOverride).toEqual({
-			reason: "menu_api_override",
+			reason: "automatic_model_split",
 			nodes: {
 				eng_design: {
 					vendor: "codex",
-					model: "gpt-5.6-sol",
-					effort: "max",
+					model: "gpt-6-astra",
+					effort: "xhigh",
 				},
 			},
 		});
 		expect(resolved.receipts).toMatchObject({
 			eng_design: {
-				model: "codex (= gpt-5.6-sol)",
-				effort: "max",
+				model: "astra (= gpt-6-astra)",
+				effort: "xhigh",
 				overridden: true,
 			},
 			implement: {
@@ -739,7 +773,12 @@ describe("workflow menu override validation", () => {
 		[
 			{ eng_design: { model: "opus" } },
 			"MODEL_NOT_ALLOWED_FOR_NODE",
-			["fable", "codex"],
+			["fable", "codex", "astra"],
+		],
+		[
+			{ eng_design: { model: "atsra" } },
+			"INVALID_MODEL",
+			["fable", "codex", "astra"],
 		],
 		[
 			{ eng_design: { model: "fable", effort: "ultra" } },
@@ -755,7 +794,9 @@ describe("workflow menu override validation", () => {
 		"fails loud for invalid override %# with a legal set",
 		(overrides, codeName, legal) => {
 			try {
-				resolveMenuOverrides(code(), overrides);
+				resolveMenuOverrides(code(), overrides, {
+					issueIdentifier: "FLY-802",
+				});
 				throw new Error("expected validation failure");
 			} catch (error) {
 				expect(error).toBeInstanceOf(WorkflowMenuValidationError);
@@ -769,7 +810,11 @@ describe("workflow menu override validation", () => {
 			(menu) => menu.shape === "simple_code",
 		)!;
 		try {
-			resolveMenuOverrides(simple, { qa: { model: "codex" } });
+			resolveMenuOverrides(
+				simple,
+				{ qa: { model: "codex" } },
+				{ issueIdentifier: "FLY-802" },
+			);
 			throw new Error("expected same-vendor validation failure");
 		} catch (error) {
 			expect(error).toBeInstanceOf(WorkflowMenuValidationError);

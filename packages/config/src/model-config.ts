@@ -73,12 +73,27 @@ export interface ModelCatalog {
 	}>;
 }
 
+export interface RuntimeModelSplitArm {
+	readonly arm: string;
+	readonly model: string;
+}
+
+export interface RuntimeModelSplitPolicy {
+	readonly enabled: boolean;
+	readonly rule: "issue_number_parity";
+	readonly version: string;
+	readonly odd: RuntimeModelSplitArm;
+	readonly even: RuntimeModelSplitArm;
+}
+
 export interface ModelConfigSnapshot {
 	readonly revision: string;
 	readonly sourcePath: string;
 	readonly registry: readonly ModelRegistryEntry[];
 	readonly bindings: ModelBindings;
 	readonly tiers: Readonly<Record<ModelTier, ModelTierSpec>>;
+	readonly modelSplit?: RuntimeModelSplitPolicy;
+	readonly runtimeModelSplitStatus: "absent" | "valid" | "invalid";
 	readonly acceptedDispatchModels: readonly string[];
 	getModelRegistryEntry(raw: string): ModelRegistryEntry | null;
 	getDispatchCanonical(raw: string): string | null;
@@ -112,6 +127,7 @@ interface ModelConfigFile {
 	bindings?: unknown;
 	models?: unknown;
 	tiers?: unknown;
+	modelSplit?: unknown;
 }
 
 interface SnapshotCache {
@@ -154,6 +170,62 @@ function normalizedStrings(value: unknown): string[] | null {
 		return null;
 	}
 	return value.map((item) => item.trim()).filter(Boolean);
+}
+
+function parseRuntimeModelSplitArm(
+	value: unknown,
+	path: string,
+	lookup: ReadonlyMap<string, ModelRegistryEntry>,
+): RuntimeModelSplitArm {
+	if (!isObject(value)) throw new Error(`${path} must be an object`);
+	const unknown = Object.keys(value).find(
+		(key) => key !== "arm" && key !== "model",
+	);
+	if (unknown) throw new Error(`${path} unknown key: ${unknown}`);
+	const arm = typeof value.arm === "string" ? value.arm.trim() : "";
+	const model = typeof value.model === "string" ? value.model.trim() : "";
+	if (!arm) throw new Error(`${path}.arm must be a non-empty string`);
+	if (!model) throw new Error(`${path}.model must be a non-empty string`);
+	const entry = lookup.get(model.toLowerCase());
+	if (!entry || !entry.surfaces.includes("workflow")) {
+		throw new Error(`${path}.model must identify a workflow model`);
+	}
+	return Object.freeze({ arm, model });
+}
+
+function parseRuntimeModelSplit(
+	value: unknown,
+	lookup: ReadonlyMap<string, ModelRegistryEntry>,
+	warnings: string[],
+): RuntimeModelSplitPolicy | undefined {
+	if (value === undefined) return undefined;
+	try {
+		if (!isObject(value)) throw new Error("expected an object");
+		const allowed = new Set(["enabled", "rule", "version", "odd", "even"]);
+		const unknown = Object.keys(value).find((key) => !allowed.has(key));
+		if (unknown) throw new Error(`unknown key: ${unknown}`);
+		if (typeof value.enabled !== "boolean") {
+			throw new Error("enabled must be boolean");
+		}
+		if (value.rule !== "issue_number_parity") {
+			throw new Error("rule must be issue_number_parity");
+		}
+		const version =
+			typeof value.version === "string" ? value.version.trim() : "";
+		if (!version) throw new Error("version must be a non-empty string");
+		return Object.freeze({
+			enabled: value.enabled,
+			rule: value.rule,
+			version,
+			odd: parseRuntimeModelSplitArm(value.odd, "modelSplit.odd", lookup),
+			even: parseRuntimeModelSplitArm(value.even, "modelSplit.even", lookup),
+		});
+	} catch (error) {
+		warnings.push(
+			`modelSplit segment ignored: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return undefined;
+	}
 }
 
 function defaultEfforts(
@@ -459,6 +531,7 @@ function createSnapshot(
 	path: string,
 	revision: string,
 	config: ModelConfigFile,
+	configLoadStatus: "absent" | "valid" | "invalid",
 	warnings: string[],
 ): ModelConfigSnapshot {
 	let registry = mergeModels(
@@ -470,6 +543,19 @@ function createSnapshot(
 	registry = bindingResult.registry;
 	const registryLookup = buildModelLookup(registry);
 	const dispatchLookup = buildDispatchLookupForRegistry(registry);
+	const modelSplit = parseRuntimeModelSplit(
+		config.modelSplit,
+		registryLookup,
+		warnings,
+	);
+	const runtimeModelSplitStatus =
+		configLoadStatus === "invalid"
+			? "invalid"
+			: config.modelSplit === undefined
+				? "absent"
+				: modelSplit === undefined
+					? "invalid"
+					: "valid";
 
 	const tiers = {} as Record<ModelTier, ModelTierSpec>;
 	const configuredTiers = isObject(config.tiers) ? config.tiers : {};
@@ -609,6 +695,8 @@ function createSnapshot(
 		registry,
 		bindings: bindingResult.bindings,
 		tiers: frozenTiers,
+		...(modelSplit ? { modelSplit } : {}),
+		runtimeModelSplitStatus,
 		acceptedDispatchModels,
 		getModelRegistryEntry,
 		getDispatchCanonical,
@@ -627,14 +715,17 @@ function loadSnapshot(
 ): ModelConfigSnapshot {
 	const warnings: string[] = [];
 	let config: ModelConfigFile = {};
+	let configLoadStatus: "absent" | "valid" | "invalid" = "absent";
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
 		if (!isObject(parsed) || parsed.version !== CONFIG_VERSION) {
 			throw new Error(`expected object with version ${CONFIG_VERSION}`);
 		}
 		config = parsed;
+		configLoadStatus = "valid";
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
+		configLoadStatus = code === "ENOENT" ? "absent" : "invalid";
 		const detail =
 			code === "ENOENT"
 				? "file absent"
@@ -645,7 +736,13 @@ function loadSnapshot(
 			warnings.push(`using built-in model policy: ${detail}`);
 		}
 	}
-	const snapshot = createSnapshot(path, revision, config, warnings);
+	const snapshot = createSnapshot(
+		path,
+		revision,
+		config,
+		configLoadStatus,
+		warnings,
+	);
 	if (warnings.length > 0) {
 		console.warn(`[model_config] ${warnings.join("; ")}`);
 	}

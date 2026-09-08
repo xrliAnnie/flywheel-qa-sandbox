@@ -256,12 +256,26 @@ export function resolveRoleAdapter(
 		}
 	}
 
-	// Final Claude role boundary: canonicalize aliases so no adapter can turn a
-	// bare alias into CLI argv and let the CLI's own table pick the version.
+	// Final transported-runner boundary: canonicalize registered aliases so no
+	// adapter can turn a bare alias into CLI/runtime input and let an upstream
+	// alias table pick the version. Claude has historically failed closed for
+	// every unknown model. Codex still accepts legacy unregistered literal ids,
+	// but any registry-owned spelling (including `astra`) must resolve through
+	// this captured snapshot and match the Codex runtime vendor.
 	if (model && backend === "claude-tmux") {
 		model = resolveAllowedCanonicalModel(model, {
 			surface: args.role === "lead" ? "lead" : "runner",
 			runtimeVendor: "claude",
+			snapshot: modelSnapshot,
+		});
+	} else if (
+		model &&
+		backend === "codex-tmux" &&
+		modelSnapshot.getModelRegistryEntry(model)
+	) {
+		model = resolveAllowedCanonicalModel(model, {
+			surface: args.role === "lead" ? "lead" : "runner",
+			runtimeVendor: "codex",
 			snapshot: modelSnapshot,
 		});
 	}

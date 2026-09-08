@@ -60,11 +60,24 @@ graphs:
     policies:
       eng_design:
         defaultModel: fable
+        modelSplit:
+          enabled: true
+          rule: issue_number_parity
+          version: fly2403-v1
+          odd:
+            arm: A
+            model: astra
+          even:
+            arm: B
+            model: fable
         models:
           - model: fable
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: high
           - model: codex
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+          - model: astra
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: xhigh
       implement:
@@ -74,6 +87,9 @@ graphs:
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: high
           - model: codex
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+          - model: astra
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: xhigh
       qa:
@@ -126,6 +142,9 @@ graphs:
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: high
           - model: codex
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+          - model: astra
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: xhigh
       qa:

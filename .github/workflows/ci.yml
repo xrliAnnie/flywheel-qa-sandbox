@@ -1029,6 +1029,11 @@ jobs:
       - name: Test — FLY-1855 executable Lead patrol snapshot
         run: bash scripts/__tests__/lead-patrol-snapshot.test.sh
 
+      # FLY-2403: the report boots the real StateStore schema, populates only
+      # temporary tables, and proves the SQLite query does not mutate its input.
+      - name: Test — FLY-2403 Astra/Fable design outcome report
+        run: bash scripts/__tests__/fly2403-design-model-comparison.test.sh
+
       # FLY-1986: the Phase-0 load probe is read-only by contract. This suite
       # mutates the probe and requires every contract to go RED, so a check that
       # can no longer fail is itself caught. ⚠ Placed on THIS shard, not shard 1:

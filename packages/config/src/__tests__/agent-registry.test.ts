@@ -155,6 +155,59 @@ describe("bundled agent registry", () => {
 		});
 	});
 
+	it("loads a configurable issue-parity model split on a node policy", () => {
+		const root = tempRoot();
+		const value = validBundledRegistry();
+		const policy = (
+			(value.graphs as Record<string, Record<string, unknown>>).code!
+				.policies as Record<string, Record<string, unknown>>
+		).eng_design!;
+		(policy.models as Array<Record<string, unknown>>).push({
+			model: "astra",
+			allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
+			defaultEffort: "xhigh",
+		});
+		policy.modelSplit = {
+			enabled: true,
+			rule: "issue_number_parity",
+			version: "fly2403-v1",
+			odd: { arm: "A", model: "astra" },
+			even: { arm: "B", model: "fable" },
+		};
+
+		const registry = loadBundledRegistry(
+			writeYaml(root, "model-split.yaml", value),
+		);
+
+		expect(registry.graphs.code?.policies.eng_design?.modelSplit).toEqual({
+			enabled: true,
+			rule: "issue_number_parity",
+			version: "fly2403-v1",
+			odd: { arm: "A", model: "astra" },
+			even: { arm: "B", model: "fable" },
+		});
+	});
+
+	it("rejects a model split arm whose alias is absent from the node policy", () => {
+		const root = tempRoot();
+		const value = validBundledRegistry();
+		const policy = (
+			(value.graphs as Record<string, Record<string, unknown>>).code!
+				.policies as Record<string, Record<string, unknown>>
+		).eng_design!;
+		policy.modelSplit = {
+			enabled: true,
+			rule: "issue_number_parity",
+			version: "fly2403-v1",
+			odd: { arm: "A", model: "astra" },
+			even: { arm: "B", model: "fable" },
+		};
+
+		expect(() =>
+			loadBundledRegistry(writeYaml(root, "invalid-model-split.yaml", value)),
+		).toThrow(/modelSplit\.odd\.model.*declared model/i);
+	});
+
 	it("requires node names to match their markdown filenames", () => {
 		const root = tempRoot();
 		const value = validBundledRegistry();

@@ -193,6 +193,7 @@ import {
 	workflowSeedContentHash,
 	workflowTerminalNode,
 } from "./workflow-template.js";
+import type { WorkflowModelAssignmentReceipt } from "./workflow-menu.js";
 import {
 	ENGINE_INVARIANT_REASON_PREFIX,
 	engineInvariantFromReason,
@@ -26541,6 +26542,8 @@ export class StateStore {
 		override?: WorkflowTemplateOverride;
 		/** Menu-level API override included in the selection authority digest. */
 		selectionOverride?: WorkflowTemplateOverride;
+		/** Engine-owned model split receipts, atomically persisted with this run. */
+		modelAssignments?: Record<string, WorkflowModelAssignmentReceipt>;
 		actor: string;
 		canonicalRoot?: string;
 		selection?: {
@@ -26725,6 +26728,31 @@ export class StateStore {
 					manifest: applied.manifest,
 					...(applied.override ? { override: applied.override } : {}),
 				});
+		for (const [nodeId, assignment] of Object.entries(
+			input.modelAssignments ?? {},
+		)) {
+			const node = engineSnapshot?.resolved.nodes.find(
+				(candidate) => candidate.id === nodeId,
+			);
+			const aliases = new Set([
+				input.issueId,
+				...(input.entryIssueAliases ?? []),
+			]);
+			const suffix = /-(\d+)$/.exec(assignment.basis.issueIdentifier);
+			if (
+				!node?.dispatch ||
+				node.dispatch.model !== assignment.model ||
+				!aliases.has(assignment.basis.issueIdentifier) ||
+				assignment.basis.rule !== "issue_number_parity" ||
+				!assignment.basis.ruleVersion ||
+				!suffix ||
+				Number(suffix[1]) !== assignment.basis.issueNumber ||
+				(assignment.basis.issueNumber % 2 === 1 ? "odd" : "even") !==
+					assignment.basis.parity
+			) {
+				throw new Error(`workflow_model_assignment_invalid:${nodeId}`);
+			}
+		}
 		this.db.transaction(() => {
 			if (input.expectedSelection) {
 				const expected = input.expectedSelection;
@@ -26768,14 +26796,16 @@ export class StateStore {
 							}
 						: undefined,
 				);
-				const currentSelectionDigest = canonicalSubmissionDigest(
-					input.selectionOverride
-						? {
-								...currentSelectionDigestBody,
-								override: input.selectionOverride,
-							}
-						: currentSelectionDigestBody,
-				);
+				const currentSelectionDigest = canonicalSubmissionDigest({
+					...currentSelectionDigestBody,
+					...(input.selectionOverride
+						? { override: input.selectionOverride }
+						: {}),
+					...(input.modelAssignments &&
+					Object.keys(input.modelAssignments).length > 0
+						? { modelAssignments: input.modelAssignments }
+						: {}),
+				});
 				if (
 					!input.startReservation ||
 					input.startReservation.selectionDigest !== expected.selectionDigest ||
@@ -26915,6 +26945,17 @@ export class StateStore {
 					...(input.entryRootKey ? [input.entryRootKey] : []),
 				],
 			);
+			for (const [nodeId, assignment] of Object.entries(
+				input.modelAssignments ?? {},
+			)) {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: `design_model_arm_assigned:${input.runId}:${nodeId}`,
+					kind: "design_model_arm_assigned",
+					nodeId,
+					payload: assignment,
+				});
+			}
 			if (input.startReservation) {
 				const startReservation = input.startReservation;
 				this.db.run(
@@ -34578,6 +34619,7 @@ export class StateStore {
 				| "pinned_snapshot"
 				| "snapshot_fallback";
 			audit: boolean;
+			modelAssignment?: WorkflowModelAssignmentReceipt;
 		};
 	}): GeneralizedWorkflowAdmissionResult {
 		const now = input.now ?? new Date().toISOString();
@@ -34823,6 +34865,12 @@ export class StateStore {
 						attempt: input.attempt,
 						dispatch: resolvedDispatch,
 						source: input.dispatchResolution.source,
+						...(input.dispatchResolution.modelAssignment
+							? {
+									modelAssignment:
+										input.dispatchResolution.modelAssignment,
+								}
+							: {}),
 					},
 				});
 			}

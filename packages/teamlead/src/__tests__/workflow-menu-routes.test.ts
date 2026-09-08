@@ -108,6 +108,13 @@ describe("GET /api/workflow/menus", () => {
 					resolvedModel: "gpt-5.6-sol",
 					receipt: "codex (= gpt-5.6-sol)",
 				},
+				{
+					model: "astra",
+					resolvedModel: "gpt-6-astra",
+					receipt: "astra (= gpt-6-astra)",
+					allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
+					defaultEffort: "xhigh",
+				},
 			],
 		});
 		expect(Object.hasOwn(body.menus[0].nodes[0], "role")).toBe(false);

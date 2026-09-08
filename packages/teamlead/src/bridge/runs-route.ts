@@ -2716,10 +2716,14 @@ export function createRunsRouter(
 					return;
 				}
 				try {
-					menuResolution = resolveMenuOverrides(menu, req.body.overrides);
-					menuTemplateOverride = Object.hasOwn(req.body, "overrides")
-						? menuResolution.templateOverride
-						: undefined;
+					menuResolution = resolveMenuOverrides(menu, req.body.overrides, {
+						issueIdentifier: issueIdentifier ?? issueId,
+					});
+					menuTemplateOverride =
+						Object.hasOwn(req.body, "overrides") ||
+						Object.keys(menuResolution.assignments).length > 0
+							? menuResolution.templateOverride
+							: undefined;
 				} catch (error) {
 					if (error instanceof WorkflowMenuValidationError) {
 						res.status(error.status).json({
@@ -2937,6 +2941,7 @@ export function createRunsRouter(
 				generalizedSelection = await resolveWorkflowTemplateSelection(store, {
 					...templateCandidateInput,
 					issueId,
+					issueIdentifier: issueIdentifier ?? issueId,
 					entryIssueAliases: workflowEntryAliases,
 					entryRootKey: workflowEntryRootKey,
 					leadReason:

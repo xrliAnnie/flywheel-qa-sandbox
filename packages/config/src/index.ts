@@ -8,6 +8,8 @@ export type {
 	RegistryEdge,
 	RegistryLoop,
 	RegistryModelPolicy,
+	RegistryModelSplitArm,
+	RegistryModelSplitPolicy,
 	RegistryNodePolicy,
 	RegistryWorkflowEffort,
 	ResolvedProjectRegistry,
@@ -148,6 +150,8 @@ export type {
 	LeadLaunchSelection,
 	ModelConfigSnapshot,
 	ModelPolicyErrorCode,
+	RuntimeModelSplitArm,
+	RuntimeModelSplitPolicy,
 } from "./model-config.js";
 export {
 	getModelConfigSnapshot,
