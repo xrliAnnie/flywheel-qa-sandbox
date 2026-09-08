@@ -1,0 +1,34 @@
+flowchart TB
+  ANNIE(["founder 在 #raya 文字频道发消息"])
+
+  subgraph BRAIN["raya brain 进程 · com.xrli.raya.brain"]
+    BR0["launchd installer.ts:24<br/>KeepAlive Crashed launchd.ts:34-37<br/>ThrottleInterval 60 :62-63"]
+    GWC["discord.js 网关 websocket<br/>voice-mode.ts:632-638 · :643"]
+    CLS["classify 分流 未归类走文字聊天<br/>voice-mode.ts:658 · cli.ts:392-404"]
+    CTRL["TextChatController 一个类全包<br/>controller.ts:244 handle<br/>:390-445 ensureThread<br/>:587 :595 runTurn turn/start"]
+    STORE[("平文件状态 无队列 无 batch 无 ack<br/>store.ts:107 · :110-112<br/>thread.json / asks.json / events.jsonl<br/>events 拒写正文 :162-171")]
+    CX["spawn codex app-server --strict-config<br/>codex-client.ts:118-121 · :143 · :222<br/>stdio JSON-RPC 无 MCP 注入"]
+    REST["直发 Discord REST v10<br/>discord-rest.ts:6 · :25 · :38-41"]
+    ASK["【问 Lead】文本标记<br/>lead-ask.ts:44 正则从模型自己的回答里解析"]
+    POLLA["30s REST 轮询 roundtable thread<br/>controller.ts:1027 · config.ts:151<br/>:1054-1057 拉取 · :1063-1071 校验 Lead bot 身份"]
+    SYN["synthesizeAsk 再跑一轮 turn/start 合成<br/>controller.ts:1128 · :1170-1180<br/>thread 复用有条件 见 :404-445"]
+  end
+
+  REG[("Raya 自己的 Lead 名册<br/>stateDir/leads/id/profile.json<br/>meeting.ts:431-436 · 生产 14 份")]
+  RT[["#leads-roundtable 频道<br/>@mention 明文<br/>controller.ts:928"]]
+  DISCORD[["Discord REST v10 / 网关"]]
+  NOBRIDGE(["🔴 无 Bridge · 无 comm.db · 无 chat-ingest<br/>apps/brain/src 下 grep 9876 / flywheel-comm / chat-ingest 零命中"])
+
+  ANNIE --> GWC --> CLS --> CTRL
+  CTRL <--> STORE
+  CTRL <-->|"thread/start · thread/resume · turn/start"| CX
+  CTRL -->|"sendAnswer"| REST --> DISCORD
+  CTRL --> ASK
+  ASK --> REG
+  REG -->|"resolve leadUserId"| RT
+  ASK --> RT
+  RT --> POLLA --> SYN --> REST
+  NOBRIDGE -.-> BRAIN
+
+  SECRET["开服硬门 沙箱必须读不到 .env<br/>secret-isolation.ts:59-67 · codex-sandbox-probe.ts:28-37<br/>未证明则拒服务 controller.ts:264-268"]
+  SECRET -.->|"gate"| CX

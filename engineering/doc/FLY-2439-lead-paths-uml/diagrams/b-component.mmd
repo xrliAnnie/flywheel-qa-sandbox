@@ -1,0 +1,44 @@
+flowchart TB
+  ANNIE(["founder 在 Discord 频道发消息"])
+
+  subgraph DAEMON["① Lead 自己的 launchd 守护进程"]
+    DP0["入口 codex-lead-tui-runtime.js<br/>run-codex-lead-mufasa-tui-fullaccess.sh:36 · :140<br/>FLYWHEEL_CODEX_LEAD_MODE=tui :75"]
+    POLL["RestPollDiscordInboundSource<br/>REST 轮询 默认 3s<br/>:7 · :121 · 构造 tui-runtime:665"]
+    GW["CodexDiscordGateway 过滤/回声免疫<br/>:233 · 构造 tui-runtime:749"]
+    STRAT["CodexDiscordMailboxStrategy<br/>进程内直接调库<br/>:1 · :72"]
+    SOCKSRV["CodexLeadInboxServer<br/>CodexLeadInboxSocket.ts:78 · :202"]
+    JOURNAL[("journal.db durable accept<br/>LeadInputRouter.ts:218<br/>LeadJournal.ts:240 · :260")]
+    ROUTER["LeadInputRouter 泵<br/>:219-225 · :291 · :297"]
+    EXEC["CodexTurnExecutor<br/>turn/start :156-161<br/>awaitCompletion 无超时"]
+    OUT["DirectDiscordOutboundSender<br/>生产默认 direct<br/>:4 · :57"]
+  end
+
+  subgraph CDB["② comm.db 与 A 共用同一张表"]
+    MBOX[("mailbox 表<br/>mailbox-schema.ts:193")]
+  end
+
+  subgraph BR["③ Bridge 进程 与 A 共用同一份代码"]
+    LOOP["LeadInboxLoop 1s / 30s<br/>lead-inbox-loop.ts:29-30"]
+    ADP["CodexLeadDeliveryAdapter<br/>lead-delivery-adapter.ts:92 · :103 · :146"]
+  end
+
+  SOCK[["④ unix socket<br/>stateDir/lead-inbox.sock<br/>CodexLeadInboxSocket.ts:64<br/>理由 :4-7 Bridge 不能直改 journal.db"]]
+  DAEMONWS[["共享 codex remote-control daemon<br/>ws+unix daemon-ws.ts:13-14 · :36<br/>founder 的 codex resume --remote 是同一 thread 的另一个客户端<br/>codex-lead-tui-runtime.ts:1-6"]]
+  DISCORD[["Discord REST v10<br/>discord-utils.ts:10"]]
+
+  ANNIE -->|"GET /channels/id/messages?after"| POLL
+  POLL --> GW
+  GW -->|"durable 回执即返回 不喂模型"| STRAT
+  STRAT -->|"ingestDiscordChat 库调用"| MBOX
+  STRAT -.->|"🔴 不敲门铃<br/>lead-backends/codex 下零命中"| LOOP
+  MBOX -->|"轮询认领 组批"| LOOP
+  LOOP --> ADP
+  ADP -->|"submitCodexLeadInboxBatch"| SOCK
+  SOCK --> SOCKSRV
+  SOCKSRV --> JOURNAL
+  JOURNAL -->|"只有 accepted_new 才入队起泵"| ROUTER
+  ROUTER --> EXEC
+  EXEC <-->|"thread/start · thread/resume · turn/start · thread/read<br/>CodexLeadProcess.ts:372,380,415<br/>turn/steer 已封装但无调用方 :427-428"| DAEMONWS
+  EXEC --> OUT
+  OUT -->|"自己的 bot token 直发<br/>绕开 Bridge 出站授权<br/>launcher:101-104"| DISCORD
+  OUT -.->|"bridge 模式存在但生产未启用<br/>CodexOutboundSender.ts:180"| BR

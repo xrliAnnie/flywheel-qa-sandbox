@@ -1,0 +1,33 @@
+sequenceDiagram
+  autonumber
+  actor F as founder
+  participant GW as discord.js 网关<br/>raya brain 进程内
+  participant CT as TextChatController
+  participant ST as 平文件 thread.json / asks.json
+  participant CX as spawn 的 codex app-server
+  participant RTC as leads-roundtable 频道
+  participant L as 某个 Lead 的 bot
+  participant DC as Discord REST
+
+  F->>GW: messageCreate  voice-mode.ts:643
+  GW->>CT: classify 未归类 → onUnhandled  voice-mode.ts:658 · cli.ts:392-404
+  Note over GW,CT: 🔴 全程无 Bridge 无 comm.db apps/brain/src 下零命中
+  CT->>ST: 读 thread.json  store.ts:110
+  CT->>CX: thread/resume 或 thread/start  controller.ts:408,415,445
+  Note over CT,CX: thread 复用有条件 rollout 缺失或无 resumeId 才新建  controller.ts:404-445
+  CT->>CX: turn/start  controller.ts:595
+  Note over CT,CX: 整轮超时 300s 重活 900s → turn/interrupt  config.ts:147-148 · controller.ts:617-619
+  CX-->>CT: 回答文本  controller.ts:606-624 收 turn 通知并聚合
+  CT->>CT: parseLeadAskLines 从模型自己的回答里解析 【问 Lead】  lead-ask.ts:44 · controller.ts:802
+  CT->>RTC: 发一条 @mention 明文  controller.ts:928
+  RTC->>L: Lead 看到
+  L-->>RTC: Lead 回复
+  loop 每 30s  controller.ts:1027 · config.ts:151
+    CT->>RTC: rest.list after lastSeenMessageId  controller.ts:1054-1057
+    CT->>CT: 校验答复者确实是那个 Lead 的 bot  controller.ts:1063-1071
+  end
+  CT->>ST: 落 answer_observed  controller.ts:1089-1095
+  CT->>CX: synthesizeAsk 再跑一轮 turn/start  controller.ts:1170-1180
+  CX-->>CT: 合成后的答复  controller.ts:1170-1180
+  CT->>DC: sendAnswer 直发 REST  discord-rest.ts:38-41
+  DC-->>F: 答复出现在 #raya

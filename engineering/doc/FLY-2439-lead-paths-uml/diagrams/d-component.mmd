@@ -1,0 +1,43 @@
+flowchart TB
+  ANNIE(["founder 在 Discord 语音房说话"])
+
+  subgraph VOICE["raya voice 进程 · com.xrli.raya.voice"]
+    VP0["launchd installer.ts:30<br/>45 个非测试 ts / 13683 行"]
+    ROOM["DiscordAdapter joinVoice + 订阅 opus<br/>:174-183 · :201-211 · VoiceRoom.ts:283-296"]
+    UP["Uplink pushPcm48Stereo<br/>Uplink.ts:96-119 · runtime.ts:1592-1597"]
+    VAD["SileroVad 本地抢话门<br/>SileroVad.ts:5-6 模型 SHA 钉死<br/>UplinkSpeechGate.ts:403 · :424"]
+    APPCLI["AppServerClient spawn codex app-server<br/>:91-98 · :132-145 · :280-291 stdio JSON-RPC"]
+    LEG["CodexLeg 起进程 开 thread 塞 ACTIONS 提案合同<br/>:107-110 · :112-145 · :71-83"]
+    RT["RealtimeTransport<br/>thread/realtime/start :191-202<br/>appendAudio :231-238 · outputAudio :376-390<br/>transcript :392-416 · speech_started :340-356"]
+    DOWN["Downlink 24k→48k 入队 出帧<br/>:108-124 · :171-217"]
+    PLAY["@discordjs/voice player 播回房间<br/>DiscordAdapter.ts:222 · :248-263"]
+    YIELD["平台抢话让位 清队列 估听到哪儿 压制最长 11s<br/>runtime.ts:1148-1195 · :980-1063 · Downlink.ts:12"]
+  end
+
+  subgraph SIDE["侧通道 · 两个方向彼此不相连"]
+    INBOX[("voice-inbox/items.jsonl + acks.jsonl<br/>voice-inbox.ts:228-235")]
+    READER["InboxReader 轮询 五种处置<br/>:203 :210 轮询 · :422 ship_gate · :441 filtered<br/>:450-455 非决策文字 fallback · :458-473 语音稿不合格 fallback<br/>:476-477 合格才 speak"]
+    OUTBOX["Codex 写 *.action.json 提案<br/>OutboxWatcher.ts:372-396 认领 · :444-462 逐字比对转写"]
+    RB["ReadbackGate 念复述稿<br/>:87-96 稿子说 确认后我会真的把消息发给对方<br/>:192-194 等反对窗口 · :197 发送"]
+    LEADCH[["预注册 Lead 的 Discord 频道<br/>RoomText.ts:57-103 voice-leads.json<br/>白名单 :105-137"]]
+    APPROVAL[["审批 HTTP POST baseUrl/ship-approval<br/>ApprovalClient.ts:228-230 · :252-265<br/>生产 env 缺 RAYA_APPROVAL_ENDPOINT_URL"]]
+    MIRROR["VoiceTextMirror 自动字幕<br/>:42-100 · runtime.ts:399-404"]
+  end
+
+  NOPROD(["🔴 无生产写入方<br/>appendVoiceInboxItem 在 b1b5a64 只被测试/探针/夹具调用<br/>plan.md:399 把 producer 记为待办<br/>生产盘 voice-inbox 目录不存在"])
+
+  ANNIE --> ROOM --> UP --> VAD --> APPCLI
+  LEG --- APPCLI
+  APPCLI <--> RT
+  RT -->|"outputAudio delta"| DOWN --> PLAY
+  RT -->|"speech_started"| YIELD --> DOWN
+  RT --> MIRROR
+
+  NOPROD -.->|"✗ 没有箭头指进来"| INBOX
+  INBOX --> READER
+  READER -->|"合格决策项 speak → appendSpeech"| RT
+  READER -->|"ship_gate"| APPROVAL
+
+  RT -->|"模型提案"| OUTBOX --> RB
+  RB -->|"🔴 不反对即发 反对词 不对/等等/取消<br/>ReadbackGate.ts:244-253 · :291-295 超时=未取消"| LEADCH
+  MIRROR --> LEADCH

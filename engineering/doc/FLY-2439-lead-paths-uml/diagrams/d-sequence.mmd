@@ -1,0 +1,31 @@
+sequenceDiagram
+  autonumber
+  actor F as founder
+  participant RM as DiscordAdapter 语音房
+  participant UP as Uplink + SileroVad 抢话门
+  participant AC as AppServerClient stdio
+  participant RT as RealtimeTransport
+  participant DN as Downlink + player
+  participant OB as OutboxWatcher + ReadbackGate
+  participant LC as 预注册 Lead 频道
+  participant IB as voice-inbox/items.jsonl
+
+  Note over F,DN: 主链 说话与回话
+  F->>RM: 语音房音频
+  RM->>UP: 订阅 opus 解码 → pushPcm48Stereo  DiscordAdapter.ts:201-211 · runtime.ts:1592-1597
+  UP->>AC: 门开后上行  UplinkSpeechGate.ts:403,424
+  AC->>RT: thread/realtime/appendAudio  RealtimeTransport.ts:231-238
+  RT-->>DN: outputAudio delta → pushPcm24Mono  RealtimeTransport.ts:376-390 · runtime.ts:1719
+  DN-->>F: player 播回房间  DiscordAdapter.ts:248-263
+  RT-->>UP: speech_started → fireLocalYield 清队列 压制 11s  RealtimeTransport.ts:340-356 · runtime.ts:1191-1195
+
+  Note over F,LC: 分支一 会议中要转达给别人 存在 但是 opt-out
+  RT->>OB: Codex 写 *.action.json 提案  CodexLeg.ts:71-83 · OutboxWatcher.ts:372-396
+  OB->>OB: 逐字比对 founder 转写取证  OutboxWatcher.ts:444-462
+  OB->>F: 念复述稿 稿子说 确认后我会真的把消息发给对方  ReadbackGate.ts:87-96
+  Note over OB,F: 🔴 执行上不等确认 只等一个反对窗口<br/>反对词 不对 等等 取消  ReadbackGate.ts:244-253<br/>超时返回未取消即发送  ReadbackGate.ts:291-295
+  OB->>LC: roomText.send 白名单内  ReadbackGate.ts:197 · RoomText.ts:105-137
+
+  Note over F,IB: 分支二 会议中要问别人并等回答 这条不存在
+  F-xIB: ✗ 未在代码中找到 任何从 Raya 提问动作写入 items.jsonl 的箭头
+  IB-->>IB: 🔴 appendVoiceInboxItem 在 b1b5a64 只被测试 探针 夹具调用<br/>生产盘 voice-inbox 目录不存在

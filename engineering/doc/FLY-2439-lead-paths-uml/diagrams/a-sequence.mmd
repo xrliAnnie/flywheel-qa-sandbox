@@ -1,0 +1,28 @@
+sequenceDiagram
+  autonumber
+  actor F as founder
+  participant AD as bun 适配器<br/>在 Lead 的 Claude 会话内
+  participant SP as 本地 spool
+  participant CLI as flywheel-comm chat-ingest<br/>子进程
+  participant DB as comm.db mailbox
+  participant BR as Bridge LeadInboxLoop
+  participant FS as JSON 文件 + jsonl sidecar
+  participant M as Lead 模型
+  participant DC as Discord REST
+
+  F->>AD: messageCreate  server.ts:1593
+  AD->>SP: 原子写 ingest intent  chat-receipt-runtime.ts:106,116-118
+  AD->>CLI: spawn node ... chat-ingest --content-stdin  chat-receipt-runtime.ts:266-274,:349
+  CLI->>DB: ingestDiscordChat → claimDiscordLane  index.ts:747 · discord-chat-ingest.ts:114
+  CLI--)BR: 可丢弃门铃 POST /api/lead-inbox/nudge  index.ts:781-789
+  Note over CLI,BR: 门铃丢了不丢消息 队列行才是权威  lead-inbox-nudge.ts:34-36
+  BR->>DB: 轮询认领 活跃 1s 空闲 30s  lead-inbox-loop.ts:29-30
+  BR->>BR: 组 mailbox-batch 头  lead-inbox-loop.ts:444 · kind 标签 :449
+  BR->>FS: writeMailboxBatch 两阶段  ClaudeMailboxCodec.ts:273,283,290
+  FS->>M: 内置 poller 把未读快照打包成一个 turn  ClaudeCodeAdapter.ts:11
+  M->>AD: MCP 工具 reply  server.ts:1171
+  AD->>BR: POST /api/discord/reply-guard  server.ts:375-376
+  BR-->>AD: allow 或 deny  tools.ts:1276
+  Note over AD,BR: 404 或 env 缺失即 fail open  server.ts:370,391
+  AD->>DC: ch.send 直发  server.ts:1339-1342
+  DC-->>F: 回复出现在频道

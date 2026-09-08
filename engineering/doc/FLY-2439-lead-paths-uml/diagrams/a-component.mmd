@@ -1,0 +1,48 @@
+flowchart TB
+  ANNIE(["founder 在 Discord 频道发消息"])
+
+  subgraph LEADPROC["① Lead 自己的 Claude 会话进程"]
+    LP0["两个 channel 由启动器写死<br/>claude-lead.sh:2559<br/>plugin:discord@flywheel-plugins + server:flywheel-inbox"]
+    ADAPTER["bun 适配器 server.ts<br/>discord.js 网关 websocket<br/>server.ts:494 · :1593 · :1793"]
+    SPOOL[("本地 spool<br/>stateDir/chat-receipt-spool/ingest<br/>chat-receipt-runtime.ts:92-94")]
+    CLI["spawn node flywheel-comm chat-ingest<br/>chat-receipt-runtime.ts:266-274 · :349"]
+    MODEL(["Lead 模型<br/>内置 useInboxPoller 读 JSON<br/>ClaudeCodeAdapter.ts:11 · :255"])
+    REPLY["MCP 工具 reply<br/>server.ts:1171 · :1339-1342"]
+  end
+
+  subgraph CDB["② comm.db 每项目一个"]
+    MBOX[("mailbox 表<br/>mailbox-schema.ts:193<br/>carrier=inbox<br/>discord-chat-ingest.ts:114 · :127")]
+  end
+
+  subgraph BR["③ Bridge 进程"]
+    LOOP["LeadInboxLoop<br/>活跃 1s / 空闲 30s<br/>lead-inbox-loop.ts:29-30"]
+    BATCH["组 mailbox-batch 头<br/>lead-inbox-loop.ts:444 · :449"]
+    ADP["ClaudeLeadDeliveryAdapter<br/>lead-delivery-adapter.ts:56 · :75"]
+    GUARD["reply-guard 路由<br/>tools.ts:1276"]
+    THRSEND["chat-threads/send 路由<br/>tools.ts:711"]
+    EV["引擎事件入队<br/>plugin.ts:5825 · lead-inbox-runtime.ts:573"]
+  end
+
+  FILE[["④ JSON 文件 + jsonl sidecar<br/>~/.claude/teams/lead/inboxes/lead.json<br/>path-helpers.ts:116 · lead-inbox-runtime.ts:1269<br/>两阶段写 ClaudeMailboxCodec.ts:273 · :283 · :290"]]
+  DISCORD[["Discord REST v10"]]
+
+  ANNIE -->|"messageCreate"| ADAPTER
+  ADAPTER -->|"原子落盘意图<br/>chat-receipt-runtime.ts:106,116-118"| SPOOL
+  SPOOL -->|"2 次即时尝试<br/>chat-receipt-runtime.ts:135"| CLI
+  CLI -->|"ingestDiscordChat<br/>index.ts:747"| MBOX
+  CLI -.->|"可丢弃门铃 只有 A 会敲<br/>index.ts:781-789 · lead-inbox-nudge.ts:34-36,56"| LOOP
+  MBOX -->|"轮询认领"| LOOP
+  LOOP --> BATCH --> ADP
+  ADP -->|"writeMailboxBatch"| FILE
+  EV -->|"session_completed 等<br/>同一条 batch 管道 不混装<br/>lead-inbox-loop.ts:414"| MBOX
+  FILE -->|"未读快照打包成一个 turn"| MODEL
+  MODEL --> REPLY
+  REPLY -->|"发送前问一次<br/>server.ts:375-376"| GUARD
+  GUARD -.->|"404 或 env 缺失即 fail open<br/>server.ts:370 · :391"| REPLY
+  REPLY -->|"ch.send 直发"| DISCORD
+  MODEL -.->|"提示词引导 模型自己发 HTTP<br/>非插件工具"| THRSEND
+  THRSEND --> DISCORD
+
+  ADAPTER -.->|"🔴 legacy fail-open 车道<br/>三个 env 缺失时整条绕开 comm.db 与 Bridge<br/>server.ts:1768-1782 · chat-receipt-recorder.ts:87-116"| MODEL
+
+  classDef gap stroke-dasharray: 5 5

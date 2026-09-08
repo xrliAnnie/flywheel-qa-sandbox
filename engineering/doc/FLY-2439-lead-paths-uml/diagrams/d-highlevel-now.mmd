@@ -1,0 +1,13 @@
+flowchart TB
+  subgraph NOW["现状(已验证)· Raya 是两个进程、两个 Codex、两个 thread"]
+    direction TB
+    DT["Discord 文字 #raya"] --> BP["brain 进程<br/>launchd com.xrli.raya.brain<br/>installer.ts:22-27"]
+    BP --> CX1["codex app-server 子进程 A<br/>args = app-server --strict-config<br/>codex-client.ts:81-87 · :120"]
+    CX1 --> TH1[("thread.json<br/>store.ts:110")]
+    DV["Discord 语音房"] --> VP["voice 进程<br/>launchd com.xrli.raya.voice<br/>installer.ts:28-35"]
+    VP --> CX2["codex app-server 子进程 B<br/>args = --enable realtime_conversation app-server --strict-config<br/>config.ts:21-26 · AppServerClient.ts:91-98"]
+    CX2 --> TH2[("voice-session.json<br/>store.ts:26")]
+  end
+  NOTE["两侧只共用 RAYA_CODEX_HOME 这一个 env<br/>brain config.ts:242 · voice config.ts:345<br/>🔴 但进程不同 · thread 不同 · 记忆不互通"]
+  TH1 -.-> NOTE
+  TH2 -.-> NOTE

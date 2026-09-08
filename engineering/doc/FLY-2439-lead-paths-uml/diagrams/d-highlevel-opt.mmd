@@ -1,0 +1,20 @@
+flowchart TB
+  subgraph OPT["选项一(建议 · 未实现)· 一个脑子 两个 I/O 适配器"]
+    direction TB
+    I1["Discord 文字"] --> AD1["文字适配器<br/>文本 → turn 输入"]
+    I2["Discord 语音房"] --> AD2["语音适配器<br/>音频 ↔ realtime 流"]
+    AD1 --> ONE["同一个 Codex 会话<br/>一个 app-server · 一个 thread<br/>启动时必须带 --enable realtime_conversation"]
+    AD2 --> ONE
+    ONE --> MEM[("同一份上下文<br/>说过的话文字侧也知道")]
+  end
+  subgraph TWO["选项二(= 今天的形状)· 两套"]
+    direction TB
+    J1["Discord 文字"] --> B1["brain + codex A"]
+    J2["Discord 语音房"] --> B2["voice + codex B"]
+    B1 --> M1[("上下文 A")]
+    B2 --> M2[("上下文 B")]
+    M1 -.->|"要靠额外机制同步"| M2
+  end
+  COST["取舍(未验证 · 待拍)<br/>选项一:一份上下文 · 但语音的 realtime 会话要一直开着 · 抢话/超时语义要合一<br/>选项二:互不影响 · 但记忆天然分裂 · 两套守护进程两套配置"]
+  ONE -.-> COST
+  M2 -.-> COST

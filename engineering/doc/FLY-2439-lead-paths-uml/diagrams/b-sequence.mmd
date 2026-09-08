@@ -1,0 +1,27 @@
+sequenceDiagram
+  autonumber
+  actor F as founder
+  participant PO as RestPoll + Gateway<br/>在 Lead 的 launchd 守护进程内
+  participant DB as comm.db mailbox
+  participant BR as Bridge LeadInboxLoop
+  participant SK as unix socket lead-inbox.sock
+  participant JR as journal.db
+  participant RT as LeadInputRouter + TurnExecutor<br/>同一守护进程
+  participant CX as 共享 codex remote-control daemon
+  participant DC as Discord REST
+
+  F->>PO: 消息进频道
+  PO->>PO: 3s 轮询 GET /channels/id/messages?after  RestPollDiscordInboundSource.ts:7,:121
+  PO->>DB: ingestDiscordChat 进程内库调用  CodexDiscordMailboxStrategy.ts:72
+  Note over PO,BR: 🔴 B 不敲门铃 CodexDiscordMailboxStrategy.ts:72 库调用 · lead-inbox-nudge.ts:34-36 门铃只在 CLI
+  PO-->>PO: durable 回执即返回 不喂模型  CodexDiscordGateway.ts:233
+  BR->>DB: 轮询认领 组批  lead-inbox-loop.ts:29-30,444
+  BR->>SK: submitCodexLeadInboxBatch  lead-delivery-adapter.ts:146
+  SK->>JR: journal.acceptBatch  LeadInputRouter.ts:218 · LeadJournal.ts:240,260
+  JR->>RT: 只有 accepted_new 才入队起泵  LeadInputRouter.ts:219-225
+  RT->>CX: turn/start  CodexTurnExecutor.ts:156-161 · CodexLeadProcess.ts:415
+  Note over RT,CX: awaitCompletion 没有超时 单次 RPC 超时 60s  CodexLeadProcess.ts:141
+  CX-->>RT: turn/completed  CodexTurnExecutor.ts:177-188 awaitCompletion 无超时 · CodexLeadProcess.ts:141 单次 RPC 60s
+  RT->>DC: DirectDiscordOutboundSender 自己的 bot token 直发  DirectDiscordOutboundSender.ts:57 · discord-utils.ts:10
+  Note over RT,DC: 生产默认 direct 绕开 Bridge 出站授权  run-codex-lead-mufasa-tui-fullaccess.sh:101-104
+  DC-->>F: 回复出现在频道
