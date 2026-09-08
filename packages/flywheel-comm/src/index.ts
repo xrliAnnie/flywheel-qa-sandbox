@@ -85,7 +85,10 @@ import { xhsAnalysis } from "./commands/xhs-analysis.js";
 import { xhsState } from "./commands/xhs-state.js";
 import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
 import { CommDB } from "./db.js";
-import { ingestDiscordChat } from "./discord-chat-ingest.js";
+import {
+	DISCORD_WIRING_BROKEN_STALE_REASON,
+	ingestDiscordChat,
+} from "./discord-chat-ingest.js";
 import { resolveFounderId } from "./founder-attribution.js";
 import { inspectCommittedFounderReviewArtifacts } from "./founder-review.js";
 import { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
@@ -717,6 +720,9 @@ async function runChatIngest(args: string[]): Promise<void> {
 			"attachments-json": { type: "string" },
 			"reply-channel-id": { type: "string" },
 			"reply-route-json": { type: "string" },
+			"held-since": { type: "string" },
+			"held-reason": { type: "string" },
+			"dead-letter-reason": { type: "string" },
 			"content-stdin": { type: "boolean", default: false },
 			db: { type: "string" },
 			project: { type: "string" },
@@ -727,12 +733,30 @@ async function runChatIngest(args: string[]): Promise<void> {
 		throw new Error("chat-ingest accepts no positionals");
 	if (values["version-probe"]) {
 		console.log(
-			JSON.stringify({ command: "chat-ingest", protocolVersion: 1, ok: true }),
+			JSON.stringify({ command: "chat-ingest", protocolVersion: 2, ok: true }),
 		);
 		return;
 	}
 	if (!values["content-stdin"]) {
 		throw new Error("chat-ingest requires --content-stdin");
+	}
+	if (values["held-reason"] && !values["held-since"]) {
+		throw new Error("--held-reason requires --held-since");
+	}
+	if (values["dead-letter-reason"] && !values["held-since"]) {
+		throw new Error("--dead-letter-reason requires --held-since");
+	}
+	if (
+		values["held-reason"] &&
+		values["held-reason"] !== "discord_wiring_broken"
+	) {
+		throw new Error("--held-reason is invalid");
+	}
+	if (
+		values["dead-letter-reason"] &&
+		values["dead-letter-reason"] !== DISCORD_WIRING_BROKEN_STALE_REASON
+	) {
+		throw new Error("--dead-letter-reason is invalid");
 	}
 	const required = (name: keyof typeof values): string => {
 		const value = values[name];
@@ -770,6 +794,18 @@ async function runChatIngest(args: string[]): Promise<void> {
 			sizeKb: number;
 		}>,
 		text: readFileSync(0, "utf8"),
+		...(values["held-since"] ? { heldSince: values["held-since"] } : {}),
+		...(values["held-reason"]
+			? { heldReason: values["held-reason"] as "discord_wiring_broken" }
+			: {}),
+		...(values["dead-letter-reason"]
+			? {
+					deadLetter: {
+						reason: DISCORD_WIRING_BROKEN_STALE_REASON,
+						at: new Date().toISOString(),
+					},
+				}
+			: {}),
 		...(values["reply-channel-id"]
 			? { replyChannelId: values["reply-channel-id"] }
 			: {}),
@@ -787,7 +823,7 @@ async function runChatIngest(args: string[]): Promise<void> {
 	});
 	// Commit evidence must precede the best-effort doorbell.
 	console.log(JSON.stringify(result));
-	if (result.lane === "inserted_inbox") {
+	if (result.lane === "inserted_inbox" && !result.deadLettered) {
 		await nudgeLeadInboxBestEffort({
 			bridgeUrl: process.env.BRIDGE_URL,
 			leadId: required("lead"),

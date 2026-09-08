@@ -1,0 +1,11 @@
+flowchart TD
+    A[主仓 PR 合并并部署<br/>chat-ingest 协议 v2] --> B[fork 插件 PR 合并<br/>版本号 patch+1]
+    B --> C[冻结收据<br/>主仓 SHA · target SHA · 安装前 preimage · Lead 名单 · 开始时刻]
+    C --> D{fork main == target?}
+    D -- 否 --> X[停止: 多出的提交不在本单审查内]
+    D -- 是 --> E[一次受管操作 restart-services.sh<br/>同一把锁内: 检查 → 更新缓存 → 复核 → 重启每个 Lead]
+    E --> G{硬门 A/B/C 全过?<br/>A 重启状态文件 · B registry SHA==target · C 逐 Lead 进程快照}
+    G -- 是 --> H[归档收据, 上线完成]
+    G -- 否 --> R[回滚: fork 上开 revert PR<br/>除 plugin.json 外树等于 preimage, 版本号再 patch+1]
+    R --> C
+    X --> R

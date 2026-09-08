@@ -210,7 +210,13 @@ export type EnqueueMailboxResult =
 	| { outcome: "archived" };
 
 export type DiscordLaneVerdict =
-	| { lane: "inserted_inbox" | "active_inbox"; deliveryId: string; seq: number }
+	| {
+			lane: "inserted_inbox";
+			deliveryId: string;
+			seq: number;
+			deadLettered?: true;
+	  }
+	| { lane: "active_inbox"; deliveryId: string; seq: number }
 	| { lane: "inserted_external"; deliveryId: string; seq: number }
 	| { lane: "legacy_external"; deliveryId: string }
 	| { lane: "archived" };
@@ -690,7 +696,10 @@ export class MailboxQueue {
 
 	/** Atomically awards one Discord message identity to the inbox or legacy lane. */
 	claimDiscordLane(
-		input: EnqueueMailboxInput & { carrier: "inbox" | "external" },
+		input: EnqueueMailboxInput & {
+			carrier: "inbox" | "external";
+			deadLetter?: { reason: string; at: string };
+		},
 	): DiscordLaneVerdict {
 		return this.db
 			.transaction((): DiscordLaneVerdict => {
@@ -717,11 +726,25 @@ export class MailboxQueue {
 				}
 				const inserted = this.enqueue(input);
 				if (inserted.outcome === "archived") return { lane: "archived" };
+				if (
+					inserted.outcome === "inserted" &&
+					input.deadLetter &&
+					!this.markDead(
+						inserted.row.id,
+						input.deadLetter.at,
+						input.deadLetter.reason,
+					)
+				) {
+					throw new Error("failed to dead-letter inserted Discord message");
+				}
 				return input.carrier === "inbox"
 					? {
 							lane: "inserted_inbox",
 							deliveryId: inserted.row.delivery_id,
 							seq: inserted.row.seq,
+							...(inserted.outcome === "inserted" && input.deadLetter
+								? { deadLettered: true as const }
+								: {}),
 						}
 					: {
 							lane: "inserted_external",
@@ -1338,6 +1361,8 @@ export class MailboxQueue {
 				const windowEnd = new Date(
 					Date.parse(head.created_at) + input.batchWindowMs,
 				).toISOString();
+				const heldDiscordCollapseKey =
+					head.type === "discord_chat" ? head.collapse_key : null;
 				const effectiveLimit =
 					input.recipientKind === "runner" && ackClass === "response"
 						? 1
@@ -1349,7 +1374,8 @@ export class MailboxQueue {
 						    AND to_agent = ? AND from_agent = ? AND msg_class = ?
 						    AND state = 'QUEUED' AND batch_id IS NULL
 						    AND lease_retry_count = ? AND retry_count = ?
-						    AND created_at >= ? AND created_at <= ?
+						    AND ((? IS NOT NULL AND collapse_key = ?)
+						      OR (? IS NULL AND created_at >= ? AND created_at <= ?))
 						    AND (next_retry_at IS NULL OR next_retry_at <= ?)
 						    AND (? = 'lead'
 						      OR (? = 'response' AND type = 'response')
@@ -1363,6 +1389,9 @@ export class MailboxQueue {
 						head.msg_class,
 						head.lease_retry_count,
 						head.retry_count,
+						heldDiscordCollapseKey,
+						heldDiscordCollapseKey,
+						heldDiscordCollapseKey,
 						head.created_at,
 						windowEnd,
 						input.now,

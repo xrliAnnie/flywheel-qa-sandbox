@@ -373,5 +373,55 @@ EOF
   fi
 fi
 
+assert_revert_tree() {
+  local repo="$1" preimage="$2" revert_sha="$3" expected_version="$4"
+  local manifest="external_plugins/discord/.claude-plugin/plugin.json"
+  local numstat preimage_shape revert_shape actual_version
+  git -C "$repo" diff --quiet "$preimage" "$revert_sha" -- \
+    external_plugins/discord ":!$manifest" || return 1
+  numstat="$(git -C "$repo" diff --numstat "$preimage" "$revert_sha" -- "$manifest")"
+  [[ "$numstat" == $'1\t1\t'"$manifest" ]] || return 1
+  preimage_shape="$(git -C "$repo" show "$preimage:$manifest" | jq -S 'del(.version)')" || return 1
+  revert_shape="$(git -C "$repo" show "$revert_sha:$manifest" | jq -S 'del(.version)')" || return 1
+  actual_version="$(git -C "$repo" show "$revert_sha:$manifest" | jq -r '.version')" || return 1
+  [[ "$preimage_shape" == "$revert_shape" && "$actual_version" == "$expected_version" ]]
+}
+
+ROLLBACK_REPO="$SB/rollback-repo"
+ROLLBACK_PLUGIN="$ROLLBACK_REPO/external_plugins/discord"
+mkdir -p "$ROLLBACK_PLUGIN/.claude-plugin"
+git -C "$ROLLBACK_REPO" init -q
+git -C "$ROLLBACK_REPO" config user.name flywheel-test
+git -C "$ROLLBACK_REPO" config user.email flywheel-test@example.invalid
+printf 'old runtime\n' > "$ROLLBACK_PLUGIN/server.ts"
+printf '{"name":"discord","version":"0.0.6"}\n' \
+  > "$ROLLBACK_PLUGIN/.claude-plugin/plugin.json"
+git -C "$ROLLBACK_REPO" add external_plugins/discord
+git -C "$ROLLBACK_REPO" commit -qm preimage
+PREIMAGE_SHA="$(git -C "$ROLLBACK_REPO" rev-parse HEAD)"
+printf 'new runtime\n' > "$ROLLBACK_PLUGIN/server.ts"
+printf '{"name":"discord","version":"0.0.7"}\n' \
+  > "$ROLLBACK_PLUGIN/.claude-plugin/plugin.json"
+git -C "$ROLLBACK_REPO" commit -qam target
+git -C "$ROLLBACK_REPO" show "$PREIMAGE_SHA:external_plugins/discord/server.ts" \
+  > "$ROLLBACK_PLUGIN/server.ts"
+printf '{"name":"discord","version":"0.0.8"}\n' \
+  > "$ROLLBACK_PLUGIN/.claude-plugin/plugin.json"
+git -C "$ROLLBACK_REPO" commit -qam revert-with-jit-version
+REVERT_SHA="$(git -C "$ROLLBACK_REPO" rev-parse HEAD)"
+if assert_revert_tree "$ROLLBACK_REPO" "$PREIMAGE_SHA" "$REVERT_SHA" 0.0.8; then
+  pass "revert tree matches the preimage except for the expected JIT version"
+else
+  fail "revert tree matches the preimage except for the expected JIT version"
+fi
+printf 'unreviewed drift\n' > "$ROLLBACK_PLUGIN/server.ts"
+git -C "$ROLLBACK_REPO" commit -qam drifted-revert
+DRIFTED_REVERT_SHA="$(git -C "$ROLLBACK_REPO" rev-parse HEAD)"
+if assert_revert_tree "$ROLLBACK_REPO" "$PREIMAGE_SHA" "$DRIFTED_REVERT_SHA" 0.0.8; then
+  fail "revert tree guard rejects non-manifest drift"
+else
+  pass "revert tree guard rejects non-manifest drift"
+fi
+
 printf '\nResults: %d passed, %d failed\n' "$PASSED" "$FAILED"
 (( FAILED == 0 ))

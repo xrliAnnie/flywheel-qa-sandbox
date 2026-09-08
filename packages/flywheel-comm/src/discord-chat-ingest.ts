@@ -8,8 +8,14 @@ import {
 	normalizeChatDeliveryEnvelope,
 	parseChatDeliveryEnvelope,
 } from "./chat-delivery-envelope.js";
-import { type DiscordLaneVerdict, MailboxQueue } from "./mailbox-queue.js";
+import {
+	assertUtcIsoTimestamp,
+	type DiscordLaneVerdict,
+	MailboxQueue,
+} from "./mailbox-queue.js";
 import { encodeSenderRef } from "./sender-ref.js";
+
+export const DISCORD_WIRING_BROKEN_STALE_REASON = "discord_wiring_broken_stale";
 
 export interface IngestDiscordChatArgs {
 	dbPath: string;
@@ -23,6 +29,12 @@ export interface IngestDiscordChatArgs {
 	msgKind: ChatDeliveryMessageKind;
 	attachments: ChatDeliveryAttachment[];
 	text: string;
+	heldSince?: string;
+	heldReason?: ChatDeliveryEnvelopeV1["heldReason"];
+	deadLetter?: {
+		reason: typeof DISCORD_WIRING_BROKEN_STALE_REASON;
+		at: string;
+	};
 	founderId?: string;
 	replyChannelId?: string;
 	replyRoute?: ChatDeliveryEnvelopeV1["replyRoute"];
@@ -59,6 +71,12 @@ export function renderDiscordChatContent(
 		user_id: envelope.authorId,
 		ts: envelope.ts,
 		delivery_id: envelope.deliveryId,
+		...(envelope.heldSince
+			? {
+					held_since: envelope.heldSince,
+					held_reason: envelope.heldReason as string,
+				}
+			: {}),
 	};
 	const attachments = envelope.attachments.map(
 		(attachment) =>
@@ -86,6 +104,13 @@ export function ingestDiscordChatOnQueue(
 	queue: MailboxQueue,
 	args: IngestDiscordChatArgs,
 ): DiscordLaneVerdict {
+	if (args.deadLetter) {
+		if (!args.heldSince) throw new Error("deadLetter requires heldSince");
+		if (args.deadLetter.reason !== DISCORD_WIRING_BROKEN_STALE_REASON) {
+			throw new Error("deadLetter.reason is invalid");
+		}
+		assertUtcIsoTimestamp(args.deadLetter.at, "deadLetter.at");
+	}
 	if (
 		args.msgKind === "roundtable" &&
 		!args.replyChannelId &&
@@ -108,6 +133,8 @@ export function ingestDiscordChatOnQueue(
 		msgKind: args.msgKind,
 		attachments: args.attachments,
 		text: args.text,
+		...(args.heldSince ? { heldSince: args.heldSince } : {}),
+		...(args.heldReason ? { heldReason: args.heldReason } : {}),
 		...(args.replyChannelId ? { replyChannelId: args.replyChannelId } : {}),
 		...(args.replyRoute ? { replyRoute: args.replyRoute } : {}),
 	});
@@ -125,8 +152,9 @@ export function ingestDiscordChatOnQueue(
 		deliveryContent: renderDiscordChatContent(envelope),
 		createdAt: envelope.ts,
 		carrier: "inbox",
-		collapseKey: null,
+		collapseKey: envelope.heldSince ? `discord-held:${envelope.chatId}` : null,
 		senderRef: encodeSenderRef(),
+		...(args.deadLetter ? { deadLetter: args.deadLetter } : {}),
 	});
 }
 

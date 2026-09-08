@@ -1,0 +1,16 @@
+stateDiagram-v2
+    direction LR
+    [*] --> 收到消息
+    收到消息 --> 进信箱: enabled(三 env 齐)
+    收到消息 --> 直推会话: stock / isolated(有意的非 Flywheel 形态, 不变)
+    收到消息 --> 拒收: broken(三 env 缺任一, 本单改这里)
+    拒收 --> 保留区文件: 写 rejected/id.json + ⛔ 回执
+    保留区文件 --> 等待: Lead 未重启 / 命令行未升级(独立退避, 不空转)
+    等待 --> 保留区文件
+    保留区文件 --> 进信箱: 重启后重放, 不超过 24 小时, 带 held_since
+    保留区文件 --> 留档DEAD: 重启后重放, 超过 24 小时
+    留档DEAD --> 既有dead_letter告警: Bridge 扫到 DEAD 行
+    进信箱 --> Lead会话: Bridge 打包投递
+    直推会话 --> Lead会话
+    Lead会话 --> [*]
+    既有dead_letter告警 --> [*]

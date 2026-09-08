@@ -26,6 +26,8 @@ export interface ChatDeliveryEnvelopeV1 {
 	msgKind: ChatDeliveryMessageKind;
 	attachments: ChatDeliveryAttachment[];
 	text: string;
+	heldSince?: string;
+	heldReason?: "discord_wiring_broken";
 	replyChannelId?: string;
 	replyRoute?: {
 		kind: "roundtable_thread_from_message";
@@ -108,6 +110,19 @@ export function normalizeChatDeliveryEnvelope(
 		value.replyChannelId === undefined
 			? undefined
 			: snowflake(value.replyChannelId, "replyChannelId");
+	if ((value.heldSince === undefined) !== (value.heldReason === undefined)) {
+		throw new Error("heldSince and heldReason must be provided together");
+	}
+	let heldSince: string | undefined;
+	let heldReason: ChatDeliveryEnvelopeV1["heldReason"];
+	if (value.heldSince !== undefined) {
+		heldSince = requiredText(value.heldSince, "heldSince");
+		assertUtcIsoTimestamp(heldSince, "heldSince");
+		if (value.heldReason !== "discord_wiring_broken") {
+			throw new Error("heldReason must be discord_wiring_broken");
+		}
+		heldReason = value.heldReason;
+	}
 	let replyRoute: ChatDeliveryEnvelopeV1["replyRoute"];
 	if (value.replyRoute !== undefined) {
 		if (
@@ -153,6 +168,7 @@ export function normalizeChatDeliveryEnvelope(
 		msgKind: value.msgKind,
 		attachments,
 		text: value.text,
+		...(heldSince ? { heldSince, heldReason } : {}),
 		...(replyChannelId ? { replyChannelId } : {}),
 		...(replyRoute ? { replyRoute } : {}),
 	};

@@ -2,10 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseChatDeliveryEnvelope } from "../chat-delivery-envelope.js";
 import { CommDB } from "../db.js";
 import {
+	DISCORD_WIRING_BROKEN_STALE_REASON,
 	discordBatchPartitionKey,
 	ingestDiscordChat,
+	ingestDiscordChatOnQueue,
 } from "../discord-chat-ingest.js";
 import { MailboxQueue } from "../mailbox-queue.js";
 
@@ -100,6 +103,177 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		queue.close();
 	});
 
+	it("round-trips and renders held-message provenance", () => {
+		const { dbPath, args } = fixture();
+		const heldSince = "2026-08-10T11:55:00.000Z";
+		expect(
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				heldSince,
+				heldReason: "discord_wiring_broken",
+			}),
+		).toMatchObject({ lane: "inserted_inbox" });
+
+		const queue = new MailboxQueue(dbPath);
+		const row = queue.getById(`chat:${args.leadId}:${args.messageId}`)!;
+		queue.close();
+		expect(parseChatDeliveryEnvelope(row.content)).toMatchObject({
+			heldSince,
+			heldReason: "discord_wiring_broken",
+		});
+		expect(row.delivery_content).toContain(`held_since="${heldSince}"`);
+		expect(row.delivery_content).toContain(
+			'held_reason="discord_wiring_broken"',
+		);
+	});
+
+	it("rejects partial or malformed held-message provenance", () => {
+		const { dbPath, args } = fixture();
+		expect(() =>
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				heldSince: "not-utc",
+				heldReason: "discord_wiring_broken",
+			}),
+		).toThrow("heldSince must be a valid UTC ISO timestamp ending in Z");
+		expect(() =>
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				heldReason: "discord_wiring_broken",
+			}),
+		).toThrow("heldSince and heldReason must be provided together");
+	});
+
+	it("atomically records a stale held message as an alertable DEAD row", () => {
+		const { dbPath, args } = fixture();
+		const deadAt = "2026-08-11T12:00:00.000Z";
+		expect(
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				heldSince: "2026-08-10T11:55:00.000Z",
+				heldReason: "discord_wiring_broken",
+				deadLetter: {
+					reason: DISCORD_WIRING_BROKEN_STALE_REASON,
+					at: deadAt,
+				},
+			}),
+		).toMatchObject({ lane: "inserted_inbox", deadLettered: true });
+
+		const queue = new MailboxQueue(dbPath);
+		expect(
+			queue.getById(`chat:${args.leadId}:${args.messageId}`),
+		).toMatchObject({
+			state: "DEAD",
+			dead_at: deadAt,
+			dead_reason: DISCORD_WIRING_BROKEN_STALE_REASON,
+		});
+		expect(
+			queue.listUncoveredLeadDeadLetters({
+				sinceCursor: [],
+				limit: 10,
+				maxRowsPerRecipient: 10,
+				maxSummaryBytes: 4_096,
+				resolveOwningLead: () => undefined,
+			}),
+		).toEqual([
+			expect.objectContaining({
+				sourceKind: "lead_unacked",
+				recipient: args.leadId,
+				deadCount: 1,
+			}),
+		]);
+		queue.close();
+	});
+
+	it("does not kill an existing live Discord row during stale replay", () => {
+		const { dbPath, args } = fixture();
+		ingestDiscordChat({ dbPath, ...args });
+		expect(
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				heldSince: "2026-08-10T11:55:00.000Z",
+				heldReason: "discord_wiring_broken",
+				deadLetter: {
+					reason: DISCORD_WIRING_BROKEN_STALE_REASON,
+					at: "2026-08-11T12:00:00.000Z",
+				},
+			}),
+		).toMatchObject({ lane: "active_inbox" });
+		const queue = new MailboxQueue(dbPath);
+		expect(
+			queue.getById(`chat:${args.leadId}:${args.messageId}`),
+		).toMatchObject({
+			state: "QUEUED",
+			dead_reason: null,
+		});
+		queue.close();
+	});
+
+	it("rolls back insertion if transactional dead-lettering fails", () => {
+		const { args } = fixture();
+		const queue = new MailboxQueue(":memory:");
+		queue.markDead = () => false;
+		expect(() =>
+			ingestDiscordChatOnQueue(queue, {
+				dbPath: ":memory:",
+				...args,
+				heldSince: "2026-08-10T11:55:00.000Z",
+				heldReason: "discord_wiring_broken",
+				deadLetter: {
+					reason: DISCORD_WIRING_BROKEN_STALE_REASON,
+					at: "2026-08-11T12:00:00.000Z",
+				},
+			}),
+		).toThrow("failed to dead-letter inserted Discord message");
+		expect(
+			queue.getById(`chat:${args.leadId}:${args.messageId}`),
+		).toBeUndefined();
+		queue.close();
+	});
+
+	it("rejects invalid dead-letter requests before writing", () => {
+		const { dbPath, args } = fixture();
+		expect(() =>
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				deadLetter: {
+					reason: DISCORD_WIRING_BROKEN_STALE_REASON,
+					at: "2026-08-11T12:00:00.000Z",
+				},
+			}),
+		).toThrow("deadLetter requires heldSince");
+		expect(() =>
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				heldSince: "2026-08-10T11:55:00.000Z",
+				heldReason: "discord_wiring_broken",
+				deadLetter: {
+					reason: "other" as typeof DISCORD_WIRING_BROKEN_STALE_REASON,
+					at: "2026-08-11T12:00:00.000Z",
+				},
+			}),
+		).toThrow("deadLetter.reason is invalid");
+		expect(() =>
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				heldSince: "2026-08-10T11:55:00.000Z",
+				heldReason: "discord_wiring_broken",
+				deadLetter: {
+					reason: DISCORD_WIRING_BROKEN_STALE_REASON,
+					at: "not-utc",
+				},
+			}),
+		).toThrow("deadLetter.at must be a valid UTC ISO timestamp ending in Z");
+	});
+
 	it("uses a total partition key and isolates malformed Discord rows", () => {
 		expect(
 			discordBatchPartitionKey({
@@ -180,6 +354,62 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		expect(claimed.map(({ source_ref }) => source_ref)).toEqual([
 			`chat:${args.leadId}:223456789012345678`,
 			`chat:${args.leadId}:223456789012345679`,
+		]);
+		queue.close();
+	});
+
+	it("batches held messages from one Discord chat across original send times", () => {
+		const { dbPath, args } = fixture();
+		for (const [messageId, ts, heldSince] of [
+			[
+				"223456789012345678",
+				"2026-08-10T09:00:00.000Z",
+				"2026-08-10T09:00:01.000Z",
+			],
+			[
+				"223456789012345679",
+				"2026-08-10T10:00:00.000Z",
+				"2026-08-10T10:00:01.000Z",
+			],
+			[
+				"223456789012345680",
+				"2026-08-10T11:00:00.000Z",
+				"2026-08-10T11:00:01.000Z",
+			],
+		] as const) {
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				messageId,
+				ts,
+				heldSince,
+				heldReason: "discord_wiring_broken",
+			});
+		}
+		const queue = new MailboxQueue(dbPath);
+		expect(
+			queue.acquireOrRenewOwner({
+				ownerEpoch: "owner",
+				now: "2026-08-10T12:00:01.000Z",
+				leaseTtlMs: 60_000,
+			}),
+		).toBe(true);
+		const claimed = queue.claimLeadBatchQueue({
+			toAgent: args.leadId,
+			msgClass: "model",
+			ownerEpoch: "owner",
+			batchId: "held-batch",
+			now: "2026-08-10T12:00:01.000Z",
+			transportClaimTtlMs: 60_000,
+			batchWindowMs: 30_000,
+			batchMaxSize: 10,
+			inflightMaxBatches: 3,
+			partitionKey: discordBatchPartitionKey,
+		});
+		expect(claimed.map(({ created_at }) => created_at)).toEqual([
+			"2026-08-10T09:00:00.000Z",
+			"2026-08-10T10:00:00.000Z",
+			"2026-08-10T11:00:00.000Z",
 		]);
 		queue.close();
 	});

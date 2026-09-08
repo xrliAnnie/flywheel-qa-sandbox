@@ -1,0 +1,27 @@
+sequenceDiagram
+    autonumber
+    participant F as founder(Discord)
+    participant P as Discord 插件 server.ts
+    participant R as ChatIngestRuntime
+    participant D as 本地保留区 rejected/
+    participant C as chat-ingest 命令行
+    participant M as comm.db 信箱
+    participant L as Lead 会话
+
+    Note over P: 启动: 三个 env 缺任一 = broken
+    F->>P: 消息 m1
+    P->>R: holdInbound(m1)
+    R->>D: 只创建不覆盖地写 m1.json
+    R-->>P: rejected
+    P->>F: 给 m1 打 ⛔ 回执
+    Note over P,L: 不推会话 · 不进信箱 · 不发任何文字
+    Note over P: Lead 带齐 env 重启 = enabled
+    P->>R: kickWorker()
+    R->>C: --version-probe
+    C-->>R: protocolVersion 2
+    R->>C: chat-ingest --held-since(按 messageId 从小到大)
+    C->>M: 入表(同 id 只进一次)
+    C-->>R: lane
+    R->>D: 删除 m1.json
+    M->>L: 批次里带 held_since 标记
+    L->>F: Lead 自己说: 这 N 条是你 HH:MM 发的, 我当时接线断了, 刚读到
