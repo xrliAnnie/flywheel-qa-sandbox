@@ -1,0 +1,29 @@
+sequenceDiagram
+    autonumber
+    participant T as 触发
+    participant P as 巡视器
+    participant S as 采样器
+    participant C as Codex 大脑
+    participant R as raya 频道
+    T->>P: 6 小时到点 / 她刚记了目标 / 进程启动
+    P->>S: 逐仓读 git / GitHub / Linear / summary 文件
+    S-->>P: 快照 snapshot,读不到的行明写「读不到」
+    Note over P: 证据门:有活跃目标?快照新鲜?至少一个项目读到活动?目标文件完好?
+    alt 证据不够
+        Note over P: 跳过,零输出,只记事件
+    else 证据够
+        P->>C: 巡视回合:读数 + 她的目标原话
+        Note over C: 中间碎碎念一律不出频道
+        C-->>P: 三选一:【无话】/【证据不足】/【偏离】+ 依据行 + 正文
+        alt 【无话】或【证据不足】
+            Note over P: 静默,记事件
+        else 【偏离】
+            Note over P: 信封校验:snapshot 是本次?目标活跃?每个读数键真读到了?整条 ≤ 1900 字?
+            alt 校验不过
+                Note over P: 零输出,记 patrol_envelope_invalid
+            else 校验过
+                P-->>R: 🔔 一句她能当场否掉的话,尾行写依据(只发一次)
+                R-->>C: 她回「不对,因为…」,同一对话接着聊
+            end
+        end
+    end

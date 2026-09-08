@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2381 · Raya 自己去各仓读状态 + 记住你的目标 + 偏离时开口 — 设计方案</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .section { margin-bottom: 34px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15.5px; color: #1a365d; margin-bottom: 8px; }
+  .card p { margin-bottom: 8px; font-size: 14.5px; }
+  .card ul, .card ol { margin: 6px 0 8px 20px; font-size: 14.5px; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 17px; font-weight: 600; color: #1d1d1f; }
+  .jargon { color: #515154; font-size: 13.5px; background: #f5f5f7; border-radius: 8px; padding: 8px 12px; margin: 6px 0 10px; }
+  .badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin-right: 6px; vertical-align: middle; white-space: nowrap; }
+  .badge.new { background: #e3f6e8; color: #1f7a3a; }
+  .badge.update { background: #fff1dc; color: #a35a00; }
+  .badge.candidate { background: #f1e6fb; color: #6b2fa3; }
+  .badge.close { background: #ffe3e0; color: #b3261e; }
+  .badge.existing { background: #ececef; color: #515154; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 8px 0 10px; }
+  th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .diagram { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 12px; margin: 10px 0 14px; overflow-x: auto; }
+  .diagram svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  .caption { color: #86868b; font-size: 12.5px; margin: -6px 0 12px 4px; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 13.5px; color: #1d1d1f; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; }
+  #summary-card { border-left-color: #af52de; }
+  .summary-chunk { white-space: pre-wrap; font-size: 13px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin: 10px 0; min-height: 40px; font-family: 'SF Mono', monospace; }
+  .btn { background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn:hover { background: #0066d6; }
+  .btn.small { padding: 6px 12px; font-size: 13px; }
+  #copy-status { color: #34c759; font-size: 13px; margin-left: 10px; }
+  .chunk-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+  .chunk-label { color: #86868b; font-size: 12.5px; }
+  .quote { border-left: 3px solid #d2d2d7; padding: 6px 12px; color: #515154; font-size: 14px; margin: 6px 0 10px; background: #fafafa; border-radius: 0 8px 8px 0; }
+  @media (max-width: 640px) { .card { padding: 16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2381 · Raya 自己去各仓读状态 + 记住你的目标 + 偏离时开口</h1>
+  <div class="meta">设计方案(design 节点交付)· 2026-09-06 · Issue <span class="mono">FLY-2381</span> · 代码落 raya 仓分支 <span class="mono">fly-2381-raya-brain-drift</span>(挂在 FLY-2379 文字通路之上)· PRD FLY-1846 v1.7 §5.1 / §7 / §10 · Codex 设计评审 6 轮,第 6 轮 APPROVED · Bridge 设计门 APPROVED</div>
+
+  <!-- 1 -->
+  <div class="section" data-section="1. 一句话总结">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span> 1. 一句话总结</div>
+    <div class="card green">
+      <p class="lede">Raya 每 6 小时(你可以随时改)自己去六个项目的仓库里读一遍真实状态,把读到的和你说过的目标放在一起看;只有当「你说过要紧的」和「实际在推的」明显分岔、而且每一条依据都能核对时,她才在 #raya 开口问你一句你能当场否掉的话;证据不够或没有分岔,她一个字都不说。</p>
+      <p>这是 PRD FLY-1846 里 2026-08-18 就拍定、FLY-2030「大脑」宣称过、但从未写进代码的三格:§5.1「主管自己去各仓读状态」、§7「目标两阶段」、§10「不排序,做偏离探测」。今天(9-06)实核:Raya 常驻程序的源码里,读仓库、存目标、对比偏离这三件事一行都没有。</p>
+      <div class="jargon">名词:<b>Raya 常驻程序(brain)</b> = 一直在跑、盯着 #raya 的那个进程。<b>Codex</b> = OpenAI 的命令行 AI 助手,Raya 的大脑就是它(模型 gpt-5.6-sol,你在 PRD 里拍的)。<b>FLY-2379</b> = 正在实现的「在 #raya 打字她就真回」通路;本单的所有对话都走它那一条线,不另起炉灶。</div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s1" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 2 -->
+  <div class="section" data-section="2. 今天各仓真实读数(实核)">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span> 2. 今天各仓的真实读数(实核 2026-09-06,不是猜)</div>
+    <div class="card red">
+      <p>PRD §5.4 写的「其余五个仓停在 7 月、personal-assistant 不是 git 仓」已经过期,而且过期的方向要紧:</p>
+      <table>
+        <tr><th>项目</th><th>最近一次提交</th><th>最近一次「非 chore」提交</th><th>open PR</th><th>备注</th></tr>
+        <tr><td>geoforge3d</td><td>08-29 <span class="mono">chore(config): retire project flag keys</span></td><td><b>07-11</b> feat(GEO-446)</td><td>5(最新 08-17)</td><td></td></tr>
+        <tr><td>joycon-typeless</td><td>08-29 同一条 chore</td><td><b>07-04</b> docs(LEARN-203)</td><td>5(最新 08-31)</td><td>停在 <span class="mono">chore/enable-doc-flow</span> 分支</td></tr>
+        <tr><td>personal-assistant</td><td><b>09-02</b> fix(meal-prep)</td><td>09-02</td><td>2</td><td>已经是 git 仓(remote belle-workspace)</td></tr>
+        <tr><td>growth</td><td>08-29 同一条 chore</td><td><b>07-10</b> docs(reflection)</td><td>1(06-24)</td><td></td></tr>
+        <tr><td>flywheel</td><td>09-06</td><td>09-06</td><td>30</td><td>唯一活的</td></tr>
+        <tr><td>tidal-echo</td><td>08-29 同一条 chore</td><td><b>07-05</b> feat(FLY-886)</td><td>5(最新 08-02)</td><td>没有 CLAUDE.md</td></tr>
+      </table>
+      <p><b>两个设计后果</b>:① 五个仓在 08-29 同一天被一条机器批量配置提交统一推进,只看「最近一次提交」会把静了两个月的仓读成「上周还在动」——所以 Raya 会<b>同时给你两条</b>(最近提交 / 最近非 chore 提交),不替你裁哪条算数;② 四个静默项目里三个各挂着 1–5 个 open PR(最旧 04-19),「静了多久」之外「挂着多少没收尾」是第二个能直接读到的信号。</p>
+      <div class="jargon">名词:<b>chore 提交</b> = 提交信息以 chore 开头的「整理性」改动(配置、重命名),按惯例不算功能推进;Raya 用这个前缀做启发式区分,它可能误判,所以两条都亮给你。<b>open PR</b> = 提了但还没合并的改动。</div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s2" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 3 -->
+  <div class="section" data-section="3. 核心流程:一次巡视怎么走">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span> 3. 核心流程:一次巡视怎么走</div>
+    <div class="diagram">__SVG_D1__</div>
+    <div class="caption">图 1 · 触发 → 采样 → 证据门 → Codex 三选一 → 信封校验 → 才发一条 🔔。任何一关不过都是零输出。</div>
+    <div class="card">
+      <h3>三个触发点</h3>
+      <ul>
+        <li><b>6 小时到点</b>(PRD §8.7.2 你圈的 a);间隔写在一个你或运维能手改的文件里,改完 1 分钟内生效,不用重启。</li>
+        <li><b>你刚记了一条目标</b>:马上对一次,你能预期这次开口。</li>
+        <li><b>进程启动</b>:先做一次「启动探针」读数(不开口),证明这台机器上真的读得到;上次巡视不新鲜才顺手巡一次。</li>
+      </ul>
+      <h3>Codex 只能回三种</h3>
+      <p><span class="mono">【无话】</span>(没分岔)· <span class="mono">【证据不足】</span>(读数不够支撑判断)· <span class="mono">【偏离】</span> + 一行「依据」(快照 id、目标 id、引用了哪些读数键)+ 正文。写成别的样子一律当无效,不发。</p>
+      <div class="jargon">名词:<b>快照(snapshot)</b> = 某一时刻六个项目读数的一份存档,带 id 和采样时间,你和 QA 都能翻出来对。<b>证据门</b> = 程序层的硬检查:没有活跃目标、快照过期、一个项目都读不到活动、目标文件损坏,四种情况直接跳过,连 Codex 都不问。</div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s3" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 4 -->
+  <div class="section" data-section="4. 它读什么">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span> 4. 它读什么(PRD §5.1「自己去各仓读」)</div>
+    <div class="diagram">__SVG_D4__</div>
+    <div class="caption">图 2 · 每个项目四个来源;每个读数要么是值,要么是「读不到 + 原因」,没有第三态。</div>
+    <div class="card">
+      <ul>
+        <li><b>注册表</b>:运维把 Raya 的 <span class="mono">RAYA_PROJECTS_FILE</span> 指向 <span class="mono">~/.flywheel/projects.json</span>;Raya 只认最小几个字段(名字、目录、GitHub 仓、Linear 绑定),多余的一律不看。换一台没有 flywheel 的机器,手写一份同样格式的 JSON 就能用(PRD §8.5)。</li>
+        <li><b>读数由程序确定性地采</b>,不是让模型自己翻:这样每个数字都能回放核对。模型仍可以在沙箱里补读细节,但引用时以采样为准并带采样时间。</li>
+        <li><b>GitHub 读「最近被更新的 PR」必须带排序参数</b>:实核发现默认顺序是错的(flywheel 仓「最近 merge」默认给 #1100,实际 #1063 更新)。</li>
+        <li><b>Linear</b>:Raya 今天没有 Linear 凭据,六个项目里也只有 flywheel 绑了 Linear ⇒ 今天全部明写「未配置,读不到」;留了口子,配上 key 就读。</li>
+        <li><b>summary 文件</b>只是「部署 checkout 里有几个文件」的观测,<b>不代表</b>已读未读(那是 FLY-2131 的 merge 回执合同,本单不动)。</li>
+      </ul>
+      <div class="jargon">名词:<b>checkout</b> = 某个仓库在这台电脑上的一份工作副本;它可能停在某个分支上,所以图里把「本机 checkout 侧」和「GitHub 默认分支侧」分开读。<b>沙箱</b> = Codex 跑命令时的受限环境,只挡写不挡读。</div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s4" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 5 -->
+  <div class="section" data-section="5. 目标怎么记">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span> 5. 目标怎么记(PRD §7 两阶段的第一阶段)</div>
+    <div class="diagram">__SVG_D3__</div>
+    <div class="caption">图 3 · 你在对话里自然地说,模型识别后写一行标记,程序逐字落盘、git 提交、回你一条 📌 收据;要撤就撤。</div>
+    <div class="card purple">
+      <ul>
+        <li><b>不是填表</b>(PRD §10.4 你否掉了填表):没有「目标:xxx」这种命令;你怎么说都行,Raya 在回答里写 <span class="mono">【记目标】你的原话</span>,程序才记。</li>
+        <li><b>逐字</b>:存进 goals.md 的是你那句话的原样(连首尾空格、全角字符都不动);只有发回 Discord 的显示副本会做脱敏。原话看起来像含密钥 ⇒ 拒收,不会偷偷改写后说「记下了」。</li>
+        <li><b>存在 Raya 自己的记忆仓</b>(raya-memory,和 MEMORY.md 同目录),每条带日期、你那条消息的链接、状态;撤销是改状态,不删行,历史可溯。</li>
+        <li><b>幂等</b>:同一条消息重放不会记两条;程序崩在半路也能靠「操作号」对账。</li>
+        <li><b>校准入口留着,不自动</b>:你再说一句就是校准;什么频率合适,按 PRD §7.2 跑起来再定。</li>
+      </ul>
+      <div class="jargon">名词:<b>幂等</b> = 同一件事做两遍和做一遍结果一样。<b>git 提交</b> = 把这次改动存成一个带时间和说明的版本,以后能回看、能撤回。</div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s5" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 6 -->
+  <div class="section" data-section="6. 数据与结构模型">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span> 6. 数据与结构模型</div>
+    <div class="diagram">__SVG_D2__</div>
+    <div class="caption">图 4 · 六个文件各管一件事:注册表(只读)、快照(留 50 份)、目标(记忆仓)、运维控制(你写 Raya 读)、运行状态(Raya 写)、事件流水(每步一行)。</div>
+    <div class="card">
+      <table>
+        <tr><th>东西</th><th>谁写</th><th>放哪</th><th>作用</th></tr>
+        <tr><td>注册表</td><td>运维</td><td><span class="mono">RAYA_PROJECTS_FILE</span></td><td>六个项目是谁、在哪</td></tr>
+        <tr><td>快照</td><td>Raya</td><td><span class="mono">state/portfolio/snapshots/</span></td><td>每次读数存档,可核</td></tr>
+        <tr><td>goals.md</td><td>Raya(经你说)</td><td>raya-memory 仓</td><td>你的目标原话与状态</td></tr>
+        <tr><td>patrol-control.json</td><td>你 / 运维</td><td><span class="mono">state/portfolio/</span></td><td>开关与间隔,改了即生效</td></tr>
+        <tr><td>patrol-state.json</td><td>Raya</td><td><span class="mono">state/portfolio/</span></td><td>上次巡视、上次开口、发送尝试</td></tr>
+        <tr><td>patrols.jsonl</td><td>Raya</td><td><span class="mono">state/portfolio/</span></td><td>每步一行事件,不含正文;QA 数「打断了几次」就看它</td></tr>
+      </table>
+      <p>不新增任何守护进程、数据库、Discord 权限;巡视计时器就在常驻程序里。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s6" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 7 -->
+  <div class="section" data-section="7. 什么时候闭嘴">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span> 7. 什么时候闭嘴(PRD §3 硬约束的机械保证)</div>
+    <div class="card amber">
+      <p>你说过:「信息太少还出来说话,反而是干扰源。」这一条在代码里有五道闸,不靠模型听话:</p>
+      <ol>
+        <li><b>证据门</b>:没活跃目标 / 快照过期 / 没读到任何活动 / 目标文件坏 ⇒ 不问 Codex。</li>
+        <li><b>三选一信封</b>:回复不是精确的三种之一 ⇒ 无效,不发。</li>
+        <li><b>依据校验</b>:【偏离】里写的快照 id 必须是本次、目标必须是活跃的、每个读数键必须真的读到了值 ⇒ 任一不成立,不发。</li>
+        <li><b>巡视回合的中间碎碎念一律不出</b>:只有最后那一条 🔔 能发。</li>
+        <li><b>节流 + 宁漏勿重</b>:两次开口之间至少隔一个巡视周期(你刚记目标那次除外);发送结果不明时不重发。</li>
+      </ol>
+      <p>到点没东西说就不说(§6.3 你圈的 A);「我看了,没有」那句附带项你没表态,本版不做。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s7" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 8 -->
+  <div class="section" data-section="8. 关键取舍与被否掉的方案">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span> 8. 关键取舍与被否掉的方案</div>
+    <div class="card purple">
+      <table>
+        <tr><th>取舍</th><th>选了</th><th>没选</th><th>为什么</th></tr>
+        <tr><td>谁去读仓</td><td>程序确定性采样,模型在上面推理</td><td>全交给模型自己在沙箱里翻</td><td>验收要「可核」;模型转述的数字回放不了</td></tr>
+        <tr><td>目标存哪</td><td>记忆仓新文件 goals.md,标记行触发</td><td>「目标:」命令 / 塞进 MEMORY.md / 模型直接写文件</td><td>不填表;机器可解析;收据可核(FLY-2031 教训:模型不能自称已做)</td></tr>
+        <tr><td>巡视在哪跑</td><td>常驻程序里一个计时器</td><td>复活 FLY-2131 那条「Raya 当 flywheel Lead」线</td><td>那条线至今没出生;把巡视触发放在 flywheel 数据库里违反 §8.5</td></tr>
+        <tr><td>注册表来源</td><td>Raya 自己的 env 指向 projects.json,只认最小字段</td><td>直接读 flywheel 的文件格式</td><td>issue 要用 projects.json,§8.5 要假设没有 flywheel;两者都满足</td></tr>
+        <tr><td>「最新 merge」读数</td><td>删掉,改读「最近被更新的 PR」(有排序保证)</td><td>保留</td><td>实核默认顺序是错的,不能证明「最新」</td></tr>
+        <tr><td>巡视时看不清能不能去问 Lead</td><td>阶段一不问,回【证据不足】静默</td><td>再造一套巡视专用的追问状态机</td><td>2379 的追问要求「你那条消息」做来源,巡视没有;Lead(Tadashi)已同意这个裁量</td></tr>
+      </table>
+      <p>Codex 六轮评审一共提了 11 + 8 + 7 + 4 + 3 = 33 条,全部接受、无一驳回;其中三条是它实跑复现的(git 的 grep 正则要加 -E、提交后主索引不同步会自锁、子目录路径语义),都已改进方案。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s8" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 9 -->
+  <div class="section" data-section="9. 诚实边界:做与不做">
+    <div class="section-title"><span class="dot" style="color:#86868b;">●</span> 9. 诚实边界:这版做什么、不做什么</div>
+    <div class="card gray">
+      <h3>做</h3>
+      <ul>
+        <li>六个项目逐仓读数(git / GitHub / Linear 可选 / summary 文件观测),读不到明写原因。</li>
+        <li>你说的目标逐字入库、可撤、有收据。</li>
+        <li>6 小时巡视 + 记目标即巡 + 启动探针;偏离时一句可否掉的话,尾行写依据。</li>
+        <li>你问「接下来一周该推什么」时,回答里带最新读数(快照 id、采样时间)和你的目标。</li>
+      </ul>
+      <h3>不做(每条是决定,不是遗漏)</h3>
+      <ul>
+        <li>不排序、不做硬规则(§10.3);不做跨项目依赖/重复劳动检测(§10c 你砍掉的)。</li>
+        <li>不做自动校准节奏、不做每日 Report(§8.7.3 另单)、不做「我看了,没有」心跳。</li>
+        <li>不做 summary 未读/已读状态(FLY-2131 合同)。</li>
+        <li><b>巡视回合不主动追问 Lead</b>(PRD §5.3 主动侧的缺口,明写);追问只在你发起的对话里发生(FLY-2379)。</li>
+        <li>不做「语音控制电脑」(等 FLY-1453 OS 级隔离)。</li>
+        <li>不改 IDENTITY.md 本体、不改 summaries 合同、不改 FLY-2379 的对话/追问/安全语义。</li>
+      </ul>
+      <h3>已知的模糊处</h3>
+      <ul>
+        <li>「chore」是启发式,可能把某个 Lead 真正的整理工作算成「非推进」——所以两条都给你。</li>
+        <li>【偏离】的<b>依据受控、正文自由</b>:快照/目标/读数键机械校验,但正文里的措辞是模型写的;你能当场否掉,这就是设计边界。</li>
+        <li>goals.md 在记忆仓里,模型理论上能直接改它;程序的保证是「提交的内容一定是程序写的那份」+「外部改动会显成未提交改动、并在收据里告诉你」,不是互斥锁。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s9" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 10 -->
+  <div class="section" data-section="10. 上线与验收">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span> 10. 上线怎么确认、你怎么验收</div>
+    <div class="card green">
+      <h3>上线(9-06 教训:合入 ≠ 部署)</h3>
+      <ul>
+        <li>顺序:FLY-2379 先合入并部署 → 本单合入 → 停 brain → 拉记忆仓 → 切到合入的版本并构建 → 补一行 <span class="mono">RAYA_PROJECTS_FILE</span> → preflight 通过 → 起 brain → <b>等 daemon 自己产出的「启动探针」事件</b>(带新进程 id),核 GitHub 读数是「ok」还是明确的「读不到 + 原因」。</li>
+        <li>运行期改巡视间隔:改一个 JSON 文件,1 分钟内生效;关主动开口也在同一文件。</li>
+        <li>回滚:切回旧版本重建重启;目标文件用 git revert。</li>
+      </ul>
+      <h3>验收(真机,以你为准)</h3>
+      <ol>
+        <li>你在 #raya 问「接下来一周该推什么」→ 回答引用各仓真实读数(QA 用同样命令独立复采对数)与你的目标;读不到的项目明说。</li>
+        <li>你说一句目标(故意带个首尾空格或全角字符)→ 📌 收据;记忆仓最近一次提交只含 goals.md,原话逐字一致;说「撤掉」→ ↩️。</li>
+        <li>记下目标后 5 分钟内出现一条 🔔,引用具体日期/PR/目标原话、末尾二选一问题、尾行写依据;你回「不对,因为…」→ 她接得上。</li>
+        <li>撤光目标再触发 → 事件里是「证据不足跳过」,#raya 零新消息。</li>
+        <li>语音三命令与文字聊天照常;改间隔文件不重启即生效。</li>
+      </ol>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s10" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- summary -->
+  <div class="section" data-section="意见汇总">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span> 页面意见汇总</div>
+    <div class="card" id="summary-card">
+      <p>下面会实时汇总你写在各节的意见。点「复制全部意见」把它贴回 Discord 给我们;这是修订反馈,不是通过信号。</p>
+      <div id="summary-chunks"></div>
+      <div class="chunk-row"><button class="btn" id="copy-all" type="button">复制全部意见</button><span id="copy-status"></span></div>
+    </div>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = "【页面意见汇总】FLY-2381";
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly2381-comment:" + (typeof location !== "undefined" && location.pathname ? location.pathname : "/") + ":";
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(".comment-box textarea[data-key]"));
+
+  function load(key) {
+    try { return localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; }
+  }
+  function save(key, value) {
+    try { localStorage.setItem(prefix + key, value); } catch (e) { /* storage unavailable */ }
+  }
+  function sectionTitle(el) {
+    var section = el.closest(".section");
+    return section && section.getAttribute("data-section") ? section.getAttribute("data-section") : "未命名小节";
+  }
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (box) {
+      var text = box.value.trim();
+      if (!text) return;
+      parts.push("[" + sectionTitle(box) + "]\n" + text);
+    });
+    return parts;
+  }
+  function chunk(parts) {
+    var chunks = [];
+    var current = "";
+    parts.forEach(function (part) {
+      var candidate = current ? current + "\n\n" + part : part;
+      if (candidate.length > CHUNK_LIMIT && current) {
+        chunks.push(current);
+        current = part;
+      } else {
+        current = candidate;
+      }
+    });
+    if (current) chunks.push(current);
+    if (chunks.length === 0) chunks.push("(还没有意见)");
+    return chunks.map(function (body, index) {
+      var head = chunks.length > 1 ? MARKER + " (" + (index + 1) + "/" + chunks.length + ")" : MARKER;
+      return head + "\n" + body;
+    });
+  }
+  var lastChunks = [];
+  function render() {
+    lastChunks = chunk(collect());
+    var host = document.getElementById("summary-chunks");
+    while (host.firstChild) host.removeChild(host.firstChild);
+    lastChunks.forEach(function (text, index) {
+      var pre = document.createElement("div");
+      pre.className = "summary-chunk";
+      pre.textContent = text;
+      host.appendChild(pre);
+      if (lastChunks.length > 1) {
+        var row = document.createElement("div");
+        row.className = "chunk-row";
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn small";
+        btn.textContent = "复制第 " + (index + 1) + " 段";
+        btn.addEventListener("click", function () { copyText(text); });
+        var label = document.createElement("span");
+        label.className = "chunk-label";
+        label.textContent = text.length + " 字";
+        row.appendChild(btn);
+        row.appendChild(label);
+        host.appendChild(row);
+      }
+    });
+  }
+  function setStatus(message) {
+    var status = document.getElementById("copy-status");
+    status.textContent = message;
+    setTimeout(function () { status.textContent = ""; }, 2500);
+  }
+  function fallbackCopy(text) {
+    var area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(area);
+    setStatus(ok ? "已复制" : "复制失败,请手动选择文字");
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { setStatus("已复制"); }, function () { fallbackCopy(text); });
+    } else {
+      fallbackCopy(text);
+    }
+  }
+  boxes.forEach(function (box) {
+    box.value = load(box.getAttribute("data-key"));
+    box.addEventListener("input", function () {
+      save(box.getAttribute("data-key"), box.value);
+      render();
+    });
+  });
+  document.getElementById("copy-all").addEventListener("click", function () {
+    copyText(lastChunks.join("\n\n"));
+  });
+  render();
+})();
+</script>
+</body>
+</html>

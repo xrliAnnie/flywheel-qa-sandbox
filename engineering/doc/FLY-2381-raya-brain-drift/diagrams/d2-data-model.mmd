@@ -1,0 +1,15 @@
+flowchart TB
+    REG["注册表 RAYA_PROJECTS_FILE<br/>六个项目:名字 / 目录 / GitHub 仓 / Linear 绑定<br/>运维指向 ~/.flywheel/projects.json,Raya 只认最小字段"]
+    SMP["采样器<br/>每个读数二态:读到值 或 读不到+原因"]
+    SNAP[("state/portfolio/snapshots<br/>每份快照带 id 与序号,latest 只前进,留 50 份")]
+    GOALS[("raya-memory 仓 goals.md<br/>一条目标 = id + 操作号 + 时间 + 来源消息链接 + 状态 + 原话逐字<br/>只追加,撤销改状态不删行,每条一次 git 提交")]
+    CTRL["state/portfolio/patrol-control.json<br/>运维手写:enabled / intervalMs<br/>Raya 只读,改了 1 分钟内生效"]
+    STATE["state/portfolio/patrol-state.json<br/>Raya 自己写:上次巡视 / 上次开口 / 已注入的读数游标 / 发送尝试"]
+    LOG["state/portfolio/patrols.jsonl<br/>每一步一行事件,不含正文,便于事后核对"]
+    REG --> SMP --> SNAP
+    SNAP --> TURN["巡视回合 / 她提问时的系统附注"]
+    GOALS --> TURN
+    CTRL --> PAT["巡视器"]
+    PAT --> STATE
+    PAT --> LOG
+    TURN --> PAT
