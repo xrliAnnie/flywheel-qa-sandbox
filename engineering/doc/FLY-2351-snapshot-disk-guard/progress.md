@@ -1,14 +1,14 @@
 ---
 issue: FLY-2351
 phase: design
-phaseCursor: 1/5
-updated: 2026-09-08T19:24:30.771Z
-nextStep: Audit snapshot writers, lifecycle completion and capacity consumers;
-  write research and plan
+phaseCursor: 2/5
+updated: 2026-09-08T19:26:27.736Z
+nextStep: Finalize lifecycle identity contract, write implementation plan and
+  submit formal design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2351 progress
-**phase**: design (1/5)
-**next**: Audit snapshot writers, lifecycle completion and capacity consumers; write research and plan
+**phase**: design (2/5)
+**next**: Finalize lifecycle identity contract, write implementation plan and submit formal design review
