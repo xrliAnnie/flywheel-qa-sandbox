@@ -1,0 +1,200 @@
+{
+  "issue": "FLY-2383",
+  "qualificationPolicyId": "fly2383/window-level/v3",
+  "holdoutRules": {
+    "silence": {
+      "maxBedShare": 0.01,
+      "maxVoiceShare": 0.01
+    },
+    "bed": {
+      "minBedShare": 0.5,
+      "maxVoiceShare": 0.02
+    },
+    "voice": {
+      "maxBedShare": 0.05,
+      "minVoiceShare": 0.3
+    },
+    "transition": {
+      "minVoiceShare": 0.5,
+      "maxBedShare": 0.05
+    }
+  },
+  "onRun": "/Users/xiaorongli/.flywheel/raya/qa/FLY-2383-runs/fly2383-pilot-on-r7",
+  "offRun": "/Users/xiaorongli/.flywheel/raya/qa/FLY-2383-runs/fly2383-pilot-off-r2",
+  "windowFrames": {
+    "silence": 760,
+    "voice": 1603,
+    "bed": 400,
+    "transition": 185
+  },
+  "windowSummaries": {
+    "silence": {
+      "frames": 760,
+      "energy": {
+        "p05": 0,
+        "p50": 0,
+        "p95": 0
+      },
+      "tonalRatio": {
+        "p05": 0,
+        "p50": 0,
+        "p95": 0
+      }
+    },
+    "voice": {
+      "frames": 1603,
+      "energy": {
+        "p05": 0.000119,
+        "p50": 0.053997,
+        "p95": 0.143359
+      },
+      "tonalRatio": {
+        "p05": 0.000675,
+        "p50": 0.193218,
+        "p95": 1
+      }
+    },
+    "bed": {
+      "frames": 400,
+      "energy": {
+        "p05": 0,
+        "p50": 0.006099,
+        "p95": 0.019451
+      },
+      "tonalRatio": {
+        "p05": 0,
+        "p50": 1,
+        "p95": 1
+      }
+    },
+    "transition": {
+      "frames": 185,
+      "energy": {
+        "p05": 0.000985,
+        "p50": 0.08878,
+        "p95": 0.144617
+      },
+      "tonalRatio": {
+        "p05": 0.038128,
+        "p50": 0.27785,
+        "p95": 1
+      }
+    }
+  },
+  "thresholds": {
+    "calibrated": true,
+    "silenceFloor": 0.0010164,
+    "bedTonalMin": 0.9,
+    "bedEnergyMax": 0.026788999999999997,
+    "voiceEnergyMin": 0.026788999999999997,
+    "voiceTonalMax": 1,
+    "separability": {
+      "bedTonalShare": 0.6955,
+      "voiceAsBedShare": 0.0154,
+      "audibleBedFrames": 243,
+      "audibleVoiceFrames": 1107
+    },
+    "derivedFrom": {
+      "silence": {
+        "frames": 532,
+        "energy": {
+          "p05": 0,
+          "p50": 0,
+          "p95": 0
+        },
+        "tonalRatio": {
+          "p05": 0,
+          "p50": 0,
+          "p95": 0
+        }
+      },
+      "bed": {
+        "frames": 243,
+        "energy": {
+          "p05": 0.002541,
+          "p50": 0.007465,
+          "p95": 0.019135
+        },
+        "tonalRatio": {
+          "p05": 0.020653,
+          "p50": 1,
+          "p95": 1
+        }
+      },
+      "voice": {
+        "frames": 1107,
+        "energy": {
+          "p05": 0.000443,
+          "p50": 0.057501,
+          "p95": 0.144045
+        },
+        "tonalRatio": {
+          "p05": 0.003357,
+          "p50": 0.191435,
+          "p95": 1
+        }
+      }
+    }
+  },
+  "holdout": {
+    "passed": true,
+    "failures": [],
+    "shares": {
+      "silence": {
+        "frames": 228,
+        "counts": {
+          "voice": 0,
+          "bed": 0,
+          "silence": 228,
+          "unknown": 0
+        },
+        "bedShare": 0,
+        "voiceShare": 0
+      },
+      "bed": {
+        "frames": 120,
+        "counts": {
+          "voice": 0,
+          "bed": 120,
+          "silence": 0,
+          "unknown": 0
+        },
+        "bedShare": 1,
+        "voiceShare": 0
+      },
+      "voice": {
+        "frames": 481,
+        "counts": {
+          "voice": 282,
+          "bed": 1,
+          "silence": 99,
+          "unknown": 99
+        },
+        "bedShare": 0.0021,
+        "voiceShare": 0.5863
+      },
+      "transition": {
+        "frames": 185,
+        "counts": {
+          "voice": 144,
+          "bed": 2,
+          "silence": 10,
+          "unknown": 29
+        },
+        "bedShare": 0.0108,
+        "voiceShare": 0.7784
+      }
+    }
+  },
+  "negativeControl": {
+    "busyFrames": 405,
+    "classified": {
+      "voice": 0,
+      "bed": 0,
+      "silence": 405,
+      "unknown": 0
+    },
+    "bedShare": 0,
+    "passed": true
+  }
+}

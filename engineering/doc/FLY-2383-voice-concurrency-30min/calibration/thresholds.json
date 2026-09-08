@@ -1,0 +1,58 @@
+{
+  "calibrated": true,
+  "silenceFloor": 0.0010164,
+  "bedTonalMin": 0.9,
+  "bedEnergyMax": 0.026788999999999997,
+  "voiceEnergyMin": 0.026788999999999997,
+  "voiceTonalMax": 1,
+  "separability": {
+    "bedTonalShare": 0.6955,
+    "voiceAsBedShare": 0.0154,
+    "audibleBedFrames": 243,
+    "audibleVoiceFrames": 1107
+  },
+  "derivedFrom": {
+    "silence": {
+      "frames": 532,
+      "energy": {
+        "p05": 0,
+        "p50": 0,
+        "p95": 0
+      },
+      "tonalRatio": {
+        "p05": 0,
+        "p50": 0,
+        "p95": 0
+      }
+    },
+    "bed": {
+      "frames": 243,
+      "energy": {
+        "p05": 0.002541,
+        "p50": 0.007465,
+        "p95": 0.019135
+      },
+      "tonalRatio": {
+        "p05": 0.020653,
+        "p50": 1,
+        "p95": 1
+      }
+    },
+    "voice": {
+      "frames": 1107,
+      "energy": {
+        "p05": 0.000443,
+        "p50": 0.057501,
+        "p95": 0.144045
+      },
+      "tonalRatio": {
+        "p05": 0.003357,
+        "p50": 0.191435,
+        "p95": 1
+      }
+    }
+  },
+  "qualificationPolicyId": "fly2383/window-level/v3",
+  "onRun": "/Users/xiaorongli/.flywheel/raya/qa/FLY-2383-runs/fly2383-pilot-on-r7",
+  "offRun": "/Users/xiaorongli/.flywheel/raya/qa/FLY-2383-runs/fly2383-pilot-off-r2"
+}

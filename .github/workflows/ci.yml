@@ -581,6 +581,20 @@ jobs:
           node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
           node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
 
+      # FLY-2383: the measurement contract behind the PRD 1850 §7.3 soak. These
+      # are the rules that decide whether the recorded numbers mean anything:
+      # the four-way audio classifier (bed vs voice vs silence vs unknown, with
+      # the bed/voice duck transition never reading as bed), the two orthogonal
+      # eligibility stages that keep recognition from deciding its own
+      # denominator, and the Bridge field names that separate a live candidate
+      # from a runner that is actually executing. Pure functions only; no room,
+      # no Discord, no Bridge.
+      - name: Test — FLY-2383 voice concurrency measurement contract
+        run: |
+          node --test scripts/__tests__/fly2383-voice-soak-measure.test.mjs
+          node --test scripts/__tests__/fly2383-voice-soak-calibration.test.mjs
+          node --test scripts/__tests__/fly2383-voice-soak-evidence.test.mjs
+
       # FLY-1189: fault injector S1 SAFETY LOCK — the anchor rejection matrix
       # (execId/tmux/path anchors + prod denylist + prefix-collision + symlink
       # escape + TOCTOU start-time/inode drift + restore direction lock +
