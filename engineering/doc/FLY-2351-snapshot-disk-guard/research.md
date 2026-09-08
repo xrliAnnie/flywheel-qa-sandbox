@@ -63,4 +63,4 @@ Issue: FLY-2351 (https://linear.app/geoforge3d/issue/FLY-2351/运维磁盘-满�
 
 ## 待核对的决策
 
-Lead 问题 `ec87d39f-aa63-49cb-b098-e96790a1077b`：2GB 的受管准入边界、分组键及旧文件归属。等待不阻塞研究/图稿。旧文件没有可靠唯一归属时只列 manual-only；报告未纳入数量和 bytes，不能把它算作已完成清理。
+Lead 问题 `ec87d39f-aa63-49cb-b098-e96790a1077b` 已答复：同意 2GB 受管获取目录预算、issue/db kind/CommDB project 分组，以及 inventory+显式映射。明确要求映射不上的库一律不删。旧文件没有可靠唯一归属时只列 manual-only；报告未纳入数量和 bytes，不能把它算作已完成清理。
