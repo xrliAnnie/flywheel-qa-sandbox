@@ -452,7 +452,7 @@ function workflowGateCarrierRebindCanonical(
 	};
 }
 
-function rejectNonLoopback(
+export function rejectNonLoopback(
 	req: express.Request,
 	res: express.Response,
 ): boolean {

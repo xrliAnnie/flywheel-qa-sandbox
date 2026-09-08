@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "issue": "FLY-2397",
+  "cutover_at": null,
+  "shadow_boundary_at": "2026-09-07T04:11:15.000Z",
+  "shadow_provenance": {
+    "source": "live_db_consistent_copy",
+    "snapshot_captured_at": "2026-09-07T04:11:21Z",
+    "snapshot_bytes": 814628864,
+    "snapshot_sha256": "c461bdeef2103afe2b8eb5021eded569ca8e9f71acdb5aec97cf38237e7b0112",
+    "workflow_claims": 901,
+    "cohort_total": 305,
+    "cohort_excluded": 0,
+    "cohort_result": "305/305_no_ledger_row",
+    "rows_sha256": "4cdc58d98ab21a849e95df98b8b1b3c5bef674b7fa52a8dc3cd6b698846e7450"
+  }
+}

@@ -1,0 +1,20 @@
+flowchart TB
+  K["绑定<br/>run_id · 仓(v1 恒主仓)· head(40 位)<br/>记账人 = QA 节点(由 credential 得出,CLI 不能指定)"]
+  subgraph A["(a) 真环境跑过"]
+    direction TB
+    A1["场地:529 槽位号 + 端口"] --> A2["房的 /health 事实<br/>HTTP 200 · ok · built · 两个 buildSha"]
+    A2 --> A3["链路:generalized_e2e_stub / generalized_e2e_real / manual_test_deploy"]
+    A3 --> A4["驱动器退出码"]
+    A4 --> A5["ran_status + ran_reason"]
+  end
+  subgraph B["(b) 外部可查可重跑"]
+    direction TB
+    B1["记录地址 + 类别<br/>托管报告 / GitHub 评论"] --> B2["写入时探测结果<br/>HTTP 状态 · sha256 · 字节数 · 时刻"]
+    B2 --> B3["重跑配方(结构化 JSON)<br/>+ 服务端渲染的一行命令"]
+    B3 --> B4["record_status + record_reason"]
+  end
+  K --> A
+  K --> B
+  A5 --> V["verdict = (a) 满足 且 (b) 满足<br/>数据库 CHECK 钉死:不能单独为真,<br/>satisfied 的事实列必须非空且互相一致"]
+  B4 --> V
+  V --> T["整行只追加:no-update / no-delete 触发器"]

@@ -35,6 +35,13 @@ import {
 } from "flywheel-config";
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import { truncateCodePoints } from "flywheel-comm/text-truncate";
+import {
+	type RecordProbe,
+	type SiteProbe,
+	type StrengthTwoLedgerRow,
+	judgeRan,
+	judgeRecord,
+} from "./strength-two/judge.js";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import {
 	deliveryContractFrozenCopy,
@@ -22694,6 +22701,83 @@ export class StateStore {
 			CREATE TRIGGER IF NOT EXISTS founder_review_card_binding_no_delete
 			BEFORE DELETE ON founder_review_card_binding
 			BEGIN SELECT RAISE(ABORT, 'founder_review_card_binding is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS strength_two_evidence_record (
+				record_id TEXT PRIMARY KEY CHECK (record_id GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'),
+				run_id TEXT NOT NULL CHECK (length(run_id) > 0),
+				recorder_credential_id INTEGER NOT NULL,
+				recorder_activation_id TEXT NOT NULL CHECK (length(recorder_activation_id) > 0),
+				recorder_execution_id TEXT NOT NULL CHECK (length(recorder_execution_id) > 0),
+				recorder_node_id TEXT NOT NULL CHECK (length(recorder_node_id) > 0),
+				recorder_attempt INTEGER NOT NULL CHECK (recorder_attempt > 0),
+				target_repo_identity TEXT NOT NULL DEFAULT '__main__'
+					CHECK (target_repo_identity = '__main__' OR (
+						target_repo_identity GLOB '?*/?*'
+						AND target_repo_identity NOT GLOB '*/*/*'
+						AND target_repo_identity NOT GLOB '*[^a-z0-9._/-]*'
+						AND length(target_repo_identity) <= 200)),
+				head_sha TEXT NOT NULL CHECK (length(head_sha) = 40 AND head_sha NOT GLOB '*[^0-9a-f]*'),
+				site_kind TEXT NOT NULL CHECK (site_kind IN ('slot_529')),
+				site_slot INTEGER NOT NULL CHECK (site_slot >= 1),
+				site_bridge_port INTEGER NOT NULL CHECK (site_bridge_port BETWEEN 1 AND 65535),
+				site_http_status INTEGER,
+				site_health_ok INTEGER CHECK (site_health_ok IS NULL OR site_health_ok IN (0,1)),
+				site_shutting_down INTEGER CHECK (site_shutting_down IS NULL OR site_shutting_down IN (0,1)),
+				site_build_mode TEXT CHECK (site_build_mode IS NULL OR length(site_build_mode) BETWEEN 1 AND 32),
+				site_build_sha TEXT CHECK (site_build_sha IS NULL OR (length(site_build_sha) = 40 AND site_build_sha NOT GLOB '*[^0-9a-f]*')),
+				site_artifact_build_sha TEXT CHECK (site_artifact_build_sha IS NULL OR (length(site_artifact_build_sha) = 40 AND site_artifact_build_sha NOT GLOB '*[^0-9a-f]*')),
+				site_checked_at TEXT NOT NULL,
+				lane TEXT NOT NULL CHECK (lane IN ('generalized_e2e_stub','generalized_e2e_real','manual_test_deploy')),
+				driver_exit_code INTEGER,
+				ran_status TEXT NOT NULL CHECK (ran_status IN ('satisfied','unsatisfied')),
+				ran_reason TEXT NOT NULL CHECK (ran_reason IN ('ok','site_unreachable','site_timeout','site_bad_payload','site_not_ready','site_head_mismatch','lane_unproven','driver_nonzero')),
+				record_url TEXT NOT NULL CHECK (length(record_url) BETWEEN 12 AND 2048),
+				record_url_kind TEXT NOT NULL CHECK (record_url_kind IN ('hosted_report','github_comment')),
+				record_http_status INTEGER,
+				record_digest TEXT CHECK (record_digest IS NULL OR (length(record_digest) = 64 AND record_digest NOT GLOB '*[^0-9a-f]*')),
+				record_bytes INTEGER CHECK (record_bytes IS NULL OR record_bytes >= 0),
+				record_checked_at TEXT NOT NULL,
+				probe_detail TEXT NOT NULL CHECK (json_valid(probe_detail) AND length(CAST(probe_detail AS BLOB)) <= 4096 AND instr(probe_detail, char(10)) = 0),
+				rerun_spec TEXT NOT NULL CHECK (json_valid(rerun_spec) AND length(CAST(rerun_spec AS BLOB)) <= 2048),
+				rerun_worktree_path TEXT NOT NULL CHECK (rerun_worktree_path GLOB '/*' AND length(CAST(rerun_worktree_path AS BLOB)) <= 1024 AND instr(rerun_worktree_path, char(10)) = 0 AND instr(rerun_worktree_path, char(0)) = 0),
+				rerun_argv TEXT NOT NULL CHECK (json_valid(rerun_argv) AND length(CAST(rerun_argv AS BLOB)) <= 4096),
+				rerun_command TEXT NOT NULL CHECK (length(CAST(rerun_command AS BLOB)) BETWEEN 1 AND 4096),
+				local_copy_path TEXT CHECK (local_copy_path IS NULL OR (length(CAST(local_copy_path AS BLOB)) BETWEEN 1 AND 1024 AND instr(local_copy_path, char(10)) = 0 AND instr(local_copy_path, char(0)) = 0)),
+				record_status TEXT NOT NULL CHECK (record_status IN ('satisfied','unsatisfied')),
+				record_reason TEXT NOT NULL CHECK (record_reason IN ('ok','url_not_in_registry','url_expired','url_timeout','url_unreachable','url_http_error','url_body_too_large','digest_mismatch','gh_timeout','gh_unreachable','gh_not_found','gh_forbidden','gh_bad_payload','gh_url_mismatch')),
+				verdict TEXT NOT NULL CHECK (verdict IN ('satisfied','unsatisfied')),
+				recorded_at TEXT NOT NULL,
+				CHECK ((ran_status = 'satisfied') = (ran_reason = 'ok')),
+				CHECK ((record_status = 'satisfied') = (record_reason = 'ok')),
+				CHECK ((verdict = 'satisfied') = (ran_status = 'satisfied' AND record_status = 'satisfied')),
+				CHECK (ran_status <> 'satisfied' OR (
+					site_http_status IS NOT NULL AND site_http_status = 200
+					AND site_health_ok IS NOT NULL AND site_health_ok = 1
+					AND site_shutting_down IS NOT NULL AND site_shutting_down = 0
+					AND site_build_mode IS NOT NULL AND site_build_mode = 'built'
+					AND site_build_sha IS NOT NULL AND site_build_sha = head_sha
+					AND site_artifact_build_sha IS NOT NULL AND site_artifact_build_sha = head_sha
+					AND lane IN ('generalized_e2e_stub','generalized_e2e_real')
+					AND driver_exit_code IS NOT NULL AND driver_exit_code = 0)),
+				CHECK (record_status <> 'satisfied' OR (
+					record_http_status IS NOT NULL AND record_http_status = 200
+					AND record_digest IS NOT NULL AND record_bytes IS NOT NULL AND record_bytes > 0)),
+				CHECK ((lane = 'manual_test_deploy') = (driver_exit_code IS NULL))
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_strength_two_evidence_record_run_repo_head ON strength_two_evidence_record(run_id, target_repo_identity, head_sha, recorded_at, record_id)",
+		);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS strength_two_evidence_record_no_update
+			BEFORE UPDATE ON strength_two_evidence_record
+			BEGIN SELECT RAISE(ABORT, 'strength_two_evidence_record is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS strength_two_evidence_record_no_delete
+			BEFORE DELETE ON strength_two_evidence_record
+			BEGIN SELECT RAISE(ABORT, 'strength_two_evidence_record is immutable'); END
 		`);
 		// Existing FLY-1232 databases predate the explicit current-QA authority.
 		// Scope the migration to the column itself; legacy null rows stay valid.
@@ -50476,6 +50560,385 @@ export class StateStore {
 			: undefined;
 	}
 
+	private strengthTwoEvidenceRow(
+		row: Record<string, unknown>,
+	): StrengthTwoEvidenceRecordRow {
+		return {
+			record_id: row.record_id as string,
+			run_id: row.run_id as string,
+			recorder_credential_id: Number(row.recorder_credential_id),
+			recorder_activation_id: row.recorder_activation_id as string,
+			recorder_execution_id: row.recorder_execution_id as string,
+			recorder_node_id: row.recorder_node_id as string,
+			recorder_attempt: Number(row.recorder_attempt),
+			target_repo_identity: row.target_repo_identity as string,
+			head_sha: row.head_sha as string,
+			site_kind: "slot_529",
+			site_slot: Number(row.site_slot),
+			site_bridge_port: Number(row.site_bridge_port),
+			site_http_status:
+				row.site_http_status == null ? null : Number(row.site_http_status),
+			site_health_ok:
+				row.site_health_ok == null ? null : Number(row.site_health_ok),
+			site_shutting_down:
+				row.site_shutting_down == null ? null : Number(row.site_shutting_down),
+			site_build_mode: (row.site_build_mode as string) ?? null,
+			site_build_sha: (row.site_build_sha as string) ?? null,
+			site_artifact_build_sha:
+				(row.site_artifact_build_sha as string) ?? null,
+			site_checked_at: row.site_checked_at as string,
+			lane: row.lane as StrengthTwoEvidenceRecordRow["lane"],
+			driver_exit_code:
+				row.driver_exit_code == null ? null : Number(row.driver_exit_code),
+			ran_status: row.ran_status as "satisfied" | "unsatisfied",
+			ran_reason: row.ran_reason as StrengthTwoEvidenceRecordRow["ran_reason"],
+			record_url: row.record_url as string,
+			record_url_kind:
+				row.record_url_kind as StrengthTwoEvidenceRecordRow["record_url_kind"],
+			record_http_status:
+				row.record_http_status == null ? null : Number(row.record_http_status),
+			record_digest: (row.record_digest as string) ?? null,
+			record_bytes:
+				row.record_bytes == null ? null : Number(row.record_bytes),
+			record_checked_at: row.record_checked_at as string,
+			probe_detail: row.probe_detail as string,
+			rerun_spec: row.rerun_spec as string,
+			rerun_worktree_path: row.rerun_worktree_path as string,
+			rerun_argv: row.rerun_argv as string,
+			rerun_command: row.rerun_command as string,
+			local_copy_path: (row.local_copy_path as string) ?? null,
+			record_status: row.record_status as "satisfied" | "unsatisfied",
+			record_reason:
+				row.record_reason as StrengthTwoEvidenceRecordRow["record_reason"],
+			verdict: row.verdict as "satisfied" | "unsatisfied",
+			recorded_at: row.recorded_at as string,
+		};
+	}
+
+	getStrengthTwoEvidenceRecord(
+		recordId: string,
+	): StrengthTwoEvidenceRecordRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM strength_two_evidence_record WHERE record_id = ?",
+			[recordId],
+		)[0];
+		return row ? this.strengthTwoEvidenceRow(row) : undefined;
+	}
+
+	listStrengthTwoRecordsForRun(runId: string): StrengthTwoEvidenceRecordRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM strength_two_evidence_record WHERE run_id = ? ORDER BY recorded_at, record_id",
+			[runId],
+		).map((row) => this.strengthTwoEvidenceRow(row));
+	}
+
+	listStrengthTwoRecordsForHead(
+		runId: string,
+		targetRepoIdentity: string,
+		headSha: string,
+	): StrengthTwoEvidenceRecordRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM strength_two_evidence_record
+			  WHERE run_id = ? AND target_repo_identity = ? AND head_sha = ?
+			  ORDER BY recorded_at, record_id`,
+			[runId, targetRepoIdentity, headSha],
+		).map((row) => this.strengthTwoEvidenceRow(row));
+	}
+
+	private strengthTwoEvidenceReplayMatches(
+		row: StrengthTwoEvidenceRecordRow,
+		identity: {
+			credentialId: number;
+			activationId: string;
+			executionId: string;
+			runId: string;
+			nodeId: string;
+			attempt: number;
+		},
+		facts: StrengthTwoEvidenceCallerFacts,
+	): boolean {
+		return (
+			row.recorder_credential_id === identity.credentialId &&
+			row.recorder_activation_id === identity.activationId &&
+			row.recorder_execution_id === identity.executionId &&
+			row.run_id === identity.runId &&
+			row.recorder_node_id === identity.nodeId &&
+			row.recorder_attempt === identity.attempt &&
+			row.head_sha === facts.headSha &&
+			row.site_slot === facts.siteSlot &&
+			row.lane === facts.lane &&
+			row.driver_exit_code === facts.driverExitCode &&
+			row.record_url === facts.recordUrl &&
+			row.rerun_spec === facts.rerunSpec &&
+			row.local_copy_path === (facts.localCopyPath ?? null)
+		);
+	}
+
+	/** Cheap route preflight only; recordStrengthTwoEvidenceByCredential rechecks in its transaction. */
+	preflightStrengthTwoEvidenceCredential(
+		credentialId: number,
+		now: string,
+	):
+		| { ok: true }
+		| {
+				ok: false;
+				reason:
+					| "credential_not_found"
+					| "credential_consumed"
+					| "credential_revoked"
+					| "credential_expired"
+					| `not_current_writer:${
+							| "writer_session_missing"
+							| "writer_session_terminal"
+							| "writer_binding_stale"}`;
+		  } {
+		const credential = this.getWorkflowSubmissionCredential(credentialId);
+		if (!credential) return { ok: false, reason: "credential_not_found" };
+		if (credential.consumed_at != null) {
+			return { ok: false, reason: "credential_consumed" };
+		}
+		if (credential.revoked === 1) {
+			return { ok: false, reason: "credential_revoked" };
+		}
+		if (
+			!StateStore.workflowFiniteTimestamp(now) ||
+			!StateStore.workflowFiniteTimestamp(credential.absolute_deadline_at) ||
+			StateStore.workflowExpired(credential.absolute_deadline_at, now)
+		) {
+			return { ok: false, reason: "credential_expired" };
+		}
+		const writer = this.classifyCurrentWorkflowWriterTx({
+			runId: credential.run_id,
+			nodeId: credential.node_id,
+			attempt: credential.attempt,
+			executionId: credential.execution_id,
+			activationId: credential.activation_id,
+		});
+		return writer.ok
+			? { ok: true }
+			: { ok: false, reason: `not_current_writer:${writer.reason}` };
+	}
+
+	recordStrengthTwoEvidenceByCredential(
+		input: RecordStrengthTwoEvidenceInput,
+	): RecordStrengthTwoEvidenceResult {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "credential_expired" };
+		}
+		let result: RecordStrengthTwoEvidenceResult = {
+			ok: false,
+			reason: "credential_not_found",
+		};
+		this.db.transaction(() => {
+			const rawCredential = this.workflowSelectAll(
+				"SELECT * FROM workflow_submission_credential WHERE credential_hash = ?",
+				[hashCapabilityToken(input.credential)],
+			)[0];
+			if (!rawCredential) return;
+			const credential = this.getWorkflowSubmissionCredential(
+				Number(rawCredential.id),
+			)!;
+			if (credential.family !== "qa_verdict") {
+				result = { ok: false, reason: "credential_family_mismatch" };
+				return;
+			}
+			if (
+				credential.execution_id !== input.callerFacts.recorderExecutionId
+			) {
+				result = { ok: false, reason: "credential_execution_mismatch" };
+				return;
+			}
+			const identity = {
+				credentialId: credential.id,
+				activationId: credential.activation_id,
+				executionId: credential.execution_id,
+				runId: credential.run_id,
+				nodeId: credential.node_id,
+				attempt: credential.attempt,
+			};
+			const existing = this.getStrengthTwoEvidenceRecord(input.recordId);
+			if (existing) {
+				result = this.strengthTwoEvidenceReplayMatches(
+					existing,
+					identity,
+					input.callerFacts,
+				)
+					? { ok: true, status: "replayed", row: existing }
+					: { ok: false, reason: "record_conflict" };
+				return;
+			}
+			if (credential.consumed_at != null) {
+				result = { ok: false, reason: "credential_consumed" };
+				return;
+			}
+			if (credential.revoked === 1) {
+				result = { ok: false, reason: "credential_revoked" };
+				return;
+			}
+			if (
+				!StateStore.workflowFiniteTimestamp(credential.absolute_deadline_at) ||
+				StateStore.workflowExpired(credential.absolute_deadline_at, input.now)
+			) {
+				result = { ok: false, reason: "credential_expired" };
+				return;
+			}
+			const writer = this.classifyCurrentWorkflowWriterTx({
+				runId: credential.run_id,
+				nodeId: credential.node_id,
+				attempt: credential.attempt,
+				executionId: credential.execution_id,
+				activationId: credential.activation_id,
+			});
+			if (!writer.ok) {
+				result = {
+					ok: false,
+					reason: `not_current_writer:${writer.reason}`,
+				};
+				return;
+			}
+			const session = this.getSession(credential.execution_id);
+			if (
+				!session ||
+				session.session_role !== "qa" ||
+				session.chat_thread_role !== "qa"
+			) {
+				result = { ok: false, reason: "credential_not_durable_qa" };
+				return;
+			}
+			if (input.authority.headSha !== input.callerFacts.headSha) {
+				result = { ok: false, reason: "authority_head_mismatch" };
+				return;
+			}
+
+			const ran = judgeRan({
+				siteProbe: input.siteProbe,
+				headSha: input.authority.headSha,
+				lane: input.callerFacts.lane,
+				driverExitCode: input.callerFacts.driverExitCode,
+			});
+			const record = judgeRecord(input.recordProbe);
+			const rawSite = input.siteProbe.ok
+				? {
+						httpStatus: input.siteProbe.httpStatus,
+						healthOk: input.siteProbe.healthOk,
+						shuttingDown: input.siteProbe.shuttingDown,
+						buildMode: input.siteProbe.buildMode,
+						buildSha: input.siteProbe.buildSha,
+						artifactBuildSha: input.siteProbe.artifactBuildSha,
+					}
+				: {
+						httpStatus:
+							input.siteProbe.httpStatus ??
+							input.siteProbe.raw.httpStatus ??
+							input.siteProbe.raw.status,
+						healthOk:
+							input.siteProbe.raw.healthOk ?? input.siteProbe.raw.ok,
+						shuttingDown: input.siteProbe.raw.shuttingDown,
+						buildMode: input.siteProbe.raw.buildMode,
+						buildSha: input.siteProbe.raw.buildSha,
+						artifactBuildSha: input.siteProbe.raw.artifactBuildSha,
+					};
+			const siteHttpStatus =
+				Number.isInteger(rawSite.httpStatus) &&
+				Number(rawSite.httpStatus) >= 100 &&
+				Number(rawSite.httpStatus) <= 599
+					? Number(rawSite.httpStatus)
+					: null;
+			const siteHealthOk =
+				typeof rawSite.healthOk === "boolean"
+					? rawSite.healthOk
+						? 1
+						: 0
+					: null;
+			const siteShuttingDown =
+				typeof rawSite.shuttingDown === "boolean"
+					? rawSite.shuttingDown
+						? 1
+						: 0
+					: null;
+			const siteBuildMode =
+				typeof rawSite.buildMode === "string" &&
+				rawSite.buildMode.length >= 1 &&
+				rawSite.buildMode.length <= 32
+					? rawSite.buildMode
+					: null;
+			const siteBuildSha =
+				typeof rawSite.buildSha === "string" &&
+				/^[0-9a-f]{40}$/.test(rawSite.buildSha)
+					? rawSite.buildSha
+					: null;
+			const siteArtifactBuildSha =
+				typeof rawSite.artifactBuildSha === "string" &&
+				/^[0-9a-f]{40}$/.test(rawSite.artifactBuildSha)
+					? rawSite.artifactBuildSha
+					: null;
+			const driverExitCode =
+				input.callerFacts.lane === "manual_test_deploy"
+					? null
+					: input.callerFacts.driverExitCode;
+			const verdict =
+				ran.satisfied && record.satisfied ? "satisfied" : "unsatisfied";
+			this.db.run(
+				`INSERT INTO strength_two_evidence_record (
+					record_id, run_id, recorder_credential_id, recorder_activation_id,
+					recorder_execution_id, recorder_node_id, recorder_attempt,
+					target_repo_identity, head_sha, site_kind, site_slot, site_bridge_port,
+					site_http_status, site_health_ok, site_shutting_down, site_build_mode,
+					site_build_sha, site_artifact_build_sha, site_checked_at, lane,
+					driver_exit_code, ran_status, ran_reason, record_url, record_url_kind,
+					record_http_status, record_digest, record_bytes, record_checked_at,
+					probe_detail, rerun_spec, rerun_worktree_path, rerun_argv,
+					rerun_command, local_copy_path, record_status, record_reason,
+					verdict, recorded_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, '__main__', ?, 'slot_529', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.recordId,
+					credential.run_id,
+					credential.id,
+					credential.activation_id,
+					credential.execution_id,
+					credential.node_id,
+					credential.attempt,
+					input.authority.headSha,
+					input.callerFacts.siteSlot,
+					input.siteBridgePort,
+					siteHttpStatus,
+					siteHealthOk,
+					siteShuttingDown,
+					siteBuildMode,
+					siteBuildSha,
+					siteArtifactBuildSha,
+					input.now,
+					input.callerFacts.lane,
+					driverExitCode,
+					ran.satisfied ? "satisfied" : "unsatisfied",
+					ran.reason,
+					input.callerFacts.recordUrl,
+					input.recordProbe.kind,
+					record.httpStatus ?? null,
+					record.digest ?? null,
+					record.bytes ?? null,
+					input.now,
+					input.probeDetail,
+					input.callerFacts.rerunSpec,
+					input.authority.worktreePath,
+					JSON.stringify(input.rerun.argv),
+					input.rerun.command,
+					input.callerFacts.localCopyPath ?? null,
+					record.satisfied ? "satisfied" : "unsatisfied",
+					record.reason,
+					verdict,
+					input.now,
+				],
+			);
+			const row = this.getStrengthTwoEvidenceRecord(input.recordId);
+			if (!row) throw new Error("strength-two evidence insert missing");
+			result = { ok: true, status: "inserted", row };
+		});
+		this.save();
+		return result;
+	}
+
 	private ensureWorkflowClaimLeadEventTx(input: {
 		claim: WorkflowClaimRow;
 		run: WorkflowRunRow;
@@ -68890,6 +69353,89 @@ export interface WorkflowSubmissionCredentialRow {
 	revoked: number;
 	revoked_reason: string | null;
 }
+
+export interface StrengthTwoEvidenceCallerFacts {
+	recorderExecutionId: string;
+	headSha: string;
+	siteSlot: number;
+	lane: "generalized_e2e_stub" | "generalized_e2e_real" | "manual_test_deploy";
+	driverExitCode: number | null;
+	recordUrl: string;
+	rerunSpec: string;
+	localCopyPath?: string | null;
+}
+
+export interface StrengthTwoEvidenceRecordRow extends StrengthTwoLedgerRow {
+	run_id: string;
+	recorder_credential_id: number;
+	recorder_activation_id: string;
+	recorder_execution_id: string;
+	recorder_node_id: string;
+	recorder_attempt: number;
+	target_repo_identity: string;
+	head_sha: string;
+	site_kind: "slot_529";
+	site_slot: number;
+	site_bridge_port: number;
+	site_http_status: number | null;
+	site_health_ok: number | null;
+	site_shutting_down: number | null;
+	site_build_mode: string | null;
+	site_build_sha: string | null;
+	site_artifact_build_sha: string | null;
+	site_checked_at: string;
+	lane: StrengthTwoEvidenceCallerFacts["lane"];
+	driver_exit_code: number | null;
+	record_url: string;
+	record_url_kind: "hosted_report" | "github_comment";
+	record_http_status: number | null;
+	record_digest: string | null;
+	record_bytes: number | null;
+	record_checked_at: string;
+	probe_detail: string;
+	rerun_spec: string;
+	rerun_worktree_path: string;
+	rerun_argv: string;
+	rerun_command: string;
+	local_copy_path: string | null;
+}
+
+export interface RecordStrengthTwoEvidenceInput {
+	credential: string;
+	recordId: string;
+	callerFacts: StrengthTwoEvidenceCallerFacts;
+	authority: { headSha: string; worktreePath: string };
+	siteBridgePort: number;
+	siteProbe: SiteProbe;
+	recordProbe: RecordProbe;
+	rerun: { argv: string[][]; command: string };
+	probeDetail: string;
+	now: string;
+}
+
+export type RecordStrengthTwoEvidenceResult =
+	| {
+			ok: true;
+			status: "inserted" | "replayed";
+			row: StrengthTwoEvidenceRecordRow;
+	  }
+	| {
+			ok: false;
+			reason:
+				| "credential_not_found"
+				| "credential_family_mismatch"
+				| "credential_execution_mismatch"
+				| "record_conflict"
+				| "credential_consumed"
+				| "credential_revoked"
+				| "credential_expired"
+				| `not_current_writer:${
+						| "writer_session_missing"
+						| "writer_session_terminal"
+						| "writer_binding_stale"}`
+				| "credential_not_durable_qa"
+				| "authority_head_mismatch";
+	  };
 
 export type WorkflowExecutionAdmissionResult =
 	| { ok: true; credentialId: number; credential: string }

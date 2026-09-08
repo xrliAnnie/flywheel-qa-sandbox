@@ -77,6 +77,73 @@ describe("Bridge scaffold", () => {
 		store.close();
 	});
 
+	it("fail-closes the strength-two evidence mount and requires the ingest bearer", async () => {
+		const tokenlessStore = await StateStore.create(":memory:");
+		const tokenlessApp = createBridgeApp(tokenlessStore, [], makeConfig());
+		const tokenless = await fetch(
+			await startAndGetUrl(tokenlessApp, "/api/workflow/evidence-run"),
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "{}",
+			},
+		);
+		expect(tokenless.status).toBe(503);
+		expect(await tokenless.json()).toEqual({
+			ok: false,
+			reason: "bridge ingest token not configured",
+		});
+		tokenlessStore.close();
+
+		const protectedStore = await StateStore.create(":memory:");
+		const protectedApp = createBridgeApp(
+			protectedStore,
+			[],
+			makeConfig({ ingestToken: "ingest-secret" }),
+		);
+		const protectedResponse = await fetch(
+			await startAndGetUrl(protectedApp, "/api/workflow/evidence-run"),
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "{}",
+			},
+		);
+		expect(protectedResponse.status).toBe(401);
+		expect(await protectedResponse.json()).toEqual({ error: "unauthorized" });
+		const authenticatedResponse = await fetch(
+			await startAndGetUrl(protectedApp, "/api/workflow/evidence-run"),
+			{
+				method: "POST",
+				headers: {
+					Authorization: "Bearer ingest-secret",
+					"content-type": "application/json",
+				},
+				body: "{}",
+			},
+		);
+		expect(authenticatedResponse.status).toBe(422);
+		expect(await authenticatedResponse.json()).toMatchObject({
+			ok: false,
+			reason: "evidence_run_rejected:body_shape",
+		});
+
+		const siblingResponse = await fetch(
+			await startAndGetUrl(protectedApp, "/api/workflow/output"),
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "{}",
+			},
+		);
+		expect(siblingResponse.status).toBe(400);
+		expect(await siblingResponse.json()).toMatchObject({
+			ok: false,
+			reason: "invalid_request",
+		});
+		protectedStore.close();
+	});
+
 	it("FLY-1995 exposes stable event-loop health and fail-closed diagnostics auth", async () => {
 		const diagnostics = {
 			healthSnapshot: () => ({ p99_ms: null, max_ms: null, episodes: 0 }),

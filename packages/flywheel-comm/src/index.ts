@@ -28,6 +28,7 @@ import {
 } from "./commands/declare-state.js";
 import { runDependency } from "./commands/dependency.js";
 import { runEpicPage } from "./commands/epic-page.js";
+import { runEvidenceRunCommand } from "./commands/evidence-run.js";
 import { runFeatureFlags } from "./commands/feature-flags.js";
 import { founderTime } from "./commands/founder-time.js";
 import { gate } from "./commands/gate.js";
@@ -145,6 +146,11 @@ Commands:
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
   workflow-output  Submit a generalized node's JSON output before completion
+  evidence-run  Record independently judged strength-two evidence for a QA run.
+            Subcommand: record --exec-id <id> --head <sha> --site slot_529:<n>
+            --lane <generalized_e2e_stub|generalized_e2e_real|manual_test_deploy>
+            [--driver-exit-code <int>] --record-url <https-url>
+            --rerun-spec <path.json> [--local-copy <path>] [--record-id <uuid>]
   request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>] [--target-repo <rel>])
   review-ruling  Record or revoke a supervised Lead ruling for a delivered review finding (FLY-1278)
   codex-review-result  Emit a Codex code-review APPROVED verdict for an explicit execution/head (FLY-827; requires --exec-id and --pr-head)
@@ -343,6 +349,9 @@ async function main(): Promise<void> {
 			break;
 		case "workflow-output":
 			await runWorkflowOutput(commandArgs);
+			break;
+		case "evidence-run":
+			process.exitCode = await runEvidenceRunCommand(commandArgs);
 			break;
 		case "request-review":
 			await runRequestReview(commandArgs);

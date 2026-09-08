@@ -309,6 +309,18 @@ describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 			label: "workflow verdict",
 			summary: "<evidence and verdict>",
 		});
+		expect(withLead).toContain(
+			"record strength-two evidence immediately after the driver exits",
+		);
+		expect(withLead).toContain("before `test-teardown.sh`");
+		expect(withLead).toContain("before `qa-result`");
+		expect(withLead).toContain(
+			"evidence-run record --exec-id exec-generalized-qa",
+		);
+		expect(withLead).toContain("--head $(git rev-parse HEAD)");
+		expect(withLead).toContain(
+			"This records evidence only; it is not a verdict",
+		);
 
 		const withoutLead = await buildPrompt({
 			...generalized,

@@ -1,0 +1,11 @@
+flowchart TB
+  A["QA 跑手在 529 房把链路从头到尾跑一遍<br/>(房还开着,还没拆)"] --> B["QA 跑手执行一条记账命令<br/>flywheel-comm evidence-run record<br/>带:被测 head · 槽位号 · 链路 · 驱动器退出码 · 报告地址 · 重跑配方"]
+  B --> C["Bridge 核身份<br/>凭 QA 自己那把一次性 credential(只读不消费)<br/>必须是当前 QA 节点、未消费、未过期"]
+  C --> D["Bridge 核 head<br/>git rev-parse HEAD@QA 工作树 == 命令里的 head"]
+  D --> E["探针 (a):去 529 房 /health<br/>房活着? built? buildSha == head?"]
+  D --> F["探针 (b):真去取报告地址<br/>托管报告 HTTP 200 + 正文 sha256 == 本地存档"]
+  E --> G["judgeRan → (a) 真环境跑过 ✓/✗ + 原因"]
+  F --> H["judgeRecord → (b) 外部记录可取 ✓/✗ + 原因"]
+  G --> I["单事务写一行台账(只追加,不可改删)<br/>强度二 = (a) ∧ (b)"]
+  H --> I
+  I --> J["B4 影子跑记录线 ③ 读台账<br/>没有行 = 不满足;取不到 = 不满足"]

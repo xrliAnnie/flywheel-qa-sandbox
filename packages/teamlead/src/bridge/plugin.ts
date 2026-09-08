@@ -680,6 +680,7 @@ import {
 	reconcileStateStoreGhosts,
 	type StateStoreGhostDeps,
 } from "./statestore-ghost-reconcile.js";
+import { createStrengthTwoEvidenceRouter } from "./strength-two-evidence-route.js";
 import {
 	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,
@@ -2069,6 +2070,28 @@ export function createBridgeApp(
 	// credential, never the fleet ingest bearer. The head read route is a separate
 	// loopback-only fail-closed seam used by verify-approval; it is not credential
 	// authenticated and exposes only the execution's git SHA.
+	if (!config.ingestToken) {
+		app.post("/api/workflow/evidence-run", (_req, res) => {
+			res.status(503).json({
+				ok: false,
+				reason: "bridge ingest token not configured",
+			});
+		});
+	} else {
+		app.post(
+			"/api/workflow/evidence-run",
+			tokenAuthMiddleware(config.ingestToken),
+		);
+		app.use(
+			"/api/workflow",
+			createStrengthTwoEvidenceRouter({
+				store,
+				registry: reportRegistry,
+				hostOverride: opts?.reportHostOverride,
+				vercelProjectName: () => reportRegistry.vercelProjectName(),
+			}),
+		);
+	}
 	app.use(
 		"/api/workflow",
 		createWorkflowDecisionRouter({

@@ -93,6 +93,7 @@
 	"ship_relevant_diff_snapshot",
 	"ship_relevant_pr_snapshot",
 	"state_store_migration",
+	"strength_two_evidence_record",
 	"stuck_dispositions",
 	"three_stage_turn",
 	"ticket_escalations",

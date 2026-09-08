@@ -1883,6 +1883,14 @@ export class Blueprint {
 				);
 			}
 			if (ctx.workflowSubmissionCredential) {
+				if (
+					isQaPhase ||
+					ctx.generalizedExecutionContext!.nodeId.toLowerCase() === "qa"
+				) {
+					systemPromptLines.push(
+						`If you exercised this head in a 529 room, record strength-two evidence immediately after the driver exits: while the room is still up, before \`test-teardown.sh\`, before committing anything else in this worktree (the record binds \`git rev-parse HEAD\`, which must equal the room's buildSha), and before \`qa-result\` (the record is authenticated by your unconsumed submission credential): \`node ${commCliPath} evidence-run record --exec-id ${executionId} --head $(git rev-parse HEAD) --site slot_529:<n> --lane generalized_e2e_stub|generalized_e2e_real --driver-exit-code <driver exit code> --record-url <published QA report URL> --rerun-spec <spec.json>\`. A torn-down room, a HEAD that differs from the room's buildSha, or an unreachable report URL records as unsatisfied (fail-closed). This records evidence only; it is not a verdict and does not change any gate.`,
+					);
+				}
 				const terminalVerdictInstruction = ctx.leadId?.trim()
 					? `Your terminal action is one structured workflow verdict followed by its Lead report: run \`${generalizedVerdictAction}\`. ${verdictLeadReportRetry}`
 					: `Your terminal action is one structured workflow verdict: run \`${generalizedVerdictAction}\`.`;
