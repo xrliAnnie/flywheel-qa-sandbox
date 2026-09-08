@@ -600,6 +600,18 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "packages/flywheel-comm/src/snapshot-storage.ts:(deps.signalProcess ?? ((pid) => process.kill(pid, 0)))(owner.pid);#1",
+		"path": "packages/flywheel-comm/src/snapshot-storage.ts",
+		"code": "(deps.signalProcess ?? ((pid) => process.kill(pid, 0)))(owner.pid);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/flywheel-comm/src/snapshot-storage.ts:process.kill(owner.pid, 0);#1",
+		"path": "packages/flywheel-comm/src/snapshot-storage.ts",
+		"code": "process.kill(owner.pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
 		"key": "packages/flywheel-comm/src/xiaohongshu-state.ts:process.kill(pid, 0);#1",
 		"path": "packages/flywheel-comm/src/xiaohongshu-state.ts",
 		"code": "process.kill(pid, 0);",
