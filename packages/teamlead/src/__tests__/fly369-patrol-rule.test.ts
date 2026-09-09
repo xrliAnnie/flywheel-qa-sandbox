@@ -16,12 +16,24 @@ const PATROL_PATH = join(BASE, "runner-patrol-rules.md");
 const MSG_PATH = join(BASE, "runner-messaging-rules.md");
 const README_PATH = join(BASE, "README.md");
 const SH_PATH = join(__dirname, "..", "..", "scripts", "claude-lead.sh");
+const RUNBOOK_PATH = join(
+	__dirname,
+	"..",
+	"..",
+	"..",
+	"..",
+	"engineering",
+	"doc",
+	"FLY-2351-snapshot-disk-guard",
+	"runbook.md",
+);
 
 describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 	const patrol = readFileSync(PATROL_PATH, "utf8");
 	const msg = readFileSync(MSG_PATH, "utf8");
 	const readme = readFileSync(README_PATH, "utf8");
 	const sh = readFileSync(SH_PATH, "utf8");
+	const runbook = readFileSync(RUNBOOK_PATH, "utf8");
 
 	it("RC-3: proactive patrol uses runner_terminal_list as the sweep starting point (NOT an acceptance oracle)", () => {
 		expect(patrol).toContain("runner_terminal_list");
@@ -55,6 +67,40 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(patrol).toMatch(/多了少了.*finding/i);
 		expect(patrol).toMatch(/纯闹钟/);
 		expect(patrol).toMatch(/不采信.*Bridge|Bridge.*不是事实/);
+	});
+
+	it("FLY-2351: STEP 5 uses the Data volume bytes and fails closed on a contradictory verdict", () => {
+		for (const anchor of [
+			"df -h /System/Volumes/Data",
+			"disk_avail_bytes=<integer>",
+			"disk_below_threshold=<yes|no>",
+			"<20000000000",
+			"data_volume_low",
+			'low&&status!="STEP 5: FINDING"',
+			'unknown&&status=="STEP 5: OK"',
+		]) {
+			expect(patrol).toContain(anchor);
+		}
+	});
+
+	it("FLY-2351: low-disk patrol links the ordered emergency runbook", () => {
+		for (const anchor of [
+			"## 低盘紧急处置顺序",
+			"只读 inventory",
+			"可删旧快照和已结束的受管副本",
+			"measured_avail_bytes",
+			"required_bytes",
+			"non_deletable_items",
+			"停止所有会修改数据库的修复",
+			"不能降到 `2×`",
+			"不能用裸 `sqlite3`",
+			"db-maintenance backup 或 `VACUUM`",
+		]) {
+			expect(runbook).toContain(anchor);
+		}
+		expect(patrol).toContain(
+			"engineering/doc/FLY-2351-snapshot-disk-guard/runbook.md#低盘紧急处置顺序",
+		);
 	});
 
 	it("FLY-2118: patrol_tick has an executable owner scope, orphan fallback, six-step artifact, and explicit UNAVAILABLE exit", () => {
@@ -480,6 +526,28 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		}
 		expect(section0).toMatch(/步骤 A.*发现即补账推进/s);
 		expect(section0).toMatch(/步骤 B.*记录进病根 Epic/s);
+	});
+
+	it("FLY-2351: the repair recipe resolves snapshot control from the managed executable", () => {
+		const appendixA = patrol.slice(
+			patrol.indexOf("### FLY-2080 附录 A"),
+			patrol.indexOf("### FLY-2080 附录 B"),
+		);
+		expect(appendixA).toContain(
+			'PATROL_SNAPSHOT="$(command -v flywheel-patrol-snapshot)" || exit $?',
+		);
+		expect(appendixA).toContain("dirname(realpathSync(process.argv[1]))");
+		expect(appendixA).toMatch(
+			/realpathSync\(process\.argv\[1\]\).*"\$PATROL_SNAPSHOT"\)" \|\| exit \$\?/,
+		);
+		expect(appendixA).toContain(
+			'SNAPSHOT_CONTROL="$SNAPSHOT_SOURCE_DIR/flywheel-snapshot-control.mjs"',
+		);
+		expect(appendixA).toContain('node "$SNAPSHOT_CONTROL" repair');
+		expect(appendixA).not.toContain("FLYWHEEL_DIR");
+		expect(appendixA).not.toContain(
+			"node scripts/flywheel-snapshot-control.mjs",
+		);
 	});
 
 	it("FLY-2080: guard classification, truth boundaries, and both executable recipes are complete", () => {

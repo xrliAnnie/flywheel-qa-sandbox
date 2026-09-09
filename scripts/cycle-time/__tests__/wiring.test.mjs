@@ -32,4 +32,11 @@ test("cycle-time CLI entrypoint exists and advertises required arguments", async
 	assert.match(source, /parseReportArgs\(process\.argv\.slice\(2\)\)/);
 	assert.match(source, /data-\$\{issue\}\.json/);
 	assert.match(source, /cycle-time-report\.html/);
+	assert.match(source, /withManagedSnapshots/);
+	const collector = await readFile(
+		new URL("../lib/collect.mjs", import.meta.url),
+		"utf8",
+	);
+	assert.doesNotMatch(collector, /backupSqliteSnapshot\(teamDb/);
+	assert.doesNotMatch(collector, /snapshot_path:/);
 });

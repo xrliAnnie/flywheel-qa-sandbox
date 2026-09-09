@@ -46,6 +46,7 @@ import {
 } from "./done-thread-archiver.js";
 import { probeRunExecutionLiveness } from "./run-quiescence.js";
 import { reapRunnerMcp } from "./runner-teardown.js";
+import { cleanupExecutionSnapshots } from "./snapshot-closeout.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import {
 	getTmuxTargetFromCommDb,
@@ -239,15 +240,42 @@ export async function closeRunner(
 	opts: CloseRunnerOpts,
 	store: StateStore,
 ): Promise<CloseRunnerResult> {
+	let result: CloseRunnerResult;
 	// Codex R2#3: serialize with the unified executor's issue mutex.
 	if (lifecycleCloseGuard && !opts.skipLifecycleGuard) {
 		const guard = lifecycleCloseGuard;
 		const keys = guard.resolveLockKeys(store, opts.issueId);
-		return guard.withIssueMutex(keys, () =>
+		result = await guard.withIssueMutex(keys, () =>
 			closeRunnerWithRunAuthority({ ...opts, skipLifecycleGuard: true }, store),
 		);
+	} else {
+		result = await closeRunnerWithRunAuthority(opts, store);
 	}
-	return closeRunnerWithRunAuthority(opts, store);
+	if (result.closed) {
+		try {
+			const snapshot = await cleanupExecutionSnapshots(
+				store,
+				opts.executionId,
+				{
+					terminalAuthority:
+						opts.issueTerminalOverride === true || !!opts.runCloseAuthority,
+				},
+			);
+			if (
+				snapshot.status !== "deleted" &&
+				snapshot.status !== "already_absent"
+			) {
+				console.warn(
+					`[close-runner] snapshot cleanup pending for ${opts.executionId}: ${snapshot.status}`,
+				);
+			}
+		} catch (error) {
+			console.warn(
+				`[close-runner] snapshot cleanup failed for ${opts.executionId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	return result;
 }
 
 async function closeRunnerWithRunAuthority(

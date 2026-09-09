@@ -163,6 +163,11 @@ a fresh fact and must not be cited as one. The tick remains an alarm and these
 capacity facts do not replace the independent runner verification required by
 the patrol rules.
 
+The Data-volume cell is also an operations fact: it must name
+`/System/Volumes/Data`. Below 20,000,000,000 available bytes, STEP 5 is a
+mandatory finding and disk-heavy work must wait for the patrol disposition;
+never substitute `df -h /`, which reports macOS's sealed system volume.
+
 「还剩什么」(Epic 范围内现在可以开始的)与容量在同一封 tick 里,读法见
 `runner-patrol-rules.md` §0.9(FLY-2141)。
 

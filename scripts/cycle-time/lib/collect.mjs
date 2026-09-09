@@ -4,11 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import {
-	backupSqliteSnapshot,
-	canonicalizeExtract,
-	querySqliteSnapshot,
-} from "./extract.mjs";
+import { canonicalizeExtract, querySqliteSnapshot } from "./extract.mjs";
 import { parseSystemHealthLog } from "./time.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -399,19 +395,57 @@ async function fileSha256(path) {
 		.digest("hex");
 }
 
+export async function collectDatabaseSources({
+	issues,
+	project,
+	asOf,
+	minT0,
+	withSnapshot,
+}) {
+	let team = { sessions: [], events: [], reviews: [], qaRecords: [] };
+	let comm = { questions: [], responses: [], wakes: [] };
+	const status = { teamlead: "failed", commdb: "failed" };
+	const errors = {};
+	const rawSources = {};
+
+	try {
+		team = await withSnapshot("teamlead", async (path) => {
+			const data = await collectTeam(path, issues, project, asOf, minT0);
+			rawSources.teamlead = { raw_sha256: await fileSha256(path) };
+			return data;
+		});
+		status.teamlead = "ok";
+	} catch (error) {
+		errors.teamlead = error.message;
+	}
+	try {
+		comm = await withSnapshot("comm", async (path) => {
+			const data = await collectComm(
+				path,
+				team.sessions.filter((session) =>
+					issues.includes(session.issue_identifier),
+				),
+				asOf,
+			);
+			rawSources.commdb = { raw_sha256: await fileSha256(path) };
+			return data;
+		});
+		status.commdb = "ok";
+	} catch (error) {
+		errors.commdb = error.message;
+	}
+	return { team, comm, status, errors, rawSources };
+}
+
 export async function collectSources({
 	issues,
 	asOf,
 	asOfIso,
 	project,
-	scratchDir,
-	teamDb,
-	commDb,
+	withSnapshot,
 	linearApiKey,
 	healthRoot,
 }) {
-	const teamSnapshot = join(scratchDir, "snap-teamlead.db");
-	const commSnapshot = join(scratchDir, "snap-comm.db");
 	const qaLog = {
 		captured_at: new Date().toISOString(),
 		as_of: asOfIso,
@@ -428,8 +462,6 @@ export async function collectSources({
 		prsByIssue: Object.fromEntries(issues.map((issue) => [issue, []])),
 		runsByIssue: Object.fromEntries(issues.map((issue) => [issue, []])),
 	};
-	let team = { sessions: [], events: [], reviews: [], qaRecords: [] };
-	let comm = { questions: [], responses: [], wakes: [] };
 	const errors = {};
 
 	try {
@@ -444,34 +476,18 @@ export async function collectSources({
 	const minT0 =
 		knownT0.length > 0 ? Math.min(...knownT0) : asOf - 7 * 86_400_000;
 
-	try {
-		await backupSqliteSnapshot(teamDb, teamSnapshot);
-		team = await collectTeam(teamSnapshot, issues, project, asOf, minT0);
-		qaLog.raw_sources.teamlead = {
-			snapshot_path: teamSnapshot,
-			raw_sha256: await fileSha256(teamSnapshot),
-		};
-		status.teamlead = "ok";
-	} catch (error) {
-		errors.teamlead = error.message;
-	}
-	try {
-		await backupSqliteSnapshot(commDb, commSnapshot);
-		comm = await collectComm(
-			commSnapshot,
-			team.sessions.filter((session) =>
-				issues.includes(session.issue_identifier),
-			),
-			asOf,
-		);
-		qaLog.raw_sources.commdb = {
-			snapshot_path: commSnapshot,
-			raw_sha256: await fileSha256(commSnapshot),
-		};
-		status.commdb = "ok";
-	} catch (error) {
-		errors.commdb = error.message;
-	}
+	const databaseSources = await collectDatabaseSources({
+		issues,
+		project,
+		asOf,
+		minT0,
+		withSnapshot,
+	});
+	const { team, comm } = databaseSources;
+	Object.assign(status, databaseSources.status);
+	Object.assign(errors, databaseSources.errors);
+	Object.assign(qaLog.raw_sources, databaseSources.rawSources);
+
 	try {
 		github = await collectGitHub(issues, asOf);
 		status.gh = "ok";

@@ -2050,6 +2050,18 @@ export class Blueprint {
 			];
 		}
 
+		const snapshotManagedNode = isGeneralizedExecution
+			? ["implement", "qa"].includes(
+					ctx.generalizedExecutionContext!.nodeId.toLowerCase(),
+				)
+			: !isDesignPhase;
+		if (snapshotManagedNode) {
+			systemPromptLines.push(
+				"",
+				"PRODUCTION DATABASE SNAPSHOTS (HARD): For a live `teamlead.db` or `comm.db` copy, use `node scripts/flywheel-snapshot-control.mjs runner ...`; never `cp` live `teamlead.db` or `comm.db`. Keep every managed copy under `/tmp/flywheel-snapshots/<exec>/`, treat that execution directory's 2GB hard limit as an admission boundary, and close database handles before terminal completion so closeout can remove it.",
+			);
+		}
+
 		const usesSharedTurn =
 			isDesignPhase ||
 			isImplementPhase ||

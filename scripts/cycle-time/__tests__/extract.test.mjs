@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 
 import {
-	backupSqliteSnapshot,
 	buildCiIntervals,
 	buildGateIntervals,
 	buildInfraIntervals,
@@ -15,7 +9,6 @@ import {
 	buildReworkIntervals,
 	buildSessionIntervals,
 	canonicalizeExtract,
-	querySqliteSnapshot,
 } from "../lib/extract.mjs";
 import { validateIntervals } from "../lib/validate.mjs";
 
@@ -442,49 +435,6 @@ test("canonical extract bytes ignore execution ephemera and post-as-of growth bu
 	);
 	assert.notEqual(first.bytes, withLatePreAsOf.bytes);
 	assert.notEqual(first.sha256, withLatePreAsOf.sha256);
-});
-
-test("WAL source backup is read through immutable snapshot without mutating source content", async () => {
-	const root = mkdtempSync(join(tmpdir(), "fly1327-snapshot-"));
-	const source = join(root, "source.db");
-	const snapshot = join(root, "snapshot.db");
-	try {
-		execFileSync("sqlite3", [
-			source,
-			"PRAGMA journal_mode=WAL; CREATE TABLE sample(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO sample(value) VALUES ('before');",
-		]);
-		const beforeMain = createHash("sha256")
-			.update(readFileSync(source))
-			.digest("hex");
-		const beforeDump = execFileSync(
-			"sqlite3",
-			["-readonly", `file:${source}?mode=ro`, ".dump sample"],
-			{ encoding: "utf8" },
-		);
-		await backupSqliteSnapshot(source, snapshot);
-		const afterMain = createHash("sha256")
-			.update(readFileSync(source))
-			.digest("hex");
-		const afterDump = execFileSync(
-			"sqlite3",
-			["-readonly", `file:${source}?mode=ro`, ".dump sample"],
-			{ encoding: "utf8" },
-		);
-		assert.equal(afterMain, beforeMain);
-		assert.equal(afterDump, beforeDump);
-
-		execFileSync("sqlite3", [
-			source,
-			"INSERT INTO sample(value) VALUES ('after');",
-		]);
-		const rows = await querySqliteSnapshot(
-			snapshot,
-			"SELECT value FROM sample ORDER BY id",
-		);
-		assert.deepEqual(rows, [{ value: "before" }]);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
 });
 
 test("session stage events separate design work, implementation work, and independent QA", () => {

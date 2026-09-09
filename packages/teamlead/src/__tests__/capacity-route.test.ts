@@ -98,6 +98,14 @@ describe("GET /api/capacity", () => {
 				apiToken: "master-token",
 				geminiAgentToken: "scoped-token",
 				capacityProbes: {
+					readDataDisk: () => ({
+						disk_avail_gb: 21,
+						disk: {
+							volume: "/System/Volumes/Data",
+							availBytes: 21_000_000_000,
+							observedAt: "2026-09-03T06:00:00.000Z",
+						},
+					}),
 					readMemoryFreePct: async () => ({
 						freePct: 44,
 						observedAt: "2026-09-03T06:00:00.000Z",
@@ -137,10 +145,17 @@ describe("GET /api/capacity", () => {
 		const text = await response.text();
 		const body = JSON.parse(text) as {
 			schemaVersion: number;
+			disk_avail_gb: number;
+			disk: { volume: string; availBytes: number };
 			memory: { freePct: number };
 			quota: { claude: { accounts: Array<{ name: string }> } };
 		};
 		expect(body.schemaVersion).toBe(1);
+		expect(body.disk_avail_gb).toBe(21);
+		expect(body.disk).toMatchObject({
+			volume: "/System/Volumes/Data",
+			availBytes: 21_000_000_000,
+		});
 		expect(body.memory.freePct).toBe(44);
 		expect(body.quota.claude.accounts).toEqual([
 			expect.objectContaining({ name: "personal" }),

@@ -63,6 +63,7 @@ import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { runShadowDeclareCommand } from "./commands/shadow-declare.js";
+import { runSnapshotCommand } from "./commands/snapshot.js";
 import { stage } from "./commands/stage.js";
 import { runSummaryCommand } from "./commands/summary.js";
 import { runSummaryRegistryCommand } from "./commands/summary-registry.js";
@@ -203,6 +204,11 @@ Commands:
             [--effort <level|default>] [--backend <executor|default>] --yes
             — writes <projectRoot>/.flywheel/config.yaml (roles.runner.* or
             collections[].model); hot-effective for NEW runs, no restart.
+  snapshot  Managed SQLite snapshots. Subcommands:
+            disk | repair --source <db> --issue <ID> --kind teamlead|comm
+            [--project <name>] | runner --source <db> --kind teamlead|comm
+            [--project <name>] | prune [--dry-run|--apply] | release.
+            Runtime failures exit 1, argument errors exit 2; all output is JSON.
   set-artifact   Register build output (.glb/.stl/.3mf) path for 3D capture (GEO-151)
   account-rotation-notify  FLY-696: surface a Codex per-runner account rotation
             in the unified Alerts channel. Emits a dedicated account_rotation
@@ -409,6 +415,9 @@ async function main(): Promise<void> {
 			break;
 		case "runner-config":
 			await runRunnerConfig(commandArgs);
+			break;
+		case "snapshot":
+			process.exitCode = await runSnapshotCommand(commandArgs);
 			break;
 		case "token-report":
 			await runTokenReport(commandArgs);

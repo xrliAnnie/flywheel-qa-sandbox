@@ -291,6 +291,7 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 			startPoint: "abc123", // matches the mock gitChecker baseline (takeover guard)
 		});
 		expect(prompt).toContain("DAG workflow keep-alive (implement phase)");
+		expect(prompt).toContain("/tmp/flywheel-snapshots/<exec>/");
 		for (const banned of BANNED_IN_CODEX_PROMPT) {
 			expect(prompt).not.toContain(banned);
 		}
@@ -328,6 +329,7 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 			startPoint: "abc123",
 		});
 		expect(prompt).toContain("QA phase of a DAG workflow");
+		expect(prompt).toContain("/tmp/flywheel-snapshots/<exec>/");
 		for (const banned of BANNED_IN_CODEX_PROMPT) {
 			expect(prompt).not.toContain(banned);
 		}
@@ -430,6 +432,22 @@ describe("FLY-2222 — inbox pending verdict hygiene", () => {
 			"Pending runner mailbox items may include answers to outstanding questions.",
 		);
 	});
+});
+
+describe("FLY-2351 — production database snapshot discipline", () => {
+	it.each(["claude", "codex"] as const)(
+		"injects the managed-copy boundary into the %s implementation prompt",
+		async (vendor) => {
+			const prompt =
+				vendor === "codex" ? await buildCodexPrompt() : await buildPrompt({});
+			expect(prompt).toContain("/tmp/flywheel-snapshots/<exec>/");
+			expect(prompt).toContain("never `cp` live `teamlead.db` or `comm.db`");
+			expect(prompt).toContain("2GB hard limit");
+			expect(prompt).toContain(
+				"close database handles before terminal completion",
+			);
+		},
+	);
 });
 
 describe("FLY-1188 M2 — claude prompt byte-snapshot (drift guard)", () => {

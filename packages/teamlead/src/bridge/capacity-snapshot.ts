@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
+	DATA_VOLUME_PATH,
+	GB_BYTES,
+	readDataDisk as readSharedDataDisk,
+} from "flywheel-comm/snapshot-storage";
+import {
 	defaultStorePath,
 	readStoreStrict,
 } from "../account-heal/account-store.js";
@@ -55,6 +60,13 @@ function canonicalCapacityWatermark(value: string): string {
 export interface CapacitySnapshot {
 	schemaVersion: 1;
 	generatedAt: string;
+	disk_avail_gb: number | null;
+	disk: {
+		volume: typeof DATA_VOLUME_PATH;
+		availBytes: number | null;
+		observedAt: string | null;
+		unavailable?: CapacityUnavailable;
+	};
 	memory: {
 		source: "memory_pressure";
 		freePct: number | null;
@@ -133,6 +145,7 @@ export interface CapacitySnapshotDeps {
 	>;
 	admission?: Pick<RunnerAdmissionController, "probe">;
 	readMemoryFreePct: () => Promise<MemoryFreePctReading>;
+	readDataDisk?: typeof readSharedDataDisk;
 	accountStorePath?: string;
 	quotaConfigPath?: string;
 	now?: () => number;
@@ -212,6 +225,48 @@ export async function buildCapacitySnapshot(
 ): Promise<CapacitySnapshot> {
 	const nowMs = (deps.now ?? Date.now)();
 	const observedAt = new Date(nowMs).toISOString();
+	let disk: CapacitySnapshot["disk"];
+	let diskAvailGb: number | null;
+	try {
+		const reading = (deps.readDataDisk ?? readSharedDataDisk)();
+		if (
+			reading.disk.volume !== DATA_VOLUME_PATH ||
+			(reading.disk.availBytes === null
+				? reading.disk_avail_gb !== null ||
+					reading.disk.observedAt !== null ||
+					!Array.isArray(reading.disk.unavailable) ||
+					reading.disk.unavailable.length === 0 ||
+					!reading.disk.unavailable.every(isCapacityUnavailableToken)
+				: !Number.isSafeInteger(reading.disk.availBytes) ||
+					reading.disk.availBytes < 0 ||
+					validInstant(reading.disk.observedAt) === null ||
+					reading.disk_avail_gb !== reading.disk.availBytes / GB_BYTES)
+		) {
+			throw new Error("invalid Data volume reading");
+		}
+		disk =
+			reading.disk.availBytes === null
+				? {
+						volume: DATA_VOLUME_PATH,
+						availBytes: null,
+						observedAt: null,
+						unavailable: reading.disk.unavailable,
+					}
+				: {
+						volume: DATA_VOLUME_PATH,
+						availBytes: reading.disk.availBytes,
+						observedAt: reading.disk.observedAt,
+					};
+		diskAvailGb = reading.disk_avail_gb;
+	} catch {
+		diskAvailGb = null;
+		disk = {
+			volume: DATA_VOLUME_PATH,
+			availBytes: null,
+			observedAt: null,
+			unavailable: ["transient: data_volume_unreadable"],
+		};
+	}
 	let memoryReading: {
 		freePct: number | null;
 		observedAt: string | null;
@@ -374,6 +429,8 @@ export async function buildCapacitySnapshot(
 	return {
 		schemaVersion: CAPACITY_SNAPSHOT_SCHEMA_VERSION,
 		generatedAt: observedAt,
+		disk_avail_gb: diskAvailGb,
+		disk,
 		memory: {
 			source: "memory_pressure",
 			freePct: memoryReading.freePct,

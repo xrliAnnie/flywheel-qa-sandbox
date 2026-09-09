@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
 	symlinkSync,
+	truncateSync,
 	unlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +16,12 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { parseFly2006Args } from "../../../../scripts/fly-1998-database-retention-sweep.mjs";
-import { buildIsolatedRehearsalAudit } from "../../../../scripts/fly-2006-retention-rehearsal.mjs";
+import {
+	buildIsolatedRehearsalAudit,
+	executeFly2006Rehearsal,
+	executeManagedFly2006Rehearsal,
+} from "../../../../scripts/fly-2006-retention-rehearsal.mjs";
+import { withManagedSnapshots } from "../../../../scripts/flywheel-snapshot-control.mjs";
 import {
 	assertFrozenCohort,
 	buildActiveSnapshot,
@@ -49,6 +57,10 @@ import {
 import { MailboxQueue } from "../../../flywheel-comm/src/mailbox-queue.js";
 import { MAILBOX_SCHEMA } from "../../../flywheel-comm/src/mailbox-schema.js";
 import { encodeSenderRef } from "../../../flywheel-comm/src/sender-ref.js";
+import {
+	withManagedSnapshotBudget,
+	withOperatorSnapshots,
+} from "../../../flywheel-comm/src/snapshot-storage.js";
 import { CMUX_LIVE_SESSION_STATUSES } from "../operational-terminal-status.js";
 import { StateStore } from "../StateStore.js";
 
@@ -76,6 +88,235 @@ const TEAMLEAD_PRODUCTION_TABLES = JSON.parse(
 ) as string[];
 
 describe("FLY-2006 retention registry", () => {
+	it.each([false, true])(
+		"releases each managed rehearsal before the next acquisition (oversize=%s)",
+		async (oversize) => {
+			const root = mkdtempSync(join(tmpdir(), "fly2351-managed-rehearsal-"));
+			const teamleadDbPath = join(root, "teamlead.db");
+			const commDbPath = join(root, "comm.db");
+			const managedRoot = join(root, "managed");
+			mkdirSync(managedRoot, { mode: 0o700 });
+			try {
+				for (const path of [teamleadDbPath, commDbPath]) {
+					const db = new Database(path);
+					db.exec(
+						"CREATE TABLE sessions(execution_id TEXT, issue_id TEXT, status TEXT); CREATE TABLE bloat(payload BLOB); INSERT INTO bloat VALUES(zeroblob(1048576)); DROP TABLE bloat;",
+					);
+					db.close();
+				}
+				if (oversize) truncateSync(teamleadDbPath, 2_000_000_000);
+				const sizes = [teamleadDbPath, commDbPath].map(
+					(path) => statSync(path).size,
+				);
+				const acquired: string[] = [];
+				const budgetReservations: number[] = [];
+				const result = await executeManagedFly2006Rehearsal(
+					{
+						teamleadDbPath,
+						commDbPath,
+						rehearsalDir: join(root, "report"),
+						allowFixtureSchema: true,
+					},
+					{
+						withManagedSnapshots: (
+							input: Parameters<typeof withManagedSnapshots>[0],
+							use: Parameters<typeof withManagedSnapshots>[1],
+						) => {
+							expect(readdirSync(managedRoot)).toEqual([]);
+							expect(input.sources).toHaveLength(1);
+							acquired.push(input.sources[0].name);
+							return withManagedSnapshots({ ...input, env: {} }, use, {
+								withOperatorSnapshots: (
+									owner: Parameters<typeof withOperatorSnapshots>[0],
+									callback: Parameters<typeof withOperatorSnapshots>[1],
+								) =>
+									withOperatorSnapshots(owner, callback, {
+										stateRoot: root,
+										managedRoot,
+										processStartIdentity: () => "fixture-process",
+										readDataDisk: () => ({
+											disk_avail_gb: 100,
+											disk: {
+												volume: "/System/Volumes/Data",
+												availBytes: 100_000_000_000,
+												observedAt: new Date().toISOString(),
+											},
+										}),
+									}),
+								withManagedSnapshotBudget: (
+									budget: Parameters<typeof withManagedSnapshotBudget>[0],
+									operation: () => unknown,
+								) => {
+									budgetReservations.push(budget.additionalBytes);
+									return withManagedSnapshotBudget(budget, operation, {
+										stateRoot: root,
+										managedRoot,
+									});
+								},
+							});
+						},
+					},
+				);
+				expect(acquired).toEqual(["teamlead", "comm"]);
+				expect(readdirSync(managedRoot)).toEqual([]);
+				expect(
+					[teamleadDbPath, commDbPath].map((path) => statSync(path).size),
+				).toEqual(sizes);
+				expect(result.status).toBe(oversize ? "partial" : "complete");
+				expect(result.databases.comm.status).toBe("complete");
+				expect(result.vacuumDurationsMs.comm).toBeGreaterThan(0);
+				if (!oversize)
+					expect(result.vacuumDurationsMs.teamlead).toBeGreaterThan(0);
+				expect(result.findings).toEqual(
+					oversize
+						? [
+								{
+									database: "teamlead",
+									reason: "managed_snapshot_budget_exceeded",
+								},
+							]
+						: [],
+				);
+				expect(budgetReservations.length).toBeGreaterThan(0);
+				expect(
+					JSON.parse(readFileSync(result.summaryPath, "utf8")).status,
+				).toBe(result.status);
+				expect(readdirSync(join(root, "report"))).toEqual([
+					"rehearsal-summary.json",
+					"rehearsal-summary.json.sha256",
+				]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+	it.each(["teamlead", "comm"])(
+		"rehearses only %s while preserving the other database as live guard context",
+		async (database) => {
+			const root = mkdtempSync(join(tmpdir(), "fly2351-single-rehearsal-"));
+			const teamleadDbPath = join(root, "teamlead.db");
+			const commDbPath = join(root, "comm.db");
+			try {
+				const teamlead = new Database(teamleadDbPath);
+				teamlead.exec(`CREATE TABLE sessions(execution_id TEXT, issue_id TEXT, status TEXT);
+				INSERT INTO sessions VALUES('team-live','FLY-1','running');
+				CREATE TABLE alert_mailbox_ledger(correlation_key TEXT PRIMARY KEY, resolved_at TEXT, execution_id TEXT);
+				INSERT INTO alert_mailbox_ledger VALUES('delete','2020-01-01',NULL),('keep','2020-01-01','comm-live');`);
+				teamlead.close();
+				const comm = new Database(commDbPath);
+				comm.exec(`CREATE TABLE sessions(execution_id TEXT, issue_id TEXT, status TEXT);
+				INSERT INTO sessions VALUES('comm-live','FLY-2','running');
+				CREATE TABLE runner_shutdown_controls(execution_id TEXT PRIMARY KEY, state TEXT, finished_at INTEGER);
+				INSERT INTO runner_shutdown_controls VALUES('delete','acked',1),('team-live','acked',1);`);
+				comm.close();
+				const contextPath =
+					database === "teamlead" ? commDbPath : teamleadDbPath;
+				const before = sha256File(contextPath);
+				const inventory = await executeFly2006Inventory({
+					teamleadDbPath,
+					commDbPath,
+					evidenceDir: join(root, "evidence"),
+					allowFixturePaths: true,
+					allowFixtureSchema: true,
+					rehearsalDatabase: database,
+				});
+				expect(
+					Object.values(inventory.manifest.targets).map(
+						(target: any) => target.database,
+					),
+				).toEqual([database]);
+				const target: any = Object.values(inventory.manifest.targets)[0];
+				expect(target.candidateCount).toBe(1);
+				const applied = await executeFly2006Apply({
+					manifestPath: inventory.manifestPath,
+					allowFixturePaths: true,
+					founderGateAudit: buildIsolatedRehearsalAudit(),
+				});
+				expect(Object.values(applied.deleted)).toEqual([1]);
+				expect(sha256File(contextPath)).toBe(before);
+				await expect(
+					executeFly2006Vacuum({
+						manifestPath: inventory.manifestPath,
+						allowFixturePaths: true,
+						database: database === "teamlead" ? "comm" : "teamlead",
+					}),
+				).rejects.toThrow("rehearsal_database_invalid");
+				await expect(
+					executeFly2006Apply({
+						manifestPath: inventory.manifestPath,
+						allowFixturePaths: true,
+						founderGateAudit: FOUNDER_DISCORD_AUDIT,
+					}),
+				).rejects.toThrow("rehearsal_database_invalid");
+				const forged = join(root, "forged.json");
+				writeSealedJson(forged, {
+					...inventory.manifest,
+					targets: {
+						crossDatabase: {
+							...target,
+							database: database === "teamlead" ? "comm" : "teamlead",
+						},
+					},
+				});
+				await expect(
+					executeFly2006Apply({
+						manifestPath: forged,
+						allowFixturePaths: true,
+						founderGateAudit: buildIsolatedRehearsalAudit(),
+					}),
+				).rejects.toThrow("rehearsal_database_invalid");
+				const selected = new Database(
+					database === "teamlead" ? teamleadDbPath : commDbPath,
+					{ readonly: true },
+				);
+				expect(
+					selected.prepare(`SELECT count(*) n FROM ${target.table}`).get(),
+				).toEqual({ n: 1 });
+				selected.close();
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+	it("executes the rehearsal through inventory, apply and both vacuums on synthetic databases", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2006-rehearsal-"));
+		const teamleadDbPath = join(root, "teamlead.db");
+		const commDbPath = join(root, "comm.db");
+		try {
+			const store = await StateStore.create(teamleadDbPath);
+			store.close();
+			new MailboxQueue(commDbPath).close();
+			for (const path of [teamleadDbPath, commDbPath]) {
+				const db = new Database(path);
+				try {
+					db.exec(
+						"CREATE TABLE rehearsal_bloat(payload BLOB); INSERT INTO rehearsal_bloat VALUES(zeroblob(1048576)); DROP TABLE rehearsal_bloat;",
+					);
+				} finally {
+					db.close();
+				}
+			}
+			const result = await executeFly2006Rehearsal({
+				teamleadDbPath,
+				commDbPath,
+				rehearsalDir: join(root, "rehearsal"),
+				allowFixtureSchema: true,
+				withBudget: async (_bytes: number, use: () => unknown) => use(),
+			});
+			expect(result.status).toBe("complete");
+			for (const database of ["teamlead", "comm"]) {
+				expect(result.snapshots[database].quickCheck).toBe("ok");
+				expect(result.vacuumBytes[database].after).toBeLessThan(
+					result.vacuumBytes[database].before,
+				);
+			}
+			expect(JSON.parse(readFileSync(result.summaryPath, "utf8")).status).toBe(
+				"complete",
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 	it("classifies the current production schemas created for both live database families", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2006-live-schema-"));
 		const teamleadPath = join(root, "teamlead.db");

@@ -166,6 +166,11 @@
 			"disposition": "one_shot_cli"
 		},
 		{
+			"file": "packages/flywheel-comm/src/snapshot-storage.ts",
+			"sync_child": 1,
+			"disposition": "bridge_bounded_identity_probe"
+		},
+		{
 			"file": "packages/flywheel-comm/src/summary-delivery.ts",
 			"sync_child": 1,
 			"disposition": "one_shot_cli"

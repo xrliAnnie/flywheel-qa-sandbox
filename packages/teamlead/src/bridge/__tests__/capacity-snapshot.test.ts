@@ -70,6 +70,14 @@ describe("buildCapacitySnapshot", () => {
 
 		const snapshot = await buildCapacitySnapshot({
 			now: () => now,
+			readDataDisk: () => ({
+				disk_avail_gb: 20,
+				disk: {
+					volume: "/System/Volumes/Data",
+					availBytes: 20_000_000_000,
+					observedAt: "2026-09-03T03:59:58.000Z",
+				},
+			}),
 			accountStorePath,
 			quotaConfigPath: join(tmpdir(), "fly2144-missing-quota-config.json"),
 			readMemoryFreePct: vi.fn(async () => ({
@@ -104,6 +112,12 @@ describe("buildCapacitySnapshot", () => {
 		expect(snapshot).toEqual({
 			schemaVersion: 1,
 			generatedAt: "2026-09-03T04:00:00.000Z",
+			disk_avail_gb: 20,
+			disk: {
+				volume: "/System/Volumes/Data",
+				availBytes: 20_000_000_000,
+				observedAt: "2026-09-03T03:59:58.000Z",
+			},
 			memory: {
 				source: "memory_pressure",
 				freePct: 14,
@@ -225,6 +239,35 @@ describe("buildCapacitySnapshot", () => {
 			unavailable: ["transient: memory_pressure_timeout"],
 		});
 		expect(snapshot.load.load1).toBe(4);
+		expect(snapshot.runners.total).toBe(0);
+	});
+
+	it("isolates an unavailable Data-volume reading without hiding other facts", async () => {
+		const snapshot = await buildCapacitySnapshot({
+			now: () => Date.parse("2026-09-03T04:10:00.000Z"),
+			accountStorePath: missingAccountStorePath(),
+			readDataDisk: () => {
+				throw new Error("disk sensor down");
+			},
+			readMemoryFreePct: async () => ({
+				freePct: 44,
+				observedAt: "2026-09-03T04:10:00.000Z",
+			}),
+			store: {
+				getActiveSessions: () => [],
+				getFleetPressureHold: () => undefined,
+				getAdmissionPause: () => undefined,
+			},
+		});
+
+		expect(snapshot.disk_avail_gb).toBeNull();
+		expect(snapshot.disk).toEqual({
+			volume: "/System/Volumes/Data",
+			availBytes: null,
+			observedAt: null,
+			unavailable: ["transient: data_volume_unreadable"],
+		});
+		expect(snapshot.memory.freePct).toBe(44);
 		expect(snapshot.runners.total).toBe(0);
 	});
 

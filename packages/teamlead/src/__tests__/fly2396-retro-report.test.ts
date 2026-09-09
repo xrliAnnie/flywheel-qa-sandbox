@@ -1,12 +1,14 @@
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
+import { withOperatorSnapshots } from "flywheel-comm/snapshot-storage";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	normalizeLegacyCutoff,
 	runFly2396RetroReport,
 } from "../../../../scripts/fly2396-retro-report.mjs";
+import { withManagedSnapshots } from "../../../../scripts/flywheel-snapshot-control.mjs";
 
 const roots: string[] = [];
 const connections: Database.Database[] = [];
@@ -168,6 +170,38 @@ function createReportFixture(
 	return { db, path };
 }
 
+function runManagedReport(options: {
+	db: string;
+	preDeployCutoff?: string;
+	expectedForeignKeyBaseline: string[];
+}) {
+	return withManagedSnapshots(
+		{
+			label: "fly2396-retro-report-test",
+			env: {},
+			sources: [{ name: "teamlead", source: options.db, kind: "teamlead" }],
+		},
+		({ paths }) =>
+			runFly2396RetroReport({ ...options, snapshot: paths.teamlead }),
+		{
+			withOperatorSnapshots: (input, use) =>
+				withOperatorSnapshots(input, use, {
+					stateRoot: join(dirname(options.db), "state"),
+					managedRoot: join(dirname(options.db), "snapshots"),
+					processStartIdentity: () => "fly2396-test-process",
+					readDataDisk: () => ({
+						disk_avail_gb: 1_000,
+						disk: {
+							volume: "/System/Volumes/Data",
+							availBytes: 1_000_000_000_000,
+							observedAt: new Date().toISOString(),
+						},
+					}),
+				}),
+		},
+	);
+}
+
 describe("FLY-2396 retro report cutoff", () => {
 	it.each([
 		"0",
@@ -194,7 +228,7 @@ describe("FLY-2396 retro report cutoff", () => {
 		const { path } = createReportFixture();
 		expect(existsSync(`${path}-wal`)).toBe(true);
 		expect(statSync(`${path}-wal`).size).toBeGreaterThan(0);
-		const output = await runFly2396RetroReport({
+		const output = await runManagedReport({
 			db: path,
 			preDeployCutoff: "2026-09-06T20:00:00.000Z",
 			expectedForeignKeyBaseline: [],
@@ -221,20 +255,20 @@ describe("FLY-2396 retro report cutoff", () => {
 	it("refuses a pre-deploy schema without an explicit cutoff", async () => {
 		const { path } = createReportFixture();
 		await expect(
-			runFly2396RetroReport({ db: path, expectedForeignKeyBaseline: [] }),
+			runManagedReport({ db: path, expectedForeignKeyBaseline: [] }),
 		).rejects.toThrow("pre-deploy schema requires --pre-deploy-cutoff");
 	});
 
 	it("uses the migration receipt after deployment and forbids a cutoff stub", async () => {
 		const { path } = createReportFixture({ deployed: true });
 		await expect(
-			runFly2396RetroReport({
+			runManagedReport({
 				db: path,
 				preDeployCutoff: "2026-09-06T20:00:00.000Z",
 				expectedForeignKeyBaseline: [],
 			}),
 		).rejects.toThrow("pre-deploy cutoff is forbidden after deployment");
-		const output = await runFly2396RetroReport({
+		const output = await runManagedReport({
 			db: path,
 			expectedForeignKeyBaseline: [],
 		});
@@ -265,7 +299,7 @@ describe("FLY-2396 retro report cutoff", () => {
 	it("fails closed when the snapshot has a foreign-key violation", async () => {
 		const { path } = createReportFixture({ foreignKeyViolation: true });
 		await expect(
-			runFly2396RetroReport({
+			runManagedReport({
 				db: path,
 				preDeployCutoff: "2026-09-06T20:00:00.000Z",
 				expectedForeignKeyBaseline: [],

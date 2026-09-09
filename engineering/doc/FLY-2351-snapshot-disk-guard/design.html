@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLY-2351 · 给数据库副本一个退出时间</title>
+<style>
+:root{color-scheme:light;font-family:-apple-system,system-ui,sans-serif;color:#1d1d1f;background:#f5f5f7;line-height:1.65}*{box-sizing:border-box}body{margin:0}main{max-width:960px;margin:auto;padding:44px 24px 64px}h1{font-size:clamp(30px,5vw,44px);line-height:1.2;letter-spacing:-.035em;margin:12px 0 18px}h2{font-size:25px;line-height:1.3;margin:0 0 16px}h3{font-size:18px;margin:0 0 8px}p{margin:10px 0 16px}.eyebrow{font-size:12px;font-weight:700;letter-spacing:.12em;color:#1a365d}.lede{font-size:21px;line-height:1.65}.card{margin:22px 0;padding:28px;background:#fff;border-radius:12px;border-left:4px solid #007aff;box-shadow:0 1px 3px rgba(0,0,0,.06)}.card.warn{border-left-color:#ff9500}.card.gray{border-left-color:#86868b}.tag{display:inline-block;background:#eef5ff;color:#0056b3;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600}.muted{color:#626269;font-size:14px}.statline{display:flex;gap:25px;flex-wrap:wrap;margin:22px 0}.statline div{flex:1;min-width:125px}.statline strong{font-size:30px;font-weight:650;display:block;color:#1a365d}.statline span{font-size:14px}.comment{display:block;border-top:1px solid #e8e8ed;padding-top:16px;margin-top:24px;font-size:13px;color:#626269}.comment textarea{display:block;width:100%;min-height:70px;margin-top:8px;padding:12px;border:1px solid #d2d2d7;border-radius:8px;background:#fbfbfd;font:inherit;color:#1d1d1f;resize:vertical}.comment textarea:focus{outline:2px solid #007aff;outline-offset:2px}table{border-collapse:collapse;width:100%;font-size:15px}th,td{padding:13px 10px;border-bottom:1px solid #e8e8ed;text-align:left;vertical-align:top}th{color:#1a365d;font-weight:600}code{font-family:'SF Mono',monospace;font-size:.86em;overflow-wrap:anywhere}a{color:#0066cc;text-decoration:none}a:hover{text-decoration:underline}.tablewrap{overflow-x:auto}.pending{padding:25px;border:1px dashed #e6ae62;border-radius:8px;background:#fff9ef;margin:18px 0}.pending strong{display:block;color:#825015;font-size:14px;letter-spacing:.04em}.pending p{font-size:15px;margin-bottom:0}details{margin:14px 0}summary{cursor:pointer;color:#0066cc;font-size:14px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f7;padding:16px;border-radius:8px;font-size:12px}button{border:0;border-radius:8px;padding:11px 16px;font:inherit;font-size:14px;background:#007aff;color:#fff;cursor:pointer}button:disabled{opacity:.45;cursor:default}button.secondary{background:#edf4ff;color:#0066cc}button:focus-visible{outline:2px solid #1d1d1f;outline-offset:3px}.chunk{border-top:1px solid #e8e8ed;margin-top:18px;padding-top:16px}.chunk pre{font-family:inherit;font-size:14px;max-height:300px;overflow:auto}.actions{display:flex;gap:14px;align-items:center;flex-wrap:wrap}ul{padding-left:22px}li{margin:8px 0}.checks{font-size:15px}footer{font-size:12px;color:#86868b;text-align:center;margin-top:30px}@media(max-width:600px){main{padding:25px 14px 40px}.card{padding:20px 16px}h2{font-size:22px}.lede{font-size:18px}th,td{padding:10px 7px;font-size:14px}.statline{gap:12px}.statline strong{font-size:25px}}@media print{body{background:white}.card{box-shadow:none;break-inside:avoid}.comment,#feedback,button{display:none}main{padding:0}.pending{border-style:solid}}
+</style>
+</head>
+<body><main>
+<section class="card" data-section="一句话方案">
+<div class="eyebrow">FLY-2351 · 工程设计 · 2026-09-08</div>
+<h1>给数据库副本<br>一个退出时间</h1>
+<span class="tag">设计交付 · 尚未实施</span>
+<p class="lede">修复备份按规则留存，验证副本在节点结束时回收；新副本写入前先检查 Data 卷的真实余量。</p>
+<p class="muted">Data 卷是 macOS 实际存放用户文件的数据分区。9 月 5 日，它被累积副本挤满，导致 Bridge（负责调度任务的服务）和会话工具无法继续写文件。</p>
+<div class="statline"><div><strong>24 小时</strong><span>近期修复快照全部保留</span></div><div><strong>2 GB</strong><span>每个执行目录的受管预算</span></div><div><strong>20 GB</strong><span>Data 余量告警线</span></div></div>
+<label class="comment">这一节的意见<textarea data-comment="summary" placeholder="输入即保存在本机浏览器"></textarea></label>
+</section>
+
+<section class="card" data-section="核心流程">
+<div class="eyebrow">01 · 从生成到回收</div><h2>写之前检查，用之后释放</h2>
+<div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地渲染连续两次被系统沙箱阻止启动浏览器。Mermaid 源文件（描述节点和连接关系的图稿）已随设计保存；这里保留真实失败状态。</p></div>
+<p>每次生成副本，先要求 Data 可用空间至少是该文件大小的五倍。余量不足或读不到数据时，停止生成并发出告警。</p>
+<p>修复用的恢复点进入保留流程；实现和测试使用的副本先检查执行目录总量，完成后回收。超出 2 GB 时，先释放不用的副本，或改用小型测试数据。</p>
+<details><summary>查看核心流程图稿</summary><pre>flowchart TB
+  A[需要数据库副本] --&gt; B{Data 余量至少为副本的五倍?}
+  B --&gt;|不足或未知| C[拒绝并告警]
+  B --&gt;|充足| D{副本用途}
+  D --&gt;|修复| E[保留近期与每组最新]
+  E --&gt; F[每小时清理其它旧副本]
+  D --&gt;|验证| G[执行目录总量不得超过 2 GB]
+  G --&gt; H[节点完成被接受后回收]</pre></details>
+<label class="comment">这一节的意见<textarea data-comment="flow" placeholder="流程中需要调整的地方"></textarea></label>
+</section>
+
+<section class="card" data-section="修复快照保留规则">
+<div class="eyebrow">02 · 哪些留下</div><h2>满足任意一条，就保留</h2>
+<p>快照是一份可用于恢复的数据库副本。分组按“issue（任务编号）＋数据库类型＋所属项目”，不按修复动作或请求编号拆成越来越多组。</p>
+<div class="tablewrap"><table><thead><tr><th>文件情况</th><th>处理</th><th>原因</th></tr></thead><tbody>
+<tr><td>创建于最近 24 小时内</td><td>保留</td><td>留下近期修复轨迹</td></tr>
+<tr><td>超过 24 小时，但仍是该组最新</td><td>保留</td><td>保住最后一个恢复点</td></tr>
+<tr><td>超过 24 小时，且已有更新的完整快照</td><td>自动删除</td><td>释放累积空间</td></tr>
+<tr><td>历史名称含糊、文件仍在写入或身份变化</td><td>保留并列入待处理项</td><td>不能靠猜测删除</td></tr>
+</tbody></table></div>
+<p class="muted">删除前会留下 dry-run 记录，即“如果执行，将删除哪些文件以及原因”的预演清单。实际删除后再记录结果和释放字节数。已有归档备份保留其独立恢复规则。</p>
+<label class="comment">这一节的意见<textarea data-comment="retention" placeholder="对保留时长或分组的意见"></textarea></label>
+</section>
+
+<section class="card" data-section="副本归属与回收">
+<div class="eyebrow">03 · 数据结构</div><h2>每个副本都知道自己属于谁</h2>
+<div class="tablewrap"><table><thead><tr><th>类别</th><th>保存位置</th><th>归属依据</th></tr></thead><tbody>
+<tr><td>修复恢复点</td><td><code>patrol-repairs/</code></td><td>任务编号、数据库类型、项目、创建时间</td></tr>
+<tr><td>实现／测试副本</td><td><code>/tmp/flywheel-snapshots/&lt;exec&gt;/</code></td><td>执行编号、节点、本次尝试、本次激活</td></tr>
+<tr><td>人工分析副本</td><td>同一受管根下的独立分析目录</td><td>本次分析编号、启动者、分析进程；不冒充 runner</td></tr>
+<tr><td>小型验证证据</td><td>任务文档／测试证据目录</td><td>结果、计数、校验摘要；在副本回收后继续保留</td></tr>
+</tbody></table></div>
+<p>runner 是自动执行工作的进程，<code>exec</code> 是一次执行的唯一编号。节点是设计、实现或测试等工作单元；同一执行进程可能多次接手同一节点，因此删除前还要核对是哪次尝试。</p>
+<div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>归属核对图也已按标准参数重试一次，仍被本地沙箱阻止。图稿 <code>ownership.mmd</code> 随设计保存。</p></div>
+<p>系统接受当前节点的完成凭据后，closeout（结束时的收尾程序）回收这次副本。只是在等待、仅报告“完成”但未被接受、或已进入新尝试时，都不能触发旧回调删除新文件。</p>
+<p class="muted">删除失败由既有维护周期重试。关闭进程和任务取消时，也会按当前身份与退出证据补清理；不凭文件年龄推断进程已死。</p>
+<p class="muted">人工分析脚本保留原来的启动方式，在自己的进程内登记临时身份，结束时立即回收。异常退出后的遗留仅在确认该进程已消失后回收；与共享工作目录的写入权限分开判断。</p>
+<label class="comment">这一节的意见<textarea data-comment="ownership" placeholder="回收时机和证据是否清楚"></textarea></label>
+</section>
+
+<section class="card" data-section="磁盘告警与读数">
+<div class="eyebrow">04 · 提前看见风险</div><h2>巡检和容量接口读同一块盘</h2>
+<p><code>disk_avail_gb</code> 表示 Data 卷可用空间。巡检 STEP 5 和 <code>/api/capacity</code>（供程序读取机器容量的接口）使用同一计算方法；接口同时提供原始字节，判断用字节，显示才四舍五入。</p>
+<div class="tablewrap"><table><thead><tr><th>状态</th><th>结果</th></tr></thead><tbody>
+<tr><td>可用空间低于 20 GB</td><td>FINDING：记录需要处置的问题并通知 Lead</td></tr>
+<tr><td>恰好 20 GB 或更多</td><td>不触发低盘量问题；每次复制仍要过五倍检查</td></tr>
+<tr><td>读不到数据卷</td><td>UNAVAILABLE：明确“无法测量”，不能当作健康</td></tr>
+</tbody></table></div>
+<p>人工检查命令：<code>df -h /System/Volumes/Data</code>。macOS 的根目录 <code>/</code> 是受保护的系统卷，不能代替用户数据写入面的测量。</p>
+<p class="muted">本设计中 1 GB = 10 亿字节。即使显示舍入为 20.00 GB，原始值低于门槛仍必须报问题。</p>
+<label class="comment">这一节的意见<textarea data-comment="capacity" placeholder="对阈值或告警方式的意见"></textarea></label>
+</section>
+
+<section class="card gray" data-section="取舍与未选方案">
+<div class="eyebrow">05 · 控制改动大小</div><h2>复用维护周期和现有备份能力</h2>
+<div class="tablewrap"><table><thead><tr><th>选择</th><th>理由</th></tr></thead><tbody>
+<tr><td>小型共用工具＋现有维护周期</td><td>写入、容量和删除遵守同一规则；不用新建后台服务</td></tr>
+<tr><td>放弃只提醒人工删除</td><td>无法阻止同类累积再次发生</td></tr>
+<tr><td>放弃全盘通用清理器</td><td>扩大误删范围；当前只需要管理两类副本</td></tr>
+<tr><td>暂不引入磁盘镜像与系统配额</td><td>需要额外挂载、权限和恢复流程；本次采用受管写入预算</td></tr>
+</tbody></table></div>
+<label class="comment">这一节的意见<textarea data-comment="tradeoffs" placeholder="需要改变的取舍"></textarea></label>
+</section>
+
+<section class="card warn" data-section="边界与验收">
+<div class="eyebrow">06 · 明确承诺范围</div><h2>防止已知累积，保留真实边界</h2>
+<ul><li><strong>2 GB 约束受管副本获取与衍生生成。</strong>它不是操作系统对任意命令的强制配额；绕过工具的写入属于违规，需要被巡检发现。Lead 已确认这个边界。</li>
+<li><strong>每组最新一份会长期保留。</strong>随着任务增加，总量仍可能增加，因此不承诺全盘永不满。</li>
+<li><strong>旧文件先核对归属。</strong>本次只读清点看到 15 份旧修复库、约 12.1 GB；名称含糊的不能猜着删。旧 <code>/tmp</code> 遗留同样逐项确认。</li>
+<li><strong>删除无法靠回滚代码复原。</strong>上线前要核对预演清单；回滚不会重新生成已删除的历史副本。</li></ul>
+<p class="checks">实施验收需要真实证明：并发创建不会超预算；低盘与未知读数拒绝写入；节点完成后目录释放；旧回调不删新尝试；读取或删除失败可以重试；接口、提示词和巡检最终状态一致。</p>
+<p class="checks">低盘事故中先清点、回收已允许删除的副本；仍不足五倍时，先处理存储容量再修库，不降低门槛或跳过恢复点。失败回收通常在现有约五分钟维护周期重试，不承诺一分钟内完成。</p>
+<p class="muted">当前交付是设计。功能测试和生产上线由后续节点完成，合入代码与部署仍是两步。</p>
+<label class="comment">这一节的意见<textarea data-comment="boundaries" placeholder="哪些边界需要进一步收紧"></textarea></label>
+</section>
+
+<section class="card gray" data-section="依据与来源">
+<div class="eyebrow">07 · 可核对依据</div><h2>方案来自当前代码和平台合同</h2>
+<p>代码审计基线 <code>ee113cab9</code>；详细调用方、边界测试和实施分块保存在同一任务的 exploration、research 与 plan 文档中。</p>
+<p class="muted"><a href="https://www.sqlite.org/backup.html" rel="noreferrer">SQLite 官方在线备份说明</a> · <a href="https://nodejs.org/api/fs.html#statfsbavail" rel="noreferrer">Node 可用空间计算</a> · <a href="https://support.apple.com/en-euro/guide/security/seca6147599e/web" rel="noreferrer">Apple 系统卷与数据卷说明</a></p>
+<label class="comment">这一节的意见<textarea data-comment="sources" placeholder="需要补充的证据"></textarea></label>
+</section>
+
+<section class="card" id="feedback" data-section="整体意见">
+<div class="eyebrow">页面意见汇总</div><h2>把意见带回任务讨论</h2>
+<p>每节意见只保存在当前浏览器。汇总会自动更新；超过约 1800 字符时会分段，每段都带任务标记。意见汇总用于修订设计，不代表批准。</p>
+<label class="comment">补充整体意见<textarea data-comment="overall" placeholder="还有什么需要改动"></textarea></label>
+<p id="save-status" class="muted" role="status">输入即保存；也可随时复制带走。</p>
+<div class="actions"><button id="copy-all" type="button" disabled>复制全部意见</button><span id="copy-status" class="muted" role="status"></span></div>
+<div id="comment-chunks" aria-live="polite"><p class="muted">还没有意见。在任意一节输入后，这里会自动汇总。</p></div>
+</section>
+<footer>FLY-2351 · 快照保留与磁盘护栏 · 设计节点交付</footer>
+</main>
+<script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2351';
+  const prefix = 'flywheel-comments:' + location.pathname + ':FLY-2351:';
+  const fields = Array.from(document.querySelectorAll('textarea[data-comment]'));
+  const output = document.getElementById('comment-chunks');
+  const copyAll = document.getElementById('copy-all');
+  const status = document.getElementById('copy-status');
+  const saved = document.getElementById('save-status');
+  let chunks = [];
+  async function copy(text) {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const active = document.activeElement;
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('aria-label', '待复制意见');
+      area.style.position = 'fixed';
+      area.style.top = '0';
+      area.style.left = '-10000px';
+      document.body.appendChild(area);
+      area.focus(); area.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } finally { area.remove(); if (active && active.focus) active.focus(); }
+      if (!ok) throw new Error('copy failed');
+    }
+  }
+  async function copyWithStatus(text) {
+    try { await copy(text); status.textContent = '已复制，可粘贴到任务讨论。'; }
+    catch { status.textContent = '自动复制失败，请选中下方文字手动复制。'; }
+  }
+  function update() {
+    chunks = [];
+    let current = marker;
+    for (const field of fields) {
+      const text = field.value.trim();
+      if (!text) continue;
+      const label = '\n\n【' + field.closest('[data-section]').dataset.section + '】\n';
+      let remaining = Array.from(text);
+      while (remaining.length) {
+        const room = 1800 - Array.from(current).length - Array.from(label).length;
+        if (room < 1) { chunks.push(current); current = marker; continue; }
+        current += label + remaining.slice(0, room).join('');
+        remaining = remaining.slice(room);
+        if (remaining.length) { chunks.push(current); current = marker; }
+      }
+    }
+    if (current !== marker) chunks.push(current);
+    output.replaceChildren();
+    copyAll.disabled = chunks.length === 0;
+    if (!chunks.length) {
+      const empty = document.createElement('p'); empty.className = 'muted';
+      empty.textContent = '还没有意见。在任意一节输入后，这里会自动汇总。'; output.appendChild(empty);
+    }
+    chunks.forEach((text, index) => {
+      const row = document.createElement('div'); row.className = 'chunk';
+      const title = document.createElement('p'); title.className = 'muted';
+      title.textContent = '第 ' + (index + 1) + ' / ' + chunks.length + ' 段';
+      const body = document.createElement('pre'); body.textContent = text;
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary';
+      button.textContent = '复制这一段'; button.addEventListener('click', () => copyWithStatus(text));
+      row.append(title, body, button); output.appendChild(row);
+    });
+  }
+  fields.forEach(field => {
+    try { field.value = localStorage.getItem(prefix + field.dataset.comment) || ''; }
+    catch { saved.textContent = '浏览器不允许本地保存；请在离开前复制意见。'; }
+    field.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + field.dataset.comment, field.value); saved.textContent = '已保存到当前浏览器。'; }
+      catch { saved.textContent = '本地保存失败；当前意见仍可复制，请在离开前带走。'; }
+      update();
+    });
+  });
+  copyAll.addEventListener('click', () => copyWithStatus(chunks.join('\n\n')));
+  update();
+})();
+</script>
+</body></html>

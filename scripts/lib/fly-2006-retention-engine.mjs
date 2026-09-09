@@ -1010,6 +1010,12 @@ function genericCandidateSpec(policy, db, cutoff14, active) {
 }
 
 export async function executeFly2006Inventory(input) {
+	if (
+		input.rehearsalDatabase !== undefined &&
+		(input.allowFixturePaths !== true ||
+			!["teamlead", "comm"].includes(input.rehearsalDatabase))
+	)
+		throw new Error("rehearsal_database_invalid");
 	if (!input.allowFixturePaths && !input.healthUrl)
 		throw new Error("health_url_required");
 	const healthUrl = input.healthUrl ? validateHealthUrl(input.healthUrl) : null;
@@ -1050,7 +1056,9 @@ export async function executeFly2006Inventory(input) {
 		const active = activeSnapshot(teamlead, comm);
 		const targets = {};
 		for (const policy of RETENTION_TARGET_POLICIES.filter(
-			(item) => !item.special,
+			(item) =>
+				!item.special &&
+				(!input.rehearsalDatabase || item.database === input.rehearsalDatabase),
 		)) {
 			const target = await inventoryGenericTarget({
 				policy,
@@ -1061,22 +1069,29 @@ export async function executeFly2006Inventory(input) {
 			});
 			if (target) targets[policy.key] = target;
 		}
-		const sessionEvents = await inventorySessionEvents({
-			db: teamlead,
-			evidenceDir: input.evidenceDir,
-			cutoff14,
-			active,
-		});
+		const sessionEvents =
+			input.rehearsalDatabase === "comm"
+				? null
+				: await inventorySessionEvents({
+						db: teamlead,
+						evidenceDir: input.evidenceDir,
+						cutoff14,
+						active,
+					});
 		if (sessionEvents) targets.sessionEvents = sessionEvents;
-		const mailbox = await inventoryMailbox({
-			db: comm,
-			evidenceDir: input.evidenceDir,
-			cutoff14,
-			active,
-		});
+		const mailbox =
+			input.rehearsalDatabase === "teamlead"
+				? null
+				: await inventoryMailbox({
+						db: comm,
+						evidenceDir: input.evidenceDir,
+						cutoff14,
+						active,
+					});
 		if (mailbox) targets.mailbox = mailbox;
 		const manifest = {
 			schemaVersion: 2,
+			rehearsalDatabase: input.rehearsalDatabase,
 			issue: "FLY-2006",
 			startedAt,
 			completedAt: new Date().toISOString(),
@@ -1532,6 +1547,16 @@ async function executeFrozenApply(input, authority) {
 	const manifest = readSealedJson(input.manifestPath, "manifest");
 	if (manifest.issue !== "FLY-2006" || manifest.schemaVersion !== 2)
 		throw new Error("manifest_identity_mismatch");
+	if (
+		manifest.rehearsalDatabase !== undefined &&
+		(input.allowFixturePaths !== true ||
+			authorityAudit?.source !== "isolated-rehearsal" ||
+			!["teamlead", "comm"].includes(manifest.rehearsalDatabase) ||
+			Object.values(manifest.targets).some(
+				(target) => target.database !== manifest.rehearsalDatabase,
+			))
+	)
+		throw new Error("rehearsal_database_invalid");
 	validateManifestRetentionWindow(manifest);
 	const manifestSha256 = sha256File(input.manifestPath);
 	const applyReceiptPath = join(
@@ -1564,9 +1589,11 @@ async function executeFrozenApply(input, authority) {
 	}
 	const teamlead = new Database(manifest.databases.teamlead.path, {
 		fileMustExist: true,
+		readonly: manifest.rehearsalDatabase === "comm",
 	});
 	const comm = new Database(manifest.databases.comm.path, {
 		fileMustExist: true,
+		readonly: manifest.rehearsalDatabase === "teamlead",
 	});
 	let committedTargets = 0;
 	try {
@@ -1778,6 +1805,12 @@ export async function executeFly2006Vacuum(input) {
 	const manifest = readSealedJson(input.manifestPath, "manifest");
 	if (manifest.issue !== "FLY-2006" || manifest.schemaVersion !== 2)
 		throw new Error("manifest_identity_mismatch");
+	if (
+		manifest.rehearsalDatabase !== undefined &&
+		(input.allowFixturePaths !== true ||
+			manifest.rehearsalDatabase !== input.database)
+	)
+		throw new Error("rehearsal_database_invalid");
 	const manifestSha256 = sha256File(input.manifestPath);
 	const evidenceDir = dirname(input.manifestPath);
 	const applyReceiptPath = join(evidenceDir, "apply-receipt.json");

@@ -1,0 +1,15 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'-apple-system, system-ui, sans-serif','fontSize':'17px','primaryColor':'#eef5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b','secondaryColor':'#fff7eb','tertiaryColor':'#ffffff'},'flowchart':{'htmlLabels':false,'curve':'stepAfter','nodeSpacing':22,'rankSpacing':30}}}%%
+flowchart TB
+  accTitle: FLY-2351 副本获取与回收
+  accDescr: 所有新副本先检查 Data 卷五倍余量。修复快照按保留规则回收，验证副本限两 GB 并在节点完成后回收。
+  A[需要数据库副本] --> B{Data 余量 ≥ 副本大小 × 5}
+  B -->|不足或无法读取| C[拒绝生成 · 告警]
+  B -->|充足| D{副本用途}
+  D -->|修复前留恢复点| E[保存修复快照]
+  E --> F[每小时清理：超过 24 小时且不是组内最新]
+  D -->|实现或测试验证| G{执行目录合计 ≤ 2 GB}
+  G -->|超过| C
+  G -->|允许| H[在执行专属目录完成验证]
+  H --> I[节点完成被接受 → 回收本次副本]
+  classDef stop fill:#fff3e0,stroke:#ff9500,color:#1d1d1f;
+  class C stop;

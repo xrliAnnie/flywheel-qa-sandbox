@@ -1,3 +1,4 @@
+import type { readDataDisk } from "flywheel-comm/snapshot-storage";
 import type { FounderConsentConfig } from "./founder-consent/config.js";
 import type { MemoryFreePctReading } from "./machine-free-pct.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
@@ -38,6 +39,7 @@ export interface BridgeConfig {
 	/** FLY-2144: test/scaffold overrides for read-only capacity inputs. */
 	capacityProbes?: {
 		readMemoryFreePct?: () => Promise<MemoryFreePctReading>;
+		readDataDisk?: typeof readDataDisk;
 		accountStorePath?: string;
 		quotaConfigPath?: string;
 	};

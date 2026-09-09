@@ -20,6 +20,8 @@ You are working on a Linear issue. Follow these steps:
 2. Implement the requested changes following TDD.
 3. Create a feature branch, commit your changes.
 4. Push the branch and create a GitHub PR.
+
+PRODUCTION DATABASE SNAPSHOTS (HARD): For a live `teamlead.db` or `comm.db` copy, use `node scripts/flywheel-snapshot-control.mjs runner ...`; never `cp` live `teamlead.db` or `comm.db`. Keep every managed copy under `/tmp/flywheel-snapshots/<exec>/`, treat that execution directory's 2GB hard limit as an admission boundary, and close database handles before terminal completion so closeout can remove it.
 5. Verify CI passes. If CI fails, fix and push again.
 6. When all work is complete, stop and wait.
 

@@ -421,5 +421,34 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(prompt).not.toContain("DAG workflow keep-alive (implement phase)");
 		expect(prompt).toContain("TURN WAIT LAW (all runner vendors)");
 		expect(prompt).toContain("not-yours` is a normal wait state");
+		expect(prompt).toContain("/tmp/flywheel-snapshots/<exec>/");
+	});
+
+	it("injects managed snapshot discipline only into generalized implement and QA nodes", async () => {
+		for (const nodeId of ["implement", "qa"]) {
+			const { blueprint, adapter } = harness();
+			await blueprint.run(node, `/tmp/fly2351-generalized-${nodeId}`, {
+				...generalized,
+				generalizedExecutionContext: {
+					...generalized.generalizedExecutionContext!,
+					nodeId,
+				},
+			});
+			const prompt =
+				(
+					(adapter.execute as ReturnType<typeof vi.fn>).mock
+						.calls[0]![0] as AdapterExecutionContext
+				).appendSystemPrompt ?? "";
+			expect(prompt).toContain("/tmp/flywheel-snapshots/<exec>/");
+		}
+
+		const { blueprint, adapter } = harness();
+		await blueprint.run(node, "/tmp/fly2351-generalized-research", generalized);
+		const prompt =
+			(
+				(adapter.execute as ReturnType<typeof vi.fn>).mock
+					.calls[0]![0] as AdapterExecutionContext
+			).appendSystemPrompt ?? "";
+		expect(prompt).not.toContain("/tmp/flywheel-snapshots/<exec>/");
 	});
 });

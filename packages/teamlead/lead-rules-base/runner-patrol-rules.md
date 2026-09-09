@@ -166,6 +166,23 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
    最后 run: Discord MCP `fetch_messages(chat_id=$THREAD_ID, limit=20)`。消息与
    archive 状态以 Discord 为真,`chat_threads` 不是状态 oracle。
 
+   **Data 卷容量（FLY-2351）**。同段必须有且仅有一条
+   `disk_volume=/System/Volumes/Data disk_avail_bytes=<integer>` 和
+   `disk_below_threshold=<yes|no>` 事实；`disk_avail_gb` 只用于展示，判定一律用
+   原始 bytes。`disk_below_threshold=yes`（即 `<20000000000`）强制把 STEP 5
+   定稿为 `FINDING`，即使 gh 或 Raya 同时 unavailable 也不得覆盖；各
+   `UNAVAILABLE_CAUSE` 仍保留。追加：
+   `FINDING step=5 bridge_problem=no result=escalated-with-plan evidence=data_volume_low owner=agent:<lead-id> next=repair:disk-space epic=n/a epic_marker=n/a`。
+   同机低盘事件使用既有巡检告警去重，每小时最多一次；恢复到阈值后再次跌破是新事件。
+   磁盘事实 unavailable 时 STEP 5 不得定稿 `OK`；保留稳定 token 并走本规则的
+   UNAVAILABLE 建单流程。人工复核只准 run
+   `df -h /System/Volumes/Data`，不得用 `df -h /`（macOS 的 `/` 是密封系统卷）。
+   低盘 finding 后，任何数据库写修复都必须先执行
+   `engineering/doc/FLY-2351-snapshot-disk-guard/runbook.md#低盘紧急处置顺序`：只读
+   inventory → 仅清理可删旧快照和已结束的受管副本 → 重测 5×。仍不足时停止修改
+   数据库，并向 Lead 报告 measured avail、required bytes 和不可删除项；禁止降到 2×、
+   裸 sqlite 绕过门槛或用 db-maintenance backup/VACUUM 腾空间。
+
    **Raya 生产 checkout（仅 flywheel 项目）**。读取同段的 `raya checkout=` 事实行：
 
    - `overdue=yes` 时，本 tick 必须在 `CHAT_CHANNEL_ID`（#flywheel-engineer）发 warning，
@@ -409,6 +426,8 @@ STEP DWELL 多 cause 统一使用稳定 `node_dwell_incomplete` token，逐 caus
    `PAYLOAD="$(jq -n --arg title "$TITLE" --arg description "patrol report: $REPORT_PATH" '{title:$title, description:$description, team:"FLY", project:"Flywheel", labels:["Flywheel"]}')"; printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS -X POST -H 'Content-Type: application/json' "$BRIDGE_URL/api/linear/create-issue" -d "$PAYLOAD"`。
    最后 run(完成门):
    `FINAL_STEP_COUNT="$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; DWELL_STEP_COUNT="$(grep -Ec '^STEP DWELL: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; PANE_COUNT="$(sed -n 's/^pane_count=//p' "$REPORT_PATH" | tail -1)"; EVIDENCE_COUNT="$(grep -c '^PANE_EVIDENCE ' "$REPORT_PATH")"; WELL_FORMED_EVIDENCE="$(awk '/^PANE_EVIDENCE / && / pane=[^ ]+/ && / target=[^ ]+/ && / capture_sha256=[^ ]+/ && / state_sha256=[^ ]+/ && / last_change_epoch=[0-9]+/ && / findings=[^ ]+/ && / action=[^ ]+/ && / result=[^ ]+/{n++} END{print n+0}' "$REPORT_PATH")"; case "$PANE_COUNT" in ''|*[!0-9]*) false;; esac && test "$FINAL_STEP_COUNT" -eq 6 && test "$DWELL_STEP_COUNT" -eq 1 && test "$PANE_COUNT" -eq "$EVIDENCE_COUNT" && test "$PANE_COUNT" -eq "$WELL_FORMED_EVIDENCE" && ! grep -Eq '^STEP (0|[7-9]|[1-9][0-9]+): |LEAD-JUDGMENT-REQUIRED|-CANDIDATE$|action=REQUIRED|result=UNSET' "$REPORT_PATH"`。
+   再 run 磁盘一致性门；非零同样没有完成：
+   `awk '/^## STEP 5$/{in5=1;next}/^## STEP 6$/{in5=0} in5&&/^STEP 5: /{status=$0} in5&&/disk_below_threshold=yes/{disk=1;low=1} in5&&/disk_below_threshold=no/{disk=1} in5&&/^UNAVAILABLE_CAUSE step=5 /&&/(data_volume|snapshot_helper)/{unknown=1} END{if(low&&status!="STEP 5: FINDING")exit 1;if(!disk&&!unknown)exit 1;if(unknown&&status=="STEP 5: OK")exit 1}' "$REPORT_PATH"`。
    再 run 以下 finding validator；非零同样没有完成：
 
 # FLY-2080-FINDING-GATE-BEGIN
@@ -503,16 +522,14 @@ pane 输出建立 baseline 指纹：
 STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-$HOME/.flywheel/teamlead.db}}"
 REQUEST_ID='<exact request_id from the read-only probe>'
 TARGET_PANE='<exact canonical pane id>'
+REPAIR_ISSUE_IDENTIFIER='<exact issue that owns this run>'
 case "$REQUEST_ID:$TARGET_PANE" in *[!A-Za-z0-9._:%-]*) exit 64;; esac
-REPAIR_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/patrol-repairs"
-umask 077; mkdir -p "$REPAIR_DIR"
-BACKUP_PATH="$REPAIR_DIR/FLY-2080-receipt-${REQUEST_ID}-$(date -u +%Y%m%dT%H%M%SZ).db"
-sqlite3 -bail "$STATE_DB" <<SQL
-PRAGMA foreign_keys=ON;
-PRAGMA busy_timeout=5000;
-.backup '$BACKUP_PATH'
-SQL
-chmod 600 "$BACKUP_PATH"
+case "$REPAIR_ISSUE_IDENTIFIER" in [A-Z]*-[1-9][0-9]*) ;; *) exit 64;; esac
+PATROL_SNAPSHOT="$(command -v flywheel-patrol-snapshot)" || exit $?
+SNAPSHOT_SOURCE_DIR="$(node -e 'const {dirname}=require("node:path");const {realpathSync}=require("node:fs");process.stdout.write(dirname(realpathSync(process.argv[1])))' "$PATROL_SNAPSHOT")" || exit $?
+SNAPSHOT_CONTROL="$SNAPSHOT_SOURCE_DIR/flywheel-snapshot-control.mjs"
+BACKUP_JSON="$(node "$SNAPSHOT_CONTROL" repair --source "$STATE_DB" --kind teamlead --issue "$REPAIR_ISSUE_IDENTIFIER")" || exit $?
+BACKUP_PATH="$(printf '%s' "$BACKUP_JSON" | jq -er 'if .ok == true and (.path | type == "string") then .path else empty end')" || exit 1
 BASELINE_SEQ="$(sqlite3 -bail "$STATE_DB" "PRAGMA busy_timeout=5000; SELECT COALESCE(MAX(e.seq),0) FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID';")"
 ```
 
@@ -682,7 +699,7 @@ predecessor 分支也只认 baseline 后的新非 patrol engine event。
 
 输入必须是引擎已经 reserve 的 `NEW_EXECUTION_ID`；本配方绝不创建
 `workflow_actor`、execution、authority、approval 或 claim。先执行与附录 A 相同的
-DB path、0600 `.backup` 与 event baseline；如需 pane 参与事务前真实性证明或事后
+DB path、受管 repair snapshot 与 event baseline；如需 pane 参与事务前真实性证明或事后
 诊断，也复用附录 A 的字符校验、40 行读取与不落原文合同。再设置并校验：
 
 ```sh
