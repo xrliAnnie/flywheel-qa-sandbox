@@ -120,6 +120,42 @@ test("runner snapshots use the CLI and release in finally", async () => {
 	assert.deepEqual(calls.at(-1), ["release"]);
 });
 
+test("runner callbacks receive a budget guard bound to their owner directory", async () => {
+	const calls = [];
+	const runCli = async (args) => {
+		calls.push(args);
+		return args[0] === "release"
+			? { ok: true, status: "deleted" }
+			: {
+					ok: true,
+					path: "/tmp/flywheel-snapshots/exec-1/teamlead.db",
+				};
+	};
+	const withManagedSnapshotBudget = async (input, operation) => {
+		calls.push(input);
+		return operation();
+	};
+
+	const result = await withManagedSnapshots(
+		{
+			label: "test-analysis",
+			sources: [
+				{ name: "team", source: "/state/teamlead.db", kind: "teamlead" },
+			],
+			env: { FLYWHEEL_EXEC_ID: "exec-1" },
+		},
+		({ withBudget }) => withBudget(123, async () => "ok"),
+		{ runCli, withManagedSnapshotBudget },
+	);
+
+	assert.equal(result, "ok");
+	assert.deepEqual(calls.at(-2), {
+		executionDirectory: "/tmp/flywheel-snapshots/exec-1",
+		additionalBytes: 123,
+	});
+	assert.deepEqual(calls.at(-1), ["release"]);
+});
+
 test("a failed release cannot hide the original runner snapshot failure", async () => {
 	const runCli = async (args) => {
 		throw new Error(
@@ -180,6 +216,15 @@ test("the retention rehearsal keeps database copies inside managed storage", asy
 		"utf8",
 	);
 	assert.match(source, /withManagedSnapshots/);
+	assert.match(
+		source,
+		/const evidenceDir = join\(input\.rehearsalDir, "evidence"\)/,
+	);
+	assert.doesNotMatch(
+		source,
+		/join\(input\.snapshotDirectory, "fly-2006-evidence"\)/,
+	);
+	assert.match(source, /input\.withBudget/);
 	assert.doesNotMatch(source, /backupAndVerify/);
 	assert.doesNotMatch(source, /copiesDir/);
 });

@@ -198,4 +198,47 @@ describe("snapshot closeout", () => {
 			expect.objectContaining({ mode: "dry-run" }),
 		);
 	});
+
+	it("reports an orphan entry and continues cleanup for valid directories", async () => {
+		const owner = {
+			kind: "session" as const,
+			executionId: "exec-terminal",
+			sessionStartedAt: "2026-09-08T12:00:00.000Z",
+		};
+		const cleanup = vi.fn(async () => ({
+			status: "deleted" as const,
+			bytesReleased: 4_096,
+		}));
+		const log = vi.fn();
+		const store = {
+			getSession: () => ({
+				execution_id: owner.executionId,
+				status: "completed",
+				started_at: owner.sessionStartedAt,
+			}),
+		};
+
+		await runSnapshotMaintenance(store as never, {
+			prune: (async ({ dryRun }) => ({
+				mode: dryRun ? "dry-run" : "apply",
+				items: [],
+			})) as never,
+			inspect: (() => [
+				{
+					path: "orphan-exec",
+					error: "managed_snapshot_owner_missing",
+				},
+				{ owner, bytes: 4_096 },
+			]) as never,
+			readOwner: () => owner,
+			cleanup: cleanup as never,
+			log,
+		});
+
+		expect(log).toHaveBeenCalledWith("snapshot_directory_unmanaged", {
+			path: "orphan-exec",
+			error: "managed_snapshot_owner_missing",
+		});
+		expect(cleanup).toHaveBeenCalledTimes(1);
+	});
 });

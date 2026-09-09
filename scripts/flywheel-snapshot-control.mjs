@@ -80,6 +80,21 @@ export async function withManagedSnapshots(input, use, deps = {}) {
 	validateSources(input.sources);
 	const env = input.env ?? process.env;
 	const runCli = deps.runCli ?? ((args) => runSnapshotCli(args, env));
+	const withBudget = async (executionDirectory, additionalBytes, operation) => {
+		const implementation =
+			deps.withManagedSnapshotBudget ??
+			(
+				await import(
+					pathToFileURL(
+						resolve(
+							repoRoot,
+							"packages/flywheel-comm/dist/snapshot-storage.js",
+						),
+					).href
+				)
+			).withManagedSnapshotBudget;
+		return implementation({ executionDirectory, additionalBytes }, operation);
+	};
 	if (Object.hasOwn(env, "FLYWHEEL_EXEC_ID")) {
 		const paths = {};
 		let primaryFailure;
@@ -99,10 +114,13 @@ export async function withManagedSnapshots(input, use, deps = {}) {
 			const directories = new Set(Object.values(paths).map(dirname));
 			if (directories.size !== 1)
 				throw new Error("snapshot paths span multiple owner directories");
+			const directory = directories.values().next().value;
 			value = await use({
 				paths,
-				directory: directories.values().next().value,
+				directory,
 				ownerKind: "runner",
+				withBudget: (additionalBytes, operation) =>
+					withBudget(directory, additionalBytes, operation),
 			});
 		} catch (error) {
 			primaryFailure = error;
@@ -148,7 +166,13 @@ export async function withManagedSnapshots(input, use, deps = {}) {
 				).path;
 			}
 			const directory = dirname(Object.values(paths)[0]);
-			return use({ paths, directory, ownerKind: "operator" });
+			return use({
+				paths,
+				directory,
+				ownerKind: "operator",
+				withBudget: (additionalBytes, operation) =>
+					withBudget(directory, additionalBytes, operation),
+			});
 		},
 	);
 }

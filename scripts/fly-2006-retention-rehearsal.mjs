@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,7 +97,7 @@ export async function executeFly2006Rehearsal(input) {
 	if (existsSync(input.rehearsalDir))
 		throw new Error("rehearsal_dir_already_exists");
 	mkdirSync(input.rehearsalDir, { mode: 0o700 });
-	const evidenceDir = join(input.snapshotDirectory, "fly-2006-evidence");
+	const evidenceDir = join(input.rehearsalDir, "evidence");
 	mkdirSync(evidenceDir, { mode: 0o700 });
 	const snapshots = {
 		teamlead: verifyManagedSnapshot(input.teamleadDbPath),
@@ -104,11 +110,15 @@ export async function executeFly2006Rehearsal(input) {
 		allowFixturePaths: true,
 	});
 	const manifestSha256 = sha256File(inventory.manifestPath);
-	const applied = await executeFly2006Apply({
-		manifestPath: inventory.manifestPath,
-		allowFixturePaths: true,
-		founderGateAudit: buildIsolatedRehearsalAudit(),
-	});
+	const applied = await input.withBudget(
+		statSync(input.teamleadDbPath).size + statSync(input.commDbPath).size,
+		() =>
+			executeFly2006Apply({
+				manifestPath: inventory.manifestPath,
+				allowFixturePaths: true,
+				founderGateAudit: buildIsolatedRehearsalAudit(),
+			}),
+	);
 	for (const [key, target] of Object.entries(inventory.manifest.targets)) {
 		if (applied.deleted[key] !== target.candidateCount)
 			throw new Error(`rehearsal_count_mismatch:${key}`);
@@ -135,14 +145,20 @@ export async function executeFly2006Rehearsal(input) {
 			token: randomBytes(32).toString("hex"),
 			acknowledgedAt: new Date().toISOString(),
 		});
-		vacuums[database] = await executeFly2006Vacuum({
-			manifestPath: inventory.manifestPath,
-			database,
-			quiescenceAckPath: ackPath,
-			rehearsalSummaryPath: bindingSummaryPath,
-			maxDurationMs: 300_000,
-			allowFixturePaths: true,
-		});
+		const databasePath =
+			database === "teamlead" ? input.teamleadDbPath : input.commDbPath;
+		vacuums[database] = await input.withBudget(
+			statSync(databasePath).size,
+			() =>
+				executeFly2006Vacuum({
+					manifestPath: inventory.manifestPath,
+					database,
+					quiescenceAckPath: ackPath,
+					rehearsalSummaryPath: bindingSummaryPath,
+					maxDurationMs: 300_000,
+					allowFixturePaths: true,
+				}),
+		);
 		if (vacuums[database].after.mainBytes >= vacuums[database].before.mainBytes)
 			throw new Error(`rehearsal_file_not_smaller:${database}`);
 	}
@@ -212,11 +228,11 @@ async function runCli() {
 					},
 				],
 			},
-			({ paths, directory }) =>
+			({ paths, withBudget }) =>
 				executeFly2006Rehearsal({
 					teamleadDbPath: paths.teamlead,
 					commDbPath: paths.comm,
-					snapshotDirectory: directory,
+					withBudget,
 					rehearsalDir: args["--rehearsal-dir"],
 				}),
 		);

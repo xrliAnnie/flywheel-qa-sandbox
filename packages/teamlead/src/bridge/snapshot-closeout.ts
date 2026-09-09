@@ -160,6 +160,10 @@ export async function runSnapshotMaintenance(
 		status: string;
 	}> = [];
 	for (const entry of (deps.inspect ?? inspectManagedSnapshotDirectories)()) {
+		if ("error" in entry) {
+			log("snapshot_directory_unmanaged", entry);
+			continue;
+		}
 		if (entry.bytes > MANAGED_SNAPSHOT_LIMIT_BYTES) {
 			log("snapshot_directory_over_budget", {
 				executionId: entry.owner.executionId,

@@ -17,7 +17,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3";
 
 export const DATA_VOLUME_PATH = "/System/Volumes/Data";
@@ -402,7 +402,16 @@ function canonicalRecord(value: unknown): string | undefined {
 }
 
 function readOwnerFile(path: string): SnapshotOwner {
-	const stat = lstatSync(path);
+	let stat: ReturnType<typeof lstatSync>;
+	try {
+		stat = lstatSync(path);
+	} catch (error) {
+		throw new SnapshotStorageError(
+			(error as NodeJS.ErrnoException)?.code === "ENOENT"
+				? "managed_snapshot_owner_missing"
+				: "managed_snapshot_owner_unsafe",
+		);
+	}
 	if (
 		!stat.isFile() ||
 		stat.isSymbolicLink() ||
@@ -491,7 +500,9 @@ function readDirectoryBytes(path: string): number {
 
 export function inspectManagedSnapshotDirectories(
 	deps: { managedRoot?: string } = {},
-): Array<{ owner: SnapshotOwner; bytes: number }> {
+): Array<
+	{ owner: SnapshotOwner; bytes: number } | { path: string; error: string }
+> {
 	const managedRoot = resolve(
 		deps.managedRoot ?? join(realpathSync("/tmp"), "flywheel-snapshots"),
 	);
@@ -508,17 +519,27 @@ export function inspectManagedSnapshotDirectories(
 	return readdirSync(managedRoot, { withFileTypes: true })
 		.sort((left, right) => left.name.localeCompare(right.name))
 		.map((entry) => {
-			if (!entry.isDirectory() || entry.isSymbolicLink()) {
-				throw new SnapshotStorageError("managed_snapshot_unknown_entry");
+			try {
+				if (!entry.isDirectory() || entry.isSymbolicLink()) {
+					throw new SnapshotStorageError("managed_snapshot_unknown_entry");
+				}
+				const owner = readManagedSnapshotOwner(entry.name, { managedRoot });
+				if (!owner) {
+					throw new SnapshotStorageError("managed_snapshot_owner_invalid");
+				}
+				return {
+					owner,
+					bytes: readDirectoryBytes(join(managedRoot, entry.name)),
+				};
+			} catch (error) {
+				return {
+					path: entry.name,
+					error:
+						error instanceof SnapshotStorageError
+							? error.reason
+							: "managed_snapshot_inspection_failed",
+				};
 			}
-			const owner = readManagedSnapshotOwner(entry.name, { managedRoot });
-			if (!owner) {
-				throw new SnapshotStorageError("managed_snapshot_owner_invalid");
-			}
-			return {
-				owner,
-				bytes: readDirectoryBytes(join(managedRoot, entry.name)),
-			};
 		});
 }
 
@@ -820,6 +841,65 @@ export async function cleanupRunnerSnapshots(
 		}
 		rmSync(executionDir, { recursive: true });
 		return { status: "deleted" as const, bytesReleased };
+	} finally {
+		releaseLock();
+	}
+}
+
+export async function withManagedSnapshotBudget<T>(
+	input: { executionDirectory: string; additionalBytes: number },
+	operation: () => T | Promise<T>,
+	deps: {
+		stateRoot?: string;
+		managedRoot?: string;
+		lockTimeoutMs?: number;
+	} = {},
+): Promise<T> {
+	if (
+		!Number.isSafeInteger(input.additionalBytes) ||
+		input.additionalBytes < 0
+	) {
+		throw new SnapshotStorageError("managed_snapshot_budget_invalid");
+	}
+	const managedRoot = resolve(
+		deps.managedRoot ?? join(realpathSync("/tmp"), "flywheel-snapshots"),
+	);
+	const executionDirectory = resolve(input.executionDirectory);
+	if (dirname(executionDirectory) !== managedRoot) {
+		throw new SnapshotStorageError("managed_snapshot_owner_directory_unsafe");
+	}
+	const releaseLock = await acquireSnapshotLock(
+		deps.stateRoot ?? defaultStateRoot(),
+		deps.lockTimeoutMs ?? 5_000,
+	);
+	try {
+		const rootStat = lstatSync(managedRoot);
+		const executionStat = lstatSync(executionDirectory);
+		if (
+			!rootStat.isDirectory() ||
+			rootStat.isSymbolicLink() ||
+			rootStat.uid !== process.geteuid?.() ||
+			(rootStat.mode & 0o777) !== 0o700 ||
+			!executionStat.isDirectory() ||
+			executionStat.isSymbolicLink() ||
+			executionStat.uid !== rootStat.uid ||
+			(executionStat.mode & 0o777) !== 0o700
+		) {
+			throw new SnapshotStorageError("managed_snapshot_owner_directory_unsafe");
+		}
+		const owner = readOwnerFile(join(executionDirectory, ".owner.json"));
+		if (join(managedRoot, owner.executionId) !== executionDirectory) {
+			throw new SnapshotStorageError("managed_snapshot_owner_mismatch");
+		}
+		const beforeBytes = readDirectoryBytes(executionDirectory);
+		if (beforeBytes + input.additionalBytes > MANAGED_SNAPSHOT_LIMIT_BYTES) {
+			throw new SnapshotStorageError("managed_snapshot_budget_exceeded");
+		}
+		const result = await operation();
+		if (readDirectoryBytes(executionDirectory) > MANAGED_SNAPSHOT_LIMIT_BYTES) {
+			throw new SnapshotStorageError("managed_snapshot_budget_exceeded");
+		}
+		return result;
 	} finally {
 		releaseLock();
 	}
@@ -1156,14 +1236,12 @@ export async function pruneRepairSnapshots(
 				reason,
 			});
 		}
+		const deletions = items.filter((item) => item.action === "delete");
 		return {
 			mode: input.dryRun ? "dry-run" : "apply",
 			items,
-			candidate_count: candidates.length,
-			candidate_bytes: candidates.reduce(
-				(sum, candidate) => sum + candidate.bytes,
-				0,
-			),
+			candidate_count: deletions.length,
+			candidate_bytes: deletions.reduce((sum, item) => sum + item.bytes, 0),
 			patrol_repairs_total_bytes: totalBytes,
 			retained_group_count: latest.size,
 			unmapped_bytes: unmappedBytes,

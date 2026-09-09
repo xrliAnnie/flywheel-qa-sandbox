@@ -20,9 +20,11 @@ import {
 	createRepairSnapshot,
 	inspectManagedSnapshotDirectories,
 	isOperatorSnapshotOwnerDead,
+	MANAGED_SNAPSHOT_LIMIT_BYTES,
 	pruneRepairSnapshots,
 	readDataDisk,
 	readManagedSnapshotOwner,
+	withManagedSnapshotBudget,
 	withOperatorSnapshots,
 } from "../snapshot-storage.js";
 
@@ -480,6 +482,8 @@ describe("snapshot storage", () => {
 			dryRun.items.find((item) => item.path === names.exact24h),
 		).toMatchObject({ action: "keep", reason: "within_24h" });
 		expect(dryRun.unmapped_bytes).toBe(Buffer.byteLength(names.unmapped));
+		expect(dryRun.candidate_count).toBe(1);
+		expect(dryRun.candidate_bytes).toBe(Buffer.byteLength(names.oldest));
 		expect(
 			Object.values(names).every((name) => existsSync(join(repairs, name))),
 		).toBe(true);
@@ -614,6 +618,38 @@ describe("snapshot storage", () => {
 		]);
 	});
 
+	it("reports orphan and stray entries without hiding valid managed directories", () => {
+		const managedRoot = join(root, "flywheel-snapshots");
+		const executionId = "db6e2cf5-d7df-4b87-9feb-2def287d71e0";
+		const owner = {
+			kind: "session" as const,
+			executionId,
+			sessionStartedAt: "2026-09-08T12:00:00.000Z",
+		};
+		const directory = join(managedRoot, executionId);
+		mkdirSync(directory, { recursive: true, mode: 0o700 });
+		writeFileSync(
+			join(directory, ".owner.json"),
+			`${JSON.stringify({ version: 1, ...owner })}\n`,
+			{ mode: 0o600 },
+		);
+		writeFileSync(join(directory, "teamlead.db"), "valid", { mode: 0o600 });
+		mkdirSync(join(managedRoot, "orphan-exec"), { mode: 0o700 });
+		writeFileSync(join(managedRoot, ".DS_Store"), "stray", { mode: 0o600 });
+
+		expect(inspectManagedSnapshotDirectories({ managedRoot })).toEqual([
+			{
+				path: ".DS_Store",
+				error: "managed_snapshot_unknown_entry",
+			},
+			expect.objectContaining({ owner, bytes: expect.any(Number) }),
+			{
+				path: "orphan-exec",
+				error: "managed_snapshot_owner_missing",
+			},
+		]);
+	});
+
 	it("allows exactly 2GB of managed files and rejects one byte more", async () => {
 		const source = join(root, "source.db");
 		const db = new Database(source);
@@ -679,6 +715,59 @@ describe("snapshot storage", () => {
 				{ stateRoot: root, managedRoot, readDataDisk: disk },
 			),
 		).rejects.toMatchObject({ reason: "managed_snapshot_budget_exceeded" });
+	});
+
+	it("holds the snapshot lock while admitting bounded managed writes", async () => {
+		const managedRoot = join(root, "flywheel-snapshots");
+		const executionId = "db6e2cf5-d7df-4b87-9feb-2def287d71e0";
+		const directory = join(managedRoot, executionId);
+		mkdirSync(directory, { recursive: true, mode: 0o700 });
+		writeFileSync(
+			join(directory, ".owner.json"),
+			`${JSON.stringify({
+				version: 1,
+				kind: "session",
+				executionId,
+				sessionStartedAt: "2026-09-08T12:00:00.000Z",
+			})}\n`,
+			{ mode: 0o600 },
+		);
+		writeFileSync(join(directory, "teamlead.db"), "snapshot", { mode: 0o600 });
+		const currentBytes = statSync(join(directory, ".owner.json")).size + 8;
+		const operation = vi.fn(async () => {
+			expect(existsSync(join(root, "state", "snapshot-storage.lock"))).toBe(
+				true,
+			);
+			return "ok";
+		});
+
+		await expect(
+			withManagedSnapshotBudget(
+				{
+					executionDirectory: directory,
+					additionalBytes: MANAGED_SNAPSHOT_LIMIT_BYTES - currentBytes,
+				},
+				operation,
+				{ stateRoot: root, managedRoot },
+			),
+		).resolves.toBe("ok");
+		expect(operation).toHaveBeenCalledOnce();
+		expect(existsSync(join(root, "state", "snapshot-storage.lock"))).toBe(
+			false,
+		);
+
+		const rejected = vi.fn();
+		await expect(
+			withManagedSnapshotBudget(
+				{
+					executionDirectory: directory,
+					additionalBytes: MANAGED_SNAPSHOT_LIMIT_BYTES - currentBytes + 1,
+				},
+				rejected,
+				{ stateRoot: root, managedRoot },
+			),
+		).rejects.toMatchObject({ reason: "managed_snapshot_budget_exceeded" });
+		expect(rejected).not.toHaveBeenCalled();
 	});
 
 	it("releases operator snapshots in finally without impersonating a runner", async () => {
