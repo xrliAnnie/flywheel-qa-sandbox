@@ -496,6 +496,20 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(section0).toMatch(/步骤 B.*记录进病根 Epic/s);
 	});
 
+	it("FLY-2351: the repair recipe resolves snapshot control from the Lead checkout", () => {
+		const appendixA = patrol.slice(
+			patrol.indexOf("### FLY-2080 附录 A"),
+			patrol.indexOf("### FLY-2080 附录 B"),
+		);
+		expect(appendixA).toContain(
+			'SNAPSHOT_CONTROL="${FLYWHEEL_DIR:?FLYWHEEL_DIR must name the Flywheel checkout}/scripts/flywheel-snapshot-control.mjs"',
+		);
+		expect(appendixA).toContain('node "$SNAPSHOT_CONTROL" repair');
+		expect(appendixA).not.toContain(
+			"node scripts/flywheel-snapshot-control.mjs",
+		);
+	});
+
 	it("FLY-2080: guard classification, truth boundaries, and both executable recipes are complete", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),
