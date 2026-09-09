@@ -10,6 +10,7 @@ fi
 
 RETIRE_SYNC_LABEL=com.flywheel.lead-memory-sync
 RETIRE_ARRIVAL_LABEL=com.flywheel.lead-memory-arrival-check
+RETIRE_ARTIFACT_LABEL=com.flywheel.artifact-freshness-check
 
 _retire_source_dir() { printf '%s\n' "$RETIRE_SCRIPT_DIR/../launchd"; }
 _retire_manifest_path() { printf '%s\n' "$RETIRE_SCRIPT_DIR/../launchd/units.manifest"; }
@@ -18,8 +19,8 @@ retire_usage() {
 	cat >&2 <<'USAGE'
 Usage: retire-units.sh [--apply|--enable] --i-am-operator LABEL
 
-Only com.flywheel.lead-memory-sync and
-com.flywheel.lead-memory-arrival-check are accepted. The default is a
+Only com.flywheel.lead-memory-sync, com.flywheel.lead-memory-arrival-check,
+and com.flywheel.artifact-freshness-check are accepted. The default is a
 read-only retirement preview; mutation requires an interactive TTY and the
 explicit operator acknowledgement.
 USAGE
@@ -27,7 +28,7 @@ USAGE
 }
 
 retire_label_allowed() {
-	[[ "$1" == "$RETIRE_SYNC_LABEL" || "$1" == "$RETIRE_ARRIVAL_LABEL" ]]
+	[[ "$1" == "$RETIRE_SYNC_LABEL" || "$1" == "$RETIRE_ARRIVAL_LABEL" || "$1" == "$RETIRE_ARTIFACT_LABEL" ]]
 }
 
 retire_authority_present() {
@@ -70,8 +71,8 @@ retire_enable() {
 		return 0
 	fi
 	intent="action=enable\nlabel=$label\nprior_disabled=$disabled\nprior_domain=$domain_state"
-	fly1814_operator_audit enable-memory-unit "$label" \
-		"FLY-2146 memory unit enable requested" \
+	fly1814_operator_audit enable-observer-unit "$label" \
+		"Flywheel observer unit enable requested" \
 		"Operator requested enable after restoring repository authority for $label." \
 		"$intent" || { printf 'ERROR: mandatory audit was not delivered; no mutation\n' >&2; return 70; }
 	[[ "$(retire_probe_state "$domain" "$label")" == "$state" ]] || {
@@ -122,8 +123,8 @@ retire_apply() {
 	[[ ! -L "$archive_dir" && ( ! -e "$archive_dir" || -d "$archive_dir" ) ]] || return 73
 
 	intent="action=retire\nlabel=$label\nprior_disabled=$disabled\nprior_domain=$domain_state\nactive_identity=$active_identity\narchive=$archive"
-	fly1814_operator_audit retire-memory-unit "$label" \
-		"FLY-2146 memory unit retirement requested" \
+	fly1814_operator_audit retire-observer-unit "$label" \
+		"Flywheel observer unit retirement requested" \
 		"Operator requested disable, unload, and identity-safe archive for $label." \
 		"$intent" || { printf 'ERROR: mandatory audit was not delivered; no mutation\n' >&2; return 70; }
 	retire_plist_matches "$active" "$label" || { printf 'ERROR: active plist changed during audit\n' >&2; return 68; }
@@ -174,7 +175,7 @@ retire_main() {
 		shift
 	done
 	if [[ -z "$label" ]] || ! retire_label_allowed "$label"; then
-		printf 'ERROR: exact FLY-2146 label required\n' >&2
+		printf 'ERROR: exact supported observer label required\n' >&2
 		return 64
 	fi
 	domain="$(fly1814_domain)" || return 69

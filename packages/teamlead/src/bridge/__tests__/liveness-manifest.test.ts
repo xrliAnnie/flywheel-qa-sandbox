@@ -1,11 +1,194 @@
+import {
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { validateLivenessManifest } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import {
+	artifactFreshnessStateDir,
 	buildLivenessManifest,
 	LivenessCheckTracker,
+	readArtifactFreshnessReceipt,
 } from "../liveness-manifest.js";
 
 describe("FLY-1393 liveness manifest", () => {
+	it("resolves the artifact freshness state root with trim-then-default semantics", () => {
+		const fallback = join(
+			homedir(),
+			".flywheel",
+			"state",
+			"artifact-freshness",
+		);
+		for (const env of [
+			{},
+			{ FLYWHEEL_STATE_DIR: "" },
+			{ FLYWHEEL_STATE_DIR: " \t " },
+		]) {
+			expect(artifactFreshnessStateDir(env)).toBe(fallback);
+		}
+		expect(
+			artifactFreshnessStateDir({
+				FLYWHEEL_STATE_DIR: " /tmp/flywheel-state \t",
+			}),
+		).toBe("/tmp/flywheel-state/state/artifact-freshness");
+		expect(
+			artifactFreshnessStateDir({ FLYWHEEL_STATE_DIR: "/tmp/flywheel-state" }),
+		).toBe("/tmp/flywheel-state/state/artifact-freshness");
+	});
+
+	it("reports a missing artifact freshness receipt as not started", () => {
+		expect(
+			readArtifactFreshnessReceipt(
+				"/definitely-missing/flywheel-artifact-freshness.json",
+				Date.parse("2026-09-08T12:00:00Z"),
+			),
+		).toEqual({
+			freshness: "not_started",
+			run_status: "unknown",
+			last_run_at: null,
+		});
+	});
+
+	it("validates every receipt field and derives fresh, stale, and degraded states", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2134-receipt-"));
+		const path = join(root, "last-run.json");
+		const nowMs = Date.parse("2026-09-08T12:00:00Z");
+		const valid = {
+			schema: 1,
+			run_id: "20260908T120000Z-abcdef",
+			observed_at: "2026-09-08T12:00:00Z",
+			registry_sha256: "a".repeat(64),
+			rows: 1,
+			counts: {
+				fresh: 1,
+				stale: 0,
+				missing: 0,
+				undetermined: 0,
+				suspended: 0,
+			},
+			unobservable_active: 0,
+			post_status: "none",
+			run_status: "ok",
+		};
+		const write = (value: unknown) =>
+			writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+		try {
+			write(valid);
+			expect(readArtifactFreshnessReceipt(path, nowMs)).toEqual({
+				freshness: "fresh",
+				run_status: "ok",
+				last_run_at: valid.observed_at,
+			});
+			write({
+				...valid,
+				observed_at: "2026-09-08T09:00:00Z",
+				run_id: "20260908T090000Z-abcdef",
+			});
+			expect(readArtifactFreshnessReceipt(path, nowMs).freshness).toBe("fresh");
+
+			write({
+				...valid,
+				observed_at: "2026-09-08T08:59:59Z",
+				run_id: "20260908T085959Z-abcdef",
+			});
+			expect(readArtifactFreshnessReceipt(path, nowMs).freshness).toBe("stale");
+
+			write({
+				...valid,
+				counts: { ...valid.counts, fresh: 0, undetermined: 1 },
+				unobservable_active: 1,
+				post_status: "success",
+				run_status: "degraded",
+			});
+			expect(readArtifactFreshnessReceipt(path, nowMs)).toMatchObject({
+				freshness: "fresh",
+				run_status: "degraded",
+			});
+
+			const invalidCases: Array<[string, unknown]> = [
+				["non-object", []],
+				["wrong schema", { ...valid, schema: 2 }],
+				["missing run id", { ...valid, run_id: undefined }],
+				["malformed run id", { ...valid, run_id: "run-1" }],
+				[
+					"fractional time",
+					{ ...valid, observed_at: "2026-09-08T12:00:00.000Z" },
+				],
+				[
+					"invalid calendar date",
+					{ ...valid, observed_at: "2026-02-30T12:00:00Z" },
+				],
+				["future time", { ...valid, observed_at: "2026-09-08T12:05:01Z" }],
+				["bad registry hash", { ...valid, registry_sha256: "xyz" }],
+				["rows string", { ...valid, rows: "1" }],
+				["rows negative", { ...valid, rows: -1 }],
+				[
+					"counts keys",
+					{
+						...valid,
+						counts: { fresh: 1, stale: 0, missing: 0, undetermined: 0 },
+					},
+				],
+				["counts total", { ...valid, counts: { ...valid.counts, stale: 1 } }],
+				[
+					"counts negative",
+					{ ...valid, counts: { ...valid.counts, fresh: -1 } },
+				],
+				["unobservable string", { ...valid, unobservable_active: "0" }],
+				["unobservable negative", { ...valid, unobservable_active: -1 }],
+				["unobservable exceeds rows", { ...valid, unobservable_active: 2 }],
+				["bad post status", { ...valid, post_status: "sent" }],
+				["bad run status", { ...valid, run_status: "healthy" }],
+				[
+					"post failure hidden",
+					{ ...valid, post_status: "failed", run_status: "ok" },
+				],
+				[
+					"unobservable hidden",
+					{
+						...valid,
+						counts: { ...valid.counts, fresh: 0, undetermined: 1 },
+						unobservable_active: 1,
+						run_status: "ok",
+					},
+				],
+			];
+			for (const [name, value] of invalidCases) {
+				write(value);
+				expect(readArtifactFreshnessReceipt(path, nowMs), name).toEqual({
+					freshness: "invalid",
+					run_status: "unknown",
+					last_run_at: null,
+				});
+			}
+			writeFileSync(path, "{");
+			expect(readArtifactFreshnessReceipt(path, nowMs)).toEqual({
+				freshness: "invalid",
+				run_status: "unknown",
+				last_run_at: null,
+			});
+
+			writeFileSync(path, "x".repeat(4097));
+			expect(readArtifactFreshnessReceipt(path, nowMs).freshness).toBe(
+				"invalid",
+			);
+			rmSync(path);
+			const target = join(root, "target.json");
+			writeFileSync(target, `${JSON.stringify(valid)}\n`);
+			symlinkSync(target, path);
+			expect(readArtifactFreshnessReceipt(path, nowMs).freshness).toBe(
+				"invalid",
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("tracks started/completed/in-flight timestamps with cadence-aware freshness", () => {
 		let now = 1_000_000;
 		const tracker = new LivenessCheckTracker({
@@ -151,6 +334,73 @@ describe("FLY-1393 liveness manifest", () => {
 			loopTargets: [],
 		});
 		expect(manifest).not.toHaveProperty("probe_forensics");
+	});
+
+	it("publishes the optional Phase A W-4 lane from a validated receipt", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2134-manifest-w4-"));
+		const receiptPath = join(root, "last-run.json");
+		const nowMs = Date.parse("2026-09-08T12:00:00Z");
+		writeFileSync(
+			receiptPath,
+			`${JSON.stringify({
+				schema: 1,
+				run_id: "20260908T120000Z-abcdef",
+				observed_at: "2026-09-08T12:00:00Z",
+				registry_sha256: "a".repeat(64),
+				rows: 1,
+				counts: {
+					fresh: 1,
+					stale: 0,
+					missing: 0,
+					undetermined: 0,
+					suspended: 0,
+				},
+				unobservable_active: 0,
+				post_status: "none",
+				run_status: "ok",
+			})}\n`,
+		);
+		try {
+			const tracker = new LivenessCheckTracker({ cadenceMs: 60_000 });
+			const manifest = buildLivenessManifest({
+				nowMs,
+				bridgeStartedAtMs: nowMs - 60_000,
+				wiring: { liveness: true, externalDrift: true },
+				trackers: { liveness: tracker },
+				deliveryLoopWired: true,
+				loopStallMs: 60_000,
+				loopTargets: [],
+				artifactFreshness: { receiptPath },
+			});
+			expect(manifest.schema_version).toBe(2);
+			expect(manifest.components.w4_artifact_freshness).toEqual({
+				class: "W-4",
+				wired: true,
+				effective_enabled: true,
+				switch: "required/no_switch",
+				observation: "receipt_file",
+				receipt_path: receiptPath,
+				last_run_at: "2026-09-08T12:00:00Z",
+				freshness: "fresh",
+				run_status: "ok",
+			});
+			expect(validateLivenessManifest(manifest)).toEqual({
+				ok: true,
+				errors: [],
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("wires the production Bridge manifest to the artifact freshness receipt", () => {
+		const plugin = readFileSync(
+			new URL("../plugin.ts", import.meta.url),
+			"utf8",
+		);
+		expect(plugin).toMatch(
+			/artifactFreshness:\s*\{\s*receiptPath:\s*join\(\s*artifactFreshnessStateDir\(process\.env\),\s*"last-run\.json",\s*\)/s,
+		);
 	});
 
 	// FLY-1560 刀 6: the schema-v2 contract is only real if the producer here and

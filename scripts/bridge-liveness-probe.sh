@@ -128,10 +128,41 @@ write_state() {
 # "manifest missing" and page the founder for a healthy Bridge.
 _manifest_filter='((.liveness // .watchdogs) // {})'
 
+w4_predicate() {
+  jq -e --arg _ "" "
+    def strict_utc_seconds:
+      type == \"string\" and
+      test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$\") and
+      (. as \$raw |
+        (try fromdateiso8601 catch null) as \$epoch |
+        \$epoch != null and ((\$epoch | todateiso8601) == \$raw));
+    ${_manifest_filter}.components.w4_artifact_freshness as \$w |
+    (\$w | type == \"object\") and
+    (\$w.class == \"W-4\") and
+    (\$w.wired == true) and
+    (\$w.effective_enabled == true) and
+    (\$w.switch == \"required/no_switch\") and
+    (\$w.observation == \"receipt_file\") and
+    (\$w.receipt_path | type == \"string\" and test(\"[^[:space:]]\")) and
+    (\$w.freshness == \"not_started\" or \$w.freshness == \"fresh\" or
+      \$w.freshness == \"stale\" or \$w.freshness == \"invalid\") and
+    (\$w.run_status == \"ok\" or \$w.run_status == \"degraded\" or
+      \$w.run_status == \"unknown\") and
+    (if (\$w.freshness == \"not_started\" or \$w.freshness == \"invalid\") then
+      (\$w.run_status == \"unknown\" and \$w.last_run_at == null)
+     else
+      ((\$w.run_status == \"ok\" or \$w.run_status == \"degraded\") and
+       (\$w.last_run_at | strict_utc_seconds))
+     end)
+  " >/dev/null 2>&1
+}
+
 liveness_manifest_valid() {
+  local body schema
+  body="$(cat)"
   jq -e --arg _ "" "
     ${_manifest_filter} as \$m |
-    (\$m.schema_version == 1 or \$m.schema_version == 2) and
+    (\$m.schema_version == 1 or \$m.schema_version == 2 or \$m.schema_version == 3) and
     (\$m.components.w1_process_liveness | type == \"object\" and .wired == true and (.effective_enabled | type == \"boolean\")) and
     (\$m.components.w2_delivery_loop | type == \"object\" and .wired == true and (.effective_enabled | type == \"boolean\")) and
     (\$m.components.w2_delivery_loop.leads |
@@ -152,7 +183,42 @@ liveness_manifest_valid() {
         ((.in_flight_age_ms | type == \"number\") or .in_flight_age_ms == null)
       )
      else true end)
-  " >/dev/null 2>&1
+  " <<<"$body" >/dev/null 2>&1 || return 1
+
+  schema="$(jq -r "${_manifest_filter}.schema_version" <<<"$body" 2>/dev/null || true)"
+  if jq -e "${_manifest_filter}.components | has(\"w4_artifact_freshness\")" <<<"$body" >/dev/null 2>&1; then
+    w4_predicate <<<"$body"
+  else
+    [[ "$schema" != "3" ]]
+  fi
+}
+
+w4_freshness_unhealthy_reason() {
+  local body="$1" schema freshness run_status
+  schema="$(jq -r "${_manifest_filter} | (.schema_version // 1)" <<<"$body" 2>/dev/null || echo 1)"
+  [[ "$schema" =~ ^[0-9]+$ ]] || schema=1
+
+  if ! jq -e "${_manifest_filter}.components | has(\"w4_artifact_freshness\")" <<<"$body" >/dev/null 2>&1; then
+    (( schema == 3 )) && printf 'manifest 缺少 W-4'
+    return 0
+  fi
+  if ! w4_predicate <<<"$body"; then
+    printf 'W-4 形状非法'
+    return 0
+  fi
+
+  freshness="$(jq -r "${_manifest_filter}.components.w4_artifact_freshness.freshness" <<<"$body")"
+  run_status="$(jq -r "${_manifest_filter}.components.w4_artifact_freshness.run_status" <<<"$body")"
+  case "$freshness" in
+    invalid)
+      printf 'W-4 receipt 非法' ;;
+    stale)
+      printf 'W-4 看者上一轮完成过久' ;;
+    not_started)
+      (( schema == 3 )) && printf 'W-4 看者从未产出 receipt' ;;
+    fresh)
+      [[ "$run_status" == "degraded" ]] && printf 'W-4 看者上一轮有不可判定或投递失败' ;;
+  esac
 }
 
 # FLY-1560 §2.7 receiving end. schema v2 publishes the W-1 tracker state from
@@ -268,11 +334,24 @@ probe_once() {
 
   local degraded_reason=""
   if ! liveness_manifest_valid <<<"$body"; then
-    degraded_reason="liveness manifest 缺失或不完整"
+    local invalid_w4_reason
+    invalid_w4_reason="$(w4_freshness_unhealthy_reason "$body")"
+    case "$invalid_w4_reason" in
+      "manifest 缺少 W-4"|"W-4 形状非法") degraded_reason="$invalid_w4_reason" ;;
+      *) degraded_reason="liveness manifest 缺失或不完整" ;;
+    esac
   else
-    local w1_reason
+    local w1_reason w4_reason
     w1_reason="$(w1_liveness_unhealthy_reason "$(( grace_min * 60 ))" "$body")"
     [[ -n "$w1_reason" ]] && degraded_reason="$w1_reason"
+    w4_reason="$(w4_freshness_unhealthy_reason "$body")"
+    if [[ -n "$w4_reason" ]]; then
+      if [[ -n "$degraded_reason" ]]; then
+        degraded_reason="${degraded_reason}; ${w4_reason}"
+      else
+        degraded_reason="$w4_reason"
+      fi
+    fi
   fi
 
   if [[ -n "$degraded_reason" ]]; then

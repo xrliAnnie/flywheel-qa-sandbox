@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.flywheel.artifact-freshness-check</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>set -a; [ -f "$HOME/.flywheel/.env" ] &amp;&amp; . "$HOME/.flywheel/.env"; set +a; exec /Users/xiaorongli/Dev/flywheel/scripts/artifact-freshness-check.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key><integer>50</integer>
+    </dict>
+    <key>StandardOutPath</key><string>/tmp/flywheel-artifact-freshness-check.log</string>
+    <key>StandardErrorPath</key><string>/tmp/flywheel-artifact-freshness-check.log</string>
+</dict>
+</plist>

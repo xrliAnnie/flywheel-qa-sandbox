@@ -1027,6 +1027,20 @@ const REQUIRED_LIVENESS_ROWS = [
 	"w3_external_drift",
 ] as const;
 
+function isUtcSecondsTimestamp(value: unknown): value is string {
+	if (
+		typeof value !== "string" ||
+		!/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(value)
+	) {
+		return false;
+	}
+	const parsed = Date.parse(value);
+	return (
+		Number.isFinite(parsed) &&
+		`${new Date(parsed).toISOString().slice(0, 19)}Z` === value
+	);
+}
+
 export function validateLivenessManifest(value: unknown): FlagTruthValidation {
 	const errors: string[] = [];
 	if (!value || typeof value !== "object") {
@@ -1037,8 +1051,8 @@ export function validateLivenessManifest(value: unknown): FlagTruthValidation {
 		components?: Record<string, unknown>;
 		probe_forensics?: unknown;
 	};
-	if (manifest.schema_version !== 2) {
-		errors.push("liveness manifest schema_version must be 2");
+	if (manifest.schema_version !== 2 && manifest.schema_version !== 3) {
+		errors.push("liveness manifest schema_version must be 2 or 3");
 	}
 	if (manifest.probe_forensics !== undefined) {
 		if (
@@ -1170,6 +1184,90 @@ export function validateLivenessManifest(value: unknown): FlagTruthValidation {
 					}
 				}
 			}
+		}
+	}
+	const w4 = manifest.components?.w4_artifact_freshness;
+	if (w4 === undefined) {
+		if (manifest.schema_version === 3) {
+			errors.push("liveness manifest missing w4_artifact_freshness");
+		}
+	} else if (!w4 || typeof w4 !== "object" || Array.isArray(w4)) {
+		errors.push("liveness manifest w4_artifact_freshness must be an object");
+	} else {
+		const state = w4 as Record<string, unknown>;
+		if (state.class !== "W-4") {
+			errors.push(
+				'liveness manifest w4_artifact_freshness class must be "W-4"',
+			);
+		}
+		if (state.wired !== true) {
+			errors.push(
+				"liveness manifest w4_artifact_freshness must have wired=true",
+			);
+		}
+		if (state.effective_enabled !== true) {
+			errors.push(
+				"liveness manifest w4_artifact_freshness effective_enabled must be true",
+			);
+		}
+		if (state.switch !== "required/no_switch") {
+			errors.push(
+				'liveness manifest w4_artifact_freshness switch must be "required/no_switch"',
+			);
+		}
+		if (state.observation !== "receipt_file") {
+			errors.push(
+				'liveness manifest w4_artifact_freshness observation must be "receipt_file"',
+			);
+		}
+		if (
+			typeof state.receipt_path !== "string" ||
+			state.receipt_path.trim() === ""
+		) {
+			errors.push(
+				"liveness manifest w4_artifact_freshness receipt_path must be a non-empty string",
+			);
+		}
+		const freshness = state.freshness;
+		const runStatus = state.run_status;
+		if (
+			freshness !== "not_started" &&
+			freshness !== "fresh" &&
+			freshness !== "stale" &&
+			freshness !== "invalid"
+		) {
+			errors.push(
+				"liveness manifest w4_artifact_freshness freshness must be not_started, fresh, stale or invalid",
+			);
+		}
+		if (
+			runStatus !== "ok" &&
+			runStatus !== "degraded" &&
+			runStatus !== "unknown"
+		) {
+			errors.push(
+				"liveness manifest w4_artifact_freshness run_status must be ok, degraded or unknown",
+			);
+		}
+		if (freshness === "not_started" || freshness === "invalid") {
+			if (runStatus !== "unknown" || state.last_run_at !== null) {
+				errors.push(
+					"liveness manifest w4_artifact_freshness not_started/invalid requires run_status=unknown and last_run_at=null",
+				);
+			}
+		} else if (freshness === "fresh" || freshness === "stale") {
+			if (
+				(runStatus !== "ok" && runStatus !== "degraded") ||
+				!isUtcSecondsTimestamp(state.last_run_at)
+			) {
+				errors.push(
+					"liveness manifest w4_artifact_freshness fresh/stale requires run_status=ok|degraded and last_run_at in UTC seconds",
+				);
+			}
+		} else if (state.last_run_at !== null) {
+			errors.push(
+				"liveness manifest w4_artifact_freshness last_run_at must match its freshness state",
+			);
 		}
 	}
 	return { ok: errors.length === 0, errors };

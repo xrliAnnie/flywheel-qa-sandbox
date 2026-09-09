@@ -20,6 +20,7 @@ LOG="$TASK_TMP_DIR/operator.log"
 mkdir -p "$FIXTURE_SOURCE" "$AGENTS" "$STATE"
 cp "$REPO_ROOT/scripts/launchd/com.flywheel.lead-memory-sync.plist" "$FIXTURE_SOURCE/"
 cp "$REPO_ROOT/scripts/launchd/com.flywheel.lead-memory-arrival-check.plist" "$FIXTURE_SOURCE/"
+cp "$REPO_ROOT/scripts/launchd/com.flywheel.artifact-freshness-check.plist" "$FIXTURE_SOURCE/"
 cp "$REPO_ROOT/scripts/launchd/units.manifest" "$MANIFEST"
 
 HARNESS="$TASK_TMP_DIR/run-retire.sh"
@@ -71,12 +72,19 @@ run_operator() {
 
 SYNC_LABEL=com.flywheel.lead-memory-sync
 ARRIVAL_LABEL=com.flywheel.lead-memory-arrival-check
+ARTIFACT_LABEL=com.flywheel.artifact-freshness-check
 install_unit() {
 	local label="$1"
 	cp "$FIXTURE_SOURCE/$label.plist" "$AGENTS/$label.plist"
 	printf 'loaded\n' >"$STATE/domain-$label"
 	printf 'enabled\n' >"$STATE/disabled-$label"
 }
+
+run_operator "$ARTIFACT_LABEL" >"$TASK_TMP_DIR/artifact-preview.out" ||
+	fail "artifact freshness retirement preview is accepted"
+grep -Fq "$ARTIFACT_LABEL" "$TASK_TMP_DIR/artifact-preview.out" ||
+	fail "artifact freshness preview omits the selected unit"
+pass "retirement preview accepts the artifact freshness observer"
 
 : >"$LOG"
 install_unit "$SYNC_LABEL"
@@ -313,11 +321,77 @@ test ! -e "$CONVERGE_AGENTS/$SYNC_LABEL.plist" && test ! -s "$CONVERGE_BOOTSTRAP
 	fail "disabled retired unit is resurrected by convergence"
 pass "disabled override prevents manifest-driven resurrection"
 
+# FLY-2134: the generalized third label must traverse the same authority and
+# crash-safety matrix as the two original memory observers.
+reset_unit "$ARTIFACT_LABEL"
+run_operator --apply --i-am-operator "$ARTIFACT_LABEL" >/dev/null ||
+	fail "artifact observer retirement apply fails"
+ARTIFACT_ARCHIVE="$AGENTS/retired-20260904/$ARTIFACT_LABEL.plist"
+test ! -e "$AGENTS/$ARTIFACT_LABEL.plist" && test -f "$ARTIFACT_ARCHIVE" &&
+	test "$(cat "$STATE/disabled-$ARTIFACT_LABEL")" = disabled &&
+	test "$(cat "$STATE/domain-$ARTIFACT_LABEL")" = missing ||
+	fail "artifact observer apply did not disable, unload, archive, and unlink"
+ARTIFACT_LOG_HASH="$(shasum -a 256 "$LOG" | awk '{print $1}')"
+run_operator --apply --i-am-operator "$ARTIFACT_LABEL" >/dev/null ||
+	fail "artifact observer retirement is not idempotent"
+test "$(shasum -a 256 "$LOG" | awk '{print $1}')" = "$ARTIFACT_LOG_HASH" ||
+	fail "artifact observer idempotence repeated an audit or mutation"
+run_operator --enable --i-am-operator "$ARTIFACT_LABEL" >/dev/null ||
+	fail "artifact observer enable recovery fails with repository authority present"
+test "$(cat "$STATE/disabled-$ARTIFACT_LABEL")" = enabled ||
+	fail "artifact observer enable did not clear its disabled override"
+
+reset_unit "$ARTIFACT_LABEL"
+set +e
+TEST_AUDIT_FAIL=1 run_operator --apply --i-am-operator "$ARTIFACT_LABEL" >/dev/null 2>&1
+ARTIFACT_AUDIT_RC=$?
+set -e
+test "$ARTIFACT_AUDIT_RC" -ne 0 && test "$(cat "$STATE/disabled-$ARTIFACT_LABEL")" = enabled &&
+	test "$(cat "$STATE/domain-$ARTIFACT_LABEL")" = loaded ||
+	fail "artifact observer audit failure permitted mutation"
+
+printf 'disabled\n' >"$STATE/disabled-$ARTIFACT_LABEL"
+printf 'missing\n' >"$STATE/domain-$ARTIFACT_LABEL"
+mkdir -p "$AGENTS/retired-20260904"
+ln "$AGENTS/$ARTIFACT_LABEL.plist" "$ARTIFACT_ARCHIVE"
+run_operator --apply --i-am-operator "$ARTIFACT_LABEL" >/dev/null ||
+	fail "artifact observer cannot resume publish-before-unlink crash window"
+test ! -e "$AGENTS/$ARTIFACT_LABEL.plist" && test -f "$ARTIFACT_ARCHIVE" ||
+	fail "artifact observer crash resume did not finish the source unlink"
+
+reset_unit "$ARTIFACT_LABEL"
+printf '\nforeign\n' >>"$AGENTS/$ARTIFACT_LABEL.plist"
+ARTIFACT_LOG_HASH="$(shasum -a 256 "$LOG" | awk '{print $1}')"
+set +e
+run_operator --apply --i-am-operator "$ARTIFACT_LABEL" >/dev/null 2>&1
+ARTIFACT_IDENTITY_RC=$?
+set -e
+test "$ARTIFACT_IDENTITY_RC" -ne 0 && test "$(cat "$STATE/disabled-$ARTIFACT_LABEL")" = enabled &&
+	test "$(cat "$STATE/domain-$ARTIFACT_LABEL")" = loaded &&
+	test "$(shasum -a 256 "$LOG" | awk '{print $1}')" = "$ARTIFACT_LOG_HASH" ||
+	fail "artifact observer identity drift reached audit or mutation"
+
+rm -f -- "$FIXTURE_SOURCE/$ARTIFACT_LABEL.plist"
+printf 'disabled\n' >"$STATE/disabled-$ARTIFACT_LABEL"
+set +e
+run_operator --enable --i-am-operator "$ARTIFACT_LABEL" >/dev/null 2>&1
+ARTIFACT_AUTHORITY_RC=$?
+set -e
+test "$ARTIFACT_AUTHORITY_RC" -ne 0 && test "$(cat "$STATE/disabled-$ARTIFACT_LABEL")" = disabled ||
+	fail "artifact observer enable ignored missing repository authority"
+cp "$REPO_ROOT/scripts/launchd/$ARTIFACT_LABEL.plist" "$FIXTURE_SOURCE/"
+pass "artifact observer passes apply, idempotence, audit, resume, identity, and enable-authority guards"
+
+if grep -Eq 'enable-memory-unit|retire-memory-unit|memory unit (enable|retirement) requested' "$SOURCE"; then
+	fail "generalized retirement audit vocabulary remains memory-only"
+fi
+pass "retirement audit vocabulary is generic across all three observer labels"
+
 set +e
 run_operator --apply --i-am-operator com.flywheel.not-memory >/dev/null 2>&1
 FOREIGN_LABEL_RC=$?
 set -e
 test "$FOREIGN_LABEL_RC" -ne 0 || fail "retirement accepts a label outside its exact allowlist"
-pass "retirement is bounded to the two FLY-2146 labels"
+pass "retirement is bounded to the three manifest-backed observer labels"
 
 printf 'ALL %s TESTS PASSED\n' "$PASSED"

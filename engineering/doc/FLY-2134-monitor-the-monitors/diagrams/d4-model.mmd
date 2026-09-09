@@ -1,0 +1,17 @@
+flowchart TB
+  M["登记表 artifact-freshness.manifest · 一行一个产出物<br/>artifact_id · kind · target · max_age_h · state · owner · note<br/>kind ∈ file_mtime / sqlite_max / git_remote_head<br/>state ∈ active(会告警) / suspended(只列出,note 必带 FLY 单号)"]
+  M --> R1["token-usage-daily-row · sqlite_max<br/>token-usage.db :: token_usage_daily :: day · ≤36h · active"]
+  M --> R2["chezmoi-remote-head · git_remote_head<br/>~/.local/share/chezmoi · ≤48h · active"]
+  M --> R3["lead-memory-arrival-ledger · file_mtime<br/>arrival/checks.tsv · ≤3h · active"]
+  M --> R4["bridge-liveness-probe-state · file_mtime<br/>state/bridge-liveness-probe.json · ≤0.25h · active"]
+  M --> R5["runner-memory-remote-head · git_remote_head<br/>~/.flywheel/runner-memory · ≤26h · active"]
+  R1 --> SD
+  R2 --> SD
+  R3 --> SD
+  R4 --> SD
+  R5 --> SD
+  SD["状态目录 ~/.flywheel/state/artifact-freshness/ · 0700 · 只有看者写"]
+  SD --> F1["state.json · schema 1<br/>每个 active 行两本账 incident / unobservable<br/>active · lastNotifiedAt · streak"]
+  SD --> F2["checks.tsv · 只追加 · 固定表头<br/>run_id · observed_at · artifact_id · kind · verdict · observed_value · age_h · max_age_h · state · detail · post_status"]
+  SD --> F3["last-run.json · schema 1 · 整轮完成才写<br/>run_id · observed_at · registry_sha256 · rows · counts · unobservable_active · post_status · run_status"]
+  F3 --> W4["Bridge /health · components.w4_artifact_freshness<br/>observation = receipt_file · last_run_at · run_status<br/>freshness ∈ not_started / fresh / stale(180 分钟) / invalid(receipt 任一字段不合规)"]

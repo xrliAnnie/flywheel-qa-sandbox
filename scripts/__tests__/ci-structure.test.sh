@@ -833,6 +833,7 @@ expected_shard_tests = {
     ],
     "script-tests-5": [
         "Test — FLY-2146 Lead memory remote sync",
+        "Test — FLY-2134 artifact freshness monitor",
     ],
 }
 script_shards = {
@@ -977,6 +978,32 @@ require(
 )
 fly2146_env = mapping(fly2146_step.get("env"), "FLY-2146 shell suite env")
 require(str(fly2146_env.get("GITLEAKS_VERSION")) == "8.30.1", "FLY-2146 must pin gitleaks 8.30.1")
+
+fly2134_steps = [
+    step for step in script_steps_5
+    if isinstance(step, dict) and step.get("name") == "Test — FLY-2134 artifact freshness monitor"
+]
+require(len(fly2134_steps) == 1, "script-tests-5 must contain exactly one FLY-2134 step")
+fly2134_step = fly2134_steps[0]
+fly2134_commands = [
+    line.strip()
+    for line in str(fly2134_step.get("run", "")).splitlines()
+    if line.strip().startswith("bash scripts/__tests__/")
+]
+expected_fly2134_commands = [
+    "bash scripts/__tests__/artifact-freshness-manifest.test.sh",
+    "bash scripts/__tests__/artifact-freshness-check.test.sh",
+    "bash scripts/__tests__/bridge-liveness-probe-w4.test.sh",
+]
+require(
+    fly2134_commands == expected_fly2134_commands,
+    f"FLY-2134 CI must run the three new suites exactly once and serially: {fly2134_commands}",
+)
+require("if" not in fly2134_step, "FLY-2134 shell suites must not be conditional")
+require(
+    "continue-on-error" not in fly2134_step,
+    "FLY-2134 shell suites must fail the PR gate",
+)
 
 repo_root = os.path.dirname(os.path.dirname(os.path.dirname(workflow_path)))
 missing_bash_paths = []

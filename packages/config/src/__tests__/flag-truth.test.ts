@@ -26,6 +26,18 @@ const W1_TRACKED_FIELDS = {
 	freshness: "fresh",
 };
 
+const W4_ARTIFACT_FRESHNESS_FIELDS = {
+	class: "W-4",
+	wired: true,
+	effective_enabled: true,
+	switch: "required/no_switch",
+	observation: "receipt_file",
+	receipt_path: "/tmp/flywheel-state/state/artifact-freshness/last-run.json",
+	freshness: "fresh",
+	run_status: "ok",
+	last_run_at: "2026-09-08T12:00:00Z",
+};
+
 const FLY_1806_RETIRED_FLAGS = [
 	"FLYWHEEL_GATEPOLLER_CIRCUIT",
 	"FLYWHEEL_FOUNDER_THREAD_NOTIFY",
@@ -719,6 +731,176 @@ describe("FLY-1393 flag truth", () => {
 		expect(result.errors.join("\n")).toMatch(
 			/w3_external_drift.*observation=static_contract/,
 		);
+	});
+
+	it("keeps W-4 optional in schema 2 and requires its full contract in schema 3", () => {
+		const manifest = (schemaVersion: number, includeW4: boolean) => ({
+			schema_version: schemaVersion,
+			components: {
+				w1_process_liveness: {
+					wired: true,
+					effective_enabled: true,
+					...W1_TRACKED_FIELDS,
+				},
+				w2_delivery_loop: {
+					wired: true,
+					effective_enabled: true,
+					leads: [],
+				},
+				w3_external_drift: {
+					wired: true,
+					effective_enabled: true,
+					observation: "static_contract",
+				},
+				...(includeW4
+					? { w4_artifact_freshness: { ...W4_ARTIFACT_FRESHNESS_FIELDS } }
+					: {}),
+			},
+		});
+
+		expect(validateLivenessManifest(manifest(2, false))).toEqual({
+			ok: true,
+			errors: [],
+		});
+		expect(validateLivenessManifest(manifest(2, true))).toEqual({
+			ok: true,
+			errors: [],
+		});
+		expect(validateLivenessManifest(manifest(3, true))).toEqual({
+			ok: true,
+			errors: [],
+		});
+		const missing = validateLivenessManifest(manifest(3, false));
+		expect(missing.ok).toBe(false);
+		expect(missing.errors.join("\n")).toMatch(/missing w4_artifact_freshness/);
+	});
+
+	it("rejects every malformed W-4 field and impossible receipt-state combination", () => {
+		const manifest = (w4: Record<string, unknown>) => ({
+			schema_version: 2,
+			components: {
+				w1_process_liveness: {
+					wired: true,
+					effective_enabled: true,
+					...W1_TRACKED_FIELDS,
+				},
+				w2_delivery_loop: {
+					wired: true,
+					effective_enabled: true,
+					leads: [],
+				},
+				w3_external_drift: {
+					wired: true,
+					effective_enabled: true,
+					observation: "static_contract",
+				},
+				w4_artifact_freshness: w4,
+			},
+		});
+		const invalidCases: Array<[string, Record<string, unknown>, RegExp]> = [
+			["class", { ...W4_ARTIFACT_FRESHNESS_FIELDS, class: "W-3" }, /class/],
+			["wired", { ...W4_ARTIFACT_FRESHNESS_FIELDS, wired: false }, /wired/],
+			[
+				"effective_enabled",
+				{ ...W4_ARTIFACT_FRESHNESS_FIELDS, effective_enabled: false },
+				/effective_enabled/,
+			],
+			[
+				"switch",
+				{ ...W4_ARTIFACT_FRESHNESS_FIELDS, switch: "required" },
+				/switch/,
+			],
+			[
+				"observation",
+				{ ...W4_ARTIFACT_FRESHNESS_FIELDS, observation: "process_status" },
+				/observation/,
+			],
+			[
+				"receipt_path",
+				{ ...W4_ARTIFACT_FRESHNESS_FIELDS, receipt_path: " \t " },
+				/receipt_path/,
+			],
+			[
+				"freshness",
+				{ ...W4_ARTIFACT_FRESHNESS_FIELDS, freshness: "in_flight" },
+				/freshness/,
+			],
+			[
+				"run_status",
+				{ ...W4_ARTIFACT_FRESHNESS_FIELDS, run_status: "unknown" },
+				/run_status/,
+			],
+			[
+				"last_run_at",
+				{
+					...W4_ARTIFACT_FRESHNESS_FIELDS,
+					last_run_at: "2026-09-08T12:00:00.000Z",
+				},
+				/last_run_at/,
+			],
+			[
+				"not_started combination",
+				{ ...W4_ARTIFACT_FRESHNESS_FIELDS, freshness: "not_started" },
+				/not_started\/invalid/,
+			],
+			[
+				"invalid combination",
+				{ ...W4_ARTIFACT_FRESHNESS_FIELDS, freshness: "invalid" },
+				/not_started\/invalid/,
+			],
+			[
+				"fresh combination",
+				{
+					...W4_ARTIFACT_FRESHNESS_FIELDS,
+					run_status: "unknown",
+					last_run_at: null,
+				},
+				/fresh\/stale/,
+			],
+		];
+		for (const [name, w4, expectedError] of invalidCases) {
+			const result = validateLivenessManifest(manifest(w4));
+			expect(result.ok, name).toBe(false);
+			expect(result.errors.join("\n"), name).toMatch(expectedError);
+		}
+
+		for (const field of Object.keys(W4_ARTIFACT_FRESHNESS_FIELDS)) {
+			const w4: Record<string, unknown> = {
+				...W4_ARTIFACT_FRESHNESS_FIELDS,
+			};
+			delete w4[field];
+			const result = validateLivenessManifest(manifest(w4));
+			expect(result.ok, `missing ${field}`).toBe(false);
+			expect(result.errors.join("\n"), `missing ${field}`).toMatch(
+				new RegExp(field),
+			);
+		}
+
+		for (const freshness of ["not_started", "invalid"] as const) {
+			expect(
+				validateLivenessManifest(
+					manifest({
+						...W4_ARTIFACT_FRESHNESS_FIELDS,
+						freshness,
+						run_status: "unknown",
+						last_run_at: null,
+					}),
+				),
+			).toEqual({ ok: true, errors: [] });
+		}
+		for (const freshness of ["fresh", "stale"] as const) {
+			for (const runStatus of ["ok", "degraded"] as const) {
+				expect(
+					validateLivenessManifest(
+						manifest({
+							...W4_ARTIFACT_FRESHNESS_FIELDS,
+							freshness,
+							run_status: runStatus,
+						}),
+					),
+				).toEqual({ ok: true, errors: [] });
+			}
+		}
 	});
 
 	it("rejects a W-2 Lead row whose identity or freshness is missing or invalid", () => {

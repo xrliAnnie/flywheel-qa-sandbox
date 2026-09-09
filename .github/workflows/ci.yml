@@ -1238,6 +1238,12 @@ jobs:
           bash scripts/__tests__/test-lead-memory-observe-workflow.test.sh
           bash scripts/__tests__/test-lead-memory-retire.test.sh
 
+      - name: Test — FLY-2134 artifact freshness monitor
+        run: |
+          bash scripts/__tests__/artifact-freshness-manifest.test.sh
+          bash scripts/__tests__/artifact-freshness-check.test.sh
+          bash scripts/__tests__/bridge-liveness-probe-w4.test.sh
+
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"

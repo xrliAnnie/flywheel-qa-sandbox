@@ -306,14 +306,28 @@ v2_manifest() {
 REAL_MANIFEST_JS="$SCRIPT_DIR/../../packages/teamlead/dist/bridge/liveness-manifest.js"
 if [[ -f "$REAL_MANIFEST_JS" ]] && command -v node >/dev/null 2>&1; then
 	real_body="$(node -e '
+		const fs = require("node:fs");
 		const { buildLivenessManifest, LivenessCheckTracker } = require(process.argv[1]);
+		const receiptPath = process.argv[2];
 		const nowMs = Date.parse("2026-08-14T09:00:00.000Z");
 		const cadenceMs = 300000;
+		fs.writeFileSync(receiptPath, JSON.stringify({
+			schema: 1,
+			run_id: "20260814T090000Z-abcdef",
+			observed_at: "2026-08-14T09:00:00Z",
+			registry_sha256: "a".repeat(64),
+			rows: 1,
+			counts: { fresh: 1, stale: 0, missing: 0, undetermined: 0, suspended: 0 },
+			unobservable_active: 0,
+			post_status: "none",
+			run_status: "ok",
+		}) + "\n");
 		const build = (t) => buildLivenessManifest({
 			nowMs, bridgeStartedAtMs: nowMs - 3600000,
 			wiring: { liveness: true, externalDrift: true },
 			trackers: { liveness: t },
 			deliveryLoopWired: true, loopStallMs: 600000,
+			artifactFreshness: { receiptPath },
 			loopTargets: [{ projectName: "flywheel", leadId: "lead-a", queue: { getHeartbeat: () => ({
 				lead_id: "lead-a", last_started_at: "2026-08-14T08:59:59.000Z",
 				last_success_at: "2026-08-14T08:59:59.500Z" }) } }],
@@ -330,15 +344,17 @@ if [[ -f "$REAL_MANIFEST_JS" ]] && command -v node >/dev/null 2>&1; then
 			fresh: { ok: true, liveness: build(fresh) },
 			hung: { ok: true, liveness: build(hung) },
 		}));
-	' "$REAL_MANIFEST_JS" 2>/dev/null)"
+	' "$REAL_MANIFEST_JS" "$TMP/artifact-last-run.json" 2>/dev/null)"
 	if [[ -n "$real_body" ]]; then
 		real_fresh="$(jq -c '.fresh' <<<"$real_body")"
 		real_hung="$(jq -c '.hung' <<<"$real_body")"
 		if liveness_manifest_valid <<<"$real_fresh" \
 			&& liveness_manifest_valid <<<"$real_hung" \
+			&& jq -e '.liveness.components.w4_artifact_freshness | .freshness == "fresh" and .run_status == "ok"' <<<"$real_fresh" >/dev/null \
+			&& [[ -z "$(w4_freshness_unhealthy_reason "$real_fresh")" ]] \
 			&& [[ -z "$(w1_liveness_unhealthy_reason 300 "$real_fresh")" ]] \
 			&& [[ -n "$(w1_liveness_unhealthy_reason 300 "$real_hung")" ]]; then
-			pass "T12 real buildLivenessManifest output: fresh healthy, hung owner flagged"
+			pass "T12 real producer + receipt: W-4 fresh/ok, W-1 fresh healthy, hung owner flagged"
 		else
 			fail "T12 probe disagrees with the REAL manifest producer: fresh_reason=$(w1_liveness_unhealthy_reason 300 "$real_fresh") hung_reason=$(w1_liveness_unhealthy_reason 300 "$real_hung")"
 		fi

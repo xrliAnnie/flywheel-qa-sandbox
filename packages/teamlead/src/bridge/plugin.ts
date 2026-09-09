@@ -517,6 +517,7 @@ import {
 	resolveProjectNameParam,
 } from "./linear-scope.js";
 import {
+	artifactFreshnessStateDir,
 	buildLivenessManifest,
 	inboxLoopStallMs,
 	LivenessCheckTracker,
@@ -5887,6 +5888,12 @@ export async function startBridge(
 				deliveryLoopWired,
 				loopStallMs: inboxLoopStallMs(process.env),
 				loopTargets: leadInboxRuntime.healthTargets(),
+				artifactFreshness: {
+					receiptPath: join(
+						artifactFreshnessStateDir(process.env),
+						"last-run.json",
+					),
+				},
 				...(heartbeatServiceRef.current
 					? {
 							probeForensics:

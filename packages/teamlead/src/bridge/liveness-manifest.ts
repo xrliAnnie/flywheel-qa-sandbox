@@ -1,5 +1,6 @@
+import { lstatSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { MailboxQueue } from "flywheel-comm/mailbox-queue";
 
 export interface InboxLoopHealthTarget {
@@ -16,6 +17,124 @@ export interface LivenessProbeForensics {
 	last_at: string | null;
 }
 
+export type ArtifactFreshnessReceiptState = {
+	freshness: "not_started" | "fresh" | "stale" | "invalid";
+	run_status: "ok" | "degraded" | "unknown";
+	last_run_at: string | null;
+};
+
+export const ARTIFACT_FRESHNESS_STALL_MS = 180 * 60_000;
+const ARTIFACT_FRESHNESS_RECEIPT_MAX_BYTES = 4096;
+const ARTIFACT_FRESHNESS_FUTURE_SKEW_MS = 300_000;
+const ARTIFACT_FRESHNESS_COUNT_KEYS = [
+	"fresh",
+	"stale",
+	"missing",
+	"undetermined",
+	"suspended",
+] as const;
+
+const invalidArtifactFreshnessReceipt = (): ArtifactFreshnessReceiptState => ({
+	freshness: "invalid",
+	run_status: "unknown",
+	last_run_at: null,
+});
+
+export function readArtifactFreshnessReceipt(
+	path: string,
+	nowMs: number,
+): ArtifactFreshnessReceiptState {
+	try {
+		const stat = lstatSync(path, { throwIfNoEntry: false });
+		if (stat === undefined) {
+			return {
+				freshness: "not_started",
+				run_status: "unknown",
+				last_run_at: null,
+			};
+		}
+		if (!stat.isFile() || stat.isSymbolicLink()) {
+			return invalidArtifactFreshnessReceipt();
+		}
+		if (stat.size > ARTIFACT_FRESHNESS_RECEIPT_MAX_BYTES) {
+			return invalidArtifactFreshnessReceipt();
+		}
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return invalidArtifactFreshnessReceipt();
+		}
+		const receipt = parsed as Record<string, unknown>;
+		if (
+			receipt.schema !== 1 ||
+			typeof receipt.run_id !== "string" ||
+			!/^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/.test(receipt.run_id) ||
+			typeof receipt.observed_at !== "string" ||
+			!/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(
+				receipt.observed_at,
+			) ||
+			typeof receipt.registry_sha256 !== "string" ||
+			!/^[0-9a-f]{64}$/.test(receipt.registry_sha256) ||
+			!Number.isSafeInteger(receipt.rows) ||
+			(receipt.rows as number) < 0 ||
+			!Number.isSafeInteger(receipt.unobservable_active) ||
+			(receipt.unobservable_active as number) < 0 ||
+			(receipt.unobservable_active as number) > (receipt.rows as number) ||
+			(receipt.post_status !== "none" &&
+				receipt.post_status !== "success" &&
+				receipt.post_status !== "failed") ||
+			(receipt.run_status !== "ok" && receipt.run_status !== "degraded")
+		) {
+			return invalidArtifactFreshnessReceipt();
+		}
+		const observedAtMs = Date.parse(receipt.observed_at);
+		if (
+			!Number.isFinite(observedAtMs) ||
+			`${new Date(observedAtMs).toISOString().slice(0, 19)}Z` !==
+				receipt.observed_at ||
+			observedAtMs > nowMs + ARTIFACT_FRESHNESS_FUTURE_SKEW_MS
+		) {
+			return invalidArtifactFreshnessReceipt();
+		}
+		if (
+			!receipt.counts ||
+			typeof receipt.counts !== "object" ||
+			Array.isArray(receipt.counts)
+		) {
+			return invalidArtifactFreshnessReceipt();
+		}
+		const counts = receipt.counts as Record<string, unknown>;
+		if (
+			Object.keys(counts).length !== ARTIFACT_FRESHNESS_COUNT_KEYS.length ||
+			!ARTIFACT_FRESHNESS_COUNT_KEYS.every(
+				(key) =>
+					Number.isSafeInteger(counts[key]) && (counts[key] as number) >= 0,
+			) ||
+			ARTIFACT_FRESHNESS_COUNT_KEYS.reduce(
+				(total, key) => total + (counts[key] as number),
+				0,
+			) !== receipt.rows
+		) {
+			return invalidArtifactFreshnessReceipt();
+		}
+		const derivedRunStatus =
+			(receipt.unobservable_active as number) > 0 ||
+			receipt.post_status === "failed"
+				? "degraded"
+				: "ok";
+		if (receipt.run_status !== derivedRunStatus) {
+			return invalidArtifactFreshnessReceipt();
+		}
+		return {
+			freshness:
+				nowMs - observedAtMs <= ARTIFACT_FRESHNESS_STALL_MS ? "fresh" : "stale",
+			run_status: receipt.run_status as "ok" | "degraded",
+			last_run_at: receipt.observed_at,
+		};
+	} catch {
+		return invalidArtifactFreshnessReceipt();
+	}
+}
+
 const DEFAULT_INBOX_LOOP_STALL_MS = 10 * 60_000;
 
 export function inboxLoopStallMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -26,6 +145,13 @@ export function inboxLoopStallMs(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 export type LivenessEnv = Record<string, string | undefined>;
+
+export function artifactFreshnessStateDir(
+	env: LivenessEnv = process.env,
+): string {
+	const root = env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel");
+	return join(root, "state", "artifact-freshness");
+}
 
 /**
  * The W-2 hang seam is destructive, so a target Lead alone is insufficient.
@@ -136,6 +262,7 @@ export function buildLivenessManifest(input: {
 	loopStallMs: number;
 	loopTargets: readonly InboxLoopHealthTarget[];
 	probeForensics?: LivenessProbeForensics;
+	artifactFreshness?: { receiptPath: string };
 }) {
 	const nowMs = input.nowMs ?? Date.now();
 	const tracked = (
@@ -192,6 +319,22 @@ export function buildLivenessManifest(input: {
 				observation: "static_contract",
 				switch: "required/no_switch",
 			},
+			...(input.artifactFreshness === undefined
+				? {}
+				: {
+						w4_artifact_freshness: {
+							class: "W-4",
+							wired: true,
+							effective_enabled: true,
+							switch: "required/no_switch",
+							observation: "receipt_file",
+							receipt_path: input.artifactFreshness.receiptPath,
+							...readArtifactFreshnessReceipt(
+								input.artifactFreshness.receiptPath,
+								nowMs,
+							),
+						},
+					}),
 		},
 	};
 }

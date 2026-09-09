@@ -195,6 +195,9 @@ def validate_repo_manifest(text):
         "com.flywheel.daily-standup": ("com.flywheel.daily-standup.plist", "copy", "0,1", None),
         "com.flywheel.token-usage-daily": ("com.flywheel.token-usage-daily.plist", "copy", "0", None),
         "com.flywheel.bridge-liveness-probe": ("com.flywheel.bridge-liveness-probe.plist", "copy", "0", None),
+        "com.flywheel.artifact-freshness-check": (
+            "com.flywheel.artifact-freshness-check.plist", "copy", "0", "reports incidents independently"
+        ),
         "com.flywheel.codex-log-guard": ("com.flywheel.codex-log-guard.plist", "copy", "0", "never-installed-copy-exception"),
         "com.flywheel.lead-memory-sync": (
             "com.flywheel.lead-memory-sync.plist", "copy", "0,2,3,4,5,7,75", "remote arrival"
@@ -287,6 +290,21 @@ def validate_repo_manifest(text):
             reject(value != expected_log, f"{label}: {key} is not the approved literal path")
             reject("$HOME" in value or "~" in value,
                    f"{label}: {key} contains a launchd-unexpanded home token")
+    artifact_label = "com.flywheel.artifact-freshness-check"
+    artifact_data = plist_data(launchd_dir / by_label[artifact_label]["source"])
+    reject(resolved.get(artifact_label) != host_prefix + "scripts/artifact-freshness-check.sh",
+           "artifact freshness shell -c payload did not resolve to its literal repo payload")
+    reject(artifact_data.get("StartCalendarInterval") != {"Minute": 50},
+           "artifact freshness observer must run hourly at minute 50")
+    reject(artifact_data.get("EnvironmentVariables") != {
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    }, "artifact freshness observer may declare only the approved PATH")
+    for key in ("StandardOutPath", "StandardErrorPath"):
+        value = artifact_data.get(key)
+        reject(value != "/tmp/flywheel-artifact-freshness-check.log",
+               f"artifact freshness {key} is not the approved literal path")
+        reject("$HOME" in value or "~" in value,
+               f"artifact freshness {key} contains an unexpanded home token")
     return host_prefix, census_scopes, rows
 
 

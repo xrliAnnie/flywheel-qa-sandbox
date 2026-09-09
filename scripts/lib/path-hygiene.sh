@@ -177,6 +177,7 @@ scripts/launchd/com.flywheel.codex-log-guard.plist
 scripts/launchd/com.flywheel.bridge-liveness-probe.plist
 scripts/launchd/com.flywheel.lead-memory-sync.plist
 scripts/launchd/com.flywheel.lead-memory-arrival-check.plist
+scripts/launchd/com.flywheel.artifact-freshness-check.plist
 scripts/com.flywheel.calendar-sweep.plist.template
 scripts/host-tmux-selection-gate.sh
 scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh

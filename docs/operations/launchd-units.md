@@ -53,6 +53,71 @@ as `lead` or `aux`; that JSON is capture/provision input used to narrate or
 reproduce a host. It does not replace the local policy, exit-code, source, or
 hold authority.
 
+## Artifact freshness registry
+
+[`scripts/launchd/artifact-freshness.manifest`](../../scripts/launchd/artifact-freshness.manifest)
+declares expected outputs; it does not declare launchd delivery. Each TSV row
+binds a stable artifact id to one read-only observation (`file_mtime`,
+`sqlite_max`, or `git_remote_head`), a maximum age, an explicit state, and an
+owner. The hourly `com.flywheel.artifact-freshness-check` unit evaluates those
+outputs without trusting the owner's logs, exit status, or launchd state. Its
+own delivery still belongs in `units.manifest` as a normal `copy` unit.
+
+Before adding or changing a row:
+
+1. Identify a durable output that proves delivery, not merely execution. For a
+   remote-delivery mechanism, prefer the remote head or remote object.
+2. Choose a threshold that includes the expected cadence and bounded delivery
+   delay. Keep the row `active` unless a reviewed issue explicitly records an
+   intentional suspension.
+3. Use only a literal `$HOME/` target. A `sqlite_max` target is
+   `$HOME/path.db::table::column`; table and column are identifiers, not SQL.
+4. Name a launchd label already present in `units.manifest`, an
+   `external:<owner>`, or `none`. A `suspended` row's note must cite its
+   governing `FLY-<number>` issue.
+5. Validate the whole registry and run its required suites before delivery:
+
+   ```bash
+   bash scripts/artifact-freshness-check.sh --validate
+   bash scripts/__tests__/artifact-freshness-manifest.test.sh
+   bash scripts/__tests__/artifact-freshness-check.test.sh
+   bash scripts/__tests__/bridge-liveness-probe-w4.test.sh
+   ```
+
+One invalid row rejects the complete registry. The state root is the trimmed,
+non-empty `FLYWHEEL_STATE_DIR`, or `$HOME/.flywheel` when it is unset, empty, or
+only whitespace. The observer writes private state below that root at
+`state/artifact-freshness/`: an episode ledger (`state.json`), append-only
+observations (`checks.tsv`), and the last completed-round receipt
+(`last-run.json`). Inspect without mutation or notification using:
+
+```bash
+bash scripts/artifact-freshness-check.sh --status
+curl -s localhost:9876/health |
+  jq '.liveness.components.w4_artifact_freshness | {freshness, run_status}'
+```
+
+`fresh` and `stale` are output-age judgments; `missing` asserts that a required
+output does not exist; `undetermined` means the read-only probe could not judge
+it. Two consecutive `undetermined` rounds open an independent unobservable
+episode. `suspended` is not inferred from launchd: it is a reviewed registry
+state, produces ledger evidence, never pages, and changes only by PR.
+
+To remove a single watched output, delete its registry row by PR. To retire the
+observer itself, ordering is mandatory: while the source plist and `copy` row
+still exist, an operator first runs the audited authority path:
+
+```bash
+bash scripts/lead-memory/retire-units.sh --apply --i-am-operator \
+  com.flywheel.artifact-freshness-check
+```
+
+Only after that succeeds may a follow-up PR change the unit policy to `hold`.
+Reversing those steps makes the retirement tool correctly fail closed because
+the `copy` row is its mutation authority. Plist byte changes likewise require
+retire, edit, manifest validation, and bootstrap; convergence does not refresh
+an already installed plist merely because repo bytes changed.
+
 ## Census and convergence
 
 The same library exposes mutating non-Lead convergence and a read-only,

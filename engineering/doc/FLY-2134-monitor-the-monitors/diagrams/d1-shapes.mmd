@@ -1,0 +1,20 @@
+flowchart TB
+  subgraph A["形状 A · 报成功地死"]
+    A1[token-usage.db<br/>launchd 单元被 disabled<br/>最后写入 2026-06-30] --> A3[自己的日志 / 退出码 / 状态<br/>全部看起来正常]
+    A2[chezmoi 自动同步<br/>本地领先远端 126 次提交<br/>日志每天写 Sync completed] --> A3
+  end
+  subgraph B["形状 B · 假设存在而从未存在"]
+    B1[agent-memory 零副本<br/>已由 FLY-2145/2146 修好] --> B3[从来没人建过<br/>所有人以为有]
+    B2[runner-memory 零副本<br/>194 个记忆文件 · 非 git] --> B3
+  end
+  A3 --> R
+  B3 --> R
+  R[["一张登记表:每个机制<br/>应该产出什么 · 多久必须更新一次"]]
+  R --> C{独立进程每小时<br/>只看产出物年龄}
+  C -->|产出物在 · 但过期| S[stale · 形状 A 被抓]
+  C -->|产出物根本不存在| M[missing · 形状 B 被抓]
+  C -->|产出物在 · 且够新| F[fresh · 不出声]
+  C -->|读不到 · 判不出| U[undetermined · 单轮不响<br/>连续 2 轮 → 另一本账响]
+  S --> AL[flywheel-alerts 频道<br/>进入发一条 · 持续每 24h 重提 · 恢复发一条]
+  M --> AL
+  U --> AL

@@ -1,0 +1,16 @@
+flowchart TB
+  S([看者每小时 :50 开跑<br/>arrival-check :40 之后]) --> P{预检 + 拿锁<br/>工具在不在 · mkdir 原子锁}
+  P -->|工具缺| X6[退出 6<br/>零发帖 · 零台账 · 不写心跳]
+  P -->|锁被活进程占着| X0[退出 0 · 本轮跳过]
+  P -->|通过| REG{读登记表<br/>7 列 · kind/state 闭集 · id 唯一}
+  REG -->|任一行不合法 → 整表拒绝| X6
+  REG -->|整表合法| ST{读上次的账 state.json}
+  ST -->|schema 不对 / 解析失败| X9[退出 9 · 不覆盖旧账]
+  ST -->|正常 或 首跑空账| E[逐行跑探针<br/>file_mtime · sqlite_max（表·列 → 固定 max 查询） · git_remote_head（祖先关系）<br/>每个子命令 120s 有界 · 全部只读]
+  E --> V[四态判词<br/>fresh · stale · missing · undetermined]
+  V --> ACT[按两本账算动作<br/>incident 账:stale/missing → enter · ≥24h → renotify · fresh → recover<br/>unobservable 账:undetermined 连续 2 轮 → enter · 可判定 → recover<br/>suspended 行 → 无]
+  ACT --> POST[逐条直发 Discord<br/>发成功才记时 · 恢复帖成功才清账]
+  POST --> W[原子写 state.json（严格校验形状）<br/>追加 checks.tsv 每产出物一行 · 同一 run_id<br/>最后原子写 last-run.json = 整轮完成的心跳<br/>含 run_status ok/degraded · 全 fresh 也照写]
+  W --> END{有发帖失败?}
+  END -->|有| X10[退出 10]
+  END -->|无| X00[退出 0]

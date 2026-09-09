@@ -1,0 +1,10 @@
+# FLY-2134 artifact freshness authority. TSV columns:
+# artifact_id	kind	target	max_age_h	state	owner	note
+# Add one row only through a PR that updates this file and passes --validate plus the manifest suite.
+# state: active | suspended (suspended notes must name a FLY issue)
+# kind: file_mtime | sqlite_max | git_remote_head
+token-usage-daily-row	sqlite_max	$HOME/.flywheel/token-usage.db::token_usage_daily::day	36	active	com.flywheel.token-usage-daily	token usage daily output
+chezmoi-remote-head	git_remote_head	$HOME/.local/share/chezmoi	48	active	external:com.chezmoi.auto-sync	chezmoi remote delivery
+lead-memory-arrival-ledger	file_mtime	$HOME/.flywheel/state/lead-memory/arrival/checks.tsv	3	active	com.flywheel.lead-memory-arrival-check	lead memory remote observer output
+bridge-liveness-probe-state	file_mtime	$HOME/.flywheel/state/bridge-liveness-probe.json	0.25	active	com.flywheel.bridge-liveness-probe	out of process bridge probe output
+runner-memory-remote-head	git_remote_head	$HOME/.flywheel/runner-memory	26	active	none	pending-lead-issue: runner memory remote backup assertion

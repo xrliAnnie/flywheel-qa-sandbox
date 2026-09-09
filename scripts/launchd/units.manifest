@@ -8,6 +8,7 @@ com.flywheel.updater	com.flywheel.updater.plist	copy	0,1,2,3,127,130	handled upd
 com.flywheel.daily-standup	com.flywheel.daily-standup.plist	copy	0,1	exit 1 is the documented restart-lock skip
 com.flywheel.token-usage-daily	com.flywheel.token-usage-daily.plist	copy	0	repo plist is byte authority
 com.flywheel.bridge-liveness-probe	com.flywheel.bridge-liveness-probe.plist	copy	0	repo plist is byte authority
+com.flywheel.artifact-freshness-check	com.flywheel.artifact-freshness-check.plist	copy	0	artifact freshness observer; reports incidents independently
 com.flywheel.codex-log-guard	com.flywheel.codex-log-guard.plist	copy	0	approved never-installed-copy-exception
 com.flywheel.lead-memory-sync	com.flywheel.lead-memory-sync.plist	copy	0,2,3,4,5,7,75	remote arrival writer; lock contention is retryable
 com.flywheel.lead-memory-arrival-check	com.flywheel.lead-memory-arrival-check.plist	copy	0	remote observer reports incidents independently

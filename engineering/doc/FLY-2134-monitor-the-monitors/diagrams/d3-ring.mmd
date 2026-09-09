@@ -1,0 +1,15 @@
+flowchart TB
+  T1[token-usage.db<br/>sqlite 最新日期] --> REG
+  T2[chezmoi 仓<br/>远端 head vs 本地] --> REG
+  T3[lead-memory 看者台账<br/>checks.tsv 年龄] --> REG
+  T4[runner-memory<br/>无远端 = missing] --> REG
+  REG[登记表 artifact-freshness.manifest<br/>v1 五行 · 第五行 = probe 状态文件]
+  REG -->|读| CHK
+  CHK[看者 artifact-freshness-check.sh<br/>launchd 每小时 :50<br/>只看产出物年龄]
+  CHK -->|写| RCPT[(last-run.json<br/>看者每轮写的心跳)]
+  RCPT -->|W-4 严格校验 receipt<br/>超 3h = stale · 坏了 = invalid| BRG[Bridge 进程<br/>/health liveness 清单<br/>新增 W-4 lane（先可选 · 后必有）]
+  BRG -->|/health 含 W-4| PRB[bridge-liveness-probe.sh<br/>launchd 每分钟 · 已有]
+  PRB -->|写| PST[(bridge-liveness-probe.json<br/>probe 每分钟写的状态)]
+  PST -->|登记为一行<br/>超 15 分钟 = stale| CHK
+  CHK -->|stale / missing| AL[flywheel-alerts]
+  PRB -->|W-4 stale/invalid/degraded 连续 3 分钟<br/>折进已有 degraded 告警| AL
