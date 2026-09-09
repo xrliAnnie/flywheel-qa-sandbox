@@ -1206,10 +1206,6 @@ if [ -n "$DISK_FACT" ]; then
 fi
 if [ -n "$DISK_UNAVAILABLE" ]; then
   STEP5_FACTS="${STEP5_FACTS:+$STEP5_FACTS$'\n'}UNAVAILABLE_CAUSE step=5 class=$DISK_UNAVAILABLE_CLASS token=$DISK_UNAVAILABLE"
-  case "$STEP5_STATUS" in
-    UNAVAILABLE\(*) ;;
-    *) STEP5_STATUS="UNAVAILABLE($DISK_UNAVAILABLE_CLASS: $DISK_UNAVAILABLE)" ;;
-  esac
 fi
 if [ "$DISK_LOW" -eq 1 ]; then
   STEP5_STATUS="FINDING"
@@ -1227,6 +1223,15 @@ if [ "$PROJECT_NAME" = flywheel ]; then
       *) STEP5_STATUS="UNAVAILABLE(structural: $RAYA_PATROL_UNAVAILABLE)" ;;
     esac
   fi
+fi
+
+# STEP 5 precedence: low disk > GitHub > Raya > disk probe. Keep every cause
+# row, but let the disk probe fill only a still-unresolved status slot.
+if [ -n "$DISK_UNAVAILABLE" ]; then
+  case "$STEP5_STATUS" in
+    FINDING|UNAVAILABLE\(*) ;;
+    *) STEP5_STATUS="UNAVAILABLE($DISK_UNAVAILABLE_CLASS: $DISK_UNAVAILABLE)" ;;
+  esac
 fi
 
 STEP6_STATUS="LEAD-JUDGMENT-REQUIRED"
