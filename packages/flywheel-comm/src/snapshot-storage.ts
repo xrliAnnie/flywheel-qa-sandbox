@@ -24,6 +24,10 @@ export const DATA_VOLUME_PATH = "/System/Volumes/Data";
 export const GB_BYTES = 1_000_000_000;
 export const MANAGED_SNAPSHOT_LIMIT_BYTES = 2_000_000_000;
 
+function defaultStateRoot(): string {
+	return process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel");
+}
+
 export type SnapshotOwner =
 	| {
 			kind: "workflow";
@@ -556,7 +560,7 @@ export async function createRepairSnapshot(
 	let partialDir: string | undefined;
 	let releaseLock: (() => void) | undefined;
 	try {
-		const stateRoot = deps.stateRoot ?? join(homedir(), ".flywheel");
+		const stateRoot = deps.stateRoot ?? defaultStateRoot();
 		releaseLock = await acquireSnapshotLock(
 			stateRoot,
 			deps.lockTimeoutMs ?? 5_000,
@@ -647,7 +651,7 @@ export async function createManagedSnapshot(
 	validateOwner(input.owner);
 	const project = normalizeProject(input.databaseKind, input.project);
 	const source = openReservedSource(input.source);
-	const stateRoot = deps.stateRoot ?? join(homedir(), ".flywheel");
+	const stateRoot = deps.stateRoot ?? defaultStateRoot();
 	const managedRoot = resolve(
 		deps.managedRoot ?? join(realpathSync("/tmp"), "flywheel-snapshots"),
 	);
@@ -775,7 +779,7 @@ export async function cleanupRunnerSnapshots(
 	if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
 		throw new SnapshotStorageError("managed_snapshot_root_unsafe");
 	}
-	const stateRoot = deps.stateRoot ?? join(homedir(), ".flywheel");
+	const stateRoot = deps.stateRoot ?? defaultStateRoot();
 	const releaseLock = await acquireSnapshotLock(
 		stateRoot,
 		deps.lockTimeoutMs ?? 5_000,
@@ -1019,7 +1023,7 @@ export async function pruneRepairSnapshots(
 	if (!Number.isFinite(input.now.getTime())) {
 		throw new SnapshotStorageError("invalid_prune_time");
 	}
-	const stateRoot = deps.stateRoot ?? join(homedir(), ".flywheel");
+	const stateRoot = deps.stateRoot ?? defaultStateRoot();
 	const repairRoot = join(stateRoot, "patrol-repairs");
 	const releaseLock = await acquireSnapshotLock(
 		stateRoot,

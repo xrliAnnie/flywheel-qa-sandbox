@@ -34,6 +34,7 @@ describe("snapshot storage", () => {
 	});
 
 	afterEach(() => {
+		vi.unstubAllEnvs();
 		rmSync(root, { recursive: true, force: true });
 	});
 
@@ -200,6 +201,39 @@ describe("snapshot storage", () => {
 			"ok",
 		);
 		snapshot.close();
+	});
+
+	it("uses FLYWHEEL_STATE_DIR instead of HOME for repair snapshots", async () => {
+		const source = join(root, "source.db");
+		const db = new Database(source);
+		db.exec("CREATE TABLE evidence (value TEXT)");
+		db.close();
+		const stateRoot = join(root, "slot");
+		vi.stubEnv("HOME", join(root, "home"));
+		vi.stubEnv("FLYWHEEL_STATE_DIR", stateRoot);
+
+		const result = await createRepairSnapshot(
+			{
+				source,
+				issueIdentifier: "FLY-2351",
+				databaseKind: "teamlead",
+			},
+			{
+				readDataDisk: () => ({
+					disk_avail_gb: 100,
+					disk: {
+						volume: "/System/Volumes/Data",
+						availBytes: 100_000_000_000,
+						observedAt: "2026-09-08T12:00:00.000Z",
+					},
+				}),
+			},
+		);
+
+		expect(result.path.startsWith(join(stateRoot, "patrol-repairs"))).toBe(
+			true,
+		);
+		expect(existsSync(join(root, "home", ".flywheel"))).toBe(false);
 	});
 
 	it("rejects a symlink source instead of following it", async () => {
