@@ -22,9 +22,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WF="$ROOT/.github/workflows"
 BETA="$WF/payload-beta-release.yml"
 PROMOTE="$WF/payload-promote.yml"
+COMMIT="$WF/payload-promote-commit.yml"
 ACTIVATION="$WF/payload-activation.yml"
 
-for f in "$BETA" "$PROMOTE" "$ACTIVATION"; do
+for f in "$BETA" "$PROMOTE" "$COMMIT" "$ACTIVATION"; do
   [ -f "$f" ] || { echo "ERROR: missing $f"; exit 1; }
 done
 
@@ -52,10 +53,10 @@ fi
 
 # ── S2 · single-flight concurrency group ─────────────────────────────────────
 ok=1
-for f in "$BETA" "$PROMOTE" "$ACTIVATION"; do
+for f in "$BETA" "$PROMOTE" "$COMMIT" "$ACTIVATION"; do
   grep -q "group: payload-release" "$f" || ok=0
 done
-[ "$ok" -eq 1 ] && pass "S2 concurrency group payload-release present in all three release workflows" \
+[ "$ok" -eq 1 ] && pass "S2 concurrency group payload-release present in all four release workflows" \
                 || fail "S2 concurrency group missing"
 
 # ── S3 · beta = scheduled 6h + dispatch + pre-activation guard that ACTUALLY
@@ -115,30 +116,41 @@ else
   fail "S4a vendor credential reference outside the release-environment contract:$bad_cf"
 fi
 
-# S4b: the customer-release capability appears in NO workflow at all — the
-# customer pointer flip is still not a CI action in this PR (a future
-# promote-commit workflow must revisit THIS assertion explicitly).
-if ! grep -rn "FW_CUSTOMER_RELEASE_TOKEN" "$WF" >/dev/null 2>&1; then
-  pass "S4b customer-release token referenced in ZERO workflows"
-else
-  fail "S4b customer-release token in a workflow: $(grep -rln 'FW_CUSTOMER_RELEASE_TOKEN' "$WF")"
-fi
-
-# S4c: npm credential / OIDC id-token references may appear ONLY in
-# release-environment workflows (today: exactly {activation}).
-bad_npm=""
+# S4b (FLY-2388 Amendment A1): the customer-release capability is allowlisted
+# only in the zero-build commit workflow and activation's sha-stamping step.
+bad_customer=""
 while IFS= read -r f; do
-  if grep -qE "NODE_AUTH_TOKEN|NPM_TOKEN|NPM_PUBLISH_TOKEN|id-token" "$f"; then
+  if grep -q "FW_CUSTOMER_RELEASE_TOKEN" "$f"; then
     case "$f" in
-      "$ACTIVATION") is_release_env_workflow "$f" || bad_npm="$bad_npm $f(not-env-gated)" ;;
-      *) bad_npm="$bad_npm $f" ;;
+      "$COMMIT"|"$ACTIVATION") is_release_env_workflow "$f" || bad_customer="$bad_customer $f(not-env-gated)" ;;
+      *) bad_customer="$bad_customer $f" ;;
     esac
   fi
 done < <(all_workflows)
-if [ -z "$bad_npm" ]; then
-  pass "S4c npm credential / OIDC id-token only in the environment-gated activation workflow"
+if [ -z "$bad_customer" ] && grep -q "FW_CUSTOMER_RELEASE_TOKEN" "$COMMIT"; then
+  pass "S4b customer-release token is scoped to the release-env commit/activation allowlist"
 else
-  fail "S4c npm/OIDC credential outside the release-environment contract:$bad_npm"
+  fail "S4b customer-release token outside its allowlist:$bad_customer"
+fi
+
+# S4c: trusted publishing has no long-lived npm credential in any workflow.
+# id-token is present only in the release-environment activation workflow.
+bad_npm=""
+while IFS= read -r f; do
+  if grep -qE "NODE_AUTH_TOKEN|NPM_TOKEN|NPM_PUBLISH_TOKEN" "$f"; then
+    bad_npm="$bad_npm $f(long-lived-token)"
+  fi
+  if grep -q "id-token" "$f"; then
+    case "$f" in
+      "$ACTIVATION") is_release_env_workflow "$f" || bad_npm="$bad_npm $f(not-env-gated)" ;;
+      *) bad_npm="$bad_npm $f(id-token-outside-activation)" ;;
+    esac
+  fi
+done < <(all_workflows)
+if [ -z "$bad_npm" ] && grep -q 'id-token:[[:space:]]*write' "$ACTIVATION"; then
+  pass "S4c zero long-lived npm token globally; OIDC id-token only in release activation"
+else
+  fail "S4c npm/OIDC credential contract failed:$bad_npm"
 fi
 
 # S4d: the beta workflow holds only the beta-publish capability (unchanged)
@@ -158,14 +170,17 @@ for f in "$BETA" "$PROMOTE"; do
     [ "$name" = "FW_BETA_PUBLISH_TOKEN" ] || bad_secret="$bad_secret $f:$name"
   done < <(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$f" | sed 's/^secrets\.//' | sort -u)
 done
+commit_secrets="$(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$COMMIT" | sed 's/^secrets\.//' | sort -u | tr '\n' ' ')"
+[ "$commit_secrets" = "FW_CUSTOMER_RELEASE_TOKEN " ] \
+  || bad_secret="$bad_secret $COMMIT:{${commit_secrets}}"
 while IFS= read -r name; do
   case "$name" in
-    CLOUDFLARE_API_TOKEN|NPM_PUBLISH_TOKEN|FW_BETA_PUBLISH_TOKEN) : ;;
+    CLOUDFLARE_API_TOKEN|FW_BETA_PUBLISH_TOKEN|FW_CUSTOMER_RELEASE_TOKEN) : ;;
     *) bad_secret="$bad_secret $ACTIVATION:$name" ;;
   esac
 done < <(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$ACTIVATION" | sed 's/^secrets\.//' | sort -u)
 if [ -z "$bad_secret" ]; then
-  pass "S4e per-file secret allowlist holds (beta/promote: beta capability only; activation: two vendor secrets + beta capability)"
+  pass "S4e per-file secret allowlist holds (commit: customer capability only; activation: scoped release secrets)"
 else
   fail "S4e non-allowlisted secret in a release workflow:$bad_secret"
 fi
@@ -226,8 +241,10 @@ for f in "$BETA" "$PROMOTE"; do
   grep -q "Dispatch-ref guard (main only)" "$f" || ok=0
   grep -q 'refs/heads/main' "$f" || ok=0
 done
+grep -q "Guards (main-only" "$COMMIT" || ok=0
+grep -q 'refs/heads/main' "$COMMIT" || ok=0
 grep -q 'refs/heads/main' "$ACTIVATION" || ok=0
-[ "$ok" -eq 1 ] && pass "S7 main-only guard present in all three release workflows" \
+[ "$ok" -eq 1 ] && pass "S7 main-only guard present in all four release workflows" \
                 || fail "S7 dispatch-ref guard missing"
 
 # ── S8 · dispatch inputs never interpolate into run shell text ──────────────
@@ -238,8 +255,8 @@ while IFS= read -r line; do
       echo "$line" | grep -qE "_INPUT: |if: |ref: " || ok=0
       ;;
   esac
-done < <(cat "$BETA" "$PROMOTE" "$ACTIVATION")
-[ "$ok" -eq 1 ] && pass "S8 dispatch inputs ride env/if/ref only — never raw in run: text (all three workflows)" \
+done < <(cat "$BETA" "$PROMOTE" "$COMMIT" "$ACTIVATION")
+[ "$ok" -eq 1 ] && pass "S8 dispatch inputs ride env/if/ref only — never raw in run: text (all four workflows)" \
                 || fail "S8 raw input interpolation found in a run block"
 
 # ── S9 · pre-existing workflows untouched: ci.yml + ship keep their names ────
@@ -273,6 +290,8 @@ wf_dir = sys.argv[1]
 ACT = os.path.join(wf_dir, "payload-activation.yml")
 BETA = os.path.join(wf_dir, "payload-beta-release.yml")
 PROMOTE = os.path.join(wf_dir, "payload-promote.yml")
+COMMIT = os.path.join(wf_dir, "payload-promote-commit.yml")
+CI = os.path.join(wf_dir, "ci.yml")
 
 
 def load(p):
@@ -301,12 +320,14 @@ JOB_GATE = "github.ref == 'refs/heads/main' && github.event_name == 'workflow_di
 
 failures = []
 act = load(ACT)
+ci = load(CI)
 
 # S13: trigger sets are exact. A future push/pull_request addition would make
 # release a merge side effect and violate REQ-0 even if every job guard stayed.
 expected_triggers = {
     BETA: ["schedule", "workflow_dispatch"],
     PROMOTE: ["workflow_dispatch"],
+    COMMIT: ["workflow_dispatch"],
     ACT: ["workflow_dispatch"],
 }
 for workflow_path, expected in expected_triggers.items():
@@ -318,6 +339,19 @@ for workflow_path, expected in expected_triggers.items():
 activation_inputs = ((act.get("on", act.get(True)) or {}).get("workflow_dispatch") or {}).get("inputs") or {}
 if "confirm" not in activation_inputs:
     failures.append("S13:activation-confirm-input-missing")
+commit = load(COMMIT)
+commit_inputs = ((commit.get("on", commit.get(True)) or {}).get("workflow_dispatch") or {}).get("inputs") or {}
+if "confirm" not in commit_inputs:
+    failures.append("S13:commit-confirm-input-missing")
+expected_commit_inputs = {
+    "confirm", "action", "release-id", "expected-sha256",
+    "withdraw-version", "fallback-version",
+}
+if set(commit_inputs) != expected_commit_inputs:
+    failures.append(f"S13:commit-inputs={sorted(commit_inputs)}")
+action_input = commit_inputs.get("action") or {}
+if action_input.get("type") != "choice" or action_input.get("options") != ["commit", "abandon", "withdraw"]:
+    failures.append(f"S13:commit-actions={action_input!r}")
 
 # S10a: trigger allowlist on the PARSED key set — quoting cannot hide a key
 t = triggers(act)
@@ -346,29 +380,35 @@ guard = next((st for st in steps if str(st.get("name", "")).startswith("Guards")
 if not guard or "ACTIVATE" not in str(guard.get("run") or ""):
     failures.append("S10:guard-step-missing-ACTIVATE")
 
-# S12: per-step mode conditions from the parsed steps
-MODES = {
-    "workers.dev subdomain": "infra",
-    "Create R2 bucket": "infra",
-    "Deploy Worker": "infra",
-    "Stamp beta capability": "infra",
-    "Initialize manifest": "infra",
-    "Report endpoint URL": "infra",
-    "Refuse placeholder endpoint": "publish",
-    "Publish preflight": "publish",
-    "npm publish @flywheel-ai/onboard": "publish",
-    "Verify the published version": "publish",
+# S12: prefix -> exact parsed condition. The publish command alone is also
+# gated by registry preflight's free outcome; idempotent reruns skip it.
+STEP_CONDITIONS = {
+    "workers.dev subdomain": "inputs.mode == 'infra'",
+    "Create R2 bucket": "inputs.mode == 'infra'",
+    "Deploy Worker": "inputs.mode == 'infra'",
+    "Stamp beta capability": "inputs.mode == 'infra'",
+    "Stamp customer-release capability": "inputs.mode == 'infra'",
+    "Initialize manifest": "inputs.mode == 'infra'",
+    "Report endpoint URL": "inputs.mode == 'infra'",
+    "Refuse placeholder endpoint": "inputs.mode == 'publish'",
+    "Install pinned npm": "inputs.mode == 'publish'",
+    "Publish preflight (workflow mode)": "inputs.mode == 'publish'",
+    "Pack exact tarball": "inputs.mode == 'publish'",
+    "Content gate on the exact tarball": "inputs.mode == 'publish'",
+    "Registry preflight": "inputs.mode == 'publish'",
+    "npm publish @flywheel-ai/onboard": "inputs.mode == 'publish' && steps.reg.outputs.outcome == 'free'",
+    "Verify the published version": "inputs.mode == 'publish'",
 }
 seen = set()
 for step in steps:
     name = str(step.get("name") or "")
-    for prefix, mode in MODES.items():
+    for prefix, expected_condition in STEP_CONDITIONS.items():
         if name.startswith(prefix):
             seen.add(prefix)
             sif = norm(step.get("if"))
-            if sif != f"inputs.mode == '{mode}'":
+            if sif != expected_condition:
                 failures.append(f"S12:{prefix}:if={sif!r}")
-missing = sorted(set(MODES) - seen)
+missing = sorted(set(STEP_CONDITIONS) - seen)
 if missing:
     failures.append(f"S12:missing-steps={missing}")
 
@@ -380,22 +420,201 @@ for p in sorted(
     doc = load(p)
     for jname, j in (doc.get("jobs") or {}).items():
         blob = json.dumps(j)
-        if "CLOUDFLARE_API_TOKEN" in blob or "NPM_PUBLISH_TOKEN" in blob:
+        if any(name in blob for name in ["CLOUDFLARE_API_TOKEN", "FW_CUSTOMER_RELEASE_TOKEN"]):
             jcond = norm((j or {}).get("if"))
             if (j or {}).get("environment") != "release" or jcond != JOB_GATE:
                 failures.append(f"S11:{os.path.basename(p)}:{jname}")
+
+# S14: the customer pointer execution surface is dispatch-only, one job,
+# environment-gated, read-only, zero-build, and permits only a fully pinned
+# actions/checkout reference with credentials disabled.
+commit_jobs = commit.get("jobs") or {}
+if len(commit_jobs) != 1:
+    failures.append(f"S14:jobs={sorted(commit_jobs)}")
+commit_job = next(iter(commit_jobs.values()), {}) or {}
+if commit_job.get("environment") != "release":
+    failures.append(f"S14:environment={commit_job.get('environment')!r}")
+if norm(commit_job.get("if")) != JOB_GATE:
+    failures.append(f"S14:job-if={norm(commit_job.get('if'))!r}")
+if (commit.get("permissions") or {}) != {"contents": "read"}:
+    failures.append(f"S14:permissions={commit.get('permissions')!r}")
+if (commit.get("concurrency") or {}).get("group") != "payload-release":
+    failures.append(f"S14:concurrency={commit.get('concurrency')!r}")
+commit_steps = commit_job.get("steps") or []
+for step in commit_steps:
+    uses = str(step.get("uses") or "")
+    run = str(step.get("run") or "")
+    blob = f"{uses}\n{run}"
+    if any(forbidden in blob for forbidden in [
+        "pnpm install", "pnpm build", "package-onboard", "npm ci",
+        "npm run build", "setup-pnpm", "actions/setup-node",
+    ]):
+        failures.append(f"S14:build-step={step.get('name') or uses}")
+    if uses:
+        if not uses.startswith("actions/checkout@"):
+            failures.append(f"S14:uses-not-allowlisted={uses}")
+        else:
+            ref = uses.split("@", 1)[1]
+            if not __import__("re").fullmatch(r"[0-9a-f]{40}", ref):
+                failures.append(f"S14:checkout-not-pinned={uses}")
+            with_map = step.get("with") or {}
+            if with_map.get("persist-credentials") is not False:
+                failures.append(f"S14:persist-credentials={with_map.get('persist-credentials')!r}")
+            if with_map.get("fetch-depth") != 1:
+                failures.append(f"S14:fetch-depth={with_map.get('fetch-depth')!r}")
+guard = next((st for st in commit_steps if str(st.get("name", "")).startswith("Guards")), None)
+release_id_module = os.path.join(os.path.dirname(os.path.dirname(wf_dir)), "scripts", "release", "lib", "release-id.mjs")
+release_id_text = open(release_id_module).read()
+release_id_match = __import__("re").search(r'RELEASE_ID_SOURCE\s*=\s*"([^"]+)"', release_id_text)
+release_id_source = release_id_match.group(1) if release_id_match else "<missing>"
+if not guard or release_id_source not in str(guard.get("run") or "") or "COMMIT" not in str(guard.get("run") or ""):
+    failures.append("S14:guard-contract-missing")
+commit_secret_names = sorted(set(__import__("re").findall(
+    r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", json.dumps(commit_job)
+)))
+if commit_secret_names != ["FW_CUSTOMER_RELEASE_TOKEN"]:
+    failures.append(f"S14:secrets={commit_secret_names}")
+action_steps = {
+    "Run commit": ("commit_result", "inputs.action == 'commit'"),
+    "Run abandon": ("abandon_result", "inputs.action == 'abandon'"),
+    "Run withdraw": ("withdraw_result", "inputs.action == 'withdraw'"),
+}
+for name, (expected_id, expected_if) in action_steps.items():
+    step = next((st for st in commit_steps if st.get("name") == name), None)
+    if not step or step.get("id") != expected_id or norm(step.get("if")) != expected_if:
+        failures.append(f"S14:action-step={name}:{step!r}")
+render_index = next((i for i, st in enumerate(commit_steps) if st.get("name") == "Render result (always)"), -1)
+validate_index = next((i for i, st in enumerate(commit_steps) if st.get("name") == "Validate production manifest snapshot"), -1)
+action_indexes = [next((i for i, st in enumerate(commit_steps) if st.get("name") == name), -1) for name in action_steps]
+render = commit_steps[render_index] if render_index >= 0 else {}
+if (
+    validate_index < 0
+    or any(index <= validate_index for index in action_indexes)
+    or render_index <= max(action_indexes)
+    or norm(render.get("if")) != "always()"
+    or render.get("continue-on-error") is not True
+    or "PROMOTE_RESULT" not in str(render.get("run") or "")
+):
+    failures.append("S14:validate-action-render-order")
+
+# S15: exact-tarball OIDC dataflow. Every consumer is bound through parsed
+# step outputs; source directories, ambient tags, and long-lived npm tokens
+# cannot substitute for the reviewed tarball tuple.
+if perms != {"contents": "read", "id-token": "write"}:
+    failures.append(f"S15:permissions={perms!r}")
+
+def step_with_prefix(prefix):
+    return next((st for st in steps if str(st.get("name") or "").startswith(prefix)), None)
+
+publish_names = [
+    "Install pinned npm",
+    "Publish preflight (workflow mode)",
+    "Pack exact tarball",
+    "Content gate on the exact tarball",
+    "Registry preflight",
+    "npm publish @flywheel-ai/onboard",
+    "Verify the published version",
+]
+publish_steps = {name: step_with_prefix(name) for name in publish_names}
+
+# S16 is independent of S15's complete publish-step inventory: a missing S15
+# step must not suppress an unrelated CI/activation npm-pin mismatch.
+activation_install = publish_steps["Install pinned npm"]
+activation_install_run = None if activation_install is None else norm(activation_install.get("run"))
+ci_payload = ((ci.get("jobs") or {}).get("payload-distribution") or {})
+ci_steps = ci_payload.get("steps") or []
+ci_install = next((
+    st for st in ci_steps
+    if st.get("name") == "Install pinned npm for publish integration"
+), None)
+ci_idempotency = next((
+    st for st in ci_steps
+    if st.get("name") == "Exact shell publish idempotency (local registry stub)"
+), None)
+if (
+    activation_install_run is None
+    or ci_install is None
+    or ci_idempotency is None
+    or norm(ci_install.get("run")) != activation_install_run
+    or ci_steps.index(ci_install) >= ci_steps.index(ci_idempotency)
+):
+    failures.append(
+        "S16:ci-pinned-npm-before-idempotency="
+        f"install:{None if ci_install is None else norm(ci_install.get('run'))!r},"
+        f"activation:{activation_install_run!r}"
+    )
+
+if any(step is None for step in publish_steps.values()):
+    failures.append(f"S15:missing={sorted(name for name, step in publish_steps.items() if step is None)}")
+else:
+    install = publish_steps["Install pinned npm"]
+    workflow_preflight = publish_steps["Publish preflight (workflow mode)"]
+    pack = publish_steps["Pack exact tarball"]
+    content = publish_steps["Content gate on the exact tarball"]
+    registry = publish_steps["Registry preflight"]
+    publish = publish_steps["npm publish @flywheel-ai/onboard"]
+    verify = publish_steps["Verify the published version"]
+    if pack.get("id") != "pack" or registry.get("id") != "reg":
+        failures.append(f"S15:ids=pack:{pack.get('id')!r},reg:{registry.get('id')!r}")
+    indexes = [steps.index(publish_steps[name]) for name in publish_names]
+    if indexes != sorted(indexes):
+        failures.append(f"S15:order={indexes}")
+    npm_pin = __import__("re").fullmatch(r"npm i -g npm@(\d+)\.(\d+)\.(\d+)", norm(install.get("run")))
+    if not npm_pin or tuple(map(int, npm_pin.groups())) < (11, 5, 1):
+        failures.append(f"S15:npm-pin={norm(install.get('run'))!r}")
+    if norm(workflow_preflight.get("run")) != "bash scripts/release/shell-publish-preflight.sh --workflow":
+        failures.append(f"S15:workflow-preflight={norm(workflow_preflight.get('run'))!r}")
+    if norm(pack.get("run")) != 'node scripts/release/shell-publish-helper.mjs pack --out "$RUNNER_TEMP/shell"':
+        failures.append(f"S15:pack-run={norm(pack.get('run'))!r}")
+    expected_env = {
+        "Content gate on the exact tarball": {
+            "TARBALL": "${{ steps.pack.outputs.tarball }}",
+        },
+        "Registry preflight": {
+            "TARBALL": "${{ steps.pack.outputs.tarball }}",
+            "SHA": "${{ steps.pack.outputs.sha }}",
+            "TAG": "${{ steps.pack.outputs.tag }}",
+        },
+        "npm publish @flywheel-ai/onboard": {
+            "TARBALL": "${{ steps.pack.outputs.tarball }}",
+            "TAG": "${{ steps.pack.outputs.tag }}",
+            "NPM_CONFIG_PROVENANCE": "false",
+        },
+        "Verify the published version": {
+            "TARBALL": "${{ steps.pack.outputs.tarball }}",
+            "SHA": "${{ steps.pack.outputs.sha }}",
+            "TAG": "${{ steps.pack.outputs.tag }}",
+        },
+    }
+    for name, wanted in expected_env.items():
+        actual = publish_steps[name].get("env") or {}
+        for key, value in wanted.items():
+            if actual.get(key) != value:
+                failures.append(f"S15:{name}:env.{key}={actual.get(key)!r}")
+    helper_binding = '--expect-sha "$SHA" --expect-tag "$TAG" --registry https://registry.npmjs.org/'
+    if norm(content.get("run")) != 'node scripts/release/shell-publish-helper.mjs gate "$TARBALL"':
+        failures.append(f"S15:content-run={norm(content.get('run'))!r}")
+    if helper_binding not in norm(registry.get("run")) or 'preflight "$TARBALL"' not in norm(registry.get("run")):
+        failures.append(f"S15:registry-run={norm(registry.get('run'))!r}")
+    if norm(publish.get("run")) != 'npm publish "$TARBALL" --access public --tag "$TAG"':
+        failures.append(f"S15:publish-run={norm(publish.get('run'))!r}")
+    if helper_binding not in norm(verify.get("run")) or 'verify "$TARBALL"' not in norm(verify.get("run")):
+        failures.append(f"S15:verify-run={norm(verify.get('run'))!r}")
 
 print("OK" if not failures else "FAIL " + " | ".join(failures))
 PYEOF
 )"; PY_RC=$?
 # a parser error is a failed check, never a silent pass
 if [ "$PY_RC" -eq 0 ] && [ "$CONTRACT_OUT" = "OK" ]; then
-  pass "S10 activation shape (parsed): dispatch-only triggers + single job + environment release + job-level ref/event gate + read-only token + ACTIVATE confirm"
+  pass "S10 activation shape (parsed): dispatch-only triggers + single job + release env + job gate + contents-read/OIDC permissions + ACTIVATE confirm"
   pass "S11 (parsed, per-job): every job referencing a vendor secret declares environment: release + the main/dispatch job gate"
-  pass "S12 (parsed, per-step): every side-effect step carries its inputs.mode condition (infra ×6, publish ×4)"
+  pass "S12 (parsed, per-step): every side-effect step carries its exact condition (infra ×7, publish ×8)"
   pass "S13 (parsed): release trigger sets are exact and activation retains confirm (release is never a merge side effect)"
+  pass "S14 (parsed): commit workflow is one release-env, dispatch-only, read-only, pinned-checkout, zero-build job"
+  pass "S15 (parsed): OIDC publish binds exact tarball + sha + dist-tag through pack/reg outputs"
+  pass "S16 (parsed): payload CI installs the activation workflow's exact npm pin before the idempotency integration"
 else
-  fail "S10/S11/S12/S13 parsed contract failed (rc=$PY_RC): $CONTRACT_OUT"
+  fail "S10-S16 parsed contract failed (rc=$PY_RC): $CONTRACT_OUT"
 fi
 
 echo ""

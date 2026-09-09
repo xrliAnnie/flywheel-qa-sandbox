@@ -7,7 +7,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CI_FILE="$ROOT/.github/workflows/ci.yml"
+CI_FILE="${CI_SHELL_SUITE_CI_FILE:-$ROOT/.github/workflows/ci.yml}"
 EXEMPTIONS_FILE="$ROOT/scripts/__tests__/ci-shell-suite-manual-only.txt"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -23,16 +23,17 @@ grep -Eo 'bash[[:space:]]+scripts/__tests__/[A-Za-z0-9._/-]+\.test\.sh' "$CI_FIL
 sed -E '/^[[:space:]]*(#|$)/d; s/[[:space:]]+$//' "$EXEMPTIONS_FILE" \
   | LC_ALL=C sort -u >"$TMP/manual-only"
 
-# FLY-1775: the generalized room's Node contract suites are all hermetic and
-# must ride the same CI step. Keep this family explicit so adding a new RPC or
-# driver suite cannot silently leave its only coverage local-only.
-find "$ROOT/scripts/__tests__" -maxdepth 1 -type f -name 'qa-generalized-*.test.mjs' \
+# Root Node contract suites are not discovered by any workspace test command.
+# Require every one to appear literally in ci.yml so new suites cannot remain
+# local-only coverage.
+find "$ROOT/scripts/__tests__" -maxdepth 1 -type f -name '*.test.mjs' \
   | sed "s#^$ROOT/##" \
-  | LC_ALL=C sort -u >"$TMP/all-generalized-node"
+  | LC_ALL=C sort -u >"$TMP/all-node"
 
-grep -Eo 'node[[:space:]]+--test[[:space:]]+scripts/__tests__/qa-generalized-[A-Za-z0-9._/-]+\.test\.mjs' "$CI_FILE" \
-  | sed -E 's/^node[[:space:]]+--test[[:space:]]+//' \
-  | LC_ALL=C sort -u >"$TMP/enumerated-generalized-node"
+awk '{ line=$0; while (sub(/\\[[:space:]]*$/, "", line)) { if ((getline next_line) <= 0) break; line=line next_line } print line }' "$CI_FILE" \
+  | grep -E 'node[[:space:]]+--test' \
+  | grep -Eo 'scripts/__tests__/[A-Za-z0-9._/-]+\.test\.mjs' \
+  | LC_ALL=C sort -u >"$TMP/enumerated-node"
 
 LC_ALL=C comm -23 "$TMP/all" <(LC_ALL=C sort -u "$TMP/enumerated" "$TMP/manual-only") >"$TMP/unclassified"
 LC_ALL=C comm -12 "$TMP/enumerated" "$TMP/manual-only" >"$TMP/overlap"
@@ -43,8 +44,8 @@ while IFS= read -r suite; do
     printf '%s\n' "$suite" >>"$TMP/stale-manual"
   fi
 done <"$TMP/manual-only"
-LC_ALL=C comm -23 "$TMP/all-generalized-node" "$TMP/enumerated-generalized-node" >"$TMP/missing-generalized-node"
-LC_ALL=C comm -13 "$TMP/all-generalized-node" "$TMP/enumerated-generalized-node" >"$TMP/stale-generalized-node"
+LC_ALL=C comm -23 "$TMP/all-node" "$TMP/enumerated-node" >"$TMP/missing-node"
+LC_ALL=C comm -13 "$TMP/all-node" "$TMP/enumerated-node" >"$TMP/stale-node"
 
 failed=0
 report_nonempty() {
@@ -60,16 +61,33 @@ report_nonempty "shell suites missing from both ci.yml and the manual-only inven
 report_nonempty "shell suites classified as both CI and manual-only" "$TMP/overlap"
 report_nonempty "ci.yml enumerates missing shell suites" "$TMP/stale-enumerated"
 report_nonempty "manual-only inventory contains missing shell suites" "$TMP/stale-manual"
-report_nonempty "generalized Node suites missing from ci.yml" "$TMP/missing-generalized-node"
-report_nonempty "ci.yml enumerates missing generalized Node suites" "$TMP/stale-generalized-node"
+report_nonempty "Node suites missing from ci.yml" "$TMP/missing-node"
+report_nonempty "ci.yml enumerates missing Node suites" "$TMP/stale-node"
 
 if (( failed != 0 )); then
   exit 1
+fi
+
+# Mutation control: deleting one explicitly wired Node suite must make this
+# inventory fail. The nested run skips this block to avoid recursive mutants.
+if [[ "${CI_SHELL_SUITE_SKIP_MUTATION:-0}" != "1" ]]; then
+  endpoint_suite='scripts/__tests__/endpoint-client-etag.test.mjs'
+  if [[ "$(grep -Fc "$endpoint_suite" "$CI_FILE")" != "1" ]]; then
+    printf '[FAIL] endpoint-client ETag mutation target must occur exactly once in ci.yml\n' >&2
+    exit 1
+  fi
+  sed "\\#$endpoint_suite#d" "$CI_FILE" >"$TMP/ci-without-endpoint-client-etag.yml"
+  if CI_SHELL_SUITE_CI_FILE="$TMP/ci-without-endpoint-client-etag.yml" \
+    CI_SHELL_SUITE_SKIP_MUTATION=1 \
+    bash "$0" >"$TMP/mutation.log" 2>&1; then
+    printf '[FAIL] removing endpoint-client-etag.test.mjs from ci.yml stayed green\n' >&2
+    exit 1
+  fi
 fi
 
 printf '[PASS] %s shell suites are explicitly classified (%s CI, %s manual-only)\n' \
   "$(wc -l <"$TMP/all" | tr -d ' ')" \
   "$(wc -l <"$TMP/enumerated" | tr -d ' ')" \
   "$(wc -l <"$TMP/manual-only" | tr -d ' ')"
-printf '[PASS] %s generalized Node suites are explicitly enumerated in CI\n' \
-  "$(wc -l <"$TMP/all-generalized-node" | tr -d ' ')"
+printf '[PASS] %s Node suites are explicitly enumerated in CI; endpoint-client removal mutation turns red\n' \
+  "$(wc -l <"$TMP/all-node" | tr -d ' ')"

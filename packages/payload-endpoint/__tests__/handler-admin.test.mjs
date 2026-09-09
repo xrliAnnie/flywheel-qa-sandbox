@@ -110,6 +110,46 @@ test("CAS: stale etag → 412, nothing written", async () => {
 	assert.equal(rawManifestBytes(bucket), before);
 });
 
+test("CAS accepts canonical strong, weak, and bare ETag forms", async () => {
+	for (const shape of [
+		(raw) => raw,
+		(raw) => `"${raw}"`,
+		(raw) => `W/"${raw}"`,
+		(raw) => `w/"${raw}"`,
+	]) {
+		const { deps } = seeded();
+		const { manifest, etag } = await getManifest(deps);
+		const raw = etag.slice(1, -1);
+		const res = await postManifest(
+			deps,
+			reserveBetaDiff(manifest),
+			shape(raw),
+			TOKENS.beta,
+		);
+		assert.equal(res.status, 200, shape(raw));
+	}
+});
+
+test("CAS rejects malformed baseEtag as 400 and preserves null-as-stale semantics", async () => {
+	const { deps, bucket } = seeded();
+	const { manifest } = await getManifest(deps);
+	const candidate = reserveBetaDiff(manifest);
+	const before = rawManifestBytes(bucket);
+	const malformed = await postManifest(
+		deps,
+		candidate,
+		"not-an-etag",
+		TOKENS.beta,
+	);
+	assert.equal(malformed.status, 400);
+	assert.deepEqual(await malformed.json(), { error: "bad baseEtag" });
+	assert.equal(rawManifestBytes(bucket), before);
+
+	const missing = await postManifest(deps, candidate, null, TOKENS.beta);
+	assert.equal(missing.status, 412);
+	assert.equal(rawManifestBytes(bucket), before);
+});
+
 // fixture with a SECOND committed release (1.54.9, active non-latest) so a
 // pure pointer move / quarantine diff is expressible without injecting history.
 function twoReleaseManifest() {

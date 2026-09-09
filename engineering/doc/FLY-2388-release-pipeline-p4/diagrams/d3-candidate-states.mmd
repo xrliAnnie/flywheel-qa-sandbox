@@ -1,0 +1,9 @@
+stateDiagram-v2
+  direction LR
+  [*] --> reserved: prepare 登记候选
+  reserved --> prepared: 上传 + 回读验 hash
+  reserved --> abandoned: 失败 / 搁浅 / 被取代
+  prepared --> committed: commit 一次 CAS(切客户指针)
+  prepared --> abandoned: 否决 / 搁浅 / 被同版本赢家取代
+  committed --> [*]
+  abandoned --> [*]: 对象走 expire→tombstone→delete 回收

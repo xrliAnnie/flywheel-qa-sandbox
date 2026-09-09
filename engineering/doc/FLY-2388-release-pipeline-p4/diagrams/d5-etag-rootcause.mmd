@@ -1,0 +1,14 @@
+sequenceDiagram
+  participant S as 发布脚本(GitHub CI)
+  participant E as Cloudflare 边缘
+  participant W as Worker 端点
+  S->>E: GET /admin/manifest
+  E->>W: 转发
+  W-->>E: 200 + ETag "abc123"(强 ETag)
+  Note over E: 对 JSON 做 br 压缩<br/>按规则把强 ETag 改成弱 ETag
+  E-->>S: 200 + ETag W/"abc123"
+  S->>E: POST /admin/manifest baseEtag = W/"abc123"
+  E->>W: 转发
+  Note over W: 只剥引号 → 得到 W/"abc123<br/>与 abc123 不相等
+  W-->>S: 412 etag mismatch(8 次重试全部如此)
+  Note over S,W: 修复:两侧都先剥掉 W/ 与引号再比较<br/>412 时打印服务端原话

@@ -12,6 +12,8 @@
 #   P3  commit re-verification catches a swapped/corrupted artifact
 #   P4  STRUCTURAL: zero build steps below the commit-path marker
 #   W1  withdraw → quarantined + fallback re-pinned, customer view immediate
+#   R4  beta single-winner sweep (reserve + scheduled dedup), with strict
+#       terminal/kind guards and abandoned-id refusal
 set -uo pipefail
 
 PASSED=0; FAILED=0
@@ -83,7 +85,9 @@ import(path.join(root, "packages/payload-endpoint/__tests__/harness.mjs")).then(
 EOF
 SERVER_OUT="$SANDBOX/server.out"
 FW_TEST_BETA_TOKEN="$BETA_TOKEN" FW_TEST_RELEASE_TOKEN="$RELEASE_TOKEN" \
-  FW_TEST_OPS_TOKEN="$OPS_TOKEN" SERVE_SEED_MANIFEST="$SANDBOX/seed-empty.json" \
+  FW_TEST_OPS_TOKEN="$OPS_TOKEN" FW_TEST_WEAK_ETAG=1 \
+  FW_TEST_REQUIRE_CANONICAL_BASE_ETAG=1 \
+  SERVE_SEED_MANIFEST="$SANDBOX/seed-empty.json" \
   node "$SERVE" > "$SERVER_OUT" 2>&1 &
 SERVER_PID=$!
 PORT=""
@@ -93,6 +97,13 @@ for _ in $(seq 1 40); do
 done
 [ -n "$PORT" ] || { echo "ERROR: serve.mjs never bound"; exit 1; }
 EP="http://127.0.0.1:$PORT"
+
+ETAG_HEADER="$(curl -sS -D - -o /dev/null -H "Authorization: Bearer $OPS_TOKEN" "$EP/admin/manifest" | tr -d '\r' | sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//p')"
+if [[ "$ETAG_HEADER" == W/\"*\" ]]; then
+  pass "E1 harness exposes the production weak-ETag shape"
+else
+  fail "E1 harness did not weaken the manifest ETag: $ETAG_HEADER"
+fi
 
 run_release() { # $1=release-id, rest env-prefix pairs
   local id="$1"; shift
@@ -123,7 +134,7 @@ if run_release "run-A" >/dev/null 2>&1 \
    && [ "$(jq_manifest 'm.releaseOps["run-A"].state')" = "committed" ] \
    && [ "$(jq_manifest 'm.channels["internal-beta"].latest')" = "9.9.9-beta.1" ] \
    && [ "$(jq_manifest 'm.releaseLedger["9.9.9"].nextBetaN')" = "2" ]; then
-  pass "R1/R2a rerun completes the SAME pinned ver (9.9.9-beta.1), ledger advanced exactly once"
+  pass "E1/R1/R2a weak-ETag rerun completes the SAME pinned ver (9.9.9-beta.1), ledger advanced exactly once"
 else
   fail "R1 rerun state wrong: $(manifest)"
 fi
@@ -480,7 +491,8 @@ SWAP_OUT="$(node -e '
 const [ep, tok, id, evil] = process.argv.slice(1);
 (async () => {
   const g = await fetch(ep + "/admin/manifest", {headers:{authorization:"Bearer "+tok}});
-  const etag = g.headers.get("etag");
+  const etag = (g.headers.get("etag") || "")
+    .replace(/^W\//i, "").replace(/^"|"$/g, "");
   const m = await g.json();
   m.releaseOps[id].sha256 = evil;
   m.releaseOps[id].objectKey = "payloads/" + m.releaseOps[id].ver + "/" + evil + ".tgz";
@@ -722,7 +734,8 @@ P8C_QUARANTINE="$(node -e '
 const [endpoint, token, beta] = process.argv.slice(1);
 (async () => {
   const get = await fetch(endpoint + "/admin/manifest", {headers:{authorization:"Bearer "+token}});
-  const etag = get.headers.get("etag");
+  const etag = (get.headers.get("etag") || "")
+    .replace(/^W\//i, "").replace(/^"|"$/g, "");
   const manifest = await get.json();
   manifest.versions[beta].status = "quarantined";
   const post = await fetch(endpoint + "/admin/manifest", {
@@ -771,7 +784,7 @@ const server = http.createServer((request, response) => {
 	if (request.method === "GET" && request.url === "/admin/manifest") {
 		response.writeHead(200, {
 			"content-type": "application/json",
-			etag: '"cold-committed"',
+			etag: '"cccccccccccccccccccccccccccccccc"',
 		});
 		response.end(JSON.stringify(manifest));
 		return;
@@ -826,6 +839,101 @@ else
   else
     fail "P8e committed sha mismatch was accepted (rc=$RC_8E, post=$COLD_POST_SEEN): $OUT_8E"
   fi
+fi
+
+# ── P9c · one clean semver has one winning release candidate ────────────────
+echo "payload input p9c" > "$FIX/content.txt"
+echo "v9.9.92" > "$FIX/doc/VERSION"
+git -C "$FIX" add -A && git -C "$FIX" -c user.email=t@t -c user.name=t commit -qm p9c
+run_release "run-P9C" >/dev/null 2>&1 || { echo "FATAL: beta for P9c failed"; exit 1; }
+BETA_P9C="$(jq_manifest 'm.releaseOps["run-P9C"].ver')"
+for id in promo-p9c-old promo-p9c-winner; do
+  env FW_ENDPOINT="$EP" FW_BETA_PUBLISH_TOKEN="$BETA_TOKEN" FW_PACKER="$PACKER" \
+    node "$PROMOTE" prepare --release-id "$id" --beta "$BETA_P9C" --repo-root "$FIX" >/dev/null 2>&1 \
+    || { echo "FATAL: P9c prepare failed for $id"; exit 1; }
+done
+P9C_SHA="$(jq_manifest 'm.releaseOps["promo-p9c-winner"].sha256')"
+P9C_OUT="$(env FW_ENDPOINT="$EP" FW_CUSTOMER_RELEASE_TOKEN="$RELEASE_TOKEN" \
+  node "$PROMOTE" commit --release-id promo-p9c-winner --expected-sha256 "$P9C_SHA" 2>&1)" \
+  && P9C_RC=0 || P9C_RC=$?
+if [ "$P9C_RC" -eq 0 ] \
+   && grep -q '"action":"commit"' <<<"$P9C_OUT" \
+   && grep -q '"outcome":"committed"' <<<"$P9C_OUT" \
+   && [ "$(jq_manifest 'm.releaseOps["promo-p9c-winner"].state')" = "committed" ] \
+   && [ "$(jq_manifest 'm.releaseOps["promo-p9c-old"].state')" = "abandoned" ] \
+   && [ "$(jq_manifest 'm.channels["customer-release"].latest')" = "9.9.92" ]; then
+  pass "P9c commit CAS picks one same-version winner and abandons every other live release candidate"
+else
+  fail "P9c same-version candidates did not converge: $P9C_OUT $(manifest)"
+fi
+P9C_BEFORE="$(manifest)"
+P9C_REPLAY="$(env FW_ENDPOINT="$EP" FW_CUSTOMER_RELEASE_TOKEN="$RELEASE_TOKEN" \
+  node "$PROMOTE" commit --release-id promo-p9c-winner --expected-sha256 "$P9C_SHA" 2>&1)" \
+  && P9C_REPLAY_RC=0 || P9C_REPLAY_RC=$?
+P9C_AFTER="$(manifest)"
+if [ "$P9C_REPLAY_RC" -eq 0 ] && grep -q '"outcome":"idempotent"' <<<"$P9C_REPLAY" \
+   && [ "$P9C_BEFORE" = "$P9C_AFTER" ]; then
+  pass "P9c committed winner replay is idempotent and byte-zero-write"
+else
+  fail "P9c replay was not idempotent: $P9C_REPLAY"
+fi
+
+# ── R4 · beta staging has one live winner across explicit ids ───────────────
+# All three ids use the same HEAD. The reserved op must abandon the prior
+# prepared op in ITS reserve CAS; the final winner must abandon that reserved
+# op in ITS reserve CAS. Committed beta and release-kind ops are never swept.
+RELEASE_KIND_BEFORE="$(jq_manifest 'm.releaseOps["promo-6d"].state')"
+run_release "r4-prepared" FW_TEST_ABORT_AFTER=prepared >/dev/null 2>&1
+R4_PREP_RC=$?
+run_release "r4-reserved" FW_TEST_ABORT_AFTER=reserve >/dev/null 2>&1
+R4_RES_RC=$?
+run_release "r4-winner" >/dev/null 2>&1
+R4_WIN_RC=$?
+if [ "$R4_PREP_RC" -eq 42 ] && [ "$R4_RES_RC" -eq 42 ] && [ "$R4_WIN_RC" -eq 0 ] \
+   && [ "$(jq_manifest 'm.releaseOps["r4-prepared"].state')" = "abandoned" ] \
+   && [ "$(jq_manifest 'm.releaseOps["r4-reserved"].state')" = "abandoned" ] \
+   && [ "$(jq_manifest 'm.releaseOps["r4-winner"].state')" = "committed" ]; then
+  pass "R4 reserve CAS abandons every older live beta op and commits one winner"
+else
+  fail "R4 beta candidates did not converge to one winner: $(manifest)"
+fi
+
+# Scheduled dedup still has cleanup work: a committed op for this sourceCommit
+# is not permission to leave a later explicit stray live forever.
+run_release "r4-dedup-stray" FW_TEST_ABORT_AFTER=reserve >/dev/null 2>&1
+R4_STRAY_RC=$?
+R4_DEDUP_BEFORE="$(manifest)"
+R4_DEDUP_OUT="$(run_release_auto 2>&1)"; R4_DEDUP_RC=$?
+R4_DEDUP_AFTER="$(manifest)"
+if [ "$R4_STRAY_RC" -eq 42 ] && [ "$R4_DEDUP_RC" -eq 0 ] \
+   && grep -q "already published" <<<"$R4_DEDUP_OUT" \
+   && [ "$(jq_manifest 'm.releaseOps["r4-dedup-stray"].state')" = "abandoned" ] \
+   && [ "$R4_DEDUP_BEFORE" != "$R4_DEDUP_AFTER" ]; then
+  pass "R4b scheduled dedup hit performs one CAS sweep when a live beta stray exists"
+else
+  fail "R4b dedup did not sweep the stray (rc=$R4_DEDUP_RC): $R4_DEDUP_OUT"
+fi
+R4_ZERO_BEFORE="$(manifest)"
+R4_ZERO_OUT="$(run_release_auto 2>&1)"; R4_ZERO_RC=$?
+R4_ZERO_AFTER="$(manifest)"
+if [ "$R4_ZERO_RC" -eq 0 ] && grep -q "already published" <<<"$R4_ZERO_OUT" \
+   && [ "$R4_ZERO_BEFORE" = "$R4_ZERO_AFTER" ]; then
+  pass "R4b scheduled dedup with no live beta stray is byte-zero-write"
+else
+  fail "R4b empty dedup sweep wrote state (rc=$R4_ZERO_RC): $R4_ZERO_OUT"
+fi
+
+if [ "$(jq_manifest 'm.releaseOps["r4-winner"].state')" = "committed" ] \
+   && [ "$(jq_manifest 'm.releaseOps["promo-6d"].state')" = "$RELEASE_KIND_BEFORE" ]; then
+  pass "R4c beta sweep leaves committed and kind=release operations untouched"
+else
+  fail "R4c beta sweep damaged terminal or release-kind operations"
+fi
+R4_RETRY_OUT="$(run_release "r4-dedup-stray" 2>&1)"; R4_RETRY_RC=$?
+if [ "$R4_RETRY_RC" -ne 0 ] && grep -q "was abandoned" <<<"$R4_RETRY_OUT"; then
+  pass "R4d explicit rerun of an abandoned beta releaseId fails closed"
+else
+  fail "R4d abandoned releaseId rerun was not refused (rc=$R4_RETRY_RC): $R4_RETRY_OUT"
 fi
 
 # P6g · FLY-1323 (Codex code R1 MEDIUM-2) · DUPLICATE flags are refused.

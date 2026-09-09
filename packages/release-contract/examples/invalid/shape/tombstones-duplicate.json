@@ -1,0 +1,14 @@
+{
+	"schemaVersion": 1,
+	"channels": {
+		"internal-beta": { "latest": null },
+		"customer-release": { "latest": null }
+	},
+	"versions": {},
+	"releaseOps": {},
+	"releaseLedger": {},
+	"tombstones": [
+		"payloads/9.9.9/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.tgz",
+		"payloads/9.9.9/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.tgz"
+	]
+}

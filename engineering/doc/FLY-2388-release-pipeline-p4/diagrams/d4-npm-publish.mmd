@@ -1,0 +1,10 @@
+flowchart LR
+  P0["preflight --workflow<br/>端点非占位 · 工具链 · repository.url"] --> P1["npm pack 出一个确切 .tgz<br/>算 sha256 · 定 dist-tag"]
+  P1 --> P2["内容门:对这个 .tgz<br/>白名单 · 零 secret · 零私仓 slug"]
+  P2 --> P3{"registry 已有这个版本?"}
+  P3 -->|没有 = free| P4["npm publish 这个 .tgz<br/>--tag latest|next(OIDC,无 token)"]
+  P3 -->|有,且 sha256 与 tag 都相等 = idempotent| P6
+  P3 -->|有,但不相等 = conflict| PX["停:事故信号<br/>不重发,不覆盖"]
+  P4 --> P6["verify:下载 registry 的 tarball<br/>本地重算 sha256 == 预期 · dist-tag 指向它"]
+  classDef stop fill:#ffe5e5,stroke:#ff3b30,color:#c0392b
+  class PX stop

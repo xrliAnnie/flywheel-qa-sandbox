@@ -12,6 +12,8 @@
 #   C2 cleanup --apply: expire→tombstone→delete lands; object physically gone;
 #      view no longer lists the expired version; sweep replays the FULL set
 #   C3 structural order assertions on the script source (protocol lock)
+#   C4 abandoned beta/release staging objects converge through
+#      tombstone→delete under weak ETags
 set -uo pipefail
 
 PASSED=0; FAILED=0
@@ -31,12 +33,14 @@ trap cleanup EXIT
 
 OPS_TOKEN="ops-admin-test-token"
 
-start_server() { # $1 = seed manifest path (optional)
+start_server() { # $1 = seed manifest path (optional), $2 = weak etag flag (optional)
   local out="$SANDBOX/server-$RANDOM.out"
   if [ -n "${1:-}" ]; then
-    FW_TEST_OPS_TOKEN="$OPS_TOKEN" SERVE_SEED_MANIFEST="$1" node "$SERVE" > "$out" 2>&1 &
+    FW_TEST_OPS_TOKEN="$OPS_TOKEN" FW_TEST_WEAK_ETAG="${2:-}" \
+      FW_TEST_REQUIRE_CANONICAL_BASE_ETAG="${2:-}" SERVE_SEED_MANIFEST="$1" node "$SERVE" > "$out" 2>&1 &
   else
-    FW_TEST_OPS_TOKEN="$OPS_TOKEN" node "$SERVE" > "$out" 2>&1 &
+    FW_TEST_OPS_TOKEN="$OPS_TOKEN" FW_TEST_WEAK_ETAG="${2:-}" \
+      FW_TEST_REQUIRE_CANONICAL_BASE_ETAG="${2:-}" node "$SERVE" > "$out" 2>&1 &
   fi
   local pid=$!
   SERVER_PIDS="$SERVER_PIDS $pid"
@@ -91,6 +95,28 @@ import(path.join(root, "packages/payload-endpoint/__tests__/harness.mjs")).then(
 		createdAt: "2026-01-01T00:00:00.000Z",
 	};
 	m.releaseLedger["1.54.0"] = { nextBetaN: 2 };
+	const abandonedBetaSha = "e".repeat(64);
+	m.releaseOps["op-abandoned-beta"] = {
+		kind: "beta",
+		state: "abandoned",
+		ver: "1.55.0-beta.99",
+		betaVersion: null,
+		sourceCommit: "e".repeat(40),
+		sha256: abandonedBetaSha,
+		objectKey: h.payloadKeyOf("1.55.0-beta.99", abandonedBetaSha),
+		createdAt: "2026-01-01T00:00:00.000Z",
+	};
+	const abandonedReleaseSha = "f".repeat(64);
+	m.releaseOps["op-abandoned-release"] = {
+		kind: "release",
+		state: "abandoned",
+		ver: "1.55.0",
+		betaVersion: "1.55.0-beta.1",
+		sourceCommit: m.versions["1.55.0-beta.1"].sourceCommit,
+		sha256: abandonedReleaseSha,
+		objectKey: h.payloadKeyOf("1.55.0", abandonedReleaseSha),
+		createdAt: "2026-01-01T00:00:00.000Z",
+	};
 	fs.writeFileSync(path.join(sandbox, "seed-cleanup.json"), JSON.stringify(m));
 });
 EOF
@@ -158,12 +184,30 @@ else
 fi
 
 # ── C1 · cleanup dry-run writes nothing ──────────────────────────────────────
-PORT="$(start_server "$SANDBOX/seed-cleanup.json")"
+PORT="$(start_server "$SANDBOX/seed-cleanup.json" 1)"
 EP="http://127.0.0.1:$PORT"
+ETAG_HEADER="$(curl -sS -D - -o /dev/null -H "Authorization: Bearer $OPS_TOKEN" "$EP/admin/manifest" | tr -d '\r' | sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//p')"
+if [[ "$ETAG_HEADER" == W/\"*\" ]]; then
+  pass "E1c harness exposes the production weak-ETag shape to cleanup"
+else
+  fail "E1c harness did not weaken the cleanup ETag: $ETAG_HEADER"
+fi
 BEFORE="$(curl -s -H "Authorization: Bearer $OPS_TOKEN" "$EP/admin/manifest")"
+ABANDONED_BETA_KEY="payloads/1.55.0-beta.99/$(printf 'e%.0s' $(seq 1 64)).tgz"
+ABANDONED_RELEASE_KEY="payloads/1.55.0/$(printf 'f%.0s' $(seq 1 64)).tgz"
+OBJECTS_BEFORE="$(curl -s "$EP/__test__/objects")"
+if grep -q "$ABANDONED_BETA_KEY" <<<"$OBJECTS_BEFORE" \
+   && grep -q "$ABANDONED_RELEASE_KEY" <<<"$OBJECTS_BEFORE"; then
+  pass "C4a abandoned beta/release staging objects are present before cleanup"
+else
+  fail "C4a abandoned staging object fixture missing: $OBJECTS_BEFORE"
+fi
 DRY="$(FW_ENDPOINT="$EP" FW_OPS_ADMIN_TOKEN="$OPS_TOKEN" node "$CLEAN" 2>&1)"
 AFTER="$(curl -s -H "Authorization: Bearer $OPS_TOKEN" "$EP/admin/manifest")"
-if grep -q "1.54.0-beta.1" <<<"$DRY" && grep -q "dry-run only" <<<"$DRY" && [ "$BEFORE" = "$AFTER" ]; then
+if grep -q "1.54.0-beta.1" <<<"$DRY" \
+   && grep -q "$ABANDONED_BETA_KEY" <<<"$DRY" \
+   && grep -q "$ABANDONED_RELEASE_KEY" <<<"$DRY" \
+   && grep -q "dry-run only" <<<"$DRY" && [ "$BEFORE" = "$AFTER" ]; then
   pass "C1 dry-run default reports the candidate and writes nothing"
 else
   fail "C1 dry-run misbehaved: $DRY"
@@ -189,8 +233,17 @@ if ! curl -s "$EP/__test__/objects" | grep -q "1.54.0-beta.1"; then
 else
   fail "C2c object survived apply"
 fi
+OBJECTS_AFTER="$(curl -s "$EP/__test__/objects")"
+if ! grep -q "$ABANDONED_BETA_KEY" <<<"$OBJECTS_AFTER" \
+   && ! grep -q "$ABANDONED_RELEASE_KEY" <<<"$OBJECTS_AFTER" \
+   && node -e "const m=JSON.parse(process.argv[1]); process.exit(m.tombstones.includes(process.argv[2])&&m.tombstones.includes(process.argv[3])?0:1)" \
+      "$MANIFEST_AFTER" "$ABANDONED_BETA_KEY" "$ABANDONED_RELEASE_KEY"; then
+  pass "C4b weak-ETag cleanup tombstones then deletes abandoned beta/release objects"
+else
+  fail "C4b abandoned staging objects did not converge: $OBJECTS_AFTER"
+fi
 RERUN="$(FW_ENDPOINT="$EP" FW_OPS_ADMIN_TOKEN="$OPS_TOKEN" node "$CLEAN" --apply 2>&1)" || true
-if grep -q "delete sweep over 1 tombstone" <<<"$RERUN"; then
+if grep -q "delete sweep over 3 tombstone" <<<"$RERUN"; then
   pass "C2d rerun sweeps the FULL tombstone set again (convergence, idempotent)"
 else
   fail "C2d rerun did not sweep: $RERUN"

@@ -1,0 +1,170 @@
+# FLY-2388 · zero-build customer-release commit surface. The workflow stages
+# nothing and rebuilds nothing: it can only commit, abandon, or withdraw state
+# already represented by the reviewed manifest contract.
+name: Payload Promote (commit / abandon / withdraw)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "type COMMIT to confirm this customer-release action"
+        required: true
+        type: string
+      action:
+        description: "manifest action"
+        required: true
+        type: choice
+        options:
+          - commit
+          - abandon
+          - withdraw
+      release-id:
+        description: "commit/abandon releaseId; empty for withdraw"
+        required: false
+        type: string
+      expected-sha256:
+        description: "commit-only approved payload sha256"
+        required: false
+        type: string
+      withdraw-version:
+        description: "withdraw-only current clean version"
+        required: false
+        type: string
+      fallback-version:
+        description: "withdraw-only active clean fallback"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payload-release
+
+jobs:
+  commit:
+    name: Apply customer-release manifest action
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    environment: release
+    steps:
+      - name: Guards (main-only + explicit COMMIT confirm + input shape)
+        env:
+          GH_REF: ${{ github.ref }}
+          GH_EVENT: ${{ github.event_name }}
+          CONFIRM_INPUT: ${{ inputs.confirm }}
+          ACTION_INPUT: ${{ inputs.action }}
+          RELEASE_ID_INPUT: ${{ inputs.release-id }}
+          EXPECTED_SHA256_INPUT: ${{ inputs.expected-sha256 }}
+          WITHDRAW_VERSION_INPUT: ${{ inputs.withdraw-version }}
+          FALLBACK_VERSION_INPUT: ${{ inputs.fallback-version }}
+        run: |
+          set -euo pipefail
+          RELEASE_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$'
+          CLEAN_SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if [ "$GH_REF" != "refs/heads/main" ] || [ "$GH_EVENT" != "workflow_dispatch" ]; then
+            echo "::error::customer-release actions may only be dispatched from main"
+            exit 1
+          fi
+          if [ "$CONFIRM_INPUT" != "COMMIT" ]; then
+            echo "::error::confirm input must be exactly COMMIT"
+            exit 1
+          fi
+          case "$ACTION_INPUT" in
+            commit)
+              [[ "$RELEASE_ID_INPUT" =~ $RELEASE_ID_RE ]] \
+                || { echo "::error::commit requires a valid release-id"; exit 1; }
+              [[ "$EXPECTED_SHA256_INPUT" =~ ^[0-9a-f]{64}$ ]] \
+                || { echo "::error::commit requires a 64-hex expected-sha256"; exit 1; }
+              [ -z "$WITHDRAW_VERSION_INPUT$FALLBACK_VERSION_INPUT" ] \
+                || { echo "::error::commit rejects withdraw inputs"; exit 1; }
+              ;;
+            abandon)
+              [[ "$RELEASE_ID_INPUT" =~ $RELEASE_ID_RE ]] \
+                || { echo "::error::abandon requires a valid release-id"; exit 1; }
+              [ -z "$EXPECTED_SHA256_INPUT$WITHDRAW_VERSION_INPUT$FALLBACK_VERSION_INPUT" ] \
+                || { echo "::error::abandon accepts only release-id"; exit 1; }
+              ;;
+            withdraw)
+              [ -z "$RELEASE_ID_INPUT$EXPECTED_SHA256_INPUT" ] \
+                || { echo "::error::withdraw rejects commit/abandon inputs"; exit 1; }
+              [[ "$WITHDRAW_VERSION_INPUT" =~ $CLEAN_SEMVER_RE ]] \
+                && [[ "$FALLBACK_VERSION_INPUT" =~ $CLEAN_SEMVER_RE ]] \
+                && [ "$WITHDRAW_VERSION_INPUT" != "$FALLBACK_VERSION_INPUT" ] \
+                || { echo "::error::withdraw requires two different clean versions"; exit 1; }
+              ;;
+            *) echo "::error::unsupported action"; exit 1 ;;
+          esac
+
+      - name: Check out scripts (no build)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate production manifest snapshot
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
+        run: node scripts/release/payload-promote.mjs validate-snapshot
+
+      - name: Run commit
+        id: commit_result
+        if: inputs.action == 'commit'
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
+          RELEASE_ID_INPUT: ${{ inputs.release-id }}
+          EXPECTED_SHA256_INPUT: ${{ inputs.expected-sha256 }}
+        run: |
+          node scripts/release/payload-promote.mjs commit \
+            --release-id "$RELEASE_ID_INPUT" \
+            --expected-sha256 "$EXPECTED_SHA256_INPUT"
+
+      - name: Run abandon
+        id: abandon_result
+        if: inputs.action == 'abandon'
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
+          RELEASE_ID_INPUT: ${{ inputs.release-id }}
+        run: node scripts/release/payload-promote.mjs abandon --release-id "$RELEASE_ID_INPUT"
+
+      - name: Run withdraw
+        id: withdraw_result
+        if: inputs.action == 'withdraw'
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
+          WITHDRAW_VERSION_INPUT: ${{ inputs.withdraw-version }}
+          FALLBACK_VERSION_INPUT: ${{ inputs.fallback-version }}
+        run: |
+          node scripts/release/payload-promote.mjs withdraw \
+            --withdraw "$WITHDRAW_VERSION_INPUT" \
+            --fallback "$FALLBACK_VERSION_INPUT"
+
+      - name: Render result (always)
+        if: always()
+        continue-on-error: true
+        env:
+          ACTION_INPUT: ${{ inputs.action }}
+          COMMIT_RESULT: ${{ steps.commit_result.outputs.result }}
+          ABANDON_RESULT: ${{ steps.abandon_result.outputs.result }}
+          WITHDRAW_RESULT: ${{ steps.withdraw_result.outputs.result }}
+        run: |
+          node --input-type=module - <<'JS'
+          const action = process.env.ACTION_INPUT;
+          const raw = {
+            commit: process.env.COMMIT_RESULT,
+            abandon: process.env.ABANDON_RESULT,
+            withdraw: process.env.WITHDRAW_RESULT,
+          }[action];
+          let result = { action, outcome: "unavailable" };
+          if (raw) {
+            try { result = JSON.parse(raw); }
+            catch { result = { action, outcome: "invalid-result" }; }
+          }
+          console.log(`PROMOTE_RESULT ${JSON.stringify(result)}`);
+          console.log("Recovery query: re-run validate-snapshot, then retry the same action inputs.");
+          JS

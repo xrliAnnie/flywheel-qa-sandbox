@@ -25,6 +25,9 @@ PREPARE="$ROOT/scripts/release/shell-prepare.mjs"
 SANDBOX="$(mktemp -d -t fly1062-pack-XXXXXX)"
 cleanup() { rm -rf "$SANDBOX"; }
 trap cleanup EXIT
+# Hermetic npm state: a developer's global cache permissions/configuration are
+# not part of this packaging proof.
+export npm_config_cache="$SANDBOX/npm-cache"
 
 sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
 

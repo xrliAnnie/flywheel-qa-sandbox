@@ -111,6 +111,17 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # FLY-2388: top-level Node contract suites are outside every workspace
+      # test glob. ci-shell-suite-enumeration.test.sh requires each suite to be
+      # wired literally here or elsewhere in this workflow.
+      - name: Test — root Node contract suites
+        run: |
+          node --test scripts/__tests__/fly-2395-ship-relevance-retro.test.mjs
+          node --test scripts/__tests__/fly-2397-strength-two-acceptance.test.mjs
+          node --test scripts/__tests__/fly-2398-shadow-table.test.mjs
+          node --test scripts/__tests__/fly1165-sweep-decision.test.mjs
+          node --test scripts/__tests__/fly2074-founder-disclosure-guard.test.mjs
+
       - name: Enforce FLY-2165 torn mailbox identity repair contracts
         run: bash scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh
 
@@ -1277,6 +1288,18 @@ jobs:
       - name: Endpoint handler unit tests (validator / views / transitions / lifecycle)
         run: node --test packages/payload-endpoint/__tests__/*.test.mjs
 
+      - name: Release endpoint client + promote control tests
+        run: |
+          node --test \
+            scripts/__tests__/dist-tag.test.mjs \
+            scripts/__tests__/endpoint-client-etag.test.mjs \
+            scripts/__tests__/release-id.test.mjs \
+            scripts/__tests__/payload-promote-controls.test.mjs \
+            scripts/__tests__/shell-publish-helper.test.mjs
+
+      - name: Promote CLI argv contract
+        run: bash scripts/__tests__/payload-promote-argv.test.sh
+
       - name: Release contract unit tests
         run: node --test packages/release-contract/__tests__/*.test.mjs
 
@@ -1337,6 +1360,19 @@ jobs:
 
       - name: Preflight OIDC toolchain-floor matrix (exit-status + version-grammar guards)
         run: bash scripts/__tests__/oidc-toolchain-floor.test.sh
+
+      - name: Preflight workflow/founder mode split
+        run: bash scripts/__tests__/shell-publish-preflight-modes.test.sh
+
+      # The integration below executes the real trusted-publishing preflight,
+      # whose npm floor is part of the activation contract. setup-node's bundled
+      # npm is not that contract; install the exact activation pin before the
+      # test so CI exercises the same toolchain as the publish workflow.
+      - name: Install pinned npm for publish integration
+        run: npm i -g npm@11.9.0
+
+      - name: Exact shell publish idempotency (local registry stub)
+        run: bash scripts/__tests__/shell-publish-idempotent.test.sh
 
       - name: Release workflow structure lint (founder-gate contract)
         run: bash scripts/__tests__/release-workflows-structure.test.sh

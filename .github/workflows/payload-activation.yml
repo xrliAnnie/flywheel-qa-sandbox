@@ -1,14 +1,13 @@
 # FLY-1323 · one-time distribution ACTIVATION — the deliberate, reviewed
 # reversal of the "credentials never in CI" posture (FLY-1062 底线一/二/三).
-# Annie's direction (2026-07-18): one-time tokenization — she creates two
-# vendor tokens once; every execution (including npm publish) is CI from
-# then on, zero founder involvement per release.
+# Annie's direction (2026-07-18): every execution is CI. Cloudflare keeps one
+# environment-scoped credential; npm publish uses trusted publishing (OIDC)
+# with zero long-lived npm token and zero founder credential handling per run.
 #
 # NEW SECURITY POSTURE — "merge gate = publish gate" (design doc:
 # engineering/doc/FLY-1323-npm-distribution-activation/ci-activation-design.md):
-#   * both vendor secrets (CLOUDFLARE_API_TOKEN, NPM_PUBLISH_TOKEN) live in
-#     the GitHub Environment `release`, whose deployment branch policy allows
-#     ONLY main — a PR / branch / fork workflow cannot resolve them;
+#   * Cloudflare credentials live in the GitHub Environment `release`; npm
+#     uses trusted publishing (OIDC), so no long-lived npm token exists;
 #   * this job declares `environment: release` AND refuses any non-main ref,
 #     so the only path to these secrets is code that already passed the
 #     founder-gated merge to main;
@@ -48,6 +47,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 # single-flight with every other payload publish operation — also what makes
 # a per-run capability-stamp race impossible (design §4).
@@ -102,8 +102,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .node-version
-          # wires .npmrc to NODE_AUTH_TOKEN for the publish step; inert in
-          # infra mode (no npm auth is used there).
+          # Pins the target registry for npm trusted publishing.
           registry-url: https://registry.npmjs.org
 
       # wrangler comes from the REVIEWED lockfile (root devDependency, exact
@@ -177,9 +176,10 @@ jobs:
       # The beta token is the app-level capability CI was ALWAYS allowed to
       # hold (internal-beta blast radius — original plan §3). Derive its sha
       # in-run so the repo secret and the Worker can never drift apart.
-      # customer-release / ops-admin shas are NOT stamped here: absent secret
-      # = fail-closed 401 on those capabilities until their own workflows
-      # land and stamp per-run ephemeral tokens (design §4/§5).
+      # ops-admin remains absent: its key-issuance blast radius is deliberately
+      # kept out of CI. Customer-release is stamped from its environment secret
+      # in the following step so the zero-build commit workflow and Worker bind
+      # to one durable capability.
       - name: Stamp beta capability sha256 into the Worker
         if: inputs.mode == 'infra'
         env:
@@ -195,6 +195,22 @@ jobs:
           printf '%s' "$SHA" | pnpm exec wrangler secret put FW_BETA_PUBLISH_TOKEN_SHA256 \
             --config packages/payload-endpoint/wrangler.toml
           echo "beta capability sha256 stamped (the sha itself is not a secret — the Worker stores exactly this)"
+
+      - name: Stamp customer-release capability sha256 into the Worker
+        if: inputs.mode == 'infra'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
+        run: |
+          set -o pipefail
+          if [ -z "$FW_CUSTOMER_RELEASE_TOKEN" ]; then
+            echo "::error::FW_CUSTOMER_RELEASE_TOKEN environment secret missing"
+            exit 1
+          fi
+          SHA="$(printf '%s' "$FW_CUSTOMER_RELEASE_TOKEN" | sha256sum | cut -d' ' -f1)"
+          printf '%s' "$SHA" | pnpm exec wrangler secret put FW_CUSTOMER_RELEASE_TOKEN_SHA256 \
+            --config packages/payload-endpoint/wrangler.toml
+          echo "customer-release capability sha256 stamped"
 
       - name: Initialize manifest (conditional create, resume-safe)
         if: inputs.mode == 'infra'
@@ -256,35 +272,46 @@ jobs:
           fi
           echo "DEFAULT_ENDPOINT is real — proceeding"
 
-      - name: Publish preflight (explicit — prepublishOnly reruns it as the backstop)
+      - name: Install pinned npm (trusted publishing floor)
         if: inputs.mode == 'publish'
-        run: bash scripts/release/shell-publish-preflight.sh --founder-local
+        run: npm i -g npm@11.9.0
+
+      - name: Publish preflight (workflow mode)
+        if: inputs.mode == 'publish'
+        run: bash scripts/release/shell-publish-preflight.sh --workflow
+
+      - name: Pack exact tarball + resolve dist-tag
+        id: pack
+        if: inputs.mode == 'publish'
+        run: node scripts/release/shell-publish-helper.mjs pack --out "$RUNNER_TEMP/shell"
+
+      - name: Content gate on the exact tarball
+        if: inputs.mode == 'publish'
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: node scripts/release/shell-publish-helper.mjs gate "$TARBALL"
+
+      - name: Registry preflight (free | idempotent | conflict)
+        id: reg
+        if: inputs.mode == 'publish'
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          SHA: ${{ steps.pack.outputs.sha }}
+          TAG: ${{ steps.pack.outputs.tag }}
+        run: node scripts/release/shell-publish-helper.mjs preflight "$TARBALL" --expect-sha "$SHA" --expect-tag "$TAG" --registry https://registry.npmjs.org/
 
       - name: npm publish @flywheel-ai/onboard
-        if: inputs.mode == 'publish'
-        working-directory: packages/onboard-shell
+        if: inputs.mode == 'publish' && steps.reg.outputs.outcome == 'free'
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
-        run: npm publish --access public
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          TAG: ${{ steps.pack.outputs.tag }}
+          NPM_CONFIG_PROVENANCE: "false"
+        run: npm publish "$TARBALL" --access public --tag "$TAG"
 
       - name: Verify the published version is live on the registry
         if: inputs.mode == 'publish'
-        working-directory: packages/onboard-shell
-        run: |
-          LOCAL_V="$(node -p "require('./package.json').version")"
-          for i in 1 2 3 4 5 6; do
-            PUB_V="$(npm view "@flywheel-ai/onboard@$LOCAL_V" version 2>/dev/null || true)"
-            if [ "$PUB_V" = "$LOCAL_V" ]; then
-              echo "published and visible: @flywheel-ai/onboard@$LOCAL_V"
-              {
-                echo "## Shell published"
-                echo ""
-                echo "@flywheel-ai/onboard@$LOCAL_V is live on registry.npmjs.org"
-              } >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            echo "not yet visible (attempt $i/6) — waiting 10s"
-            sleep 10
-          done
-          echo "::error::@flywheel-ai/onboard@$LOCAL_V did not become visible after publish"
-          exit 1
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          SHA: ${{ steps.pack.outputs.sha }}
+          TAG: ${{ steps.pack.outputs.tag }}
+        run: node scripts/release/shell-publish-helper.mjs verify "$TARBALL" --expect-sha "$SHA" --expect-tag "$TAG" --registry https://registry.npmjs.org/

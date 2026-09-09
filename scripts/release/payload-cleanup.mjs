@@ -22,12 +22,11 @@ import {
 	latestSet,
 	RETENTION_WINDOW_MS,
 } from "../../packages/release-contract/src/index.mjs";
+import { makeClient } from "./lib/endpoint-client.mjs";
 
 const ENDPOINT = (process.env.FW_ENDPOINT || "").replace(/\/+$/, "");
 const TOKEN = process.env.FW_OPS_ADMIN_TOKEN || "";
 const APPLY = process.argv.includes("--apply");
-
-const CAS_RETRIES = 5;
 
 function log(msg) {
 	console.log(`[payload-cleanup]${APPLY ? "" : "[dry-run]"} ${msg}`);
@@ -38,27 +37,7 @@ function die(msg) {
 	process.exit(1);
 }
 
-async function api(method, path, body) {
-	const res = await fetch(`${ENDPOINT}${path}`, {
-		method,
-		headers: {
-			authorization: `Bearer ${TOKEN}`,
-			...(body !== undefined ? { "content-type": "application/json" } : {}),
-		},
-		...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-	});
-	let json = null;
-	try {
-		json = await res.json();
-	} catch {}
-	return { status: res.status, json, etag: res.headers.get("etag") };
-}
-
-async function readManifest() {
-	const { status, json, etag } = await api("GET", "/admin/manifest");
-	if (status !== 200) die(`cannot read manifest (HTTP ${status})`);
-	return { manifest: json, etag };
-}
+const client = makeClient({ endpoint: ENDPOINT, token: TOKEN, log });
 
 // ── ① candidates: superseded past their window (endpoint re-enforces) ───────
 function expireCandidates(m, nowMs) {
@@ -101,24 +80,15 @@ function tombstoneCandidates(m) {
 
 // CAS write with bounded re-read/re-judge retries (plan §B0-8).
 async function casPost(mutate, describe) {
-	for (let attempt = 0; attempt < CAS_RETRIES; attempt++) {
-		const { manifest, etag } = await readManifest();
-		const candidate = structuredClone(manifest);
-		if (!mutate(candidate)) return { ok: true, skipped: true }; // no longer applicable
-		const { status, json } = await api("POST", "/admin/manifest", {
-			baseEtag: etag,
-			manifest: candidate,
-		});
-		if (status === 200) return { ok: true };
-		if (status === 412) continue; // lost the race — re-read and re-judge
-		return {
-			ok: false,
-			status,
-			error: json?.error,
-			violations: json?.violations,
-		};
+	try {
+		const result = await client.casUpdate(
+			(candidate) => mutate(candidate),
+			describe,
+		);
+		return { ok: true, skipped: result.skipped };
+	} catch (error) {
+		return { ok: false, error: error.message };
 	}
-	return { ok: false, error: `CAS retries exhausted for ${describe}` };
 }
 
 async function main() {
@@ -130,7 +100,7 @@ async function main() {
 
 	// ── phase ①: EXPIRE ───────────────────────────────────────────────────────
 	{
-		const { manifest } = await readManifest();
+		const { manifest } = await client.readManifest();
 		const candidates = expireCandidates(manifest, nowMs);
 		log(
 			`expire candidates: ${candidates.length ? candidates.join(", ") : "(none)"}`,
@@ -156,7 +126,7 @@ async function main() {
 
 	// ── phase ②: TOMBSTONE (the durable guard — always before any delete) ────
 	{
-		const { manifest } = await readManifest();
+		const { manifest } = await client.readManifest();
 		const candidates = tombstoneCandidates(manifest);
 		log(
 			`tombstone candidates: ${candidates.length ? candidates.join(", ") : "(none)"}`,
@@ -183,7 +153,7 @@ async function main() {
 	// (not just this run's additions: R5#2 — crashed deletes and slow-PUT
 	// resurrections are converged by replaying every tombstone every run.)
 	{
-		const { manifest } = await readManifest();
+		const { manifest } = await client.readManifest();
 		const sweep = manifest.tombstones ?? [];
 		log(`delete sweep over ${sweep.length} tombstone(s)`);
 		if (APPLY) {
@@ -193,14 +163,15 @@ async function main() {
 					summary.failures.push(`sweep: unparseable tombstone key ${key}`);
 					continue;
 				}
-				const { status, json } = await api(
+				const response = await client.api(
 					"DELETE",
 					`/admin/payload/${encodeURIComponent(m[1])}/${m[2]}`,
 				);
-				if (status === 200) summary.deleted++;
+				const json = await response.json().catch(() => ({}));
+				if (response.status === 200) summary.deleted++;
 				else
 					summary.failures.push(
-						`delete ${key}: HTTP ${status} ${json?.error ?? ""}`,
+						`delete ${key}: HTTP ${response.status} ${json?.error ?? ""}`,
 					);
 			}
 		}

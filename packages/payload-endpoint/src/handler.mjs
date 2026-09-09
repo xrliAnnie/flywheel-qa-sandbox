@@ -15,6 +15,7 @@
 //   • keys / key hashes / capability tokens never reach a log line or an
 //     error body (log() receives route TEMPLATES, never raw paths).
 
+import { normalizeEtag } from "./etag.mjs";
 import {
 	ENTITLEMENT_POINTER,
 	isPayloadSemver,
@@ -64,10 +65,6 @@ function json(status, body, headers = {}) {
 // byte-identical rejection shapes (anti-enumeration)
 const customer401 = () => json(401, { error: "invalid or revoked key" });
 const uniform404 = () => json(404, { error: "not found" });
-
-function stripQuotes(etag) {
-	return typeof etag === "string" ? etag.replace(/^"|"$/g, "") : etag;
-}
 
 async function readManifest(bucket) {
 	const obj = await bucket.get(MANIFEST_KEY);
@@ -250,7 +247,15 @@ export async function handleRequest(request, deps) {
 						json(200, { ok: true, etag: created.httpEtag }),
 					);
 				}
-				if (stripQuotes(body.baseEtag) !== cur.etag) {
+				let baseEtag = null;
+				if (body.baseEtag !== null) {
+					try {
+						baseEtag = normalizeEtag(body.baseEtag);
+					} catch {
+						return respond(route, json(400, { error: "bad baseEtag" }));
+					}
+				}
+				if (baseEtag !== cur.etag) {
 					return respond(route, json(412, { error: "etag mismatch" }));
 				}
 				const {

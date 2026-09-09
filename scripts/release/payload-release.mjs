@@ -50,6 +50,21 @@ function argValue(name, fallback) {
 	return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
+function abandonOtherLiveBetaOps(manifest, winnerId) {
+	let abandoned = 0;
+	for (const [id, op] of Object.entries(manifest.releaseOps ?? {})) {
+		if (
+			id !== winnerId &&
+			op.kind === "beta" &&
+			(op.state === "reserved" || op.state === "prepared")
+		) {
+			op.state = "abandoned";
+			abandoned++;
+		}
+	}
+	return abandoned;
+}
+
 async function main() {
 	const endpoint = process.env.FW_ENDPOINT || "";
 	const token = process.env.FW_BETA_PUBLISH_TOKEN || "";
@@ -88,15 +103,31 @@ async function main() {
 	// dispatch is an explicit force and skips the dedup.
 	if (!argValue("release-id", "")) {
 		const { manifest } = await client.readManifest();
-		const already = Object.values(manifest?.releaseOps ?? {}).find(
-			(op) =>
+		const already = Object.entries(manifest?.releaseOps ?? {}).find(
+			([, op]) =>
 				op.kind === "beta" &&
 				op.state === "committed" &&
 				op.sourceCommit === sourceCommit,
 		);
 		if (already) {
+			let swept = 0;
+			await client.casUpdate((m) => {
+				const winner = Object.entries(m.releaseOps ?? {}).find(
+					([, op]) =>
+						op.kind === "beta" &&
+						op.state === "committed" &&
+						op.sourceCommit === sourceCommit,
+				);
+				if (!winner) {
+					throw new Error(
+						`dedup winner for sourceCommit ${sourceCommit} disappeared`,
+					);
+				}
+				swept = abandonOtherLiveBetaOps(m, winner[0]);
+				return swept > 0;
+			}, "dedup-sweep");
 			log(
-				`sourceCommit ${sourceCommit} already published as ${already.ver} — nothing to do (dedup)`,
+				`sourceCommit ${sourceCommit} already published as ${already[1].ver} — nothing to do (dedup; abandoned ${swept} live beta op(s))`,
 			);
 			return;
 		}
@@ -104,8 +135,10 @@ async function main() {
 
 	// ── 1. RESERVE (or reuse — same releaseId always yields the same ver) ────
 	let pinnedVer = null;
+	let sweptAtReserve = 0;
 	await client.casUpdate((m) => {
 		const op = m.releaseOps[releaseId];
+		let changed = false;
 		if (op) {
 			if (op.kind !== "beta")
 				throw new Error(`releaseId ${releaseId} is a ${op.kind} op`);
@@ -117,24 +150,28 @@ async function main() {
 				);
 			}
 			pinnedVer = op.ver;
-			return false; // reservation already durable
+		} else {
+			const n = m.releaseLedger[base]?.nextBetaN ?? 1;
+			pinnedVer = `${base}-beta.${n}`;
+			m.releaseOps[releaseId] = {
+				kind: "beta",
+				state: "reserved",
+				ver: pinnedVer,
+				betaVersion: null,
+				sourceCommit: null,
+				sha256: null,
+				objectKey: null,
+				createdAt: new Date().toISOString(), // server re-stamps
+			};
+			m.releaseLedger[base] = { nextBetaN: n + 1 };
+			changed = true;
 		}
-		const n = m.releaseLedger[base]?.nextBetaN ?? 1;
-		pinnedVer = `${base}-beta.${n}`;
-		m.releaseOps[releaseId] = {
-			kind: "beta",
-			state: "reserved",
-			ver: pinnedVer,
-			betaVersion: null,
-			sourceCommit: null,
-			sha256: null,
-			objectKey: null,
-			createdAt: new Date().toISOString(), // server re-stamps
-		};
-		m.releaseLedger[base] = { nextBetaN: n + 1 };
-		return true;
+		sweptAtReserve = abandonOtherLiveBetaOps(m, releaseId);
+		return changed || sweptAtReserve > 0;
 	}, "reserve");
-	log(`reservation: ${releaseId} → ${pinnedVer}`);
+	log(
+		`reservation: ${releaseId} → ${pinnedVer}; abandoned ${sweptAtReserve} older live beta op(s)`,
+	);
 	testAbortPoint("reserve");
 
 	// short-circuit: already committed (rerun after a lost final response)

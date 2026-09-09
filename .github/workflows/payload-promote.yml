@@ -5,9 +5,10 @@
 # candidate. It touches ONLY the internal capability (beta-publish) and NEVER
 # the customer channel.
 #
-# The COMMIT half (flip the customer pointer) is intentionally out of scope for
-# this prepare-only workflow. This workflow carries ZERO customer-release
-# credential; release-workflows-structure.test.sh asserts that boundary.
+# The COMMIT/ABANDON/WITHDRAW half lives in the sibling
+# payload-promote-commit.yml after the authorization window. This prepare-only
+# workflow carries ZERO customer-release credential; the structure tests assert
+# both that boundary and the exact release-environment allowlist.
 name: Payload Promote (prepare)
 
 on:

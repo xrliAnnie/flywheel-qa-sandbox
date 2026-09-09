@@ -47,7 +47,7 @@ payload channel 的唯一真相是 manifest 中恰好两个指针:
 
 customer 视图只包含 `channel=release && status=active` 的 entry;internal 视图包含 active 的 beta 与 release。对不在 entitlement 可见集中的版本,`GET /payload/<ver>` 统一返回同形 404,不得泄露 beta 或其他不可见版本是否存在。
 
-npm dist-tag 只描述公开薄壳 `@flywheel-ai/onboard`,不表达 payload channel。薄壳版本与 `doc/VERSION` 独立。PRD §7.2 选择不使用 GitHub Release。
+npm dist-tag 只描述公开薄壳 `@flywheel-ai/onboard`,不表达 payload channel。薄壳版本与 `doc/VERSION` 独立。`scripts/release/lib/dist-tag.mjs` 是机器入口:clean shell 版本映射 `latest`,prerelease 映射 `next`,其它形状 fail closed;activation 的 S15 结构断言锁定这条数据流。PRD §7.2 选择不使用 GitHub Release。
 
 ## 3. manifest v1
 
@@ -161,7 +161,7 @@ npm dist-tag 只描述公开薄壳 `@flywheel-ai/onboard`,不表达 payload chan
 ```
 <!-- manifest-example:end -->
 
-其他合法状态见 `examples/empty.json`、`beta-only.json`、`prepared-candidate.json`、`paused.json`、`withdraw-fallback.json`。`examples/invalid/shape` 是 C-0 schema/运行时等价拒绝集;`examples/invalid/relations` 形状合法,只由对应关系编号拒绝。
+其他合法状态见 `examples/empty.json`、`beta-only.json`、`prepared-candidate.json`、`paused.json`、`withdraw-fallback.json`。`examples/invalid/shape` 全部同时被 schema 与运行时 validator 拒绝,但运行时编号不必都是 C-0(例如 ledger 下界属于 C-4、tombstone 去重属于 C-8);原有 exact-key/type 子集继续断言 C-0。`examples/invalid/relations` 形状合法,只由对应关系编号拒绝。
 
 ## 4. 不变量
 
@@ -227,8 +227,8 @@ C-3、C-4 的融合递增、C-6b、C-7 状态机是 transition-only 规则,由 e
 | 薄壳 npm publish | main 代码 + Environment `release` | `workflow_dispatch`,main-only,`confirm=ACTIVATE`,`mode=publish` | `payload-activation.yml` | npm/OIDC credential 只在 release environment | 无 |
 | beta publish | main 代码;无人门 | `schedule` 每 6h + `workflow_dispatch`;main-only;pre-activation guard | `payload-beta-release.yml` | 只持 beta-publish,不能切 customer pointer | 无 |
 | promote prepare | 无人工门 | `workflow_dispatch` + main-only | `payload-promote.yml` | 只准备 op,不切 customer pointer | 无 |
-| promote commit | B4 veto window 沉默或 founder 显式 go;不使用 🆒/merge/ship 账本 | B1 尚未实现 | B1 | 仅 `{releaseId,expectedSha256}`、零构建、C-6b;B1 必须显式重谈 S4b | 无,当前无 workflow |
-| withdraw / paused | customer-release capability holder | B5 | B5 | 同一 CAS 摘 pointer 并 re-pin fallback 或进入 paused | 无 |
+| promote commit | B4 veto window 沉默或 founder 显式 go;B1 期间仅 founder 每次实例化的 go 经 Lead 核身后 dispatch;不使用 🆒/merge/ship 账本 | `workflow_dispatch` + main-only + `environment: release` + `confirm=COMMIT` | `payload-promote-commit.yml` | env `release` secret `FW_CUSTOMER_RELEASE_TOKEN`;仅 `{releaseId,expectedSha256}`、零构建、完整 `validateManifest`、C-6b | 无 |
+| abandon / withdraw | 与 promote commit 相同;paused/无 fallback 决策仍归 B5 | 与 commit 同一 workflow;`action=abandon|withdraw`;withdraw 必须逐字绑定当前 `customer-release` pointer | `payload-promote-commit.yml` | 同一 CAS abandon 候选,或 quarantine 当前版并 re-pin 显式 active fallback | 无 |
 
 workflow 结构测试 S13 把真实 trigger set 锁为 beta=`{schedule,workflow_dispatch}`,promote=`{workflow_dispatch}`,activation=`{workflow_dispatch}` 且保留 `confirm`;三者都没有 `push` 或 `pull_request`,所以 release 不是 merge 副作用。
 
@@ -256,6 +256,28 @@ v1 的 200 body 不含 wire version 字段。不能通过底层 manifest `schema
 - 运行时完整验证:调用 `validateManifest`;不能只跑 JSON Schema,因为 C-1…C-9 含跨字段关系。
 - 新建 manifest:只用 `emptyManifest()`;`isEmptyInitialManifest` 只表示 conditional-create 的全空形状,不能用来判断单个 channel 的 paused/never-activated。
 
-数据迁移为无:`schemaVersion` 仍为 1、manifest 字段不变。语义变化只有 C-1b 放宽与 C-6b 对新 release commit 收紧。激活 B1 前,必须用本包对生产 manifest 快照运行 schema + `validateManifest`。
+数据迁移为无:`schemaVersion` 仍为 1、manifest 字段不变。语义变化只有 C-1b 放宽与 C-6b 对新 release commit 收紧。B1 customer-release action 的生产执行门是完整 `validateManifest`;不能把每条形状错误都称为 C-0。CI 的 differential corpus 锁定 JSON Schema 的 accept/reject 形状与运行时 validator 一致;有 Ajv 的环境可以额外跑 schema,但生产执行不依赖 Ajv。
 
-本合同不新增 promote-commit workflow,不改变 S4b,不改变 broker/FLY-1323 凭据姿态,不实现 npm prerelease dist-tag、B4 决策账本、B5 客户话术或 `/v2/manifest`,也不执行任何真实发布、R2 或 npm 动作。
+以下 B0 时态句已由 Amendment A1 取代:「本合同不新增 promote-commit workflow」「不改变 S4b」「不改变 broker/FLY-1323 凭据姿态」「不实现 npm prerelease dist-tag」。仍不实现 B4 决策账本、B5 paused/无 fallback 客户话术或 `/v2/manifest`,也不授权或执行任何真实发布、R2 或 npm 动作。
+
+## Amendment A1 (FLY-2388, 2026-09-08)
+
+签署:FLY-2388 approved design authority(`flywheel-eng-lead`,R3 `APPROVED`)。本修订在不改变 manifest schema、字段和 C-n 语义的前提下,替代下列 B0 时态文本。
+
+| 位置 | 被替代文本 | A1 新文本 |
+|---|---|---|
+| §7 REQ-0 promote commit 行 | `B1 尚未实现` / `B1` / `当前无 workflow` | 执行面是 `.github/workflows/payload-promote-commit.yml`:`workflow_dispatch`、main-only、`environment: release`、`confirm=COMMIT`;凭据只来自 env `release` secret `FW_CUSTOMER_RELEASE_TOKEN`。授权源不变:B1 期间是 founder 每次实例化的 go 经 Lead 核身后 dispatch,B4 后由否决窗口机器门 dispatch。 |
+| §9 S4b 时态 | `不改变 S4b` | `FW_CUSTOMER_RELEASE_TOKEN` 的 workflow 白名单恰为 `{payload-promote-commit.yml,payload-activation.yml}`;前者执行 customer action,后者只派生并灌入 capability sha256;二者都必须受 `environment: release` 与 main-only job gate 保护。 |
+| §1.2 / §9 dist-tag 时态 | `不实现 npm prerelease dist-tag` | 已实现 `scripts/release/lib/dist-tag.mjs`:clean shell 版本 → `latest`,prerelease → `next`,非法形状拒绝;S15 锁定 pack output 到 preflight/publish/verify 的 tag 绑定。 |
+| §7 withdraw 行 | `withdraw / paused` 全归 B5 | 有显式 active fallback 的 withdraw 已由同一 commit workflow 的 `action=withdraw` 执行,且脚本只允许撤当前 customer pointer;paused/无 fallback 仍归 B5。 |
+| §6 §7.3-7 staging 清理 | 仅 `expire→tombstone→delete` | 工程定稿见下列六条;对象上传与 manifest commit 继续分处否决窗口两侧。 |
+| §9 激活门 | `schema + validateManifest` | 生产执行门是完整 `validateManifest`;schema-reject ⇒ runtime 至少一个 error 以及所有合法形状双接受,由 CI differential corpus 锁定;不声称每条 shape error 都是 C-0。有 Ajv 时可额外跑 schema。 |
+
+### A1.1 staging 清理工程定稿
+
+1. release commit 的同一 CAS 把同 `ver` 的其它 `kind=release ∧ state∈{reserved,prepared}` 候选置为 `abandoned`,形成同版本单赢家。
+2. beta reserve 的同一 CAS 把赢家之外所有 `kind=beta ∧ state∈{reserved,prepared}` 候选置为 `abandoned`;scheduled dedup 命中 committed winner 时仍先做幂等 sweep,没有 live stray 时零写。
+3. 被 veto 或主动放弃的 release 用同一 workflow `action=abandon` 按 releaseId 显式收口;B4 落地后由 B4 dispatch。
+4. 搁浅 release 由 runbook 手动执行 `payload-promote.mjs abandon --stale-days 14 --apply`;beta 每次至少 6 小时的正常 run 通过第 2 条收敛。
+5. abandoned op 的 immutable object 仍走既有 `expire/abandon → tombstone CAS → physical delete` 三步;apply 每次重扫完整 tombstone 集。
+6. 本修订不新增定时 cleanup workflow,因为 `FW_OPS_ADMIN_TOKEN` 同时能签发客户 key;拆分 ops-admin capability 与定时化归 follow-up。

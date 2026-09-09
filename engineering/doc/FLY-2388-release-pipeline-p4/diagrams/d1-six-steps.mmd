@@ -1,0 +1,17 @@
+flowchart LR
+  S1["① 挑候选<br/>(B3 判据,未来)"] --> S2
+  subgraph PRE["② 否决窗口【前】· payload-promote.yml(prepare,无门)"]
+    S2["从同一 commit 打 clean 包<br/>等价证明 = 与 beta 逐字节相同"] --> S3["登记候选 → 上传 R2<br/>(immutable key)"] --> S4["回读验 hash<br/>op = prepared"]
+  end
+  S4 --> W["③ 授权<br/>B1:founder 在 Discord 说 go,Lead 核身后 dispatch<br/>B4(未来):否决窗口沉默 = go"]
+  subgraph POST["④ 否决窗口【后】· payload-promote-commit.yml(新,environment release)"]
+    C0["校验生产 manifest"] --> C1["再回读验 hash<br/>核 sha256 = 审批物"] --> C2["一次 CAS 切 customer-release<br/>同时放弃同版本其它候选"]
+  end
+  W --> C0
+  C2 --> S5["⑤ 客户自动更新<br/>(B5,未来)"] --> S6["⑥ 记账<br/>PROMOTE_RESULT + run log"]
+  classDef done fill:#e6f9ed,stroke:#34c759,color:#1d1d1f
+  classDef new fill:#e8f1ff,stroke:#007aff,color:#1d1d1f
+  classDef future fill:#f2f2f5,stroke:#86868b,color:#515154
+  class S2,S3,S4 done
+  class C0,C1,C2,S6 new
+  class S1,S5 future

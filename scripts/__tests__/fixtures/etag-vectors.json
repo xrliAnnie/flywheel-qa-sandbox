@@ -1,0 +1,39 @@
+{
+	"valid": [
+		{
+			"name": "strong quoted R2 md5",
+			"input": "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+			"expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		},
+		{
+			"name": "weak quoted R2 md5",
+			"input": "W/\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+			"expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		},
+		{
+			"name": "lower-case weak prefix and surrounding whitespace",
+			"input": "  w/\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"  ",
+			"expected": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		},
+		{
+			"name": "bare harness sha256",
+			"input": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			"expected": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		}
+	],
+	"invalid": [
+		{ "name": "null", "input": null },
+		{ "name": "empty", "input": "" },
+		{ "name": "empty weak tag", "input": "W/\"\"" },
+		{ "name": "non-hex", "input": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" },
+		{ "name": "33 hex", "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+		{
+			"name": "63 hex",
+			"input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		},
+		{
+			"name": "65 hex",
+			"input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		}
+	]
+}

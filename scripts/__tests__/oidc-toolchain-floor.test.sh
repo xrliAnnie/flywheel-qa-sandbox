@@ -10,9 +10,9 @@
 #
 # This drives the branch WITHOUT --founder-local, shims npm/node/sort to control
 # each answer, and asserts each fail-closed case dies AT the toolchain floor
-# (before the repository.url step) with ITS OWN diagnostic. O0 is the positive
+# (before the registry probe) with ITS OWN diagnostic. O0 is the positive
 # control: a good toolchain must clear the floor (and only then die later at
-# repository.url), or every fail-closed assertion below would be vacuous.
+# the registry probe), or every fail-closed assertion below would be vacuous.
 set -uo pipefail
 
 PASSED=0; FAILED=0
@@ -64,15 +64,15 @@ run() { # caller sets NPM_OUT NPM_RC NODE_OUT NODE_RC SORT_FAIL
 }
 
 # ── O0 · POSITIVE CONTROL: a good toolchain clears the floor ─────────────────
-# In this repo the OIDC branch dies at the repository.url check (line 106), which
-# is AFTER the whole floor — so reaching that message proves every floor guard
+# The npm shim dies at the registry config probe, which is AFTER the whole
+# floor — so reaching that message proves every floor guard
 # (exit-status, grammar, comparison, pipeline) let a valid toolchain through. If
 # even the good case died at the floor, every fail-closed assertion below would
-# be vacuous. So: reached repository.url AND died at NO floor diagnostic.
+# be vacuous. So: reached the registry probe AND died at NO floor diagnostic.
 OUT="$(run)"; RC=$?
-if [ "$RC" -ne 0 ] && grep -q "repository.url missing" <<<"$OUT" \
+if [ "$RC" -ne 0 ] && grep -q "npm config get registry failed" <<<"$OUT" \
    && ! grep -qE "toolchain floor|is not a version|< 11.5.1|< 22.14|pipeline failed" <<<"$OUT"; then
-  pass "O0 good npm/node clear the toolchain floor (reach repository.url, die at no floor guard) — ruler is live"
+  pass "O0 good npm/node clear the toolchain floor (reach registry probe, die at no floor guard) — ruler is live"
 else
   fail "O0 good toolchain did not clear the floor (rc=$RC): $(tail -3 <<<"$OUT")"
 fi
@@ -80,7 +80,7 @@ fi
 # ── O1 · npm --version prints a plausible version but EXITS NON-ZERO → die ────
 OUT="$(NPM_RC=7 run)"; RC=$?
 if [ "$RC" -ne 0 ] && grep -q "cannot confirm the npm toolchain floor" <<<"$OUT" \
-   && ! grep -q "repository.url missing" <<<"$OUT"; then
+   && ! grep -q "npm config get registry failed" <<<"$OUT"; then
   pass "O1 npm --version nonzero-exit (plausible stdout) fails CLOSED at the floor"
 else
   fail "O1 npm exit-status guard did not fire (rc=$RC): $(tail -3 <<<"$OUT")"
@@ -89,7 +89,7 @@ fi
 # ── O2 · node --version plausible but EXITS NON-ZERO → die ───────────────────
 OUT="$(NODE_RC=7 run)"; RC=$?
 if [ "$RC" -ne 0 ] && grep -q "cannot confirm the node toolchain floor" <<<"$OUT" \
-   && ! grep -q "repository.url missing" <<<"$OUT"; then
+   && ! grep -q "npm config get registry failed" <<<"$OUT"; then
   pass "O2 node --version nonzero-exit (plausible stdout) fails CLOSED at the floor"
 else
   fail "O2 node exit-status guard did not fire (rc=$RC): $(tail -3 <<<"$OUT")"
@@ -98,7 +98,7 @@ fi
 # ── O3 · npm exit-0 GARBAGE (not a version) → die (Codex's exact input) ───────
 OUT="$(NPM_OUT='99garbage.99junk.99trash' run)"; RC=$?
 if [ "$RC" -ne 0 ] && grep -q "which is not a version" <<<"$OUT" \
-   && ! grep -q "repository.url missing" <<<"$OUT"; then
+   && ! grep -q "npm config get registry failed" <<<"$OUT"; then
   pass "O3 npm exit-0 garbage is refused by the version grammar (glob→anchored-regex)"
 else
   fail "O3 grammar guard accepted garbage (rc=$RC): $(tail -3 <<<"$OUT")"
@@ -107,7 +107,7 @@ fi
 # ── O4 · node exit-0 GARBAGE → die ───────────────────────────────────────────
 OUT="$(NODE_OUT='garbage' run)"; RC=$?   # no 'v' so `tr -d v` leaves it garbage
 if [ "$RC" -ne 0 ] && grep -q "which is not a version" <<<"$OUT" \
-   && ! grep -q "repository.url missing" <<<"$OUT"; then
+   && ! grep -q "npm config get registry failed" <<<"$OUT"; then
   pass "O4 node exit-0 garbage is refused by the version grammar"
 else
   fail "O4 grammar guard accepted node garbage (rc=$RC): $(tail -3 <<<"$OUT")"
@@ -116,7 +116,7 @@ fi
 # ── O5 · npm BELOW the floor → die ───────────────────────────────────────────
 OUT="$(NPM_OUT='11.0.0' run)"; RC=$?
 if [ "$RC" -ne 0 ] && grep -q "npm 11.0.0 < 11.5.1" <<<"$OUT" \
-   && ! grep -q "repository.url missing" <<<"$OUT"; then
+   && ! grep -q "npm config get registry failed" <<<"$OUT"; then
   pass "O5 below-floor npm is refused (11.0.0 < 11.5.1)"
 else
   fail "O5 npm floor comparison did not fire (rc=$RC): $(tail -3 <<<"$OUT")"
@@ -125,7 +125,7 @@ fi
 # ── O6 · node BELOW the floor → die ──────────────────────────────────────────
 OUT="$(NODE_OUT='v20.0.0' run)"; RC=$?
 if [ "$RC" -ne 0 ] && grep -q "node 20.0.0 < 22.14" <<<"$OUT" \
-   && ! grep -q "repository.url missing" <<<"$OUT"; then
+   && ! grep -q "npm config get registry failed" <<<"$OUT"; then
   pass "O6 below-floor node is refused (20.0.0 < 22.14)"
 else
   fail "O6 node floor comparison did not fire (rc=$RC): $(tail -3 <<<"$OUT")"
@@ -134,7 +134,7 @@ fi
 # ── O7 · the sort|head comparison pipeline FAILS → die (not a silent pass) ────
 OUT="$(SORT_FAIL=1 run)"; RC=$?
 if [ "$RC" -ne 0 ] && grep -q "version comparison pipeline failed" <<<"$OUT" \
-   && ! grep -q "repository.url missing" <<<"$OUT"; then
+   && ! grep -q "npm config get registry failed" <<<"$OUT"; then
   pass "O7 a failing comparison pipeline fails CLOSED (not read as 'above floor')"
 else
   fail "O7 pipeline-status guard did not fire (rc=$RC): $(tail -3 <<<"$OUT")"

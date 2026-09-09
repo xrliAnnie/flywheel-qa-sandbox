@@ -11,14 +11,16 @@
 //     • registers the durable candidate (reserved, full tuple, BEFORE upload),
 //       uploads, readback-verifies → prepared.
 //
-//   commit   (FOUNDER GATE; FW_CUSTOMER_RELEASE_TOKEN — founder custody, §3)
+//   commit   (customer-release action; FW_CUSTOMER_RELEASE_TOKEN is supplied
+//             only by payload-promote-commit.yml's release environment, §3)
 //     node payload-promote.mjs commit --release-id <id> --expected-sha256 <64hex>   (REQUIRED)
 //     • ZERO BUILD: re-verifies the already-prepared artifact's sha via
 //       streamed readback, then ONE CAS: release entry (full lineage) +
-//       customer-release pointer + op→committed. What the founder approved is
-//       the candidate tuple's sha256 — nothing is rebuilt after the gate.
+//       customer-release pointer + op→committed. The external B1 founder-go / B4
+//       veto authority binds the candidate tuple's sha256 before dispatch;
+//       nothing is rebuilt after that gate.
 //
-//   withdraw (FW_CUSTOMER_RELEASE_TOKEN)
+//   withdraw (same environment-gated workflow and capability as commit)
 //     node payload-promote.mjs withdraw --withdraw <ver> --fallback <ver>
 //     • quarantine + pointer back to an explicit known-good, ONE CAS; the
 //       fallback re-pin resets its retention clock (server-stamped).
@@ -31,6 +33,8 @@ import { fileURLToPath } from "node:url";
 import {
 	deriveVetoBinding,
 	ENTITLEMENT_POINTER,
+	isCleanSemver,
+	validateManifest,
 } from "../../packages/release-contract/src/index.mjs";
 import {
 	baseOf,
@@ -40,6 +44,7 @@ import {
 	testAbortPoint,
 	tupleMatches,
 } from "./lib/endpoint-client.mjs";
+import { isReleaseId } from "./lib/release-id.mjs";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CUSTOMER_POINTER = ENTITLEMENT_POINTER.customer;
@@ -50,33 +55,25 @@ function die(msg) {
 }
 const log = (m) => console.log(`[payload-promote] ${m}`);
 
-function argValue(name, fallback) {
-	const i = process.argv.indexOf(`--${name}`);
-	return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
+function emitResult(result) {
+	const json = JSON.stringify(result);
+	console.log(json);
+	if (process.env.GITHUB_OUTPUT) {
+		fs.appendFileSync(process.env.GITHUB_OUTPUT, `result=${json}\n`);
+	}
 }
 
-// FLY-1323: argValue() only reads the flags a caller thinks to ask for, so an
-// unknown argument used to be silently DROPPED. That is worse than rejecting
-// it: a `--sha256` typo'd for `--expected-sha256` reads like an approval
-// binding while binding nothing. Every mode declares its flags; anything else
-// is fail-closed.
-//
-// This consumes the WHOLE argv as recognized flag/value pairs and refuses any
-// token it did not consume. Every flag here is value-taking (there are no
-// booleans), so a known flag always eats exactly two tokens. Three spellings
-// are each refused for the same reason — they all read as ABSENT downstream:
-//   --flag=value   argValue() matches only an exact `--flag` item, so
-//                  `--expected-sha256=<hex>` would pass a name check and then
-//                  read back as absent (Codex design R2);
-//   positional/-x  a bare token or short option was skipped by an earlier
-//                  `continue`, so it looked accepted and did nothing (R3);
-//   dangling flag  `--expected-sha256` with nothing after it falls back to ""
-//                  and reports as simply not given (R3).
-// One accepted syntax, no second parser to drift.
-function assertArgvFullyRecognized(allowed) {
+function parseCommandArgs({
+	valueFlags = [],
+	booleanFlags = [],
+	exclusive = [],
+	requires = {},
+}) {
 	const argv = process.argv.slice(3);
+	const allowed = [...valueFlags, ...booleanFlags];
 	const known = () => allowed.map((a) => `--${a}`).join(" ");
 	const seen = new Set();
+	const parsed = {};
 
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -100,22 +97,37 @@ function assertArgvFullyRecognized(allowed) {
 					`Refusing rather than ignoring it — a flag that looks like a control but does nothing is worse than no control.`,
 			);
 		}
-		// argValue() resolves via indexOf → the FIRST occurrence wins and every
-		// later one is silently dropped. `--expected-sha256 <good> --expected-sha256
-		// <evil>` must never be ambiguous about which artifact was approved.
 		if (seen.has(name))
 			die(`--${name} given more than once — refusing an ambiguous value`);
 		seen.add(name);
 
-		// A dangling flag must not read as absent: argValue() would fall back to
-		// "" and the caller would report the flag as simply not given.
-		if (i + 1 >= argv.length) {
+		if (booleanFlags.includes(name)) {
+			parsed[name] = true;
+			continue;
+		}
+		if (i + 1 >= argv.length || argv[i + 1].startsWith("--")) {
 			die(
 				`--${name} requires a value but none followed it — refusing to read a dangling flag as absent`,
 			);
 		}
-		i++; // consume the value token
+		parsed[name] = argv[++i];
 	}
+
+	for (const group of exclusive) {
+		const present = group.filter((name) => seen.has(name));
+		if (present.length > 1) {
+			die(`--${present.join(" and --")} are mutually exclusive`);
+		}
+	}
+	for (const [name, dependencies] of Object.entries(requires)) {
+		if (!seen.has(name)) continue;
+		for (const dependency of dependencies) {
+			if (!seen.has(dependency)) {
+				die(`--${name} requires --${dependency}`);
+			}
+		}
+	}
+	return parsed;
 }
 
 function clientFor(envName) {
@@ -183,17 +195,20 @@ export function proveEquivalence(betaTarball, cleanTarball, workDir) {
 
 // ── prepare ──────────────────────────────────────────────────────────────────
 async function cmdPrepare() {
-	assertArgvFullyRecognized(["release-id", "beta", "repo-root"]);
-	const client = clientFor("FW_BETA_PUBLISH_TOKEN");
-	const releaseId = argValue("release-id", "");
-	const betaVer = argValue("beta", "");
+	const args = parseCommandArgs({
+		valueFlags: ["release-id", "beta", "repo-root"],
+	});
+	const releaseId = args["release-id"] ?? "";
+	const betaVer = args.beta ?? "";
 	if (!releaseId) die("prepare: --release-id required");
+	if (!isReleaseId(releaseId)) die("prepare: invalid releaseId");
 	if (!betaVer)
 		die(
 			"prepare: --beta <X.Y.Z-beta.N> required (the UNIQUE beta being promoted)",
 		);
+	const client = clientFor("FW_BETA_PUBLISH_TOKEN");
 	const repoRoot = path.resolve(
-		argValue("repo-root", path.join(SELF_DIR, "..", "..")),
+		args["repo-root"] ?? path.join(SELF_DIR, "..", ".."),
 	);
 	const packer =
 		process.env.FW_PACKER ||
@@ -346,15 +361,17 @@ async function cmdPrepare() {
 // ═════════════════════════════════════════════════════════════════════════════
 
 async function cmdCommit() {
-	assertArgvFullyRecognized(["release-id", "expected-sha256"]);
-	const client = clientFor("FW_CUSTOMER_RELEASE_TOKEN");
-	const releaseId = argValue("release-id", "");
+	const args = parseCommandArgs({
+		valueFlags: ["release-id", "expected-sha256"],
+	});
+	const releaseId = args["release-id"] ?? "";
 	if (!releaseId) die("commit: --release-id required");
+	if (!isReleaseId(releaseId)) die("commit: invalid releaseId");
 	// FLY-1323: binds THIS invocation to the exact tuple the founder approved.
 	// REQUIRED, not optional — an unbound direct commit is precisely the hole the
 	// founder-direct first publish opens. Nothing in the repo needs the unbound
 	// form, so an optional flag would only preserve a footgun.
-	const expectedSha = argValue("expected-sha256", "");
+	const expectedSha = args["expected-sha256"] ?? "";
 	if (!expectedSha)
 		die(
 			"commit: --expected-sha256 <64hex> required — the customer pointer only ever moves to an artifact someone explicitly approved by hash",
@@ -363,6 +380,7 @@ async function cmdCommit() {
 		die(
 			`commit: --expected-sha256 must be a 64-char lowercase hex sha256 (got ${expectedSha})`,
 		);
+	const client = clientFor("FW_CUSTOMER_RELEASE_TOKEN");
 
 	const { manifest } = await client.readManifest();
 	if (!manifest) die("no manifest");
@@ -376,22 +394,21 @@ async function cmdCommit() {
 		);
 	if (op.state === "committed") {
 		log(`releaseId ${releaseId} already committed — idempotent success`);
+		emitResult({
+			action: "commit",
+			releaseId,
+			ver: op.ver,
+			sha256: expectedSha,
+			outcome: "idempotent",
+		});
 		return;
 	}
 	if (op.state !== "prepared")
 		die(`commit: candidate is ${op.state}, must be prepared`);
 
 	// re-verify the EXACT artifact the founder approved (streamed hash)
-	await client.readbackVerify(op.ver, op.sha256);
+	const { size } = await client.readbackVerify(op.ver, op.sha256);
 	log(`artifact re-verified: ${op.ver} sha256=${op.sha256}`);
-
-	// object size for the entry (identity metadata; endpoint HEAD-checks it)
-	const head = await client.api(
-		"GET",
-		`/admin/payload/${encodeURIComponent(op.ver)}/${op.sha256}`,
-	);
-	const bytes = Buffer.from(await head.arrayBuffer());
-	const size = bytes.length;
 
 	// QA ff38290f F1 (defense in depth — NOT a live HIGH; severity corrected in R4,
 	// confirmed by Codex): the binding above was checked on the snapshot read at
@@ -413,6 +430,7 @@ async function cmdCommit() {
 	// is the highest-consequence write in the flow and was the one call site not doing
 	// it.
 	let committedVer = null;
+	let outcome = "committed";
 	await client.casUpdate((m) => {
 		const cur = m.releaseOps[releaseId];
 		if (!cur || cur.kind !== "release") {
@@ -433,6 +451,7 @@ async function cmdCommit() {
 		if (cur.state === "committed") {
 			// Someone else committed the artifact we approved — genuinely idempotent.
 			committedVer = cur.ver;
+			outcome = "idempotent";
 			return false;
 		}
 		if (cur.state !== "prepared")
@@ -458,6 +477,16 @@ async function cmdCommit() {
 			quarantinedAt: null,
 		};
 		m.channels[CUSTOMER_POINTER].latest = cur.ver;
+		for (const [otherId, other] of Object.entries(m.releaseOps)) {
+			if (
+				otherId !== releaseId &&
+				other.kind === "release" &&
+				(other.state === "reserved" || other.state === "prepared") &&
+				other.ver === cur.ver
+			) {
+				other.state = "abandoned";
+			}
+		}
 		committedVer = cur.ver;
 		cur.state = "committed";
 		return true;
@@ -471,28 +500,59 @@ async function cmdCommit() {
 	log(
 		`COMMITTED: ${CUSTOMER_POINTER}.latest = ${committedVer} (releaseId ${releaseId})`,
 	);
+	emitResult({
+		action: "commit",
+		releaseId,
+		ver: committedVer,
+		sha256: expectedSha,
+		outcome,
+	});
 }
 
 async function cmdWithdraw() {
-	assertArgvFullyRecognized(["withdraw", "fallback"]);
-	const client = clientFor("FW_CUSTOMER_RELEASE_TOKEN");
-	const ver = argValue("withdraw", "");
-	const fallback = argValue("fallback", "");
+	const args = parseCommandArgs({ valueFlags: ["withdraw", "fallback"] });
+	const ver = args.withdraw ?? "";
+	const fallback = args.fallback ?? "";
 	if (!ver || !fallback)
 		die("withdraw: --withdraw <ver> --fallback <ver> required");
+	if (!isCleanSemver(ver) || !isCleanSemver(fallback)) {
+		die("withdraw: both versions must be clean payload semvers");
+	}
+	if (ver === fallback)
+		die("withdraw: withdrawn and fallback versions must differ");
+	const client = clientFor("FW_CUSTOMER_RELEASE_TOKEN");
+	let outcome = "withdrawn";
 	await client.casUpdate((m) => {
 		const e = m.versions[ver];
 		if (!e) throw new Error(`withdraw: no such version ${ver}`);
+		const f = m.versions[fallback];
+		if (
+			!f ||
+			f.channel !== "release" ||
+			f.status !== "active" ||
+			!isCleanSemver(fallback)
+		) {
+			throw new Error(
+				`withdraw: fallback ${fallback} must be an ACTIVE release (fail-closed)`,
+			);
+		}
 		if (
 			e.status === "quarantined" &&
 			m.channels[CUSTOMER_POINTER].latest === fallback
 		) {
+			outcome = "idempotent";
 			return false; // already withdrawn to this fallback (idempotent)
 		}
-		const f = m.versions[fallback];
-		if (!f || f.channel !== "release" || f.status !== "active") {
+		if (
+			e.channel !== "release" ||
+			e.status !== "active" ||
+			!isCleanSemver(ver)
+		) {
+			throw new Error(`withdraw: ${ver} must be an ACTIVE release`);
+		}
+		if (m.channels[CUSTOMER_POINTER].latest !== ver) {
 			throw new Error(
-				`withdraw: fallback ${fallback} must be an ACTIVE release (fail-closed)`,
+				`withdraw: ${ver} is not the current ${CUSTOMER_POINTER} pointer`,
 			);
 		}
 		e.status = "quarantined";
@@ -502,14 +562,116 @@ async function cmdWithdraw() {
 	log(
 		`WITHDRAWN: ${ver} quarantined; ${CUSTOMER_POINTER}.latest = ${fallback} (fallback re-pin resets its retention clock server-side)`,
 	);
+	emitResult({
+		action: "withdraw",
+		withdrawn: ver,
+		fallback,
+		outcome,
+	});
+}
+
+async function cmdAbandon() {
+	const args = parseCommandArgs({
+		valueFlags: ["release-id", "stale-days"],
+		booleanFlags: ["apply"],
+		exclusive: [["release-id", "stale-days"]],
+		requires: { apply: ["stale-days"] },
+	});
+	const releaseId = args["release-id"] ?? "";
+	const staleDays = args["stale-days"] ?? "";
+	if (!releaseId && !staleDays) {
+		die("abandon: exactly one of --release-id or --stale-days is required");
+	}
+	if (releaseId && !isReleaseId(releaseId)) die("abandon: invalid releaseId");
+	if (staleDays && !/^[1-9][0-9]*$/.test(staleDays)) {
+		die("abandon: --stale-days must be a positive integer");
+	}
+	const client = clientFor("FW_CUSTOMER_RELEASE_TOKEN");
+	if (releaseId) {
+		let outcome = "abandoned";
+		await client.casUpdate((m) => {
+			const op = m.releaseOps[releaseId];
+			if (!op || op.kind !== "release") {
+				throw new Error(`abandon: no release candidate ${releaseId}`);
+			}
+			if (op.state === "abandoned") {
+				outcome = "idempotent";
+				return false;
+			}
+			if (op.state === "committed") {
+				throw new Error(
+					`abandon: ${releaseId} is already published; use withdraw instead`,
+				);
+			}
+			if (op.state !== "reserved" && op.state !== "prepared") {
+				throw new Error(`abandon: cannot abandon from ${op.state}`);
+			}
+			op.state = "abandoned";
+			return true;
+		}, `abandon ${releaseId}`);
+		emitResult({ action: "abandon", releaseIds: [releaseId], outcome });
+		return;
+	}
+
+	const cutoff = Date.now() - Number(staleDays) * 24 * 60 * 60 * 1000;
+	const staleIds = (m) =>
+		Object.entries(m.releaseOps)
+			.filter(
+				([, op]) =>
+					op.kind === "release" &&
+					(op.state === "reserved" || op.state === "prepared") &&
+					Date.parse(op.createdAt) <= cutoff,
+			)
+			.map(([id]) => id)
+			.sort();
+	if (!args.apply) {
+		const { manifest } = await client.readManifest();
+		emitResult({
+			action: "abandon",
+			releaseIds: staleIds(manifest),
+			outcome: "dry-run",
+		});
+		return;
+	}
+	let releaseIds = [];
+	await client.casUpdate((m) => {
+		releaseIds = staleIds(m);
+		for (const id of releaseIds) m.releaseOps[id].state = "abandoned";
+		return releaseIds.length > 0;
+	}, `abandon releases stale for ${staleDays} day(s)`);
+	emitResult({
+		action: "abandon",
+		releaseIds,
+		outcome: releaseIds.length ? "abandoned" : "idempotent",
+	});
+}
+
+async function cmdValidateSnapshot() {
+	parseCommandArgs({});
+	const client = clientFor("FW_CUSTOMER_RELEASE_TOKEN");
+	const { manifest } = await client.readManifest();
+	if (!manifest) die("validate-snapshot: no manifest");
+	const violations = validateManifest(manifest);
+	if (violations.length) {
+		throw new Error(
+			`validate-snapshot: contract violations: ${JSON.stringify(violations)}`,
+		);
+	}
+	log(
+		`snapshot valid: channels=${JSON.stringify(manifest.channels)} releaseOps=${Object.keys(manifest.releaseOps).length}`,
+	);
 }
 
 async function main() {
 	const mode = process.argv[2];
 	if (mode === "prepare") return cmdPrepare();
 	if (mode === "commit") return cmdCommit();
+	if (mode === "abandon") return cmdAbandon();
 	if (mode === "withdraw") return cmdWithdraw();
-	die("usage: payload-promote.mjs prepare|commit|withdraw (see file header)");
+	if (mode === "validate-snapshot") return cmdValidateSnapshot();
+	die(
+		"usage: payload-promote.mjs prepare|commit|abandon|withdraw|validate-snapshot (see file header)",
+	);
 }
 
 main().catch((e) => die(e.message));

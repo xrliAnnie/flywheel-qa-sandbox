@@ -116,11 +116,25 @@ if (process.env.STUB_PAYLOAD_FILE) {
 	// seed a placeholder object per version entry so DELETE effects are
 	// observable (bytes are fixtures; identity metadata matches the entry).
 	const seed = JSON.parse(seedJson);
+	const seededObjectKeys = new Set();
 	for (const [ver, e] of Object.entries(seed.versions ?? {})) {
 		bucket.seed(e.key, Buffer.from(`seed-payload-${ver}`), {
 			sha256: e.sha256,
 			ver,
 		});
+		seededObjectKeys.add(e.key);
+	}
+	// Abandoned staging candidates intentionally have no versions entry. Seed
+	// their registered immutable objects as well so cleanup tests prove a real
+	// present→tombstoned→deleted transition rather than a vacuous delete.
+	for (const op of Object.values(seed.releaseOps ?? {})) {
+		if (op.objectKey && op.sha256 && !seededObjectKeys.has(op.objectKey)) {
+			bucket.seed(op.objectKey, Buffer.from(`seed-staging-${op.ver}`), {
+				sha256: op.sha256,
+				ver: op.ver,
+			});
+			seededObjectKeys.add(op.objectKey);
+		}
 	}
 	if (process.env.SERVE_SEED_KEY) {
 		// SERVE_SEED_KEY=<plaintext>:<entitlement> — a pre-issued license key
@@ -183,6 +197,21 @@ const server = http.createServer(async (req, res) => {
 		const chunks = [];
 		for await (const c of req) chunks.push(c);
 		const body = Buffer.concat(chunks);
+		if (
+			process.env.FW_TEST_REQUIRE_CANONICAL_BASE_ETAG === "1" &&
+			req.method === "POST" &&
+			req.url === "/admin/manifest"
+		) {
+			const parsed = JSON.parse(body.toString("utf8"));
+			if (
+				typeof parsed.baseEtag === "string" &&
+				/^W\//i.test(parsed.baseEtag)
+			) {
+				res.writeHead(412, { "content-type": "application/json" });
+				res.end(JSON.stringify({ error: "etag mismatch" }));
+				return;
+			}
+		}
 		const headers = new Headers();
 		for (const [k, v] of Object.entries(req.headers)) {
 			if (typeof v === "string") headers.set(k, v);
@@ -197,6 +226,9 @@ const server = http.createServer(async (req, res) => {
 		const response = await handleRequest(request, { bucket, secrets, now });
 		const resHeaders = {};
 		for (const [k, v] of response.headers.entries()) resHeaders[k] = v;
+		if (process.env.FW_TEST_WEAK_ETAG === "1" && resHeaders.etag) {
+			resHeaders.etag = `W/${resHeaders.etag}`;
+		}
 		res.writeHead(response.status, resHeaders);
 		const buf = Buffer.from(await response.arrayBuffer());
 		res.end(buf);

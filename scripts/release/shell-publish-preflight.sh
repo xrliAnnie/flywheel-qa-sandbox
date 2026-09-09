@@ -1,7 +1,7 @@
 #!/bin/bash
 # FLY-1062 PR4 · shell publish preflight — the SHARED guard for BOTH publish
-# paths (the dormant shell-publish.yml workflow AND the founder-local 2FA
-# command in the runbook). Publishing the thin shell bakes DEFAULT_ENDPOINT
+# paths (the OIDC activation workflow AND the founder-local 2FA backstop in
+# the runbook). Publishing the thin shell bakes DEFAULT_ENDPOINT
 # into every customer install, so this refuses:
 #   1. the .invalid placeholder endpoint (a published shell must point at the
 #      real hosting URL — one-line change once Annie picks workers.dev vs a
@@ -13,8 +13,8 @@
 #   4. a red publish content gate (the packed file set is the registered
 #      whitelist and nothing else).
 #
-# Usage:
-#   scripts/release/shell-publish-preflight.sh [--founder-local] [--check-endpoint-only]
+# Usage (modes are mutually exclusive):
+#   scripts/release/shell-publish-preflight.sh [--workflow|--founder-local|--check-endpoint-only]
 set -uo pipefail
 
 die() { echo "[shell-publish-preflight] $*" >&2; exit 1; }
@@ -41,14 +41,18 @@ SHELL_DIR="$ROOT/packages/onboard-shell"
 note() { echo "[shell-publish-preflight] $*"; }
 
 FOUNDER_LOCAL=0
+WORKFLOW=0
 ENDPOINT_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --founder-local) FOUNDER_LOCAL=1 ;;
+    --workflow) WORKFLOW=1 ;;
     --check-endpoint-only) ENDPOINT_ONLY=1 ;;
     *) die "unknown arg: $arg" ;;
   esac
 done
+[ "$((FOUNDER_LOCAL + WORKFLOW + ENDPOINT_ONLY))" -le 1 ] \
+  || die "--workflow, --founder-local, and --check-endpoint-only are mutually exclusive"
 
 # ── 1. endpoint reality ───────────────────────────────────────────────────────
 # QA ff38290f F2: this gate used a bare `grep -q ... "$CONFIG"`. A missing file
@@ -105,12 +109,14 @@ if [ "$FOUNDER_LOCAL" -ne 1 ]; then
   }
   version_ge "$NPM_V" "11.5.1" || die "npm $NPM_V < 11.5.1 (trusted publishing floor)"
   version_ge "$NODE_V" "22.14.0" || die "node $NODE_V < 22.14 (trusted publishing floor)"
-  # trusted publishing also requires repository.url matching the repo — NOT
-  # set under the fallback form (it would bake the private repo slug into the
-  # public package, tripping the zero-private-URL gate); add it deliberately
-  # when the environment form becomes real, with a registered gate exception.
-  jq -e '.repository.url' "$SHELL_DIR/package.json" >/dev/null 2>&1 \
-    || die "repository.url missing — required for trusted publishing (see runbook: environment-form flip)"
+  # npm trusted publishing binds this field to the configured GitHub repository.
+  # Presence alone is not enough: a typo or different repository is a different
+  # publisher identity.
+  REPOSITORY_URL="$(jq -r '.repository.url // empty' "$SHELL_DIR/package.json")"; REPOSITORY_RC=$?
+  [ "$REPOSITORY_RC" -eq 0 ] \
+    || die "repository.url probe failed (exit $REPOSITORY_RC) — required for trusted publishing"
+  [ "$REPOSITORY_URL" = "git+https://github.com/xrliAnnie/flywheel.git" ] \
+    || die "repository.url must exactly identify git+https://github.com/xrliAnnie/flywheel.git for trusted publishing"
   note "toolchain: npm $NPM_V / node $NODE_V ok"
 fi
 
@@ -132,6 +138,18 @@ VER="$(jq -r '.version' "$SHELL_DIR/package.json")"; VER_RC=$?
 case "$VER" in
   ""|null) die "package.json .version is empty/null — cannot check version reuse, refusing" ;;
 esac
+if [ "$FOUNDER_LOCAL" -eq 1 ] && [ -n "${npm_config_tag:-}" ]; then
+  EXPECTED_TAG="$(node --input-type=module - "$ROOT/scripts/release/lib/dist-tag.mjs" "$VER" <<'JS'
+import { pathToFileURL } from "node:url";
+const { distTagForVersion } = await import(pathToFileURL(process.argv[2]));
+process.stdout.write(distTagForVersion(process.argv[3]));
+JS
+)"; TAG_RC=$?
+  [ "$TAG_RC" -eq 0 ] \
+    || die "cannot derive the required npm dist-tag for shell version $VER"
+  [ "$npm_config_tag" = "$EXPECTED_TAG" ] \
+    || die "npm_config_tag '$npm_config_tag' disagrees with shared parser: $VER requires '$EXPECTED_TAG'"
+fi
 # FLY-1323: FAIL CLOSED. This used to treat ANY `npm view` failure (DNS, TLS,
 # registry 5xx, wrong registry, auth) as "version is free" and print a green
 # PREFLIGHT PASS — a fail-OPEN check on the one gate that stops a clean semver
@@ -192,6 +210,10 @@ if [ -n "$PUBCFG_REGISTRY" ]; then
   note "publishConfig.registry pinned: $PUBCFG_REGISTRY"
 fi
 note "registry pinned: $CONFIGURED_REGISTRY"
+[ "$WORKFLOW" -eq 1 ] && {
+  note "PREFLIGHT PASS — workflow gate 2 complete; exact tarball occupancy/content checks follow"
+  exit 0
+}
 VIEW_OUT="$(npm view --registry "$NPMJS" "$NAME@$VER" version 2>&1)" && VIEW_RC=0 || VIEW_RC=$?
 if [ "$VIEW_RC" -eq 0 ]; then
   die "$NAME@$VER already exists on the registry — bump the shell version explicitly in a PR"

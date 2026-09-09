@@ -19,14 +19,32 @@ command -v npm >/dev/null 2>&1 || { echo "ERROR: npm required"; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
 PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+TARBALL_INPUT=""
+if [ "$#" -gt 0 ]; then
+  if [ "$#" -eq 2 ] && [ "$1" = "--tarball" ]; then
+    TARBALL_INPUT="$2"
+    [ -f "$TARBALL_INPUT" ] || { echo "ERROR: exact tarball not found: $TARBALL_INPUT"; exit 1; }
+  else
+    echo "ERROR: usage: $0 [--tarball <exact.tgz>]"
+    exit 1
+  fi
+fi
+
 SANDBOX="$(mktemp -d -t fly1062-shellpub-XXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
-# real npm pack of the shell package → list its contents
-TARBALL="$SANDBOX/$(cd "$PKG_DIR" && npm pack --pack-destination "$SANDBOX" 2>/dev/null | tail -1)"
+# Default/source mode creates a real npm pack. Workflow mode supplies the exact
+# already-hashed tarball, so the content gate cannot accidentally inspect a
+# second build.
+if [ -n "$TARBALL_INPUT" ]; then
+  TARBALL="$TARBALL_INPUT"
+else
+  TARBALL="$SANDBOX/$(cd "$PKG_DIR" && npm_config_cache="$SANDBOX/npm-cache" npm pack --pack-destination "$SANDBOX" 2>/dev/null | tail -1)"
+fi
 [ -f "$TARBALL" ] || { echo "ERROR: shell npm pack failed"; exit 1; }
 LIST="$(tar -tzf "$TARBALL" | sed 's|^package/||' | sort)"
 UNPACK="$SANDBOX/unpack"; mkdir -p "$UNPACK"; tar -xzf "$TARBALL" -C "$UNPACK"
+PACKED_PACKAGE_JSON="$UNPACK/package/package.json"
 
 # ── G1 · no internal surface in the packed content ──────────────────────────
 BAD="$(grep -E '^(scripts/|packages/|agents/)|\.tgz$' <<<"$LIST" || true)"
@@ -73,11 +91,19 @@ else
   fail "G2 unregistered:[$UNEXPECTED] missing-required:[$MISSING]"
 fi
 
-# ── G3 · zero private-repo URL in the packed content ────────────────────────
-if ! grep -rq "xrliAnnie/" "$UNPACK" 2>/dev/null; then
-  pass "G3 zero private-repo reference in the shell package"
+# ── G3 · zero private-repo URL except the trusted-publisher repository field ─
+PRIVATE_OUTSIDE_REPOSITORY=""
+if grep -r "xrliAnnie/" "$UNPACK/package" --exclude=package.json >/dev/null 2>&1; then
+  PRIVATE_OUTSIDE_REPOSITORY="$(grep -rln 'xrliAnnie/' "$UNPACK/package" --exclude=package.json)"
+fi
+jq 'del(.repository.url)' "$PACKED_PACKAGE_JSON" > "$SANDBOX/package-without-repository-url.json"
+if grep -q "xrliAnnie/" "$SANDBOX/package-without-repository-url.json"; then
+  PRIVATE_OUTSIDE_REPOSITORY="$PRIVATE_OUTSIDE_REPOSITORY package.json(outside repository.url)"
+fi
+if [ -z "$PRIVATE_OUTSIDE_REPOSITORY" ]; then
+  pass "G3 zero private-repo reference outside package.json.repository.url"
 else
-  fail "G3 private-repo slug: $(grep -rln 'xrliAnnie/' "$UNPACK")"
+  fail "G3 private-repo slug outside repository.url: $PRIVATE_OUTSIDE_REPOSITORY"
 fi
 
 # ── G3b · secret scan over the packed content (Codex R1#5) ───────────────────
@@ -96,16 +122,45 @@ else
 fi
 
 # ── G4 · publish FORM (PR4 unlock: the private:true lock is replaced by the
-#    explicit publish shape — public scoped access; publishing itself remains
-#    founder-gated at the PATH level: shell-publish-preflight.sh refuses while
-#    DEFAULT_ENDPOINT is the .invalid placeholder, and the first publish is a
-#    founder-local 2FA action per the runbook) ────────────────────────────────
-if [ "$(jq -r '.private // "absent"' "$PKG_DIR/package.json")" = "absent" ] \
-   && [ "$(jq -r '.publishConfig.access' "$PKG_DIR/package.json")" = "public" ] \
-   && [ "$(jq -r '.name' "$PKG_DIR/package.json")" = "@flywheel-ai/onboard" ]; then
+#    explicit publish shape — public scoped access; shell-publish-preflight.sh
+#    refuses while DEFAULT_ENDPOINT is the .invalid placeholder. Release CI
+#    publishes through OIDC; founder-local remains a strict fallback backstop.)
+# ─────────────────────────────────────────────────────────────────────────────
+if [ "$(jq -r '.private // "absent"' "$PACKED_PACKAGE_JSON")" = "absent" ] \
+   && [ "$(jq -r '.publishConfig.access' "$PACKED_PACKAGE_JSON")" = "public" ] \
+   && [ "$(jq -r '.name' "$PACKED_PACKAGE_JSON")" = "@flywheel-ai/onboard" ]; then
   pass "G4 publish form: scoped public package, private lock removed (PR4)"
 else
-  fail "G4 publish form wrong: private=$(jq -r '.private' "$PKG_DIR/package.json") access=$(jq -r '.publishConfig.access' "$PKG_DIR/package.json")"
+  fail "G4 publish form wrong: private=$(jq -r '.private' "$PACKED_PACKAGE_JSON") access=$(jq -r '.publishConfig.access' "$PACKED_PACKAGE_JSON")"
+fi
+
+# ── G9 · npm trusted publishing binds the public package to this repository ─
+EXPECTED_REPOSITORY_URL='git+https://github.com/xrliAnnie/flywheel.git'
+if [ "$(jq -r '.repository.url // empty' "$PACKED_PACKAGE_JSON")" = "$EXPECTED_REPOSITORY_URL" ]; then
+  pass "G9 repository.url exactly identifies the trusted-publisher repository"
+else
+  fail "G9 repository.url must be exactly $EXPECTED_REPOSITORY_URL"
+fi
+
+# ── G6a · the packed package retains the exact founder-local backstop hook ───
+EXPECTED_HOOK='bash ../../scripts/release/shell-publish-preflight.sh --founder-local'
+HOOK="$(jq -r '.scripts.prepublishOnly // ""' "$PACKED_PACKAGE_JSON")"; HOOK_RC=$?
+if [ "$HOOK_RC" -eq 0 ] && [ "$HOOK" = "$EXPECTED_HOOK" ] \
+   && [ "$EXPECTED_HOOK" != "echo shell-publish-preflight" ] \
+   && [ "$EXPECTED_HOOK" != "bash -c 'true' shell-publish-preflight.sh --founder-local" ]; then
+  pass "G6a prepublishOnly is EXACTLY the canonical preflight invocation (no substring/glob/-c lookalike can pass)"
+else
+  fail "G6a hook is not the exact canonical invocation (jq rc=$HOOK_RC): got '$HOOK', want '$EXPECTED_HOOK'"
+fi
+
+# Exact-tarball mode ends here: every assertion above reads the supplied bytes.
+# Source-only self-tests below deliberately include npm pack and must never
+# rebuild during the workflow's exact artifact gate.
+if [ -n "$TARBALL_INPUT" ]; then
+  echo ""
+  echo "onboard-shell-publish-gate: PASSED=$PASSED FAILED=$FAILED (exact tarball)"
+  [ "$FAILED" -eq 0 ]
+  exit $?
 fi
 
 # ── G5 · publish preflight refuses the placeholder endpoint ─────────────────
@@ -132,38 +187,13 @@ else
   fail "G5 shell-publish-preflight.sh missing"
 fi
 
-# ── G6 · FLY-1323 · a bare `npm publish` must run the gate by itself ─────────
-# The founder-direct first publish (FLY-1323) has no broker to re-run the
-# authoritative content gate, and `npm publish` runs NOTHING on its own. Without
-# a prepublishOnly hook the ONLY protection is a human remembering to run the
-# preflight. Make it structural.
-# Codex R4#4: G6a trusted jq's output without checking its exit; a failed jq
-# printing nothing would read as "no hook". Require exit 0 first.
-# Codex R5#4 then R6#4: substring/glob checks were both gameable — `echo
-# shell-publish-preflight` (R5) and `bash -c 'true' shell-publish-preflight.sh
-# --founder-local` (R6, matches the glob `bash *…--founder-local` yet runs
-# `bash -c 'true'`, never the gate). This repo owns exactly ONE lifecycle command,
-# so pin the EXACT canonical hook string — no lookalike can equal it. The
-# behavioral proof that this exact string actually runs the gate lives in
-# shell-pack-install-dryrun.test.sh P4d (bare publish IS gated). Two known
-# lookalikes are asserted unequal below so the equality's discrimination is explicit.
-EXPECTED_HOOK='bash ../../scripts/release/shell-publish-preflight.sh --founder-local'
-HOOK="$(jq -r '.scripts.prepublishOnly // ""' "$PKG_DIR/package.json")"; HOOK_RC=$?
-if [ "$HOOK_RC" -eq 0 ] && [ "$HOOK" = "$EXPECTED_HOOK" ] \
-   && [ "$EXPECTED_HOOK" != "echo shell-publish-preflight" ] \
-   && [ "$EXPECTED_HOOK" != "bash -c 'true' shell-publish-preflight.sh --founder-local" ]; then
-  pass "G6a prepublishOnly is EXACTLY the canonical preflight invocation (no substring/glob/-c lookalike can pass)"
-else
-  fail "G6a hook is not the exact canonical invocation (jq rc=$HOOK_RC): got '$HOOK', want '$EXPECTED_HOOK'"
-fi
-
 # G6b · npm pack must NOT fire prepublishOnly. shell-prepare.mjs packs the exact
 # tarball, and the preflight itself packs while checking content — if pack fired
 # the hook it would recurse forever.
 # Codex R4#4: this captured pack output but ignored its exit status — a FAILED
 # pack (which prints no "shell-publish-preflight") was reported as PASS. Require
 # exit 0, so a broken pack fails this test instead of masquerading as "no recursion".
-PACK_OUT="$(cd "$PKG_DIR" && npm pack --dry-run 2>&1)"; PACK_RC=$?
+PACK_OUT="$(cd "$PKG_DIR" && npm_config_cache="$SANDBOX/npm-cache" npm pack --dry-run 2>&1)"; PACK_RC=$?
 if [ "$PACK_RC" -eq 0 ] && ! grep -q "shell-publish-preflight" <<<"$PACK_OUT"; then
   pass "G6b npm pack succeeds and does not fire prepublishOnly (no recursion into the gate)"
 else

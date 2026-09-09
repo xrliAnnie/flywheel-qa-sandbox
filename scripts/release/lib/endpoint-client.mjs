@@ -18,6 +18,22 @@ export const payloadKeyOf = payloadObjectKey;
 
 export const CAS_RETRIES = 8;
 
+export class EtagProtocolError extends Error {
+	constructor() {
+		super("invalid manifest ETag");
+		this.name = "EtagProtocolError";
+	}
+}
+
+export function normalizeEtag(value) {
+	if (typeof value !== "string") throw new EtagProtocolError();
+	const etag = value.trim().replace(/^W\//i, "").replace(/^"|"$/g, "");
+	if (!/^(?:[0-9a-f]{32}|[0-9a-f]{64})$/.test(etag)) {
+		throw new EtagProtocolError();
+	}
+	return etag;
+}
+
 export function makeClient({ endpoint, token, log = () => {} }) {
 	const base = endpoint.replace(/\/+$/, "");
 
@@ -43,7 +59,10 @@ export function makeClient({ endpoint, token, log = () => {} }) {
 		if (res.status !== 200) {
 			throw new Error(`cannot read manifest (HTTP ${res.status})`);
 		}
-		return { manifest: await res.json(), etag: res.headers.get("etag") };
+		return {
+			manifest: await res.json(),
+			etag: normalizeEtag(res.headers.get("etag")),
+		};
 	}
 
 	// casUpdate <mutate> <describe> — mutate(copy, current) returns:
@@ -67,8 +86,13 @@ export function makeClient({ endpoint, token, log = () => {} }) {
 			});
 			if (res.status === 200) return { manifest: copy, skipped: false };
 			if (res.status === 412) {
+				const err = await res.json().catch(() => ({}));
+				const reason =
+					err.error === "etag mismatch"
+						? "etag mismatch"
+						: "unknown endpoint error";
 				log(
-					`${describe}: CAS conflict — re-reading and re-judging (attempt ${attempt + 1})`,
+					`${describe}: CAS conflict (${reason}) — re-reading and re-judging (attempt ${attempt + 1})`,
 				);
 				continue;
 			}
@@ -108,13 +132,18 @@ export function makeClient({ endpoint, token, log = () => {} }) {
 		if (res.status !== 200)
 			throw new Error(`readback ${ver} failed (HTTP ${res.status})`);
 		const hash = createHash("sha256");
-		for await (const chunk of res.body) hash.update(chunk);
+		let size = 0;
+		for await (const chunk of res.body) {
+			hash.update(chunk);
+			size += chunk.byteLength;
+		}
 		const got = hash.digest("hex");
 		if (got !== sha) {
 			throw new Error(
 				`readback ${ver}: sha256 mismatch (object ${got}, expected ${sha})`,
 			);
 		}
+		return { size };
 	}
 
 	// downloadPayload <ver> <sha> <outFile> — verified fetch to a local file.
