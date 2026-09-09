@@ -195,6 +195,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	// FLY-1256: the quota monitor already performed (or deliberately declined)
 	// the switch/revive. Bridge ARC would duplicate an external safety action.
 	account_switched: { owner: "claude", arc: "human_by_design" },
+	account_dead: { owner: "claude", arc: "human_by_design" },
 	account_switch_degraded: { owner: "claude", arc: "human_by_design" },
 	machine_account_conflict: { owner: "claude", arc: "human_by_design" },
 	model_config: { owner: "claude", arc: "human_by_design" },

@@ -232,6 +232,7 @@ export const ALERT_EVENT_TYPES = [
 	// transient-unknown, and confirmation notices are root-only informational;
 	// conflict/persistent-unknown/malformed/choice and legacy failures ticket.
 	"account_switched",
+	"account_dead",
 	"account_switch_degraded",
 	"machine_account_conflict",
 	"model_config",

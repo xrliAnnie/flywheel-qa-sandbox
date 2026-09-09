@@ -87,6 +87,10 @@ import {
 	type ValidatedUsagePayload,
 } from "./quota-usage-api.js";
 import {
+	type QuotaWitnessReadResult,
+	readQuotaWitness,
+} from "./quota-witness.js";
+import {
 	defaultLockPath,
 	switchAccount as defaultSwitchAccount,
 	type SwitchInput,
@@ -119,6 +123,7 @@ export interface QuotaMonitorRuntimeOptions {
 	readKeychainCredential?: () => Promise<MonitorCredential | null>;
 	fetchUsage?: (accessToken: string) => Promise<AccountUsageResult>;
 	fetchIdentity?: (accessToken: string) => Promise<ProfileIdentityResult>;
+	readWitness?: () => Promise<QuotaWitnessReadResult>;
 	verifyCandidate?: (
 		name: string,
 		activeName: string | null,
@@ -252,6 +257,13 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 	const fetchUsage = opts.fetchUsage ?? ((token) => fetchAccountUsage(token));
 	const fetchIdentity =
 		opts.fetchIdentity ?? ((token) => fetchProfileIdentity(token));
+	const readWitness =
+		opts.readWitness ??
+		(async () =>
+			readQuotaWitness(
+				join(dirname(paths.statePath), "quota-monitor-witness.json"),
+				{ uid: process.getuid?.() ?? -1, now: now() },
+			));
 	const verifyCandidate =
 		opts.verifyCandidate ??
 		((name: string, activeName: string | null) =>
@@ -499,6 +511,12 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 								const result = syncActiveAccountInStore(
 									paths.storePath,
 									activeName,
+									{
+										lastSwitch: {
+											triggerKind: "witness",
+											at: new Date(now()).toISOString(),
+										},
+									},
 								);
 								if (result !== "synced" && result !== "noop") {
 									return { result, generation: null };
@@ -550,6 +568,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				verifyCandidate,
 				fetchUsage,
 				fetchIdentity,
+				readWitness,
 				resolveIdentityName: async (identity) =>
 					resolvePoolProfileIdentity(paths.poolDir, identity),
 				readPoolIdentity: async (name) =>

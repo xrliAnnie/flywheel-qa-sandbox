@@ -56,6 +56,7 @@ describe("FLY-1256 drained alert routing", () => {
 	);
 
 	it.each([
+		"account_dead",
 		"quota_no_target",
 		"machine_account_conflict",
 		"model_cap_persistent_unknown",

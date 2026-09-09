@@ -842,6 +842,232 @@ describe("pollOnce", () => {
 		expect(h.fetchUsage).not.toHaveBeenCalled();
 	});
 
+	it("classifies a forbidden active account as dead and bypasses switch cooldown", async () => {
+		h.usages.set("secret-shopping", {
+			error: "forbidden",
+			errorCode: "oauth_not_allowed_for_organization",
+		});
+		h.deps.state.lastSwitchAt = NOW - 60_000;
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.fetchIdentity).toHaveBeenCalledWith("secret-shopping");
+		expect(h.switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({
+				trigger: { kind: "account_dead", profile: "shopping" },
+				observedAccount: "shopping",
+				observedGeneration: 4,
+				quotaPreverified: true,
+				markUnavailable: {
+					name: "shopping",
+					mark: expect.objectContaining({
+						reason: "usage_forbidden:oauth_not_allowed_for_organization",
+						markedBy: "quota-monitor",
+					}),
+				},
+			}),
+		);
+		expect(result.state).toMatchObject({
+			activeUnreadableStreak: 0,
+			lastSwitchAt: NOW,
+			observedGeneration: 5,
+			reviveEpoch: null,
+			deadAccountEpisode: {
+				profile: "shopping",
+				reason: "usage_forbidden:oauth_not_allowed_for_organization",
+				generation: 4,
+				switchOutcome: "switched",
+				switchedGeneration: 5,
+			},
+		});
+		expect(
+			vi
+				.mocked(h.deps.log)
+				.mock.calls.some(([line]) =>
+					line.includes(
+						'"trigger":{"kind":"account_dead","profile":"shopping"}',
+					),
+				),
+		).toBe(true);
+	});
+
+	it("deduplicates only a successful dead-account switch and retries no-target episodes", async () => {
+		h.usages.set("secret-shopping", {
+			error: "forbidden",
+			errorCode: "oauth_not_allowed_for_organization",
+		});
+		h.switchImpl
+			.mockResolvedValueOnce({
+				outcome: "no_account",
+				earliestReset: null,
+				reasonCode: "no_eligible_account",
+			})
+			.mockResolvedValueOnce({
+				outcome: "switched",
+				from: "shopping",
+				to: "school",
+				generation: 5,
+			});
+
+		const first = await pollOnce(h.deps);
+		expect(first.outcome).toBe("no_target");
+		expect(first.state.deadAccountEpisode).toMatchObject({
+			profile: "shopping",
+			switchOutcome: "no_account",
+		});
+		expect(
+			h.alerts.filter((alert) => alert.kind === "quota_no_target"),
+		).toHaveLength(1);
+		expect(h.alerts.at(-1)?.body).toMatch(/^account_dead:shopping/);
+
+		h.deps.state = { ...first.state, nextUsageDueAt: NOW };
+		const second = await pollOnce(h.deps);
+		expect(second.outcome).toBe("switched");
+		expect(h.switchImpl).toHaveBeenCalledTimes(2);
+		expect(
+			h.alerts.filter((alert) => alert.kind === "quota_no_target"),
+		).toHaveLength(1);
+
+		h.deps.state = { ...second.state, nextUsageDueAt: NOW };
+		const third = await pollOnce(h.deps);
+		expect(third.outcome).toBe("noop_already_switched");
+		expect(h.switchImpl).toHaveBeenCalledTimes(2);
+	});
+
+	it("probes only after the configured unreadable streak and never switches an active paid profile", async () => {
+		h.usages.set("secret-shopping", {
+			error: "rate_limited",
+			retryAfterMs: 60_000,
+		});
+
+		const first = await pollOnce(h.deps);
+		expect(first.outcome).toBe("backoff");
+		expect(first.state.activeUnreadableStreak).toBe(1);
+		expect(h.fetchIdentity).not.toHaveBeenCalled();
+
+		h.deps.state = first.state;
+		h.setNow(NOW + 60_000);
+		h.fetchIdentity.mockResolvedValueOnce({
+			email: "shopping@example.com",
+			uuid: "uuid-shopping",
+			subscription: { status: "active", organizationType: "claude_max" },
+		});
+		const second = await pollOnce(h.deps);
+
+		expect(second.outcome).toBe("backoff");
+		expect(second.state.activeUnreadableStreak).toBe(2);
+		expect(h.fetchIdentity).toHaveBeenCalledTimes(1);
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(
+			vi
+				.mocked(h.deps.log)
+				.mock.calls.some(([line]) => line.includes('"liveness":"alive"')),
+		).toBe(true);
+	});
+
+	it("records an unknown liveness verdict without switching", async () => {
+		h.deps.state.activeUnreadableStreak = 1;
+		h.usages.set("secret-shopping", { error: "network" });
+		h.fetchIdentity.mockResolvedValueOnce({
+			email: "shopping@example.com",
+			uuid: "uuid-shopping",
+			subscription: { status: "past_due", organizationType: "claude_max" },
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("error");
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(
+			vi
+				.mocked(h.deps.log)
+				.mock.calls.some(([line]) =>
+					line.includes('"liveness":"unknown:profile_past_due"'),
+				),
+		).toBe(true);
+	});
+
+	it("uses an unconsumed witness to bypass backoff, probe liveness, and advance the cursor", async () => {
+		const digest = "d".repeat(64);
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			backoffUntilMs: NOW + 15 * 60_000,
+			nextUsageDueAt: NOW + 15 * 60_000,
+			nextPaneScanDueAt: NOW + 15 * 60_000,
+		};
+		h.usages.set("secret-shopping", {
+			error: "rate_limited",
+			retryAfterMs: 60_000,
+		});
+		h.fetchIdentity.mockResolvedValueOnce({
+			email: "shopping@example.com",
+			uuid: "uuid-shopping",
+			subscription: { status: "active", organizationType: "claude_max" },
+		});
+		h.deps.readWitness = vi.fn(async () => ({
+			status: "accepted" as const,
+			witness: {
+				version: 1 as const,
+				kind: "account_disabled" as const,
+				observedAt: NOW,
+				source: "review_job" as const,
+				executionId: "exec-1",
+				evidenceDigest: digest,
+			},
+		}));
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("backoff");
+		expect(h.fetchUsage).toHaveBeenCalledWith("secret-shopping");
+		expect(h.fetchIdentity).toHaveBeenCalledWith("secret-shopping");
+		expect(result.state.witnessCursor).toEqual({
+			consumedAt: NOW,
+			digest,
+		});
+	});
+
+	it.each([
+		["stale", { status: "rejected" as const, reason: "stale" as const }],
+		[
+			"duplicate",
+			{
+				status: "accepted" as const,
+				witness: {
+					version: 1 as const,
+					kind: "account_disabled" as const,
+					observedAt: NOW,
+					source: "review_job" as const,
+					evidenceDigest: "e".repeat(64),
+				},
+			},
+		],
+	])("ignores a %s witness without bypassing backoff", async (reason, read) => {
+		h.deps.state = {
+			...emptyQuotaMonitorState(4),
+			backoffUntilMs: NOW + 15 * 60_000,
+			nextUsageDueAt: NOW + 15 * 60_000,
+			nextPaneScanDueAt: NOW + 15 * 60_000,
+			...(reason === "duplicate"
+				? { witnessCursor: { consumedAt: NOW - 1, digest: "e".repeat(64) } }
+				: {}),
+		};
+		h.deps.readWitness = vi.fn(async () => read);
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("backoff");
+		expect(h.fetchUsage).not.toHaveBeenCalled();
+		expect(
+			vi
+				.mocked(h.deps.log)
+				.mock.calls.some(([line]) =>
+					line.includes(`witness_rejected:${reason}`),
+				),
+		).toBe(true);
+	});
+
 	it("runs the local pane/revive tick without usage work while nextUsageDueAt is backed off", async () => {
 		h.deps.state = {
 			...emptyQuotaMonitorState(4),

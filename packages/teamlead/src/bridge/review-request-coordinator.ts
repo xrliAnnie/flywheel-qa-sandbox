@@ -24,9 +24,14 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { adapterTypeToFamily, type RoleEffort } from "flywheel-config";
+import { defaultQuotaMonitorStatePath } from "../account-heal/quota-monitor-state.js";
+import {
+	type QuotaWitness,
+	writeQuotaWitness as writeQuotaWitnessFile,
+} from "../account-heal/quota-witness.js";
 import type {
 	CodexReviewJob,
 	CodexReviewReuseBinding,
@@ -38,8 +43,9 @@ import {
 	type ClaudeReviewOutcome,
 	runClaudeReviewRound,
 } from "./claude-review-runner.js";
+import { wakeQuotaDaemon as wakeDefaultQuotaDaemon } from "./quota-daemon-wake.js";
 import { buildGovernancePromptSegment } from "./review-governance-prompt.js";
-import { parseReviewQuotaResetAt } from "./review-quota-retry.js";
+import { classifyReviewFailure } from "./review-quota-retry.js";
 import {
 	computeEffectiveVerdict,
 	type EffectiveReviewVerdict,
@@ -195,6 +201,11 @@ export interface ReviewCoordinatorDeps {
 	now?: () => number;
 	setTimer?: (callback: () => void, delayMs: number) => unknown;
 	clearTimer?: (handle: unknown) => void;
+	/** Account-dead fast-path witness writer and daemon signal seams. */
+	writeQuotaWitness?: (
+		witness: QuotaWitness & { source: "review_job"; executionId: string },
+	) => void;
+	wakeQuotaDaemon?: () => unknown;
 }
 
 const REQUEST_ID_MAX = 128;
@@ -209,6 +220,7 @@ const MAX_RETRY_JITTER_MS = 5 * 60_000;
 const GATE_EXPIRY_SAFETY_MS = 60_000;
 const KILL_SWITCH_RECHECK_MS = 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
+const PARKED_PAGE_SIZE = 100;
 
 export function reviewRetryJitterMs(requestId: string): number {
 	const digest = createHash("sha256").update(requestId).digest();
@@ -1706,26 +1718,31 @@ export class ReviewRequestCoordinator {
 		attempts: FailedReviewAttempt[],
 	): void {
 		const failureRaw = composeFailureRaw(attempts);
+		const failureAtMs = this.now();
+		let classification: ReturnType<typeof classifyReviewFailure> = null;
 		let retryAt: string | undefined;
 		try {
-			if ((this.deps.quotaAutoRetryEnabled?.() ?? true) && outcome.raw) {
-				const resetAt = parseReviewQuotaResetAt(outcome.raw, this.now());
-				if (resetAt !== null) {
-					const gate = this.inspectGate(
-						job.project_name,
-						job.question_id,
-						job.execution_id,
-						job.review_type,
-					);
-					const candidate =
-						resetAt + RESET_GRACE_MS + reviewRetryJitterMs(job.request_id);
-					if (
-						gate.state === "open" &&
-						gate.expiresAtMs !== undefined &&
-						candidate < gate.expiresAtMs - GATE_EXPIRY_SAFETY_MS
-					) {
-						retryAt = new Date(candidate).toISOString();
-					}
+			classification =
+				(this.deps.quotaAutoRetryEnabled?.() ?? true) && outcome.raw
+					? classifyReviewFailure(outcome.raw, failureAtMs)
+					: null;
+			if (classification?.kind === "quota_reset") {
+				const gate = this.inspectGate(
+					job.project_name,
+					job.question_id,
+					job.execution_id,
+					job.review_type,
+				);
+				const candidate =
+					classification.resetAt +
+					RESET_GRACE_MS +
+					reviewRetryJitterMs(job.request_id);
+				if (
+					gate.state === "open" &&
+					gate.expiresAtMs !== undefined &&
+					candidate < gate.expiresAtMs - GATE_EXPIRY_SAFETY_MS
+				) {
+					retryAt = new Date(candidate).toISOString();
 				}
 			}
 		} catch (err) {
@@ -1738,7 +1755,17 @@ export class ReviewRequestCoordinator {
 			reason: outcome.reason,
 			failureRaw,
 			retryAt,
+			...(classification?.kind === "account_switch"
+				? { retryTrigger: "account_switch" as const, parkedAtMs: failureAtMs }
+				: {}),
 		});
+		if (
+			classification?.kind === "account_switch" &&
+			persisted.updated &&
+			persisted.job
+		) {
+			this.signalAccountDisabledWitness(persisted.job, failureRaw, failureAtMs);
+		}
 		if (persisted.scheduled && persisted.job) {
 			this.armRetryTimer(persisted.job);
 		}
@@ -1762,6 +1789,41 @@ export class ReviewRequestCoordinator {
 		this.alert(
 			`claude review ${job.request_id} (${job.issue_id ?? job.execution_id}, ${job.review_type} R${job.round}) FAILED: ${outcome.reason} — ${recovery}${summary ? ` Evidence: ${summary}` : ""}`,
 		);
+	}
+
+	private signalAccountDisabledWitness(
+		job: CodexReviewJob,
+		failureRaw: string | undefined,
+		observedAt: number,
+	): void {
+		const witness = {
+			version: 1 as const,
+			kind: "account_disabled" as const,
+			observedAt,
+			source: "review_job" as const,
+			executionId: job.execution_id,
+			evidenceDigest: createHash("sha256")
+				.update(failureRaw ?? `${job.request_id}:account_disabled`)
+				.digest("hex"),
+		};
+		try {
+			const writeWitness =
+				this.deps.writeQuotaWitness ??
+				((value: typeof witness) =>
+					writeQuotaWitnessFile(
+						join(
+							dirname(defaultQuotaMonitorStatePath()),
+							"quota-monitor-witness.json",
+						),
+						value,
+					));
+			writeWitness(witness);
+			(this.deps.wakeQuotaDaemon ?? wakeDefaultQuotaDaemon)();
+		} catch (error) {
+			this.log(
+				`account-disabled witness failed safely for ${job.request_id}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	private emitReviewJobFailureAlert(
@@ -1916,6 +1978,9 @@ export class ReviewRequestCoordinator {
 		job: CodexReviewJob,
 		gateState: ReviewGateState,
 	): string {
+		if (job.retry_trigger === "account_switch") {
+			return "automatic same-request retry is armed for the next Claude account switch; the gate remains closed.";
+		}
 		if (
 			(job.failure_reason === "no_verdict" ||
 				job.failure_reason === "reviewed_wrong_head") &&
@@ -2020,19 +2085,82 @@ export class ReviewRequestCoordinator {
 			this.armRetryTimer(job);
 			return;
 		}
+		await this.retryIfStillEligible(requestId, "reset_timer");
+	}
+
+	async redriveAfterAccountSwitch(input: {
+		generation: number;
+		atMs: number;
+	}): Promise<{ requeued: number; retired: number; deferred: boolean }> {
+		if (
+			!Number.isSafeInteger(input.generation) ||
+			input.generation < 1 ||
+			!Number.isSafeInteger(input.atMs) ||
+			input.atMs < 0
+		) {
+			throw new Error("invalid account-switch redrive snapshot");
+		}
+		let requeued = 0;
+		let retired = 0;
+		let after: { parkedAtMs: number; requestId: string } | undefined;
+		for (;;) {
+			const page = this.store.listAccountSwitchParkedCodexReviewJobs({
+				beforeMs: input.atMs,
+				limit: PARKED_PAGE_SIZE,
+				...(after ? { after } : {}),
+			});
+			if (page.length === 0) break;
+			const last = page.at(-1)!;
+			after = {
+				parkedAtMs: last.retry_parked_at_ms!,
+				requestId: last.request_id,
+			};
+			for (const job of page) {
+				const result = await this.retryIfStillEligible(
+					job.request_id,
+					"account_switch",
+				);
+				if (result === "deferred") {
+					this.log(
+						`account-switch generation ${input.generation} review redrive deferred by kill switch`,
+					);
+					return { requeued, retired, deferred: true };
+				}
+				if (result === "requeued") requeued += 1;
+				if (result === "retired") retired += 1;
+			}
+		}
+		return { requeued, retired, deferred: false };
+	}
+
+	private async retryIfStillEligible(
+		requestId: string,
+		origin: "reset_timer" | "account_switch",
+	): Promise<"requeued" | "retired" | "deferred" | "skipped"> {
+		if (this.stopped) return "deferred";
+		const job = this.store.getCodexReviewJob(requestId);
+		if (!job || job.status !== "failed") return "skipped";
+		if (origin === "reset_timer" && !job.retry_at) return "skipped";
+		if (origin === "account_switch" && job.retry_trigger !== "account_switch") {
+			return "skipped";
+		}
 		let quotaAutoRetryEnabled: boolean;
 		try {
 			quotaAutoRetryEnabled = this.deps.quotaAutoRetryEnabled?.() ?? true;
 		} catch (err) {
 			this.log(
-				`scheduled review retry ${requestId} could not read its kill switch; retrying the read later: ${err instanceof Error ? err.message : String(err)}`,
+				`${origin} review retry ${requestId} could not read its kill switch: ${err instanceof Error ? err.message : String(err)}`,
 			);
-			this.armRetryTimer(job, this.now() + KILL_SWITCH_RECHECK_MS);
-			return;
+			if (origin === "reset_timer") {
+				this.armRetryTimer(job, this.now() + KILL_SWITCH_RECHECK_MS);
+			}
+			return "deferred";
 		}
 		if (!quotaAutoRetryEnabled) {
-			this.armRetryTimer(job, this.now() + KILL_SWITCH_RECHECK_MS);
-			return;
+			if (origin === "reset_timer") {
+				this.armRetryTimer(job, this.now() + KILL_SWITCH_RECHECK_MS);
+			}
+			return "deferred";
 		}
 		const gate = this.inspectGate(
 			job.project_name,
@@ -2042,7 +2170,7 @@ export class ReviewRequestCoordinator {
 		);
 		if (gate.state !== "open") {
 			this.failReviewJob(requestId, runtimeGateFailureReason(gate.state));
-			return;
+			return "retired";
 		}
 		if (job.review_type === "code") {
 			const targetPath =
@@ -2054,10 +2182,11 @@ export class ReviewRequestCoordinator {
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
 				this.handleHeadMoved(job, current);
-				return;
+				return "retired";
 			}
 		}
 		this.enqueue(requestId, job.execution_id);
+		return "requeued";
 	}
 
 	/**

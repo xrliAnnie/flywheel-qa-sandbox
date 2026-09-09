@@ -35,7 +35,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		workflow_terminal_archive
 	`),
 	protectedCurrentOrReference: words(`
-		admission_pause alert_delivery_receipts auto_merge_shadow_declaration
+		account_switch_action_receipt admission_pause alert_delivery_receipts auto_merge_shadow_declaration
 		auto_merge_shadow_observation auto_qa_record cleanup_ref_observations
 		commdb_finalize_failures dead_letter_alerts doa_backoff doa_backoff_participants
 		doa_backoff_reset_receipts epic_page epic_page_publication epic_page_refresh

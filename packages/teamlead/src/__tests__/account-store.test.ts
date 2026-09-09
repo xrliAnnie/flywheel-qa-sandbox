@@ -32,7 +32,9 @@ import {
 	isAuthUnusable,
 	isModelSetUsable,
 	isQuotaUsable,
+	isSwitchNotificationIntent,
 	MAX_SWITCH_NOTIFICATION_OUTBOX,
+	markAccountUnavailable,
 	peekSwitchNotification,
 	readStore,
 	readStoreStrict,
@@ -175,6 +177,47 @@ describe("selectNextAccount", () => {
 		expect(
 			selectNextAccount(s, { scope: "5h", currentName: "personal", now: NOW }),
 		).toBeNull();
+	});
+
+	it("permanently unavailable accounts are not eligible for any switch path", () => {
+		const unavailable = {
+			reason: "profile_canceled",
+			markedAt: NOW.toISOString(),
+			evidence: "usage_forbidden",
+			markedBy: "quota-monitor" as const,
+		};
+		const school = acct("school", { unavailable });
+		const s = store([acct("personal"), school], "personal");
+
+		expect(isAuthUnusable(school)).toBe(true);
+		expect(
+			selectNextAccount(s, { scope: "5h", currentName: "personal", now: NOW }),
+		).toBeNull();
+		expect(
+			selectNextAccount(s, {
+				scope: "5h",
+				currentName: "personal",
+				now: NOW,
+				preferredOrder: ["school"],
+			}),
+		).toBeNull();
+	});
+
+	it("marks one account unavailable without mutating the input store", () => {
+		const before = store([acct("personal"), acct("school")], "personal");
+		const mark = {
+			reason: "profile_canceled",
+			markedAt: NOW.toISOString(),
+			evidence: "profile_subscription",
+			markedBy: "quota-monitor" as const,
+		};
+
+		const after = markAccountUnavailable(before, "personal", mark);
+
+		expect(after).not.toBe(before);
+		expect(before.accounts[0]).not.toHaveProperty("unavailable");
+		expect(after.accounts[0]?.unavailable).toEqual(mark);
+		expect(markAccountUnavailable(after, "personal", mark)).toBe(after);
 	});
 
 	it("returns null when no other account is usable (caller pages Annie)", () => {
@@ -745,6 +788,25 @@ describe("syncActiveAccountInStore", () => {
 		});
 	});
 
+	it("records an explicit witness switch snapshot in the same write", () => {
+		const before = store([acct("personal"), acct("school")], "personal");
+		before.generation = 7;
+		writeStore(before, path);
+
+		expect(
+			syncActiveAccountInStore(path, "school", {
+				lastSwitch: { triggerKind: "witness", at: NOW.toISOString() },
+			}),
+		).toBe("synced");
+		expect(readStoreStrict(path)?.lastSwitch).toEqual({
+			generation: 8,
+			triggerKind: "witness",
+			from: "personal",
+			to: "school",
+			at: NOW.toISOString(),
+		});
+	});
+
 	it("returns noop without writing when the active account already matches", () => {
 		const before = store([acct("personal"), acct("school")], "school");
 		writeStore(before, path);
@@ -860,6 +922,36 @@ describe("syncFreshenedActiveAccountInStore", () => {
 		).toBe("synced");
 		expect(readStore(path).accounts[0]?.identityMismatch).toEqual(mismatch);
 	});
+
+	it("never clears unavailable or rewrites the last switch while freshening", () => {
+		const unavailable = {
+			reason: "profile_canceled",
+			markedAt: NOW.toISOString(),
+			evidence: "profile_subscription",
+			markedBy: "quota-monitor" as const,
+		};
+		const before = store(
+			[acct("personal", { authExpired: true, unavailable })],
+			"personal",
+		);
+		before.lastSwitch = {
+			generation: 1,
+			triggerKind: "account_dead",
+			from: "school",
+			to: "personal",
+			at: NOW.toISOString(),
+		};
+		writeStore(before, path);
+
+		expect(
+			syncFreshenedActiveAccountInStore(path, "personal", {
+				email: "personal@example.test",
+			}),
+		).toBe("synced");
+		const after = readStoreStrict(path);
+		expect(after?.accounts[0]?.unavailable).toEqual(unavailable);
+		expect(after?.lastSwitch).toEqual(before.lastSwitch);
+	});
 });
 
 describe("account-store IO", () => {
@@ -884,6 +976,77 @@ describe("account-store IO", () => {
 		expect(readStore(path)).toEqual(s);
 		// 0600 — the state file references account names; keep it owner-only.
 		expect(statSync(path).mode & 0o777).toBe(0o600);
+	});
+
+	it("strictly round-trips validated unavailable and lastSwitch metadata", () => {
+		const s = store(
+			[
+				acct("personal", {
+					unavailable: {
+						reason: "profile_canceled",
+						markedAt: NOW.toISOString(),
+						evidence: "profile_subscription",
+						markedBy: "quota-monitor",
+					},
+				}),
+			],
+			"personal",
+		);
+		s.lastSwitch = {
+			generation: 1,
+			triggerKind: "account_dead",
+			from: "school",
+			to: "personal",
+			at: NOW.toISOString(),
+		};
+
+		writeStore(s, path);
+
+		expect(readStoreStrict(path)).toEqual(s);
+	});
+
+	it.each([
+		["unknown marker owner", { unavailable: { markedBy: "daemon" } }],
+		["oversized marker reason", { unavailable: { reason: "r".repeat(201) } }],
+		["non-positive switch generation", { lastSwitch: { generation: 0 } }],
+		["unknown switch trigger", { lastSwitch: { triggerKind: "refresh" } }],
+		["oversized switch source", { lastSwitch: { from: "f".repeat(201) } }],
+	])("strictly rejects %s", (_label, mutation) => {
+		const unavailable = {
+			reason: "profile_canceled",
+			markedAt: NOW.toISOString(),
+			evidence: "profile_subscription",
+			markedBy: "quota-monitor",
+		};
+		const lastSwitch = {
+			generation: 1,
+			triggerKind: "account_dead",
+			from: "school",
+			to: "personal",
+			at: NOW.toISOString(),
+		};
+		writeFileSync(
+			path,
+			JSON.stringify({
+				generation: 1,
+				activeAccount: "personal",
+				accounts: [
+					{
+						...acct("personal"),
+						unavailable: {
+							...unavailable,
+							...((mutation as { unavailable?: object }).unavailable ?? {}),
+						},
+					},
+				],
+				lastSwitch: {
+					...lastSwitch,
+					...((mutation as { lastSwitch?: object }).lastSwitch ?? {}),
+				},
+			}),
+		);
+
+		expect(readStoreStrict(path)).toBeNull();
 	});
 
 	it("readStore returns an empty store on corrupt JSON (fail-soft, not throw)", () => {
@@ -919,6 +1082,25 @@ describe("switch notification outbox", () => {
 		expect(readStoreStrict(path)?.pendingSwitchNotifications).toEqual([
 			switchIntent(2),
 		]);
+	});
+
+	it("accepts the account-dead alert kind and rejects unknown kinds", () => {
+		const deadIntent = {
+			...switchIntent(2),
+			eventId: "account-dead-g2",
+			alert: {
+				...switchIntent(2).alert,
+				kind: "account_dead",
+				signature: "account-dead-g2",
+			},
+		};
+		expect(isSwitchNotificationIntent(deadIntent)).toBe(true);
+		expect(
+			isSwitchNotificationIntent({
+				...deadIntent,
+				alert: { ...deadIntent.alert, kind: "account_disabled" },
+			}),
+		).toBe(false);
 	});
 
 	it("enqueues by event id idempotently and acknowledges only an exact id", () => {

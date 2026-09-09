@@ -9,6 +9,10 @@ import type {
 	ProfileIdentityResult,
 } from "./account-identity.js";
 import {
+	type AccountLiveness,
+	classifyAccountLiveness,
+} from "./account-liveness.js";
+import {
 	type AccountEntry,
 	type AccountQuotaObservation,
 	type AccountStore,
@@ -42,6 +46,7 @@ import type {
 	AccountUsageResult,
 	ValidatedUsagePayload,
 } from "./quota-usage-api.js";
+import type { QuotaWitnessReadResult } from "./quota-witness.js";
 import type {
 	ApplyProfileReport,
 	SwitchInput,
@@ -75,6 +80,7 @@ export interface AccountIdentity {
 
 export type QuotaMonitorAlertKind =
 	| "account_switched"
+	| "account_dead"
 	| "account_switch_degraded"
 	| "quota_no_target"
 	| "quota_blocked_recovered"
@@ -140,6 +146,8 @@ export interface QuotaMonitorDeps {
 	fetchUsage: (accessToken: string) => Promise<AccountUsageResult>;
 	/** Live profile lookup; always called after the account lock is released. */
 	fetchIdentity: (accessToken: string) => Promise<ProfileIdentityResult>;
+	/** Optional Bridge witness; a valid unconsumed record bypasses scheduling gates. */
+	readWitness?: () => Promise<QuotaWitnessReadResult>;
 	/** Resolve a probed OAuth identity through the pool's immutable anchors. */
 	resolveIdentityName: (identity: ProfileIdentity) => Promise<string | null>;
 	/** Read the trusted immutable identity anchor for notification rendering. */
@@ -299,6 +307,7 @@ async function commitSuccessfulObservation(
 		}
 		state.lastSuccessfulUsageAt = deps.now();
 		state.errorStreak = 0;
+		state.activeUnreadableStreak = 0;
 		state.backoffUntilMs = 0;
 		state.observedGeneration = current.storeGeneration;
 		if (deps.config.config.writeStatuslineCache) {
@@ -387,7 +396,13 @@ async function sweepCandidates(
 		const entry = snapshot.store.accounts.find(
 			(account) => account.name === name,
 		);
-		if (!entry || !snapshot.poolAccounts.includes(name)) continue;
+		if (
+			!entry ||
+			entry.unavailable !== undefined ||
+			!snapshot.poolAccounts.includes(name)
+		) {
+			continue;
+		}
 		const checked = await readCandidateCredential(deps, snapshot, name, true);
 		if (checked.reason === "active_witness_changed") return;
 		const { credential } = checked;
@@ -796,13 +811,16 @@ function setNoTargetContext(
 }
 
 function buildNoTargetBody(episode: BlockedEpisode): string {
+	const deadDetail = episode.detail?.startsWith("account_dead:")
+		? episode.detail
+		: null;
 	return [
-		"no_target: all keys unusable, founder action needed",
+		deadDetail ?? "no_target: all keys unusable, founder action needed",
 		`scope=${episode.scope}; blocked_since=${episode.startedAt}`,
 		episode.fallbackName === undefined || episode.fallbackReason === undefined
 			? ""
 			: `fallback tried=${episode.fallbackName}; refused=${episode.fallbackReason}`,
-		episode.detail ?? "",
+		deadDetail === null ? (episode.detail ?? "") : "",
 	]
 		.filter(Boolean)
 		.join("\n");
@@ -1292,6 +1310,196 @@ function modelSnapshotIsUncertain(snapshot: QuotaPaneSnapshot): boolean {
 	);
 }
 
+export async function probeActiveLiveness(
+	deps: QuotaMonitorDeps,
+	snapshot: AccountSnapshot,
+	usage: AccountUsageResult,
+): Promise<AccountLiveness> {
+	if (snapshot.activeCredential === null) {
+		return { verdict: "unknown", reason: "active_credential_missing" };
+	}
+	const profile = await deps.fetchIdentity(
+		snapshot.activeCredential.accessToken,
+	);
+	return classifyAccountLiveness(usage, profile);
+}
+
+function deadEpisode(
+	state: QuotaMonitorState,
+	input: {
+		profile: string;
+		reason: string;
+		detectedAt: number;
+		generation: number;
+		switchOutcome: "switched" | "no_account" | "failed";
+		switchedGeneration?: number;
+	},
+): QuotaMonitorState["deadAccountEpisode"] {
+	const prior = state.deadAccountEpisode;
+	const sameEpisode =
+		prior?.profile === input.profile && prior.generation === input.generation;
+	return {
+		profile: input.profile,
+		reason: input.reason,
+		detectedAt: sameEpisode ? prior.detectedAt : input.detectedAt,
+		generation: input.generation,
+		switchOutcome: input.switchOutcome,
+		...(input.switchedGeneration === undefined
+			? {}
+			: { switchedGeneration: input.switchedGeneration }),
+		alertCount: sameEpisode ? prior.alertCount : 0,
+		lastAlertAt: sameEpisode ? prior.lastAlertAt : null,
+	};
+}
+
+async function handleAccountDead(
+	deps: QuotaMonitorDeps,
+	state: QuotaMonitorState,
+	snapshot: AccountSnapshot,
+	liveness: Extract<AccountLiveness, { verdict: "dead" }>,
+	attemptedKinds: Set<QuotaMonitorAlertKind>,
+): Promise<PollOutcome> {
+	if (snapshot.activeName === null) return "blind";
+	const existing = state.deadAccountEpisode;
+	if (
+		existing?.profile === snapshot.activeName &&
+		existing.generation === snapshot.store.generation &&
+		existing.switchOutcome === "switched" &&
+		existing.switchedGeneration !== undefined
+	) {
+		state.activeUnreadableStreak = 0;
+		await deps.persistState(state);
+		return "noop_already_switched";
+	}
+
+	const candidates = deps.config.monitorOnly
+		? {
+				ranked: [] as string[],
+				verifiedAt: new Date(deps.now()).toISOString(),
+				panorama: [] as CandidatePanoramaEntry[],
+				usageByName: new Map<string, SuccessfulUsage>(),
+			}
+		: await verifyAndRankCandidates(deps, snapshot);
+	deps.log(
+		JSON.stringify({
+			event: "quota_switch_decision",
+			trigger: { kind: "account_dead", profile: snapshot.activeName },
+			selected: candidates.ranked[0] ?? null,
+			candidates: candidateDecisionInputs(snapshot, candidates.panorama),
+		}),
+	);
+
+	const identityByName = new Map<string, { email?: string }>();
+	const identityNames = [
+		...new Set([snapshot.activeName, ...candidates.ranked]),
+	];
+	await Promise.all(
+		identityNames.map(async (name) => {
+			let email = snapshot.store.accounts.find(
+				(account) => account.name === name,
+			)?.identity?.email;
+			if (deps.readPoolIdentity !== undefined) {
+				try {
+					email = (await deps.readPoolIdentity(name))?.email ?? email;
+				} catch (error) {
+					deps.log(
+						`switch notification identity lookup failed account=${name} error=${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+			identityByName.set(name, email === undefined ? {} : { email });
+		}),
+	);
+
+	const now = deps.now();
+	const switched = await deps.switchAccount({
+		trigger: { kind: "account_dead", profile: snapshot.activeName },
+		observedAccount: snapshot.activeName,
+		observedGeneration: snapshot.store.generation,
+		now: new Date(now),
+		preferredOrder: candidates.ranked,
+		verifiedAt: candidates.verifiedAt,
+		quotaPreverified: true,
+		markUnavailable: {
+			name: snapshot.activeName,
+			mark: {
+				reason: liveness.reason,
+				markedAt: new Date(now).toISOString(),
+				evidence: liveness.reason,
+				markedBy: "quota-monitor",
+			},
+		},
+		notificationContext: {
+			founderTimezone: deps.founderTimezone?.() ?? resolveFounderTimezone(),
+			usageByName: candidates.usageByName,
+			identityByName,
+			panorama: candidates.panorama,
+		},
+	});
+	await consumeApplyIdentityReports(deps, state, switched.applyReports);
+
+	if (switched.outcome === "switched") {
+		state.activeUnreadableStreak = 0;
+		state.lastSwitchAt = now;
+		state.observedGeneration = switched.generation;
+		state.reviveEpoch = null;
+		state.confirmation = null;
+		state.confirmDueAt = null;
+		state.pendingSwitchFailure = null;
+		state.deadAccountEpisode = deadEpisode(state, {
+			profile: snapshot.activeName,
+			reason: liveness.reason,
+			detectedAt: now,
+			generation: snapshot.store.generation,
+			switchOutcome: "switched",
+			switchedGeneration: switched.generation,
+		});
+		await deps.persistState(state);
+		await openBlockedRecovery(
+			deps,
+			state,
+			attemptedKinds,
+			`${switched.from}->${switched.to}; account_dead switch succeeded`,
+		);
+		return "switched";
+	}
+	if (
+		switched.outcome === "noop_already_switched" ||
+		switched.outcome === "noop_reconciled"
+	) {
+		return "noop_already_switched";
+	}
+
+	state.deadAccountEpisode = deadEpisode(state, {
+		profile: snapshot.activeName,
+		reason: liveness.reason,
+		detectedAt: now,
+		generation: snapshot.store.generation,
+		switchOutcome: switched.outcome === "no_account" ? "no_account" : "failed",
+	});
+	await deps.persistState(state);
+	if (switched.outcome === "no_account") {
+		await openBlockedEpisode(deps, state, "both", attemptedKinds, {
+			detail: `account_dead:${snapshot.activeName}\n${panoramaBody(candidates.panorama)}`,
+		});
+		return "no_target";
+	}
+	const evidence = switched.applyEvidence;
+	await openSwitchFailureEpisode(
+		deps,
+		state,
+		switched.reasonCode,
+		false,
+		attemptedKinds,
+		{
+			applyExitCode: evidence?.exitCode ?? null,
+			childStarted: evidence?.childStarted ?? null,
+			detail: formatFailureDetail("", evidence?.detail ?? ""),
+		},
+	);
+	return "switch_failed";
+}
+
 export async function pollOnce(
 	inputDeps: QuotaMonitorDeps,
 ): Promise<PollOnceResult> {
@@ -1306,9 +1514,30 @@ export async function pollOnce(
 	};
 	const now = deps.now();
 	let state = structuredClone(deps.state);
+	let witnessDue = false;
+	let witnessDigest: string | null = null;
+	if (deps.readWitness !== undefined) {
+		let witness: QuotaWitnessReadResult;
+		try {
+			witness = await deps.readWitness();
+		} catch {
+			witness = { status: "rejected", reason: "read_error" };
+		}
+		if (witness.status === "accepted") {
+			witnessDigest = witness.witness.evidenceDigest;
+			if (state.witnessCursor?.digest === witnessDigest) {
+				deps.log("witness_rejected:duplicate");
+			} else {
+				witnessDue = true;
+			}
+		} else if (witness.reason !== "missing") {
+			deps.log(`witness_rejected:${witness.reason}`);
+		}
+	}
 	const attemptedKinds = new Set<QuotaMonitorAlertKind>();
 	const attemptedIdentityLabels = new Set<string>();
 	let panorama: string[] = [];
+	let livenessLog: string | null = null;
 	const paneScanDue = state.nextPaneScanDueAt <= now;
 	const confirmationDue =
 		state.confirmation !== null && state.confirmation.dueAt <= now;
@@ -1359,6 +1588,7 @@ export async function pollOnce(
 					outcome,
 					panorama,
 					delivery,
+					...(livenessLog === null ? {} : { liveness: livenessLog }),
 				}),
 			);
 		}
@@ -1411,7 +1641,11 @@ export async function pollOnce(
 			state.pendingDetection = null;
 		}
 	}
-	if (state.nextUsageDueAt > now && detectedModels.length === 0) {
+	if (
+		state.nextUsageDueAt > now &&
+		detectedModels.length === 0 &&
+		!witnessDue
+	) {
 		await processLocalSnapshot();
 		await deps.persistState(state);
 		return result(
@@ -1473,7 +1707,7 @@ export async function pollOnce(
 		await deps.persistState(state);
 	}
 
-	if (state.backoffUntilMs > now) {
+	if (state.backoffUntilMs > now && !witnessDue) {
 		state.nextUsageDueAt = state.backoffUntilMs;
 		await deps.persistState(state);
 		return finish("backoff");
@@ -1496,6 +1730,31 @@ export async function pollOnce(
 		snapshot.activeCredential.accessToken,
 	);
 	if (!("ok" in currentUsage)) {
+		state.activeUnreadableStreak += 1;
+		const shouldProbe =
+			currentUsage.error === "forbidden" ||
+			witnessDue ||
+			state.activeUnreadableStreak >= deps.config.config.deadProbeStreak;
+		if (shouldProbe) {
+			const liveness = await probeActiveLiveness(deps, snapshot, currentUsage);
+			livenessLog =
+				liveness.verdict === "unknown"
+					? `unknown:${liveness.reason}`
+					: liveness.verdict;
+			if (witnessDue && witnessDigest !== null) {
+				state.witnessCursor = { consumedAt: now, digest: witnessDigest };
+			}
+			if (liveness.verdict === "dead") {
+				const outcome = await handleAccountDead(
+					deps,
+					state,
+					snapshot,
+					liveness,
+					attemptedKinds,
+				);
+				return finish(outcome);
+			}
+		}
 		if (currentUsage.error === "rate_limited") {
 			state.backoffUntilMs =
 				now +
@@ -1526,6 +1785,9 @@ export async function pollOnce(
 			});
 		}
 		return finish("error");
+	}
+	if (witnessDue && witnessDigest !== null) {
+		state.witnessCursor = { consumedAt: now, digest: witnessDigest };
 	}
 
 	state.tier =

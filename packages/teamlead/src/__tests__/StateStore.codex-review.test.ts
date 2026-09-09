@@ -567,6 +567,187 @@ describe("StateStore — FLY-1254 review failure evidence", () => {
 	});
 });
 
+describe("StateStore — FLY-2452 account-switch review recovery", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	function insertJob(requestId: string) {
+		store.insertCodexReviewJob({
+			requestId,
+			executionId: `exec-${requestId}`,
+			issueId: "FLY-2452",
+			projectName: "flywheel",
+			reviewType: "design",
+			questionId: `q-${requestId}`,
+		});
+	}
+
+	it("parks account-disabled failures without consuming reset retry budget", () => {
+		insertJob("account-dead");
+		const result = store.recordCodexReviewJobFailure({
+			requestId: "account-dead",
+			reason: "nonzero_exit",
+			failureRaw: "403 disabled",
+			retryTrigger: "account_switch",
+			parkedAtMs: 1_725_000_000_123,
+		});
+
+		expect(result.scheduled).toBe(false);
+		expect(result.job).toMatchObject({
+			status: "failed",
+			retry_trigger: "account_switch",
+			retry_parked_at_ms: 1_725_000_000_123,
+			auto_retry_count: 0,
+			failure_attempt_count: 1,
+		});
+		expect(result.job?.retry_at).toBeUndefined();
+	});
+
+	it("labels reset-time retries and clears every retry carrier on claim", () => {
+		insertJob("quota-reset");
+		store.recordCodexReviewJobFailure({
+			requestId: "quota-reset",
+			reason: "nonzero_exit",
+			retryAt: "2026-08-31T00:10:00.000Z",
+		});
+		expect(store.getCodexReviewJob("quota-reset")).toMatchObject({
+			retry_trigger: "reset_at",
+			auto_retry_count: 1,
+		});
+		expect(
+			store.getCodexReviewJob("quota-reset")?.retry_parked_at_ms,
+		).toBeUndefined();
+
+		expect(store.claimCodexReviewJobRunning("quota-reset")).toBe(true);
+		expect(store.getCodexReviewJob("quota-reset")?.retry_at).toBeUndefined();
+		expect(
+			store.getCodexReviewJob("quota-reset")?.retry_trigger,
+		).toBeUndefined();
+		expect(
+			store.getCodexReviewJob("quota-reset")?.retry_parked_at_ms,
+		).toBeUndefined();
+	});
+
+	it("pages every eligible parked row with a stable compound cursor", () => {
+		const beforeMs = 1_800_000_000_000;
+		const parkedAtMs = beforeMs - 3 * 24 * 60 * 60_000;
+		for (const requestId of ["z-row", "a-row", "m-row", "b-row", "y-row"]) {
+			insertJob(requestId);
+			store.recordCodexReviewJobFailure({
+				requestId,
+				reason: "nonzero_exit",
+				retryTrigger: "account_switch",
+				parkedAtMs,
+			});
+		}
+		insertJob("later-row");
+		store.recordCodexReviewJobFailure({
+			requestId: "later-row",
+			reason: "nonzero_exit",
+			retryTrigger: "account_switch",
+			parkedAtMs: parkedAtMs + 1,
+		});
+		insertJob("equal-boundary");
+		store.recordCodexReviewJobFailure({
+			requestId: "equal-boundary",
+			reason: "nonzero_exit",
+			retryTrigger: "account_switch",
+			parkedAtMs: beforeMs,
+		});
+		insertJob("reset-row");
+		store.recordCodexReviewJobFailure({
+			requestId: "reset-row",
+			reason: "nonzero_exit",
+			retryAt: "2026-08-31T00:10:00.000Z",
+		});
+
+		const seen: string[] = [];
+		let after: { parkedAtMs: number; requestId: string } | undefined;
+		for (;;) {
+			const page = store.listAccountSwitchParkedCodexReviewJobs({
+				beforeMs,
+				limit: 2,
+				...(after ? { after } : {}),
+			});
+			if (page.length === 0) break;
+			const cursorJob = page.at(-1)!;
+			after = {
+				parkedAtMs: cursorJob.retry_parked_at_ms!,
+				requestId: cursorJob.request_id,
+			};
+			seen.push(...page.map((job) => job.request_id));
+			expect(store.claimCodexReviewJobRunning(page[0]!.request_id)).toBe(true);
+			store.completeCodexReviewJob(page[1]!.request_id, "APPROVED", "[]");
+		}
+
+		expect(seen).toEqual([
+			"a-row",
+			"b-row",
+			"m-row",
+			"y-row",
+			"z-row",
+			"later-row",
+		]);
+	});
+
+	it("stores action snapshots once and completes only pending receipts", () => {
+		const first = {
+			generation: 7,
+			triggerKind: "account_dead" as const,
+			from: "personal1",
+			to: "business",
+			atMs: 1_725_000_000_000,
+		};
+		const replaced = { ...first, from: "wrong-source" };
+
+		expect(store.beginAccountSwitchAction(7, "review_redrive", first)).toEqual({
+			outcome: "started",
+			receipt: expect.objectContaining({ switch: first, status: "pending" }),
+		});
+		expect(
+			store.beginAccountSwitchAction(7, "review_redrive", replaced),
+		).toEqual({
+			outcome: "already_pending",
+			receipt: expect.objectContaining({ switch: first, status: "pending" }),
+		});
+		expect(store.beginAccountSwitchAction(6, "wake_sweep", first).outcome).toBe(
+			"started",
+		);
+		expect(
+			store
+				.listPendingAccountSwitchActions()
+				.map((row) => [row.switch_generation, row.action]),
+		).toEqual([
+			[6, "wake_sweep"],
+			[7, "review_redrive"],
+		]);
+
+		expect(
+			store.completeAccountSwitchAction(7, "review_redrive", {
+				requeued: 3,
+			}),
+		).toBe(true);
+		expect(
+			store.completeAccountSwitchAction(7, "review_redrive", {
+				requeued: 4,
+			}),
+		).toBe(false);
+		expect(
+			store.beginAccountSwitchAction(7, "review_redrive", replaced),
+		).toEqual({
+			outcome: "already_completed",
+			receipt: expect.objectContaining({
+				switch: first,
+				status: "completed",
+				outcome: { requeued: 3 },
+			}),
+		});
+	});
+});
+
 describe("StateStore — FLY-2334 review reuse release", () => {
 	it("atomically releases a reused binding into an idempotent standalone job", async () => {
 		const store = await StateStore.create(":memory:");
@@ -719,6 +900,17 @@ describe("StateStore — FLY-2228 moved-head successor", () => {
 				retired_reviewer_session_uuid: undefined,
 				reuse_repo_identity: "__main__",
 			});
+			migrated.recordCodexReviewJobFailure({
+				requestId: "legacy-parent",
+				reason: "nonzero_exit",
+				retryTrigger: "account_switch",
+				parkedAtMs: 1_725_000_000_123,
+			});
+			expect(migrated.getCodexReviewJob("legacy-parent")).toMatchObject({
+				retry_trigger: "account_switch",
+				retry_parked_at_ms: 1_725_000_000_123,
+			});
+			expect(migrated.claimCodexReviewJobRunning("legacy-parent")).toBe(true);
 			expect(migrated.getCodexReviewReuseBinding("legacy-reuse")).toMatchObject(
 				{
 					target_repo_identity: "__main__",

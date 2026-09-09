@@ -60,6 +60,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"bridge_wrapper_fail",
 		// FLY-1182 actionable quota-monitor tickets. Informational quota notices
 		// bypass lifecycle in AlertChannelHub/isInformationalKind.
+		"account_dead",
 		"machine_account_conflict",
 		"model_cap_persistent_unknown",
 		"model_bench_malformed",

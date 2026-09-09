@@ -1,6 +1,18 @@
-import { readFileSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fchmodSync,
+	fstatSync,
+	fsyncSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	type Stats,
+	writeSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	compareAccountIdentity,
@@ -49,7 +61,15 @@ export interface QuotaGuardCliDeps {
 	withAccountsLock?: AccountsLock;
 	lockPath?: string;
 	alert?: (alert: QuotaMonitorAlert) => Promise<DeliveryReport>;
+	auditUnavailableClear?: (record: UnavailableClearAuditRecord) => void;
 	log?: (message: string) => void;
+}
+
+export interface UnavailableClearAuditRecord {
+	cmd: "unavailable-clear";
+	name: string;
+	reason: string;
+	at: number;
 }
 
 interface GuardArgs {
@@ -58,6 +78,7 @@ interface GuardArgs {
 	store?: string;
 	email?: string;
 	uuid?: string;
+	reason?: string;
 }
 
 function leaseFenceFromEnv(): (() => boolean) | null {
@@ -90,6 +111,9 @@ function parseArgs(argv: string[]): GuardArgs {
 			index++;
 		} else if (flag === "--uuid") {
 			out.uuid = value;
+			index++;
+		} else if (flag === "--reason") {
+			out.reason = value;
 			index++;
 		}
 	}
@@ -151,6 +175,167 @@ function defaultAccountsLockPath(): string {
 		process.env.FLYWHEEL_CLAUDE_ACCOUNTS_LOCK ??
 		join(homedir(), ".flywheel", "claude-accounts.lock")
 	);
+}
+
+function defaultProfileAuditPath(): string {
+	return (
+		process.env.FLYWHEEL_PROFILE_AUDIT_LOG ??
+		join(homedir(), ".flywheel", "claude-profile-audit.log")
+	);
+}
+
+function currentUid(): number {
+	const uid = process.getuid?.();
+	if (uid === undefined) throw new Error("audit owner identity unavailable");
+	return uid;
+}
+
+function validateAuditFile(stat: Stats, uid: number): void {
+	if (
+		!stat.isFile() ||
+		stat.isSymbolicLink() ||
+		stat.uid !== uid ||
+		(stat.mode & 0o777) !== 0o600
+	) {
+		throw new Error("unsafe audit file (must be same-owner regular 0600 file)");
+	}
+}
+
+function appendUnavailableClearAudit(
+	record: UnavailableClearAuditRecord,
+): void {
+	const path = defaultProfileAuditPath();
+	const uid = currentUid();
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	let before: Stats | undefined;
+	try {
+		before = lstatSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	if (before !== undefined) validateAuditFile(before, uid);
+	const fd = openSync(
+		path,
+		constants.O_APPEND |
+			constants.O_WRONLY |
+			(constants.O_NOFOLLOW ?? 0) |
+			(before === undefined ? constants.O_CREAT | constants.O_EXCL : 0),
+		0o600,
+	);
+	try {
+		if (before === undefined) fchmodSync(fd, 0o600);
+		const opened = fstatSync(fd);
+		validateAuditFile(opened, uid);
+		const named = lstatSync(path);
+		validateAuditFile(named, uid);
+		if (named.dev !== opened.dev || named.ino !== opened.ino) {
+			throw new Error("audit file changed during open");
+		}
+		const line = `${JSON.stringify({
+			ts: new Date(record.at).toISOString(),
+			cmd: record.cmd,
+			profile: record.name,
+			reason: record.reason,
+		})}\n`;
+		if (writeSync(fd, line) !== Buffer.byteLength(line)) {
+			throw new Error("short audit append");
+		}
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function validOperatorReason(value: string | undefined): string | null {
+	const reason = value?.trim() || "operator_clear";
+	const hasControl = [...reason].some((character) => {
+		const code = character.charCodeAt(0);
+		return code < 32 || code === 127;
+	});
+	return reason.length <= 200 && !hasControl ? reason : null;
+}
+
+async function runUnavailableClear(
+	argv: string[],
+	deps: QuotaGuardCliDeps,
+	log: (message: string) => void,
+): Promise<number> {
+	const { name, store, reason: rawReason } = parseArgs(argv);
+	const reason = validOperatorReason(rawReason);
+	if (!name || reason === null) {
+		log("quota guard unavailable-clear: invalid input");
+		return 33;
+	}
+	const storePath = store ?? defaultStorePath();
+	const lock = deps.withAccountsLock ?? withAccountsLock;
+	const result = await lock<
+		"cleared" | "noop" | "invalid_store" | "missing_account" | "write_failed"
+	>(deps.lockPath ?? defaultAccountsLockPath(), async () => {
+		const current = readStoreStrict(storePath);
+		if (current === null) return "invalid_store";
+		const matches = current.accounts
+			.map((entry, index) => ({ entry, index }))
+			.filter(({ entry }) => entry.name === name);
+		if (matches.length !== 1 || matches[0] === undefined) {
+			return "missing_account";
+		}
+		if (matches[0].entry.unavailable === undefined) return "noop";
+		const { unavailable: _, ...available } = matches[0].entry;
+		current.accounts[matches[0].index] = available;
+		try {
+			writeStore(current, storePath);
+			return "cleared";
+		} catch {
+			return "write_failed";
+		}
+	});
+	if (result.kind !== "ok") {
+		log(
+			`quota guard unavailable-clear: lock result=${result.kind}; name=${name}`,
+		);
+		return 33;
+	}
+	if (result.value === "cleared") {
+		try {
+			(deps.auditUnavailableClear ?? appendUnavailableClearAudit)({
+				cmd: "unavailable-clear",
+				name,
+				reason,
+				at: (deps.now ?? Date.now)(),
+			});
+		} catch {
+			log(`quota guard unavailable-clear: result=audit_failed; name=${name}`);
+			return 33;
+		}
+	}
+	log(`quota guard unavailable-clear: result=${result.value}; name=${name}`);
+	return result.value === "cleared" || result.value === "noop" ? 0 : 33;
+}
+
+function runUnavailableList(
+	argv: string[],
+	log: (message: string) => void,
+): number {
+	const { store } = parseArgs(argv);
+	const current = readStoreStrict(store ?? defaultStorePath());
+	if (current === null) {
+		log("quota guard unavailable-list: invalid store");
+		return 33;
+	}
+	log(
+		JSON.stringify({
+			unavailable: current.accounts
+				.filter((account) => account.unavailable !== undefined)
+				.sort((a, b) => a.name.localeCompare(b.name, "en-US"))
+				.map((account) => ({
+					name: account.name,
+					reason: account.unavailable?.reason,
+					markedAt: account.unavailable?.markedAt,
+					markedBy: account.unavailable?.markedBy,
+				})),
+		}),
+	);
+	return 0;
 }
 
 function safeAccessToken(raw: string): string | null {
@@ -587,6 +772,12 @@ export async function runQuotaGuardCli(
 	if (argv[0] === "identity-alert-flush") {
 		return runIdentityAlertFlush(deps, log);
 	}
+	if (argv[0] === "unavailable-clear") {
+		return runUnavailableClear(argv, deps, log);
+	}
+	if (argv[0] === "unavailable-list") {
+		return runUnavailableList(argv, log);
+	}
 	if (argv[0] === "active-sync-strict") {
 		const args = parseStrictActiveSyncArgs(argv);
 		const proof = args ? readFreshenedIdentityProof(deps) : null;
@@ -616,9 +807,19 @@ export async function runQuotaGuardCli(
 		}
 		const result =
 			name && store
-				? syncActiveAccountInStore(store, name)
+				? syncActiveAccountInStore(store, name, {
+						lastSwitch: {
+							triggerKind: "witness",
+							at: new Date((deps.now ?? Date.now)()).toISOString(),
+						},
+					})
 				: name
-					? syncActiveAccountInStore(defaultStorePath(), name)
+					? syncActiveAccountInStore(defaultStorePath(), name, {
+							lastSwitch: {
+								triggerKind: "witness",
+								at: new Date((deps.now ?? Date.now)()).toISOString(),
+							},
+						})
 					: "invalid_name";
 		log(`quota guard active-sync: result=${result}; name=${name ?? "missing"}`);
 		// This is a post-commit repair seam: Keychain remains authoritative and a
@@ -627,7 +828,7 @@ export async function runQuotaGuardCli(
 	}
 	if (argv[0] !== "check") {
 		log(
-			"usage: quota-guard check --name <target> --pool <dir> [--store <path>] | active-sync --name <active> [--store <path>] | active-sync-strict --name <active> [--store <path>] --freshened | identity-verify --name <target> [--store <path>] | identity-set --name <target> --email <email> [--uuid <uuid>] [--store <path>] | identity-audit [--mark] --pool <dir> [--store <path>] | identity-alert-flush",
+			"usage: quota-guard check --name <target> --pool <dir> [--store <path>] | active-sync --name <active> [--store <path>] | active-sync-strict --name <active> [--store <path>] --freshened | identity-verify --name <target> [--store <path>] | identity-set --name <target> --email <email> [--uuid <uuid>] [--store <path>] | identity-audit [--mark] --pool <dir> [--store <path>] | identity-alert-flush | unavailable-list [--store <path>] | unavailable-clear --name <profile> [--reason <text>] [--store <path>]",
 		);
 		return 33;
 	}

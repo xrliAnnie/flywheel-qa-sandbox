@@ -20,6 +20,7 @@ beforeEach(() => {
 	delete process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
 	delete process.env.FLYWHEEL_NOTIFY_CHANNEL;
 	delete process.env.FLYWHEEL_FOUNDER_USER_ID;
+	delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
 });
 
 afterEach(() => {
@@ -28,9 +29,108 @@ afterEach(() => {
 	delete process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
 	delete process.env.FLYWHEEL_NOTIFY_CHANNEL;
 	delete process.env.FLYWHEEL_FOUNDER_USER_ID;
+	delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
 });
 
 describe("sendQuotaMonitorAlert", () => {
+	it("routes account_dead to the configured engineering Lead channel as an actionable severe alert", async () => {
+		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "alerts-channel";
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "ENGINEER_ALERT_TOKEN";
+		const founderUserId = "1".repeat(18);
+		const engineerChannel = "7".repeat(18);
+		process.env.FLYWHEEL_FOUNDER_USER_ID = founderUserId;
+		const readLeadAlertChannel = vi.fn(() => engineerChannel);
+		const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+		await expect(
+			sendQuotaMonitorAlert(
+				{
+					kind: "account_dead",
+					severity: "severe",
+					title: "Claude 账号已死,已拉黑",
+					body: "account_dead:personal1",
+					signature: "account-dead-g2",
+				},
+				{ execFile, readLeadAlertChannel },
+			),
+		).resolves.toEqual({ primary: "sent" });
+
+		expect(readLeadAlertChannel).toHaveBeenCalledWith(
+			"flywheel",
+			"flywheel-eng-lead",
+		);
+		expect(execFile).toHaveBeenCalledTimes(1);
+		const call = execFile.mock.calls[0];
+		expect(call?.[1]).toEqual(
+			expect.arrayContaining([
+				"--lead",
+				"quota-monitor",
+				"--project",
+				"flywheel",
+				"--kind",
+				"account_dead",
+				"--severity",
+				"severe",
+				"--mention-user",
+				founderUserId,
+			]),
+		);
+		expect(call?.[1]).not.toContain("--plain-message");
+		expect(call?.[2]).toEqual(
+			expect.objectContaining({
+				env: expect.objectContaining({
+					FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: engineerChannel,
+					FLYWHEEL_ALERT_SENDER_TOKEN_ENV: "ENGINEER_ALERT_TOKEN",
+				}),
+			}),
+		);
+	});
+
+	it.each([
+		["missing", undefined],
+		["invalid", "engineer-channel"],
+	] as const)(
+		"fails closed when the engineering Lead channel is %s",
+		async (_label, channel) => {
+			const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+			await expect(
+				sendQuotaMonitorAlert(
+					{
+						kind: "account_dead",
+						severity: "severe",
+						title: "Dead account",
+						body: "account_dead:personal1",
+						signature: "account-dead-invalid-route",
+					},
+					{ execFile, readLeadAlertChannel: () => channel },
+				),
+			).resolves.toEqual({ primary: "config_error" });
+			expect(execFile).not.toHaveBeenCalled();
+		},
+	);
+
+	it("fails closed when the engineering Lead registry cannot be read", async () => {
+		const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+		await expect(
+			sendQuotaMonitorAlert(
+				{
+					kind: "account_dead",
+					severity: "severe",
+					title: "Dead account",
+					body: "account_dead:personal1",
+					signature: "account-dead-config-error",
+				},
+				{
+					execFile,
+					readLeadAlertChannel: () => {
+						throw new Error("registry unavailable");
+					},
+				},
+			),
+		).resolves.toEqual({ primary: "config_error" });
+		expect(execFile).not.toHaveBeenCalled();
+	});
+
 	it("routes a complete account switch notice to notification with the founder mention", async () => {
 		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "alerts-channel";
 		process.env.FLYWHEEL_NOTIFY_CHANNEL = "notification-channel";

@@ -367,6 +367,8 @@ export function titleFor(kind: AlertEventType): string {
 		// supplies its own title. Cases keep the shared union exhaustive.
 		case "account_switched":
 			return "Claude account switched";
+		case "account_dead":
+			return "Claude 账号已死,已拉黑";
 		case "account_switch_degraded":
 			return "Claude account switched with degraded verification";
 		case "machine_account_conflict":
@@ -627,6 +629,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// account/quota/reset evidence in the real alert body.
 		case "account_switched":
 			return "The external quota monitor switched Claude accounts after verifying the target account had fresh quota.";
+		case "account_dead":
+			return "外部 quota monitor 已标记不可用的终态 Claude profile,并切到下一可用账号。它不会被自动轮回选择;修复或续订后需手工解除 unavailable 标记。";
 		case "account_switch_degraded":
 			return "The external quota monitor switched Claude accounts using the controlled degraded-verification fallback; inspect the supplied panorama evidence.";
 		case "machine_account_conflict":

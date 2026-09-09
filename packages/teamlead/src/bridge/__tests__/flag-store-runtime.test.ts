@@ -9,6 +9,7 @@ import {
 	initializeFlagStore,
 	readScopedBoolean,
 	readScopedValue,
+	storeAccountSwitchWakeSweepEnabled,
 	storeAlertSystemEnabled,
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
@@ -192,6 +193,25 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeReviewQuotaAutoRetryEnabled(runtime)).toBe(false);
+	});
+
+	it("FLY-2452 keeps account-switch wake sweep default-on and observes an off write without restart", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeAccountSwitchWakeSweepEnabled(runtime)).toBe(true);
+
+		const revision = store.getFlagValueRow(
+			"account_switch_wake_sweep",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "account_switch_wake_sweep",
+				rawTo: "0",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "pause automatic Claude runner wakes during incident control",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeAccountSwitchWakeSweepEnabled(runtime)).toBe(false);
 	});
 
 	it("resolves all project flags from project row, star row, then registry default", () => {

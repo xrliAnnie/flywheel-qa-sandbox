@@ -145,6 +145,22 @@ export interface IdentityMismatchEpisode {
 	activeDelivery: SwitchFailureDelivery | null;
 }
 
+export interface DeadAccountEpisode {
+	profile: string;
+	reason: string;
+	detectedAt: number;
+	generation: number;
+	switchOutcome: "switched" | "no_account" | "failed";
+	switchedGeneration?: number;
+	alertCount: number;
+	lastAlertAt: string | null;
+}
+
+export interface WitnessCursor {
+	consumedAt: number;
+	digest: string;
+}
+
 export interface QuotaMonitorState {
 	version: 2;
 	lastPollAt: number | null;
@@ -168,6 +184,9 @@ export interface QuotaMonitorState {
 	pendingSwitchFailure: PendingSwitchFailure | null;
 	identityMismatchEpisodes: Record<string, IdentityMismatchEpisode> | null;
 	identityAlertCursor: string | null;
+	activeUnreadableStreak: number;
+	deadAccountEpisode: DeadAccountEpisode | null;
+	witnessCursor: WitnessCursor | null;
 }
 
 export interface LoadQuotaMonitorStateOptions {
@@ -207,6 +226,9 @@ const V2_STATE_KEYS = new Set([
 	"confirmation",
 	"unknownPanes",
 	"modelPaneSuppressions",
+	"activeUnreadableStreak",
+	"deadAccountEpisode",
+	"witnessCursor",
 ]);
 const EPOCH_KEYS = new Set([
 	"open",
@@ -296,6 +318,17 @@ const IDENTITY_MISMATCH_EPISODE_KEYS = new Set([
 	"round",
 	"activeDelivery",
 ]);
+const DEAD_ACCOUNT_EPISODE_KEYS = new Set([
+	"profile",
+	"reason",
+	"detectedAt",
+	"generation",
+	"switchOutcome",
+	"switchedGeneration",
+	"alertCount",
+	"lastAlertAt",
+]);
+const WITNESS_CURSOR_KEYS = new Set(["consumedAt", "digest"]);
 const IDENTITY_CHECKPOINTS = new Set<IdentityMismatchCheckpoint>([
 	"candidate",
 	"active",
@@ -352,6 +385,9 @@ export function emptyQuotaMonitorState(
 		pendingSwitchFailure: null,
 		identityMismatchEpisodes: null,
 		identityAlertCursor: null,
+		activeUnreadableStreak: 0,
+		deadAccountEpisode: null,
+		witnessCursor: null,
 	};
 }
 
@@ -612,6 +648,65 @@ function parseIdentityMismatchEpisodes(
 		};
 	}
 	return Object.keys(episodes).length === 0 ? null : episodes;
+}
+
+function parseDeadAccountEpisode(
+	value: unknown,
+): DeadAccountEpisode | null | undefined {
+	if (value === undefined || value === null) return null;
+	if (!isRecord(value) || !hasOnlyKeys(value, DEAD_ACCOUNT_EPISODE_KEYS)) {
+		return undefined;
+	}
+	const switchedGeneration = value.switchedGeneration;
+	if (
+		typeof value.profile !== "string" ||
+		!PROFILE_NAME.test(value.profile) ||
+		!isSafeEpisodeText(value.reason, 200) ||
+		!isNonNegativeNumber(value.detectedAt) ||
+		!isGeneration(value.generation) ||
+		(value.switchOutcome !== "switched" &&
+			value.switchOutcome !== "no_account" &&
+			value.switchOutcome !== "failed") ||
+		(value.switchOutcome === "switched"
+			? !isGeneration(switchedGeneration) || switchedGeneration === 0
+			: switchedGeneration !== undefined) ||
+		!isGeneration(value.alertCount) ||
+		value.alertCount > 10 ||
+		!isNullableIsoInstant(value.lastAlertAt)
+	) {
+		return undefined;
+	}
+	const normalizedSwitchedGeneration =
+		value.switchOutcome === "switched"
+			? (switchedGeneration as number)
+			: undefined;
+	return {
+		profile: value.profile,
+		reason: value.reason,
+		detectedAt: value.detectedAt,
+		generation: value.generation,
+		switchOutcome: value.switchOutcome,
+		...(normalizedSwitchedGeneration === undefined
+			? {}
+			: { switchedGeneration: normalizedSwitchedGeneration }),
+		alertCount: value.alertCount,
+		lastAlertAt: value.lastAlertAt,
+	};
+}
+
+function parseWitnessCursor(value: unknown): WitnessCursor | null | undefined {
+	if (value === undefined || value === null) return null;
+	if (!isRecord(value) || !hasOnlyKeys(value, WITNESS_CURSOR_KEYS)) {
+		return undefined;
+	}
+	if (
+		!isNonNegativeNumber(value.consumedAt) ||
+		typeof value.digest !== "string" ||
+		!DIGEST.test(value.digest)
+	) {
+		return undefined;
+	}
+	return { consumedAt: value.consumedAt, digest: value.digest };
 }
 
 function parseReviveEpoch(value: unknown): ReviveEpoch | null | undefined {
@@ -922,6 +1017,9 @@ function parseState(
 					PROFILE_NAME.test(value.identityAlertCursor)
 				? value.identityAlertCursor
 				: undefined;
+	const activeUnreadableStreak = value.activeUnreadableStreak ?? 0;
+	const deadAccountEpisode = parseDeadAccountEpisode(value.deadAccountEpisode);
+	const witnessCursor = parseWitnessCursor(value.witnessCursor);
 	if (
 		(value.version !== 1 && value.version !== 2) ||
 		!isNullableTimestamp(value.lastPollAt) ||
@@ -942,7 +1040,10 @@ function parseState(
 		blockedEpisode === undefined ||
 		pendingSwitchFailure === undefined ||
 		identityMismatchEpisodes === undefined ||
-		identityAlertCursor === undefined
+		identityAlertCursor === undefined ||
+		!isGeneration(activeUnreadableStreak) ||
+		deadAccountEpisode === undefined ||
+		witnessCursor === undefined
 	) {
 		return null;
 	}
@@ -989,6 +1090,9 @@ function parseState(
 			pendingSwitchFailure,
 			identityMismatchEpisodes,
 			identityAlertCursor,
+			activeUnreadableStreak,
+			deadAccountEpisode,
+			witnessCursor,
 		},
 	};
 }

@@ -174,6 +174,21 @@ if [ "$RC" = "2" ] && [ "$OUT" = "queued_transient" ] \
   ok "strict: queued account_switched preserves channel + ordinary-message style"
 else bad "switch queue route: rc=$RC out='$OUT' channel='$SWITCH_DESTINATION' style='$SWITCH_STYLE'"; fi
 
+DEAD_QUEUE="$TMP/account-dead-route-queue"
+OUT=$(run_routed_alert 500 account_dead sig-account-dead-route "$DEAD_QUEUE" "$ROUTE_CHANNEL" 0 2>/dev/null); RC=$?
+DEAD_RECORD=$(find "$DEAD_QUEUE" -maxdepth 1 -name '*.json' -print -quit 2>/dev/null)
+if [ "$RC" = "2" ] && [ "$OUT" = "queued_transient" ] \
+    && jq -e --arg channel "$ROUTE_CHANNEL" \
+      '.eventType == "account_dead" and .deliveryChannelId == $channel and (has("deliveryStyle") | not)' \
+      "$DEAD_RECORD" >/dev/null 2>&1; then
+  ok "strict: queued account_dead preserves engineer channel without plain style"
+else bad "account_dead queue route: rc=$RC out='$OUT' record='$DEAD_RECORD'"; fi
+
+OUT=$(run_routed_alert 200 account_dead sig-account-dead-plain "$TMP/account-dead-plain" "$ROUTE_CHANNEL" 1 2>/dev/null); RC=$?
+if [ "$RC" = "1" ] && [ "$OUT" = "config_error" ]; then
+  ok "strict: account_dead refuses the plain-message override"
+else bad "account_dead plain-message guard: rc=$RC out='$OUT'"; fi
+
 CONTROL_QUEUE="$TMP/control-route-queue"
 OUT=$(run_routed_alert 500 quota_no_target sig-control-route "$CONTROL_QUEUE" "$ROUTE_CHANNEL" 2>/dev/null); RC=$?
 CONTROL_RECORD=$(find "$CONTROL_QUEUE" -maxdepth 1 -name '*.json' -print -quit 2>/dev/null)

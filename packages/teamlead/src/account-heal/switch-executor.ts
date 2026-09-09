@@ -22,10 +22,12 @@
 import type { CandidatePanoramaEntry } from "./account-candidate-selector.js";
 import {
 	type AccountStore,
+	type AccountUnavailableMark,
 	defaultStorePath,
 	earliestReset,
 	enqueueSwitchNotification,
 	MAX_SWITCH_NOTIFICATION_OUTBOX,
+	markAccountUnavailable,
 	readStore,
 	selectNextAccount,
 	writeStore,
@@ -61,6 +63,8 @@ interface SwitchInputBase {
 	cooldownFallbacks?: readonly string[];
 	/** Pre-fetched, non-secret facts used to format the centralized notification. */
 	notificationContext?: SwitchNotificationContext;
+	/** Terminal exclusion committed with an account-dead transition. */
+	markUnavailable?: { name: string; mark: AccountUnavailableMark };
 }
 
 export interface SwitchNotificationContext {
@@ -79,7 +83,8 @@ export type SwitchTrigger =
 			scope: "5h" | "weekly" | "both";
 			resetAt: string;
 	  }
-	| { kind: "model"; models: CanonicalModels };
+	| { kind: "model"; models: CanonicalModels }
+	| { kind: "account_dead"; profile: string };
 
 export interface ManualEligibilityOverride {
 	ignoreCooldown: boolean;
@@ -210,6 +215,7 @@ type SwitchOutcome =
 				| "apply_failed"
 				| "machine_account_conflict"
 				| "notification_outbox_full"
+				| "invalid_unavailable_mark"
 				| "invalid_model_trigger"
 				| "invalid_manual_overrides"
 				| "invalid_cooldown_fallbacks"
@@ -567,7 +573,9 @@ function commitSwitch(
 	const generation = store.generation + 1;
 	const accounts = store.accounts.map((account) => {
 		if (account.name !== input.observedAccount) return account;
-		if (trigger.kind === "manual") return account;
+		if (trigger.kind === "manual" || trigger.kind === "account_dead") {
+			return account;
+		}
 		if (trigger.kind === "model") {
 			if (benchUntilByModel === null) return account;
 			const modelCaps = { ...account.modelCaps };
@@ -593,7 +601,7 @@ function commitSwitch(
 					kind: "model",
 					models: Object.keys(benchUntilByModel ?? {}).sort(),
 				}
-			: trigger.kind === "manual"
+			: trigger.kind === "manual" || trigger.kind === "account_dead"
 				? trigger
 				: { kind: trigger.kind, scope: trigger.scope };
 	const context = input.notificationContext;
@@ -624,8 +632,15 @@ function commitSwitch(
 		activeAccount: to,
 		identityStale: !identitySynced,
 		accounts,
+		lastSwitch: {
+			generation,
+			triggerKind: trigger.kind,
+			from: input.observedAccount,
+			to,
+			at: input.now.toISOString(),
+		},
 	};
-	return enqueueSwitchNotification(switched, {
+	const withSwitchNotification = enqueueSwitchNotification(switched, {
 		eventId: `account-switch-g${generation}`,
 		generation,
 		createdAt: input.now.getTime(),
@@ -635,6 +650,25 @@ function commitSwitch(
 			title: `Claude account switched: ${input.observedAccount} → ${to}`,
 			body,
 			signature: `account-switch-g${generation}`,
+		},
+	});
+	if (trigger.kind !== "account_dead") return withSwitchNotification;
+	const prefix = `account_dead:${trigger.profile}\n`;
+	let deadBody = `${prefix}${body.slice(0, 4_000 - prefix.length)}`;
+	const lastCodeUnit = deadBody.charCodeAt(deadBody.length - 1);
+	if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) {
+		deadBody = deadBody.slice(0, -1);
+	}
+	return enqueueSwitchNotification(withSwitchNotification, {
+		eventId: `account-dead-g${generation}`,
+		generation,
+		createdAt: input.now.getTime(),
+		alert: {
+			kind: "account_dead",
+			severity: "severe",
+			title: `Claude account unavailable: ${trigger.profile}`,
+			body: deadBody,
+			signature: `account-dead-g${generation}`,
 		},
 	});
 }
@@ -735,6 +769,28 @@ export async function switchAccount(
 				reasonCode: "invalid_model_trigger",
 			};
 		}
+		if (
+			trigger.kind === "account_dead" &&
+			(input.markUnavailable === undefined ||
+				input.markUnavailable.name !== input.observedAccount ||
+				trigger.profile !== input.observedAccount)
+		) {
+			return {
+				outcome: "failed",
+				reason: "account-dead switch requires a mark for the observed profile",
+				reasonCode: "invalid_unavailable_mark",
+			};
+		}
+		if (
+			trigger.kind !== "account_dead" &&
+			input.markUnavailable !== undefined
+		) {
+			return {
+				outcome: "failed",
+				reason: "only account-dead switches may quarantine a profile",
+				reasonCode: "invalid_unavailable_mark",
+			};
+		}
 		const manualOverrides =
 			"manualOverrides" in input ? input.manualOverrides : undefined;
 		const preferredNames = new Set(input.preferredOrder ?? []);
@@ -827,6 +883,16 @@ export async function switchAccount(
 		// (Crash recovery above is unaffected: an uncommitted switch never bumped
 		// the stored generation, and its name-mismatch already no-ops.)
 		if (store.generation !== input.observedGeneration) {
+			if (trigger.kind === "account_dead") {
+				return withReports(
+					{
+						outcome: "failed",
+						reason: "account generation changed after dead-account detection",
+						reasonCode: "active_marker_drift",
+					},
+					applyReports,
+				);
+			}
 			return withReports(
 				{
 					outcome: "noop_already_switched",
@@ -835,13 +901,23 @@ export async function switchAccount(
 				applyReports,
 			);
 		}
-		const nextNotificationEventId = `account-switch-g${store.generation + 1}`;
+		const nextGeneration = store.generation + 1;
+		const nextNotificationEventIds = [
+			`account-switch-g${nextGeneration}`,
+			...(trigger.kind === "account_dead"
+				? [`account-dead-g${nextGeneration}`]
+				: []),
+		];
 		const pendingNotifications = store.pendingSwitchNotifications ?? [];
+		const pendingEventIds = new Set(
+			pendingNotifications.map((intent) => intent.eventId),
+		);
+		const requiredNotificationSlots = nextNotificationEventIds.filter(
+			(eventId) => !pendingEventIds.has(eventId),
+		).length;
 		if (
-			pendingNotifications.length >= MAX_SWITCH_NOTIFICATION_OUTBOX &&
-			!pendingNotifications.some(
-				(intent) => intent.eventId === nextNotificationEventId,
-			)
+			pendingNotifications.length + requiredNotificationSlots >
+			MAX_SWITCH_NOTIFICATION_OUTBOX
 		) {
 			return withReports(
 				{
@@ -862,7 +938,21 @@ export async function switchAccount(
 		// environmental → fail closed with no flag, no loop. On failure the active
 		// account is left untouched (never a half-switched pool). Bounded by pool
 		// size as a backstop.
-		let working = store;
+		const applyDeadMark = (candidate: AccountStore): AccountStore => {
+			if (
+				trigger.kind !== "account_dead" ||
+				input.markUnavailable === undefined
+			) {
+				return candidate;
+			}
+			return markAccountUnavailable(
+				candidate,
+				input.markUnavailable.name,
+				input.markUnavailable.mark,
+			);
+		};
+		let working = applyDeadMark(store);
+		let deadMarkNeedsWrite = working !== store;
 		const consumeReport = (
 			// biome-ignore lint/suspicious/noConfusingVoidType: preserve compatibility with void apply mocks.
 			value: ApplyProfileReport | void | ApplyProfileReportedError | Error,
@@ -887,11 +977,16 @@ export async function switchAccount(
 				input.observedGeneration,
 				input.observedAccount,
 			);
-			if (JSON.stringify(updated) !== JSON.stringify(latest)) {
+			const updatedWithDeadMark = applyDeadMark(updated);
+			deadMarkNeedsWrite ||= updatedWithDeadMark !== updated;
+			if (
+				trigger.kind !== "account_dead" &&
+				JSON.stringify(updated) !== JSON.stringify(latest)
+			) {
 				if (!fence()) throw new LockLeaseLostError(lockPath);
 				writeStore(updated, storePath);
 			}
-			working = updated;
+			working = updatedWithDeadMark;
 		};
 		let applied: string | null = null;
 		let identitySynced = true;
@@ -908,7 +1003,7 @@ export async function switchAccount(
 				scope:
 					trigger.kind === "model"
 						? "model"
-						: trigger.kind === "manual"
+						: trigger.kind === "manual" || trigger.kind === "account_dead"
 							? null
 							: trigger.scope,
 				models: models ?? undefined,
@@ -931,6 +1026,11 @@ export async function switchAccount(
 						applyReports,
 						lastEvidence,
 					);
+				}
+				if (deadMarkNeedsWrite) {
+					if (!fence()) return leaseLost();
+					writeStore(working, storePath);
+					deadMarkNeedsWrite = false;
 				}
 				return withReports(
 					{
@@ -992,7 +1092,10 @@ export async function switchAccount(
 				}
 				if (err instanceof TargetQuotaExhaustedError) {
 					targetQuotaSeen = true;
-					working = readStore(storePath);
+					const refreshed = readStore(storePath);
+					const refreshedWithDeadMark = applyDeadMark(refreshed);
+					deadMarkNeedsWrite ||= refreshedWithDeadMark !== refreshed;
+					working = refreshedWithDeadMark;
 					continue;
 				}
 				if (err instanceof TargetStaleError) {
@@ -1090,6 +1193,11 @@ export async function switchAccount(
 					applyReports,
 					lastEvidence,
 				);
+			}
+			if (deadMarkNeedsWrite) {
+				if (!fence()) return leaseLost();
+				writeStore(working, storePath);
+				deadMarkNeedsWrite = false;
 			}
 			return withReports(
 				{

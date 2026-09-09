@@ -2,6 +2,7 @@ import { execFile as nodeExecFile } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { loadProjects } from "../ProjectConfig.js";
 import type {
 	QuotaMonitorAlert,
 	QuotaMonitorAlertKind,
@@ -41,12 +42,17 @@ export interface QuotaMonitorAlertOptions {
 	execFile?: ExecFileFn;
 	project?: string;
 	env?: NodeJS.ProcessEnv;
+	readLeadAlertChannel?: (
+		project: string,
+		leadId: string,
+	) => string | undefined;
 }
 
 type RoutingPolicy = {
 	mention: boolean;
 	severe: boolean;
-	primaryChannel?: "notify";
+	primaryChannel?: "notify" | "lead";
+	leadId?: string;
 	primaryStyle?: "plain";
 };
 
@@ -56,6 +62,12 @@ const ROUTING = {
 		severe: false,
 		primaryChannel: "notify",
 		primaryStyle: "plain",
+	},
+	account_dead: {
+		mention: true,
+		severe: true,
+		primaryChannel: "lead",
+		leadId: "flywheel-eng-lead",
 	},
 	account_switch_degraded: {
 		mention: true,
@@ -152,6 +164,19 @@ function resolveMentionUser(env: NodeJS.ProcessEnv): string | undefined {
 	return undefined;
 }
 
+function defaultReadLeadAlertChannel(
+	project: string,
+	leadId: string,
+): string | undefined {
+	return loadProjects()
+		.find((entry) => entry.projectName === project)
+		?.leads.find((lead) => lead.agentId === leadId)?.alertChannel;
+}
+
+function validDiscordChannelId(value: unknown): value is string {
+	return typeof value === "string" && /^\d{17,20}$/.test(value);
+}
+
 function alertArgs(
 	alert: QuotaMonitorAlert | DurableAlertIntent["alert"],
 	project: string,
@@ -202,17 +227,28 @@ export async function sendQuotaMonitorAlert(
 	const mentionUser = policy.mention
 		? resolveMentionUser(effectiveEnv)
 		: undefined;
-	const notifyChannel =
-		policy.primaryChannel === "notify"
-			? effectiveEnv.FLYWHEEL_NOTIFY_CHANNEL?.trim()
-			: undefined;
-	if (policy.primaryChannel === "notify" && !notifyChannel) {
+	let primaryChannel: string | undefined;
+	if (policy.primaryChannel === "notify") {
+		primaryChannel = effectiveEnv.FLYWHEEL_NOTIFY_CHANNEL?.trim();
+	} else if (policy.primaryChannel === "lead") {
+		try {
+			primaryChannel = (
+				opts.readLeadAlertChannel ?? defaultReadLeadAlertChannel
+			)(project, policy.leadId ?? "");
+		} catch {
+			return { primary: "config_error" };
+		}
+		if (!validDiscordChannelId(primaryChannel)) {
+			return { primary: "config_error" };
+		}
+	}
+	if (policy.primaryChannel === "notify" && !primaryChannel) {
 		return { primary: "config_error" };
 	}
-	const primaryEnv = notifyChannel
+	const primaryEnv = primaryChannel
 		? {
 				...effectiveEnv,
-				FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: notifyChannel,
+				FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: primaryChannel,
 			}
 		: effectiveEnv;
 	const primary = await attemptDelivery(
@@ -234,7 +270,7 @@ export async function sendQuotaMonitorAlert(
 		!policy.severe ||
 		!severeChannel ||
 		severeChannel === unifiedChannel ||
-		severeChannel === notifyChannel
+		severeChannel === primaryChannel
 	) {
 		return { primary };
 	}

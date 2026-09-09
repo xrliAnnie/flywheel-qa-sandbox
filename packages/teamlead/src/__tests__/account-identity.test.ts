@@ -44,6 +44,62 @@ describe("fetchProfileIdentity", () => {
 		);
 	});
 
+	it("retains validated subscription state from the OAuth profile", async () => {
+		const fetchFn = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						...PROFILE,
+						organization: {
+							subscription_status: "canceled",
+							organization_type: "claude_free",
+						},
+					}),
+					{ status: 200 },
+				),
+		);
+
+		await expect(
+			fetchProfileIdentity(TOKEN, { fetchFn: fetchFn as typeof fetch }),
+		).resolves.toEqual({
+			email: "annie@example.com",
+			uuid: "f2caedf8-4d28-4e63-a79a-111111111111",
+			subscription: {
+				status: "canceled",
+				organizationType: "claude_free",
+			},
+		});
+	});
+
+	it.each([
+		["missing organization", undefined],
+		[
+			"invalid status",
+			{ subscription_status: "CANCELED", organization_type: "claude_free" },
+		],
+		[
+			"oversized organization type",
+			{ subscription_status: "active", organization_type: "a".repeat(33) },
+		],
+	])(
+		"keeps identity usable while discarding %s subscription metadata",
+		async (_label, organization) => {
+			const fetchFn = vi.fn(
+				async () =>
+					new Response(JSON.stringify({ ...PROFILE, organization }), {
+						status: 200,
+					}),
+			);
+
+			await expect(
+				fetchProfileIdentity(TOKEN, { fetchFn: fetchFn as typeof fetch }),
+			).resolves.toEqual({
+				email: "annie@example.com",
+				uuid: "f2caedf8-4d28-4e63-a79a-111111111111",
+			});
+		},
+	);
+
 	it("classifies 401 separately and never exposes token or response text", async () => {
 		const fetchFn = vi.fn(
 			async () => new Response(`expired ${TOKEN}`, { status: 401 }),

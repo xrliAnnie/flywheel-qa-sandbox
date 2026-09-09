@@ -5,8 +5,8 @@ set -euo pipefail
 SCENARIO="${1:-all}"
 shift || true
 case "$SCENARIO" in
-  token-rotation|true-drift|old-daemon|all) ;;
-  *) echo "usage: $0 <token-rotation|true-drift|old-daemon|all> [--baseline <ref>] [--old-daemon-ref <ref>]" >&2; exit 2 ;;
+  token-rotation|true-drift|old-daemon|dead-account|all) ;;
+  *) echo "usage: $0 <token-rotation|true-drift|old-daemon|dead-account|all> [--baseline <ref>] [--old-daemon-ref <ref>]" >&2; exit 2 ;;
 esac
 BASELINE_REF=""
 OLD_DAEMON_REF="155e1e78a^"
@@ -123,15 +123,25 @@ SECURITY
 cat > "$ROOT/bin/lead-alert" <<'ALERT'
 #!/usr/bin/env bash
 set -euo pipefail
-kind="" body=""
+lead="" project="" kind="" severity="" body=""
 while (( $# > 0 )); do
   case "$1" in
+    --lead) lead="$2"; shift 2 ;;
+    --project) project="$2"; shift 2 ;;
     --kind) kind="$2"; shift 2 ;;
+    --severity) severity="$2"; shift 2 ;;
     --body) body="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
-jq -cn --arg kind "$kind" --arg body "$body" '{kind:$kind,body:$body}' >> "$FAKE_ALERT_LOG"
+jq -cn \
+  --arg lead "$lead" \
+  --arg project "$project" \
+  --arg kind "$kind" \
+  --arg severity "$severity" \
+  --arg body "$body" \
+  --arg channel "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" \
+  '{lead:$lead,project:$project,kind:$kind,severity:$severity,body:$body,channel:$channel}' >> "$FAKE_ALERT_LOG"
 printf 'sent\n'
 ALERT
 cat > "$ROOT/bin/tmux" <<'TMUX'
@@ -147,8 +157,8 @@ chmod +x "$ROOT/bin/security" "$ROOT/bin/lead-alert" "$ROOT/bin/tmux" "$ROOT/bin
 
 cat > "$ROOT/mock-server.mjs" <<'MOCK'
 import { createServer } from "node:http";
-import { writeFileSync } from "node:fs";
-const [portFile] = process.argv.slice(2);
+import { readFileSync, writeFileSync } from "node:fs";
+const [portFile, overrideFile] = process.argv.slice(2);
 let refresh = 0;
 const classify = (auth) => auth.includes("personal-") ? "personal" : auth.includes("school-") ? "school" : auth.includes("business-") ? "business" : "unknown";
 const identity = {
@@ -161,6 +171,9 @@ const respond = (res, status, value) => {
   res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(body) });
   res.end(body);
 };
+const overrides = () => {
+  try { return JSON.parse(readFileSync(overrideFile, "utf8")); } catch { return {}; }
+};
 const usage = (name) => ({
   five_hour: { utilization: name === "school" ? 5 : 95, resets_at: new Date(Date.now() + 2 * 60 * 60_000).toISOString() },
   seven_day: { utilization: name === "school" ? 5 : 50, resets_at: new Date(Date.now() + (name === "school" ? 24 : 72) * 60 * 60_000).toISOString() },
@@ -169,11 +182,22 @@ const usage = (name) => ({
 const server = createServer((req, res) => {
   if (req.method === "GET" && req.url === "/v1/oauth/profile") {
     const name = classify(String(req.headers.authorization ?? ""));
-    return name === "unknown" ? respond(res, 401, { error: "unauthorized" }) : respond(res, 200, { account: identity[name] });
+    if (name === "unknown") return respond(res, 401, { error: "unauthorized" });
+    const override = overrides().profile?.[name];
+    return override
+      ? respond(res, override.status, override.body)
+      : respond(res, 200, {
+          account: identity[name],
+          organization: { subscription_status: "active", organization_type: "claude_max" },
+        });
   }
   if (req.method === "GET" && req.url === "/api/oauth/usage") {
     const name = classify(String(req.headers.authorization ?? ""));
-    return name === "unknown" ? respond(res, 401, { error: "unauthorized" }) : respond(res, 200, usage(name));
+    if (name === "unknown") return respond(res, 401, { error: "unauthorized" });
+    const override = overrides().usage?.[name];
+    return override
+      ? respond(res, override.status, override.body)
+      : respond(res, 200, usage(name));
   }
   if (req.method === "POST" && req.url === "/v1/oauth/token") {
     let raw = "";
@@ -194,7 +218,8 @@ const server = createServer((req, res) => {
 server.listen(0, "127.0.0.1", () => writeFileSync(portFile, `${server.address().port}\n`));
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 MOCK
-node "$ROOT/mock-server.mjs" "$ROOT/http-port" > "$ROOT/http.log" 2>&1 &
+: > "$ROOT/usage-override.json"
+node "$ROOT/mock-server.mjs" "$ROOT/http-port" "$ROOT/usage-override.json" > "$ROOT/http.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 100); do [[ -s "$ROOT/http-port" ]] && break; sleep 0.05; done
 [[ -s "$ROOT/http-port" ]] || fail "mock server did not bind"
@@ -275,6 +300,7 @@ export_fixture_env() {
   export FLYWHEEL_CLAUDE_JSON_LOCK="$fixture/home/.claude.json.lock"
   export FLYWHEEL_LEAD_ALERT_BIN="$ROOT/bin/lead-alert"
   export FLYWHEEL_NOTIFY_CHANNEL="777777777777777777"
+  export FLYWHEEL_PROJECTS='[{"projectName":"flywheel","projectRoot":"/tmp/flywheel","leads":[{"agentId":"flywheel-eng-lead","summaryRole":"producer","chatChannel":"666666666666666666","match":{"labels":["Engineering"]},"alertChannel":"888888888888888888"}]}]'
   export FLYWHEEL_FOUNDER_TZ="America/Los_Angeles"
   export FAKE_SECURITY_STATE="$fixture/keychain.json"
   export FAKE_SECURITY_FAIL_NEXT_READ_FILE="$fixture/fail-next-security-read"
@@ -319,8 +345,8 @@ write_evidence() {
   [[ -f "$audit" ]] || : > "$audit"
   jq -Rsc --argjson rc "$rc" \
     --slurpfile alerts <(jq -s '.' "$alerts" 2>/dev/null || printf '[]') \
-    --slurpfile events <(jq -Rsc '[split("\n")[] | fromjson? | select(.event == "quota_poll" or .event == "account_switch_failed" or .event == "account_switch_reconcile") | {event,outcome,trigger,reasonCode,exitCode,childStarted,detail,from,to,ok}]' "$daemon") \
-    '{rc:$rc,auditLines:[split("\n")[] | fromjson? | {cmd,phase,exitCode,probeSummary}],events:$events[0],alertBodies:[$alerts[0][]?.body]}' \
+    --slurpfile events <(jq -Rsc '[split("\n")[] | fromjson? | select(.event == "quota_poll" or .event == "quota_switch_decision" or .event == "account_switch_failed" or .event == "account_switch_reconcile") | {event,outcome,trigger,liveness,reasonCode,exitCode,childStarted,detail,from,to,ok}]' "$daemon") \
+    '{rc:$rc,auditLines:[split("\n")[] | fromjson? | {cmd,phase,exitCode,probeSummary}],events:$events[0],alerts:$alerts[0],alertBodies:[$alerts[0][]?.body]}' \
     "$audit" > "$output"
 }
 
@@ -380,6 +406,55 @@ run_daemon() {
   fi
   [[ ! -s "$fixture/claude.log" ]] || fail "$scenario $revision invoked Claude"
   write_evidence "$scenario" "$revision" daemon "$fixture" 0
+}
+
+run_dead_account() {
+  local fixture started_ms finished_ms elapsed_ms poll_ms outcome
+  fixture="$(make_fixture "dead-account-current-daemon")"
+  export_fixture_env "$fixture" "$CURRENT_TREE" "$CURRENT_TREE"
+  jq -n '{
+    usage: {personal: {
+      status: 403,
+      body: {type:"error",error:{type:"permission_error",details:{error_code:"oauth_not_allowed_for_organization"}}}
+    }},
+    profile: {personal: {
+      status: 200,
+      body: {
+        account:{uuid:"uuid-personal",email:"personal@example.test"},
+        organization:{subscription_status:"canceled",organization_type:"claude_max"}
+      }
+    }}
+  }' > "$ROOT/usage-override.json.next"
+  mv "$ROOT/usage-override.json.next" "$ROOT/usage-override.json"
+
+  started_ms="$(node -p 'Date.now()')"
+  start_daemon "$CURRENT_TREE" "$fixture"
+  wait_for_log "$fixture/daemon.log" '"event":"quota_poll"' || fail "dead-account current daemon did not complete a quota poll"
+  finished_ms="$(node -p 'Date.now()')"
+  stop_daemon
+
+  outcome="$(jq -Rr 'fromjson? | select(.event == "quota_poll") | .outcome' "$fixture/daemon.log" | tail -1)"
+  [[ "$outcome" == "switched" ]] || fail "dead-account current daemon outcome was $outcome"
+  jq -Re 'fromjson? | select(.event == "quota_poll" and .liveness == "dead")' "$fixture/daemon.log" >/dev/null \
+    || fail "dead-account current daemon did not classify liveness=dead"
+  jq -Re 'fromjson? | select(.event == "quota_switch_decision" and .trigger.kind == "account_dead" and .trigger.profile == "personal")' "$fixture/daemon.log" >/dev/null \
+    || fail "dead-account current daemon did not log the account_dead switch decision"
+  [[ "$(cat "$fixture/pool/.active")" == "school" ]] || fail "dead-account current daemon did not switch to school"
+  jq -e '.accounts[] | select(.name == "personal") | .unavailable.reason == "usage_forbidden:oauth_not_allowed_for_organization" and .unavailable.markedBy == "quota-monitor"' \
+    "$fixture/home/.flywheel/claude-accounts.json" >/dev/null \
+    || fail "dead-account current daemon did not quarantine personal"
+  jq -e '.lastSwitch.triggerKind == "account_dead" and .lastSwitch.from == "personal" and .lastSwitch.to == "school"' \
+    "$fixture/home/.flywheel/claude-accounts.json" >/dev/null \
+    || fail "dead-account current daemon did not persist account_dead lastSwitch"
+  jq -e 'select(.kind == "account_dead" and .lead == "quota-monitor" and .project == "flywheel" and .severity == "severe" and .channel == "888888888888888888" and (.body | startswith("account_dead:personal")))' \
+    "$fixture/alerts.log" >/dev/null \
+    || fail "dead-account alert missed its engineering channel, system identity, or reason"
+  [[ ! -s "$fixture/claude.log" ]] || fail "dead-account current daemon invoked Claude"
+
+  elapsed_ms=$((finished_ms - started_ms))
+  poll_ms=$(( $(jq -r '.basePollMinutes' "$fixture/home/.flywheel/quota-monitor.json") * 60000 ))
+  (( elapsed_ms <= poll_ms )) || fail "dead-account switch took ${elapsed_ms}ms (> one ${poll_ms}ms poll cycle)"
+  write_evidence dead-account current daemon "$fixture" 0
 }
 
 empty_state() {
@@ -485,11 +560,26 @@ if [[ "$SCENARIO" == "old-daemon" || "$SCENARIO" == "all" ]]; then
   [[ -z "$BASELINE_TREE" ]] || run_old_daemon_entry baseline-script "$BASELINE_TREE"
   run_old_daemon_entry current-script "$CURRENT_TREE"
 fi
+if [[ "$SCENARIO" == "dead-account" || "$SCENARIO" == "all" ]]; then
+  run_dead_account
+fi
 
 baseline_token="not run (--baseline omitted)"
 baseline_manual_drift="not run (--baseline omitted)"
 baseline_drift="not run (--baseline omitted)"
 baseline_old="not run (--baseline omitted)"
+if [[ -f "$EVIDENCE_DIR/token-rotation-baseline-daemon.json" ]]; then
+  baseline_token="switched; one audit entry/exit; rotated live credential captured"
+fi
+if [[ -f "$EVIDENCE_DIR/true-drift-baseline-manual.json" ]]; then
+  baseline_manual_drift="strict reconcile then switched"
+fi
+if [[ -f "$EVIDENCE_DIR/true-drift-baseline-daemon.json" ]]; then
+  baseline_drift="switch_failed; no daemon detail"
+fi
+if [[ -f "$EVIDENCE_DIR/old-daemon-baseline-script-daemon.json" ]]; then
+  baseline_old="baseline script: switch_failed, zero audit/exit evidence"
+fi
 if [[ -n "$BASELINE_REF" ]]; then
   baseline_token="switched; one audit entry/exit; rotated live credential captured"
   baseline_manual_drift="strict reconcile then switched"
@@ -509,8 +599,9 @@ Issue: FLY-2271 (https://linear.app/geoforge3d/issue/FLY-2271/切号器daemon-�
 | true identity drift, manual | $baseline_manual_drift | strict reconcile then switched |
 | true identity drift, daemon | $baseline_drift | strict drift recovery personal→business, then switched |
 | old daemon + tested script | $baseline_old | current script: audited exit 48; restart helper restarted; current daemon switched |
+| dead account, daemon | n/a | 403 terminal classification; switched within one poll; dead profile quarantined; engineering alert routed |
 
-Generated by \`bash scripts/qa-fly-2271-switch-evidence-e2e.sh $SCENARIO${BASELINE_REF:+ --baseline $BASELINE_REF}\`. JSON files contain only redacted audit fields, structured events, and alert bodies.
+Evidence files are scenario-scoped; latest command: \`bash scripts/qa-fly-2271-switch-evidence-e2e.sh $SCENARIO${BASELINE_REF:+ --baseline $BASELINE_REF}\`. JSON files contain only redacted audit fields, structured events, and alert bodies.
 EOF
 
 if grep -R -F -e personal-original -e school-original -e business-original -e personal-refresh -e school-refresh -e business-refresh -e personal-rotated "$EVIDENCE_DIR" >/dev/null; then

@@ -1,0 +1,21 @@
+sequenceDiagram
+  autonumber
+  participant R as 评审子进程 claude -p
+  participant B as Bridge
+  participant D as 切号守护 quota-monitor
+  participant A as Anthropic API
+  participant S as 账号池 claude-accounts.json
+  participant C as 在跑的 Claude 体
+  R-->>B: 退出码≠0, failure_raw 含 403 disabled
+  B->>B: 分类 account_switch, review job 停靠
+  B->>D: 写见证文件 + SIGUSR1 叫醒
+  D->>A: GET /api/oauth/usage(只读)
+  A-->>D: 403 permission_error
+  D->>A: GET /api/oauth/profile(只读)
+  A-->>D: subscription_status=canceled
+  D->>S: 标记 unavailable + 切到下一号(generation+1, lastSwitch)
+  D-->>B: Discord 告警 account_dead:personal1 → #flywheel-engineer
+  B->>S: 每 60s 读 generation, 发现前进
+  B->>B: 停靠的 review job 同 request-id 重入队
+  B->>C: mailbox 指令「凭据已切, 重跑上一轮」
+  C->>A: 下一 turn 用新钥匙成功

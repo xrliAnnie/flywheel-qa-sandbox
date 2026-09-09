@@ -67,8 +67,30 @@ describe("GatePoller lead reconcile rider", () => {
 		);
 		expect(plugin.match(/onLeadReconcileTick:/g)).toHaveLength(1);
 		expect(plugin.match(/onRunnerQuotaScanTick:/g)).toHaveLength(1);
+		expect(plugin.match(/onAccountSwitchTick:/g)).toHaveLength(1);
 		expect(plugin).not.toContain("onPollComplete:");
 		expect(plugin).not.toContain("RunnerIdleWatchdog");
+	});
+
+	it("boots account-switch recovery after review redrive and before arming the poll rider", () => {
+		const plugin = readFileSync(
+			new URL("../plugin.ts", import.meta.url),
+			"utf8",
+		);
+		const legacyRedrive = plugin.indexOf(
+			"reviewCoordinatorHolder.current.redriveOnBoot()",
+		);
+		const replayPending = plugin.indexOf(
+			"await accountSwitchConsumer.replayPending()",
+		);
+		const firstTick = plugin.indexOf("await accountSwitchConsumer.tick()");
+		const armHolder = plugin.indexOf(
+			"accountSwitchPassHolder.current = () => accountSwitchConsumer.tick()",
+		);
+		expect(legacyRedrive).toBeGreaterThan(-1);
+		expect(replayPending).toBeGreaterThan(legacyRedrive);
+		expect(firstTick).toBeGreaterThan(replayPending);
+		expect(armHolder).toBeGreaterThan(firstTick);
 	});
 });
 
@@ -189,6 +211,33 @@ describe("FLY-1560 late-armed riders do not burn the cadence anchor", () => {
 		expect(onFlagScanTick).toHaveBeenCalledTimes(1);
 		await poll(poller);
 		expect(onFlagScanTick).toHaveBeenCalledTimes(2);
+	});
+
+	it("anchors the account-switch rider on the first ARMED tick and keeps one pass in flight", async () => {
+		let armed = false;
+		let release: (() => void) | undefined;
+		const onAccountSwitchTick = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+		const poller = makePoller({
+			onAccountSwitchTick,
+			onAccountSwitchReady: () => armed,
+		});
+
+		await poll(poller);
+		expect(onAccountSwitchTick).not.toHaveBeenCalled();
+		armed = true;
+		await poll(poller);
+		await poll(poller);
+		expect(onAccountSwitchTick).toHaveBeenCalledTimes(1);
+
+		release?.();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await poll(poller);
+		expect(onAccountSwitchTick).toHaveBeenCalledTimes(2);
 	});
 
 	it("keeps byte-compatible tick-1 behavior when no readiness probe is given", async () => {

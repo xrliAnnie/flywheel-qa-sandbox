@@ -240,6 +240,9 @@ describe("account-switch-repair · executeSwitch", () => {
 		const r = await repair(switchImpl).executeSwitch(pending());
 		expect(r.outcome).toBe("attempted");
 		expect(r.detail).toContain("personal→school");
+		expect(r.detail).toContain(
+			"切号成功那一刻 Bridge 会向在跑的 Claude 体投复工指令",
+		);
 		expect(readPending(pendingPath)).toEqual([]); // resolved
 	});
 

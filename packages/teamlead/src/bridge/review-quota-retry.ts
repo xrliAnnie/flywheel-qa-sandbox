@@ -2,6 +2,9 @@ const FAILURE_RAW_MAX = 4_000;
 const MAX_RESET_HORIZON_MS = 8 * 24 * 60 * 60_000;
 
 const API_RATE_LIMIT_RE = /"api_error_status"\s*:\s*429(?:\D|$)/;
+const ACCOUNT_DEAD_STATUS_RE = /"api_error_status"\s*:\s*403(?:\D|$)/;
+const ACCOUNT_DEAD_RESULT_RE =
+	/"result"\s*:\s*"[^"\r\n]*(?:disabled Claude subscription access|oauth_not_allowed_for_organization|subscription access for Claude Code)[^"\r\n]*"/i;
 const QUOTA_RESULT_RE =
 	/You've hit your (session|weekly) limit\s*·\s*resets\s+(?:(?<month>[A-Za-z]{3})\s+(?<day>\d{1,2})\s+at\s+)?(?<hour>\d{1,2})(?::(?<minute>\d{2}))?(?<meridiem>am|pm)\s+\((?<timezone>[A-Za-z0-9_+.-]+(?:\/[A-Za-z0-9_+.-]+)+)\)(?:\s*·\s*progress saved)?/i;
 
@@ -174,4 +177,24 @@ export function parseReviewQuotaResetAt(
 		return null;
 	}
 	return resetAt;
+}
+
+export type ReviewFailureClassification =
+	| { kind: "quota_reset"; resetAt: number }
+	| { kind: "account_switch" };
+
+export function classifyReviewFailure(
+	raw: string | undefined,
+	nowMs: number,
+): ReviewFailureClassification | null {
+	if (!raw || !Number.isFinite(nowMs)) return null;
+	const evidence = raw.slice(-FAILURE_RAW_MAX);
+	if (
+		ACCOUNT_DEAD_STATUS_RE.test(evidence) &&
+		ACCOUNT_DEAD_RESULT_RE.test(evidence)
+	) {
+		return { kind: "account_switch" };
+	}
+	const resetAt = parseReviewQuotaResetAt(evidence, nowMs);
+	return resetAt === null ? null : { kind: "quota_reset", resetAt };
 }

@@ -145,6 +145,17 @@ async function makeHarness(
 		deriveRepoIdentity?: (path: string) => Promise<string>;
 		quotaAutoRetryEnabled?: () => boolean;
 		openCommDb?: (comm: FakeCommDb) => ReviewCommDb;
+		now?: () => number;
+		writeQuotaWitness?: (witness: {
+			version: 1;
+			kind: "account_disabled";
+			observedAt: number;
+			source: "review_job";
+			executionId: string;
+			evidenceDigest: string;
+		}) => void;
+		wakeQuotaDaemon?: () => unknown;
+		setTimer?: (callback: () => void, delayMs: number) => unknown;
 	} = {},
 ): Promise<Harness> {
 	const store = await StateStore.create(":memory:");
@@ -206,6 +217,14 @@ async function makeHarness(
 			return { ok: harnessOpts.postReviewRulingOk !== false };
 		},
 		quotaAutoRetryEnabled: harnessOpts.quotaAutoRetryEnabled ?? (() => true),
+		...(harnessOpts.now && { now: harnessOpts.now }),
+		...(harnessOpts.writeQuotaWitness && {
+			writeQuotaWitness: harnessOpts.writeQuotaWitness,
+		}),
+		...(harnessOpts.wakeQuotaDaemon && {
+			wakeQuotaDaemon: harnessOpts.wakeQuotaDaemon,
+		}),
+		...(harnessOpts.setTimer && { setTimer: harnessOpts.setTimer }),
 		logger: () => {},
 	});
 	return {
@@ -1664,6 +1683,253 @@ describe("ReviewRequestCoordinator — job execution", () => {
 			message:
 				"Review unknown-gate (design R1) failed: timeout. The bound review gate could not be verified. Inspect CommDB and the gate before choosing a recovery path.",
 		});
+	});
+
+	it("parks a disabled-account 403, writes a witness, and wakes the quota daemon", async () => {
+		const now = Date.parse("2026-09-08T21:49:00.000Z");
+		const writeQuotaWitness = vi.fn();
+		const wakeQuotaDaemon = vi.fn(() => "signaled");
+		const setTimer = vi.fn();
+		const h = await makeHarness({
+			now: () => now,
+			writeQuotaWitness,
+			wakeQuotaDaemon,
+			setTimer,
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+		h.outcomes.push({
+			kind: "failed",
+			reason: "nonzero_exit",
+			detail: "claude exited 1",
+			exitCode: 1,
+			timedOut: false,
+			raw: JSON.stringify({
+				api_error_status: 403,
+				result:
+					"Your organization has disabled Claude subscription access for Claude Code",
+			}),
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "account-dead-r1",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+
+		expect(h.store.getCodexReviewJob("account-dead-r1")).toMatchObject({
+			status: "failed",
+			retry_trigger: "account_switch",
+			retry_parked_at_ms: now,
+			auto_retry_count: 0,
+			failure_attempt_count: 1,
+		});
+		expect(
+			h.store.getCodexReviewJob("account-dead-r1")?.retry_at,
+		).toBeUndefined();
+		expect(writeQuotaWitness).toHaveBeenCalledWith({
+			version: 1,
+			kind: "account_disabled",
+			observedAt: now,
+			source: "review_job",
+			executionId: "e1",
+			evidenceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+		});
+		expect(wakeQuotaDaemon).toHaveBeenCalledOnce();
+		expect(h.alerts[0]).toContain("armed for the next Claude account switch");
+		expect(setTimer).not.toHaveBeenCalled();
+	});
+
+	it("redrives an account-switch parked request once on the same request id", async () => {
+		const now = Date.parse("2026-09-08T21:49:00.000Z");
+		const h = await makeHarness({ now: () => now });
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+		h.store.insertCodexReviewJob({
+			requestId: "parked-review",
+			executionId: "e1",
+			issueId: "FLY-2452",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		h.store.recordCodexReviewJobFailure({
+			requestId: "parked-review",
+			reason: "nonzero_exit",
+			retryTrigger: "account_switch",
+			parkedAtMs: now,
+		});
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+
+		await expect(
+			h.coordinator.redriveAfterAccountSwitch({
+				generation: 2,
+				atMs: now + 1,
+			}),
+		).resolves.toEqual({ requeued: 1, retired: 0, deferred: false });
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		expect(h.store.getCodexReviewJob("parked-review")?.status).toBe("done");
+
+		await expect(
+			h.coordinator.redriveAfterAccountSwitch({
+				generation: 2,
+				atMs: now + 1,
+			}),
+		).resolves.toEqual({ requeued: 0, retired: 0, deferred: false });
+	});
+
+	it("retires parked work whose gate expired before the account switch", async () => {
+		const now = Date.parse("2026-09-08T21:49:00.000Z");
+		const h = await makeHarness({ now: () => now });
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			expires_at: new Date(now - 1).toISOString(),
+		});
+		h.store.insertCodexReviewJob({
+			requestId: "expired-parked-review",
+			executionId: "e1",
+			issueId: "FLY-2452",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		h.store.recordCodexReviewJobFailure({
+			requestId: "expired-parked-review",
+			reason: "nonzero_exit",
+			retryTrigger: "account_switch",
+			parkedAtMs: now - 1,
+		});
+
+		await expect(
+			h.coordinator.redriveAfterAccountSwitch({ generation: 2, atMs: now }),
+		).resolves.toEqual({ requeued: 0, retired: 1, deferred: false });
+		expect(h.store.getCodexReviewJob("expired-parked-review")).toMatchObject({
+			status: "failed",
+			failure_reason: "gate_expired",
+		});
+		expect(
+			h.store.getCodexReviewJob("expired-parked-review")?.retry_trigger,
+		).toBeUndefined();
+	});
+
+	it("leaves account-switch parked work pending when the retry kill switch is off", async () => {
+		const now = Date.parse("2026-09-08T21:49:00.000Z");
+		const h = await makeHarness({
+			now: () => now,
+			quotaAutoRetryEnabled: () => false,
+		});
+		h.store.insertCodexReviewJob({
+			requestId: "deferred-parked-review",
+			executionId: "e1",
+			issueId: "FLY-2452",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		h.store.recordCodexReviewJobFailure({
+			requestId: "deferred-parked-review",
+			reason: "nonzero_exit",
+			retryTrigger: "account_switch",
+			parkedAtMs: now - 1,
+		});
+
+		await expect(
+			h.coordinator.redriveAfterAccountSwitch({ generation: 2, atMs: now }),
+		).resolves.toEqual({ requeued: 0, retired: 0, deferred: true });
+		expect(h.store.getCodexReviewJob("deferred-parked-review")).toMatchObject({
+			status: "failed",
+			retry_trigger: "account_switch",
+		});
+		expect(h.invocations).toHaveLength(0);
+	});
+
+	it("redrives old parked rows while excluding rows at or after the switch instant", async () => {
+		const now = Date.parse("2026-09-08T21:49:00.000Z");
+		const h = await makeHarness({ now: () => now });
+		registerSession(h.store, "e1");
+		for (const [requestId, parkedAtMs] of [
+			["three-days-old", now - 3 * 24 * 60 * 60_000],
+			["equal-switch", now],
+			["after-switch", now + 1],
+		] as const) {
+			openGate(h.comm, `q-${requestId}`, "e1", "review_design");
+			h.store.insertCodexReviewJob({
+				requestId,
+				executionId: "e1",
+				issueId: "FLY-2452",
+				projectName: "proj",
+				reviewType: "design",
+				questionId: `q-${requestId}`,
+			});
+			h.store.recordCodexReviewJobFailure({
+				requestId,
+				reason: "nonzero_exit",
+				retryTrigger: "account_switch",
+				parkedAtMs,
+			});
+		}
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+
+		await expect(
+			h.coordinator.redriveAfterAccountSwitch({ generation: 2, atMs: now }),
+		).resolves.toEqual({ requeued: 1, retired: 0, deferred: false });
+		await settle();
+		expect(h.store.getCodexReviewJob("three-days-old")?.status).toBe("done");
+		expect(h.store.getCodexReviewJob("equal-switch")?.status).toBe("failed");
+		expect(h.store.getCodexReviewJob("after-switch")?.status).toBe("failed");
+	});
+
+	it("paginates 200 parked rows without skipping same-millisecond request ids", async () => {
+		const now = Date.parse("2026-09-08T21:49:00.000Z");
+		const h = await makeHarness({
+			now: () => now,
+			reviewRound: async () => ({
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				raw: "",
+			}),
+		});
+		registerSession(h.store, "e1");
+		for (let index = 199; index >= 0; index -= 1) {
+			const requestId = `paged-${String(index).padStart(3, "0")}`;
+			openGate(h.comm, `q-${requestId}`, "e1", "review_design");
+			h.store.insertCodexReviewJob({
+				requestId,
+				executionId: "e1",
+				issueId: "FLY-2452",
+				projectName: "proj",
+				reviewType: "design",
+				questionId: `q-${requestId}`,
+			});
+			h.store.recordCodexReviewJobFailure({
+				requestId,
+				reason: "nonzero_exit",
+				retryTrigger: "account_switch",
+				parkedAtMs: index < 50 ? now - 2 : now - 1,
+			});
+		}
+
+		await expect(
+			h.coordinator.redriveAfterAccountSwitch({ generation: 2, atMs: now }),
+		).resolves.toEqual({ requeued: 200, retired: 0, deferred: false });
+		h.coordinator.stop();
 	});
 
 	it("schedules an observed quota reset on the same durable request", async () => {

@@ -166,6 +166,7 @@ import {
 	createDiscordOps,
 } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
+import { createAccountSwitchConsumer } from "./account-switch-consumer.js";
 import { createAccountSwitchRouter } from "./account-switch-route.js";
 import { createActionRouter } from "./actions.js";
 import { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
@@ -369,6 +370,7 @@ import {
 	enrichFlagViewsWithStore,
 	type FlagStoreRuntime,
 	initializeFlagStore,
+	storeAccountSwitchWakeSweepEnabled,
 	storeAlertSystemEnabled,
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
@@ -4896,6 +4898,9 @@ export async function startBridge(
 		current: (() => Promise<void>) | null;
 	} = { current: null };
 	const runnerQuotaScanPassHolder: {
+		current: (() => Promise<void>) | null;
+	} = { current: null };
+	const accountSwitchPassHolder: {
 		current: (() => Promise<void>) | null;
 	} = { current: null };
 	const serverLossHolder: { current: ServerLossCoordinator | null } = {
@@ -10676,6 +10681,8 @@ export async function startBridge(
 		onLeadReconcileReady: () => leadReconcilePassHolder.current !== null,
 		onRunnerQuotaScanTick: () => runnerQuotaScanPassHolder.current?.(),
 		onRunnerQuotaScanReady: () => runnerQuotaScanPassHolder.current !== null,
+		onAccountSwitchTick: () => accountSwitchPassHolder.current?.(),
+		onAccountSwitchReady: () => accountSwitchPassHolder.current !== null,
 		onFlagScanTick: async () => {
 			await flagRetirementScanner?.scanIfDue();
 		},
@@ -11197,6 +11204,16 @@ export async function startBridge(
 				`[review-coordinator] boot redrive: ${redriven} review job(s) re-enqueued`,
 			);
 		}
+		const accountSwitchConsumer = createAccountSwitchConsumer({
+			store,
+			commDbPathFor: commDbPathForProject,
+			coordinator: reviewCoordinatorHolder.current,
+			sweepEnabled: () => storeAccountSwitchWakeSweepEnabled(flagStore),
+			log: (message) => console.warn(message),
+		});
+		await accountSwitchConsumer.replayPending();
+		await accountSwitchConsumer.tick();
+		accountSwitchPassHolder.current = () => accountSwitchConsumer.tick();
 	}
 
 	const codexReviewEffects = new CodexReviewEffects({

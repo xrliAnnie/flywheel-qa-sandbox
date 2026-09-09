@@ -12,6 +12,18 @@ import {
 import type { RunnerResult } from "../bridge/approval-signal/subscription-claude-classifier-runner.js";
 
 describe("classifyDetection — Layer 1 fixed pattern", () => {
+	it("account_disabled: terminal subscription and organization variants", async () => {
+		for (const text of [
+			"Your organization has disabled Claude subscription access for Claude Code",
+			'{"error":"oauth_not_allowed_for_organization"}',
+		]) {
+			const result = await classifyDetection(text);
+			expect(result.category).toBe("account_disabled");
+			expect(result.layer).toBe("pattern");
+			expect(result.confidence).toBe("high");
+		}
+	});
+
 	it("login_expired: classic + runner kicked-out variants", async () => {
 		for (const t of [
 			"Your login has expired, please re-authenticate",

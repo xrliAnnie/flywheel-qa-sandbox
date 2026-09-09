@@ -1,0 +1,51 @@
+classDiagram
+  class AccountEntry {
+    name
+    quotaExhaustedUntil
+    switchCooldownUntil
+    authExpired
+    +unavailable: reason / markedAt / evidence / markedBy
+  }
+  class AccountStore {
+    generation
+    activeAccount
+    accounts[]
+    pendingSwitchNotifications: account_switched | +account_dead
+    +lastSwitch: generation / triggerKind / from / to / at
+  }
+  class QuotaMonitorState {
+    backoffUntilMs
+    errorStreak
+    +activeUnreadableStreak
+    +deadAccountEpisode
+    +witnessCursor
+  }
+  class WitnessFile {
+    kind: account_disabled
+    observedAt
+    source: review_job | runner_pane
+    evidenceDigest
+  }
+  class CodexReviewJob {
+    status: failed
+    retry_at
+    auto_retry_count
+    +retry_trigger: reset_at | account_switch
+    +retry_parked_at_ms
+  }
+  class AccountSwitchActionReceipt {
+    switch_generation + action PK
+    status: pending | completed
+    switch_json 切号快照
+    outcome_json
+  }
+  class SessionEvents {
+    event_id: account-switch-wake:gN:execId
+    event_type: account_switch_wake
+  }
+  AccountStore "1" *-- "n" AccountEntry
+  QuotaMonitorState ..> WitnessFile : 每 tick 读并推进 cursor
+  QuotaMonitorState ..> AccountStore : CAS generation
+  AccountSwitchActionReceipt ..> AccountStore : 按 lastSwitch.generation 每动作一次
+  AccountSwitchActionReceipt ..> CodexReviewJob : 重入队
+  AccountSwitchActionReceipt ..> SessionEvents : 复工审计

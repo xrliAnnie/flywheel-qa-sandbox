@@ -229,7 +229,7 @@ export function makeAccountSwitchRepair(
 					return {
 						outcome: "attempted",
 						action: "account_switch",
-						detail: `🔧 已切机器 Claude 账号 ${result.from}→${result.to}（${scopeLabel(pending.scope)} 到, reset ${pending.resetAt}）。新 spawn 的 runner/lead 用新账号;当前 session 等 reset 或需 founder 重启自愈。`,
+						detail: `🔧 已切机器 Claude 账号 ${result.from}→${result.to}（${scopeLabel(pending.scope)} 到, reset ${pending.resetAt}）。切号成功那一刻 Bridge 会向在跑的 Claude 体投复工指令。`,
 					};
 				case "noop_already_switched":
 					return {

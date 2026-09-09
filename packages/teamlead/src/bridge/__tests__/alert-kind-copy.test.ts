@@ -10,6 +10,12 @@ import {
 } from "../alert-kind-copy.js";
 
 describe("alert kind copy", () => {
+	it("gives a dead Claude account actionable operator copy", () => {
+		expect(titleFor("account_dead")).toBe("Claude 账号已死,已拉黑");
+		expect(bodyFor("account_dead", "ignored")).toContain("已标记不可用");
+		expect(bodyFor("account_dead", "ignored")).toContain("需手工解除");
+	});
+
 	it("keeps run id, evidence stamp, and the hold-list gate on every FLY-2278 delivery alert", () => {
 		const runId = "run-copy-contract";
 		const evidenceAt = "2026-09-03T17:00:00.000Z";

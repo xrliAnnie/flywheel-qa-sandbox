@@ -57,6 +57,11 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 		expect(TICKET_KINDS.has("ship_attempt_failed")).toBe(true);
 	});
 
+	it("routes a dead Claude account to an actionable ticket", () => {
+		expect(TICKET_KINDS.has("account_dead")).toBe(true);
+		expect(INFORMATIONAL_KINDS.has("account_dead")).toBe(false);
+	});
+
 	it("routes resident Codex Lead business-liveness incidents to tickets", () => {
 		expect(
 			TICKET_KINDS.has(

@@ -195,6 +195,37 @@ describe("verifyAndRankCandidates", () => {
 		);
 	});
 
+	it("reports unavailable accounts as auth exclusions without probing them", async () => {
+		const h = harness();
+		const business = h.snapshot.store.accounts.find(
+			(account) => account.name === "business",
+		);
+		expect(business).toBeDefined();
+		if (!business) return;
+		business.unavailable = {
+			reason: "profile_canceled",
+			markedAt: new Date(NOW).toISOString(),
+			evidence: "profile_subscription",
+			markedBy: "quota-monitor",
+		};
+		const fetchUsage = vi.fn(h.deps.fetchUsage);
+		h.deps.fetchUsage = fetchUsage;
+
+		const result = await verifyAndRankCandidates(h.deps, h.snapshot, {
+			onlyNames: ["business"],
+			headroomPolicy: { kind: "explicit_target" },
+		});
+
+		expect(result.ranked).toEqual([]);
+		expect(result.panorama).toContainEqual({
+			name: "business",
+			status: "unavailable:profile_canceled",
+			excludedBy: "auth",
+		});
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+		expect(fetchUsage).not.toHaveBeenCalled();
+	});
+
 	it("returns a stable token-safe reason for every account when the pool is fully unusable", async () => {
 		const h = harness();
 		h.snapshot.poolAccounts = ["personal1", "school", "business", "shopping"];

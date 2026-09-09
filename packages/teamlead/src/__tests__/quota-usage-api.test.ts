@@ -212,6 +212,68 @@ describe("fetchAccountUsage", () => {
 		expect(JSON.stringify(result)).not.toContain(TOKEN);
 	});
 
+	it("classifies the observed organization-disabled 403 without returning response prose", async () => {
+		const fetchFn = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						type: "error",
+						error: {
+							type: "permission_error",
+							message: `organization disabled ${TOKEN}`,
+							details: {
+								error_code: "oauth_not_allowed_for_organization",
+							},
+						},
+					}),
+					{ status: 403 },
+				),
+		);
+
+		const result = await fetchAccountUsage(TOKEN, {
+			fetchFn: fetchFn as typeof fetch,
+		});
+
+		expect(result).toEqual({
+			error: "forbidden",
+			errorCode: "oauth_not_allowed_for_organization",
+		});
+		expect(JSON.stringify(result)).not.toContain(TOKEN);
+	});
+
+	it.each([
+		["non-JSON body", "not-json"],
+		[
+			"oversized error code",
+			JSON.stringify({
+				type: "error",
+				error: {
+					type: "permission_error",
+					details: { error_code: "a".repeat(65) },
+				},
+			}),
+		],
+		[
+			"non-identifier error code",
+			JSON.stringify({
+				type: "error",
+				error: {
+					type: "permission_error",
+					details: { error_code: "oauth-not-allowed" },
+				},
+			}),
+		],
+	])(
+		"classifies a 403 with %s but discards unsafe detail",
+		async (_label, body) => {
+			const fetchFn = vi.fn(async () => new Response(body, { status: 403 }));
+
+			await expect(
+				fetchAccountUsage(TOKEN, { fetchFn: fetchFn as typeof fetch }),
+			).resolves.toEqual({ error: "forbidden", errorCode: null });
+		},
+	);
+
 	it("parses Retry-After seconds and clamps the backoff to 60s..30min", async () => {
 		const tooShort = vi.fn(
 			async () =>

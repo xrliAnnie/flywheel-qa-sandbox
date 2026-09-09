@@ -256,6 +256,12 @@ export function storeReviewQuotaAutoRetryEnabled(
 	return readBoolean(runtime, "review_quota_auto_retry");
 }
 
+export function storeAccountSwitchWakeSweepEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "account_switch_wake_sweep");
+}
+
 export function storeFlagRetirementScanEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

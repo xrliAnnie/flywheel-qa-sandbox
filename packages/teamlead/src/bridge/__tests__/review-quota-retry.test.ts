@@ -1,5 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { parseReviewQuotaResetAt } from "../review-quota-retry.js";
+import {
+	classifyReviewFailure,
+	parseReviewQuotaResetAt,
+} from "../review-quota-retry.js";
+
+describe("classifyReviewFailure", () => {
+	it("classifies the observed disabled-subscription 403 for account-switch recovery", () => {
+		const raw = JSON.stringify({
+			api_error_status: 403,
+			result:
+				"Your organization has disabled Claude subscription access for Claude Code",
+			type: "result",
+		});
+
+		expect(classifyReviewFailure(raw, Date.now())).toEqual({
+			kind: "account_switch",
+		});
+	});
+
+	it("retains quota-reset classification for the observed 429 envelope", () => {
+		const now = Date.parse("2026-08-30T18:00:00.000Z");
+		const raw = JSON.stringify({
+			api_error_status: 429,
+			result:
+				"You've hit your session limit · resets 5:10pm (America/Los_Angeles)",
+		});
+
+		expect(classifyReviewFailure(raw, now)).toEqual({
+			kind: "quota_reset",
+			resetAt: Date.parse("2026-08-31T00:10:00.000Z"),
+		});
+	});
+
+	it.each([
+		[
+			"unrelated 403",
+			JSON.stringify({ api_error_status: 403, result: "permission denied" }),
+		],
+		[
+			"prefix-only status",
+			JSON.stringify({
+				api_error_status: 4030,
+				result:
+					"Your organization has disabled Claude subscription access for Claude Code",
+			}),
+		],
+	] as const)("rejects %s", (_label, raw) => {
+		expect(classifyReviewFailure(raw, Date.now())).toBeNull();
+	});
+});
 
 describe("parseReviewQuotaResetAt", () => {
 	it("parses the observed headless-Claude session-limit envelope", () => {

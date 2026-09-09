@@ -16,6 +16,8 @@
 #                       non-zero exit, .active UNCHANGED (the red line)
 #   S3 argv hygiene   — no credential ever appears in any security(1) argv
 #   S4 prod untouched — production files byte-identical before/after
+#   S8 unavailable    — a quarantined target is rejected before profile mutation
+#   S9 explicit clear — only unavailable-clear restores target eligibility
 set -uo pipefail
 
 # Codex R1 HIGH-2 + R2 HIGH: neutralize any INHERITED env that would weaken the
@@ -29,14 +31,23 @@ set -uo pipefail
 unset FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED FLYWHEEL_PROFILE_IDENTITY_BYPASS \
       FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL
 
-PROFILE_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/packages/claude-runner/bin/flywheel-claude-profile"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE_BIN="$REPO_ROOT/packages/claude-runner/bin/flywheel-claude-profile"
+QUOTA_GUARD_BIN="$REPO_ROOT/packages/teamlead/bin/flywheel-claude-quota-guard"
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/qa-fly-1182-drill.XXXXXX")"
+# Normalize TMPDIR's common trailing slash and /var symlink before the mkdir
+# lease registry keys the lock path; the proof lookup is exact-path by design.
+ROOT="$(cd "$ROOT" && pwd -P)"
 PASS=0; FAIL=0
+USAGE_SERVER_PID=""
 ok()   { echo "✅ $1"; PASS=$((PASS+1)); }
 bad()  { echo "❌ $1"; FAIL=$((FAIL+1)); }
 note() { echo "   · $1"; }
 
-cleanup() { rm -rf "$ROOT"; }
+cleanup() {
+  [[ -n "$USAGE_SERVER_PID" ]] && kill "$USAGE_SERVER_PID" 2>/dev/null || true
+  rm -rf "$ROOT"
+}
 trap cleanup EXIT
 
 # ---------------------------------------------------------------- isolation
@@ -78,8 +89,8 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$FRESH"; chmod +x "$FRESH"
 # whitespace (the `security -i` single-token rule), so the drill must feed the
 # real shape — a synthetic non-JSON token is rejected before Keychain is ever
 # touched, which would make every downstream assertion vacuously green.
-SECRET_ALPHA='{"claudeAiOauth":{"accessToken":"ALPHA-b3f1a9d2c7e4","refreshToken":"ALPHA-RT-1"}}'
-SECRET_BRAVO='{"claudeAiOauth":{"accessToken":"BRAVO-9d4c1e7a2f8b","refreshToken":"BRAVO-RT-1"}}'
+SECRET_ALPHA='{"claudeAiOauth":{"accessToken":"ALPHA-b3f1a9d2c7e4","refreshToken":"ALPHA-RT-1","expiresAt":4102444800000}}'
+SECRET_BRAVO='{"claudeAiOauth":{"accessToken":"BRAVO-9d4c1e7a2f8b","refreshToken":"BRAVO-RT-1","expiresAt":4102444800000}}'
 # The distinctive substrings the argv-leak check greps for.
 MARK_ALPHA="ALPHA-b3f1a9d2c7e4"
 MARK_BRAVO="BRAVO-9d4c1e7a2f8b"
@@ -136,7 +147,16 @@ printf '{"oauthAccount":{"emailAddress":"alpha@test.invalid"}}' > "$CLAUDE_JSON"
 # (~/.flywheel/claude-accounts.json + the real dist quota-guard bin), so the
 # drill MUST inject scratch versions or the new gate would touch production.
 ACCOUNTS_STORE_FILE="$ROOT/claude-accounts.json"
-printf '{"generation":1,"activeAccount":"alpha","accounts":[{"name":"alpha"},{"name":"bravo"}]}' > "$ACCOUNTS_STORE_FILE"
+printf '{"generation":1,"activeAccount":"alpha","accounts":[{"name":"alpha","quotaExhaustedUntil":null,"weeklyResetAt":null},{"name":"bravo","quotaExhaustedUntil":null,"weeklyResetAt":null}]}' > "$ACCOUNTS_STORE_FILE"
+
+# Public `use` (S8/S9) reads monitor config and emits a no-target alert on S8.
+# Keep both surfaces inside scratch; the fake notifier records no credentials and
+# returns the strict-delivery token the real sender contract expects.
+QUOTA_CONFIG="$ROOT/quota-monitor.json"
+printf '{"trigger5hPct":90,"basePollMinutes":20,"acceleratePct":70,"acceleratedPollMinutes":10,"candidateSweepMinutes":60,"minSwitchIntervalMinutes":15,"order":["alpha","bravo"],"writeStatuslineCache":false}' > "$QUOTA_CONFIG"
+FAKE_ALERT="$ROOT/fake-lead-alert"
+printf '#!/usr/bin/env bash\nprintf "sent\\n"\n' > "$FAKE_ALERT"
+chmod +x "$FAKE_ALERT"
 
 # A controllable fake quota guard. FAKE_QUOTA_RC decides the verdict per scenario:
 #   0 healthy · 32 exhausted · 33 evidence unavailable. Contract from the binary:
@@ -153,6 +173,8 @@ export FLYWHEEL_CLAUDE_PROFILES_DIR="$POOL"
 export FLYWHEEL_CLAUDE_ACCOUNTS_LOCK="$ROOT/lock"
 export FLYWHEEL_CLAUDE_ACCOUNTS_PATH="$ACCOUNTS_STORE_FILE"       # NOT prod claude-accounts.json
 export FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN="$QGUARD"                  # NOT the real dist guard
+export FLYWHEEL_QUOTA_MONITOR_CONFIG="$QUOTA_CONFIG"              # NOT prod quota-monitor.json
+export FLYWHEEL_LEAD_ALERT_BIN="$FAKE_ALERT"                       # NOT a real Discord sender
 export FLYWHEEL_CLAUDE_SECURITY_BIN="$STUB"
 export FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE="QA-FLY1182-Drill-credentials"   # NOT the prod service
 export FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT="qa-drill-acct"
@@ -206,6 +228,8 @@ guard_fail=0
 [[ "$FLYWHEEL_CLAUDE_ACCOUNTS_PATH" == "$HOME/.flywheel/claude-accounts.json" ]] && { echo "REFUSE: prod accounts store"; guard_fail=1; }
 [[ "$FLYWHEEL_CLAUDE_ACCOUNTS_PATH" == "$ROOT"/* ]] || { echo "REFUSE: accounts store outside scratch root"; guard_fail=1; }
 [[ "$FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN" == "$ROOT"/* ]] || { echo "REFUSE: quota guard bin outside scratch root"; guard_fail=1; }
+[[ "$FLYWHEEL_QUOTA_MONITOR_CONFIG" == "$ROOT"/* ]] || { echo "REFUSE: quota config outside scratch root"; guard_fail=1; }
+[[ "$FLYWHEEL_LEAD_ALERT_BIN" == "$ROOT"/* ]] || { echo "REFUSE: alert sender outside scratch root"; guard_fail=1; }
 # Codex R1 HIGH-1: the transition journal defaults to production; assert scratch.
 [[ "$FLYWHEEL_CLAUDE_TRANSITION_JOURNAL" == "$HOME/.flywheel/claude-account-transition.json" ]] && { echo "REFUSE: prod transition journal"; guard_fail=1; }
 [[ "$FLYWHEEL_CLAUDE_TRANSITION_JOURNAL" == "$ROOT"/* ]] || { echo "REFUSE: transition journal outside scratch root"; guard_fail=1; }
@@ -369,6 +393,99 @@ FAKE_QUOTA_RC=0 invoke_profile_use bravo >/dev/null 2>&1
 [[ "$(cat "$STATE")" == "$SECRET_BRAVO" ]] \
   && ok "S7 positive control: a HEALTHY guard (rc=0) DOES allow the switch — the gate is not a blanket block" \
   || bad "S7 positive control: healthy guard still blocked — gate is over-blocking or harness broken"
+
+echo
+echo "── S8: unavailable profile is rejected before profile mutation ──"
+# Reconcile all scratch authority surfaces to alpha, then quarantine bravo in
+# the real strict store shape. Public `use` must reject it in candidate selection
+# before quota or Keychain mutation.
+printf '%s' "$SECRET_ALPHA" > "$STATE"; printf 'alpha' > "$POOL/.active"
+node --input-type=module - "$ACCOUNTS_STORE_FILE" <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+const path = process.argv[2];
+const store = JSON.parse(readFileSync(path, "utf8"));
+store.activeAccount = "alpha";
+store.accounts = store.accounts.map((entry) => entry.name === "bravo" ? {
+  ...entry,
+  unavailable: {
+    reason: "profile_subscription_expired",
+    markedAt: "2026-09-09T00:00:00.000Z",
+    evidence: "qa-fly-1182:S8",
+    markedBy: "operator",
+  },
+} : entry);
+writeFileSync(path, `${JSON.stringify(store)}\n`, { mode: 0o600 });
+NODE
+S8_PRE_KC=$(cat "$STATE"); S8_PRE_ACTIVE=$(cat "$POOL/.active")
+S8_OUT=$("$PROFILE_BIN" use bravo 2>&1); S8_RC=$?
+S8_KC=$(cat "$STATE"); S8_ACTIVE=$(cat "$POOL/.active")
+[[ "$S8_RC" != "0" ]] && ok "S8: unavailable target refused with non-zero exit (rc=$S8_RC)" \
+                      || bad "S8: exited 0 — selected an unavailable profile"
+{ [[ "$S8_KC" == "$S8_PRE_KC" ]] && [[ "$S8_ACTIVE" == "$S8_PRE_ACTIVE" ]]; } \
+  && ok "S8: keychain + .active unchanged (unavailable target never landed)" \
+  || bad "S8: state moved despite unavailable target"
+printf '%s' "$S8_OUT" | grep -q "bravo:unavailable:profile_subscription_expired" \
+  && ok "S8: refusal panorama names the unavailable profile and reason" \
+  || { bad "S8: refusal did not expose the unavailable profile reason"; note "output: $(printf '%s' "$S8_OUT" | tail -2)"; }
+
+echo
+echo "── S9: explicit unavailable-clear restores target eligibility ──"
+S9_GEN_BEFORE=$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(s.generation))' "$ACCOUNTS_STORE_FILE")
+S9_CLEAR_OUT=$("$QUOTA_GUARD_BIN" unavailable-clear --name bravo --reason qa_fly_2452_s9 --store "$ACCOUNTS_STORE_FILE" 2>&1); S9_CLEAR_RC=$?
+S9_GEN_AFTER=$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(s.generation))' "$ACCOUNTS_STORE_FILE")
+S9_MARK_PRESENT=$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(Object.hasOwn(s.accounts.find((a)=>a.name==="bravo"),"unavailable")))' "$ACCOUNTS_STORE_FILE")
+{ [[ "$S9_CLEAR_RC" == "0" ]] && [[ "$S9_MARK_PRESENT" == "false" ]] && [[ "$S9_GEN_AFTER" == "$S9_GEN_BEFORE" ]]; } \
+  && ok "S9: unavailable-clear removed only the marker and preserved generation=$S9_GEN_AFTER" \
+  || bad "S9: clear failed rc=$S9_CLEAR_RC mark-present=$S9_MARK_PRESENT generation=${S9_GEN_BEFORE}→${S9_GEN_AFTER} output=$S9_CLEAR_OUT"
+
+# Once the one-way marker is explicitly cleared, public `use` reaches live quota
+# verification. Serve one local healthy response so this proof remains offline.
+USAGE_PORT_FILE="$ROOT/usage-port"
+node --input-type=module - "$USAGE_PORT_FILE" <<'NODE' &
+import { writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+const portFile = process.argv[2];
+const body = JSON.stringify({
+  five_hour: { utilization: 1, resets_at: null },
+  seven_day: { utilization: 1, resets_at: null },
+});
+const refresh = JSON.stringify({
+  access_token: "BRAVO-9d4c1e7a2f8b",
+  refresh_token: "BRAVO-RT-2",
+  expires_in: 3600,
+});
+const server = createServer((request, response) => {
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(request.url === "/v1/oauth/token" ? refresh : body);
+});
+server.listen(0, "127.0.0.1", () => {
+  const address = server.address();
+  if (address === null || typeof address === "string") process.exit(2);
+  writeFileSync(portFile, String(address.port), { mode: 0o600 });
+});
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
+NODE
+USAGE_SERVER_PID=$!
+for _ in $(seq 1 100); do [[ -s "$USAGE_PORT_FILE" ]] && break; sleep 0.02; done
+if [[ -s "$USAGE_PORT_FILE" ]]; then
+  export FLYWHEEL_QUOTA_API_BASE="http://127.0.0.1:$(cat "$USAGE_PORT_FILE")"
+  export FLYWHEEL_CLAUDE_OAUTH_ENDPOINT="$FLYWHEEL_QUOTA_API_BASE/v1/oauth/token"
+  S9_USE_OUT=$("$PROFILE_BIN" use bravo 2>&1); S9_USE_RC=$?
+  S9_ACCESS=$(node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(c.claudeAiOauth?.accessToken ?? "")' "$STATE")
+  if [[ "$S9_USE_RC" == "0" && "$S9_ACCESS" == "$MARK_BRAVO" && "$(cat "$POOL/.active")" == "bravo" ]]; then
+    ok "S9: explicitly cleared profile is selectable again and public use commits it"
+  else
+    bad "S9: public use after explicit clear failed rc=$S9_USE_RC active=$(cat "$POOL/.active")"
+    note "output: $(printf '%s' "$S9_USE_OUT" | tail -2)"
+  fi
+  if grep -Eq -- "$MARK_ALPHA|$MARK_BRAVO" "$ARGV_LOG"; then
+    bad "S9: public switch path leaked a credential marker into security argv"
+  else
+    ok "S9: public switch path kept credential markers out of security argv"
+  fi
+else
+  bad "S9: local usage fixture did not start; restored eligibility was not exercised"
+fi
 
 echo
 echo "════════ RESULT: $PASS passed, $FAIL failed ════════"

@@ -188,6 +188,14 @@ export async function verifyAndRankCandidates(
 			panorama.push({ name, status: "not_in_pool", excludedBy: "pool" });
 			continue;
 		}
+		if (entry.unavailable !== undefined) {
+			panorama.push({
+				name,
+				status: `unavailable:${entry.unavailable.reason}`,
+				excludedBy: "auth",
+			});
+			continue;
+		}
 		if (entry.identityMismatch !== undefined) {
 			panorama.push({
 				name,

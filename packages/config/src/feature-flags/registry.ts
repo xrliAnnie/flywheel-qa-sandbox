@@ -347,6 +347,32 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2177 default-on wrapper observes an off store write without restart",
 	},
 	{
+		name: "account_switch_wake_sweep",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ACCOUNT_SWITCH_WAKE_SWEEP",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2452: wake pre-switch live Claude runners after a terminal-account rotation",
+		whenOn:
+			"Claude 死号切换成功后，自动唤醒切号前已在运行的 Claude 节点继续工作",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeAccountSwitchWakeSweepEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2452 default-on wrapper observes an off store write without restart",
+		note: "Turning this off permanently skips each newly observed wake sweep; it is not backfilled after re-enable.",
+	},
+	{
 		name: "loop_profiler",
 		category: "kill_switch",
 		source: "env",

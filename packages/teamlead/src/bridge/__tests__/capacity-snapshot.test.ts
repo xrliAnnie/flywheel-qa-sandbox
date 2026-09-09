@@ -759,6 +759,61 @@ describe("buildCapacitySnapshot", () => {
 		expect(JSON.stringify(snapshot)).not.toContain(badAlias);
 	});
 
+	it("reports a terminally unavailable Claude profile as structural capacity loss", async () => {
+		const snapshot = await buildCapacitySnapshot({
+			now: () => Date.parse("2026-09-03T05:25:00.000Z"),
+			accountStorePath: writeAccountStore({
+				generation: 2,
+				activeAccount: "business",
+				accounts: [
+					{
+						name: "business",
+						quotaExhaustedUntil: null,
+						weeklyResetAt: null,
+					},
+					{
+						name: "personal1",
+						quotaExhaustedUntil: null,
+						weeklyResetAt: null,
+						unavailable: {
+							reason: "profile_canceled",
+							markedAt: "2026-09-03T05:00:00.000Z",
+							evidence: "profile_subscription",
+							markedBy: "quota-monitor",
+						},
+					},
+				],
+			}),
+			readMemoryFreePct: async () => ({
+				freePct: 70,
+				observedAt: "2026-09-03T05:25:00.000Z",
+			}),
+			admission: {
+				probe: () => ({
+					load1: 2,
+					cpuCount: 4,
+					perCore: 0.5,
+					thresholdPerCore: 8,
+					decision: { admit: true },
+				}),
+			},
+			store: {
+				getActiveSessions: () => [],
+				getFleetPressureHold: () => undefined,
+				getAdmissionPause: () => undefined,
+			},
+		});
+
+		expect(snapshot.quota.claude.unavailable).toContain(
+			"structural: account_unavailable:personal1",
+		);
+		expect(
+			snapshot.quota.claude.accounts.find(
+				(account) => account.name === "personal1",
+			)?.authUnusable,
+		).toBe(true);
+	});
+
 	it("clears an active account that is missing or filtered from the pool", async () => {
 		const cases = [
 			{

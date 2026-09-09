@@ -20,16 +20,24 @@
  * and NEVER auto-rescued (the rescue path checks the evidence prefix).
  */
 
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { readStore } from "../account-heal/account-store.js";
 import {
 	classifyDetection,
 	type DetectionDeps,
 } from "../account-heal/detection-classifier.js";
+import { defaultQuotaMonitorStatePath } from "../account-heal/quota-monitor-state.js";
+import {
+	type QuotaWitness,
+	writeQuotaWitness as writeQuotaWitnessFile,
+} from "../account-heal/quota-witness.js";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
 import { parseSessionLabels } from "./lead-scope.js";
+import { wakeQuotaDaemon as wakeDefaultQuotaDaemon } from "./quota-daemon-wake.js";
 
 /** Only the last N lines are classified (the live region, not the scrollback). */
 const RECENT_LINES = 20;
@@ -62,6 +70,12 @@ export interface RunnerAuthScanDeps {
 	 * `recordAuthHealth`, gated on the same self-heal switch as this scan.
 	 */
 	recordAuthHealth?: (accountName: string) => void;
+	/** Fast-path terminal-account witness. The daemon still proves liveness itself. */
+	writeQuotaWitness?: (
+		witness: QuotaWitness & { source: "runner_pane"; executionId: string },
+	) => void;
+	wakeQuotaDaemon?: () => unknown;
+	now?: () => number;
 	log?: (msg: string) => void;
 }
 
@@ -96,6 +110,73 @@ export function makeRunnerAuthScan(
 		const result = await classifyDetection(region, {
 			aiClassify: deps.aiClassify,
 		});
+		if (result.category === "account_disabled") {
+			const witness = {
+				version: 1 as const,
+				kind: "account_disabled" as const,
+				observedAt: (deps.now ?? Date.now)(),
+				source: "runner_pane" as const,
+				executionId: session.execution_id,
+				evidenceDigest: createHash("sha256").update(region).digest("hex"),
+			};
+			try {
+				const writeWitness =
+					deps.writeQuotaWitness ??
+					((value: typeof witness) =>
+						writeQuotaWitnessFile(
+							join(
+								dirname(defaultQuotaMonitorStatePath()),
+								"quota-monitor-witness.json",
+							),
+							value,
+						));
+				writeWitness(witness);
+				(deps.wakeQuotaDaemon ?? wakeDefaultQuotaDaemon)();
+			} catch (error) {
+				deps.log?.(
+					`[RunnerAuthScan] account-disabled witness failed safely for ${session.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+
+			const leadId = deps.resolveLeadId(session);
+			if (leadId === null) {
+				deps.log?.(
+					`[RunnerAuthScan] cannot resolve owning Lead for ${session.execution_id} — account-disabled witness sent without alert`,
+				);
+				return;
+			}
+			const store = readStore(deps.storePath);
+			const observedAccount = store.activeAccount ?? "unknown";
+			const issue = session.issue_identifier ?? session.issue_id;
+			try {
+				await deps.alert({
+					leadId,
+					projectName: session.project_name,
+					eventId: `runner-account-dead:${session.execution_id}:${store.generation}`,
+					eventType: "account_dead",
+					title: `Claude account disabled: ${observedAccount}`,
+					body:
+						`account_dead:${observedAccount}\n` +
+						`Runner ${session.execution_id} (${issue}) detected terminal Claude account access; the quota daemon was asked to switch profiles.`,
+					severity: "severe",
+					sessionKey: session.execution_id,
+					metadata: {
+						authLimit: {
+							provider: "claude",
+							observedAccount,
+							observedGeneration: store.generation,
+							evidence: "runner-pane:account_disabled",
+							executionId: session.execution_id,
+						},
+					},
+				});
+			} catch (error) {
+				deps.log?.(
+					`[RunnerAuthScan] account-disabled alert emit failed for ${session.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return;
+		}
 
 		const confirmed = result.category === "login_expired";
 		// fail-suspicious: surface an UNRECOGNISED anomaly, but only when it is

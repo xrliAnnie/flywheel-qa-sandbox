@@ -54,6 +54,7 @@ describe("loadQuotaMonitorConfig", () => {
 			confirmDelayMinutes: 7,
 			degradedSwitch: false,
 			episodeRealertMinutes: 30,
+			deadProbeStreak: 2,
 		});
 	});
 
@@ -66,6 +67,7 @@ describe("loadQuotaMonitorConfig", () => {
 				confirmDelayMinutes: 7,
 				degradedSwitch: false,
 				episodeRealertMinutes: 30,
+				deadProbeStreak: 2,
 			},
 			monitorOnly: false,
 		});
@@ -99,6 +101,27 @@ describe("loadQuotaMonitorConfig", () => {
 			episodeRealertMinutes: 45,
 		});
 	});
+
+	it("accepts a bounded dead-account probe streak", () => {
+		write({ ...enabledConfig, deadProbeStreak: 4 });
+
+		expect(loadQuotaMonitorConfig(path)).toMatchObject({
+			config: { deadProbeStreak: 4 },
+			monitorOnly: false,
+		});
+	});
+
+	it.each([0, 11, 1.5, "2"])(
+		"defaults an invalid dead-account probe streak without disabling the monitor: %s",
+		(deadProbeStreak) => {
+			write({ ...enabledConfig, deadProbeStreak });
+
+			expect(loadQuotaMonitorConfig(path)).toMatchObject({
+				config: { deadProbeStreak: 2 },
+				monitorOnly: false,
+			});
+		},
+	);
 
 	it("accepts an empty order as an intentional valid monitor-only config", () => {
 		write({ ...enabledConfig, order: [] });

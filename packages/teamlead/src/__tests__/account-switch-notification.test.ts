@@ -24,11 +24,25 @@ const INTENT: SwitchNotificationIntent = {
 	},
 };
 
+const DEAD_INTENT: SwitchNotificationIntent = {
+	eventId: "account-dead-g2",
+	generation: 2,
+	createdAt: INTENT.createdAt,
+	alert: {
+		kind: "account_dead",
+		severity: "severe",
+		title: "Claude account unavailable",
+		body: "account_dead:personal1\npersonal1 → school",
+		signature: "account-dead-g2",
+	},
+};
+
 describe("formatSwitchNotification", () => {
 	it.each<SwitchNotificationTrigger>([
 		{ kind: "manual", mode: "use" },
 		{ kind: "quota", scope: "5h" },
 		{ kind: "model", models: ["Fable 5"] },
+		{ kind: "account_dead", profile: "personal1" },
 	])("uses one switch message shape for $kind triggers", (trigger) => {
 		const body = formatSwitchNotification({
 			from: { name: "personal1", email: "from@example.com" },
@@ -39,7 +53,9 @@ describe("formatSwitchNotification", () => {
 		});
 
 		expect(body).toContain("Claude 已切号：**personal1 → school**");
-		expect(body).toMatch(/（(?:manual:use|quota:5h|model:Fable 5)）/);
+		expect(body).toMatch(
+			/（(?:manual:use|quota:5h|model:Fable 5|account_dead:personal1)）/,
+		);
 	});
 
 	it("summarizes skipped candidates without serializing credentials", () => {
@@ -162,4 +178,26 @@ describe("drainSwitchNotification", () => {
 			expect(peekSwitchNotification(current)).toEqual(INTENT);
 		},
 	);
+
+	it("does not deliver the second intent while the first remains pending", async () => {
+		let current = enqueueSwitchNotification(
+			enqueueSwitchNotification(emptyStore(), INTENT),
+			DEAD_INTENT,
+		);
+		const send = vi.fn(async () => ({ primary: "process_error" as const }));
+
+		await expect(
+			drainSwitchNotification({
+				withAccountsLock: async (fn) => fn(),
+				readStore: async () => current,
+				writeStore: async (store) => {
+					current = store;
+				},
+				send,
+			}),
+		).resolves.toMatchObject({ outcome: "pending" });
+		expect(send).toHaveBeenCalledTimes(1);
+		expect(send).toHaveBeenCalledWith(INTENT.alert);
+		expect(current.pendingSwitchNotifications).toEqual([INTENT, DEAD_INTENT]);
+	});
 });

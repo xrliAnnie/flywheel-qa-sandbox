@@ -110,6 +110,12 @@ describe("FLY-1256 shell alert rendering", () => {
 		).toThrow();
 	});
 
+	it("refuses the plain-message override for account_dead", () => {
+		expect(() =>
+			send("account_dead", "plain-account-dead", { plain: true }),
+		).toThrow();
+	});
+
 	it.each([
 		"account_switched",
 		"model_cap_switched",
@@ -120,6 +126,7 @@ describe("FLY-1256 shell alert rendering", () => {
 	});
 
 	it.each([
+		"account_dead",
 		"machine_account_conflict",
 		"model_cap_persistent_unknown",
 		"model_bench_malformed",

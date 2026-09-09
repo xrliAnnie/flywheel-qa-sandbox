@@ -40,6 +40,7 @@ const FLEET_KINDS = [
 
 const QUOTA_MONITOR_KINDS = [
 	"account_switched",
+	"account_dead",
 	"machine_account_conflict",
 	"model_cap_switched",
 	"model_cap_unknown",

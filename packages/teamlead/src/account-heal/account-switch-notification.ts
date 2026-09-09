@@ -17,7 +17,8 @@ const TRUNCATED_SUFFIX = "\n… [truncated]";
 export type SwitchNotificationTrigger =
 	| { kind: "manual"; mode: "use" | "next" }
 	| { kind: "quota" | "repair"; scope: "5h" | "weekly" | "both" }
-	| { kind: "model"; models: readonly string[] };
+	| { kind: "model"; models: readonly string[] }
+	| { kind: "account_dead"; profile: string };
 
 export interface SwitchNotificationAccount {
 	name: string;
@@ -156,6 +157,8 @@ function triggerLabel(trigger: SwitchNotificationTrigger): string {
 			return `${trigger.kind}:${trigger.scope}`;
 		case "model":
 			return `model:${trigger.models.join("+")}`;
+		case "account_dead":
+			return `account_dead:${trigger.profile}`;
 	}
 }
 

@@ -34,6 +34,29 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { MAX_MODEL_CAP_TTL_MS, type ModelCapState } from "./model-cap.js";
 
+export type AccountSwitchTriggerKind =
+	| "quota"
+	| "model"
+	| "manual"
+	| "repair"
+	| "account_dead"
+	| "witness";
+
+export interface AccountUnavailableMark {
+	reason: string;
+	markedAt: string;
+	evidence: string;
+	markedBy: "quota-monitor" | "operator";
+}
+
+export interface AccountLastSwitch {
+	generation: number;
+	triggerKind: AccountSwitchTriggerKind;
+	from: string;
+	to: string;
+	at: string;
+}
+
 export interface AccountEntry {
 	name: string;
 	/** ISO instant this account is quota-unusable until; null = usable now. */
@@ -62,6 +85,8 @@ export interface AccountEntry {
 		markedBy: "audit" | "executor";
 		markedAt: string;
 	};
+	/** Terminal account exclusion. Only an explicit operator command removes it. */
+	unavailable?: AccountUnavailableMark;
 }
 
 export interface AccountStore {
@@ -72,6 +97,8 @@ export interface AccountStore {
 	/** Recorded fact: the last profile switch could not sync display identity. */
 	identityStale?: boolean;
 	accounts: AccountEntry[];
+	/** Last committed account transition; unrelated generation changes leave it intact. */
+	lastSwitch?: AccountLastSwitch;
 	/** Durable success notifications awaiting confirmed sender delivery. */
 	pendingSwitchNotifications?: SwitchNotificationIntent[];
 }
@@ -87,7 +114,7 @@ export interface SwitchNotificationIntent {
 	generation: number;
 	createdAt: number;
 	alert: {
-		kind: "account_switched";
+		kind: "account_switched" | "account_dead";
 		severity: "info" | "warning" | "severe";
 		title: string;
 		body: string;
@@ -154,6 +181,10 @@ export interface FreshenedIdentityProof {
 	uuid?: string;
 }
 
+export interface SyncActiveAccountOptions {
+	lastSwitch?: Pick<AccountLastSwitch, "triggerKind" | "at">;
+}
+
 const VALID_ACCOUNT_NAME = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
 
 export function isAuthUnusable(a: AccountEntry): boolean {
@@ -161,7 +192,8 @@ export function isAuthUnusable(a: AccountEntry): boolean {
 		a.authExpired ||
 			a.refreshTokenInvalid ||
 			a.profileVerifyFailed ||
-			a.identityMismatch,
+			a.identityMismatch ||
+			a.unavailable,
 	);
 }
 
@@ -195,7 +227,71 @@ function validBoundedString(
 	);
 }
 
-function isSwitchNotificationIntent(
+function isAccountUnavailableMark(
+	value: unknown,
+): value is AccountUnavailableMark {
+	return (
+		isRecord(value) &&
+		hasOnlyKeys(value, ["reason", "markedAt", "evidence", "markedBy"]) &&
+		validBoundedString(value.reason, 200) &&
+		validBoundedString(value.markedAt, 200) &&
+		!Number.isNaN(Date.parse(value.markedAt)) &&
+		validBoundedString(value.evidence, 200) &&
+		(value.markedBy === "quota-monitor" || value.markedBy === "operator")
+	);
+}
+
+const ACCOUNT_SWITCH_TRIGGER_KINDS = new Set<AccountSwitchTriggerKind>([
+	"quota",
+	"model",
+	"manual",
+	"repair",
+	"account_dead",
+	"witness",
+]);
+
+function isAccountLastSwitch(value: unknown): value is AccountLastSwitch {
+	return (
+		isRecord(value) &&
+		hasOnlyKeys(value, ["generation", "triggerKind", "from", "to", "at"]) &&
+		Number.isSafeInteger(value.generation) &&
+		(value.generation as number) > 0 &&
+		typeof value.triggerKind === "string" &&
+		ACCOUNT_SWITCH_TRIGGER_KINDS.has(
+			value.triggerKind as AccountSwitchTriggerKind,
+		) &&
+		validBoundedString(value.from, 200) &&
+		VALID_ACCOUNT_NAME.test(value.from) &&
+		validBoundedString(value.to, 200) &&
+		VALID_ACCOUNT_NAME.test(value.to) &&
+		validBoundedString(value.at, 200) &&
+		!Number.isNaN(Date.parse(value.at))
+	);
+}
+
+export function markAccountUnavailable(
+	store: AccountStore,
+	name: string,
+	mark: AccountUnavailableMark,
+): AccountStore {
+	if (!isAccountUnavailableMark(mark)) {
+		throw new TypeError("invalid account unavailable mark");
+	}
+	if (store.accounts.filter((account) => account.name === name).length !== 1) {
+		return store;
+	}
+	const current = store.accounts.find((account) => account.name === name);
+	if (JSON.stringify(current?.unavailable) === JSON.stringify(mark))
+		return store;
+	return {
+		...store,
+		accounts: store.accounts.map((account) =>
+			account.name === name ? { ...account, unavailable: mark } : account,
+		),
+	};
+}
+
+export function isSwitchNotificationIntent(
 	value: unknown,
 ): value is SwitchNotificationIntent {
 	if (
@@ -218,7 +314,8 @@ function isSwitchNotificationIntent(
 		return false;
 	}
 	return (
-		value.alert.kind === "account_switched" &&
+		(value.alert.kind === "account_switched" ||
+			value.alert.kind === "account_dead") &&
 		(value.alert.severity === "info" ||
 			value.alert.severity === "warning" ||
 			value.alert.severity === "severe") &&
@@ -598,6 +695,8 @@ export function readStoreStrict(path: string): AccountStore | null {
 			(parsed.activeAccount !== null &&
 				typeof parsed.activeAccount !== "string") ||
 			!Array.isArray(parsed.accounts) ||
+			(parsed.lastSwitch !== undefined &&
+				!isAccountLastSwitch(parsed.lastSwitch)) ||
 			pending === null ||
 			parsed.accounts.some(
 				(entry) =>
@@ -607,7 +706,9 @@ export function readStoreStrict(path: string): AccountStore | null {
 					(entry.weeklyResetAt !== null &&
 						typeof entry.weeklyResetAt !== "string") ||
 					(entry.switchCooldownUntil !== undefined &&
-						typeof entry.switchCooldownUntil !== "string"),
+						typeof entry.switchCooldownUntil !== "string") ||
+					(entry.unavailable !== undefined &&
+						!isAccountUnavailableMark(entry.unavailable)),
 			)
 		) {
 			return null;
@@ -668,6 +769,7 @@ export function recordObservationInStore(
 export function syncActiveAccountInStore(
 	storePath: string,
 	name: string,
+	opts: SyncActiveAccountOptions = {},
 ): SyncActiveAccountResult {
 	if (!VALID_ACCOUNT_NAME.test(name)) return "invalid_name";
 	const store = readStoreStrict(storePath);
@@ -676,12 +778,27 @@ export function syncActiveAccountInStore(
 		return "missing_account";
 	}
 	if (store.activeAccount === name) return "noop";
+	if (opts.lastSwitch !== undefined && store.activeAccount === null) {
+		return "invalid_store";
+	}
+	const generation = store.generation + 1;
 	try {
 		writeStore(
 			{
 				...store,
 				activeAccount: name,
-				generation: store.generation + 1,
+				generation,
+				...(opts.lastSwitch === undefined
+					? {}
+					: {
+							lastSwitch: {
+								generation,
+								triggerKind: opts.lastSwitch.triggerKind,
+								from: store.activeAccount as string,
+								to: name,
+								at: opts.lastSwitch.at,
+							},
+						}),
 			},
 			storePath,
 		);

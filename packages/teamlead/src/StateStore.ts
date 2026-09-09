@@ -1768,6 +1768,10 @@ export interface CodexReviewJob {
 	failure_raw?: string;
 	/** UTC ISO instant for the next durable same-request automatic retry. */
 	retry_at?: string;
+	/** Durable recovery lane selected for this failed attempt. */
+	retry_trigger?: "reset_at" | "account_switch";
+	/** Numeric causal fence for account-switch redrive. */
+	retry_parked_at_ms?: number;
 	/** Number of automatic retry budgets consumed by this durable request. */
 	auto_retry_count: number;
 	/** FLY-2228: direct stale-head parent for an automatically minted request. */
@@ -1791,6 +1795,32 @@ export interface CodexReviewJob {
 	 * "bridge" response and have it mistaken for the Bridge's delivery.
 	 */
 	delivery_nonce?: string;
+}
+
+export type AccountSwitchAction = "review_redrive" | "wake_sweep";
+
+export interface AccountSwitchSnapshot {
+	generation: number;
+	triggerKind:
+		| "quota"
+		| "model"
+		| "manual"
+		| "repair"
+		| "account_dead"
+		| "witness";
+	from: string;
+	to: string;
+	atMs: number;
+}
+
+export interface AccountSwitchActionReceipt {
+	switch_generation: number;
+	action: AccountSwitchAction;
+	status: "pending" | "completed";
+	switch: AccountSwitchSnapshot;
+	started_at_ms: number;
+	completed_at_ms?: number;
+	outcome?: unknown;
 }
 
 /**
@@ -5088,6 +5118,8 @@ export class StateStore {
 				failure_reason        TEXT,
 				failure_raw           TEXT,
 				retry_at              TEXT,
+				retry_trigger         TEXT CHECK(retry_trigger IN ('reset_at','account_switch')),
+				retry_parked_at_ms    INTEGER,
 				auto_retry_count      INTEGER NOT NULL DEFAULT 0,
 				head_move_parent_request_id TEXT,
 				head_move_retry_count  INTEGER NOT NULL DEFAULT 0,
@@ -5126,6 +5158,8 @@ export class StateStore {
 			["question_id", "TEXT"],
 			["failure_raw", "TEXT"],
 			["retry_at", "TEXT"],
+			["retry_trigger", "TEXT"],
+			["retry_parked_at_ms", "INTEGER"],
 			["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
 			["head_move_parent_request_id", "TEXT"],
 			["head_move_retry_count", "INTEGER NOT NULL DEFAULT 0"],
@@ -5163,6 +5197,25 @@ export class StateStore {
 			   ON codex_review_job(head_move_parent_request_id)
 			 WHERE head_move_parent_request_id IS NOT NULL`,
 		);
+		this.db.run(
+			`CREATE INDEX IF NOT EXISTS idx_codex_review_job_account_switch_parked
+			   ON codex_review_job(retry_parked_at_ms, request_id)
+			 WHERE status = 'failed' AND retry_trigger = 'account_switch'`,
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS account_switch_action_receipt (
+				switch_generation INTEGER NOT NULL,
+				action            TEXT NOT NULL
+				                  CHECK(action IN ('review_redrive','wake_sweep')),
+				status            TEXT NOT NULL
+				                  CHECK(status IN ('pending','completed')),
+				switch_json       TEXT NOT NULL,
+				started_at_ms     INTEGER NOT NULL,
+				completed_at_ms   INTEGER,
+				outcome_json      TEXT,
+				PRIMARY KEY(switch_generation, action)
+			)
+		`);
 		// FLY-2334: substitute executions reviewing the same issue/head attach
 		// their own request+gate to one live reviewer job. The per-binding nonce
 		// preserves response ownership and responded_at is the crash-safe outbox.
@@ -12782,6 +12835,12 @@ export class StateStore {
 			failure_reason: (row.failure_reason as string) ?? undefined,
 			failure_raw: (row.failure_raw as string) ?? undefined,
 			retry_at: (row.retry_at as string) ?? undefined,
+			retry_trigger: (row.retry_trigger as CodexReviewJob["retry_trigger"]) ??
+				undefined,
+			retry_parked_at_ms:
+				row.retry_parked_at_ms === null || row.retry_parked_at_ms === undefined
+					? undefined
+					: Number(row.retry_parked_at_ms),
 			auto_retry_count: Number(row.auto_retry_count ?? 0),
 			head_move_parent_request_id:
 				(row.head_move_parent_request_id as string) ?? undefined,
@@ -13269,6 +13328,7 @@ export class StateStore {
 				`UPDATE codex_review_job
 				    SET status = 'failed', failure_reason = ?,
 				        failure_raw = ?, retry_at = NULL,
+				        retry_trigger = NULL, retry_parked_at_ms = NULL,
 				        reviewer_session_failure_streak = 0,
 				        failure_attempt_count = failure_attempt_count + 1,
 				        updated_at = datetime('now')
@@ -13343,7 +13403,8 @@ export class StateStore {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
-			       retry_at = NULL,
+			       retry_at = NULL, retry_trigger = NULL,
+			       retry_parked_at_ms = NULL,
 			       updated_at = datetime('now')
 			 WHERE request_id = ? AND status IN ('pending','failed')`,
 			[requestId],
@@ -13372,6 +13433,7 @@ export class StateStore {
 			       response_json = ?, payload_version = ?,
 			       reviewer_session_failure_streak = 0,
 			       failure_reason = NULL, failure_raw = NULL, retry_at = NULL,
+			       retry_trigger = NULL, retry_parked_at_ms = NULL,
 			       updated_at = datetime('now')
 			 WHERE request_id = ?`,
 			[
@@ -13398,6 +13460,8 @@ export class StateStore {
 		reason: string;
 		failureRaw?: string;
 		retryAt?: string;
+		retryTrigger?: "account_switch";
+		parkedAtMs?: number;
 	}): {
 		updated: boolean;
 		scheduled: boolean;
@@ -13417,9 +13481,22 @@ export class StateStore {
 				retryAt = input.retryAt;
 			}
 		}
+		const accountSwitchParked =
+			input.retryTrigger === "account_switch" &&
+			Number.isSafeInteger(input.parkedAtMs) &&
+			(input.parkedAtMs ?? -1) >= 0;
+		const retryTrigger: CodexReviewJob["retry_trigger"] | null =
+			accountSwitchParked
+				? "account_switch"
+				: retryAt !== null
+					? "reset_at"
+					: null;
+		const retryParkedAtMs = accountSwitchParked ? input.parkedAtMs! : null;
+		if (accountSwitchParked) retryAt = null;
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'failed', failure_reason = ?, failure_raw = ?,
+			       retry_trigger = ?, retry_parked_at_ms = ?,
 			       retry_at = CASE
 			         WHEN ? IS NOT NULL AND auto_retry_count < ? THEN ?
 			         ELSE NULL
@@ -13452,6 +13529,8 @@ export class StateStore {
 			[
 				input.reason,
 				input.failureRaw ?? null,
+				retryTrigger,
+				retryParkedAtMs,
 				retryAt,
 				MAX_CODEX_REVIEW_AUTO_RETRIES,
 				retryAt,
@@ -13559,6 +13638,160 @@ export class StateStore {
 		}
 		stmt.free();
 		return jobs;
+	}
+
+	listAccountSwitchParkedCodexReviewJobs(input: {
+		beforeMs: number;
+		limit: number;
+		after?: { parkedAtMs: number; requestId: string };
+	}): CodexReviewJob[] {
+		if (
+			!Number.isSafeInteger(input.beforeMs) ||
+			input.beforeMs < 0 ||
+			!Number.isSafeInteger(input.limit) ||
+			input.limit < 1 ||
+			input.limit > 1_000 ||
+			(input.after !== undefined &&
+				(!Number.isSafeInteger(input.after.parkedAtMs) ||
+					input.after.parkedAtMs < 0 ||
+					input.after.requestId.length === 0))
+		) {
+			throw new Error("invalid account-switch parked review cursor");
+		}
+		const cursorClause = input.after
+			? `AND (retry_parked_at_ms > ?
+			       OR (retry_parked_at_ms = ? AND request_id > ?))`
+			: "";
+		const params: Array<string | number> = [input.beforeMs];
+		if (input.after) {
+			params.push(
+				input.after.parkedAtMs,
+				input.after.parkedAtMs,
+				input.after.requestId,
+			);
+		}
+		params.push(input.limit);
+		const jobs: CodexReviewJob[] = [];
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_job
+			  WHERE status = 'failed'
+			    AND retry_trigger = 'account_switch'
+			    AND retry_parked_at_ms < ?
+			    ${cursorClause}
+			  ORDER BY retry_parked_at_ms ASC, request_id ASC
+			  LIMIT ?`,
+		);
+		stmt.bind(params);
+		while (stmt.step()) {
+			jobs.push(
+				this.rowToCodexReviewJob(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return jobs;
+	}
+
+	private rowToAccountSwitchActionReceipt(
+		row: Record<string, unknown>,
+	): AccountSwitchActionReceipt {
+		const parsedSwitch = JSON.parse(String(row.switch_json)) as AccountSwitchSnapshot;
+		const parsedOutcome =
+			row.outcome_json === null || row.outcome_json === undefined
+				? undefined
+				: JSON.parse(String(row.outcome_json));
+		return {
+			switch_generation: Number(row.switch_generation),
+			action: row.action as AccountSwitchAction,
+			status: row.status as AccountSwitchActionReceipt["status"],
+			switch: parsedSwitch,
+			started_at_ms: Number(row.started_at_ms),
+			...(row.completed_at_ms === null || row.completed_at_ms === undefined
+				? {}
+				: { completed_at_ms: Number(row.completed_at_ms) }),
+			...(parsedOutcome === undefined ? {} : { outcome: parsedOutcome }),
+		};
+	}
+
+	getAccountSwitchActionReceipt(
+		switchGeneration: number,
+		action: AccountSwitchAction,
+	): AccountSwitchActionReceipt | null {
+		const stmt = this.db.prepare(
+			`SELECT * FROM account_switch_action_receipt
+			  WHERE switch_generation = ? AND action = ?`,
+		);
+		stmt.bind([switchGeneration, action]);
+		const receipt = stmt.step()
+			? this.rowToAccountSwitchActionReceipt(
+					stmt.getAsObject() as Record<string, unknown>,
+				)
+			: null;
+		stmt.free();
+		return receipt;
+	}
+
+	beginAccountSwitchAction(
+		switchGeneration: number,
+		action: AccountSwitchAction,
+		snapshot: AccountSwitchSnapshot,
+		startedAtMs = Date.now(),
+	): {
+		outcome: "started" | "already_pending" | "already_completed";
+		receipt: AccountSwitchActionReceipt;
+	} {
+		this.db.run(
+			`INSERT OR IGNORE INTO account_switch_action_receipt
+			 (switch_generation, action, status, switch_json, started_at_ms)
+			 VALUES (?, ?, 'pending', ?, ?)`,
+			[switchGeneration, action, JSON.stringify(snapshot), startedAtMs],
+		);
+		const inserted = this.db.getRowsModified() > 0;
+		this.save();
+		const receipt = this.getAccountSwitchActionReceipt(switchGeneration, action);
+		if (!receipt) throw new Error("account-switch action receipt insert lost");
+		return {
+			outcome: inserted
+				? "started"
+				: receipt.status === "completed"
+					? "already_completed"
+					: "already_pending",
+			receipt,
+		};
+	}
+
+	completeAccountSwitchAction(
+		switchGeneration: number,
+		action: AccountSwitchAction,
+		outcome: unknown,
+		completedAtMs = Date.now(),
+	): boolean {
+		this.db.run(
+			`UPDATE account_switch_action_receipt
+			    SET status = 'completed', completed_at_ms = ?, outcome_json = ?
+			  WHERE switch_generation = ? AND action = ? AND status = 'pending'`,
+			[completedAtMs, JSON.stringify(outcome), switchGeneration, action],
+		);
+		const completed = this.db.getRowsModified() > 0;
+		if (completed) this.save();
+		return completed;
+	}
+
+	listPendingAccountSwitchActions(): AccountSwitchActionReceipt[] {
+		const receipts: AccountSwitchActionReceipt[] = [];
+		const stmt = this.db.prepare(
+			`SELECT * FROM account_switch_action_receipt
+			  WHERE status = 'pending'
+			  ORDER BY switch_generation ASC, action ASC`,
+		);
+		while (stmt.step()) {
+			receipts.push(
+				this.rowToAccountSwitchActionReceipt(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return receipts;
 	}
 
 	/** R12 HIGH-4 outbox: stamp AFTER the bound question is actually answered. */

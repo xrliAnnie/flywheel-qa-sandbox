@@ -98,6 +98,21 @@ function populatedState(): QuotaMonitorState {
 			},
 		},
 		identityAlertCursor: "school",
+		activeUnreadableStreak: 2,
+		deadAccountEpisode: {
+			profile: "personal1",
+			reason: "profile_canceled",
+			detectedAt: NOW - 180_000,
+			generation: 7,
+			switchOutcome: "switched",
+			switchedGeneration: 8,
+			alertCount: 1,
+			lastAlertAt: "2026-07-14T19:58:00.000Z",
+		},
+		witnessCursor: {
+			consumedAt: NOW - 120_000,
+			digest: "c".repeat(64),
+		},
 	};
 }
 
@@ -124,6 +139,51 @@ describe("quota monitor persistent state", () => {
 		expect(statSync(path).mode & 0o777).toBe(0o600);
 		expect(readdirSync(dir)).toEqual(["quota-monitor-state.json"]);
 		expect(readFileSync(path, "utf8").toLowerCase()).not.toContain("token");
+	});
+
+	it("defaults dead-account fields when reading an older v2 state", () => {
+		const {
+			activeUnreadableStreak: _activeUnreadableStreak,
+			deadAccountEpisode: _deadAccountEpisode,
+			witnessCursor: _witnessCursor,
+			...olderV2
+		} = populatedState();
+		writeFileSync(path, `${JSON.stringify(olderV2)}\n`, { mode: 0o600 });
+
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }).state,
+		).toMatchObject({
+			activeUnreadableStreak: 0,
+			deadAccountEpisode: null,
+			witnessCursor: null,
+		});
+	});
+
+	it.each([
+		["negative unreadable streak", { activeUnreadableStreak: -1 }],
+		[
+			"unsafe dead-account profile",
+			{
+				deadAccountEpisode: {
+					...populatedState().deadAccountEpisode,
+					profile: "../x",
+				},
+			},
+		],
+		[
+			"invalid witness digest",
+			{ witnessCursor: { consumedAt: NOW, digest: "not-a-digest" } },
+		],
+	])("rejects %s", (_label, mutation) => {
+		writeFileSync(
+			path,
+			`${JSON.stringify({ ...populatedState(), ...mutation })}\n`,
+			{ mode: 0o600 },
+		);
+
+		expect(
+			loadQuotaMonitorState(path, { nowMs: NOW, storeGeneration: 7 }).recovery,
+		).toBe("corrupt");
 	});
 
 	it("accepts null or absent switch-child evidence without changing the state version", () => {
@@ -287,6 +347,9 @@ describe("quota monitor persistent state", () => {
 		});
 
 		const {
+			activeUnreadableStreak: _activeUnreadableStreak,
+			deadAccountEpisode: _deadAccountEpisode,
+			witnessCursor: _witnessCursor,
 			pendingDetection: _pendingDetection,
 			alertOutbox: _alertOutbox,
 			confirmation: _confirmation,
@@ -487,6 +550,9 @@ describe("quota monitor persistent state", () => {
 			pendingSwitchFailure: null,
 			identityMismatchEpisodes: null,
 			identityAlertCursor: null,
+			activeUnreadableStreak: 2,
+			deadAccountEpisode: populatedState().deadAccountEpisode,
+			witnessCursor: populatedState().witnessCursor,
 		});
 		expect(loaded.state.backoffUntilMs).toBe(NOW + 300_000);
 	});

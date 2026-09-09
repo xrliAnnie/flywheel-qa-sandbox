@@ -1074,6 +1074,23 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 		},
 	);
 
+	it("routes account_dead as an actionable ticket", async () => {
+		const fetchFn = okFetch();
+		await makeNotifier(fetchFn, { tickets: true }).alert(
+			buildPayload({
+				eventType: "account_dead",
+				title: "Claude 账号已死,已拉黑",
+				body: "account_dead:personal1",
+				severity: "severe",
+			}),
+		);
+		const body = JSON.parse(
+			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
+		);
+		expect(body.content).toContain("🎫");
+		expect(body.content).toContain("account_dead:personal1");
+	});
+
 	it.each([
 		"account_switched",
 		"model_cap_switched",
@@ -1597,6 +1614,55 @@ describe("LeadAlertNotifier — FLY-927 Codex R1 fixes", () => {
 		// An ordinary notification must never be handed to AlertChannelHub, which
 		// would attach the alert-box/thread lifecycle after a queued replay.
 		expect(result.delivered).toEqual([]);
+	});
+
+	it("replays queued account_dead to its engineer channel and exposes its actionable lifecycle", async () => {
+		const routedChannel = "8".repeat(18);
+		writeFileSync(
+			join(queueDir, "20260908T214900Z-quota-monitor-account_dead.json"),
+			JSON.stringify({
+				leadId: "quota-monitor",
+				projectName: "flywheel",
+				eventId: "account-dead-route",
+				eventType: "account_dead",
+				title: "Claude 账号已死,已拉黑",
+				body: "account_dead:personal1",
+				severity: "severe",
+				queuedAt: new Date().toISOString(),
+				queueReason: "discord-503",
+				deliveryChannelId: routedChannel,
+			}),
+		);
+		const fetchOk = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "account-dead-root" }),
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: fetchOk,
+			queueDir,
+			unifiedAlert: unified,
+		});
+
+		const result = await notifier.drainQueue();
+
+		expect(fetchOk.mock.calls[0]![0]).toBe(
+			`https://discord.com/api/v10/channels/${routedChannel}/messages`,
+		);
+		const posted = JSON.parse(
+			(fetchOk.mock.calls[0]![1] as RequestInit).body as string,
+		);
+		expect(posted.content).toContain("🎫");
+		expect(result.delivered).toHaveLength(1);
+		expect(result.delivered[0]).toMatchObject({
+			channelId: routedChannel,
+			messageId: "account-dead-root",
+			payload: { eventType: "account_dead" },
+		});
 	});
 
 	it("FLY-2051: unified drain dead-letters an invalid delivery style without POSTing", async () => {

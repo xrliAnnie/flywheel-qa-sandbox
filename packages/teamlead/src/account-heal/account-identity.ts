@@ -6,6 +6,10 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 export interface ProfileIdentity {
 	email: string;
 	uuid: string;
+	subscription?: {
+		status: string;
+		organizationType: string;
+	};
 }
 
 export interface ExpectedAccountIdentity {
@@ -38,6 +42,31 @@ function normalize(value: string): string {
 	return value.trim().toLowerCase();
 }
 
+function isSubscriptionIdentifier(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= 32 &&
+		/^[a-z_]+$/.test(value)
+	);
+}
+
+function parseSubscription(
+	value: unknown,
+): ProfileIdentity["subscription"] | undefined {
+	if (!isRecord(value)) return undefined;
+	if (
+		!isSubscriptionIdentifier(value.subscription_status) ||
+		!isSubscriptionIdentifier(value.organization_type)
+	) {
+		return undefined;
+	}
+	return {
+		status: value.subscription_status,
+		organizationType: value.organization_type,
+	};
+}
+
 function parseProfile(value: unknown): ProfileIdentity | null {
 	if (!isRecord(value) || !isRecord(value.account)) return null;
 	const { email, uuid } = value.account;
@@ -45,7 +74,12 @@ function parseProfile(value: unknown): ProfileIdentity | null {
 	const normalizedEmail = normalize(email);
 	const normalizedUuid = normalize(uuid);
 	if (normalizedEmail.length === 0 || normalizedUuid.length === 0) return null;
-	return { email: normalizedEmail, uuid: normalizedUuid };
+	const subscription = parseSubscription(value.organization);
+	return {
+		email: normalizedEmail,
+		uuid: normalizedUuid,
+		...(subscription === undefined ? {} : { subscription }),
+	};
 }
 
 async function requestProfile(

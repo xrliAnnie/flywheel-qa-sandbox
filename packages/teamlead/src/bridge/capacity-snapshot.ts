@@ -337,6 +337,14 @@ export async function buildCapacitySnapshot(
 		activeAccount = null;
 		appendUnavailable(claudeUnavailable, "transient: account_store_invalid");
 	}
+	for (const account of accountEntries) {
+		if (account.unavailable !== undefined) {
+			appendUnavailable(
+				claudeUnavailable,
+				`structural: account_unavailable:${account.name}`,
+			);
+		}
+	}
 	const accounts = accountEntries.map((account) => {
 		const accountObservedAt = validObservationInstant(
 			account.lastObservedAt,
@@ -359,7 +367,8 @@ export async function buildCapacitySnapshot(
 			authUnusable:
 				account.authExpired === true ||
 				account.refreshTokenInvalid === true ||
-				account.profileVerifyFailed === true,
+				account.profileVerifyFailed === true ||
+				account.unavailable !== undefined,
 		};
 	});
 	return {

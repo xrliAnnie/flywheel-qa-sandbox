@@ -27,6 +27,10 @@ export type AccountUsageResult =
 			};
 	  }
 	| {
+			error: "forbidden";
+			errorCode: string | null;
+	  }
+	| {
 			error: "unauthorized" | "rate_limited" | "network" | "malformed";
 			retryAfterMs?: number;
 	  };
@@ -137,6 +141,34 @@ function parseRetryAfter(value: string | null): number {
 	return MIN_RETRY_AFTER_MS;
 }
 
+function isSafeErrorIdentifier(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= 64 &&
+		/^[a-z_]+$/.test(value)
+	);
+}
+
+async function parseForbiddenErrorCode(
+	response: Response,
+): Promise<string | null> {
+	let raw: unknown;
+	try {
+		raw = await response.json();
+	} catch {
+		return null;
+	}
+	if (!isRecord(raw) || raw.type !== "error" || !isRecord(raw.error)) {
+		return null;
+	}
+	if (!isSafeErrorIdentifier(raw.error.type)) return null;
+	if (!isRecord(raw.error.details)) return null;
+	return isSafeErrorIdentifier(raw.error.details.error_code)
+		? raw.error.details.error_code
+		: null;
+}
+
 async function requestUsage(
 	accessToken: string,
 	opts: FetchAccountUsageOptions,
@@ -158,6 +190,12 @@ async function requestUsage(
 	});
 
 	if (response.status === 401) return { error: "unauthorized" };
+	if (response.status === 403) {
+		return {
+			error: "forbidden",
+			errorCode: await parseForbiddenErrorCode(response),
+		};
+	}
 	if (response.status === 429) {
 		return {
 			error: "rate_limited",

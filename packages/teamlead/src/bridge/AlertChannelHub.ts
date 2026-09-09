@@ -292,6 +292,7 @@ const LEAD_KINDS: ReadonlySet<AlertEventType> = new Set([
  */
 export const QUOTA_MONITOR_MANUAL_TICKET_KINDS: ReadonlySet<AlertEventType> =
 	new Set([
+		"account_dead",
 		"account_identity_mismatch",
 		"account_switch_degraded",
 		"machine_account_conflict",

@@ -4,7 +4,7 @@
  * injected `applyProfile` (the real one = `flywheel-claude-profile use`, kept in
  * the final isolated commit); this exercises the orchestration with mocks.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -75,6 +75,22 @@ const input = {
 	observedGeneration: 1,
 	resetAt: "2026-07-04T02:30:00.000Z",
 	now: NOW,
+};
+
+const deadMark = {
+	reason: "profile_canceled",
+	markedAt: NOW.toISOString(),
+	evidence: "profile_subscription_status:canceled",
+	markedBy: "quota-monitor" as const,
+};
+
+const deadInput = {
+	trigger: { kind: "account_dead" as const, profile: "personal" },
+	observedAccount: "personal",
+	observedGeneration: 1,
+	now: NOW,
+	quotaPreverified: true,
+	markUnavailable: { name: "personal", mark: deadMark },
 };
 
 function pendingIntent(generation: number): SwitchNotificationIntent {
@@ -712,6 +728,166 @@ describe("switchAccount", () => {
 		expect(readStore(storePath).generation).toBe(1);
 	});
 
+	it("atomically quarantines a dead account, switches, records provenance, and enqueues two durable alerts", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+			pendingSwitchNotifications: Array.from({ length: 62 }, (_, index) =>
+				pendingIntent(index + 1),
+			),
+		});
+
+		await expect(switchAccount(deadInput, deps())).resolves.toMatchObject({
+			outcome: "switched",
+			from: "personal",
+			to: "school",
+			generation: 2,
+		});
+		const after = readStore(storePath);
+		expect(after).toMatchObject({
+			generation: 2,
+			activeAccount: "school",
+			lastSwitch: {
+				generation: 2,
+				triggerKind: "account_dead",
+				from: "personal",
+				to: "school",
+				at: NOW.toISOString(),
+			},
+		});
+		expect(after.accounts[0]).toMatchObject({
+			name: "personal",
+			quotaExhaustedUntil: null,
+			unavailable: deadMark,
+		});
+		expect(after.accounts[0]).not.toHaveProperty("switchCooldownUntil");
+		expect(after.pendingSwitchNotifications).toHaveLength(64);
+		expect(after.pendingSwitchNotifications?.slice(-2)).toEqual([
+			expect.objectContaining({
+				eventId: "account-switch-g2",
+				alert: expect.objectContaining({ kind: "account_switched" }),
+			}),
+			expect.objectContaining({
+				eventId: "account-dead-g2",
+				alert: expect.objectContaining({
+					kind: "account_dead",
+					body: expect.stringMatching(/^account_dead:personal\n/),
+					signature: "account-dead-g2",
+				}),
+			}),
+		]);
+	});
+
+	it("fails before profile mutation when a dead-account switch has only one outbox slot", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+			pendingSwitchNotifications: Array.from({ length: 63 }, (_, index) =>
+				pendingIntent(index + 1),
+			),
+		});
+		const before = readFileSync(storePath, "utf8");
+		const d = deps();
+
+		await expect(switchAccount(deadInput, d)).resolves.toMatchObject({
+			outcome: "failed",
+			reasonCode: "notification_outbox_full",
+		});
+		expect(d.applyProfile).not.toHaveBeenCalled();
+		expect(readFileSync(storePath, "utf8")).toBe(before);
+	});
+
+	it("allows a one-intent quota switch when one outbox slot remains", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+			pendingSwitchNotifications: Array.from({ length: 63 }, (_, index) =>
+				pendingIntent(index + 1),
+			),
+		});
+
+		await expect(switchAccount(input, deps())).resolves.toMatchObject({
+			outcome: "switched",
+		});
+		expect(readStore(storePath).pendingSwitchNotifications).toHaveLength(64);
+	});
+
+	it("persists only the quarantine when a dead account has no target", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{
+					name: "school",
+					quotaExhaustedUntil: "2026-09-10T00:00:00.000Z",
+					weeklyResetAt: null,
+				},
+			],
+		});
+
+		await expect(switchAccount(deadInput, deps())).resolves.toMatchObject({
+			outcome: "no_account",
+		});
+		const after = readStore(storePath);
+		expect(after.generation).toBe(1);
+		expect(after.activeAccount).toBe("personal");
+		expect(after.lastSwitch).toBeUndefined();
+		expect(after.accounts[0]?.unavailable).toEqual(deadMark);
+	});
+
+	it("does not persist the dead mark when profile application fails", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+		});
+
+		await expect(
+			switchAccount(
+				deadInput,
+				deps({
+					applyProfile: vi.fn(async () => {
+						throw new Error("temporary apply failure");
+					}),
+				}),
+			),
+		).resolves.toMatchObject({ outcome: "failed", reasonCode: "apply_failed" });
+		expect(readStore(storePath).accounts[0]?.unavailable).toBeUndefined();
+	});
+
+	it("reports account-dead generation drift as a failed fence without persisting the mark", async () => {
+		seed({
+			generation: 2,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+		});
+
+		await expect(switchAccount(deadInput, deps())).resolves.toMatchObject({
+			outcome: "failed",
+			reasonCode: "active_marker_drift",
+		});
+		expect(readStore(storePath).accounts[0]?.unavailable).toBeUndefined();
+	});
+
 	it("applyProfile throws → fail-closed: state unchanged, outcome failed", async () => {
 		seed({
 			generation: 1,
@@ -884,6 +1060,13 @@ describe("switchAccount", () => {
 
 	it("a stale target still commits the delegated proof that the outgoing account was freshened", async () => {
 		const store = threeAccountStore();
+		store.lastSwitch = {
+			generation: 1,
+			triggerKind: "witness",
+			from: "school",
+			to: "personal",
+			at: NOW.toISOString(),
+		};
 		store.accounts[0] = {
 			...store.accounts[0],
 			authExpired: true,
@@ -898,6 +1081,12 @@ describe("switchAccount", () => {
 				actualDigest: "a".repeat(64),
 				markedBy: "executor",
 				markedAt: NOW.toISOString(),
+			},
+			unavailable: {
+				reason: "profile_canceled",
+				markedAt: NOW.toISOString(),
+				evidence: "profile_subscription",
+				markedBy: "quota-monitor",
 			},
 		};
 		seed(store);
@@ -928,6 +1117,19 @@ describe("switchAccount", () => {
 		expect(personal?.refreshTokenInvalid).toBeUndefined();
 		expect(personal?.profileVerifyFailed).toBeUndefined();
 		expect(personal?.identityMismatch).toBeUndefined();
+		expect(personal?.unavailable).toEqual({
+			reason: "profile_canceled",
+			markedAt: NOW.toISOString(),
+			evidence: "profile_subscription",
+			markedBy: "quota-monitor",
+		});
+		expect(after.lastSwitch).toEqual({
+			generation: 2,
+			triggerKind: "quota",
+			from: "personal",
+			to: "school",
+			at: NOW.toISOString(),
+		});
 		expect(
 			after.accounts.find((account) => account.name === "business")
 				?.authExpired,
@@ -1449,6 +1651,40 @@ describe("switchAccount", () => {
 			"business",
 			"school",
 		]);
+	});
+
+	it("preserves a dead-account quarantine when a candidate is quota-exhausted", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name !== "business") return { identitySynced: true };
+			const latest = readStore(storePath);
+			writeStore(
+				{
+					...latest,
+					accounts: latest.accounts.map((entry) =>
+						entry.name === name
+							? {
+									...entry,
+									quotaExhaustedUntil: "2026-07-04T03:00:00Z",
+									lastObservedAt: NOW.toISOString(),
+								}
+							: entry,
+					),
+				},
+				storePath,
+			);
+			throw new TargetQuotaExhaustedError(name);
+		});
+
+		const result = await switchAccount(
+			{ ...deadInput, preferredOrder: ["business", "school"] },
+			deps({ applyProfile }),
+		);
+
+		expect(result).toMatchObject({ outcome: "switched", to: "school" });
+		expect(readStore(storePath).accounts).toContainEqual(
+			expect.objectContaining({ name: "personal", unavailable: deadMark }),
+		);
 	});
 
 	it("all quota-exhausted candidates return target_quota_exhausted", async () => {

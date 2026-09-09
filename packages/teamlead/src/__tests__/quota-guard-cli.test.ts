@@ -584,7 +584,7 @@ describe("runQuotaGuardCli", () => {
 		const before = initialStore();
 		const code = await runQuotaGuardCli(
 			["active-sync", "--name", "business", "--store", storePath],
-			{ log: (message) => output.push(message) },
+			{ now: () => NOW, log: (message) => output.push(message) },
 		);
 
 		expect(code).toBe(0);
@@ -592,6 +592,13 @@ describe("runQuotaGuardCli", () => {
 			...before,
 			activeAccount: "business",
 			generation: 8,
+			lastSwitch: {
+				generation: 8,
+				triggerKind: "witness",
+				from: "shopping",
+				to: "business",
+				at: new Date(NOW).toISOString(),
+			},
 			pendingSwitchNotifications: [],
 		});
 		expect(output).toEqual([
@@ -611,6 +618,117 @@ describe("runQuotaGuardCli", () => {
 		expect(output).toEqual([
 			"quota guard active-sync: result=missing_account; name=unknown",
 		]);
+	});
+
+	it("unavailable-clear removes only the named marker under the account lock and audits it", async () => {
+		const current = readStore(storePath);
+		const business = current.accounts.find(
+			(entry) => entry.name === "business",
+		);
+		if (!business) throw new Error("fixture missing business");
+		business.unavailable = {
+			reason: "profile_canceled",
+			markedAt: new Date(NOW - 60_000).toISOString(),
+			evidence: "profile_subscription",
+			markedBy: "quota-monitor",
+		};
+		writeStore(current, storePath);
+		const accountLock = vi.fn(immediateAccountsLock);
+		const auditUnavailableClear = vi.fn();
+
+		const code = await runQuotaGuardCli(
+			[
+				"unavailable-clear",
+				"--name",
+				"business",
+				"--reason",
+				"subscription renewed",
+				"--store",
+				storePath,
+			],
+			{
+				now: () => NOW,
+				withAccountsLock: accountLock,
+				auditUnavailableClear,
+				log: (message) => output.push(message),
+			},
+		);
+
+		expect(code).toBe(0);
+		expect(accountLock).toHaveBeenCalledTimes(1);
+		const after = readStore(storePath);
+		expect(after.generation).toBe(current.generation);
+		expect(
+			after.accounts.find((entry) => entry.name === "business")?.unavailable,
+		).toBeUndefined();
+		expect(auditUnavailableClear).toHaveBeenCalledWith({
+			cmd: "unavailable-clear",
+			name: "business",
+			reason: "subscription renewed",
+			at: NOW,
+		});
+		expect(output).toEqual([
+			"quota guard unavailable-clear: result=cleared; name=business",
+		]);
+	});
+
+	it("unavailable-clear is an idempotent no-op for an unmarked account", async () => {
+		const before = readFileSync(storePath, "utf8");
+		const auditUnavailableClear = vi.fn();
+
+		const code = await runQuotaGuardCli(
+			["unavailable-clear", "--name", "business", "--store", storePath],
+			{
+				now: () => NOW,
+				withAccountsLock: immediateAccountsLock,
+				auditUnavailableClear,
+				log: (message) => output.push(message),
+			},
+		);
+
+		expect(code).toBe(0);
+		expect(readFileSync(storePath, "utf8")).toBe(before);
+		expect(auditUnavailableClear).not.toHaveBeenCalled();
+		expect(output).toEqual([
+			"quota guard unavailable-clear: result=noop; name=business",
+		]);
+	});
+
+	it("unavailable-list is read-only and omits evidence detail", async () => {
+		const current = readStore(storePath);
+		const personal = current.accounts.find(
+			(entry) => entry.name === "personal",
+		);
+		if (!personal) throw new Error("fixture missing personal");
+		personal.unavailable = {
+			reason: "profile_canceled",
+			markedAt: new Date(NOW - 60_000).toISOString(),
+			evidence: "private-evidence",
+			markedBy: "operator",
+		};
+		writeStore(current, storePath);
+		const before = readFileSync(storePath, "utf8");
+
+		const code = await runQuotaGuardCli(
+			["unavailable-list", "--store", storePath],
+			{ log: (message) => output.push(message) },
+		);
+
+		expect(code).toBe(0);
+		expect(readFileSync(storePath, "utf8")).toBe(before);
+		expect(output).toEqual([
+			JSON.stringify({
+				unavailable: [
+					{
+						name: "personal",
+						reason: "profile_canceled",
+						markedAt: new Date(NOW - 60_000).toISOString(),
+						markedBy: "operator",
+					},
+				],
+			}),
+		]);
+		expect(output.join("\n")).not.toContain("private-evidence");
 	});
 
 	it("active-sync-strict clears verified freshening flags", async () => {

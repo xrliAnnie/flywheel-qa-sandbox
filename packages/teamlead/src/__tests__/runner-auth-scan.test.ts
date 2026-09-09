@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeStore } from "../account-heal/account-store.js";
 import { makeRunnerAuthScan } from "../bridge/runner-auth-scan.js";
 import type { AlertPayload } from "../LeadAlertNotifier.js";
 import type { Session } from "../StateStore.js";
@@ -58,6 +59,73 @@ describe("makeRunnerAuthScan", () => {
 		expect(p.eventId).toBe("runner-login-expired:exec-1:login_expired");
 		expect(p.metadata?.authLimit?.evidence).toBe("runner-pane:login_expired");
 		expect(p.metadata?.authLimit?.executionId).toBe("exec-1");
+	});
+
+	it("account_disabled writes a daemon witness, wakes it, and raises an account_dead Lead alert", async () => {
+		const writeQuotaWitness = vi.fn();
+		const wakeQuotaDaemon = vi.fn();
+		const recordAuthHealth = vi.fn();
+		writeStore(
+			{
+				generation: 7,
+				activeAccount: "personal1",
+				accounts: [
+					{
+						name: "personal1",
+						quotaExhaustedUntil: null,
+						weeklyResetAt: null,
+					},
+				],
+			},
+			storePath,
+		);
+		const authScan = makeRunnerAuthScan({
+			alert,
+			resolveLeadId: () => "flywheel-eng-lead",
+			storePath,
+			now: () => 1_725_831_000_000,
+			writeQuotaWitness,
+			wakeQuotaDaemon,
+			recordAuthHealth,
+		});
+
+		await authScan(
+			makeSession(),
+			"Your organization has disabled Claude subscription access for Claude Code",
+		);
+
+		expect(writeQuotaWitness).toHaveBeenCalledWith(
+			expect.objectContaining({
+				version: 1,
+				kind: "account_disabled",
+				observedAt: 1_725_831_000_000,
+				source: "runner_pane",
+				executionId: "exec-1",
+				evidenceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+			}),
+		);
+		expect(wakeQuotaDaemon).toHaveBeenCalledOnce();
+		expect(alert).toHaveBeenCalledWith(
+			expect.objectContaining({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				eventId: "runner-account-dead:exec-1:7",
+				eventType: "account_dead",
+				severity: "severe",
+				sessionKey: "exec-1",
+				body: expect.stringMatching(/^account_dead:personal1\b/),
+				metadata: {
+					authLimit: {
+						provider: "claude",
+						observedAccount: "personal1",
+						observedGeneration: 7,
+						evidence: "runner-pane:account_disabled",
+						executionId: "exec-1",
+					},
+				},
+			}),
+		);
+		expect(recordAuthHealth).not.toHaveBeenCalled();
 	});
 
 	it("healthy pane → no alert", async () => {

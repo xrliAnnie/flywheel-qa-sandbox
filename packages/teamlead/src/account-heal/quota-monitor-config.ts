@@ -15,6 +15,7 @@ export interface QuotaMonitorConfig {
 	confirmDelayMinutes: number;
 	degradedSwitch: boolean;
 	episodeRealertMinutes: number;
+	deadProbeStreak: number;
 }
 
 export const DEFAULT_QUOTA_MONITOR_CONFIG: QuotaMonitorConfig = {
@@ -30,6 +31,7 @@ export const DEFAULT_QUOTA_MONITOR_CONFIG: QuotaMonitorConfig = {
 	confirmDelayMinutes: 7,
 	degradedSwitch: false,
 	episodeRealertMinutes: 30,
+	deadProbeStreak: 2,
 };
 
 export type LoadedQuotaMonitorConfig = {
@@ -81,6 +83,11 @@ function parseConfig(value: unknown): QuotaMonitorConfig | null {
 		DEFAULT_QUOTA_MONITOR_CONFIG.confirmDelayMinutes;
 	const degradedSwitch = value.degradedSwitch ?? false;
 	const episodeRealertMinutes = value.episodeRealertMinutes ?? 30;
+	const deadProbeStreak =
+		Number.isInteger(value.deadProbeStreak) &&
+		boundedNumber(value.deadProbeStreak, 1, 10)
+			? value.deadProbeStreak
+			: DEFAULT_QUOTA_MONITOR_CONFIG.deadProbeStreak;
 	if (
 		!boundedNumber(value.trigger5hPct, 0, 100) ||
 		!boundedNumber(value.acceleratePct, 0, 100) ||
@@ -126,6 +133,7 @@ function parseConfig(value: unknown): QuotaMonitorConfig | null {
 		confirmDelayMinutes,
 		degradedSwitch,
 		episodeRealertMinutes,
+		deadProbeStreak,
 	};
 }
 

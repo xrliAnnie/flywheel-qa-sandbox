@@ -111,6 +111,13 @@ describe("ClaudePoolRebuild", () => {
 				generation: 7,
 				activeAccount: "personal",
 				identityStale: true,
+				lastSwitch: {
+					generation: 7,
+					triggerKind: "account_dead",
+					from: "retired",
+					to: "personal",
+					at: "2026-09-08T22:00:00.000Z",
+				},
 				accounts: SLOTS.map((name, index) => ({
 					name,
 					quotaExhaustedUntil:
@@ -121,6 +128,16 @@ describe("ClaudePoolRebuild", () => {
 					authExpired: true,
 					refreshTokenInvalid: true,
 					profileVerifyFailed: true,
+					...(index === 0
+						? {
+								unavailable: {
+									reason: "profile_canceled",
+									markedAt: "2026-09-08T21:50:00.000Z",
+									evidence: "profile_subscription",
+									markedBy: "quota-monitor",
+								},
+							}
+						: {}),
 					modelCaps: {
 						opus: { until: "2099-03-01T00:00:00.000Z", backoffMs: 60_000 },
 					},
@@ -524,6 +541,19 @@ describe("ClaudePoolRebuild", () => {
 			expect(account.refreshTokenInvalid).toBe(false);
 			expect(account.profileVerifyFailed).toBe(false);
 		}
+		expect(store.accounts[0].unavailable).toEqual({
+			reason: "profile_canceled",
+			markedAt: "2026-09-08T21:50:00.000Z",
+			evidence: "profile_subscription",
+			markedBy: "quota-monitor",
+		});
+		expect(store.lastSwitch).toEqual({
+			generation: 7,
+			triggerKind: "account_dead",
+			from: "retired",
+			to: "personal",
+			at: "2026-09-08T22:00:00.000Z",
+		});
 		const state = json(paths.state);
 		expect(state.observedGeneration).toBe(8);
 		expect(state.pendingDetection).toBeNull();

@@ -35,6 +35,7 @@ import {
 
 /** A recognised blocking condition, plus the two non-cap terminal verdicts. */
 export type DetectionCategory =
+	| "account_disabled"
 	| "login_expired"
 	| "usage_limit"
 	| "rate_limit"
@@ -63,6 +64,13 @@ type BlockedCategory = Exclude<DetectionCategory, "healthy" | "suspicious">;
  * shapes (Invalid API key / please run /login / session expired).
  */
 const PATTERN_TABLE: Array<{ category: BlockedCategory; tokens: RegExp[] }> = [
+	{
+		category: "account_disabled",
+		tokens: [
+			/disabled claude subscription access/i,
+			/oauth_not_allowed_for_organization/i,
+		],
+	},
 	{
 		category: "login_expired",
 		tokens: [
@@ -185,6 +193,7 @@ export async function classifyDetection(
 }
 
 const AI_CATEGORIES: ReadonlySet<string> = new Set([
+	"account_disabled",
 	"login_expired",
 	"usage_limit",
 	"rate_limit",
@@ -197,6 +206,7 @@ function buildDetectionPrompt(text: string): string {
 		"You are a STRICT classifier for the terminal pane of an AI coding CLI.",
 		"Classify the CURRENT blocking condition into EXACTLY one category.",
 		"Categories:",
+		"- account_disabled: the Claude subscription or organization has disabled access.",
 		"- login_expired: logged out / auth or session expired / invalid API key / it is asking to re-login (/login).",
 		"- usage_limit: a subscription usage/quota cap was hit.",
 		"- rate_limit: transient rate limiting.",

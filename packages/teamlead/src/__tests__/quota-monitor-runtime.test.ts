@@ -21,6 +21,7 @@ import {
 	emptyQuotaMonitorState,
 	writeQuotaMonitorState,
 } from "../account-heal/quota-monitor-state.js";
+import { writeQuotaWitness } from "../account-heal/quota-witness.js";
 import { usageResult } from "./quota-monitor-test-helpers.js";
 
 const NOW = Date.parse("2026-07-14T20:00:00Z");
@@ -118,6 +119,65 @@ const noMachineDrift = async () => ({
 });
 
 describe("makeQuotaMonitorRuntime", () => {
+	it("reads the witness beside state and bypasses a persisted usage backoff", async () => {
+		writeConfig(99);
+		const state = emptyQuotaMonitorState(4);
+		state.backoffUntilMs = NOW + 15 * 60_000;
+		state.nextUsageDueAt = NOW + 15 * 60_000;
+		state.nextPaneScanDueAt = NOW + 15 * 60_000;
+		writeQuotaMonitorState(state, statePath);
+		writeQuotaWitness(join(dir, "quota-monitor-witness.json"), {
+			version: 1,
+			kind: "account_disabled",
+			observedAt: NOW,
+			source: "review_job",
+			executionId: "exec-1",
+			evidenceDigest: "f".repeat(64),
+		});
+		const fetchUsage = vi.fn(async () => ({
+			error: "rate_limited" as const,
+			retryAfterMs: 60_000,
+		}));
+		const fetchIdentity = vi.fn(async () => ({
+			email: "shopping@example.com",
+			uuid: "uuid-shopping",
+			subscription: { status: "active", organizationType: "claude_max" },
+		}));
+		const runtime = makeQuotaMonitorRuntime({
+			now: () => NOW,
+			paths: {
+				poolDir,
+				configPath,
+				statePath,
+				storePath,
+				cachePath,
+				lockPath,
+				claudeJsonPath,
+			},
+			reconcileMachine: noMachineDrift,
+			readKeychainCredential: async () => ({
+				accessToken: "active-secret",
+				expiresAt: NOW + 3_600_000,
+			}),
+			fetchUsage,
+			fetchIdentity,
+			tmux: {
+				listPanes: async () => [],
+				capturePane: async () => "",
+				sendContinue: async () => ({ sent: true }),
+			},
+			alert: async () => ({ primary: "sent" }),
+		});
+
+		await expect(runtime.tick()).resolves.toMatchObject({ outcome: "backoff" });
+		expect(fetchUsage).toHaveBeenCalledTimes(1);
+		expect(fetchIdentity).toHaveBeenCalledTimes(1);
+		expect(JSON.parse(readFileSync(statePath, "utf8")).witnessCursor).toEqual({
+			consumedAt: NOW,
+			digest: "f".repeat(64),
+		});
+	});
+
 	it("skips healthy reconcile and throttles repeated attempts for one drift witness", async () => {
 		writeConfig(99);
 		let accessToken = "active-secret";
@@ -450,6 +510,13 @@ describe("makeQuotaMonitorRuntime", () => {
 			{
 				generation: 5,
 				activeAccount: "school",
+				lastSwitch: {
+					generation: 5,
+					triggerKind: "witness",
+					from: "shopping",
+					to: "school",
+					at: new Date(NOW).toISOString(),
+				},
 				accounts: [
 					{ name: "shopping", quotaExhaustedUntil: null, weeklyResetAt: null },
 					{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
@@ -489,6 +556,13 @@ describe("makeQuotaMonitorRuntime", () => {
 		expect(readStore(storePath)).toMatchObject({
 			activeAccount: "school",
 			generation: 5,
+			lastSwitch: {
+				generation: 5,
+				triggerKind: "witness",
+				from: "shopping",
+				to: "school",
+				at: new Date(NOW).toISOString(),
+			},
 		});
 		expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
 			observedGeneration: 5,
