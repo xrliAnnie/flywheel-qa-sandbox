@@ -525,7 +525,9 @@ TARGET_PANE='<exact canonical pane id>'
 REPAIR_ISSUE_IDENTIFIER='<exact issue that owns this run>'
 case "$REQUEST_ID:$TARGET_PANE" in *[!A-Za-z0-9._:%-]*) exit 64;; esac
 case "$REPAIR_ISSUE_IDENTIFIER" in [A-Z]*-[1-9][0-9]*) ;; *) exit 64;; esac
-SNAPSHOT_CONTROL="${FLYWHEEL_DIR:?FLYWHEEL_DIR must name the Flywheel checkout}/scripts/flywheel-snapshot-control.mjs"
+PATROL_SNAPSHOT="$(command -v flywheel-patrol-snapshot)" || exit $?
+SNAPSHOT_SOURCE_DIR="$(node -e 'const {dirname}=require("node:path");const {realpathSync}=require("node:fs");process.stdout.write(dirname(realpathSync(process.argv[1])))' "$PATROL_SNAPSHOT")" || exit $?
+SNAPSHOT_CONTROL="$SNAPSHOT_SOURCE_DIR/flywheel-snapshot-control.mjs"
 BACKUP_JSON="$(node "$SNAPSHOT_CONTROL" repair --source "$STATE_DB" --kind teamlead --issue "$REPAIR_ISSUE_IDENTIFIER")" || exit $?
 BACKUP_PATH="$(printf '%s' "$BACKUP_JSON" | jq -er 'if .ok == true and (.path | type == "string") then .path else empty end')" || exit 1
 BASELINE_SEQ="$(sqlite3 -bail "$STATE_DB" "PRAGMA busy_timeout=5000; SELECT COALESCE(MAX(e.seq),0) FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID';")"

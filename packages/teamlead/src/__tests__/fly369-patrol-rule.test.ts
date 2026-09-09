@@ -528,15 +528,23 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(section0).toMatch(/步骤 B.*记录进病根 Epic/s);
 	});
 
-	it("FLY-2351: the repair recipe resolves snapshot control from the Lead checkout", () => {
+	it("FLY-2351: the repair recipe resolves snapshot control from the managed executable", () => {
 		const appendixA = patrol.slice(
 			patrol.indexOf("### FLY-2080 附录 A"),
 			patrol.indexOf("### FLY-2080 附录 B"),
 		);
 		expect(appendixA).toContain(
-			`SNAPSHOT_CONTROL="\${FLYWHEEL_DIR:?FLYWHEEL_DIR must name the Flywheel checkout}/scripts/flywheel-snapshot-control.mjs"`,
+			'PATROL_SNAPSHOT="$(command -v flywheel-patrol-snapshot)" || exit $?',
+		);
+		expect(appendixA).toContain("dirname(realpathSync(process.argv[1]))");
+		expect(appendixA).toMatch(
+			/realpathSync\(process\.argv\[1\]\).*"\$PATROL_SNAPSHOT"\)" \|\| exit \$\?/,
+		);
+		expect(appendixA).toContain(
+			'SNAPSHOT_CONTROL="$SNAPSHOT_SOURCE_DIR/flywheel-snapshot-control.mjs"',
 		);
 		expect(appendixA).toContain('node "$SNAPSHOT_CONTROL" repair');
+		expect(appendixA).not.toContain("FLYWHEEL_DIR");
 		expect(appendixA).not.toContain(
 			"node scripts/flywheel-snapshot-control.mjs",
 		);
