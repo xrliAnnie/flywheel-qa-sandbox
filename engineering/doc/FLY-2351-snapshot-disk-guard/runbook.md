@@ -9,6 +9,17 @@ Issue: FLY-2351 (https://linear.app/geoforge3d/issue/FLY-2351/运维磁盘-满�
 - 机器接口：`node scripts/flywheel-snapshot-control.mjs disk`。`disk.availBytes` 是判定源，`disk_avail_gb` 不舍入，仅展示。
 - `disk.availBytes < 20000000000` 时巡检 STEP 5 必须是 `FINDING`；等于 20GB 不触发低盘 finding。读数 unknown 不得当 0，也不得把 STEP 5 定稿为 OK。
 
+## 低盘紧急处置顺序
+
+低盘 finding 后严格按顺序处置：
+
+1. **只读 inventory**：记录 Data 卷可用 bytes、计划快照的 reservation、规范 repair 快照、受管 runner 目录和不可删除项；盘点本身不得写数据库。
+2. **只清理已批准对象**：仅按保留规则清理可删旧快照和已结束的受管副本。未映射、owner 不明或仍活跃的对象只列入 `non_deletable_items`，不得猜测删除。
+3. **重新测量 5× 门槛**：记录 `measured_avail_bytes` 与 `required_bytes = 5 × reservation`。只有重新测量达标，才可创建恢复点并继续修改数据库。
+4. **不足即停并上报**：若仍不足 5×，停止所有会修改数据库的修复，把 `measured_avail_bytes`、`required_bytes` 和 `non_deletable_items` 报给 Lead，由运维扩容或按目标存储的既有合同扩大清理范围。
+
+不能降到 `2×`，不能用裸 `sqlite3` 绕过受管快照门槛，也不能把会额外占盘的 db-maintenance backup 或 `VACUUM` 当作紧急腾空命令。
+
 ## 创建快照
 
 禁止 `cp` 正在使用的 `teamlead.db` 或 `comm.db`。在线快照统一走：

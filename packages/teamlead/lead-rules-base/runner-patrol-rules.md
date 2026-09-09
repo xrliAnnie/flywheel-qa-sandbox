@@ -177,6 +177,11 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
    磁盘事实 unavailable 时 STEP 5 不得定稿 `OK`；保留稳定 token 并走本规则的
    UNAVAILABLE 建单流程。人工复核只准 run
    `df -h /System/Volumes/Data`，不得用 `df -h /`（macOS 的 `/` 是密封系统卷）。
+   低盘 finding 后，任何数据库写修复都必须先执行
+   `engineering/doc/FLY-2351-snapshot-disk-guard/runbook.md#低盘紧急处置顺序`：只读
+   inventory → 仅清理可删旧快照和已结束的受管副本 → 重测 5×。仍不足时停止修改
+   数据库，并向 Lead 报告 measured avail、required bytes 和不可删除项；禁止降到 2×、
+   裸 sqlite 绕过门槛或用 db-maintenance backup/VACUUM 腾空间。
 
    **Raya 生产 checkout（仅 flywheel 项目）**。读取同段的 `raya checkout=` 事实行：
 

@@ -16,12 +16,24 @@ const PATROL_PATH = join(BASE, "runner-patrol-rules.md");
 const MSG_PATH = join(BASE, "runner-messaging-rules.md");
 const README_PATH = join(BASE, "README.md");
 const SH_PATH = join(__dirname, "..", "..", "scripts", "claude-lead.sh");
+const RUNBOOK_PATH = join(
+	__dirname,
+	"..",
+	"..",
+	"..",
+	"..",
+	"engineering",
+	"doc",
+	"FLY-2351-snapshot-disk-guard",
+	"runbook.md",
+);
 
 describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 	const patrol = readFileSync(PATROL_PATH, "utf8");
 	const msg = readFileSync(MSG_PATH, "utf8");
 	const readme = readFileSync(README_PATH, "utf8");
 	const sh = readFileSync(SH_PATH, "utf8");
+	const runbook = readFileSync(RUNBOOK_PATH, "utf8");
 
 	it("RC-3: proactive patrol uses runner_terminal_list as the sweep starting point (NOT an acceptance oracle)", () => {
 		expect(patrol).toContain("runner_terminal_list");
@@ -69,6 +81,26 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		]) {
 			expect(patrol).toContain(anchor);
 		}
+	});
+
+	it("FLY-2351: low-disk patrol links the ordered emergency runbook", () => {
+		for (const anchor of [
+			"## 低盘紧急处置顺序",
+			"只读 inventory",
+			"可删旧快照和已结束的受管副本",
+			"measured_avail_bytes",
+			"required_bytes",
+			"non_deletable_items",
+			"停止所有会修改数据库的修复",
+			"不能降到 `2×`",
+			"不能用裸 `sqlite3`",
+			"db-maintenance backup 或 `VACUUM`",
+		]) {
+			expect(runbook).toContain(anchor);
+		}
+		expect(patrol).toContain(
+			"engineering/doc/FLY-2351-snapshot-disk-guard/runbook.md#低盘紧急处置顺序",
+		);
 	});
 
 	it("FLY-2118: patrol_tick has an executable owner scope, orphan fallback, six-step artifact, and explicit UNAVAILABLE exit", () => {
