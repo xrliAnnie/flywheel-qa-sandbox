@@ -1,0 +1,21 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'-apple-system, system-ui, sans-serif','primaryColor':'#eef5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b'},'class':{'htmlLabels':false}}}%%
+classDiagram
+ class 身份 {
+  项目键
+  岗位键
+ }
+ class 持久家 {
+  开场说明
+  Codex原生记忆
+ }
+ class 历史档案 {
+  来源清单
+  阅读索引
+ }
+ class 内容快照 {
+  内容指纹
+  原样Markdown目录
+ }
+ 身份 "1" --> "1" 持久家 : 精确对应
+ 持久家 "1" *-- "0..1" 历史档案 : 首次导入
+ 历史档案 "1" *-- "0..n" 内容快照 : 相同内容存一份

@@ -4,6 +4,7 @@
  * temp homes root (no real ~/.codex touched).
  */
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -220,6 +221,235 @@ describe("FLY-2358 agent home path", () => {
 describe("FLY-2358 agent home admission and provisioning", () => {
 	const identity = { project: "flywheel", role: "implement" };
 
+	it("publishes legacy memory before creating the first lease", async () => {
+		const legacyMemories = join(codexHomeDir("exec-old", env), "memories");
+		mkdirSync(legacyMemories, { recursive: true });
+		writeFileSync(join(legacyMemories, "MEMORY.md"), "legacy marker\n");
+		const home = codexAgentHomeDir(identity, env);
+		const loader = vi.fn(() => {
+			expect(readdirSync(join(home, ".flywheel-leases"))).toEqual([]);
+			return {
+				sources: [
+					{
+						executionId: "exec-old",
+						issueId: "issue-old",
+						issueIdentifier: "FLY-OLD",
+						issueTitle: "Old task",
+						startedAt: "2026-07-19 18:36:36",
+					},
+				],
+				skipped: [],
+			};
+		});
+
+		const admission = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-new",
+				requestedAssemblyArm: "bare",
+				loadMemorySeedSources: loader,
+			},
+			env,
+		);
+
+		expect(loader).toHaveBeenCalledTimes(1);
+		expect(admission.memorySeed).toBe("published");
+		const manifest = JSON.parse(
+			readFileSync(
+				join(home, ".flywheel-memory-seed", "manifest.json"),
+				"utf8",
+			),
+		);
+		expect(
+			readFileSync(
+				join(
+					home,
+					".flywheel-memory-seed",
+					"snapshots",
+					manifest.sources[0].snapshotHash,
+					"MEMORY.md",
+				),
+				"utf8",
+			),
+		).toBe("legacy marker\n");
+		expect(readdirSync(join(home, ".flywheel-leases"))).toEqual(["exec-new"]);
+	});
+
+	it("defers a B1 home while busy and seeds it after every lease drains", async () => {
+		const first = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-a",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		const legacyMemories = join(codexHomeDir("exec-old", env), "memories");
+		mkdirSync(legacyMemories, { recursive: true });
+		writeFileSync(join(legacyMemories, "MEMORY.md"), "drained marker\n");
+		const loader = vi.fn(() => ({
+			sources: [
+				{
+					executionId: "exec-old",
+					issueId: null,
+					issueIdentifier: null,
+					issueTitle: null,
+					startedAt: null,
+				},
+			],
+			skipped: [],
+		}));
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const second = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-b",
+				requestedAssemblyArm: "bare",
+				loadMemorySeedSources: loader,
+			},
+			env,
+		);
+		expect(second.memorySeed).toBe("deferred_busy");
+		expect(loader).not.toHaveBeenCalled();
+		expect(warning).toHaveBeenCalledWith(
+			expect.stringContaining("deferred_busy project=flywheel role=implement"),
+		);
+		warning.mockRestore();
+		await releaseCodexAgentHomeLease(first.handle, env);
+		await releaseCodexAgentHomeLease(second.handle, env);
+
+		const third = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-c",
+				requestedAssemblyArm: "bare",
+				loadMemorySeedSources: loader,
+			},
+			env,
+		);
+		expect(third.memorySeed).toBe("published");
+		expect(loader).toHaveBeenCalledTimes(1);
+		expect(
+			readFileSync(
+				join(third.handle.home, ".flywheel-memory-seed", "catalog.md"),
+				"utf8",
+			),
+		).toContain("snapshots/");
+	});
+
+	it("replays a post-rename crash from the complete archive without adding a lease twice", async () => {
+		const legacyMemories = join(codexHomeDir("exec-old", env), "memories");
+		mkdirSync(legacyMemories, { recursive: true });
+		writeFileSync(join(legacyMemories, "MEMORY.md"), "crash marker\n");
+		const loader = vi.fn(() => ({
+			sources: [
+				{
+					executionId: "exec-old",
+					issueId: null,
+					issueIdentifier: null,
+					issueTitle: null,
+					startedAt: null,
+				},
+			],
+			skipped: [],
+		}));
+		await expect(
+			admitCodexAgentHome(
+				{
+					...identity,
+					executionId: "exec-new",
+					requestedAssemblyArm: "bare",
+					loadMemorySeedSources: loader,
+					memorySeedTesting: {
+						afterRename: () => {
+							throw new Error("post-rename crash");
+						},
+					},
+				},
+				env,
+			),
+		).rejects.toThrow("post-rename crash");
+		const home = codexAgentHomeDir(identity, env);
+		expect(readdirSync(join(home, ".flywheel-leases"))).toEqual([]);
+		expect(
+			existsSync(join(home, ".flywheel-memory-seed", "manifest.json")),
+		).toBe(true);
+
+		const replay = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-new",
+				requestedAssemblyArm: "bare",
+				loadMemorySeedSources: loader,
+			},
+			env,
+		);
+		expect(replay.memorySeed).toBe("reused");
+		expect(loader).toHaveBeenCalledTimes(1);
+		expect(readdirSync(join(home, ".flywheel-leases"))).toEqual(["exec-new"]);
+	});
+
+	it("leaves no lease or completed archive after a seed failure and retries", async () => {
+		const failingLoader = vi.fn(() => {
+			throw new Error("source query failed");
+		});
+		await expect(
+			admitCodexAgentHome(
+				{
+					...identity,
+					executionId: "exec-new",
+					requestedAssemblyArm: "bare",
+					loadMemorySeedSources: failingLoader,
+				},
+				env,
+			),
+		).rejects.toThrow("source query failed");
+		const home = codexAgentHomeDir(identity, env);
+		expect(existsSync(join(home, ".flywheel-agent-home.json"))).toBe(true);
+		expect(readdirSync(join(home, ".flywheel-leases"))).toEqual([]);
+		expect(existsSync(join(home, ".flywheel-memory-seed"))).toBe(false);
+
+		const retry = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-new",
+				requestedAssemblyArm: "bare",
+				loadMemorySeedSources: () => ({ sources: [], skipped: [] }),
+			},
+			env,
+		);
+		expect(retry.memorySeed).toBe("published");
+		expect(readdirSync(join(home, ".flywheel-leases"))).toEqual(["exec-new"]);
+	});
+
+	it("rejects a completed directory without a valid manifest before creating a lease", async () => {
+		const initial = await admitCodexAgentHome(
+			{
+				...identity,
+				executionId: "exec-initial",
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		await releaseCodexAgentHomeLease(initial.handle, env);
+		const seed = join(initial.handle.home, ".flywheel-memory-seed");
+		mkdirSync(seed);
+
+		await expect(
+			admitCodexAgentHome(
+				{
+					...identity,
+					executionId: "exec-new",
+					requestedAssemblyArm: "bare",
+				},
+				env,
+			),
+		).rejects.toThrow("invalid codex memory seed manifest");
+		expect(readdirSync(join(initial.handle.home, ".flywheel-leases"))).toEqual(
+			[],
+		);
+	});
+
 	it("creates a keyed home lazily and makes repeated admission idempotent", async () => {
 		expect(existsSync(join(tmp, "homes", "agents"))).toBe(false);
 		const first = await admitCodexAgentHome(
@@ -383,8 +613,13 @@ describe("FLY-2358 agent home admission and provisioning", () => {
 		});
 	});
 
-	it("serializes eight simultaneous processes onto one arm, marker, and trust set", async () => {
+	it("serializes eight processes onto one arm, one memory seed, marker, and trust set", async () => {
 		const barrier = join(tmp, "concurrency-barrier");
+		const memoryCounter = join(tmp, "memory-seed-counter");
+		const memorySource = "exec-memory-source";
+		const sourceMemories = join(codexHomeDir(memorySource, env), "memories");
+		mkdirSync(sourceMemories, { recursive: true });
+		writeFileSync(join(sourceMemories, "MEMORY.md"), "concurrent marker\n");
 		const worker = fileURLToPath(
 			new URL(
 				"./fixtures/codex-agent-home-concurrent-worker.ts",
@@ -423,6 +658,8 @@ describe("FLY-2358 agent home admission and provisioning", () => {
 					FLY_TEST_REGISTRY: registryPath,
 					FLY_TEST_LEDGER: join(ledgerRoot, executionId),
 					FLY_TEST_GH_TOKEN: TOKEN,
+					FLY_TEST_MEMORY_SOURCE: memorySource,
+					FLY_TEST_MEMORY_COUNTER: memoryCounter,
 					FLY_TEST_MATT_SKILLS: join(
 						repoRoot,
 						"vendor",
@@ -468,6 +705,7 @@ describe("FLY-2358 agent home admission and provisioning", () => {
 					requestedAssemblyArm: string;
 					effectiveAssemblyArm: string;
 					inherited: boolean;
+					memorySeed: string;
 				},
 			})),
 		);
@@ -489,6 +727,18 @@ describe("FLY-2358 agent home admission and provisioning", () => {
 		expect(marker.assemblyArm).toBe(effectiveArm);
 		expect(marker.materializedArm).toBe(effectiveArm);
 		expect(readdirSync(join(home, ".flywheel-leases"))).toHaveLength(8);
+		expect(readFileSync(memoryCounter, "utf8").trim().split("\n")).toHaveLength(
+			1,
+		);
+		expect(
+			results.filter(({ result }) => result.memorySeed === "published"),
+		).toHaveLength(1);
+		expect(
+			results.filter(({ result }) => result.memorySeed === "reused"),
+		).toHaveLength(7);
+		expect(
+			readFileSync(join(home, ".flywheel-memory-seed", "catalog.md"), "utf8"),
+		).toContain("snapshots/");
 		const config = readFileSync(join(home, "config.toml"), "utf8");
 		expect(() => parseToml(config)).not.toThrow();
 		for (const child of children) {
@@ -2322,6 +2572,32 @@ hide_full_access_warning = true
 				"utf-8",
 			);
 			expect(agents.match(/flywheel-managed \(FLY-1188\)/g)?.length).toBe(1);
+		});
+
+		it("guards historical seed reads and leaves native memories unchanged", () => {
+			const opts = { executionId: "exec-memory-seed-contract", env };
+			const home = provisionCodexHome(opts);
+			const nativeMemory = join(home, "memories", "MEMORY.md");
+			mkdirSync(dirname(nativeMemory), { recursive: true });
+			writeFileSync(nativeMemory, "native memory stays authoritative\n");
+			const before = createHash("sha256")
+				.update(readFileSync(nativeMemory))
+				.digest("hex");
+
+			provisionCodexHome(opts);
+
+			const agents = readFileSync(join(home, "AGENTS.md"), "utf8");
+			expect(agents).toContain(
+				"Only when `$CODEX_HOME/.flywheel-memory-seed/index.md` exists",
+			);
+			expect(agents).toContain("do not read the archive at all");
+			expect(agents).toMatch(/Search `catalog\.md`\s+by issue or topic/);
+			expect(agents).toMatch(
+				/Current task and\s+repository evidence always win/,
+			);
+			expect(
+				createHash("sha256").update(readFileSync(nativeMemory)).digest("hex"),
+			).toBe(before);
 		});
 	});
 });

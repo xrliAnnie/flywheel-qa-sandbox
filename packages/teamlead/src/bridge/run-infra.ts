@@ -13,8 +13,10 @@ import {
 	AnthropicLLMClient,
 	AntigravityTmuxAdapter,
 	type AsyncExecFileFn,
+	type CodexAgentHomeIdentity,
 	type CodexAgentHomeSessionSnapshot,
 	CodexExecutionOwnershipRegistry,
+	type CodexMemorySeedSourceSet,
 	type CodexRecoveryCommitHooks,
 	type CodexRecoveryOptions,
 	CodexTmuxAdapter,
@@ -22,6 +24,7 @@ import {
 	defaultAsyncExecFile,
 	KimiTmuxAdapter,
 	type RunnerTuiWindowLostEvidence,
+	resolveExecutionCodexHome,
 	scrubOrphanedCodexAgentHomes,
 	scrubOrphanedCodexHomes,
 	TmuxAdapter,
@@ -67,9 +70,11 @@ import {
 import {
 	Blueprint,
 	type BlueprintResult,
+	type CodexMemorySeedSourcesLoader,
 } from "flywheel-edge-worker/dist/Blueprint.js";
 import { PreHydrator } from "flywheel-edge-worker/dist/PreHydrator.js";
 import { DirectEventSink } from "../DirectEventSink.js";
+import { isWakeTerminalStatus } from "../operational-terminal-status.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import {
 	isStateStoreIrreversibleTerminalForZombie,
@@ -548,8 +553,93 @@ function resolveFlywheelRepoRoot(explicit?: string): string {
 	return candidate;
 }
 
+type CodexMemoryHomeResolution = ReturnType<typeof resolveExecutionCodexHome>;
+
+/** Build the deterministic legacy-source set for one exact persistent home. */
+export function loadCodexMemorySeedSources(input: {
+	store: Pick<StateStore, "getProjectSessions">;
+	identity: CodexAgentHomeIdentity;
+	currentExecutionId: string;
+	resolveHome?: (
+		executionId: string,
+		expected: CodexAgentHomeIdentity,
+	) => CodexMemoryHomeResolution;
+}): CodexMemorySeedSourceSet {
+	const sources: CodexMemorySeedSourceSet["sources"] = [];
+	const skipped: CodexMemorySeedSourceSet["skipped"] = [];
+	const resolveHome = input.resolveHome ?? resolveExecutionCodexHome;
+	for (const session of input.store.getProjectSessions(
+		input.identity.project,
+	)) {
+		let reason: string | undefined;
+		if (session.execution_id === input.currentExecutionId) {
+			reason = "current_execution";
+		} else if (session.project_name !== input.identity.project) {
+			reason = "project_mismatch";
+		} else if (session.adapter_type !== "codex-tmux") {
+			reason = "adapter_mismatch";
+		} else if (!session.workflow_node_id) {
+			reason = "missing_role";
+		} else if (session.workflow_node_id !== input.identity.role) {
+			reason = "role_mismatch";
+		} else if (!isWakeTerminalStatus(session.status)) {
+			reason = "non_terminal";
+		}
+		if (reason !== undefined) {
+			skipped.push({ executionId: session.execution_id, reason });
+			continue;
+		}
+		const resolution = resolveHome(session.execution_id, input.identity);
+		if (resolution.kind !== "legacy") {
+			skipped.push({
+				executionId: session.execution_id,
+				reason:
+					resolution.kind === "keyed"
+						? "keyed_home"
+						: resolution.kind === "prepublished"
+							? "prepublished_home"
+							: "unknown_home",
+			});
+			continue;
+		}
+		const nullable = (value: unknown): string | null =>
+			typeof value === "string" && value.length > 0 ? value : null;
+		sources.push({
+			executionId: session.execution_id,
+			issueId: nullable(session.issue_id),
+			issueIdentifier: nullable(session.issue_identifier),
+			issueTitle: nullable(session.issue_title),
+			startedAt: nullable(session.started_at),
+		});
+	}
+	const byExecutionId = <T extends { executionId: string }>(
+		left: T,
+		right: T,
+	) =>
+		left.executionId < right.executionId
+			? -1
+			: left.executionId > right.executionId
+				? 1
+				: 0;
+	return {
+		sources: sources.sort(byExecutionId),
+		skipped: skipped.sort(byExecutionId),
+	};
+}
+
+export function createCodexMemorySeedSourcesLoader(
+	store: Pick<StateStore, "getProjectSessions">,
+): CodexMemorySeedSourcesLoader {
+	return ({ project, role, currentExecutionId }) =>
+		loadCodexMemorySeedSources({
+			store,
+			identity: { project, role },
+			currentExecutionId,
+		});
+}
+
 /** Create a Blueprint for running issues. CIPHER principles loaded; AgentDispatcher wired (FLY-137 v1.27.2). */
-async function createRunBlueprint(
+export async function createRunBlueprint(
 	tmuxSessionName: string,
 	fetchIssue: ReturnType<typeof createFetchIssue>,
 	eventEmitter: DirectEventSink,
@@ -591,6 +681,7 @@ async function createRunBlueprint(
 			  }
 			| undefined;
 	},
+	codexMemorySeedSources?: CodexMemorySeedSourcesLoader,
 ): Promise<{
 	blueprint: Blueprint;
 	cleanup: () => Promise<void>;
@@ -842,7 +933,11 @@ async function createRunBlueprint(
 			docFlowEnabled,
 			undefined, // auditSignal — use Blueprint default
 			runnerMemoryMode,
+			undefined, // runnerMemoryPreparer — use Blueprint default
 		);
+		if (codexMemorySeedSources) {
+			blueprint.setCodexMemorySeedSources(codexMemorySeedSources);
+		}
 
 		const cleanup = async () => {
 			await hookServer!.stop();
@@ -1481,6 +1576,7 @@ export async function setupRunInfrastructure(
 							};
 						},
 					},
+					createCodexMemorySeedSourcesLoader(store),
 				);
 			runInfraOpts?.codexRecoveryRuntimes?.set(
 				project.projectName,

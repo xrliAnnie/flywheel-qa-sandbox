@@ -1,0 +1,98 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2359 · 让旧经验回到自己的家</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,system-ui,"PingFang SC",sans-serif}.wrap{max-width:960px;margin:auto;padding:32px 20px 64px}h1{font-size:32px;line-height:1.25;color:#1a365d;margin:12px 0}h2{font-size:21px;margin:0 0 12px}p{margin:10px 0}.meta,.note{font-size:13px;color:#6e6e73}.card{background:#fff;border-radius:12px;padding:24px;margin:18px 0;box-shadow:0 1px 3px #0000000f;border-left:4px solid #007aff}.amber{border-color:#ff9500}.green{border-color:#34c759}.purple{border-color:#af52de}.lede{font-size:19px}.pending{border:1px dashed #ff9500;background:#fff8ee;border-radius:8px;padding:22px;margin:12px 0;color:#734900}.pending strong{font-size:14px;display:block}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:10px 8px;border-bottom:1px solid #e5e5ea;text-align:left;vertical-align:top}th{color:#6e6e73}code,pre{font-family:"SF Mono",Menlo,monospace;font-size:13px}code{background:#f2f2f7;padding:2px 4px;border-radius:4px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f7;border-radius:8px;padding:14px}label{display:block;font-size:13px;color:#6e6e73;margin:18px 0 6px}.comment-input{width:100%;min-height:76px;resize:vertical;border:1px solid #d2d2d7;border-radius:8px;padding:12px;font:inherit}.comment-input:focus{outline:2px solid #007aff;outline-offset:2px}button{border:0;background:#007aff;color:white;border-radius:8px;padding:10px 16px;font:inherit;cursor:pointer;margin:6px 8px 6px 0}button:disabled{opacity:.45;cursor:default}.chunk{padding-bottom:12px;border-bottom:1px solid #e5e5ea}summary{cursor:pointer;color:#0066cc}.tag{color:#0066cc;font-size:13px;font-weight:600}.table-wrap{overflow:auto}@media(max-width:600px){.wrap{padding:20px 12px 40px}.card{padding:18px 15px}h1{font-size:27px}td,th{min-width:90px}.lede{font-size:17px}}</style></head><body><main class="wrap"><div class="tag">FLY-2359 · 工程设计</div><h1>让旧经验回到自己的家</h1><p class="meta">2026-09-08 · Epic FLY-2355 · B1 已落地共享持久目录 · 本页是设计说明，尚非实现验收</p>
+<section class="card green"><h2>一句话说明</h2><p class="lede">同一个岗位在同一个项目里，首次开场就能找到它过去的经验；其他岗位、其他项目的经验不会被带进来。</p><p><strong>home</strong> 是 Codex 保存个人文件的目录。上一单 B1 已让后续任务复用同一个持久 home；本单补上首次历史导入，并验证不会串人、串项目。</p><label for="comment-summary">对「一句话说明」的意见（保存在这台设备）</label><textarea class="comment-input" id="comment-summary" data-title="一句话说明" placeholder="写下希望修改的地方…"></textarea></section>
+<section class="card "><h2>经验怎样回家</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>先核对项目与岗位，再等家空闲，把完整历史一次放好，最后允许新任务开场。</p><p class="note">本地 Chromium 被沙箱拒绝启动，标准参数重试仍失败。这里保留真实 Mermaid 源码，尚未生成图像。</p></div><details><summary>查看 Mermaid 图稿</summary><pre>%%{init: {&#x27;theme&#x27;:&#x27;base&#x27;,&#x27;themeVariables&#x27;:{&#x27;fontFamily&#x27;:&#x27;-apple-system, system-ui, sans-serif&#x27;,&#x27;primaryColor&#x27;:&#x27;#eef5ff&#x27;,&#x27;primaryTextColor&#x27;:&#x27;#1d1d1f&#x27;,&#x27;primaryBorderColor&#x27;:&#x27;#007aff&#x27;,&#x27;lineColor&#x27;:&#x27;#86868b&#x27;},&#x27;flowchart&#x27;:{&#x27;htmlLabels&#x27;:false,&#x27;curve&#x27;:&#x27;linear&#x27;}}}%%
+flowchart TD
+ A[旧任务留下的经验] --&gt; B{项目与岗位完全匹配?}
+ B --&gt;|否或不明| X[留在原处 · 记录原因]
+ B --&gt;|是| C{持久家正忙吗?}
+ C --&gt;|忙| Y[等下次自然空闲]
+ C --&gt;|空闲| D[一次发布完整历史档案]
+ D --&gt; E[新任务开场读取历史索引]
+ E --&gt; F[后续经验继续留在同一家]
+</pre></details><p><strong>租约</strong> 是“这个家目前有人在用”的记录。第一次导入在授予新租约之前完成；已经有人在用时，等下次自然空闲再做。</p><label for="comment-flow">对「经验怎样回家」的意见（保存在这台设备）</label><textarea class="comment-input" id="comment-flow" data-title="经验怎样回家" placeholder="写下希望修改的地方…"></textarea></section>
+<section class="card purple"><h2>每份历史都有归属</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>项目键与岗位键共同确定一个持久家；家里分别保存 Codex 原生记忆和首次导入的历史档案。</p><p class="note">本地 Chromium 被沙箱拒绝启动，标准参数重试仍失败。这里保留真实 Mermaid 源码，尚未生成图像。</p></div><details><summary>查看 Mermaid 图稿</summary><pre>%%{init: {&#x27;theme&#x27;:&#x27;base&#x27;,&#x27;themeVariables&#x27;:{&#x27;fontFamily&#x27;:&#x27;-apple-system, system-ui, sans-serif&#x27;,&#x27;primaryColor&#x27;:&#x27;#eef5ff&#x27;,&#x27;primaryTextColor&#x27;:&#x27;#1d1d1f&#x27;,&#x27;primaryBorderColor&#x27;:&#x27;#007aff&#x27;,&#x27;lineColor&#x27;:&#x27;#86868b&#x27;},&#x27;class&#x27;:{&#x27;htmlLabels&#x27;:false}}}%%
+classDiagram
+ class 身份 {
+  项目键
+  岗位键
+ }
+ class 持久家 {
+  开场说明
+  Codex原生记忆
+ }
+ class 历史档案 {
+  来源清单
+  阅读索引
+ }
+ class 内容快照 {
+  内容指纹
+  原样Markdown目录
+ }
+ 身份 &quot;1&quot; --&gt; &quot;1&quot; 持久家 : 精确对应
+ 持久家 &quot;1&quot; *-- &quot;0..1&quot; 历史档案 : 首次导入
+ 历史档案 &quot;1&quot; *-- &quot;0..n&quot; 内容快照 : 相同内容存一份
+</pre></details><div class="table-wrap"><table><thead><tr><th>保存什么</th><th>有什么用</th></tr></thead><tbody><tr><td>项目键 + 岗位键</td><td>只认系统中确定的身份，不从名字、任务标题或文字内容猜。</td></tr><tr><td>来源清单</td><td>记录每份历史来自哪次执行，哪些资料没导入及原因。</td></tr><tr><td>内容快照</td><td>保存当时的 Markdown 文件；Markdown 是用纯文本写文档的格式。</td></tr><tr><td>阅读索引与完整目录</td><td>开场最多列 8 份近期经验，显示任务日期与名称；更早经验按任务号或主题检索，再打开相关快照。</td></tr></tbody></table></div><label for="comment-model">对「每份历史都有归属」的意见（保存在这台设备）</label><textarea class="comment-input" id="comment-model" data-title="每份历史都有归属" placeholder="写下希望修改的地方…"></textarea></section>
+<section class="card "><h2>重复与冲突怎样处理</h2><p><strong>内容指纹</strong> 是由文件字节算出的固定标识。同样一套文件只存一份，所有来源仍记下来；只要文字不同，就分别保存。</p><p>目录按任务发生日期排列，帮助找到相关经验；开场索引限制在 8 KiB 以内。KiB 是文件大小单位，8 KiB 约为八千字节，避免开场读入几百条来源清单。</p><p>两份旧经验互相矛盾时，两份都保留，当前任务的明确要求优先。我们不把“哪份更正确”的决定交给自动合并模型。</p><div class="table-wrap"><table><thead><tr><th>没有采用的做法</th><th>原因</th></tr></thead><tbody><tr><td>直接拼进 Codex 原生记忆</td><td>自动整理可能重写或删除它们，不能保证历史一直在。</td></tr><tr><td>搬整个旧 home 或数据库</td><td>会带入凭据、会话和无关状态，远超过记忆导入所需。</td></tr><tr><td>从显示名称猜归属</td><td>可能把别的岗位或项目的经验带进来。</td></tr><tr><td>新增持续回流服务</td><td>B1 已让后续任务住同一家，本单无需再造一套。</td></tr></tbody></table></div><label for="comment-rules">对「重复与冲突怎样处理」的意见（保存在这台设备）</label><textarea class="comment-input" id="comment-rules" data-title="重复与冲突怎样处理" placeholder="写下希望修改的地方…"></textarea></section>
+<section class="card green"><h2>怎样证明它真的有用</h2><p><strong>RED / GREEN</strong> 指同一份测试在接线断开时失败、接好后通过。验收要在隔离测试房或真机跑真实文件和真实开场读取，不能只看路径不同。</p><div class="table-wrap"><table><thead><tr><th>四条都要</th><th>留下什么证据</th></tr></thead><tbody><tr><td>① implement 完成后经验还在</td><td>任务结束后，持久 home 中仍有本次记忆标记。</td></tr><tr><td>② 下一任务开场读得到</td><td>开场前文件已在；首轮实际读取并报告只存在历史中的标记。</td></tr><tr><td>③ qa 不见 implement 的经验</td><td>qa 自己的正控可读，同时它的原生与历史记忆均无 implement 标记。</td></tr><tr><td>④ flywheel 不见 joycon 的经验</td><td>joycon 自己的正控可读，同时 flywheel 的记忆均无 joycon 标记。</td></tr></tbody></table></div><p>还要放入接近生产规模的夹具：605 条候选、217 份不同快照。把答案放在近期 8 份之外，验证 agent 能从完整目录找到并读取旧经验。</p><p class="note">RED 分两层：一次性家且不回流，证明原来的跨任务丢失；单独关闭 B2 导入，证明首次旧历史读不到。真实蒸馏格式夹具证明运输，不代表 Codex 自动蒸馏已经即时发生。</p><label for="comment-qa">对「怎样证明它真的有用」的意见（保存在这台设备）</label><textarea class="comment-input" id="comment-qa" data-title="怎样证明它真的有用" placeholder="写下希望修改的地方…"></textarea></section>
+<section class="card amber"><h2>明确的边界</h2><p><strong>2026-09-08 只读盘点：127 个旧家有候选历史，但缺少可靠的岗位身份（flywheel 126 个、sub 1 个），所以不会自动导入；原文件继续保留。</strong>这是设计阶段的盘点，没有执行迁移。</p><p>保留旧家，不接任务结束删除，不动公共家，不改记忆生成的等待时间或额度门槛。资料没有可信身份就留在原处，首次快照之后旧任务追加的内容也仍留在原处。</p><p>历史档案通过 shell 读取；shell 是执行本机读文件等命令的工具。它不会冒充 Codex 原生记忆工具支持的目录，也不会把全量旧文字塞进每次开场。</p><p><strong>本单保证自动导入和开场提供的内容不串身份。</strong>它不是操作系统权限隔离；有其他文件访问权限的 agent 仍可能主动读取别处。</p><p>目前完成的是设计。实现、真实四条验收和上线尚需后继阶段完成；本页两张图的本地渲染失败已明确披露。</p><label for="comment-limits">对「明确的边界」的意见（保存在这台设备）</label><textarea class="comment-input" id="comment-limits" data-title="明确的边界" placeholder="写下希望修改的地方…"></textarea></section>
+<section class="card" id="feedback" data-marker="【页面意见汇总】FLY-2359"><h2>页面意见汇总</h2><p class="note">每段意见会自动出现在这里。超过约 1800 字会拆成可分别复制的段落，每段保留识别标记。此标记表示修改意见，不表示批准。</p><label for="comment-feedback">对「页面整体意见」的意见（保存在这台设备）</label><textarea class="comment-input" id="comment-feedback" data-title="页面整体意见" placeholder="写下希望修改的地方…"></textarea><div id="chunks"></div><button type="button" id="copy-all">复制全部意见</button><p id="copy-status" role="status" aria-live="polite"></p><p id="storage-status" class="note" role="status"></p></section>
+<script nonce="__CSP_NONCE__">(() => {
+  const inputs = [...document.querySelectorAll('.comment-input')];
+  const prefix = 'flywheel-report-comments:' + location.pathname + ':';
+  const marker = document.getElementById('feedback').dataset.marker;
+  const chunksNode = document.getElementById('chunks');
+  const copyAll = document.getElementById('copy-all');
+  const status = document.getElementById('copy-status');
+  const storageStatus = document.getElementById('storage-status');
+  let chunks = [];
+  async function copy(text) {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('unavailable');
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const temporary = document.createElement('textarea');
+      temporary.value = text;
+      temporary.style.position = 'fixed';
+      temporary.style.top = '0';
+      temporary.style.left = '-10000px';
+      document.body.append(temporary);
+      temporary.focus(); temporary.select();
+      let copied = false;
+      try { copied = document.execCommand('copy'); }
+      finally { temporary.remove(); }
+      if (!copied) throw new Error('copy_failed');
+    }
+  }
+  async function copyWithStatus(text) {
+    try { await copy(text); status.textContent = '已复制。'; }
+    catch { status.textContent = '自动复制不可用，请选中上方意见手动复制。'; }
+  }
+  function render() {
+    const body = inputs.filter(input => input.value.trim()).map(input => '【' + input.dataset.title + '】\n' + input.value.trim()).join('\n\n');
+    const characters = Array.from(body);
+    const limit = 1750 - Array.from(marker).length - 1;
+    chunks = [];
+    for (let offset = 0; offset < characters.length; offset += limit) chunks.push(marker + '\n' + characters.slice(offset, offset + limit).join(''));
+    chunksNode.replaceChildren();
+    chunks.forEach((text, index) => {
+      const wrapper = document.createElement('div'); wrapper.className = 'chunk';
+      const pre = document.createElement('pre'); pre.textContent = text;
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => copyWithStatus(text));
+      wrapper.append(pre, button); chunksNode.append(wrapper);
+    });
+    copyAll.disabled = chunks.length === 0;
+    if (!chunks.length) { const empty = document.createElement('p'); empty.textContent = '还没有填写意见。'; chunksNode.append(empty); }
+  }
+  inputs.forEach(input => {
+    try { input.value = localStorage.getItem(prefix + input.id) || ''; }
+    catch { storageStatus.textContent = '浏览器禁止本地保存；本次输入仍可汇总和复制。'; }
+    input.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + input.id, input.value); }
+      catch { storageStatus.textContent = '浏览器禁止本地保存；本次输入仍可汇总和复制。'; }
+      render();
+    });
+  });
+  copyAll.addEventListener('click', () => copyWithStatus(chunks.join('\n\n')));
+  render();
+})();</script></main></body></html>

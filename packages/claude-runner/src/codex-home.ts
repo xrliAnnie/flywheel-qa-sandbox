@@ -76,6 +76,12 @@ import {
 	recordCodexAccountObservation,
 	resolveCodexAccountLedgerRoot,
 } from "./codex-account-ledger.js";
+import {
+	type CodexMemorySeedSourceSet,
+	type PublishCodexMemorySeedInput,
+	publishCodexMemorySeed,
+	readCodexMemorySeedManifest,
+} from "./codex-memory-seed.js";
 
 /** gh tokens are `[A-Za-z0-9_]`; `-` tolerated. Same charset the adapter and
  * codex-resume validate, so a token that passes here rides a TOML
@@ -356,6 +362,7 @@ export interface AdmitCodexAgentHomeResult {
 	inherited: boolean;
 	liveLeases: number;
 	createdLease: boolean;
+	memorySeed: "not_requested" | "published" | "reused" | "deferred_busy";
 }
 
 function assertSafeExecutionId(executionId: string): void {
@@ -573,6 +580,10 @@ export async function admitCodexAgentHome(
 	input: CodexAgentHomeIdentity & {
 		executionId: string;
 		requestedAssemblyArm: SkillAssemblyBaseArm;
+		loadMemorySeedSources?: () =>
+			| CodexMemorySeedSourceSet
+			| Promise<CodexMemorySeedSourceSet>;
+		memorySeedTesting?: PublishCodexMemorySeedInput["testing"];
 	},
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<AdmitCodexAgentHomeResult> {
@@ -602,6 +613,36 @@ export async function admitCodexAgentHome(
 				writeCodexAgentHomeMarker(home, marker);
 			} else {
 				validateMarkerIdentity(marker, identity);
+			}
+			const seedDirectory = join(home, ".flywheel-memory-seed");
+			let seedExists = false;
+			try {
+				lstatSync(seedDirectory);
+				seedExists = true;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+			let memorySeed: AdmitCodexAgentHomeResult["memorySeed"] = "not_requested";
+			if (seedExists) {
+				readCodexMemorySeedManifest(seedDirectory, identity);
+				memorySeed = "reused";
+			} else if (input.loadMemorySeedSources !== undefined) {
+				if (leases.length > 0) {
+					memorySeed = "deferred_busy";
+					console.warn(
+						`[codex-memory-seed] deferred_busy project=${identity.project} role=${identity.role} liveLeases=${leases.length}`,
+					);
+				} else {
+					const sourceSet = await input.loadMemorySeedSources();
+					const published = publishCodexMemorySeed({
+						...identity,
+						home,
+						homesRoot: codexHomesRoot(env),
+						...sourceSet,
+						testing: input.memorySeedTesting,
+					});
+					memorySeed = published.reused ? "reused" : "published";
+				}
 			}
 
 			const leasePath = join(leasesDir, input.executionId);
@@ -634,6 +675,7 @@ export async function admitCodexAgentHome(
 				inherited: marker.assemblyArm !== input.requestedAssemblyArm,
 				liveLeases: leases.length + (existing ? 0 : 1),
 				createdLease: !existing,
+				memorySeed,
 			};
 		},
 		CODEX_AGENT_HOME_LOCK_OPTS,

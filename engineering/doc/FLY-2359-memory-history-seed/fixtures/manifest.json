@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "description": "Deidentified distilled-memory transport fixtures; no production memory or credentials.",
+  "controls": [
+    { "key": "no-node", "expectedSkip": "missing_role" },
+    { "key": "bad-adapter", "expectedSkip": "adapter_mismatch" }
+  ],
+  "sources": [
+    {
+      "key": "f",
+      "executionId": "fly2359-fixture-f",
+      "identity": { "project": "flywheel", "role": "implement" },
+      "issueIdentifier": "FLY-1901",
+      "issueTitle": "Amber river retrospective",
+      "startedAt": "2020-01-01T00:00:00Z",
+      "marker": "FLY2359_FIXTURE_F_AMBER_RIVER",
+      "files": {
+        "MEMORY.md": "d81e3cd484f6776cb6a2be5ac19006a0949542cfd8121f845325cb67c7eed6f0",
+        "memory_summary.md": "e8369a3ddeddb888d73e5bcdf44fa68fcaafba52123f55f741500146d53c2f2f",
+        "rollout_summaries/session.md": "eb28f318d363f705056299830b3ba7a8f6983df277742c747ef6ab3e0fd7bd01"
+      }
+    },
+    {
+      "key": "q",
+      "executionId": "fly2359-fixture-q",
+      "identity": { "project": "flywheel", "role": "qa" },
+      "issueIdentifier": "FLY-1902",
+      "issueTitle": "Quartz lake QA notes",
+      "startedAt": "2021-01-01T00:00:00Z",
+      "marker": "FLY2359_FIXTURE_Q_QUARTZ_LAKE",
+      "files": {
+        "MEMORY.md": "391ee558e2cbbc9ab483bb668d6ef91cf8a76fcfb8a9aea31a4af60c0739f7ff",
+        "memory_summary.md": "6896c15a57bf1a607d1f3e3e8a37cd040c8f4b50af2c5f0a10d2e27abe809dea",
+        "rollout_summaries/session.md": "9f3b7e61d66be9fc6078964d4965ad1535175c49b130fc17c7811433259cd138"
+      }
+    },
+    {
+      "key": "j",
+      "executionId": "fly2359-fixture-j",
+      "identity": { "project": "joycon-typeless", "role": "implement" },
+      "issueIdentifier": "JOY-1903",
+      "issueTitle": "Juniper field implementation",
+      "startedAt": "2022-01-01T00:00:00Z",
+      "marker": "FLY2359_FIXTURE_J_JUNIPER_FIELD",
+      "files": {
+        "MEMORY.md": "011fb1bf1cd0f8e19f5a5da3105e05f53b10298a51324e6fbe6e959209983e11",
+        "memory_summary.md": "7b929b00e9aea7987fb4c145323ee20a4edad569aba6b5a3df5e323f5b7bff06",
+        "rollout_summaries/session.md": "abb540bc3cf980421fef5319771042d8ffaed88d2ae0c9b57739f930aea9598f"
+      }
+    },
+    {
+      "key": "conflict-a",
+      "executionId": "fly2359-fixture-conflict-a",
+      "identity": { "project": "flywheel", "role": "implement" },
+      "issueIdentifier": "FLY-1904",
+      "issueTitle": "Copper branch conflict A",
+      "startedAt": "2023-01-01T00:00:00Z",
+      "marker": "FLY2359_FIXTURE_CONFLICT_A",
+      "files": {
+        "MEMORY.md": "5ae28b5465071bcfbcd1d361d05f88012bec3ef7a4fc69f94bad4ed05151749b"
+      }
+    },
+    {
+      "key": "conflict-b",
+      "executionId": "fly2359-fixture-conflict-b",
+      "identity": { "project": "flywheel", "role": "implement" },
+      "issueIdentifier": "FLY-1905",
+      "issueTitle": "Copper branch conflict B",
+      "startedAt": "2024-01-01T00:00:00Z",
+      "marker": "FLY2359_FIXTURE_CONFLICT_B",
+      "files": {
+        "MEMORY.md": "080d7f5e31d77e5b2e89f9e18976e27fe0f9ff759507a2f8ad376ef98491e00f"
+      }
+    }
+  ]
+}

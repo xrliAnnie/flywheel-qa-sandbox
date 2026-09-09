@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import {
 	admitCodexAgentHome,
 	provisionCodexAgentHome,
@@ -22,11 +22,34 @@ while (!existsSync(barrier)) {
 	await new Promise<void>((resolve) => setTimeout(resolve, 5));
 }
 
+const memorySource = process.env.FLY_TEST_MEMORY_SOURCE;
 const admission = await admitCodexAgentHome({
 	project: "flywheel",
 	role: "implement",
 	executionId,
 	requestedAssemblyArm,
+	...(memorySource
+		? {
+				loadMemorySeedSources: () => {
+					appendFileSync(
+						required("FLY_TEST_MEMORY_COUNTER"),
+						`${process.pid}\n`,
+					);
+					return {
+						sources: [
+							{
+								executionId: memorySource,
+								issueId: null,
+								issueIdentifier: null,
+								issueTitle: null,
+								startedAt: null,
+							},
+						],
+						skipped: [],
+					};
+				},
+			}
+		: {}),
 });
 await provisionCodexAgentHome(admission.handle, {
 	ghToken: required("FLY_TEST_GH_TOKEN"),
@@ -43,5 +66,6 @@ process.stdout.write(
 		requestedAssemblyArm,
 		effectiveAssemblyArm: admission.effectiveAssemblyArm,
 		inherited: admission.inherited,
+		memorySeed: admission.memorySeed,
 	})}\n`,
 );

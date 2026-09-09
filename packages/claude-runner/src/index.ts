@@ -124,6 +124,7 @@ export {
 	type AdmitCodexAgentHomeResult,
 	admitCodexAgentHome,
 	assertCodexSourceIdentity,
+	type CodexAgentHomeIdentity,
 	type CodexAgentHomeSessionSnapshot,
 	type CodexCredentialMigrationResult,
 	type CodexCredentialMigrationState,
@@ -151,6 +152,21 @@ export {
 	sourceCodexDir,
 	stripSecretEnv,
 } from "./codex-home.js";
+export {
+	CODEX_MEMORY_SEED_MAX_FILE_BYTES,
+	CODEX_MEMORY_SEED_MAX_FILES,
+	CODEX_MEMORY_SEED_MAX_INDEX_BYTES,
+	CODEX_MEMORY_SEED_MAX_TOTAL_BYTES,
+	CODEX_MEMORY_SEED_RECENT_SNAPSHOTS,
+	type CodexMemorySeedManifest,
+	type CodexMemorySeedSkippedInput,
+	type CodexMemorySeedSourceInput,
+	type CodexMemorySeedSourceSet,
+	type PublishCodexMemorySeedInput,
+	type PublishCodexMemorySeedResult,
+	publishCodexMemorySeed,
+	readCodexMemorySeedManifest,
+} from "./codex-memory-seed.js";
 export {
 	type CodexRolloutMtimeProbe,
 	probeCodexRolloutMtime,

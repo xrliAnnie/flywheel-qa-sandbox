@@ -1,0 +1,9 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'-apple-system, system-ui, sans-serif','primaryColor':'#eef5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b'},'flowchart':{'htmlLabels':false,'curve':'linear'}}}%%
+flowchart TD
+ A[旧任务留下的经验] --> B{项目与岗位完全匹配?}
+ B -->|否或不明| X[留在原处 · 记录原因]
+ B -->|是| C{持久家正忙吗?}
+ C -->|忙| Y[等下次自然空闲]
+ C -->|空闲| D[一次发布完整历史档案]
+ D --> E[新任务开场读取历史索引]
+ E --> F[后续经验继续留在同一家]

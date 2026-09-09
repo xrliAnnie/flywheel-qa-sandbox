@@ -417,6 +417,67 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(existsSync(admission.handle.home)).toBe(true);
 	});
 
+	it("FLY-2359 starts the adapter only after the admitted history is readable", async () => {
+		const source = join(homesRoot, "seed-source", "memories");
+		mkdirSync(source, { recursive: true });
+		writeFileSync(join(source, "MEMORY.md"), "fly2359-adapter-history\n");
+		const admission = await admitCodexAgentHome({
+			project: "flywheel",
+			role: "implement",
+			executionId: execId,
+			requestedAssemblyArm: "bare",
+			loadMemorySeedSources: () => ({
+				sources: [
+					{
+						executionId: "seed-source",
+						issueId: "issue-old",
+						issueIdentifier: "FLY-2000",
+						issueTitle: "Prior implementation",
+						startedAt: "2026-01-01T00:00:00Z",
+					},
+				],
+				skipped: [],
+			}),
+		});
+		expect(admission.memorySeed).toBe("published");
+		runtime = new FakeRuntime(async (input) => {
+			const archive = join(admission.handle.home, ".flywheel-memory-seed");
+			expect(readFileSync(join(archive, "index.md"), "utf8")).toContain(
+				"FLY-2000",
+			);
+			expect(readFileSync(join(archive, "catalog.md"), "utf8")).toContain(
+				"Prior implementation",
+			);
+			const [snapshot] = readdirSync(join(archive, "snapshots"));
+			expect(
+				readFileSync(
+					join(archive, "snapshots", snapshot!, "MEMORY.md"),
+					"utf8",
+				),
+			).toBe("fly2359-adapter-history\n");
+			expect(
+				readFileSync(join(admission.handle.home, "AGENTS.md"), "utf8"),
+			).toContain(".flywheel-memory-seed/index.md");
+			input.onThreadReady?.(THREAD_ID, 0);
+			input.onGoalActive?.();
+			return complete();
+		});
+
+		const result = await makeAdapter().execute(
+			ctx({
+				skillFrameworkMode: "bare",
+				codexAgentHome: {
+					...admission.handle,
+					assemblyArm: admission.effectiveAssemblyArm,
+					createdLease: admission.createdLease,
+				},
+			}),
+		);
+
+		expect(result.success).toBe(true);
+		expect(ensureWindowCalls[0]?.codexHome).toBe(admission.handle.home);
+	});
+
 	it("FLY-2358 refuses to overwrite a drifted agent-home session record", async () => {
 		const admission = await admitCodexAgentHome({
 			project: "flywheel",

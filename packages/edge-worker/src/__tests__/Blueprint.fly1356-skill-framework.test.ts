@@ -270,6 +270,7 @@ function admittedHome(
 		inherited: false,
 		liveLeases: 1,
 		createdLease: true,
+		memorySeed: "not_requested",
 		...input,
 	};
 }

@@ -11,6 +11,8 @@ import {
 	type AuditedSignalResult,
 	admitCodexAgentHome,
 	auditedSignalAsync,
+	type CodexAgentHomeIdentity,
+	type CodexMemorySeedSourceSet,
 	defaultAsyncExecFile,
 	releaseCodexAgentHomeLease,
 	withSyncOpMarker,
@@ -839,6 +841,10 @@ export interface ShellRunner {
 	): Promise<{ stdout: string; exitCode: number }>;
 }
 
+export type CodexMemorySeedSourcesLoader = (
+	input: CodexAgentHomeIdentity & { currentExecutionId: string },
+) => CodexMemorySeedSourceSet | Promise<CodexMemorySeedSourceSet>;
+
 /**
  * Blueprint: interactive-mode orchestration engine.
  *
@@ -856,6 +862,7 @@ export class Blueprint {
 		admitCodexAgentHome;
 	private codexAgentHomeReleaser: typeof releaseCodexAgentHomeLease =
 		releaseCodexAgentHomeLease;
+	private codexMemorySeedSources?: CodexMemorySeedSourcesLoader;
 
 	constructor(
 		private hydrator: PreHydrator,
@@ -934,6 +941,10 @@ export class Blueprint {
 		private runnerMemoryPreparer: typeof prepareRunnerMemoryMount = prepareRunnerMemoryMount,
 	) {}
 
+	setCodexMemorySeedSources(loader: CodexMemorySeedSourcesLoader): void {
+		this.codexMemorySeedSources = loader;
+	}
+
 	async run(
 		node: DagNode,
 		projectRoot: string,
@@ -987,6 +998,13 @@ export class Blueprint {
 						requestedAssemblyArm: skillAssemblyBaseArm(
 							skillFramework?.mode ?? "superpowers",
 						),
+						...(this.codexMemorySeedSources && {
+							loadMemorySeedSources: () =>
+								this.codexMemorySeedSources!({
+									...resolvedIdentity.identity,
+									currentExecutionId: executionId,
+								}),
+						}),
 					});
 					if (codexAgentHome.inherited) {
 						const effective = codexAgentHome.effectiveAssemblyArm;
