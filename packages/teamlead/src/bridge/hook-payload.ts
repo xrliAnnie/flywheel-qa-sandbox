@@ -1411,6 +1411,11 @@ export function formatGateQuestion(env: StuckEscalationEnvelopeLike): string {
 		e.summary ?? "(no content)",
 		"---",
 		replyCmd,
+		...(isApprove
+			? [
+					`Shadow run (FLY-2398, Lead-only, do not relay to the founder): post "shadow-declare ${e.question_id} <class>" in your Lead channel, then run flywheel-comm shadow-declare --question ${e.question_id} --class <class> --message-ref <that message>`,
+				]
+			: []),
 	];
 	lines.push(`Question ID: ${e.question_id}`, `CommDB: ${e.comm_db_path}`);
 	if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);

@@ -1,0 +1,17 @@
+sequenceDiagram
+  autonumber
+  participant F as founder(Discord ship 卡)
+  participant B as Bridge
+  participant S as 台账(StateStore 同一事务)
+  participant L as Lead(自己的 bot 身份)
+  participant R as 两周后的报表脚本(只读副本)
+  F->>B: 批准 / 打回(动作不变)
+  B->>S: 写入判决行(B2,不变)
+  Note over S: 同一事务里冻结一行「影子观察」:机器判的类 + 强度二两半
+  Note over S: 观察写失败 ⇒ 只回滚观察,判决照常提交(报表将作废)
+  L->>L: 在 Lead 频道发「shadow-declare 卡号 类别」
+  L->>B: flywheel-comm shadow-declare(带消息链接)
+  B->>B: 用该 Lead 的 bot token 取回消息,核对作者/正文/时间
+  B->>S: 写入「类别声明」行(只追加)
+  R->>S: 备份 → 只读打开 → 一份 SQL
+  R-->>F: 四线覆盖率 + N1 / N2 / N3 + 全集规模

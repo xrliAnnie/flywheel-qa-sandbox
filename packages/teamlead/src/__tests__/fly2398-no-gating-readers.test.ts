@@ -6,13 +6,14 @@ import { describe, expect, it } from "vitest";
 const REPO_ROOT = resolve(
 	fileURLToPath(new URL("../../../../", import.meta.url)),
 );
-const AUTHORITY_FACT =
-	/workflow_founder_gate_verdict|founder_authored|listFounderGateVerdicts/;
+const SHADOW_FACT =
+	/auto_merge_shadow_observation|auto_merge_shadow_declaration|recordAutoMergeShadow|listAutoMergeShadow|buildShadowObservation/;
 const ALLOWED = new Set([
-	"engineering/doc/FLY-2396-founder-gate-head-origin/retro-bind.sql",
+	"engineering/doc/FLY-2398-auto-merge-shadow-run/shadow-table.sql",
 	"packages/teamlead/src/StateStore.ts",
+	"packages/teamlead/src/auto-merge-shadow/observation.ts",
+	"packages/teamlead/src/bridge/auto-merge-shadow-route.ts",
 	"scripts/fly-2398-shadow-table.mjs",
-	"scripts/fly2396-retro-report.mjs",
 	"scripts/lib/fly-2006-retention-registry.mjs",
 ]);
 const SOURCE_EXTENSIONS = new Set([".ts", ".js", ".mjs", ".cjs", ".sql"]);
@@ -32,33 +33,53 @@ function sourceFiles(path: string): string[] {
 		if (entry.isDirectory()) {
 			return IGNORED_DIRECTORIES.has(entry.name) ? [] : sourceFiles(entryPath);
 		}
+		if (/\.(?:test|spec)\.[cm]?[jt]s$/.test(entry.name)) return [];
 		return entry.isFile() && SOURCE_EXTENSIONS.has(extname(entry.name))
 			? [entryPath]
 			: [];
 	});
 }
 
-describe("FLY-2396 authorship fact isolation", () => {
-	it("keeps the new ledger and fact out of every merge authorization reader", () => {
+describe("FLY-2398 auto-merge shadow isolation", () => {
+	it("freezes every production reader and writer in the audited observation boundary", () => {
 		const references = [
 			...sourceFiles(resolve(REPO_ROOT, "packages")),
 			...sourceFiles(resolve(REPO_ROOT, "scripts")),
 			resolve(
 				REPO_ROOT,
-				"engineering/doc/FLY-2396-founder-gate-head-origin/retro-bind.sql",
+				"engineering/doc/FLY-2398-auto-merge-shadow-run/shadow-table.sql",
 			),
 		]
-			.filter((file) => AUTHORITY_FACT.test(readFileSync(file, "utf8")))
+			.filter((file) => SHADOW_FACT.test(readFileSync(file, "utf8")))
 			.map((file) => relative(REPO_ROOT, file))
 			.sort();
+
 		expect(references).toEqual([...ALLOWED].sort());
-		for (const forbidden of [
+		for (const authorizationReader of [
 			"land-executor",
 			"approval-signal",
 			"post-ship-finalization",
 			"external-merge-reconcile",
+			"review-hold",
+			"gate-poller",
+			"run-ship-relevance",
+			"strength-two",
 		]) {
-			expect(references.some((file) => file.includes(forbidden))).toBe(false);
+			expect(
+				references.some((file) => file.includes(authorizationReader)),
+			).toBe(false);
+		}
+	});
+
+	it("does not expose the shadow facts to review-hold or the founder merge guard", () => {
+		for (const path of [
+			"packages/teamlead/src/bridge/review-hold.ts",
+			"packages/teamlead/src/bridge/run-ship-relevance.ts",
+			"packages/teamlead/src/bridge/post-ship-finalization.ts",
+		]) {
+			expect(readFileSync(resolve(REPO_ROOT, path), "utf8")).not.toMatch(
+				SHADOW_FACT,
+			);
 		}
 	});
 });

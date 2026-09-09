@@ -192,6 +192,7 @@ import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-
 import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
+import { createAutoMergeShadowRouter } from "./auto-merge-shadow-route.js";
 import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
 import { makeShipRemoteBranchCleanup } from "./branch-cleanup.js";
@@ -2077,6 +2078,12 @@ export function createBridgeApp(
 				reason: "bridge ingest token not configured",
 			});
 		});
+		app.post("/api/workflow/shadow-declaration", (_req, res) => {
+			res.status(503).json({
+				ok: false,
+				reason: "bridge ingest token not configured",
+			});
+		});
 	} else {
 		app.post(
 			"/api/workflow/evidence-run",
@@ -2091,6 +2098,11 @@ export function createBridgeApp(
 				vercelProjectName: () => reportRegistry.vercelProjectName(),
 			}),
 		);
+		app.post(
+			"/api/workflow/shadow-declaration",
+			tokenAuthMiddleware(config.ingestToken),
+		);
+		app.use("/api/workflow", createAutoMergeShadowRouter({ store, projects }));
 	}
 	app.use(
 		"/api/workflow",

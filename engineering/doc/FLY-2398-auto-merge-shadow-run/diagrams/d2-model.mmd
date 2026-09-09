@@ -1,0 +1,26 @@
+erDiagram
+  workflow_founder_gate_verdict ||--o| auto_merge_shadow_observation : "verdict_id 一对一,同事务"
+  workflow_gate_holder ||--o{ auto_merge_shadow_declaration : "question_id(声明属于卡)"
+  workflow_claims ||--o| workflow_founder_gate_verdict : "claim_id(批准)"
+  workflow_rework_request ||--o| workflow_founder_gate_verdict : "rework_request_id(打回)"
+  strength_two_evidence_record }o..o| auto_merge_shadow_observation : "SQL 逐列重算断言"
+  workflow_founder_gate_verdict {
+    TEXT verdict_id PK
+    TEXT verdict "approved | rework"
+    INTEGER founder_authored "0 | 1"
+    TEXT head_sha
+  }
+  auto_merge_shadow_observation {
+    TEXT verdict_id PK
+    TEXT machine_class "docs_only | ship_relevant | unknown"
+    TEXT s2_verdict "satisfied | unsatisfied"
+    TEXT observed_at "= 判决时刻"
+    TEXT machine_basis_json "冻结的输入事实"
+  }
+  auto_merge_shadow_declaration {
+    TEXT declaration_id PK
+    TEXT question_id FK
+    TEXT declared_class "4 值枚举"
+    TEXT declared_by "名册 Lead id,服务端派生"
+    TEXT discord_message_id UK
+  }

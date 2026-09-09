@@ -35,14 +35,20 @@ import {
 } from "flywheel-config";
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import { isReservedApprovalAttribution } from "flywheel-comm/founder-attribution";
+import {
+	RAN_REASONS,
+	RECORD_REASONS,
+} from "flywheel-comm/strength-two-contract";
 import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import {
 	type RecordProbe,
 	type SiteProbe,
 	type StrengthTwoLedgerRow,
+	evaluateStrengthTwo,
 	judgeRan,
 	judgeRecord,
 } from "./strength-two/judge.js";
+import { buildShadowObservation } from "./auto-merge-shadow/observation.js";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import {
 	deliveryContractFrozenCopy,
@@ -78,6 +84,7 @@ import {
 	type LivenessVerdict,
 } from "./bridge/delivery-contract/liveness.js";
 import { parseSqliteUtcMs } from "./bridge/founder-notify-utils.js";
+import { resolveRunShipRelevance } from "./bridge/run-ship-relevance.js";
 import {
 	shouldFreeze,
 	shouldHoldUndeliverable,
@@ -3203,6 +3210,134 @@ export class StateStore {
 				INSERT OR IGNORE INTO state_store_migration (migration_id, applied_at)
 					VALUES (
 						'fly-2396-founder-gate-verdict-v1',
+						strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+					);
+			`);
+		})();
+	}
+
+	private migrateAutoMergeShadowLedger(): void {
+		this.db.raw.transaction(() => {
+			this.db.raw.exec(`
+				CREATE TABLE IF NOT EXISTS auto_merge_shadow_observation (
+					verdict_id TEXT PRIMARY KEY,
+					run_id TEXT NOT NULL CHECK (length(run_id) > 0),
+					question_id TEXT NOT NULL CHECK (length(question_id) > 0),
+					gate_execution_id TEXT NOT NULL CHECK (length(gate_execution_id) > 0),
+					repo_identity TEXT NOT NULL CHECK (length(repo_identity) > 0),
+					pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+					head_sha TEXT NOT NULL CHECK (
+						length(head_sha) = 40 AND head_sha NOT GLOB '*[^0-9a-f]*'
+					),
+					observed_at TEXT NOT NULL,
+					machine_class TEXT NOT NULL CHECK (
+						machine_class IN ('docs_only','ship_relevant','unknown')
+					),
+					machine_reason TEXT CHECK (
+						machine_reason IS NULL OR machine_reason IN (
+							'primary_ship_relevant','declared_ship_relevant','file_budget_exceeded',
+							'primary_snapshot_missing','primary_snapshot_stale','primary_snapshot_version_mismatch',
+							'declared_snapshot_missing','declared_snapshot_stale','declared_snapshot_version_mismatch',
+							'nested_review_uncovered','declaration_overflow','scope_unresolved'
+						)
+					),
+					machine_file_count INTEGER CHECK (
+						machine_file_count IS NULL OR machine_file_count >= 0
+					),
+					machine_candidate_count INTEGER NOT NULL CHECK (machine_candidate_count >= 0),
+					machine_declared_projected_count INTEGER NOT NULL CHECK (
+						machine_declared_projected_count >= 0
+					),
+					machine_primary_snapshot_age_ms INTEGER,
+					machine_declared_max_snapshot_age_ms INTEGER,
+					machine_basis_json TEXT NOT NULL CHECK (
+						json_valid(machine_basis_json)
+						AND length(CAST(machine_basis_json AS BLOB)) <= 16384
+					),
+					s2_ran_status TEXT NOT NULL CHECK (
+						s2_ran_status IN ('satisfied','unsatisfied')
+					),
+					s2_ran_reason TEXT NOT NULL CHECK (length(s2_ran_reason) BETWEEN 1 AND 64),
+					s2_record_status TEXT NOT NULL CHECK (
+						s2_record_status IN ('satisfied','unsatisfied')
+					),
+					s2_record_reason TEXT NOT NULL CHECK (
+						length(s2_record_reason) BETWEEN 1 AND 64
+					),
+					s2_verdict TEXT NOT NULL CHECK (
+						s2_verdict IN ('satisfied','unsatisfied')
+					),
+					s2_basis_record_id TEXT,
+					s2_row_count INTEGER NOT NULL CHECK (s2_row_count >= 0),
+					s2_other_head_row_count INTEGER NOT NULL CHECK (s2_other_head_row_count >= 0),
+					shadow_version INTEGER NOT NULL CHECK (shadow_version = 1),
+					CHECK ((machine_class = 'docs_only') = (machine_reason IS NULL)),
+					CHECK (machine_class <> 'docs_only' OR machine_file_count IS NOT NULL),
+					CHECK (
+						(s2_verdict = 'satisfied') =
+						(s2_ran_status = 'satisfied' AND s2_record_status = 'satisfied')
+					),
+					CHECK (
+						(s2_row_count = 0) =
+						(s2_ran_reason = 'no_ledger_row'
+						 AND s2_record_reason = 'no_ledger_row'
+						 AND s2_basis_record_id IS NULL)
+					),
+					CHECK (s2_row_count = 0 OR s2_basis_record_id IS NOT NULL),
+					FOREIGN KEY (verdict_id) REFERENCES workflow_founder_gate_verdict(verdict_id),
+					FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+				);
+				CREATE INDEX IF NOT EXISTS idx_auto_merge_shadow_observation_run
+					ON auto_merge_shadow_observation(run_id, observed_at, verdict_id);
+				CREATE TRIGGER IF NOT EXISTS auto_merge_shadow_observation_no_update
+					BEFORE UPDATE ON auto_merge_shadow_observation
+					BEGIN SELECT RAISE(ABORT, 'auto_merge_shadow_observation is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS auto_merge_shadow_observation_no_delete
+					BEFORE DELETE ON auto_merge_shadow_observation
+					BEGIN SELECT RAISE(ABORT, 'auto_merge_shadow_observation is immutable'); END;
+
+				CREATE TABLE IF NOT EXISTS auto_merge_shadow_declaration (
+					declaration_id TEXT PRIMARY KEY CHECK (
+						declaration_id GLOB
+						'[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+					),
+					question_id TEXT NOT NULL CHECK (length(question_id) > 0),
+					run_id TEXT NOT NULL CHECK (length(run_id) > 0),
+					declared_class TEXT NOT NULL CHECK (
+						declared_class IN ('pure_docs','config_only','single_point_change','other_code')
+					),
+					declared_by TEXT NOT NULL CHECK (
+						length(declared_by) BETWEEN 1 AND 64
+						AND declared_by NOT GLOB '*[^A-Za-z0-9._-]*'
+					),
+					discord_channel_id TEXT NOT NULL CHECK (
+						length(discord_channel_id) BETWEEN 1 AND 32
+						AND discord_channel_id NOT GLOB '*[^0-9]*'
+					),
+					discord_message_id TEXT NOT NULL UNIQUE CHECK (
+						length(discord_message_id) BETWEEN 1 AND 32
+						AND discord_message_id NOT GLOB '*[^0-9]*'
+					),
+					discord_author_user_id TEXT NOT NULL CHECK (
+						length(discord_author_user_id) BETWEEN 1 AND 32
+						AND discord_author_user_id NOT GLOB '*[^0-9]*'
+					),
+					message_ts TEXT NOT NULL,
+					declaration_seq INTEGER NOT NULL CHECK (declaration_seq > 0),
+					declared_at TEXT NOT NULL,
+					UNIQUE (question_id, declaration_seq),
+					FOREIGN KEY (question_id) REFERENCES workflow_gate_holder(question_id),
+					FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+				);
+				CREATE TRIGGER IF NOT EXISTS auto_merge_shadow_declaration_no_update
+					BEFORE UPDATE ON auto_merge_shadow_declaration
+					BEGIN SELECT RAISE(ABORT, 'auto_merge_shadow_declaration is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS auto_merge_shadow_declaration_no_delete
+					BEFORE DELETE ON auto_merge_shadow_declaration
+					BEGIN SELECT RAISE(ABORT, 'auto_merge_shadow_declaration is immutable'); END;
+				INSERT OR IGNORE INTO state_store_migration (migration_id, applied_at)
+					VALUES (
+						'fly-2398-shadow-observation-v1',
 						strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 					);
 			`);
@@ -24113,6 +24248,7 @@ export class StateStore {
 		`);
 		this.migrateWorkflowReworkEngineAuthority();
 		this.migrateFounderGateVerdictLedger();
+		this.migrateAutoMergeShadowLedger();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_rework_route_revision (
 				request_id TEXT NOT NULL,
@@ -50807,6 +50943,204 @@ export class StateStore {
 		).map((row) => this.strengthTwoEvidenceRow(row));
 	}
 
+	private autoMergeShadowObservationRow(
+		row: Record<string, unknown>,
+	): AutoMergeShadowObservationRow {
+		return {
+			verdict_id: row.verdict_id as string,
+			run_id: row.run_id as string,
+			question_id: row.question_id as string,
+			gate_execution_id: row.gate_execution_id as string,
+			repo_identity: row.repo_identity as string,
+			pr_number: Number(row.pr_number),
+			head_sha: row.head_sha as string,
+			observed_at: row.observed_at as string,
+			machine_class:
+				row.machine_class as AutoMergeShadowObservationRow["machine_class"],
+			machine_reason:
+				(row.machine_reason as AutoMergeShadowObservationRow["machine_reason"]) ??
+				null,
+			machine_file_count:
+				row.machine_file_count == null
+					? null
+					: Number(row.machine_file_count),
+			machine_candidate_count: Number(row.machine_candidate_count),
+			machine_declared_projected_count: Number(
+				row.machine_declared_projected_count,
+			),
+			machine_primary_snapshot_age_ms:
+				row.machine_primary_snapshot_age_ms == null
+					? null
+					: Number(row.machine_primary_snapshot_age_ms),
+			machine_declared_max_snapshot_age_ms:
+				row.machine_declared_max_snapshot_age_ms == null
+					? null
+					: Number(row.machine_declared_max_snapshot_age_ms),
+			machine_basis_json: row.machine_basis_json as string,
+			s2_ran_status:
+				row.s2_ran_status as AutoMergeShadowObservationRow["s2_ran_status"],
+			s2_ran_reason:
+				row.s2_ran_reason as AutoMergeShadowObservationRow["s2_ran_reason"],
+			s2_record_status:
+				row.s2_record_status as AutoMergeShadowObservationRow["s2_record_status"],
+			s2_record_reason:
+				row.s2_record_reason as AutoMergeShadowObservationRow["s2_record_reason"],
+			s2_verdict:
+				row.s2_verdict as AutoMergeShadowObservationRow["s2_verdict"],
+			s2_basis_record_id: (row.s2_basis_record_id as string) ?? null,
+			s2_row_count: Number(row.s2_row_count),
+			s2_other_head_row_count: Number(row.s2_other_head_row_count),
+			shadow_version: 1,
+		};
+	}
+
+	listAutoMergeShadowObservations(
+		input: { runId?: string; since?: string } = {},
+	): AutoMergeShadowObservationRow[] {
+		const clauses: string[] = [];
+		const values: Array<string> = [];
+		if (input.runId !== undefined) {
+			clauses.push("run_id = ?");
+			values.push(input.runId);
+		}
+		if (input.since !== undefined) {
+			clauses.push("observed_at >= ?");
+			values.push(input.since);
+		}
+		return this.workflowSelectAll(
+			`SELECT * FROM auto_merge_shadow_observation${
+				clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : ""
+			} ORDER BY observed_at, verdict_id`,
+			values,
+		).map((row) => this.autoMergeShadowObservationRow(row));
+	}
+
+	private autoMergeShadowDeclarationRow(
+		row: Record<string, unknown>,
+	): AutoMergeShadowDeclarationRow {
+		return {
+			declaration_id: row.declaration_id as string,
+			question_id: row.question_id as string,
+			run_id: row.run_id as string,
+			declared_class:
+				row.declared_class as AutoMergeShadowDeclarationRow["declared_class"],
+			declared_by: row.declared_by as string,
+			discord_channel_id: row.discord_channel_id as string,
+			discord_message_id: row.discord_message_id as string,
+			discord_author_user_id: row.discord_author_user_id as string,
+			message_ts: row.message_ts as string,
+			declaration_seq: Number(row.declaration_seq),
+			declared_at: row.declared_at as string,
+		};
+	}
+
+	listAutoMergeShadowDeclarations(
+		questionId: string,
+	): AutoMergeShadowDeclarationRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM auto_merge_shadow_declaration
+			  WHERE question_id = ? ORDER BY declaration_seq`,
+			[questionId],
+		).map((row) => this.autoMergeShadowDeclarationRow(row));
+	}
+
+	recordAutoMergeShadowDeclaration(
+		input: RecordAutoMergeShadowDeclarationInput,
+	): RecordAutoMergeShadowDeclarationResult {
+		if (
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+				input.declarationId,
+			) ||
+			!input.questionId ||
+			!input.runId ||
+			!(["pure_docs", "config_only", "single_point_change", "other_code"] as const).includes(
+				input.declaredClass,
+			) ||
+			!/^[A-Za-z0-9._-]{1,64}$/.test(input.declaredBy) ||
+			!/^\d{1,32}$/.test(input.discordChannelId) ||
+			!/^\d{1,32}$/.test(input.discordMessageId) ||
+			!/^\d{1,32}$/.test(input.discordAuthorUserId) ||
+			!StateStore.workflowFiniteTimestamp(input.messageTs) ||
+			!StateStore.workflowFiniteTimestamp(input.declaredAt)
+		) {
+			return { ok: false, reason: "invalid_declaration" };
+		}
+		let result: RecordAutoMergeShadowDeclarationResult = {
+			ok: false,
+			reason: "question_unknown",
+		};
+		let inserted = false;
+		this.db.transaction(() => {
+			const existing = this.workflowSelectAll(
+				"SELECT * FROM auto_merge_shadow_declaration WHERE declaration_id = ?",
+				[input.declarationId],
+			)[0];
+			if (existing) {
+				const row = this.autoMergeShadowDeclarationRow(existing);
+				result =
+					row.question_id === input.questionId &&
+					row.declared_class === input.declaredClass &&
+					row.discord_channel_id === input.discordChannelId &&
+					row.discord_message_id === input.discordMessageId
+						? { ok: true, status: "replayed", row }
+						: { ok: false, reason: "declaration_conflict" };
+				return;
+			}
+			const holder = this.getWorkflowGateHolderByQuestionId(input.questionId);
+			if (!holder) return;
+			if (holder.run_id !== input.runId) {
+				result = { ok: false, reason: "question_run_mismatch" };
+				return;
+			}
+			const usedMessage = this.workflowSelectAll(
+				"SELECT 1 FROM auto_merge_shadow_declaration WHERE discord_message_id = ?",
+				[input.discordMessageId],
+			)[0];
+			if (usedMessage) {
+				result = { ok: false, reason: "message_already_used" };
+				return;
+			}
+			const sequenceRow = this.workflowSelectAll(
+				`SELECT COALESCE(MAX(declaration_seq), 0) + 1 AS next_seq
+				   FROM auto_merge_shadow_declaration WHERE question_id = ?`,
+				[input.questionId],
+			)[0]!;
+			const sequence = Number(sequenceRow.next_seq);
+			this.db.run(
+				`INSERT INTO auto_merge_shadow_declaration
+				   (declaration_id, question_id, run_id, declared_class, declared_by,
+				    discord_channel_id, discord_message_id, discord_author_user_id,
+				    message_ts, declaration_seq, declared_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.declarationId,
+					input.questionId,
+					input.runId,
+					input.declaredClass,
+					input.declaredBy,
+					input.discordChannelId,
+					input.discordMessageId,
+					input.discordAuthorUserId,
+					input.messageTs,
+					sequence,
+					input.declaredAt,
+				],
+			);
+			const row = this.workflowSelectAll(
+				"SELECT * FROM auto_merge_shadow_declaration WHERE declaration_id = ?",
+				[input.declarationId],
+			)[0]!;
+			result = {
+				ok: true,
+				status: "created",
+				row: this.autoMergeShadowDeclarationRow(row),
+			};
+			inserted = true;
+		});
+		if (inserted) this.save();
+		return result;
+	}
+
 	private strengthTwoEvidenceReplayMatches(
 		row: StrengthTwoEvidenceRecordRow,
 		identity: {
@@ -54283,6 +54617,144 @@ export class StateStore {
 		};
 	}
 
+	private insertAutoMergeShadowObservationTx(
+		row: AutoMergeShadowObservationRow,
+	): void {
+		this.db.run(
+			`INSERT INTO auto_merge_shadow_observation
+			   (verdict_id, run_id, question_id, gate_execution_id, repo_identity,
+			    pr_number, head_sha, observed_at, machine_class, machine_reason,
+			    machine_file_count, machine_candidate_count,
+			    machine_declared_projected_count, machine_primary_snapshot_age_ms,
+			    machine_declared_max_snapshot_age_ms, machine_basis_json,
+			    s2_ran_status, s2_ran_reason, s2_record_status, s2_record_reason,
+			    s2_verdict, s2_basis_record_id, s2_row_count,
+			    s2_other_head_row_count, shadow_version)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			         ?, ?, ?, ?, ?)`,
+			[
+				row.verdict_id,
+				row.run_id,
+				row.question_id,
+				row.gate_execution_id,
+				row.repo_identity,
+				row.pr_number,
+				row.head_sha,
+				row.observed_at,
+				row.machine_class,
+				row.machine_reason,
+				row.machine_file_count,
+				row.machine_candidate_count,
+				row.machine_declared_projected_count,
+				row.machine_primary_snapshot_age_ms,
+				row.machine_declared_max_snapshot_age_ms,
+				row.machine_basis_json,
+				row.s2_ran_status,
+				row.s2_ran_reason,
+				row.s2_record_status,
+				row.s2_record_reason,
+				row.s2_verdict,
+				row.s2_basis_record_id,
+				row.s2_row_count,
+				row.s2_other_head_row_count,
+				row.shadow_version,
+			],
+		);
+	}
+
+	private recordAutoMergeShadowObservationTx(input: {
+		verdictId: string;
+		runId: string;
+		binding: ReturnType<StateStore["resolveFounderGateBindingTx"]>;
+		recordedAt: string;
+	}): void {
+		const holder = this.getWorkflowGateHolderByQuestionId(
+			input.binding.questionId,
+		);
+		if (!holder || holder.run_id !== input.runId) {
+			throw new Error("shadow_holder_unavailable");
+		}
+		const observedAtMs = Date.parse(input.recordedAt);
+		if (!Number.isFinite(observedAtMs)) {
+			throw new Error("shadow_observed_at_invalid");
+		}
+		const relevance = resolveRunShipRelevance(
+			this,
+			{
+				execution_id: holder.source_execution_id,
+				pr_number: input.binding.prNumber,
+				pr_head_sha: input.binding.headSha,
+			},
+			new Date(input.recordedAt),
+		);
+		const declaredProjectedCount =
+			this.projectCurrentShipRelevantCandidates(input.runId).length;
+		const snapshotsByCandidate = relevance.prs.map((candidate) => ({
+			role: candidate.role,
+			repoSlug: candidate.repoSlug,
+			prNumber: candidate.prNumber,
+			snapshot: this.getShipRelevantPrSnapshot(
+				holder.source_execution_id,
+				candidate.repoSlug,
+				candidate.prNumber,
+			),
+		}));
+		const resolvedRun = this.resolveWorkflowRunForExecution(
+			holder.source_execution_id,
+		);
+		const nestedReviews =
+			resolvedRun.kind === "one"
+				? this.listNestedCodexReviewHeadsForRun(resolvedRun.runId)
+				: this.listNestedCodexReviewHeadsForExecution(
+						holder.source_execution_id,
+					);
+		const recordedAtOrBeforeObservation = (recordedAt: string): boolean => {
+			const timestamp = Date.parse(recordedAt);
+			return Number.isFinite(timestamp) && timestamp <= observedAtMs;
+		};
+		const rows = this.listStrengthTwoRecordsForHead(
+			input.runId,
+			input.binding.repoIdentity,
+			input.binding.headSha,
+		).filter((row) => recordedAtOrBeforeObservation(row.recorded_at));
+		const otherHeadRowCount = this.listStrengthTwoRecordsForRun(
+			input.runId,
+		).filter(
+			(row) =>
+				row.target_repo_identity === input.binding.repoIdentity &&
+				row.head_sha !== input.binding.headSha &&
+				recordedAtOrBeforeObservation(row.recorded_at),
+		).length;
+		const strengthTwo = evaluateStrengthTwo(rows);
+		if (
+			(strengthTwo.ran.reason !== "no_ledger_row" &&
+				!RAN_REASONS.includes(strengthTwo.ran.reason)) ||
+			(strengthTwo.record.reason !== "no_ledger_row" &&
+				!RECORD_REASONS.includes(strengthTwo.record.reason))
+		) {
+			throw new Error("shadow_strength_two_reason_invalid");
+		}
+		this.insertAutoMergeShadowObservationTx(
+			buildShadowObservation({
+				verdictId: input.verdictId,
+				runId: input.runId,
+				questionId: input.binding.questionId,
+				gateExecutionId: holder.source_execution_id,
+				repoIdentity: input.binding.repoIdentity,
+				prNumber: input.binding.prNumber,
+				headSha: input.binding.headSha,
+				observedAt: input.recordedAt,
+				relevance,
+				declaredProjectedCount,
+				snapshotsByCandidate,
+				nestedReviews,
+				strengthTwo,
+				strengthTwoRowCount: rows.length,
+				strengthTwoOtherHeadRowCount: otherHeadRowCount,
+			}),
+		);
+	}
+
 	private recordFounderGateVerdictTx(input: {
 		sourceEventId: string;
 		runId: string;
@@ -54355,6 +54827,22 @@ export class StateStore {
 				input.recordedAt,
 			],
 		);
+		this.db.run("SAVEPOINT auto_merge_shadow");
+		try {
+			this.recordAutoMergeShadowObservationTx({
+				verdictId,
+				runId: input.runId,
+				binding: input.binding,
+				recordedAt: input.recordedAt,
+			});
+			this.db.run("RELEASE SAVEPOINT auto_merge_shadow");
+		} catch (error) {
+			this.db.run("ROLLBACK TO SAVEPOINT auto_merge_shadow");
+			this.db.run("RELEASE SAVEPOINT auto_merge_shadow");
+			console.warn(
+				`[auto-merge-shadow] observation skipped for ${verdictId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 		return {
 			verdict_id: verdictId,
 			...digestBody,
@@ -68713,6 +69201,100 @@ export interface WorkflowFounderGateVerdictRow {
 	row_digest: string;
 	recorded_at: string;
 }
+
+export type AutoMergeShadowMachineReason =
+	| "primary_ship_relevant"
+	| "declared_ship_relevant"
+	| "file_budget_exceeded"
+	| "primary_snapshot_missing"
+	| "primary_snapshot_stale"
+	| "primary_snapshot_version_mismatch"
+	| "declared_snapshot_missing"
+	| "declared_snapshot_stale"
+	| "declared_snapshot_version_mismatch"
+	| "nested_review_uncovered"
+	| "declaration_overflow"
+	| "scope_unresolved";
+
+export interface AutoMergeShadowObservationRow {
+	verdict_id: string;
+	run_id: string;
+	question_id: string;
+	gate_execution_id: string;
+	repo_identity: string;
+	pr_number: number;
+	head_sha: string;
+	observed_at: string;
+	machine_class: "docs_only" | "ship_relevant" | "unknown";
+	machine_reason: AutoMergeShadowMachineReason | null;
+	machine_file_count: number | null;
+	machine_candidate_count: number;
+	machine_declared_projected_count: number;
+	machine_primary_snapshot_age_ms: number | null;
+	machine_declared_max_snapshot_age_ms: number | null;
+	machine_basis_json: string;
+	s2_ran_status: "satisfied" | "unsatisfied";
+	s2_ran_reason: StrengthTwoLedgerRow["ran_reason"] | "no_ledger_row";
+	s2_record_status: "satisfied" | "unsatisfied";
+	s2_record_reason: StrengthTwoLedgerRow["record_reason"] | "no_ledger_row";
+	s2_verdict: "satisfied" | "unsatisfied";
+	s2_basis_record_id: string | null;
+	s2_row_count: number;
+	s2_other_head_row_count: number;
+	shadow_version: 1;
+}
+
+export const AUTO_MERGE_SHADOW_DECLARED_CLASSES = [
+	"pure_docs",
+	"config_only",
+	"single_point_change",
+	"other_code",
+] as const;
+export type AutoMergeShadowDeclaredClass =
+	(typeof AUTO_MERGE_SHADOW_DECLARED_CLASSES)[number];
+
+export interface AutoMergeShadowDeclarationRow {
+	declaration_id: string;
+	question_id: string;
+	run_id: string;
+	declared_class: AutoMergeShadowDeclaredClass;
+	declared_by: string;
+	discord_channel_id: string;
+	discord_message_id: string;
+	discord_author_user_id: string;
+	message_ts: string;
+	declaration_seq: number;
+	declared_at: string;
+}
+
+export interface RecordAutoMergeShadowDeclarationInput {
+	declarationId: string;
+	questionId: string;
+	runId: string;
+	declaredClass: AutoMergeShadowDeclaredClass;
+	declaredBy: string;
+	discordChannelId: string;
+	discordMessageId: string;
+	discordAuthorUserId: string;
+	messageTs: string;
+	declaredAt: string;
+}
+
+export type RecordAutoMergeShadowDeclarationResult =
+	| {
+			ok: true;
+			status: "created" | "replayed";
+			row: AutoMergeShadowDeclarationRow;
+	  }
+	| {
+			ok: false;
+			reason:
+				| "invalid_declaration"
+				| "question_unknown"
+				| "question_run_mismatch"
+				| "declaration_conflict"
+				| "message_already_used";
+	  };
 
 export type WorkflowLandConflictReworkResult =
 	| {

@@ -79,7 +79,9 @@ export type FetchDiscordMessageResult =
 				id: string;
 				channelId: string;
 				authorId: string;
+				authorIsBot?: boolean;
 				timestampMs: number;
+				editedTimestampMs?: number | null;
 				content: string;
 			};
 	  }
@@ -126,8 +128,9 @@ export async function fetchDiscordMessageFromChannel(
 	}
 	const message = payload as {
 		id?: unknown;
-		author?: { id?: unknown };
+		author?: { id?: unknown; bot?: unknown };
 		timestamp?: unknown;
+		edited_timestamp?: unknown;
 		content?: unknown;
 	};
 	const timestampMs =
@@ -143,13 +146,32 @@ export async function fetchDiscordMessageFromChannel(
 	) {
 		return { ok: false, kind: "server", status: response.status };
 	}
+	const editedTimestampMs =
+		message.edited_timestamp === null
+			? null
+			: typeof message.edited_timestamp === "string"
+				? Date.parse(message.edited_timestamp)
+				: undefined;
+	if (
+		message.edited_timestamp !== undefined &&
+		editedTimestampMs !== null &&
+		!Number.isFinite(editedTimestampMs)
+	) {
+		return { ok: false, kind: "server", status: response.status };
+	}
 	return {
 		ok: true,
 		message: {
 			id: message.id,
 			channelId,
 			authorId: message.author.id,
+			...(typeof message.author.bot === "boolean"
+				? { authorIsBot: message.author.bot }
+				: {}),
 			timestampMs,
+			...(message.edited_timestamp !== undefined
+				? { editedTimestampMs: editedTimestampMs ?? null }
+				: {}),
 			content: message.content,
 		},
 	};

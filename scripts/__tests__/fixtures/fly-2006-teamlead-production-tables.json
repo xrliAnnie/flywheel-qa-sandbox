@@ -4,6 +4,8 @@
 	"alert_mailbox_ledger",
 	"alert_repair_attempts",
 	"alert_threads",
+	"auto_merge_shadow_declaration",
+	"auto_merge_shadow_observation",
 	"auto_qa_record",
 	"chat_threads",
 	"cleanup_ref_observations",

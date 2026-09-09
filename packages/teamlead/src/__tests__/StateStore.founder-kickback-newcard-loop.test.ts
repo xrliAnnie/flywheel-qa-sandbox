@@ -634,6 +634,14 @@ describe("founder kickback new-card loop", () => {
 				},
 			]);
 			expect(
+				store.listAutoMergeShadowObservations({ runId: "run-1" }),
+			).toMatchObject([
+				{
+					question_id: holderA.question_id,
+					head_sha: head1,
+				},
+			]);
+			expect(
 				store.getWorkflowGateHolderByQuestionId(holderA.question_id),
 			).toMatchObject({
 				state: "superseded",

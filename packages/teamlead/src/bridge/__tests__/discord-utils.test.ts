@@ -37,8 +37,9 @@ describe("fetchDiscordMessageFromChannel (FLY-2396)", () => {
 		const fetchMock = vi.fn().mockResolvedValueOnce(
 			okResponse({
 				id: "22345678901234567",
-				author: { id: "42345678901234567" },
+				author: { id: "42345678901234567", bot: true },
 				timestamp: "2026-09-06T18:59:00.123Z",
+				edited_timestamp: "2026-09-06T19:00:00.456Z",
 				content: "founder verbatim",
 			}),
 		);
@@ -55,7 +56,9 @@ describe("fetchDiscordMessageFromChannel (FLY-2396)", () => {
 				id: "22345678901234567",
 				channelId: "12345678901234567",
 				authorId: "42345678901234567",
+				authorIsBot: true,
 				timestampMs: Date.parse("2026-09-06T18:59:00.123Z"),
+				editedTimestampMs: Date.parse("2026-09-06T19:00:00.456Z"),
 				content: "founder verbatim",
 			},
 		});

@@ -552,6 +552,15 @@ describe("FLY-2396 operator founder verdict", () => {
 						claim_id: null,
 					},
 				]);
+				expect(
+					store.listAutoMergeShadowObservations({ runId: "run-heavy" }),
+				).toMatchObject([
+					{
+						question_id: "question-operator",
+						head_sha: "a".repeat(40),
+						observed_at: "2026-09-06T18:03:00.000Z",
+					},
+				]);
 				const authorEvidence = JSON.parse(
 					store.listFounderGateVerdicts({ runId: "run-heavy" })[0]!
 						.author_evidence_json,

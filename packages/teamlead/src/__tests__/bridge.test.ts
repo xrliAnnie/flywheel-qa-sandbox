@@ -144,6 +144,56 @@ describe("Bridge scaffold", () => {
 		protectedStore.close();
 	});
 
+	it("fail-closes the shadow declaration mount and requires the ingest bearer", async () => {
+		const tokenlessStore = await StateStore.create(":memory:");
+		const tokenlessApp = createBridgeApp(tokenlessStore, [], makeConfig());
+		const tokenless = await fetch(
+			await startAndGetUrl(tokenlessApp, "/api/workflow/shadow-declaration"),
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "{}",
+			},
+		);
+		expect(tokenless.status).toBe(503);
+		expect(await tokenless.json()).toEqual({
+			ok: false,
+			reason: "bridge ingest token not configured",
+		});
+		tokenlessStore.close();
+
+		const protectedStore = await StateStore.create(":memory:");
+		const protectedApp = createBridgeApp(
+			protectedStore,
+			[],
+			makeConfig({ ingestToken: "ingest-secret" }),
+		);
+		const url = await startAndGetUrl(
+			protectedApp,
+			"/api/workflow/shadow-declaration",
+		);
+		const unauthorized = await fetch(url, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: "{}",
+		});
+		expect(unauthorized.status).toBe(401);
+		const authenticated = await fetch(url, {
+			method: "POST",
+			headers: {
+				Authorization: "Bearer ingest-secret",
+				"content-type": "application/json",
+			},
+			body: "{}",
+		});
+		expect(authenticated.status).toBe(400);
+		expect(await authenticated.json()).toEqual({
+			ok: false,
+			reason: "body_shape",
+		});
+		protectedStore.close();
+	});
+
 	it("FLY-1995 exposes stable event-loop health and fail-closed diagnostics auth", async () => {
 		const diagnostics = {
 			healthSnapshot: () => ({ p99_ms: null, max_ms: null, episodes: 0 }),

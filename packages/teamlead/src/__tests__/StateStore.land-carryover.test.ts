@@ -956,6 +956,14 @@ describe("equivalent-head carryover authority", () => {
 				rework_request_id: request?.request_id,
 				claim_id: null,
 			});
+			expect(
+				store
+					.listAutoMergeShadowObservations({ runId: "run-carryover" })
+					.at(-1),
+			).toMatchObject({
+				question_id: holder.question_id,
+				head_sha: HEAD_A,
+			});
 
 			const cutoffPayload = {
 				schema_version: 1,

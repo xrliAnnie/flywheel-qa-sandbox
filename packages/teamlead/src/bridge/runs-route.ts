@@ -263,7 +263,7 @@ function isGeneralizedSnapshot(snapshot: string | null | undefined): boolean {
 
 const DISCORD_SNOWFLAKE = /^\d{17,20}$/;
 
-function parseFounderMessageRef(
+export function parseFounderMessageRef(
 	value: unknown,
 ): { channelId: string; messageId: string } | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
