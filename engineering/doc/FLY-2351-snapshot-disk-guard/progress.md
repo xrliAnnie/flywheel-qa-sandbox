@@ -1,14 +1,13 @@
 ---
 issue: FLY-2351
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-09T04:03:20.819Z
-nextStep: "TDD B3: isolate per-file retention deletion failures and preserve
-  managed-copy sweep"
+phaseCursor: 3/4
+updated: 2026-09-09T04:06:14.719Z
+nextStep: "TDD B4: document and cross-reference low-disk emergency ordering"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2351 progress
-**phase**: implement (2/4)
-**next**: TDD B3: isolate per-file retention deletion failures and preserve managed-copy sweep
+**phase**: implement (3/4)
+**next**: TDD B4: document and cross-reference low-disk emergency ordering
