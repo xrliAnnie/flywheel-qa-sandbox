@@ -534,7 +534,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			patrol.indexOf("### FLY-2080 附录 B"),
 		);
 		expect(appendixA).toContain(
-			'SNAPSHOT_CONTROL="${FLYWHEEL_DIR:?FLYWHEEL_DIR must name the Flywheel checkout}/scripts/flywheel-snapshot-control.mjs"',
+			`SNAPSHOT_CONTROL="\${FLYWHEEL_DIR:?FLYWHEEL_DIR must name the Flywheel checkout}/scripts/flywheel-snapshot-control.mjs"`,
 		);
 		expect(appendixA).toContain('node "$SNAPSHOT_CONTROL" repair');
 		expect(appendixA).not.toContain(
