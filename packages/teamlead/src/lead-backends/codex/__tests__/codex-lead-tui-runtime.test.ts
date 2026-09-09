@@ -271,6 +271,7 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 			DISCORD_BOT_TOKEN: "tok-from-env",
 			FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "alerts-channel",
 			TEAMLEAD_API_TOKEN: "api-tok",
+			BRIDGE_URL: "http://bridge.local",
 			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access", // present in source env
 			SOME_RANDOM_SECRET: "leak-me",
 		} as NodeJS.ProcessEnv,
@@ -291,6 +292,7 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 		expect(e.SOME_RANDOM_SECRET).toBeUndefined();
 		// allowlisted Claude-pane env survives.
 		expect(e.TEAMLEAD_API_TOKEN).toBe("api-tok");
+		expect(e.BRIDGE_URL).toBe("http://bridge.local");
 		expect(e.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID).toBe("alerts-channel");
 		expect(e.FLYWHEEL_ALERT_SENDER_TOKEN_ENV).toBe("DISCORD_BOT_TOKEN");
 	});
@@ -303,6 +305,15 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 		});
 		expect(e.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID).toBeUndefined();
 		expect(e.FLYWHEEL_ALERT_SENDER_TOKEN_ENV).toBeUndefined();
+	});
+
+	it("full-access: forwards the normalized outbound mode to the daemon home", () => {
+		const e = buildTuiDaemonEnv({
+			...base,
+			profile: "full-access",
+			env: { ...base.env, FLYWHEEL_CODEX_LEAD_OUTBOUND: "direct" },
+		});
+		expect(e.FLYWHEEL_CODEX_LEAD_OUTBOUND).toBe("direct");
 	});
 
 	it("companion: raw env (byte-compat) + home pin", () => {

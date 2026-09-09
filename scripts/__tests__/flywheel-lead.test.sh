@@ -19,10 +19,11 @@ if [ -x "$LAUNCHER" ] \
   && printf '%s' "$help" | grep -q 'register' \
   && printf '%s' "$help" | grep -q 'run' \
   && printf '%s' "$help" | grep -q 'preflight' \
+  && printf '%s' "$help" | grep -q 'import-cos-context' \
   && printf '%s' "$help" | grep -q 'recover'; then
   pass "publishes the bounded generalized Lead command surface"
 else
-  fail "flywheel-lead.sh must expose register/run/preflight/recover"
+  fail "flywheel-lead.sh must expose register/import-cos-context/run/preflight/recover"
 fi
 
 H="$TMP/home"
@@ -252,6 +253,10 @@ if ! HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
   "$LAUNCHER" register \
     --project-name codex-demo --project-root "$CODEX_PROJECT" \
     --lead-id demo-codex --chat-channel 10000000000000003 \
+    --roundtable-channel 10000000000000013 \
+    --alert-channel 10000000000000003 \
+    --alert-bot-token-env DEMO_CODEX_BOT_TOKEN \
+    --alert-fallback-to-core false \
     --bot-token-env DEMO_CODEX_BOT_TOKEN --bot-user-id 20000000000000003 \
     --harness codex >"$TMP/codex-register.out" 2>"$TMP/codex-register.err"; then
   echo "codex fixture registration failed: $(cat "$TMP/codex-register.err")" >&2
@@ -350,7 +355,7 @@ if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
       .FLYWHEEL_CODEX_LEAD_PROFILE == "full-access" and
       .FLYWHEEL_CODEX_LEAD_SANDBOX == "workspace-write" and
       .FLYWHEEL_LEAD_CHAT_CHANNEL_ID == "10000000000000003" and
-      .FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS == null and
+      .FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS == "10000000000000013" and
       .FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD == null and
       .FLYWHEEL_ROUNDTABLE_CHANNEL_ID == null and
       .FLYWHEEL_ROUNDTABLE_ENABLED == null and
@@ -545,13 +550,11 @@ if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
   FLYWHEEL_TEAMLEAD_ROOT="$REPO_ROOT/packages/teamlead" \
   FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" \
   "$LAUNCHER" preflight "$raya_manifest" \
-    >"$TMP/raya-parser.out" 2>"$TMP/raya-parser.err"; then
-  fail "Codex preflight must reject the launcher-composed env when the real runtime parser rejects it"
-elif [ "$?" -eq 78 ] \
-  && grep -q 'RAYA_METRICS_DIR must be an absolute path' "$TMP/raya-parser.err"; then
-  pass "runs the launcher-composed Codex child env through the real runtime parser"
+    >"$TMP/raya-parser.out" 2>"$TMP/raya-parser.err" \
+  && grep -q 'PASS preflight complete for raya-smoke/raya' "$TMP/raya-parser.out"; then
+  pass "ignores the retired Raya-only metrics override during standard Lead preflight"
 else
-  fail "Codex runtime parser preflight returned the wrong result: $(cat "$TMP/raya-parser.err")"
+  fail "standard Raya preflight still depends on the retired metrics override: $(cat "$TMP/raya-parser.err")"
 fi
 mv "$TMP/flywheel.env.before-raya-parser" "$STATE/.env"
 

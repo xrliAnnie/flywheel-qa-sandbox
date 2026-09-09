@@ -124,8 +124,10 @@ describe("SkillInjector", () => {
 		);
 		expect(content).toContain("合入 ≠ 上线");
 		expect(content).toContain("生产 checkout");
-		expect(content).toContain("com.xrli.raya.brain");
-		expect(content).toContain("`raya preflight` ready");
+		expect(content).toContain("com.flywheel.lead.raya-raya");
+		expect(content).toContain("public `flywheel-lead.sh verify`");
+		expect(content).toContain("schemaVersion:2");
+		expect(content).toContain("carrier:standard-lead");
 		expect(content).toContain("deploy-receipt.json");
 	});
 

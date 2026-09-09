@@ -266,6 +266,13 @@ if [[ "$GENERALIZED" == "1" ]]; then
       ;;
   esac
 fi
+case "${TEST_CODEX_LEAD_OUTBOUND_MODE:-direct}" in
+  direct|bridge) ;;
+  *)
+    echo "ERROR: TEST_CODEX_LEAD_OUTBOUND_MODE must be 'direct' or 'bridge' (got '${TEST_CODEX_LEAD_OUTBOUND_MODE}')." >&2
+    exit 1
+    ;;
+esac
 if [[ -n "$EXPECT_HEAD" && "$GENERALIZED" != "1" ]]; then
   echo "ERROR: --expect-head requires --generalized" >&2
   exit 1
@@ -1561,7 +1568,7 @@ qa_slot_start_lead() {
       "FLYWHEEL_CODEX_BIN=${codex_bin}"
       "FLYWHEEL_CODEX_LEAD_MODE=tui"
       "FLYWHEEL_CODEX_TUI_CWD=${workspace}"
-      "FLYWHEEL_CODEX_LEAD_OUTBOUND=direct"
+      "FLYWHEEL_CODEX_LEAD_OUTBOUND=${TEST_CODEX_LEAD_OUTBOUND_MODE:-direct}"
       "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES=${identity},${REPO_ROOT}/packages/teamlead/lead-rules-base/companion-safety-contract.md"
     )
     profile_assignments=$(qa_codex_profile_assignments "$codex_profile" \

@@ -18,8 +18,10 @@
 - Use the shared command below. Do not hand-craft the PR flow, push directly to
   Raya's default branch, or merge your own summary PR. The merge is Raya's read
   receipt, not yours.
-- Raya 代码 PR 的合入不等于部署；定时班车完成生产 checkout、brain 重启和
-  preflight 后写入 `~/.flywheel/raya/deploy-receipt.json`，Done 条件见
+- Raya 代码 PR 的合入不等于部署；定时班车通过公共 standard Lead 完成生产
+  checkout、`flywheel-lead.sh verify`、文字与 summary 验收后写入
+  `~/.flywheel/raya/deploy-receipt.json`。只有绑定两仓 SHA 的
+  `schemaVersion:2`、`carrier:standard-lead` 回执可作为上线证据；Done 条件见
   `founder-only-authority.md` 的 R1。
 - The ONLY exception in this mechanism is Raya's own read-receipt merge, defined
   in `founder-only-authority.md` under “Narrow exemption — Raya's read-receipt

@@ -18,7 +18,10 @@ function fakePost(status = 200): { post: HttpPost; calls: Posted[] } {
 	const calls: Posted[] = [];
 	const post: HttpPost = async (req) => {
 		calls.push(req);
-		return { status, body: "ok" };
+		return {
+			status,
+			body: JSON.stringify({ status: "sent", messageId: "message-1" }),
+		};
 	};
 	return { post, calls };
 }
@@ -31,12 +34,22 @@ function seqPost(statuses: number[]): { post: HttpPost; calls: Posted[] } {
 		calls.push(req);
 		const status = statuses[Math.min(i, statuses.length - 1)];
 		i += 1;
-		return { status, body: "ok" };
+		return {
+			status,
+			body: JSON.stringify({ status: "sent", messageId: "message-1" }),
+		};
 	};
 	return { post, calls };
 }
 
-function make(opts: { post?: HttpPost; dbPath?: string } = {}) {
+function make(
+	opts: {
+		post?: HttpPost;
+		dbPath?: string;
+		now?: () => number;
+		proactiveEventIdTtlMs?: number;
+	} = {},
+) {
 	return new CodexOutboundSender({
 		bridgeUrl: "http://bridge.local/",
 		apiToken: "secret-token",
@@ -45,7 +58,8 @@ function make(opts: { post?: HttpPost; dbPath?: string } = {}) {
 		channelId: "chan-1",
 		dbPath: opts.dbPath ?? ":memory:",
 		post: opts.post,
-		now: () => 1000,
+		now: opts.now ?? (() => 1000),
+		proactiveEventIdTtlMs: opts.proactiveEventIdTtlMs,
 	});
 }
 
@@ -195,6 +209,84 @@ describe("CodexOutboundSender — authorization probe (FLY-2442)", () => {
 });
 
 describe("CodexOutboundSender — enqueue", () => {
+	it("allocates one durable event id for the same proactive target and text across reopen", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2445-event-id-"));
+		const dbPath = join(dir, "actions.db");
+		const first = make({ dbPath });
+		const eventId = first.allocateEventId("chat", "same report");
+		expect(eventId).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+		);
+		first.close();
+
+		const restarted = make({ dbPath });
+		expect(restarted.allocateEventId("chat", "same report")).toBe(eventId);
+		expect(restarted.allocateEventId("chat", "different report")).not.toBe(
+			eventId,
+		);
+		restarted.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("rotates a confirmed-sent content allocation after the bounded dedup window", async () => {
+		let now = 1_000;
+		const { post, calls } = fakePost(200);
+		const sender = make({
+			post,
+			now: () => now,
+			proactiveEventIdTtlMs: 60_000,
+		});
+		const firstEventId = sender.allocateEventId("chat", "done");
+		const firstOutboxId = await sender.enqueue({
+			leadId: "lead-1",
+			text: "done",
+			idempotencyKey: `lead-action:proj-1:lead-1:${firstEventId}`,
+		});
+		await sender.deliver(firstOutboxId);
+
+		now += 10 * 24 * 60 * 60 * 1_000;
+		const secondEventId = sender.allocateEventId("chat", "done");
+		expect(secondEventId).not.toBe(firstEventId);
+		const secondOutboxId = await sender.enqueue({
+			leadId: "lead-1",
+			text: "done",
+			idempotencyKey: `lead-action:proj-1:lead-1:${secondEventId}`,
+		});
+		await sender.deliver(secondOutboxId);
+		expect(calls).toHaveLength(2);
+	});
+
+	it("never rotates an ambiguous content allocation after the dedup window", async () => {
+		let now = 1_000;
+		const calls: Posted[] = [];
+		const sender = make({
+			now: () => now,
+			proactiveEventIdTtlMs: 60_000,
+			post: async (req) => {
+				calls.push(req);
+				return {
+					status: 409,
+					body: JSON.stringify({
+						status: "ambiguous",
+						reason: "prior_attempt_unproven",
+					}),
+				};
+			},
+		});
+		const eventId = sender.allocateEventId("chat", "maybe delivered");
+		const outboxId = await sender.enqueue({
+			leadId: "lead-1",
+			text: "maybe delivered",
+			idempotencyKey: `lead-action:proj-1:lead-1:${eventId}`,
+		});
+		await expect(sender.deliver(outboxId)).rejects.toThrow(/ambiguous/i);
+
+		now += 10 * 24 * 60 * 60 * 1_000;
+		expect(sender.allocateEventId("chat", "maybe delivered")).toBe(eventId);
+		await expect(sender.deliver(outboxId)).rejects.toThrow(/ambiguous/i);
+		expect(calls).toHaveLength(1);
+	});
+
 	it("returns outboxId = idempotencyKey and dedupes", async () => {
 		const sender = make();
 		const id1 = await sender.enqueue({
@@ -203,13 +295,29 @@ describe("CodexOutboundSender — enqueue", () => {
 			idempotencyKey: "e1:out",
 		});
 		expect(id1).toBe("e1:out");
-		// Duplicate key with different text → same row (original text preserved).
+		// Exact duplicate key and payload → same durable row.
 		const id2 = await sender.enqueue({
 			leadId: "l",
-			text: "changed",
+			text: "hi",
 			idempotencyKey: "e1:out",
 		});
 		expect(id2).toBe("e1:out");
+	});
+
+	it("rejects reuse of one idempotency key with different content", async () => {
+		const sender = make();
+		await sender.enqueue({
+			leadId: "l",
+			text: "original",
+			idempotencyKey: "event-1",
+		});
+		await expect(
+			sender.enqueue({
+				leadId: "l",
+				text: "changed",
+				idempotencyKey: "event-1",
+			}),
+		).rejects.toThrow(/idempotency.*conflict/i);
 	});
 
 	it("uses a deterministic nonce (stable across keys/instances)", () => {
@@ -274,6 +382,60 @@ describe("CodexOutboundSender — deliver", () => {
 		});
 		await sender.deliver(id);
 		await sender.deliver(id);
+		expect(calls).toHaveLength(1);
+	});
+
+	it("persists the Bridge message id and returns it after a process restart", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2445-actions-outbox-"));
+		const dbPath = join(dir, "actions.db");
+		const { post, calls } = fakePost(200);
+		const first = make({ post, dbPath });
+		const id = await first.enqueue({
+			leadId: "lead-a",
+			text: "report",
+			idempotencyKey: "summary:7:report",
+		});
+		await expect(first.deliverWithResult(id)).resolves.toEqual({
+			messageId: "message-1",
+			deduped: false,
+		});
+		first.close();
+		const restarted = make({ post, dbPath });
+		await restarted.enqueue({
+			leadId: "lead-a",
+			text: "report",
+			idempotencyKey: "summary:7:report",
+		});
+		await expect(restarted.deliverWithResult(id)).resolves.toEqual({
+			messageId: "message-1",
+			deduped: true,
+		});
+		expect(calls).toHaveLength(1);
+		restarted.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("marks a Bridge ambiguity and never blindly re-posts it", async () => {
+		const calls: Posted[] = [];
+		const sender = make({
+			post: async (req) => {
+				calls.push(req);
+				return {
+					status: 409,
+					body: JSON.stringify({
+						status: "ambiguous",
+						reason: "prior_attempt_unproven",
+					}),
+				};
+			},
+		});
+		const id = await sender.enqueue({
+			leadId: "lead-a",
+			text: "report",
+			idempotencyKey: "summary:8:report",
+		});
+		await expect(sender.deliverWithResult(id)).rejects.toThrow(/ambiguous/i);
+		await expect(sender.deliverWithResult(id)).rejects.toThrow(/ambiguous/i);
 		expect(calls).toHaveLength(1);
 	});
 

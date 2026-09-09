@@ -79,7 +79,7 @@ export class CodexDiscordMailboxStrategy {
 				authorName: message.authorId,
 				ts: input.createdAt,
 				msgKind: input.replyRoute ? "roundtable" : "guild",
-				attachments: [],
+				attachments: message.attachments ?? [],
 				text: input.payload,
 				...(this.opts.founderId ? { founderId: this.opts.founderId } : {}),
 				...(input.replyChannelId

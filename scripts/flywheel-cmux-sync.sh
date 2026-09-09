@@ -592,10 +592,14 @@ classify_lead_carrier() {
         && printf 'claude-private\n' \
         || printf 'config-drift\n'
       ;;
+    flywheel-lead.sh)
+      [[ "$backend" == "codex-app-server" ]] \
+        && printf 'codex-tui-cmux\n' \
+        || printf 'config-drift\n'
+      ;;
     flywheel-codex-lead-wrapper-mufasa-tui.sh|\
     flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|\
-    flywheel-codex-lead-wrapper-codex-infra-bot.sh|\
-    flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh)
+    flywheel-codex-lead-wrapper-codex-infra-bot.sh)
       printf 'codex-tui-cmux\n'
       ;;
     *) printf 'config-drift\n' ;;

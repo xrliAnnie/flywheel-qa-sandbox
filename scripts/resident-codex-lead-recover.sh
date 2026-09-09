@@ -98,9 +98,6 @@ load_authority() {
 		flywheel-codex-lead-wrapper-codex-infra-bot.sh)
 			codex_home_key=infra-bot
 			;;
-		flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh)
-			codex_home_key=raya
-			;;
 		*) return 1 ;;
 	esac
 	EXPECTED_CODEX_HOME="$(derive_codex_lead_home "$codex_home_key" "$HOME_ROOT")" || return 1

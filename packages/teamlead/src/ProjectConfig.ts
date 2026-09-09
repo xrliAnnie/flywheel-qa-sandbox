@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import type { SummaryRole } from "flywheel-comm/lead-identity";
 import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
 import { SAFE_IDENTIFIER_RE } from "flywheel-core";
@@ -8,6 +8,15 @@ import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
 
 export type LeadCarrier = "v2";
+
+export interface LeadCoSContext {
+	displayName: string;
+	aliases: string[];
+	workingSubdirectory: string;
+	identityPath: string;
+	memoryPaths: string[];
+	writableRoots: string[];
+}
 
 export interface LeadConfig {
 	agentId: string;
@@ -33,6 +42,8 @@ export interface LeadConfig {
 	alertChannel?: string;
 	/** The one configured roundtable channel this Lead may reply into via Bridge. */
 	roundtableChannel?: string;
+	/** Registry-owned CoS business directory metadata; never a second identity roster. */
+	cosContext?: LeadCoSContext;
 	/** Optional Discord user ID for severe follow-up DMs. */
 	alertDmUserId?: string;
 	/**
@@ -598,6 +609,79 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}].alertFallbackToCore: must be a boolean, got ${JSON.stringify(lead.alertFallbackToCore)}`,
 				);
+			}
+			if (lead.cosContext !== undefined) {
+				const where = `Project "${entry.projectName}" leads[${i}].cosContext`;
+				const context = lead.cosContext as unknown as Record<string, unknown>;
+				if (
+					context === null ||
+					typeof context !== "object" ||
+					Array.isArray(context)
+				) {
+					throw new Error(`${where}: must be an object`);
+				}
+				const allowed = new Set([
+					"displayName",
+					"aliases",
+					"workingSubdirectory",
+					"identityPath",
+					"memoryPaths",
+					"writableRoots",
+				]);
+				for (const key of Object.keys(context)) {
+					if (!allowed.has(key))
+						throw new Error(`${where}.${key}: unknown field`);
+				}
+				if (
+					typeof context.displayName !== "string" ||
+					context.displayName.trim().length === 0
+				) {
+					throw new Error(`${where}.displayName: must be a non-empty string`);
+				}
+				if (
+					!Array.isArray(context.aliases) ||
+					context.aliases.some(
+						(value) => typeof value !== "string" || value.trim().length === 0,
+					)
+				) {
+					throw new Error(
+						`${where}.aliases: must be an array of non-empty strings`,
+					);
+				}
+				if (
+					typeof context.workingSubdirectory !== "string" ||
+					context.workingSubdirectory.length === 0 ||
+					isAbsolute(context.workingSubdirectory) ||
+					normalize(context.workingSubdirectory) === ".." ||
+					normalize(context.workingSubdirectory).startsWith(
+						`..${process.platform === "win32" ? "\\\\" : "/"}`,
+					)
+				) {
+					throw new Error(
+						`${where}.workingSubdirectory: must stay inside projectRoot`,
+					);
+				}
+				for (const [field, value] of [
+					["identityPath", context.identityPath],
+				] as const) {
+					if (typeof value !== "string" || !isAbsolute(value)) {
+						throw new Error(`${where}.${field}: must be an absolute path`);
+					}
+				}
+				for (const field of ["memoryPaths", "writableRoots"] as const) {
+					const value = context[field];
+					if (
+						!Array.isArray(value) ||
+						value.some(
+							(candidate) =>
+								typeof candidate !== "string" || !isAbsolute(candidate),
+						)
+					) {
+						throw new Error(
+							`${where}.${field}: must be an array of absolute paths`,
+						);
+					}
+				}
 			}
 			// FLY-127: validate optional canSpawnRunners type
 			if (

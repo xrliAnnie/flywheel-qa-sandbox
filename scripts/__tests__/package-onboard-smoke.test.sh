@@ -241,13 +241,16 @@ GEN_HOME="$SANDBOX/generalized-home"
 GEN_STATE="$GEN_HOME/.flywheel"
 GEN_CLAUDE_ROOT="$GEN_HOME/claude-project"
 GEN_CODEX_ROOT="$GEN_HOME/codex-project"
+GEN_RAYA_ROOT="$GEN_HOME/raya-lead-workspace"
 GEN_CLI="$PKG_ROOT/packages/flywheel-comm/dist/index.js"
 GEN_VALIDATOR="$PKG_ROOT/packages/teamlead/dist/bin/validate-projects.js"
 GEN_LAUNCHER="$GEN_STATE/bin/flywheel-lead.sh"
 mkdir -p "$GEN_STATE/state/summary-registry" "$GEN_STATE/bin/lib" \
-  "$GEN_CLAUDE_ROOT/.lead/smoke-claude" "$GEN_CODEX_ROOT/.lead/smoke-codex"
+  "$GEN_CLAUDE_ROOT/.lead/smoke-claude" "$GEN_CODEX_ROOT/.lead/smoke-codex" \
+  "$GEN_RAYA_ROOT/.lead/raya"
 printf '%s\n' '# Smoke Claude Lead' > "$GEN_CLAUDE_ROOT/.lead/smoke-claude/identity.md"
 printf '%s\n' '# Smoke Codex Lead' > "$GEN_CODEX_ROOT/.lead/smoke-codex/identity.md"
+printf '%s\n' '# Raya Codex Lead' > "$GEN_RAYA_ROOT/.lead/raya/identity.md"
 cat > "$GEN_STATE/host.json" <<JSON
 {"flywheelDir":"$PKG_ROOT","stateDir":"$GEN_STATE"}
 JSON
@@ -334,6 +337,7 @@ chmod +x "$GEN_STATE/bin/"*.sh "$GEN_STATE/bin/lib/"*.sh \
 cat > "$GEN_STATE/.env" <<'ENV'
 SMOKE_CLAUDE_TOKEN=claude-smoke-token
 SMOKE_CODEX_TOKEN=codex-smoke-token
+RAYA_BOT_TOKEN=raya-smoke-token
 TEAMLEAD_API_TOKEN=bridge-smoke-token
 ENV
 GEN_CODEX_HOME="$GEN_HOME/.codex-smoke-codex"
@@ -391,7 +395,53 @@ else
   fail "④e generalized launcher failed: setup=$GEN_SETUP_RC register=$GEN_DRY_RC claude=$GEN_CLAUDE_RC codex=$GEN_CODEX_RC run=$GEN_RUN_RC $(tail -6 "$SANDBOX/generalized-register.err" "$SANDBOX/generalized-claude.err" "$SANDBOX/generalized-codex.err" "$SANDBOX/generalized-run.err" 2>/dev/null | tr '\n' ' ')"
 fi
 
-# ── ④f internal summary transport stays dormant for packaged customers ─────
+# ── ④f Raya registers and preflights through the installed tree ─────────────
+GEN_RAYA_HOME="$GEN_HOME/.codex-raya"
+mkdir -p "$GEN_RAYA_HOME/packages/standalone/current"
+cp "$GEN_CODEX_HOME/packages/standalone/current/codex" \
+  "$GEN_RAYA_HOME/packages/standalone/current/codex"
+printf '%s\n' '{}' > "$GEN_RAYA_HOME/auth.json"
+GEN_RAYA_REGISTER_RC=0
+run_generalized "$GEN_LAUNCHER" register \
+  --project-name raya --project-root "$GEN_RAYA_ROOT" \
+  --project-repo xrliAnnie/raya --general-channel 30000000000000004 \
+  --lead-id raya --chat-channel 30000000000000004 \
+  --bot-token-env RAYA_BOT_TOKEN --bot-user-id 40000000000000004 \
+  --harness codex --model gpt-6-astra --effort xhigh \
+  --model-context-window 1050000 --summary-role recipient \
+  --can-spawn-runners false --roundtable-channel 30000000000000014 \
+  --alert-channel 30000000000000004 --alert-bot-token-env RAYA_BOT_TOKEN \
+  --alert-fallback-to-core false \
+  > "$SANDBOX/generalized-raya-register.out" \
+  2> "$SANDBOX/generalized-raya-register.err" || GEN_RAYA_REGISTER_RC=$?
+GEN_RAYA_PREFLIGHT_RC=0
+run_generalized "$GEN_LAUNCHER" preflight \
+  "$GEN_STATE/manifests/raya-raya.json" \
+  > "$SANDBOX/generalized-raya-preflight.out" \
+  2> "$SANDBOX/generalized-raya-preflight.err" || GEN_RAYA_PREFLIGHT_RC=$?
+if [ "$GEN_RAYA_REGISTER_RC" -eq 0 ] && [ "$GEN_RAYA_PREFLIGHT_RC" -eq 0 ] \
+  && grep -q 'PASS preflight complete for raya/raya' \
+    "$SANDBOX/generalized-raya-preflight.out" \
+  && jq -e --arg root "$GEN_RAYA_ROOT" '
+    .projectName == "raya" and .leadId == "raya" and
+    .projectDir == $root and .leadBackend.backendId == "codex-app-server"
+  ' "$GEN_STATE/manifests/raya-raya.json" >/dev/null \
+  && jq -e '
+    .[] | select(.projectName == "raya" and .projectRepo == "xrliAnnie/raya") |
+    .leads[] | select(
+      .agentId == "raya" and .summaryRole == "recipient" and
+      .backend == "codex-app-server" and .codexProfile == "full-access" and
+      .model == "gpt-6-astra" and
+      .effort == "xhigh" and .modelContextWindow == 1050000 and
+      .canSpawnRunners == false and .alertFallbackToCore == false
+    )
+  ' "$GEN_STATE/projects.json" >/dev/null; then
+  pass "④f packaged Raya performs a real standard registration then Codex preflight"
+else
+  fail "④f packaged Raya register/preflight failed: register=$GEN_RAYA_REGISTER_RC preflight=$GEN_RAYA_PREFLIGHT_RC $(tail -8 "$SANDBOX/generalized-raya-register.err" "$SANDBOX/generalized-raya-preflight.err" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# ── ④g internal summary transport stays dormant for packaged customers ─────
 # The release allowlist deliberately registers Raya's repository names because
 # flywheel-comm is shipped as one compiled package. Customer setup assigns this
 # fixture an explicit exempt role: even with otherwise plausible selectors, the
@@ -416,9 +466,9 @@ summary_merge_out="$(env -i HOME="$LEAD_HOME" PATH="$SUMMARY_BIN:$PATH" \
 if grep -q "summary_duty_required" <<<"$summary_out" \
    && grep -q "summary_merge_authority_required" <<<"$summary_merge_out" \
    && [ ! -e "$SANDBOX/summary-gh.log" ]; then
-  pass "④f packaged exempt Lead cannot reach internal Raya summary delivery or merge transport"
+  pass "④g packaged exempt Lead cannot reach internal Raya summary delivery or merge transport"
 else
-  fail "④f packaged summary boundary failed: delivery=$summary_out merge=$summary_merge_out"
+  fail "④g packaged summary boundary failed: delivery=$summary_out merge=$summary_merge_out"
 fi
 
 echo ""

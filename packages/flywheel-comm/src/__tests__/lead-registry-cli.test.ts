@@ -157,6 +157,14 @@ describe("flywheel-comm lead-registry", () => {
 		"50000000000000001",
 		"--harness",
 		"codex",
+		"--roundtable-channel",
+		"60000000000000001",
+		"--alert-channel",
+		"40000000000000001",
+		"--alert-bot-token-env",
+		"RAYA_PRODUCT_BOT_TOKEN",
+		"--alert-fallback-to-core",
+		"false",
 	];
 
 	it.each(["\n", "", " \n"])(
@@ -181,6 +189,10 @@ describe("flywheel-comm lead-registry", () => {
 								canSpawnRunners: false,
 								backend: "codex-app-server",
 								codexProfile: "full-access",
+								roundtableChannel: "40000000000000002",
+								alertChannel: "20000000000000001",
+								alertBotTokenEnv: "RAYA_PRODUCT_BOT_TOKEN",
+								alertFallbackToCore: false,
 							},
 						],
 					},
@@ -215,6 +227,10 @@ describe("flywheel-comm lead-registry", () => {
 				backend: "codex-app-server",
 				codexProfile: "full-access",
 				botTokenEnv: "RAYA_PRODUCT_BOT_TOKEN",
+				roundtableChannel: "40000000000000002",
+				alertChannel: "20000000000000001",
+				alertBotTokenEnv: "RAYA_PRODUCT_BOT_TOKEN",
+				alertFallbackToCore: false,
 			});
 		},
 	);
@@ -252,6 +268,10 @@ describe("flywheel-comm lead-registry", () => {
 			agentId: "raya-product-lead",
 			backend: "codex-app-server",
 			codexProfile: "full-access",
+			roundtableChannel: "60000000000000001",
+			alertChannel: "40000000000000001",
+			alertBotTokenEnv: "RAYA_PRODUCT_BOT_TOKEN",
+			alertFallbackToCore: false,
 		});
 		expect(JSON.parse(readFileSync(f.receiptPath, "utf8"))).toMatchObject({
 			assignments: expect.arrayContaining([

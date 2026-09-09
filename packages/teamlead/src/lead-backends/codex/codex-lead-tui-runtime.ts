@@ -172,8 +172,9 @@ export function loadResidentCodexLeadProjectsSafely(
  * that the runtime path drops it).
  *
  *   - full-access (= Claude-equal) → the H-1 POSITIVE allowlist (`buildFullAccessEnv`,
- *     Claude-pane mirror + gh auth) + the bot token by name (for the lead_actions MCP
- *     child) + the daemon-control pin `FLYWHEEL_CODEX_LEAD_PROFILE=full-access`.
+ *     Claude-pane mirror + gh auth) + the bot token for standard Discord inbound;
+ *     lead_actions receives only Bridge credentials by name. The daemon-control pin
+ *     remains `FLYWHEEL_CODEX_LEAD_PROFILE=full-access`.
  *     The pin is CRITICAL: `buildFullAccessEnv` strips the profile (not in the
  *     allowlist), so without re-pinning it the home script's `ensure_daemon` would
  *     NOT do stop-before-start and a stale
@@ -189,6 +190,9 @@ export function buildTuiDaemonEnv(opts: {
 	env: NodeJS.ProcessEnv;
 	codexHome: string;
 	botToken: string;
+	bridgeUrl?: string;
+	apiToken?: string;
+	outboundMode?: "direct" | "bridge";
 	carrierInstanceId?: string;
 	leadId?: string;
 	projectName?: string;
@@ -204,9 +208,22 @@ export function buildTuiDaemonEnv(opts: {
 			}
 		: {};
 	if (profile === "full-access") {
+		const outboundMode =
+			opts.outboundMode ??
+			(env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge" ? "bridge" : "direct");
 		const alertChannel = env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID?.trim();
+		const bridgeUrl =
+			opts.bridgeUrl?.trim() ||
+			env.BRIDGE_URL?.trim() ||
+			env.FLYWHEEL_BRIDGE_URL?.trim();
+		const apiToken =
+			opts.apiToken?.trim() ||
+			env.TEAMLEAD_API_TOKEN?.trim() ||
+			env.FLYWHEEL_API_TOKEN?.trim();
 		return {
 			...buildFullAccessEnv(env),
+			...(bridgeUrl ? { BRIDGE_URL: bridgeUrl } : {}),
+			...(apiToken ? { TEAMLEAD_API_TOKEN: apiToken } : {}),
 			...(alertChannel
 				? {
 						FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: alertChannel,
@@ -215,6 +232,7 @@ export function buildTuiDaemonEnv(opts: {
 				: {}),
 			DISCORD_BOT_TOKEN: botToken,
 			FLYWHEEL_CODEX_TUI_HOME: codexHome,
+			FLYWHEEL_CODEX_LEAD_OUTBOUND: outboundMode,
 			// Re-pin the daemon-control flags buildFullAccessEnv strips, so the home
 			// script's ensure-daemon does stop-before-start (no stale read-only daemon
 			// survives the flip — Codex R1 HIGH-1). Non-secret.
@@ -568,9 +586,7 @@ export function buildTuiGeneration(
 							payload: "founder terminal turn (observed; see TUI/rollout)",
 						});
 					},
-					...(config.leadId === "raya" &&
-					config.contextUsagePath &&
-					config.contextUsageUnavailablePath
+					...(config.contextUsagePath && config.contextUsageUnavailablePath
 						? {
 								onTokenUsage: (params: unknown) => {
 									if (!activeThreadId) return;
@@ -1025,11 +1041,10 @@ export async function main(
 		"scripts",
 		"codex-lead-tui-home.sh",
 	);
-	// FLY-398 FULL-ACCESS (= Claude-equal): the lead_actions MCP (proactive
-	// discord_send) is injected via config.toml (written by ensure-home), with the
-	// bot token forwarded BY NAME (env_vars) — NO broker (Claude-equal). The §10
-	// config gate runs the FULL-ACCESS variant: it ALLOWS exactly approve +
-	// env_vars=[DISCORD_BOT_TOKEN] while still rejecting extra MCP / literal secrets
+	// FLY-398/FLY-2445 FULL-ACCESS: the lead_actions MCP (proactive discord_send)
+	// is injected via config.toml with only the selected transport credential
+	// forwarded BY NAME. The §10 config gate runs the FULL-ACCESS variant: it
+	// ALLOWS exactly approve + the mode-selected env names while rejecting extra MCP / literal secrets
 	// / alternate fields. Fail-closed before the daemon starts.
 	if (fullAccess) {
 		const mainJsPath = env.FLYWHEEL_LEAD_ACTIONS_MAIN_JS?.trim();
@@ -1048,6 +1063,7 @@ export async function main(
 			crossDeptChannelIds: config.crossDeptChannelIds,
 			stateDir,
 			commDbPath: config.commDbPath,
+			outboundMode: config.outboundMode,
 			explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
 			// FLY-676: forward the effective roundtable autoContinue (parity with headless).
 			// codex-lead-tui-home.sh writes the matching env into config.toml; the full-access
@@ -1078,7 +1094,7 @@ export async function main(
 			config.fullAccessProjectRoot,
 		);
 		console.warn(
-			"[codex-lead-tui-runtime] full-access §10 config gate PASSED (lead_actions MCP exact + sandbox=workspace-write/network-on + writable_roots=[validated project root], approve mode, token by-name, no broker)",
+			`[codex-lead-tui-runtime] full-access §10 config gate PASSED (lead_actions MCP exact + sandbox=workspace-write/network-on + writable_roots=[validated project root], approve mode, outbound=${config.outboundMode}, credential by-name, no broker)`,
 		);
 	}
 	const ensureDaemon = async () => {
@@ -1091,6 +1107,9 @@ export async function main(
 					env,
 					codexHome: config.codexHome,
 					botToken: config.botToken,
+					bridgeUrl: config.bridgeUrl,
+					apiToken: config.apiToken,
+					outboundMode: config.outboundMode,
 					carrierInstanceId,
 					leadId: config.leadId,
 					projectName: config.projectName,

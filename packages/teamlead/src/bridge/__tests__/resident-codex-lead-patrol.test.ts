@@ -36,7 +36,7 @@ const exactIdentity = {
 	],
 	codexHome: "/home/.flywheel/raya/codex-home",
 	label: "com.flywheel.lead.raya-raya",
-	wrapper: "flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh",
+	wrapper: "flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh",
 };
 const heartbeat = {
 	v: 1 as const,
@@ -257,7 +257,7 @@ describe("FLY-2216 resident Codex Lead host adapter", () => {
 					leadKey: "raya-raya",
 				},
 				pid: 4242,
-				wrapper: "flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh",
+				wrapper: "flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh",
 				codexHome: ".flywheel/raya/codex-home",
 			},
 			{

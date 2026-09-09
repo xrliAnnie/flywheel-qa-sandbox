@@ -21,6 +21,7 @@ import {
 	buildActionSurfaceDisableArgv,
 	buildCodexLeadRuntime,
 	buildConfinementArgv,
+	buildFullAccessAppServerEnv,
 	buildFullAccessArgv,
 	buildFullAccessEnv,
 	buildThreadParams,
@@ -75,6 +76,27 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		expect(c.channelIds).toEqual(["chan-chat"]); // no core channel set
 		expect(c.outboundProbeChannelIds).toEqual([]); // direct mode does not probe
 		expect(c.chrome).toBeUndefined();
+		expect(c.contextUsagePath).toBe(
+			"/var/state/mufasa/metrics/context-usage.jsonl",
+		);
+	});
+
+	it("starts canonical Raya without the retired RAYA_METRICS_DIR special case", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({
+				FLYWHEEL_LEAD_ID: "raya",
+				FLYWHEEL_PROJECT_NAME: "raya",
+				FLYWHEEL_LEAD_KEY: "raya-raya",
+				FLYWHEEL_CODEX_LEAD_STATE_DIR: "/var/state/raya",
+				RAYA_METRICS_DIR: undefined,
+			}),
+		);
+		expect(c.contextUsagePath).toBe(
+			"/var/state/raya/metrics/context-usage.jsonl",
+		);
+		expect(c.contextUsageUnavailablePath).toBe(
+			"/var/state/raya/metrics/context-usage-unavailable.jsonl",
+		);
 	});
 
 	it("keeps model, effort, and context window absent without materializing empty config", () => {
@@ -698,22 +720,42 @@ describe("FLY-350 full-access profile (= Claude-equal, opt-in)", () => {
 	});
 
 	// FLY-304 R1#3: dry-run preflight must reflect the LIVE full-access MCP injection
-	// (lead_actions + token-by-name), never the token value.
-	it("dry-run reflects lead_actions injection + token-by-name, never the token value", () => {
+	// (lead_actions + Bridge credentials by name), never secret values.
+	it("dry-run reflects Bridge-only lead_actions injection, never secret values", () => {
 		const config = parseCodexLeadRuntimeConfig(
 			fullAccessEnv({
+				FLYWHEEL_CODEX_LEAD_OUTBOUND: "bridge",
 				DISCORD_BOT_TOKEN: "topsecrettoken1234567890",
 				FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "1512578695468941333",
 			}),
 		);
 		const report = dryRunReport(config).join("\n");
 		expect(report).toMatch(/MCP injected\s*:.*lead_actions/);
-		expect(report).toContain('env_vars=["DISCORD_BOT_TOKEN"]');
+		expect(report).toContain('env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN"]');
+		expect(report).not.toContain('env_vars=["DISCORD_BOT_TOKEN"]');
 		// the raw token VALUE must never appear (redacted bot-token line shows ≤4 chars).
 		expect(report).not.toContain("topsecrettoken1234567890");
 		// literal env carries non-secret coords only.
 		expect(report).toContain(
 			"mcp_servers.lead_actions.env.FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
+		);
+	});
+
+	it("dry-run preserves the direct lead_actions credential path", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			fullAccessEnv({
+				FLYWHEEL_CODEX_LEAD_OUTBOUND: "direct",
+				FLYWHEEL_BRIDGE_URL: undefined,
+				FLYWHEEL_API_TOKEN: undefined,
+			}),
+		);
+		const report = dryRunReport(config).join("\n");
+		expect(report).toContain('env_vars=["DISCORD_BOT_TOKEN"]');
+		expect(report).not.toContain(
+			'env_vars=["BRIDGE_URL","TEAMLEAD_API_TOKEN"]',
+		);
+		expect(report).toContain(
+			'mcp_servers.lead_actions.env.FLYWHEEL_CODEX_LEAD_OUTBOUND="direct"',
 		);
 	});
 
@@ -970,6 +1012,21 @@ describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pa
 		const out = buildFullAccessEnv({ HOME: "/Users/x", PATH: "/usr/bin" });
 		expect("DISCORD_BOT_TOKEN" in out).toBe(false);
 		expect("GH_TOKEN" in out).toBe(false);
+	});
+
+	it("preserves ambient Bridge aliases when direct mode has no parsed Bridge pins", () => {
+		const out = buildFullAccessAppServerEnv(
+			{
+				HOME: "/Users/x",
+				PATH: "/usr/bin",
+				BRIDGE_URL: "http://127.0.0.1:9876",
+				TEAMLEAD_API_TOKEN: "ambient-teamlead-token",
+			},
+			{ botToken: "raya-token", bridgeUrl: "", apiToken: "" },
+		);
+		expect(out.DISCORD_BOT_TOKEN).toBe("raya-token");
+		expect(out.BRIDGE_URL).toBe("http://127.0.0.1:9876");
+		expect(out.TEAMLEAD_API_TOKEN).toBe("ambient-teamlead-token");
 	});
 
 	// Codex code-review HIGH: the allowlist must never carry a SECRET a Claude pane

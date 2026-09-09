@@ -1,6 +1,7 @@
 export interface LeadRegistryIntent {
 	schemaVersion: 1;
 	phase: "pending" | "done";
+	operation?: "add" | "cos-context-import";
 	leadKey: string;
 	startedAt: string;
 	projectsShaBefore: string;
@@ -46,6 +47,9 @@ function parseIntent(value: unknown): LeadRegistryIntent {
 	if (
 		intent.schemaVersion !== 1 ||
 		(intent.phase !== "pending" && intent.phase !== "done") ||
+		(intent.operation !== undefined &&
+			intent.operation !== "add" &&
+			intent.operation !== "cos-context-import") ||
 		typeof intent.leadKey !== "string" ||
 		intent.leadKey.length === 0 ||
 		typeof intent.startedAt !== "string" ||

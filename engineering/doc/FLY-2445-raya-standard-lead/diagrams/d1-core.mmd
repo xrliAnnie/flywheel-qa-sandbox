@@ -1,0 +1,16 @@
+flowchart TB
+  A["你在 Raya 频道打字"] --> B["标准 Lead 进程内取信器"]
+  W["持久收件位置：重启后补齐停机消息"] --> B
+  B --> C[("项目持久信箱")]
+  S["各 Lead 的 summary 轮次"] --> C
+  C --> D["Bridge 共用投递泵"]
+  D --> E["已有 Codex 适配器"]
+  E --> F["Raya · 同一位统管
+身份、判断、会议、日报"]
+  F --> G["Bridge 授权与去重"]
+  G --> H["Raya 频道看见回复"]
+  F --> I["原 summaries PR + 长期记忆"]
+  classDef platform fill:#edf5ff,stroke:#007aff,color:#16324f
+  classDef business fill:#f6efff,stroke:#af52de,color:#38224c
+  class B,C,D,E,G,W platform
+  class F,I business

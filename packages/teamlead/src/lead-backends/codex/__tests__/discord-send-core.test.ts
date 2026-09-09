@@ -134,6 +134,63 @@ describe("runDiscordSend (FLY-350 shared core)", () => {
 		expect(r.text).toMatch(/threw: network down/);
 	});
 
+	it("routes an event-keyed active send through the injected Bridge sender without direct Discord fallback", async () => {
+		const bridgeSend = vi.fn(async () => ({ messageId: "bridge-msg-1" }));
+		const { deps, post } = makeDeps({
+			botToken: undefined,
+			bridgeSend,
+			eventId: "summary:round-7:report",
+		});
+		const r = await runDiscordSend("chat", "summary ready", deps);
+		expect(r).toMatchObject({
+			ok: true,
+			channelId: CHAT,
+			messageId: "bridge-msg-1",
+		});
+		expect(bridgeSend).toHaveBeenCalledWith({
+			channelId: CHAT,
+			text: "summary ready",
+			idempotencyKey: "lead-action:growth:mufasa-lead:summary:round-7:report",
+		});
+		expect(post).not.toHaveBeenCalled();
+	});
+
+	it("persists a trusted event allocation when Bridge send omits eventId and reuses its key", async () => {
+		const bridgeSend = vi.fn(async () => ({ messageId: "bridge-msg-2" }));
+		const allocateEventId = vi.fn(() => "allocated-event-id");
+		const { deps, post } = makeDeps({
+			botToken: undefined,
+			bridgeSend,
+			allocateEventId,
+		});
+		const first = await runDiscordSend("chat", "same report", deps);
+		const second = await runDiscordSend("chat", "same report", deps);
+		expect(first.messageId).toBe("bridge-msg-2");
+		expect(second.text).toMatch(/idempotent/);
+		expect(allocateEventId).toHaveBeenCalledTimes(2);
+		expect(bridgeSend).toHaveBeenCalledTimes(1);
+		expect(bridgeSend).toHaveBeenCalledWith({
+			channelId: CHAT,
+			text: "same report",
+			idempotencyKey: "lead-action:growth:mufasa-lead:allocated-event-id",
+		});
+		expect(post).not.toHaveBeenCalled();
+	});
+
+	it("never falls back to direct Discord when the injected Bridge sender fails", async () => {
+		const bridgeSend = vi.fn(async () => {
+			throw new Error("Bridge unavailable");
+		});
+		const { deps, post } = makeDeps({
+			bridgeSend,
+			eventId: "meeting:abc:1:invite",
+		});
+		const r = await runDiscordSend("roundtable", "invite", deps);
+		expect(r).toMatchObject({ ok: false, isError: true });
+		expect(r.text).toMatch(/bridge send failed.*Bridge unavailable/i);
+		expect(post).not.toHaveBeenCalled();
+	});
+
 	it("audits metadata only — NEVER the message text or the bot token (R2-6)", async () => {
 		const { deps, audits } = makeDeps();
 		await runDiscordSend("chat", "super secret message body", deps);

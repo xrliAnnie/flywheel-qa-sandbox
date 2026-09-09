@@ -35,7 +35,6 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
   local f i
   for f in flywheel-lead-wrapper-v2.sh flywheel-lead.sh \
       flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
-      flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
       resident-codex-lead-recover.sh \
       flywheel-codex-lead-wrapper-codex-infra-bot.sh \
       flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
@@ -43,6 +42,7 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
       host-tmux-selection-gate.sh \
       flywheel-cmux-sync.sh flywheel-cmux-autostart.sh lib/bounded-run.sh \
       lib/lead-address.sh lib/lead-host-tmux-gate.sh \
+      lib/raya-standard-migration.sh \
       meta-alert.sh lead-patrol-snapshot.sh \
       flywheel-node-dwell-control.mjs; do
     { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$fr/scripts/$f"
@@ -83,13 +83,13 @@ seed_wrappers() {  # <state-dir> <repo> — pre-converge steady state (healthy)
   local f
   for f in flywheel-lead-wrapper-v2.sh flywheel-lead.sh \
            flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
-           flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
            resident-codex-lead-recover.sh \
            flywheel-codex-lead-wrapper-codex-infra-bot.sh \
            flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
            flywheel-bridge-wrapper.sh restart-services.sh \
            restart-storm-gate.py host-tmux-selection-gate.sh \
-           lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh; do
+           lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh \
+           lib/raya-standard-migration.sh; do
     cp "$2/scripts/$f" "$1/bin/$f"
   done
   ln -sfn "$2/scripts/meta-alert.sh" "$1/bin/meta-alert.sh"

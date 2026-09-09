@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# FLY-2385: hermetic contract for the scheduled Raya deployment pass.
-# shellcheck disable=SC2034,SC2329
+# FLY-2445: the updater may deploy Raya only through the standard Lead carrier.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-LIB="$ROOT/scripts/lib/updater-raya-deploy.sh"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/fly2385-raya.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/fly2445-updater.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 PASSED=0
@@ -13,709 +11,462 @@ FAILED=0
 pass() { PASSED=$((PASSED + 1)); printf '[TEST] ok - %s\n' "$1"; }
 fail() { FAILED=$((FAILED + 1)); printf '[TEST] FAIL - %s\n' "$1" >&2; }
 expect_eq() {
-  local want="$1" got="$2" label="$3"
-  if [[ "$got" == "$want" ]]; then pass "$label"; else fail "$label (want=$want got=$got)"; fi
+  local expected="$1" actual="$2" label="$3"
+  if [[ "$actual" == "$expected" ]]; then pass "$label"; else
+    fail "$label (expected=$expected actual=$actual)"
+  fi
 }
-read_count() { local value=""; value="$(cat "$1" 2>/dev/null || true)"; printf '%s\n' "${value:-0}"; }
 
-if [[ ! -f "$LIB" ]]; then
-  fail "Raya updater source library exists"
-  printf 'Results: %s passed, %s failed\n' "$PASSED" "$FAILED"
-  exit 1
-fi
-
-REMOTE="$TMP/raya.git"
-SEED="$TMP/seed"
+export UPDATE_FLYWHEEL_SOURCED=1
 export HOME="$TMP/home"
-export FLYWHEEL_HOME="$TMP/flywheel"
+export FLYWHEEL_HOME="$HOME/.flywheel"
 export RAYA_HOME="$FLYWHEEL_HOME/raya"
 export RAYA_CODE_DIR="$RAYA_HOME/code"
-export RAYA_STATE_DIR="$RAYA_HOME/data/state"
-export RAYA_METRICS_DIR="$RAYA_HOME/data/metrics"
 export RAYA_DEPLOYED_SHA_FILE="$RAYA_HOME/deployed-sha"
 export RAYA_DEPLOY_RECEIPT="$RAYA_HOME/deploy-receipt.json"
 export RAYA_DEPLOY_LOCK_DIR="$RAYA_HOME/deploy.lock.d"
-export RAYA_BRAIN_PID_FILE="$RAYA_METRICS_DIR/run/brain.pid"
-export RAYA_VOICE_PID_FILE="$RAYA_METRICS_DIR/run/voice.pid"
-export RAYA_PLIST_DIR="$HOME/Library/LaunchAgents"
-export UPDATE_FLYWHEEL_SOURCED=1
-export RAYA_FETCH_TIMEOUT_SECONDS=20
-export RAYA_HEALTH_TRIES=3
-export RAYA_HEALTH_INTERVAL_SECONDS=0
-export RAYA_SESSION_GRACE_SECONDS=3
-export RAYA_SESSION_POLL_SECONDS=1
-mkdir -p "$HOME" "$FLYWHEEL_HOME" "$RAYA_HOME" "$RAYA_PLIST_DIR"
-
-git init -q --bare "$REMOTE"
-git init -q "$SEED"
-git -C "$SEED" config user.email fly2385@example.test
-git -C "$SEED" config user.name FLY-2385
-git -C "$SEED" checkout -qb main
-mkdir -p "$SEED/apps/brain/dist" "$SEED/apps/voice/dist" "$SEED/packages/contracts"
-printf 'brain-a\n' > "$SEED/apps/brain/dist/cli.js"
-printf 'voice-a\n' > "$SEED/apps/voice/dist/cli.js"
-printf 'lock-a\n' > "$SEED/pnpm-lock.yaml"
-git -C "$SEED" add .
-git -C "$SEED" commit -qm A
-SHA_A="$(git -C "$SEED" rev-parse HEAD)"
-git -C "$SEED" remote add origin "$REMOTE"
-git -C "$SEED" push -q -u origin main
-git --git-dir="$REMOTE" symbolic-ref HEAD refs/heads/main
-git clone -q "$REMOTE" "$RAYA_CODE_DIR"
-git -C "$RAYA_CODE_DIR" config user.email fly2385@example.test
-git -C "$RAYA_CODE_DIR" config user.name FLY-2385
-printf 'brain-b\n' > "$SEED/apps/brain/dist/cli.js"
-printf 'voice-b\n' > "$SEED/apps/voice/dist/cli.js"
-git -C "$SEED" add .
-git -C "$SEED" commit -qm B
-SHA_B="$(git -C "$SEED" rev-parse HEAD)"
-git -C "$SEED" push -q origin main
-git -C "$RAYA_CODE_DIR" fetch -q origin
-
-mkdir -p "$RAYA_METRICS_DIR/run" "$RAYA_STATE_DIR"
-printf 'RAYA_HOME=%s\nRAYA_METRICS_DIR=%s\nRAYA_STATE_DIR=%s\nRAYA_DISCORD_TEXT_CHANNEL_ID=test-channel\n' \
-  "$RAYA_HOME" "$RAYA_METRICS_DIR" "$RAYA_STATE_DIR" > "$RAYA_HOME/raya.env"
+export RAYA_CANONICAL_MANIFEST="$FLYWHEEL_HOME/manifests/raya-raya.json"
+export RAYA_MIGRATION_MANIFEST="$RAYA_HOME/migrations/fly-2445-test/manifest.json"
+export RAYA_STANDARD_PROOF_FILE="$RAYA_HOME/migrations/fly-2445-test/proof.json"
+export RAYA_STANDARD_MIGRATION_LIB="$ROOT/scripts/lib/raya-standard-migration.sh"
+mkdir -p "$(dirname "$RAYA_CANONICAL_MANIFEST")" "$(dirname "$RAYA_MIGRATION_MANIFEST")" \
+  "$RAYA_CODE_DIR" "$HOME/Dev/raya-lead-workspace"
 
 # shellcheck source=/dev/null
-source "$LIB"
-PRODUCTION_NOTICE_DEFINITION="$(declare -f raya_notify_interruption)"
-PRODUCTION_INSTALL_DEFINITION="$(declare -f raya_pnpm_install)"
-PRODUCTION_BUILD_DEFINITION="$(declare -f raya_pnpm_build)"
+source "$ROOT/scripts/lib/updater-raya-deploy.sh"
+raya_configure_runtime_paths
 
-required_functions=(
-  raya_configure_runtime_paths raya_host_capable raya_lock_acquire raya_lock_release
-  raya_validate_launchd_identity raya_assert_checkout raya_session_active
-  raya_write_receipt raya_finish updater_raya_pass
-)
-for fn in "${required_functions[@]}"; do
-  declare -F "$fn" >/dev/null 2>&1 || fail "source library exports $fn"
-done
+write_canonical() {
+  jq -n --arg root "$HOME/Dev/raya-lead-workspace" '{
+    projectName:"raya", leadId:"raya", projectDir:$root,
+    leadBackend:{backendId:"codex-app-server"}
+  }' > "$RAYA_CANONICAL_MANIFEST"
+  chmod 600 "$RAYA_CANONICAL_MANIFEST"
+}
 
-if declare -F raya_run_bounded_in_checkout >/dev/null 2>&1 \
-  && [[ "${RAYA_INSTALL_TIMEOUT_SECONDS:-}" =~ ^[1-9][0-9]*$ ]] \
-  && [[ "${RAYA_BUILD_TIMEOUT_SECONDS:-}" =~ ^[1-9][0-9]*$ ]] \
-  && declare -f raya_pnpm_install | grep -q 'raya_run_bounded_in_checkout.*RAYA_INSTALL_TIMEOUT_SECONDS' \
-  && declare -f raya_pnpm_build | grep -q 'raya_run_bounded_in_checkout.*RAYA_BUILD_TIMEOUT_SECONDS'; then
-  pass "install and build are bounded while the updater singleton is held"
-else
-  fail "install or build lacks an explicit bounded-run ceiling"
+write_p2_manifest() {
+  local unresolved="${1:-[]}" cursor="$TMP/inbound-cursor.json" seed="$TMP/seed.json"
+  printf '%s\n' '{"schemaVersion":1}' > "$seed"
+  chmod 600 "$seed"
+  jq -n \
+    --arg migration "fly-2445-test" \
+    --arg cursor "$cursor" --arg seed "$seed" --argjson unresolved "$unresolved" '{
+      schemaVersion:1, migration_id:$migration, checkpoint:"P2",
+      unresolved:$unresolved,
+      cursor:{path:$cursor,seed_input:$seed,status:null,sha256:null}
+    }' > "$RAYA_MIGRATION_MANIFEST"
+  chmod 600 "$RAYA_MIGRATION_MANIFEST"
+}
+
+write_p6_manifest() {
+  local raya_sha="${1:-${frozen_raya:-1111111111111111111111111111111111111111}}"
+  local flywheel_sha="${2:-2222222222222222222222222222222222222222}"
+  local manifest_digest=""
+  manifest_digest="$(shasum -a 256 "$RAYA_CANONICAL_MANIFEST" | awk '{print $1}')"
+  printf '%s\n' "$flywheel_sha" > "$FLYWHEEL_DEPLOYED_SHA_FILE"
+  chmod 600 "$FLYWHEEL_DEPLOYED_SHA_FILE"
+  jq -n \
+    --arg migration "fly-2445-test" --arg raya "$raya_sha" --arg flywheel "$flywheel_sha" \
+    --arg manifest "$manifest_digest" --arg workspace "$HOME/Dev/raya-lead-workspace" \
+    --arg artifact "$RAYA_ARTIFACT_DIGEST" --arg persona "$RAYA_PERSONA_DIGEST" '{
+      schemaVersion:1, migration_id:$migration, checkpoint:"P6", unresolved:[],
+      flywheel_deployed_sha:$flywheel, raya_sha:$raya,
+      registry_digest:("a"*64), summary_receipt_digest:("b"*64),
+      canonical_manifest_digest:$manifest,
+      artifact:{digest:$artifact,persona_digest:$persona,workspace:$workspace,state_schema_version:1},
+      cursor:{status:"seeded",sha256:("9"*64)},
+      lead:{project:"raya",id:"raya",key:"raya-raya",identity_digest:("f"*64),
+        registry_digest:("a"*64),summary_receipt_digest:("b"*64),manifest_digest:$manifest,
+        pid:4321,process_started_at:"2026-09-08T10:00:00Z",activation_id:"activation-1",
+        thread_id:"thread-1",tui_visible:true},
+      business:{source_sha:$raya,artifact_digest:$artifact,persona_digest:$persona,
+        workspace:$workspace,state_schema_version:1},
+      checks:{preflight:true,unique_owner:true,pump:true,text_delivery_id:"chat:raya:100",
+        outbound_message_id:"200",summary_round_id:"round-1",summary_delivery_id:"summary:1",
+        mailbox_acked:true,bridge_sent:true,bridge_identity_verified:true,
+        alert_channel_id:"300",alert_delivery_id:"400",alert_reachable:true},
+      cutover:{seed_digest:("9"*64),seeded_at:"2026-09-08T09:58:00Z",
+        old_stopped_at:"2026-09-08T09:59:00Z",activated_at:"2026-09-08T10:00:00Z",
+        activation_id:"activation-1",channels:[{channel_id:"500",seeded_after:"600"}],
+        window_message_id:"700",window_delivery_id:"chat:raya:700",
+        window_outbound_message_id:"800",unresolved_count:0}
+    }' > "$RAYA_MIGRATION_MANIFEST"
+  chmod 600 "$RAYA_MIGRATION_MANIFEST"
+}
+
+write_canonical
+if raya_host_capable; then pass "canonical codex-app-server manifest enables the Raya shuttle"; else
+  fail "canonical codex-app-server manifest enables the Raya shuttle"
 fi
+jq '.leadBackend.backendId="claude-code"' "$RAYA_CANONICAL_MANIFEST" > "$TMP/wrong.json"
+mv "$TMP/wrong.json" "$RAYA_CANONICAL_MANIFEST"
+chmod 600 "$RAYA_CANONICAL_MANIFEST"
+if raya_host_capable; then fail "non-standard Raya carrier is not host capability"; else
+  pass "non-standard Raya carrier is not host capability"
+fi
+write_canonical
+
+python3 - "$TMP/foreign.plist" "$RAYA_CODE_DIR/apps/brain/dist/cli.js" "$RAYA_CODE_DIR" <<'PY'
+import plistlib, sys
+path, cli, cwd = sys.argv[1:]
+with open(path, "wb") as handle:
+    plistlib.dump({
+        "Label": "com.example.foreign",
+        "ProgramArguments": ["/usr/bin/node", cli, "run"],
+        "WorkingDirectory": cwd,
+        "EnvironmentVariables": {"RAYA_ENV_FILE": "foreign"},
+    }, handle)
+PY
+if raya_legacy_plist_matches "$TMP/foreign.plist" brain com.xrli.raya.brain; then
+  fail "legacy quiesce must refuse a foreign launchd identity"
+else
+  pass "legacy quiesce refuses a foreign launchd identity"
+fi
+
+mkdir -p "$RAYA_CODE_DIR/.lead/raya" "$RAYA_CODE_DIR/packages/cos/dist" \
+  "$RAYA_CODE_DIR/packages/cos/node_modules" "$RAYA_WORKSPACE/memory" "$RAYA_WORKSPACE/state"
+printf 'raya persona\n' > "$RAYA_CODE_DIR/.lead/raya/identity.md"
+printf 'console.log("cos")\n' > "$RAYA_CODE_DIR/packages/cos/dist/cli.js"
+printf '%s\n' '{"name":"@raya/cos","type":"module"}' > "$RAYA_CODE_DIR/packages/cos/package.json"
+printf 'must not deploy\n' > "$RAYA_CODE_DIR/packages/cos/node_modules/private-cache"
+printf 'memory stays\n' > "$RAYA_WORKSPACE/memory/MEMORY.md"
+printf 'state stays\n' > "$RAYA_WORKSPACE/state/business.json"
+RAYA_NEW_HEAD="1111111111111111111111111111111111111111"
+if raya_materialize_business; then pass "materializes the bounded Raya business artifact"; else
+  fail "materializes the bounded Raya business artifact"
+fi
+version="$RAYA_WORKSPACE/.flywheel-managed/versions/$RAYA_NEW_HEAD"
+if [[ -f "$version/packages/cos/dist/cli.js" \
+  && -f "$version/packages/cos/package.json" \
+  && ! -e "$version/packages/cos/node_modules" \
+  && "$(cat "$RAYA_WORKSPACE/memory/MEMORY.md")" == "memory stays" \
+  && "$(cat "$RAYA_WORKSPACE/state/business.json")" == "state stays" ]]; then
+  pass "artifact export excludes install caches and preserves memory/state"
+else
+  fail "artifact export must contain only the managed build and preserve memory/state"
+fi
+if raya_materialize_business; then
+  pass "artifact projection is restart-idempotent before the first receipt"
+else
+  fail "artifact projection must resume safely before the first receipt"
+fi
+
+git init -q "$RAYA_CODE_DIR"
+git -C "$RAYA_CODE_DIR" config user.email fly2445@example.test
+git -C "$RAYA_CODE_DIR" config user.name FLY-2445
+git -C "$RAYA_CODE_DIR" add .
+git -C "$RAYA_CODE_DIR" commit -qm seed
+git -C "$RAYA_CODE_DIR" branch -M main
+frozen_raya="$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)"
+frozen_version="$RAYA_WORKSPACE/.flywheel-managed/versions/$frozen_raya"
+cp -R "$version" "$frozen_version"
+rm "$RAYA_WORKSPACE/business/current"
+ln -s "$frozen_version" "$RAYA_WORKSPACE/business/current"
+frozen_flywheel="6666666666666666666666666666666666666666"
+printf '%s\n' "$frozen_flywheel" > "$FLYWHEEL_DEPLOYED_SHA_FILE"
+chmod 600 "$FLYWHEEL_DEPLOYED_SHA_FILE"
+canonical_digest="$(shasum -a 256 "$RAYA_CANONICAL_MANIFEST" | awk '{print $1}')"
+mkdir -p "$(dirname "$RAYA_MIGRATION_MANIFEST")"
+jq -n --arg raya "$frozen_raya" --arg flywheel "$frozen_flywheel" \
+  --arg manifest "$canonical_digest" --arg artifact "$RAYA_ARTIFACT_DIGEST" \
+  --arg persona "$RAYA_PERSONA_DIGEST" --arg workspace "$RAYA_WORKSPACE" '{
+    schemaVersion:1,migration_id:"fly-2445-test",checkpoint:"P3",unresolved:[],
+    raya_sha:$raya,flywheel_deployed_sha:$flywheel,canonical_manifest_digest:$manifest,
+    artifact:{digest:$artifact,persona_digest:$persona,workspace:$workspace,state_schema_version:1},
+    cursor:{path:"/tmp/not-used",seed_input:"/tmp/not-used"}
+  }' > "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+: > "$TMP/fetch-calls"
+saved_fetch="$(declare -f raya_git_fetch_bounded)"
+raya_git_fetch_bounded() { printf 'fetch\n' >> "$TMP/fetch-calls"; return 99; }
+if raya_prepare_source && [[ ! -s "$TMP/fetch-calls" ]]; then
+  pass "P3+ resume verifies the frozen two-repository artifact without fetching"
+else
+  fail "P3+ resume must not move the frozen source after legacy ownership stopped"
+fi
+eval "$saved_fetch"
+version="$frozen_version"
+
+v1_keys='["brain_pid","checked_at","checkout_before","deployed_sha","failure","gen_before","generation","head","identity","interrupt_notice","ledger","node_bin","origin_main","outcome","preflight_rc","rollback_sha","schemaVersion","session_at_cutover","session_grace","state","voice","voice_pid"]'
+v2_keys='["brain_pid","business","carrier","checked_at","checkout_before","checks","cutover","deployed_sha","failure","flywheel_deployed_sha","gen_before","generation","head","identity","interrupt_notice","lead","ledger","migration_id","node_bin","origin_main","outcome","preflight_rc","rollback_sha","rollback_target","schemaVersion","session_at_cutover","session_grace","state","voice","voice_pid"]'
+
+jq -n '{
+  schemaVersion:1,checked_at:0,outcome:"current",state:"current",failure:null,
+  checkout_before:null,head:null,origin_main:null,ledger:null,rollback_sha:null,deployed_sha:null,
+  identity:null,session_grace:null,session_at_cutover:null,generation:null,gen_before:null,
+  interrupt_notice:null,brain_pid:null,voice:null,voice_pid:null,node_bin:null,preflight_rc:null
+}' > "$TMP/v1.json"
+if raya_receipt_keys_valid "$TMP/v1.json"; then pass "legacy v1 receipt retains exactly 22 keys"; else
+  fail "legacy v1 receipt retains exactly 22 keys"
+fi
+expect_eq "$v1_keys" "$(jq -c 'keys' "$TMP/v1.json")" "v1 receipt key set is pinned"
+
+write_p6_manifest
+RAYA_CHECKOUT_BEFORE="0000000000000000000000000000000000000000"
+RAYA_TARGET="$frozen_raya"
+RAYA_NEW_HEAD="$RAYA_TARGET"
+RAYA_LEDGER_STATE=missing
+RAYA_ROLLBACK_SHA=""
+RAYA_PREFLIGHT_RC=0
+if raya_write_standard_receipt deployed "standard-lead activated"; then
+  pass "writes a standard Lead v2 deploy receipt"
+else
+  fail "writes a standard Lead v2 deploy receipt"
+fi
+expect_eq "$v2_keys" "$(jq -c 'keys' "$RAYA_DEPLOY_RECEIPT")" "v2 receipt key set is pinned at 30"
+if jq -e --arg raya "$frozen_raya" '
+  .schemaVersion == 2 and .carrier == "standard-lead" and
+  .deployed_sha == $raya and
+  .flywheel_deployed_sha == "2222222222222222222222222222222222222222" and
+  .lead.key == "raya-raya" and .business.state_schema_version == 1 and
+  .checks.preflight and .checks.mailbox_acked and .cutover.unresolved_count == 0 and
+  .identity == null and .generation == null and .brain_pid == null and .voice_pid == null
+' "$RAYA_DEPLOY_RECEIPT" >/dev/null; then
+  pass "v2 success carries current standard evidence without inventing legacy process evidence"
+else
+  fail "v2 success evidence is malformed"
+fi
+
+cp "$RAYA_CANONICAL_MANIFEST" "$TMP/canonical.before"
+jq '.tampered=true' "$RAYA_CANONICAL_MANIFEST" > "$TMP/canonical.tampered"
+mv "$TMP/canonical.tampered" "$RAYA_CANONICAL_MANIFEST"
+chmod 600 "$RAYA_CANONICAL_MANIFEST"
+if raya_write_standard_receipt deployed "must refuse stale manifest proof" >/dev/null 2>&1; then
+  fail "stale canonical manifest digest must block a success receipt"
+else
+  pass "stale canonical manifest digest blocks a success receipt"
+fi
+mv "$TMP/canonical.before" "$RAYA_CANONICAL_MANIFEST"
+chmod 600 "$RAYA_CANONICAL_MANIFEST"
+
+printf 'tampered artifact\n' > "$version/packages/cos/dist/cli.js"
+if raya_write_standard_receipt deployed "must refuse stale artifact proof" >/dev/null 2>&1; then
+  fail "stale business artifact digest must block a success receipt"
+else
+  pass "stale business artifact digest blocks a success receipt"
+fi
+printf 'console.log("cos")\n' > "$version/packages/cos/dist/cli.js"
+
+first_receipt_digest="$(shasum -a 256 "$RAYA_DEPLOY_RECEIPT" | awk '{print $1}')"
+next_raya="3333333333333333333333333333333333333333"
+next_flywheel="4444444444444444444444444444444444444444"
+next_version="$RAYA_WORKSPACE/.flywheel-managed/versions/$next_raya"
+cp -R "$version" "$next_version"
+rm "$RAYA_WORKSPACE/business/current"
+ln -s "$next_version" "$RAYA_WORKSPACE/business/current"
+RAYA_TARGET="$next_raya"
+write_p6_manifest "$next_raya" "$next_flywheel"
+if raya_write_standard_receipt deployed "paired update" \
+  && jq -e --arg digest "$first_receipt_digest" --arg previous "$frozen_raya" '
+    .rollback_target.carrier == "standard-lead" and
+    .rollback_target.raya_sha == $previous and
+    .rollback_target.flywheel_sha == "2222222222222222222222222222222222222222" and
+    .rollback_target.receipt_digest == $digest
+  ' "$RAYA_DEPLOY_RECEIPT" >/dev/null; then
+  pass "rollback target pairs the previous verified Raya and Flywheel SHAs"
+else
+  fail "rollback target must preserve the previous verified two-repository pair"
+fi
+rm "$RAYA_WORKSPACE/business/current"
+ln -s "$version" "$RAYA_WORKSPACE/business/current"
+RAYA_TARGET="$frozen_raya"
+write_p6_manifest
 
 CALLS="$TMP/calls"
-ALERTS="$TMP/alerts"
-NOTICES="$TMP/notices"
-BUILD_COUNT="$TMP/build-count"
-SLEEP_COUNT="$TMP/sleep-count"
-FETCH_COUNT="$TMP/fetch-count"
-KICK_COUNT="$TMP/kick-count"
-LAUNCHD="$TMP/launchd"
-mkdir -p "$LAUNCHD"
-
-label_app() { [[ "$1" == com.xrli.raya.brain ]] && printf brain || printf voice; }
-write_job() {
-  local app="$1" state="$2" pid="$3" start="$4"
-  printf '%s\n' "$state" > "$LAUNCHD/$app.state"
-  printf '%s\n' "$pid" > "$LAUNCHD/$app.pid"
-  printf '%s\n' "$start" > "$LAUNCHD/$app.start"
+: > "$CALLS"
+saved_quiesce="$(declare -f raya_quiesce_legacy_owner)"
+raya_quiesce_legacy_owner() { printf '%s\n' quiesce >> "$CALLS"; }
+raya_standard_seed_inbound_cursor() {
+  printf '{}\n' > "$1"; chmod 600 "$1"
+  local digest; digest="$(shasum -a 256 "$1" | awk '{print $1}')"
+  printf '%s\n' "{\"status\":\"seeded\",\"migrationId\":\"fly-2445-test\",\"sha256\":\"$digest\",\"channels\":1}"
 }
-job_state() { cat "$LAUNCHD/$1.state"; }
-job_pid() { cat "$LAUNCHD/$1.pid"; }
+raya_standard_lead() { printf '%s\n' "$*" >> "$CALLS"; }
+raya_bridge_token_ready() { return 0; }
+write_p2_manifest
+if raya_standard_cutover; then pass "runs P3-P5 through the standard Lead lifecycle"; else
+  fail "runs P3-P5 through the standard Lead lifecycle"
+fi
+expect_eq "P5" "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" "successful install advances the durable checkpoint to P5"
+expected_calls=$'quiesce\npreflight '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage installed '$RAYA_CANONICAL_MANIFEST
+expect_eq "$expected_calls" "$(cat "$CALLS")" "cutover orders quiesce, seed fence, preflight, install, verify"
 
-raya_git() { git -C "$RAYA_CODE_DIR" "$@"; }
-raya_git_fetch_bounded() {
-  local n=0
-  n="$(cat "$FETCH_COUNT" 2>/dev/null || printf 0)"; n=$((n + 1)); printf '%s\n' "$n" > "$FETCH_COUNT"
-  if (( n <= ${FETCH_FAIL_UNTIL:-0} )); then return "${FETCH_FAIL_RC:-1}"; fi
-  git -C "$RAYA_CODE_DIR" fetch origin '+refs/heads/main:refs/remotes/origin/main' --quiet || return
-  if [[ "${FETCH_MUTATE_HEAD:-0}" == 1 ]]; then git -C "$RAYA_CODE_DIR" reset --hard -q "$SHA_B"; fi
-}
-raya_pnpm_install() { printf 'install|%s\n' "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" >> "$CALLS"; }
-raya_pnpm_build() {
-  local n=0
-  n="$(cat "$BUILD_COUNT" 2>/dev/null || printf 0)"
-  n=$((n + 1)); printf '%s\n' "$n" > "$BUILD_COUNT"
-  printf 'build|%s\n' "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" >> "$CALLS"
-  if [[ "${BUILD_MUTATE_TRACKED:-0}" == 1 ]]; then printf 'operator-byte\n' >> "$RAYA_CODE_DIR/apps/brain/dist/cli.js"; fi
-  if [[ "${BUILD_BUMP_BRAIN:-0}" == 1 ]]; then write_job brain running 777 start-777; fi
-  if [[ "${BUILD_STOP_VOICE:-0}" == 1 ]]; then write_job voice exited 200 start-200; rm -f "$RAYA_STATE_DIR/voice-mode.requested"; fi
-  if [[ "${BUILD_DROP_VOICE:-0}" == 1 ]]; then write_job voice exited 200 start-200; touch "$RAYA_STATE_DIR/voice-mode.requested"; fi
-  case ",${BUILD_FAIL_AT:-0}," in *",$n,"*) return 1 ;; esac
-  return 0
-}
-raya_preflight() { printf 'preflight\n' >> "$CALLS"; [[ "${PREFLIGHT_FAIL:-0}" != 1 ]]; }
-raya_launchd_print() {
-  local label="$1" app state pid program cwd env_file
-  app="$(label_app "$label")"; state="$(job_state "$app")"; pid="$(job_pid "$app")"
-  [[ "$state" != unloaded ]] || return 1
-  program="${JOB_PROGRAM:-/bin/sh}"; [[ "$app" != voice || -z "${JOB_PROGRAM_VOICE:-}" ]] || program="$JOB_PROGRAM_VOICE"
-  cwd="${JOB_CWD:-${JOB_CODE_DIR:-$RAYA_CODE_DIR}}"
-  env_file="${JOB_ENV_FILE:-${JOB_RAYA_HOME:-$RAYA_HOME}/raya.env}"
-  if [[ -n "${JOB_ENV_DECOY:-}" ]]; then
-    printf 'inherited environment = {\n\tRAYA_ENV_FILE => %s\n}\n' "$JOB_ENV_DECOY"
-  fi
-  printf 'path = gui/501/%s\nstate = %s\nprogram = %s\narguments = {\n\t%s\n\t%s/apps/%s/dist/cli.js\n\trun\n' \
-    "$label" "$state" "$program" "$program" "${JOB_CODE_DIR:-$RAYA_CODE_DIR}" "$app"
-  [[ "${JOB_ARG_EXTRA:-0}" != 1 ]] || printf '\textra\n'
-  printf '}\nworking directory = %s\nenvironment = {\n\tRAYA_ENV_FILE => %s\n}\n' "$cwd" "$env_file"
-  [[ "$state" != running || "${JOB_NO_PID_APP:-}" == "$app" ]] || printf 'pid = %s\n' "$pid"
-}
-raya_plist_program_arguments() {
-  local app; app="$(label_app "$1")"
-  jq -nc --arg p "${PLIST_PROGRAM:-${JOB_PROGRAM:-/bin/sh}}" \
-    --arg e "${PLIST_CODE_DIR:-${JOB_CODE_DIR:-$RAYA_CODE_DIR}}/apps/$app/dist/cli.js" \
-    '[ $p, $e, "run" ]'
-}
-raya_process_start() {
-  local pid="$1" app
-  if [[ "$pid" == "$$" ]]; then printf 'updater-start\n'; return; fi
-  for app in brain voice; do
-    [[ "$(job_pid "$app")" != "$pid" ]] || { cat "$LAUNCHD/$app.start"; return; }
-  done
-  return 1
-}
-raya_kickstart() {
-  local app old new count=0
-  app="$(label_app "$1")"; old="$(job_pid "$app")"; new=$((old + 100))
-  count="$(cat "$KICK_COUNT" 2>/dev/null || printf 0)"; count=$((count + 1)); printf '%s\n' "$count" > "$KICK_COUNT"
-  printf 'kick|%s\n' "$app" >> "$CALLS"
-  [[ "${KICK_FAIL_APP:-}" != "$app" && "${KICK_FAIL_AT:-0}" != "$count" ]] || return 1
-  write_job "$app" running "$new" "start-$new"
-  [[ "$app" == brain ]] && printf '%s\n' "$new" > "$RAYA_BRAIN_PID_FILE"
-  [[ "$app" == voice ]] && printf '%s\n' "$new" > "$RAYA_VOICE_PID_FILE"
-  if [[ "${KICK_EXIT_AT:-0}" == "$count" ]]; then write_job "$app" exited "$new" "start-$new"; fi
-  if [[ "${VOICE_START_AFTER_BRAIN_KICK:-0}" == 1 && "$app" == brain ]]; then
-    write_job voice running 250 start-250
-    printf '250\n' > "$RAYA_VOICE_PID_FILE"
-  fi
-  if [[ "${MUTATE_AFTER_BRAIN_KICK:-0}" == 1 && "$app" == brain ]]; then
-    printf 'late-operator-byte\n' >> "$RAYA_CODE_DIR/apps/brain/dist/cli.js"
-  fi
-  return 0
-}
-raya_sleep() {
-  local n=0
-  [[ "$1" != 0 ]] || return 0
-  n="$(cat "$SLEEP_COUNT" 2>/dev/null || printf 0)"; n=$((n + 1)); printf '%s\n' "$n" > "$SLEEP_COUNT"
-  if [[ "${SESSION_CLEAR_AFTER:-0}" == "$n" ]]; then rm -f "$RAYA_STATE_DIR/voice-mode.requested"; write_job voice exited 200 start-200; fi
-}
-raya_now() { printf '%s\n' "${FAKE_NOW:-2000000000}"; }
-raya_alert() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >> "$ALERTS"; }
-raya_notify_interruption() { printf '%s\n' "$1" >> "$NOTICES"; [[ "${NOTICE_FAIL:-0}" != 1 ]]; }
+: > "$CALLS"
+write_p2_manifest '["message-unknown-side-effect"]'
+if raya_standard_cutover >/dev/null 2>&1; then
+  fail "unresolved legacy side effects must block quiesce and install"
+else
+  pass "unresolved legacy side effects block quiesce and install"
+fi
+expect_eq "" "$(cat "$CALLS")" "blocked cutover performs no lifecycle operation"
+eval "$saved_quiesce"
 
-reset_case() {
-  local head="${1:-$SHA_A}" target="${2:-$SHA_A}"
-  git --git-dir="$REMOTE" update-ref refs/heads/main "$target"
-  git -C "$RAYA_CODE_DIR" reset --hard -q "$head"
-  git -C "$RAYA_CODE_DIR" checkout -q main
-  git -C "$RAYA_CODE_DIR" clean -fdq
-  git -C "$RAYA_CODE_DIR" update-ref refs/remotes/origin/main "$target"
-  rm -rf "$RAYA_DEPLOY_LOCK_DIR" "$RAYA_DEPLOYED_SHA_FILE" "$RAYA_DEPLOY_RECEIPT" \
-    "$RAYA_STATE_DIR/voice-mode.requested" "$RAYA_STATE_DIR/meeting.json"
-  mkdir -p "$RAYA_METRICS_DIR/run" "$RAYA_STATE_DIR"
-  printf 'RAYA_HOME=%s\nRAYA_METRICS_DIR=%s\nRAYA_STATE_DIR=%s\nRAYA_DISCORD_TEXT_CHANNEL_ID=test-channel\n' \
-    "$RAYA_HOME" "$RAYA_METRICS_DIR" "$RAYA_STATE_DIR" > "$RAYA_HOME/raya.env"
-  : > "$CALLS"; : > "$ALERTS"; : > "$NOTICES"; : > "$BUILD_COUNT"; : > "$SLEEP_COUNT"
-  : > "$FETCH_COUNT"; : > "$KICK_COUNT"
-  write_job brain running 100 start-100
-  write_job voice exited 200 start-200
-  printf '100\n' > "$RAYA_BRAIN_PID_FILE"
-  rm -f "$RAYA_VOICE_PID_FILE"
-  JOB_PROGRAM=/bin/sh JOB_PROGRAM_VOICE="" JOB_CODE_DIR="$RAYA_CODE_DIR" JOB_RAYA_HOME="$RAYA_HOME"
-  JOB_CWD="" JOB_ENV_FILE="" JOB_ENV_DECOY="" JOB_ARG_EXTRA=0 JOB_NO_PID_APP=""
-  PLIST_PROGRAM=/bin/sh PLIST_CODE_DIR="$RAYA_CODE_DIR"
-  BUILD_FAIL_AT=0 BUILD_MUTATE_TRACKED=0 BUILD_BUMP_BRAIN=0 BUILD_STOP_VOICE=0 BUILD_DROP_VOICE=0
-  PREFLIGHT_FAIL=0 KICK_FAIL_APP="" KICK_FAIL_AT=0 KICK_EXIT_AT=0 NOTICE_FAIL=0 SESSION_CLEAR_AFTER=0
-  VOICE_START_AFTER_BRAIN_KICK=0
-  MUTATE_AFTER_BRAIN_KICK=0
-  FETCH_FAIL_UNTIL=0 FETCH_FAIL_RC=1 FETCH_MUTATE_HEAD=0
-  FAKE_NOW=2000000000
-  RAYA_LOCK_OWNED=0 RAYA_DEPLOY_STATE="" RAYA_DEPLOY_DETAIL=""
-  RAYA_CHECKOUT_BEFORE="" RAYA_TARGET="" RAYA_ROLLBACK_SHA="" RAYA_LEDGER_STATE=""
-}
-
-run_pass() {
-  if [[ "${RAYA_TEST_TRACE:-0}" == 1 ]]; then updater_raya_pass; else updater_raya_pass >/dev/null 2>&1; fi
-}
-
-reset_case "$SHA_A" "$SHA_A"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-run_pass; rc=$?
-expect_eq 0 "$rc" "current checkout succeeds"
-expect_eq current "$RAYA_DEPLOY_STATE" "current checkout records current state"
-expect_eq 0 "$(grep -c '^kick|' "$CALLS" || true)" "current checkout does not restart"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-run_pass; rc=$?
-expect_eq 0 "$rc" "behind checkout deploys"
-expect_eq "$SHA_B" "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" "behind checkout fast-forwards to origin/main"
-expect_eq "$SHA_B" "$(cat "$RAYA_DEPLOYED_SHA_FILE")" "successful deploy advances deployed-sha"
-expect_eq deployed "$(jq -r .outcome "$RAYA_DEPLOY_RECEIPT")" "successful deploy writes deployed receipt first"
-expect_eq 1 "$(grep -c '^kick|brain$' "$CALLS")" "successful deploy replaces brain"
-
-reset_case "$SHA_B" "$SHA_B"
-run_pass; rc=$?
-expect_eq 0 "$rc" "missing ledger bootstraps at current origin/main"
-expect_eq "$SHA_B" "$(cat "$RAYA_DEPLOYED_SHA_FILE")" "bootstrap writes deployed-sha after verification"
-
-reset_case "$SHA_A" "$SHA_B"
-printf 'dirty\n' >> "$RAYA_CODE_DIR/apps/brain/dist/cli.js"
-run_pass; rc=$?
-expect_eq 1 "$rc" "dirty checkout is refused"
-expect_eq dirty "$RAYA_DEPLOY_STATE" "dirty checkout has a distinct state"
-expect_eq "$SHA_A" "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" "dirty refusal does not move HEAD"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '  %s \r\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-printf 'dirty\n' >> "$RAYA_CODE_DIR/apps/brain/dist/cli.js"
-run_pass; rc=$?
-expect_eq "$SHA_A" "$(jq -r .deployed_sha "$RAYA_DEPLOY_RECEIPT")" \
-  "refusal receipt normalizes the same deployed anchor used for rollback"
-
-reset_case "$SHA_A" "$SHA_B"
-printf 'local\n' > "$RAYA_CODE_DIR/local.txt"
-git -C "$RAYA_CODE_DIR" add local.txt
-git -C "$RAYA_CODE_DIR" commit -qm local
-local_sha="$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)"
-run_pass; rc=$?
-expect_eq 1 "$rc" "diverged checkout is refused"
-expect_eq diverged "$RAYA_DEPLOY_STATE" "diverged checkout has a distinct state"
-expect_eq "$local_sha" "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" "diverged refusal preserves local HEAD"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-BUILD_FAIL_AT=1 run_pass; rc=$?
-expect_eq 0 "$rc" "forward build failure rolls back to known-good"
-expect_eq rolled_back "$RAYA_DEPLOY_STATE" "known-good rollback is explicit"
-expect_eq "$SHA_A" "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" "rollback restores known-good HEAD"
-expect_eq 0 "$(grep -c '^kick|' "$CALLS" || true)" "pre-cutover rollback preserves unchanged process generation"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-export BOUNDED_CALLS="$TMP/bounded.calls"
-timeout_runner="$TMP/bounded-timeout.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >> "${BOUNDED_CALLS:?}"' 'exit 124' > "$timeout_runner"
-chmod +x "$timeout_runner"
-saved_install_definition="$(declare -f raya_pnpm_install)"
-eval "$PRODUCTION_INSTALL_DEFINITION"
-UPDATER_BOUNDED_RUN="$timeout_runner" run_pass; rc=$?
-eval "$saved_install_definition"
-expect_eq 3 "$rc" "install timeout fails loud when rollback dependencies cannot be rebuilt"
-expect_eq "$SHA_A" "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" "install timeout leaves checkout on the old head"
-expect_eq 0 "$(grep -c '^kick|' "$CALLS" || true)" "install timeout never restarts a Raya service"
-expect_eq "600 pnpm install --frozen-lockfile" "$(sed -n '1p' "$BOUNDED_CALLS")" \
-  "install timeout uses the explicit production ceiling"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-: > "$BOUNDED_CALLS"
-saved_build_definition="$(declare -f raya_pnpm_build)"
-eval "$PRODUCTION_BUILD_DEFINITION"
-UPDATER_BOUNDED_RUN="$timeout_runner" run_pass; rc=$?
-eval "$saved_build_definition"
-expect_eq 3 "$rc" "build timeout fails loud when rollback dependencies cannot be rebuilt"
-expect_eq "$SHA_A" "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" "build timeout leaves checkout on the old head"
-expect_eq 0 "$(grep -c '^kick|' "$CALLS" || true)" "build timeout never restarts a Raya service"
-expect_eq "600 pnpm build" "$(sed -n '1p' "$BOUNDED_CALLS")" \
-  "build timeout uses the explicit production ceiling"
-
-reset_case "$SHA_A" "$SHA_B"
-BUILD_FAIL_AT=1 run_pass; rc=$?
-expect_eq 3 "$rc" "bootstrap build failure is terminal without a reset anchor"
-expect_eq failed "$RAYA_DEPLOY_STATE" "no-known-good failure is explicit"
-expect_eq "$SHA_B" "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" "no-known-good failure never guesses a reset target"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-write_job voice running 200 start-200
-printf '200\n' > "$RAYA_VOICE_PID_FILE"
-run_pass; rc=$?
-expect_eq 0 "$rc" "running voice deploy succeeds"
-expect_eq 1 "$(grep -c '^kick|voice$' "$CALLS")" "voice running at cutover is replaced"
-expect_eq replaced "$(jq -r .voice "$RAYA_DEPLOY_RECEIPT")" "voice replacement is receipted"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-JOB_CODE_DIR="$TMP/wrong-worktree"
-run_pass; rc=$?
-expect_eq 1 "$rc" "launchd worktree drift is refused"
-expect_eq identity_drift "$RAYA_DEPLOY_STATE" "identity drift has a distinct state"
-expect_eq 0 "$(grep -c '^install|' "$CALLS" || true)" "identity drift refuses before checkout build"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-JOB_ENV_DECOY="$TMP/inherited-debug.env" run_pass; rc=$?
-expect_eq 0 "$rc" "job identity ignores inherited launchd environment decoys"
-expect_eq deployed "$RAYA_DEPLOY_STATE" "job environment block remains the identity authority"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-touch "$RAYA_STATE_DIR/voice-mode.requested"
-write_job voice running 200 start-200
-printf '200\n' > "$RAYA_VOICE_PID_FILE"
-SESSION_CLEAR_AFTER=2 run_pass; rc=$?
-expect_eq 0 "$rc" "active session waits before mutation then deploys"
-expect_eq 2 "$(cat "$SLEEP_COUNT")" "session grace polls until the session clears"
-expect_eq 0 "$(wc -l < "$NOTICES" | tr -d ' ')" "cleared session is not sent an interruption notice"
-
-# Lock ownership is pid+start bound: live/uninspectable owners stay put, while
-# dead or reused pids are reclaimable. Only this process may release its lock.
-reset_case
-mkdir -p "$RAYA_DEPLOY_LOCK_DIR"
-printf '%s\nupdater-start\n1\n' "$$" > "$TMP/lock-lines"
-sed -n '1p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/pid"
-sed -n '2p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/start"
-sed -n '3p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/created"
-raya_lock_acquire; lock_rc=$?
-expect_eq 75 "$lock_rc" "live pid+start lock is never reclaimed"
-expect_eq live "${RAYA_LOCK_FAILURE:-}" "live lock contention is classified separately"
-printf 'different-start\n' > "$RAYA_DEPLOY_LOCK_DIR/start"
-raya_lock_acquire; lock_rc=$?
-expect_eq 0 "$lock_rc" "pid reuse with a different start is reclaimed"
-raya_lock_release
-
-reset_case
-mkdir -p "$RAYA_DEPLOY_LOCK_DIR"
-printf '%s\nupdater-start\n1\n' "$$" > "$TMP/lock-lines"
-sed -n '1p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/pid"
-sed -n '2p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/start"
-sed -n '3p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/created"
-saved_process_start="$(declare -f raya_process_start)"
-raya_process_start() { return 1; }
-raya_lock_acquire; lock_rc=$?
-eval "$saved_process_start"
-expect_eq 75 "$lock_rc" "live owner with unreadable start is never reclaimed"
-
-reset_case
-saved_lock_writer="$(declare -f raya_lock_write_owner)"
-raya_lock_write_owner() { return 1; }
-raya_lock_acquire; lock_rc=$?
-eval "$saved_lock_writer"
-expect_eq 75 "$lock_rc" "lock owner write failure is fail closed"
-expect_eq state "${RAYA_LOCK_FAILURE:-}" "lock owner write failure has a distinct alert class"
-expect_eq no "$([[ -e "$RAYA_DEPLOY_LOCK_DIR" ]] && printf yes || printf no)" "failed lock initialization leaves no ownerless lock"
-
-reset_case
-saved_raya_home_for_lock="$RAYA_HOME"
-saved_raya_lock_for_home="$RAYA_DEPLOY_LOCK_DIR"
-blocked_raya_home="$TMP/raya-home-file"
-printf 'not-a-directory\n' > "$blocked_raya_home"
-RAYA_HOME="$blocked_raya_home/child"
-RAYA_DEPLOY_LOCK_DIR="$RAYA_HOME/deploy.lock.d"
-run_pass; rc=$?
-expect_eq 1 "$rc" "unwritable Raya home refuses the deploy pass"
-expect_eq home-unwritable "$RAYA_DEPLOY_DETAIL" "Raya home initialization failure is not reported as lock contention"
-expect_eq 1 "$(grep -c 'raya-home-unwritable' "$ALERTS" || true)" "Raya home initialization failure has a distinct alert class"
-RAYA_HOME="$saved_raya_home_for_lock"
-RAYA_DEPLOY_LOCK_DIR="$saved_raya_lock_for_home"
-
-reset_case
-mkdir -p "$RAYA_DEPLOY_LOCK_DIR"
-printf '99999999\ndead-start\n1\n' > "$TMP/lock-lines"
-sed -n '1p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/pid"
-sed -n '2p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/start"
-sed -n '3p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/created"
-raya_lock_acquire; lock_rc=$?
-expect_eq 0 "$lock_rc" "dead lock owner is reclaimed"
-raya_lock_release
-
-reset_case
-mkdir -p "$RAYA_DEPLOY_LOCK_DIR"
-printf '99999999\nforeign-start\n1\n' > "$TMP/lock-lines"
-sed -n '1p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/pid"
-sed -n '2p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/start"
-sed -n '3p' "$TMP/lock-lines" > "$RAYA_DEPLOY_LOCK_DIR/created"
-RAYA_LOCK_OWNED=1
-raya_lock_release
-expect_eq yes "$([[ -e "$RAYA_DEPLOY_LOCK_DIR" ]] && printf yes || printf no)" "lock release never removes a foreign owner"
-
-reset_case "$SHA_A" "$SHA_B"
-FETCH_FAIL_UNTIL=3 run_pass; rc=$?
-expect_eq 2 "$rc" "three failed Raya fetch attempts are reported"
-expect_eq 3 "$(cat "$FETCH_COUNT")" "Raya fetch retries exactly three times"
-expect_eq fetch_failed "$RAYA_DEPLOY_STATE" "fetch failure has a distinct state"
-
-reset_case "$SHA_A" "$SHA_B"
-git -C "$RAYA_CODE_DIR" checkout -qb other
-run_pass; rc=$?
-expect_eq wrong_branch "$RAYA_DEPLOY_STATE" "non-main branch is refused before fetch"
-expect_eq 0 "$(read_count "$FETCH_COUNT")" "wrong branch performs zero network work"
-
-reset_case "$SHA_A" "$SHA_B"
-git -C "$RAYA_CODE_DIR" checkout -q --detach
-run_pass; rc=$?
-expect_eq wrong_branch "$RAYA_DEPLOY_STATE" "detached checkout is refused"
-
-reset_case "$SHA_A" "$SHA_B"
-git -C "$RAYA_CODE_DIR" remote set-url origin https://example.test/not-raya.git
-run_pass; rc=$?
-expect_eq remote_mismatch "$RAYA_DEPLOY_STATE" "unexpected origin URL is refused"
-expect_eq 0 "$(read_count "$FETCH_COUNT")" "remote mismatch performs zero fetches"
-git -C "$RAYA_CODE_DIR" remote set-url origin "$REMOTE"
-
-reset_case "$SHA_B" "$SHA_B"
-printf 'not-a-sha\n' > "$RAYA_DEPLOYED_SHA_FILE"
-run_pass; rc=$?
-expect_eq 0 "$rc" "invalid deployed ledger enters safe bootstrap"
-expect_eq invalid "$(jq -r .ledger "$RAYA_DEPLOY_RECEIPT")" "invalid ledger classification is receipted"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '  %s \r\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-BUILD_FAIL_AT=1 run_pass; rc=$?
-expect_eq 0 "$rc" "deployed ledger tolerates surrounding transport whitespace"
-expect_eq rolled_back "$RAYA_DEPLOY_STATE" "trimmed deployed ledger remains the rollback anchor"
-expect_eq "$SHA_A" "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" "trimmed deployed ledger restores known-good HEAD"
-
-reset_case "$SHA_B" "$SHA_B"
-printf '%s\n' "$local_sha" > "$RAYA_DEPLOYED_SHA_FILE"
-run_pass; rc=$?
-expect_eq 0 "$rc" "non-ancestor deployed ledger enters safe bootstrap"
-expect_eq not_ancestor "$(jq -r .ledger "$RAYA_DEPLOY_RECEIPT")" "non-ancestor ledger classification is receipted"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-saved_raya_git="$(declare -f raya_git)"
-raya_git() {
-  if [[ "$1" == merge-base && "$2" == --is-ancestor && "$3" == "$SHA_A" ]]; then return 2; fi
-  git -C "$RAYA_CODE_DIR" "$@"
-}
-run_pass; rc=$?
-eval "$saved_raya_git"
-expect_eq 1 "$rc" "ledger ancestry probe error refuses deployment"
-expect_eq ledger_probe_error "$RAYA_DEPLOY_STATE" "ledger probe error is not downgraded to invalid"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-PREFLIGHT_FAIL=1 run_pass; rc=$?
-expect_eq 0 "$rc" "preflight failure rolls back to known-good"
-expect_eq rolled_back "$RAYA_DEPLOY_STATE" "preflight is fail closed"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-KICK_EXIT_AT=1 run_pass; rc=$?
-expect_eq 0 "$rc" "failed forward brain verification recovers known-good"
-expect_eq rolled_back "$RAYA_DEPLOY_STATE" "post-cutover recovery is receipted as rolled_back"
-expect_eq 2 "$(grep -c '^kick|brain$' "$CALLS")" "post-cutover recovery replaces brain again on restored bytes"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-KICK_EXIT_AT=1 VOICE_START_AFTER_BRAIN_KICK=1 run_pass; rc=$?
-expect_eq 0 "$rc" "failed brain cutover recovers when voice starts during verification"
-expect_eq 1 "$(grep -c '^kick|voice$' "$CALLS" || true)" \
-  "rollback restarts voice that began after the cutover sample"
-
-reset_case "$SHA_B" "$SHA_B"
-write_job voice running 200 start-200
-printf '200\n' > "$RAYA_VOICE_PID_FILE"
-KICK_EXIT_AT=2 run_pass; rc=$?
-expect_eq 3 "$rc" "voice cutover failure without known-good remains failed"
-expect_eq 1 "$(grep -c 'raya-deploy-failed-no-known-good' "$ALERTS")" "successful unanchored process recovery remains an unverified-version failure"
-expect_eq 2 "$(grep -c '^kick|voice$' "$CALLS")" "unanchored recovery retries a voice that was touched"
-
-reset_case "$SHA_B" "$SHA_B"
-write_job voice running 200 start-200
-printf '200\n' > "$RAYA_VOICE_PID_FILE"
-KICK_FAIL_APP=voice run_pass; rc=$?
-expect_eq 3 "$rc" "persistent unanchored voice replacement failure is terminal"
-expect_eq 1 "$(grep -c 'raya-voice-down-after-rollback' "$ALERTS")" "persistent unanchored voice failure uses the voice-down severe class"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-BUILD_FAIL_AT=1,2 run_pass; rc=$?
-expect_eq 3 "$rc" "rollback rebuild failure is terminal"
-expect_eq failed "$RAYA_DEPLOY_STATE" "rollback rebuild failure is explicit"
-expect_eq 1 "$(grep -c 'raya-deploy-rollback-failed' "$ALERTS")" "rollback rebuild failure emits its severe class"
-
-for drift in extra cwd env pid program env-config; do
-  reset_case "$SHA_A" "$SHA_B"
-  printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-  case "$drift" in
-    extra) JOB_ARG_EXTRA=1 ;;
-    cwd) JOB_CWD="$TMP/wrong-cwd" ;;
-    env) JOB_ENV_FILE="$TMP/wrong.env" ;;
-    pid) JOB_NO_PID_APP=brain ;;
-    program) JOB_PROGRAM_VOICE=/bin/bash ;;
-    env-config) printf 'RAYA_HOME=%s\nRAYA_METRICS_DIR=%s\nRAYA_STATE_DIR=%s\n' "$RAYA_HOME" "$TMP/wrong-metrics" "$RAYA_STATE_DIR" > "$RAYA_HOME/raya.env" ;;
-  esac
-  run_pass; rc=$?
-  if [[ "$drift" == pid ]]; then
-    expect_eq observe_failed "$RAYA_DEPLOY_STATE" "running launchd job without pid is an observation failure"
-    expect_eq "observe_failed:$RAYA_BRAIN_LABEL" "$(jq -r .identity "$RAYA_DEPLOY_RECEIPT")" \
-      "observation failure receipt does not claim launchd identity is healthy"
+write_p6_manifest
+rm -f "$RAYA_DEPLOY_RECEIPT" "$RAYA_DEPLOYED_SHA_FILE"
+if declare -F raya_verify_frozen_source >/dev/null 2>&1; then
+  saved_fence="$(declare -f raya_verify_frozen_source)"
+  saved_receipt_writer="$(declare -f raya_write_standard_receipt)"
+  raya_verify_frozen_source() { return 1; }
+  raya_write_standard_receipt() { touch "$TMP/unexpected-receipt-write"; return 0; }
+  if raya_standard_finalize >/dev/null 2>&1 || [[ -e "$TMP/unexpected-receipt-write" ]]; then
+    fail "P7 must recheck the frozen source before writing its receipt"
   else
-    expect_eq identity_drift "$RAYA_DEPLOY_STATE" "launchd identity drift is rejected: $drift"
+    pass "P7 rechecks the frozen source before writing its receipt"
   fi
-done
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-FETCH_MUTATE_HEAD=1 run_pass; rc=$?
-expect_eq 1 "$rc" "concurrent HEAD move during fetch is refused"
-expect_eq mutated "$RAYA_DEPLOY_STATE" "post-fetch fence detects concurrent mutation"
-expect_eq 0 "$(grep -c '^install|' "$CALLS" || true)" "post-fetch mutation never reaches install"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-BUILD_MUTATE_TRACKED=1 run_pass; rc=$?
-expect_eq 3 "$rc" "tracked mutation during build blocks rollback reset"
-expect_eq rollback_blocked_mutation "$RAYA_DEPLOY_STATE" "rollback fence preserves concurrent bytes"
-if grep -q 'operator-byte' "$RAYA_CODE_DIR/apps/brain/dist/cli.js"; then
-  pass "rollback fence preserves the distinguishable concurrent mutation"
+  eval "$saved_fence"
+  eval "$saved_receipt_writer"
 else
-  fail "rollback fence erased a concurrent tracked mutation"
+  fail "P7 must expose and use a frozen-source verification fence"
 fi
+saved_writer="$(declare -f raya_write_standard_receipt)"
+raya_write_standard_receipt() { return 1; }
+if raya_standard_finalize >/dev/null 2>&1; then fail "receipt failure must fail finalization"; else
+  pass "receipt failure fails finalization"
+fi
+if [[ -e "$RAYA_DEPLOYED_SHA_FILE" ]]; then fail "receipt failure must not advance the anchor"; else
+  pass "receipt failure leaves the known-good anchor untouched"
+fi
+eval "$saved_writer"
+if raya_standard_finalize; then pass "P7 finalizes after verified P6 evidence"; else
+  fail "P7 finalizes after verified P6 evidence"
+fi
+expect_eq "$RAYA_TARGET" "$(sed -n '1p' "$RAYA_DEPLOYED_SHA_FILE")" "anchor advances only after the v2 receipt"
 
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-printf '{bad json\n' > "$RAYA_STATE_DIR/meeting.json"
-run_pass; rc=$?
-expect_eq session_state_unreadable "$RAYA_DEPLOY_STATE" "malformed session state refuses before checkout mutation"
-expect_eq "$SHA_A" "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" "malformed session state leaves checkout unchanged"
+remote="$TMP/raya-remote.git"
+publisher="$TMP/raya-publisher"
+git init -q --bare -b main "$remote"
+git -C "$RAYA_CODE_DIR" remote add origin "$remote"
+git -C "$RAYA_CODE_DIR" push -q -u origin main
+git clone -q "$remote" "$publisher"
+git -C "$publisher" config user.email fly2445@example.test
+git -C "$publisher" config user.name FLY-2445
+mkdir -p "$publisher/packages/cos/dist"
+printf 'console.log("cos-v2")\n' > "$publisher/packages/cos/dist/cli.js"
+git -C "$publisher" add packages/cos/dist/cli.js
+git -C "$publisher" commit -qm update
+git -C "$publisher" push -q origin main
+followup_target="$(git -C "$publisher" rev-parse HEAD)"
+saved_bounded="$(declare -f raya_run_bounded_in_checkout)"
+saved_lead="$(declare -f raya_standard_lead)"
+raya_run_bounded_in_checkout() { return 0; }
+: > "$CALLS"
+raya_standard_lead() { printf '%s\n' "$*" >> "$CALLS"; return 0; }
 
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-jq -n '{status:"scheduled"}' > "$RAYA_STATE_DIR/meeting.json"
-run_pass; rc=$?
-expect_eq 0 "$(read_count "$SLEEP_COUNT")" "scheduled meeting does not trigger session grace"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-touch "$RAYA_STATE_DIR/voice-mode.requested"
-run_pass; rc=$?
-expect_eq 0 "$rc" "exhausted session grace proceeds under the Lead ruling"
-expect_eq "exhausted:3" "$(jq -r .session_grace "$RAYA_DEPLOY_RECEIPT")" "session grace exhaustion is receipted"
-expect_eq 1 "$(wc -l < "$NOTICES" | tr -d ' ')" "active cutover sends one interruption notice"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-saved_receipt_writer="$(declare -f raya_write_receipt)"
-raya_write_receipt() { return 1; }
-run_pass; rc=$?
-eval "$saved_receipt_writer"
-expect_eq 3 "$rc" "receipt write failure fails the deployment transaction"
-expect_eq "$SHA_A" "$(cat "$RAYA_DEPLOYED_SHA_FILE")" "receipt failure never advances deployed-sha"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-saved_sha_writer="$(declare -f raya_write_deployed_sha)"
-raya_write_deployed_sha() { return 1; }
-run_pass; rc=$?
-eval "$saved_sha_writer"
-expect_eq 3 "$rc" "deployed-sha write failure is fail loud"
-expect_eq deployed "$(jq -r .outcome "$RAYA_DEPLOY_RECEIPT")" "receipt remains truthful when the later sha write fails"
-expect_eq "$SHA_A" "$(cat "$RAYA_DEPLOYED_SHA_FILE")" "failed sha write preserves the previous known-good anchor"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-BUILD_BUMP_BRAIN=1 BUILD_FAIL_AT=1 run_pass; rc=$?
-expect_eq 0 "$rc" "pre-cutover process generation change is recovered on restored bytes"
-expect_eq replaced "$(jq -r .generation.brain "$RAYA_DEPLOY_RECEIPT")" "brain generation replacement is explicit"
-expect_eq 1 "$(grep -c '^kick|brain$' "$CALLS")" "changed brain generation gets one managed replacement"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-write_job voice running 200 start-200
-printf '200\n' > "$RAYA_VOICE_PID_FILE"
-touch "$RAYA_STATE_DIR/voice-mode.requested"
-SESSION_CLEAR_AFTER=1 BUILD_STOP_VOICE=1 BUILD_FAIL_AT=1 run_pass; rc=$?
-expect_eq stopped_by_user "$(jq -r .generation.voice "$RAYA_DEPLOY_RECEIPT")" "voice stopped by its user during build is not relaunched"
-expect_eq 0 "$(grep -c '^kick|voice$' "$CALLS" || true)" "user-stopped voice remains stopped"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-write_job voice running 200 start-200
-printf '200\n' > "$RAYA_VOICE_PID_FILE"
-touch "$RAYA_STATE_DIR/voice-mode.requested"
-SESSION_CLEAR_AFTER=1 BUILD_DROP_VOICE=1 BUILD_FAIL_AT=1 run_pass; rc=$?
-expect_eq recovered "$(jq -r .generation.voice "$RAYA_DEPLOY_RECEIPT")" "desired voice lost during build is recovered from restored bytes"
-expect_eq 1 "$(grep -c '^kick|voice$' "$CALLS" || true)" "desired down voice gets one managed recovery"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-write_job brain exited 100 start-100
-rm -f "$RAYA_BRAIN_PID_FILE"
-run_pass; rc=$?
-expect_eq 0 "$rc" "cold brain start is supported"
-expect_eq deployed "$RAYA_DEPLOY_STATE" "cold brain is verified before deployment succeeds"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-MUTATE_AFTER_BRAIN_KICK=1 run_pass; rc=$?
-expect_eq rollback_blocked_mutation "$RAYA_DEPLOY_STATE" "final ledger fence blocks a post-restart checkout mutation"
-expect_eq 1 "$(read_count "$BUILD_COUNT")" "final ledger fence does not reset or rebuild concurrent bytes"
-
-reset_case "$SHA_A" "$SHA_B"
-printf '%s\n' "$SHA_A" > "$RAYA_DEPLOYED_SHA_FILE"
-BUILD_BUMP_BRAIN=1 run_pass; rc=$?
-expect_eq 100 "$(jq -r .gen_before.brain.pid "$RAYA_DEPLOY_RECEIPT")" "receipt preserves the baseline process pid identity"
-expect_eq start-100 "$(jq -r .gen_before.brain.start "$RAYA_DEPLOY_RECEIPT")" "receipt preserves the baseline process start identity"
-expect_eq 777 "$(jq -r .brain_pid.before "$RAYA_DEPLOY_RECEIPT")" "receipt records the distinct cutover brain pid"
-expect_eq 877 "$(jq -r .brain_pid.after "$RAYA_DEPLOY_RECEIPT")" "receipt records the verified replacement brain pid"
-
-saved_observe_job="$(declare -f raya_observe_job)"
-saved_health_tries="$RAYA_HEALTH_TRIES"
-replacement_samples=0
-raya_observe_job() {
-  replacement_samples=$((replacement_samples + 1))
-  RAYA_OBS_PID=300 RAYA_OBS_START=start-300
-  if [[ "$replacement_samples" == 2 ]]; then RAYA_OBS_STATE=exited; else RAYA_OBS_STATE=running; fi
-  return 0
+legacy_plist_dir="$TMP/legacy-launch-agents"
+mkdir -p "$legacy_plist_dir"
+touch "$legacy_plist_dir/com.xrli.raya.brain.plist"
+export RAYA_LEGACY_PLIST_DIR="$legacy_plist_dir"
+export RAYA_MIGRATION_ALLOW_LEGACY_STOP=0
+blocked_head="$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)"
+blocked_pointer="$(readlink "$RAYA_WORKSPACE/business/current")"
+cp "$RAYA_MIGRATION_MANIFEST" "$TMP/pre-blocked-manifest.json"
+write_p2_manifest
+: > "$TMP/blocked-fetch-calls"
+saved_guarded_fetch="$(declare -f raya_git_fetch_bounded)"
+eval "$(declare -f raya_git_fetch_bounded | sed '1s/raya_git_fetch_bounded/raya_git_fetch_bounded_real/')"
+raya_git_fetch_bounded() {
+  printf 'fetch\n' >> "$TMP/blocked-fetch-calls"
+  raya_git_fetch_bounded_real "$@"
 }
-printf '300\n' > "$RAYA_BRAIN_PID_FILE"
-RAYA_HEALTH_TRIES=4
-raya_wait_for_replacement brain 100; replacement_rc=$?
-eval "$saved_observe_job"
-RAYA_HEALTH_TRIES="$saved_health_tries"
-expect_eq 0 "$replacement_rc" "replacement verification accepts two adjacent healthy samples"
-expect_eq 4 "$replacement_samples" "an unhealthy middle sample resets replacement stability"
-
-saved_sourced="$UPDATE_FLYWHEEL_SOURCED"
-saved_raya_home="$RAYA_HOME"
-UPDATE_FLYWHEEL_SOURCED=0
-RAYA_HOME="$TMP/diverted-raya"
-RAYA_CODE_DIR="$TMP/diverted-code"
-raya_configure_runtime_paths
-expect_eq "$FLYWHEEL_HOME/raya" "$RAYA_HOME" "production pins Raya state under the updater home"
-expect_eq "$FLYWHEEL_HOME/raya/code" "$RAYA_CODE_DIR" "production refuses a diverted Raya checkout"
-UPDATE_FLYWHEEL_SOURCED="$saved_sourced"
-RAYA_HOME="$saved_raya_home"
-raya_configure_runtime_paths
-
-eval "$PRODUCTION_NOTICE_DEFINITION"
-NOTICE_CURL_ARGS="$TMP/notice-curl.args"
-NOTICE_CURL_STDIN="$TMP/notice-curl.stdin"
-curl() { printf '%s\n' "$*" > "$NOTICE_CURL_ARGS"; sed -n '1,3p' > "$NOTICE_CURL_STDIN"; }
-export CLAUDE_INFRA_BOT_TOKEN=not-on-argv
-# shellcheck disable=SC2218
-raya_notify_interruption abcdef12; notice_rc=$?
-expect_eq 0 "$notice_rc" "production interruption notice uses the configured Raya channel"
-if ! grep -q 'not-on-argv' "$NOTICE_CURL_ARGS" \
-  && grep -q 'channels/test-channel/messages' "$NOTICE_CURL_ARGS" \
-  && grep -q 'not-on-argv' "$NOTICE_CURL_STDIN"; then
-  pass "interruption token travels through curl stdin configuration only"
+if ! raya_prepare_source >/dev/null 2>&1 \
+  && [[ ! -s "$TMP/blocked-fetch-calls" ]] \
+  && [[ "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$blocked_head" ]] \
+  && [[ "$(readlink "$RAYA_WORKSPACE/business/current")" == "$blocked_pointer" ]]; then
+  pass "unapproved legacy owner blocks source mutation before fetch"
 else
-  fail "interruption notification leaked its token or used the wrong endpoint"
+  fail "unapproved legacy owner must leave checkout and business projection untouched"
 fi
-raya_notify_interruption() { printf '%s\n' "$1" >> "$NOTICES"; [[ "${NOTICE_FAIL:-0}" != 1 ]]; }
+unset -f raya_git_fetch_bounded raya_git_fetch_bounded_real
+eval "$saved_guarded_fetch"
+git -C "$RAYA_CODE_DIR" reset --hard -q "$blocked_head"
+rm -f "$RAYA_WORKSPACE/business/current"
+ln -s "$blocked_pointer" "$RAYA_WORKSPACE/business/current"
+cp "$TMP/pre-blocked-manifest.json" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+rm -f "$legacy_plist_dir/com.xrli.raya.brain.plist"
+unset RAYA_LEGACY_PLIST_DIR RAYA_MIGRATION_ALLOW_LEGACY_STOP
 
-receipt_keys='["brain_pid","checked_at","checkout_before","deployed_sha","failure","gen_before","generation","head","identity","interrupt_notice","ledger","node_bin","origin_main","outcome","preflight_rc","rollback_sha","schemaVersion","session_at_cutover","session_grace","state","voice","voice_pid"]'
-if jq -e --argjson expected "$receipt_keys" 'keys == $expected' "$RAYA_DEPLOY_RECEIPT" >/dev/null; then
-  pass "receipt schema has the pinned key set"
+if raya_prepare_source \
+  && [[ "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" == P5 ]] \
+  && [[ "$(jq -r .mode "$RAYA_MIGRATION_MANIFEST")" == standard-update ]] \
+  && [[ "$(jq -r .raya_sha "$RAYA_MIGRATION_MANIFEST")" == "$followup_target" ]] \
+  && [[ "$(git -C "$RAYA_CODE_DIR" rev-parse HEAD)" == "$followup_target" ]] \
+  && [[ "$(readlink "$RAYA_WORKSPACE/business/current")" == "$RAYA_WORKSPACE/.flywheel-managed/versions/$followup_target" ]]; then
+  pass "P7 starts a new resumable standard update transaction when Raya main advances"
 else
-  fail "receipt schema drifted: $(jq -c keys "$RAYA_DEPLOY_RECEIPT" 2>/dev/null)"
+  fail "P7 must not freeze the scheduled Raya shuttle at the first migrated SHA"
 fi
+expected_followup_calls=$'preflight '$RAYA_CANONICAL_MANIFEST$'\ninstall --project raya --lead raya\nverify --stage installed '$RAYA_CANONICAL_MANIFEST
+expect_eq "$expected_followup_calls" "$(cat "$CALLS")" "follow-up update uses only the public standard Lead lifecycle"
 
-reset_guard='pkill|kill -9|bootout|bootstrap|launchctl[[:space:]]+load|reset --hard "?\$\{?RAYA_(NEW_HEAD|TARGET|CHECKOUT_BEFORE)'
-if printf '%s\n' 'raya_git reset --hard "$RAYA_TARGET"' | rg -q "$reset_guard"; then
-  pass "reset guard recognizes the real transaction variable names"
+proof_migration="$(jq -r .migration_id "$RAYA_MIGRATION_MANIFEST")"
+proof_raya="$(jq -r .raya_sha "$RAYA_MIGRATION_MANIFEST")"
+proof_flywheel="$(jq -r .flywheel_deployed_sha "$RAYA_MIGRATION_MANIFEST")"
+cat > "$RAYA_STANDARD_PROOF_FILE" <<JSON
+{"migration_id":"$proof_migration","raya_sha":"$proof_raya","flywheel_deployed_sha":"$proof_flywheel","lead":{},"business":{},"checks":{},"cutover":{}}
+JSON
+chmod 600 "$RAYA_STANDARD_PROOF_FILE"
+if ! raya_standard_collect_proof >/dev/null 2>&1 \
+  && [[ "$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" == P5 ]]; then
+  pass "matching proof with incomplete P6 evidence is rejected before checkpoint advance"
 else
-  fail "reset guard misses a reset through a real transaction variable"
+  fail "matching proof with incomplete P6 evidence must not advance the checkpoint"
 fi
-if ! rg -n "$reset_guard" "$LIB"; then
-  pass "library contains no unmanaged process or unverified reset escape hatch"
+# Restore the P5 fixture even while this assertion is RED so the stale-pair
+# assertion below remains independent.
+jq '.checkpoint="P5" | .lead=null | .business=null | .checks=null | .cutover=null' \
+  "$RAYA_MIGRATION_MANIFEST" > "$RAYA_MIGRATION_MANIFEST.tmp"
+mv "$RAYA_MIGRATION_MANIFEST.tmp" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+
+jq -n --slurpfile manifest "$RAYA_MIGRATION_MANIFEST" '
+  $manifest[0] as $m | {
+    migration_id:$m.migration_id,raya_sha:$m.raya_sha,
+    flywheel_deployed_sha:$m.flywheel_deployed_sha,
+    lead:{project:"raya",id:"raya",key:"raya-raya",identity_digest:("f"*64),
+      registry_digest:$m.registry_digest,summary_receipt_digest:$m.summary_receipt_digest,
+      manifest_digest:$m.canonical_manifest_digest,pid:7654,
+      process_started_at:"2026-09-08T11:00:00Z",activation_id:"activation-followup",
+      thread_id:"thread-followup",tui_visible:true},
+    business:{source_sha:$m.raya_sha,artifact_digest:$m.artifact.digest,
+      persona_digest:$m.artifact.persona_digest,workspace:$m.artifact.workspace,
+      state_schema_version:$m.artifact.state_schema_version},
+    checks:{preflight:true,unique_owner:true,pump:true,text_delivery_id:"chat:raya:900",
+      outbound_message_id:"901",summary_round_id:"round-followup",
+      summary_delivery_id:"summary:followup",mailbox_acked:true,bridge_sent:true,
+      bridge_identity_verified:true,alert_channel_id:"902",alert_delivery_id:"903",
+      alert_reachable:true},
+    cutover:{seed_digest:$m.cursor.sha256,seeded_at:"2026-09-08T10:58:00Z",
+      old_stopped_at:"2026-09-08T10:59:00Z",activated_at:"2026-09-08T11:00:00Z",
+      activation_id:"activation-followup",channels:[{channel_id:"904",seeded_after:"905"}],
+      window_message_id:"906",window_delivery_id:"chat:raya:906",
+      window_outbound_message_id:"907",unresolved_count:0}
+  }
+' > "$RAYA_STANDARD_PROOF_FILE"
+chmod 600 "$RAYA_STANDARD_PROOF_FILE"
+if raya_standard_collect_proof \
+  && jq -e '.checkpoint == "P6" and .lead.activation_id == "activation-followup"' \
+    "$RAYA_MIGRATION_MANIFEST" >/dev/null; then
+  pass "matching complete proof advances P5 to P6 with the current activation evidence"
 else
-  fail "library contains a forbidden process/reset primitive"
+  fail "matching complete proof must advance P5 to P6"
 fi
+jq '.checkpoint="P5" | .lead=null | .business=null | .checks=null | .cutover=null' \
+  "$RAYA_MIGRATION_MANIFEST" > "$RAYA_MIGRATION_MANIFEST.tmp"
+mv "$RAYA_MIGRATION_MANIFEST.tmp" "$RAYA_MIGRATION_MANIFEST"
+chmod 600 "$RAYA_MIGRATION_MANIFEST"
+
+cat > "$RAYA_STANDARD_PROOF_FILE" <<JSON
+{"migration_id":"stale-migration","raya_sha":"$frozen_raya","flywheel_deployed_sha":"$frozen_flywheel","lead":{},"business":{},"checks":{},"cutover":{}}
+JSON
+chmod 600 "$RAYA_STANDARD_PROOF_FILE"
+if raya_standard_collect_proof >/dev/null 2>&1; then
+  fail "proof from an earlier migration or SHA pair must not be reusable"
+else
+  pass "proof is bound to the current migration and two-repository SHA pair"
+fi
+eval "$saved_bounded"
+eval "$saved_lead"
 
 printf 'Results: %s passed, %s failed\n' "$PASSED" "$FAILED"
-[[ "$FAILED" -eq 0 ]]
+(( FAILED == 0 ))

@@ -89,7 +89,7 @@ write_plist "$MUFASA_PLIST" com.flywheel.lead.growth-mufasa-lead \
 write_plist "$INFRA_PLIST" com.flywheel.lead.flywheel-codex-infra-bot-lead \
   /bin/bash "$HOME/.flywheel/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh"
 write_plist "$RAYA_PLIST" com.flywheel.lead.raya-raya \
-  /bin/bash "$HOME/.flywheel/bin/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh"
+  /bin/bash "$HOME/.flywheel/bin/flywheel-lead.sh" "$RAYA_MANIFEST"
 
 ARGV_AND_MANIFEST_OK=1
 while IFS='|' read -r plist expected_argv expected_inventory; do
@@ -105,10 +105,10 @@ $CLAUDE_PLIST|["/bin/bash","$HOME/.flywheel/bin/flywheel-lead-wrapper-v2.sh","$C
 $GENERIC_PLIST|["/bin/bash","$HOME/.flywheel/bin/flywheel-lead.sh","$GENERIC_MANIFEST"]|demo-codex-lead	$GENERIC_MANIFEST
 $MUFASA_PLIST|["/bin/bash","$HOME/.flywheel/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh"]|growth-mufasa-lead	-
 $INFRA_PLIST|["/bin/bash","$HOME/.flywheel/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh"]|flywheel-codex-infra-bot-lead	-
-$RAYA_PLIST|["/bin/bash","$HOME/.flywheel/bin/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh"]|raya-raya	-
+$RAYA_PLIST|["/bin/bash","$HOME/.flywheel/bin/flywheel-lead.sh","$RAYA_MANIFEST"]|raya-raya	$RAYA_MANIFEST
 EOF
 if [ "$ARGV_AND_MANIFEST_OK" -eq 1 ]; then
-  pass "all five carrier plists retain exact argv arrays and manifest extraction"
+  pass "all five Lead plists retain exact argv arrays and manifest extraction"
 else
   fail "carrier argv or manifest inventory drifted"
 fi
@@ -120,7 +120,7 @@ assert_authorized "$MUFASA_MANIFEST" "$MUFASA_PLIST" \
 assert_authorized "$INFRA_MANIFEST" "$INFRA_PLIST" \
   com.flywheel.lead.flywheel-codex-infra-bot-lead "existing infra authority remains accepted"
 assert_authorized "$RAYA_MANIFEST" "$RAYA_PLIST" \
-  com.flywheel.lead.raya-raya "existing Raya authority remains accepted"
+  com.flywheel.lead.raya-raya "Raya uses standard generic Codex authority"
 
 if lead_restart_validate_authority "$GENERIC_MANIFEST" "$GENERIC_PLIST" "$PROJECTS" \
   com.flywheel.lead.demo-codex-lead \
@@ -187,8 +187,7 @@ for carrier in \
   flywheel-lead-wrapper-v2.sh \
   flywheel-lead.sh \
   flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
-  flywheel-codex-lead-wrapper-codex-infra-bot.sh \
-  flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh; do
+  flywheel-codex-lead-wrapper-codex-infra-bot.sh; do
   cp "$REPO_ROOT/scripts/$carrier" "$HOME/.flywheel/bin/$carrier"
 done
 lead_restart_launchd_probe() { printf 'loaded\n'; }
@@ -206,9 +205,9 @@ if [ "$COLLECT_RC" -eq 0 ] \
   && [ "$(wc -l < "$CANDIDATES" | tr -d ' ')" -eq 5 ] \
   && [ "$(awk -F '\t' '$5 == "restart" && $6 == "manifest,plist" && $4 != "-" { count++ } END { print count+0 }' "$CANDIDATES")" -eq 5 ] \
   && [ "$CENSUS_RC" -eq 0 ] \
-  && grep -Fq 'census pass plists=5 generic=1 codex-generic=1 codex-mufasa=1 codex-infra-bot=1 codex-raya=1' \
+  && grep -Fq 'census pass plists=5 generic=1 codex-generic=2 codex-mufasa=1 codex-infra-bot=1' \
     "$SANDBOX/census.out"; then
-  pass "dry-run fleet inventory and census converge for all five carrier shapes"
+  pass "dry-run fleet inventory and census converge with Raya on the standard carrier"
 else
   fail "five-carrier dry-run inventory/census did not converge" \
     "collect=$COLLECT_RC census=$CENSUS_RC $(cat "$SANDBOX/census.err" 2>/dev/null)"

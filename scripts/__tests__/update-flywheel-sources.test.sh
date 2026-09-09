@@ -99,14 +99,14 @@ if declare -F updater_configure_runtime_paths >/dev/null 2>&1; then
   saved_lock="$SELF_SHIP_LOCK_DIR"
   saved_raya_home="$RAYA_HOME"
   saved_raya_code="$RAYA_CODE_DIR"
-  saved_raya_state="$RAYA_STATE_DIR"
-  saved_raya_metrics="$RAYA_METRICS_DIR"
   saved_raya_sha="$RAYA_DEPLOYED_SHA_FILE"
   saved_raya_receipt="$RAYA_DEPLOY_RECEIPT"
   saved_raya_lock="$RAYA_DEPLOY_LOCK_DIR"
-  saved_raya_brain_pid="$RAYA_BRAIN_PID_FILE"
-  saved_raya_voice_pid="$RAYA_VOICE_PID_FILE"
-  saved_raya_plists="$RAYA_PLIST_DIR"
+  saved_raya_manifest="$RAYA_CANONICAL_MANIFEST"
+  saved_raya_migration="$RAYA_MIGRATION_MANIFEST"
+  saved_raya_proof="$RAYA_STANDARD_PROOF_FILE"
+  saved_raya_workspace="$RAYA_WORKSPACE"
+  saved_flywheel_sha="$FLYWHEEL_DEPLOYED_SHA_FILE"
   sandbox_home="$HOME"
   UPDATE_FLYWHEEL_SOURCED=0
   FLYWHEEL_HOME="$TMP/diverted-state"
@@ -114,14 +114,14 @@ if declare -F updater_configure_runtime_paths >/dev/null 2>&1; then
   SELF_SHIP_LOCK_DIR="$TMP/diverted-lock"
   RAYA_HOME="$TMP/diverted-raya"
   RAYA_CODE_DIR="$TMP/diverted-code"
-  RAYA_STATE_DIR="$TMP/diverted-raya-state"
-  RAYA_METRICS_DIR="$TMP/diverted-raya-metrics"
   RAYA_DEPLOYED_SHA_FILE="$TMP/diverted-raya-sha"
   RAYA_DEPLOY_RECEIPT="$TMP/diverted-raya-receipt"
   RAYA_DEPLOY_LOCK_DIR="$TMP/diverted-raya-lock"
-  RAYA_BRAIN_PID_FILE="$TMP/diverted-brain-pid"
-  RAYA_VOICE_PID_FILE="$TMP/diverted-voice-pid"
-  RAYA_PLIST_DIR="$TMP/diverted-plists"
+  RAYA_CANONICAL_MANIFEST="$TMP/diverted-manifest"
+  RAYA_MIGRATION_MANIFEST="$TMP/diverted-migration"
+  RAYA_STANDARD_PROOF_FILE="$TMP/diverted-proof"
+  RAYA_WORKSPACE="$TMP/diverted-workspace"
+  FLYWHEEL_DEPLOYED_SHA_FILE="$TMP/diverted-flywheel-sha"
   updater_configure_runtime_paths
   raya_configure_runtime_paths
   runtime_home="$FLYWHEEL_HOME"
@@ -129,28 +129,28 @@ if declare -F updater_configure_runtime_paths >/dev/null 2>&1; then
   runtime_lock="$SELF_SHIP_LOCK_DIR"
   runtime_raya_home="$RAYA_HOME"
   runtime_raya_code="$RAYA_CODE_DIR"
-  runtime_raya_state="$RAYA_STATE_DIR"
-  runtime_raya_metrics="$RAYA_METRICS_DIR"
   runtime_raya_sha="$RAYA_DEPLOYED_SHA_FILE"
   runtime_raya_receipt="$RAYA_DEPLOY_RECEIPT"
   runtime_raya_lock="$RAYA_DEPLOY_LOCK_DIR"
-  runtime_raya_brain_pid="$RAYA_BRAIN_PID_FILE"
-  runtime_raya_voice_pid="$RAYA_VOICE_PID_FILE"
-  runtime_raya_plists="$RAYA_PLIST_DIR"
+  runtime_raya_manifest="$RAYA_CANONICAL_MANIFEST"
+  runtime_raya_migration="$RAYA_MIGRATION_MANIFEST"
+  runtime_raya_proof="$RAYA_STANDARD_PROOF_FILE"
+  runtime_raya_workspace="$RAYA_WORKSPACE"
+  runtime_flywheel_sha="$FLYWHEEL_DEPLOYED_SHA_FILE"
   UPDATE_FLYWHEEL_SOURCED=1
   FLYWHEEL_HOME="$saved_home"
   SELF_SHIP_URGENT_DIR="$saved_urgent"
   SELF_SHIP_LOCK_DIR="$saved_lock"
   RAYA_HOME="$saved_raya_home"
   RAYA_CODE_DIR="$saved_raya_code"
-  RAYA_STATE_DIR="$saved_raya_state"
-  RAYA_METRICS_DIR="$saved_raya_metrics"
   RAYA_DEPLOYED_SHA_FILE="$saved_raya_sha"
   RAYA_DEPLOY_RECEIPT="$saved_raya_receipt"
   RAYA_DEPLOY_LOCK_DIR="$saved_raya_lock"
-  RAYA_BRAIN_PID_FILE="$saved_raya_brain_pid"
-  RAYA_VOICE_PID_FILE="$saved_raya_voice_pid"
-  RAYA_PLIST_DIR="$saved_raya_plists"
+  RAYA_CANONICAL_MANIFEST="$saved_raya_manifest"
+  RAYA_MIGRATION_MANIFEST="$saved_raya_migration"
+  RAYA_STANDARD_PROOF_FILE="$saved_raya_proof"
+  RAYA_WORKSPACE="$saved_raya_workspace"
+  FLYWHEEL_DEPLOYED_SHA_FILE="$saved_flywheel_sha"
   updater_configure_runtime_paths
   raya_configure_runtime_paths
   if [ "$runtime_home" = "$sandbox_home/.flywheel" ] \
@@ -158,30 +158,30 @@ if declare -F updater_configure_runtime_paths >/dev/null 2>&1; then
     && [ "$runtime_lock" = "$sandbox_home/.flywheel/self-ship-updater.lock.d" ] \
     && [ "$runtime_raya_home" = "$sandbox_home/.flywheel/raya" ] \
     && [ "$runtime_raya_code" = "$sandbox_home/.flywheel/raya/code" ] \
-    && [ "$runtime_raya_state" = "$sandbox_home/.flywheel/raya/data/state" ] \
-    && [ "$runtime_raya_metrics" = "$sandbox_home/.flywheel/raya/data/metrics" ] \
     && [ "$runtime_raya_sha" = "$sandbox_home/.flywheel/raya/deployed-sha" ] \
     && [ "$runtime_raya_receipt" = "$sandbox_home/.flywheel/raya/deploy-receipt.json" ] \
     && [ "$runtime_raya_lock" = "$sandbox_home/.flywheel/raya/deploy.lock.d" ] \
-    && [ "$runtime_raya_brain_pid" = "$sandbox_home/.flywheel/raya/data/metrics/run/brain.pid" ] \
-    && [ "$runtime_raya_voice_pid" = "$sandbox_home/.flywheel/raya/data/metrics/run/voice.pid" ] \
-    && [ "$runtime_raya_plists" = "$sandbox_home/Library/LaunchAgents" ] \
+    && [ "$runtime_raya_manifest" = "$sandbox_home/.flywheel/manifests/raya-raya.json" ] \
+    && [ "$runtime_raya_migration" = "$sandbox_home/.flywheel/raya/migrations/FLY-2445-standard-lead/manifest.json" ] \
+    && [ "$runtime_raya_proof" = "$sandbox_home/.flywheel/raya/migrations/FLY-2445-standard-lead/proof.json" ] \
+    && [ "$runtime_raya_workspace" = "$sandbox_home/Dev/raya-lead-workspace" ] \
+    && [ "$runtime_flywheel_sha" = "$sandbox_home/.flywheel/deployed-sha" ] \
     && [ "$FLYWHEEL_HOME" = "$saved_home" ] \
     && [ "$SELF_SHIP_URGENT_DIR" = "$saved_urgent" ] \
     && [ "$SELF_SHIP_LOCK_DIR" = "$saved_lock" ] \
     && [ "$RAYA_HOME" = "$saved_raya_home" ] \
     && [ "$RAYA_CODE_DIR" = "$saved_raya_code" ] \
-    && [ "$RAYA_STATE_DIR" = "$saved_raya_state" ] \
-    && [ "$RAYA_METRICS_DIR" = "$saved_raya_metrics" ] \
     && [ "$RAYA_DEPLOYED_SHA_FILE" = "$saved_raya_sha" ] \
     && [ "$RAYA_DEPLOY_RECEIPT" = "$saved_raya_receipt" ] \
     && [ "$RAYA_DEPLOY_LOCK_DIR" = "$saved_raya_lock" ] \
-    && [ "$RAYA_BRAIN_PID_FILE" = "$saved_raya_brain_pid" ] \
-    && [ "$RAYA_VOICE_PID_FILE" = "$saved_raya_voice_pid" ] \
-    && [ "$RAYA_PLIST_DIR" = "$saved_raya_plists" ]; then
+    && [ "$RAYA_CANONICAL_MANIFEST" = "$saved_raya_manifest" ] \
+    && [ "$RAYA_MIGRATION_MANIFEST" = "$saved_raya_migration" ] \
+    && [ "$RAYA_STANDARD_PROOF_FILE" = "$saved_raya_proof" ] \
+    && [ "$RAYA_WORKSPACE" = "$saved_raya_workspace" ] \
+    && [ "$FLYWHEEL_DEPLOYED_SHA_FILE" = "$saved_flywheel_sha" ]; then
     pass "production pins Flywheel and Raya paths while sourced harnesses may override"
   else
-    fail "runtime path pinning drifted (flywheel=$runtime_home/$runtime_urgent/$runtime_lock raya=$runtime_raya_home/$runtime_raya_code/$runtime_raya_state/$runtime_raya_metrics/$runtime_raya_sha/$runtime_raya_receipt/$runtime_raya_lock/$runtime_raya_brain_pid/$runtime_raya_voice_pid/$runtime_raya_plists)"
+    fail "runtime path pinning drifted (flywheel=$runtime_home/$runtime_urgent/$runtime_lock/$runtime_flywheel_sha raya=$runtime_raya_home/$runtime_raya_code/$runtime_raya_sha/$runtime_raya_receipt/$runtime_raya_lock/$runtime_raya_manifest/$runtime_raya_migration/$runtime_raya_proof/$runtime_raya_workspace)"
   fi
   UPDATE_FLYWHEEL_SOURCED="$saved_sourced"
 else
@@ -321,7 +321,7 @@ update_main >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(raya_count)" = 0 ] \
   && [ "$RAYA_DEPLOY_STATE" = not_configured ] \
   && [ "$RAYA_DEPLOY_DETAIL" = host-capability-absent ]; then
-  pass "scheduled updater skips Raya silently on hosts without its installed brain job"
+  pass "scheduled updater skips Raya silently on hosts without its canonical standard Lead"
 else
   fail "host capability gate ran or alerted Raya on an unrelated updater host (rc=$rc raya=$(raya_count) state=${RAYA_DEPLOY_STATE:-unset} detail=${RAYA_DEPLOY_DETAIL:-unset})"
 fi

@@ -97,6 +97,32 @@ describe("planLeadRegistryAdd", () => {
 		expect(plan.manifest.leadBackend.backendId).toBe("codex-app-server");
 	});
 
+	it("persists the canonical roundtable and operator-alert routing fields", () => {
+		const plan = planLeadRegistryAdd(registry, receiptFor(registry), PER_LEAD, {
+			projectName: "raya",
+			projectRoot: "/tmp/raya",
+			leadId: "raya",
+			chatChannel: "40000000000000001",
+			botTokenEnv: "RAYA_BOT_TOKEN",
+			botUserId: "50000000000000001",
+			harness: "codex",
+			roundtableChannel: "60000000000000001",
+			alertChannel: "40000000000000001",
+			alertBotTokenEnv: "RAYA_BOT_TOKEN",
+			alertFallbackToCore: false,
+		} as Parameters<typeof planLeadRegistryAdd>[3]);
+
+		const projects = plan.candidateRegistry as Array<{
+			leads: Array<Record<string, unknown>>;
+		}>;
+		expect(projects[1]?.leads[0]).toMatchObject({
+			roundtableChannel: "60000000000000001",
+			alertChannel: "40000000000000001",
+			alertBotTokenEnv: "RAYA_BOT_TOKEN",
+			alertFallbackToCore: false,
+		});
+	});
+
 	it("rejects an existing Lead whose row differs and names the fields", () => {
 		const existingRegistry = [
 			{

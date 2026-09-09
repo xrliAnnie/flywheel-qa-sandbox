@@ -39,6 +39,8 @@ export interface DiscordInboundMessage {
 	/** Whether the author is a bot (any bot, incl. this Lead or other Leads). */
 	authorBot: boolean;
 	content: string;
+	/** Attachment metadata copied from Discord without downloading user content. */
+	attachments?: Array<{ name: string; type: string; sizeKb: number }>;
 	/** Discord's message send instant. Missing sources fall back to the snowflake. */
 	timestampMs?: number;
 	/** FLY-267: ids of users explicitly @-mentioned (Discord `mentions[].id`).
@@ -274,8 +276,13 @@ export class CodexDiscordGateway {
 		) {
 			return false;
 		}
-		// Empty / whitespace-only content (attachment-only, system messages).
-		if (!msg.content || msg.content.trim() === "") return false;
+		// Empty system messages are ignored, but attachment-only messages remain valid
+		// input and are rendered as bounded metadata by the mailbox envelope.
+		if (
+			(!msg.content || msg.content.trim() === "") &&
+			(msg.attachments?.length ?? 0) === 0
+		)
+			return false;
 		// A message with no id can't be deduped — drop it (defensive).
 		if (!msg.id) return false;
 		// Optional extra policy.

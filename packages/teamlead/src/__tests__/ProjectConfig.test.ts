@@ -99,6 +99,33 @@ describe("LeadConfig type", () => {
 		},
 	);
 
+	it("rejects a CoS directory context whose working subdirectory escapes the project", () => {
+		expect(() =>
+			parseAndValidateProjects([
+				{
+					projectName: "growth",
+					projectRoot: "/tmp/growth",
+					leads: [
+						{
+							agentId: "growth-lead",
+							summaryRole: "producer",
+							chatChannel: "chat-channel",
+							match: { labels: ["Growth"] },
+							cosContext: {
+								displayName: "Growth",
+								aliases: ["growth"],
+								workingSubdirectory: "../other-project",
+								identityPath: "/tmp/identity.md",
+								memoryPaths: ["/tmp/memory.md"],
+								writableRoots: ["/tmp/growth"],
+							},
+						},
+					],
+				},
+			]),
+		).toThrow(/cosContext\.workingSubdirectory/);
+	});
+
 	it("LeadConfig exposes an identity-bound Playwright MCP opt-in", () => {
 		const lead: LeadConfig = {
 			agentId: "eng-lead",

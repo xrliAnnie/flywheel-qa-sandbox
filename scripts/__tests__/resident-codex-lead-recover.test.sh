@@ -13,18 +13,18 @@ fail() { FAIL=$((FAIL + 1)); printf '[TEST] FAIL - %s\n' "$1" >&2; }
 
 make_fixture() {
 	local t="$1"
-	mkdir -p "$t/home/.codex-raya" "$t/bin" \
+	mkdir -p "$t/home/.codex-mufasa" "$t/bin" \
 		"$t/repo/packages/teamlead/dist/lead-backends/codex" "$t/home/Library/LaunchAgents"
 	printf '4242\n' > "$t/pid"
 	cat > "$t/projects.json" <<JSON
-[{"projectName":"raya","projectRoot":"$t/raya-workspace","leads":[{"agentId":"raya","backend":"codex-app-server","codexProfile":"full-access","canSpawnRunners":false,"codexResidencyPatrol":true,"summaryRole":"recipient","chatChannel":"1","match":{"labels":["raya"]}}]}]
+[{"projectName":"growth","projectRoot":"$t/growth-workspace","leads":[{"agentId":"mufasa-lead","backend":"codex-app-server","companion":true,"canSpawnRunners":false,"codexResidencyPatrol":true,"summaryRole":"producer","chatChannel":"1","match":{"labels":["growth"]}}]}]
 JSON
 	cat > "$t/manifest.json" <<JSON
-{"projectName":"raya","leadId":"raya","projectDir":"$t/raya-workspace","leadBackend":{"backendId":"codex-app-server"}}
+{"projectName":"growth","leadId":"mufasa-lead","projectDir":"$t/growth-workspace","leadBackend":{"backendId":"codex-app-server"}}
 JSON
 	cat > "$t/plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict><key>Label</key><string>com.flywheel.lead.raya-raya</string><key>ProgramArguments</key><array><string>/bin/bash</string><string>$t/home/.flywheel/bin/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh</string></array></dict></plist>
+<plist version="1.0"><dict><key>Label</key><string>com.flywheel.lead.growth-mufasa-lead</string><key>ProgramArguments</key><array><string>/bin/bash</string><string>$t/home/.flywheel/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh</string></array></dict></plist>
 PLIST
 	cat > "$t/heartbeat.json" <<JSON
 {"v":1,"generationId":"generation-a","threadId":"thread-a","processPid":4242,"carrierInstanceId":"carrier-a","state":"online","activeTurn":null,"updatedAt":"2026-09-01T06:00:00.000Z"}
@@ -59,12 +59,12 @@ count=0
 [ ! -f "$CODEX_RESIDENCY_FAKE_ROOT/ps-count" ] || count="$(cat "$CODEX_RESIDENCY_FAKE_ROOT/ps-count")"
 count=$((count + 1)); printf '%s\n' "$count" > "$CODEX_RESIDENCY_FAKE_ROOT/ps-count"
 if [ "${CODEX_RESIDENCY_FAKE_PS_DRIFT:-}" = authority ] && [ "$count" -eq 3 ]; then
-	printf '%s\n' '{"projectName":"raya","leadId":"raya","projectDir":"/drift","leadBackend":{"backendId":"claude-code"}}' > "$CODEX_RESIDENCY_FAKE_ROOT/manifest.json"
+	printf '%s\n' '{"projectName":"growth","leadId":"mufasa-lead","projectDir":"/drift","leadBackend":{"backendId":"claude-code"}}' > "$CODEX_RESIDENCY_FAKE_ROOT/manifest.json"
 fi
 pid=""
 for arg in "$@"; do case "$arg" in [1-9][0-9]*) pid="$arg" ;; esac; done
 [ -n "$pid" ] || exit 2
-codex_home="${CODEX_RESIDENCY_FAKE_CODEX_HOME:-$CODEX_RESIDENCY_FAKE_ROOT/home/.codex-raya}"
+codex_home="${CODEX_RESIDENCY_FAKE_CODEX_HOME:-$CODEX_RESIDENCY_FAKE_ROOT/home/.codex-mufasa}"
 if printf '%s\n' "$*" | grep -q 'lstart='; then
 	if [ "$pid" = 4242 ]; then printf 'Tue Sep  1 05:00:00 2026\n'; else printf 'Tue Sep  1 06:01:00 2026\n'; fi
 else
@@ -98,15 +98,15 @@ run_helper() {
 	FLYWHEEL_CODEX_RESIDENCY_PS_BIN="$t/bin/ps" \
 	FLYWHEEL_CODEX_RESIDENCY_BOUNDED_RUN_BIN="$t/bin/bounded-run" \
 	CODEX_LEAD_RESIDENCY_VERIFY_ATTEMPTS=2 CODEX_LEAD_RESIDENCY_VERIFY_INTERVAL_SECONDS=0 \
-		"$SUT" --project raya --lead raya "$@"
+		"$SUT" --project growth --lead mufasa-lead "$@"
 }
 
 T1="$TMP_ROOT/success"; make_fixture "$T1"
 AUTHORITY="$(run_helper "$T1" --authority 2>/dev/null || true)"
-if jq -e --arg home "$T1/home/.codex-raya" '
+if jq -e --arg home "$T1/home/.codex-mufasa" '
 	.codexHome == $home
-	and .label == "com.flywheel.lead.raya-raya"
-	and .wrapper == "flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh"
+	and .label == "com.flywheel.lead.growth-mufasa-lead"
+	and .wrapper == "flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh"
 	and (keys | sort) == ["codexHome", "label", "wrapper"]' <<<"$AUTHORITY" >/dev/null; then
 	pass "authority resolves the configured home without process evidence"
 else
@@ -114,61 +114,14 @@ else
 fi
 
 PROBE="$(run_helper "$T1" --probe 2>/dev/null || true)"
-if jq -e --arg home "$T1/home/.codex-raya" '
+if jq -e --arg home "$T1/home/.codex-mufasa" '
 	.state == "exact" and .pid == 4242 and .codexHome == $home
-	and .label == "com.flywheel.lead.raya-raya"
-	and .wrapper == "flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh"
+and .label == "com.flywheel.lead.growth-mufasa-lead"
+	and .wrapper == "flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh"
 	and (.argv | any(endswith("/codex-lead-tui-runtime.js")))' <<<"$PROBE" >/dev/null; then
-	pass "probe returns only the exact Raya process identity"
+	pass "probe returns only the exact resident Codex process identity"
 else
 	fail "exact probe contract failed: $PROBE"
-fi
-
-T_OLD_HOME="$TMP_ROOT/old-shared-home"; make_fixture "$T_OLD_HOME"
-CODEX_RESIDENCY_FAKE_CODEX_HOME="$T_OLD_HOME/home/.flywheel/raya/codex-home" \
-	run_helper "$T_OLD_HOME" --probe >/dev/null 2>&1
-old_probe_rc=$?
-CODEX_RESIDENCY_FAKE_CODEX_HOME="$T_OLD_HOME/home/.flywheel/raya/codex-home" \
-	run_helper "$T_OLD_HOME" --recover --expected-pid 4242 \
-		--expected-lstart 'Tue Sep  1 05:00:00 2026' \
-		--expected-generation generation-a --expected-carrier-instance carrier-a >/dev/null 2>&1
-old_recover_rc=$?
-if [ "$old_probe_rc" -eq 21 ] && [ "$old_recover_rc" -eq 21 ] \
-	&& [ "$(grep -cv '^launchctl print gui/' "$T_OLD_HOME/calls" || true)" -eq 0 ] \
-	&& ! grep -q 'kickstart\|^bounded ' "$T_OLD_HOME/calls" \
-	&& [ ! -e "$T_OLD_HOME/recovery-receipts.jsonl" ]; then
-	pass "Raya's retired shared CODEX_HOME is rejected before mutation"
-else
-	fail "retired shared CODEX_HOME was not zero-mutation (probe=$old_probe_rc recover=$old_recover_rc calls=$(cat "$T_OLD_HOME/calls" 2>/dev/null))"
-fi
-
-T_MUFASA="$TMP_ROOT/mufasa-probe"; make_fixture "$T_MUFASA"
-mkdir -p "$T_MUFASA/home/.codex-mufasa"
-cat > "$T_MUFASA/projects.json" <<JSON
-[{"projectName":"growth","projectRoot":"$T_MUFASA/growth-workspace","leads":[{"agentId":"mufasa-lead","backend":"codex-app-server","companion":true,"canSpawnRunners":false,"codexResidencyPatrol":true,"summaryRole":"producer","chatChannel":"1","match":{"labels":["growth"]}}]}]
-JSON
-cat > "$T_MUFASA/manifest.json" <<JSON
-{"projectName":"growth","leadId":"mufasa-lead","projectDir":"$T_MUFASA/growth-workspace","leadBackend":{"backendId":"codex-app-server"}}
-JSON
-cat > "$T_MUFASA/plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict><key>Label</key><string>com.flywheel.lead.growth-mufasa-lead</string><key>ProgramArguments</key><array><string>/bin/bash</string><string>$T_MUFASA/home/.flywheel/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh</string></array></dict></plist>
-PLIST
-MUFASA_PROBE="$(CODEX_RESIDENCY_FAKE_CODEX_HOME="$T_MUFASA/home/.codex-mufasa" \
-	CODEX_RESIDENCY_FAKE_ROOT="$T_MUFASA" \
-	FLYWHEEL_CODEX_RESIDENCY_RECOVERY_TEST_ROOT="$T_MUFASA" \
-	FLYWHEEL_CODEX_RESIDENCY_LAUNCHCTL_BIN="$T_MUFASA/bin/launchctl" \
-	FLYWHEEL_CODEX_RESIDENCY_PS_BIN="$T_MUFASA/bin/ps" \
-	FLYWHEEL_CODEX_RESIDENCY_BOUNDED_RUN_BIN="$T_MUFASA/bin/bounded-run" \
-	"$SUT" --project growth --lead mufasa-lead --probe 2>/dev/null || true)"
-if jq -e --arg home "$T_MUFASA/home/.codex-mufasa" '
-	.state == "exact" and .pid == 4242 and .codexHome == $home
-	and .label == "com.flywheel.lead.growth-mufasa-lead"
-	and .wrapper == "flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh"' \
-	<<<"$MUFASA_PROBE" >/dev/null; then
-	pass "the same recovery helper probes a second resident Codex Lead carrier"
-else
-	fail "second carrier probe contract failed: $MUFASA_PROBE"
 fi
 
 T_SECRET="$TMP_ROOT/secret-env"; make_fixture "$T_SECRET"
@@ -183,7 +136,7 @@ RECOVER="$(run_helper "$T1" --recover --expected-pid 4242 \
 	--expected-lstart 'Tue Sep  1 05:00:00 2026' \
 	--expected-generation generation-a --expected-carrier-instance carrier-a 2>/dev/null || true)"
 if jq -e '.ok == true and .detail == "converged" and .newPid == 5252' <<<"$RECOVER" >/dev/null \
-	&& [ "$(head -n1 "$T1/calls")" = 'launchctl print gui/'"$(id -u)"'/com.flywheel.lead.raya-raya' ] \
+	&& [ "$(head -n1 "$T1/calls")" = 'launchctl print gui/'"$(id -u)"'/com.flywheel.lead.growth-mufasa-lead' ] \
 	&& ! grep -q 'mutation-before-receipt\|com.xrli.raya.brain' "$T1/calls" \
 	&& jq -e '.phase == "pre_mutation" and .old.pid == 4242' "$T1/recovery-receipts.jsonl" >/dev/null; then
 	pass "eligible recovery receipts before bounded exact-label kickstart and converges"

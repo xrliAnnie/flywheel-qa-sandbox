@@ -96,13 +96,12 @@ export function assertFullAccessSandboxConfig(
 // ─────────────────────────────────────────────────────────────────────────────
 // FLY-398 — FULL-ACCESS lead_actions config + named gate.
 //
-// A full-access (= Claude-equal) Codex Lead has NO broker: the bot token lives in
-// the daemon env (the H-1 positive allowlist), so the lead_actions MCP child gets
-// it BY NAME via `env_vars = ["DISCORD_BOT_TOKEN"]` — the same token-by-name form
-// the headless full-access argv route uses. It also pins
+// A full-access (= Claude-equal) Codex Lead has NO broker. Its MCP child follows
+// the parent runtime's outbound mode: Bridge coordinates or the Discord token
+// are forwarded BY NAME, never as literal values. It also pins
 // `default_tools_approval_mode = "approve"` so codex auto-approves discord_send
-// instead of eliciting (FLY-398 root cause). The token is NEVER a literal in
-// config.toml — only its NAME (env_vars) appears.
+// instead of eliciting (FLY-398 root cause). Secrets are never literal values in
+// config.toml — only their names appear in env_vars.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface LeadActionsFullAccessMcpServerConfig {
@@ -110,15 +109,17 @@ export interface LeadActionsFullAccessMcpServerConfig {
 	args: string[];
 	/** NON-SECRET coordinates only (lead/project/channel/state — NO broker socket). */
 	env: Record<string, string>;
-	/** Env var NAMES forwarded from the daemon env — EXACTLY ["DISCORD_BOT_TOKEN"]. */
+	/** Env var NAMES forwarded from the daemon env for the selected transport. */
 	envVarNames: string[];
 	/** FLY-398: pinned to "approve" so codex auto-approves the trusted tools. */
 	defaultToolsApprovalMode: "approve";
 }
 
-/** The ONE env var NAME the full-access lead_actions child resolves for the bot
- * token (forwarded by name from the daemon env — never a literal). */
-export const LEAD_ACTIONS_BOT_TOKEN_ENV = "DISCORD_BOT_TOKEN";
+export const LEAD_ACTIONS_BRIDGE_ENV_VARS = [
+	"BRIDGE_URL",
+	"TEAMLEAD_API_TOKEN",
+] as const;
+export const LEAD_ACTIONS_DIRECT_ENV_VARS = ["DISCORD_BOT_TOKEN"] as const;
 
 export interface BuildFullAccessLeadActionsMcpOptions {
 	nodeBin: string;
@@ -129,6 +130,7 @@ export interface BuildFullAccessLeadActionsMcpOptions {
 	crossDeptChannelIds: string[];
 	stateDir: string;
 	commDbPath: string;
+	outboundMode: "direct" | "bridge";
 	explicitAliases?: string;
 	/** FLY-676 — EFFECTIVE roundtable autoContinue (runtime-computed). When true, the child
 	 * fail-soft refuses proactive discord_send(target="roundtable") (FLY-680). Non-secret. */
@@ -136,8 +138,8 @@ export interface BuildFullAccessLeadActionsMcpOptions {
 }
 
 /** Build the FULL-ACCESS `[mcp_servers.lead_actions]` config — non-secret coords +
- * the bot token forwarded BY NAME (env_vars) + approve mode. NO broker socket (a
- * full-access Lead has no broker). Throws if any literal env key looks secret-shaped. */
+ * mode-selected credentials forwarded BY NAME (env_vars) + approve mode. NO
+ * broker socket. Throws if any literal env key looks secret-shaped. */
 export function buildFullAccessLeadActionsMcpServerConfig(
 	opts: BuildFullAccessLeadActionsMcpOptions,
 ): LeadActionsFullAccessMcpServerConfig {
@@ -148,6 +150,7 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: opts.crossDeptChannelIds.join(","),
 		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: opts.stateDir,
 		FLYWHEEL_COMM_DB: opts.commDbPath,
+		FLYWHEEL_CODEX_LEAD_OUTBOUND: opts.outboundMode,
 	};
 	if (opts.explicitAliases) {
 		env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES = opts.explicitAliases;
@@ -160,7 +163,7 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 	for (const k of Object.keys(env)) {
 		if (FORBIDDEN_ENV_KEY.test(k)) {
 			throw new Error(
-				`buildFullAccessLeadActionsMcpServerConfig: literal env key "${k}" is secret-shaped — the token travels BY NAME via env_vars, never a literal in config.toml`,
+				`buildFullAccessLeadActionsMcpServerConfig: literal env key "${k}" is secret-shaped — secrets travel BY NAME via env_vars, never as literals in config.toml`,
 			);
 		}
 	}
@@ -168,7 +171,10 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 		command: opts.nodeBin,
 		args: [opts.mainJsPath],
 		env,
-		envVarNames: [LEAD_ACTIONS_BOT_TOKEN_ENV],
+		envVarNames:
+			opts.outboundMode === "bridge"
+				? [...LEAD_ACTIONS_BRIDGE_ENV_VARS]
+				: [...LEAD_ACTIONS_DIRECT_ENV_VARS],
 		defaultToolsApprovalMode: "approve",
 	};
 }
@@ -205,7 +211,7 @@ const SECRET_SHAPED_VALUE =
  * FLY-398 §10 CONFIG GATE — FULL-ACCESS variant. Asserts the effective config.toml
  * contains EXACTLY the trusted full-access lead_actions MCP and nothing else. Throws
  * `ConfigGateError` on ANY drift (fail-closed). It requires exactly
- * `default_tools_approval_mode === "approve"` + `env_vars === ["DISCORD_BOT_TOKEN"]`,
+ * `default_tools_approval_mode === "approve"` + the exact expected env vars,
  * while still rejecting literal secrets, extra
  * MCP servers, alternate transports/fields, and unexpected enabled tools.
  */
@@ -275,15 +281,15 @@ export function assertFullAccessLeadActionsConfigGate(
 			`lead_actions.default_tools_approval_mode must be "approve" for full-access (got ${JSON.stringify(s.default_tools_approval_mode)}) — without it codex elicits approval and a headless/unattended daemon auto-declines (FLY-398)`,
 		);
 	}
-	// env_vars MUST be EXACTLY ["DISCORD_BOT_TOKEN"] (token by name, never literal).
+	// env_vars MUST exactly match the mode-selected credential names.
 	const ev = s.env_vars;
 	if (
 		!Array.isArray(ev) ||
-		ev.length !== 1 ||
-		ev[0] !== LEAD_ACTIONS_BOT_TOKEN_ENV
+		ev.length !== expected.envVarNames.length ||
+		ev.some((value, index) => value !== expected.envVarNames[index])
 	) {
 		throw new ConfigGateError(
-			`lead_actions.env_vars must be exactly ["${LEAD_ACTIONS_BOT_TOKEN_ENV}"] (got ${JSON.stringify(ev)}) — full-access forwards ONLY the bot token by name`,
+			`lead_actions.env_vars must be exactly ${JSON.stringify(expected.envVarNames)} (got ${JSON.stringify(ev)}) for outbound mode ${JSON.stringify(expected.env.FLYWHEEL_CODEX_LEAD_OUTBOUND)}`,
 		);
 	}
 	// env: exact non-secret coordinate set; reject any secret-shaped LITERAL key/value.

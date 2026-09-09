@@ -7,6 +7,8 @@ const baseEnv = (): NodeJS.ProcessEnv => ({
 	FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
 	FLYWHEEL_LEAD_ACTIONS_STATE_DIR: "/tmp/state",
 	FLYWHEEL_COMM_DB: "/tmp/comm.db",
+	FLYWHEEL_CODEX_LEAD_OUTBOUND: "bridge",
+	BRIDGE_URL: "http://127.0.0.1:9876/",
 });
 
 describe("parseLeadActionsConfig", () => {
@@ -19,11 +21,23 @@ describe("parseLeadActionsConfig", () => {
 		expect(cfg.projectName).toBe("growth");
 		expect(cfg.chatChannelId).toBe("1500600400238084307");
 		expect(cfg.commDbPath).toBe("/tmp/comm.db");
+		expect(cfg.outboundMode).toBe("bridge");
+		expect(cfg.bridgeUrl).toBe("http://127.0.0.1:9876");
 		expect(cfg.crossDeptChannelIds).toEqual(["1512578695468941333"]);
 		expect(cfg.rateMaxPerWindow).toBe(5);
 		expect(cfg.rateWindowMs).toBe(60_000);
 		expect(cfg.idempotencyTtlMs).toBe(60_000);
 		expect(cfg.explicitAliases).toEqual({});
+	});
+
+	it("keeps direct-mode Leads independent of Bridge coordinates", () => {
+		const cfg = parseLeadActionsConfig({
+			...baseEnv(),
+			FLYWHEEL_CODEX_LEAD_OUTBOUND: "direct",
+			BRIDGE_URL: undefined,
+		});
+		expect(cfg.outboundMode).toBe("direct");
+		expect(cfg.bridgeUrl).toBeUndefined();
 	});
 
 	it("lists ALL missing required vars at once (fail-loud)", () => {

@@ -39,6 +39,10 @@ export interface LeadRegistryAddInput {
 	summaryRole?: Exclude<SummaryRole, "aggregator">;
 	labels?: string[];
 	canSpawnRunners?: boolean;
+	roundtableChannel?: string;
+	alertChannel?: string;
+	alertBotTokenEnv?: string;
+	alertFallbackToCore?: boolean;
 }
 
 export interface LeadRunManifest {
@@ -100,6 +104,18 @@ function leadRow(input: LeadRegistryAddInput): Record<string, unknown> {
 		...(input.effort !== undefined ? { effort: input.effort } : {}),
 		...(input.modelContextWindow !== undefined
 			? { modelContextWindow: input.modelContextWindow }
+			: {}),
+		...(input.roundtableChannel !== undefined
+			? { roundtableChannel: input.roundtableChannel }
+			: {}),
+		...(input.alertChannel !== undefined
+			? { alertChannel: input.alertChannel }
+			: {}),
+		...(input.alertBotTokenEnv !== undefined
+			? { alertBotTokenEnv: input.alertBotTokenEnv }
+			: {}),
+		...(input.alertFallbackToCore !== undefined
+			? { alertFallbackToCore: input.alertFallbackToCore }
 			: {}),
 	};
 }

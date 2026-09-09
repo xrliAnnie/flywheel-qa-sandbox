@@ -215,8 +215,10 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(summaryRule).toContain("deploy-receipt.json");
 		expect(authority).toContain("Raya 仓：merge 不等于 deploy");
 		expect(authority).toContain("com.flywheel.updater");
-		expect(authority).toContain("com.xrli.raya.brain");
-		expect(authority).toContain("raya preflight");
+		expect(authority).toContain("com.flywheel.lead.raya-raya");
+		expect(authority).toContain("公共 `flywheel-lead.sh verify`");
+		expect(authority).toContain("`schemaVersion:2`");
+		expect(authority).toContain("`carrier:standard-lead`");
 		expect(authority).toContain("deployed-sha");
 	});
 

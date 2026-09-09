@@ -25,6 +25,10 @@ import {
 	planLeadRegistryAdd,
 } from "../lead-registry-add.js";
 import {
+	LeadRegistryCoSContextError,
+	planLeadRegistryCoSContextImport,
+} from "../lead-registry-cos-context.js";
+import {
 	classifyRecovery,
 	LeadRegistryRecoveryError,
 } from "../lead-registry-recover.js";
@@ -116,7 +120,11 @@ function writeAtomic(path: string, contents: string, mode = 0o600): void {
 	}
 }
 
-function readRegularFileNoFollow(path: string, label: string): string {
+function readRegularFileNoFollow(
+	path: string,
+	label: string,
+	ownerOnly = false,
+): string {
 	let parent: ReturnType<typeof lstatSync>;
 	try {
 		parent = lstatSync(dirname(path));
@@ -145,11 +153,19 @@ function readRegularFileNoFollow(path: string, label: string): string {
 		);
 	}
 	try {
-		if (!fstatSync(fd).isFile()) {
+		const stat = fstatSync(fd);
+		if (!stat.isFile()) {
 			throw new LeadRegistryCommandError(
 				"lead_registry_source_invalid",
 				78,
 				`${label} must be a regular file`,
+			);
+		}
+		if (ownerOnly && (stat.mode & 0o077) !== 0) {
+			throw new LeadRegistryCommandError(
+				"lead_registry_source_invalid",
+				78,
+				`${label} must be owner-only (0600 or stricter)`,
 			);
 		}
 		return readFileSync(fd, "utf8");
@@ -161,11 +177,12 @@ function readRegularFileNoFollow(path: string, label: string): string {
 function readJsonNoFollow<T>(
 	path: string,
 	label: string,
+	ownerOnly = false,
 ): {
 	text: string;
 	value: T;
 } {
-	const text = readRegularFileNoFollow(path, label);
+	const text = readRegularFileNoFollow(path, label, ownerOnly);
 	try {
 		return { text, value: JSON.parse(text) as T };
 	} catch (error) {
@@ -205,6 +222,36 @@ function optionalBoolean(
 		64,
 		`${name} must be true or false`,
 	);
+}
+
+function optionalDiscordSnowflake(
+	value: string | undefined,
+	name: string,
+): string | undefined {
+	if (value === undefined) return undefined;
+	if (!/^\d{17,20}$/u.test(value)) {
+		throw new LeadRegistryCommandError(
+			"lead_registry_usage",
+			64,
+			`${name} must be a 17-20 digit Discord snowflake`,
+		);
+	}
+	return value;
+}
+
+function optionalEnvName(
+	value: string | undefined,
+	name: string,
+): string | undefined {
+	if (value === undefined) return undefined;
+	if (!/^[A-Z_][A-Z0-9_]*$/u.test(value)) {
+		throw new LeadRegistryCommandError(
+			"lead_registry_usage",
+			64,
+			`${name} must be an uppercase environment variable name`,
+		);
+	}
+	return value;
 }
 
 function defaultTeamleadValidator(
@@ -283,6 +330,10 @@ function parseAddInput(args: string[]): {
 			"summary-role": { type: "string" },
 			labels: { type: "string" },
 			"can-spawn-runners": { type: "string" },
+			"roundtable-channel": { type: "string" },
+			"alert-channel": { type: "string" },
+			"alert-bot-token-env": { type: "string" },
+			"alert-fallback-to-core": { type: "string" },
 			"projects-file": { type: "string" },
 			"receipt-file": { type: "string" },
 			"summary-config-home": { type: "string" },
@@ -378,6 +429,50 @@ function parseAddInput(args: string[]): {
 						canSpawnRunners: optionalBoolean(
 							values["can-spawn-runners"],
 							"--can-spawn-runners",
+						),
+					}
+				: {}),
+			...(optionalDiscordSnowflake(
+				values["roundtable-channel"],
+				"--roundtable-channel",
+			) !== undefined
+				? {
+						roundtableChannel: optionalDiscordSnowflake(
+							values["roundtable-channel"],
+							"--roundtable-channel",
+						),
+					}
+				: {}),
+			...(optionalDiscordSnowflake(
+				values["alert-channel"],
+				"--alert-channel",
+			) !== undefined
+				? {
+						alertChannel: optionalDiscordSnowflake(
+							values["alert-channel"],
+							"--alert-channel",
+						),
+					}
+				: {}),
+			...(optionalEnvName(
+				values["alert-bot-token-env"],
+				"--alert-bot-token-env",
+			) !== undefined
+				? {
+						alertBotTokenEnv: optionalEnvName(
+							values["alert-bot-token-env"],
+							"--alert-bot-token-env",
+						),
+					}
+				: {}),
+			...(optionalBoolean(
+				values["alert-fallback-to-core"],
+				"--alert-fallback-to-core",
+			) !== undefined
+				? {
+						alertFallbackToCore: optionalBoolean(
+							values["alert-fallback-to-core"],
+							"--alert-fallback-to-core",
 						),
 					}
 				: {}),
@@ -675,6 +770,300 @@ function removeIntent(intentPath: string): void {
 	fsyncDirectory(dirname(intentPath));
 }
 
+function runImportCoSContext(
+	args: string[],
+	deps: LeadRegistryCommandDeps,
+	homeDir: string,
+	stdout: (line: string) => void,
+): number {
+	const { values } = parseArgs({
+		args,
+		options: {
+			input: { type: "string" },
+			"expected-projects-sha": { type: "string" },
+			"expected-receipt-sha": { type: "string" },
+			"projects-file": { type: "string" },
+			"receipt-file": { type: "string" },
+			"summary-config-home": { type: "string" },
+			"dry-run": { type: "boolean" },
+		},
+		allowPositionals: false,
+	});
+	const inputPath = required(values.input, "--input");
+	const expectedProjectsSha = required(
+		values["expected-projects-sha"],
+		"--expected-projects-sha",
+	);
+	const expectedReceiptSha = required(
+		values["expected-receipt-sha"],
+		"--expected-receipt-sha",
+	);
+	if (
+		!/^[a-f0-9]{64}$/u.test(expectedProjectsSha) ||
+		!/^[a-f0-9]{64}$/u.test(expectedReceiptSha)
+	) {
+		throw new LeadRegistryCommandError(
+			"lead_registry_usage",
+			64,
+			"expected digests must be 64-character lowercase SHA-256 values",
+		);
+	}
+	const summaryConfigHome = values["summary-config-home"] ?? homeDir;
+	const projectsPath =
+		values["projects-file"] ?? join(homeDir, ".flywheel", "projects.json");
+	const receiptPath =
+		values["receipt-file"] ??
+		join(
+			homeDir,
+			".flywheel",
+			"state",
+			"summary-registry",
+			"migration-receipt.json",
+		);
+	const intentPath = `${receiptPath}.lead-registry-intent.json`;
+	if (pathEntryExists(intentPath)) {
+		throw new LeadRegistryCommandError(
+			"lead_registry_recovery_required",
+			78,
+			`recovery intent exists: ${intentPath}; run lead-registry recover`,
+		);
+	}
+	const importSource = readJsonNoFollow<unknown>(
+		inputPath,
+		"CoS context import",
+		true,
+	);
+	const source = readJsonNoFollow<unknown>(projectsPath, "projects registry");
+	const receiptSource = readJsonNoFollow<SummaryMigrationReceipt>(
+		receiptPath,
+		"summary migration receipt",
+	);
+	if (
+		sha256(source.text) !== expectedProjectsSha ||
+		sha256(receiptSource.text) !== expectedReceiptSha
+	) {
+		throw new LeadRegistryCommandError(
+			"lead_registry_source_stale",
+			78,
+			"projects registry or summary receipt does not match the caller CAS",
+		);
+	}
+	const validator =
+		deps.validateTeamleadCandidate ??
+		((candidatePath: string) =>
+			defaultTeamleadValidator(candidatePath, deps.env ?? process.env));
+	try {
+		verifySummaryRegistryActivation(
+			{ projectsPath, receiptPath, homeDir: summaryConfigHome },
+			{ validateTeamleadCandidate: validator },
+		);
+	} catch (error) {
+		throw new LeadRegistryCommandError(
+			"lead_registry_preimage_stale",
+			78,
+			error instanceof Error ? error.message : String(error),
+		);
+	}
+	const selection = readSummaryGranularity({ homeDir: summaryConfigHome });
+	const plan = planLeadRegistryCoSContextImport(
+		source.value,
+		receiptSource.value,
+		selection,
+		importSource.value,
+	);
+	const candidateTemp = join(
+		dirname(projectsPath),
+		`.${basename(projectsPath)}.cos-context-validate.${randomUUID()}`,
+	);
+	try {
+		writeDurableFile(
+			candidateTemp,
+			plan.candidateText,
+			statSync(projectsPath).mode & 0o777,
+		);
+		validator(candidateTemp);
+	} catch (error) {
+		if (error instanceof LeadRegistryCommandError) throw error;
+		throw new LeadRegistryCommandError(
+			"lead_registry_candidate_invalid",
+			78,
+			error instanceof Error ? error.message : String(error),
+		);
+	} finally {
+		try {
+			unlinkSync(candidateTemp);
+		} catch {}
+	}
+	const dryRun = values["dry-run"] ?? false;
+	if (dryRun || plan.kind === "continuation") {
+		stdout(
+			JSON.stringify({
+				ok: true,
+				operation: "cos-context-import",
+				...(plan.kind === "continuation" ? { continuation: true } : {}),
+				dryRun,
+				updatedLeadKeys: plan.updatedLeadKeys,
+				planned: plan.planned,
+				projectsFile: projectsPath,
+				receiptFile: receiptPath,
+			}),
+		);
+		return 0;
+	}
+	if ((deps.env ?? process.env).FLYWHEEL_SUMMARY_CONFIG_LOCK_HELD !== "1") {
+		throw new LeadRegistryCommandError(
+			"lead_registry_lock_required",
+			78,
+			"FLYWHEEL_SUMMARY_CONFIG_LOCK_HELD=1 is required",
+		);
+	}
+	const fencedProjects = readRegularFileNoFollow(
+		projectsPath,
+		"projects registry",
+	);
+	const fencedReceipt = readRegularFileNoFollow(
+		receiptPath,
+		"summary migration receipt",
+	);
+	if (
+		sha256(fencedProjects) !== expectedProjectsSha ||
+		sha256(fencedReceipt) !== expectedReceiptSha
+	) {
+		throw new LeadRegistryCommandError(
+			"lead_registry_source_stale",
+			78,
+			"projects registry or summary receipt changed after planning",
+		);
+	}
+	const startedAt = deps.now?.() ?? new Date().toISOString();
+	const backupStamp = startedAt.replace(/[-:.]/g, "");
+	const projectsBackup = `${projectsPath}.bak-fly2445-${backupStamp}`;
+	const receiptBackup = `${receiptPath}.bak-fly2445-${backupStamp}`;
+	writeDurableFile(
+		projectsBackup,
+		fencedProjects,
+		statSync(projectsPath).mode & 0o777,
+	);
+	writeDurableFile(
+		receiptBackup,
+		fencedReceipt,
+		statSync(receiptPath).mode & 0o777,
+	);
+	const intent = {
+		schemaVersion: 1 as const,
+		phase: "pending" as const,
+		operation: "cos-context-import" as const,
+		leadKey: "cos-context-import",
+		startedAt,
+		projectsShaBefore: expectedProjectsSha,
+		receiptDigestBefore: receiptSource.value.summaryAssignmentDigest,
+		projectsShaPlanned: plan.planned.projectsSha,
+		receiptDigestPlanned: plan.planned.receiptDigest,
+		backups: { projects: projectsBackup, receipt: receiptBackup },
+	};
+	writeAtomic(intentPath, `${JSON.stringify(intent, null, 2)}\n`);
+	const assignmentsPath = join(
+		dirname(receiptPath),
+		`.cos-context-assignments.${randomUUID()}.json`,
+	);
+	try {
+		writeDurableFile(
+			assignmentsPath,
+			assignmentManifest(plan.candidateRegistry, summaryConfigHome),
+			0o600,
+		);
+		const migrated = migrateSummaryRegistry(
+			{
+				projectsPath,
+				assignmentsPath,
+				receiptPath,
+				expectedSha256: expectedProjectsSha,
+				homeDir: summaryConfigHome,
+				candidateRegistry: plan.candidateRegistry,
+			},
+			{
+				validateTeamleadCandidate: validator,
+				now: deps.now,
+				afterProjectsRename: deps.afterProjectsRename,
+			},
+		);
+		if (
+			sha256(readRegularFileNoFollow(projectsPath, "projects registry")) !==
+				plan.planned.projectsSha ||
+			migrated.summaryAssignmentDigest !== plan.planned.receiptDigest
+		) {
+			throw new Error("CoS context import landed hashes differ from plan");
+		}
+		verifySummaryRegistryActivation(
+			{ projectsPath, receiptPath, homeDir: summaryConfigHome },
+			{ validateTeamleadCandidate: validator },
+		);
+		writeAtomic(
+			intentPath,
+			`${JSON.stringify(
+				{
+					...intent,
+					phase: "done",
+					projectsShaAfter: plan.planned.projectsSha,
+					receiptDigestAfter: plan.planned.receiptDigest,
+				},
+				null,
+				2,
+			)}\n`,
+		);
+		removeIntent(intentPath);
+	} catch (error) {
+		let rollbackError: unknown;
+		try {
+			writeAtomic(
+				receiptPath,
+				readRegularFileNoFollow(receiptBackup, "receipt backup"),
+				statSync(receiptPath).mode & 0o777,
+			);
+			writeAtomic(
+				projectsPath,
+				readRegularFileNoFollow(projectsBackup, "projects backup"),
+				statSync(projectsPath).mode & 0o777,
+			);
+			verifySummaryRegistryActivation(
+				{ projectsPath, receiptPath, homeDir: summaryConfigHome },
+				{ validateTeamleadCandidate: validator },
+			);
+			removeIntent(intentPath);
+		} catch (caught) {
+			rollbackError = caught;
+		}
+		if (rollbackError !== undefined) {
+			throw new LeadRegistryCommandError(
+				"lead_registry_rollback_failed",
+				70,
+				`${error instanceof Error ? error.message : String(error)}; rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+			);
+		}
+		throw new LeadRegistryCommandError(
+			"lead_registry_rolled_back",
+			70,
+			error instanceof Error ? error.message : String(error),
+		);
+	} finally {
+		try {
+			unlinkSync(assignmentsPath);
+		} catch {}
+	}
+	stdout(
+		JSON.stringify({
+			ok: true,
+			operation: "cos-context-import",
+			updatedLeadKeys: plan.updatedLeadKeys,
+			projectsFile: projectsPath,
+			receiptFile: receiptPath,
+			backups: { projects: projectsBackup, receipt: receiptBackup },
+			effectiveAt: "next-bridge-restart",
+		}),
+	);
+	return 0;
+}
+
 function runRecover(
 	args: string[],
 	deps: LeadRegistryCommandDeps,
@@ -908,6 +1297,18 @@ function runSelector(
 				? { codexProfile: match.lead.codexProfile }
 				: {}),
 			botTokenEnv: match.identity.botTokenEnv,
+			...(match.lead.roundtableChannel !== undefined
+				? { roundtableChannel: match.lead.roundtableChannel }
+				: {}),
+			...(match.lead.alertChannel !== undefined
+				? { alertChannel: match.lead.alertChannel }
+				: {}),
+			...(match.lead.alertBotTokenEnv !== undefined
+				? { alertBotTokenEnv: match.lead.alertBotTokenEnv }
+				: {}),
+			...(match.lead.alertFallbackToCore !== undefined
+				? { alertFallbackToCore: match.lead.alertFallbackToCore }
+				: {}),
 		}),
 	);
 	return 0;
@@ -928,13 +1329,16 @@ export function runLeadRegistryCommand(
 		if (subcommand === "add") {
 			return runAdd(args.slice(1), deps, homeDir, stdout);
 		}
+		if (subcommand === "import-cos-context") {
+			return runImportCoSContext(args.slice(1), deps, homeDir, stdout);
+		}
 		if (subcommand === "recover") {
 			return runRecover(args.slice(1), deps, homeDir, stdout);
 		}
 		throw new LeadRegistryCommandError(
 			"lead_registry_usage",
 			64,
-			"expected subcommand: add|recover|selector",
+			"expected subcommand: add|import-cos-context|recover|selector",
 		);
 	} catch (error) {
 		const parseArgsError =
@@ -948,21 +1352,23 @@ export function runLeadRegistryCommand(
 				? error
 				: error instanceof LeadRegistryAddError
 					? new LeadRegistryCommandError(error.code, 78, error.message)
-					: error instanceof LeadRegistryRecoveryError
+					: error instanceof LeadRegistryCoSContextError
 						? new LeadRegistryCommandError(error.code, 78, error.message)
-						: error instanceof SummaryRegistryError
+						: error instanceof LeadRegistryRecoveryError
 							? new LeadRegistryCommandError(error.code, 78, error.message)
-							: parseArgsError
-								? new LeadRegistryCommandError(
-										"lead_registry_usage",
-										64,
-										error instanceof Error ? error.message : String(error),
-									)
-								: new LeadRegistryCommandError(
-										"lead_registry_command_invalid",
-										78,
-										error instanceof Error ? error.message : String(error),
-									);
+							: error instanceof SummaryRegistryError
+								? new LeadRegistryCommandError(error.code, 78, error.message)
+								: parseArgsError
+									? new LeadRegistryCommandError(
+											"lead_registry_usage",
+											64,
+											error instanceof Error ? error.message : String(error),
+										)
+									: new LeadRegistryCommandError(
+											"lead_registry_command_invalid",
+											78,
+											error instanceof Error ? error.message : String(error),
+										);
 		stderr(
 			JSON.stringify({
 				ok: false,

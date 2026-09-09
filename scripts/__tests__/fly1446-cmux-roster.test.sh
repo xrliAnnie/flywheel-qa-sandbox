@@ -48,8 +48,8 @@ expect_eq "$(classify_lead_carrier flywheel-lead-wrapper-v2.sh codex)" "config-d
   "v2 wrapper + Codex backend is config drift"
 expect_eq "$(classify_lead_carrier flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh '')" "codex-tui-cmux" \
   "Mufasa dedicated TUI wrapper is allowlisted"
-expect_eq "$(classify_lead_carrier flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh '')" "codex-tui-cmux" \
-  "Raya dedicated resident TUI wrapper is allowlisted"
+expect_eq "$(classify_lead_carrier flywheel-lead.sh codex-app-server)" "codex-tui-cmux" \
+  "standard Codex Lead carrier is allowlisted"
 expect_eq "$(classify_lead_carrier flywheel-codex-lead-wrapper-codex-infra-bot.sh '')" "codex-tui-cmux" \
   "infra-bot wrapper is allowlisted despite lacking a tui suffix"
 expect_eq "$(classify_lead_carrier future-wrapper.sh claude-code)" "config-drift" \
@@ -65,14 +65,14 @@ jq -n --arg socket "$(derive_lead_socket "growth/mufasa-lead" "$FLYWHEEL_LEAD_ST
   '{projectName:"growth",leadId:"mufasa-lead",socketPath:$socket,leadBackend:{backendId:"codex"}}' \
   > "$HOME/.flywheel/manifests/growth-mufasa-lead.json"
 jq -n --arg socket "$(derive_lead_socket "raya/raya" "$FLYWHEEL_LEAD_STATE_DIR")" \
-  '{projectName:"raya",leadId:"raya",socketPath:$socket,leadBackend:{backendId:"codex"}}' \
+  '{projectName:"raya",leadId:"raya",socketPath:$socket,leadBackend:{backendId:"codex-app-server"}}' \
   > "$HOME/.flywheel/manifests/raya-raya.json"
 lead_job_loaded() { return 0; }
 lead_plist_wrapper_basename() {
   case "$1" in
     *flywheel-eng-lead.plist) printf '%s\n' flywheel-lead-wrapper-v2.sh ;;
     *growth-mufasa-lead.plist) printf '%s\n' flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh ;;
-    *raya-raya.plist) printf '%s\n' flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh ;;
+    *raya-raya.plist) printf '%s\n' flywheel-lead.sh ;;
     *) return 1 ;;
   esac
 }
@@ -92,7 +92,7 @@ lead_plist_wrapper_basename() {
   case "$1" in
     *flywheel-eng-lead.plist) printf '%s\n' flywheel-lead-wrapper-v2.sh ;;
     *growth-mufasa-lead.plist) printf '%s\n' flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh ;;
-    *raya-raya.plist) printf '%s\n' flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh ;;
+    *raya-raya.plist) printf '%s\n' flywheel-lead.sh ;;
     *bad-lead.plist) printf '%s\n' flywheel-lead-wrapper-v2.sh ;;
     *) return 1 ;;
   esac
@@ -267,7 +267,7 @@ ORDER="$TMP/order"; : > "$ORDER"
 reconcile_roster_read_phase() { printf 'R\n' >> "$ORDER"; }
 get_tmux_agent_windows() { printf '%s\n' 'flywheel|@7|flywheel-eng-lead'; }
 register_hooks_on_new_sessions() { printf 'hooks\n' >> "$ORDER"; }
-refresh_linked_sessions() { printf 'refresh\n' >> "$ORDER"; return 1; }
+prepare_linked_view_state() { printf 'refresh\n' >> "$ORDER"; return 1; }
 reconcile_existing_workspaces() { printf 'reconcile\n' >> "$ORDER"; }
 create_workspace_for_window() { printf 'create\n' >> "$ORDER"; }
 sync_additive

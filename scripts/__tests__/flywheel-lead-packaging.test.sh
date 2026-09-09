@@ -19,6 +19,7 @@ SCRIPT_CLOSURE="flywheel-lead.sh
 flywheel-config-lock.sh
 flywheel-config-lock.py
 migrate-summary-registry.sh
+lib/raya-standard-migration.sh
 lib/lead-host-tmux-gate.sh"
 SCRIPT_CLOSURE_OK=1
 while IFS= read -r file; do
@@ -49,7 +50,7 @@ while IFS= read -r declaration; do
     *) CONVERGE_OK=0 ;;
   esac
   case "$declaration" in
-    *lib/lead-host-tmux-gate.sh*) ;;
+    *lib/lead-host-tmux-gate.sh*lib/raya-standard-migration.sh*) ;;
     *) CONVERGE_OK=0 ;;
   esac
 done < <(grep '^[[:space:]]*FILES=' "$REPO_ROOT/scripts/converge-flywheel-bin.sh")
@@ -58,6 +59,14 @@ if [ "$CONVERGE_OK" -eq 1 ] \
   pass "monorepo and prebuilt convergence both own launcher and host-gate helper"
 else
   fail "converge-flywheel-bin does not own the Lead closure in both modes"
+fi
+
+if [ -f "$REPO_ROOT/packages/teamlead/dist/bin/seed-lead-inbound-cursor.js" ] \
+  && grep -Fq 'seedLeadInboundCursor' \
+    "$REPO_ROOT/packages/teamlead/dist/bin/seed-lead-inbound-cursor.js"; then
+  pass "packaged TeamLead dist contains the one-shot cursor seed tool"
+else
+  fail "TeamLead dist is missing the one-shot cursor seed tool"
 fi
 
 PACKAGED="$SANDBOX/package"

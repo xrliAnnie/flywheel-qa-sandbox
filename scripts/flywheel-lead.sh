@@ -18,6 +18,7 @@ usage() {
   cat <<'EOF'
 Usage:
   flywheel-lead.sh register <lead-registry add options>
+  flywheel-lead.sh import-cos-context <lead-registry import-cos-context options>
   flywheel-lead.sh run <manifest>
   flywheel-lead.sh run --project <project> --lead <lead-id>
   flywheel-lead.sh preflight <manifest>
@@ -136,13 +137,20 @@ source_runtime_env() {
 }
 
 sanitize_codex_child_env() {
+  local selector="${1:-}" roundtable_channel=""
+  if [ -n "$selector" ]; then
+    roundtable_channel="$(jq -r '.roundtableChannel // ""' <<<"$selector")"
+  fi
   if [ -n "${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-}" ]; then
-    log "ignoring FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS until the Bridge outbound contract permits it"
+    log "ignoring ambient FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS; registry routing is authoritative"
   fi
   unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS \
     FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD FLYWHEEL_ROUNDTABLE_CHANNEL_ID \
     FLYWHEEL_ROUNDTABLE_ENABLED FLYWHEEL_ROUNDTABLE_GUILD_ID \
     FLYWHEEL_LEAD_CORE_CHANNEL_ID FLYWHEEL_LEAD_MENTION_PATTERNS
+  if [ -n "$roundtable_channel" ]; then
+    export FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="$roundtable_channel"
+  fi
 }
 
 compose_codex_child_env() {
@@ -225,7 +233,7 @@ run_manifest() {
     || { fail "Codex selector has an invalid botTokenEnv" 78; return $?; }
   [ -n "${!token_env:-}" ] || { fail "$token_env is unset or empty" 78; return $?; }
 
-  sanitize_codex_child_env
+  sanitize_codex_child_env "$selector"
 
   target_sha="$(lead_host_tmux_target_sha)"
   export FLYWHEEL_HOST_TMUX_TARGET_SHA="$target_sha"
@@ -485,7 +493,7 @@ preflight_manifest() {
 
     runtime_rc=0
     runtime_output="$(
-      sanitize_codex_child_env
+      sanitize_codex_child_env "$selector"
       compose_codex_child_env "$selector" "$project_root" || exit $?
       FLYWHEEL_LEAD_DRY_RUN=1 /bin/bash "$CODEX_LAUNCHER" \
         "$RUN_LEAD" "$project_root" "$RUN_PROJECT" 2>&1
@@ -607,6 +615,30 @@ register_lead() {
   jq -nc --arg leadKey "${project}-${lead}" --arg projectsFile "$PROJECTS_FILE" \
     --arg receiptFile "$RECEIPT_FILE" \
     '{ok:true,leadKey:$leadKey,projectsFile:$projectsFile,receiptFile:$receiptFile,effectiveAt:"next-bridge-restart"}'
+}
+
+import_cos_context() {
+  load_common || return $?
+  local lock_script materializer result
+  lock_script="$(_tool_path flywheel-config-lock.sh)"
+  materializer="${FLYWHEEL_LEAD_MATERIALIZER:-$(_tool_path materialize-lead-manifests.sh)}"
+  [ -f "$lock_script" ] || { fail "config lock helper is missing: $lock_script" 78; return $?; }
+  [ -x "$materializer" ] || { fail "manifest materializer is missing: $materializer" 78; return $?; }
+  # shellcheck source=flywheel-config-lock.sh
+  # shellcheck disable=SC1091
+  FLYWHEEL_CONFIG_LOCK_SOURCED=1 source "$lock_script"
+  result="$(config_write_locked "${PROJECTS_FILE}.cfglock" 5 \
+      env FLYWHEEL_SUMMARY_CONFIG_LOCK_HELD=1 \
+      FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR" \
+      node "$FLYWHEEL_COMM_CLI" lead-registry import-cos-context "$@")" || return $?
+  printf '%s\n' "$result"
+  if jq -e '.dryRun == true' >/dev/null 2>&1 <<<"$result"; then
+    return 0
+  fi
+  "$materializer" --home "$HOME" --projects "$PROJECTS_FILE" --manifests-dir "$MANIFEST_DIR" || {
+    fail "CoS context committed but manifest materialization failed; rerun the same import" 78
+    return 78
+  }
 }
 
 recover_registry() {
@@ -910,6 +942,7 @@ main() {
   case "$command" in
     -h|--help) usage ;;
     register) shift; register_lead "$@" ;;
+    import-cos-context) shift; import_cos_context "$@" ;;
     run) shift; run_lead "$@" ;;
     preflight)
       shift

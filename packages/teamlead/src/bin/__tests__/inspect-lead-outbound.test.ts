@@ -60,7 +60,10 @@ async function createFixture(): Promise<Fixture> {
 		leadId: "demo-codex",
 		channelId: "10000000000000003",
 		dbPath: outboxDb,
-		post: async () => ({ status: 200, body: '{"status":"sent"}' }),
+		post: async () => ({
+			status: 200,
+			body: '{"status":"sent","messageId":"523456789012345678"}',
+		}),
 		now: () => 1_725_753_600_100,
 	});
 	const outboxId = await sender.enqueue({

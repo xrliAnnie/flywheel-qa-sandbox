@@ -245,6 +245,7 @@ const required = [
   "FLYWHEEL_PROJECT_NAME", "FLYWHEEL_LEAD_KEY", "FLYWHEEL_LEAD_BACKEND",
   "FLYWHEEL_PROJECTS_FILE", "FLYWHEEL_CODEX_LEAD_STATE_DIR", "CODEX_HOME",
   "DISCORD_BOT_TOKEN", "FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
+  "FLYWHEEL_CODEX_LEAD_OUTBOUND",
 ];
 for (const key of required) {
   if (!process.env[key]) throw new Error(`missing canonical env ${key}`);
@@ -894,6 +895,7 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       TEST_LEAD_CLAUDE_CONFIG_DIR="${TEST_LEAD_CLAUDE_CONFIG_DIR:-}" \
       TEST_REPLY_BY_ISSUE="${TEST_REPLY_BY_ISSUE:-}" \
       TEST_API_TOKEN="${TEST_API_TOKEN:-}" \
+      TEST_CODEX_LEAD_OUTBOUND_MODE="${TEST_CODEX_LEAD_OUTBOUND_MODE:-}" \
       VERCEL_TOKEN="${VERCEL_TOKEN:-}" \
       FLYWHEEL_REPORT_HOST_OVERRIDE_URL="${FLYWHEEL_REPORT_HOST_OVERRIDE_URL:-}" \
       TEAMLEAD_INGEST_TOKEN="${TEAMLEAD_INGEST_TOKEN:-}" \
@@ -1690,7 +1692,8 @@ run_codex_drill() {  # <slot> <crash|kickstart> <evidence-root> <stdout> <stderr
 
 rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}"
 CX_OUT="$SB/cx-out.json"; CX_ERR="$SB/cx-err.log"
-if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+if TEST_CODEX_LEAD_OUTBOUND_MODE=bridge \
+    FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
     run_deploy "$FH1" "$CODEX_SLOT" "$CX_OUT" "$CX_ERR" --lead-ready-timeout 5; then
   CX_JSON="$(extract_json "$CX_OUT")"
   CX_SLOT_DIR="/tmp/flywheel-test-slot-${CODEX_SLOT}"
@@ -1740,9 +1743,10 @@ PY
       .FLYWHEEL_LEAD_BACKEND == "codex-app-server" and
       .FLYWHEEL_LEAD_ID == "flywheel-test-34" and
       .FLYWHEEL_PROJECT_NAME == "test-slot-34" and
+      .FLYWHEEL_CODEX_LEAD_OUTBOUND == "bridge" and
       .DISCORD_BOT_TOKEN == "[present]"' \
     "$CX_SLOT_DIR/q/34/codex-runtime-env.json" >/dev/null 2>&1 \
-    || { CX_OK=0; fail "CX: true launcher/canonical resolver did not reach the runtime"; }
+    || { CX_OK=0; fail "CX: true launcher/canonical resolver did not reach the bridge-mode runtime"; }
   if ! (unset FLYWHEEL_COMM_DB
       # shellcheck disable=SC1090
       source "$CX_SLOT_DIR/q/34/.env"
@@ -1825,6 +1829,9 @@ if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
       && [[ "$(wc -l <<<"$CXX_MATCHED_UPDATERS" | tr -d ' ')" == 2 ]] \
       && [[ -f "$CXX_DIR/q/34/codex-runtime-env.json" \
           && -f "$CXX_DIR/q/35/codex-runtime-env.json" ]] \
+      && jq -e '.FLYWHEEL_CODEX_LEAD_OUTBOUND == "direct"' \
+        "$CXX_DIR/q/34/codex-runtime-env.json" "$CXX_DIR/q/35/codex-runtime-env.json" \
+        >/dev/null 2>&1 \
       && while IFS= read -r cxx_home; do
         [[ -L "$cxx_home/auth.json" ]] || exit 1
       done < <(jq -r '.[].codexHome' "$CXX_DIR/launchd-leads.json"); then

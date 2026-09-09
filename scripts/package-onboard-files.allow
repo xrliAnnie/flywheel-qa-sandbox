@@ -37,7 +37,6 @@ scripts/flywheel-config-lock.py
 scripts/migrate-summary-registry.sh
 scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
-scripts/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh
 scripts/resident-codex-lead-recover.sh
 scripts/codex-home-link-truth.sh
 scripts/codex-credential-cutover.sh
@@ -61,6 +60,7 @@ scripts/lib/fleet-sanitize.sh
 scripts/lib/host-config.sh
 scripts/lib/lead-address.sh
 scripts/lib/lead-host-tmux-gate.sh
+scripts/lib/raya-standard-migration.sh
 scripts/lib/platform-deps.sh
 scripts/lib/script-sanity.sh
 scripts/lib/path-hygiene.sh

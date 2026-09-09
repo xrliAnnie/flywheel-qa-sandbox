@@ -98,7 +98,6 @@ flywheel-config-lock.py
 migrate-summary-registry.sh
 flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 flywheel-codex-lead-wrapper-codex-infra-bot.sh
-flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh
 resident-codex-lead-recover.sh
 codex-home-link-truth.sh
 codex-credential-cutover.sh
@@ -122,6 +121,7 @@ lib/fleet-sanitize.sh
 lib/host-config.sh
 lib/lead-address.sh
 lib/lead-host-tmux-gate.sh
+lib/raya-standard-migration.sh
 lib/platform-deps.sh
 lib/script-sanity.sh
 lib/path-hygiene.sh

@@ -132,7 +132,7 @@ export interface CodexLeadRuntimeConfig {
 	reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
 	/** FLY-2131: explicit Codex model context window, e.g. Raya's 1M pin. */
 	modelContextWindow?: number;
-	/** FLY-2131: Raya-only v1 context metrics + explicit unavailable ledger. */
+	/** Per-Lead platform context metrics + explicit unavailable ledger. */
 	contextUsagePath?: string;
 	contextUsageUnavailablePath?: string;
 	/** Persona/identity files (e.g. `.lead/<id>/identity.md` + companion-safety-
@@ -448,6 +448,18 @@ export function buildFullAccessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	return out;
 }
 
+export function buildFullAccessAppServerEnv(
+	env: NodeJS.ProcessEnv,
+	pins: { botToken: string; bridgeUrl: string; apiToken: string },
+): NodeJS.ProcessEnv {
+	return {
+		...buildFullAccessEnv(env),
+		DISCORD_BOT_TOKEN: pins.botToken,
+		...(pins.bridgeUrl ? { BRIDGE_URL: pins.bridgeUrl } : {}),
+		...(pins.apiToken ? { TEAMLEAD_API_TOKEN: pins.apiToken } : {}),
+	};
+}
+
 /** Resolve + validate the FULL-ACCESS Lead project root (plan §2.1 M-1). FAIL-LOUD.
  * Returns the canonical absolute path to pin into both `cwd` and `writable_roots`.
  * A full-access Lead works IN its project checkout (Claude-equal), so — unlike the
@@ -544,7 +556,6 @@ export function parseCodexLeadRuntimeConfig(
 	const codexBin = req("FLYWHEEL_CODEX_BIN");
 	const codexHome = req("CODEX_HOME");
 	const commDbPath = req("FLYWHEEL_COMM_DB");
-	const rayaMetricsDir = leadId === "raya" ? req("RAYA_METRICS_DIR") : "";
 	// Bridge fields: required only when outbound routes through the Bridge.
 	const bridgeUrl =
 		outboundMode === "bridge"
@@ -573,11 +584,6 @@ export function parseCodexLeadRuntimeConfig(
 	if (!/^[a-f0-9]{64}$/.test(identityDigest)) {
 		throw new Error(
 			"codex-lead-runtime: FLYWHEEL_LEAD_IDENTITY_DIGEST must be a 64-character lowercase hex digest",
-		);
-	}
-	if (rayaMetricsDir && !isAbsolute(rayaMetricsDir)) {
-		throw new Error(
-			"codex-lead-runtime: RAYA_METRICS_DIR must be an absolute path",
 		);
 	}
 	if (env.LEAD_ID !== undefined && env.LEAD_ID.trim() !== leadId) {
@@ -890,15 +896,12 @@ export function parseCodexLeadRuntimeConfig(
 		...(model ? { model } : {}),
 		...(reasoningEffort ? { reasoningEffort } : {}),
 		...(modelContextWindow ? { modelContextWindow } : {}),
-		...(rayaMetricsDir
-			? {
-					contextUsagePath: join(rayaMetricsDir, "context-usage.jsonl"),
-					contextUsageUnavailablePath: join(
-						rayaMetricsDir,
-						"context-usage-unavailable.jsonl",
-					),
-				}
-			: {}),
+		contextUsagePath: join(stateDir, "metrics", "context-usage.jsonl"),
+		contextUsageUnavailablePath: join(
+			stateDir,
+			"metrics",
+			"context-usage-unavailable.jsonl",
+		),
 		systemPromptFiles,
 		sandboxMode,
 		codexProfile,
@@ -965,8 +968,8 @@ function assertLeadActionsEntry(entry: string | undefined): string {
 
 /** FLY-304: the lead-actions MCP options for a full-access Lead — SHARED by the live
  * startup (buildCodexLeadRuntime) and the dry-run report so they can NEVER diverge
- * (code-review R1#3). The bot token is forwarded BY NAME (env_vars) — never a literal;
- * all literal env entries are NON-SECRET coordinates. `entry` is passed in (the live
+ * (code-review R1#3). The selected credential is forwarded BY NAME (env_vars) —
+ * never a literal; all literal env entries are NON-SECRET coordinates. `entry` is passed in (the live
  * path existsSync-validates it first; dry-run discloses the configured path as-is). */
 function fullAccessLeadActionsMcpConfig(
 	config: Pick<
@@ -978,6 +981,7 @@ function fullAccessLeadActionsMcpConfig(
 		| "stateDir"
 		| "commDbPath"
 		| "leadActionsChannelAliases"
+		| "outboundMode"
 	>,
 	entry: string,
 	// FLY-676: the EFFECTIVE roundtable autoContinue, computed by the caller from
@@ -993,6 +997,7 @@ function fullAccessLeadActionsMcpConfig(
 		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: config.crossDeptChannelIds.join(","),
 		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: config.stateDir,
 		FLYWHEEL_COMM_DB: config.commDbPath,
+		FLYWHEEL_CODEX_LEAD_OUTBOUND: config.outboundMode,
 		// R1#2: forward explicit alias pins so the documented roundtable
 		// disambiguation works for full-access (non-secret).
 		...(config.leadActionsChannelAliases
@@ -1012,8 +1017,11 @@ function fullAccessLeadActionsMcpConfig(
 		command: process.execPath,
 		args: [entry],
 		env,
-		// Token by NAME — already in the full-access app-server env; never a literal.
-		envVarNames: ["DISCORD_BOT_TOKEN"],
+		// Forward only the credential names required by the selected transport.
+		envVarNames:
+			config.outboundMode === "bridge"
+				? ["BRIDGE_URL", "TEAMLEAD_API_TOKEN"]
+				: ["DISCORD_BOT_TOKEN"],
 	};
 }
 
@@ -1547,16 +1555,13 @@ export function buildCodexLeadRuntime(
 				// env allowlist (Claude-pane mirror + gh auth) AS-IS — washSecrets:false
 				// so its gh/Discord/Bridge auth survives. Every other path keeps the
 				// unconditional action-secret wash (byte-compat).
-				// FLY-304 (codex review item 3): pin DISCORD_BOT_TOKEN from the PARSED
-				// config (not just the allowlist copy) so the lead_actions env_vars
-				// by-name forward resolves even when config came from a different env
-				// object (tests / embedded callers). Still by NAME → never in argv.
+				// Pin non-empty parsed credentials; direct mode has no parsed Bridge
+				// values, so it keeps the allowlisted aliases inherited from the pane.
+				// DISCORD_BOT_TOKEN serves inbound only; lead_actions receives the
+				// Bridge aliases by name and never sees the Discord credential.
 				...(fullAccess
 					? {
-							baseEnv: {
-								...buildFullAccessEnv(process.env),
-								DISCORD_BOT_TOKEN: config.botToken,
-							},
+							baseEnv: buildFullAccessAppServerEnv(process.env, config),
 							washSecrets: false,
 						}
 					: gatewayEnv
@@ -1893,7 +1898,7 @@ function redactSecret(s: string): string {
 export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 	// FLY-304 (code-review R1#3): mirror the LIVE full-access MCP injection so the
 	// preflight evidence (MCP injected / spawn cmd) actually shows `lead_actions` +
-	// env_vars=["DISCORD_BOT_TOKEN"] — the token NAME only, never its value. Uses the
+	// mode-selected env_vars — names only, never secret values. Uses the
 	// configured entry as-is (no existsSync throw — a dry-run describes, never aborts).
 	const mcp =
 		config.codexProfile === "full-access" && config.leadActionsEntry

@@ -124,6 +124,7 @@ case "$PATROL_NOW_EPOCH" in
 esac
 RAYA_PATROL_HOME="$STATE_DIR/raya"
 RAYA_PATROL_CODE_DIR="$RAYA_PATROL_HOME/code"
+RAYA_PATROL_CANONICAL_MANIFEST="$STATE_DIR/manifests/raya-raya.json"
 RAYA_PATROL_FACT=""
 RAYA_PATROL_UNAVAILABLE=""
 
@@ -1011,6 +1012,7 @@ raya_collect_patrol_fact() {
   local head="" head8="" origin="" origin8=none branch="" behind=unknown ahead=unknown
   local checkout_drift=no ledger="" deployed_sha=missing ledger_ok=0 deploy_drift=yes
   local checked="" receipt_age_h=missing receipt_age_seconds="" shuttle_stale=yes
+  local receipt_schema=missing receipt_carrier=missing manifest_carrier=missing carrier_mismatch=yes
   local checkout_oldest="" deploy_oldest="" oldest="" drift_age_seconds="" drift_age_h=-
   local overdue=no rc=0
   RAYA_PATROL_FACT=""
@@ -1066,10 +1068,41 @@ raya_collect_patrol_fact() {
   fi
   if [ "$ledger_ok" -eq 1 ] && [ "$ledger" = "$head" ]; then deploy_drift=no; fi
 
-  if [ -f "$RAYA_PATROL_HOME/deploy-receipt.json" ]; then
+  if [ -f "$RAYA_PATROL_CANONICAL_MANIFEST" ] \
+    && [ ! -L "$RAYA_PATROL_CANONICAL_MANIFEST" ]; then
+    if jq -e '
+      .projectName == "raya" and .leadId == "raya" and
+      .leadBackend.backendId == "codex-app-server"
+    ' "$RAYA_PATROL_CANONICAL_MANIFEST" >/dev/null 2>&1; then
+      manifest_carrier=standard-lead
+    else
+      manifest_carrier=mismatch
+    fi
+  fi
+
+  if [ -f "$RAYA_PATROL_HOME/deploy-receipt.json" ] \
+    && [ ! -L "$RAYA_PATROL_HOME/deploy-receipt.json" ]; then
+    receipt_schema="$(jq -r '
+      if .schemaVersion == 1 then "1"
+      elif .schemaVersion == 2 then "2"
+      else "malformed" end
+    ' "$RAYA_PATROL_HOME/deploy-receipt.json" 2>/dev/null || printf malformed)"
+    case "$receipt_schema" in
+      1) receipt_carrier=legacy ;;
+      2)
+        receipt_carrier="$(jq -r 'if (.carrier | type) == "string" and (.carrier | length) > 0 then .carrier else "malformed" end' \
+          "$RAYA_PATROL_HOME/deploy-receipt.json" 2>/dev/null || printf malformed)"
+        ;;
+      *) receipt_carrier=malformed ;;
+    esac
+    if [ "$receipt_schema" = 2 ] && [ "$receipt_carrier" = standard-lead ] \
+      && [ "$manifest_carrier" = standard-lead ]; then
+      carrier_mismatch=no
+    fi
     checked="$(jq -er '.checked_at | select(type == "number" and . == floor)' \
       "$RAYA_PATROL_HOME/deploy-receipt.json" 2>/dev/null || true)"
-    if [[ "$checked" =~ ^[0-9]+$ ]] && [ "$checked" -le "$PATROL_NOW_EPOCH" ]; then
+    if [ "$carrier_mismatch" = no ] && [[ "$checked" =~ ^[0-9]+$ ]] \
+      && [ "$checked" -le "$PATROL_NOW_EPOCH" ]; then
       receipt_age_seconds=$((PATROL_NOW_EPOCH - checked))
       receipt_age_h=$((receipt_age_seconds / 3600))
       if [ "$receipt_age_seconds" -le "$RAYA_SHUTTLE_STALE_SECONDS" ]; then shuttle_stale=no; fi
@@ -1108,7 +1141,7 @@ raya_collect_patrol_fact() {
     overdue=yes
   fi
 
-  RAYA_PATROL_FACT="raya checkout=$RAYA_PATROL_CODE_DIR head=$head8 origin_main=$origin8 branch=$branch behind=$behind deployed_sha=$deployed_sha receipt_age_h=$receipt_age_h drift_age_h=$drift_age_h checkout_drift=$checkout_drift deploy_drift=$deploy_drift shuttle_stale=$shuttle_stale overdue=$overdue"
+  RAYA_PATROL_FACT="raya checkout=$RAYA_PATROL_CODE_DIR head=$head8 origin_main=$origin8 branch=$branch behind=$behind deployed_sha=$deployed_sha receipt_age_h=$receipt_age_h drift_age_h=$drift_age_h checkout_drift=$checkout_drift deploy_drift=$deploy_drift shuttle_stale=$shuttle_stale overdue=$overdue receipt_schema=$receipt_schema receipt_carrier=$receipt_carrier manifest_carrier=$manifest_carrier carrier_mismatch=$carrier_mismatch"
 }
 
 STEP5_FACTS=""

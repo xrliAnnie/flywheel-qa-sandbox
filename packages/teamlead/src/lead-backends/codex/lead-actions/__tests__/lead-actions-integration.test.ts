@@ -2,7 +2,7 @@
  * Real-MCP integration test for the lead-actions stdio child.
  *
  * Spawns the built entrypoint the same way Codex does and drives it with a real
- * MCP stdio client. The child receives DISCORD_BOT_TOKEN directly in its env,
+ * MCP stdio client. The child receives Bridge credentials but no Discord token,
  * registers exactly discord_send, remains stable across repeated ephemeral
  * spawns, and fails closed when the token is absent or empty.
  *
@@ -33,6 +33,7 @@ const distMain = join(
 function childEnv(
 	stateDir: string,
 	token: string | undefined,
+	mode: "bridge" | "direct" = "bridge",
 ): Record<string, string> {
 	return {
 		FLYWHEEL_LEAD_ID: "mufasa-lead",
@@ -41,7 +42,13 @@ function childEnv(
 		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "1512578695468941333",
 		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: stateDir,
 		FLYWHEEL_COMM_DB: join(stateDir, "comm.db"),
-		...(token === undefined ? {} : { DISCORD_BOT_TOKEN: token }),
+		FLYWHEEL_CODEX_LEAD_OUTBOUND: mode,
+		...(mode === "bridge" ? { BRIDGE_URL: "http://127.0.0.1:1" } : {}),
+		...(token === undefined
+			? {}
+			: mode === "bridge"
+				? { TEAMLEAD_API_TOKEN: token }
+				: { DISCORD_BOT_TOKEN: token }),
 	};
 }
 
@@ -60,6 +67,7 @@ describe("lead-actions MCP real-spawn integration", () => {
 	async function spawnAndListTools(
 		stateDir: string,
 		token: string | undefined,
+		mode: "bridge" | "direct" = "bridge",
 	): Promise<string[]> {
 		const { Client } = await import(
 			"@modelcontextprotocol/sdk/client/index.js"
@@ -70,7 +78,7 @@ describe("lead-actions MCP real-spawn integration", () => {
 		const transport = new StdioClientTransport({
 			command: process.execPath,
 			args: [distMain],
-			env: childEnv(stateDir, token),
+			env: childEnv(stateDir, token, mode),
 		});
 		const client = new Client({ name: "fly350-int", version: "0.0.0" });
 		await client.connect(transport);
@@ -83,11 +91,24 @@ describe("lead-actions MCP real-spawn integration", () => {
 	}
 
 	run(
-		"reads the env token and registers exactly discord_send plus ack_batch",
+		"reads the Bridge API token and registers exactly discord_send plus ack_batch",
 		async () => {
 			const tools = await spawnAndListTools(
 				join(dir, "state"),
 				"test-bot-token-xyz",
+			);
+			expect(tools).toEqual(["discord_send", "ack_batch"]);
+		},
+		20_000,
+	);
+
+	run(
+		"starts direct mode with only the Discord credential",
+		async () => {
+			const tools = await spawnAndListTools(
+				join(dir, "direct"),
+				"direct-discord-token",
+				"direct",
 			);
 			expect(tools).toEqual(["discord_send", "ack_batch"]);
 		},
@@ -112,7 +133,7 @@ describe("lead-actions MCP real-spawn integration", () => {
 	);
 
 	run(
-		"fails closed when DISCORD_BOT_TOKEN is missing",
+		"fails closed when TEAMLEAD_API_TOKEN is missing",
 		async () => {
 			await expect(
 				spawnAndListTools(join(dir, "missing-token"), undefined),
@@ -122,7 +143,7 @@ describe("lead-actions MCP real-spawn integration", () => {
 	);
 
 	run(
-		"fails closed when DISCORD_BOT_TOKEN is empty",
+		"fails closed when TEAMLEAD_API_TOKEN is empty",
 		async () => {
 			await expect(
 				spawnAndListTools(join(dir, "empty-token"), ""),

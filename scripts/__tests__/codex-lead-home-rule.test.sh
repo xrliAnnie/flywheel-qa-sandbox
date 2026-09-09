@@ -72,7 +72,6 @@ assert_launcher() {
 
 assert_launcher run-codex-lead-mufasa-tui-fullaccess.sh mufasa
 assert_launcher run-codex-infra-bot-tui.sh infra-bot
-assert_launcher run-codex-lead-raya-tui-fullaccess.sh raya
 
 assert_helper_mapping() {
 	local wrapper="$1" key="$2" block
@@ -86,7 +85,6 @@ assert_helper_mapping() {
 
 assert_helper_mapping flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh mufasa
 assert_helper_mapping flywheel-codex-lead-wrapper-codex-infra-bot.sh infra-bot
-assert_helper_mapping flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh raya
 
 if grep -Fq 'derive_codex_lead_home "$codex_home_key" "$HOME_ROOT"' "$HELPER" \
 	&& ! grep -Fq '.codex-' "$HELPER"; then

@@ -33,6 +33,11 @@ interface RawDiscordMessage {
 	/** Discord ISO timestamp for the message send instant. */
 	timestamp?: string;
 	author?: { id?: string; bot?: boolean };
+	attachments?: Array<{
+		filename?: string;
+		content_type?: string;
+		size?: number;
+	}>;
 	/** FLY-267: Discord populates `mentions` with the @-mentioned user objects. */
 	mentions?: Array<{ id?: string }>;
 	/** FLY-314 fix: set on a Discord REPLY → the message this one replies to. */
@@ -406,6 +411,24 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 				authorId: m.author?.id ?? "",
 				authorBot: m.author?.bot === true,
 				content: m.content ?? "",
+				attachments: (m.attachments ?? [])
+					.filter(
+						(attachment) =>
+							typeof attachment.filename === "string" &&
+							attachment.filename.trim().length > 0 &&
+							typeof attachment.size === "number" &&
+							Number.isFinite(attachment.size) &&
+							attachment.size >= 0,
+					)
+					.map((attachment) => ({
+						name: attachment.filename as string,
+						type:
+							typeof attachment.content_type === "string" &&
+							attachment.content_type.trim().length > 0
+								? attachment.content_type
+								: "application/octet-stream",
+						sizeKb: (attachment.size as number) / 1024,
+					})),
 				...(Number.isFinite(parsedTimestamp)
 					? { timestampMs: parsedTimestamp }
 					: {}),

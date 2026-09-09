@@ -433,7 +433,7 @@ while IFS= read -r label; do
   wrapper=flywheel-lead-wrapper-v2.sh
   [ "$lead_index" -ne 13 ] || wrapper=flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
   [ "$lead_index" -ne 14 ] || wrapper=flywheel-codex-lead-wrapper-codex-infra-bot.sh
-  [ "$lead_index" -ne 15 ] || wrapper=flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh
+  [ "$lead_index" -ne 15 ] || wrapper=flywheel-lead.sh
   printf 'com.flywheel.lead.%s|%s\n' "${label#com.flywheel.lead.}" "$pid" >>"$STATE/launchd"
   printf '%s|%s\n' "$pid" "$child" >>"$STATE/children"
   write_proc "$pid" 1 "$MAIN_IMAGE" "lead-$pid" "$GOOD_PATH"

@@ -3,13 +3,14 @@
  * shared by full-access Codex Leads (the FLY-245 gateway's sibling).
  *
  * A stdio MCP server (app-server child), spawned from the trusted teamlead dist.
- * The Discord bot token is forwarded to the child by env-var name and resolved
- * at startup; it is never embedded as a literal in argv or config.toml.
+ * The parent runtime's selected outbound credential is forwarded to the child
+ * by env-var name and resolved at startup. Bridge mode has no direct fallback;
+ * direct mode retains the existing Discord-token path.
  *
  * Tool surface (FLY-350): `discord_send(target, text)` — proactive send to an
  * ALLOWLISTED channel alias only ("chat"/"roundtable"); the channel id is
- * resolved server-side (the model cannot pass a raw id), rate-limited + made
- * idempotent (FLY-220 loop-safety), and audited. Linear create/assign tools are
+ * resolved server-side (the model cannot pass a raw id), rate-limited, durably
+ * idempotent through the Bridge outbox, and audited. Linear create/assign tools are
  * a FLY-351 follow-on (they slot into this same server once the growth Linear
  * project + prefix exist; until then a Codex Lead has no place to route them).
  *
@@ -22,6 +23,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { appendRotatedLogSync } from "flywheel-config";
+import { CodexOutboundSender } from "../CodexOutboundSender.js";
 import { runDiscordSend } from "../discord-send-core.js";
 import { parseLeadActionsConfig } from "./config.js";
 import { LEAD_ACTIONS_TOOLS } from "./mcp-config.js";
@@ -47,18 +49,38 @@ if (
 }
 
 /**
- * Resolve the Discord bot token from the MCP child's env, fail-closed. The
+ * Resolve the Bridge API token from the MCP child's env, fail-closed. The
  * runtime forwards it BY NAME via `env_vars`, never as a literal in argv or
- * config.toml.
+ * config.toml. The child deliberately has no Discord credential.
  */
+export function resolveLeadActionsApiToken(env: NodeJS.ProcessEnv): string {
+	const token = env.TEAMLEAD_API_TOKEN?.trim();
+	if (!token) {
+		throw new Error(
+			"lead-actions: TEAMLEAD_API_TOKEN is absent from the MCP child env (fail-closed)",
+		);
+	}
+	return token;
+}
+
+/** Resolve the Discord credential for a direct-mode MCP child, fail-closed. */
 export function resolveLeadActionsBotToken(env: NodeJS.ProcessEnv): string {
 	const token = env.DISCORD_BOT_TOKEN?.trim();
 	if (!token) {
 		throw new Error(
-			"lead-actions: DISCORD_BOT_TOKEN is absent from the MCP child env (fail-closed)",
+			"lead-actions: DISCORD_BOT_TOKEN is absent from the direct-mode MCP child env (fail-closed)",
 		);
 	}
 	return token;
+}
+
+export function resolveLeadActionEventId(
+	requestedEventId: string | undefined,
+	target: string,
+	text: string,
+	allocate: (target: string, text: string) => string,
+): string {
+	return requestedEventId ?? allocate(target, text);
 }
 
 /**
@@ -69,11 +91,30 @@ export async function leadActionsMain(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
 	const cfg = parseLeadActionsConfig(env);
+	mkdirSync(cfg.stateDir, { recursive: true });
 
-	// Fail closed if the full-access Lead child did not receive its by-name
-	// Discord credential. The deploy probe supplies a non-live sentinel token;
-	// it lists tools only and never invokes discord_send.
-	const botToken = resolveLeadActionsBotToken(env);
+	// Resolve only the credential selected by the parent runtime. Each mode fails
+	// closed independently and never falls back to the other transport.
+	let botToken: string | undefined;
+	let outbound: CodexOutboundSender | undefined;
+	if (cfg.outboundMode === "bridge") {
+		if (!cfg.bridgeUrl) {
+			throw new Error(
+				"lead-actions: bridge mode parsed without BRIDGE_URL (invariant violation)",
+			);
+		}
+		outbound = new CodexOutboundSender({
+			bridgeUrl: cfg.bridgeUrl,
+			apiToken: resolveLeadActionsApiToken(env),
+			projectName: cfg.projectName,
+			leadId: cfg.leadId,
+			channelId: cfg.chatChannelId,
+			dbPath: join(cfg.stateDir, "lead-actions-outbox.db"),
+			proactiveEventIdTtlMs: cfg.idempotencyTtlMs,
+		});
+	} else {
+		botToken = resolveLeadActionsBotToken(env);
+	}
 
 	const rateLimiter = new SlidingWindowRateLimiter({
 		maxPerWindow: cfg.rateMaxPerWindow,
@@ -92,7 +133,6 @@ export async function leadActionsMain(
 	// process — FLY-220); cross-restart exactly-once is intentionally out of scope
 	// (a restart-window duplicate is acceptable for a chat companion, same trade-off
 	// as direct reactive outbound).
-	mkdirSync(cfg.stateDir, { recursive: true });
 	appendRotatedLogSync(
 		auditPath,
 		`${JSON.stringify({ ts: Date.now(), leadId: cfg.leadId, project: cfg.projectName, outcome: "audit_probe" })}\n`,
@@ -125,8 +165,18 @@ export async function leadActionsMain(
 				.string()
 				.describe('Channel alias: "chat" or "roundtable" (not a raw id)'),
 			text: z.string().min(1).describe("Message text to post"),
+			eventId: z
+				.string()
+				.trim()
+				.min(1)
+				.max(200)
+				.optional()
+				.describe(
+					"Stable business event id. Reuse only with the exact same target and text.",
+				),
 		},
-		async ({ target, text }) => {
+		async ({ target, text, eventId: requestedEventId }) => {
+			let effectiveEventId = requestedEventId;
 			// FLY-350 (R1-4): delegate to the SHARED send core (alias gate →
 			// idempotency → rate limit → post → record → metadata audit). The
 			// gateway uses the exact same core, so full-access and write-capable
@@ -135,7 +185,47 @@ export async function leadActionsMain(
 				chatChannelId: cfg.chatChannelId,
 				crossDeptChannelIds: cfg.crossDeptChannelIds,
 				explicitAliases: cfg.explicitAliases,
-				botToken,
+				...(outbound
+					? {
+							bridgeSend: async ({
+								channelId,
+								text: outboundText,
+								idempotencyKey,
+							}: {
+								channelId: string;
+								text: string;
+								idempotencyKey: string;
+							}) => {
+								const outboxId = await outbound.enqueue({
+									leadId: cfg.leadId,
+									text: outboundText,
+									idempotencyKey,
+									channelId,
+								});
+								const result = await outbound.deliverWithResult(outboxId);
+								if (!result.messageId) {
+									throw new Error(
+										`Bridge result for ${outboxId} has no durable messageId`,
+									);
+								}
+								return result as { messageId: string; deduped: boolean };
+							},
+							allocateEventId: (
+								resolvedTarget: string,
+								outboundText: string,
+							) => {
+								effectiveEventId = resolveLeadActionEventId(
+									requestedEventId,
+									resolvedTarget,
+									outboundText,
+									(targetAlias, body) =>
+										outbound.allocateEventId(targetAlias, body),
+								);
+								return effectiveEventId;
+							},
+						}
+					: { botToken }),
+				eventId: requestedEventId,
 				rateLimiter,
 				idempotency,
 				auditPath,
@@ -143,7 +233,10 @@ export async function leadActionsMain(
 				projectName: cfg.projectName,
 				roundtableAutoContinue: cfg.roundtableAutoContinue,
 			});
-			return asText(r.text, r.isError);
+			return asText(
+				`${r.text}${effectiveEventId ? ` [eventId=${effectiveEventId}]` : ""}`,
+				r.isError,
+			);
 		},
 	);
 
@@ -168,7 +261,7 @@ export async function leadActionsMain(
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
 	process.stderr.write(
-		`[lead-actions] ${cfg.leadId}@${cfg.projectName} ready (chat=${cfg.chatChannelId}, crossDept=${cfg.crossDeptChannelIds.length}, discord=${botToken ? "enabled" : "disabled"}, mailboxAck=enabled)\n`,
+		`[lead-actions] ${cfg.leadId}@${cfg.projectName} ready (chat=${cfg.chatChannelId}, crossDept=${cfg.crossDeptChannelIds.length}, outbound=${cfg.outboundMode}, discordCredential=${cfg.outboundMode === "direct" ? "present" : "absent"}, mailboxAck=enabled)\n`,
 	);
 }
 

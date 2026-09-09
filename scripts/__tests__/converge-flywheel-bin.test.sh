@@ -32,13 +32,12 @@ CONVERGE="$FR/scripts/converge-flywheel-bin.sh"
 for f in flywheel-lead-wrapper-v2.sh \
     flywheel-lead.sh \
     flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
-    flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
     resident-codex-lead-recover.sh \
     flywheel-codex-lead-wrapper-codex-infra-bot.sh \
     flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
     flywheel-bridge-wrapper.sh restart-services.sh \
     host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh \
-    lib/lead-host-tmux-gate.sh; do
+    lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh; do
   { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$FR/scripts/$f"
 done
 # FLY-1577: the gate is PYTHON. It is in FILES because the cmux watcher's
@@ -55,7 +54,7 @@ done
 # must start from a converged copy-lane steady state — otherwise the widened
 # FILES makes converge repair the un-seeded entries and the "exactly one alert"
 # assertions below count repairs they never meant to trigger.
-COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh"
+COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh"
 seed_steady_state() {  # <state-dir>
   local st="$1" f
   for f in $COPY_FILES; do
@@ -206,7 +205,7 @@ else fail "C9: gate not converged (rc=$RC, mode=$(t_mode "$ST/bin/restart-storm-
   cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
 
 # C9b (FLY-2190/2216): every host-selection mount resolves through state/bin.
-# The gate, formerly-unmanaged Codex carriers, and Raya recovery helper must be
+# The gate, formerly-unmanaged Codex carriers, and recovery helper must be
 # installed atomically by this same convergence authority. Their first valid
 # adoption is expected rollout work, not pre-existing integrity drift, so only
 # the independently-new host gate alerts on this first pass.
@@ -215,23 +214,21 @@ seed_steady_state "$ST"
 rm -rf "$ST/state/converge-adoptions"
 rm -f "$ST/bin/host-tmux-selection-gate.sh" \
   "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" \
-  "$ST/bin/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh" \
   "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh" \
   "$ST/bin/resident-codex-lead-recover.sh"
 run_converge; RC=$?
 if [ "$RC" -eq 0 ] \
   && cmp -s "$ST/bin/host-tmux-selection-gate.sh" "$FR/scripts/host-tmux-selection-gate.sh" \
   && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" "$FR/scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" \
-  && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh" "$FR/scripts/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh" \
   && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh" "$FR/scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh" \
   && cmp -s "$ST/bin/resident-codex-lead-recover.sh" "$FR/scripts/resident-codex-lead-recover.sh" \
   && [ "$(t_mode "$ST/bin/host-tmux-selection-gate.sh")" = "555" ] \
   && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 1 ] \
   && [ "$(t_mode "$ST/state/converge-adoptions/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh")" = "600" ] \
-  && [ "$(t_mode "$ST/state/converge-adoptions/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh")" = "600" ] \
   && [ "$(t_mode "$ST/state/converge-adoptions/flywheel-codex-lead-wrapper-codex-infra-bot.sh")" = "600" ] \
-  && [ "$(t_mode "$ST/state/converge-adoptions/resident-codex-lead-recover.sh")" = "600" ]; then
-  pass "C9b: first Codex carrier/recovery adoption converges silently and records durable baselines"
+  && [ "$(t_mode "$ST/state/converge-adoptions/resident-codex-lead-recover.sh")" = "600" ] \
+  && [ "$(t_mode "$ST/state/converge-adoptions/lib__raya-standard-migration.sh")" = "600" ]; then
+  pass "C9b: first Codex carrier/recovery/migration adoption converges silently and records durable baselines"
 else fail "C9b: FLY-2190 runtime closure not converged (rc=$RC)"
   cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
 
@@ -240,22 +237,18 @@ else fail "C9b: FLY-2190 runtime closure not converged (rc=$RC)"
 # normal severe drift repair path.
 : > "$SB/alerts.log"
 chmod u+w "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" \
-  "$ST/bin/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh" \
   "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh" \
   "$ST/bin/resident-codex-lead-recover.sh"
 printf '%s\n' '#!/bin/bash' > "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh"
-printf '%s\n' '#!/bin/bash' > "$ST/bin/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh"
 printf '%s\n' '#!/bin/bash' > "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh"
 printf '%s\n' '#!/bin/bash' > "$ST/bin/resident-codex-lead-recover.sh"
 run_converge; RC=$?
 if [ "$RC" -eq 0 ] \
   && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" "$FR/scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" \
-  && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh" "$FR/scripts/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh" \
   && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh" "$FR/scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh" \
   && cmp -s "$ST/bin/resident-codex-lead-recover.sh" "$FR/scripts/resident-codex-lead-recover.sh" \
-  && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 4 ] \
+  && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 3 ] \
   && grep -q 'flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh' "$SB/alerts.log" \
-  && grep -q 'flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh' "$SB/alerts.log" \
   && grep -q 'flywheel-codex-lead-wrapper-codex-infra-bot.sh' "$SB/alerts.log" \
   && grep -q 'resident-codex-lead-recover.sh' "$SB/alerts.log"; then
   pass "C9c: post-adoption Codex carrier/recovery drift repairs loudly"
@@ -272,9 +265,9 @@ mkdir -p "$ST/state"
 run_converge; RC=$?
 if [ "$RC" -eq 0 ] \
   && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" "$FR/scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" \
-  && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh" "$FR/scripts/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh" \
   && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh" "$FR/scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh" \
   && cmp -s "$ST/bin/resident-codex-lead-recover.sh" "$FR/scripts/resident-codex-lead-recover.sh" \
+  && cmp -s "$ST/bin/lib/raya-standard-migration.sh" "$FR/scripts/lib/raya-standard-migration.sh" \
   && [ "$(grep -c 'adoption baseline FAILED' "$SB/alerts.log")" -eq 4 ]; then
   pass "C9d: adoption-marker failure alerts without blocking healthy runtime bytes"
 else fail "C9d: bookkeeping marker blocked healthy convergence (rc=$RC)"
@@ -293,10 +286,13 @@ if [ "$RC" -eq 0 ] && [ -d "$ST/bin/lib" ] \
    && cmp -s "$ST/bin/lib/bounded-run.sh" "$FR/scripts/lib/bounded-run.sh" \
    && cmp -s "$ST/bin/lib/lead-address.sh" "$FR/scripts/lib/lead-address.sh" \
    && cmp -s "$ST/bin/lib/lead-host-tmux-gate.sh" "$FR/scripts/lib/lead-host-tmux-gate.sh" \
+   && cmp -s "$ST/bin/lib/raya-standard-migration.sh" "$FR/scripts/lib/raya-standard-migration.sh" \
    && [ "$(t_mode "$ST/bin/lib/bounded-run.sh")" = "555" ] \
    && [ "$(t_mode "$ST/bin/lib/lead-address.sh")" = "555" ] \
    && [ "$(t_mode "$ST/bin/lib/lead-host-tmux-gate.sh")" = "555" ] \
-   && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 3 ]; then
+   && [ "$(t_mode "$ST/bin/lib/raya-standard-migration.sh")" = "555" ] \
+   && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 3 ] \
+   && [ "$(t_mode "$ST/state/converge-adoptions/lib__raya-standard-migration.sh")" = "600" ]; then
   pass "C10: missing support-lib closure repaired to 555, <bin>/lib auto-created"
 else fail "C10: nested copy not converged (rc=$RC)"; cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
 

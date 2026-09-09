@@ -397,6 +397,7 @@ if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL
    FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
    FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
    FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" \
+   FLYWHEEL_CODEX_LEAD_OUTBOUND="bridge" \
    FLYWHEEL_COMM_DB="/state/comm.db" \
    /bin/bash "$SUT" ensure-home >/dev/null 2>&1; then
   pass "full-access ensure-home succeeds"
@@ -410,7 +411,7 @@ python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sww=c.ge
 python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('default_permissions') is None else 1)" "$H/config.toml" \
   && pass "full-access: no default permission profile" || fail "full-access: must not carry a default permission profile"
 command grep -q 'default_tools_approval_mode = "approve"' "$H/config.toml" && pass "full-access: lead_actions approve mode written" || fail "full-access: approve mode missing"
-command grep -q 'env_vars = \["DISCORD_BOT_TOKEN"\]' "$H/config.toml" && pass "full-access: token forwarded by NAME (env_vars)" || fail "full-access: env_vars missing"
+command grep -q 'env_vars = \["BRIDGE_URL", "TEAMLEAD_API_TOKEN"\]' "$H/config.toml" && pass "full-access: Bridge credentials forwarded by NAME (env_vars)" || fail "full-access: env_vars missing"
 ! command grep -q "BROKER_SOCKET" "$H/config.toml" && pass "full-access: NO broker socket in config (token by name)" || fail "full-access: broker socket must not appear"
 python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('notice',{}).get('hide_rate_limit_model_nudge') is True else 1)" "$H/config.toml" \
   && pass "FLY-2296: full-access home hides the rate-limit model nudge" \
@@ -424,12 +425,30 @@ if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL
   FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
   FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
   FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+  FLYWHEEL_CODEX_LEAD_OUTBOUND="bridge" \
   FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" FLYWHEEL_COMM_DB="/state/comm.db" \
   /bin/bash "$SUT" ensure-home >/dev/null 2>&1 \
   && [ "$FA_WHOLE_BEFORE" = "$(cat "$H/config.toml")" ]; then
   pass "FLY-2357: fresh full-access config is byte-identical after a second ensure"
 else
   fail "FLY-2357: fresh full-access config must be byte-identical after a second ensure"
+fi
+
+H_DIRECT=$(fresh_home 2445-direct)
+if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H_DIRECT" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+  FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+  FLYWHEEL_LEAD_ID="codex-infra-bot-lead" FLYWHEEL_PROJECT_NAME="flywheel" \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+  FLYWHEEL_CODEX_LEAD_OUTBOUND="direct" \
+  FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/claw" FLYWHEEL_COMM_DB="/state/comm.db" \
+  /bin/bash "$SUT" ensure-home >/dev/null 2>&1 \
+  && command grep -q 'env_vars = \["DISCORD_BOT_TOKEN"\]' "$H_DIRECT/config.toml" \
+  && command grep -q 'FLYWHEEL_CODEX_LEAD_OUTBOUND = "direct"' "$H_DIRECT/config.toml" \
+  && ! command grep -q 'TEAMLEAD_API_TOKEN' "$H_DIRECT/config.toml"; then
+  pass "FLY-2445 review: direct full-access home preserves Discord delivery without Bridge credentials"
+else
+  fail "FLY-2445 review: direct full-access home must use only DISCORD_BOT_TOKEN"
 fi
 
 # ── FLY-2357: full-access must see memory drift before its rewrite ─────────
@@ -633,6 +652,7 @@ else
       FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
       FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" \
       FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="$2" \
+      FLYWHEEL_CODEX_LEAD_OUTBOUND="direct" \
       FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/Users/x/.flywheel/state/codex-lead/mufasa" \
       FLYWHEEL_COMM_DB="/Users/x/.flywheel/comm/growth/comm.db" \
       FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES="$3" \
@@ -675,6 +695,7 @@ else
         crossDeptChannelIds: parsed.crossDeptChannelIds,
         stateDir: "/Users/x/.flywheel/state/codex-lead/mufasa",
         commDbPath: "/Users/x/.flywheel/comm/growth/comm.db",
+        outboundMode: parsed.outboundMode,
         explicitAliases: process.env.ALI || undefined,
         roundtableAutoContinue: parsed.replyInThread?.autoContinue === true,
       });

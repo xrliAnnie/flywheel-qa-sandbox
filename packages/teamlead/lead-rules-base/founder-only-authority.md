@@ -96,12 +96,17 @@ for how this list contracts as calibration data accumulates.
 - Raya 仓的生产部署由既有 `com.flywheel.updater` 定时班车负责；PR
   合入 `main` 本身不代表已上线，不得用 merge 状态关闭部署责任。
 - Lead 对外报告“已上线”或把相关 issue 标记 Done 前，必须核对生产 checkout
-  已到目标 sha、`com.xrli.raya.brain` 已重启且 `raya preflight` ready，并引用
-  `~/.flywheel/raya/deploy-receipt.json` 中的 `deployed_sha` 作为证据。
+  已到目标 Raya SHA，公共 `flywheel-lead.sh verify` 已核验
+  `com.flywheel.lead.raya-raya` 的当前 standard Lead 与可见 TUI，并引用
+  `~/.flywheel/raya/deploy-receipt.json`。该回执必须是 `schemaVersion:2`、
+  `carrier:standard-lead`，同时绑定当前 `deployed_sha`（Raya）与
+  `flywheel_deployed_sha`，且 text、summary、Bridge identity、alert 和迁移窗口
+  补录证据都属于同一 activation；旧 v1 回执不能证明新 carrier 已上线。
 - `~/.flywheel/raya/deployed-sha` 是班车失败回滚的 known-good anchor，不是
   绕过验收的替代证据。
-- 若 launchd identity 需要修复，唯一入口是 Raya 的 `install-launchd`，且仍需
-  founder 当前、明确授权；不得另造手工部署脚本或新的调度器。
+- 若 launchd identity 需要修复，唯一入口是公共
+  `flywheel-lead.sh install --project raya --lead raya`，且仍需 founder 当前、
+  明确授权；不得另造手工部署脚本、Raya 专属 wrapper 或新的调度器。
 
 ### Narrow exemption — Raya's read-receipt merges (founder-decided 2026-08-18; FLY-2030)
 

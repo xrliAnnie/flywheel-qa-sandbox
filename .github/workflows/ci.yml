@@ -83,10 +83,10 @@ jobs:
           bash scripts/__tests__/fly2030-summary-prefix-pair.test.sh
           bash scripts/__tests__/fly2030-summary-registry-activation.test.sh
 
-      # FLY-2401: activation tools are hermetic and must prove read-only/audited
-      # behavior on Linux before any production-window material can merge.
-      - name: Enforce FLY-2401 Raya activation material contracts
-        run: bash scripts/__tests__/fly2401-raya-read-activation.test.sh
+      # FLY-2445: the old dedicated Raya activation path is retired; the replacement
+      # migration closure is hermetic and must stay green in the always-on lane.
+      - name: Enforce FLY-2445 Raya standard Lead migration contracts
+        run: bash scripts/__tests__/raya-standard-migration.test.sh
 
       - uses: pnpm/action-setup@v4
 
@@ -639,12 +639,10 @@ jobs:
           bash scripts/__tests__/test-deploy-fly1389.test.sh
           bash scripts/__tests__/test-deploy-preflight-github.test.sh
 
-      # FLY-2216: resident Codex TUI carrier and business-level false-live
-      # recovery are hermetic (fixture HOME, stub launchctl/tmux/ps;
-      # no production process, gateway, cmux workspace, or alert mutation).
-      - name: Test — FLY-2216 Raya resident brain contracts
+      # FLY-2216: shared resident Codex recovery remains for Mufasa/infra while
+      # Raya is covered by the standard Lead migration suite above.
+      - name: Test — resident Codex recovery contracts
         run: |
-          bash scripts/__tests__/raya-resident-carrier.test.sh
           bash scripts/__tests__/resident-codex-lead-recover.test.sh
           # FLY-2259: pure-shell generic Codex Lead home rule + production wiring.
           bash scripts/__tests__/codex-lead-home-rule.test.sh

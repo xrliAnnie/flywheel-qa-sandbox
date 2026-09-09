@@ -8,9 +8,9 @@
  * Security shape (unchanged from the reviewed lead-actions path):
  *  - `target` is an ALIAS only ("chat"/"roundtable"); the channel id is resolved
  *    SERVER-SIDE (`resolveChannelAlias`, fail-closed) — the model never passes a raw id.
- *  - per-channel rate limit + deterministic in-process idempotency (FLY-220 loop-safety;
- *    cross-restart exactly-once is intentionally out of scope — same trade-off as
- *    direct reactive outbound).
+ *  - per-channel rate limit + deterministic in-process idempotency for direct
+ *    gateway callers; full-access lead_actions injects the canonical durable
+ *    Bridge sender with a stable event key.
  *  - metadata-only audit (NEVER the message text; codex R2-6).
  *  - `allowed_mentions:{parse:[]}` + chunking live in `postDiscordMessageToChannel`
  *    (no `@everyone`/role pings).
@@ -49,7 +49,21 @@ export interface DiscordSendResult {
  * rate-limiter / idempotency-cache instances (one per live process). */
 export interface DiscordSendDeps extends ChannelAliasConfig {
 	/** Bot token fetched from the parent broker (NEVER from the model env). */
-	botToken: string;
+	botToken?: string;
+	/** Bridge-backed send seam used by full-access lead_actions. When present,
+	 * direct Discord is never attempted, including on failure. */
+	bridgeSend?: (args: {
+		channelId: string;
+		text: string;
+		idempotencyKey: string;
+	}) => Promise<{ messageId: string; deduped?: boolean }>;
+	/** Stable caller-owned business event key. Required by Bridge-backed sends;
+	 * the trusted lead_actions server allocates and persists one when omitted by
+	 * the model-facing request. */
+	eventId?: string;
+	/** Trusted durable allocator used only when a Bridge-backed model call omits
+	 * eventId. Called after alias and roundtable guards, before any send. */
+	allocateEventId?: (target: string, text: string) => string;
 	rateLimiter: SlidingWindowRateLimiter;
 	idempotency: SendIdempotencyCache;
 	/** Absolute path to the metadata-only audit jsonl. */
@@ -144,8 +158,24 @@ export async function runDiscordSend(
 		};
 	}
 
-	const key = deriveSendIdempotencyKey(channelId, text);
-	const prior = deps.idempotency.get(key, now);
+	const eventId =
+		deps.eventId ??
+		(deps.bridgeSend ? deps.allocateEventId?.(target, text) : undefined);
+	const key = deps.bridgeSend
+		? `lead-action:${deps.projectName}:${deps.leadId}:${eventId ?? ""}`
+		: deriveSendIdempotencyKey(channelId, text);
+	const cacheKey = deps.bridgeSend
+		? `${key}:${deriveSendIdempotencyKey(channelId, text)}`
+		: key;
+	if (deps.bridgeSend && !eventId) {
+		return {
+			ok: false,
+			isError: true,
+			channelId,
+			text: "REFUSED: Bridge-backed active send requires a durable eventId",
+		};
+	}
+	const prior = deps.idempotency.get(cacheKey, now);
 	if (prior) {
 		return {
 			ok: true,
@@ -172,6 +202,48 @@ export async function runDiscordSend(
 		};
 	}
 
+	if (deps.bridgeSend) {
+		try {
+			const result = await deps.bridgeSend({
+				channelId,
+				text,
+				idempotencyKey: key,
+			});
+			deps.idempotency.record(cacheKey, result.messageId, now);
+			audit({
+				ts: now,
+				leadId: deps.leadId,
+				project: deps.projectName,
+				target,
+				channelId,
+				messageId: result.messageId,
+				textLen: text.length,
+				outcome: result.deduped ? "bridge_deduped" : "bridge_sent",
+			});
+			return {
+				ok: true,
+				channelId,
+				messageId: result.messageId,
+				text: `${result.deduped ? "Already sent" : "Sent"} via Bridge to ${target} (${channelId}) → message ${result.messageId}`,
+			};
+		} catch (error) {
+			return {
+				ok: false,
+				isError: true,
+				channelId,
+				text: `REFUSED: bridge send failed: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+	}
+
+	if (!deps.botToken) {
+		return {
+			ok: false,
+			isError: true,
+			channelId,
+			text: "REFUSED: direct Discord credential is unavailable",
+		};
+	}
 	let res: Awaited<ReturnType<typeof postDiscordMessageToChannel>>;
 	try {
 		res = await post(channelId, text, deps.botToken, {

@@ -67,7 +67,7 @@ pad() {  # <prefix> — filler that clears FLY-954's 1024B sanity floor with
   while [ "$i" -le 60 ]; do echo "$1 line $i placeholder padding text >/dev/null"; i=$((i+1)); done
 }
 
-COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh"
+COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh"
 
 # ── fake repos ───────────────────────────────────────────────────────────────
 # The canonical flywheel-cmux-sync.sh IS the positive-control recorder. It has
@@ -99,13 +99,13 @@ reset_repo_sources() {  # <repo>
   local fr="$1" f
   for f in flywheel-lead-wrapper-v2.sh flywheel-lead.sh \
       flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
-      flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
       resident-codex-lead-recover.sh \
       flywheel-codex-lead-wrapper-codex-infra-bot.sh \
       flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
       flywheel-bridge-wrapper.sh restart-services.sh \
       host-tmux-selection-gate.sh \
-      lib/lead-address.sh lib/lead-host-tmux-gate.sh; do
+      lib/lead-address.sh lib/lead-host-tmux-gate.sh \
+      lib/raya-standard-migration.sh; do
     { echo '#!/bin/bash'; pad "echo repo-$f"; } > "$fr/scripts/$f"
   done
   { echo '#!/usr/bin/env python3'; echo 'import sys'

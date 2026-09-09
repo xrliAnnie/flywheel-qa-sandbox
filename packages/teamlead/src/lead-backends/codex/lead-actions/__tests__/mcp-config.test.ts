@@ -16,6 +16,7 @@ describe("FLY-398 full-access lead_actions", () => {
 		crossDeptChannelIds: ["1512578695468941333"],
 		stateDir: "/Users/x/.flywheel/state/codex-lead/mufasa",
 		commDbPath: "/Users/x/.flywheel/comm/growth/comm.db",
+		outboundMode: "bridge" as const,
 	});
 
 	describe("buildFullAccessLeadActionsMcpServerConfig", () => {
@@ -32,13 +33,23 @@ describe("FLY-398 full-access lead_actions", () => {
 			expect(cfg.env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS).toBe(
 				"1512578695468941333",
 			);
-			// full-access forwards the token by name in the daemon env.
-			expect(cfg.envVarNames).toEqual(["DISCORD_BOT_TOKEN"]);
+			// Active sends use the canonical Bridge coordinates by name; the Discord
+			// token is deliberately unavailable to this MCP child.
+			expect(cfg.envVarNames).toEqual(["BRIDGE_URL", "TEAMLEAD_API_TOKEN"]);
 			expect(cfg.defaultToolsApprovalMode).toBe("approve");
 			// no secret-shaped LITERAL env key (the token travels by name, never literal).
 			for (const k of Object.keys(cfg.env)) {
 				expect(/TOKEN|SECRET|KEY/i.test(k)).toBe(false);
 			}
+		});
+
+		it("keeps direct-mode Leads on the Discord credential path", () => {
+			const cfg = buildFullAccessLeadActionsMcpServerConfig({
+				...faOpts(),
+				outboundMode: "direct",
+			});
+			expect(cfg.env.FLYWHEEL_CODEX_LEAD_OUTBOUND).toBe("direct");
+			expect(cfg.envVarNames).toEqual(["DISCORD_BOT_TOKEN"]);
 		});
 
 		it("FLY-676: forwards FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE only when on (TUI full-access guard)", () => {
@@ -66,11 +77,12 @@ describe("FLY-398 full-access lead_actions", () => {
 		].join("\n");
 
 	describe("toFullAccessMcpServerToml", () => {
-		it("emits default_tools_approval_mode=approve + env_vars=[DISCORD_BOT_TOKEN]", () => {
+		it("emits approve mode with Bridge-only env_vars", () => {
 			const toml = toFullAccessMcpServerToml("lead_actions", expectedFA());
 			expect(toml).toContain("[mcp_servers.lead_actions]");
 			expect(toml).toContain('default_tools_approval_mode = "approve"');
-			expect(toml).toContain('env_vars = ["DISCORD_BOT_TOKEN"]');
+			expect(toml).toContain('env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN"]');
+			expect(toml).not.toContain("DISCORD_BOT_TOKEN");
 			expect(toml).toContain('FLYWHEEL_LEAD_ID = "mufasa-lead"');
 			// the token NAME may appear (env_vars) but never a literal token VALUE.
 			expect(toml).not.toMatch(/SECRET/i);
@@ -104,10 +116,10 @@ describe("FLY-398 full-access lead_actions", () => {
 			).toThrow(/approve/);
 		});
 
-		it("rejects env_vars other than exactly [DISCORD_BOT_TOKEN]", () => {
+		it("rejects env_vars other than the exact Bridge-only pair", () => {
 			const toml = goodFAToml().replace(
-				'env_vars = ["DISCORD_BOT_TOKEN"]',
-				'env_vars = ["DISCORD_BOT_TOKEN", "GH_TOKEN"]',
+				'env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN"]',
+				'env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN", "DISCORD_BOT_TOKEN"]',
 			);
 			expect(() =>
 				assertFullAccessLeadActionsConfigGate(toml, expectedFA()),

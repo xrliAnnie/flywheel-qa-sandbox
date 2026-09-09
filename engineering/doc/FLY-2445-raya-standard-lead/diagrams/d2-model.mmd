@@ -1,0 +1,34 @@
+classDiagram
+  class CentralRegistry {
+    project = raya
+    leadId = raya
+    displayName = Raya
+    bot identity + channels
+    business metadata
+  }
+  class FlywheelState {
+    mailbox + delivery receipt
+    Codex journal + outbox
+    one process owner
+  }
+  class RayaBusiness {
+    persona
+    question + meeting IDs
+    report state
+  }
+  class OriginalKnowledge {
+    summaries PRs
+    unread / read receipts
+    memory git history
+  }
+  class DeploymentReceipt {
+    Flywheel SHA + Raya SHA
+    actual Lead identity
+    text + summary evidence
+  }
+  CentralRegistry --> FlywheelState : defines identity
+  CentralRegistry --> RayaBusiness : read only projection
+  FlywheelState --> RayaBusiness : delivers events
+  RayaBusiness --> OriginalKnowledge : reads and reconciles
+  DeploymentReceipt --> FlywheelState : proves active version
+  DeploymentReceipt --> RayaBusiness : proves loaded content

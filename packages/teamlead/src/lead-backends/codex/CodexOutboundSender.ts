@@ -33,7 +33,7 @@
  * — never a real Bridge.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import type { ProbeResult } from "./outbound-preflight.js";
@@ -64,6 +64,7 @@ interface OutboxRow {
 	nonce: string;
 	channel_id: string;
 	status: string;
+	message_id: string | null;
 	created_at: number;
 	updated_at: number;
 }
@@ -83,6 +84,9 @@ export interface CodexOutboundSenderOptions {
 	post?: HttpPost;
 	now?: () => number;
 	probeTimeoutMs?: number;
+	/** Confirmed sends with identical content may allocate a new business event
+	 * after this window. Pending/ambiguous sends never rotate automatically. */
+	proactiveEventIdTtlMs?: number;
 }
 
 export class CodexOutboundSender implements OutboundSender {
@@ -95,6 +99,7 @@ export class CodexOutboundSender implements OutboundSender {
 	private readonly post: HttpPost;
 	private readonly now: () => number;
 	private readonly probeTimeoutMs: number;
+	private readonly proactiveEventIdTtlMs: number;
 
 	constructor(opts: CodexOutboundSenderOptions) {
 		// Validate at the boundary — these are required for any real delivery.
@@ -115,6 +120,15 @@ export class CodexOutboundSender implements OutboundSender {
 		this.post = opts.post ?? defaultPost;
 		this.now = opts.now ?? (() => Date.now());
 		this.probeTimeoutMs = opts.probeTimeoutMs ?? 5_000;
+		this.proactiveEventIdTtlMs = opts.proactiveEventIdTtlMs ?? 60_000;
+		if (
+			!Number.isSafeInteger(this.proactiveEventIdTtlMs) ||
+			this.proactiveEventIdTtlMs <= 0
+		) {
+			throw new Error(
+				"CodexOutboundSender: proactiveEventIdTtlMs must be a positive integer",
+			);
+		}
 		this.db = new Database(opts.dbPath);
 		this.db.pragma("journal_mode = WAL");
 		this.db.exec(`
@@ -124,16 +138,83 @@ export class CodexOutboundSender implements OutboundSender {
 				lead_id TEXT NOT NULL,
 				text TEXT NOT NULL,
 				nonce TEXT NOT NULL,
-				channel_id TEXT NOT NULL,
-				status TEXT NOT NULL,
-				created_at INTEGER NOT NULL,
+				 channel_id TEXT NOT NULL,
+				 status TEXT NOT NULL,
+				 message_id TEXT,
+				 created_at INTEGER NOT NULL,
 				updated_at INTEGER NOT NULL
 			);
+			CREATE TABLE IF NOT EXISTS proactive_event_id (
+				request_digest TEXT PRIMARY KEY,
+				event_id TEXT UNIQUE NOT NULL,
+				created_at INTEGER NOT NULL
+			);
 		`);
+		const columns = this.db
+			.prepare("PRAGMA table_info(outbox)")
+			.all() as Array<{ name: string }>;
+		if (!columns.some((column) => column.name === "message_id")) {
+			this.db.exec("ALTER TABLE outbox ADD COLUMN message_id TEXT");
+		}
 	}
 
 	close(): void {
 		this.db.close();
+	}
+
+	/**
+	 * Allocate the trusted event id used by model calls that omit an explicit
+	 * business key. The mapping is persisted before enqueue/delivery, so a
+	 * same-payload retry (including after process restart or an ambiguous send)
+	 * reuses the exact Bridge idempotency key instead of minting a blind retry.
+	 * A confirmed send rotates after the bounded in-process dedup window so later
+	 * legitimate repeated text is deliverable; pending/ambiguous rows never rotate.
+	 * Only the payload digest is retained here; the outbox owns the message body.
+	 */
+	allocateEventId(target: string, text: string): string {
+		const requestDigest = createHash("sha256")
+			.update(this.projectName)
+			.update("\0")
+			.update(this.leadId)
+			.update("\0")
+			.update(target)
+			.update("\0")
+			.update(text)
+			.digest("hex");
+		return this.db.transaction(() => {
+			const now = this.now();
+			const row = this.db
+				.prepare(
+					"SELECT event_id, created_at FROM proactive_event_id WHERE request_digest = ?",
+				)
+				.get(requestDigest) as
+				| { event_id: string; created_at: number }
+				| undefined;
+			if (row) {
+				const idempotencyKey = `lead-action:${this.projectName}:${this.leadId}:${row.event_id}`;
+				const outbox = this.db
+					.prepare("SELECT status FROM outbox WHERE idempotency_key = ?")
+					.get(idempotencyKey) as { status: string } | undefined;
+				if (
+					outbox?.status !== "sent" ||
+					now - row.created_at < this.proactiveEventIdTtlMs
+				) {
+					return row.event_id;
+				}
+			}
+
+			const eventId = randomUUID();
+			this.db
+				.prepare(
+					`INSERT INTO proactive_event_id (request_digest, event_id, created_at)
+					 VALUES (?, ?, ?)
+					 ON CONFLICT(request_digest) DO UPDATE SET
+					   event_id = excluded.event_id,
+					   created_at = excluded.created_at`,
+				)
+				.run(requestDigest, eventId, now);
+			return eventId;
+		})();
 	}
 
 	async probeAuthorization(channelId: string): Promise<ProbeResult> {
@@ -211,6 +292,18 @@ export class CodexOutboundSender implements OutboundSender {
 				channelId,
 				ts,
 			});
+		const row = this.db
+			.prepare("SELECT * FROM outbox WHERE idempotency_key = ?")
+			.get(args.idempotencyKey) as OutboxRow;
+		if (
+			row.lead_id !== args.leadId ||
+			row.text !== args.text ||
+			row.channel_id !== channelId
+		) {
+			throw new Error(
+				`CodexOutboundSender.enqueue: idempotency key conflict for ${args.idempotencyKey}`,
+			);
+		}
 		return outboxId;
 	}
 
@@ -219,44 +312,106 @@ export class CodexOutboundSender implements OutboundSender {
 	 * Idempotent: a row already `sent` is a no-op. A non-2xx / transport error
 	 * leaves the row `pending` and throws (router → ambiguous; retry on recovery).
 	 */
-	async deliver(outboxId: string): Promise<void> {
+	async deliverWithResult(outboxId: string): Promise<{
+		messageId?: string;
+		deduped: boolean;
+	}> {
 		const row = this.db
 			.prepare("SELECT * FROM outbox WHERE outbox_id = ?")
 			.get(outboxId) as OutboxRow | undefined;
 		if (!row)
 			throw new Error(`CodexOutboundSender.deliver: no outbox ${outboxId}`);
-		if (row.status === "sent") return; // already delivered — idempotent
+		if (row.status === "sent") {
+			return {
+				...(row.message_id ? { messageId: row.message_id } : {}),
+				deduped: true,
+			};
+		}
+		if (row.status === "ambiguous") {
+			throw new Error(
+				`CodexOutboundSender.deliver: outbox ${outboxId} is ambiguous; refusing blind retry`,
+			);
+		}
 
-		const res = await this.post({
-			url: `${this.bridgeUrl}/api/lead-outbound/send`,
-			headers: {
-				"content-type": "application/json",
-				// apiToken authorizes the reserved endpoint; never logged.
-				authorization: `Bearer ${this.apiToken}`,
-			},
-			body: JSON.stringify({
-				projectName: this.projectName,
-				leadId: row.lead_id,
-				channelId: row.channel_id,
-				text: row.text,
-				// Stable dedup key the Bridge persists (idempotencyKey→result) so a
-				// repeat returns the prior result instead of re-sending. Closing the
-				// Bridge-crash gap (sent-but-not-persisted) is the Bridge route's job
-				// (reconcile→ambiguous when unprovable); see the module docstring.
-				idempotencyKey: row.idempotency_key,
-				// In-window guard only (Discord enforce_nonce); not the cross-crash one.
-				nonce: row.nonce,
-			}),
-		});
+		let res: Awaited<ReturnType<HttpPost>>;
+		try {
+			res = await this.post({
+				url: `${this.bridgeUrl}/api/lead-outbound/send`,
+				headers: {
+					"content-type": "application/json",
+					// apiToken authorizes the reserved endpoint; never logged.
+					authorization: `Bearer ${this.apiToken}`,
+				},
+				body: JSON.stringify({
+					projectName: this.projectName,
+					leadId: row.lead_id,
+					channelId: row.channel_id,
+					text: row.text,
+					// Stable dedup key the Bridge persists (idempotencyKey→result) so a
+					// repeat returns the prior result instead of re-sending. Closing the
+					// Bridge-crash gap (sent-but-not-persisted) is the Bridge route's job
+					// (reconcile→ambiguous when unprovable); see the module docstring.
+					idempotencyKey: row.idempotency_key,
+					// In-window guard only (Discord enforce_nonce); not the cross-crash one.
+					nonce: row.nonce,
+				}),
+			});
+		} catch (error) {
+			this.db
+				.prepare(
+					"UPDATE outbox SET status = 'ambiguous', updated_at = @ts WHERE outbox_id = @outboxId AND status = 'pending'",
+				)
+				.run({ ts: this.now(), outboxId });
+			throw new Error(
+				`lead-outbound/send transport ambiguous: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		let response: { status?: unknown; messageId?: unknown; reason?: unknown } =
+			{};
+		try {
+			response = JSON.parse(res.body) as typeof response;
+		} catch {}
+		if (res.status === 409 && response.status === "ambiguous") {
+			this.db
+				.prepare(
+					"UPDATE outbox SET status = 'ambiguous', updated_at = @ts WHERE outbox_id = @outboxId AND status = 'pending'",
+				)
+				.run({ ts: this.now(), outboxId });
+			throw new Error(
+				`lead-outbound/send ambiguous: ${typeof response.reason === "string" ? response.reason : "unproven"}`,
+			);
+		}
 		if (res.status < 200 || res.status >= 300) {
 			// Leave pending so recovery can retry; surface for ambiguous handling.
 			throw new Error(`lead-outbound/send failed: HTTP ${res.status}`);
 		}
+		if (
+			(response.status !== "sent" && response.status !== "deduped") ||
+			typeof response.messageId !== "string" ||
+			response.messageId.length === 0
+		) {
+			this.db
+				.prepare(
+					"UPDATE outbox SET status = 'ambiguous', updated_at = @ts WHERE outbox_id = @outboxId AND status = 'pending'",
+				)
+				.run({ ts: this.now(), outboxId });
+			throw new Error(
+				"lead-outbound/send returned an incompatible success body; delivery is ambiguous",
+			);
+		}
 		this.db
 			.prepare(
-				"UPDATE outbox SET status = 'sent', updated_at = @ts WHERE outbox_id = @outboxId AND status = 'pending'",
+				"UPDATE outbox SET status = 'sent', message_id = @messageId, updated_at = @ts WHERE outbox_id = @outboxId AND status = 'pending'",
 			)
-			.run({ ts: this.now(), outboxId });
+			.run({ ts: this.now(), outboxId, messageId: response.messageId });
+		return {
+			messageId: response.messageId,
+			deduped: response.status === "deduped",
+		};
+	}
+
+	async deliver(outboxId: string): Promise<void> {
+		await this.deliverWithResult(outboxId);
 	}
 }
 

@@ -716,9 +716,9 @@ PYVAL
   log "config.toml written (full-access: workspace-write + network ON, writable_roots=[$cwd])"
 }
 
-# FLY-398 — full-access lead-actions MCP block: approve mode + token forwarded BY
-# NAME (env_vars) — NO broker socket (a full-access Lead has the token in its daemon
-# env, Claude-equal). The runtime's full-access §10 config gate validates the exact
+# FLY-398/FLY-2445 — full-access lead-actions MCP block: approve mode + the
+# selected transport credential forwarded BY NAME (env_vars) — NO broker socket.
+# The runtime's full-access §10 config gate validates the exact
 # shape (assertFullAccessLeadActionsConfigGate). Idempotent: appended AFTER every
 # (re)write of the base full-access config (write_full_access_config).
 append_full_access_lead_actions_mcp() {
@@ -738,21 +738,24 @@ append_full_access_lead_actions_mcp() {
   local state_dir="${FLYWHEEL_LEAD_ACTIONS_STATE_DIR:-}"
   local comm_db="${FLYWHEEL_COMM_DB:-}"
   local aliases="${FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:-}"
+  local outbound_mode="${FLYWHEEL_CODEX_LEAD_OUTBOUND:-direct}"
+  [ "$outbound_mode" = "bridge" ] || outbound_mode="direct"
   for pair in "FLYWHEEL_LEAD_ACTIONS_MAIN_JS=$main_js" "FLYWHEEL_LEAD_ID=$lead_id" \
     "FLYWHEEL_PROJECT_NAME=$project" "FLYWHEEL_LEAD_CHAT_CHANNEL_ID=$chat" \
     "FLYWHEEL_LEAD_ACTIONS_STATE_DIR=$state_dir" "FLYWHEEL_COMM_DB=$comm_db"; do
     case "$pair" in *=) die "append_full_access_lead_actions_mcp: missing required env ${pair%=}" ;; esac
   done
-  # env table: non-secret coords ONLY, NO broker socket (token is by NAME via env_vars).
+  # env table: non-secret coords ONLY, NO broker socket (auth is by NAME).
   local rt_eff
   rt_eff="$(roundtable_autocontinue_effective)"  # FLY-676 — see helper; gate-matched
   local env_toml
-  env_toml="$(python3 - "$lead_id" "$project" "$chat" "$cross" "$state_dir" "$comm_db" "$aliases" "$rt_eff" <<'PYENV'
+  env_toml="$(python3 - "$lead_id" "$project" "$chat" "$cross" "$state_dir" "$comm_db" "$aliases" "$outbound_mode" "$rt_eff" <<'PYENV'
 import sys, json
 keys = ["FLYWHEEL_LEAD_ID","FLYWHEEL_PROJECT_NAME","FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
         "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS","FLYWHEEL_LEAD_ACTIONS_STATE_DIR",
-        "FLYWHEEL_COMM_DB","FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES"]
-vals = sys.argv[1:8]
+        "FLYWHEEL_COMM_DB","FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES",
+        "FLYWHEEL_CODEX_LEAD_OUTBOUND"]
+vals = sys.argv[1:9]
 pairs = []
 for k, v in zip(keys, vals):
     if k == "FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES" and not v:
@@ -762,21 +765,25 @@ for k, v in zip(keys, vals):
     pairs.append(f"{k} = {json.dumps(v)}")
 # FLY-676: effective roundtable autoContinue flag — ONLY when on (matches the runtime
 # full-access builder's conditional include; preserves the prior OFF env shape).
-if len(sys.argv) > 8 and sys.argv[8] == "1":
+if len(sys.argv) > 9 and sys.argv[9] == "1":
     pairs.append(f'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = {json.dumps("1")}')
 print(", ".join(pairs))
 PYENV
 )" || die "append_full_access_lead_actions_mcp: failed to render env table"
   {
-    printf '\n# FLY-398 full-access (= Claude-equal): lead-actions MCP — approve mode + token by NAME (no broker)\n'
+    printf '\n# FLY-398/FLY-2445 full-access lead-actions MCP — approve + selected credential by NAME\n'
     printf '[mcp_servers.lead_actions]\n'
     printf 'command = %s\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$node_bin")"
     printf 'args = [%s]\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$main_js")"
     printf 'default_tools_approval_mode = "approve"\n'
-    printf 'env_vars = ["DISCORD_BOT_TOKEN"]\n'
+    if [ "$outbound_mode" = "bridge" ]; then
+      printf 'env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN"]\n'
+    else
+      printf 'env_vars = ["DISCORD_BOT_TOKEN"]\n'
+    fi
     printf 'env = { %s }\n' "$env_toml"
   } >> "$CONFIG"
-  log "config.toml: appended [mcp_servers.lead_actions] (full-access: approve + token by name)"
+  log "config.toml: appended [mcp_servers.lead_actions] (full-access: approve + outbound=$outbound_mode credential by name)"
 }
 
 ensure_home() {

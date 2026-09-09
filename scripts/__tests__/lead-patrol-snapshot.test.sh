@@ -172,6 +172,11 @@ make_raya_checkout() {
     git -C "$repo" commit -qm recent-tip
   RAYA_SHA_C="$(git -C "$repo" rev-parse HEAD)"
   git -C "$repo" update-ref refs/remotes/origin/main "$RAYA_SHA_C"
+  mkdir -p "$dir/state/manifests"
+  jq -n --arg root "$dir/home/Dev/raya-lead-workspace" '{
+    projectName:"raya",leadId:"raya",projectDir:$root,
+    leadBackend:{backendId:"codex-app-server"}
+  }' > "$dir/state/manifests/raya-raya.json"
   raya_set_ledger "$dir" "$RAYA_SHA_C"
   raya_set_receipt "$dir" "$RAYA_TEST_NOW"
 }
@@ -183,7 +188,19 @@ raya_set_ledger() {
 
 raya_set_receipt() {
   mkdir -p "$1/state/raya"
-  jq -n --argjson checked "$2" '{checked_at:$checked}' > "$1/state/raya/deploy-receipt.json"
+  local deployed=""
+  deployed="$(sed -n '1p' "$1/state/raya/deployed-sha" 2>/dev/null || true)"
+  jq -n --argjson checked "$2" --arg deployed "$deployed" '{
+    schemaVersion:2,checked_at:$checked,carrier:"standard-lead",
+    outcome:"current",deployed_sha:$deployed,
+    flywheel_deployed_sha:("f"*40)
+  }' > "$1/state/raya/deploy-receipt.json"
+}
+
+raya_set_v1_receipt() {
+  mkdir -p "$1/state/raya"
+  jq -n --argjson checked "$2" '{schemaVersion:1,checked_at:$checked}' \
+    > "$1/state/raya/deploy-receipt.json"
 }
 
 MAIN="$TMP/main"
@@ -1549,7 +1566,14 @@ RAYA_REPO="$RAYA_CASE/state/raya/code"
 
 RAYA_CURRENT_OUT="$RAYA_CASE/current.txt"
 PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_CURRENT_OUT" || fail "current Raya snapshot exits zero"
-contains "$RAYA_CURRENT_OUT" "raya checkout=$RAYA_REPO head=${RAYA_SHA_C:0:8} origin_main=${RAYA_SHA_C:0:8} branch=main behind=0 deployed_sha=${RAYA_SHA_C:0:8} receipt_age_h=0 drift_age_h=- checkout_drift=no deploy_drift=no shuttle_stale=no overdue=no" "current Raya checkout is healthy"
+contains "$RAYA_CURRENT_OUT" "raya checkout=$RAYA_REPO head=${RAYA_SHA_C:0:8} origin_main=${RAYA_SHA_C:0:8} branch=main behind=0 deployed_sha=${RAYA_SHA_C:0:8} receipt_age_h=0 drift_age_h=- checkout_drift=no deploy_drift=no shuttle_stale=no overdue=no receipt_schema=2 receipt_carrier=standard-lead manifest_carrier=standard-lead carrier_mismatch=no" "current standard Raya checkout is healthy"
+
+raya_set_v1_receipt "$RAYA_CASE" "$RAYA_TEST_NOW"
+RAYA_V1_RECEIPT_OUT="$RAYA_CASE/v1-receipt.txt"
+PATROL_NOW_EPOCH="$RAYA_TEST_NOW" run_snapshot "$RAYA_CASE" "$RAYA_V1_RECEIPT_OUT" || fail "v1 receipt snapshot exits zero"
+contains "$RAYA_V1_RECEIPT_OUT" "receipt_schema=1 receipt_carrier=legacy manifest_carrier=standard-lead carrier_mismatch=yes" "legacy v1 receipt cannot prove the standard carrier"
+contains "$RAYA_V1_RECEIPT_OUT" "shuttle_stale=yes overdue=yes" "legacy v1 receipt remains operationally overdue"
+raya_set_receipt "$RAYA_CASE" "$RAYA_TEST_NOW"
 
 printf '  %s \r\n' "$RAYA_SHA_C" > "$RAYA_CASE/state/raya/deployed-sha"
 RAYA_PADDED_LEDGER_OUT="$RAYA_CASE/padded-ledger.txt"

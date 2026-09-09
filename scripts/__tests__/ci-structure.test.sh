@@ -776,7 +776,7 @@ expected_shard_tests = {
         "Test — FLY-1189 fault injector safety lock",
         "Test — FLY-1189 assert library + driver trap owner",
         "Test — FLY-1389 path-hygiene + 529-Room repair batch",
-        "Test — FLY-2216 Raya resident brain contracts",
+        "Test — resident Codex recovery contracts",
         "Test — NPM packaging pipeline + packaged-mode seams",
         "Test — FLY-2190 host tmux selection S0",
         "Test — FLY-2444 generalized Lead launcher",

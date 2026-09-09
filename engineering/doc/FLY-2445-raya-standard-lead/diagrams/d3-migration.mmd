@@ -1,0 +1,23 @@
+stateDiagram-v2
+  direction TB
+  [*] --> Prepared
+  Prepared: 准备新平台与业务包
+  Snapshot: 留存业务状态与收件位置
+  Stopped: 确认旧脑与旧语音停止
+  Seeded: 初始化或复核标准收信位置
+  Active: 启动唯一标准 Raya
+  Proven: 窗口消息补齐、文字和 summary 验收
+  Receipt: 班车写新部署回执
+  Hold: 保留信件与证据，报告失败
+  Prepared --> Snapshot
+  Snapshot --> Stopped: 获批切换窗口
+  Stopped --> Seeded: 状态迁移通过、无未知副作用
+  Seeded --> Active: 身份、告警、服务名检查通过
+  Active --> Proven
+  Proven --> Receipt
+  Receipt --> [*]
+  Stopped --> Hold: 状态或身份无法确认
+  Seeded --> Hold: 收信位置写入或读回失败
+  Active --> Hold: 启动或收信失败
+  Proven --> Hold: 验收缺项
+  Hold --> Seeded: 修复后重新检查收信位置

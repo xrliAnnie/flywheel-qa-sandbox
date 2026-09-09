@@ -155,7 +155,6 @@ scripts/flywheel-lead-wrapper-v2.sh
 scripts/flywheel-lead.sh
 scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
-scripts/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh
 scripts/resident-codex-lead-recover.sh
 scripts/flywheel-bridge-wrapper.sh
 scripts/flywheel-voice-bridge-wrapper.sh

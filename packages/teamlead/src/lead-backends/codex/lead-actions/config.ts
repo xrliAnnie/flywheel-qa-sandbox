@@ -22,6 +22,10 @@ export interface LeadActionsConfig {
 	stateDir: string;
 	/** Project CommDB used for durable mailbox batch ACK protocol rows. */
 	commDbPath: string;
+	/** Active-send transport selected by the parent Lead runtime. */
+	outboundMode: "direct" | "bridge";
+	/** Canonical Bridge endpoint when outboundMode is "bridge". */
+	bridgeUrl?: string;
 	/** Per-channel send cap per window (loop-safety). */
 	rateMaxPerWindow: number;
 	/** Rate-limit window length (ms). */
@@ -58,6 +62,12 @@ export function parseLeadActionsConfig(
 	const chatChannelId = req("FLYWHEEL_LEAD_CHAT_CHANNEL_ID");
 	const stateDir = req("FLYWHEEL_LEAD_ACTIONS_STATE_DIR");
 	const commDbPath = req("FLYWHEEL_COMM_DB");
+	const outboundMode: "direct" | "bridge" =
+		env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge" ? "bridge" : "direct";
+	const bridgeUrl =
+		outboundMode === "bridge"
+			? req("BRIDGE_URL")
+			: (env.BRIDGE_URL?.trim() ?? "");
 	if (missing.length > 0) {
 		throw new Error(
 			`lead-actions: missing required env: ${missing.join(", ")}`,
@@ -80,6 +90,8 @@ export function parseLeadActionsConfig(
 		),
 		stateDir,
 		commDbPath,
+		outboundMode,
+		bridgeUrl: bridgeUrl ? bridgeUrl.replace(/\/+$/u, "") : undefined,
 		rateMaxPerWindow: posIntEnv(env.FLYWHEEL_LEAD_ACTIONS_RATE_MAX, 5),
 		rateWindowMs: posIntEnv(env.FLYWHEEL_LEAD_ACTIONS_RATE_WINDOW_MS, 60_000),
 		idempotencyTtlMs: posIntEnv(

@@ -53,13 +53,13 @@ chmod 0755 "$FR/scripts/meta-alert.sh" "$FR/scripts/lead-alert.sh" \
   "$FR/scripts/lead-patrol-snapshot.sh" "$FR/scripts/flywheel-node-dwell-control.mjs"
 for f in flywheel-lead-wrapper-v2.sh flywheel-lead.sh \
          flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
-         flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
          resident-codex-lead-recover.sh \
          flywheel-codex-lead-wrapper-codex-infra-bot.sh \
          flywheel-lead-attach.sh \
          flywheel-view-attach.sh flywheel-node-status.sh \
          flywheel-bridge-wrapper.sh restart-services.sh \
-         host-tmux-selection-gate.sh lib/lead-host-tmux-gate.sh; do
+         host-tmux-selection-gate.sh lib/lead-host-tmux-gate.sh \
+         lib/raya-standard-migration.sh; do
   { echo '#!/bin/bash'; pad "echo r-$f"; } > "$FR/scripts/$f"
 done
 { echo '#!/bin/bash'; pad 'echo r-lead-address'; } > "$FR/scripts/lib/lead-address.sh"
@@ -195,14 +195,13 @@ seed_state() {  # <state-dir> — converged copy lane + healthy meta link
   rm -rf "$st"; mkdir -p "$st/bin/lib"
   for f in flywheel-lead-wrapper-v2.sh flywheel-lead.sh \
            flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
-           flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
            resident-codex-lead-recover.sh \
            flywheel-codex-lead-wrapper-codex-infra-bot.sh \
            flywheel-lead-attach.sh \
            flywheel-view-attach.sh flywheel-node-status.sh \
            flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py \
            host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh \
-           lib/lead-host-tmux-gate.sh; do
+           lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh; do
     cp "$FR/scripts/$f" "$st/bin/$f"; chmod 555 "$st/bin/$f"
   done
   ln -sfn "$FR/scripts/meta-alert.sh" "$st/bin/meta-alert.sh"
