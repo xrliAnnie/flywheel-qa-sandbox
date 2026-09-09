@@ -1,15 +1,15 @@
 ---
 issue: FLY-2351
 phase: implement
-phaseCursor: 6/7
-updated: 2026-09-09T02:06:47.652Z
-nextStep: R1 HIGH fixed at bb431ef01 with RED/GREEN state-root isolation
-  coverage; rerun exact full gates, push reviewed candidate, then open a NEW
-  code-review gate/request for the new head
+phaseCursor: 7/7
+updated: 2026-09-09T02:58:04.349Z
+nextStep: R1 HIGH and three MEDIUM fixes committed; focused Node22 checks green
+  (22/22, 10/10, 8/8), typechecks and Biome green; add milestone as literal last
+  commit, push, then freeze one R2 review head
 chunks: []
 pointers: {}
 ---
 
 # FLY-2351 progress
-**phase**: implement (6/7)
-**next**: R1 HIGH fixed at bb431ef01 with RED/GREEN state-root isolation coverage; rerun exact full gates, push reviewed candidate, then open a NEW code-review gate/request for the new head
+**phase**: implement (7/7)
+**next**: R1 HIGH and three MEDIUM fixes committed; focused Node22 checks green (22/22, 10/10, 8/8), typechecks and Biome green; add milestone as literal last commit, push, then freeze one R2 review head
