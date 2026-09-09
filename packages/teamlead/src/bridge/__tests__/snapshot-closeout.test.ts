@@ -157,7 +157,7 @@ describe("snapshot closeout", () => {
 		).resolves.toMatchObject({ status: "not_authorized" });
 	});
 
-	it("logs a dry run before applying repair retention and retries terminal residue", async () => {
+	it("retries terminal residue after a repair snapshot deletion fails", async () => {
 		const calls: string[] = [];
 		const owner = {
 			kind: "session" as const,
@@ -166,7 +166,12 @@ describe("snapshot closeout", () => {
 		};
 		const prune = vi.fn(async ({ dryRun }) => {
 			calls.push(dryRun ? "dry-run" : "apply");
-			return { mode: dryRun ? "dry-run" : "apply", items: [] };
+			return {
+				mode: dryRun ? "dry-run" : "apply",
+				items: dryRun
+					? []
+					: [{ path: "locked.db", action: "keep", reason: "delete_failed" }],
+			};
 		});
 		const cleanup = vi.fn(async (input) => {
 			calls.push("cleanup");
@@ -196,6 +201,12 @@ describe("snapshot closeout", () => {
 		expect(log).toHaveBeenCalledWith(
 			"snapshot_retention_dry_run",
 			expect.objectContaining({ mode: "dry-run" }),
+		);
+		expect(log).toHaveBeenCalledWith(
+			"snapshot_retention_apply",
+			expect.objectContaining({
+				items: [expect.objectContaining({ reason: "delete_failed" })],
+			}),
 		);
 	});
 

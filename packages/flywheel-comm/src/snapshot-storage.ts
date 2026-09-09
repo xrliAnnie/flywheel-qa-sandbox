@@ -1098,13 +1098,18 @@ function readLegacyRepairMap(repairRoot: string): Map<
 
 export async function pruneRepairSnapshots(
 	input: { dryRun: boolean; now: Date },
-	deps: { stateRoot?: string; lockTimeoutMs?: number } = {},
+	deps: {
+		stateRoot?: string;
+		lockTimeoutMs?: number;
+		unlink?: (path: string) => void;
+	} = {},
 ) {
 	if (!Number.isFinite(input.now.getTime())) {
 		throw new SnapshotStorageError("invalid_prune_time");
 	}
 	const stateRoot = deps.stateRoot ?? defaultStateRoot();
 	const repairRoot = join(stateRoot, "patrol-repairs");
+	const unlink = deps.unlink ?? unlinkSync;
 	const releaseLock = await acquireSnapshotLock(
 		stateRoot,
 		deps.lockTimeoutMs ?? 5_000,
@@ -1214,17 +1219,22 @@ export async function pruneRepairSnapshots(
 				reason = "expired";
 				if (!input.dryRun) {
 					const path = join(repairRoot, candidate.path);
-					const fresh = lstatSync(path);
-					if (
-						fresh.dev !== candidate.stat.dev ||
-						fresh.ino !== candidate.stat.ino ||
-						fresh.size !== candidate.stat.size ||
-						fresh.mtimeMs !== candidate.stat.mtimeMs
-					) {
+					try {
+						const fresh = lstatSync(path);
+						if (
+							fresh.dev !== candidate.stat.dev ||
+							fresh.ino !== candidate.stat.ino ||
+							fresh.size !== candidate.stat.size ||
+							fresh.mtimeMs !== candidate.stat.mtimeMs
+						) {
+							action = "keep";
+							reason = "changed_since_scan";
+						} else {
+							unlink(path);
+						}
+					} catch {
 						action = "keep";
-						reason = "changed_since_scan";
-					} else {
-						unlinkSync(path);
+						reason = "delete_failed";
 					}
 				}
 			}

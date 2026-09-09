@@ -8,6 +8,7 @@ import {
 	statSync,
 	symlinkSync,
 	truncateSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -501,6 +502,47 @@ describe("snapshot storage", () => {
 		]) {
 			expect(existsSync(join(repairs, name))).toBe(true);
 		}
+	});
+
+	it("continues pruning after one repair snapshot cannot be deleted", async () => {
+		const repairs = join(root, "patrol-repairs");
+		mkdirSync(repairs, { mode: 0o700 });
+		const blocked =
+			"FLY-1__teamlead-global__2026-09-05T12:00:00.000Z__11111111-1111-4111-8111-111111111111.db";
+		const deletable =
+			"FLY-1__teamlead-global__2026-09-06T12:00:00.000Z__22222222-2222-4222-8222-222222222222.db";
+		const latest =
+			"FLY-1__teamlead-global__2026-09-07T12:00:00.000Z__33333333-3333-4333-8333-333333333333.db";
+		for (const name of [blocked, deletable, latest]) {
+			writeFileSync(join(repairs, name), name);
+		}
+
+		const result = await pruneRepairSnapshots(
+			{ dryRun: false, now: new Date("2026-09-09T12:00:00.000Z") },
+			{
+				stateRoot: root,
+				unlink: (path: string) => {
+					if (path.endsWith(blocked)) {
+						throw Object.assign(new Error("operation not permitted"), {
+							code: "EPERM",
+						});
+					}
+					unlinkSync(path);
+				},
+			},
+		);
+
+		expect(result.items.find((item) => item.path === blocked)).toMatchObject({
+			action: "keep",
+			reason: "delete_failed",
+		});
+		expect(result.items.find((item) => item.path === deletable)).toMatchObject({
+			action: "delete",
+			reason: "expired",
+		});
+		expect(existsSync(join(repairs, blocked))).toBe(true);
+		expect(existsSync(join(repairs, deletable))).toBe(false);
+		expect(existsSync(join(repairs, latest))).toBe(true);
 	});
 
 	it("prunes an old legacy snapshot only when its explicit identity map still matches", async () => {
