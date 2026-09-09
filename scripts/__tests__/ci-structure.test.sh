@@ -779,6 +779,7 @@ expected_shard_tests = {
         "Test — FLY-2216 Raya resident brain contracts",
         "Test — NPM packaging pipeline + packaged-mode seams",
         "Test — FLY-2190 host tmux selection S0",
+        "Test — FLY-2444 generalized Lead launcher",
         "Test — FLY-1501 restart brake + heartbeat guard contracts",
         "Test — FLY-1634 restart net-deletion contracts",
         "Test — FLY-1959 updater sources + body provenance contracts",
@@ -928,6 +929,29 @@ for job_id, (job, steps) in script_shards.items():
         "--now-epoch" not in tripwire_tokens,
         f"{job_id} production tripwire must use the real clock",
     )
+
+fly2444_steps = [
+    step for step in script_steps_2
+    if isinstance(step, dict) and step.get("name") == "Test — FLY-2444 generalized Lead launcher"
+]
+require(len(fly2444_steps) == 1, "script-tests-2 must contain exactly one FLY-2444 step")
+fly2444_commands = [
+    line.strip()
+    for line in str(fly2444_steps[0].get("run", "")).splitlines()
+    if line.strip().startswith("bash ")
+]
+require(
+    fly2444_commands
+    == [
+        "bash scripts/__tests__/flywheel-lead.test.sh",
+        "bash scripts/__tests__/flywheel-lead-packaging.test.sh",
+        "bash scripts/__tests__/host-tmux-selection-gate-probe.test.sh",
+        "bash scripts/__tests__/lead-restart-lifecycle-generic-carrier.test.sh",
+        "bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh",
+        "bash packages/teamlead/scripts/__tests__/codex-lead-state-dir-parity.test.sh",
+    ],
+    f"FLY-2444 CI command inventory drifted: {fly2444_commands}",
+)
 
 fly2146_steps = [
     step for step in script_steps_5

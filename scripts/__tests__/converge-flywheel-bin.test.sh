@@ -30,13 +30,15 @@ cp "$REAL_REPO_ROOT/scripts/lib/path-hygiene.sh" "$FR/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/converge-flywheel-bin.sh" "$FR/scripts/"
 CONVERGE="$FR/scripts/converge-flywheel-bin.sh"
 for f in flywheel-lead-wrapper-v2.sh \
+    flywheel-lead.sh \
     flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
     flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
     resident-codex-lead-recover.sh \
     flywheel-codex-lead-wrapper-codex-infra-bot.sh \
     flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
     flywheel-bridge-wrapper.sh restart-services.sh \
-    host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh; do
+    host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh \
+    lib/lead-host-tmux-gate.sh; do
   { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$FR/scripts/$f"
 done
 # FLY-1577: the gate is PYTHON. It is in FILES because the cmux watcher's
@@ -53,7 +55,7 @@ done
 # must start from a converged copy-lane steady state — otherwise the widened
 # FILES makes converge repair the un-seeded entries and the "exactly one alert"
 # assertions below count repairs they never meant to trigger.
-COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh"
+COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh"
 seed_steady_state() {  # <state-dir>
   local st="$1" f
   for f in $COPY_FILES; do
@@ -290,9 +292,11 @@ run_converge; RC=$?
 if [ "$RC" -eq 0 ] && [ -d "$ST/bin/lib" ] \
    && cmp -s "$ST/bin/lib/bounded-run.sh" "$FR/scripts/lib/bounded-run.sh" \
    && cmp -s "$ST/bin/lib/lead-address.sh" "$FR/scripts/lib/lead-address.sh" \
+   && cmp -s "$ST/bin/lib/lead-host-tmux-gate.sh" "$FR/scripts/lib/lead-host-tmux-gate.sh" \
    && [ "$(t_mode "$ST/bin/lib/bounded-run.sh")" = "555" ] \
    && [ "$(t_mode "$ST/bin/lib/lead-address.sh")" = "555" ] \
-   && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 2 ]; then
+   && [ "$(t_mode "$ST/bin/lib/lead-host-tmux-gate.sh")" = "555" ] \
+   && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 3 ]; then
   pass "C10: missing support-lib closure repaired to 555, <bin>/lib auto-created"
 else fail "C10: nested copy not converged (rc=$RC)"; cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
 

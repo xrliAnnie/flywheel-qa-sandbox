@@ -10,7 +10,7 @@ die() {
 }
 
 usage() {
-  echo "Usage: host-tmux-selection-gate.sh {gate|verify} <carrier> | census <loaded-candidates.tsv>" >&2
+  echo "Usage: host-tmux-selection-gate.sh {gate|verify|probe} <carrier> | census <loaded-candidates.tsv>" >&2
   exit 2
 }
 
@@ -77,7 +77,7 @@ run_census() {
   local source_dir="${FLYWHEEL_HOST_TMUX_CENSUS_SOURCE_DIR:-${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}/scripts}"
   local temp_root="" plist="" args_file="" argument="" selected=""
   local selected_count=0 basename="" source="" expected_carrier=""
-  local total=0 generic=0 mufasa=0 infra=0 raya=0
+  local total=0 generic=0 codex_generic=0 mufasa=0 infra=0 raya=0
   local key="" project="" lead_id="" manifest="" classification="" sources=""
 
   if [ "$test_mode" = "1" ]; then
@@ -120,6 +120,11 @@ run_census() {
     selected_count=0
     while IFS= read -r argument; do
       basename="${argument##*/}"
+      if [ "$basename" = "flywheel-lead.sh" ]; then
+        selected="$argument"
+        selected_count=$((selected_count + 1))
+        continue
+      fi
       case "$basename" in
         flywheel-lead-wrapper-v2.sh|\
         flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|\
@@ -148,6 +153,10 @@ run_census() {
         expected_carrier=lead
         generic=$((generic + 1))
         ;;
+      flywheel-lead.sh)
+        expected_carrier=codex-generic
+        codex_generic=$((codex_generic + 1))
+        ;;
       flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh)
         expected_carrier=codex-mufasa
         mufasa=$((mufasa + 1))
@@ -173,7 +182,7 @@ run_census() {
 
   trap - EXIT
   /bin/rm -rf "$temp_root"
-  echo "host-tmux-selection-gate: census pass plists=$total generic=$generic codex-mufasa=$mufasa codex-infra-bot=$infra codex-raya=$raya"
+  echo "host-tmux-selection-gate: census pass plists=$total generic=$generic codex-generic=$codex_generic codex-mufasa=$mufasa codex-infra-bot=$infra codex-raya=$raya"
 }
 
 ACTION="${1:-}"
@@ -194,7 +203,7 @@ if [ "$ACTION" = "census" ]; then
   run_census "$2"
   exit 0
 fi
-case "$ACTION" in gate|verify) : ;; *) usage ;; esac
+case "$ACTION" in gate|verify|probe) : ;; *) usage ;; esac
 CARRIER="${2:-}"
 [ -n "$CARRIER" ] && [ "$#" -eq 2 ] || usage
 case "$CARRIER" in *[!A-Za-z0-9._-]*) die "invalid carrier: $CARRIER" ;; esac
@@ -295,7 +304,8 @@ else
   APPLICABILITY="$(resolve_applicability \
     "$REQUIRED_MARKER" "$LEGACY_CANONICAL" "$NATIVE_CANONICAL")" \
     || die "cannot resolve host gate applicability"
-  if [ "$APPLICABILITY" = "required" ] \
+  if [ "$ACTION" != "probe" ] \
+    && [ "$APPLICABILITY" = "required" ] \
     && { [ ! -e "$REQUIRED_MARKER" ] && [ ! -L "$REQUIRED_MARKER" ]; }; then
     [ ! -L "$RECEIPT_DIR" ] || die "receipt directory must not be a symlink: $RECEIPT_DIR"
     /bin/mkdir -p "$RECEIPT_DIR" || die "cannot create receipt directory: $RECEIPT_DIR"
@@ -375,6 +385,11 @@ MOUNT_POINT="${FLYWHEEL_HOST_TMUX_MOUNT_POINT:-unknown}"
 RECEIPT="$RECEIPT_DIR/$CARRIER.json"
 if [ -L "$RECEIPT" ] || { [ -e "$RECEIPT" ] && [ ! -f "$RECEIPT" ]; }; then
   die "receipt path must be a regular file: $RECEIPT"
+fi
+
+if [ "$ACTION" = "probe" ]; then
+  echo "host-tmux-selection-gate: pass carrier=$CARRIER selected=$SELECTED_PATH canonical=$CANONICAL_PATH version=$TMUX_VERSION"
+  exit 0
 fi
 
 if [ "$ACTION" = "verify" ]; then

@@ -17,7 +17,8 @@
  *   3 — input was not valid JSON
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { parseAndValidateProjects } from "../ProjectConfig.js";
 
 export const VALIDATE_PROJECTS_VERSION = 1;
@@ -73,11 +74,9 @@ export function runCli(argv: string[]): number {
 	return result.code;
 }
 
-// Only run when invoked directly as a CLI (not when imported by tests).
-// import.meta.url is the file URL; process.argv[1] is the invoked script path.
 if (
-	typeof process !== "undefined" &&
-	import.meta.url === `file://${process.argv[1]}`
+	process.argv[1] !== undefined &&
+	realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-	process.exit(runCli(process.argv));
+	process.exitCode = runCli(process.argv);
 }

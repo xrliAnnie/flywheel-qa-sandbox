@@ -121,6 +121,56 @@ describe("FLY-2030 summary registry data-first fence", () => {
 		});
 	});
 
+	it("writes a supplied candidate registry through the same receipt path", () => {
+		const candidate = JSON.parse(original);
+		candidate[0].leads[0].summaryRole = "producer";
+		candidate[0].leads[1].summaryRole = "aggregator";
+		candidate[1].leads[0].summaryRole = "recipient";
+		candidate.push({
+			projectName: "outside",
+			projectRoot: join(dir, "outside"),
+			leads: [
+				{
+					agentId: "outside-lead",
+					summaryRole: "recipient",
+					chatChannel: "outside",
+				},
+			],
+		});
+		const assignments = JSON.parse(readFileSync(assignmentsPath, "utf8"));
+		assignments.assignments.push({
+			projectName: "outside",
+			leadId: "outside-lead",
+			summaryRole: "recipient",
+		});
+		writeFileSync(assignmentsPath, JSON.stringify(assignments));
+		let renamedImage: unknown;
+
+		const result = migrateSummaryRegistry(
+			{
+				projectsPath,
+				assignmentsPath,
+				receiptPath,
+				expectedSha256: sha256(original),
+				homeDir: dir,
+				candidateRegistry: candidate,
+			},
+			{
+				validateTeamleadCandidate,
+				now: () => "2026-09-08T01:00:00.000Z",
+				afterProjectsRename: () => {
+					renamedImage = JSON.parse(readFileSync(projectsPath, "utf8"));
+				},
+			},
+		);
+
+		expect(renamedImage).toEqual(candidate);
+		expect(result.assignments).toHaveLength(4);
+		expect(result.postImageSha256).toBe(
+			sha256(`${JSON.stringify(candidate, null, 2)}\n`),
+		);
+	});
+
 	it("rejects a stale expected SHA with zero mutation", () => {
 		expect(() =>
 			migrateSummaryRegistry(

@@ -63,6 +63,8 @@ export interface MigrateSummaryRegistryInput {
 	receiptPath: string;
 	expectedSha256: string;
 	homeDir?: string;
+	/** Prebuilt full registry used by transactional registrars adding rows. */
+	candidateRegistry?: unknown;
 }
 
 export interface VerifySummaryRegistryActivationInput {
@@ -76,6 +78,8 @@ export interface SummaryRegistryDeps {
 	validateTeamleadCandidate: (candidatePath: string) => void;
 	now?: () => string;
 	beforeRename?: (candidatePath: string) => void;
+	/** Crash-test seam after the projects rename and before receipt creation. */
+	afterProjectsRename?: () => void;
 }
 
 function sha256(value: string): string {
@@ -318,7 +322,12 @@ export function migrateSummaryRegistry(
 	const manifest = parseManifest(
 		readJson(input.assignmentsPath, "assignment manifest").value,
 	);
-	const candidate = applyManifest(source.value, manifest);
+	const candidate = applyManifest(
+		input.candidateRegistry === undefined
+			? source.value
+			: input.candidateRegistry,
+		manifest,
+	);
 	const selection = readSummaryGranularity({ homeDir: input.homeDir });
 	const projection = compileSummaryAssignments(candidate, selection);
 	const candidateText = `${JSON.stringify(candidate, null, 2)}\n`;
@@ -350,6 +359,7 @@ export function migrateSummaryRegistry(
 		} finally {
 			closeSync(dirFd);
 		}
+		deps.afterProjectsRename?.();
 	} catch (error) {
 		try {
 			unlinkSync(candidatePath);

@@ -101,6 +101,59 @@ husks="$(find "$PKG_ROOT/node_modules" -mindepth 1 -maxdepth 2 -type d -empty 2>
 [ -z "$husks" ] && pass "②d no empty husk dirs shadowing flat-installed deps" \
                || fail "②d empty husk dirs left: $husks"
 
+# The compatibility paths above are symlinks. Invoke these CLIs through those
+# exact paths so a lexical main guard cannot turn verification into exit 0.
+MIRROR_INSPECTOR="$PKG_ROOT/packages/teamlead/dist/bin/inspect-lead-outbound.js"
+mirror_inspector_out="$(node "$MIRROR_INSPECTOR" \
+  --state-dir "$SANDBOX/missing-outbound-state" \
+  --delivery-id "chat:smoke-codex:30000000000000002" \
+  --dedup-db "$SANDBOX/missing-outbound-dedup.db" 2>&1)"
+mirror_inspector_rc=$?
+if [ "$mirror_inspector_rc" -ne 0 ] \
+   && grep -q '"code":"outbound_inspection_error"' <<<"$mirror_inspector_out"; then
+  pass "②e outbound inspector executes through the compat symlink"
+else
+  fail "②e outbound inspector was vacuous through the compat symlink: rc=$mirror_inspector_rc output=$mirror_inspector_out"
+fi
+
+MIRROR_PROJECT_ROOT_PREFLIGHT="$PKG_ROOT/packages/teamlead/dist/bin/preflight-codex-project-root.js"
+mirror_preflight_out="$(env HOME="$SANDBOX/compat-home" node "$MIRROR_PROJECT_ROOT_PREFLIGHT" \
+  --project-root "$SANDBOX/missing-project-root" \
+  --state-dir "$SANDBOX/missing-state-dir" \
+  --codex-home "$SANDBOX/missing-codex-home" 2>&1)"
+mirror_preflight_rc=$?
+if [ "$mirror_preflight_rc" -ne 0 ] \
+   && grep -q '"code":"codex_project_root_invalid"' <<<"$mirror_preflight_out"; then
+  pass "②f Codex project-root preflight rejects invalid input through the compat symlink"
+else
+  fail "②f Codex project-root preflight was vacuous through the compat symlink: rc=$mirror_preflight_rc output=$mirror_preflight_out"
+fi
+
+MIRROR_PROJECTS_VALIDATOR="$PKG_ROOT/packages/teamlead/dist/bin/validate-projects.js"
+cat > "$SANDBOX/invalid-projects.json" <<JSON
+[
+  {
+    "projectName":"invalid-smoke-project",
+    "projectRoot":"$SANDBOX/invalid-project-root",
+    "leads":[{
+      "agentId":"invalid-smoke-lead",
+      "chatChannel":"30000000000000003",
+      "match":{"labels":["invalid-smoke"]},
+      "department":""
+    }]
+  }
+]
+JSON
+mirror_validator_out="$(node "$MIRROR_PROJECTS_VALIDATOR" \
+  "$SANDBOX/invalid-projects.json" 2>&1)"
+mirror_validator_rc=$?
+if [ "$mirror_validator_rc" -eq 1 ] \
+   && grep -q 'validate-projects: INVALID:' <<<"$mirror_validator_out"; then
+  pass "②g projects validator rejects invalid input through the compat symlink"
+else
+  fail "②g projects validator was vacuous through the compat symlink: rc=$mirror_validator_rc output=$mirror_validator_out"
+fi
+
 # ── ③ bundled agent registry ─────────────────────────────────────────────────
 [ -f "$PKG_ROOT/.flywheel/agents/registry.yaml" ] \
   && [ -f "$PKG_ROOT/.flywheel/agents/nodes/general.md" ] \
@@ -183,7 +236,162 @@ else
   fail "④d Lead launcher dry-run broken: $(tail -12 <<<"$out")"
 fi
 
-# ── ④e internal summary transport stays dormant for packaged customers ─────
+# ── ④e generalized Lead entrypoint through the installed tree ───────────────
+GEN_HOME="$SANDBOX/generalized-home"
+GEN_STATE="$GEN_HOME/.flywheel"
+GEN_CLAUDE_ROOT="$GEN_HOME/claude-project"
+GEN_CODEX_ROOT="$GEN_HOME/codex-project"
+GEN_CLI="$PKG_ROOT/packages/flywheel-comm/dist/index.js"
+GEN_VALIDATOR="$PKG_ROOT/packages/teamlead/dist/bin/validate-projects.js"
+GEN_LAUNCHER="$GEN_STATE/bin/flywheel-lead.sh"
+mkdir -p "$GEN_STATE/state/summary-registry" "$GEN_STATE/bin/lib" \
+  "$GEN_CLAUDE_ROOT/.lead/smoke-claude" "$GEN_CODEX_ROOT/.lead/smoke-codex"
+printf '%s\n' '# Smoke Claude Lead' > "$GEN_CLAUDE_ROOT/.lead/smoke-claude/identity.md"
+printf '%s\n' '# Smoke Codex Lead' > "$GEN_CODEX_ROOT/.lead/smoke-codex/identity.md"
+cat > "$GEN_STATE/host.json" <<JSON
+{"flywheelDir":"$PKG_ROOT","stateDir":"$GEN_STATE"}
+JSON
+cat > "$GEN_STATE/projects.json" <<JSON
+[
+  {
+    "projectName":"smoke-claude-project",
+    "projectRoot":"$GEN_CLAUDE_ROOT",
+    "leads":[{
+      "agentId":"smoke-claude","summaryRole":"exempt",
+      "chatChannel":"30000000000000001","match":{"labels":["smoke-claude"]},
+      "botTokenEnv":"SMOKE_CLAUDE_TOKEN","botUserId":"40000000000000001",
+      "canSpawnRunners":false,"backend":"claude-code","carrier":"v2"
+    }]
+  },
+  {
+    "projectName":"smoke-codex-project",
+    "projectRoot":"$GEN_CODEX_ROOT",
+    "leads":[{
+      "agentId":"smoke-codex","summaryRole":"exempt",
+      "chatChannel":"30000000000000002","match":{"labels":["smoke-codex"]},
+      "botTokenEnv":"SMOKE_CODEX_TOKEN","botUserId":"40000000000000002",
+      "canSpawnRunners":false,"backend":"codex-app-server",
+      "codexProfile":"full-access"
+    }]
+  }
+]
+JSON
+printf '%s\n' '{"granularity":"per-lead","setBy":"packaged-smoke","setAt":"2026-09-08T00:00:00.000Z"}' \
+  > "$GEN_STATE/summary-config.json"
+cat > "$SANDBOX/generalized-assignments.json" <<'JSON'
+{
+  "assignments":[
+    {"projectName":"smoke-claude-project","leadId":"smoke-claude","summaryRole":"exempt"},
+    {"projectName":"smoke-codex-project","leadId":"smoke-codex","summaryRole":"exempt"}
+  ],
+  "projectAggregators":[]
+}
+JSON
+GEN_PROJECTS_SHA="$(shasum -a 256 "$GEN_STATE/projects.json" | awk '{print $1}')"
+GEN_SETUP_RC=0
+HOME="$GEN_HOME" FLYWHEEL_SUMMARY_CONFIG_LOCK_HELD=1 \
+  FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$GEN_VALIDATOR" \
+  node "$GEN_CLI" summary-registry migrate \
+    --projects-file "$GEN_STATE/projects.json" \
+    --assignments-file "$SANDBOX/generalized-assignments.json" \
+    --receipt-file "$GEN_STATE/state/summary-registry/migration-receipt.json" \
+    --expected-sha256 "$GEN_PROJECTS_SHA" \
+    > "$SANDBOX/generalized-migrate.out" 2> "$SANDBOX/generalized-migrate.err" \
+  || GEN_SETUP_RC=$?
+
+cp "$PKG_ROOT/scripts/flywheel-lead.sh" "$GEN_STATE/bin/flywheel-lead.sh"
+cp "$PKG_ROOT/scripts/flywheel-lead-wrapper-v2.sh" "$GEN_STATE/bin/flywheel-lead-wrapper-v2.sh"
+cp "$PKG_ROOT/scripts/lib/host-config.sh" "$GEN_STATE/bin/lib/host-config.sh"
+cp "$PKG_ROOT/scripts/lib/lead-address.sh" "$GEN_STATE/bin/lib/lead-address.sh"
+cp "$PKG_ROOT/scripts/lib/lead-host-tmux-gate.sh" "$GEN_STATE/bin/lib/lead-host-tmux-gate.sh"
+cat > "$GEN_STATE/bin/host-tmux-selection-gate.sh" <<'SH'
+#!/bin/bash
+exit 0
+SH
+cat > "$GEN_STATE/bin/codex-home-link-truth.sh" <<'SH'
+#!/bin/bash
+exit 0
+SH
+cat > "$GEN_STATE/bin/tmux" <<'SH'
+#!/bin/bash
+exit 0
+SH
+cat > "$GEN_STATE/bin/claude" <<'SH'
+#!/bin/bash
+exit 0
+SH
+cat > "$GEN_STATE/bin/check-discord-plugin.sh" <<'SH'
+#!/bin/bash
+[ "${1:-}" = "--print-contract" ] && { echo 'discord@flywheel-plugins/v1'; exit 0; }
+exit 0
+SH
+cat > "$GEN_STATE/bin/update-discord-plugin.sh" <<'SH'
+#!/bin/bash
+exit 0
+SH
+chmod +x "$GEN_STATE/bin/"*.sh "$GEN_STATE/bin/lib/"*.sh \
+  "$GEN_STATE/bin/tmux" "$GEN_STATE/bin/claude"
+cat > "$GEN_STATE/.env" <<'ENV'
+SMOKE_CLAUDE_TOKEN=claude-smoke-token
+SMOKE_CODEX_TOKEN=codex-smoke-token
+TEAMLEAD_API_TOKEN=bridge-smoke-token
+ENV
+GEN_CODEX_HOME="$GEN_HOME/.codex-smoke-codex"
+mkdir -p "$GEN_CODEX_HOME/packages/standalone/current"
+cat > "$GEN_CODEX_HOME/packages/standalone/current/codex" <<'SH'
+#!/bin/bash
+exit 0
+SH
+chmod +x "$GEN_CODEX_HOME/packages/standalone/current/codex"
+printf '%s\n' '{}' > "$GEN_CODEX_HOME/auth.json"
+bash "$PKG_ROOT/scripts/materialize-lead-manifests.sh" \
+  --home "$GEN_HOME" --projects "$GEN_STATE/projects.json" \
+  --manifests-dir "$GEN_STATE/manifests" > "$SANDBOX/generalized-materialize.out"
+
+run_generalized() {
+  env -i HOME="$GEN_HOME" PATH="$GEN_STATE/bin:$PATH" \
+    FLYWHEEL_DIR="$PKG_ROOT" FLYWHEEL_STATE_DIR="$GEN_STATE" \
+    FLYWHEEL_LEAD_DRY_RUN="${FLYWHEEL_LEAD_DRY_RUN:-}" \
+    "$@"
+}
+GEN_DRY_RC=0
+run_generalized "$GEN_LAUNCHER" register \
+  --project-name smoke-dry-run --project-root "$GEN_CLAUDE_ROOT" \
+  --lead-id smoke-dry-run --chat-channel 30000000000000003 \
+  --bot-token-env SMOKE_DRY_TOKEN --bot-user-id 40000000000000003 \
+  --harness claude --dry-run \
+  > "$SANDBOX/generalized-register.out" 2> "$SANDBOX/generalized-register.err" \
+  || GEN_DRY_RC=$?
+GEN_CLAUDE_RC=0
+run_generalized "$GEN_LAUNCHER" preflight \
+  "$GEN_STATE/manifests/smoke-claude-project-smoke-claude.json" \
+  > "$SANDBOX/generalized-claude.out" 2> "$SANDBOX/generalized-claude.err" \
+  || GEN_CLAUDE_RC=$?
+GEN_CODEX_RC=0
+run_generalized "$GEN_LAUNCHER" preflight \
+  "$GEN_STATE/manifests/smoke-codex-project-smoke-codex.json" \
+  > "$SANDBOX/generalized-codex.out" 2> "$SANDBOX/generalized-codex.err" \
+  || GEN_CODEX_RC=$?
+GEN_RUN_RC=0
+FLYWHEEL_LEAD_DRY_RUN=1 run_generalized "$GEN_LAUNCHER" run \
+  "$GEN_STATE/manifests/smoke-codex-project-smoke-codex.json" \
+  > "$SANDBOX/generalized-run.out" 2> "$SANDBOX/generalized-run.err" \
+  || GEN_RUN_RC=$?
+if [ "$GEN_SETUP_RC" -eq 0 ] && [ "$GEN_DRY_RC" -eq 0 ] \
+  && [ "$GEN_CLAUDE_RC" -eq 0 ] && [ "$GEN_CODEX_RC" -eq 0 ] \
+  && [ "$GEN_RUN_RC" -eq 0 ] \
+  && jq -e '.dryRun == true' "$SANDBOX/generalized-register.out" >/dev/null \
+  && grep -q 'PASS preflight complete for smoke-claude-project/smoke-claude' \
+    "$SANDBOX/generalized-claude.out" \
+  && grep -q 'PASS preflight complete for smoke-codex-project/smoke-codex' \
+    "$SANDBOX/generalized-codex.out" \
+  && grep -q 'CODEX LEAD DRY RUN' "$SANDBOX/generalized-run.out"; then
+  pass "④e packaged generalized launcher dry-runs registration and both harnesses"
+else
+  fail "④e generalized launcher failed: setup=$GEN_SETUP_RC register=$GEN_DRY_RC claude=$GEN_CLAUDE_RC codex=$GEN_CODEX_RC run=$GEN_RUN_RC $(tail -6 "$SANDBOX/generalized-register.err" "$SANDBOX/generalized-claude.err" "$SANDBOX/generalized-codex.err" "$SANDBOX/generalized-run.err" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# ── ④f internal summary transport stays dormant for packaged customers ─────
 # The release allowlist deliberately registers Raya's repository names because
 # flywheel-comm is shipped as one compiled package. Customer setup assigns this
 # fixture an explicit exempt role: even with otherwise plausible selectors, the
@@ -208,9 +416,9 @@ summary_merge_out="$(env -i HOME="$LEAD_HOME" PATH="$SUMMARY_BIN:$PATH" \
 if grep -q "summary_duty_required" <<<"$summary_out" \
    && grep -q "summary_merge_authority_required" <<<"$summary_merge_out" \
    && [ ! -e "$SANDBOX/summary-gh.log" ]; then
-  pass "④e packaged exempt Lead cannot reach internal Raya summary delivery or merge transport"
+  pass "④f packaged exempt Lead cannot reach internal Raya summary delivery or merge transport"
 else
-  fail "④e packaged summary boundary failed: delivery=$summary_out merge=$summary_merge_out"
+  fail "④f packaged summary boundary failed: delivery=$summary_out merge=$summary_merge_out"
 fi
 
 echo ""

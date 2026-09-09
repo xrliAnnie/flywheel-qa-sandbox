@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP="$(mktemp -d /tmp/f2301-state-root.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/home" "$TMP/codex-home"
-NEW_LINE='STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state/codex-lead/${SAFE_PROJECT}__${SAFE_LEAD}-${IDENTITY_HEX}"'
-OLD_LINE='STATE_DIR="${HOME}/.flywheel/state/codex-lead/${SAFE_PROJECT}__${SAFE_LEAD}-${IDENTITY_HEX}"'
+NEW_LINE='  state_root="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state/codex-lead"'
+OLD_LINE='  state_root="${HOME}/.flywheel/state/codex-lead"'
 
 for variant in new legacy; do
   mkdir -p "$TMP/$variant/scripts/lib" \
@@ -45,7 +45,7 @@ if [ "$?" -ne 0 ]; then
 fi
 
 diff_lines=$(diff -u "$TMP/legacy/scripts/codex-lead.sh" "$TMP/new/scripts/codex-lead.sh" \
-  | grep -Ec '^[-+]STATE_DIR=')
+  | grep -Ec '^[-+]  state_root=')
 if [ "$diff_lines" -ne 2 ]; then
   echo "FAIL: legacy mirror differs by more than the one state-root line"
   exit 1

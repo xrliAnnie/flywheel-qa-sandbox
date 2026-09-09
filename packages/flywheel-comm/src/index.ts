@@ -36,6 +36,7 @@ import { runHoldCommand } from "./commands/hold.js";
 import { inbox, renderInboxInstruction } from "./commands/inbox.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
+import { runLeadRegistryCommand } from "./commands/lead-registry.js";
 import { messageStatus } from "./commands/message-status.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
 import { runOncallDraftCommand } from "./commands/oncall-draft.js";
@@ -123,6 +124,7 @@ Commands:
   chat-ingest   Enqueue one Discord inbound into the unified mailbox
   send      Send an instruction to a runner (Lead use)
   lead-identity  Resolve one immutable Lead identity from an explicit registry selector
+  lead-registry  Add, recover, or select an installable Lead registry row
   summary-registry  Migrate or verify the FLY-2030 summary assignment registry fence
   summary   Validate and deliver one Lead-authored summary PR; summary verify-pr
             validates a Raya PR's complete current-head diff and prints its verified SHA;
@@ -288,6 +290,9 @@ async function main(): Promise<void> {
 			break;
 		case "lead-identity":
 			process.exitCode = await runLeadIdentityCommand(commandArgs);
+			break;
+		case "lead-registry":
+			process.exitCode = runLeadRegistryCommand(commandArgs);
 			break;
 		case "summary-registry":
 			process.exitCode = runSummaryRegistryCommand(commandArgs);

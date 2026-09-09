@@ -147,7 +147,9 @@ for f in flywheel-lead-wrapper-v2.sh \
 done
 cp "$REPO_ROOT/scripts/lib/host-config.sh" "$RR/scripts/lib/host-config.sh"
 cp "$REPO_ROOT/scripts/lib/lead-address.sh" "$RR/scripts/lib/lead-address.sh"
-chmod +x "$RR/scripts/lib/host-config.sh" "$RR/scripts/lib/lead-address.sh"
+cp "$REPO_ROOT/scripts/lib/lead-host-tmux-gate.sh" "$RR/scripts/lib/lead-host-tmux-gate.sh"
+chmod +x "$RR/scripts/lib/host-config.sh" "$RR/scripts/lib/lead-address.sh" \
+  "$RR/scripts/lib/lead-host-tmux-gate.sh"
 echo '#!/bin/bash' > "$RR/scripts/flywheel-fleet.sh"; chmod +x "$RR/scripts/flywheel-fleet.sh"
 echo '# lib' > "$RR/scripts/lib/fleet-sanitize.sh"
 echo '# bridge plist' > "$RR/scripts/launchd/com.flywheel.bridge.plist"

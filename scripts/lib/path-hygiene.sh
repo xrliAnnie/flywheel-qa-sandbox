@@ -152,6 +152,7 @@ packages/claude-runner/src/tmux-server-environment.ts
 scripts/lib/kill-ledger.sh
 scripts/lib/tmux-server-rescue.sh
 scripts/flywheel-lead-wrapper-v2.sh
+scripts/flywheel-lead.sh
 scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
 scripts/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh

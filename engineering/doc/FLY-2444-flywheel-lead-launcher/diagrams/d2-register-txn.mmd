@@ -1,0 +1,19 @@
+stateDiagram-v2
+  [*] --> 持锁
+  持锁 --> 拒绝: intent pending / 非 per-lead / 回执陈旧
+  持锁 --> 续跑: 同一行已在且回执一致(零写)
+  持锁 --> 校验候选: 新行(内存)
+  校验候选 --> 拒绝: 重名 / root 冲突 / 校验失败
+  校验候选 --> intent_pending: 备份两文件,记 before + planned 哈希
+  intent_pending --> 名册已换: migrate 唯一 writer(rename + fsync)
+  名册已换 --> 回执已换: 写回执
+  回执已换 --> 校验后像: 哈希 == planned 且 verify-activation
+  校验后像 --> 完成: intent done → 删
+  intent_pending --> 回滚: 抛错 → 备份恢复
+  名册已换 --> 回滚: 抛错 → 备份恢复
+  名册已换 --> 半完成: 进程中途被终止
+  半完成 --> recover: 下次任何动词退出 78
+  recover --> 完成: 枚举状态匹配 → 恢复名册或收尾
+  recover --> 人工: 其他状态 → 拒绝并打印四组哈希
+  续跑 --> 完成
+  完成 --> [*]

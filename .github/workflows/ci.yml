@@ -677,6 +677,17 @@ jobs:
           bash scripts/__tests__/host-tmux-selection-restart-mounts.test.sh
           bash scripts/__tests__/host-tmux-selection-s0-scope.test.sh
 
+      # FLY-2444: repository-neutral Lead registration, launch, lifecycle,
+      # read-only host preflight, and packaged migration closure.
+      - name: Test — FLY-2444 generalized Lead launcher
+        run: |
+          bash scripts/__tests__/flywheel-lead.test.sh
+          bash scripts/__tests__/flywheel-lead-packaging.test.sh
+          bash scripts/__tests__/host-tmux-selection-gate-probe.test.sh
+          bash scripts/__tests__/lead-restart-lifecycle-generic-carrier.test.sh
+          bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh
+          bash packages/teamlead/scripts/__tests__/codex-lead-state-dir-parity.test.sh
+
       # FLY-1501: the restart-storm brake and the launchd heartbeat guard are
       # the mechanisms that stop a production restart storm, so their contract
       # suites must not be hand-run only. The script-tests job enumerates files

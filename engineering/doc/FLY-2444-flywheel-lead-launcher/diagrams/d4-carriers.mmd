@@ -1,0 +1,22 @@
+flowchart TB
+  subgraph plist["常驻服务 plist(五种已审载体形状)"]
+    C1["flywheel-lead-wrapper-v2.sh manifest<br/>Claude(既有)"]
+    C2["flywheel-codex-lead-wrapper-mufasa-…<br/>手写(既有)"]
+    C3["flywheel-codex-lead-wrapper-codex-infra-bot.sh<br/>手写(既有)"]
+    C4["flywheel-codex-lead-wrapper-raya-…<br/>手写(既有)"]
+    C5["flywheel-lead.sh manifest<br/>通用 Codex(新,argc 3)"]
+  end
+  subgraph auth["restart-services 的两道白名单(各加恰好一个字面量 case)"]
+    A1["lead-restart-lifecycle.sh<br/>authority:label + manifest + backend + profile"]
+    A2["host-tmux-selection-gate.sh<br/>census:basename + 部署字节 cmp + gate 字面量"]
+  end
+  C1 --> A1
+  C2 --> A1
+  C3 --> A1
+  C4 --> A1
+  C5 --> A1
+  A1 --> A2
+  A2 --> W["整批 Lead 重启波次放行"]
+  X["未登记 basename"] -. die .-> A2
+  C5 --> R["codex-lead.sh(唯一一次身份解析 · state dir 镜像 Bridge)"]
+  R --> T["codex-lead-tui-runtime.js(拥有 daemon)"]

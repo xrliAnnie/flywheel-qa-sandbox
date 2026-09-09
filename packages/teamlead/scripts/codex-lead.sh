@@ -1,8 +1,8 @@
 #!/bin/bash
 # FLY-224 Phase 2: codex-lead.sh — the codex-app-server backend launcher.
 #
-# Dormant direct launcher retained for operator QA; production launchd dispatch
-# is Claude wrapper-v2 only. It takes the same positional args as claude-lead.sh:
+# Direct backend launcher used by the generalized flywheel-lead carrier and by
+# operator QA. It takes the same positional args as claude-lead.sh:
 #
 #   codex-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>]
 #
@@ -13,14 +13,63 @@
 #     gateway + canonical outbound (Phase 4), MCP argv injection (Phase 5) and
 #     the health/supervisor (Phase 6).
 #
-# Phase 2 boundary: the wrapper→backend dispatch + this launcher + the state-dir
-# bootstrap are wired here. The runtime entrypoint it execs is filled in by the
-# later phases; until then it fails loudly rather than pretending to be live.
-#
 # Claude path (claude-lead.sh) is UNCHANGED by this file.
 set -euo pipefail
 
 log() { echo "[codex-lead $(date '+%H:%M:%S')] $*" >&2; }
+
+resolve_codex_lead_state_dir() {
+  local project_name="$1" lead_id="$2" state_root legacy safe_project safe_lead identity_hex mapped
+  if [ "${FLYWHEEL_CODEX_LEAD_STATE_DIRS+x}" = x ]; then
+    if ! mapped="$(node - "$project_name" "$lead_id" <<'NODE'
+const path = require("node:path");
+let parsed;
+try {
+  parsed = JSON.parse(process.env.FLYWHEEL_CODEX_LEAD_STATE_DIRS);
+} catch {
+  process.stderr.write("FLYWHEEL_CODEX_LEAD_STATE_DIRS must be valid JSON\n");
+  process.exit(1);
+}
+const projectName = process.argv[2];
+const leadId = process.argv[3];
+const stateDir = parsed && typeof parsed === "object" &&
+  parsed[projectName] && typeof parsed[projectName] === "object"
+  ? parsed[projectName][leadId]
+  : undefined;
+if (typeof stateDir !== "string" || !path.isAbsolute(stateDir)) {
+  process.stderr.write(`FLYWHEEL_CODEX_LEAD_STATE_DIRS has no absolute path for ${projectName}/${leadId}\n`);
+  process.exit(1);
+}
+process.stdout.write(stateDir);
+NODE
+    )"; then
+      log "ERROR: unable to resolve mapped Codex Lead state directory."
+      return 78
+    fi
+    printf '%s\n' "$mapped"
+    return 0
+  fi
+
+  state_root="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state/codex-lead"
+  legacy="${state_root}/${lead_id}"
+  if [ -d "$legacy" ]; then
+    printf '%s\n' "$legacy"
+    return 0
+  fi
+  safe_project=$(printf '%s' "$project_name" | tr -c 'a-zA-Z0-9_-' '_')
+  safe_lead=$(printf '%s' "$lead_id" | tr -c 'a-zA-Z0-9_-' '_')
+  identity_hex=$(printf '%s\037%s' "$project_name" "$lead_id" | od -An -v -tx1 | tr -d ' \n')
+  printf '%s/%s__%s-%s\n' "$state_root" "$safe_project" "$safe_lead" "$identity_hex"
+}
+
+if [ "${1:-}" = "--print-state-dir" ]; then
+  if [ "$#" -ne 3 ] || [[ ! "${2:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || [ -z "${3:-}" ]; then
+    log "ERROR: Usage: codex-lead.sh --print-state-dir <lead-id> <project-name>"
+    exit 64
+  fi
+  resolve_codex_lead_state_dir "$3" "$2" || exit $?
+  exit 0
+fi
 
 SELECTED_LEAD_ID="${1:?Usage: codex-lead.sh <lead-id> <project-dir> [project-name] [flags]}"
 PROJECT_DIR="${2:?project-dir required}"
@@ -66,6 +115,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/canonical-lead-identity.sh
 . "${SCRIPT_DIR}/lib/canonical-lead-identity.sh"
 canonical_lead_identity_resolve "$SELECTED_PROJECT_NAME" "$SELECTED_LEAD_ID"
+if [ "${FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST+x}" = x ] \
+  && [ "$FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST" != "$FLYWHEEL_LEAD_PROJECTS_DIGEST" ]; then
+  log "ERROR: identity_projects_digest_drift: selector expected ${FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST}, resolver read ${FLYWHEEL_LEAD_PROJECTS_DIGEST}."
+  exit 78
+fi
 
 # ── vendor-neutral bootstrap: per-(project,lead) state dir ──────
 # CR Phase 2a #1 (R2): the directory key must be TRULY injective — a truncated
@@ -75,16 +129,21 @@ canonical_lead_identity_resolve "$SELECTED_PROJECT_NAME" "$SELECTED_LEAD_ID"
 # different identities always produce different dir names — by construction, not
 # by hash luck. A short lossy `SAFE_*` prefix is kept only for human readability;
 # the hex suffix is what guarantees uniqueness.
-SAFE_PROJECT=$(printf '%s' "$FLYWHEEL_PROJECT_NAME" | tr -c 'a-zA-Z0-9_-' '_')
-SAFE_LEAD=$(printf '%s' "$FLYWHEEL_LEAD_ID" | tr -c 'a-zA-Z0-9_-' '_')
-IDENTITY_HEX=$(printf '%s\037%s' "$FLYWHEEL_PROJECT_NAME" "$FLYWHEEL_LEAD_ID" | od -An -v -tx1 | tr -d ' \n')
-STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state/codex-lead/${SAFE_PROJECT}__${SAFE_LEAD}-${IDENTITY_HEX}"
-mkdir -p "$STATE_DIR"
-chmod 700 "$STATE_DIR" 2>/dev/null || true
+STATE_DIR="$(resolve_codex_lead_state_dir "$FLYWHEEL_PROJECT_NAME" "$FLYWHEEL_LEAD_ID")" || exit $?
+if [ "${FLYWHEEL_LEAD_ACTIONS_STATE_DIR+x}" = x ] \
+  && [ "$FLYWHEEL_LEAD_ACTIONS_STATE_DIR" != "$STATE_DIR" ]; then
+  log "ERROR: lead actions state directory must equal resolved Codex Lead state directory (${STATE_DIR})."
+  exit 78
+fi
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+  mkdir -p "$STATE_DIR"
+  chmod 700 "$STATE_DIR" 2>/dev/null || true
+fi
 
 export FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$PROJECT_DIR"
 export FLYWHEEL_CODEX_LEAD_SUBDIR="$SUBDIR"
 export FLYWHEEL_CODEX_LEAD_STATE_DIR="$STATE_DIR"
+export FLYWHEEL_LEAD_ACTIONS_STATE_DIR="$STATE_DIR"
 
 # ── FLY-898: fleet-wide core-room mention gate signal (non-CoS Codex lead) ────
 # A Codex lead that subscribes to a core room (FLYWHEEL_LEAD_CORE_CHANNEL_ID set)
@@ -143,7 +202,9 @@ if [ "${FLYWHEEL_CODEX_LEAD_MODE:-headless}" = "tui" ]; then
   # the side-effecting ensures on a real start.
   if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
     FLYWHEEL_CODEX_TUI_HOME="$CODEX_HOME" FLYWHEEL_CODEX_TUI_CWD="${FLYWHEEL_CODEX_TUI_CWD:?FLYWHEEL_CODEX_TUI_CWD required in tui mode}"     /bin/bash "$TUI_HOME_SH" ensure-home
-    FLYWHEEL_CODEX_TUI_HOME="$CODEX_HOME" /bin/bash "$TUI_HOME_SH" ensure-daemon
+    if [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" != "full-access" ]; then
+      FLYWHEEL_CODEX_TUI_HOME="$CODEX_HOME" /bin/bash "$TUI_HOME_SH" ensure-daemon
+    fi
   fi
   TUI_RUNTIME_DIST="${SCRIPT_DIR}/../dist/lead-backends/codex/codex-lead-tui-runtime.js"
   TUI_RUNTIME_SRC="${SCRIPT_DIR}/../src/lead-backends/codex/codex-lead-tui-runtime.ts"

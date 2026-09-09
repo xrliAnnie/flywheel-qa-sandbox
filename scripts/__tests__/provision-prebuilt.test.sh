@@ -58,13 +58,13 @@ STUB_PATH="$STUB_BIN:/usr/bin:/bin"
 mk_root() {
   local rr="$1" prebuilt="${2:-}"
   mkdir -p "$rr/scripts/lib" "$rr/scripts/packaged"
-  for f in flywheel-lead-wrapper-v2.sh \
+  for f in flywheel-lead.sh flywheel-lead-wrapper-v2.sh \
            flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
            flywheel-bridge-wrapper.sh daily-standup.sh \
            materialize-lead-manifests.sh host-tmux-selection-gate.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$rr/scripts/$f"
   done
-  for f in lib/host-config.sh lib/lead-address.sh lib/lead-restart-lifecycle.sh lib/script-sanity.sh lib/supervisor.sh; do
+  for f in lib/host-config.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/lead-restart-lifecycle.sh lib/script-sanity.sh lib/supervisor.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$rr/scripts/$f"
   done
   cp -p "$REPO_ROOT/scripts/packaged/bootstrap-services.sh" "$rr/scripts/packaged/"
@@ -158,11 +158,13 @@ EOF
 out="$(_prov "$H" "$RR" "$FD" flywheel-home)"; rc=$?
 if [ "$rc" -eq 0 ] \
    && [ -f "$H/.flywheel/bin/flywheel-bridge-wrapper.sh" ] \
+   && [ -x "$H/.flywheel/bin/flywheel-lead.sh" ] \
    && [ -f "$H/.flywheel/bin/flywheel-lead-wrapper-v2.sh" ] \
    && [ -f "$H/.flywheel/bin/flywheel-lead-attach.sh" ] \
    && [ -x "$H/.flywheel/bin/host-tmux-selection-gate.sh" ] \
    && [ -f "$H/.flywheel/bin/lib/host-config.sh" ] \
    && [ -f "$H/.flywheel/bin/lib/lead-address.sh" ] \
+   && [ -x "$H/.flywheel/bin/lib/lead-host-tmux-gate.sh" ] \
    && [ ! -e "$H/.flywheel/bin/restart-services.sh" ]; then
   pass "P3a flywheel-home prebuilt: wrappers + host-config lib closure, no restart-services.sh"
 else
@@ -206,7 +208,9 @@ if [ "$rc" -eq 0 ] \
    && [ ! -e "$CODEX_PLIST" ] \
    && grep -q "$H/.flywheel/bin/flywheel-bridge-wrapper.sh" "$BR_PLIST" \
    && grep -q "$H/.flywheel/bin/flywheel-lead-wrapper-v2.sh" "$CLAUDE_PLIST" \
+   && [ -x "$H/.flywheel/bin/flywheel-lead.sh" ] \
    && [ -x "$H/.flywheel/bin/host-tmux-selection-gate.sh" ] \
+   && [ -x "$H/.flywheel/bin/lib/lead-host-tmux-gate.sh" ] \
    && grep -q "$H/.flywheel/runtime/current/scripts/daily-standup.sh" "$SU_PLIST" \
    && grep -q "skipping bespoke backend codex-app-server" <<<"$out" \
    && grep -q "launchctl bootstrap" "$CALLS" \

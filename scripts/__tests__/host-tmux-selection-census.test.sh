@@ -24,6 +24,7 @@ flywheel-lead-wrapper-v2.sh
 flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh
 flywheel-codex-lead-wrapper-codex-infra-bot.sh
+flywheel-lead.sh
 "
 for wrapper in $REGISTERED_WRAPPERS; do
   cp "$REPO_ROOT/scripts/$wrapper" "$SOURCE_DIR/$wrapper"
@@ -32,7 +33,7 @@ for wrapper in $REGISTERED_WRAPPERS; do
 done
 
 write_plist() {
-  local label="$1" wrapper="$2"
+  local label="$1" wrapper="$2" manifest="${3:-}"
   {
     printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
     printf '%s\n' '<plist version="1.0"><dict>'
@@ -40,6 +41,7 @@ write_plist() {
     printf '%s\n' '<key>ProgramArguments</key><array>'
     printf '%s\n' '<string>/bin/bash</string>'
     printf '<string>%s</string>\n' "$INSTALLED_DIR/$wrapper"
+    [ -z "$manifest" ] || printf '<string>%s</string>\n' "$manifest"
     printf '%s\n' '</array><key>KeepAlive</key><true/></dict></plist>'
   } > "$PLIST_DIR/$label.plist"
 }
@@ -53,6 +55,10 @@ write_plist com.flywheel.lead.raya-raya \
   flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh
 write_plist com.flywheel.lead.flywheel-codex-infra-bot-lead \
   flywheel-codex-lead-wrapper-codex-infra-bot.sh
+GENERIC_MANIFEST="$HOME_ROOT/.flywheel/manifests/external-demo-lead.json"
+mkdir -p "$(dirname "$GENERIC_MANIFEST")"
+printf '%s\n' '{}' > "$GENERIC_MANIFEST"
+write_plist com.flywheel.lead.external-demo-lead flywheel-lead.sh "$GENERIC_MANIFEST"
 
 CANDIDATES="$SANDBOX/loaded-candidates.tsv"
 for index in $(seq 1 14); do
@@ -62,6 +68,7 @@ printf '%s\n' \
   $'growth-mufasa-lead\tfixture\tmufasa\t-\trestart\tplist' \
   $'raya-raya\tfixture\traya\t-\trestart\tplist' \
   $'flywheel-codex-infra-bot-lead\tfixture\tinfra\t-\trestart\tplist' \
+  $'external-demo-lead\texternal\tdemo-lead\t'"$GENERIC_MANIFEST"$'\trestart\tplist' \
   >> "$CANDIDATES"
 cp "$CANDIDATES" "$SANDBOX/loaded-candidates.base.tsv"
 
@@ -86,11 +93,11 @@ run_census() {
 run_census healthy
 
 if [ "$CENSUS_RC" -eq 0 ] \
-  && grep -Fq 'census pass plists=17 generic=14 codex-mufasa=1 codex-infra-bot=1 codex-raya=1' \
+  && grep -Fq 'census pass plists=18 generic=14 codex-generic=1 codex-mufasa=1 codex-infra-bot=1 codex-raya=1' \
     "$SANDBOX/healthy.out"; then
-  pass "all 17 positively-loaded Lead plists map to the four registered carriers"
+  pass "all 18 positively-loaded Lead plists map to the five registered carriers"
 else
-  fail "healthy 17-Lead census (rc=$CENSUS_RC)" \
+  fail "healthy 18-Lead census (rc=$CENSUS_RC)" \
     "$(cat "$SANDBOX/healthy.err" 2>/dev/null)"
 fi
 
@@ -101,7 +108,7 @@ write_plist com.flywheel.lead.skipped-unknown flywheel-unknown-lead-wrapper.sh
 printf '%s\n' $'skipped-unknown\t-\t-\t-\tconfig-drift\tplist' >> "$CANDIDATES"
 run_census classified-skip
 if [ "$CENSUS_RC" -eq 0 ] \
-  && grep -Fq 'census pass plists=17 generic=14 codex-mufasa=1 codex-infra-bot=1 codex-raya=1' \
+  && grep -Fq 'census pass plists=18 generic=14 codex-generic=1 codex-mufasa=1 codex-infra-bot=1 codex-raya=1' \
     "$SANDBOX/classified-skip.out"; then
   pass "non-restart loaded classifications do not veto healthy production Leads"
 else
@@ -177,6 +184,12 @@ if [ "$CENSUS_RC" -ne 0 ] \
 else
   fail "mountless deployed wrapper was accepted (rc=$CENSUS_RC)" \
     "$(cat "$SANDBOX/mountless.err" 2>/dev/null)"
+fi
+
+if [ "$(grep -Ec '^[[:space:]]*flywheel-lead\.sh\)' "$GATE")" -eq 1 ]; then
+  pass "census contains exactly one literal generic carrier classification case"
+else
+  fail "census must add exactly one literal generic carrier classification case"
 fi
 
 echo ""

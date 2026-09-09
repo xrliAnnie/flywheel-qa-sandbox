@@ -51,7 +51,7 @@ for f in lib/script-sanity.sh lib/path-hygiene.sh lib/bounded-run.sh \
 done
 chmod 0755 "$FR/scripts/meta-alert.sh" "$FR/scripts/lead-alert.sh" \
   "$FR/scripts/lead-patrol-snapshot.sh" "$FR/scripts/flywheel-node-dwell-control.mjs"
-for f in flywheel-lead-wrapper-v2.sh \
+for f in flywheel-lead-wrapper-v2.sh flywheel-lead.sh \
          flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
          flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
          resident-codex-lead-recover.sh \
@@ -59,7 +59,7 @@ for f in flywheel-lead-wrapper-v2.sh \
          flywheel-lead-attach.sh \
          flywheel-view-attach.sh flywheel-node-status.sh \
          flywheel-bridge-wrapper.sh restart-services.sh \
-         host-tmux-selection-gate.sh; do
+         host-tmux-selection-gate.sh lib/lead-host-tmux-gate.sh; do
   { echo '#!/bin/bash'; pad "echo r-$f"; } > "$FR/scripts/$f"
 done
 { echo '#!/bin/bash'; pad 'echo r-lead-address'; } > "$FR/scripts/lib/lead-address.sh"
@@ -193,7 +193,7 @@ run_converge() {  # <state-dir> [extra env...] → rc; converge uses the REAL le
 seed_state() {  # <state-dir> — converged copy lane + healthy meta link
   local st="$1" f
   rm -rf "$st"; mkdir -p "$st/bin/lib"
-  for f in flywheel-lead-wrapper-v2.sh \
+  for f in flywheel-lead-wrapper-v2.sh flywheel-lead.sh \
            flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
            flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
            resident-codex-lead-recover.sh \
@@ -201,7 +201,8 @@ seed_state() {  # <state-dir> — converged copy lane + healthy meta link
            flywheel-lead-attach.sh \
            flywheel-view-attach.sh flywheel-node-status.sh \
            flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py \
-           host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh; do
+           host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh \
+           lib/lead-host-tmux-gate.sh; do
     cp "$FR/scripts/$f" "$st/bin/$f"; chmod 555 "$st/bin/$f"
   done
   ln -sfn "$FR/scripts/meta-alert.sh" "$st/bin/meta-alert.sh"

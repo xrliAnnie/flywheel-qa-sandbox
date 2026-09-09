@@ -116,6 +116,11 @@
 			"disposition": "one_shot_cli"
 		},
 		{
+			"file": "packages/flywheel-comm/src/commands/lead-registry.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
 			"file": "packages/flywheel-comm/src/commands/progress.ts",
 			"sync_child": 1,
 			"disposition": "one_shot_cli"

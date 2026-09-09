@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2444 · 任意仓起一个 Lead:flywheel-lead 启动器 + 注册一行 + 一页文档 — 设计方案</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .section { margin-bottom: 34px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15.5px; color: #1a365d; margin-bottom: 8px; }
+  .card p { margin-bottom: 8px; font-size: 14.5px; }
+  .card ul, .card ol { margin: 6px 0 8px 20px; font-size: 14.5px; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 17px; font-weight: 600; color: #1d1d1f; }
+  .jargon { color: #515154; font-size: 13.5px; background: #f5f5f7; border-radius: 8px; padding: 8px 12px; margin: 6px 0 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 8px 0 10px; }
+  th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .diagram { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 12px; margin: 10px 0 14px; overflow-x: auto; }
+  .diagram svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  .caption { color: #86868b; font-size: 12.5px; margin: -6px 0 12px 4px; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 13.5px; color: #1d1d1f; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; }
+  #summary-card { border-left-color: #af52de; }
+  .summary-chunk { white-space: pre-wrap; font-size: 13px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin: 10px 0; min-height: 40px; font-family: 'SF Mono', monospace; }
+  .btn { background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn:hover { background: #0066d6; }
+  .btn.small { padding: 6px 12px; font-size: 13px; }
+  #copy-status { color: #34c759; font-size: 13px; margin-left: 10px; }
+  .chunk-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+  .chunk-label { color: #86868b; font-size: 12.5px; }
+  @media (max-width: 640px) { .card { padding: 16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2444 · 任意仓起一个 Lead:一个启动器、一条注册命令、一页照着念就能跑的文档</h1>
+  <div class="meta">设计方案(design 节点交付)· 2026-09-08 · Issue <span class="mono">FLY-2444</span> · Epic <span class="mono">FLY-2441</span>(子单 ③)· Codex 设计评审 4 轮(9 → 10 → 7 → 0),第 4 轮 APPROVED · Lead(Tadashi)三条裁定已折入 · 代码零改动,本页只是设计</div>
+
+  <!-- 1 -->
+  <div class="section" data-section="1. 一句话总结">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span> 1. 一句话总结</div>
+    <div class="card green">
+      <p class="lede">任何装了 Flywheel 的仓库,跑三条命令(注册 → 起 → 验)就能让一个 Claude 或 Codex Lead 常驻上线,消息统一先进同一张 mailbox 表、由 Bridge 投递、回复经 Bridge 出站;不再一个 Lead 手写一套脚本。Raya 是第一个按这份文档上线的外仓 Lead(由 ④ 在 founder 窗口执行)。</p>
+      <div class="jargon">名词:<b>Lead</b> = 常驻在某个 Discord 频道里替你干活的 AI 主管进程(用 Claude 或 Codex 当大脑)。<b>mailbox</b> = Flywheel 的统一收件箱,一张数据库表,所有 Discord 消息先落这里再被投递。<b>Bridge</b> = Flywheel 的总控进程,负责从 mailbox 往各 Lead 投递、并替 Lead 把回复发回 Discord。<b>harness</b> = 「用哪家 AI 当大脑」的那层壳:Claude 版或 Codex 版。</div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s1" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 2 -->
+  <div class="section" data-section="2. 今天的现状与四个差距">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span> 2. 今天的现状与四个差距(实核 2026-09-08)</div>
+    <div class="card red">
+      <table>
+        <tr><th>你的期望</th><th>今天</th><th>差在哪</th></tr>
+        <tr><td>一个启动器,选 Claude / Codex</td><td>Claude 已是通用的(名册一行 → 通用启动器);Codex 是三份手写脚本(mufasa / raya / infra-bot),频道 id 和路径写死</td><td>Codex 缺「把名册一行变成一组启动参数」的那层</td></tr>
+        <tr><td>注册 = 一行</td><td>改 projects.json 一行之后,还必须重铸一份「summary 回执」,否则下一次服务重启被拒;而且新 Lead 要等 Bridge 重启才有投递泵</td><td>没有一条命令把这三件事做完并说清「什么时候生效」</td></tr>
+        <tr><td>装了包就能起</td><td>安装包只会装 Claude 形态的常驻服务,Codex 被跳过;而且三份写死别人频道的手写脚本被整个打进了安装包</td><td>缺按名册渲染的 Codex 常驻服务</td></tr>
+        <tr><td>一页文档 + 验证「第一条消息走了 mailbox」</td><td>只有 raya 专用的 801 行手工 runbook;探针散落(查 mailbox 行、敲门铃、看 socket)没人串起来</td><td>缺一页外仓视角的「装 / 注册 / 起 / 验」和一个 verify 命令</td></tr>
+      </table>
+      <div class="jargon">名词:<b>projects.json</b>(名册)= Flywheel 记录「有哪些项目、每个项目有哪些 Lead、用哪个 Discord 频道和机器人身份」的唯一权威文件。<b>summary 回执</b> = 上一次全体 Lead「汇报角色」分配的一份存根;它和名册必须一致,否则重启前的安全检查会拒绝整批重启。</div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s2" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 3 -->
+  <div class="section" data-section="3. 核心流程">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span> 3. 核心流程:三条命令怎么把一个 Lead 送上线</div>
+    <div class="diagram">__SVG_D1__</div>
+    <div class="caption">图 1 · 注册(持锁、一次写完)→ 起(按大脑类型分叉,不写新运行时)→ 消息走同一张表 → 验(十项检查)。</div>
+    <div class="card">
+      <ul>
+        <li><b><span class="mono">flywheel-lead.sh register …</span></b>:把「一行」真正变成一行 —— 持锁校验、写名册、同事务重铸 summary 回执、生成启动清单;打印「生效于下次 Bridge 重启(班车 00:00 / 12:00 或 founder 票)」。</li>
+        <li><b><span class="mono">flywheel-lead.sh preflight</span> → <span class="mono">install</span></b>:先做一遍<b>纯只读</b>体检(不改任何文件),全过才装常驻服务。Claude 直接用今天已在生产跑的启动器;Codex 走通用的 <span class="mono">codex-lead.sh</span>(三年前就写好但一直没人用的通用版),由入口把名册里的频道、目录、大脑家目录等按约定填进去。</li>
+        <li><b><span class="mono">flywheel-lead.sh verify --message-id</span></b>:你在频道打一句,把消息 id 交给它,它顺着「mailbox 行 → Lead 日志 → 发件箱 → Bridge 去重表」逐跳按精确键核对,证明这句话确实走了 mailbox、回复确实经 Bridge 出站。</li>
+      </ul>
+      <div class="jargon">名词:<b>纯只读体检(preflight)</b> = 只看不动:文件在不在、身份对不对、登录有没有;不创建目录、不写标记,所以失败了不留下半成品。<b>投递泵</b> = Bridge 里为每个 Lead 单独跑的那个「从 mailbox 取行、送到 Lead」的循环;它只在 Bridge 启动时按名册建立,所以新 Lead 要等一次重启。</div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s3" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 4 -->
+  <div class="section" data-section="4. 注册一行的事务">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span> 4. 「注册一行」内部:为什么要当成一笔事务</div>
+    <div class="diagram">__SVG_D2__</div>
+    <div class="caption">图 2 · 注册的状态机:先证明前态一致,再一个写者落两份文件;中途报错自动回滚;中途被杀留下「意向文件」,下次任何命令都先拒绝并给出恢复路径。</div>
+    <div class="card purple">
+      <ul>
+        <li><b>前态校验</b>:动手前先用重启脚本用的同一条检查证明「名册 ⟷ 回执」当前一致;不一致就拒绝,不替人决定。</li>
+        <li><b>一个写者</b>:复用已有的回执重铸函数写名册和回执,不自己再写一遍文件;落盘后核对哈希必须等于事先算好的「计划值」。</li>
+        <li><b>可续跑</b>:如果名册写好了但启动清单没生成,重跑同一条命令会识别「同一行已在」并直接补后半段,不会报重名。</li>
+        <li><b>崩溃恢复</b>:在第一次写文件前先落一份意向文件(记录改前 / 计划后的哈希和备份路径)。被杀之后,<span class="mono">recover</span> 只处理三种能百分百判定的状态,其余一律拒绝并把四组哈希打出来,交给人。</li>
+        <li><b>不做的</b>:不自动修复未知状态;不提供「注销」命令(注销是手工三步,文档给逐字命令)。</li>
+      </ul>
+      <div class="jargon">名词:<b>事务</b> = 要么全做完、要么等于没做过;中间状态不能被别人看见。<b>哈希</b> = 文件内容的指纹,改一个字指纹就变,用来证明「文件就是我想写的那份」。<b>意向文件(intent)</b> = 动手前写下的「我打算把 A 改成 B」,崩了以后据此判断做到哪一步。</div>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s4" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 5 -->
+  <div class="section" data-section="5. 数据与结构模型">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span> 5. 数据与结构模型</div>
+    <div class="diagram">__SVG_D3__</div>
+    <div class="caption">图 3 · 名册一行派生出一切:启动清单、常驻服务、回执;Codex 额外有自己的大脑家目录和状态目录。没有新增名册字段。</div>
+    <div class="card">
+      <table>
+        <tr><th>东西</th><th>放哪</th><th>谁写</th><th>作用</th></tr>
+        <tr><td>名册一行</td><td><span class="mono">~/.flywheel/projects.json</span></td><td><span class="mono">register</span>(持锁)</td><td>Lead 身份的唯一权威:项目、频道、机器人身份、大脑类型</td></tr>
+        <tr><td>summary 回执</td><td><span class="mono">~/.flywheel/state/summary-registry/migration-receipt.json</span></td><td>同一次 <span class="mono">register</span></td><td>全体 Lead 汇报角色的存根;重启前检查用</td></tr>
+        <tr><td>启动清单(manifest)</td><td><span class="mono">~/.flywheel/manifests/&lt;项目&gt;-&lt;Lead&gt;.json</span></td><td><span class="mono">register</span> 后半段</td><td>常驻服务的输入;已存在则五个字段必须一致</td></tr>
+        <tr><td>常驻服务</td><td><span class="mono">com.flywheel.lead.&lt;项目&gt;-&lt;Lead&gt;</span></td><td><span class="mono">install</span></td><td>Claude 用既有启动器形状;Codex 用新的通用形状</td></tr>
+        <tr><td>Codex 大脑家目录</td><td><span class="mono">~/.codex-&lt;Lead&gt;</span></td><td>founder 登录一次</td><td>每个 Codex Lead 独立登录、独立配置(FLY-2259 的通用规则)</td></tr>
+        <tr><td>Codex 状态目录</td><td><span class="mono">~/.flywheel/state/codex-lead/…</span></td><td>启动器</td><td>投递 socket、收件日志、发件箱;推导规则和 Bridge 逐字一致</td></tr>
+      </table>
+      <p>persona(这个 Lead 是谁、怎么说话)统一放在<b>各仓自己的</b> <span class="mono">.lead/&lt;Lead&gt;/identity.md</span>,Claude 和 Codex 同一处。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s5" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 6 -->
+  <div class="section" data-section="6. 载体与重启白名单">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span> 6. 新的 Codex 常驻形状怎么进「重启白名单」</div>
+    <div class="diagram">__SVG_D4__</div>
+    <div class="caption">图 4 · 服务重启脚本只认「显式审过」的启动器文件名;本单在两张白名单里各加恰好一条,Claude 形状不变。</div>
+    <div class="card amber">
+      <p>评审时发现的一个硬事实:整批 Lead 重启前有一道「点名」—— 每个常驻服务的启动器文件名必须在白名单里,否则<b>整批重启都被拒</b>,不只是新 Lead。所以通用 Codex 形状必须正式登记:</p>
+      <ul>
+        <li>两个文件各加<b>恰好一条字面量</b>(Lead 裁定):不许通配、不许前缀匹配;绑定强度照抄既有条目(服务名、启动清单、大脑类型、权限档、部署文件逐字节比对)。</li>
+        <li>阴性对照必须有测试:未登记的文件名仍然被拒。</li>
+        <li>不动现有四条,不动重启授权的其它逻辑;<b>不改 Bridge 任何注册 / 授权代码</b>(Lead 明确的停线条件,本单没有触碰)。</li>
+        <li>实现时要交一份证据:加了新条目之后,<b>现有整批 Lead</b> 的重启点名仍然放行。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s6" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 7 -->
+  <div class="section" data-section="7. 关键取舍与被否掉的方案">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span> 7. 关键取舍与被否掉的方案</div>
+    <div class="card purple">
+      <table>
+        <tr><th>取舍</th><th>选了</th><th>没选</th><th>为什么</th></tr>
+        <tr><td>Codex 怎么起</td><td>复用通用 <span class="mono">codex-lead.sh</span> + 一层「名册 → 参数」</td><td>再写一个 Codex 运行时 / 再手写第四份脚本</td><td>运行时早就通用,缺的只是那一层;手写脚本正是要消灭的东西</td></tr>
+        <tr><td>Claude 怎么起</td><td>零改动,直接用生产在跑的启动器和服务形状</td><td>也套进新入口</td><td>不给全体 Claude Lead 增加回归面</td></tr>
+        <tr><td>注册什么时候生效</td><td>明说「等下次 Bridge 重启」</td><td>给 Bridge 加热加载</td><td>热加载要动 Bridge 投递泵,超出最小闭环;另立单</td></tr>
+        <tr><td>支持哪些 Codex 权限档</td><td>只做 full-access(= 与 Claude 同等)</td><td>companion / write-capable 一起做</td><td>那两档各自还要网关、代理、发布门;评审证明「同一行合成规则」对它们不成立</td></tr>
+        <tr><td>Codex 出站</td><td>经 Bridge,且 cross-dept 频道<b>必须留空</b></td><td>直连 Discord(今天的生产做法)</td><td>与 ① FLY-2442 对齐;FLY-2442 落地前声明 roundtable 频道会撞运行时硬门(Lead 裁定)</td></tr>
+        <tr><td>名册加不加新字段</td><td>不加;大脑家目录 key = Lead id,persona 位置靠约定</td><td>加 codexHomeKey / identityPath</td><td>名册是唯一权威,每加一个字段都要过解析器和校验;约定够用</td></tr>
+        <tr><td>崩溃怎么办</td><td>意向文件 + 枚举状态恢复,其余拒绝</td><td>自动修复</td><td>备份不是恢复协议;拒绝比猜错安全</td></tr>
+      </table>
+      <p>Codex 四轮评审共 9 + 10 + 7 = 26 条,全部接受、无一驳回;第 4 轮按 Lead 的收口规则只验前 7 条改没改对,结论 APPROVED。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s7" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 8 -->
+  <div class="section" data-section="8. 诚实边界">
+    <div class="section-title"><span class="dot" style="color:#86868b;">●</span> 8. 诚实边界:这版做什么、不做什么</div>
+    <div class="card gray">
+      <h3>做</h3>
+      <ul>
+        <li>一个入口 <span class="mono">flywheel-lead.sh</span>:register / preflight / install / stop / verify / recover。</li>
+        <li>Codex full-access 的通用启动路径,进入重启白名单;Claude 走既有路径。</li>
+        <li>逐字可复制、每步带成功判据的一页文档;安装包清单登记(让新脚本真的随包出货)。</li>
+      </ul>
+      <h3>不做(每条是决定,不是遗漏)</h3>
+      <ul>
+        <li>不做 Bridge 热加载(注册后要等重启);不改 Bridge 注册 / 授权代码。</li>
+        <li>不做 companion / write-capable 两档;不做「注销」命令;不做崩溃自动修复。</li>
+        <li>不迁移 mufasa / infra-bot 的手写脚本(它们在生产跑着,零字节不动)。</li>
+        <li>不做 Raya 迁移本身(④)、不做语音(⑤);不改名册校验规则(比如纯聊天 Lead 也得填标签)。</li>
+      </ul>
+      <h3>两个必须写在脸上的前提</h3>
+      <ul>
+        <li><b>FLY-2442 既是实现门也是完成门</b>:Codex 出站三个参数的名字、以及 verify 第 10 项「回复经 Bridge 出站」的证据形态,都以 FLY-2442 合入后的合同为准。在它合入前,本单可以先合前半段,但 issue 不能标完成、也不能说「ready for Raya」。</li>
+        <li><b>真机验收归 ④ 的 founder 窗口</b>:在生产名册注册一行 + 重启 Bridge 是部署动作,runner 无权做。本单交付的是工具、文档和在隔离环境(临时 home)里跑通的证据;Raya 按这份文档在窗口里执行,把 verify 十项输出贴回 Epic。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s8" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- 9 -->
+  <div class="section" data-section="9. 你怎么验收">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span> 9. 你怎么验收</div>
+    <div class="card green">
+      <ol>
+        <li>拿 raya 仓(或任何外仓),照一页文档逐字跑 <span class="mono">register</span>:名册出现该行,重启前检查 <span class="mono">verify-activation</span> 报 ok,命令输出「生效于下次 Bridge 重启」。</li>
+        <li><span class="mono">preflight</span> 全 PASS;<span class="mono">install</span> 后服务处于 running,日志出现「real TUI up」(Codex)或「Comm DB:」(Claude)。</li>
+        <li>Bridge 班车重启后:<span class="mono">verify --stage live</span> 前 8 项 PASS(含「投递泵存在」)。</li>
+        <li>在频道打一句,复制消息 id 跑 <span class="mono">verify --message-id</span>:第 9 项显示 mailbox 行已投递;第 10 项按精确键串到 Bridge 去重表(FLY-2442 合入后才算数)。</li>
+        <li>同一份文档再起一个 Claude Lead,第 1–3 步同样通过。</li>
+      </ol>
+      <p>全程不改 flywheel 仓的代码;改的只有 <span class="mono">~/.flywheel</span> 下的配置与服务定义。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s9" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- summary -->
+  <div class="section" data-section="意见汇总">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span> 页面意见汇总</div>
+    <div class="card" id="summary-card">
+      <p>下面会实时汇总你写在各节的意见。点「复制全部意见」把它贴回 Discord 给我们;这是修订反馈,不是通过信号。</p>
+      <div id="summary-chunks"></div>
+      <div class="chunk-row"><button class="btn" id="copy-all" type="button">复制全部意见</button><span id="copy-status"></span></div>
+    </div>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = "【页面意见汇总】FLY-2444";
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly2444-comment:" + (typeof location !== "undefined" && location.pathname ? location.pathname : "/") + ":";
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(".comment-box textarea[data-key]"));
+
+  function load(key) {
+    try { return localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; }
+  }
+  function save(key, value) {
+    try { localStorage.setItem(prefix + key, value); } catch (e) { /* storage unavailable */ }
+  }
+  function sectionTitle(el) {
+    var section = el.closest(".section");
+    return section && section.getAttribute("data-section") ? section.getAttribute("data-section") : "未命名小节";
+  }
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (box) {
+      var text = box.value.trim();
+      if (!text) return;
+      parts.push("[" + sectionTitle(box) + "]\n" + text);
+    });
+    return parts;
+  }
+  function chunk(parts) {
+    var chunks = [];
+    var current = "";
+    parts.forEach(function (part) {
+      var candidate = current ? current + "\n\n" + part : part;
+      if (candidate.length > CHUNK_LIMIT && current) {
+        chunks.push(current);
+        current = part;
+      } else {
+        current = candidate;
+      }
+    });
+    if (current) chunks.push(current);
+    if (chunks.length === 0) chunks.push("(还没有意见)");
+    return chunks.map(function (body, index) {
+      var head = chunks.length > 1 ? MARKER + " (" + (index + 1) + "/" + chunks.length + ")" : MARKER;
+      return head + "\n" + body;
+    });
+  }
+  var lastChunks = [];
+  function render() {
+    lastChunks = chunk(collect());
+    var host = document.getElementById("summary-chunks");
+    while (host.firstChild) host.removeChild(host.firstChild);
+    lastChunks.forEach(function (text, index) {
+      var pre = document.createElement("div");
+      pre.className = "summary-chunk";
+      pre.textContent = text;
+      host.appendChild(pre);
+      if (lastChunks.length > 1) {
+        var row = document.createElement("div");
+        row.className = "chunk-row";
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn small";
+        btn.textContent = "复制第 " + (index + 1) + " 段";
+        btn.addEventListener("click", function () { copyText(text); });
+        var label = document.createElement("span");
+        label.className = "chunk-label";
+        label.textContent = text.length + " 字";
+        row.appendChild(btn);
+        row.appendChild(label);
+        host.appendChild(row);
+      }
+    });
+  }
+  function setStatus(message) {
+    var status = document.getElementById("copy-status");
+    status.textContent = message;
+    setTimeout(function () { status.textContent = ""; }, 2500);
+  }
+  function fallbackCopy(text) {
+    var area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(area);
+    setStatus(ok ? "已复制" : "复制失败,请手动选择文字");
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { setStatus("已复制"); }, function () { fallbackCopy(text); });
+    } else {
+      fallbackCopy(text);
+    }
+  }
+  boxes.forEach(function (box) {
+    box.value = load(box.getAttribute("data-key"));
+    box.addEventListener("input", function () {
+      save(box.getAttribute("data-key"), box.value);
+      render();
+    });
+  });
+  document.getElementById("copy-all").addEventListener("click", function () {
+    copyText(lastChunks.join("\n\n"));
+  });
+  render();
+})();
+</script>
+</body>
+</html>

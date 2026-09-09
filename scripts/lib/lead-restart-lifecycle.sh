@@ -555,6 +555,21 @@ _lead_restart_validate_authority_once() {
       case "$manifest_backend" in ""|claude-code) ;; *) return 1 ;; esac
       backend="claude-code"
       ;;
+    flywheel-lead.sh)
+      [ "$argc" -eq 3 ] || return 1
+      arg2="$(printf '%s' "$plist_json" | jq -er '.argv[2]')" || return 1
+      [ "$arg2" = "$manifest" ] || return 1
+      [ "$project_backend" = "codex-app-server" ] || return 1
+      case "$manifest_backend" in ""|codex-app-server) ;; *) return 1 ;; esac
+      jq -e --arg project "$project" --arg lead "$lead_id" '
+        [.[] | select(.projectName == $project) | (.leads // [])[] | select(.agentId == $lead)] as $matches |
+        ($matches | length) == 1 and
+        $matches[0].codexProfile == "full-access" and
+        $matches[0].canSpawnRunners == false and
+        ($matches[0].companion // false) == false
+      ' "$projects_file" >/dev/null 2>&1 || return 1
+      backend="codex-app-server"
+      ;;
     flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh)
       [ "$argc" -eq 2 ] || return 1
       [ "$project" = "growth" ] && [ "$lead_id" = "mufasa-lead" ] || return 1

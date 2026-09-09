@@ -353,7 +353,7 @@ phase_flywheel_home() {
   # write-protected 555 — a degenerate source must fail the provision loudly,
   # never install silently; bare cp is banned for <state>/bin).
   local f
-  for f in flywheel-lead-wrapper-v2.sh \
+  for f in flywheel-lead.sh flywheel-lead-wrapper-v2.sh \
       flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
       resident-codex-lead-recover.sh \
       flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
@@ -371,7 +371,7 @@ phase_flywheel_home() {
   # The installed wrapper sources support libs beside itself. Publish that
   # closure in both monorepo and prebuilt installs.
   run mkdir -p "$FW/bin/lib"
-  for f in lib/host-config.sh lib/lead-address.sh; do
+  for f in lib/host-config.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh; do
       [ -f "$REPO_ROOT/scripts/$f" ] || die "tree missing support lib: scripts/$f"
       if [ "$DRY_RUN" -eq 1 ]; then
         plan "install (sanity+atomic+555) $REPO_ROOT/scripts/$f -> $FW/bin/$f"

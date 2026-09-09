@@ -18,6 +18,24 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOCK_PATH="${FLYWHEEL_CONFIG_LOCK_FILE:-${PROJECTS_PATH}.cfglock}"
 LOCK_DEADLINE="${FLYWHEEL_CONFIG_LOCK_DEADLINE:-5}"
 
+if [[ -z "${FLYWHEEL_COMM_CLI:-}" ]]; then
+  HOST_CONFIG_LIB="${SCRIPT_DIR}/lib/host-config.sh"
+  if [[ -f "$HOST_CONFIG_LIB" && ! -L "$HOST_CONFIG_LIB" ]]; then
+    # shellcheck source=lib/host-config.sh
+    source "$HOST_CONFIG_LIB"
+    host_config_load || exit $?
+    DIST_CLI="${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js"
+    if [[ -f "$DIST_CLI" && ! -L "$DIST_CLI" ]]; then
+      FLYWHEEL_COMM_CLI="$DIST_CLI"
+      DIST_VALIDATOR="${FLYWHEEL_DIR}/packages/teamlead/dist/bin/validate-projects.js"
+      if [[ -z "${FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR:-}" \
+        && -f "$DIST_VALIDATOR" && ! -L "$DIST_VALIDATOR" ]]; then
+        export FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$DIST_VALIDATOR"
+      fi
+    fi
+  fi
+fi
+
 if [[ -n "${FLYWHEEL_COMM_CLI:-}" ]]; then
   exec "${SCRIPT_DIR}/flywheel-config-lock.sh" "$LOCK_PATH" "$LOCK_DEADLINE" \
     env FLYWHEEL_SUMMARY_CONFIG_LOCK_HELD=1 \

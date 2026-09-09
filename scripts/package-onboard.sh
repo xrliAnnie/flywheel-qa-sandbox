@@ -78,7 +78,8 @@ teamlead:scripts/lib/lead-model-authority-receipt.mjs
 teamlead:scripts/lib/session-ctx-usage.mjs
 teamlead:scripts/lib/mcp-inherit.sh
 teamlead:scripts/lib/reap-orphan-adapters.sh
-teamlead:scripts/lib/lead-body-receipt.sh"}
+teamlead:scripts/lib/lead-body-receipt.sh
+teamlead:scripts/lib/canonical-lead-identity.sh"}
 
 # Curated scripts/ whitelist — EXPLICIT file list, not an ignore list. Every
 # entry here must have a row in the packaged-path audit table
@@ -91,6 +92,10 @@ provision-fleet-host.sh
 daily-standup.sh
 flywheel-bridge-wrapper.sh
 flywheel-lead-wrapper-v2.sh
+flywheel-lead.sh
+flywheel-config-lock.sh
+flywheel-config-lock.py
+migrate-summary-registry.sh
 flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
 flywheel-codex-lead-wrapper-codex-infra-bot.sh
 flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh
@@ -116,6 +121,7 @@ lib/buddy-connect.sh
 lib/fleet-sanitize.sh
 lib/host-config.sh
 lib/lead-address.sh
+lib/lead-host-tmux-gate.sh
 lib/platform-deps.sh
 lib/script-sanity.sh
 lib/path-hygiene.sh

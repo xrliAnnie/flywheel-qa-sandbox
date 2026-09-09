@@ -1,0 +1,21 @@
+sequenceDiagram
+  autonumber
+  participant O as 操作者(外仓)
+  participant FL as flywheel-lead.sh
+  participant REG as projects.json + 回执
+  participant B as Bridge
+  participant L as Lead 进程(Claude / Codex)
+  participant DC as Discord
+  O->>FL: register(一行参数)
+  FL->>REG: 持锁 → 校验 → 写行 + 重铸回执(一个 writer)
+  FL-->>O: 生效于下次 Bridge 重启
+  O->>FL: preflight(纯只读)→ install
+  FL->>L: 常驻服务:claude 走 wrapper-v2 / codex 走 codex-lead.sh
+  Note over B: 班车重启后 Bridge 为该 Lead 建投递泵
+  DC->>L: 频道里一句话
+  L->>REG: 写进同一张 mailbox 表(comm.db)
+  B->>L: 泵投递:Claude 写 JSON inbox / Codex 走 unix socket
+  L->>B: 回复经 Bridge 出站(/api/lead-outbound/send)
+  B->>DC: 发到频道
+  O->>FL: verify --message-id
+  FL-->>O: 十项 PASS/FAIL(mailbox 行 → journal → outbox → Bridge dedup)

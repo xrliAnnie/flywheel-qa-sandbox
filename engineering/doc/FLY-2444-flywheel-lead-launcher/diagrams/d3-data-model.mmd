@@ -1,0 +1,50 @@
+erDiagram
+  PROJECTS_JSON ||--o{ LEAD_ROW : "leads[]"
+  PROJECTS_JSON {
+    string projectName PK
+    string projectRoot
+    string projectRepo
+    string generalChannel
+  }
+  LEAD_ROW {
+    string agentId PK
+    string chatChannel
+    string botTokenEnv
+    string botUserId
+    string backend "claude-code | codex-app-server"
+    string codexProfile "full-access"
+    string summaryRole "recipient"
+    bool canSpawnRunners "false"
+  }
+  LEAD_ROW ||--|| MANIFEST : "materialize"
+  MANIFEST {
+    string leadId
+    string projectName
+    string projectDir
+    string projectsFile
+    string backendId
+  }
+  PROJECTS_JSON ||--|| RECEIPT : "summary 回执(全 Lead 投影摘要)"
+  RECEIPT {
+    string summaryAssignmentDigest
+    string postImageSha256
+  }
+  RECEIPT ||--o| INTENT : "事务中"
+  INTENT {
+    string phase "pending | done"
+    string projectsShaBefore
+    string projectsShaPlanned
+    string backups
+  }
+  MANIFEST ||--|| SERVICE_PLIST : "install"
+  SERVICE_PLIST {
+    string label "com.flywheel.lead.P-L"
+    string argv "wrapper-v2 | flywheel-lead.sh manifest"
+  }
+  LEAD_ROW ||--o| CODEX_STATE : "backend=codex"
+  CODEX_STATE {
+    string codexHome "~/.codex-L"
+    string stateDir "hex 形 / legacy / 映射"
+    string socket "lead-inbox.sock"
+    string journal "journal.db + outbox.db"
+  }
