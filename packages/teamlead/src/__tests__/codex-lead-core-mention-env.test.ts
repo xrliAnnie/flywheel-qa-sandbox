@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
 	chmodSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -13,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const SCRIPTS = join(__dirname, "..", "..", "scripts");
 const LAUNCHER = join(SCRIPTS, "codex-lead.sh");
 
-describe("codex-lead core mention launcher authority", () => {
+describe("codex-lead registry launcher authority", () => {
 	let home: string;
 	let shimDir: string;
 	let dumpFile: string;
@@ -21,7 +22,8 @@ describe("codex-lead core mention launcher authority", () => {
 	beforeEach(() => {
 		home = mkdtempSync(join(tmpdir(), "fly1981-codex-lead-home-"));
 		shimDir = mkdtempSync(join(tmpdir(), "fly1981-codex-lead-shim-"));
-		dumpFile = join(home, "mention-gate.txt");
+		dumpFile = join(home, "launcher-env.json");
+		mkdirSync(join(home, ".flywheel"), { recursive: true });
 		const nodeShim = join(shimDir, "node");
 		writeFileSync(
 			nodeShim,
@@ -42,7 +44,9 @@ case " $* " in
     exit 0
     ;;
 esac
-printf '%s' "\${FLYWHEEL_LEAD_CORE_MENTION_GATED-unset}" > "$DUMP_FILE"
+printf '{"core":"%s","ignored":"%s"}' \
+  "\${FLYWHEEL_LEAD_CORE_MENTION_GATED-unset}" \
+  "\${FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS-unset}" > "$DUMP_FILE"
 exit 0
 `,
 		);
@@ -54,7 +58,23 @@ exit 0
 		rmSync(shimDir, { recursive: true, force: true });
 	});
 
-	function launch(inherited: string, computed: boolean | "fail"): string {
+	function launch(
+		inherited: string,
+		computed: boolean | "fail",
+		voiceBotUserId?: string,
+		inheritedIgnored = "stale-bot",
+	): { core: string; ignored: string } {
+		writeFileSync(
+			join(home, ".flywheel", "projects.json"),
+			JSON.stringify([
+				{
+					projectName: "growth",
+					...(voiceBotUserId
+						? { huddle: { orchestratorBotUserId: voiceBotUserId } }
+						: {}),
+				},
+			]),
+		);
 		const env = { ...process.env };
 		for (const name of [
 			"FLYWHEEL_LEAD_ID",
@@ -95,6 +115,7 @@ exit 0
 				),
 				FLYWHEEL_LEAD_CORE_CHANNEL_ID: "core-room",
 				FLYWHEEL_LEAD_CORE_MENTION_GATED: inherited,
+				FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS: inheritedIgnored,
 				GROWTH_BOT_TOKEN: "token",
 				CANONICAL_JSON: JSON.stringify({
 					schemaVersion: 1,
@@ -117,18 +138,25 @@ exit 0
 			},
 			stdio: "pipe",
 		});
-		return readFileSync(dumpFile, "utf8");
+		return JSON.parse(readFileSync(dumpFile, "utf8"));
 	}
 
 	it("an inherited 1 cannot survive when projects.json computes the gate off", () => {
-		expect(launch("1", false)).toBe("unset");
+		expect(launch("1", false).core).toBe("unset");
 	});
 
 	it("an inherited 0 cannot suppress a projects.json computation of gate on", () => {
-		expect(launch("0", true)).toBe("1");
+		expect(launch("0", true).core).toBe("1");
 	});
 
 	it("a resolver failure clears inherited state and does not abort launch", () => {
-		expect(launch("1", "fail")).toBe("unset");
+		expect(launch("1", "fail").core).toBe("unset");
+	});
+
+	it("projects the current project's voice bot id and clears inherited drift", () => {
+		expect(launch("0", false, "123456789012345678").ignored).toBe(
+			"123456789012345678",
+		);
+		expect(launch("0", false).ignored).toBe("unset");
 	});
 });

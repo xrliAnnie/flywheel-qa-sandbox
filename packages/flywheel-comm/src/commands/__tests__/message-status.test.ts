@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ingestDiscordChat } from "../../discord-chat-ingest.js";
 import { MailboxQueue } from "../../mailbox-queue.js";
 import { encodeSenderRef } from "../../sender-ref.js";
 import { messageStatus } from "../message-status.js";
@@ -179,5 +180,38 @@ describe("message-status", () => {
 	it("keeps usage failures on exit 2", () => {
 		expect(messageStatus([], io())).toBe(2);
 		expect(stderr.join("\n")).toContain("exactly one <message-id> is required");
+	});
+
+	it("optionally returns the voice envelope fields needed for replay", () => {
+		const messageId = "223456789012345678";
+		const deliveryId = `chat:mufasa:${messageId}`;
+		ingestDiscordChat({
+			dbPath,
+			leadId: "mufasa",
+			chatId: "123456789012345678",
+			originChannelId: "123456789012345678",
+			messageId,
+			authorId: "323456789012345678",
+			authorName: "Founder",
+			ts: CREATED_AT,
+			msgKind: "guild",
+			attachments: [],
+			text: "Please summarize FLY-2446",
+			origin: "voice",
+			voiceSessionId: "019caa85-d0d4-7f66-9d2f-5e2ffefcf417",
+		});
+
+		expect(
+			messageStatus(
+				[deliveryId, "--db", dbPath, "--json", "--with-envelope"],
+				io(),
+			),
+		).toBe(0);
+		expect(JSON.parse(stdout.pop()!)).toMatchObject({
+			origin: "voice",
+			voiceSessionId: "019caa85-d0d4-7f66-9d2f-5e2ffefcf417",
+			authorId: "323456789012345678",
+			text: "Please summarize FLY-2446",
+		});
 	});
 });

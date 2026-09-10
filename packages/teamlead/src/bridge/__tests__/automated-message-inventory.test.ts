@@ -70,6 +70,8 @@ describe("automated Discord sender inventory", () => {
 			"bridge/reports-route.ts",
 			"bridge/review-thread-effect.ts",
 			"bridge/tools.ts",
+			"bridge/voice-session-provisioner.ts",
+			"bridge/voice-session-services.ts",
 			"lead-backends/codex/DirectDiscordOutboundSender.ts",
 			"lead-backends/codex/discord-send-core.ts",
 			"lead-backends/codex/leadDiscordSend.ts",

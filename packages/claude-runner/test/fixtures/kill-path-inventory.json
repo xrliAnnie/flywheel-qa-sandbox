@@ -2772,6 +2772,12 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "scripts/flywheel-voice-wrapper.sh:if [[ \"$EXISTING_PID\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-voice-wrapper.sh",
+		"code": "if [[ \"$EXISTING_PID\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
 		"key": "scripts/flywheel-voucher-watch.sh:kill -TERM \"$pid\" 2>/dev/null; sleep 1; kill -KILL \"$pid\" 2>/dev/null#1",
 		"path": "scripts/flywheel-voucher-watch.sh",
 		"code": "kill -TERM \"$pid\" 2>/dev/null; sleep 1; kill -KILL \"$pid\" 2>/dev/null",

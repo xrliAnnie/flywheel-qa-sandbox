@@ -79,6 +79,23 @@ function runCliCaptured(
 	};
 }
 
+function runCliWithInput(
+	args: string[],
+	input: string,
+	env?: Record<string, string | undefined>,
+): { stdout: string; stderr: string; exitCode: number } {
+	const result = spawnSync("node", [CLI_PATH, ...args], {
+		encoding: "utf-8",
+		env: cliEnv(env),
+		input,
+	});
+	return {
+		stdout: result.stdout.trim(),
+		stderr: result.stderr.trim(),
+		exitCode: result.status ?? 1,
+	};
+}
+
 describe("CLI", () => {
 	let tmpDir: string;
 	let dbPath: string;
@@ -982,6 +999,94 @@ globalThis.fetch = async () => {
 		});
 	});
 
+	describe("chat-ingest", () => {
+		it("advertises v3 and accepts paired voice provenance flags", () => {
+			expect(
+				JSON.parse(runCli(["chat-ingest", "--version-probe"])),
+			).toMatchObject({ protocolVersion: 3, ok: true });
+
+			const result = runCliWithInput(
+				[
+					"chat-ingest",
+					"--db",
+					dbPath,
+					"--lead",
+					"product-lead",
+					"--chat-id",
+					"123456789012345678",
+					"--origin-channel-id",
+					"123456789012345678",
+					"--message-id",
+					"223456789012345678",
+					"--author-id",
+					"323456789012345678",
+					"--author-name",
+					"Founder",
+					"--ts",
+					"2026-09-09T04:00:00.000Z",
+					"--msg-kind",
+					"guild",
+					"--origin",
+					"voice",
+					"--voice-session",
+					"019caa85-d0d4-7f66-9d2f-5e2ffefcf417",
+					"--content-stdin",
+				],
+				"Please summarize FLY-2446",
+				{ BRIDGE_URL: undefined, TEAMLEAD_API_TOKEN: undefined },
+			);
+			expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+			const db = new CommDB(dbPath);
+			const row = db.inspectMailboxDeliveryContent(
+				"chat:product-lead:223456789012345678",
+			);
+			db.close();
+			expect(row).toContain('"origin":"voice"');
+			expect(row).toContain(
+				'"voiceSessionId":"019caa85-d0d4-7f66-9d2f-5e2ffefcf417"',
+			);
+		});
+
+		it("rejects an unknown voice origin before creating a mailbox row", () => {
+			const result = runCliWithInput(
+				[
+					"chat-ingest",
+					"--db",
+					dbPath,
+					"--lead",
+					"product-lead",
+					"--chat-id",
+					"123456789012345678",
+					"--origin-channel-id",
+					"123456789012345678",
+					"--message-id",
+					"223456789012345678",
+					"--author-id",
+					"323456789012345678",
+					"--author-name",
+					"Founder",
+					"--ts",
+					"2026-09-09T04:00:00.000Z",
+					"--msg-kind",
+					"guild",
+					"--origin",
+					"microphone",
+					"--voice-session",
+					"019caa85-d0d4-7f66-9d2f-5e2ffefcf417",
+					"--content-stdin",
+				],
+				"not written",
+			);
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("origin must be discord or voice");
+			const db = new CommDB(dbPath);
+			expect(
+				db.inspectMailboxDeliveryState("chat:product-lead:223456789012345678"),
+			).toEqual({ kind: "absent_identity" });
+			db.close();
+		});
+	});
+
 	describe("message-status", () => {
 		it("queries live evidence by exact id and exits 1 for an absent id", () => {
 			const id = runCli([
@@ -1024,6 +1129,15 @@ globalThis.fetch = async () => {
 				message_id: "missing",
 				state: null,
 			});
+		});
+	});
+
+	describe("voice-session", () => {
+		it("dispatches to the voice session client", () => {
+			const result = runCliSafe(["voice-session", "start"]);
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("voice-session:");
+			expect(result.stderr).not.toContain("Unknown command");
 		});
 	});
 

@@ -108,6 +108,8 @@ export interface CodexLeadProcessOptions {
 	maxStderrBytes?: number;
 	/** clientInfo for initialize. */
 	clientInfo?: { name: string; version: string };
+	/** Advertise the experimental API capability required by realtime clients. */
+	experimentalApi?: boolean;
 	/**
 	 * Optional handler for server-initiated requests. Only invoked for methods
 	 * in `knownServerMethods`; any method NOT in that set gets an immediate
@@ -207,6 +209,7 @@ export class CodexLeadProcess {
 				name: "flywheel-codex-lead",
 				version: "0.0.1",
 			},
+			experimentalApi: options.experimentalApi ?? false,
 			onServerRequest: options.onServerRequest,
 			logger: options.logger ?? {
 				warn: (m, c) => console.warn(`[CodexLeadProcess] ${m}`, c ?? ""),
@@ -284,7 +287,7 @@ export class CodexLeadProcess {
 
 		const initRes = await this.request("initialize", {
 			clientInfo: this.opts.clientInfo,
-			capabilities: {},
+			capabilities: this.opts.experimentalApi ? { experimentalApi: true } : {},
 		});
 		// CR HIGH-1: an initialize ERROR must NOT be treated as a successful
 		// handshake — do not send `initialized`, surface the failure.

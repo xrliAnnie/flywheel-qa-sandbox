@@ -102,6 +102,8 @@
 	"ticket_escalations",
 	"tmux_hold",
 	"turn_source_history",
+	"voice_outbound",
+	"voice_sessions",
 	"workflow_activation_turn",
 	"workflow_actor",
 	"workflow_alert_outbox",

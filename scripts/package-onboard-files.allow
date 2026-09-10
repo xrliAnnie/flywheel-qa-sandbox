@@ -143,3 +143,14 @@ node_modules/flywheel-linear-event-transport/package.json
 node_modules/flywheel-linear-event-transport/dist/*
 node_modules/flywheel-slack-event-transport/package.json
 node_modules/flywheel-slack-event-transport/dist/*
+
+# Generic Codex voice runtime closure (FLY-2446).
+scripts/flywheel-voice-wrapper.sh
+node_modules/flywheel-voice-core/package.json
+node_modules/flywheel-voice-core/dist/*
+node_modules/flywheel-voice-bridge/package.json
+node_modules/flywheel-voice-bridge/dist/*
+node_modules/flywheel-voice-codex/package.json
+node_modules/flywheel-voice-codex/dist/*
+node_modules/flywheel-voice-codex/models/silero_vad.onnx
+node_modules/flywheel-voice-codex/models/LICENSE.silero-vad

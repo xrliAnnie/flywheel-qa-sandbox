@@ -29,6 +29,8 @@ export interface IngestDiscordChatArgs {
 	msgKind: ChatDeliveryMessageKind;
 	attachments: ChatDeliveryAttachment[];
 	text: string;
+	origin?: ChatDeliveryEnvelopeV1["origin"];
+	voiceSessionId?: string;
 	heldSince?: string;
 	heldReason?: ChatDeliveryEnvelopeV1["heldReason"];
 	deadLetter?: {
@@ -64,7 +66,10 @@ export function renderDiscordChatContent(
 	envelope: ChatDeliveryEnvelopeV1,
 ): string {
 	const attrs = {
-		source: "plugin:discord:discord",
+		source: envelope.origin === "voice" ? "voice" : "plugin:discord:discord",
+		...(envelope.voiceSessionId
+			? { "voice-session": envelope.voiceSessionId }
+			: {}),
 		chat_id: envelope.chatId,
 		message_id: envelope.messageId,
 		user: envelope.authorName,
@@ -82,11 +87,18 @@ export function renderDiscordChatContent(
 		(attachment) =>
 			`<attachment name="${escapeXml(attachment.name)}" type="${escapeXml(attachment.type)}" size_kb="${attachment.sizeKb}" />`,
 	);
+	const body = [
+		...(envelope.origin === "voice"
+			? [
+					"[voice] 这句话是 founder 口述并会被念给她听;请在本 thread 用可说出口的短句回复。",
+				]
+			: []),
+		escapeXmlText(envelope.text),
+		...attachments,
+	];
 	return `<channel ${Object.entries(attrs)
 		.map(([key, value]) => `${key}="${escapeXml(value)}"`)
-		.join(
-			" ",
-		)}>\n${[escapeXmlText(envelope.text), ...attachments].join("\n")}\n</channel>`;
+		.join(" ")}>\n${body.join("\n")}\n</channel>`;
 }
 
 export function ingestDiscordChat(
@@ -133,6 +145,8 @@ export function ingestDiscordChatOnQueue(
 		msgKind: args.msgKind,
 		attachments: args.attachments,
 		text: args.text,
+		...(args.origin ? { origin: args.origin } : {}),
+		...(args.voiceSessionId ? { voiceSessionId: args.voiceSessionId } : {}),
 		...(args.heldSince ? { heldSince: args.heldSince } : {}),
 		...(args.heldReason ? { heldReason: args.heldReason } : {}),
 		...(args.replyChannelId ? { replyChannelId: args.replyChannelId } : {}),
@@ -143,7 +157,7 @@ export function ingestDiscordChatOnQueue(
 		fromAgent: founder ? "founder" : `discord:${args.authorId}`,
 		toAgent: envelope.leadId,
 		recipientKind: "lead",
-		sourceKind: "discord_chat",
+		sourceKind: envelope.origin === "voice" ? "voice" : "discord_chat",
 		sourceRef: envelope.deliveryId,
 		type: "discord_chat",
 		msgClass: "model",

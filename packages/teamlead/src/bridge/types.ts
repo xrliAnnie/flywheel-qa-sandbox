@@ -82,6 +82,15 @@ export interface BridgeConfig {
 	 * ignores it (with an ERROR log) when apiToken is unset.
 	 */
 	geminiAgentToken?: string;
+	voiceSessionTiming?: {
+		leaseTtlMs: number;
+		leaseRenewMs: number;
+		leaseHttpTimeoutMs: number;
+		clockSkewGraceMs: number;
+		provisioningStaleMs: number;
+		endingTimeoutMs: number;
+		pollIntervalMs: number;
+	};
 }
 
 // ──────────────────────────────────────────────────────────────────────

@@ -72,3 +72,50 @@ it("spawned app-server env carries NO action secrets but keeps CODEX_HOME + plai
 	const values = Object.values(childEnv).join("\n");
 	expect(values).not.toContain("leak-me-not");
 });
+
+it("prefixes optional feature argv while keeping the default argv byte-identical", async () => {
+	const stub = join(dir, "codex-argv-stub.js");
+	writeFileSync(
+		stub,
+		`#!/usr/bin/env node\nrequire("fs").writeFileSync(process.env.ARGV_DUMP, JSON.stringify(process.argv.slice(2)))\n`,
+	);
+	chmodSync(stub, 0o755);
+	const run = async (name: string, featureArgv?: string[]) => {
+		const path = join(dir, `${name}.json`);
+		const transport = spawnCodexAppServer({
+			codexBin: stub,
+			mcpArgv: ["-c", "mcp_servers={}"],
+			codexHome: join(dir, "codex-home"),
+			baseEnv: { PATH: process.env.PATH, ARGV_DUMP: path },
+			...(featureArgv ? { featureArgv } : {}),
+		});
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(
+				() => reject(new Error("stub did not exit")),
+				5000,
+			);
+			transport.onExit(() => {
+				clearTimeout(timer);
+				resolve();
+			});
+		});
+		return JSON.parse(readFileSync(path, "utf8"));
+	};
+
+	await expect(run("default")).resolves.toEqual([
+		"app-server",
+		"--strict-config",
+		"-c",
+		"mcp_servers={}",
+	]);
+	await expect(
+		run("realtime", ["--enable", "realtime_conversation"]),
+	).resolves.toEqual([
+		"--enable",
+		"realtime_conversation",
+		"app-server",
+		"--strict-config",
+		"-c",
+		"mcp_servers={}",
+	]);
+});

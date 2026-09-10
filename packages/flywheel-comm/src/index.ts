@@ -82,6 +82,7 @@ import {
 	visualCapture,
 	visualCaptureStdout,
 } from "./commands/visual-capture.js";
+import { runVoiceSessionCommand } from "./commands/voice-session.js";
 import { currentWorkflowCompletionActivationFromEnv } from "./commands/workflow-activation.js";
 import { workflowOutput } from "./commands/workflow-output.js";
 import { xhsAnalysis } from "./commands/xhs-analysis.js";
@@ -135,6 +136,7 @@ Commands:
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
   message-status  Read one mailbox message's live/archive delivery evidence by exact id
+  voice-session  Start, stop, or inspect a generic Codex realtime voice session
   adopt-inflight  Requeue this recipient identity's in-flight inbox batches (Lead birth use)
   sessions           List runner sessions
   sessions register  Register a runner session in CommDB
@@ -314,6 +316,9 @@ async function main(): Promise<void> {
 			break;
 		case "message-status":
 			process.exitCode = messageStatus(commandArgs);
+			break;
+		case "voice-session":
+			process.exitCode = await runVoiceSessionCommand(commandArgs);
 			break;
 		case "adopt-inflight":
 			process.exitCode = adoptInflight(commandArgs);
@@ -732,6 +737,8 @@ async function runChatIngest(args: string[]): Promise<void> {
 			lead: { type: "string" },
 			"chat-id": { type: "string" },
 			"origin-channel-id": { type: "string" },
+			origin: { type: "string" },
+			"voice-session": { type: "string" },
 			"message-id": { type: "string" },
 			"author-id": { type: "string" },
 			"author-name": { type: "string" },
@@ -754,7 +761,7 @@ async function runChatIngest(args: string[]): Promise<void> {
 		throw new Error("chat-ingest accepts no positionals");
 	if (values["version-probe"]) {
 		console.log(
-			JSON.stringify({ command: "chat-ingest", protocolVersion: 2, ok: true }),
+			JSON.stringify({ command: "chat-ingest", protocolVersion: 3, ok: true }),
 		);
 		return;
 	}
@@ -815,6 +822,10 @@ async function runChatIngest(args: string[]): Promise<void> {
 			sizeKb: number;
 		}>,
 		text: readFileSync(0, "utf8"),
+		...(values.origin ? { origin: values.origin as "discord" | "voice" } : {}),
+		...(values["voice-session"]
+			? { voiceSessionId: values["voice-session"] }
+			: {}),
 		...(values["held-since"] ? { heldSince: values["held-since"] } : {}),
 		...(values["held-reason"]
 			? { heldReason: values["held-reason"] as "discord_wiring_broken" }

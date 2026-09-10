@@ -16,7 +16,10 @@ afterEach(async () => {
 	await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-function harness(afterCommit?: () => void | Promise<void>) {
+function harness(
+	afterCommit?: () => void | Promise<void>,
+	ignoredAuthorIds?: string[],
+) {
 	const dir = mkdtempSync(join(tmpdir(), "fly1373-codex-inbox-"));
 	const socketPath = join(dir, "inbox.sock");
 	const store = new InMemoryJournalStore();
@@ -50,6 +53,7 @@ function harness(afterCommit?: () => void | Promise<void>) {
 		leadId: "lead-a",
 		router,
 		authSecret: "lead-bot-token",
+		ignoredAuthorIds,
 		...(afterCommit ? { afterCommit } : {}),
 	});
 	servers.push(server);
@@ -63,6 +67,20 @@ const batch = {
 };
 
 describe("CodexLeadInboxSocket", () => {
+	it("reports the live gateway mirror exclusions through the authenticated probe", async () => {
+		const h = harness(undefined, ["100000000000000003"]);
+		await h.server.listen();
+		await expect(
+			probeCodexLeadInboxCapabilities({
+				socketPath: h.socketPath,
+				leadId: "lead-a",
+				authSecret: "lead-bot-token",
+			}),
+		).resolves.toMatchObject({
+			voiceMirrorIgnoredAuthorIds: ["100000000000000003"],
+		});
+	});
+
 	it("binds lead + owner epoch and durably submits exactly one batch turn", async () => {
 		const h = harness();
 		await h.server.listen();

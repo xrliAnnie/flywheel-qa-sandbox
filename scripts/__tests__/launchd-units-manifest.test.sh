@@ -223,6 +223,7 @@ def validate_repo_manifest(text):
         "com.flywheel.sub-daily-loop": ("-", "external", "*", "informational-only"),
         "com.flywheel.skills-update": ("-", "external", "*", "informational-only"),
         "com.flywheel.voice-bridge": ("com.flywheel.voice-bridge.plist", "managed", "0", None),
+        "com.flywheel.voice": ("com.flywheel.voice.plist", "hold", "0", "pending voice rollout"),
     }
     reject(set(by_label) != set(expected),
            f"manifest labels differ from approved initial set: {sorted(set(by_label) ^ set(expected))}")

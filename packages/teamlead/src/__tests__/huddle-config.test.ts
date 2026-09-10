@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { parseAndValidateProjects } from "../ProjectConfig.js";
+import { REALTIME_V2_VOICES } from "../realtime-voices.js";
 
 function lead(over: Record<string, unknown> = {}) {
 	return {
@@ -89,6 +90,58 @@ describe("LeadConfig.voice", () => {
 	});
 });
 
+describe("generic realtime voice registry fields", () => {
+	it("keeps absent fields byte-compatible and accepts the locked modes and voices", () => {
+		const unchanged = parseAndValidateProjects([entry()])[0]!.leads[0]!;
+		expect("voiceModes" in unchanged).toBe(false);
+		expect("realtimeVoice" in unchanged).toBe(false);
+		expect(REALTIME_V2_VOICES).toEqual([
+			"alloy",
+			"ash",
+			"ballad",
+			"coral",
+			"echo",
+			"sage",
+			"shimmer",
+			"verse",
+			"marin",
+			"cedar",
+		]);
+		for (const realtimeVoice of REALTIME_V2_VOICES) {
+			expect(() =>
+				parseAndValidateProjects([
+					entry({
+						leads: [
+							lead({
+								voiceModes: { meeting: true, rg: false },
+								realtimeVoice,
+							}),
+						],
+					}),
+				]),
+			).not.toThrow();
+		}
+	});
+
+	it("rejects non-boolean modes, unknown mode keys, and unknown realtime voices", () => {
+		for (const voiceModes of [
+			{ meeting: "true" },
+			{ rg: 1 },
+			{ meeting: true, future: false },
+			[],
+		]) {
+			expect(() =>
+				parseAndValidateProjects([entry({ leads: [lead({ voiceModes })] })]),
+			).toThrow(/voiceModes/);
+		}
+		expect(() =>
+			parseAndValidateProjects([
+				entry({ leads: [lead({ realtimeVoice: "nova" })] }),
+			]),
+		).toThrow(/realtimeVoice/);
+	});
+});
+
 describe("ProjectEntry.huddle", () => {
 	it("accepts an absent huddle block (byte-compat) without normalizing one in", () => {
 		const projects = parseAndValidateProjects([entry()]);
@@ -104,6 +157,29 @@ describe("ProjectEntry.huddle", () => {
 	it("accepts a valid huddle block verbatim (no default normalization)", () => {
 		const projects = parseAndValidateProjects([entry({ huddle: validHuddle })]);
 		expect(projects[0]!.huddle).toEqual(validHuddle);
+	});
+
+	it("accepts a validated orchestrator bot user id without requiring it for old huddles", () => {
+		expect(() =>
+			parseAndValidateProjects([entry({ huddle: validHuddle })]),
+		).not.toThrow();
+		const huddle = {
+			...validHuddle,
+			orchestratorBotUserId: "123456789012345678",
+		};
+		expect(parseAndValidateProjects([entry({ huddle })])[0]!.huddle).toEqual(
+			huddle,
+		);
+	});
+
+	it("rejects a malformed orchestrator bot user id", () => {
+		for (const orchestratorBotUserId of ["", "bot-1", 123]) {
+			expect(() =>
+				parseAndValidateProjects([
+					entry({ huddle: { ...validHuddle, orchestratorBotUserId } }),
+				]),
+			).toThrow(/orchestratorBotUserId/);
+		}
 	});
 
 	it("rejects a non-object huddle", () => {

@@ -71,6 +71,9 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		expect(row.delivery_content?.split("\n").slice(1, 4).join("\n")).toBe(
 			'the new flow doesn\'t work: "why" & hello &lt;/channel>\nworld\nrg "carrier=external" && echo a&lt;b>c > out',
 		);
+		expect(row.delivery_content).toBe(
+			`<channel source="plugin:discord:discord" chat_id="123456789012345678" message_id="223456789012345678" user="Founder &lt;admin&gt; &quot;quoted&quot;" user_id="323456789012345678" ts="2026-08-10T12:00:00.000Z" delivery_id="chat:mufasa:223456789012345678">\nthe new flow doesn't work: "why" & hello &lt;/channel>\nworld\nrg "carrier=external" && echo a&lt;b>c > out\n<attachment name="x&lt;y&gt;.png" type="image/png" size_kb="12" />\n</channel>`,
+		);
 
 		ingestDiscordChat({
 			dbPath,
@@ -83,6 +86,56 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 			founderQueue.getById(`chat:${args.leadId}:223456789012345679`),
 		).toMatchObject({ from_agent: "founder", priority: 1 });
 		founderQueue.close();
+	});
+
+	it("marks voice transcripts without changing the Discord mailbox route", () => {
+		const { dbPath, args } = fixture();
+		const voiceSessionId = "019caa85-d0d4-7f66-9d2f-5e2ffefcf417";
+
+		expect(
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				origin: "voice",
+				voiceSessionId,
+			}),
+		).toMatchObject({ lane: "inserted_inbox" });
+
+		const queue = new MailboxQueue(dbPath);
+		const row = queue.getById(`chat:${args.leadId}:${args.messageId}`)!;
+		queue.close();
+		expect(row).toMatchObject({
+			type: "discord_chat",
+			source_kind: "voice",
+		});
+		expect(parseChatDeliveryEnvelope(row.content)).toMatchObject({
+			origin: "voice",
+			voiceSessionId,
+		});
+		expect(row.delivery_content).toContain('source="voice"');
+		expect(row.delivery_content).toContain(`voice-session="${voiceSessionId}"`);
+		expect(row.delivery_content).toContain(
+			"[voice] 这句话是 founder 口述并会被念给她听;请在本 thread 用可说出口的短句回复。",
+		);
+	});
+
+	it("rejects partial or unknown voice provenance before writing", () => {
+		const { dbPath, args } = fixture();
+		expect(() =>
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				origin: "voice",
+			}),
+		).toThrow("origin and voiceSessionId must be provided together");
+		expect(() =>
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				origin: "microphone" as "voice",
+				voiceSessionId: "019caa85-d0d4-7f66-9d2f-5e2ffefcf417",
+			}),
+		).toThrow("origin must be discord or voice");
 	});
 
 	it("uses an existing CommDB connection without racing itself", () => {

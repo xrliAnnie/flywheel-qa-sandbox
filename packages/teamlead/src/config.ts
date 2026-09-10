@@ -21,6 +21,37 @@ function parsePositiveInt(
 	return n;
 }
 
+export function parseVoiceSessionTiming(
+	env: Readonly<Record<string, string | undefined>>,
+): NonNullable<BridgeConfig["voiceSessionTiming"]> {
+	const value = (name: string, fallback: number) => {
+		if (env[name] !== undefined && !/^[1-9]\d*$/.test(env[name]!)) {
+			throw new Error(
+				`Invalid ${name}: ${env[name]} (must be a positive integer)`,
+			);
+		}
+		return parsePositiveInt(env[name], fallback, name);
+	};
+	const timing = {
+		leaseTtlMs: value("FLYWHEEL_VOICE_LEASE_TTL_MS", 15_000),
+		leaseRenewMs: value("FLYWHEEL_VOICE_LEASE_RENEW_MS", 4_000),
+		leaseHttpTimeoutMs: value("FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS", 2_000),
+		clockSkewGraceMs: value("FLYWHEEL_VOICE_CLOCK_SKEW_GRACE_MS", 5_000),
+		provisioningStaleMs: value("FLYWHEEL_VOICE_PROVISIONING_STALE_MS", 120_000),
+		endingTimeoutMs: value("FLYWHEEL_VOICE_ENDING_TIMEOUT_MS", 30_000),
+		pollIntervalMs: value("FLYWHEEL_VOICE_POLL_INTERVAL_MS", 3_000),
+	};
+	if (
+		timing.leaseRenewMs + timing.leaseHttpTimeoutMs >=
+		timing.leaseTtlMs / 2
+	) {
+		throw new Error(
+			"voice session renew + http timeout must be less than half the lease TTL",
+		);
+	}
+	return timing;
+}
+
 export function loadConfig(): BridgeConfig {
 	const host = process.env.TEAMLEAD_HOST ?? "127.0.0.1";
 	if (!isAllowedLoopbackHostname(host)) {
@@ -214,5 +245,6 @@ export function loadConfig(): BridgeConfig {
 		// FLY-1018 M4: scoped gemini-agent token (validated above; undefined
 		// when unset, invalid-without-master, or blank — byte-compatible).
 		geminiAgentToken,
+		voiceSessionTiming: parseVoiceSessionTiming(process.env),
 	};
 }

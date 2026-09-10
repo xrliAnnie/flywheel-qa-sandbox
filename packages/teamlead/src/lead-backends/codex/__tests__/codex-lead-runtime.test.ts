@@ -76,6 +76,7 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		expect(c.channelIds).toEqual(["chan-chat"]); // no core channel set
 		expect(c.outboundProbeChannelIds).toEqual([]); // direct mode does not probe
 		expect(c.chrome).toBeUndefined();
+		expect(c.ignoredAuthorIds).toEqual([]);
 		expect(c.contextUsagePath).toBe(
 			"/var/state/mufasa/metrics/context-usage.jsonl",
 		);
@@ -97,6 +98,17 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		expect(c.contextUsageUnavailablePath).toBe(
 			"/var/state/raya/metrics/context-usage-unavailable.jsonl",
 		);
+	});
+
+	it("parses exact registry-projected author ids for the voice mirror guard", () => {
+		expect(
+			parseCodexLeadRuntimeConfig(
+				fullEnv({
+					FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS:
+						"100000000000000001, 100000000000000002,100000000000000001",
+				}),
+			).ignoredAuthorIds,
+		).toEqual(["100000000000000001", "100000000000000002"]);
 	});
 
 	it("keeps model, effort, and context window absent without materializing empty config", () => {

@@ -42,9 +42,9 @@ po_die() { po_err "$*"; exit 1; }
 # ── policy: what goes into the payload ─────────────────────────────────────
 # Runtime workspace packages (directory names under packages/). This is the
 # closure of the customer MVP runtime (Bridge + Lead + Buddy + comm CLIs +
-# MCP servers) — see research.md §1/§2. qa-framework / flywheel-cli / voice-*
-# are deliberately NOT customer runtime.
-PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claude-runner agent-team-transport inbox-mcp terminal-mcp token-usage github-event-transport linear-event-transport slack-event-transport"}
+# MCP servers and generic voice) — see research.md §1/§2. qa-framework /
+# flywheel-cli are deliberately NOT customer runtime.
+PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claude-runner agent-team-transport inbox-mcp terminal-mcp token-usage github-event-transport linear-event-transport slack-event-transport voice-core voice-bridge voice-codex"}
 
 # Extra runtime asset dirs per package (beyond package.json + dist/), colon
 # separated as <pkg-dir>:<asset-dir>. claude-lead.sh + Lead runtime read these
@@ -54,7 +54,7 @@ PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claud
 # $CODEX_HOME/AGENTS.md; a payload without it fail-louds every codex spawn)
 # and bin/ (the CODEX_HOME-aware rotation shim FLYWHEEL_CODEX_BIN defaults
 # to — same runtime-closure failure mode).
-PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:prompts teamlead:lead-rules-base teamlead:static claude-runner:agents claude-runner:bin"}
+PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:prompts teamlead:lead-rules-base teamlead:static claude-runner:agents claude-runner:bin voice-codex:models"}
 
 # File-level asset whitelist (<pkg-dir>:<relative-file>) — packages/teamlead/
 # scripts is a grab bag of launcher runtime AND operator/ops one-offs
@@ -91,6 +91,7 @@ flywheel-setup.sh
 provision-fleet-host.sh
 daily-standup.sh
 flywheel-bridge-wrapper.sh
+flywheel-voice-wrapper.sh
 flywheel-lead-wrapper-v2.sh
 flywheel-lead.sh
 flywheel-config-lock.sh

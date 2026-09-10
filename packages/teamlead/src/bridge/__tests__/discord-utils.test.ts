@@ -185,6 +185,53 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 		expect(body.allowed_mentions).toEqual({ parse: [] });
 	});
 
+	it("sends a bounded Discord nonce with enforced deduplication", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(okResponse({ id: "msg-1" }));
+		await postDiscordMessageToChannel(
+			"thread-nonce",
+			"one root card",
+			"bot-token",
+			{
+				origin: "lead_authored",
+				nonce: "0123456789abcdefghijklmno",
+				enforceNonce: true,
+			},
+			fetchMock as unknown as typeof fetch,
+		);
+		expect(
+			JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string),
+		).toMatchObject({
+			nonce: "0123456789abcdefghijklmno",
+			enforce_nonce: true,
+			allowed_mentions: { parse: [] },
+		});
+	});
+
+	it("rejects invalid or multi-chunk nonces before posting", async () => {
+		const fetchMock = vi.fn<typeof fetch>();
+		await expect(
+			postDiscordMessageToChannel(
+				"thread-nonce",
+				"text",
+				"bot-token",
+				{ origin: "lead_authored", enforceNonce: true },
+				fetchMock,
+			),
+		).rejects.toThrow(/nonce/);
+		await expect(
+			postDiscordMessageToChannel(
+				"thread-nonce",
+				`${"x".repeat(MAX_DISCORD_MESSAGE_LENGTH)}\nmore`,
+				"bot-token",
+				{ origin: "lead_authored", nonce: "root", enforceNonce: true },
+				fetchMock,
+			),
+		).rejects.toThrow(/single chunk/);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
 	it("multi-chunk split: all chunks sent, in order, each with allowed_mentions", async () => {
 		// Build text > MAX_DISCORD_MESSAGE_LENGTH so splitter produces ≥2 chunks
 		const longText = `${"x".repeat(MAX_DISCORD_MESSAGE_LENGTH)}\n${"y".repeat(

@@ -182,6 +182,10 @@ export interface PostDiscordOptions {
 	origin: DiscordMessageOrigin;
 	/** Discord `message_reference.message_id` — attached only to the FIRST chunk. */
 	replyTo?: string;
+	/** Discord idempotency nonce (maximum 25 characters). */
+	nonce?: string;
+	/** Ask Discord to return the existing message when the nonce repeats. */
+	enforceNonce?: boolean;
 }
 
 /** Build the unsent-suffix recovery text from the chunk list. */
@@ -208,6 +212,18 @@ export async function postDiscordMessageToChannel(
 	const chunks = splitDiscordMessage(text).map((chunk) =>
 		options.origin === "automation" ? markAutomatedDiscordText(chunk) : chunk,
 	);
+	if (options.enforceNonce && !options.nonce) {
+		throw new Error("enforceNonce requires nonce");
+	}
+	if (
+		options.nonce &&
+		(options.nonce.length > 25 || options.nonce.length === 0)
+	) {
+		throw new Error("nonce must contain 1-25 characters");
+	}
+	if (options.nonce && chunks.length !== 1) {
+		throw new Error("nonce is only supported for a single chunk");
+	}
 	const url = `${DISCORD_API}/channels/${threadId}/messages`;
 	const messageIds: string[] = [];
 
@@ -216,6 +232,8 @@ export async function postDiscordMessageToChannel(
 			content: chunks[i],
 			// FLY-162 Codex R2 #7: never let user-supplied text trigger pings
 			allowed_mentions: { parse: [] },
+			...(options.nonce ? { nonce: options.nonce } : {}),
+			...(options.enforceNonce ? { enforce_nonce: true } : {}),
 		};
 		// Discord `message_reference` only valid on first chunk
 		if (i === 0 && options.replyTo) {

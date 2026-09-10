@@ -1,10 +1,5 @@
 import { execFile } from "node:child_process";
-import {
-	createHash,
-	randomBytes,
-	randomUUID,
-	timingSafeEqual,
-} from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	existsSync as ffExistsSync,
 	readFileSync as ffReadFileSync,
@@ -193,6 +188,7 @@ import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-
 import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
+import { safeCompare } from "./auth-compare.js";
 import { createAutoMergeShadowRouter } from "./auto-merge-shadow-route.js";
 import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
@@ -741,6 +737,8 @@ import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
 import { createVoiceRouter } from "./voice-routes.js";
+import { voiceSessionAuthMiddleware } from "./voice-session-auth.js";
+import { createVoiceSessionServices } from "./voice-session-services.js";
 import type { WorkflowActorSession } from "./workflow-actor-session.js";
 import { createWorkflowCarrierRedriveRouter } from "./workflow-carrier-redrive-routes.js";
 import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
@@ -1129,11 +1127,6 @@ function isLeaseAlive(
 	}
 }
 
-function safeCompare(a: string, b: string): boolean {
-	if (a.length !== b.length) return false;
-	return timingSafeEqual(Buffer.from(a), Buffer.from(b));
-}
-
 /**
  * FLY-1018 M4: the scoped gemini-agent token's reachable set — server-side
  * enforcement of the client-side whitelist (method + exact path). Everything
@@ -1267,7 +1260,9 @@ export function apiAuthWithRunnerTierDelegation(
 		if (
 			req.path === "/lead-inbox/nudge" ||
 			req.path === "/reports" ||
-			req.path.startsWith("/reports/")
+			req.path.startsWith("/reports/") ||
+			req.path === "/voice/sessions" ||
+			req.path.startsWith("/voice/sessions/")
 		) {
 			next();
 			return;
@@ -1540,6 +1535,7 @@ export interface BridgeAppOptions {
 		reroutedCount?: AlertDutyRouterDeps["reroutedCount"];
 		dutyWritePath?: () => "configured" | "unconfigured";
 	};
+	voiceSessionRouter?: express.Router;
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -4821,6 +4817,13 @@ export function createBridgeApp(
 			});
 		});
 	}
+	if (opts?.voiceSessionRouter) {
+		app.use(
+			"/api/voice/sessions",
+			voiceSessionAuthMiddleware(config.apiToken, config.ingestToken),
+			opts.voiceSessionRouter,
+		);
+	}
 
 	// Catch-all 404 (must be after all routes)
 	app.use((_req, res) => {
@@ -7416,6 +7419,11 @@ export async function startBridge(
 		}
 	}
 
+	const voiceSessionServices = createVoiceSessionServices({
+		store,
+		projects,
+		config,
+	});
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -7697,6 +7705,7 @@ export async function startBridge(
 					config.alertDutyToken ? "configured" : "unconfigured",
 			},
 			flagScanRoute: flagScanRouteHolder,
+			voiceSessionRouter: voiceSessionServices.router,
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},
@@ -7707,6 +7716,7 @@ export async function startBridge(
 	reconcileDesignReviewManifestOutbox();
 
 	const server = app.listen(config.port, config.host);
+	voiceSessionServices.runtime.start();
 
 	await new Promise<void>((resolve, reject) => {
 		server.once("listening", resolve);
@@ -12963,6 +12973,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		voiceSessionServices.runtime.stop();
 		// FLY-1082 (Task 2.4): the clean-shutdown marker rides the SAME close
 		// path as /health shuttingDown (no extra signal handlers) — a boot that
 		// finds this marker still `running` knows the previous Bridge died dirty.

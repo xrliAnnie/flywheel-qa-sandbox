@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -144,4 +150,48 @@ test("collects runtime sources without tests, dist, docs, or the retention tool 
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("registers the isolated voice QA mailbox read without exempting it from scanning", () => {
+	const file = "scripts/qa/fly2446-two-lead-run.mjs";
+	const source = readFileSync(
+		new URL("../qa/fly2446-two-lead-run.mjs", import.meta.url),
+		"utf8",
+	);
+	const consumers = scanRetentionConsumers({
+		files: new Map([[file, source]]),
+		targetTables: TARGETS,
+	});
+	assert.deepEqual(consumers, [
+		{ file, relation: "mailbox", baseTable: "mailbox", usage: "read" },
+	]);
+	const config = JSON.parse(
+		readFileSync(
+			new URL(
+				"../fly-2006-retention-consumer-gate.config.json",
+				import.meta.url,
+			),
+			"utf8",
+		),
+	);
+	const entries = config.consumers.filter((entry) => entry.file === file);
+	// This reads only current isolated-run ACK evidence, never authority inferred
+	// from absence. Retention does not gain a protected row or a new deletion rule.
+	assert.deepEqual(entries, [
+		{ ...consumers[0], disposition: "candidate_guarded" },
+	]);
+	assert.equal(
+		auditRetentionConsumers({
+			consumers,
+			config: { version: 1, consumers: entries },
+		}).ok,
+		true,
+	);
+	assert.deepEqual(
+		auditRetentionConsumers({
+			consumers,
+			config: { version: 1, consumers: [] },
+		}).errors,
+		[`unclassified_retention_consumer:${file}:mailbox:read`],
+	);
 });

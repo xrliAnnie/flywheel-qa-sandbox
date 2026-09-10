@@ -100,12 +100,23 @@ describe("CodexLeadProcess — handshake", () => {
 		expect(init.method).toBe("initialize");
 		expect(init.id).toBe(1);
 		expect((init.params as { clientInfo: unknown }).clientInfo).toBeDefined();
+		expect((init.params as { capabilities: unknown }).capabilities).toEqual({});
 		// Respond → start() resolves and sends initialized.
 		child.respond(1, {});
 		await startP;
 		const initialized = child.lastFrame();
 		expect(initialized.method).toBe("initialized");
 		expect(initialized.id).toBeUndefined();
+	});
+
+	it("advertises experimentalApi only for an explicit realtime client", async () => {
+		const { child, proc } = make({ experimentalApi: true });
+		const startP = proc.start();
+		expect(
+			(child.frames()[0]!.params as { capabilities: unknown }).capabilities,
+		).toEqual({ experimentalApi: true });
+		child.respond(1, {});
+		await startP;
 	});
 
 	it("rejects double start", async () => {

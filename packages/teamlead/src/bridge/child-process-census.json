@@ -359,6 +359,16 @@
 			"disposition": "lead_runtime_bounded"
 		},
 		{
+			"file": "packages/voice-codex/src/adapters.ts",
+			"raw_spawn": 1,
+			"disposition": "standalone_runtime_observed"
+		},
+		{
+			"file": "packages/voice-codex/src/startup-alert.ts",
+			"sync_child": 1,
+			"disposition": "standalone_runtime_bounded"
+		},
+		{
 			"file": "packages/voice-core/src/audio/FilePlayer.ts",
 			"raw_spawn": 1,
 			"disposition": "standalone_runtime"

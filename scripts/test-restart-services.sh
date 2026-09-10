@@ -2184,6 +2184,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/converge-nonlead-daemons.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-quota-monitor.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-voice-bridge.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/restart-voice.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/discord-pointer-guard.sh" \
    "$REAL_REPO_ROOT/scripts/lib/legacy-swap-broadcast-retirement.sh" \

@@ -121,6 +121,19 @@ if [ "${FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST+x}" = x ] \
   exit 78
 fi
 
+# FLY-2446: the generic voice bot mirrors founder speech into the Lead's thread.
+# Project its exact registry identity so Codex intake drops only that author and
+# cannot turn the mirror back into a second mailbox delivery. Registry absence
+# is the byte-compatible empty set; inherited values are never authoritative.
+unset FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS
+_voice_bot_user_id="$(jq -er --arg project "$FLYWHEEL_PROJECT_NAME" '
+  .[] | select(.projectName == $project) | .huddle.orchestratorBotUserId // empty
+' "${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}" 2>/dev/null || true)"
+if [[ "$_voice_bot_user_id" =~ ^[0-9]{17,20}$ ]]; then
+  export FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS="$_voice_bot_user_id"
+fi
+unset _voice_bot_user_id
+
 # ── vendor-neutral bootstrap: per-(project,lead) state dir ──────
 # CR Phase 2a #1 (R2): the directory key must be TRULY injective — a truncated
 # hash (48-bit) can still collide, so it can't back the "distinct identities

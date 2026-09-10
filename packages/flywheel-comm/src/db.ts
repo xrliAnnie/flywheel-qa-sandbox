@@ -1134,6 +1134,12 @@ export class CommDB {
 		);
 	}
 
+	inspectMailboxDeliveryContent(idOrDeliveryId: string): string | undefined {
+		return new MailboxQueue(this.db, { readOnly: true }).inspectDeliveryContent(
+			idOrDeliveryId,
+		);
+	}
+
 	ingestDiscordChat(
 		input: Omit<IngestDiscordChatArgs, "dbPath">,
 	): ReturnType<typeof ingestDiscordChatOnQueue> {

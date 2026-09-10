@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -2270,6 +2270,98 @@ export interface EpicPageSignalFacts {
 	signals: EpicPageStateSignalFact[];
 }
 
+export type VoiceSessionMode = "meeting" | "rg";
+export type VoiceCredentialTier = "master" | "ingest";
+export type VoiceProvisioningStep =
+	| "reserved"
+	| "root_requested"
+	| "thread_requested"
+	| "member_requested"
+	| "thread_cursor"
+	| "finalize"
+	| "done";
+export type VoiceSessionState =
+	| "provisioning"
+	| "desired"
+	| "claimed"
+	| "warming"
+	| "live"
+	| "ending"
+	| "ended"
+	| "cancelled"
+	| "failed";
+export type VoiceOutboundPhase =
+	| "queued"
+	| "claimed"
+	| "confirmed"
+	| "unconfirmed"
+	| "failed"
+	| "dropped"
+	| "ambiguous";
+
+export interface VoiceSessionRow {
+	sessionId: string;
+	mode: VoiceSessionMode;
+	projectName: string;
+	leadId: string;
+	guildId: string;
+	voiceChannelId: string;
+	provisioningStep: VoiceProvisioningStep;
+	provisionerEpoch: string | null;
+	provisioningNonce: string | null;
+	rootRequestedAt: string | null;
+	rootMessageId: string | null;
+	threadId: string | null;
+	memberAddedAt: string | null;
+	cancelRequestedAt: string | null;
+	endingStartedAt: string | null;
+	orphanCandidates: string[];
+	boundChannelIds: string[];
+	meetingId: string | null;
+	evidenceDir: string | null;
+	topic: string | null;
+	requestedBy: string;
+	credentialTier: VoiceCredentialTier;
+	state: VoiceSessionState;
+	reason: string | null;
+	daemonBootId: string | null;
+	leaseToken: string | null;
+	leaseExpiresAt: string | null;
+	outboundCursor: Record<string, string>;
+	createdAt: string;
+	updatedAt: string;
+	endedAt: string | null;
+}
+
+export interface VoiceOutboundRow {
+	seq: number;
+	sessionId: string;
+	messageId: string;
+	channelId: string;
+	authorId: string;
+	text: string;
+	observedAt: string;
+	phase: VoiceOutboundPhase;
+	attemptToken: string | null;
+	claimedAt: string | null;
+	finishedAt: string | null;
+}
+
+export interface VoiceSessionReservation {
+	sessionId: string;
+	mode: VoiceSessionMode;
+	projectName: string;
+	leadId: string;
+	guildId: string;
+	voiceChannelId: string;
+	meetingId?: string;
+	evidenceDir?: string;
+	topic?: string;
+	requestedBy: string;
+	credentialTier: VoiceCredentialTier;
+	createdAt: string;
+}
+
 export class StateStore {
 	private db: CompatDb;
 	private dbPath: string;
@@ -2382,6 +2474,722 @@ export class StateStore {
 	 */
 	getDbPath(): string {
 		return this.dbPath;
+	}
+
+	private voiceSessionFromRow(
+		row: Record<string, unknown> | undefined,
+	): VoiceSessionRow | undefined {
+		if (!row) return;
+		const stringArray = (value: unknown): string[] => {
+			try {
+				const parsed = JSON.parse(String(value));
+				return Array.isArray(parsed)
+					? parsed.filter((item): item is string => typeof item === "string")
+					: [];
+			} catch {
+				return [];
+			}
+		};
+		const stringRecord = (value: unknown): Record<string, string> => {
+			try {
+				const parsed = JSON.parse(String(value));
+				if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+				return Object.fromEntries(
+					Object.entries(parsed).filter(
+						(entry): entry is [string, string] => typeof entry[1] === "string",
+					),
+				);
+			} catch {
+				return {};
+			}
+		};
+		return {
+			sessionId: String(row.session_id),
+			mode: row.mode as VoiceSessionMode,
+			projectName: String(row.project_name),
+			leadId: String(row.lead_id),
+			guildId: String(row.guild_id),
+			voiceChannelId: String(row.voice_channel_id),
+			provisioningStep: row.provisioning_step as VoiceProvisioningStep,
+			provisionerEpoch: (row.provisioner_epoch as string | null) ?? null,
+			provisioningNonce: (row.provisioning_nonce as string | null) ?? null,
+			rootRequestedAt: (row.root_requested_at as string | null) ?? null,
+			rootMessageId: (row.root_message_id as string | null) ?? null,
+			threadId: (row.thread_id as string | null) ?? null,
+			memberAddedAt: (row.member_added_at as string | null) ?? null,
+			cancelRequestedAt: (row.cancel_requested_at as string | null) ?? null,
+			endingStartedAt: (row.ending_started_at as string | null) ?? null,
+			orphanCandidates: stringArray(row.orphan_candidates),
+			boundChannelIds: stringArray(row.bound_channel_ids),
+			meetingId: (row.meeting_id as string | null) ?? null,
+			evidenceDir: (row.evidence_dir as string | null) ?? null,
+			topic: (row.topic as string | null) ?? null,
+			requestedBy: String(row.requested_by),
+			credentialTier: row.credential_tier as VoiceCredentialTier,
+			state: row.state as VoiceSessionState,
+			reason: (row.reason as string | null) ?? null,
+			daemonBootId: (row.daemon_boot_id as string | null) ?? null,
+			leaseToken: (row.lease_token as string | null) ?? null,
+			leaseExpiresAt: (row.lease_expires_at as string | null) ?? null,
+			outboundCursor: stringRecord(row.outbound_cursor),
+			createdAt: String(row.created_at),
+			updatedAt: String(row.updated_at),
+			endedAt: (row.ended_at as string | null) ?? null,
+		};
+	}
+
+	private voiceOutboundFromRow(row: Record<string, unknown>): VoiceOutboundRow {
+		return {
+			seq: Number(row.seq),
+			sessionId: String(row.session_id),
+			messageId: String(row.message_id),
+			channelId: String(row.channel_id),
+			authorId: String(row.author_id),
+			text: String(row.text),
+			observedAt: String(row.observed_at),
+			phase: row.phase as VoiceOutboundPhase,
+			attemptToken: (row.attempt_token as string | null) ?? null,
+			claimedAt: (row.claimed_at as string | null) ?? null,
+			finishedAt: (row.finished_at as string | null) ?? null,
+		};
+	}
+
+	getVoiceSession(sessionId: string): VoiceSessionRow | undefined {
+		return this.voiceSessionFromRow(
+			this.workflowSelectAll("SELECT * FROM voice_sessions WHERE session_id = ?", [
+				sessionId,
+			])[0],
+		);
+	}
+
+	getVoiceSessionByMeeting(meetingId: string): VoiceSessionRow | undefined {
+		return this.voiceSessionFromRow(
+			this.workflowSelectAll(
+				`SELECT * FROM voice_sessions WHERE meeting_id = ?
+				 ORDER BY created_at DESC LIMIT 1`,
+				[meetingId],
+			)[0],
+		);
+	}
+
+	getDesiredVoiceSession(): VoiceSessionRow | undefined {
+		return this.voiceSessionFromRow(
+			this.workflowSelectAll(
+				"SELECT * FROM voice_sessions WHERE state = 'desired' ORDER BY created_at, session_id LIMIT 1",
+				[],
+			)[0],
+		);
+	}
+
+	listVoiceSessions(states: readonly VoiceSessionState[]): VoiceSessionRow[] {
+		if (states.length === 0) return [];
+		return this.workflowSelectAll(
+			`SELECT * FROM voice_sessions WHERE state IN (${states.map(() => "?").join(",")})
+			 ORDER BY created_at, session_id`,
+			[...states],
+		)
+			.map((row) => this.voiceSessionFromRow(row))
+			.filter((row): row is VoiceSessionRow => row !== undefined);
+	}
+
+	reserveVoiceSession(
+		input: VoiceSessionReservation,
+	):
+		| { status: "inserted" | "already_exists"; session: VoiceSessionRow }
+		| { status: "meeting_intent_conflict" | "session_active" } {
+		let result:
+			| { status: "inserted" | "already_exists"; session: VoiceSessionRow }
+			| { status: "meeting_intent_conflict" | "session_active" } = {
+			status: "session_active",
+		};
+		this.db.transaction(() => {
+			if (input.meetingId) {
+				const existing = this.voiceSessionFromRow(
+					this.workflowSelectAll(
+						`SELECT * FROM voice_sessions WHERE meeting_id = ?
+						 AND state NOT IN ('ended','cancelled','failed') LIMIT 1`,
+						[input.meetingId],
+					)[0],
+				);
+				if (existing) {
+					result =
+						existing.mode === input.mode &&
+						existing.projectName === input.projectName &&
+						existing.leadId === input.leadId
+							? { status: "already_exists", session: existing }
+							: { status: "meeting_intent_conflict" };
+					return;
+				}
+			}
+			const activeRoom = this.workflowSelectAll(
+				`SELECT 1 AS present FROM voice_sessions WHERE voice_channel_id = ?
+				 AND state NOT IN ('ended','cancelled','failed') LIMIT 1`,
+				[input.voiceChannelId],
+			)[0];
+			if (activeRoom) return;
+			this.db.run(
+				`INSERT INTO voice_sessions
+				 (session_id, mode, project_name, lead_id, guild_id, voice_channel_id,
+				  meeting_id, evidence_dir, topic, requested_by, credential_tier, state,
+				  created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?)`,
+				[
+					input.sessionId,
+					input.mode,
+					input.projectName,
+					input.leadId,
+					input.guildId,
+					input.voiceChannelId,
+					input.meetingId ?? null,
+					input.evidenceDir ?? null,
+					input.topic ?? null,
+					input.requestedBy,
+					input.credentialTier,
+					input.createdAt,
+					input.createdAt,
+				],
+			);
+			result = {
+				status: "inserted",
+				session: this.getVoiceSession(input.sessionId)!,
+			};
+		});
+		this.save();
+		return result;
+	}
+
+	updateVoiceProvisioning(input: {
+		sessionId: string;
+		expectedStep: VoiceProvisioningStep;
+		nextStep: VoiceProvisioningStep;
+		nextState?: "provisioning" | "desired" | "cancelled" | "failed";
+		updatedAt: string;
+		reason?: string;
+		provisionerEpoch?: string;
+		provisioningNonce?: string;
+		rootMessageId?: string;
+		threadId?: string;
+		memberAddedAt?: string;
+		boundChannelIds?: string[];
+		outboundCursor?: Record<string, string>;
+		orphanCandidates?: string[];
+	}): boolean {
+		const terminal = new Set(["cancelled", "failed"]);
+		const assignments = [
+			"provisioning_step = ?",
+			"state = ?",
+			"reason = ?",
+			"updated_at = ?",
+			"ended_at = CASE WHEN ? THEN ? ELSE ended_at END",
+		];
+		const values: unknown[] = [
+			input.nextStep,
+			input.nextState ?? "provisioning",
+			input.reason ?? null,
+			input.updatedAt,
+			terminal.has(input.nextState ?? "provisioning") ? 1 : 0,
+			input.updatedAt,
+		];
+		const add = (column: string, value: unknown) => {
+			if (value === undefined) return;
+			assignments.push(`${column} = ?`);
+			values.push(value);
+		};
+		add("provisioning_nonce", input.provisioningNonce);
+		if (input.nextStep === "root_requested") {
+			assignments.push("root_requested_at = COALESCE(root_requested_at, ?)");
+			values.push(input.updatedAt);
+		}
+		add("root_message_id", input.rootMessageId);
+		add("thread_id", input.threadId);
+		add("member_added_at", input.memberAddedAt);
+		add(
+			"bound_channel_ids",
+			input.boundChannelIds === undefined
+				? undefined
+				: JSON.stringify(input.boundChannelIds),
+		);
+		add(
+			"outbound_cursor",
+			input.outboundCursor === undefined
+				? undefined
+				: JSON.stringify(input.outboundCursor),
+		);
+		add(
+			"orphan_candidates",
+			input.orphanCandidates === undefined
+				? undefined
+				: JSON.stringify(input.orphanCandidates),
+		);
+		this.db.run(
+			`UPDATE voice_sessions
+			 SET ${assignments.join(", ")}
+			 WHERE session_id = ? AND state = 'provisioning' AND provisioning_step = ?
+			   AND (? IS NULL OR provisioner_epoch = ?)
+			   AND (cancel_requested_at IS NULL OR ? = 'cancelled')`,
+			[
+				...values,
+				input.sessionId,
+				input.expectedStep,
+				input.provisionerEpoch ?? null,
+				input.provisionerEpoch ?? null,
+				input.nextState ?? "provisioning",
+			],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		else if (input.provisionerEpoch && (input.rootMessageId || input.threadId)) {
+			// A cancellation forbids advancement, but its successful in-flight receipt
+			// is still evidence needed by the same owner's cancellation cleanup.
+			const column =
+				input.expectedStep === "root_requested"
+					? "root_message_id"
+					: input.expectedStep === "thread_requested"
+						? "thread_id"
+						: undefined;
+			const receipt =
+				column === "root_message_id" ? input.rootMessageId : input.threadId;
+			if (column && receipt) {
+				this.db.run(
+					`UPDATE voice_sessions SET ${column} = ?
+					WHERE session_id = ? AND state = 'provisioning' AND provisioning_step = ?
+					AND provisioner_epoch = ? AND cancel_requested_at IS NOT NULL
+					AND (${column} IS NULL OR ${column} = ?)`,
+					[
+						receipt,
+						input.sessionId,
+						input.expectedStep,
+						input.provisionerEpoch,
+						receipt,
+					],
+				);
+				if (this.db.getRowsModified() === 1) this.save();
+			}
+		}
+		return changed;
+	}
+
+	claimVoiceProvisioner(
+		sessionId: string,
+		epoch: string,
+		now: string,
+		staleBefore: string,
+	): boolean {
+		this.db.run(
+			`UPDATE voice_sessions SET provisioner_epoch = ?, updated_at = ?
+			 WHERE session_id = ? AND state = 'provisioning'
+			   AND (provisioner_epoch IS NULL OR provisioner_epoch = ? OR updated_at < ?)`,
+			[epoch, now, sessionId, epoch, staleBefore],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
+	}
+
+	claimVoiceSession(input: {
+		sessionId: string;
+		daemonBootId: string;
+		now: string;
+		leaseTtlMs: number;
+	}):
+		| {
+				leaseToken: string;
+				leaseExpiresAt: string;
+				session: VoiceSessionRow;
+		  }
+		| undefined {
+		let claimed:
+			| {
+					leaseToken: string;
+					leaseExpiresAt: string;
+					session: VoiceSessionRow;
+			  }
+			| undefined;
+		this.db.transaction(() => {
+			const leaseToken = randomBytes(32).toString("hex");
+			const leaseExpiresAt = new Date(
+				Date.parse(input.now) + input.leaseTtlMs,
+			).toISOString();
+			this.db.run(
+				`UPDATE voice_sessions SET state = 'claimed', daemon_boot_id = ?,
+				 lease_token = ?, lease_expires_at = ?, updated_at = ?
+				 WHERE session_id = ? AND state = 'desired'`,
+				[
+					input.daemonBootId,
+					leaseToken,
+					leaseExpiresAt,
+					input.now,
+					input.sessionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			claimed = {
+				leaseToken,
+				leaseExpiresAt,
+				session: this.getVoiceSession(input.sessionId)!,
+			};
+		});
+		if (claimed) this.save();
+		return claimed;
+	}
+
+	renewVoiceSession(input: {
+		sessionId: string;
+		leaseToken: string;
+		now: string;
+		leaseTtlMs: number;
+	}): { state: VoiceSessionState; leaseExpiresAt: string } | undefined {
+		let result: { state: VoiceSessionState; leaseExpiresAt: string } | undefined;
+		this.db.transaction(() => {
+			const current = this.getVoiceSession(input.sessionId);
+			if (
+				!current ||
+				current.leaseToken !== input.leaseToken ||
+				!current.leaseExpiresAt ||
+				Date.parse(current.leaseExpiresAt) <= Date.parse(input.now) ||
+				new Set<VoiceSessionState>(["ended", "cancelled", "failed"]).has(
+					current.state,
+				)
+			)
+				return;
+			const leaseExpiresAt = new Date(
+				Date.parse(input.now) + input.leaseTtlMs,
+			).toISOString();
+			this.db.run(
+				`UPDATE voice_sessions SET lease_expires_at = ?, updated_at = ?
+				 WHERE session_id = ? AND lease_token = ?`,
+				[leaseExpiresAt, input.now, input.sessionId, input.leaseToken],
+			);
+			result = { state: current.state, leaseExpiresAt };
+		});
+		if (result) this.save();
+		return result;
+	}
+
+	setVoiceSessionState(input: {
+		sessionId: string;
+		leaseToken: string;
+		state: "warming" | "live" | "ended" | "failed";
+		reason?: string;
+		now: string;
+		abandonedCount?: number;
+	}): boolean {
+		const allowed: Record<string, readonly VoiceSessionState[]> = {
+			claimed: ["warming", "failed"],
+			warming: ["live", "failed"],
+			live: ["ended", "failed"],
+			ending: ["ended", "failed"],
+		};
+		let changed = false;
+		this.db.transaction(() => {
+			const current = this.getVoiceSession(input.sessionId);
+			if (!current || current.leaseToken !== input.leaseToken) return;
+			if (!(allowed[current.state] ?? []).includes(input.state)) return;
+			const expired =
+				!current.leaseExpiresAt ||
+				Date.parse(current.leaseExpiresAt) <= Date.parse(input.now);
+			if (expired && input.state !== "failed") return;
+			// Local departure/voice command is the daemon's terminal intent; text stop
+			// still requires the Bridge-owned transition through ending.
+			if (
+				current.state === "live" && input.state === "ended" &&
+				!new Set(["she-left", "voice-stop"]).has(input.reason ?? "")
+			) return;
+			if (new Set(["ended", "failed"]).has(input.state) && !input.reason) return;
+			if (
+				input.state === "ended" &&
+				!new Set(["she-left", "text-stop", "voice-stop"]).has(input.reason!)
+			)
+				return;
+			this.db.run(
+				`UPDATE voice_sessions SET state = ?, reason = ?, updated_at = ?,
+				 ended_at = CASE WHEN ? IN ('ended','failed') THEN ? ELSE ended_at END
+				 WHERE session_id = ? AND state = ? AND lease_token = ?`,
+				[
+					input.state,
+					input.reason ?? null,
+					input.now,
+					input.state,
+					input.now,
+					input.sessionId,
+					current.state,
+					input.leaseToken,
+				],
+			);
+			changed = this.db.getRowsModified() === 1;
+			if (changed && new Set(["ended", "failed"]).has(input.state)) {
+				this.settleVoiceOutboundTx(input.sessionId, input.now);
+			}
+		});
+		if (changed) this.save();
+		return changed;
+	}
+
+	stopVoiceSession(
+		sessionId: string,
+		now: string,
+	): "cancel_requested" | "cancelled" | "ending" | VoiceSessionState | undefined {
+		let result: ReturnType<StateStore["stopVoiceSession"]>;
+		this.db.transaction(() => {
+			const current = this.getVoiceSession(sessionId);
+			if (!current) return;
+			if (current.state === "provisioning") {
+				this.db.run(
+					`UPDATE voice_sessions SET cancel_requested_at = COALESCE(cancel_requested_at, ?), updated_at = ?
+					 WHERE session_id = ? AND state = 'provisioning'`,
+					[now, now, sessionId],
+				);
+				result = "cancel_requested";
+				return;
+			}
+			if (current.state === "desired") {
+				this.db.run(
+					`UPDATE voice_sessions SET state = 'cancelled', reason = 'text-stop',
+					 updated_at = ?, ended_at = ? WHERE session_id = ? AND state = 'desired'`,
+					[now, now, sessionId],
+				);
+				this.settleVoiceOutboundTx(sessionId, now);
+				result = "cancelled";
+				return;
+			}
+			if (new Set<VoiceSessionState>(["claimed", "warming", "live"]).has(current.state)) {
+				this.db.run(
+					`UPDATE voice_sessions SET state = 'ending', reason = 'text-stop', updated_at = ?, ending_started_at = ?
+					 WHERE session_id = ? AND state = ?`,
+					[now, now, sessionId, current.state],
+				);
+				result = "ending";
+				return;
+			}
+			result = current.state;
+		});
+		if (result) this.save();
+		return result;
+	}
+
+	getActiveVoiceLease(
+		sessionId: string,
+		leaseToken: string,
+		now: string,
+	): VoiceSessionRow | undefined {
+		const session = this.getVoiceSession(sessionId);
+		if (
+			!session ||
+			session.leaseToken !== leaseToken ||
+			!session.leaseExpiresAt ||
+			Date.parse(session.leaseExpiresAt) <= Date.parse(now) ||
+			new Set<VoiceSessionState>(["ended", "cancelled", "failed"]).has(
+				session.state,
+			)
+		)
+			return;
+		return session;
+	}
+
+	recordVoiceOutboundPage(input: {
+		sessionId: string;
+		leaseToken: string;
+		channelId: string;
+		cursor: string;
+		messages: Array<{
+			messageId: string;
+			authorId: string;
+			text: string;
+			observedAt: string;
+		}>;
+		now: string;
+	}): boolean {
+		let changed = false;
+		this.db.transaction(() => {
+			if (!/^\d+$/.test(input.cursor)) return;
+			const session = this.getActiveVoiceLease(
+				input.sessionId,
+				input.leaseToken,
+				input.now,
+			);
+			if (!session) return;
+			for (const message of input.messages) {
+				this.db.run(
+					`INSERT OR IGNORE INTO voice_outbound
+					 (session_id, message_id, channel_id, author_id, text, observed_at)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+					[
+						input.sessionId,
+						message.messageId,
+						input.channelId,
+						message.authorId,
+						message.text,
+						message.observedAt,
+					],
+				);
+			}
+			this.db.run(
+				`UPDATE voice_sessions SET outbound_cursor = ?, updated_at = ?
+				 WHERE session_id = ? AND lease_token = ?`,
+				[
+					JSON.stringify({
+						...session.outboundCursor,
+						[input.channelId]:
+							/^\d+$/.test(session.outboundCursor[input.channelId] ?? "") &&
+							BigInt(session.outboundCursor[input.channelId]!) >
+								BigInt(input.cursor)
+								? session.outboundCursor[input.channelId]
+								: input.cursor,
+					}),
+					input.now,
+					input.sessionId,
+					input.leaseToken,
+				],
+			);
+			changed = true;
+		});
+		if (changed) this.save();
+		return changed;
+	}
+
+	listVoiceOutbound(
+		sessionId: string,
+		leaseToken: string,
+		now: string,
+		limit = 20,
+	): VoiceOutboundRow[] {
+		if (!this.getActiveVoiceLease(sessionId, leaseToken, now)) return [];
+		return this.workflowSelectAll(
+			`SELECT * FROM voice_outbound WHERE session_id = ? AND phase = 'queued'
+			 ORDER BY seq LIMIT ?`,
+			[sessionId, Math.max(1, Math.min(20, Math.floor(limit)))],
+		).map((row) => this.voiceOutboundFromRow(row));
+	}
+
+	claimVoiceOutbound(input: {
+		sessionId: string;
+		seq: number;
+		leaseToken: string;
+		now: string;
+	}): string | undefined {
+		let attemptToken: string | undefined;
+		this.db.transaction(() => {
+			if (!this.getActiveVoiceLease(input.sessionId, input.leaseToken, input.now)) return;
+			const candidate = randomUUID();
+			this.db.run(
+				`UPDATE voice_outbound SET phase = 'claimed', attempt_token = ?, claimed_at = ?
+				 WHERE seq = ? AND session_id = ? AND phase = 'queued'`,
+				[candidate, input.now, input.seq, input.sessionId],
+			);
+			if (this.db.getRowsModified() === 1) attemptToken = candidate;
+		});
+		if (attemptToken) this.save();
+		return attemptToken;
+	}
+
+	finishVoiceOutbound(input: {
+		sessionId: string;
+		seq: number;
+		leaseToken: string;
+		attemptToken: string;
+		status: "confirmed" | "unconfirmed" | "failed" | "dropped";
+		now: string;
+	}): "updated" | "replayed" | "conflict" {
+		const result: { value: "updated" | "replayed" | "conflict" } = {
+			value: "conflict",
+		};
+		this.db.transaction(() => {
+			if (!this.getActiveVoiceLease(input.sessionId, input.leaseToken, input.now)) return;
+			const row = this.voiceOutboundFromRow(
+				this.workflowSelectAll(
+					"SELECT * FROM voice_outbound WHERE session_id = ? AND seq = ?",
+					[input.sessionId, input.seq],
+				)[0] ?? {},
+			);
+			if (row.attemptToken !== input.attemptToken) return;
+			if (row.phase === input.status) {
+				result.value = "replayed";
+				return;
+			}
+			if (row.phase !== "claimed") return;
+			this.db.run(
+				`UPDATE voice_outbound SET phase = ?, finished_at = ?
+				 WHERE session_id = ? AND seq = ? AND phase = 'claimed' AND attempt_token = ?`,
+				[
+					input.status,
+					input.now,
+					input.sessionId,
+					input.seq,
+					input.attemptToken,
+				],
+			);
+			if (this.db.getRowsModified() === 1) result.value = "updated";
+		});
+		if (result.value === "updated") this.save();
+		return result.value;
+	}
+
+	private settleVoiceOutboundTx(sessionId: string, now: string): void {
+		this.db.run(
+			`UPDATE voice_outbound SET phase = 'dropped', finished_at = ?
+			 WHERE session_id = ? AND phase = 'queued'`,
+			[now, sessionId],
+		);
+		this.db.run(
+			`UPDATE voice_outbound SET phase = 'ambiguous', finished_at = ?
+			 WHERE session_id = ? AND phase = 'claimed'`,
+			[now, sessionId],
+		);
+	}
+
+	listRecoverableVoiceProvisioning(staleBefore: string): VoiceSessionRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM voice_sessions
+			 WHERE state = 'provisioning' AND updated_at < ?
+			 ORDER BY updated_at, session_id`,
+			[staleBefore],
+		)
+			.map((row) => this.voiceSessionFromRow(row))
+			.filter((row): row is VoiceSessionRow => row !== undefined);
+	}
+
+	sweepVoiceSessions(input: {
+		now: string;
+		clockSkewGraceMs: number;
+		endingTimeoutMs: number;
+	}): Array<{ sessionId: string; reason: "lease_lost" | "ending_timeout" }> {
+		const swept: Array<{
+			sessionId: string;
+			reason: "lease_lost" | "ending_timeout";
+		}> = [];
+		this.db.transaction(() => {
+			const sessions = this.workflowSelectAll(
+				`SELECT * FROM voice_sessions
+				 WHERE state IN ('claimed','warming','live','ending')`,
+				[],
+			)
+				.map((row) => this.voiceSessionFromRow(row))
+				.filter((row): row is VoiceSessionRow => row !== undefined);
+			for (const session of sessions) {
+				const reason =
+					session.state === "ending"
+						? Date.parse(input.now) >
+							Date.parse(session.endingStartedAt ?? session.createdAt) + input.endingTimeoutMs
+							? "ending_timeout"
+							: undefined
+						: session.leaseExpiresAt &&
+								Date.parse(input.now) >
+									Date.parse(session.leaseExpiresAt) + input.clockSkewGraceMs
+							? "lease_lost"
+							: undefined;
+				if (!reason) continue;
+				this.db.run(
+					`UPDATE voice_sessions SET state = 'failed', reason = ?,
+					 updated_at = ?, ended_at = ? WHERE session_id = ? AND state = ?`,
+					[reason, input.now, input.now, session.sessionId, session.state],
+				);
+				if (this.db.getRowsModified() !== 1) continue;
+				this.settleVoiceOutboundTx(session.sessionId, input.now);
+				swept.push({ sessionId: session.sessionId, reason });
+			}
+		});
+		if (swept.length > 0) this.save();
+		return swept;
 	}
 
 	/**
@@ -4540,6 +5348,81 @@ export class StateStore {
 		`);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_ship_approval_requests_pr ON ship_approval_requests(pr_url, created_at)",
+		);
+
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_sessions (
+				session_id TEXT PRIMARY KEY,
+				mode TEXT NOT NULL CHECK(mode IN ('meeting','rg')),
+				project_name TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				guild_id TEXT NOT NULL,
+				voice_channel_id TEXT NOT NULL,
+				provisioning_step TEXT NOT NULL DEFAULT 'reserved'
+					CHECK(provisioning_step IN ('reserved','root_requested','thread_requested','member_requested','thread_cursor','finalize','done')),
+				provisioner_epoch TEXT,
+				provisioning_nonce TEXT,
+				root_message_id TEXT,
+				thread_id TEXT,
+				member_added_at TEXT,
+				cancel_requested_at TEXT,
+				orphan_candidates TEXT NOT NULL DEFAULT '[]',
+				bound_channel_ids TEXT NOT NULL DEFAULT '[]',
+				meeting_id TEXT,
+				evidence_dir TEXT,
+				topic TEXT,
+				requested_by TEXT NOT NULL,
+				credential_tier TEXT NOT NULL CHECK(credential_tier IN ('master','ingest')),
+				state TEXT NOT NULL CHECK(state IN ('provisioning','desired','claimed','warming','live','ending','ended','cancelled','failed')),
+				reason TEXT,
+				daemon_boot_id TEXT,
+				lease_token TEXT,
+				lease_expires_at TEXT,
+				outbound_cursor TEXT NOT NULL DEFAULT '{}',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				ended_at TEXT
+			)
+		`);
+		this.addColumnIfMissing("voice_sessions", "topic", "TEXT");
+		// Additive migration: ending age must not be rejuvenated by lease/poller writes.
+		this.addColumnIfMissing("voice_sessions", "ending_started_at", "TEXT");
+		this.addColumnIfMissing("voice_sessions", "root_requested_at", "TEXT");
+		// A legacy unknown root must never receive a fresh deduplication window.
+		this.db.run(
+			"UPDATE voice_sessions SET root_requested_at = created_at WHERE provisioning_step = 'root_requested' AND root_requested_at IS NULL",
+		);
+		this.db.run(
+			"UPDATE voice_sessions SET ending_started_at = created_at WHERE state = 'ending' AND ending_started_at IS NULL",
+		);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS voice_sessions_active_room
+			ON voice_sessions(voice_channel_id)
+			WHERE state NOT IN ('ended','cancelled','failed')
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS voice_sessions_active_meeting
+			ON voice_sessions(meeting_id)
+			WHERE meeting_id IS NOT NULL AND state NOT IN ('ended','cancelled','failed')
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_outbound (
+				seq INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id TEXT NOT NULL,
+				message_id TEXT NOT NULL UNIQUE,
+				channel_id TEXT NOT NULL,
+				author_id TEXT NOT NULL,
+				text TEXT NOT NULL,
+				observed_at TEXT NOT NULL,
+				phase TEXT NOT NULL DEFAULT 'queued'
+					CHECK(phase IN ('queued','claimed','confirmed','unconfirmed','failed','dropped','ambiguous')),
+				attempt_token TEXT,
+				claimed_at TEXT,
+				finished_at TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS voice_outbound_session_phase ON voice_outbound(session_id, phase, seq)",
 		);
 
 		// FLY-91: Chat threads for per-issue conversation in chatChannel

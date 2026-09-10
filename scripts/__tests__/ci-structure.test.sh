@@ -773,6 +773,7 @@ expected_shard_tests = {
         "Test — FLY-2270 slot Bridge launch boundary",
         "Test — FLY-1775 generalized-DAG 529 room",
         "Test — FLY-2383 voice concurrency measurement contract",
+        "Test — FLY-2446 two-Lead voice driver",
         "Test — FLY-1189 fault injector safety lock",
         "Test — FLY-1189 assert library + driver trap owner",
         "Test — FLY-1389 path-hygiene + 529-Room repair batch",
@@ -1175,6 +1176,7 @@ fly1814_commands = [
     if line.strip() and not line.lstrip().startswith("#")
 ]
 expected_fly1814_commands = [
+    "bash scripts/__tests__/flywheel-voice-wrapper.test.sh",
     "bash scripts/__tests__/launchd-units-manifest.test.sh",
     "bash scripts/__tests__/launchd-units-manifest-fail-closed.test.sh",
     "bash scripts/__tests__/launchd-census.test.sh",
@@ -1402,6 +1404,12 @@ require(
     "continue-on-error" not in stub_hygiene_step,
     "FLY-1883 stub-hygiene pairing must not swallow failures",
 )
+
+voice_driver_steps = [step for step in script_steps_2 if isinstance(step, dict) and step.get("name") == "Test — FLY-2446 two-Lead voice driver"]
+require(len(voice_driver_steps) == 1, "FLY-2446 driver must run exactly once in script-tests-2")
+voice_driver_step = voice_driver_steps[0]
+require(voice_driver_step.get("run") == "node --test scripts/__tests__/fly2446-two-lead-run.test.mjs", "FLY-2446 driver command drifted")
+require("if" not in voice_driver_step and "continue-on-error" not in voice_driver_step, "FLY-2446 driver must be a mandatory hermetic gate")
 
 print("PASS: FLY-1338 CI structure contract")
 PY

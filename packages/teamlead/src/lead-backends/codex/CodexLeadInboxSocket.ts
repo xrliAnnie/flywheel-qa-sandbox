@@ -58,6 +58,7 @@ export interface CodexLeadInboxCapabilities {
 	protocolVersions: [1, 2];
 	features: ["discord_route_v2"];
 	socketOwnerId: string;
+	voiceMirrorIgnoredAuthorIds?: readonly string[];
 }
 
 export function resolveCodexLeadInboxSocketPath(stateDir: string): string {
@@ -71,6 +72,8 @@ export interface CodexLeadInboxServerOptions {
 	/** Lead bot token shared only by Bridge and the owning TUI process. */
 	authSecret: string;
 	socketOwnerId?: string;
+	/** Must be the same startup projection passed to this process's gateway. */
+	ignoredAuthorIds?: readonly string[];
 	/** Crash seam: throw after journal commit to simulate response loss. */
 	afterCommit?: () => void | Promise<void>;
 }
@@ -195,6 +198,11 @@ export class CodexLeadInboxServer {
 					protocolVersions: [1, 2],
 					features: ["discord_route_v2"],
 					socketOwnerId: this.socketOwnerId,
+					...(this.opts.ignoredAuthorIds === undefined
+						? {}
+						: {
+								voiceMirrorIgnoredAuthorIds: [...this.opts.ignoredAuthorIds],
+							}),
 				};
 				socket.end(`${JSON.stringify({ ok: true, capabilities })}\n`);
 				return;

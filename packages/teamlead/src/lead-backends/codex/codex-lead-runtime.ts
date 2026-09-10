@@ -78,6 +78,8 @@ export interface CodexLeadRuntimeConfig {
 	leadKey: string;
 	identityDigest: string;
 	botUserId: string;
+	/** Exact registry-projected bot ids that must never re-enter this Lead. */
+	ignoredAuthorIds: string[];
 	botToken: string;
 	chatChannelId: string;
 	coreChannelId?: string;
@@ -550,6 +552,19 @@ export function parseCodexLeadRuntimeConfig(
 	const backend = req("FLYWHEEL_LEAD_BACKEND");
 	const identityDigest = req("FLYWHEEL_LEAD_IDENTITY_DIGEST");
 	const botUserId = req("DISCORD_EXPECTED_BOT_USER_ID");
+	const ignoredAuthorIds = [
+		...new Set(
+			(env.FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS ?? "")
+				.split(",")
+				.map((value) => value.trim())
+				.filter(Boolean),
+		),
+	];
+	if (ignoredAuthorIds.some((value) => !/^[0-9]{17,20}$/.test(value))) {
+		throw new Error(
+			"codex-lead-runtime: FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS must contain only Discord snowflakes",
+		);
+	}
 	const botToken = req("DISCORD_BOT_TOKEN");
 	const chatChannelId = req("FLYWHEEL_LEAD_CHAT_CHANNEL_ID");
 	const stateDir = req("FLYWHEEL_CODEX_LEAD_STATE_DIR");
@@ -871,6 +886,7 @@ export function parseCodexLeadRuntimeConfig(
 		leadKey,
 		identityDigest,
 		botUserId,
+		ignoredAuthorIds,
 		botToken,
 		chatChannelId,
 		coreChannelId,
@@ -1305,6 +1321,7 @@ export function assertWriteCapableRelease(
 export function spawnCodexAppServer(cfg: {
 	codexBin: string;
 	mcpArgv: string[];
+	featureArgv?: string[];
 	codexHome: string;
 	baseEnv?: NodeJS.ProcessEnv;
 	/** FLY-350 full-access: when false, the `baseEnv` is used AS-IS — it is already
@@ -1317,7 +1334,12 @@ export function spawnCodexAppServer(cfg: {
 	leadId?: string;
 	projectName?: string;
 }): ChildTransport {
-	const args = ["app-server", "--strict-config", ...cfg.mcpArgv];
+	const args = [
+		...(cfg.featureArgv ?? []),
+		"app-server",
+		"--strict-config",
+		...cfg.mcpArgv,
+	];
 	const base = cfg.baseEnv ?? process.env;
 	const child = spawn(cfg.codexBin, args, {
 		env: {
@@ -1747,6 +1769,7 @@ export function buildCodexLeadRuntime(
 					: {}),
 			});
 			const inboxServer = new CodexLeadInboxServer({
+				ignoredAuthorIds: config.ignoredAuthorIds,
 				socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),
 				leadId: config.leadId,
 				router,
@@ -1800,6 +1823,7 @@ export function buildCodexLeadRuntime(
 				source,
 				router,
 				botUserId: config.botUserId,
+				ignoredAuthorIds: config.ignoredAuthorIds,
 				channelIds: config.channelIds,
 				externalReceiptSaga,
 				durableAccept: (input) => mailboxStrategy.accept(input),

@@ -316,6 +316,18 @@ describe("CodexDiscordGateway — forwarding + filters", () => {
 		expect(router.submits).toHaveLength(0); // dropped, not forwarded
 	});
 
+	it("drops configured voice bot messages while preserving other bot traffic", () => {
+		const { gw, router } = make({ ignoredAuthorIds: ["voice-bot"] });
+		expect(
+			gw.handle(msg({ id: "voice-1", authorId: "voice-bot", authorBot: true })),
+		).toBe(true);
+		expect(router.submits).toHaveLength(0);
+		expect(
+			gw.handle(msg({ id: "lead-1", authorId: "other-bot", authorBot: true })),
+		).toBe(true);
+		expect(router.submits).toHaveLength(1);
+	});
+
 	it("drops messages outside the channel allowlist (safe to advance)", () => {
 		const { gw, router } = make();
 		expect(gw.handle(msg({ channelId: "random-chan" }))).toBe(true);

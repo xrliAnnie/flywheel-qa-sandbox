@@ -75,7 +75,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		workflow_run_collect_alias workflow_run_collect_receipt workflow_run_issue_alias workflow_run_node
 		workflow_side_effect_ledger workflow_source_cursor workflow_source_deadletter
 		workflow_template workflow_template_audit workflow_template_publication
-		workflow_template_revision workflow_wake_send_claim
+		voice_outbound voice_sessions workflow_template_revision workflow_wake_send_claim
 	`),
 });
 

@@ -761,6 +761,17 @@ export class MailboxQueue {
 			.get(idOrDeliveryId, idOrDeliveryId) as MailboxRow | undefined;
 	}
 
+	inspectDeliveryContent(idOrDeliveryId: string): string | undefined {
+		const live = this.getById(idOrDeliveryId);
+		if (live) return live.content;
+		const identity = this.findIdentity(idOrDeliveryId);
+		if (!identity?.archived_at) return undefined;
+		const archived = this.archivedMailboxJson(identity.id);
+		if (!archived) return undefined;
+		const content = (JSON.parse(archived) as { content?: unknown }).content;
+		return typeof content === "string" ? content : undefined;
+	}
+
 	recordRunnerTerminalizationRefusedNotice(input: {
 		sourceId: string;
 		toAgent: string;

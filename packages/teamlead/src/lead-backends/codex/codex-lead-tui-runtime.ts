@@ -749,6 +749,7 @@ export function buildTuiGeneration(
 								: {}),
 						});
 						const inboxServer = new CodexLeadInboxServer({
+							ignoredAuthorIds: config.ignoredAuthorIds,
 							socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),
 							leadId: config.leadId,
 							router,
@@ -798,6 +799,7 @@ export function buildTuiGeneration(
 							source,
 							router,
 							botUserId: config.botUserId,
+							ignoredAuthorIds: config.ignoredAuthorIds,
 							channelIds: config.channelIds,
 							externalReceiptSaga,
 							durableAccept: (input) => mailboxStrategy.accept(input),

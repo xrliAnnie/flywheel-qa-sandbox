@@ -25,6 +25,18 @@
 		"./bridge/cmux-close-request": {
 			"types": "./dist/bridge/cmux-close-request.d.ts",
 			"import": "./dist/bridge/cmux-close-request.js"
+		},
+		"./codex-process": {
+			"types": "./dist/codex-process.d.ts",
+			"import": "./dist/codex-process.js"
+		},
+		"./process-lock": {
+			"types": "./dist/process-lock.d.ts",
+			"import": "./dist/process-lock.js"
+		},
+		"./cos-ports/voice-intent": {
+			"types": "./dist/cos-ports/voice-intent.d.ts",
+			"import": "./dist/cos-ports/voice-intent.js"
 		}
 	},
 	"bin": {
@@ -64,6 +76,7 @@
 		"flywheel-config": "workspace:*",
 		"flywheel-core": "workspace:*",
 		"flywheel-edge-worker": "workspace:*",
+		"flywheel-voice-core": "workspace:*",
 		"smol-toml": "^1.6.1",
 		"sql.js": "^1.14.1",
 		"ws": "^8.19.0",

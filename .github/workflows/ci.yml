@@ -166,6 +166,8 @@ jobs:
           - name: heavy
             cmd: pnpm --filter flywheel-claude-runner --filter flywheel-comm --filter flywheel-edge-worker test:run
           - name: light
+            # FLY-2446: flywheel-voice-codex runs in this package shard;
+            # its config uses one fork and excludes the macOS tmux viewer.
             cmd: pnpm --filter './packages/*' --filter '!flywheel-teamlead' --filter '!flywheel-claude-runner' --filter '!flywheel-comm' --filter '!flywheel-edge-worker' test:run
     steps:
       - uses: actions/checkout@v4
@@ -409,6 +411,7 @@ jobs:
       # Step seconds: ~15 locally; comfortably inside the shard budget.
       - name: Test — FLY-1814 launchd fleet contracts
         run: |
+          bash scripts/__tests__/flywheel-voice-wrapper.test.sh
           bash scripts/__tests__/launchd-units-manifest.test.sh
           bash scripts/__tests__/launchd-units-manifest-fail-closed.test.sh
           bash scripts/__tests__/launchd-census.test.sh
@@ -605,6 +608,9 @@ jobs:
           node --test scripts/__tests__/fly2383-voice-soak-measure.test.mjs
           node --test scripts/__tests__/fly2383-voice-soak-calibration.test.mjs
           node --test scripts/__tests__/fly2383-voice-soak-evidence.test.mjs
+
+      - name: Test — FLY-2446 two-Lead voice driver
+        run: node --test scripts/__tests__/fly2446-two-lead-run.test.mjs
 
       # FLY-1189: fault injector S1 SAFETY LOCK — the anchor rejection matrix
       # (execId/tmux/path anchors + prod denylist + prefix-collision + symlink

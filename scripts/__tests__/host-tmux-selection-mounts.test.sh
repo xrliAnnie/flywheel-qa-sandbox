@@ -312,13 +312,14 @@ for wrapper in \
   scripts/flywheel-quota-monitor-wrapper.sh \
   scripts/flywheel-lead-wrapper-v2.sh \
   scripts/flywheel-voice-bridge-wrapper.sh \
+  scripts/flywheel-voice-wrapper.sh \
   scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
   scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh; do
   grep -Fq '${FLYWHEEL_DIR}/scripts/host-tmux-selection-gate.sh' \
     "$REPO_ROOT/$wrapper" && FALLBACK_DECLARATIONS=$((FALLBACK_DECLARATIONS + 1))
 done
 if [ "$FALLBACK_RC" -eq 0 ] \
-  && [ "$FALLBACK_DECLARATIONS" -eq 6 ] \
+  && [ "$FALLBACK_DECLARATIONS" -eq 7 ] \
   && [ ! -e "$FALLBACK_STATE/bin/host-tmux-selection-gate.sh" ] \
   && grep -Fqx "gate codex-infra-bot|$FALLBACK_SHA|$FALLBACK_STATE" \
     "$FALLBACK_ROOT/gate-call" \

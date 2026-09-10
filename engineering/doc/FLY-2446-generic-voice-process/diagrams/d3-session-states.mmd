@@ -1,0 +1,18 @@
+stateDiagram-v2
+  [*] --> provisioning : POST /api/voice/sessions 先占账
+  provisioning --> desired : 建 thread 拿到回执
+  provisioning --> cancelled : stop 时由 provisioner 收尾
+  provisioning --> failed : 副作用无法完成
+  desired --> claimed : voice 进程认领 拿到 lease
+  desired --> cancelled : stop
+  claimed --> warming : 起 Codex 前台 进语音房
+  warming --> live : founder 在房
+  warming --> failed : founder 未到 或 前台起不来
+  live --> ending : stop 或 founder 离房 或 口令退出
+  ending --> ended : 念完当前块 离房 写信号
+  claimed --> failed : lease 丢失
+  live --> failed : lease 丢失 或 前台断线
+  ending --> failed : 收尾超时
+  ended --> [*]
+  cancelled --> [*]
+  failed --> [*]

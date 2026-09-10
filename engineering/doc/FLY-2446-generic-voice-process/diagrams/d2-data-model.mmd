@@ -1,0 +1,55 @@
+classDiagram
+  class LeadConfig_registry {
+    +agentId 身份主键
+    +botUserId Lead 的 bot
+    +chatChannel 自己的频道
+    +voiceModes.meeting 缺席=开
+    +voiceModes.rg 缺席=关
+    +realtimeVoice 音色(缺席=marin)
+  }
+  class HuddleConfig_registry {
+    +guildId
+    +voiceChannelId 唯一一间语音房
+    +orchestratorBotTokenEnv 语音 bot
+    +orchestratorBotUserId 新增
+  }
+  class voice_sessions_Bridge {
+    +session_id
+    +mode meeting 或 rg
+    +project_name / lead_id
+    +thread_id 绑定 thread
+    +bound_channel_ids
+    +meeting_id / evidence_dir
+    +state 生命周期
+    +lease_token / lease_expires_at
+    +provisioning_step / cancel_requested_at
+    +outbound_cursor
+  }
+  class voice_outbound_Bridge {
+    +seq
+    +session_id
+    +message_id Discord 唯一
+    +author_id 必须是 Lead bot
+    +text 已脱敏
+    +phase queued→claimed→终态
+    +attempt_token
+  }
+  class mailbox_row {
+    +delivery_id chat:lead:镜像id
+    +source_kind voice
+    +type discord_chat 不变
+    +content origin=voice
+    +state QUEUED→ACKED
+  }
+  class journal_daemon {
+    +captured 已脱敏文本+nonce
+    +mirror_requested
+    +mirrored messageId
+    +ingested deliveryId
+    +abandoned 原因
+  }
+  LeadConfig_registry "1" --> "0..1" voice_sessions_Bridge : 按会话挂上
+  HuddleConfig_registry "1" --> "*" voice_sessions_Bridge : 房间与语音 bot
+  voice_sessions_Bridge "1" --> "*" voice_outbound_Bridge : Lead 回帖账本
+  voice_sessions_Bridge "1" --> "*" mailbox_row : founder 每句话
+  voice_sessions_Bridge "1" --> "1" journal_daemon : 本机重放账

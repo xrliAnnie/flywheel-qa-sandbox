@@ -17,6 +17,7 @@ scripts/lib/tmux-server-rescue.sh
 scripts/flywheel-lead-wrapper-v2.sh
 scripts/flywheel-bridge-wrapper.sh
 scripts/flywheel-voice-bridge-wrapper.sh
+scripts/flywheel-voice-wrapper.sh
 scripts/flywheel-quota-monitor-wrapper.sh
 scripts/restart-services.sh
 packages/teamlead/scripts/templates/flywheel-codex-lead-wrapper-mufasa-tui.sh

@@ -1,0 +1,16 @@
+flowchart TB
+  F["👩 founder<br/>在 Discord 语音房说话"]
+  V["🎙️ flywheel-voice 进程<br/>只做耳朵和嘴<br/>(Codex realtime 前台)"]
+  T["🧵 Discord 绑定 thread<br/>(在 Lead 自己的频道下)"]
+  M["📬 mailbox<br/>(comm.db,和文字消息同一张表)"]
+  P["⚙️ Bridge 投递泵 + 适配器<br/>(和文字完全同一条路)"]
+  L["🧠 Lead(脑子)<br/>Claude 或 Codex"]
+  B["🛂 Bridge 回程中继<br/>只认这个 Lead 的 bot"]
+  F -->|"① 语音"| V
+  V -->|"② 🗣️ 转写镜像"| T
+  V -->|"③ chat-ingest<br/>origin=voice"| M
+  M --> P --> L
+  L -->|"④ 像平时一样在 thread 回帖"| T
+  T -->|"⑤ 轮询 Lead 回帖"| B
+  B -->|"⑥ 交给 voice 进程"| V
+  V -->|"⑦ 用 Lead 的音色念出来"| F

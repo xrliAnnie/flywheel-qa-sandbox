@@ -26,6 +26,8 @@ export interface ChatDeliveryEnvelopeV1 {
 	msgKind: ChatDeliveryMessageKind;
 	attachments: ChatDeliveryAttachment[];
 	text: string;
+	origin?: "discord" | "voice";
+	voiceSessionId?: string;
 	heldSince?: string;
 	heldReason?: "discord_wiring_broken";
 	replyChannelId?: string;
@@ -113,6 +115,20 @@ export function normalizeChatDeliveryEnvelope(
 	if ((value.heldSince === undefined) !== (value.heldReason === undefined)) {
 		throw new Error("heldSince and heldReason must be provided together");
 	}
+	if (
+		value.origin !== undefined &&
+		value.origin !== "discord" &&
+		value.origin !== "voice"
+	) {
+		throw new Error("origin must be discord or voice");
+	}
+	if ((value.origin === "voice") !== (value.voiceSessionId !== undefined)) {
+		throw new Error("origin and voiceSessionId must be provided together");
+	}
+	const voiceSessionId =
+		value.voiceSessionId === undefined
+			? undefined
+			: requiredText(value.voiceSessionId, "voiceSessionId");
 	let heldSince: string | undefined;
 	let heldReason: ChatDeliveryEnvelopeV1["heldReason"];
 	if (value.heldSince !== undefined) {
@@ -168,6 +184,8 @@ export function normalizeChatDeliveryEnvelope(
 		msgKind: value.msgKind,
 		attachments,
 		text: value.text,
+		...(value.origin ? { origin: value.origin } : {}),
+		...(voiceSessionId ? { voiceSessionId } : {}),
 		...(heldSince ? { heldSince, heldReason } : {}),
 		...(replyChannelId ? { replyChannelId } : {}),
 		...(replyRoute ? { replyRoute } : {}),

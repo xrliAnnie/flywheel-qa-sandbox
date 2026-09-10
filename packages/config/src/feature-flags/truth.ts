@@ -262,6 +262,42 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"path override for the hot-read patrol timing config (FLY-1687), not an on/off gate",
 	FLYWHEEL_MEETING_NOTES_CONFIG:
 		"config value: trusted meeting-notes YAML path override for hermetic QA and deployment (FLY-2033), not an on/off gate",
+	FLYWHEEL_LEAD_IGNORED_AUTHOR_IDS:
+		"FLY-2446 config value: comma-separated bot author ids excluded from Codex Lead intake, not an on/off gate",
+	...Object.fromEntries(
+		[
+			"FLYWHEEL_VOICE_CLOCK_SKEW_GRACE_MS",
+			"FLYWHEEL_VOICE_CONFIRMATION_MS",
+			"FLYWHEEL_VOICE_DELIVERY_RETRY_MS",
+			"FLYWHEEL_VOICE_DISCORD_TIMEOUT_MS",
+			"FLYWHEEL_VOICE_ENDING_TIMEOUT_MS",
+			"FLYWHEEL_VOICE_IDLE_POLL_MS",
+			"FLYWHEEL_VOICE_INGEST_ATTEMPTS",
+			"FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS",
+			"FLYWHEEL_VOICE_LEASE_MISS_MAX",
+			"FLYWHEEL_VOICE_LEASE_RENEW_MS",
+			"FLYWHEEL_VOICE_LEASE_TTL_MS",
+			"FLYWHEEL_VOICE_MIRROR_ATTEMPTS",
+			"FLYWHEEL_VOICE_MIRROR_RETRY_WINDOW_MS",
+			"FLYWHEEL_VOICE_POLL_INTERVAL_MS",
+			"FLYWHEEL_VOICE_PRESENCE_GRACE_MS",
+			"FLYWHEEL_VOICE_PROVISIONING_STALE_MS",
+			"FLYWHEEL_VOICE_SPEECH_CHUNK_TOKENS",
+		].map((name) => [
+			name,
+			"FLY-2446 numeric tuning for bounded voice-session timing or retry policy, not an on/off gate",
+		]),
+	),
+	...Object.fromEntries(
+		[
+			"FLYWHEEL_VOICE_CODEX_HOME",
+			"FLYWHEEL_VOICE_HOST_CONFIG",
+			"FLYWHEEL_VOICE_STATE_DIR",
+		].map((name) => [
+			name,
+			"FLY-2446 plumbing: managed voice runtime path override, not an on/off gate",
+		]),
+	),
 	FLYWHEEL_CODEX_LEAD_STATE_DIRS:
 		"FLY-2301 slot-injected Lead identity-to-state-directory path map, not an on/off gate",
 	FLYWHEEL_CODEX_ACCOUNT_REGISTRY_PATH:

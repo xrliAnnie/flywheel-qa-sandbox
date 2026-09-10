@@ -49,6 +49,39 @@ TARBALL="$SANDBOX/payload/flywheel-onboard-payload-$VERSION.tgz"
 [ -f "$TARBALL" ] && pass "①a packaging pipeline: gated tarball produced (v$VERSION)" \
                   || { fail "①a tarball missing at $TARBALL"; exit 1; }
 
+# Generic voice is part of TeamLead's runtime dependency closure.
+if jq -e '
+  ([.dependencies[] | select(startswith("workspace:"))] | length) == 0 and
+  .flywheelPackagesMirror["voice-core"] == "flywheel-voice-core" and
+  .flywheelPackagesMirror["voice-bridge"] == "flywheel-voice-bridge" and
+  .flywheelPackagesMirror["voice-codex"] == "flywheel-voice-codex"
+' "$SANDBOX/payload/tree/package.json" >/dev/null \
+  && tar -tzf "$TARBALL" | grep '^package/node_modules/flywheel-voice-codex/models/silero_vad.onnx$' >/dev/null \
+  && tar -tzf "$TARBALL" | grep '^package/node_modules/flywheel-voice-codex/models/LICENSE.silero-vad$' >/dev/null \
+  && tar -tzf "$TARBALL" | grep '^package/scripts/flywheel-voice-wrapper.sh$' >/dev/null; then
+  pass "①a voice runtime closure includes packages, model, license and wrapper"
+else
+  fail "①a voice runtime closure missing or workspace protocol leaked"
+  exit 1
+fi
+
+# Removing voice-core's explicit classification must fail the real payload gate.
+sed '/^node_modules\/flywheel-voice-core\//d' \
+  "$REPO_ROOT/scripts/package-onboard-files.allow" > "$SANDBOX/no-voice-core.allow"
+if (export PACKAGE_ONBOARD_SOURCED=1
+    export PO_FILES_ALLOWLIST="$SANDBOX/no-voice-core.allow"
+    source "$REPO_ROOT/scripts/package-onboard.sh"
+    po_gate_tarball "$TARBALL" "$REPO_ROOT") > "$SANDBOX/voice-allowlist-negative.log" 2>&1; then
+  fail "①a removed voice-core allowlist unexpectedly passed"
+  exit 1
+elif grep -q 'node_modules/flywheel-voice-core/' "$SANDBOX/voice-allowlist-negative.log" \
+  && grep -q 'NOT in the release allowlist' "$SANDBOX/voice-allowlist-negative.log"; then
+  pass "①a removed voice-core allowlist rejects the real payload"
+else
+  fail "①a voice-core allowlist mutation failed for an unexpected reason"
+  exit 1
+fi
+
 PREFIX="$SANDBOX/runtime/versions/$VERSION"
 mkdir -p "$PREFIX"
 : > "$SANDBOX/npmrc-clean"
@@ -152,6 +185,35 @@ if [ "$mirror_validator_rc" -eq 1 ] \
   pass "②g projects validator rejects invalid input through the compat symlink"
 else
   fail "②g projects validator was vacuous through the compat symlink: rc=$mirror_validator_rc output=$mirror_validator_out"
+fi
+
+# Native model loading and CLI import closure, without daemon startup/network.
+cat > "$PKG_ROOT/.smoke-voice.mjs" <<'JS'
+import assert from 'node:assert/strict';
+import { SileroVad, createInitialSileroState } from './packages/voice-codex/dist/pipeline/SileroVad.js';
+import { fileURLToPath } from 'node:url';
+await import('@discordjs/voice');
+const vad = await SileroVad.create(fileURLToPath(new URL('./packages/voice-codex/models/silero_vad.onnx', import.meta.url)));
+try {
+  const result = await vad.score(new Float32Array(512), createInitialSileroState());
+  assert.ok(Number.isFinite(result.probability));
+  assert.ok(result.probability >= 0 && result.probability <= 1);
+  console.log('VOICE_NATIVE_OK');
+} finally { await vad.close(); }
+JS
+if (cd "$SANDBOX" && node "$PKG_ROOT/.smoke-voice.mjs") > "$SANDBOX/voice-native.log" 2>&1; then
+  pass "②h installed Discord voice and Silero native model execute"
+else
+  fail "②h installed voice native closure failed: $(tail -8 "$SANDBOX/voice-native.log")"
+fi
+voice_cli_out="$(env -i PATH="$PATH" HOME="$SANDBOX/voice-home" \
+  CODEX_HOME="$SANDBOX/voice-codex-home" node \
+  "$PKG_ROOT/packages/voice-codex/dist/cli.js" --check-config 2>&1)"
+voice_cli_rc=$?
+if [ "$voice_cli_rc" -eq 1 ] && grep -q '^\[voice\] fatal: TEAMLEAD_API_TOKEN is required$' <<<"$voice_cli_out"; then
+  pass "②i installed generic voice CLI loads and rejects absent credentials"
+else
+  fail "②i voice CLI import/config boundary failed: rc=$voice_cli_rc output=$voice_cli_out"
 fi
 
 # ── ③ bundled agent registry ─────────────────────────────────────────────────

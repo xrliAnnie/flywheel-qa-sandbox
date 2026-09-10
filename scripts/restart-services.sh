@@ -90,6 +90,8 @@ source "${FLYWHEEL_DIR}/scripts/lib/discord-pointer-guard.sh"
 source "${FLYWHEEL_DIR}/scripts/lib/supervisor.sh"
 # shellcheck source=lib/restart-voice-bridge.sh
 source "${FLYWHEEL_DIR}/scripts/lib/restart-voice-bridge.sh"
+# shellcheck source=lib/restart-voice.sh
+source "${FLYWHEEL_DIR}/scripts/lib/restart-voice.sh"
 # shellcheck source=lib/tmux-server-rescue.sh
 if [[ -f "${FLYWHEEL_DIR}/scripts/lib/tmux-server-rescue.sh" ]]; then
     source "${FLYWHEEL_DIR}/scripts/lib/tmux-server-rescue.sh"
@@ -1937,6 +1939,7 @@ fi
 classify_changes() {
     local _restart_bridge=false
     local _restart_all_leads=false
+    local _restart_voice=false
     local _need_install=false
 
     while IFS= read -r file; do
@@ -1957,10 +1960,15 @@ classify_changes() {
             scripts/run-bridge.ts)       _restart_bridge=true ;;
             scripts/lib/*)               _restart_bridge=true ;;
 
+            # Standalone voice daemon impact
+            packages/voice-codex/*)              _restart_voice=true ;;
+            scripts/flywheel-voice-wrapper.sh)   _restart_voice=true ;;
+            scripts/launchd/com.flywheel.voice.plist) _restart_voice=true ;;
+
             # Dependency changes → everything
-            package.json)                _need_install=true; _restart_bridge=true; _restart_all_leads=true ;;
-            pnpm-lock.yaml)              _need_install=true; _restart_bridge=true; _restart_all_leads=true ;;
-            pnpm-workspace.yaml)         _need_install=true; _restart_bridge=true; _restart_all_leads=true ;;
+            package.json)                _need_install=true; _restart_bridge=true; _restart_all_leads=true; _restart_voice=true ;;
+            pnpm-lock.yaml)              _need_install=true; _restart_bridge=true; _restart_all_leads=true; _restart_voice=true ;;
+            pnpm-workspace.yaml)         _need_install=true; _restart_bridge=true; _restart_all_leads=true; _restart_voice=true ;;
 
             # No restart needed
             doc/*|tests/*|.claude/*|.github/*|*.md)  ;;
@@ -1970,16 +1978,19 @@ classify_changes() {
 
     echo "restart_bridge=$_restart_bridge"
     echo "restart_all_leads=$_restart_all_leads"
+    echo "restart_voice=$_restart_voice"
     echo "need_install=$_need_install"
 }
 
 restart_bridge=false
 restart_all_leads=false
+restart_voice=false
 need_install=false
 
 if [[ "$FIRST_RUN" == "true" ]]; then
     restart_bridge=true
     restart_all_leads=true
+    restart_voice=true
     need_install=true
     log "First run: full restart (bridge + all leads + install)"
 else
@@ -1989,7 +2000,7 @@ else
         SKIP_BUILD=true
     else
         eval "$(classify_changes)"
-        log "Diff analysis: bridge=$restart_bridge leads=$restart_all_leads install=$need_install"
+        log "Diff analysis: bridge=$restart_bridge leads=$restart_all_leads voice=$restart_voice install=$need_install"
     fi
 fi
 
@@ -1998,7 +2009,7 @@ if [[ "$plugin_needs_restart" == "true" || "$project_lead_changed" == "true" ]];
     restart_all_leads=true
 fi
 
-if [[ "$restart_bridge" == "false" && "$restart_all_leads" == "false" && "$need_install" == "false" ]]; then
+if [[ "$restart_bridge" == "false" && "$restart_all_leads" == "false" && "$restart_voice" == "false" && "$need_install" == "false" ]]; then
     SKIP_BUILD=true
 fi
 
@@ -2018,7 +2029,7 @@ restart_bridge=true
 restart_all_leads=true
 
     if [[ "$DRY_RUN" == "true" ]]; then
-    log "DRY RUN: Would restart Bridge + voice-bridge (when configured/loaded) + all Leads (reason=$RESTART_REASON build=$([[ "$SKIP_BUILD" == "true" ]] && echo skip || echo run) install=$need_install)"
+    log "DRY RUN: Would restart Bridge + voice-bridge (when configured/loaded) + all Leads + voice when changed/loaded (reason=$RESTART_REASON build=$([[ "$SKIP_BUILD" == "true" ]] && echo skip || echo run) install=$need_install)"
     log "DRY RUN: Changes since ${DEPLOYED_SHA:0:7}:"
     echo "${CHANGED:-"(first run)"}" | head -20
     exit 0
@@ -2914,6 +2925,12 @@ rollback_and_restart() {
             RESTART_TERMINAL_REPORTED=true
             return 1
         fi
+        if [[ "${restart_voice:-false}" == "true" ]] && ! restart_voice_managed; then
+            alert_severe "rollback-voice-failed" "Flywheel deploy failed" \
+                "Flywheel 已回滚到旧版本，但 standalone voice 受管重启失败 (${VOICE_RESTART_DETAIL})。deployed-sha 未推进，需要手动介入。"
+            RESTART_TERMINAL_REPORTED=true
+            return 1
+        fi
         if (( rb_leads_failed > 0 )); then
             alert_severe "rollback-leads-failed" "Flywheel deploy failed" \
                 "Flywheel 回滚到 \`${rollback_sha:0:7}\` 成功，但 ${rb_leads_failed} 个 Lead（含 Eng Lead？）未恢复——KeepAlive 重拉不了坏 token/manifest/config。需要手动开 terminal 检查。"
@@ -2952,6 +2969,27 @@ ensure_voice_bridge_for_deploy() {
     if ! rollback_and_restart "$DEPLOYED_SHA"; then
         log "ERROR: rollback after voice-bridge failure did not restore a healthy old voice service"
     fi
+    return 1
+}
+
+ensure_voice_for_deploy() {
+    [[ "${restart_voice:-false}" == "true" ]] || return 0
+    if restart_voice_managed; then
+        return 0
+    fi
+
+    local detail="${VOICE_RESTART_DETAIL:-unknown failure}"
+    if [[ "$RESTART_CODE_ROLLBACK_DISABLED" == "1" ]]; then
+        alert_severe "deploy-voice-failed-code-rollback-disabled" \
+            "Flywheel voice restart failed; code-only rollback disabled" \
+            "standalone voice 受管重启失败 (${detail})。deployed-sha 未推进；请走 window rollback。"
+        resume_admission_best_effort
+        RESTART_TERMINAL_REPORTED=true
+        return 1
+    fi
+
+    log "ERROR: standalone voice restart failed (${detail}); attempting rollback"
+    rollback_and_restart "$DEPLOYED_SHA" || true
     return 1
 }
 
@@ -3138,6 +3176,9 @@ deploy_and_verify() {
     # Replace it under this transaction's restart lock, prove :9878/health and
     # old PID+start tree reclamation, and fail before deployed-sha advancement.
     if ! ensure_voice_bridge_for_deploy; then
+        return 1
+    fi
+    if ! ensure_voice_for_deploy; then
         return 1
     fi
 

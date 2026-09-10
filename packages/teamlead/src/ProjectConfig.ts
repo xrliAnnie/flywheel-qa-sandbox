@@ -6,6 +6,7 @@ import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
 import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
+import { isRealtimeV2Voice, type RealtimeV2Voice } from "./realtime-voices.js";
 
 export type LeadCarrier = "v2";
 
@@ -203,6 +204,10 @@ export interface LeadConfig {
 	 * existing in-memory Lead objects keep their exact shape (reverse-compat).
 	 */
 	voice?: string | { voiceId: string; rate?: string; pitch?: string };
+	/** Generic Codex realtime voice modes. Missing meeting defaults on; missing RG defaults off. */
+	voiceModes?: { meeting?: boolean; rg?: boolean };
+	/** Codex Realtime v2 voice. Consumers default an absent value to marin. */
+	realtimeVoice?: RealtimeV2Voice;
 	/**
 	 * FLY-671: per-Lead reasoning-effort override (`low|medium|high|xhigh|max`).
 	 * Mirrors `model`: Claude consumes it as `claude-lead.sh --effort`; Codex maps
@@ -269,6 +274,8 @@ export interface HuddleConfig {
 	voiceChannelId: string;
 	/** Env var NAME for the orchestrator bot token (pool claim). REQUIRED. */
 	orchestratorBotTokenEnv: string;
+	/** Registry-owned Discord user id for the orchestrator bot. */
+	orchestratorBotUserId?: string;
 	/** Env var NAME for the ears (receive) bot token (pool claim). REQUIRED. */
 	earsBotTokenEnv: string;
 	/** Slash-command name (PRD R10: configurable). Consumer default: "glaw" (Annie-final ①). */
@@ -400,6 +407,23 @@ export function resolveAnnouncerBotToken(
 	projectName: string,
 ): string | undefined {
 	return projects.find((p) => p.projectName === projectName)?.announcerBotToken;
+}
+
+export function resolveLeadByAgentIdAcrossRegistry(
+	projects: ProjectEntry[],
+	agentId: string,
+): { project: ProjectEntry; lead: LeadConfig } | undefined {
+	const matches = projects.flatMap((project) =>
+		project.leads
+			.filter((lead) => lead.agentId === agentId)
+			.map((lead) => ({ project, lead })),
+	);
+	if (matches.length > 1) {
+		throw new Error(
+			`lead_ambiguous: ${agentId} matches ${matches.map(({ project }) => project.projectName).join(",")}`,
+		);
+	}
+	return matches[0];
 }
 
 /**
@@ -583,6 +607,36 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 						);
 					}
 				}
+			}
+			if (lead.voiceModes !== undefined) {
+				const modes = lead.voiceModes as unknown;
+				if (
+					typeof modes !== "object" ||
+					modes === null ||
+					Array.isArray(modes)
+				) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].voiceModes: must be an object`,
+					);
+				}
+				for (const [mode, enabled] of Object.entries(modes)) {
+					if (
+						(mode !== "meeting" && mode !== "rg") ||
+						typeof enabled !== "boolean"
+					) {
+						throw new Error(
+							`Project "${entry.projectName}" leads[${i}].voiceModes: keys must be meeting|rg with boolean values`,
+						);
+					}
+				}
+			}
+			if (
+				lead.realtimeVoice !== undefined &&
+				!isRealtimeV2Voice(lead.realtimeVoice)
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].realtimeVoice: must be a Realtime v2 voice`,
+				);
 			}
 
 			// FLY-83: validate optional alert fields
@@ -1043,6 +1097,15 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 			if (hb.moveMembers !== undefined && typeof hb.moveMembers !== "boolean") {
 				throw new Error(
 					`Project "${entry.projectName}" huddle.moveMembers: if provided, must be a boolean, got ${JSON.stringify(hb.moveMembers)}`,
+				);
+			}
+			if (
+				hb.orchestratorBotUserId !== undefined &&
+				(typeof hb.orchestratorBotUserId !== "string" ||
+					!/^[0-9]{17,20}$/.test(hb.orchestratorBotUserId))
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" huddle.orchestratorBotUserId: if provided, must be a Discord snowflake`,
 				);
 			}
 		}

@@ -496,6 +496,13 @@
 			"baseTable": "session_events",
 			"usage": "read",
 			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/qa/fly2446-two-lead-run.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
 		}
 	]
 }

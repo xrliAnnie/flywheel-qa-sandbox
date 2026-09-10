@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { parseChatDeliveryEnvelope } from "../chat-delivery-envelope.js";
 import { CommDB } from "../db.js";
 import type { MailboxSettlement, MailboxState } from "../mailbox-queue.js";
 import { resolveDbPath } from "../resolve-db-path.js";
@@ -15,6 +16,10 @@ export interface MessageStatusView {
 		notified_at: string | null;
 		settled_at: string | null;
 	};
+	origin?: "discord" | "voice";
+	voiceSessionId?: string | null;
+	authorId?: string;
+	text?: string;
 }
 
 export interface MessageStatusIo {
@@ -71,7 +76,12 @@ export function messageStatus(
 	args: string[],
 	io: MessageStatusIo = defaultIo,
 ): number {
-	let values: { db?: string; project?: string; json?: boolean };
+	let values: {
+		db?: string;
+		project?: string;
+		json?: boolean;
+		"with-envelope"?: boolean;
+	};
 	let positionals: string[];
 	try {
 		({ values, positionals } = parseArgs({
@@ -80,6 +90,7 @@ export function messageStatus(
 				db: { type: "string" },
 				project: { type: "string" },
 				json: { type: "boolean", default: false },
+				"with-envelope": { type: "boolean", default: false },
 			},
 			allowPositionals: true,
 		}));
@@ -98,6 +109,20 @@ export function messageStatus(
 		const dbPath = resolveDbPath({ db: values.db, project: values.project });
 		db = CommDB.openReadonly(dbPath);
 		const view = toView(messageId, db.inspectMailboxDeliveryState(messageId));
+		if (
+			values["with-envelope"] &&
+			(view.location === "live" || view.location === "archived")
+		) {
+			const content = db.inspectMailboxDeliveryContent(messageId);
+			if (!content) throw new Error("mailbox envelope content is unavailable");
+			const envelope = parseChatDeliveryEnvelope(content);
+			Object.assign(view, {
+				origin: envelope.origin ?? "discord",
+				voiceSessionId: envelope.voiceSessionId ?? null,
+				authorId: envelope.authorId,
+				text: envelope.text,
+			});
+		}
 		io.stdout(values.json ? JSON.stringify(view) : renderHuman(view));
 		if (view.location === "absent") return 1;
 		if (view.location === "torn") return 3;

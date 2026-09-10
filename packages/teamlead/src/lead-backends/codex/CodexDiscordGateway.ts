@@ -83,6 +83,8 @@ export interface CodexDiscordGatewayOptions {
 	router: Pick<LeadInputRouter, "submit">;
 	/** This Lead's own bot user id — its own messages are ALWAYS dropped. */
 	botUserId: string;
+	/** Additional exact author ids to drop, such as the generic voice mirror bot. */
+	ignoredAuthorIds?: Iterable<string>;
 	/** Channels the Lead listens to (chat + core). */
 	channelIds: Iterable<string>;
 	/** Optional extra policy, applied after the mandatory filters. */
@@ -137,6 +139,7 @@ export class CodexDiscordGateway {
 	private readonly source: DiscordInboundSource;
 	private readonly router: Pick<LeadInputRouter, "submit">;
 	private readonly botUserId: string;
+	private readonly ignoredAuthorIds: Set<string>;
 	private readonly channelIds: Set<string>;
 	private readonly shouldHandle?: (msg: DiscordInboundMessage) => boolean;
 	private readonly resolveReplyChannelId?: (
@@ -164,6 +167,7 @@ export class CodexDiscordGateway {
 		this.source = opts.source;
 		this.router = opts.router;
 		this.botUserId = opts.botUserId;
+		this.ignoredAuthorIds = new Set(opts.ignoredAuthorIds ?? []);
 		this.channelIds = new Set(opts.channelIds);
 		this.shouldHandle = opts.shouldHandle;
 		this.resolveReplyChannelId = opts.resolveReplyChannelId;
@@ -267,7 +271,12 @@ export class CodexDiscordGateway {
 
 	private passesFilters(msg: DiscordInboundMessage): boolean {
 		// ECHO IMMUNITY — never react to our own posts (FLY-220). Not overridable.
-		if (msg.authorId === this.botUserId) return false;
+		if (
+			msg.authorId === this.botUserId ||
+			this.ignoredAuthorIds.has(msg.authorId)
+		) {
+			return false;
+		}
 		// Channel allowlist — static channels OR a dynamically-subscribed roundtable
 		// topic thread (FLY-314 Phase 2; registry is empty when the feature is off).
 		if (

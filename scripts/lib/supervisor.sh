@@ -275,17 +275,26 @@ supervisor_status()  { _sup_verb status "$@"; }
 supervisor_is_loaded(){ _sup_verb is_loaded "$@"; }
 supervisor_trigger()  { _sup_verb trigger "$@"; }
 
-# supervisor_assert_keepalive <name> — prove both service registration and the
+# supervisor_assert_keepalive <name> [always|on-failure] — prove registration and the
 # durable restart policy before/after a launchd restart. Linux Restart=always
 # is enforced by the renderer; is-active is the runtime assertion there.
 supervisor_assert_keepalive() {
-  local name="$1"
+  local name="$1" policy="${2:-always}"
+  case "$policy" in always|on-failure) ;; *) return 1 ;; esac
   supervisor_is_loaded "$name" service >/dev/null 2>&1 || return 1
   if [ "$(supervisor_backend)" = "launchd" ]; then
     local plist
     plist="$(_sup_launchd_dir)/$(_sup_darwin_label "$name").plist"
     [ -f "$plist" ] || return 1
-    [ "$(plutil -extract KeepAlive raw -o - "$plist" 2>/dev/null)" = "true" ] || return 1
+    case "$policy" in
+      always)
+        [ "$(plutil -extract KeepAlive raw -o - "$plist" 2>/dev/null)" = "true" ] || return 1
+        ;;
+      on-failure)
+        [ "$(plutil -extract KeepAlive raw -o - "$plist" 2>/dev/null)" = "SuccessfulExit" ] || return 1
+        [ "$(plutil -extract KeepAlive.SuccessfulExit raw -o - "$plist" 2>/dev/null)" = "false" ] || return 1
+        ;;
+    esac
   fi
 }
 

@@ -1,0 +1,33 @@
+{
+	"name": "flywheel-voice-codex",
+	"version": "0.1.0",
+	"description": "Flywheel generic Codex realtime voice daemon",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"flywheel-voice": "dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"models"
+	],
+	"scripts": {
+		"build": "tsc",
+		"test": "vitest run",
+		"test:run": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"flywheel-teamlead": "workspace:*",
+		"flywheel-voice-bridge": "workspace:*",
+		"flywheel-voice-core": "workspace:*",
+		"onnxruntime-node": "1.29.0",
+		"@discordjs/voice": "0.19.2"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	}
+}

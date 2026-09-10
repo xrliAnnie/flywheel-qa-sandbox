@@ -1,0 +1,20 @@
+sequenceDiagram
+  autonumber
+  participant F as founder
+  participant V as voice 进程
+  participant T as Discord thread
+  participant M as mailbox
+  participant L as Lead 脑子
+  participant B as Bridge 回程
+  F->>V: 说一句话
+  V->>V: 转写 → 脱敏 → 写本机账 captured
+  V->>T: 发 🗣️ 镜像消息(带 nonce 防重复)
+  T-->>V: 返回 Discord 消息 id
+  V->>M: chat-ingest(origin=voice, 作者=founder, id=镜像 id)
+  M->>L: 泵成批投递(和文字同路)
+  L->>T: 在 thread 回帖(和平时一样)
+  B->>T: 轮询绑定频道,只认这个 Lead 的 bot
+  B->>B: 记账 voice_outbound(queued)
+  V->>B: 认领这一条(拿 attempt token)
+  V->>F: 用 Lead 的音色念出来
+  V->>B: 回执 confirmed / unconfirmed
