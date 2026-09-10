@@ -602,3 +602,23 @@ describe("Epic page render parity", () => {
 		expect(html).toContain("dependents.v1");
 	});
 });
+
+it("marks scope.v2 and counts.v1 as founder-decided without adding rendered fields", () => {
+	const document = page();
+	for (const render of [renderEpicPageHtml, renderEpicPageMarkdown]) {
+		const output = render(document, EPIC_SHAPE_NOW);
+		expect(output).toContain("已获 founder 裁定的规则 scope.v2");
+		expect(output).not.toContain("scope.v1");
+		expect(output).not.toContain('data-cell="/header/root_counts');
+		const probe = structuredClone(document);
+		// Exercise the existing rendered Cell seam; counts remain data-only in real pages.
+		probe.ready_items.provenance = {
+			kind: "derived",
+			rule: "counts.v1",
+			from: [],
+		};
+		expect(render(probe, EPIC_SHAPE_NOW)).toContain(
+			label("page.decided_rule_note", { rule: "counts.v1" }),
+		);
+	}
+});

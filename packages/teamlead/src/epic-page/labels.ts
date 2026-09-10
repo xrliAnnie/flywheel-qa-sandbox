@@ -21,7 +21,7 @@ const LABELS = {
 	"page.project": "项目",
 	"page.overview": "执行范围总览",
 	"page.ready_rule_note": "已获 founder 裁定的规则 ready.v1",
-	"page.scope_rule_note": "已获 founder 裁定的规则 scope.v1",
+	"page.scope_rule_note": "已获 founder 裁定的规则 scope.v2",
 	"page.decided_rule_note": "已获 founder 裁定的规则 {rule}",
 	"page.default_rule_note": "未获 founder 裁定的默认规则 {rule}",
 	"page.none": "无",

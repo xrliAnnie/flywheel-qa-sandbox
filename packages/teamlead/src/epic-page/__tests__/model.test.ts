@@ -8,7 +8,11 @@ import {
 	EpicPageSchemaError,
 	stripTimestamps,
 } from "../model.js";
-import { computeDependencyReview, computeReady } from "../rules.js";
+import {
+	computeDependencyReview,
+	computeReady,
+	computeRootCounts,
+} from "../rules.js";
 
 const NOW = "2026-09-03T04:00:00Z";
 
@@ -59,6 +63,15 @@ function validPage(withItem = true): EpicPage {
 		? [
 				{
 					identifier: "EPX-1",
+					parent: {
+						...linearCell("EPX-100"),
+						provenance: {
+							kind: "linear",
+							entity: "issue",
+							id: "uuid-1",
+							field: "parent",
+						},
+					},
 					title: linearCell("Build it"),
 					url: linearCell("https://linear.app/example/issue/EPX-1"),
 					state: linearCell({ name: "Todo", type: "unstarted" }),
@@ -117,13 +130,21 @@ function validPage(withItem = true): EpicPage {
 			reasons: ["manual"],
 		},
 		header: {
+			root_counts: computeRootCounts(items, [{ identifier: "EPX-100" }]).map(
+				(result) => ({
+					value: result.value,
+					provenance: { kind: "derived", rule: "counts.v1", from: result.from },
+					observed_at: NOW,
+					...(result.missing ? { missing: result.missing } : {}),
+				}),
+			),
 			scope_definition: {
 				...derivedCell({
 					root_state_type: "started" as const,
 					daily_title_contains: "日常" as const,
-					excluded_item_state_type: "backlog" as const,
+					item_state_filter: "none" as const,
 				}),
-				provenance: { kind: "derived", rule: "scope.v1", from: [] },
+				provenance: { kind: "derived", rule: "scope.v2", from: [] },
 			},
 			roots: {
 				...linearCell([
@@ -543,6 +564,15 @@ describe("EpicPage v1 schema", () => {
 			(entry) => entry.kind === "all_blocked",
 		);
 		if (allBlocked?.kind !== "all_blocked") throw new Error("fixture failure");
+		page.header.root_counts = computeRootCounts(
+			page.items,
+			page.header.roots.value!,
+		).map((result) => ({
+			value: result.value,
+			provenance: { kind: "derived", rule: "counts.v1", from: result.from },
+			observed_at: NOW,
+		}));
+		expect(assertEpicPage(page)).toBeUndefined();
 		allBlocked.blocking_edges_truncated = false;
 		expectSchemaFailure(page);
 	});

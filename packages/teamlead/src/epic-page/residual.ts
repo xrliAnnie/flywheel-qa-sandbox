@@ -1,5 +1,6 @@
 import type { LinearActiveScopeSnapshot } from "../bridge/linear-epic-query.js";
 import { type EpicPage, SIGNAL_KINDS, type SignalKind } from "./model.js";
+import { isSchedulable } from "./rules.js";
 
 export type EpicResidualTrigger = "roster" | "scope";
 
@@ -241,7 +242,11 @@ export function summarizeEpicResidual(input: {
 	);
 	const remainingItems = page.items.filter((item) => {
 		const stateType = item.state.value?.type;
-		return stateType !== "completed" && stateType !== "canceled";
+		return (
+			isSchedulable(item) &&
+			stateType !== "completed" &&
+			stateType !== "canceled"
+		);
 	});
 	if (
 		remainingItems.some(

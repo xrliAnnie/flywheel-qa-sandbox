@@ -8,6 +8,7 @@ function child(
 	blockedBy: number[],
 ): LinearActiveScopeSnapshot["items"][number] {
 	return {
+		parent: { id: "epic-uuid", identifier: "EPX-100" },
 		id: `child-uuid-${number}`,
 		identifier: `EPX-${number}`,
 		title: `Task ${String.fromCharCode(64 + number)}`,
@@ -82,3 +83,75 @@ export function emptyItemFacts(): EpicItemFacts {
 }
 
 export const EPIC_SHAPE_NOW = new Date("2026-09-03T04:00:01Z");
+
+export function epicShapeSnapshotV2() {
+	const snapshot = epicShapeSnapshot();
+	for (const [number, parent, blockedBy] of [
+		[
+			6,
+			0,
+			[
+				{
+					id: "outside",
+					identifier: "EPX-90",
+					title: "Outside",
+					url: "https://linear.app/90",
+					stateType: "completed",
+					inScope: false,
+				},
+			],
+		],
+		[7, 1, []],
+		[
+			8,
+			0,
+			[
+				{
+					id: "child-uuid-6",
+					identifier: "EPX-6",
+					title: "Six",
+					url: "https://linear.app/6",
+					stateType: "backlog",
+					inScope: true,
+				},
+			],
+		],
+		[
+			9,
+			0,
+			[
+				{
+					id: "child-uuid-7",
+					identifier: "EPX-7",
+					title: "Seven",
+					url: "https://linear.app/7",
+					stateType: "backlog",
+					inScope: true,
+				},
+			],
+		],
+	] as const) {
+		const root = snapshot.roots[parent]!;
+		snapshot.items.push({
+			...snapshot.items[0]!,
+			id: `child-uuid-${number}`,
+			identifier: `EPX-${number}`,
+			parent: { id: root.id, identifier: root.identifier },
+			state: {
+				name: number === 9 ? "Todo" : "Backlog",
+				type: number === 9 ? "unstarted" : "backlog",
+			},
+			blockedBy: structuredClone([...blockedBy]),
+		});
+	}
+	snapshot.descendantIds = snapshot.items.map((item) => item.id);
+	return snapshot;
+}
+export function filterV1(snapshot: ReturnType<typeof epicShapeSnapshotV2>) {
+	const result = structuredClone(snapshot);
+	result.items = result.items.filter((item) => item.state.type !== "backlog");
+	const ids = new Set(result.items.map((item) => item.id));
+	for (const item of result.items)
+		for (const blocker of item.blockedBy) blocker.inScope = ids.has(blocker.id);
+	return result;
+}

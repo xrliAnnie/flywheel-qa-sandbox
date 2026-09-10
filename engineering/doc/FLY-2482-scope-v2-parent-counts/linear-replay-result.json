@@ -1,0 +1,84 @@
+{
+  "observed_at": "2026-09-10T06:09:09Z",
+  "source_sha256": "16281a5788d09b465c350a9e6f953e699ba9a69414dde89128390399ad59c99d",
+  "roots": 7,
+  "items": 36,
+  "previous_items": 22,
+  "parents_matched": 36,
+  "counts": [
+    {
+      "root": "FLY-2481",
+      "live": 3,
+      "waiting": 1,
+      "free": 0,
+      "idle": 0,
+      "done": 0,
+      "canceled": 0,
+      "total": 4
+    },
+    {
+      "root": "FLY-2456",
+      "live": 0,
+      "waiting": 1,
+      "free": 0,
+      "idle": 0,
+      "done": 0,
+      "canceled": 0,
+      "total": 1
+    },
+    {
+      "root": "FLY-2441",
+      "live": 0,
+      "waiting": 0,
+      "free": 1,
+      "idle": 3,
+      "done": 5,
+      "canceled": 2,
+      "total": 11
+    },
+    {
+      "root": "FLY-2369",
+      "live": 0,
+      "waiting": 0,
+      "free": 0,
+      "idle": 1,
+      "done": 0,
+      "canceled": 0,
+      "total": 1
+    },
+    {
+      "root": "FLY-2355",
+      "live": 0,
+      "waiting": 0,
+      "free": 1,
+      "idle": 0,
+      "done": 4,
+      "canceled": 0,
+      "total": 5
+    },
+    {
+      "root": "FLY-2309",
+      "live": 0,
+      "waiting": 0,
+      "free": 0,
+      "idle": 2,
+      "done": 5,
+      "canceled": 0,
+      "total": 7
+    },
+    {
+      "root": "FLY-1143",
+      "live": 1,
+      "waiting": 0,
+      "free": 0,
+      "idle": 4,
+      "done": 2,
+      "canceled": 0,
+      "total": 7
+    }
+  ],
+  "regression": "ready/dependency/stuck values equal for same frozen inputs",
+  "document_bytes": 284064,
+  "html_bytes": 469843,
+  "runtime_facts": "StateStore and CommDB explicitly missing; offline Linear replay, not fixed-page production acceptance"
+}

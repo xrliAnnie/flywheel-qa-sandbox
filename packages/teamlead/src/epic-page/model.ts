@@ -2,7 +2,7 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
-import { computeReady } from "./rules.js";
+import { computeReady, computeRootCounts, isSchedulable } from "./rules.js";
 import { EpicPageSchemaError } from "./schema-error.js";
 import { computeDependencyReview } from "./subtraction.js";
 
@@ -11,7 +11,8 @@ export { EpicPageSchemaError } from "./schema-error.js";
 export const EPIC_PAGE_MAX_DOCUMENT_BYTES = 1_507_328;
 
 export const RULE_IDS = [
-	"scope.v1",
+	"scope.v2",
+	"counts.v1",
 	"ready.v1",
 	"dependents.v1",
 	"founder.v1",
@@ -24,6 +25,8 @@ export const RULE_IDS = [
 export type RuleId = (typeof RULE_IDS)[number];
 
 export const MISSING_REASONS = [
+	"no_parent",
+	"unknown_state_type",
 	"no_acceptance_section",
 	"statestore_error",
 	"commdb_error",
@@ -135,7 +138,28 @@ export type DependencyReviewEntry =
 			blocking_edges_truncated: boolean;
 	  };
 
+export interface RootCounts {
+	root: string;
+	counts: {
+		live: number;
+		waiting: number;
+		free: number;
+		idle: number;
+		done: number;
+		canceled: number;
+		total: number;
+	};
+}
+
+export interface RootCountsResult {
+	root: string;
+	value: RootCounts | null;
+	missing?: { reason: "unknown_state_type"; detail: string };
+	from: string[];
+}
+
 export interface EpicItem {
+	parent: Cell<string>;
 	identifier: string;
 	title: Cell<string>;
 	url: Cell<string>;
@@ -227,7 +251,7 @@ export interface EpicPage {
 		scope_definition: Cell<{
 			root_state_type: "started";
 			daily_title_contains: "日常";
-			excluded_item_state_type: "backlog";
+			item_state_filter: "none";
 		}>;
 		roots: Cell<
 			Array<{
@@ -238,6 +262,7 @@ export interface EpicPage {
 			}>
 		>;
 		items: Cell<string[]>;
+		root_counts: Array<Cell<RootCounts>>;
 	};
 	items: EpicItem[];
 	done_definition: Cell<{ terminal_state: "completed" }>;
@@ -250,6 +275,7 @@ export interface EpicPage {
 		Array<{
 			item: string;
 			face:
+				| "parent"
 				| "what"
 				| "done"
 				| "founder"
@@ -720,6 +746,7 @@ const ROOT_CELLS = [
 	"gaps",
 ] as const;
 const ITEM_CELLS = [
+	"parent",
 	"title",
 	"url",
 	"state",
@@ -790,12 +817,48 @@ export function assertEpicPage(
 	const header = requireRecord(root.header, "/header");
 	requireExactKeys(
 		header,
-		["scope_definition", "roots", "items"],
+		["scope_definition", "roots", "items", "root_counts"],
 		[],
 		"/header",
 	);
 	for (const name of ["scope_definition", "roots", "items"]) {
 		assertCell(header[name], `/header/${name}`, root);
+	}
+
+	const scope = assertCellValueShape(
+		header.scope_definition,
+		"/header/scope_definition",
+		["root_state_type", "daily_title_contains", "item_state_filter"],
+	);
+	if (
+		!scope ||
+		scope.root_state_type !== "started" ||
+		scope.daily_title_contains !== "日常" ||
+		scope.item_state_filter !== "none"
+	)
+		fail("/header/scope_definition/value", "expected scope.v2 definition");
+	const scopeCell = header.scope_definition as Cell<unknown>;
+	if (
+		scopeCell.provenance.kind !== "derived" ||
+		scopeCell.provenance.rule !== "scope.v2"
+	)
+		fail("/header/scope_definition/provenance", "expected derived scope.v2");
+	const rootValues = (header.roots as Cell<unknown>).value;
+	if (!Array.isArray(rootValues)) fail("/header/roots/value", "expected array");
+	const rootIds = new Set<string>();
+	for (const [index, raw] of rootValues.entries()) {
+		const path = `/header/roots/value/${index}`;
+		const value = requireRecord(raw, path);
+		requireExactKeys(value, ["identifier", "title", "url", "state"], [], path);
+		for (const key of ["identifier", "title", "url"])
+			requireNonEmptyString(value[key], `${path}/${key}`);
+		const identifier = value.identifier as string;
+		if (rootIds.has(identifier)) fail(path, "duplicate root identifier");
+		rootIds.add(identifier);
+		const state = requireRecord(value.state, `${path}/state`);
+		requireExactKeys(state, ["name", "type"], [], `${path}/state`);
+		requireNonEmptyString(state.name, `${path}/state/name`);
+		requireNonEmptyString(state.type, `${path}/state/type`);
 	}
 
 	for (const name of ROOT_CELLS) assertCell(root[name], `/${name}`, root);
@@ -814,6 +877,50 @@ export function assertEpicPage(
 		for (const name of ITEM_CELLS) {
 			assertCell(item[name], `${itemPath}/${name}`, root);
 		}
+		if (rootIds.has(item.identifier as string))
+			fail(itemPath, "root and item identifiers must be disjoint");
+		const state = assertCellValueShape(item.state, `${itemPath}/state`, [
+			"name",
+			"type",
+		]);
+		if (!state) fail(`${itemPath}/state`, "state cell must be known");
+		requireNonEmptyString(state.name, `${itemPath}/state/value/name`);
+		requireNonEmptyString(state.type, `${itemPath}/state/value/type`);
+		const blockedBy = (item.blocked_by as Cell<unknown>).value;
+		if (!Array.isArray(blockedBy))
+			fail(`${itemPath}/blocked_by`, "blocked_by cell must be known array");
+		for (const [index, raw] of blockedBy.entries()) {
+			const path = `${itemPath}/blocked_by/value/${index}`;
+			const blocker = requireRecord(raw, path);
+			requireExactKeys(
+				blocker,
+				["identifier", "title", "url", "in_scope", "blocker_state_type"],
+				[],
+				path,
+			);
+			for (const key of ["identifier", "title", "url", "blocker_state_type"])
+				requireNonEmptyString(blocker[key], `${path}/${key}`);
+			if (typeof blocker.in_scope !== "boolean")
+				fail(`${path}/in_scope`, "expected boolean");
+		}
+		const parent = item.parent as Cell<unknown>;
+		if (parent.value === null) {
+			if (parent.missing?.reason !== "no_parent")
+				fail(`${itemPath}/parent/missing`, "expected no_parent");
+		} else requireNonEmptyString(parent.value, `${itemPath}/parent/value`);
+		const titleSource = (item.title as Cell<unknown>).provenance;
+		if (
+			parent.provenance.kind !== "linear" ||
+			parent.provenance.entity !== "issue" ||
+			parent.provenance.field !== "parent" ||
+			titleSource.kind !== "linear" ||
+			parent.provenance.id !== titleSource.id
+		)
+			fail(
+				`${itemPath}/parent/provenance`,
+				"expected this issue's Linear parent",
+			);
+
 		if (!Array.isArray(item.signals)) {
 			fail(`${itemPath}/signals`, "expected array");
 		}
@@ -881,6 +988,55 @@ export function assertEpicPage(
 	if (JSON.stringify(childIds) !== JSON.stringify(itemIds)) {
 		fail("/header/items/value", "identifier set differs from items");
 	}
+	if (
+		!Array.isArray(page.header.root_counts) ||
+		page.header.root_counts.length !== rootValues.length
+	)
+		fail("/header/root_counts", "expected one count Cell per root");
+	const expectedCounts = computeRootCounts(
+		page.items,
+		page.header.roots.value!,
+	);
+	for (const [index, countsCell] of page.header.root_counts.entries()) {
+		const path = `/header/root_counts/${index}`;
+		assertCell(countsCell, path, root);
+		if (
+			countsCell.provenance.kind !== "derived" ||
+			countsCell.provenance.rule !== "counts.v1"
+		)
+			fail(`${path}/provenance`, "expected derived counts.v1");
+		if (countsCell.value === null) {
+			if (countsCell.missing?.reason !== "unknown_state_type")
+				fail(`${path}/missing`, "expected unknown_state_type");
+		} else {
+			const value = requireRecord(countsCell.value, `${path}/value`);
+			requireExactKeys(value, ["root", "counts"], [], `${path}/value`);
+			if (value.root !== page.header.roots.value![index]!.identifier)
+				fail(`${path}/value/root`, "root order mismatch");
+			const counts = requireRecord(value.counts, `${path}/value/counts`);
+			const keys = ["live", "waiting", "free", "idle", "done", "canceled"];
+			requireExactKeys(counts, [...keys, "total"], [], `${path}/value/counts`);
+			for (const key of [...keys, "total"])
+				requireNonNegativeInteger(counts[key], `${path}/value/counts/${key}`);
+			if (
+				counts.total !==
+				keys.reduce((sum, key) => sum + (counts[key] as number), 0)
+			)
+				fail(`${path}/value/counts/total`, "must equal sum");
+		}
+		const actual = {
+			root:
+				countsCell.value?.root ?? page.header.roots.value![index]!.identifier,
+			value: countsCell.value,
+			from: countsCell.provenance.from,
+			...(countsCell.missing ? { missing: countsCell.missing } : {}),
+		};
+		if (
+			canonicalJsonString(actual) !== canonicalJsonString(expectedCounts[index])
+		)
+			fail(path, "does not match counts.v1 recomputation");
+	}
+
 	if (!Array.isArray(page.ready_items.value)) {
 		fail("/ready_items/value", "expected identifier array");
 	}
@@ -902,6 +1058,7 @@ export function assertEpicPage(
 	const expectedStuck: StuckItem[] = [];
 	const expectedStuckPointers: string[] = [];
 	for (const [itemIndex, item] of page.items.entries()) {
+		if (!isSchedulable(item)) continue;
 		for (const [signalIndex, signal] of item.signals.entries()) {
 			if (signal.kind === "waiting_founder") continue;
 			expectedStuck.push({
@@ -988,6 +1145,7 @@ export function assertEpicPage(
 
 	if (!Array.isArray(page.gaps.value)) fail("/gaps/value", "expected array");
 	const faces = [
+		["parent", "parent"],
 		["title", "what"],
 		["acceptance", "done"],
 		["founder_named", "founder"],

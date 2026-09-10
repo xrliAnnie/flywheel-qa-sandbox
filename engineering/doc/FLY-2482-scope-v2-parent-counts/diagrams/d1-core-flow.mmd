@@ -1,0 +1,16 @@
+flowchart TD
+  A["Linear<br/>查 In Progress 的父单<br/>(state.type = started, 有子单)"] --> B["逐个父单取子单<br/>children 分页到底<br/>+ parent { id identifier }"]
+  B --> C{"Linear 说的 parent<br/>== 我从哪个父单取到它?"}
+  C -- "不一致" --> X["本轮不出页<br/>structural: scope_snapshot_truncated"]
+  C -- "一致 / parent 为空" --> D["快照:全部后代<br/>scope.v2:不再按状态丢子单"]
+  D --> E["投影成文档<br/>每张子单一格 parent(Linear 出处)<br/>每个父单一格 counts.v1(派生)"]
+  E --> F["四条规则只看「非 backlog」的子单<br/>ready.v1 · subtraction.v1 · signals.v1 · Lead 巡检"]
+  F --> G["assertEpicPage 自检<br/>重算 counts / ready / stuck / review 比对"]
+  G -- "不符" --> Y["structural: epic_page_invalid"]
+  G -- "通过" --> H["回执 + 固定页发布<br/>HTML ≤ 512KB 否则 epic_html_too_large"]
+  classDef stop fill:#ffe5e5,stroke:#ff3b30,color:#c0392b;
+  classDef ok fill:#e6f9ed,stroke:#34c759,color:#1d7a3d;
+  classDef new fill:#e8f0fe,stroke:#007aff,color:#1d4ed8;
+  class X,Y stop;
+  class H ok;
+  class B,D,E,F new;

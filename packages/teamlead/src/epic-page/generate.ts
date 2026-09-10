@@ -18,8 +18,10 @@ import {
 	computeDependencyReview,
 	computeGaps,
 	computeReady,
+	computeRootCounts,
 	doneDefinition,
 	isFounderNamed,
+	isSchedulable,
 } from "./rules.js";
 import type { EpicPageItemSignals } from "./signals.js";
 
@@ -139,6 +141,14 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				};
 		return {
 			identifier: child.identifier,
+			parent: {
+				...linearCell(child.parent?.identifier ?? null, {
+					...issueSource,
+					entity: "issue",
+					field: "parent",
+				}),
+				...(child.parent ? {} : { missing: { reason: "no_parent" as const } }),
+			},
 			title: linearCell(child.title, {
 				...issueSource,
 				entity: "issue",
@@ -279,6 +289,7 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 		);
 	const readyItems = computeReady(items);
 	const stuckItems = items
+		.filter(isSchedulable)
 		.flatMap((item) =>
 			item.signals
 				.filter(
@@ -301,19 +312,24 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				left.item.localeCompare(right.item) ||
 				left.kind.localeCompare(right.kind),
 		);
-	const stuckPointers = items.flatMap((item, itemIndex) => [
-		...item.signals.flatMap((signal, signalIndex) =>
-			signal.kind === "waiting_founder"
-				? []
-				: [`/items/${itemIndex}/signals/${signalIndex}`],
-		),
-		`/items/${itemIndex}/signal_sources/statestore`,
-		`/items/${itemIndex}/signal_sources/commdb`,
-	]);
+	const stuckPointers = items.flatMap((item, itemIndex) =>
+		!isSchedulable(item)
+			? []
+			: [
+					...item.signals.flatMap((signal, signalIndex) =>
+						signal.kind === "waiting_founder"
+							? []
+							: [`/items/${itemIndex}/signals/${signalIndex}`],
+					),
+					`/items/${itemIndex}/signal_sources/statestore`,
+					`/items/${itemIndex}/signal_sources/commdb`,
+				],
+	);
 	const sourceCells = [
 		{ path: "/header/roots", observedAt: linearObservedAt },
 		{ path: "/header/items", observedAt: linearObservedAt },
 		...items.flatMap((item, index) => [
+			{ path: `/items/${index}/parent`, observedAt: item.parent.observed_at },
 			{ path: `/items/${index}/title`, observedAt: item.title.observed_at },
 			{ path: `/items/${index}/url`, observedAt: item.url.observed_at },
 			{ path: `/items/${index}/state`, observedAt: item.state.observed_at },
@@ -375,15 +391,23 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 			reasons: [...reasons].sort() as RefreshReason[],
 		},
 		header: {
+			root_counts: computeRootCounts(items, input.snapshot.roots).map(
+				(result) => ({
+					value: result.value,
+					provenance: { kind: "derived", rule: "counts.v1", from: result.from },
+					observed_at: generatedAt,
+					...(result.missing ? { missing: result.missing } : {}),
+				}),
+			),
 			scope_definition: {
 				value: {
 					root_state_type: "started",
 					daily_title_contains: "日常",
-					excluded_item_state_type: "backlog",
+					item_state_filter: "none",
 				},
 				provenance: {
 					kind: "derived",
-					rule: "scope.v1",
+					rule: "scope.v2",
 					from: ["/header/roots", "/header/items"],
 				},
 				observed_at: generatedAt,
@@ -407,7 +431,7 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				{
 					entity: "children",
 					id: input.snapshot.roots.map((root) => root.id).join(","),
-					field: "subtree,state.type!=backlog",
+					field: "subtree",
 					observedAt: linearObservedAt,
 				},
 			),

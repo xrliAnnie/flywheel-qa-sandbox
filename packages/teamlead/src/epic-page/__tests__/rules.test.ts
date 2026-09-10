@@ -26,6 +26,7 @@ function item(
 ): EpicItem {
 	return {
 		identifier,
+		parent: cell("EPX-100"),
 		title: cell(identifier),
 		url: cell(`https://linear.app/example/issue/${identifier}`),
 		state: cell({ name: "Backlog", type: "backlog" }),
@@ -120,7 +121,7 @@ describe("subtraction.v1", () => {
 	it("reports the sorted blocking frontier when no non-terminal item is ready", () => {
 		const first = item("EPX-2", [blocker("GEO-9", false, "started")]);
 		first.state = cell({ name: "Todo", type: "unstarted" });
-		const second = item("EPX-1", [blocker("EPX-0", true, "backlog")]);
+		const second = item("EPX-1", [blocker("EPX-0", false, "backlog")]);
 		second.state = cell({ name: "Doing", type: "started" });
 
 		expect(computeDependencyReview([first, second], [])).toEqual([
@@ -132,7 +133,7 @@ describe("subtraction.v1", () => {
 						blocker: "EPX-0",
 						blocked: "EPX-1",
 						blocker_state_type: "backlog",
-						in_scope: true,
+						in_scope: false,
 					},
 					{
 						blocker: "GEO-9",

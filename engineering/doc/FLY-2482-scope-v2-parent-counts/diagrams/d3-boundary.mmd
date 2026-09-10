@@ -1,0 +1,24 @@
+flowchart LR
+  subgraph S["文档里的子单 items[] — scope.v2 全部后代"]
+    direction TB
+    NB["非 backlog 子单<br/>(与今天完全同一集合)"]
+    BL["backlog 子单<br/>(今天被丢,现在进来)"]
+  end
+  NB --> R1["ready.v1 现在可以开始的"]
+  NB --> R2["subtraction.v1 依赖要减法的地方"]
+  NB --> R3["signals.v1 卡住说了一声的"]
+  NB --> R4["Lead 巡检 残差行"]
+  R1 & R2 & R3 & R4 --> U["值逐字节不变<br/>(谓词 isSchedulable 钉死定义域)"]
+  BL --> W1["blocks / blocked_by.in_scope<br/>依赖关系如实变宽"]
+  BL --> W2["gaps / founder_items<br/>如实变宽"]
+  BL --> W3["counts.v1 计数 · parent 归属<br/>新增,给 F2 / F9 / F10 用"]
+  NB --> W3
+  S -.-> N1["不动:渲染卡片 · 排序 · attention<br/>日常 筐规则 · StateStore · CLI"]
+  classDef same fill:#e6f9ed,stroke:#34c759,color:#1d7a3d;
+  classDef widen fill:#fff2dd,stroke:#ff9500,color:#8a5200;
+  classDef new fill:#e8f0fe,stroke:#007aff,color:#1d4ed8;
+  classDef off fill:#f2f2f5,stroke:#86868b,color:#515154;
+  class U,R1,R2,R3,R4 same;
+  class W1,W2 widen;
+  class W3 new;
+  class N1 off;

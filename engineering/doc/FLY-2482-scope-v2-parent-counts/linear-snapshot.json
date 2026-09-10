@@ -1,0 +1,914 @@
+{
+ "observed_at": "2026-09-10T06:09:09Z",
+ "query_shape": "plan §7.1 recursive children(first:50)+inverseRelations blocks, includeArchived:false; fields id/identifier/title/url/updatedAt/priority/description/state/labels/parent",
+ "roots": [
+  {
+   "id": "cd11a588-5adc-4ff2-9408-eb3ca735a5a5",
+   "identifier": "FLY-2481",
+   "title": "[进度页·Epic] founder 进度页:Epic → 子单一眼看清 + 「现在要你看」+ 跳 Discord + Lead 判断(PRD FLY-2457 v2.1 落地;工程拆解由 Lead 定)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2481/进度页epic-founder-进度页epic-子单一眼看清-现在要你看-跳-discord-lead-判断prd-fly-2457-v21",
+   "updatedAt": "2026-09-10T04:47:52.006Z",
+   "priority": 0,
+   "description": "## 来源\n\nPRD:`product/doc/FLY-2457-founder-progress-page/prd.md`(v2.1,origin/main f4e7d289;founder 亲批 approve_to_ship,PR #1144)。产品侧定「要什么效果」(F1–F13 + 五个洞结论 + §11 字段清单 + §13 成功指标);本 Epic 是工程 Lead 的拆解(PRD §16)。\n\n## 北极星\n\nN1:她不用再开口要一页 —— 固定链接打开就是最新的;30 秒内说出「有 N 件等我」。\n\n## 拆解(次序 = 依赖)\n\n1. **E1 · 取数层前置**(scope.v2 不再丢 backlog 子单;`items[].parent`;`roots[].counts`;顺手改掉 prd.md F3 那行残留)—— 洞 E / 洞 A / 洞 B 的数据侧。F2/F9/F10 的前置。\n2. **E2 · 「现在要你看」+ 跳 Discord**(`attention[]` 三路合并、固定四段格式、`discord.guild_id` 持久化、`attention[].thread_url`;**必须真点开一次留证**)—— 洞 C / 洞 D,F7/F11。与 E1 无依赖。\n3. **E3 · 渲染层**(Epic 徽标照抄 Linear + 子单计数;分组稳定排序 R2/R3;依赖徽标「等 FLY-XXXX」/「整块在等」/跨 Epic 标出;默认全部收起;全做完的不出现;终态子单折叠计数)—— F1/F3/F4/F6/F8/F9/F10。依赖 E1。\n4. **E4 · Lead 判断格**(`lead_note` 新表 + `flywheel-comm lead-note` CLI 与依赖账本同构;角色+时间出处,零人名;页面并列显示不覆盖机器句;超 N 天淡化)—— F12/F13。与 E1 无依赖。\n\n## 开放问题的工程默认值(PRD §15 未定;founder 回一句即改)\n\n* Q1「体说卡住了」不进「现在要你看」,放回 Epic 卡的子单状态(PRD 建议)。\n* Q2 终态子单默认不列,折叠区一行计数。\n* Q3 新页上线后老链接原地变新版(同 token)。\n* Q4 `lead_note` 超过 3 天视觉淡化(不硬编码进 PRD,由 E4 实现单定为配置)。\n\n## 验收(Epic 级)\n\n* 固定链接打开:只列 In Progress 的 Epic,每个 Epic 挂全部子单(含未开始),Epic 徽标 = Linear state;\n* 首屏「现在要你看」四段固定格式,链接真能点开对应 thread(留证);\n* 全文零人名;换项目跑得出同形页;HTML ≤512KB;\n* 每张子单 QA 报告按 ship report 骨架,零表格。\n\n## 边界\n\n不做排期/优先级决定字段、不做 rollup 二状态、不画依赖图;日常筐挂散活的动作等 founder 开口(PRD §6.4)。",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": null
+  },
+  {
+   "id": "2518445b-bc58-424b-acb4-2fd05c296ab8",
+   "identifier": "FLY-2456",
+   "title": "[529 房·演练] 2352 真机重启演练:slot 里起 2–3 具 Codex 体 → 重启 slot Bridge → 测 reown 成功率,修前(main)/修后(#1128 头)各一次;founder 按 2352 卡的前置(founder 2026-09-09 03:04Z「起」)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2456/529-房演练-2352-真机重启演练slot-里起-2-3-具-codex-体-重启-slot-bridge-测-reown",
+   "updatedAt": "2026-09-10T05:00:58.977Z",
+   "priority": 2,
+   "description": "## 为什么\n\nFLY-2352(PR #1128,Bridge 重启后 Codex 体恢复必败:`buildCodexRecoveryContext` 撞 capability drift)QA PASS,ship 卡在 founder 手里;她要先看一次**真机重启演练**再按(2026-09-09 02:36Z「等」→ 03:04Z「起」前置)。\n\n## 依赖(必须先合入 / 先修好)\n\n* FLY-2454 两处 slot 隔离洞修复 —— 否则演练会击杀生产 Codex 舰队 / 生产 tmux;\n* FLY-2455 [test-deploy.sh](<http://test-deploy.sh>) 能起 529 slot Lead。\n\n## 要做\n\n1. 在 529 slot 里用当前 main 起 slot Bridge + 2–3 具真实 Codex 体(多 activation 的形状至少一具,单 activation 一具),让它们进入 running;\n2. 重启 slot Bridge(走 slot 自己的 restart 路径,**不碰**生产 `com.flywheel.*` launchd);\n3. 记录每具体的 reown 结果(成功 / `workflow capability drift` / `reown_exhausted` → 换体),对照 StateStore 事件;\n4. 换到 #1128 的头(或合入后的 main)重复 1–3;\n5. 报告:两轮成功率对照 + 事件序列 + 生产零影响证据(生产 Codex 进程数、tmux 窗口数、comm.db 前后逐字相同)。\n\n## 验收\n\n* 修前至少一具多 activation 体 reown 失败被换体(复现病);修后同形状全部认回;\n* 生产零影响证据齐全;\n* 报告按 ship report 骨架、零表格,交到 FLY-2352 thread 给 founder 决定按不按。\n\n## 边界\n\n不改 2352 的代码;不在生产 Bridge 上做任何重启(R4);演练只在 slot 内。",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": null
+  },
+  {
+   "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+   "identifier": "FLY-2441",
+   "title": "[通路·统一·Epic] Lead 通路统一 + Raya 重建在 Flywheel 之上:一条 mailbox、最后一跳按 harness 分叉;Raya = 装了 Flywheel 的标准 Codex Lead(founder 2026-09-08 直令)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2441/通路统一epic-lead-通路统一-raya-重建在-flywheel-之上一条-mailbox最后一跳按-harness-分叉raya",
+   "updatedAt": "2026-09-09T22:42:08.899Z",
+   "priority": 2,
+   "description": "## 目标(founder 2026-09-08 07:15–07:46Z 在 FLY-2379 thread 的原话为准)\n\n* **Flywheel 是产品(harness),最终是 npm 包**。任何 Lead(Claude / Codex,任何仓)装上即当 Lead:Discord 消息统一先进 **mailbox(CommDB 同一张表)**,Flywheel 按 harness 做**最后一跳**投递;回复统一经 Bridge 出站。**没有任何 Lead 在自己仓里再写一套「怎么用 Codex / 怎么收 Discord 消息」。**\n* **Raya 就是一个用 Flywheel 的 Codex Lead**,只多自己的业务:统管其他 Lead(PRD FLY-1846 的定义)、summaries(§8.8)、日报、会议。raya 仓不留任何连接/驱动逻辑。\n* **语音是通用能力**:会议模式所有 Lead 都要有;RG(随身)模式先只 Raya 用,但也做成通用能力、可选择给谁开。两个进程可以,只要文字侧与语音侧能交流。\n\n## 现状与差距(证据)\n\n* 现状 UML(逐箭头 file:line):[https://fw-reports-a53de2.vercel.app/r/a1086478fb01a953dc49d66bd09af5b8/](<https://fw-reports-a53de2.vercel.app/r/a1086478fb01a953dc49d66bd09af5b8/>)(FLY-2439 v3)\n* 差距 G1–G7 + 目标架构图:[https://fw-reports-a53de2.vercel.app/r/9bf49815abf33ed46038bbcbd6220a72/](<https://fw-reports-a53de2.vercel.app/r/9bf49815abf33ed46038bbcbd6220a72/>)(FLY-2439 v4)\n\n## 子单与顺序\n\n见各子单;执行规划在总控页 [https://triage-flywheel-plan.vercel.app](<https://triage-flywheel-plan.vercel.app>) 。\n\n## 交付物索引(随子单推进补充)\n\n* **接口合同**「mailbox → harness 适配器」:`engineering/doc/FLY-2442-codex-outbound-bridge/mailbox-adapter-contract.md`(FLY-2442,含 Claude=guard-then-self-send / Codex=Bridge 代发 的显式差异一节)\n* FLY-2442 设计稿:[https://fw-reports-a53de2.vercel.app/r/6f7710519524fdd15bb6e0368a824cf1/](<https://fw-reports-a53de2.vercel.app/r/6f7710519524fdd15bb6e0368a824cf1/>)\n* FLY-2443 设计稿:[https://fw-reports-a53de2.vercel.app/r/83b90f91a5b228b044eb68f866fe9c60/](<https://fw-reports-a53de2.vercel.app/r/83b90f91a5b228b044eb68f866fe9c60/>)\n* FLY-2444 设计稿:[https://fw-reports-a53de2.vercel.app/r/07b9deaa30f5b13e8c2ec51250646a47/](<https://fw-reports-a53de2.vercel.app/r/07b9deaa30f5b13e8c2ec51250646a47/>)\n\n## 部署期必做(不在任何子单的实现权限内,由 Lead 在合入/部署窗口执行)\n\n1. **FLY-2442 合入前**:`~/.flywheel/projects.json` 给 `growth/mufasa-lead` 补 `roundtableChannel=1512578695468941333`。⚠️ 改名册必须同窗口重铸 summary 回执(否则下一次 `restart-services.sh` 预检拒绝整批 Lead 重启 —— FLY-2444 设计期实核),所以这一步与合入/部署同窗口做,不提前散做。\n2. **顺序约束**:FLY-2444 的 Codex 出站三键自检与 verify #10 在 FLY-2442 合入前只能 SKIP,故 **2442 必须先于 2444 ship**,2444 不得先标完成。\n\n## Epic 验收\n\n1. 在 #raya 打字 → mailbox → 泵 → Codex 适配器 → Raya → Bridge 出站,与给 Mufasa 打字走**同一条路**(同表、同泵、同适配器)。\n2. raya 仓 grep 不到 Discord ingest / Codex app-server 驱动 / 自建 Lead 名册 / 自建 launchd。\n3. 任一 Claude Lead 与任一 Codex Lead 都能挂上通用 voice 进程开会;语音里说过的话文字侧知道。\n4. Claude Lead 不再有绕过 mailbox 的 fail-open 旁路;Codex Lead 出站经 Bridge。\n\n## 作废/挂靠\n\nFLY-2379 / FLY-2381 / FLY-2437 / FLY-2380 作废或挂本 Epic(由子单⑦执行)。",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": null
+  },
+  {
+   "id": "29a159c0-a2cc-4273-a2b5-798c3ccf19c3",
+   "identifier": "FLY-2369",
+   "title": "[日常] Flywheel 日常筐 — bug / 小需求常驻父单(Epic 页 active scope 声明)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2369/日常-flywheel-日常筐-bug-小需求常驻父单epic-页-active-scope-声明",
+   "updatedAt": "2026-09-05T19:11:17.255Z",
+   "priority": 0,
+   "description": "常驻父单(FLY-2140 plan §11.4 founder 2026-09-03 裁定):标题含「日常」、状态保持 In Progress。不属于任何 Epic 的 bug / 小需求挂在它下面,Epic 页「还剩什么」会把它的子树算进 active 范围(backlog 状态的子单不算)。\n\n* 不要关闭、不要改出 In Progress 一族;否则 Epic 页整页生成失败(active_scope_not_found)。\n* 挂进来 = 进范围;想暂缓就把子单拖回 Backlog。\n\n建单:Tadashi 2026-09-05 19:10Z(12:00 PT 班车部署后接通 Epic 页时发现缺此声明)。",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": null
+  },
+  {
+   "id": "3c2a299e-e3c8-4743-8e09-51f0fc36dfe5",
+   "identifier": "FLY-2355",
+   "title": "[Epic] FLY-2119 Codex 记忆落地 — 每个 agent × 每个项目一个家（PRD 已定，塔大拆单+定序）",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2355/epic-fly-2119-codex-记忆落地-每个-agent-每个项目一个家prd-已定塔大拆单定序",
+   "updatedAt": "2026-09-09T07:00:47.802Z",
+   "priority": 0,
+   "description": "Annie 2026-09-05 07:48 直令:「那个 PRD 文档，你推计划之后就做一个 Epic 出来，让塔大自己去拆单就行了。那具体是先改配置还是再做什么，让塔大去决定吧，你不用决定了，你把 PRD 给他就行了。」\n\n⇒ 本 Epic = 把 FLY-2119 已收敛的 PRD 交给工程。**拆单 + 先做哪半 + 定序,全由 Tadashi 决定,HL 不定。**\n\n## PRD 在哪\n\n* 文档:`product/doc/FLY-2119-codex-identity-memory/prd.md`(+ 图 d1/d2/d3 + founder-overview.html)\n* PR **#1063 不是这个** —— 是 **PR #1024**(branch `flywheel-FLY-2119`),纯文档。直接读分支即可,不必等它合。\n* founder overview(她看过的那版):[https://fw-reports-a53de2.vercel.app/r/e0c33167c0e2968316298d45bff9eeb0/](<https://fw-reports-a53de2.vercel.app/r/e0c33167c0e2968316298d45bff9eeb0/>)\n\n## PRD 已收敛(方向已定,只剩 1 个非阻塞未决项)\n\nFounder 决定:**方案 D —— 每个 agent × 每个项目一个 home**(2026-09-01 两次 + 09-02 两次)。\n\nPRD §5 自己分了两半(供 Tadashi 参考,不是指令):\n\n```\n§5.1 第一半:三个常驻 Lead 加记忆  = 改配置就能做完（home 由 tui-window.ts 的 spec.codexHome 决定；四道节流闸本轮不动）\n§5.2/§5.3 第二半:每个 IC 节点一个家 = 改配置解决不了，要【新建一层】（IC 节点 home 不稳定，见 §3.3）；「实现交 Tadashi」\n```\n\n⚠️ §5.3.2「已经查到的约束(写给 Tadashi,免得他重查)」+ §5.3.3「顺序上的硬约束(代价不对称)」请务必读 —— PRD 作者体已经替你查过一轮。\n\n## 边界(PRD 原文的硬约束,别在实现里丢)\n\n* ⛔ 别顺手打开 `disable_on_external_context` / 调低 `min_rate_limit_remaining_percent`(默认值就是我们要的,调它=拆安全边际)。\n* 未决项(§ 标 `【未决】`,1 条)按 PRD 说明处理,不许当已定。\n\n## HL 不做的\n\n* ⛔ 不替工程拆单、不定「先 config 还是先 IC 层」—— founder 明确说这些归 Tadashi。\n* PM 验收 = FLY-830,本轮不做。",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": null
+  },
+  {
+   "id": "34a37268-6410-4d63-93b5-e0e6b0ad82a5",
+   "identifier": "FLY-2309",
+   "title": "[co-create·落地] 自动合并怎么落地 —— 影子跑怎么跑、规矩改哪几条、拆成 build issue",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2309/co-create落地-自动合并怎么落地-影子跑怎么跑规矩改哪几条拆成-build-issue",
+   "updatedAt": "2026-09-09T03:15:30.691Z",
+   "priority": 0,
+   "description": "FLY-2261 的下一阶段。**2261 已完成并落地**(判据共创 + explainer + process-log,PR #1058 已合并),\n本单接着做它明确标为「未开始」的三样:T6 落地路径、prd.md、build issue 拆分。\n\nfounder 2026-09-03 22:57 定的:「如果你都打算另开一单了,2261 就 complete 就可以了」。\n\n## 已定的方向(2261 已收敛,本单不再重开这些)\n\n```\n① 判据      「改动类别 + 真环境证据」，⛔ 不走置信度打分\n             理由（她的原话逻辑）：0.87 你没法反驳 ⇒ 你永远不敢放手；\n             「这单算不算纯文档改动」你可以反驳 ⇒ 判据必须是能吵架的\n② 强度      默认强度二 = 在 529 房把链路从头到尾真跑一次 ＋【留下外部可查、能被重跑的记录】\n             ⚠️ 后半句是挡住\"模型自称跑过\"的那一半，不可省\n             开机/常驻/部署那类（FLY-2029 那种）由 HL 判定；强度二证不了就不自动、回 founder\n             自律条款：「我拿不准」≠ 退回给她；只有那一类的性质本身决定了强度二证不了才退回，并写明是哪条性质\n③ 起步      补法 C：先影子跑，宽度最保守 = 纯文档类（实测约 14%）\n④ 资格门槛  一个类别只有在「不需要任何判断、光看改了哪些文件就能判定」时才有资格进自动道；\n             需要 Lead 读一眼才能定的，按定义永远不进（不是\"以后做准一点就能进\"）\n             ⇒ 从 14% 起步不是保守，是目前只有它过得了这道门槛；其余类别不是候选名单\n⑤ 不对称    错判进自动道 = 真代价（只能事后 revert）；错判出 = 零代价（落回她手上）\n             ⇒ 有一丝拿不准就不进\n```\n\n## 本单要做的三样\n\n1. **T6 落地路径**\n   * 影子跑具体怎么跑:每单同时记「机器判的类 / 人判的类」+ 是否满足强度二两半 + 她实际有没有打回\n   * 两周后交一张表:纯文档类错判率、被判会自动合并的单里她原本会打回几条,以及两个数各自的放手门槛\n   * 事先定死:纯文档类错判率为 0 才放手;不为 0 连它也不开,回来重想\n   * ⭐ 明写:**影子跑期间一条规矩都不用改** —— 这是影子跑最大的好处\n2. **prd.md** —— 按 doc-flow 模板落到 `product/doc/` 下\n3. **拆 build issue** —— 工程实现单交给 Tadashi 的队列(带 `Flywheel` label),本单只出定义\n\n## ⛔ 边界(从 2261 继承,不得放宽)\n\n* 本单**不动 merge 授权契约**。founder 至今**没有**批准自动合并上线,只批准了 2261 那份产物存档。\n* 🔴 那个「9 条加需求里约 2 条必须当场拦、约 7 条可以下一单」的 2/7 分法,\n  **founder 从未逐字确认过**。她说「你先来自己发挥」是授权发挥,**不等于确认事实**。\n  下游任何地方引用它必须带「未经确认」。影子跑期间它会被真实数据直接检验。\n\n## 参考\n\n* 已落地的产物:`product/doc/FLY-2261-auto-merge-criteria/`(explainer.html + process-log.md,PR #1058)\n* process-log.md 第 1 节是本轮收敛的全部结论,可直接作为 prd.md 的输入",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel-Product",
+    "Flywheel"
+   ],
+   "parent": null
+  },
+  {
+   "id": "f4992936-44e3-4853-b8f1-498f0cfeee8b",
+   "identifier": "FLY-1143",
+   "title": "build · FLY-1098 Release CI/CD 发布流程 — 打包发布 pipeline (PRD 定稿 + Annie 放行, B0-B6)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-1143/build-fly-1098-release-cicd-发布流程-打包发布-pipeline-prd-定稿-annie-放行-b0-b6",
+   "updatedAt": "2026-09-09T03:12:34.223Z",
+   "priority": 2,
+   "description": "## 来源\n\nFLY-1098 PRD 定稿(8 轮 co-eval + Codex design review 4 轮 APPROVED)+ **Annie 放行(2026-07-10 lgtm)**。此为工程 build epic,交 Tadashi 队列。\n\n## PRD\n\n`product/doc/FLY-1098-release-cicd/prd.md`(PR #544)。spec for FLY-1062 PR4,咬合 🆒 FLY-1063。\n\n## Build 拆分(PRD §14,含激活依赖序)\n\n* **B0 · 合同先锁**:版本/channel/manifest 合同(规范化版本、payload 通道真相、发布不变量、manifest 字段)—— 其余都依赖它。\n* **B1 · 发布流水线 P4**(FLY-1062 PR4 主体):薄壳 npm publish(2FA/OIDC)+ payload immutable-key 上传 R2 + 回读验 hash + manifest CAS 切指针 + 版本机器断言接 CI + 撤版。\n* **B2 · R2 payload 托管 + 端点**:R2 私有 bucket + entitlement 分级 presigned GET + lifecycle(current 不过期 / supersede 后 14/28 天)+ license key 签发/校验/吊销。**B1‖B2 并行写,联合 E2E 后才启用。**\n* **B3 · 判据 c 聚合**:消费 FLY-942 原始事件 + 版本归因 + watchdog heartbeat/源健康 + 报 bug 打版本 tag + Annie 👍/👎 → green/hold/unknown + 日报呈现。\n* **B4 · auto-ship-on-silence**:opt-out + fail-closed 状态机 + 否决窗口(绑定不可变候选、delivery-receipt、单次开)+ 记账。**最后,依赖 B1+B2+B3,先 shadow/observe → 手动 E2E → 在 B5 quarantine 验证后灰度启用。**\n* **B5 · 客户自动更新器 + 止血**:定时更新器(查 customer-release→装→失败回滚,单飞)+ central quarantine/withdraw + flywheel rollback + install 旧版。\n* **B6 · Bridge 按项目分频**(独立泳道):只阻塞每项目 beta 分频目标态,不阻塞 flywheel-only 每周 release / 判据 / auto-ship。\n\n**激活序**:B0 → (B1‖B2 联合 E2E) → B3 → B5 → **B4 最后灰度**。B6 独立。\n\n## Owner\n\nbuild = 工程(Tadashi);产品拍板项都在 PRD 标了(auto-ship 反转/否决窗口/两档节奏/判据 c/保留期 = 产品定)。related FLY-1062(打包基础)/ FLY-1063(:cool ship)/ FLY-942(判据源)。Tadashi 可按 §14 切子任务或直接分泳道。",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": null
+  }
+ ],
+ "items": [
+  {
+   "id": "05d70a98-c538-4b67-892f-221c119268f3",
+   "identifier": "FLY-2357",
+   "title": "[2355·A] 配置半:三个常驻 Lead 家开 Codex 记忆(`[features] memories=true` + `[memories] dedicated_tools=true`),经启动器落盘、先试非生产家、一次一个、节流闸一律不动",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2357/2355a-配置半三个常驻-lead-家开-codex-记忆features-memoriestrue-memories-dedicated",
+   "updatedAt": "2026-09-05T22:39:03.663Z",
+   "priority": 2,
+   "description": "PRD:`engineering/doc/FLY-2119-codex-identity-memory/prd.md`(branch `flywheel-FLY-2119`,PR #1024)§5.1 / §5.6 / §4.2。Epic FLY-2355;拆分与定序由 Tadashi 定(founder 07:48 直令)。\n\n## 要做什么\n\n1. 三个常驻 Lead 家(`~/.codex-honeylemon` / `~/.codex-infra-bot` / `~/.codex-mufasa`,三个全开,含 Mufasa——founder 已否掉排除建议,§6.4)的 `config.toml` 加两段(逐字,**分属两段不要合并**,§5.6.2 写错不报错):\n\n   ```toml\n   [features]\n   memories = true\n   \n   [memories]\n   dedicated_tools = true\n   ```\n2. **不许手改文件当交付**:该文件由 `packages/teamlead/scripts/codex-lead-tui-home.sh` 管理且带 fail-closed 漂移门(:615 「write pins if absent; FAIL-CLOSE if present with drift」;`codex-lead-tui-runtime.ts:959-984` 二道门)。改动要落在**启动器模板/写入逻辑**里,让重启后仍成立,并证明这两段不触发 §10 gate 漂移(它们断言的是 `[mcp_servers.lead_actions]` / sandbox / `[projects.*]` 块)。\n3. 上线顺序(§5.1 硬要求,代价不对称):备份 → **先拿一个非生产 home 试**(16 个残留 home 之一或临时 home)→ 一次只改一个 Lead、确认 daemon 能起再下一个 → 启动器报 `Fix $CONFIG manually` 或 gate 失败即回滚备份。\n4. ⛔ 四道节流闸(`max_rollouts_per_startup` / `min_rollout_idle_hours` / `max_rollout_age_days` / `min_rate_limit_remaining_percent`)与 `disable_on_external_context` **一律不动**(§5.6.3:先量再调,归 [2355·D])。\n5. 交付里写清:配置生效需要各 Lead daemon 重启一次——**走 R4 的 00:00/12:00 班车或 founder 重启票,本单不自行重启任何 Lead**。\n\n## 验收\n\n* 三个 Lead 家 `config.toml` 含上述两段且在对应正确段下(`[memories]` 段下写 `memories=true` 视为 FAIL)。\n* 非生产 home 先行验证记录 + 三个 Lead 重启后 daemon 正常起(启动器日志无 die / gate 失败)。\n* `find ~ -maxdepth 2 -type d -name memories -path '*/.codex*'` 的一周后读数交给 [2355·D];本单不以「写了配置」当「功能开了」。\n* 公共家 `~/.codex` 一字不动(§5.5.2)。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "3c2a299e-e3c8-4743-8e09-51f0fc36dfe5",
+    "identifier": "FLY-2355"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "63300c9d-1299-462a-b389-91090c9fe4b1",
+   "identifier": "FLY-2358",
+   "title": "[2355·B1] IC 层地基:任务级 Codex home 改键 executionId → (agent, 项目),第一次用到才建、不随任务删除(删除保护与改键同批),并给出同 (agent,项目) 并发的裁定",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2358/2355b1-ic-层地基任务级-codex-home-改键-executionid-agent",
+   "updatedAt": "2026-09-06T06:33:05.091Z",
+   "priority": 2,
+   "description": "PRD §5.2 / §5.3.2 / §5.3.3 / §5.5(`engineering/doc/FLY-2119-codex-identity-memory/prd.md`,branch `flywheel-FLY-2119`)。Epic FLY-2355。**这是三段式(设计→实现→QA)单,设计段必须先答下面的裁定题。**\n\n## 事实(PRD 作者体已查,不重查)\n\n* 任务级家 = `~/.flywheel/codex-homes/<executionId>`(`packages/claude-runner/src/codex-home.ts:262-274`),一次性,记忆随家孤立;runner 侧记忆开关**本来就是开的**(config 从 `~/.codex` 整份拷来,646 家里 92 家真攒出记忆)。问题是「攒了但回不来」,不是「没开」。\n* `codexHomeDir()` 只拿到 `executionId`;键所需的 **agent**(会话名里有 `*-implement-codex-*`)与 **项目**(dispatch/manifest 的 `projectName`)都没传进来 → 要多传两个字段(PRD 没追到底,实现时确认)。\n* 删家函数已写好但**全仓零生产调用点**,且 `catch` 为空——今天没删是巧合,「跑完清理」迟早接上。\n\n## 设计段必须裁定(带证据,不许拍脑袋)\n\n**同一** `(agent, 项目)` **同时跑两个 runner 时(常态:flywheel 下两张单同时在 implement),家怎么办?** 两条路二选一,用 `engineering/doc/FLY-2119-codex-identity-memory/exp-auth-concurrency.sh` 与真实并发实验给出结论:\n\n* (a) 共享持久家:一个 `(agent,项目)` 一个 home,多 runner 并发同用(auth.json / sessions / socket / memories 目录的并发安全要实证);此时记忆天然累积,[2355·B2] 缩成「种回去 + 验收」。\n* (b) 执行级家 + 持久记忆存放点:每次任务仍一次性 home,但为每个 `(agent,项目)` 维护一个跨任务存活的记忆点,由 [2355·B2] 做回流与种回去。\n  裁定写进 plan,并说明选另一条的代价。\n\n## 实现要求(与设计裁定无关的硬条)\n\n1. 键 = `(agent, 项目)`,agent 含 Lead 与 IC 节点(design/implement/qa/review…),项目 = projects.json 六个;**同一对每次解析到同一个家,不同对不相撞**;家名拼法是实现选择,根目录仍由 `codexHomesRoot()`(可被 `FLYWHEEL_CODEX_HOMES_ROOT` 覆盖)决定。\n2. 第一次用到才建,不预建;建家时沿用现有「技能目录递归拷入 + 写 AGENTS.md」的同形先例。\n3. 🔴 **角色家不随任务生命周期删除**,与改键**同批上线**(§5.5.3):给删家函数加保护(按键判定的家拒删),并把空 `catch` 改成可见错误/告警。\n4. ⛔ 不清理今天那 750 个一次性家(§5.5.4;其中 92 个是唯一证据);⛔ 不动 `~/.codex` 公共家;⛔ 不改节流闸。\n\n## 验收\n\n* 同一 `(agent,项目)` 连续两次 spawn 解析到同一路径;不同 agent / 不同项目解析到不同路径(四组对照)。\n* 并发裁定有实验记录(RED/GREEN 或等价),且实现与裁定一致。\n* 删家保护:对键式家调用删函数 → 拒绝且有日志/告警;对旧式 executionId 家行为不变。\n* 现有 Codex runner 的 spawn / 恢复 / 换体路径全部通过(529 房或真机至少各一次)。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "3c2a299e-e3c8-4743-8e09-51f0fc36dfe5",
+    "identifier": "FLY-2355"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "5ab72a8c-475a-4c5b-be57-07a3fb4b8ce4",
+   "identifier": "FLY-2359",
+   "title": "[2355·B2] 记忆回流 + 种回去:任务结束把一次性家蒸馏出的记忆汇进 (agent,项目) 存放点,新家开场带上历史;自定去重/冲突规则;四条验收含两条反向(不跨 agent、不跨项目)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2359/2355b2-记忆回流-种回去任务结束把一次性家蒸馏出的记忆汇进-agent项目",
+   "updatedAt": "2026-09-09T17:16:19.619Z",
+   "priority": 2,
+   "description": "PRD §5.3.1 / §5.3.2 / §5.3.4 / §7.2(`engineering/doc/FLY-2119-codex-identity-memory/prd.md`,branch `flywheel-FLY-2119`)。Epic FLY-2355。**前置 [2355·B1]**:本单范围随 B1 的并发裁定收缩——B1 选 (a) 共享持久家时,本单只剩「种回去(首建时带历史)+ 四条验收」;选 (b) 时本单做完整回流。\n\n## 要达到的效果(PRD 原文)\n\n> 一个 agent 在某个项目里第 N 次任务学到的东西,应该在【同一项目】第 N+1 次任务开始时对它可用——哪怕两次跑在不同的一次性 home 里。而【别的项目】的同名 agent,不应该看到这些东西。\n\n## 两个可分别验收的动作\n\n|  | 效果 |\n| -- | -- |\n| 回流 | 任务结束前,把一次性 home 里蒸馏出的记忆汇进 `(agent,项目)` 对应的、跨任务存活的地方 |\n| 种回去 | 下次为同一 `(agent,项目)` 建 home 时,把那个地方的内容放进新 home |\n\n## 硬约束\n\n* 去重/冲突规则**自己定且可复现**;⛔ 不能依赖 Codex 自带的 Phase 2 合并(模型判断、不可复现,§7.2)。\n* 🔴 回流能用之前,不许接上「任务结束就删 home」(§5.3.3)。\n* ⛔ 不清理 750 个旧家;⛔ 不动公共家;⛔ 不改节流闸。\n\n## 验收(四条都要,3/4 是反向指标,不能省)\n\n1. 跑完一个 `implement` 任务后,该 `(implement, flywheel)` 存放点出现本次记忆条目。\n2. 下一个 `(implement, flywheel)` 任务的新 home **开场就带着**上一条。\n3. `qa` 的 home 里**不出现** `implement` 的记忆条目。\n4. `flywheel` 的 `implement` 家里**不出现** `joycon-typeless` 的记忆条目。\n   QA 必须用真夹具在 529 房/真机跑,并给出 RED(未接回流时 1/2 失败)与 GREEN。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "3c2a299e-e3c8-4743-8e09-51f0fc36dfe5",
+    "identifier": "FLY-2355"
+   },
+   "blocked_by": [
+    {
+     "id": "63300c9d-1299-462a-b389-91090c9fe4b1",
+     "identifier": "FLY-2358",
+     "state_type": "completed"
+    }
+   ]
+  },
+  {
+   "id": "6347f4f3-2f96-4333-8ad8-12582c2ab135",
+   "identifier": "FLY-2360",
+   "title": "[2355·D] 一周观测 + 节流闸诊断:A 上线一周后读三个 Lead 家 memories/ 读数;为空才逐道排查四道闸(先量出哪一道在拦,只调那一道)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2360/2355d-一周观测-节流闸诊断a-上线一周后读三个-lead-家-memories-读数为空才逐道排查四道闸先量出哪一道在拦只调那一道",
+   "updatedAt": "2026-09-05T19:14:28.793Z",
+   "priority": 3,
+   "description": "PRD §5.1 验收 / §5.6.3(`engineering/doc/FLY-2119-codex-identity-memory/prd.md`)。Epic FLY-2355。**前置:[2355·A] 已上线(各 Lead daemon 已重启)满 7 天。** 非代码单(generic):观测 + 诊断报告;若诊断结论需要改某一道闸,另开 simple_code 单,本单不改配置。\n\n## 步骤\n\n1. `find ~ -maxdepth 2 -type d -name memories -path '*/.codex*' | sort` + 各 Lead 家 `memories/rollout_summaries/` 是否有产出(⛔ 别用 `ls ~/.codex-*/...` glob,匹配不到 `~/.codex` 且 zsh 无匹配会中断)。\n2. 有产出 ⇒ 四道闸都没拦,结论「不需要调」,记录读数收单。\n3. 无产出 ⇒ 逐道排查 `max_rollouts_per_startup`(2)/ `min_rollout_idle_hours`(6)/ `max_rollout_age_days`(10)/ `min_rate_limit_remaining_percent`(25),证明是哪一道在拦;只建议调那一道,理由与量法写进报告。\n4. ⛔ `disable_on_external_context` 保持 false;⛔ 不给一组拍脑袋的推荐值(PRD 上一版的 16/1 已作废)。\n\n## 交付\n\n一份诊断报告(HTML/MD)+ 若需调闸,一张只改一道闸的 simple_code 子单。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "3c2a299e-e3c8-4743-8e09-51f0fc36dfe5",
+    "identifier": "FLY-2355"
+   },
+   "blocked_by": [
+    {
+     "id": "05d70a98-c538-4b67-892f-221c119268f3",
+     "identifier": "FLY-2357",
+     "state_type": "completed"
+    }
+   ]
+  },
+  {
+   "id": "82736233-928d-45e0-b96e-05d949a58734",
+   "identifier": "FLY-2370",
+   "title": "[日常·说明] 这筐怎么用(不是任务;Backlog 状态不进范围)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2370/日常说明-这筐怎么用不是任务backlog-状态不进范围",
+   "updatedAt": "2026-09-05T19:11:17.255Z",
+   "priority": 0,
+   "description": "不是工作项。Epic 页的 active root 判定要求父单「有子单」(linear-epic-query.ts activeScopeFilter: children.length > 0),日常筐空着时整页会 422 active_scope_not_found;这张 Backlog 子单只是让筐成立,Backlog 状态的子单不进「还剩什么」范围。\n\n用法:不属于任何 Epic 的 bug / 小需求 → 父单设为 FLY-2369,状态 Todo/In Progress 即进范围;不做了拖回 Backlog。\n\n残余(给 founder 定要不要开单):「日常筐为空 ⇒ 整页不生成」是判定过严,可在 2143(Epic 页活化)或后续单里放宽为「日常筐允许零子单」。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "29a159c0-a2cc-4273-a2b5-798c3ccf19c3",
+    "identifier": "FLY-2369"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "dbfdaa08-7225-409d-8847-cb93862b0b27",
+   "identifier": "FLY-2379",
+   "title": "[Raya·文字] 在 #raya 里打字她就真回:文字对话通路(FLY-2030 首要验收从未交付,founder 2026-09-06 直令补上)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2379/raya文字-在-raya-里打字她就真回文字对话通路fly-2030-首要验收从未交付founder-2026-09-06-直令补上",
+   "updatedAt": "2026-09-09T03:47:42.422Z",
+   "priority": 1,
+   "description": "> ✅ **已作废（founder 2026-09-08 12:01 PT 直令「确定没有要做就直接关掉、清理掉」）**。效果由 FLY-2445 提供。raya#26 / flywheel#1106 已关闭（分支保留，不删）。\n\n> ⛔ **不再按原样做**（founder 2026-09-08 选 B：Raya + Codex 通路层推翻重做）。\n> 原因：本单是「在 Raya 自己那套壳上补文字回复」，而那套壳正是要拆掉的。\n> **它要的效果（在 #raya 打字她就真回）改由** [FLY-2445](https://linear.app/geoforge3d/issue/FLY-2445) **提供**：Raya 迁成标准 Codex Lead 后，文字通路是 Flywheel 的通用件，不需要在 Raya 壳里再写一遍。\n> PR `xrliAnnie/raya#26` 不合入。正式作废由 [FLY-2448](https://linear.app/geoforge3d/issue/FLY-2448) 执行（在 2445 真落地前先保留本单作为需求参考）。\n\n## 为什么有这张单(先读)\n\nFLY-2030 的**首要验收标准(founder 2026-08-27 拍板,原文)**:「Raya 能真正和 founder 对话——founder 在 #raya 说话,Raya 真实回复、能追问、能吸收状态。验收以 founder 真实使用为准,不以 unit test 为准。」\n2030 以「M1 = 回流机制」关单、2131 做了吸收/可见汇报,**文字对话通路始终没人做**。2026-09-06 实测:`apps/brain/src/voice-mode.ts` `handleMessageSerial` 对 founder 在 #raya 的文字只 `parseVoiceModeCommand`(进入语音模式 / /voice / /endvoice),其余 `return \"ignored\"`,不回一个字;founder 9-1 ×2、9-6 ×1 的「你在吗」全部被静默吞掉。founder 2026-09-06 14:12 PT:「我是需要它能做文字聊天的呀」。这是 Tadashi 的交付失误,本单补齐。\n\n## PRD 依据(FLY-1846 v1.7,逐条引用,不许再漏)\n\n* §8.6.7 说话走哪条路(她的自由表述):「他跟我说话是走他自己的 Channel」→ **她↔Raya 的对话面 = #raya 文字**(需要她看见的在 Discord)。\n* §4.3 对话时要能做的三件:①排序建议(机制 = §10 偏离探测,不排序、不硬规则)②跨项目可整合机会(对话中的能力,§10c)③陪她 brainstorm。\n* §5.1/§5.2/§5.3:自己去各仓读状态是主干;读不够时**追问对应 Lead**(它直接问 Lead、不需要她在场、带结论回来、问不到如实说)。追问对 Lead 走 #leads-roundtable(§8.6.7:总管↔Lead 走 Lead Round Table;不需要她看见的走 Mailbox)。\n* §6.4 形式 = 「一起想」;§10.4b 她给「留住对话」划的界(读原文,不许超)。\n* §3 硬约束 + §5.3 末条:信息不足时不许硬说;追问失败 = 如实说「这里没问清楚」。\n* §2.5 设计原则:先简单,让产品在使用中长出来 → 本单**只做对话通路 + 三件能力的最小可用版**,不建新子系统。\n* §8.5:假设使用者没有 flywheel 仓;§8.6.1 vendor = Codex(gpt-5.6-sol,独立 CODEX_HOME=~/.flywheel/raya/codex-home,已存在)。\n\n## 要做\n\n1. brain 收到 founder(`RAYA_FOUNDER_DISCORD_USER_ID`)在 #raya 的**非命令文字** → 进入一段与 Codex 的对话回合(复用 brain 现有 Codex home / 身份 / MEMORY),把回复发回 #raya(💭 思考中 → 💬 回复 的既有样式可沿用)。三条语音命令行为不变。\n2. 对话上下文:她的最近消息 + Raya 已吸收的 summary/状态(2131 的吸收结果)+ MEMORY.md;不足以回答时按 §5.3 **追问对应 Lead**(第一版可先做「告诉她我去问谁、问什么」并在 #leads-roundtable 发问;回来的答案落回对话)。\n3. 立即止血(同 PR 或先行小 commit):在通路做完前,非命令文字先回一句「我现在只会语音;文字聊天正在做(FLY-本单)」,不再装死。\n4. 不做:新的排程/告警子系统;不改语音管线;不改 summary 合同。\n\n## 验收(真机,founder 亲测为准)\n\n* founder 在 #raya 打字「接下来一周我们该推什么」→ 30 秒内 Raya 给出一段可被她当场否掉的回答(引用她已知的状态,不硬编);她追问一句 → Raya 接得上。\n* 她问一个 Raya 不知道的项目细节 → Raya 如实说不知道 + 去问了哪个 Lead(#leads-roundtable 可见)或说「这里没问清楚」;**不许编**。\n* 三条语音命令照常;bot 自己/其他 bot 的消息不触发。\n* 上线 = 合入 raya main **且部署到 ~/.flywheel/raya/code + brain 重启**(本单验收包含部署确认,不只 PR)。\n\n## 工作树约束(沿用 2030)\n\n代码在 **raya 仓**(xrliAnnie/raya)。`git -C ~/.flywheel/raya/code fetch origin` 后 `git worktree add ~/.flywheel/raya/worktrees/raya-<本单> -b fly-<本单>-raya-text-chat origin/main`;⛔ 不在 `~/.flywheel/raya/code` 本身改文件(生产 brain 从那里跑)。注意:生产 checkout 目前落后 origin/main 244 commits(#9/#14 未部署),部署问题由 Lead 另行处理,本单基于 origin/main 开发。",
+   "state": {
+    "type": "canceled",
+    "name": "Canceled"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "5b693ced-1f41-4495-a414-800390cff10f",
+   "identifier": "FLY-2380",
+   "title": "[Raya·Report] 每日可互动 Report:存在 Raya 自己的仓、founder 在上面讨论(PRD 1846 §8.7.3;founder 2026-09-06 拍「开单,排 2379 之后」)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2380/rayareport-每日可互动-report存在-raya-自己的仓founder-在上面讨论prd-1846-873founder",
+   "updatedAt": "2026-09-08T19:09:11.116Z",
+   "priority": 0,
+   "description": "> ✅ **已作废（founder 2026-09-08 12:01 PT 直令「确定没有要做就直接关掉、清理掉」）**。效果由 FLY-2447 提供，本单设计产物作为 2447 的输入。\n\n> ⛔ **不再按原样做**（founder 2026-09-08 选 B：Raya + Codex 通路层推翻重做）。\n> 原因：本单的日报建在 Raya 自己那套壳上（独立仓 + 自建 driver），而那套壳要拆掉。\n> **它要的效果（每日可互动 report）改由** [FLY-2447](https://linear.app/geoforge3d/issue/FLY-2447) **提供**：Raya 的 CoS 业务（统管 Leads / summaries / 日报）在新地基上重排，本单的设计产物作为输入并入。\n> 正式作废由 [FLY-2448](https://linear.app/geoforge3d/issue/FLY-2448) 执行（在 2447 真落地前先保留本单作为需求与设计参考）。\n\n## 来源\n\nPRD FLY-1846 v1.7 §8.7.3(她的自由表述):「大多数时候,他可能每个小时记录一次……但是可能可以**每天给我一个 Report**……**可互动的 Report,然后我们就可以在 Report 基础上去讨论。**」「**Report 存在它自己的仓库**」⇒ Report 不是通知,是讨论的载体(与 §6.4「一起想」同源)。\n2026-09-06 PRD 逐条对照发现此条无任何单覆盖;founder 15:48 PT 拍:「开单,排 2379 之后」。\n\n## 要做(最小版,§2.5 先简单)\n\n1. Raya 每天(节奏与 summary 回流一致:每天晚上)生成一份 Report 文件落在 Raya 仓(路径由本单定,与 `summaries/` 分开),内容 = 她今天吸收到的各项目状态 + 她的判断(偏离探测 §10 的口径:不排序、不硬规则、可被 founder 当场否掉)。\n2. Report 发到 #raya 供 founder 看(托管 HTML 或 Discord 卡,复用 founder-html-delivery / 既有互动卡机制,不新造);founder 在上面的回复进入 Raya 的对话上下文(依赖 2379 的文字通路)。\n3. 不做:新的排程子系统(复用 brain 现有吸收节奏);不改 summary 合同。\n\n## 验收(真机)\n\n* 连续两天 #raya 各出现一份 Report;founder 对其中一条回复后,Raya 在下一轮对话里能引用她的回复。\n* Report 文件在 Raya 仓可查,含日期与来源 summary 列表。\n\n## 前置\n\nFLY-2379(文字通路)先上线。代码在 raya 仓;⛔ 不在 ~/.flywheel/raya/code 生产 checkout 改文件。",
+   "state": {
+    "type": "canceled",
+    "name": "Canceled"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "f35f375c-26b2-47ed-8e4d-9b4b0a07cdf9",
+   "identifier": "FLY-2387",
+   "title": "[1143·B0] 先锁合同:版本/channel/manifest(PRD 1098 §6 规范化版本 · §7.2 通道单一真相 · §7.3 发布不变量 · manifest 字段)—— 其余 B1–B5 全依赖它",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2387/1143b0-先锁合同版本channelmanifestprd-1098-6-规范化版本-72-通道单一真相-73-发布不变量",
+   "updatedAt": "2026-09-07T05:49:51.199Z",
+   "priority": 0,
+   "description": "## 来源\n\nPRD `product/doc/FLY-1098-release-cicd/prd.md` §14 Build issues 拆分 + 激活依赖序:**B0(先锁合同)** —— 版本/channel/manifest 合同(§6 规范化版本、§7.2 通道真相、§7.3 不变量、manifest 字段)—— 其余都依赖它,先定。founder 2026-09-06 16:19 PT:「1143 Release CI/CD:做,起 Epic」。Epic = FLY-1143(PRD FLY-1098 已定稿、founder 7 月放行)。\n\n## 要做(只引 PRD,不自造)\n\n1. §6 版本号 + 命名(Option 2,Annie r3):版本单一真相 = base version 派生(§6.1,Codex R2#1);两个身份 + veto 绑真 artifact(§6.2,消除 TOCTOU)。\n2. §7.2 发布通道:一个 payload channel 真相(Codex R1#2)。\n3. §7.3 发布的产品不变量(Codex R1#4:三套外部状态不可原子提交)—— 写成机器可断言的合同。\n4. manifest 字段合同(供 B1 CAS 切指针、B4 否决窗口、B5 更新器读取)。\n5. §2.1 REQ-0 Tadashi 硬约束逐条对照,不得违反;§2.2 ship 段(FLY-1063 Option B)只引用不重写。\n\n## 交付\n\n合同文档 + 类型/schema + 断言测试(版本派生、通道唯一、manifest 校验);不做任何发布动作。\n\n## 验收\n\nB1/B2 能仅依赖本合同并行开工;manifest 示例通过 schema 校验;REQ-0 对照表无违反项。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "f4992936-44e3-4853-b8f1-498f0cfeee8b",
+    "identifier": "FLY-1143"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "6e575e15-a4ef-4e17-b8b4-6ae4ad3a3a16",
+   "identifier": "FLY-2388",
+   "title": "[1143·B1] 发布流水线 P4:薄壳 npm publish(2FA/OIDC)+ payload immutable-key 上传 R2 + 回读验 hash + manifest CAS 切指针 + 版本机器断言接 CI(PRD 1098 §7 / §10)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2388/1143b1-发布流水线-p4薄壳-npm-publish2faoidc-payload-immutable-key-上传-r2-回读验",
+   "updatedAt": "2026-09-09T18:31:37.994Z",
+   "priority": 0,
+   "description": "## 来源\n\nPRD `product/doc/FLY-1098-release-cicd/prd.md` §14:**B1 · 发布流水线 P4**(FLY-1062 PR4 主体)。依赖 B0 合同;与 B2 联合 E2E(激活序 B0 → (B1‖B2 联合 E2E))。founder 2026-09-06 16:19 PT 拍「1143 做,起 Epic」。\n\n## 要做(只引 PRD)\n\n* §7.1 打包(FLY-1062 PR1 已落,release 门复用);§7.2 通道真相;§7.3 不变量:上传 staging(步 2)与 manifest commit(步 4)刻意拆开、分居窗口前后(§10 六步);staging 清理策略(§7.3 第 7 条,保留策略工程定)。\n* 薄壳 `npm publish`(2FA/OIDC)+ payload immutable-key 上传 R2 + 回读验 hash + manifest CAS 切指针 + 版本机器断言接 CI。\n* §6.2 两个身份 + veto 绑真 artifact。\n\n## 验收(§14 B1 acceptance 按 §10 六步)\n\n一次端到端:打包 → 上传 staging → 回读 hash 一致 → manifest CAS 切换 → CI 断言绿;失败任一步不留半状态(§7.3 不变量)。与 B2 联合 E2E 通过后才算激活。\n\n## QA 判据(Lead 落文件副本 · QA 体开局必读;信箱里那行路径只是备份)\n\n对象:PR #1135(flywheel-FLY-2388),代码审 APPROVED 头 ab8ad0d4f 或其后仅含 CI 修/PR 正文/证据的提交。计划:`engineering/doc/FLY-2388-release-pipeline-p4/plan.md`(c0–c4 五块)。\n\n### 三条边界(不是漏,是设计)\n\n* 本单**不执行**真 npm publish、真 customer-release commit。QA 不得用真 registry / 真 R2 生产写入来「验」。\n* founder 三项前置未完成时(CF token / npmjs trusted publisher / FW_CUSTOMER_RELEASE_TOKEN):publish mode 以 ENEEDAUTH/E404 fail-closed **是预期**。\n* handler 侧 `normalizeEtag` 需重部署才在生产生效;客户端修复单独足以让 beta 线过。\n\n### 硬门(任一 FAIL 即 qa_fail)\n\n 1. c0 ETag 归一化两侧等价(共用向量文件;突变对照:退回只剥引号 → 至少一个向量红)。\n 2. c0 pipeline E1/E1b/E1c(`FW_TEST_WEAK_ETAG=1`;handler-admin baseEtag 四形态 200、真错 412、非法串 400 不落 500)。\n 3. c0 CI 登记:`endpoint-client-etag.test.mjs` 显式在 `ci.yml` payload-distribution job;**删掉那一行 → enumeration 守卫必须变红**(attempt 1 FAIL 点:守卫要覆盖 scripts/**tests**/*.test.mjs),恢复 → 绿。\n 4. c1 结构断言 S4b/S4e/S11/S13/S14 全绿 + 突变红(checkout SHA 换 @v4 → S14 红;删 confirm 输入 → S13 红)。\n 5. c1 argv/语义矩阵 P9–P11、W2 系列,每条给命令与退出码。\n 6. c2 helper 四子命令对本地 registry stub(free / idempotent / conflict ×2 / verify 超时 / verify sha 不等);`--founder-local` 对已存在版本仍 die;dist-tag 向量。\n 7. c2 结构断言 S4c 全局负 / S12 / S15(+ 突变红);S16 不得嵌在 S15 presence-check else 里。\n 8. c3 beta 单赢家 R4/R4b/R4c/R4d + cleanup C4。\n 9. c4 合同修订 A1 + differential corpus;runbook 同步(§7 引用的 helper 必须真实存在)。\n10. 能干净合入当前 main + exact-head CI 14/14 绿(判决前重新 fetch)。\n11. PR 正文:验收矩阵证据、CI run 链接、「未做」清单、founder 三项前置状态如实、代码审 follow-up **逐条列出(真实数 2 MEDIUM + 6 LOW)**。\n\n### 硬规\n\n零生产写入(真 registry / R2 / release environment secret 都不碰);vitest/node --test 单进程 `--pool=forks --poolOptions.forks.maxForks=1`;本单无消息面,529 N-to-N 写「不适用」。\n\n### attempt 2 承接(attempt 1 claim 968 FAIL @ b6c96af67)\n\n判据 3(守卫覆盖 *.test.mjs + 变异对照)与判据 11(PR 正文逐条、真实计数)为本轮重点;其余 9 门引用 attempt 1 证据即可。报告按 QA ship report 骨架,`publish-report` 后自验 200。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "f4992936-44e3-4853-b8f1-498f0cfeee8b",
+    "identifier": "FLY-1143"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "68707d3d-ae67-4dca-8693-e7a13595629f",
+   "identifier": "FLY-2389",
+   "title": "[1143·B2] R2 payload 托管 + 端点:私有 bucket + 验 key 薄端点(entitlement 分级 presigned GET)+ lifecycle(current 不过期 / supersede 后 14/28 天)+ license key 签发(PRD 1098 §7.2 / §9)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2389/1143b2-r2-payload-托管-端点私有-bucket-验-key-薄端点entitlement-分级-presigned-get",
+   "updatedAt": "2026-09-10T05:25:25.375Z",
+   "priority": 0,
+   "description": "## 来源\n\nPRD `product/doc/FLY-1098-release-cicd/prd.md` §14:**B2 · R2 payload 托管 + 端点**。依赖 B0;与 B1 联合 E2E。founder 2026-09-06 拍「1143 做,起 Epic」。\n\n## 要做(只引 PRD)\n\n* R2 私有 bucket;验 key 薄端点(entitlement 分级 presigned GET);license key 签发/校验。\n* §9 保留期 + R2 lifecycle:current 永不因年龄过期;supersede 后 14/28 天清理(留多久 = 产品已定,实现 = 工程定)。\n* §7.2 通道单一真相;§2.1 REQ-0 硬约束。\n* 非目标(§1.4):不做计费/账号/席位/计量(免费付费是将来,B 渠道留口子)。\n\n## 验收\n\npresigned GET 按 entitlement 分级可/不可下载各一例;lifecycle 规则用夹具验证(current 不过期、supersede 到期清理);与 B1 联合 E2E:发布 → 端点可取 → hash 一致。",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "f4992936-44e3-4853-b8f1-498f0cfeee8b",
+    "identifier": "FLY-1143"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "3457e4c0-a81c-4162-bda0-b015fa6d9231",
+   "identifier": "FLY-2390",
+   "title": "[1143·B3] 判据 c 聚合:消费 FLY-942 原始事件 + 版本归因 + watchdog heartbeat/源健康 + 报 bug 打版本 tag + Annie 👍/👎 → 产出 green/hold/unknown(PRD 1098 §4)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2390/1143b3-判据-c-聚合消费-fly-942-原始事件-版本归因-watchdog-heartbeat源健康-报-bug-打版本-tag",
+   "updatedAt": "2026-09-06T23:24:42.651Z",
+   "priority": 0,
+   "description": "## 来源\n\nPRD `product/doc/FLY-1098-release-cicd/prd.md` §14:**B3 · 判据 c 聚合**。依赖 B0(同版本身份);激活序在 (B1‖B2) 之后。founder 2026-09-06 拍「1143 做,起 Epic」。\n\n## 要做(只引 PRD §4)\n\n* 消费 FLY-942 原始事件;**新增**版本归因 + watchdog heartbeat/源健康;报 bug 打版本 tag 聚合;Annie 👍/👎 输入;产出 `green / hold / unknown`(§4.1 信号语义 + 状态,Codex R1#1 fail-closed 基础);新聚合日报。\n* §3 节奏两档 + Beta 分频两态只消费,不实现分频(那是 B6)。\n\n## 验收\n\n用回放的 FLY-942 事件 + 注入的 heartbeat 缺失/版本 tag 各一组,聚合器输出 green / hold / unknown 三态各一例且理由可查;日报生成一份。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "f4992936-44e3-4853-b8f1-498f0cfeee8b",
+    "identifier": "FLY-1143"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "780a55db-9d4f-4eac-8dc7-d94a50dd574f",
+   "identifier": "FLY-2391",
+   "title": "[1143·B4] auto-ship-on-silence:opt-out + fail-closed 状态机 + 否决窗口(绑不可变候选、delivery-receipt、单次开)+ 记账 —— 最后灰度,依赖 B1+B2+B3(PRD 1098 §5)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2391/1143b4-auto-ship-on-silenceopt-out-fail-closed-状态机-否决窗口绑不可变候选delivery",
+   "updatedAt": "2026-09-06T23:24:52.625Z",
+   "priority": 0,
+   "description": "## 来源\n\nPRD `product/doc/FLY-1098-release-cicd/prd.md` §14:**B4 · auto-ship-on-silence**。**B4 最后**,依赖 B1+B2+B3;激活序末位灰度(§5.5 上线次序,Codex R1#4/#7)。founder 2026-09-06 拍「1143 做,起 Epic」。⚠️ 与 FLY-2309(自动合并影子跑)是两件事:本单是对外发布的默认自动、Annie 可否决;不动 merge 授权契约。\n\n## 要做(只引 PRD §5)\n\n* §5.1 反转:opt-in → opt-out(Annie r8);§5.2 fail-closed 状态机(Codex R1#1,核心安全语义);§5.3 否决窗口(Annie r8 圈定):绑定不可变候选、delivery-receipt、单次开;§5.4 owner 变更 + 记账;§5.5 上线次序。\n* §6.2 veto 绑真 artifact(消除 TOCTOU)。\n\n## 验收\n\n状态机每个转移有测试;否决窗口内 Annie 一个动作能拦下并留账;窗口过期且判据 c=green 才自动发;unknown/hold 一律不发(fail-closed)。灰度开关默认关,最后一步由 founder 授权打开。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "f4992936-44e3-4853-b8f1-498f0cfeee8b",
+    "identifier": "FLY-1143"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "857ae400-3ce9-4ed8-b4a1-5a4d2f3f6098",
+   "identifier": "FLY-2392",
+   "title": "[1143·B5] 客户自动更新器 + 止血:定时更新器(查 customer-release → 装 → 即时失败回滚,单飞)+ central quarantine/withdraw + 客户本地回滚/降级(PRD 1098 §8)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2392/1143b5-客户自动更新器-止血定时更新器查-customer-release-装-即时失败回滚单飞-central",
+   "updatedAt": "2026-09-06T23:24:56.989Z",
+   "priority": 0,
+   "description": "## 来源\n\nPRD `product/doc/FLY-1098-release-cicd/prd.md` §14:**B5 · 客户自动更新器 + 止血**。依赖 B0 manifest;激活序在 B3 之后(同 manifest 的 install/update/rollback/quarantine 验证)。founder 2026-09-06 拍「1143 做,起 Epic」。\n\n## 要做(只引 PRD §8)\n\n* §8.1 自动更新器 B(Annie r5 选):定时查 customer-release → 装 → 即时失败回滚,单飞。\n* §8.2 fleet 级止血:central quarantine/withdraw(Codex R1#3 / R2#3):摘 pointer + 阻止再升 + 客户端记。\n* §8.3 客户本地回滚/降级(Annie r6)。\n* §14 B5 acceptance 覆盖三情况:有 previous-good / previous-good 已过期 / 首个 release 就坏。\n\n## 验收\n\n三情况各一条 E2E(夹具 manifest):更新成功、失败即时回滚到 previous-good、首版即坏时的明确失败态;quarantine 后客户端不再升级并有本地记录。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "f4992936-44e3-4853-b8f1-498f0cfeee8b",
+    "identifier": "FLY-1143"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "94a7b178-b0c2-41a3-9a08-75b5f0ac94ed",
+   "identifier": "FLY-2393",
+   "title": "[1143·B6] Bridge 按项目分频(独立泳道):只阻塞 §3「每项目 beta 分频目标态」,不阻塞 flywheel-only 每周 release / 判据聚合 / auto-ship;可与 B0–B5 并行(PRD 1098 §3.2 / §14)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2393/1143b6-bridge-按项目分频独立泳道只阻塞-3每项目-beta-分频目标态不阻塞-flywheel-only-每周-release",
+   "updatedAt": "2026-09-06T23:25:03.532Z",
+   "priority": 0,
+   "description": "## 来源\n\nPRD `product/doc/FLY-1098-release-cicd/prd.md` §14:**B6 · Bridge 按项目分频(独立泳道)**。只阻塞 §3 目标态,不阻塞其余;可与 B0–B5 并行。§13 Open questions 第 6 条:B6 优先级由 Annie/Tadashi 收口(决定 §3 目标态多久落)。founder 2026-09-06 拍「1143 做,起 Epic」;**本单排在 B0–B5 之后起**,除非 founder 另说。\n\n## 要做(只引 PRD §3.2)\n\nBeta 分频现状 → 目标态两态都写:目标态需 Bridge 先支持按项目分开;此前维持现状全 6h。\n\n## 验收\n\n两个项目配置不同 beta 频率后各自按自己的节奏发 beta;flywheel-only 每周 release 不受影响。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "f4992936-44e3-4853-b8f1-498f0cfeee8b",
+    "identifier": "FLY-1143"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "bc5adb5b-1170-496b-b7cb-4060473ba022",
+   "identifier": "FLY-2395",
+   "title": "[2309·B1] docs-only 判定覆盖全部 target repo —— 今天只看主仓,实测漏 8/33,且已在放行 QA 证据门【P0 · 影子跑前置】",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2395/2309b1-docs-only-判定覆盖全部-target-repo-今天只看主仓实测漏-833且已在放行-qa-证据门p0-影子跑前置",
+   "updatedAt": "2026-09-07T05:47:11.690Z",
+   "priority": 0,
+   "description": "## 来源\n\n`product/doc/FLY-2309-auto-merge-rollout/build-issues.md` §B1(PR #1063 已合入;founder 2026-09-06 16:19 PT 拍「2309 做,起 Epic」)。逐字规格见该文件;本单只摘要 + 记 Lead 的选型。\n\n## Scope(照 B1 §Scope)\n\n1. 判定改为全仓:docs-only 充要条件 = 该单**全部** PR(主仓 + 每个 nested target repo)改动都落在现有 6 个文档前缀下,且合计 ≤ `MAX_DOCS_ONLY_FILES`(`bridge/ship-relevant-diff.ts` `DOCS_PREFIXES` / `MAX_DOCS_ONLY_FILES`)。\n2. fail-closed:任一 PR 拿不到分类快照 ⇒ 整单 `unknown` ⇒ 不算 docs-only。\n3. `SHIP_RELEVANT_CLASSIFIER_VERSION` 递增(旧快照自动失效,不改写历史行)。\n4. 入口 `ensureShipRelevantDiff` 要拿到这一单的全部 PR。\n5. 新表/新列必须登记 `scripts/lib/fly-2006-retention-registry.mjs`,归 `protectedCurrentOrReference`(⛔ 不放 deleteTarget,14 天会吃掉影子跑窗口)。\n\n## 🔴 Lead 选型(spec 留给 Tadashi 拍的未决项)\n\n**取方案 B**:启用已建未用的多 PR 声明路径(`workflow_pr_manifest` + `workflow_declared_pr`,路由在 `runs-route.ts` 开 manifest / seal / list),节点声明**全部** PR,分类器读 manifest 里的全部已声明 PR。⛔ 不走方案 A(改 `workflow_node_pr_binding` 主键 = 动授权层台账)。\n**开工第一步必须先回答 spec 明写「我没查出来」的两问,写进 plan 再动手**:① manifest / declared_pr 为什么从未被使用(没接 / flag 关着 / 被取代)—— 若是已废弃路径,停下报 Lead;② `sealWorkflowPrManifestFromBindings` 从绑定层铸 ⇒ 声明入口必须绕开「只有 `__main__`」的绑定层,直接由 `complete --target-repo` 写 declared_pr。\n\n## 验收(硬,照 spec)\n\n* 阳性对照:回溯 33 个 run,**8 个带 nested 代码的全部翻成非 docs-only**;\n* 反向对照:另 22 个仍判 docs-only(不许一刀切 unknown);\n* `review-hold.ts` 回归:主仓 docs-only + nested 代码 ⇒ 必须 hold(今天返回 null);\n* retention registry 通过 `assertClassifiedSchema`;复现 SQL 用只读副本,报出自己的全集规模(比例与方向,不是整数)。\n\n## ⛔ 边界\n\n不动 `founder-only-authority` / merge 授权契约;founder 未批准自动合并上线;影子跑期间一条规矩都不改。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "34a37268-6410-4d63-93b5-e0e6b0ad82a5",
+    "identifier": "FLY-2309"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "2c889517-72a3-48ac-8369-f4bc0575e8b1",
+   "identifier": "FLY-2396",
+   "title": "[2309·B2] founder 门判决绑 exact head + 新增「是否 founder 本人」字段(authority 是权限不是作者)【P0 · 影子跑前置】",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2396/2309b2-founder-门判决绑-exact-head-新增是否-founder-本人字段authority-是权限不是作者p0",
+   "updatedAt": "2026-09-07T07:50:16.543Z",
+   "priority": 0,
+   "description": "## 来源\n\n`product/doc/FLY-2309-auto-merge-rollout/build-issues.md` §B2(PR #1063;founder 2026-09-06 拍「2309 做,起 Epic」)。逐字规格见该文件。\n\n## Scope(照 spec)\n\n1. 每一条 founder 门的过卡 / 打回,可查到它当时绑的 `(repo, pr_number, head_sha)`。\n2. 新增一个与 `authority` **分离**的字段表达「这条是不是 founder 本人写的」;⛔ 不许用文本前缀 / 正则去猜 `founder_feedback_verbatim`(那会把「谁写的」重新变成判断,违反资格门槛)。\n\n## 验收(硬,照 spec)\n\n* 新数据 100% 可绑到 exact head;\n* 回溯 55 条**报出**可绑比例(「55 条里 N 条」,同时报全集规模);\n* 阳性对照:`c8f001a6` / `3f9f9f1c` 判**是她本人**;`5ae599c6` / `54f0d683` / `f5bd6f2b` 判**不是**;\n* 复现 SQL(spec 末尾)在只读副本上跑,期望 358/358 与 0。\n\n## ⛔ 边界\n\n不动 merge 授权契约;新字段只记事实,不参与任何自动放行。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "34a37268-6410-4d63-93b5-e0e6b0ad82a5",
+    "identifier": "FLY-2309"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "b3da5195-fb60-452c-8b05-6762c3870ab5",
+   "identifier": "FLY-2397",
+   "title": "[2309·B3] 强度二证据台账 —— 真环境跑过 + 外部可查可重跑的记录(两个独立字段)【P0 · 影子跑前置】",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2397/2309b3-强度二证据台账-真环境跑过-外部可查可重跑的记录两个独立字段p0-影子跑前置",
+   "updatedAt": "2026-09-08T03:51:59.360Z",
+   "priority": 0,
+   "description": "## 来源\n\n`product/doc/FLY-2309-auto-merge-rollout/build-issues.md` §B3(PR #1063;founder 2026-09-06 拍「2309 做,起 Epic」)。逐字规格见该文件。\n\n## Scope(照 spec)\n\n一条记录至少含:绑的 head、在哪跑的(529 房 / 其它)、跑的是哪条链路、**外部可查的记录地址**、**怎么重跑**。🔴 两半必须是两个独立字段:(a) 真跑过 (b) 有外部可查可重跑的记录 —— 少了 (b) 强度二退化成强度一。fail-closed:没有台账行 = 不满足强度二;只认台账不认自称。登记 retention registry(归 `protectedCurrentOrReference`)。\n\n## 验收(硬,照 spec)\n\n* 阳性对照 1:「自称跑过但没有台账记录」⇒ 判不满足;\n* 阳性对照 2:「有台账行但记录地址取不到」⇒ 判不满足;\n* 两半分别被单独测到(不许一个布尔盖两件事)。\n\n## 已知不解(照 spec 明写,不许在实现中悄悄声称覆盖)\n\n强度二挡不住 FLY-1833 那种 flaky(端到端偶然全绿);本单无新解法,验收文档保留此缺口说明。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "34a37268-6410-4d63-93b5-e0e6b0ad82a5",
+    "identifier": "FLY-2309"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "995f26e3-8587-45a6-8b1a-aef387a2875b",
+   "identifier": "FLY-2398",
+   "title": "[2309·B4] 自动合并影子跑(两周)—— 四条记录线 + 错判率表,一次都不真的自动合并【P1 · 依赖 B1/B2/B3】",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2398/2309b4-自动合并影子跑两周-四条记录线-错判率表一次都不真的自动合并p1-依赖-b1b2b3",
+   "updatedAt": "2026-09-09T02:33:17.452Z",
+   "priority": 0,
+   "description": "## 来源\n\n`product/doc/FLY-2309-auto-merge-rollout/build-issues.md` §B4(PR #1063;founder 2026-09-06 拍「2309 做,起 Epic」)。依赖 B1 ∥ B2 ∥ B3 全部落地后起。\n\n## Scope(照 spec + 2309 PRD T6)\n\n每单同时记「机器判的类 / 人判的类」+ 强度二两半是否满足 + 她实际有没有打回(四条记录线);两周后交一张表:纯文档类错判率、被判会自动合并的单里她原本会打回几条、两个数各自的放手门槛。事先定死:**纯文档类错判率为 0 才放手;不为 0 连它也不开**。⭐ 影子跑期间**一条规矩都不用改**;**一次都不真的自动合并**。\n\n## 验收(硬,照 spec)\n\n* 四条记录线覆盖率 100%(缺一条这张表不作数);\n* 表可被独立重算(只读 SQL,库副本可复现 N1/N2/N3);\n* founder 的动作变化量 = 0;\n* 报 0 时必须同时报全集规模(「30 个里 0 条」才是结论)。\n\n## ⛔ 边界\n\n不动 merge 授权契约;B4 计时起点由 founder 定(她 9-6 未定,起跑前问一句)。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "34a37268-6410-4d63-93b5-e0e6b0ad82a5",
+    "identifier": "FLY-2309"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "85b03aa4-2dd6-456d-902c-47f3412e98f9",
+   "identifier": "FLY-2399",
+   "title": "[2309·B5] 自动合并放手前要改的三条规矩(提案,交 founder 拍)【P2 · 文档单 · 依赖 B4 结果】",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2399/2309b5-自动合并放手前要改的三条规矩提案交-founder-拍p2-文档单-依赖-b4-结果",
+   "updatedAt": "2026-09-06T23:29:18.658Z",
+   "priority": 0,
+   "description": "## 来源\n\n`product/doc/FLY-2309-auto-merge-rollout/build-issues.md` §B5(PR #1063;founder 2026-09-06 拍「2309 做,起 Epic」)。文档单,依赖 B4 两周表出来之后。\n\n## Scope(照 spec)\n\n* **M1** `founder-only-authority` R1 增开窄口:同时过三道闸的单可不经她过卡直接合并;\n* **M2** 走了自动道的单,事后要有她看得见、能一键 revert 的入口;\n* **M3** 「她在卡上加新要求」这个入口关掉后的事后补位(FLY-2261 T4,未定案)。\n  三条都是**提案**,交 founder 拍;⛔ 本单不改任何规则文件,不动 merge 授权契约。\n\n## 验收\n\n一份提案文档(product/doc 下)+ founder 可互动页;founder 逐条拍后才进工程。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "34a37268-6410-4d63-93b5-e0e6b0ad82a5",
+    "identifier": "FLY-2309"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "cf3fd0b6-20fb-4c04-8226-f76d58d7bd60",
+   "identifier": "FLY-2442",
+   "title": "[通路·Codex·①] Codex Lead 出站改走 Bridge(launcher 配置)+ 「mailbox → harness 适配器」接口合同一页(founder 2026-09-08 直令,Epic FLY-2441)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2442/通路codex-codex-lead-出站改走-bridgelauncher-配置-mailbox-harness",
+   "updatedAt": "2026-09-08T17:10:36.846Z",
+   "priority": 2,
+   "description": "## 要做什么\n\n1. Codex Lead 出站从 direct 直连 Discord 改为经 Bridge 出站(与 Claude Lead 一致)。这是 **launcher 配置选择**,不是 harness 限制:经 Bridge 的出站代码已存在。\n2. 写一页「mailbox → 适配器」接口合同:ingest / mailbox(CommDB) / batch 投递泵(3 槽·租约) / 最后一跳适配器 四段的接口,明确 Claude(MCP channel 注入)与 Codex(socket + journal)的差异为何存在、哪些砍不掉。以后任何 harness / 任何仓的 Lead 照它接。\n\n## 现状证据(FLY-2439 v3 §B3,已逐行核过)\n\n* launcher 选 direct:`run-codex-lead-mufasa-tui-fullaccess.sh:101-104`\n* direct 的代价:`DirectDiscordOutboundSender.ts:57`(bypasses Bridge outbound authorization)\n* 经 Bridge 的出站已存在:`CodexOutboundSender.ts:180`\n* 入站 harness 差异(保留):`agent-team-transport/src/types.ts:308`、`lead-delivery-adapter.ts:29-31`、`CodexLeadInboxSocket.ts:4-7`(Bridge cannot mutate journal.db)\n\n## 验收\n\n* Mufasa(现有 Codex Lead)一条回复落 Discord 的路径 = Bridge 出站(日志/审计可证),direct 路径不再被 launcher 打开。\n* 合同文档进 `engineering/doc/`,并在 Epic FLY-2441 引用;含「journal 为何砍不掉」的原注释引用。\n* 不动 journal;不动 Claude 侧;不动 Raya。\n\n## 范围外\n\nRaya 的迁移(④)、Claude fail-open(②)。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "f237ac5d-2888-4a16-965f-bc261980d3dd",
+   "identifier": "FLY-2443",
+   "title": "[通路·Claude·②] Claude Lead 的 fail-open 旁路改 fail-closed:缺 env 不再绕过 mailbox 直推会话(founder 2026-09-08 直令,Epic FLY-2441)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2443/通路claude-claude-lead-的-fail-open-旁路改-fail-closed缺-env-不再绕过-mailbox",
+   "updatedAt": "2026-09-08T17:32:50.687Z",
+   "priority": 2,
+   "description": "## 要做什么\n\nClaude Lead 的 Discord 入站有一条 fail-open 旁路:三个 env 缺任一,消息直接推进会话、**不进 mailbox、不经 Bridge、Discord 侧看不出来**。改为 fail-closed:缺 env 就拒收 + 告警(dead-letter / alert),让「所有信先进 mailbox」没有例外。\n\n## 现状证据(FLY-2439 v3 §A3,已逐行核过)\n\n* 旁路判定:`discord-chat-ingest.ts:114`\n* mailbox 落表:`mailbox-schema.ts:193`\n* 回执侧看不出旁路:`server.ts:1750-1753`、`chat-receipt-recorder.ts:87-116`\n\n## 验收\n\n* 三种 env 缺失场景各一条回归测试:消息不进会话、进 dead-letter/告警、Discord 回执可见「未投递」。\n* 正常场景行为不变(mailbox → batch → MCP channel 注入)。\n* 不改 Codex 侧。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "90afa33f-dbdf-4233-9966-295da2959385",
+   "identifier": "FLY-2444",
+   "title": "[产品·③] 「任意仓起一个 Lead」最小闭环:flywheel-lead launcher(Claude / Codex)+ 注册一行 + 一页文档;Raya 是第一个外仓用户(founder 2026-09-08 直令,Epic FLY-2441)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2444/产品-任意仓起一个-lead最小闭环flywheel-lead-launcherclaude-codex-注册一行-一页文档raya",
+   "updatedAt": "2026-09-09T04:23:12.030Z",
+   "priority": 2,
+   "description": "## 要做什么\n\n让「别的仓装了 Flywheel 就能当 Lead」成为一条真通的最小闭环:\n\n1. `flywheel-lead` launcher:选 Claude 或 Codex harness,起一个 Lead 进程并接入 mailbox → 最后一跳适配器(① 的合同)。\n2. 注册:projects.json(或等价配置)一行,声明 Lead id / 频道 / harness / 工作目录。\n3. 一页文档:在自己的仓里怎么装、怎么注册、怎么验证第一条消息走了 mailbox。\n\n## 边界\n\n* 对齐产品化线(发布流水线 FLY-2388、安装闭环 FLY-1835~1842),**不重复造发布流水线**;本单只定「装了包之后怎么当 Lead」。\n* 现状:Claude Lead / Codex Lead 的启动长在 flywheel 仓脚本 + launchd([claude-lead.sh](<http://claude-lead.sh>)、Codex Lead launcher),见 FLY-2439 v3 §A1 / §B2。\n\n## 顺序\n\n先出设计(设计 HTML 给 founder 拍),再实现;Raya 迁移(④)依赖本单最小版。\n\n## 验收\n\n* 用一个非 flywheel 仓(可先用 raya 仓)按文档起一个 Codex Lead,在其频道打字 → mailbox 有行 → 泵投递 → 回复经 Bridge 出站;全程不改 flywheel 仓。\n* 同一文档起一个 Claude Lead 也通。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "05ecdc2a-5a89-4be8-ba62-d7042df38f5a",
+   "identifier": "FLY-2445",
+   "title": "[Raya·④] Raya 迁为标准 Codex Lead:注册进 Flywheel、走 mailbox;raya 仓删掉 ingest / 名册 / launchd / Codex 驱动,只留 persona + CoS 业务(founder 2026-09-08 直令,Epic FLY-2441)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2445/raya-raya-迁为标准-codex-lead注册进-flywheel走-mailboxraya-仓删掉-ingest-名册",
+   "updatedAt": "2026-09-09T17:32:58.007Z",
+   "priority": 2,
+   "description": "## 要做什么\n\nRaya 用 ③ 的闭环注册为一个标准 Codex Lead;raya 仓里「怎么连 Discord / 怎么驱动 Codex」的整层删掉。\n\n**删**(以 FLY-2439 v3 §C 的删留清单为准,逐项核):自建 Discord ingest、自建 14 人 Lead 名册、自建 launchd、brain daemon、app-server spawn、thread 管理、2379 在旧壳上补的文字通路。\n**留**(founder 2026-09-08 07:46Z 原话):persona / prompt、统管其他 Lead 的逻辑、summaries(PRD FLY-1846 §8.8)、日报、会议。\n\n## 依赖\n\n①(出站经 Bridge)、③(最小闭环)。\n\n## 顺序\n\n先出设计:删/留清单逐文件 + 注册方案 + 迁移步骤 + 回滚;founder 拍后实现。\n\n## 验收\n\n* 在 #raya 打字 → 同一张 mailbox 表 → 泵 → Codex 适配器 → Raya → Bridge 出站,与给 Mufasa 打字同路(日志可证)。\n* raya 仓 grep 不到 Discord ingest / app-server 驱动 / 自建名册 / 自建 launchd。\n* Raya 的 CoS 业务(⑥)在迁移后仍可跑(至少 summaries 收件不断)。\n* 合入 ≠ 上线:按 founder-only-authority R1 的 Raya 部署回执(deploy-receipt)验收。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "7232d5f0-7600-4d35-bd01-0545db23dabd",
+   "identifier": "FLY-2446",
+   "title": "[语音·⑤] 通用 voice 进程:会议模式所有 Lead 可挂、RG(随身)模式先 Raya 用;独立 Codex realtime 进程,语音↔文字经 mailbox 互通(founder 2026-09-08 直令,Epic FLY-2441)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2446/语音-通用-voice-进程会议模式所有-lead-可挂rg随身模式先-raya-用独立-codex-realtime-进程语音文字经",
+   "updatedAt": "2026-09-10T01:02:04.800Z",
+   "priority": 3,
+   "description": "## 要做什么\n\n把语音从「Raya 仓私有的第二个 Codex 进程」变成 Flywheel 的通用能力:\n\n* 一个独立的 voice 进程(Codex realtime),任何 Lead(含 Claude Lead:HoneyLemon、Tadashi…)开会时挂上。\n* 语音转写成文字消息进 mailbox,走与文字完全相同的路(泵 → 适配器 → Lead);Lead 的回复经 Bridge 交给 voice 进程 TTS。文字↔语音因此天然互通。\n* 两种模式(founder 07:46Z 定):**会议模式 = 通用能力,所有 Lead 都要有;RG(随身/耳机)模式 = 先只给 Raya 用,但做成通用能力、可选择给谁开。**\n\n## PRD\n\n* FLY-1850 随身语音(耳机模式)PRD v1.0:`product/doc/FLY-1850-headphone-voice-relay/prd.md`;其 exploration §8「和 FLY-1851 会议模式的关系 —— 同一个底座,别各写一套」。\n* 会议模式:FLY-1851 / FLY-2032 / FLY-2033 的现有产物,迁到通用底座。\n\n## 现状证据(FLY-2439 v3 §D1)\n\n今天是两个 Codex 进程(两个 launchd job,argv 不同,语音多 realtime 参数),只共用家目录,语音里说过的话文字侧不知道;硬约束:realtime 是起进程那一刻由参数决定。\n\n## 依赖\n\n④ 定下 Raya 作为标准 Codex Lead 的接口后再实现;本单先出设计(给 founder 拍)。\n\n## 验收\n\n* 一个 Claude Lead 与一个 Codex Lead 各自挂上同一种 voice 进程完成一次会议;语音转写在 mailbox 可查;回复经 Bridge → TTS。\n* RG 模式对 Raya 可用,对其他 Lead 默认关、可配置开。\n\n## QA 判据(Lead 落文件副本 · QA 体开局必读;信箱里那行路径只是备份)\n\n对象:PR(flywheel-FLY-2446 分支),代码审 APPROVED 头。计划:`engineering/doc/FLY-2446-generic-voice-process/plan.md`(v4;§3 设计;§4 负向守卫 G 系列;§6 TDD 批次 A–G;§7 验收映射与诚实边界)。plan §0 已定 QA 硬门:真语音房、两种 harness(Claude Lead + Codex Lead)各一场、录音波形而非事件日志、真实 `selectMeetingTranscript` 非空。\n\n### 四条边界\n\n* ④(FLY-2445)未合入前批 G 无调用方:`voiceIntent` 走 ④ adapter 的验收要等 2445 落地;若未合入,CLI 运维形态驱动 provisioning 允许,但报告必须明写「验收证据非 ④ 形态」,且该项不能算 PASS。\n* 「前台只应一字」是提示级约束;自言句 `🤖` 标出;报计数不承诺 0。\n* 端到端节奏不给数字;会中断电只有 evidence 转写;镜像窗外的话会丢并提示重说——既知交换。\n* Huddle orchestrator bot 权限属运维:preflight 503 明报即正确行为,不新建 bot、不改生产 access。\n\n### 硬门(任一 FAIL 即 qa_fail)\n\n 1. **真语音房两场**:同一 `flywheel-voice` 二进制 sha;`voice_sessions` 两行(一个 Claude Lead、一个 Codex Lead),状态 `live → ended`;两份 evidence 目录;真实 `selectMeetingTranscript` 非空。\n 2. **上行:口述进 mailbox(§3.5)**:`mailbox` 行 `source_kind='voice'`、`delivery_id=chat:<lead>:<镜像id>`、`ACKED`;journal 同 `deliveryId`;`CodexDiscordGateway` 忽略 voice bot(`ignoredAuthorIds` 来自 registry);`enforce_nonce ≤ 25`、`active_inbox` 回读核对;窗外未知 ⇒ abandoned 且状态行提示。\n 3. **下行:回帖 → 朗读(§3.6)**:`voice_outbound` 行 `author_id = lead.botUserId`、`phase=confirmed` 附 `attempt_token`;房内录音波形该时段有声(峰值下 25 dB 判有声);crash 窗反例:append 前崩 / append 后崩 / receipt 超时 / 跨重启不重念 / 根卡不被念 / 整页被过滤后 cursor 仍前进。\n 4. **RG 模式开关**:Raya `voiceModes.rg=true` ⇒ 200;未配置 Lead ⇒ 403 `voice_mode_not_enabled`;临时配上 ⇒ 200;会议模式所有 Lead 默认开。\n 5. **鉴权与校验阶梯(§3.1–3.3)**:503 `voice_unavailable(master_token_unset)` → 401 → 400 → 404/400 lead → 403 mode → 503 `huddle_missing|bot_env_unset` → 400 `evidence_dir_rejected` → 400 `meeting_invalid` → preflight 503 → 事务插 `provisioning` 行;每级一格负向测试;ingest 调 `claim` 403;FLY-546 四条路由鉴权字节不变。\n 6. **lease / 状态机(§3.4)**:stop-before-claim ⇒ cancelled;stop-during-warming ⇒ ending → ended;renew 分区 ⇒ failed + 旧 daemon kill-switch;新会话起后旧 lease 不能写任何行;两个 provisioner CAS 只一个赢。\n 7. **daemon 生命周期与信号映射(§3.7)**:she-left / text-stop / voice-stop / failed(<reason>) 各自正确;voice-signal 复用 Raya `writeMeetingVoiceSignal` 语义(提取为 `voice-codex/src/meeting-voice-signal.ts` 并带原测试);`KeepAlive.SuccessfulExit:false` + restart-storm gate;`acquireProcessLifetimeFileLock`。\n 8. **§4 负向守卫 G 系列每条一格测试**;批次 A–G 自验命令逐条附输出;`packages/voice-codex` 测试排除 `**/tmux-viewer.macos.test.ts`;新测试在 CI 分片显式登记。\n 9. **边界脱敏与 allowed_mentions**:scrub 进所有出口;出站 `allowed_mentions` 空;evidence 不含 token/凭据;journal 三前缀折叠。\n10. **能干净合入当前 main + exact-head CI 14/14 绿**;若含 raya 侧改动,主 `--pr` 必须是 flywheel 锚 PR。\n11. **PR 正文 / ship report**:§7 四行逐行证据(录音 sha、SQL 行、evidence 目录清单)、诚实边界原样、④ 依赖状态如实、「未做」清单、follow-up 逐条、回滚(§5)。\n\n### 硬规\n\n真语音房用 529 测试频道/测试语音房 + 测试 bot(⛔ 不借真实会议频道、不用生产 Lead 的 bot、不让 Raya 生产进程进房);前台 Codex 家用隔离 `CODEX_HOME`;realtime 额度烧平台 credit,用量记进报告;零生产写入(comm.db/teamlead.db/registry/launchd);vitest 单进程 forks maxForks=1;`@discordjs/voice`/`onnxruntime-node` 构建冒烟先过;529 Discord N-to-N 适用(口述 → mailbox → Lead 回帖 → 朗读,双向账本证据)。\n\n### 报告\n\nQA ship report 骨架,零表格;限制单列;录音证据给 sha 与时长,不上传原始音频;`publish-report` 后自验 200。\n\n* 09:4xZ 裁定(question ec23cc03,选 b):FLY-2446 配对 Raya nested PR(等 #1134 + raya #61 合入后 rebase)。QA 追加必核:①Flywheel PR 正文引用 Raya PR 号,两边 exact-head CI 都绿;②Raya PR 只含 createUnavailablePorts 的 voiceIntent 注入替换 + 详细 reason → 字面量 voice_transport_not_available 映射 + Raya 侧测试,不碰 persona/CoS 业务(diff 范围核对);③报告限制段必须写「Raya 仓 merge ≠ deploy:生产 checkout/brain 重启/preflight 由班车完成,以 ~/.flywheel/raya/deploy-receipt.json 为准,本 QA 不宣称上线」。\n* 21:35Z 追加(review 24984c74 两条 HIGH 修复后,头 ef7786061):\n  12. **KeepAlive 谓词真加载**:在隔离测试 HOME 下用 launchd 真载入 `com.flywheel.voice.plist`(dict 形 `KeepAlive={SuccessfulExit:false}`),`supervisor_assert_keepalive` 与 `restart_voice_managed` 返回 0;⛔ 不许 stub 该谓词;`com.flywheel.voice-bridge.plist` 的 bool `true` 仍通过(回归)。\n  13. **wrapper 测试生产隔离负控制**:在本机 `FLYWHEEL_DIR`/`FLYWHEEL_STATE_DIR` 已 export 的 shell 里跑 `scripts/__tests__/flywheel-voice-wrapper.test.sh`,证明:未读生产 `~/.flywheel/.env`(假 dotenv 哨兵被拒)、未发真 meta-alert(只有本地回执)、每个子进程 `env -i` 白名单。跑前后 `~/.flywheel/` 无新写入(mtime 对照)。\n* 硬规追加:**⛔ 2454 未合入前不许** `scripts/test-deploy.sh` **起 529 slot**(会伤生产:2231/2287/2469);真语音房用 529 **测试频道 + 测试 bot** 即可,进程一律在隔离 HOME / `CODEX_HOME` 下起,零生产 comm.db/teamlead.db/launchd 写入。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "ec064688-f64f-4d1b-a320-c3b1b7a88816",
+   "identifier": "FLY-2447",
+   "title": "[Raya·CoS·⑥] 统管 Leads / summaries(§8.8)/ 日报 在新地基重排:按 PRD FLY-1846 的定义,作为 Raya 的业务模块挂在标准 Codex Lead 上(founder 2026-09-08 直令,Epic FLY-2441)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2447/rayacos-统管-leads-summaries88-日报-在新地基重排按-prd-fly-1846-的定义作为-raya",
+   "updatedAt": "2026-09-08T18:59:13.252Z",
+   "priority": 3,
+   "description": "## 要做什么\n\nRaya 特有的 CoS 业务在 ④ 之后重排到新地基:\n\n* **统管其他 Lead**:按 PRD FLY-1846(`product/doc/FLY-1846-global-chief-of-staff/prd.md`)的定义(founder 07:46Z:「仔细看之前 PRD 怎么定义」),跨 Lead 沟通用 Flywheel 现成机制(#leads-roundtable、summary-inflow),不再用 2379 在旧壳里做的 roundtable ask。\n* **summaries 收件**:PRD §8.8(各 Lead 写 summary PR 进 Raya 仓;merge = 已读)保留,作为 Raya 的业务模块。\n* **日报**:FLY-2380 的内容并入(2380 本身作废)。\n* **会议**:与 ⑤ 的通用 voice 进程对接。\n\n## 依赖\n\n④。FLY-2380 / FLY-2437 / FLY-2381 的内容并入本单(由 ⑦ 作废原单)。\n\n## 验收\n\n* Raya 作为标准 Codex Lead 跑着的同时,summaries 收件 / 日报 / 统管动作全部可用,且这些逻辑只存在于 raya 仓的业务层,不含任何连接/驱动代码。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "ae0e1a6c-c5c4-4b9b-ad65-597f89a3c4a5",
+   "identifier": "FLY-2448",
+   "title": "[收口·⑦] FLY-2379 / 2381 / 2437 / 2380 作废或挂 Epic;raya 仓旧壳清理清单执行;2439 收口(founder 2026-09-08 直令,Epic FLY-2441)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2448/收口-fly-2379-2381-2437-2380-作废或挂-epicraya-仓旧壳清理清单执行2439-收口founder-2026",
+   "updatedAt": "2026-09-08T18:59:13.252Z",
+   "priority": 3,
+   "description": "## 要做什么\n\n* FLY-2379(Raya 文字通路,旧壳)、FLY-2381、FLY-2437、FLY-2380(日报)四张作废或挂到 FLY-2441;各自 PR(raya#26 / raya#27 / 2380 分支)不合入,内容需要的部分在 ④⑥ 里重做。\n* 各 thread 说明作废原因 + 指向 Epic;各活体按 R2 由 founder 授权停止。\n* raya 仓旧壳清理:按 ④ 的删留清单执行删除,确认 grep 不到驱动代码。\n* FLY-2439(通路 UML,纯文档 PR #1123)收口:重铸 ship 卡(卡头已过期)并合入。\n\n## 依赖\n\n与 ④ 同步;⑥ 并入内容确认后再作废原单。\n\n## 验收\n\n* Linear 上四张单状态为 Canceled 或 parent=FLY-2441,thread 已说明;raya 仓无旧壳代码;#1123 合入。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "7ad57b6c-7cb0-4b78-8018-2169bac80006",
+   "identifier": "FLY-2453",
+   "title": "[2309·B4.5] 自动合并「窄口开关」:founder 一句「现在放开 / 现在停止」切换;开着时,同时过三道闸(机器判纯文档 + 人声明 pure_docs + 强度二证据)的 ship 卡由引擎代按、其余照旧等她;每次代按写审计 + 影子表照记(founder 2026-09-09 直令:这两天要放开)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2453/2309b45-自动合并窄口开关founder-一句现在放开-现在停止切换开着时同时过三道闸机器判纯文档-人声明-pure-docs",
+   "updatedAt": "2026-09-10T04:16:33.018Z",
+   "priority": 1,
+   "description": "## 为什么现在开(founder 2026-09-09 02:45Z 原话)\n\n> 「我觉得这两天可能要把\"自动合并\"马上放开。最早什么时候可以放开呢?因为这两天我可能没有很多时间来盯着,到时我会告诉你\"现在放开\",然后那段时间就保持放开;我告诉你\"现在停止\",你就把它停止。」\n\nFLY-2398(B4,影子跑)只记账、一次不真合;FLY-2399(B5)是两周数据之后改规矩的**文档**单。两者之间没有「真的放开」这一步——本单补上。\n\n## 要做\n\n1. **一个 founder-only 开关**(项目级 flag,例如 `auto_merge_narrow_gate`,默认 off)。开/关只由 founder 的话触发:她在 #flywheel-engineer 说「现在放开」/「现在停止」→ Lead 用 `flywheel-comm feature-flags set … --reason \"founder <消息 id>\"` 切换,并在 thread 回一句已切;flag 变更写审计(谁/何时/消息 id)。**不做自然语言解析器**;Lead 是唯一切换者,founder 原话是唯一依据。\n2. **开着时的行为**:ship 卡铸出后,若该单**同时过三道闸**——① 机器判类 = 纯文档(2398 的 machine class),② 实现体人声明 `pure_docs`,③ 强度二证据满足(2398 已算)——引擎以「founder 授权的窄口」身份写 approve_to_ship 响应并走既有 land;卡上明写「窄口自动批(开关由 founder 于 <时间> 打开)」。**任一闸不满足 → 完全照旧等她**。\n3. **影子表照记**:自动批的单也写四条记录线,`decision_source=auto_narrow_gate`,两周表能把「自动批的」和「她亲手批的」分开算错判率。\n4. **停止即生效**:flag 关掉后,已铸未批的卡不再自动批;正在 land 的不回滚。\n5. **红线**:不改 R1 其它任何东西;不给非文档类任何自动路径;founder 打回过的 head 不得再被自动批;Lead 不能自己打开开关。\n6. `founder-only-authority.md` R1 增一段「窄口自动批(2399 M1 的实现)」,写清三道闸 + 开关归属 + 审计,PR 内一并改。\n\n## 验收\n\n* 529 隔离台架:开关 off → 纯文档单卡照常等;on → 三闸全过的单自动 approve + land,影子表有 `auto_narrow_gate` 行;任一闸不过 → 等她;关掉后新卡不再自动;审计行含 founder 消息 id。\n* 变异:去掉任一闸的检查 → 测试红。\n* 生产零改动直到她说「现在放开」。\n* 报告按 ship report 骨架、零表格。\n\n## 依赖\n\n* FLY-2398 合入(卡在 founder 手里)。\n* 时间估:实现 + QA 约 1 天;2398 今晚合入的话最早 9-10(周三)上午 PT 可放开。\n\n## 追加范围(founder 2026-09-09 02:46Z)：机器意见可见\n\nfounder：「直接加在 QA report card 上可能不太可行；QA 把卡发出来，你看了之后再提供 feedback：留一段 comments + 打 emoji，且要有判断依据和具体得分。」\n\n* 与开关状态无关：每张 ship 卡铸出后，引擎在同 issue thread 紧跟一条「🤖 机器意见：可自动批 / 不可 | 闸①②③ 各 ✓/✗ | 置信 | 一句理由 | 最近 N 张与 founder 决定一致率」，并在卡上加 emoji reaction(🤖 可 / 🚫 不可)。\n* 一致率读 2398 影子表(机器判 vs founder 决定)，滚动窗口 200，目标 98%(founder 定的正式开启判据，写进 2399)。\n* 开关入口裁定：引擎核验 founder 原消息(作者 id / 频道 #flywheel-engineer / 未编辑 / 文本精确为「现在放开」或「现在停止」)，Lead 命令带消息 id；不做自然语言解析。开启时对已铸未批的卡重判三闸。\n\n## 开关形态裁定(founder 2026-09-09 02:55Z)：三档 feature flag，不是布尔\n\n* 项目级 flag，存 DB(flywheel-comm feature-flags set，不改代码不重启)。\n* `off`：什么都没有，和今天一样。\n* `dry_run`（**默认、常开**）：每张卡后给机器意见 + 三闸得分 + emoji + 一致率，但一律等 founder。\n* `auto`：三闸全过的卡由引擎代按，其余仍等 founder。\n* 「现在放开」→ auto；「现在停止」→ dry_run（不是 off，意见照给）。\n\n## QA 判据(Lead 落文件副本 · QA 体开局必读;信箱里那行路径只是备份)\n\n对象:PR(flywheel-FLY-2453 分支,以实现体开出的 PR 号为准),代码审 APPROVED 头。计划:`engineering/doc/FLY-2453-auto-merge-narrow-gate/plan.md`(v4;C0–C4;§12 验证证据;§13 R1)。founder 已定参数(⛔ 不许再当选项问、不许改):三态 flag `off | dry_run | auto`,默认 dry_run 常驻;切换只认 founder 本人在指定频道的精确原话「现在放开」→ auto、「现在停止」→ dry_run;auto 下同时过三闸(机器判纯文档 + 人声明 pure_docs + 强度二证据)的 ship 卡由引擎代按,其余照旧等她;每次代按写审计 + 影子表照记;每张 QA 卡带机器意见 + emoji + 得分;放开门槛 = 滚动 200 张人工卡 98% 一致(仅展示)。\n\n### 三条边界\n\n* 本单不真按任何生产 ship 卡、不 merge、不 ship;auto 路径的「代按」只在 529 房或隔离 StateStore/CommDB 副本上证明。\n* 生产 flag 值不动:QA 结束时生产必须仍是 dry_run(或无行=dry_run)。\n* founder 身份、频道 id 由项目名册解析,不硬编码;QA 用 529 测试 bot 与测试频道模拟 founder 身份时,必须证明非 founder 身份的同句话不生效。\n\n### 硬门(任一 FAIL 即 qa_fail)\n\n 1. **C0 schema**:四表存在、append-only 表的 UPDATE/DELETE 触发器拒绝、非法 mode/身份/字节上限/空引用拒绝;opinion 表 `sample_start_at / sample_end_at / last_eligible_human_at` 从 C0 就有;schema 重跑幂等;四表登记 retention 分类。\n 2. **C1 founder 控制入口**:默认无行读为 dry_run;env/YAML/`*` scope 都不能把 mode 推到 auto;只有 canonical founder 在配置频道的精确原句写入控制事件;非 founder 同句、别的频道、编辑过、近似句 → 全部不生效并留审计;「现在放开」10 分钟时效(容忍 5 秒未来偏差),「现在停止」不因延迟失效;非法 raw 直接拒绝,损坏值降级 `{mode:'dry_run', degraded:true}`;生产 API 不能写 off。\n 3. **C2 三闸判定核**:auto 下只有三闸同过的卡被代按;三份变异(分别删 gate1/gate2/gate3 检查)各自测试必须红;dry_run 下同一张卡零代按只记意见;off 下零意见零投递;代按写 `auto_narrow_decision_audit` + 影子表(FLY-2398)照记;B4/B2 边界测试仍绿。\n 4. **代按提交点与恢复(§6)**:自动批准的 source 提交后才加 banner;提交后崩溃 → 重启不重复不丢;founder 打回与自动批并发(§7)→ founder 赢,审计两条都在。\n 5. **C3 每卡机器意见**:新卡 materialize 成功后立即出现 opinion snapshot + delivery intent(dry_run 与 auto 都跑,off 不跑);**无投递行的卡不得被代按**(bootstrap 必须在生产真触发,R1/R2 MED);卡上显示意见 + emoji + 得分依据;529 真机:在 529 房走到一张真实 QA 卡看到意见与 emoji;**意见投递用持卡 Lead 的身份**(不是 leads[0]/CoS,R2 HIGH);**投递失败有退避上限**(R1 HIGH);gate rider 扫描不饿死队尾(R2 MED)。\n 6. **§9 统计口径**:滚动 200 张人工卡;precision + Wilson 下界;b<5「样本不足」;98% 仅展示;自动自计分排除;N=0/1/200、b=0/4/5、缺覆盖、同卡重复判决各有数值测试。\n 7. **回滚(§10)**:模拟「现在停止」→ 新自动源停止;有未投影 auto source 时旧 projector 拒绝回退;C0 schema/证据保留。\n 8. **回归**:§12 列的套件全绿;新测试在 CI 分片显式登记;禁跑根 `pnpm test`;vitest 单进程 forks maxForks=1。\n 9. **能干净合入当前 main + exact-head CI 14/14 绿**(判决前重新 fetch;不因已知红短路)。\n10. **PR 正文 / ship report**:§12 验收逐项证据、CI run、「未做」清单、founder 可见行为一句话(§1)、代码审 follow-up 逐条。\n\n### 硬规\n\n零生产写入(生产 teamlead.db/comm.db、生产 flag 值、生产 Discord 频道都不碰);529 房或隔离副本;⛔ 不借真实 #flywheel-core/#flywheel-engineer,用测试频道 + 测试 bot(斜杠命令带 test 后缀);529 Discord N-to-N **适用**(founder 原句 → 控制事件 → 卡意见/emoji 出现在测试频道,双向账本证据);vitest 单进程。\n\n### 报告\n\nQA ship report 骨架,零表格;限制单列;`publish-report` 后自验 200;写清哪些是 hermetic 证明、哪些是 529 真机证明、哪些本单没做。\n\n### attempt 2 承接(attempt 1 FAIL claim 970 @ f6e55b05e,09:33Z)\n\n* 三道硬门 FAIL:9(exact-head CI 红两处:inventory 缺 plugin.ts postDiscordMessageToChannel 语义来源;retro-bind.sql json_extract(c.evidence)+NOT EXISTS 在 pre-deploy fixture 不解析);2(auto-narrow-control-route 6 种拒绝零 denied 审计行);7(plan §10 updater 回滚 precheck 未做未披露)。advisory MED:fly-2453 变异脚本未进 CI。\n* attempt 2 必核:①inventory 8 文件全分类;②fly2396-retro-report 两用例在 pre/post 两套 fixture 都绿、fixture 未被改;③真路由 6 种拒绝各 1 行 denied 审计 + 成功 1 行;[④update-flywheel.sh](<http://xn--update-flywheel-183j.sh>) precheck:auto source 未投影时拒绝降级(有 shell 测试,含反向:已投影则放行);⑤mutations 脚本在 CI job 里、529 脚本 manual-only 分类;⑥PR 正文 CI 真值、两条 LOW 列为 follow-up;⑦exact-head CI 14/14。其余判据(三闸变异、C1 矩阵、529 真机卡)引用 attempt 1 证据即可,不必重跑 529。\n* 09:4xZ QA 补充(question 7d8a9738):attempt 2 追加必核 ⑧ mutations driver 已改整闸变异(const gateN = true)且在 writer 级否定上三闸全杀;⑨ 复用 ~/.flywheel/artifacts/fly2453-qa-harness/(README + shadow 副本步骤)照跑,不必重建;529 真机卡证据(cos-test 频道三条消息)引用 attempt 1,不重发。\n\n### attempt 2 补充(审 77b8102d APPROVED @ bdd900a13 后,Lead 18:5xZ)\n\n* 审查两条 MEDIUM advisory 直接碰自动代按行为,QA 必验而非留 follow-up:① `opinion-attempt-counter-never-reset`——成功刷新后重试预算必须回满(造 N 次成功刷新后再造一次失败,仍能重试);不回满 = FAIL。② `opinion-refresh-clobbers-uncertain-post`——重复 POST 恢复不得把「uncertain」结论覆盖成已决;有回归。其余 6 条 advisory 留 follow-up。\n* 已接受的限制:qa-c1-control.test.ts:211 改按 plan §4/§11 断言 409 message_order_conflict(旧 STOP 不能覆盖新 OPEN);全包门 RPC 伪影逐包收据在 PR 正文;exact-head CI 14/14 为权威。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "34a37268-6410-4d63-93b5-e0e6b0ad82a5",
+    "identifier": "FLY-2309"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "9f14d626-7910-4b08-aaba-4b8f305dbcde",
+   "identifier": "FLY-2459",
+   "title": "[2441·⑥] 能派 runner 的部门 Lead 跑 Codex 后端:补 Codex Lead 动作面的 start/manage runner 接线(重启 FLY-251 范围)+ 管理台放开跨厂商 Lead 切换;Honey Lemon(flywheel-product-lead)首个切 astra·high(founder 2026-09-09 04:36Z 直令)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2459/2441-能派-runner-的部门-lead-跑-codex-后端补-codex-lead-动作面的-startmanage-runner",
+   "updatedAt": "2026-09-09T04:39:30.661Z",
+   "priority": 2,
+   "description": "## 疼在哪\n\nfounder 2026-09-09 04:31Z:「我想要把 Honey Lemon 也换成 Astra high」。查实后**今天做不到**,不是换模型名的问题:\n\n* Honey Lemon = `flywheel/flywheel-product-lead`,`backend=claude-code`(opus[1m]·high),`canSpawnRunners=true`(要派 PRD runner)。Astra 是 Codex 侧模型 → 需要把这个 Lead 整个搬到 `codex-app-server` 后端。\n* 管理台 fleet snapshot 对该 Lead 明写 `backendWritable:false, backendDisabledReason:\"跨厂商 Lead 切换在 v1 中只读\"`。\n* Codex Lead 的动作面**故意不含起/管 runner**:`packages/teamlead/src/lead-backends/codex/action-surface.ts:53`「`start_runner`/`read_runner_tmux`/etc. are FLY-251 and deliberately NOT here」;FLY-251(dept Codex Lead 起/管 Runner — 端到端接线)状态 **Canceled**。\n* 管理台的 Codex 准入 `isCodexEligible`(`fleet-capabilities.ts:116`)要求 `canSpawnRunners === false` 且(companion 或 codexProfile)。今天生产上只有两个 Codex 后端 Lead:Mufasa(companion)、codex-infra-bot(不派 runner)。\n\nfounder 2026-09-09 04:36Z:「标准的 Codex 还是不能完全符合我们的需求。那确实要把这个工单安排进去」。\n\n## 要做什么\n\n1. **Codex Lead 动作面补齐派/管 runner**:`start_runner`(= `POST /api/runs/start`,带 projectName/leadId/taskCategory 合同,FLY-127 部门闸不变)、runner 列表/状态读、对 runner 的 send/respond。重启 FLY-251 的范围,按当前 codex-lead-runtime 的 action-surface 机制接。\n2. **准入放开**:`isCodexEligible` 允许 `canSpawnRunners=true` 的部门 Lead 上 Codex 后端(带模型/effort 指定:`LeadConfig.model` / `effort` 已被 codex-lead-runtime 读,`codex-lead-runtime.ts:1088/1095`);管理台跨厂商切换从只读放开,或给出明确的手动切换路径(projects.json + launchd 单元 + 受控重启,重启走 R4 班车/founder 票,不得自行 kickstart)。\n3. **首个实例**:Honey Lemon 切 `codex-app-server` + `astra` + `high`,在真实 #flywheel-core 收一条 @ 并对 FLY-2457 那类 PRD 单真正派出一个 runner 作为验收。\n\n## 依赖\n\n* **blockedBy FLY-2445**(Raya 迁为标准 Codex Lead):它把「标准 Codex Lead」的注册/mailbox/launchd 接线做出来,本单在其上加派 runner 能力。2445 实现体已在 #1126 之上 rebase,本周内落。\n\n## 验收(行为级)\n\n* Honey Lemon 进程为 Codex 后端、模型 astra、effort high(pane 状态栏 + Bridge `/api/sessions` 或 fleet snapshot `dispatch.current` 可读)。\n* 她在 #flywheel-core 被 @ 后能对一张带 `Flywheel-Product` label 的单调 `/api/runs/start` 成功(run event `issue_delivery` 出现),FLY-127 部门闸对越界单照样 403。\n* 管理台 snapshot 对该 Lead 显示新 backend/model,且重启(班车)后不回退。\n* 一条负例:`canSpawnRunners=false` 之外的 Codex Lead 只有在显式配置下才获得 start_runner,默认不变。\n\n## 边界\n\n* 不改 implement 节点模板(已于 04:3xZ 由 founder「换」切 astra·medium,见 tpl_code rev13 / tpl_simple_code rev5)。\n* 不动 R1/R2/R4 任何授权边界;Lead 重启仍只走 updater 班车或 founder 紧急票。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": [
+    {
+     "id": "05ecdc2a-5a89-4be8-ba62-d7042df38f5a",
+     "identifier": "FLY-2445",
+     "state_type": "completed"
+    }
+   ]
+  },
+  {
+   "id": "00b9a9eb-09c0-4701-a2f1-c842b3c7fd18",
+   "identifier": "FLY-2460",
+   "title": "[2355·B3] Codex 自蒸馏从不触发:runner 家里模型拿不到原生 memory 工具、memory_stage1 后台任务从不跑 → 288 个 (flywheel,implement) 旧家只有 2 个有真记忆、214 个是「暂无记忆」模板文(FLY-2359 QA 补证 2026-09-09 发现)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2460/2355b3-codex-自蒸馏从不触发runner-家里模型拿不到原生-memory-工具memory-stage1-后台任务从不跑",
+   "updatedAt": "2026-09-10T01:00:03.172Z",
+   "priority": 2,
+   "description": "## 疼在哪\n\nFLY-2359(记忆回流 + 种回去)的 QA 在 founder 要求下于 529 房补跑「真实 Codex 自蒸馏」一路(2026-09-09 05:40–06:10Z,head 11b7dde39,报告 [https://fw-reports-a53de2.vercel.app/r/435c0de4aa0fd5373dc9f8c8149782c9/](<https://fw-reports-a53de2.vercel.app/r/435c0de4aa0fd5373dc9f8c8149782c9/>) ),结论:**回流/种回的运输是对的,但被运输的东西基本是空的**。\n\n机器可查的证据(QA 原话摘录):\n\n1. **模型拿不到原生 memory 工具**:对房间里真实 provision 的 Codex 家跑 `codex debug prompt-input`,导出的模型可见 prompt 37,241 字节、5 条消息,`ad_hoc_note / memory_search / memory_read / memory_list` 出现 0 次;加 `--enable memories` 再跑仍 0。模型在任务中根本没有写蒸馏记忆的途径。\n2. **后台 ingestion 从不跑**:两次干净完成的 session 后,家里 `memories_1.sqlite` 的 jobs 表只有一行 `memory_consolidate_global`(done,input_watermark=0);没有任何 `memory_stage1` 行,`stage1_outputs`=0。Phase 2 对空输入跑了一次,只产出脚手架:MEMORY.md 134B「No consolidated rollout memories yet」、raw_memories.md 37B「No raw memories yet」。\n3. **生产全量**:878 个旧家里只有 1 个(0a23cb41,2026-07-24)跑过 memory_stage1;949 个 rollout JSONL 全文扫描原生 memory 工具调用 = 0(唯一命中的 write_memory 是 Serena MCP 的工具)。\n4. **对 2359 的含义**:288 个 (flywheel,implement) 旧家里 2 个有真 rollout 记忆、214 个只有 Phase-2 bootstrap 模板文、72 个没有可导入内容 → 2359 上线当天忠实运输的 225 源归档约 99% 是「这里还没有东西」。\n\n## 要做什么\n\n* 查清 Codex CLI(0.153.x)在我们 runner 家配置下 memories 功能为何 inert:是 feature flag / config.toml 项 / 模型或计划不支持 / prompt 注入被我们的 AGENTS/instructions 覆盖?给出 file:line 级根因。\n* 给出让 stage1 真正跑起来的最小配置或代码改动,并在 529 房用真实 Codex 任务证明:任务中产生非模板的蒸馏记忆 → retire → 进 (agent,project) 归档 → 下一个家 seed 到并能回忆(即 2359 补证里 (a) 那条从 FAIL 变 PASS)。\n* 若结构上做不到(Codex 侧不开放),写明替代路线(例如由 runner 收尾时按我们的模板显式蒸馏)交 founder 定。\n\n## 边界\n\n* 不改 2359 的运输逻辑(它已验证正确);本单只管「有没有东西可运」。\n* 生产旧家零写入;所有实验在 529 房。\n\n## 出处\n\nFLY-2359 QA 体 e25ef68f 补证报告(question c9382df5),Lead 转记。\n\n## QA 判据(Lead 落文件副本 · QA 体开局必读;信箱里那行路径只是备份)\n\n目标:Codex 自蒸馏从不触发 → 改为「准入时蒸馏通道」:下一次执行在 keyed 家起 daemon 后、runner 第一轮之前,用我们自己算的候选(state_5.sqlite 里 ≥1h 闲置、未蒸馏的线程)决定是否起触发线程;stage1(+phase2 若被 claim)结束再开 runner 第一轮;预算 ≤5 分钟不阻塞;无候选零成本。设计 v4 R4 APPROVED(状态合同:stage1_done 绑定非空 stage1_outputs 同水位;readable_ready 看 selected_for_phase2;hints 未 claim → partial)。开关 = registry 管理的 SQLite flag `codex_memory_distill`(默认 ON,`*` scope + 项目覆盖,adapter 构造时读取;改 store 只对新 adapter 生效)。\n\n### 必过\n\n1. **E4 真机**:同一 keyed 家(agent×项目)先跑一次真实执行留下线程,闲置 ≥1h(或受控时钟/只读 fixture 证明等价),再起下一次真实执行 → 首轮 prompt-input(codex debug)里读到上一次的非模板记忆,并有模型 receipt;模板文「暂无记忆」不算。\n2. **无候选零成本**:无 ≥1h 闲置未蒸馏线程时,不起触发线程、不多等(耗时差 < 1s,计时证据)。\n3. **预算不阻塞**:人为让 stage1 超过 5 分钟 → runner 第一轮仍按时开始,蒸馏结果不进本轮,状态记 partial/timeout,不报错不 park。\n4. **状态合同三条**:①no_output 的 stage1 job 被 Codex 标 done 时我们的 stage1_done 仍为 false;②phase2 done 但 T1 输出未被选入合并 → readable_ready=false;③hints 未被 claim → partial 不报 success。每条红→绿测试。\n5. **两条反向**:不跨 agent、不跨项目。\n6. **legacy 不回填**:288 个旧家一个字节不改;legacy→seed 半程明写「无自然人口,不在本单证明」。\n7. **flag off 路径**:用治理 CLI `feature-flags set --name codex_memory_distill --to off --project flywheel --reason …` 关掉再验「零蒸馏、零等待」;不许改 env 或直写库;dependencies enabled=false 仍是回滚路。\n8. 能干净合入当前 main;exact-head CI 绿。9. 报告按 ship report 骨架、零表格、新链接验 200;限制单列。\n\n不算通过:只跑单测不跑 E4 真机;手工往 memories 表塞行冒充蒸馏;把 legacy 回填当 E4 证据;蒸馏阻塞 runner 首轮超过 5 分钟。\n\n铁律:不拷生产 teamlead.db/comm.db;不动生产 codex-homes(隔离 CODEX_HOME 与 fixture 家);vitest 单进程 --pool=forks --poolOptions.forks.maxForks=1。\n\n* 09:0xZ R1 后裁定:准入时每次最多领 2 条 rollout(hint 与原生 max_rollouts_per_startup 都封顶 2),默认 ON、300s 绝对上限不变、不加积压清理任务;QA 加一条「积压 >8 条时只领 2、runner 首轮按时开始」的成本用例。\n\n## attempt 2 承接(attempt 1 E4 FAIL,12:0xZ)\n\n* 根因:准入通道给触发线程覆盖 baseInstructions=「Reply with exactly: ok」;Codex phase2(memories/phase2.rs agent::get_config)clone 父 config 只覆盖 cwd/approval/sandbox/model,base_instructions 原样继承 → Memory Writing Agent 零工具调用 → jobs memory_consolidate_global status=error failed_invalid_artifacts → stage1_outputs.selected_for_phase2=0 → 无 MEMORY.md → T2 首轮 NO PRIOR MEMORY。phase1 成立(36 秒内 stage1_outputs 0→1,raw_memory 3150B,真实教训)。\n* 返工:不覆盖 baseInstructions(或改为不毒化子代理的内容);attempt 2 必核:①phase2 job status=done、selected_for_phase2=1、MEMORY.md 存在且含 T1 教训;②T2 首轮 prompt-input 含该记忆(非模板),模型回执引用;③其余判据 2–8 引用 attempt 1 证据;④三条偏离与限制段照旧。\n* 12:5xZ QA 复盘补充(A/B 已钉死):去掉触发线程的 baseInstructions 覆盖后同家同候选立刻 phase2 done、readable_ready、MEMORY.md 4162B,下一次真实执行首轮完整复述教训并自述来自 prior-run memory——返工只需这一行,设计不推翻。附加必核:①runbook §3 更正「codex debug prompt-input 不能判定记忆可读性(三次 33815 字符零命中)」,改用模型自述/MEMORY.md 存在作判据;②回执 homeKind=legacy 是 QA harness 假象,不是缺陷,attempt 2 不必再查;③三条限制(全 DAG 未走、school 凭据副本随 teardown 删、判据 7 进程内治理函数)照抄。\n* 12:5xZ 裁定(QA 回执 2bd2cc35 提问):attempt 2 的 E4 必须在 canonical Codex 号(切号后的正式号)上跑,不再用 slot 内凭据副本;既是二次确认,也是「不动生产 codex-homes / 不放凭据副本」铁律的常态执行。\n\n## QA attempt 3 指引(Lead 22:32Z · 新 run 2c97be57 · QA 体开局必读)\n\n* 上一 QA 体(29127313)已在头 `29d9abf1245e229663fec5c9e6919911d36cbe16` 挣到 **PASS**,只是提交凭证被 FLY-2469 泄漏永久吊销、判决没能落库。它的全部证据、拆 slot 记录与交接说明在 `~/.flywheel/qa-evidence/FLY-2460/`,**先读** `HANDOFF-for-replacement-qa.md`。\n* **可直接引用不必重跑**:判据 1(E4 真机,T1/T2 收据与 rollout JSONL 在 `evidence/` 与 `keyed-home-snapshot/`)、2/3/5、backlog>8、4(变异体)、6(零生产写入)、7(governed off/on A/B)、8(CI run 34390586511 14/14)。\n* **必须在本判决时刻自己复核(时效项)**:worktree HEAD == `gh pr view 1139 --json headRefOid` 且干净;mergeable/mergeStateStatus 仍 MERGEABLE/CLEAN;精确头 CI 仍绿;报告 [https://fw-reports-a53de2.vercel.app/r/e946ef4bc29d4149485f8ad2ac730fdf/](<https://fw-reports-a53de2.vercel.app/r/e946ef4bc29d4149485f8ad2ac730fdf/>) 仍 200(**不要重新发布**,Lead 已投递)。\n* **三条限制原样进判决**:未走完整 generalized DAG;判据 7 用进程内 governed handler 而非 feature-flags CLI(529 Bridge 不挂 `/api/fleet/flag/stage`);`evidence-run record` 曾被 422 `recorder_credential_revoked` 拒绝 → **没有 strength-two 行,不许声称**。E7 仍未证。\n* ⛔ **不许起 529 slot**(2454 未合入前会伤生产);不需要——真机证据已在盘上。\n* 结论:时效项全过 → `qa-result` status=pass(摘要可基于 `~/.flywheel/state/qa-result-failed/29127313-*.json` 的 4480 字摘要重写,语义不变);任一时效项不过 → FAIL 并写明。",
+   "state": {
+    "type": "completed",
+    "name": "Done"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "3c2a299e-e3c8-4743-8e09-51f0fc36dfe5",
+    "identifier": "FLY-2355"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "6aa6221c-4882-4fb2-ae10-b88ce975f971",
+   "identifier": "FLY-2471",
+   "title": "[语音·follow-up] voice runtime tick 一次 provision() 抛错/挂起即永久禁用整个 tick + poll 失败每 tick 刷 Discord 状态无去重(FLY-2446 review 两条 MEDIUM)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2471/语音follow-up-voice-runtime-tick-一次-provision-抛错挂起即永久禁用整个-tick-poll-失败每",
+   "updatedAt": "2026-09-09T22:42:08.899Z",
+   "priority": 0,
+   "description": "FLY-2446 attempt-2 ROOT review 5789754f(头 7497af984)APPROVED 时留下的两条 MEDIUM,Lead 判为 follow-up、不阻塞 ship:\n\n1. **voice-runtime-tick-unguarded-provision**:runtime tick 里 provision() 抛错或挂起会让整个 voice runtime tick 永久停摆(无 try/catch、无超时)。修法方向:每次 provision 包 AbortSignal 超时 + catch 记录后继续下一 tick。\n2. **poll-failure-status-storm**:reportPollFailure 每个失败 tick 都往 Discord 发一条状态行,无去重/退避。修法方向:同一失败原因合并 + 指数退避。\n\n其余同批 advisory(evidence-root realpath 顺序、preflight/provisioner Discord 调用无 AbortSignal、archived lane 误标 transient、voice 依赖改动不触发 daemon 重启、poller 零消息页提前 return、thread 名 UTF-16 长度)见 PR #1140 正文 follow-up 段。\n\n来源:FLY-2446 · PR [https://github.com/xrliAnnie/flywheel/pull/1140](<https://github.com/xrliAnnie/flywheel/pull/1140>) · Lead 2026-09-09T22:38Z",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "a80e32bc-9aae-4775-b3a8-e45c87b3c301",
+    "identifier": "FLY-2441"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "95d0e8c8-b108-4c9b-8297-7cda8e4eb785",
+   "identifier": "FLY-2479",
+   "title": "[2453 follow-up] updater 的 auto-source 回滚预检只扫 FLYWHEEL_HOME/comm,不走 FLYWHEEL_COMM_ROOT/FLYWHEEL_COMM_DIR 解析器:comm 根重定位(529 slot)时可绕过待处理自动合并的回滚守卫、旧投影上的 source 被搁浅/死信(review MEDIUM,merge 引入)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2479/2453-follow-up-updater-的-auto-source-回滚预检只扫-flywheel-homecomm不走",
+   "updatedAt": "2026-09-10T02:37:03.201Z",
+   "priority": 0,
+   "description": "## 来源\n\nFLY-2453 attempt 3 精确头 31ece31e5 的 review（request efe604e6，APPROVED）新报 MEDIUM `rollback-precheck-ignores-comm-root`（并入 main 5cbd540f1 后出现，reviewer 核过不是错并）：updater 的自动合并 source 回滚预检只扫描 `FLYWHEEL_HOME/comm`，不使用 `FLYWHEEL_COMM_ROOT` → `FLYWHEEL_COMM_DIR` 的共享解析器；comm 根被重定位时（目前只有 529 slot，FLY-2454 引入）可绕过「有待处理自动合并时禁止回滚」的守卫，把 source 留在旧投影上被搁浅/死信。影子表的默认路径有同样漂移。\n\n## 要做\n\n预检与影子表默认路径改用共享 comm 根解析器；加「重定位根」的 shell 用例（slot 形态）。\n\n## 边界\n\n生产 comm 根不重定位，本单不阻塞 2453 ship；不改 2453 的三闸语义。\n\n## 其余 7 条 advisory\n\n见 PR #1138 正文（LOW：同 revision 模式不一致 / 无效 opening reference 仍不可见降级——两者都拒 auto，需篡改或部分恢复才触发）。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "7ad57b6c-7cb0-4b78-8018-2169bac80006",
+    "identifier": "FLY-2453"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "975b3db5-cf3d-4622-b082-1b1772e85349",
+   "identifier": "FLY-2482",
+   "title": "[进度页·E1·前置] 取数层 scope.v2:不再丢 backlog 子单 + items[].parent + roots[].counts(洞 E/A/B 数据侧;F2/F9/F10 的前置;顺手改 prd.md F3 残留)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2482/进度页e1前置-取数层-scopev2不再丢-backlog-子单-itemsparent-rootscounts洞-eab",
+   "updatedAt": "2026-09-10T05:59:25.574Z",
+   "priority": 0,
+   "description": "## 为什么\n\nPRD §6.5 实核:`scope.v1` 的 `excluded_item_state_type: \"backlog\"` 把 5 个 Epic 的 28 张子单丢到只剩 17 张,缺的 11 张全是未开始的 ⇒ F2(每个 Epic 挂它的子单)、F9(未开始排下面)、F10(依赖显示)从数据层做不到。§6.1:item 没有 `parent` 字段,父子关系只能硬编码。\n\n## 要做\n\n1. 范围规则升 `scope.v2`:Epic 范围内的子单不再按状态排除;「显不显示」交渲染层。⛔ `daily_title_contains: 日常` 保留不动。\n2. 新增 `items[].parent`(Cell<string>,出处 Linear `issue.parent`;缺失显式 `no_parent`,不许静默)。\n3. 新增 `roots[].counts`(Cell<{live,waiting,free,idle,done,canceled,total}>,derived 由子单 state 数出来;无子单全 0)。\n4. `rollup` 不新增(PRD §6.2 已裁定 Epic 徽标照抄 Linear)。\n5. 顺手把 `product/doc/FLY-2457-founder-progress-page/prd.md` 需求表 F3 那行「⬜ 见 §6.2(待裁定)」改成指向 §6.2 的已裁定结论(同一 PR,不单开)。\n\n## 验收\n\n* 用当前 Linear 数据生成:items 数 == 5 个 In Progress Epic 在 Linear 的子单总数(今天 28),每个 item 的 `parent` 非空且等于 Linear parent;固定页 HTML 仍 ≤512KB;\n* `roots[].counts` 每个 Epic 与 Linear 子单 state 逐个数对得上;\n* 既有 `ready.v1` / `signals.v1` / `subtraction.v1` 规则输出不变(回归);\n* 单测:scope.v2 对 backlog 子单的保留、parent 缺失显式 `no_parent`、counts 派生;\n* 报告按 ship report 骨架,零表格。\n\n## 边界\n\n不改渲染;不做排序;不碰 attention。\n\n## QA 判据（Lead 派前写入，QA 开局即读；plan §5/§7 为准，本段是硬门）\n\n1. **子单总数对账**（不写死数字）：`flywheel-comm epic-page show --project flywheel --format json | jq '.result.document.items | length'` 与 Linear 递归后代名单（与引擎同构的 children 翻页 + `blocks` 型 inverseRelations 翻页，子单有 children 再递归）相等；逐张 `parent.value` == Linear `parent.identifier`（jq 一行全量比对，不抽样）。Linear key 在 Bridge 进程环境，QA 若需直查 Linear 用 `ask` 找 Lead 取结果，不自行找 key。\n2. **counts 对账**：同一份后代名单按 plan §2.3 分类，每个根六个数与 `root_counts[i].counts` 逐个相等，`total` = 后代数。\n3. **负向守卫 G1–G18 逐条有测且红→绿**：parent null 不抛；parent id 与遍历父不符 ⇒ `EpicSnapshotTruncatedError` 本轮不出页；parent 指向未知 identifier / 成环 ⇒ `EpicPageSchemaError`；未知 `state.type` ⇒ 该根 `root_counts` missing、其它根正常；`state.value`/`blocked_by.value` null 拒绝；`root_counts` 长度/顺序不符、非整数/负数/`total`≠和、任一数被篡改 ⇒ 拒绝；任何格标 `scope.v1` 拒绝；`scope_definition` 出现 `excluded_item_state_type` 或 `item_state_filter !== \"none\"` 拒绝；backlog item 出现在 `ready_items` 拒绝；`item.parent` missing 但 gaps 无条目拒绝；backlog 子单 session 格不可读 residual 不抛；可排期子单被 backlog 子单挡 ⇒ `blocked_by.in_scope === true`、ready.v1 不列、subtraction 边 `in_scope:false`、`dependency_review.value` 与 v1 逐字节相同；backlog 子单带活信号 ⇒ signals 照存、`stuck_items` 不含；`roots.value` null/重复/与 item 碰撞 拒绝；parent 非字符串/缺失原因非 `no_parent`/出处 id 不符 拒绝；HTML > 512KB 既有 `epic_html_too_large` 不动。\n4. **回归**：C5 同快照 v1/v2 对拍 + C4 residual 冻结快照对拍全绿（输出贴报告）；生产逐字段：`ready_items` 不含 backlog；`stuck_items[].item` 非 backlog；`dependency_review` 里 canceled_blocker / cycle members / all_blocked.blocked 都是可排期 item，blocker 可为 backlog 但必 `in_scope:false`；上线后第一封 `[patrol_tick]` 「范围内 N 张未完成」== 最近 show 文档中 `isSchedulable ∧ 非终态` 数（周期错开则如实写明）。\n5. **HTML 体积**：`epic-page render --out` 打印 bytes ≤ 524,288，数字写进报告；`epic-page status` 的 `last_version` 前进。\n6. **单测与 CI**：plan §6 全部命令输出；CI 14/14；PR 头 = QA 验的头。\n7. **prd.md F3 残留**已在同 PR 修正（对照 diff）。\n8. 报告：ship report 骨架、零表格、零人名，实测/未测逐项；本单不渲染 parent/root_counts（E3 的事），不得因此判 FAIL。",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "cd11a588-5adc-4ff2-9408-eb3ca735a5a5",
+    "identifier": "FLY-2481"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "7cdf839c-eb22-4b4b-989a-f7ca5cfdbd9a",
+   "identifier": "FLY-2483",
+   "title": "[进度页·E2] 「现在要你看」attention[] 三路合并 + 固定四段格式 + 跳 Discord thread(discord.guild_id 持久化;链接必须真点开一次留证)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2483/进度页e2-现在要你看attention-三路合并-固定四段格式-跳-discord-threaddiscordguild-id",
+   "updatedAt": "2026-09-10T05:44:21.143Z",
+   "priority": 0,
+   "description": "## 为什么\n\nPRD F7/F11 + §6.3/§6.4:首屏最上面要「现在该马上看的」+ 一键跳 thread;今天没有任何代码拼过带 guild 的 thread 链接,也没人验证过能打开(⛔ 没验证过的能用 = 没能用)。「等你的事」不能只从 Epic 范围取(FLY-2244 这类散活会漏)。\n\n## 要做\n\n1. 新数组 `attention[]`,与 Epic 范围解耦,三路合并去重:① 未决 founder 门(`workflow_gate_holder` / `founder_review` 等 open);② `stuck_items` 里 `question_pending`;③ Linear `founder-review` 标签的未终态单。空 ⇒ 显式「现在没有等你的事」。\n2. `attention[].kind` / `.action`:derived `attention.v1` 固定词表(PRD §7 表:在等你按一下 / 体在问你一句话 / ship 卡在你手里 / 你点过名要回来找你 ↔ 对应动作词);未知类型显示原始 kind + 「不确定,去看一眼」。\n3. 固定四段格式(①这是什么 ②需要你做什么 ③等了多久「自 HH:MM 起,已等 N 小时」 ④去哪儿做);缺任一段显式写「不知道」,⛔ 不省略整段。\n4. `discord.guild_id`(Cell,持久化一份,源 = config/env `DISCORD_GUILD_ID`);`attention[].thread_url`(Cell,出处 `chat_threads` + guild_id);任一半缺 ⇒ 灰掉 + 写明原因;⛔ 不拿假链接或 Linear 链接冒充。\n5. **QA 必须真点开一次**:用 Claude-in-Chrome 打开生成的 thread_url,截图证明落在正确 thread(留证进报告)。\n6. 工程默认(PRD §15 Q1,founder 可改):「体说它卡住了」不进 attention。\n\n## 验收\n\n* 三路各造一个 fixture,页面「现在要你看」出现且只出现这三条,格式四段齐全;\n* thread_url 真点开落在对应 thread 的截图;缺 guild 时灰掉 + 原因;\n* 全文零人名(F13);报告按 ship report 骨架,零表格。\n\n## 边界\n\n不改 Epic/子单渲染;不依赖 E1。\n\n## QA 判据（Lead 派前写入，QA 开局即读；plan §10 为准，本段是硬门）\n\n1. **exactly-3 fixture**：隔离 fixture 固定时钟 2026-09-09T12:00:00Z，造 A（当前 founder 门，since 10:00Z）、B（Epic 外 question_pending，09:00Z）、C（Epic 外非终态 founder-review 标签，起点 unknown）。`attention[]` 恰好 3 行：A 等 2 小时、B 等 3 小时、C 「不知道」。第四个 declared_blocked-only（无门/无未答/无标签）的单不进入。closed gate / answered question / 终态标签单都不能增加行。\n2. **declared_blocked 双向**：declared_blocked + 非终态 founder-review 标签仍进入（原因只能是标签这一路）；去掉标签且无另两路即退出。\n3. **负向清单逐条留证**：三源重叠合并去重、两个独立问题各保留一行、>14 天、终态源 session、orphan 无单号、另一项目排除、未知 kind（显示原 kind + 「不确定,去看一眼」）、缺 guild / 缺 thread / 冲突 / 错误 URL（灰掉 + 原因可见、无 href）、无效时间、分页遗漏、任一路失败不得假空（unavailable 显式）、无 Epic 时 attention 有值而 residual unavailable。\n4. **固定四段**：每种缺字段各验一次，四段 DOM 都在，缺的段写「不知道」，不省略整段。\n5. **真点开（硬要求，不可替代）**：QA 用真实生成并发布的页面（记录代码 SHA、doc generation/version、issue id、期望 guild/channel/thread id、thread_url 原值，href 不得手工替换），Claude-in-Chrome 已登录会话点击跳转，记录点击前后时间与落地 URL，截图含地址栏或等价可核 URL 证据 + 可见正确 thread 标题/单号。登录页 / Discord 首页 / 父频道 / 错 thread / 权限拒绝 = 未通过。curl 200、正则、API thread 存在、普通 HTML 截图都不算。浏览器不可用 ⇒ 报告写「真实 thread 点击未验证」且不得 PASS。⛔ 不许借真实生产频道造负例：缺 guild 场景在隔离环境重生成。\n6. **零人名 / 零表格**：产物与报告 grep 无人名；报告按 ship report 骨架（一句话结论 → 改了什么 → 怎么验证 → 未通过项 → 风险回退 → 证据链接与版本），每项标实测/未测。\n7. **回归**：现有 Epic/子单卡 DOM 与 scoped 调度事实不变；无 scope 时调度结果 unavailable；不引入 parent/scope.v2/排序改动（那是 E1/E3）。\n8. CI 全绿；PR 头 = QA 验的头（头动了重验）。",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "cd11a588-5adc-4ff2-9408-eb3ca735a5a5",
+    "identifier": "FLY-2481"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "7dbf9bfa-7060-409a-916f-dc56ab067ace",
+   "identifier": "FLY-2484",
+   "title": "[进度页·E3] 渲染层:Epic 徽标照抄 Linear + 子单计数;分组稳定排序;依赖徽标「等 FLY-XXXX」/「整块在等」/跨 Epic 标出;默认全收起;全做完的不出现(F1/F3/F4/F6/F8/F9/F10;依赖 E1)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2484/进度页e3-渲染层epic-徽标照抄-linear-子单计数分组稳定排序依赖徽标等-fly-xxxx整块在等跨-epic",
+   "updatedAt": "2026-09-10T04:49:17.440Z",
+   "priority": 0,
+   "description": "## 为什么\n\nPRD F1–F10 的页面形状;§6.2 已裁定 Epic 徽标 = Linear `state`(唯一真相),子单计数留在徽标旁边但不是状态;§8 分组稳定排序,⛔ 组内不按优先级;§9 依赖只用徽标不画图。\n\n## 要做\n\n1. 范围 = Linear `state.type=started` 且有子单的父单(F1);全做完的 Epic **不出现**(F4)。\n2. Epic 卡:徽标照抄 Linear state;旁边 `roots[].counts`(如「0 在跑 · 1 未开始」);默认收起(F6),「现在要你看」除外(E2 负责)。\n3. 排序 R2:Epic 按状态分组(在做 → 还没开始 → 其余),组内按 identifier 稳定排序;R3:子单 在跑 → 未开始;终态子单默认不列,折叠区一行计数(工程默认 Q2)。\n4. 依赖 R4:被挡住的子单徽标写「等 FLY-XXXX」而不是「未开始」;所有未完成子单都被挡住时 Epic 头部「整块在等 XXX」;跨 Epic 依赖(`blocked_by.in_scope=false`)标出;⛔ 不画依赖图。\n5. 子单「在跑到哪一步」沿用 `run.current_node_label` + 第几次 + 会话状态(F5,已有)。\n6. 每格保留出处/observed_at(§12);零人名(F13)。\n\n## 验收\n\n* 用 E1 之后的数据:Epic 集合 == Linear 查询结果;任取一个 Epic,子单集合 == Linear children;\n* 同样数据两次渲染顺序逐字相同;\n* 造一个被挡住的子单 fixture:徽标显示「等 FLY-XXXX」;造一个全被挡住的 Epic:头部「整块在等」;\n* 首屏零展开;无 open 子单的 Epic 不在页面上;\n* HTML ≤512KB;报告按 ship report 骨架,零表格。\n\n## 依赖\n\nE1(取数层 scope.v2 + parent + counts)。",
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "cd11a588-5adc-4ff2-9408-eb3ca735a5a5",
+    "identifier": "FLY-2481"
+   },
+   "blocked_by": [
+    {
+     "id": "975b3db5-cf3d-4622-b082-1b1772e85349",
+     "identifier": "FLY-2482",
+     "state_type": "started"
+    }
+   ]
+  },
+  {
+   "id": "8e2d4b67-65a0-4841-9fbc-945064541168",
+   "identifier": "FLY-2485",
+   "title": "[进度页·E4] Lead 判断格:lead_note 新表 + flywheel-comm lead-note CLI(与依赖账本同构);角色+时间出处、零人名;页面并列显示不覆盖机器句;超 N 天淡化(F12/F13)",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2485/进度页e4-lead-判断格lead-note-新表-flywheel-comm-lead-note",
+   "updatedAt": "2026-09-10T05:44:43.986Z",
+   "priority": 0,
+   "description": "## 为什么\n\nPRD F12「有一个地方需要去 update」+「丙 · 合流」:任意 Lead 可以给任一 Epic / 子单写一句「现在到哪了」的判断,页面贴在机器那句旁边,标明角色 + 时间;不写只显示机器句,⛔ 不伪造。F13:零人名。\n\n## 要做\n\n1. 新表(与依赖账本同构):`items[].lead_note` / `roots[].lead_note`(Cell<string> + `role` + `written_at`);出处 `{kind:\"lead_note\", role:<角色>, written_at:<时间>}`,⛔ 存角色不存人名。\n2. CLI:`flywheel-comm lead-note set --project <p> --issue <id> --role <role> --text '<一句>'` / `show` / `clear`,与 `commands/dependency.ts` 同构;⛔ 页面无入站。\n3. 渲染:机器那句仍在,Lead 句并列、视觉可分(PRD §4/§10);显示「<角色> · N 小时前写」;`written_at` 与页面 `generated_at` 同显;超过 N 天视觉淡化,N 为配置(工程默认 3 天;PRD §15 Q4 由 founder 可改)。\n4. 不写 ⇒ 只显示机器句;⛔ 不用「暂无」占位假装有人看过。\n\n## 验收\n\n* CLI 写一句 → 页面对应 Epic/子单出现并列句 + 角色 + 时间;clear 后消失;\n* 全文 grep 无人名(S3);换项目同一份代码跑得出同形;\n* 淡化阈值可配且默认 3 天,单测覆盖 边界(N-1 天不淡化 / N+1 天淡化);\n* 报告按 ship report 骨架,零表格。\n\n## 边界\n\n不覆盖任何状态;与 E1 无依赖(渲染位置若依赖 E3 的卡片结构,先以最小并列句落地)。\n\n## QA 判据（Lead 派前写入，QA 开局即读；plan §三 T1–T5 为准，本段是硬门）\n\n1. **存储合同**（T1）：临时 SQLite：迁移幂等；set→close→reopen→get 字段一致；同角色再 set 覆盖、行数仍 1；第二角色 set 后行数 2 且并存；两个 Lead 同 role 共用一格后写覆盖（按角色合同）；clear 一角色不影响另一角色；不同 project 同 UUID 不串；clear 两次 true/false；含引号输入只写目标行；写失败不触发刷新。淡化阈值配置：缺省 3、2.5 生效、0/-1/字符串/null/溢出拒绝不静默回落。\n2. **受保护写入口**（T2）：HTTP 无 token / master 缺失 / scoped 下拒绝且 lookup+SQL 0 次；项目未知/跨绑定/不存在零写。写范围 = issueMatchesBinding OR 当前 bound-root snapshot 子树：Epic root、暂停 root、backlog 子单可写；snapshot 截断/无日常根/超界 ⇒ scope_membership_unavailable 零写；Linear 网络失败 ⇒ linear_unavailable 零写；直接绑定成功时 snapshot 调用 0 次。`--role` 只接受该项目已配置部门（中文/含空格精确匹配，不 slug 化；persona/未知/他项目角色拒绝；含控制符 ⇒ role_configuration_invalid）；不解析 agentId。text 1/280 code points 成功、0/281 失败，换行/control/注入/duplicate 参数拒绝。show 不生成不刷新；重复 clear 不刷新。stdout 单一 JSON。\n3. **生成线路**（T3）：根+子两记录 ⇒ 输出两个精确 `lead_note` 元素，role/written_at 保真，收据含两 note 且无正文/人名键；零记录旧 fixture 无 note 字段（不得写 null/空串）；错路径/invalid timestamp/多余身份 key 拒绝；DB 读故障 ⇒ 整次生成失败、不出新 publication、旧 URL/版本不伪造；manual generate 与 event/scan 两线路同输出同阈值；生成中再 set/clear 后续一轮反映。四份对比（无 note/双角色/单角色 clear/全清）state/run/ready/stuck/dependency_review 集合完全相同。\n4. **渲染与时间**（T4）：固定 now、N=3：N−1/N/N+1 天 ⇒ 正常/正常/淡化；N=5 同覆盖；now 早于 written_at 无负小时。机器句保留，Lead 句紧邻且视觉可分，根/子都显示角色 + 相对小时 + 绝对时间，generated_at 同显，「角色声明的作者未核验」页面与 Markdown 可读。无记录无 Lead DOM；clear 指定角色只消失该角色；最后角色 clear 后只剩机器句。一分钟脚本只更新淡化不改 written_at/generated_at。text 含 `<img>`/`</script>`/`</textarea>`/引号/`&` ⇒ 字面显示不执行，Markdown 无结构注入。390px 与桌面截图：长句换行不撑破；512 KiB 拒绝且不替换固定页。\n5. **联通证据**（T5）：隔离 Bridge+SQLite+测试 publisher：真实 CLI set 根与子 → 刷新队列 → HTML → clear 一角色 → 保留其他 → clear 最后 → 仅机器句；记录退出码、脱敏 JSON、收据 source path、版本/固定 URL token 一致。第二个项目/不同部门重跑同形无串。产物与实现字节零人名（S3，fixture 用配置值，不做人名 denylist）；新表 PRAGMA 列、请求/响应 keys 无作者身份键。旧版程序对含新表的库跑 freshness/生成 smoke 不炸。\n6. **报告**：ship report 骨架、零表格，实测/未测逐项；只有真实 QA 证据才写 PASS。CI 全绿；PR 头 = QA 验的头。",
+   "state": {
+    "type": "started",
+    "name": "In Progress"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "cd11a588-5adc-4ff2-9408-eb3ca735a5a5",
+    "identifier": "FLY-2481"
+   },
+   "blocked_by": []
+  },
+  {
+   "id": "afe2871c-3a4a-4e1c-bdc2-0e5b2f407b70",
+   "identifier": "FLY-2487",
+   "title": "isCodexReownExcluded 对 room-info.runnerMode==real 的真 Codex 529 房豁免(+单测)—— 让 reown 演练不再需要隐藏 room-info 夹具",
+   "url": "https://linear.app/geoforge3d/issue/FLY-2487/iscodexreownexcluded-对-room-inforunnermodereal-的真-codex-529-房豁免单测-让",
+   "updatedAt": "2026-09-10T05:01:06.843Z",
+   "priority": 0,
+   "description": null,
+   "state": {
+    "type": "backlog",
+    "name": "Backlog"
+   },
+   "labels": [
+    "Flywheel"
+   ],
+   "parent": {
+    "id": "2518445b-bc58-424b-acb4-2fd05c296ab8",
+    "identifier": "FLY-2456"
+   },
+   "blocked_by": [
+    {
+     "id": "2518445b-bc58-424b-acb4-2fd05c296ab8",
+     "identifier": "FLY-2456",
+     "state_type": "started"
+    }
+   ]
+  }
+ ]
+}

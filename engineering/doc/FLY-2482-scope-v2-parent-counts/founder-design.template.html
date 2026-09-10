@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2482 · 进度页取数层:不再丢「还没开始」的子单 + 每张子单知道自己挂谁 + 每个 Epic 有子单计数 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  .badge.new { background:#e8f0fe; color:#1d4ed8; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+  .mock { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#fbfbfd; border:1px solid #e5e5ea; border-radius:8px; padding:12px; white-space:pre-wrap; }
+  .kv { display:grid; grid-template-columns: 1fr 2fr; gap:6px 12px; font-size:14px; }
+  .kv b { color:#1a365d; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2482 · 进度页取数层:不再丢「还没开始」的子单 · 每张子单知道自己挂谁 · 每个 Epic 有子单计数</h1>
+<div class="meta">
+  设计交付 · 2026-09-09 · 进度页 Epic(FLY-2481)的第一张前置单(E1)· 依据 PRD FLY-2457 v2.1 §6.1 / §6.2 / §6.5 / §11<br/>
+  证据基线:分支 <code>flywheel-FLY-2482</code> 自 <code>main 42869f935</code> · 真页实测 2026-09-10T04:54Z(21 张子单,261KB)· Codex 设计评审 3 轮,终判 APPROVED<br/>
+  文档:<code>engineering/doc/FLY-2482-scope-v2-parent-counts/</code>{exploration, research, plan, review-log}.md · 本页只讲结论与取舍,细节在 plan
+</div>
+
+<section class="card green" data-title="一句话结论">
+  <h2>一句话结论</h2>
+  <p class="summary-line">今天那份自己会刷新的 <span class="term" title="epic-page:Bridge 每次事件或到点自动生成、发布到固定链接的那份「项目执行页」">机器页</span>,在<b>取数那一层</b>就把所有「还没开始」的子单扔掉了;本单让它把这些子单捡回来,并给每张子单加一格「我挂在哪个 Epic 下」、给每个 Epic 加一格「下面 6 种状态各几张」—— 只动数据,不动页面长相;你已经在看的三样东西(现在可以开始的、依赖要减法的、卡住说了一声的)和 Lead 每小时巡检信里的数字<b>一个字都不变</b>。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:34%">PRD 里你定的</th><th>本设计怎么落</th></tr>
+    <tr><td>§6.5 · 洞 E:范围规则不再按状态排除子单,「显不显示」交给页面</td><td>取数规则升 <code>scope.v2</code>:删掉那一行 backlog 过滤;每张子单进文档</td></tr>
+    <tr><td>§6.1 · 洞 A:每张子单要有 <code>parent</code>,出处是 Linear,缺了要明说</td><td>子单查询多要一个字段 <code>parent</code>;缺 ⇒ 显式 <code>no_parent</code> 并进「缺什么」清单</td></tr>
+    <tr><td>§11 G · 每个 Epic 一格 <code>counts</code>:在跑 / 等依赖 / 可起跑 / 未开始 / 已完成 / 已取消 / 共计</td><td>派生规则 <code>counts.v1</code>,按你在样子稿上看过的分法数,只看 Linear 状态与依赖线</td></tr>
+    <tr><td>§6.2 · Epic 徽标照抄 Linear,不另算第二个状态</td><td><span class="badge no">不做</span> <code>rollup</code> 不新增;计数在徽标旁,不是状态</td></tr>
+    <tr><td>「日常」筐规则保留不动</td><td><span class="badge no">不碰</span></td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「一句话结论」的意见</label><textarea data-key="s01" data-title="一句话结论"></textarea></div>
+</section>
+
+<section class="card red" data-title="今天丢在哪儿">
+  <h2>今天丢在哪儿,丢了多少</h2>
+  <p>取数代码在把 Epic 子树全部走完之后,有一行 <code>filter(state.type !== "backlog")</code>,把 <span class="term" title="backlog:Linear 里「还没排、还没开始」的那一档状态;In Progress 之前的 Todo 不算 backlog">Backlog</span> 状态的子单直接丢掉,然后才算「谁在范围内」。所以:</p>
+  <ul>
+    <li>PRD 2026-09-09 实核:5 个 In Progress 的 Epic 在 Linear 共 28 张子单,机器页里只有 17 张 —— 少的 11 张<b>全是还没开始的</b>(FLY-2360 / 2370 / 2389–2393 / 2399 / 2447 / 2448 / 2459)。</li>
+    <li>这些子单之间的依赖线也一并看不见:比如 FLY-2459 在等已经做完的 FLY-2445,页面上无从知道「它其实可以起跑了」。</li>
+    <li>文档里每张子单没有 <code>parent</code> 字段;PRD 做样子稿时只能把父子关系<b>硬编码进脚本</b>。</li>
+  </ul>
+  <div class="callout amber">这不是页面的问题,是数据层的问题:F2(每个 Epic 挂它的子单)、F9(未开始排下面)、F10(依赖显示)在这一层就做不到。所以先修这一层,页面长相留给后面的单。</div>
+  <div class="cbox"><label>给「今天丢在哪儿」的意见</label><textarea data-key="s02" data-title="今天丢在哪儿"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程:一次刷新会发生什么</h2>
+  <div class="diagram"><!--DIAGRAM_1--></div>
+  <div class="cap">图 1 · 蓝色是本单改动的步骤;红色是「宁可这一轮不出页」的两道闸;绿色是既有的发布闸门</div>
+  <ol>
+    <li>Bridge 去 Linear 找所有 In Progress、且有子单的父单(今天 6 个)。</li>
+    <li>逐个父单把子单翻页取完;<b>新增</b>:每张子单顺便要一个 <code>parent</code> 字段,并跟「我是从哪个父单底下取到它的」对账 —— 对不上说明取数中途有人把单挪走了,这一轮不出页,等下一次刷新(不发布一份自相矛盾的页)。</li>
+    <li><b>新增</b>:快照包含全部后代,不再按状态丢;每张子单一格 <code>parent</code>,每个父单一格 <code>counts</code>。</li>
+    <li>你已经裁过的规则(现在可以开始的 <code>ready.v1</code>、依赖减法 <code>subtraction.v1</code>、卡住信号 <code>signals.v1</code>)和 Lead 巡检信,<b>只看「非 backlog」的子单</b> —— 这正是它们一直以来的定义域(你 2026-09-03 裁的「范围 − backlog」),本单只是把它从取数层的副作用变成规则里的一行显式判断。</li>
+    <li>文档自检:把 counts / ready / stuck / review 全部重算一遍比对;不符就不出页。</li>
+    <li>回执 + 固定页发布;HTML 超过 512KB 会被拒(既有闸门)。</li>
+  </ol>
+  <div class="cbox"><label>给「核心流程」的意见</label><textarea data-key="s03" data-title="核心流程"></textarea></div>
+</section>
+
+<section class="card purple" data-title="数据模型">
+  <h2>数据模型:文档里多了什么</h2>
+  <div class="diagram"><!--DIAGRAM_2--></div>
+  <div class="cap">图 2 · 每个字段都是一格 <code>Cell</code>:带值、带出处、带看到它的时间;缺了写明为什么缺</div>
+  <div class="kv">
+    <b>items[].parent</b><span>新增。值 = 父单号(如 FLY-2441);出处 = Linear 的 <code>issue.parent</code>;缺 ⇒ <code>no_parent</code>,并进「缺什么、缺在哪」。</span>
+    <b>header.root_counts[]</b><span>新增。每个父单一格,顺序与父单列表一致;出处 = 派生规则 <code>counts.v1</code>,列出它读了哪些格。PRD 写的 <code>roots[].counts</code> 就是它。</span>
+    <b>header.scope_definition</b><span>规则号 <code>scope.v1 → scope.v2</code>;值里明写 <code>item_state_filter: "none"</code>(用「明说不排除」而不是「字段消失」)。</span>
+    <b>不变</b><span>文档版本号、表结构、固定链接、渲染;<code>rollup</code> 不新增。</span>
+  </div>
+  <div class="cbox"><label>给「数据模型」的意见</label><textarea data-key="s04" data-title="数据模型"></textarea></div>
+</section>
+
+<section class="card amber" data-title="六个数怎么数">
+  <h2>每个 Epic 的六个数怎么数(counts.v1)</h2>
+  <p>沿用你在样子稿上看过的那一行「0 在跑 · 1 等依赖 · 0 可起跑 · 1 未开始 · 共 2」的分法,<b>只看 Linear 的状态和依赖线</b>,不看机器账本 —— 这符合你定的「排期决定的唯一真相是 Linear」。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:18%">数</th><th>怎么判</th></tr>
+    <tr><td><b>在跑 live</b></td><td>Linear 状态是 In Progress(started)</td></tr>
+    <tr><td><b>等依赖 waiting</b></td><td>还没开始(Backlog / Todo / Triage),且至少有一条依赖线指向<b>没做完</b>的单</td></tr>
+    <tr><td><b>可起跑 free</b></td><td>还没开始,有依赖线,但它们全部已 <b>Done</b> —— 依赖已解开</td></tr>
+    <tr><td><b>未开始 idle</b></td><td>还没开始,没有任何依赖线</td></tr>
+    <tr><td><b>已完成 done</b> / <b>已取消 canceled</b></td><td>Linear 终态</td></tr>
+    <tr><td><b>共计 total</b></td><td>六者之和 = 这个 Epic 下的子单数;没有子单 ⇒ 全 0</td></tr>
+  </table>
+  </div>
+  <p class="note">与样子稿唯一的差别:样子稿把「已取消」的前置也当「解开」;这里对齐你裁过的 <code>ready.v1</code>(只有 Done 才算解开),避免同一页出现两套「解开」的定义。Linear 将来若加了第七种状态,该 Epic 这一格整格写「不认识这个状态」,不出半对的数。</p>
+  <div class="cbox"><label>给「六个数怎么数」的意见</label><textarea data-key="s05" data-title="六个数怎么数"></textarea></div>
+</section>
+
+<section class="card green" data-title="什么变、什么不变">
+  <h2>什么变、什么不变(回归边界)</h2>
+  <div class="diagram"><!--DIAGRAM_3--></div>
+  <div class="cap">图 3 · 绿色:值逐字节不变;橙色:如实变宽;蓝色:新增;灰色:不碰</div>
+  <ul>
+    <li><b>不变</b>:「现在可以开始的」「依赖要减法的地方」「卡住说了一声的」三块的值,以及 Lead 巡检信里「范围内 N 张未完成 · 可开始 · 等前置 · 在跑」四个数。做法是一个共享判断 <code>isSchedulable</code>(= 不是 backlog),四处都引用它,一处真相。</li>
+    <li><b>如实变宽</b>:「谁在等我」(<code>blocks</code>)会多出还没开始的下游;「缺什么」清单会多出这些子单缺的验收节。这是把真相补全,不是回归。</li>
+    <li><b>新增</b>:<code>parent</code> 与 <code>counts</code>,给后面的 F2 / F9 / F10 页面用;本单不渲染它们,今天只在原始 JSON 和回执里看得到。</li>
+  </ul>
+  <div class="callout green">Codex 评审第 1 轮抓到两处会让「不变」失守的漏口(依赖减法里一位「是否在范围内」的抄写、卡住信号对 backlog 单的聚合),第 2 轮抓到验收断言与规则自相矛盾;都已改进 plan,并各有一条测试固定。</div>
+  <div class="cbox"><label>给「什么变、什么不变」的意见</label><textarea data-key="s06" data-title="什么变、什么不变"></textarea></div>
+</section>
+
+<section class="card" data-title="关键取舍">
+  <h2>关键取舍与被否掉的方案</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:30%">问题</th><th>选了</th><th>否掉了,为什么</th></tr>
+    <tr><td>backlog 子单怎么进来</td><td>取数层删过滤,规则升 <code>scope.v2</code></td><td>「保留过滤、另附一份被排除名单」—— 仍是取数层静默丢弃,依赖线还是拿不到</td></tr>
+    <tr><td><code>parent</code> 从哪来</td><td>向 Linear 多要一个字段,并与遍历上下文对账</td><td>「从我是在哪个父单底下取到它推出来」—— 推出来的不是读来的,PRD 明写出处是 Linear</td></tr>
+    <tr><td>对账不一致怎么办</td><td>这一轮不出页,等下一次刷新</td><td>「按 Linear 说的算」—— 可能把子单算进错的 Epic;「按遍历说的算」—— 出处不诚实</td></tr>
+    <tr><td>六个数看什么</td><td>只看 Linear 状态 + 依赖线</td><td>「在跑」看机器账本的会话 —— 账本读失败会把计数弄缺;且与「Linear 是排期唯一真相」相悖</td></tr>
+    <tr><td>三块既有规则怎么保证不变</td><td>规则内部显式钉域「非 backlog」</td><td>「让它们自然变宽」—— Lead 巡检信数字会跳,验收也明写了回归</td></tr>
+    <tr><td>计数放哪</td><td>每个父单一格,与父单列表同序</td><td>「塞进父单列表那一格里」—— 一格里放不下第二个出处;「整体一格」—— 一个 Epic 算不出会拖垮所有 Epic</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「关键取舍」的意见</label><textarea data-key="s07" data-title="关键取舍"></textarea></div>
+</section>
+
+<section class="card amber" data-title="容量与风险">
+  <h2>容量与风险</h2>
+  <ul>
+    <li><b>固定页体积</b>:今天真页 261KB = 固定 36KB + 21 张卡 × 约 10.7KB。把 backlog 子单加回来后估 32–40 张 ⇒ <b>363–445KB</b>,仍在 512KB 之内;天花板约 <b>45 张卡</b>。超过时固定页会停在上一版并留下一个明确的失败记号(<code>epic_html_too_large</code>),不会悄悄发一份坏页。</li>
+    <li><b>瘦身不在本单</b>(不改渲染);Lead 已把「卡片瘦身」记为 E3 候选后续。</li>
+    <li><b>设计期数不出 FLY-2481 名下有几张 backlog 子单</b>(本机没有 Linear 读权限,Bridge 的 issue 列表不带 parent);验收当天由 QA 记实数。</li>
+    <li><b>零迁移</b>:数据库只存回执和摘要,不存整份文档;新字段上线后第一次刷新自然产生新版本、同一个链接重新发布。回滚 = revert 一个 PR。</li>
+  </ul>
+  <div class="cbox"><label>给「容量与风险」的意见</label><textarea data-key="s08" data-title="容量与风险"></textarea></div>
+</section>
+
+<section class="card purple" data-title="验收怎么看">
+  <h2>验收怎么看(QA 当天,不写死「28」)</h2>
+  <ol>
+    <li>新页的子单数 = 用与引擎同一套递归查询在 Linear 数出来的全部后代数;每张子单的 <code>parent</code> 与 Linear 一一相等(不抽样,全量)。</li>
+    <li>每个 Epic 的六个数与 Linear 子单状态手工分类逐个相等,共计 = 后代数。</li>
+    <li>三块既有规则的值里没有任何 backlog 子单(依赖减法里的「前置」可以是 backlog 单,但必须标「不在范围内」);Lead 巡检信的四个数与最近一份文档对得上。</li>
+    <li>固定页 HTML 字节数 ≤ 512KB,把实数写进报告。</li>
+    <li>单测全绿的命令输出;固定页版本号前进。</li>
+  </ol>
+  <p class="note">PRD 写的「5 个 Epic / 28 张」是 2026-09-09 04:40Z 的数;之后 FLY-2481 进了 In Progress,今天已是 6 个父单。验收按当天实数对账。</p>
+  <div class="cbox"><label>给「验收怎么看」的意见</label><textarea data-key="s09" data-title="验收怎么看"></textarea></div>
+</section>
+
+<section class="card gray" data-title="诚实边界">
+  <h2>诚实边界:本单做什么、不做什么</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:50%">做</th><th>不做</th></tr>
+    <tr><td>取数层捡回 backlog 子单(<code>scope.v2</code>)</td><td>不改页面长相、不排序、不碰「现在要你看」(attention)</td></tr>
+    <tr><td>每张子单一格 <code>parent</code>,缺失显式 <code>no_parent</code></td><td>不渲染 <code>parent</code> / <code>counts</code>(F2 / F9 的事)</td></tr>
+    <tr><td>每个 Epic 一格 <code>counts</code>(六个数 + 共计)</td><td>不新增 <code>rollup</code>(Epic 徽标照抄 Linear,§6.2 已裁)</td></tr>
+    <tr><td>三块既有规则 + Lead 巡检数字逐字节不变,各有测试固定</td><td>不给卡片瘦身、不动 512KB 上限(E3 候选)</td></tr>
+    <tr><td>顺手把 PRD 需求表 F3 那行「待裁定」改成 §6.2 的已裁结论</td><td>不动「日常」筐规则、不动依赖账本、不动数据库、不动命令行工具</td></tr>
+  </table>
+  </div>
+  <p class="note">一条刻意保持的旧行为:一张被挪回 backlog 的单,若 14 天内还有停机/提问信号,Lead 巡检信仍然不会看到它 —— 与今天一致;要把它们抬进巡检是另一张单。</p>
+  <div class="cbox"><label>给「诚实边界」的意见</label><textarea data-key="s10" data-title="诚实边界"></textarea></div>
+</section>
+
+<section class="card" data-title="评审记录">
+  <h2>Codex 设计评审记录(3 轮,终判 APPROVED)</h2>
+  <ul>
+    <li><b>第 1 轮</b>(6 条,全部采纳):两处「不变」漏口(依赖减法边的范围位、卡住信号聚合)· 测试命令包名写错 · 校验器要核输入形状、计数函数改纯函数并前移 · 验收查询要与引擎同构递归 · 测试 fixture 期望值算错 · SDK 版本依据引错。</li>
+    <li><b>第 2 轮</b>(4 条,全部采纳):验收断言与规则合同自相矛盾 · 验收查询漏了依赖线分页 · 分块顺序编译不闭合,改为四个编译切片 · 「状态缺失」的降级路径与既有守卫冲突,改为直接拒绝。</li>
+    <li><b>第 3 轮</b>:APPROVED,一条非阻塞实现提示(空值测试要覆盖两个字段),已写进 plan。</li>
+  </ul>
+  <p class="note">原始反馈全文在 <code>review-log.md</code>。四条方向性裁定(回归域、计数词汇、体积天花板、验收按当日实数)已由工程 Lead 2026-09-09 书面同意。</p>
+  <div class="cbox"><label>给「评审记录」的意见</label><textarea data-key="s11" data-title="评审记录"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页意见</button>
+  </div>
+  <div class="status" id="copy-status"></div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2482";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

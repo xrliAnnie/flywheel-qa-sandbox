@@ -41,6 +41,7 @@ export interface LinearActiveScopeSnapshot {
 		state: { name: string; type: string };
 	}>;
 	items: Array<{
+		parent: { id: string; identifier: string } | null;
 		id: string;
 		identifier: string;
 		title: string;
@@ -87,6 +88,7 @@ interface LinearScopeRelationNode {
 }
 
 interface LinearScopeIssueNode {
+	parent: { id: string; identifier: string } | null;
 	id: string;
 	identifier: string;
 	title: string;
@@ -146,6 +148,7 @@ const ACTIVE_SCOPE_CHILDREN_QUERY = `
 			children(first: 50, after: $after, includeArchived: false) {
 				nodes {
 					id identifier title description url priority updatedAt
+					parent { id identifier }
 					state { name type }
 					labels(first: 50) { nodes { name } pageInfo { hasNextPage } }
 					inverseRelations(first: 25) {
@@ -341,6 +344,11 @@ export async function fetchLinearActiveScopeSnapshot(
 					child.inverseRelations.nodes.push(...relationConnection.nodes);
 					relationPageInfo = relationConnection.pageInfo;
 				}
+				if (child.parent && child.parent.id !== parentId) {
+					throw new EpicSnapshotTruncatedError(
+						`Child parent drifted during snapshot: ${child.identifier}`,
+					);
+				}
 				rawItems.push(child);
 				if (rawItems.length > maxItems) {
 					throw new EpicTooLargeError("Active scope exceeds 500 issues");
@@ -370,11 +378,11 @@ export async function fetchLinearActiveScopeSnapshot(
 	const uniqueRawItems = [
 		...new Map(rawItems.map((item) => [item.id, item])).values(),
 	];
-	const includedRawItems = uniqueRawItems.filter(
-		(item) => item.state.type !== "backlog",
-	);
-	const inScopeIds = new Set(includedRawItems.map((item) => item.id));
-	const items = includedRawItems.map((item) => ({
+	const inScopeIds = new Set(uniqueRawItems.map((item) => item.id));
+	const items = uniqueRawItems.map((item) => ({
+		parent: item.parent
+			? { id: item.parent.id, identifier: item.parent.identifier }
+			: null,
 		id: item.id,
 		identifier: item.identifier,
 		title: item.title,

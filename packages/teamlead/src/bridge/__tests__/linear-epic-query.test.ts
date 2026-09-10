@@ -40,6 +40,7 @@ function child(
 	identifier: string,
 	overrides: Partial<{
 		state: { name: string; type: string };
+		parent: { id: string; identifier: string } | null;
 		inverseRelations: ReturnType<typeof relation>[];
 		relationsHasNextPage: boolean;
 		relationsEndCursor: string | null;
@@ -49,6 +50,10 @@ function child(
 	return {
 		id: `${identifier}-uuid`,
 		identifier,
+		parent:
+			overrides.parent === undefined
+				? { id: "EPX-100-uuid", identifier: "EPX-100" }
+				: overrides.parent,
 		title: `Title ${identifier}`,
 		description: "## 验收\nDone",
 		url: `https://linear.app/example/issue/${identifier}`,
@@ -104,7 +109,7 @@ beforeEach(() => {
 });
 
 describe("fetchLinearActiveScopeSnapshot", () => {
-	it("discovers started root subtrees, includes 日常, and filters Backlog", async () => {
+	it("discovers started root subtrees, includes 日常, and keeps Backlog children", async () => {
 		mockRawRequest
 			.mockResolvedValueOnce(
 				rootsResponse([
@@ -120,7 +125,13 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 					}),
 				]),
 			)
-			.mockResolvedValueOnce(childrenResponse([child("EPX-2")]));
+			.mockResolvedValueOnce(
+				childrenResponse([
+					child("EPX-2", {
+						parent: { id: "EPX-200-uuid", identifier: "EPX-200" },
+					}),
+				]),
+			);
 
 		const snapshot = await fetchLinearActiveScopeSnapshot(
 			"token",
@@ -132,14 +143,24 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 			"EPX-100",
 			"EPX-200",
 		]);
-		expect(snapshot.items.map((item) => item.identifier)).toEqual(["EPX-1"]);
+		expect(snapshot.items.map((item) => item.identifier)).toEqual([
+			"EPX-1",
+			"EPX-2",
+		]);
+		expect(snapshot.items.map((item) => item.parent?.identifier)).toEqual([
+			"EPX-100",
+			"EPX-200",
+		]);
+		expect(mockRawRequest.mock.calls[1]?.[0]).toContain(
+			"parent { id identifier }",
+		);
 		expect(snapshot.descendantIds).toEqual(["EPX-1-uuid", "EPX-2-uuid"]);
 		expect(snapshot.items[0]?.blockedBy).toEqual([
 			expect.objectContaining({
 				identifier: "EPX-2",
 				title: "Title EPX-2",
 				stateType: "completed",
-				inScope: false,
+				inScope: true,
 			}),
 		]);
 		expect(mockRawRequest.mock.calls[0]?.[1]).toMatchObject({
@@ -154,12 +175,46 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 		});
 	});
 
+	it("represents a null Linear parent without inventing one", async () => {
+		mockRawRequest
+			.mockResolvedValueOnce(rootsResponse([scopeRoot("EPX-100", "日常")]))
+			.mockResolvedValueOnce(
+				childrenResponse([child("EPX-1", { parent: null })]),
+			);
+		const snapshot = await fetchLinearActiveScopeSnapshot(
+			"token",
+			{ team: "EPX" },
+			{ now },
+		);
+		expect(snapshot.items[0]?.parent).toBeNull();
+	});
+
+	it("fails closed when a child's Linear parent drifts from the traversal parent", async () => {
+		mockRawRequest
+			.mockResolvedValueOnce(rootsResponse([scopeRoot("EPX-100", "日常")]))
+			.mockResolvedValueOnce(
+				childrenResponse([
+					child("EPX-1", {
+						parent: { id: "elsewhere", identifier: "EPX-999" },
+					}),
+				]),
+			);
+		await expect(
+			fetchLinearActiveScopeSnapshot("token", { team: "EPX" }, { now }),
+		).rejects.toThrow(
+			new EpicSnapshotTruncatedError(
+				"Child parent drifted during snapshot: EPX-1",
+			),
+		);
+	});
+
 	it("walks the full declared subtree instead of stopping at direct children", async () => {
 		mockRawRequest
 			.mockResolvedValueOnce(rootsResponse([scopeRoot("EPX-200", "日常")]))
 			.mockResolvedValueOnce(
 				childrenResponse([
 					child("EPX-1", {
+						parent: { id: "EPX-200-uuid", identifier: "EPX-200" },
 						state: { name: "Todo", type: "unstarted" },
 						children: [{ id: "EPX-2-uuid" }],
 					}),
@@ -168,6 +223,7 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 			.mockResolvedValueOnce(
 				childrenResponse([
 					child("EPX-2", {
+						parent: { id: "EPX-1-uuid", identifier: "EPX-1" },
 						state: { name: "Todo", type: "unstarted" },
 					}),
 				]),
@@ -183,6 +239,7 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 			"EPX-1",
 			"EPX-2",
 		]);
+		expect(snapshot.items[1]?.parent?.identifier).toBe("EPX-1");
 		expect(mockRawRequest.mock.calls[2]?.[1]).toEqual({
 			id: "EPX-1-uuid",
 			after: null,

@@ -1,4 +1,5 @@
 import type { DependencyReviewEntry, EpicItem } from "./model.js";
+import { isSchedulable } from "./rules.js";
 import { EpicPageSchemaError } from "./schema-error.js";
 
 const TERMINAL_STATES = new Set(["completed", "canceled"]);
@@ -19,10 +20,11 @@ export function computeDependencyReview(
 			);
 		}
 	}
+	const schedulable = items.filter(isSchedulable);
 	const canceled: Extract<
 		DependencyReviewEntry,
 		{ kind: "canceled_blocker" }
-	>[] = items
+	>[] = schedulable
 		.flatMap((item) =>
 			item.state.value &&
 			!TERMINAL_STATES.has(item.state.value.type) &&
@@ -47,15 +49,15 @@ export function computeDependencyReview(
 				entry.item !== entries[index - 1]!.item ||
 				entry.blocker !== entries[index - 1]!.blocker,
 		);
-	const identifiers = new Set(items.map((item) => item.identifier));
+	const identifiers = new Set(schedulable.map((item) => item.identifier));
 	const edges = new Map(
 		[...identifiers]
 			.sort((left, right) => left.localeCompare(right))
 			.map((identifier) => [identifier, new Set<string>()]),
 	);
-	for (const item of items) {
+	for (const item of schedulable) {
 		for (const blocker of item.blocked_by.value ?? []) {
-			if (blocker.in_scope && identifiers.has(blocker.identifier)) {
+			if (identifiers.has(blocker.identifier)) {
 				edges.get(blocker.identifier)?.add(item.identifier);
 			}
 		}
@@ -113,7 +115,7 @@ export function computeDependencyReview(
 		left.members[0]!.localeCompare(right.members[0]!),
 	);
 
-	const nonTerminal = items.filter(
+	const nonTerminal = schedulable.filter(
 		(item) => item.state.value && !TERMINAL_STATES.has(item.state.value.type),
 	);
 	const allEdges = nonTerminal
@@ -124,7 +126,7 @@ export function computeDependencyReview(
 					blocker: blocker.identifier,
 					blocked: item.identifier,
 					blocker_state_type: blocker.blocker_state_type,
-					in_scope: blocker.in_scope,
+					in_scope: identifiers.has(blocker.identifier),
 				})),
 		)
 		.sort(

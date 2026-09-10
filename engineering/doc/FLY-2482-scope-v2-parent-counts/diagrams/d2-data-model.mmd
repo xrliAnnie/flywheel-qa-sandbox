@@ -1,0 +1,39 @@
+classDiagram
+  class EpicPage {
+    header.scope_definition : Cell~scope.v2~
+    header.roots : Cell~父单列表~ 来自 Linear
+    header.items : Cell~子单号列表~ 来自 Linear 全子树
+    header.root_counts : Cell~RootCounts~[] 新增
+    items : EpicItem[]
+    ready_items / dependency_review / stuck_items : 值不变
+  }
+  class EpicItem {
+    identifier
+    parent : Cell~string~ 新增, 来自 Linear issue.parent
+    state : Cell 来自 Linear
+    blocked_by : Cell 来自 Linear 依赖线
+    blocks : Cell 派生 dependents.v1, 如实变宽
+    session / run / attempt / gates / carriers / land
+    signals[]
+  }
+  class RootCounts {
+    root : 父单号
+    counts.live 在跑 = started
+    counts.waiting 等依赖
+    counts.free 依赖已解开可起跑
+    counts.idle 未开始没人挡
+    counts.done 已完成
+    counts.canceled 已取消
+    counts.total 六者之和
+  }
+  class Cell {
+    value 或 null
+    provenance 出处 = linear 或 statestore 或 commdb 或 derived 规则号
+    observed_at 看到它的时间
+    missing.reason no_parent / unknown_state_type ...
+  }
+  EpicPage "1" --> "*" EpicItem : items
+  EpicPage "1" --> "*" RootCounts : header.root_counts (每父单一格)
+  EpicItem --> RootCounts : parent 链走到父单 → 计入该父单
+  EpicItem ..> Cell : 每个字段都是一格
+  RootCounts ..> Cell : derived counts.v1

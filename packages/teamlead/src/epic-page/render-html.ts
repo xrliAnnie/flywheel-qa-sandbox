@@ -11,7 +11,8 @@ import type {
 } from "./model.js";
 
 const FOUNDER_DECIDED_RULES = new Set([
-	"scope.v1",
+	"scope.v2",
+	"counts.v1",
 	"ready.v1",
 	"dependents.v1",
 ]);

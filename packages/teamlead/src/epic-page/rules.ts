@@ -1,7 +1,16 @@
-import type { Cell, EpicItem, MissingReason } from "./model.js";
+import type {
+	Cell,
+	EpicItem,
+	MissingReason,
+	RootCounts,
+	RootCountsResult,
+} from "./model.js";
+
+import { EpicPageSchemaError } from "./schema-error.js";
 
 export const FOUNDER_REVIEW_LABEL = "founder-review";
 export const RULE_IDS = {
+	counts: "counts.v1",
 	ready: "ready.v1",
 	dependents: "dependents.v1",
 	founder: "founder.v1",
@@ -25,7 +34,7 @@ export function computeReady(items: EpicItem[]): string[] {
 		.filter((item) => {
 			if (!known(item.state) || !known(item.blocked_by)) return false;
 			if (
-				item.state.value.type === "backlog" ||
+				!isSchedulable(item) ||
 				item.state.value.type === "completed" ||
 				item.state.value.type === "canceled"
 			) {
@@ -173,6 +182,7 @@ export function extractAcceptance(
 export function computeGaps(items: EpicItem[]): Array<{
 	item: string;
 	face:
+		| "parent"
 		| "what"
 		| "done"
 		| "founder"
@@ -189,6 +199,7 @@ export function computeGaps(items: EpicItem[]): Array<{
 	const result: Array<{
 		item: string;
 		face:
+			| "parent"
 			| "what"
 			| "done"
 			| "founder"
@@ -203,6 +214,7 @@ export function computeGaps(items: EpicItem[]): Array<{
 		reason: MissingReason;
 	}> = [];
 	const faces = [
+		["parent", "parent"],
 		["title", "what"],
 		["acceptance", "done"],
 		["founder_named", "founder"],
@@ -239,4 +251,84 @@ export function computeGaps(items: EpicItem[]): Array<{
 		}
 	}
 	return result;
+}
+
+export function isSchedulable(item: EpicItem): boolean {
+	return item.state.value?.type !== "backlog";
+}
+
+export function computeRootCounts(
+	items: EpicItem[],
+	roots: Array<{ identifier: string }>,
+): RootCountsResult[] {
+	const rootsById = new Set(roots.map((root) => root.identifier));
+	const byId = new Map(items.map((item) => [item.identifier, item]));
+	const members = new Map<string, number[]>();
+	for (const [index, item] of items.entries()) {
+		if (item.state.value === null || item.blocked_by.value === null) {
+			throw new EpicPageSchemaError(
+				`counts.v1: state/blocked_by cell must be known: ${item.identifier}`,
+			);
+		}
+		let parent = item.parent.value;
+		const visited = new Set<string>([item.identifier]);
+		while (parent !== null && !rootsById.has(parent)) {
+			const ancestor = byId.get(parent);
+			if (!ancestor || visited.has(parent))
+				throw new EpicPageSchemaError(
+					`counts.v1: parent chain does not reach a root: ${item.identifier}`,
+				);
+			visited.add(parent);
+			parent = ancestor.parent.value;
+		}
+		if (parent !== null) {
+			const indexes = members.get(parent) ?? [];
+			indexes.push(index);
+			members.set(parent, indexes);
+		}
+	}
+	const parentPointers = items.map((_, index) => `/items/${index}/parent`);
+	return roots.map((root) => {
+		const counts: RootCounts["counts"] = {
+			live: 0,
+			waiting: 0,
+			free: 0,
+			idle: 0,
+			done: 0,
+			canceled: 0,
+			total: 0,
+		};
+		let missing: RootCountsResult["missing"];
+		const from = ["/header/roots", ...parentPointers];
+		for (const index of members.get(root.identifier) ?? []) {
+			const item = items[index]!;
+			from.push(`/items/${index}/state`, `/items/${index}/blocked_by`);
+			const type = item.state.value!.type;
+			if (type === "started") counts.live++;
+			else if (type === "completed") counts.done++;
+			else if (type === "canceled") counts.canceled++;
+			else if (["backlog", "unstarted", "triage"].includes(type)) {
+				const blockers = item.blocked_by.value!;
+				if (blockers.length === 0) counts.idle++;
+				else if (
+					blockers.some((blocker) => blocker.blocker_state_type !== "completed")
+				)
+					counts.waiting++;
+				else counts.free++;
+			} else missing ??= { reason: "unknown_state_type", detail: type };
+		}
+		counts.total =
+			counts.live +
+			counts.waiting +
+			counts.free +
+			counts.idle +
+			counts.done +
+			counts.canceled;
+		return {
+			root: root.identifier,
+			value: missing ? null : { root: root.identifier, counts },
+			from,
+			...(missing ? { missing } : {}),
+		};
+	});
 }
