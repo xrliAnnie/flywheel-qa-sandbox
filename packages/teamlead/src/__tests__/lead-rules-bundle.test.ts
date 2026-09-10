@@ -70,6 +70,32 @@ function names(lines: string[]): string[] {
 }
 
 describe("lead-rules-bundle.sh — behavioral", () => {
+	it("keeps a proven v2 body EXIT owner while preserving legacy trap transfer", () => {
+		const probe = (active: "0" | "1") =>
+			execFileSync(
+				"bash",
+				[
+					"-c",
+					`source "$1"
+RULES_BUNDLE_MODE=bundle
+_RULES_BUNDLE_COMMITTED=0
+_V2_BODY_EXIT_TRAP_ACTIVE="$2"
+_rules_bundle_write_receipt() { return 0; }
+_rules_bundle_cleanup_stale_generations() { return 0; }
+trap 'printf BODY_TRAP_EXECUTED' EXIT
+_rules_bundle_commit_once
+trap -p EXIT`,
+					"_",
+					RESOLVER,
+					active,
+				],
+				{ encoding: "utf8" },
+			);
+		expect(probe("1")).toContain("BODY_TRAP_EXECUTED");
+		expect(probe("1")).toContain("trap --");
+		expect(probe("0")).toBe("");
+	});
+
 	it("advertises Belle as a runner-owning life department Lead", () => {
 		const crossDepartmentRules = readFileSync(
 			join(BASE_RULES_DIR, "cross-dept-channel-rules.md"),

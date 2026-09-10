@@ -1548,6 +1548,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh:kill -0 \"$fast_wrapper_pid\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh",
+		"code": "kill -0 \"$fast_wrapper_pid\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh:kill -0 \"$wrapper_pid\" 2>/dev/null || break#1",
 		"path": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh",
 		"code": "kill -0 \"$wrapper_pid\" 2>/dev/null || break",
@@ -1605,6 +1611,12 @@
 		"key": "scripts/__tests__/fly1679-dev-channels-v2.test.sh:if [ -n \"${_V2_DIALOG_POLLER_PID:-}\" ] && kill -0 \"$_V2_DIALOG_POLLER_PID\" 2>/dev/null; then#1",
 		"path": "scripts/__tests__/fly1679-dev-channels-v2.test.sh",
 		"code": "if [ -n \"${_V2_DIALOG_POLLER_PID:-}\" ] && kill -0 \"$_V2_DIALOG_POLLER_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1697-v2-lease-body.test.sh:child.kill()#1",
+		"path": "scripts/__tests__/fly1697-v2-lease-body.test.sh",
+		"code": "child.kill()",
 		"classification": "qa-only"
 	},
 	{
@@ -3123,6 +3135,12 @@
 		"key": "scripts/lib/qa-launchd-lead.sh:kill -TERM -- \"$pid\" 2>/dev/null || true#1",
 		"path": "scripts/lib/qa-launchd-lead.sh",
 		"code": "kill -TERM -- \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-lead-diagnostics.py:process.kill()#1",
+		"path": "scripts/lib/qa-lead-diagnostics.py",
+		"code": "process.kill()",
 		"classification": "qa-only"
 	},
 	{

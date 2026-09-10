@@ -33,6 +33,12 @@ esac
 PS_STUB
 chmod +x "$TMP/bin/ps"
 export FLYWHEEL_LEAD_V2_PS_BIN="$TMP/bin/ps"
+cat > "$TMP/bin/host-tmux-gate" <<'SH'
+#!/bin/bash
+exit 0
+SH
+chmod +x "$TMP/bin/host-tmux-gate"
+export FLYWHEEL_HOST_TMUX_GATE_BIN="$TMP/bin/host-tmux-gate"
 printf '%s\n' '---' 'name: ops-lead' '---' 'Ops Lead' \
   > "$TMP/project/.lead/ops-lead/identity.md"
 cat > "$TMP/home/.flywheel/summary-config.json" <<'JSON'
@@ -228,6 +234,7 @@ if HOME="$TMP/home" \
   && ! grep -qF 'LOGNAME=untrusted-logname' "$TMP/server.env" \
   && ! grep -qF 'USER=manifest-user' "$TMP/server.env" \
   && ! grep -qF 'LOGNAME=manifest-logname' "$TMP/server.env" \
+  && ! grep -q '^FLYWHEEL_QA_LEAD_DIAGNOSTICS_' "$TMP/server.env" \
   && ! grep -qF 'TEAMLEAD_API_TOKEN=bridge-secret' "$TMP/server.env"; then
   pass "wrapper preserves required launch identity without trusting inherited names"
 else
@@ -529,8 +536,75 @@ JSON
     kill "$wrapper_pid" 2>/dev/null || true
   fi
   wait "$wrapper_pid" 2>/dev/null || true
+
+  # FLY-2455: the real foreground wrapper must preserve terminal output before
+  # an immediately failing body makes %0 and the server disappear.
+  fast_slot="${RANDOM}${RANDOM}"
+  fast_root="/tmp/flywheel-test-slot-${fast_slot}"
+  fast_runtime="${fast_root}/launchd/ops-lead"
+  mkdir -p "$fast_runtime"
+  chmod 700 "$fast_runtime"
+  fast_env="$fast_runtime/fixture.env"
+  cat > "$fast_env" <<'ENV'
+OPS_TOKEN=discord-secret
+TEAMLEAD_API_TOKEN=bridge-secret
+FLYWHEEL_COMM_BACKEND=mailbox
+if [[ "$0" == */lead-body.sh ]]; then
+  printf 'FLY2455_BODY_FAILURE_CANARY\n'
+  exit 42
+fi
+ENV
+  cat > "$fast_runtime/manifest.json" <<JSON
+{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","projectsFile":"$TMP/home/.flywheel/projects.json","launchEnvironment":{"FLYWHEEL_WRAPPER_ENV_FILE":"$fast_env"}}
+JSON
+  HOME="$TMP/home" \
+    FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
+    FLYWHEEL_DIR="$ROOT" \
+    FLYWHEEL_WRAPPER_ENV_FILE="$fast_env" \
+    FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR="$fast_runtime" \
+    FLYWHEEL_LEAD_V2_TEST_MODE=1 \
+    FLYWHEEL_LEAD_V2_TEST_BODY_SCRIPT="$ROOT/packages/teamlead/scripts/lead-body.sh" \
+    bash "$WRAPPER" "$fast_runtime/manifest.json" >"$fast_runtime/wrapper.log" 2>&1 &
+  fast_wrapper_pid=$!
+  for _ in {1..100}; do
+    kill -0 "$fast_wrapper_pid" 2>/dev/null || break
+    sleep 0.05
+  done
+  wait "$fast_wrapper_pid" 2>/dev/null || true
+  if grep -qF 'FLY2455_BODY_FAILURE_CANARY' "$fast_runtime/body-output.log" 2>/dev/null \
+      && jq -e --argjson pid "$fast_wrapper_pid" \
+        '.schemaVersion == 1 and .carrierPid == $pid
+         and .carrierTmux.binary != null
+         and .exitCode == 42 and .exitObservation == "shell_exit"
+         and .observedShellExitCode == 42' \
+        "$fast_runtime/body-status.json" >/dev/null 2>&1 \
+      && jq -e '.active == false' "$fast_runtime/body-recorder.json" >/dev/null 2>&1; then
+    pass "real wrapper captures an immediately failing body before the private server disappears"
+  else
+    fail "real wrapper immediate-body diagnostic capture"
+    cat "$fast_runtime/wrapper.log" 2>/dev/null || true
+    find "$fast_runtime" -maxdepth 1 -type f -print -exec sh -c 'echo "--- $1"; sed -n "1,20p" "$1"' _ {} \; 2>/dev/null || true
+  fi
+  rm -rf "$fast_root"
 else
   pass "real private tmux test skipped (tmux unavailable)"
+fi
+
+jq --arg path /tmp/flywheel-test-slot-2/launchd/ops-lead \
+  '.launchEnvironment.FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR = $path' \
+  "$TMP/manifest.json" > "$TMP/manifest-diagnostics-poison.json"
+if HOME="$TMP/home" \
+    FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
+    FLYWHEEL_DIR="$ROOT" \
+    FLYWHEEL_LEAD_V2_DRY_RUN=1 \
+    bash "$WRAPPER" "$TMP/manifest-diagnostics-poison.json" \
+      >"$TMP/diagnostics-poison.out" 2>&1; then
+  fail "manifest cannot supply the trusted QA diagnostics directory"
+elif grep -qF 'identity_launch_env_conflict' "$TMP/diagnostics-poison.out"; then
+  pass "manifest cannot supply the trusted QA diagnostics directory"
+else
+  fail "manifest diagnostics authority rejection is specific"
+  cat "$TMP/diagnostics-poison.out" 2>/dev/null || true
 fi
 
 if grep -q '_launch_claude .*|| _v2_launch_rc=' \

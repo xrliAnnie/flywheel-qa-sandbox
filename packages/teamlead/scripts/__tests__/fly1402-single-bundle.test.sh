@@ -218,6 +218,39 @@ else
   bad "real launcher commit wiring order is commit=${COMMIT_LINE:-?} launch=${LAUNCH_LINE:-?}"
 fi
 
+# FLY-2455: commit_once keeps the body-owned composite EXIT trap when the real
+# v2 body installed it, while preserving the exact legacy ownership transfer
+# (clear EXIT) for every caller without that proven marker.
+ownership_probe() {
+  local active="$1"
+  bash -c '
+    source "$1"
+    RULES_BUNDLE_MODE=bundle
+    _RULES_BUNDLE_COMMITTED=0
+    _V2_BODY_EXIT_TRAP_ACTIVE="$2"
+    _rules_bundle_write_receipt() { return 0; }
+    _rules_bundle_cleanup_stale_generations() { return 0; }
+    trap "printf BODY_TRAP_EXECUTED" EXIT
+    _rules_bundle_commit_once
+    trap -p EXIT
+  ' _ "$BUNDLE_LIB" "$active" 2>/dev/null
+}
+
+OWNED_OUT="$(ownership_probe 1)"
+if printf '%s' "$OWNED_OUT" | grep -qF 'BODY_TRAP_EXECUTED' \
+    && printf '%s' "$OWNED_OUT" | grep -qF 'trap --'; then
+  ok "v2 body ownership preserves the composite EXIT trap through commit"
+else
+  bad "v2 body ownership lost the composite EXIT trap: $OWNED_OUT"
+fi
+
+LEGACY_OUT="$(ownership_probe 0)"
+if [ -z "$LEGACY_OUT" ]; then
+  ok "non-body bundle ownership keeps the legacy EXIT trap clearing behavior"
+else
+  bad "non-body bundle ownership changed legacy EXIT behavior: $LEGACY_OUT"
+fi
+
 # Legacy lifecycle: one active receipt + one alert across repeated child launch
 # attempts; no bundle file is created or deleted.
 if (

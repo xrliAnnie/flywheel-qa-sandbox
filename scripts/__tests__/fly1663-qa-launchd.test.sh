@@ -4,7 +4,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP="$(mktemp -d /tmp/f1663-q.XXXXXX)"
 MINT_SLOT="/tmp/flywheel-test-slot-$((900000 + $$))"
-trap 'rm -rf "$TMP" "$MINT_SLOT"' EXIT
+EVIDENCE_SLOT="/tmp/flywheel-test-slot-$((1900000 + $$))"
+trap 'rm -rf "$TMP" "$MINT_SLOT" "$EVIDENCE_SLOT"' EXIT
 export HOME="$TMP/home"
 export FLYWHEEL_DIR="$ROOT"
 export FLYWHEEL_STATE_DIR="$TMP/state"
@@ -66,6 +67,8 @@ if qa_launchd_render_plist "$plist" "$label" "$ROOT/scripts/flywheel-lead-wrappe
     && grep -qF "$FLYWHEEL_STATE_DIR" "$plist" \
     && grep -qF '<key>FLYWHEEL_SUMMARY_CONFIG_HOME</key>' "$plist" \
     && grep -qF "$summary_home" "$plist" \
+    && grep -qF '<key>FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR</key>' "$plist" \
+    && grep -qF "$(dirname "$manifest")" "$plist" \
     && ! grep -qF "$HOME/.flywheel" "$plist"; then
   pass "ephemeral plist owns one v2 wrapper with slot-local state"
 else
@@ -612,6 +615,31 @@ else
   fail "QA launchd bootstrap/singleton"
 fi
 
+bootstrap_fail_stub="$TMP/bin/launchctl-bootstrap-fail"
+cat > "$bootstrap_fail_stub" <<'BOOTSTRAPFAIL'
+#!/bin/sh
+if [ "$1" = print ]; then
+  printf '%s\n' 'Could not find service' >&2
+  exit 113
+fi
+exit 5
+BOOTSTRAPFAIL
+chmod +x "$bootstrap_fail_stub"
+rm -f "$TMP/runtime/bootstrap-failure.json"
+export FLYWHEEL_QA_LAUNCHCTL="$bootstrap_fail_stub"
+if ! FLYWHEEL_QA_LEAD_DIAGNOSTICS_HELPER="$ROOT/scripts/lib/qa-lead-diagnostics.py" \
+    qa_launchd_lead_start "$label" "$plist" "$manifest" "$log_file" \
+      "$ROOT/scripts/flywheel-lead-wrapper-v2.sh" /usr/bin/false \
+      >/dev/null 2>"$TMP/bootstrap-fail.err" \
+    && [[ "$(jq -r '.phase + ":" + .reason' "$TMP/runtime/bootstrap-failure.json" 2>/dev/null)" \
+      == bootstrap:launchd_job_missing ]] \
+    && grep -qF 'phase=bootstrap reason=launchd_job_missing' "$TMP/bootstrap-fail.err"; then
+  pass "bootstrap failure records the concrete launchd item before returning"
+else
+  fail "QA launchd bootstrap failure diagnostics"
+fi
+export FLYWHEEL_QA_LAUNCHCTL="$launchctl_stub"
+
 tmux_stub="$TMP/bin/tmux"
 cat > "$tmux_stub" <<'TMUX'
 #!/bin/bash
@@ -691,16 +719,23 @@ prints_before=$(grep -c '^print ' "$launchctl_calls" || true)
 sleep() { printf '%s\n' "$1" >> "$verify_sleeps"; }
 export FLYWHEEL_QA_LEAD_VERIFY_POLLS=2
 unset FLYWHEEL_QA_LEAD_VERIFY_INTERVAL
-qa_launchd_lead_verify "$label" "$manifest" >/dev/null 2>&1 || true
+pending_verify_stdout="$TMP/pending-verify.stdout"
+pending_verify_stderr="$TMP/pending-verify.stderr"
+qa_launchd_lead_verify "$label" "$manifest" "$plist" "$log_file" \
+  "$ROOT/scripts/flywheel-lead-wrapper-v2.sh" \
+  >"$pending_verify_stdout" 2>"$pending_verify_stderr" || true
 unset -f sleep
 export FLYWHEEL_QA_LEAD_VERIFY_POLLS=1
 prints_after=$(grep -c '^print ' "$launchctl_calls" || true)
-if [ -s "$verify_sleeps" ] \
+if [ ! -s "$pending_verify_stdout" ] \
+    && [ -s "$verify_sleeps" ] \
     && ! grep -Ev '^1$' "$verify_sleeps" >/dev/null \
-    && [ "$prints_after" = "$prints_before" ]; then
-  pass "pending topology probes are paced and defer launchctl until publication"
+    && [ "$prints_after" = "$((prints_before + 1))" ] \
+    && grep -qF 'phase=topology reason=runtime_unpublished' "$pending_verify_stderr" \
+    && [[ "$(jq -r '.reason' "$TMP/runtime/topology-failure.json")" == runtime_unpublished ]]; then
+  pass "pending topology probes are paced and take one specific post-failure snapshot"
 else
-  fail "pending topology verifier still creates a process probe storm"
+  fail "pending topology verifier diagnostics/cadence contract"
 fi
 
 # Teardown convergence is a fixed 30-second production contract. Ambient test
@@ -1313,6 +1348,65 @@ else
 fi
 export FLYWHEEL_QA_TMUX="$saved_qa_tmux"
 unset FLY1663_QA_STALE_TMUX_STATE FLY1663_QA_STALE_TMUX_CALLS
+
+evidence_runtime="$EVIDENCE_SLOT/launchd/qa-lead"
+evidence_manifest="$evidence_runtime/manifest.json"
+evidence_registry="$EVIDENCE_SLOT/launchd-leads.json"
+evidence_lock="$EVIDENCE_SLOT.lock"
+mkdir -p "$evidence_runtime" "$evidence_lock"
+chmod 700 "$evidence_runtime"
+jq -n '{leadId:"qa-lead",projectName:"test-slot-1"}' > "$evidence_manifest"
+jq -n --arg manifest "$evidence_manifest" \
+  '[{label:"com.flywheel.qa.lead.slot-1.qa-lead",plist:"/tmp/qa.plist",manifest:$manifest}]' \
+  > "$evidence_registry"
+printf 'FLY2455_PRIVATE_BODY_CANARY\n' \
+  | python3 "$ROOT/scripts/lib/qa-lead-diagnostics.py" record \
+    --runtime "$evidence_runtime" --carrier-pid 4242
+if qa_launchd_evidence_residue_pending "$evidence_registry" \
+    && qa_launchd_mark_evidence_pending "$evidence_registry" "$evidence_lock" \
+    && [[ "$(cat "$evidence_lock/pid")" == diagnostic-evidence-pending ]]; then
+  pass "raw body evidence keeps the slot lock in explicit pending ownership"
+else
+  fail "raw body evidence ownership marker"
+fi
+evidence_symlink_lock="$TMP/evidence-symlink.lock"
+evidence_symlink_target="$TMP/evidence-symlink-target"
+mkdir -p "$evidence_symlink_lock"
+printf 'FLY2455_LOCK_SYMLINK_CANARY\n' > "$evidence_symlink_target"
+ln -s "$evidence_symlink_target" "$evidence_symlink_lock/pid"
+if qa_launchd_mark_evidence_pending "$evidence_registry" "$evidence_symlink_lock" \
+    && [[ ! -L "$evidence_symlink_lock/pid" ]] \
+    && [[ "$(cat "$evidence_symlink_lock/pid")" == diagnostic-evidence-pending ]] \
+    && grep -qF 'FLY2455_LOCK_SYMLINK_CANARY' "$evidence_symlink_target"; then
+  pass "evidence ownership atomically replaces a pid symlink without following it"
+else
+  fail "evidence ownership followed or retained a pid symlink"
+fi
+if qa_launchd_discard_evidence "$evidence_registry" \
+    && ! qa_launchd_evidence_residue_pending "$evidence_registry" \
+    && [[ ! -e "$evidence_runtime/body-output.log" \
+       && ! -e "$evidence_runtime/body-output.truncated" ]]; then
+  pass "safe discard removes raw output before evidence ownership can clear"
+else
+  fail "safe raw body evidence discard"
+fi
+jq 'del(.endedAt)' "$evidence_runtime/body-recorder.json" \
+  > "$evidence_runtime/body-recorder.invalid.json"
+mv "$evidence_runtime/body-recorder.invalid.json" \
+  "$evidence_runtime/body-recorder.json"
+if qa_launchd_evidence_residue_pending "$evidence_registry"; then
+  pass "unverified recorder completion keeps evidence ownership fail-closed"
+else
+  fail "unverified recorder completion cleared evidence ownership"
+fi
+codex_evidence_registry="$TMP/codex-evidence-registry.json"
+jq -n '[{label:"com.flywheel.qa.lead.slot-1.codex-lead",plist:"/tmp/codex.plist",manifest:"",carrier:"codex-tui"}]' \
+  > "$codex_evidence_registry"
+if ! qa_launchd_evidence_residue_pending "$codex_evidence_registry"; then
+  pass "Codex-only registry entries do not invent Claude body-output residue"
+else
+  fail "Codex-only registry was misclassified as Claude body-output residue"
+fi
 
 unset -f sleep
 rm -rf "$stop_matrix_root" "$stop_alive_root" "$stop_bootout_root" \

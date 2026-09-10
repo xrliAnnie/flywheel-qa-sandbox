@@ -314,7 +314,8 @@ _rules_bundle_legacy_alert() {
 _rules_bundle_commit_once() {
   [ "$_RULES_BUNDLE_COMMITTED" = "1" ] && return 0
   _rules_bundle_write_receipt || return 1
-  if [ "$RULES_BUNDLE_MODE" = "bundle" ]; then
+  if [ "$RULES_BUNDLE_MODE" = "bundle" ] \
+      && [ "${_V2_BODY_EXIT_TRAP_ACTIVE:-0}" != 1 ]; then
     trap - EXIT
   fi
   _RULES_BUNDLE_COMMITTED=1

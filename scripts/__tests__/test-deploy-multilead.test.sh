@@ -465,6 +465,22 @@ else
   [[ "$H2_OK" == "1" ]] && pass "H2: dead borrowed lock → fail-loud, no stale teardown"
 fi
 
+# FLY-2455: a non-numeric raw-evidence owner is deliberate, never a dead PID.
+rm -rf "${LOCK_ROOT}/flywheel-test-slot-3.lock" "$STALE_PROBE"
+mkdir -p "${LOCK_ROOT}/flywheel-test-slot-3.lock"
+printf '%s\n' diagnostic-evidence-pending \
+  > "${LOCK_ROOT}/flywheel-test-slot-3.lock/pid"
+if qa_multilead_claim_one "${LOCK_ROOT}/flywheel-test-slot-3.lock" \
+    stale_probe 3 >/dev/null 2>&1; then
+  fail "H3: diagnostic evidence lock must not be reclaimed"
+else
+  H3_OK=1
+  [[ ! -f "$STALE_PROBE" ]] || { H3_OK=0; fail "H3: evidence-pending must not invoke stale teardown"; }
+  [[ "$(cat "${LOCK_ROOT}/flywheel-test-slot-3.lock/pid")" == diagnostic-evidence-pending ]] \
+    || { H3_OK=0; fail "H3: evidence-pending marker changed"; }
+  [[ "$H3_OK" == 1 ]] && pass "H3: diagnostic evidence marker refuses automatic reclaim"
+fi
+
 # ── F2: manifest-driven extra-Lead teardown ──
 FAKEHOME="${TMP}/home"
 mkdir -p "${FAKEHOME}/.flywheel/pids" "${FAKEHOME}/.flywheel/claude-sessions" \
@@ -580,6 +596,57 @@ W2_OK=1
 [[ "$W2_OK" == "1" ]] && pass "W2: owner teardown consumes campaign manifest (no extra-Lead residue)"
 rm -rf "$W2_SLOT_DIR" "$W2_LOCK" "$W2_BLOCK"
 
+# W3: raw Lead output is fail-closed evidence. An unsafe residue keeps both
+# owner and borrowed locks; after replacing it with helper-owned evidence, the
+# same explicit teardown safely discards it and releases the campaign.
+W3_SLOT_DIR="/tmp/flywheel-test-slot-28"
+W3_LOCK="/tmp/flywheel-test-slot-28.lock"
+W3_BLOCK="/tmp/flywheel-test-slot-29.lock"
+W3_RUNTIME="$W3_SLOT_DIR/launchd/flywheel-test-28"
+W3_MANIFEST="$W3_RUNTIME/manifest.json"
+W3_REGISTRY="$W3_SLOT_DIR/launchd-leads.json"
+W3_CANARY="$TMP/w3-private-canary"
+rm -rf "$W3_SLOT_DIR" "$W3_LOCK" "$W3_BLOCK"
+mkdir -p "$W3_RUNTIME" "$W3_LOCK" "$W3_BLOCK"
+chmod 700 "$W3_RUNTIME"
+printf 'FLY2455_PRIVATE_TEARDOWN_CANARY\n' > "$W3_CANARY"
+jq -n '{leadId:"flywheel-test-28",projectName:"test-slot-28"}' > "$W3_MANIFEST"
+jq -n --arg manifest "$W3_MANIFEST" \
+  '[{label:"com.flywheel.qa.lead.slot-28.flywheel-test-28",plist:"/tmp/w3.plist",manifest:$manifest}]' \
+  > "$W3_REGISTRY"
+jq -n '{campaignId:"camp-w3",ownerSlot:28,projectName:"test-slot-28",borrowedSlots:[29],extraLeads:[]}' \
+  > "$W3_SLOT_DIR/campaign-manifest.json"
+jq -n '{ownerSlot:28,campaignId:"camp-w3",borrowed:true}' > "$W3_BLOCK/campaign.json"
+printf 'claiming\n' > "$W3_LOCK/pid"
+printf 'claiming\n' > "$W3_BLOCK/pid"
+ln -s "$W3_CANARY" "$W3_RUNTIME/body-output.log"
+if PATH="${STUB_BIN}:$PATH" HOME="$FAKEHOME" \
+    bash "${SCRIPT_DIR}/test-teardown.sh" 28 >"$TMP/w3.out" 2>"$TMP/w3.err"; then
+  fail "W3: unsafe raw evidence must block teardown"
+else
+  W3_OK=1
+  [[ "$(cat "$W3_LOCK/pid" 2>/dev/null)" == diagnostic-evidence-pending ]] \
+    || { W3_OK=0; fail "W3: owner lock did not retain evidence ownership"; }
+  [[ "$(cat "$W3_BLOCK/pid" 2>/dev/null)" == diagnostic-evidence-pending ]] \
+    || { W3_OK=0; fail "W3: borrowed lock did not retain host evidence ownership"; }
+  grep -qF 'FLY2455_PRIVATE_TEARDOWN_CANARY' "$W3_CANARY" \
+    || { W3_OK=0; fail "W3: unsafe evidence target was mutated"; }
+  [[ "$W3_OK" == 1 ]] && pass "W3: unsafe evidence retains owner and borrowed locks"
+fi
+rm -f "$W3_RUNTIME/body-output.log"
+printf 'FLY2455_PRIVATE_TEARDOWN_CANARY\n' \
+  | python3 "${SCRIPT_DIR}/lib/qa-lead-diagnostics.py" record \
+    --runtime "$W3_RUNTIME" --carrier-pid 4242
+if PATH="${STUB_BIN}:$PATH" HOME="$FAKEHOME" \
+    bash "${SCRIPT_DIR}/test-teardown.sh" 28 >"$TMP/w3-clear.out" 2>"$TMP/w3-clear.err" \
+    && [[ ! -d "$W3_SLOT_DIR" && ! -d "$W3_LOCK" && ! -d "$W3_BLOCK" ]]; then
+  pass "W3: explicit teardown discards safe raw evidence before campaign release"
+else
+  fail "W3: safe evidence disposition did not release the campaign"
+  cat "$TMP/w3-clear.err" 2>/dev/null || true
+fi
+rm -rf "$W3_SLOT_DIR" "$W3_LOCK" "$W3_BLOCK"
+
 # ── L1: launch manifest (SHA present; no token values) ──
 FAKE_TOKEN_VALUE="supersecret-token-value-xyz"
 export TEST_BOT_TOKEN_3="$FAKE_TOKEN_VALUE"
@@ -606,6 +673,8 @@ grep -Fq 'carrier=codex-tui step=tmux-converge' "${SCRIPT_DIR}/test-teardown.sh"
 grep -q 'qa-multilead.sh' "$DEPLOY" || { S1_OK=0; fail "S1: test-deploy.sh must source lib/qa-multilead.sh"; }
 grep -q -- '--extra-lead' "$DEPLOY" || { S1_OK=0; fail "S1: --extra-lead flag not parsed"; }
 grep -q -- '--lead-label' "$DEPLOY" || { S1_OK=0; fail "S1: --lead-label flag not parsed"; }
+grep -Fq 'if [[ "$lock_pid" == "diagnostic-evidence-pending" ]]' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2455 S1: main slot claim must preserve diagnostic evidence ownership"; }
 grep -q 'qa_multilead_build_projects' "$DEPLOY" || { S1_OK=0; fail "S1: FLYWHEEL_PROJECTS must be built via qa_multilead_build_projects"; }
 grep -Fq 'MAIN_LEAD_SHAPE=$(qa_multilead_validate_lead_shape' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2301 S1: main slot carrier tuple must be validated"; }

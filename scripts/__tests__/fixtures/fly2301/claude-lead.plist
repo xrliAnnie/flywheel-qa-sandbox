@@ -11,6 +11,7 @@
 <key>FLYWHEEL_PROJECTS_FILE</key><string>@TMP@/runtime/projects.json</string>
 <key>FLYWHEEL_WRAPPER_ENV_FILE</key><string>@TMP@/runtime/.env</string>
 <key>FLYWHEEL_SUMMARY_CONFIG_HOME</key><string>@TMP@/runtime/identity-home</string>
+<key>FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR</key><string>@TMP@/runtime</string>
 </dict>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>ThrottleInterval</key><integer>3</integer>

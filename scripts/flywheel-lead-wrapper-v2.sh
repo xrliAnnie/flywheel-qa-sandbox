@@ -11,6 +11,53 @@ SELF_PATH="${SELF_DIR}/$(basename "${BASH_SOURCE[0]}")"
 log() { printf '[wrapper-v2] %s %s\n' "$(date '+%H:%M:%S')" "$*"; }
 fatal() { log "ERROR: $*" >&2; exit 1; }
 
+# FLY-2455: this is the only QA diagnostics opt-in. Capture it before any
+# sourced configuration can replace it, then erase the public name until the
+# trusted value crosses the env -i boundary below.
+V2_QA_DIAGNOSTICS_DIR="${FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR:-}"
+unset FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR
+V2_QA_DIAGNOSTICS_HELPER="${SELF_DIR}/lib/qa-lead-diagnostics.py"
+V2_QA_DIAGNOSTICS_PYTHON=""
+
+qa_diagnostics_validate() {
+  local manifest="$1" lead_id="${2:-}" args
+  [ -n "$V2_QA_DIAGNOSTICS_DIR" ] || return 0
+  if [ -z "$V2_QA_DIAGNOSTICS_PYTHON" ]; then
+    V2_QA_DIAGNOSTICS_PYTHON="$(command -v python3 2>/dev/null || true)"
+  fi
+  if [ -z "$V2_QA_DIAGNOSTICS_PYTHON" ] || [ ! -f "$V2_QA_DIAGNOSTICS_HELPER" ]; then
+    log "ERROR: diagnostic_capture_failed: helper_unavailable" >&2
+    return 2
+  fi
+  args=(validate-runtime --runtime "$V2_QA_DIAGNOSTICS_DIR" --manifest "$manifest")
+  [ -z "$lead_id" ] || args+=(--lead-id "$lead_id")
+  "$V2_QA_DIAGNOSTICS_PYTHON" "$V2_QA_DIAGNOSTICS_HELPER" "${args[@]}"
+}
+
+qa_diagnostics_install_recorder() {
+  local manifest="$1" socket="$2" carrier_pid="$3" tmux_bin="$4"
+  local recorder_command
+  [ -n "$V2_QA_DIAGNOSTICS_DIR" ] || return 0
+  if ! qa_diagnostics_validate "$manifest"; then
+    log "ERROR: diagnostic_capture_failed: runtime_validation_failed" >&2
+    return 1
+  fi
+  printf -v recorder_command 'exec %q %q record --runtime %q --carrier-pid %q' \
+    "$V2_QA_DIAGNOSTICS_PYTHON" "$V2_QA_DIAGNOSTICS_HELPER" \
+    "$V2_QA_DIAGNOSTICS_DIR" "$carrier_pid"
+  if ! "$tmux_bin" -S "$socket" pipe-pane -o -t '%0' "$recorder_command"; then
+    log "ERROR: diagnostic_capture_failed: pipe_pane_install_failed" >&2
+    return 1
+  fi
+  if ! "$V2_QA_DIAGNOSTICS_PYTHON" "$V2_QA_DIAGNOSTICS_HELPER" body-status \
+      --runtime "$V2_QA_DIAGNOSTICS_DIR" --event carrier \
+      --carrier-pid "$carrier_pid" --tmux "$tmux_bin"; then
+    log "ERROR: diagnostic_capture_failed: carrier_status_write_failed" >&2
+    return 1
+  fi
+  return 0
+}
+
 # Capture inherited identity before either .env or the manifest can shadow it.
 # These values are comparison inputs only; the canonical registry resolution
 # below is the only identity projected into the tmux server.
@@ -46,6 +93,11 @@ publish_runtime_fields() {
 
 if [ "${1:-}" = --publish-and-start ]; then
   [ "$#" -eq 6 ] || exit 64
+  qa_diagnostics_install_recorder "$2" "$3" "$4" "$5" || true
+  if [ -n "$V2_QA_DIAGNOSTICS_DIR" ]; then
+    export FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR="$V2_QA_DIAGNOSTICS_DIR"
+    export FLYWHEEL_QA_LEAD_DIAGNOSTICS_PYTHON="$V2_QA_DIAGNOSTICS_PYTHON"
+  fi
   if publish_runtime_fields "$2" "$3" "$4"; then
     exec /bin/bash "$6" "$2"
   else
@@ -57,6 +109,11 @@ if [ "${1:-}" = --publish-and-start ]; then
 fi
 
 MANIFEST="${1:?Usage: flywheel-lead-wrapper-v2.sh <manifest-path>}"
+
+if [ -n "$V2_QA_DIAGNOSTICS_DIR" ]; then
+  qa_diagnostics_validate "$MANIFEST" \
+    || fatal "trusted QA diagnostics runtime is invalid"
+fi
 
 if [ -f "$SELF_DIR/lib/host-config.sh" ]; then
   # shellcheck source=lib/host-config.sh
@@ -98,6 +155,7 @@ set +a
 source "$ENV_FILE"
 [ "$_v2_allexport_was_on" = false ] || set -a
 unset _v2_allexport_was_on
+unset FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR
 
 # FLY-2190: the launchd job owns this tmux server birth directly. Run the
 # converged gate after .env loading (so fixture-only overrides can be scrubbed)
@@ -386,7 +444,7 @@ while IFS= read -r name; do
     FLYWHEEL_LEAD_IDENTITY_DIGEST) expected="$IDENTITY_DIGEST" ;;
     FLYWHEEL_LEAD_PROJECTS_DIGEST) expected="$PROJECTS_DIGEST" ;;
     FLYWHEEL_PROJECTS_FILE) expected="$PROJECTS_FILE" ;;
-    FLYWHEEL_PROJECTS|FLYWHEEL_SUMMARY_CONFIG_HOME|DISCORD_BOT_TOKEN)
+    FLYWHEEL_PROJECTS|FLYWHEEL_SUMMARY_CONFIG_HOME|DISCORD_BOT_TOKEN|FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR)
       identity_fatal identity_launch_env_conflict "$name may not be supplied by the manifest"
       ;;
     *) is_identity=false ;;
@@ -407,6 +465,10 @@ while IFS= read -r name; do
   fi
   SERVER_ENV+=("$name=$value")
 done < <(jq -r 'keys[]' <<<"$LAUNCH_ENVIRONMENT")
+if [ -n "$V2_QA_DIAGNOSTICS_DIR" ]; then
+  qa_diagnostics_validate "$MANIFEST" "$LEAD_ID" \
+    || fatal "trusted QA diagnostics identity is invalid"
+fi
 OS_USER="$(/usr/bin/id -un 2>/dev/null)" \
   || fatal "Unable to resolve the launchd job's OS user"
 [ -n "$OS_USER" ] || fatal "Resolved OS user is empty"
@@ -459,6 +521,12 @@ if [ -n "$CARRIER_START" ]; then
   SERVER_ENV+=(
     "FLYWHEEL_LEAD_CARRIER_PID=$$"
     "FLYWHEEL_LEAD_CARRIER_START=$CARRIER_START"
+  )
+fi
+if [ -n "$V2_QA_DIAGNOSTICS_DIR" ]; then
+  SERVER_ENV+=(
+    "FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR=$V2_QA_DIAGNOSTICS_DIR"
+    "FLYWHEEL_QA_LEAD_DIAGNOSTICS_PYTHON=$V2_QA_DIAGNOSTICS_PYTHON"
   )
 fi
 for name in TMPDIR LANG LC_ALL LC_CTYPE CLAUDE_CONFIG_DIR; do

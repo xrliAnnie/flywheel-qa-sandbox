@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLY-2455 · 让 529 房重新起得来</title>
+<style>
+:root{color-scheme:light;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:#1d1d1f;background:#f5f5f7;line-height:1.65}*{box-sizing:border-box}body{margin:0}main{max-width:960px;margin:auto;padding:36px 20px 64px}header{margin:8px 0 28px}.eyebrow{font-size:13px;color:#64748b;letter-spacing:.08em}h1{font-size:clamp(29px,5vw,44px);line-height:1.22;letter-spacing:-.04em;margin:12px 0}h2{font-size:22px;margin:0 0 14px;line-height:1.35}p{margin:10px 0}.intro{font-size:19px;max-width:760px}.card{background:#fff;border-radius:12px;border-left:4px solid #007aff;box-shadow:0 1px 3px #0000000f;padding:25px;margin:18px 0}.amber{border-color:#ff9500}.green{border-color:#34c759}.muted,small{color:#6e6e73}.tag{display:inline-block;color:#8a5000;background:#fff3dc;border-radius:6px;font-size:12px;padding:3px 9px}.lead{font-size:18px;font-weight:600}.comment{border-top:1px solid #ececf0;margin-top:22px;padding-top:14px}label{display:block;font-size:14px;color:#515156;margin-bottom:7px}textarea{width:100%;min-height:85px;resize:vertical;border:1px solid #c9c9cf;border-radius:8px;padding:12px;background:#fff;font:inherit;color:inherit}textarea:focus{outline:3px solid #007aff33;border-color:#007aff}button{border:0;background:#007aff;color:white;border-radius:8px;font:inherit;font-size:14px;padding:10px 15px;cursor:pointer}button:hover{background:#0061c9}button:focus-visible{outline:3px solid #1d1d1f;outline-offset:3px}button:disabled{opacity:.5;cursor:default}.pending{padding:20px;background:#fff7e9;border:1px dashed #cf9a39;border-radius:8px}.pending strong{font:600 13px "SF Mono",monospace;color:#805100}.pending p{font-size:14px}svg{max-width:100%;height:auto;display:block;margin:auto}details{margin-top:14px}summary{cursor:pointer;color:#007aff;font-size:14px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f7;padding:14px;border-radius:8px;font:12px/1.6 "SF Mono",monospace}li{margin:8px 0}ol,ul{padding-left:24px}.chunk{margin:18px 0}.chunk textarea{min-height:140px;font-size:14px}.status{font-size:13px;min-height:22px;margin-top:10px}footer{font-size:13px;color:#6e6e73;margin-top:24px}a{color:#007aff}code{font-family:"SF Mono",monospace;font-size:.9em;overflow-wrap:anywhere}@media(max-width:600px){main{padding:24px 14px 44px}.card{padding:20px 16px}h2{font-size:20px}}
+</style>
+</head>
+<body><main>
+<header><div class="eyebrow">ENGINEERING DESIGN · FLY-2455 · 2026-09-08</div><h1>让 529 房重新起得来</h1><p class="intro">先留下真正的失败证据，再修复启动断点，最后用“在线、收件、拆干净”证明恢复。</p><span class="tag">设计方案 · 尚未完成真机修复</span></header>
+<section class="card amber" data-section="summary"><h2>01 · 已经知道什么</h2><p class="lead">系统拉起过 Lead，但检查时已无法访问它的会话。</p><p>Lead 是测试房里负责接收指令的智能体。主分支对照中，两份运行记录的进程编号相同，仍然无法通过私有连接访问会话；此前启动器还反复拉起它。</p><p>原日志中的宿主工具检查通过，也没有使用旧的告警参数。现在缺的是正文退出那一刻的证据，不能直接认定旧故障复发。</p><div class="comment"><label for="c-summary">这部分有什么要调整的？</label><textarea id="c-summary" data-comment="summary" placeholder="输入后保存在当前浏览器"></textarea></div></section>
+<section class="card" data-section="flow"><h2>02 · 核心流程</h2><p>启动前后留下同一次运行的记录；一旦失败，先保存具体原因，再执行经过隔离验证的清理。</p><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形渲染被系统权限拒绝；标准参数重试后仍失败。图源已保留，未使用远程渲染。</p></div><ol><li>系统启动器建立 Lead 终端，记录进程编号和连接地址。</li><li>在正文开始前接好证据保存，避免会话消失后线索也消失。</li><li>成功路径必须继续验证服务健康和真实收件；失败路径点明具体不一致项。</li><li>最终拆房只处理这个房里的进程。</li></ol><details><summary>查看本地 Mermaid 图源</summary><p class="muted">Mermaid 是用文字描述关系、再生成图的格式。</p><pre>flowchart TD
+  A[启动测试房] --&gt; B[系统启动器拉起 Lead 终端]
+  B --&gt; C[记录进程编号和私有连接地址]
+  C --&gt; D[进入 Lead 正文前开始留证]
+  D --&gt; E{正文存活且连接可访问?}
+  E --&gt;|否| F[保存具体失败项和正文退出证据]
+  F --&gt; G[只清理本测试房]
+  E --&gt;|是| H[服务健康 200 且 Lead 实际收件]
+  H --&gt; I[完整拆房并验证其他进程未受影响]
+  classDef fail fill:#fff2f0,stroke:#ff3b30,color:#1d1d1f
+  classDef ok fill:#effbef,stroke:#34c759,color:#1d1d1f
+  class F fail
+  class H,I ok
+</pre></details><div class="comment"><label for="c-flow">对流程的意见</label><textarea id="c-flow" data-comment="flow"></textarea></div></section>
+<section class="card" data-section="model"><h2>03 · 每条证据属于哪一次启动</h2><p>一个测试房可有多个 Lead。每个 Lead 的错误记录必须绑定自己的系统任务名、进程编号和时间，旧一轮的退出记录不能被当成新一轮的原因。</p><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形渲染被系统权限拒绝；标准参数重试后仍失败。图源已保留，未使用远程渲染。</p></div><p>失败快照保存“哪项检查错了”；正文证据保存“何时开始、是否退出、退出结果”。原始输出只保存在房内私有文件，分享报告只带净化后的必要信息。</p><details><summary>查看结构图源与字段含义</summary><p class="muted">TestRoom 是测试房，LeadRuntime 是负责人本次运行，FailureSnapshot 是失败检查记录，BodyEvidence 是正文运行证据。processId 是进程编号；socketPath 是私有连接地址；exitCode 是程序结束时返回的结果，未知时明确记未知。</p><pre>classDiagram
+  class TestRoom {
+    slotNumber
+    projectName
+  }
+  class LeadRuntime {
+    agentId
+    launchdLabel
+    manifestPath
+    processId
+    socketPath
+  }
+  class FailureSnapshot {
+    schemaVersion
+    reason
+    observedAt
+    probeResult
+  }
+  class BodyEvidence {
+    carrierProcessId
+    bodyProcessId
+    exitCodeOrUnknown
+    privateOutputFile
+  }
+  TestRoom &quot;1&quot; *-- &quot;1..*&quot; LeadRuntime : 一个房可以有多个负责人
+  LeadRuntime &quot;1&quot; --&gt; &quot;0..1&quot; FailureSnapshot : 失败时留下快照
+  FailureSnapshot --&gt; BodyEvidence : 只关联同一次启动
+</pre></details><div class="comment"><label for="c-model">对证据结构的意见</label><textarea id="c-model" data-comment="model"></textarea></div></section>
+<section class="card" data-section="choices"><h2>04 · 为什么这样修</h2><ul><li><strong>保留严格检查。</strong>更长的等待无法修复反复退出；跳过检查会把失联的 Lead 当成成功。</li><li><strong>先分清两种可能。</strong>是正文提前退出，还是探测工具与启动工具不一致，必须靠同一轮证据区分。</li><li><strong>不改成“只起服务”。</strong>服务能回应健康检查，只能证明一部分可用，不能证明 Lead 收到消息。</li><li><strong>诊断只在测试房开启。</strong>正常生产启动保持原行为，诊断记录也不获得停止进程的权限。</li></ul><div class="comment"><label for="c-choices">对取舍的意见</label><textarea id="c-choices" data-comment="choices"></textarea></div></section>
+<section class="card green" data-section="steps"><h2>05 · 接下来怎么验收</h2><ol><li>先补具体错误快照和真实正文输出、退出记录。</li><li>等 FLY-2454 的隔离修复通过实证，才在台架上复现；该单负责保证起拆不会碰到其他进程。</li><li>写清根因和最小修复，再经过一次设计复审后改根因代码。</li><li>Bridge 是处理消息和任务的服务。从干净主分支起房后，它的健康检查须返回 200，Lead 须在线并收到带唯一标记的测试消息。</li><li>完整拆房，验证其他进程未受影响，留下重跑命令和起拆用时；最终提交对应的持续集成检查必须通过。</li></ol><div class="comment"><label for="c-steps">对顺序和验收的意见</label><textarea id="c-steps" data-comment="steps"></textarea></div></section>
+<section class="card amber" data-section="boundary"><h2>06 · 本设计的边界</h2><p>本单必须恢复完整启动与收件，不能以“报错更清楚了”收尾。目前仅完成设计调查，没有启动或拆除真实测试房，没有声称服务已经恢复。</p><p>隔离漏洞由 FLY-2454 处理；重启演练仍由 FLY-2352 执行。若恢复后发现独立的 Discord 通道失联问题，带证据交回 FLY-1948 协调，不能隐去未满足的收件验收。</p><p>合并代码和部署仍分开；只有独立更新器负责部署。图形在本机两次渲染均被权限拒绝，所以此页如实展示待渲染提示和图源。</p><div class="comment"><label for="c-boundary">对边界的意见</label><textarea id="c-boundary" data-comment="boundary"></textarea></div></section>
+<section class="card" data-section="feedback"><h2>页面意见汇总</h2><p class="muted">批注只保存在当前浏览器，换设备不会自动同步。复制后发回即可；意见汇总是修改反馈，不代表审批通过。</p><div class="comment"><label for="c-feedback">补充整体意见</label><textarea id="c-feedback" data-comment="feedback"></textarea></div><p id="empty">还没有填写意见。</p><div id="chunks"></div><button id="copy-all" type="button" disabled>复制全部意见</button><div class="status" id="copy-status" role="status" aria-live="polite"></div></section>
+<footer><a href="https://linear.app/geoforge3d/issue/FLY-2455">查看 FLY-2455</a> · 设计可继续推进；真实启动与拆除需要先满足隔离前置条件。</footer>
+</main>
+<script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2455';
+  const prefix = 'fly2455-comments:' + location.pathname + ':';
+  const fields = Array.from(document.querySelectorAll('[data-comment]'));
+  const container = document.getElementById('chunks');
+  const empty = document.getElementById('empty');
+  const all = document.getElementById('copy-all');
+  const status = document.getElementById('copy-status');
+  let currentChunks = [];
+  async function copy(text) {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('unavailable');
+      await navigator.clipboard.writeText(text);
+      status.textContent = '已复制。';
+      return;
+    } catch (_) {
+      const temporary = document.createElement('textarea');
+      temporary.value = text;
+      temporary.setAttribute('aria-label', '待复制意见');
+      temporary.style.position = 'fixed';
+      temporary.style.left = '-10000px';
+      document.body.appendChild(temporary);
+      temporary.select();
+      let success = false;
+      try { success = document.execCommand('copy'); } catch (_) {}
+      temporary.remove();
+      status.textContent = success ? '已复制。' : '自动复制不可用，请在下方文本框中选中并复制。';
+    }
+  }
+  function refresh() {
+    const parts = [];
+    fields.forEach(field => {
+      const value = field.value.trim();
+      if (value) parts.push(field.closest('[data-section]').querySelector('h2').textContent + '\n' + value);
+    });
+    let text = parts.join('\n\n');
+    currentChunks = [];
+    const budget = 1780 - marker.length - 1;
+    while (text.length) {
+      let end = Math.min(budget, text.length);
+      if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
+      currentChunks.push(marker + '\n' + text.slice(0, end));
+      text = text.slice(end);
+    }
+    container.replaceChildren();
+    currentChunks.forEach((chunk, index) => {
+      const box = document.createElement('div');
+      box.className = 'chunk';
+      const label = document.createElement('label');
+      label.textContent = '意见 ' + (index + 1) + ' / ' + currentChunks.length;
+      label.htmlFor = 'chunk-' + index;
+      const field = document.createElement('textarea');
+      field.id = 'chunk-' + index;
+      field.readOnly = true;
+      field.value = chunk;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = '复制这一段';
+      button.addEventListener('click', () => copy(chunk));
+      box.append(label, field, button);
+      container.appendChild(box);
+    });
+    empty.hidden = currentChunks.length > 0;
+    all.disabled = currentChunks.length === 0;
+  }
+  fields.forEach(field => {
+    const key = prefix + field.dataset.comment;
+    try { field.value = localStorage.getItem(key) || ''; } catch (_) {}
+    field.addEventListener('input', () => {
+      try { localStorage.setItem(key, field.value); } catch (_) {}
+      status.textContent = '';
+      refresh();
+    });
+  });
+  all.addEventListener('click', () => copy(currentChunks.join('\n\n')));
+  refresh();
+})();
+</script>
+</body></html>

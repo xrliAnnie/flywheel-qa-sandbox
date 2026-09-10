@@ -177,6 +177,10 @@ run_mutant claude-env scripts/lib/qa-launchd-lead.sh \
   '<key>FLYWHEEL_SUMMARY_CONFIG_HOME</key><string>%s</string>' \
   '<key>FLYWHEEL_SUMMARY_CONFIG_HOME_MUTANT</key><string>%s</string>' \
   claude-plist
+run_mutant qa-diagnostics-env scripts/lib/qa-launchd-lead.sh \
+  '<key>FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR</key><string>%s</string>' \
+  '<key>FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR_MUTANT</key><string>%s</string>' \
+  claude-plist
 run_mutant codex-argv scripts/lib/qa-launchd-lead.sh \
   '<key>ProgramArguments</key><array><string>/bin/bash</string><string>%s</string></array>' \
   '<key>ProgramArguments</key><array><string>/bin/zsh</string><string>%s</string></array>' \
@@ -192,6 +196,92 @@ run_mutant stdout-key scripts/lib/qa-lead-artifacts.sh \
   '"leadSocket": "${lead_socket}"' '"leadSocketMutant": "${lead_socket}"' stdout
 run_mutant log-text scripts/lib/qa-lead-artifacts.sh \
   'private socket: %s' 'private socket MUTANT: %s' log
+
+# FLY-2455: mutate the production verifier's diagnostic call site, then run
+# that real function. A source-only assertion would miss broken runtime wiring.
+diagnostic_contract() (
+  local mirror="$1" work="$2" runtime="$2/runtime"
+  local label='com.flywheel.qa.lead.slot-7.qa-lead'
+  local manifest="$runtime/manifest.json" plist="$runtime/lead.plist"
+  local wrapper="$mirror/scripts/flywheel-lead-wrapper-v2.sh"
+  local lead_log="$runtime/lead.log" launchctl_bin="$work/launchctl" tmux_bin="$work/tmux"
+  mkdir -p "$runtime"
+  export FLYWHEEL_DIR="$mirror" FLYWHEEL_STATE_DIR="$work/state"
+  export FLYWHEEL_QA_LAUNCHD_DOMAIN=gui/test FLYWHEEL_QA_LAUNCHD_PID_POLLS=1
+  export FLYWHEEL_QA_LEAD_VERIFY_POLLS=1 FLYWHEEL_QA_LEAD_VERIFY_INTERVAL=0
+  export FLYWHEEL_QA_LAUNCHCTL="$launchctl_bin" FLYWHEEL_QA_TMUX="$tmux_bin"
+  log() { :; }
+  # shellcheck disable=SC1090
+  source "$mirror/scripts/lib/qa-launchd-lead.sh"
+  printf '%s\n' \
+    '{"leadId":"qa-lead","projectName":"test-slot-7","pid":4242,"socketPath":"/tmp/fly2455-mutant.sock"}' \
+    > "$manifest"
+  : > "$lead_log"
+  qa_launchd_render_plist "$plist" "$label" "$wrapper" "$manifest" \
+    "$work" "$work/state" "$work/projects.json" "$work/env" "$lead_log" \
+    >/dev/null 2>&1 || return 1
+  cat > "$launchctl_bin" <<'LAUNCH'
+#!/bin/sh
+printf '%s\n' 'state = running' 'pid = 4242'
+LAUNCH
+  cat > "$tmux_bin" <<'TMUX'
+#!/bin/sh
+if [ "$1" = -V ]; then printf '%s\n' 'tmux 3.7c'; exit 0; fi
+printf '%s\n' 'no server running on redacted socket' >&2
+exit 1
+TMUX
+  chmod +x "$launchctl_bin" "$tmux_bin"
+  if qa_launchd_lead_verify "$label" "$manifest" "$plist" "$lead_log" "$wrapper" \
+      >/dev/null 2>"$work/verify.err"; then
+    return 1
+  fi
+  jq -e '
+    .phase == "topology" and .reason == "session_probe_failed" and
+    .probe.kind == "socket_unavailable"
+  ' "$runtime/topology-failure.json" >/dev/null 2>&1
+)
+
+diagnostic_base="$TMP/diagnostic-base/repo"
+diagnostic_mutant="$TMP/diagnostic-mutant/repo"
+copy_mirror "$diagnostic_base"
+copy_mirror "$diagnostic_mutant"
+if ! mutate_once "$diagnostic_mutant/scripts/lib/qa-launchd-lead.sh" \
+    'qa_launchd_failure_snapshot topology "$label"' \
+    'qa_launchd_failure_snapshot topology-mutant "$label"'; then
+  fail "diagnostic call-site mutation was not applied exactly once"
+elif diagnostic_contract "$diagnostic_base" "$TMP/diagnostic-base/work" \
+    && ! diagnostic_contract "$diagnostic_mutant" "$TMP/diagnostic-mutant/work"; then
+  pass "diagnostic call-site mutant is rejected by executable verifier coverage"
+else
+  fail "diagnostic call-site mutation survived or baseline contract failed"
+fi
+
+# The immediate-exit assertion in the real wrapper suite must fail if the
+# production pipe-pane install is removed. Mirror packages read-only so the
+# test still executes the real identity resolver/body fixtures.
+wrapper_base="$TMP/wrapper-base/repo"
+wrapper_mutant="$TMP/wrapper-mutant/repo"
+copy_mirror "$wrapper_base"
+copy_mirror "$wrapper_mutant"
+for mirror in "$wrapper_base" "$wrapper_mutant"; do
+  cp "$ROOT/scripts/__tests__/fly1663-lead-v2-runtime.test.sh" \
+    "$mirror/scripts/__tests__/fly1663-lead-v2-runtime.test.sh"
+  ln -s "$ROOT/packages" "$mirror/packages"
+done
+if ! mutate_once "$wrapper_mutant/scripts/flywheel-lead-wrapper-v2.sh" \
+    'if ! "$tmux_bin" -S "$socket" pipe-pane -o -t '\''%0'\'' "$recorder_command"; then' \
+    'if false; then'; then
+  fail "wrapper recorder mutation was not applied exactly once"
+elif bash "$wrapper_base/scripts/__tests__/fly1663-lead-v2-runtime.test.sh" \
+      >"$TMP/wrapper-base.out" 2>&1 \
+    && ! bash "$wrapper_mutant/scripts/__tests__/fly1663-lead-v2-runtime.test.sh" \
+      >"$TMP/wrapper-mutant.out" 2>&1; then
+  pass "wrapper recorder mutant is rejected by the real immediate-exit coverage"
+else
+  fail "wrapper recorder mutation survived or baseline suite failed"
+  tail -30 "$TMP/wrapper-base.out" 2>/dev/null || true
+  tail -30 "$TMP/wrapper-mutant.out" 2>/dev/null || true
+fi
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [[ "$failed" -eq 0 ]]

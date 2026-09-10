@@ -1,0 +1,27 @@
+classDiagram
+  class TestRoom {
+    slotNumber
+    projectName
+  }
+  class LeadRuntime {
+    agentId
+    launchdLabel
+    manifestPath
+    processId
+    socketPath
+  }
+  class FailureSnapshot {
+    schemaVersion
+    reason
+    observedAt
+    probeResult
+  }
+  class BodyEvidence {
+    carrierProcessId
+    bodyProcessId
+    exitCodeOrUnknown
+    privateOutputFile
+  }
+  TestRoom "1" *-- "1..*" LeadRuntime : 一个房可以有多个负责人
+  LeadRuntime "1" --> "0..1" FailureSnapshot : 失败时留下快照
+  FailureSnapshot --> BodyEvidence : 只关联同一次启动

@@ -842,6 +842,26 @@ teardown_slot() {
     return 1
   fi
 
+  # FLY-2455: explicit teardown is the default disposition for private raw
+  # body output. Stop the recorder with its launchd job first, then let the
+  # bounded helper delete only body-output residue. A failed disposition keeps
+  # owner and borrowed locks tied to this host slot for operator recovery.
+  local QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
+  if [[ -f "$QA_LEAD_REGISTRY" ]] \
+      && ! qa_launchd_discard_evidence "$QA_LEAD_REGISTRY"; then
+    local evidence_locks=("/tmp/flywheel-test-slot-${SLOT}.lock") evidence_slot
+    if [[ -f "${SLOT_DIR}/campaign-manifest.json" ]]; then
+      while IFS= read -r evidence_slot; do
+        [[ -z "$evidence_slot" ]] \
+          || evidence_locks+=("/tmp/flywheel-test-slot-${evidence_slot}.lock")
+      done < <(jq -r '.borrowedSlots[]?' "${SLOT_DIR}/campaign-manifest.json" 2>/dev/null || true)
+    fi
+    qa_launchd_mark_evidence_pending "$QA_LEAD_REGISTRY" "${evidence_locks[@]}" || true
+    log "ERROR: raw Lead diagnostics could not be safely discarded; retaining diagnostic-evidence-pending locks"
+    qa_slot_bridge_guard_release
+    return 1
+  fi
+
   # FLY-1189: owner-slot campaign cleanup — stop the extra Leads + release the
   # borrowed slot locks BEFORE the legacy single-Lead teardown below. Absent
   # manifest → no-op (legacy behavior verbatim).

@@ -45,6 +45,121 @@ qa_launchd_require_tmux_bin() {
     || { qa_launchd_err "tmux binary must be an absolute executable: $tmux_bin"; return 1; }
 }
 
+qa_launchd_resolve_command() {
+  local candidate="$1" resolved=""
+  if [[ "$candidate" == /* ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  resolved=$(command -v "$candidate" 2>/dev/null || true)
+  [[ "$resolved" == /* ]] || return 1
+  printf '%s\n' "$resolved"
+}
+
+qa_launchd_failure_snapshot() {
+  local phase="$1" label="$2" plist="$3" manifest="$4" log_file="$5"
+  local wrapper="$6" tmux_bin="$7" launch_pid="$8" manifest_pid="$9"
+  local socket="${10}" probe_rc="${11}" observed_at="${12}"
+  local helper launchctl_bin domain
+  helper="${FLYWHEEL_QA_LEAD_DIAGNOSTICS_HELPER:-${FLYWHEEL_DIR:-}/scripts/lib/qa-lead-diagnostics.py}"
+  [[ "$helper" == /* && -f "$helper" && ! -L "$helper" ]] \
+    || { qa_launchd_err "diagnostic_write_failed: helper_unavailable"; return 1; }
+  launchctl_bin=$(qa_launchd_resolve_command "${FLYWHEEL_QA_LAUNCHCTL:-launchctl}" || true)
+  tmux_bin=$(qa_launchd_resolve_command "$tmux_bin" || true)
+  [[ -n "$launchctl_bin" && -n "$tmux_bin" ]] \
+    || { qa_launchd_err "diagnostic_write_failed: probe_binary_unavailable"; return 1; }
+  domain=$(qa_launchd_domain) || return 1
+  python3 "$helper" snapshot \
+    --phase "$phase" --label "$label" --plist "$plist" --manifest "$manifest" \
+    --log "$log_file" --wrapper "$wrapper" --launchctl "$launchctl_bin" \
+    --domain "$domain" --tmux "$tmux_bin" \
+    --last-launch-pid "$launch_pid" --last-manifest-pid "$manifest_pid" \
+    --last-socket "$socket" --last-probe-exit-code "$probe_rc" \
+    --last-observed-at "$observed_at"
+}
+
+# FLY-2455: return 0 when raw body evidence still owns the slot, 1 only when
+# every registered Claude runtime is conclusively clear. Malformed registry or
+# recorder metadata fails closed to pending without reading body-output bytes.
+qa_launchd_evidence_residue_pending() {
+  local registry="$1" manifest runtime recorder
+  [[ -e "$registry" || -L "$registry" ]] || return 1
+  [[ -f "$registry" && ! -L "$registry" ]] || return 0
+  jq -e 'type == "array" and all(.[];
+      type == "object"
+      and (if (.carrier // "") == "codex-tui"
+        then .manifest == ""
+        elif (.carrier // "") == ""
+        then (.manifest | (type == "string" and length > 0))
+        else false
+      end))' \
+    "$registry" >/dev/null 2>&1 || return 0
+  while IFS= read -r manifest; do
+    [[ -n "$manifest" ]] || continue
+    runtime=$(dirname "$manifest")
+    [[ "$runtime" =~ ^/(private/)?tmp/flywheel-test-slot-[0-9]+/launchd/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+      || return 0
+    if [[ -e "$runtime/body-output.log" || -L "$runtime/body-output.log" \
+        || -e "$runtime/body-output.truncated" || -L "$runtime/body-output.truncated" ]]; then
+      return 0
+    fi
+    recorder="$runtime/body-recorder.json"
+    if [[ -e "$recorder" || -L "$recorder" ]]; then
+      [[ -f "$recorder" && ! -L "$recorder" ]] || return 0
+      jq -e '
+        .schemaVersion == 1
+        and (.active | type == "boolean") and .active == false
+        and (.carrierPid | type == "number" and floor == . and . > 0)
+        and (.recorderPid | type == "number" and floor == . and . > 0)
+        and (.startedAt | type == "string" and length > 0)
+        and (.endedAt | type == "string" and length > 0)
+        and (.truncated | type == "boolean")
+      ' "$recorder" >/dev/null 2>&1 \
+        || return 0
+    fi
+  done < <(jq -r '.[] | select((.carrier // "") == "") | .manifest' "$registry")
+  return 1
+}
+
+# Mark every lock that shares this host runtime. Campaign sidecars stay intact,
+# so borrowed locks continue to point at the owner responsible for disposition.
+qa_launchd_mark_evidence_pending() {
+  local registry="$1" lock temp
+  shift
+  qa_launchd_evidence_residue_pending "$registry" || return 1
+  for lock in "$@"; do
+    [[ -d "$lock" && ! -L "$lock" ]] || continue
+    temp=$(mktemp "${lock}/.evidence-pid.XXXXXX") || return 1
+    if printf '%s\n' diagnostic-evidence-pending > "$temp" \
+        && chmod 600 "$temp" && mv -f "$temp" "$lock/pid"; then
+      :
+    else
+      rm -f "$temp"
+      return 1
+    fi
+  done
+  return 0
+}
+
+# Explicit/default teardown disposition. The recorder must already have exited;
+# the helper validates each slot-local runtime and removes only raw output plus
+# its truncation marker. Whitelisted status/snapshots remain available.
+qa_launchd_discard_evidence() {
+  local registry="$1" manifest runtime
+  local helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qa-lead-diagnostics.py"
+  [[ -f "$registry" && ! -L "$registry" && -f "$helper" ]] || return 1
+  jq -e 'type == "array"' "$registry" >/dev/null 2>&1 || return 1
+  while IFS= read -r manifest; do
+    [[ -n "$manifest" ]] || continue
+    runtime=$(dirname "$manifest")
+    if [[ -e "$runtime/body-output.log" || -L "$runtime/body-output.log" \
+        || -e "$runtime/body-output.truncated" || -L "$runtime/body-output.truncated" ]]; then
+      python3 "$helper" discard --runtime "$runtime" || return 1
+    fi
+  done < <(jq -r '.[] | select((.carrier // "") == "") | .manifest // empty' "$registry")
+  ! qa_launchd_evidence_residue_pending "$registry"
+}
+
 qa_launchd_resolve_codex_tmux_bin() {
   local candidate
   # This is the same Homebrew-first authority the Codex wrapper historically
@@ -77,7 +192,7 @@ qa_launchd_plist_argv_codex() {
 
 qa_launchd_plist_env_claude() {
   local x_home="$1" x_path="$2" x_state="$3" x_projects="$4"
-  local x_env="$5" x_summary_config_home="$6"
+  local x_env="$5" x_summary_config_home="$6" x_diagnostics_dir="$7"
   printf '%s\n' '<key>EnvironmentVariables</key><dict>'
   printf '<key>HOME</key><string>%s</string>\n' "$x_home"
   printf '<key>PATH</key><string>%s</string>\n' "$x_path"
@@ -88,6 +203,7 @@ qa_launchd_plist_env_claude() {
   if [ -n "$x_summary_config_home" ]; then
     printf '<key>FLYWHEEL_SUMMARY_CONFIG_HOME</key><string>%s</string>\n' "$x_summary_config_home"
   fi
+  printf '<key>FLYWHEEL_QA_LEAD_DIAGNOSTICS_DIR</key><string>%s</string>\n' "$x_diagnostics_dir"
   printf '%s\n' '</dict>'
 }
 
@@ -136,7 +252,7 @@ qa_launchd_render_plist() {
   [ -x "$wrapper" ] || { qa_launchd_err "wrapper is not executable: $wrapper"; return 1; }
   [ -f "$manifest" ] || { qa_launchd_err "manifest missing: $manifest"; return 1; }
 
-  local x_label x_wrapper x_manifest x_home x_state x_projects x_env x_log x_path x_summary_config_home
+  local x_label x_wrapper x_manifest x_home x_state x_projects x_env x_log x_path x_summary_config_home x_diagnostics_dir
   x_label=$(printf '%s' "$label" | qa_launchd_xml_escape)
   x_wrapper=$(printf '%s' "$wrapper" | qa_launchd_xml_escape)
   x_manifest=$(printf '%s' "$manifest" | qa_launchd_xml_escape)
@@ -146,6 +262,7 @@ qa_launchd_render_plist() {
   x_env=$(printf '%s' "$env_file" | qa_launchd_xml_escape)
   x_log=$(printf '%s' "$log_file" | qa_launchd_xml_escape)
   x_summary_config_home=$(printf '%s' "$summary_config_home" | qa_launchd_xml_escape)
+  x_diagnostics_dir=$(printf '%s' "$(dirname "$manifest")" | qa_launchd_xml_escape)
   x_path=$(printf '%s' "${FLYWHEEL_QA_LAUNCHD_PATH:-${home}/.local/bin:${home}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}" \
     | qa_launchd_xml_escape)
   tmp="${plist}.tmp.$$"
@@ -155,7 +272,7 @@ qa_launchd_render_plist() {
     qa_launchd_plist_open "$x_label"
     qa_launchd_plist_argv_claude "$x_wrapper" "$x_manifest"
     qa_launchd_plist_env_claude "$x_home" "$x_path" "$x_state" \
-      "$x_projects" "$x_env" "$x_summary_config_home"
+      "$x_projects" "$x_env" "$x_summary_config_home" "$x_diagnostics_dir"
     qa_launchd_plist_close "$x_log"
   } > "$tmp"; then
     rm -f "$tmp"
@@ -701,15 +818,24 @@ PY
 
 # Bootstrap one unique label and print the live launchd job PID.
 qa_launchd_lead_start() {
-  local label="$1" plist="$2" launchctl_bin="${FLYWHEEL_QA_LAUNCHCTL:-launchctl}"
+  local label="$1" plist="$2" manifest="${3:-}" log_file="${4:-}"
+  local wrapper="${5:-}" tmux_bin="${6:-${FLYWHEEL_QA_TMUX:-tmux}}"
+  local launchctl_bin="${FLYWHEEL_QA_LAUNCHCTL:-launchctl}"
   local domain pid
   domain=$(qa_launchd_domain) || return 1
   if "$launchctl_bin" print "${domain}/${label}" >/dev/null 2>&1; then
     qa_launchd_err "label already loaded: $label"
     return 1
   fi
-  "$launchctl_bin" bootstrap "$domain" "$plist" \
-    || { qa_launchd_err "bootstrap failed: $label"; return 1; }
+  if ! "$launchctl_bin" bootstrap "$domain" "$plist"; then
+    qa_launchd_err "bootstrap failed: $label"
+    if [[ -n "$manifest" && -n "$log_file" && -n "$wrapper" ]]; then
+      qa_launchd_failure_snapshot bootstrap "$label" "$plist" "$manifest" "$log_file" \
+        "$wrapper" "$tmux_bin" "" "" "" "" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        || true
+    fi
+    return 1
+  fi
   for _ in $(seq 1 "${FLYWHEEL_QA_LAUNCHD_PID_POLLS:-50}"); do
     pid=$(qa_launchd_lead_pid "$label" || true)
     if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
@@ -718,8 +844,13 @@ qa_launchd_lead_start() {
     fi
     sleep "${FLYWHEEL_QA_LAUNCHD_POLL_INTERVAL:-0.1}"
   done
-  "$launchctl_bin" bootout "${domain}/${label}" >/dev/null 2>&1 || true
   qa_launchd_err "job never published a PID: $label"
+  if [[ -n "$manifest" && -n "$log_file" && -n "$wrapper" ]]; then
+    qa_launchd_failure_snapshot bootstrap "$label" "$plist" "$manifest" "$log_file" \
+      "$wrapper" "$tmux_bin" "" "" "" "" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+      || true
+  fi
+  "$launchctl_bin" bootout "${domain}/${label}" >/dev/null 2>&1 || true
   return 1
 }
 
@@ -732,10 +863,14 @@ qa_launchd_lead_stop() {
 }
 
 # Verify positive topology evidence, not merely process existence.
-# Args: label manifest
+# Args: label manifest [plist log wrapper]
 qa_launchd_lead_verify() {
-  local label="$1" manifest="$2" tmux_bin="${FLYWHEEL_QA_TMUX:-tmux}"
+  local label="$1" manifest="$2" plist="${3:-}" log_file="${4:-}" wrapper="${5:-}"
+  local tmux_bin="${FLYWHEEL_QA_TMUX:-tmux}" resolved_tmux=""
   local launch_pid="" manifest_pid="" socket="" manifest_topology=""
+  local probe_rc="" last_observed_at=""
+  resolved_tmux=$(qa_launchd_resolve_command "$tmux_bin" || true)
+  [[ -n "$resolved_tmux" ]] && tmux_bin="$resolved_tmux"
   for _ in $(seq 1 "${FLYWHEEL_QA_LEAD_VERIFY_POLLS:-$QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT}"); do
     manifest_topology=$(jq -er '
       select((.pid | type) == "number" and .pid > 0)
@@ -746,15 +881,27 @@ qa_launchd_lead_verify() {
     if [[ -n "$manifest_topology" ]]; then
       IFS=$'\t' read -r manifest_pid socket <<<"$manifest_topology"
       launch_pid=$(qa_launchd_lead_pid "$label" || true)
-      if [[ -n "$launch_pid" && "$manifest_pid" == "$launch_pid" ]] \
-          && "$tmux_bin" -S "$socket" has-session -t '=main' >/dev/null 2>&1; then
-        printf '%s\t%s\n' "$launch_pid" "$socket"
-        return 0
+      if [[ -n "$launch_pid" && "$manifest_pid" == "$launch_pid" ]]; then
+        if "$tmux_bin" -S "$socket" has-session -t '=main' >/dev/null 2>&1; then
+          printf '%s\t%s\n' "$launch_pid" "$socket"
+          return 0
+        else
+          probe_rc=$?
+        fi
+      else
+        probe_rc=""
       fi
     fi
+    last_observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     sleep "${FLYWHEEL_QA_LEAD_VERIFY_INTERVAL:-$QA_LAUNCHD_LEAD_VERIFY_INTERVAL_DEFAULT}"
   done
-  qa_launchd_err "topology verification failed: label=$label launchPid=${launch_pid:-} manifestPid=${manifest_pid:-} socket=${socket:-}"
+  if [[ -n "$plist" && -n "$log_file" && -n "$wrapper" ]]; then
+    qa_launchd_failure_snapshot topology "$label" "$plist" "$manifest" "$log_file" \
+      "$wrapper" "$tmux_bin" "$launch_pid" "$manifest_pid" "$socket" \
+      "$probe_rc" "$last_observed_at" || true
+  else
+    qa_launchd_err "topology verification failed: label=$label launchPid=${launch_pid:-} manifestPid=${manifest_pid:-} socket=${socket:-}"
+  fi
   return 1
 }
 

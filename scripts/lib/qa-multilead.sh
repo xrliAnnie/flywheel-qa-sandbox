@@ -331,6 +331,10 @@ qa_multilead_claim_one() {
 	fi
 	local lock_pid
 	lock_pid=$(cat "$lockfile/pid" 2>/dev/null || echo "")
+	if [[ "$lock_pid" == "diagnostic-evidence-pending" ]]; then
+		echo "[qa-multilead] ${lockfile} has diagnostic-evidence-pending ownership — not reclaiming; run explicit test-teardown.sh ${slot_arg}" >&2
+		return 1
+	fi
 	if [[ "$lock_pid" == "cycle-failed" ]]; then
 		echo "[qa-multilead] ${lockfile} has cycle-failed ownership — not reclaiming; run explicit test-teardown.sh ${slot_arg}" >&2
 		return 1

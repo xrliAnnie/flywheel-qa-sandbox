@@ -387,6 +387,7 @@ jobs:
           bash scripts/__tests__/fly2266-cmux-lead-attach-health.test.sh
           bash scripts/__tests__/fly1663-bridge-launchd.test.sh
           bash scripts/__tests__/fly1663-qa-launchd.test.sh
+          node --test scripts/__tests__/qa-lead-diagnostics.test.mjs
           bash scripts/__tests__/qa-lead-artifact-fixtures.test.sh
           bash scripts/__tests__/fly1663-qa-launchd-mutants.test.sh
           bash scripts/__tests__/codex-lead-state-root.test.sh
@@ -975,6 +976,7 @@ jobs:
           bash scripts/__tests__/fly1726-default-lead-delivery.test.sh
           bash scripts/__tests__/fly1726-lead-identity-wrapper.test.sh
           bash scripts/__tests__/fly1697-v2-lease-body.test.sh
+          bash packages/teamlead/scripts/__tests__/claude-lead-comm-db-path.test.sh
           bash packages/teamlead/scripts/__tests__/canonical-lead-identity.test.sh
 
       # FLY-1708/FLY-1751: both process-birth and SessionStart(source=clear)

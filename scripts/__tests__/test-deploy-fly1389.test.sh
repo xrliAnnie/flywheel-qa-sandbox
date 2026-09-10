@@ -87,6 +87,7 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-lead.sh" \
   "${SCRIPT_DIR}/lib/qa-lead-artifacts.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-env.py" \
+  "${SCRIPT_DIR}/lib/qa-lead-diagnostics.py" \
   "${SCRIPT_DIR}/lib/qa-codex-home-provision.mjs" \
   "${SCRIPT_DIR}/lib/qa-codex-lead-render.py" \
   "${SCRIPT_DIR}/lib/qa-codex-lead-wrapper.template.sh" \
@@ -1014,6 +1015,44 @@ else
   else
     fail "A: --alerts hermetic deploy failed before the identity assertion" \
       "carrier=[$A_LEAD_DIAGNOSTIC] deploy=[$(tail -30 <<<"$A_DEPLOY_DIAGNOSTIC")]"
+  fi
+  run_teardown "$FH1" "$LEAD_SLOT" || true
+fi
+
+# ── D1: failed Lead topology records the exact item before stop ────────────
+rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"
+D1_TMUX="$SB/tmux-topology-fail"
+cat > "$D1_TMUX" <<'TMUXFAIL'
+#!/bin/sh
+if [ "${1:-}" = "-V" ]; then
+  printf '%s\n' 'tmux 3.7c'
+  exit 0
+fi
+printf '%s\n' 'no server running on redacted fixture socket' >&2
+exit 1
+TMUXFAIL
+chmod +x "$D1_TMUX"
+D1_OUT="$SB/d1-out.json"; D1_ERR="$SB/d1-err.log"
+if FLY1389_QA_TMUX="$D1_TMUX" \
+    run_deploy "$FH1" "$LEAD_SLOT" "$D1_OUT" "$D1_ERR" --lead-ready-timeout 1; then
+  fail "D1: broken topology fixture must fail deploy"
+  run_teardown "$FH1" "$LEAD_SLOT" || true
+else
+  D1_RUNTIME="/tmp/flywheel-test-slot-${LEAD_SLOT}/launchd/flywheel-test-31"
+  D1_EVIDENCE="$D1_RUNTIME/topology-failure.json"
+  if [[ -f "$D1_EVIDENCE" && "$(mode_of "$D1_EVIDENCE")" == "600" ]] \
+      && jq -e '
+        .phase == "topology" and .reason == "session_probe_failed" and
+        .probe.kind == "socket_unavailable" and
+        .label == "com.flywheel.qa.lead.slot-31.flywheel-test-31"
+      ' "$D1_EVIDENCE" >/dev/null 2>&1 \
+      && grep -qF "phase=topology reason=session_probe_failed" "$D1_ERR" \
+      && grep -qF "evidencePath=$D1_EVIDENCE" "$D1_ERR" \
+      && ! grep -qF 'launchd-v2 Lead bootstrap failed' "$D1_ERR"; then
+    pass "D1: topology failure names the probe item and persists evidence before stop"
+  else
+    fail "D1: topology failure collapsed to a generic bootstrap error" \
+      "stderr=[$(tail -20 "$D1_ERR")] evidence=[$(cat "$D1_EVIDENCE" 2>/dev/null || true)]"
   fi
   run_teardown "$FH1" "$LEAD_SLOT" || true
 fi

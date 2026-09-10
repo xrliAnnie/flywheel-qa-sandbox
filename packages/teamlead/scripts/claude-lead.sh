@@ -2363,7 +2363,7 @@ if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
   log "${_LOCKED_ROLE_LABEL}: flywheel-inbox MCP NOT registered"
 elif [ -d "$INBOX_MCP_DIR" ]; then
   INBOX_MCP_BIN="$(cd "$INBOX_MCP_DIR" && pwd)/index.js"
-  COMM_DB_PATH="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
+  COMM_DB_PATH="$FLYWHEEL_COMM_DB"
   inbox_server=$(jq -n \
     --arg bin "$INBOX_MCP_BIN" \
     --arg db "$COMM_DB_PATH" \
@@ -3015,7 +3015,11 @@ if [ "$RULES_BUNDLE_MODE" = "bundle" ]; then
   CLAUDE_ARGS+=(--append-system-prompt-file "$RULES_BUNDLE_PATH")
   log "Appending consolidated rules bundle: ${RULES_BUNDLE_PATH} (${#RULES_BUNDLE_FILES[@]} files)"
   if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
-    trap _rules_bundle_uncommitted_cleanup EXIT
+    if [ "${_V2_BODY_EXIT_TRAP_ACTIVE:-0}" = 1 ]; then
+      _V2_RULES_CLEANUP_READY=1
+    else
+      trap _rules_bundle_uncommitted_cleanup EXIT
+    fi
   fi
 else
   log "WARNING: running LEGACY last-one-wins mode, rules NOT bundled (FLYWHEEL_LEAD_RULES_BUNDLE=legacy)"
@@ -3383,5 +3387,9 @@ fi
   # Primary shutdown path. TMUX was injected by this private server into %0.
   # The pane-exited hook is an independent fallback if this body is SIGKILLed.
   _v2_exit="$CLAUDE_EXIT"
+  if [ "${_V2_BODY_EXIT_TRAP_ACTIVE:-0}" = 1 ] \
+      && declare -F _v2_body_finalize >/dev/null 2>&1; then
+    _v2_body_finalize "$_v2_exit" pre_server_stop "$CLAUDE_EXIT"
+  fi
   tmux kill-server 2>/dev/null || true
   exit "$_v2_exit"

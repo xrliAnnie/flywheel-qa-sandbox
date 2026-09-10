@@ -119,6 +119,10 @@ claim_slot() {
   # Check if existing lock is stale (Bridge PID dead)
   local lock_pid
   lock_pid=$(cat "$lockfile/pid" 2>/dev/null || echo "")
+  if [[ "$lock_pid" == "diagnostic-evidence-pending" ]]; then
+    log "Slot ${slot_num} has diagnostic-evidence-pending ownership — refusing automatic reclaim; run explicit test-teardown.sh ${slot_num}"
+    return 1
+  fi
   if [[ "$lock_pid" == "cycle-failed" ]]; then
     log "Slot ${slot_num} has cycle-failed ownership — refusing automatic reclaim; run explicit test-teardown.sh ${slot_num}"
     return 1
@@ -581,6 +585,24 @@ else
   done
 fi
 
+# Raw body output is private evidence, not abandoned temp data. Once capture
+# exists, every failure-release path uses this one host-runtime decision for the
+# owner and all borrowed locks.
+qa_slot_evidence_allows_release() {
+  local registry="${SLOT_DIR:-}/launchd-leads.json" xsid
+  local locks=("/tmp/flywheel-test-slot-${SLOT}.lock")
+  [[ "$registry" == /tmp/flywheel-test-slot-*/launchd-leads.json ]] || return 0
+  if qa_launchd_evidence_residue_pending "$registry"; then
+    for xsid in ${CAMPAIGN_SLOT_IDS[@]+"${CAMPAIGN_SLOT_IDS[@]}"}; do
+      [[ "$xsid" == "$SLOT" ]] || locks+=("/tmp/flywheel-test-slot-${xsid}.lock")
+    done
+    qa_launchd_mark_evidence_pending "$registry" "${locks[@]}" || true
+    log "Raw Lead diagnostics remain under ${SLOT_DIR}; retaining campaign locks as diagnostic-evidence-pending"
+    return 1
+  fi
+  return 0
+}
+
 # Cleanup trap: release slot lock if deploy fails before Bridge PID is written
 cleanup_on_failure() {
   local lock="/tmp/flywheel-test-slot-${SLOT}.lock"
@@ -605,7 +627,8 @@ cleanup_on_failure() {
 			QA_LEAD_REGISTRY=""
 		fi
 		qa_generalized_invalidate_room_info "$SLOT_DIR"
-		if (( generalized_bridge_stopped == 1 && qa_registry_stopped == 1 )); then
+			if (( generalized_bridge_stopped == 1 && qa_registry_stopped == 1 )) \
+					&& qa_slot_evidence_allows_release; then
 			rm -rf "$lock"
 		else
 			echo "ERROR: generalized cleanup did not converge; retaining slot ${SLOT} lock" >&2
@@ -636,7 +659,7 @@ cleanup_on_failure() {
   lock_pid=$(cat "$lock/pid" 2>/dev/null || echo "")
   # Only clean up if still in "claiming" state (Bridge PID not yet written)
   if [[ "$lock_pid" == "claiming" ]]; then
-    if (( qa_registry_stopped == 1 )); then
+    if (( qa_registry_stopped == 1 )) && qa_slot_evidence_allows_release; then
       log "Deploy interrupted — releasing slot ${SLOT} lock"
       rm -rf "$lock"
     else
@@ -652,7 +675,8 @@ cleanup_on_failure() {
     [[ "$xsid" == "$SLOT" ]] && continue
     xlock="/tmp/flywheel-test-slot-${xsid}.lock"
     xpid=$(cat "$xlock/pid" 2>/dev/null || echo "")
-    if [[ "$xpid" == "claiming" && "$qa_registry_stopped" == 1 ]]; then
+    if [[ "$xpid" == "claiming" && "$qa_registry_stopped" == 1 ]] \
+        && qa_slot_evidence_allows_release; then
       log "Deploy interrupted — releasing borrowed slot ${xsid} lock"
       rm -rf "$xlock"
     elif [[ "$xpid" == "claiming" ]]; then
@@ -1667,13 +1691,38 @@ qa_slot_start_lead() {
     "$plist" "$label" "$wrapper" "$manifest" "$HOME" "$state" \
     "$projects" "$env_file" "$lead_log" "$QA_SUMMARY_CONFIG_HOME" || return 1
   qa_launchd_register "$QA_LEAD_REGISTRY" "$label" "$plist" "$manifest" || return 1
-  launch_pid=$(qa_launchd_lead_start "$label" "$plist") || return 1
-  topology=$(qa_launchd_lead_verify "$label" "$manifest") \
+  launch_pid=$(FLYWHEEL_QA_LEAD_DIAGNOSTICS_HELPER="${REPO_ROOT}/scripts/lib/qa-lead-diagnostics.py" \
+    qa_launchd_lead_start "$label" "$plist" "$manifest" "$lead_log" "$wrapper" \
+      "${FLYWHEEL_QA_TMUX:-tmux}") || return 1
+  topology=$(FLYWHEEL_QA_LEAD_DIAGNOSTICS_HELPER="${REPO_ROOT}/scripts/lib/qa-lead-diagnostics.py" \
+    qa_launchd_lead_verify "$label" "$manifest" "$plist" "$lead_log" "$wrapper") \
     || { qa_launchd_lead_stop "$label" || true; return 1; }
   IFS=$'\t' read -r launch_pid socket <<<"$topology"
   printf '%s\n' "$launch_pid" > "$pid_file"
   printf '%s\t%s\t%s\t%s\t%s\n' \
     "$launch_pid" "$socket" "$label" "$manifest" "$pid_file"
+}
+
+qa_slot_report_lead_start_failure() {
+  local agent="$1" runtime="${SLOT_DIR}/launchd/${1}"
+  local phase evidence reason label
+  for phase in topology bootstrap; do
+    evidence="${runtime}/${phase}-failure.json"
+    [[ -f "$evidence" && ! -L "$evidence" ]] || continue
+    reason=$(jq -er --arg phase "$phase" '
+      select(.schemaVersion == 1 and .phase == $phase)
+      | .reason
+      | select(type == "string" and test("^[a-z_]+$"))
+    ' "$evidence" 2>/dev/null || true)
+    label=$(jq -er '
+      .label | select(type == "string" and test("^[A-Za-z0-9._-]+$"))
+    ' "$evidence" 2>/dev/null || true)
+    if [[ -n "$reason" && -n "$label" ]]; then
+      log "ERROR: Lead startup failed phase=${phase} reason=${reason} label=${label} evidencePath=${evidence}"
+      return 0
+    fi
+  done
+  log "ERROR: Lead startup failed phase=preflight reason=unknown agent=${agent} evidenceDir=${runtime}"
 }
 
 # ── FLY-1389 P0-d: test slots are FRESH by definition — unconditionally drop
@@ -1737,7 +1786,7 @@ LEAD_LAUNCH_RECORD=$(qa_slot_start_lead \
   "${SLOT_DIR}/discord-state" "${SLOT_DIR}/test-identity.md" \
   "${SLOT_DIR}/lead-workspace" "$LEAD_LOG" \
   ${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"}) \
-  || { log "ERROR: launchd-v2 Lead bootstrap failed"; exit 1; }
+  || { qa_slot_report_lead_start_failure "$AGENT_ID"; exit 1; }
 IFS=$'\t' read -r LEAD_BG_PID _lead_coordinate LEAD_LAUNCHD_LABEL _lead_carrier_home LEAD_PID_FILE \
   <<<"$LEAD_LAUNCH_RECORD"
 log "Lead background PID: ${LEAD_BG_PID}"
@@ -1796,8 +1845,10 @@ fi
 if [[ "$LEAD_READY" != "true" ]]; then
   log "ERROR: Lead did not become ready within ${LEAD_READY_TIMEOUT_SEC} seconds"
   if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
-    QA_LEAD_REGISTRY=""
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    if qa_slot_evidence_allows_release; then
+      QA_LEAD_REGISTRY=""
+      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    fi
   else
     log "ERROR: Lead cleanup did not converge; retaining slot ${SLOT} lock"
   fi
@@ -1941,7 +1992,8 @@ EOF
       "$XSID" "$XAGENT" "$XTOKEN_ENV_NAME" "$XTOKEN" "$XROLE" \
       "${XDIR}/discord-state" "${XDIR}/test-identity.md" \
       "${XDIR}/lead-workspace" "$XLEAD_LOG" "${XLEAD_ENV[@]}") \
-      || campaign_abort "extra Lead ${XAGENT} launchd-v2 bootstrap failed"
+      || { qa_slot_report_lead_start_failure "$XAGENT"; \
+        campaign_abort "extra Lead ${XAGENT} startup failed"; }
     IFS=$'\t' read -r XLEAD_BG_PID _xlead_coordinate _xlead_label _xlead_carrier_home _xlead_pid_file \
       <<<"$XLEAD_LAUNCH_RECORD"
     EXTRA_LEAD_BG_PIDS+=("$XLEAD_BG_PID")
@@ -2196,8 +2248,10 @@ for i in $(seq 1 120); do
   if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
     log "ERROR: Bridge process died"
     if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
-      QA_LEAD_REGISTRY=""
-      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      if qa_slot_evidence_allows_release; then
+        QA_LEAD_REGISTRY=""
+        rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      fi
     else
       log "ERROR: Lead cleanup did not converge; retaining slot ${SLOT} lock"
     fi
@@ -2210,8 +2264,10 @@ if [[ "$BRIDGE_READY" != "true" ]]; then
   log "ERROR: Bridge did not become ready within 120 seconds"
   kill "$BRIDGE_PID" 2>/dev/null || true
   if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
-    QA_LEAD_REGISTRY=""
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    if qa_slot_evidence_allows_release; then
+      QA_LEAD_REGISTRY=""
+      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    fi
   else
     log "ERROR: Lead cleanup did not converge; retaining slot ${SLOT} lock"
   fi

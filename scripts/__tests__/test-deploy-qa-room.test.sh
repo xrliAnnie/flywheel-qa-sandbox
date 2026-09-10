@@ -172,6 +172,14 @@ if grep -qF 'qa_launchd_lead_start' "$TD_SRC" \
 else
   fail "launchd carrier missing" "test-deploy still exposes the direct claude-lead path"
 fi
+if grep -qF 'qa_launchd_lead_start "$label" "$plist" "$manifest" "$lead_log" "$wrapper"' "$TD_SRC" \
+  && grep -qF 'qa_launchd_lead_verify "$label" "$manifest" "$plist" "$lead_log" "$wrapper"' "$TD_SRC" \
+  && grep -qF 'qa_slot_report_lead_start_failure "$AGENT_ID"' "$TD_SRC" \
+  && grep -qF 'qa_slot_report_lead_start_failure "$XAGENT"' "$TD_SRC"; then
+  pass "launchd diagnostics: main and extra Lead startup pass full failure context"
+else
+  fail "launchd diagnostics wiring missing" "start/verify or main/extra failure reporter is incomplete"
+fi
 DELIVERY_LINE="FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret"
 if grep -qxF "$DELIVERY_LINE" <<<"$SLOT_CONTRACT_PROJECTION"; then
   pass "delivery secret: slot Bridge cannot read or rotate the resident fleet secret"

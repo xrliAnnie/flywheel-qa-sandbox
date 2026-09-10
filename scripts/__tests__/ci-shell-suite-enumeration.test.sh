@@ -71,23 +71,28 @@ fi
 # Mutation control: deleting one explicitly wired Node suite must make this
 # inventory fail. The nested run skips this block to avoid recursive mutants.
 if [[ "${CI_SHELL_SUITE_SKIP_MUTATION:-0}" != "1" ]]; then
-  endpoint_suite='scripts/__tests__/endpoint-client-etag.test.mjs'
-  if [[ "$(grep -Fc "$endpoint_suite" "$CI_FILE")" != "1" ]]; then
-    printf '[FAIL] endpoint-client ETag mutation target must occur exactly once in ci.yml\n' >&2
-    exit 1
-  fi
-  sed "\\#$endpoint_suite#d" "$CI_FILE" >"$TMP/ci-without-endpoint-client-etag.yml"
-  if CI_SHELL_SUITE_CI_FILE="$TMP/ci-without-endpoint-client-etag.yml" \
-    CI_SHELL_SUITE_SKIP_MUTATION=1 \
-    bash "$0" >"$TMP/mutation.log" 2>&1; then
-    printf '[FAIL] removing endpoint-client-etag.test.mjs from ci.yml stayed green\n' >&2
-    exit 1
-  fi
+  for mutation_suite in scripts/__tests__/endpoint-client-etag.test.mjs scripts/__tests__/qa-lead-diagnostics.test.mjs; do
+    if [[ "$(grep -Fc "$mutation_suite" "$CI_FILE")" != "1" ]]; then
+      printf '[FAIL] %s mutation target must occur exactly once in ci.yml\n' "$mutation_suite" >&2
+      exit 1
+    fi
+    sed "\#$mutation_suite#d" "$CI_FILE" >"$TMP/ci-without-node-suite.yml"
+    if CI_SHELL_SUITE_CI_FILE="$TMP/ci-without-node-suite.yml" \
+      CI_SHELL_SUITE_SKIP_MUTATION=1 \
+      bash "$0" >"$TMP/mutation.log" 2>&1; then
+      printf '[FAIL] removing %s from ci.yml stayed green\n' "$mutation_suite" >&2
+      exit 1
+    fi
+    if ! grep -Fq "$mutation_suite" "$TMP/mutation.log"; then
+      printf '[FAIL] Node enumeration mutant did not identify %s\n' "$mutation_suite" >&2
+      exit 1
+    fi
+  done
 fi
 
 printf '[PASS] %s shell suites are explicitly classified (%s CI, %s manual-only)\n' \
   "$(wc -l <"$TMP/all" | tr -d ' ')" \
   "$(wc -l <"$TMP/enumerated" | tr -d ' ')" \
   "$(wc -l <"$TMP/manual-only" | tr -d ' ')"
-printf '[PASS] %s Node suites are explicitly enumerated in CI; endpoint-client removal mutation turns red\n' \
+printf '[PASS] %s Node suites are explicitly enumerated in CI; endpoint-client and FLY-2455 removal mutations turn red\n' \
   "$(wc -l <"$TMP/all-node" | tr -d ' ')"

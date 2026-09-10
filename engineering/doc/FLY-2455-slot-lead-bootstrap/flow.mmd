@@ -1,0 +1,13 @@
+flowchart TD
+  A[启动测试房] --> B[系统启动器拉起 Lead 终端]
+  B --> C[记录进程编号和私有连接地址]
+  C --> D[进入 Lead 正文前开始留证]
+  D --> E{正文存活且连接可访问?}
+  E -->|否| F[保存具体失败项和正文退出证据]
+  F --> G[只清理本测试房]
+  E -->|是| H[服务健康 200 且 Lead 实际收件]
+  H --> I[完整拆房并验证其他进程未受影响]
+  classDef fail fill:#fff2f0,stroke:#ff3b30,color:#1d1d1f
+  classDef ok fill:#effbef,stroke:#34c759,color:#1d1d1f
+  class F fail
+  class H,I ok
