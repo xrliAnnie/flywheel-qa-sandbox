@@ -54,7 +54,17 @@ try {
 				scroll: document.documentElement.scrollWidth,
 				open: document.querySelectorAll('details[open]').length,
 				footer: document.querySelector('footer')?.textContent,
-				wrap: getComputedStyle(document.querySelector('footer')).overflowWrap
+				wrap: getComputedStyle(document.querySelector('footer')).overflowWrap,
+                leadNotes: Array.from(document.querySelectorAll('.epic > summary > [data-lead-written-at]')).map(note => {
+                    const text = note.querySelector('.lead-note-text');
+                    const style = text && getComputedStyle(text);
+                    return { visible: note.getBoundingClientRect().height > 0,
+                        width: note.getBoundingClientRect().width,
+                        parentWidth: note.parentElement.getBoundingClientRect().width,
+                        titleMatches: text?.title === text?.textContent,
+                        ellipsis: style?.textOverflow, whiteSpace: style?.whiteSpace,
+                        written: note.querySelector('time')?.textContent === note.getAttribute('data-lead-written-at') };
+                })
 			}))))`, awaitPromise: true, returnByValue: true,
 		});
 		assert(!result.exceptionDetails, JSON.stringify(result.exceptionDetails));
@@ -66,6 +76,12 @@ try {
 		assert.equal(measured.client, width);
 		assert(measured.scroll <= measured.client, `horizontal overflow: ${measured.scroll} > ${measured.client}`);
 		assert.equal(measured.open, 0, "initial page must be collapsed");
+        for (const note of measured.leadNotes) {
+            assert(note.visible && note.width <= note.parentWidth, "collapsed Lead judgment must be visible and fit the card");
+            assert(note.titleMatches && note.written, "Lead judgment must preserve full text and written time");
+            assert.equal(note.ellipsis, "ellipsis");
+            assert.equal(note.whiteSpace, "nowrap");
+        }
 	}
 } finally {
 	await send("Target.closeTarget", { targetId });

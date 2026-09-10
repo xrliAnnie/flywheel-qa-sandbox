@@ -1,4 +1,7 @@
 const LABELS = {
+	"lead_note.title": "Lead 判断（角色声明）",
+	"lead_note.disclosure": "角色为提交方声明，未核验具体作者",
+	"lead_note.stale": "较早判断",
 	"audit.acceptance_source": "到 Linear 看完整验收",
 	"terminal.done": "{n} 张已完成",
 	"terminal.canceled": "{n} 张已取消",
@@ -155,6 +158,26 @@ const LABELS = {
 } as const;
 
 export type LabelKey = keyof typeof LABELS;
+
+export function leadNoteRoleLabel(role: string): string {
+	const departments: Record<string, string> = {
+		engineering: "工程",
+		product: "产品",
+		operations: "运维",
+		infra: "基础设施",
+		pm: "产品规划",
+		content: "内容",
+		life: "生活",
+		growth: "增长",
+		reflection: "复盘",
+		xuanxue: "玄学",
+	};
+	return role.endsWith("-triage")
+		? "分流 Lead"
+		: Object.hasOwn(departments, role)
+			? `${departments[role]} Lead`
+			: `部门 Lead（${role}）`;
+}
 
 export function label(
 	key: LabelKey,

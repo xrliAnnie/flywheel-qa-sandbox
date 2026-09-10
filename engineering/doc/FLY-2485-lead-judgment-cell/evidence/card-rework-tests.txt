@@ -1,0 +1,41 @@
+FLY-2485 attempt 3 local receipts
+
+card-red:
+ FAIL  src/epic-page/__tests__/lead-note-card.test.ts > keeps every root judgment visible in collapsed card headers and full text in the body
+AssertionError: expected null not to be null
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  15:19:07
+   Duration  1.03s (transform 338ms, setup 11ms, collect 779ms, tests 27ms, environment 0ms, prepare 42ms)
+
+focused:
+{"baseline_children":60,"html_bytes":277385,"notes_and_attention":"not integrated"}
+  integrated_note_displays: 76,
+  chars_per_note: 280,
+  html_bytes: 439133,
+  upstream_renderers: 'lead notes integrated; attention synthetic'
+{ html_bytes: 277385, audit_bytes: 217898, entries: 1042 }
+ Test Files  30 passed (30)
+      Tests  365 passed (365)
+   Start at  15:21:33
+   Duration  14.97s (transform 14.83s, setup 2.32s, collect 92.66s, tests 22.41s, environment 7ms, prepare 8.48s)
+
+comm:
+ Test Files  2 passed (2)
+      Tests  44 passed (44)
+   Start at  15:21:54
+   Duration  660ms (transform 169ms, setup 35ms, collect 244ms, tests 14ms, environment 0ms, prepare 167ms)
+
+retention:
+ Test Files  1 passed (1)
+      Tests  30 passed (30)
+   Start at  15:22:31
+   Duration  15.36s (transform 4.02s, setup 37ms, collect 6.03s, tests 7.93s, environment 0ms, prepare 260ms)
+
+retention-consumer:
+ℹ tests 5
+ℹ pass 5
+ℹ fail 0
+
+pnpm lint: exit 0; pnpm -r build: exit 0.
+verify-hosted-layout: node --check exit 0; Chromium visual run not performed.

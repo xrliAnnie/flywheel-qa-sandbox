@@ -195,6 +195,27 @@ export function assertEpicPageRenderReceipt(
 				requireString(key, `${path}/provenance/key`);
 				requireString(value, `${path}/provenance/key/${key}`);
 			}
+		} else if (source.provenance.kind === "lead_note") {
+			requireExactKeys(
+				source.provenance,
+				["kind", "role", "written_at"],
+				[],
+				`${path}/provenance`,
+			);
+			requireString(source.provenance.role, `${path}/provenance/role`);
+			const { role, written_at } = source.provenance;
+			if (
+				!/^\/(?:items\/\d+|header\/roots\/value\/\d+)\/lead_note\/\d+$/.test(
+					source.path,
+				) ||
+				role !== role.trim() ||
+				/[\p{Cc}\u2028\u2029]/u.test(role) ||
+				typeof written_at !== "string" ||
+				!Number.isFinite(Date.parse(written_at)) ||
+				new Date(written_at).toISOString() !== written_at ||
+				source.source_updated_at !== written_at
+			)
+				throw new Error(`${path}: invalid lead-note source`);
 		} else {
 			throw new Error(`${path}/provenance: source provenance required`);
 		}
@@ -214,6 +235,7 @@ export function buildEpicPageRenderReceipt(
 		if (
 			isRecord(value.provenance) &&
 			(value.provenance.kind === "linear" ||
+				value.provenance.kind === "lead_note" ||
 				value.provenance.kind === "statestore" ||
 				value.provenance.kind === "commdb") &&
 			("value" in value ||
@@ -228,6 +250,12 @@ export function buildEpicPageRenderReceipt(
 				source.source_updated_at = value.source_updated_at;
 			}
 			sources.push(source);
+			if (path === "/header/roots" && Array.isArray(value.value)) {
+				value.value.forEach((root, index) => {
+					if (isRecord(root) && root.lead_note !== undefined)
+						visit(root.lead_note, `${path}/value/${index}/lead_note`);
+				});
+			}
 			return;
 		}
 		for (const [key, child] of Object.entries(value)) {

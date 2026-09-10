@@ -5,8 +5,10 @@ import type {
 	EpicPageFreshnessRead,
 	EpicPagePublicationRead,
 	EpicPageTrigger,
+	LeadNoteRecord,
 } from "../StateStore.js";
 import { buildFreshness } from "./freshness.js";
+import { DEFAULT_LEAD_NOTE_FADE_DAYS } from "./lead-note.js";
 import {
 	assertEpicPage,
 	type Cell,
@@ -26,6 +28,8 @@ import {
 import type { EpicPageItemSignals } from "./signals.js";
 
 export interface GenerateEpicPageInput {
+	leadNotes?: LeadNoteRecord[];
+	leadNoteFadeDays?: number;
 	snapshot: LinearActiveScopeSnapshot;
 	itemFacts: EpicItemFacts[];
 	now: Date;
@@ -109,6 +113,23 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 		throw new Error("Epic item signals must match the Linear scope snapshot");
 	}
 	const generatedAt = input.now.toISOString();
+	const notesByIssue = new Map<string, Cell<string>[]>();
+	for (const note of [...(input.leadNotes ?? [])].sort((a, b) =>
+		a.role < b.role ? -1 : a.role > b.role ? 1 : 0,
+	)) {
+		const notes = notesByIssue.get(note.issue_uuid) ?? [];
+		notes.push({
+			value: note.text,
+			provenance: {
+				kind: "lead_note",
+				role: note.role,
+				written_at: note.written_at,
+			},
+			observed_at: generatedAt,
+			source_updated_at: note.written_at,
+		});
+		notesByIssue.set(note.issue_uuid, notes);
+	}
 	const version = input.version ?? 1;
 	const reasons =
 		input.reasons ??
@@ -141,6 +162,9 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				};
 		return {
 			identifier: child.identifier,
+			...(notesByIssue.has(child.id)
+				? { lead_note: notesByIssue.get(child.id)! }
+				: {}),
 			parent: {
 				...linearCell(child.parent?.identifier ?? null, {
 					...issueSource,
@@ -326,6 +350,18 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				],
 	);
 	const sourceCells = [
+		...input.snapshot.roots.flatMap((root, index) =>
+			(notesByIssue.get(root.id) ?? []).map((note, noteIndex) => ({
+				path: `/header/roots/value/${index}/lead_note/${noteIndex}`,
+				observedAt: note.observed_at,
+			})),
+		),
+		...items.flatMap((item, index) =>
+			(item.lead_note ?? []).map((note, noteIndex) => ({
+				path: `/items/${index}/lead_note/${noteIndex}`,
+				observedAt: note.observed_at,
+			})),
+		),
 		{ path: "/header/roots", observedAt: linearObservedAt },
 		{ path: "/header/items", observedAt: linearObservedAt },
 		...items.flatMap((item, index) => [
@@ -418,6 +454,9 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 					title: root.title,
 					url: root.url,
 					state: root.state,
+					...(notesByIssue.has(root.id)
+						? { lead_note: notesByIssue.get(root.id)! }
+						: {}),
 				})),
 				{
 					entity: "issues",
@@ -437,6 +476,13 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 			),
 		},
 		items,
+		lead_note_policy: {
+			value: {
+				fade_after_days: input.leadNoteFadeDays ?? DEFAULT_LEAD_NOTE_FADE_DAYS,
+			},
+			provenance: { kind: "derived", rule: "lead_note_fade.v1", from: [] },
+			observed_at: generatedAt,
+		},
 		done_definition: doneDefinition(generatedAt),
 		founder_items: {
 			value: founderItems,

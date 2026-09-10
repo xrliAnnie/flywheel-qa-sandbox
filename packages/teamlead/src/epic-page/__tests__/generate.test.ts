@@ -3,6 +3,10 @@ import type { EpicItemFacts } from "../../StateStore.js";
 import { generateEpicPage } from "../generate.js";
 import { assertEpicPage, type Signal } from "../model.js";
 import {
+	assertEpicPageRenderReceipt,
+	buildEpicPageRenderReceipt,
+} from "../receipt.js";
+import {
 	EPIC_SHAPE_NOW,
 	emptyItemFacts,
 	epicShapeSnapshot,
@@ -20,6 +24,78 @@ function generate(facts?: EpicItemFacts[]) {
 }
 
 describe("generateEpicPage", () => {
+	it("projects sorted multi-role notes on roots and items without changing machine facts", () => {
+		const snapshot = epicShapeSnapshot();
+		const input = {
+			snapshot,
+			itemFacts: snapshot.items.map(() => emptyItemFacts()),
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "manual" as const,
+		};
+		const plain = generateEpicPage(input);
+		const written_at = "2026-09-01T12:00:00.000Z";
+		const page = generateEpicPage({
+			...input,
+			leadNotes: [
+				{
+					issue_uuid: snapshot.roots[0]!.id,
+					role: "engineering",
+					text: "根判断",
+					written_at,
+				},
+				{
+					issue_uuid: snapshot.items[0]!.id,
+					role: "product",
+					text: "产品判断",
+					written_at,
+				},
+				{
+					issue_uuid: snapshot.items[0]!.id,
+					role: "engineering",
+					text: "工程判断",
+					written_at,
+				},
+			],
+		});
+		expect(page.items[0]!.lead_note?.map((note) => note.value)).toEqual([
+			"工程判断",
+			"产品判断",
+		]);
+		expect(page.header.roots.value![0]!.lead_note?.[0]).toEqual({
+			value: "根判断",
+			provenance: { kind: "lead_note", role: "engineering", written_at },
+			observed_at: EPIC_SHAPE_NOW.toISOString(),
+			source_updated_at: written_at,
+		});
+		expect(page.lead_note_policy?.value).toEqual({ fade_after_days: 3 });
+		for (const key of [
+			"ready_items",
+			"stuck_items",
+			"dependency_review",
+			"founder_items",
+			"gaps",
+		] as const)
+			expect(page[key]).toEqual(plain[key]);
+		expect(page.items.map(({ lead_note: _, ...item }) => item)).toEqual(
+			plain.items,
+		);
+		const receipt = buildEpicPageRenderReceipt(page);
+		expect(() => assertEpicPageRenderReceipt(receipt)).not.toThrow();
+		expect(
+			receipt.sources
+				.filter((source) => source.provenance.kind === "lead_note")
+				.map((source) => source.path),
+		).toEqual([
+			"/header/roots/value/0/lead_note/0",
+			"/items/0/lead_note/0",
+			"/items/0/lead_note/1",
+		]);
+		expect(
+			receipt.sources.filter((source) => source.path === "/header/roots"),
+		).toHaveLength(1);
+		expect(JSON.stringify(receipt)).not.toContain("根判断");
+	});
 	it("projects active Linear roots and their filtered subtree into the page header", () => {
 		const snapshot = epicShapeSnapshot();
 		const page = generateEpicPage({

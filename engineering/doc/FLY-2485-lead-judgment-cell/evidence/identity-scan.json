@@ -1,0 +1,13 @@
+{
+  "configured_identity_tokens": 32,
+  "added_source_literal_hits": 0,
+  "generated_html_literal_hits": 0,
+  "note_schema_columns": [
+    "project_name",
+    "issue_uuid",
+    "role",
+    "text",
+    "written_at"
+  ],
+  "scope": "Added implementation/test lines and generated visual fixture only; not arbitrary natural-language name detection."
+}

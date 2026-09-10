@@ -241,6 +241,8 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 										{ stateStore: deps.store },
 										{ projectName, items, now: generatedAt },
 									),
+								readLeadNotes: (projectName, ids) =>
+									deps.store.getLeadNotes(projectName, ids),
 								readFreshness: (projectName) => ({
 									history: deps.store.getEpicPageFreshness(projectName),
 									publication: deps.store.getEpicPagePublication(projectName),
@@ -249,7 +251,12 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 								buildReceipt,
 								now,
 							},
-							input,
+							{
+								...input,
+								leadNoteFadeDays: deps.projects.find(
+									(project) => project.projectName === input.projectName,
+								)?.epicPage?.leadNoteFadeDays,
+							},
 						),
 				},
 				{

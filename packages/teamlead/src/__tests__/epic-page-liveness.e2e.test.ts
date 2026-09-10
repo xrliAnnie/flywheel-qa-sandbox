@@ -144,6 +144,8 @@ async function createHarness(): Promise<Harness> {
 									},
 									{ projectName, items, now },
 								),
+							readLeadNotes: (projectName, ids) =>
+								store.getLeadNotes(projectName, ids),
 							readFreshness: (projectName) => ({
 								history: store.getEpicPageFreshness(projectName),
 								publication: store.getEpicPagePublication(projectName),

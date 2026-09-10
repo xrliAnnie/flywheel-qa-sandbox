@@ -1,0 +1,431 @@
+
+> flywheel-monorepo@1.0.1 lint /Users/xiaorongli/Dev/flywheel-FLY-2485
+> biome check
+
+doc/engineer/research/new/FLY-1563-e2e/e2e-wake-loop.mjs:443:13 lint/style/useTemplate  FIXABLE  ━━━━━━━━━━
+
+  i Template literals are preferred over string concatenation.
+
+    441 │ const lead = readLog(leadLog);
+    442 │ const codex = readLog(codexLog);
+  > 443 │ console.log("\n[e2e] ---- runner-claude.log ----\n" + runner);
+        │             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    444 │ console.log("[e2e] ---- lead.log ----\n" + lead);
+    445 │ console.log("[e2e] ---- runner-codex.log ----\n" + codex);
+
+  i Unsafe fix: Use a template literal.
+
+    441 441 │   const lead = readLog(leadLog);
+    442 442 │   const codex = readLog(codexLog);
+    443     │ - console.log("\n[e2e]·----·runner-claude.log·----\n"·+·runner);
+        443 │ + console.log(`\n[e2e]·----·runner-claude.log·----\n${runner}`);
+    444 444 │   console.log("[e2e] ---- lead.log ----\n" + lead);
+    445 445 │   console.log("[e2e] ---- runner-codex.log ----\n" + codex);
+
+
+doc/engineer/research/new/FLY-1563-e2e/e2e-wake-loop.mjs:444:13 lint/style/useTemplate  FIXABLE  ━━━━━━━━━━
+
+  i Template literals are preferred over string concatenation.
+
+    442 │ const codex = readLog(codexLog);
+    443 │ console.log("\n[e2e] ---- runner-claude.log ----\n" + runner);
+  > 444 │ console.log("[e2e] ---- lead.log ----\n" + lead);
+        │             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    445 │ console.log("[e2e] ---- runner-codex.log ----\n" + codex);
+    446 │
+
+  i Unsafe fix: Use a template literal.
+
+    442 442 │   const codex = readLog(codexLog);
+    443 443 │   console.log("\n[e2e] ---- runner-claude.log ----\n" + runner);
+    444     │ - console.log("[e2e]·----·lead.log·----\n"·+·lead);
+        444 │ + console.log(`[e2e]·----·lead.log·----\n${lead}`);
+    445 445 │   console.log("[e2e] ---- runner-codex.log ----\n" + codex);
+    446 446 │
+
+
+doc/engineer/research/new/FLY-1563-e2e/e2e-wake-loop.mjs:445:13 lint/style/useTemplate  FIXABLE  ━━━━━━━━━━
+
+  i Template literals are preferred over string concatenation.
+
+    443 │ console.log("\n[e2e] ---- runner-claude.log ----\n" + runner);
+    444 │ console.log("[e2e] ---- lead.log ----\n" + lead);
+  > 445 │ console.log("[e2e] ---- runner-codex.log ----\n" + codex);
+        │             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    446 │
+    447 │ check(
+
+  i Unsafe fix: Use a template literal.
+
+    443 443 │   console.log("\n[e2e] ---- runner-claude.log ----\n" + runner);
+    444 444 │   console.log("[e2e] ---- lead.log ----\n" + lead);
+    445     │ - console.log("[e2e]·----·runner-codex.log·----\n"·+·codex);
+        445 │ + console.log(`[e2e]·----·runner-codex.log·----\n${codex}`);
+    446 446 │
+    447 447 │   check(
+
+
+packages/teamlead/src/StateStore.ts check ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i The size of the file is 2.3 MiB, which exceeds the configured maximum of 1.0 MiB for this project.
+    Use the `files.maxSize` configuration to change the maximum size of files processed, or `files.includes` to ignore the file.
+
+
+scripts/qa-fly-2007-phase0-analyze.mjs:1780:4 lint/style/useTemplate  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━
+
+  i Template literals are preferred over string concatenation.
+
+    1778 │ 		writeFileSync(
+    1779 │ 			join(opts.out, "sensitivity.json"),
+  > 1780 │ 			JSON.stringify(
+         │ 			^^^^^^^^^^^^^^^
+  > 1781 │ 				{
+          ...
+  > 1787 │ 				2,
+  > 1788 │ 			) + "\n",
+         │ 			^^^^^^^^
+    1789 │ 		);
+    1790 │ 	} catch (e) {
+
+  i Unsafe fix: Use a template literal.
+
+    1778 1778 │   		writeFileSync(
+    1779 1779 │   			join(opts.out, "sensitivity.json"),
+    1780      │ - → → → JSON.stringify(
+         1780 │ + → → → `${JSON.stringify(
+    1781 1781 │   				{
+    1782 1782 │   					...opts.sensitivityResult,
+    ········· │
+    1786 1786 │   				null,
+    1787 1787 │   				2,
+    1788      │ - → → → )·+·"\n",
+         1788 │ + → → → )}\n`,
+    1789 1789 │   		);
+    1790 1790 │   	} catch (e) {
+
+
+scripts/qa-fly-2007-phase0-analyze.mjs:1809:3 lint/style/useTemplate  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━
+
+  i Template literals are preferred over string concatenation.
+
+    1807 │ 	writeFileSync(
+    1808 │ 		join(opts.out, "analysis.json"),
+  > 1809 │ 		JSON.stringify(result, null, 2) + "\n",
+         │ 		^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    1810 │ 	);
+    1811 │ 	console.log(
+
+  i Unsafe fix: Use a template literal.
+
+    1807 1807 │   	writeFileSync(
+    1808 1808 │   		join(opts.out, "analysis.json"),
+    1809      │ - → → JSON.stringify(result,·null,·2)·+·"\n",
+         1809 │ + → → `${JSON.stringify(result,·null,·2)}\n`,
+    1810 1810 │   	);
+    1811 1811 │   	console.log(
+
+
+scripts/qa-fly-2007-phase0-simulate.mjs:397:15 lint/style/useTemplate  FIXABLE  ━━━━━━━━━━━━━━━━━━━━
+
+  i Template literals are preferred over string concatenation.
+
+    395 │ 	const outIdx = process.argv.indexOf("--out");
+    396 │ 	const res = runSensitivity({ m });
+  > 397 │ 	const text = JSON.stringify(res, null, 2) + "\n";
+        │ 	             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    398 │ 	if (outIdx > -1) writeFileSync(process.argv[outIdx + 1], text);
+    399 │ 	else process.stdout.write(text);
+
+  i Unsafe fix: Use a template literal.
+
+    395 395 │   	const outIdx = process.argv.indexOf("--out");
+    396 396 │   	const res = runSensitivity({ m });
+    397     │ - → const·text·=·JSON.stringify(res,·null,·2)·+·"\n";
+        397 │ + → const·text·=·`${JSON.stringify(res,·null,·2)}\n`;
+    398 398 │   	if (outIdx > -1) writeFileSync(process.argv[outIdx + 1], text);
+    399 399 │   	else process.stdout.write(text);
+
+
+doc/engineer/research/new/FLY-1547-e2e/e2e-mailbox.mjs:380:2 lint/complexity/useOptionalChain  FIXABLE  ━━━━━━━━━━
+
+  ! Change to an optional chain.
+
+    378 │ check(
+    379 │ 	"reply payload carries the derived uid + body",
+  > 380 │ 	rows.reply != null &&
+        │ 	^^^^^^^^^^^^^^^^^^^^^
+  > 381 │ 		rows.reply.payload.includes("q-78") &&
+        │ 		^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    382 │ 		rows.reply.payload.includes("port 4747"),
+    383 │ );
+
+  i Unsafe fix: Change to an optional chain.
+
+    378 378 │   check(
+    379 379 │   	"reply payload carries the derived uid + body",
+    380     │ - → rows.reply·!=·null·&&
+    381     │ - → → rows.reply.payload.includes("q-78")·&&
+        380 │ + → rows.reply?.payload.includes("q-78")·&&
+    382 381 │   		rows.reply.payload.includes("port 4747"),
+    383 382 │   );
+
+
+doc/engineer/research/new/FLY-1547-e2e/e2e-mailbox.mjs:5:8 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━
+
+  ! This import is unused.
+
+    3 │ // MCP server in LEAD mode. Asserts: claim-at-next read receipts, FYI deferred
+    4 │ // ack, actionable settle(reply) with derived route + idempotent key.
+  > 5 │ import { execFileSync, spawn } from "node:child_process";
+      │        ^^^^^^^^^^^^^^^^^^^^^^^
+    6 │ import { randomBytes } from "node:crypto";
+    7 │ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+
+  i Unused imports might be the result of an incomplete refactoring.
+
+  i Unsafe fix: Remove the unused imports.
+
+      1   1 │   #!/usr/bin/env node
+      2     │ - //·FLY-1547·real-machine·E2E·—·isolated·host·+·real·socket·+·the·real·mailbox
+      3     │ - //·MCP·server·in·LEAD·mode.·Asserts:·claim-at-next·read·receipts,·FYI·deferred
+      4     │ - //·ack,·actionable·settle(reply)·with·derived·route·+·idempotent·key.
+      5     │ - import·{·execFileSync,·spawn·}·from·"node:child_process";
+      6   2 │   import { randomBytes } from "node:crypto";
+      7   3 │   import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+
+
+doc/engineer/research/new/FLY-1547-e2e/e2e-mailbox.mjs:355:7 lint/correctness/noUnusedVariables  FIXABLE  ━━━━━━━━━━
+
+  ! This variable ask2 is unused.
+
+    353 │ }));
+    354 │ const fyi = rows.mailbox.find((r) => r.kind === "issue_opened");
+  > 355 │ const ask2 = rows.mailbox.find(
+        │       ^^^^
+    356 │ 	(r) =>
+    357 │ 		r.kind === "runner_ask" &&
+
+  i Unused variables are often the result of an incomplete refactoring, typos, or other sources of bugs.
+
+  i Unsafe fix: If this is intentional, prepend ask2 with an underscore.
+
+    353 353 │   }));
+    354 354 │   const fyi = rows.mailbox.find((r) => r.kind === "issue_opened");
+    355     │ - const·ask2·=·rows.mailbox.find(
+        355 │ + const·_ask2·=·rows.mailbox.find(
+    356 356 │   	(r) =>
+    357 357 │   		r.kind === "runner_ask" &&
+
+
+packages/teamlead/src/__tests__/StateStore.fly1185-lifecycle.test.ts:74:4 suppressions/unused ━━━━━━━━━━
+
+  ! Suppression comment has no effect. Remove the suppression or make sure you are suppressing the correct rule.
+
+    72 │ 			worktree_path: "/attacker/path",
+    73 │ 			branch: "attacker-branch",
+  > 74 │ 			// biome-ignore lint/suspicious/noExplicitAny: deliberate smuggle attempt
+       │ 			^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    75 │ 			...({ worktree_binding_generation: "attacker-gen" } as any),
+    76 │ 		});
+
+
+packages/teamlead/src/account-heal/quota-monitor-runtime.ts:138:47 lint/suspicious/noConfusingVoidType  FIXABLE  ━━━━━━━━━━
+
+  ! void is confusing inside a union type.
+
+    136 │ 	switchAccount?: (input: SwitchInput) => Promise<SwitchResult>;
+    137 │ 	tmux?: TmuxReviveDeps;
+  > 138 │ 	alert: (alert: QuotaMonitorAlert) => Promise<void | DeliveryReport>;
+        │ 	                                             ^^^^
+    139 │ 	deliverAlert?: (
+    140 │ 		alert: DurableAlertIntent["alert"],
+
+  i Unsafe fix: Use undefined instead.
+
+    136 136 │   	switchAccount?: (input: SwitchInput) => Promise<SwitchResult>;
+    137 137 │   	tmux?: TmuxReviveDeps;
+    138     │ - → alert:·(alert:·QuotaMonitorAlert)·=>·Promise<void·|·DeliveryReport>;
+        138 │ + → alert:·(alert:·QuotaMonitorAlert)·=>·Promise<undefined·|·DeliveryReport>;
+    139 139 │   	deliverAlert?: (
+    140 140 │   		alert: DurableAlertIntent["alert"],
+
+
+packages/teamlead/src/bridge/__tests__/fleet-data.test.ts:702:4 suppressions/unused ━━━━━━━━━━━━━━━━
+
+  ! Suppression comment has no effect. Remove the suppression or make sure you are suppressing the correct rule.
+
+    700 │ 				last_failure_at: null,
+    701 │ 			}),
+  > 702 │ 			// biome-ignore lint/suspicious/noExplicitAny: minimal store stub
+        │ 			^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    703 │ 		} as any;
+    704 │ 		const payload = buildDashboardPayload(fakeStore, 30);
+
+
+scripts/qa-fly-2007-phase0-analyze.mjs:741:20 lint/complexity/useOptionalChain  FIXABLE  ━━━━━━━━━━━
+
+  ! Change to an optional chain.
+
+    739 │ 		if (row.artifacts) {
+    740 │ 			for (const [f, h] of Object.entries(row.artifacts)) {
+  > 741 │ 				const actual = b.fileHashes && b.fileHashes[f];
+        │ 				               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    742 │ 				if (actual && actual !== h)
+    743 │ 					problems.push(
+
+  i Unsafe fix: Change to an optional chain.
+
+     739  739 │   		if (row.artifacts) {
+     740  740 │   			for (const [f, h] of Object.entries(row.artifacts)) {
+     741      │ - → → → → const·actual·=·b.fileHashes·&&·b.fileHashes[f];
+          741 │ + → → → → const·actual·=·b.fileHashes?.[f];
+     742  742 │   				if (actual && actual !== h)
+     743  743 │   					problems.push(
+
+
+scripts/qa-fly-2007-phase0-analyze.mjs:860:13 lint/complexity/useOptionalChain  FIXABLE  ━━━━━━━━━━━
+
+  ! Change to an optional chain.
+
+    858 │ export function receiptProblems(b, freezeCommit, repoRootForSpec) {
+    859 │ 	const problems = [];
+  > 860 │ 	const p = (b.receipt && b.receipt.preflight) || {};
+        │ 	           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    861 │ 	for (const f of REQUIRED_RECEIPT_FIELDS) {
+    862 │ 		const v = p[f];
+
+  i Unsafe fix: Change to an optional chain.
+
+     858  858 │   export function receiptProblems(b, freezeCommit, repoRootForSpec) {
+     859  859 │   	const problems = [];
+     860      │ - → const·p·=·(b.receipt·&&·b.receipt.preflight)·||·{};
+          860 │ + → const·p·=·(b.receipt?.preflight)·||·{};
+     861  861 │   	for (const f of REQUIRED_RECEIPT_FIELDS) {
+     862  862 │   		const v = p[f];
+
+
+scripts/qa-fly-2007-phase0-analyze.mjs:1207:4 lint/complexity/useOptionalChain  FIXABLE  ━━━━━━━━━━━
+
+  ! Change to an optional chain.
+
+    1205 │ 		const sens = opts.sensitivityResult || {};
+    1206 │ 		const aSensOk =
+  > 1207 │ 			sens.configurations &&
+         │ 			^^^^^^^^^^^^^^^^^^^^^^
+  > 1208 │ 			sens.configurations.b_lb_A &&
+         │ 			^^^^^^^^^^^^^^^^^^^^^^^^^^
+    1209 │ 			sens.configurations.b_lb_A.pass === true;
+    1210 │ 		const provedBad =
+
+  i Unsafe fix: Change to an optional chain.
+
+    1205 1205 │   		const sens = opts.sensitivityResult || {};
+    1206 1206 │   		const aSensOk =
+    1207      │ - → → → sens.configurations·&&
+    1208      │ - → → → sens.configurations.b_lb_A·&&
+         1207 │ + → → → sens.configurations?.b_lb_A·&&
+    1209 1208 │   			sens.configurations.b_lb_A.pass === true;
+    1210 1209 │   		const provedBad =
+
+
+scripts/qa-fly-2007-phase0-analyze.mjs:1226:4 lint/complexity/useOptionalChain  FIXABLE  ━━━━━━━━━━━
+
+  ! Change to an optional chain.
+
+    1224 │ 		// Both the original ruling and the revision are recorded in spec-baseline.md.
+    1225 │ 		const nSensOk =
+  > 1226 │ 			sens.configurations &&
+         │ 			^^^^^^^^^^^^^^^^^^^^^^
+  > 1227 │ 			sens.configurations.range_lb_N &&
+         │ 			^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    1228 │ 			sens.configurations.range_lb_N.pass === true;
+    1229 │ 		const provedDrift =
+
+  i Unsafe fix: Change to an optional chain.
+
+    1224 1224 │   		// Both the original ruling and the revision are recorded in spec-baseline.md.
+    1225 1225 │   		const nSensOk =
+    1226      │ - → → → sens.configurations·&&
+    1227      │ - → → → sens.configurations.range_lb_N·&&
+         1226 │ + → → → sens.configurations?.range_lb_N·&&
+    1228 1227 │   			sens.configurations.range_lb_N.pass === true;
+    1229 1228 │   		const provedDrift =
+
+
+scripts/qa-fly-2007-phase0-analyze.mjs:1293:23 lint/complexity/useOptionalChain  FIXABLE  ━━━━━━━━━━
+
+  ! Change to an optional chain.
+
+    1291 │ 			sha256: b.bundleSha256,
+    1292 │ 			build_sha: b.meta.build_sha,
+  > 1293 │ 			collection_freeze: b.receipt && b.receipt.freeze_commit,
+         │ 			                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    1294 │ 		})),
+    1295 │ 		analysis_freeze: opts.freezeCommit || null,
+
+  i Unsafe fix: Change to an optional chain.
+
+    1291 1291 │   			sha256: b.bundleSha256,
+    1292 1292 │   			build_sha: b.meta.build_sha,
+    1293      │ - → → → collection_freeze:·b.receipt·&&·b.receipt.freeze_commit,
+         1293 │ + → → → collection_freeze:·b.receipt?.freeze_commit,
+    1294 1294 │   		})),
+    1295 1295 │   		analysis_freeze: opts.freezeCommit || null,
+
+
+scripts/qa-fly-2007-phase0-analyze.mjs:251:7 lint/correctness/noUnusedVariables  FIXABLE  ━━━━━━━━━━
+
+  ! This variable VIOLATION is unused.
+
+    249 │ 	"invalid_auth",
+    250 │ ]);
+  > 251 │ const VIOLATION = new Set(["missed", "error", "timer_late"]); // conservative counting
+        │       ^^^^^^^^^
+    252 │ const CONFIG_FAULT = new Set(["no_token", "unreachable", "invalid_auth"]);
+    253 │
+
+  i Unused variables are often the result of an incomplete refactoring, typos, or other sources of bugs.
+
+  i Unsafe fix: If this is intentional, prepend VIOLATION with an underscore.
+
+     249  249 │   	"invalid_auth",
+     250  250 │   ]);
+     251      │ - const·VIOLATION·=·new·Set(["missed",·"error",·"timer_late"]);·//·conservative·counting
+          251 │ + const·_VIOLATION·=·new·Set(["missed",·"error",·"timer_late"]);·//·conservative·counting
+     252  252 │   const CONFIG_FAULT = new Set(["no_token", "unreachable", "invalid_auth"]);
+     253  253 │
+
+
+scripts/qa-fly-2007-phase0-simulate.mjs:35:2 lint/correctness/noUnusedImports  FIXABLE  ━━━━━━━━━━━━
+
+  ! Several of these imports are unused.
+
+    33 │ 	cpLower,
+    34 │ 	cpUpper,
+  > 35 │ 	DELTA,
+       │ 	^^^^^^
+  > 36 │ 	GRID,
+  > 37 │ 	rangeBounds,
+  > 38 │ 	SLO,
+       │ 	^^^
+    39 │ } from "./qa-fly-2007-phase0-analyze.mjs";
+    40 │
+
+  i Unused imports might be the result of an incomplete refactoring.
+
+  i Unsafe fix: Remove the unused imports.
+
+     33  33 │   	cpLower,
+     34  34 │   	cpUpper,
+     35     │ - → DELTA,
+     36  35 │   	GRID,
+     37  36 │   	rangeBounds,
+     38     │ - → SLO,
+     39  37 │   } from "./qa-fly-2007-phase0-analyze.mjs";
+     40  38 │
+
+
+The number of diagnostics exceeds the limit allowed. Use --max-diagnostics to increase it.
+Diagnostics not shown: 8.
+Checked 3252 files in 3s. No fixes applied.
+Found 14 warnings.

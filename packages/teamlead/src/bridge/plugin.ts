@@ -520,6 +520,7 @@ import {
 import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
+import { createLeadNoteRouter } from "./lead-note-route.js";
 import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
@@ -4554,6 +4555,17 @@ export function createBridgeApp(
 		}),
 	);
 
+	app.use(
+		"/api/lead-note",
+		masterOnlyAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		createLeadNoteRouter({
+			store,
+			projects,
+			linearApiKey: config.linearApiKey,
+			onEpicChange: opts?.epicPageRefresher?.requestRefresh,
+		}),
+	);
+
 	const workflowRunCollector = transitionOpts
 		? createWorkflowRunCollector(store, transitionOpts)
 		: undefined;
@@ -6239,6 +6251,8 @@ export async function startBridge(
 									{ stateStore: store },
 									{ projectName, items, now: generatedAt },
 								),
+							readLeadNotes: (projectName, ids) =>
+								store.getLeadNotes(projectName, ids),
 							readFreshness: (projectName) => ({
 								history: store.getEpicPageFreshness(projectName),
 								publication: store.getEpicPagePublication(projectName),
@@ -6250,6 +6264,9 @@ export async function startBridge(
 						{
 							...attempt,
 							scanSchedule: epicPageScanSchedule(attempt.projectName),
+							leadNoteFadeDays: projects.find(
+								(project) => project.projectName === attempt.projectName,
+							)?.epicPage?.leadNoteFadeDays,
 						},
 					),
 			},

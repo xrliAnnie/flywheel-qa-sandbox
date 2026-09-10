@@ -1,0 +1,23 @@
+---
+config:
+  theme: base
+  themeVariables:
+    fontFamily: '-apple-system, BlinkMacSystemFont, Arial, sans-serif'
+    primaryColor: '#f0f6ff'
+    primaryTextColor: '#1d1d1f'
+    primaryBorderColor: '#0071e3'
+    lineColor: '#6e6e73'
+---
+erDiagram
+  accTitle: 一项目一单每个角色最多保存一句判断
+  accDescr: 单据用项目与稳定编号定位，可以没有判断；不同角色可并存，每个角色保留正文和写入时间。
+  ISSUE ||--o{ LEAD_NOTE : "每角色最多一句"
+  ISSUE {
+    string project_name "项目"
+    string issue_uuid "稳定单据编号"
+  }
+  LEAD_NOTE {
+    string text "一句判断"
+    string role "部门角色"
+    string written_at "写入时间"
+  }

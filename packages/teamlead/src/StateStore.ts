@@ -549,6 +549,13 @@ type RunnerShipObservationProjection =
  * structurally impossible. The on-disk file is unchanged (sql.js exported a
  * standard SQLite3 file), so the migration needs zero data conversion.
  */
+export interface LeadNoteRecord {
+	issue_uuid: string;
+	role: string;
+	text: string;
+	written_at: string;
+}
+
 interface CompatExecResult {
 	columns: string[];
 	values: unknown[][];
@@ -6918,6 +6925,14 @@ export class StateStore {
 		this.migrateFlagRetirementScan();
 		this.migrateFly1427TerminalStatusCorrections();
 		this.migrateEpicPage();
+		this.db.run(`CREATE TABLE IF NOT EXISTS lead_note (
+			project_name TEXT NOT NULL,
+			issue_uuid TEXT NOT NULL,
+			role TEXT NOT NULL,
+			text TEXT NOT NULL,
+			written_at TEXT NOT NULL,
+			PRIMARY KEY (project_name, issue_uuid, role)
+		)`);
 		installTerminalRowArchiveSchema(this.db.raw);
 	}
 
@@ -6930,6 +6945,46 @@ export class StateStore {
 		sourceIdentity: string;
 	}): { outcome: "restored" | "idempotent" } {
 		return restoreTerminalRowInDatabase(this.db.raw, input);
+	}
+
+	setLeadNote(input: {
+		projectName: string;
+		issueUuid: string;
+		role: string;
+		text: string;
+		writtenAt: string;
+	}): void {
+		this.db.transaction(() => {
+			this.db.run(`INSERT INTO lead_note (project_name, issue_uuid, role, text, written_at)
+				VALUES (?, ?, ?, ?, ?) ON CONFLICT (project_name, issue_uuid, role)
+				DO UPDATE SET text = excluded.text, written_at = excluded.written_at`,
+				[input.projectName, input.issueUuid, input.role, input.text, input.writtenAt]);
+		});
+		this.save();
+	}
+
+	getLeadNote(projectName: string, issueUuid: string, role: string): LeadNoteRecord | undefined {
+		return this.db.raw.prepare("SELECT issue_uuid, role, text, written_at FROM lead_note WHERE project_name = ? AND issue_uuid = ? AND role = ?")
+			.get(projectName, issueUuid, role) as LeadNoteRecord | undefined;
+	}
+
+	clearLeadNote(projectName: string, issueUuid: string, role: string): boolean {
+		const changed = this.db.raw.prepare("DELETE FROM lead_note WHERE project_name = ? AND issue_uuid = ? AND role = ?")
+			.run(projectName, issueUuid, role).changes > 0;
+		if (changed) this.save();
+		return changed;
+	}
+
+	getLeadNotes(projectName: string, issueUuids: string[]): LeadNoteRecord[] {
+		const ids = [...new Set(issueUuids)];
+		const notes: LeadNoteRecord[] = [];
+		for (let offset = 0; offset < ids.length; offset += 200) {
+			const batch = ids.slice(offset, offset + 200);
+			notes.push(...this.db.raw.prepare(`SELECT issue_uuid, role, text, written_at FROM lead_note
+				WHERE project_name = ? AND issue_uuid IN (${batch.map(() => "?").join(",")})
+				ORDER BY issue_uuid, role`).all(projectName, ...batch) as LeadNoteRecord[]);
+		}
+		return notes;
 	}
 
 	private migrateEpicPage(): void {

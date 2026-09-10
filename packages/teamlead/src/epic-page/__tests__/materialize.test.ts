@@ -61,6 +61,14 @@ describe("FLY-2143 Epic page materialization inputs", () => {
 				publish_failures_since_last_published: 1,
 			},
 		}));
+		const readLeadNotes = vi.fn(() => [
+			{
+				issue_uuid: snapshot.roots[0]!.id,
+				role: "engineering",
+				text: "判断",
+				written_at: "2026-09-01T12:00:00.000Z",
+			},
+		]);
 
 		const result = await materializeEpicPage(
 			{
@@ -68,6 +76,7 @@ describe("FLY-2143 Epic page materialization inputs", () => {
 				readItemFacts: () => emptyItemFacts(),
 				readSignals,
 				readFreshness,
+				readLeadNotes,
 				generatePage: generateEpicPage,
 				buildReceipt: buildEpicPageRenderReceipt,
 				now: () => EPIC_SHAPE_NOW,
@@ -78,6 +87,7 @@ describe("FLY-2143 Epic page materialization inputs", () => {
 				apiKey: "linear-key",
 				trigger: "event",
 				version: 9,
+				leadNoteFadeDays: 2.5,
 				reasons: ["session_completed"],
 			},
 		);
@@ -91,6 +101,15 @@ describe("FLY-2143 Epic page materialization inputs", () => {
 			EPIC_SHAPE_NOW,
 		);
 		expect(readFreshness).toHaveBeenCalledWith("example");
+		expect(readLeadNotes).toHaveBeenCalledExactlyOnceWith("example", [
+			...new Set([...snapshot.roots, ...snapshot.items].map((item) => item.id)),
+		]);
+		expect(result.page.header.roots.value![0]!.lead_note?.[0]?.value).toBe(
+			"判断",
+		);
+		expect(result.page.lead_note_policy?.value).toEqual({
+			fade_after_days: 2.5,
+		});
 		expect(result.page.freshness.current.value).toEqual({
 			version: 9,
 			trigger: "event",

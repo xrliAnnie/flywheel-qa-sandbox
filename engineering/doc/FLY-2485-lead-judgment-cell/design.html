@@ -1,0 +1,158 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2485 · Lead 判断格设计</title><style>html{color-scheme:light only}*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif}.page{width:min(100% - 36px,1000px);margin:auto;padding:38px 0 64px}header,section{background:#fff;border:1px solid #e5e5ea;border-radius:22px;padding:30px;margin:18px 0}header{padding:38px;background:linear-gradient(135deg,#fff,#eff5ff)}h1{font-size:clamp(30px,5vw,52px);line-height:1.15;letter-spacing:-.04em;margin:8px 0 14px}h2{font-size:clamp(24px,4vw,33px);line-height:1.3;letter-spacing:-.025em;margin:8px 0 16px}p{margin:10px 0}.eyebrow,.kicker{color:#0066cc;font-size:13px;font-weight:700;letter-spacing:.05em}.lead{font-size:20px}.muted,small{color:#64646b}.status{display:inline-block;padding:7px 12px;background:#eff5ff;border-radius:8px;color:#225388;font-size:14px}.pending{border:1px dashed #c1a063;background:#fffaf0;border-radius:12px;padding:18px;margin:18px 0}.pending strong{font-size:14px;color:#725210}details{margin:14px 0}summary{cursor:pointer;color:#0066cc}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,SFMono-Regular,monospace;background:#f7f7f9;padding:16px;border-radius:10px}code{font-size:.9em}li+li{margin-top:10px}blockquote{margin:14px 0;padding:18px 22px;border-left:4px solid #a2a2aa;background:#f8f8fa}.judgment{border-color:#0071e3;background:#f0f6ff}blockquote b{font-size:13px;color:#55555b}blockquote p{font-size:19px}.callout{padding:15px;border-left:4px solid #b78e40;background:#fffbf1}.comment{margin-top:24px;padding-top:17px;border-top:1px solid #e5e5ea}label{display:block;margin-bottom:7px;font-size:14px;color:#5b5b63}textarea{width:100%;min-height:78px;border:1px solid #c8c8ce;border-radius:10px;padding:12px;color:#1d1d1f;background:#fff;font:inherit;line-height:1.5;resize:vertical}textarea:focus{outline:2px solid #0071e3;outline-offset:2px}button{font:inherit;cursor:pointer;border:0;border-radius:12px;padding:10px 16px;background:#0066cc;color:#fff;margin:10px 0}button:focus-visible{outline:3px solid #1d1d1f;outline-offset:3px}.export-chunk{margin-top:18px;padding-top:12px;border-top:1px solid #e5e5ea}.export-chunk textarea{min-height:140px;background:#fafafa}#copy-status{color:#55555b;font-size:14px}footer{color:#68686f;text-align:center;font-size:12px;margin-top:24px}@media(max-width:600px){.page{width:calc(100% - 20px);padding:10px 0 40px}header,section{padding:22px 18px;border-radius:16px}.lead{font-size:18px}ul{padding-left:21px}}</style></head><body><main class="page">
+<header data-section="summary"><p class="kicker">01 · 先看结论</p><h1>机器告诉你事实，Lead 补一句判断。</h1><p class="lead">任意部门负责人都可以按角色给一张 Epic 或子单写一句“现在到哪了”。不同角色可并存。机器句保持原样，判断带角色与写入时间；没人写，就只显示机器句。</p><p>Epic 是包含多张子单的一块工作。Lead 指部门负责人角色，不是某个具体的人。</p><p class="status">设计方案 · R2 已批准 · 尚未实现</p>
+<div class="comment"><label for="comment-summary">对“先看结论”的意见（自动保存在本机）</label><textarea id="comment-summary" data-comment="summary" data-title="先看结论"></textarea></div>
+</header>
+<section data-section="flow"><p class="kicker">02 · 改动路径</p><h2>两路内容，汇到同一页。</h2><p>负责人写入的判断与机器测得的事实各有来源，页面把它们并列展示。</p><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>流程图暂未渲染：本机浏览器启动被权限限制，两次尝试均失败。图源已保留；以下为图的文字来源，不冒充已渲染图。</p></div><details><summary>查看流程图源（Mermaid：用文字描述节点与连线）</summary><pre>---
+config:
+  theme: base
+  themeVariables:
+    fontFamily: &#x27;-apple-system, BlinkMacSystemFont, Arial, sans-serif&#x27;
+    primaryColor: &#x27;#f0f6ff&#x27;
+    primaryTextColor: &#x27;#1d1d1f&#x27;
+    primaryBorderColor: &#x27;#0071e3&#x27;
+    lineColor: &#x27;#6e6e73&#x27;
+  flowchart:
+    htmlLabels: false
+    curve: stepAfter
+---
+flowchart TD
+  accTitle: Lead 判断与机器事实分别进入同一张页面
+  accDescr: 负责人提交一句判断，经项目角色校验后保存，生成器与原有机器事实一起读出，页面并列呈现。
+  L[部门 Lead 写一句] --&gt; V[检查项目范围与角色]
+  V --&gt; N[(保存该角色当前判断)]
+  N --&gt; G[现有生成器读取]
+  M[原有状态与机器事实] --&gt; G
+  G --&gt; P[同一页机器句与各角色判断并列]
+</pre></details>
+<div class="comment"><label for="comment-flow">对“改动路径”的意见（自动保存在本机）</label><textarea id="comment-flow" data-comment="flow" data-title="改动路径"></textarea></div>
+</section>
+<section data-section="change"><p class="kicker">03 · 怎么改</p><h2>写一句、看一句、清除一句。</h2><p>命令入口沿用现有依赖维护的方式，写入独立判断表。每个项目的每张单，每个角色最多保存一句；同角色的新一句替换旧一句，其他角色的句子保留。</p><ul><li><b>写入：</b>校验项目范围与部门角色，保存正文和服务端时间，请求现有页面刷新。</li><li><b>查看：</b>只读取当前记录，不改变时间，也不触发发布。</li><li><b>清除：</b>只删除指定角色的判断，其他角色仍在；最后一条清除后，下次成功刷新只剩机器说明。</li></ul><p>页面本身没有判断写入按钮。写入成功与页面发布成功分别记录；命令只说明是否调用了刷新流程，实际结果仍看页面更新时间。</p>
+<div class="comment"><label for="comment-change">对“怎么改”的意见（自动保存在本机）</label><textarea id="comment-change" data-comment="change" data-title="怎么改"></textarea></div>
+</section>
+<section data-section="model"><p class="kicker">04 · 数据结构</p><h2>一项目、一单、每角色一句。</h2><p>记录保存五项：项目、不会随显示名称改变的单据编号、正文、角色、写入时间。表中没有作者姓名、账户或机器人身份。</p><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>数据关系图也受同一本机权限限制；图源保留在设计文档旁。</p></div><details><summary>查看数据关系图源</summary><pre>---
+config:
+  theme: base
+  themeVariables:
+    fontFamily: &#x27;-apple-system, BlinkMacSystemFont, Arial, sans-serif&#x27;
+    primaryColor: &#x27;#f0f6ff&#x27;
+    primaryTextColor: &#x27;#1d1d1f&#x27;
+    primaryBorderColor: &#x27;#0071e3&#x27;
+    lineColor: &#x27;#6e6e73&#x27;
+---
+erDiagram
+  accTitle: 一项目一单每个角色最多保存一句判断
+  accDescr: 单据用项目与稳定编号定位，可以没有判断；不同角色可并存，每个角色保留正文和写入时间。
+  ISSUE ||--o{ LEAD_NOTE : &quot;每角色最多一句&quot;
+  ISSUE {
+    string project_name &quot;项目&quot;
+    string issue_uuid &quot;稳定单据编号&quot;
+  }
+  LEAD_NOTE {
+    string text &quot;一句判断&quot;
+    string role &quot;部门角色&quot;
+    string written_at &quot;写入时间&quot;
+  }
+</pre></details><p>Cell 是一格内容与它的出处、读取时间组成的记录。Epic 和子单的判断都采用这个格式，不再复制一份根列表。</p><p><code>role</code> 记录部门角色；<code>written_at</code> 记录这句话何时写下；<code>generated_at</code> 记录页面何时生成。刷新页面不等于重新写过判断。</p>
+<div class="comment"><label for="comment-model">对“数据结构”的意见（自动保存在本机）</label><textarea id="comment-model" data-comment="model" data-title="数据结构"></textarea></div>
+</section>
+<section data-section="preview"><p class="kicker">05 · 目标体验示例</p><h2>机器句与角色判断放在一起。</h2><p class="muted">以下是设计示例，非真实项目记录，也不是已完成的产品截图。</p><blockquote class="machine"><b>机器说明</b><p>设计阶段 · 第 1 次</p></blockquote><blockquote class="judgment"><b>Lead 判断（角色声明）</b><p>方案已收敛，正在补验证路径。</p><small>工程 Lead · 2 小时前写<br>角色为提交方声明，未核验具体作者<br>写入：2026-09-09 12:00 UTC</small></blockquote><p class="muted">页面生成：2026-09-09 14:00 UTC</p><p>没写时，整个“Lead 判断”块消失。不会显示“暂无判断”来暗示有人看过。</p>
+<div class="comment"><label for="comment-preview">对“目标体验示例”的意见（自动保存在本机）</label><textarea id="comment-preview" data-comment="preview" data-title="目标体验示例"></textarea></div>
+</section>
+<section data-section="age"><p class="kicker">06 · 时间边界</p><h2>默认 3 天后变淡，保留原话。</h2><p>超过配置天数才淡化，恰好到达阈值仍保持原样。淡化只改变强调程度，并标注“较早判断”；文字仍可读，不自动删除、不改变状态。</p><ul><li>默认 3 天：2 天前写，正常显示。</li><li>默认 3 天：恰好 3 天，正常显示。</li><li>默认 3 天：4 天前写，标为较早判断。</li></ul><p>阈值在项目配置中可改，下次生成时带入页面。显示写入时间，也显示页面生成时间，避免把旧判断包装成新判断。</p>
+<div class="comment"><label for="comment-age">对“时间边界”的意见（自动保存在本机）</label><textarea id="comment-age" data-comment="age" data-title="时间边界"></textarea></div>
+</section>
+<section data-section="choices"><p class="kicker">07 · 关键取舍</p><h2>沿用已有入口，减少多余状态。</h2><ul><li><b>选择一张当前值表：</b>满足“现在到哪了”；代价是本功能不提供历史版本。</li><li><b>选择每个角色一句：</b>不同部门的判断可并存；同一角色只显示最新一句；多个负责人若共用同一个部门角色，就共用这一格，不增加作者级历史。</li><li><b>保留原刷新队列：</b>固定链接继续使用；代价是写入后可能短暂等待刷新。</li><li><b>不自动生成 Lead 判断：</b>机器不能代替负责人声称“已经判断过”。</li><li><b>不覆盖机器句：</b>读者能同时看到机器事实与负责人意见。</li></ul><p>Linear 是记录工作单与状态的系统。当前依赖账本实际保存在它的评论中。本功能复用它的命令与服务校验结构，按本单要求另建判断表。</p>
+<div class="comment"><label for="comment-choices">对“关键取舍”的意见（自动保存在本机）</label><textarea id="comment-choices" data-comment="choices" data-title="关键取舍"></textarea></div>
+</section>
+<section data-section="verification"><p class="kicker">08 · 如何验收</p><h2>从写入一直检查到页面。</h2><p>后续实现与验证节点须走通：命令写入 Epic 和子单 → 实际存储 → 现有刷新流程 → 对应页面并列句 → 按角色清除后仅该句消失，其他角色保留。</p><ul><li>默认与自定义阈值都覆盖前一天、恰好当天、后一天。</li><li>第二项目与另一个部门重复相同流程，数据不串项目。</li><li>拒绝无权限、跨项目、无效角色和恶意结构输入；正文始终按文字显示。</li><li>检查生成数据与报告无作者身份字段、无人名硬编码。</li><li>桌面与手机检查长句、可读性、写入时间与生成时间。</li></ul><p class="callout">本阶段已做源码审计与设计产物检查；产品联通测试、真实写入与清除、部署验收尚未执行。</p>
+<div class="comment"><label for="comment-verification">对“如何验收”的意见（自动保存在本机）</label><textarea id="comment-verification" data-comment="verification" data-title="如何验收"></textarea></div>
+</section>
+<section data-section="boundary"><p class="kicker">09 · 诚实边界</p><h2>判断是意见，不是状态或批准。</h2><p>此设计不改变 Linear 状态、运行状态、依赖、排序或任何审批。满足项目绑定的单，或属于页面根工作块的子单，都可以存判断；子单不必重复父单的项目标签。写判断不会使单据自动进入页面。</p><p>共享内部凭据证明调用方有写权限，不证明某一个具体负责人亲自写过。角色是受配置约束的声明，不是人类签名。</p><p>自由文本由写入者负责只用角色称呼。本单防止人名硬编码与作者身份字段进入产物，不新增能够识别所有自然语言人名的系统。</p><p>数据库读取失败时，本轮生成明确失败并保留旧页与旧时间。上游故障时仍可用前次回执里的稳定单据编号清除本地判断，但旧网页须等下一次成功生成才更新；恢复后由现有扫描追上。合并与部署分开，只有独立更新器负责部署。</p><p>本地 Mermaid 图未渲染是已知交付限制。图源保留，没有使用远程绘图服务。</p>
+<div class="comment"><label for="comment-boundary">对“诚实边界”的意见（自动保存在本机）</label><textarea id="comment-boundary" data-comment="boundary" data-title="诚实边界"></textarea></div>
+</section>
+<section data-section="feedback"><p class="kicker">10 · 页面意见汇总</p><h2>逐段留下意见，再复制回讨论。</h2><p>留言仅保存在当前浏览器，不会自动发给 Lead。这里的汇总标记只表示修改意见，从不代表设计通过或允许发布。</p>
+<div class="comment"><label for="comment-feedback">对“页面意见汇总”的意见（自动保存在本机）</label><textarea id="comment-feedback" data-comment="feedback" data-title="页面意见汇总"></textarea></div>
+<div id="comment-chunks" aria-live="polite"></div><button id="copy-all" type="button">复制全部意见</button><p id="copy-status" role="status"></p>
+</section>
+<footer>FLY-2485 · 工程设计 · 2026-09-09 · 留言不自动回传</footer></main>
+<script nonce="__CSP_NONCE__">
+(() => {
+  const prefix = 'fly2485-comments:' + location.pathname + ':';
+  const marker = '【页面意见汇总】FLY-2485';
+  const inputs = Array.from(document.querySelectorAll('[data-comment]'));
+  const area = document.getElementById('comment-chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  function fallbackCopy(text) {
+    const field = document.createElement('textarea');
+    field.value = text;
+    document.body.appendChild(field);
+    field.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) {}
+    field.remove();
+    return ok;
+  }
+  async function copy(text) {
+    let ok = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch (_) {}
+    if (!ok) ok = fallbackCopy(text);
+    status.textContent = ok ? '已复制，请贴回讨论。' : '复制未成功，请从下方文本框手动选择复制。';
+  }
+  function aggregate() {
+    const body = inputs.filter(field => field.value.trim()).map(field => '[' + field.dataset.title + ']\n' + field.value.trim()).join('\n\n');
+    chunks = [];
+    let part = marker + '\n';
+    for (const char of body) {
+      if (part.length + char.length > 1800) {
+        chunks.push(part);
+        part = marker + '\n';
+      }
+      part += char;
+    }
+    if (body) chunks.push(part);
+    area.replaceChildren();
+    if (!chunks.length) {
+      const hint = document.createElement('p');
+      hint.textContent = '填写任一段意见后，这里会实时汇总。';
+      area.appendChild(hint);
+    }
+    chunks.forEach((chunk, index) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'export-chunk';
+      const label = document.createElement('label');
+      label.htmlFor = 'chunk-' + index;
+      label.textContent = '意见第 ' + (index + 1) + ' / ' + chunks.length + ' 段';
+      const field = document.createElement('textarea');
+      field.id = label.htmlFor;
+      field.readOnly = true;
+      field.value = chunk;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = '复制这一段';
+      button.addEventListener('click', () => copy(chunk));
+      wrap.append(label, field, button);
+      area.appendChild(wrap);
+    });
+  }
+  inputs.forEach(field => {
+    try { field.value = localStorage.getItem(prefix + field.dataset.comment) || ''; }
+    catch (_) { status.textContent = '浏览器无法保存留言；本次仍可填写并复制。'; }
+    field.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + field.dataset.comment, field.value); }
+      catch (_) { status.textContent = '浏览器无法保存留言；请在离开前复制。'; }
+      aggregate();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => {
+    if (chunks.length) copy(chunks.join('\n\n'));
+    else status.textContent = '还没有填写意见。';
+  });
+  aggregate();
+})();
+</script></body></html>

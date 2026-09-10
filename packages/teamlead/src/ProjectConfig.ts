@@ -285,6 +285,7 @@ export interface HuddleConfig {
 }
 
 export interface ProjectEntry {
+	epicPage?: { leadNoteFadeDays?: number };
 	projectName: string;
 	projectRoot: string;
 	projectRepo?: string;
@@ -466,6 +467,23 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 			throw new Error(`Duplicate projectName: "${entry.projectName}"`);
 		}
 		seen.add(entry.projectName);
+		if (entry.epicPage !== undefined) {
+			const policy = entry.epicPage;
+			if (
+				!policy ||
+				typeof policy !== "object" ||
+				Array.isArray(policy) ||
+				Object.keys(policy).some((key) => key !== "leadNoteFadeDays") ||
+				(policy.leadNoteFadeDays !== undefined &&
+					(typeof policy.leadNoteFadeDays !== "number" ||
+						policy.leadNoteFadeDays <= 0 ||
+						!Number.isFinite(policy.leadNoteFadeDays * 86_400_000)))
+			) {
+				throw new Error(
+					"epicPage must contain only a finite positive leadNoteFadeDays",
+				);
+			}
+		}
 		if (!SAFE_IDENTIFIER_RE.test(entry.projectName)) {
 			throw new Error(
 				`Project "${entry.projectName}": projectName must match ${SAFE_IDENTIFIER_RE} (it becomes a filesystem path component)`,

@@ -1,5 +1,6 @@
 import { escapeMarkdownTableCell } from "./escape.js";
-import { type LabelKey, label } from "./labels.js";
+import { type LabelKey, label, leadNoteRoleLabel } from "./labels.js";
+import { DEFAULT_LEAD_NOTE_FADE_DAYS, leadNoteAge } from "./lead-note.js";
 import type {
 	Cell,
 	DependencyReviewEntry,
@@ -38,6 +39,8 @@ function markdownLink(url: string, text: string): string {
 }
 
 function markdownProvenance(provenance: Provenance): string {
+	if (provenance.kind === "lead_note")
+		return markdownText(`${provenance.role} · ${provenance.written_at}`);
 	if (provenance.kind === "linear") {
 		return markdownText(
 			[
@@ -269,7 +272,34 @@ function itemCells(
 	];
 }
 
-function renderItem(item: EpicItem, index: number, now: Date): string {
+function renderLeadNotes(
+	notes: Cell<string>[] | undefined,
+	now: Date,
+	fadeDays: number,
+): string {
+	return (notes ?? [])
+		.map((note) => {
+			if (note.provenance.kind !== "lead_note")
+				throw new Error("invalid lead-note provenance");
+			const { written_at, role } = note.provenance;
+			const age = leadNoteAge(written_at, now, fadeDays);
+			return `
+
+**${label("lead_note.title")}**: ${markdownText(note.value ?? "")}
+
+${markdownText(leadNoteRoleLabel(role))} · ${age.relative} · ${markdownText(written_at)}${age.stale ? ` · ${label("lead_note.stale")}` : ""}
+
+${label("lead_note.disclosure")}`;
+		})
+		.join("\n\n");
+}
+
+function renderItem(
+	item: EpicItem,
+	index: number,
+	now: Date,
+	fadeDays: number,
+): string {
 	const path = `/items/${index}`;
 	const title = item.title.value ?? label("cell.missing");
 	const state = item.state.value?.name ?? label("cell.missing");
@@ -292,6 +322,7 @@ function renderItem(item: EpicItem, index: number, now: Date): string {
 		`- **${label("page.waiting_on_me")}**: ${dependents}`,
 		`- **${label("cell.item.state")}**: ${markdownText(`${state} (${item.state.value?.type ?? label("cell.missing")})`)}`,
 		`- **${label("page.accounted_execution")}**: ${markdownText(executionSummary(item))} · ${label("cell.ledger_note")}`,
+		renderLeadNotes(item.lead_note, now, fadeDays),
 		`- **${label("section.stuck")}**: ${
 			item.signals.filter((signal) => signal.kind !== "waiting_founder")
 				.length > 0
@@ -367,6 +398,9 @@ export function renderEpicPageMarkdown(
 	page: EpicPage,
 	now = new Date(),
 ): string {
+	const fadeDays =
+		page.lead_note_policy?.value?.fade_after_days ??
+		DEFAULT_LEAD_NOTE_FADE_DAYS;
 	const ready = page.ready_items.value ?? [];
 	const founder = page.founder_items.value ?? [];
 	const itemById = new Map(page.items.map((item) => [item.identifier, item]));
@@ -384,7 +418,10 @@ export function renderEpicPageMarkdown(
 				.join(", ")
 		: label("page.none");
 	const roots = (page.header.roots.value ?? [])
-		.map((root) => markdownLink(root.url, `${root.identifier} · ${root.title}`))
+		.map(
+			(root) =>
+				`${markdownLink(root.url, `${root.identifier} · ${root.title}`)} · ${markdownText(root.state.name)}${renderLeadNotes(root.lead_note, now, fadeDays)}`,
+		)
 		.join(", ");
 	return [
 		`# ${label("page.title")}: ${markdownText(page.key.project_name)}`,
@@ -432,6 +469,6 @@ export function renderEpicPageMarkdown(
 		`## ${label("section.gaps")}`,
 		renderCell("/gaps", "cell.gaps", page.gaps, now),
 		`## ${label("section.what")}`,
-		...page.items.map((item, index) => renderItem(item, index, now)),
+		...page.items.map((item, index) => renderItem(item, index, now, fadeDays)),
 	].join("\n\n");
 }

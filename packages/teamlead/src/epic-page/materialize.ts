@@ -1,7 +1,11 @@
 import type { LinearActiveScopeSnapshot } from "../bridge/linear-epic-query.js";
 import { EpicTooLargeError } from "../bridge/linear-epic-query.js";
 import type { ProjectLinearBinding } from "../ProjectConfig.js";
-import type { EpicItemFacts, EpicPageTrigger } from "../StateStore.js";
+import type {
+	EpicItemFacts,
+	EpicPageTrigger,
+	LeadNoteRecord,
+} from "../StateStore.js";
 import type { GenerateEpicPageInput } from "./generate.js";
 import { assertEpicPage, type EpicPage } from "./model.js";
 import type { EpicPageRenderReceipt } from "./receipt.js";
@@ -10,6 +14,10 @@ import type { EpicPageItemSignals } from "./signals.js";
 export const MAX_EPIC_SCOPE_ITEMS = 500;
 
 export interface MaterializeEpicPageDeps {
+	readLeadNotes: (
+		projectName: string,
+		issueUuids: string[],
+	) => LeadNoteRecord[];
 	fetchSnapshot: (
 		apiKey: string,
 		binding: ProjectLinearBinding,
@@ -32,6 +40,7 @@ export interface MaterializeEpicPageDeps {
 }
 
 export interface MaterializeEpicPageInput {
+	leadNoteFadeDays?: number;
 	projectName: string;
 	binding: ProjectLinearBinding;
 	apiKey: string;
@@ -71,7 +80,12 @@ export async function materializeEpicPage(
 		generatedAt,
 	);
 	const freshness = deps.readFreshness(input.projectName);
+	const leadNotes = deps.readLeadNotes(input.projectName, [
+		...new Set([...snapshot.roots, ...snapshot.items].map((item) => item.id)),
+	]);
 	const page = deps.generatePage({
+		leadNotes,
+		leadNoteFadeDays: input.leadNoteFadeDays,
 		snapshot,
 		itemFacts,
 		itemSignals,

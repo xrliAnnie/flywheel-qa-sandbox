@@ -1,0 +1,21 @@
+---
+config:
+  theme: base
+  themeVariables:
+    fontFamily: '-apple-system, BlinkMacSystemFont, Arial, sans-serif'
+    primaryColor: '#f0f6ff'
+    primaryTextColor: '#1d1d1f'
+    primaryBorderColor: '#0071e3'
+    lineColor: '#6e6e73'
+  flowchart:
+    htmlLabels: false
+    curve: stepAfter
+---
+flowchart TD
+  accTitle: Lead 判断与机器事实分别进入同一张页面
+  accDescr: 负责人提交一句判断，经项目角色校验后保存，生成器与原有机器事实一起读出，页面并列呈现。
+  L[部门 Lead 写一句] --> V[检查项目范围与角色]
+  V --> N[(保存该角色当前判断)]
+  N --> G[现有生成器读取]
+  M[原有状态与机器事实] --> G
+  G --> P[同一页机器句与各角色判断并列]

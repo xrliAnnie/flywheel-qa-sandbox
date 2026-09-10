@@ -1,9 +1,11 @@
+import { runInNewContext } from "node:vm";
 import { Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
 import { escapeHtml } from "../../bridge/xhs-review-html.js";
 import { escapeMarkdownTableCell } from "../escape.js";
 import { generateEpicPage } from "../generate.js";
 import { label } from "../labels.js";
+import { leadNoteAge } from "../lead-note.js";
 import type { Cell, EpicPage, Signal } from "../model.js";
 import { buildEpicPageRenderReceipt } from "../receipt.js";
 import { renderEpicPageHtml } from "../render-html.js";
@@ -24,6 +26,136 @@ function page(): EpicPage {
 		trigger: "manual",
 	});
 }
+
+it.each([4, 5, 6])("honors custom five-day fade boundary at age %i", (days) => {
+	const written = new Date(
+		EPIC_SHAPE_NOW.getTime() - days * 86_400_000,
+	).toISOString();
+	expect(leadNoteAge(written, EPIC_SHAPE_NOW, 5).stale).toBe(days > 5);
+});
+
+it("clamps future written time to just written and escapes unknown department labels", () => {
+	const document = page();
+	const written_at = new Date(EPIC_SHAPE_NOW.getTime() + 60_000).toISOString();
+	document.items[0]!.lead_note = [
+		{
+			value: "判断",
+			provenance: { kind: "lead_note", role: "工程 <部门>", written_at },
+			source_updated_at: written_at,
+			observed_at: EPIC_SHAPE_NOW.toISOString(),
+		},
+	];
+	expect(renderEpicPageHtml(document, EPIC_SHAPE_NOW)).toContain(
+		"部门 Lead（工程 &lt;部门&gt;） · 刚写",
+	);
+	expect(renderEpicPageHtml(document, EPIC_SHAPE_NOW)).not.toContain("<部门>");
+});
+
+it.each([2, 3, 4])(
+	"renders parallel lead notes and fades only beyond three days (age %i)",
+	(days) => {
+		const snapshot = epicShapeSnapshot();
+		const written_at = new Date(
+			EPIC_SHAPE_NOW.getTime() - days * 86_400_000,
+		).toISOString();
+		const document = generateEpicPage({
+			snapshot,
+			itemFacts: snapshot.items.map(() => emptyItemFacts()),
+			now: EPIC_SHAPE_NOW,
+			projectName: "example",
+			trigger: "manual",
+			leadNotes: [snapshot.roots[0]!.id, snapshot.items[0]!.id].map(
+				(issue_uuid) => ({
+					issue_uuid,
+					role: "engineering",
+					text: "判断 <img src=x> & </script>",
+					written_at,
+				}),
+			),
+		});
+		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
+		const window = new Window();
+		try {
+			window.document.body.innerHTML = html;
+			const notes = window.document.querySelectorAll("[data-lead-written-at]");
+			expect(notes).toHaveLength(3);
+			for (const note of notes) {
+				expect(note.classList.contains("lead-note-stale")).toBe(days > 3);
+				expect(note.textContent).toContain(`工程 Lead · ${days * 24} 小时前写`);
+				expect(note.querySelector("time")?.textContent).toBe(written_at);
+				expect(note.querySelector("img")).toBeNull();
+			}
+			expect(
+				notes[2]?.previousElementSibling?.hasAttribute("data-machine-line"),
+			).toBe(true);
+			expect(window.document.body.textContent).toContain(
+				"角色为提交方声明，未核验具体作者",
+			);
+			expect(html).toContain(document.generated_at);
+			const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
+			expect(markdown).toContain("Lead 判断（角色声明）");
+			expect(markdown).toContain("角色为提交方声明，未核验具体作者");
+			expect(markdown).toContain(written_at);
+			expect(markdown.includes("较早判断")).toBe(days > 3);
+		} finally {
+			window.close();
+		}
+	},
+);
+
+it("omits the judgment region when nobody wrote and updates time without a freshness node", () => {
+	const document = page();
+	const window = new Window();
+	try {
+		window.document.body.innerHTML = renderEpicPageHtml(
+			document,
+			EPIC_SHAPE_NOW,
+		);
+		expect(
+			window.document.querySelectorAll("[data-lead-written-at]"),
+		).toHaveLength(0);
+		expect(renderEpicPageMarkdown(document, EPIC_SHAPE_NOW)).not.toContain(
+			"Lead 判断",
+		);
+		document.items[0]!.lead_note = [
+			{
+				value: "判断",
+				provenance: {
+					kind: "lead_note",
+					role: "engineering",
+					written_at: EPIC_SHAPE_NOW.toISOString(),
+				},
+				observed_at: EPIC_SHAPE_NOW.toISOString(),
+				source_updated_at: EPIC_SHAPE_NOW.toISOString(),
+			},
+		];
+		document.lead_note_policy!.value = { fade_after_days: 5 };
+		window.document.body.innerHTML = renderEpicPageHtml(
+			document,
+			EPIC_SHAPE_NOW,
+		);
+		window.document.querySelector("[data-opened-age]")?.remove();
+		const script = window.document.querySelector("script[nonce]")!.textContent;
+		const future = EPIC_SHAPE_NOW.getTime() + 6 * 86_400_000;
+		runInNewContext(script, {
+			document: window.document,
+			Date: class extends Date {
+				static now() {
+					return future;
+				}
+			},
+			setInterval: () => 1,
+		});
+		const note = window.document.querySelector("[data-lead-written-at]")!;
+		expect(note.classList.contains("lead-note-stale")).toBe(true);
+		expect(note.textContent).toContain("144 小时前写");
+		expect(note.querySelector("time")!.textContent).toBe(
+			EPIC_SHAPE_NOW.toISOString(),
+		);
+	} finally {
+		window.close();
+	}
+});
 
 function pageWithItemCount(count: number): EpicPage {
 	const snapshot = epicShapeSnapshot();

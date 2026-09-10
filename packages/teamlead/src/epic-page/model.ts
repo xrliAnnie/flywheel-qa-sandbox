@@ -21,6 +21,7 @@ export const RULE_IDS = [
 	"subtraction.v1",
 	"freshness.v1",
 	"signals.v1",
+	"lead_note_fade.v1",
 ] as const;
 export type RuleId = (typeof RULE_IDS)[number];
 
@@ -41,6 +42,7 @@ export const MISSING_REASONS = [
 export type MissingReason = (typeof MISSING_REASONS)[number];
 
 export type Provenance =
+	| { kind: "lead_note"; role: string; written_at: string }
 	| {
 			kind: "linear";
 			entity: "issue" | "issues" | "relation" | "label" | "children";
@@ -68,6 +70,7 @@ export const REFRESH_REASONS = [
 	"run_resumed",
 	"linear_done",
 	"dependency_changed",
+	"lead_note_changed",
 	"scan",
 	"manual",
 ] as const;
@@ -96,7 +99,7 @@ export interface Signal {
 	since: string;
 	execution_id8: string;
 	reason?: StopReason;
-	provenance: Exclude<Provenance, { kind: "linear" | "derived" }>;
+	provenance: Extract<Provenance, { kind: "statestore" | "commdb" }>;
 	observed_at: string;
 }
 
@@ -159,6 +162,7 @@ export interface RootCountsResult {
 }
 
 export interface EpicItem {
+	lead_note?: Cell<string>[];
 	parent: Cell<string>;
 	identifier: string;
 	title: Cell<string>;
@@ -237,6 +241,7 @@ export interface FreshnessSection {
 }
 
 export interface EpicPage {
+	lead_note_policy?: Cell<{ fade_after_days: number }>;
 	schema_version: 1;
 	key: {
 		project_name: string;
@@ -255,6 +260,7 @@ export interface EpicPage {
 		}>;
 		roots: Cell<
 			Array<{
+				lead_note?: Cell<string>[];
 				identifier: string;
 				title: string;
 				url: string;
@@ -342,10 +348,18 @@ function requireTimestamp(value: unknown, path: string): void {
 	}
 }
 
-function assertNoTimestampKeys(value: unknown, path: string): void {
+function assertNoTimestampKeys(
+	value: unknown,
+	path: string,
+	root: unknown,
+): void {
+	if (/^\/header\/roots\/value\/\d+\/lead_note\/\d+$/.test(path)) {
+		assertCell(value, path, root);
+		return;
+	}
 	if (Array.isArray(value)) {
 		value.forEach((entry, index) =>
-			assertNoTimestampKeys(entry, `${path}/${index}`),
+			assertNoTimestampKeys(entry, `${path}/${index}`, root),
 		);
 		return;
 	}
@@ -353,7 +367,7 @@ function assertNoTimestampKeys(value: unknown, path: string): void {
 	for (const [key, child] of Object.entries(value)) {
 		if (key.endsWith("_at"))
 			fail(`${path}/${key}`, "timestamp belongs on Cell");
-		assertNoTimestampKeys(child, `${path}/${key}`);
+		assertNoTimestampKeys(child, `${path}/${key}`, root);
 	}
 }
 
@@ -398,6 +412,26 @@ export function resolvePointer(root: unknown, pointer: string): unknown {
 
 function assertProvenance(value: unknown, path: string, root: unknown): void {
 	const provenance = requireRecord(value, path);
+	if (provenance.kind === "lead_note") {
+		if (
+			!/^\/(?:items\/\d+|header\/roots\/value\/\d+)\/lead_note\/\d+\/provenance$/.test(
+				path,
+			)
+		)
+			fail(path, "lead_note provenance requires a lead-note cell");
+		requireExactKeys(provenance, ["kind", "role", "written_at"], [], path);
+		const role = requireNonEmptyString(provenance.role, `${path}/role`);
+		if (role !== role.trim() || /[\p{Cc}\u2028\u2029]/u.test(role))
+			fail(path, "invalid lead-note role");
+		requireTimestamp(provenance.written_at, `${path}/written_at`);
+		if (
+			!Number.isFinite(Date.parse(String(provenance.written_at))) ||
+			new Date(String(provenance.written_at)).toISOString() !==
+				provenance.written_at
+		)
+			fail(path, "invalid lead-note written_at");
+		return;
+	}
 	if (provenance.kind === "linear") {
 		requireExactKeys(
 			provenance,
@@ -734,7 +768,37 @@ function assertCell(value: unknown, path: string, root: unknown): void {
 			fail(`${path}/missing/detail`, "expected string");
 		}
 	}
-	assertNoTimestampKeys(cell.value, `${path}/value`);
+	assertNoTimestampKeys(cell.value, `${path}/value`, root);
+}
+
+function assertLeadNotes(value: unknown, path: string, root: unknown): void {
+	if (!Array.isArray(value) || value.length === 0)
+		fail(path, "expected nonempty lead-note array");
+	let previous: string | undefined;
+	for (const [index, note] of value.entries()) {
+		const notePath = `${path}/${index}`;
+		assertCell(note, notePath, root);
+		const cell = note as Cell<string>;
+		if (cell.provenance.kind !== "lead_note")
+			fail(notePath, "expected lead_note provenance");
+		if (
+			typeof cell.value !== "string" ||
+			cell.value.length === 0 ||
+			cell.value !== cell.value.normalize("NFC").trim() ||
+			[...cell.value].length > 280 ||
+			/[\p{Cc}\u2028\u2029]/u.test(cell.value)
+		)
+			fail(notePath, "invalid lead-note text");
+		if (
+			cell.source_updated_at !== cell.provenance.written_at ||
+			!Number.isFinite(Date.parse(cell.observed_at)) ||
+			new Date(cell.observed_at).toISOString() !== cell.observed_at
+		)
+			fail(notePath, "invalid lead-note timestamp");
+		if (previous !== undefined && previous >= cell.provenance.role)
+			fail(path, "lead-note roles must be unique and sorted");
+		previous = cell.provenance.role;
+	}
 }
 
 const ROOT_CELLS = [
@@ -786,7 +850,7 @@ export function assertEpicPage(
 			"freshness",
 			...ROOT_CELLS,
 		],
-		[],
+		["lead_note_policy"],
 		"",
 	);
 	if (root.schema_version !== 1) fail("/schema_version", "expected 1");
@@ -824,6 +888,24 @@ export function assertEpicPage(
 	for (const name of ["scope_definition", "roots", "items"]) {
 		assertCell(header[name], `/header/${name}`, root);
 	}
+	if (root.lead_note_policy !== undefined) {
+		assertCell(root.lead_note_policy, "/lead_note_policy", root);
+		const policy = root.lead_note_policy as Cell<{ fade_after_days: number }>;
+		const value = requireRecord(policy.value, "/lead_note_policy/value");
+		requireExactKeys(value, ["fade_after_days"], [], "/lead_note_policy/value");
+		if (
+			typeof value.fade_after_days !== "number" ||
+			value.fade_after_days <= 0 ||
+			!Number.isFinite(value.fade_after_days * 86_400_000)
+		)
+			fail("/lead_note_policy", "expected finite positive fade days");
+		if (
+			policy.provenance.kind !== "derived" ||
+			policy.provenance.rule !== "lead_note_fade.v1" ||
+			policy.provenance.from.length !== 0
+		)
+			fail("/lead_note_policy", "expected lead_note_fade.v1 policy");
+	}
 
 	const scope = assertCellValueShape(
 		header.scope_definition,
@@ -849,7 +931,14 @@ export function assertEpicPage(
 	for (const [index, raw] of rootValues.entries()) {
 		const path = `/header/roots/value/${index}`;
 		const value = requireRecord(raw, path);
-		requireExactKeys(value, ["identifier", "title", "url", "state"], [], path);
+		requireExactKeys(
+			value,
+			["identifier", "title", "url", "state"],
+			["lead_note"],
+			path,
+		);
+		if (value.lead_note !== undefined)
+			assertLeadNotes(value.lead_note, `${path}/lead_note`, root);
 		for (const key of ["identifier", "title", "url"])
 			requireNonEmptyString(value[key], `${path}/${key}`);
 		const identifier = value.identifier as string;
@@ -870,10 +959,12 @@ export function assertEpicPage(
 		requireExactKeys(
 			item,
 			["identifier", ...ITEM_CELLS, "signals", "signal_sources"],
-			[],
+			["lead_note"],
 			itemPath,
 		);
 		requireNonEmptyString(item.identifier, `${itemPath}/identifier`);
+		if (item.lead_note !== undefined)
+			assertLeadNotes(item.lead_note, `${itemPath}/lead_note`, root);
 		for (const name of ITEM_CELLS) {
 			assertCell(item[name], `${itemPath}/${name}`, root);
 		}

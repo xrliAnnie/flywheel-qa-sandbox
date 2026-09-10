@@ -112,6 +112,8 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 										{ stateStore: deps.store },
 										{ projectName, items, now: generatedAt },
 									),
+								readLeadNotes: (projectName, ids) =>
+									deps.store.getLeadNotes(projectName, ids),
 								readFreshness: (projectName) => ({
 									history: deps.store.getEpicPageFreshness(projectName),
 									publication: deps.store.getEpicPagePublication(projectName),
@@ -120,7 +122,12 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 								buildReceipt: deps.buildReceipt ?? buildEpicPageRenderReceipt,
 								now,
 							},
-							attempt,
+							{
+								...attempt,
+								leadNoteFadeDays: deps.projects.find(
+									(project) => project.projectName === attempt.projectName,
+								)?.epicPage?.leadNoteFadeDays,
+							},
 						),
 					now,
 				},

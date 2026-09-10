@@ -155,6 +155,45 @@ describe("Epic page router", () => {
 		expect(insert).not.toHaveBeenCalled();
 	});
 
+	it("manual generation reads project notes and policy; read failure produces no new receipt", async () => {
+		const snapshot = epicShapeSnapshot();
+		store.setLeadNote({
+			projectName: "example",
+			issueUuid: snapshot.roots[0]!.id,
+			role: "engineering",
+			text: "根判断",
+			writtenAt: "2026-09-01T12:00:00.000Z",
+		});
+		store.setLeadNote({
+			projectName: "example",
+			issueUuid: snapshot.items[0]!.id,
+			role: "engineering",
+			text: "子判断",
+			writtenAt: "2026-09-01T12:00:00.000Z",
+		});
+		const application = app({
+			projects: [{ ...projects[0]!, epicPage: { leadNoteFadeDays: 2.5 } }],
+		});
+		const response = await request(application, {
+			token: "master",
+			body: { projectName: "example" },
+		});
+		expect(response.status).toBe(200);
+		expect(response.text).toContain("根判断");
+		expect(response.text).toContain("子判断");
+		expect(response.text).toContain('"fade_after_days":2.5');
+		const before = insert.mock.calls.length;
+		vi.spyOn(store, "getLeadNotes").mockImplementationOnce(() => {
+			throw new Error("fixture note read failed");
+		});
+		const failed = await request(application, {
+			token: "master",
+			body: { projectName: "example" },
+		});
+		expect(failed.status).toBeGreaterThanOrEqual(500);
+		expect(insert).toHaveBeenCalledTimes(before);
+	});
+
 	it.each([
 		[{}, 400, "project_required"],
 		[{ projectName: "" }, 400, "project_required"],

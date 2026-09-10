@@ -1,0 +1,415 @@
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC1 — port lock + free-port + no kill + cleanup > acquires lock, calls findPort with preferred, releases lock when done
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:147:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC1 — port lock + free-port + no kill + cleanup > throws when no free port can be found in range
+AssertionError: expected [Function] to throw error matching /no free port/ but got 'ELOCK_TIMEOUT'
+
+- Expected: 
+/no free port/
+
++ Received: 
+"ELOCK_TIMEOUT"
+
+ ❯ src/__tests__/visual-capture.test.ts:162:4
+    160|     findPort: () => null,
+    161|    });
+    162|    await expect(visualCapture(args)).rejects.toThrow(/no free port/);
+       |    ^
+    163|   });
+    164| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC1 — port lock + free-port + no kill + cleanup > findPort uses preferred port arg (not just default 3000)
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:182:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC1 — port lock + free-port + no kill + cleanup > releases lock even when proofshot throws
+AssertionError: expected [Function] to throw error matching /simulated/ but got 'ELOCK_TIMEOUT'
+
+- Expected: 
+/simulated/
+
++ Received: 
+"ELOCK_TIMEOUT"
+
+ ❯ src/__tests__/visual-capture.test.ts:194:4
+    192|     },
+    193|    });
+    194|    await expect(visualCapture(args)).rejects.toThrow(/simulated/);
+       |    ^
+    195|    // Lock dir should be cleaned up.
+    196|    const lock = acquireProofShotLock();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC1 — port lock + free-port + no kill + cleanup > stops the owned recording after start succeeds and screenshot fails
+AssertionError: expected [Function] to throw error including 'screenshot failed after start' but got 'ELOCK_TIMEOUT'
+
+Expected: "screenshot failed after start"
+Received: "ELOCK_TIMEOUT"
+
+ ❯ src/__tests__/visual-capture.test.ts:224:4
+    222|    });
+    223| 
+    224|    await expect(visualCapture(args)).rejects.toThrow(
+       |    ^
+    225|     "screenshot failed after start",
+    226|    );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC1 — port lock + free-port + no kill + cleanup > warns when recording cleanup fails without masking the screenshot error
+AssertionError: expected [Function] to throw error including 'primary screenshot failure' but got 'ELOCK_TIMEOUT'
+
+Expected: "primary screenshot failure"
+Received: "ELOCK_TIMEOUT"
+
+ ❯ src/__tests__/visual-capture.test.ts:263:4
+    261|    };
+    262| 
+    263|    await expect(visualCapture(baseArgs(overrides))).rejects.toThrow(
+       |    ^
+    264|     "primary screenshot failure",
+    265|    );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC1 — port lock + free-port + no kill + cleanup > uses stderr as the default cleanup warning sink
+AssertionError: expected [Function] to throw error including 'primary failure for default warning' but got 'ELOCK_TIMEOUT'
+
+Expected: "primary failure for default warning"
+Received: "ELOCK_TIMEOUT"
+
+ ❯ src/__tests__/visual-capture.test.ts:299:4
+    297|    });
+    298| 
+    299|    await expect(visualCapture(args)).rejects.toThrow(
+       |    ^
+    300|     "primary failure for default warning",
+    301|    );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC1 — port lock + free-port + no kill + cleanup > retries record stop once and degrades on the normal success path
+AssertionError: promise rejected "Error: ELOCK_TIMEOUT" instead of resolving
+ ❯ src/__tests__/visual-capture.test.ts:334:36
+    332|    });
+    333| 
+    334|    await expect(visualCapture(args)).resolves.toMatchObject({
+       |                                    ^
+    335|     captureKind: "ui",
+    336|    });
+
+Caused by: Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:334:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC1 — port lock + free-port + no kill + cleanup > does NOT kill the port occupant — wrapper trusts findPort to skip occupied
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:363:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC3 — manifest + selected paths > writes manifest.json with full wire schema (snake_case correlation fields)
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:387:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC3 — manifest + selected paths > stdout JSON has wire field names (dedup_key, not dedupKey)
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:425:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > AC3 — manifest + selected paths > WebM files appear in dropped but never in selected
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:454:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > present/shared captures successfully, preserves the foreign baseline tab, and closes only the new tab
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:523:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > takes the initial membership snapshot before preparation and the second immediately before start
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:562:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > absent/owned bootstraps without a pre tab-list and closes the whole session
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:595:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > probe failure remains degradable: capture succeeds and performs no tab or browser close
+AssertionError: promise rejected "Error: ELOCK_TIMEOUT" instead of resolving
+ ❯ src/__tests__/visual-capture.test.ts:628:36
+    626|    );
+    627| 
+    628|    await expect(visualCapture(args)).resolves.toMatchObject({
+       |                                    ^
+    629|     captureKind: "ui",
+    630|    });
+
+Caused by: Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:628:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > never treats malformed session members as an absent session with close authority
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:667:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > a malformed shared tab baseline grants no tab-close authority
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:701:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > deduplicates stable post-minus-pre tab ids before closing
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:741:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > start failure after an absent session opens tabs closes the owned tree without stopping a recording
+AssertionError: expected [Function] to throw error including 'Recording already active' but got 'ELOCK_TIMEOUT'
+
+Expected: "Recording already active"
+Received: "ELOCK_TIMEOUT"
+
+ ❯ src/__tests__/visual-capture.test.ts:770:4
+    768|    };
+    769| 
+    770|    await expect(visualCapture(args)).rejects.toThrow(
+       |    ^
+    771|     "Recording already active",
+    772|    );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > start failure before an absent session appears performs no tab, record, or close command
+AssertionError: expected [Function] to throw error including 'start failed before browser open' but got 'ELOCK_TIMEOUT'
+
+Expected: "start failed before browser open"
+Received: "ELOCK_TIMEOUT"
+
+ ❯ src/__tests__/visual-capture.test.ts:797:4
+    795|    };
+    796| 
+    797|    await expect(visualCapture(args)).rejects.toThrow(
+       |    ^
+    798|     "start failed before browser open",
+    799|    );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[21/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > shared start failure closes only the guarded post-minus-pre tab
+AssertionError: expected [Function] to throw error including 'shared start failed' but got 'ELOCK_TIMEOUT'
+
+Expected: "shared start failed"
+Received: "ELOCK_TIMEOUT"
+
+ ❯ src/__tests__/visual-capture.test.ts:832:4
+    830|    };
+    831| 
+    832|    await expect(visualCapture(args)).rejects.toThrow("shared start fai…
+       |    ^
+    833|    expect(agentCalls.map((call) => call.args)).toContainEqual([
+    834|     "tab",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[22/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > a failed pre-start membership probe preserves tabs but still stops this successful recording
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:874:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[23/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > post membership failure skips post tab-list, recording stop, and every close
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:907:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[24/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > owned whole-close failure falls back to every stable captured tab
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:947:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[25/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > freezes the shared tab difference immediately after start
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:982:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[26/27]⎯
+
+ FAIL  src/__tests__/visual-capture.test.ts > visualCapture (GEO-151 A4) > FLY-2269 — browser ownership cleanup > invalid shared post-tab JSON stops recording but closes no page or browser
+Error: ELOCK_TIMEOUT
+ ❯ acquireProofShotLockWithRetry src/proofshot/lock.ts:139:11
+    137|    if ((err as Error).message !== "ELOCKED") throw err;
+    138|    if (i === maxRetries) {
+    139|     throw new Error("ELOCK_TIMEOUT");
+       |           ^
+    140|    }
+    141|    await sleep(retryMs);
+ ❯ visualCapture src/commands/visual-capture.ts:311:10
+ ❯ src/__tests__/visual-capture.test.ts:1021:4
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[27/27]⎯
+
+
+ Test Files  1 failed | 154 passed (155)
+      Tests  27 failed | 2177 passed | 2 skipped (2206)
+   Start at  23:22:37
+   Duration  108.69s (transform 2.63s, setup 2.03s, collect 14.77s, tests 158.01s, environment 23ms, prepare 9.25s)
+
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  flywheel-comm@0.1.0 test:run: `vitest run`
+Exit status 1
+ ELIFECYCLE  Command failed with exit code 1.

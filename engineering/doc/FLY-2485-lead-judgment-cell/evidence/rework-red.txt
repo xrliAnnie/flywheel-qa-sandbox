@@ -1,0 +1,100 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2485/packages/teamlead
+
+ ❯ src/epic-page/__tests__/generate.test.ts (16 tests | 1 failed) 47ms
+   × generateEpicPage > projects sorted multi-role notes on roots and items without changing machine facts 13ms
+     → /header/roots/value/0/lead_note: unsourced structural field
+   ✓ generateEpicPage > projects active Linear roots and their filtered subtree into the page header 2ms
+   ✓ generateEpicPage > generates the approved R1 golden page with every value in a Cell 4ms
+   ✓ generateEpicPage > represents an observed empty active scope without inventing items 1ms
+   ✓ generateEpicPage > keeps gate and carrier observations separate with their own provenance 1ms
+   ✓ generateEpicPage > keeps ready selection independent of session error 3ms
+   ✓ generateEpicPage > keeps ready selection independent of active run 3ms
+   ✓ generateEpicPage > keeps ready selection independent of held run 2ms
+   ✓ generateEpicPage > keeps ready selection independent of open attempt 3ms
+   ✓ generateEpicPage > keeps ready selection independent of land operation 2ms
+   ✓ generateEpicPage > keeps ready selection independent of older live session despite latest completed 3ms
+   ✓ generateEpicPage > keeps ready selection independent of run dependency failure 2ms
+   ✓ generateEpicPage > keeps ready selection independent of gate and carrier query failure 2ms
+   ✓ generateEpicPage > turns failed fact reads into stable missing cells without error text 2ms
+   ✓ generateEpicPage > reports every failed execution fact in page gaps by item and cell 2ms
+   ✓ generateEpicPage > projects item signals, excludes founder waits from stuck items, and reports source gaps 2ms
+ ❯ src/__tests__/fly-2006-database-retention-sweep.test.ts (30 tests | 1 failed) 677ms
+   ✓ FLY-2006 retention registry > releases each managed rehearsal before the next acquisition (oversize=false) 61ms
+   ✓ FLY-2006 retention registry > releases each managed rehearsal before the next acquisition (oversize=true) 24ms
+   ✓ FLY-2006 retention registry > rehearses only teamlead while preserving the other database as live guard context 13ms
+   ✓ FLY-2006 retention registry > rehearses only comm while preserving the other database as live guard context 11ms
+   ✓ FLY-2006 retention registry > executes the rehearsal through inventory, apply and both vacuums on synthetic databases 102ms
+   ✓ FLY-2006 retention registry > protects every quota recovery table including lazy canonical observations from retention deletion 1ms
+   ✓ FLY-2006 retention registry > classifies the current production schemas created for both live database families 36ms
+   ✓ FLY-2006 retention registry > labels copy-only rehearsal authority without impersonating a Discord message 1ms
+   ✓ FLY-2006 retention registry > parses only the bounded v2 inventory/apply/policy/vacuum operator contracts 1ms
+   × FLY-2006 retention registry > classifies the production schema and its optional-retired subset 5ms
+     → expected [ Array(143) ] to have a length of 142 but got 143
+   ✓ FLY-2006 retention registry > uses a strict 14-day boundary for text and epoch timestamps 1ms
+   ✓ FLY-2006 retention registry > admits only the exact Lead-directed mailbox exception regardless of age 1ms
+   ✓ FLY-2006 retention registry > protects authority and unknown mailbox values outside the exception 0ms
+   ✓ FLY-2006 bounded active-aware cohorts > includes every execution of active/held runs plus live cross-DB sessions 1ms
+   ✓ FLY-2006 bounded active-aware cohorts > matches JSON lineage only by exact scalar value 1ms
+   ✓ FLY-2006 bounded active-aware cohorts > uses exact keys through 20k and bounded digest shards above it 62ms
+   ✓ FLY-2006 bounded active-aware cohorts > forces range-digest mailbox cohorts into receipt-per-row batches 2ms
+   ✓ FLY-2006 bounded active-aware cohorts > emits a five-way partition whose counts exactly cover the universe 1ms
+   ✓ FLY-2006 SQLite evidence and legacy reader > creates a 0600 SQLite snapshot and backup-restores exact candidate rows 6ms
+   ✓ FLY-2006 SQLite evidence and legacy reader > snapshots a child cohort without copying its protected FK parent 3ms
+   ✓ FLY-2006 SQLite evidence and legacy reader > rejects a symlinked snapshot 3ms
+   ✓ FLY-2006 SQLite evidence and legacy reader > streams a high-cardinality query into range-digest SQLite evidence 50ms
+   ✓ FLY-2006 SQLite evidence and legacy reader > reads closed v1 evidence without rechecking its released live baseline 2ms
+   ✓ FLY-2006 multi-target inventory > has one explicit policy for every delete-target table 0ms
+   ✓ FLY-2006 multi-target inventory > sweeps only old terminal completion-drain challenges 1ms
+   ✓ FLY-2006 multi-target inventory > retains canonical Discord thread anchors until Discord confirms them missing 1ms
+   ✓ FLY-2006 multi-target inventory > inventories resolved alert threads with NULL repair status 1ms
+   ✓ FLY-2006 multi-target inventory > inventories only mailbox alert ledger rows resolved before the cutoff 0ms
+   ✓ FLY-2006 multi-target inventory > never inventories a lead event while any foreign-key child survives 208ms
+   ✓ FLY-2006 multi-target inventory > freezes active-aware session history and the exact recent HL orphan 77ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/epic-page/__tests__/generate.test.ts > generateEpicPage > projects sorted multi-role notes on roots and items without changing machine facts
+EpicPageSchemaError: /header/roots/value/0/lead_note: unsourced structural field
+ ❯ fail src/epic-page/model.ts:311:8
+    309|
+    310| function fail(path: string, message: string): never {
+    311|  throw new EpicPageSchemaError(`${path}: ${message}`);
+       |        ^
+    312| }
+    313|
+ ❯ requireExactKeys src/epic-page/model.ts:331:26
+ ❯ assertEpicPage src/epic-page/model.ts:948:3
+ ❯ generateEpicPage src/epic-page/generate.ts:547:2
+ ❯ src/epic-page/__tests__/generate.test.ts:38:16
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__tests__/fly-2006-database-retention-sweep.test.ts > FLY-2006 retention registry > classifies the production schema and its optional-retired subset
+AssertionError: expected [ Array(143) ] to have a length of 142 but got 143
+
+- Expected
++ Received
+
+- 142
++ 143
+
+ ❯ src/__tests__/fly-2006-database-retention-sweep.test.ts:543:5
+    541|   expect(
+    542|    TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
+    543|   ).toHaveLength(142);
+       |     ^
+    544|   expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).to…
+    545|    expect.arrayContaining([
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  2 failed | 44 passed (46)
+   Start at  01:17:02
+   Duration  1.92s (transform 935ms, setup 21ms, collect 1.87s, tests 724ms, environment 0ms, prepare 102ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2485/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/epic-page/__tests__/generate.test.ts src/__tests__/fly-2006-database-retention-sweep.test.ts

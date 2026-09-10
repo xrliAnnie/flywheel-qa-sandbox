@@ -16,6 +16,110 @@ import {
 
 const NOW = "2026-09-03T04:00:00Z";
 
+const leadNote = () => ({
+	value: "验证中",
+	provenance: {
+		kind: "lead_note" as const,
+		role: "engineering",
+		written_at: "2026-09-03T03:00:00.000Z",
+	},
+	observed_at: "2026-09-03T04:00:00.000Z",
+	source_updated_at: "2026-09-03T03:00:00.000Z",
+});
+
+it.each(
+	[
+		[],
+		[leadNote(), leadNote()],
+		[
+			{
+				...leadNote(),
+				provenance: { ...leadNote().provenance, role: "product" },
+			},
+			leadNote(),
+		],
+		[{ ...leadNote(), value: "" }],
+		[{ ...leadNote(), value: null, missing: { reason: "statestore_error" } }],
+		[{ ...leadNote(), value: "line\nbreak" }],
+		[{ ...leadNote(), source_updated_at: NOW }],
+		[
+			{
+				...leadNote(),
+				provenance: { ...leadNote().provenance, author: "forbidden" },
+			},
+		],
+		[
+			{
+				...leadNote(),
+				provenance: {
+					...leadNote().provenance,
+					written_at: "2026-02-30T03:00:00.000Z",
+				},
+			},
+		],
+	].map((notes) => [notes]),
+)(
+	"rejects invalid lead-note arrays in either canonical location %j",
+	(notes) => {
+		for (const atRoot of [false, true]) {
+			const page = validPage();
+			const target = atRoot ? page.header.roots.value![0]! : page.items[0]!;
+			Object.assign(target, { lead_note: notes });
+			expect(() => assertEpicPage(page)).toThrow();
+		}
+	},
+);
+
+it("does not permit lead-note provenance on machine cells or hidden timestamps elsewhere", () => {
+	const page = validPage();
+	page.items[0]!.title = leadNote();
+	expect(() => assertEpicPage(page)).toThrow("lead-note cell");
+	const hidden = validPage();
+	Object.assign(hidden.header.roots.value![0]!, { extra: { written_at: NOW } });
+	expect(() => assertEpicPage(hidden)).toThrow("timestamp belongs on Cell");
+});
+
+it("rejects impossible observation dates and retains rewritten-note times in content digest", () => {
+	const page = validPage();
+	page.items[0]!.lead_note = [leadNote()];
+	const digest = contentDigest(page);
+	page.items[0]!.lead_note![0]!.observed_at = "2026-02-30T04:00:00.000Z";
+	expect(() => assertEpicPage(page)).toThrow("timestamp");
+	page.items[0]!.lead_note![0] = {
+		...leadNote(),
+		provenance: {
+			...leadNote().provenance,
+			written_at: "2026-09-03T03:01:00.000Z",
+		},
+		source_updated_at: "2026-09-03T03:01:00.000Z",
+	};
+	expect(contentDigest(page)).not.toBe(digest);
+});
+
+it("accepts exact nested root and item lead-note cells with a positive fade policy", () => {
+	const page = validPage();
+	page.items[0]!.lead_note = [leadNote()];
+	page.header.roots.value![0]!.lead_note = [leadNote()];
+	page.lead_note_policy = {
+		value: { fade_after_days: 3 },
+		provenance: { kind: "derived", rule: "lead_note_fade.v1", from: [] },
+		observed_at: NOW,
+	};
+	expect(() => assertEpicPage(page)).not.toThrow();
+});
+
+it("accepts the lead-note refresh reason through the existing closed set", () => {
+	const page = validPage();
+	page.generator.trigger = "event";
+	page.generator.reasons = ["lead_note_changed"];
+	page.freshness.current.value = {
+		version: 1,
+		trigger: "event",
+		reasons: ["lead_note_changed"],
+	};
+	expect(() => assertEpicPage(page)).not.toThrow();
+});
+
 function linearCell<T>(value: T): Cell<T> {
 	return {
 		value,

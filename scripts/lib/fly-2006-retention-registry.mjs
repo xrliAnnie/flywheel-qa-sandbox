@@ -51,7 +51,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		flag_scan_failure_alert_intents flag_scan_run_items flag_scan_run_legs flag_scan_runs
 		flag_scan_scope_state flag_scan_state flag_store_meta flag_value_changelog flag_values fleet_pressure_hold
 		founder_reply_retry land_alert_outbox land_operation land_operation_step
-		land_recovery_episode land_repo_admission lead_inbox lead_pending_escalation
+		land_recovery_episode land_repo_admission lead_inbox lead_note lead_pending_escalation
 		lifecycle_apply_claims lifecycle_launch_claims linear_state_observations
 		loop_heartbeat loop_owner merged_gate_guard_failure messages
 		node_dwell_review patrol_orphan_watch

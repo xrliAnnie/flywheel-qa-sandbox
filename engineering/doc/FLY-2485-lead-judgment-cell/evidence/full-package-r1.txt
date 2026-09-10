@@ -1,0 +1,19 @@
+packages/claude-runner test:run: ⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+packages/claude-runner test:run: Vitest caught 1 unhandled error during the test run.
+packages/claude-runner test:run: This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+packages/claude-runner test:run: ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+packages/claude-runner test:run: Error: [vitest-worker]: Timeout calling "onTaskUpdate"
+packages/claude-runner test:run:  ❯ Object.onTimeoutError ../../node_modules/.pnpm/vitest@3.2.4_@types+node@20.19.21_@vitest+ui@3.2.4_happy-dom@20.10.6_tsx@4.20.6_yaml@2.8.1/node_modules/vitest/dist/chunks/rpc.-pEldfrD.js:53:10
+packages/claude-runner test:run:  ❯ Timeout._onTimeout ../../node_modules/.pnpm/vitest@3.2.4_@types+node@20.19.21_@vitest+ui@3.2.4_happy-dom@20.10.6_tsx@4.20.6_yaml@2.8.1/node_modules/vitest/dist/chunks/index.B521nVV-.js:59:62
+packages/claude-runner test:run:  ❯ listOnTimeout node:internal/timers:605:17
+packages/claude-runner test:run:  ❯ processTimers node:internal/timers:541:7
+packages/claude-runner test:run: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+packages/claude-runner test:run:  Test Files  49 passed (49)
+packages/claude-runner test:run:       Tests  1224 passed | 2 skipped (1226)
+packages/claude-runner test:run:      Errors  1 error
+packages/claude-runner test:run:    Start at  23:12:48
+packages/claude-runner test:run:    Duration  306.57s (transform 13.27s, setup 0ms, collect 64.38s, tests 398.28s, environment 13ms, prepare 16.10s)
+packages/claude-runner test:run: Failed
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  flywheel-claude-runner@0.2.24 test:run: `vitest run`
+Exit status 1
+ ELIFECYCLE  Command failed with exit code 1.

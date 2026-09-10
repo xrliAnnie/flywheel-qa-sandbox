@@ -1,0 +1,51 @@
+Scope: 23 of 24 workspace projects
+packages/agent-team-transport build$ tsc
+packages/config build$ tsc && rm -f dist/three-stage-phases.* dist/__tests__/three-stage-phases.test.*
+packages/core build$ tsc
+packages/qa-framework build$ tsc
+packages/agent-team-transport build: Done
+packages/token-usage build$ tsc
+packages/qa-framework build: Done
+packages/config build: Done
+packages/core build: Done
+packages/token-usage build: Done
+packages/flywheel-cli build$ tsc && cp -r src/templates dist/templates
+packages/flywheel-comm build$ tsc
+packages/linear-event-transport build$ tsc
+packages/github-event-transport build$ tsc
+packages/flywheel-cli build: Done
+packages/slack-event-transport build$ tsc
+packages/github-event-transport build: Done
+packages/voice-core build$ tsc
+packages/linear-event-transport build: Done
+packages/slack-event-transport build: Done
+packages/voice-core build: Done
+packages/flywheel-comm build: Done
+packages/terminal-mcp build$ tsc
+packages/claude-runner build$ tsc
+packages/inbox-mcp build$ tsc
+packages/gemini-agent build$ tsc
+packages/inbox-mcp build: Done
+packages/voice-headphone build$ tsc
+packages/terminal-mcp build: Done
+packages/gemini-agent build: Done
+packages/voice-headphone build: Done
+packages/claude-runner build: Done
+packages/edge-worker build$ tsc && rm -f dist/DagDisp* && npm run copy-prompts
+packages/edge-worker build: npm warn Unknown env config "approve-builds-auto". This will stop working in the next major version of npm.
+packages/edge-worker build: npm warn Unknown env config "recursive". This will stop working in the next major version of npm.
+packages/edge-worker build: npm warn Unknown env config "approve-builds". This will stop working in the next major version of npm.
+packages/edge-worker build: npm warn Unknown env config "verify-deps-before-run". This will stop working in the next major version of npm.
+packages/edge-worker build: npm warn Unknown env config "_jsr-registry". This will stop working in the next major version of npm.
+packages/edge-worker build: npm warn Unknown env config "overrides". This will stop working in the next major version of npm.
+packages/edge-worker build: > flywheel-edge-worker@0.2.24 copy-prompts
+packages/edge-worker build: > mkdir -p dist/prompts/subroutines && cp -r src/prompts/subroutines/*.md dist/prompts/subroutines/ && cp label-prompt-template.md dist/ && cp -r prompts dist/
+packages/edge-worker build: Done
+packages/teamlead prebuild$ rm -f dist/bridge/auto-qa-held.* dist/bridge/auto-qa-config-source.* dist/bridge/auto-qa-coordinator.* dist/bridge/auto-qa-effects.* dist/bridge/auto-qa-policy.* dist/bridge/manual-qa-routes.* dist/bridge/ship-gate-rebind.* dist/bridge/founder-milestone-config-source.* dist/bridge/milestone-report-policy.* dist/bridge/checkpoint-park.* dist/bridge/__tests__/checkpoint-park.test.*
+packages/voice-bridge build$ tsc
+packages/teamlead prebuild: Done
+packages/teamlead build$ tsc && node -e "require('fs').writeFileSync('dist/build-identity.json', JSON.stringify({artifactBuildSha:require('child_process').execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim()})+'\n')" && rm -f dist/__tests__/StateStore.fly939-stranded-implement.test.* dist/__tests__/StateStore.three-stage-qa.test.* dist/__tests__/actions-fly1050-terminate-qa-loss.test.* dist/__tests__/event-route-fly859-three-stage-qa.test.* dist/__tests__/phase-orchestrator.fly921-adversarial.test.* dist/__tests__/three-stage-dedup.test.* dist/bridge/__tests__/phase-orchestrator*.test.* dist/bridge/__tests__/retest-head-delta.test.* dist/bridge/__tests__/run-dispatcher.fly887-label-bypass.test.* dist/bridge/__tests__/runs-route.dag-recovery.test.* dist/bridge/__tests__/three-stage-policy.test.* dist/bridge/__tests__/workflow-b11-freshspawn.test.* dist/bridge/__tests__/workflow-shadow-wiring.test.* dist/bridge/__tests__/workflow-shadow-writer.test.* dist/bridge/phase-orchestrator.* dist/bridge/retest-head-delta.* dist/bridge/three-stage-policy.* dist/bridge/workflow-shadow-writer.* && rm -rf dist/static dist/workflow-seeds dist/bridge/publish-broker && cp -r static dist/static
+packages/voice-bridge build: Done
+packages/teamlead build: Done
+packages/voice-codex build$ tsc
+packages/voice-codex build: Done

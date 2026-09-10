@@ -8,7 +8,8 @@ import {
 	type EpicView,
 	type ViewProvenance,
 } from "./founder-view.js";
-import { type LabelKey, label } from "./labels.js";
+import { type LabelKey, label, leadNoteRoleLabel } from "./labels.js";
+import { DEFAULT_LEAD_NOTE_FADE_DAYS, leadNoteAge } from "./lead-note.js";
 import type {
 	Cell,
 	DependencyReviewEntry,
@@ -71,6 +72,8 @@ function safeLinearLink(url: string, text: string): string {
 }
 
 function htmlProvenance(provenance: Provenance): string {
+	if (provenance.kind === "lead_note")
+		return escapeHtml(`${provenance.role} · ${provenance.written_at}`);
 	if (provenance.kind === "linear") {
 		const text = [
 			label("cell.linear"),
@@ -349,6 +352,26 @@ function renderFreshness(page: EpicPage): string {
 </section>`;
 }
 
+function renderLeadNotes(
+	notes: Cell<string>[] | undefined,
+	now: Date,
+	fadeDays: number,
+	compact = false,
+): string {
+	return (notes ?? [])
+		.map((note) => {
+			if (note.provenance.kind !== "lead_note")
+				throw new Error("invalid lead-note provenance");
+			const { written_at, role } = note.provenance;
+			const age = leadNoteAge(written_at, now, fadeDays);
+			const roleLabel = leadNoteRoleLabel(role);
+			const tag = compact ? "span" : "aside";
+			const textTag = compact ? "span" : "p";
+			return `<${tag} class="lead-note${compact ? " lead-note-compact" : ""}${age.stale ? " lead-note-stale" : ""}" data-lead-written-at="${escapeHtml(written_at)}" data-lead-fade-days="${escapeHtml(String(fadeDays))}" data-lead-role="${escapeHtml(roleLabel)}"><b>${escapeHtml(label("lead_note.title"))}</b><${textTag} class="lead-note-text" title="${escapeHtml(note.value ?? "")}">${escapeHtml(note.value ?? "")}</${textTag}><span data-lead-relative>${escapeHtml(`${roleLabel} · ${age.relative}`)}</span><time datetime="${escapeHtml(written_at)}">${escapeHtml(written_at)}</time><span data-lead-stale${age.stale ? "" : " hidden"}>${escapeHtml(label("lead_note.stale"))}</span><small>${escapeHtml(label("lead_note.disclosure"))}</small></${tag}>`;
+		})
+		.join("");
+}
+
 function renderViewRule(view: ViewProvenance, dictionary: RenderAudit): string {
 	if (dictionary.sidecar)
 		return `<div class="view-rule" data-view-rule="${view.rule}" data-audit="${dictionary.sidecar.add(view)}">${escapeHtml(view.rule)} · ${compactAudit(dictionary.sidecar, view, view.observedAt)}</div>`;
@@ -443,12 +466,13 @@ function renderChild(
 	page: EpicPage,
 	child: ChildView,
 	dictionary: RenderAudit,
+	now: Date,
 ): string {
 	const item = page.items[child.itemIndex]!;
 	const signals = item.signals.length
 		? `<div class="kid-signals">${item.signals.some((s) => s.kind !== "waiting_founder") ? signalList(item.signals.filter((s) => s.kind !== "waiting_founder")) : ""}${item.signals.some((s) => s.kind === "waiting_founder") ? signalList(item.signals.filter((s) => s.kind === "waiting_founder")) : ""}</div>`
 		: "";
-	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span><span class="kid-id">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span>${escapeHtml(child.title)}</span></div><div class="kid-a" data-machine-line>${escapeHtml(progressText(child))} <span class="src">${escapeHtml(label("progress.source"))}</span></div><!-- Slot B2: merged renderLeadNotes belongs immediately after kid-a, before signals. -->${signals}${renderChildAudit(item, child, dictionary)}</div>`;
+	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span><span class="kid-id">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span>${escapeHtml(child.title)}</span></div><div class="kid-a" data-machine-line>${escapeHtml(progressText(child))} <span class="src">${escapeHtml(label("progress.source"))}</span></div>${renderLeadNotes(item.lead_note, now, page.lead_note_policy?.value?.fade_after_days ?? DEFAULT_LEAD_NOTE_FADE_DAYS)}${signals}${renderChildAudit(item, child, dictionary)}</div>`;
 }
 function countsText(epic: EpicView): string {
 	if (!epic.counts)
@@ -476,6 +500,10 @@ function renderEpic(
 	now: Date,
 	dictionary: RenderAudit,
 ): string {
+	const notes = page.header.roots.value?.[epic.rootIndex]?.lead_note;
+	const fadeDays =
+		page.lead_note_policy?.value?.fade_after_days ??
+		DEFAULT_LEAD_NOTE_FADE_DAYS;
 	const terminal = [
 		epic.terminal.done ? label("terminal.done", { n: epic.terminal.done }) : "",
 		epic.terminal.canceled
@@ -484,7 +512,7 @@ function renderEpic(
 	]
 		.filter(Boolean)
 		.join(" · ");
-	return `<details class="epic" data-root="${escapeHtml(epic.identifier)}" data-state-type="${escapeHtml(epic.state.type)}"><summary><span class="e-st">${escapeHtml(epic.state.name)}</span><span class="e-id">${escapeHtml(epic.identifier)}</span><span class="e-n">${escapeHtml(epic.title)}</span><span class="e-c">${escapeHtml(countsText(epic))}</span>${epic.allWaitingOn ? `<span class="e-wait">${escapeHtml(label("epic.all_waiting", { blockers: epic.allWaitingOn.blockers.join(" / ") }))}</span>` : ""}</summary><div class="e-b"><!-- Slot B1: merged renderLeadNotes is first in the Epic body. -->${epic.children.map((c) => renderChild(page, c, dictionary)).join("")}${terminal ? `<p class="terminal-tail">${escapeHtml(label("epic.terminal_tail", { tail: terminal }))}</p>` : ""}<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderRootProjection(page, epic, dictionary)}${renderAuditCell(`/header/root_counts/${epic.rootIndex}`, "cell.header.root_counts", page.header.root_counts[epic.rootIndex]!, now, dictionary)}${epic.allWaitingOn ? renderViewRule(epic.allWaitingOn.view, dictionary) : ""}${epic.terminal.view ? renderViewRule(epic.terminal.view, dictionary) : ""}</details></div></details>`;
+	return `<details class="epic" data-root="${escapeHtml(epic.identifier)}" data-state-type="${escapeHtml(epic.state.type)}"><summary><span class="e-st">${escapeHtml(epic.state.name)}</span><span class="e-id">${escapeHtml(epic.identifier)}</span><span class="e-n">${escapeHtml(epic.title)}</span><span class="e-c">${escapeHtml(countsText(epic))}</span>${epic.allWaitingOn ? `<span class="e-wait">${escapeHtml(label("epic.all_waiting", { blockers: epic.allWaitingOn.blockers.join(" / ") }))}</span>` : ""}${renderLeadNotes(notes, now, fadeDays, true)}</summary><div class="e-b">${renderLeadNotes(notes, now, fadeDays)}${epic.children.map((c) => renderChild(page, c, dictionary, now)).join("")}${terminal ? `<p class="terminal-tail">${escapeHtml(label("epic.terminal_tail", { tail: terminal }))}</p>` : ""}<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderRootProjection(page, epic, dictionary)}${renderAuditCell(`/header/root_counts/${epic.rootIndex}`, "cell.header.root_counts", page.header.root_counts[epic.rootIndex]!, now, dictionary)}${epic.allWaitingOn ? renderViewRule(epic.allWaitingOn.view, dictionary) : ""}${epic.terminal.view ? renderViewRule(epic.terminal.view, dictionary) : ""}</details></div></details>`;
 }
 
 function renderOverviewCell(
@@ -628,7 +656,9 @@ function renderHtml(
 .epic{background:var(--card);border:1px solid var(--line);border-radius:12px;margin:12px 0;overflow:hidden}.epic>summary{cursor:pointer;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:16px}.epic>summary:before{content:"▸";color:var(--muted)}.epic[open]>summary:before{content:"▾"}.e-st,.s{font-size:12px;border-radius:6px;padding:3px 7px;background:#f2f4f7;color:#344054}.epic[data-state-type=started] .e-st,.s-live{background:#ecfdf3;color:#05603a}.e-id,.kid-id{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}.e-n{font-weight:650;flex:1;min-width:120px}.e-c{font-size:12px;color:var(--muted)}.e-wait{flex-basis:100%;margin-left:20px;color:var(--amber)}.e-b{padding:0 16px 16px}.kid{padding:14px 0;border-top:1px solid var(--line)}.kid-h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}.kid-a{margin:6px 0;color:#475467}.src{font-size:11px;color:var(--muted);margin-left:8px}.s-waiting{background:#fff4e5;color:#93370d}.s-free{background:#eff4ff;color:#174a78}.audit{display:block;margin:7px 0}.audit-head,.view-rule{font-size:11px;color:var(--muted);overflow-wrap:anywhere}.view-rule{padding:6px 0}.lead-panel{margin-top:28px}.lead-panel>summary{cursor:pointer;color:var(--muted);padding:12px 0}.terminal-tail,.epic-hidden{color:var(--muted);font-size:12px}.unattached{margin-top:24px}.order-audit>summary{font-size:11px;color:var(--muted)}summary:focus-visible,a:focus-visible{outline:2px solid var(--blue);outline-offset:4px}.kid,.epic{overflow-wrap:anywhere}@media(max-width:600px){.e-c{flex-basis:100%;margin-left:20px}.e-b{padding:0 12px 12px}.epic>summary{padding:14px 12px}.kid-h{gap:6px}}
 
 	footer{overflow-wrap:anywhere}
-	</style>
+		.lead-note{background:#eff6ff;border-left:3px solid #3b82f6;border-radius:6px;padding:10px 12px;margin:7px 0;overflow-wrap:anywhere;color:#1e3a5f}.lead-note p{margin:5px 0;font-size:14px}.lead-note time,.lead-note small{display:block;font-size:11px;color:#475467}.lead-note [data-lead-stale]{margin-left:8px;font-size:11px}.lead-note-stale{background:#f8fafc;border-left-color:#cbd5e1;color:#334155}.root-entry{min-width:0}
+.lead-note-compact{display:block;flex-basis:100%;min-width:0;max-width:100%;margin:0}.lead-note-compact .lead-note-text{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lead-note-compact time,.lead-note-compact small{display:block}
+</style>
 </head>
 <body><main>
 	<!-- Slot A: merged renderAttention(page, now) is first, including legacy fallback. -->
@@ -641,7 +671,7 @@ function renderHtml(
  <details class="audit order-audit"><summary>${escapeHtml(label("view.order_desc"))}</summary>${view.order ? renderViewRule(view.order, dictionary) : ""}</details>
  ${view.epics.length ? view.epics.map((epic) => renderEpic(page, epic, now, dictionary)).join("") : `<p>${escapeHtml(label("epic.none"))}</p>`}
  ${view.hiddenDoneEpics && view.hiddenDoneEpics.count > 0 ? `<div class="epic-hidden">${escapeHtml(label("epic.hidden_done", { n: view.hiddenDoneEpics.count }))}<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderViewRule(view.hiddenDoneEpics.view, dictionary)}</details></div>` : ""}
- ${view.unattached.length ? `<section class="unattached"><h2>${escapeHtml(label("epic.unattached"))}</h2>${view.unattached.map((c) => renderChild(page, c, dictionary)).join("")}</section>` : ""}
+ ${view.unattached.length ? `<section class="unattached"><h2>${escapeHtml(label("epic.unattached"))}</h2>${view.unattached.map((c) => renderChild(page, c, dictionary, now)).join("")}</section>` : ""}
  <details class="lead-panel"><summary>${escapeHtml(label("section.lead_panel"))}</summary>
  ${headerCells.map(([field, name, cell]) => renderAuditCell(`/header/${field}`, name, cell, now, dictionary)).join("")}
 
@@ -657,5 +687,5 @@ function renderHtml(
 		${renderOverviewCell("/gaps", label("section.gaps"), page.gaps.value?.length ? escapeHtml(`${page.gaps.value.length} ${label("page.gaps_unit")}`) : escapeHtml(label("page.none")), page.gaps, now, dictionary)}
 	</div>
  </details>
-${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");if(!root||!age)return;const update=()=>{const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
+${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");const update=()=>{document.querySelectorAll("[data-lead-written-at]").forEach(note=>{const written=Date.parse(note.getAttribute("data-lead-written-at")||"");const days=Number(note.getAttribute("data-lead-fade-days"));if(!Number.isFinite(written)||!Number.isFinite(days)||days<=0)return;const elapsed=Math.max(0,Date.now()-written);const hours=Math.floor(elapsed/3600000);const relative=note.querySelector("[data-lead-relative]");if(relative)relative.textContent=note.getAttribute("data-lead-role")+" · "+(hours<1?"刚写":hours+" 小时前写");const stale=elapsed>days*86400000;note.classList.toggle("lead-note-stale",stale);const badge=note.querySelector("[data-lead-stale]");if(badge)badge.hidden=!stale;});if(!root||!age)return;const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
 }

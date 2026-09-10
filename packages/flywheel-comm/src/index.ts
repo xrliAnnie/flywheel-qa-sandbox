@@ -36,6 +36,7 @@ import { runHoldCommand } from "./commands/hold.js";
 import { inbox, renderInboxInstruction } from "./commands/inbox.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
+import { runLeadNote } from "./commands/lead-note.js";
 import { runLeadRegistryCommand } from "./commands/lead-registry.js";
 import { messageStatus } from "./commands/message-status.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
@@ -199,6 +200,8 @@ Commands:
 	            status is read-only; generate/show/render recompute the active Linear scope.
   dependency  Maintain the live dependency ledger. Subcommands:
               add | remove | note | discover | log | show.
+  lead-note   Set, show or clear a role-declared judgment beside machine facts.
+              set | show | clear --project <project> --issue <ID> [--role <role>] [--text <text>].
   founder-time   Print Annie's current local time and timezone. Uses the host
             device timezone by default; --json emits {iso,tz,abbrev,offsetMinutes}.
   runner-config   Per-project runner defaults + cron model (FLY-709). Subcommand:
@@ -414,6 +417,9 @@ async function main(): Promise<void> {
 			break;
 		case "dependency":
 			process.exitCode = await runDependency(commandArgs);
+			break;
+		case "lead-note":
+			process.exitCode = await runLeadNote(commandArgs);
 			break;
 		case "founder-time":
 			founderTime(commandArgs);

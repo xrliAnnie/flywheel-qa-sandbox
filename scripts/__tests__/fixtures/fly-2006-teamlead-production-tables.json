@@ -75,6 +75,7 @@
 	"lead_event_delivery_attempts",
 	"lead_events",
 	"lead_inbox",
+	"lead_note",
 	"lead_pending_escalation",
 	"legacy_cutover_quarantine",
 	"legacy_render_fallback",
