@@ -64,7 +64,7 @@ TABLE_VALID
 | `node --test scripts/__tests__/fly-2398-shadow-table.test.mjs` | 10 / 10 通过;含门槛非零、空全集、覆盖不全、双零仅候选与期末备份竞态(绝不自动合并) |
 | TeamLead 13 个受影响文件精确集(含 Bridge、StateStore、route、Discord、retention 与两组隔离契约) | 267 / 267 通过 |
 | flywheel-comm `shadow-declare` CLI | 8 / 8 通过 |
-| `pnpm --dir packages/teamlead exec vitest run src/__tests__/fly2396-no-gating-readers.test.ts src/__tests__/fly2398-no-gating-readers.test.ts` | 3 / 3 通过 |
+| `pnpm --dir packages/teamlead exec vitest run src/__tests__/fly2396-authorship-boundary.test.ts src/__tests__/fly2398-narrow-boundary.test.ts` | 3 / 3 通过 |
 | TeamLead typecheck | 退出 0 |
 | `pnpm test:packages:run` 第一次 | 未绿:flywheel-comm 2,076 通过;claude-runner 1,105 通过、2 skip,但 Vitest worker `onTaskUpdate` 超时导致退出 1 |
 | `pnpm test:packages:run` 第二次 | 未绿:机器负载下既有 CLI/E2E 固定超时及 Vitest worker 超时;没有把该次称为全仓通过 |

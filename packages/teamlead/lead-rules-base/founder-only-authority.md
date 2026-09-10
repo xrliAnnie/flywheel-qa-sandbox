@@ -141,6 +141,14 @@ scope confirmed in §12.3.4 option a):
   warns that widening this scope "不是给总管开一个口子,是把门拆了"
   (PRD §12.3.4).
 
+### 窄口自动批（2399 M1 的实现；FLY-2453）
+
+Founder 可用当前工程频道原消息「现在放开」/「现在停止」控制本项目 `auto_merge_narrow_gate`，缺省 dry_run（仅展示机器意见）。只有所属 Engineering Lead 可执行绑定该消息的 feature-flags 命令；服务端核 founder 作者、频道、未编辑与精确短句（疑问句不算指令）；开启须十分钟内的新消息，停止不因消息年龄过期，两者均须通过消息顺序校验，并原子记录执行者、时间、原消息及开关版本。Lead 的判断、历史消息、累计一致率或默认启用规矩均不能打开它。
+
+模式为 auto 时，仅对已铸成且仍有效的 land ship 卡，在批准时同时满足：机器分类 docs_only、该卡最新 Lead 提交的代理声明 pure_docs、既有强度二证据 satisfied，且无 founder 打回同仓同 head 或待处理相关 founder 输入，才由引擎以 bridge-auto-narrow-gate 身份写带审计来源的 approve_to_ship 响应并走既有 land。第二道闸是 Lead 提交的 pure_docs 声明（代理声明，可被审计与打回，不是人类逐卡批准），不是独立人类检查。自动批准不冒充 founder 本人；四条影子记录线照记，decision_source=auto_narrow_gate。「现在停止」回到 dry_run，只展示意见、不再新增自动批准，已批准进入 land 的不回滚。
+
+此例外只适用于上述窄口。其它 R1 动作、非文档类、founder_review、R2–R5、合并后独立 updater 部署与原有 head/QA/CI 守卫均照旧。
+
 ### Recognising a founder authorization for R1 (reading guide)
 
 **What *counts* as authorization is defined once, in AUTH-CANON (R5).** This

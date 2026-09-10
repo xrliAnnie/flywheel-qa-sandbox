@@ -486,6 +486,12 @@ describe("feature-flag drift guard", () => {
 					"storeDocFlowEnabled",
 				],
 				[
+					"auto_merge_narrow_gate",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"startBridge",
+					"readAutoNarrowRuntimeControl",
+				],
+				[
 					"runner_memory_mode",
 					"packages/teamlead/src/bridge/run-infra.ts",
 					"setupRunInfrastructure",

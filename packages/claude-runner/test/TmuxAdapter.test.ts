@@ -3566,24 +3566,31 @@ describe("ensureRunnerSession (FLY-758)", () => {
 	});
 
 	it("rejects an exit-0 helper payload whose action is not a success verdict", async () => {
-		const fn: ExecFileFn = () => ({ stdout: "" });
-		const asyncFn: AsyncExecFileFn = async () => ({
-			stdout: JSON.stringify({
-				action: "hold_unknown",
-				reachablePid: 100,
-			}),
-			stderr: "",
-		});
-		await expect(
-			ensureRunnerSession(fn, "runner-test", {
-				asyncExecFileFn: asyncFn,
-				deadlineMs: 1,
-				retryDelayMs: 0,
-			}),
-		).rejects.toMatchObject({
-			kind: "unknown",
-			evidence: { reason: "invalid_helper_output" },
-		});
+		// CI job 102677591004: wall time exhausted 1ms before the helper ran.
+		// This case tests payload validation; keep its clock fixed and budget intact.
+		const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+		try {
+			const fn: ExecFileFn = () => ({ stdout: "" });
+			const asyncFn: AsyncExecFileFn = async () => ({
+				stdout: JSON.stringify({
+					action: "hold_unknown",
+					reachablePid: 100,
+				}),
+				stderr: "",
+			});
+			await expect(
+				ensureRunnerSession(fn, "runner-test", {
+					asyncExecFileFn: asyncFn,
+					deadlineMs: 1,
+					retryDelayMs: 0,
+				}),
+			).rejects.toMatchObject({
+				kind: "unknown",
+				evidence: { reason: "invalid_helper_output" },
+			});
+		} finally {
+			clock.mockRestore();
+		}
 	});
 
 	it("a hung first guard probe yields the event loop and expires as a typed hold", async () => {

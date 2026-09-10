@@ -46,6 +46,8 @@ const EXPECTED_WHEN_ON = {
 	pipeline_work_kind:
 		"这个项目使用 DAG 流程派发时，检查任务类型是否符合当前节点，避免交给错误角色",
 	doc_flow: "要求这个项目的 Runner 随任务提交探索、调研、计划和进度文档",
+	auto_merge_narrow_gate:
+		"dry_run 给每张 ship 卡附机器意见但仍等 founder；auto 仅代批同时通过机器纯文档、人声明 pure_docs、强度二证据的卡",
 	runner_memory_mode:
 		"决定新 Runner 使用哪种记忆方案；off 不注入实验记忆，其余选项用于对照实验",
 	skill_framework_mode:
@@ -70,7 +72,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(26);
+		expect(FEATURE_FLAGS).toHaveLength(27);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);

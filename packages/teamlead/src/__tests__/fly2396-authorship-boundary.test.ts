@@ -39,7 +39,7 @@ function sourceFiles(path: string): string[] {
 }
 
 describe("FLY-2396 authorship fact isolation", () => {
-	it("keeps the new ledger and fact out of every merge authorization reader", () => {
+	it("allows only the narrow core to consume authorship as a negative veto", () => {
 		const references = [
 			...sourceFiles(resolve(REPO_ROOT, "packages")),
 			...sourceFiles(resolve(REPO_ROOT, "scripts")),
@@ -60,5 +60,15 @@ describe("FLY-2396 authorship fact isolation", () => {
 		]) {
 			expect(references.some((file) => file.includes(forbidden))).toBe(false);
 		}
+		const stateStore = readFileSync(
+			resolve(REPO_ROOT, "packages/teamlead/src/StateStore.ts"),
+			"utf8",
+		);
+		expect(stateStore).toContain(
+			"lower(v.head_sha) = lower(?) AND v.verdict = 'rework'\n\t\t\t\t    AND v.founder_authored = 1 LIMIT 1",
+		);
+		expect(stateStore).not.toMatch(
+			/founder_authored = 1[^;]+predicate[^;]+founder_approved/s,
+		);
 	});
 });

@@ -17,6 +17,11 @@ import {
 	PROJECT_STORE_MANAGED_FLAGS,
 	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
+import {
+	authorizeLeadWrite,
+	type LeadWriteAuthorization,
+	postCarrierClaim,
+} from "../lead-lease.js";
 import { publishReport } from "./publish-report.js";
 
 export interface PublishInput {
@@ -44,12 +49,17 @@ export interface FeatureFlagsDeps {
 	exit?: (code: number) => never;
 	/** Injected for tests; defaults to a tmp path. */
 	outDefault?: string;
+	/** Injected authorization seam for the founder-message protected flag. */
+	authorizeLead?: (
+		leadId: string,
+		env: Record<string, string | undefined>,
+	) => LeadWriteAuthorization;
 }
 
 const USAGE = [
 	"usage:",
 	"  flywheel-comm feature-flags report [--project <publish-project>] [--channel <id>] [--out <file>] [--bridge-url <url>]",
-	"  flywheel-comm feature-flags set --name <flag> --to on|off|<enum-value> [--project <scope; default *>] [--reason <required for store flags>] [--bridge-url <url>]",
+	"  flywheel-comm feature-flags set --name <flag> --to on|off|<enum-value> [--project <scope; default *>] [--reason <required for store flags>] [--founder-message-ref <channelId/messageId>] [--bridge-url <url>]",
 	"  flywheel-comm feature-flags clear --name <flag> --project <scope> --reason <reason> [--bridge-url <url>]",
 	"  feature-flags apply remains an alias for set",
 	"  set/clear --project selects a flag scope; report --project selects the publish project.",
@@ -59,6 +69,13 @@ const USAGE = [
 function flagVal(args: string[], name: string): string | undefined {
 	const i = args.indexOf(name);
 	return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+}
+
+function parseFounderMessageRef(
+	raw: string | undefined,
+): { channelId: string; messageId: string } | undefined {
+	const match = raw?.match(/^(\d{17,20})\/(\d{17,20})$/);
+	return match ? { channelId: match[1]!, messageId: match[2]! } : undefined;
 }
 
 export async function runFeatureFlags(
@@ -108,6 +125,10 @@ export async function runFeatureFlags(
 		const explicitProject = flagVal(rest, "--project");
 		const project = explicitProject ?? "*";
 		const reason = flagVal(rest, "--reason")?.trim();
+		const protectedNarrow = name === "auto_merge_narrow_gate";
+		const founderMessageRef = parseFounderMessageRef(
+			flagVal(rest, "--founder-message-ref"),
+		);
 		// FLY-1356: bool flags keep on|off; enum flags (skill_framework_mode)
 		// take the target value itself (e.g. --to split). The server validates
 		// enum membership and 400s unknown values — the CLI only shapes the type.
@@ -120,7 +141,12 @@ export async function runFeatureFlags(
 			(op === "set" && !toStr) ||
 			(op === "clear" &&
 				(explicitProject === undefined || toStr !== undefined)) ||
-			((storeManaged || op === "clear") && !reason)
+			((storeManaged || op === "clear") && !reason) ||
+			(protectedNarrow &&
+				(op !== "set" ||
+					project !== "flywheel" ||
+					(toStr !== "auto" && toStr !== "dry_run") ||
+					!founderMessageRef))
 		) {
 			errorLog(USAGE);
 			return exit(1);
@@ -143,18 +169,98 @@ export async function runFeatureFlags(
 					NonNullable<FeatureFlagsDeps["httpJson"]>
 				>);
 		const hdr = { "Content-Type": "application/json", Origin: bridgeUrl };
-		let staged: { canonical: unknown; confirmToken: string };
-		try {
-			const sres = await httpJson(`${bridgeUrl}/api/fleet/flag/stage`, {
+		let leadAuth:
+			| {
+					leadId: string;
+					projectName: string;
+					identityDigest: string;
+					leaseClaim?: { leaseKey: string; generation: number };
+					provenance?: LeadWriteAuthorization["provenance"];
+			  }
+			| undefined;
+		let carrierClaim: string | undefined;
+		if (protectedNarrow) {
+			const leadId = env.FLYWHEEL_LEAD_ID ?? env.LEAD_ID;
+			const projectName = env.FLYWHEEL_PROJECT_NAME ?? env.PROJECT_NAME;
+			if (leadId !== "flywheel-eng-lead" || projectName !== "flywheel") {
+				errorLog(
+					"feature-flags set: auto_merge_narrow_gate requires flywheel-eng-lead in the flywheel project",
+				);
+				return exit(1);
+			}
+			let authorization: LeadWriteAuthorization;
+			try {
+				authorization = deps.authorizeLead
+					? deps.authorizeLead(leadId, env)
+					: authorizeLeadWrite({ claimedLeadId: leadId, env });
+			} catch (error) {
+				errorLog(
+					`feature-flags set: Lead authorization failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return exit(1);
+			}
+			if (!authorization.identityDigest) {
+				errorLog(
+					"feature-flags set: Lead authorization returned no identity digest",
+				);
+				return exit(1);
+			}
+			leadAuth = {
+				leadId,
+				projectName,
+				identityDigest: authorization.identityDigest,
+				...(authorization.leaseClaim
+					? {
+							leaseClaim: {
+								leaseKey: authorization.leaseClaim.leaseKey,
+								generation: authorization.leaseClaim.generation,
+							},
+						}
+					: {}),
+				...(authorization.provenance
+					? { provenance: authorization.provenance }
+					: {}),
+			};
+			carrierClaim = authorization.carrierClaim;
+		}
+		const postJson = async (
+			url: string,
+			body: Record<string, unknown>,
+		): Promise<{
+			ok: boolean;
+			status: number;
+			json: () => Promise<unknown>;
+		}> => {
+			if (deps.httpJson) {
+				return deps.httpJson(url, {
+					method: "POST",
+					headers: hdr,
+					body: JSON.stringify(body),
+				});
+			}
+			if (carrierClaim) {
+				return postCarrierClaim({
+					url,
+					carrierClaim,
+					body,
+					headers: hdr,
+				});
+			}
+			return httpJson(url, {
 				method: "POST",
 				headers: hdr,
-				body: JSON.stringify({
-					name,
-					...(op === "set" ? { to: toValue } : {}),
-					project,
-					op,
-					reason,
-				}),
+				body: JSON.stringify(body),
+			});
+		};
+		let staged: { canonical: unknown; confirmToken: string };
+		try {
+			const sres = await postJson(`${bridgeUrl}/api/fleet/flag/stage`, {
+				name,
+				...(op === "set" ? { to: toValue } : {}),
+				project,
+				op,
+				reason,
+				...(protectedNarrow ? { founderMessageRef, leadAuth } : {}),
 			});
 			if (!sres.ok) {
 				errorLog(`feature-flags ${action}: stage failed (${sres.status})`);
@@ -171,13 +277,10 @@ export async function runFeatureFlags(
 			return exit(1);
 		}
 		try {
-			const ares = await httpJson(`${bridgeUrl}/api/fleet/flag/apply`, {
-				method: "POST",
-				headers: hdr,
-				body: JSON.stringify({
-					canonical: staged.canonical,
-					confirmToken: staged.confirmToken,
-				}),
+			const ares = await postJson(`${bridgeUrl}/api/fleet/flag/apply`, {
+				canonical: staged.canonical,
+				confirmToken: staged.confirmToken,
+				...(protectedNarrow ? { leadAuth } : {}),
 			});
 			const body = await ares.json().catch(() => ({}));
 			log(JSON.stringify(body));

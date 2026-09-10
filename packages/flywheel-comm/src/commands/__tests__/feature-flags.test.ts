@@ -214,6 +214,107 @@ describe("flywheel-comm feature-flags set/clear (apply alias)", () => {
 		});
 	});
 
+	it("binds the protected narrow flag to an authorized Lead and founder message", async () => {
+		const httpJson = httpMock(
+			{
+				ok: true,
+				status: 200,
+				body: {
+					canonical: { kind: "auto_narrow_control" },
+					confirmToken: "t1",
+				},
+			},
+			{ ok: true, status: 200, body: { ok: true, mode: "auto" } },
+		);
+		const authorizeLead = vi.fn(() => ({
+			disposition: "lease_validated" as const,
+			identityDigest: "b".repeat(64),
+			leaseClaim: {
+				leaseKey: "flywheel/flywheel-eng-lead",
+				generation: 9,
+				identityDigest: "b".repeat(64),
+			},
+		}));
+		const deps = baseDeps({
+			httpJson,
+			authorizeLead,
+			env: {
+				FLYWHEEL_LEAD_ID: "flywheel-eng-lead",
+				FLYWHEEL_PROJECT_NAME: "flywheel",
+			},
+		});
+		await runFeatureFlags(
+			[
+				"set",
+				"--name",
+				"auto_merge_narrow_gate",
+				"--to",
+				"auto",
+				"--project",
+				"flywheel",
+				"--reason",
+				"founder 1517000000000000001",
+				"--founder-message-ref",
+				"1516209714097291335/1517000000000000001",
+			],
+			deps,
+		);
+		expect(authorizeLead).toHaveBeenCalledWith("flywheel-eng-lead", deps.env);
+		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toMatchObject({
+			name: "auto_merge_narrow_gate",
+			to: "auto",
+			project: "flywheel",
+			founderMessageRef: {
+				channelId: "1516209714097291335",
+				messageId: "1517000000000000001",
+			},
+			leadAuth: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				identityDigest: "b".repeat(64),
+				leaseClaim: {
+					leaseKey: "flywheel/flywheel-eng-lead",
+					generation: 9,
+				},
+			},
+		});
+		expect(JSON.parse(httpJson.mock.calls[1]?.[1].body ?? "{}")).toMatchObject({
+			leadAuth: { leadId: "flywheel-eng-lead", projectName: "flywheel" },
+		});
+	});
+
+	it("refuses missing founder evidence and the production-inaccessible off mode", async () => {
+		const deps = baseDeps({
+			env: {
+				FLYWHEEL_LEAD_ID: "flywheel-eng-lead",
+				FLYWHEEL_PROJECT_NAME: "flywheel",
+			},
+			authorizeLead: vi.fn(() => ({
+				disposition: "off" as const,
+				identityDigest: "b".repeat(64),
+			})),
+		});
+		for (const extra of [[], ["--founder-message-ref", "1/2"]]) {
+			await expect(
+				runFeatureFlags(
+					[
+						"set",
+						"--name",
+						"auto_merge_narrow_gate",
+						"--to",
+						extra.length ? "off" : "auto",
+						"--project",
+						"flywheel",
+						"--reason",
+						"founder 1517000000000000001",
+						...extra,
+					],
+					deps,
+				),
+			).rejects.toThrow("exit 1");
+		}
+	});
+
 	it.each([
 		["workflow_turn_divergence_alerts", "*"],
 		["doc_flow", "flywheel"],

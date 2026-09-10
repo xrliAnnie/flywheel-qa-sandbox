@@ -272,6 +272,18 @@ SELECT
 				`incomplete deployment schema: table=${tableCount}, receipt=${receiptCount}`,
 			);
 		}
+		// Historical snapshots predate FLY-2453. Only TEMP state is added;
+		// current snapshots retain the real audit used to exclude auto decisions.
+		const narrowSchema = await session.run(
+			"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'auto_narrow_decision_audit';",
+		);
+		if (narrowSchema.length !== 1)
+			throw new Error("narrow schema query was ambiguous");
+		if (narrowSchema[0] === "0") {
+			await session.run(
+				"CREATE TEMP TABLE auto_narrow_decision_audit (source_event_id TEXT, project_name TEXT, question_id TEXT);",
+			);
+		}
 		await session.run(attestationSql(loadAttestations(attestationPath)));
 		progress("running bound-head and authorship report");
 		const report = await session.run(`

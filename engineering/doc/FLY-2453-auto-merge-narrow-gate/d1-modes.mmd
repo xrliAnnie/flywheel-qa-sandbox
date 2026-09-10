@@ -1,0 +1,10 @@
+flowchart LR
+  O["off · 完全静默<br/>不出意见，不自动批"]
+  D["dry_run · 默认<br/>出机器意见，等你批准"]
+  A["auto · 窄口放开<br/>三闸全过才自动批"]
+  D -->|"你说：现在放开"| A
+  A -->|"你说：现在停止"| D
+  O -.->|"你说：现在放开"| A
+  O -.->|"你说：现在停止"| D
+  classDef focal fill:#e8f2ff,stroke:#007aff,color:#1d1d1f
+  class D focal

@@ -40,8 +40,8 @@ function sourceFiles(path: string): string[] {
 	});
 }
 
-describe("FLY-2398 auto-merge shadow isolation", () => {
-	it("freezes every production reader and writer in the audited observation boundary", () => {
+describe("FLY-2398 / FLY-2453 narrow authorization boundary", () => {
+	it("freezes the exact shadow readers, including the one protected narrow-gate core", () => {
 		const references = [
 			...sourceFiles(resolve(REPO_ROOT, "packages")),
 			...sourceFiles(resolve(REPO_ROOT, "scripts")),
@@ -63,12 +63,17 @@ describe("FLY-2398 auto-merge shadow isolation", () => {
 			"review-hold",
 			"gate-poller",
 			"run-ship-relevance",
-			"strength-two",
 		]) {
 			expect(
 				references.some((file) => file.includes(authorizationReader)),
 			).toBe(false);
 		}
+		const stateStore = readFileSync(
+			resolve(REPO_ROOT, "packages/teamlead/src/StateStore.ts"),
+			"utf8",
+		);
+		expect(stateStore).toContain("evaluateAutoNarrowEligibility({");
+		expect(stateStore).toContain("commitAutoNarrowSourceIfEligible(input:");
 	});
 
 	it("does not expose the shadow facts to review-hold or the founder merge guard", () => {

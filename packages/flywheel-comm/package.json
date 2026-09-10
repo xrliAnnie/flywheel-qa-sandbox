@@ -15,6 +15,7 @@
 		"./verify-approval": "./dist/commands/verify-approval.js",
 		"./ship-eligibility": "./dist/ship-eligibility.js",
 		"./strength-two-contract": "./dist/strength-two-contract.js",
+		"./auto-narrow-contract": "./dist/auto-narrow-contract.js",
 		"./evidence-run": "./dist/commands/evidence-run.js",
 		"./xiaohongshu-state": "./dist/xiaohongshu-state.js",
 		"./xiaohongshu-final": "./dist/xiaohongshu-final.js",

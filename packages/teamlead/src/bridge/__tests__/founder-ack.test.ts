@@ -2,7 +2,10 @@
  * FLY-1041 Chunk 8 — founder receipt reaction PUT (unit).
  */
 import { describe, expect, it, vi } from "vitest";
-import { reactToFounderMessage } from "../approval-signal/founder-ack.js";
+import {
+	reactToFounderMessage,
+	setBotOpinionReaction,
+} from "../approval-signal/founder-ack.js";
 
 function fetchWith(status: number) {
 	return vi.fn(async () => ({ ok: status < 300, status })) as unknown as
@@ -55,5 +58,29 @@ describe("reactToFounderMessage", () => {
 			fetchImpl,
 		});
 		expect(r.ok).toBe(false);
+	});
+});
+
+describe("setBotOpinionReaction", () => {
+	it("adds the desired bot reaction and removes only the bot's opposite reaction", async () => {
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValueOnce({ ok: true, status: 204 })
+			.mockResolvedValueOnce({ ok: false, status: 404 });
+		expect(
+			await setBotOpinionReaction({
+				botToken: "tok",
+				channelId: "T1",
+				messageId: "M1",
+				reaction: "eligible",
+				fetchImpl: fetchImpl as typeof fetch,
+			}),
+		).toBe(true);
+		expect(fetchImpl.mock.calls.map((call) => call[1]?.method)).toEqual([
+			"PUT",
+			"DELETE",
+		]);
+		expect(fetchImpl.mock.calls[0]?.[0]).toContain(encodeURIComponent("🤖"));
+		expect(fetchImpl.mock.calls[1]?.[0]).toContain(encodeURIComponent("🚫"));
 	});
 });

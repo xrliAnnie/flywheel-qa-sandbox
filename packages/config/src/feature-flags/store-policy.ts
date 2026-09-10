@@ -78,6 +78,22 @@ const runnerMemoryModeCodec: FlagStoreCodec = {
 	canonicalEffective: (value) => (isRunnerMemoryMode(value) ? value : "off"),
 };
 
+const AUTO_NARROW_MODES = new Set(["off", "dry_run", "auto"] as const);
+const autoNarrowModeCodec: FlagStoreCodec = {
+	parse: ({ hasOverride, raw }) => {
+		if (!hasOverride) return "dry_run";
+		if (raw !== null && AUTO_NARROW_MODES.has(raw as never)) return raw;
+		throw new Error("auto narrow mode must be off, dry_run, or auto");
+	},
+	canonicalEffective: (value) => {
+		const raw = String(value);
+		if (!AUTO_NARROW_MODES.has(raw as never)) {
+			throw new Error("auto narrow mode must be off, dry_run, or auto");
+		}
+		return raw;
+	},
+};
+
 export const SUMMARY_ABSORPTION_CADENCE_DEFAULT_MS = 6 * 60 * 60_000;
 export const SUMMARY_ABSORPTION_CADENCE_MIN_MS = 60_000;
 export const SUMMARY_ABSORPTION_CADENCE_MAX_MS = 30 * 24 * 60 * 60_000;
@@ -125,6 +141,7 @@ const nodeDwellThresholdHoursCodec: FlagStoreCodec = {
 };
 
 export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
+	if (name === "auto_merge_narrow_gate") return autoNarrowModeCodec;
 	if (name === "summary_absorption_cadence_ms") {
 		return summaryAbsorptionCadenceCodec;
 	}
@@ -271,18 +288,27 @@ export function validateFlagAuthoringPolicy(
 		}
 
 		if (spec.scope === "project") {
+			const founderControlled =
+				spec.controlAuthority === "founder_message" &&
+				spec.source === "code_default" &&
+				spec.valueKind === "enum" &&
+				spec.name === "auto_merge_narrow_gate" &&
+				spec.configKey === undefined &&
+				spec.envVar === undefined;
 			if (
-				spec.source !== "project_config" ||
-				(spec.valueKind !== "bool" && spec.valueKind !== "value") ||
+				(!founderControlled && spec.source !== "project_config") ||
+				(!founderControlled &&
+					spec.valueKind !== "bool" &&
+					spec.valueKind !== "value") ||
 				spec.dormant === true ||
 				spec.toggleable === "readonly" ||
-				!spec.configKey ||
-				spec.configKey.includes("[]") ||
-				spec.configKey.includes("*")
+				(!founderControlled && !spec.configKey) ||
+				Boolean(spec.configKey?.includes("[]")) ||
+				Boolean(spec.configKey?.includes("*"))
 			) {
 				issues.push(
 					authoringIssue(
-						`${spec.name}: project-store specs must be active, writable project_config booleans or strict scalar values with one exact configKey`,
+						`${spec.name}: project-store specs must be active, writable project_config booleans/strict scalar values or the exact founder-message control`,
 					),
 				);
 			}
@@ -324,7 +350,10 @@ export function validateFlagAuthoringPolicy(
 						),
 					);
 				}
-				if (spec.valueKind === "value") {
+				if (
+					spec.valueKind === "value" ||
+					spec.controlAuthority === "founder_message"
+				) {
 					if (codec.canonicalEffective(defaultValue) !== String(spec.default)) {
 						issues.push(
 							authoringIssue(

@@ -28,6 +28,7 @@ export type FlagOnMeans = "enables" | "disables";
 export type FlagScope = "bridge_global" | "project";
 export type FlagValueKind = "bool" | "enum" | "value";
 export type FlagToggleability = "direct" | "conversational" | "readonly";
+export type FlagControlAuthority = "founder_message";
 
 /**
  * When the owning code reads the flag — the safety key for live toggling.
@@ -90,6 +91,8 @@ export interface FeatureFlagSpec {
 	/** Every place the code reads this flag (timing evidence). */
 	readSites: FlagReadSite[];
 	toggleable: FlagToggleability;
+	/** Optional write authority stronger than the generic flag management route. */
+	controlAuthority?: FlagControlAuthority;
 	/**
 	 * REQUIRED when toggleable === "direct": the test that proves an in-process
 	 * `process.env` mutation is observed by the next real read (no reconstruction).
@@ -696,6 +699,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 		],
 		toggleable: "conversational",
+	},
+	{
+		name: "auto_merge_narrow_gate",
+		category: "feature",
+		source: "code_default",
+		scope: "project",
+		polarity: "default_on",
+		valueKind: "enum",
+		enumValues: ["off", "dry_run", "auto"],
+		default: "dry_run",
+		description:
+			"FLY-2453: founder-message-controlled narrow auto approval for three-gate pure-document ship cards",
+		whenOn:
+			"dry_run 给每张 ship 卡附机器意见但仍等 founder；auto 仅代批同时通过机器纯文档、人声明 pure_docs、强度二证据的卡",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"readAutoNarrowRuntimeControl",
+			),
+		],
+		toggleable: "conversational",
+		controlAuthority: "founder_message",
+		note: "No env/config override. Production writes require an exact, unedited founder Discord message through the protected Lead route; off is fixture/emergency storage only.",
 	},
 	{
 		name: "runner_memory_mode",

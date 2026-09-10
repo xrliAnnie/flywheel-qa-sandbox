@@ -3,6 +3,7 @@ export { isDirectToggleMetadata } from "./direct-toggle.js";
 export type {
 	FeatureFlagSpec,
 	FlagCategory,
+	FlagControlAuthority,
 	FlagOnMeans,
 	FlagPolarity,
 	FlagReadSite,
@@ -20,6 +21,7 @@ export {
 } from "./registry.js";
 export type {
 	FlagEffectiveByProject,
+	FlagFounderControlView,
 	FlagResolveCtx,
 	FlagScopedStoreView,
 	FlagView,

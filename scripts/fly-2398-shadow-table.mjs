@@ -23,6 +23,7 @@ const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1_000;
 const REQUIRED_TABLES = Object.freeze([
 	"auto_merge_shadow_declaration",
 	"auto_merge_shadow_observation",
+	"auto_narrow_decision_audit",
 	"codex_review_record",
 	"state_store_migration",
 	"strength_two_evidence_record",
@@ -61,6 +62,7 @@ export function defaultShadowWindowStart(appliedAt) {
 export function parseFly2398ShadowArgs(argv) {
 	const parsed = {
 		db: join(homedir(), ".flywheel", "teamlead.db"),
+		commDb: join(homedir(), ".flywheel", "comm", "flywheel", "comm.db"),
 		sql: DEFAULT_SQL,
 		sqlite: "sqlite3",
 		format: "md",
@@ -72,6 +74,7 @@ export function parseFly2398ShadowArgs(argv) {
 		if (flag === "--help") return { ...parsed, help: true };
 		if (
 			flag !== "--db" &&
+			flag !== "--comm-db" &&
 			flag !== "--sql" &&
 			flag !== "--sqlite" &&
 			flag !== "--format" &&
@@ -86,6 +89,7 @@ export function parseFly2398ShadowArgs(argv) {
 		}
 		index += 1;
 		if (flag === "--db") parsed.db = value;
+		if (flag === "--comm-db") parsed.commDb = value;
 		if (flag === "--sql") parsed.sql = value;
 		if (flag === "--sqlite") parsed.sqlite = value;
 		if (flag === "--format") {
@@ -189,11 +193,17 @@ export async function runFly2398ShadowTable(options) {
 	const progress = options.onProgress ?? (() => {});
 	const now = options.now ?? (() => new Date().toISOString());
 	const dbPath = requireRegularFile(options.db, "database");
+	const commDbPath = requireRegularFile(
+		options.commDb ?? options.db,
+		"CommDB database",
+	);
 	const sqlPath = requireRegularFile(options.sql ?? DEFAULT_SQL, "report SQL");
 	const sqlite = options.sqlite ?? "sqlite3";
 	const scratch = mkdtempSync(join(tmpdir(), "fly2398-shadow-table-"));
 	const snapshot = join(scratch, "teamlead-snapshot.db");
+	const commSnapshot = join(scratch, "comm-snapshot.db");
 	const snapshotStartedAt = normalizeShadowInstant(now());
+	let commSnapshotStartedAt = snapshotStartedAt;
 	let session;
 	try {
 		progress("creating WAL-safe online backup");
@@ -207,12 +217,26 @@ export async function runFly2398ShadowTable(options) {
 				`sqlite online backup failed: ${backup.error?.message ?? backup.stderr.trim()}`,
 			);
 		}
+		commSnapshotStartedAt = normalizeShadowInstant(now());
+		const commBackup = spawnSync(
+			sqlite,
+			["-readonly", commDbPath, `.backup ${sqlLiteral(commSnapshot)}`],
+			{ encoding: "utf8" },
+		);
+		if (commBackup.error || commBackup.status !== 0) {
+			throw new Error(
+				`CommDB online backup failed: ${commBackup.error?.message ?? commBackup.stderr.trim()}`,
+			);
+		}
 		progress("online backup complete; opening immutable snapshot");
 		session = openSqliteSession(
 			sqlite,
 			`file:${encodeURI(snapshot)}?mode=ro&immutable=1`,
 		);
 		await session.run(".bail on\n.headers off\n.mode list");
+		await session.run(
+			`ATTACH DATABASE ${sqlLiteral(`file:${encodeURI(commSnapshot)}?mode=ro&immutable=1`)} AS comm;`,
+		);
 		const quickCheck = await session.run("PRAGMA quick_check;");
 		if (quickCheck.length !== 1 || quickCheck[0] !== "ok") {
 			throw new Error(`snapshot quick_check failed: ${quickCheck.join(" | ")}`);
@@ -239,6 +263,14 @@ ORDER BY name;`);
 			);
 			throw new Error(
 				`shadow report schema is incomplete: missing ${missing.join(", ")}`,
+			);
+		}
+		const commSchemaRows = await session.run(`
+SELECT name FROM comm.sqlite_master
+WHERE type = 'table' AND name = 'workflow_source_event';`);
+		if (!sameStrings(commSchemaRows, ["workflow_source_event"])) {
+			throw new Error(
+				"shadow report CommDB schema is incomplete: missing workflow_source_event",
 			);
 		}
 		const receipts = await session.run(`
@@ -296,6 +328,7 @@ ORDER BY applied_at;`);
 			windowStart,
 			windowEnd,
 			snapshotStartedAt,
+			commSnapshotStartedAt,
 			windowStartSource: options.windowStart
 				? "explicit"
 				: "receipt_next_utc_midnight",
@@ -314,6 +347,7 @@ export function renderFly2398ShadowTable(report, format = "md") {
 		"",
 		`Window: \`${report.windowStart}\` to \`${report.windowEnd}\` (end exclusive; start source: ${report.windowStartSource})`,
 		`Snapshot started: \`${report.snapshotStartedAt}\``,
+		`CommDB snapshot started: \`${report.commSnapshotStartedAt}\``,
 		"",
 		"| Kind | Name | Result | Detail |",
 		"| --- | --- | ---: | --- |",
@@ -336,6 +370,7 @@ function usage() {
 
 Options:
   --db <path>                 source teamlead.db (default: ~/.flywheel/teamlead.db)
+  --comm-db <path>            source CommDB (default: ~/.flywheel/comm/flywheel/comm.db)
   --window-start <ISO>        configurable UTC start (default: first UTC midnight after receipt)
   --window-end <ISO>          exclusive UTC end (default: start + 14 days)
   --sql <path>                report SQL override (tests only)

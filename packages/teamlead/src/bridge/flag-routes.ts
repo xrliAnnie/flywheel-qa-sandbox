@@ -256,6 +256,14 @@ export function handleFlagStage(
 			body: { error: `unknown feature flag: ${input.name}` },
 		};
 	}
+	if (spec.controlAuthority === "founder_message") {
+		return {
+			code: 403,
+			body: {
+				error: `${spec.name} requires the founder-message control route`,
+			},
+		};
+	}
 	if (spec.scope === "bridge_global" && scope !== "*") {
 		return {
 			code: 400,

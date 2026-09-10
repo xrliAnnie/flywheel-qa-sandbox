@@ -201,6 +201,12 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # FLY-2453: whole-gate mutants must fail both writer and unit controls.
+      # scripts/fly-2453-narrow-gate-529.mjs is manual-only: isolated 529 evidence.
+      - name: FLY-2453 whole-gate writer mutations
+        if: matrix.name == 'teamlead 1 of 3'
+        run: node scripts/fly-2453-narrow-gate-mutations.mjs
+
       - name: Run matrix tests
         run: ${{ matrix.cmd }}
 
@@ -1032,6 +1038,7 @@ jobs:
           bash scripts/__tests__/restart-notify-routine.test.sh
           bash scripts/__tests__/restart-services-notify.test.sh
           bash scripts/__tests__/update-flywheel-sources.test.sh
+          bash scripts/__tests__/auto-narrow-rollback-precheck.test.sh
           bash scripts/__tests__/updater-raya-deploy.test.sh
           bash scripts/__tests__/simba-grep-zero.test.sh
           # QA alert: drives the REAL lead-alert.sh in the production

@@ -353,7 +353,7 @@ fresh 分支的**第一个 mutation 是 `:37812-37817`**:`heldNeedsLead` 分支�
 | `packages/teamlead/src/bridge/__tests__/runs-route.founder-message-ref.test.ts`(新) | G7–G9、G13、G21、G27、G34、url 解析、deps 注入缺失 → 503、`fetchImpl` 夹具(200 / 404 / 403 / 429 / 500 / throw / invalid timestamp) |
 | `packages/teamlead/src/bridge/__tests__/discord-utils.test.ts`(扩) | `fetchDiscordMessageFromChannel` 各分支 |
 | `packages/teamlead/src/__tests__/fly2396-retro-report.test.ts`(新) | 夹具库(含 5 条阳性对照形状 + WAL 未 checkpoint 帧 + 一份无新表无 receipt 的旧 schema)跑 runner:G23、G24、G26、G29、G31、计数与 1,1,0,0,0 |
-| `packages/teamlead/src/__tests__/fly2396-no-gating-readers.test.ts`(新) | G14 |
+| `packages/teamlead/src/__tests__/fly2396-authorship-boundary.test.ts`（由 FLY-2453 重述） | G14 |
 | `packages/teamlead/src/__tests__/fly-2006-database-retention-sweep.test.ts`(扩) | G22 |
 
 运行:`pnpm -F teamlead typecheck`(`tsc --noEmit`,覆盖 `openOperatorRework` 全部调用方的编译迁移)→

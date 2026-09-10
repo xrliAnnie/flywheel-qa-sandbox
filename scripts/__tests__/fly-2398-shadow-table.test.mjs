@@ -55,6 +55,10 @@ function createFixture() {
 		CREATE TABLE workflow_source_deadletter (
 			project TEXT, source_event_id TEXT, reason TEXT, at TEXT
 		);
+		CREATE TABLE workflow_source_event (
+			project TEXT, source_event_id TEXT, kind TEXT, payload TEXT,
+			payload_digest TEXT, schema_version INTEGER, at TEXT
+		);
 		CREATE TABLE workflow_founder_gate_verdict (
 			verdict_id TEXT PRIMARY KEY, run_id TEXT, verdict TEXT, question_id TEXT,
 			repo_identity TEXT, pr_number INTEGER, head_sha TEXT,
@@ -76,6 +80,10 @@ function createFixture() {
 			discord_message_id TEXT, discord_author_user_id TEXT, message_ts TEXT,
 			declaration_seq INTEGER, declared_at TEXT
 		);
+		CREATE TABLE auto_narrow_decision_audit (
+			source_event_id TEXT PRIMARY KEY, question_id TEXT, verdict_id TEXT,
+			decision_source TEXT, declaration_id TEXT, decision_at TEXT
+		);
 		CREATE TABLE strength_two_evidence_record (
 			record_id TEXT PRIMARY KEY, run_id TEXT, target_repo_identity TEXT,
 			head_sha TEXT, ran_status TEXT, ran_reason TEXT, record_status TEXT,
@@ -94,6 +102,7 @@ function createFixture() {
 		["run-doc-rework", "FLY-2", "exec-doc-rework"],
 		["run-code", "FLY-3", "exec-code"],
 		["run-mixed", "FLY-4", "exec-mixed"],
+		["run-auto", "FLY-5", "exec-auto"],
 	];
 	for (const [runId, issueId, executionId] of runs) {
 		db.prepare("INSERT INTO workflow_run VALUES (?, ?)").run(runId, issueId);
@@ -164,6 +173,18 @@ function createFixture() {
 				nestedReviews: { entries: [] },
 			},
 		},
+		{
+			id: 6,
+			runId: "run-auto",
+			question: "question-6",
+			head: "f".repeat(40),
+			time: "2026-08-15T06:00:00.000Z",
+			action: "approved",
+			machine: "docs_only",
+			declared: "pure_docs",
+			auto: true,
+			basis: { schemaVersion: 1, prs: [], nestedReviews: { entries: [] } },
+		},
 	];
 	for (const action of actions) {
 		db.prepare(
@@ -211,7 +232,9 @@ function createFixture() {
 			action.head,
 			requestId,
 			claimId,
-			JSON.stringify({ kind: "gate_response" }),
+			JSON.stringify({
+				kind: action.auto ? "auto_narrow_gate" : "gate_response",
+			}),
 			action.time,
 		);
 		db.prepare(
@@ -243,6 +266,21 @@ function createFixture() {
 			action.time,
 			action.time,
 		);
+		if (action.auto) {
+			db.prepare(
+				`INSERT INTO auto_narrow_decision_audit VALUES
+				 (?, ?, ?, 'auto_narrow_gate', ?, ?)`,
+			).run(
+				`auto-narrow:${action.question}`,
+				action.question,
+				verdictId,
+				`declaration-${action.id}`,
+				action.time,
+			);
+			db.prepare(
+				"UPDATE workflow_founder_gate_verdict SET founder_authored = 0 WHERE verdict_id = ?",
+			).run(verdictId);
+		}
 	}
 	db.prepare(
 		`INSERT INTO codex_review_record VALUES
@@ -325,22 +363,27 @@ test("backs up live WAL, independently recomputes all four lines and preserves h
 			.filter((row) => row.kind === "metric")
 			.map((row) => [row.name, `${row.numerator} / ${row.denominator}`]),
 	);
-	assert.equal(metrics.get("cohort_actions"), "5 / 5");
-	assert.equal(metrics.get("cohort_runs"), "4 / 4");
-	assert.equal(metrics.get("line1_machine_class"), "5 / 5");
-	assert.equal(metrics.get("line2_human_class"), "5 / 5");
-	assert.equal(metrics.get("line3_strength_two"), "5 / 5");
-	assert.equal(metrics.get("line4_founder_action"), "5 / 5");
-	assert.equal(metrics.get("docs_cards"), "4 / 5");
+	assert.equal(metrics.get("cohort_actions"), "6 / 6");
+	assert.equal(metrics.get("cohort_runs"), "5 / 5");
+	assert.equal(metrics.get("line1_machine_class"), "6 / 6");
+	assert.equal(metrics.get("line2_human_class"), "6 / 6");
+	assert.equal(metrics.get("line3_strength_two"), "6 / 6");
+	assert.equal(metrics.get("line4_founder_action"), "6 / 6");
+	assert.equal(metrics.get("docs_cards"), "5 / 6");
 	assert.equal(metrics.get("eligible_docs_runs"), "3 / 3");
+	assert.equal(metrics.get("source_auto_narrow_gate"), "1 / 6");
+	assert.equal(metrics.get("source_founder_manual"), "5 / 6");
+	assert.equal(metrics.get("auto_approved"), "1 / 1");
+	assert.equal(metrics.get("auto_human_reviewed"), "0 / 1");
+	assert.equal(metrics.get("auto_unreviewed"), "1 / 1");
 	assert.equal(metrics.get("N1_founder_authored_rework"), "1 / 3");
 	assert.equal(metrics.get("N2_founder_authority_rework"), "1 / 3");
 	assert.equal(metrics.get("N1_release_threshold"), "0 / 3");
 	assert.equal(metrics.get("N2_release_threshold"), "0 / 3");
 	assert.equal(metrics.get("N2_wide_all_rework"), "1 / 3");
-	assert.equal(metrics.get("nested_post_observation_hit"), "1 / 3");
-	assert.equal(metrics.get("nested_post_observation_incomparable"), "0 / 3");
-	assert.equal(metrics.get("nested_post_observation_clear"), "2 / 3");
+	assert.equal(metrics.get("nested_post_observation_hit"), "1 / 4");
+	assert.equal(metrics.get("nested_post_observation_incomparable"), "0 / 4");
+	assert.equal(metrics.get("nested_post_observation_clear"), "3 / 4");
 	assert.equal(
 		metric(report, "snapshot_age_over_30s_proxy").detail,
 		"不等价于误判单数,精确数需 PR head 变更事件台账",
@@ -408,6 +451,74 @@ test("keeps an empty population valid and renders every zero with its denominato
 	assert.doesNotMatch(markdown, /\| 0 \|/);
 });
 
+test("keeps an unprojected CommDB auto source visible and voids four-line coverage", async () => {
+	const payload = JSON.stringify({
+		run_id: "run-auto",
+		question_id: "question-pending",
+		head_sha: "9".repeat(40),
+		decision_source: "auto_narrow_gate",
+	});
+	const report = await reportAfter(`
+		INSERT INTO workflow_gate_holder VALUES
+		 ('run-auto', 'founder_gate', 2, '${"9".repeat(40)}',
+		  'question-pending', 'land', 'git_head');
+		INSERT INTO workflow_source_event VALUES
+		 ('flywheel', 'auto-narrow:question-pending', 'founder_approval',
+		  '${payload.replaceAll("'", "''")}', 'digest', 1,
+		  '2026-08-16T07:00:00.000Z');
+	`);
+	assert.equal(metric(report, "pending_auto_projection").numerator, 1);
+	assert.deepEqual(
+		[
+			metric(report, "source_auto_narrow_gate").numerator,
+			metric(report, "cohort_actions").numerator,
+			metric(report, "line4_founder_action").numerator,
+		],
+		[2, 7, 6],
+	);
+	assert.match(tableStatus(report), /line1.*line2.*line3.*line4/);
+});
+
+test("reports later human review of an auto approval without adding auto to human N1/N2", async () => {
+	const report = await reportAfter(`
+		INSERT INTO workflow_gate_holder VALUES
+		 ('run-auto', 'founder_gate', 2, '${"f".repeat(40)}',
+		  'question-auto-review', 'land', 'git_head');
+		INSERT INTO workflow_rework_request VALUES
+		 ('rework-auto-review', 'run-auto', '2026-08-16T08:00:00.000Z', 2,
+		  'founder', 'founder_gate', 'Please rework this head.', NULL, NULL);
+		INSERT INTO workflow_founder_gate_verdict VALUES
+		 ('verdict-auto-review', 'run-auto', 'rework', 'question-auto-review',
+		  '__main__', 106, '${"f".repeat(40)}', 'rework-auto-review', NULL, 1,
+		  '{"kind":"gate_response"}', '2026-08-16T08:00:00.000Z');
+		INSERT INTO auto_merge_shadow_observation VALUES
+		 ('verdict-auto-review', 'run-auto', 'question-auto-review', '__main__', 106,
+		  '${"f".repeat(40)}', '2026-08-16T08:00:00.000Z', 'docs_only', NULL,
+		  NULL, '{"schemaVersion":1,"prs":[],"nestedReviews":{"entries":[]}}',
+		  'unsatisfied', 'no_ledger_row', 'unsatisfied', 'no_ledger_row',
+		  'unsatisfied', NULL, 0, 0);
+		INSERT INTO auto_merge_shadow_declaration VALUES
+		 ('declaration-auto-review', 'question-auto-review', 'run-auto', 'pure_docs',
+		  'flywheel-eng-lead', '12345678901234567', '72345678901234567',
+		  '32345678901234567', '2026-08-16T08:00:00.000Z', 1,
+		  '2026-08-16T08:00:00.000Z');
+	`);
+	assert.equal(metric(report, "auto_human_reviewed").numerator, 1);
+	assert.deepEqual(
+		[
+			metric(report, "auto_human_reworked").numerator,
+			metric(report, "auto_human_reworked").denominator,
+		],
+		[1, 1],
+	);
+	assert.equal(metric(report, "N1_founder_authored_rework").denominator, 4);
+	assert.ok(
+		report.rows.some(
+			(row) => row.kind === "status" && row.name === "AUTO_REVIEW_OBSERVED",
+		),
+	);
+});
+
 test("voids the table when any of the four independent record lines is incomplete", async () => {
 	const missingObservation = await reportAfter(
 		"DELETE FROM auto_merge_shadow_observation WHERE verdict_id = 'verdict-1'",
@@ -417,7 +528,7 @@ test("voids the table when any of the four independent record lines is incomplet
 			metric(missingObservation, "line1_machine_class").numerator,
 			metric(missingObservation, "line3_strength_two").numerator,
 		],
-		[4, 4],
+		[5, 5],
 	);
 	assert.match(tableStatus(missingObservation), /line1.*line3/);
 	assert.equal(
@@ -428,14 +539,14 @@ test("voids the table when any of the four independent record lines is incomplet
 	const missingDeclaration = await reportAfter(
 		"DELETE FROM auto_merge_shadow_declaration WHERE question_id = 'question-1'",
 	);
-	assert.equal(metric(missingDeclaration, "line2_human_class").numerator, 4);
+	assert.equal(metric(missingDeclaration, "line2_human_class").numerator, 5);
 	assert.match(tableStatus(missingDeclaration), /line2/);
 	const crossRunDeclaration = await reportAfter(`
 		UPDATE auto_merge_shadow_declaration
 		SET run_id = 'run-code'
 		WHERE question_id = 'question-1'
 	`);
-	assert.equal(metric(crossRunDeclaration, "line2_human_class").numerator, 4);
+	assert.equal(metric(crossRunDeclaration, "line2_human_class").numerator, 5);
 	assert.match(tableStatus(crossRunDeclaration), /line2/);
 
 	const lostAction = await reportAfter(`
@@ -449,7 +560,7 @@ test("voids the table when any of the four independent record lines is incomplet
 			metric(lostAction, "line4_founder_action").numerator,
 			metric(lostAction, "line4_founder_action").denominator,
 		],
-		[1, 6, 5, 6],
+		[1, 7, 6, 7],
 	);
 	assert.match(tableStatus(lostAction), /line4/);
 });
@@ -471,8 +582,8 @@ test("voids mirrored observations and duplicate verdict actions without multiply
 		SET observed_at = '2026-08-10T01:00:01.000Z'
 		WHERE verdict_id = 'verdict-1'
 	`);
-	assert.equal(metric(mirrorMismatch, "line1_machine_class").numerator, 4);
-	assert.equal(metric(mirrorMismatch, "line3_strength_two").numerator, 4);
+	assert.equal(metric(mirrorMismatch, "line1_machine_class").numerator, 5);
+	assert.equal(metric(mirrorMismatch, "line3_strength_two").numerator, 5);
 	assert.match(tableStatus(mirrorMismatch), /line1.*line3/);
 
 	const duplicateVerdict = await reportAfter(`
@@ -487,7 +598,7 @@ test("voids mirrored observations and duplicate verdict actions without multiply
 			metric(duplicateVerdict, "duplicate_verdict").numerator,
 			metric(duplicateVerdict, "line4_founder_action").numerator,
 		],
-		[5, 1, 4],
+		[6, 1, 5],
 	);
 	assert.match(tableStatus(duplicateVerdict), /line4/);
 });
@@ -495,22 +606,22 @@ test("voids mirrored observations and duplicate verdict actions without multiply
 test("emits one N3 detail per reworked run even when the run has multiple founder reworks", async () => {
 	const report = await reportAfter(`
 		INSERT INTO workflow_gate_holder VALUES
-		 ('run-doc-rework', 'founder_gate', 2, '${"g".repeat(40)}', 'question-6', 'land', 'git_head');
+			 ('run-doc-rework', 'founder_gate', 2, '${"g".repeat(40)}', 'question-7', 'land', 'git_head');
 		INSERT INTO workflow_rework_request VALUES
 		 ('rework-6', 'run-doc-rework', '2026-08-15T06:00:00.000Z', 2,
 		  'founder', 'founder_gate', 'Please revise it again.', NULL, NULL);
 		INSERT INTO workflow_founder_gate_verdict VALUES
-		 ('verdict-6', 'run-doc-rework', 'rework', 'question-6', '__main__', 106,
+			 ('verdict-7', 'run-doc-rework', 'rework', 'question-7', '__main__', 107,
 		  '${"g".repeat(40)}', 'rework-6', NULL, 1,
 		  '{"kind":"gate_response"}', '2026-08-15T06:00:00.000Z');
 		INSERT INTO auto_merge_shadow_observation VALUES
-		 ('verdict-6', 'run-doc-rework', 'question-6', '__main__', 106,
+			 ('verdict-7', 'run-doc-rework', 'question-7', '__main__', 107,
 		  '${"g".repeat(40)}', '2026-08-15T06:00:00.000Z', 'docs_only', NULL,
 		  NULL, '{"schemaVersion":1,"prs":[],"nestedReviews":{"entries":[]}}',
 		  'unsatisfied', 'no_ledger_row', 'unsatisfied', 'no_ledger_row',
 		  'unsatisfied', NULL, 0, 0);
 		INSERT INTO auto_merge_shadow_declaration VALUES
-		 ('declaration-6', 'question-6', 'run-doc-rework', 'pure_docs',
+			 ('declaration-7', 'question-7', 'run-doc-rework', 'pure_docs',
 		  'flywheel-eng-lead', '12345678901234567', '62345678901234567',
 		  '32345678901234567', '2026-08-15T06:00:00.000Z', 1,
 		  '2026-08-15T06:00:00.000Z')

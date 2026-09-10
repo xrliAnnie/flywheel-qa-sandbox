@@ -162,6 +162,8 @@ export interface GatePollerConfig {
 	 * Runs every poll tick on the existing timer; the callback owns single-flight.
 	 */
 	onWorkflowGateMaterializeTick?: () => void | Promise<void>;
+	/** FLY-2453: bounded three-gate opinion/approval rider on this timer. */
+	onAutoNarrowGateTick?: () => void | Promise<void>;
 	/** FLY-1375: resume durable engine and runless land operations. */
 	onLandOperationTick?: () => void | Promise<void>;
 	/**
@@ -1178,6 +1180,21 @@ export class GatePoller {
 				} catch (err) {
 					console.warn(
 						"[GatePoller] founder-reaction approval pass error:",
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
+				}
+				await yieldToEventLoop();
+			}
+
+			if (this.config.onAutoNarrowGateTick) {
+				try {
+					await this.withSpan("gate-poller.auto-narrow-gate", () =>
+						this.config.onAutoNarrowGateTick?.(),
+					);
+				} catch (err) {
+					console.warn(
+						"[GatePoller] auto narrow gate error (non-fatal):",
 						err instanceof Error ? err.message : String(err),
 					);
 					this.maybeRecoverStore(err);

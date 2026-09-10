@@ -16,6 +16,7 @@ import {
 	FEATURE_FLAGS,
 	type FeatureFlagSpec,
 	type FlagCategory,
+	type FlagControlAuthority,
 	type FlagOnMeans,
 	type FlagPolarity,
 	type FlagScope,
@@ -52,6 +53,16 @@ export interface FlagScopedStoreView {
 		raw: string;
 		value: boolean | string;
 	}>;
+}
+
+export interface FlagFounderControlView {
+	degraded: boolean;
+	reason?: "invalid_raw" | "receipt_missing" | "revision_mismatch";
+	projectName: string;
+	mode: "off" | "dry_run" | "auto";
+	controlEventId?: string;
+	founderMessageId?: string;
+	openingAt?: string;
 }
 
 /** Persistent stable-value clock for one flag scope. Secret-free by design. */
@@ -109,6 +120,10 @@ export interface FlagView {
 	error?: string;
 	note?: string;
 	retiring?: string;
+	/** Optional protected control authority declared by the registry. */
+	controlAuthority?: FlagControlAuthority;
+	/** Secret-free founder receipt projection for protected project controls. */
+	founderControlByProject?: FlagFounderControlView[];
 	/** FLY-1778: true when SQLite, rather than legacy env/config, owns the value. */
 	storeManaged?: boolean;
 	/** FLY-2100: this project flag is writable through scoped SQLite rows. */
@@ -281,6 +296,7 @@ export function resolveFlag(
 		dormant: spec.dormant,
 		note: spec.note,
 		retiring: spec.retiring,
+		controlAuthority: spec.controlAuthority,
 	};
 
 	if (spec.scope === "bridge_global") {

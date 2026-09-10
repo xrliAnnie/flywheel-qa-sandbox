@@ -102,7 +102,7 @@ spec §B4 要四条记录线同时落、100% 覆盖、只读 SQL 可重算、fou
 | **B3 的 `verified_then_expired`** | `probeRecordLiveness` 会发网络请求,**不进只读 SQL**;报表脚本有 `--probe-record-liveness` 可选开关,输出单独一列并标「非 SQL 可复现」 |
 | **N2 的口径** | PRD 写 `authority='founder'`;今天 `openOperatorRework` 写的是 `authority='lead'`(`StateStore.ts:39469`),founder_feedback 路径写 `'founder'`(`:54046`)。N2 = 打回判决 join `workflow_rework_request.authority='founder'`;另单列「全部打回(含 lead / operator)」作最宽上界,**不冒充 N2** |
 | **计时起点** | founder 未定(PRD Q1;已 ask Lead,id `70d912cc`)。设计上**不写死**:报表脚本必填 `--window-start/--window-end`;库里 `state_store_migration` receipt `fly-2398-shadow-observation-v1` 给出观察最早可能时刻,早于它的窗口直接拒绝。默认建议:**从观察表上线后首条完整四线记录落库那天起算**(否则前几天覆盖率天然 < 100%) |
-| **一次都不真的自动合并** | B4 零合并代码;新表**没有任何 gating reader**(照 `fly2396-no-gating-readers.test.ts` 加同款测试:`auto_merge_shadow_*` 只允许出现在 StateStore、路由、CLI、报表脚本、registry 五处) |
+| **一次都不真的自动合并** | B4 当时零合并代码；FLY-2453 后仅受保护的 StateStore 窄口核可把当前卡的最新声明作为三闸之一，历史观察、意见和统计仍不得直接授权（边界测试：`fly2396-authorship-boundary.test.ts`、`fly2398-narrow-boundary.test.ts`） |
 
 ## 6. 非目标
 

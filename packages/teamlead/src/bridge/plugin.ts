@@ -182,7 +182,10 @@ import {
 } from "./alert-rate-limiter.js";
 import { deriveCanonicalFounderId } from "./approval-signal/canonical-founder-id.js";
 import { makeDeferralSupport } from "./approval-signal/deferred-approval.js";
-import { reactToFounderMessage } from "./approval-signal/founder-ack.js";
+import {
+	reactToFounderMessage,
+	setBotOpinionReaction,
+} from "./approval-signal/founder-ack.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
@@ -190,6 +193,17 @@ import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-bi
 import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
 import { safeCompare } from "./auth-compare.js";
 import { createAutoMergeShadowRouter } from "./auto-merge-shadow-route.js";
+import {
+	type AutoNarrowControlCanonical,
+	handleAutoNarrowControlApply,
+	handleAutoNarrowControlStage,
+} from "./auto-narrow-control-route.js";
+import {
+	reconcileAutoNarrowGate,
+	refreshAutoNarrowOpinionTrace,
+	resolveAutoNarrowGateDeliveryContext,
+} from "./auto-narrow-gate.js";
+import { reconcileAutoNarrowOpinionDeliveries } from "./auto-narrow-opinion-delivery.js";
 import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
 import { makeShipRemoteBranchCleanup } from "./branch-cleanup.js";
@@ -288,6 +302,11 @@ import {
 	listGuildActiveThreads,
 	resolveInfraDiscordIdentity,
 } from "./discord-guild-active-threads.js";
+import {
+	editDiscordMessageInChannel,
+	fetchDiscordMessageFromChannel,
+	postDiscordMessageToChannel,
+} from "./discord-utils.js";
 import { createDispositionReceiptPass } from "./disposition-receipt.js";
 import {
 	createDoaBackoffAdmission,
@@ -366,6 +385,7 @@ import {
 	enrichFlagViewsWithStore,
 	type FlagStoreRuntime,
 	initializeFlagStore,
+	readAutoNarrowRuntimeControl,
 	storeAccountSwitchWakeSweepEnabled,
 	storeAlertSystemEnabled,
 	storeCmuxRebindDisabled,
@@ -2756,7 +2776,22 @@ export function createBridgeApp(
 					return root ? join(root, ".flywheel", "config.yaml") : undefined;
 				}),
 		};
-		app.post("/api/fleet/flag/stage", (req, res) => {
+		const narrowProject = projects.find(
+			(project) => project.projectName === "flywheel",
+		);
+		const narrowLead = narrowProject?.leads.find(
+			(lead) => lead.agentId === "flywheel-eng-lead",
+		);
+		const autoNarrowControlDeps = {
+			store,
+			founderUserId: config.discordOwnerUserId ?? "",
+			engineeringChannelId: narrowLead?.chatChannel ?? "",
+			leadId: narrowLead?.agentId ?? "",
+			botToken: narrowLead?.botToken ?? config.discordBotToken ?? "",
+			tokens: fleetConsole.tokens,
+			audit: fleetConsole.audit,
+		};
+		app.post("/api/fleet/flag/stage", async (req, res) => {
 			const selfOrigin = loopbackSelfOrigin(req.headers.host);
 			if (!selfOrigin) {
 				res.status(403).json({ error: "non-loopback host" });
@@ -2766,10 +2801,25 @@ export function createBridgeApp(
 				res.status(403).json({ error: "cross-origin" });
 				return;
 			}
-			const r = handleFlagStage(flagRouteDeps, req.body, selfOrigin);
+			const r =
+				req.body?.name === "auto_merge_narrow_gate"
+					? await handleAutoNarrowControlStage(
+							autoNarrowControlDeps,
+							{
+								...req.body,
+								leadAuth: {
+									...req.body?.leadAuth,
+									...(typeof req.body?.carrierClaim === "string"
+										? { carrierClaim: req.body.carrierClaim }
+										: {}),
+								},
+							},
+							selfOrigin,
+						)
+					: handleFlagStage(flagRouteDeps, req.body, selfOrigin);
 			res.status(r.code).json(r.body);
 		});
-		app.post("/api/fleet/flag/apply", (req, res) => {
+		app.post("/api/fleet/flag/apply", async (req, res) => {
 			const selfOrigin = loopbackSelfOrigin(req.headers.host);
 			if (!selfOrigin) {
 				res.status(403).json({ error: "non-loopback host" });
@@ -2780,19 +2830,28 @@ export function createBridgeApp(
 				return;
 			}
 			const { canonical, confirmToken } = (req.body ?? {}) as {
-				canonical?: AnyFlagCanonical;
+				canonical?: AnyFlagCanonical | AutoNarrowControlCanonical;
 				confirmToken?: string;
 			};
 			if (!canonical || !confirmToken) {
 				res.status(400).json({ error: "missing canonical/confirmToken" });
 				return;
 			}
-			const r = handleFlagApply(
-				flagRouteDeps,
-				canonical,
-				confirmToken,
-				selfOrigin,
-			);
+			const r =
+				canonical.kind === "auto_narrow_control"
+					? await handleAutoNarrowControlApply(
+							autoNarrowControlDeps,
+							canonical,
+							confirmToken,
+							{
+								...req.body?.leadAuth,
+								...(typeof req.body?.carrierClaim === "string"
+									? { carrierClaim: req.body.carrierClaim }
+									: {}),
+							},
+							selfOrigin,
+						)
+					: handleFlagApply(flagRouteDeps, canonical, confirmToken, selfOrigin);
 			res.status(r.code).json(r.body);
 		});
 
@@ -9764,6 +9823,27 @@ export async function startBridge(
 								},
 								holder.question_id,
 							);
+							if (result.ok && run.project_name === "flywheel") {
+								const control = readAutoNarrowRuntimeControl(
+									flagStore,
+									run.project_name,
+								);
+								const controlAppliedAt = control.controlEventId
+									? store.getAutoNarrowControlEventById(control.controlEventId)
+											?.appliedAt
+									: undefined;
+								refreshAutoNarrowOpinionTrace({
+									store,
+									questionId: holder.question_id,
+									issueThreadId: thread.thread_id,
+									opinionControl: {
+										mode: control.mode,
+										...(controlAppliedAt ? { controlAppliedAt } : {}),
+									},
+									at: new Date().toISOString(),
+									log: (message) => console.warn(message),
+								});
+							}
 							materialized = result.ok;
 							return result;
 						},
@@ -10371,6 +10451,7 @@ export async function startBridge(
 		}),
 	}));
 
+	let autoNarrowGateScanCursor: string | undefined;
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
 		recordSpan: (name, startMs, endMs) =>
@@ -10382,6 +10463,123 @@ export async function startBridge(
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,
+		onAutoNarrowGateTick: async () => {
+			const control = readAutoNarrowRuntimeControl(flagStore, "flywheel");
+			const controlAppliedAt = control.controlEventId
+				? store.getAutoNarrowControlEventById(control.controlEventId)?.appliedAt
+				: undefined;
+			const resolveDeliveryContext = (questionId: string) =>
+				resolveAutoNarrowGateDeliveryContext({
+					store,
+					projects,
+					questionId,
+					defaultBotToken: config.discordBotToken,
+				});
+			const gateResult = reconcileAutoNarrowGate({
+				store,
+				openCommDb: (project) => new CommDB(commDbPathForProject(project)),
+				resolveDeliveryContext,
+				scanAfterQuestionId: autoNarrowGateScanCursor,
+				opinionControl: {
+					mode: control.mode,
+					...(controlAppliedAt ? { controlAppliedAt } : {}),
+				},
+				log: (message) => console.warn(message),
+			});
+			if (gateResult.cursor) autoNarrowGateScanCursor = gateResult.cursor;
+			await reconcileAutoNarrowOpinionDeliveries({
+				store,
+				mode: control.mode,
+				post: async ({
+					questionId,
+					threadId,
+					cardMessageId,
+					content,
+					signal,
+				}) => {
+					const context = resolveDeliveryContext(questionId);
+					if (!context || context.issueThreadId !== threadId) {
+						return { kind: "failed" as const };
+					}
+					const posted = await postDiscordMessageToChannel(
+						threadId,
+						content,
+						context.botToken,
+						{ origin: "automation", replyTo: cardMessageId, signal },
+					);
+					return posted.ok && posted.messageIds.length === 1
+						? { kind: "posted" as const, messageId: posted.messageIds[0]! }
+						: { kind: "uncertain" as const };
+				},
+				edit: async ({ questionId, threadId, messageId, content, signal }) => {
+					const context = resolveDeliveryContext(questionId);
+					if (!context || context.issueThreadId !== threadId)
+						return { ok: false };
+					return editDiscordMessageInChannel(
+						threadId,
+						messageId,
+						content,
+						context.botToken,
+						{ origin: "automation", signal },
+					);
+				},
+				scan: ({ questionId, threadId, postedAt, correlationMarker }) => {
+					const context = resolveDeliveryContext(questionId);
+					if (!context || context.issueThreadId !== threadId) {
+						return Promise.resolve({
+							kind: "ambiguous" as const,
+							frontier: null,
+						});
+					}
+					return scanFounderThreadForGateCard({
+						threadId,
+						botToken: context.botToken,
+						postedAt,
+						correlationMarker,
+					});
+				},
+				setReaction: ({ questionId, threadId, cardMessageId, reaction }) => {
+					const context = resolveDeliveryContext(questionId);
+					if (!context || context.issueThreadId !== threadId) {
+						return Promise.resolve(false);
+					}
+					return setBotOpinionReaction({
+						botToken: context.botToken,
+						channelId: threadId,
+						messageId: cardMessageId,
+						reaction,
+					});
+				},
+				markCard: async ({
+					questionId,
+					threadId,
+					cardMessageId,
+					banner,
+					signal,
+				}) => {
+					const context = resolveDeliveryContext(questionId);
+					if (!context || context.issueThreadId !== threadId) return false;
+					const current = await fetchDiscordMessageFromChannel(
+						threadId,
+						cardMessageId,
+						context.botToken,
+						fetch,
+						signal,
+					);
+					if (!current.ok) return false;
+					if (current.message.content.includes(banner)) return true;
+					const edited = await editDiscordMessageInChannel(
+						threadId,
+						cardMessageId,
+						`${current.message.content}\n\n${banner}`,
+						context.botToken,
+						{ origin: "automation", signal },
+					);
+					return edited.ok;
+				},
+				log: (message) => console.warn(message),
+			});
+		},
 		onLeadPatrolTick: leadPatrolTickPass,
 		onSummaryAbsorptionTick: summaryAbsorptionPass,
 		onPatrolOrphanSweepTick: patrolOrphanSweepPass,

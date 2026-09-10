@@ -14,6 +14,11 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
+import {
+	AUTO_NARROW_ACTOR,
+	AUTO_NARROW_DECISION_SOURCE,
+	parseAutoNarrowSourceEnvelope,
+} from "./auto-narrow-contract.js";
 import { openCommDbWritable } from "./commdb-open-gate.js";
 import {
 	type IngestDiscordChatArgs,
@@ -2409,6 +2414,11 @@ export class CommDB {
 		payload: unknown;
 		provenance?: MessageProvenance;
 	}): boolean {
+		if (input.fromAgent === AUTO_NARROW_ACTOR) {
+			throw new Error(
+				"bridge-auto-narrow-gate is reserved for the strict auto narrow source writer",
+			);
+		}
 		const payload = canonicalJsonString(input.payload);
 		const payloadDigest = canonicalSubmissionDigest(input.payload);
 		const at = new Date().toISOString();
@@ -2476,6 +2486,132 @@ export class CommDB {
 				return true;
 			})
 			.immediate();
+	}
+
+	/** FLY-2453: the sole writer for a synthetic narrow-gate approval source. */
+	insertAutoNarrowApprovalWithSource(input: {
+		project: string;
+		expectedOwner: string;
+		projectedThroughSourceRowId: number;
+		envelope: unknown;
+	}): { written: boolean; replayed: boolean } {
+		const envelope = parseAutoNarrowSourceEnvelope(input.envelope);
+		if (
+			input.project !== "flywheel" ||
+			!input.expectedOwner.trim() ||
+			!Number.isSafeInteger(input.projectedThroughSourceRowId) ||
+			input.projectedThroughSourceRowId < 0
+		) {
+			throw new Error("auto narrow source scope invalid");
+		}
+		const sourceEventId = `auto-narrow:${envelope.question_id}`;
+		const payload = canonicalJsonString(envelope);
+		const payloadDigest = canonicalSubmissionDigest(envelope);
+		const content = canonicalJsonString({
+			approved: true,
+			actor: AUTO_NARROW_ACTOR,
+			decision_source: AUTO_NARROW_DECISION_SOURCE,
+			head_sha: envelope.head_sha,
+		});
+		const priorBusyTimeout = Number(
+			this.db.pragma("busy_timeout", { simple: true }),
+		);
+		this.db.pragma("busy_timeout = 0");
+		try {
+			return this.db
+				.transaction(() => {
+					const existingSource = this.db
+						.prepare(
+							`SELECT payload_digest FROM workflow_source_event
+						  WHERE project = ? AND source_event_id = ?`,
+						)
+						.get(input.project, sourceEventId) as
+						| { payload_digest: string }
+						| undefined;
+					if (existingSource) {
+						const response = this.getResponse(envelope.question_id);
+						if (
+							existingSource.payload_digest !== payloadDigest ||
+							response?.from_agent !== AUTO_NARROW_ACTOR ||
+							response.content !== content
+						) {
+							throw new Error("auto narrow source replay conflict (poison)");
+						}
+						return { written: true, replayed: true };
+					}
+					const question = this.db
+						.prepare(
+							`SELECT q.* FROM mailbox_message_projection q
+						  WHERE q.id = ? AND q.type = 'question'
+						    AND q.from_agent = ? AND q.checkpoint = 'approve_to_ship'
+						    AND q.resolved_at IS NULL AND q.superseded_at IS NULL
+						    AND q.relay_state != 'terminal_disposed'
+						    AND NOT EXISTS (
+						      SELECT 1 FROM mailbox_message_projection r
+						       WHERE r.parent_id = q.id AND r.type = 'response'
+						    )`,
+						)
+						.get(envelope.question_id, input.expectedOwner) as
+						| Message
+						| undefined;
+					if (
+						!question ||
+						envelope.source_execution_id !== input.expectedOwner
+					) {
+						return { written: false, replayed: false };
+					}
+					const pendingFounderInput = this.db
+						.prepare(
+							`SELECT 1 FROM workflow_source_event
+							  WHERE project = ? AND rowid > ? AND kind = 'founder_feedback'
+							    AND (json_extract(payload, '$.run_id') = ?
+							         OR json_extract(payload, '$.issue_id') = ?)
+							  LIMIT 1`,
+						)
+						.get(
+							input.project,
+							input.projectedThroughSourceRowId,
+							envelope.run_id,
+							envelope.issue_id,
+						);
+					if (pendingFounderInput) {
+						return { written: false, replayed: false };
+					}
+					new MailboxQueue(this.db).enqueue({
+						id: randomUUID(),
+						fromAgent: AUTO_NARROW_ACTOR,
+						toAgent: question.from_agent,
+						recipientKind: "runner",
+						type: "response",
+						content,
+						refId: envelope.question_id,
+						senderRef: encodeSenderRef(),
+						createdAt: envelope.decision_at,
+						expiresAt: new Date(
+							Date.parse(envelope.decision_at) + 72 * 60 * 60 * 1000,
+						).toISOString(),
+					});
+					this.markQuestionTerminalDisposed(envelope.question_id);
+					this.db
+						.prepare(
+							`INSERT INTO workflow_source_event
+						 (project, source_event_id, kind, payload, payload_digest,
+						  schema_version, at)
+						 VALUES (?, ?, 'founder_approval', ?, ?, 1, ?)`,
+						)
+						.run(
+							input.project,
+							sourceEventId,
+							payload,
+							payloadDigest,
+							envelope.decision_at,
+						);
+					return { written: true, replayed: false };
+				})
+				.immediate();
+		} finally {
+			this.db.pragma(`busy_timeout = ${priorBusyTimeout}`);
+		}
 	}
 
 	appendLandDepartureCutoff(input: {

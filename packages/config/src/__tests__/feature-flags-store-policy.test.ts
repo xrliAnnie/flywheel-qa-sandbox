@@ -586,10 +586,16 @@ describe("FLY-1778 flag store policy", () => {
 						member,
 					);
 				}
-				expect(
-					codec.parse({ hasOverride: true, raw: "__unsupported__" }),
-					name,
-				).toBe(spec.default);
+				if (spec.controlAuthority === "founder_message") {
+					expect(() =>
+						codec.parse({ hasOverride: true, raw: "__unsupported__" }),
+					).toThrow();
+				} else {
+					expect(
+						codec.parse({ hasOverride: true, raw: "__unsupported__" }),
+						name,
+					).toBe(spec.default);
+				}
 			}
 		}
 	});

@@ -91,7 +91,7 @@ DDL `StateStore.ts:3165`;`recorded_at` ISO 毫秒;`author_evidence_json.kind ∈
 
 - `scripts/fly2396-retro-report.mjs`:`--db`(默认 `~/.flywheel/teamlead.db`)、`--sql`、`--sqlite`;以 `sqlite3 "file:<snapshot>?immutable=1"` **单连接**执行 `engineering/doc/FLY-2396-*/retro-bind.sql`(TEMP 表只对创建连接可见);`STRICT_UTC_INSTANT` 校验时间参数;输出首行标模式。
 - `scripts/fly-2397-strength-two-acceptance.mjs`:`createRequire` 拿 teamlead 的 `better-sqlite3`,从 `dist/strength-two/judge.js` import 纯函数跑阳性对照;对照行集 sha256 版本化(`STRENGTH_TWO_ACCEPTANCE_ROWS_SHA256`)。
-- 隔离测试 `__tests__/fly2396-no-gating-readers.test.ts`:正则扫 `packages/` + `scripts/` 所有源文件,引用集合必须 `toEqual(ALLOWED)`,且不含 `land-executor / approval-signal / post-ship-finalization / external-merge-reconcile`。
+- 边界测试后由 FLY-2453 重述为 `__tests__/fly2396-authorship-boundary.test.ts` 与 `fly2398-narrow-boundary.test.ts`：精确扫描引用集合；只允许 StateStore 窄口核把当前卡声明用于三闸，并禁止 land、通用 approval、post-ship 与 external-merge 直接读取影子或作者事实来授权。
 
 ## 7. 规模估计(定报表形状,不定结论)
 

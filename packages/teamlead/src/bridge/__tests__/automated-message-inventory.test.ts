@@ -67,6 +67,8 @@ describe("automated Discord sender inventory", () => {
 		expect(refs.sort()).toEqual([
 			"bridge/gate-poller.ts",
 			"bridge/infra-notify.ts",
+			// FLY-2453: machine opinions sent by the card-owning Lead bot.
+			"bridge/plugin.ts",
 			"bridge/reports-route.ts",
 			"bridge/review-thread-effect.ts",
 			"bridge/tools.ts",

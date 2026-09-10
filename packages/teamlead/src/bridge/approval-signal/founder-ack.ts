@@ -26,6 +26,37 @@ export interface ReactToFounderMessageArgs {
 	fetchImpl?: typeof fetch;
 }
 
+async function mutateBotReaction(args: {
+	botToken: string;
+	channelId: string;
+	messageId: string;
+	emoji: string;
+	method: "PUT" | "DELETE";
+	fetchImpl?: typeof fetch;
+}): Promise<{ ok: boolean; status?: number }> {
+	const fetchImpl = args.fetchImpl ?? fetch;
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), PUT_TIMEOUT_MS);
+	try {
+		const res = await fetchImpl(
+			`${DISCORD_API}/channels/${args.channelId}/messages/${args.messageId}/reactions/${encodeURIComponent(args.emoji)}/@me`,
+			{
+				method: args.method,
+				headers: { Authorization: `Bot ${args.botToken}` },
+				signal: controller.signal,
+			},
+		);
+		return {
+			ok: res.ok || (args.method === "DELETE" && res.status === 404),
+			status: res.status,
+		};
+	} catch {
+		return { ok: false };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 /**
  * PUT /channels/{cid}/messages/{mid}/reactions/{emoji}/@me — add the bot's
  * reaction. Requires the ADD_REACTIONS permission; a 403 surfaces as
@@ -35,22 +66,28 @@ export interface ReactToFounderMessageArgs {
 export async function reactToFounderMessage(
 	args: ReactToFounderMessageArgs,
 ): Promise<{ ok: boolean; status?: number }> {
-	const fetchImpl = args.fetchImpl ?? fetch;
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), PUT_TIMEOUT_MS);
-	try {
-		const res = await fetchImpl(
-			`${DISCORD_API}/channels/${args.channelId}/messages/${args.messageId}/reactions/${encodeURIComponent(args.emoji)}/@me`,
-			{
-				method: "PUT",
-				headers: { Authorization: `Bot ${args.botToken}` },
-				signal: controller.signal,
-			},
-		);
-		return { ok: res.ok, status: res.status };
-	} catch {
-		return { ok: false };
-	} finally {
-		clearTimeout(timer);
-	}
+	return mutateBotReaction({ ...args, method: "PUT" });
+}
+
+export async function setBotOpinionReaction(args: {
+	botToken: string;
+	channelId: string;
+	messageId: string;
+	reaction: "eligible" | "ineligible";
+	fetchImpl?: typeof fetch;
+}): Promise<boolean> {
+	const desired = args.reaction === "eligible" ? "🤖" : "🚫";
+	const opposite = args.reaction === "eligible" ? "🚫" : "🤖";
+	const added = await mutateBotReaction({
+		...args,
+		emoji: desired,
+		method: "PUT",
+	});
+	if (!added.ok) return false;
+	const removed = await mutateBotReaction({
+		...args,
+		emoji: opposite,
+		method: "DELETE",
+	});
+	return removed.ok;
 }

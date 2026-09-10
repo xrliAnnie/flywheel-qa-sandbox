@@ -11,6 +11,20 @@ import type { StateStore } from "../StateStore.js";
 
 export type FlagStoreRuntime = { mode: "ready"; store: StateStore };
 
+export type AutoNarrowRuntimeControl = {
+	degraded: boolean;
+	reason?: "invalid_raw" | "receipt_missing" | "revision_mismatch";
+} & (
+	| { mode: "off" | "dry_run"; controlEventId?: string }
+	| {
+			mode: "auto";
+			controlEventId: string;
+			openingEventId: string;
+			openingAt: string;
+			flagRevision: number;
+	  }
+);
+
 function bootstrapFlagEnv(
 	env: Record<string, string | undefined>,
 	log: (message: string) => void,
@@ -128,6 +142,75 @@ export function readScopedValue(
 		throw new Error(`project-store flag is not a scalar value: ${name}`);
 	}
 	return effective;
+}
+
+/**
+ * FLY-2453: unlike ordinary project flags, this control never inherits a `*`
+ * row. An `auto` value is authority only while its exact immutable founder
+ * control receipt is present and agrees with the current scoped revision.
+ */
+export function readAutoNarrowRuntimeControl(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): AutoNarrowRuntimeControl {
+	const row = runtime.store.getFlagValueRow(
+		"auto_merge_narrow_gate",
+		projectName,
+	);
+	if (!row) return { mode: "dry_run", degraded: false };
+	const codec = getFlagStoreCodec("auto_merge_narrow_gate");
+	let mode: string;
+	try {
+		mode = String(
+			codec?.parse({ hasOverride: row.hasOverride, raw: row.raw }) ?? "dry_run",
+		);
+	} catch {
+		return { mode: "dry_run", degraded: true, reason: "invalid_raw" };
+	}
+	if (mode === "off") return { mode: "off", degraded: false };
+	const event = runtime.store.getLatestAutoNarrowControlEvent(projectName);
+	if (mode !== "auto") {
+		return {
+			mode: "dry_run",
+			degraded: false,
+			...(event?.mode === "dry_run" ? { controlEventId: event.eventId } : {}),
+		};
+	}
+	if (!event) {
+		return { mode: "dry_run", degraded: true, reason: "receipt_missing" };
+	}
+	if (event.flagRevision !== row.revision) {
+		return { mode: "dry_run", degraded: true, reason: "revision_mismatch" };
+	}
+	if (event.mode !== "auto" || !event.openingEventId) {
+		return { mode: "dry_run", degraded: false };
+	}
+	const opening = runtime.store.getAutoNarrowControlEventById(
+		event.openingEventId,
+	);
+	if (
+		!opening ||
+		opening.projectName !== projectName ||
+		opening.mode !== "auto" ||
+		opening.openingEventId !== opening.eventId
+	) {
+		return { mode: "dry_run", degraded: false };
+	}
+	return {
+		mode: "auto",
+		degraded: false,
+		controlEventId: event.eventId,
+		openingEventId: event.openingEventId,
+		openingAt: opening.appliedAt,
+		flagRevision: event.flagRevision,
+	};
+}
+
+export function storeAutoNarrowMode(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): "off" | "dry_run" | "auto" {
+	return readAutoNarrowRuntimeControl(runtime, projectName).mode;
 }
 
 export function storeNodeDwellThresholdHours(
@@ -354,6 +437,17 @@ export function enrichFlagViewsWithStore(
 							`invalid inherited scoped flag row: ${view.name}/${row.scope}`,
 						);
 					}
+					if (
+						view.name === "auto_merge_narrow_gate" &&
+						view.controlAuthority === "founder_message"
+					) {
+						return {
+							scope: row.scope,
+							raw: row.raw,
+							value: readAutoNarrowRuntimeControl(runtime, row.scope).mode,
+						};
+					}
+
 					return {
 						scope: row.scope,
 						raw: row.raw,
@@ -361,6 +455,53 @@ export function enrichFlagViewsWithStore(
 					};
 				});
 				const names = [...new Set(projectNames ?? [])];
+				if (
+					view.name === "auto_merge_narrow_gate" &&
+					view.controlAuthority === "founder_message"
+				) {
+					const founderControlByProject = names.map((projectName) => {
+						const control = readAutoNarrowRuntimeControl(runtime, projectName);
+						const authorityEventId =
+							control.mode === "auto"
+								? control.openingEventId
+								: control.controlEventId;
+						const authorityEvent = authorityEventId
+							? runtime.store.getAutoNarrowControlEventById(authorityEventId)
+							: undefined;
+						return {
+							projectName,
+							mode: control.mode,
+							degraded: control.degraded,
+							...(control.reason ? { reason: control.reason } : {}),
+							...(authorityEvent
+								? {
+										controlEventId: authorityEvent.eventId,
+										founderMessageId: authorityEvent.founderMessageId,
+									}
+								: {}),
+							...(control.mode === "auto"
+								? { openingAt: control.openingAt }
+								: {}),
+						};
+					});
+					return {
+						...view,
+						storeManaged: false,
+						projectStoreManaged: true,
+						scopedStore: { rows: publicRows },
+						effectiveByProject: founderControlByProject.map((control) => ({
+							projectName: control.projectName,
+							value: control.mode,
+							isDefault: control.mode === spec.default,
+							via: rows.some((row) => row.scope === control.projectName)
+								? ("project_row" as const)
+								: ("default" as const),
+						})),
+						founderControlByProject,
+						clockReadiness: "ready",
+						valueClocks,
+					};
+				}
 				const effectiveByProject = names.map((projectName) => {
 					return resolveScopedEffective({
 						spec,

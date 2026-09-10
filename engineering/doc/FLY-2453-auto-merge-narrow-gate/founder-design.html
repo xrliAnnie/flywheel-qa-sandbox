@@ -1,0 +1,137 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLY-2453 · 自动批准窄口设计</title><style>
+:root{color-scheme:light;--ink:#1d1d1f;--muted:#6e6e73;--blue:#007aff}
+*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif;line-height:1.75}
+main{max-width:1000px;margin:auto;padding:40px 22px 80px}header{padding:10px 6px 30px}h1{font-size:clamp(28px,5vw,42px);line-height:1.25;letter-spacing:-.04em;margin:8px 0 12px}h2{font-size:21px;letter-spacing:-.015em;margin:0 0 20px}.eyebrow{font-size:12px;letter-spacing:.15em;color:var(--blue);font-weight:650}.muted,.small{color:var(--muted);font-size:13px}.card{background:#fff;border:1px solid #e8e8ed;border-radius:16px;padding:28px;margin-bottom:20px}.hero{font-size:24px;line-height:1.65;margin-top:0}p{margin:12px 0}.tag{display:inline-block;padding:5px 10px;background:#edf5ff;color:#145b9b;border-radius:6px;font-size:12px;margin:8px 8px 0 0}.diagram{overflow-x:auto}.diagram svg{display:block;max-width:100%;height:auto;margin:8px auto 24px}.pending{padding:20px;border:1px dashed #c58c33;border-radius:8px;background:#fffaf0;color:#725320;font-size:14px;margin:12px 0 22px}.pending strong{font-size:12px;letter-spacing:.06em}.pending p{margin:6px 0}dl{margin:18px 0}dt{font-weight:650;color:#15599c;margin-top:18px}dd{margin:5px 0 0}.sample{background:#f5f5f7;padding:18px;border-radius:8px}code{font:13px "SFMono-Regular",Consolas,monospace;background:#f5f5f7;padding:3px 6px;border-radius:4px}li{margin:7px 0}.comment{border-top:1px solid #ececf0;margin-top:24px;padding-top:18px}label{display:block;font-size:13px;color:var(--muted);margin-bottom:8px}label span{margin-left:12px;color:#237343}textarea{width:100%;min-height:76px;resize:vertical;border:1px solid #d2d2d7;border-radius:8px;padding:12px;font:inherit;font-size:14px;background:#fcfcfd}textarea:focus{outline:2px solid #7ab7ff;outline-offset:2px}button{background:var(--blue);color:#fff;border:0;border-radius:7px;padding:10px 16px;font:inherit;font-size:14px;cursor:pointer;margin:14px 12px 0 0}.secondary{background:#eaf3ff;color:#15599c}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui,sans-serif;background:#f5f5f7;padding:16px;border-radius:8px}.chunk{margin-top:18px}#copy-status{font-size:13px;color:var(--muted)}a{color:#0067d6;text-decoration:none}@media(max-width:600px){main{padding:22px 12px 50px}.card{padding:22px 18px;border-radius:12px}.hero{font-size:21px}h2{font-size:18px}}
+</style></head><body><main><header><div class="eyebrow">FLY-2453 · ENGINEERING DESIGN</div>
+<h1>你说放开，才替你批准。</h1><p class="muted">三态模式 · 三道闸 · 每卡机器意见 · 2026-09-08（PT）<br>已吸收 founder 最新三态与统计裁定。下方每节均可留意见。</p></header>
+<section class="card" id="summary"><h2>01 / 一句话</h2>
+      <p class="hero">平时只给机器意见。你说<strong>「现在放开」</strong>，三闸全过才替你批；你说<strong>「现在停止」</strong>，立刻回到只给意见。</p>
+      <p>这里的 <b>ship 卡</b>，就是每次改动完成后，在讨论串里等你批准的那张卡。<b>Lead</b> 是负责执行你指令的工程组长。它不能自行决定进入自动批准模式。</p>
+      <span class="tag">默认只展示</span><span class="tag">自动批准要新授权</span><span class="tag">98%不触发开关</span>
+    <div class="comment"><label for="comment-summary">这一节的意见<span data-saved="summary" aria-live="polite"></span></label><textarea id="comment-summary" data-comment="summary" data-title="01 / 一句话" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="modes"><h2>02 / 三种模式，一处控制</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>三态切换图：本机浏览器启动被权限限制阻止；标准参数重试仍失败。</p><p>下方文字保留设计含义。Mermaid 图源已随设计提交，没有使用远端渲染服务。</p></div>
+      <dl><dt>dry_run · 默认</dt><dd>每卡展示机器意见和表情，所有卡仍由你批准。</dd>
+      <dt>auto · 你说「现在放开」</dt><dd>继续出意见；三闸全过、卡仍有效、这个版本没被你打回，才自动批准。已有未批卡也重新检查。</dd>
+      <dt>off · 维护和台架状态</dt><dd>不出新意见，也不自动批准。这轮没有第三条聊天短句，组长不能用自由文字把生产切到 off。生产暂时没有关掉机器意见的开关；若要静音，需要修改或回退相关代码并等待更新服务上线。</dd></dl>
+      <p>「现在停止」回到 <b>dry_run</b>。模式存在数据库里，切换不改代码、不重启服务。组长执行并确认切换后生效。开启原消息须在十分钟内；“现在放开？”这样的疑问句不算指令。停止消息不会因处理延迟而过期，但旧停止消息不能覆盖更新的开启指令。模式一旦开启，不会因十分钟过去而自动停止。</p>
+    <div class="comment"><label for="comment-modes">这一节的意见<span data-saved="modes" aria-live="polite"></span></label><textarea id="comment-modes" data-comment="modes" data-title="02 / 三种模式，一处控制" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="flow"><h2>03 / 必须同时通过的三道闸</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>批准流程图：本机浏览器启动被权限限制阻止；标准参数重试仍失败。</p><p>下方文字保留设计含义。Mermaid 图源已随设计提交，没有使用远端渲染服务。</p></div>
+      <ol><li><b>机器判纯文档。</b>检查本单涉及的所有代码仓库，不能只看主仓。</li>
+      <li><b>Lead 提交 pure_docs 声明。</b>这个固定值表示“我确认这张卡属于纯文档”；取当前卡的最新声明。它是工程代理提交的可审计声明，不是人类逐卡批准，也不是独立的人类检查。</li>
+      <li><b>强度二证据满足。</b>它表示这次版本在真实验证环境跑过，而且留下别人能查到的验证记录。</li></ol>
+      <p>任一项缺失、过期、判不清或不满足，都继续等你。自动批准后仍走现有合并流程。</p>
+    <div class="comment"><label for="comment-flow">这一节的意见<span data-saved="flow" aria-live="polite"></span></label><textarea id="comment-flow" data-comment="flow" data-title="03 / 必须同时通过的三道闸" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="opinion"><h2>04 / 每张卡下面，你都会看到什么</h2>
+      <p>在默认展示模式和自动模式，卡下只有一条机器意见；证据变化时更新原消息，卡上的 🤖 表示三闸全过，🚫 表示至少一闸未过。它们都不代表已经批准。</p>
+      <div class="sample"><span class="small">文案示例 · 不是实际测量结果</span>
+      <p>🤖 机器意见：不可自动批<br>闸① 机器判纯文档 ✓ · 闸② Lead代理声明 pure_docs ✗ · 闸③ 强度二证据 ✓<br>
+      置信：样本不足 · 还没有收到这张卡的Lead代理声明。<br>自动批命中 0/0（不可判）· 整体一致 0/0（不可判）<br>模式 dry_run · 目标98%仅展示 · 置信不是这张卡的正确概率。</p></div>
+      <p>真正自动批准以后，卡上才加：<b>「窄口自动批（开关由 founder 于 &lt;时间&gt; 打开）」</b>。发送失败会留下待补发记录，重试不会另发一串相同意见。</p>
+    <div class="comment"><label for="comment-opinion">这一节的意见<span data-saved="opinion" aria-live="polite"></span></label><textarea id="comment-opinion" data-comment="opinion" data-title="04 / 每张卡下面，你都会看到什么" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="model"><h2>05 / 每次代批，都能找到依据</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>证据关系图：本机浏览器启动被权限限制阻止；标准参数重试仍失败。</p><p>下方文字保留设计含义。Mermaid 图源已随设计提交，没有使用远端渲染服务。</p></div>
+      <p><b>审计</b>就是不能悄悄改掉的操作记录。开启记录保存你的原消息、作者、时间、执行组长和模式版本；自动批准引用这条记录，不冒充你亲手按了卡。</p>
+      <p><b>head</b> 是这次改动的版本指纹。机器判断、Lead代理声明、验证证据和实际决定这四条记录，都绑定同一张卡与同一版本。新卡或重启不能洗掉你打回过的版本。</p>
+      <p><b>影子记录</b>是旁边持续保存的对照账。自动批标记为 <code>auto_narrow_gate</code>，与你亲手批准的记录分开统计。</p>
+    <div class="comment"><label for="comment-model">这一节的意见<span data-saved="model" aria-live="polite"></span></label><textarea id="comment-model" data-comment="model" data-title="05 / 每次代批，都能找到依据" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="stop"><h2>06 / “停止”卡在哪个时点生效</h2>
+      <p>系统在一起写完“答卡＋审计来源”的那一刻，才算已经批准。切换模式和这个提交点有明确先后顺序。</p>
+      <ul><li>停止先落库：这张卡不会自动批准。</li><li>批准先落库：它属于已批，现有合并继续。</li><li>写到一半断电：已提交的从记录恢复；未提交的不算批准。</li></ul>
+      <p>系统不撤回已经开始的合并。你已被系统接收、尚在处理的打回意见也会先挡住自动批准；尚未收到的聊天不能假装已经处理。</p>
+    <div class="comment"><label for="comment-stop">这一节的意见<span data-saved="stop" aria-live="polite"></span></label><textarea id="comment-stop" data-comment="stop" data-title="06 / “停止”卡在哪个时点生效" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="metrics"><h2>07 / 98%究竟在量什么</h2>
+      <p>先看最近200张有你亲自决定的卡。其中三闸全过、机器建议自动批的卡，最后有多少被你批准且没打回？这个比例叫<b>自动批命中率</b>，它才是98%的目标。</p>
+      <p>另列“整体动作一致率”：机器建议与实际批准/打回是否同向。它不代表代码正确率；非文档不能自动批，也不等于你应该打回。</p>
+      <p><b>Wilson 95%下界</b>是一种考虑样本数量的保守估计，页面的“置信”显示这个数。自动批候选少于5张就写“样本不足”；它不是某张卡正确的概率。</p>
+      <p>每条意见写出人工样本的日期范围，以及多久没有新的可自动批人工对照；超过七天会标“历史样本，非近期验证”。自动批准永远不替自己提供人工答案。尚未人工复核的自动卡单列“未复核”，不能算成零错误。达到98%也不会自动切模式。</p>
+    <div class="comment"><label for="comment-metrics">这一节的意见<span data-saved="metrics" aria-live="polite"></span></label><textarea id="comment-metrics" data-comment="metrics" data-title="07 / 98%究竟在量什么" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="tradeoffs"><h2>08 / 为什么沿用这条路</h2>
+      <p><b>选：在现有卡和合并流程上增加受限来源。</b>继续使用同一套分类、验证和版本绑定，审计能追到原消息。</p>
+      <p><b>放弃：让组长直接调用批准。</b>一段“founder已授权”的说明文字不足以证明权限，三闸也可能已经变化。</p>
+      <p><b>放弃：另写一个直接合并脚本。</b>它会重复维护合并条件、恢复和停止逻辑，容易产生两套规矩。</p>
+      <p>代价是要清楚处理两个数据库之间的提交与恢复。这已列为实现和529台架的必测项。</p>
+    <div class="comment"><label for="comment-tradeoffs">这一节的意见<span data-saved="tradeoffs" aria-live="polite"></span></label><textarea id="comment-tradeoffs" data-comment="tradeoffs" data-title="08 / 为什么沿用这条路" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="boundary"><h2>09 / 这次做到哪里</h2>
+      <p>本次设计包含三态开关、每卡机器意见、三闸自动批、停止、审计、四线记录、统计与授权条款的局部增补。</p>
+      <p>非文档类没有自动路径；被你打回的同仓同版本不再自动批。修正后的新版本重新过三闸后仍可能自动批，本轮没有把整张PR永久排除；不新增聊天理解模型；不修改其它授权规则。</p>
+      <p><b>合并与上线分开。</b>合并进入主分支，上线仍由独立更新服务按原窗口执行。本设计节点只交文档，没有开生产模式、合并或部署。</p>
+      <p>本机浏览器被权限限制阻止，三张图保留源码和明确待渲染标识。评论逻辑做静态与隔离脚本验证；不能把它说成已完成浏览器视觉验收。</p>
+    <div class="comment"><label for="comment-boundary">这一节的意见<span data-saved="boundary" aria-live="polite"></span></label><textarea id="comment-boundary" data-comment="boundary" data-title="09 / 这次做到哪里" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="validation"><h2>10 / 接下来怎么证明可用</h2>
+      <p><b>529台架</b>是与生产隔离的验证环境。后续实现与QA要在那里跑完：dry_run只出意见、auto三闸全过批准合并、任一闸失败等你、停止后新旧未批卡不再自动批、已拒版本不复批、审计四线齐全。</p>
+      <p>还要分别删掉三道检查，证明每删一道都会让测试变红；测试模式切换并发、重启、答卡和消息发送中断的恢复。</p>
+      <p>本页交付的是设计。实现测试、台架结果与生产首次开启都尚未完成；进入auto仍要你的新「现在放开」原消息。</p>
+    <div class="comment"><label for="comment-validation">这一节的意见<span data-saved="validation" aria-live="polite"></span></label><textarea id="comment-validation" data-comment="validation" data-title="10 / 接下来怎么证明可用" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div></section><section class="card" id="feedback"><h2>11 / 意见汇总</h2><p>每节意见会实时汇总。复制给Lead即可；这只是修改意见，不代表审批通过。长意见会分段，每段都带相同标记。</p><div class="comment"><label for="comment-feedback">这一节的意见<span data-saved="feedback" aria-live="polite"></span></label><textarea id="comment-feedback" data-comment="feedback" data-title="11 / 总体意见" placeholder="写下疑问或要改的地方；自动保存在本机浏览器"></textarea></div><button type="button" id="copy-all">复制全部意见</button><span id="copy-status" role="status"></span><div id="comment-chunks"></div></section><script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2453';
+  const prefix = 'flywheel:design-comments:' + location.pathname + ':';
+  const inputs = Array.from(document.querySelectorAll('textarea[data-comment]'));
+  const chunksBox = document.getElementById('comment-chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  function splitText(text) {
+    const chars = Array.from(text);
+    const room = 1800 - Array.from(marker).length - 1;
+    if (!chars.length) return [marker + '\n（暂无意见）'];
+    const result = [];
+    let part = '';
+    for (const char of chars) {
+      if (part.length + char.length > room) {
+        result.push(marker + '\n' + part);
+        part = '';
+      }
+      part += char;
+    }
+    if (part) result.push(marker + '\n' + part);
+    return result;
+  }
+  function fallbackCopy(text) {
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('aria-label', '复制意见');
+    helper.style.position = 'fixed';
+    helper.style.left = '-10000px';
+    document.body.appendChild(helper);
+    helper.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    helper.remove();
+    return ok;
+  }
+  async function copyText(text) {
+    let ok = false;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try { await navigator.clipboard.writeText(text); ok = true; }
+      catch (_) { ok = fallbackCopy(text); }
+    } else { ok = fallbackCopy(text); }
+    status.textContent = ok ? '已复制' : '复制失败，请选中下方文字手动复制';
+  }
+  function updateSummary() {
+    const entries = inputs.filter(input => input.value.trim()).map(input =>
+      input.dataset.title + '\n' + input.value.trim());
+    chunks = splitText(entries.join('\n\n'));
+    chunksBox.replaceChildren();
+    chunks.forEach((chunk, index) => {
+      const block = document.createElement('div');
+      block.className = 'chunk';
+      const text = document.createElement('pre');
+      text.textContent = chunk;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => copyText(chunk));
+      block.appendChild(text);
+      block.appendChild(button);
+      chunksBox.appendChild(block);
+    });
+  }
+  inputs.forEach(input => {
+    const saved = document.querySelector('[data-saved="' + input.dataset.comment + '"]');
+    try { input.value = localStorage.getItem(prefix + input.dataset.comment) || ''; }
+    catch (_) { if (saved) saved.textContent = '无法读取本机保存'; }
+    input.addEventListener('input', () => {
+      try {
+        localStorage.setItem(prefix + input.dataset.comment, input.value);
+        if (saved) saved.textContent = '已保存';
+      } catch (_) { if (saved) saved.textContent = '未保存；仍可复制'; }
+      updateSummary();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => copyText(chunks.join('\n\n')));
+  updateSummary();
+})();
+</script></main></body></html>

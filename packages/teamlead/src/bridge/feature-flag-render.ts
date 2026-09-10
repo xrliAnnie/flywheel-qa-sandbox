@@ -240,8 +240,28 @@ function renderProjectFlagControl(flag: FlagView): string {
 	].join("");
 }
 
+function renderFounderMessageControl(flag: FlagView): string {
+	const rows = flag.founderControlByProject ?? [];
+	const detail = rows
+		.map((row) =>
+			[
+				`${row.projectName}: ${row.mode}`,
+				...(row.degraded ? [`已降级（${row.reason ?? "unknown"}）`] : []),
+				`开启时间 ${row.openingAt ?? "无"}`,
+				`授权消息 ${row.founderMessageId ?? "无"}`,
+			]
+				.map(esc)
+				.join(" · "),
+		)
+		.join("；");
+	return `<span class="ffc-founder-control">由 founder 原消息控制${detail ? ` · ${detail}` : ""}</span>`;
+}
+
 /** The in-card control for a direct-toggleable flag (console button / phone checkbox). */
 function renderFlagControl(flag: FlagView, mode: FlagControlMode): string {
+	if (mode === "phone" && flag.controlAuthority === "founder_message") {
+		return renderFounderMessageControl(flag);
+	}
 	if (
 		mode === "phone" &&
 		flag.projectStoreManaged &&

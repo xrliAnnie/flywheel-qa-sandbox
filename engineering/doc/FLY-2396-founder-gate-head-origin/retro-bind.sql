@@ -109,6 +109,11 @@ SELECT 'approval' AS verdict_kind,
  WHERE c.decision_kind = 'founder_decision'
    AND c.predicate = 'founder_approved'
    AND c.issuer_kind = 'founder_challenge'
+   AND NOT EXISTS (
+         SELECT 1 FROM auto_narrow_decision_audit a
+          WHERE a.source_event_id = s.source_event_id
+            AND a.project_name = s.project
+       )
    AND julianday(s.applied_at) >= julianday(:legacy_cutoff)
    AND NOT EXISTS (
          SELECT 1 FROM workflow_founder_gate_verdict v
@@ -141,7 +146,15 @@ SELECT n.run_id, n.attempt, n.ended_at,
        (SELECT h.authority_mode FROM workflow_gate_holder h
          WHERE h.run_id = n.run_id AND h.gate_node_id = 'founder_gate' AND h.attempt = n.attempt LIMIT 1) AS authority_mode
   FROM workflow_run_node n
- WHERE n.node_id = 'founder_gate' AND n.state = 'done';
+ WHERE n.node_id = 'founder_gate' AND n.state = 'done'
+   AND NOT EXISTS (
+         SELECT 1
+           FROM workflow_gate_holder h
+           JOIN auto_narrow_decision_audit a ON a.question_id = h.question_id
+          WHERE h.run_id = n.run_id
+            AND h.gate_node_id = n.node_id
+            AND h.attempt = n.attempt
+       );
 
 SELECT 'pass_today' AS scope,
        COUNT(*) AS total,

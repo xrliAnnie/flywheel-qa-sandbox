@@ -36,7 +36,8 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 	`),
 	protectedCurrentOrReference: words(`
 		account_switch_action_receipt admission_pause alert_delivery_receipts auto_merge_shadow_declaration
-		auto_merge_shadow_observation auto_qa_record cleanup_ref_observations
+		auto_merge_shadow_observation auto_narrow_control_event auto_narrow_decision_audit
+		auto_narrow_opinion_delivery auto_narrow_opinion_snapshot auto_qa_record cleanup_ref_observations
 		commdb_finalize_failures dead_letter_alerts doa_backoff doa_backoff_participants
 		doa_backoff_reset_receipts epic_page epic_page_publication epic_page_refresh
 		flag_departures flag_keep_anchor flag_provenance

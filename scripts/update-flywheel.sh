@@ -165,6 +165,10 @@ default_deploy() {
     log "host tmux selection gate refused the frozen target — no fast-forward attempted"
     return 3
   fi
+  if ! updater_auto_narrow_rollback_precheck; then
+    log "auto narrow rollback precheck refused target — no merge or restart attempted"
+    return 3
+  fi
   updater_merge_remote
   remote_rc=$?
   if (( remote_rc != 0 )); then
@@ -177,6 +181,51 @@ default_deploy() {
   log "restart-services.sh failed (deterministic)"
   return 3
 }
+# Read-only compatibility check before replacing the running projector. Paths
+# are pinned by updater_configure_runtime_paths; only sourced tests override them.
+updater_auto_narrow_rollback_precheck() {
+  local target_source=""
+  target_source="$("$UPDATER_GIT" -C "$FLYWHEEL_DIR" show origin/main:packages/teamlead/src/StateStore.ts 2>/dev/null)" || target_source=""
+  if [[ "$target_source" == *'autoNarrowEnvelope = parseAutoNarrowSourceEnvelope(payload)'* ]]; then
+    return 0
+  fi
+  python3 - "$FLYWHEEL_HOME" <<'PY_NARROW'
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+
+def open_readonly(path):
+    return sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
+
+def has_table(db, name):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+try:
+    pending = []
+    for path in sorted((root / 'comm').glob('*/comm.db')):
+        with open_readonly(path) as comm:
+            if not has_table(comm, 'workflow_source_event'):
+                continue
+            for project, event_id, payload in comm.execute("SELECT project, source_event_id, payload FROM workflow_source_event WHERE kind='founder_approval'"):
+                document = json.loads(payload)
+                if event_id.startswith('auto-narrow:') or document.get('decision_source') == 'auto_narrow_gate':
+                    pending.append((project, event_id))
+    if pending:
+        with open_readonly(root / 'teamlead.db') as state:
+            if not has_table(state, 'workflow_source_receipt'):
+                raise RuntimeError('unprojected_auto_narrow_source: receipt table missing')
+            for project, event_id in pending:
+                if not state.execute('SELECT 1 FROM workflow_source_receipt WHERE project=? AND source_event_id=?', (project, event_id)).fetchone():
+                    raise RuntimeError('unprojected_auto_narrow_source: wait for projection before rollback')
+except Exception as error:
+    print('auto narrow rollback refused: ' + str(error), file=sys.stderr)
+    sys.exit(1)
+PY_NARROW
+}
+
 SELF_SHIP_DEPLOY_CMD="${SELF_SHIP_DEPLOY_CMD:-default_deploy}"
 
 deployed_sha() { cat "$DEPLOYED_SHA_FILE" 2>/dev/null || echo ""; }

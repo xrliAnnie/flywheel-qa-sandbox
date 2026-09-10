@@ -96,6 +96,7 @@ export async function fetchDiscordMessageFromChannel(
 	messageId: string,
 	botToken: string,
 	fetchImpl: typeof fetch = fetch,
+	signal?: AbortSignal,
 ): Promise<FetchDiscordMessageResult> {
 	let response: Response;
 	try {
@@ -104,6 +105,7 @@ export async function fetchDiscordMessageFromChannel(
 			{
 				method: "GET",
 				headers: { Authorization: `Bot ${botToken}` },
+				...(signal ? { signal } : {}),
 			},
 		);
 	} catch {
@@ -182,6 +184,8 @@ export interface PostDiscordOptions {
 	origin: DiscordMessageOrigin;
 	/** Discord `message_reference.message_id` — attached only to the FIRST chunk. */
 	replyTo?: string;
+	/** Optional caller-owned deadline for the network request. */
+	signal?: AbortSignal;
 	/** Discord idempotency nonce (maximum 25 characters). */
 	nonce?: string;
 	/** Ask Discord to return the existing message when the nonce repeats. */
@@ -249,6 +253,7 @@ export async function postDiscordMessageToChannel(
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify(body),
+				...(options.signal ? { signal: options.signal } : {}),
 			});
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);

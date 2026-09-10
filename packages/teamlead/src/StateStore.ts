@@ -36,6 +36,15 @@ import {
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import { isReservedApprovalAttribution } from "flywheel-comm/founder-attribution";
 import {
+	AUTO_NARROW_ACTOR,
+	AUTO_NARROW_DECISION_SOURCE,
+	AUTO_NARROW_POLICY_VERSION,
+	autoNarrowSourceEventId,
+	autoNarrowVerdictId,
+	parseAutoNarrowSourceEnvelope,
+	type AutoNarrowSourceEnvelopeV1,
+} from "flywheel-comm/auto-narrow-contract";
+import {
 	RAN_REASONS,
 	RECORD_REASONS,
 } from "flywheel-comm/strength-two-contract";
@@ -49,6 +58,16 @@ import {
 	judgeRecord,
 } from "./strength-two/judge.js";
 import { buildShadowObservation } from "./auto-merge-shadow/observation.js";
+import {
+	evaluateAutoNarrowEligibility,
+	type AutoNarrowEligibility,
+} from "./auto-narrow/eligibility.js";
+import {
+	computeAutoNarrowMetrics,
+	type AutoNarrowMetricSample,
+	type AutoNarrowMetrics,
+	type AutoNarrowOpinionReason,
+} from "./auto-narrow/opinion.js";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import {
 	deliveryContractFrozenCopy,
@@ -321,6 +340,21 @@ export const MAX_BLIND_REPLACEMENTS = 3;
 const MAX_CODEX_REVIEW_AUTO_RETRIES = 3;
 export const MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES = 2;
 export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
+const AUTO_NARROW_OPINION_RETRY_BASE_MS = 30_000;
+const AUTO_NARROW_OPINION_RETRY_MAX_MS = 15 * 60_000;
+const AUTO_NARROW_OPINION_MAX_ATTEMPTS = 8;
+
+function autoNarrowOpinionRetryAt(now: string, attempt: number): string {
+	const nowMs = Date.parse(now);
+	if (!Number.isFinite(nowMs)) {
+		throw new Error("auto narrow opinion retry timestamp invalid");
+	}
+	const delay = Math.min(
+		AUTO_NARROW_OPINION_RETRY_MAX_MS,
+		AUTO_NARROW_OPINION_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1),
+	);
+	return new Date(nowMs + delay).toISOString();
+}
 
 /** FLY-1638: uncommitted launch owners heartbeat in short, bounded windows. */
 export const WORKFLOW_LAUNCH_SOFT_LEASE_MS = 5 * 60_000;
@@ -2119,10 +2153,45 @@ export type ApplyScopedFlagValueChangeResult =
 			ok: false;
 			reason:
 				| "not_project_store_managed"
+				| "founder_message_required"
 				| "invalid_scope"
 				| "invalid_raw"
 				| "missing_row"
 				| "stale_change_seq";
+			currentChangeSeq?: number;
+		  };
+
+export interface AutoNarrowControlEventRow {
+	eventId: string;
+	projectName: string;
+	controlSeq: number;
+	mode: "dry_run" | "auto";
+	flagRevision: number;
+	flagChangeSeq: number;
+	founderMessageId: string;
+	founderChannelId: string;
+	founderAuthorId: string;
+	messageCreatedAt: string;
+	appliedAt: string;
+	messageDigest: string;
+	commandText: "现在放开" | "现在停止";
+	executedBy: string;
+	openingEventId: string | null;
+	schemaVersion: 1;
+}
+
+export type ApplyAutoNarrowControlChangeResult =
+	| { ok: true; replayed: boolean; event: AutoNarrowControlEventRow }
+	| {
+			ok: false;
+				reason:
+				| "invalid_input"
+				| "lead_not_authorized"
+				| "control_message_expired"
+				| "control_message_future"
+				| "stale_change_seq"
+				| "message_conflict"
+				| "message_order_conflict";
 			currentChangeSeq?: number;
 	  };
 
@@ -4178,6 +4247,206 @@ export class StateStore {
 						'fly-2398-shadow-observation-v1',
 						strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 					);
+			`);
+		})();
+	}
+
+	private migrateAutoNarrowGateLedger(): void {
+		this.db.raw.transaction(() => {
+			this.db.raw.exec(`
+				CREATE TABLE IF NOT EXISTS auto_narrow_control_event (
+					event_id TEXT PRIMARY KEY CHECK (
+						event_id GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+					),
+					project_name TEXT NOT NULL CHECK (length(project_name) BETWEEN 1 AND 64),
+					control_seq INTEGER NOT NULL CHECK (control_seq > 0),
+					mode TEXT NOT NULL CHECK (mode IN ('dry_run','auto')),
+					flag_revision INTEGER NOT NULL CHECK (flag_revision > 0),
+					flag_change_seq INTEGER NOT NULL UNIQUE,
+					founder_message_id TEXT NOT NULL UNIQUE CHECK (
+						length(founder_message_id) BETWEEN 17 AND 20
+						AND founder_message_id NOT GLOB '*[^0-9]*'
+					),
+					founder_channel_id TEXT NOT NULL CHECK (
+						length(founder_channel_id) BETWEEN 17 AND 20
+						AND founder_channel_id NOT GLOB '*[^0-9]*'
+					),
+					founder_author_id TEXT NOT NULL CHECK (
+						length(founder_author_id) BETWEEN 17 AND 20
+						AND founder_author_id NOT GLOB '*[^0-9]*'
+					),
+					message_created_at TEXT NOT NULL CHECK (
+						message_created_at GLOB '????-??-??T??:??:??.???Z'
+					),
+					applied_at TEXT NOT NULL CHECK (applied_at GLOB '????-??-??T??:??:??.???Z'),
+					message_digest TEXT NOT NULL CHECK (
+						length(message_digest) = 64 AND message_digest NOT GLOB '*[^0-9a-f]*'
+					),
+					command_text TEXT NOT NULL CHECK (command_text IN ('现在放开','现在停止')),
+					executed_by TEXT NOT NULL CHECK (
+						length(CAST(executed_by AS BLOB)) BETWEEN 1 AND 64
+						AND executed_by NOT GLOB '*[^A-Za-z0-9._-]*'
+					),
+					opening_event_id TEXT,
+					schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+					UNIQUE (project_name, control_seq),
+					CHECK (
+						(mode = 'auto' AND command_text = '现在放开' AND opening_event_id IS NOT NULL)
+						OR (mode = 'dry_run' AND command_text = '现在停止' AND opening_event_id IS NULL)
+					),
+					FOREIGN KEY (flag_change_seq) REFERENCES flag_value_changelog(id),
+					FOREIGN KEY (opening_event_id) REFERENCES auto_narrow_control_event(event_id)
+				);
+				CREATE INDEX IF NOT EXISTS idx_auto_narrow_control_project
+					ON auto_narrow_control_event(project_name, control_seq DESC);
+
+				CREATE TABLE IF NOT EXISTS auto_narrow_opinion_snapshot (
+					opinion_id TEXT PRIMARY KEY CHECK (length(opinion_id) BETWEEN 1 AND 240),
+					question_id TEXT NOT NULL CHECK (length(question_id) BETWEEN 1 AND 200),
+					run_id TEXT NOT NULL CHECK (length(run_id) BETWEEN 1 AND 200),
+					project_name TEXT NOT NULL CHECK (length(project_name) BETWEEN 1 AND 64),
+					head_sha TEXT NOT NULL CHECK (
+						length(head_sha) = 40 AND head_sha NOT GLOB '*[^0-9a-f]*'
+					),
+					card_message_id TEXT NOT NULL CHECK (
+						length(card_message_id) BETWEEN 17 AND 20
+						AND card_message_id NOT GLOB '*[^0-9]*'
+					),
+					ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+					captured_at TEXT NOT NULL CHECK (captured_at GLOB '????-??-??T??:??:??.???Z'),
+					gate1 INTEGER NOT NULL CHECK (gate1 IN (0,1)),
+					gate2 INTEGER NOT NULL CHECK (gate2 IN (0,1)),
+					gate3 INTEGER NOT NULL CHECK (gate3 IN (0,1)),
+					eligible INTEGER NOT NULL CHECK (eligible IN (0,1)),
+					declaration_id TEXT,
+					machine_reason TEXT CHECK (
+						machine_reason IS NULL OR length(CAST(machine_reason AS BLOB)) <= 512
+					),
+					s2_basis_record_id TEXT,
+					reason_code TEXT NOT NULL CHECK (reason_code IN (
+						'eligible','gate1_failed','gate2_failed','gate3_failed','multiple_failed','negative_guard','facts_unavailable'
+					)),
+					policy_version INTEGER NOT NULL CHECK (policy_version = 1),
+					sample_n INTEGER NOT NULL CHECK (sample_n BETWEEN 0 AND 200),
+					agree_n INTEGER NOT NULL CHECK (agree_n BETWEEN 0 AND sample_n),
+					precision_a INTEGER NOT NULL CHECK (precision_a >= 0),
+					precision_b INTEGER NOT NULL CHECK (
+						precision_b BETWEEN 0 AND sample_n AND precision_a <= precision_b
+					),
+					confidence_lower REAL CHECK (confidence_lower BETWEEN 0.0 AND 1.0),
+					sample_start_at TEXT CHECK (
+						sample_start_at IS NULL OR sample_start_at GLOB '????-??-??T??:??:??.???Z'
+					),
+					sample_end_at TEXT CHECK (
+						sample_end_at IS NULL OR sample_end_at GLOB '????-??-??T??:??:??.???Z'
+					),
+					last_eligible_human_at TEXT CHECK (
+						last_eligible_human_at IS NULL OR last_eligible_human_at GLOB '????-??-??T??:??:??.???Z'
+					),
+					UNIQUE (question_id, ordinal),
+					CHECK (eligible = 0 OR (gate1 AND gate2 AND gate3)),
+					CHECK ((confidence_lower IS NULL) = (precision_b < 5)),
+					CHECK (
+						(sample_n = 0 AND sample_start_at IS NULL AND sample_end_at IS NULL)
+						OR (sample_n > 0 AND sample_start_at IS NOT NULL AND sample_end_at IS NOT NULL)
+					),
+					CHECK ((precision_b = 0) = (last_eligible_human_at IS NULL)),
+					FOREIGN KEY (declaration_id) REFERENCES auto_merge_shadow_declaration(declaration_id)
+				);
+				CREATE INDEX IF NOT EXISTS idx_auto_narrow_opinion_question
+					ON auto_narrow_opinion_snapshot(question_id, ordinal DESC);
+
+				CREATE TABLE IF NOT EXISTS auto_narrow_decision_audit (
+					source_event_id TEXT PRIMARY KEY CHECK (length(source_event_id) BETWEEN 1 AND 240),
+					question_id TEXT NOT NULL UNIQUE CHECK (length(question_id) BETWEEN 1 AND 200),
+					verdict_id TEXT NOT NULL UNIQUE CHECK (length(verdict_id) BETWEEN 1 AND 96),
+					decision_source TEXT NOT NULL CHECK (decision_source = 'auto_narrow_gate'),
+					project_name TEXT NOT NULL CHECK (length(project_name) BETWEEN 1 AND 64),
+					run_id TEXT NOT NULL CHECK (length(run_id) BETWEEN 1 AND 200),
+					gate_node_id TEXT NOT NULL CHECK (length(gate_node_id) BETWEEN 1 AND 64),
+					attempt INTEGER NOT NULL CHECK (attempt > 0),
+					source_execution_id TEXT NOT NULL CHECK (length(source_execution_id) BETWEEN 1 AND 200),
+					repo_identity TEXT NOT NULL CHECK (length(repo_identity) BETWEEN 1 AND 200),
+					pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+					head_sha TEXT NOT NULL CHECK (
+						length(head_sha) = 40 AND head_sha NOT GLOB '*[^0-9a-f]*'
+					),
+					control_event_id TEXT NOT NULL,
+					opening_event_id TEXT NOT NULL,
+					flag_revision INTEGER NOT NULL CHECK (flag_revision > 0),
+					declaration_id TEXT NOT NULL,
+					declaration_seq INTEGER NOT NULL CHECK (declaration_seq > 0),
+					s2_basis_record_id TEXT NOT NULL CHECK (length(s2_basis_record_id) BETWEEN 1 AND 80),
+					observation_digest TEXT NOT NULL CHECK (
+						length(observation_digest) = 64 AND observation_digest NOT GLOB '*[^0-9a-f]*'
+					),
+					source_payload_digest TEXT NOT NULL CHECK (
+						length(source_payload_digest) = 64 AND source_payload_digest NOT GLOB '*[^0-9a-f]*'
+					),
+					decision_at TEXT NOT NULL CHECK (decision_at GLOB '????-??-??T??:??:??.???Z'),
+					policy_version INTEGER NOT NULL CHECK (policy_version = 1),
+					FOREIGN KEY (control_event_id) REFERENCES auto_narrow_control_event(event_id),
+					FOREIGN KEY (opening_event_id) REFERENCES auto_narrow_control_event(event_id),
+					FOREIGN KEY (declaration_id) REFERENCES auto_merge_shadow_declaration(declaration_id),
+					FOREIGN KEY (verdict_id) REFERENCES workflow_founder_gate_verdict(verdict_id)
+				);
+				CREATE INDEX IF NOT EXISTS idx_auto_narrow_audit_head
+					ON auto_narrow_decision_audit(project_name, repo_identity, head_sha, decision_at);
+
+				CREATE TABLE IF NOT EXISTS auto_narrow_opinion_delivery (
+					question_id TEXT PRIMARY KEY CHECK (length(question_id) BETWEEN 1 AND 200),
+					issue_thread_id TEXT NOT NULL CHECK (
+						length(issue_thread_id) BETWEEN 17 AND 20
+						AND issue_thread_id NOT GLOB '*[^0-9]*'
+					),
+					card_message_id TEXT NOT NULL CHECK (
+						length(card_message_id) BETWEEN 17 AND 20
+						AND card_message_id NOT GLOB '*[^0-9]*'
+					),
+					desired_opinion_id TEXT,
+					posted_opinion_id TEXT,
+					followup_message_id TEXT CHECK (
+						followup_message_id IS NULL OR (
+							length(followup_message_id) BETWEEN 17 AND 20
+							AND followup_message_id NOT GLOB '*[^0-9]*'
+						)
+					),
+					generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+					attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+					state TEXT NOT NULL CHECK (state IN ('pending','posting','uncertain','delivered','gone')),
+					correlation_marker TEXT NOT NULL CHECK (length(CAST(correlation_marker AS BLOB)) BETWEEN 1 AND 256),
+					posting_at TEXT,
+					first_zero_scan_at TEXT,
+					scan_frontier TEXT,
+					next_attempt_at TEXT,
+					last_error_code TEXT CHECK (last_error_code IS NULL OR length(last_error_code) <= 64),
+					reaction_applied TEXT NOT NULL DEFAULT 'none' CHECK (reaction_applied IN ('none','eligible','ineligible')),
+					automatic_label_pending INTEGER NOT NULL DEFAULT 0 CHECK (automatic_label_pending IN (0,1)),
+					FOREIGN KEY (desired_opinion_id) REFERENCES auto_narrow_opinion_snapshot(opinion_id),
+					FOREIGN KEY (posted_opinion_id) REFERENCES auto_narrow_opinion_snapshot(opinion_id)
+				);
+
+				CREATE TRIGGER IF NOT EXISTS auto_narrow_control_event_no_update
+					BEFORE UPDATE ON auto_narrow_control_event
+					BEGIN SELECT RAISE(ABORT, 'auto_narrow_control_event is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS auto_narrow_control_event_no_delete
+					BEFORE DELETE ON auto_narrow_control_event
+					BEGIN SELECT RAISE(ABORT, 'auto_narrow_control_event is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS auto_narrow_decision_audit_no_update
+					BEFORE UPDATE ON auto_narrow_decision_audit
+					BEGIN SELECT RAISE(ABORT, 'auto_narrow_decision_audit is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS auto_narrow_decision_audit_no_delete
+					BEFORE DELETE ON auto_narrow_decision_audit
+					BEGIN SELECT RAISE(ABORT, 'auto_narrow_decision_audit is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS auto_narrow_opinion_snapshot_no_update
+					BEFORE UPDATE ON auto_narrow_opinion_snapshot
+					BEGIN SELECT RAISE(ABORT, 'auto_narrow_opinion_snapshot is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS auto_narrow_opinion_snapshot_no_delete
+					BEFORE DELETE ON auto_narrow_opinion_snapshot
+					BEGIN SELECT RAISE(ABORT, 'auto_narrow_opinion_snapshot is immutable'); END;
+
+				INSERT OR IGNORE INTO state_store_migration (migration_id, applied_at)
+					VALUES ('fly-2453-auto-narrow-v1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 			`);
 		})();
 	}
@@ -7268,6 +7537,9 @@ export class StateStore {
 		reason: string;
 		now?: number;
 	}): ApplyScopedFlagValueChangeResult {
+		if (args.name === "auto_merge_narrow_gate") {
+			return { ok: false, reason: "founder_message_required" };
+		}
 		if (!PROJECT_STORE_MANAGED_FLAGS.has(args.name)) {
 			return { ok: false, reason: "not_project_store_managed" };
 		}
@@ -7418,6 +7690,265 @@ export class StateStore {
 				changeSeq: this.getFlagValueChangeSeq(args.name, args.scope),
 			};
 		})();
+		return result;
+	}
+
+	private mapAutoNarrowControlEvent(row: {
+		event_id: string;
+		project_name: string;
+		control_seq: number;
+		mode: "dry_run" | "auto";
+		flag_revision: number;
+		flag_change_seq: number;
+		founder_message_id: string;
+		founder_channel_id: string;
+		founder_author_id: string;
+		message_created_at: string;
+		applied_at: string;
+		message_digest: string;
+		command_text: "现在放开" | "现在停止";
+		executed_by: string;
+		opening_event_id: string | null;
+		schema_version: 1;
+	}): AutoNarrowControlEventRow {
+		return {
+			eventId: row.event_id,
+			projectName: row.project_name,
+			controlSeq: row.control_seq,
+			mode: row.mode,
+			flagRevision: row.flag_revision,
+			flagChangeSeq: row.flag_change_seq,
+			founderMessageId: row.founder_message_id,
+			founderChannelId: row.founder_channel_id,
+			founderAuthorId: row.founder_author_id,
+			messageCreatedAt: row.message_created_at,
+			appliedAt: row.applied_at,
+			messageDigest: row.message_digest,
+			commandText: row.command_text,
+			executedBy: row.executed_by,
+			openingEventId: row.opening_event_id,
+			schemaVersion: row.schema_version,
+		};
+	}
+
+	getAutoNarrowControlEventByMessageId(
+		founderMessageId: string,
+	): AutoNarrowControlEventRow | undefined {
+		const row = this.db.raw
+			.prepare(
+				"SELECT * FROM auto_narrow_control_event WHERE founder_message_id = ?",
+			)
+			.get(founderMessageId) as Parameters<
+			typeof this.mapAutoNarrowControlEvent
+		>[0] | undefined;
+		return row ? this.mapAutoNarrowControlEvent(row) : undefined;
+	}
+
+	getAutoNarrowControlEventById(
+		eventId: string,
+	): AutoNarrowControlEventRow | undefined {
+		const row = this.db.raw
+			.prepare("SELECT * FROM auto_narrow_control_event WHERE event_id = ?")
+			.get(eventId) as Parameters<
+			typeof this.mapAutoNarrowControlEvent
+		>[0] | undefined;
+		return row ? this.mapAutoNarrowControlEvent(row) : undefined;
+	}
+
+	getLatestAutoNarrowControlEvent(
+		projectName: string,
+	): AutoNarrowControlEventRow | undefined {
+		const row = this.db.raw
+			.prepare(
+				`SELECT * FROM auto_narrow_control_event
+				 WHERE project_name = ? ORDER BY control_seq DESC LIMIT 1`,
+			)
+			.get(projectName) as Parameters<
+			typeof this.mapAutoNarrowControlEvent
+		>[0] | undefined;
+		return row ? this.mapAutoNarrowControlEvent(row) : undefined;
+	}
+
+	applyAutoNarrowControlChange(args: {
+		eventId: string;
+		projectName: string;
+		mode: "dry_run" | "auto";
+		expectedChangeSeq: number;
+		founderMessageId: string;
+		founderChannelId: string;
+		founderAuthorId: string;
+		messageCreatedAt: string;
+		messageDigest: string;
+		commandText: "现在放开" | "现在停止";
+		executedBy: string;
+		reason: string;
+		authorizeCurrent?: () => boolean;
+		now?: number | (() => number);
+	}): ApplyAutoNarrowControlChangeResult {
+		const expectedCommand = args.mode === "auto" ? "现在放开" : "现在停止";
+		const messageCreatedMs = Date.parse(args.messageCreatedAt);
+		if (
+			!args.projectName.trim() ||
+			!Number.isSafeInteger(args.expectedChangeSeq) ||
+			args.expectedChangeSeq < 0 ||
+			args.commandText !== expectedCommand ||
+			args.reason !== `founder ${args.founderMessageId}` ||
+			!args.executedBy.trim() ||
+			!Number.isFinite(messageCreatedMs)
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		let result: ApplyAutoNarrowControlChangeResult = {
+			ok: false,
+			reason: "invalid_input",
+		};
+		const transaction = this.db.raw.transaction(() => {
+			if (args.authorizeCurrent && !args.authorizeCurrent()) {
+				result = { ok: false, reason: "lead_not_authorized" };
+				return;
+			}
+			const now =
+				typeof args.now === "function" ? args.now() : (args.now ?? Date.now());
+			const messageAgeMs = now - messageCreatedMs;
+			if (args.mode === "auto" && messageAgeMs < -5_000) {
+				result = { ok: false, reason: "control_message_future" };
+				return;
+			}
+			if (args.mode === "auto" && messageAgeMs > 600_000) {
+				result = { ok: false, reason: "control_message_expired" };
+				return;
+			}
+			const replay = this.getAutoNarrowControlEventByMessageId(
+				args.founderMessageId,
+			);
+			if (replay) {
+				result =
+					replay.projectName === args.projectName &&
+					replay.mode === args.mode &&
+					replay.founderChannelId === args.founderChannelId &&
+					replay.founderAuthorId === args.founderAuthorId &&
+					replay.messageCreatedAt === args.messageCreatedAt &&
+					replay.messageDigest === args.messageDigest &&
+					replay.commandText === args.commandText &&
+					replay.executedBy === args.executedBy
+						? { ok: true, replayed: true, event: replay }
+						: { ok: false, reason: "message_conflict" };
+				return;
+			}
+			const latest = this.getLatestAutoNarrowControlEvent(args.projectName);
+			if (
+				latest &&
+				BigInt(args.founderMessageId) <= BigInt(latest.founderMessageId)
+			) {
+				result = { ok: false, reason: "message_order_conflict" };
+				return;
+			}
+			const currentChangeSeq = this.getFlagValueChangeSeq(
+				"auto_merge_narrow_gate",
+				args.projectName,
+			);
+			if (currentChangeSeq !== args.expectedChangeSeq) {
+				result = {
+					ok: false,
+					reason: "stale_change_seq",
+					currentChangeSeq,
+				};
+				return;
+			}
+			const codec = getFlagStoreCodec("auto_merge_narrow_gate");
+			if (!codec) throw new Error("missing auto narrow flag codec");
+			const effective = codec.canonicalEffective(args.mode);
+			const current = this.getFlagValueRow(
+				"auto_merge_narrow_gate",
+				args.projectName,
+			);
+			const revision = (current?.revision ?? 0) + 1;
+			const valueLastChanged =
+				!current || current.lastEffective !== effective
+					? now
+					: current.valueLastChanged;
+			this.db.raw
+				.prepare(
+					`INSERT INTO flag_values (
+						flag_name, scope, has_override, raw_value, last_effective,
+						value_last_changed, revision, updated_at, updated_by
+					) VALUES ('auto_merge_narrow_gate', ?, 1, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(flag_name, scope) DO UPDATE SET
+						has_override = 1, raw_value = excluded.raw_value,
+						last_effective = excluded.last_effective,
+						value_last_changed = excluded.value_last_changed,
+						revision = excluded.revision, updated_at = excluded.updated_at,
+						updated_by = excluded.updated_by`,
+				)
+				.run(
+					args.projectName,
+					args.mode,
+					effective,
+					valueLastChanged,
+					revision,
+					now,
+					args.executedBy,
+				);
+			const change = this.db.raw
+				.prepare(
+					`INSERT INTO flag_value_changelog (
+						flag_name, scope, action, from_present, from_raw,
+						to_present, to_raw, from_effective, to_effective,
+						changed_by, changed_at, reason
+					) VALUES ('auto_merge_narrow_gate', ?, 'set', ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					args.projectName,
+					current ? 1 : null,
+					current?.raw ?? null,
+					args.mode,
+					current?.lastEffective ?? "dry_run",
+					effective,
+					args.executedBy,
+					now,
+					args.reason,
+				);
+			const controlSeq = (latest?.controlSeq ?? 0) + 1;
+			const openingEventId =
+				args.mode === "auto"
+					? latest?.mode === "auto" && latest.openingEventId
+						? latest.openingEventId
+						: args.eventId
+					: null;
+			this.db.raw
+				.prepare(
+					`INSERT INTO auto_narrow_control_event (
+						event_id, project_name, control_seq, mode, flag_revision,
+						flag_change_seq, founder_message_id, founder_channel_id,
+						founder_author_id, message_created_at, applied_at,
+						message_digest, command_text, executed_by, opening_event_id,
+						schema_version
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+				)
+				.run(
+					args.eventId,
+					args.projectName,
+					controlSeq,
+					args.mode,
+					revision,
+					Number(change.lastInsertRowid),
+					args.founderMessageId,
+					args.founderChannelId,
+					args.founderAuthorId,
+					args.messageCreatedAt,
+					new Date(now).toISOString(),
+					args.messageDigest,
+					args.commandText,
+					args.executedBy,
+					openingEventId,
+				);
+			const event = this.getAutoNarrowControlEventByMessageId(
+				args.founderMessageId,
+			);
+			if (!event) throw new Error("auto narrow control event disappeared");
+			result = { ok: true, replayed: false, event };
+		});
+		transaction.immediate();
 		return result;
 	}
 
@@ -25365,6 +25896,7 @@ export class StateStore {
 		this.migrateWorkflowReworkEngineAuthority();
 		this.migrateFounderGateVerdictLedger();
 		this.migrateAutoMergeShadowLedger();
+		this.migrateAutoNarrowGateLedger();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_rework_route_revision (
 				request_id TEXT NOT NULL,
@@ -52131,6 +52663,850 @@ export class StateStore {
 		).map((row) => this.autoMergeShadowObservationRow(row));
 	}
 
+	private evaluateAutoNarrowCandidateTx(
+		questionId: string,
+		at: string,
+		verdictId: string,
+	): AutoNarrowCandidateEvaluation | undefined {
+		const holder = this.getWorkflowGateHolderByQuestionId(questionId);
+		if (
+			!holder ||
+			holder.gate_node_id !== "founder_gate" ||
+			holder.authority_mode !== "land" ||
+			holder.subject_kind !== "git_head" ||
+			holder.state !== "awaiting_review" ||
+			holder.materialization_stage !== "completed" ||
+			!holder.card_message_id
+		) {
+			return undefined;
+		}
+		const run = this.getWorkflowRun(holder.run_id);
+		if (!run || run.project_name !== "flywheel" || run.status !== "active") {
+			return undefined;
+		}
+		const binding = this.resolveFounderGateBindingTx({
+			runId: holder.run_id,
+			questionId,
+		});
+		const observation = this.buildAutoMergeShadowObservationTx({
+			verdictId,
+			runId: holder.run_id,
+			binding,
+			recordedAt: at,
+		});
+		const declaration = this.listAutoMergeShadowDeclarations(questionId).at(-1);
+		const hasFounderRework = Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 FROM workflow_founder_gate_verdict v
+				   JOIN workflow_run r ON r.run_id = v.run_id
+				  WHERE r.project_name = ? AND v.repo_identity = ?
+				    AND lower(v.head_sha) = lower(?) AND v.verdict = 'rework'
+				    AND v.founder_authored = 1 LIMIT 1`,
+				[run.project_name, binding.repoIdentity, binding.headSha],
+			)[0],
+		);
+		const hasPendingFounderInput = Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 FROM founder_decision_convergence
+				  WHERE question_id = ? AND resolved_at_ms IS NULL LIMIT 1`,
+				[questionId],
+			)[0] ??
+				this.workflowSelectAll(
+					`SELECT 1 FROM founder_deferred_approval
+					  WHERE question_id = ? AND consumed_at IS NULL
+					    AND invalidated_at IS NULL LIMIT 1`,
+					[questionId],
+				)[0],
+		);
+		const eligibility = evaluateAutoNarrowEligibility({
+			binding: {
+				runId: holder.run_id,
+				questionId,
+				gateExecutionId: holder.source_execution_id,
+				repoIdentity: binding.repoIdentity,
+				prNumber: binding.prNumber,
+				headSha: binding.headSha,
+			},
+			observation,
+			declaration,
+			hasFounderRework,
+			hasPendingFounderInput,
+		});
+		return {
+			holder,
+			binding,
+			observation,
+			...(declaration ? { declaration } : {}),
+			eligibility,
+			hasFounderRework,
+			hasPendingFounderInput,
+		};
+	}
+
+	evaluateAutoNarrowCandidate(
+		questionId: string,
+		at: string,
+	): AutoNarrowCandidateEvaluation | undefined {
+		return this.db.raw
+			.transaction(() =>
+				this.evaluateAutoNarrowCandidateTx(
+					questionId,
+					at,
+					autoNarrowVerdictId(questionId),
+				),
+			)
+			.immediate();
+	}
+
+	private autoNarrowOpinionSnapshotRow(
+		row: Record<string, unknown>,
+	): AutoNarrowOpinionSnapshotRow {
+		return {
+			opinionId: String(row.opinion_id),
+			questionId: String(row.question_id),
+			runId: String(row.run_id),
+			projectName: String(row.project_name),
+			headSha: String(row.head_sha),
+			cardMessageId: String(row.card_message_id),
+			ordinal: Number(row.ordinal),
+			capturedAt: String(row.captured_at),
+			gate1: Number(row.gate1) as 0 | 1,
+			gate2: Number(row.gate2) as 0 | 1,
+			gate3: Number(row.gate3) as 0 | 1,
+			eligible: Number(row.eligible) as 0 | 1,
+			declarationId: (row.declaration_id as string | null) ?? null,
+			machineReason: (row.machine_reason as string | null) ?? null,
+			s2BasisRecordId: (row.s2_basis_record_id as string | null) ?? null,
+			reasonCode: row.reason_code as AutoNarrowOpinionReason,
+			policyVersion: 1,
+			sampleN: Number(row.sample_n),
+			agreeN: Number(row.agree_n),
+			precisionA: Number(row.precision_a),
+			precisionB: Number(row.precision_b),
+			confidenceLower:
+				row.confidence_lower == null ? null : Number(row.confidence_lower),
+			sampleStartAt: (row.sample_start_at as string | null) ?? null,
+			sampleEndAt: (row.sample_end_at as string | null) ?? null,
+			lastEligibleHumanAt:
+				(row.last_eligible_human_at as string | null) ?? null,
+		};
+	}
+
+	listAutoNarrowOpinionSnapshots(
+		questionId: string,
+	): AutoNarrowOpinionSnapshotRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM auto_narrow_opinion_snapshot
+			  WHERE question_id = ? ORDER BY ordinal`,
+			[questionId],
+		).map((row) => this.autoNarrowOpinionSnapshotRow(row));
+	}
+
+	private autoNarrowMetricSamplesTx(
+		projectName: string,
+		at: string,
+	): AutoNarrowMetricSample[] {
+		const verdicts = this.workflowSelectAll(
+			`SELECT v.verdict_id, v.question_id, v.run_id, v.repo_identity,
+			        v.pr_number, v.head_sha, v.verdict, v.recorded_at
+			   FROM workflow_founder_gate_verdict v
+			   JOIN workflow_run r ON r.run_id = v.run_id
+			  WHERE r.project_name = ? AND v.founder_authored = 1
+			    AND v.recorded_at <= ?
+			  ORDER BY v.recorded_at, v.verdict_id`,
+			[projectName, at],
+		);
+		const grouped = new Map<
+			string,
+			Array<{
+				verdictId: string;
+				runId: string;
+				repoIdentity: string;
+				prNumber: number;
+				headSha: string;
+				verdict: "approved" | "rework";
+				recordedAt: string;
+			}>
+		>();
+		for (const row of verdicts) {
+			const questionId = String(row.question_id);
+			const rows = grouped.get(questionId) ?? [];
+			rows.push({
+				verdictId: String(row.verdict_id),
+				runId: String(row.run_id),
+				repoIdentity: String(row.repo_identity),
+				prNumber: Number(row.pr_number),
+				headSha: String(row.head_sha),
+				verdict: row.verdict as "approved" | "rework",
+				recordedAt: String(row.recorded_at),
+			});
+			grouped.set(questionId, rows);
+		}
+		return [...grouped.entries()]
+			.map(([questionId, rows]) => ({
+				questionId,
+				first: rows[0]!,
+				actual: !rows.some((row) => row.verdict === "rework"),
+			}))
+			.sort((left, right) => right.first.recordedAt.localeCompare(left.first.recordedAt))
+			.slice(0, 200)
+			.flatMap((sample) => {
+				const coverage = this.workflowSelectAll(
+					`SELECT 1 FROM auto_merge_shadow_observation o
+					  WHERE o.verdict_id = ? AND o.run_id = ? AND o.question_id = ?
+					    AND o.repo_identity = ? AND o.pr_number = ?
+					    AND lower(o.head_sha) = lower(?) AND o.observed_at = ?
+					    AND EXISTS (
+					      SELECT 1 FROM auto_merge_shadow_declaration d
+					       WHERE d.question_id = ? AND d.run_id = ? AND d.declared_at <= ?
+					    ) LIMIT 1`,
+					[
+						sample.first.verdictId,
+						sample.first.runId,
+						sample.questionId,
+						sample.first.repoIdentity,
+						sample.first.prNumber,
+						sample.first.headSha,
+						sample.first.recordedAt,
+						sample.questionId,
+						sample.first.runId,
+						sample.first.recordedAt,
+					],
+				)[0];
+				if (!coverage) return [];
+				const prediction = this.workflowSelectAll(
+					`SELECT eligible FROM auto_narrow_opinion_snapshot
+					  WHERE project_name = ? AND question_id = ? AND captured_at <= ?
+					  ORDER BY ordinal DESC LIMIT 1`,
+					[projectName, sample.questionId, sample.first.recordedAt],
+				)[0];
+				return prediction
+					? [
+							{
+								decidedAt: sample.first.recordedAt,
+								predicted: Number(prediction.eligible) === 1,
+								actual: sample.actual,
+							},
+						]
+					: [];
+			});
+	}
+
+	private autoNarrowOpinionDeliveryRow(
+		row: Record<string, unknown>,
+	): AutoNarrowOpinionDeliveryRow {
+		return {
+			questionId: String(row.question_id),
+			issueThreadId: String(row.issue_thread_id),
+			cardMessageId: String(row.card_message_id),
+			desiredOpinionId: (row.desired_opinion_id as string | null) ?? null,
+			postedOpinionId: (row.posted_opinion_id as string | null) ?? null,
+			followupMessageId: (row.followup_message_id as string | null) ?? null,
+			generation: Number(row.generation),
+			attempt: Number(row.attempt),
+			state: row.state as AutoNarrowOpinionDeliveryRow["state"],
+			correlationMarker: String(row.correlation_marker),
+			postingAt: (row.posting_at as string | null) ?? null,
+			firstZeroScanAt: (row.first_zero_scan_at as string | null) ?? null,
+			scanFrontier: (row.scan_frontier as string | null) ?? null,
+			nextAttemptAt: (row.next_attempt_at as string | null) ?? null,
+			lastErrorCode: (row.last_error_code as string | null) ?? null,
+			reactionApplied: row.reaction_applied as AutoNarrowOpinionDeliveryRow["reactionApplied"],
+			automaticLabelPending: Number(row.automatic_label_pending) as 0 | 1,
+		};
+	}
+
+	getAutoNarrowOpinionDelivery(
+		questionId: string,
+	): AutoNarrowOpinionDeliveryRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM auto_narrow_opinion_delivery WHERE question_id = ?",
+			[questionId],
+		)[0];
+		return row ? this.autoNarrowOpinionDeliveryRow(row) : undefined;
+	}
+
+	listAutoNarrowOpinionDeliveryWork(
+		limit = 20,
+		now = new Date().toISOString(),
+	): AutoNarrowOpinionDeliveryWork[] {
+		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
+		return this.workflowSelectAll(
+			`SELECT d.*, c.applied_at AS opening_at
+			   FROM auto_narrow_opinion_delivery d
+			   LEFT JOIN auto_narrow_decision_audit a ON a.question_id = d.question_id
+			   LEFT JOIN auto_narrow_control_event c ON c.event_id = a.opening_event_id
+			  WHERE d.desired_opinion_id IS NOT NULL AND d.state <> 'gone'
+			    AND (d.state <> 'delivered' OR d.automatic_label_pending = 1
+			         OR d.desired_opinion_id <> d.posted_opinion_id)
+			    AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
+			  ORDER BY COALESCE(d.next_attempt_at, ''), d.question_id LIMIT ?`,
+			[now, bounded],
+		).flatMap((row) => {
+			const opinion = this.workflowSelectAll(
+				"SELECT * FROM auto_narrow_opinion_snapshot WHERE opinion_id = ?",
+				[row.desired_opinion_id],
+			)[0];
+			return opinion
+				? [
+						{
+							delivery: this.autoNarrowOpinionDeliveryRow(row),
+							opinion: this.autoNarrowOpinionSnapshotRow(opinion),
+							openingAt: (row.opening_at as string | null) ?? null,
+						},
+					]
+				: [];
+		});
+	}
+
+	beginAutoNarrowOpinionDelivery(
+		questionId: string,
+		now: string,
+	): AutoNarrowOpinionDeliveryRow | undefined {
+		return this.db.raw
+			.transaction(() => {
+				const current = this.getAutoNarrowOpinionDelivery(questionId);
+				if (!current || current.state !== "pending") return undefined;
+				this.db.run(
+					`UPDATE auto_narrow_opinion_delivery
+					    SET state='posting', generation=generation+1, attempt=attempt+1,
+					        posting_at=?, last_error_code=NULL
+					  WHERE question_id=? AND generation=? AND state='pending'`,
+					[now, questionId, current.generation],
+				);
+				return this.db.getRowsModified() === 1
+					? this.getAutoNarrowOpinionDelivery(questionId)
+					: undefined;
+			})
+			.immediate();
+	}
+
+	bindAutoNarrowOpinionMessage(input: {
+		questionId: string;
+		generation: number;
+		messageId: string;
+		opinionId: string;
+	}): boolean {
+		this.db.run(
+			`UPDATE auto_narrow_opinion_delivery
+			    SET followup_message_id=?, posted_opinion_id=?, state='posting',
+			        first_zero_scan_at=NULL, scan_frontier=NULL,
+			        last_error_code=NULL
+			  WHERE question_id=? AND generation=? AND state='posting'`,
+			[
+				input.messageId,
+				input.opinionId,
+				input.questionId,
+				input.generation,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	markAutoNarrowOpinionReaction(input: {
+		questionId: string;
+		generation: number;
+		reaction: "eligible" | "ineligible";
+	}): boolean {
+		this.db.run(
+			`UPDATE auto_narrow_opinion_delivery SET reaction_applied=?
+			  WHERE question_id=? AND generation=? AND state='posting'`,
+			[input.reaction, input.questionId, input.generation],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	markAutoNarrowAutomaticLabelDelivered(input: {
+		questionId: string;
+		generation: number;
+	}): boolean {
+		this.db.run(
+			`UPDATE auto_narrow_opinion_delivery SET automatic_label_pending=0
+			  WHERE question_id=? AND generation=? AND state='posting'`,
+			[input.questionId, input.generation],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	finishAutoNarrowOpinionDelivery(input: {
+		questionId: string;
+		generation: number;
+		expectedReaction: "eligible" | "ineligible";
+	}): boolean {
+		this.db.run(
+			`UPDATE auto_narrow_opinion_delivery
+			    SET state='delivered', posting_at=NULL, next_attempt_at=NULL,
+			        attempt=0, last_error_code=NULL
+			  WHERE question_id=? AND generation=? AND state='posting'
+			    AND followup_message_id IS NOT NULL
+			    AND desired_opinion_id=posted_opinion_id
+			    AND reaction_applied=? AND automatic_label_pending=0`,
+			[
+				input.questionId,
+				input.generation,
+				input.expectedReaction,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	deferAutoNarrowOpinionDelivery(input: {
+		questionId: string;
+		generation: number;
+		state: "pending" | "uncertain";
+		errorCode: string;
+		now: string;
+	}): boolean {
+		return this.db.raw
+			.transaction(() => {
+				const current = this.getAutoNarrowOpinionDelivery(input.questionId);
+				if (
+					!current ||
+					current.generation !== input.generation ||
+					current.state !== "posting"
+				) {
+					return false;
+				}
+				const terminal = current.attempt >= AUTO_NARROW_OPINION_MAX_ATTEMPTS;
+				const state = terminal ? "gone" : input.state;
+				const nextAttemptAt = terminal
+					? null
+					: autoNarrowOpinionRetryAt(input.now, current.attempt);
+				this.db.run(
+					`UPDATE auto_narrow_opinion_delivery
+					    SET state=?,
+					        posting_at=CASE WHEN ?='uncertain' THEN posting_at ELSE NULL END,
+					        next_attempt_at=?, last_error_code=?
+					  WHERE question_id=? AND generation=? AND state='posting'`,
+					[
+						state,
+						state,
+						nextAttemptAt,
+						input.errorCode.slice(0, 64),
+						input.questionId,
+						input.generation,
+					],
+				);
+				return this.db.getRowsModified() === 1;
+			})
+			.immediate();
+	}
+
+	recordAutoNarrowOpinionRecovery(input: {
+		questionId: string;
+		kind: "found" | "none" | "ambiguous";
+		now: string;
+		frontier: string | null;
+		messageId?: string;
+	}): "recovered" | "waiting" | "retry" {
+		return this.db.raw
+			.transaction(() => {
+				const current = this.getAutoNarrowOpinionDelivery(input.questionId);
+				if (
+					!current ||
+					(current.state !== "posting" && current.state !== "uncertain")
+				) {
+					return "waiting";
+				}
+				if (input.kind === "found" && input.messageId) {
+					this.db.run(
+						`UPDATE auto_narrow_opinion_delivery
+						    SET followup_message_id=?, state='pending', posting_at=NULL,
+						        first_zero_scan_at=NULL, scan_frontier=NULL,
+						        next_attempt_at=NULL, last_error_code=NULL
+						  WHERE question_id=?`,
+						[input.messageId, input.questionId],
+					);
+					return "recovered";
+				}
+				if (current.attempt >= AUTO_NARROW_OPINION_MAX_ATTEMPTS) {
+					this.db.run(
+						`UPDATE auto_narrow_opinion_delivery
+						    SET state='gone', posting_at=NULL, next_attempt_at=NULL,
+						        last_error_code='recovery_exhausted'
+						  WHERE question_id=?`,
+						[input.questionId],
+					);
+					return "waiting";
+				}
+				if (input.kind !== "none") {
+					this.db.run(
+						`UPDATE auto_narrow_opinion_delivery
+						    SET state='uncertain', next_attempt_at=?,
+						        last_error_code='scan_ambiguous'
+						  WHERE question_id=?`,
+						[
+							autoNarrowOpinionRetryAt(input.now, current.attempt),
+							input.questionId,
+						],
+					);
+					return "waiting";
+				}
+				const firstMs = Date.parse(current.firstZeroScanAt ?? "invalid");
+				const nowMs = Date.parse(input.now);
+				if (
+					!current.firstZeroScanAt ||
+					current.scanFrontier !== input.frontier ||
+					!Number.isFinite(firstMs) ||
+					!Number.isFinite(nowMs)
+				) {
+					this.db.run(
+						`UPDATE auto_narrow_opinion_delivery
+						    SET state='uncertain', first_zero_scan_at=?, scan_frontier=?,
+						        next_attempt_at=?, last_error_code='scan_zero_once'
+						  WHERE question_id=?`,
+						[
+							input.now,
+							input.frontier,
+							autoNarrowOpinionRetryAt(input.now, current.attempt),
+							input.questionId,
+						],
+					);
+					return "waiting";
+				}
+				if (nowMs - firstMs < AUTO_NARROW_OPINION_RETRY_BASE_MS) {
+					this.db.run(
+						`UPDATE auto_narrow_opinion_delivery
+						    SET state='uncertain', next_attempt_at=?,
+						        last_error_code='scan_zero_once'
+						  WHERE question_id=?`,
+						[
+							new Date(
+								firstMs + AUTO_NARROW_OPINION_RETRY_BASE_MS,
+							).toISOString(),
+							input.questionId,
+						],
+					);
+					return "waiting";
+				}
+				this.db.run(
+					`UPDATE auto_narrow_opinion_delivery
+					    SET state='pending', posting_at=NULL, first_zero_scan_at=NULL,
+					        scan_frontier=NULL, next_attempt_at=NULL, last_error_code=NULL
+					  WHERE question_id=?`,
+					[input.questionId],
+				);
+				return "retry";
+			})
+			.immediate();
+	}
+
+	refreshAutoNarrowOpinion(input: {
+		questionId: string;
+		issueThreadId: string;
+		mode: "off" | "dry_run" | "auto";
+		controlAppliedAt?: string;
+		at: string;
+		metrics?: AutoNarrowMetrics;
+	}): AutoNarrowOpinionRefreshResult {
+		if (input.mode === "off") return { status: "off" };
+		return this.db.raw
+			.transaction((): AutoNarrowOpinionRefreshResult => {
+				const candidate = this.evaluateAutoNarrowCandidateTx(
+					input.questionId,
+					input.at,
+					autoNarrowVerdictId(input.questionId),
+				);
+				if (!candidate?.holder.card_message_id) {
+					return { status: "not_candidate" };
+				}
+				const gate1 = candidate.eligibility.gate1 ? 1 : 0;
+				const gate2 = candidate.eligibility.gate2 ? 1 : 0;
+				const gate3 = candidate.eligibility.gate3 ? 1 : 0;
+				const eligible = candidate.eligibility.eligible ? 1 : 0;
+				const reasonCode: AutoNarrowOpinionReason =
+					candidate.eligibility.reasonCode;
+				const metrics =
+					input.metrics ??
+					computeAutoNarrowMetrics(
+						this.autoNarrowMetricSamplesTx("flywheel", input.at),
+					);
+				const latest = this.listAutoNarrowOpinionSnapshots(
+					input.questionId,
+				).at(-1);
+				const same =
+					latest &&
+					latest.headSha === candidate.binding.headSha &&
+					latest.cardMessageId === candidate.holder.card_message_id &&
+					latest.gate1 === gate1 &&
+					latest.gate2 === gate2 &&
+					latest.gate3 === gate3 &&
+					latest.eligible === eligible &&
+					latest.declarationId ===
+						(candidate.declaration?.declaration_id ?? null) &&
+					latest.machineReason === candidate.observation.machine_reason &&
+					latest.s2BasisRecordId ===
+						candidate.observation.s2_basis_record_id &&
+					latest.reasonCode === reasonCode &&
+					latest.sampleN === metrics.sampleN &&
+					latest.agreeN === metrics.agreeN &&
+					latest.precisionA === metrics.precisionA &&
+					latest.precisionB === metrics.precisionB &&
+					latest.confidenceLower === metrics.confidenceLower &&
+					latest.sampleStartAt === metrics.sampleStartAt &&
+					latest.sampleEndAt === metrics.sampleEndAt &&
+					latest.lastEligibleHumanAt === metrics.lastEligibleHumanAt &&
+					(!input.controlAppliedAt ||
+						latest.capturedAt >= input.controlAppliedAt);
+				if (same) return { status: "unchanged", snapshot: latest };
+				const ordinal = (latest?.ordinal ?? 0) + 1;
+				const opinionId = `${input.questionId}:${ordinal}`;
+				this.db.run(
+					`INSERT INTO auto_narrow_opinion_snapshot
+					  (opinion_id, question_id, run_id, project_name, head_sha,
+					   card_message_id, ordinal, captured_at, gate1, gate2, gate3,
+					   eligible, declaration_id, machine_reason, s2_basis_record_id,
+					   reason_code, policy_version, sample_n, agree_n, precision_a,
+					   precision_b, confidence_lower, sample_start_at, sample_end_at,
+					   last_eligible_human_at)
+					 VALUES (?, ?, ?, 'flywheel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1,
+					         ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						opinionId,
+						input.questionId,
+						candidate.holder.run_id,
+						candidate.binding.headSha,
+						candidate.holder.card_message_id,
+						ordinal,
+						input.at,
+						gate1,
+						gate2,
+						gate3,
+						eligible,
+						candidate.declaration?.declaration_id ?? null,
+						candidate.observation.machine_reason,
+						candidate.observation.s2_basis_record_id,
+						reasonCode,
+						metrics.sampleN,
+						metrics.agreeN,
+						metrics.precisionA,
+						metrics.precisionB,
+						metrics.confidenceLower,
+						metrics.sampleStartAt,
+						metrics.sampleEndAt,
+						metrics.lastEligibleHumanAt,
+					],
+				);
+				const marker = `auto-narrow-opinion:${createHash("sha256")
+					.update(input.questionId)
+					.digest("hex")
+					.slice(0, 16)}`;
+				this.db.run(
+					`INSERT INTO auto_narrow_opinion_delivery
+					  (question_id, issue_thread_id, card_message_id,
+					   desired_opinion_id, state, correlation_marker)
+					 VALUES (?, ?, ?, ?, 'pending', ?)
+					 ON CONFLICT(question_id) DO UPDATE SET
+					   issue_thread_id=excluded.issue_thread_id,
+					   card_message_id=excluded.card_message_id,
+					   desired_opinion_id=excluded.desired_opinion_id,
+					   state=CASE WHEN state IN ('posting', 'uncertain') THEN state ELSE 'pending' END,
+					   next_attempt_at=CASE WHEN state IN ('posting', 'uncertain') THEN next_attempt_at ELSE NULL END,
+					   last_error_code=CASE WHEN state IN ('posting', 'uncertain') THEN last_error_code ELSE NULL END`,
+					[
+						input.questionId,
+						input.issueThreadId,
+						candidate.holder.card_message_id,
+						opinionId,
+						marker,
+					],
+				);
+				return {
+					status: "created",
+					snapshot: this.listAutoNarrowOpinionSnapshots(input.questionId).at(
+						-1,
+					)!,
+				};
+			})
+			.immediate();
+	}
+
+	getAutoNarrowOpinionMetrics(at: string): AutoNarrowMetrics {
+		return this.db.raw
+			.transaction(() =>
+				computeAutoNarrowMetrics(
+					this.autoNarrowMetricSamplesTx("flywheel", at),
+				),
+			)
+			.immediate();
+	}
+
+	listPendingAutoNarrowCandidates(
+		limit = 20,
+		startAfterQuestionId?: string,
+	): string[] {
+		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
+		return this.workflowSelectAll(
+			`SELECT h.question_id FROM workflow_gate_holder h
+			   JOIN workflow_run r ON r.run_id = h.run_id
+			  WHERE r.project_name = 'flywheel' AND r.status = 'active'
+			    AND h.gate_node_id = 'founder_gate' AND h.authority_mode = 'land'
+			    AND h.subject_kind = 'git_head' AND h.state = 'awaiting_review'
+			    AND h.materialization_stage = 'completed' AND h.card_message_id IS NOT NULL
+			  ORDER BY CASE WHEN ? IS NULL OR h.question_id > ? THEN 0 ELSE 1 END,
+			           h.question_id
+			  LIMIT ?`,
+			[startAfterQuestionId ?? null, startAfterQuestionId ?? null, bounded],
+		).map((row) => String(row.question_id));
+	}
+
+	private assertAutoNarrowEnvelopeEvidenceTx(
+		envelope: AutoNarrowSourceEnvelopeV1,
+	): void {
+		const control = this.getAutoNarrowControlEventById(envelope.control.event_id);
+		const opening = this.getAutoNarrowControlEventById(
+			envelope.control.opening_event_id,
+		);
+		const declaration = this.listAutoMergeShadowDeclarations(
+			envelope.question_id,
+		).find(
+			(row) => row.declaration_id === envelope.declaration.declaration_id,
+		);
+		const latestDeclarationAtDecision = this.listAutoMergeShadowDeclarations(
+			envelope.question_id,
+		)
+			.filter((row) => row.declared_at <= envelope.decision_at)
+			.at(-1);
+		const strengthTwo = this.getStrengthTwoEvidenceRecord(
+			envelope.strength_two.basis_record_id,
+		);
+		if (
+			!control ||
+			control.projectName !== "flywheel" ||
+			control.mode !== "auto" ||
+			control.flagRevision !== envelope.control.flag_revision ||
+			control.openingEventId !== envelope.control.opening_event_id ||
+			!opening ||
+			opening.projectName !== "flywheel" ||
+			opening.mode !== "auto" ||
+			opening.appliedAt !== envelope.control.opening_at ||
+			opening.founderMessageId !== envelope.control.founder_message_id ||
+			!declaration ||
+			declaration.question_id !== envelope.question_id ||
+			declaration.run_id !== envelope.run_id ||
+			declaration.declaration_seq !== envelope.declaration.declaration_seq ||
+			declaration.declared_by !== "flywheel-eng-lead" ||
+			declaration.declared_class !== "pure_docs" ||
+			declaration.declared_at > envelope.decision_at ||
+			latestDeclarationAtDecision?.declaration_id !==
+				envelope.declaration.declaration_id ||
+			!strengthTwo ||
+			strengthTwo.run_id !== envelope.run_id ||
+			strengthTwo.target_repo_identity !== envelope.repo_identity ||
+			strengthTwo.head_sha !== envelope.head_sha ||
+			strengthTwo.ran_status !== "satisfied" ||
+			strengthTwo.ran_reason !== "ok" ||
+			strengthTwo.record_status !== "satisfied" ||
+			strengthTwo.record_reason !== "ok" ||
+			strengthTwo.verdict !== "satisfied" ||
+			strengthTwo.recorded_at > envelope.decision_at
+		) {
+			throw new Error("auto narrow source payload invalid: evidence reference");
+		}
+	}
+
+	commitAutoNarrowSourceIfEligible(input: {
+		questionId: string;
+		at: string;
+		writeSource: (args: {
+			expectedOwner: string;
+			projectedThroughSourceRowId: number;
+			envelope: AutoNarrowSourceEnvelopeV1;
+		}) => { written: boolean; replayed: boolean };
+	}): AutoNarrowSourceCommitResult {
+		const priorBusyTimeout = Number(
+			this.db.raw.pragma("busy_timeout", { simple: true }),
+		);
+		this.db.raw.pragma("busy_timeout = 0");
+		try {
+			return this.db.raw
+				.transaction((): AutoNarrowSourceCommitResult => {
+				const row = this.getFlagValueRow(
+					"auto_merge_narrow_gate",
+					"flywheel",
+				);
+				if (!row || row.raw !== "auto" || row.lastEffective !== "auto") {
+					return { status: "not_auto" };
+				}
+				const control = this.getLatestAutoNarrowControlEvent("flywheel");
+				if (
+					!control ||
+					control.mode !== "auto" ||
+					control.flagRevision !== row.revision ||
+					!control.openingEventId
+				) {
+					return { status: "not_auto" };
+				}
+				const opening = this.getAutoNarrowControlEventById(
+					control.openingEventId,
+				);
+				if (!opening || opening.mode !== "auto") return { status: "not_auto" };
+				const verdictId = autoNarrowVerdictId(input.questionId);
+				const candidate = this.evaluateAutoNarrowCandidateTx(
+					input.questionId,
+					input.at,
+					verdictId,
+				);
+				if (!candidate) return { status: "not_candidate" };
+				if (!candidate.eligibility.eligible || !candidate.declaration) {
+					return { status: "ineligible" };
+				}
+				const envelope = parseAutoNarrowSourceEnvelope({
+					schema_version: 1,
+					policy_version: AUTO_NARROW_POLICY_VERSION,
+					run_id: candidate.holder.run_id,
+					issue_id: this.getWorkflowRun(candidate.holder.run_id)?.issue_id,
+					question_id: input.questionId,
+					gate_node_id: candidate.holder.gate_node_id,
+					attempt: candidate.holder.attempt,
+					source_execution_id: candidate.holder.source_execution_id,
+					repo_identity: candidate.binding.repoIdentity,
+					repo_slug: candidate.binding.repoSlug,
+					pr_number: candidate.binding.prNumber,
+					head_sha: candidate.binding.headSha,
+					response: { approved: true },
+					actor: AUTO_NARROW_ACTOR,
+					decision_source: AUTO_NARROW_DECISION_SOURCE,
+					control: {
+						event_id: control.eventId,
+						opening_event_id: opening.eventId,
+						flag_revision: control.flagRevision,
+						opening_at: opening.appliedAt,
+						founder_message_id: opening.founderMessageId,
+					},
+					declaration: {
+						declaration_id: candidate.declaration.declaration_id,
+						declaration_seq: candidate.declaration.declaration_seq,
+					},
+					strength_two: {
+						basis_record_id: candidate.observation.s2_basis_record_id,
+					},
+					observation: candidate.observation,
+					decision_at: input.at,
+				});
+				const projectedThroughSourceRowId = Number(
+					this.workflowSelectAll(
+						"SELECT last_row_id FROM workflow_source_cursor WHERE project = 'flywheel'",
+						[],
+					)[0]?.last_row_id ?? 0,
+				);
+				const written = input.writeSource({
+					expectedOwner: candidate.holder.source_execution_id,
+					projectedThroughSourceRowId,
+					envelope,
+				});
+				if (!written.written) return { status: "not_candidate" };
+				return {
+					status: written.replayed ? "replayed" : "written",
+					envelope,
+				};
+				})
+				.immediate();
+		} finally {
+			this.db.raw.pragma(`busy_timeout = ${priorBusyTimeout}`);
+		}
+	}
+
 	private autoMergeShadowDeclarationRow(
 		row: Record<string, unknown>,
 	): AutoMergeShadowDeclarationRow {
@@ -55778,12 +57154,12 @@ export class StateStore {
 		);
 	}
 
-	private recordAutoMergeShadowObservationTx(input: {
+	private buildAutoMergeShadowObservationTx(input: {
 		verdictId: string;
 		runId: string;
 		binding: ReturnType<StateStore["resolveFounderGateBindingTx"]>;
 		recordedAt: string;
-	}): void {
+	}): AutoMergeShadowObservationRow {
 		const holder = this.getWorkflowGateHolderByQuestionId(
 			input.binding.questionId,
 		);
@@ -55850,8 +57226,7 @@ export class StateStore {
 		) {
 			throw new Error("shadow_strength_two_reason_invalid");
 		}
-		this.insertAutoMergeShadowObservationTx(
-			buildShadowObservation({
+		return buildShadowObservation({
 				verdictId: input.verdictId,
 				runId: input.runId,
 				questionId: input.binding.questionId,
@@ -55867,7 +57242,17 @@ export class StateStore {
 				strengthTwo,
 				strengthTwoRowCount: rows.length,
 				strengthTwoOtherHeadRowCount: otherHeadRowCount,
-			}),
+		});
+	}
+
+	private recordAutoMergeShadowObservationTx(input: {
+		verdictId: string;
+		runId: string;
+		binding: ReturnType<StateStore["resolveFounderGateBindingTx"]>;
+		recordedAt: string;
+	}): void {
+		this.insertAutoMergeShadowObservationTx(
+			this.buildAutoMergeShadowObservationTx(input),
 		);
 	}
 
@@ -55881,6 +57266,7 @@ export class StateStore {
 		founderAuthored: 0 | 1;
 		authorEvidence: Record<string, unknown>;
 		recordedAt: string;
+		frozenObservation?: AutoMergeShadowObservationRow;
 	}): WorkflowFounderGateVerdictRow {
 		const authorEvidenceJson = canonicalJsonString(input.authorEvidence);
 		const digestBody = {
@@ -55943,6 +57329,20 @@ export class StateStore {
 				input.recordedAt,
 			],
 		);
+		if (input.frozenObservation) {
+			if (input.frozenObservation.verdict_id !== verdictId) {
+				throw new Error(
+					"auto narrow source payload invalid: observation verdict",
+				);
+			}
+			this.insertAutoMergeShadowObservationTx(input.frozenObservation);
+			return {
+				verdict_id: verdictId,
+				...digestBody,
+				row_digest: rowDigest,
+				recorded_at: input.recordedAt,
+			};
+		}
 		this.db.run("SAVEPOINT auto_merge_shadow");
 		try {
 			this.recordAutoMergeShadowObservationTx({
@@ -55993,6 +57393,34 @@ export class StateStore {
 			!StateStore.workflowAlertIdentityValid(input.alertIdentity)
 		) {
 			throw new Error("workflow source alert identity invalid");
+		}
+		const carriesAutoNarrowIdentity =
+			payload.actor === AUTO_NARROW_ACTOR ||
+			payload.decision_source === AUTO_NARROW_DECISION_SOURCE ||
+			input.sourceEventId.startsWith("auto-narrow:");
+		let autoNarrowEnvelope: AutoNarrowSourceEnvelopeV1 | undefined;
+		if (carriesAutoNarrowIdentity) {
+			if (
+				input.kind !== "founder_approval" ||
+				input.project !== "flywheel" ||
+				payload.actor !== AUTO_NARROW_ACTOR ||
+				payload.decision_source !== AUTO_NARROW_DECISION_SOURCE
+			) {
+				throw new Error("auto narrow source payload invalid: identity");
+			}
+			try {
+				autoNarrowEnvelope = parseAutoNarrowSourceEnvelope(payload);
+			} catch (error) {
+				throw new Error(
+					`auto narrow source payload invalid: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			if (
+				input.sourceEventId !==
+				autoNarrowSourceEventId(autoNarrowEnvelope.question_id)
+			) {
+				throw new Error("auto narrow source payload invalid: source id");
+			}
 		}
 
 		let result: WorkflowSourceApplyResult | undefined;
@@ -56218,13 +57646,20 @@ export class StateStore {
 				return;
 			}
 
-			const runId = typeof payload.run_id === "string" ? payload.run_id : "";
+			const runId = autoNarrowEnvelope
+				? autoNarrowEnvelope.run_id
+				: typeof payload.run_id === "string"
+					? payload.run_id
+					: "";
 			const issueId =
-				typeof payload.issue_id === "string" ? payload.issue_id : "";
+				autoNarrowEnvelope?.issue_id ??
+				(typeof payload.issue_id === "string" ? payload.issue_id : "");
 			const approvedHead =
-				typeof payload.approved_head === "string" ? payload.approved_head : "";
+				autoNarrowEnvelope?.head_sha ??
+				(typeof payload.approved_head === "string" ? payload.approved_head : "");
 			const authorityId =
-				typeof payload.authority_id === "string" ? payload.authority_id : "";
+				autoNarrowEnvelope?.question_id ??
+				(typeof payload.authority_id === "string" ? payload.authority_id : "");
 			const response = payload.response as
 				| { approved?: unknown; feedback?: unknown }
 				| undefined;
@@ -56674,13 +58109,31 @@ export class StateStore {
 			}
 
 			const decisionQuestionId =
-				typeof payload.question_id === "string" ? payload.question_id : "";
+				autoNarrowEnvelope?.question_id ??
+				(typeof payload.question_id === "string" ? payload.question_id : "");
 			const decisionHolder = this.workflowSelectAll(
 				`SELECT * FROM workflow_gate_holder
 				  WHERE question_id = ? AND run_id = ?
 				    AND state IN ('materializing','awaiting_review','approved')`,
 				[decisionQuestionId, runId],
 			)[0];
+			if (autoNarrowEnvelope) {
+				this.assertAutoNarrowEnvelopeEvidenceTx(autoNarrowEnvelope);
+				if (
+					!decisionHolder ||
+					decisionHolder.gate_node_id !== autoNarrowEnvelope.gate_node_id ||
+					Number(decisionHolder.attempt) !== autoNarrowEnvelope.attempt ||
+					decisionHolder.source_execution_id !==
+						autoNarrowEnvelope.source_execution_id ||
+					decisionHolder.authority_mode !== "land" ||
+					decisionHolder.subject_kind !== "git_head" ||
+					decisionHolder.state !== "awaiting_review" ||
+					decisionHolder.materialization_stage !== "completed" ||
+					!decisionHolder.card_message_id
+				) {
+					throw new Error("auto narrow source payload invalid: gate holder");
+				}
+			}
 			const founderSubjectKind =
 				(decisionHolder?.subject_kind as WorkflowGateSubjectKind | null) ??
 				"git_head";
@@ -56725,11 +58178,27 @@ export class StateStore {
 					runId,
 					founderSubjectKind,
 					approvedHead,
-					JSON.stringify({
-						questionId: payload.question_id,
-						actor: payload.actor,
-						classification: payload.classification,
-					}),
+					JSON.stringify(
+						autoNarrowEnvelope
+							? {
+									questionId: autoNarrowEnvelope.question_id,
+									actor: AUTO_NARROW_ACTOR,
+									decisionSource: AUTO_NARROW_DECISION_SOURCE,
+									controlEventId: autoNarrowEnvelope.control.event_id,
+									openingEventId:
+										autoNarrowEnvelope.control.opening_event_id,
+									declarationId:
+										autoNarrowEnvelope.declaration.declaration_id,
+									strengthTwoBasisRecordId:
+										autoNarrowEnvelope.strength_two.basis_record_id,
+									sourceEventId: input.sourceEventId,
+								}
+							: {
+									questionId: payload.question_id,
+									actor: payload.actor,
+									classification: payload.classification,
+								},
+					),
 					authorityId,
 				],
 			);
@@ -56748,17 +58217,28 @@ export class StateStore {
 					runId,
 					questionId: decisionQuestionId,
 				});
-				this.recordFounderGateVerdictTx({
+				const verdict = this.recordFounderGateVerdictTx({
 					sourceEventId: input.sourceEventId,
 					runId,
 					binding,
 					verdict: "approved",
 					claimId,
-					founderAuthored:
-						founderIdAtCapture !== undefined && actor === founderIdAtCapture
+					founderAuthored: autoNarrowEnvelope
+						? 0
+						: founderIdAtCapture !== undefined && actor === founderIdAtCapture
 							? 1
 							: 0,
-					authorEvidence: founderIdAtCapture
+					authorEvidence: autoNarrowEnvelope
+						? {
+								kind: "auto_narrow_gate",
+								actor: AUTO_NARROW_ACTOR,
+								decision_source: AUTO_NARROW_DECISION_SOURCE,
+								source_event_id: input.sourceEventId,
+								control_event_id: autoNarrowEnvelope.control.event_id,
+								opening_event_id:
+									autoNarrowEnvelope.control.opening_event_id,
+							}
+						: founderIdAtCapture
 						? {
 								kind: "gate_response",
 								actor,
@@ -56770,8 +58250,62 @@ export class StateStore {
 								actor,
 								source_event_id: input.sourceEventId,
 							},
-					recordedAt: input.at ?? new Date().toISOString(),
+					recordedAt:
+						autoNarrowEnvelope?.decision_at ??
+						input.at ??
+						new Date().toISOString(),
+					...(autoNarrowEnvelope
+						? {
+								frozenObservation:
+									autoNarrowEnvelope.observation as unknown as AutoMergeShadowObservationRow,
+							}
+						: {}),
 				});
+				if (autoNarrowEnvelope) {
+					this.db.run(
+						`INSERT INTO auto_narrow_decision_audit
+						  (source_event_id, question_id, verdict_id, decision_source,
+						   project_name, run_id, gate_node_id, attempt, source_execution_id,
+						   repo_identity, pr_number, head_sha, control_event_id,
+						   opening_event_id, flag_revision, declaration_id,
+						   declaration_seq, s2_basis_record_id, observation_digest,
+						   source_payload_digest, decision_at, policy_version)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						[
+							input.sourceEventId,
+							autoNarrowEnvelope.question_id,
+							verdict.verdict_id,
+							AUTO_NARROW_DECISION_SOURCE,
+							input.project,
+							autoNarrowEnvelope.run_id,
+							autoNarrowEnvelope.gate_node_id,
+							autoNarrowEnvelope.attempt,
+							autoNarrowEnvelope.source_execution_id,
+							autoNarrowEnvelope.repo_identity,
+							autoNarrowEnvelope.pr_number,
+							autoNarrowEnvelope.head_sha,
+							autoNarrowEnvelope.control.event_id,
+							autoNarrowEnvelope.control.opening_event_id,
+							autoNarrowEnvelope.control.flag_revision,
+							autoNarrowEnvelope.declaration.declaration_id,
+							autoNarrowEnvelope.declaration.declaration_seq,
+							autoNarrowEnvelope.strength_two.basis_record_id,
+							canonicalSubmissionDigest(autoNarrowEnvelope.observation),
+							input.payloadDigest,
+							autoNarrowEnvelope.decision_at,
+							AUTO_NARROW_POLICY_VERSION,
+						],
+					);
+					this.db.run(
+						`UPDATE auto_narrow_opinion_delivery
+						    SET automatic_label_pending = 1,
+						        state = CASE WHEN state IN ('posting', 'uncertain') THEN state ELSE 'pending' END,
+						        next_attempt_at = CASE WHEN state IN ('posting', 'uncertain') THEN next_attempt_at ELSE NULL END,
+						        last_error_code = CASE WHEN state IN ('posting', 'uncertain') THEN last_error_code ELSE NULL END
+						  WHERE question_id = ?`,
+						[autoNarrowEnvelope.question_id],
+					);
+				}
 			}
 			this.appendWorkflowRunEventTx({
 				runId,
@@ -70359,6 +71893,92 @@ export interface AutoMergeShadowObservationRow {
 	s2_other_head_row_count: number;
 	shadow_version: 1;
 }
+
+export interface AutoNarrowCandidateEvaluation {
+	holder: WorkflowGateHolderRow;
+	binding: {
+		questionId: string;
+		gateNodeId: string;
+		attempt: number;
+		repoIdentity: string;
+		repoSlug: string;
+		prNumber: number;
+		headSha: string;
+	};
+	observation: AutoMergeShadowObservationRow;
+	declaration?: AutoMergeShadowDeclarationRow;
+	eligibility: AutoNarrowEligibility;
+	hasFounderRework: boolean;
+	hasPendingFounderInput: boolean;
+}
+
+export type AutoNarrowSourceCommitResult =
+	| { status: "not_auto" | "not_candidate" | "ineligible" }
+	| {
+			status: "written" | "replayed";
+			envelope: AutoNarrowSourceEnvelopeV1;
+	  };
+
+export interface AutoNarrowOpinionSnapshotRow {
+	opinionId: string;
+	questionId: string;
+	runId: string;
+	projectName: string;
+	headSha: string;
+	cardMessageId: string;
+	ordinal: number;
+	capturedAt: string;
+	gate1: 0 | 1;
+	gate2: 0 | 1;
+	gate3: 0 | 1;
+	eligible: 0 | 1;
+	declarationId: string | null;
+	machineReason: string | null;
+	s2BasisRecordId: string | null;
+	reasonCode: AutoNarrowOpinionReason;
+	policyVersion: 1;
+	sampleN: number;
+	agreeN: number;
+	precisionA: number;
+	precisionB: number;
+	confidenceLower: number | null;
+	sampleStartAt: string | null;
+	sampleEndAt: string | null;
+	lastEligibleHumanAt: string | null;
+}
+
+export interface AutoNarrowOpinionDeliveryRow {
+	questionId: string;
+	issueThreadId: string;
+	cardMessageId: string;
+	desiredOpinionId: string | null;
+	postedOpinionId: string | null;
+	followupMessageId: string | null;
+	generation: number;
+	attempt: number;
+	state: "pending" | "posting" | "uncertain" | "delivered" | "gone";
+	correlationMarker: string;
+	postingAt: string | null;
+	firstZeroScanAt: string | null;
+	scanFrontier: string | null;
+	nextAttemptAt: string | null;
+	lastErrorCode: string | null;
+	reactionApplied: "none" | "eligible" | "ineligible";
+	automaticLabelPending: 0 | 1;
+}
+
+export interface AutoNarrowOpinionDeliveryWork {
+	delivery: AutoNarrowOpinionDeliveryRow;
+	opinion: AutoNarrowOpinionSnapshotRow;
+	openingAt: string | null;
+}
+
+export type AutoNarrowOpinionRefreshResult =
+	| { status: "off" | "not_candidate" }
+	| {
+			status: "created" | "unchanged";
+			snapshot: AutoNarrowOpinionSnapshotRow;
+	  };
 
 export const AUTO_MERGE_SHADOW_DECLARED_CLASSES = [
 	"pure_docs",

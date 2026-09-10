@@ -23,6 +23,47 @@ SELECT
   AND abs((julianday(:window_end) - julianday(:window_start)) - 14.0) < 0.000000001
   AND julianday('now') >= julianday(:window_end);
 
+-- CommDB is snapshotted separately and attached by the runner. A committed
+-- auto source which has not reached StateStore is part of the cohort, but it
+-- deliberately has no invented destination facts and therefore voids coverage.
+CREATE TEMP TABLE pending_auto_sources AS
+SELECT
+  'pending-auto:' || s.source_event_id AS action_key,
+  'pending_auto' AS action,
+  NULL AS claim_id,
+  NULL AS request_id,
+  NULL AS dead_key,
+  json_extract(s.payload, '$.run_id') AS run_id,
+  s.at AS acted_at,
+  json_extract(s.payload, '$.question_id') AS evidence_question_id,
+  json_extract(s.payload, '$.question_id') AS authority_id,
+  lower(json_extract(s.payload, '$.head_sha')) AS claim_head,
+  h.question_id AS holder_question_id,
+  lower(h.head_sha) AS holder_head,
+  h.attempt,
+  CASE WHEN h.question_id = json_extract(s.payload, '$.question_id')
+         AND h.run_id = json_extract(s.payload, '$.run_id')
+         AND lower(h.head_sha) = lower(json_extract(s.payload, '$.head_sha'))
+       THEN 1 ELSE 0 END AS binding_ok,
+  CASE WHEN h.question_id IS NULL THEN 0 ELSE 1 END AS holder_count
+FROM comm.workflow_source_event s
+LEFT JOIN workflow_gate_holder h
+  ON h.question_id = json_extract(s.payload, '$.question_id')
+ AND h.run_id = json_extract(s.payload, '$.run_id')
+ AND h.gate_node_id = 'founder_gate'
+ AND h.authority_mode = 'land'
+ AND h.subject_kind = 'git_head'
+WHERE s.project = 'flywheel'
+  AND s.kind = 'founder_approval'
+  AND s.source_event_id GLOB 'auto-narrow:*'
+  AND json_extract(s.payload, '$.decision_source') = 'auto_narrow_gate'
+  AND julianday(s.at) >= julianday(:window_start)
+  AND julianday(s.at) < julianday(:window_end)
+  AND NOT EXISTS (
+    SELECT 1 FROM auto_narrow_decision_audit a
+     WHERE a.source_event_id = s.source_event_id
+  );
+
 CREATE TEMP TABLE approvals AS
 SELECT
   'claim:' || c.id AS action_key,
@@ -123,7 +164,8 @@ WHERE (d.source_event_id GLOB 'founder-approval:*'
 CREATE TEMP TABLE cohort_all AS
 SELECT * FROM approvals
 UNION ALL SELECT * FROM reworks
-UNION ALL SELECT * FROM lost;
+UNION ALL SELECT * FROM lost
+UNION ALL SELECT * FROM pending_auto_sources;
 
 CREATE TEMP TABLE verdict_match AS
 SELECT
@@ -148,6 +190,12 @@ JOIN (
   ON latest.question_id = d.question_id
  AND latest.max_seq = d.declaration_seq;
 
+CREATE TEMP TABLE audit_declaration AS
+SELECT a.verdict_id, d.*
+FROM auto_narrow_decision_audit a
+LEFT JOIN auto_merge_shadow_declaration d
+  ON d.declaration_id = a.declaration_id;
+
 CREATE TEMP TABLE acts_raw AS
 SELECT
   a.*,
@@ -163,6 +211,14 @@ SELECT
   v.question_id AS verdict_question_id,
   v.run_id AS verdict_run_id,
   v.author_evidence_json,
+  CASE
+    WHEN na.source_event_id IS NOT NULL OR a.action = 'pending_auto'
+      THEN 'auto_narrow_gate'
+    WHEN v.founder_authored = 1 THEN 'founder_manual'
+    WHEN v.verdict_id IS NOT NULL THEN 'other_manual'
+    ELSE 'legacy_unknown'
+  END AS decision_source,
+  na.source_event_id AS auto_source_event_id,
   wr.issue_id,
   o.verdict_id AS observation_verdict_id,
   o.run_id AS observation_run_id,
@@ -183,16 +239,19 @@ SELECT
   o.s2_basis_record_id,
   o.s2_row_count,
   o.s2_other_head_row_count,
-  d.declared_class,
-  d.run_id AS declaration_run_id,
-  d.declared_at
+  COALESCE(ad.declared_class, d.declared_class) AS declared_class,
+  COALESCE(ad.run_id, d.run_id) AS declaration_run_id,
+  COALESCE(ad.declared_at, d.declared_at) AS declared_at
 FROM cohort_all a
 JOIN verdict_match vm ON vm.action_key = a.action_key
 LEFT JOIN workflow_founder_gate_verdict v
   ON vm.verdict_match_count = 1 AND v.verdict_id = vm.only_verdict_id
 LEFT JOIN workflow_run wr ON wr.run_id = a.run_id
 LEFT JOIN auto_merge_shadow_observation o ON o.verdict_id = v.verdict_id
-LEFT JOIN current_declaration d ON d.question_id = a.holder_question_id;
+LEFT JOIN auto_narrow_decision_audit na ON na.verdict_id = v.verdict_id
+LEFT JOIN audit_declaration ad ON ad.verdict_id = v.verdict_id
+LEFT JOIN current_declaration d
+  ON d.question_id = a.holder_question_id AND na.verdict_id IS NULL;
 
 CREATE TEMP TABLE acts AS
 SELECT
@@ -267,10 +326,19 @@ WHERE machine_class = 'docs_only'
   AND mirror_ok = 1;
 
 CREATE TEMP TABLE eligible_docs_cards AS
-SELECT * FROM docs_cards WHERE declared_class IS NOT NULL;
+SELECT * FROM docs_cards
+WHERE declared_class IS NOT NULL AND decision_source <> 'auto_narrow_gate';
+
+CREATE TEMP TABLE auto_docs_cards AS
+SELECT * FROM docs_cards
+WHERE declared_class IS NOT NULL AND decision_source = 'auto_narrow_gate';
 
 CREATE TEMP TABLE docs_runs AS
 SELECT DISTINCT run_id FROM docs_cards;
+
+CREATE TEMP TABLE human_docs_runs AS
+SELECT DISTINCT run_id FROM docs_cards
+WHERE decision_source <> 'auto_narrow_gate';
 
 CREATE TEMP TABLE eligible_docs_runs AS
 SELECT DISTINCT run_id FROM eligible_docs_cards;
@@ -349,7 +417,21 @@ SELECT 'metric', 'eligible_docs_cards', (SELECT COUNT(*) FROM eligible_docs_card
 INSERT INTO report_output(kind, name, numerator, denominator, detail)
 SELECT 'metric', 'docs_runs', COUNT(*), COUNT(*), 'distinct machine docs-only runs' FROM docs_runs;
 INSERT INTO report_output(kind, name, numerator, denominator, detail)
-SELECT 'metric', 'eligible_docs_runs', (SELECT COUNT(*) FROM eligible_docs_runs), COUNT(*), 'declared docs-only run population' FROM docs_runs;
+SELECT 'metric', 'eligible_docs_runs', (SELECT COUNT(*) FROM eligible_docs_runs), COUNT(*), 'declared human docs-only run population' FROM human_docs_runs;
+
+INSERT INTO report_output(kind, name, numerator, denominator, detail)
+SELECT 'metric', 'source_' || source.value,
+       (SELECT COUNT(*) FROM acts a WHERE a.decision_source = source.value),
+       (SELECT COUNT(*) FROM cohort_all), 'decision-source cohort'
+FROM (SELECT 'auto_narrow_gate' AS value
+      UNION ALL SELECT 'founder_manual'
+      UNION ALL SELECT 'other_manual'
+      UNION ALL SELECT 'legacy_unknown') source;
+INSERT INTO report_output(kind, name, numerator, denominator, detail)
+SELECT 'metric', 'pending_auto_projection', COUNT(*),
+       (SELECT COUNT(*) FROM cohort_all),
+       'CommDB auto sources absent from the StateStore projection'
+FROM pending_auto_sources;
 
 INSERT INTO report_output(kind, name, numerator, denominator, detail)
 SELECT 'metric', 'line1_machine_class', COALESCE(SUM(action_binding_ok = 1 AND verdict_ok = 1 AND mirror_ok = 1), 0), COUNT(*), 'coverage line 1' FROM acts;
@@ -422,6 +504,50 @@ SELECT 'metric', 'N2_wide_all_rework',
        (SELECT COUNT(*) FROM eligible_docs_runs),
        'all machine docs-only rework including Lead/operator'
 FROM eligible_docs_cards e;
+
+CREATE TEMP TABLE auto_review AS
+SELECT
+  a.action_key,
+  a.run_id,
+  a.verdict_repo_identity,
+  a.verdict_head_sha,
+  EXISTS (
+    SELECT 1 FROM workflow_founder_gate_verdict v
+     WHERE v.founder_authored = 1
+       AND v.repo_identity = a.verdict_repo_identity
+       AND lower(v.head_sha) = a.verdict_head_sha
+       AND julianday(v.recorded_at) > julianday(a.recorded_at)
+  ) AS reviewed,
+  EXISTS (
+    SELECT 1 FROM workflow_founder_gate_verdict v
+     WHERE v.founder_authored = 1 AND v.verdict = 'rework'
+       AND v.repo_identity = a.verdict_repo_identity
+       AND lower(v.head_sha) = a.verdict_head_sha
+       AND julianday(v.recorded_at) > julianday(a.recorded_at)
+  ) AS reworked
+FROM auto_docs_cards a
+WHERE a.action = 'approved';
+
+INSERT INTO report_output(kind, name, numerator, denominator, detail)
+SELECT 'metric', 'auto_approved', COUNT(*), COUNT(*),
+       'projected approvals from the narrow gate' FROM auto_review;
+INSERT INTO report_output(kind, name, numerator, denominator, detail)
+SELECT 'metric', 'auto_human_reviewed', COALESCE(SUM(reviewed), 0), COUNT(*),
+       'auto-approved heads with a later founder-authored verdict' FROM auto_review;
+INSERT INTO report_output(kind, name, numerator, denominator, detail)
+SELECT 'metric', 'auto_human_reworked', COALESCE(SUM(reworked), 0), COALESCE(SUM(reviewed), 0),
+       'later founder-authored rework / human-reviewed auto approvals' FROM auto_review;
+INSERT INTO report_output(kind, name, numerator, denominator, detail)
+SELECT 'metric', 'auto_unreviewed', COALESCE(SUM(reviewed = 0), 0), COUNT(*),
+       'auto approvals without an independent later founder verdict' FROM auto_review;
+INSERT INTO report_output(kind, name, numerator, denominator, detail)
+SELECT 'status',
+       CASE WHEN COALESCE(SUM(reviewed), 0) = 0
+              THEN 'AUTO_REVIEW_UNKNOWN: zero_human_review'
+            ELSE 'AUTO_REVIEW_OBSERVED' END,
+       COALESCE(SUM(reworked), 0), COALESCE(SUM(reviewed), 0),
+       'zero human review is unknown, never a zero-percent error claim'
+FROM auto_review;
 
 INSERT INTO report_output(kind, name, numerator, denominator, detail)
 SELECT 'detail', 'N3', 1, (SELECT COUNT(*) FROM eligible_docs_runs),

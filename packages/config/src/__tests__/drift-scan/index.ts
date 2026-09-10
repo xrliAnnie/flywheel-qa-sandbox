@@ -1163,7 +1163,7 @@ function storeResolverReadsExactFlag(
 	let found = false;
 	const visit = (node: ts.Node): void => {
 		if (found) return;
-		if (
+		const helperRead =
 			ts.isCallExpression(node) &&
 			ts.isIdentifier(node.expression) &&
 			(node.expression.text === "readBoolean" ||
@@ -1172,8 +1172,15 @@ function storeResolverReadsExactFlag(
 				node.expression.text === "readFlagValue") &&
 			node.arguments.length >= 2 &&
 			ts.isStringLiteralLike(node.arguments[1] as ts.Expression) &&
-			(node.arguments[1] as ts.StringLiteralLike).text === flagName
-		) {
+			(node.arguments[1] as ts.StringLiteralLike).text === flagName;
+		const directProjectRead =
+			ts.isCallExpression(node) &&
+			ts.isPropertyAccessExpression(node.expression) &&
+			node.expression.name.text === "getFlagValueRow" &&
+			node.arguments.length >= 2 &&
+			ts.isStringLiteralLike(node.arguments[0] as ts.Expression) &&
+			(node.arguments[0] as ts.StringLiteralLike).text === flagName;
+		if (helperRead || directProjectRead) {
 			found = true;
 			return;
 		}

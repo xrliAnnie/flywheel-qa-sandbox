@@ -1,0 +1,16 @@
+erDiagram
+  "你的原消息" ||--|| "模式变更审计" : "核作者与命令"
+  "模式变更审计" ||--o{ "自动批准记录" : "引用开启证据"
+  "ship卡" ||--o| "自动批准记录" : "同卡只批一次"
+  "ship卡" ||--o{ "机器意见快照" : "每次变化留底"
+  "自动批准记录" ||--|| "四条记录线" : "精确绑定同版本"
+  "ship卡" {
+    text question_id "这张卡的固定身份"
+    text head_sha "这次改动的版本指纹"
+  }
+  "四条记录线" {
+    text machine "机器判断"
+    text declaration "Lead代理声明"
+    text evidence "真实验证记录"
+    text decision "实际决定及来源"
+  }
