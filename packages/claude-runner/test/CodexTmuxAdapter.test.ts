@@ -38,7 +38,10 @@ import {
 	TUI_OPEN_DEADLINE_MS,
 	TUI_OPEN_MAX_ATTEMPTS,
 } from "../src/CodexTmuxAdapter.js";
-import type { CodexDaemonEvents } from "../src/codex-daemon-client.js";
+import type {
+	CodexDaemonClient,
+	CodexDaemonEvents,
+} from "../src/codex-daemon-client.js";
 import { GoalRunError } from "../src/codex-daemon-client.js";
 import type {
 	CodexDaemonGoalRuntimeOptions,
@@ -697,6 +700,54 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 		await makeAdapter().execute(ctx());
 		expect(isWaiting?.()).toBe(true);
+	});
+
+	it("FLY-2460 injects admission only when enabled and uses the session's home", async () => {
+		const injectedHome = join(dir, "session-home");
+		mkdirSync(injectedHome);
+		runtime = new FakeRuntime(async (input) => {
+			expect(input.beforeFirstThread).toBeTypeOf("function");
+			await input.beforeFirstThread!({
+				client: { isClosed: () => false } as CodexDaemonClient,
+				codexHome: injectedHome,
+				signal: new AbortController().signal,
+			});
+			const receipt = JSON.parse(
+				readFileSync(
+					join(injectedHome, ".flywheel-memory-distill", `${execId}.json`),
+					"utf8",
+				),
+			);
+			expect(receipt.status).toBe("skipped:no_candidates");
+			expect(ensureWindowCalls).toHaveLength(0);
+			input.onThreadReady?.(THREAD_ID, 0);
+			return complete();
+		});
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60000,
+			undefined,
+			undefined,
+			{ ...makeDeps(), memoryDistill: { enabled: true } },
+		);
+		expect((await adapter.execute(ctx())).success).toBe(true);
+		expect(runtime.stopped).toBe(1);
+		expect(runtime.drainedCalls).toBe(1);
+	});
+	it("FLY-2460 disabled admission injects no hook", async () => {
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60000,
+			undefined,
+			undefined,
+			{ ...makeDeps(), memoryDistill: { enabled: false } },
+		);
+		expect((await adapter.execute(ctx())).success).toBe(true);
+		expect(runtime.runGoalInputs[0].beforeFirstThread).toBeUndefined();
 	});
 
 	it("happy path: runGoal → complete → success result + terminal reclaim", async () => {

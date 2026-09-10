@@ -102,6 +102,7 @@ import {
 	scrubCodexHomeCredential,
 	stripInheritedSecretEnv,
 } from "./codex-home.js";
+import { runMemoryDistillation } from "./codex-memory-distill.js";
 import {
 	type CodexPhaseLifecycle,
 	CodexPhaseLifecycleController,
@@ -440,6 +441,7 @@ function capabilityDigest(
 
 /** Injected collaborators for daemon-mode execute() (default to the real ones). */
 export interface CodexDaemonAdapterDeps {
+	memoryDistill?: { enabled: boolean; waitBudgetMs?: number; pollMs?: number };
 	/** FLY-2003 test/deployment seam for canonical account identity. */
 	codexAccountRegistryPath?: string;
 	/** FLY-2003 test/slot seam for identity-ledger snapshots. */
@@ -498,6 +500,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	readonly type = "codex-tmux";
 	readonly supportsStreaming = false;
 	private preflightDone = false;
+	private readonly memoryDistill: CodexDaemonAdapterDeps["memoryDistill"];
 	private readonly runtimeFactory: NonNullable<
 		CodexDaemonAdapterDeps["runtimeFactory"]
 	>;
@@ -563,6 +566,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						);
 						return { stdout: result.stdout, stderr: "" };
 					};
+		this.memoryDistill = deps.memoryDistill;
 		this.runtimeFactory =
 			deps.runtimeFactory ?? ((opts) => new CodexDaemonGoalRuntime(opts));
 		this.ensureWindow = deps.ensureWindow ?? ensureRunnerTuiWindow;
@@ -1555,6 +1559,28 @@ export class CodexTmuxAdapter implements IAdapter {
 			const goalPromise = runtime.runGoal(
 				{
 					objective,
+					...(this.memoryDistill?.enabled
+						? {
+								beforeFirstThread: async ({
+									client,
+									codexHome: sessionHome,
+									signal,
+								}: Parameters<
+									NonNullable<RunGoalInput["beforeFirstThread"]>
+								>[0]) => {
+									await runMemoryDistillation({
+										executionId: ctx.executionId,
+										codexHome: sessionHome,
+										cwd: ctx.cwd,
+										client,
+										signal,
+										waitBudgetMs: this.memoryDistill?.waitBudgetMs,
+										pollMs: this.memoryDistill?.pollMs,
+										log: (message) => this.log(message),
+									});
+								},
+							}
+						: {}),
 					// FLY-1236: the full working instructions ride the kick turn
 					// (turn/start), not the length-capped /goal objective.
 					kickText,

@@ -152,6 +152,13 @@ export function storeNodeDwellEnabled(
 	return readScopedBoolean(runtime, "node_dwell", projectName);
 }
 
+export function storeCodexMemoryDistillEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "codex_memory_distill", projectName);
+}
+
 export function storeDatabaseArchiveEnabled(
 	runtime: FlagStoreRuntime,
 	projectName: string,

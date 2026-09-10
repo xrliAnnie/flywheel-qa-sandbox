@@ -1,0 +1,38 @@
+classDiagram
+  class CodexHome {
+    +agents/项目/岗位/  持久家 (FLY-2358)
+    +state_5.sqlite  threads 表
+    +memories_1.sqlite  jobs / stage1_outputs
+    +memories/memory_summary.md  模型开工读的那页纸
+    +.flywheel-memory-distill/执行id.json  本单回执
+  }
+  class Thread {
+    +id
+    +source  vscode / cli
+    +memory_mode  enabled
+    +updated_at_ms  最后写日记时间
+    +rollout_path  日记文件
+  }
+  class Stage1Job {
+    +job_key = thread.id
+    +worker_id = 触发线程 id
+    +status  running / done / error
+    +last_success_watermark
+  }
+  class Stage1Output {
+    +thread_id
+    +raw_memory  非空才算真摘要
+    +rollout_summary
+    +selected_for_phase2  是否被合并进那页纸
+  }
+  class Receipt {
+    +status  readable_ready / stage1_done / partial / skipped
+    +hints[]  我们算的候选
+    +claimed[]  Codex 真做的
+    +cost.wallMs / triggerThreadTotalTokens
+  }
+  CodexHome "1" o-- "*" Thread : threads 表
+  Thread "1" --> "0..1" Stage1Job : Codex 认领
+  Stage1Job "1" --> "0..1" Stage1Output : 成功且非空
+  Receipt --> Stage1Job : 只看本 worker 的行
+  Receipt --> Stage1Output : 绑定输出与入选标记

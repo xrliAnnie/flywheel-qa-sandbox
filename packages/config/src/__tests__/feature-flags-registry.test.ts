@@ -12,6 +12,8 @@ import { RETIRED_CONFIG_PATHS, RETIRED_FLAGS } from "../feature-flags/truth.js";
 import { auditFly1981LegacyLedger } from "./fly1981-legacy-snapshot.js";
 
 const EXPECTED_WHEN_ON = {
+	codex_memory_distill:
+		"让新 Codex 任务开工前整理同一岗位已有的任务经验，供后续任务回忆",
 	cmux_watcher_rebuild_disabled:
 		"停止自动重建掉线的 cmux 监看窗口；健康检查和告警仍继续",
 	cmux_rebind_disabled: "停止自动补建并重新连接丢失的 Runner cmux 窗口",
@@ -68,7 +70,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(25);
+		expect(FEATURE_FLAGS).toHaveLength(26);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);
@@ -718,4 +720,27 @@ describe("FLY-1779 keep-field contract (§5.6)", () => {
 		expect(Object.hasOwn(base, "longTermKeep")).toBe(false);
 		expect(Object.hasOwn(base, "keepReason")).toBe(false);
 	});
+});
+
+it("FLY-2460 registers default-on managed project memory distillation without an env switch", () => {
+	const spec = FEATURE_FLAGS.find(
+		(flag) => flag.name === "codex_memory_distill",
+	);
+	expect(spec).toMatchObject({
+		default: true,
+		polarity: "default_on",
+		scope: "project",
+		valueKind: "bool",
+	});
+	expect(spec?.envVar).toBeUndefined();
+	expect(FeatureFlags.STORE_MANAGED_FLAGS.has("codex_memory_distill")).toBe(
+		true,
+	);
+	expect(
+		FeatureFlags.PROJECT_STORE_MANAGED_FLAGS.has("codex_memory_distill"),
+	).toBe(true);
+	const codec = FeatureFlags.getFlagStoreCodec("codex_memory_distill")!;
+	expect(codec.parse({ hasOverride: false, raw: null })).toBe(true);
+	expect(codec.parse({ hasOverride: true, raw: "0" })).toBe(false);
+	expect(codec.parse({ hasOverride: true, raw: "1" })).toBe(true);
 });

@@ -2504,7 +2504,7 @@ export type RemoveCodexHomeResult =
 			reason: "agent_home_protected" | "unresolved" | "rm_failed";
 	  };
 
-function isAgentHomeSubtreePath(
+export function isAgentHomeSubtreePath(
 	target: string,
 	env: NodeJS.ProcessEnv,
 ): boolean {

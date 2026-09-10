@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	type CodexDaemonClient,
 	CodexDaemonError,
@@ -47,6 +47,9 @@ class FakeClient {
 	resumed: string[] = [];
 	closed = 0;
 	constructor(private readonly threadId: string) {}
+	isClosed(): boolean {
+		return this.closed > 0;
+	}
 	async initialize(): Promise<void> {
 		this.initialized += 1;
 	}
@@ -859,4 +862,117 @@ describe("CodexDaemonGoalRuntime", () => {
 				}),
 		).toThrow(/exactly one codexHome|automatic account switching is retired/i);
 	});
+});
+
+describe("FLY-2460 admission memory hook", () => {
+	it("awaits the hook before creating the runner thread and runs it only once across restarts", async () => {
+		const h = makeHarness({
+			runGoalScript: [new CodexDaemonError("closed", "closed"), COMPLETE],
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		const calls: string[] = [];
+		try {
+			await rt.runGoal({
+				objective: "x",
+				beforeFirstThread: async ({ client, codexHome, signal }) => {
+					expect(client).toBe(h.clients[0]);
+					expect(h.clients[0].started).toEqual([]);
+					expect(signal.aborted).toBe(false);
+					calls.push(codexHome);
+				},
+			});
+			expect(calls).toEqual(["/home/a"]);
+		} finally {
+			rt.stop();
+			await rt.drained();
+		}
+	});
+});
+
+it("FLY-2460 preserves active/waiting budgets and the adjusted anchor across restarts", async () => {
+	let clock = 1000000;
+	const date = vi.spyOn(Date, "now").mockImplementation(() => clock);
+	const anchors: (number | undefined)[] = [];
+	const h = makeHarness({
+		runGoalScript: [],
+		runGoalFn: async (_client, input) => {
+			anchors.push(input.startedAt);
+			expect(input.overallTimeoutMs).toBe(5000);
+			expect(input.waitingTimeoutMs).toBe(10000);
+			if (anchors.length === 1) {
+				clock += 2000;
+				throw new CodexDaemonError("closed", "closed");
+			}
+			return COMPLETE;
+		},
+	});
+	const rt = new CodexDaemonGoalRuntime(h.opts);
+	try {
+		await rt.runGoal({
+			objective: "x",
+			overallTimeoutMs: 5000,
+			waitingTimeoutMs: 10000,
+			beforeFirstThread: async () => {
+				clock += 299000;
+			},
+		});
+		expect(anchors).toEqual([1299000, 1299000]);
+	} finally {
+		rt.stop();
+		await rt.drained();
+		date.mockRestore();
+	}
+});
+
+it("FLY-2460 skips admission on resume and contains hook errors on a fresh run", async () => {
+	const h = makeHarness({ runGoalScript: [COMPLETE] });
+	const rt = new CodexDaemonGoalRuntime(h.opts);
+	const hook = vi.fn(async () => {
+		throw new Error("ignored");
+	});
+	try {
+		await rt.runGoal({
+			objective: "x",
+			resumeThreadId: "old",
+			beforeFirstThread: hook,
+		});
+		expect(hook).not.toHaveBeenCalled();
+	} finally {
+		rt.stop();
+		await rt.drained();
+	}
+	const h2 = makeHarness({ runGoalScript: [COMPLETE] });
+	const rt2 = new CodexDaemonGoalRuntime(h2.opts);
+	try {
+		expect(
+			(await rt2.runGoal({ objective: "x", beforeFirstThread: hook })).result,
+		).toEqual(COMPLETE);
+		expect(hook).toHaveBeenCalledTimes(1);
+	} finally {
+		rt2.stop();
+		await rt2.drained();
+	}
+});
+
+it("FLY-2460 stop aborts admission and drains without creating a runner thread", async () => {
+	const h = makeHarness({ runGoalScript: [COMPLETE] });
+	const rt = new CodexDaemonGoalRuntime(h.opts);
+	let signal: AbortSignal | undefined;
+	const run = rt.runGoal({
+		objective: "x",
+		beforeFirstThread: async (session) => {
+			signal = session.signal;
+			queueMicrotask(() => rt.stop());
+			await new Promise<void>((resolve) =>
+				session.signal.addEventListener("abort", () => resolve(), {
+					once: true,
+				}),
+			);
+		},
+	});
+	await expect(run).rejects.toThrow("stopped during admission");
+	await rt.drained();
+	expect(signal?.aborted).toBe(true);
+	expect(h.clients[0].started).toEqual([]);
+	expect(h.stops).toBe(1);
 });

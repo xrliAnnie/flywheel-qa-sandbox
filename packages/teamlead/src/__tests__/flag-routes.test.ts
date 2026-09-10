@@ -55,6 +55,46 @@ async function makeManagedDeps(over: Partial<FlagRouteDeps> = {}) {
 }
 
 describe("handleFlagStage", () => {
+	it("FLY-2460 manages distillation global/project set and clear through SQLite only", async () => {
+		const readFile = vi.fn(() => {
+			throw new Error("distillation must not access config or env files");
+		});
+		const { deps, flagStore, store } = await makeManagedDeps({ readFile });
+		const name = "codex_memory_distill";
+		for (const payload of [
+			{ project: "*", to: false, op: "set" },
+			{ project: "flywheel", to: true, op: "set" },
+			{ project: "flywheel", op: "clear" },
+		] as const) {
+			const result = handleFlagStage(
+				deps,
+				{ name, ...payload, reason: "adjust admission distillation" },
+				"o",
+			);
+			expect(result.code).toBe(200);
+			const body = result.body as {
+				canonical: FlagStoreCanonical;
+				confirmToken: string;
+			};
+			expect(
+				handleFlagApply(deps, body.canonical, body.confirmToken, "o").code,
+			).toBe(200);
+			expect(
+				FlagStoreReaders.storeCodexMemoryDistillEnabled(flagStore, "flywheel"),
+			).toBe(payload.project === "flywheel" && payload.op === "set");
+		}
+		expect(store.getFlagValueRow(name, "*")?.raw).toBe("0");
+		expect(store.getFlagValueRow(name, "flywheel")).toBeUndefined();
+		expect(readFile).not.toHaveBeenCalled();
+		for (const payload of [
+			{ project: "flywheel", reason: "" },
+			{ project: "not-in-roster", reason: "unknown project" },
+		])
+			expect(
+				handleFlagStage(deps, { name, to: false, ...payload }, "o").code,
+			).toBe(400);
+	});
+
 	it("rejects enabling doc_flow when the project config has no default_department", async () => {
 		const { deps } = await makeManagedDeps({
 			projectConfigPath: (projectName: string) =>

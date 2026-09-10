@@ -438,6 +438,12 @@ describe("feature-flag drift guard", () => {
 					"storeWorkflowNodeReuseEnabled",
 				],
 				[
+					"codex_memory_distill",
+					"packages/teamlead/src/bridge/run-infra.ts",
+					"setupRunInfrastructure",
+					"storeCodexMemoryDistillEnabled",
+				],
+				[
 					"workflow_gate_question_recovery",
 					"packages/teamlead/src/bridge/plugin.ts",
 					"workflowGateQuestionRecoveryEnabled",

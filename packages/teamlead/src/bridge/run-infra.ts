@@ -94,6 +94,7 @@ import { EventFilter } from "./EventFilter.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
 	type FlagStoreRuntime,
+	storeCodexMemoryDistillEnabled,
 	storeDocFlowEnabled,
 	storePonytailEnabled,
 	storeProofshotEnabled,
@@ -553,6 +554,24 @@ function resolveFlywheelRepoRoot(explicit?: string): string {
 	return candidate;
 }
 
+export function createCodexRunAdapterFactory(
+	args: ConstructorParameters<typeof CodexTmuxAdapter>,
+	readEnabled: () => boolean = () => true,
+): () => CodexTmuxAdapter {
+	return () => {
+		const enabled = readEnabled();
+		if (!enabled)
+			console.log(
+				"[RunInfra] Codex memory distillation disabled for new adapter",
+			);
+		const configured: ConstructorParameters<typeof CodexTmuxAdapter> = [
+			...args,
+		];
+		configured[6] = { ...args[6], memoryDistill: { enabled } };
+		return new CodexTmuxAdapter(...configured);
+	};
+}
+
 type CodexMemoryHomeResolution = ReturnType<typeof resolveExecutionCodexHome>;
 
 /** Build the deterministic legacy-source set for one exact persistent home. */
@@ -682,6 +701,7 @@ export async function createRunBlueprint(
 			| undefined;
 	},
 	codexMemorySeedSources?: CodexMemorySeedSourcesLoader,
+	codexMemoryDistillEnabled?: () => boolean,
 ): Promise<{
 	blueprint: Blueprint;
 	cleanup: () => Promise<void>;
@@ -847,8 +867,8 @@ export async function createRunBlueprint(
 		);
 		adapterRegistry.registerFactory(
 			"codex-tmux",
-			() =>
-				new CodexTmuxAdapter(
+			createCodexRunAdapterFactory(
+				[
 					tmuxSessionName,
 					undefined,
 					5000,
@@ -869,7 +889,9 @@ export async function createRunBlueprint(
 							? { onTransportClose: onCodexTransportClose }
 							: {}),
 					},
-				),
+				],
+				codexMemoryDistillEnabled,
+			),
 		);
 		// FLY-493: Antigravity (`agy`) executor backend — v1 transport=none, so
 		// NO transport arg (agy has no claude-code Agent Team mailbox). The
@@ -1577,6 +1599,10 @@ export async function setupRunInfrastructure(
 						},
 					},
 					createCodexMemorySeedSourcesLoader(store),
+					flagStore
+						? () =>
+								storeCodexMemoryDistillEnabled(flagStore, project.projectName)
+						: undefined,
 				);
 			runInfraOpts?.codexRecoveryRuntimes?.set(
 				project.projectName,

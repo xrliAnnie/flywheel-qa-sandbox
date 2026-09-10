@@ -124,6 +124,12 @@ export interface CodexTransportCloseEvidence {
 }
 
 export interface RunGoalInput {
+	/** Awaited only before this fresh execution creates its first runner thread. */
+	beforeFirstThread?: (session: {
+		client: CodexDaemonClient;
+		codexHome: string;
+		signal: AbortSignal;
+	}) => Promise<void>;
 	objective: string;
 	kickText?: string;
 	tokenBudget?: number;
@@ -230,6 +236,7 @@ export class CodexDaemonGoalRuntime {
 	private readonly exitWaitMs: number;
 	private session: DaemonSession | null = null;
 	private stopped = false;
+	private readonly admissionAbort = new AbortController();
 	private running = false;
 	/** The teardown started by stop() — always RESOLVES (a failure is recorded
 	 * in teardownError + logged), so in-flight runGoal can await it without an
@@ -501,7 +508,7 @@ export class CodexDaemonGoalRuntime {
 			// waiting ceilings are absolute for the run — a daemon
 			// restart can no longer re-arm a full fresh budget (which let N
 			// restarts multiply the cap).
-			const runStartedAt = Date.now();
+			let runStartedAt = Date.now();
 			// MED-7 R3 (Codex full-PR review): carry the monotonic gate-wait deadline
 			// extension across restarts, so a runner that extended its deadline while
 			// waiting on a gate is not cut off by a transport restart after the gate
@@ -516,6 +523,28 @@ export class CodexDaemonGoalRuntime {
 						this.session ??
 						(await this.startSession(reapPid, input.onSpawnIdentity));
 					reapPid = undefined; // reap applies only to the first spawn
+					if (
+						input.beforeFirstThread &&
+						restarts === 0 &&
+						!input.resumeThreadId &&
+						!this.stopped &&
+						!session.client.isClosed()
+					) {
+						const admissionStartedAt = Date.now();
+						try {
+							await input.beforeFirstThread({
+								client: session.client,
+								codexHome: session.codexHome,
+								signal: this.admissionAbort.signal,
+							});
+						} catch {
+							this.safeLog("beforeFirstThread failed (ignored)");
+						} finally {
+							runStartedAt += Math.max(0, Date.now() - admissionStartedAt);
+						}
+						if (this.stopped)
+							throw new Error("runtime stopped during admission");
+					}
 					threadId = await this.ensureThread(session, threadId);
 					// AUTHORITATIVE own-thread signal (FLY-1188 M4d): the thread is
 					// confirmed ours here (not a raw notification, which can be
@@ -649,6 +678,7 @@ export class CodexDaemonGoalRuntime {
 	stop(): void {
 		if (this.stopped) return;
 		this.stopped = true;
+		this.admissionAbort.abort();
 		const dead = this.killSession();
 		if (dead) {
 			this.teardownDone = this.drainExit(dead).catch((e) => {

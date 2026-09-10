@@ -177,6 +177,26 @@ describe("CodexDaemonClient — handshake + protocol", () => {
 		);
 	});
 
+	it("passes per-thread memory overrides and a bounded request timeout", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/start", () => ({ thread: { id: "trigger" } }));
+		const c = makeClient(d);
+		const config = {
+			"memories.generate_memories": false,
+			"memories.min_rollout_idle_hours": 1,
+		};
+		await c.startThread({ cwd: "/w", config, timeoutMs: 123 });
+		expect(d.sent.find((s) => s.method === "thread/start")?.params).toEqual({
+			cwd: "/w",
+			config,
+		});
+		await expect(c.startThread({ cwd: "/w", timeoutMs: 0 })).rejects.toThrow();
+		await c.startThread({ cwd: "/w" });
+		expect(
+			d.sent.filter((s) => s.method === "thread/start")[1]?.params,
+		).toEqual({ cwd: "/w" });
+	});
+
 	it("thread/resume returns the resumed id (survives daemon restart — V2)", async () => {
 		const d = new FakeDaemon();
 		d.responders.set("thread/resume", (p) => ({

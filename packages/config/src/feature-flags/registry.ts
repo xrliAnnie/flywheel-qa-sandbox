@@ -520,6 +520,29 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 
 	// ─── project config flags (per-project scope) ───
 	{
+		name: "codex_memory_distill",
+		category: "kill_switch",
+		source: "project_config",
+		scope: "project",
+		configKey: "codex.memory_distill_enabled",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2460: run bounded native memory distillation before a new Codex runner task",
+		whenOn: "让新 Codex 任务开工前整理同一岗位已有的任务经验，供后续任务回忆",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
+				"storeCodexMemoryDistillEnabled",
+			),
+		],
+		toggleable: "conversational",
+		note: "SQLite only: project override, then global * row, then default on. Read for each new adapter; changes do not interrupt an admitted execution. configKey is registry metadata, not a config.yaml read channel.",
+	},
+	{
 		name: "workflow_gate_question_recovery",
 		category: "kill_switch",
 		source: "project_config",

@@ -457,16 +457,25 @@ export class CodexDaemonClient {
 		approvalPolicy?: "never" | "on-request" | "on-failure" | "unless-trusted";
 		model?: string;
 		baseInstructions?: string;
+		config?: Record<string, string | number | boolean>;
+		timeoutMs?: number;
 	}): Promise<string> {
-		const res = await this.request("thread/start", {
-			cwd: input.cwd,
-			...(input.sandbox ? { sandbox: input.sandbox } : {}),
-			...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}),
-			...(input.model ? { model: input.model } : {}),
-			...(input.baseInstructions
-				? { baseInstructions: input.baseInstructions }
-				: {}),
-		});
+		const res = await this.request(
+			"thread/start",
+			{
+				...(input.config !== undefined ? { config: input.config } : {}),
+				cwd: input.cwd,
+				...(input.sandbox ? { sandbox: input.sandbox } : {}),
+				...(input.approvalPolicy
+					? { approvalPolicy: input.approvalPolicy }
+					: {}),
+				...(input.model ? { model: input.model } : {}),
+				...(input.baseInstructions
+					? { baseInstructions: input.baseInstructions }
+					: {}),
+			},
+			input.timeoutMs,
+		);
 		const id = extractThreadId(res.result);
 		if (!id)
 			throw new CodexDaemonError("thread/start returned no id", "no_thread");

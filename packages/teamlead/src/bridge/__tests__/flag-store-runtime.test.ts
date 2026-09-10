@@ -13,6 +13,7 @@ import {
 	storeAlertSystemEnabled,
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
+	storeCodexMemoryDistillEnabled,
 	storeDatabaseArchiveEnabled,
 	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
@@ -254,6 +255,41 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		expect(storeDocFlowEnabled(runtime, "geoforge3d")).toBe(true);
 	});
 
+	it("FLY-2460 reads memory distillation at call time with project, star, default precedence", () => {
+		const runtime = initializeFlagStore(store, {});
+		const read = (project = "flywheel") =>
+			storeCodexMemoryDistillEnabled(runtime, project);
+		expect(read()).toBe(true);
+		for (const [scope, rawTo, op] of [
+			["*", "0", "set"],
+			["flywheel", "1", "set"],
+			["flywheel", null, "clear"],
+			["*", null, "clear"],
+		] as const) {
+			expect(
+				store.applyScopedFlagValueChange({
+					name: "codex_memory_distill",
+					scope,
+					rawTo,
+					expectedChangeSeq: store.getFlagValueChangeSeq(
+						"codex_memory_distill",
+						scope,
+					),
+					op,
+					actor: "fixture",
+					reason: "test admission switch",
+				}),
+			).toMatchObject({ ok: true });
+			expect(read()).toBe(
+				(scope === "flywheel" && op === "set") ||
+					(scope === "*" && op === "clear"),
+			);
+			expect(read("geoforge3d")).toBe(scope === "*" && op === "clear");
+		}
+		expect(
+			store.getFlagValueRow("codex_memory_distill", "flywheel"),
+		).toBeUndefined();
+	});
 	it("keeps database archive default-on and observes a project off write", () => {
 		const runtime = initializeFlagStore(store, {});
 		expect(storeDatabaseArchiveEnabled(runtime, "flywheel")).toBe(true);

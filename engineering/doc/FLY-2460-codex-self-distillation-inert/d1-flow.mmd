@@ -1,0 +1,14 @@
+flowchart TD
+  A["Bridge 派发任务 N+1<br/>到同一个 keyed 家"] --> B["daemon 启动<br/>(codex app-server)"]
+  B --> C{"读家里两个数据库<br/>有没有 ≥1h 前结束、<br/>还没蒸馏的旧线程?"}
+  C -- 没有 --> Z["写回执 skipped:no_candidates<br/>零成本, 直接开工"]
+  C -- 有 --> D["同一 daemon 起一条触发线程<br/>idle=1h · generate_memories=false<br/>只读沙箱, 只回一个字 ok"]
+  D --> E["Codex 自己跑 stage1<br/>(每条 rollout → 摘要进库, ≈40s)"]
+  E --> F{"phase2 6h 冷却过了?"}
+  F -- 过了 --> G["Codex 自己跑 phase2<br/>(合并成 memory_summary.md, ≈90s)"]
+  F -- 没过 --> H["这次只存摘要<br/>回执 stage1_done"]
+  G --> I["回执 readable_ready"]
+  H --> J["建 runner 自己的线程, 第一轮开始"]
+  I --> J
+  Z --> J
+  J -. "预算 ≤5 分钟, 到点让路<br/>关闭开关 = 零调用" .-> J
