@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex 体重启后不再全体换体</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, "PingFang SC", "Helvetica Neue", sans-serif; line-height: 1.65; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; color: #1a365d; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; font-family: "SF Mono", Menlo, monospace; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin: 18px 0; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; } .card.amber { border-left-color: #ff9500; } .card.red { border-left-color: #ff3b30; } .card.purple { border-left-color: #af52de; } .card.gray { border-left-color: #86868b; }
+  .card h2 { font-size: 18px; margin: 0 0 10px; }
+  .card h3 { font-size: 15px; margin: 14px 0 6px; color: #1a365d; }
+  .lede { font-size: 17px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .tablewrap { overflow-x: auto; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; background: #f2f2f7; padding: 1px 5px; border-radius: 4px; }
+  .expl { color: #515154; font-size: 13.5px; }
+  .diagram { overflow-x: auto; background: #fff; border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  .diagram.wide svg { min-width: 1100px; }
+  .quote { border-left: 3px solid #d2d2d7; margin: 10px 0; padding: 6px 12px; color: #3a3a3c; background: #fafafa; border-radius: 0 8px 8px 0; font-size: 13.5px; }
+  .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; margin-right: 6px; vertical-align: middle; }
+  .tag.do { background: #e3f9e9; color: #1f7a37; } .tag.dont { background: #fde8e6; color: #b3261e; } .tag.later { background: #ede7f6; color: #5e35b1; }
+  .num { font-family: "SF Mono", Menlo, monospace; }
+  ul { padding-left: 20px; } li { margin: 4px 0; }
+  .comment { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e5e5ea; }
+  .comment label { display: block; font-size: 12px; color: #86868b; margin-bottom: 4px; }
+  .comment textarea { width: 100%; box-sizing: border-box; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 14px; resize: vertical; background: #fafafa; }
+  .comment textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  .summary pre { white-space: pre-wrap; word-break: break-word; background: #f2f2f7; border-radius: 8px; padding: 12px; font-size: 13px; margin: 8px 0; }
+  .btn { background: #007aff; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer; }
+  .btn.secondary { background: #e5e5ea; color: #1d1d1f; }
+  #copy-status { margin-left: 10px; color: #34c759; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Bridge 重启后,被返工唤醒过的 Codex 体不再「必死换体」</h1>
+  <div class="meta">FLY-2352 · 设计稿 2026-09-08 · Codex 设计评审 2 轮 APPROVED · Bridge design gate 已过 · 实现节点待派</div>
+
+  <section class="card green" data-title="一句话">
+    <h2>一句话</h2>
+    <p class="lede">Bridge(总机:管所有 runner 的那个常驻进程)每次重启,只要一个 Codex runner(runner:领了一张 issue 在干活的 AI 工人,下文叫「体」)之前被 QA 打回过一次(返工),它就<b>必定</b>救不回来,被判死、换一个新体从头读交接。原因不是它真的坏了,而是「救援程序」找它的档案时用了一把<b>只认单条记录的旧钥匙</b>,返工过的体有两条记录,旧钥匙一看两条就说「查无此人」。换成早就写好的那把精确钥匙,同一个体就能按原样接着干。</p>
+    <p class="expl">修改范围:一个函数换一把钥匙 + 两个新的失败原因词 + 一句更清楚的报错。不动数据库结构,不加开关,回滚就是撤回 PR。</p>
+    <div class="comment"><label for="c-1">对这一节的意见</label><textarea id="c-1" data-key="s1" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card red" data-title="这事有多大">
+    <h2>这事有多大(2026-09-08 只读查生产库,没拷库)</h2>
+    <div class="tablewrap"><table>
+      <tr><th>指标</th><th>数字</th><th>说明</th></tr>
+      <tr><td>issue 登记的规模</td><td class="num">×2</td><td>FLY-2337 的两个体,2026-09-05</td></tr>
+      <tr><td>实测被这个病打死的体</td><td class="num">15 个 / 10 张 issue</td><td>2026-09-03 21:07 首见,2026-09-08 05:06 最近一次;FLY-2403 一张单两天烧掉 3 个体</td></tr>
+      <tr><td>这 15 个体在出事时的档案条数</td><td class="num">15/15 都是 ≥2 条</td><td>全部是「原始那条 + 返工唤醒那条」</td></tr>
+      <tr><td>历史上救回来的体</td><td class="num">54 个</td><td>54/54 都发生在它只有 1 条档案的时候;没有一次是在 2 条档案下救回来的</td></tr>
+      <tr><td>此刻在飞的 Codex 体</td><td class="num">5 个,其中 2 条档案的 0 个</td><td>但任何一次 QA 打回都会把一个在飞体推进「必死」集合</td></tr>
+    </table></div>
+    <p class="expl">时间线:2026-07-22 FLY-1423 把旧钥匙改成「多条记录就返回空」并写明「调用方应改用精确 API」;2026-09-01 FLY-2211 上线「重启救援」时,救援程序恰恰用了这把旧钥匙;上线第三天(09-03)开始出事,至今没有一次在返工体上救援成功。</p>
+    <div class="comment"><label for="c-2">对这一节的意见</label><textarea id="c-2" data-key="s2" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card" data-title="核心流程:出事 vs 修后">
+    <h2>核心流程:出事的路(红)与修后的路(绿)</h2>
+    <p class="expl">名词:<b>activation</b>(激活记录)= 「这个体在这张 issue 的第几轮里被授权干活」的一条档案;正常派工留一条,QA 打回后引擎不换人、直接「唤醒」同一个体再干一轮,就会再挂一条。<b>snapshot</b>(启动快照)= 体出生时冻结下来的一份参数,救援时拿它重建现场。<b>drift</b>(漂移)= 快照里的参数和现在重新算出来的参数对不上。</p>
+    <div class="diagram"><!--SVG1--></div>
+    <p>重点看菱形分叉:同一份快照、同一个体,只是换了一把找档案的钥匙,结果从「判死换体」变成「原体续命」。绿线上的 <code>runtime.resume</code> 就是 issue 里说的「同 socket 重拉 daemon」——这条路本来就在,只是从来没跑到过。</p>
+    <div class="comment"><label for="c-3">对这一节的意见</label><textarea id="c-3" data-key="s3" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card purple" data-title="两把钥匙的差别">
+    <h2>两把钥匙的差别</h2>
+    <div class="diagram wide"><!--SVG3--></div>
+    <p>左边这把旧钥匙不是 bug,它是 FLY-1423 有意做成「多条就报空」的保险丝,源码注释原话:「this legacy getter is only well-defined for a single activation. Callers that can observe re-entry must use an exact activation API」。问题是救援程序没听这句话。右边这把精确钥匙在同一次救援里<b>已经被另一行代码用着</b>(拿它取 activation id 传给 runner),两把钥匙在同一次救援里给出了矛盾答案:精确钥匙说「你是第 3 轮的返工体」,旧钥匙说「查无此人」。</p>
+    <div class="comment"><label for="c-4">对这一节的意见</label><textarea id="c-4" data-key="s4" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card" data-title="数据结构">
+    <h2>数据结构:谁记着什么</h2>
+    <div class="diagram wide"><!--SVG2--></div>
+    <p class="expl">关键就一句:<code>WORKFLOW_EXECUTION_BINDING</code> 允许同一个 <code>execution_id</code> 有多行(attempt 2 和 attempt 3 同时挂着),而救援程序假设它只有一行。<code>RECOVERY_CLAIM</code> 是救援次数账本,每个 episode(一轮救援周期)最多 2 次,第 3 次来就判死。<code>LAUNCH_SNAPSHOT_FILE</code> 里那两个布尔值是出生时冻结的,不会变;这次出事不是它们变了,是「现在重新算」那一侧根本没算出来。</p>
+    <div class="comment"><label for="c-5">对这一节的意见</label><textarea id="c-5" data-key="s5" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card amber" data-title="改什么、怎么验">
+    <h2>改什么、怎么验</h2>
+    <h3>改动(最小交付)</h3>
+    <ul>
+      <li><span class="tag do">改</span><code>prepareCodexRecoveryCapabilities</code>:找档案的那一行从旧钥匙换成精确钥匙 <code>resolveCurrentWorkflowActivation</code>;后面发能力、轮换凭据的代码一行不动。</li>
+      <li><span class="tag do">加</span>两个失败原因词:<code>activation_ambiguous</code>(精确钥匙也找不到唯一的一条,例如替身已经铸好)、<code>activation_invalid</code>(档案本身损坏)。都走既有的「本次尝试作废」分支,不再让异常炸掉整轮巡检。</li>
+      <li><span class="tag do">改</span>drift 报错句子带上两边的值,巡检不用再猜是哪个布尔、哪一侧。</li>
+    </ul>
+    <h3>验收</h3>
+    <ul>
+      <li>先红后绿:用内存数据库复现生产的「原始 + 唤醒」两条档案形状,改前返回「非 workflow 体」(红),改后返回正确能力且新凭据挂在返工那条档案上(绿)。设计阶段已用一次性探针验证过红侧。</li>
+      <li>三份既有测试文件基线 54/54 绿,改后继续绿;CI 以 PR 的确切 head 为准。</li>
+      <li>QA 上线后盯下一次 Bridge 重启:若窗口内有 2 条档案的 Codex 在飞体,期望看到 <code>reown_revive_succeeded</code> 而不是 drift;窗口内没有这类体就如实写「未观测到目标形状」。</li>
+    </ul>
+    <div class="comment"><label for="c-6">对这一节的意见</label><textarea id="c-6" data-key="s6" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card gray" data-title="取舍与被否掉的方案">
+    <h2>取舍与被否掉的方案</h2>
+    <div class="tablewrap"><table>
+      <tr><th>方案</th><th>结论</th><th>为什么</th></tr>
+      <tr><td>A. 救援程序换精确钥匙</td><td><span class="tag do">采用</span></td><td>一处改动,和同一次救援里已在用的那把钥匙统一成一个来源;生产两例的救援日志证明精确钥匙当时能唯一解析。</td></tr>
+      <tr><td>B. issue 提的「漂移了就重算覆盖,别抛错」</td><td><span class="tag dont">否</span></td><td>快照里的布尔已经烘进了体的启动指令和环境变量;若真对不上,覆盖只是把矛盾藏到运行期。修好 A 之后合法返工不再触发这个守卫,它剩下的职责就是抓「真的对不上」,那正该 fail-closed(宁可停下也不猜)。只把报错句子写清楚。</td></tr>
+      <tr><td>C. 把检查挪到「杀旧进程」之前 / 失败不扣次数</td><td><span class="tag later">不做,记为已知限制</span></td><td>失败不扣次数会让一个确定救不回的体永远悬着,比换体更糟;A 修好后这个场景不再出现。</td></tr>
+      <tr><td>D. 直接改旧钥匙本身</td><td><span class="tag dont">否</span></td><td>FLY-1423 有意把它做成保险丝,还有 9 处调用方各有自己的合同;改语义是另一张单。</td></tr>
+      <tr><td>issue 提的「失败后先试同 socket 重拉 daemon」</td><td><span class="tag dont">不需要新路</span></td><td>绿线上的 <code>runtime.resume</code> 就是这条路,它只是从来没被跑到。</td></tr>
+    </table></div>
+    <div class="comment"><label for="c-7">对这一节的意见</label><textarea id="c-7" data-key="s7" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card amber" data-title="诚实边界:做与不做">
+    <h2>诚实边界:这单做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>返工唤醒过的 Codex 体在 Bridge 重启后能按原体救回。</li>
+      <li>档案找不到唯一一条、或档案损坏时,给出可辨认的失败原因,不炸整轮巡检。</li>
+    </ul>
+    <h3>不做</h3>
+    <ul>
+      <li><b>L1(Codex 评审抓到的另一个洞,FLY-2211 就有,本单不修)</b>:救援时轮换出的新凭据只放进了体的环境变量,而体在提交结果时读的是另一张表里的旧凭据。这只影响「带输出/裁决凭据」的 Codex 体;<b>今天生产里没有这种体</b>——314 条救援能力事件里带凭据的 0 条,54 个救回的体全是 implement,所有在飞 workflow 模板里 Codex 节点只有 implement / eng_design,都不带凭据;QA 节点全是 Claude。已建议 Tadashi 另开一张单;ship 前会再核一次模板没变。</li>
+      <li>不改旧钥匙和它的其他 9 处调用方。</li>
+      <li>不改救援的次数上限、先杀后救的顺序、判死后换体的引擎行为。</li>
+      <li>不回填已经被换体的 14 个 session(替身已在跑或已完成)。</li>
+      <li>FLY-2403 里另一种判死(<code>recovery owner failed before commit</code>)不是这个病,不在本单。</li>
+    </ul>
+    <div class="comment"><label for="c-8">对这一节的意见</label><textarea id="c-8" data-key="s8" placeholder="留空 = 没意见"></textarea></div>
+  </section>
+
+  <section class="card blue summary" id="summary-card" data-title="页面意见汇总">
+    <h2>页面意见汇总</h2>
+    <p class="expl">下面实时汇总你在每一节留下的意见。点「复制全部意见」发回给 Tadashi;超过约 1800 字会自动分段,每段都带标记。这是修改反馈,不是通过信号。草稿只存在你这台设备的浏览器里。</p>
+    <div id="summary-chunks"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button>
+    <button class="btn secondary" id="clear-all" type="button">清空</button>
+    <span id="copy-status"></span>
+  </section>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = "【页面意见汇总】FLY-2352";
+  var PREFIX = "fly2352-comment:" + location.pathname + ":";
+  var CHUNK = 1800;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  function load(key) { try { return localStorage.getItem(PREFIX + key) || ""; } catch (e) { return ""; } }
+  function save(key, value) { try { localStorage.setItem(PREFIX + key, value); } catch (e) {} }
+  function remove(key) { try { localStorage.removeItem(PREFIX + key); } catch (e) {} }
+  function sectionTitle(el) {
+    var sec = el.closest("section");
+    return sec && sec.getAttribute("data-title") ? sec.getAttribute("data-title") : "未命名";
+  }
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) lines.push("[" + sectionTitle(ta) + "] " + v);
+    });
+    return lines;
+  }
+  function chunks() {
+    var lines = collect();
+    if (!lines.length) return [MARKER + "\n(暂无意见)"];
+    var out = [], cur = MARKER;
+    lines.forEach(function (line) {
+      var candidate = cur + "\n" + line;
+      if (candidate.length > CHUNK && cur !== MARKER) { out.push(cur); cur = MARKER + "\n" + line; }
+      else cur = candidate;
+    });
+    out.push(cur);
+    return out;
+  }
+  function render() {
+    var host = document.getElementById("summary-chunks");
+    while (host.firstChild) host.removeChild(host.firstChild);
+    chunks().forEach(function (text, i, all) {
+      var pre = document.createElement("pre");
+      pre.textContent = all.length > 1 ? text + "\n(第 " + (i + 1) + "/" + all.length + " 段)" : text;
+      host.appendChild(pre);
+    });
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.top = "-1000px";
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function setStatus(msg) {
+    var s = document.getElementById("copy-status");
+    s.textContent = msg;
+    setTimeout(function () { s.textContent = ""; }, 2500);
+  }
+  function copyAll() {
+    var text = chunks().join("\n\n");
+    var done = function (ok) { setStatus(ok ? "已复制" : "复制失败,请手动选中上方文本"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+  areas.forEach(function (ta) {
+    ta.value = load(ta.getAttribute("data-key"));
+    ta.addEventListener("input", function () { save(ta.getAttribute("data-key"), ta.value); render(); });
+  });
+  document.getElementById("copy-all").addEventListener("click", copyAll);
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; remove(ta.getAttribute("data-key")); });
+    render(); setStatus("已清空");
+  });
+  render();
+})();
+</script>
+</body>
+</html>

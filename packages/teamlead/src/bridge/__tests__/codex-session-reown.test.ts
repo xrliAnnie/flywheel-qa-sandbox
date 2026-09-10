@@ -658,6 +658,28 @@ describe("FLY-2211 Codex session re-owner", () => {
 		expect(h.events).toContain("reown_revive_failed");
 	});
 
+	it("FLY-2352 aborts without spawn when capabilities resolve to an ambiguous activation", async () => {
+		const h = harness({ liveness: "absent" });
+		vi.mocked(h.deps.store.prepareCodexRecoveryCapabilities).mockReturnValue({
+			ok: false,
+			reason: "activation_ambiguous",
+		});
+		const reowner = new CodexSessionReowner(h.deps);
+
+		await reowner.runPass();
+
+		expect(h.order).toEqual(["claim", "abort"]);
+		expect(h.revive).not.toHaveBeenCalled();
+		expect(h.abort).toHaveBeenCalledWith("exec-1", "claim-1", {});
+		expect(h.deps.record).toHaveBeenCalledWith(
+			"reown_revive_failed",
+			h.candidate,
+			expect.objectContaining({
+				reason: "capabilities_activation_ambiguous",
+			}),
+		);
+	});
+
 	it("aborts before recycle when a crashed TURN writer already changed CommDB", async () => {
 		const h = harness({ liveness: "alive", gateHeld: true });
 		vi.mocked(h.deps.readTurnHolder).mockResolvedValue("replacement-exec");

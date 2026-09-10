@@ -1472,6 +1472,8 @@ export type CodexRecoveryCapabilitiesResult =
 				| "lease_expired"
 				| "stale_revision"
 				| "superseded"
+				| "activation_ambiguous"
+				| "activation_invalid"
 				| "capabilities_already_prepared"
 				| "invalid_expiry";
 	  };
@@ -10475,8 +10477,25 @@ export class StateStore {
 				return;
 			}
 
-			const context = this.generalizedExecutionContext(executionId);
-			if (!context) {
+			// FLY-1423/FLY-2352: recovery can observe multiple historical
+			// activations after re-entry, so the single-activation legacy getter is
+			// not authoritative here. Resolve the activation that still owns the
+			// active run's latest attempt instead.
+			let resolved: ReturnType<StateStore["resolveCurrentWorkflowActivation"]>;
+			try {
+				resolved = this.resolveCurrentWorkflowActivation(executionId);
+			} catch (error) {
+				if (error instanceof WorkflowAdmissionClassificationError) {
+					result = { ok: false, reason: "activation_invalid" };
+					return;
+				}
+				throw error;
+			}
+			if (resolved.kind === "ambiguous") {
+				result = { ok: false, reason: "activation_ambiguous" };
+				return;
+			}
+			if (resolved.kind === "none") {
 				result = {
 					ok: true,
 					enrolled: false,
@@ -10485,6 +10504,7 @@ export class StateStore {
 				};
 				return;
 			}
+			const context = resolved;
 			const eventUid = `codex_recovery_capabilities_prepared:${executionId}:${claim.episode_id}:${claim.episode_attempts}`;
 			if (
 				this.workflowSelectAll(

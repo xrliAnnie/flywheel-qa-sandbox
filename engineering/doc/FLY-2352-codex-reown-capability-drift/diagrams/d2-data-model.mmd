@@ -1,0 +1,35 @@
+erDiagram
+    SESSIONS ||--o{ WORKFLOW_EXECUTION_BINDING : "一个体可有多条 activation"
+    WORKFLOW_EXECUTION_BINDING }o--|| WORKFLOW_RUN : "属于同一个 run"
+    WORKFLOW_RUN ||--o{ WORKFLOW_RUN_NODE : "每个节点每个 attempt 一行"
+    SESSIONS ||--o| RECOVERY_CLAIM : "恢复尝试账本"
+    SESSIONS ||--o| LAUNCH_SNAPSHOT_FILE : "启动时冻结的快照(文件)"
+    SESSIONS {
+        string execution_id PK "体的唯一 id"
+        string status "running / failed ..."
+        string workflow_node_id "implement / eng_design"
+        int lifecycle_revision
+    }
+    WORKFLOW_EXECUTION_BINDING {
+        string activation_id PK "spawn 用 activation:exec:run:node:n / rework 用 activation:rework:hash"
+        string execution_id FK
+        string node_id
+        int attempt "2 与 3 可同时挂在同一个 execution 上"
+        string mode "spawn | replacement | wake"
+    }
+    WORKFLOW_RUN_NODE {
+        string node_id
+        int attempt
+        string execution_id "谁在跑这个 attempt"
+        string state
+    }
+    RECOVERY_CLAIM {
+        string execution_id PK
+        string episode_id
+        int episode_attempts "打到 2 即 exhausted"
+        string episode_state "open | closed"
+    }
+    LAUNCH_SNAPSHOT_FILE {
+        bool workflowSubmissionExpected "launch 时的值(不可变)"
+        bool founderReviewRequired "launch 时的值(不可变)"
+    }

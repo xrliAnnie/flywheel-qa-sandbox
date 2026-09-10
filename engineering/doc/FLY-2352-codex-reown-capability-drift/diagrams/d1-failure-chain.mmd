@@ -1,0 +1,26 @@
+flowchart TB
+    A["Bridge 重启"] --> B["Codex 体的 daemon 随旧 Bridge 断开<br/>(TUI 报 Connection lost)"]
+    B --> C["reown 巡检:判定该体不健康<br/>→ 进入恢复 beginRecovery"]
+    C --> D["claim:登记本次恢复尝试<br/>(每个 episode 最多 2 次)"]
+    D --> E["prepareCodexRecoveryCapabilities<br/>(重新算这个体的 workflow 能力)"]
+    E --> F{"用哪把钥匙<br/>找这个体的 activation?"}
+    F -->|"现状:老钥匙 getWorkflowExecutionBinding"| G["该体有 2 条 activation<br/>(原 spawn + rework wake)<br/>⇒ 返回 undefined"]
+    G --> H["算成『非 workflow 体』<br/>workflowSubmissionExpected=false"]
+    H --> I["buildCodexRecoveryContext<br/>快照说 true,现算说 false<br/>⇒ 抛 workflow capability drift"]
+    I --> J["本次尝试作废<br/>(attempt +1)"]
+    J -->|"5 分钟后再来一次,同样失败"| D
+    D -->|"第 3 次:attempts>=2"| K["episode_exhausted<br/>→ session 标 failed"]
+    K --> L["引擎铸替身:重读交接、重开审查<br/>(每次重启全体换体)"]
+    F -->|"修后:精确钥匙 resolveCurrentWorkflowActivation"| M["找到 current activation<br/>(rework wake, attempt 最新)"]
+    M --> N["正常发能力、轮换凭据<br/>workflowSubmissionExpected=true"]
+    N --> O["快照与现算一致<br/>→ runtime.resume 按原 socket 重拉 daemon"]
+    O --> P["reown_revive_succeeded<br/>同一个体继续干活"]
+    style G fill:#ffe5e3,stroke:#ff3b30
+    style H fill:#ffe5e3,stroke:#ff3b30
+    style I fill:#ffe5e3,stroke:#ff3b30
+    style K fill:#ffe5e3,stroke:#ff3b30
+    style L fill:#ffe5e3,stroke:#ff3b30
+    style M fill:#e3f7e8,stroke:#34c759
+    style N fill:#e3f7e8,stroke:#34c759
+    style O fill:#e3f7e8,stroke:#34c759
+    style P fill:#e3f7e8,stroke:#34c759

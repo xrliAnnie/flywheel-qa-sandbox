@@ -341,6 +341,8 @@ describe("FLY-2211 recovery context", () => {
 					founderReviewRequired: false,
 				},
 			}),
-		).toThrow(/workflow capability drift/);
+		).toThrow(
+			/workflow capability drift for exec-1: snapshot=submission:true,founderReview:false current=submission:false,founderReview:false/,
+		);
 	});
 });

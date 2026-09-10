@@ -212,7 +212,7 @@ export function buildCodexRecoveryContext(input: {
 		raw.founderReviewRequired !== input.capabilities.founderReviewRequired
 	) {
 		throw new Error(
-			`workflow capability drift for ${input.session.execution_id}`,
+			`workflow capability drift for ${input.session.execution_id}: snapshot=submission:${raw.workflowSubmissionExpected},founderReview:${raw.founderReviewRequired} current=submission:${input.capabilities.workflowSubmissionExpected},founderReview:${input.capabilities.founderReviewRequired}`,
 		);
 	}
 	const launch = input.snapshot.launchContext;

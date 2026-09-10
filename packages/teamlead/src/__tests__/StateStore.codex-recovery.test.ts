@@ -29,6 +29,28 @@ describe("FLY-2211 codex recovery authority", () => {
 		return store;
 	}
 
+	function rawDatabase(store: StateStore): {
+		prepare(sql: string): {
+			get(...params: unknown[]): Record<string, unknown> | undefined;
+			all(...params: unknown[]): Record<string, unknown>[];
+			run(...params: unknown[]): unknown;
+		};
+	} {
+		return (
+			store as unknown as {
+				db: {
+					raw: {
+						prepare(sql: string): {
+							get(...params: unknown[]): Record<string, unknown> | undefined;
+							all(...params: unknown[]): Record<string, unknown>[];
+							run(...params: unknown[]): unknown;
+						};
+					};
+				};
+			}
+		).db.raw;
+	}
+
 	function enrollOutputExecution(store: StateStore): string {
 		const root = mkdtempSync(join(tmpdir(), "fly2211-recovery-"));
 		roots.push(root);
@@ -88,6 +110,40 @@ describe("FLY-2211 codex recovery authority", () => {
 			throw new Error("output execution admission failed");
 		}
 		return admitted.outputCredential;
+	}
+
+	function reenterOutputExecution(store: StateStore): string {
+		store.upsertWorkflowRunNode({
+			runId: "run-recovery",
+			nodeId: "execute",
+			attempt: 1,
+			state: "done",
+			executionId: "exec-reown",
+			endedAt: "2026-08-31T20:01:00.000Z",
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-recovery",
+			nodeId: "execute",
+			attempt: 2,
+			state: "running",
+			executionId: "exec-reown",
+		});
+		const wake = store.admitGeneralizedWorkflowExecution({
+			runId: "run-recovery",
+			nodeId: "execute",
+			executionId: "exec-reown",
+			attempt: 2,
+			activationId: "activation:rework:test",
+			activationMode: "wake",
+			reworkRequestId: "rework:test",
+			now: "2026-08-31T20:02:00.000Z",
+			expiresAt: "2026-08-31T21:02:00.000Z",
+			absoluteDeadlineAt: "2026-09-01T20:00:00.000Z",
+		});
+		if (!wake.ok || !wake.outputCredential) {
+			throw new Error("rework output execution admission failed");
+		}
+		return wake.outputCredential;
 	}
 
 	it("preclaims each attempt atomically and caps one open episode", async () => {
@@ -344,21 +400,13 @@ describe("FLY-2211 codex recovery authority", () => {
 		}
 		expect(prepared.workflowOutputCredential).not.toBe(oldOutputCredential);
 
-		const raw = store as unknown as {
-			db: {
-				raw: {
-					prepare(sql: string): {
-						get(...params: unknown[]): Record<string, unknown> | undefined;
-					};
-				};
-			};
-		};
-		const oldRow = raw.db.raw
+		const raw = rawDatabase(store);
+		const oldRow = raw
 			.prepare(
 				"SELECT revoked, revoked_reason FROM workflow_output_credential WHERE credential_hash = ?",
 			)
 			.get(hashCapabilityToken(oldOutputCredential));
-		const newRow = raw.db.raw
+		const newRow = raw
 			.prepare(
 				"SELECT revoked FROM workflow_output_credential WHERE credential_hash = ?",
 			)
@@ -378,5 +426,146 @@ describe("FLY-2211 codex recovery authority", () => {
 				Date.parse("2026-08-31T20:05:02.000Z"),
 			),
 		).toEqual({ ok: false, reason: "capabilities_already_prepared" });
+	});
+
+	it("FLY-2352 reissues capabilities to the current rework activation after re-entry", async () => {
+		const store = await fixture();
+		enrollOutputExecution(store);
+		const wakeOutputCredential = reenterOutputExecution(store);
+		expect(store.getWorkflowExecutionBinding("exec-reown")).toBeUndefined();
+		expect(store.resolveCurrentWorkflowActivation("exec-reown")).toMatchObject({
+			kind: "current",
+			binding: {
+				activation_id: "activation:rework:test",
+				attempt: 2,
+			},
+		});
+
+		const claim = store.claimCodexRecovery("exec-reown", 0, {
+			holder: "bridge-a",
+			nowMs: Date.parse("2026-08-31T20:05:00.000Z"),
+			ttlMs: 60_000,
+		});
+		if (!claim.ok) throw new Error("claim unexpectedly failed");
+		const prepared = store.prepareCodexRecoveryCapabilities(
+			"exec-reown",
+			claim.claimToken,
+			0,
+			Date.parse("2026-08-31T20:05:01.000Z"),
+		);
+
+		expect(prepared).toMatchObject({
+			ok: true,
+			enrolled: true,
+			workflowSubmissionExpected: true,
+			founderReviewRequired: false,
+		});
+		if (!prepared.ok || !prepared.workflowOutputCredential) {
+			throw new Error("capability preparation failed");
+		}
+		const raw = rawDatabase(store);
+		expect(
+			raw
+				.prepare(
+					"SELECT activation_id, attempt, revoked FROM workflow_output_credential WHERE credential_hash = ?",
+				)
+				.get(hashCapabilityToken(prepared.workflowOutputCredential)),
+		).toMatchObject({
+			activation_id: "activation:rework:test",
+			attempt: 2,
+			revoked: 0,
+		});
+		expect(
+			raw
+				.prepare(
+					"SELECT revoked, revoked_reason FROM workflow_output_credential WHERE credential_hash = ?",
+				)
+				.get(hashCapabilityToken(wakeOutputCredential)),
+		).toMatchObject({
+			revoked: 1,
+			revoked_reason: "codex_recovery_rotation",
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-recovery")
+				.find((event) => event.kind === "codex_recovery_capabilities_prepared"),
+		).toMatchObject({ payload: expect.objectContaining({ attempt: 2 }) });
+	});
+
+	it("FLY-2352 fails closed as activation_ambiguous when no binding is current", async () => {
+		const store = await fixture();
+		enrollOutputExecution(store);
+		const wakeOutputCredential = reenterOutputExecution(store);
+		const raw = rawDatabase(store);
+		raw
+			.prepare(
+				"UPDATE workflow_run_node SET execution_id = 'exec-other' WHERE run_id = 'run-recovery' AND node_id = 'execute' AND attempt = 2",
+			)
+			.run();
+		const beforeCount = raw
+			.prepare(
+				"SELECT COUNT(*) AS count FROM workflow_output_credential WHERE execution_id = 'exec-reown'",
+			)
+			.get()?.count;
+		const claim = store.claimCodexRecovery("exec-reown", 0, {
+			holder: "bridge-a",
+			nowMs: Date.parse("2026-08-31T20:05:00.000Z"),
+			ttlMs: 60_000,
+		});
+		if (!claim.ok) throw new Error("claim unexpectedly failed");
+
+		expect(
+			store.prepareCodexRecoveryCapabilities(
+				"exec-reown",
+				claim.claimToken,
+				0,
+				Date.parse("2026-08-31T20:05:01.000Z"),
+			),
+		).toEqual({ ok: false, reason: "activation_ambiguous" });
+		expect(
+			raw
+				.prepare(
+					"SELECT COUNT(*) AS count FROM workflow_output_credential WHERE execution_id = 'exec-reown'",
+				)
+				.get()?.count,
+		).toBe(beforeCount);
+		expect(
+			raw
+				.prepare(
+					"SELECT revoked, revoked_reason FROM workflow_output_credential WHERE credential_hash = ?",
+				)
+				.get(hashCapabilityToken(wakeOutputCredential)),
+		).toMatchObject({ revoked: 0, revoked_reason: null });
+		expect(
+			store
+				.listWorkflowRunEvents("run-recovery")
+				.some((event) => event.kind === "codex_recovery_capabilities_prepared"),
+		).toBe(false);
+	});
+
+	it("FLY-2352 fails closed as activation_invalid when the bound snapshot is corrupt", async () => {
+		const store = await fixture();
+		enrollOutputExecution(store);
+		const raw = rawDatabase(store);
+		raw
+			.prepare(
+				"UPDATE workflow_run SET snapshot = '{not json' WHERE run_id = ?",
+			)
+			.run("run-recovery");
+		const claim = store.claimCodexRecovery("exec-reown", 0, {
+			holder: "bridge-a",
+			nowMs: Date.parse("2026-08-31T20:05:00.000Z"),
+			ttlMs: 60_000,
+		});
+		if (!claim.ok) throw new Error("claim unexpectedly failed");
+
+		expect(
+			store.prepareCodexRecoveryCapabilities(
+				"exec-reown",
+				claim.claimToken,
+				0,
+				Date.parse("2026-08-31T20:05:01.000Z"),
+			),
+		).toEqual({ ok: false, reason: "activation_invalid" });
 	});
 });

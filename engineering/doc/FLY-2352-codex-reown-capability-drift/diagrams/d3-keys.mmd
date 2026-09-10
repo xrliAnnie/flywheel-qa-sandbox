@@ -1,0 +1,19 @@
+flowchart LR
+    subgraph exact["精确钥匙(修后)"]
+        direction TB
+        E0["resolveCurrentWorkflowActivation"] --> E1["取该体全部 binding"]
+        E1 -->|"0 条"| E6["none(legacy 体)"]
+        E1 --> E2["只留:run 仍 active<br/>且 attempt = 该节点最新 attempt<br/>且 run_node 行仍归这个体"]
+        E2 --> E3{"候选数 == 1 ?"}
+        E3 -->|"是"| E4["current:<br/>binding + run + node + snapshot"]
+        E3 -->|"否"| E5["ambiguous(fail-closed)"]
+    end
+    subgraph legacy["老钥匙(现状)"]
+        direction TB
+        L0["getWorkflowExecutionBinding<br/>(FLY-1423 设计)"] --> L1["SELECT * FROM workflow_execution_binding<br/>WHERE execution_id = ?"]
+        L1 --> L2{"行数 == 1 ?"}
+        L2 -->|"是"| L3["返回那一行"]
+        L2 -->|"否:0 行或 ≥2 行"| L4["返回 undefined<br/>设计意图:多 activation 时 fail-closed,<br/>调用方应改用精确 API"]
+    end
+    style L4 fill:#ffe5e3,stroke:#ff3b30
+    style E4 fill:#e3f7e8,stroke:#34c759
