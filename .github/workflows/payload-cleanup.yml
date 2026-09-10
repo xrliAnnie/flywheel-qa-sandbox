@@ -1,0 +1,61 @@
+name: Payload Retention Cleanup
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payload-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    steps:
+      - name: Explicit activation preflight
+        id: preflight
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_CLEANUP_TOKEN: ${{ secrets.FW_CLEANUP_TOKEN }}
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs';
+          if (!process.env.FW_ENDPOINT || !process.env.FW_CLEANUP_TOKEN) {
+            appendFileSync(process.env.GITHUB_OUTPUT, 'activated=false\n');
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'Cleanup not activated: skipped; no cleanup success evidence.\n');
+          } else {
+            try {
+              const url = new URL(process.env.FW_ENDPOINT);
+              if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error();
+            } catch {
+              console.error('::error::cleanup endpoint must be a valid HTTPS URL');
+              process.exit(1);
+            }
+            appendFileSync(process.env.GITHUB_OUTPUT, 'activated=true\n');
+          }
+          JS
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        if: steps.preflight.outputs.activated == 'true'
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: steps.preflight.outputs.activated == 'true'
+        with:
+          node-version-file: .node-version
+
+      - name: Sweep expired payloads through the guarded endpoint
+        if: steps.preflight.outputs.activated == 'true'
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_CLEANUP_TOKEN: ${{ secrets.FW_CLEANUP_TOKEN }}
+        run: node scripts/release/payload-cleanup.mjs --apply

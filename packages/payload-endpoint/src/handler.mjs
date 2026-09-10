@@ -20,9 +20,11 @@ import {
 	ENTITLEMENT_POINTER,
 	isPayloadSemver,
 	keyObjectKey,
+	latestSet,
 	MANIFEST_KEY,
 	POINTER_CAPABILITY,
 	payloadObjectKey,
+	RETENTION_WINDOW_MS,
 } from "./manifest.mjs";
 import { applyTransition, capabilityAllows } from "./transitions.mjs";
 import { isEmptyInitialManifest, validateManifest } from "./validator.mjs";
@@ -65,6 +67,7 @@ function json(status, body, headers = {}) {
 // byte-identical rejection shapes (anti-enumeration)
 const customer401 = () => json(401, { error: "invalid or revoked key" });
 const uniform404 = () => json(404, { error: "not found" });
+const downloadUnavailable = () => json(503, { error: "download unavailable" });
 
 async function readManifest(bucket) {
 	const obj = await bucket.get(MANIFEST_KEY);
@@ -82,7 +85,12 @@ async function capabilityOf(request, secrets) {
 		[BETA_CAPABILITY, secrets.betaPublishTokenSha256],
 		[RELEASE_CAPABILITY, secrets.customerReleaseTokenSha256],
 		["ops-admin", secrets.opsAdminTokenSha256],
+		["cleanup", secrets.cleanupTokenSha256],
 	];
+	const hashes = table
+		.map(([, hash]) => (typeof hash === "string" ? hash.toLowerCase() : ""))
+		.filter(Boolean);
+	if (new Set(hashes).size !== hashes.length) return "invalid-configuration";
 	for (const [cap, hash] of table) {
 		if (
 			typeof hash === "string" &&
@@ -96,11 +104,11 @@ async function capabilityOf(request, secrets) {
 
 async function customerAuth(request, bucket) {
 	const key = bearer(request);
-	if (!key) return null;
-	const obj = await bucket.get(keyObjectKey(await sha256Hex(key)));
-	if (!obj) return null;
+	if (!key || enc.encode(key).byteLength > 512) return null;
 	let rec;
 	try {
+		const obj = await bucket.get(keyObjectKey(await sha256Hex(key)));
+		if (!obj) return null;
 		rec = await obj.json();
 	} catch {
 		return null;
@@ -125,12 +133,15 @@ function hasLiveClaim(manifest, objectKey) {
 
 export async function handleRequest(request, deps) {
 	const { bucket, secrets, now } = deps;
+	const requestStartedAt = now().getTime();
 	const log = deps.log ?? (() => {});
 	const url = new URL(request.url);
 	const path = url.pathname;
 	const method = request.method;
 
 	const respond = (route, res) => {
+		if (!path.startsWith("/admin/"))
+			res.headers.set("Cache-Control", "private, no-store");
 		log(`${method} ${route} ${res.status}`);
 		return res;
 	};
@@ -143,7 +154,13 @@ export async function handleRequest(request, deps) {
 			const cur = await readManifest(bucket);
 			if (!cur)
 				return respond("/manifest", json(503, { error: "not activated" }));
-			const view = manifestView(cur.manifest, rec.entitlement);
+			if (validateManifest(cur.manifest).length)
+				return respond("/manifest", downloadUnavailable());
+			const view = manifestView(
+				cur.manifest,
+				rec.entitlement,
+				requestStartedAt,
+			);
 			if (view.empty)
 				return respond(
 					"/manifest",
@@ -161,12 +178,70 @@ export async function handleRequest(request, deps) {
 			const rec = await customerAuth(request, bucket);
 			if (!rec) return respond("/payload/:ver", customer401());
 			const cur = await readManifest(bucket);
-			if (!cur) return respond("/payload/:ver", uniform404());
-			const ver = decodeURIComponent(path.slice("/payload/".length));
+			if (!cur || validateManifest(cur.manifest).length)
+				return respond("/payload/:ver", downloadUnavailable());
+			let ver;
+			try {
+				ver = decodeURIComponent(path.slice("/payload/".length));
+			} catch {
+				return respond("/payload/:ver", uniform404());
+			}
+			if (!isPayloadSemver(ver)) return respond("/payload/:ver", uniform404());
 			// fetch THROUGH the visible set (Codex R1#3) — never by URL-derived
 			// object path; out-of-set = the same 404 bytes as unknown.
-			const entry = visibleEntries(cur.manifest, rec.entitlement).get(ver);
+			const entry = visibleEntries(
+				cur.manifest,
+				rec.entitlement,
+				requestStartedAt,
+			).get(ver);
 			if (!entry) return respond("/payload/:ver", uniform404());
+			if (deps.delivery?.mode === "presigned") {
+				if (typeof deps.delivery.signGet !== "function")
+					return respond("/payload/:ver", downloadUnavailable());
+				const head = await bucket.head(entry.key);
+				if (
+					!head ||
+					head.size !== entry.size ||
+					head.customMetadata?.sha256 !== entry.sha256
+				)
+					return respond("/payload/:ver", uniform404());
+				const issuedAt = Math.floor(requestStartedAt / 1000) * 1000;
+				const expiresIn = latestSet(cur.manifest).has(ver)
+					? 60
+					: Math.min(
+							60,
+							Math.floor(
+								(Date.parse(entry.retentionSince) +
+									RETENTION_WINDOW_MS[entry.channel] -
+									issuedAt) /
+									1000,
+							),
+						);
+				if (expiresIn <= 0) return respond("/payload/:ver", uniform404());
+				const expiresAt = issuedAt + expiresIn * 1000;
+				if (now().getTime() >= expiresAt)
+					return respond("/payload/:ver", downloadUnavailable());
+				const location = await deps.delivery.signGet({
+					objectKey: entry.key,
+					issuedAt,
+					expiresIn,
+				});
+				if (now().getTime() >= expiresAt)
+					return respond("/payload/:ver", downloadUnavailable());
+				return respond(
+					"/payload/:ver",
+					new Response(null, {
+						status: 302,
+						headers: {
+							Location: location,
+							"Cache-Control": "private, no-store",
+							"Referrer-Policy": "no-referrer",
+						},
+					}),
+				);
+			}
+			if (deps.delivery?.mode !== "stream")
+				return respond("/payload/:ver", downloadUnavailable());
 			const obj = await bucket.get(entry.key);
 			if (!obj) return respond("/payload/:ver", uniform404());
 			return respond(
@@ -181,6 +256,11 @@ export async function handleRequest(request, deps) {
 		// ── admin surface ────────────────────────────────────────────────────
 		if (path.startsWith("/admin/")) {
 			const cap = await capabilityOf(request, secrets);
+			if (cap === "invalid-configuration")
+				return respond(
+					"/admin/*",
+					json(503, { error: "capability configuration invalid" }),
+				);
 			if (!cap)
 				return respond("/admin/*", json(401, { error: "unauthorized" }));
 
@@ -216,6 +296,8 @@ export async function handleRequest(request, deps) {
 				}
 				const cur = await readManifest(bucket);
 				if (!cur) {
+					if (cap === "cleanup")
+						return respond(route, json(403, { error: "forbidden" }));
 					// conditional create (plan §B0-7): base must be null and the
 					// initial state exactly the empty shape.
 					if (body.baseEtag !== null) {
@@ -376,6 +458,7 @@ export async function handleRequest(request, deps) {
 							sha256: sha,
 							onlyIf: { etagDoesNotMatch: "*" },
 							customMetadata: { sha256: sha, ver },
+							httpMetadata: { cacheControl: "private, no-store" },
 						});
 					} catch {
 						return respond(
@@ -389,11 +472,8 @@ export async function handleRequest(request, deps) {
 							json(409, { error: "object already exists (immutable)" }),
 						);
 					}
-					// post-check (Codex R5#2 + R6): the claim must STILL be live for
-					// this exact objectKey (any live claim counts — an abandoned
-					// reservation's key may have been taken over by a new releaseId).
-					// If the world moved (abandon + tombstone raced past a slow PUT),
-					// remove what we just wrote and report the conflict.
+					// A claim may have committed while PUT returned. Only tombstone
+					// sweep deletes: a post-check read cannot guard a later delete.
 					const after = await readManifest(bucket);
 					const tombstoned = (after?.manifest.tombstones ?? []).includes(
 						objectKey,
@@ -401,19 +481,22 @@ export async function handleRequest(request, deps) {
 					if (
 						!after ||
 						tombstoned ||
-						!hasLiveClaim(after.manifest, objectKey)
+						(!hasLiveClaim(after.manifest, objectKey) &&
+							!Object.values(after.manifest.versions).some(
+								(entry) =>
+									entry.key === objectKey && entry.status !== "expired",
+							))
 					) {
-						await bucket.delete(objectKey);
 						return respond(
 							route,
-							json(409, { error: "claim lost during upload; object removed" }),
+							json(409, { error: "claim lost during upload" }),
 						);
 					}
 					return respond(route, json(200, { ok: true }));
 				}
 
 				if (method === "DELETE") {
-					if (cap !== "ops-admin")
+					if (cap !== "ops-admin" && cap !== "cleanup")
 						return respond(route, json(403, { error: "forbidden" }));
 					const cur = await readManifest(bucket);
 					// two-step delete (Codex R4#1): the tombstone CAS is the guard —
@@ -441,7 +524,31 @@ export async function handleRequest(request, deps) {
 				if (method === "PUT" && !keyMatch[2]) {
 					let body;
 					try {
-						body = await request.json();
+						const reader = request.body?.getReader();
+						const bytes = new Uint8Array(4096);
+						let size = 0;
+						if (reader) {
+							try {
+								while (true) {
+									const { done, value } = await reader.read();
+									if (done) break;
+									if (size + value.byteLength > bytes.length) {
+										void reader.cancel().catch(() => {});
+										return respond(
+											route,
+											json(413, { error: "key record too large" }),
+										);
+									}
+									bytes.set(value, size);
+									size += value.byteLength;
+								}
+							} finally {
+								reader.releaseLock();
+							}
+						}
+						body = JSON.parse(
+							new TextDecoder().decode(bytes.subarray(0, size)),
+						);
 					} catch {
 						return respond(
 							route,
@@ -451,11 +558,17 @@ export async function handleRequest(request, deps) {
 					if (
 						!body ||
 						typeof body.customerId !== "string" ||
-						!body.customerId ||
+						!body.customerId.trim() ||
+						body.customerId.length > 128 ||
 						(body.entitlement !== "customer" &&
 							body.entitlement !== "internal") ||
 						body.revoked !== false ||
-						(body.note !== undefined && typeof body.note !== "string")
+						(body.note !== undefined &&
+							(typeof body.note !== "string" || body.note.length > 512)) ||
+						Object.keys(body).some(
+							(key) =>
+								!["customerId", "entitlement", "revoked", "note"].includes(key),
+						)
 					) {
 						return respond(
 							route,
@@ -478,27 +591,40 @@ export async function handleRequest(request, deps) {
 							}),
 						);
 					}
-					const existing = await bucket.get(objectKey);
-					let createdAt = now().toISOString();
-					if (existing) {
-						try {
-							const prev = await existing.json();
-							if (prev?.createdAt) createdAt = prev.createdAt;
-						} catch {
-							// unreadable previous record — replace it wholesale
-						}
+					let existing = await bucket.get(objectKey);
+					if (!existing) {
+						const created = await bucket.put(
+							objectKey,
+							JSON.stringify({
+								customerId: body.customerId,
+								entitlement: body.entitlement,
+								revoked: false,
+								createdAt: now().toISOString(),
+								note: body.note ?? "",
+							}),
+							{ onlyIf: { etagDoesNotMatch: "*" } },
+						);
+						if (created) return respond(route, json(200, { ok: true }));
+						existing = await bucket.get(objectKey);
 					}
-					await bucket.put(
-						objectKey,
-						JSON.stringify({
-							customerId: body.customerId,
-							entitlement: body.entitlement,
-							revoked: false,
-							createdAt,
-							note: body.note ?? "",
-						}),
-					);
-					return respond(route, json(200, { ok: true }));
+					let prev;
+					try {
+						prev = await existing?.json();
+					} catch {
+						return respond(
+							route,
+							json(409, { error: "key record unreadable" }),
+						);
+					}
+					if (
+						prev?.revoked === false &&
+						prev.customerId === body.customerId &&
+						prev.entitlement === body.entitlement &&
+						(prev.note ?? "") === (body.note ?? "")
+					) {
+						return respond(route, json(200, { ok: true }));
+					}
+					return respond(route, json(409, { error: "key already exists" }));
 				}
 
 				if (method === "POST" && keyMatch[2]) {
@@ -514,6 +640,21 @@ export async function handleRequest(request, deps) {
 							json(409, { error: "key record unreadable" }),
 						);
 					}
+					if (
+						!rec ||
+						typeof rec.customerId !== "string" ||
+						!rec.customerId.trim() ||
+						(rec.entitlement !== "customer" &&
+							rec.entitlement !== "internal") ||
+						typeof rec.revoked !== "boolean"
+					) {
+						return respond(
+							route,
+							json(409, { error: "key record unreadable" }),
+						);
+					}
+					if (rec.revoked === true)
+						return respond(route, json(200, { ok: true }));
 					rec.revoked = true;
 					await bucket.put(objectKey, JSON.stringify(rec));
 					return respond(route, json(200, { ok: true }));
@@ -525,6 +666,12 @@ export async function handleRequest(request, deps) {
 
 		return respond(path.startsWith("/admin") ? "/admin/*" : "/*", uniform404());
 	} catch {
+		if (path === "/manifest" || path.startsWith("/payload/")) {
+			return respond(
+				path === "/manifest" ? "/manifest" : "/payload/:ver",
+				downloadUnavailable(),
+			);
+		}
 		// never leak internals — a handler bug surfaces as an opaque 500.
 		return json(500, { error: "internal error" });
 	}

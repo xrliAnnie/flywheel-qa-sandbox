@@ -33,6 +33,116 @@ function rawManifestBytes(bucket) {
 	return bucket.rawBytes("manifest.json").toString("utf8");
 }
 
+test("key issuance is create-only; identical replay writes nothing and cannot revive revoked keys", async () => {
+	const { deps, bucket, clock } = seeded();
+	const sha = sha256Hex("immutable-key-fixture");
+	const path = `/admin/key/${sha}`;
+	const body = { customerId: "c1", entitlement: "customer", revoked: false };
+	const issue = (record = body) =>
+		request(deps, "PUT", path, { token: TOKENS.ops, body: record });
+	assert.equal((await issue()).status, 200);
+	const original = bucket.rawBytes(`keys/${sha}.json`);
+	const puts = bucket.observations.puts.length;
+	clock.tick(1000);
+	assert.equal((await issue()).status, 200);
+	assert.equal(
+		bucket.observations.puts.length,
+		puts,
+		"replay must perform zero writes",
+	);
+	assert.deepEqual(bucket.rawBytes(`keys/${sha}.json`), original);
+	for (const change of [
+		{ entitlement: "internal" },
+		{ customerId: "c2" },
+		{ note: "changed" },
+	]) {
+		assert.equal((await issue({ ...body, ...change })).status, 409);
+	}
+	assert.equal(
+		(await request(deps, "POST", `${path}/revoke`, { token: TOKENS.ops }))
+			.status,
+		200,
+	);
+	const revoked = bucket.rawBytes(`keys/${sha}.json`);
+	assert.equal((await issue()).status, 409);
+	assert.deepEqual(bucket.rawBytes(`keys/${sha}.json`), revoked);
+});
+
+test("repeated revoke writes nothing, including after a competing creation wins", async () => {
+	const { deps, bucket } = seeded();
+	const sha = sha256Hex("creation-race-fixture");
+	const path = `/admin/key/${sha}`;
+	const body = { customerId: "c1", entitlement: "customer", revoked: false };
+	const outcomes = [];
+	bucket.hooks.beforePut = async () => {
+		outcomes.push(
+			(await request(deps, "PUT", path, { token: TOKENS.ops, body })).status,
+		);
+		outcomes.push(
+			(await request(deps, "POST", `${path}/revoke`, { token: TOKENS.ops }))
+				.status,
+		);
+	};
+	const outer = await request(deps, "PUT", path, { token: TOKENS.ops, body });
+	assert.deepEqual(outcomes, [200, 200]);
+	assert.equal(outer.status, 409);
+	assert.equal(JSON.parse(bucket.rawBytes(`keys/${sha}.json`)).revoked, true);
+	const puts = bucket.observations.puts.length;
+	assert.equal(
+		(await request(deps, "POST", `${path}/revoke`, { token: TOKENS.ops }))
+			.status,
+		200,
+	);
+	assert.equal(bucket.observations.puts.length, puts);
+});
+
+test("key input is bounded and unknown fields or unreadable records cannot be overwritten", async () => {
+	const { deps, bucket } = seeded();
+	const sha = sha256Hex("bounded-key-fixture");
+	const path = `/admin/key/${sha}`;
+	const body = { customerId: "c1", entitlement: "customer", revoked: false };
+	for (const change of [
+		{ customerId: "x".repeat(129) },
+		{ customerId: "  " },
+		{ note: "x".repeat(513) },
+		{ createdAt: "2000-01-01" },
+		{ admin: true },
+	]) {
+		assert.equal(
+			(
+				await request(deps, "PUT", path, {
+					token: TOKENS.ops,
+					body: { ...body, ...change },
+				})
+			).status,
+			400,
+		);
+	}
+	assert.equal(
+		(
+			await request(deps, "PUT", path, {
+				token: TOKENS.ops,
+				body: " ".repeat(4097),
+			})
+		).status,
+		413,
+	);
+	assert.equal(bucket.observations.puts.length, 0);
+	for (const corrupt of ["{", "null", "[]", "{}", '"record"']) {
+		bucket.seed(`keys/${sha}.json`, corrupt);
+		assert.equal(
+			(await request(deps, "PUT", path, { token: TOKENS.ops, body })).status,
+			409,
+		);
+		assert.equal(
+			(await request(deps, "POST", `${path}/revoke`, { token: TOKENS.ops }))
+				.status,
+			409,
+		);
+		assert.equal(bucket.rawBytes(`keys/${sha}.json`).toString(), corrupt);
+	}
+});
+
 // a reserved beta op diff on top of the fixture (the canonical beta-publish op)
 function reserveBetaDiff(m) {
 	return edit(m, (x) => {
@@ -49,6 +159,70 @@ function reserveBetaDiff(m) {
 		x.releaseLedger["1.55.0"].nextBetaN = 3;
 	});
 }
+
+test("PUT finishing after its release commits preserves the current object", async () => {
+	const { deps, bucket } = seeded();
+	const bytes = Buffer.from("commit-before-upload-response");
+	const sha = sha256Hex(bytes);
+	const ver = "1.55.0-beta.2";
+	const key = payloadKeyOf(ver, sha);
+	const initial = await getManifest(deps);
+	const reserve = reserveBetaDiff(initial.manifest);
+	Object.assign(reserve.releaseOps["op-beta-2"], {
+		sourceCommit: COMMIT,
+		sha256: sha,
+		objectKey: key,
+	});
+	assert.equal(
+		(await postManifest(deps, reserve, initial.etag, TOKENS.beta)).status,
+		200,
+	);
+	const put = bucket.put.bind(bucket);
+	const outcomes = [];
+	bucket.put = async (objectKey, value, options) => {
+		const result = await put(objectKey, value, options);
+		if (objectKey === key) {
+			let cur = await getManifest(deps);
+			const prepared = edit(cur.manifest, (m) => {
+				m.releaseOps["op-beta-2"].state = "prepared";
+			});
+			outcomes.push(
+				(await postManifest(deps, prepared, cur.etag, TOKENS.beta)).status,
+			);
+			cur = await getManifest(deps);
+			const committed = edit(cur.manifest, (m) => {
+				m.releaseOps["op-beta-2"].state = "committed";
+				m.versions[ver] = {
+					...m.versions["1.55.0-beta.1"],
+					key,
+					sha256: sha,
+					size: bytes.length,
+					releaseId: "op-beta-2",
+				};
+				m.channels["internal-beta"].latest = ver;
+			});
+			outcomes.push(
+				(await postManifest(deps, committed, cur.etag, TOKENS.beta)).status,
+			);
+		}
+		return result;
+	};
+	const response = await request(deps, "PUT", `/admin/payload/${ver}/${sha}`, {
+		token: TOKENS.beta,
+		body: bytes,
+	});
+	assert.deepEqual(
+		outcomes,
+		[200, 200],
+		"the competing prepare and commit must actually land",
+	);
+	assert.equal(response.status, 200);
+	assert.deepEqual(bucket.rawBytes(key), bytes);
+	assert.equal(
+		(await getManifest(deps)).manifest.channels["internal-beta"].latest,
+		ver,
+	);
+});
 
 test("admin auth: wrong token → uniform 401; no writes", async () => {
 	const { deps, bucket } = seeded();
@@ -165,7 +339,7 @@ function twoReleaseManifest() {
 			sourceCommit: COMMIT,
 			releaseId: "op-rel-alt",
 			derivedFromBeta: "1.54.9-beta.1",
-			retentionSince: "2026-06-02T00:00:00.000Z",
+			retentionSince: "2026-07-01T00:00:00.000Z",
 			quarantinedAt: null,
 		};
 		const bsha = "e".repeat(64);
@@ -179,7 +353,7 @@ function twoReleaseManifest() {
 			sourceCommit: COMMIT,
 			releaseId: "op-beta-alt",
 			derivedFromBeta: null,
-			retentionSince: "2026-06-02T00:00:00.000Z",
+			retentionSince: "2026-07-01T00:00:00.000Z",
 			quarantinedAt: null,
 		};
 		x.releaseOps["op-rel-alt"] = {
@@ -292,6 +466,30 @@ test("pointer-tenure migration is server-stamped in the same CAS (re-pin resets 
 		"2026-07-11T12:00:00.000Z",
 		"the entry leaving latest is stamped with the SERVER clock",
 	);
+});
+
+test("history cannot be re-pinned at or after its retention deadline before cleanup runs", async () => {
+	for (const [offset, status] of [
+		[-1, 200],
+		[0, 422],
+		[1, 422],
+	]) {
+		const { deps, clock, bucket } = seeded(twoReleaseManifest());
+		const current = await getManifest(deps);
+		const deadline =
+			Date.parse(current.manifest.versions["1.54.9"].retentionSince) +
+			28 * 86400000;
+		clock.set(new Date(deadline + offset).toISOString());
+		const before = rawManifestBytes(bucket);
+		const repin = edit(current.manifest, (m) => {
+			m.channels["customer-release"].latest = "1.54.9";
+		});
+		assert.equal(
+			(await postManifest(deps, repin, current.etag, TOKENS.release)).status,
+			status,
+		);
+		if (status !== 200) assert.equal(rawManifestBytes(bucket), before);
+	}
 });
 
 test("ops-admin cannot touch pointers; beta token cannot quarantine", async () => {
@@ -492,6 +690,9 @@ test("PUT payload: no claim → 409; claimed → 200; duplicate → 409; sha-mis
 	// streamed, not buffered, into storage
 	const putObs = bucket.observations.puts.filter((p) => p.key === objectKey);
 	assert.ok(putObs.some((p) => p.bodyKind === "stream"));
+	assert.ok(
+		putObs.some((p) => p.httpMetadata?.cacheControl === "private, no-store"),
+	);
 
 	// immutable: second PUT → 409
 	const dup = await request(deps, "PUT", `/admin/payload/${ver}/${sha}`, {
@@ -520,7 +721,7 @@ test("PUT payload: no claim → 409; claimed → 200; duplicate → 409; sha-mis
 	assert.equal(opsPut.status, 403);
 });
 
-test("PUT post-check: claim abandoned+tombstoned while PUT in flight → object removed, 409, never visible", async () => {
+test("PUT post-check: claim abandoned+tombstoned while PUT in flight → 409, deletion left to sweep", async () => {
 	const { deps, bucket } = seeded();
 	const bytes = Buffer.from("slow-put-payload");
 	const sha = createHash("sha256").update(bytes).digest("hex");
@@ -571,10 +772,10 @@ test("PUT post-check: claim abandoned+tombstoned while PUT in flight → object 
 		body: bytes,
 	});
 	assert.equal(res.status, 409);
-	assert.equal(
+	assert.deepEqual(
 		bucket.rawBytes(objectKey),
-		null,
-		"post-check must remove the resurrected object",
+		bytes,
+		"only tombstone sweep may delete",
 	);
 });
 
@@ -672,9 +873,9 @@ test("PUT claim takeover (Codex R6): A abandoned, B re-claims same key → slow 
 		token: TOKENS.beta,
 		body: bytes,
 	});
-	// A's own claim died and no other claim references THIS objectKey → removed.
+	// The claim died; keep bytes for the tombstone sweep, never delete in PUT.
 	assert.equal(res.status, 409);
-	assert.equal(bucket.rawBytes(objectKey), null);
+	assert.deepEqual(bucket.rawBytes(objectKey), bytes);
 });
 
 test("DELETE: not tombstoned → 409; tombstoned → deleted; repeat delete idempotent", async () => {

@@ -254,6 +254,14 @@ export function applyTransition(oldM, clientM, now) {
 			e.quarantinedAt = old.quarantinedAt;
 		}
 		if (latestNew.has(ver)) {
+			if (
+				old &&
+				!latestOld.has(ver) &&
+				Date.parse(old.retentionSince) + RETENTION_WINDOW_MS[old.channel] <=
+					Date.parse(nowIso)
+			) {
+				err(`versions[${ver}]: re-pin refused — retention deadline passed`);
+			}
 			e.retentionSince = null; // current/pinned never expires (re-pin resets)
 		} else if (!old) {
 			e.retentionSince = nowIso; // born superseded
@@ -321,7 +329,7 @@ export function capabilityAllows(capability, op) {
 			return capability === RELEASE_CAPABILITY;
 		case "expire":
 		case "tombstone":
-			return capability === "ops-admin";
+			return capability === "ops-admin" || capability === "cleanup";
 		default:
 			return false;
 	}

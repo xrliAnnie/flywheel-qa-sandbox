@@ -30,8 +30,8 @@ export async function fetchManifest(endpoint, key, { fetchImpl = fetch } = {}) {
 		res = await fetchImpl(`${endpoint}/manifest`, {
 			headers: authHeaders(key),
 		});
-	} catch (e) {
-		throw new EndpointError("network", e.message);
+	} catch {
+		throw new EndpointError("network", "endpoint request failed");
 	}
 	if (res.status === 401 || res.status === 403) {
 		throw new EndpointError(
@@ -44,8 +44,8 @@ export async function fetchManifest(endpoint, key, { fetchImpl = fetch } = {}) {
 	let json;
 	try {
 		json = await res.json();
-	} catch (e) {
-		throw new EndpointError("protocol", `manifest not JSON: ${e.message}`);
+	} catch {
+		throw new EndpointError("protocol", "manifest not JSON");
 	}
 	if (
 		!json ||
@@ -89,17 +89,24 @@ export async function downloadPayload(
 		res = await fetchImpl(`${endpoint}/payload/${encodeURIComponent(ver)}`, {
 			headers: authHeaders(key),
 		});
-	} catch (e) {
-		throw new EndpointError("network", e.message);
+	} catch {
+		throw new EndpointError("network", "endpoint request failed");
 	}
-	if (res.status === 401 || res.status === 403) {
+	const objectResponse =
+		res.redirected && new URL(res.url).origin !== new URL(endpoint).origin;
+	if (!objectResponse && (res.status === 401 || res.status === 403)) {
 		throw new EndpointError(
 			"unauthorized",
 			`endpoint rejected the key (${res.status})`,
 		);
 	}
 	if (!res.ok) throw new EndpointError("network", `payload HTTP ${res.status}`);
-	const buf = Buffer.from(await res.arrayBuffer());
+	let buf;
+	try {
+		buf = Buffer.from(await res.arrayBuffer());
+	} catch {
+		throw new EndpointError("network", "payload transfer failed");
+	}
 	const got = createHash("sha256").update(buf).digest("hex");
 	if (got !== expectedSha) {
 		throw new EndpointError(

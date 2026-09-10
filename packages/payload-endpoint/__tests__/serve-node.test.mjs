@@ -12,13 +12,14 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { FsBucket } from "../src/fs-bucket.mjs";
 import { payloadObjectKey } from "../src/manifest.mjs";
+import { fixtureManifest } from "./harness.mjs";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
 const sha256Hex = (b) => createHash("sha256").update(b).digest("hex");
 
 const CUSTOMER_KEY = `fwk_${"a".repeat(32)}`;
 const OPS_TOKEN = "ops-secret-token";
-const VER = "1.2.3";
+const VER = "1.55.0";
 const PAYLOAD = Buffer.from("real-endpoint-payload-bytes");
 
 async function seed(dataDir) {
@@ -26,46 +27,14 @@ async function seed(dataDir) {
 	const sha = sha256Hex(PAYLOAD);
 	const objectKey = payloadObjectKey(VER, sha);
 	const t0 = new Date(0).toISOString();
-	const releaseId = "seed-release-1";
-	await bucket.put(
-		"manifest.json",
-		JSON.stringify({
-			schemaVersion: 1,
-			channels: {
-				"internal-beta": { latest: null },
-				"customer-release": { latest: VER },
-			},
-			versions: {
-				[VER]: {
-					sha256: sha,
-					key: objectKey,
-					size: PAYLOAD.length,
-					publishedAt: t0,
-					channel: "release",
-					status: "active",
-					sourceCommit: "0".repeat(40),
-					releaseId,
-					derivedFromBeta: `${VER}-beta.1`,
-					retentionSince: null,
-					quarantinedAt: null,
-				},
-			},
-			releaseOps: {
-				[releaseId]: {
-					kind: "release",
-					state: "committed",
-					ver: VER,
-					betaVersion: `${VER}-beta.1`,
-					sourceCommit: "0".repeat(40),
-					sha256: sha,
-					objectKey,
-					createdAt: t0,
-				},
-			},
-			releaseLedger: {},
-			tombstones: [],
-		}),
-	);
+	const manifest = fixtureManifest();
+	const entry = manifest.versions[VER];
+	Object.assign(entry, { sha256: sha, key: objectKey, size: PAYLOAD.length });
+	Object.assign(manifest.releaseOps[entry.releaseId], {
+		sha256: sha,
+		objectKey,
+	});
+	await bucket.put("manifest.json", JSON.stringify(manifest));
 	await bucket.put(objectKey, PAYLOAD, {
 		customMetadata: { sha256: sha, ver: VER },
 	});

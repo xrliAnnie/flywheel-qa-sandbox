@@ -1,0 +1,12 @@
+sequenceDiagram
+    participant C as 安装器
+    participant W as 验权端点
+    participant R as 私有文件库
+    C->>W: 授权码 + 请求版本
+    W->>R: 读取授权记录和版本目录
+    W->>W: 核对内部 / 客户档位与保留期
+    W->>R: 检查指定文件存在、校验值相符
+    W-->>C: 最多 60 秒有效的下载链接
+    C->>R: 直接下载，不带授权码
+    R-->>C: 产品包
+    C->>C: 校验文件一致后安装

@@ -1369,7 +1369,7 @@ jobs:
       - name: Release contract TypeScript declarations
         run: pnpm exec tsc --noEmit -p packages/release-contract/__tests__/tsconfig.json
 
-      - name: Worker dry-run bundles the release contract
+      - name: Worker dry-run bundles the release contract and signer
         env:
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-payload-dry-run.log
         run: |
@@ -1390,6 +1390,10 @@ jobs:
           const resolvedInputs = Object.keys(metafile.inputs).map((input) =>
             path.resolve(configDir, input),
           );
+          if (!resolvedInputs.some((input) => input.includes('/aws4fetch/')) ||
+              !resolvedInputs.some((input) => input.endsWith('/payload-endpoint/src/presign.mjs'))) {
+            throw new Error('Worker bundle omitted the R2 presigner');
+          }
           if (!resolvedInputs.some((input) => input.startsWith(contractDir))) {
             throw new Error(
               `Worker bundle omitted release-contract sources: ${resolvedInputs.join(", ")}`,

@@ -30,6 +30,9 @@ const now = () => (fakeNowMs === null ? new Date() : new Date(fakeNowMs));
 
 // ── capability secrets (admin mode) ──────────────────────────────────────────
 const secrets = {};
+if (process.env.FW_TEST_CLEANUP_TOKEN) {
+	secrets.cleanupTokenSha256 = sha256Hex(process.env.FW_TEST_CLEANUP_TOKEN);
+}
 if (process.env.FW_TEST_BETA_TOKEN) {
 	secrets.betaPublishTokenSha256 = sha256Hex(process.env.FW_TEST_BETA_TOKEN);
 }
@@ -75,10 +78,23 @@ if (process.env.STUB_PAYLOAD_FILE) {
 	bucket.seed("manifest.json", {
 		schemaVersion: 1,
 		channels: {
-			"internal-beta": { latest: null },
+			"internal-beta": { latest: `${ver}-beta.1` },
 			"customer-release": { latest: ver },
 		},
 		versions: {
+			[`${ver}-beta.1`]: {
+				sha256: advertisedSha,
+				key: `payloads/${ver}-beta.1/${advertisedSha}.tgz`,
+				size: bytes.length,
+				publishedAt: t0,
+				channel: "beta",
+				status: "active",
+				sourceCommit,
+				releaseId: `${releaseId}-beta`,
+				derivedFromBeta: null,
+				retentionSince: null,
+				quarantinedAt: null,
+			},
 			[ver]: {
 				sha256: advertisedSha,
 				key: objectKey,
@@ -94,6 +110,16 @@ if (process.env.STUB_PAYLOAD_FILE) {
 			},
 		},
 		releaseOps: {
+			[`${releaseId}-beta`]: {
+				kind: "beta",
+				state: "committed",
+				ver: `${ver}-beta.1`,
+				betaVersion: null,
+				sourceCommit,
+				sha256: advertisedSha,
+				objectKey: `payloads/${ver}-beta.1/${advertisedSha}.tgz`,
+				createdAt: t0,
+			},
 			[releaseId]: {
 				kind: "release",
 				state: "committed",
@@ -105,7 +131,7 @@ if (process.env.STUB_PAYLOAD_FILE) {
 				createdAt: t0,
 			},
 		},
-		releaseLedger: {},
+		releaseLedger: { [ver]: { nextBetaN: 2 } },
 		tombstones: [],
 	});
 	bucket.seed(objectKey, bytes, { sha256: advertisedSha, ver });
@@ -223,7 +249,12 @@ const server = http.createServer(async (req, res) => {
 				? { body }
 				: {}),
 		});
-		const response = await handleRequest(request, { bucket, secrets, now });
+		const response = await handleRequest(request, {
+			bucket,
+			secrets,
+			now,
+			delivery: { mode: "stream" },
+		});
 		const resHeaders = {};
 		for (const [k, v] of response.headers.entries()) resHeaders[k] = v;
 		if (process.env.FW_TEST_WEAK_ETAG === "1" && resHeaders.etag) {

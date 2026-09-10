@@ -1,11 +1,12 @@
 {
 	"name": "flywheel-payload-endpoint",
 	"version": "0.0.0",
-	"description": "FLY-1062 PR3 · gated payload distribution endpoint (Cloudflare Worker). The single trusted write choke point for the R2 bucket: customer reads (entitlement views), publish writes (manifest single-object CAS + capability diffs + releaseOps idempotency ledger), ops cleanup guards. Runtime dependencies are limited to the zero-dependency release contract package.",
+	"description": "FLY-1062 PR3 · gated payload distribution endpoint (Cloudflare Worker). The single trusted write choke point for the R2 bucket: customer reads (entitlement views), publish writes (manifest single-object CAS + capability diffs + releaseOps idempotency ledger), ops cleanup guards. Uses the shared release contract and aws4fetch for short-lived R2 GET signatures.",
 	"type": "module",
 	"private": true,
 	"license": "UNLICENSED",
 	"dependencies": {
+		"aws4fetch": "1.0.20",
 		"flywheel-release-contract": "workspace:*"
 	},
 	"engines": {

@@ -162,8 +162,8 @@ fi
 
 # S4e (Codex code R1): banning KNOWN names is a false negative — ALLOWLIST
 # instead, per file. beta/promote: only FW_BETA_PUBLISH_TOKEN (unchanged).
-# activation: exactly the two vendor secrets + the beta capability (its sha
-# is derived in-run and stamped into the Worker).
+# activation: explicitly scoped infra and publication credentials. B2 signer
+# and cleanup inputs are also restricted to infra at the parsed step boundary.
 bad_secret=""
 for f in "$BETA" "$PROMOTE"; do
   while IFS= read -r name; do
@@ -175,7 +175,7 @@ commit_secrets="$(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$COMMIT" | sed 's/
   || bad_secret="$bad_secret $COMMIT:{${commit_secrets}}"
 while IFS= read -r name; do
   case "$name" in
-    CLOUDFLARE_API_TOKEN|FW_BETA_PUBLISH_TOKEN|FW_CUSTOMER_RELEASE_TOKEN) : ;;
+    CLOUDFLARE_API_TOKEN|FW_BETA_PUBLISH_TOKEN|FW_CUSTOMER_RELEASE_TOKEN|FW_CLEANUP_TOKEN|FW_R2_ACCESS_KEY_ID|FW_R2_SECRET_ACCESS_KEY) : ;;
     *) bad_secret="$bad_secret $ACTIVATION:$name" ;;
   esac
 done < <(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$ACTIVATION" | sed 's/^secrets\.//' | sort -u)
@@ -385,6 +385,9 @@ if not guard or "ACTIVATE" not in str(guard.get("run") or ""):
 STEP_CONDITIONS = {
     "workers.dev subdomain": "inputs.mode == 'infra'",
     "Create R2 bucket": "inputs.mode == 'infra'",
+    "Validate B2 deployment inputs": "inputs.mode == 'infra'",
+    "Verify private R2": "inputs.mode == 'infra'",
+    "Stage B2 Worker secrets": "inputs.mode == 'infra'",
     "Deploy Worker": "inputs.mode == 'infra'",
     "Stamp beta capability": "inputs.mode == 'infra'",
     "Stamp customer-release capability": "inputs.mode == 'infra'",
@@ -408,6 +411,19 @@ for step in steps:
             sif = norm(step.get("if"))
             if sif != expected_condition:
                 failures.append(f"S12:{prefix}:if={sif!r}")
+# B2 signing/cleanup credentials must never enter publish or job-wide env.
+secret_names = ['FW_R2_ACCESS_KEY_ID', 'FW_R2_SECRET_ACCESS_KEY', 'FW_CLEANUP_TOKEN']
+if any(name in json.dumps(job.get('env') or {}) for name in secret_names):
+    failures.append('B2:secret-in-job-env')
+for step in steps:
+    if any(name in json.dumps(step.get('env') or {}) for name in secret_names) and norm(step.get('if')) != "inputs.mode == 'infra'":
+        failures.append('B2:secret-outside-infra')
+ordered_names = ['Validate B2 deployment inputs', 'Create R2 bucket (tolerates already-exists = resume)',
+                 'Verify private R2 and apply reviewed lifecycle', 'Stage B2 Worker secrets', 'Deploy Worker + capture endpoint URL']
+positions = [next((i for i, step in enumerate(steps) if step.get('name') == name), -1) for name in ordered_names]
+if -1 in positions or positions != sorted(positions):
+    failures.append('B2:predeploy-order')
+
 missing = sorted(set(STEP_CONDITIONS) - seen)
 if missing:
     failures.append(f"S12:missing-steps={missing}")
@@ -608,13 +624,62 @@ PYEOF
 if [ "$PY_RC" -eq 0 ] && [ "$CONTRACT_OUT" = "OK" ]; then
   pass "S10 activation shape (parsed): dispatch-only triggers + single job + release env + job gate + contents-read/OIDC permissions + ACTIVATE confirm"
   pass "S11 (parsed, per-job): every job referencing a vendor secret declares environment: release + the main/dispatch job gate"
-  pass "S12 (parsed, per-step): every side-effect step carries its exact condition (infra ×7, publish ×8)"
+  pass "S12 (parsed, per-step): every side-effect step carries its exact condition (infra ×10, publish ×8)"
   pass "S13 (parsed): release trigger sets are exact and activation retains confirm (release is never a merge side effect)"
   pass "S14 (parsed): commit workflow is one release-env, dispatch-only, read-only, pinned-checkout, zero-build job"
   pass "S15 (parsed): OIDC publish binds exact tarball + sha + dist-tag through pack/reg outputs"
   pass "S16 (parsed): payload CI installs the activation workflow's exact npm pin before the idempotency integration"
 else
   fail "S10-S16 parsed contract failed (rc=$PY_RC): $CONTRACT_OUT"
+fi
+
+# B2: parsed cleanup workflow + native lifecycle, including adverse mutations.
+if python3 - "$ROOT" <<'PYB2'
+import copy, json, pathlib, sys, yaml
+root = pathlib.Path(sys.argv[1])
+workflow = yaml.safe_load((root / '.github/workflows/payload-cleanup.yml').read_text())
+lifecycle = json.loads((root / 'packages/payload-endpoint/r2-lifecycle.json').read_text())
+def check(w, native):
+    triggers = w.get('on', w.get(True))
+    assert set(triggers) == {'schedule', 'workflow_dispatch'}
+    assert triggers['schedule'] == [{'cron': '17 * * * *'}]
+    assert w['permissions'] == {'contents': 'read'}
+    assert w['concurrency'] == {'group': 'payload-cleanup', 'cancel-in-progress': False}
+    assert set(w['jobs']) == {'cleanup'}
+    job = w['jobs']['cleanup']
+    assert job['environment'] == 'release' and job['timeout-minutes'] == 10
+    assert job['if'] == "github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
+    steps = job['steps']
+    assert steps[0]['id'] == 'preflight'
+    assert 'not activated' in steps[0]['run'] and 'activated=false' in steps[0]['run']
+    assert len(steps) == 4
+    assert all(s['if'] == "steps.preflight.outputs.activated == 'true'" for s in steps[1:])
+    assert steps[1]['uses'] == 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5'
+    assert steps[1]['with']['persist-credentials'] is False
+    assert steps[2]['uses'] == 'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020'
+    assert steps[3]['run'] == 'node scripts/release/payload-cleanup.mjs --apply'
+    assert steps[3]['env'] == {'FW_ENDPOINT': '${{ vars.FW_ENDPOINT }}', 'FW_CLEANUP_TOKEN': '${{ secrets.FW_CLEANUP_TOKEN }}'}
+    blob = json.dumps(w)
+    assert all(k not in blob for k in ['FW_OPS_ADMIN', 'FW_R2_SECRET', 'CLOUDFLARE_API', 'FW_BETA_PUBLISH', 'FW_CUSTOMER_RELEASE'])
+    assert native == {'rules': [{'id': 'abort-incomplete-multipart-7d', 'enabled': True, 'conditions': {'prefix': ''}, 'abortMultipartUploadsTransition': {'condition': {'type': 'Age', 'maxAge': 604800}}}]}
+check(workflow, lifecycle)
+mutations = [lambda w: w['jobs']['cleanup'].pop('if'), lambda w: w['jobs']['cleanup'].pop('environment'),
+             lambda w: w['jobs']['cleanup']['steps'][1].pop('if'),
+             lambda w: w['concurrency'].update({'cancel-in-progress': True}),
+             lambda w: w['concurrency'].update({'group': 'payload-release'}),
+             lambda w: w['jobs']['cleanup']['steps'][3]['env'].update({'FW_OPS_ADMIN_TOKEN': 'unsafe'})]
+for mutate in mutations:
+    bad = copy.deepcopy(workflow); mutate(bad)
+    try: check(bad, lifecycle)
+    except (AssertionError, KeyError): pass
+    else: raise AssertionError('unsafe workflow mutation survived')
+bad = copy.deepcopy(lifecycle); bad['rules'][0]['deleteObjectsTransition'] = {'condition': {'type': 'Age', 'maxAge': 86400}}
+try: check(workflow, bad)
+except AssertionError: pass
+else: raise AssertionError('native object-age deletion survived')
+PYB2
+then pass "S17 parsed B2 cleanup/main/env/skip/least privilege and native lifecycle mutation guards"
+else fail "S17 B2 cleanup or lifecycle contract"
 fi
 
 echo ""

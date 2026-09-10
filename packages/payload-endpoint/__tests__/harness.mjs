@@ -49,6 +49,7 @@ export function makeDeps({
 		clock,
 		logLines,
 		deps: {
+			delivery: { mode: "stream" },
 			bucket,
 			secrets: secretsFor(tokens),
 			now: clock.now,

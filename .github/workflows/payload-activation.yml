@@ -141,6 +141,38 @@ jobs:
             exit 1
           fi
 
+      - name: Validate B2 deployment inputs
+        if: inputs.mode == 'infra'
+        env:
+          FW_R2_ACCESS_KEY_ID: ${{ secrets.FW_R2_ACCESS_KEY_ID }}
+          FW_R2_SECRET_ACCESS_KEY: ${{ secrets.FW_R2_SECRET_ACCESS_KEY }}
+          FW_CLEANUP_TOKEN: ${{ secrets.FW_CLEANUP_TOKEN }}
+          FW_BETA_PUBLISH_TOKEN: ${{ secrets.FW_BETA_PUBLISH_TOKEN }}
+          FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          try {
+            const env = process.env;
+            if (!/^[a-f0-9]{32}$/.test(env.CLOUDFLARE_ACCOUNT_ID || '')) throw new Error();
+            for (const name of ['FW_R2_ACCESS_KEY_ID', 'FW_R2_SECRET_ACCESS_KEY', 'FW_CLEANUP_TOKEN', 'FW_BETA_PUBLISH_TOKEN', 'FW_CUSTOMER_RELEASE_TOKEN']) {
+              if (!env[name]) throw new Error();
+            }
+            if (env.FW_CLEANUP_TOKEN.length < 32) throw new Error();
+            const hashes = ['FW_CLEANUP_TOKEN', 'FW_BETA_PUBLISH_TOKEN', 'FW_CUSTOMER_RELEASE_TOKEN'].map(name => createHash('sha256').update(env[name]).digest('hex'));
+            if (new Set(hashes).size !== hashes.length) throw new Error();
+            const config = readFileSync('packages/payload-endpoint/wrangler.toml', 'utf8');
+            const bucket = config.match(/^bucket_name = "([^"]+)"$/m)?.[1];
+            const signerBucket = config.match(/^FW_R2_BUCKET = "([^"]+)"$/m)?.[1];
+            if (bucket !== 'flywheel-payloads' || signerBucket !== bucket) throw new Error();
+            console.log('B2 deployment inputs valid');
+          } catch {
+            console.error('::error::B2 credentials or bucket configuration invalid');
+            process.exit(1);
+          }
+          JS
+
       - name: Create R2 bucket (tolerates already-exists = resume)
         if: inputs.mode == 'infra'
         env:
@@ -156,6 +188,67 @@ jobs:
             echo "bucket flywheel-payloads already exists — resume OK"
           fi
 
+      - name: Verify private R2 and apply reviewed lifecycle
+        if: inputs.mode == 'infra'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import { isDeepStrictEqual } from 'node:util';
+          try {
+            const base = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/r2/buckets/flywheel-payloads`;
+            const get = async path => {
+              const response = await fetch(`${base}/${path}`, { headers: { authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` } });
+              if (!response.ok) throw new Error();
+              const body = await response.json();
+              if (body.success !== true || !body.result) throw new Error();
+              return body.result;
+            };
+            const managed = await get('domains/managed');
+            const custom = await get('domains/custom');
+            if (managed.enabled !== false || !Array.isArray(custom.domains) || custom.domains.some(domain => domain.enabled !== false)) throw new Error();
+            const expected = JSON.parse(readFileSync('packages/payload-endpoint/r2-lifecycle.json', 'utf8'));
+            const existing = await get('lifecycle');
+            if (!Array.isArray(existing.rules) || (existing.rules.length && !isDeepStrictEqual(existing, expected))) throw new Error();
+            execFileSync('pnpm', ['exec', 'wrangler', 'r2', 'bucket', 'lifecycle', 'set', 'flywheel-payloads', '--file', 'packages/payload-endpoint/r2-lifecycle.json', '--force'], { stdio: 'pipe' });
+            if (!isDeepStrictEqual(await get('lifecycle'), expected)) throw new Error();
+            console.log('Private R2 verified; multipart-only lifecycle readback matched');
+          } catch {
+            console.error('::error::private R2 or reviewed lifecycle verification failed; inspect configuration before retry');
+            process.exit(1);
+          }
+          JS
+
+      - name: Stage B2 Worker secrets
+        if: inputs.mode == 'infra'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          FW_R2_ACCESS_KEY_ID: ${{ secrets.FW_R2_ACCESS_KEY_ID }}
+          FW_R2_SECRET_ACCESS_KEY: ${{ secrets.FW_R2_SECRET_ACCESS_KEY }}
+          FW_CLEANUP_TOKEN: ${{ secrets.FW_CLEANUP_TOKEN }}
+        run: |
+          set +x
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { createHash } from 'node:crypto';
+          try {
+            const values = {
+              FW_R2_ACCESS_KEY_ID: process.env.FW_R2_ACCESS_KEY_ID,
+              FW_R2_SECRET_ACCESS_KEY: process.env.FW_R2_SECRET_ACCESS_KEY,
+              FW_CLEANUP_TOKEN_SHA256: createHash('sha256').update(process.env.FW_CLEANUP_TOKEN).digest('hex'),
+            };
+            for (const [name, input] of Object.entries(values)) {
+              execFileSync('pnpm', ['exec', 'wrangler', 'secret', 'put', name, '--config', 'packages/payload-endpoint/wrangler.toml'], { input, stdio: ['pipe', 'pipe', 'pipe'] });
+            }
+            console.log('B2 Worker secrets staged');
+          } catch {
+            console.error('::error::B2 Worker secret staging failed');
+            process.exit(1);
+          }
+          JS
+
       - name: Deploy Worker + capture endpoint URL
         id: deploy
         if: inputs.mode == 'infra'
@@ -163,7 +256,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -o pipefail
-          pnpm exec wrangler deploy --config packages/payload-endpoint/wrangler.toml 2>&1 | tee /tmp/deploy.out
+          pnpm exec wrangler deploy --config packages/payload-endpoint/wrangler.toml --var "FW_R2_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID" 2>&1 | tee /tmp/deploy.out
           URL="$(grep -oE 'https://flywheel-onboard-endpoint\.[a-zA-Z0-9-]+\.workers\.dev' /tmp/deploy.out | head -1)"
           if [ -z "$URL" ]; then
             echo "::error::could not find the workers.dev URL in the deploy output"

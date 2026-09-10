@@ -40,7 +40,7 @@ function addCommittedPair(manifest, base, char) {
 		sourceCommit,
 		releaseId: `beta-${base}`,
 		derivedFromBeta: null,
-		retentionSince: createdAt,
+		retentionSince: "2026-09-01T00:00:00.000Z",
 		quarantinedAt: null,
 	};
 	manifest.releaseOps[`beta-${base}`] = {
@@ -63,7 +63,7 @@ function addCommittedPair(manifest, base, char) {
 		sourceCommit,
 		releaseId: `rel-${base}`,
 		derivedFromBeta: beta,
-		retentionSince: createdAt,
+		retentionSince: "2026-09-01T00:00:00.000Z",
 		quarantinedAt: null,
 	};
 	manifest.releaseOps[`rel-${base}`] = {
@@ -114,6 +114,7 @@ async function startEndpoint(manifest) {
 			customerReleaseTokenSha256: sha256Hex(RELEASE_TOKEN),
 		},
 		now: () => new Date("2026-09-08T12:00:00.000Z"),
+		delivery: { mode: "stream" },
 	};
 	const server = http.createServer(async (request, response) => {
 		const chunks = [];

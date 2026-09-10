@@ -32,14 +32,15 @@ cleanup() { for p in $SERVER_PIDS; do kill "$p" 2>/dev/null; done; rm -rf "$SAND
 trap cleanup EXIT
 
 OPS_TOKEN="ops-admin-test-token"
+CLEANUP_TOKEN="cleanup-test-token"
 
 start_server() { # $1 = seed manifest path (optional), $2 = weak etag flag (optional)
   local out="$SANDBOX/server-$RANDOM.out"
   if [ -n "${1:-}" ]; then
-    FW_TEST_OPS_TOKEN="$OPS_TOKEN" FW_TEST_WEAK_ETAG="${2:-}" \
+    FW_TEST_CLEANUP_TOKEN="$CLEANUP_TOKEN" FW_TEST_OPS_TOKEN="$OPS_TOKEN" FW_TEST_WEAK_ETAG="${2:-}" \
       FW_TEST_REQUIRE_CANONICAL_BASE_ETAG="${2:-}" SERVE_SEED_MANIFEST="$1" node "$SERVE" > "$out" 2>&1 &
   else
-    FW_TEST_OPS_TOKEN="$OPS_TOKEN" FW_TEST_WEAK_ETAG="${2:-}" \
+    FW_TEST_CLEANUP_TOKEN="$CLEANUP_TOKEN" FW_TEST_OPS_TOKEN="$OPS_TOKEN" FW_TEST_WEAK_ETAG="${2:-}" \
       FW_TEST_REQUIRE_CANONICAL_BASE_ETAG="${2:-}" node "$SERVE" > "$out" 2>&1 &
   fi
   local pid=$!
@@ -183,6 +184,53 @@ else
   fail "K4 rotate failed: $ROT"
 fi
 
+# Rotation failure paths run the real CLI against a bounded loopback server.
+if node --input-type=module - "$LK" <<'EOF'
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+const cli = process.argv[2];
+const oldId = "a".repeat(64);
+const marker = "PRIVATE_SERVER_ERROR_MUST_NOT_ESCAPE";
+for (const failure of ["issue", "revoke"]) {
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    for await (const _ of req) {}
+    requests.push(`${req.method} ${req.url}`);
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET") return res.end(JSON.stringify({channels:{"customer-release":{latest:"1.55.0"}}}));
+    res.statusCode = (failure === "issue" ? req.method === "PUT" : req.method === "POST") ? 503 : 200;
+    res.end(JSON.stringify({error:marker}));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const child = spawn(process.execPath, [cli, "rotate", "--key-id", oldId, "--customer", "fixture", "--entitlement", "customer"], {
+      env:{...process.env, FW_ENDPOINT:`http://127.0.0.1:${server.address().port}`, FW_OPS_ADMIN_TOKEN:"fixture-token"},
+      stdio:["ignore", "pipe", "pipe"], timeout:10000,
+    });
+    let output = "";
+    child.stdout.on("data", chunk => output += chunk);
+    child.stderr.on("data", chunk => output += chunk);
+    const code = await new Promise((resolve, reject) => {child.on("error", reject); child.on("close", resolve);});
+    assert.equal(code, 1);
+    assert.equal(output.includes(marker), false, "untrusted server error must be hidden");
+    if (failure === "issue") {
+      assert.equal(requests.some(route => route.startsWith("POST")), false);
+      assert.equal(output.includes("key    :"), false);
+    } else {
+      assert.match(output, /new key issued; old key revocation unconfirmed/);
+      assert.match(output, /retry revoke --key-id/);
+      assert.equal((output.match(/key    :/g) ?? []).length, 1);
+      assert.equal(requests.filter(route => route.startsWith("PUT")).length, 1);
+      assert.equal(requests.at(-1), `POST /admin/key/${oldId}/revoke`);
+    }
+  } finally { await new Promise(resolve => server.close(resolve)); }
+}
+EOF
+then pass "K6 rotation failures preserve order, report recovery, and hide server errors"
+else fail "K6 rotation failure safety"
+fi
+
 # ── C1 · cleanup dry-run writes nothing ──────────────────────────────────────
 PORT="$(start_server "$SANDBOX/seed-cleanup.json" 1)"
 EP="http://127.0.0.1:$PORT"
@@ -213,6 +261,17 @@ else
   fail "C1 dry-run misbehaved: $DRY"
 fi
 
+DEDICATED="$(FW_ENDPOINT="$EP" FW_CLEANUP_TOKEN="$CLEANUP_TOKEN" FW_OPS_ADMIN_TOKEN= node "$CLEAN" 2>&1)" && DEDICATED_RC=0 || DEDICATED_RC=$?
+if [ "$DEDICATED_RC" -eq 0 ] && grep -q "dry-run only" <<<"$DEDICATED"; then
+  pass "C5 cleanup-only token can read and propose cleanup"
+else fail "C5 cleanup-only token refused"
+fi
+BOTH="$(FW_ENDPOINT="$EP" FW_CLEANUP_TOKEN="$CLEANUP_TOKEN" FW_OPS_ADMIN_TOKEN="$OPS_TOKEN" node "$CLEAN" --apply 2>&1)" && BOTH_RC=0 || BOTH_RC=$?
+if [ "$BOTH_RC" -ne 0 ] && grep -q "choose exactly one" <<<"$BOTH"; then
+  pass "C6 two token inputs fail closed without choosing a privilege"
+else fail "C6 ambiguous cleanup credentials accepted"
+fi
+
 # ── C2 · apply: expire→tombstone→delete, object gone, view clean ─────────────
 OBJ_KEY="payloads/1.54.0-beta.1/$(printf 'd%.0s' $(seq 1 64)).tgz"
 if curl -s "$EP/__test__/objects" | grep -q "1.54.0-beta.1"; then
@@ -220,7 +279,7 @@ if curl -s "$EP/__test__/objects" | grep -q "1.54.0-beta.1"; then
 else
   fail "C2a expected the seeded object before apply"
 fi
-APPLY="$(FW_ENDPOINT="$EP" FW_OPS_ADMIN_TOKEN="$OPS_TOKEN" node "$CLEAN" --apply 2>&1)" || true
+APPLY="$(FW_ENDPOINT="$EP" FW_CLEANUP_TOKEN="$CLEANUP_TOKEN" FW_OPS_ADMIN_TOKEN= node "$CLEAN" --apply 2>&1)" || true
 MANIFEST_AFTER="$(curl -s -H "Authorization: Bearer $OPS_TOKEN" "$EP/admin/manifest")"
 if grep -q '"1.54.0-beta.1"' <<<"$MANIFEST_AFTER" \
    && node -e "const m=JSON.parse(process.argv[1]); process.exit(m.versions['1.54.0-beta.1'].status==='expired'&&m.tombstones.includes('$OBJ_KEY')?0:1)" "$MANIFEST_AFTER"; then

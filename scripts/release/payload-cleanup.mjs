@@ -2,7 +2,8 @@
 // FLY-1062 PR3 · retention cleanup (plan §B0-10) — dry-run by default.
 //
 // Usage (token via env, NEVER argv):
-//   FW_ENDPOINT=… FW_OPS_ADMIN_TOKEN=… node scripts/release/payload-cleanup.mjs [--apply]
+//   FW_ENDPOINT=… FW_CLEANUP_TOKEN=… node scripts/release/payload-cleanup.mjs [--apply]
+// Manual ops-admin use remains supported; never supply both tokens.
 //
 // THE ORDER IS THE PROTOCOL (Codex R4#1 / R5#1 — never reorder):
 //   ① EXPIRE    status→expired via manifest CAS (exits every view; the
@@ -25,7 +26,8 @@ import {
 import { makeClient } from "./lib/endpoint-client.mjs";
 
 const ENDPOINT = (process.env.FW_ENDPOINT || "").replace(/\/+$/, "");
-const TOKEN = process.env.FW_OPS_ADMIN_TOKEN || "";
+const TOKEN =
+	process.env.FW_CLEANUP_TOKEN || process.env.FW_OPS_ADMIN_TOKEN || "";
 const APPLY = process.argv.includes("--apply");
 
 function log(msg) {
@@ -92,9 +94,13 @@ async function casPost(mutate, describe) {
 }
 
 async function main() {
+	if (process.env.FW_CLEANUP_TOKEN && process.env.FW_OPS_ADMIN_TOKEN)
+		die("choose exactly one cleanup or ops-admin token");
 	if (!ENDPOINT) die("FW_ENDPOINT env required");
 	if (!TOKEN)
-		die("FW_OPS_ADMIN_TOKEN env required (never pass tokens as arguments)");
+		die(
+			"FW_CLEANUP_TOKEN or FW_OPS_ADMIN_TOKEN env required (never pass tokens as arguments)",
+		);
 	const nowMs = Date.now();
 	const summary = { expired: 0, tombstoned: 0, deleted: 0, failures: [] };
 

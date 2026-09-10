@@ -1,0 +1,121 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2389 · 私有下载与保留期</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:1000px;margin:auto;padding:44px 20px 72px}h1{font-size:clamp(26px,4vw,40px);line-height:1.3;letter-spacing:-.7px}h2{font-size:23px;line-height:1.4;margin:0 0 16px}p{margin:12px 0}.eyebrow{font-size:13px;color:#62626a;letter-spacing:1px}.card{background:#fff;border:1px solid #e6e6eb;border-radius:20px;padding:28px;margin:22px 0;box-shadow:0 4px 20px #00000003}.lead{font-size:22px;line-height:1.65}.note{font-size:14px;color:#65656d}.pending{border:1px dashed #c88921;background:#fff8ec;padding:22px;border-radius:12px;margin:20px 0;color:#7d5010}.pending strong{display:block;font-size:15px}details{margin:12px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:12px 10px;border-bottom:1px solid #e9e9ee;text-align:left;vertical-align:top}th{background:#fafafa}.comment{border-top:1px solid #eee;margin-top:24px;padding-top:16px}label{display:block;font-size:13px;color:#666;margin-bottom:6px}textarea{width:100%;min-height:80px;padding:12px;font:inherit;font-size:15px;border:1px solid #d2d2d7;border-radius:10px;background:#fdfdff;resize:vertical}textarea:focus{outline:2px solid #007aff66;border-color:#007aff}button{font:inherit;font-size:14px;padding:10px 16px;border:0;border-radius:10px;background:#007aff;color:white;cursor:pointer;margin:10px 8px 0 0}button:disabled{opacity:.4;cursor:default}#summary-text{background:#f5f5f7;padding:16px;border-radius:10px;min-height:64px;font:14px/1.7 inherit;white-space:pre-wrap;overflow-wrap:anywhere}#copy-status{min-height:1.5em;color:#555;font-size:14px}.chunk{background:#fafafa;border-radius:10px;padding:14px;margin-top:12px}.chunk pre{font:14px/1.7 inherit;margin:0}@media(max-width:600px){main{padding:22px 12px 44px}.card{padding:20px 16px;border-radius:16px}h2{font-size:21px}td,th{padding:9px 5px;font-size:12px}.lead{font-size:20px}}</style></head><body><main><div class="eyebrow">FLY-2389 · B2 · 2026-09-09 · 设计说明</div><h1>让客户拿到对的版本，<br>让最新版本一直可用。</h1>
+<section class="card" data-section="flow"><h2>从授权码到产品包</h2><p class="lead">端点检查授权码后发出最多 60 秒有效的下载链接；私有文件库直接传输，安装器校验文件一致后才安装。</p><p><b>R2</b> 是存放产品包的私有文件库。<b>presigned GET</b> 是只能下载一个指定文件、到时失效的临时链接。链接是凭证，请勿转发。</p>
+<div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong>本地 Mermaid 渲染被 Chromium 启动权限拒绝，两次标准渲染均失败。保留真实图源，未使用远端渲染或假图。</div><details><summary>查看流程图原文</summary><pre>sequenceDiagram
+    participant C as 安装器
+    participant W as 验权端点
+    participant R as 私有文件库
+    C-&gt;&gt;W: 授权码 + 请求版本
+    W-&gt;&gt;R: 读取授权记录和版本目录
+    W-&gt;&gt;W: 核对内部 / 客户档位与保留期
+    W-&gt;&gt;R: 检查指定文件存在、校验值相符
+    W--&gt;&gt;C: 最多 60 秒有效的下载链接
+    C-&gt;&gt;R: 直接下载，不带授权码
+    R--&gt;&gt;C: 产品包
+    C-&gt;&gt;C: 校验文件一致后安装
+</pre></details>
+<div class="comment"><label for="comment-flow">对「从授权码到产品包」的意见</label><textarea id="comment-flow" data-comment="flow" data-title="从授权码到产品包" placeholder="写在这里，自动保存在本页的浏览器中"></textarea></div></section>
+<section class="card" data-section="model"><h2>一份目录，两种授权</h2><p><b>manifest</b> 是版本目录，决定当前内部测试版与客户正式版。<b>entitlement</b> 是授权档位，决定能看和下载的版本集合。</p><table><thead><tr><th>记录</th><th>唯一真相</th><th>保持什么</th></tr></thead><tbody><tr><td>内部授权</td><td>internal → internal-beta</td><td>可下载允许的测试版和正式版</td></tr><tr><td>客户授权</td><td>customer → customer-release</td><td>只可下载允许的正式版</td></tr><tr><td>文件身份</td><td>版本号 + SHA-256</td><td>同一身份的内容不能被替换</td></tr><tr><td>授权码记录</td><td>授权码的摘要 → 档位、吊销状态</td><td>不存明文，不覆盖已吊销授权码</td></tr></tbody></table><p><b>SHA-256</b> 是文件内容的校验值，用来检查下载的字节是否与发布目录一致。机器版本号不带 v；人看的标签可以带 v。公开安装器的 npm 标签不决定产品包版本。</p>
+<div class="comment"><label for="comment-model">对「一份目录，两种授权」的意见</label><textarea id="comment-model" data-comment="model" data-title="一份目录，两种授权" placeholder="写在这里，自动保存在本页的浏览器中"></textarea></div></section>
+<section class="card" data-section="retention"><h2>最新的一直留；旧的才开始计时</h2><p>内部测试版被替换后保留 <b>14 天</b>，客户正式版保留 <b>28 天</b>。当前版本即使一年没更新也不能被按年龄删除。旧版到期前重新启用，会清零历史时钟；再被替换时重新起算。</p><p>到期后端点立即停止新下载授权。后台计划任务按小时尝试清理；任务延迟或失败会推迟物理删除，后续任务继续重试。</p>
+<div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong>本地 Mermaid 渲染被 Chromium 启动权限拒绝，两次标准渲染均失败。保留真实图源，未使用远端渲染或假图。</div><details><summary>查看流程图原文</summary><pre>stateDiagram-v2
+    state &quot;当前版本：一直保留&quot; as Current
+    state &quot;历史版本：开始计时&quot; as History
+    state &quot;隔离坏版：禁止新下载&quot; as Bad
+    state &quot;到期：退出可见集合&quot; as Expired
+    state &quot;永久删除标记&quot; as Marked
+    state &quot;删除文件；失败可重试&quot; as Deleted
+    [*] --&gt; Current
+    Current --&gt; History: 被新版本替代
+    History --&gt; Current: 到期前重新启用，清零时钟
+    Current --&gt; Bad: 隔离并移走当前指针
+    History --&gt; Bad: 隔离，使用隔离时钟
+    History --&gt; Expired: 内部 14 天 / 正式 28 天
+    Bad --&gt; Expired: 内部 14 天 / 正式 28 天
+    Expired --&gt; Marked: 原子提交删除标记
+    Marked --&gt; Deleted: 定时任务重扫
+</pre></details>
+<div class="comment"><label for="comment-retention">对「最新的一直留；旧的才开始计时」的意见</label><textarea id="comment-retention" data-comment="retention" data-title="最新的一直留；旧的才开始计时" placeholder="写在这里，自动保存在本页的浏览器中"></textarea></div></section>
+<section class="card" data-section="security"><h2>吊销与密钥：明确生效边界</h2><p>吊销授权码、隔离坏版后，端点不再发新链接。<b>已发出的链接仍可能在剩余 60 秒内开始下载；已经开始或完成的下载不能召回。</b>Engineering Lead 已确认接受这个边界。</p><p><b>quarantine</b> 是隔离坏版本，禁止再取得它的新下载授权。缺文件、超出授权、到期、已隔离的请求都不会得到下载链接。</p><table><thead><tr><th>用途</th><th>放在哪里</th><th>权限边界</th></tr></thead><tbody><tr><td>文件签名凭据</td><td>GitHub 的 release 受管环境 → Worker 密钥</td><td>只读指定文件库，不交给客户</td></tr><tr><td>自动清理凭据</td><td>同一受管环境 → 清理任务</td><td>只能标记到期、标记删除和删除已标记文件</td></tr><tr><td>运营授权码工具</td><td>运营进程环境变量</td><td>签发、吊销；不把这项权限给清理任务</td></tr><tr><td>客户授权码</td><td>签发时私密交付；客户本地受限文件</td><td>库里只保留摘要，不出现在文档或日志</td></tr></tbody></table><p><b>Worker</b> 是运行验权端点的小型云程序。<b>GitHub release 受管环境</b> 是现有发布流程专用的配置与密钥存放位置。</p>
+<div class="comment"><label for="comment-security">对「吊销与密钥：明确生效边界」的意见</label><textarea id="comment-security" data-comment="security" data-title="吊销与密钥：明确生效边界" placeholder="写在这里，自动保存在本页的浏览器中"></textarea></div></section>
+<section class="card" data-section="tradeoffs"><h2>为什么采用这个最小方案</h2><table><thead><tr><th>采用</th><th>没有采用</th><th>理由</th></tr></thead><tbody><tr><td>复用现有版本目录和清理协议</td><td>按上传年龄删文件</td><td>上传日不等于被替换日；会误删还在服务的最新版本</td></tr><tr><td>原生规则只清理未完成分段上传</td><td>搬迁 current/history 或每个文件一条规则</td><td>避免多份状态、复制与恢复竞态</td></tr><tr><td>短效链接直接下载</td><td>每次文件传输都代理验权</td><td>满足本单分级直连下载，接受 60 秒剩余窗口</td></tr><tr><td>随机授权码 + 摘要记录</td><td>新账户、签名 license 或支付系统</td><td>现有基础已足够签发、验证和吊销</td></tr></tbody></table><p><b>CAS</b> 是先检查目录没有被别人改过，再原子提交自己的修改。删除前通过它提交永久删除标记，避免与重新启用旧版竞争。</p><p>审计发现上传收尾可能误删刚刚发布的当前版本。设计只修这处收尾检查，并把实际删除收归既有删除标记协议。</p>
+<div class="comment"><label for="comment-tradeoffs">对「为什么采用这个最小方案」的意见</label><textarea id="comment-tradeoffs" data-comment="tradeoffs" data-title="为什么采用这个最小方案" placeholder="写在这里，自动保存在本页的浏览器中"></textarea></div></section>
+<section class="card" data-section="acceptance"><h2>怎样证明它真的可用</h2><ol><li><b>授权正反例：</b>客户可下正式版、不能下测试版；内部授权可下测试版。无效或已吊销授权不能换链接。</li><li><b>保留期夹具：</b>模拟 365 天、14/28 天边界前后、旧版重新启用、清理失败与并发上传，断言当前文件一直存在。</li><li><b>联合真实验证：</b>B1 发布 → 端点给短效链接 → 私有 R2 下载 → 安装器校验值一致。改签名、改文件、过期链接必须失败。</li><li><b>自动化证据：</b>确认清理任务只有清理权限，真实运行成功，原生规则不删除完整产品包。</li></ol><p class="note">已有 28 个端点与生命周期基线测试通过。新增短效链接、自动清理和真实 R2 联合验证尚未实施；不能把基线通过写成整单上线成功。</p>
+<div class="comment"><label for="comment-acceptance">对「怎样证明它真的可用」的意见</label><textarea id="comment-acceptance" data-comment="acceptance" data-title="怎样证明它真的可用" placeholder="写在这里，自动保存在本页的浏览器中"></textarea></div></section>
+<section class="card" data-section="boundary"><h2>这份设计交付到哪里</h2><p>覆盖私有托管、分级下载、授权码签发/验证/吊销、14/28 天保留与自动清理，以及 B1 联合验收方案。</p><p>不做计费、账号、席位、计量，也不在这次设计中实现自动发布决策或客户自动更新器。<b>ship</b> 是内部合并/部署流程；<b>release</b> 是对外发产品包的流程，两者保持独立授权。</p><p>设计节点只提交文档与本页。实现、独立 QA、正式部署与激活各按既有工作流推进；这里不操作真实文件库、不签真实授权码、不启动后继节点。</p>
+<div class="comment"><label for="comment-boundary">对「这份设计交付到哪里」的意见</label><textarea id="comment-boundary" data-comment="boundary" data-title="这份设计交付到哪里" placeholder="写在这里，自动保存在本页的浏览器中"></textarea></div></section>
+<section class="card" data-section="summary"><h2>页面意见汇总</h2><p class="note">填写意见后，复制汇总发回即可。这是修改反馈，不代表设计通过。意见只留在此浏览器，不会自动发送。</p><div class="comment"><label for="comment-summary">补充整体意见</label><textarea id="comment-summary" data-comment="summary" data-title="整体意见" placeholder="也可以在这里补充整体意见"></textarea></div><div id="summary-text" aria-live="polite"></div><button id="copy-all" type="button" disabled>复制全部意见</button><div id="chunks"></div><p id="copy-status" role="status"></p></section></main>
+<script nonce="__CSP_NONCE__">(() => {
+  const marker = '【页面意见汇总】FLY-2389';
+  const prefix = 'flywheel-comments:' + location.pathname + ':';
+  const fields = Array.from(document.querySelectorAll('[data-comment]'));
+  const summary = document.getElementById('summary-text');
+  const chunksNode = document.getElementById('chunks');
+  const status = document.getElementById('copy-status');
+  const allButton = document.getElementById('copy-all');
+  let chunks = [];
+  async function copy(text) {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('unavailable');
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const field = document.createElement('textarea');
+      field.value = text;
+      field.style.position = 'fixed';
+      field.style.opacity = '0';
+      document.body.appendChild(field);
+      field.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch { ok = false; }
+      field.remove();
+      if (!ok) { status.textContent = '自动复制失败，请手动选择汇总文字复制。'; return; }
+    }
+    status.textContent = '已复制。粘贴发回即可；本页不会自动发送。';
+  }
+  function render() {
+    chunks = [];
+    let current = marker;
+    for (const field of fields) {
+      const value = field.value.trim();
+      if (!value) continue;
+      const label = '\n\n【' + field.dataset.title + '】\n';
+      let piece = '';
+      const pieces = [];
+      for (const char of value) {
+        if (piece.length + char.length > 1550) { pieces.push(piece); piece = ''; }
+        piece += char;
+      }
+      if (piece) pieces.push(piece);
+      for (const part of pieces) {
+        if ((current + label + part).length > 1800) { chunks.push(current); current = marker; }
+        current += label + part;
+      }
+    }
+    if (current !== marker) chunks.push(current);
+    summary.textContent = chunks.length ? chunks.join('\n\n') : '尚无意见。';
+    allButton.disabled = chunks.length === 0;
+    chunksNode.replaceChildren();
+    if (chunks.length > 1) chunks.forEach((part, index) => {
+      const box = document.createElement('div');
+      box.className = 'chunk';
+      const pre = document.createElement('pre');
+      pre.textContent = part;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = '复制第 ' + (index + 1) + '/' + chunks.length + ' 段';
+      button.addEventListener('click', () => copy(part));
+      box.append(pre, button);
+      chunksNode.appendChild(box);
+    });
+  }
+  for (const field of fields) {
+    try { field.value = localStorage.getItem(prefix + field.dataset.comment) || ''; }
+    catch { status.textContent = '浏览器未允许本地保存，仍可填写并复制。'; }
+    field.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + field.dataset.comment, field.value); }
+      catch { status.textContent = '本地保存不可用，请及时复制意见。'; }
+      render();
+    });
+  }
+  allButton.addEventListener('click', () => copy(chunks.join('\n\n')));
+  render();
+})();</script></body></html>

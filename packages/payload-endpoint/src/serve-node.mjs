@@ -37,6 +37,7 @@ const secrets = {
 	betaPublishTokenSha256: process.env.FW_BETA_PUBLISH_TOKEN_SHA256,
 	customerReleaseTokenSha256: process.env.FW_CUSTOMER_RELEASE_TOKEN_SHA256,
 	opsAdminTokenSha256: process.env.FW_OPS_ADMIN_TOKEN_SHA256,
+	cleanupTokenSha256: process.env.FW_CLEANUP_TOKEN_SHA256,
 };
 
 const server = http.createServer(async (req, res) => {
@@ -52,6 +53,7 @@ const server = http.createServer(async (req, res) => {
 			...(hasBody ? { body: Readable.toWeb(req), duplex: "half" } : {}),
 		});
 		const response = await handleRequest(request, {
+			delivery: { mode: "stream" },
 			bucket,
 			secrets,
 			now: () => new Date(),

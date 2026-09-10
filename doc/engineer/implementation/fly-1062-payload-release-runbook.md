@@ -17,11 +17,11 @@
 
 ## 1. 一次性初始化(P5 前置;第 2/3 步 = Annie 动作清单第 2 项)
 
-1. 生成三枚 capability token(各 ≥32 字节随机 hex,前缀随意,建议 `fwcap_` 便于识别)+ 计算各自 sha256:
+1. 生成四枚互不相同的 capability token(各 ≥32 字节随机 hex,前缀随意,建议 `fwcap_` 便于识别)+ 计算各自 sha256:
    ```
    node -e "const c=require('crypto');const t=c.randomBytes(32).toString('hex');console.log('token:',t);console.log('sha256:',c.createHash('sha256').update(t).digest('hex'))"
    ```
-   custody:beta-publish → repo secret `FW_BETA_PUBLISH_TOKEN`;customer-release → environment `release` secret `FW_CUSTOMER_RELEASE_TOKEN`;ops-admin → 运营侧(Tadashi/runbook)。Worker 只存 **sha256**。
+   custody:beta-publish → repo secret `FW_BETA_PUBLISH_TOKEN`;customer-release → environment `release` secret `FW_CUSTOMER_RELEASE_TOKEN`;ops-admin → 运营侧(Tadashi/runbook);cleanup → environment `release` 的 `FW_CLEANUP_TOKEN`。Worker 只存 **sha256**，自动清理不持有 ops-admin。
 2. Cloudflare(账号**已存在** = Annie 的,登录邮箱 **xrliannie.b@gmail.com**;Peter/GeoForge3D 核实 2026-07-11):
    - **首把 API token 需浏览器登录 bootstrap 一次**(Runner 用 Claude-in-Chrome 替她操作,需要密码/2FA/不可逆确认时才叫她),之后建 bucket / 部署 Worker / 发后续 token **全走 wrangler/API**(Cloudflare 有完整 API,不必再进浏览器)。
    - `wrangler r2 bucket create flywheel-payloads`(R2 大概率未启用,namespace 对我们干净)。
@@ -29,7 +29,7 @@
    - **硬边界(绝对不碰)**:该账号 GeoForge3D 在用两块——Cloudflare Pages 项目 `custom-map-studio`(`*.geoforge3d.pages.dev`)+ `memoscaped.com` 的 Email Routing/MX/DNS。我们**只新增** R2 bucket + Worker。
    - endpoint 形态 = **workers.dev** 免费地址(Annie 确认;真 URL 部署后一次定妥,填进 `DEFAULT_ENDPOINT`)。
 3. Annie 把 `CLOUDFLARE_API_TOKEN` 放进 GitHub environment `release`;activation `mode=infra` 通过 repo 中的 wrangler 配置部署 Worker,并从三个 capability secret 派生 sha256 后写入 Worker。不得在日志打印明文 token。
-4. conditional create 初始化 manifest(任一 capability token 均可;初始 = 双 channel null + 空表):
+4. conditional create 初始化 manifest(beta/customer-release/ops-admin 可用，cleanup 不可;初始 = 双 channel null + 空表):
    ```
    curl -X POST "$FW_ENDPOINT/admin/manifest" -H "Authorization: Bearer $TOKEN" \
      -H 'content-type: application/json' \
@@ -58,7 +58,7 @@ FW_ENDPOINT=… FW_BETA_PUBLISH_TOKEN=… node scripts/release/payload-release.m
 
 ## 4. withdraw(撤版;显式 fallback)
 
-有已知 active previous-good 时,在同一 `payload-promote-commit.yml` dispatch `action=withdraw`,`withdraw-version=<当前客户版本>`,`fallback-version=<已知好版本>`。脚本会在 CAS 内再次确认被撤版本就是当前 `customer-release` pointer,然后一次 CAS 将坏版本 quarantined 并回指 fallback;fallback re-pin 自动清零 retention 钟(服务端盖章)。不是当前 pointer、fallback 非 active release、两版本相同或并发漂移都零写拒绝。客户视图即时回退;paused / 无 previous-good 仍归 FLY-1143 B5。
+有已知 active previous-good 时,在同一 `payload-promote-commit.yml` dispatch `action=withdraw`,`withdraw-version=<当前客户版本>`,`fallback-version=<已知好版本>`。脚本会在 CAS 内再次确认被撤版本就是当前 `customer-release` pointer,然后一次 CAS 将坏版本 quarantined 并回指 fallback;fallback re-pin 自动清零 retention 钟(服务端盖章)。不是当前 pointer、fallback 非 active release 或保留期已到、两版本相同或并发漂移都零写拒绝。客户视图即时回退;paused / 无 previous-good 仍归 FLY-1143 B5。
 
 ## 5. retention 清理(dry-run 默认)
 
@@ -73,7 +73,7 @@ FW_ENDPOINT=… FW_CUSTOMER_RELEASE_TOKEN=… node scripts/release/payload-promo
 FW_ENDPOINT=… FW_OPS_ADMIN_TOKEN=… node scripts/release/payload-cleanup.mjs          # 只看
 FW_ENDPOINT=… FW_OPS_ADMIN_TOKEN=… node scripts/release/payload-cleanup.mjs --apply  # 执行
 ```
-顺序铁律(脚本结构即协议,测试锁死):**① expire/abandon**(端点用自己的钟强制 entry 窗口:beta 14 天 / release 28 天,current/pinned 永不过期;abandoned op 已终态)→ **② tombstone**(耐久 guard:从此新引用/PUT 复活全被拒)→ **③ delete + 全量 sweep**(每次 apply 重放全部 tombstones;delete 失败留 orphan 下次收敛)。不新增定时 cleanup workflow:`FW_OPS_ADMIN_TOKEN` 同时能签发客户 key;拆 capability 和定时化归 follow-up。
+顺序铁律(脚本结构即协议,测试锁死):**① expire/abandon**(端点用自己的钟强制 entry 窗口:beta 14 天 / release 28 天,current/pinned 永不过期;abandoned op 已终态)→ **② tombstone**(耐久 guard:从此新引用/PUT 复活全被拒)→ **③ delete + 全量 sweep**(每次 apply 重放全部 tombstones;delete 失败留 orphan 下次收敛)。B2 已拆 cleanup-only capability：`.github/workflows/payload-cleanup.yml` 每小时17分运行，也支持 dispatch。只在 main + environment release 读 `FW_ENDPOINT` 与 `FW_CLEANUP_TOKEN`，使用独立 `payload-cleanup` 并发组。未配置时明确 skip，不是清理成功；配置后失败必须排查。CLI 可用专用 token，或单独用上述 ops-admin；两者同时设置会拒绝。
 
 ## 6. key 签发 / 吊销 / 轮换(ops-admin)
 
@@ -84,7 +84,7 @@ FW_ENDPOINT=… FW_OPS_ADMIN_TOKEN=… node scripts/release/license-key.mjs rota
 ```
 - 明文 key 只在签发瞬间打印一次(附非敏感 key id 供吊销);系统只存 sha256;明文经 Annie 手交客户(founder 家规:清单第 4 项)。
 - 空态前置检查:目标 entitlement 的 channel `latest` 为 null → 拒(脚本 + 端点双重)。
-- 轮换 = 先签新再吊旧,客户零断档。吊销即时(R2 强一致,下一请求即拒)。
+- 轮换 = 先签新再吊旧,客户零断档。吊销后端点不再发新链接；已发链接最多剩余60秒可开始下载，已下载字节不能召回。若新签成功而旧吊销失败，CLI 非零退出；保留新 key/key id，单独重试 revoke --key-id <旧sha256>，不要重跑 rotate。
 
 ## 7. 薄壳 npm 发布(OIDC trusted publishing)
 
@@ -128,3 +128,18 @@ FLY-2102 已删除 broker、socket CLI、`FW_NPM_GAT_TOKEN` 和 Bridge token 供
 | ops-admin token | 运营侧(不进任何 workflow) | keys、expire、tombstone、DELETE;因能签客户 key,本单不定时化 cleanup |
 | Cloudflare API token | GitHub environment `release` secret `CLOUDFLARE_API_TOKEN`;由 Annie 一次性恢复 | activation infra 的 bucket/Worker 部署;不进 repo secret |
 | npm 账号(2FA) | Annie 本人 | 一次性配置/维护 trusted publisher;不签发 GAT |
+
+
+## B2 私有 R2 激活与回退（FLY-2389）
+
+激活前由授权运营在 environment `release` 配置 bucket 限定的 Object Read only R2 credential：`FW_R2_ACCESS_KEY_ID`、`FW_R2_SECRET_ACCESS_KEY`，以及 ≥32随机字节的 `FW_CLEANUP_TOKEN`。控制面仍是既有 `CLOUDFLARE_API_TOKEN`，两类 credential 不混用。account 取既有 `CLOUDFLARE_ACCOUNT_ID` variable；signer bucket 与 `PAYLOADS` 绑定同为 `flywheel-payloads`，不能配置任意 host。ops-admin 仍不进入 workflow。
+
+先读回 managed r2.dev 状态、custom domain 列表、全部原生 lifecycle 规则，与 `packages/payload-endpoint/r2-lifecycle.json` 做完整 diff。公开入口、完整对象年龄删除、未知规则都先停，由运营确认后处理，再重跑同一 infra workflow；不能用全量 set 悄悄覆盖未知 benign rule。原生配置只中止未完成 multipart，不能代替历史 payload 清理验收。没有公开域还应由 QA 核对客户不存在其它公开/缓存绕行入口。
+
+授权的 `payload-activation.yml mode=infra confirm=ACTIVATE` 执行：校验 secrets/账号/bucket → bucket create/resume → 私有性与 live rules 核验 → 应用 reviewed multipart rule 并读回 → 通过 stdin 预置 Worker signer secrets 与 cleanup hash → 部署 Worker。各新增 secret 只在 infra step 可用，不进 publish。原生规则应用在读取校验后显式确认；失败只有固定操作错误，不保存原始响应/secret。这段说明不授权现在 dispatch。
+
+上线顺序：实现和全仓门禁 → 独立 QA 在授权隔离 Worker/private bucket 做 B1+B2 联合 E2E → 既有授权的 infra 激活 → 正式 smoke → 一次自动清理成功证据。验签负例（方法/路径/query/过期）与旧对象实际 Cache-Control header 必须来自真实 R2；local stream/双 origin fixture 不能替代。执行前核 read-only signer 作用域、R2 私有性、版本 tuple、被测 SHA 与部署 id；不把 key 或 signed URL 存进报告。
+
+定时运行可延迟。运营核对最近一次**实际 apply 成功**，超过2小时没有成功就排查，必要时授权 dispatch 同一个 cleanup workflow。未激活 skip 不刷新成功时间。cleanup 无权 abandon live reservation；继续按 A1 先收口，再由全集 tombstone sweep 清理。读侧在14/28天截止立即隐藏历史，不依赖 scheduler。
+
+回退只回退 Worker 程序或停止调度；不回滚 schema1 manifest、pointer、keys、tombstones，不恢复已吊销 key。代码回退不能找回已删除对象。需要临时 stream 构建时保留 C1 的不可覆盖 key 与 PUT 当前对象保护，不能原样回到有破坏性竞态的旧 handler；stream 恢复服务仍不满足 B2 presign 验收。泄漏短链接等待最多60秒；signer secret 泄漏时吊销并更换 R2 credential，期间返回503，不把 bucket 改公开。REQ-0 仍禁止 merge/ship 自动触发客户 release。

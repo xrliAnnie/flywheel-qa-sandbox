@@ -22,9 +22,15 @@ import { ENTITLEMENT_POINTER } from "../../packages/release-contract/src/index.m
 
 const ENDPOINT = (process.env.FW_ENDPOINT || "").replace(/\/+$/, "");
 const TOKEN = process.env.FW_OPS_ADMIN_TOKEN || "";
+let rotationPending = null;
 
 function die(msg) {
 	console.error(`[license-key] ${msg}`);
+	if (rotationPending) {
+		console.error(
+			`[license-key] new key issued; old key revocation unconfirmed; retry revoke --key-id ${rotationPending} (do not repeat rotate).`,
+		);
+	}
 	process.exit(1);
 }
 
@@ -100,14 +106,13 @@ async function issue(opts) {
 	// fwk_ + 256-bit hex — matches the secret-scan pattern fwk_[0-9a-f]{32,}
 	const plaintext = `fwk_${randomBytes(32).toString("hex")}`;
 	const keyId = sha256Hex(plaintext);
-	const { status, json } = await api("PUT", `/admin/key/${keyId}`, {
+	const { status } = await api("PUT", `/admin/key/${keyId}`, {
 		customerId: customer,
 		entitlement,
 		revoked: false,
 		note: typeof opts.note === "string" ? opts.note : "",
 	});
-	if (status !== 200)
-		die(`issue failed (HTTP ${status}): ${json?.error ?? "unknown"}`);
+	if (status !== 200) die(`issue failed (HTTP ${status})`);
 	console.log(
 		"license key issued — the PLAINTEXT below is shown ONCE and never stored:",
 	);
@@ -133,12 +138,11 @@ async function revoke(opts) {
 			"revoke: --key-id <64-hex sha256> required (or --stdin with the plaintext key)",
 		);
 	}
-	const { status, json } = await api("POST", `/admin/key/${keyId}/revoke`, {});
+	const { status } = await api("POST", `/admin/key/${keyId}/revoke`, {});
 	if (status === 404) die("revoke: no such key");
-	if (status !== 200)
-		die(`revoke failed (HTTP ${status}): ${json?.error ?? "unknown"}`);
+	if (status !== 200) die(`revoke failed (HTTP ${status})`);
 	console.log(
-		`revoked ${keyId} — takes effect on the customer's NEXT request (strong consistency).`,
+		`revoked ${keyId} — no new download links; existing links may remain valid for up to 60 seconds.`,
 	);
 }
 
@@ -149,7 +153,9 @@ async function rotate(opts) {
 		die("rotate: --key-id <old key id> required");
 	}
 	await issue(opts);
+	rotationPending = opts["key-id"];
 	await revoke({ "key-id": opts["key-id"] });
+	rotationPending = null;
 	console.log("rotation complete: new key live, old key revoked.");
 }
 
@@ -164,4 +170,4 @@ async function main() {
 	die("usage: license-key.mjs issue|revoke|rotate (see file header)");
 }
 
-main().catch((e) => die(e.message));
+main().catch(() => die("operation failed; network or response unavailable"));

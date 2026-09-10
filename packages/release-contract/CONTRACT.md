@@ -245,6 +245,7 @@ workflow 结构测试 S13 把真实 trigger set 锁为 beta=`{schedule,workflow_
 - channel 从未有 entry 且 pointer=null:`GET /manifest` → HTTP 503,body 逐字 `{"error":"not activated"}`。
 - channel 有历史 entry、没有 active entry 且 pointer=null(`paused`):HTTP 503,body 逐字 `{"error":"no-release-available"}`。
 - paused entitlement 禁止签发新 license key。
+- B2：客户 `/manifest` / `/payload/:ver` 的不可读或非法 manifest，以及 payload 签名模式/凭据/运行故障、已经到期的待返回链接，HTTP 503 body 逐字 `{"error":"download unavailable"}`。未创建 manifest 的 `/manifest` 保留 `not activated`；未创建 manifest 的 payload 使用 `download unavailable`。
 
 v1 的 200 body 不含 wire version 字段。不能通过底层 manifest `schemaVersion` 在原路由直接加字段;需要新字段时必须新增显式版本化协议,例如 `/v2/manifest`,并保留 v1。
 
@@ -281,3 +282,24 @@ v1 的 200 body 不含 wire version 字段。不能通过底层 manifest `schema
 4. 搁浅 release 由 runbook 手动执行 `payload-promote.mjs abandon --stale-days 14 --apply`;beta 每次至少 6 小时的正常 run 通过第 2 条收敛。
 5. abandoned op 的 immutable object 仍走既有 `expire/abandon → tombstone CAS → physical delete` 三步;apply 每次重扫完整 tombstone 集。
 6. 本修订不新增定时 cleanup workflow,因为 `FW_OPS_ADMIN_TOKEN` 同时能签发客户 key;拆分 ops-admin capability 与定时化归 follow-up。
+
+## Amendment B2 (FLY-2389, 2026-09-09)
+
+签署依据：设计 R1 `reviewVerdict=APPROVED`，request `378ae9e4-5e7e-4160-8e11-2332862d8e84`；实施采用 Lead instruction `10b63b4b-4367-4b59-9802-bffdd36d99dd` 的七项处置。manifest schemaVersion=1、tuple、对象 identity、客户 manifest 200 body 与 channel 映射不变；本修订不是生产激活证据或发布授权。
+
+| 替代的旧语义 | B2 合同 |
+|---|---|
+| active 全部可见 | status=active 且 entitlement 允许；current 依据 channel pointer 永不按年龄过期，历史只在 retentionSince + beta 14天/release 28天之前可见，到期读侧立即拒绝，无须等 cleanup stamp。 |
+| payload 恒 stream | Worker 显式 presigned；Node 本地入口显式 stream。GET 验 key、完整 manifest、版本可见性与 HEAD size/sha metadata 后返回空 body 302。只签确定的 GET/key，不签管理 staging、manifest、key record、任意方法或 list。 |
+| 新链接即时吊销等于字节召回 | key revoke / quarantine 后开始的新请求不签发；旧 URL 最多剩余 60 秒可开始下载，不召回已下载字节或截断正在传输。签名从 auth I/O 前的起始秒算起，历史 TTL 向下取整且不超过截止，签前/签后都验时钟。 |
+| 三个 capability | 新增 cleanup，hash 为 `FW_CLEANUP_TOKEN_SHA256`。只 GET admin manifest、expire/tombstone CAS、tombstoned DELETE；无初始化、keys、payload PUT/GET、pointer、ledger、reserve/prepare/commit/abandon/quarantine 权限。非空 capability hash 重复时 admin 固定 503 `{"error":"capability configuration invalid"}`。 |
+| key 可更新 | ops-admin 条件创建；同 customerId/entitlement/规范化 note 且未 revoked 的重放零写 200，改档/改人/改 note/复活 409，revoke 单向且重复零写。createdAt 服务端拥有。请求实际读取最多 4 KiB，超限 413；customerId 1–128字符（非全空白），note ≤512字符，未知字段拒绝。 |
+| active 历史随时可回指 | Lead 裁定：到期前可回指并清钟；截止时及之后即使尚未 stamp expired 也拒绝回指。再次退出 current 重新起算，不使用 publishedAt/object age。 |
+| PUT 收尾可物理删除 | 收尾承认 reserved/prepared 或合法非 expired VersionEntry 引用；tombstone 优先拒绝。失去引用返回 409，PUT 不删除对象，统一由 tombstone sweep 收敛。 |
+| A1.1 第6条暂缓定时 | `payload-cleanup.yml` 每小时17分 + dispatch，只 main/release environment，cleanup-only token，独立 concurrency group。未激活显式 skip，不计为成功；只配置专用 token，手工 CLI 可单独用 ops-admin，同时提供二者拒绝。 |
+
+客户所有响应 `Cache-Control: private, no-store`，302 加 `Referrer-Policy: no-referrer`。新上传写 no-store；签名带 response-cache-control override，旧对象实际 R2 返回 header 必须由联合 QA 读回，不能从本地假对象响应推出。对象端跨 origin 403 是下载错误，不提示轮换有效 key。网络/解析异常不透出底层 URL/响应内容。
+
+唯一 lifecycle 执行器仍是 manifest 时钟 + expire→tombstone CAS→全集物理 sweep；失败删除保留标记，后续运行重试。原生 R2 只 abort 未完成 multipart 7 天，不设置 payload/manifest/key 的完整对象 TTL。不增加存储、迁移、计费、账号、席位或计量；B1/REQ-0 的 ship/release 独立性不变。
+
+读取预算与限制：每次客户请求不缓存 key/manifest，最多各读取一条 key/manifest，并完整执行一次 validator；presigned payload 另读一次 HEAD。当前 validator 的 tombstone 交叉检查随历史增长，应用尚未承诺 manifest 规模/CPU SLA，也未增加截断阈值。Worker 的平台 CPU 限额仍有效，规模与校验成本预算由 Lead follow-up 处理，不把本地 fixture 的延迟当生产容量结论。

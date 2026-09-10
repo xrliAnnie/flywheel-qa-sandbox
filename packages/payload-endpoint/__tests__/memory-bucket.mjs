@@ -105,7 +105,11 @@ export class MemoryBucket {
 			bodyKind = "stream";
 			bytes = await streamToBytes(value);
 		}
-		this.observations.puts.push({ key, bodyKind });
+		this.observations.puts.push({
+			key,
+			bodyKind,
+			httpMetadata: options.httpMetadata,
+		});
 		if (this.hooks.beforePut) {
 			const hook = this.hooks.beforePut;
 			this.hooks.beforePut = null; // one-shot — a hook that re-puts must not recurse
