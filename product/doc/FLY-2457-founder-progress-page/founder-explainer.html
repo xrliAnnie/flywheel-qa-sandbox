@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLY-2457 一页看清进度 — 我们先对一下形状</title>
+<style>
+  :root{color-scheme:light;--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--navy:#1a365d;--blue:#007aff;--green:#34c759;--amber:#ff9500;--red:#ff3b30;--purple:#af52de;--line:#e5e5ea}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,system-ui,"PingFang SC","Helvetica Neue",Arial,sans-serif}
+  main{max-width:960px;margin:0 auto;padding:26px 18px 80px}
+  header{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:22px 24px;margin-bottom:14px;border-left:4px solid var(--navy)}
+  h1{margin:0 0 8px;font-size:25px;letter-spacing:-.02em;color:var(--navy)}
+  h2{margin:0 0 10px;font-size:19px;color:var(--navy)}
+  h3{margin:16px 0 6px;font-size:15px}
+  .meta{color:var(--dim);font-size:13px;display:flex;flex-wrap:wrap;gap:6px 14px}
+  .card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:20px 22px;margin:14px 0;border-left:4px solid var(--blue)}
+  .card.green{border-left-color:var(--green)}.card.amber{border-left-color:var(--amber)}.card.red{border-left-color:var(--red)}.card.purple{border-left-color:var(--purple)}.card.gray{border-left-color:var(--dim)}
+  .lede{font-size:17px;line-height:1.6}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px}
+  th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.03em}
+  .scroll{overflow-x:auto}
+  .note{color:var(--dim);font-size:13px}
+  .pill{display:inline-block;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:600;margin-right:6px}
+  .pill.yes{background:#e8f8ec;color:#1b7a34}.pill.no{background:#fdeceb;color:#b3261e}.pill.info{background:#e9f2ff;color:#0b5cad}.pill.warn{background:#fff4e5;color:#8a4b00}
+  .comment{margin-top:18px;border-top:1px dashed var(--line);padding-top:10px}
+  .comment label{display:block;font-size:12.5px;color:var(--dim);margin-bottom:4px}
+  .comment textarea{width:100%;min-height:62px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:14px/1.5 inherit;resize:vertical;background:#fafafa;color:inherit}
+  .comment textarea:focus{outline:2px solid #bcd7ff;background:#fff}
+  .summary-text{white-space:pre-wrap;background:#fafafa;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:13.5px;min-height:44px}
+  button{font:14px inherit;border:1px solid var(--blue);background:var(--blue);color:#fff;border-radius:8px;padding:7px 14px;cursor:pointer;margin:8px 6px 0 0}
+  button.secondary{background:#fff;color:var(--blue)}
+  .status{font-size:13px;color:var(--dim);margin-left:6px}
+  ul,ol{margin:6px 0 6px 20px;padding:0}li{margin:4px 0}
+  .q{background:#fbfbfd;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:12px 0}
+  .q h3{margin:0 0 4px}
+  /* --- mockup --- */
+  .mock{background:#f3f4f6;border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .mock-bar{font-size:12px;color:var(--dim);margin-bottom:10px;font-family:"SF Mono",Menlo,monospace}
+  .m-head{background:#fff;border-radius:10px;padding:14px 16px;margin-bottom:10px;border:1px solid var(--line)}
+  .m-title{font-size:19px;font-weight:700;color:var(--navy);margin:0 0 4px}
+  .m-wait{background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px 14px;margin-bottom:10px}
+  .m-wait h4{margin:0 0 6px;font-size:14px;color:#8a4b00}
+  .m-wait li{font-size:13.5px}
+  .m-epic{background:#fff;border:1px solid var(--line);border-left:4px solid var(--green);border-radius:10px;padding:12px 14px;margin:8px 0}
+  .m-epic.later{border-left-color:var(--dim);opacity:.72}
+  .m-epic-h{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+  .m-epic-h b{font-size:15px}
+  .m-judge{background:#f6f9ff;border-radius:8px;padding:8px 10px;margin:8px 0;font-size:13.5px}
+  .m-judge span{color:var(--dim);font-size:12px}
+  .m-sub{font-size:13px;color:var(--dim);border-top:1px dashed var(--line);margin-top:8px;padding-top:6px}
+  .m-row{display:grid;grid-template-columns:88px 1fr;gap:8px;padding:3px 0;font-size:13px}
+  .m-row b{color:var(--navy);font-weight:600}
+  @media(max-width:700px){main{padding:16px 10px 60px}.card{padding:15px 14px}.m-row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>一页看清进度 —— 我们先对一下形状</h1>
+  <p class="lede">你昨晚说「跟他一起讨论一下这个页面应该长什么样子」。这一页就是我先把功课做完、把选择摊开,<b>还没写需求文档</b> —— 等你在下面留完意见,我再按你的意思写。</p>
+  <div class="meta"><span>FLY-2457</span><span>Honey Lemon</span><span>2026-09-08</span><span>第 1 轮 · 对形状</span></div>
+</header>
+
+<section class="card" data-section="1. 我理解你要什么">
+  <h2>1. 我理解你要的是什么</h2>
+  <p>你要 <b>一个链接</b>,想看就打开,打开就能回答三句话:</p>
+  <ol>
+    <li><b>哪些大块在做</b> —— 大块(Epic)一眼数得清,小活默认收起来。</li>
+    <li><b>每个到哪了</b> —— 一句人话,不是状态词。</li>
+    <li><b>哪里等我</b> —— 不用翻,顶上就写着「今天要你按几下」。</li>
+  </ol>
+  <p>而且这一页要<b>替掉</b>现在并存的几页,不是再加一页。你还要能在上面随手留话。</p>
+  <p class="note">我从你这几天的行为里读出的两条,我不再拿来问你:<b>①</b> 大块和小活混在一起 = 你已经否过一次;<b>②</b> 每张卡要有一句「我的判断」+ 能就地留言 —— 那版你真用了,一次拍了 14 个决定。</p>
+  <div class="comment"><label for="c1">这一段有没有说偏?(比如你其实还想要别的)</label><textarea id="c1" data-comment-key="s1" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card gray" data-section="2. 今天为什么是好几页">
+  <h2>2. 今天为什么会变成好几页</h2>
+  <p>我把这两天出现过的页面都翻了一遍,其实是 <b>四份</b>,不是两份:</p>
+  <div class="scroll"><table>
+    <tr><th>哪一份</th><th>谁在维护</th><th>强在哪</th><th>差在哪</th></tr>
+    <tr><td>系统自动出的那页</td><td>机器,自己刷新</td><td>永远和真实情况一致,每一格都写着「这是什么时候看到的」</td><td>把大块和小活<b>平铺</b>成一长串;满屏机器话(原始数据、规则编号、UTC 时间);<b>不能留言</b></td></tr>
+    <tr><td>Epic 评审页</td><td>塔大手写</td><td><b>你真用了</b> —— 大块一张卡、判断一句话、小活折叠、能点决定</td><td>手写 = 一次性的,过两天就旧</td></tr>
+    <tr><td>执行计划页(第一版)</td><td>塔大手写</td><td>—</td><td>你说「非常混乱」,大块和小活混在一起</td></tr>
+    <tr><td>总控页</td><td>塔大手写</td><td>开篇就写「要你决定的只有一件」——<b>最接近你要的顺序</b></td><td>同样手写、同样会旧</td></tr>
+  </table></div>
+  <p><b>一句话病因</b>:机器那一份<b>不会旧但不好看</b>,人写那几份<b>好看但会旧</b>。所以才并存 —— 谁也替不掉谁。</p>
+  <div class="comment"><label for="c2">对这个病因的判断,你同意吗?</label><textarea id="c2" data-comment-key="s2" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card green" data-section="3. 我提议的一页长什么样">
+  <h2>3. 我提议的一页,长这样</h2>
+  <p class="note">下面是<b>样子稿</b>(假数据只是示意,用的是今晚真实的单号)。你直接对着它说「这块留 / 这块砍 / 这块换个位置」最省事。</p>
+
+  <div class="mock">
+    <div class="mock-bar">🔒 一个固定链接 · 手机也能开 · 系统自己刷新</div>
+
+    <div class="m-head">
+      <p class="m-title">Flywheel · 现在在做什么</p>
+      <div class="note">刚刚更新 · 数据都来自 Linear 和引擎本身,不是谁抄的</div>
+    </div>
+
+    <div class="m-wait">
+      <h4>⚠️ 今天等你 3 件</h4>
+      <ul>
+        <li><b>FLY-2398</b> 自动合并影子跑 —— 验收过了,<b>ship 卡在你手里</b> <span class="pill info">系统在等</span></li>
+        <li><b>FLY-2444</b> 通用启动器 —— 新卡发你了,<b>旧卡别按</b> <span class="pill warn">塔大在问</span></li>
+        <li><b>FLY-2107</b> 返工体要不要「换体」 <span class="pill warn">塔大在问</span></li>
+      </ul>
+      <div class="note">「系统在等」= 引擎自己测出来有一道门开着;「塔大在问」= 人挂上来的一句话,他自己撤。</div>
+    </div>
+
+    <div class="m-epic">
+      <div class="m-epic-h"><span class="pill yes">现在做 · 1</span><b>FLY-2441 通路统一 + Raya 重建</b><span class="note">5 张小活 · 2 张已完成</span></div>
+      <div class="m-judge">💬 <b>塔大的判断</b>:所有别的都建在它上面。它不收,后面几张都没落点。<br><span>塔大 2 小时前写</span></div>
+      <div class="m-row"><b>到哪了</b><span>2444 在返工收尾(等验收) · 2445 等它合入 · 2446 刚起 · 2447/2448 还没开</span></div>
+      <div class="m-sub">▸ 展开 5 张小活</div>
+    </div>
+
+    <div class="m-epic">
+      <div class="m-epic-h"><span class="pill yes">现在做 · 2</span><b>FLY-2309 自动合并落地</b><span class="note">2 张小活</span></div>
+      <div class="m-judge">💬 <b>塔大的判断</b>:你这两天就要放开,而且它能让你少盯。<br><span>塔大 2 小时前写</span></div>
+      <div class="m-row"><b>到哪了</b><span>影子跑已合入 · 开关单在复审 · 最早 9-10 中午可放开</span></div>
+      <div class="m-row"><b>等你</b><span>2398 的 ship</span></div>
+      <div class="m-sub">▸ 展开 2 张小活</div>
+    </div>
+
+    <div class="m-epic later">
+      <div class="m-epic-h"><span class="pill">以后 · 6 个</span><b>你拍过「以后」的大块</b></div>
+      <div class="m-sub">▸ 点开看是哪 6 个(默认收起,不占地方)</div>
+    </div>
+
+    <div class="m-epic later">
+      <div class="m-epic-h"><span class="pill">Epic 外 · 5 张</span><b>没挂在任何大块下的活</b></div>
+      <div class="m-sub">▸ 529 房台架线 4 张 · 切号器 1 张(默认收起)</div>
+    </div>
+
+    <div class="m-head" style="margin-top:10px">
+      <div class="note">💬 想说什么就在任意一块下面写,写完点最下面「复制全部」贴回给塔大。</div>
+    </div>
+  </div>
+
+  <h3>这个样子稿里,我做了哪几个决定</h3>
+  <ul>
+    <li><b>「等你」提到最顶</b> —— 你最常问的就是这句;而且它短,一屏能看完。</li>
+    <li><b>大块一张卡,小活默认全收起</b> —— 你否过一次混排,这条不再商量。</li>
+    <li><b>每张卡两行</b>:一行「人的判断」(带谁写的、什么时候写的),一行「到哪了」(机器算的)。<b>你要能一眼分清哪句是人说的、哪句是机器测的。</b></li>
+    <li><b>「以后 / 不要」的大块不消失,但默认折起来</b> —— 你拍过的 14 个决定得有地方待着。</li>
+    <li><b>没挂大块的散活单独一节</b> —— 今天系统那页直接看不见它们,这是个真漏。</li>
+  </ul>
+  <div class="comment"><label for="c3">对着样子稿说:哪块留、哪块砍、哪块换位置、缺了什么?</label><textarea id="c3" data-comment-key="s3" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card amber" data-section="4. 核心取舍:那句人话谁写">
+  <h2>4. 唯一的硬取舍:那句「人的判断」谁来写</h2>
+  <p>我把塔大手写页里的每一句「现在到哪了」拆开数过:<b>大约七成机器本来就知道</b>(走到哪一步、卡在什么上、哪个 PR、等谁),<b>三成只有人知道</b> —— 就是「所有别的都建在它上面」「旧卡别按」这类。</p>
+  <p>所以问题不是「机器还是人」,是<b>那三成放哪</b>。三条路:</p>
+  <div class="scroll"><table>
+    <tr><th>路</th><th>做法</th><th>代价</th></tr>
+    <tr><td><b>甲 · 全交给机器</b></td><td>只显示机器算得出的,不要那句判断</td><td>就退回你已经否掉的那版观感:全是状态词,看不出轻重</td></tr>
+    <tr><td><b>乙 · 全靠人写</b>(今天)</td><td>塔大每次重写整页</td><td>会旧(你昨晚就读到了旧状态)、只有他在的时候才有、和 Linear 会不一致</td></tr>
+    <tr><td><b>丙 · 合流</b> ← 我推荐</td><td>骨架和状态归机器自动出;塔大只用一条命令写两格:<b>「我的判断」</b>和<b>「要她做什么」</b>。页面把它们贴到对应的大块上,并标明谁写的、什么时候写的</td><td>要新加一小块存放的地方 + 一条命令;塔大得记得写(不写就只显示机器那部分,不会假装有判断)</td></tr>
+  </table></div>
+  <p><b>我推荐丙</b>,两个理由:① 系统里已经有一模一样的东西(依赖关系账本就是这么做的),不是新发明;② 判断天生带「谁写的、什么时候写的」,不会出现「只有页面上有、别处查不到」的说法。</p>
+
+  <h3>还有第三个理由,我是查了才发现的 —— 你的决定今天正在丢</h3>
+  <p>我把你昨晚拍的 14 个决定,逐个去 Linear 对了一遍现在的状态(<b>刚查的,2026-09-09 04:40 UTC</b>):</p>
+  <div class="scroll"><table>
+    <tr><th>你拍的</th><th>几个</th><th>现在 Linear 里是什么</th><th>对得上吗</th></tr>
+    <tr><td><b>现在做</b></td><td>2</td><td>FLY-2441、FLY-2355 都在 In Progress</td><td><span class="pill yes">对得上</span></td></tr>
+    <tr><td><b>以后</b></td><td>6</td><td>2 个 Backlog、2 个 Done、<b>2 个还在 In Progress</b>(FLY-2309、FLY-1143)</td><td><span class="pill no">对不上</span></td></tr>
+    <tr><td><b>不要</b></td><td>5</td><td>2 个 Canceled、2 个 Done、<b>1 个还是 Backlog</b>(FLY-555)</td><td><span class="pill no">对不上</span></td></tr>
+  </table></div>
+  <p>后果就在你今晚看的那一页上:<b>系统那页现在列了 5 个「在做」,其中 2 个(2309、1143)是你说过「以后」的。</b>它不是坏了 —— 它只能读 Linear 的状态,而你的决定<b>没有一个字段可以放</b>,只能硬塞进「状态」这一个格子里,塞不下的就丢了:</p>
+  <ul>
+    <li><b>「以后」和「压根没拍过」在系统里长得一模一样</b>(都是 Backlog)。</li>
+    <li><b>FLY-555 你说了「不要」,它今天还活着</b>(Backlog),没人去关。</li>
+    <li><b>你说「以后」的 2072、648 是 Done 状态</b> —— Epic 关了但里面还有剩活,系统那页反而<b>整个看不见它们</b>。</li>
+  </ul>
+  <p class="note">这条比页面本身更早:<b>先给你的决定一个落点,这一页才排得对</b>。这也是我推荐丙的第三个、也是最硬的理由。</p>
+  <p class="note">我不确定的:塔大是不是愿意每天多写这两格。如果他嫌烦,这一页会慢慢退化成只有机器那部分。这是丙的真实风险,我先说在前面。</p>
+  <div class="comment"><label for="c4">甲 / 乙 / 丙 你选哪条?或者你有第四条?</label><textarea id="c4" data-comment-key="s4" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card purple" data-section="5. 要你拍的五件事">
+  <h2>5. 要你拍的五件事</h2>
+  <p class="note">你可以只回你有定见的几条,剩下的写「你发挥」,我按上面推荐的默认值定。</p>
+
+  <div class="q"><h3>① 默认显示哪些大块?</h3>
+  <p>你昨晚拍了「现在做 2 个」,但 Linear 里在跑的有 5 个 —— 差的那 2 个正是你说过「以后」的(见上一节的表)。默认按<b>你拍的</b>,还是按 <b>Linear 里在跑的</b>?<br><span class="note">我的默认 🔶:按你拍的;Linear 在跑但你没拍过 / 你说过以后的,单独提醒一行「这个对不上」。</span></p></div>
+
+  <div class="q"><h3>② 你的「现在做 / 以后 / 不要」要不要有自己的落点?</h3>
+  <p>有 = 这一页按你的决定排,你下次不用重拍,而且系统能自己发现「你说不要的还活着」这种对不上。没有 = 每次重来(就是今天)。<br><span class="note">我的默认 🔶:要。这是走「丙」的一部分,也是上面那张表的直接补丁。</span></p></div>
+
+  <div class="q"><h3>③ 这一页你要能<b>直接改决定</b>吗?</h3>
+  <p>像评审页那样点「改成:以后」,还是这一页只看 + 留言,决定另开一页拍?<br><span class="note">我的默认 🔶:这一页只看 + 留言。理由:你要的是「一眼看清」,按钮多了又变复杂;拍决定是隔一阵一次的事,不是每天。</span></p></div>
+
+  <div class="q"><h3>④ 没挂大块的散活(529 房那几张、切号器)放哪?</h3>
+  <p>单开一节 / 不显示 / 塞进「日常筐」。<br><span class="note">我的默认 🔶:单开一节、默认收起。今天它们在系统那页里完全不可见,这是个真洞。</span></p></div>
+
+  <div class="q"><h3>⑤ 那句「等你一句话」谁能挂?</h3>
+  <p>只有塔大(和各部门 Lead),还是干活的 runner 也能直接往上挂?<br><span class="note">我的默认 🔶:只有 Lead 能挂,免得变成许愿池。</span></p></div>
+
+  <div class="comment"><label for="c5">五件事的回答(有定见的写,没定见的写「你发挥」)</label><textarea id="c5" data-comment-key="s5" placeholder="① …… ② …… ③ …… ④ …… ⑤ ……"></textarea></div>
+</section>
+
+<section class="card red" data-section="6. 做不到 / 我不确定">
+  <h2>6. 做不到的,和我不确定的(先说清楚)</h2>
+  <ul>
+    <li><b>你在这一页写的留言不会自动回到我这里。</b> 页面是只出不进的,你写完要点「复制全部」贴回 thread —— 这一条我不会假装能自动。</li>
+    <li><b>链接靠「一直被刷新」活着。</b> 引擎长时间停摆,链接会过期。它死在管线之后,而不是活得比管线久 —— 这是故意的,免得你看到一页假的。</li>
+    <li><b>它不替代 Linear。</b> 单子的真相还在 Linear,这一页只是投影;每一格都写着「这是什么时候看到的」。</li>
+    <li><b>我不确定的</b>:你想要的「一眼」到底是<b>一屏</b>(手机上滑一下就完),还是<b>一页</b>(可以滚,但不用点)。这两个做法差挺多,你说一句我就定。</li>
+  </ul>
+  <div class="comment"><label for="c6">这些代价你接受吗?「一屏还是一页」你怎么想?</label><textarea id="c6" data-comment-key="s6" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card gray" data-section="7. 接下来">
+  <h2>7. 我接下来会做什么</h2>
+  <ol>
+    <li>拿你这一轮的意见,写成需求文档(PRD),再发你看一次。</li>
+    <li>需求定了,拆成工程单交给塔大的队列。</li>
+  </ol>
+  <p class="note">这一轮我<b>不会</b>动代码,也不会先拆单。</p>
+  <div class="comment"><label for="c7">对节奏有意见吗?</label><textarea id="c7" data-comment-key="s7" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card" data-section="汇总" id="summary-card">
+  <h2>页面意见汇总</h2>
+  <p class="note">下面实时汇总你在各节写的留言。<b>写完点「复制全部」贴回 issue thread,我才收得到</b> —— 这一页不会自动把它们发给我。第一行的标记是给 Lead 认页用的,不代表通过。</p>
+  <div id="summary-chunks"></div>
+  <button id="copy-all" type="button">复制全部意见</button><button id="clear-all" type="button" class="secondary">清空本页留言</button><span class="status" id="copy-status"></span>
+</section>
+
+</main>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARK = '【页面意见汇总】FLY-2457';
+  var PREFIX = 'fly2457-comment:' + location.pathname + ':';
+  var LIMIT = 1800;
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function lsDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-comment-key]'));
+  function sectionTitle(el) {
+    var sec = el.closest('section');
+    return sec ? (sec.getAttribute('data-section') || '') : '';
+  }
+  function buildText() {
+    var parts = [];
+    areas.forEach(function (a) {
+      var v = a.value.trim();
+      if (v) parts.push('[' + sectionTitle(a) + '] ' + v);
+    });
+    return parts;
+  }
+  function chunkify(parts) {
+    var chunks = [], cur = MARK;
+    parts.forEach(function (p) {
+      var cand = cur + '\n' + p;
+      if (cand.length > LIMIT && cur !== MARK) { chunks.push(cur); cur = MARK + '\n' + p; }
+      else cur = cand;
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+  var host = document.getElementById('summary-chunks');
+  function render() {
+    var parts = buildText();
+    while (host.firstChild) host.removeChild(host.firstChild);
+    var chunks = chunkify(parts);
+    chunks.forEach(function (c, i) {
+      var wrap = document.createElement('div');
+      if (chunks.length > 1) {
+        var lab = document.createElement('div'); lab.className = 'note';
+        lab.textContent = '第 ' + (i + 1) + ' / ' + chunks.length + ' 段(每段都要单独复制)';
+        wrap.appendChild(lab);
+      }
+      var pre = document.createElement('div'); pre.className = 'summary-text';
+      pre.textContent = parts.length ? c : MARK + '\n(还没有留言)';
+      wrap.appendChild(pre);
+      if (chunks.length > 1) {
+        var b = document.createElement('button'); b.type = 'button'; b.className = 'secondary';
+        b.textContent = '复制第 ' + (i + 1) + ' 段';
+        b.addEventListener('click', function () { copyText(c); });
+        wrap.appendChild(b);
+      }
+      host.appendChild(wrap);
+    });
+  }
+  var status = document.getElementById('copy-status');
+  function setStatus(t) { status.textContent = t; setTimeout(function () { status.textContent = ''; }, 2500); }
+  function fallbackCopy(t) {
+    var ta = document.createElement('textarea'); ta.value = t; ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.left = '-9999px'; document.body.appendChild(ta); ta.select();
+    var ok = false; try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta); return ok;
+  }
+  function copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function () { setStatus('已复制'); }, function () { setStatus(fallbackCopy(t) ? '已复制' : '复制失败,请手动选择'); });
+    } else setStatus(fallbackCopy(t) ? '已复制' : '复制失败,请手动选择');
+  }
+  areas.forEach(function (a) {
+    var saved = lsGet(PREFIX + a.getAttribute('data-comment-key'));
+    if (saved) a.value = saved;
+    a.addEventListener('input', function () { lsSet(PREFIX + a.getAttribute('data-comment-key'), a.value); render(); });
+  });
+  document.getElementById('copy-all').addEventListener('click', function () { copyText(chunkify(buildText()).join('\n\n')); });
+  document.getElementById('clear-all').addEventListener('click', function () {
+    areas.forEach(function (a) { a.value = ''; lsDel(PREFIX + a.getAttribute('data-comment-key')); }); render(); setStatus('已清空');
+  });
+  render();
+})();
+</script>
+</body>
+</html>

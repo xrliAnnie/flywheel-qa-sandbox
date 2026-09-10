@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLY-2457 进度页 · 第二版 —— 按你这一轮改完了</title>
+<style>
+  :root{color-scheme:light;--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--navy:#1a365d;--blue:#007aff;--green:#34c759;--amber:#ff9500;--red:#ff3b30;--purple:#af52de;--line:#e5e5ea}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,system-ui,"PingFang SC","Helvetica Neue",Arial,sans-serif}
+  main{max-width:960px;margin:0 auto;padding:26px 18px 80px}
+  header{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:22px 24px;margin-bottom:14px;border-left:4px solid var(--navy)}
+  h1{margin:0 0 8px;font-size:25px;letter-spacing:-.02em;color:var(--navy)}
+  h2{margin:0 0 10px;font-size:19px;color:var(--navy)}
+  h3{margin:16px 0 6px;font-size:15px}
+  .meta{color:var(--dim);font-size:13px;display:flex;flex-wrap:wrap;gap:6px 14px}
+  .card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:20px 22px;margin:14px 0;border-left:4px solid var(--blue)}
+  .card.green{border-left-color:var(--green)}.card.amber{border-left-color:var(--amber)}.card.red{border-left-color:var(--red)}.card.purple{border-left-color:var(--purple)}.card.gray{border-left-color:var(--dim)}
+  .lede{font-size:17px;line-height:1.6}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px}
+  th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.03em}
+  .scroll{overflow-x:auto}
+  .note{color:var(--dim);font-size:13px}
+  .pill{display:inline-block;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:600;margin-right:6px}
+  .pill.yes{background:#e8f8ec;color:#1b7a34}.pill.no{background:#fdeceb;color:#b3261e}.pill.info{background:#e9f2ff;color:#0b5cad}.pill.warn{background:#fff4e5;color:#8a4b00}.pill.wait{background:#f3e8ff;color:#7a3ea8}
+  .comment{margin-top:18px;border-top:1px dashed var(--line);padding-top:10px}
+  .comment label{display:block;font-size:12.5px;color:var(--dim);margin-bottom:4px}
+  .comment textarea{width:100%;min-height:62px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:14px/1.5 inherit;resize:vertical;background:#fafafa;color:inherit}
+  .comment textarea:focus{outline:2px solid #bcd7ff;background:#fff}
+  .summary-text{white-space:pre-wrap;background:#fafafa;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:13.5px;min-height:44px}
+  button{font:14px inherit;border:1px solid var(--blue);background:var(--blue);color:#fff;border-radius:8px;padding:7px 14px;cursor:pointer;margin:8px 6px 0 0}
+  button.secondary{background:#fff;color:var(--blue)}
+  .status{font-size:13px;color:var(--dim);margin-left:6px}
+  ul,ol{margin:6px 0 6px 20px;padding:0}li{margin:4px 0}
+  .q{background:#fbfbfd;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:12px 0}
+  .q h3{margin:0 0 4px}
+  .quote{background:#f6f9ff;border-left:3px solid var(--blue);border-radius:0 8px 8px 0;padding:8px 12px;margin:8px 0;font-size:14px}
+  .mono{font-family:"SF Mono",Menlo,monospace;font-size:12.5px;color:var(--navy);font-weight:600;text-decoration:none}
+  /* ---- embedded mockup ---- */
+  .mock{background:#eef0f3;border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .mock-bar{font-size:12px;color:var(--dim);margin-bottom:10px;font-family:"SF Mono",Menlo,monospace}
+  .m-h{background:#fff;border-radius:10px;padding:13px 15px;border:1px solid var(--line)}
+  .m-t{font-size:19px;font-weight:700;color:var(--navy);margin:0 0 3px}
+  .mock .sec{font-size:12.5px;font-weight:700;color:var(--dim);letter-spacing:.3px;margin:16px 0 8px}
+  .urgent{background:#fff;border-radius:10px;border-left:4px solid var(--red);border-top:1px solid var(--line);border-right:1px solid var(--line);border-bottom:1px solid var(--line);overflow:hidden}
+  .u-row{padding:11px 14px;border-bottom:1px solid var(--line)}
+  .u-row:last-child{border-bottom:none}
+  .u-l{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .u-kind{font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;white-space:nowrap}
+  .k-gate{background:#ffe9e7;color:#c92a20}.k-ask{background:#fff2dd;color:#a35c00}.k-named{background:#efe6ff;color:#6d33b8}
+  .u-t{color:var(--dim);font-size:12.5px}
+  .u-scope{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+  .u-act{font-size:13.5px;font-weight:600;color:var(--navy);margin:6px 0 4px}
+  .u-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .u-since{font-size:12px;color:var(--dim)}
+  .jump{font-size:12px;padding:3px 9px;border-radius:7px;border:1px solid var(--blue);color:var(--blue);text-decoration:none}
+  .jump-off{font-size:12px;padding:3px 9px;border-radius:7px;border:1px dashed #c7c7cc;color:#a1a1a6;background:#fafafa;cursor:not-allowed}
+  .epic{background:#fff;border-radius:10px;border:1px solid var(--line);border-left:4px solid var(--green);margin-bottom:8px;overflow:hidden}
+  .epic.e-idle{border-left-color:var(--dim)}
+  .epic summary{cursor:pointer;padding:12px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;list-style:none}
+  .epic summary::-webkit-details-marker{display:none}
+  .epic summary::before{content:"▸";color:var(--dim);font-size:12px}
+  .epic[open] summary::before{content:"▾"}
+  .e-st{font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .st-live{background:#e3f6e9;color:#1f7a37}.st-idle{background:#eeeef0;color:#6e6e73}
+  .st-linear{background:#e3f6e9;color:#1f7a37}
+  .e-n{font-weight:600}
+  .e-c{margin-left:auto;font-size:12px;color:var(--dim)}
+  .e-b{padding:2px 14px 12px;border-top:1px solid var(--line)}
+  .leadnote{background:#f6f9ff;border:1px dashed #c3d7f5;border-radius:9px;padding:9px 11px;margin:9px 0;font-size:13px}
+  .sample-tag{font-size:10.5px;font-weight:700;background:#fff4e5;color:#8a4b00;border-radius:20px;padding:2px 8px;margin-left:6px}
+  .ln-body{margin-top:5px;color:#4a4a4f}
+  .ln-meta{margin-top:5px;font-size:11px;color:var(--dim)}
+  .kid{padding:10px 0;border-bottom:1px solid var(--line)}
+  .kid:last-child{border-bottom:none}
+  .kid-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .kid-t{font-size:12.5px}
+  .s{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;white-space:nowrap}
+  .s-live{background:#e3f6e9;color:#1f7a37}.s-idle{background:#eeeef0;color:#6e6e73}.s-wait{background:#fff2dd;color:#a35c00}
+  .kid-a{font-size:12.5px;color:#4a4a4f;margin-top:3px}
+  .kid-tail{font-size:12px;color:var(--dim);padding-top:9px}
+  .empty{color:var(--dim);font-size:13px;padding:10px 0}
+  @media(max-width:700px){main{padding:16px 10px 60px}.card{padding:15px 14px}}
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>进度页 · 第二版 —— 按你这一轮改完了</h1>
+  <p class="lede">你上一轮把这件事砍掉了一大块,我整版重写了(不是打补丁)。这一页给你看:<b>我按你的话改了什么</b>、<b>真数据的样子稿</b>、以及<b>还剩一件要你裁</b>。</p>
+  <div class="meta"><span>FLY-2457</span><span>产品 Lead</span><span>第二版</span></div>
+</header>
+
+<section class="card green" data-section="1. 按你的话改了什么">
+  <h2>1. 你说的每一句,我改了什么</h2>
+  <div class="scroll"><table>
+    <tr><th>你说的</th><th>我改了什么</th></tr>
+    <tr><td>「我理解的现在也只有一页吧,就是我让他手写的……但我希望之后就<b>不需要我再手动让他去出一页</b>」</td><td>整个问题重新定义了:<b>问题不是「页太多」,是「那一页要你开口才存在」</b>。成功的判据也换成你这句 —— 连续 7 天你不用为了看进度去要求任何人出一页。</td></tr>
+    <tr><td>「我们一开始就不应该让它变得 inconsistent……只有我排的 Epic 会进入 In Progress……<b>不用存下来</b>」</td><td>把原来那一整套「记录你的决定、再跟 Linear 对账」的设计<b>全部删掉了</b>。改成:页面<b>直接照抄 Linear</b>,一致性靠规矩保证,不靠第二个账本。</td></tr>
+    <tr><td>「<b>丙 · 合流</b>」</td><td>Lead 手写的那句判断<b>回来了</b>(上一版我把它列成不做)。机器算的和人写的<b>并排显示</b>,你一眼能分清哪句是谁说的。</td></tr>
+    <tr><td>「这个东西需要是一个 generic……<b>不能写死</b>在具体人这里」</td><td>这一页和整份需求里<b>一个人名都没有</b>(我 grep 过)。凡是指人的地方一律写<b>角色</b>——「工程 Lead」「产品 Lead」。判断那一行的署名也是角色,不是人。</td></tr>
+    <tr><td>「我们现在都<b>只做后面那个</b>」+「哪个先做哪个后做<b>不需要在这个 PRD 里解决</b>」</td><td>范围砍掉一半:<b>不做</b>「讨论哪些该进 In Progress」那一页,<b>不做</b>先后排序。Epic 只按状态分组排,组内顺序固定不变(你能靠位置记东西)。</td></tr>
+    <tr><td>「没挂大块的散活,<b>放一个专门的 Epic</b>,叫『其他』或『日常』」</td><td>原来打算改取数范围去捞它们,<b>这个方案作废</b> —— 你的办法更省。而且现成就有一个「日常筐」可以用。<br><span class="note">⛔ 你说了「等我一句话」,所以在你开口之前<b>我一个 issue 都没挂、一个状态都没改</b>。</span></td></tr>
+  </table></div>
+  <div class="comment"><label for="c1">有没有哪句我改歪了?</label><textarea id="c1" data-comment-key="s1" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card" data-section="2. 样子稿(真数据)">
+  <h2>2. 样子稿 —— 真数据,不是画的</h2>
+  <p class="note">下面这块用<b>此刻真实的数据</b>渲染。Epic 可以真的点开。</p>
+  <div class="mock">
+<div class="mock-bar">🔒 一个固定链接 · 手机能开 · 系统自己刷新 —— 下面是<b>真数据</b>,2026-09-09 17:50Z</div>
+<div class="m-h"><p class="m-t">Flywheel · 现在在做什么</p><div class="note">全部默认收起,点开才展开</div></div>
+<div class="sec">⚡ 现在要你看 · 4 件</div>
+<div class="urgent"><div class="u-row">
+<div class="u-l"><span class="u-kind k-gate">在等你按一下(门开着)</span><span class="mono">FLY-2388</span>
+<span class="u-t">[1143·B1] 发布流水线 P4:薄壳 npm publish(2FA/</span><span class="u-scope">Epic 内</span><span class="u-scope">体在问你一句话</span></div>
+<div class="u-act">▶ 去 thread 里回一句「同意」或「打回」</div>
+<div class="u-r"><span class="u-since">自 17:48Z 起,已等 1 分钟</span>
+<span class="jump-off" title="thread 已存,但跳转链接还没接通">跳 Discord · 还没接通</span></div></div><div class="u-row">
+<div class="u-l"><span class="u-kind k-ask">体在问你一句话</span><span class="mono">FLY-2446</span>
+<span class="u-t">[语音·⑤] 通用 voice 进程:会议模式所有 Lead 可挂、RG(随</span><span class="u-scope">Epic 内</span></div>
+<div class="u-act">▶ 去 thread 里回答它的问题</div>
+<div class="u-r"><span class="u-since">自 17:29Z 起,已等 20 分钟</span>
+<span class="jump-off" title="thread 已存,但跳转链接还没接通">跳 Discord · 还没接通</span></div></div><div class="u-row">
+<div class="u-l"><span class="u-kind k-ask">体在问你一句话</span><span class="mono">FLY-2453</span>
+<span class="u-t">[2309·B4.5] 自动合并「窄口开关」:founder 一句「现在放开</span><span class="u-scope">Epic 内</span><span class="u-scope">体自己停了</span></div>
+<div class="u-act">▶ 去 thread 里回答它的问题</div>
+<div class="u-r"><span class="u-since">自 17:42Z 起,已等 8 分钟</span>
+<span class="jump-off" title="thread 已存,但跳转链接还没接通">跳 Discord · 还没接通</span></div></div><div class="u-row">
+<div class="u-l"><span class="u-kind k-named">你点过名要回来找你</span><span class="mono">FLY-2244</span>
+<span class="u-t">[流程·designer] product_design 节点规范写错了:高</span><span class="u-scope">⚠️ 没挂任何 Epic</span></div>
+<div class="u-act">▶ 去看一眼,决定继续还是停</div>
+<div class="u-r"><span class="u-since">—</span>
+<span class="jump-off" title="thread 已存,但跳转链接还没接通">跳 Discord · 还没接通</span></div></div></div>
+<div class="sec">在跑的 Epic(全做完的已拿掉;状态直接照抄 Linear)</div>
+<details class="epic e-live"><summary>
+<span class="e-st st-linear">In Progress</span><span class="mono e-id">FLY-2441</span><span class="e-n">通路统一 + Raya 重建</span>
+<span class="e-c">1 在跑 · 3 未开始 · 共 10</span></summary>
+<div class="e-b"><div class="leadnote sample"><b>💬 判断</b>
+<span class="sample-tag">示例 · 还没有任何人写过</span>
+<div class="ln-body">某个 Lead 写下的一句话会出现在这里,例如「这块是别的都建在它上面,它不收后面都没落点」。</div>
+<div class="ln-meta">工程 Lead · 2 小时前写</div></div><div class="kid"><div class="kid-h"><span class="s s-live">在跑</span><span class="mono">FLY-2446</span>
+<span class="kid-t">[语音·⑤] 通用 voice 进程:会议模式所有 Lead 可挂、RG(随身)模式先 Raya 用;独立 Code</span></div><div class="kid-a">↳ 到「实现」· 第 1 次 · implement running</div></div><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2459</span>
+<span class="kid-t">[2441·⑥] 能派 runner 的部门 Lead 跑 Codex 后端:补 Codex Lead 动作面的 s</span></div><div class="kid-a">↳ 还没起跑</div></div><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2447</span>
+<span class="kid-t">[Raya·CoS·⑥] 统管 Leads / summaries(§8.8)/ 日报 在新地基重排:按 PRD F</span></div><div class="kid-a">↳ 还没起跑</div></div><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2448</span>
+<span class="kid-t">[收口·⑦] FLY-2379 / 2381 / 2437 / 2380 作废或挂 Epic;raya 仓旧壳清理清</span></div><div class="kid-a">↳ 还没起跑</div></div><div class="kid-tail">另有 4 张已完成 · 2 张已取消(不展示)</div></div></details><details class="epic e-live"><summary>
+<span class="e-st st-linear">In Progress</span><span class="mono e-id">FLY-2355</span><span class="e-n">Codex 记忆落地</span>
+<span class="e-c">1 在跑 · 1 未开始 · 共 5</span></summary>
+<div class="e-b"><div class="kid"><div class="kid-h"><span class="s s-live">在跑</span><span class="mono">FLY-2460</span>
+<span class="kid-t">[2355·B3] Codex 自蒸馏从不触发:runner 家里模型拿不到原生 memory 工具、memory_</span></div><div class="kid-a">↳ 到「实现」· 第 1 次 · implement running</div></div><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2360</span>
+<span class="kid-t">[2355·D] 一周观测 + 节流闸诊断:A 上线一周后读三个 Lead 家 memories/ 读数;为空才逐道</span></div><div class="kid-a">↳ 还没起跑</div></div><div class="kid-tail">另有 3 张已完成(不展示)</div></div></details><details class="epic e-live"><summary>
+<span class="e-st st-linear">In Progress</span><span class="mono e-id">FLY-2309</span><span class="e-n">自动合并怎么落地</span>
+<span class="e-c">1 在跑 · 1 未开始 · 共 6</span></summary>
+<div class="e-b"><div class="kid"><div class="kid-h"><span class="s s-live">在跑</span><span class="mono">FLY-2453</span>
+<span class="kid-t">[2309·B4.5] 自动合并「窄口开关」:founder 一句「现在放开 / 现在停止」切换;开着时,同时过三道</span></div><div class="kid-a">↳ 到「实现」· 第 1 次 · implement running</div></div><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2399</span>
+<span class="kid-t">[2309·B5] 自动合并放手前要改的三条规矩(提案,交 founder 拍)【P2 · 文档单 · 依赖 B4 </span></div><div class="kid-a">↳ 还没起跑</div></div><div class="kid-tail">另有 4 张已完成(不展示)</div></div></details><details class="epic e-live"><summary>
+<span class="e-st st-linear">In Progress</span><span class="mono e-id">FLY-1143</span><span class="e-n">Release CI/CD 发布流程</span>
+<span class="e-c">1 在跑 · 5 未开始 · 共 7</span></summary>
+<div class="e-b"><div class="kid"><div class="kid-h"><span class="s s-live">在跑</span><span class="mono">FLY-2388</span>
+<span class="kid-t">[1143·B1] 发布流水线 P4:薄壳 npm publish(2FA/OIDC)+ payload immut</span></div><div class="kid-a">↳ 到「创始人门」· 第 1 次 · qa running</div></div><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2389</span>
+<span class="kid-t">[1143·B2] R2 payload 托管 + 端点:私有 bucket + 验 key 薄端点(entitle</span></div><div class="kid-a">↳ 还没起跑</div></div><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2390</span>
+<span class="kid-t">[1143·B3] 判据 c 聚合:消费 FLY-942 原始事件 + 版本归因 + watchdog heartb</span></div><div class="kid-a">↳ 还没起跑</div></div><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2391</span>
+<span class="kid-t">[1143·B4] auto-ship-on-silence:opt-out + fail-closed 状态机 +</span></div><div class="kid-a">↳ 还没起跑</div></div><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2392</span>
+<span class="kid-t">[1143·B5] 客户自动更新器 + 止血:定时更新器(查 customer-release → 装 → 即时失败</span></div><div class="kid-a">↳ 还没起跑</div></div><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2393</span>
+<span class="kid-t">[1143·B6] Bridge 按项目分频(独立泳道):只阻塞 §3「每项目 beta 分频目标态」,不阻塞 fl</span></div><div class="kid-a">↳ 还没起跑</div></div><div class="kid-tail">另有 1 张已完成(不展示)</div></div></details><details class="epic e-idle"><summary>
+<span class="e-st st-linear">In Progress</span><span class="mono e-id">FLY-2369</span><span class="e-n">日常筐(bug / 小需求)</span>
+<span class="e-c">0 在跑 · 1 未开始 · 共 1</span></summary>
+<div class="e-b"><div class="kid"><div class="kid-h"><span class="s s-idle">未开始</span><span class="mono">FLY-2370</span>
+<span class="kid-t">[日常·说明] 这筐怎么用(不是任务;Backlog 状态不进范围)</span></div><div class="kid-a">↳ 还没起跑</div></div></div></details>
+</div>
+  <p class="note"><b>看这块时注意四件事:</b><br>
+  <b>①</b> 最上面「现在要你看」每行都是固定四段:<b>这是什么 / 要你做什么 / 等了多久 / 去哪儿做</b>。第三条标着「没挂任何 Epic」—— 它就是你说的那类散活,今天的机制从范围上看不见它。<br>
+  <b>②</b> 「跳 Discord」<b>已按正式格式拼出,未实测能否打开</b>。我没有真的点开过,所以不写「能点」。真正的验证写进了工程单:实现时先点开一次留证。<br>
+  <b>③</b> 第一张卡里那条<b>💬 判断</b>标着「示例 · 还没有任何人写过」—— 那是给你看形状的,<b>不是真的有人写了</b>。真有人写才会出现真句子;没人写就只显示机器那句,<b>不会假装有判断</b>。<br>
+  <b>④</b> 每张 Epic 卡上<b>只有一个状态徽标,就是 Linear 上的状态</b> —— 这是你 20:26 裁的,已经照做。旁边那串「N 在跑 · N 未开始」是<b>细节,不是第二个状态</b>。</p>
+  <div class="comment"><label for="c2">对着样子稿说:哪块留、哪块砍、哪块换位置、缺了什么?</label><textarea id="c2" data-comment-key="s2" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card purple" data-section="3. 两个决定不是同一件事">
+  <h2>3. 先讲清楚一条,免得看起来自相矛盾</h2>
+  <p>你这一轮说了两句,单看会觉得打架:</p>
+  <div class="quote">「<b>不用存下来</b>……直接显示 Linear 里面的状态就可以了,不会出现两个 source of truth」</div>
+  <div class="quote">「<b>丙 · 合流</b>」+「有一个地方需要去 update,而且那个地方我也是需要可以去留言的」</div>
+  <p>其实它们说的是<b>两件不同的事</b>:</p>
+  <div class="scroll"><table>
+    <tr><th></th><th>它回答的问题</th><th>谁说了算</th></tr>
+    <tr><td><b>排期决定</b></td><td>这件事<b>做不做 / 什么时候做</b></td><td><b>Linear 的状态</b> —— 你排了才进 In Progress,页面直接照抄,不推断、不另存</td></tr>
+    <tr><td><b>执行判断</b></td><td>正在做的这件,<b>现在什么样</b></td><td><b>Lead 写的那一句</b> —— 机器算不出「这张返工了、旧卡别按」</td></tr>
+  </table></div>
+  <p>⇒ <b>它们答的不是同一个问题,所以不构成两个真相。</b>页面上这两类信息会做成视觉上分得开:你一眼能看出哪句是机器测的、哪句是人写的。</p>
+  <div class="comment"><label for="c3">这条分界你认吗?</label><textarea id="c3" data-comment-key="s3" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card green" data-section="4. 你裁了 Epic 的状态">
+  <h2>4. ✅ 你裁了:Epic 的状态照抄 Linear</h2>
+  <p>上一版这里问你「Epic 的状态用算出来的,还是照抄 Linear」。<b>你选了照抄。</b>已经写死进需求,不再是待定。</p>
+  <div class="scroll"><table>
+    <tr><th></th><th>怎么显示</th></tr>
+    <tr><td><b>Epic 的状态徽标</b></td><td><b>= Linear 上的状态,唯一真相</b>。⛔ 不再算第二个状态、也不另存一份判断</td></tr>
+    <tr><td><b>子单计数</b></td><td>照留在徽标旁边(比如「0 在跑 · 1 未开始」)—— 信息还在,但它<b>不是状态</b></td></tr>
+  </table></div>
+  <p class="note">📌 你裁的时候页面上正好有个活例子:「日常筐」徽标写着 <b>In Progress</b>,同一行的计数是「0 在跑 · 1 未开始」。<br>
+  两者并存不打架:<b>徽标回答「它是什么状态」,计数回答「它下面有多少活在动」</b>。状态只有一个来源,细节仍然看得见。</p>
+  <p class="note">⚠️ 这条的代价我也写在需求里了:存量没对齐时(你说过「以后」、但状态还是 In Progress 的那些),页面会<b>如实显示 Linear 当时的样子</b> —— 照抄的意思就是页面不替你纠正它。</p>
+  <div class="comment"><label for="c4">这个落地形状对吗?</label><textarea id="c4" data-comment-key="s4" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card red" data-section="5. 还挡在前面的四件">
+  <h2>5. 还挡在前面的四件(工程要补的)</h2>
+  <ol>
+    <li><b>子单不知道自己属于哪个 Epic。</b> 引擎给的数据里每张子单有标题、状态、跑到哪一步,<b>就是没有「我爸是谁」</b>。做样子稿只能把父子关系手抄进脚本 —— 不可持续。<b>要补一格「父单」。</b></li>
+    <li><b>「还没开始」的单根本不在数据里。</b> 取数规则里写着「排除还没开始的」,实测:这 5 个 Epic 在 Linear 有 <b>28 张</b>子单,引擎数据里只有 <b>17 张</b>,缺的 <b>11 张全是还没开始的</b>。⇒ 你要的「每个 Epic 挂它的 issue」「未开始的排下面」「依赖要表现出来」<b>今天从数据层就做不到</b> —— 被挡住的恰恰是这批单。<b>要改成不再按状态丢单</b>,显不显示交给页面决定。</li>
+    <li><b>跳 Discord 的链接。</b> 服务器号有、取值口有、每张单的 thread 号也有,连「用服务器号拼链接」的代码都已经存在(语音功能在用)——<b>只是没人给「跳到某张单的 thread」拼过</b>。所以这是要新写的一小段,不是接现成的。<b>拼不出来时灰掉并写明原因</b>,⛔ 绝不拿假链接、也不拿指向 Linear 的链接冒充。</li>
+    <li><b>等你的事不能只在 Epic 里找。</b> 你现在正有一张单在等你,而它不挂在任何 Epic 下。你的办法(挂进「日常筐」)能解决大部分,但那是<b>人的规矩</b>,页面不能假定它总被执行 —— 所以「现在要你看」<b>单独取数</b>,跟 Epic 范围脱钩,当兜底。</li>
+  </ol>
+  <div class="comment"><label for="c5">这四件的处理方式有意见吗?</label><textarea id="c5" data-comment-key="s5" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card gray" data-section="6. 做不到 / 砍掉的">
+  <h2>6. 做不到的,和我砍掉的</h2>
+  <h3>做不到(如实说)</h3>
+  <ul>
+    <li><b>你在这一页写的留言不会自动回到我这里。</b> 写完要点「复制全部」贴回去 —— 这一条我不会假装能自动。</li>
+    <li><b>链接靠一直被刷新活着。</b> 引擎长时间停摆,链接会过期。它死在管线之后,而不是活得比管线久(那才是假新鲜)。</li>
+    <li><b>那句判断要有人去写。</b> 没人写,这一页就退化成只有机器那半 —— 但它<b>不会假装有判断</b>。</li>
+    <li><b>一致性靠规矩,不靠系统。</b>「只有你排的才进 In Progress」是人的规矩;规矩没被执行时,页面会如实显示 Linear 当时的样子。</li>
+  </ul>
+  <h3>砍掉的(每加一样要砍一样)</h3>
+  <ul>
+    <li>❌ 记录你的排期决定、再跟 Linear 对账 —— 你说不用存,整套删掉</li>
+    <li>❌ 「哪些该进 In Progress」的排期页 —— 你说只做后面那个</li>
+    <li>❌ 先后顺序 —— 你说不在这份需求里解决</li>
+    <li>❌ 在这一页上直接改 Linear —— 本版只能留言,不能改。要做是新的一块,你另开</li>
+    <li>❌ 依赖关系图 —— 一句「等 FLY-XXXX」就够,图会把「默认收起」的清爽吃掉</li>
+  </ul>
+  <div class="comment"><label for="c6">砍错了哪个?</label><textarea id="c6" data-comment-key="s6" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card" data-section="7. 怎么算做成 + 拆单">
+  <h2>7. 怎么算做成了,和拆几张单</h2>
+  <h3>做成了的判据</h3>
+  <ul>
+    <li><b>主判据(你的原话)</b>:连续 7 天,你<b>没有为了看进度去要求任何人出一页</b>;想看就直接打开那个固定链接。</li>
+    <li>你冷启动到说出「有 N 件等我」<b>不超过 30 秒</b>。</li>
+    <li>「现在要你看」<b>一件都不漏</b>。</li>
+    <li><b>换一个 Lead、换一个项目,同一份代码跑得出同样的页</b>,零人名写死 —— 这是你要的 generic。</li>
+  </ul>
+  <h3>接下来怎么交出去</h3>
+  <p>上一版我在这里列了「拆成 7 张工程单」。<b>那一步取消了</b>,因为它越界了:</p>
+  <div class="scroll"><table>
+    <tr><th>谁</th><th>定什么</th></tr>
+    <tr><td><b>产品侧(我)</b></td><td><b>要什么效果</b> —— 就是这份需求本身</td></tr>
+    <tr><td><b>工程 Lead</b></td><td><b>怎么拆</b> —— 动哪几层、拆几张单、什么次序</td></tr>
+  </table></div>
+  <p>⇒ 交接方式是:<b>把这份需求整份交给工程 Lead,由他拆。</b>我们预先切成 7 块塞过去,等于替他做了技术拆解,而那不是我们该判断的。<br>
+  ⛔ 所以我<b>不会建任何工程单</b>,也不实现 —— 交付物就是这份需求。</p>
+  <p class="note">我只留了两条<b>提示</b>给他(不是拆法):<b>①</b> 「还没开始的单不在数据里」那一条是第 ②⑨⑩ 条的前置,不解开就做不到;<b>②</b> 跳 Discord 的链接,实现时要先真点开一次留证,不许拿没验证过的当已完成。</p>
+  <div class="comment"><label for="c7">拆法和判据有意见吗?</label><textarea id="c7" data-comment-key="s7" placeholder="留言……"></textarea></div>
+</section>
+
+<section class="card" data-section="汇总" id="summary-card">
+  <h2>页面意见汇总</h2>
+  <p class="note">下面实时汇总你各节写的留言。<b>写完点「复制全部」贴回 issue thread,我才收得到</b> —— 这一页不会自动把它们发给我。第一行的标记是给 Lead 认页用的,不代表通过。</p>
+  <div id="summary-chunks"></div>
+  <button id="copy-all" type="button">复制全部意见</button><button id="clear-all" type="button" class="secondary">清空本页留言</button><span class="status" id="copy-status"></span>
+</section>
+
+</main>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARK = '【页面意见汇总】FLY-2457';
+  var PREFIX = 'fly2457-prd2:' + location.pathname + ':';
+  var LIMIT = 1800;
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function lsDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-comment-key]'));
+  function sectionTitle(el) {
+    var sec = el.closest('section');
+    return sec ? (sec.getAttribute('data-section') || '') : '';
+  }
+  function buildText() {
+    var parts = [];
+    areas.forEach(function (a) {
+      var v = a.value.trim();
+      if (v) parts.push('[' + sectionTitle(a) + '] ' + v);
+    });
+    return parts;
+  }
+  function chunkify(parts) {
+    var chunks = [], cur = MARK;
+    parts.forEach(function (p) {
+      var cand = cur + '\n' + p;
+      if (cand.length > LIMIT && cur !== MARK) { chunks.push(cur); cur = MARK + '\n' + p; }
+      else cur = cand;
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+  var host = document.getElementById('summary-chunks');
+  function render() {
+    var parts = buildText();
+    while (host.firstChild) host.removeChild(host.firstChild);
+    var chunks = chunkify(parts);
+    chunks.forEach(function (c, i) {
+      var wrap = document.createElement('div');
+      if (chunks.length > 1) {
+        var lab = document.createElement('div'); lab.className = 'note';
+        lab.textContent = '第 ' + (i + 1) + ' / ' + chunks.length + ' 段(每段都要单独复制)';
+        wrap.appendChild(lab);
+      }
+      var pre = document.createElement('div'); pre.className = 'summary-text';
+      pre.textContent = parts.length ? c : MARK + '\n(还没有留言)';
+      wrap.appendChild(pre);
+      if (chunks.length > 1) {
+        var b = document.createElement('button'); b.type = 'button'; b.className = 'secondary';
+        b.textContent = '复制第 ' + (i + 1) + ' 段';
+        b.addEventListener('click', function () { copyText(c); });
+        wrap.appendChild(b);
+      }
+      host.appendChild(wrap);
+    });
+  }
+  var status = document.getElementById('copy-status');
+  function setStatus(t) { status.textContent = t; setTimeout(function () { status.textContent = ''; }, 2500); }
+  function fallbackCopy(t) {
+    var ta = document.createElement('textarea'); ta.value = t; ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.left = '-9999px'; document.body.appendChild(ta); ta.select();
+    var ok = false; try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta); return ok;
+  }
+  function copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function () { setStatus('已复制'); }, function () { setStatus(fallbackCopy(t) ? '已复制' : '复制失败,请手动选择'); });
+    } else setStatus(fallbackCopy(t) ? '已复制' : '复制失败,请手动选择');
+  }
+  areas.forEach(function (a) {
+    var saved = lsGet(PREFIX + a.getAttribute('data-comment-key'));
+    if (saved) a.value = saved;
+    a.addEventListener('input', function () { lsSet(PREFIX + a.getAttribute('data-comment-key'), a.value); render(); });
+  });
+  document.getElementById('copy-all').addEventListener('click', function () { copyText(chunkify(buildText()).join('\n\n')); });
+  document.getElementById('clear-all').addEventListener('click', function () {
+    areas.forEach(function (a) { a.value = ''; lsDel(PREFIX + a.getAttribute('data-comment-key')); }); render(); setStatus('已清空');
+  });
+  render();
+})();
+</script>
+</body>
+</html>
