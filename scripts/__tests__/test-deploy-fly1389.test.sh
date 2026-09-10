@@ -94,6 +94,8 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-report-host.mjs" \
   "${SCRIPT_DIR}/lib/qa-report-host-bridge-wrapper.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge.sh" \
+  "${SCRIPT_DIR}/lib/qa-slot-env-contract.sh" \
+  "${SCRIPT_DIR}/lib/qa-slot-env-contract.json" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" \
   "${SCRIPT_DIR}/lib/cmux-mutator-process-census.sh" \
   "${SCRIPT_DIR}/lib/runner-workspace-trust.sh" \
@@ -117,14 +119,14 @@ SD="$(dirname "$DISCORD_STATE_DIR")"
 env | sort > "$SD/lead-env.txt"
 pwd > "$SD/lead-cwd.txt"
 echo $$ > "$SD/lead-shell-pid.txt"
-mkdir -p "$HOME/.flywheel/pids" "$HOME/.flywheel/comm/$PROJ"
+mkdir -p "$HOME/.flywheel/pids" "$FLYWHEEL_COMM_ROOT/$PROJ"
 echo $$ > "$HOME/.flywheel/pids/$PROJ-$AGENT.pid"
-printf '{"pid": %s}\n' $$ > "$HOME/.flywheel/comm/$PROJ/.inbox-ready-$AGENT"
+printf '{"pid": %s}\n' $$ > "$FLYWHEEL_COMM_ROOT/$PROJ/.inbox-ready-$AGENT"
 # FLY-1608 campaign-abort fixture: the extra Lead records its true process
 # identity/cwd/env above but deliberately withholds readiness. test-deploy must
 # kill exactly this supervisor PID through its own failure path.
 if [[ "$AGENT" == "flywheel-test-30" ]]; then
-  rm -f "$HOME/.flywheel/comm/$PROJ/.inbox-ready-$AGENT"
+  rm -f "$FLYWHEEL_COMM_ROOT/$PROJ/.inbox-ready-$AGENT"
 fi
 sleep 300
 STUBLEAD
@@ -181,9 +183,9 @@ cd "$(dirname "$0")/../packages/teamlead"
 env | sort > "$SD/lead-env.txt"
 pwd > "$SD/lead-cwd.txt"
 echo $$ > "$SD/lead-shell-pid.txt"
-mkdir -p "$HOME/.flywheel/comm/$PROJ"
+mkdir -p "$FLYWHEEL_COMM_ROOT/$PROJ"
 if [[ "$AGENT" != "flywheel-test-30" ]]; then
-  printf '{"pid": %s}\n' $$ > "$HOME/.flywheel/comm/$PROJ/.inbox-ready-$AGENT"
+  printf '{"pid": %s}\n' $$ > "$FLYWHEEL_COMM_ROOT/$PROJ/.inbox-ready-$AGENT"
 fi
 sleep 300
 STUBCARRIER
@@ -912,6 +914,7 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       TEAMLEAD_ISSUE_PREFIXES="${TEAMLEAD_ISSUE_PREFIXES:-}" \
       FLY1389_SAFE_SENTINEL="${FLY1389_SAFE_SENTINEL:-}" \
       FLYWHEEL_NOVEL_WEBHOOK_TOKEN="fixture-novel-webhook-secret" \
+      FLYWHEEL_NOVEL_ROOT="/production/novel-root" \
       FLYWHEEL_LEAD_MODEL="malicious-model" \
       FLYWHEEL_LEAD_EFFORT="malicious-effort" \
       bash "$repo_root/scripts/test-deploy.sh" "$slot" "$@" \
@@ -1119,7 +1122,8 @@ const live = JSON.parse(fs.readFileSync(livePath, "utf8"));
 delete live._;
 delete live.SHLVL;
 const mandatory = {
-  FLYWHEEL_COMM_DB: `${home}/.flywheel/comm/test-slot-31/comm.db`,
+  FLYWHEEL_COMM_ROOT: `${slotDir}/state/comm`,
+  FLYWHEEL_ISOLATION_ROOT: slotDir,
   FLYWHEEL_STATE_DIR: slotDir,
   FLYWHEEL_DELIVERY_SECRET_PATH: `${slotDir}/state/delivery-secret`,
   CODEX_HOME: `${slotDir}/state/codex-home`,
@@ -1133,11 +1137,21 @@ const mandatory = {
 const mandatoryDrift = Object.entries(mandatory)
   .filter(([name, value]) => expected[name] !== value)
   .map(([name, value]) => ({ name, expected: value, actual: expected[name] }));
+try {
+  const expectedContract = fs.realpathSync(`${spec.repoRoot}/scripts/lib/qa-slot-env-contract.json`);
+  const actualContract = fs.realpathSync(expected.FLYWHEEL_ISOLATION_CONTRACT);
+  if (actualContract !== expectedContract) {
+    mandatoryDrift.push({ name: "FLYWHEEL_ISOLATION_CONTRACT", expected: expectedContract, actual: actualContract });
+  }
+} catch (error) {
+  mandatoryDrift.push({ name: "FLYWHEEL_ISOLATION_CONTRACT", expected: "canonical repo contract", actual: String(error) });
+}
 const flywheelNames = Object.keys(expected).filter((name) => name.startsWith("FLYWHEEL_"));
 const productionLeaks = flywheelNames
   .filter((name) => expected[name].includes(productionPrefix))
   .map((name) => ({ name, value: expected[name] }));
-const forbiddenNames = ["FLYWHEEL_NOVEL_WEBHOOK_TOKEN"].filter((name) => name in expected);
+const forbiddenNames = ["FLYWHEEL_COMM_DB", "FLYWHEEL_NOVEL_WEBHOOK_TOKEN", "FLYWHEEL_NOVEL_ROOT", "TMUX_PANE"]
+  .filter((name) => name in expected);
 const names = [...new Set([...Object.keys(expected), ...Object.keys(live)])].sort();
 const missing = names.filter((name) => !(name in live));
 const extra = names.filter((name) => !(name in expected));
@@ -1167,6 +1181,9 @@ NODE
       (.[0] | keys | sort) == ["label","manifest","plist"]' \
     "$E_SLOT_DIR/launchd-leads.json" >/dev/null 2>&1 \
     || { E_OK=0; fail "E/FLY-2301: pure Claude registry transcript changed shape"; }
+  jq -e '.unclassifiedCoordinatesCleared | index("FLYWHEEL_NOVEL_ROOT") != null' \
+    "$E_SLOT_DIR/launch-manifest.json" >/dev/null 2>&1 \
+    || { E_OK=0; fail "E/FLY-2454: unclassified coordinate clearing is absent from manifest"; }
   [[ -n "$(jq -r '.leadPidFile' <<<"$E_JSON")" ]] || { E_OK=0; fail "E: leadPidFile must be non-empty on the default path"; }
   # P0-a: caller leak cleared, LEAD_WORKSPACE pinned slot-local.
   LE="$E_SLOT_DIR/lead-env.txt"
@@ -1210,8 +1227,14 @@ NODE
       || { E_OK=0; fail "E/FLY-1663: Bridge delivery secret path not slot-local"; }
     grep -q "^TMUX_TMPDIR=${E_SLOT_DIR}$" "$BE" \
       || { E_OK=0; fail "E/FLY-1999: Bridge tmux socket root not slot-local"; }
+    grep -q "^FLYWHEEL_COMM_ROOT=${E_SLOT_DIR}/state/comm$" "$BE" \
+      || { E_OK=0; fail "E/FLY-2454: Bridge CommDB root not slot-local"; }
+    ! grep -q '^FLYWHEEL_COMM_DB=' "$BE" \
+      || { E_OK=0; fail "E/FLY-2454: Bridge retained an inherited CommDB file"; }
     ! grep -q '^TMUX=' "$BE" \
       || { E_OK=0; fail "E/FLY-1999: Bridge inherited a caller tmux coordinate"; }
+    ! grep -q '^TMUX_PANE=' "$BE" \
+      || { E_OK=0; fail "E/FLY-2454: Bridge inherited a caller tmux pane"; }
     ! grep -q '^FLYWHEEL_TMUX_SOCKET_OVERRIDE=' "$BE" \
       || { E_OK=0; fail "E/FLY-1999: QA Bridge retained the split-routing socket override"; }
     grep -q '^TEAMLEAD_DEFAULT_LEAD_AGENT=flywheel-test-31$' "$BE" \

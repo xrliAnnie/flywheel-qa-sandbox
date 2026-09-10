@@ -1,29 +1,52 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+	type BoundaryEvidence,
+	checkBoundaryEvidence,
+	resolveIsolationRoot,
+} from "./isolation-boundary.js";
 
-export type KillLedgerTargetKind = "pid" | "pgid" | "tmux-window";
+export type KillMutationTargetKind = "pid" | "pgid" | "tmux-window";
+export type KillLedgerTargetKind = KillMutationTargetKind | "none";
 
 export interface KillLedgerEntry {
 	ts: string;
 	source: string;
 	signal: string;
 	targetKind: KillLedgerTargetKind;
-	target: number | string;
+	target: number | string | null;
 	execId?: string;
 	reason: string;
 	schemaVersion: 1;
+	refusal?: "isolation_boundary";
+	refusalReason?: "no_evidence" | "outside_root";
+	boundary?: BoundaryEvidence;
+	isolationRoot?: string;
 }
 
 export interface AuditedSignalInput {
 	source: string;
 	signal: string;
-	targetKind: KillLedgerTargetKind;
+	targetKind: KillMutationTargetKind;
 	target: number | string;
 	execId?: string;
 	reason: string;
 	failureMode?: "fail-closed" | "forced-shutdown-fail-open";
+	boundary?: BoundaryEvidence;
 }
+
+export interface BoundaryRefusalInput {
+	source: string;
+	execId?: string;
+	reason: string;
+}
+
+export type AuditedSignalFailureKind =
+	| "invalid_target"
+	| "ledger_failed"
+	| "signal_failed"
+	| "boundary_refused";
 
 export type AuditedSignalResult =
 	| {
@@ -33,7 +56,7 @@ export type AuditedSignalResult =
 	  }
 	| {
 			ok: false;
-			kind: "invalid_target" | "ledger_failed" | "signal_failed";
+			kind: AuditedSignalFailureKind;
 			error: string;
 			entry: KillLedgerEntry;
 	  };
@@ -44,6 +67,7 @@ export interface AuditedSignalDeps {
 	fsync?: (fd: number) => void;
 	mutate?: (target: number | string, signal: string) => void;
 	stderr?: (line: string) => void;
+	env?: NodeJS.ProcessEnv;
 }
 
 export interface AuditedSignalAsyncDeps
@@ -59,6 +83,55 @@ function defaultLedgerRoot(env: NodeJS.ProcessEnv = process.env): string {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function appendLedgerEntry(
+	entry: KillLedgerEntry,
+	deps: Pick<AuditedSignalDeps, "env" | "fsync" | "ledgerRoot">,
+): string | null {
+	try {
+		const root = deps.ledgerRoot ?? defaultLedgerRoot(deps.env ?? process.env);
+		mkdirSync(root, { recursive: true, mode: 0o700 });
+		const day = entry.ts.slice(0, 10).replaceAll("-", "");
+		const path = join(root, `${day}.ndjson`);
+		const fd = openSync(path, "a", 0o600);
+		try {
+			writeSync(fd, `${JSON.stringify(entry)}\n`, undefined, "utf8");
+			(deps.fsync ?? fsyncSync)(fd);
+		} finally {
+			closeSync(fd);
+		}
+		return null;
+	} catch (error) {
+		return errorMessage(error);
+	}
+}
+
+function refuseBoundary(
+	input: AuditedSignalInput,
+	entry: KillLedgerEntry,
+	deps: Pick<AuditedSignalDeps, "env" | "fsync" | "ledgerRoot" | "stderr">,
+): AuditedSignalResult | null {
+	const root = resolveIsolationRoot(deps.env ?? process.env);
+	const check = checkBoundaryEvidence(root, input.boundary ?? {});
+	if (check.ok) return null;
+	const refusalEntry: KillLedgerEntry = {
+		...entry,
+		refusal: "isolation_boundary",
+		refusalReason: check.reason,
+		boundary: input.boundary ?? {},
+		isolationRoot: root?.canonical ?? "",
+	};
+	appendLedgerEntry(refusalEntry, deps);
+	(deps.stderr ?? console.error)(
+		`[isolation-boundary] REFUSED source=${JSON.stringify(input.source)} targetKind=${input.targetKind} target=${JSON.stringify(input.target)} root=${JSON.stringify(root?.canonical ?? "")} evidence=${JSON.stringify(input.boundary ?? {})} reason=${check.reason}`,
+	);
+	return {
+		ok: false,
+		kind: "boundary_refused",
+		error: check.reason,
+		entry: refusalEntry,
+	};
 }
 
 function mutationTarget(
@@ -119,22 +192,13 @@ export function auditedSignal(
 			entry,
 		};
 	}
+	const boundaryRefusal = refuseBoundary(input, entry, deps);
+	if (boundaryRefusal) return boundaryRefusal;
 
 	let durableLedger: "ndjson" | "stderr-fallback" = "ndjson";
-	try {
-		const root = deps.ledgerRoot ?? defaultLedgerRoot();
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-		const day = entry.ts.slice(0, 10).replaceAll("-", "");
-		const path = join(root, `${day}.ndjson`);
-		const fd = openSync(path, "a", 0o600);
-		try {
-			writeSync(fd, `${JSON.stringify(entry)}\n`, undefined, "utf8");
-			(deps.fsync ?? fsyncSync)(fd);
-		} finally {
-			closeSync(fd);
-		}
-	} catch (error) {
-		const detail = errorMessage(error);
+	const ledgerError = appendLedgerEntry(entry, deps);
+	if (ledgerError !== null) {
+		const detail = ledgerError;
 		if (input.failureMode !== "forced-shutdown-fail-open") {
 			return { ok: false, kind: "ledger_failed", error: detail, entry };
 		}
@@ -185,22 +249,13 @@ export async function auditedSignalAsync(
 			entry,
 		};
 	}
+	const boundaryRefusal = refuseBoundary(input, entry, deps);
+	if (boundaryRefusal) return boundaryRefusal;
 
 	let durableLedger: "ndjson" | "stderr-fallback" = "ndjson";
-	try {
-		const root = deps.ledgerRoot ?? defaultLedgerRoot();
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-		const day = entry.ts.slice(0, 10).replaceAll("-", "");
-		const path = join(root, `${day}.ndjson`);
-		const fd = openSync(path, "a", 0o600);
-		try {
-			writeSync(fd, `${JSON.stringify(entry)}\n`, undefined, "utf8");
-			(deps.fsync ?? fsyncSync)(fd);
-		} finally {
-			closeSync(fd);
-		}
-	} catch (error) {
-		const detail = errorMessage(error);
+	const ledgerError = appendLedgerEntry(entry, deps);
+	if (ledgerError !== null) {
+		const detail = ledgerError;
 		if (input.failureMode !== "forced-shutdown-fail-open") {
 			return { ok: false, kind: "ledger_failed", error: detail, entry };
 		}
@@ -225,4 +280,37 @@ export async function auditedSignalAsync(
 			entry,
 		};
 	}
+}
+
+/** Record a fail-closed isolated mutation refusal when no target evidence exists. */
+export function recordBoundaryRefusal(
+	input: BoundaryRefusalInput,
+	deps: AuditedSignalDeps = {},
+): AuditedSignalResult {
+	const now = (deps.now ?? (() => new Date()))();
+	const root = resolveIsolationRoot(deps.env ?? process.env);
+	const entry: KillLedgerEntry = {
+		ts: now.toISOString(),
+		source: input.source,
+		signal: "none",
+		targetKind: "none",
+		target: null,
+		...(input.execId ? { execId: input.execId } : {}),
+		reason: input.reason,
+		schemaVersion: 1,
+		refusal: "isolation_boundary",
+		refusalReason: "no_evidence",
+		boundary: {},
+		isolationRoot: root?.canonical ?? "",
+	};
+	appendLedgerEntry(entry, deps);
+	(deps.stderr ?? console.error)(
+		`[isolation-boundary] REFUSED source=${JSON.stringify(input.source)} targetKind=none target=null root=${JSON.stringify(root?.canonical ?? "")} evidence={} reason=no_evidence`,
+	);
+	return {
+		ok: false,
+		kind: "boundary_refused",
+		error: "no_evidence",
+		entry,
+	};
 }

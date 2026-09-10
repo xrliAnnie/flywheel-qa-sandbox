@@ -198,16 +198,34 @@ export {
 	ClaudeMessageFormatter,
 	type IMessageFormatter,
 } from "./formatter.js";
+export {
+	assertIsolationBoundaryAtBoot,
+	type BoundaryCheckResult,
+	type BoundaryEvidence,
+	checkBoundaryEvidence,
+	type IsolationBootCheckResult,
+	type IsolationBootContractEntry,
+	type IsolationBootOffender,
+	type IsolationBootPolicy,
+	type IsolationRoot,
+	IsolationRootInvalid,
+	isUnderIsolationRoot,
+	resolveIsolationRoot,
+} from "./isolation-boundary.js";
 export { KimiTmuxAdapter } from "./KimiTmuxAdapter.js"; // FLY-494
 export {
 	type AuditedSignalAsyncDeps,
 	type AuditedSignalDeps,
+	type AuditedSignalFailureKind,
 	type AuditedSignalInput,
 	type AuditedSignalResult,
 	auditedSignal,
 	auditedSignalAsync,
+	type BoundaryRefusalInput,
 	type KillLedgerEntry,
 	type KillLedgerTargetKind,
+	type KillMutationTargetKind,
+	recordBoundaryRefusal,
 } from "./kill-ledger.js";
 export {
 	clearSyncOp,

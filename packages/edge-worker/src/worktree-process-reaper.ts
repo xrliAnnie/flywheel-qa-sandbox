@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { auditedSignal } from "flywheel-claude-runner";
+import { auditedSignal, type BoundaryEvidence } from "flywheel-claude-runner";
 import { canonicalizeWorktreePath } from "./worktree-paths.js";
 
 export interface ReapTarget {
@@ -48,10 +48,19 @@ export function isReapIncomplete(summary: ReapSummary): boolean {
 }
 
 export interface ReapDeps {
+	env: NodeJS.ProcessEnv;
 	listCwds(): Promise<CwdRow[]>;
 	listProcesses(): Promise<ProcessRow[]>;
-	kill(pid: number, sig: "SIGTERM" | "SIGKILL" | 0): boolean;
-	killGroup(pgid: number, sig: "SIGTERM" | "SIGKILL"): boolean;
+	kill(
+		pid: number,
+		sig: "SIGTERM" | "SIGKILL" | 0,
+		boundary?: BoundaryEvidence,
+	): boolean;
+	killGroup(
+		pgid: number,
+		sig: "SIGTERM" | "SIGKILL",
+		boundary?: BoundaryEvidence,
+	): boolean;
 	sleep(ms: number): Promise<void>;
 	now(): number;
 	lstat(p: string): { isDir: boolean; isSymlink: boolean } | null;
@@ -148,70 +157,81 @@ export async function listSystemCwds(): Promise<CwdRow[]> {
 	);
 }
 
-const defaultDeps: ReapDeps = {
-	listCwds: listSystemCwds,
-	listProcesses: async () =>
-		parseProcessOutput(
-			await runFile("ps", ["-axo", "pid=,ppid=,pgid=,lstart=,command="], {
-				env: { ...process.env, LC_ALL: "C" },
-			}),
-		),
-	kill: (pid, signal) => {
-		if (signal === 0) {
-			try {
-				process.kill(pid, 0);
-				return true;
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-				throw error;
+function defaultDeps(env: NodeJS.ProcessEnv): ReapDeps {
+	return {
+		env,
+		listCwds: listSystemCwds,
+		listProcesses: async () =>
+			parseProcessOutput(
+				await runFile("ps", ["-axo", "pid=,ppid=,pgid=,lstart=,command="], {
+					env: { ...env, LC_ALL: "C" },
+				}),
+			),
+		kill: (pid, signal, boundary) => {
+			if (signal === 0) {
+				try {
+					process.kill(pid, 0);
+					return true;
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+					throw error;
+				}
 			}
-		}
-		const result = auditedSignal({
-			source: "worktree_process_reaper",
-			signal,
-			targetKind: "pid",
-			target: pid,
-			reason: "worktree_owner_reap",
-		});
-		if (result.ok) return true;
-		if (result.kind === "signal_failed" && result.error.includes("ESRCH")) {
-			return false;
-		}
-		throw new Error(`audited pid signal blocked: ${result.error}`);
-	},
-	killGroup: (pgid, signal) => {
-		const result = auditedSignal({
-			source: "worktree_process_reaper",
-			signal,
-			targetKind: "pgid",
-			target: pgid,
-			reason: "worktree_owner_group_reap",
-		});
-		if (result.ok) return true;
-		if (result.kind === "signal_failed" && result.error.includes("ESRCH")) {
-			return false;
-		}
-		throw new Error(`audited group signal blocked: ${result.error}`);
-	},
-	sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-	now: () => performance.now(),
-	lstat: (candidate) => {
-		try {
-			const stat = fs.lstatSync(candidate);
-			return { isDir: stat.isDirectory(), isSymlink: stat.isSymbolicLink() };
-		} catch {
-			return null;
-		}
-	},
-	realpath: (candidate) => {
-		try {
-			return fs.realpathSync(candidate);
-		} catch {
-			return null;
-		}
-	},
-	selfPid: process.pid,
-};
+			const result = auditedSignal(
+				{
+					source: "worktree_process_reaper",
+					signal,
+					targetKind: "pid",
+					target: pid,
+					reason: "worktree_owner_reap",
+					boundary,
+				},
+				{ env },
+			);
+			if (result.ok) return true;
+			if (result.kind === "signal_failed" && result.error.includes("ESRCH")) {
+				return false;
+			}
+			throw new Error(`audited pid signal blocked: ${result.error}`);
+		},
+		killGroup: (pgid, signal, boundary) => {
+			const result = auditedSignal(
+				{
+					source: "worktree_process_reaper",
+					signal,
+					targetKind: "pgid",
+					target: pgid,
+					reason: "worktree_owner_group_reap",
+					boundary,
+				},
+				{ env },
+			);
+			if (result.ok) return true;
+			if (result.kind === "signal_failed" && result.error.includes("ESRCH")) {
+				return false;
+			}
+			throw new Error(`audited group signal blocked: ${result.error}`);
+		},
+		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+		now: () => performance.now(),
+		lstat: (candidate) => {
+			try {
+				const stat = fs.lstatSync(candidate);
+				return { isDir: stat.isDirectory(), isSymlink: stat.isSymbolicLink() };
+			} catch {
+				return null;
+			}
+		},
+		realpath: (candidate) => {
+			try {
+				return fs.realpathSync(candidate);
+			} catch {
+				return null;
+			}
+		},
+		selfPid: process.pid,
+	};
+}
 
 function emptySummary(): ReapSummary {
 	return {
@@ -331,7 +351,8 @@ export async function reapWorktreeProcesses(
 	target: ReapTarget,
 	overrides?: Partial<ReapDeps>,
 ): Promise<ReapSummary> {
-	const deps: ReapDeps = { ...defaultDeps, ...overrides };
+	const env = overrides?.env ?? process.env;
+	const deps: ReapDeps = { ...defaultDeps(env), ...overrides, env };
 	const summary = emptySummary();
 	const deadline = deps.now() + REAP_TOTAL_DEADLINE_MS;
 	const mismatched = new Set<number>();
@@ -434,7 +455,13 @@ export async function reapWorktreeProcesses(
 				});
 			if (!wholeGroupOwned) continue;
 			try {
-				if (deps.killGroup(row.pgid, signal)) signalsStarted = true;
+				if (
+					deps.killGroup(row.pgid, signal, {
+						worktreePath: target.canonicalPath,
+					})
+				) {
+					signalsStarted = true;
+				}
 				for (const member of members) handled.add(member.pid);
 			} catch (error) {
 				return errorMessage(error);
@@ -450,7 +477,13 @@ export async function reapWorktreeProcesses(
 				continue;
 			}
 			try {
-				if (deps.kill(pid, signal)) signalsStarted = true;
+				if (
+					deps.kill(pid, signal, {
+						worktreePath: target.canonicalPath,
+					})
+				) {
+					signalsStarted = true;
+				}
 			} catch (error) {
 				return errorMessage(error);
 			}

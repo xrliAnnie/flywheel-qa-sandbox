@@ -6,6 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import type { BoundaryEvidence } from "./isolation-boundary.js";
 import { auditedSignal, auditedSignalAsync } from "./kill-ledger.js";
 import { withSyncOpMarker } from "./sync-op-marker.js";
 import { buildRunnerPaneEnvironmentPrefix } from "./TmuxAdapter.js";
@@ -155,11 +156,11 @@ export interface RunnerTuiWindowDeps {
 function tmuxSocketPath(): string {
 	const override = process.env.FLYWHEEL_TMUX_SOCKET_OVERRIDE?.trim();
 	if (override?.startsWith("/")) return resolve(override);
-	let tmp = "/tmp";
+	let tmp = process.env.TMUX_TMPDIR || "/tmp";
 	try {
-		tmp = realpathSync("/tmp");
+		tmp = realpathSync(tmp);
 	} catch {
-		// tmux itself defaults to /tmp when the symlink cannot be resolved.
+		// Preserve tmux's configured root even when it cannot be resolved.
 	}
 	const uid = process.getuid?.();
 	if (!Number.isSafeInteger(uid) || (uid ?? -1) < 0) {
@@ -759,8 +760,23 @@ async function auditedAsyncTuiWindowKill(
 		env?: NodeJS.ProcessEnv;
 	},
 ): Promise<{ ok: boolean; stdout?: string }> {
-	if (exec !== defaultExecAsync) {
+	const env = options.env ?? process.env;
+	const isolated = env.FLYWHEEL_ISOLATION_ROOT !== undefined;
+	if (exec !== defaultExecAsync && !isolated) {
 		return exec("tmux", ["kill-window", "-t", target], options);
+	}
+	let boundary: BoundaryEvidence | undefined;
+	if (isolated) {
+		try {
+			const probe = await exec(
+				"tmux",
+				["display-message", "-p", "-t", target, "#{socket_path}"],
+				options,
+			);
+			if (probe.ok) boundary = { tmuxSocketPath: probe.stdout?.trim() ?? "" };
+		} catch {
+			// Empty evidence makes the central isolation boundary refuse the kill.
+		}
 	}
 	let mutationResult: { ok: boolean; stdout?: string } = { ok: false };
 	const audited = await auditedSignalAsync(
@@ -770,8 +786,10 @@ async function auditedAsyncTuiWindowKill(
 			targetKind: "tmux-window",
 			target,
 			reason,
+			boundary,
 		},
 		{
+			env,
 			mutate: async () => {
 				mutationResult = await exec(
 					"tmux",
@@ -1226,8 +1244,27 @@ export function killRunnerTuiWindow(
 		const target = spec.windowId
 			? `=${spec.tmuxSession}:${spec.windowId}`
 			: `=${spec.tmuxSession}:=${spec.windowName}`;
+		const isolated = process.env.FLYWHEEL_ISOLATION_ROOT !== undefined;
+		let boundary: BoundaryEvidence | undefined;
+		if (isolated) {
+			try {
+				const execOut = deps.execOut ?? defaultExecOut;
+				boundary = {
+					tmuxSocketPath:
+						execOut("tmux", [
+							"display-message",
+							"-p",
+							"-t",
+							target,
+							"#{socket_path}",
+						]) ?? "",
+				};
+			} catch {
+				// Empty evidence makes the central isolation boundary refuse the kill.
+			}
+		}
 		const r =
-			exec === defaultExec
+			exec === defaultExec || isolated
 				? (() => {
 						let mutationResult: { ok: boolean } = { ok: false };
 						const audited = auditedSignal(
@@ -1237,8 +1274,10 @@ export function killRunnerTuiWindow(
 								targetKind: "tmux-window",
 								target,
 								reason: "runner_tui_close",
+								boundary,
 							},
 							{
+								env: process.env,
 								mutate: () => {
 									mutationResult = exec("tmux", ["kill-window", "-t", target]);
 									if (!mutationResult.ok) {

@@ -11,6 +11,7 @@ import {
 	type AuditedSignalResult,
 	admitCodexAgentHome,
 	auditedSignalAsync,
+	type BoundaryEvidence,
 	type CodexAgentHomeIdentity,
 	type CodexMemorySeedSourceSet,
 	defaultAsyncExecFile,
@@ -34,6 +35,7 @@ import type {
 import {
 	BACKEND_SKILL_ASSEMBLY,
 	captureRepositoryBaselineSet,
+	commDbPathForProject,
 	DEFAULT_GATE_TIMEOUT_MS,
 	defaultAgentsSkillsDir,
 	isRunnerMemoryMode,
@@ -2917,15 +2919,10 @@ export class Blueprint {
 		// GEO-206: Compute commDbPath for Lead ↔ Runner communication.
 		// ctx.projectName is resolved from projects config canonical name in
 		// run-issue.ts. claude-lead.sh accepts matching project-name as 3rd arg.
+		// FLY-2454: share the Bridge/Lead root resolver, including slot overrides.
 		const commDbPath =
 			ctx.leadId && ctx.projectName
-				? path.join(
-						process.env.HOME ?? "/tmp",
-						".flywheel",
-						"comm",
-						ctx.projectName,
-						"comm.db",
-					)
+				? commDbPathForProject(ctx.projectName)
 				: undefined;
 
 		// FLY-272: derive the HUMAN-READABLE display id for the tmux window name /
@@ -3345,6 +3342,21 @@ export class Blueprint {
 	}
 
 	private async killTmuxWindow(tmuxWindow: string): Promise<void> {
+		let boundary: BoundaryEvidence | undefined;
+		if (process.env.FLYWHEEL_ISOLATION_ROOT !== undefined) {
+			try {
+				const socket = await this.shell.execFile(
+					"tmux",
+					["display-message", "-p", "-t", tmuxWindow, "#{socket_path}"],
+					"/",
+				);
+				boundary = { tmuxSocketPath: socket.stdout.trim() };
+			} catch (error) {
+				console.warn(
+					`[Blueprint] Could not resolve tmux socket for ${tmuxWindow}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
 		const result = await this.auditSignal(
 			{
 				source: "blueprint",
@@ -3352,8 +3364,10 @@ export class Blueprint {
 				targetKind: "tmux-window",
 				target: tmuxWindow,
 				reason: "runner_blueprint_cleanup",
+				boundary,
 			},
 			{
+				env: process.env,
 				mutate: async () => {
 					await this.shell.execFile(
 						"tmux",

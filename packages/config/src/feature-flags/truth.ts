@@ -432,6 +432,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_REPO_ROOT: "plumbing: repo root path",
 	FLYWHEEL_DIR: "plumbing: state dir root",
 	FLYWHEEL_STATE_DIR: "plumbing: state dir",
+	FLYWHEEL_ISOLATION_ROOT:
+		"plumbing: fail-closed 529 slot ownership root (FLY-2454), not an on/off gate",
+	FLYWHEEL_ISOLATION_CONTRACT:
+		"plumbing: fail-closed 529 slot env contract path (FLY-2454), not an on/off gate",
 	FLYWHEEL_KILL_LEDGER_ROOT:
 		"plumbing: kill-ledger state path override for hermetic tests (FLY-2211), not an on/off gate",
 	FLYWHEEL_KILL_LEDGER_NOW:

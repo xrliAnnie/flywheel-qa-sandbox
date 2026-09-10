@@ -32,6 +32,8 @@ assert_contains() {
 source "$ROOT/scripts/lib/qa-multilead.sh"
 # shellcheck source=../lib/qa-generalized.sh
 source "$ROOT/scripts/lib/qa-generalized.sh"
+# shellcheck source=../lib/qa-slot-env-contract.sh
+source "$ROOT/scripts/lib/qa-slot-env-contract.sh"
 
 test_deploy_source="$(<"$ROOT/scripts/test-deploy.sh")"
 qa_generalized_source="$(<"$ROOT/scripts/lib/qa-generalized.sh")"
@@ -188,17 +190,27 @@ ingest_unset_count="$(
 )"
 assert_eq "${ingest_unset_count:-0}" '3' \
 	'all three Bridge branches scrub ambient ingest auth before assignment'
+contract_fixture_slot="$TMP_ROOT/contract-slot"
+contract_fixture_project='test-slot-fixture'
+contract_projection="$(qa_slot_env_contract_render \
+	"$contract_fixture_slot" "$contract_fixture_project")"
 for codex_root_assignment in \
-	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOMES_ROOT=${SLOT_DIR}/state/codex-homes")' \
-	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_SESSION_DIR=${SLOT_DIR}/state/codex-sessions")' \
-	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT=${SLOT_DIR}/state/cdx-sock")'
+	"FLYWHEEL_CODEX_HOMES_ROOT=${contract_fixture_slot}/state/codex-homes" \
+	"FLYWHEEL_CODEX_SESSION_DIR=${contract_fixture_slot}/state/codex-sessions" \
+	"FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT=${contract_fixture_slot}/state/cdx-sock"
 do
 	assignment_count="$(
-		rg -F -x -c "$codex_root_assignment" "$ROOT/scripts/test-deploy.sh" || true
+		rg -F -x -c "$codex_root_assignment" <<<"$contract_projection" || true
 	)"
 	assert_eq "${assignment_count:-0}" '1' \
-		'QA Bridge binds each destructive Codex reaper root to the slot tree exactly once'
+		'QA environment contract binds each destructive Codex reaper root to the slot tree exactly once'
 done
+contract_render_count="$(
+	rg -F -c 'done < <(qa_slot_env_contract_render "$SLOT_DIR" "$TEST_PROJECT_NAME")' \
+		"$ROOT/scripts/test-deploy.sh" || true
+)"
+assert_eq "${contract_render_count:-0}" '1' \
+	'test-deploy projects the declarative environment contract exactly once'
 generalized_bridge_launch="$(awk '
 	/^if \[\[ "\$GENERALIZED" == "1" \]\]; then$/ { block=$0 ORS; capture=1; next }
 	capture { block=block $0 ORS }
@@ -236,7 +248,7 @@ else
 fi
 
 # FLY-2163: the slot Bridge must override an inherited production state root.
-# Evaluate the exact repo-owned array append against a fake production root,
+# Evaluate the repo-owned contract projection against a fake production root,
 # then exercise a real state writer. Nothing here touches ~/.flywheel or the
 # desktop notification channel.
 linear_started_assignment='BRIDGE_EXTRA_ENV+=("FLYWHEEL_LINEAR_STARTED_SYNC=0")'
@@ -245,30 +257,26 @@ linear_started_assignment_count="$(
 )"
 assert_eq "${linear_started_assignment_count:-0}" '1' \
 	'QA Bridge disables Linear started-state writes exactly once'
-bridge_state_assignment='BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")'
+bridge_state_assignment="FLYWHEEL_STATE_DIR=${contract_fixture_slot}"
 bridge_state_assignment_count="$(
-	rg -F -x -c "$bridge_state_assignment" "$ROOT/scripts/test-deploy.sh" || true
+	rg -F -x -c "$bridge_state_assignment" <<<"$contract_projection" || true
 )"
 assert_eq "${bridge_state_assignment_count:-0}" '1' \
-	'Bridge state root has exactly one slot-local assignment'
-bridge_last_append="$(
-	rg '^BRIDGE_EXTRA_ENV\+=' "$ROOT/scripts/test-deploy.sh" | tail -1
-)"
-assert_eq "$bridge_last_append" "$bridge_state_assignment" \
-	'Bridge state root is the final later-wins environment append'
+	'Bridge state root has exactly one contract-owned slot-local assignment'
 linear_started_assignment_line="$(
 	rg -F -x -n "$linear_started_assignment" "$ROOT/scripts/test-deploy.sh" \
 		| cut -d: -f1 || true
 )"
-bridge_state_assignment_line="$(
-	rg -F -x -n "$bridge_state_assignment" "$ROOT/scripts/test-deploy.sh" \
+contract_render_line="$(
+	rg -F -n 'done < <(qa_slot_env_contract_render "$SLOT_DIR" "$TEST_PROJECT_NAME")' \
+		"$ROOT/scripts/test-deploy.sh" \
 		| cut -d: -f1 || true
 )"
-if [[ -n "$linear_started_assignment_line" \
-	&& "$linear_started_assignment_line" -lt "$bridge_state_assignment_line" ]]; then
-	echo 'PASS: Linear started-state kill switch precedes the final state-dir append'
+if [[ -n "$contract_render_line" && -n "$linear_started_assignment_line" \
+	&& "$contract_render_line" -lt "$linear_started_assignment_line" ]]; then
+	echo 'PASS: slot contract projection precedes dynamic Bridge environment additions'
 else
-	echo 'FAIL: Linear started-state kill switch must precede the final state-dir append' >&2
+	echo 'FAIL: slot contract projection must precede dynamic Bridge environment additions' >&2
 	failures=$((failures + 1))
 fi
 bridge_env_expansion_count="$(
@@ -281,7 +289,7 @@ assert_eq "${bridge_env_expansion_count:-0}" '3' \
 fake_production_state="$TMP_ROOT/fake-production-state"
 slot_state_root="$TMP_ROOT/flywheel-test-slot-state"
 state_writer_bin="$TMP_ROOT/state-writer-bin"
-mkdir -p "$fake_production_state" "$slot_state_root" "$state_writer_bin"
+mkdir -p "$fake_production_state" "$slot_state_root/tmp" "$state_writer_bin"
 slot_state_root="$(cd "$slot_state_root" && pwd -P)"
 printf 'production-sentinel\n' > "$fake_production_state/sentinel.txt"
 cat > "$state_writer_bin/osascript" <<'FAKE_OSASCRIPT'
@@ -296,11 +304,11 @@ production_before="$(
 )"
 
 SLOT_DIR="$slot_state_root"
+TEST_PROJECT_NAME='test-slot-fixture'
 BRIDGE_EXTRA_ENV=()
-actual_bridge_state_assignment="$(
-	rg -F -x -m 1 "$bridge_state_assignment" "$ROOT/scripts/test-deploy.sh" || true
-)"
-[[ -z "$actual_bridge_state_assignment" ]] || eval "$actual_bridge_state_assignment"
+while IFS= read -r contract_assignment; do
+	[[ -n "$contract_assignment" ]] && BRIDGE_EXTRA_ENV+=("$contract_assignment")
+done < <(qa_slot_env_contract_render "$SLOT_DIR" "$TEST_PROJECT_NAME")
 FLYWHEEL_STATE_DIR="$fake_production_state" \
 FLYWHEEL_META_ALERT_DEBOUNCE_MS=0 \
 PATH="$state_writer_bin:$PATH" \
@@ -330,9 +338,12 @@ assert_eq "$production_after" "$production_before" \
 	'fake production state tree remains byte-for-byte unchanged'
 
 bridge_state_value=''
-if (( ${#BRIDGE_EXTRA_ENV[@]} > 0 )); then
-	bridge_state_value="${BRIDGE_EXTRA_ENV[0]#*=}"
-fi
+for contract_assignment in "${BRIDGE_EXTRA_ENV[@]}"; do
+	if [[ "$contract_assignment" == FLYWHEEL_STATE_DIR=* ]]; then
+		bridge_state_value="${contract_assignment#*=}"
+		break
+	fi
+done
 bridge_marker_path='<missing Bridge state assignment>'
 if [[ -n "$bridge_state_value" ]]; then
 	bridge_marker_path="$(

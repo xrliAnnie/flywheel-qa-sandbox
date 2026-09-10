@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant T as 测试
+    participant P as 生产侧夹具 根 A
+    participant S as slot 侧清扫器
+    participant K as 审计信号咽喉
+    T->>P: 起一具像孤儿的 Codex 守护进程 + 一个真 tmux 窗口
+    T->>T: 五个前置断言 进程活着 socket 被持有 账本在 ppid 为 1 argv 匹配
+    rect rgb(230, 249, 237)
+        Note over T,K: GREEN 隔离根 = B
+        T->>S: 用指向 A 的坐标 + 隔离根 B 运行清扫与关窗
+        S->>K: 请求杀 pgid 与 kill-window 附证据 路径在 A 下
+        K-->>S: boundary_refused outside_root 写账本行
+        S-->>T: reaped 0 boundaryRefused 1
+        T->>P: 断言守护进程与窗口都还在
+    end
+    rect rgb(255, 229, 229)
+        Note over T,K: RED 不设隔离根 承重证明
+        T->>S: 同样坐标 但不设隔离根
+        S->>K: 请求杀 pgid 与 kill-window
+        K-->>S: ok 已发信号
+        S-->>T: reaped 1
+        T->>P: 断言守护进程死亡 窗口消失 即 2231 与 2287 的形状
+    end

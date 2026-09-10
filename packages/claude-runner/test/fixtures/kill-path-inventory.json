@@ -12,15 +12,15 @@
 		"classification": "out-of-scope"
 	},
 	{
-		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:if (!child.kill(signal)) {#1",
+		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:else process.kill(target, auditedSignalName as NodeJS.Signals);#1",
 		"path": "packages/claude-runner/src/codex-daemon-runtime.ts",
-		"code": "if (!child.kill(signal)) {",
+		"code": "else process.kill(target, auditedSignalName as NodeJS.Signals);",
 		"classification": "runner-affecting-mutation"
 	},
 	{
-		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:options.kill ?? ((target, signal) => process.kill(target, signal));#1",
+		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:if (!child.kill(signal)) {#1",
 		"path": "packages/claude-runner/src/codex-daemon-runtime.ts",
-		"code": "options.kill ?? ((target, signal) => process.kill(target, signal));",
+		"code": "if (!child.kill(signal)) {",
 		"classification": "runner-affecting-mutation"
 	},
 	{
@@ -75,13 +75,13 @@
 		"key": "packages/claude-runner/src/codex-runner-tui-window.ts:signal: \"kill-window\",#1",
 		"path": "packages/claude-runner/src/codex-runner-tui-window.ts",
 		"code": "signal: \"kill-window\",",
-		"classification": "runner-affecting-mutation"
+		"classification": "out-of-scope"
 	},
 	{
 		"key": "packages/claude-runner/src/codex-runner-tui-window.ts:signal: \"kill-window\",#2",
 		"path": "packages/claude-runner/src/codex-runner-tui-window.ts",
 		"code": "signal: \"kill-window\",",
-		"classification": "runner-affecting-mutation"
+		"classification": "out-of-scope"
 	},
 	{
 		"key": "packages/claude-runner/src/kill-ledger.ts:process.kill(target, signal as NodeJS.Signals);#1",
@@ -123,7 +123,7 @@
 		"key": "packages/claude-runner/src/TmuxAdapter.ts:signal: \"kill-window\",#1",
 		"path": "packages/claude-runner/src/TmuxAdapter.ts",
 		"code": "signal: \"kill-window\",",
-		"classification": "runner-affecting-mutation"
+		"classification": "out-of-scope"
 	},
 	{
 		"key": "packages/claude-runner/src/wait-aware-exec.ts:child?.kill(\"SIGTERM\");#1",
@@ -234,6 +234,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(calls.some((call) => call[1] === \"kill-window\")).toBe(false);#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(calls.some((call) => call[1] === \"kill-window\")).toBe(false);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(calls.some((call) => call[1] === \"kill-window\")).toBe(false);#2",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(calls.some((call) => call[1] === \"kill-window\")).toBe(false);",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(r.calls).toEqual([[\"tmux\", \"kill-window\", \"-t\", \"=flywheel:@7\"]]);#1",
 		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
 		"code": "expect(r.calls).toEqual([[\"tmux\", \"kill-window\", \"-t\", \"=flywheel:@7\"]]);",
@@ -300,9 +312,51 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/claude-runner/test/kill-ledger.test.ts:signal: \"kill-window\",#2",
+		"path": "packages/claude-runner/test/kill-ledger.test.ts",
+		"code": "signal: \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/kill-ledger.test.ts:signal: \"kill-window\",#3",
+		"path": "packages/claude-runner/test/kill-ledger.test.ts",
+		"code": "signal: \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/kill-path-inventory.test.ts:(entry.code === 'child.kill(\"SIGKILL\");' ||#1",
+		"path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+		"code": "(entry.code === 'child.kill(\"SIGKILL\");' ||",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/kill-path-inventory.test.ts:callFragment: 'process.kill(-child.pid, \"SIGKILL\")',#1",
+		"path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+		"code": "callFragment: 'process.kill(-child.pid, \"SIGKILL\")',",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/kill-path-inventory.test.ts:entry.code === 'process.kill(-child.pid, \"SIGKILL\");')#1",
+		"path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+		"code": "entry.code === 'process.kill(-child.pid, \"SIGKILL\");')",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/kill-path-inventory.test.ts:entry.code.includes(\"process.kill(target\")#1",
+		"path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+		"code": "entry.code.includes(\"process.kill(target\")",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/claude-runner/test/kill-path-inventory.ts:(code.startsWith(\"const killPid =\") || code === \"child.kill(signal);\")) ||#1",
 		"path": "packages/claude-runner/test/kill-path-inventory.ts",
 		"code": "(code.startsWith(\"const killPid =\") || code === \"child.kill(signal);\")) ||",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/kill-path-inventory.ts:code.startsWith(\"deps.kill(pid, signal\"))#1",
+		"path": "packages/claude-runner/test/kill-path-inventory.ts",
+		"code": "code.startsWith(\"deps.kill(pid, signal\"))",
 		"classification": "qa-only"
 	},
 	{
@@ -408,6 +462,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/edge-worker/src/__tests__/Blueprint.decision.test.ts:[\"kill-window\", \"-t\", \"flywheel:@42\"],#2",
+		"path": "packages/edge-worker/src/__tests__/Blueprint.decision.test.ts",
+		"code": "[\"kill-window\", \"-t\", \"flywheel:@42\"],",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/edge-worker/src/__tests__/Blueprint.test.ts:c[0] === \"tmux\" && c[1][0] === \"kill-window\",#1",
 		"path": "packages/edge-worker/src/__tests__/Blueprint.test.ts",
 		"code": "c[0] === \"tmux\" && c[1][0] === \"kill-window\",",
@@ -483,19 +543,19 @@
 		"key": "packages/edge-worker/src/Blueprint.ts:signal: \"kill-window\",#1",
 		"path": "packages/edge-worker/src/Blueprint.ts",
 		"code": "signal: \"kill-window\",",
-		"classification": "runner-affecting-mutation"
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/edge-worker/src/worktree-process-reaper.ts:deps.kill(pid, signal, {#1",
+		"path": "packages/edge-worker/src/worktree-process-reaper.ts",
+		"code": "deps.kill(pid, signal, {",
+		"classification": "out-of-scope"
 	},
 	{
 		"key": "packages/edge-worker/src/worktree-process-reaper.ts:if (deps.kill(pid, 0)) alive.add(pid);#1",
 		"path": "packages/edge-worker/src/worktree-process-reaper.ts",
 		"code": "if (deps.kill(pid, 0)) alive.add(pid);",
 		"classification": "signal-0-probe"
-	},
-	{
-		"key": "packages/edge-worker/src/worktree-process-reaper.ts:if (deps.kill(pid, signal)) signalsStarted = true;#1",
-		"path": "packages/edge-worker/src/worktree-process-reaper.ts",
-		"code": "if (deps.kill(pid, signal)) signalsStarted = true;",
-		"classification": "runner-affecting-mutation"
 	},
 	{
 		"key": "packages/edge-worker/src/worktree-process-reaper.ts:process.kill(pid, 0);#1",
@@ -804,6 +864,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/__tests__/isolation-boundary.real-process.test.ts:process.kill(-holderPgid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/__tests__/isolation-boundary.real-process.test.ts",
+		"code": "process.kill(-holderPgid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/isolation-boundary.real-process.test.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/__tests__/isolation-boundary.real-process.test.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/__tests__/rules-bundle-truth-process.test.ts:for (const child of children) child.kill(\"SIGTERM\");#1",
 		"path": "packages/teamlead/src/__tests__/rules-bundle-truth-process.test.ts",
 		"code": "for (const child of children) child.kill(\"SIGTERM\");",
@@ -1089,13 +1161,13 @@
 		"key": "packages/teamlead/src/bridge/tmux-lookup.ts:signal: \"kill-window\",#1",
 		"path": "packages/teamlead/src/bridge/tmux-lookup.ts",
 		"code": "signal: \"kill-window\",",
-		"classification": "runner-affecting-mutation"
+		"classification": "out-of-scope"
 	},
 	{
 		"key": "packages/teamlead/src/bridge/tmux-lookup.ts:signal: \"kill-window\",#2",
 		"path": "packages/teamlead/src/bridge/tmux-lookup.ts",
 		"code": "signal: \"kill-window\",",
-		"classification": "runner-affecting-mutation"
+		"classification": "out-of-scope"
 	},
 	{
 		"key": "packages/teamlead/src/bridge/viewer-session-reaper.ts:[\"kill-session\", \"-t\", `=${sessionName}`],#1",

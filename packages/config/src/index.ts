@@ -35,6 +35,7 @@ export {
 } from "./canonical-json.js";
 export type { CommBackend } from "./comm-backend.js";
 export { resolveCommBackend } from "./comm-backend.js";
+export { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 export {
 	DEFAULT_GATE_TIMEOUT_MS,
 	DEFAULT_TIMEOUT_BEHAVIOR,

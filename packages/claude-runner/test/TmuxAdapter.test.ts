@@ -3306,6 +3306,38 @@ describe("pruneScaffoldWindow (FLY-758)", () => {
 		expect(killWindowTargets(calls)).toEqual(["@0"]);
 	});
 
+	it("refuses to prune a scaffold reached through a tmux socket outside the slot", () => {
+		const isolationRoot = mkdtempSync(
+			join(tmpdir(), "flywheel-scaffold-slot-"),
+		);
+		vi.stubEnv("FLYWHEEL_ISOLATION_ROOT", isolationRoot);
+		vi.stubEnv("FLYWHEEL_KILL_LEDGER_ROOT", isolationRoot);
+		const calls: ExecCall[] = [];
+		const fn: ExecFileFn = (cmd, args) => {
+			calls.push({ cmd, args });
+			if (args[0] === "list-windows") {
+				return { stdout: "@0|zsh\n@42|GEO-TEST-claude-fix" };
+			}
+			if (args[0] === "display-message") {
+				return { stdout: "/production/tmux/default\n" };
+			}
+			return { stdout: "" };
+		};
+
+		try {
+			pruneScaffoldWindow(fn, "runner-test", "@42");
+
+			expect(calls).toContainEqual({
+				cmd: "tmux",
+				args: ["display-message", "-p", "-t", "@0", "#{socket_path}"],
+			});
+			expect(killWindowTargets(calls)).toEqual([]);
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(isolationRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("never prunes when only the runner window exists (would kill the session)", () => {
 		const { fn, calls } = mockExec("@42|GEO-TEST-claude-fix");
 		pruneScaffoldWindow(fn, "runner-test", "@42");

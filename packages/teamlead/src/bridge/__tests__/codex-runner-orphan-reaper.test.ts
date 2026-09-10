@@ -172,7 +172,7 @@ function harness(input: {
 				signals.push({ pgid, signal });
 				if (signal === "SIGTERM")
 					rows = rows.filter((row) => row.pgid !== pgid);
-				return true;
+				return { ok: true as const };
 			},
 			sleep: async () => undefined,
 			removeSocket: (path: string) => removed.push(path),
@@ -459,7 +459,7 @@ describe("sweepCodexRunnerOrphans", () => {
 		const executionId = "freshness-exec";
 		const process = appServerProcess({ executionId, env });
 		let calls = 0;
-		const signalGroup = vi.fn(() => true);
+		const signalGroup = vi.fn(() => ({ ok: true as const }));
 		const audit = vi.fn();
 
 		const result = await sweepCodexRunnerOrphans(
@@ -534,6 +534,46 @@ describe("sweepCodexRunnerOrphans", () => {
 		);
 	});
 
+	it("counts an isolation boundary refusal without misreporting a generic signal failure", async () => {
+		const env = testEnv("/tmp/fly2454-boundary-refused");
+		const executionId = "production-shaped-exec";
+		const process = appServerProcess({ executionId, env });
+		const h = harness({
+			env,
+			rows: [process],
+			homeExecutionIds: [executionId],
+		});
+		h.deps.signalGroup = () => ({
+			ok: false,
+			kind: "boundary_refused",
+			error: "outside_root",
+		});
+
+		const result = await sweepCodexRunnerOrphans(
+			{ activeExecutionIds: new Set() },
+			h.deps,
+		);
+
+		expect(result).toMatchObject({
+			reaped: 0,
+			boundaryRefused: 1,
+			survivors: 1,
+		});
+		expect(h.removed).toEqual([]);
+		expect(h.audit).toHaveBeenCalledWith(
+			"isolation_boundary_refused",
+			expect.objectContaining({
+				executionId,
+				reason: "outside_root",
+				signal: "SIGTERM",
+			}),
+		);
+		expect(h.audit).not.toHaveBeenCalledWith(
+			"codex_app_server_orphan_signal_failed",
+			expect.anything(),
+		);
+	});
+
 	it("re-proves argv and socket ownership before escalating a TERM survivor to KILL", async () => {
 		const env = testEnv("/tmp/fly2169-kill");
 		const executionId = "kill-exec";
@@ -559,7 +599,7 @@ describe("sweepCodexRunnerOrphans", () => {
 				signalGroup: (_pgid, signal) => {
 					signals.push(signal);
 					if (signal === "SIGKILL") rows = [];
-					return true;
+					return { ok: true as const };
 				},
 				sleep: async () => undefined,
 				removeSocket,

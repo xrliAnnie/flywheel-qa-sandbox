@@ -20,6 +20,15 @@
  * NOT "unknown".
  */
 
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	IAgentTeamTransport,
 	MailboxMessage,
@@ -182,4 +191,38 @@ describe("createLeadRuntime — preflight error surfacing", () => {
 		expect(typeof opts.logger?.warn).toBe("function");
 		expect(typeof opts.logger?.error).toBe("function");
 	});
+});
+
+it("opens the slot CommDB runtime and lease without creating HOME comm state", async () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2454-runtime-"));
+	const home = join(root, "home");
+	const commRoot = join(root, "slot", "state", "comm");
+	const projectDir = join(commRoot, "flywheel-test-2");
+	mkdirSync(home, { recursive: true });
+	mkdirSync(projectDir, { recursive: true });
+	writeFileSync(join(projectDir, "comm.db"), "");
+	writeFileSync(
+		join(projectDir, ".inbox-ready-cos-lead"),
+		JSON.stringify({ pid: process.pid }),
+	);
+	vi.stubEnv("HOME", home);
+	vi.stubEnv("FLYWHEEL_COMM_ROOT", commRoot);
+	vi.stubEnv("FLYWHEEL_COMM_BACKEND", "commdb");
+	try {
+		const { createLeadRuntime } = await import("../bridge/plugin.js");
+		const runtime = await createLeadRuntime(
+			baseLead,
+			{} as never,
+			"flywheel-test-2",
+		);
+		try {
+			expect(runtime.type).toBe("commdb");
+		} finally {
+			await runtime.shutdown();
+		}
+		expect(existsSync(join(home, ".flywheel", "comm"))).toBe(false);
+	} finally {
+		vi.unstubAllEnvs();
+		rmSync(root, { recursive: true, force: true });
+	}
 });

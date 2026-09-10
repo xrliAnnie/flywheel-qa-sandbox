@@ -18,10 +18,24 @@
  *   - TEAMLEAD_MAX_CONCURRENT_RUNNERS (default 3)
  */
 
-import {
-	installRotatingStdioFromEnv,
-	writeBoundedRotationErrorMarker,
-} from "../packages/config/dist/index.js";
+if (process.env.FLYWHEEL_ISOLATION_ROOT) {
+	try {
+		const { assertRunBridgeIsolationAtBoot } = await import(
+			"./lib/run-bridge-isolation-bootstrap.mjs"
+		);
+		assertRunBridgeIsolationAtBoot(process.env);
+	} catch (error) {
+		process.stderr.write(
+			`[isolation-boundary] BOOT REFUSED ${
+				error instanceof Error ? error.message : String(error)
+			}\n`,
+		);
+		process.exit(78);
+	}
+}
+
+const { installRotatingStdioFromEnv, writeBoundedRotationErrorMarker } =
+	await import("../packages/config/dist/index.js");
 
 const rotationErrorMarker =
 	process.env.FLYWHEEL_BRIDGE_LOG_ERROR_MARKER?.trim();

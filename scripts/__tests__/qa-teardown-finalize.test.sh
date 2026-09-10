@@ -143,5 +143,58 @@ else
   fail "one or more QA cleanup entry points bypasses the observable finalizer"
 fi
 
+echo "Test: FLY-2454 teardown archives slot isolation evidence before deleting the slot"
+TEARDOWN_SCRIPT="$SCRIPT_DIR/test-teardown.sh"
+ARCHIVE_SLOT="$TEST_ROOT/archive-slot"
+ARCHIVE_ROOT="$TEST_ROOT/qa-evidence"
+mkdir -p "$ARCHIVE_SLOT/state/kill-ledger"
+printf '%s\n' '{"refusal":"isolation_boundary","target":2231}' \
+  > "$ARCHIVE_SLOT/state/kill-ledger/20260909.ndjson"
+printf '%s\n' '{"contract":"slot"}' > "$ARCHIVE_SLOT/launch-manifest.json"
+sqlite3 "$ARCHIVE_SLOT/teamlead.db" <<'SQL'
+CREATE TABLE session_events (
+  id INTEGER PRIMARY KEY,
+  event_id TEXT,
+  ts TEXT,
+  execution_id TEXT,
+  issue_id TEXT,
+  project_name TEXT,
+  event_type TEXT,
+  severity TEXT,
+  payload JSON,
+  source TEXT
+);
+INSERT INTO session_events VALUES
+  (1, 'boundary', '2026-09-09 01:00:00', 'exec-1', 'issue-1', 'flywheel-test-2',
+   'isolation_boundary_refused', 'warn', '{"target":2231}', 'test'),
+  (2, 'orphan', '2026-09-09 01:01:00', 'exec-1', 'issue-1', 'flywheel-test-2',
+   'codex_app_server_orphan_refused', 'warn', '{"pid":2231}', 'test'),
+  (3, 'noise', '2026-09-09 01:02:00', 'exec-1', 'issue-1', 'flywheel-test-2',
+   'session_started', 'info', '{}', 'test');
+SQL
+archive_rc=0
+FLYWHEEL_QA_EVID_DIR="$ARCHIVE_ROOT" bash -c \
+  'source "$1"; qa_archive_slot_isolation_evidence "$2" 2' \
+  _ "$TEARDOWN_SCRIPT" "$ARCHIVE_SLOT" >/dev/null 2>"$TEST_ROOT/archive-stderr" \
+  || archive_rc=$?
+archive_dir=$(find "$ARCHIVE_ROOT/slot-2" -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
+  | head -1)
+archive_line=$(grep -n 'qa_archive_slot_isolation_evidence "$SLOT_DIR" "$SLOT"' \
+  "$TEARDOWN_SCRIPT" | head -1 | cut -d: -f1)
+delete_line=$(grep -n '^[[:space:]]*rm -rf "$SLOT_DIR"$' "$TEARDOWN_SCRIPT" \
+  | head -1 | cut -d: -f1)
+if [[ "$archive_rc" == "0" && -n "$archive_dir" \
+    && -f "$archive_dir/kill-ledger/20260909.ndjson" \
+    && -f "$archive_dir/launch-manifest.json" \
+    && "$(jq -r 'map(.event_type) | join(",")' "$archive_dir/boundary-events.json" 2>/dev/null)" \
+      == "isolation_boundary_refused,codex_app_server_orphan_refused" \
+    && -n "$archive_line" && -n "$delete_line" \
+    && "$archive_line" -lt "$delete_line" \
+    && "$(grep -c "event_type = 'isolation_boundary_refused'" "$TEARDOWN_SCRIPT")" == "1" ]]; then
+  pass "authoritative ledger, exact boundary event, orphan events, and manifest survive before slot deletion"
+else
+  fail "evidence archive contract mismatch rc=$archive_rc dir=[$archive_dir] order=${archive_line:-?}/${delete_line:-?} stderr=[$(cat "$TEST_ROOT/archive-stderr" 2>/dev/null)]"
+fi
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import { commDbPathForProject } from "./commdb-path.js";
 import { isDoneButRunning as isDoneButRunningSession } from "./done-running-reconciler.js";
 import type { QuietSignals } from "./quiet-classifier.js";
 
@@ -32,7 +31,7 @@ export function stuckCommActivityMs(
 
 function openCommDb(projectName: string): CommDB | undefined {
 	if (/[/\\]|\.\./.test(projectName)) return undefined;
-	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
+	const dbPath = commDbPathForProject(projectName);
 	return existsSync(dbPath) ? CommDB.openReadonly(dbPath) : undefined;
 }
 

@@ -20,25 +20,35 @@ import {
 	reapMcpDescendants,
 } from "./mcp-descendant-reaper.js";
 
+export interface PaneIdentity {
+	pid: number;
+	socketPath: string;
+}
+
 export type PanePidResolver = (
 	tmuxWindow: string,
-) => Promise<number | undefined>;
+) => Promise<PaneIdentity | undefined>;
 
 export async function defaultResolvePanePid(
 	tmuxWindow: string,
-): Promise<number | undefined> {
+): Promise<PaneIdentity | undefined> {
 	return new Promise((resolve) => {
 		execFile(
 			"tmux",
-			["display", "-p", "-t", tmuxWindow, "#{pane_pid}"],
+			["display", "-p", "-t", tmuxWindow, "#{pane_pid}\t#{socket_path}"],
 			{ timeout: 10_000 },
 			(err, stdout) => {
 				if (err) {
 					resolve(undefined);
 					return;
 				}
-				const pid = Number(stdout.trim());
-				resolve(Number.isInteger(pid) && pid > 0 ? pid : undefined);
+				const [rawPid, socketPath] = stdout.trim().split("\t");
+				const pid = Number(rawPid);
+				resolve(
+					Number.isInteger(pid) && pid > 0 && socketPath
+						? { pid, socketPath }
+						: undefined,
+				);
 			},
 		);
 	});
@@ -77,8 +87,8 @@ export async function reapRunnerMcp(
 			};
 		}
 		const resolvePanePid = deps.resolvePanePid ?? defaultResolvePanePid;
-		const panePid = await resolvePanePid(tmuxWindow);
-		if (!panePid) {
+		const pane = await resolvePanePid(tmuxWindow);
+		if (!pane) {
 			return {
 				matched: 0,
 				terminated: 0,
@@ -91,8 +101,11 @@ export async function reapRunnerMcp(
 				skippedReason: "no_pane_pid",
 			};
 		}
-		const res = await reapMcpDescendants(panePid, deps);
-		return { ...res, panePid };
+		const res = await reapMcpDescendants(pane.pid, {
+			...deps,
+			boundary: { tmuxSocketPath: pane.socketPath },
+		});
+		return { ...res, panePid: pane.pid };
 	} catch (err) {
 		deps.audit?.("runner_mcp_reap_failed", {
 			tmuxWindow,

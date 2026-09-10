@@ -1,0 +1,27 @@
+flowchart LR
+    subgraph S0[起房脚本]
+        A1[调用者环境<br/>含生产坐标]
+        A2[按契约清理<br/>删生产坐标]
+        A3[按契约投影<br/>写 slot 坐标 + 隔离根]
+        A1 --> A2 --> A3
+    end
+    subgraph S1[slot Bridge 启动]
+        B1{启动自检<br/>坐标都在隔离根下?}
+        B2[退出 78<br/>拒绝启动]
+        B3[正常启动]
+        B1 -- 否 --> B2
+        B1 -- 是 --> B3
+    end
+    subgraph S2[每一次杀进程 / 关窗口]
+        C1{咽喉校验<br/>目标坐标在隔离根下?}
+        C2[拒绝 + 记账 + 告警]
+        C3[放行 + 记账]
+        C1 -- 否/无证据 --> C2
+        C1 -- 是 --> C3
+    end
+    A3 --> B1
+    B3 --> C1
+    style B2 fill:#ffe5e5,stroke:#ff3b30
+    style C2 fill:#ffe5e5,stroke:#ff3b30
+    style B3 fill:#e6f9ed,stroke:#34c759
+    style C3 fill:#e6f9ed,stroke:#34c759

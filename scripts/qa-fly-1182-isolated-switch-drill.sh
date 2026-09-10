@@ -9,6 +9,8 @@
 # Isolation is FAIL-CLOSED: the guard below refuses to run unless every knob is
 # pointed away from production. A drill that silently fell back to the real
 # Keychain would be worse than no drill at all.
+# For e2e runs launched through a 529 room, the slot env contract plus Bridge
+# boot fence owns process/tmux isolation; this REFUSE guard covers credentials only.
 #
 # Stages:
 #   S1 verify+commit  — a good write reads back equal -> commit, .active flips

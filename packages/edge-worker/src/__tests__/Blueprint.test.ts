@@ -595,6 +595,59 @@ describe("Blueprint", () => {
 		expect(execCall.commDbPath).toContain(".flywheel/comm/geoforge3d/comm.db");
 	});
 
+	it.each([
+		[
+			"root wins",
+			" /tmp/slot/state/comm ",
+			"/tmp/legacy-comm",
+			"/tmp/slot/state/comm",
+		],
+		[
+			"legacy directory fallback",
+			"  ",
+			" /tmp/legacy-comm ",
+			"/tmp/legacy-comm",
+		],
+		["production fallback", undefined, undefined, undefined],
+	])(
+		"shares the Bridge CommDB coordinates: %s",
+		async (_name, root, dir, expectedRoot) => {
+			vi.stubEnv("FLYWHEEL_COMM_ROOT", root);
+			vi.stubEnv("FLYWHEEL_COMM_DIR", dir);
+			// The project-scoped Bridge resolver must win over a caller's DB.
+			vi.stubEnv("FLYWHEEL_COMM_DB", "/tmp/foreign-project/comm.db");
+			try {
+				const adapter = makeMockAdapter();
+				const blueprint = new Blueprint(
+					makeHydrator(),
+					makeMockGitChecker(),
+					() => adapter,
+					makeMockShell(),
+				);
+				await blueprint.run(
+					makeNode(),
+					"/project",
+					makeContext({
+						leadId: "slot-lead",
+						projectName: "flywheel-test-2",
+					}),
+				);
+				const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+					.calls[0]![0] as AdapterExecutionContext;
+				expect(execCall.commDbPath).toBe(
+					join(
+						expectedRoot ??
+							join(process.env.HOME ?? "/tmp", ".flywheel", "comm"),
+						"flywheel-test-2",
+						"comm.db",
+					),
+				);
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		},
+	);
+
 	it("does not pass commDbPath when leadId is not set", async () => {
 		const adapter = makeMockAdapter();
 		const blueprint = new Blueprint(

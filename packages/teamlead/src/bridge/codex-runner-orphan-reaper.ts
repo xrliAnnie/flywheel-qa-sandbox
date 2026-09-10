@@ -14,7 +14,9 @@ import { execFile } from "node:child_process";
 import { type Dirent, readdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
+	type AuditedSignalFailureKind,
 	auditedSignal,
+	type BoundaryEvidence,
 	codexHomesRoot,
 	codexSessionStateDir,
 	resolveDaemonSocketPath,
@@ -55,6 +57,10 @@ export type SocketHolderProbeResult =
 	| { status: "ok"; pids: number[] }
 	| { status: "unknown"; error: string };
 
+export type SignalGroupResult =
+	| { ok: true }
+	| { ok: false; kind: AuditedSignalFailureKind; error: string };
+
 export interface CodexRunnerOrphanSweepDeps {
 	env?: NodeJS.ProcessEnv;
 	listProcesses?: () => Promise<CodexProcessProbeResult>;
@@ -65,7 +71,8 @@ export interface CodexRunnerOrphanSweepDeps {
 		pgid: number,
 		signal: NodeJS.Signals,
 		executionId?: string,
-	) => boolean;
+		boundary?: BoundaryEvidence,
+	) => SignalGroupResult;
 	removeSocket?: (path: string) => void;
 	sleep?: (ms: number) => Promise<void>;
 	termGraceMs?: number;
@@ -82,6 +89,7 @@ export interface CodexRunnerOrphanSweepResult {
 	unparseableSkipped: number;
 	probeUnknown: number;
 	survivors: number;
+	boundaryRefused: number;
 }
 
 interface AppServerIdentity {
@@ -427,19 +435,29 @@ function isWithinSocketRoot(socketPath: string, socketRoot: string): boolean {
 	return resolve(socketPath).startsWith(`${resolve(socketRoot)}${sep}`);
 }
 
-function defaultSignalGroup(
-	pgid: number,
-	signal: NodeJS.Signals,
-	executionId?: string,
-): boolean {
-	return auditedSignal({
-		source: "codex_orphan_reaper",
-		signal,
-		targetKind: "pgid",
-		target: pgid,
-		...(executionId ? { execId: executionId } : {}),
-		reason: "proven_orphan_app_server",
-	}).ok;
+function makeDefaultSignalGroup(env: NodeJS.ProcessEnv) {
+	return (
+		pgid: number,
+		signal: NodeJS.Signals,
+		executionId?: string,
+		boundary?: BoundaryEvidence,
+	): SignalGroupResult => {
+		const result = auditedSignal(
+			{
+				source: "codex_orphan_reaper",
+				signal,
+				targetKind: "pgid",
+				target: pgid,
+				...(executionId ? { execId: executionId } : {}),
+				reason: "proven_orphan_app_server",
+				boundary,
+			},
+			{ env },
+		);
+		return result.ok
+			? { ok: true }
+			: { ok: false, kind: result.kind, error: result.error };
+	};
 }
 
 function emptyResult(): CodexRunnerOrphanSweepResult {
@@ -451,6 +469,7 @@ function emptyResult(): CodexRunnerOrphanSweepResult {
 		unparseableSkipped: 0,
 		probeUnknown: 0,
 		survivors: 0,
+		boundaryRefused: 0,
 	};
 }
 
@@ -562,8 +581,30 @@ async function reapCandidate(
 		});
 		return;
 	}
-	if (!deps.signalGroup(candidate.pgid, "SIGTERM", candidate.executionId)) {
+	const boundary = {
+		socketPath: candidate.socketPath,
+		codexHome: candidate.codexHome,
+	};
+	const termResult = deps.signalGroup(
+		candidate.pgid,
+		"SIGTERM",
+		candidate.executionId,
+		boundary,
+	);
+	if (!termResult.ok) {
 		result.survivors++;
+		if (termResult.kind === "boundary_refused") {
+			result.boundaryRefused++;
+			deps.audit("isolation_boundary_refused", {
+				...detail,
+				targetKind: "pgid",
+				target: candidate.pgid,
+				boundary,
+				reason: termResult.error,
+				signal: "SIGTERM",
+			});
+			return;
+		}
 		deps.audit("codex_app_server_orphan_signal_failed", {
 			...detail,
 			signal: "SIGTERM",
@@ -625,8 +666,26 @@ async function reapCandidate(
 			});
 			return;
 		}
-		if (!deps.signalGroup(candidate.pgid, "SIGKILL", candidate.executionId)) {
+		const killResult = deps.signalGroup(
+			candidate.pgid,
+			"SIGKILL",
+			candidate.executionId,
+			boundary,
+		);
+		if (!killResult.ok) {
 			result.survivors++;
+			if (killResult.kind === "boundary_refused") {
+				result.boundaryRefused++;
+				deps.audit("isolation_boundary_refused", {
+					...detail,
+					targetKind: "pgid",
+					target: candidate.pgid,
+					boundary,
+					reason: killResult.error,
+					signal: "SIGKILL",
+				});
+				return;
+			}
 			deps.audit("codex_app_server_orphan_signal_failed", {
 				...detail,
 				signal: "SIGKILL",
@@ -892,7 +951,7 @@ export async function sweepCodexRunnerOrphans(
 		env,
 		listProcesses,
 		socketHolderPids: deps.socketHolderPids ?? defaultSocketHolderPids,
-		signalGroup: deps.signalGroup ?? defaultSignalGroup,
+		signalGroup: deps.signalGroup ?? makeDefaultSignalGroup(env),
 		removeSocket:
 			deps.removeSocket ?? ((path: string) => rmSync(path, { force: true })),
 		sleep:

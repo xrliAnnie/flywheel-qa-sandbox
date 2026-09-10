@@ -27,15 +27,25 @@ describe("comm probe cadence", () => {
 describe("CommDB probes", () => {
 	let dir: string;
 	let oldHome: string | undefined;
+	let oldCommRoot: string | undefined;
+	let oldCommDir: string | undefined;
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1570-probe-"));
 		oldHome = process.env.HOME;
+		oldCommRoot = process.env.FLYWHEEL_COMM_ROOT;
+		oldCommDir = process.env.FLYWHEEL_COMM_DIR;
 		process.env.HOME = dir;
+		delete process.env.FLYWHEEL_COMM_ROOT;
+		delete process.env.FLYWHEEL_COMM_DIR;
 	});
 
 	afterEach(() => {
 		process.env.HOME = oldHome;
+		if (oldCommRoot === undefined) delete process.env.FLYWHEEL_COMM_ROOT;
+		else process.env.FLYWHEEL_COMM_ROOT = oldCommRoot;
+		if (oldCommDir === undefined) delete process.env.FLYWHEEL_COMM_DIR;
+		else process.env.FLYWHEEL_COMM_DIR = oldCommDir;
 		rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -51,6 +61,22 @@ describe("CommDB probes", () => {
 			hasPendingGate: true,
 			hasRecentOutbound: true,
 		});
+	});
+
+	it("uses the shared COMM_DIR fallback instead of the production home", () => {
+		const commRoot = join(dir, "slot-comm");
+		process.env.FLYWHEEL_COMM_DIR = commRoot;
+		delete process.env.FLYWHEEL_COMM_ROOT;
+		const db = new CommDB(join(commRoot, "geo", "comm.db"));
+		db.insertQuestion("exec-slot", "product-lead", "blocking?");
+		db.close();
+		try {
+			expect(
+				probeCommSignalsFromCommDb("exec-slot", "geo", 60_000),
+			).toMatchObject({ hasPendingGate: true });
+		} finally {
+			delete process.env.FLYWHEEL_COMM_DIR;
+		}
 	});
 
 	it("rejects path traversal and short-circuits an activity window of zero", () => {

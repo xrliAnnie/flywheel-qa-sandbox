@@ -145,6 +145,9 @@ export async function reapViewerSessions(
 		}
 
 		try {
+			// Slot safety is boot-fenced: this is deliberately plain tmux, so the
+			// Bridge startup contract requires slot-local TMUX_TMPDIR and no TMUX
+			// or FLYWHEEL_TMUX_SOCKET_OVERRIDE coordinates.
 			await execFilePromise(
 				"tmux",
 				["kill-session", "-t", `=${sessionName}`],

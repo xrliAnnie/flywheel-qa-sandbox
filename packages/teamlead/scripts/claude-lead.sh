@@ -673,7 +673,7 @@ esac
 SESSION_ID_FILE="${SESSION_DIR}/${PROJECT_NAME}-${LEAD_ID}.session-id"
 
 # ── Comm DB + CLI setup ──────────────────────────────────────
-export FLYWHEEL_COMM_DB="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
+export FLYWHEEL_COMM_DB="${FLYWHEEL_COMM_DB:-${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db}"
 # GEO-234: Non-failing probe — use [ -f ] first, then cd && pwd only if exists.
 # This prevents set -e from aborting when flywheel-comm is not built.
 COMM_DIST_DIR="${SCRIPT_DIR}/../../flywheel-comm/dist"

@@ -5,12 +5,18 @@ import { resolveDbPath } from "../resolve-db-path.js";
 
 describe("resolveDbPath", () => {
 	const originalEnv = process.env.FLYWHEEL_COMM_DB;
+	const originalRoot = process.env.FLYWHEEL_COMM_ROOT;
 
 	afterEach(() => {
 		if (originalEnv !== undefined) {
 			process.env.FLYWHEEL_COMM_DB = originalEnv;
 		} else {
 			delete process.env.FLYWHEEL_COMM_DB;
+		}
+		if (originalRoot !== undefined) {
+			process.env.FLYWHEEL_COMM_ROOT = originalRoot;
+		} else {
+			delete process.env.FLYWHEEL_COMM_ROOT;
 		}
 	});
 
@@ -28,9 +34,18 @@ describe("resolveDbPath", () => {
 
 	it("should derive from --project when no --db or env", () => {
 		delete process.env.FLYWHEEL_COMM_DB;
+		delete process.env.FLYWHEEL_COMM_ROOT;
 		const result = resolveDbPath({ project: "geoforge3d" });
 		expect(result).toBe(
 			join(homedir(), ".flywheel", "comm", "geoforge3d", "comm.db"),
+		);
+	});
+
+	it("should derive --project from FLYWHEEL_COMM_ROOT when set", () => {
+		delete process.env.FLYWHEEL_COMM_DB;
+		process.env.FLYWHEEL_COMM_ROOT = "/slot/state/comm";
+		expect(resolveDbPath({ project: "geoforge3d" })).toBe(
+			"/slot/state/comm/geoforge3d/comm.db",
 		);
 	});
 

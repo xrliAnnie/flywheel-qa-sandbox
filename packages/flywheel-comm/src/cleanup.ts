@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { commDbRootDir } from "flywheel-config";
 import { CommDB } from "./db.js";
 import type { Session } from "./types.js";
 
@@ -84,9 +84,9 @@ export function cleanupStaleSessions(opts?: CleanupOptions): CleanupResult {
 	return result;
 }
 
-/** Discover all CommDB files under ~/.flywheel/comm/{project}/comm.db */
+/** Discover per-project CommDB files under the shared, possibly slot-local root */
 function discoverCommDbs(): string[] {
-	const commDir = join(homedir(), ".flywheel", "comm");
+	const commDir = commDbRootDir();
 	if (!existsSync(commDir)) return [];
 	try {
 		return readdirSync(commDir, { withFileTypes: true })

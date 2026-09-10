@@ -12,7 +12,6 @@
  */
 
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import path, { join, resolve } from "node:path";
 import { type Request, type Response, Router } from "express";
 import { hasApprovalIntent } from "flywheel-comm/approval-intent";
@@ -27,6 +26,7 @@ import {
 	type GateResponseStore,
 	writeGateResponseAndRunPostWrite,
 } from "../approval-signal/write-gate-response.js";
+import { commDbRootDir } from "../commdb-path.js";
 import type { ReviewHoldReason } from "../review-hold.js";
 import type { FounderConsentEvaluator } from "./evaluator.js";
 import type { ConsentContextResolver } from "./middleware.js";
@@ -149,11 +149,16 @@ async function runPostWriteHook(
 	}
 }
 
+export function resolveGateResponseCommRoot(
+	override: string | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	return resolve(override ?? commDbRootDir(env));
+}
+
 export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 	const router = Router();
-	const COMMDB_ROOT = resolve(
-		deps.commRoot ?? join(homedir(), ".flywheel", "comm"),
-	);
+	const COMMDB_ROOT = resolveGateResponseCommRoot(deps.commRoot);
 
 	router.post("/", async (req: Request, res: Response) => {
 		const body = (req.body ?? {}) as {

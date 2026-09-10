@@ -9,7 +9,12 @@
 import { execFile } from "node:child_process";
 import { basename } from "node:path";
 import { performance } from "node:perf_hooks";
-import { auditedSignal } from "flywheel-claude-runner";
+import {
+	auditedSignal,
+	type BoundaryEvidence,
+	recordBoundaryRefusal,
+	resolveIsolationRoot,
+} from "flywheel-claude-runner";
 import { classifyMcpProcess } from "./mcp-process-classifier.js";
 
 export const MCP_ORPHAN_MIN_ELAPSED_SECONDS = 30 * 60;
@@ -179,14 +184,33 @@ export async function defaultListProcesses(
 export function defaultKill(
 	pid: number,
 	signal: "SIGTERM" | "SIGKILL",
+	boundary?: BoundaryEvidence,
+	env: NodeJS.ProcessEnv = process.env,
+	audit: (event: string, detail: Record<string, unknown>) => void = () => {},
 ): boolean {
-	return auditedSignal({
-		source: "mcp_descendant_reaper",
-		signal,
-		targetKind: "pid",
-		target: pid,
-		reason: "runner_mcp_descendant_reap",
-	}).ok;
+	const result = auditedSignal(
+		{
+			source: "mcp_descendant_reaper",
+			signal,
+			targetKind: "pid",
+			target: pid,
+			reason: "runner_mcp_descendant_reap",
+			boundary,
+		},
+		{ env },
+	);
+	if (!result.ok && result.kind === "boundary_refused") {
+		audit("isolation_boundary_refused", {
+			source: "mcp_descendant_reaper",
+			targetKind: "pid",
+			target: pid,
+			evidence: boundary ?? {},
+			isolationRoot: result.entry.isolationRoot,
+			reason: result.error,
+			signal,
+		});
+	}
+	return result.ok;
 }
 
 export function collectDescendants(
@@ -215,6 +239,8 @@ export function collectDescendants(
 }
 
 export interface McpReapDeps {
+	env?: NodeJS.ProcessEnv;
+	boundary?: BoundaryEvidence;
 	listProcesses?: ListProcessesFn;
 	kill?: KillFn;
 	sleep?: SleepFn;
@@ -246,7 +272,8 @@ export interface McpReapResult {
 		| "process_probe_unknown"
 		| "dispatch_budget_exhausted"
 		| "authority_timeout"
-		| "classifier_unknown";
+		| "classifier_unknown"
+		| "isolation_no_evidence";
 }
 
 const emptyResult = (): McpReapResult => ({
@@ -298,7 +325,10 @@ async function reapCandidates(
 	dispatchDeadline: number,
 ): Promise<McpReapResult> {
 	const listProcesses = deps.listProcesses ?? defaultListProcesses;
-	const kill = deps.kill ?? defaultKill;
+	const kill =
+		deps.kill ??
+		((pid, signal) =>
+			defaultKill(pid, signal, deps.boundary, deps.env, deps.audit));
 	const sleep =
 		deps.sleep ??
 		((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -608,6 +638,27 @@ export async function reapMcpDescendants(
 export async function reapMcpOrphans(
 	deps: McpReapDeps = {},
 ): Promise<McpReapResult> {
+	const env = deps.env ?? process.env;
+	if (resolveIsolationRoot(env) !== null) {
+		const refusal = recordBoundaryRefusal(
+			{
+				source: "mcp_descendant_reaper",
+				reason: "periodic_orphan_pass",
+			},
+			{ env },
+		);
+		const result = emptyResult();
+		result.incompleteReason = "isolation_no_evidence";
+		deps.audit?.("isolation_boundary_refused", {
+			source: "mcp_descendant_reaper",
+			targetKind: "none",
+			target: null,
+			evidence: {},
+			isolationRoot: refusal.entry.isolationRoot,
+			reason: "no_evidence",
+		});
+		return result;
+	}
 	const now = deps.now ?? (() => performance.now());
 	const dispatchDeadline = now() + (deps.dispatchMs ?? MCP_DISPATCH_BUDGET_MS);
 	const listProcesses = deps.listProcesses ?? defaultListProcesses;

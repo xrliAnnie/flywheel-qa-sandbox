@@ -9,8 +9,9 @@
 # 3. Kill Lead tmux window (cleanup fallback)
 # 4. Delete session-id file (prevents --resume on slot reuse)
 # 5. Kill Bridge process
-# 6. Clean temp files + CommDB
-# 7. Release slot lock
+# 6. Archive slot isolation evidence (best effort)
+# 7. Clean temp files + CommDB
+# 8. Release slot lock
 set -euo pipefail
 
 log() { echo "[test-teardown] $(date +%H:%M:%S) $*" >&2; }
@@ -652,6 +653,86 @@ prune_trust_entries() {
   release_claude_lock
 }
 
+# FLY-2454: Preserve the authoritative slot kill ledger and the complementary
+# StateStore boundary events after Bridge shutdown but before SLOT_DIR is
+# removed. Evidence collection must never turn a recyclable test room into a
+# teardown failure, so callers warn and continue on every non-zero result.
+qa_archive_slot_isolation_evidence() {
+  local slot_dir="$1" slot="$2"
+  local evidence_root="${FLYWHEEL_QA_EVID_DIR:-${HOME}/.flywheel/qa-evidence}"
+  local timestamp archive_parent archive_dir temp_dir
+  local ledger_root="${slot_dir}/state/kill-ledger"
+  local event_db="${slot_dir}/teamlead.db"
+  local event_json manifest failed=0 ledger_file
+
+  timestamp=$(date -u +%Y%m%dT%H%M%SZ) || return 1
+  archive_parent="${evidence_root}/slot-${slot}"
+  archive_dir="${archive_parent}/${timestamp}"
+  if [[ -e "$archive_dir" || -L "$archive_dir" ]]; then
+    archive_dir="${archive_dir}-$$"
+  fi
+  temp_dir="${archive_dir}.tmp.$$"
+  event_json="${temp_dir}/boundary-events.json"
+  manifest="${slot_dir}/launch-manifest.json"
+
+  mkdir -p "$archive_parent" || return 1
+  mkdir "$temp_dir" || return 1
+  if ! chmod 700 "$archive_parent" "$temp_dir" \
+      || ! mkdir "$temp_dir/kill-ledger" \
+      || ! chmod 700 "$temp_dir/kill-ledger"; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+
+  if [[ -d "$ledger_root" && ! -L "$ledger_root" ]]; then
+    for ledger_file in "$ledger_root"/*; do
+      [[ -e "$ledger_file" || -L "$ledger_file" ]] || continue
+      if [[ -f "$ledger_file" && ! -L "$ledger_file" ]]; then
+        cp -p "$ledger_file" "$temp_dir/kill-ledger/" || failed=1
+      else
+        log "WARN: isolation evidence skipped unsafe ledger entry: ${ledger_file}"
+        failed=1
+      fi
+    done
+  elif [[ -e "$ledger_root" || -L "$ledger_root" ]]; then
+    log "WARN: isolation evidence ledger root is not a real directory: ${ledger_root}"
+    failed=1
+  fi
+
+  if [[ -f "$event_db" && ! -L "$event_db" ]] && command -v sqlite3 >/dev/null 2>&1; then
+    if ! sqlite3 -json "$event_db" \
+      "SELECT id, event_id, ts, execution_id, issue_id, project_name, event_type, severity, payload, source
+         FROM session_events
+        WHERE event_type = 'isolation_boundary_refused'
+           OR event_type LIKE 'codex_app_server_orphan_%'
+        ORDER BY id" > "$event_json"; then
+      log "WARN: failed to export slot isolation boundary events from ${event_db}"
+      printf '[]\n' > "$event_json"
+      failed=1
+    elif [[ ! -s "$event_json" ]]; then
+      printf '[]\n' > "$event_json"
+    fi
+  else
+    log "WARN: slot event database or sqlite3 unavailable; archiving empty boundary event list"
+    printf '[]\n' > "$event_json"
+    failed=1
+  fi
+
+  if [[ -f "$manifest" && ! -L "$manifest" ]]; then
+    cp -p "$manifest" "$temp_dir/launch-manifest.json" || failed=1
+  else
+    log "WARN: slot launch manifest unavailable for evidence archive: ${manifest}"
+    failed=1
+  fi
+
+  if ! mv "$temp_dir" "$archive_dir"; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  log "Archived slot isolation evidence: ${archive_dir}"
+  return "$failed"
+}
+
 teardown_slot() {
   local SLOT="$1"
   # FLY-115 fix (Codex R7 #1): Validate SLOT is a positive integer. Without
@@ -1107,7 +1188,20 @@ teardown_slot() {
     fi
   fi
 
-  # ── Step 6: Clean temp files + CommDB ─────────────────
+  # ── Step 6 (FLY-2454): Archive boundary evidence ───────
+  if ! qa_archive_slot_isolation_evidence "$SLOT_DIR" "$SLOT"; then
+    log "WARN: slot ${SLOT} isolation evidence archive incomplete; continuing teardown"
+  fi
+
+  # ── Step 7: Clean temp files + CommDB ─────────────────
+  local COMMDB_DIR="${SLOT_DIR}/state/comm/${PROJECT_NAME}"
+  if [[ -d "$COMMDB_DIR" ]]; then
+    log "Cleaning slot CommDB: ${COMMDB_DIR}"
+  fi
+  local LEGACY_COMMDB_DIR="${HOME}/.flywheel/comm/${PROJECT_NAME}"
+  if [[ -d "$LEGACY_COMMDB_DIR" ]]; then
+    log "legacy HOME comm dir present; not touched: ${LEGACY_COMMDB_DIR}"
+  fi
   if [[ -d "$SLOT_DIR" ]]; then
     log "Cleaning temp dir: ${SLOT_DIR}"
     rm -rf "$SLOT_DIR"
@@ -1121,19 +1215,13 @@ teardown_slot() {
     log "WARN: Codex trust prune failed; managed entries retained for inspection"
   fi
 
-  local COMMDB_DIR="${HOME}/.flywheel/comm/${PROJECT_NAME}"
-  if [[ -d "$COMMDB_DIR" ]]; then
-    log "Cleaning CommDB: ${COMMDB_DIR}"
-    rm -rf "$COMMDB_DIR"
-  fi
-
   # Clean test lead workspace + agent files
   local LEAD_WORKSPACE="${HOME}/.flywheel/lead-workspace/${AGENT_ID}"
   if [[ -d "$LEAD_WORKSPACE" ]]; then
     rm -rf "$LEAD_WORKSPACE"
   fi
 
-  # ── Step 7: Release slot lock ─────────────────────────
+  # ── Step 8: Release slot lock ─────────────────────────
   if [[ -d "$LOCK_FILE" ]]; then
     rm -rf "$LOCK_FILE"
     log "Slot ${SLOT} released"

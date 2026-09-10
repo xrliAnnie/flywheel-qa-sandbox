@@ -1002,8 +1002,7 @@ export async function createLeadRuntime(
 	_config: BridgeConfig,
 	projectName?: string,
 ): Promise<LeadRuntime> {
-	const { join } = await import("node:path");
-	const { homedir } = await import("node:os");
+	const { dirname, join } = await import("node:path");
 	const { existsSync, readFileSync } = await import("node:fs");
 
 	// Use the source binding inside this module. Importing the full Bridge under
@@ -1079,20 +1078,8 @@ export async function createLeadRuntime(
 		);
 	}
 
-	const commDbPath = join(
-		homedir(),
-		".flywheel",
-		"comm",
-		projectName,
-		"comm.db",
-	);
-	const leasePath = join(
-		homedir(),
-		".flywheel",
-		"comm",
-		projectName,
-		`.inbox-ready-${lead.agentId}`,
-	);
+	const commDbPath = commDbPathForProject(projectName);
+	const leasePath = join(dirname(commDbPath), `.inbox-ready-${lead.agentId}`);
 
 	if (
 		!existsSync(commDbPath) ||

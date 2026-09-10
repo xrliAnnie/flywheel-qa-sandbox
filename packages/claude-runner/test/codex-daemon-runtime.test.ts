@@ -239,6 +239,34 @@ describe("daemon group-kill safety", () => {
 
 		expect(kill).toHaveBeenCalledWith(-777, "SIGTERM");
 	});
+
+	it("refuses a proven daemon group when its ownership coordinates are outside the slot", () => {
+		const isolationRoot = mkdtempSync(join(tmpdir(), "fly2454-daemon-slot-"));
+		const kill = vi.fn();
+		const logger = vi.fn();
+		try {
+			const killGroup = createDefaultKillGroup({
+				pid: 123,
+				ppid: 12,
+				processGroupOf: () => 321,
+				kill,
+				logger,
+				env: {
+					FLYWHEEL_ISOLATION_ROOT: isolationRoot,
+					FLYWHEEL_KILL_LEDGER_ROOT: join(isolationRoot, "kill-ledger"),
+				},
+				boundary: { socketPath: "/production/codex.sock" },
+			});
+
+			expect(killGroup(777, "SIGTERM")).toBe(false);
+			expect(kill).not.toHaveBeenCalled();
+			expect(logger).toHaveBeenCalledWith(
+				expect.stringContaining("kind=boundary_refused"),
+			);
+		} finally {
+			rmSync(isolationRoot, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("codexDaemonExitWaitMs", () => {

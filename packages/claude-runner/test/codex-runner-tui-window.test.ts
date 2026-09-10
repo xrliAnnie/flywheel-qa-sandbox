@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	buildRunnerTuiCommand,
 	ensureRunnerTuiWindow,
@@ -1321,6 +1321,50 @@ describe("fail-open logging + kill result", () => {
 });
 
 describe("killRunnerTuiWindow", () => {
+	it("refuses a window reached through a tmux socket outside the slot", () => {
+		const isolationRoot = mkdtempSync(
+			join(tmpdir(), "flywheel-tui-kill-slot-"),
+		);
+		vi.stubEnv("FLYWHEEL_ISOLATION_ROOT", isolationRoot);
+		vi.stubEnv("FLYWHEEL_KILL_LEDGER_ROOT", isolationRoot);
+		const calls: string[][] = [];
+
+		try {
+			killRunnerTuiWindow(
+				{
+					tmuxSession: "flywheel",
+					windowName: "FLY-1188",
+					windowId: "@7",
+				},
+				{
+					exec: (cmd, args) => {
+						calls.push([cmd, ...args]);
+						return { ok: true };
+					},
+					execOut: (cmd, args) => {
+						calls.push([cmd, ...args]);
+						return args[0] === "display-message"
+							? "/production/tmux/default"
+							: "@7 FLY-1188";
+					},
+				},
+			);
+
+			expect(calls).toContainEqual([
+				"tmux",
+				"display-message",
+				"-p",
+				"-t",
+				"=flywheel:@7",
+				"#{socket_path}",
+			]);
+			expect(calls.some((call) => call[1] === "kill-window")).toBe(false);
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(isolationRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("downgrades a non-ok kill to already-gone only when a re-list proves absence", () => {
 		const logs: string[] = [];
 		killRunnerTuiWindow(
@@ -1363,6 +1407,40 @@ describe("killRunnerTuiWindow", () => {
 			{ exec: r.exec },
 		);
 		expect(r.calls).toEqual([["tmux", "kill-window", "-t", "=flywheel:@7"]]);
+	});
+});
+
+describe("isolated async TUI cleanup", () => {
+	it("refuses a same-name window reached through a tmux socket outside the slot", async () => {
+		const isolationRoot = mkdtempSync(
+			join(tmpdir(), "flywheel-tui-async-slot-"),
+		);
+		vi.stubEnv("FLYWHEEL_ISOLATION_ROOT", isolationRoot);
+		vi.stubEnv("FLYWHEEL_KILL_LEDGER_ROOT", isolationRoot);
+		const calls: string[][] = [];
+		const exec = async (cmd: string, args: string[]) => {
+			calls.push([cmd, ...args]);
+			return {
+				ok: true,
+				stdout: args[0] === "display-message" ? "/production/tmux/default" : "",
+			};
+		};
+
+		try {
+			await expect(
+				scanAndKillSameNameWindows(
+					{ tmuxSession: "flywheel", windowName: "FLY-1188" },
+					{
+						exec,
+						execOut: async () => "@7 FLY-1188",
+					},
+				),
+			).rejects.toThrow("outside_root");
+			expect(calls.some((call) => call[1] === "kill-window")).toBe(false);
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(isolationRoot, { recursive: true, force: true });
+		}
 	});
 });
 

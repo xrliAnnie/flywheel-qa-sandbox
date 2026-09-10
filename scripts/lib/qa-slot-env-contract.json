@@ -1,0 +1,208 @@
+[
+	{
+		"name": "FLYWHEEL_ISOLATION_ROOT",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_ISOLATION_CONTRACT",
+		"disposition": "redirect",
+		"value": "${REPO_ROOT}/scripts/lib/qa-slot-env-contract.json",
+		"boot": "unchecked"
+	},
+	{
+		"name": "FLYWHEEL_STATE_DIR",
+		"unconfinedConsumers": [
+			{
+				"coordinate": "$HOME/.flywheel/state/launch-commits/<executionId>",
+				"consumers": [
+					"run-dispatcher.launchCommitPath",
+					"WorkflowEngineDispatcher.stateRoot"
+				],
+				"reason": "Legacy launch-commit records ignore FLYWHEEL_STATE_DIR; explicitly unconfined by Lead ruling 38377789. Boot validates the env value, not these consumers. Path refactor deferred."
+			}
+		],
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "TEAMLEAD_DB_PATH",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/teamlead.db",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_COMM_ROOT",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/comm",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_CODEX_HOMES_ROOT",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/codex-homes",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_CODEX_SESSION_DIR",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/codex-sessions",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/cdx-sock",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "CODEX_HOME",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/codex-home",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "TMUX_TMPDIR",
+		"confinedConsumers": [
+			"codex-runner-tui-window.defaultEnsureSessionAsync (explicit -S via tmuxSocketPath)"
+		],
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "TMPDIR",
+		"disposition": "redirect",
+		"value": "${SLOT_TMPDIR}",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_DELIVERY_SECRET_PATH",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/delivery-secret",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_KILL_LEDGER_ROOT",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/kill-ledger",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_REPORTS_DIR",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/reports",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_COMPLETE_MARKER_DIR",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/complete-failed",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_LOOP_DIAGNOSTICS_DIR",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/loop-diagnostics",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/founder-consent-audit.db",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_BIN_DIR",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/bin",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_HOOKS_DIR",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/hooks",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_IDENTITY_FAILURE_DIR",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/lead-identity-failures",
+		"boot": "mustBeUnderRoot"
+	},
+	{ "name": "TMUX", "disposition": "clear", "boot": "mustBeAbsent" },
+	{ "name": "TMUX_PANE", "disposition": "clear", "boot": "mustBeAbsent" },
+	{
+		"name": "FLYWHEEL_TMUX_SOCKET_OVERRIDE",
+		"disposition": "clear",
+		"boot": "mustBeAbsent"
+	},
+	{
+		"name": "FLYWHEEL_COMM_DB",
+		"disposition": "clear",
+		"boot": "mustBeAbsent"
+	},
+	{
+		"name": "FLYWHEEL_COMM_DIR",
+		"disposition": "clear",
+		"boot": "mustBeAbsent"
+	},
+	{
+		"name": "FLYWHEEL_BRIDGE_LOG_PATH",
+		"disposition": "clear",
+		"boot": "mustBeUnderRootIfSet"
+	},
+	{
+		"name": "FLYWHEEL_BRIDGE_LOG_ERROR_MARKER",
+		"disposition": "clear",
+		"boot": "mustBeUnderRootIfSet"
+	},
+	{
+		"name": "FLYWHEEL_BRIDGE_RAW_STARTUP_LOG",
+		"disposition": "clear",
+		"boot": "mustBeUnderRootIfSet"
+	},
+	{ "name": "FLYWHEEL_QA_NODE", "disposition": "clear", "boot": "unchecked" },
+	{ "name": "VERCEL_TOKEN", "disposition": "clear", "boot": "unchecked" },
+	{
+		"name": "FLYWHEEL_REPORT_HOST_OVERRIDE_URL",
+		"disposition": "clear",
+		"boot": "unchecked"
+	},
+	{
+		"name": "FLYWHEEL_ROUNDTABLE_CHANNEL_ID",
+		"disposition": "clear",
+		"boot": "unchecked"
+	},
+	{
+		"name": "FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD",
+		"disposition": "clear",
+		"boot": "unchecked"
+	},
+	{
+		"name": "GH_TOKEN",
+		"disposition": "passthrough",
+		"reason": "GitHub CLI credential required by the slot checkout workflow",
+		"boot": "unchecked"
+	},
+	{
+		"name": "GITHUB_TOKEN",
+		"disposition": "passthrough",
+		"reason": "GitHub CLI credential alias required by the slot checkout workflow",
+		"boot": "unchecked"
+	},
+	{
+		"name": "HOME",
+		"disposition": "passthrough",
+		"reason": "Host account root is required to locate explicit QA configuration",
+		"boot": "unchecked"
+	},
+	{
+		"name": "PATH",
+		"disposition": "passthrough",
+		"reason": "The slot launcher requires the host toolchain executables",
+		"boot": "unchecked"
+	}
+]

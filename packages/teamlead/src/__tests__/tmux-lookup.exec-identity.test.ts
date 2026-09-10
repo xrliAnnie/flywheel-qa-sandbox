@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	discoverTmuxTargetByExecutionId,
@@ -133,6 +136,28 @@ describe("FLY-1374 tmux execution identity discovery", () => {
 
 		expect(result).toEqual({ killed: true });
 		expect(order).toEqual(["ledger", "tmux"]);
+	});
+
+	it("resolves and rejects a plain tmux window on a socket outside the slot", async () => {
+		const isolationRoot = mkdtempSync(join(tmpdir(), "fly2454-plain-tmux-"));
+		const mutate = vi.fn(async () => undefined);
+		try {
+			const result = await killTmuxWindow("runner-flywheel:@42", {
+				env: {
+					FLYWHEEL_ISOLATION_ROOT: isolationRoot,
+					FLYWHEEL_KILL_LEDGER_ROOT: join(isolationRoot, "kill-ledger"),
+				},
+				runTmux: vi.fn(async () => ({
+					stdout: "/production/tmux/default\n",
+				})),
+				exec: mutate,
+			});
+
+			expect(result).toMatchObject({ killed: false, error: "outside_root" });
+			expect(mutate).not.toHaveBeenCalled();
+		} finally {
+			rmSync(isolationRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("discovers identity when tmux sanitizes control-character separators", async () => {

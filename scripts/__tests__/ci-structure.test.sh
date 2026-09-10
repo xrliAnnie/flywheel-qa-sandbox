@@ -771,6 +771,7 @@ expected_shard_tests = {
         "Test — FLY-2237 slot Bridge cycle",
         "Test — FLY-2270 QA report host stub",
         "Test — FLY-2270 slot Bridge launch boundary",
+        "Test — FLY-2454 slot isolation contracts",
         "Test — FLY-1775 generalized-DAG 529 room",
         "Test — FLY-2383 voice concurrency measurement contract",
         "Test — FLY-2446 two-Lead voice driver",

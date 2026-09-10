@@ -46,6 +46,7 @@ import {
 	type RunCloseAuthority,
 } from "./close-runner.js";
 import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
+import { commDbPathForProject } from "./commdb-path.js";
 import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import type { EventFilter } from "./EventFilter.js";
 import {
@@ -107,19 +108,6 @@ export const ACTION_TARGET_STATUS: Record<string, string> = {
 	retry: "running",
 	shelve: "shelved",
 };
-
-/**
- * Resolve the per-project CommDB path. FLY-191: `FLYWHEEL_COMM_ROOT` override
- * (tests / non-standard installs); default matches flywheel-comm's
- * `resolveDbPath` convention. Module-scoped so both `approveExecution` (gate
- * unblock) and `handleTerminate` (FLY-228 gate resolution) share it.
- */
-function commDbPathFor(projectName: string): string {
-	const root =
-		process.env.FLYWHEEL_COMM_ROOT?.trim() ||
-		join(homedir(), ".flywheel", "comm");
-	return join(root, projectName, "comm.db");
-}
 
 /** Send post-action hook notification via RuntimeRegistry (best-effort, fire-and-forget). */
 function sendActionHook(
@@ -282,7 +270,7 @@ export async function approveExecution(
 	// counts as written (so an FSM-rejected attempt can be retried).
 	let gateUnblocked = false;
 	try {
-		const commDbPath = commDbPathFor(projectName);
+		const commDbPath = commDbPathForProject(projectName);
 		const db = new CommDB(commDbPath, false);
 		try {
 			// Bound question first (Codex PR R1 CRITICAL): the session's CURRENT
@@ -516,7 +504,7 @@ export async function approveExecution(
 	// reinforces the verify-before-ship contract. Best-effort — failure is
 	// recorded as runner_wake_failed telemetry inside sendRunnerWake.
 	try {
-		const db = new CommDB(commDbPathFor(session.project_name), false);
+		const db = new CommDB(commDbPathForProject(session.project_name), false);
 		try {
 			await sendRunnerWake(store, db, executionId, session, "approval_wake");
 		} finally {

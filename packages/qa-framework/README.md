@@ -397,3 +397,8 @@ suites remain the supported paths.
 
 - `contracts/PLAN_SOURCE_CONTRACT.md` — How QA agents obtain plan files across worktrees
 - `skills/SKILL_INTERFACE.md` — Interface contract for all QA test skills
+
+529 房的 Bridge 启动环境由
+[`scripts/lib/qa-slot-env-contract.json`](../../scripts/lib/qa-slot-env-contract.json)
+集中定义；字段的隔离语义、拒绝证据和生产舰队零变化快照步骤见
+[`529-room-playbook.md` §7](../../doc/qa/framework/529-room-playbook.md#7-隔离契约与真机零伤害验证)。

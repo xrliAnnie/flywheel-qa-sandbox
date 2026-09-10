@@ -522,6 +522,23 @@ describe("FLY-1393 flag truth", () => {
 		).toEqual({ ok: true, errors: [] });
 	});
 
+	it("registers the FLY-2454 slot isolation coordinates as fail-closed plumbing", () => {
+		for (const envVar of [
+			"FLYWHEEL_ISOLATION_ROOT",
+			"FLYWHEEL_ISOLATION_CONTRACT",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(
+				/plumbing.*fail-closed.*FLY-2454/i,
+			);
+		}
+		expect(
+			validateFlagTruthEnvironment([
+				"FLYWHEEL_ISOLATION_ROOT=/tmp/flywheel-test-slot-1",
+				"FLYWHEEL_ISOLATION_CONTRACT=/repo/scripts/lib/qa-slot-env-contract.json",
+			]),
+		).toEqual({ ok: true, errors: [] });
+	});
+
 	it("registers the FLY-2137 calendar sweep installer inputs as non-flags", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_REPO).toMatch(
 			/plumbing.*repo.*FLY-2137/i,

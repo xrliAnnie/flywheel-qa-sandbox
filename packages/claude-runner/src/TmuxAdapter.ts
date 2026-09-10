@@ -31,6 +31,7 @@ import type {
 	LaunchPrecommitFailure,
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
+import type { BoundaryEvidence } from "./isolation-boundary.js";
 import { auditedSignal } from "./kill-ledger.js";
 import {
 	readSyncOpMarker,
@@ -2150,9 +2151,26 @@ function auditedTmuxKillWindow(
 	reason: string,
 ): boolean {
 	// An injected exec seam is test/QA-owned; production uses defaultExecFile.
-	if (execFileFn !== defaultExecFile) {
+	const isolated = process.env.FLYWHEEL_ISOLATION_ROOT !== undefined;
+	if (execFileFn !== defaultExecFile && !isolated) {
 		execFileFn("tmux", ["kill-window", "-t", target]);
 		return true;
+	}
+	let boundary: BoundaryEvidence | undefined;
+	if (isolated) {
+		try {
+			boundary = {
+				tmuxSocketPath: execFileFn("tmux", [
+					"display-message",
+					"-p",
+					"-t",
+					target,
+					"#{socket_path}",
+				]).stdout.trim(),
+			};
+		} catch {
+			// Empty evidence makes the central isolation boundary refuse the kill.
+		}
 	}
 	return auditedSignal(
 		{
@@ -2161,8 +2179,10 @@ function auditedTmuxKillWindow(
 			targetKind: "tmux-window",
 			target,
 			reason,
+			boundary,
 		},
 		{
+			env: process.env,
 			mutate: () => execFileFn("tmux", ["kill-window", "-t", target]),
 		},
 	).ok;
@@ -2348,6 +2368,8 @@ export function defaultAsyncExecFile(
 			exitSignal ??= "SIGKILL";
 			if (!exitSeen && child.pid && process.platform !== "win32") {
 				try {
+					// Bounded-child exception: this detached group id is exactly the pid
+					// returned by this invocation's own spawn, never a discovered pid.
 					process.kill(-child.pid, "SIGKILL");
 					return;
 				} catch {

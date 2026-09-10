@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -78,6 +78,34 @@ describe("cleanupStaleSessions", () => {
 		db.close();
 		return dbPath;
 	}
+
+	it("discovers only slot CommDBs when the shared root is set", () => {
+		const home = join(tmpDir, "home");
+		const slotRoot = join(tmpDir, "slot", "state", "comm");
+		const homeDb = join(home, ".flywheel", "comm", "production", "comm.db");
+		const slotDb = join(slotRoot, "flywheel-test-2", "comm.db");
+		for (const [dbPath, execId] of [
+			[homeDb, "production"],
+			[slotDb, "slot"],
+		]) {
+			mkdirSync(join(dbPath!, ".."), { recursive: true });
+			const db = new CommDB(dbPath!);
+			db.registerSession(execId!, `${execId}:@1`, execId!);
+			db.updateSessionStatus(execId!, "completed");
+			db.close();
+		}
+		vi.stubEnv("HOME", home);
+		vi.stubEnv("FLYWHEEL_COMM_ROOT", slotRoot);
+		const open = vi.spyOn(CommDB, "openReadonly");
+		try {
+			const result = cleanupStaleSessions({ dryRun: true });
+			expect(result.errors).toEqual([]);
+			expect(open.mock.calls.map(([dbPath]) => dbPath)).toEqual([slotDb]);
+		} finally {
+			open.mockRestore();
+			vi.unstubAllEnvs();
+		}
+	});
 
 	it("returns empty result when dbPaths is empty", () => {
 		const result = cleanupStaleSessions({ dbPaths: [] });

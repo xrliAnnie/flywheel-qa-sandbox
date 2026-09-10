@@ -1,8 +1,12 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { auditedSignal, auditedSignalAsync } from "../src/kill-ledger.js";
+import {
+	auditedSignal,
+	auditedSignalAsync,
+	recordBoundaryRefusal,
+} from "../src/kill-ledger.js";
 
 describe("FLY-2211 auditedSignal", () => {
 	const roots: string[] = [];
@@ -138,5 +142,182 @@ describe("FLY-2211 auditedSignal", () => {
 
 		expect(result.ok).toBe(true);
 		expect(order).toEqual(["fsync", "kill-window:runner-flywheel:@42"]);
+	});
+
+	it("refuses an isolated mutation without ownership evidence and writes the refusal before returning", () => {
+		const isolationRoot = ledgerRoot();
+		const root = join(isolationRoot, "ledger");
+		const mutate = vi.fn();
+		const stderr = vi.fn();
+		const result = auditedSignal(
+			{
+				source: "codex_orphan_reaper",
+				signal: "SIGTERM",
+				targetKind: "pgid",
+				target: 4321,
+				reason: "orphan_reap",
+			},
+			{
+				env: { FLYWHEEL_ISOLATION_ROOT: isolationRoot },
+				ledgerRoot: root,
+				now: () => new Date("2026-09-09T05:00:00.000Z"),
+				fsync: () => undefined,
+				stderr,
+				mutate,
+			},
+		);
+
+		expect(result).toMatchObject({
+			ok: false,
+			kind: "boundary_refused",
+			error: "no_evidence",
+		});
+		expect(mutate).not.toHaveBeenCalled();
+		expect(stderr).toHaveBeenCalledWith(
+			expect.stringContaining("[isolation-boundary] REFUSED"),
+		);
+		expect(
+			JSON.parse(readFileSync(join(root, "20260909.ndjson"), "utf8")),
+		).toEqual({
+			ts: "2026-09-09T05:00:00.000Z",
+			source: "codex_orphan_reaper",
+			signal: "SIGTERM",
+			targetKind: "pgid",
+			target: 4321,
+			reason: "orphan_reap",
+			schemaVersion: 1,
+			refusal: "isolation_boundary",
+			refusalReason: "no_evidence",
+			boundary: {},
+			isolationRoot: realpathSync(isolationRoot),
+		});
+	});
+
+	it("keeps the boundary refusal authoritative when its ledger fsync fails", () => {
+		const isolationRoot = ledgerRoot();
+		const mutate = vi.fn();
+		const result = auditedSignal(
+			{
+				source: "tmux_lookup",
+				signal: "kill-window",
+				targetKind: "tmux-window",
+				target: "@production",
+				reason: "runner_close",
+				boundary: { tmuxSocketPath: "/production/tmux.sock" },
+			},
+			{
+				env: { FLYWHEEL_ISOLATION_ROOT: isolationRoot },
+				ledgerRoot: join(isolationRoot, "ledger"),
+				fsync: () => {
+					throw new Error("disk full");
+				},
+				stderr: vi.fn(),
+				mutate,
+			},
+		);
+
+		expect(result).toMatchObject({
+			ok: false,
+			kind: "boundary_refused",
+			error: "outside_root",
+		});
+		expect(mutate).not.toHaveBeenCalled();
+	});
+
+	it("allows owned evidence without changing the production ledger shape", () => {
+		const isolationRoot = ledgerRoot();
+		const root = join(isolationRoot, "ledger");
+		const mutate = vi.fn();
+		const result = auditedSignal(
+			{
+				source: "codex_daemon_runtime",
+				signal: "SIGKILL",
+				targetKind: "pgid",
+				target: 7654,
+				reason: "owned_daemon",
+				boundary: { socketPath: join(isolationRoot, "daemon.sock") },
+			},
+			{
+				env: { FLYWHEEL_ISOLATION_ROOT: isolationRoot },
+				ledgerRoot: root,
+				now: () => new Date("2026-09-09T05:10:00.000Z"),
+				fsync: () => undefined,
+				mutate,
+			},
+		);
+
+		expect(result.ok).toBe(true);
+		expect(mutate).toHaveBeenCalledWith(-7654, "SIGKILL");
+		expect(
+			JSON.parse(readFileSync(join(root, "20260909.ndjson"), "utf8")),
+		).toEqual({
+			ts: "2026-09-09T05:10:00.000Z",
+			source: "codex_daemon_runtime",
+			signal: "SIGKILL",
+			targetKind: "pgid",
+			target: 7654,
+			reason: "owned_daemon",
+			schemaVersion: 1,
+		});
+	});
+
+	it("applies the same boundary refusal to asynchronous mutations", async () => {
+		const isolationRoot = ledgerRoot();
+		const mutate = vi.fn();
+		const result = await auditedSignalAsync(
+			{
+				source: "tmux_lookup",
+				signal: "kill-window",
+				targetKind: "tmux-window",
+				target: "@production",
+				reason: "runner_close",
+				boundary: { tmuxSocketPath: "/production/tmux.sock" },
+			},
+			{
+				env: { FLYWHEEL_ISOLATION_ROOT: isolationRoot },
+				ledgerRoot: join(isolationRoot, "ledger"),
+				fsync: () => undefined,
+				stderr: vi.fn(),
+				mutate,
+			},
+		);
+
+		expect(result).toMatchObject({ ok: false, kind: "boundary_refused" });
+		expect(mutate).not.toHaveBeenCalled();
+	});
+
+	it("records the exact no-target refusal shape", () => {
+		const isolationRoot = ledgerRoot();
+		const root = join(isolationRoot, "ledger");
+		const result = recordBoundaryRefusal(
+			{
+				source: "mcp_descendant_reaper",
+				reason: "periodic_orphan_pass",
+			},
+			{
+				env: { FLYWHEEL_ISOLATION_ROOT: isolationRoot },
+				ledgerRoot: root,
+				now: () => new Date("2026-09-09T05:20:00.000Z"),
+				fsync: () => undefined,
+				stderr: vi.fn(),
+			},
+		);
+
+		expect(result).toMatchObject({ ok: false, kind: "boundary_refused" });
+		expect(
+			JSON.parse(readFileSync(join(root, "20260909.ndjson"), "utf8")),
+		).toEqual({
+			ts: "2026-09-09T05:20:00.000Z",
+			source: "mcp_descendant_reaper",
+			signal: "none",
+			targetKind: "none",
+			target: null,
+			reason: "periodic_orphan_pass",
+			schemaVersion: 1,
+			refusal: "isolation_boundary",
+			refusalReason: "no_evidence",
+			boundary: {},
+			isolationRoot: realpathSync(isolationRoot),
+		});
 	});
 });

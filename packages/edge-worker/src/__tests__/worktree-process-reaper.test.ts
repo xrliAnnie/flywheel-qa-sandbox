@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type ProcessRow,
 	parseLsofCwdOutput,
@@ -47,6 +50,7 @@ function makeDeps(input?: {
 	const pointSignals: Array<[number, "SIGTERM" | "SIGKILL"]> = [];
 	const groupSignals: Array<[number, "SIGTERM" | "SIGKILL"]> = [];
 	const deps: ReapDeps = {
+		env: process.env,
 		listCwds: async () =>
 			[...cwdPids]
 				.filter((pid) => alive.has(pid))
@@ -116,6 +120,10 @@ describe("parseLsofCwdOutput", () => {
 });
 
 describe("reapWorktreeProcesses", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	it("takes the empty-match fast path without a process census or signals", async () => {
 		const { deps } = makeDeps();
 		deps.listProcesses = vi.fn(async () => []);
@@ -148,6 +156,41 @@ describe("reapWorktreeProcesses", () => {
 		expect(groupSignals).toEqual([[101, "SIGTERM"]]);
 		expect(pointSignals).toEqual([]);
 		expect(alive).toEqual(new Set());
+	});
+
+	it("records the worktree path when an isolated reaper refuses an outside group", async () => {
+		const isolationRoot = fs.mkdtempSync(
+			path.join(os.tmpdir(), "flywheel-worktree-reaper-slot-"),
+		);
+		const { deps } = makeDeps({
+			rows: [processRow(101, 1, 101)],
+			cwdPids: [101],
+		});
+		const { kill: _kill, killGroup: _killGroup, ...sensors } = deps;
+		sensors.env = {
+			...process.env,
+			FLYWHEEL_ISOLATION_ROOT: isolationRoot,
+			FLYWHEEL_KILL_LEDGER_ROOT: isolationRoot,
+		};
+
+		try {
+			const summary = await reapWorktreeProcesses(target, sensors);
+
+			expect(summary.scanError).toContain("outside_root");
+			const [ledgerFile] = fs.readdirSync(isolationRoot);
+			expect(ledgerFile).toMatch(/\.ndjson$/);
+			const ledger = fs
+				.readFileSync(path.join(isolationRoot, ledgerFile!), "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line));
+			expect(ledger.at(-1)).toMatchObject({
+				refusalReason: "outside_root",
+				boundary: { worktreePath: target.canonicalPath },
+			});
+		} finally {
+			fs.rmSync(isolationRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("does not group-signal an unrelated same-group sibling", async () => {

@@ -583,6 +583,16 @@ jobs:
       - name: Test — FLY-2270 slot Bridge launch boundary
         run: bash scripts/__tests__/test-deploy-launch-boundary.test.sh
 
+      # FLY-2454: a 529 slot gets one declarative env projection, rejects an
+      # unsafe Bridge before imports, and exposes a byte-stable production
+      # Codex/tmux census for the before/after zero-harm proof. All three are
+      # hermetic: fixture env, stub process commands, and temporary roots only.
+      - name: Test — FLY-2454 slot isolation contracts
+        run: |
+          bash scripts/__tests__/qa-slot-env-contract.test.sh
+          bash scripts/__tests__/run-bridge-isolation-boot.test.sh
+          bash scripts/__tests__/qa-fly-2454-fleet-snapshot.test.sh
+
       # FLY-1775: generalized-DAG 529 room provisioning, canonical binding
       # seed/verify, deterministic persistent stub, and the nine-step replay
       # state machine. Hermetic: temporary SQLite/clone fixtures and fake

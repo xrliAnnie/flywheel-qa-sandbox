@@ -155,6 +155,9 @@ export async function reapTerminalTabs(store: StateStore): Promise<ReapResult> {
 
 			// Also kill the linked viewer session for this exec (best-effort).
 			try {
+				// Slot safety is boot-fenced: this plain tmux invocation is safe only
+				// after startup proves slot-local TMUX_TMPDIR and absent inherited
+				// TMUX / FLYWHEEL_TMUX_SOCKET_OVERRIDE coordinates.
 				withSyncOpMarker("terminal-reaper:tmux-kill", () =>
 					execFileSync(
 						"tmux",

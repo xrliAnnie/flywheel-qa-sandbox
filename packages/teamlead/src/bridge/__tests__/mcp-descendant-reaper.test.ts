@@ -119,6 +119,32 @@ describe("collectDescendants", () => {
 });
 
 describe("reapMcpDescendants", () => {
+	it("refuses descendant signals whose tmux socket is outside the slot", async () => {
+		const isolationRoot = mkdtempSync(join(tmpdir(), "fly2454-mcp-slot-"));
+		fixtureRoots.push(isolationRoot);
+		const target = row(30, 10, MCP_ARGV);
+		const audits: Array<{ event: string; detail: Record<string, unknown> }> =
+			[];
+		const result = await reapMcpDescendants(10, {
+			env: {
+				FLYWHEEL_ISOLATION_ROOT: isolationRoot,
+				FLYWHEEL_KILL_LEDGER_ROOT: join(isolationRoot, "kill-ledger"),
+			},
+			boundary: { tmuxSocketPath: "/production/tmux.sock" },
+			listProcesses: async () => ok([PANE, target]),
+			audit: (event, detail) => audits.push({ event, detail }),
+		});
+
+		expect(result).toMatchObject({ matched: 1, terminated: 0 });
+		expect(audits).toContainEqual({
+			event: "isolation_boundary_refused",
+			detail: expect.objectContaining({
+				target: target.pid,
+				reason: "outside_root",
+			}),
+		});
+	});
+
 	it("lets a five-second graceful shutdown finish instead of killing it at three", async () => {
 		const signals: Array<{ pid: number; signal: string }> = [];
 		let elapsed = 0;
@@ -391,6 +417,32 @@ describe("reapMcpDescendants", () => {
 });
 
 describe("reapMcpOrphans", () => {
+	it("refuses the periodic orphan pass before process enumeration in an isolated slot", async () => {
+		const isolationRoot = mkdtempSync(join(tmpdir(), "fly2454-mcp-orphans-"));
+		fixtureRoots.push(isolationRoot);
+		let listed = false;
+		const audits: Array<{ event: string; detail: Record<string, unknown> }> =
+			[];
+		const result = await reapMcpOrphans({
+			env: {
+				FLYWHEEL_ISOLATION_ROOT: isolationRoot,
+				FLYWHEEL_KILL_LEDGER_ROOT: join(isolationRoot, "kill-ledger"),
+			},
+			listProcesses: async () => {
+				listed = true;
+				return ok([]);
+			},
+			audit: (event, detail) => audits.push({ event, detail }),
+		});
+
+		expect(listed).toBe(false);
+		expect(result.incompleteReason).toBe("isolation_no_evidence");
+		expect(audits).toContainEqual({
+			event: "isolation_boundary_refused",
+			detail: expect.objectContaining({ reason: "no_evidence" }),
+		});
+	});
+
 	it("only ppid 1 + exact classifier + at least 30 minutes qualifies", async () => {
 		const signals: number[] = [];
 		const eligible = row(100, 1, MCP_ARGV, MCP_ORPHAN_MIN_ELAPSED_SECONDS + 5);
@@ -446,7 +498,10 @@ describe("reapRunnerMcp", () => {
 		const target = row(30, 10, MCP_ARGV);
 		let call = 0;
 		const result = await reapRunnerMcp("flywheel-x:1", {
-			resolvePanePid: async () => 10,
+			resolvePanePid: async () => ({
+				pid: 10,
+				socketPath: "/tmp/flywheel-tmux/default",
+			}),
 			listProcesses: async () => ok(++call <= 2 ? [PANE, target] : [PANE]),
 			kill: () => true,
 			sleep: async () => {},

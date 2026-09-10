@@ -24,3 +24,5 @@ Round 1 在 `d67133198651b73682fe1fd2933f78c913d765bf` 返回 `APPROVED`，包�
 本地 `codex:rescue` companion 已按合同以 review-only task 调用，但在读取仓库前被 resident 外层 macOS seatbelt 拒绝 nested `sandbox-exec`（status 71）；没有使用 raw `codex exec`，也没有把该尝试记作 review PASS。权威结论来自 request-driven cross-family review gate。
 
 Round 2 在 `83194f2a1fd8d5f2504a8db857120a17d441b35b` 再次 `APPROVED`，确认上述 MEDIUM 与生产 LOW 已收口；唯一新增 LOW 是 runtime-hash-failure 测试的 `print*` 会跨换行匹配。该断言已改为同时要求 launchctl 日志恰好一行，避免未来追加 `kickstart` 后仍假绿。uniform timeout residual 保持上述明确边界。
+
+经 529 房启动 Bridge 的 e2e，其进程/tmux 隔离由 slot env 契约与 Bridge boot 自检保证；本 drill 的 REFUSE 守卫只覆盖凭据轴。

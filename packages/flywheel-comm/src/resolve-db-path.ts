@@ -18,7 +18,10 @@ export function resolveDbPath(opts: { db?: string; project?: string }): string {
 
 	if (opts.project) {
 		validateProjectName(opts.project);
-		return join(homedir(), ".flywheel", "comm", opts.project, "comm.db");
+		const root =
+			process.env.FLYWHEEL_COMM_ROOT?.trim() ||
+			join(homedir(), ".flywheel", "comm");
+		return join(root, opts.project, "comm.db");
 	}
 
 	throw new Error(

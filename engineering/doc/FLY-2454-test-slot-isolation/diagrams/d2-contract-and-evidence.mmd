@@ -1,0 +1,38 @@
+classDiagram
+    class 契约条目 {
+        name 环境变量名
+        disposition redirect / clear / passthrough
+        boot 四档 mustBeUnderRoot 等
+        value 模板 如 SLOT_DIR/state/comm
+        reason passthrough 必填
+    }
+    class 隔离根 {
+        env FLYWHEEL_ISOLATION_ROOT
+        lexical 路径 给 tmux 与 lsof 用
+        canonical 路径 给比较用
+        生产永不设置
+    }
+    class 归属证据 {
+        socketPath
+        codexHome
+        ledgerPath
+        tmuxSocketPath
+        worktreePath
+    }
+    class 审计信号咽喉 {
+        auditedSignal 输入 + 证据
+        checkBoundaryEvidence 根 证据
+        recordBoundaryRefusal 无目标留痕
+        结果 ok 或 boundary_refused
+    }
+    class 账本行 {
+        schemaVersion 1
+        source signal targetKind target
+        refusal isolation_boundary 可选
+        refusalReason no_evidence 或 outside_root
+        isolationRoot 可选
+    }
+    契约条目 "多" --> "1" 隔离根 : 启动自检按 boot 轴逐条检查
+    审计信号咽喉 --> 隔离根 : 从环境解析
+    审计信号咽喉 --> 归属证据 : 每次杀之前必须提供
+    审计信号咽喉 --> 账本行 : 放行与拒绝都写

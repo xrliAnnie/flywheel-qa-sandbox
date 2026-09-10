@@ -1,9 +1,12 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type {
 	AdapterExecutionResult,
 	DecisionResult,
 	ExecutionContext,
 } from "flywheel-core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BlueprintContext } from "../Blueprint.js";
 import { Blueprint } from "../Blueprint.js";
 import type { IDecisionLayer } from "../decision/DecisionLayer.js";
@@ -103,6 +106,10 @@ function makeContext(
 }
 
 describe("Blueprint Decision Layer Integration", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	it("FLY-1279: goal_blocked bypasses DecisionLayer even when commits exist", async () => {
 		const decisionLayer = makeMockDecisionLayer({ route: "auto_approve" });
 		const emitFailed = vi.fn(async () => {});
@@ -180,6 +187,51 @@ describe("Blueprint Decision Layer Integration", () => {
 			["kill-window", "-t", "flywheel:@42"],
 			"/",
 		);
+	});
+
+	it("refuses auto-approve cleanup when the tmux socket is outside the slot", async () => {
+		const isolationRoot = fs.mkdtempSync(
+			path.join(os.tmpdir(), "flywheel-blueprint-slot-"),
+		);
+		vi.stubEnv("FLYWHEEL_ISOLATION_ROOT", isolationRoot);
+		vi.stubEnv("FLYWHEEL_KILL_LEDGER_ROOT", isolationRoot);
+		const shell = makeMockShell();
+		shell.execFile.mockImplementation(async (_command, args) => ({
+			stdout: args[0] === "display-message" ? "/production/tmux/default\n" : "",
+			exitCode: 0,
+		}));
+		const blueprint = new Blueprint(
+			makeMockHydrator(),
+			makeMockGitChecker(),
+			() => makeMockAdapter(),
+			shell,
+			undefined,
+			undefined,
+			makeMockEvidenceCollector(),
+			undefined,
+			makeMockDecisionLayer({ route: "auto_approve" }),
+		);
+
+		try {
+			await blueprint.run(
+				{ id: "GEO-101", blockedBy: [] },
+				"/project",
+				makeContext(),
+			);
+
+			expect(shell.execFile).toHaveBeenCalledWith(
+				"tmux",
+				["display-message", "-p", "-t", "flywheel:@42", "#{socket_path}"],
+				"/",
+			);
+			expect(shell.execFile).not.toHaveBeenCalledWith(
+				"tmux",
+				["kill-window", "-t", "flywheel:@42"],
+				"/",
+			);
+		} finally {
+			fs.rmSync(isolationRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("needs_review → success=true, window preserved", async () => {

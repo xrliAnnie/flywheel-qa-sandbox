@@ -190,7 +190,8 @@ qa_slot_bridge_timeout() {
 qa_slot_bridge_validate_spec() {
 	local spec="${1:?Bridge launch spec required}" expected_slot="${2:-}"
 	local expected_repo="${3:-}" slot slot_dir secret_root owner_path cwd repo_root script session_launcher command0 assignment name upper_name seen=" "
-	local secret_name secret_path path
+	local secret_name secret_path path isolation_root isolation_contract
+	local slot_canonical isolation_root_canonical expected_contract contract_canonical
 	[[ -f "$spec" && ! -L "$spec" && "$(qa_slot_bridge_mode "$spec")" == "600" ]] || {
 		echo '[qa-slot-bridge] launch spec must be a mode-0600 regular file' >&2
 		return 64
@@ -241,6 +242,34 @@ qa_slot_bridge_validate_spec() {
 		expected_repo="$(cd "$expected_repo" && pwd -P)" || return 64
 		[[ "$repo_root" == "$expected_repo" ]] || return 64
 	fi
+	isolation_root="$(jq -er '
+		[.environment[] | select(startswith("FLYWHEEL_ISOLATION_ROOT="))]
+		| if length == 1 then .[0] | sub("^[^=]+="; "")
+		  else error("expected one isolation root") end
+	' "$spec")" || return 64
+	[[ -d "$isolation_root" && ! -L "$isolation_root" ]] || return 64
+	slot_canonical="$(cd "$slot_dir" && pwd -P)" || return 64
+	isolation_root_canonical="$(cd "$isolation_root" && pwd -P)" || return 64
+	[[ "$isolation_root_canonical" == "$slot_canonical" ]] || {
+		echo '[qa-slot-bridge] isolation root does not match authoritative slot' >&2
+		return 64
+	}
+	isolation_contract="$(jq -er '
+		[.environment[] | select(startswith("FLYWHEEL_ISOLATION_CONTRACT="))]
+		| if length == 1 then .[0] | sub("^[^=]+="; "")
+		  else error("expected one isolation contract") end
+	' "$spec")" || return 64
+	expected_contract="${repo_root}/scripts/lib/qa-slot-env-contract.json"
+	[[ -f "$isolation_contract" && ! -L "$isolation_contract" \
+		&& -f "$expected_contract" && ! -L "$expected_contract" ]] || return 64
+	contract_canonical="$(cd "$(dirname "$isolation_contract")" && pwd -P)/$(basename "$isolation_contract")" \
+		|| return 64
+	expected_contract="$(cd "$(dirname "$expected_contract")" && pwd -P)/$(basename "$expected_contract")" \
+		|| return 64
+	[[ "$contract_canonical" == "$expected_contract" ]] || {
+		echo '[qa-slot-bridge] isolation contract does not match canonical repository contract' >&2
+		return 64
+	}
 	script="$(jq -r '.scriptPath' "$spec")"
 	[[ -f "$script" && ! -L "$script" ]] || return 64
 	session_launcher="$(jq -r '.sessionLauncher' "$spec")"

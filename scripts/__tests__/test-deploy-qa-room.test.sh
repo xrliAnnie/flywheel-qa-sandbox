@@ -16,6 +16,8 @@ fail() { FAILED=$((FAILED + 1)); echo "[TEST] ✗ $1 — $2"; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib/qa-room.sh
 source "${SCRIPT_DIR}/../lib/qa-room.sh"
+# shellcheck source=../lib/qa-slot-env-contract.sh
+source "${SCRIPT_DIR}/../lib/qa-slot-env-contract.sh"
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/td-qa-room.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
@@ -123,6 +125,8 @@ fi
 # slot Bridge env. Asserted against the script SOURCE (not a mirror) so a
 # refactor that drops or conditionalizes the line fails here.
 TD_SRC="${SCRIPT_DIR}/../test-deploy.sh"
+SLOT_CONTRACT_PROJECTION="$(qa_slot_env_contract_render "$SLOT_DIR" 'test-slot-1')"
+SLOT_CONTRACT_CLEARS="$(qa_slot_env_contract_names clear)"
 OWNER_FORWARD='DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}"'
 OWNER_FORWARD_COUNT=$(grep -cF "$OWNER_FORWARD" "$TD_SRC" || true)
 if [[ "$OWNER_FORWARD_COUNT" -eq 3 ]]; then
@@ -130,8 +134,8 @@ if [[ "$OWNER_FORWARD_COUNT" -eq 3 ]]; then
 else
   fail "founder owner forwarding incomplete" "found ${OWNER_FORWARD_COUNT}/3 launch branches"
 fi
-CONSENT_AUDIT_LINE='BRIDGE_EXTRA_ENV+=("FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db")'
-if grep -qF "$CONSENT_AUDIT_LINE" "$TD_SRC"; then
+CONSENT_AUDIT_LINE="FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db"
+if grep -qxF "$CONSENT_AUDIT_LINE" <<<"$SLOT_CONTRACT_PROJECTION"; then
   pass "founder consent: every slot Bridge writes calibration evidence to its slot-local audit DB"
 else
   fail "founder consent audit isolation missing" "$CONSENT_AUDIT_LINE"
@@ -168,16 +172,17 @@ if grep -qF 'qa_launchd_lead_start' "$TD_SRC" \
 else
   fail "launchd carrier missing" "test-deploy still exposes the direct claude-lead path"
 fi
-DELIVERY_LINE='BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")'
-if grep -qF "$DELIVERY_LINE" "$TD_SRC"; then
+DELIVERY_LINE="FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret"
+if grep -qxF "$DELIVERY_LINE" <<<"$SLOT_CONTRACT_PROJECTION"; then
   pass "delivery secret: slot Bridge cannot read or rotate the resident fleet secret"
 else
   fail "delivery secret isolation missing" "$DELIVERY_LINE"
 fi
-TMUX_ROOT_LINE='BRIDGE_EXTRA_ENV+=("TMUX_TMPDIR=${SLOT_DIR}")'
-if grep -qF "$TMUX_ROOT_LINE" "$TD_SRC" \
-  && grep -qF -- '-u TMUX' "$TD_SRC" \
-  && grep -qF -- '-u FLYWHEEL_TMUX_SOCKET_OVERRIDE' "$TD_SRC"; then
+TMUX_ROOT_LINE="TMUX_TMPDIR=${SLOT_DIR}"
+if grep -qxF "$TMUX_ROOT_LINE" <<<"$SLOT_CONTRACT_PROJECTION" \
+  && grep -qxF 'TMUX' <<<"$SLOT_CONTRACT_CLEARS" \
+  && grep -qxF 'FLYWHEEL_TMUX_SOCKET_OVERRIDE' <<<"$SLOT_CONTRACT_CLEARS" \
+  && grep -qF 'BRIDGE_ENV_UNSET_ARGS+=(-u "$_qa_contract_name")' "$TD_SRC"; then
   pass "tmux socket: every slot Bridge tmux call resolves through its private native socket root"
 else
   fail "tmux socket isolation missing" "$TMUX_ROOT_LINE plus inherited TMUX/override scrubs"
@@ -185,7 +190,7 @@ fi
 TEARDOWN_SRC="${SCRIPT_DIR}/../test-teardown.sh"
 if grep -qF 'qa_launchd_stop_registry "${SLOT_DIR}/launchd-leads.json"' "$TEARDOWN_SRC" \
   && grep -qF 'local SLOT_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"' "$TEARDOWN_SRC" \
-  && grep -qF 'tmux -S "$SLOT_TMUX_SOCKET" kill-server' "$TEARDOWN_SRC"; then
+  && grep -qF '"$SLOT_TMUX_BIN" -S "$SLOT_TMUX_SOCKET" kill-server' "$TEARDOWN_SRC"; then
   pass "launchd teardown: registry bootout precedes PID/socket cleanup"
 else
   fail "launchd teardown authority missing" "test-teardown must bootout the slot registry and retire only the slot tmux socket"

@@ -41,6 +41,8 @@ BRIDGE_FIXTURE="$TMP/scripts/run-bridge.ts"
 mkdir -p "$BIN" "$TMP/scripts/lib"
 cp "$SCRIPT_DIR/test-cycle-bridge.sh" "$TMP/scripts/test-cycle-bridge.sh"
 cp "$SCRIPT_DIR/lib/qa-slot-bridge.sh" "$TMP/scripts/lib/qa-slot-bridge.sh"
+cp "$SCRIPT_DIR/lib/qa-slot-env-contract.json" \
+  "$TMP/scripts/lib/qa-slot-env-contract.json"
 
 cleanup() {
   if [[ "$BRIDGE_PID" =~ ^[1-9][0-9]*$ ]]; then
@@ -318,6 +320,8 @@ write_spec() {
         "FIXTURE_STALLED_CHILD=" + $stalledChild,
         "FIXTURE_MODE=" + $mode,
         "FIXTURE_HEALTH_STATUS=" + $health,
+        "FLYWHEEL_ISOLATION_ROOT=" + $slotDir,
+        "FLYWHEEL_ISOLATION_CONTRACT=" + $cwd + "/scripts/lib/qa-slot-env-contract.json",
         "TEAMLEAD_PORT=" + ($port|tostring)
       ],
       secretEnvironment: [], command: [$command],
@@ -962,6 +966,23 @@ n12_expect_invalid() {
 }
 chmod 644 "$SPEC"
 n12_expect_invalid "world-readable spec"
+cp "$TMP/n12-valid.json" "$SPEC"; chmod 600 "$SPEC"
+jq --arg outside "$TMP/outside-root" '
+  .environment |= map(
+    if startswith("FLYWHEEL_ISOLATION_ROOT=")
+    then "FLYWHEEL_ISOLATION_ROOT=" + $outside
+    else . end)
+' "$SPEC" > "$SPEC.tmp"; mv "$SPEC.tmp" "$SPEC"; chmod 600 "$SPEC"
+n12_expect_invalid "replayed isolation root outside the authoritative slot"
+cp "$TMP/n12-valid.json" "$SPEC"; chmod 600 "$SPEC"
+cp "$TMP/scripts/lib/qa-slot-env-contract.json" "$TMP/alternate-contract.json"
+jq --arg alternate "$TMP/alternate-contract.json" '
+  .environment |= map(
+    if startswith("FLYWHEEL_ISOLATION_CONTRACT=")
+    then "FLYWHEEL_ISOLATION_CONTRACT=" + $alternate
+    else . end)
+' "$SPEC" > "$SPEC.tmp"; mv "$SPEC.tmp" "$SPEC"; chmod 600 "$SPEC"
+n12_expect_invalid "replayed alternate isolation contract"
 cp "$TMP/n12-valid.json" "$SPEC"; chmod 600 "$SPEC"
 jq '.schemaVersion = 2' "$SPEC" > "$SPEC.tmp"; mv "$SPEC.tmp" "$SPEC"; chmod 600 "$SPEC"
 n12_expect_invalid "unknown schema"

@@ -84,9 +84,12 @@ function classify(path: string, code: string): KillPathClassification {
 	if (/[\w?.]+\.kill\([^,]+,\s*(?:0|["']0["'])\)|\bkill\s+-0\b/.test(code)) {
 		return "signal-0-probe";
 	}
+	// Signal descriptors name the operation written to the audit ledger; they
+	// do not perform that operation themselves.
+	if (/^signal:\s*["']kill-/.test(code)) return "out-of-scope";
 	// Human-reviewed exclusions inside otherwise runner-facing modules. These
-	// are bounded helper/view processes or injected test seams, not mutations of
-	// the runner daemon/window named by A3.
+	// are bounded helper/view processes, injected test seams, or logical dispatch
+	// whose production default is registered by the audited-call layer.
 	if (
 		path === "packages/claude-runner/src/wait-aware-exec.ts" ||
 		(path === "packages/claude-runner/src/codex-runner-tui-window.ts" &&
@@ -98,7 +101,9 @@ function classify(path: string, code: string): KillPathClassification {
 		path === "packages/teamlead/src/bridge/terminal-tab-reaper.ts" ||
 		path === "packages/teamlead/src/bridge/viewer-session-reaper.ts" ||
 		(path === "packages/claude-runner/src/TmuxAdapter.ts" &&
-			code.startsWith('execFileFn("tmux"'))
+			code.startsWith('execFileFn("tmux"')) ||
+		(path === "packages/edge-worker/src/worktree-process-reaper.ts" &&
+			code.startsWith("deps.kill(pid, signal"))
 	) {
 		return "out-of-scope";
 	}

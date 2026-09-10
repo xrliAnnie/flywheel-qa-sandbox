@@ -34,6 +34,10 @@ source "${SCRIPT_DIR}/lib/qa-generalized.sh"
 # shellcheck source=lib/qa-slot-bridge.sh
 source "${SCRIPT_DIR}/lib/qa-slot-bridge.sh"
 
+# FLY-2454: single-source slot environment whitelist and coordinate projection.
+# shellcheck source=lib/qa-slot-env-contract.sh
+source "${SCRIPT_DIR}/lib/qa-slot-env-contract.sh"
+
 # FLY-1663: 529 Room Leads use the same launchd-native v2 topology as the
 # target fleet, with labels and state scoped to the ephemeral QA slot.
 # shellcheck source=lib/qa-launchd-lead.sh
@@ -503,7 +507,17 @@ trap release_preflight_lock EXIT
   #    /api/runs/start spawns Runners against stale origin/main dist.
   pnpm --filter flywheel-edge-worker build || exit 13
 
-  # 4. FLY-162 QA round 1: rebuild teamlead dist too. scripts/run-bridge.ts
+  # 4. FLY-2454: the isolation bootstrap imports claude-runner dist directly,
+  #    and the rebuilt teamlead package consumes its new boundary exports.
+  #    Build and verify that dependency before compiling teamlead so a stale
+  #    local dist cannot make every 529 slot fail at boot.
+  pnpm --filter flywheel-claude-runner build || exit 17
+  grep -q 'resolveIsolationRoot' \
+    "$REPO_ROOT/packages/claude-runner/dist/isolation-boundary.js" || exit 18
+  grep -q 'isolation-boundary.js' \
+    "$REPO_ROOT/packages/claude-runner/dist/index.js" || exit 18
+
+  # 5. FLY-162 QA round 1: rebuild teamlead dist too. scripts/run-bridge.ts
   #    imports compiled artifacts from packages/teamlead/dist (route handlers,
   #    config loader, plugin). Without this rebuild, edits to tools.ts /
   #    config.ts / plugin.ts (e.g. new POST /api/chat-threads/send route) are
@@ -511,12 +525,12 @@ trap release_preflight_lock EXIT
   #    this exact trap on the first FLY-162 deploy ("404 not found" on /send).
   pnpm --filter flywheel-teamlead build || exit 15
 
-  # 5. Assert the env fallback actually landed in the built artifact. Cheaper
+  # 6. Assert the env fallback actually landed in the built artifact. Cheaper
   #    than rerunning unit tests under the lock, and it catches the case where
   #    someone forgets to rebuild after editing src.
   grep -q 'FLYWHEEL_RUNNER_START_POINT' \
     "$REPO_ROOT/packages/edge-worker/dist/WorktreeManager.js" || exit 14
-) || fail_preflight "preflight failed. Run pnpm install --frozen-lockfile, then pnpm -r build; verify better-sqlite3, config, edge-worker, teamlead, and dist freshness."
+) || fail_preflight "preflight failed. Run pnpm install --frozen-lockfile, then pnpm -r build; verify better-sqlite3, config, edge-worker, claude-runner, teamlead, and dist freshness."
 
 release_preflight_lock
 trap - EXIT
@@ -786,23 +800,43 @@ fi
 
 # ── Create temp directories ───────────────────────────
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
+TEST_PROJECT_NAME="test-slot-${SLOT}"
 BRIDGE_LAUNCH_SPEC="${SLOT_DIR}/bridge-launch.json"
 LEAD_EXTRA_ENV=()
 BRIDGE_EXTRA_ENV=()
 BRIDGE_ENV_UNSET_ARGS=()
 BRIDGE_EXPLICIT_CALLER_ENV=()
+UNCLASSIFIED_COORDINATES_CLEARED=()
 GENERALIZED_ENV_UNSET_ARGS=()
 REPORT_HOST_WRAPPER_ARGS=()
 # Preserve ordinary caller compatibility while removing every exported
 # identity/state coordinate before the Bridge launch environment is rebuilt.
-# GitHub CLI credentials are the two intentional token-name exceptions.
+# Every coordinate family member is either classified by the explicit contract
+# or recorded as an unknown value that was cleared fail-closed.
+QA_SLOT_CONTRACT_NAMES=" "
+QA_SLOT_CONTRACT_PASSTHROUGH=" "
+for _qa_disposition in redirect clear passthrough; do
+  while IFS= read -r _qa_contract_name; do
+    [[ -n "$_qa_contract_name" ]] || continue
+    QA_SLOT_CONTRACT_NAMES+="${_qa_contract_name} "
+    if [[ "$_qa_disposition" == passthrough ]]; then
+      QA_SLOT_CONTRACT_PASSTHROUGH+="${_qa_contract_name} "
+    else
+      BRIDGE_ENV_UNSET_ARGS+=(-u "$_qa_contract_name")
+    fi
+  done < <(qa_slot_env_contract_names "$_qa_disposition")
+done
 while IFS='=' read -r BRIDGE_ENV_NAME _bridge_env_value; do
   [[ "$BRIDGE_ENV_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
   case "$BRIDGE_ENV_NAME" in
-    GH_TOKEN|GITHUB_TOKEN)
-      ;;
-    FLYWHEEL_*|DELIVERY_*|*_DB|*_DIR|*_TOKEN|CODEX_HOME)
-      BRIDGE_ENV_UNSET_ARGS+=(-u "$BRIDGE_ENV_NAME")
+    FLYWHEEL_*|TEAMLEAD_*|DELIVERY_*|*_DB|*_DIR|*_ROOT|*_TOKEN|CODEX_HOME|TMUX|TMUX_PANE|TMUX_TMPDIR|TMPDIR)
+      if [[ "$QA_SLOT_CONTRACT_PASSTHROUGH" == *" ${BRIDGE_ENV_NAME} "* ]]; then
+        continue
+      fi
+      if [[ "$QA_SLOT_CONTRACT_NAMES" != *" ${BRIDGE_ENV_NAME} "* ]]; then
+        BRIDGE_ENV_UNSET_ARGS+=(-u "$BRIDGE_ENV_NAME")
+        UNCLASSIFIED_COORDINATES_CLEARED+=("$BRIDGE_ENV_NAME")
+      fi
       ;;
   esac
 done < <(env)
@@ -832,8 +866,9 @@ REPORT_HOST_DIR_CANONICAL=$(cd "$REPORT_HOST_DIR" && pwd -P)
 chmod 700 "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state" \
   "${SLOT_DIR}/state/reports" "${SLOT_DIR}/state/report-host" \
   "${SLOT_DIR}/state/codex-home"
-BRIDGE_EXTRA_ENV+=("TMPDIR=${GENERALIZED_CHILD_TMPDIR}")
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_REPORTS_DIR=${SLOT_DIR}/state/reports")
+while IFS= read -r _qa_slot_assignment; do
+  [[ -n "$_qa_slot_assignment" ]] && BRIDGE_EXTRA_ENV+=("$_qa_slot_assignment")
+done < <(qa_slot_env_contract_render "$SLOT_DIR" "$TEST_PROJECT_NAME")
 LEAD_EXTRA_ENV+=("FLYWHEEL_REPORTS_DIR=${SLOT_DIR}/state/reports")
 QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
 # FLY-2030: canonical identity compilation requires the founder-selected
@@ -892,30 +927,22 @@ fi
 # or leave test markers for the production Bridge.
 COMPLETE_MARKER_DIR="${SLOT_DIR}/state/complete-failed"
 LEAD_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_LOOP_DIAGNOSTICS_DIR=${SLOT_DIR}/state/loop-diagnostics")
 # FLY-1726: a failed canonical-identity assertion must stay inside the QA
 # slot, never write a diagnostic into the resident fleet's state directory.
 LEAD_EXTRA_ENV+=("FLYWHEEL_IDENTITY_FAILURE_DIR=${SLOT_DIR}/state/lead-identity-failures")
 # FLY-1663 QA must never read, create, or rotate the resident Bridge secret.
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")
 # FLY-2174: the Bridge's Codex orphan reaper combines its StateStore runway
 # with the daemon homes/session/socket inventories named by these coordinates.
 # A slot-local DB cannot authorize mutations against the resident fleet's
 # default ~/.flywheel inventories: every production execution would look
 # inactive to the slot and old reparented app-servers would be signaled. Bind
 # all three destructive identity axes to one slot tree for every Bridge mode.
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOMES_ROOT=${SLOT_DIR}/state/codex-homes")
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_SESSION_DIR=${SLOT_DIR}/state/codex-sessions")
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT=${SLOT_DIR}/state/cdx-sock")
 # FLY-1999: native tmux routing keeps every unqualified Bridge/adapter/reaper
 # call on the slot server. The launch boundary below also removes inherited
 # TMUX and the explicit override so no call can resolve back to another server.
-BRIDGE_EXTRA_ENV+=("TMUX_TMPDIR=${SLOT_DIR}")
 # FLY-1981: consent policy is permanently audit-only, so every QA Bridge opens
 # an audit store. Keep synthetic slot decisions out of the resident calibration
 # ledger even when alerts/roundtable mode is disabled.
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db")
 if [[ "$GENERALIZED" == "1" ]]; then
   BRIDGE_EXTRA_ENV+=("BRIDGE_DEPT_SCOPE_REJECT=${TEST_BRIDGE_DEPT_SCOPE_REJECT:-off}")
   # launchd manifests are explicit env maps rather than `env -u`; empty values
@@ -1106,11 +1133,6 @@ git -C "${HOST_REPO}" checkout -B "$QA_TEMP_BRANCH" "$RUNNER_START_REF"
 # Record the SHA under test for downstream verification
 BRANCH_SHA="$(git -C "${HOST_REPO}" rev-parse HEAD)"
 log "Sandbox HEAD for ${FROM_BRANCH}: ${BRANCH_SHA}"
-
-# Project identifier — referenced by .flywheel/config.yaml below and by the
-# FLYWHEEL_PROJECTS jq builder later. Defined early (was only set right
-# before jq build) so the v1.24.3 sandbox config write can reuse it.
-TEST_PROJECT_NAME="test-slot-${SLOT}"
 
 # ── FLY-115 v1.24.3 Gap 2 fix: write .flywheel/config.yaml ─────────
 # Root cause (Round 3 §S6, sandbox): `xrliAnnie/flywheel-qa-sandbox` has no
@@ -1526,6 +1548,8 @@ qa_slot_start_lead() {
     "TEAMLEAD_API_TOKEN=${TEST_TEAMLEAD_API_TOKEN}"
     "FLYWHEEL_PROJECTS_FILE=${projects}"
     "TEAMLEAD_DB_PATH=${SLOT_DIR}/teamlead.db"
+    "FLYWHEEL_COMM_DB=${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}/comm.db"
+    "FLYWHEEL_COMM_ROOT=${SLOT_DIR}/state/comm"
     "FLYWHEEL_STATE_DIR=${state}"
     "FLYWHEEL_WRAPPER_ENV_FILE=${env_file}"
     "FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret"
@@ -1533,6 +1557,9 @@ qa_slot_start_lead() {
   )
   local codex_assignments=() env_assignments=()
   base_assignments+=("$@")
+  mkdir -p "${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}" || return 1
+  chmod 700 "${SLOT_DIR}/state/comm" \
+    "${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}" || return 1
 
   # Resolve and validate the carrier before creating any per-Lead artifact.
   lead_row=$(jq -cer --arg agent "$agent" \
@@ -1562,7 +1589,6 @@ qa_slot_start_lead() {
     codex_comm_db="${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}/comm.db"
     codex_assignments=(
       "FLYWHEEL_LEAD_CHAT_CHANNEL_ID=${lead_chat_channel}"
-      "FLYWHEEL_COMM_DB=${codex_comm_db}"
       "FLYWHEEL_COMM_CLI=${REPO_ROOT}/packages/flywheel-comm/dist/index.js"
       "CODEX_HOME=${codex_home}"
       "FLYWHEEL_CODEX_BIN=${codex_bin}"
@@ -1733,7 +1759,7 @@ fi
 # ── Step 2: Wait for Lead inbox-ready lease ───────────
 # FLY-1389 P2-a: budget is LEAD_READY_TIMEOUT_SEC (default 120s; flag/env
 # knob resolved before preflight) — 2s poll → LEAD_READY_POLL_ITERS.
-LEASE_DIR="${HOME}/.flywheel/comm/${TEST_PROJECT_NAME}"
+LEASE_DIR="${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}"
 LEAD_READY=false
 if [[ "$SLOT_BACKEND" == codex-app-server ]]; then
   LEAD_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"
@@ -1977,11 +2003,8 @@ if jq -e 'length > 0' <<<"$CODEX_LEAD_STATE_DIRS" >/dev/null; then
 fi
 BRIDGE_EXTRA_ENV+=("DISCORD_GUILD_ID=${GUILD_ID}")
 BRIDGE_EXTRA_ENV+=("TEAMLEAD_ISSUE_PREFIXES=${TEAMLEAD_ISSUE_PREFIXES:-FLY,GEO}")
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_COMM_DB=${HOME}/.flywheel/comm/${TEST_PROJECT_NAME}/comm.db")
-BRIDGE_EXTRA_ENV+=("CODEX_HOME=${SLOT_DIR}/state/codex-home")
 BRIDGE_EXTRA_ENV+=(${BRIDGE_EXPLICIT_CALLER_ENV[@]+"${BRIDGE_EXPLICIT_CALLER_ENV[@]}"})
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_LINEAR_STARTED_SYNC=0")
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")
 
 # ── Step 3: Start test Bridge (file-backed DB, real-Runner env) ──
 # FLY-115 §4.5: file-backed teamlead.db so FLY-108 S4 chain is visible
@@ -2041,11 +2064,6 @@ if [[ "$GENERALIZED" == "1" ]]; then
     ${BRIDGE_ENV_UNSET_ARGS[@]+"${BRIDGE_ENV_UNSET_ARGS[@]}"} \
     ${GENERALIZED_ENV_UNSET_ARGS[@]+"${GENERALIZED_ENV_UNSET_ARGS[@]}"} \
     -u TEAMLEAD_INGEST_TOKEN \
-    -u TMUX \
-    -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
-    -u FLYWHEEL_QA_NODE \
-    -u VERCEL_TOKEN \
-    -u FLYWHEEL_REPORT_HOST_OVERRIDE_URL \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
     -u TEAMLEAD_CHAT_THREADS_ENABLED \
@@ -2054,15 +2072,12 @@ if [[ "$GENERALIZED" == "1" ]]; then
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
     DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
     "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
-    TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
     FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
-    FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
-    FLYWHEEL_HOOKS_DIR="${SLOT_DIR}/hooks" \
     TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
     TEAMLEAD_INGEST_TOKEN="${TEST_TEAMLEAD_INGEST_TOKEN}" \
     ${GENERALIZED_REPLY_ENV[@]+"${GENERALIZED_REPLY_ENV[@]}"} \
@@ -2085,25 +2100,17 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   env \
     ${BRIDGE_ENV_UNSET_ARGS[@]+"${BRIDGE_ENV_UNSET_ARGS[@]}"} \
     -u TEAMLEAD_INGEST_TOKEN \
-    -u TMUX \
-    -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
-    -u FLYWHEEL_QA_NODE \
-    -u VERCEL_TOKEN \
-    -u FLYWHEEL_REPORT_HOST_OVERRIDE_URL \
     TEAMLEAD_PORT="${SLOT_PORT}" \
     TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
     DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
     "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
-    TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
     FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
-    FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
-    FLYWHEEL_HOOKS_DIR="${SLOT_DIR}/hooks" \
     TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
     TEAMLEAD_CHAT_THREADS_ENABLED=true \
     TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true \
@@ -2132,11 +2139,6 @@ else
     ${BRIDGE_ENV_UNSET_ARGS[@]+"${BRIDGE_ENV_UNSET_ARGS[@]}"} \
     -u TEAMLEAD_API_TOKEN \
     -u TEAMLEAD_INGEST_TOKEN \
-    -u TMUX \
-    -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
-    -u FLYWHEEL_QA_NODE \
-    -u VERCEL_TOKEN \
-    -u FLYWHEEL_REPORT_HOST_OVERRIDE_URL \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
     -u TEAMLEAD_CHAT_THREADS_ENABLED \
@@ -2145,15 +2147,12 @@ else
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
     DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
     "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
-    TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
     FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
-    FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
-    FLYWHEEL_HOOKS_DIR="${SLOT_DIR}/hooks" \
     ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
     "$QA_SLOT_BRIDGE_NODE" "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" capture \
       --spec "$BRIDGE_LAUNCH_SPEC" --slot "$SLOT" --port "$SLOT_PORT" \
@@ -2322,10 +2321,14 @@ elif [[ "$SLOT_BACKEND" == codex-app-server ]]; then
 else
   LEAD_CARRIER="launchd-v2"
 fi
+UNCLASSIFIED_COORDINATES_CLEARED_JSON=$(printf '%s\n' \
+  ${UNCLASSIFIED_COORDINATES_CLEARED[@]+"${UNCLASSIFIED_COORDINATES_CLEARED[@]}"} \
+  | jq -Rsc 'split("\n") | map(select(length > 0)) | unique')
 qa_lead_write_launch_manifest "${SLOT_DIR}/launch-manifest.json" \
   "$BRIDGE_PID" "$BRANCH_SHA" "$FROM_BRANCH" "$MODE" \
   "${CAMPAIGN_ID}" "${LEAD_LABEL}" "$EXTRA_LEADS_JSON" "$LEAD_CARRIER" \
-  "$QA_LEAD_REGISTRY" "$LEAD_LAUNCHD_LABEL" "$LEAD_SOCKET" "$CODEX_LEAD_JSON"
+  "$QA_LEAD_REGISTRY" "$LEAD_LAUNCHD_LABEL" "$LEAD_SOCKET" "$CODEX_LEAD_JSON" \
+  "$UNCLASSIFIED_COORDINATES_CLEARED_JSON"
 log "Wrote ${SLOT_DIR}/launch-manifest.json"
 
 # ── Step 5: Record PIDs ──────────────────────────────

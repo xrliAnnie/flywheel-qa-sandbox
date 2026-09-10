@@ -266,3 +266,53 @@ report host 的生命期等于 Bridge：`test-cycle-bridge.sh 2` 会停止旧 ho
 可以继续：`room-info.json` 已发布；5/5 flag、5/5 binding、strict config、menu、双 SHA 全绿；driver 每个 step 文件都带同一 `runId`。
 
 必须停手：active run 没有上一轮 `owner.json`；已证明 execution 从 run 记录消失；tmux/process liveness 为 unknown；launch owner 仍在 lease / 10 分钟 absolute horizon；PR marker、repo、branch 或 expected head 不符；QA authority preflight 缺项；`room-info.buildSha` 与被测 checkout 当前 HEAD 不同。最后一种要按新 HEAD 用 `--expect-head` 重新装房，不能在旧房继续。遇到这些情况不要手工 INSERT、不要直接删 branch、不要补发 QA PASS。
+
+## 7. 隔离契约与真机零伤害验证
+
+529 房的 Bridge 环境以
+[`scripts/lib/qa-slot-env-contract.json`](../../../scripts/lib/qa-slot-env-contract.json)
+为唯一处置清单。`test-deploy.sh` 先按该文件清除 caller env 中的危险坐标，
+再从 `SLOT_DIR` 写入 `FLYWHEEL_ISOLATION_ROOT` 及各个 slot-local 路径；不要在
+driver 里另抄一份 allow/deny 名单。`FLYWHEEL_ISOLATION_ROOT` 一旦存在就是硬边界，
+不是 feature flag。Bridge boot 会在任何有副作用的 import 之前验证：根必须是
+真实、绝对、非 symlink 的目录，所有 `mustBeUnderRoot` 坐标必须归属于它，
+`mustBeAbsent` 坐标必须为空。验证失败以 exit `78` 拒绝启动；不要绕过或重试成
+production 坐标。
+
+启动围栏验证的是契约中的环境坐标，不证明所有宿主文件写入都已隔离。
+契约 `FLYWHEEL_STATE_DIR.unconfinedConsumers` 明确记录例外：
+`run-dispatcher.launchCommitPath` 与 `WorkflowEngineDispatcher.stateRoot` 仍将
+launch-commit 记录写入 `$HOME/.flywheel/state/launch-commits/<executionId>`，
+不遵循 slot 的 `FLYWHEEL_STATE_DIR`。Lead 裁定本轮只披露该未隔离坐标，不重构
+launch-commit 路径；QA 不应把 boot PASS 表述为全部 state 写入均在 slot 内。
+
+运行期拒绝有两份互补证据：`${SLOT_DIR}/state/kill-ledger/*.ndjson` 的
+`refusal: "isolation_boundary"` 是实际破坏性原语的权威记录；slot
+`teamlead.db` 中 `event_type = 'isolation_boundary_refused'` 是供 Bridge/Lead
+观察的附加事件。排障时同时看 `boundary`、`isolationRoot`、`refusalReason` 与
+目标字段；看到拒绝意味着动作没有执行，不能把它当成“清扫已完成”。
+
+真机零伤害验证必须用同一个 checkout 的快照脚本，在动作前后各写一次：
+
+```bash
+scripts/qa-fly-2454-fleet-snapshot.sh --out /tmp/fly2454-before.txt
+# 起 529 房，创建并确认生产默认 tmux 的 fly2454-decoy 窗口，执行 slot terminate，
+# 等至少两个 maintenance tick，再用 scripts/test-teardown.sh 拆房。
+scripts/qa-fly-2454-fleet-snapshot.sh --out /tmp/fly2454-after.txt
+diff -u /tmp/fly2454-before.txt /tmp/fly2454-after.txt
+```
+
+快照的 `[codex-app-servers]` 只列排序后的 app-server Unix socket；
+`[tmux-windows]` 列排序后的 `session|window_id|window_name`。通过判据是 `diff`
+完全为空且 `fly2454-decoy` 在前后两份里都存在。若 production runner 在窗口期
+自然完成，必须用 production StateStore 事件逐项解释差异，同时确认 slot ledger
+没有对应目标；不能直接把非空 diff 判绿。
+
+拆房在停 Bridge 后、删除 slot 前，把 kill ledger、筛选后的
+`boundary-events.json` 与 `launch-manifest.json` best-effort 归档到
+`${FLYWHEEL_QA_EVID_DIR:-$HOME/.flywheel/qa-evidence}/slot-<N>/<UTC-ts>/`。
+归档失败只告警，不阻断房间回收；报告里仍要明确证据缺口。
+
+FLY-2352 的 restart/reown 演练以本节为硬前置：先独立完成一次
+“快照 → 起房/动作 → 拆房 → 快照”，证明 diff 为空并核对归档，再开始 2352
+演练。该前置只证明 529 房不会伤生产，不代替 FLY-2352 自身验收。

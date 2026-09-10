@@ -8,8 +8,7 @@
  * Lease is written AFTER server.connect() so Bridge never sees a "ready"
  * signal while the MCP transport is still half-wired.
  */
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CommDB } from "flywheel-comm/db";
@@ -18,16 +17,22 @@ import {
 	deleteLease as deleteChannelLease,
 	writeLease as writeChannelLease,
 } from "./channel-lease.js";
+import { resolveInboxCommCoordinates } from "./comm-db-path.js";
 import { handleBatchAck, handleEventAck } from "./delivery.js";
 
 // ── Required env vars (injected by claude-lead.sh) ──
 
-const commDbPath = process.env.FLYWHEEL_COMM_DB;
 const leadId = process.env.FLYWHEEL_LEAD_ID;
 const projectName = process.env.FLYWHEEL_PROJECT_NAME;
+let commDbPath: string;
+let leaseDir: string;
 
-if (!commDbPath) {
-	process.stderr.write("FLYWHEEL_COMM_DB is required\n");
+try {
+	({ commDbPath, leaseDir } = resolveInboxCommCoordinates(process.env));
+} catch (error) {
+	process.stderr.write(
+		`${error instanceof Error ? error.message : String(error)}\n`,
+	);
 	process.exit(1);
 }
 if (!leadId) {
@@ -37,9 +42,6 @@ if (!leadId) {
 
 // ── Lease file path ──
 
-const leaseDir = projectName
-	? join(homedir(), ".flywheel", "comm", projectName)
-	: dirname(commDbPath);
 const leasePath = join(leaseDir, `.inbox-ready-${leadId}`);
 
 // ── DB ──
@@ -48,7 +50,7 @@ let commDb: CommDB;
 
 function openDb(): void {
 	// CommDB constructor creates the DB + schema if missing, sets WAL + busy_timeout
-	commDb = new CommDB(commDbPath!);
+	commDb = new CommDB(commDbPath);
 }
 
 // ── Lease management ──

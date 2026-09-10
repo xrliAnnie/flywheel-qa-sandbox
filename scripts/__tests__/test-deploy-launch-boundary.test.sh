@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEPLOY="${DEPLOY_UNDER_TEST:-$ROOT/scripts/test-deploy.sh}"
 GENERALIZED="$ROOT/scripts/lib/qa-generalized.sh"
+CONTRACT="$ROOT/scripts/lib/qa-slot-env-contract.json"
 TEARDOWN="$ROOT/scripts/test-teardown.sh"
 PLAYBOOK="$ROOT/doc/qa/framework/529-room-playbook.md"
 
@@ -30,37 +31,41 @@ pass "retired TMPDIR fallback is replaced by one slot-local helper"
 
 [[ "$(count 'qa-slot-bridge-spec\.mjs" capture' "$DEPLOY")" == "3" ]] \
 	|| fail "expected exactly three Bridge launch-spec captures"
-[[ "$(count '-u VERCEL_TOKEN' "$DEPLOY")" == "3" ]] \
-	|| fail "every Bridge launch boundary must scrub inherited VERCEL_TOKEN"
-[[ "$(count '-u FLYWHEEL_REPORT_HOST_OVERRIDE_URL' "$DEPLOY")" == "3" ]] \
-	|| fail "every Bridge launch boundary must scrub inherited report-host overrides"
 [[ "$(count 'REPORT_HOST_WRAPPER_ARGS\[@\]' "$DEPLOY")" == "3" ]] \
 	|| fail "every captured command must inject the optional report-host wrapper"
-pass "all three Bridge launch boundaries scrub and inject exactly once"
+pass "all three Bridge launch boundaries inject the optional wrapper exactly once"
 
 bridge_launch_block="$(sed -n \
 	'/^if \[\[ "$GENERALIZED" == "1" \]\]; then$/,/^: > "${SLOT_DIR}\/bridge.log"$/p' \
 	"$DEPLOY")"
 [[ "$(rg -F -c 'BRIDGE_ENV_UNSET_ARGS[@]' <<<"$bridge_launch_block" || true)" == "3" ]] \
 	|| fail "all three Bridge launch branches must consume the shared dynamic deny arguments"
-[[ "$(exact_count '    GH_TOKEN|GITHUB_TOKEN)' "$DEPLOY")" == "1" ]] \
-	|| fail "dynamic deny must retain only the two named GitHub token exceptions"
-[[ "$(exact_count '    FLYWHEEL_*|DELIVERY_*|*_DB|*_DIR|*_TOKEN|CODEX_HOME)' "$DEPLOY")" == "1" ]] \
-	|| fail "dynamic deny must cover the approved identity and state name families"
+[[ "$(exact_count '    FLYWHEEL_*|TEAMLEAD_*|DELIVERY_*|*_DB|*_DIR|*_ROOT|*_TOKEN|CODEX_HOME|TMUX|TMUX_PANE|TMUX_TMPDIR|TMPDIR)' "$DEPLOY")" == "1" ]] \
+	|| fail "dynamic deny must cover the complete coordinate family"
 [[ "$(exact_count '  BRIDGE_ENV_UNSET_ARGS+=(-u FLY1389_ENV_DUMP_NODE)' "$DEPLOY")" == "1" \
 	&& "$(exact_count '  BRIDGE_EXPLICIT_CALLER_ENV+=("FLY1389_ENV_DUMP_NODE=${FLY1389_ENV_DUMP_NODE}")' "$DEPLOY")" == "1" ]] \
 	|| fail "fixture Node control must be unset and then explicitly restored by name"
-for slot_assignment in \
-	'BRIDGE_EXTRA_ENV+=("DISCORD_GUILD_ID=${GUILD_ID}")' \
-	'BRIDGE_EXTRA_ENV+=("TEAMLEAD_ISSUE_PREFIXES=${TEAMLEAD_ISSUE_PREFIXES:-FLY,GEO}")' \
-	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_COMM_DB=${HOME}/.flywheel/comm/${TEST_PROJECT_NAME}/comm.db")' \
-	'BRIDGE_EXTRA_ENV+=("CODEX_HOME=${SLOT_DIR}/state/codex-home")' \
-	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")'
-do
-	[[ "$(exact_count "$slot_assignment" "$DEPLOY")" == "1" ]] \
-		|| fail "Bridge common environment must assemble exactly once: $slot_assignment"
+[[ "$(count '^source .*qa-slot-env-contract\.sh' "$DEPLOY")" == "1" \
+	&& "$(count 'qa_slot_env_contract_render ' "$DEPLOY")" == "1" ]] \
+	|| fail "Bridge coordinates must be rendered once from the shared contract"
+for name in $(jq -r '.[] | select(.disposition == "redirect") | .name' "$CONTRACT"); do
+	[[ "$(count "BRIDGE_EXTRA_ENV\+=\(\"${name}=" "$DEPLOY")" == "0" ]] \
+		|| fail "inline Bridge coordinate remains outside contract: $name"
 done
-pass "all three Bridge launches share one validated deny boundary and one slot coordinate projection"
+[[ "$(count 'FLYWHEEL_COMM_DB=\$\{HOME\}/\.flywheel/comm' "$DEPLOY")" == "0" ]] \
+	|| fail "Bridge must not inherit or synthesize the production CommDB path"
+pass "all three Bridge launches share one contract-rendered coordinate projection"
+
+claude_runner_build_line="$(line 'pnpm --filter flywheel-claude-runner build' "$DEPLOY")"
+teamlead_build_line="$(line 'pnpm --filter flywheel-teamlead build' "$DEPLOY")"
+boundary_freshness_line="$(line "packages/claude-runner/dist/isolation-boundary\\.js" "$DEPLOY")"
+boundary_export_line="$(line "packages/claude-runner/dist/index\\.js" "$DEPLOY")"
+[[ "$claude_runner_build_line" -lt "$teamlead_build_line" \
+	&& "$claude_runner_build_line" -lt "$boundary_freshness_line" \
+	&& "$boundary_freshness_line" -lt "$teamlead_build_line" \
+	&& "$boundary_export_line" -lt "$teamlead_build_line" ]] \
+	|| fail "preflight must build and verify claude-runner isolation exports before teamlead"
+pass "preflight builds and verifies the claude-runner isolation dependency"
 
 slot_line="$(line '^SLOT_DIR=' "$DEPLOY")"
 node_line="$(line '^QA_SLOT_BRIDGE_NODE=' "$DEPLOY")"

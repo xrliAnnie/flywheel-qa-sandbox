@@ -38,6 +38,7 @@ import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stripInheritedSecretEnv, stripSecretEnv } from "./codex-home.js";
+import type { BoundaryEvidence } from "./isolation-boundary.js";
 import {
 	type AuditedSignalDeps,
 	type AuditedSignalInput,
@@ -247,11 +248,21 @@ export async function reapCodexDaemonForExecution(
 		};
 	}
 	const processGroupOf = deps.processGroupOf ?? defaultProcessGroupOf;
+	const env = deps.env ?? process.env;
 	const killGroup =
 		deps.killGroup ??
 		createDefaultKillGroup({
 			processGroupOf,
 			logger: deps.logger,
+			env,
+			execId: executionId,
+			boundary: {
+				socketPath: initial.socketPath,
+				ledgerPath: join(
+					codexSessionStateDir(executionId, env),
+					"session.json",
+				),
+			},
 		});
 	const now = deps.now ?? Date.now;
 	const sleep =
@@ -600,6 +611,18 @@ export async function spawnCodexDaemon(
 	const killPid = opts.killPid ?? ((pid, sig) => process.kill(pid, sig));
 	const socketHolderPids = opts.socketHolderPids ?? defaultSocketHolderPids;
 	const processGroupOf = opts.processGroupOf ?? defaultProcessGroupOf;
+	const runtimeEnv = opts.env ?? process.env;
+	const boundary: BoundaryEvidence = {
+		socketPath: opts.socketPath,
+		...(opts.executionId
+			? {
+					ledgerPath: join(
+						codexSessionStateDir(opts.executionId, runtimeEnv),
+						"session.json",
+					),
+				}
+			: {}),
+	};
 	// QA · FLY-1188 HIGH-2: a real `kill(-pgid)` is only ever reachable for a
 	// daemon we really spawned. With an injected (fake) spawnFn and no injected
 	// killGroup there is NO group to signal — a made-up pid must never be able to
@@ -610,6 +633,8 @@ export async function spawnCodexDaemon(
 				processGroupOf,
 				logger: log,
 				execId: opts.executionId,
+				env: runtimeEnv,
+				boundary,
 			});
 	const killGroup = opts.killGroup ?? defaultKillGroup;
 	const timeoutMs = opts.socketWaitTimeoutMs ?? 30_000;
@@ -807,8 +832,10 @@ export async function spawnCodexDaemon(
 						target: pid,
 						...(opts.executionId ? { execId: opts.executionId } : {}),
 						reason: "daemon_child_signal_fallback",
+						boundary,
 					},
 					{
+						env: runtimeEnv,
 						mutate: () => {
 							if (!child.kill(signal)) {
 								throw new Error("child signal returned false");
@@ -1007,11 +1034,12 @@ export function createDefaultKillGroup(options: {
 	source?: string;
 	execId?: string;
 	reason?: string;
+	env?: NodeJS.ProcessEnv;
+	boundary?: BoundaryEvidence;
 }): (pgid: number, signal: NodeJS.Signals) => boolean {
 	const pid = options.pid ?? process.pid;
 	const ppid = options.ppid ?? process.ppid;
-	const kill =
-		options.kill ?? ((target, signal) => process.kill(target, signal));
+	const kill = options.kill;
 	const logger = options.logger ?? (() => {});
 	const auditSignal = options.auditSignal ?? auditedSignal;
 	let ownPgidResolved = false;
@@ -1042,13 +1070,16 @@ export function createDefaultKillGroup(options: {
 				target: pgid,
 				...(options.execId ? { execId: options.execId } : {}),
 				reason: options.reason ?? "daemon_group_signal",
+				boundary: options.boundary,
 			},
 			{
+				env: options.env,
 				mutate: (target, auditedSignalName) => {
 					if (typeof target !== "number") {
 						throw new Error("codex daemon group target must be numeric");
 					}
-					kill(target, auditedSignalName as NodeJS.Signals);
+					if (kill) kill(target, auditedSignalName as NodeJS.Signals);
+					else process.kill(target, auditedSignalName as NodeJS.Signals);
 				},
 			},
 		);

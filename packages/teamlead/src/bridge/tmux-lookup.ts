@@ -17,6 +17,7 @@ import {
 	type AuditedSignalInput,
 	type AuditedSignalResult,
 	auditedSignalAsync,
+	resolveIsolationRoot,
 } from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
 import { commDbPathForProject } from "./commdb-path.js";
@@ -546,6 +547,7 @@ export async function cleanupExactWorkflowTmuxWindow(
 		input: AuditedSignalInput,
 		deps?: AuditedSignalAsyncDeps,
 	) => Promise<AuditedSignalResult> = auditedSignalAsync,
+	env: NodeJS.ProcessEnv = process.env,
 ): Promise<WorkflowTmuxWindowCleanupResult> {
 	if (
 		!identity.socketPath ||
@@ -553,6 +555,7 @@ export async function cleanupExactWorkflowTmuxWindow(
 		!/^[0-9]+$/.test(identity.serverStartTime) ||
 		!/^@\d+$/.test(identity.windowId) ||
 		!identity.executionId ||
+		identity.executionId.includes(TMUX_IDENTITY_SEPARATOR) ||
 		/[\t\r\n]/.test(identity.executionId) ||
 		!Number.isInteger(identity.launchGeneration) ||
 		identity.launchGeneration < 1 ||
@@ -591,12 +594,12 @@ export async function cleanupExactWorkflowTmuxWindow(
 		"-p",
 		"-t",
 		identity.windowId,
-		"#{window_id}\t#{@flywheel_exec_id}\t#{@flywheel_launch_generation}\t#{@flywheel_launch_fingerprint}",
+		"#{window_id}|#{@flywheel_exec_id}|#{@flywheel_launch_generation}|#{@flywheel_launch_fingerprint}",
 	];
 	const before = await run(inspectArgs);
 	if (!before.ok) return before.absent ? "absent" : "unknown";
 	const [windowId, executionId, rawGeneration, fingerprint, ...extra] =
-		before.stdout.trim().split("\t");
+		before.stdout.trim().split(TMUX_IDENTITY_SEPARATOR);
 	if (
 		extra.length > 0 ||
 		windowId !== identity.windowId ||
@@ -607,13 +610,6 @@ export async function cleanupExactWorkflowTmuxWindow(
 		return "present";
 	}
 
-	const killArgs = [
-		"-S",
-		identity.socketPath,
-		"kill-window",
-		"-t",
-		identity.windowId,
-	];
 	const killed = await auditSignal(
 		{
 			source: "tmux_lookup_workflow_cleanup",
@@ -622,10 +618,18 @@ export async function cleanupExactWorkflowTmuxWindow(
 			target: `${identity.socketPath}:${identity.windowId}`,
 			execId: identity.executionId,
 			reason: "uncommitted_workflow_window_cleanup",
+			boundary: { tmuxSocketPath: identity.socketPath },
 		},
 		{
+			env,
 			mutate: async () => {
-				await runTmux(killArgs);
+				await runTmux([
+					"-S",
+					identity.socketPath,
+					"kill-window",
+					"-t",
+					identity.windowId,
+				]);
 			},
 		},
 	);
@@ -637,7 +641,27 @@ export async function cleanupExactWorkflowTmuxWindow(
 	}
 	const after = await run(inspectArgs);
 	if (!after.ok) return after.absent ? "cleaned" : "unknown";
-	return "present";
+	// tmux may exit zero with empty output or silently fall back to another
+	// current window after the exact @window id was removed. Neither response
+	// proves the target's state, so compare the persisted/emitted @window id
+	// against a same-socket census before claiming cleanup.
+	const census = await run([
+		"-S",
+		identity.socketPath,
+		"list-windows",
+		"-a",
+		"-F",
+		"#{window_id}",
+	]);
+	if (!census.ok) return census.absent ? "cleaned" : "unknown";
+	const windowIds = census.stdout
+		.split("\n")
+		.map((value) => value.trim())
+		.filter(Boolean);
+	if (windowIds.length === 0 || windowIds.some((id) => !/^@\d+$/.test(id))) {
+		return "unknown";
+	}
+	return windowIds.includes(identity.windowId) ? "present" : "cleaned";
 }
 
 /**
@@ -960,12 +984,37 @@ export async function killTmuxWindow(
 			deps?: AuditedSignalAsyncDeps,
 		) => Promise<AuditedSignalResult>;
 		exec?: () => Promise<void>;
+		runTmux?: TmuxRunner;
+		env?: NodeJS.ProcessEnv;
 	} = {},
 ): Promise<{ killed: boolean; error?: string }> {
 	if (tmuxWindow.endsWith(":pending")) {
 		return { killed: false, error: "tmux window identity is still pending" };
 	}
 	const auditSignal = deps.auditSignal ?? auditedSignalAsync;
+	const env = deps.env ?? process.env;
+	const isolationRoot = resolveIsolationRoot(env);
+	let boundary: AuditedSignalInput["boundary"];
+	if (isolationRoot !== null) {
+		try {
+			const runTmux =
+				deps.runTmux ??
+				((args: string[]) =>
+					execFileAsync("tmux", args, { timeout: TMUX_TIMEOUT, env }));
+			const { stdout } = await runTmux([
+				"display-message",
+				"-p",
+				"-t",
+				tmuxWindow,
+				"#{socket_path}",
+			]);
+			const tmuxSocketPath = stdout.trim();
+			if (tmuxSocketPath) boundary = { tmuxSocketPath };
+		} catch {
+			// Missing ownership evidence is deliberately handed to the central guard,
+			// which records a durable no_evidence refusal before any mutation.
+		}
+	}
 	const result = await auditSignal(
 		{
 			source: "tmux_lookup",
@@ -973,12 +1022,15 @@ export async function killTmuxWindow(
 			targetKind: "tmux-window",
 			target: tmuxWindow,
 			reason: "runner_window_close",
+			...(isolationRoot !== null ? { boundary } : {}),
 		},
 		{
+			env,
 			mutate: async () => {
 				if (deps.exec) return deps.exec();
 				await execFileAsync("tmux", ["kill-window", "-t", tmuxWindow], {
 					timeout: TMUX_TIMEOUT,
+					env,
 				});
 			},
 		},
