@@ -20,7 +20,8 @@ flywheel-config-lock.sh
 flywheel-config-lock.py
 migrate-summary-registry.sh
 lib/raya-standard-migration.sh
-lib/lead-host-tmux-gate.sh"
+lib/lead-host-tmux-gate.sh
+lib/codex-quota-summary.mjs"
 SCRIPT_CLOSURE_OK=1
 while IFS= read -r file; do
   grep -Fxq "$file" <<<"$PO_SCRIPT_FILES" || SCRIPT_CLOSURE_OK=0
@@ -50,7 +51,7 @@ while IFS= read -r declaration; do
     *) CONVERGE_OK=0 ;;
   esac
   case "$declaration" in
-    *lib/lead-host-tmux-gate.sh*lib/raya-standard-migration.sh*) ;;
+    *lib/lead-host-tmux-gate.sh*lib/raya-standard-migration.sh*lib/codex-quota-summary.mjs*) ;;
     *) CONVERGE_OK=0 ;;
   esac
 done < <(grep '^[[:space:]]*FILES=' "$REPO_ROOT/scripts/converge-flywheel-bin.sh")

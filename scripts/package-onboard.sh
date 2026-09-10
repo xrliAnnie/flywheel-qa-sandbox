@@ -103,11 +103,14 @@ resident-codex-lead-recover.sh
 codex-home-link-truth.sh
 codex-credential-cutover.sh
 codex-home-credential-sweep.mjs
+codex-quota-readiness-receipt.mjs
 flywheel-lead-attach.sh
 flywheel-view-attach.sh
 flywheel-node-status.sh
 restart-storm-gate.py
 host-tmux-selection-gate.sh
+lead-patrol-snapshot.sh
+flywheel-node-dwell-control.mjs
 lead-alert.sh
 meta-alert.sh
 update-flywheel.sh
@@ -134,6 +137,7 @@ lib/flywheel-log.sh
 lib/tmux-server-rescue.sh
 lib/lead-body-evidence.sh
 lib/bounded-run.sh
+lib/codex-quota-summary.mjs
 packaged/create-compat-mirror.sh
 packaged/bootstrap-services.sh
 packaged/restart-packaged-services.sh"}

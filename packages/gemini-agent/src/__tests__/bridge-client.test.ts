@@ -73,6 +73,45 @@ describe("endpoint whitelist (guardrail layer 3, client side)", () => {
 });
 
 describe("BridgeClient transport", () => {
+	it("reports quota start as queued until the same request returns running", async () => {
+		const requests: string[] = [];
+		const queued = JSON.stringify({
+			code: "CODEX_QUOTA_QUEUED",
+			status: "queued",
+			runId: "run-1",
+			executionId: "exec-1",
+		});
+		const running = JSON.stringify({
+			status: "running",
+			runId: "run-1",
+			executionId: "exec-1",
+		});
+		const client = new BridgeClient({
+			baseUrl: "http://bridge.test",
+			token: TOKEN,
+			timeoutMs: 1000,
+			fetchFn: (async (_url: unknown, init?: RequestInit) => {
+				requests.push(String(init?.body));
+				return new Response(requests.length === 1 ? queued : running, {
+					status: requests.length === 1 ? 202 : 200,
+				});
+			}) as typeof fetch,
+		});
+		const request = { issueId: "FLY-1", idempotencyKey: "quota-recovery-1" };
+		expect(await client.request("POST", "/api/runs/start", request)).toEqual({
+			ok: false,
+			httpStatus: 202,
+			body: queued,
+		});
+		expect(requests).toHaveLength(1);
+		expect(await client.request("POST", "/api/runs/start", request)).toEqual({
+			ok: true,
+			httpStatus: 200,
+			body: running,
+		});
+		expect(requests[0]).toBe(requests[1]);
+	});
+
 	it("sends the Bearer header", async () => {
 		let seenAuth: string | null = null;
 		const client = new BridgeClient({

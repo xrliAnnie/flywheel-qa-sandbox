@@ -387,6 +387,7 @@ describe("feature-flag drift guard", () => {
 				["summary_absorption_cadence_ms", "storeSummaryAbsorptionCadenceMs"],
 				["alert_system", "storeAlertSystemEnabled"],
 				["review_quota_auto_retry", "storeReviewQuotaAutoRetryEnabled"],
+				["codex_quota_auto_switch", "storeCodexQuotaAutoSwitchEnabled"],
 				["account_switch_wake_sweep", "storeAccountSwitchWakeSweepEnabled"],
 				["loop_profiler", "storeLoopProfilerEnabled"],
 				["shipped_husk_force", "storeShippedHuskForceEnabled"],

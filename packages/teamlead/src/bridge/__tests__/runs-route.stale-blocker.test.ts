@@ -10,7 +10,15 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import type { Session } from "../../StateStore.js";
 import { createRunsRouter } from "../runs-route.js";
 
@@ -22,13 +30,19 @@ const BLOCKER = {
 	project_name: "sub",
 } as Session;
 
-// Only getActiveSessions() is reached before the 409 / admission branch.
+// Terminal reservation rejection also retires its durable quota admission waiter.
+const setAdmissionWaitState = vi.fn();
 const fakeStore = {
+	codexQuota: { setAdmissionWaitState },
 	getActiveSessions: () => [BLOCKER],
 	getActiveWorkflowRunForIssue: () => undefined,
 	getWorkflowStartReservation: (key: string) =>
 		key === "legacy-replay"
-			? { execution_id: "old-exec", run_id: "legacy-run" }
+			? {
+					idempotency_key: "legacy-replay",
+					execution_id: "old-exec",
+					run_id: "legacy-run",
+				}
 			: undefined,
 	getWorkflowRun: (runId: string) =>
 		runId === "legacy-run"
@@ -102,6 +116,7 @@ afterAll(() => {
 });
 
 afterEach(async () => {
+	setAdmissionWaitState.mockClear();
 	if (server) {
 		await new Promise<void>((r) => server?.close(() => r()));
 		server = undefined;
@@ -142,6 +157,10 @@ describe("runs-route stale-blocker guard integration", () => {
 			hint: "use /api/runs/:runId/rework",
 			runId: "legacy-run",
 		});
+		expect(setAdmissionWaitState).toHaveBeenCalledWith(
+			"legacy-replay",
+			"abandoned",
+		);
 	});
 
 	it("guard proceed:true → falls through past 409 (reaches admission → 429)", async () => {

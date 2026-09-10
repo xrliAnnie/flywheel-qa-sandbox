@@ -1,3 +1,4 @@
+import { parseCodexQuotaSignalV1 } from "flywheel-core";
 import { describe, expect, it } from "vitest";
 import {
 	buildDaemonSandboxWritableRoots,
@@ -5,6 +6,7 @@ import {
 	buildGoalObjective,
 	classifyGoalOutcome,
 	enforceObjectiveLimit,
+	goalQuotaFailure,
 } from "../src/codex-daemon-adapter-helpers.js";
 import {
 	GOAL_OBJECTIVE_MAX_CHARS,
@@ -253,4 +255,96 @@ describe("classifyGoalOutcome", () => {
 			}).resultText,
 		).toBe("PR opened");
 	});
+});
+
+describe("FLY-2465 quota attribution guards", () => {
+	const binding = {
+		bindingId: "launch-1",
+		executionId: "exec-1",
+		runId: null,
+		accountKey: "account-1",
+		profile: "business",
+		generation: 1,
+		credentialRootKey: "root-1",
+		purpose: "runner",
+	};
+	const result = {
+		status: "usageLimited" as const,
+		tokensUsed: 1,
+		turns: 1,
+		succeeded: false,
+	};
+	const input = {
+		outcome: { result },
+		binding,
+		executionId: "exec-1",
+		observedAt: "2026-09-09T17:16:00.000Z",
+	};
+	it("never invents bindings from current auth", () => {
+		for (const candidate of [
+			undefined,
+			{ ...binding, executionId: "other" },
+			{ ...binding, purpose: "review" },
+			{ ...binding, generation: -1 },
+		]) {
+			expect(goalQuotaFailure({ ...input, binding: candidate })).toEqual({
+				failureKind: "goal_usage_limited",
+				failureReason: "goal ended non-complete: usageLimited",
+			});
+		}
+	});
+	it.each(["paused", "blocked", "budgetLimited", "complete"] as const)(
+		"does not promote %s or generic 429 into quota",
+		(status) => {
+			expect(
+				goalQuotaFailure({
+					...input,
+					outcome: { result: { ...result, status } },
+				}),
+			).toBeUndefined();
+		},
+	);
+	it("caught errors take precedence, including generic HTTP 429", () => {
+		expect(
+			goalQuotaFailure({ ...input, caughtError: new Error("429") }),
+		).toBeUndefined();
+	});
+});
+
+it("FLY-2465 maximum length binding yields a valid stable signal identity", () => {
+	const binding = {
+		bindingId: "b".repeat(512),
+		executionId: "exec-1",
+		runId: null,
+		accountKey: "account-1",
+		profile: "business",
+		generation: 1,
+		credentialRootKey: "root-1",
+		purpose: "runner",
+	};
+	const input = {
+		outcome: {
+			result: {
+				status: "usageLimited" as const,
+				tokensUsed: 1,
+				turns: 1,
+				succeeded: false,
+			},
+		},
+		binding,
+		executionId: "exec-1",
+		observedAt: "2026-09-09T17:16:00.000Z",
+	};
+	const signal = goalQuotaFailure(input)?.quotaSignal;
+	expect(parseCodexQuotaSignalV1(signal)).toEqual(signal);
+	expect(signal?.sourceEventId).toBe(
+		goalQuotaFailure({ ...input, observedAt: "2026-09-09T17:17:00.000Z" })
+			?.quotaSignal?.sourceEventId,
+	);
+	expect(signal?.sourceEventId).not.toBe(
+		goalQuotaFailure({
+			...input,
+			binding: { ...binding, bindingId: "c".repeat(512) },
+		})?.quotaSignal?.sourceEventId,
+	);
 });

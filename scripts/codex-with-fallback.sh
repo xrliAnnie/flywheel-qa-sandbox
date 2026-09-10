@@ -10,6 +10,26 @@ exec 8>&1 9>&2
 CODEX_GUARD_CLOSE_WRAPPER_FDS=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Flywheel review invocations use the typed quota lane; manual calls stay local.
+quota_model_arg_seen=0
+for quota_arg in "$@"; do
+  case "$quota_arg" in -m|--model|--model=*) quota_model_arg_seen=1 ;; esac
+done
+if [[ -n "${FLYWHEEL_EXEC_ID:-}" && -n "${FLYWHEEL_PROJECT_NAME:-}" \
+  && -n "${FLYWHEEL_INGEST_TOKEN:-}" && -n "${FLYWHEEL_BRIDGE_URL:-}" \
+  && "$quota_model_arg_seen" == "1" && "${FLYWHEEL_CODEX_QUOTA_CHILD:-}" != "1" ]]; then
+  quota_client="$SCRIPT_DIR/lib/codex-quota-client.mjs"
+  [[ -r "$quota_client" ]] || quota_client="$SCRIPT_DIR/codex-quota-client.mjs"
+  quota_node="$(command -v "${FLYWHEEL_NODE_BIN:-node}" 2>/dev/null || true)"
+  if [[ ! -r "$quota_client" || "$quota_node" != /* || ! -x "$quota_node" ]]; then
+    printf 'CODEX_QUOTA_CONTROLLED_FAILURE\n' >&2
+    exit 75
+  fi
+  if "$quota_node" "$quota_client" --check-review-enrollment "$@"; then
+    exec "$quota_node" "$quota_client" "$SCRIPT_DIR/codex-with-fallback.sh" "$@"
+  fi
+fi
+
 GUARD_LIB="${FLYWHEEL_CODEX_GUARD_LIB:-$SCRIPT_DIR/lib/codex-guard.sh}"
 [[ -r "$GUARD_LIB" ]] || GUARD_LIB="$SCRIPT_DIR/codex-guard.sh"
 if [[ ! -r "$GUARD_LIB" ]]; then
@@ -136,7 +156,11 @@ run_codex_attempt() {
   codex_guard_run "$budget" "$label" codex "$@" >"$stdout_file" 2>"$stderr_file"
   status=$?
   publish_active_output
-  CODEX_ATTEMPT_OUTPUT="$(cat "$stdout_file" "$stderr_file")"
+  if [[ "${FLYWHEEL_CODEX_QUOTA_CHILD:-}" == "1" ]]; then
+    CODEX_ATTEMPT_OUTPUT="$(cat "$stdout_file" "$stderr_file" | tail -c 4096)"
+  else
+    CODEX_ATTEMPT_OUTPUT="$(cat "$stdout_file" "$stderr_file")"
+  fi
   return "$status"
 }
 
@@ -159,6 +183,7 @@ if printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE 'not supported when using C
   run_codex_attempt "model-fallback" -m gpt-5.5 "${new_args[@]}"
   exit $?
 elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE '429|rate.?limit|too many requests|capacity|usage.?limit'; then
+  [[ "${FLYWHEEL_CODEX_QUOTA_CHILD:-}" == "1" ]] && exit "$exit_code"
   printf '\n[codex-with-fallback] RATE_LIMIT on the selected account. Run codex-profile status; the Founder may manually select school/personal/business with the profile tool use command.\n' >&2
   exit "$exit_code"
 elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qi 'refresh_token_reused'; then

@@ -22,6 +22,39 @@ import {
 	redactCodexEmail,
 } from "./codex-account-core.mjs";
 
+import {
+	acquireCodexAccountLease,
+	codexInstallAccountKey,
+	withCodexInstallLock,
+} from "./codex-account-install.mjs";
+
+function withManualCredentialLocks(context, name, operation) {
+	expectedProfile(context.registry, name);
+	assertSafeDirectory(context.profiles, "Codex profile pool");
+	const sourcePath =
+		operation === "use"
+			? join(context.profiles, name, "auth.json")
+			: join(context.home, "auth.json");
+	const initial = verifiedAuth(sourcePath, name, context.registry);
+	const accountKey = codexInstallAccountKey(initial.identity);
+	const lease = acquireCodexAccountLease(context.profiles, accountKey);
+	try {
+		if (lease.orphanRecovery) fail("codex_candidate_recovery_required");
+		assertSafeDirectory(context.home, "CODEX_HOME", {
+			create: operation === "use",
+		});
+		return withCodexInstallLock(context.home, () => {
+			const current = verifiedAuth(sourcePath, name, context.registry);
+			if (codexInstallAccountKey(current.identity) !== accountKey)
+				fail("codex_account_changed");
+			if (operation === "use") return use(context, name);
+			return save(context, name);
+		});
+	} finally {
+		lease.release();
+	}
+}
+
 function fail(message) {
 	throw new Error(message);
 }
@@ -287,7 +320,8 @@ function list(context) {
 		.filter(
 			(entry) =>
 				(entry.isDirectory() || entry.isSymbolicLink()) &&
-				!canonical.has(entry.name),
+				!canonical.has(entry.name) &&
+				entry.name !== ".codex-quota-account-locks",
 		)
 		.map((entry) => entry.name)
 		.sort();
@@ -366,11 +400,11 @@ function main() {
 			break;
 		case "use":
 			if (options.positional.length !== 1) fail(usage());
-			use(context, options.positional[0]);
+			withManualCredentialLocks(context, options.positional[0], "use");
 			break;
 		case "save":
 			if (options.positional.length !== 1) fail(usage());
-			save(context, options.positional[0]);
+			withManualCredentialLocks(context, options.positional[0], "save");
 			break;
 		case "next":
 			fail(

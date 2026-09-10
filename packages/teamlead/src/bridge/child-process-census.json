@@ -327,6 +327,11 @@
 			"disposition": "bridge_sync_marker_timeout"
 		},
 		{
+			"file": "packages/teamlead/src/codex-quota/probe.ts",
+			"raw_spawn": 1,
+			"disposition": "FLY-2465 isolated quota reader/probe only: async raw Codex child, sanitized environment, account lease, bounded deadline and output, abort process-group drain before credential persistence"
+		},
+		{
 			"file": "packages/teamlead/src/lead-backends/codex/ProcessLifetimeFileLock.ts",
 			"raw_spawn": 1,
 			"disposition": "observed_async_lifecycle"

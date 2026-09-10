@@ -3020,6 +3020,86 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(killWindowCalls).toHaveLength(1);
 	});
 
+	it("FLY-2465 forwards pre-auth hook and attributes quota to latest runtime binding", async () => {
+		const quotaBinding = {
+			bindingId: "latest-binding",
+			executionId: execId,
+			runId: null,
+			accountKey: "account-2",
+			profile: "school",
+			generation: 2,
+			credentialRootKey: "root",
+			purpose: "runner" as const,
+		};
+		const callback = vi.fn(async () => quotaBinding);
+		runtime = new FakeRuntime(async () => ({
+			threadId: THREAD_ID,
+			result: {
+				status: "usageLimited",
+				tokensUsed: 1,
+				turns: 1,
+				succeeded: false,
+			},
+			restarts: 1,
+			quotaBinding,
+		}));
+		const result = await makeAdapter().execute(
+			ctx({
+				beforeCodexDaemonStart: callback,
+				codexQuotaBinding: {
+					...quotaBinding,
+					bindingId: "old-binding",
+					generation: 1,
+				},
+			}),
+		);
+		expect(capturedOpts?.beforeCodexDaemonStart).toBe(callback);
+		expect(result.failure?.quotaSignal?.bindingId).toBe("latest-binding");
+	});
+
+	it("FLY-2465 emits quota failure from its registered launch binding", async () => {
+		runtime = new FakeRuntime(async () => ({
+			threadId: THREAD_ID,
+			result: {
+				status: "usageLimited",
+				tokensUsed: 9,
+				turns: 3,
+				succeeded: false,
+			},
+			restarts: 1,
+		}));
+		const res = await makeAdapter().execute(
+			ctx({
+				codexQuotaBinding: {
+					bindingId: "launch-binding",
+					executionId: execId,
+					runId: "run-1",
+					accountKey: "account-1",
+					profile: "business",
+					generation: 1,
+					credentialRootKey: "root-1",
+					purpose: "runner",
+				},
+			}),
+		);
+		expect(res.success).toBe(false);
+		expect(res.failure).toMatchObject({
+			failureKind: "goal_usage_limited",
+			failureReason: "goal ended non-complete: usageLimited",
+			quotaSignal: {
+				version: 1,
+				vendor: "codex",
+				source: "goal_ended",
+				bindingId: "launch-binding",
+				evidence: "usageLimited",
+			},
+		});
+		expect(res.failure?.quotaSignal?.sourceEventId).toBeTruthy();
+		expect(
+			Number.isFinite(Date.parse(res.failure?.quotaSignal?.observedAt ?? "")),
+		).toBe(true);
+	});
+
 	it("FLY-1279: a blocked goal preserves a typed failure and blocked CommDB status", async () => {
 		runtime = new FakeRuntime(async () => ({
 			threadId: THREAD_ID,

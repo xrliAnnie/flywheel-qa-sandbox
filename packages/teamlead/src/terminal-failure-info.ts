@@ -1,4 +1,8 @@
-import type { TerminalFailureInfo } from "flywheel-core";
+import {
+	CODEX_QUOTA_FAILURE_REASON,
+	parseCodexQuotaSignalV1,
+	type TerminalFailureInfo,
+} from "flywheel-core";
 
 export interface TerminalFailureClassification {
 	failureClass: "environment";
@@ -33,12 +37,32 @@ export function normalizeTerminalFailureInfo(
 			? failure.failureReason
 			: undefined;
 	if (
-		(failureKind !== "goal_blocked" &&
+		(failureKind !== "goal_usage_limited" &&
+			failureKind !== "goal_blocked" &&
 			failureKind !== "worktree_takeover_failed" &&
 			failureKind !== "reown_exhausted") ||
 		!failureReason
 	) {
 		return undefined;
+	}
+	const quotaSignal = parseCodexQuotaSignalV1(failure.quotaSignal);
+	if (
+		failure.quotaSignal !== undefined &&
+		(!quotaSignal || failureKind !== "goal_usage_limited")
+	)
+		return undefined;
+	if (failureKind === "goal_usage_limited") {
+		if (
+			failureReason !== CODEX_QUOTA_FAILURE_REASON ||
+			failure.failureClass !== undefined ||
+			failure.failureCode !== undefined
+		)
+			return undefined;
+		return {
+			failureKind,
+			failureReason,
+			...(quotaSignal ? { quotaSignal } : {}),
+		};
 	}
 	const classification = normalizeTerminalFailureClassification(failure);
 	return {

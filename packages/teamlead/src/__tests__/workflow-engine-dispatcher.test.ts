@@ -5304,3 +5304,118 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 		expect(postFounderCard).toHaveBeenCalledTimes(2);
 	});
 });
+it.each(["bound", "new", "bound without root resolver"])(
+	"FLY-2465 keeps a %s quota-paused dispatch intent unclaimed",
+	async (kind) => {
+		const store = await storeWithIntent("implement");
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2465-intent-"));
+		try {
+			store.codexQuota.registerBinding({
+				bindingId: "quota",
+				executionId: kind === "new" ? "old-limited" : "implement-1",
+				runId: "run-1",
+				accountKey: "business",
+				profile: "business",
+				generation: 1,
+				credentialRootKey: "root",
+				purpose: "runner",
+			});
+			store.codexQuota.recordSignal({
+				executionId: kind === "new" ? "old-limited" : "implement-1",
+				bindingId: "quota",
+			});
+			const fake = fakeStartDispatcher(store);
+			const claim = vi.spyOn(store, "recoverOrAcquireWorkflowLaunch");
+			const admit = vi.spyOn(store, "admitGeneralizedWorkflowExecution");
+			const engine = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-07-16T00:11:00.000Z"),
+				stateRoot,
+				// A resumed execution remains paused even if launch-root resolution
+				// is unavailable; only consume's per-execution guard protects it.
+				codexQuotaRootKey:
+					kind === "bound without root resolver" ? undefined : () => "root",
+				resolvePredecessorHead: async () => HEAD,
+			});
+			await engine.reconcile();
+			expect(admit).not.toHaveBeenCalled();
+			expect(claim).not.toHaveBeenCalled();
+			expect(fake.start).not.toHaveBeenCalled();
+		} finally {
+			store.close();
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
+	},
+);
+
+it.each(["bound", "fresh"])(
+	"FLY-2465 OFF releases a %s queued launch on the next pass without changing pause facts",
+	async (kind) => {
+		const store = await storeWithIntent("implement");
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2465-off-intent-"));
+		let enabled = true;
+		store.codexQuotaLaunchEnabled = () => enabled;
+		try {
+			store.codexQuota.registerBinding({
+				bindingId: "off-quota",
+				executionId: kind === "bound" ? "implement-1" : "dead-old",
+				runId: "run-1",
+				accountKey: "business",
+				profile: "business",
+				generation: 1,
+				credentialRootKey: "root",
+				purpose: "runner",
+			});
+			store.codexQuota.recordSignal({
+				executionId: kind === "bound" ? "implement-1" : "dead-old",
+				bindingId: "off-quota",
+			});
+			const incidentBefore = store.codexQuota.listIncidents();
+			const fake = fakeStartDispatcher(store);
+			const engine = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-07-16T00:11:00.000Z"),
+				stateRoot,
+				codexQuotaRootKey: () => "root",
+				resolvePredecessorHead: async () => HEAD,
+			});
+			await engine.reconcile();
+			expect(fake.start).not.toHaveBeenCalled();
+			enabled = false;
+			await engine.reconcile();
+			expect(fake.start).toHaveBeenCalledTimes(1);
+			expect(store.getSession("implement-1")?.status).toBe("running");
+			expect(store.getSession("dead-old")).toBeUndefined();
+			expect(store.codexQuota.listIncidents()).toEqual(incidentBefore);
+			expect(store.codexQuota.isPaused("root")).toBe(true);
+			enabled = true;
+			expect(store.isCodexQuotaLaunchPaused("another-fresh", "root")).toBe(
+				true,
+			);
+		} finally {
+			store.close();
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
+	},
+);
+
+it("FLY-2465 dispatcher services disabled admission queues even without a dispatch intent", async () => {
+	const store = await StateStore.create(":memory:");
+	const resumeDisabledCodexQuotaAdmissions = vi.fn(async () => {});
+	try {
+		const engine = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			env: WORKFLOW_ON,
+			resumeDisabledCodexQuotaAdmissions,
+		});
+		await engine.reconcile();
+		expect(resumeDisabledCodexQuotaAdmissions).toHaveBeenCalledOnce();
+	} finally {
+		store.close();
+	}
+});

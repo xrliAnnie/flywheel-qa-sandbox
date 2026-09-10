@@ -59,7 +59,7 @@ for f in flywheel-lead-wrapper-v2.sh flywheel-lead.sh \
          flywheel-view-attach.sh flywheel-node-status.sh \
          flywheel-bridge-wrapper.sh restart-services.sh \
          host-tmux-selection-gate.sh lib/lead-host-tmux-gate.sh \
-         lib/raya-standard-migration.sh; do
+         lib/raya-standard-migration.sh lib/codex-quota-summary.mjs; do
   { echo '#!/bin/bash'; pad "echo r-$f"; } > "$FR/scripts/$f"
 done
 { echo '#!/bin/bash'; pad 'echo r-lead-address'; } > "$FR/scripts/lib/lead-address.sh"
@@ -201,7 +201,7 @@ seed_state() {  # <state-dir> — converged copy lane + healthy meta link
            flywheel-view-attach.sh flywheel-node-status.sh \
            flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py \
            host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh \
-           lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh; do
+           lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/codex-quota-summary.mjs; do
     cp "$FR/scripts/$f" "$st/bin/$f"; chmod 555 "$st/bin/$f"
   done
   ln -sfn "$FR/scripts/meta-alert.sh" "$st/bin/meta-alert.sh"

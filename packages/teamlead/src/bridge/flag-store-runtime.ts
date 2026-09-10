@@ -346,6 +346,12 @@ export function storeReviewQuotaAutoRetryEnabled(
 	return readBoolean(runtime, "review_quota_auto_retry");
 }
 
+export function storeCodexQuotaAutoSwitchEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "codex_quota_auto_switch");
+}
+
 export function storeAccountSwitchWakeSweepEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

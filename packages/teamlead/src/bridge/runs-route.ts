@@ -1,3 +1,4 @@
+import { CodexQuotaQueuedError } from "./retry-dispatcher.js";
 /**
  * GEO-267: /api/runs routes — start new Runner executions.
  *
@@ -325,6 +326,8 @@ export function createRunsRouter(
 		handleActiveBlocker(blocker: Session): Promise<{ proceed: boolean }>;
 	},
 	auth?: {
+		codexQuotaRootKey?: (projectName: string) => string | undefined;
+		verifyCodexQuotaRecovery?: (incidentId: string) => Promise<boolean>;
 		masterToken?: string;
 		scopedToken?: string;
 		confirmTokens?: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
@@ -1425,6 +1428,61 @@ export function createRunsRouter(
 			: secureTokenEqual(bearer, auth?.scopedToken)
 				? "scoped"
 				: "tokenless";
+		let quotaRecoveryStartPoint: string | undefined;
+		let quotaRecoveryContext:
+			| ReturnType<StateStore["getCodexQuotaRecoveryContext"]>
+			| undefined;
+		if (req.body.quotaRecoveryId !== undefined) {
+			try {
+				if (
+					requestAuthKind !== "master" ||
+					typeof req.body.quotaRecoveryId !== "string" ||
+					req.body.quotaRecoveryId.length > 1024
+				)
+					throw new Error("quota_recovery_auth_required");
+				quotaRecoveryContext = store.getCodexQuotaRecoveryContext(
+					req.body.quotaRecoveryId,
+				);
+				const context = quotaRecoveryContext;
+				const sourceRequest =
+					typeof context.target.start_request_json === "string"
+						? (JSON.parse(context.target.start_request_json) as Record<
+								string,
+								unknown
+							>)
+						: {};
+				quotaRecoveryStartPoint =
+					typeof sourceRequest.originalBranch === "string"
+						? sourceRequest.originalBranch
+						: store.getSession(String(context.target.old_execution_id))?.branch;
+
+				if (
+					context.operatorStopped ||
+					context.run.issue_id !== issueId ||
+					context.run.project_name !== req.body.projectName ||
+					req.body.idempotencyKey !==
+						`codex-quota:${String(context.incident.incident_id)}:${context.run.run_id}:start` ||
+					!(await auth?.verifyCodexQuotaRecovery?.(
+						String(context.incident.incident_id),
+					))
+				)
+					throw new Error("quota_recovery_authority_refused");
+				// Only the durable source may supply launch policy. Client snapshots/overrides are discarded.
+				req.body = {
+					issueId,
+					projectName: context.run.project_name,
+					sessionRole: "main",
+					leadId: context.run.selected_by ?? undefined,
+					idempotencyKey: req.body.idempotencyKey,
+					quotaRecoveryId: req.body.quotaRecoveryId,
+				};
+			} catch {
+				res
+					.status(409)
+					.json({ success: false, code: "CODEX_QUOTA_RECOVERY_REFUSED" });
+				return;
+			}
+		}
 		const rawProjectName = req.body.projectName;
 		let leadId = req.body.leadId as string | undefined;
 		const rawFreshStart = req.body.freshStart;
@@ -1671,7 +1729,11 @@ export function createRunsRouter(
 		// session, and a concurrent re-dispatch of an in-flight phase is backstopped
 		// by the worktree single-writer (git cannot check out shared branch B twice).
 		const role =
-			(typeof sessionRole === "string" ? sessionRole : undefined) ?? "main";
+			(quotaRecoveryContext
+				? "main"
+				: typeof sessionRole === "string"
+					? sessionRole
+					: undefined) ?? "main";
 		const activeSessions = store.getActiveSessions();
 		const alreadyActive = activeSessions.find(
 			(s) =>
@@ -1702,6 +1764,10 @@ export function createRunsRouter(
 		): boolean => {
 			if (inspection.ok) return false;
 			if (inspection.reason === "run_not_active") {
+				store.codexQuota.setAdmissionWaitState(
+					reservation.idempotency_key,
+					"abandoned",
+				);
 				res.status(409).json({
 					success: false,
 					code: "RUN_NOT_REWORKABLE_VIA_START",
@@ -2340,13 +2406,39 @@ export function createRunsRouter(
 		};
 		let engineRecovery: WorkflowTemplateSelectionResult | undefined;
 		let engineRecoveryKind: "pipeline_dag_v1" | "workflow_v2" | undefined;
+		if (quotaRecoveryContext) {
+			try {
+				const reserved = store.reserveCodexQuotaRecoveryStart({
+					recoveryId: req.body.quotaRecoveryId,
+					startKey: requestedStartKey!,
+				});
+				engineRecovery = recoverWorkflowStartSelection(store, {
+					issueId,
+					projectName,
+					authKind: requestAuthKind,
+					runId: reserved.runId,
+				});
+				engineRecoveryKind =
+					quotaRecoveryContext.snapshot.schema_version === 1
+						? "pipeline_dag_v1"
+						: "workflow_v2";
+			} catch {
+				res
+					.status(409)
+					.json({ success: false, code: "CODEX_QUOTA_RECOVERY_REFUSED" });
+				return;
+			}
+		}
+
 		{
 			// FLY-1385 W8: classify every active engine run BEFORE opt-out and
 			// candidate resolution. New runs carry an explicit entry marker; old v2
 			// runs are recognized narrowly by engine ownership + reservation + pinned
 			// schema 2. An unclassified engine run fails closed rather than allowing a
 			// parallel legacy start.
-			const activeRun = store.getActiveWorkflowRunForIssue(issueId);
+			const activeRun = quotaRecoveryContext
+				? undefined
+				: store.getActiveWorkflowRunForIssue(issueId);
 			if (
 				activeRun &&
 				(activeRun.engine_owned === 1 ||
@@ -3124,7 +3216,68 @@ export function createRunsRouter(
 				runId: generalizedSelection.runId,
 				nodeId: generalizedSelection.nodeId,
 			});
+			const quotaRootKey =
+				dispatchResolution.dispatch.vendor === "codex"
+					? auth?.codexQuotaRootKey?.(projectName)
+					: undefined;
+			const quotaWait = store.codexQuota.getAdmissionWait(
+				generalizedSelection.idempotencyKey,
+			);
+			const quotaSession = store.getSession(generalizedSelection.executionId);
+			if (
+				quotaWait &&
+				(quotaWait.state === "abandoned" ||
+					selectedRun?.status !== "active" ||
+					(quotaSession &&
+						!["running", "starting"].includes(quotaSession.status)))
+			) {
+				store.codexQuota.setAdmissionWaitState(
+					generalizedSelection.idempotencyKey,
+					"abandoned",
+				);
+				res.status(409).json({ success: false, code: "CODEX_QUOTA_ABANDONED" });
+				return;
+			}
+			const queueQuotaAdmission = () => {
+				const root = quotaRootKey
+					? store.codexQuota.getRoot(quotaRootKey)
+					: undefined;
+				store.codexQuota.enqueueAdmissionWait({
+					startKey: generalizedSelection.idempotencyKey,
+					rootKey: quotaRootKey ?? "identity_uncertain",
+					generation: root?.generation ?? 0,
+					dispatchJson: JSON.stringify(dispatchResolution.dispatch),
+					requestContext: JSON.stringify({
+						issueId,
+						projectName,
+						taskCategory: req.body.taskCategory,
+						templateId: req.body.templateId,
+						tier: req.body.tier,
+						idempotencyKey: generalizedSelection.idempotencyKey,
+						leadId,
+					}),
+				});
+				res.status(202).json({
+					success: false,
+					status: "queued",
+					code: "CODEX_QUOTA_QUEUED",
+					runId: generalizedSelection.runId,
+					executionId: generalizedSelection.executionId,
+					startKey: generalizedSelection.idempotencyKey,
+				});
+			};
+			if (
+				dispatchResolution.dispatch.vendor === "codex" &&
+				store.isCodexQuotaLaunchPaused(
+					generalizedSelection.executionId,
+					quotaRootKey,
+				)
+			) {
+				queueQuotaAdmission();
+				return;
+			}
 			const workflowAdmission = store.admitGeneralizedWorkflowExecution({
+				codexQuotaRootKey: quotaRootKey,
 				runId: generalizedSelection.runId,
 				nodeId: generalizedSelection.nodeId,
 				executionId: generalizedSelection.executionId,
@@ -3136,6 +3289,10 @@ export function createRunsRouter(
 				dispatchResolution,
 			});
 			if (!workflowAdmission.ok) {
+				if (workflowAdmission.reason === "codex_quota_paused") {
+					queueQuotaAdmission();
+					return;
+				}
 				res.status(409).json({
 					success: false,
 					code: "GENERALIZED_ADMISSION_REJECTED",
@@ -3453,6 +3610,9 @@ export function createRunsRouter(
 					let startResult: StartResult;
 					try {
 						startResult = await startDispatcher.start({
+							...(quotaRecoveryStartPoint
+								? { startPoint: quotaRecoveryStartPoint }
+								: {}),
 							issueId,
 							projectName,
 							leadId,
@@ -3785,6 +3945,15 @@ export function createRunsRouter(
 					: {}),
 				message: `Runner started for ${issueId}`,
 			};
+			// Automatic replay retains its cursor until the recovery worker proves physical liveness.
+			if (
+				store.codexQuota.getAdmissionWait(generalizedSelection.idempotencyKey)
+					?.state !== "resuming"
+			)
+				store.codexQuota.setAdmissionWaitState(
+					generalizedSelection.idempotencyKey,
+					"released",
+				);
 			store.recordWorkflowStartResponse({
 				idempotencyKey: generalizedSelection.idempotencyKey,
 				response,
@@ -3837,7 +4006,72 @@ export function createRunsRouter(
 			}
 		}
 
-		const legacyEntryExecutionId = randomUUID();
+		const legacyStartKey = requestedStartKey ?? `legacy-auto-${randomUUID()}`;
+		const legacyRequestContext = {
+			issueId,
+			projectName,
+			taskCategory: req.body.taskCategory,
+			templateId: req.body.templateId,
+			tier: req.body.tier,
+			idempotencyKey: legacyStartKey,
+			leadId,
+			role,
+			agentName,
+			freshStart,
+			dispatchModel,
+		};
+		let legacyEntryExecutionId: string;
+		try {
+			// A master worker replays the same durable scoped request, not a new
+			// fresh-start authority. Preserve only its stored actor; the original
+			// reservation digest still rejects every other normalized field change.
+			const replayWait = store.codexQuota.getAdmissionWait(legacyStartKey);
+			if (
+				requestAuthKind === "master" &&
+				freshStart &&
+				replayWait &&
+				typeof replayWait.run_id !== "string" &&
+				["waiting", "resuming"].includes(String(replayWait.state))
+			) {
+				const saved =
+					store.getCodexQuotaAdmissionWaitContext(legacyStartKey).request
+						.freshStart;
+				if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+					const authority = saved as Record<string, unknown>;
+					if (
+						authority.authority === freshStart.authority &&
+						authority.reason === freshStart.reason &&
+						(authority.actor === "scoped" || authority.actor === "master")
+					) {
+						freshStart = { ...freshStart, actor: authority.actor };
+						legacyRequestContext.freshStart = freshStart;
+					}
+				}
+			}
+			legacyEntryExecutionId = store.codexQuota.reserveLegacyStart({
+				startKey: legacyStartKey,
+				projectName,
+				issueId,
+				executionId: randomUUID(),
+				requestDigest: canonicalSubmissionDigest(legacyRequestContext),
+				requestContext: JSON.stringify(legacyRequestContext),
+			}).execution_id;
+		} catch {
+			res.status(409).json({ success: false, code: "LEGACY_START_CONFLICT" });
+			return;
+		}
+		const legacyWait = store.codexQuota.getAdmissionWait(legacyStartKey);
+		const legacySession = store.getSession(legacyEntryExecutionId);
+		if (
+			legacyWait &&
+			(legacyWait.state === "abandoned" ||
+				(legacySession &&
+					!["running", "starting"].includes(legacySession.status)))
+		) {
+			store.codexQuota.setAdmissionWaitState(legacyStartKey, "abandoned");
+			res.status(409).json({ success: false, code: "CODEX_QUOTA_ABANDONED" });
+			return;
+		}
 		const legacyEntryClaim = store.claimLegacyWorkflowEntry({
 			issueId,
 			issueAliases: workflowEntryAliases,
@@ -3990,6 +4224,12 @@ export function createRunsRouter(
 			// ghost-start guard below.
 			const persistedSession = await waitForSession(store, result.executionId);
 			if (persistedSession) {
+				if (
+					persistedSession.status === "running" &&
+					store.codexQuota.getAdmissionWait(legacyStartKey)?.state !==
+						"resuming"
+				)
+					store.codexQuota.setAdmissionWaitState(legacyStartKey, "released");
 				const matchMethod: string | undefined = agentName
 					? "override"
 					: undefined;
@@ -4092,6 +4332,24 @@ export function createRunsRouter(
 					: {}),
 			});
 		} catch (err) {
+			if (err instanceof CodexQuotaQueuedError) {
+				if (err.executionId !== legacyEntryExecutionId)
+					throw new Error("quota_legacy_execution_mismatch");
+				store.codexQuota.enqueueLegacyAdmissionWait({
+					startKey: legacyStartKey,
+					rootKey: err.rootKey,
+					generation: err.generation,
+				});
+				res.status(202).json({
+					success: false,
+					status: "queued",
+					code: "CODEX_QUOTA_QUEUED",
+					executionId: legacyEntryExecutionId,
+					startKey: legacyStartKey,
+				});
+				return;
+			}
+
 			store.casLaunchClaimState(
 				legacyEntryExecutionId,
 				"starting",

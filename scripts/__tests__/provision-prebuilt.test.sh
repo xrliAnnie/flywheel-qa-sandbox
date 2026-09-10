@@ -64,7 +64,7 @@ mk_root() {
            materialize-lead-manifests.sh host-tmux-selection-gate.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$rr/scripts/$f"
   done
-  for f in lib/host-config.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/lead-restart-lifecycle.sh lib/script-sanity.sh lib/supervisor.sh; do
+  for f in lib/host-config.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/codex-quota-summary.mjs lib/lead-restart-lifecycle.sh lib/script-sanity.sh lib/supervisor.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$rr/scripts/$f"
   done
   cp -p "$REPO_ROOT/scripts/packaged/bootstrap-services.sh" "$rr/scripts/packaged/"

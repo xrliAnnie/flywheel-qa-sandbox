@@ -148,6 +148,7 @@ done
 cp "$REPO_ROOT/scripts/lib/host-config.sh" "$RR/scripts/lib/host-config.sh"
 cp "$REPO_ROOT/scripts/lib/lead-address.sh" "$RR/scripts/lib/lead-address.sh"
 cp "$REPO_ROOT/scripts/lib/lead-host-tmux-gate.sh" "$RR/scripts/lib/lead-host-tmux-gate.sh"
+cp "$REPO_ROOT/scripts/lib/codex-quota-summary.mjs" "$RR/scripts/lib/codex-quota-summary.mjs"
 chmod +x "$RR/scripts/lib/host-config.sh" "$RR/scripts/lib/lead-address.sh" \
   "$RR/scripts/lib/lead-host-tmux-gate.sh"
 echo '#!/bin/bash' > "$RR/scripts/flywheel-fleet.sh"; chmod +x "$RR/scripts/flywheel-fleet.sh"

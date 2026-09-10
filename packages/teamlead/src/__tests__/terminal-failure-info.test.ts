@@ -14,3 +14,27 @@ describe("normalizeTerminalFailureInfo", () => {
 		});
 	});
 });
+
+const quotaSignal = {
+	version: 1,
+	vendor: "codex",
+	source: "goal_ended",
+	sourceEventId: "event-1",
+	bindingId: "binding-1",
+	evidence: "usageLimited",
+	observedAt: "2026-09-09T17:16:00.000Z",
+};
+it("FLY-2465 quota signal survives terminal normalization without field loss", () => {
+	const failure = {
+		failureKind: "goal_usage_limited",
+		failureReason: "goal ended non-complete: usageLimited",
+		quotaSignal,
+	};
+	expect(normalizeTerminalFailureInfo(failure)).toEqual(failure);
+	expect(
+		normalizeTerminalFailureInfo({
+			...failure,
+			quotaSignal: { ...quotaSignal, evidence: "429" },
+		}),
+	).toBeUndefined();
+});

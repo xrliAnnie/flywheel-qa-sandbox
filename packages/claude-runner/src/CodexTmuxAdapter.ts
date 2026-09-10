@@ -65,6 +65,7 @@ import {
 	buildGoalObjective,
 	classifyGoalOutcome,
 	enforceObjectiveLimit,
+	goalQuotaFailure,
 } from "./codex-daemon-adapter-helpers.js";
 import type { CodexDaemonEvents } from "./codex-daemon-client.js";
 import {
@@ -1136,6 +1137,8 @@ export class CodexTmuxAdapter implements IAdapter {
 			}
 
 			runtime = this.runtimeFactory({
+				beforeCodexDaemonStart: ctx.beforeCodexDaemonStart,
+				codexQuotaBinding: ctx.codexQuotaBinding,
 				executionId: ctx.executionId,
 				codexBin: flywheelCodexBin(),
 				codexHomes: [codexHome],
@@ -1912,10 +1915,19 @@ export class CodexTmuxAdapter implements IAdapter {
 		}
 
 		const cls = classifyGoalOutcome({ outcome, caughtError });
+		const quotaFailure = goalQuotaFailure({
+			outcome,
+			caughtError,
+			binding: outcome?.quotaBinding ?? ctx.codexQuotaBinding,
+			executionId: ctx.executionId,
+			observedAt: new Date().toISOString(),
+		});
 		// HIGH-6: an unconfirmed daemon teardown fails the run (a live daemon +
 		// "completed" would be a lie).
 		const success =
-			(cls.success || controlledShutdownSucceeded()) && !teardownError;
+			(cls.success || controlledShutdownSucceeded()) &&
+			!teardownError &&
+			!quotaFailure;
 		const threadId = outcome?.threadId;
 		const result: AdapterExecutionResult = {
 			success,
@@ -1929,6 +1941,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			},
 		};
 		if (cls.resultText !== undefined) result.resultText = cls.resultText;
+		if (quotaFailure) result.failure = quotaFailure;
 		if (outcome?.result.status === "blocked") {
 			result.failure = {
 				failureKind: "goal_blocked",

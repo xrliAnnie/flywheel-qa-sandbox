@@ -414,6 +414,7 @@ export type AlertSeverity = "info" | "warning" | "severe";
  * out of the eventId string (Codex design R1 HIGH-2).
  */
 export interface AlertMetadata {
+	codexQuota?: { vendor: "codex"; incidentId: string; generation: number };
 	workflowEngine?: {
 		runId: string;
 		issueId: string;

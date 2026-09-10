@@ -369,6 +369,7 @@ cp "$PKG_ROOT/scripts/flywheel-lead-wrapper-v2.sh" "$GEN_STATE/bin/flywheel-lead
 cp "$PKG_ROOT/scripts/lib/host-config.sh" "$GEN_STATE/bin/lib/host-config.sh"
 cp "$PKG_ROOT/scripts/lib/lead-address.sh" "$GEN_STATE/bin/lib/lead-address.sh"
 cp "$PKG_ROOT/scripts/lib/lead-host-tmux-gate.sh" "$GEN_STATE/bin/lib/lead-host-tmux-gate.sh"
+cp "$PKG_ROOT/scripts/lib/codex-quota-summary.mjs" "$GEN_STATE/bin/lib/codex-quota-summary.mjs"
 cat > "$GEN_STATE/bin/host-tmux-selection-gate.sh" <<'SH'
 #!/bin/bash
 exit 0

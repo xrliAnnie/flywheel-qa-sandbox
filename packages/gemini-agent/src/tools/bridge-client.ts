@@ -96,7 +96,16 @@ export class BridgeClient {
 						error: "non-JSON response",
 						raw: text.slice(0, 500),
 					});
-			return { ok: res.ok, httpStatus: res.status, body: bodyOut };
+			// FLY-2465: admission can accept a reservation without launching a
+			// runner. Preserve queued ids for same-key replay, but never report
+			// that response as a successful dispatch or retry it as a transport error.
+			const queuedStart =
+				method === "POST" && path === "/api/runs/start" && res.status === 202;
+			return {
+				ok: res.ok && !queuedStart,
+				httpStatus: res.status,
+				body: bodyOut,
+			};
 		};
 
 		try {

@@ -47,6 +47,9 @@ scripts/flywheel-node-status.sh
 scripts/restart-storm-gate.py
 scripts/host-tmux-selection-gate.sh
 scripts/lead-alert.sh
+scripts/codex-quota-readiness-receipt.mjs
+scripts/flywheel-node-dwell-control.mjs
+scripts/lead-patrol-snapshot.sh
 scripts/meta-alert.sh
 scripts/update-flywheel.sh
 scripts/converge-flywheel-bin.sh
@@ -61,6 +64,7 @@ scripts/lib/host-config.sh
 scripts/lib/lead-address.sh
 scripts/lib/lead-host-tmux-gate.sh
 scripts/lib/raya-standard-migration.sh
+scripts/lib/codex-quota-summary.mjs
 scripts/lib/platform-deps.sh
 scripts/lib/script-sanity.sh
 scripts/lib/path-hygiene.sh

@@ -21,6 +21,8 @@ import type {
 	OnAskUserQuestion,
 } from "./agent-runner-types.js";
 
+import type { CodexQuotaBindingV1, CodexQuotaSignalV1 } from "./codex-quota.js";
+
 import type { ILogger } from "./logging/index.js";
 
 // Re-export types that AdapterSession depends on (consumers shouldn't need
@@ -131,6 +133,13 @@ export interface AdapterSession {
  * (Edge Worker path) into a single structure.
  */
 export interface AdapterExecutionContext {
+	/** Trusted binding registered before launching the authenticated backend. */
+	codexQuotaBinding?: CodexQuotaBindingV1;
+	/** Bridge-owned pre-auth registration before every physical daemon start; null explicitly disables rotation for this launch. */
+	beforeCodexDaemonStart?: (
+		home: string,
+		executionId: string,
+	) => CodexQuotaBindingV1 | null | Promise<CodexQuotaBindingV1 | null>;
 	// -- Identity --
 
 	/** Execution ID — matches the existing DAG/Blueprint/StateStore executionId */
@@ -449,12 +458,14 @@ export interface AdapterExecutionContext {
  * untyped `failed` path.
  */
 export type TerminalFailureKind =
+	| "goal_usage_limited"
 	| "goal_blocked"
 	| "worktree_takeover_failed"
 	| "reown_exhausted";
 
 export interface TerminalFailureInfo {
 	failureKind: TerminalFailureKind;
+	quotaSignal?: CodexQuotaSignalV1;
 	failureReason: string;
 	failureClass?: "environment";
 	failureCode?: string;

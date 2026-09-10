@@ -1,5 +1,17 @@
 [
 	{
+		"key": "packages/claude-runner/bin/codex-account-install.mjs:process.kill(-candidate.pid, 0);#1",
+		"path": "packages/claude-runner/bin/codex-account-install.mjs",
+		"code": "process.kill(-candidate.pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/claude-runner/bin/codex-account-install.mjs:process.kill(owner.pid, 0);#1",
+		"path": "packages/claude-runner/bin/codex-account-install.mjs",
+		"code": "process.kill(owner.pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
 		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:child.kill(signal);#1",
 		"path": "packages/claude-runner/src/codex-daemon-runtime.ts",
 		"code": "child.kill(signal);",
@@ -195,6 +207,36 @@
 		"key": "packages/claude-runner/test/claude-profile.test.ts:process.kill(-child.pid, \"SIGKILL\");#1",
 		"path": "packages/claude-runner/test/claude-profile.test.ts",
 		"code": "process.kill(-child.pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-account-install.test.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/codex-account-install.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-account-install.test.ts:child.kill(\"SIGKILL\");#2",
+		"path": "packages/claude-runner/test/codex-account-install.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-account-install.test.ts:child.kill(\"SIGKILL\");#3",
+		"path": "packages/claude-runner/test/codex-account-install.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-account-install.test.ts:child.kill(\"SIGKILL\");#4",
+		"path": "packages/claude-runner/test/codex-account-install.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-account-install.test.ts:owner.kill(\"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/codex-account-install.test.ts",
+		"code": "owner.kill(\"SIGKILL\");",
 		"classification": "qa-only"
 	},
 	{
@@ -1014,6 +1056,24 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts:process.kill(pid, 0);#2",
+		"path": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts:tmux([\"kill-session\", \"-t\", SESSION]);#1",
 		"path": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts",
 		"code": "tmux([\"kill-session\", \"-t\", SESSION]);",
@@ -1173,6 +1233,12 @@
 		"key": "packages/teamlead/src/bridge/viewer-session-reaper.ts:[\"kill-session\", \"-t\", `=${sessionName}`],#1",
 		"path": "packages/teamlead/src/bridge/viewer-session-reaper.ts",
 		"code": "[\"kill-session\", \"-t\", `=${sessionName}`],",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/codex-quota/probe.ts:process.kill(-child.pid, signal);#1",
+		"path": "packages/teamlead/src/codex-quota/probe.ts",
+		"code": "process.kill(-child.pid, signal);",
 		"classification": "out-of-scope"
 	},
 	{
@@ -3016,6 +3082,12 @@
 		"path": "scripts/lib/codex-guard.sh",
 		"code": "kill -0 \"$pid\" 2>/dev/null || return 1",
 		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/codex-quota-client.mjs:activeChild?.kill(signal);#1",
+		"path": "scripts/lib/codex-quota-client.mjs",
+		"code": "activeChild?.kill(signal);",
+		"classification": "out-of-scope"
 	},
 	{
 		"key": "scripts/lib/kill-ledger.sh:pgid) kill -s \"$signal\" -- \"-$target\" ;;#1",

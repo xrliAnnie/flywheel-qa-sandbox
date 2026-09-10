@@ -1,0 +1,26 @@
+classDiagram
+  class Account {
+    稳定账号身份
+    显示名称
+    重置时间与剩余额度
+    凭据健康状态
+  }
+  class Episode {
+    本轮唯一编号
+    原账号与生成号
+    选择与验证结果
+    切换完成记录
+  }
+  class Task {
+    原运行与所在阶段
+    恢复进度
+    新运行编号
+  }
+  class Receipt {
+    唯一通知编号
+    切换审计行
+    已发送回执
+  }
+  Account "1" --> "多轮" Episode : 发生额度耗尽
+  Episode "1" --> "多个" Task : 汇集并恢复
+  Episode "1" --> "多个" Receipt : 留下可核对记录

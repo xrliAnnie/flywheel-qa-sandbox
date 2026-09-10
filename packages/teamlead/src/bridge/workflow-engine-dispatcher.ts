@@ -73,6 +73,8 @@ import {
 } from "./workflow-ship-carrier-coordinator.js";
 
 interface WorkflowEngineDispatcherOptions {
+	resumeDisabledCodexQuotaAdmissions?: () => Promise<void>;
+	codexQuotaRootKey?: (projectName: string) => string | undefined;
 	store: StateStore;
 	startDispatcher: IStartDispatcher;
 	workflowReworkReentryEnabled?: () => boolean;
@@ -336,6 +338,13 @@ export class WorkflowEngineDispatcher {
 		this.reconciling = true;
 		const result = { started: 0, held: 0 };
 		try {
+			void this.options
+				.resumeDisabledCodexQuotaAdmissions?.()
+				.catch((error) => {
+					this.log(
+						`disabled quota admission replay failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				});
 			await this.reconcileWorkflowEngineAlerts();
 			await this.reconcileAdmissionPauseAlert();
 			this.reconcileWorkflowDivergence();
@@ -2134,6 +2143,7 @@ export class WorkflowEngineDispatcher {
 
 	private async consume(intent: WorkflowSideEffectRow): Promise<boolean> {
 		const store = this.options.store;
+		if (store.isCodexQuotaLaunchPaused(intent.execution_id)) return false;
 		const run = store.getWorkflowRun(intent.run_id);
 		if (!run?.snapshot || run.status !== "active" || run.engine_owned !== 1) {
 			throw new Error("engine_run_not_active");
@@ -2594,11 +2604,18 @@ export class WorkflowEngineDispatcher {
 			runId: intent.run_id,
 			nodeId: intent.node_id,
 		});
+		const quotaRootKey =
+			dispatchResolution.dispatch.vendor === "codex"
+				? this.options.codexQuotaRootKey?.(run.project_name)
+				: undefined;
+		if (store.isCodexQuotaLaunchPaused(intent.execution_id, quotaRootKey))
+			return false;
 		const admission = this.options.admissionProbe?.();
 		if (admission && !admission.admit) {
 			throw new Error(`engine_admission_${admission.reason}`);
 		}
 		const admitted = store.admitGeneralizedWorkflowExecution({
+			codexQuotaRootKey: quotaRootKey,
 			runId: intent.run_id,
 			nodeId: intent.node_id,
 			executionId: intent.execution_id,

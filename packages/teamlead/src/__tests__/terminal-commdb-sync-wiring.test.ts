@@ -44,7 +44,18 @@ describe("FLY-1066 terminal CommDB sync production inventory", () => {
 		);
 		expect(
 			directSink.match(/this\.enqueueTerminalCommDbStatus\(/g),
-		).toHaveLength(3);
+		).toHaveLength(4);
+		const quotaStart = directSink.indexOf(
+			"this.store.recordLegacyCodexQuotaFailure(",
+		);
+		const quotaEnd = directSink.indexOf(
+			"// FLY-793: pre-failure snapshot",
+			quotaStart,
+		);
+		const quotaFailure = directSink.slice(quotaStart, quotaEnd);
+		expect(quotaStart).toBeGreaterThan(0);
+		expect(quotaFailure).toContain("this.enqueueTerminalCommDbStatus(");
+		expect(quotaFailure).toContain('"failed"');
 		expect(marker).toContain(
 			"args.onTerminalStatusPersisted(\n\t\t\t\targs.executionId",
 		);

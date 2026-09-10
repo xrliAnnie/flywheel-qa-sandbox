@@ -91,6 +91,9 @@ function classify(path: string, code: string): KillPathClassification {
 	// are bounded helper/view processes, injected test seams, or logical dispatch
 	// whose production default is registered by the audited-call layer.
 	if (
+		// FLY-2465: owned isolated probe/review children only, never runner daemons.
+		path === "packages/teamlead/src/codex-quota/probe.ts" ||
+		path === "scripts/lib/codex-quota-client.mjs" ||
 		path === "packages/claude-runner/src/wait-aware-exec.ts" ||
 		(path === "packages/claude-runner/src/codex-runner-tui-window.ts" &&
 			(/child\.kill\(/.test(code) ||

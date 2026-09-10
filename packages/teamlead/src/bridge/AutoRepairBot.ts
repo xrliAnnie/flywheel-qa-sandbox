@@ -104,6 +104,7 @@ export class AutoRepairBot {
 	 */
 	canAttempt(payload: AlertPayload): boolean {
 		if (payload.eventType === "usage_limit") {
+			if (payload.metadata?.codexQuota?.vendor === "codex") return false;
 			return this.deps.accountSwitch?.canAttempt(payload) ?? false;
 		}
 		// FLY-1082: fleet kinds — attemptable iff the wired repair (or, for the
@@ -197,6 +198,13 @@ export class AutoRepairBot {
 						"🔧 launchd 已复活 Bridge（本工单即由复活后的 Bridge 开出）。boot 对账自检完成后自动标记 ✅。",
 				};
 			case "usage_limit": {
+				if (payload.metadata?.codexQuota?.vendor === "codex")
+					return {
+						outcome: "no_action",
+						action: "codex_quota_coordinator",
+						detail:
+							"Codex quota incident is tracked by the durable fleet coordinator.",
+					};
 				// FLY-696: a real Claude quota cap → ENQUEUE a durable pending switch
 				// (a cross-provider Infra Bot claims it, else the Bridge deadline sweep fires
 				// it after the deadline — C8c). Gated by the same canAttempt predicate

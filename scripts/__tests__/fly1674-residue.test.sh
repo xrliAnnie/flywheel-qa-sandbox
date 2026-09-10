@@ -67,6 +67,8 @@ allowed_hits=(
   'packages/teamlead/src/__tests__/fly1436-pr-b-assets.test.ts|no-three-stage'
   'packages/teamlead/src/__tests__/work-kind.test.ts|no-three-stage'
   'packages/teamlead/src/bridge/__tests__/runs-route.dag-entry.test.ts|no-three-stage'
+  # FLY-2465 verifies the persisted legacy override through the actual admission route.
+  'packages/teamlead/src/__tests__/runs-route-codex-quota.test.ts|no-three-stage'
   'packages/teamlead/src/bridge/runs-route.ts|no-three-stage'
   'packages/teamlead/src/work-kind.ts|no-three-stage'
   'scripts/__tests__/test-pm-executor-contract.sh|no-three-stage'

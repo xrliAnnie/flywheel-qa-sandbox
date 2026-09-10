@@ -864,6 +864,89 @@ describe("CodexDaemonGoalRuntime", () => {
 	});
 });
 
+describe("FLY-2465 pre-auth quota fence", () => {
+	it("explicit disabled rotation launches the legacy daemon successfully", async () => {
+		const h = makeHarness({
+			runGoalScript: [COMPLETE],
+			beforeCodexDaemonStart: async () => null,
+		});
+		const runtime = new CodexDaemonGoalRuntime(h.opts);
+		const out = await runtime.runGoal({ objective: "x" });
+		expect(h.spawns).toHaveLength(1);
+		expect(out.result.succeeded).toBe(true);
+		expect(out.quotaBinding).toBeUndefined();
+		runtime.stop();
+	});
+
+	const binding = (generation: number) => ({
+		bindingId: `binding-${generation}`,
+		executionId: "exec-1",
+		runId: null,
+		accountKey: `account-${generation}`,
+		profile: "business",
+		generation,
+		credentialRootKey: "root",
+		purpose: "runner" as const,
+	});
+	it("registers before every physical spawn and retains the latest binding", async () => {
+		let calls = 0;
+		const h = makeHarness({
+			runGoalScript: [
+				new GoalRunError("death", "transport_closed"),
+				{ status: "usageLimited", tokensUsed: 1, turns: 1, succeeded: false },
+			],
+			beforeCodexDaemonStart: async (home, executionId) => {
+				expect(home).toBe("/home/a");
+				expect(executionId).toBe("exec-1");
+				expect(h.spawns).toHaveLength(calls);
+				return binding(++calls);
+			},
+		});
+		const runtime = new CodexDaemonGoalRuntime(h.opts);
+		const out = await runtime.runGoal({ objective: "x" });
+		expect(calls).toBe(2);
+		expect(h.spawns).toHaveLength(2);
+		expect(out.quotaBinding).toEqual(binding(2));
+		runtime.stop();
+	});
+	it("preauth refusal spawns zero even if callback reports transport death", async () => {
+		const h = makeHarness({
+			runGoalScript: [COMPLETE],
+			beforeCodexDaemonStart: () => {
+				throw new GoalRunError("private diagnostic", "transport_closed");
+			},
+		});
+		await expect(
+			new CodexDaemonGoalRuntime(h.opts).runGoal({ objective: "x" }),
+		).rejects.toThrow("codex_quota_pre_auth_rejected");
+		expect(h.spawns).toHaveLength(0);
+	});
+	it.each(["stale", "foreign", "identity_drift"])(
+		"refuses %s binding on restart",
+		async (kind) => {
+			let calls = 0;
+			const h = makeHarness({
+				runGoalScript: [
+					new GoalRunError("death", "transport_closed"),
+					COMPLETE,
+				],
+				beforeCodexDaemonStart: () => {
+					if (++calls === 1) return binding(2);
+					return kind === "stale"
+						? binding(1)
+						: kind === "foreign"
+							? { ...binding(3), executionId: "foreign" }
+							: { ...binding(2), accountKey: "different" };
+				},
+			});
+			await expect(
+				new CodexDaemonGoalRuntime(h.opts).runGoal({ objective: "x" }),
+			).rejects.toThrow("codex_quota_pre_auth_rejected");
+			expect(h.spawns).toHaveLength(1);
+		},
+	);
+});
+
 describe("FLY-2460 admission memory hook", () => {
 	it("awaits the hook before creating the runner thread and runs it only once across restarts", async () => {
 		const h = makeHarness({

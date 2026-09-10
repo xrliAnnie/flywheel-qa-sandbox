@@ -1998,6 +1998,104 @@ describe("Event route", () => {
 		);
 	});
 
+	it.each([true, false])(
+		"FLY-2465 HTTP preserves quota in real store; generalized=%s",
+		async (generalized) => {
+			if (generalized) bindGeneralizedExecution(store, "exec-1");
+			else
+				store.upsertSession({
+					execution_id: "exec-1",
+					issue_id: "issue-1",
+					project_name: "geoforge3d",
+					status: "running",
+				});
+			store.codexQuota.registerBinding({
+				bindingId: "quota-binding",
+				executionId: "exec-1",
+				runId: generalized ? "run-exec-1" : null,
+				accountKey: "account",
+				profile: "business",
+				generation: 1,
+				credentialRootKey: "root",
+				purpose: "runner",
+			});
+			const quotaSignal = {
+				version: 1,
+				vendor: "codex",
+				source: "goal_ended",
+				sourceEventId: "quota-event",
+				bindingId: "quota-binding",
+				evidence: "usageLimited",
+				observedAt: "2026-09-09T17:16:00.000Z",
+			};
+			const event = makeEvent({
+				event_id: "quota-http",
+				event_type: "session_failed",
+				payload: {
+					error: "untrusted raw diagnostic",
+					failure: {
+						failureKind: "goal_usage_limited",
+						failureReason: "goal ended non-complete: usageLimited",
+						quotaSignal,
+					},
+				},
+			});
+			for (let n = 0; n < 2; n++) {
+				const response = await fetch(`${baseUrl}/events`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: "Bearer ingest-secret",
+					},
+					body: JSON.stringify(event),
+				});
+				expect(response.status).toBe(200);
+			}
+			expect(store.codexQuota.listIncidents()).toHaveLength(1);
+			expect(store.codexQuota.listTargets("codex:root:1")).toHaveLength(1);
+			expect(store.codexQuota.listOutbox()).toHaveLength(1);
+			expect(store.codexQuota.isExecutionPaused("exec-1")).toBe(true);
+			expect(store.getSession("exec-1")?.last_error).toBe(
+				"goal ended non-complete: usageLimited",
+			);
+		},
+	);
+	it.each([true, false])(
+		"FLY-2465 invalid quota does not consume HTTP event id; generalized=%s",
+		async (generalized) => {
+			if (generalized) bindGeneralizedExecution(store, "exec-1");
+			else
+				store.upsertSession({
+					execution_id: "exec-1",
+					issue_id: "issue-1",
+					project_name: "geoforge3d",
+					status: "running",
+				});
+			const response = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: "quota-invalid",
+						event_type: "session_failed",
+						payload: {
+							failure: {
+								failureKind: "goal_usage_limited",
+								failureReason: "goal ended non-complete: usageLimited",
+								quotaSignal: { evidence: "429" },
+							},
+						},
+					}),
+				),
+			});
+			expect(response.status).toBe(400);
+			expect(store.getEventPayloadById("quota-invalid")).toBeUndefined();
+			expect(store.getSession("exec-1")?.status).toBe("running");
+		},
+	);
 	it("FLY-2018: HTTP generalized failure persists the normalized environment pair", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const res = await fetch(`${baseUrl}/events`, {

@@ -1339,9 +1339,31 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.codexExecutionOwners?.releaseReservation(env.executionId);
 		const now = sqliteDatetime();
 		const normalizedFailure = normalizeTerminalFailureInfo(failure);
+		if (
+			failure &&
+			(failure.failureKind === "goal_usage_limited" ||
+				failure.quotaSignal !== undefined) &&
+			!normalizedFailure
+		)
+			throw new Error("invalid_quota_signal");
+		const quotaFailure =
+			normalizedFailure?.failureKind === "goal_usage_limited"
+				? normalizedFailure
+				: undefined;
+		if (quotaFailure) {
+			const session = this.store.getSession(env.executionId);
+			if (
+				!session ||
+				session.issue_id !== env.issueId ||
+				session.project_name !== env.projectName
+			)
+				throw new Error("quota_execution_ownership_mismatch");
+		}
+
 		const goalBlocked = normalizedFailure?.failureKind === "goal_blocked";
 		const terminalStatus = goalBlocked ? "blocked" : "failed";
-		const terminalError = goalBlocked ? normalizedFailure.failureReason : error;
+		const terminalError =
+			goalBlocked || quotaFailure ? normalizedFailure!.failureReason : error;
 		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
 			env.executionId,
 		);
@@ -1358,6 +1380,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				sourceEventId: randomUUID(),
 				signal: "failed",
 				failureKind: normalizedFailure?.failureKind,
+				quotaSignal: normalizedFailure?.quotaSignal,
 				failureClass: normalizedFailure?.failureClass,
 				failureCode: normalizedFailure?.failureCode,
 				lastError: terminalError,
@@ -1369,6 +1392,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				console.error(
 					`[DirectEventSink] generalized failure persistence refused for ${env.executionId}: ${recorded.reason}`,
 				);
+				if (quotaFailure)
+					throw new Error(`quota_persistence_refused:${recorded.reason}`);
 				return;
 			}
 			await this.alertWorktreeTakeoverFailure(
@@ -1400,6 +1425,28 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			this.enqueueTerminalCommDbStatus(
 				env.executionId,
 				recorded.status === "blocked" ? "blocked" : "failed",
+				env.projectName,
+			);
+			return;
+		}
+
+		if (quotaFailure) {
+			const recorded = this.store.recordLegacyCodexQuotaFailure({
+				executionId: env.executionId,
+				sourceEventId: randomUUID(),
+				issueId: env.issueId,
+				projectName: env.projectName,
+				source: "direct-event-sink",
+				quotaSignal: quotaFailure.quotaSignal,
+				now,
+			});
+			if (!recorded.ok)
+				throw new Error(`quota_persistence_refused:${recorded.reason}`);
+			if (!recorded.idempotentReplay)
+				this.notifyEpicChanged(env.projectName, "session_failed");
+			this.enqueueTerminalCommDbStatus(
+				env.executionId,
+				"failed",
 				env.projectName,
 			);
 			return;

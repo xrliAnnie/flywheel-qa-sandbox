@@ -377,3 +377,141 @@ describe("FLY-1385 enrolled teardown seam", () => {
 		warn.mockRestore();
 	});
 });
+
+describe("FLY-2465 quota direct intake", () => {
+	it.each([true, false])(
+		"persists quota before terminal return; generalized=%s",
+		async (generalized) => {
+			const { store, sink } = await harness();
+			if (generalized) {
+				const seed = legacyWorkflowSeeds().find(
+					(candidate) => candidate.templateId === "tpl_eng_heavy",
+				)!;
+				const env = {
+					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+				};
+				store.importWorkflowTemplateSeed(seed);
+				store.materializeWorkflowRun({
+					runId: "run-teardown",
+					issueId: "FLY-1335",
+					projectName: "flywheel",
+					taskCategory: "code",
+					templateId: seed.templateId,
+					claimsReadEnrolled: true,
+					actor: "lead",
+					env,
+					startReservation: {
+						idempotencyKey: "teardown-start",
+						selectionDigest: "teardown-selection",
+						nodeId: "design",
+						attempt: 1,
+						executionId: "teardown-exec",
+						createdAt: "2026-07-20T00:00:00.000Z",
+					},
+				});
+				store.upsertWorkflowRunNode({
+					runId: "run-teardown",
+					nodeId: "design",
+					attempt: 1,
+					state: "running",
+					executionId: "teardown-exec",
+				});
+				expect(
+					store.admitGeneralizedWorkflowExecution({
+						runId: "run-teardown",
+						nodeId: "design",
+						executionId: "teardown-exec",
+						attempt: 1,
+						now: "2026-07-20T00:01:00.000Z",
+						expiresAt: "2026-07-20T01:00:00.000Z",
+						absoluteDeadlineAt: "2026-07-21T00:00:00.000Z",
+						env,
+					}),
+				).toMatchObject({ ok: true });
+				store.upsertSession({
+					execution_id: "teardown-exec",
+					issue_id: "FLY-1335",
+					project_name: "flywheel",
+					status: "running",
+					workflow_node_id: "design",
+				});
+			} else {
+				store.upsertSession({
+					execution_id: "teardown-exec",
+					issue_id: "FLY-1335",
+					project_name: "flywheel",
+					status: "running",
+				});
+			}
+			store.codexQuota.registerBinding({
+				bindingId: "quota-binding",
+				executionId: "teardown-exec",
+				runId: generalized ? "run-teardown" : null,
+				accountKey: "account",
+				profile: "business",
+				generation: 1,
+				credentialRootKey: "root",
+				purpose: "runner",
+			});
+			const quotaSignal = {
+				version: 1 as const,
+				vendor: "codex" as const,
+				source: "goal_ended" as const,
+				sourceEventId: "quota-event",
+				bindingId: "quota-binding",
+				evidence: "usageLimited" as const,
+				observedAt: "2026-09-09T17:16:00.000Z",
+			};
+			const failure = {
+				failureKind: "goal_usage_limited" as const,
+				failureReason: "goal ended non-complete: usageLimited",
+				quotaSignal,
+			};
+			const envelope = {
+				executionId: "teardown-exec",
+				issueId: "FLY-1335",
+				projectName: "flywheel",
+			};
+			await sink.emitFailed(
+				envelope,
+				"untrusted raw diagnostic",
+				undefined,
+				failure,
+			);
+			await sink.emitFailed(
+				envelope,
+				"untrusted raw diagnostic",
+				undefined,
+				failure,
+			);
+			expect(store.codexQuota.listIncidents()).toHaveLength(1);
+			expect(store.codexQuota.listTargets("codex:root:1")).toHaveLength(1);
+			expect(store.codexQuota.listOutbox()).toHaveLength(1);
+			expect(store.codexQuota.isExecutionPaused("teardown-exec")).toBe(true);
+			expect(store.getSession("teardown-exec")?.last_error).toBe(
+				failure.failureReason,
+			);
+		},
+	);
+	it("missing binding records one diagnostic without pausing legacy execution", async () => {
+		const { store, sink } = await harness();
+		store.upsertSession({
+			execution_id: "seam-1",
+			issue_id: "FLY-802",
+			project_name: "flywheel",
+			status: "running",
+		});
+		const failure = {
+			failureKind: "goal_usage_limited" as const,
+			failureReason: "goal ended non-complete: usageLimited",
+		};
+		await sink.emitFailed(baseEnv, "quota", undefined, failure);
+		await sink.emitFailed(baseEnv, "quota", undefined, failure);
+		expect(store.codexQuota.isExecutionPaused("seam-1")).toBe(false);
+		expect(store.codexQuota.listIncidents()).toHaveLength(0);
+		expect(store.codexQuota.listOutbox()).toHaveLength(1);
+		expect(store.codexQuota.listOutbox()[0]?.kind).toBe("lead_diagnostic");
+	});
+});

@@ -5,7 +5,7 @@ import {
 	readFileSync as ffReadFileSync,
 	realpathSync as voiceRealpathSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import {
 	dirname,
 	join,
@@ -29,6 +29,7 @@ import {
 	probeCodexDaemonLiveness,
 	probeCodexRolloutMtime,
 	type RunnerTuiWindowLostEvidence,
+	rawCodexBin,
 	readCodexGateHoldLatch,
 	readCodexLaunchSnapshot,
 	reapCodexDaemonForExecution,
@@ -37,6 +38,7 @@ import {
 	syncOpMarkerPath,
 	withSyncOpMarker,
 } from "flywheel-claude-runner";
+import { loadCodexAccountRegistry } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import { CommDB } from "flywheel-comm/db";
 import {
 	defaultGateMarkerDir,
@@ -93,6 +95,19 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
+import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
+import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
+import { createCodexQuotaHostCollector } from "../codex-quota/host-readiness.js";
+import { createCodexQuotaOutboxDelivery } from "../codex-quota/outbox.js";
+import { codexQuotaIdentityReader } from "../codex-quota/probe.js";
+import { createCodexQuotaRunRecovery } from "../codex-quota/run-recovery.js";
+import {
+	type CodexQuotaDispatcherWiring,
+	CodexQuotaRuntime,
+	createCodexQuotaFailureReporter,
+	initializeCodexQuotaRuntime,
+	wireCodexQuotaDispatcher,
+} from "../codex-quota/runtime.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import { generateEpicPage } from "../epic-page/generate.js";
 import { materializeEpicPage } from "../epic-page/materialize.js";
@@ -241,6 +256,7 @@ import {
 	createCredentialProbe,
 	reportCodexGlobalHealth,
 } from "./codex-global-health.js";
+import { createCodexQuotaRouter } from "./codex-quota-route.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import { CodexReviewIngest } from "./codex-review-ingest.js";
@@ -390,6 +406,7 @@ import {
 	storeAlertSystemEnabled,
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
+	storeCodexQuotaAutoSwitchEnabled,
 	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
@@ -1396,6 +1413,11 @@ export class SseBroadcaster {
 
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
+	codexQuota?: {
+		runtime?: CodexQuotaRuntime;
+		rootKey: string;
+		canRecover: (incidentId: string) => Promise<boolean>;
+	};
 	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
 	eventLoopAttribution?: {
 		healthSnapshot(): EventLoopHealthSnapshot;
@@ -1680,6 +1702,9 @@ export function createBridgeApp(
 	const app = express();
 	const capacityDeps = makeCapacitySnapshotDeps(store, config);
 	const flagStore = opts?.flagStore;
+	if (flagStore)
+		store.codexQuotaLaunchEnabled = () =>
+			storeCodexQuotaAutoSwitchEnabled(flagStore);
 	const eventRouterWorkflowCompletion = () =>
 		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
 	const workflowDecisionRoutes = () =>
@@ -2112,6 +2137,19 @@ export function createBridgeApp(
 	// credential, never the fleet ingest bearer. The head read route is a separate
 	// loopback-only fail-closed seam used by verify-approval; it is not credential
 	// authenticated and exposes only the execution's git SHA.
+	if (opts?.codexQuota)
+		app.use(
+			"/api/codex/quota",
+			createCodexQuotaRouter({
+				store,
+				ingestToken: config.ingestToken,
+				credential: async () => {
+					if (!opts.codexQuota?.runtime)
+						throw new Error("quota_runtime_unavailable");
+					return opts.codexQuota.runtime.credential();
+				},
+			}),
+		);
 	if (!config.ingestToken) {
 		app.post("/api/workflow/evidence-run", (_req, res) => {
 			res.status(503).json({
@@ -4645,6 +4683,8 @@ export function createBridgeApp(
 			config.chatThreadsEnabled,
 			staleBlockerGuard,
 			{
+				codexQuotaRootKey: () => opts?.codexQuota?.rootKey,
+				verifyCodexQuotaRecovery: opts?.codexQuota?.canRecover,
 				masterToken: config.apiToken,
 				scopedToken: config.geminiAgentToken,
 				confirmTokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
@@ -5083,6 +5123,8 @@ export async function startBridge(
 		else console.warn(message);
 	}
 	const flagStore = initializeFlagStore(store, process.env);
+	store.codexQuotaLaunchEnabled = () =>
+		storeCodexQuotaAutoSwitchEnabled(flagStore);
 	const databaseArchiveEnabled = (projectName: string): boolean => {
 		try {
 			return storeDatabaseArchiveEnabled(flagStore, projectName);
@@ -7318,10 +7360,198 @@ export async function startBridge(
 		},
 		nowMs: () => Date.now(),
 	});
+	const codexQuotaCanonicalHome = resolve(
+		process.env.FLYWHEEL_CODEX_SOURCE_HOME?.trim() || join(homedir(), ".codex"),
+	);
+	const codexQuotaStateRoot = join(
+		process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel"),
+		"codex-quota",
+	);
+	let codexQuotaRootKey = createHash("sha256")
+		.update(codexQuotaCanonicalHome)
+		.digest("hex");
+	let codexQuotaRuntime: CodexQuotaRuntime | undefined;
+	const codexQuotaOutboxHolder: { flush?: () => Promise<void> } = {};
+	let codexQuotaCanRecover: (incidentId: string) => Promise<boolean> =
+		async () => false;
+	const reportCodexQuotaFailure = createCodexQuotaFailureReporter({
+		host: hostname(),
+		log: (diagnostic) =>
+			console.warn("[Bridge] Codex quota rotation disabled", diagnostic),
+		alert: (diagnostic, eventId) => {
+			const receipt = leadInboxRuntime.enqueueInfraAlert(
+				INFRA_ALERT_OWNER_LEAD_ID,
+				{
+					leadId: INFRA_ALERT_OWNER_LEAD_ID,
+					projectName: projects[0]?.projectName ?? "flywheel",
+					eventId,
+					eventType: "workflow_engine_escalation",
+					title: "Codex rotation disabled; launches continue",
+					body: JSON.stringify(diagnostic),
+					severity: "warning",
+					episodeId: eventId,
+				},
+			);
+			if (!receipt.queued) throw new Error("quota_runtime_alert_not_queued");
+		},
+	});
+	codexQuotaRuntime = await initializeCodexQuotaRuntime(
+		() => !process.env.VITEST && storeCodexQuotaAutoSwitchEnabled(flagStore),
+		async () => {
+			store.codexQuota.backfillHistoricalQuotaFailures();
+			const canonicalHome = voiceRealpathSync(codexQuotaCanonicalHome);
+			codexQuotaRootKey = createHash("sha256")
+				.update(canonicalHome)
+				.digest("hex");
+			if (!config.apiToken) throw new Error("quota_api_token_missing");
+			const accountRegistry = loadCodexAccountRegistry();
+			const recovery = createCodexQuotaRunRecovery({
+				readiness: async () => (await codexQuotaRuntime?.readiness()) ?? false,
+				store,
+				bridgeUrl: buildLoopbackBaseUrl(config.host, config.port),
+				apiToken: config.apiToken,
+				canonicalHome,
+				identify: codexQuotaIdentityReader(accountRegistry),
+			});
+			codexQuotaCanRecover = recovery.canRecover;
+			codexQuotaRuntime = new CodexQuotaRuntime({
+				store,
+				canonicalHome,
+				profilesRoot: join(canonicalHome, "profiles"),
+				stateRoot: codexQuotaStateRoot,
+				rawBinary: rawCodexBin(),
+				registry: accountRegistry,
+				model: (incident) => {
+					for (const target of store.codexQuota.listTargets(
+						String(incident.incident_id),
+					)) {
+						let model: string | null | undefined;
+						if (target.target_kind === "review")
+							model = store.codexQuota.getReviewModel(String(target.target_id));
+						else {
+							try {
+								model = readCodexLaunchSnapshot(String(target.old_execution_id))
+									.launchContext.model;
+							} catch {
+								continue;
+							}
+						}
+						if (
+							model &&
+							/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(model) &&
+							!/spark/i.test(model)
+						)
+							return model;
+					}
+					throw new Error("quota_probe_model_unavailable");
+				},
+				limitId: "codex",
+				recover: recovery.recover,
+				autoEnabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
+				collectHomes: createCodexQuotaHostCollector({
+					canonicalHome,
+					homesRoot:
+						process.env.FLYWHEEL_CODEX_HOMES_ROOT?.trim() ||
+						join(homedir(), ".flywheel", "codex-homes"),
+					commRoot: commDbRootDir(),
+					projectNames: projects.map((p) => p.projectName),
+					approvedManifestPath: join(
+						codexQuotaStateRoot,
+						"readiness-receipt.json",
+					),
+					leadTargets: findResidentCodexLeadTargets(projects),
+					credentialIdentity: async (home) => {
+						const bytes = ffReadFileSync(join(home, "auth.json"), "utf8");
+						const token = JSON.parse(bytes)?.tokens?.refresh_token;
+						if (typeof token !== "string" || !token)
+							throw new Error("quota_refresh_identity_unavailable");
+						return {
+							...codexQuotaIdentityReader(accountRegistry)(bytes),
+							chainKey: createHash("sha256").update(token).digest("hex"),
+						};
+					},
+					leadAuthorityScript: join(
+						process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+							resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
+						"scripts",
+						"resident-codex-lead-recover.sh",
+					),
+				}),
+			});
+			if (!store.codexQuota.getRoot(codexQuotaRootKey))
+				await codexQuotaRuntime.credential();
+			return codexQuotaRuntime;
+		},
+		reportCodexQuotaFailure,
+	);
+
+	for (const dispatcher of new Set([startDispatcher, retryDispatcher]))
+		if (dispatcher)
+			wireCodexQuotaDispatcher(
+				dispatcher as CodexQuotaDispatcherWiring,
+				store,
+				codexQuotaRuntime,
+				codexQuotaRootKey,
+				{
+					enabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
+					report: reportCodexQuotaFailure,
+				},
+			);
+	const resumeDisabledCodexQuotaAdmissions = config.apiToken
+		? createCodexQuotaDisabledAdmissionReplay({
+				store,
+				enabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
+				report: reportCodexQuotaFailure,
+				post: async (path, body) => {
+					if (path !== "/api/runs/start")
+						throw new Error("quota_admission_replay_path_invalid");
+					const response = await fetch(
+						new URL(path, buildLoopbackBaseUrl(config.host, config.port)),
+						{
+							method: "POST",
+							redirect: "error",
+							headers: {
+								Authorization: `Bearer ${config.apiToken}`,
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify(body),
+							signal: AbortSignal.timeout(100_000),
+						},
+					);
+					const text = await response.text();
+					if (text.length > 65536)
+						throw new Error("quota_admission_replay_response_too_large");
+					const parsed: unknown = JSON.parse(text);
+					if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+						throw new Error("quota_admission_replay_response_invalid");
+					return {
+						status: response.status,
+						body: parsed as Record<string, unknown>,
+					};
+				},
+				liveness: async (executionId, projectName) => {
+					const { probeRunExecutionLiveness } = await import(
+						"./run-quiescence.js"
+					);
+					const result = await probeRunExecutionLiveness(
+						store.getSession(executionId),
+						executionId,
+						projectName,
+					);
+					return result === "alive"
+						? "alive"
+						: result === "dead"
+							? "dead"
+							: "unknown";
+				},
+			})
+		: undefined;
 	const workflowEngineDispatcher = startDispatcher
 		? new WorkflowEngineDispatcher({
 				store,
 				startDispatcher,
+				resumeDisabledCodexQuotaAdmissions,
+				codexQuotaRootKey: () => codexQuotaRootKey,
 				alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 				workflowReworkReentryEnabled: () =>
 					storeWorkflowReworkReentryEnabled(flagStore),
@@ -7488,6 +7718,11 @@ export async function startBridge(
 		standupService,
 		standupProjectName,
 		{
+			codexQuota: {
+				runtime: codexQuotaRuntime,
+				rootKey: codexQuotaRootKey,
+				canRecover: codexQuotaCanRecover,
+			},
 			vercelToken,
 			reportBlobStore,
 			reportRegistry: hostedReportRegistry,
@@ -10462,7 +10697,19 @@ export async function startBridge(
 		refreshShipRelevance,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
-		onLandOperationTick: landOperationTick,
+		onLandOperationTick: async () => {
+			await landOperationTick();
+			if (process.env.VITEST) return;
+			try {
+				await codexQuotaRuntime?.tick();
+			} finally {
+				await codexQuotaOutboxHolder.flush?.();
+				await projectCodexQuotaAudit(
+					store.codexQuota,
+					dirname(codexQuotaStateRoot),
+				);
+			}
+		},
 		onAutoNarrowGateTick: async () => {
 			const control = readAutoNarrowRuntimeControl(flagStore, "flywheel");
 			const controlAppliedAt = control.controlEventId
@@ -11141,6 +11388,33 @@ export async function startBridge(
 		// local paths so test alerts never land in the production queue/dead-letter
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
+	});
+	codexQuotaOutboxHolder.flush = createCodexQuotaOutboxDelivery({
+		store,
+		resolveLead: (executionId) => {
+			const session = store.getSession(executionId);
+			if (!session?.project_name || !session.issue_id) return undefined;
+			const run = store.getGeneralizedWorkflowNodeForExecution(executionId);
+			const identity = resolveWorkflowRunAlertIdentity({
+				store,
+				projects,
+				defaultLeadAgentId: config.defaultLeadAgentId,
+				projectName: session.project_name,
+				issueId: session.issue_id,
+				runId: run?.run.run_id ?? null,
+			});
+			return identity.leadResolution === "resolved"
+				? identity.leadId
+				: undefined;
+		},
+		enqueueLead: (envelope, content) =>
+			leadInboxRuntime.enqueueLeadEvent(envelope, content),
+		send: (payload, attempt) => leadAlertNotifier.alert(payload, attempt),
+		founderUserId:
+			deriveCanonicalFounderId(
+				config.discordOwnerUserId,
+				config.founderConsent?.founderUserId,
+			) ?? undefined,
 	});
 	tuiWindowAlertHolder.lost = async (evidence) => {
 		await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert(
@@ -13169,6 +13443,7 @@ export async function startBridge(
 		heartbeatService?.stop();
 		await residentReceiverSupervisor.stop();
 		gatePoller.stop();
+		await codexQuotaRuntime?.stop();
 		await eventLoopAttribution.stop();
 		// FLY-1188 §7.2 (R12 HIGH): stop accepting new review jobs and reap
 		// every detached Claude reviewer child — a clean restart must not leave

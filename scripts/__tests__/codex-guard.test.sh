@@ -793,11 +793,14 @@ if [[ "$install_rc" == "0" && -L "$current" \
   && -r "$current/codex-account-core.mjs" \
   && -r "$current/codex-account-core.d.mts" \
   && -r "$current/codex-account-registry.json" \
+  && -r "$current/codex-quota-client.mjs" \
+  && -r "$current/codex-account-install.mjs" \
+  && -r "$current/codex-account-install.d.mts" \
   && -x "$INSTALL_HOME/.local/bin/codex-with-fallback" \
   && -x "$INSTALL_HOME/.local/bin/codex-profile" ]]; then
-  pass "installer publishes the eight-file release and both global shims"
+  pass "installer publishes the eleven-file release and both global shims"
 else
-  fail "installer publishes the eight-file release and both global shims" "rc=$install_rc stderr=$(cat "$ROOT/install.stderr" 2>/dev/null)"
+  fail "installer publishes the eleven-file release and both global shims" "rc=$install_rc stderr=$(cat "$ROOT/install.stderr" 2>/dev/null)"
 fi
 if [[ "$(cat "$INSTALL_HOME/.local/bin/codex-with-fallback.bak" 2>/dev/null)" == "legacy-wrapper" ]]; then
   pass "installer preserves the original wrapper once"
@@ -879,12 +882,15 @@ mkdir -p "$UPGRADE_REPO/scripts/lib" \
 cp "$INSTALLER" "$UPGRADE_REPO/scripts/install-codex-guard.sh"
 cp "$REPO_ROOT/scripts/codex-with-fallback.sh" "$UPGRADE_REPO/scripts/codex-with-fallback.sh"
 cp "$REPO_ROOT/scripts/lib/codex-guard.sh" "$UPGRADE_REPO/scripts/lib/codex-guard.sh"
+cp "$REPO_ROOT/scripts/lib/codex-quota-client.mjs" "$UPGRADE_REPO/scripts/lib/codex-quota-client.mjs"
 cp "$REPO_ROOT/scripts/lib/kill-ledger.sh" \
   "$REPO_ROOT/scripts/lib/kill-ledger-append.mjs" \
   "$UPGRADE_REPO/scripts/lib/"
 cp "$REPO_ROOT/packages/claude-runner/bin/flywheel-codex-profile.mjs" \
   "$REPO_ROOT/packages/claude-runner/bin/codex-account-core.mjs" \
   "$REPO_ROOT/packages/claude-runner/bin/codex-account-core.d.mts" \
+  "$REPO_ROOT/packages/claude-runner/bin/codex-account-install.mjs" \
+  "$REPO_ROOT/packages/claude-runner/bin/codex-account-install.d.mts" \
   "$UPGRADE_REPO/packages/claude-runner/bin/"
 cp "$REPO_ROOT/packages/claude-runner/agents/codex-account-registry.json" \
   "$UPGRADE_REPO/packages/claude-runner/agents/"

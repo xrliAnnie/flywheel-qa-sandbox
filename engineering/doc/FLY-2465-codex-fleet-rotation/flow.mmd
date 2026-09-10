@@ -1,0 +1,17 @@
+flowchart TB
+  A["① 发现 Codex 额度耗尽<br/>记录本轮编号，合并受影响任务"] --> B["② 暂停无效换体<br/>旧任务不再反复重生"]
+  B --> C["③ 检查三个登记账号<br/>优先用最早重置的可用额度"]
+  C --> D{"可用账号？"}
+  D -->|有| E["④ 隔离目录真实请求一次<br/>不改正在使用的凭据"]
+  E --> F{"返回 ok 且账号正确？"}
+  F -->|通过| G["⑤ 安装统一凭据并记账"]
+  G --> H["⑥ 逐个结束旧运行，再启动新运行<br/>确认工作后向 Lead 汇总"]
+  F -->|失败| I["保持原账号，不重起<br/>只给 Lead 一条诊断"]
+  D -->|三号都满| J["只给 founder 一条告警<br/>到重置时间再检查"]
+  D -->|身份或网络不明| I
+  classDef normal fill:#eef5ff,stroke:#007aff,color:#1d1d1f
+  classDef good fill:#edf9ee,stroke:#34c759,color:#1d1d1f
+  classDef warn fill:#fff5e8,stroke:#ff9500,color:#1d1d1f
+  class A,B,C,D,E,F normal
+  class G,H good
+  class I,J warn

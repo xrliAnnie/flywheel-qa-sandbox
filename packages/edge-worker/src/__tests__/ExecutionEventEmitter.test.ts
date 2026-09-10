@@ -218,6 +218,32 @@ describe("TeamLeadClient", () => {
 		});
 	});
 
+	it("FLY-2465 emitFailed preserves the quota signal on the HTTP wire", async () => {
+		const failure = {
+			failureKind: "goal_usage_limited" as const,
+			failureReason: "goal ended non-complete: usageLimited",
+			quotaSignal: {
+				version: 1 as const,
+				vendor: "codex" as const,
+				source: "goal_ended" as const,
+				sourceEventId: "event-1",
+				bindingId: "binding-1",
+				evidence: "usageLimited" as const,
+				observedAt: "2026-09-09T17:16:00.000Z",
+			},
+		};
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitFailed(
+			makeEnvelope(),
+			failure.failureReason,
+			undefined,
+			failure,
+		);
+		expect(
+			(receivedBodies[0] as { payload: { failure: unknown } }).payload.failure,
+		).toEqual(failure);
+	});
+
 	it("FLY-2018: emitFailed preserves environment failure metadata on the wire", async () => {
 		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
 		await client.emitFailed(makeEnvelope(), "blocked", undefined, {

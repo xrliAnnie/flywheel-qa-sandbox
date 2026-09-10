@@ -6,6 +6,13 @@
  * is unit-testable independent of the (real-daemon) execute() wiring.
  */
 
+import { createHash } from "node:crypto";
+import {
+	CODEX_QUOTA_FAILURE_REASON,
+	parseCodexQuotaBindingV1,
+	type TerminalFailureInfo,
+} from "flywheel-core";
+
 import type { GoalRunResult } from "./codex-daemon-client.js";
 import {
 	GOAL_OBJECTIVE_MAX_CHARS,
@@ -211,4 +218,39 @@ export function classifyGoalOutcome(input: {
 	}
 	if (lastMessage !== undefined) classification.resultText = lastMessage;
 	return classification;
+}
+
+/** A launch binding is immutable; never derive incident identity from current auth. */
+export function goalQuotaFailure(input: {
+	outcome?: { result: GoalRunResult } | null;
+	caughtError?: unknown;
+	binding?: unknown;
+	executionId: string;
+	observedAt: string;
+}): TerminalFailureInfo | undefined {
+	if (
+		input.caughtError != null ||
+		input.outcome?.result.status !== "usageLimited"
+	)
+		return undefined;
+	const binding = parseCodexQuotaBindingV1(input.binding);
+	const trusted =
+		binding?.executionId === input.executionId && binding.purpose === "runner";
+	return {
+		failureKind: "goal_usage_limited",
+		failureReason: CODEX_QUOTA_FAILURE_REASON,
+		...(trusted
+			? {
+					quotaSignal: {
+						version: 1 as const,
+						vendor: "codex" as const,
+						source: "goal_ended" as const,
+						sourceEventId: `goal-ended:${createHash("sha256").update(binding.bindingId).digest("hex")}:usageLimited`,
+						bindingId: binding.bindingId,
+						evidence: "usageLimited" as const,
+						observedAt: input.observedAt,
+					},
+				}
+			: {}),
+	};
 }

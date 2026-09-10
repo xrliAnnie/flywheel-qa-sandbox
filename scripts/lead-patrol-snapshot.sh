@@ -535,6 +535,10 @@ if [ "$PANE_LIST_RC" -eq 0 ] && [ "$CONTINUITY_WRITE_READY" -eq 1 ]; then
 fi
 
 STEP2_FACTS="pane_count=$PANE_COUNT${STEP2_FACTS:+$'\n'}${STEP2_FACTS}"
+# Public quota audit projection only; existing pane findings retain their status.
+CODEX_SWITCH_FACT="$(node "$SCRIPT_DIR/lib/codex-quota-summary.mjs" --state-root "$STATE_DIR" 2>/dev/null)" || CODEX_SWITCH_FACT="CODEX_SWITCH unavailable"
+STEP2_FACTS="${STEP2_FACTS}${STEP2_FACTS:+$'\n'}${CODEX_SWITCH_FACT}"
+
 
 # Resolve a patrol fact's owner from the execution row first, then the current
 # issue cohort, then only the latest historical cohort. Every caller defines an

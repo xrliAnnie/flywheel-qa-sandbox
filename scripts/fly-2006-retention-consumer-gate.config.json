@@ -498,6 +498,13 @@
 			"disposition": "candidate_guarded"
 		},
 		{
+			"file": "packages/teamlead/src/bridge/codex-quota-store.ts",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
 			"file": "scripts/qa/fly2446-two-lead-run.mjs",
 			"relation": "mailbox",
 			"baseTable": "mailbox",

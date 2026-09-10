@@ -562,6 +562,7 @@ export interface BlueprintContext {
 		launchFingerprint?: string;
 	}) => "prune" | "keep";
 	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
+	beforeCodexDaemonStart?: AdapterExecutionContext["beforeCodexDaemonStart"];
 	// FLY-137 v1.27.2 — Lead override: explicit agent name; bypasses label-match dispatch
 	agentName?: string;
 	// FLY-137 v1.27.2 — Pre-normalized (lowercased) Linear labels passed by caller
@@ -3079,6 +3080,7 @@ export class Blueprint {
 				launchFingerprint: ctx.launchFingerprint,
 				workflowTmuxWindowAuthority: ctx.workflowTmuxWindowAuthority,
 				commitWorkflowLaunch: ctx.commitWorkflowLaunch,
+				beforeCodexDaemonStart: ctx.beforeCodexDaemonStart,
 				// FLY-142 PR 1.4: forward Agent Team transport identity so
 				// TmuxAdapter.tryBuildTransportSpawnConfig() actually fires
 				// (was dead code in QA E1 verify because none of these were
@@ -3153,7 +3155,10 @@ export class Blueprint {
 		// FLY-1279: a resident goal's explicit blocked terminal is authoritative.
 		// Commits may predate the impasse; neither GitResultChecker nor the
 		// DecisionLayer may turn that terminal into a successful completion.
-		if (result.failure?.failureKind === "goal_blocked") {
+		if (
+			result.failure?.failureKind === "goal_blocked" ||
+			result.failure?.failureKind === "goal_usage_limited"
+		) {
 			return {
 				success: false,
 				costUsd: result.costUsd,

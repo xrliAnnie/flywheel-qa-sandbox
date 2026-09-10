@@ -317,6 +317,32 @@ describe("FLY-2006 retention registry", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+	it("protects every quota recovery table including lazy canonical observations from retention deletion", () => {
+		const tables = [
+			"admission_wait",
+			"binding",
+			"canonical_observation",
+			"execution_pause",
+			"external_generation",
+			"incident",
+			"install_material",
+			"legacy_start",
+			"observation",
+			"outbox",
+			"outbox_attempt",
+			"review_model",
+			"root",
+			"switch_audit",
+			"target",
+		].map((name) => `codex_quota_${name}`);
+		expect(() => assertNoUnclassifiedSchema("teamlead", tables)).not.toThrow();
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toEqual(
+			expect.arrayContaining(tables),
+		);
+		for (const table of tables)
+			expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).not.toContain(table);
+	});
+
 	it("classifies the current production schemas created for both live database families", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2006-live-schema-"));
 		const teamleadPath = join(root, "teamlead.db");
@@ -514,7 +540,7 @@ describe("FLY-2006 retention registry", () => {
 		);
 		expect(
 			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
-		).toHaveLength(127);
+		).toHaveLength(142);
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toEqual(
 			expect.arrayContaining([
 				"auto_merge_shadow_declaration",
@@ -568,13 +594,13 @@ describe("FLY-2006 retention registry", () => {
 
 		const teamleadNames = Object.values(TEAMLEAD_TABLE_CLASSIFICATION).flat();
 		const commNames = Object.values(COMM_TABLE_CLASSIFICATION).flat();
-		expect(new Set(teamleadNames).size).toBe(188);
+		expect(new Set(teamleadNames).size).toBe(203);
 		expect(TEAMLEAD_PRODUCTION_TABLES).toEqual([...teamleadNames].sort());
 		expect(new Set(commNames).size).toBe(28);
 		expect(
 			assertClassifiedSchema("teamlead", TEAMLEAD_PRODUCTION_TABLES),
 		).toMatchObject({
-			total: 188,
+			total: 203,
 		});
 		expect(
 			assertClassifiedSchema(
@@ -583,7 +609,7 @@ describe("FLY-2006 retention registry", () => {
 					(name) => !retiredNames.includes(name),
 				),
 			),
-		).toMatchObject({ total: 185 });
+		).toMatchObject({ total: 200 });
 		expect(assertClassifiedSchema("comm", commNames)).toMatchObject({
 			total: 28,
 		});

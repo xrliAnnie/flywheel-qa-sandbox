@@ -1082,3 +1082,44 @@ describe("handleFlagApply", () => {
 		);
 	});
 });
+it("FLY-2465 stages/applies Codex rotation globally and refuses project scope", async () => {
+	const { deps, flagStore } = await makeManagedDeps();
+	expect(FlagStoreReaders.storeCodexQuotaAutoSwitchEnabled(flagStore)).toBe(
+		true,
+	);
+	const staged = handleFlagStage(
+		deps,
+		{
+			name: "codex_quota_auto_switch",
+			to: false,
+			project: "*",
+			op: "set",
+			reason: "pause automatic account installation",
+		},
+		"o",
+	);
+	expect(staged.code).toBe(200);
+	const body = staged.body as {
+		canonical: FlagStoreCanonical;
+		confirmToken: string;
+	};
+	expect(
+		handleFlagApply(deps, body.canonical, body.confirmToken, "o").code,
+	).toBe(200);
+	expect(FlagStoreReaders.storeCodexQuotaAutoSwitchEnabled(flagStore)).toBe(
+		false,
+	);
+	expect(
+		handleFlagStage(
+			deps,
+			{
+				name: "codex_quota_auto_switch",
+				to: true,
+				project: "flywheel",
+				op: "set",
+				reason: "invalid project scope",
+			},
+			"o",
+		).code,
+	).not.toBe(200);
+});

@@ -6,6 +6,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$SCRIPT_DIR/../packages/claude-runner"
+SOURCE_QUOTA_CLIENT="$SCRIPT_DIR/lib/codex-quota-client.mjs"
+SOURCE_ACCOUNT_INSTALL="$RUNNER_DIR/bin/codex-account-install.mjs"
+SOURCE_ACCOUNT_INSTALL_TYPES="$RUNNER_DIR/bin/codex-account-install.d.mts"
 SOURCE_WRAPPER="$SCRIPT_DIR/codex-with-fallback.sh"
 SOURCE_GUARD="$SCRIPT_DIR/lib/codex-guard.sh"
 SOURCE_KILL_LEDGER="$SCRIPT_DIR/lib/kill-ledger.sh"
@@ -67,7 +70,8 @@ fi
 for source_file in \
   "$SOURCE_WRAPPER" "$SOURCE_GUARD" "$SOURCE_KILL_LEDGER" \
   "$SOURCE_KILL_LEDGER_APPEND" "$SOURCE_PROFILE" \
-  "$SOURCE_CORE" "$SOURCE_CORE_TYPES" "$SOURCE_REGISTRY"; do
+  "$SOURCE_CORE" "$SOURCE_CORE_TYPES" "$SOURCE_REGISTRY" \
+  "$SOURCE_QUOTA_CLIENT" "$SOURCE_ACCOUNT_INSTALL" "$SOURCE_ACCOUNT_INSTALL_TYPES"; do
   [[ -f "$source_file" && ! -L "$source_file" ]] \
     || die "repo release source is missing or unsafe: $source_file"
 done
@@ -81,7 +85,13 @@ done
 "$node_bin" --check "$SOURCE_CORE" >/dev/null \
   || die "account core source failed node --check"
 
+"$node_bin" --check "$SOURCE_QUOTA_CLIENT" >/dev/null || die "quota client source failed node --check"
+"$node_bin" --check "$SOURCE_ACCOUNT_INSTALL" >/dev/null || die "account installer source failed node --check"
+
 content_hash="$({
+  shasum -a 256 "$SOURCE_QUOTA_CLIENT"
+  shasum -a 256 "$SOURCE_ACCOUNT_INSTALL"
+  shasum -a 256 "$SOURCE_ACCOUNT_INSTALL_TYPES"
   shasum -a 256 "$SOURCE_WRAPPER"
   shasum -a 256 "$SOURCE_GUARD"
   shasum -a 256 "$SOURCE_KILL_LEDGER"
@@ -100,7 +110,10 @@ if [[ ! -d "$release_dir" ]]; then
   stage="$RELEASES_DIR/.stage-$content_hash-$$"
   [[ ! -e "$stage" ]] || die "staging path already exists: $stage"
   mkdir "$stage" || die "cannot create release stage"
-  if ! cp "$SOURCE_WRAPPER" "$stage/codex-with-fallback.sh" \
+  if ! cp "$SOURCE_QUOTA_CLIENT" "$stage/codex-quota-client.mjs" \
+    || ! cp "$SOURCE_ACCOUNT_INSTALL" "$stage/codex-account-install.mjs" \
+    || ! cp "$SOURCE_ACCOUNT_INSTALL_TYPES" "$stage/codex-account-install.d.mts" \
+    || ! cp "$SOURCE_WRAPPER" "$stage/codex-with-fallback.sh" \
     || ! cp "$SOURCE_GUARD" "$stage/codex-guard.sh" \
     || ! cp "$SOURCE_KILL_LEDGER" "$stage/kill-ledger.sh" \
     || ! cp "$SOURCE_KILL_LEDGER_APPEND" "$stage/kill-ledger-append.mjs" \
@@ -115,12 +128,15 @@ if [[ ! -d "$release_dir" ]]; then
     "$stage/kill-ledger.sh" \
     "$stage/flywheel-codex-profile.mjs" \
     || { rm -rf "$stage" 2>/dev/null || true; die "cannot lock executable release modes"; }
-  chmod 444 "$stage/kill-ledger-append.mjs" "$stage/codex-account-core.mjs" \
+  chmod 444 "$stage/codex-quota-client.mjs" "$stage/codex-account-install.mjs" \
+    "$stage/codex-account-install.d.mts" "$stage/kill-ledger-append.mjs" "$stage/codex-account-core.mjs" \
     "$stage/codex-account-core.d.mts" "$stage/codex-account-registry.json" \
     || { rm -rf "$stage" 2>/dev/null || true; die "cannot lock data release modes"; }
   /bin/bash -n "$stage/codex-with-fallback.sh" \
     && /bin/bash -n "$stage/codex-guard.sh" \
     && /bin/bash -n "$stage/kill-ledger.sh" \
+    && "$node_bin" --check "$stage/codex-quota-client.mjs" >/dev/null \
+    && "$node_bin" --check "$stage/codex-account-install.mjs" >/dev/null \
     && "$node_bin" --check "$stage/kill-ledger-append.mjs" >/dev/null \
     && "$node_bin" --check "$stage/flywheel-codex-profile.mjs" >/dev/null \
     && "$node_bin" --check "$stage/codex-account-core.mjs" >/dev/null \
@@ -237,14 +253,19 @@ release_shape() {
     printf 'legacy\n'
     return 0
   fi
-  if [[ "$entry_count" == "6" || "$entry_count" == "8" ]]; then
+  if [[ "$entry_count" == "6" || "$entry_count" == "8" || "$entry_count" == "11" ]]; then
     local name
     for name in codex-with-fallback.sh codex-guard.sh flywheel-codex-profile.mjs \
       codex-account-core.mjs codex-account-core.d.mts codex-account-registry.json; do
       [[ -f "$candidate/$name" && ! -L "$candidate/$name" ]] || return 1
     done
-    if [[ "$entry_count" == "8" ]]; then
+    if [[ "$entry_count" == "8" || "$entry_count" == "11" ]]; then
       for name in kill-ledger.sh kill-ledger-append.mjs; do
+        [[ -f "$candidate/$name" && ! -L "$candidate/$name" ]] || return 1
+      done
+    fi
+    if [[ "$entry_count" == "11" ]]; then
+      for name in codex-quota-client.mjs codex-account-install.mjs codex-account-install.d.mts; do
         [[ -f "$candidate/$name" && ! -L "$candidate/$name" ]] || return 1
       done
     fi
@@ -292,7 +313,9 @@ for old_release in "$RELEASES_DIR"/*; do
       "$old_release/kill-ledger.sh" "$old_release/kill-ledger-append.mjs" \
       "$old_release/codex-account-core.mjs" \
       "$old_release/codex-account-core.d.mts" \
-      "$old_release/codex-account-registry.json" 2>/dev/null || continue
+      "$old_release/codex-account-registry.json" \
+      "$old_release/codex-quota-client.mjs" "$old_release/codex-account-install.mjs" \
+      "$old_release/codex-account-install.d.mts" 2>/dev/null || continue
   fi
   for current_residue in "$old_release"/.current-*; do
     [[ -L "$current_residue" ]] || continue

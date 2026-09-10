@@ -1,3 +1,5 @@
+import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
+import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	existsSync,
@@ -2434,6 +2436,15 @@ export interface VoiceSessionReservation {
 export class StateStore {
 	private db: CompatDb;
 	private dbPath: string;
+	get codexQuota(): CodexQuotaStore { return new CodexQuotaStore(this.db.raw); }
+	/** Live launch policy only; quota facts and dead-execution retry guards remain intact. */
+	codexQuotaLaunchEnabled: () => boolean = () => true;
+	isCodexQuotaLaunchPaused(executionId: string, rootKey?: string): boolean {
+		if (!this.codexQuotaLaunchEnabled()) return false;
+		return this.codexQuota.isExecutionPaused(executionId) ||
+			(rootKey !== undefined && this.codexQuota.isPaused(rootKey));
+	}
+
 
 	static canonicalizeHoldResume(
 		value: unknown,
@@ -3274,6 +3285,7 @@ export class StateStore {
 	static async create(dbPath: string): Promise<StateStore> {
 		const store = new StateStore(StateStore.openDatabase(dbPath), dbPath);
 		store.migrate();
+		store.codexQuota.migrate();
 		return store;
 	}
 
@@ -30415,6 +30427,124 @@ export class StateStore {
 	 * reservation from the active run (`run_id` is UNIQUE on the append-only
 	 * reservation table).
 	 */
+	/** Resolve only the pre-existing immutable start reservation; never admit a new run here. */
+	getCodexQuotaAdmissionWaitContext(startKey: string) {
+		const waiter=this.codexQuota.getAdmissionWait(startKey);
+		if(!waiter || typeof waiter.request_context!=="string" || waiter.request_context.length>65536)throw new Error("quota_waiter_missing");
+		const request=JSON.parse(waiter.request_context) as Record<string,unknown>;
+		if(!request || Array.isArray(request) || request.idempotencyKey!==startKey || typeof request.issueId!=="string" || typeof request.projectName!=="string")throw new Error("quota_waiter_context_invalid");
+		let stopped=false;
+		if(typeof waiter.run_id==="string") {
+			const reservation=this.getWorkflowStartReservation(startKey),run=this.getWorkflowRun(waiter.run_id);
+			if(!reservation || reservation.run_id!==waiter.run_id || reservation.execution_id!==waiter.execution_id || !run || run.issue_id!==request.issueId || run.project_name!==request.projectName)throw new Error("quota_waiter_reservation_conflict");
+			stopped=run.status!=="active";
+		} else {
+			const reservation=this.workflowSelectAll("SELECT * FROM codex_quota_legacy_start WHERE start_key=?",[startKey])[0];
+			if(!reservation || reservation.execution_id!==waiter.execution_id || reservation.request_context!==waiter.request_context)throw new Error("quota_waiter_reservation_conflict");
+		}
+		const session=this.getSession(String(waiter.execution_id));
+		if(session && !["running","starting"].includes(session.status))stopped=true;
+		return {waiter,request,stopped};
+	}
+
+	/** Late casualties retain their original signal attribution but need today's same-root proof. */
+	getCodexQuotaRecoveryPermit(incidentId: string): Record<string,unknown> | undefined {
+		const incident = this.codexQuota.getIncident(incidentId);
+		if (!incident) return undefined;
+		const rootKey = String(incident.root_key), root = this.codexQuota.getRoot(rootKey);
+		if (!root || this.codexQuota.isPaused(rootKey)) return undefined;
+		return this.codexQuota.listIncidents().find((candidate) => {
+			if(candidate.root_key!==rootKey || candidate.installed_generation!==root.generation || candidate.probe_result!=="ok" || !["committed","recovering","settled"].includes(String(candidate.state)))return false;
+			const material=this.codexQuota.getInstallationMaterial(String(candidate.incident_id));
+			return material?.accountKey===root.accountKey && material.profile===root.profile && material.installedAuthDigest===candidate.installed_auth_digest;
+		});
+	}
+
+	/** Original installation proof is immutable; token refresh observes bytes without changing identity generation. */
+	observeCodexQuotaCanonicalCredential(input: {incidentId:string;generation:number;accountKey:string;profile:string;authDigest:string}): void {
+		this.db.transaction(() => {
+			const incident = this.codexQuota.getIncident(input.incidentId);
+			const root = incident && this.codexQuota.getRoot(String(incident.root_key));
+			if (!incident || incident.probe_result !== "ok" || !["committed","recovering","settled"].includes(String(incident.state)) ||
+				!root || root.generation !== input.generation || root.generation !== incident.installed_generation || root.accountKey !== input.accountKey || root.profile !== input.profile || !/^[0-9a-f]{64}$/.test(input.authDigest))
+				throw new Error("quota_canonical_observation_conflict");
+			this.db.run("CREATE TABLE IF NOT EXISTS codex_quota_canonical_observation(incident_id TEXT NOT NULL,generation INTEGER NOT NULL,auth_digest TEXT NOT NULL,reason TEXT NOT NULL,observed_at TEXT NOT NULL,PRIMARY KEY(incident_id,generation,auth_digest))");
+			this.db.run("INSERT OR IGNORE INTO codex_quota_canonical_observation VALUES(?,?,?,'same_account_refresh',?)",[input.incidentId,input.generation,input.authDigest,new Date().toISOString()]);
+		});
+	}
+
+	/** Server-owned quota target reference. Client input never supplies a workflow snapshot. */
+	getCodexQuotaRecoveryContext(recoveryId: string) {
+		const target = this.workflowSelectAll(
+			"SELECT * FROM codex_quota_target WHERE target_kind='runner' AND incident_id || ':runner:' || target_id = ?",
+			[recoveryId],
+		)[0];
+		if (!target || typeof target.run_id !== "string") throw new Error("quota_recovery_target_missing");
+		const incident = this.codexQuota.getIncident(String(target.incident_id));
+		const run = this.getWorkflowRun(target.run_id);
+		const binding = this.workflowSelectAll(
+			"SELECT * FROM codex_quota_binding WHERE execution_id=? AND run_id=? AND purpose='runner' AND root_key=? AND generation=?",
+			[String(target.old_execution_id), target.run_id, String(incident?.root_key ?? ""), Number(incident?.generation ?? 0)],
+		)[0];
+		if (!incident || !run?.snapshot || !binding) throw new Error("quota_recovery_provenance_missing");
+		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		const sourceNode = this.workflowSelectAll("SELECT node_id FROM workflow_run_node WHERE run_id=? AND execution_id=? ORDER BY attempt DESC LIMIT 1",[run.run_id,String(target.old_execution_id)])[0];
+		const nodeId = typeof target.node_id === "string" ? target.node_id : sourceNode?.node_id;
+		if(!sourceNode || sourceNode.node_id!==nodeId || (run.status!=="terminated" && run.current_node_id!==nodeId)) throw new Error("quota_recovery_source_advanced");
+		const node = snapshot.resolved.nodes.find((n) => n.id === nodeId);
+		if (!node || node.dispatch?.vendor !== "codex") throw new Error("quota_recovery_node_invalid");
+		const terminationKey = `codex-quota:${String(incident.incident_id)}:${run.run_id}:terminate`;
+		const events = this.listWorkflowRunEvents(run.run_id);
+		const ownTermination = events.some((event) => event.kind === "run_terminated_by_operator" &&
+			(event.payload as { clientRequestId?: string } | undefined)?.clientRequestId === terminationKey);
+		const operatorStopped = events.some((event) =>
+			["run_held_by_operator", "run_terminated_by_operator", "run_completed"].includes(event.kind) &&
+			(event.payload as { clientRequestId?: string } | undefined)?.clientRequestId !== terminationKey &&
+			Date.parse(event.at) >= Date.parse(String(incident.first_seen_at))) ||
+			["completed", "cancelled"].includes(run.status) || (run.status === "terminated" && !ownTermination);
+		return { target, incident, run, snapshot, node, ownTermination, operatorStopped };
+	}
+
+	/** Atomically freeze the original node and snapshot into the normal launch reservation. */
+	reserveCodexQuotaRecoveryStart(input: { recoveryId: string; startKey: string }) {
+		let replayed = false;
+		let newRunId = "";
+		this.db.transaction(() => {
+			const context = this.getCodexQuotaRecoveryContext(input.recoveryId);
+			const { target, incident, run, node, operatorStopped, ownTermination } = context;
+			const root = this.codexQuota.getRoot(String(incident.root_key));
+			const permit = this.getCodexQuotaRecoveryPermit(String(incident.incident_id));
+			if (operatorStopped || !ownTermination || run.status !== "terminated" ||
+				!permit || root?.generation !== permit.installed_generation ||
+				input.startKey !== `codex-quota:${String(incident.incident_id)}:${run.run_id}:start`)
+				throw new Error("quota_recovery_authority_refused");
+			const prior = this.getWorkflowStartReservation(input.startKey);
+			if (prior) {
+				if (prior.run_id !== target.new_run_id || prior.execution_id !== target.new_execution_id ||
+					this.getWorkflowRun(prior.run_id)?.status !== "active") throw new Error("quota_recovery_replay_conflict");
+				newRunId = prior.run_id; replayed = true; return;
+			}
+			if (this.getActiveWorkflowRunForIssue(run.issue_id)) throw new Error("quota_recovery_successor_exists");
+			const active = this.getActiveSessions().find((session) => session.issue_id === run.issue_id && session.project_name === run.project_name);
+			if (active) throw new Error("quota_recovery_live_session");
+			newRunId = randomUUID();
+			const executionId = randomUUID(), now = new Date().toISOString();
+			this.db.run(`INSERT INTO workflow_run
+				(run_id,issue_id,project_name,template_id,template_revision,snapshot,claims_read_enrolled,engine_owned,current_node_id,selection_source,selected_by,selection_reason,entry_kind,task_category,category_source,tier,gate_carrier_epoch)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				[newRunId,run.issue_id,run.project_name,run.template_id,run.template_revision,run.snapshot,run.claims_read_enrolled,1,node.id,run.selection_source,run.selected_by,run.selection_reason,run.entry_kind ?? "workflow_v2",run.task_category,run.category_source,run.tier,run.gate_carrier_epoch]);
+			this.captureWorkflowRunIssueAliasesTx(newRunId,run.project_name,run.issue_id);
+			this.db.run("INSERT INTO workflow_start_reservation VALUES(?,?,?,?,?,?,?)",[input.startKey,canonicalSubmissionDigest({ recoveryId: input.recoveryId, snapshotDigest: context.snapshot.snapshot_digest, nodeId: node.id }),newRunId,node.id,1,executionId,now]);
+			this.db.run("INSERT INTO workflow_start_stage VALUES(?,'materialized',?)",[input.startKey,now]);
+			this.allocateWorkflowLaunchOrdinalTx(newRunId,node.id,1,executionId);
+			this.upsertWorkflowRunNodeTx({runId:newRunId,nodeId:node.id,attempt:1,state:"pending",executionId});
+			this.codexQuota.updateTarget(String(incident.incident_id),"runner",String(target.target_id),{start_key:input.startKey,new_run_id:newRunId,new_execution_id:executionId});
+			this.appendWorkflowRunEventCheckedTx({runId:newRunId,eventUid:`quota_recovery:${input.recoveryId}`,kind:"quota_recovery_reserved",nodeId:node.id,executionId,payload:{sourceRunId:run.run_id,incidentId:incident.incident_id,snapshotDigest:context.snapshot.snapshot_digest}});
+		});
+		this.save();
+		return { runId: newRunId, replayed };
+	}
+
 	getWorkflowStartReservationForRun(
 		runId: string,
 	): WorkflowStartReservationRow | undefined {
@@ -33066,6 +33196,7 @@ export class StateStore {
 		markerPath: string;
 		now: string;
 	}): { ok: true; token: string } | { ok: false; reason: string } {
+		if(this.isCodexQuotaLaunchPaused(input.executionId)) return {ok:false,reason:"codex_quota_paused"};
 		if (this.getWorkflowLaunchCancellation(input.executionId)) {
 			return { ok: false, reason: "launch_cancelled" };
 		}
@@ -33096,6 +33227,7 @@ export class StateStore {
 		let committed = false;
 		let cancelled = false;
 		this.db.transaction(() => {
+			if(this.isCodexQuotaLaunchPaused(input.executionId)) return;
 			if (this.getWorkflowLaunchCancellation(input.executionId)) {
 				cancelled = true;
 				return;
@@ -33161,6 +33293,7 @@ export class StateStore {
 			reason: "fence_rejected",
 		};
 		this.db.transaction(() => {
+			if(this.isCodexQuotaLaunchPaused(input.executionId)) { result={ok:false,reason:"codex_quota_paused"}; return; }
 			if (this.getWorkflowLaunchCancellation(input.executionId)) {
 				result = { ok: false, reason: "launch_cancelled" };
 				return;
@@ -36380,6 +36513,7 @@ export class StateStore {
 
 	/** One fail-closed admission seam for typed engine and generalized executions. */
 	admitGeneralizedWorkflowExecution(input: {
+		codexQuotaRootKey?: string;
 		runId: string;
 		nodeId: string;
 		executionId: string;
@@ -36489,6 +36623,8 @@ export class StateStore {
 			}
 		}
 
+		const quotaPaused = () => resolvedDispatch.vendor === "codex" && this.isCodexQuotaLaunchPaused(input.executionId, input.codexQuotaRootKey);
+		if (quotaPaused()) return {ok:false,reason:"codex_quota_paused"};
 		const actor = this.getWorkflowActor(input.executionId);
 		if (
 			actor &&
@@ -36550,9 +36686,11 @@ export class StateStore {
 			return { ok: false, reason: reservationBlocker };
 		}
 
+		let quotaRefused = false;
 		let outputCredential: string | undefined;
 		let submissionCredential: string | undefined;
 		this.db.transaction(() => {
+			if(quotaPaused()) {quotaRefused=true;return;}
 			this.appendWorkflowEngineParkEventTx({
 				eventId: `engine-park-clear:${activationId}`,
 				projectName: run.project_name,
@@ -36830,6 +36968,7 @@ export class StateStore {
 				);
 			}
 		});
+		if(quotaRefused) return {ok:false,reason:"codex_quota_paused"};
 		this.save();
 		return {
 			ok: true,
@@ -38086,11 +38225,33 @@ export class StateStore {
 	 * any legacy completion hooks. The lifecycle event, fixed terminal session
 	 * projection, and teardown fact share one SQLite commit.
 	 */
+	recordLegacyCodexQuotaFailure(input:{executionId:string;sourceEventId:string;issueId:string;projectName:string;source:string;quotaSignal?:CodexQuotaSignalV1;now?:string}):{ok:true;idempotentReplay:boolean}|{ok:false;reason:string} {
+		const signal=input.quotaSignal === undefined ? undefined : parseCodexQuotaSignalV1(input.quotaSignal);
+		if (!input.executionId || !input.sourceEventId || !input.issueId || !input.projectName || (input.quotaSignal!==undefined && !signal)) return {ok:false,reason:"invalid_quota_signal"};
+		if(signal) {
+			const binding=this.codexQuota.getBinding(signal.bindingId);
+			if(!binding || binding.executionId!==input.executionId || binding.purpose!==(signal.source==="goal_ended"?"runner":"review")) return {ok:false,reason:"quota_binding_mismatch"};
+		}
+		return this.db.raw.transaction(() => {
+			const prior=this.workflowSelectAll("SELECT * FROM session_events WHERE event_id=?",[input.sourceEventId])[0];
+			const payload={failureKind:"goal_usage_limited",...(signal?{quotaSignal:signal}:{})};
+			if(prior) {
+				if(prior.execution_id!==input.executionId || prior.event_type!=="session_failed" || canonicalSubmissionDigest(JSON.parse(String(prior.payload)))!==canonicalSubmissionDigest(payload)) return {ok:false as const,reason:"terminal_signal_conflict"};
+				return {ok:true as const,idempotentReplay:true};
+			}
+			this.codexQuota.recordSignal({executionId:input.executionId,bindingId:signal?.bindingId,now:input.now});
+			this.db.run("INSERT INTO session_events(event_id,execution_id,issue_id,project_name,event_type,severity,payload,source) VALUES(?,?,?,?,'session_failed','info',?,?)",[input.sourceEventId,input.executionId,input.issueId,input.projectName,JSON.stringify(payload),input.source]);
+			this.upsertSession({execution_id:input.executionId,issue_id:input.issueId,project_name:input.projectName,status:"failed",last_error:"goal ended non-complete: usageLimited"});
+			return {ok:true as const,idempotentReplay:false};
+		})();
+	}
+
 	recordEnrolledTerminalSignal(input: {
 		executionId: string;
 		sourceEventId: string;
 		signal: "completed" | "failed";
 		failureKind?: string;
+		quotaSignal?: CodexQuotaSignalV1;
 		failureClass?: "environment";
 		failureCode?: string;
 		lastError?: string;
@@ -38119,6 +38280,12 @@ export class StateStore {
 			!StateStore.workflowFiniteTimestamp(now)
 		) {
 			return { ok: false, reason: "invalid_terminal_signal" };
+		}
+		const quotaSignal = input.quotaSignal === undefined ? undefined : parseCodexQuotaSignalV1(input.quotaSignal);
+		if (input.quotaSignal !== undefined && (!quotaSignal || input.signal !== "failed" || input.failureKind !== "goal_usage_limited")) return {ok:false,reason:"invalid_quota_signal"};
+		if (quotaSignal) {
+			const binding = this.codexQuota.getBinding(quotaSignal.bindingId);
+			if (!binding || binding.executionId !== input.executionId || (quotaSignal.source === "goal_ended" ? binding.purpose !== "runner" : binding.purpose !== "review")) return {ok:false,reason:"quota_binding_mismatch"};
 		}
 		const context = this.generalizedExecutionContext(input.executionId);
 		if (!context) return { ok: false, reason: "not_enrolled" };
@@ -38168,6 +38335,7 @@ export class StateStore {
 					priorEvent.source !== input.source ||
 					!priorPayload ||
 					(priorPayload.failureKind ?? null) !== (input.failureKind ?? null) ||
+					canonicalSubmissionDigest(priorPayload.quotaSignal ?? null) !== canonicalSubmissionDigest(quotaSignal ?? null) ||
 					(priorPayload.lastError ?? null) !== (input.lastError ?? null) ||
 					(priorPayload.failureClass ?? null) !==
 						(failureClassification?.failureClass ?? null) ||
@@ -38184,6 +38352,9 @@ export class StateStore {
 					isNoOutEdgeTerminalStatus(currentStatus) && currentStatus !== status;
 				return;
 			} else {
+				if (input.failureKind === "goal_usage_limited") {
+					this.codexQuota.recordSignal({executionId:input.executionId,bindingId:quotaSignal?.bindingId,nodeId:context.binding.node_id,now});
+				}
 				const canonical =
 					this.getWorkflowExecutionTerminalFailureCanonical(input.executionId);
 				if (
@@ -38209,6 +38380,7 @@ export class StateStore {
 						eventType,
 						JSON.stringify({
 							failureKind: input.failureKind ?? null,
+							...(quotaSignal ? {quotaSignal} : {}),
 							lastError: input.lastError ?? null,
 							...(failureClassification ?? {}),
 						}),
@@ -48491,6 +48663,10 @@ export class StateStore {
 			reason: "rollback_not_committed",
 		};
 		this.db.transaction(() => {
+			if (this.codexQuota.isExecutionPaused(input.deadExecutionId)) {
+				result = { ok: false, reason: "codex_quota_paused" };
+				return;
+			}
 			const eventUid = `dead_rollback:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`;
 			const prior = this.workflowSelectAll(
 				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
@@ -72358,6 +72534,7 @@ export type GeneralizedWorkflowAdmissionResult =
 	| {
 			ok: false;
 			reason:
+				| "codex_quota_paused"
 				| "invalid_expiry"
 				| "run_not_found"
 				| "invalid_snapshot"

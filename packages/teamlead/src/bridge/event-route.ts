@@ -712,6 +712,39 @@ export function createEventRouter(
 			}
 		}
 
+		const rawTerminalFailure =
+			event.event_type === "session_failed"
+				? event.payload?.failure
+				: undefined;
+		const normalizedTerminalFailure =
+			normalizeTerminalFailureInfo(rawTerminalFailure);
+		if (
+			rawTerminalFailure &&
+			typeof rawTerminalFailure === "object" &&
+			((rawTerminalFailure as Record<string, unknown>).failureKind ===
+				"goal_usage_limited" ||
+				(rawTerminalFailure as Record<string, unknown>).quotaSignal !==
+					undefined) &&
+			!normalizedTerminalFailure
+		) {
+			res.status(400).json({ error: "invalid_quota_signal" });
+			return;
+		}
+		const quotaFailure =
+			normalizedTerminalFailure?.failureKind === "goal_usage_limited"
+				? normalizedTerminalFailure
+				: undefined;
+		if (quotaFailure) {
+			const session = store.getSession(event.execution_id);
+			if (
+				!session ||
+				session.issue_id !== event.issue_id ||
+				session.project_name !== event.project_name
+			) {
+				res.status(409).json({ error: "quota_execution_ownership_mismatch" });
+				return;
+			}
+		}
 		let workflowNodeId: string | undefined;
 		if (
 			event.event_type === "session_started" ||
@@ -1368,11 +1401,12 @@ export function createEventRouter(
 					sourceEventId: event.event_id,
 					signal: "failed",
 					failureKind: failure?.failureKind,
+					quotaSignal: failure?.quotaSignal,
 					failureClass: failure?.failureClass,
 					failureCode: failure?.failureCode,
 					lastError:
-						failure?.failureKind === "goal_blocked"
-							? failure.failureReason
+						failure?.failureKind === "goal_blocked" || quotaFailure
+							? failure!.failureReason
 							: asString(event.payload?.error),
 					source:
 						typeof event.source === "string" ? event.source : "orchestrator",
@@ -1421,6 +1455,32 @@ export function createEventRouter(
 			}
 		}
 
+		if (quotaFailure) {
+			const recorded = store.recordLegacyCodexQuotaFailure({
+				executionId: event.execution_id,
+				sourceEventId: event.event_id,
+				issueId: event.issue_id,
+				projectName: event.project_name,
+				source:
+					typeof event.source === "string" ? event.source : "orchestrator",
+				quotaSignal: quotaFailure.quotaSignal,
+			});
+			if (!recorded.ok) {
+				res.status(409).json({
+					error: "quota_persistence_refused",
+					reason: recorded.reason,
+				});
+				return;
+			}
+			if (!recorded.idempotentReplay)
+				notifyEpicChanged(event.project_name, "session_failed");
+			res.json({
+				ok: true,
+				quotaPaused: true,
+				duplicate: recorded.idempotentReplay,
+			});
+			return;
+		}
 		// DAG verdicts are capability-backed engine decisions. The retired legacy
 		// event route must never acknowledge or persist a fresh qa_result.
 		if (event.event_type === "qa_result") {

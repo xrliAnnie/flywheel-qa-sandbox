@@ -33,6 +33,12 @@ The default view (`active_only=true`) shows `running` + `parked-alive`. A
    active session", that is usually exactly this case — check
    `runner_terminal_list`; if it's `parked-alive`, `send` to it instead of
    forcing a new run.
+4. `POST /api/runs/start` returning HTTP 202 `CODEX_QUOTA_QUEUED` means the
+   request is queued behind Codex quota recovery. Its run/execution ids identify
+   a reservation, not a working runner. Report it as queued; preserve the same
+   idempotency key for replay/status checks. Only report recovery after the
+   execution is `running` with current liveness evidence. Do not create another
+   start key or terminate a healthy run to bypass the quota pause.
 
 ## When terminate IS correct
 

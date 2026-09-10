@@ -865,6 +865,13 @@ jobs:
       - name: Test — FLY-1887 one-shot Codex hard timeout
         run: bash scripts/__tests__/codex-guard.test.sh
 
+      - name: Test — FLY-2465 isolated Codex quota contracts
+        run: |
+          bash scripts/__tests__/codex-quota-client.test.sh
+          node --test scripts/__tests__/codex-quota-client.test.mjs
+          bash scripts/__tests__/codex-quota-readiness-receipt.test.sh
+          bash scripts/__tests__/codex-quota-summary.test.sh
+
       # FLY-2404: shared credential truth provisioning, fenced shuttle cutover,
       # and conservative legacy-copy sweep. All three suites use fixture HOMEs,
       # fake process/Bridge authorities, and synthetic credentials only.

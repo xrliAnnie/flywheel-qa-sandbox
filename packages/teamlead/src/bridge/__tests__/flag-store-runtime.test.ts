@@ -14,6 +14,7 @@ import {
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
 	storeCodexMemoryDistillEnabled,
+	storeCodexQuotaAutoSwitchEnabled,
 	storeDatabaseArchiveEnabled,
 	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
@@ -179,6 +180,23 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		expect(storeCmuxRebindDisabled(runtime)).toBe(true);
 	});
 
+	it("FLY-2465 defaults Codex rotation on and observes store off and restore immediately", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeCodexQuotaAutoSwitchEnabled(runtime)).toBe(true);
+		for (const rawTo of ["0", null]) {
+			expect(
+				store.applyFlagValueChange({
+					name: "codex_quota_auto_switch",
+					rawTo,
+					expectedRevision: store.getFlagValueRow("codex_quota_auto_switch")!
+						.revision,
+					actor: "bridge-local-operator",
+					reason: "test quota rotation toggle",
+				}),
+			).toMatchObject({ ok: true });
+			expect(storeCodexQuotaAutoSwitchEnabled(runtime)).toBe(rawTo === null);
+		}
+	});
 	it("FLY-2177 keeps quota retry default-on and observes an off write without restart", () => {
 		const runtime = initializeFlagStore(store, {});
 		expect(storeReviewQuotaAutoRetryEnabled(runtime)).toBe(true);

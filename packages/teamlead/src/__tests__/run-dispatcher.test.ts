@@ -1762,3 +1762,68 @@ describe("FLY-1188: preRegistrationVendor()", () => {
 		expect(preRegistrationVendor({})).toBeUndefined();
 	});
 });
+
+describe("FLY-2465 dispatcher pre-auth hook", () => {
+	it.each(["start", "retry"] as const)("forwards on %s", async (lane) => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RunDispatcher(runtimes, []);
+		const callback = async () => ({
+			bindingId: "binding",
+			executionId: "exec",
+			runId: null,
+			accountKey: "account",
+			profile: "school",
+			generation: 1,
+			credentialRootKey: "root",
+			purpose: "runner" as const,
+		});
+		dispatcher.beforeCodexDaemonStart = callback;
+		if (lane === "start")
+			await dispatcher.start({
+				issueId: "FLY-2465",
+				projectName: "TestProject",
+			});
+		else
+			await dispatcher.dispatch({
+				oldExecutionId: "old-exec",
+				issueId: "FLY-2465",
+				projectName: "TestProject",
+				runAttempt: 1,
+			});
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(
+			vi.mocked(runtimes.get("TestProject")!.blueprint.run).mock.calls[0]?.[2]
+				?.beforeCodexDaemonStart,
+		).toBe(callback);
+	});
+});
+describe("FLY-2465 retry quota pause", () => {
+	it("refuses a quota-dead predecessor before Blueprint launch", async () => {
+		const runtimes = new Map([makeRuntime("TestProject")]);
+		const dispatcher = new RunDispatcher(runtimes, []);
+		dispatcher.executionQuotaPaused = (id) => id === "old-exec";
+		await expect(
+			dispatcher.dispatch({
+				oldExecutionId: "old-exec",
+				issueId: "FLY-2465",
+				projectName: "TestProject",
+				runAttempt: 1,
+			}),
+		).rejects.toThrow("codex_quota_paused");
+		expect(runtimes.get("TestProject")!.blueprint.run).not.toHaveBeenCalled();
+	});
+});
+it("FLY-2465 pauses resolved Codex fresh starts before lifecycle or Blueprint", async () => {
+	const runtimes = new Map([makeRuntime("TestProject")]);
+	const dispatcher = new RunDispatcher(runtimes, []);
+	dispatcher.codexQuotaAdmission = () => ({ rootKey: "root", generation: 1 });
+	await expect(
+		dispatcher.start({
+			issueId: "FLY-2465",
+			projectName: "TestProject",
+			dispatchVendor: "codex",
+			dispatchModel: "gpt-5.6-sol",
+		}),
+	).rejects.toMatchObject({ name: "CodexQuotaQueuedError", rootKey: "root" });
+	expect(runtimes.get("TestProject")!.blueprint.run).not.toHaveBeenCalled();
+});

@@ -157,6 +157,63 @@ describe("Blueprint Decision Layer Integration", () => {
 			result.failure,
 		);
 	});
+	it("FLY-2465: goal_usage_limited bypasses DecisionLayer even when commits exist", async () => {
+		const decisionLayer = makeMockDecisionLayer({ route: "auto_approve" });
+		const emitFailed = vi.fn(async () => {});
+		const blueprint = new Blueprint(
+			makeMockHydrator(),
+			makeMockGitChecker(),
+			() =>
+				makeMockAdapter({
+					success: false,
+					failure: {
+						failureKind: "goal_usage_limited",
+						failureReason: "goal ended non-complete: usageLimited",
+						quotaSignal: {
+							version: 1,
+							vendor: "codex",
+							source: "goal_ended",
+							sourceEventId: "event-1",
+							bindingId: "binding-1",
+							evidence: "usageLimited",
+							observedAt: "2026-09-09T17:16:00.000Z",
+						},
+					},
+				}),
+			makeMockShell(),
+			undefined,
+			undefined,
+			makeMockEvidenceCollector(),
+			undefined,
+			decisionLayer,
+			{
+				emitStarted: vi.fn(async () => {}),
+				emitWorktreeReady: vi.fn(async () => {}),
+				emitCompleted: vi.fn(async () => {}),
+				emitFailed,
+				emitHeartbeat: vi.fn(async () => {}),
+				flush: vi.fn(async () => {}),
+			},
+		);
+
+		const result = await blueprint.run(
+			{ id: "GEO-101", blockedBy: [] },
+			"/project",
+			makeContext(),
+		);
+
+		expect(decisionLayer.decide).not.toHaveBeenCalled();
+		expect(result.success).toBe(false);
+		expect(result.decision).toBeUndefined();
+		expect(result.failure?.failureKind).toBe("goal_usage_limited");
+		expect(result.failure?.quotaSignal?.bindingId).toBe("binding-1");
+		expect(emitFailed).toHaveBeenCalledWith(
+			expect.anything(),
+			"goal ended non-complete: usageLimited",
+			undefined,
+			result.failure,
+		);
+	});
 
 	it("auto_approve → success=true, window killed", async () => {
 		const shell = makeMockShell();
@@ -367,4 +424,32 @@ describe("Blueprint Decision Layer Integration", () => {
 		expect(execCtx.consecutiveFailures).toBe(2);
 		expect(execCtx.commitCount).toBe(2);
 	});
+});
+
+it("FLY-2465 forwards trusted pre-auth callback into the adapter context", async () => {
+	const callback = async () => ({
+		bindingId: "binding",
+		executionId: "test-exec-id",
+		runId: null,
+		accountKey: "account",
+		profile: "school",
+		generation: 1,
+		credentialRootKey: "root",
+		purpose: "runner" as const,
+	});
+	const adapter = makeMockAdapter();
+	const blueprint = new Blueprint(
+		makeMockHydrator(),
+		makeMockGitChecker(),
+		() => adapter,
+		makeMockShell(),
+	);
+	await blueprint.run(
+		{ id: "GEO-101", blockedBy: [] },
+		"/project",
+		makeContext({ beforeCodexDaemonStart: callback }),
+	);
+	expect(adapter.execute.mock.calls[0][0].beforeCodexDaemonStart).toBe(
+		callback,
+	);
 });

@@ -56,7 +56,7 @@ for f in restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh me
   flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
   flywheel-codex-lead-wrapper-codex-infra-bot.sh \
   flywheel-lead-attach.sh flywheel-view-attach.sh \
-  flywheel-node-status.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh; do
+  flywheel-node-status.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/codex-quota-summary.mjs; do
   [ -x "$PACKAGED_ASSEMBLY/scripts/$f" ] || closure_ok=0
 done
 if [ "$closure_ok" -eq 1 ]; then
@@ -85,7 +85,7 @@ mk_tree() {
   done
   for f in lib/script-sanity.sh lib/host-config.sh lib/supervisor.sh \
            lib/bounded-run.sh lib/discord-pointer-guard.sh \
-           lib/converge-nonlead-daemons.sh lib/lead-host-tmux-gate.sh; do
+           lib/converge-nonlead-daemons.sh lib/lead-host-tmux-gate.sh lib/codex-quota-summary.mjs; do
     cp -p "$REPO_ROOT/scripts/$f" "$dir/scripts/$f"
   done
   return 0
@@ -342,7 +342,7 @@ for f in flywheel-lead.sh flywheel-lead-wrapper-v2.sh \
   flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh \
   flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh \
   restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh \
-  lib/lead-host-tmux-gate.sh; do
+  lib/lead-host-tmux-gate.sh lib/codex-quota-summary.mjs; do
   cp -p "$T/scripts/$f" "$H/.flywheel/bin/$f"; chmod 555 "$H/.flywheel/bin/$f"
 done
 run_converge "$T" "$H"; rc=$?

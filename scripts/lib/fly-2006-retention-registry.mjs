@@ -34,7 +34,14 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		workflow_submission_credential workflow_turn_divergence_episode
 		workflow_terminal_archive
 	`),
+	// Quota tables retain current pause, recovery, install, and delivery references.
+	// No quota deletion policy is authorized by the fleet rotation change.
 	protectedCurrentOrReference: words(`
+		codex_quota_admission_wait codex_quota_binding codex_quota_canonical_observation
+		codex_quota_execution_pause codex_quota_external_generation codex_quota_incident
+		codex_quota_install_material codex_quota_legacy_start codex_quota_observation
+		codex_quota_outbox codex_quota_outbox_attempt codex_quota_review_model
+		codex_quota_root codex_quota_switch_audit codex_quota_target
 		account_switch_action_receipt admission_pause alert_delivery_receipts auto_merge_shadow_declaration
 		auto_merge_shadow_observation auto_narrow_control_event auto_narrow_decision_audit
 		auto_narrow_opinion_delivery auto_narrow_opinion_snapshot auto_qa_record cleanup_ref_observations

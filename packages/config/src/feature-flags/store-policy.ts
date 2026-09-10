@@ -154,6 +154,7 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 		name === "alert_system" ||
 		name === "review_quota_auto_retry" ||
 		name === "account_switch_wake_sweep" ||
+		name === "codex_quota_auto_switch" ||
 		name === "loop_profiler" ||
 		name === "shipped_husk_force" ||
 		name === "flag_retirement_scan" ||

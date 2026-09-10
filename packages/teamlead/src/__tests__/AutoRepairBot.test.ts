@@ -34,6 +34,29 @@ function makeBot(
 }
 
 describe("AutoRepairBot (FLY-368)", () => {
+	it("keeps Codex quota under its durable coordinator and never invokes Claude switching", async () => {
+		const accountSwitch = {
+			canAttempt: vi.fn(() => true),
+			enqueue: vi.fn(),
+			executeSwitch: vi.fn(),
+		};
+		const { bot } = makeBot({ accountSwitch });
+		const event = payload({
+			eventType: "usage_limit",
+			metadata: {
+				codexQuota: {
+					vendor: "codex",
+					incidentId: "codex:root:1",
+					generation: 1,
+				},
+			},
+		});
+		expect(bot.canAttempt(event)).toBe(false);
+		expect((await bot.attempt(event, "codex")).outcome).toBe("no_action");
+		expect(accountSwitch.canAttempt).not.toHaveBeenCalled();
+		expect(accountSwitch.enqueue).not.toHaveBeenCalled();
+	});
+
 	const CK = "flywheel|tadashi|pane_hash_stuck|";
 
 	it.each([

@@ -1,3 +1,4 @@
+import { CodexQuotaQueuedError } from "./retry-dispatcher.js";
 /**
  * FLY-22: RunDispatcher — IStartDispatcher + IRetryDispatcher implementation.
  *
@@ -567,6 +568,12 @@ export function assertDesignDispatchContract(
 }
 
 export class RetryDispatcher implements IRetryDispatcher {
+	codexQuotaAdmission?: (input: {
+		projectName: string;
+		executionId: string;
+	}) => { rootKey: string; generation: number } | undefined;
+	executionQuotaPaused?: (executionId: string) => boolean;
+	beforeCodexDaemonStart?: BlueprintContext["beforeCodexDaemonStart"];
 	protected inflight = new Map<string, InflightEntry>();
 	protected accepting = true;
 
@@ -766,6 +773,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 	}
 
 	private async dispatchInsideBarrier(req: RetryRequest): Promise<RetryResult> {
+		if (this.executionQuotaPaused?.(req.oldExecutionId))
+			throw new Error("codex_quota_paused");
 		this.assertRunnerAdmission();
 		if (!this.accepting) {
 			throw new Error("RetryDispatcher is shutting down");
@@ -1019,6 +1028,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 				}
 			}
 			const ctx: BlueprintContext = {
+				beforeCodexDaemonStart: this.beforeCodexDaemonStart,
 				teamName: "eng",
 				// FLY-1255: phase/model identity is composed once from the resolved spawn.
 				runnerName: runnerDisplayName(
@@ -1500,6 +1510,32 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.successorExecutionId ??
 			randomUUID();
 
+		const runnerSpawn = buildRunnerSpawnFields(
+			executionId,
+			req.leadId,
+			req.issueLabels,
+			runtime.rolesConfig,
+			req.generalizedExecution ? true : req.ignoreRunnerLabelSelection,
+			req.generalizedExecution?.dispatch.model ?? req.dispatchModel, // FLY-728 Part C
+			req.generalizedExecution?.dispatch.vendor ?? req.dispatchVendor, // FLY-1224/1281
+			req.generalizedExecution?.dispatch.effort ?? req.dispatchEffort,
+		);
+		if (
+			runnerSpawn.runnerBackend &&
+			adapterTypeToFamily(runnerSpawn.runnerBackend) === "codex"
+		) {
+			const quota = this.codexQuotaAdmission?.({
+				projectName: req.projectName,
+				executionId,
+			});
+			if (quota)
+				throw new CodexQuotaQueuedError(
+					executionId,
+					quota.rootKey,
+					quota.generation,
+				);
+		}
+
 		await this.admitDoaBackoff({
 			issueKey: req.issueId,
 			issueIdentifier: req.issueIdentifier,
@@ -1624,16 +1660,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// FLY-1188: resolved BEFORE the CommDB pre-registration so the pending
 			// row already carries the runner's transport vendor (pure function —
 			// no ordering dependency on the TURN grant / resume computation below).
-			const runnerSpawn = buildRunnerSpawnFields(
-				executionId,
-				req.leadId,
-				req.issueLabels,
-				runtime.rolesConfig,
-				req.generalizedExecution ? true : req.ignoreRunnerLabelSelection,
-				req.generalizedExecution?.dispatch.model ?? req.dispatchModel, // FLY-728 Part C
-				req.generalizedExecution?.dispatch.vendor ?? req.dispatchVendor, // FLY-1224/1281
-				req.generalizedExecution?.dispatch.effort ?? req.dispatchEffort,
-			);
+
 			const modelDisplay = renderRunnerModelDisplay({
 				vendor: runnerSpawn.runnerBackend
 					? adapterTypeToFamily(runnerSpawn.runnerBackend)
@@ -1718,6 +1745,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			}
 
 			const ctx: BlueprintContext = {
+				beforeCodexDaemonStart: this.beforeCodexDaemonStart,
 				teamName: "eng",
 				// FLY-1255: fresh starts use the same phase/model composition as retries.
 				runnerName: runnerDisplayName(

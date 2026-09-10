@@ -340,3 +340,14 @@ export interface IStartDispatcher {
 		| { ok: false; reason: "unknown_agent"; available: string[] }
 		| { ok: false; reason: "project_unknown" };
 }
+
+export class CodexQuotaQueuedError extends Error {
+	readonly name = "CodexQuotaQueuedError";
+	constructor(
+		readonly executionId: string,
+		readonly rootKey: string,
+		readonly generation: number,
+	) {
+		super("codex_quota_paused");
+	}
+}

@@ -12,6 +12,11 @@
  */
 
 import {
+	type AdapterExecutionContext,
+	type CodexQuotaBindingV1,
+	parseCodexQuotaBindingV1,
+} from "flywheel-core";
+import {
 	CodexDaemonClient,
 	CodexDaemonError,
 	type CodexDaemonEvents,
@@ -61,6 +66,8 @@ interface DyingDaemon {
 }
 
 export interface CodexDaemonGoalRuntimeOptions {
+	beforeCodexDaemonStart?: AdapterExecutionContext["beforeCodexDaemonStart"];
+	codexQuotaBinding?: CodexQuotaBindingV1;
 	executionId: string;
 	codexBin: string;
 	/**
@@ -197,6 +204,7 @@ export interface RunGoalInput {
 }
 
 export interface RunGoalOutcome {
+	quotaBinding?: CodexQuotaBindingV1;
 	threadId: string;
 	result: GoalRunResult;
 	/** How many same-account daemon restarts the run survived. */
@@ -219,6 +227,7 @@ function isTransportDeath(err: unknown): boolean {
  * re-entrant — a second concurrent `runGoal` is rejected.
  */
 export class CodexDaemonGoalRuntime {
+	private quotaBinding?: CodexQuotaBindingV1;
 	private readonly opts: CodexDaemonGoalRuntimeOptions;
 	private readonly log: (m: string) => void;
 	private readonly socketPath: string;
@@ -310,6 +319,41 @@ export class CodexDaemonGoalRuntime {
 		onSpawnIdentity?: (pgid: number) => void,
 	): Promise<DaemonSession> {
 		const codexHome = this.selectedCodexHome();
+		let binding: CodexQuotaBindingV1 | undefined;
+		if (this.opts.beforeCodexDaemonStart) {
+			try {
+				const result = await this.opts.beforeCodexDaemonStart(
+					codexHome,
+					this.opts.executionId,
+				);
+				if (result === null) {
+					// Explicit Bridge fallback: launch without quota enrollment.
+					this.quotaBinding = undefined;
+					this.log("Codex quota rotation disabled for this launch");
+				} else {
+					binding = parseCodexQuotaBindingV1(result);
+					const prior = this.quotaBinding ?? this.opts.codexQuotaBinding;
+					if (
+						!binding ||
+						binding.executionId !== this.opts.executionId ||
+						binding.purpose !== "runner" ||
+						(prior &&
+							(binding.credentialRootKey !== prior.credentialRootKey ||
+								binding.generation < prior.generation ||
+								(binding.generation === prior.generation &&
+									(binding.accountKey !== prior.accountKey ||
+										binding.profile !== prior.profile)) ||
+								(binding.bindingId === prior.bindingId &&
+									binding.generation !== prior.generation)))
+					)
+						throw new Error("invalid_binding");
+				}
+			} catch {
+				// Pre-auth refusal is not a transport death and must never trigger blind restarts.
+				throw new Error("codex_quota_pre_auth_rejected");
+			}
+		}
+		if (this.stopped) throw new Error("runtime stopped before daemon spawn");
 		const handle = await this.spawnDaemon({
 			executionId: this.opts.executionId,
 			codexBin: this.opts.codexBin,
@@ -329,6 +373,7 @@ export class CodexDaemonGoalRuntime {
 			...(onSpawnIdentity ? { onSpawnIdentity } : {}),
 			logger: this.log,
 		});
+		if (binding) this.quotaBinding = binding;
 		const exited = this.makeExitPromise(handle);
 		const dying: DyingDaemon = { handle, exited };
 		// Close the given resources, then SIGTERM the daemon and WAIT for it to
@@ -623,7 +668,12 @@ export class CodexDaemonGoalRuntime {
 						},
 						events,
 					);
-					return { threadId, result, restarts };
+					return {
+						threadId,
+						result,
+						restarts,
+						...(this.quotaBinding ? { quotaBinding: this.quotaBinding } : {}),
+					};
 				} catch (err) {
 					// ANY failure tears the (possibly dead) session down first and
 					// WAITS for the daemon to exit — so we never leak a daemon and a

@@ -350,6 +350,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2177 default-on wrapper observes an off store write without restart",
 	},
 	{
+		name: "codex_quota_auto_switch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CODEX_QUOTA_AUTO_SWITCH",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"Automatically rotate a quota-limited Codex account and recover affected runners after a successful probe",
+		whenOn: "Codex 额度耗尽后自动切换可用账号，并恢复受影响的任务",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeCodexQuotaAutoSwitchEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2465 defaults Codex rotation on and observes store off and restore immediately",
+	},
+	{
 		name: "account_switch_wake_sweep",
 		category: "kill_switch",
 		source: "env",

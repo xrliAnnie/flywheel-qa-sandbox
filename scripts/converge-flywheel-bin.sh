@@ -78,7 +78,7 @@ fi
 # No installer writes either file into bin, and both are plain files — so the
 # copy lane, not the symlink lane (see symlink_strict_name below for the shapes
 # that must NOT be copied).
-FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh resident-codex-lead-recover.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh"
+FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh resident-codex-lead-recover.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/codex-quota-summary.mjs"
 # FLY-1062: a PACKAGED tree (root carries .flywheel-prebuilt) never ships
 # restart-services.sh — it is monorepo deploy machinery. There its absence is
 # the EXPECTED shape, not an integrity incident; without this branch every
@@ -89,7 +89,7 @@ FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-
 # in package-onboard.sh's PO_SCRIPT_FILES whitelist and packaged-seams.test.sh
 # S0 asserts the closure is executable there — so they stay in both branches.)
 if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
-  FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh resident-codex-lead-recover.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh"
+  FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh resident-codex-lead-recover.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/codex-quota-summary.mjs"
 fi
 
 log() { echo "[converge-bin] $*"; }
@@ -152,7 +152,7 @@ alert() {  # <title> <body> <signature> — best-effort (claims.db dedup inside)
 ADOPTION_DIR="$STATE_DIR/state/converge-adoptions"
 is_first_adoption_name() {
   case "$1" in
-    flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|flywheel-codex-lead-wrapper-codex-infra-bot.sh|resident-codex-lead-recover.sh|lib/raya-standard-migration.sh) return 0 ;;
+    flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|flywheel-codex-lead-wrapper-codex-infra-bot.sh|resident-codex-lead-recover.sh|lib/raya-standard-migration.sh|lib/codex-quota-summary.mjs) return 0 ;;
     *) return 1 ;;
   esac
 }
