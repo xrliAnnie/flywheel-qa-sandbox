@@ -184,19 +184,28 @@ describe("trusted founder_review response primitive", () => {
 		});
 	});
 
-	it.each(["approve", "APPROVE", "look good to me", "Look good to me!"])(
+	it.each(["approve", "APPROVE", "通过"])(
 		"accepts only the fixed reply-to-card approval protocol: %j",
 		(text) => {
 			expect(classifyFounderReviewReply(text)).toEqual({ kind: "pass" });
 		},
 	);
 
-	it.each(["都可以了", "可以了", "通过", "LGTM", "approved"])(
-		"does not retain the old approval-word list: %j",
-		(text) => {
-			expect(classifyFounderReviewReply(text)).toEqual({ kind: "neither" });
-		},
-	);
+	// FLY-2461 supersedes FLY-1847 English-only PASS: exact Chinese tokens now
+	// pass on the current card; conversational variants still never approve.
+	it.each([
+		"look good to me",
+		"可以",
+		"同意",
+		"批准",
+		"行",
+		"都可以了",
+		"可以了",
+		"LGTM",
+		"approved",
+	])("does not retain the old approval-word list: %j", (text) => {
+		expect(classifyFounderReviewReply(text)).toEqual({ kind: "neither" });
+	});
 
 	it.each(["打回", "打回。"])(
 		"classifies explicit kickback %j without requiring feedback",

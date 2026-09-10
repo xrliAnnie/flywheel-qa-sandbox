@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
+import {
+	FOUNDER_CARD_APPROVAL_WORDS,
+	isFixedFounderCardApproval,
+} from "../../workflow-rework-hint.js";
 import { readCurrentGateMessageBinding } from "../approval-signal/gate-message-binding-store.js";
 import { materializeWorkflowGateHolder } from "../gate-materializer.js";
 
@@ -166,8 +170,11 @@ describe("workflow gate materializer", () => {
 			await materializeWorkflowGateHolder(deps, "workflow-gate-run-1"),
 		).toMatchObject({ ok: true, idempotentReplay: true });
 		expect(posts).toBe(1);
+		const advertised = cardContent.match(/只回:([^\n]+)/u)?.[1]?.split(" / ");
+		expect(advertised).toEqual([...FOUNDER_CARD_APPROVAL_WORDS]);
+		expect(advertised?.every(isFixedFounderCardApproval)).toBe(true);
 		expect(cardContent).toContain(
-			"Approval is recognized only from the founder's ✅ reaction on this card or an exact reply-to-card: approve / look good to me.",
+			"批准 → 在本卡点 ✅,或 reply-to 本卡只回:approve / 通过",
 		);
 		expect(cardContent).toContain(
 			"打回:请 reply-to 本卡回复「打回」,或用 design: / implement: / qa:",

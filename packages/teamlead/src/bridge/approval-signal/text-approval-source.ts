@@ -3,7 +3,8 @@
  *
  * Text can become a verdict only after Discord has proven that the founder
  * replied to the current immutable card. The anchored protocol is deliberately
- * finite and deterministic: approve / look good to me, or an explicit
+ * finite and deterministic: exact English or Chinese approval tokens from the
+ * shared founder-card protocol, or an explicit
  * kickback. Free thread speech never reaches a word list or an LLM.
  */
 

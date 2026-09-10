@@ -1,8 +1,68 @@
 import { describe, expect, it } from "vitest";
 import {
+	isExplicitFounderKickback,
+	isFixedFounderCardApproval,
 	resolveFounderReworkRoute,
 	resolveWorkflowReworkTarget,
 } from "../workflow-rework-hint.js";
+
+describe("FLY-2461 bilingual founder approval", () => {
+	it("accepts the founder's observed Chinese approval", () => {
+		expect(isFixedFounderCardApproval("通过")).toBe(true);
+	});
+	it.each([
+		"可以",
+		"同意",
+		"批准",
+		"行",
+		"上线",
+		"look good to me",
+		"通过！。",
+	])("rejects %s", (text) => {
+		expect(isFixedFounderCardApproval(text)).toBe(false);
+	});
+	it.each(["通过", "approve", "APPROVE"])(
+		"normalizes punctuation and whitespace for %s",
+		(text) => expect(isFixedFounderCardApproval(`  ${text}！  `)).toBe(true),
+	);
+	it.each([
+		"不通过",
+		"可以吗",
+		"通过？",
+		"行不行",
+		"通过以后再说",
+		"可以了",
+		"都可以了",
+		"通过了",
+		"LGTM",
+		"approved",
+		"通过 👍",
+		"批准 ✅",
+		"approve?",
+	])("rejects non-protocol text %s", (text) =>
+		expect(isFixedFounderCardApproval(text)).toBe(false),
+	);
+	// Keep this language matrix in sync whenever kickback gains a language.
+	// It locks current en/zh parity, not discovery of future language additions.
+	it.each([
+		{
+			language: "en",
+			approvals: ["approve"],
+			kickbacks: ["design:", "implement:", "qa:"],
+		},
+		{
+			language: "zh",
+			approvals: ["通过"],
+			kickbacks: ["打回", "设计:", "实现:", "测试:"],
+		},
+	])(
+		"approval covers kickback language $language",
+		({ approvals, kickbacks }) => {
+			expect(kickbacks.every(isExplicitFounderKickback)).toBe(true);
+			expect(approvals.every(isFixedFounderCardApproval)).toBe(true);
+		},
+	);
+});
 
 function topology(designId: string) {
 	return {

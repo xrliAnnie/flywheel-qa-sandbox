@@ -147,6 +147,7 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(prompt).toContain("do not modify the shared branch");
 		expect(prompt).toContain("Do not request ship approval");
 		expect(prompt).toContain("FOUNDER REVIEW ROUND (BLOCKING, REPEATABLE)");
+		expect(prompt).toContain("approve / 通过");
 		expect(prompt).toContain("gate founder_review");
 		expect(prompt).toContain("--publish-only");
 		expect(prompt).toContain("【页面意见汇总】FLY-1281");

@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { InMemoryInboundCursorStore } from "../../lead-backends/codex/InboundCursorStore.js";
+import {
+	FileInboundCursorStore,
+	InMemoryInboundCursorStore,
+} from "../../lead-backends/codex/InboundCursorStore.js";
+import { StateStore } from "../../StateStore.js";
 import {
 	emitFounderReplyDeliveryForThread,
 	type FounderReplyDeliverDeps,
@@ -237,91 +241,101 @@ describe("FLY-1392 v2 founder ingress", () => {
 		queue.close();
 	});
 
-	it("consumes a reply to a superseded ship card before the sole-current-gate fallback", async () => {
-		const db = new CommDB(dbPath);
-		db.registerSession(
-			"exec-current",
-			"runner",
-			"flywheel",
-			"FLY-1392",
-			"test-lead",
-		);
-		const currentQuestionId = db.insertQuestion(
-			"exec-current",
-			"test-lead",
-			"ship current?",
-			{ checkpoint: "approve_to_ship" },
-		);
-		db.close();
-		const oldHolder = {
-			run_id: "run-1",
-			gate_node_id: "founder_gate",
-			attempt: 1,
-			head_sha: "a".repeat(40),
-			source_execution_id: "exec-old",
-			question_id: "question-old",
-			state: "superseded",
-		};
-		const recordOldCardInput = vi.fn(() => ({
-			ok: true as const,
-			idempotentReplay: false,
-		}));
-		const testStore = {
-			insertEvent: vi.fn(() => true),
-			getSupersededWorkflowGateHolderByCardMessageId: vi.fn(() => oldHolder),
-			recordVoidedWorkflowGateInput: recordOldCardInput,
-		} as unknown as FounderReplyDeliverDeps["store"];
-		const tryFounderShipApproval = vi.fn();
-		const handoff = vi.fn(async () => true);
-		const msg: RawMsg = {
-			id: snowflakeAt(Date.now() - 10_000),
-			content: "ship",
-			author: { id: OWNER },
-			type: 19,
-			message_reference: {
-				type: 0,
-				message_id: "card-old",
-				channel_id: THREAD,
-			},
-		};
-
-		const outcome = await emitFounderReplyDeliveryForThread(
-			ctx(dbPath),
-			[
-				{
-					questionId: currentQuestionId,
-					checkpoint: "approve_to_ship",
-					executionId: "exec-current",
-					createdAtMs: Date.now() - 60 * 60_000,
+	it.each(["ship", "通过"])(
+		"consumes superseded ship-card %s and guides approval to the latest card",
+		async (content) => {
+			const db = new CommDB(dbPath);
+			db.registerSession(
+				"exec-current",
+				"runner",
+				"flywheel",
+				"FLY-1392",
+				"test-lead",
+			);
+			const currentQuestionId = db.insertQuestion(
+				"exec-current",
+				"test-lead",
+				"ship current?",
+				{ checkpoint: "approve_to_ship" },
+			);
+			db.close();
+			const oldHolder = {
+				run_id: "run-1",
+				gate_node_id: "founder_gate",
+				attempt: 1,
+				head_sha: "a".repeat(40),
+				source_execution_id: "exec-old",
+				question_id: "question-old",
+				state: "superseded",
+			};
+			const recordOldCardInput = vi.fn(() => ({
+				ok: true as const,
+				idempotentReplay: false,
+			}));
+			const testStore = {
+				insertEvent: vi.fn(() => true),
+				getSupersededWorkflowGateHolderByCardMessageId: vi.fn(() => oldHolder),
+				recordVoidedWorkflowGateInput: recordOldCardInput,
+			} as unknown as FounderReplyDeliverDeps["store"];
+			const tryFounderShipApproval = vi.fn();
+			const handoff = vi.fn(async () => true);
+			const postThreadReply = vi.fn(async () => true);
+			const msg: RawMsg = {
+				id: snowflakeAt(Date.now() - 10_000),
+				content,
+				author: { id: OWNER },
+				type: 19,
+				message_reference: {
+					type: 0,
+					message_id: "card-old",
+					channel_id: THREAD,
 				},
-			],
-			{
-				store: testStore,
-				fetchImpl: discordGet([msg]),
-				cursorStore: cursor,
-				deliverAmbiguousToLead: handoff,
-				tryFounderShipApproval,
-			},
-		);
+			};
 
-		expect(outcome.result).toBe("advanced");
-		expect(recordOldCardInput).toHaveBeenCalledWith({
-			questionId: "question-old",
-			alertIdentity: {
-				leadId: "test-lead",
-				projectName: "flywheel",
-				leadResolution: "resolved",
-			},
-			now: expect.any(String),
-		});
-		expect(tryFounderShipApproval).not.toHaveBeenCalled();
-		expect(handoff).not.toHaveBeenCalled();
-		const verify = new CommDB(dbPath);
-		expect(verify.getResponse(currentQuestionId)).toBeUndefined();
-		expect(verify.getResponse("question-old")).toBeUndefined();
-		expect(verify.listWorkflowSourceEventsAfter(0)).toEqual([]);
-		verify.close();
-	});
+			const outcome = await emitFounderReplyDeliveryForThread(
+				ctx(dbPath),
+				[
+					{
+						questionId: currentQuestionId,
+						checkpoint: "approve_to_ship",
+						executionId: "exec-current",
+						createdAtMs: Date.now() - 60 * 60_000,
+					},
+				],
+				{
+					store: testStore,
+					fetchImpl: discordGet([msg]),
+					cursorStore: cursor,
+					deliverAmbiguousToLead: handoff,
+					tryFounderShipApproval,
+					postThreadReply,
+				},
+			);
+
+			expect(outcome.result).toBe("advanced");
+			if (content === "通过") {
+				expect(postThreadReply).toHaveBeenCalledOnce();
+				expect(postThreadReply.mock.calls[0]?.[0]).toContain("上一轮");
+				expect(postThreadReply.mock.calls[0]?.[0]).toContain("最新");
+			} else expect(postThreadReply).not.toHaveBeenCalled();
+			expect(recordOldCardInput).toHaveBeenCalledWith({
+				questionId: "question-old",
+				alertIdentity: {
+					leadId: "test-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: expect.any(String),
+			});
+			expect(tryFounderShipApproval).not.toHaveBeenCalled();
+			expect(handoff).not.toHaveBeenCalled();
+			const verify = new CommDB(dbPath);
+			expect(verify.getResponse(currentQuestionId)).toBeUndefined();
+			expect(verify.getResponse("question-old")).toBeUndefined();
+			expect(verify.listWorkflowSourceEventsAfter(0)).toEqual([]);
+			verify.close();
+		},
+	);
 
 	it("alerts on an approved-origin superseded-card reply without approving the current gate", async () => {
 		const db = new CommDB(dbPath);
@@ -721,7 +735,434 @@ describe("FLY-1392 v2 founder ingress", () => {
 		verify.close();
 	});
 
-	it.each(["approve", "look good to me"])(
+	it("does not retry guidance after default HTTP POST failure and resumes a persisted cursor", async () => {
+		const db = new CommDB(dbPath);
+		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+		db.close();
+		const state = founderReviewStore([{ questionId, messageId: "card-1" }]);
+		const cursorPath = join(dir, "cursor.json");
+		const durable = new FileInboundCursorStore(cursorPath);
+		durable.save(THREAD, cursor.load(THREAD)!);
+		const first = snowflakeAt(Date.now() - 20_000);
+		const second = snowflakeAt(Date.now() - 10_000);
+		let messages: RawMsg[] = [
+			{ id: first, content: "通过", author: { id: OWNER } },
+		];
+		let postOk = false;
+		const posts: string[] = [];
+		const fetchImpl = vi.fn(
+			async (url: string | URL | Request, init?: RequestInit) => {
+				if (init?.method === "POST") {
+					posts.push(String(init.body));
+					return { ok: postOk, status: postOk ? 200 : 403 } as Response;
+				}
+				const after = new URL(String(url)).searchParams.get("after")!;
+				return {
+					ok: true,
+					status: 200,
+					json: async () =>
+						messages.filter((m) => BigInt(m.id) > BigInt(after)),
+				} as Response;
+			},
+		) as typeof fetch;
+		const deps = {
+			store: state,
+			fetchImpl,
+			cursorStore: durable,
+			deliverAmbiguousToLead: vi.fn(async () => true),
+		};
+		const questions = [question(questionId, "founder_review")];
+		expect(
+			(await emitFounderReplyDeliveryForThread(ctx(dbPath), questions, deps))
+				.result,
+		).toBe("advanced");
+		expect(state.insertEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event_type: "approval_anchor_feedback_failed",
+			}),
+		);
+		expect(posts).toHaveLength(1);
+		const resumed = new FileInboundCursorStore(cursorPath);
+		expect(resumed.load(THREAD)).toBe(first);
+		await emitFounderReplyDeliveryForThread(ctx(dbPath), questions, {
+			...deps,
+			cursorStore: resumed,
+		});
+		expect(posts).toHaveLength(1);
+		postOk = true;
+		messages = [{ id: second, content: "通过", author: { id: OWNER } }];
+		await emitFounderReplyDeliveryForThread(ctx(dbPath), questions, {
+			...deps,
+			cursorStore: resumed,
+		});
+		// Lead ruling: the per-card attempt remains claimed after failed/unknown POST.
+		expect(posts).toHaveLength(1);
+		expect(new FileInboundCursorStore(cursorPath).load(THREAD)).toBe(second);
+		const verify = new CommDB(dbPath);
+		expect(verify.getResponse(questionId)).toBeUndefined();
+		verify.close();
+	});
+
+	it.each([
+		{
+			content: "通过",
+			author: OWNER,
+			checkpoint: "approve_to_ship",
+			reference: undefined,
+			prompts: 1,
+		},
+		{
+			content: "通过",
+			author: OWNER,
+			checkpoint: "founder_review",
+			reference: { channel_id: "wrong-thread", message_id: "card-1" },
+			prompts: 1,
+		},
+		{
+			content: "通过",
+			author: OWNER,
+			checkpoint: "founder_review",
+			reference: { channel_id: THREAD, message_id: "wrong-card" },
+			prompts: 1,
+		},
+		{
+			content: "通过",
+			author: "other",
+			checkpoint: "founder_review",
+			reference: undefined,
+			prompts: 0,
+		},
+		{
+			content: "通过？",
+			author: OWNER,
+			checkpoint: "founder_review",
+			reference: undefined,
+			prompts: 0,
+		},
+		{
+			content: "可以了",
+			author: OWNER,
+			checkpoint: "founder_review",
+			reference: undefined,
+			prompts: 0,
+		},
+		{
+			content: "普通讨论",
+			author: OWNER,
+			checkpoint: "founder_review",
+			reference: undefined,
+			prompts: 0,
+		},
+		{
+			content: "通过",
+			author: OWNER,
+			checkpoint: null,
+			reference: undefined,
+			prompts: 0,
+		},
+	])(
+		"preserves ingress boundary $content $author $checkpoint $reference",
+		async ({ content, author, checkpoint, reference, prompts }) => {
+			const db = new CommDB(dbPath);
+			const id = db.insertQuestion("exec-q", "test-lead", "question", {
+				id: "q",
+				checkpoint: checkpoint ?? undefined,
+			});
+			db.close();
+			const postThreadReply = vi.fn(async () => true);
+			await emitFounderReplyDeliveryForThread(
+				ctx(dbPath),
+				[question(id, checkpoint)],
+				{
+					store: founderReviewStore([{ questionId: id, messageId: "card-1" }]),
+					fetchImpl: discordGet([
+						{
+							id: snowflakeAt(Date.now() - 20 * 60_000),
+							content,
+							author: { id: author },
+							...(reference ? { type: 19, message_reference: reference } : {}),
+						},
+					]),
+					cursorStore: cursor,
+					deliverAmbiguousToLead: vi.fn(async () => true),
+					postThreadReply,
+				},
+			);
+			expect(postThreadReply).toHaveBeenCalledTimes(prompts);
+			const verify = new CommDB(dbPath);
+			expect(verify.getResponse(id)).toBeUndefined();
+			verify.close();
+		},
+	);
+
+	it.each(["false", "throw", "stale-review", "superseded"])(
+		"feedback %s does not block a later anchored approval",
+		async (failure) => {
+			const db = new CommDB(dbPath);
+			const oldId = insertFounderReviewQuestion(db, "review-old", 1);
+			const questionId = insertFounderReviewQuestion(db, "review-1", 2);
+			db.close();
+			const state = founderReviewStore([
+				{ questionId: oldId, messageId: "card-old" },
+				{ questionId, messageId: "card-1" },
+			]);
+			if (failure === "superseded") {
+				Object.assign(state, {
+					getSupersededWorkflowGateHolderByCardMessageId: (id: string) =>
+						id === "card-old"
+							? { question_id: oldId, source_execution_id: "exec-review-old" }
+							: undefined,
+					recordVoidedWorkflowGateInput: vi.fn(() => ({ ok: true })),
+				});
+			}
+			const first = snowflakeAt(Date.now() - 20_000);
+			const second = snowflakeAt(Date.now() - 10_000);
+			const postThreadReply = vi.fn(async () => {
+				if (failure === "throw") throw new Error("POST unavailable");
+				return false;
+			});
+			const outcome = await emitFounderReplyDeliveryForThread(
+				ctx(dbPath),
+				[
+					question(oldId, "founder_review"),
+					question(questionId, "founder_review"),
+				],
+				{
+					store: state,
+					fetchImpl: discordGet([
+						{
+							id: first,
+							content: "通过",
+							author: { id: OWNER },
+							...(failure === "stale-review" || failure === "superseded"
+								? {
+										type: 19,
+										message_reference: {
+											message_id: "card-old",
+											channel_id: THREAD,
+										},
+									}
+								: {}),
+						},
+						{
+							id: second,
+							content: "通过",
+							author: { id: OWNER },
+							type: 19,
+							message_reference: { message_id: "card-1", channel_id: THREAD },
+						},
+					]),
+					cursorStore: cursor,
+					deliverAmbiguousToLead: vi.fn(async () => true),
+					postThreadReply,
+					reactToFounderMessage: vi.fn(async () => true),
+				},
+			);
+			expect(postThreadReply).toHaveBeenCalledOnce();
+			expect(state.insertEvent).toHaveBeenCalledWith(
+				expect.objectContaining({
+					event_type: "approval_anchor_feedback_failed",
+				}),
+			);
+			expect(outcome.result).toBe("advanced");
+			expect(cursor.load(THREAD)).toBe(second);
+			const verify = new CommDB(dbPath);
+			expect(
+				JSON.parse(verify.getResponse(questionId)?.content ?? "{}"),
+			).toMatchObject({ passed: true });
+			verify.close();
+		},
+	);
+
+	it("deduplicates bare approval guidance for the same thread and card across scans", async () => {
+		const db = new CommDB(dbPath);
+		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+		db.close();
+		const state = founderReviewStore([{ questionId, messageId: "card-1" }]);
+		const postThreadReply = vi.fn(async () => true);
+		for (const [index, content] of ["通过", "approve", "通过！"].entries()) {
+			const id = snowflakeAt(Date.now() - 30_000 + index * 5_000);
+			const outcome = await emitFounderReplyDeliveryForThread(
+				ctx(dbPath),
+				[question(questionId, "founder_review")],
+				{
+					store: state,
+					fetchImpl: discordGet([{ id, content, author: { id: OWNER } }]),
+					cursorStore: cursor,
+					deliverAmbiguousToLead: vi.fn(async () => true),
+					postThreadReply,
+				},
+			);
+			expect(outcome.result).toBe("advanced");
+		}
+		expect(postThreadReply).toHaveBeenCalledOnce();
+		const verify = new CommDB(dbPath);
+		expect(verify.getResponse(questionId)).toBeUndefined();
+		verify.close();
+	});
+
+	it.each(["founder_review", "approve_to_ship"])(
+		"persists %s guidance dedup across restart while allowing a new card or thread",
+		async (checkpoint) => {
+			const db = new CommDB(dbPath);
+			const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+			db.close();
+			const statePath = join(dir, "state.db");
+			const postThreadReply = vi.fn(async () => true);
+			const cases = [
+				{ card: "card-1", thread: THREAD, posts: 1 },
+				{ card: "card-1", thread: THREAD, posts: 1 },
+				{ card: "card-2", thread: THREAD, posts: 2 },
+				{ card: "card-2", thread: "323456789012345678", posts: 3 },
+			];
+			for (const item of cases) {
+				const durable = await StateStore.create(statePath);
+				try {
+					const state = founderReviewStore(
+						checkpoint === "founder_review"
+							? [{ questionId, messageId: item.card }]
+							: [],
+					);
+					state.insertEvent = durable.insertEvent.bind(durable);
+					const restartedCursor = new InMemoryInboundCursorStore();
+					restartedCursor.save(item.thread, snowflakeAt(Date.now() - 60_000));
+					const outcome = await emitFounderReplyDeliveryForThread(
+						{ ...ctx(dbPath), threadId: item.thread },
+						[question(questionId, checkpoint)],
+						{
+							store: state,
+							fetchImpl: discordGet([
+								{
+									id: snowflakeAt(Date.now() - 10_000),
+									content: "通过",
+									author: { id: OWNER },
+								},
+							]),
+							cursorStore: restartedCursor,
+							deliverAmbiguousToLead: vi.fn(async () => true),
+							readCurrentBinding: vi.fn(
+								() =>
+									({ gateMessageId: item.card }) as ReturnType<
+										NonNullable<FounderReplyDeliverDeps["readCurrentBinding"]>
+									>,
+							),
+							postThreadReply,
+						},
+					);
+					expect(outcome).toMatchObject({ result: "advanced" });
+					expect(postThreadReply).toHaveBeenCalledTimes(item.posts);
+				} finally {
+					durable.close();
+				}
+			}
+		},
+	);
+
+	it("skips guidance without pinning ingress when its durable claim throws", async () => {
+		const db = new CommDB(dbPath);
+		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+		db.close();
+		const state = founderReviewStore([{ questionId, messageId: "card-1" }]);
+		const insertEvent = vi.mocked(state.insertEvent).getMockImplementation()!;
+		vi.mocked(state.insertEvent).mockImplementation((event) => {
+			if (event.event_type === "approval_anchor_feedback_claimed")
+				throw new Error("claim unavailable");
+			return insertEvent(event);
+		});
+		const postThreadReply = vi.fn(async () => true);
+		const id = snowflakeAt(Date.now() - 10_000);
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[question(questionId, "founder_review")],
+			{
+				store: state,
+				fetchImpl: discordGet([{ id, content: "通过", author: { id: OWNER } }]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: vi.fn(async () => true),
+				postThreadReply,
+			},
+		);
+		expect(outcome.result).toBe("advanced");
+		expect(cursor.load(THREAD)).toBe(id);
+		expect(postThreadReply).not.toHaveBeenCalled();
+	});
+
+	it("does not pin or repost approval guidance when its audit write throws", async () => {
+		const db = new CommDB(dbPath);
+		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+		db.close();
+		const state = founderReviewStore([{ questionId, messageId: "card-1" }]);
+		const insertEvent = vi.mocked(state.insertEvent).getMockImplementation()!;
+		vi.mocked(state.insertEvent).mockImplementation((event) => {
+			if (event.event_type === "approval_anchor_feedback_sent")
+				throw new Error("audit unavailable");
+			return insertEvent(event);
+		});
+		const postThreadReply = vi.fn(async () => true);
+		const id = snowflakeAt(Date.now() - 10_000);
+		const cursorPath = join(dir, "audit-cursor.json");
+		new FileInboundCursorStore(cursorPath).save(
+			THREAD,
+			snowflakeAt(Date.now() - 60_000),
+		);
+		for (let scan = 0; scan < 2; scan++) {
+			const outcome = await emitFounderReplyDeliveryForThread(
+				ctx(dbPath),
+				[question(questionId, "founder_review")],
+				{
+					store: state,
+					fetchImpl: discordGet([
+						{ id, content: "通过", author: { id: OWNER } },
+					]),
+					cursorStore: new FileInboundCursorStore(cursorPath),
+					deliverAmbiguousToLead: vi.fn(async () => true),
+					postThreadReply,
+				},
+			);
+			expect(outcome.result).not.toBe("process_failed");
+			expect(new FileInboundCursorStore(cursorPath).load(THREAD)).toBe(id);
+		}
+		expect(postThreadReply).toHaveBeenCalledOnce();
+	});
+
+	it.each(["通过", "approve"])(
+		"explains unanchored approval %s without answering the gate",
+		async (content) => {
+			const db = new CommDB(dbPath);
+			const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+			db.close();
+			const postThreadReply = vi.fn(async () => true);
+			const handoff = vi.fn(async () => true);
+			const messageId = snowflakeAt(Date.now() - 10_000);
+			const outcome = await emitFounderReplyDeliveryForThread(
+				ctx(dbPath),
+				[question(questionId, "founder_review")],
+				{
+					store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+					fetchImpl: discordGet([
+						{ id: messageId, content, author: { id: OWNER } },
+					]),
+					cursorStore: cursor,
+					deliverAmbiguousToLead: handoff,
+					postThreadReply,
+				},
+			);
+			expect(outcome.result).toBe("advanced");
+			expect(postThreadReply).toHaveBeenCalledOnce();
+			expect(postThreadReply.mock.calls[0]?.[0]).toContain("这条还没有批准");
+			expect(postThreadReply.mock.calls[0]?.[0]).toContain(
+				"回复对应的当前审批卡",
+			);
+			expect(handoff).toHaveBeenCalledOnce();
+			const verify = new CommDB(dbPath);
+			expect(
+				verify.getFounderReviewFamily(questionId)?.response,
+			).toBeUndefined();
+			verify.close();
+		},
+	);
+
+	it.each(["approve", "通过"])(
 		"binds fixed text %j only when it replies to the review card",
 		async (content) => {
 			const db = new CommDB(dbPath);
@@ -829,6 +1270,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		expect(handoff).toHaveBeenCalledTimes(2);
 		expect(postThreadReply).toHaveBeenCalledOnce();
 		expect(postThreadReply.mock.calls[0]?.[0]).toContain("没有写入 verdict");
+		expect(postThreadReply.mock.calls[0]?.[0]).toContain("approve / 通过");
 	});
 
 	it("warns when an explicit kickback closes without page feedback", async () => {
@@ -983,6 +1425,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		const newId = insertFounderReviewQuestion(db, "review-2", 2);
 		db.close();
 		const handoff = vi.fn(async () => true);
+		const postThreadReply = vi.fn(async () => true);
 		const outcome = await emitFounderReplyDeliveryForThread(
 			ctx(dbPath),
 			[
@@ -1019,10 +1462,15 @@ describe("FLY-1392 v2 founder ingress", () => {
 				]),
 				cursorStore: cursor,
 				deliverAmbiguousToLead: handoff,
+				postThreadReply,
 			},
 		);
 		expect(outcome.result).toBe("advanced");
 		expect(handoff).toHaveBeenCalledOnce();
+		expect(postThreadReply).toHaveBeenCalledOnce();
+		expect(postThreadReply.mock.calls[0]?.[0]).toContain("上一轮");
+		expect(postThreadReply.mock.calls[0]?.[0]).toContain("最新");
+		expect(postThreadReply.mock.calls[0]?.[0]).not.toContain("本轮仍开放");
 		const verify = new CommDB(dbPath);
 		expect(verify.getFounderReviewFamily(oldId)?.response).toBeUndefined();
 		expect(verify.getFounderReviewFamily(newId)?.response).toBeUndefined();

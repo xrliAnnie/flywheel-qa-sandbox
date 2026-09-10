@@ -200,10 +200,15 @@ export function normalizeFounderCardProtocolText(content: string): string {
 	);
 }
 
+export const FOUNDER_CARD_APPROVAL_WORDS = ["approve", "通过"] as const;
+
 export function isFixedFounderCardApproval(content: string): boolean {
-	return new Set(["approve", "look good to me"]).has(
-		normalizeFounderCardProtocolText(content),
-	);
+	const text = content
+		.normalize("NFKC")
+		.trim()
+		.toLowerCase()
+		.replace(/[。.!！]$/u, "");
+	return FOUNDER_CARD_APPROVAL_WORDS.some((word) => word === text);
 }
 
 export function isExplicitFounderKickback(content: string): boolean {

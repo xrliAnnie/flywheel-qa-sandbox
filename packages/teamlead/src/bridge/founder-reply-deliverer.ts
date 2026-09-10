@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
 import type { InboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import type { StateStore } from "../StateStore.js";
+import { isFixedFounderCardApproval } from "../workflow-rework-hint.js";
 import { reactToFounderMessage as addFounderReaction } from "./approval-signal/founder-ack.js";
 import type { GateMessageBinding } from "./approval-signal/gate-message-binding.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
@@ -613,6 +614,50 @@ async function processFounderMessage(
 	const rawAnswer = msg.content ?? "";
 	const nowDate = new Date();
 	const now = nowDate.toISOString();
+	const oldCardGuidance =
+		"这是上一轮的审批卡，这条尚未批准；请回复最新的当前审批卡回「通过」，或在最新卡上点 ✅。";
+	// Protocol guidance carries no authority. Delivery failure must not block
+	// later anchored verdicts or enter the undelivered-message retry ledger.
+	async function explainApprovalAnchor(
+		content: string,
+		executionId: string,
+		cardIdentity: string,
+	) {
+		try {
+			const claimed = deps.store.insertEvent({
+				event_id: `approval_anchor_feedback:${JSON.stringify([ctx.threadId, cardIdentity])}`,
+				execution_id: executionId,
+				issue_id: ctx.issueId,
+				project_name: ctx.projectName,
+				event_type: "approval_anchor_feedback_claimed",
+				source: "bridge.founder-reply-deliverer",
+				payload: { msgId: msg.id, cardIdentity },
+			});
+			if (!claimed) return;
+		} catch {
+			// Without a durable fence, skip best-effort guidance and allow ingress to continue.
+			return;
+		}
+		let posted = false;
+		try {
+			posted = (await deps.postThreadReply?.(content)) ?? false;
+		} catch {
+			// The failed attempt is audited below; ingress can continue.
+		}
+		try {
+			audit(
+				deps.store,
+				ctx,
+				executionId,
+				posted
+					? "approval_anchor_feedback_sent"
+					: "approval_anchor_feedback_failed",
+				{ msgId: msg.id },
+			);
+		} catch {
+			// The durable claim already fences replay; telemetry must not pin ingress.
+		}
+	}
 	const shipGates = matching.filter(
 		(question) => question.checkpoint === "approve_to_ship",
 	);
@@ -646,6 +691,13 @@ async function processFounderMessage(
 					stage: "voided_card_input_alert_failed",
 					reason: recorded.reason,
 				};
+			}
+			if (isFixedFounderCardApproval(rawAnswer)) {
+				await explainApprovalAnchor(
+					oldCardGuidance,
+					superseded.source_execution_id,
+					msg.message_reference.message_id,
+				);
 			}
 			return { ok: true };
 		}
@@ -681,6 +733,7 @@ async function processFounderMessage(
 		);
 	}
 	const founderReviewContextGate = founderReviewGate;
+	let staleReviewApproval = false;
 	if (founderReviewGate) {
 		const decision = classifyFounderReviewReply(rawAnswer);
 		if (decision.kind !== "neither") {
@@ -732,6 +785,8 @@ async function processFounderMessage(
 				}
 				return { ok: true };
 			}
+			staleReviewApproval =
+				written.reason === "stale_round" && decision.kind === "pass";
 		}
 	}
 	if (shipCardGate) {
@@ -830,6 +885,34 @@ async function processFounderMessage(
 			reason: "founder reply was not delivered to Lead",
 		};
 	}
+	if (
+		!founderReviewGate &&
+		!shipCardGate &&
+		(founderReviewGates.length > 0 || shipGates.length > 0) &&
+		isFixedFounderCardApproval(rawAnswer)
+	) {
+		const gate = (founderReviewGates[0] ?? shipGates[0])!;
+		const reviewCard = deps.store.getFounderReviewCardBindingByQuestion?.(
+			gate.questionId,
+		);
+		const head = deps.store.getSession?.(gate.executionId)?.pr_head_sha;
+		const shipCard = head
+			? deps.readCurrentBinding?.(gate.executionId, gate.questionId, head)
+			: undefined;
+		await explainApprovalAnchor(
+			"这条还没有批准：请回复对应的当前审批卡，只回「approve / 通过」，或在卡片上点 ✅。这条消息已转给 Lead。",
+			gate.executionId,
+			reviewCard?.message_id ?? shipCard?.gateMessageId ?? gate.questionId,
+		);
+	}
+	if (staleReviewApproval && founderReviewGate) {
+		await explainApprovalAnchor(
+			oldCardGuidance,
+			founderReviewGate.executionId,
+			msg.message_reference?.message_id ?? founderReviewGate.questionId,
+		);
+		return { ok: true };
+	}
 	if (founderReviewContextGate && deps.postThreadReply) {
 		const explainerEventId = `fr_neither_explainer:${founderReviewContextGate.questionId}`;
 		const claimed = deps.store.insertEvent({
@@ -843,7 +926,7 @@ async function processFounderMessage(
 		});
 		if (claimed) {
 			const posted = await deps.postThreadReply(
-				"这条没有写入 verdict，已转给 Lead，本轮仍开放。要批准请在这张卡点 ✅，或 reply-to 这张卡只回「approve」/「look good to me」；要打回请 reply-to 这张卡回复「打回」或用 design: / implement: / qa: 前缀说明。",
+				"这条没有写入 verdict，已转给 Lead，本轮仍开放。要批准请在这张卡点 ✅，或 reply-to 这张卡只回「approve / 通过」；要打回请 reply-to 这张卡回复「打回」或用 design: / implement: / qa: 前缀说明。",
 			);
 			if (!posted) {
 				audit(

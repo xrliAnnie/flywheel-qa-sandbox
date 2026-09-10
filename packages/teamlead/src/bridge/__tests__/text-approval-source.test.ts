@@ -20,35 +20,32 @@ const msg = (content: string, authorId = "FOUNDER-1") => ({
 });
 
 describe("evaluateTextSource — card-anchored founder protocol", () => {
-	it("ignores non-founder messages", async () => {
+	it.each(["approve", "通过"])("ignores non-founder %s", async (content) => {
 		await expect(
 			evaluateTextSource({
 				gate: GATE,
-				message: msg("approve", "SOMEONE-ELSE"),
+				message: msg(content, "SOMEONE-ELSE"),
 				replyToCard: true,
 			}),
 		).resolves.toBeNull();
 	});
 
-	it.each([
-		"approve",
-		"APPROVE",
-		"approve。",
-		"look good to me",
-		"Look good to me!",
-	])("accepts fixed card approval %j", async (content) => {
-		const signal = await evaluateTextSource({
-			gate: GATE,
-			message: msg(content),
-			replyToCard: true,
-		});
-		expect(signal).toMatchObject({
-			kind: "approve",
-			source: "text",
-			messageId: "MSG-1",
-			evidence: { stage: "card_reply_approve" },
-		});
-	});
+	it.each(["approve", "APPROVE", "approve。", "通过"])(
+		"accepts fixed card approval %j",
+		async (content) => {
+			const signal = await evaluateTextSource({
+				gate: GATE,
+				message: msg(content),
+				replyToCard: true,
+			});
+			expect(signal).toMatchObject({
+				kind: "approve",
+				source: "text",
+				messageId: "MSG-1",
+				evidence: { stage: "card_reply_approve" },
+			});
+		},
+	);
 
 	it.each([
 		["打回。", undefined],
@@ -75,6 +72,14 @@ describe("evaluateTextSource — card-anchored founder protocol", () => {
 
 	it.each([
 		"ship",
+		"look good to me",
+		"可以",
+		"同意",
+		"批准",
+		"行",
+		"可以了",
+		"通过了",
+		"approved",
 		"都可以了",
 		"ok what's next",
 		"approve?",
@@ -95,6 +100,7 @@ describe("evaluateTextSource — card-anchored founder protocol", () => {
 
 	it.each([
 		"approve",
+		"通过",
 		"ship",
 		"都可以了",
 		"打回。",

@@ -122,9 +122,9 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 			"",
 			"…实现 + code-review 完成、等你 ship。",
 			// FLY-1041 Chunk 6: the card is the deterministic approval carrier —
-			// spell out the two binding actions + the ✅ receipt promise so a short
+			// spell out the two binding actions so a short
 			// reply elsewhere in the thread is never mistaken for the protocol.
-			"批准 → 在这张卡点 ✅，或 reply-to 这张卡只回「approve」或「look good to me」。打回 → reply-to 这张卡回复「打回」，或用 design: / implement: / qa: 前缀说明返工对象。提问和讨论 → 直接发在本 thread，由 Lead 接；不会写入 verdict，本轮保持开放。批准绑定后我会在你的消息上点 ✅ 确认。",
+			"批准 → 在本卡点 ✅,或 reply-to 本卡只回:approve / 通过\n打回 → reply-to 这张卡回复「打回」，或用 design: / implement: / qa: 前缀说明返工对象。提问和讨论 → 直接发在本 thread，由 Lead 接；不会写入 verdict，本轮保持开放。",
 			...(opts.correlationMarker ? ["", opts.correlationMarker] : []),
 		].join("\n");
 	}
@@ -150,7 +150,7 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 			url,
 			"",
 			"评论 / 提问 → 直接发在本 thread，由 Lead 接。页面里逐处留言后，记得点「一键汇总复制」再贴回来，我才收得到；thread 里的自由发言不会写入 verdict。",
-			"批准 → 在这张卡点 ✅，或 reply-to 这张卡只回「approve」或「look good to me」。",
+			"批准 → 在本卡点 ✅,或 reply-to 本卡只回:approve / 通过",
 			"打回 → reply-to 这张卡回复「打回」，或用 design: / implement: / qa: 前缀说明返工对象。",
 			...(opts.correlationMarker ? ["", opts.correlationMarker] : []),
 		].join("\n");

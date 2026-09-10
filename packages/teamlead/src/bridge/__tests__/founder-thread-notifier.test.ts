@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { StateStore } from "../../StateStore.js";
 import {
+	FOUNDER_CARD_APPROVAL_WORDS,
+	isFixedFounderCardApproval,
+} from "../../workflow-rework-hint.js";
+import {
 	emitFounderThreadNotification,
 	type FounderThreadNotifyOpts,
 	scanFounderThreadForGateCard,
@@ -343,6 +347,9 @@ describe("FLY-605 emitFounderThreadNotification (Part A)", () => {
 		);
 		expect(captured[0]).toContain("Brainstorm gate");
 		expect(captured[1]).toContain("Ship gate");
+		const advertised = captured[2].match(/只回:([^\n]+)/u)?.[1]?.split(" / ");
+		expect(advertised).toEqual([...FOUNDER_CARD_APPROVAL_WORDS]);
+		expect(advertised?.every(isFixedFounderCardApproval)).toBe(true);
 		expect(captured[2]).toContain("阶段产出 review · 第 2 轮");
 		expect(captured[2]).toContain("https://reports.example/prd-v2");
 		expect(captured[2]).toContain("评论 / 提问");
@@ -350,7 +357,9 @@ describe("FLY-605 emitFounderThreadNotification (Part A)", () => {
 		expect(captured[2]).toContain("直接发在本 thread");
 		expect(captured[2]).toContain("我才收得到");
 		expect(captured[2]).toContain("批准 →");
-		expect(captured[2]).toContain("reply-to 这张卡只回「approve」");
+		expect(captured[2]).toContain(
+			"批准 → 在本卡点 ✅,或 reply-to 本卡只回:approve / 通过",
+		);
 		expect(captured[2]).toContain("打回 →");
 		expect(captured[2]).toContain("thread 里的自由发言不会写入 verdict");
 		expect(captured[2]).not.toContain("直接回复这条卡片 = 打回");
@@ -673,7 +682,7 @@ describe("FLY-1041 Chunk 6: ship card carries the binding guidance line", () => 
 		const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
 		const content = JSON.parse(init.body as string).content as string;
 		expect(content).toContain(
-			"reply-to 这张卡只回「approve」或「look good to me」",
+			"批准 → 在本卡点 ✅,或 reply-to 本卡只回:approve / 通过",
 		);
 		expect(content).toContain("✅");
 		expect(content).toContain("reply-to 这张卡回复「打回」");
@@ -776,7 +785,7 @@ describe("FLY-1424 ship-ready card", () => {
 				"my understanding…",
 				"",
 				"…实现 + code-review 完成、等你 ship。",
-				"批准 → 在这张卡点 ✅，或 reply-to 这张卡只回「approve」或「look good to me」。打回 → reply-to 这张卡回复「打回」，或用 design: / implement: / qa: 前缀说明返工对象。提问和讨论 → 直接发在本 thread，由 Lead 接；不会写入 verdict，本轮保持开放。批准绑定后我会在你的消息上点 ✅ 确认。",
+				"批准 → 在本卡点 ✅,或 reply-to 本卡只回:approve / 通过\n打回 → reply-to 这张卡回复「打回」，或用 design: / implement: / qa: 前缀说明返工对象。提问和讨论 → 直接发在本 thread，由 Lead 接；不会写入 verdict，本轮保持开放。",
 			].join("\n"),
 		]);
 	});
