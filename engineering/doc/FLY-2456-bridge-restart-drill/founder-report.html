@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2456 实测：drift 2 → 0，恢复仍失败</title><style>body{max-width:56rem;margin:3rem auto;padding:0 1.5rem;font:17px/1.8 system-ui,sans-serif;color:#202124;background:#fff}h1{font-size:1.8rem;line-height:1.4}h2{margin-top:2.5rem;font-size:1.35rem}h3{font-size:1.15rem}strong{color:#962b20}p,li{overflow-wrap:anywhere}li{margin:.8rem 0}code{font-size:.88em;background:#f3f4f6;padding:.1em .3em}a{color:#1655a0}.meta{font-size:.85rem;color:#59636c}</style></head><body><main><h1>FLY-2456 529 房真机重启演练 — 实测报告</h1>
+<p class="meta">Issue: FLY-2456 (https://linear.app/geoforge3d/issue/FLY-2456)<br>日期: 2026-09-10<br>基于: plan.md; recomputed/replay-receipt.json; host-runs/r1/; host-runs/r2/</p>
+<h2>一句话</h2>
+<p><strong>#1128 消除了本轮观察到的 capability drift：修前 2 条，修后 0 条；但 recovery owner 提交前失败在修前修后均存在，完整 reown 尚未恢复。</strong> 两轮由 Lead 在宿主机执行，本报告用同一份原始证据重算分类，不是再次演练。整体判定仍为 FAIL，不能据此宣称 FLY-2352 已达到「修后全部认回、生产零影响」的验收条件。</p>
+<h3>认回成功率：R1 0/2，R2 0/2</h3>
+<p>分母仅含 B1 多 activation 与 B2 单 activation。B3 是非 TURN holder 阴性对照，不计分母；换体也不计为原体认回成功。</p>
+<h2>修前：原病复现并换体</h2>
+<p>R1 使用 slot 4，main <code>d6cda1fc13080f9c188cbfc5f354eea5a2c28f65</code>。</p>
+<ul><li>B1 <code>8798137e-39ef-4906-8075-7b2d095a5f0e</code>：17:15:33 与 17:20:33 UTC 的 attempt 1/2 均报 <code>workflow capability drift for 8798137e-39ef-4906-8075-7b2d095a5f0e</code>（session event 34、41）；17:25:33 出现 <code>episode_exhausted</code>（51）。随后 workflow seq 39 → 41 → 42 为 <code>rework_delivery_replacement_pending</code> → <code>rework_replacement_materialized</code> → <code>rework_replacement</code>，新体为 <code>4240e1e9-3dca-4a34-8521-0ea86533207e</code>。重算标签 <code>replaced</code>，证明修前病灶和换体链成立；此体没有 owner failure 的实证，不混写成另一种失败。</li><li>B2 <code>316a116c-b44d-41ba-bdad-e8fcec8ff92f</code>：attempt 1/2 均为 <code>recovery owner failed before commit</code>，随后 <code>episode_exhausted</code>，无满足证明条件的换体链。重算标签 <code>failed_exhausted_no_replacement</code>。</li><li>B3 <code>0c1c8174-bf92-444d-b408-9da04d66311a</code>：not-turn-holder 后接 superseded skip，重算标签 <code>skipped_not_holder</code>；仍是阴性对照。</li></ul>
+<h2>修后：drift 消失，另一处恢复故障仍在</h2>
+<p>R2 使用 slot 1，main 本地合入 #1128 的头 <code>85d516e6c42404326aad0f081489b457a33146f7</code>（完整 SHA 见重算 verdict）。下界后全库 <code>capability drift</code> 事件 0 条。B1、B2 各有 2 条 prepared 事件，两个 attempt 的失败原因均为 <code>recovery owner failed before commit</code>。</p>
+<ul><li>B1 <code>3835df15-3676-4717-a094-00b63bfde129</code>：仍标为 <code>other</code>。原始观察含 attempt 1/2 失败（session event 31、40），但第一 episode 的观察区间内没有 <code>episode_exhausted</code> 事件，因此不能证明预算耗尽，也不能把它补判为已换体或无换体耗尽。本轮不为它修改分类规则。</li><li>B2 <code>8914c4c2-ff29-464c-9efb-3b61b945e5b5</code>：attempt 1/2 失败（25、38）后有 <code>episode_exhausted</code>（42），重算标签 <code>failed_exhausted_no_replacement</code>。</li><li>B3 <code>4176c67b-ee4b-485c-a93e-761a7c57a60d</code>：<code>skipped_not_holder</code>，与原判定一致。</li></ul>
+<p><code>failed_exhausted_no_replacement</code> 在真实两轮中触发 <strong>2 次</strong>（R1 B2、R2 B2），不再是仅合成夹具覆盖的标签。owner failure 的实证是 R1 B2、R2 B1、R2 B2 三具；其更深层异常原话因本轮未保留对应 Bridge 日志而缺失，不补造根因。</p>
+<h2>生产影响与已知发现</h2>
+<p>生产零影响尚未通过。重算没有重新采集或放宽任何生产证据：R1 verdict 保留 13 项失败、2 项待归因，R2 保留 12 项失败、2 项待归因。两轮均含 proc/live、launch-commits 与 alerts 失败；R1 另有 fleet/live、fleet/postTeardown 失败。两轮 proc/postTeardown、proc/teardown 仍待归因。逐项原文与证据 SHA 见 <a href="recomputed/r1-verdict.json">R1 判定</a>、<a href="recomputed/r2-verdict.json">R2 判定</a>。</p>
+<ul><li>F1：slot 体内 daemon 写入生产停体账本。</li><li>F2：拆房后 slot CommDB 被重建，写者未定位。</li><li>F3：slot Bridge 告警写入生产 alerts 目录。</li><li>F4：修前已在返工途中的 B1 换体，普通运行的 B2 未换体。</li><li>F5：修后 drift 为 0，但 owner 提交前仍失败；更深层根因原话未捕获。</li></ul>
+<p><code>unbounded-production-evidence-projection</code>：宿主 StateStore 派生产物为 245668155 bytes；由 FLY-2503 承接上限改进，本 PR 不提交该大文件。</p>
+<h2>夹具、残留与证据边界</h2>
+<p>两轮均使用隐藏 room-info 解除排除、gate-held 满足 reown 资格的夹具；B3 为非 holder 对照。维护观察采用已批准的墙钟至少 600 秒与 tick <code>UNAVAILABLE(structural: no_unconditional_tick_observable)</code> 回执，不伪造两次 tick。活 WAL 生产库不作逐字相等声明。</p>
+<p>Lead 已回报清掉 <code>fly2454-decoy</code> 窗口；这是宿主清理回执，本实现节点没有操作生产 tmux。原始报告记载的 launch receipts、归档、沙箱分支/PR 等历史残留与当时状态保留，不能用后续清理覆盖演练窗口的污染事实。</p>
+<p><a href="host-runs/driver/DEVIATIONS.md">DEVIATIONS 原件</a> 使用混合编号：<code>1.</code>–<code>5.</code> 的编号段落与 #6–#17 小节，共 17 项；不是只有 #5–#17。本轮保持原件字节不变。</p>
+<h2>产物、自查与建议</h2>
+<p>原宿主归档仍为 <a href="host-runs/r2/drill-report.md">host-runs/r2/drill-report.md</a> 与 <a href="host-runs/r2/founder-report.html">host-runs/r2/founder-report.html</a>，供历史审计。本次重算的 <a href="recomputed/drill-report.md">双轮报告</a>、<a href="recomputed/pair.json">pair.json</a> 与 <a href="recomputed/replay-receipt.json">逐体差异及原证据哈希回执</a> 单独保存；本页为当前结论。两轮 observation 原始派生证据 SHA 不变，原 76 份 host-runs 文件字节不变。</p>
+<p>自查使用右侧字面量规则 <code>(TOKEN|SECRET|KEY)=[A-Za-z0-9._-]{16,}</code>，覆盖归档及重算产物，实际匹配 0；driver 中合法 shell 变量引用不算秘密泄漏。未提交 ps.txt、ps-comparison.txt、alerts.json、identity.json、state.evidence.json、comm.evidence.json 等原始大文件。</p>
+<p>建议由 Lead 将「drift 2 → 0，但完整 reown 0/2 → 0/2」与 owner failure、生产影响未闭合项交给 founder。是否批准仍由 FLY-2352 原 ship 流程决定；本报告不替代批准或上线。</p></main></body></html>

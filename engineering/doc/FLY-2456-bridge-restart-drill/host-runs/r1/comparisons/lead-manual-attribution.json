@@ -1,0 +1,23 @@
+{
+ "deviation": "#7 manual attribution addendum (round phase)",
+ "rows": [
+  {
+   "set": "removed",
+   "pid": 51769,
+   "command": "/bin/bash /Users/xiaorongli/.flywheel/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh",
+   "kind": "production_lead_wrapper_exit_unrelated",
+   "evidence": [
+    "launchctl list showed com.flywheel.lead.growth-mufasa-lead as not running with last exit status 3 at 15:45:46Z patrol (before the round deployed slot 4 at 17:01:49Z)",
+    "wrapper pid 51769 started 17:01:36Z (launchd KeepAlive relaunch, ppid 1) and had exited before live-after 17:30:28Z; launchctl at 17:35Z again shows '- 3'",
+    "the wrapper is a production Lead lifecycle process (growth-mufasa-lead), not a slot process; the exit-3 relaunch loop predates and is independent of the drill",
+    "CoS read-only check 18:06Z: exit 3 comes from codex-home-link-truth refusing (state=refused reason=lead-job-running / active-codex-process) because a legacy Claude-carrier Mufasa (~/Dev/growth/.atlas, tmux -L atlas, pids 902/946/954, up 14 days) is alive; launchd KeepAlive keeps retrying the new Codex TUI carrier (8346 wrapper rounds). Not quota/login. Two carriers colliding, not an outage."
+   ],
+   "verdict": "not_a_drill_casualty",
+   "followup": "growth owners decide whether the legacy .atlas carrier stays or the migration to the Codex TUI carrier completes; unrelated to the drill"
+  }
+ ],
+ "appliesTo": [
+  "proc-live.json",
+  "proc-post.json"
+ ]
+}

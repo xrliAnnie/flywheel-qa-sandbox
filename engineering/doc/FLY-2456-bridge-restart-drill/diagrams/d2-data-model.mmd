@@ -1,0 +1,33 @@
+erDiagram
+    SESSIONS ||--o{ WORKFLOW_EXECUTION_BINDING : "execution_id"
+    SESSIONS ||--o| RECOVERY_CLAIM : "execution_id"
+    SESSIONS ||--o{ SESSION_EVENTS : "execution_id"
+    WORKFLOW_RUN ||--o{ WORKFLOW_RUN_NODE : "run_id"
+    WORKFLOW_RUN_NODE ||--o{ WORKFLOW_EXECUTION_BINDING : "run_id, node_id, attempt"
+    WORKFLOW_RUN ||--o{ WORKFLOW_RUN_EVENT : "run_id"
+    SESSIONS {
+        text execution_id PK
+        text status "running / ship_parked / failed"
+        text adapter_type "codex-tmux"
+        text last_error "Codex recovery exhausted after 2 attempts"
+    }
+    WORKFLOW_EXECUTION_BINDING {
+        text activation_id PK "activation:rework:... for wake"
+        text execution_id FK
+        int attempt "1 spawn, 2 wake"
+        text mode "spawn | wake | replacement"
+    }
+    RECOVERY_CLAIM {
+        text execution_id PK
+        text episode_state "open | closed"
+        int episode_attempts "maxAttempts = 2"
+    }
+    SESSION_EVENTS {
+        text source "bridge.codex-session-reown"
+        text event_type "reown_revive_started / succeeded / failed"
+        json payload "reason: capability drift | episode_exhausted"
+    }
+    WORKFLOW_RUN_EVENT {
+        text kind "codex_recovery_capabilities_prepared / rework_replacement_launched"
+        json payload "attempt = 2 只在修后出现"
+    }

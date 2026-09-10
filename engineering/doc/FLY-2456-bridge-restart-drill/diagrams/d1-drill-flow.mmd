@@ -1,0 +1,37 @@
+sequenceDiagram
+    autonumber
+    participant Lead as Lead (宿主机, 按路书复制命令)
+    participant Room as 529 房 Bridge (slot)
+    participant B1 as B1 Codex 体<br/>(多 activation 靶, gate+holder)
+    participant B2 as B2 Codex 体<br/>(单 activation, gate+holder)
+    participant B3 as B3 Codex 体<br/>(停驻, 非 holder, 阴性)
+    participant DB as slot teamlead.db / comm.db
+    participant Tools as hermetic 工具 (只读文件)
+
+    Lead->>Room: 生产快照 before (fleet / ps / comm / launch-commits / health)
+    Lead->>Room: test-deploy --generalized --codex-runner --no-lead --expect-head
+    Lead->>Room: POST /api/runs/start ×3 (simple_code, 持久化 idempotencyKey)
+    Room->>B1: 出生 (spawn, implement@1)
+    Room->>B2: 出生 (spawn, implement@1)
+    Room->>B3: 出生 (spawn, implement@1)
+    Lead->>B1: 代 runner: 沙箱 PR + complete needs_review (B3 同)
+    Room->>DB: B1/B3 ship_parked, QA 体出生并拿走 TURN
+    Lead->>Room: QA 判 FAIL (代 QA 体) 或 POST /rework
+    Room->>B1: rework wake (同 execution, implement@2) → running, TURN 回 B1
+    Lead->>B1: 代 runner: gate question --no-block (B2 同) ⇒ gateHeld
+    Lead->>Tools: campaign-shape (形状 + 资格硬门)
+    Lead->>Room: bounds → cycle ① (room-info 未藏)
+    Lead->>Tools: observe ⇒ 期望三体 0 行 (排除生效的正对照)
+    Lead->>Room: hide-check → mv room-info.json → .drill-hidden
+    Lead->>Room: bounds → cycle ② test-cycle-bridge.sh (只 TERM Bridge 链)
+    Note over Room,B3: daemon 独立 pgid, 活过重启
+    Room->>DB: boot pass: 对 B1/B2 beginRecovery, 对 B3 skipped_not_turn_holder
+    alt 修前 (origin/main)
+        Room->>DB: B1 drift ×2 → episode_exhausted → failed → 换体
+        Room->>DB: B2 reown_revive_succeeded
+    else 修后 (main ⊕ #1128)
+        Room->>DB: B1/B2 reown_revive_succeeded (+prepared attempt=2)
+    end
+    Lead->>Tools: observe → verdict
+    Lead->>Room: 快照 live-after / pre-teardown → restore room-info → test-teardown → 快照 post-teardown
+    Lead->>Tools: 三组对照 (before→live / before→post / pre→post) + bounded launch-commits

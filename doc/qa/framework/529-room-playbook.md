@@ -316,3 +316,35 @@ diff -u /tmp/fly2454-before.txt /tmp/fly2454-after.txt
 FLY-2352 的 restart/reown 演练以本节为硬前置：先独立完成一次
 “快照 → 起房/动作 → 拆房 → 快照”，证明 diff 为空并核对归档，再开始 2352
 演练。该前置只证明 529 房不会伤生产，不代替 FLY-2352 自身验收。
+
+### 7.1 FLY-2456 的 reown 夹具
+
+529 的 `room-info.json` 会触发 FLY-2211 reown 排除。FLY-2456 两轮先保留该文件
+执行 cycle 1，确认三具目标的 reown 事件为零；随后按持久化身份将文件无覆盖移至
+`room-info.json.drill-hidden`，才执行 cycle 2。隐藏只是本次已批准的演练夹具，
+后续产品豁免见 FLY-2487。拆房或交接前必须按相同 inode/mode/mtime/hash 恢复；
+双文件或身份冲突时停手，不覆盖文件。完整命令见
+[宿主路书](../../../engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md)。
+
+### 7.2 reown 资格与阴性对照
+
+仅有活 daemon 不保证进入 revive。FLY-2456 的 B1/B2 必须持未处置的 open gate、
+持有 TURN，并由真实探针证明 PGID/socket holder 一致；B1 还须同 execution 的
+spawn@1 与 wake@2。B3 使用 parked、非 TURN holder 的单 activation 形状，预期
+`skipped_not_holder`，不计入成功率分母。fixture、状态或当前 activation 不合格时，
+不能把零恢复事件解释成修复有效。
+
+### 7.3 严格基线、声明差异与观察限制
+
+拆房因果比较的基线是**拆房紧前**的生产快照，另保留 before→live-after 与
+before→post-teardown 对照。进程按 PID+lstart 归因；FLY-2456 允许仅从派生比较文件
+排除本次采集 `ps` 自身的精确 PID，保留原始行、理由和源/派生哈希，其他 NONSLOT
+不豁免。`launch-commits` 按已收养的 PRE/B1/B2/B3/引擎 QA 与有完整因果链的换体
+做 bounded delta，不要求目录零新增；未经来源证明的新增仍失败。
+
+生产 CommDB 使用受管一致性副本进行 slot 标识污染检查，不宣称活 WAL 文件逐字相同。
+FLY-2456 的 Lead ruling `c7791d8e-0d58-44d2-af0f-28b371382737` 针对当前源码没有
+无条件每 tick 可持久观察面的情况，允许前置记录墙钟至少 600 秒及
+`maintenanceTicks=UNAVAILABLE(no_unconditional_tick_observable)`；必须保存起止时间并
+在报告披露，不能声称已观察两次维护。该限定例外不免除 terminate、拆房、fleet 与
+archive/ledger 的证据要求，也不推广为其他任务的默认豁免。

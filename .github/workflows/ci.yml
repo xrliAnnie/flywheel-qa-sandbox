@@ -600,6 +600,36 @@ jobs:
           bash scripts/__tests__/run-bridge-isolation-boot.test.sh
           bash scripts/__tests__/qa-fly-2454-fleet-snapshot.test.sh
 
+      - name: Test — FLY-2456 hermetic restart drill evidence
+        run: |
+          node --test scripts/__tests__/qa-fly-2456-drill-tools.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-scan.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-adopt.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-shape.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-observe.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-cli.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-liveness.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-proc.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-room-info.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-alerts.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-fleet.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-dry-run.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-file-adopt.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-launch-delta.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-rework-adopt.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-terminate-adopt.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-park-adopt.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-runner-windows.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-verdict.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-qa-identity.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-selection.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-report-pair.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-host-runbook.test.mjs
+          node --test scripts/__tests__/qa-fly-2456-proc-comparison.test.mjs
+          python3 scripts/__tests__/qa-fly-2456-comparison.test.py
+          python3 scripts/qa-fly-2456-guard-receipt.py engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md scripts/hooks/flywheel-restart-guard.py "$RUNNER_TEMP/fly2456-runbook-guard.json"
+          node scripts/qa-fly-2456-drill-tools.mjs dry-run --runbook engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md --scanner scripts/hooks/flywheel-restart-guard.py --receipt "$RUNNER_TEMP/fly2456-runbook-guard.json"
+
       # FLY-1775: generalized-DAG 529 room provisioning, canonical binding
       # seed/verify, deterministic persistent stub, and the nine-step replay
       # state machine. Hermetic: temporary SQLite/clone fixtures and fake

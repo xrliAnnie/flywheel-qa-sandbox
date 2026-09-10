@@ -37,6 +37,14 @@ allowed_hits=(
   'packages/teamlead/src/__tests__/fly369-patrol-rule.test.ts|three_stage_turn'
   'scripts/lead-patrol-snapshot.sh|three_stage_turn'
   'scripts/__tests__/lead-patrol-snapshot.test.sh|three_stage_turn'
+  # FLY-2456 read-only evidence over live three_stage_turn.
+  'scripts/lib/qa-fly-2456-shape.mjs|three_stage_turn'
+  'scripts/lib/qa-fly-2456-scan.mjs|three_stage_turn'
+  'scripts/__tests__/qa-fly-2456-shape.test.mjs|three_stage_turn'
+  'scripts/__tests__/qa-fly-2456-scan.test.mjs|three_stage_turn'
+  'scripts/__tests__/qa-fly-2456-cli.test.mjs|three_stage_turn'
+  # Exercise the actual legacy routing override; generalized preview rejects it.
+  'scripts/__tests__/qa-fly-2456-selection.test.mjs|no-three-stage'
   'packages/teamlead/src/__tests__/patrol-tick-loop.integration.test.ts|three_stage_turn'
   'packages/teamlead/src/bridge/hook-payload.ts|three_stage_turn'
   'packages/teamlead/src/__tests__/fly2268-mechanism-guards.test.ts|three_stage_turn'

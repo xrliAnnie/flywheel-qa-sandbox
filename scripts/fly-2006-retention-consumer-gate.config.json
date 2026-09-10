@@ -510,6 +510,55 @@
 			"baseTable": "mailbox",
 			"usage": "read",
 			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/qa-fly-2456-db.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/qa-fly-2456-fleet.mjs",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/qa-fly-2456-observe.mjs",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/qa-fly-2456-observe.mjs",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/qa-fly-2456-rework-adopt.mjs",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/qa-fly-2456-runner-windows.mjs",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/qa-fly-2456-terminate-adopt.mjs",
+			"relation": "lead_events",
+			"baseTable": "lead_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
 		}
 	]
 }

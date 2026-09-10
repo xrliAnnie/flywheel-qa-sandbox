@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2456 · 529 房真机重启演练:修前/修后各一次,看 Codex 体能不能被认回 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2456 · 529 房真机重启演练:修前/修后各一次,看 Codex 体能不能被认回</h1>
+<div class="meta">设计稿 · 2026-09-10 · 服务于 FLY-2352(PR #1128)的 founder 前置 · 文档:<code>engineering/doc/FLY-2456-bridge-restart-drill/</code>(exploration / research / plan)· {{REVIEW_META}}</div>
+
+<section class="card green" data-title="一句话">
+  <h2>一句话</h2>
+  <p class="summary-line">由 Lead 在宿主机按一份「每步一条可复制命令 + 期望输出」的路书,在专门的测试房(529 房:一套与生产完全隔离的 Bridge、数据库、tmux 和 Codex 进程)里起三具真 Codex 体,只重启那间房的 Bridge,看每具体是不是被「认回」(reown:Bridge 重启后重新接管还活着的 runner 进程,而不是判它死、换一具新的)。修前(现在的 main)预期「被返工唤醒过的体」必败被换掉,修后(#1128)预期全部认回;同时交出九项「生产一根毫毛没碰」的证据。我这边交付的是路书本身和一套不连真库、可自测的判定工具。</p>
+  <div class="cbox"><label>对这一节的意见</label><textarea data-key="s1" data-title="一句话" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+</section>
+
+<section class="card amber" data-title="审计发现:演练不能照 issue 字面直接跑">
+  <h2>审计发现:演练不能照 issue 字面直接跑</h2>
+  <p class="note">写设计前把房、脚本、被测代码都翻了一遍,三件事会让「直接跑」得出假结果或伤到生产:</p>
+  <ol>
+    <li><b>测试房里 reown 被整体关掉了。</b>FLY-2211 给 Bridge 加了一条排除规则:只要房间目录里有 <code>room-info.json</code>(装房脚本写的「这是一间测试房」标记)且标记说这是 generalized 房,Bridge 就对房内所有 Codex 体跳过认回。而真 Codex 房型(<code>--codex-runner</code>)必须是 generalized 房。⇒ 直接跑,修前修后都是「什么都没发生」。Lead 已裁定(<code>aa0f4fe9</code>):本次用<b>夹具</b>——体就位后、重启前把这个标记文件改名藏起来,重启完再改回;两轮用同一夹具,报告里明说。产品侧的正式豁免另立 <b>FLY-2487</b>。</li>
+    <li><b>#1128 的分支头不含 FLY-2454 的隔离修复。</b>从它起房 = 用没修隔离的脚本起房 = issue 依赖段警告的「击杀生产 Codex 舰队」。⇒ 修后轮用「当前 main + #1128」的本地临时合并头(已验证能干净合并,不推到远端),或等 #1128 合入后直接用 main。</li>
+    <li><b>「生产 comm.db 前后逐字相同」做不到。</b>comm.db 是生产 Lead 和 runner 的活信箱,5 秒内就在写。⇒ 改成:前后各做一次只读快照,快照里凡是带测试房标识的行必须是 0 行,加上 Codex 进程 / tmux 窗口清单的 diff 为空。Lead 已接受。</li>
+  </ol>
+  <div class="cbox"><label>对这一节的意见</label><textarea data-key="s2" data-title="审计发现:演练不能照 issue 字面直接跑" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程(每轮一遍;修前 slot 4,修后 slot 1)</h2>
+  <div class="diagram">{{D1}}</div>
+  <div class="cap">图 1 · 一轮演练的时序:起房 → 三具体 → 造出「多 activation」靶体 → 给 B1/B2 挂上 gate → 形状与资格硬门 → 正对照重启 → 藏标记 → 被测重启 → 读事件判定 → 拆房 → 三组零影响对照。宿主机命令全部由 Lead 执行,工具只读文件。</div>
+  <h3>三具体各是什么形状</h3>
+  <ul>
+    <li><b>B1(靶体,多 activation)</b>:activation 是「这具进程被授权去做某个 run 的某个节点的第几次尝试」的一条记录。B1 先做完 implement 第 1 次(停驻等待),再被返工<b>唤醒</b>去做第 2 次——同一具进程挂了两条记录。这就是生产里 15 具必败体的共同形状,也是 #1128 修的那一种。</li>
+    <li><b>B2(正对照,单 activation)</b>:刚出生、正在做第 1 次,只有一条记录。B1 与 B2 只差「有没有第二条记录」,是单变量对照。</li>
+    <li><b>B3(阴性对照,停驻、非 TURN holder)</b>:做完第 1 次停驻等待,TURN(「现在轮到谁说话」的令牌)已经交给 QA 体。Bridge 对这种体的正确行为是「跳过、不认回」(<code>reown_skipped_not_turn_holder</code>),它证明认回机制没有乱抢;不进成功率分母。</li>
+  </ul>
+  <h3>为什么 B1/B2 要先「挂一个 gate」</h3>
+  <p class="note">Codex 评审指出:Bridge 只对「daemon 还活着、但手里握着一个未答问题(open gate),或者停驻中」的体做认回;一具活着、正常干活、没问题在手的体,Bridge 只会登记「继续观察」,根本不进恢复流程。生产里那 15 具必败体在第一次尝试时都是「活着 + 握着 gate」。所以路书让 B1/B2 用它们自己的身份各发一个不阻塞的问题(<code>gate question --no-block</code>),房里没有 Lead 应答,它永远悬着——正好复刻生产形状。这是本演练的第二个夹具,报告里会写明。</p>
+  <h3>为什么要先做一次「正对照重启」</h3>
+  <p class="note">藏标记之前先重启一次,预期三具体都是 0 条认回事件——这证明「排除规则确实在起作用」;然后藏标记再重启,事件才出现。少了这一步,「没事件」既可能是排除生效,也可能是体本身不合格,分不开。</p>
+  <div class="cbox"><label>对这一节的意见</label><textarea data-key="s3" data-title="核心流程" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+</section>
+
+<section class="card purple" data-title="数据与判定">
+  <h2>数据与判定:看哪几张表、认哪几个词</h2>
+  <div class="diagram">{{D2}}</div>
+  <div class="cap">图 2 · 房间数据库里与认回相关的五张表。判定只认表里的行,不认日志里的叙述。</div>
+  <ul>
+    <li><b>认回成功</b>:事件表出现 <code>reown_revive_succeeded</code>;修后的 B1 还会多一条 <code>codex_recovery_capabilities_prepared</code> 且 attempt=2(修前这条对 B1 永远是 0 条——这是最锋利的对照)。</li>
+    <li><b>2352 的病复现</b>:两条 <code>reown_revive_failed</code>,原因以 <code>workflow capability drift</code> 开头;接着预算(每具体只给 2 次机会)耗尽 <code>episode_exhausted</code>,体被标 failed,引擎另铸一具替换体。</li>
+    <li><b>B3 的预期</b>:<code>reown_skipped_not_turn_holder</code>——被正确跳过。</li>
+    <li><b>夹具没生效 / 体不合格</b>:0 条事件,或只有「继续观察」(<code>reown_watch_started</code>,说明 gate 没挂上)。靠正对照区分,不猜。</li>
+  </ul>
+  <p class="note">事件按数据库的自增 id 和序号划界(每次重启前记下「此刻最大 id」),不按秒级时间戳,否则两次重启和 5 分钟一次的例行巡检会把事件串在一起。</p>
+  <div class="diagram">{{D3}}</div>
+  <div class="cap">图 3 · 每具体的终局怎么归类,两轮各自的通过条件,以及不符合时怎么办(报可证伪的障碍,不写 PASS)。</div>
+  <div class="cbox"><label>对这一节的意见</label><textarea data-key="s4" data-title="数据与判定" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+</section>
+
+<section class="card amber" data-title="生产零影响:五面证据">
+  <h2>生产零影响:九项证据,三组对照</h2>
+  <p class="note">每轮取四次快照:开始前、体还活着时、拆房前一刻、拆房后。三组对照各回答一个问题:「起房到重启期间生产少了什么」(开始前 → 活着时)、「整轮下来生产回到原样没有」(开始前 → 拆房后)、「拆房本身有没有杀错」(拆房前一刻 → 拆房后,这是 Lead 在 FLY-2455 C4 用过的严格基线)。</p>
+  <ol>
+    <li>生产 Codex 进程的 socket 清单 + 生产默认 tmux 的窗口清单:活着时只允许多出事先登记的测试房 socket、不允许少任何一行;拆房后 <code>diff</code> 为空。演练前先在生产 tmux 放一个 <code>fly2454-decoy</code> 假窗口,每份快照里都得在(证明「diff 为空」不是因为什么都没看到)。</li>
+    <li>全量进程表按 PID 归属:消失或新增的每个进程标成「测试房的」还是「不是测试房的」;「不是测试房的」若消失,必须逐个用生产数据库事件解释(比如某个生产 runner 自己干完了)。</li>
+    <li>生产 comm.db(Lead 与 runner 的活信箱)只读快照:对所有表、所有文本列扫测试房标识,前后都必须是 0 行;它是活库,5 秒内就在写,所以「逐字相同」做不到,改用这条(Lead 已接受)。</li>
+    <li>生产 <code>~/.flywheel/state/launch-commits/</code>:这是路书明写的「测试房也会写进去」的唯一位置,所以判据不是「没新增」,而是「新增的每一项都属于本轮登记过的体,没有一项来路不明」。</li>
+    <li>生产 StateStore 只读副本:测试房那几具体的 execution id 在生产库里零条认回事件、零条 session。</li>
+    <li>生产告警目录(meta-alert / alert-deadletter):新增或变更的文件按内容里的 leadId 归属,测试房 Lead 名下的算污染、交 Lead 隔离;生产 Lead 名下的按真告警留着。</li>
+    <li>生产 <code>runner-flywheel</code> 窗口数前后相等,或差异被生产事件解释。</li>
+    <li>生产 Bridge 的 <code>/health</code> uptime 单调递增、buildSha 不变——证明生产 Bridge 没被重启。</li>
+    <li>测试房自己的「拒杀账本」(kill-ledger)里零条越界拒绝记录;有的话逐条解释。</li>
+  </ol>
+  <p class="note">另外:路书 §7 规定演练前先按原样做一次硬前置——先放 decoy、起空房、起一具一次性体并终止它、等至少两个巡检周期、拆房、核对 diff 为空与归档可读;它只证明房不伤生产,不代替 2352 的验收。</p>
+  <div class="cbox"><label>对这一节的意见</label><textarea data-key="s5" data-title="生产零影响:五面证据" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+</section>
+
+<section class="card gray" data-title="取舍与被否掉的做法">
+  <h2>取舍与被否掉的做法</h2>
+  <ul>
+    <li><span class="badge do">采用</span><b>只重启房内 Bridge 的原语</b>(FLY-2237 的 cycle 脚本):只给 Bridge 那条进程链发 TERM,按同一份启动合同重启;Codex daemon 是独立进程组,活过重启——这正是生产事故里「daemon 还活着却被判死」的形状。<span class="badge no">否掉</span>拆房重装:会把体一起杀掉,测不到认回。</li>
+    <li><span class="badge do">采用</span><b>simple_code 菜单</b>(implement 直接打头):Codex 体在 run 开始后立刻出生。<span class="badge no">否掉</span>code 菜单:第一节点是 Claude 设计体,要走完文档流和 founder HTML 门,一具几十分钟且不可控。</li>
+    <li><span class="badge do">采用</span><b>代 runner 推进</b>(FLY-2182 实证配方):用体自己的环境替它提交完工 / 判 QA FAIL,几分钟内造出靶体形状。<span class="badge no">否掉</span>等真跑手自己干完:时间不可控,且体可能先把活干完退出。</li>
+    <li><span class="badge do">采用</span><b>QA 判 FAIL 触发唤醒</b>为主(FLY-1768 真房走通过),<span class="badge maybe">备选</span>operator 返工接口(<code>POST /api/runs/:id/rework</code>,不用起 QA 体,但房里没跑过)。</li>
+    <li><span class="badge do">采用</span><b>藏 room-info 夹具</b>(Lead 裁定)。<span class="badge no">否掉</span>改产品 predicate:同一文件正是 #1128 在改的,本单边界不碰,另立 FLY-2487。</li>
+    <li><span class="badge do">采用</span><b>「挂 gate」夹具</b>让 B1/B2 进入认回资格。<span class="badge no">否掉</span>把 daemon 杀掉来制造「死体」资格:那会变成另一种事故形状(daemon 已死),不是生产里那 15 具「活着但被判死」的形状。</li>
+    <li><span class="badge do">采用</span>每轮一份 <b>manifest</b>:所有会产生副作用的命令先「认领」——已有回执就只重放输出,不再执行;幂等键、请求 id、分支/PR 号都提前生成并落盘。<span class="badge no">否掉</span>现场手敲 uuid:「服务器收到了、客户端没拿到回应」那几秒里重试就会重复起体。</li>
+    <li><span class="badge do">采用</span>路书 dry-run 直接调用部署护栏(FLY-913)的<b>真判定函数</b>逐条检查命令。<span class="badge no">否掉</span>数「敏感词」:护栏是组合语义,数词会误报证据文件名、也会漏掉经 shell 包装的真危险命令。</li>
+    <li><span class="badge do">采用</span>两轮用<b>不同 slot</b>、串行跑:修后轮不依赖修前轮拆房成功(拆房撞 cmux 租约是老坑);串行让生产零影响能单变量归因。</li>
+  </ul>
+  <div class="cbox"><label>对这一节的意见</label><textarea data-key="s6" data-title="取舍与被否掉的做法" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+</section>
+
+<section class="card red" data-title="诚实边界">
+  <h2>诚实边界:这个设计做什么、不做什么</h2>
+  <h3>做</h3>
+  <ul>
+    <li>一份宿主机路书(Lead 逐条复制执行)+ 一套只读文件、不连真库、可自测的判定工具 + 两轮证据 + 一份零表格的 ship report 骨架报告,由 Lead 投到 FLY-2352 thread。</li>
+    <li>修前:B1 复现「drift → 耗尽 → 换体」、B2 认回、B3 被正确跳过;修后:B1/B2 全认回。这是 founder 决定按不按 #1128 的材料。</li>
+  </ul>
+  <h3>不做 / 证明不了</h3>
+  <ul>
+    <li>不改任何产品代码,不碰 #1128 分支,不重启生产任何东西,不跑 restart-services / request-restart;不用会终止整个 run 的 run 级 terminate。</li>
+    <li>测试房需要<b>两个夹具</b>(藏 room-info、挂 gate)才能观察认回——所以「529 房能开箱测 reown」这句话本设计<b>不成立</b>,要等 FLY-2487。</li>
+    <li>拆房后有几样东西会留下:生产的 launch-commits 回执(每具体一个,这是已登记的写点)、qa-evidence 归档、沙箱仓的分支与已关闭 PR、可能漏出的测试房死信。报告会逐一披露,它们不是「零影响」的反例。</li>
+    <li>修后轮跑的是「main + #1128」的本地合并字节,不是 CI 验过的那一份;报告会附 diff 统计。若 #1128 先合入,就直接用 main。</li>
+    <li>房里心跳固定 5 分钟,修前的第 2 次尝试与换体最迟要等 5–15 分钟;QA 体被唤醒后的行为不在观察范围,重启必须在唤醒后 5 分钟内做(否则 run 可能被 FLY-2208 的跑道问题挂起,靶体会被判「已被取代」而不是 drift)。</li>
+    <li>不覆盖 2352 计划里「生产首次重启窗口的形状对照」和已知限制 L1(恢复后凭据未投影到 CommDB);房里的 Codex 节点和生产一样不带产出凭据,撞到 <code>credential_revoked</code> 要单独归因。</li>
+  </ul>
+  <div class="cbox"><label>对这一节的意见</label><textarea data-key="s7" data-title="诚实边界" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+</section>
+
+<section class="card gray" data-title="评审记录">
+  <h2>评审记录</h2>
+  {{REVIEW_RECORD}}
+  <div class="cbox"><label>对这一节的意见</label><textarea data-key="s8" data-title="评审记录" placeholder="写在这里,自动保存在本机浏览器"></textarea></div>
+</section>
+
+<section class="card green" data-title="意见汇总">
+  <h2>意见汇总(复制后贴回给我)</h2>
+  <p class="note">下面实时汇总上面每一节里写的意见,首行固定是标记 <code>【页面意见汇总】FLY-2456</code>。超过约 1800 字会自动分段,每段都带标记。</p>
+  <button class="btn" id="copy-all" type="button">复制全部意见</button>
+  <button class="btn sec" id="clear-all" type="button">清空本机保存的意见</button>
+  <div class="status" id="copy-status"></div>
+  <div class="chunks" id="summary-chunks"></div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2456";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

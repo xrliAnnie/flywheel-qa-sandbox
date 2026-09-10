@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2352 真机重启演练 · 结论</title>
+<style>
+body{background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,system-ui,sans-serif;margin:0;padding:24px 16px;line-height:1.6}
+.wrap{max-width:960px;margin:0 auto}
+h1{font-size:24px;margin:0 0 6px}
+.sub{color:#86868b;font-size:14px;margin-bottom:20px}
+.card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;margin:0 0 14px;border-left:4px solid #007aff}
+.card.red{border-left-color:#ff3b30}.card.amber{border-left-color:#ff9500}.card.green{border-left-color:#34c759}.card.gray{border-left-color:#86868b}
+.card h2{font-size:17px;margin:0 0 8px}
+.big{font-size:34px;font-weight:700;margin:6px 0}
+.row{display:flex;gap:14px;flex-wrap:wrap}
+.row .card{flex:1 1 280px}
+.mono{font-family:'SF Mono',Menlo,monospace;font-size:13px;color:#1a365d}
+ul{margin:6px 0 0 18px;padding:0}
+li{margin:4px 0}
+.k{color:#86868b;font-size:13px}
+a{color:#007aff;text-decoration:none}
+.badge{display:inline-block;font-size:12px;padding:2px 8px;border-radius:999px;background:#ffe5e3;color:#c0261c;margin-left:6px;vertical-align:middle}
+.badge.g{background:#e3f7e8;color:#1f7a34}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>2352 真机重启演练 · 结论</h1>
+<div class="sub">2026-09-10 · 修前（main）与修后（main ⊕ #1128）各跑一轮 · 每轮 3 具 Codex 体、重启 slot Bridge 两次、观察 15 分钟 · 生产零伤亡</div>
+
+<div class="card red">
+<h2>一句话</h2>
+<div>合入 #1128 后，重启后的 Codex 体<strong>仍然全部认不回来</strong>：修前 0/2，修后 0/2。#1128 只去掉了 capability drift 这一个症状，认回在下一步「recovery owner 提交前」照样失败。</div>
+</div>
+
+<div class="row">
+<div class="card gray">
+<h2>修前 · main <span class="mono">d6cda1fc</span></h2>
+<div class="big">0 / 2</div>
+<ul>
+<li>B1（返工中被唤醒的体）：<span class="mono">workflow capability drift</span> → 两次失败 → exhausted；11 分钟后走返工路径铸了替身</li>
+<li>B2（普通在跑体）：<span class="mono">immutable launch snapshot does not match rehydrated context</span> → recovery owner 提交前失败 → exhausted，<strong>不换体</strong></li>
+<li>B3（已停驻、非 holder）：按设计跳过，阴性对照</li>
+</ul>
+</div>
+<div class="card gray">
+<h2>修后 · main ⊕ #1128 <span class="mono">85d516e6</span></h2>
+<div class="big">0 / 2</div>
+<ul>
+<li>capability drift 事件：<strong>0</strong>（#1128 的直接目标达成）<span class="badge g">已消</span></li>
+<li>B1 / B2：<span class="mono">reown_revive_failed · recovery owner failed before commit</span> ×2 → exhausted；B1 的替身窗口从未绑定（zombie）</li>
+<li>提交前失败的具体原因这轮没抓到（slot 日志随拆房丢失，已补归档步骤）——是否仍是 launch snapshot 不匹配，<strong>本轮未验证</strong></li>
+</ul>
+</div>
+</div>
+
+<div class="card amber">
+<h2>对 2352 那张卡意味着什么</h2>
+<ul>
+<li>按下去=合入一个<strong>去掉一个症状但不改变结局</strong>的修法。安全（生产零影响、CI 绿、QA 绿），但重启后在飞 Codex 体照样全灭。</li>
+<li>要让认回真正成功，还需要第二处修：recovery owner 提交前的失败点。建议下一张单先用补了日志归档的驱动重跑修后头一次，拿到那一行原因再定修法。</li>
+<li>我的建议：<strong>可以按，但别当"修好了"</strong>；或者压着等第二处修一起。你定。</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>演练顺带发现的真问题（都进报告，不阻塞这张卡）</h2>
+<ul>
+<li><strong>F1</strong> slot 里跑的体把停体记录写进了<strong>生产</strong>账本（两轮稳定复现）——runner 侧读的是生产 state dir。</li>
+<li><strong>F2</strong> 拆房 9 秒后 slot 的 CommDB 被某个组件按 slot 路径重建（空库）；写者还没定位。</li>
+<li><strong>F3</strong> slot Bridge 的告警文件写进了<strong>生产</strong> alerts 目录（9 个）。</li>
+<li><strong>F4</strong> main 上 exhausted 之后只有"返工在途"的体会换体，普通在跑体不换。</li>
+<li>以上三条泄漏（F1–F3）与 2352/2174 那族"env 走漏"同源，修 FLYWHEEL_STATE_DIR 隔离时一并覆盖。</li>
+</ul>
+</div>
+
+<div class="card green">
+<h2>这次为什么跑了 15 次才通</h2>
+<div>路书（实现体交付的宿主演练手册）在真机上暴露了 <strong>17 处缺陷</strong>：判据在活宿主上不可满足（进程归因、reaper 空转记录）、Codex 体不写 branch 列、效果步之后没等引擎异步落账等。每条都在驱动上打了补丁并留了证据，会随报告一起写回 PR #1150 的路书；生产全程 8/8 窗口完好。</div>
+</div>
+
+<div class="card gray">
+<h2>下一步</h2>
+<ul>
+<li>把两轮报告 + 路书修正写进 PR #1150（铸替身返工，QA 复验后出新卡）。</li>
+<li>2352 卡：等你一句——现在按 / 压着等第二处修。</li>
+<li>技术附录（工具原始判定、事件时间线、证据 SHA256）：<a href="https://fw-reports-a53de2.vercel.app/r/16b3ea0c89a38546dd15df6abda6ccf3/">打开</a></li>
+</ul>
+</div>
+</div>
+</body>
+</html>

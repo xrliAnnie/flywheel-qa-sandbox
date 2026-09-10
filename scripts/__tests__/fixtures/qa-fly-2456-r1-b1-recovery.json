@@ -1,0 +1,271 @@
+{
+	"provenance": {
+		"source": "Lead r1/final-observe.evidence.json",
+		"sha256": "6542fcf5155e5e4ec556b713306400fdacb1870b802c65c491738ec2f6b4fc92",
+		"selection": "R1 B1 post-cycle reown events, terminal session/claim and three actual replacement events; raw selected rows unchanged"
+	},
+	"bounds": {
+		"status": "pass",
+		"sessionEventsMaxId": 30,
+		"runEventMaxSeq": {
+			"abfe17aa-5ced-4f40-9514-b75e8c984355": 33,
+			"c656f694-6162-413a-86b9-ea0b66213196": 8,
+			"c2415734-f020-43b3-a3fe-64ede1eb1f29": 19
+		},
+		"metadata": {
+			"observedAt": "2026-09-10T17:15:03.880712+00:00",
+			"sha256": "05d24bb01476a23dfb289e09a2b9dd1d8f2316c2e3f5875fa86760847d5a2506"
+		}
+	},
+	"bodies": {
+		"B1": {
+			"executionId": "8798137e-39ef-4906-8075-7b2d095a5f0e",
+			"runId": "abfe17aa-5ced-4f40-9514-b75e8c984355",
+			"nodeId": "implement"
+		},
+		"B2": {
+			"executionId": "316a116c-b44d-41ba-bdad-e8fcec8ff92f",
+			"runId": "c656f694-6162-413a-86b9-ea0b66213196",
+			"nodeId": "implement"
+		},
+		"B3": {
+			"executionId": "0c1c8174-bf92-444d-b408-9da04d66311a",
+			"runId": "c2415734-f020-43b3-a3fe-64ede1eb1f29",
+			"nodeId": "implement"
+		}
+	},
+	"evidence": {
+		"version": 1,
+		"kind": "observation",
+		"source": {
+			"path": "/private/tmp/flywheel-snapshots/e29c4e33-6e98-4483-9d02-c496a444fa57/teamlead-28808efe-b604-4339-b806-e662f592e686.db",
+			"observedAt": "2026-09-10T17:30:27.943146+00:00",
+			"sha256": "60304a3ab5d50ac69bc7a116d675ac18100f6cd77b74a54d10b8c221cca7f655"
+		},
+		"tables": [
+			{
+				"name": "recovery_claim",
+				"columns": [
+					{
+						"name": "execution_id",
+						"type": "TEXT"
+					},
+					{
+						"name": "episode_id",
+						"type": "TEXT"
+					},
+					{
+						"name": "episode_attempts",
+						"type": "INTEGER"
+					}
+				],
+				"rows": [
+					[
+						"8798137e-39ef-4906-8075-7b2d095a5f0e",
+						"38b7094d-a5b1-4f48-93c3-a465398cebda",
+						0
+					]
+				]
+			},
+			{
+				"name": "session_events",
+				"columns": [
+					{
+						"name": "id",
+						"type": "INTEGER"
+					},
+					{
+						"name": "event_id",
+						"type": "TEXT"
+					},
+					{
+						"name": "ts",
+						"type": "TEXT"
+					},
+					{
+						"name": "execution_id",
+						"type": "TEXT"
+					},
+					{
+						"name": "event_type",
+						"type": "TEXT"
+					},
+					{
+						"name": "payload",
+						"type": "JSON"
+					},
+					{
+						"name": "source",
+						"type": "TEXT"
+					}
+				],
+				"rows": [
+					[
+						33,
+						"reown_revive_started-8798137e-39ef-4906-8075-7b2d095a5f0e-d78067cf-d01e-4c8f-b67f-f3f73018c824",
+						"2026-09-10 17:15:33",
+						"8798137e-39ef-4906-8075-7b2d095a5f0e",
+						"reown_revive_started",
+						"{\"episodeId\":\"38b7094d-a5b1-4f48-93c3-a465398cebda\",\"attempt\":1,\"liveness\":\"alive\",\"gateHeld\":true,\"posture\":\"running\",\"eventId\":\"reown_revive_started-8798137e-39ef-4906-8075-7b2d095a5f0e-d78067cf-d01e-4c8f-b67f-f3f73018c824\",\"source\":\"bridge.codex-session-reown\"}",
+						"bridge.codex-session-reown"
+					],
+					[
+						34,
+						"reown_revive_failed-8798137e-39ef-4906-8075-7b2d095a5f0e-1aabf9c8-ff41-460c-8a5e-510f7b7f3fad",
+						"2026-09-10 17:15:33",
+						"8798137e-39ef-4906-8075-7b2d095a5f0e",
+						"reown_revive_failed",
+						"{\"reason\":\"workflow capability drift for 8798137e-39ef-4906-8075-7b2d095a5f0e\",\"episodeId\":\"38b7094d-a5b1-4f48-93c3-a465398cebda\",\"attempt\":1,\"eventId\":\"reown_revive_failed-8798137e-39ef-4906-8075-7b2d095a5f0e-1aabf9c8-ff41-460c-8a5e-510f7b7f3fad\",\"source\":\"bridge.codex-session-reown\"}",
+						"bridge.codex-session-reown"
+					],
+					[
+						40,
+						"reown_revive_started-8798137e-39ef-4906-8075-7b2d095a5f0e-b07e5e0d-10d1-46cc-8b82-3ea0d7948948",
+						"2026-09-10 17:20:33",
+						"8798137e-39ef-4906-8075-7b2d095a5f0e",
+						"reown_revive_started",
+						"{\"episodeId\":\"38b7094d-a5b1-4f48-93c3-a465398cebda\",\"attempt\":2,\"liveness\":\"absent\",\"gateHeld\":true,\"posture\":\"running\",\"eventId\":\"reown_revive_started-8798137e-39ef-4906-8075-7b2d095a5f0e-b07e5e0d-10d1-46cc-8b82-3ea0d7948948\",\"source\":\"bridge.codex-session-reown\"}",
+						"bridge.codex-session-reown"
+					],
+					[
+						41,
+						"reown_revive_failed-8798137e-39ef-4906-8075-7b2d095a5f0e-9f38a2e2-c16e-4c53-8d95-d85031adbe36",
+						"2026-09-10 17:20:33",
+						"8798137e-39ef-4906-8075-7b2d095a5f0e",
+						"reown_revive_failed",
+						"{\"reason\":\"workflow capability drift for 8798137e-39ef-4906-8075-7b2d095a5f0e\",\"episodeId\":\"38b7094d-a5b1-4f48-93c3-a465398cebda\",\"attempt\":2,\"eventId\":\"reown_revive_failed-8798137e-39ef-4906-8075-7b2d095a5f0e-9f38a2e2-c16e-4c53-8d95-d85031adbe36\",\"source\":\"bridge.codex-session-reown\"}",
+						"bridge.codex-session-reown"
+					],
+					[
+						51,
+						"reown_revive_failed-8798137e-39ef-4906-8075-7b2d095a5f0e-6dd827f5-169a-433d-84b6-dd28ecbf17bb",
+						"2026-09-10 17:25:33",
+						"8798137e-39ef-4906-8075-7b2d095a5f0e",
+						"reown_revive_failed",
+						"{\"reason\":\"episode_exhausted\",\"attempts\":2,\"eventId\":\"reown_revive_failed-8798137e-39ef-4906-8075-7b2d095a5f0e-6dd827f5-169a-433d-84b6-dd28ecbf17bb\",\"source\":\"bridge.codex-session-reown\"}",
+						"bridge.codex-session-reown"
+					]
+				]
+			},
+			{
+				"name": "sessions",
+				"columns": [
+					{
+						"name": "execution_id",
+						"type": "TEXT"
+					},
+					{
+						"name": "status",
+						"type": "TEXT"
+					},
+					{
+						"name": "last_error",
+						"type": "TEXT"
+					}
+				],
+				"rows": [
+					["0c1c8174-bf92-444d-b408-9da04d66311a", "ship_parked", null],
+					[
+						"316a116c-b44d-41ba-bdad-e8fcec8ff92f",
+						"failed",
+						"Codex recovery exhausted after 2 attempts"
+					],
+					[
+						"8798137e-39ef-4906-8075-7b2d095a5f0e",
+						"failed",
+						"Codex recovery exhausted after 2 attempts"
+					],
+					[
+						"4240e1e9-3dca-4a34-8521-0ea86533207e",
+						"failed",
+						"worktree_takeover_failed: shared branch-B worktree /tmp/flywheel-test-slot-4/project-slot-4-FLY-202 is not reusable in place (clean=false, head=def8cf35b18f75c9b70a0ec09dcef41eaefc83cd, expected=06a6d4b7f243885222a2e5ddc913e418ad508f44) \u2014 refusing to reuse an active phase worktree; a parked phase may hold uncommitted work"
+					]
+				]
+			},
+			{
+				"name": "workflow_run",
+				"columns": [
+					{
+						"name": "run_id",
+						"type": "TEXT"
+					}
+				],
+				"rows": [
+					["abfe17aa-5ced-4f40-9514-b75e8c984355"],
+					["c2415734-f020-43b3-a3fe-64ede1eb1f29"],
+					["c656f694-6162-413a-86b9-ea0b66213196"]
+				]
+			},
+			{
+				"name": "workflow_run_event",
+				"columns": [
+					{
+						"name": "run_id",
+						"type": "TEXT"
+					},
+					{
+						"name": "seq",
+						"type": "INTEGER"
+					},
+					{
+						"name": "event_uid",
+						"type": "TEXT"
+					},
+					{
+						"name": "kind",
+						"type": "TEXT"
+					},
+					{
+						"name": "node_id",
+						"type": "TEXT"
+					},
+					{
+						"name": "execution_id",
+						"type": "TEXT"
+					},
+					{
+						"name": "payload",
+						"type": "JSON"
+					},
+					{
+						"name": "at",
+						"type": "TEXT"
+					}
+				],
+				"rows": [
+					[
+						"abfe17aa-5ced-4f40-9514-b75e8c984355",
+						39,
+						"rework_delivery_replacement_pending:rework:f77630621c08d74d87b163d0121a4e9753cb7bd86463353cb0d4c7d8947f52fd",
+						"rework_delivery_replacement_pending",
+						"implement",
+						"8798137e-39ef-4906-8075-7b2d095a5f0e",
+						"{\"requestId\":\"rework:f77630621c08d74d87b163d0121a4e9753cb7bd86463353cb0d4c7d8947f52fd\",\"generation\":6,\"from\":\"wake_delivered\",\"to\":\"replacement_pending\",\"error\":\"actor_session_terminal:failed\"}",
+						"2026-09-10 17:26:50"
+					],
+					[
+						"abfe17aa-5ced-4f40-9514-b75e8c984355",
+						41,
+						"rework_replacement_materialized:rework:f77630621c08d74d87b163d0121a4e9753cb7bd86463353cb0d4c7d8947f52fd",
+						"rework_replacement_materialized",
+						"implement",
+						"8798137e-39ef-4906-8075-7b2d095a5f0e",
+						"{\"requestId\":\"rework:f77630621c08d74d87b163d0121a4e9753cb7bd86463353cb0d4c7d8947f52fd\",\"deadExecutionId\":\"8798137e-39ef-4906-8075-7b2d095a5f0e\",\"newExecutionId\":\"4240e1e9-3dca-4a34-8521-0ea86533207e\",\"launchOrdinal\":1,\"routeRevision\":2,\"reason\":\"actor_session_terminal:failed\",\"heldPaneLossRecovery\":false}",
+						"2026-09-10 17:26:50"
+					],
+					[
+						"abfe17aa-5ced-4f40-9514-b75e8c984355",
+						42,
+						"rework_replacement:rework:f77630621c08d74d87b163d0121a4e9753cb7bd86463353cb0d4c7d8947f52fd",
+						"rework_replacement",
+						"implement",
+						"4240e1e9-3dca-4a34-8521-0ea86533207e",
+						"{\"requestId\":\"rework:f77630621c08d74d87b163d0121a4e9753cb7bd86463353cb0d4c7d8947f52fd\",\"targetNodeId\":\"implement\",\"targetAttempt\":2,\"newExecutionId\":\"4240e1e9-3dca-4a34-8521-0ea86533207e\",\"routeRevision\":2}",
+						"2026-09-10 17:26:50"
+					]
+				]
+			}
+		],
+		"views": []
+	}
+}

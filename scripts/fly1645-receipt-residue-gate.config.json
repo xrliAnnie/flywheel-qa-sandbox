@@ -158,6 +158,7 @@
 		}
 	],
 	"relayStateAllowedFiles": [
+		"scripts/lib/qa-fly-2456-db.mjs",
 		"packages/flywheel-comm/src/db.ts",
 		"packages/flywheel-comm/src/mailbox-migration.ts",
 		"packages/flywheel-comm/src/mailbox-queue.ts",

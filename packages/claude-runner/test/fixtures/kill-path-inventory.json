@@ -1914,6 +1914,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/qa-fly-2456-liveness.test.mjs:child.kill(\"SIGTERM\");#1",
+		"path": "scripts/__tests__/qa-fly-2456-liveness.test.mjs",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/qa-fly1501-bounded-run.test.sh:if kill -0 \"$DESC_PID\" 2>/dev/null; then#1",
 		"path": "scripts/__tests__/qa-fly1501-bounded-run.test.sh",
 		"code": "if kill -0 \"$DESC_PID\" 2>/dev/null; then",
@@ -3112,6 +3118,12 @@
 		"path": "scripts/lib/lead-restart-lifecycle.sh",
 		"code": "kill -0 \"$1\" 2>/dev/null",
 		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/qa-fly-2456-liveness.mjs:try{process.kill(-persistedPgidBefore,0);groupState='alive';}#1",
+		"path": "scripts/lib/qa-fly-2456-liveness.mjs",
+		"code": "try{process.kill(-persistedPgidBefore,0);groupState='alive';}",
+		"classification": "qa-only"
 	},
 	{
 		"key": "scripts/lib/qa-generalized.sh:for pid in \"${owned[@]}\"; do kill -TERM \"$pid\" 2>/dev/null || true; done#1",

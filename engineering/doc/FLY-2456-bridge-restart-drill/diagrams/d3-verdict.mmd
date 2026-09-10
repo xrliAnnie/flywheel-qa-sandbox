@@ -1,0 +1,18 @@
+flowchart TD
+    A[cycle ② 下界之后的 session_events<br/>source = bridge.codex-session-reown<br/>按 recovery_claim.episode_id 串起] --> B{该体首个 episode<br/>出现了什么?}
+    B -->|reown_revive_succeeded| S[succeeded<br/>认回成功]
+    B -->|reown_revive_failed ×2<br/>reason 以 workflow capability drift 开头| D[drift_exhausted<br/>2352 病复现]
+    D --> E{episode_exhausted +<br/>sessions.failed +<br/>rework_replacement_launched?}
+    E -->|是| R[replaced<br/>被换体]
+    E -->|否 / 超时| O[other<br/>原文入账]
+    B -->|只有 reown_watch_started| W[watch_only<br/>体没资格: running 且无 gate<br/>= 夹具漏做, 停手]
+    B -->|reown_skipped_not_turn_holder| K[skipped_not_holder<br/>B3 的预期结果<br/>不进分母]
+    B -->|0 行 且 cycle ① 也 0 行| X[excluded_or_ineligible<br/>room-info 夹具没生效<br/>停手上报]
+    B -->|其他 reason| O
+    S --> V[verdict: 分母只含有资格体 B1/B2<br/>按形状分组算成功率]
+    R --> V
+    K --> V
+    O --> V
+    V --> Y{R1 修前: B1=drift_exhausted, B2=succeeded, B3=skipped<br/>R2 修后: B1/B2 succeeded 且 B1 prepared attempt=2}
+    Y -->|两轮都符合 + 零影响九项全绿| P[报告投 FLY-2352 thread<br/>founder 决定按不按]
+    Y -->|不符合| Q[先紧急恢复 room-info<br/>再报可证伪障碍给 Lead<br/>不写 PASS]

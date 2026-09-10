@@ -1,0 +1,332 @@
+{
+ "status": "pass",
+ "deviation": "#7 Lead attribution layer (runbook proc-attribution needs-attribution has no attribution interface)",
+ "toolStatus": "needs-attribution",
+ "mode": "post-teardown",
+ "roots": [
+  "/tmp/flywheel-test-slot-4",
+  "/Users/xiaorongli/Dev/flywheel-FLY-2456-r1",
+  "/private/tmp/flywheel-test-slot-4"
+ ],
+ "baselineSkippedLines": 1,
+ "afterSkippedLines": 1,
+ "counts": {
+  "slot": 18,
+  "host_transient": 10,
+  "production_casualty": 0,
+  "production_added": 0,
+  "added_unattributed": 0,
+  "unattributed": 0
+ },
+ "failures": [],
+ "rows": [
+  {
+   "pid": 37254,
+   "ppid": 64748,
+   "lstart": "Thu Sep 10 10:30:17 2026",
+   "command": "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/153.0.8010.12/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=24260 --launch-time-ticks=1250317113455 --shared-files --metrics-shmem-handle=1752395122,r,9246336881516195960,17774696327788529801,1572864 --field-trial-handle=1718379636,r,11559101906454821014,16187966911243481444,262144 --variations-seed-version=20260826-170938.908000-production --pseudonymization-salt-handle=1935764596,r,8055510575753656360,5401395844252923208,4 --trace-process-track-uuid=3190731718947128234 --seatbelt-client=68",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "host_transient",
+   "rule": "C:host_transient",
+   "evidence": "Google Chrome Helper"
+  },
+  {
+   "pid": 45081,
+   "ppid": 1,
+   "lstart": "Thu Sep 10 10:15:06 2026",
+   "command": "npm exec tsx /Users/xiaorongli/Dev/flywheel-FLY-2456-r1/scripts/run-bridge.ts   ",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "A:slot_arg_path",
+   "evidence": "/Users/xiaorongli/Dev/flywheel-FLY-2456-r1/scripts/run-bridge.ts"
+  },
+  {
+   "pid": 45553,
+   "ppid": 45081,
+   "lstart": "Thu Sep 10 10:15:06 2026",
+   "command": "/opt/homebrew/bin/node /Users/xiaorongli/Dev/flywheel-FLY-2456-r1/scripts/lib/qa-report-host.mjs --root /private/tmp/flywheel-test-slot-4/state/report-host --expected-parent 45081",
+   "attribution": "SLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "tool:SLOT",
+   "evidence": "executable/interpreter path under root"
+  },
+  {
+   "pid": 45966,
+   "ppid": 45081,
+   "lstart": "Thu Sep 10 10:15:07 2026",
+   "command": "node /Users/xiaorongli/.npm/_npx/fd45a72a545557e9/node_modules/.bin/tsx /Users/xiaorongli/Dev/flywheel-FLY-2456-r1/scripts/run-bridge.ts",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "A:slot_arg_path",
+   "evidence": "/Users/xiaorongli/Dev/flywheel-FLY-2456-r1/scripts/run-bridge.ts"
+  },
+  {
+   "pid": 45991,
+   "ppid": 45966,
+   "lstart": "Thu Sep 10 10:15:07 2026",
+   "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node --require /Users/xiaorongli/.npm/_npx/fd45a72a545557e9/node_modules/tsx/dist/preflight.cjs --import file:///Users/xiaorongli/.npm/_npx/fd45a72a545557e9/node_modules/tsx/dist/loader.mjs /Users/xiaorongli/Dev/flywheel-FLY-2456-r1/scripts/run-bridge.ts",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "A:slot_arg_path",
+   "evidence": "/Users/xiaorongli/Dev/flywheel-FLY-2456-r1/scripts/run-bridge.ts"
+  },
+  {
+   "pid": 46183,
+   "ppid": 902,
+   "lstart": "Thu Sep 10 10:30:35 2026",
+   "command": "sleep 15",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "host_transient",
+   "rule": "C:host_transient",
+   "evidence": "^sleep \\d+$"
+  },
+  {
+   "pid": 48622,
+   "ppid": 64748,
+   "lstart": "Thu Sep 10 10:30:40 2026",
+   "command": "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/153.0.8010.12/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=24261 --launch-time-ticks=1250340017220 --shared-files --metrics-shmem-handle=1752395122,r,6638587370000612441,14864602337303604655,1572864 --field-trial-handle=1718379636,r,11559101906454821014,16187966911243481444,262144 --variations-seed-version=20260826-170938.908000-production --pseudonymization-salt-handle=1935764596,r,8055510575753656360,5401395844252923208,4 --trace-process-track-uuid=3190731719884170083 --seatbelt-client=68",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "host_transient",
+   "rule": "C:host_transient",
+   "evidence": "Google Chrome Helper"
+  },
+  {
+   "pid": 51124,
+   "ppid": 53996,
+   "lstart": "Thu Sep 10 10:30:42 2026",
+   "command": "sleep 30",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "host_transient",
+   "rule": "C:host_transient",
+   "evidence": "^sleep \\d+$"
+  },
+  {
+   "pid": 70420,
+   "ppid": 1,
+   "lstart": "Thu Sep 10 10:02:28 2026",
+   "command": "codex app-server --remote-control --listen unix:///tmp/flywheel-test-slot-4/state/cdx-sock/bd69038fc7d798a1.sock -c sandbox_workspace_write.writable_roots=[\"/Users/xiaorongli/.flywheel\",\"/Users/xiaorongli/.flywheel/state/codex-gates\",\"/tmp/flywheel-test-slot-4/state/comm/test-slot-4\",\"/private/tmp/flywheel-test-slot-4/project-slot-4-FLY-146\",\"/private/tmp/flywheel-test-slot-4/project-slot-4/.git/worktrees/project-slot-4-FLY-146\",\"/private/tmp/flywheel-test-slot-4/project-slot-4/.git\"] -c sandbox_workspace_write.network_access=true -c model_reasoning_effort=\"xhigh\"",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "A:slot_arg_path",
+   "evidence": "unix:///tmp/flywheel-test-slot-4/state/cdx-sock/bd69038fc7d798a1.sock"
+  },
+  {
+   "pid": 71017,
+   "ppid": 70420,
+   "lstart": "Thu Sep 10 10:02:29 2026",
+   "command": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "B:slot_ancestry",
+   "evidence": "ancestor pid 70420"
+  },
+  {
+   "pid": 71019,
+   "ppid": 70420,
+   "lstart": "Thu Sep 10 10:02:29 2026",
+   "command": "/Applications/Pencil.app/Contents/Resources/app.asar.unpacked/out/mcp-server-darwin-arm64 --app desktop",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "B:slot_ancestry",
+   "evidence": "ancestor pid 70420"
+  },
+  {
+   "pid": 71020,
+   "ppid": 70420,
+   "lstart": "Thu Sep 10 10:02:29 2026",
+   "command": "npm exec chrome-devtools-mcp@latest --auto-connect --channel=stable     ",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "B:slot_ancestry",
+   "evidence": "ancestor pid 70420"
+  },
+  {
+   "pid": 71822,
+   "ppid": 71020,
+   "lstart": "Thu Sep 10 10:02:30 2026",
+   "command": "chrome-devtools-mcp   ",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "B:slot_ancestry",
+   "evidence": "ancestor pid 70420"
+  },
+  {
+   "pid": 71995,
+   "ppid": 71822,
+   "lstart": "Thu Sep 10 10:02:30 2026",
+   "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /Users/xiaorongli/.npm/_npx/15c61037b1978c83/node_modules/chrome-devtools-mcp/build/src/telemetry/watchdog/main.js --parent-pid=71822 --app-version=1.9.0 --os-type=2",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "B:slot_ancestry",
+   "evidence": "ancestor pid 70420"
+  },
+  {
+   "pid": 72746,
+   "ppid": 1,
+   "lstart": "Thu Sep 10 10:02:31 2026",
+   "command": "/opt/homebrew/bin/tmux -S /private/tmp/flywheel-test-slot-4/tmux-501/default new-session -Ad -s runner-test-slot-4",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "A:slot_arg_path",
+   "evidence": "/private/tmp/flywheel-test-slot-4/tmux-501/default"
+  },
+  {
+   "pid": 84239,
+   "ppid": 70420,
+   "lstart": "Thu Sep 10 10:02:46 2026",
+   "command": "/Users/xiaorongli/.codex-242/packages/standalone/releases/0.153.2-aarch64-apple-darwin/bin/codex-code-mode-host",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "B:slot_ancestry",
+   "evidence": "ancestor pid 70420"
+  },
+  {
+   "pid": 75793,
+   "ppid": 72746,
+   "lstart": "Thu Sep 10 10:02:36 2026",
+   "command": "-zsh",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "B:slot_ancestry",
+   "evidence": "ancestor pid 72746"
+  },
+  {
+   "pid": 84516,
+   "ppid": 72746,
+   "lstart": "Thu Sep 10 10:02:47 2026",
+   "command": "/Users/xiaorongli/.local/bin/codex resume --remote unix:///tmp/flywheel-test-slot-4/state/cdx-sock/bd69038fc7d798a1.sock -C /private/tmp/flywheel-test-slot-4/project-slot-4-FLY-146 -s workspace-write -c approval_policy=\"never\" 01a08c45-5678-7c51-985f-bf6fc7c6a0e9",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "A:slot_arg_path",
+   "evidence": "unix:///tmp/flywheel-test-slot-4/state/cdx-sock/bd69038fc7d798a1.sock"
+  },
+  {
+   "pid": 53013,
+   "ppid": 66419,
+   "lstart": "Thu Sep 10 10:30:46 2026",
+   "command": "sleep 2",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "host_transient",
+   "rule": "C:host_transient",
+   "evidence": "^sleep \\d+$"
+  },
+  {
+   "pid": 16711,
+   "ppid": 72746,
+   "lstart": "Thu Sep 10 10:10:40 2026",
+   "command": "/Users/xiaorongli/.local/bin/codex resume --remote unix:///tmp/flywheel-test-slot-4/state/cdx-sock/6c3713836a959647.sock -C /private/tmp/flywheel-test-slot-4/project-slot-4-FLY-202 -s workspace-write -c approval_policy=\"never\" 01a08c4c-5c49-7e21-95be-b0fe9e006115",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "A:slot_arg_path",
+   "evidence": "unix:///tmp/flywheel-test-slot-4/state/cdx-sock/6c3713836a959647.sock"
+  },
+  {
+   "pid": 23613,
+   "ppid": 72746,
+   "lstart": "Thu Sep 10 10:10:48 2026",
+   "command": "claude --agent-id runner-486aed47@flywheel-test-4 --agent-name runner-486aed47 --team-name flywheel-test-4 --permission-mode bypassPermissions --session-id f8846bca-3afd-4f29-ad83-594c650efbc3 --permission-mode bypassPermissions --append-system-prompt-file /tmp/flywheel-test-slot-4/tmp/flywheel-runner-prompts/486aed47-0119-4546-8c02-d27c4e9b3a4f/append-system-prompt.md --model claude-opus-5 --effort high --settings {\"enabledPlugins\":{\"serena@claude-plugins-official\":false,\"playwright@claude-plugins-official\":true,\"discord@flywheel-plugins\":false,\"discord@claude-plugins-official\":false}} --name FLY-202 QA sandbox fixture-slot harness real-Runner E2E task (do not pick up) Execute generalized workflow node qa for FLY-202: QA sandbox fixture M-bM^@M^T slot harness real-Runner E2E task (do not pick up).\\012\\012**QA harness fixture M-bM^@M^T for test-slot real-Runner E2E only. Production Leads/Runners must NOT pick this up.**\\012\\012This issue exists so `scripts/inject-linear-issue.sh` / `POST /api/runs/start` has a real, PreHydrator-visible Linear issue to spawn a sandbox Runner against (FLY-197 noted `FLY-SBX-1` referenced in docs does not exist; this issue fills that gap).\\012\\012Task for the sandbox Runner (small, steady, multi-step M-bM^@M^T gives QA a mid-work window):\\012\\0121. Create `doc/qa/sandbox-notes.md` describing what the `flywheel-qa-sandbox` repo is for (2-3 paragraphs).\\0122. Append a table listing every top-level directory in the repo with a one-line description.\\0123. Append a section summarizing `packages/qa-framework/README.md` in \\~10 bullet points.\\0124. Run `ls -R doc/ | head -50` and include the output in a fenced block.\\0125. Commit on a feature branch and open a PR against the sandbox repo main.\\012\\012Keep work inside the sandbox clone. No production resources.",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "A:slot_arg_path",
+   "evidence": "/tmp/flywheel-test-slot-4/tmp/flywheel-runner-prompts/486aed47-0119-4546-8c02-d27c4e9b3a4f/append-system-prompt.md"
+  },
+  {
+   "pid": 24270,
+   "ppid": 23613,
+   "lstart": "Thu Sep 10 10:10:49 2026",
+   "command": "npm exec @playwright/mcp@latest  ",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "B:slot_ancestry",
+   "evidence": "ancestor pid 23613"
+  },
+  {
+   "pid": 24738,
+   "ppid": 24270,
+   "lstart": "Thu Sep 10 10:10:50 2026",
+   "command": "node /Users/xiaorongli/.npm/_npx/9833c18b2d85bc59/node_modules/.bin/playwright-mcp",
+   "attribution": "NONSLOT",
+   "set": "removed",
+   "kind": "slot",
+   "rule": "B:slot_ancestry",
+   "evidence": "ancestor pid 23613"
+  },
+  {
+   "pid": 61301,
+   "ppid": 902,
+   "lstart": "Thu Sep 10 10:31:05 2026",
+   "command": "sleep 15",
+   "attribution": "NONSLOT",
+   "set": "added",
+   "kind": "host_transient",
+   "rule": "C:host_transient",
+   "evidence": "^sleep \\d+$"
+  },
+  {
+   "pid": 62522,
+   "ppid": 64748,
+   "lstart": "Thu Sep 10 10:31:10 2026",
+   "command": "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/153.0.8010.12/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=24262 --launch-time-ticks=1250370202128 --shared-files --metrics-shmem-handle=1752395122,r,3814085471889254961,17578437392068192749,1572864 --field-trial-handle=1718379636,r,11559101906454821014,16187966911243481444,262144 --variations-seed-version=20260826-170938.908000-production --pseudonymization-salt-handle=1935764596,r,8055510575753656360,5401395844252923208,4 --trace-process-track-uuid=3190731720821211932 --seatbelt-client=75",
+   "attribution": "NONSLOT",
+   "set": "added",
+   "kind": "host_transient",
+   "rule": "C:host_transient",
+   "evidence": "Google Chrome Helper"
+  },
+  {
+   "pid": 64531,
+   "ppid": 53996,
+   "lstart": "Thu Sep 10 10:31:12 2026",
+   "command": "sleep 30",
+   "attribution": "NONSLOT",
+   "set": "added",
+   "kind": "host_transient",
+   "rule": "C:host_transient",
+   "evidence": "^sleep \\d+$"
+  },
+  {
+   "pid": 64809,
+   "ppid": 1,
+   "lstart": "Thu Sep 10 10:31:14 2026",
+   "command": "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared",
+   "attribution": "NONSLOT",
+   "set": "added",
+   "kind": "host_transient",
+   "rule": "C:host_transient",
+   "evidence": "Metadata\\.framework"
+  },
+  {
+   "pid": 65813,
+   "ppid": 66419,
+   "lstart": "Thu Sep 10 10:31:19 2026",
+   "command": "sleep 2",
+   "attribution": "NONSLOT",
+   "set": "added",
+   "kind": "host_transient",
+   "rule": "C:host_transient",
+   "evidence": "^sleep \\d+$"
+  }
+ ]
+}
