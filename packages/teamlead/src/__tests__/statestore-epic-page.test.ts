@@ -806,3 +806,24 @@ describe("Epic page execution fact projections", () => {
 		}
 	});
 });
+
+it("retains an explicit audit gateway failure in publication freshness", async () => {
+	const store = await StateStore.create(":memory:");
+	try {
+		store.insertEpicPageRefresh({
+			projectName: "example",
+			attemptedAt: "2026-09-10T00:00:00Z",
+			trigger: "scan",
+			reasons: ["scan"],
+			outcome: "transient: publish_failed:audit_gateway",
+		});
+		const freshness = store.getEpicPageFreshness("example");
+		expect(freshness.last_publish_failure?.token).toBe(
+			"transient: publish_failed:audit_gateway",
+		);
+		expect(freshness.publish_failures_since_last_published).toBe(1);
+		expect(freshness.last_published).toBeUndefined();
+	} finally {
+		store.close();
+	}
+});

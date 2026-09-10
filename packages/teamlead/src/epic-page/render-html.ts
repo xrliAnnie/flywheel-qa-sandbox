@@ -1,4 +1,13 @@
+import { createHash } from "node:crypto";
 import { escapeHtml } from "../bridge/xhs-review-html.js";
+import { AuditDictionary } from "./audit-dictionary.js";
+import { AuditSidecar } from "./audit-sidecar.js";
+import {
+	buildFounderView,
+	type ChildView,
+	type EpicView,
+	type ViewProvenance,
+} from "./founder-view.js";
 import { type LabelKey, label } from "./labels.js";
 import type {
 	Cell,
@@ -9,6 +18,24 @@ import type {
 	Signal,
 	StuckItem,
 } from "./model.js";
+
+class RenderAudit extends AuditDictionary {
+	constructor(readonly sidecar?: AuditSidecar) {
+		super();
+	}
+}
+function compactAudit(
+	audit: AuditSidecar,
+	value: unknown,
+	observed: string,
+): string {
+	return `<span data-audit-ref="${audit.add(value)}">出处 #${audit.add(value)} · ${escapeHtml(observed)}</span>`;
+}
+function auditFooter(audit: AuditSidecar): string {
+	const json = audit.json();
+	const hash = createHash("sha256").update(json).digest("hex");
+	return `<footer>审计出处：<a href="${hash}/index.audit.json">${hash}/index.audit.json</a> · SHA-256 ${hash} · ${audit.count} 条 · ${Buffer.byteLength(json)} B</footer>`;
+}
 
 const FOUNDER_DECIDED_RULES = new Set([
 	"scope.v2",
@@ -85,7 +112,10 @@ function renderAuditCell(
 	name: LabelKey,
 	cell: Cell<unknown>,
 	now: Date,
+	dictionary: RenderAudit,
 ): string {
+	if (dictionary.sidecar)
+		return `<div class="audit-cell" data-cell="${escapeHtml(path)}" data-audit="${dictionary.sidecar.add(cell)}"><b>${escapeHtml(label(name))}</b>${compactAudit(dictionary.sidecar, cell, cell.observed_at)}</div>`;
 	return `<div class="audit-cell" data-cell="${escapeHtml(path)}">
 	<b>${escapeHtml(label(name))}:</b> <code>${htmlValue(rawCellValue(cell))}</code>
 	<span>${escapeHtml(label("cell.provenance"))}: ${htmlProvenance(cell.provenance)}</span>
@@ -99,6 +129,7 @@ function itemCells(
 	item: EpicItem,
 ): Array<[field: string, name: LabelKey, cell: Cell<unknown>]> {
 	return [
+		["parent", "cell.item.parent", item.parent],
 		["title", "cell.item.title", item.title],
 		["url", "cell.item.url", item.url],
 		["state", "cell.item.state", item.state],
@@ -159,54 +190,6 @@ function acceptanceSummary(item: EpicItem): string {
 	return characters.length > 240
 		? `${characters.slice(0, 239).join("")}…`
 		: compact;
-}
-
-function blockerList(item: EpicItem): string {
-	if (!item.blocked_by.value) {
-		return escapeHtml(item.blocked_by.missing?.reason ?? label("cell.missing"));
-	}
-	if (item.blocked_by.value.length === 0) {
-		return escapeHtml(label("page.no_dependency"));
-	}
-	return item.blocked_by.value
-		.map((blocker) => {
-			const reference = safeLinearLink(
-				blocker.url,
-				`${blocker.identifier} · ${blocker.title}`,
-			);
-			const scope = blocker.in_scope
-				? ""
-				: ` ${escapeHtml(label("page.external_dependency"))}`;
-			return `${reference}${scope} <small>${escapeHtml(
-				label("page.blocker_state", { state: blocker.blocker_state_type }),
-			)}</small>`;
-		})
-		.join("<br>");
-}
-
-function dependentList(item: EpicItem): string {
-	if (!item.blocks.value || item.blocks.value.length === 0) {
-		return escapeHtml(label("page.no_dependents"));
-	}
-	return item.blocks.value
-		.map((dependent) =>
-			safeLinearLink(
-				dependent.url,
-				`${dependent.identifier} · ${dependent.title}`,
-			),
-		)
-		.join("<br>");
-}
-
-function whySummary(item: EpicItem): string {
-	if (!item.blocks.value || item.blocks.value.length === 0) {
-		return label("page.no_dependents");
-	}
-	return label("page.unlocks", {
-		items: item.blocks.value
-			.map((entry) => `${entry.identifier} · ${entry.title}`)
-			.join(", "),
-	});
 }
 
 function triggerLabel(trigger: EpicPage["generator"]["trigger"]): string {
@@ -366,47 +349,142 @@ function renderFreshness(page: EpicPage): string {
 </section>`;
 }
 
-function renderItem(item: EpicItem, index: number, now: Date): string {
-	const path = `/items/${index}`;
-	const title =
-		item.title.value ?? item.title.missing?.reason ?? label("cell.missing");
-	const state =
-		item.state.value?.name ??
-		item.state.missing?.reason ??
-		label("cell.missing");
-	const issueUrl = item.url.value;
-	const sourceLink =
-		typeof issueUrl === "string"
-			? safeLinearLink(issueUrl, issueUrl)
-			: escapeHtml(label("page.none"));
-	const auditCells = itemCells(item);
-	return `<article class="item-card">
-	<div class="card-head">
-		<h3>${escapeHtml(item.identifier)} · ${escapeHtml(title)} · ${escapeHtml(state)}</h3>
-		<div class="badges"><span>P${escapeHtml(String(item.priority.value ?? 0))}</span><span>${escapeHtml(item.founder_named.value ? label("page.founder_yes") : label("page.founder_no"))}</span></div>
-	</div>
-	<div class="card-rows">
-		<div class="card-row"><b>${escapeHtml(label("page.what"))}</b><span>${escapeHtml(title)}</span></div>
-		<div class="card-row"><b>${escapeHtml(label("page.why"))}</b><span>${escapeHtml(whySummary(item))}<small>${derivedRuleNote(item.blocks.provenance)}</small></span></div>
-		<div class="card-row"><b>${escapeHtml(label("page.done_outcome"))}</b><span>${escapeHtml(acceptanceSummary(item))}</span></div>
-		<div class="dependency-rows">
-			<div class="card-row"><b>${escapeHtml(label("page.waiting_for"))}</b><span>${blockerList(item)}</span></div>
-			<div class="card-row"><b>${escapeHtml(label("page.waiting_on_me"))}</b><span>${dependentList(item)}<small>${derivedRuleNote(item.blocks.provenance)}</small></span></div>
-		</div>
-		<div class="card-row"><b>${escapeHtml(label("cell.item.state"))}</b><span>${escapeHtml(state)} (${escapeHtml(item.state.value?.type ?? label("cell.missing"))})</span></div>
-		<div class="card-row"><b>${escapeHtml(label("page.accounted_execution"))}</b><span>${escapeHtml(executionSummary(item))}<small>${escapeHtml(label("cell.ledger_note"))}</small></span></div>
-		<div class="card-row"><b>${escapeHtml(label("section.stuck"))}</b><span>${signalList(item.signals.filter((signal) => signal.kind !== "waiting_founder"))}</span></div>
-		<div class="card-row"><b>${escapeHtml(label("section.waiting_founder"))}</b><span>${signalList(item.signals.filter((signal) => signal.kind === "waiting_founder"))}</span></div>
-		<div class="card-row"><b>founder</b><span>${escapeHtml(item.founder_named.value ? label("page.founder_yes") : label("page.founder_no"))}</span></div>
-	</div>
-	<footer class="card-meta"><span><b>${escapeHtml(label("page.source_link"))}:</b> ${sourceLink}</span> · <span><b>${escapeHtml(label("cell.observed_at"))}:</b> ${escapeHtml(item.title.observed_at)}</span>${item.title.source_updated_at ? ` · <span><b>${escapeHtml(label("cell.source_updated_at"))}:</b> ${escapeHtml(item.title.source_updated_at)}</span>` : ""}
-		<details class="audit"><summary>${escapeHtml(label("page.all_cells", { count: auditCells.length }))}</summary><div class="audit-list">${auditCells
-			.map(([field, name, cell]) =>
-				renderAuditCell(`${path}/${field}`, name, cell, now),
-			)
-			.join("")}</div></details>
-	</footer>
-</article>`;
+function renderViewRule(view: ViewProvenance, dictionary: RenderAudit): string {
+	if (dictionary.sidecar)
+		return `<div class="view-rule" data-view-rule="${view.rule}" data-audit="${dictionary.sidecar.add(view)}">${escapeHtml(view.rule)} · ${compactAudit(dictionary.sidecar, view, view.observedAt)}</div>`;
+	return `<div class="view-rule" data-view-rule="${view.rule}" data-view-from="${escapeHtml(view.from.join(","))}" data-view-observed="${escapeHtml(view.observedAt)}">${escapeHtml(label("view.rule_note", { rule: view.rule, from: view.from.join(", "), at: view.observedAt }))}</div>`;
+}
+
+function blockersText(child: ChildView): string {
+	const entries = child.blockers.map(
+		(b) =>
+			b.identifier +
+			(b.where === "outside"
+				? label("blocker.outside")
+				: b.where === "other_epic"
+					? b.otherRoot
+						? label("blocker.other_epic", { root: b.otherRoot })
+						: label("blocker.unattached")
+					: ""),
+	);
+	return (
+		entries.slice(0, 3).join(" / ") +
+		(entries.length > 3 ? label("blocker.more", { n: entries.length }) : "")
+	);
+}
+function childBadge(child: ChildView): string {
+	if (child.cls === "waiting")
+		return label("child.waiting", { blockers: blockersText(child) });
+	if (child.cls === null)
+		return label("child.unknown_type", { state: child.stateName });
+	if (child.cls === "done" || child.cls === "canceled") return child.stateName;
+	return label(`child.${child.cls}`);
+}
+function progressText(child: ChildView): string {
+	const value = child.progress;
+	if (value.kind === "live")
+		return label("progress.live", {
+			node: value.node,
+			attempt: value.attempt ?? label("progress.unknown"),
+			status: value.status ?? label("progress.unknown"),
+		});
+	if (value.kind === "missing")
+		return label("progress.missing", { reasons: value.reasons.join(", ") });
+	if (value.kind === "waiting" || value.kind === "free")
+		return label(`progress.${value.kind}`, {
+			blockers: value.blockers.join(" / "),
+		});
+	return label(`progress.${value.kind}`);
+}
+function renderDependencyAudit(
+	entries: Array<{ identifier: string; title: string }>,
+	dictionary: RenderAudit,
+): string {
+	return entries.length
+		? entries
+				.map((entry) => {
+					const chars = [...entry.title];
+					const short =
+						chars.length > 40 ? `${chars.slice(0, 39).join("")}…` : entry.title;
+					return `<span data-fulltext="${dictionary.text(entry.title)}">${escapeHtml(entry.identifier)} · <span class="dep-title">${escapeHtml(short)}</span></span>`;
+				})
+				.join("; ")
+		: "[]";
+}
+function renderChildAudit(
+	item: EpicItem,
+	child: ChildView,
+	dictionary: RenderAudit,
+): string {
+	const cells = itemCells(item)
+		.map(([field, name, cell]) => {
+			if (dictionary.sidecar)
+				return `<div class="audit-cell" data-cell="/items/${child.itemIndex}/${field}" data-audit="${dictionary.sidecar.add(cell)}"><b>${escapeHtml(label(name))}</b>${compactAudit(dictionary.sidecar, cell, cell.observed_at)}</div>`;
+			const value =
+				field === "acceptance" && cell.value !== null
+					? acceptanceSummary(item)
+					: rawCellValue(cell);
+			const content =
+				field === "blocked_by" && item.blocked_by.value
+					? renderDependencyAudit(item.blocked_by.value, dictionary)
+					: field === "blocks" && item.blocks.value
+						? renderDependencyAudit(item.blocks.value, dictionary)
+						: htmlValue(value);
+			const link =
+				field === "acceptance" && item.url.value
+					? safeLinearLink(item.url.value, label("audit.acceptance_source"))
+					: "";
+			return `<div class="audit-cell" data-cell="/items/${child.itemIndex}/${field}" data-src="${dictionary.add(cell)}"><b>${escapeHtml(label(name))}</b><code>${content}</code>${link}</div>`;
+		})
+		.join("");
+	return `<details class="audit"><summary>${escapeHtml(label("page.all_cells", { count: 15 }))}</summary><div class="audit-head">${item.url.value ? safeLinearLink(item.url.value, item.url.value) : ""} · ${escapeHtml(executionSummary(item))}</div><div class="audit-list">${cells}</div>${child.blockerScope ? renderViewRule(child.blockerScope, dictionary) : ""}${renderViewRule(child.progress.view, dictionary)}</details>`;
+}
+function renderChild(
+	page: EpicPage,
+	child: ChildView,
+	dictionary: RenderAudit,
+): string {
+	const item = page.items[child.itemIndex]!;
+	const signals = item.signals.length
+		? `<div class="kid-signals">${item.signals.some((s) => s.kind !== "waiting_founder") ? signalList(item.signals.filter((s) => s.kind !== "waiting_founder")) : ""}${item.signals.some((s) => s.kind === "waiting_founder") ? signalList(item.signals.filter((s) => s.kind === "waiting_founder")) : ""}</div>`
+		: "";
+	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span><span class="kid-id">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span>${escapeHtml(child.title)}</span></div><div class="kid-a" data-machine-line>${escapeHtml(progressText(child))} <span class="src">${escapeHtml(label("progress.source"))}</span></div><!-- Slot B2: merged renderLeadNotes belongs immediately after kid-a, before signals. -->${signals}${renderChildAudit(item, child, dictionary)}</div>`;
+}
+function countsText(epic: EpicView): string {
+	if (!epic.counts)
+		return label("counts.missing", {
+			type: epic.countsMissing?.detail ?? label("progress.unknown"),
+		});
+	return (["live", "waiting", "free", "idle", "total"] as const)
+		.filter((k) => k === "live" || k === "total" || epic.counts![k] > 0)
+		.map((k) => label(`counts.${k}`, { n: epic.counts![k] }))
+		.join(" · ");
+}
+function renderRootProjection(
+	page: EpicPage,
+	epic: EpicView,
+	dictionary: RenderAudit,
+): string {
+	const cell = page.header.roots;
+	if (dictionary.sidecar)
+		return `<div class="audit-cell" data-source-cell="/header/roots" data-source-value="/header/roots/value/${epic.rootIndex}" data-audit="${dictionary.sidecar.add(cell)}">${escapeHtml(epic.identifier)} · ${compactAudit(dictionary.sidecar, cell, cell.observed_at)}</div>`;
+	return `<div class="audit-cell" data-source-cell="/header/roots" data-source-value="/header/roots/value/${epic.rootIndex}"><b>${escapeHtml(label("audit.root_projection"))}</b><span>${safeLinearLink(epic.url, epic.identifier)} · ${escapeHtml(epic.title)} · ${escapeHtml(epic.state.name)}</span><span>${htmlProvenance(cell.provenance)}</span><span>${escapeHtml(cell.observed_at)}</span>${cell.source_updated_at ? `<span>${escapeHtml(cell.source_updated_at)}</span>` : ""}</div>`;
+}
+function renderEpic(
+	page: EpicPage,
+	epic: EpicView,
+	now: Date,
+	dictionary: RenderAudit,
+): string {
+	const terminal = [
+		epic.terminal.done ? label("terminal.done", { n: epic.terminal.done }) : "",
+		epic.terminal.canceled
+			? label("terminal.canceled", { n: epic.terminal.canceled })
+			: "",
+	]
+		.filter(Boolean)
+		.join(" · ");
+	return `<details class="epic" data-root="${escapeHtml(epic.identifier)}" data-state-type="${escapeHtml(epic.state.type)}"><summary><span class="e-st">${escapeHtml(epic.state.name)}</span><span class="e-id">${escapeHtml(epic.identifier)}</span><span class="e-n">${escapeHtml(epic.title)}</span><span class="e-c">${escapeHtml(countsText(epic))}</span>${epic.allWaitingOn ? `<span class="e-wait">${escapeHtml(label("epic.all_waiting", { blockers: epic.allWaitingOn.blockers.join(" / ") }))}</span>` : ""}</summary><div class="e-b"><!-- Slot B1: merged renderLeadNotes is first in the Epic body. -->${epic.children.map((c) => renderChild(page, c, dictionary)).join("")}${terminal ? `<p class="terminal-tail">${escapeHtml(label("epic.terminal_tail", { tail: terminal }))}</p>` : ""}<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderRootProjection(page, epic, dictionary)}${renderAuditCell(`/header/root_counts/${epic.rootIndex}`, "cell.header.root_counts", page.header.root_counts[epic.rootIndex]!, now, dictionary)}${epic.allWaitingOn ? renderViewRule(epic.allWaitingOn.view, dictionary) : ""}${epic.terminal.view ? renderViewRule(epic.terminal.view, dictionary) : ""}</details></div></details>`;
 }
 
 function renderOverviewCell(
@@ -415,8 +493,11 @@ function renderOverviewCell(
 	content: string,
 	cell: Cell<unknown>,
 	now: Date,
+	dictionary: RenderAudit,
 	className = "overview-card",
 ): string {
+	if (dictionary.sidecar)
+		return `<article class="${className}" data-cell="${escapeHtml(path)}" data-audit="${dictionary.sidecar.add(cell)}"><h2>${escapeHtml(title)}</h2><div class="overview-value">${content}</div>${compactAudit(dictionary.sidecar, cell, cell.observed_at)}</article>`;
 	return `<article class="${className}" data-cell="${escapeHtml(path)}">
 	<h2>${escapeHtml(title)}</h2>
 	<div class="overview-value">${content}</div>
@@ -465,7 +546,46 @@ function renderDependencyReview(entries: DependencyReviewEntry[]): string {
 		.join("");
 }
 
+/** Single-response diagnostic preview retains its inline audit for offline use. */
 export function renderEpicPageHtml(page: EpicPage, now = new Date()): string {
+	return renderHtml(page, now, new RenderAudit());
+}
+export interface EpicPageBundle {
+	html: string;
+	audit: {
+		json: string;
+		sha256: string;
+		path: string;
+		entries: number;
+		bytes: number;
+	};
+}
+/** Hosted publication: HTML and its immutable, hash-bound audit object. */
+export function renderEpicPageBundle(
+	page: EpicPage,
+	now = new Date(),
+): EpicPageBundle {
+	const sidecar = new AuditSidecar();
+	const html = renderHtml(page, now, new RenderAudit(sidecar));
+	const json = sidecar.json();
+	const sha256 = createHash("sha256").update(json).digest("hex");
+	return {
+		html,
+		audit: {
+			json,
+			sha256,
+			path: `${sha256}/index.audit.json`,
+			entries: sidecar.count,
+			bytes: Buffer.byteLength(json),
+		},
+	};
+}
+function renderHtml(
+	page: EpicPage,
+	now: Date,
+	dictionary: RenderAudit,
+): string {
+	const view = buildFounderView(page);
 	const ready = page.ready_items.value ?? [];
 	const founder = page.founder_items.value ?? [];
 	const itemById = new Map(page.items.map((item) => [item.identifier, item]));
@@ -495,7 +615,6 @@ export function renderEpicPageHtml(page: EpicPage, now = new Date()): string {
 			"cell.header.scope_definition",
 			page.header.scope_definition,
 		],
-		["roots", "cell.header.roots", page.header.roots],
 		["items", "cell.header.items", page.header.items],
 	];
 	return `<!doctype html>
@@ -506,27 +625,37 @@ export function renderEpicPageHtml(page: EpicPage, now = new Date()): string {
 	<title>${escapeHtml(label("page.title"))} · ${escapeHtml(page.key.project_name)}</title>
 	<style>
 		:root{color-scheme:light;--bg:#f3f4f6;--card:#fff;--ink:#182230;--muted:#667085;--line:#e4e7ec;--blue:#175cd3;--blue-soft:#eff4ff;--green:#067647;--green-soft:#ecfdf3;--amber:#93370d}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif}main{max-width:1020px;margin:0 auto;padding:28px 18px 72px}header,.freshness-card,.overview-card,.ready-card,.item-card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 3px rgba(16,24,40,.05)}header{padding:22px 24px;margin-bottom:12px}h1{margin:2px 0 8px;font-size:27px;letter-spacing:-.025em}h2{font-size:17px;margin:0}h3{margin:0;font-size:16px}.eyebrow{font-size:12px;font-weight:700;color:var(--blue);text-transform:uppercase;letter-spacing:.06em}.lede{display:flex;flex-wrap:wrap;gap:8px 14px;color:var(--muted)}a{color:var(--blue);text-decoration:none;overflow-wrap:anywhere}a:hover{text-decoration:underline}.freshness-card{padding:18px 22px;margin:12px 0}.freshness-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 18px;margin-top:9px}.freshness-grid div{display:grid;gap:1px}.freshness-grid b{color:var(--muted);font-size:12px}.freshness-age{color:var(--blue);font-weight:650;margin-top:9px}.ready-card{border:1px solid #abefc6;background:linear-gradient(135deg,#fff 0%,var(--green-soft) 100%);padding:20px 22px;margin:12px 0}.ready-card h2{color:var(--green)}.ready-card .overview-value{font-size:16px}.ready-pill,.root-pill,.signal-pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;margin:3px 5px 3px 0}.ready-pill{background:#fff;border:1px solid #abefc6}.root-pill{background:var(--blue-soft);border:1px solid #d1e0ff}.signal-pill{background:#fff7ed;border:1px solid #fed7aa}.root-pill small{color:var(--muted)}.overview-grid{display:grid;grid-template-columns:1.2fr .8fr .8fr;gap:10px;margin:10px 0 24px}.overview-card{padding:16px}.overview-value{font-size:15px;margin:8px 0}.overview-meta,.card-meta,.audit-cell{color:var(--muted);font-size:11px}.overview-meta{border-top:1px solid #ececef;padding-top:8px;overflow-wrap:anywhere}.section-title{display:flex;justify-content:space-between;align-items:baseline;margin:28px 2px 10px}.section-title span{color:var(--muted);font-size:12px}.item-card{border-left:5px solid var(--blue);padding:15px 17px;margin:10px 0}.card-head{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;margin-bottom:10px}.badges{display:flex;gap:5px;flex:0 0 auto}.badges span{font-size:11px;font-weight:650;padding:2px 7px;border-radius:999px;background:var(--blue-soft);color:#174a78}.card-rows{display:grid;gap:3px}.card-row{display:grid;grid-template-columns:112px 1fr;gap:10px;padding:3px 0}.card-row>b{color:var(--muted);font-weight:550}.card-row small{display:block;color:var(--muted);font-size:10.5px;margin-top:1px}.dependency-rows{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:7px 10px;margin:4px 0}.card-meta{border-top:1px solid #ececef;margin-top:11px;padding-top:8px;line-height:1.45;overflow-wrap:anywhere}.audit{display:inline-block;margin-left:6px}.audit summary{cursor:pointer;color:var(--blue)}.audit-list{display:grid;gap:6px;margin-top:8px}.audit-cell{display:grid;gap:2px;padding:7px;background:#fafafa;border-radius:8px}.audit-cell code{white-space:pre-wrap;overflow-wrap:anywhere;color:#344054}.rule-note{color:var(--amber)}@media(max-width:760px){main{padding:18px 10px 52px}.overview-grid,.freshness-grid{grid-template-columns:1fr}.card-head{display:block}.badges{margin-top:7px}.card-row{grid-template-columns:92px 1fr}header{padding:18px}.item-card{padding:13px 12px}}
+.epic{background:var(--card);border:1px solid var(--line);border-radius:12px;margin:12px 0;overflow:hidden}.epic>summary{cursor:pointer;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:16px}.epic>summary:before{content:"▸";color:var(--muted)}.epic[open]>summary:before{content:"▾"}.e-st,.s{font-size:12px;border-radius:6px;padding:3px 7px;background:#f2f4f7;color:#344054}.epic[data-state-type=started] .e-st,.s-live{background:#ecfdf3;color:#05603a}.e-id,.kid-id{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}.e-n{font-weight:650;flex:1;min-width:120px}.e-c{font-size:12px;color:var(--muted)}.e-wait{flex-basis:100%;margin-left:20px;color:var(--amber)}.e-b{padding:0 16px 16px}.kid{padding:14px 0;border-top:1px solid var(--line)}.kid-h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}.kid-a{margin:6px 0;color:#475467}.src{font-size:11px;color:var(--muted);margin-left:8px}.s-waiting{background:#fff4e5;color:#93370d}.s-free{background:#eff4ff;color:#174a78}.audit{display:block;margin:7px 0}.audit-head,.view-rule{font-size:11px;color:var(--muted);overflow-wrap:anywhere}.view-rule{padding:6px 0}.lead-panel{margin-top:28px}.lead-panel>summary{cursor:pointer;color:var(--muted);padding:12px 0}.terminal-tail,.epic-hidden{color:var(--muted);font-size:12px}.unattached{margin-top:24px}.order-audit>summary{font-size:11px;color:var(--muted)}summary:focus-visible,a:focus-visible{outline:2px solid var(--blue);outline-offset:4px}.kid,.epic{overflow-wrap:anywhere}@media(max-width:600px){.e-c{flex-basis:100%;margin-left:20px}.e-b{padding:0 12px 12px}.epic>summary{padding:14px 12px}.kid-h{gap:6px}}
+
+	footer{overflow-wrap:anywhere}
 	</style>
 </head>
 <body><main>
+	<!-- Slot A: merged renderAttention(page, now) is first, including legacy fallback. -->
 	<header data-generated-at="${escapeHtml(page.generated_at)}">
 		<div class="eyebrow">${escapeHtml(label("page.overview"))}</div>
 		<h1>${escapeHtml(page.key.project_name)} · ${escapeHtml(label("page.title"))}</h1>
 		<div class="lede"><span>${page.header.roots.value?.length ?? 0} ${escapeHtml(label("page.roots_unit"))}</span><span>${page.items.length} ${escapeHtml(label("page.items_unit"))}</span><span>${escapeHtml(label("page.generated_at"))}: ${escapeHtml(page.generated_at)}</span><span>${escapeHtml(label("page.scope_rule_note"))}</span></div>
-		<details class="audit"><summary>${escapeHtml(label("page.all_cells", { count: headerCells.length }))}</summary><div class="audit-list">${headerCells.map(([field, name, cell]) => renderAuditCell(`/header/${field}`, name, cell, now)).join("")}</div></details>
 	</header>
+ <div class="section-title"><h2>${escapeHtml(label("section.epics"))}</h2><span>${escapeHtml(label("section.epics_count", { n: view.epics.length }))}</span></div>
+ <details class="audit order-audit"><summary>${escapeHtml(label("view.order_desc"))}</summary>${view.order ? renderViewRule(view.order, dictionary) : ""}</details>
+ ${view.epics.length ? view.epics.map((epic) => renderEpic(page, epic, now, dictionary)).join("") : `<p>${escapeHtml(label("epic.none"))}</p>`}
+ ${view.hiddenDoneEpics && view.hiddenDoneEpics.count > 0 ? `<div class="epic-hidden">${escapeHtml(label("epic.hidden_done", { n: view.hiddenDoneEpics.count }))}<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderViewRule(view.hiddenDoneEpics.view, dictionary)}</details></div>` : ""}
+ ${view.unattached.length ? `<section class="unattached"><h2>${escapeHtml(label("epic.unattached"))}</h2>${view.unattached.map((c) => renderChild(page, c, dictionary)).join("")}</section>` : ""}
+ <details class="lead-panel"><summary>${escapeHtml(label("section.lead_panel"))}</summary>
+ ${headerCells.map(([field, name, cell]) => renderAuditCell(`/header/${field}`, name, cell, now, dictionary)).join("")}
+
 	${renderFreshness(page)}
-	${renderOverviewCell("/ready_items", label("section.ready"), readyContent, page.ready_items, now, "ready-card")}
-	${renderOverviewCell("/stuck_items", label("section.stuck"), stuckSummary(page), page.stuck_items, now)}
+	${renderOverviewCell("/ready_items", label("section.ready"), readyContent, page.ready_items, now, dictionary, "ready-card")}
+	${renderOverviewCell("/stuck_items", label("section.stuck"), stuckSummary(page), page.stuck_items, now, dictionary)}
 	<article class="overview-card"><h2>${escapeHtml(label("section.waiting_founder"))}</h2><div class="overview-value">${waitingFounderSummary(page)}</div></article>
-	${renderOverviewCell("/dependency_review", label("section.review"), renderDependencyReview(page.dependency_review.value ?? []), page.dependency_review, now)}
-	${renderOverviewCell("/header/roots", label("section.scope"), rootsContent || escapeHtml(label("page.none")), page.header.roots, now)}
+	${renderOverviewCell("/dependency_review", label("section.review"), renderDependencyReview(page.dependency_review.value ?? []), page.dependency_review, now, dictionary)}
+	${renderOverviewCell("/header/roots", label("section.scope"), rootsContent || escapeHtml(label("page.none")), page.header.roots, now, dictionary)}
 	<div class="overview-grid">
-		${renderOverviewCell("/founder_items", label("section.founder"), founder.length > 0 ? founder.map((id) => `<span class="root-pill">${escapeHtml(id)}</span>`).join("") : escapeHtml(label("founder.none")), page.founder_items, now)}
-		${renderOverviewCell("/done_definition", label("section.done"), escapeHtml(`terminal_state=${page.done_definition.value?.terminal_state ?? label("page.none")}`), page.done_definition, now)}
-		${renderOverviewCell("/gaps", label("section.gaps"), page.gaps.value?.length ? escapeHtml(`${page.gaps.value.length} ${label("page.gaps_unit")}`) : escapeHtml(label("page.none")), page.gaps, now)}
+		${renderOverviewCell("/founder_items", label("section.founder"), founder.length > 0 ? founder.map((id) => `<span class="root-pill">${escapeHtml(id)}</span>`).join("") : escapeHtml(label("founder.none")), page.founder_items, now, dictionary)}
+		${renderOverviewCell("/done_definition", label("section.done"), escapeHtml(`terminal_state=${page.done_definition.value?.terminal_state ?? label("page.none")}`), page.done_definition, now, dictionary)}
+		${renderOverviewCell("/gaps", label("section.gaps"), page.gaps.value?.length ? escapeHtml(`${page.gaps.value.length} ${label("page.gaps_unit")}`) : escapeHtml(label("page.none")), page.gaps, now, dictionary)}
 	</div>
-	<div class="section-title"><h2>${escapeHtml(label("section.what"))}</h2><span>${page.items.length} ${escapeHtml(label("page.items_unit"))} · ${escapeHtml(label("cell.ledger_note"))}</span></div>
-	${page.items.map((item, index) => renderItem(item, index, now)).join("")}
-</main><script nonce="__CSP_NONCE__">(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");if(!root||!age)return;const update=()=>{const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
+ </details>
+${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");if(!root||!age)return;const update=()=>{const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
 }

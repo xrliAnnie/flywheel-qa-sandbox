@@ -155,3 +155,128 @@ export function filterV1(snapshot: ReturnType<typeof epicShapeSnapshotV2>) {
 		for (const blocker of item.blockedBy) blocker.inScope = ids.has(blocker.id);
 	return result;
 }
+
+export function epicShapeSnapshotV3(): LinearActiveScopeSnapshot {
+	const snapshot = epicShapeSnapshot();
+	const base = snapshot.roots[0]!;
+	snapshot.roots.push(
+		{ ...base, id: "epic-300", identifier: "EPX-300", title: "Finished Epic" },
+		{ ...base, id: "epic-400", identifier: "EPX-400", title: "Waiting Epic" },
+	);
+	const specs: Array<[number, number | null, string, number[]]> = [
+		[1, 100, "started", []],
+		[2, 100, "unstarted", [1]],
+		[3, 100, "unstarted", [20]],
+		[4, 100, "backlog", [90]],
+		[5, 100, "unstarted", [30]],
+		[6, 100, "unstarted", []],
+		[7, 100, "backlog", []],
+		[8, 100, "completed", []],
+		[9, 100, "canceled", []],
+		[10, null, "unstarted", []],
+		[11, 100, "future", []],
+		[999, 100, "unstarted", []],
+		[1000, 100, "unstarted", []],
+		[20, 200, "unstarted", []],
+		[30, 300, "completed", []],
+		[31, 300, "canceled", []],
+		[40, 400, "unstarted", [20, 90]],
+		[41, 400, "backlog", [90]],
+	];
+	snapshot.items = specs.map(([number, parent, type, blocked]) => {
+		const root = snapshot.roots.find((r) => r.identifier === `EPX-${parent}`);
+		return {
+			...child(number, blocked),
+			parent: root ? { id: root.id, identifier: root.identifier } : null,
+			state: { type, name: type === "started" ? "In Progress" : type },
+			blockedBy: blocked.map((n) => ({
+				id: `child-uuid-${n}`,
+				identifier: `EPX-${n}`,
+				title: `Task ${n}`,
+				url: `https://linear.app/example/issue/EPX-${n}`,
+				stateType: specs.find((s) => s[0] === n)?.[2] ?? "unstarted",
+				inScope: specs.some((s) => s[0] === n),
+			})),
+		};
+	});
+	snapshot.descendantIds = snapshot.items.map((i) => i.id);
+	return snapshot;
+}
+
+export function v3ItemFacts(
+	snapshot: LinearActiveScopeSnapshot,
+): EpicItemFacts[] {
+	return snapshot.items.map((item) => {
+		const facts = emptyItemFacts();
+		if (item.identifier === "EPX-1") {
+			facts.run = {
+				ok: true,
+				value: [
+					{
+						run_id: "run-v3",
+						status: "active",
+						current_node_id: "implement",
+						current_node_label: "实现",
+						label_source: "manifest",
+						template_id: "tpl",
+					},
+				],
+			};
+			facts.attempt = {
+				ok: true,
+				value: [{ state: "running", attempt: 2, ledger_open: true }],
+			};
+			facts.session = {
+				ok: true,
+				value: {
+					ledger_live_count: 1,
+					latest: [
+						{
+							status: "running",
+							execution_id8: "execv3",
+							role: "implement",
+							branch: "example",
+						},
+					],
+				},
+			};
+		}
+		return facts;
+	});
+}
+
+export function permuteSnapshot(
+	source: LinearActiveScopeSnapshot,
+	facts: EpicItemFacts[],
+	signals: import("../../generate.js").GenerateEpicPageInput["itemSignals"],
+	seed: number,
+) {
+	function shuffled<T>(values: T[]): T[] {
+		const result = [...values];
+		for (let i = result.length - 1; i > 0; i--) {
+			seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+			const j = seed % (i + 1);
+			[result[i], result[j]] = [result[j]!, result[i]!];
+		}
+		return result;
+	}
+	const snapshot = structuredClone(source);
+	const rows = shuffled(
+		source.items.map((item, i) => ({
+			id: item.id,
+			facts: facts[i]!,
+			signals: signals?.[i],
+		})),
+	);
+	const byId = new Map(snapshot.items.map((item) => [item.id, item]));
+	snapshot.items = rows.map((row) => byId.get(row.id)!);
+	snapshot.roots = shuffled(snapshot.roots);
+	snapshot.descendantIds = snapshot.items.map((item) => item.id);
+	return {
+		snapshot,
+		itemFacts: rows.map((row) => structuredClone(row.facts)),
+		...(signals
+			? { itemSignals: rows.map((row) => structuredClone(row.signals!)) }
+			: {}),
+	};
+}

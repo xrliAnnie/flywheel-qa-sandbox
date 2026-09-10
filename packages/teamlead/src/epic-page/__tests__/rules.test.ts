@@ -1,13 +1,23 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { generateEpicPage } from "../generate.js";
 import { type Cell, type EpicItem, EpicPageSchemaError } from "../model.js";
 import {
+	classifyItem,
 	computeDependencyReview,
 	computeGaps,
 	computeReady,
+	computeRootCounts,
 	doneDefinition,
 	extractAcceptance,
 	isFounderNamed,
+	rootOf,
 } from "../rules.js";
+import {
+	EPIC_SHAPE_NOW,
+	emptyItemFacts,
+	epicShapeSnapshotV2,
+} from "./fixtures/epic-shape.js";
 
 const NOW = "2026-09-03T04:00:00Z";
 
@@ -361,4 +371,129 @@ describe("other v1 rules", () => {
 			},
 		]);
 	});
+});
+
+describe("classifyItem", () => {
+	it.each([
+		["started", [], "live"],
+		["completed", [], "done"],
+		["canceled", [], "canceled"],
+		["backlog", [], "idle"],
+		["unstarted", [blocker("OUT", false, "completed")], "free"],
+		["triage", [blocker("OUT", false, "started")], "waiting"],
+		["backlog", [blocker("OUT", false, "canceled")], "waiting"],
+		["future", [], null],
+	] as const)("classifies %s with %j as %s", (type, blockers, expected) => {
+		const subject = item("EPX-1", [...blockers]);
+		subject.state.value = { name: type, type };
+		expect(classifyItem(subject)).toBe(expected);
+	});
+});
+
+describe("rootOf", () => {
+	it("finds direct roots and follows descendants", () => {
+		const a = item("EPX-1"),
+			b = item("EPX-2");
+		b.parent.value = a.identifier;
+		const byId = new Map([a, b].map((i) => [i.identifier, i]));
+		const roots = new Set(["EPX-100"]);
+		expect(rootOf(a, byId, roots)).toBe("EPX-100");
+		expect(rootOf(b, byId, roots)).toBe("EPX-100");
+	});
+	it("leaves an entire chain ending at null unattached, retaining parent pointers", () => {
+		const a = item("EPX-1"),
+			b = item("EPX-2");
+		a.parent.value = b.identifier;
+		b.parent.value = null;
+		const byId = new Map([a, b].map((i) => [i.identifier, i]));
+		const roots = new Set(["EPX-100"]);
+		expect(rootOf(a, byId, roots)).toBeNull();
+		expect(rootOf(b, byId, roots)).toBeNull();
+		expect(computeRootCounts([a, b], [{ identifier: "EPX-100" }])).toEqual([
+			{
+				root: "EPX-100",
+				value: {
+					root: "EPX-100",
+					counts: {
+						live: 0,
+						waiting: 0,
+						free: 0,
+						idle: 0,
+						done: 0,
+						canceled: 0,
+						total: 0,
+					},
+				},
+				from: ["/header/roots", "/items/0/parent", "/items/1/parent"],
+			},
+		]);
+	});
+	it.each(["dangling", "cycle"])(
+		"rejects %s with the original error",
+		(kind) => {
+			const a = item("EPX-8"),
+				b = item("EPX-9");
+			a.parent.value = b.identifier;
+			b.parent.value = kind === "cycle" ? a.identifier : "unknown";
+			const byId = new Map([a, b].map((i) => [i.identifier, i]));
+			expect(() => rootOf(a, byId, new Set(["EPX-100"]))).toThrow(
+				new EpicPageSchemaError(
+					"counts.v1: parent chain does not reach a root: EPX-8",
+				),
+			);
+		},
+	);
+});
+
+describe("computeRootCounts error precedence", () => {
+	it.each(["state", "blocked_by"] as const)(
+		"validates %s before a dangling parent",
+		(key) => {
+			const a = item("EPX-1");
+			a[key].value = null;
+			for (const parent of ["EPX-100", "unknown"]) {
+				a.parent.value = parent;
+				expect(() =>
+					computeRootCounts([a], [{ identifier: "EPX-100" }]),
+				).toThrow(
+					new EpicPageSchemaError(
+						"counts.v1: state/blocked_by cell must be known: EPX-1",
+					),
+				);
+			}
+		},
+	);
+	it("retains the parent-chain error when cells are known", () => {
+		const a = item("EPX-1");
+		a.parent.value = "unknown";
+		expect(() => computeRootCounts([a], [{ identifier: "EPX-100" }])).toThrow(
+			new EpicPageSchemaError(
+				"counts.v1: parent chain does not reach a root: EPX-1",
+			),
+		);
+	});
+});
+
+it("preserves every scope.v2 root count value, missing state and ordered source path", () => {
+	const snapshot = epicShapeSnapshotV2();
+	const page = generateEpicPage({
+		snapshot,
+		itemFacts: snapshot.items.map(() => emptyItemFacts()),
+		now: EPIC_SHAPE_NOW,
+		projectName: "example",
+		trigger: "scan",
+	});
+	const expected = JSON.parse(
+		readFileSync(
+			new URL("./fixtures/root-counts-v2.json", import.meta.url),
+			"utf8",
+		),
+	);
+	expect(
+		page.header.root_counts.map((c) => ({
+			value: c.value,
+			...(c.missing ? { missing: c.missing } : {}),
+			from: c.provenance.kind === "derived" ? c.provenance.from : null,
+		})),
+	).toEqual(expected);
 });

@@ -86,6 +86,29 @@ describe("hosted Epic page publisher", () => {
 		);
 	});
 
+	it("passes a hash-bound sidecar to the hosted upload", async () => {
+		expect(await publisher().publishHosted(epicPage())).toBe("ok:1");
+		const [, html, audit] = putEpicPage.mock.calls[0]!;
+		expect(audit).toMatchObject({
+			sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+			json: expect.any(String),
+		});
+		expect(html).toContain(`${audit.sha256}/index.audit.json`);
+		expect(html).not.toContain("epic-audit-data");
+	});
+
+	it("rejects a page whose hardened publication exceeds 512 KiB", async () => {
+		const prefix = "<html><head></head><body>";
+		const suffix = "</body></html>";
+		const html =
+			prefix + "x".repeat(512 * 1024 - prefix.length - suffix.length) + suffix;
+		expect(
+			await publisher({ renderHtml: () => html }).publishHosted(epicPage()),
+		).toBe("structural: epic_html_too_large");
+		expect(putEpicPage).not.toHaveBeenCalled();
+		expect(registry.list()).toEqual([]);
+	});
+
 	it("reports unsupported hosting without reserving or publishing", async () => {
 		const noBlob = publisher({ blobStore: undefined });
 		expect(await noBlob.publishHosted(epicPage())).toBe(
@@ -179,6 +202,7 @@ describe("hosted Epic page publisher", () => {
 	it("P2 treats a post-upload response validation error as unknown Blob state", async () => {
 		let uploadedToken = "";
 		const validatingBlobStore = new VercelBlobReportStore("blob-secret", {
+			get: vi.fn().mockResolvedValue(null),
 			put: vi.fn(async (pathname: string, html: string) => {
 				uploadedToken = pathname.split("/")[1] ?? "";
 				blobs.set(uploadedToken, html);

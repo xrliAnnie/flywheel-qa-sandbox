@@ -257,6 +257,50 @@ export function isSchedulable(item: EpicItem): boolean {
 	return item.state.value?.type !== "backlog";
 }
 
+export type ItemClass =
+	| "live"
+	| "waiting"
+	| "free"
+	| "idle"
+	| "done"
+	| "canceled";
+
+export function classifyItem(item: EpicItem): ItemClass | null {
+	const type = item.state.value!.type;
+	if (type === "started") return "live";
+	if (type === "completed") return "done";
+	if (type === "canceled") return "canceled";
+	if (["backlog", "unstarted", "triage"].includes(type)) {
+		const blockers = item.blocked_by.value!;
+		if (blockers.length === 0) return "idle";
+		return blockers.some(
+			(blocker) => blocker.blocker_state_type !== "completed",
+		)
+			? "waiting"
+			: "free";
+	}
+	return null;
+}
+
+export function rootOf(
+	item: EpicItem,
+	byId: Map<string, EpicItem>,
+	rootsById: Set<string>,
+): string | null {
+	let parent = item.parent.value;
+	const visited = new Set<string>([item.identifier]);
+	while (parent !== null && !rootsById.has(parent)) {
+		const ancestor = byId.get(parent);
+		if (!ancestor || visited.has(parent))
+			throw new EpicPageSchemaError(
+				`counts.v1: parent chain does not reach a root: ${item.identifier}`,
+			);
+		visited.add(parent);
+		parent = ancestor.parent.value;
+	}
+	return parent;
+}
+
 export function computeRootCounts(
 	items: EpicItem[],
 	roots: Array<{ identifier: string }>,
@@ -270,17 +314,7 @@ export function computeRootCounts(
 				`counts.v1: state/blocked_by cell must be known: ${item.identifier}`,
 			);
 		}
-		let parent = item.parent.value;
-		const visited = new Set<string>([item.identifier]);
-		while (parent !== null && !rootsById.has(parent)) {
-			const ancestor = byId.get(parent);
-			if (!ancestor || visited.has(parent))
-				throw new EpicPageSchemaError(
-					`counts.v1: parent chain does not reach a root: ${item.identifier}`,
-				);
-			visited.add(parent);
-			parent = ancestor.parent.value;
-		}
+		const parent = rootOf(item, byId, rootsById);
 		if (parent !== null) {
 			const indexes = members.get(parent) ?? [];
 			indexes.push(index);
@@ -303,19 +337,13 @@ export function computeRootCounts(
 		for (const index of members.get(root.identifier) ?? []) {
 			const item = items[index]!;
 			from.push(`/items/${index}/state`, `/items/${index}/blocked_by`);
-			const type = item.state.value!.type;
-			if (type === "started") counts.live++;
-			else if (type === "completed") counts.done++;
-			else if (type === "canceled") counts.canceled++;
-			else if (["backlog", "unstarted", "triage"].includes(type)) {
-				const blockers = item.blocked_by.value!;
-				if (blockers.length === 0) counts.idle++;
-				else if (
-					blockers.some((blocker) => blocker.blocker_state_type !== "completed")
-				)
-					counts.waiting++;
-				else counts.free++;
-			} else missing ??= { reason: "unknown_state_type", detail: type };
+			const cls = classifyItem(item);
+			if (cls !== null) counts[cls]++;
+			else
+				missing ??= {
+					reason: "unknown_state_type",
+					detail: item.state.value!.type,
+				};
 		}
 		counts.total =
 			counts.live +

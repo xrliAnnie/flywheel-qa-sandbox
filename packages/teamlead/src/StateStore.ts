@@ -2213,6 +2213,7 @@ export const EPIC_PAGE_REFRESH_OUTCOMES = [
 	"ok_unpublished:<version>:skipped_hosting_unsupported",
 	"transient: publish_failed:stage",
 	"transient: publish_failed:blob",
+	"transient: publish_failed:audit_gateway",
 	"transient: publish_failed:registry",
 	"transient: publish_failed:publication",
 	"structural: epic_html_too_large",

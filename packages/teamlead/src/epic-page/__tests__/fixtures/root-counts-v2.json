@@ -1,0 +1,72 @@
+[
+	{
+		"value": {
+			"root": "EPX-100",
+			"counts": {
+				"live": 0,
+				"waiting": 5,
+				"free": 1,
+				"idle": 2,
+				"done": 0,
+				"canceled": 0,
+				"total": 8
+			}
+		},
+		"from": [
+			"/header/roots",
+			"/items/0/parent",
+			"/items/1/parent",
+			"/items/2/parent",
+			"/items/3/parent",
+			"/items/4/parent",
+			"/items/5/parent",
+			"/items/6/parent",
+			"/items/7/parent",
+			"/items/8/parent",
+			"/items/0/state",
+			"/items/0/blocked_by",
+			"/items/1/state",
+			"/items/1/blocked_by",
+			"/items/2/state",
+			"/items/2/blocked_by",
+			"/items/3/state",
+			"/items/3/blocked_by",
+			"/items/4/state",
+			"/items/4/blocked_by",
+			"/items/5/state",
+			"/items/5/blocked_by",
+			"/items/7/state",
+			"/items/7/blocked_by",
+			"/items/8/state",
+			"/items/8/blocked_by"
+		]
+	},
+	{
+		"value": {
+			"root": "EPX-200",
+			"counts": {
+				"live": 0,
+				"waiting": 0,
+				"free": 0,
+				"idle": 1,
+				"done": 0,
+				"canceled": 0,
+				"total": 1
+			}
+		},
+		"from": [
+			"/header/roots",
+			"/items/0/parent",
+			"/items/1/parent",
+			"/items/2/parent",
+			"/items/3/parent",
+			"/items/4/parent",
+			"/items/5/parent",
+			"/items/6/parent",
+			"/items/7/parent",
+			"/items/8/parent",
+			"/items/6/state",
+			"/items/6/blocked_by"
+		]
+	}
+]

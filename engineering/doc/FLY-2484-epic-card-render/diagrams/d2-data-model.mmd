@@ -1,0 +1,40 @@
+classDiagram
+  direction TB
+  class EpicPage {
+    header.roots  Linear 父单列表
+    header.root_counts  每个父单六个数
+    items  每张子单 15 格
+  }
+  class FounderView {
+    scopeUnavailable  范围不可用?
+    epics  已排序的 Epic
+    hiddenDoneEpics  全做完的个数
+    unattached  没挂 Epic 的子单
+    order  展示规则出处
+  }
+  class EpicView {
+    identifier / title / url
+    state  Linear 状态原话
+    counts  六个数 或 缺
+    allWaitingOn  整块在等谁
+    children  已排序的未终态子单
+    terminal  已完成 / 已取消 数
+  }
+  class ChildView {
+    identifier / title / url
+    cls  在跑 等依赖 可起跑 未开始
+    blockers  等谁 + 在哪个 Epic
+    progress  到哪一步
+    signals  卡住 / 在等 founder
+  }
+  class ViewProvenance {
+    rule  页面展示规则号 view.*.v1
+    from  读了文档里哪些格
+    observedAt  输入最新观测时间
+  }
+  EpicPage --> FounderView : buildFounderView()
+  FounderView "1" --> "*" EpicView
+  EpicView "1" --> "*" ChildView
+  EpicView --> ViewProvenance : 整块在等 / 终态尾数
+  ChildView --> ViewProvenance : 等谁在哪 / 进度行
+  FounderView --> ViewProvenance : 顺序 / 隐藏数

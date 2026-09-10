@@ -1,3 +1,4 @@
+import { Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
 import { escapeHtml } from "../../bridge/xhs-review-html.js";
 import { escapeMarkdownTableCell } from "../escape.js";
@@ -171,20 +172,37 @@ function htmlBlock(html: string, path: string): string {
 	const start = html.indexOf(marker);
 	expect(start, path).toBeGreaterThanOrEqual(0);
 	const next = html.indexOf("data-cell=", start + marker.length);
-	return html.slice(start, next < 0 ? undefined : next);
+	const block = html.slice(start, next < 0 ? undefined : next);
+	const ref = block.match(/data-src="(\d+)"/)?.[1];
+	return block + (ref === undefined ? "" : dictionaryText(html, ref));
+}
+
+function dictionaryText(html: string, ref: string): string {
+	const json = html.match(
+		/<script type="application\/json" id="epic-audit-data">([\s\S]*?)<\/script>/,
+	)![1]!;
+	const data = JSON.parse(json);
+	const [source, observed, updated] = data.cells[Number(ref)];
+	return (
+		JSON.stringify(data.sources[source]) +
+		data.times[observed] +
+		(updated === undefined ? "" : data.times[updated])
+	);
 }
 
 function firstHtmlItemCard(html: string): string {
-	const start = html.indexOf('<article class="item-card');
-	expect(start).toBeGreaterThanOrEqual(0);
-	const end = html.indexOf("</article>", start);
-	expect(end).toBeGreaterThan(start);
-	return html.slice(start, end + "</article>".length);
-}
-
-function firstHtmlItemSummary(html: string): string {
-	const card = firstHtmlItemCard(html);
-	return card.slice(0, card.indexOf('<footer class="card-meta">'));
+	const window = new Window({
+		settings: { disableJavaScriptEvaluation: true },
+	});
+	window.document.write(html);
+	const child = window.document.querySelector('[data-item="EPX-1"]');
+	expect(child).not.toBeNull();
+	return (
+		child!.outerHTML +
+		[...child!.querySelectorAll("[data-src]")]
+			.map((e) => dictionaryText(html, e.getAttribute("data-src")!))
+			.join("")
+	);
 }
 
 function valueMarker(value: unknown): string {
@@ -253,7 +271,9 @@ describe("Epic page render parity", () => {
 
 	it("uses one inert nonce script for reader age and no self-supplied CSP", () => {
 		const html = renderEpicPageHtml(pageWithLiveness(), EPIC_SHAPE_NOW);
-		const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/g) ?? [];
+		const scripts = (
+			html.match(/<script\b[^>]*>[\s\S]*?<\/script>/g) ?? []
+		).filter((s) => !s.includes('type="application/json"'));
 
 		expect(html).not.toContain('http-equiv="Content-Security-Policy"');
 		expect(html).toContain(
@@ -347,59 +367,43 @@ describe("Epic page render parity", () => {
 		expect(receipt.sources).not.toEqual([]);
 	});
 
-	it("renders one concise card per item with two-way dependencies and no batch", () => {
+	it("renders child rows within collapsed Epic cards without tables or batches", () => {
 		const document = page();
 		document.items[1]!.acceptance.value = null;
-		document.items[1]!.acceptance.missing = {
-			reason: "no_acceptance_section",
-		};
+		document.items[1]!.acceptance.missing = { reason: "no_acceptance_section" };
 		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
-
-		expect(html.match(/<article class="item-card/g)).toHaveLength(
+		expect(html.match(/class="kid" data-item=/g)).toHaveLength(
 			document.items.length,
 		);
+		expect(html).toContain('class="epic" data-root="EPX-100"');
 		expect(html).not.toContain("<table");
-		expect(html).not.toContain('class="cell-grid"');
-		expect(html).toContain("是什么");
-		expect(html).toContain("为什么");
-		expect(html).toContain("做完你看到");
-		expect(html).toContain("等谁");
-		expect(html).toContain("谁在等我");
-		expect(html).toContain("EPX-1 · Task A · Todo");
-		expect(html).toContain("EPX-1 · Task A");
-		expect(html).toContain("EPX-2 · Task B");
-		expect(html).toContain("缺验收");
-		expect(html).not.toContain("批次");
+		expect(html).not.toMatch(/<details[^>]* open/);
+		expect(html).toContain("等 EPX-1");
+		expect(html).toContain("no_acceptance_section");
 		expect(html).not.toContain("data-batch");
 	});
 
-	it("keeps item provenance and timestamps in a compact card footer", () => {
-		const document = page();
-		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
-		const firstCard = firstHtmlItemCard(html);
-
-		expect(firstCard).toContain('class="card-meta"');
-		expect(firstCard).toContain(document.items[0]!.url.value ?? "");
-		expect(firstCard).toContain(document.items[0]!.title.observed_at);
-		expect(firstCard).toContain(
-			document.items[0]!.title.source_updated_at ?? "",
-		);
-		expect(firstCard).toContain("dependents.v1");
-		expect(firstCard).toContain("/items/0/blocked_by");
-		expect(firstCard).toContain("已获 founder 裁定的规则");
+	it("keeps item provenance and timestamps inside its audit", () => {
+		const document = page(),
+			html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
+		const child = firstHtmlItemCard(html);
+		expect(child).toContain('class="audit"');
+		expect(child).toContain(document.items[0]!.url.value!);
+		expect(child).toContain(document.items[0]!.title.observed_at);
+		expect(child).toContain(document.items[0]!.title.source_updated_at!);
+		expect(child).toContain("dependents.v1");
+		expect(child).toContain("/items/0/blocked_by");
+		expect(child).toContain('data-cell="/items/0/parent"');
 	});
 
-	it("puts ready first, then the active scope, above all item cards", () => {
+	it("puts the Lead diagnostic panel after the Epic cards", () => {
 		const html = renderEpicPageHtml(page(), EPIC_SHAPE_NOW);
-		const firstCard = html.indexOf('<article class="item-card');
-		const ready = html.indexOf(label("section.ready"));
-		const scope = html.indexOf(label("section.scope"));
-		expect(ready).toBeGreaterThanOrEqual(0);
-		expect(ready).toBeLessThan(scope);
-		for (const marker of [label("section.ready"), label("section.scope")]) {
-			expect(html.indexOf(marker), marker).toBeGreaterThanOrEqual(0);
-			expect(html.indexOf(marker), marker).toBeLessThan(firstCard);
-		}
+		const epic = html.indexOf('<details class="epic"');
+		const lead = html.indexOf('<details class="lead-panel"');
+		expect(epic).toBeGreaterThan(0);
+		expect(lead).toBeGreaterThan(epic);
+		for (const key of ["section.ready", "section.scope"] as const)
+			expect(html.indexOf(label(key))).toBeGreaterThan(lead);
 	});
 
 	it("keeps derived overview pointers inside the collapsed audit body", () => {
@@ -558,7 +562,7 @@ describe("Epic page render parity", () => {
 		}
 	});
 
-	it("shows ledger_live_count in both first-screen execution summaries", () => {
+	it("keeps ledger_live_count in Markdown and the child audit", () => {
 		const document = page();
 		document.items[0]!.session.value = {
 			latest: [
@@ -579,37 +583,31 @@ describe("Epic page render parity", () => {
 		const htmlSummary = firstHtmlItemCard(html);
 
 		expect(markdownSummary).toContain("ledger_live_count=2");
-		expect(htmlSummary).toContain("ledger_live_count=2");
+		expect(htmlSummary.indexOf("ledger_live_count=2")).toBeGreaterThan(
+			htmlSummary.indexOf('class="audit"'),
+		);
 		expect(markdownSummary).toContain("completed/design&#40;deadbeef&#41;");
 		expect(htmlSummary).toContain("completed/design(deadbeef)");
 	});
 
-	it("shows concrete issue titles on both sides of each dependency", () => {
-		const document = page();
-		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
-		const first = firstHtmlItemSummary(html);
-		const secondStart = html.indexOf(
-			'<article class="item-card',
-			html.indexOf('<article class="item-card') + 1,
-		);
-		const secondEnd = html.indexOf('<footer class="card-meta">', secondStart);
-		const second = html.slice(secondStart, secondEnd);
-
-		expect(first).toContain("EPX-2 · Task B");
-		expect(first).toContain(label("page.waiting_on_me"));
-		expect(second).toContain("EPX-1 · Task A");
-		expect(second).toContain(label("page.waiting_for"));
+	it("keeps full dependency titles in audit cells while the badge names the blocker", () => {
+		const html = renderEpicPageHtml(page(), EPIC_SHAPE_NOW);
+		expect(htmlBlock(html, "/items/0/blocks")).toContain("Task B");
+		expect(htmlBlock(html, "/items/1/blocked_by")).toContain("Task A");
+		expect(html).toContain("等 EPX-1");
 		expect(html).toContain("dependents.v1");
 	});
 });
 
-it("marks scope.v2 and counts.v1 as founder-decided without adding rendered fields", () => {
+it("marks scope.v2 and counts.v1 as founder-decided, with HTML root counts", () => {
 	const document = page();
 	for (const render of [renderEpicPageHtml, renderEpicPageMarkdown]) {
 		const output = render(document, EPIC_SHAPE_NOW);
 		expect(output).toContain("已获 founder 裁定的规则 scope.v2");
-		expect(output).not.toContain("scope.v1");
-		expect(output).not.toContain('data-cell="/header/root_counts');
+		expect(output).not.toContain("规则 scope.v1");
+		if (render === renderEpicPageHtml)
+			expect(output).toContain('data-cell="/header/root_counts/0"');
+		else expect(output).not.toContain('data-cell="/header/root_counts');
 		const probe = structuredClone(document);
 		// Exercise the existing rendered Cell seam; counts remain data-only in real pages.
 		probe.ready_items.provenance = {

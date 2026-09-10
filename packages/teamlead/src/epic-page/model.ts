@@ -378,7 +378,7 @@ function isSignalNode(value: unknown): boolean {
 	);
 }
 
-function resolvePointer(root: unknown, pointer: string): unknown {
+export function resolvePointer(root: unknown, pointer: string): unknown {
 	if (pointer === "") return root;
 	if (!pointer.startsWith("/")) return undefined;
 	let cursor: unknown = root;

@@ -1,0 +1,21 @@
+flowchart TD
+  A["E1 文档(已合入)<br/>每张子单一格 parent · 每个 Epic 一格 counts"] --> B["buildFounderView(page)<br/>纯函数 · 不看时钟 · 不看输入顺序"]
+  B --> C{"这个 Epic 还有<br/>没做完的子单吗?"}
+  C -- "没有" --> D["不出现<br/>页尾只记一个数:另有 N 个全做完"]
+  C -- "有" --> E["Epic 卡(默认收起)<br/>徽标 = Linear 状态原话<br/>旁边:N 在跑 · N 等依赖 · N 可起跑 · N 未开始 · 共 N"]
+  E --> F["子单行:在跑 → 等依赖 → 可起跑 → 未开始<br/>组内按单号 · 终态子单不列只计数"]
+  F --> G{"这张子单<br/>被谁挡着?"}
+  G -- "没人挡" --> H["徽标「未开始」/「可起跑」/「在跑」<br/>在跑的写:到「实现」· 第 N 次 · 会话状态"]
+  G -- "被挡" --> I["徽标「等 FLY-XXXX」<br/>别的 Epic 的 ⇒ 加「(在 FLY-ROOT)」<br/>范围外的 ⇒ 加「(范围外)」"]
+  E --> J{"这个 Epic 所有<br/>没做完的子单都被挡?"}
+  J -- "是" --> K["卡头一行:整块在等 FLY-XXXX"]
+  H --> L["每行折叠着 15 格出处与时间<br/>+ 页面展示规则号(它是怎么推出来的)"]
+  I --> L
+  L --> M["HTML ≤ 512KB 否则不发布(既有闸门)"]
+  classDef stop fill:#ffe5e5,stroke:#ff3b30,color:#c0392b;
+  classDef ok fill:#e6f9ed,stroke:#34c759,color:#1d7a3d;
+  classDef new fill:#e8f0fe,stroke:#007aff,color:#1d4ed8;
+  classDef gray fill:#f2f2f5,stroke:#86868b,color:#515154;
+  class D gray;
+  class M ok;
+  class B,E,F,H,I,K,L new;

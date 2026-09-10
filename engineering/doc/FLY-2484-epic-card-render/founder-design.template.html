@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2484 · 进度页长出 Epic 卡:徽标照抄 Linear、子单分组稳定排、被挡的写「等谁」 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  html, body { overflow-x:hidden; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; overflow-wrap:anywhere; }
+  code { overflow-wrap:anywhere; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  .badge.new { background:#e8f0fe; color:#1d4ed8; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+  .kv { display:grid; grid-template-columns: 1fr 2fr; gap:6px 12px; font-size:14px; }
+  .kv b { color:#1a365d; }
+  /* 页面样子:一张 Epic 卡的静态示意(不是真页,是形状) */
+  .mock { border:1px solid #e5e5ea; border-radius:10px; background:#fbfbfd; padding:12px 14px; margin:10px 0; font-size:13.5px; }
+  .mock .row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #eeeef0; }
+  .mock .row:last-child { border-bottom:none; }
+  .mock .pill { font-size:11px; font-weight:700; padding:2px 8px; border-radius:20px; white-space:nowrap; }
+  .p-linear { background:#e3f6e9; color:#1f7a37; }
+  .p-live { background:#e3f6e9; color:#1f7a37; }
+  .p-wait { background:#fff2dd; color:#a35c00; }
+  .p-free { background:#eef4ff; color:#1a4fa0; }
+  .p-idle { background:#eeeef0; color:#6e6e73; }
+  .mock .id { font-family:'SF Mono',Menlo,monospace; font-size:12px; color:#1a365d; font-weight:600; }
+  .mock .dim { color:#86868b; font-size:12px; }
+  .mock .sub { padding-left:22px; color:#4a4a4f; font-size:12.5px; }
+  @media (max-width:640px) { .kv { grid-template-columns:1fr; } .mock .pill { white-space:normal; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2484 · 进度页长出 Epic 卡:徽标照抄 Linear、子单分组稳定排、被挡的写「等谁」</h1>
+<div class="meta">
+  设计交付 · 2026-09-10 · 进度页 Epic(FLY-2481)的第三张单(E3,渲染层)· 依据 PRD FLY-2457 v2.1 §5–§9 / §12 · 前置 E1(FLY-2482,已合入 #1146)<br/>
+  证据基线:分支 <code>flywheel-FLY-2484</code> 自 <code>main ce9238a28</code> · 今天真页本地重放 469,843 字节(36 张子单)· Codex 设计评审 4 轮,终判 APPROVED · Bridge 设计门 APPROVED<br/>
+  文档:<code>engineering/doc/FLY-2484-epic-card-render/</code>{exploration, research, plan, review-log}.md · 本页只讲结论与取舍,细节在 plan
+</div>
+
+<section class="card green" data-title="一句话结论">
+  <h2>一句话结论</h2>
+  <p class="summary-line">今天那份自己会刷新的机器页,把 36 张子单当 36 张同款卡平铺、不分 <span class="term" title="Epic:Linear 里带子单的大任务,进度页按它分块">Epic</span>(Linear 里带子单的大任务);本单只改「怎么画」这一层,把它重排成<b>一 Epic 一张卡</b>:卡头的状态<span class="term" title="徽标:状态标签">徽标</span>(状态标签)一字不改照抄 Linear,旁边写「N 在跑 · N 等依赖 · N 未开始 · 共 N」;卡默认收起,点开是它的子单,在跑的在上、还没开始的在下,被挡住的写「等 FLY-XXXX」而不是「未开始」;全做完的 Epic 不出现。数据一格不动、顺序是数据的纯函数(同样的数据永远同样的顺序)。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:34%">PRD 里你定的</th><th>本设计怎么落</th></tr>
+    <tr><td>F1 / F4 · 只列在做的 Epic,全做完的拿掉</td><td>范围 = Linear 里 In Progress 且有子单的父单(E1 已保证);没有一张没做完子单的 Epic <b>不出现</b>,页尾只留一个数「另有 N 个全做完,不列」</td></tr>
+    <tr><td>F3 / §6.2 · Epic 徽标照抄 Linear,计数在旁边但不是状态</td><td>徽标 = Linear <code>state.name</code> 原话;计数来自 E1 的 <code>counts</code>;<span class="badge no">不做</span>任何第二个 Epic 状态,也不用计数排序</td></tr>
+    <tr><td>F6 · 默认全部收起</td><td>每张 Epic 卡是浏览器原生的折叠块,不带展开标记;首屏零展开</td></tr>
+    <tr><td>F8 / F9 · Epic 按状态排、子单同理</td><td>Epic 按 Linear 状态类型分组、组内按单号数值序;子单 在跑 → 等依赖 → 可起跑 → 未开始、组内按单号;终态子单不列,卡尾一行计数</td></tr>
+    <tr><td>F10 / §9 · 依赖要表现出来,但不画图</td><td>被挡子单徽标「等 FLY-XXXX」;所有没做完子单都被挡 ⇒ 卡头「整块在等 XXX」;挡它的在别的 Epic ⇒ 标「(在 FLY-ROOT)」,在范围外 ⇒ 标「(范围外)」;<span class="badge no">不画</span>依赖图</td></tr>
+    <tr><td>F5 · 在跑的到哪一步</td><td>沿用已有字段:「到「实现」· 第 2 次 · 会话 running」,缺哪段写「不知道」,机器账本读不到就写「执行事实缺失」</td></tr>
+    <tr><td>§12 · 每格保留出处与时间;F13 · 零人名</td><td>每张列出的子单折叠着 15 格出处与时间;页面自己推出来的结论(顺序、整块在等、等谁在哪、进度行)各带一个「页面展示规则号」说明它读了哪些格;页面文案全走一张词表,零人名</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「一句话结论」的意见</label><textarea data-key="s01" data-title="一句话结论"></textarea></div>
+</section>
+
+<section class="card" data-title="页面长什么样">
+  <h2>页面长什么样(形状示意,不是真数据)</h2>
+  <p class="note">下面是一张 Epic 卡展开后的样子。收起时只看得见第一行。单号与标题是示意,真页读 Linear。</p>
+  <div class="mock">
+    <div class="row"><span class="pill p-linear">In Progress</span><span class="id">FLY-2441</span><span>通路统一 + Raya 重建</span><span class="dim">0 在跑 · 1 等依赖 · 1 可起跑 · 3 未开始 · 共 11</span></div>
+    <div class="row"><span class="pill p-wait">等 FLY-2445(在 FLY-1143)</span><span class="id">FLY-2459</span><span>能派 runner 的部门 Lead 跑 Codex 后端</span></div>
+    <div class="row sub">↳ 被 FLY-2445 挡着,没起跑 <span class="dim">机器测的</span> · <span class="dim">▸ 15 格出处与时间</span></div>
+    <div class="row"><span class="pill p-free">可起跑</span><span class="id">FLY-2447</span><span>统管 Leads / summaries 在新地基重排</span></div>
+    <div class="row sub">↳ 原本等 FLY-2444,它已经做完了 —— 现在没人挡着 <span class="dim">机器测的</span></div>
+    <div class="row"><span class="pill p-idle">未开始</span><span class="id">FLY-2448</span><span>作废或挂 Epic;旧壳清理</span></div>
+    <div class="row sub">↳ 还没起跑 <span class="dim">机器测的</span></div>
+    <div class="row"><span class="dim">另有 5 张已完成 · 2 张已取消(不列)</span></div>
+  </div>
+  <div class="mock">
+    <div class="row"><span class="pill p-linear">In Progress</span><span class="id">FLY-2456</span><span>529 房真机重启演练</span><span class="dim">0 在跑 · 1 等依赖 · 共 1</span><span class="pill p-wait">整块在等 FLY-2352</span></div>
+  </div>
+  <ul>
+    <li><b>在跑的</b>子单那一行写的是机器账本里的话:到了哪个节点、第几次、会话什么状态 —— 每一段都能指回一格数据。</li>
+    <li>「等 FLY-XXXX」用的判据和计数里的「等依赖」是<b>同一个函数</b>:徽标数出来的行数一定等于卡头的数,不会一边说 1 等依赖、一边列出 2 张。</li>
+    <li>今天页面上给 Lead 看的几块(现在可以开始的、依赖要减法的、卡住说了一声的、缺什么)不删,整体收进页尾一个折叠的「给 Lead 看的诊断」里,首屏不占位。</li>
+  </ul>
+  <div class="cbox"><label>给「页面长什么样」的意见</label><textarea data-key="s02" data-title="页面长什么样"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程:数据怎么变成这一页</h2>
+  <div class="diagram"><!--DIAGRAM_1--></div>
+  <div class="cap">图 1 · 蓝色是本单新增的步骤;灰色是「不出现」;绿色是既有的发布闸门</div>
+  <ol>
+    <li>输入只有 E1 已合入的文档:每张子单一格「我挂在哪个 Epic」、每个 Epic 一格「六种状态各几张」。</li>
+    <li>一个<span class="term" title="纯函数:只看输入、不看时钟、不看外部状态,同样输入永远同样输出">纯函数</span>(只看输入、不看时钟)把文档排成「Epic → 子单」的树,并决定顺序、徽标、整块在等、等谁在哪。</li>
+    <li>没有未做完子单的 Epic 直接不出现;其余每个一张收起的卡。</li>
+    <li>卡里只列未终态子单;已完成 / 已取消只剩一行计数。</li>
+    <li>每行折叠着它的 15 格出处与时间;页面自己推出的结论各带一条「页面展示规则号 + 读了哪些格 + 输入最新观测时间」。</li>
+    <li>发布前仍过既有闸门:HTML 超过 512KB 不发布,固定页停在上一版。</li>
+  </ol>
+  <div class="cbox"><label>给「核心流程」的意见</label><textarea data-key="s03" data-title="核心流程"></textarea></div>
+</section>
+
+<section class="card purple" data-title="数据与结构模型">
+  <h2>数据与结构模型:页面中间多了一层「视图」</h2>
+  <div class="diagram"><!--DIAGRAM_2--></div>
+  <div class="cap">图 2 · 左上是 E1 的文档(不改);中间是本单新增的视图模型(只在内存里,不落库);右下是每条页面结论的出处</div>
+  <div class="kv">
+    <b>EpicPage(不改)</b><span>E1 的文档合同原样;本单不加字段、不升版本、不动回执与摘要。</span>
+    <b>FounderView(新,内存)</b><span>「页面怎么排」的中间结果:已排序的 Epic、每个 Epic 已排序的未终态子单、全做完的个数、没挂 Epic 的子单。它是展示规则,不是事实,所以不进文档。</span>
+    <b>ViewProvenance(新)</b><span>页面自己推出来的每条结论(顺序、隐藏数、整块在等、等谁在哪、进度行)各带:规则号 <code>view.*.v1</code>、读了文档里哪些格、输入里最新的观测时间。这样 PRD §12「不许有只存在于页面里的事实」在页面层也守住:它不是事实,但它能说清自己是怎么来的。</span>
+    <b>classifyItem(从 E1 抽出)</b><span>「这张子单算在跑 / 等依赖 / 可起跑 / 未开始 / 已完成 / 已取消」这一段逻辑今天埋在计数函数里;本单把它抽成一个函数,计数与徽标都调它,计数输出逐字节不变(有测试锁)。</span>
+  </div>
+  <div class="cbox"><label>给「数据与结构模型」的意见</label><textarea data-key="s04" data-title="数据与结构模型"></textarea></div>
+</section>
+
+<section class="card amber" data-title="徽标与顺序怎么定">
+  <h2>徽标与顺序怎么定(全部可测)</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:24%">什么</th><th>怎么定</th></tr>
+    <tr><td><b>Epic 徽标</b></td><td>Linear 状态名原话(今天都是「In Progress」);颜色只按 Linear 的状态类型分</td></tr>
+    <tr><td><b>Epic 旁的计数</b></td><td>「N 在跑 · N 等依赖 · N 可起跑 · N 未开始 · 共 N」;为 0 的段省略,「在跑」与「共」永远显示</td></tr>
+    <tr><td><b>Epic 顺序</b></td><td>先按 Linear 状态类型分组(在做 → 还没开始 → 其余);组内按单号<b>数值</b>序(FLY-999 在 FLY-1000 前)。工程 Lead 已裁定:不用计数排序,不造第二个状态。今天范围内全是 In Progress,所以只有一组</td></tr>
+    <tr><td><b>子单顺序</b></td><td>在跑 → 等依赖 → 可起跑 → 未开始;组内按单号数值序;已完成 / 已取消不列</td></tr>
+    <tr><td><b>「等 FLY-XXXX」</b></td><td>它的前置里还有没做完的(已取消也算没做完,与「可以开始」的既有规则一致);多于 3 个写「等 FLY-A / FLY-B / FLY-C 等 N 张」</td></tr>
+    <tr><td><b>「整块在等 XXX」</b></td><td>这个 Epic 所有没做完的子单都在等 ⇒ 卡头一行,收起也看得见;XXX 是它们在等的单的并集</td></tr>
+    <tr><td><b>跨 Epic</b></td><td>挡它的单在<b>别的 Epic</b> ⇒「(在 FLY-ROOT)」;在<b>范围外</b>(不在任何在做的 Epic 下)⇒「(范围外)」。比 issue 原文多标了前一种,因为 E1 之后「范围内」指整份文档,不指本 Epic</td></tr>
+    <tr><td><b>同样数据 = 同样页面</b></td><td>顺序键只看单号与状态,不看时钟、不看数据到达顺序;测试会把同一份数据打乱两次输入,断言顺序逐字相同</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「徽标与顺序怎么定」的意见</label><textarea data-key="s05" data-title="徽标与顺序怎么定"></textarea></div>
+</section>
+
+<section class="card" data-title="关键取舍">
+  <h2>关键取舍与被否掉的方案</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:28%">问题</th><th>选了</th><th>否掉了,为什么</th></tr>
+    <tr><td>Epic 按什么分组</td><td>Linear 状态类型</td><td>「按 0 在跑的沉底」—— 那就是用计数造第二个状态,你已裁定状态只有一个来源</td></tr>
+    <tr><td>徽标的判据从哪来</td><td>从 E1 的计数函数里抽出同一个分类函数</td><td>「页面自己再判一次」—— 两套判据,迟早一边说 1 等依赖一边列 2 张</td></tr>
+    <tr><td>已完成的子单怎么放</td><td>不出行,卡尾一行数</td><td>「折叠着列出来」—— 字节不省(今天一半字节是它们),清爽的目的落空;「完全不提」—— 你抽查时分不清是没做完还是没取到</td></tr>
+    <tr><td>给 Lead 看的几块诊断</td><td>整体收进页尾折叠面板,内容不动</td><td>「删掉」—— 固定页是唯一 hosted 形态,Lead 也会看;「留在顶部」—— 违背首屏只看 Epic</td></tr>
+    <tr><td>页面推出的结论要不要出处</td><td>要:页面展示规则号 + 读了哪些格 + 时间</td><td>「进文档合同」—— 那是把展示规则当事实存,E1 已裁定不加第二个状态;「不给」—— 违背 §12</td></tr>
+    <tr><td>体积怎么保证</td><td>终态子单不出行 + 出处格瘦身(同一张单的链接只写一次),容量在实现期真渲染实测</td><td>「先承诺一个张数」—— 评审两轮都证明估算不可信;「超限就删出处」—— 违背 §12,评审否决</td></tr>
+    <tr><td>和另两张并行单怎么合</td><td>等它们先合入,本单在合入后的代码上动手,留三个固定插槽</td><td>「三张同时改同一个函数」—— 后合的必然手工解冲突;工程 Lead 已裁定顺序</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「关键取舍」的意见</label><textarea data-key="s06" data-title="关键取舍"></textarea></div>
+</section>
+
+<section class="card gray" data-title="诚实边界">
+  <h2>诚实边界:本单做什么、不做什么、等什么</h2>
+  <div class="diagram"><!--DIAGRAM_3--></div>
+  <div class="cap">图 3 · 蓝色是本单改的;橙色是等两张并行单(#1147「现在要你看」、#1148 Lead 判断)合入后接进来的<span class="term" title="插槽:页面上预留的固定位置,别的单把自己的内容放进来">插槽</span>;灰色不动</div>
+  <ul>
+    <li><b>等 #1147 与 #1148 先合入。</b>它们和本单改同一个渲染函数;工程 Lead 已裁定本单的实现在它们合入后才动手。设计里为「现在要你看」(页面最前)和「Lead 判断」(Epic 卡顶、子单机器行紧后)各留了固定位置,并写清输入字段 / 位置 / 没内容时什么都不画(不伪造判断)。</li>
+    <li><b>不做留言层。</b>PRD 里「每个 Epic 留言 + 一键复制」不在这张单,FLY-2481 名下也没有它;结构给它留位。</li>
+    <li><b>不做 Discord 跳转、不做 Lead 判断格</b>(分别是 #1147、#1148 的事)。</li>
+    <li><b>Markdown 形态不动。</b>Lead 每小时巡检读的那份仍是今天的平铺样子;要把它也排成 Epic 树是另一张单。</li>
+    <li><b>已完成 / 已取消子单的 15 格出处不再出现在 HTML 里</b>(只在 JSON / Markdown)。页面是文档的子集,不是全集。</li>
+    <li><b>容量不承诺具体张数。</b>实现期在合入两张并行单后的最终页上真渲染实测:门槛是至少容下 60 张未做完的子单(今天 18 张);并且这个数是「每张单最多一条 Lead 判断」条件下的数 —— #1148 没有给判断条数设上限,超出时页面走既有的「不发布、停上一版」,不截断、不发坏页。</li>
+    <li><b>Epic 分组今天恒为一组。</b>若将来你要「没人动的 Epic 沉底」,那是 §6.2 之外的新裁定。</li>
+  </ul>
+  <div class="cbox"><label>给「诚实边界」的意见</label><textarea data-key="s07" data-title="诚实边界"></textarea></div>
+</section>
+
+<section class="card amber" data-title="体积与风险">
+  <h2>体积与风险</h2>
+  <ul>
+    <li><b>今天的真页</b>(本地按 E1 的冻结 Linear 数据重放,与 E1 证据逐字节相同):469,843 字节,36 张卡,每张约 10.7KB,其中 76% 是每格出处的样板字,18 张已完成 / 已取消占了一半。上限 512KB,只剩 45 张卡的余量。</li>
+    <li><b>设计后</b>:终态子单不出行(今天 −18 张)、出处格瘦身(同一张单的 Linear 链接只写一次、验收原文只出预览);估今天真数据约 165KB。这是估算,实现期真渲染实测后写实数。</li>
+    <li><b>风险 1 · 三张单改同一个函数。</b>已用「先等合入 + 固定插槽」化解;实现开工前核两个合入记录,没合就等。</li>
+    <li><b>风险 2 · 计数函数重构回归。</b>E1 的 37 条合同测试与逐根 golden 一字不改全绿,错误优先级与文案逐条断言。</li>
+    <li><b>风险 3 · 页面结论没出处。</b>每条结论带页面展示规则号与输入格路径,测试逐条核每条路径确实指向文档里的一格。</li>
+    <li><b>零迁移、零表改动</b>;回滚 = revert 一个 PR,下一次刷新回旧样子。</li>
+  </ul>
+  <div class="cbox"><label>给「体积与风险」的意见</label><textarea data-key="s08" data-title="体积与风险"></textarea></div>
+</section>
+
+<section class="card purple" data-title="验收怎么看">
+  <h2>验收怎么看(QA 当天,报告零表格)</h2>
+  <ol>
+    <li>页面上的 Epic 集合 == Linear 里 In Progress 且有没做完子单的父单;全做完的个数 == 页尾那个数,且它们没有卡。</li>
+    <li>任取一个 Epic:列出的子单 + 尾行的已完成 / 已取消数 == 它在 Linear 的全部子单;每张徽标与 Linear 状态、前置状态对得上。</li>
+    <li>同一份数据渲染两次逐字节相同;Epic 顺序 == 单号数值序。</li>
+    <li>被挡的子单徽标「等 FLY-XXXX」、全被挡的 Epic「整块在等」、跨 Epic 与范围外后缀 —— 生产没有这种数据就用测试数据截图为证。</li>
+    <li>首屏零展开;「现在要你看」(若已上线)在最前。</li>
+    <li>HTML 字节数 ≤ 512KB,并写出实测容量与它的条件。</li>
+    <li>固定页版本号前进;手机宽度截图两张(收起 / 展开一张)由 QA 出。</li>
+    <li>零人名:剥掉 Linear 数据串后 grep,页面自己的文案零命中。</li>
+    <li>E1 的计数输出与合入前逐字段相同;两张并行单的测试在本单头上全绿。</li>
+  </ol>
+  <div class="cbox"><label>给「验收怎么看」的意见</label><textarea data-key="s09" data-title="验收怎么看"></textarea></div>
+</section>
+
+<section class="card" data-title="评审记录">
+  <h2>Codex 设计评审记录(4 轮,6 → 4 → 3 → 0,终判 APPROVED)</h2>
+  <ul>
+    <li><b>第 1 轮</b>(6 条,全部采纳):隐藏的 Epic 会从出处格里漏出来 · 两个并行单的插槽与它们已写的测试不兼容 · 排序不是全序 · 计数函数重构没锁住错误优先级 · 页面结论没出处 · 体积预算按自己的数字已超线。</li>
+    <li><b>第 2 轮</b>(4 条,全部采纳):隐藏 Epic 改结构断言 · 出处形状自洽(路径不用通配、时间按真实时间比)· 容量改在最终页上真渲染离散实测 · 父链走到空也算「没挂 Epic」。</li>
+    <li><b>第 3 轮</b>(3 条,全部采纳,均为上一轮补丁留下的内部不一致):视图类型与测试断言统一 · 进度行出处固定五格 · 容量搜索给「最小截断警告」留余量。</li>
+    <li><b>第 4 轮</b>:APPROVED,无阻塞项。</li>
+  </ul>
+  <p class="note">原始反馈全文在 <code>review-log.md</code>。工程 Lead 2026-09-10 书面裁定两条方向(合入顺序、分组键)。Bridge 设计门已 APPROVED。</p>
+  <div class="cbox"><label>给「评审记录」的意见</label><textarea data-key="s10" data-title="评审记录"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页意见</button>
+  </div>
+  <div class="status" id="copy-status"></div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2484";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

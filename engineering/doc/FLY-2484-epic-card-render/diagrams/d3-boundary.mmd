@@ -1,0 +1,27 @@
+flowchart LR
+  subgraph W["本单改(渲染层)"]
+    direction TB
+    W1["render-html.ts 重写<br/>Epic 卡 / 子单行 / Lead 诊断面板"]
+    W2["founder-view.ts 新增<br/>排序 · 分组 · 徽标 · 出处"]
+    W3["rules.ts 抽出 classifyItem / rootOf<br/>计数输出逐字节不变"]
+    W4["labels.ts 加文案<br/>零人名"]
+  end
+  subgraph S["插槽(等并行单合入后接)"]
+    direction TB
+    S1["#1147 现在要你看<br/>页面最前"]
+    S2["#1148 Lead 判断<br/>Epic 卡顶 · 子单机器行之后"]
+  end
+  subgraph N["不动"]
+    direction TB
+    N1["文档合同 · 取数 · 数据库"]
+    N2["Markdown 形态(Lead 巡检)"]
+    N3["留言层 · 依赖图 · 512KB 上限"]
+  end
+  W1 ~~~ S1
+  S1 ~~~ N1
+  classDef new fill:#e8f0fe,stroke:#007aff,color:#1d4ed8;
+  classDef slot fill:#fff2dd,stroke:#ff9500,color:#8a5200;
+  classDef gray fill:#f2f2f5,stroke:#86868b,color:#515154;
+  class W1,W2,W3,W4 new;
+  class S1,S2 slot;
+  class N1,N2,N3 gray;

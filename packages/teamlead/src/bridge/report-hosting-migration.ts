@@ -104,6 +104,10 @@ export function buildReportGatewayFiles(
 				{
 					rewrites: [
 						{
+							source: "/r/:token/:audit/index.audit.json",
+							destination: "/api/report?token=:token&audit=:audit",
+						},
+						{
 							source: "/r/:token/",
 							destination: "/api/report?token=:token",
 						},

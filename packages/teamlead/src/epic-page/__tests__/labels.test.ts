@@ -80,3 +80,85 @@ describe("epic-page labels", () => {
 		).toBe("- 卡住说了一声的 1 张:FLY-2143(run_held,now)");
 	});
 });
+
+const founderVocabulary = {
+	"section.epics": "在做的 Epic",
+	"section.epics_count": "{n} 个(全做完的不列;状态照抄 Linear)",
+	"epic.hidden_done": "另有 {n} 个 Epic 全做完,不列",
+	"epic.none": "范围内没有还没做完的 Epic",
+	"epic.scope_unavailable": "Epic 范围不可用,这一版没有 Epic 卡",
+	"epic.unattached": "没挂 Epic(取数时它的父单为空)",
+	"counts.live": "{n} 在跑",
+	"counts.waiting": "{n} 等依赖",
+	"counts.free": "{n} 可起跑",
+	"counts.idle": "{n} 未开始",
+	"counts.total": "共 {n}",
+	"counts.missing": "计数缺失:不认识状态类型 {type}",
+	"epic.all_waiting": "整块在等 {blockers}",
+	"epic.terminal_tail": "另有 {tail}(不列)",
+	"child.live": "在跑",
+	"child.waiting": "等 {blockers}",
+	"child.free": "可起跑",
+	"child.idle": "未开始",
+	"child.unknown_type": "{state}(未知类型)",
+	"blocker.outside": "(范围外)",
+	"blocker.other_epic": "(在 {root})",
+	"blocker.unattached": "(没挂 Epic)",
+	"progress.live": "到「{node}」· 第 {attempt} 次 · 会话 {status}",
+	"progress.live_no_run": "在跑(引擎还没报节点)",
+	"progress.waiting": "被 {blockers} 挡着,没起跑",
+	"progress.free": "原本等 {blockers},它已经做完了 —— 现在没人挡着",
+	"progress.idle": "还没起跑",
+	"progress.missing": "执行事实缺失:{reasons}",
+	"progress.source": "机器测的",
+	"section.lead_panel": "给 Lead 看的诊断(默认收起)",
+	"audit.linear_issue": "Linear issue {id}",
+	"audit.seen": "看到 {at}",
+	"audit.source_updated": "源 {at}",
+	"view.rule_note": "页面展示规则 {rule} · 由 {from} 推出 · 输入最新观测 {at}",
+	"view.order_desc":
+		"Epic 按 Linear 状态分组、组内按单号;子单 在跑 → 等依赖 → 可起跑 → 未开始、组内按单号",
+	"audit.root_projection": "本 Epic 在「active 父单」格里的那一项",
+} as const;
+
+describe("founder rendering vocabulary", () => {
+	it.each(Object.entries(founderVocabulary))(
+		"renders %s with all parameters",
+		(key, template) => {
+			const params = {
+				n: 2,
+				type: "future",
+				blockers: "FLY-1",
+				tail: "1 张已完成",
+				state: "Future",
+				root: "FLY-100",
+				node: "实现",
+				attempt: 2,
+				status: "running",
+				reasons: "statestore_error",
+				id: "abc",
+				at: "2026-09-10T00:00:00Z",
+				rule: "view.progress.v1",
+				from: "/items/0/run",
+			};
+			const expected = template.replace(
+				/\{(\w+)\}/g,
+				(_, name: keyof typeof params) => String(params[name]),
+			);
+			expect(label(key as keyof typeof founderVocabulary, params)).toBe(
+				expected,
+			);
+		},
+	);
+	it("requires blockers for the waiting badge", () => {
+		expect(() => label("child.waiting")).toThrow(/parameter/i);
+	});
+	it("requires all display provenance parameters", () => {
+		expect(() =>
+			label("view.rule_note", {
+				rule: "view.progress.v1",
+				from: "/items/0/run",
+			}),
+		).toThrow(/parameter/i);
+	});
+});
