@@ -25,7 +25,7 @@ Issue: FLY-2393 (https://linear.app/geoforge3d/issue/FLY-2393/1143b6-bridge-按�
 
 2026-09-10 读取 [GitHub workflow REST 文档](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)：当前 `2026-03-10` API 示例中 dispatch 返回 200 与 workflow run ID/URL；需 Actions write，ref 是分支或 tag，inputs 必须在 workflow 声明。设计固定该 API 版本、校验响应；不依赖旧版「204 就代表发好了」假设。
 
-[GitHub concurrency 文档](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)说明并发组按仓库约束，默认保留一个运行与一个等待任务，顺序不保证，新的等待任务可能替换旧的等待任务。结论：Bridge 必须持有本项目未结算尝试，不能每个 tick 盲目 dispatch；保留 flywheel 的 `payload-release` 锁，不改成每个 workflow 一个组，否则会绕过与客户发布共用的串行保护。
+[GitHub concurrency 文档](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)说明并发组按仓库约束，默认保留一个运行与一个等待任务，顺序不保证，新的等待任务可能替换旧的等待任务。当前文档还支持 `queue: max`（最多 100 个 pending，满时拒绝新进入者），且不得与 cancel-in-progress:true 联用。结论：保留共享 `payload-release` 锁，四个消费者统一 queue:max 以保护排队中的客户任务；beta preflight no-op 在拿锁前退出。Bridge 持有本项目未结算尝试，不能每个 tick 盲目 dispatch。
 
 ## 选择与限制
 
@@ -34,3 +34,9 @@ Issue: FLY-2393 (https://linear.app/geoforge3d/issue/FLY-2393/1143b6-bridge-按�
 不能承诺 GitHub 按秒开工；验收分别记录 dueAt、acceptedAt、startedAt、publishedAt。调度正常时 60s tick 内发出请求；队列等待是外部延迟，不伪报成精确发布时刻。
 
 真实 GeoForge3D 入口未核实，所以设计完成不等于双项目上线。此缺口保留在计划的激活前置和证据清单；必须由实际项目 owner 给出内部 beta 目标并完成端到端验证。调度适配合同本身应能对任意两个已接入的项目运行，不能只硬编码 flywheel 与 geoforge3d。
+
+补充消费者审计：payload-promote.yml 是 main-only prepare；payload-promote-commit.yml 是 release environment 下的 commit/abandon/withdraw；payload-activation.yml 有 release environment、ACTIVATE 输入与 OIDC。三个仅补排队策略，所有授权和动作保持。S2 当前只检查四文件存在同组，需新增 queue/层级断言，不可假设旧 S2 足以保护 pending。
+
+R1 后补充：[yauzl 官方 API](https://github.com/thejoshwolfe/yauzl) 提供异步 fromBuffer/openReadStream、lazyEntries、validateEntrySizes 与 strictFileNames；容器解码选择它，应用层另限下载 64KiB/解压 4KiB，并拒非单个 regular receipt.json。默认不开启 strictFileNames，设计必须显式开启；不依赖库未承诺的 CRC 校验。
+
+R1 结构测试审计补齐：S8 当前只允许 inputs 出现在 env/if/ref，需要显式顶层 run-name 例外，同时禁止 github.event.inputs 绕过。S3 全文件 step-count 合同改为 preflight/publish/无发布权限 receipt 三 job 的解析白名单与副作用断言。S7/S13 的 main-only/exact triggers 原边界保留。

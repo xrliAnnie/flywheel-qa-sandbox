@@ -27,7 +27,7 @@ B6 只阻塞这项目标态，不加入 B0–B5 激活依赖链，不更改判�
 
 ## 不确定性与 Lead 问题
 
-已发非阻塞问题 `2ecaa2f2-3aa4-46f4-9e5e-ae3dd321585b`：确认 Bridge 历史入口与 GeoForge3D 的 beta workflow/验收环境；另补充 production-only 证据。继续审计持久化、接管和回归，不把没有回答写成批准。设计必须区分调度能力的自动化测试和真实双项目发布验收；后者不得用假 workflow 或生产部署顶替。
+已发非阻塞问题 `2ecaa2f2-3aa4-46f4-9e5e-ae3dd321585b`：确认 Bridge 历史入口与 GeoForge3D 的 beta workflow/验收环境；另补充 production-only 证据。2026-09-10 两个问题均收到 Lead 明确裁定：采用 Bridge dispatch；Geo 缺入口时不激活且页面明示，模拟测试不代表双项目上线。继续审计持久化、接管和回归。设计必须区分调度能力的自动化测试和真实双项目发布验收；后者不得用假 workflow 或生产部署顶替。
 
 ## 交付路径
 
