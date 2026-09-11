@@ -142,10 +142,12 @@
       <li>没被 Lead 主动关窗、自己死掉的体，从死到封行最长 1 小时（清扫节奏，L7）。</li>
       <li>Linear MCP 401，issue 正文只来自派单；34 次计数未从 Linear 复核。</li>
     </ul>
-    <h3>本节点当前状态（2026-09-11 18:3x UTC）</h3>
+    <h3>本节点评审状态（2026-09-11 18:5x UTC）</h3>
     <ul>
-      <li>exploration / research / plan 已提交（<code>777450535</code>），design_review manifest rev 1 已铸。</li>
-      <li><b>Codex 设计评审未跑成</b>：R1 跑到一半撞 usage limit；五个池账号全灭（personal 至 9/17、school 9/16、business 9/14，两个免费号 token 过期）。Gemini CLI 独立评审也不可用（个人版 Code Assist 已停用）。已按规则把收口路径交 Lead 裁定（等 Codex 恢复 / Lead acceptance），本页不等待评审结果先行交付。</li>
+      <li>exploration / research / plan v2 已提交（最终 <code>ec409598a</code>），design_review manifest rev 3 已铸并过门。</li>
+      <li><b>Codex 设计评审未跑成</b>：R1 跑到一半撞 usage limit；五个池账号全灭（personal 至 9/17、school 9/16、business 9/14，两个免费号 token 过期）。</li>
+      <li><b>Gemini 独立评审 R1：APPROVED</b>（Lead 指令后改用 API key 跑通；无阻塞项，两条建议已记入 plan §5）。原文见文档夹 <code>gemini-review-round1.md</code>。</li>
+      <li>Lead 裁定以 leadAcceptance 收口：实现 PR 的 code review 第一轮必须先复审 plan 再审代码，任何设计级 HIGH 按 blocking 处理。</li>
     </ul>
     <h3>验收怎么核（QA 节点按 plan §3）</h3>
     <ul>
