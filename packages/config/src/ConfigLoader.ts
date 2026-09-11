@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { parse } from "yaml";
 import type { ResolvedProjectRegistry } from "./agent-registry.js";
+import { parseBetaReleaseConfig } from "./beta-release-config.js";
 import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
 import { RETIRED_CONFIG_PATHS } from "./feature-flags/truth.js";
 import { getModelConfigSnapshot } from "./model-config.js";
@@ -163,6 +164,10 @@ export class ConfigLoader {
 		}
 
 		const c = config as Record<string, unknown>;
+		if (Object.hasOwn(c, "beta_release")) {
+			c.beta_release = parseBetaReleaseConfig(c.beta_release);
+		}
+
 		for (const retired of RETIRED_CONFIG_PATHS) {
 			if (Object.hasOwn(c, retired.path)) {
 				throw new Error(
