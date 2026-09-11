@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph SS[StateStore 引擎账本]
+        S1["sessions<br/>status=completed<br/>terminal_at 已盖<br/>chat_thread_role=design"]
+        S2["workflow_run_node<br/>eng_design state=done"]
+    end
+    subgraph CD[CommDB 通信名册]
+        C1["sessions<br/>status=running (病灶)<br/>tmux_window=@2998<br/>phase_keep_alive=1<br/>ended_at=NULL"]
+        C2["runner_declared_states<br/>kind=parked"]
+        C3["runner_phase_wakes<br/>doorbell pending"]
+    end
+    subgraph RD[真实世界]
+        R1["tmux 窗口 @2998<br/>已被 kill"]
+        R2["Codex daemon pgid 56544<br/>已不存在"]
+    end
+    S1 ~~~ C1
+    C1 -->|"owner index 只看 status"| PATROL["Lead 巡检<br/>MISSING_PANE x34"]
+    C1 -.->|"目标指向"| R1
+    C2 -.->|"活进程的声明<br/>但进程已死"| R2
+    C1 -->|"本设计: 精确目标 CAS<br/>running → completed + ended_at"| FIX["行退出名册<br/>下一轮清扫删除"]
+    C2 -->|"同事务清空"| FIX
+    C3 -->|"同事务置 finished"| FIX

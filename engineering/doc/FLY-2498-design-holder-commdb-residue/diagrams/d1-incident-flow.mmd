@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    participant D as Codex 设计体 (1492b1f6)
+    participant B as Bridge 事件入口
+    participant S as StateStore (引擎账本)
+    participant C as CommDB (通信名册)
+    participant L as Lead close-tmux
+    participant P as Lead 巡检
+
+    D->>B: complete --route phase_design_complete
+    B->>S: sessions.status = completed, node = done
+    Note over C: 行仍 running + keep_alive=1 (按合同: 体活着停驻)
+    D->>C: 声明 parked "design complete, awaiting design wake"
+    L->>B: POST close-tmux (StateStore=completed, 守卫放行)
+    B->>B: 收 daemon (absent) + kill-window @2998
+    B->>S: 事件 tmux_closed
+    Note over C: 没有任何写入: 行仍 running, ended_at 空
+    loop 每个巡检 tick
+        P->>C: owner index: status IN (running, blocked)
+        P->>P: 有目标、无 pane => MISSING_PANE
+    end
