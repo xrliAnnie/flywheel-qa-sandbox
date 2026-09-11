@@ -279,6 +279,8 @@ import {
 	probeDeclaredStateFromCommDb,
 } from "./commdb-probes.js";
 import {
+	decideCloseTmuxCommDbFinalize,
+	finalizeCommDbPaneLossResidue,
 	finalizeCommDbSession,
 	finalizeDeadTerminalCommDbSessionById,
 	pruneDeadTerminalCommDbSessions,
@@ -3272,7 +3274,11 @@ export function createBridgeApp(
 				}
 			}
 
-			await reapCodexDaemonForSession(store, session, "bridge.close-tmux");
+			const reap = await reapCodexDaemonForSession(
+				store,
+				session,
+				"bridge.close-tmux",
+			);
 			const target = getTmuxTargetFromCommDb(executionId, session.project_name);
 			if (!target) {
 				res.json({ closed: false, reason: "No tmux target found" });
@@ -3293,6 +3299,53 @@ export function createBridgeApp(
 			);
 
 			const result = await killTmuxWindow(target.tmuxWindow);
+			let commDbFinalized = false;
+			try {
+				const decision = decideCloseTmuxCommDbFinalize({
+					killed: result.killed,
+					daemon: reap.outcome,
+					stateStoreStatus: session.status,
+				});
+				if (decision.finalize) {
+					const finalized = finalizeCommDbPaneLossResidue(
+						executionId,
+						session.project_name,
+						target.tmuxWindow,
+					);
+					commDbFinalized = finalized.ok;
+					store.recordCommDbFinalizeOutcome({
+						executionId,
+						issueId: session.issue_id,
+						projectName: session.project_name,
+						ok: finalized.ok,
+						error: finalized.error,
+						runnerDeathProven: true,
+						audit: {
+							retiredGateCount: finalized.retiredGateCount,
+							retiredAskCount: finalized.retiredAskCount,
+							source: "bridge.close-tmux",
+						},
+					});
+				} else {
+					store.insertEvent({
+						event_id: `close-tmux-commdb-skipped-${executionId}-${Date.now()}`,
+						execution_id: executionId,
+						issue_id: session.issue_id,
+						project_name: session.project_name,
+						event_type: "commdb_finalize_skipped",
+						source: "bridge.close-tmux",
+						payload: {
+							reason: decision.reason,
+							tmuxWindow: target.tmuxWindow,
+							daemon: reap.outcome,
+						},
+					});
+				}
+			} catch (error) {
+				console.warn(
+					`[close-tmux] CommDB finalize ${executionId} failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 
 			store.insertEvent({
 				event_id: `close-tmux-${executionId}-${Date.now()}`,
@@ -3308,7 +3361,7 @@ export function createBridgeApp(
 				},
 			});
 
-			res.json({ closed: result.killed, error: result.error });
+			res.json({ closed: result.killed, error: result.error, commDbFinalized });
 		},
 	);
 
@@ -6696,6 +6749,17 @@ export async function startBridge(
 			? "same_generation"
 			: "superseded";
 	};
+	const executionAbsence = async (executionId: string, project: string) => {
+		const { probeExecutionAbsenceBeyondTarget } = await import(
+			"./run-quiescence.js"
+		);
+		return probeExecutionAbsenceBeyondTarget(
+			store.getSession(executionId),
+			executionId,
+			project,
+		);
+	};
+
 	const paneLossFence =
 		(): import("./pane-loss-reconcile.js").PaneLossFaceOutcome => {
 			if (!serverLossCheckState.firstSuccessful) return "skipped_first_check";
@@ -6735,11 +6799,12 @@ export async function startBridge(
 					finalizePaneLossResidue: (db, executionId, expectedTmuxWindow) =>
 						db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
 					parkedGenerationEvidence,
+					executionAbsence,
 				},
 			);
 			if (result.reconciled > 0) {
 				console.log(
-					`[Bridge] FLY-1066 CommDB residue (${projectName}): scanned=${result.scanned} reconciled=${result.reconciled} orphan=${result.harvest?.orphanHarvested ?? 0} preserve=${result.harvest?.preserveHarvested ?? 0}`,
+					`[Bridge] FLY-1066 CommDB residue (${projectName}): scanned=${result.scanned} reconciled=${result.reconciled} orphan=${result.harvest?.orphanHarvested ?? 0} preserve=${result.harvest?.preserveHarvested ?? 0} parkedOverridden=${result.parkedOverridden}`,
 				);
 			}
 		},
@@ -9368,6 +9433,7 @@ export async function startBridge(
 						finalizePaneLossResidue: (db, executionId, expectedTmuxWindow) =>
 							db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
 						parkedGenerationEvidence,
+						executionAbsence,
 					},
 				);
 				if (result.reconciled > 0) {

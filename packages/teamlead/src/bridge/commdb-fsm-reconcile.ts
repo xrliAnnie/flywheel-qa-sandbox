@@ -36,10 +36,8 @@
  */
 
 import { CommDB } from "flywheel-comm/db";
-import {
-	CRASH_PRESERVE_STATES,
-	RECONCILE_DELETABLE_STATES,
-} from "./close-runner.js";
+import { CRASH_PRESERVE_STATES } from "./close-runner.js";
+import { RECONCILE_DELETABLE_STATES } from "./commdb-deletable-states.js";
 import {
 	type FinalizeCommDbResult,
 	resolveCommDbPath,
@@ -49,7 +47,7 @@ import {
 	type TmuxWindowProbe,
 } from "./tmux-lookup.js";
 
-export { RECONCILE_DELETABLE_STATES } from "./close-runner.js";
+export { RECONCILE_DELETABLE_STATES } from "./commdb-deletable-states.js";
 
 export interface CommDbFsmReconcileResult {
 	/** CommDB `running` rows examined. */
@@ -70,6 +68,8 @@ export interface CommDbFsmReconcileResult {
 	 * window name, not proof the process died.
 	 */
 	parkedVetoed: number;
+	/** FLY-2498: parked declarations overridden by independent execution absence. */
+	parkedOverridden: number;
 	/** FLY-1066 opt-in counters; absent preserves the exact FLY-817 result shape. */
 	harvest?: {
 		orphanHarvested: number;
@@ -129,6 +129,10 @@ export async function reconcileCommDbRunningAgainstFsm(
 		 * that default (see body).
 		 */
 		isParked?: (executionId: string) => boolean;
+		executionAbsence?: (
+			executionId: string,
+			projectName: string,
+		) => Promise<"alive" | "dead" | "unknown">;
 		parkedGenerationEvidence?: (
 			executionId: string,
 			tmuxWindow: string,
@@ -143,6 +147,7 @@ export async function reconcileCommDbRunningAgainstFsm(
 		keptAliveTarget: 0,
 		finalizeFailed: 0,
 		parkedVetoed: 0,
+		parkedOverridden: 0,
 	};
 	if (opts.harvest) {
 		result.harvest = {
@@ -256,10 +261,11 @@ export async function reconcileCommDbRunningAgainstFsm(
 					: activeDb.getEffectiveDeclaredState(s.execution_id, Date.now())
 							?.kind === "parked";
 			} catch (err) {
-				parked = true;
+				result.parkedVetoed++;
 				console.warn(
 					`[commdb-fsm-reconcile] declared-state lookup failed for ${s.execution_id}: ${(err as Error).message} — KEEPING the row (fail-closed)`,
 				);
+				continue;
 			}
 			if (parked) {
 				const evidence = opts.parkedGenerationEvidence
@@ -270,11 +276,25 @@ export async function reconcileCommDbRunningAgainstFsm(
 				if (evidence === "superseded") {
 					parkedSuperseded = true;
 				} else {
-					result.parkedVetoed++;
-					console.log(
-						`[commdb-fsm-reconcile] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
-					);
-					continue;
+					const absence =
+						fsm && RECONCILE_DELETABLE_STATES.has(fsm) && opts.executionAbsence
+							? await opts
+									.executionAbsence(s.execution_id, projectName)
+									.catch(() => "unknown" as const)
+							: "unknown";
+					if (absence === "dead") {
+						parkedSuperseded = true;
+						result.parkedOverridden++;
+						console.log(
+							`[commdb-fsm-reconcile] prune_parked_overridden_execution_absent: ${s.execution_id} (${projectName}) has no daemon, marker window, or host process — finalizing by exact target`,
+						);
+					} else {
+						result.parkedVetoed++;
+						console.log(
+							`[commdb-fsm-reconcile] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
+						);
+						continue;
+					}
 				}
 			}
 			try {

@@ -25,7 +25,7 @@
 
 import { existsSync } from "node:fs";
 import { CommDB, type Session } from "flywheel-comm/db";
-import { RECONCILE_DELETABLE_STATES } from "./close-runner.js";
+import { RECONCILE_DELETABLE_STATES } from "./commdb-deletable-states.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import {
 	probeTmuxWindowLiveness,
