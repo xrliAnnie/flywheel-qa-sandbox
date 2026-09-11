@@ -2,16 +2,17 @@
 issue: FLY-2507
 phase: implement
 phaseCursor: 3/4
-updated: 2026-09-11T02:35:53.043Z
-nextStep: "Lead c09fa970/e51b82c7: STOP ALL local package reruns. Retain two
-  full failures, isolated107 and task106 PASS, lint/build PASS. Commit report
-  then milestone literal last, open PR, exact-head request-review + CI all green
-  required before needs_review. No merge/deploy. Rescue failed sandbox exit71.
-  Freeze worktree HEAD after milestone; keep review/CI receipts in comm."
+updated: 2026-09-11T02:58:30.345Z
+nextStep: PR1154 R1 CHANGES_REQUESTED HIGH carrier-actor-missed-in-actor-query.
+  Added unrun regression for NULL founder gate actor plus pending ship carrier.
+  Await e830b49b-8360-40c0-824b-f1bc2d1cd92a targeted-test exception to c09fa970
+  no-local-package rule; then RED, minimal carrier authority fix, GREEN, new
+  milestone last and fresh review. Old CI34555742382 still running. Review JSON
+  /tmp/FLY-2507-review-r1.json. Nonblocking advisories deferred.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2507 progress
 **phase**: implement (3/4)
-**next**: Lead c09fa970/e51b82c7: STOP ALL local package reruns. Retain two full failures, isolated107 and task106 PASS, lint/build PASS. Commit report then milestone literal last, open PR, exact-head request-review + CI all green required before needs_review. No merge/deploy. Rescue failed sandbox exit71. Freeze worktree HEAD after milestone; keep review/CI receipts in comm.
+**next**: PR1154 R1 CHANGES_REQUESTED HIGH carrier-actor-missed-in-actor-query. Added unrun regression for NULL founder gate actor plus pending ship carrier. Await e830b49b-8360-40c0-824b-f1bc2d1cd92a targeted-test exception to c09fa970 no-local-package rule; then RED, minimal carrier authority fix, GREEN, new milestone last and fresh review. Old CI34555742382 still running. Review JSON /tmp/FLY-2507-review-r1.json. Nonblocking advisories deferred.
