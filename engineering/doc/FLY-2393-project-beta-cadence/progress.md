@@ -1,17 +1,15 @@
 ---
 issue: FLY-2393
 phase: implement
-phaseCursor: 5/5
-updated: 2026-09-11T07:46:03.073Z
-nextStep: Code/docs complete; R2 HIGH CI registration fixed RED/GREEN; main
-  bece7de15 merged imports-only. Final lint/build/focused37 PASS; packages red
-  visual lock34fail2232pass, prior remainders/isolated recorded. Next milestone
-  literal last commit, PR, frozen final-head R3 and CI, needs_review then park.
-  No further commits during review.
+phaseCursor: 1/3
+updated: 2026-09-11T20:35:02.253Z
+nextStep: "Engine conflict rework: merged main ca869ad6; sole conflict
+  StateStore imports retained both. Run required gates, final milestone, push,
+  fresh code review and exact-head CI, needs_review."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2393 progress
-**phase**: implement (5/5)
-**next**: Code/docs complete; R2 HIGH CI registration fixed RED/GREEN; main bece7de15 merged imports-only. Final lint/build/focused37 PASS; packages red visual lock34fail2232pass, prior remainders/isolated recorded. Next milestone literal last commit, PR, frozen final-head R3 and CI, needs_review then park. No further commits during review.
+**phase**: implement (1/3)
+**next**: Engine conflict rework: merged main ca869ad6; sole conflict StateStore imports retained both. Run required gates, final milestone, push, fresh code review and exact-head CI, needs_review.
