@@ -272,3 +272,20 @@ describe("voice session routes", () => {
 		);
 	});
 });
+
+it("preserves 503 when provisioning throws before a durable transition", async () => {
+	const { base, provisionSession } = await start();
+	provisionSession.mockImplementation(() => {
+		throw new Error("voice_session_registry_drift");
+	});
+	const response = await call(base, "", {
+		method: "POST",
+		token: INGEST,
+		body: {},
+	});
+	expect(response).toMatchObject({
+		status: 503,
+		body: { error: "voice_unavailable" },
+	});
+	expect(store.getVoiceSession(SESSION_ID)?.state).toBe("provisioning");
+});

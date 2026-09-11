@@ -50,6 +50,7 @@ export interface VoiceProvisionerDeps {
 }
 
 export interface RunVoiceProvisionerInput {
+	signal?: AbortSignal;
 	store: StateStore;
 	sessionId: string;
 	epoch: string;
@@ -163,6 +164,7 @@ export function createDiscordVoiceProvisionerDeps(
 export async function runVoiceProvisioner(
 	input: RunVoiceProvisionerInput,
 ): Promise<VoiceSessionState | "not_owner"> {
+	input.signal?.throwIfAborted();
 	const now = input.now ?? (() => new Date().toISOString());
 	const claimedAt = now();
 	const staleBefore = new Date(
@@ -181,6 +183,7 @@ export async function runVoiceProvisioner(
 
 	let rootAttempts = 0;
 	for (let safety = 0; safety < 8; safety++) {
+		input.signal?.throwIfAborted();
 		const session = input.store.getVoiceSession(input.sessionId);
 		if (!session) return "failed";
 		if (session.state !== "provisioning") return session.state;
@@ -195,8 +198,10 @@ export async function runVoiceProvisioner(
 						botToken: input.context.leadBotToken,
 					})
 					.catch(() => {
+						input.signal?.throwIfAborted();
 						cleanupFailures.push("status_failed");
 					});
+				input.signal?.throwIfAborted();
 			}
 			if (session.threadId) {
 				await input.deps
@@ -205,8 +210,10 @@ export async function runVoiceProvisioner(
 						botToken: input.context.leadBotToken,
 					})
 					.catch(() => {
+						input.signal?.throwIfAborted();
 						cleanupFailures.push("archive_failed");
 					});
+				input.signal?.throwIfAborted();
 			}
 			input.store.updateVoiceProvisioning({
 				sessionId: input.sessionId,
@@ -236,6 +243,7 @@ export async function runVoiceProvisioner(
 					botToken: input.context.leadBotToken,
 				});
 			} catch {
+				input.signal?.throwIfAborted();
 				input.store.updateVoiceProvisioning({
 					sessionId: input.sessionId,
 					expectedStep: "reserved",
@@ -247,6 +255,8 @@ export async function runVoiceProvisioner(
 				});
 				return "failed";
 			}
+			// A cursor is only a read: do not arm the root nonce window after abort.
+			input.signal?.throwIfAborted();
 			input.afterEffect?.("reserved");
 			input.store.updateVoiceProvisioning({
 				sessionId: input.sessionId,
@@ -297,6 +307,7 @@ export async function runVoiceProvisioner(
 					nonce: session.provisioningNonce!,
 				});
 			} catch {
+				input.signal?.throwIfAborted();
 				const current = input.store.getVoiceSession(input.sessionId);
 				if (
 					current?.cancelRequestedAt ||
@@ -339,6 +350,7 @@ export async function runVoiceProvisioner(
 					botToken: input.context.leadBotToken,
 				});
 			} catch {
+				input.signal?.throwIfAborted();
 				const current = input.store.getVoiceSession(input.sessionId);
 				if (
 					current?.cancelRequestedAt ||
@@ -380,6 +392,7 @@ export async function runVoiceProvisioner(
 				// handled by the common failure below
 			}
 			if (!added) {
+				input.signal?.throwIfAborted();
 				input.store.updateVoiceProvisioning({
 					sessionId: input.sessionId,
 					expectedStep: "member_requested",

@@ -23,6 +23,7 @@ import {
 	type PhaseLiveness,
 } from "./phase-actor-reentry.js";
 import type { WorkflowActorSession } from "./workflow-actor-session.js";
+import { buildWorkflowReworkContext } from "./workflow-rework-context.js";
 
 export interface WorkflowReworkTurnInput {
 	issueId: string;
@@ -726,27 +727,15 @@ export class WorkflowReworkCoordinator {
 			}
 			submissionCredential = rotated.submissionCredential;
 		}
-		let authorityContext: unknown;
-		try {
-			authorityContext = JSON.parse(request.authority_context_json);
-		} catch {
+		const builtContext = buildWorkflowReworkContext({ request, route });
+		if (!builtContext.ok) {
 			return this.releaseRetryable({
 				requestId,
 				generation: claim.generation,
-				reason: "authority_context_corrupt",
+				reason: builtContext.reason,
 			});
 		}
-		const context = {
-			requestId,
-			authority: request.authority,
-			authorityContext,
-			target: {
-				nodeId: route.target_node_id,
-				attempt: route.target_attempt,
-				invalidationScope: route.invalidation_scope,
-				verificationPolicy: route.verification_policy,
-			},
-		};
+		const context = builtContext.context;
 		const grantStarted = this.deps.store.markWorkflowReworkGrantStarted({
 			requestId,
 			ownerId: this.deps.ownerId,

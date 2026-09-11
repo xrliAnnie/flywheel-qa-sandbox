@@ -635,9 +635,14 @@ function fakeStartDispatcher(
 	const requests: StartRequest[] = [];
 	const start = vi.fn(async (request: StartRequest) => {
 		requests.push(request);
-		if (options.prepareIssueDelivery) {
+		if (
+			options.prepareIssueDelivery ||
+			store.getWorkflowExecutionBinding(
+				request.generalizedExecution!.executionId,
+			)?.mode === "replacement"
+		) {
 			request.generalizedExecution?.prepareWorkflowIssueDelivery?.({
-				sourceKind: options.prepareIssueDelivery,
+				sourceKind: options.prepareIssueDelivery ?? "authoritative",
 				body: "Pinned workflow issue body",
 				updatedAt: "2026-07-16T00:00:30.000Z",
 				anchorCommit: HEAD,
@@ -2546,7 +2551,9 @@ describe("WorkflowEngineDispatcher", () => {
 
 	it("mints a fresh launch only after the coordinator proves the actor dead", async () => {
 		const store = await storeWithQaFailKickback();
-		const fake = fakeStartDispatcher(store);
+		const fake = fakeStartDispatcher(store, {
+			prepareIssueDelivery: "authoritative",
+		});
 		const resolveLeadId = vi.fn(() => undefined);
 		const resolveReplacementLeadIntent = vi.fn(() => ({
 			leadId: "flywheel-eng-lead",
@@ -2583,7 +2590,17 @@ describe("WorkflowEngineDispatcher", () => {
 			resolveReplacementLeadIntent,
 		});
 
-		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		const reconciled = await dispatcher.reconcile();
+		expect(fake.requests[0]?.generalizedExecution?.agentContent).toMatch(
+			/^## Rework context \(replacement launch\)/,
+		);
+		expect(fake.requests[0]?.generalizedExecution?.agentContent).toContain(
+			`Rework context: {"requestId":"${requestId}"`,
+		);
+		expect(fake.requests[0]?.generalizedExecution?.agentContent).toContain(
+			"QA summary:",
+		);
+		expect(reconciled).toEqual({ started: 1, held: 0 });
 		expect(fake.start).toHaveBeenCalledOnce();
 		expect(resolveLeadId).toHaveBeenCalledWith("design-1");
 		expect(resolveReplacementLeadIntent).toHaveBeenCalledWith(
@@ -5418,4 +5435,295 @@ it("FLY-2465 dispatcher services disabled admission queues even without a dispat
 	} finally {
 		store.close();
 	}
+});
+
+async function fly2504ReplacementHarness() {
+	const store = await storeWithQaFailKickback();
+	const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+	const db = (
+		store as unknown as { db: { run(sql: string, params?: unknown[]): void } }
+	).db;
+	db.run(
+		"UPDATE workflow_rework_delivery SET state = 'replacement_pending' WHERE request_id = ?",
+		[requestId],
+	);
+	expect(
+		store.materializeWorkflowReworkReplacement({
+			requestId,
+			deadExecutionId: "implement-1",
+			newExecutionId: "replacement-2504",
+			reason: "persisted_target_dead",
+			observedAt: "2026-07-16T00:15:00.000Z",
+		}),
+	).toMatchObject({ ok: true });
+	const fake = fakeStartDispatcher(store);
+	const logs: string[] = [];
+	const stateRoot = mkdtempSync(join(tmpdir(), "fly2504-dispatch-"));
+	const dispatcher = new WorkflowEngineDispatcher({
+		store,
+		startDispatcher: fake.dispatcher,
+		stateRoot,
+		env: WORKFLOW_ON,
+		now: () => new Date("2026-07-16T00:16:00.000Z"),
+		resolvePredecessorHead: async () => HEAD,
+		resolveLeadId: () => "flywheel-eng-lead",
+		reconcileWorkflowRework: async () => ({ kind: "busy" as const }),
+		log: (line) => logs.push(line),
+	});
+	return {
+		store,
+		requestId,
+		fake,
+		dispatcher,
+		logs,
+		db,
+		cleanup: () => {
+			store.close();
+			rmSync(stateRoot, { recursive: true, force: true });
+		},
+	};
+}
+
+describe("FLY-2504 replacement launch fences", () => {
+	it("N9 adopts committed delivery after a crash before marking without another start", async () => {
+		const h = await fly2504ReplacementHarness();
+		try {
+			const mark = vi
+				.spyOn(h.store, "markWorkflowReplacementStartedTx")
+				.mockImplementationOnce(() => {
+					throw new Error("crash_before_mark");
+				});
+			expect(await h.dispatcher.reconcile()).toMatchObject({
+				started: 0,
+				held: 1,
+			});
+			expect(h.fake.start).toHaveBeenCalledTimes(1);
+			expect(h.store.getWorkflowReworkDelivery(h.requestId)?.state).toBe(
+				"replacement_pending",
+			);
+			expect(await h.dispatcher.reconcile()).toMatchObject({
+				started: 1,
+				held: 0,
+			});
+			expect(h.fake.start).toHaveBeenCalledTimes(1);
+			expect(mark).toHaveBeenCalledTimes(2);
+			expect(h.store.getWorkflowReworkDelivery(h.requestId)?.state).toBe(
+				"wake_delivered",
+			);
+		} finally {
+			h.cleanup();
+		}
+	});
+	it.each([
+		"{",
+		JSON.stringify({ outcome: "qa_fail", rework: "x".repeat(40_000) }),
+	])(
+		"N8/N12 refuses invalid or oversized authority context before start",
+		async (authorityContext) => {
+			const h = await fly2504ReplacementHarness();
+			try {
+				const request = h.store.getWorkflowReworkRequest(h.requestId)!;
+				vi.spyOn(h.store, "getWorkflowReworkRequest").mockReturnValue({
+					...request,
+					authority_context_json: authorityContext,
+				});
+				expect(await h.dispatcher.reconcile()).toMatchObject({
+					started: 0,
+					held: 1,
+				});
+				expect(h.fake.start).not.toHaveBeenCalled();
+				expect(h.logs.join("\n")).toContain(
+					"engine_rework_replacement_context_invalid",
+				);
+				expect(
+					h.store
+						.listWorkflowRunEvents("run-1")
+						.filter((e) => e.kind === "issue_delivery_prepared"),
+				).toEqual([]);
+			} finally {
+				h.cleanup();
+			}
+		},
+	);
+	it("N10 fences a generic retry until its persisted intent converges to the rework request", async () => {
+		const h = await fly2504ReplacementHarness();
+		try {
+			h.db.run(
+				"UPDATE workflow_side_effect_ledger SET reason = 'generic_retry' WHERE execution_id = 'replacement-2504'",
+			);
+			expect(await h.dispatcher.reconcile()).toMatchObject({
+				started: 0,
+				held: 1,
+			});
+			expect(h.fake.start).not.toHaveBeenCalled();
+			expect(h.logs.join("\n")).toContain("engine_rework_target_launch_fenced");
+			h.db.run(
+				"UPDATE workflow_side_effect_ledger SET reason = ? WHERE execution_id = 'replacement-2504'",
+				[`rework_replacement:${h.requestId}`],
+			);
+			expect(await h.dispatcher.reconcile()).toMatchObject({
+				started: 1,
+				held: 0,
+			});
+			expect(h.fake.start).toHaveBeenCalledTimes(1);
+			expect(h.fake.requests[0]?.generalizedExecution?.agentContent).toContain(
+				"## Rework context (replacement launch)",
+			);
+		} finally {
+			h.cleanup();
+		}
+	});
+});
+
+describe("FLY-2504 replacement envelope preservation", () => {
+	it("N11 preserves the complete rework section when a long role reaches the content budget", async () => {
+		const h = await fly2504ReplacementHarness();
+		try {
+			const snapshot = JSON.parse(h.store.getWorkflowRun("run-1")!.snapshot!);
+			const content = "role".repeat(10_000);
+			snapshot.resolved.nodes.find(
+				(n: { id: string }) => n.id === "implement",
+			).agent = { content, digest: canonicalSubmissionDigest(content) };
+			const { snapshot_digest: _priorDigest, ...body } = snapshot;
+			snapshot.snapshot_digest = canonicalSubmissionDigest(body);
+			h.db.run("UPDATE workflow_run SET snapshot = ? WHERE run_id = 'run-1'", [
+				JSON.stringify(snapshot),
+			]);
+			const result = await h.dispatcher.reconcile();
+			expect(result, h.logs.join("\n")).toMatchObject({ started: 1, held: 0 });
+			const envelope = h.fake.requests[0]!.generalizedExecution!.agentContent!;
+			expect(envelope.length).toBe(40_000);
+			expect(envelope).toMatch(/^## Rework context \(replacement launch\)/);
+			expect(envelope).toContain(
+				`Rework context: {"requestId":"${h.requestId}"`,
+			);
+			expect(envelope).toContain("QA summary:");
+			const prepared = h.store
+				.listWorkflowRunEvents("run-1")
+				.find((e) => e.kind === "issue_delivery_prepared")!;
+			const launched = h.store
+				.listWorkflowRunEvents("run-1")
+				.find((e) => e.kind === "rework_replacement_launched")!;
+			expect(prepared.payload.reworkContentDigest).toBe(
+				launched.payload.contentDigest,
+			);
+		} finally {
+			h.cleanup();
+		}
+	});
+	it("N9b retries atomic adoption without re-starting when persisted digest is wrong", async () => {
+		const h = await fly2504ReplacementHarness();
+		try {
+			const prepare = h.store.prepareWorkflowIssueDelivery.bind(h.store);
+			vi.spyOn(h.store, "prepareWorkflowIssueDelivery").mockImplementation(
+				(input) => prepare({ ...input, reworkContentDigest: "f".repeat(64) }),
+			);
+			expect(await h.dispatcher.reconcile()).toMatchObject({
+				started: 0,
+				held: 1,
+			});
+			expect(await h.dispatcher.reconcile()).toMatchObject({
+				started: 0,
+				held: 1,
+			});
+			expect(h.fake.start).toHaveBeenCalledTimes(1);
+			expect(
+				h.store
+					.listWorkflowSideEffects("run-1")
+					.find((e) => e.execution_id === "replacement-2504")?.state,
+			).not.toBe("started");
+			expect(
+				h.store.getWorkflowRunNode("run-1", "implement", 2)?.state,
+			).not.toBe("running");
+			expect(h.store.getWorkflowReworkDelivery(h.requestId)?.state).toBe(
+				"replacement_pending",
+			);
+		} finally {
+			h.cleanup();
+		}
+	});
+	it("N4b re-drives an expired uncommitted owner even when a session already exists", async () => {
+		const h = await fly2504ReplacementHarness();
+		try {
+			const admitted = h.store.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 2,
+				executionId: "replacement-2504",
+				activationMode: "replacement",
+				reworkRequestId: h.requestId,
+				now: "2026-07-16T00:14:00.000Z",
+				expiresAt: "2026-07-16T01:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-17T00:00:00.000Z",
+				env: WORKFLOW_ON,
+			});
+			if (!admitted.ok) throw new Error(admitted.reason);
+			const acquired = h.store.recoverOrAcquireWorkflowLaunch({
+				executionId: "replacement-2504",
+				ownerId: "dead-dispatcher",
+				now: "2026-07-16T00:14:00.000Z",
+				leaseExpiresAt: "2026-07-16T00:15:00.000Z",
+				markerPath: admitted.markerPath,
+			});
+			if (acquired.status !== "acquired") throw new Error(acquired.status);
+			expect(
+				h.store.prepareWorkflowIssueDelivery({
+					executionId: "replacement-2504",
+					activationId: admitted.activationId,
+					ownerId: "dead-dispatcher",
+					ownerGeneration: acquired.generation,
+					deliveryAttempt: acquired.deliveryAttempt,
+					anchorCommit: HEAD,
+					candidate: {
+						sourceKind: "authoritative",
+						body: "old uncommitted issue body",
+					},
+					now: "2026-07-16T00:14:01.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			h.store.upsertSession({
+				execution_id: "replacement-2504",
+				project_name: "flywheel",
+				issue_id: "FLY-1307",
+				session_role: "implement",
+				status: "running",
+			});
+			expect(await h.dispatcher.reconcile()).toMatchObject({
+				started: 1,
+				held: 0,
+			});
+			expect(h.fake.start).toHaveBeenCalledTimes(1);
+			expect(h.fake.requests[0]?.generalizedExecution?.executionId).toBe(
+				"replacement-2504",
+			);
+			expect(h.fake.requests[0]?.generalizedExecution).toMatchObject({
+				idempotencyKey: "engine:run-1:implement:2",
+				activationId: admitted.activationId,
+				launchGeneration: 2,
+			});
+			expect(h.fake.requests[0]?.generalizedExecution?.launchGateToken).toEqual(
+				expect.any(String),
+			);
+			expect(
+				h.fake.requests[0]?.generalizedExecution?.launchGateToken,
+			).not.toBe(acquired.token);
+			expect(
+				h.store.fencedCommitWorkflowLaunch({
+					executionId: "replacement-2504",
+					ownerId: "dead-dispatcher",
+					generation: acquired.generation,
+					deliveryAttempt: acquired.deliveryAttempt,
+					markerPath: admitted.markerPath,
+					now: "2026-07-16T00:16:00.000Z",
+				}),
+			).toMatchObject({ ok: false });
+			expect(h.store.getWorkflowLaunchOwner("replacement-2504")).toMatchObject({
+				owner_generation: 2,
+				committed_generation: 2,
+				delivery_state: "delivered",
+			});
+		} finally {
+			h.cleanup();
+		}
+	});
 });

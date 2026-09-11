@@ -1,0 +1,28 @@
+erDiagram
+  WORKFLOW_REWORK_REQUEST ||--|{ WORKFLOW_REWORK_ROUTE_REVISION : "不可变, 每次换体加一版"
+  WORKFLOW_REWORK_REQUEST ||--|| WORKFLOW_REWORK_DELIVERY : "一请求一行"
+  WORKFLOW_REWORK_ROUTE_REVISION ||--o| WORKFLOW_EXECUTION_BINDING : "preferred_actor = 替身"
+  WORKFLOW_EXECUTION_BINDING ||--o| ISSUE_DELIVERY_EVENT : "launch 证据 (新增 digest)"
+  WORKFLOW_REWORK_DELIVERY {
+    string request_id PK
+    int route_revision "指向当前有效的一版"
+    string state "pending / awaiting_receipt / wake_delivered / replacement_pending / completed / held"
+  }
+  WORKFLOW_REWORK_ROUTE_REVISION {
+    string request_id
+    int revision
+    string target_node_id
+    int target_attempt
+    string preferred_actor_execution_id
+  }
+  WORKFLOW_EXECUTION_BINDING {
+    string activation_id PK
+    string execution_id
+    string mode "spawn / wake / replacement"
+    string rework_request_id
+  }
+  ISSUE_DELIVERY_EVENT {
+    string event_uid "issue_delivery:exec:gen:attempt"
+    string body "issue 正文"
+    string reworkContentDigest "新增: 返工段摘要"
+  }

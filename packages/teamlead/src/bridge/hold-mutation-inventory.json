@@ -52,6 +52,11 @@
 		"file": "StateStore.ts",
 		"symbol": "resumeWorkflowHold",
 		"mutationKind": "undeliverable",
-		"shapeIds": ["delivery_undeliverable_no_recipient"]
+		"shapeIds": ["delivery_undeliverable_no_recipient"],
+		"producerSymbols": [
+			"finalizeUndeliverableHoldTx",
+			"recordWorkflowDeliveryRerouteOperatorRequired"
+		],
+		"causes": ["recipient_unavailable", "rework_content_not_delivered"]
 	}
 ]

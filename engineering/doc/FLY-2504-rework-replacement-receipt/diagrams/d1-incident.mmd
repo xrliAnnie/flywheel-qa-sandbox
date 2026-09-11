@@ -1,0 +1,19 @@
+sequenceDiagram
+  autonumber
+  participant QA as QA 执行体
+  participant E as 引擎
+  participant C as 送达协调器
+  participant P as 停驻体 31f0
+  participant R as 替身 32e4
+  QA->>E: 19:11 判 fail (claim 1022)
+  E->>C: 开返工#6, 派给停驻体
+  C->>P: 授 TURN + 推 wake (含返工上下文)
+  Note over C,P: 等回执, 每 3 分钟探一次
+  P--xC: 19:26 判死 (reown 失败)
+  C->>E: 送达行 → replacement_pending
+  E->>R: 铸替身, 送 issue 正文 (无返工上下文)
+  E->>E: 19:28 launch 标记: 送达行 → wake_delivered
+  R->>E: 19:29 complete (零 diff, 同头)
+  E->>E: 未读送达行, 照单接受
+  E->>QA: 派 QA attempt 6
+  QA->>E: 19:31 同头再判 fail (白跑)

@@ -394,7 +394,11 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 				.prepare("PRAGMA table_info(turn_wait_ledger)")
 				.all() as Array<{ name: string }>;
 			expect(columns.map(({ name }) => name)).toEqual(
-				expect.arrayContaining(["no_turn_streak", "last_no_turn_at"]),
+				expect.arrayContaining([
+					"no_turn_streak",
+					"last_no_turn_at",
+					"suppressed_reason",
+				]),
 			);
 		} finally {
 			migrated.close();
@@ -551,6 +555,21 @@ describe("turnStatus (FLY-887 runner self-check)", () => {
 				to_agent: "flywheel-eng-lead",
 			},
 		]);
+	});
+
+	it("records non-actor suppression instead of asking after the threshold", () => {
+		db.registerSession("exec-impl", "win:1", "flywheel", "ISSUE-1", "lead");
+		const observation = {
+			executionId: "exec-impl",
+			holderExecId: "exec-qa",
+			phase: "qa",
+			epoch: 1,
+			observedAtMs: T0,
+			askAfterMs: 0,
+			suppressedReason: "not_current_actor:run-1:founder_gate:1",
+		};
+		expect(db.observeTurnWait(observation)).toEqual({ asked: false });
+		expect(db.getPendingQuestions("lead")).toEqual([]);
 	});
 
 	it("clears a wait only after two spaced no-turn observations", () => {

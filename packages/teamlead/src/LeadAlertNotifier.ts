@@ -428,6 +428,7 @@ export interface AlertMetadata {
 			| "rework_retry_exhausted"
 			| "rework_pane_loss_handoff"
 			| "rework_stall_recovered"
+			| "rework_completion_refused"
 			| "rework_reentry_paused"
 			| "rework_reentry_resumed"
 			| "rework_held_recovery_exhausted"

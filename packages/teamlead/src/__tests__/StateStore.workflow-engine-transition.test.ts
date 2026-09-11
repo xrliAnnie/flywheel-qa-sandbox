@@ -285,6 +285,17 @@ function prepareCompiledReworkReplacement(store: StateStore) {
 	};
 }
 
+// These transition-only loop fixtures do not run the delivery coordinator.
+function settleOpenReworkFixture(store: StateStore) {
+	const db = (store as unknown as { db: { run(sql: string): void } }).db;
+	db.run(
+		"UPDATE workflow_rework_delivery SET state = 'completed' WHERE state IN ('pending','turn_granted','wake_delivered','replacement_pending')",
+	);
+	db.run(
+		"UPDATE workflow_rework_verification_path SET state = 'completed' WHERE state IN ('pending','active')",
+	);
+}
+
 function advance(
 	store: StateStore,
 	input: {
@@ -4857,6 +4868,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			targetAttempt: 2,
 		});
 
+		settleOpenReworkFixture(store);
 		advance(store, {
 			nodeId: "implement",
 			attempt: 2,
@@ -4890,19 +4902,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 	it("keeps the default Code QA loop active beyond five failures without a max payload", async () => {
 		const store = await compiledCodeEngineRun();
-		const settleOpenRework = () => {
-			const db = (
-				store as unknown as {
-					db: { run(sql: string): void };
-				}
-			).db;
-			db.run(
-				"UPDATE workflow_rework_delivery SET state = 'completed' WHERE state IN ('pending','turn_granted','wake_delivered','replacement_pending')",
-			);
-			db.run(
-				"UPDATE workflow_rework_verification_path SET state = 'completed' WHERE state IN ('pending','active')",
-			);
-		};
+
 		advance(store, {
 			nodeId: "eng_design",
 			attempt: 1,
@@ -4933,7 +4933,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			});
 			expect(failure.ok && failure.escalated).toBeUndefined();
 			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
-			if (attempt < 5) settleOpenRework();
+			if (attempt < 5) settleOpenReworkFixture(store);
 		}
 
 		expect(
@@ -5413,6 +5413,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			successorExecutionId: "implement-1",
 		});
 		for (let attempt = 1; attempt <= 4; attempt += 1) {
+			if (attempt > 1) settleOpenReworkFixture(store);
 			advance(store, {
 				nodeId: "implement",
 				attempt,

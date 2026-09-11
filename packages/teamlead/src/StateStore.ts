@@ -1,4 +1,5 @@
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -31310,6 +31311,7 @@ export class StateStore {
 		ownerGeneration: number;
 		deliveryAttempt: number;
 		anchorCommit: string;
+		reworkContentDigest?: string;
 		candidate:
 			| { sourceKind: "authoritative"; body: string; updatedAt?: string }
 			| { sourceKind: "fallback"; body: string }
@@ -31323,6 +31325,9 @@ export class StateStore {
 	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
 		if (
 			!StateStore.workflowFiniteTimestamp(input.now) ||
+			(input.reworkContentDigest !== undefined &&
+				(typeof input.reworkContentDigest !== "string" ||
+					!/^[0-9a-f]{64}$/.test(input.reworkContentDigest))) ||
 			!/^[0-9a-f]{40}$/i.test(input.anchorCommit) ||
 			(input.candidate.sourceKind === "authoritative" &&
 				input.candidate.updatedAt !== undefined &&
@@ -31461,6 +31466,9 @@ export class StateStore {
 			}
 			const eventUid = `issue_delivery_prepared:${input.executionId}:${input.ownerGeneration}:${input.deliveryAttempt}`;
 			const preparedPayload = {
+				...(input.reworkContentDigest !== undefined
+					? { reworkContentDigest: input.reworkContentDigest }
+					: {}),
 				activationId: input.activationId,
 				sourceKind: input.candidate.sourceKind,
 				body: input.candidate.body,
@@ -35435,12 +35443,35 @@ export class StateStore {
 		now: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
 	}): { ok: true; updated: boolean } | { ok: false; reason: string } {
+		const binding = this.getWorkflowExecutionBinding(input.executionId);
+		if (binding?.mode !== "replacement") return { ok: true, updated: false };
+		const run = this.getWorkflowRun(binding.run_id);
+		if (!run)
+			return { ok: false, reason: "rework_replacement_launch_context_changed" };
+		return this.markWorkflowReplacementStartedTx({
+			...input,
+			runId: run.run_id,
+			projectName: run.project_name,
+			issueId: run.issue_id,
+			expectedEngineOwned: 1,
+		});
+	}
+
+	markWorkflowReplacementStartedTx(input: {
+		runId: string;
+		projectName: string;
+		issueId: string;
+		expectedEngineOwned?: 0 | 1;
+		executionId: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}): { ok: true; updated: boolean } | { ok: false; reason: string } {
 		if (!input.executionId || !StateStore.workflowFiniteTimestamp(input.now)) {
 			return { ok: false, reason: "invalid_rework_replacement_launch" };
 		}
 		const binding = this.getWorkflowExecutionBinding(input.executionId);
 		if (binding?.mode !== "replacement" || !binding.rework_request_id) {
-			return { ok: true, updated: false };
+			return { ok: false, reason: "rework_replacement_binding_required" };
 		}
 		if (!StateStore.workflowAlertIdentityValid(input.alertIdentity)) {
 			return { ok: false, reason: "invalid_rework_replacement_launch" };
@@ -35451,6 +35482,7 @@ export class StateStore {
 				reason: "rework_replacement_launch_not_recorded",
 			};
 		this.db.transaction(() => {
+			this.requireWorkflowRunIdentityTx(input);
 			const requestId = binding.rework_request_id!;
 			const request = this.getWorkflowReworkRequest(requestId);
 			const route = this.getLatestWorkflowReworkRoute(requestId);
@@ -35464,13 +35496,17 @@ export class StateStore {
 				: undefined;
 			if (
 				!request ||
+				request.run_id !== input.runId ||
+				binding.run_id !== input.runId ||
 				!route ||
 				!delivery ||
 				!node ||
 				route.preferred_actor_execution_id !== input.executionId ||
 				delivery.route_revision !== route.revision ||
 				node.execution_id !== input.executionId ||
-				node.state !== "running"
+				!["admitted", "running", "pending"].includes(node.state) ||
+				route.target_node_id !== binding.node_id ||
+				route.target_attempt !== binding.attempt
 			) {
 				result = {
 					ok: false,
@@ -35479,30 +35515,117 @@ export class StateStore {
 				return;
 			}
 			if (delivery.state === "wake_delivered") {
-				result = { ok: true, updated: false };
+				const receipt = this.workflowSelectAll(
+					"SELECT payload FROM workflow_run_event WHERE event_uid = ?",
+					[
+						`rework_replacement_launched:${requestId}:${route.revision}:${input.executionId}`,
+					],
+				)[0];
+				let valid = false;
+				try {
+					const payload = receipt
+						? JSON.parse(String(receipt.payload))
+						: undefined;
+					valid =
+						payload?.carrier === "launch_envelope" &&
+						typeof payload.contentDigest === "string" &&
+						/^[0-9a-f]{64}$/.test(payload.contentDigest);
+				} catch {
+					/* Legacy or corrupt launch receipts do not certify content. */
+				}
+				result = valid
+					? { ok: true, updated: false }
+					: { ok: false, reason: "rework_replacement_launch_content_missing" };
 				return;
 			}
 			if (delivery.state !== "replacement_pending") {
 				result = { ok: false, reason: "rework_replacement_delivery_changed" };
 				return;
 			}
-				this.db.run(
-					`UPDATE workflow_rework_delivery
+			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			if (
+				!owner ||
+				owner.committed_generation !== owner.owner_generation ||
+				owner.delivery_state !== "delivered"
+			) {
+				result = {
+					ok: false,
+					reason: "rework_replacement_launch_not_committed",
+				};
+				return;
+			}
+			const committed = this.workflowSelectAll(
+				"SELECT payload FROM workflow_run_event WHERE event_uid = ?",
+				[
+					`issue_delivery:${input.executionId}:${owner.committed_generation}:${owner.delivery_attempt}`,
+				],
+			)[0];
+			const built = buildWorkflowReworkContext({ request, route });
+			let contentDigest: string | undefined;
+			try {
+				const payload = committed
+					? JSON.parse(String(committed.payload))
+					: undefined;
+				if (
+					built.ok &&
+					payload?.activationId === binding.activation_id &&
+					payload.preparedEventUid ===
+						`issue_delivery_prepared:${input.executionId}:${owner.committed_generation}:${owner.delivery_attempt}` &&
+					typeof payload.reworkContentDigest === "string" &&
+					/^[0-9a-f]{64}$/.test(payload.reworkContentDigest)
+				) {
+					const expected = workflowReworkLaunchDigest({
+						requestId,
+						routeRevision: route.revision,
+						stableSection: renderWorkflowReworkLaunchStableSection({
+							context: built.context,
+							baseRevision: request.base_revision,
+						}),
+					});
+					if (payload.reworkContentDigest === expected)
+						contentDigest = expected;
+				}
+			} catch {
+				/* A corrupt committed envelope cannot establish content delivery. */
+			}
+			if (!contentDigest) {
+				result = {
+					ok: false,
+					reason: "rework_replacement_launch_content_missing",
+				};
+				return;
+			}
+			// All identity and content checks precede the first write.
+			this.transitionWorkflowSideEffectTx(input.runId, {
+				op: "side_effect",
+				node: binding.node_id,
+				attempt: binding.attempt,
+				executionId: input.executionId,
+				to: "started",
+			});
+			this.upsertWorkflowRunNodeTx({
+				runId: input.runId,
+				nodeId: binding.node_id,
+				attempt: binding.attempt,
+				executionId: input.executionId,
+				state: "running",
+			});
+			this.db.run(
+				`UPDATE workflow_rework_delivery
 					    SET state = 'wake_delivered', owner_id = NULL,
 					        lease_expires_at = NULL, next_retry_at = ?,
 					        last_error = NULL, updated_at = ?
 					  WHERE request_id = ? AND route_revision = ?
 					    AND state = 'replacement_pending'`,
-					[
-						workflowDeliveryReceiptNextRetryAt(input.now),
-						input.now,
-						requestId,
-						route.revision,
-					],
-				);
+				[
+					workflowDeliveryReceiptNextRetryAt(input.now),
+					input.now,
+					requestId,
+					route.revision,
+				],
+			);
 			if (this.db.getRowsModified() !== 1) {
-				result = { ok: false, reason: "rework_replacement_launch_race" };
-				return;
+				throw new Error("rework_replacement_launch_race");
 			}
 			this.projectWorkflowDeliveryClockTx({
 				family: "rework",
@@ -35528,12 +35651,15 @@ export class StateStore {
 			);
 			this.appendWorkflowRunEventCheckedTx({
 				runId: request.run_id,
-				eventUid: `rework_replacement_launched:${requestId}`,
+				eventUid: `rework_replacement_launched:${requestId}:${route.revision}:${input.executionId}`,
 				kind: "rework_replacement_launched",
 				nodeId: binding.node_id,
 				executionId: input.executionId,
 				payload: {
 					requestId,
+					routeRevision: route.revision,
+					contentDigest,
+					carrier: "launch_envelope",
 					activationId: binding.activation_id,
 					attempt: binding.attempt,
 				},
@@ -44919,6 +45045,30 @@ export class StateStore {
 		if (row.family === "mailbox" && input.terminalMailboxReason === undefined) {
 			return { held: false, reason: "source_not_terminal" };
 		}
+		return this.finalizeUndeliverableHoldTx({ ...input, row, liveness, evidence, ageMs, terminalRecipientWarningAlreadyRecorded });
+	}
+
+	private finalizeUndeliverableHoldTx(input: {
+		episodeId: string;
+		recipientExecutionId: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		terminalMailboxReason?: WorkflowTerminalMailboxReason;
+		row: Record<string, unknown>;
+		liveness: ReturnType<typeof classifyRecipientLiveness>;
+		evidence: LivenessEvidence;
+		ageMs: number;
+		terminalRecipientWarningAlreadyRecorded: boolean;
+		reworkContentRefusal?: true;
+	}): { held: boolean; reason: string } {
+		const {
+			row,
+			liveness,
+			evidence,
+			ageMs,
+			terminalRecipientWarningAlreadyRecorded,
+		} = input;
+		const eventUid = `delivery_reroute_operator_required:${input.episodeId}`;
 		const runHeld = row.family !== "mailbox";
 		if (runHeld) {
 			this.db.run(
@@ -44947,7 +45097,10 @@ export class StateStore {
 			input.terminalMailboxReason ?? "delivery_undeliverable_no_recipient";
 		const terminalSettlementReason = "source_terminal";
 		if (terminalRecipientWarningAlreadyRecorded) {
-			if (input.terminalMailboxReason !== undefined && row.family === "mailbox") {
+			if (
+				input.terminalMailboxReason !== undefined &&
+				row.family === "mailbox"
+			) {
 				if (physicalId === "unknown" || physicalTable === "unknown") {
 					throw new WorkflowEngineInvariantError(
 						`delivery_terminal_source_ref_invalid:${row.attempt_id}`,
@@ -44971,7 +45124,16 @@ export class StateStore {
 			attemptId: row.attempt_id,
 			physicalId,
 			recipientExecutionId: input.recipientExecutionId,
-			livenessVerdict: liveness,
+			livenessVerdict: input.reworkContentRefusal ? "not_applicable" : liveness,
+			...(input.reworkContentRefusal
+				? {
+						cause: "rework_content_not_delivered",
+						liveness: {
+							verdict: "not_applicable",
+							reason: "content_never_sent",
+						},
+					}
+				: {}),
 			heartbeatAt:
 				evidence.heartbeatAtMs === null
 					? null
@@ -44994,6 +45156,8 @@ export class StateStore {
 			kind: "delivery_reroute_operator_required",
 			payload,
 		});
+		if (input.reworkContentRefusal)
+			return { held: runHeld, reason: "operator_required" };
 		const outcomeUid = `delivery_reroute_outcome:${row.attempt_id}`;
 		const copy = runHeld
 			? deliveryRerouteOutcomeCopy({
@@ -47623,12 +47787,30 @@ export class StateStore {
 		const result = { opened: 0, closed: 0, alerted: 0 };
 		this.db.transaction(() => {
 			const open = this.workflowSelectAll(
-				`SELECT episode_id, attempt_id, stage, severe_alerted_at
+				`SELECT episode_id, attempt_id, stage, severe_alerted_at, run_id
 				   FROM workflow_delivery_contract_episode
 				  WHERE family = ? AND root_id = ? AND closed_at IS NULL`,
 				[input.attempt.family, input.attempt.root_id],
 			)[0];
 			const { classification } = input;
+			// A refusal-owned operator hold survives routine sweeps until its owner
+			// leaves held or this exact delivery attempt is no longer live.
+			if (
+				input.attempt.family === "rework" &&
+				open?.stage === "undeliverable" &&
+				open.attempt_id === input.attempt.attempt_id &&
+				open.episode_id ===
+					StateStore.reworkContentEpisodeId(input.attempt.attempt_id) &&
+				!input.attempt.settlement_reason &&
+				!input.attempt.superseded_by_attempt_id &&
+				classification.stage !== "settled" &&
+				classification.stage !== "consumed" &&
+				(classification.terminal === null ||
+					classification.terminal === "undeliverable") &&
+				typeof open.run_id === "string" &&
+				this.getWorkflowRun(open.run_id)?.status === "held"
+			)
+				return;
 			const episodeId = `${input.attempt.attempt_id}:${classification.stage}:${classification.stageEnteredAt}`;
 			if (
 				input.attempt.family === "rework" &&
@@ -52183,6 +52365,274 @@ export class StateStore {
 		return { alertDurable: input.alertIdentity !== undefined };
 	}
 
+	private recordReworkDeliveryRefusal(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		refusal: WorkflowReworkCompletionRefusal;
+		now: string;
+		alertIdentity?: WorkflowEngineAlertIdentity;
+	}): void {
+		const eventUid = this.reworkCompletionRefusalUid(input);
+		this.db.transaction(() => {
+			// A replay is a read even when the first refusal has already held the run.
+			if (
+				this.workflowSelectAll(
+					"SELECT 1 FROM workflow_run_event WHERE event_uid = ?",
+					[eventUid],
+				)[0]
+			)
+				return;
+			const run = this.getWorkflowRun(input.runId);
+			if (!run) throw new Error("rework_refusal_run_missing");
+			const identity = input.alertIdentity ?? {
+				leadId: "unassigned",
+				projectName: run.project_name,
+				leadResolution: "fallback" as const,
+			};
+			const { reason, detail } = input.refusal;
+			if (reason === "rework_content_not_delivered") {
+				this.openReworkContentUndeliverableTx({
+					...input,
+					...detail,
+					alertIdentity: identity,
+				});
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid,
+				kind: "completion_transition_refused",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: {
+					attempt: input.attempt,
+					transitionReason: reason,
+					...detail,
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: input.runId,
+				now: input.now,
+				payload: {
+					leadId: identity.leadId,
+					projectName: identity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_escalation",
+					severity: "warning",
+					sessionKey: `wf:${input.runId}`,
+					title: `Rework completion refused for ${run.issue_id}`,
+					body: `Execution ${input.executionId} tried to complete ${input.nodeId}#${input.attempt} for rework ${detail.requestId} (route revision ${detail.routeRevision}) while delivery is ${detail.deliveryState}: ${reason === "rework_content_not_delivered" ? "replacement launch content has no delivery receipt. The run is now held as delivery_undeliverable_no_recipient; resume it with cancel or reroute." : "the execution does not match the current rework delivery identity. The current delivery has not been changed."}`,
+					metadata: {
+						workflowEngine: {
+							runId: input.runId,
+							issueId: run.issue_id,
+							nodeId: input.nodeId,
+							executionId: input.executionId,
+							disposition: "rework_completion_refused",
+							leadResolution: identity.leadResolution,
+						},
+					},
+				},
+			});
+		});
+		this.save();
+	}
+
+	private static reworkContentEpisodeId(attemptId: string): string {
+		return `rework-content:${canonicalSubmissionDigest({ attemptId, cause: "rework_content_not_delivered" })}`;
+	}
+
+	private openReworkContentUndeliverableTx(input: {
+		runId: string;
+		requestId: string;
+		routeRevision: number;
+		executionId: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}): void {
+		const rows = this.workflowSelectAll(
+			`SELECT attempt.*, run.run_id, run.status AS run_status, run.issue_id, run.project_name
+			 FROM workflow_delivery_attempt attempt
+			 JOIN workflow_rework_request request ON request.request_id = json_extract(attempt.contract_ref_json, '$.pk')
+			 JOIN workflow_run run ON run.run_id = request.run_id
+			 WHERE run.run_id = ? AND attempt.family = 'rework'
+			   AND json_extract(attempt.contract_ref_json, '$.table') = 'workflow_rework_delivery'
+			   AND json_extract(attempt.contract_ref_json, '$.pk') = ?
+			   AND json_extract(attempt.contract_ref_json, '$.routeRevision') = ?
+			   AND attempt.superseded_by_attempt_id IS NULL AND attempt.settlement_reason IS NULL`,
+			[input.runId, input.requestId, input.routeRevision],
+		);
+		if (rows.length !== 1)
+			throw new Error("rework_refusal_live_attempt_missing");
+		const row = rows[0]!;
+		if (row.run_status !== "active")
+			throw new Error("rework_refusal_run_not_active");
+		const episodeId = StateStore.reworkContentEpisodeId(String(row.attempt_id));
+		this.db.run(
+			// An open episode may still belong to a superseded attempt of this root.
+			`UPDATE workflow_delivery_contract_episode SET closed_at = ?, closed_reason = 'superseded_by_undeliverable'
+			WHERE family = 'rework' AND root_id = ? AND closed_at IS NULL`,
+			[input.now, row.root_id],
+		);
+		this.db.run(
+			`INSERT INTO workflow_delivery_contract_episode
+			(episode_id, family, root_id, attempt_id, run_id, stage, stage_entered_at, opened_at, escalation_uid)
+			VALUES (?, 'rework', ?, ?, ?, 'undeliverable', ?, ?, ?)`,
+			[
+				episodeId,
+				row.root_id,
+				row.attempt_id,
+				input.runId,
+				input.now,
+				input.now,
+				`delivery_contract_stalled:${episodeId}`,
+			],
+		);
+		this.finalizeUndeliverableHoldTx({
+			episodeId,
+			recipientExecutionId: input.executionId,
+			now: input.now,
+			alertIdentity: input.alertIdentity,
+			row,
+			liveness: "unknown",
+			evidence: {
+				heartbeatAtMs: null,
+				lastActivityAtMs: null,
+				recentOutboundInWindow: false,
+				observedAtMs: Date.parse(input.now),
+			},
+			ageMs: 0,
+			terminalRecipientWarningAlreadyRecorded: false,
+			reworkContentRefusal: true,
+		});
+	}
+
+	private workflowReworkTargetRows(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+	}): Record<string, unknown>[] {
+		return this.workflowSelectAll(
+			`SELECT r.request_id, rr.revision, rr.preferred_actor_execution_id,
+			        d.route_revision AS delivery_route_revision, d.state
+			   FROM workflow_rework_request r
+			   JOIN workflow_rework_route_revision rr ON rr.request_id = r.request_id
+			    AND rr.revision = (SELECT MAX(latest.revision) FROM workflow_rework_route_revision latest WHERE latest.request_id = r.request_id)
+			   JOIN workflow_rework_delivery d ON d.request_id = r.request_id
+			  WHERE r.run_id = ? AND rr.target_node_id = ? AND rr.target_attempt = ?
+			    AND d.state <> 'completed'`,
+			[input.runId, input.nodeId, input.attempt],
+		);
+	}
+
+	resolveOpenWorkflowReworkTarget(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+	}):
+		| undefined
+		| { conflict: true }
+		| {
+				conflict: false;
+				requestId: string;
+				routeRevision: number;
+				preferredActorExecutionId: string;
+				deliveryState: WorkflowReworkDeliveryRow["state"];
+				request: WorkflowReworkRequestRow;
+				route: WorkflowReworkRouteRevisionRow;
+		  } {
+		const rows = this.workflowReworkTargetRows(input);
+		if (rows.length === 0) return undefined;
+		if (rows.length !== 1) return { conflict: true };
+		const row = rows[0]!;
+		const request = this.getWorkflowReworkRequest(String(row.request_id));
+		const route = this.getLatestWorkflowReworkRoute(String(row.request_id));
+		if (!request || !route || row.delivery_route_revision !== route.revision)
+			return { conflict: true };
+		return {
+			conflict: false,
+			requestId: request.request_id,
+			routeRevision: route.revision,
+			preferredActorExecutionId: route.preferred_actor_execution_id,
+			deliveryState: row.state as WorkflowReworkDeliveryRow["state"],
+			request,
+			route,
+		};
+	}
+
+	private workflowReworkCompletionRefusal(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+	}): WorkflowReworkCompletionRefusal | undefined {
+		const reworkTargets = this.workflowReworkTargetRows(input);
+		for (const target of reworkTargets) {
+			const detail: WorkflowTransitionRefusalDetail = {
+				requestId: target.request_id as string,
+				deliveryState: target.state as WorkflowReworkDeliveryRow["state"],
+				routeRevision: target.revision as number,
+			};
+			if (
+				target.preferred_actor_execution_id !== input.executionId ||
+				target.delivery_route_revision !== target.revision
+			) {
+				return {
+					ok: false,
+					reason: "rework_receipt_identity_conflict",
+					detail,
+				};
+			}
+			const binding = this.workflowSelectAll(
+				`SELECT mode FROM workflow_execution_binding WHERE execution_id = ? AND run_id = ? AND node_id = ? AND attempt = ? AND rework_request_id = ?`,
+				[
+					input.executionId,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					detail.requestId,
+				],
+			)[0];
+			if (binding?.mode === "wake") continue;
+			if (
+				binding?.mode === "replacement" &&
+				target.state === "wake_delivered"
+			) {
+				const receipt = this.workflowSelectAll(
+					"SELECT payload FROM workflow_run_event WHERE event_uid = ?",
+					[
+						`rework_replacement_launched:${detail.requestId}:${detail.routeRevision}:${input.executionId}`,
+					],
+				)[0];
+				try {
+					const payload = receipt
+						? JSON.parse(receipt.payload as string)
+						: undefined;
+					if (
+						payload?.carrier === "launch_envelope" &&
+						typeof payload.contentDigest === "string" &&
+						/^[0-9a-f]{64}$/.test(payload.contentDigest)
+					)
+						continue;
+				} catch {
+					/* Corrupt receipts cannot establish delivery. */
+				}
+			}
+			return { ok: false, reason: "rework_content_not_delivered", detail };
+		}
+		return undefined;
+	}
+
+	private reworkCompletionRefusalUid(input: {
+		executionId: string;
+		refusal: WorkflowReworkCompletionRefusal;
+	}): string {
+		const { reason, detail } = input.refusal;
+		return `completion_transition_refused:${reason}:${detail.requestId}:${detail.routeRevision}:${input.executionId}:${detail.deliveryState}`;
+	}
+
 	commitEnrolledCompletion(input: {
 		nodeReuseEnabled: boolean;
 		executionId: string;
@@ -52377,6 +52827,14 @@ export class StateStore {
 			!genericNoCodeExit
 		) {
 			return { ok: false, reason: "route_mismatch" };
+		}
+		if (context.run.status === "held") {
+			const refusal = this.workflowReworkCompletionRefusal({ runId: context.binding.run_id, nodeId: context.binding.node_id,
+				attempt: context.binding.attempt, executionId: input.executionId });
+			if (refusal && this.workflowSelectAll("SELECT 1 FROM workflow_run_event WHERE event_uid = ?",
+				[this.reworkCompletionRefusalUid({ executionId: input.executionId, refusal })])[0]) {
+				return { ...refusal, retryable: false };
+			}
 		}
 		const digest = canonicalSubmissionDigest(input.completionSubmission);
 		const existing = this.workflowSelectAll(
@@ -52644,6 +53102,7 @@ export class StateStore {
 					? sessionHead!.toLowerCase()
 					: undefined;
 		let transitionRefusal: string | undefined;
+		let transitionRefusalDetail: WorkflowTransitionRefusalDetail | undefined;
 		let terminalImmuneRefusal = false;
 		let drainChallengeRefused = false;
 		let completionDisposition: WorkflowCompletionDisposition | undefined;
@@ -52852,6 +53311,7 @@ export class StateStore {
 						});
 						if (!transition.ok) {
 							transitionRefusal = transition.reason;
+							transitionRefusalDetail = transition.detail;
 							throw new Error("engine_completion_transition_refused");
 						}
 						transitionGateOpened = transition.gateOpened === true;
@@ -52909,6 +53369,13 @@ export class StateStore {
 				return { ok: false, reason: "terminal_status_immune" };
 			}
 			if (transitionRefusal) {
+				if (transitionRefusalDetail && (transitionRefusal === "rework_content_not_delivered" || transitionRefusal === "rework_receipt_identity_conflict")) {
+					const refusal: WorkflowReworkCompletionRefusal = { ok: false, reason: transitionRefusal, detail: transitionRefusalDetail };
+					this.recordReworkDeliveryRefusal({ runId: context.binding.run_id, nodeId: context.binding.node_id, attempt: context.binding.attempt,
+						executionId: context.binding.execution_id, refusal, now, alertIdentity: input.alertIdentity });
+					return { ...refusal, retryable: false };
+				}
+
 				if (transitionRefusal === "land_head_unavailable") {
 					this.recordLandHeadUnavailableRefusal({
 						runId: context.binding.run_id,
@@ -55483,6 +55950,10 @@ export class StateStore {
 			) {
 				result = { ok: false, reason: "node_attempt_not_current" };
 				return;
+			}
+			if (!authorityDrivenGate) {
+				const refusal = this.workflowReworkCompletionRefusal(input);
+				if (refusal) { result = refusal; return; }
 			}
 			const priorEdges = this.workflowSelectAll(
 				`SELECT payload FROM workflow_run_event
@@ -61451,6 +61922,39 @@ export class StateStore {
 	 * discipline that keeps side-effect transitions out of run_event applies —
 	 * no invented kinds.
 	 */
+	private requireWorkflowRunIdentityTx(input: {
+		runId: string;
+		projectName: string;
+		issueId: string;
+		expectedEngineOwned?: 0 | 1;
+	}): void {
+		const row = this.workflowSelectAll(
+			"SELECT run_id, project_name, issue_id, engine_owned FROM workflow_run WHERE run_id = ?",
+			[input.runId],
+		)[0];
+		if (!row) {
+			throw new Error(`workflow ledger run not found: ${input.runId}`);
+		}
+		// R3 #1: the caller's project/issue must MATCH the targeted run —
+		// a wrong-identity batch must never reach another run's rows.
+		if (
+			row.project_name !== input.projectName ||
+			row.issue_id !== input.issueId
+		) {
+			throw new Error(
+				`workflow ledger batch identity mismatch: run ${input.runId} belongs to ${row.project_name}/${row.issue_id}, not ${input.projectName}/${input.issueId}`,
+			);
+		}
+		if (
+			input.expectedEngineOwned !== undefined &&
+			Number(row.engine_owned) !== input.expectedEngineOwned
+		) {
+			throw new Error(
+				`workflow ledger ownership mismatch: run ${input.runId} engine_owned=${Number(row.engine_owned)} expected=${input.expectedEngineOwned}`,
+			);
+		}
+	}
+
 	applyWorkflowLedgerBatch(
 		input: WorkflowLedgerBatchInput,
 	): WorkflowLedgerBatchResult {
@@ -61475,31 +61979,7 @@ export class StateStore {
 						`explicit-runId workflow ledger batch accepts only side_effect ops (got ${nonSideEffect.op})`,
 					);
 				}
-				const row = this.workflowSelectAll(
-					"SELECT run_id, project_name, issue_id, engine_owned FROM workflow_run WHERE run_id = ?",
-					[input.runId],
-				)[0];
-				if (!row) {
-					throw new Error(`workflow ledger run not found: ${input.runId}`);
-				}
-				// R3 #1: the caller's project/issue must MATCH the targeted run —
-				// a wrong-identity batch must never reach another run's rows.
-				if (
-					row.project_name !== input.projectName ||
-					row.issue_id !== input.issueId
-				) {
-					throw new Error(
-						`workflow ledger batch identity mismatch: run ${input.runId} belongs to ${row.project_name}/${row.issue_id}, not ${input.projectName}/${input.issueId}`,
-					);
-				}
-				if (
-					input.expectedEngineOwned !== undefined &&
-					Number(row.engine_owned) !== input.expectedEngineOwned
-				) {
-					throw new Error(
-						`workflow ledger ownership mismatch: run ${input.runId} engine_owned=${Number(row.engine_owned)} expected=${input.expectedEngineOwned}`,
-					);
-				}
+				this.requireWorkflowRunIdentityTx({ ...input, runId: input.runId });
 				runId = input.runId;
 			} else {
 				const existing = this.workflowSelectAll(
@@ -72331,6 +72811,12 @@ export type WorkflowPrFinalizationClaimResult =
 			pendingCount?: number;
 	  };
 
+export interface WorkflowTransitionRefusalDetail {
+	requestId: string;
+	deliveryState: WorkflowReworkDeliveryRow["state"];
+	routeRevision: number;
+}
+
 export type WorkflowTransitionResult =
 	| {
 			ok: true;
@@ -72344,7 +72830,7 @@ export type WorkflowTransitionResult =
 			gateOpened?: true;
 			escalated?: true;
 	  }
-	| { ok: false; reason: string };
+	| { ok: false; reason: string; detail?: WorkflowTransitionRefusalDetail };
 
 export interface WorkflowLoopReentryCanonical {
 	requestId: string;
@@ -72998,7 +73484,14 @@ export type WorkflowCompletionDisposition =
 	| "loop_park"
 	| "terminal_no_gate";
 
+export interface WorkflowReworkCompletionRefusal {
+	ok: false;
+	reason: "rework_content_not_delivered" | "rework_receipt_identity_conflict";
+	detail: WorkflowTransitionRefusalDetail;
+}
+
 export type WorkflowCompletionResult =
+	| (WorkflowReworkCompletionRefusal & { retryable: false })
 	| {
 			ok: true;
 			eventUid: string;
@@ -73347,6 +73840,7 @@ export interface WorkflowEngineAlertPayload {
 				| "rework_retry_exhausted"
 				| "rework_pane_loss_handoff"
 				| "rework_stall_recovered"
+				| "rework_completion_refused"
 				| "rework_reentry_paused"
 				| "rework_reentry_resumed"
 				| "rework_held_recovery_exhausted"
