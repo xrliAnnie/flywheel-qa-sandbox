@@ -1,3 +1,4 @@
+import { BetaReleaseStore } from "./bridge/beta-release-store.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -2493,6 +2494,9 @@ export type AttentionThreadBinding =
 	  };
 
 export class StateStore {
+	get betaSchedules(): BetaReleaseStore {
+		return new BetaReleaseStore(this.db.raw);
+	}
 	private db: CompatDb;
 	private dbPath: string;
 	get codexQuota(): CodexQuotaStore { return new CodexQuotaStore(this.db.raw); }
@@ -5273,6 +5277,7 @@ export class StateStore {
 	}
 
 	migrate(): void {
+		this.betaSchedules.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS discord_config (
 				singleton_key TEXT PRIMARY KEY CHECK (singleton_key = 'discord'),

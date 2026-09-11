@@ -37,6 +37,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 	// Quota tables retain current pause, recovery, install, and delivery references.
 	// No quota deletion policy is authorized by the fleet rotation change.
 	protectedCurrentOrReference: words(`
+		beta_schedule_lanes beta_schedule_occurrences
 		codex_quota_admission_wait codex_quota_binding codex_quota_canonical_observation
 		codex_quota_execution_pause codex_quota_external_generation codex_quota_incident
 		codex_quota_install_material codex_quota_legacy_start codex_quota_observation

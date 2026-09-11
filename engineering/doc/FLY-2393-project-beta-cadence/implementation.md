@@ -25,3 +25,15 @@ TDD：首次 vitest 缺失是环境错误，不算红灯；锁文件安装后缺
 - pnpm --filter flywheel-teamlead exec vitest run src/bridge/__tests__/beta-release-config-source.test.ts：3 tests PASS。
 
 尚未执行全仓 lint/build/test、code review、PR、handoff。以上不是调度器完成或真实双项目发布证据。
+
+## C2 持久化基础（进行中）
+
+StateStore 复用现有连接接入 betaSchedules store；additive 建 beta_schedule_lanes / beta_schedule_occurrences 两张表。以项目/绑定/到期时间唯一约束配合 immediate transaction 占 active；完整 64hex occurrence key；保留冻结 40hex source。状态更新比较 expected state，重复 prepared→dispatching 只有一个赢家。succeeded/exhausted 才能清 active 并推进所属项目的网格；运行态拒绝结算。
+
+TDD：缺 betaSchedules 红灯→重开 DB 与重复 reserve 绿灯；非法 source/未来 due 红灯→校验绿灯；缺 transition 红灯→竞争/结算绿灯。保留策略当前 schema 测试发现两张未分类表；注册为 protectedCurrentOrReference 并同步 production fixture 及 146/207 固定数量。
+
+已验证 teamlead typecheck PASS。初始依赖全仓 pnpm -r build PASS（发生于本块完成前，不能替代最终 HEAD build）。C2 仍缺频率重算、完整调度器、重试/回执状态机和 fake-clock 验收矩阵；未对外 dispatch。
+
+2026-09-11 continuation: restored the issue-labelled salvage stash (6fdc3e1d0702a06b13441e15af39197fe06b0015) without conflicts. Added persisted interval revision and idle due calculation: change frequency from the last due/activation anchor, coalesce missed periods, freeze active occurrences, and preserve the settlement cursor when frequency has not changed. Missing due API test failed before implementation; it now passes, including backward clock and long-running settlement. Added a 48h ledger check yielding 8 versus 2 reservations for 6h/24h. This tests storage/time semantics, not GitHub publication or a running scheduler.
+
+Recovered retention tests had two remaining stale numeric assertions (205/202); updated to 207/204 for the two protected beta tables. Targeted StateStore beta + retention suites: 35 tests PASS. Teamlead typecheck PASS. Logs: /tmp/fly2393-c2-final.log and /tmp/fly2393-c2-typecheck.log. C2 remains incomplete: scheduler, bounded retry, receipt validation, owner observations and lifecycle integration are still required.

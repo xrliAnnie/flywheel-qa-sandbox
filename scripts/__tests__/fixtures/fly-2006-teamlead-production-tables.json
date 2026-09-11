@@ -12,6 +12,8 @@
 	"auto_narrow_opinion_delivery",
 	"auto_narrow_opinion_snapshot",
 	"auto_qa_record",
+	"beta_schedule_lanes",
+	"beta_schedule_occurrences",
 	"chat_threads",
 	"cleanup_ref_observations",
 	"codex_quota_admission_wait",
