@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2478 设计:停驻工人不再按 30 分钟钟表被杀,改成跟着这一头的判决走</title>
+<style>
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:26px; margin:8px 0 4px; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.green { border-left-color:#34c759; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; }
+  p, li { font-size:14.5px; line-height:1.75; }
+  .term { color:#007aff; }
+  .diagram { overflow-x:auto; background:#fff; padding:8px 0; }
+  .diagram svg { max-width:100%; height:auto; }
+  .caption { color:#86868b; font-size:12.5px; margin:4px 0 10px; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; margin:10px 0; }
+  th, td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; line-height:1.6; }
+  th { background:#f5f5f7; color:#1a365d; }
+  .mono { font-family:'SF Mono',monospace; font-size:12.5px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.reject { background:#fdecea; color:#ff3b30; }
+  .badge.keep { background:#e9f9ef; color:#248a3d; }
+  .badge.fix { background:#fff4e5; color:#c25e00; }
+  .num { font-family:'SF Mono',monospace; }
+  .comment-box { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .comment-box label { font-size:12.5px; color:#86868b; display:block; margin-bottom:6px; }
+  .comment-box textarea { width:100%; box-sizing:border-box; min-height:60px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-family:inherit; font-size:13.5px; resize:vertical; background:#fafafa; }
+  .comment-box textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  #summary-body { white-space:pre-wrap; font-size:13.5px; background:#fafafa; border:1px solid #e5e5ea; border-radius:8px; padding:12px; min-height:40px; }
+  .btn { display:inline-block; margin-top:10px; padding:8px 16px; border-radius:8px; border:none; background:#007aff; color:#fff; font-size:14px; cursor:pointer; }
+  .btn:active { opacity:.8; }
+  #copy-status { margin-left:10px; font-size:13px; color:#248a3d; }
+  .chunk { margin-top:10px; }
+  .chunk .btn { background:#1a365d; }
+  .tbl-wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2478:停驻工人不再按 30 分钟钟表被杀,改成跟着这一头的判决走</h1>
+  <div class="meta">工程设计说明 · 2026-09-11 · 分支 flywheel-FLY-2478 · 起因:founder 09-10 质疑「为什么只给 30 分钟就把 Codex 进程释放掉」 · __REVIEW_META__ · 每个卡片下方都可以留意见,页底一键汇总复制</div>
+
+  <div class="card" data-section="一句话总结">
+    <h2>1. 一句话总结</h2>
+    <p><b>你问的那个 30 分钟是当初拍脑袋定的常量,数据证明它只盖住六成的判决;本单把它改成「工人停驻等<span class="term">本头的判决</span>(它这次交上去的代码版本的 QA 结论):判决通过就立刻放人,判决打回就让原来这个工人直接接着改,最多等 3 小时」。</b>放人之后账本上要写清楚「已释放」——工人会话表直接记成 completed(完成),不再停在 ship_parked(停驻中)——这样失联巡检不会再对一具已放走的工人向你发「失联 + 恢复提案」,后面真要返工也直接派新人,不再对着一个已经没了的工人重试五轮。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在你本机)</label><textarea data-ckey="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="为什么 30 分钟不对:真机数据">
+    <h2>2. 为什么 30 分钟不对:真机数据(2026-09-11 只读查库)</h2>
+    <p>把 9 月 5 日以来每一次停驻,和它之后第一次 QA 判决落地的时间差摆出来:</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>停驻到判决的时间</th><th>9-5 起(128 次停驻)</th><th>9-9 17:00Z 起(57 次)</th><th>读法</th></tr>
+      <tr><td>≤ 30 分钟</td><td class="num">79(打回 23 / 通过 56)</td><td class="num">37(打回 9 / 通过 28)</td><td>30 分钟只盖住 62%</td></tr>
+      <tr><td>30–60 分钟</td><td class="num">29(打回 7 / 通过 22)</td><td class="num">12(打回 3 / 通过 9)</td><td>这些工人全被提前杀了</td></tr>
+      <tr><td>1–3 小时</td><td class="num">6(打回 1 / 通过 5)</td><td class="num">4(打回 1 / 通过 3)</td><td>3 小时盖住 ~96%</td></tr>
+      <tr><td>> 3 小时</td><td class="num">5</td><td class="num">0</td><td>兜底上限的代价</td></tr>
+      <tr><td>没有判决</td><td class="num">9</td><td class="num">4</td><td>run 被终止 / 手工干预</td></tr>
+    </table></div>
+    <p>34 次「打回」里有 31 次落在 3 小时内——这 31 次本来都能让原工人接着改,现在几乎全部换了新人。另外账本还有三处打架:53 行「已到期」记录永远停在「关停已请求、没等到回执」(工人其实早就用别的方式死了);现在有 4 具账面「停驻中」的 Codex 工人,只有 1 具真的还在;返工投递碰到「工人还活着但宽限已过」的情况会退避重试 5 轮再交给 Lead——真机 5 次,27 条返工卡在 needs_lead。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="核心流程">
+    <h2>3. 核心流程:一个停驻工人从交活到被放走</h2>
+    <p>工人交活后登记停驻,账本记下「兜底 3 小时」。接下来只看<b>这一头</b>的判决:<b>打回</b>就用现有的唤醒通道叫醒原工人,原地改,改完再交活、再等下一头的判决;<b>通过</b>就把到期时间提前到「现在」,由现有的<span class="term">到期 saga</span>(把「关掉一个工人」拆成几步、每步都能崩溃后重做的记账流程)去关体;3 小时没人来判,也是走同一条 saga。关体收口那一步,在<b>同一个数据库事务</b>里把工人会话表改成 completed、把 park 账本(记录「谁在停驻等返工」的账)结清。于是失联巡检看不到它(它只巡「还活着的状态」),后面再有返工需求就直接派新人。</p>
+    <div class="diagram">__SVG_D1__</div>
+    <div class="caption">图 1 · 核心流程:停驻 → 等本头判决 → 打回原体接 / 通过立即释放 / 3 小时兜底 → 同一事务收口 → 巡检静默、返工换新人</div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="数据与结构模型">
+    <h2>4. 数据 / 结构模型:不加新表、不加新状态词,只加两列</h2>
+    <p>本单刻意<b>不</b>给工人会话表发明一个新状态「resident_released」:那个状态词在代码里有 20 多个读者(巡检脚本、控制台、归档、回收…),漏改一处就是下一轮账本打架。改用已有的 completed(终态),因为返工机制本来就把 completed 的工人当成「要换新人」处理(9-5 以来这样换了 27 次,机制成熟)。「为什么被放走」记在常驻宽限表的两个新列里(<span class="mono">release_cause</span> / <span class="mono">release_source</span>),关闭原因写成 released(判决通过放走)或 expired(3 小时到点),运行事件也按这两种分开,founder 页面和巡检都能直接读到「已释放」。</p>
+    <div class="diagram">__SVG_D2__</div>
+    <div class="caption">图 2 · 数据模型:蓝框为本单改动(两列 + 两种新事件),白框为复用的现有表;到期与释放走同一张 saga 表</div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="停驻状态流转">
+    <h2>5. 停驻状态怎么流转、崩溃了怎么办</h2>
+    <p>每次交活登记一行,状态只有四种(常驻 / 已唤醒 / 已到期 / 已关闭)。「判决通过」不发明第五种状态,只是把到期时间提前——所以到期 saga 一个字不改就能处理它。saga 里原来卡死的那一步是「等工人回执」;本单加一条<span class="term">死证等价回执</span>:工人在信箱账本里已经不是 running、并且 tmux(终端复用器,工人的窗口)探针也说它没了,就视同回执。判断不出来就继续等,绝不猜。每一步都是「比对再写」(CAS),崩溃后下一轮重做不会重复。</p>
+    <div class="diagram">__SVG_D3__</div>
+    <div class="caption">图 3 · 常驻宽限表的状态流转:虚线上的「续期」是 FLY-2477 的联动——Bridge 重启后工人重新登记不再被误判成过期而杀掉</div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="判决通过后 1 分钟内放人">
+    <h2>6. 判决通过后 1 分钟内放人:谁在什么时候动手</h2>
+    <p>到期 saga 原来挂在每 5 分钟一次的维护巡检上,做不到「1 分钟内」。本单让每秒跑一次的<span class="term">dispatcher</span>(工作流引擎的调度巡检)先做一次极便宜的计数(走索引,不开任何别的库),只有真有「该到期的行」才去跑 saga;5 分钟的维护巡检原样保留当兜底。零新定时器。</p>
+    <div class="diagram">__SVG_D4__</div>
+    <div class="caption">图 4 · 判决通过 → 释放请求 → 每秒巡检触发 saga → 关体 → 同一事务收口 → 巡检静默 / 返工换人</div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="关键取舍与被否决的替代方案">
+    <h2>7. 关键取舍与被否决的替代方案</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th>取舍</th><th>选了什么</th><th>否决了什么、为什么</th></tr>
+      <tr><td>宽限怎么定</td><td><span class="badge keep">保留</span>跟着本头判决走 + 3 小时兜底常量</td><td><span class="badge reject">否决</span>只把 30 改成 180:通过之后工人白占 3 小时,账本打架原样不动。<span class="badge reject">否决</span>一直等到合入:一具工人可能占到几天;你问的是「30 分钟太短」,不是「永不释放」。</td></tr>
+      <tr><td>「已释放」记成什么</td><td><span class="badge keep">保留</span>会话表 completed + 宽限表关闭原因 released/expired + 两种事件</td><td><span class="badge reject">否决</span>新状态词 resident_released:20 多个读者要逐个决定认不认这个词,漏一个就是新一轮打架;issue 也明确允许「直接 completed 且可换体」。</td></tr>
+      <tr><td>通过之后 founder 又打回怎么办</td><td><span class="badge keep">保留</span>派新人(替身)</td><td><span class="badge reject">否决</span>为了 founder 打回继续留人:通过后 land 阶段不需要这具工人;issue 已接受这个代价。</td></tr>
+      <tr><td>放人走哪条路</td><td><span class="badge keep">保留</span>复用到期 saga(把到期时间提前)</td><td><span class="badge reject">否决</span>再写一条「释放 saga」:两条关体路径就是两本账;宽限表状态列加值要重建表,也不做。</td></tr>
+      <tr><td>saga 等不到回执</td><td><span class="badge fix">修</span>死证等价回执(信箱账本非 running + 探针说没了),判断不出就继续等</td><td><span class="badge reject">否决</span>写一次性清理脚本:真机 53 行陈旧记录在部署后第一轮巡检就会靠同一逻辑自然收敛,不需要脚本。</td></tr>
+      <tr><td>返工碰到「人活着但宽限死了」</td><td><span class="badge fix">修</span>直接派新人</td><td><span class="badge reject">否决</span>保留 5 轮退避重试:真机就是这样卡出 27 条 needs_lead 的。</td></tr>
+    </table></div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s7" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card gray" data-section="诚实边界">
+    <h2>8. 诚实边界:这份设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>宽限跟随本头判决:通过立即释放、打回原体接、兜底 3 小时(常量,没有开关)。</li>
+      <li>释放/到期后,宽限表与工人会话表在同一事务里推进;会话表进 completed;park 账本结清。</li>
+      <li>失联巡检对释放体静默(不改巡检代码,靠状态自然排除,并加负向测试钉住);返工遇释放体直接换人。</li>
+      <li>FLY-2477 联动(Lead 裁定纳入):Bridge 重启后工人重新登记按「续期」处理,工人侧不再因 stale_boundary 自杀。</li>
+      <li>让 saga 的「等回执」接受死证,顺带收敛真机 53 行陈旧记录。</li>
+    </ul>
+    <h3>不做</h3>
+    <ul>
+      <li>不改合入 / 权限 / founder 审批卡的任何流程;不动 FLY-2268 的回合边界与清信语义。</li>
+      <li>不给会话表加新状态词;不加 env / flag;不改 pane-loss 巡检代码。</li>
+      <li>不解决「founder 通过之后再打回要换新人」——这是刻意接受的代价。</li>
+      <li>Claude 工人分支只做单元测试,不做真机验收(生产停驻体都是 Codex)。</li>
+    </ul>
+    <h3>还没被证明的</h3>
+    <ul>
+      <li>真机验收由 QA 节点做:打回原体接且零换人;通过后 60 秒内释放且 thread 无失联帖;通过后 founder 打回能自动换人;Bridge 重启后停驻体存活。</li>
+      <li>设计评审的真实状态见第 9 节。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s8" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="设计评审历程">
+    <h2>9. 设计评审历程(如实记录)</h2>
+    __REVIEW_HISTORY__
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s9" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="意见汇总" id="summary-card">
+    <h2>10. 意见汇总(自动聚合上面每一节的留言)</h2>
+    <div id="summary-body">(还没有意见)</div>
+    <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+    <div id="chunk-area"></div>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = '【页面意见汇总】FLY-2478';
+  var PREFIX;
+  try { PREFIX = 'fly2478-comment:' + location.pathname + ':'; }
+  catch (e) { PREFIX = 'fly2478-comment:unknown:'; }
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 私密窗口等场景下静默降级 */ } }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-ckey]'));
+
+  function sectionTitleFor(area) {
+    var card = area.closest('.card');
+    return (card && card.getAttribute('data-section')) || '未命名小节';
+  }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var v = area.value.trim();
+      if (v) parts.push('【' + sectionTitleFor(area) + '】\n' + v);
+    });
+    return parts;
+  }
+
+  function buildFullText() {
+    var parts = collect();
+    if (parts.length === 0) return '';
+    return MARKER + '\n' + parts.join('\n\n');
+  }
+
+  function chunkText(full) {
+    if (full.length <= 1800) return [full];
+    var body = full.slice(MARKER.length + 1);
+    var chunks = [];
+    var budget = 1800 - MARKER.length - 20;
+    var pieces = body.split('\n\n');
+    var cur = '';
+    pieces.forEach(function (p) {
+      if (cur && (cur.length + p.length + 2) > budget) { chunks.push(cur); cur = ''; }
+      while (p.length > budget) { chunks.push(cur ? cur + '\n\n' + p.slice(0, budget - cur.length - 2) : p.slice(0, budget)); p = p.slice(budget); cur = ''; }
+      cur = cur ? cur + '\n\n' + p : p;
+    });
+    if (cur) chunks.push(cur);
+    return chunks.map(function (c, i) {
+      return MARKER + '(' + (i + 1) + '/' + chunks.length + ')\n' + c;
+    });
+  }
+
+  var summaryBody = document.getElementById('summary-body');
+  var chunkArea = document.getElementById('chunk-area');
+  var copyStatus = document.getElementById('copy-status');
+
+  function copyText(text, onDone) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        onDone(ok);
+      } catch (e) { onDone(false); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, fallback);
+    } else { fallback(); }
+  }
+
+  function renderSummary() {
+    var full = buildFullText();
+    if (!full) {
+      summaryBody.textContent = '(还没有意见)';
+      chunkArea.textContent = '';
+      return;
+    }
+    summaryBody.textContent = full;
+    chunkArea.textContent = '';
+    var chunks = chunkText(full);
+    if (chunks.length > 1) {
+      chunks.forEach(function (c, i) {
+        var div = document.createElement('div');
+        div.className = 'chunk';
+        var btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.textContent = '复制第 ' + (i + 1) + '/' + chunks.length + ' 段';
+        btn.addEventListener('click', function () {
+          copyText(c, function (ok) {
+            copyStatus.textContent = ok ? ('已复制第 ' + (i + 1) + ' 段') : '复制失败,请手动选择文本';
+          });
+        });
+        div.appendChild(btn);
+        chunkArea.appendChild(div);
+      });
+    }
+  }
+
+  areas.forEach(function (area) {
+    var key = PREFIX + area.getAttribute('data-ckey');
+    var saved = lsGet(key);
+    if (saved) area.value = saved;
+    area.addEventListener('input', function () {
+      lsSet(key, area.value);
+      renderSummary();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var full = buildFullText();
+    if (!full) { copyStatus.textContent = '还没有可复制的意见'; return; }
+    copyText(full, function (ok) {
+      copyStatus.textContent = ok ? '已复制' : '复制失败,请手动选择文本';
+    });
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

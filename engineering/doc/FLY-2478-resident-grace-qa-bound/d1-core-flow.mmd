@@ -1,0 +1,19 @@
+flowchart TD
+    A["工人交活<br/>complete --route needs_review"] --> B["登记停驻<br/>hold = resident · 兜底 3 小时<br/>sessions = ship_parked"]
+    B --> C{"本头的判决落地?"}
+    C -- "QA FAIL<br/>(3 小时内)" --> D["原体直接接返工<br/>hold → woken · 零换体"]
+    D --> A2["返工完成再交活<br/>hold 续新一轮 · 重新等判决"]
+    A2 --> C
+    C -- "QA PASS" --> E["释放请求<br/>grace 提前到 now<br/>release_cause = verdict_pass"]
+    C -- "3 小时无判决" --> F["兜底到期<br/>grace 自然到点"]
+    E --> G["到期 saga 关体<br/>关停请求 / 杀 pane<br/>ACK 或死证等价 ACK"]
+    F --> G
+    G --> H["同一事务投影<br/>hold = closed(released | expired)<br/>sessions = completed<br/>park 账本结清"]
+    H --> I["失联巡检:静默<br/>(completed 不在候选集)"]
+    H --> J["后续返工(如 founder 打回)<br/>→ 直接铸替身,不再 5 轮重试"]
+    classDef good fill:#e9f9ef,stroke:#34c759,color:#1d1d1f;
+    classDef warn fill:#fff4e5,stroke:#ff9500,color:#1d1d1f;
+    classDef done fill:#eef3ff,stroke:#007aff,color:#1d1d1f;
+    class D,A2 good;
+    class F warn;
+    class H,I,J done;

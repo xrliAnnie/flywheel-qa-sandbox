@@ -117,6 +117,7 @@ if (!acknowledged) continue
 
 - `residentExpiry` 缺失时 Codex 分支退回只认 `acked`(不 fail,保持旧行为);Claude 分支缺失仍 `fail('claude_resident_expiry_effects_missing')`。
 - `indeterminate` ⇒ 继续等(fail-closed)。
+- **探针抛错不等于失败**(Gemini R1 #1,MEDIUM):`probeTarget` 与 `commDb.getSession` 都包在本地 `try/catch` 里,抛错记 warn 并按 `indeterminate` 处理(`continue`,下 tick 重探);**不得**落进外层 `catch → fail()`——`failed` 的 operation 不再是 pending,一次 tmux 瞬时超时会把这条 hold 永久锁死。Claude 分支的 `probeTarget` 同样处理(现状 `:184` 的 `probeClaude` 抛错会 fail,本单一并收口)。测试:`probeTarget` 抛错 ⇒ op 仍 `applied`、`markResidentExpiryFailed` 未被调用。
 - 崩溃窗口:探针在 `markResidentExpirySent` CAS 之前,崩溃则下一 tick 重探;死体不会复活,重探结论稳定。
 
 测试(RED,`fly2268-resident-expiry.test.ts` 加 case):codex `requested` + CommDB session 不存在 + `probeTarget→absent` ⇒ `sent → projected`;`requested` + CommDB session `running` ⇒ 仍 `applied`,`probeTarget` 未被调用;`requested` + 非 running + `indeterminate` ⇒ 仍 `applied`;既有 acked / failed 用例不变;Claude 用例把 `probeClaude` 改名后全绿。
@@ -141,7 +142,7 @@ if (!acknowledged) continue
 不变量 / no-clobber:
 - sessions 写只在 `status='ship_parked'` 且 activation 精确匹配;换代/替身接管后的体只关 hold。
 - run terminal 的 `settleWorkflowEngineParksForRunTx` 再跑到该 execution:session 已终态 → `:20808` ledger-only 分支 → `appendWorkflowEngineParkSettlementClearTx` 等值校验通过 → 幂等。
-- divergence:`commitWorkflowDivergenceObservation` 对 `completed` 判 `divergence:false`(`:~800`),不告警。
+- divergence:释放体的 run 仍 `active`,`listWorkflowDivergenceCandidates`(`:757`)**会**把它选为候选(done node + 终态 session),但 `commitWorkflowDivergenceObservation` 对 `completed` 明确返回 `divergence:false`、只登记 `workflow_divergence_check` 水位,不写 `workflow_node_session_divergence` 事件、不告警(Gemini R1 #3)。这是本单依赖的既有行为,C4 测试必须显式断言(候选出现 + observation `divergence:false` + 零 divergence 事件)。
 - 不回填历史:部署后陈旧 `expired/applied` 行经 C3 收敛到本步时,`session.status` 多为 `completed/failed` → 只关 hold。
 
 测试(RED,`fly2478-resident-release.test.ts`):释放路 ⇒ closed_reason `released`、事件 kind `resident_hold_released`、sessions `completed`、`terminal_at` 有值、`lifecycle_revision` +1、park_cleared 行存在;到期路 ⇒ `expired` / `resident_hold_expired`,其余同;activation 不匹配 ⇒ hold 关、sessions 不动、payload `sessionSettled:false`;session 已 `failed` ⇒ 不动;随后 `settleWorkflowEngineParksForRunTx` 重跑不抛、不重复写;`listWorkflowDivergenceCandidates` 对该体 `commit…Observation` 返回 `divergence:false`。
@@ -188,7 +189,7 @@ if (existing.state === 'resident' && existing.boundary_seq < input.boundarySeq) 
   rowsModified===1 ? {ok:true, revision: existing.revision, graceExpiresAt} : {ok:false, reason:'stale_boundary'}
 }
 ```
-revision 不变。`boundary_seq > input.boundarySeq` 仍 `stale_boundary`。
+revision 不变。`boundary_seq > input.boundarySeq` 仍 `stale_boundary`。`release_cause=NULL, release_source=NULL` 写在 SQL 文本里(字面 `NULL`),不走绑定参数——绑定 `null` 在 sql.js 下也是 NULL,但字面量写法让「清空」在语句里可读、且不会有人把字符串 `"NULL"` 传进去(Gemini R1 #2)。`now` 沿用 `enterResidentHold` 现有的 `Number.isFinite(nowMs)` 校验与 `new Date(nowMs).toISOString()`。
 
 同时 `enterResidentHoldForCompletionTx`(`:52107-52140`,woken → resident 的 revision+1 路径)加 `release_cause=NULL, release_source=NULL`——体被唤醒返工后再次停驻,上一头的释放不再成立。
 
@@ -264,3 +265,16 @@ C0+C1(schema/常量) → C2 → C3 → C4 → C5 → C6 → C7 → C8a → C8b �
 - C5 每秒一次 `count(*)` 索引扫描,表规模 1 行/execution,可忽略。
 - C8b adopt 后本地 `residentBoundarySeq` 以 Bridge 值为准,避免下一次再 +1 撞 stale。
 - founder 打回落在 PASS 释放之后 ⇒ 替身(issue 已接受);founder HTML「边界」卡写明。
+
+## 8. 评审轨迹与 Lead 裁定记录
+
+| 时间(UTC) | 事件 | 处置 |
+|---|---|---|
+| 2026-09-11 18:2x | plan v1 提交 `c631bdbc0`,manifest 铸出(requestId `02f01420-3c0f-4fc7-bcff-df8ef68d7f94`,blob `9a13aa09…`) | — |
+| 18:2x | Codex 设计评审 R1:`You've hit your usage limit`(personal 至 9/17 19:39) | 按记忆配方用隔离 CODEX_HOME 探全部 5 个池快照:business 至 9/14、school 至 9/16、personal1/2 token 过期。池全灭,不空转 |
+| 18:2x | Gemini CLI 0.59.0 oauth 路径:`IneligibleTierError`(个人版 Code Assist 停用) | 上报 Lead(ask `93bfa2c0`、补充 `ecf5bcda`) |
+| 18:3x | **Lead 裁定**(答 `93bfa2c0`):Codex 若在 18:52Z 前恢复则正常跑 R1;否则 design-review.json 写 APPROVED + `leadAcceptance{instructionId: 93bfa2c0-b280-4f9b-adab-0f7fb1b1fb64, codexFinalVerdict: not_run_pool_exhausted, residue: …}`;不等 9/14 | 采纳 |
+| 18:3x | **Lead 裁定**(答 `ecf5bcda`):不用 Claude 子代理自审(同厂商);用 Gemini API-key 隔离 HOME 通道跑一轮 gemini-design-review,finding 落 `gemini-review-round1.md`,阻塞级吸收进 plan v2 | 已停掉已启动的 Claude 子代理;Gemini 通道跑通 |
+| 18:34 | **Gemini R1:APPROVED**,1 MEDIUM + 2 LOW(`gemini-review-round1.md`) | #1 MEDIUM 探针抛错会永久 fail hold → C3 加本地 try/catch 按 indeterminate 处理(接受);#2 LOW NULL 绑定 → C8a 写字面 NULL(接受,澄清);#3 LOW divergence 候选 → C4 显式断言(接受) |
+
+残留(写入 design-review.json `residue`):Codex 未跑(池耗尽);Gemini R1 APPROVED via API-key 通道,3 项已吸收;实现 PR 的 code review R1 须先复审本 plan(以 v2 blob 为准)再审代码,设计级 HIGH 按 blocking。

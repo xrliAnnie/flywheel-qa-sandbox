@@ -1,0 +1,20 @@
+stateDiagram-v2
+    [*] --> resident : 工人交活,登记停驻(r=1),兜底 3 小时
+    resident --> resident : 续期(同 revision,boundary 更大 · 重启后重进,FLY-2477)
+    resident --> woken : 返工唤醒投递成功(fence 只放行 resident)
+    woken --> resident : 返工完成再交活(r+1,清空 release_cause)
+    woken --> closed_terminal : 体终结(applyTerminalTimestamp)
+    resident --> release_requested : 判决 PASS transition(grace 提前到 now,release_cause=verdict_pass)
+    release_requested --> expired : 快车道(dispatcher 每秒)或维护 tick 判到期
+    resident --> expired : 3 小时兜底到点
+    expired --> closed_released : saga 投影(release_cause 非空)同事务 sessions 转 completed
+    expired --> closed_expired : saga 投影(release_cause 为空)同事务 sessions 转 completed
+    closed_released --> [*]
+    closed_expired --> [*]
+    closed_terminal --> [*]
+    note right of expired
+        applied 阶段等 ACK
+        acked,或死证等价 ACK
+        (CommDB session 非 running 且探针 dead/absent)
+        indeterminate 则继续等
+    end note
