@@ -1,13 +1,13 @@
 ---
 issue: FLY-2478
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-11T18:15:11.021Z
-nextStep: write exploration.md (brainstorm)
+phaseCursor: 2/6
+updated: 2026-09-11T18:19:13.931Z
+nextStep: write research.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-2478 progress
-**phase**: design (1/6)
-**next**: write exploration.md (brainstorm)
+**phase**: design (2/6)
+**next**: write research.md
