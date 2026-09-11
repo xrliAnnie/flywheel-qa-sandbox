@@ -38095,6 +38095,38 @@ export class StateStore {
 		return changed === 1;
 	}
 
+	private releaseResidentHoldsForNodeTx(input: {
+		runId: string;
+		nodeId: string;
+		source: string;
+		now: string;
+	}): void {
+		const holds = this.workflowSelectAll(
+			`SELECT execution_id FROM workflow_resident_hold
+			 WHERE run_id = ? AND node_id = ? AND state = 'resident' AND release_cause IS NULL
+			 ORDER BY execution_id`,
+			[input.runId, input.nodeId],
+		);
+		if (holds.length === 0) return;
+		this.db.run(
+			`UPDATE workflow_resident_hold
+			 SET grace_expires_at = ?, release_cause = 'verdict_pass', release_source = ?, updated_at = ?
+			 WHERE run_id = ? AND node_id = ? AND state = 'resident' AND release_cause IS NULL`,
+			[input.now, input.source, input.now, input.runId, input.nodeId],
+		);
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid: `resident-release:${input.source}`,
+			kind: "resident_hold_release_requested",
+			nodeId: input.nodeId,
+			payload: {
+				nodeId: input.nodeId,
+				executionIds: holds.map((hold) => String(hold.execution_id)),
+				cause: "verdict_pass",
+			},
+		});
+	}
+
 	expireResidentHoldsTx(now: string): string[] {
 		if (!StateStore.workflowFiniteTimestamp(now)) return [];
 		const expiredOperationIds: string[] = [];
@@ -56331,6 +56363,22 @@ export class StateStore {
 				executionId: input.executionId,
 				payload: { attempt: input.attempt, outcome: input.outcome },
 			});
+			if (edge) {
+				let contract: ReturnType<typeof resolveWorkflowDecisionContract>;
+				try {
+					contract = resolveWorkflowDecisionContract(snapshot, input.nodeId);
+				} catch {
+					contract = undefined;
+				}
+				if (contract && input.outcome === contract.passOutcome) {
+					const verdictLoop = snapshot.manifest.loops.find(
+						(candidate) => candidate.from === input.nodeId && candidate.loop_when === contract.failOutcome,
+					);
+					if (verdictLoop) this.releaseResidentHoldsForNodeTx({
+						runId: input.runId, nodeId: verdictLoop.to, source: transitionUid, now,
+					});
+				}
+			}
 			if (loop) {
 				this.appendWorkflowRunEventTx({
 					runId: input.runId,
