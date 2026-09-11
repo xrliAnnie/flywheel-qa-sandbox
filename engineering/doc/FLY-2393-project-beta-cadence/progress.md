@@ -2,12 +2,12 @@
 issue: FLY-2393
 phase: design
 phaseCursor: 4/5
-updated: 2026-09-11T02:12:16.104Z
-nextStep: Commit R1 corrections and request second design review
+updated: 2026-09-11T02:13:42.353Z
+nextStep: Poll R2; after effective APPROVED publish final HTML and phase handoff
 chunks: []
 pointers: {}
 ---
 
 # FLY-2393 progress
 **phase**: design (4/5)
-**next**: Commit R1 corrections and request second design review
+**next**: Poll R2; after effective APPROVED publish final HTML and phase handoff
