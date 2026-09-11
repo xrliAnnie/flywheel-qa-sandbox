@@ -80,7 +80,10 @@ import {
 	deliveryOperationStalledCopy,
 	deliveryRerouteOutcomeCopy,
 } from "./bridge/alert-kind-copy.js";
-import { RESIDENT_GRACE_MS } from "./bridge/resident-hold.js";
+import {
+	RESIDENT_EXPIRY_FAST_WINDOW_MS,
+	RESIDENT_GRACE_MS,
+} from "./bridge/resident-hold.js";
 import type {
 	DeliveryContractClassification,
 	WorkflowDeliveryAttemptRow,
@@ -38154,6 +38157,25 @@ export class StateStore {
 		});
 	}
 
+	listResidentExpiryFastLaneProjects(now: string): string[] {
+		if (!StateStore.workflowFiniteTimestamp(now)) return [];
+		const since = new Date(
+			Date.parse(now) - RESIDENT_EXPIRY_FAST_WINDOW_MS,
+		).toISOString();
+		return this.workflowSelectAll(
+			`SELECT DISTINCT run.project_name FROM workflow_run run
+			 JOIN workflow_resident_hold hold ON hold.run_id = run.run_id
+			 WHERE hold.state = 'resident' AND hold.grace_expires_at < ?
+			 UNION
+			 SELECT DISTINCT run.project_name FROM workflow_run run
+			 JOIN workflow_delivery_operation operation ON operation.run_id = run.run_id
+			 WHERE operation.kind = 'resident_expiry'
+			 AND operation.state IN ('staged','applied','sent') AND operation.created_at >= ?
+			 ORDER BY project_name`,
+			[now, since],
+		).map((row) => String(row.project_name));
+	}
+
 	countDueResidentHolds(now: string): number {
 		if (!StateStore.workflowFiniteTimestamp(now)) return 0;
 		return Number(
@@ -38251,7 +38273,9 @@ export class StateStore {
 		return expiredOperationIds;
 	}
 
-	listPendingResidentExpiryOperations(): WorkflowResidentExpiryOperation[] {
+	listPendingResidentExpiryOperations(
+		createdAfter?: string,
+	): WorkflowResidentExpiryOperation[] {
 		return this.workflowSelectAll(
 			`SELECT operation.operation_id, operation.run_id, operation.family,
 			        operation.root_id, operation.generation, operation.shape_id,
@@ -38262,8 +38286,9 @@ export class StateStore {
 			    AND hold.revision = operation.generation
 			  WHERE operation.kind = 'resident_expiry'
 			    AND operation.state IN ('staged','applied','sent')
+			    AND (? IS NULL OR operation.created_at >= ?)
 			  ORDER BY operation.created_at, operation.operation_id`,
-			[],
+			[createdAfter ?? null, createdAfter ?? null],
 		).map((row) => ({
 			operationId: String(row.operation_id),
 			executionId: String(row.root_id),

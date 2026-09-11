@@ -200,6 +200,25 @@ describe("FLY-2478 resident release", () => {
 			});
 		},
 	);
+	it("bounds the fast lane to owning projects and fresh operations; old pending work stays available to maintenance", async () => {
+		const store = await verdictStore();
+		const now = "2026-09-11T03:00:01.000Z";
+		expect(store.listResidentExpiryFastLaneProjects(now)).toEqual(["flywheel"]);
+		const operationId = stageExpiry(store, now);
+		expect(
+			store.listResidentExpiryFastLaneProjects("2026-09-11T03:00:51.000Z"),
+		).toEqual(["flywheel"]);
+		expect(
+			store.listResidentExpiryFastLaneProjects("2026-09-11T03:01:02.000Z"),
+		).toEqual([]);
+		expect(
+			store.listPendingResidentExpiryOperations("2026-09-11T03:00:02.000Z"),
+		).toEqual([]);
+		expect(store.listPendingResidentExpiryOperations()).toEqual([
+			expect.objectContaining({ operationId }),
+		]);
+		expect(store.getResidentHold("impl-1")?.state).toBe("expired");
+	});
 	it("counts only due resident and pending expired holds", async () => {
 		const store = await verdictStore();
 		expect(store.countDueResidentHolds("2026-09-11T02:59:59.000Z")).toBe(0);

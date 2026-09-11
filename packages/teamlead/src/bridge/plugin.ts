@@ -639,6 +639,7 @@ import {
 	type RescueRuntime,
 } from "./rescue-runtime.js";
 import { createHostResidentCodexLeadPatrol } from "./resident-codex-lead-patrol.js";
+import { RESIDENT_EXPIRY_FAST_WINDOW_MS } from "./resident-hold.js";
 import { ResidentReceiverSupervisor } from "./resident-receiver-supervisor.js";
 import { deliverResidentWake } from "./resident-wake-fence.js";
 import {
@@ -7649,6 +7650,7 @@ export async function startBridge(
 		projectName: string,
 		now: string,
 		existingCommDb?: CommDB,
+		createdAfter?: string,
 	): Promise<void> => {
 		if (residentExpiryProjectsInFlight.has(projectName)) return;
 		residentExpiryProjectsInFlight.add(projectName);
@@ -7662,7 +7664,7 @@ export async function startBridge(
 			await createProjectDeliveryOperations(
 				projectName,
 				commDb,
-			).runResidentExpiryPass(now);
+			).runResidentExpiryPass(now, createdAfter);
 		} finally {
 			try {
 				ownedCommDb?.close();
@@ -7676,10 +7678,20 @@ export async function startBridge(
 				store,
 				startDispatcher,
 				resumeDisabledCodexQuotaAdmissions,
-				runResidentExpiryPass: async (now) => {
-					for (const project of projects) {
+				runResidentExpiryPass: async (now, projectNames) => {
+					const createdAfter = new Date(
+						Date.parse(now) - RESIDENT_EXPIRY_FAST_WINDOW_MS,
+					).toISOString();
+					for (const project of projects.filter((project) =>
+						projectNames.includes(project.projectName),
+					)) {
 						try {
-							await runProjectResidentExpiryPass(project.projectName, now);
+							await runProjectResidentExpiryPass(
+								project.projectName,
+								now,
+								undefined,
+								createdAfter,
+							);
 						} catch (error) {
 							console.warn(
 								`[delivery-operations] resident expiry deferred for ${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,

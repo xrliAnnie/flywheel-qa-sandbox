@@ -90,3 +90,16 @@ Lead 对问题 `0be14023-0e25-42eb-954b-abbb2e67f40f` 裁定：本单保持锁�
 PR #1164 原头 `e4a2e691edbcd3e3e78d67059ae2e9e396caf087` 的 CI run `34639792611` 中，TeamLead 两个 job 因 post-ship-finalization 测试失败。生产 post-merge 已使用 typed lookup，但该测试仍将 typed lookup 固定为 gone，目标夹具只接到旧 getter，导致清理顺序等 5 项断言失败。
 
 本地原样复现 5 项失败后，仅将 typed lookup 夹具接到相同的目标与错误配置；未改变生产行为或放宽断言。post-ship-finalization 49 项与 post-merge 19 项合计 68 项通过。原头 CI 失败不能算通过；修复头须重新运行精确 HEAD CI 与代码评审。
+
+## R2 代码评审阻塞项修复
+
+评审 request `42aefe6c-2fa8-485d-a109-5e6c58694549` 对 `d650231fa` 返回 CHANGES_REQUESTED。唯一 HIGH `resident-fastlane-1hz-commdb-storm`：长期 expired/applied 记录使原全局计数持续非零，每秒打开所有项目 CommDB；已核实该代码路径。
+
+修复限定于 C5 快速调度：
+
+- 根据 due resident 或最近 60 秒创建的 pending expiry operation 查询所属项目，只打开这些已配置项目的 CommDB。
+- 快速通道每 10 秒最多执行一次，operation 创建后的快速重试窗口为 60 秒；只读取该窗口内的 operation，不扫描旧 pending 任务。
+- 过窗后仍缺少关闭证据的任务保持 pending，原维护通道继续重试；后续 ACK 可以正常收敛。未添加超时终态、flag、进程探针或新定时器。
+- RED：缺少项目/窗口查询；dispatcher 未传项目名单。GREEN：161 项相关测试，涵盖旧 backlog 退出快速通道、项目名单、10 秒限频，以及维护通道凭后续 ACK 完成释放。lint 与全仓 build 通过。
+
+非阻塞建议已保留供 Lead 跟进：`registry-absence-permanently-stalls-expiry`、`tmux-absence-not-daemon-death`、`release-voided-by-boundary-renewal`、`probe-test-regex-extracts-plugin-source`。本轮不扩大到已裁定保留的死亡证据问题、边界续期语义或测试结构重构。新头需要重新登记代码评审与 CI。

@@ -50,7 +50,10 @@ export class DeliveryOperations {
 		},
 	) {}
 
-	async runResidentExpiryPass(now: string): Promise<{
+	async runResidentExpiryPass(
+		now: string,
+		createdAfter?: string,
+	): Promise<{
 		examined: number;
 		requested: number;
 		projected: number;
@@ -58,7 +61,9 @@ export class DeliveryOperations {
 	}> {
 		this.deps.store.expireResidentHoldsTx(now);
 		const result = { examined: 0, requested: 0, projected: 0, failed: 0 };
-		for (const operation of this.deps.store.listPendingResidentExpiryOperations()) {
+		for (const operation of this.deps.store.listPendingResidentExpiryOperations(
+			createdAfter,
+		)) {
 			if (
 				this.deps.projectName &&
 				this.deps.store.getWorkflowRun(operation.runId)?.project_name !==

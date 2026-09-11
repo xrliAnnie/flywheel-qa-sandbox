@@ -90,6 +90,41 @@ function operations(
 }
 
 describe("FLY-2268 resident expiry driver", () => {
+	it("leaves old indeterminate operations to maintenance and accepts a later ACK", async () => {
+		const { store, commDb, now, nowMs } = await fixture("codex");
+		const probeTarget = vi.fn(async () => "indeterminate" as const);
+		const runner = operations(store, commDb, {
+			terminateClaude: vi.fn(async () => ({ ok: true })),
+			probeTarget,
+		});
+		expect(await runner.runResidentExpiryPass(now, now)).toMatchObject({
+			requested: 1,
+			projected: 0,
+		});
+		probeTarget.mockClear();
+		const later = new Date(nowMs + 61_000).toISOString();
+		expect(store.listResidentExpiryFastLaneProjects(later)).toEqual([]);
+		expect(
+			await runner.runResidentExpiryPass(
+				later,
+				new Date(nowMs + 1_000).toISOString(),
+			),
+		).toMatchObject({ examined: 0 });
+		expect(probeTarget).not.toHaveBeenCalled();
+		expect(store.listPendingResidentExpiryOperations()).toHaveLength(1);
+		commDb.finishAllPendingRunnerShutdowns(
+			"exec-1",
+			{ ok: true },
+			nowMs + 62_000,
+		);
+		expect(
+			await runner.runResidentExpiryPass(
+				new Date(nowMs + 300_000).toISOString(),
+			),
+		).toMatchObject({ projected: 1 });
+		expect(store.getResidentHold("exec-1")?.state).toBe("closed");
+	});
+
 	it("uses its exact Codex shutdown request and converges after runtime ACK", async () => {
 		const { store, commDb, now, nowMs } = await fixture("codex");
 		commDb.requestRunnerShutdown("exec-1", "older-requested", nowMs - 3);
