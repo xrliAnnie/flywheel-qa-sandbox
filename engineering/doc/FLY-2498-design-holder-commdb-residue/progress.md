@@ -1,14 +1,16 @@
 ---
 issue: FLY-2498
 phase: implement
-phaseCursor: 0/4
-updated: 2026-09-11T19:24:54.506Z
-nextStep: "Implement approved plan v2: absence probe, parked reconcile,
-  close-tmux finalize; TDD then full gates/review/PR"
+phaseCursor: 1/4
+updated: 2026-09-11T19:29:42.041Z
+nextStep: e4ead5196 helpers TDD 79 tests green; add real close-tmux route
+  integration then reconcile/probe. Pending Lead question
+  7a98f7c2-7624-43e8-be2d-70f99d8f0b84 on generic probe missing host guard. Full
+  gates/review/PR outstanding.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2498 progress
-**phase**: implement (0/4)
-**next**: Implement approved plan v2: absence probe, parked reconcile, close-tmux finalize; TDD then full gates/review/PR
+**phase**: implement (1/4)
+**next**: e4ead5196 helpers TDD 79 tests green; add real close-tmux route integration then reconcile/probe. Pending Lead question 7a98f7c2-7624-43e8-be2d-70f99d8f0b84 on generic probe missing host guard. Full gates/review/PR outstanding.
