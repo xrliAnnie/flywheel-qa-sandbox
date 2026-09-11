@@ -48,7 +48,7 @@
 
   <section class="card red" data-section="一句话">
     <h2>1. 一句话</h2>
-    <p class="lead">Codex 车道的设计体做完设计交接之后，<b>按合同</b>会继续活着停驻（等 ship 前的设计改动）；等它真的被关掉（Lead 用 <span class="term">close-tmux</span><span class="expl">（Bridge 的「关掉这个 runner 终端窗口」接口）</span>杀窗），没有任何代码给它在 <span class="term">CommDB</span><span class="expl">（各 runner 的通信名册，Lead 巡检靠它知道「谁是我名下的」）</span>里的注册行盖终态戳，于是这一行带着一个已经不存在的窗口一直显示「running」，巡检每一轮都报「MISSING_PANE」<span class="expl">（名册里有它、终端里却找不到它的窗口）</span>。本设计在<b>证明它已死</b>的两处（关窗当场、每小时清扫）给这一行盖上终态戳，让它退出名册、再由既有清扫删掉；不动交接、不动巡检、不动适配器。</p>
+    <p class="lead">Codex 车道的设计体做完设计交接之后，<b>按合同</b>会继续活着停驻（等 ship 前的设计改动）；等它真的被关掉（Lead 用 <span class="term">close-tmux</span><span class="expl">（Bridge 的「关掉这个 runner 终端窗口」接口）</span>杀窗），没有任何代码给它在 <span class="term">CommDB</span><span class="expl">（各 runner 的通信名册，Lead 巡检靠它知道「谁是我名下的」）</span>里的注册行盖终态戳，于是这一行带着一个已经不存在的窗口一直显示「running」，巡检每一轮都报「MISSING_PANE」<span class="expl">（名册里有它、终端里却找不到它的窗口）</span>。再往下挖一层：系统里其实<b>已经有</b>一个专收这种行的每小时清扫（FLY-817），它每小时都扫到了这五具，但全部被「体自称 parked（停驻）」的保护性否决拦住 —— 那个否决只认 Claude 体的证据，对 Codex 体没有任何证据能推翻它。本设计在<b>证明它已死</b>的两处（关窗当场、每小时清扫）用既有的「精确目标封行」原语把这一行删掉：关窗当场直接封；清扫处给 parked 否决补一种「执行缺席」的推翻证据。不动交接、不动巡检、不动适配器、不新增数据库方法。</p>
     <div class="kv">
       <b>issue 说的病根</b><span>「交接只翻 StateStore，不给 CommDB 行写终态」</span>
       <b>真库核出来的病根</b><span>交接时<b>不该</b>写终态 —— 体还活着停驻，CommDB 的 running 是它接收「设计改动唤醒」的门栓。真正没人做的事是：<b>体死了（关窗 + daemon 收掉）没人封账</b>；从不 ship 的 issue（FLY-2107 已 terminated）就永久残留</span>
@@ -68,6 +68,7 @@
       <tr><td>09-10 01:07</td><td>Lead 先试正规的 close-runner（会让适配器自己收尾封账），被 fail-closed 守卫拒绝（controller 心跳陈旧但 pane 还活）</td><td><code>lead_close_runner_failed</code> reason=<code>lease_stale_live_pane</code></td></tr>
       <tr><td>09-10 07:07</td><td>Lead 按 founder 放权用 close-tmux：收掉 Codex daemon（absent）、杀掉窗口 @2998 —— <b>CommDB 零写入</b></td><td><code>exec_host_processes_reaped</code> + <code>tmux_closed</code>，来源 <code>bridge.close-tmux</code></td></tr>
       <tr><td>09-10 07:45 起</td><td>巡检 owner index（只看 <code>status IN (running, blocked)</code>）仍列它，窗口没了 ⇒ 每 tick 一次 MISSING_PANE，累计 34 次</td><td>本 issue</td></tr>
+      <tr><td>每小时</td><td>FLY-817 清扫扫到它：StateStore 终态 ✓、窗口不在 ✓、<b>但它自称 parked</b> ⇒ 按 FLY-1329 规则保留（怕是「窗口改了名、进程还活着」的假死）</td><td>Bridge 日志 <code>prune_skipped_parked_conflict: 1492b1f6 …</code>（同一行日志里还有今天的 4 具）</td></tr>
       <tr><td>—</td><td>该 issue 的流程在 founder_gate 被 terminated，永远不会有 ship 收尾来删这一行</td><td><code>workflow_run.status=terminated</code>；CommDB 行至今仍 running</td></tr>
     </table></div>
     <p><span class="badge amber">其余五具</span>它们的 issue 后来 ship 了，post-ship 收尾用 close-runner 把行删掉（09-10 08:06 … 09-11 00:42）。所以「永不终结」对 ship 的 issue 实际是「从关窗到 ship 之间的 1–17 小时」，对不 ship 的 issue 才是真的永不。</p>
@@ -76,7 +77,7 @@
 
   <section class="card purple" data-section="数据结构">
     <h2>3. 数据 / 结构模型：两本账、一个名册、一个已死的进程</h2>
-    <p class="expl">病灶只在 CommDB 的一行；它身上还挂着两样「活进程才该有」的东西：parked 声明与 pending 的 doorbell<span class="expl">（Bridge 叫醒 runner 的门铃记录）</span>。盖戳时要一起处理，否则既有清扫会因为「它说自己 parked」而永远不删。</p>
+    <p class="expl">病灶只在 CommDB 的一行；它身上还挂着一个「活进程才该有」的 parked 声明 —— 正是这个声明让每小时清扫不敢删它。清扫的顾虑是合理的：声明 + 窗口名找不到，也可能是「窗口改了名、进程还活着」（FLY-1319 事故）。所以推翻它的证据必须<b>不看窗口名</b>，直接问「这个执行在这台机器上还存在吗」：Codex daemon 在不在、有没有任何窗口带着它的执行标记、宿主上有没有进程引用它。三者都没有，才算死。</p>
     <div class="diagram"><!--SVG:d2--></div>
     <h3>为什么交接时不能写终态</h3>
     <div class="tbl"><table>
@@ -90,21 +91,21 @@
   </section>
 
   <section class="card green" data-section="修法">
-    <h2>4. 修法：证明它死了，就给这一行盖终态戳</h2>
-    <p>两条入口共用<b>一个</b> CommDB 原语 <code>markDeadSessionTerminal</code>：精确目标 <span class="term">CAS</span><span class="expl">（compare-and-set：只有行还是「running、目标窗口一致、没盖过戳」时才写，任何漂移零写入）</span>，同一事务把 doorbell 置 finished、清掉 parked 声明。终态值按 StateStore 状态映射：failed/blocked 同名，其余一律 completed。</p>
+    <h2>4. 修法：证明它死了，就用既有的「精确目标封行」删掉这一行</h2>
+    <p>两条入口共用<b>一个既有</b> CommDB 原语 <code>finalizePaneLossResidue</code>：在一个事务里核「目标窗口没变、它不是 TURN<span class="expl">（同一 issue 上「谁有权写共享分支」的令牌）</span>持有者」，然后退掉它未回答的 ask / gate、删掉注册行；任何漂移零写入。CommDB 注册行离场的唯一方式本来就是删除，本设计不发明新的状态。</p>
     <div class="diagram"><!--SVG:d3--></div>
     <h3>两条入口各自的「死亡证明」</h3>
     <ul>
-      <li><b>路径 A · close-tmux 当场</b>：<code>kill-window</code> 成功（窗口本来不在也算成功）<b>且</b> Codex daemon 收割结果是 absent / reaped（非 Codex 体则不需要）。daemon 残留或无法核实 ⇒ 不盖，只记一条 skipped 事件（已有告警路径会报）。</li>
-      <li><b>路径 B · 每小时 / boot 清扫</b>：对 CommDB 里每条 running 行，先看 StateStore 是否终态（不是就不探进程、不盖），再用引擎回滚死体时用的同一个家族感知探针<span class="expl">（Codex 先查 daemon，再查 tmux / 发现 / 宿主）</span>说 dead 才盖。今天残留的 <code>1492b1f6</code> 与 4 具新体都由部署后第一次 boot 清扫收敛，下一轮（≤1h）删行。</li>
+      <li><b>路径 A · close-tmux 当场</b>：<code>kill-window</code> 成功（窗口本来不在也算成功）<b>且</b> Codex daemon 收割结果是 absent / reaped（非 Codex 体则不需要）<b>且</b> StateStore 是可删终态。daemon 残留或无法核实 ⇒ 不删，只记一条 skipped 事件（已有告警路径会报）。</li>
+      <li><b>路径 B · FLY-817 每小时 / boot 清扫</b>：它原有的三道门（StateStore 终态、窗口名探针 dead、非 TURN 持有者）不变；到「体自称 parked」这一步，除了原有的 Claude 代际证据，新增一种推翻证据：<b>执行缺席探针</b>说 dead（daemon 缺席 且 没有任何窗口带它的执行标记 且 宿主无进程）。alive / unknown / 探针报错 ⇒ 维持否决。今天残留的 <code>1492b1f6</code> 与 4 具新体都由部署后第一次 boot 清扫收敛。</li>
     </ul>
-    <h3>改动范围（4 个源文件）</h3>
+    <h3>改动范围（4 个源文件，不新增数据库方法）</h3>
     <ul>
-      <li><code>flywheel-comm/db.ts</code>：新方法 <code>markDeadSessionTerminal</code>（一个 IMMEDIATE 事务，返回 stamped / no_row / pending_target / target_changed / not_running）。</li>
-      <li><code>teamlead/bridge/commdb-terminal-stamp.ts</code>（新）：状态映射 + close-tmux 用的纯函数，永不抛，每次恰好记一条审计事件。</li>
-      <li><code>teamlead/bridge/plugin.ts</code>：close-tmux 端点杀窗后调用上面的纯函数；清扫处注入 StateStore 状态与探针两个依赖。</li>
-      <li><code>teamlead/bridge/commdb-session-prune.ts</code>：清扫开头加「盖戳相」；两个依赖不注入时逐字节不变（现有 8 组清扫测试原样绿是门槛）。</li>
-      <li><b>不改</b>：巡检脚本与 owner index、交接路径、Codex / Claude 适配器、close-runner、FLY-1204 回收、FLY-2302 定点封账、表结构。无 flag、无迁移；revert 即回到旧行为，已盖的行是合法终态行。</li>
+      <li><code>teamlead/bridge/run-quiescence.ts</code>：新探针 <code>probeExecutionAbsenceBeyondTarget</code>（强制走「不看注册窗口名」的分支，复用引擎判死体的三重缺席证据）。</li>
+      <li><code>teamlead/bridge/commdb-fsm-reconcile.ts</code>：parked 分支多一个可注入的 <code>executionAbsence</code> 依赖与 <code>parkedOverridden</code> 计数；不注入时逐字节不变（现有 5 条 FLY-1329 否决测试原样绿是门槛）。</li>
+      <li><code>teamlead/bridge/commdb-session-prune.ts</code>：两个小导出 —— close-tmux 的纯决策函数、<code>finalizePaneLossResidue</code> 的薄包装。</li>
+      <li><code>teamlead/bridge/plugin.ts</code>：close-tmux 端点接住 daemon 收割结果、杀窗后按决策封行并审计；两处 reconcile 接线注入新探针。</li>
+      <li><b>不改</b>：巡检脚本与 owner index、交接路径、Codex / Claude 适配器、close-runner、FLY-1204 回收、FLY-2302 定点封账、FLY-1329 否决本身、表结构。无 flag、无迁移；revert 即回到旧行为，已删的行是既有原语的合法结果。</li>
     </ul>
     <div class="comment"><label for="c-4">对这一节的意见</label><textarea id="c-4" data-title="修法"></textarea></div>
   </section>
@@ -113,11 +114,12 @@
     <h2>5. 关键取舍与被否决的方案</h2>
     <div class="tbl"><table>
       <tr><th>方案</th><th>结论</th><th>原因</th></tr>
-      <tr><td><span class="badge green">选</span>A. close-tmux 杀窗成功后当场盖戳</td><td>采纳（主修）</td><td>本案与今天 4 具的真实触发面就是它；与 close-runner「杀窗即封账」对齐；最小改动</td></tr>
-      <tr><td><span class="badge green">选</span>B. 清扫加盖戳相做收敛网</td><td>采纳</td><td>收存量、Bridge 重启丢适配器、手工杀窗等所有「死了没盖戳」的形状；复用 FLY-2302 的清扫框架与审计</td></tr>
+      <tr><td><span class="badge green">选</span>A. close-tmux 杀窗成功后当场封行</td><td>采纳（主修）</td><td>本案与今天 4 具的真实触发面就是它；与 close-runner「杀窗即封账」对齐；复用既有原语</td></tr>
+      <tr><td><span class="badge green">选</span>B. 给 FLY-817 清扫的 parked 否决补「执行缺席」推翻证据</td><td>采纳</td><td>日志证明残留就卡在这一行代码；证据不看窗口名，FLY-1319 那种「改名的活体」仍受保护；每小时自动收存量</td></tr>
+      <tr><td><span class="badge red">否</span>B′. 清扫新增「盖戳相」+ 新 CommDB 原语把 running 改成 completed（本单第一稿）</td><td>否决</td><td>与 FLY-817 重复一套判定；盖了戳仍被 parked 否决挡在终态清扫外，还要再加清声明 —— 两套机制解一个问题</td></tr>
       <tr><td><span class="badge red">否</span>C. 交接路径给 CommDB 写 completed（issue 建议之一）</td><td>否决</td><td>交接后体按合同活着停驻，running 是唤醒门栓；盖戳会把活体踢出路由</td></tr>
       <tr><td><span class="badge red">否</span>D. 巡检 owner index 与 StateStore 取交集（issue 建议之二）</td><td>否决</td><td>FLY-2302 Lead 裁定的方向守卫：让死体拿到终结，不给巡检加豁免；否则把假阳性换成盲区</td></tr>
-      <tr><td><span class="badge gray">不采</span>E. close-tmux 直接走 close-runner 的全量删行</td><td>不采纳</td><td>close-tmux 是资源清道夫，不是生命周期终结；退 ask / gate 是 close-runner 的语义，ship 收尾还要靠它。盖戳保留身份，让各自完成本职</td></tr>
+      <tr><td><span class="badge gray">不采</span>E. close-tmux 直接走 close-runner 那种<b>无守卫</b>的全量删行</td><td>不采纳</td><td>close-tmux 的调用方比 close-runner 杂；少了「目标没变、不是 TURN 持有者」两道守卫会把以前修掉的洞再打开。方案 A 用带守卫的同一原语，效果相同、否决齐全</td></tr>
       <tr><td><span class="badge gray">另开</span>F. 修 close-runner 的「controller 心跳陈旧」拒绝</td><td>另开 issue</td><td>那个 fail-closed 有理由（杀活 controller 的窗会孤儿化 daemon）；它是 Lead 退而用 close-tmux 的原因，但不是残留的原因</td></tr>
       <tr><td><span class="badge red">否</span>G. Bridge 重启时再收养 completed 的停驻体</td><td>否决</td><td>「再收养终态」= 复活死者，代码里明确排除</td></tr>
     </table></div>
@@ -128,16 +130,16 @@
     <h2>6. 诚实边界：这个设计做什么、不做什么、现在卡在哪</h2>
     <h3>做</h3>
     <ul>
-      <li>close-tmux 关掉一个 StateStore 已终态、且执行已证明死亡的体 ⇒ CommDB 行 ≤1 s 内 completed + ended_at，声明清空；巡检 STEP 1 不再对它报 MISSING_PANE。</li>
-      <li>存量（<code>1492b1f6</code> 与今天 4 具）由部署后第一次 boot 清扫盖戳，下一轮删行。</li>
-      <li>活着停驻的设计体（窗口在、daemon 在）经过任意多轮清扫仍 running、声明仍在、唤醒仍可达 —— 这是阴性对照，写进验收 A5。</li>
-      <li>每次盖戳或跳过都有 <code>session_events</code> 审计（<code>commdb_terminal_stamped</code> / <code>commdb_terminal_stamp_skipped</code>），QA 可反证没有静默跳过。</li>
+      <li>close-tmux 关掉一个 StateStore 已终态、且执行已证明死亡的体 ⇒ CommDB 行 ≤1 s 内被删；巡检 STEP 1 不再对它报 MISSING_PANE。</li>
+      <li>存量（<code>1492b1f6</code> 与今天 4 具）由部署后第一次 boot 清扫按新证据删行，日志出现 <code>prune_parked_overridden_execution_absent</code>。</li>
+      <li>活着停驻的设计体（窗口在、daemon 在）经过任意多轮清扫仍 running、声明仍在、唤醒仍可达 —— 阴性对照，写进验收 A5；FLY-1319 那种「窗口改名的活体」也仍受保护（A6）。</li>
+      <li>每次封行或跳过都有审计（<code>commdb_ask_disposed</code> / <code>commdb_finalize_skipped</code>），QA 可反证没有静默跳过。</li>
     </ul>
     <h3>不做 / 不承诺</h3>
     <ul>
-      <li>StateStore 非终态但窗口已死的体（如旧车道 design_done 持有者被关窗）不盖戳，留给 FLY-1204 告警 + <code>close_runner --done</code>。</li>
+      <li>StateStore 非终态但窗口已死的体（如旧车道 design_done 持有者被关窗）不封行，留给 FLY-1204 告警 + <code>close_runner --done</code>（L4）；failed / blocked 的体也不由 close-tmux 封行，交既有的每小时 harvest（L5）。</li>
       <li>不修 close-runner 的「controller 心跳陈旧」拒绝（L1）、不修 Codex 孤儿 reaper 每 5 分钟一条的 identity-mismatch 噪音（L2）、不碰两条 2026-08 的 <code>:pending</code> 残留行（L3）。</li>
-      <li>盖戳到删行之间（≤1h）<code>runner_terminal_list</code> 会以 dead-class 显示该行，与 Claude 体现状一致（L5）。</li>
+      <li>没被 Lead 主动关窗、自己死掉的体，从死到封行最长 1 小时（清扫节奏，L7）。</li>
       <li>Linear MCP 401，issue 正文只来自派单；34 次计数未从 Linear 复核。</li>
     </ul>
     <h3>本节点当前状态（2026-09-11 18:3x UTC）</h3>
@@ -147,9 +149,9 @@
     </ul>
     <h3>验收怎么核（QA 节点按 plan §3）</h3>
     <ul>
-      <li>隔离 Bridge 里复现：Codex 设计体交接 → close-tmux → CommDB 行 completed、声明清空、事件 stamped；巡检快照 STEP 1 无 MISSING_PANE。</li>
-      <li>阴性：StateStore awaiting_review 的体 close-tmux 被 409 拦下；daemon residual 的体行仍 running 且事件 reason 正确；活着停驻的设计体两轮清扫不动。</li>
-      <li>存量形状：手工造「running + StateStore completed + 窗口不在 + daemon 不在」行，一次清扫 stamped=1，下一轮 pruned=1。</li>
+      <li>隔离 Bridge 里复现：Codex 设计体交接 → close-tmux → CommDB 行被删、审计 <code>commdb_ask_disposed source=bridge.close-tmux</code>；巡检快照 STEP 1 无 MISSING_PANE。</li>
+      <li>阴性：StateStore awaiting_review 的体 close-tmux 被 409 拦下；daemon residual 的体行仍 running 且事件 reason 正确；活着停驻的设计体两轮清扫不动；改了窗口名的活 Claude 体不动。</li>
+      <li>存量形状：手工造「running + parked + StateStore completed + 窗口不在 + daemon 不在」行，一次清扫日志 <code>prune_parked_overridden_execution_absent</code>、行消失。</li>
       <li>plan §2.5 全部命令绿，且 PR 的 exact head 上 CI 绿。</li>
     </ul>
     <div class="comment"><label for="c-6">对这一节的意见</label><textarea id="c-6" data-title="诚实边界"></textarea></div>

@@ -15,6 +15,9 @@ Codex 车道的 eng_design 体交接(`complete --route phase_design_complete`)�
 status 仍 running」的注册行留在巡检 owner index(`status IN ('running','blocked')`)里,每 tick 报 `MISSING_PANE`,
 直到 issue ship 时 post-ship 收尾用 close-runner 全量删行;**从不 ship 的 issue(FLY-2107 run 已 terminated)则永久残留**。
 今天(09-11 07:24Z)又有 4 具同形体被 close-tmux 关掉,正在成为下一批 34 次告警。
+**再往下挖一层**(§2.3):系统里其实已经有一个专收这种行的清扫(FLY-817 running-face reconcile),它每小时都扫到了这五具,
+但全部被 FLY-1329 的「体自称 parked」否决拦住 —— 那个否决只认 Claude 体的 tmux 代际证据,对 Codex 体没有任何证据能推翻它。
+修法因此收敛为两处:close-tmux 杀窗成功后当场封行;reconcile 的 parked 否决接受「执行缺席」(daemon / 执行标记 / 宿主进程三重缺席)作为推翻证据。
 
 ## 1. 真库取证(只读,2026-09-11 17:5x UTC)
 
@@ -116,6 +119,7 @@ FLY-1269 fail-closed),于是按 founder 放权走 close-tmux。今天那 4 具�
 
 | 兜底 | 为什么收不到 |
 |---|---|
+| **FLY-817 running-face reconcile** `reconcileCommDbRunningAgainstFsm`(`commdb-fsm-reconcile.ts:115`,每小时 + boot,永久开启 `plugin.ts:6595`) | **它就是为这个形状写的**(CommDB running ∧ FSM 终态 ∧ 窗口探针 dead ⇒ 删行),而且**每小时都扫到了这五具**,但全部被 FLY-1329 的 parked 否决拦下。Bridge 日志 `/tmp/flywheel-bridge.log:50279-50283`:`prune_skipped_parked_conflict: f073a538 / 5b4fbd44 / 9e7f71d7 / 57b4aeec / 1492b1f6 … declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`。否决只能被 `parkedGenerationEvidence === "superseded"` 推翻,而那条证据只对 Claude tmux 体产出(`pane-loss-reconcile.ts:150 isAutoMigratableClaudeTmux`),Codex 体永远 `unavailable` |
 | 每小时/boot 清扫 `pruneDeadTerminalCommDbSessions`(`commdb-session-prune.ts:514`) | 只扫 `completed/timeout(/failed/blocked)` 行;`running` 行不在扫描集(`kept_status`) |
 | FLY-2302 定点封账(`finalizeDeadTerminalCommDbSessionById`) | 只挂在引擎「死体回滚 tripwire」上;正常完成的体没有 `workflow_dead_execution_watch` 行 |
 | FLY-1066 `terminal-commdb-sync` | `isTerminalStatus` 只认 failed/blocked |
@@ -135,30 +139,29 @@ Bridge orphan sweeper 同口径(`patrol-orphan-sweeper.ts:276`)。FLY-2302 plan 
 
 | 方案 | 结论 | 理由 |
 |---|---|---|
-| **A. `close-tmux` 杀窗成功且执行证明已死后,CAS 给 CommDB 行盖终态**(`running → completed/timeout/failed/blocked`,按 StateStore 终态映射,绑定 `tmux_window`) | **采纳(主修)** | 本案与今天 4 具的真实触发面就是它;与 close-runner 的「杀窗即封账」对齐;最小改动 |
-| **B. 每小时/boot 清扫增加「盖戳相」:CommDB `running` 行 ∧ StateStore 终态 ∧ 家族感知探针(`probeRunExecutionLiveness`)证明已死 ⇒ 同一 CAS 盖终态;下一轮清扫按既有规则删** | **采纳(收敛网)** | 收 1492b1f6 这类存量、Bridge 重启丢适配器、手工 `tmux kill-window` 等所有「死了没盖戳」的形状;复用 FLY-2302 的清扫框架与审计 |
+| **A. `close-tmux` 杀窗成功且 daemon 收割证明已死后,当场用精确目标 finalize(`finalizePaneLossResidue`)封掉 CommDB 行** | **采纳(主修)** | 本案与今天 4 具的真实触发面就是它;与 close-runner「杀窗即封账」(`close-runner.ts:951 canDeleteSessionIdentity = res.killed`)对齐;复用既有原语,不新增 CommDB 方法 |
+| **B. 给 FLY-817 running-face reconcile 的 parked 否决加第二种推翻证据:与注册窗口名无关的「执行缺席」探针(Codex daemon 缺席 ∧ 按执行标记发现不到窗口 ∧ 宿主无进程)说 dead ⇒ 走既有 `parkedSuperseded` 分支删行** | **采纳(收敛网)** | 日志证明这就是残留被保留的那一行代码;FLY-1329 否决保护的是「窗口名陈旧但进程活着」,而按执行标记的发现 + 宿主进程 + daemon 三重缺席正是 FLY-1319 形状缺的证据;每小时 + boot 自动收存量 |
+| B′. 每小时清扫新增「盖戳相」(新 CommDB 原语 `running → completed`) | 否决(本单第一稿) | 与 FLY-817 重复一套「running 行 + FSM 终态 + 已死」的判定;且盖了戳仍被 parked 否决挡在终态清扫外,要再加清声明 —— 两套机制解一个问题 |
 | C. 交接路径(`phase_design_complete`)给 CommDB 写 completed | 否决 | 交接后体按合同活着停驻,`running+phase_keep_alive` 是唤醒门栓(§2.1);盖戳会把活体踢出路由 |
 | D. owner index 与 StateStore 状态取交集 / 排除 completed | 否决 | FLY-2302 不变量 7;把假阳性换成盲区(Claude blocked 体窗口保留是合法名下目标) |
-| E. `close-tmux` 直接走 close-runner 的 full finalize(DELETE + 退 ask/gate) | 不采纳 | close-tmux 是资源清道夫(FLY-44),不是生命周期终结;退 ask/gate 是 close-runner 语义;ship 收尾还要靠 `owner_closed` 退 ask。盖戳保留身份,让既有清扫和 ship 收尾各自完成本职 |
+| E. `close-tmux` 直接走 close-runner 的**无守卫** full finalize(`finalizeCommDbSession`,不核目标、不核 TURN) | 不采纳 | close-tmux 是资源清道夫(FLY-44),调用方比 close-runner 杂(founder-consent / action router / Lead 手动);少了精确目标 CAS 与 TURN 否决会把 FLY-1374/1628 修掉的洞再打开。方案 A 用带守卫的 `finalizePaneLossResidue`,效果相同、否决齐全 |
 | F. 修 `lease_stale_live_pane` 让 close-runner 受控路径不再拒 | 另开 issue | FLY-1269 fail-closed 有其理由(杀活 controller 的窗会孤儿化 daemon);本单不改 |
 | G. Bridge 重启再收养 `completed` 的停驻体 | 否决 | 「再收养终态」= 复活死者(`StateStore.ts:11704` 明确排除) |
 
 ## 4. 需要设计时钉死的点(进 research)
 
 1. 「执行证明已死」在两条路径各用什么证据:close-tmux 有 `killTmuxWindow.killed` + `reapCodexDaemonForSession` 结果;
-   清扫用 `probeRunExecutionLiveness`(Codex 先 daemon 后 tmux/discovery/host)。
-2. StateStore 终态词表取哪份:`flywheel-comm/session-terminal` 的 `isMailboxTerminalStatus`(OUTCOME 去掉 approved_to_ship,
-   且不含 awaiting_review)。映射:failed/blocked → 同名;其余 → `completed`。
-3. CAS 原语:`UPDATE sessions SET status=?, ended_at=datetime('now') WHERE execution_id=? AND tmux_window=? AND status='running'
-   AND ended_at IS NULL`,同事务 `disposeRunnerDoorbellsForTerminal`(与 `updateSessionStatusIfRunning` 同款),
-   **并清 `runner_declared_states`**(parked 是活进程的声明;证明死了的进程不能再持有它,否则清扫在 sweep 模式会
-   `kept_parked` 永不删行,`finalizeSessionCommunications` 也会以 `parked` 否决)。
-4. 审计:`store.recordCommDbFinalizeOutcome` 已有;盖戳不是 finalize,需要一个新的 `session_events` 种类
-   (`commdb_terminal_stamped` / `commdb_terminal_stamp_skipped`),`insertEvent` 无白名单。
-5. 负向守卫:`:pending` 目标不盖(无法证明);探针 `alive/unknown` 不盖;StateStore 行缺失或非终态不盖;
-   CAS 0 行(目标已变 / 已终态)不盖;任何异常只记日志,不让 close-tmux 返回 5xx、不让清扫抛出。
-6. 现有测试族:`commdb-session-prune.test.ts`(3 组 veto 必须原样绿)、`founder-consent-integration.test.ts`(close-tmux
-   路由用 stub handler,不覆盖真 handler)、`scripts/__tests__/lead-patrol-snapshot.test.sh:885`(MISSING_PANE 用例)。
+   reconcile 的 parked 推翻要的是**与注册窗口名无关**的缺席证据(FLY-1319 形状 = 窗口名陈旧但进程活着,所以名字探针的 dead 不算数)。
+2. StateStore 终态词表:与 FLY-817 同一份 `RECONCILE_DELETABLE_STATES`(completed/approved/rejected/deferred/shelved/terminated;
+   failed/blocked 留给 FLY-1066 harvest)。
+3. 删行原语:`finalizePaneLossResidue(exec, expectedTmuxWindow)`(FLY-1628,精确目标 CAS + TURN 否决 + `finalizeSession` 同事务),
+   FLY-817 的 `parkedSuperseded` 分支已在用。不新增 CommDB 方法。
+4. 审计:`store.recordCommDbFinalizeOutcome` 已有(FLY-817 用 `bridge.commdb-fsm-reconcile`),close-tmux 用 `bridge.close-tmux`。
+5. 负向守卫:`:pending` 目标不删(`killTmuxWindow` 已拒);daemon `residual/unverifiable` 不删;缺席探针 `alive/unknown` 不推翻否决;
+   TURN 持有者不删(原语内);目标漂移不删(原语内);任何异常只记日志,不让 close-tmux 返回 5xx、不让 reconcile 抛出。
+6. 现有测试族:`commdb-fsm-reconcile.fly1329-parked-veto.test.ts`(5 条,含「KEEPS a parked runner's row even when FSM=completed and tmux probes dead」——
+   新依赖不注入时必须原样绿)、`commdb-fsm-reconcile.test.ts`、`commdb-session-prune.test.ts`、`founder-consent-integration.test.ts`
+   (close-tmux 路由用 stub handler,不覆盖真 handler)、`scripts/__tests__/lead-patrol-snapshot.test.sh:885`(MISSING_PANE 用例)。
 
 ## 5. 未验证 / 边界
 

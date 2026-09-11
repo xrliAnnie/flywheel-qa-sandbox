@@ -1,15 +1,17 @@
 flowchart TB
-    A["体死亡的两条入口"] --> A1["路径 A: close-tmux 端点<br/>kill-window 成功<br/>且 daemon 收割 = absent / not_codex"]
-    A --> A2["路径 B: 每小时 / boot 清扫盖戳相<br/>CommDB running 行<br/>且 StateStore 已终态<br/>且 probeRunExecutionLiveness = dead"]
-    A1 --> G{"StateStore 状态<br/>是终态吗?<br/>(isMailboxTerminalStatus)"}
-    A2 --> G
-    G -->|"否 (awaiting_review / design_done 等)"| SKIP1["不盖戳<br/>记 commdb_terminal_stamp_skipped"]
-    G -->|"是"| CAS["CommDB.markDeadSessionTerminal<br/>一个 IMMEDIATE 事务:<br/>1. 行存在 且 目标一致 且 非 :pending 且 running<br/>2. UPDATE status/ended_at (CAS)<br/>3. doorbell 置 finished<br/>4. 清 parked 声明"]
-    CAS -->|"0 行 / 目标漂移"| SKIP2["零写入<br/>记 skipped(reason)"]
-    CAS -->|"成功"| OK["记 commdb_terminal_stamped"]
+    A["体死亡后封行的两条入口"] --> A1["路径 A: close-tmux 端点<br/>kill-window 成功<br/>且 daemon 收割 = absent / reaped / not_codex<br/>且 StateStore 可删终态"]
+    A --> A2["路径 B: FLY-817 每小时 / boot reconcile<br/>CommDB running 行<br/>且 StateStore 可删终态<br/>且 窗口名探针 dead"]
+    A2 --> P{"体自称 parked?"}
+    P -->|"否"| DEL0["既有路径: 删行"]
+    P -->|"是"| G{"推翻证据"}
+    G -->|"Claude 体: tmux 代际 superseded<br/>(FLY-1329 既有)"| CAS
+    G -->|"本设计新增:<br/>执行缺席探针 = dead<br/>(daemon 缺席 且 无执行标记窗口 且 宿主无进程)"| CAS
+    G -->|"alive / unknown / 抛错"| KEEP["维持 FLY-1329 否决<br/>prune_skipped_parked_conflict"]
+    A1 --> CAS["finalizePaneLossResidue<br/>一个 IMMEDIATE 事务:<br/>1. tmux_window 仍是期望目标<br/>2. 不是 TURN 持有者<br/>3. 退 ask / gate, 删 sessions 行"]
+    CAS -->|"目标漂移 / TURN 持有者"| SKIP["零写入, 记 skipped"]
+    CAS -->|"成功"| OK["审计 commdb_ask_disposed<br/>source = close-tmux 或 fsm-reconcile"]
     OK --> IDX["巡检 owner index 不再列它<br/>MISSING_PANE 消失"]
-    OK --> PR["既有清扫 (同轮或下一轮):<br/>窗口探针 dead 且 非 TURN 持有者<br/>=> 按 FLY-2302 规则删行"]
     style CAS fill:#e8f4ff,stroke:#007aff
     style OK fill:#e9f9ee,stroke:#34c759
-    style SKIP1 fill:#fff4e5,stroke:#ff9500
-    style SKIP2 fill:#fff4e5,stroke:#ff9500
+    style KEEP fill:#fff4e5,stroke:#ff9500
+    style SKIP fill:#fff4e5,stroke:#ff9500

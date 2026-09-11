@@ -5,17 +5,18 @@ flowchart TB
     end
     subgraph CD[CommDB 通信名册]
         C1["sessions<br/>status=running (病灶)<br/>tmux_window=@2998<br/>phase_keep_alive=1<br/>ended_at=NULL"]
-        C2["runner_declared_states<br/>kind=parked"]
-        C3["runner_phase_wakes<br/>doorbell pending"]
+        C2["runner_declared_states<br/>kind=parked<br/>(让每小时清扫不敢删)"]
     end
     subgraph RD[真实世界]
         R1["tmux 窗口 @2998<br/>已被 kill"]
         R2["Codex daemon pgid 56544<br/>已不存在"]
+        R3["无任何窗口带执行标记<br/>宿主无进程引用 exec id"]
     end
     S1 ~~~ C1
     C1 -->|"owner index 只看 status"| PATROL["Lead 巡检<br/>MISSING_PANE x34"]
     C1 -.->|"目标指向"| R1
     C2 -.->|"活进程的声明<br/>但进程已死"| R2
-    C1 -->|"本设计: 精确目标 CAS<br/>running → completed + ended_at"| FIX["行退出名册<br/>下一轮清扫删除"]
-    C2 -->|"同事务清空"| FIX
-    C3 -->|"同事务置 finished"| FIX
+    R2 -->|"三重缺席 = 推翻 parked 否决的证据"| FIX["finalizePaneLossResidue<br/>精确目标 + 非 TURN 持有者<br/>删 sessions 行, 退 ask / gate"]
+    R3 --> FIX
+    C1 -->|"本设计: 证明已死后删行"| FIX
+    FIX --> OUT["行退出名册<br/>MISSING_PANE 消失"]
