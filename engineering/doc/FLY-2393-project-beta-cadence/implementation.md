@@ -147,3 +147,11 @@ Lead 对 question 50f5c58b-11a8-4bab-ac73-3f7dfa6d4f02 裁定：R2若打回，�
 - main同步后 lint PASS（16既有warnings）、beta scheduler/GitHub/config/store 37 PASS；full build PASS。再次执行packages总门exit1：未改动visual-capture锁超时34失败/2232通过/2跳过（/tmp/fly2393-final-packages.log），不重复修宿主锁、不冒称全绿，最终以exact-head CI收口。该分支没有新增 *.test.sh；两份变更的shell suite已运行，新增 *.test.mjs 有显式CI注册。
 
 最终步骤：先文档与progress提交，milestone为literal last commit；普通push、开PR、最终头R3和CI。审查期间冻结；R3若仍有blocking则原文报Lead。真实浏览器/Geo入口/真实GitHub派发与权限/外部队列互斥仍为QA或授权激活前置；未在本地测试中伪造这些结果。
+
+## Engine conflict rework (2026-09-11, implement attempt 2)
+
+Request `rework:98471af4bc96ae08a29a9e5deef315d267df31cb86ef109bcc29b6372fe38ce2`; base `41c1faf448eecc423bf0f14835aa974cd98d83f2`. TURN yours epoch 7. PR #1160 reported CONFLICTING. Fetched main `ca869ad6d638cf9aec34f0ed321a20bd1e6c4c09`, merged as `8be020063`; sole conflict was adjacent StateStore imports. Retained BetaReleaseStore and upstream session-terminal imports; no beta behavior changes, no new behavior test needed. Three customer workflow diffs remain exactly one queue:max addition each.
+
+Required checks on merged code: pnpm lint exit 0 (warnings retained); pnpm -r build exit 0; pnpm test:packages:run exit 1 at config (789 passed, 2 timeouts: drift-scan census 5s and fly1981 final ledgers 15s). The two files in one isolated run passed 38/38; this does not make the aggregate green. Core scheduler/GitHub/store 33 passed; Node receipt/workflow suites 9 passed; workflow structure 23 passed; publisher pipeline 44 passed. No newly added shell test files. Logs: /tmp/fly2393-rework-{lint,build,packages,isolated,focused,workflows,publisher,node-corrected}.log. An initial Node invocation used a nonexistent preflight filename; corrected invocation above passed.
+
+Fresh final-head code review and CI are still required. QA retest/founder gate belong to downstream workflow. No production database access, real dispatch, deployment or ship action.
