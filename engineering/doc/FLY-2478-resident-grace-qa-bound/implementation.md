@@ -48,7 +48,7 @@ C6 实施细节：进入 wake 前 delivery 可由 pending 变为 turn_granted，
 
 Lead 对问题 `0be14023-0e25-42eb-954b-abbb2e67f40f` 裁定：本单保持锁定实现，不新增宿主进程探针；推送前审计 prune 路径。
 
-实际链路是：CommDB 行缺失 ⇒ `lookupTmuxTarget` 判 gone/absent，**非独立宿主探针**。已冻结 plan C3/C5 中有关二次死证的描述应以本补充说明为准。不能把查找器返回 absent 描述成独立进程死亡观测。
+原链路是：CommDB 行缺失 ⇒ `lookupTmuxTarget` 判 gone/absent，**非独立宿主探针**。已冻结 plan C3/C5 中有关二次死证的描述应以本补充说明为准。最终按下述裁定将新释放探针的 gone/error 都改为 indeterminate，不能把缺失登记描述成独立进程死亡观测。
 
 审计发现：`post-merge.ts` 使用会折叠 lookup 错误的 `getTmuxTargetFromCommDb`，undefined 分支设置 physicalGone，然后调用完整 CommDB finalize。这不等同于 proven teardown。已按 Lead 条件暂停推送并提交问题 `9a1705a4-4e9b-4bea-962c-0ed35ee884db`，等范围裁定；尚未更改该外部路径。
 
@@ -65,8 +65,22 @@ Lead 对问题 `0be14023-0e25-42eb-954b-abbb2e67f40f` 裁定：本单保持锁�
 
 因此不能作出“所有 CommDB 行删除均代表 proven teardown”的结论。完整审计已通过报告 `9371d85b-6f6e-422a-a7d8-2896c66101cb` 送达 Lead。
 
+## 最终范围裁定与修复
+
+问题 `9a1705a4-4e9b-4bea-962c-0ed35ee884db` 及补充确认 `b24de8a9-2636-46c5-b902-8b1bdf04bc95` 已答复，解除推送暂停，授权以下最小修复：
+
+- post-merge 改用已有 `lookupTmuxTarget`，error 保留登记并报告 partial；found/gone 的既有清理行为不变。
+- 新增的 plugin resident probe 对 gone/error 均返回 `indeterminate`；只有找到的目标才调用进程探针。Codex request-bound ACK 仍可直接推进 saga。
+- legacy `getTmuxTargetFromCommDb` 及其他消费者不改；tmux-lookup 仅更正 gone 的说明。
+- stale-blocker 与 close-runner 的删除证据缺口留作 Follow-ups，本单不修。
+
+新增 RED：post-merge 在 lookup error 时仍 finalized；新 probe 在 gone 时返回 absent、error 时抛错。GREEN：post-merge 19 tests、生产 probe callback 隔离执行 3 tests、expiry saga 14 tests，合计 36 passed。probe 测试执行从 plugin 提取的实际 callback，不启动 Bridge，不能替代宿主实测。
+
+限制：缺少登记且没有 shutdown ACK 的遗留 hold 现在保持 pending，不再凭登记缺失自动结算。这是安全裁定的预期结果；不能承诺所有历史 expired 行在一个维护 tick 内归零。真正的宿主死亡恢复留给后续更强探针。
+
 ## Follow-ups 与尚待证据
 
 - 更强的独立宿主进程探针：按 Lead 裁定记录于此，不创建新单。
+- stale-blocker / close-runner 中登记删除与进程死亡证据的缺口：按 `b24de8a9` 留作后续，不扩本单实现范围。
 - C9：真机 QA FAIL 原体复用、PASS ≤60 秒释放、释放后替身、patrol 静默及重启后停驻存活，由 QA 独立验证。
 - plugin 单飞/CommDB 生命周期目前为代码审查证据；dispatcher 行为有可执行测试。

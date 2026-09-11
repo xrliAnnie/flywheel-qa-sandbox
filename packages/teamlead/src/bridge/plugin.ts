@@ -7637,8 +7637,8 @@ export async function startBridge(
 				},
 				probeTarget: async (executionId) => {
 					const lookup = lookupTmuxTarget(executionId, projectName);
-					if (lookup.kind === "error") throw new Error(lookup.error);
-					if (lookup.kind === "gone") return "absent";
+					// Missing registry evidence cannot prove physical teardown.
+					if (lookup.kind !== "found") return "indeterminate";
 					return probeRunnerProcessLiveness(lookup.target.tmuxWindow);
 				},
 			},
