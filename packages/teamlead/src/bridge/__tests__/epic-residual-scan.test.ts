@@ -1,11 +1,17 @@
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { attentionFixture } from "../../epic-page/__tests__/fixtures/attention.js";
 import {
 	EPIC_SHAPE_NOW,
 	emptyItemFacts,
 	epicShapeSnapshot,
 } from "../../epic-page/__tests__/fixtures/epic-shape.js";
 import { generateEpicPage } from "../../epic-page/generate.js";
+
+vi.mock("../../epic-page/attention-sources.js", () => ({
+	readAttentionSources: async () => attentionFixture(),
+}));
+
 import { EpicPageSchemaError } from "../../epic-page/model.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
@@ -48,6 +54,29 @@ describe("createEpicResidualScan", () => {
 	afterEach(() => {
 		store.close();
 		vi.restoreAllMocks();
+	});
+
+	it("publishes attention but marks residual unavailable when Epic scope is absent", async () => {
+		const scan = createEpicResidualScan({
+			store,
+			projects,
+			linearApiKey: "test",
+			resolveOwner: () => ({
+				agentId: "lead",
+				matchMethod: "general",
+				canSpawn: true,
+			}),
+			fetchSnapshot: async () => {
+				throw new ActiveScopeNotFoundError();
+			},
+			now: () => new Date("2026-09-09T12:00:00Z"),
+		});
+		const result = await scan.materializeForScan(projects[0]!);
+		expect(result).toMatchObject({
+			kind: "unavailable",
+			token: "structural: active_scope_not_found",
+		});
+		expect(store.getEpicPageFreshness("example").last_generated).toBeTruthy();
 	});
 
 	it("omits the residual fact without reading Linear when the project has no binding", async () => {

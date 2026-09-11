@@ -18,7 +18,13 @@ export class EpicSnapshotTruncatedError extends Error {
 }
 
 export class ActiveScopeNotFoundError extends Error {
-	constructor(message = "No active Linear parent declarations were found") {
+	constructor(
+		message = "No active Linear parent declarations were found",
+		readonly reason:
+			| "no_active_roots"
+			| "missing_daily_root"
+			| "declaration_disappeared" = "no_active_roots",
+	) {
 		super(message);
 		this.name = "ActiveScopeNotFoundError";
 	}
@@ -273,6 +279,7 @@ export async function fetchLinearActiveScopeSnapshot(
 	if (!roots.some((root) => root.title.includes("日常"))) {
 		throw new ActiveScopeNotFoundError(
 			"Permanent 日常 parent declaration was not found",
+			"missing_daily_root",
 		);
 	}
 
@@ -296,6 +303,7 @@ export async function fetchLinearActiveScopeSnapshot(
 			if (!connection) {
 				throw new ActiveScopeNotFoundError(
 					`Active parent declaration disappeared: ${parentId}`,
+					"declaration_disappeared",
 				);
 			}
 			for (const child of connection.nodes) {
@@ -339,6 +347,7 @@ export async function fetchLinearActiveScopeSnapshot(
 					if (!relationConnection) {
 						throw new ActiveScopeNotFoundError(
 							`Child declaration disappeared: ${child.identifier}`,
+							"declaration_disappeared",
 						);
 					}
 					child.inverseRelations.nodes.push(...relationConnection.nodes);

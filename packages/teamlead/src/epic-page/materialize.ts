@@ -1,19 +1,32 @@
 import type { LinearActiveScopeSnapshot } from "../bridge/linear-epic-query.js";
-import { EpicTooLargeError } from "../bridge/linear-epic-query.js";
+import {
+	ActiveScopeNotFoundError,
+	EpicTooLargeError,
+} from "../bridge/linear-epic-query.js";
 import type { ProjectLinearBinding } from "../ProjectConfig.js";
 import type {
 	EpicItemFacts,
 	EpicPageTrigger,
 	LeadNoteRecord,
 } from "../StateStore.js";
-import type { GenerateEpicPageInput } from "./generate.js";
+import type { AttentionInput } from "./attention.js";
+import { applyAttentionBudget } from "./attention-budget.js";
+import type {
+	GenerateAttentionEpicPageInput,
+	GenerateEpicPageInput,
+} from "./generate.js";
 import { assertEpicPage, type EpicPage } from "./model.js";
 import type { EpicPageRenderReceipt } from "./receipt.js";
+import { renderEpicPageHtml } from "./render-html.js";
 import type { EpicPageItemSignals } from "./signals.js";
 
 export const MAX_EPIC_SCOPE_ITEMS = 500;
 
 export interface MaterializeEpicPageDeps {
+	readAttention: (
+		input: MaterializeEpicPageInput,
+		now: Date,
+	) => Promise<AttentionInput>;
 	readLeadNotes: (
 		projectName: string,
 		issueUuids: string[],
@@ -34,7 +47,7 @@ export interface MaterializeEpicPageDeps {
 	readFreshness: (
 		projectName: string,
 	) => NonNullable<GenerateEpicPageInput["freshness"]>;
-	generatePage: (input: GenerateEpicPageInput) => EpicPage;
+	generatePage: (input: GenerateAttentionEpicPageInput) => EpicPage;
 	buildReceipt: (page: EpicPage) => EpicPageRenderReceipt;
 	now: () => Date;
 }
@@ -55,25 +68,36 @@ export async function materializeEpicPage(
 	input: MaterializeEpicPageInput,
 ): Promise<{
 	page: EpicPage;
-	snapshot: LinearActiveScopeSnapshot;
+	snapshot: LinearActiveScopeSnapshot | null;
 	receipt: EpicPageRenderReceipt;
 }> {
-	const snapshot = await deps.fetchSnapshot(input.apiKey, input.binding);
-	if (snapshot.items.length > MAX_EPIC_SCOPE_ITEMS) {
+	const generatedAt = deps.now();
+	const [snapshot, attention] = await Promise.all([
+		deps.fetchSnapshot(input.apiKey, input.binding).catch((error) => {
+			if (
+				error instanceof ActiveScopeNotFoundError &&
+				(error.reason === "no_active_roots" ||
+					error.reason === "missing_daily_root")
+			)
+				return null;
+			throw error;
+		}),
+		deps.readAttention(input, generatedAt),
+	]);
+	if (snapshot && snapshot.items.length > MAX_EPIC_SCOPE_ITEMS) {
 		throw new EpicTooLargeError(
 			`Active scope exceeds ${MAX_EPIC_SCOPE_ITEMS} issues`,
 		);
 	}
-	const itemFacts = snapshot.items.map((item) =>
+	const itemFacts = (snapshot?.items ?? []).map((item) =>
 		deps.readItemFacts(input.projectName, {
 			uuid: item.id,
 			identifier: item.identifier,
 		}),
 	);
-	const generatedAt = deps.now();
 	const itemSignals = deps.readSignals(
 		input.projectName,
-		snapshot.items.map((item) => ({
+		(snapshot?.items ?? []).map((item) => ({
 			uuid: item.id,
 			identifier: item.identifier,
 		})),
@@ -81,12 +105,19 @@ export async function materializeEpicPage(
 	);
 	const freshness = deps.readFreshness(input.projectName);
 	const leadNotes = deps.readLeadNotes(input.projectName, [
-		...new Set([...snapshot.roots, ...snapshot.items].map((item) => item.id)),
+		...new Set(
+			[...(snapshot?.roots ?? []), ...(snapshot?.items ?? [])].map(
+				(item) => item.id,
+			),
+		),
 	]);
-	const page = deps.generatePage({
+	const candidate = deps.generatePage({
 		leadNotes,
 		leadNoteFadeDays: input.leadNoteFadeDays,
 		snapshot,
+		attention,
+		scopeBinding: input.binding,
+		deferSizeValidation: true,
 		itemFacts,
 		itemSignals,
 		freshness: {
@@ -99,6 +130,12 @@ export async function materializeEpicPage(
 		version: input.version,
 		reasons: input.reasons,
 	});
+	const page =
+		candidate.schema_version === 2
+			? applyAttentionBudget(candidate, (page) =>
+					renderEpicPageHtml(page, generatedAt),
+				)
+			: candidate;
 	assertEpicPage(page);
 	return {
 		page,

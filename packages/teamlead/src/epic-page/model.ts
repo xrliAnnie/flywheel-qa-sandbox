@@ -2,6 +2,7 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
+import { type AttentionExtension, assertAttention } from "./attention.js";
 import { computeReady, computeRootCounts, isSchedulable } from "./rules.js";
 import { EpicPageSchemaError } from "./schema-error.js";
 import { computeDependencyReview } from "./subtraction.js";
@@ -21,6 +22,7 @@ export const RULE_IDS = [
 	"subtraction.v1",
 	"freshness.v1",
 	"signals.v1",
+	"attention.v1",
 	"lead_note_fade.v1",
 ] as const;
 export type RuleId = (typeof RULE_IDS)[number];
@@ -38,6 +40,20 @@ export const MISSING_REASONS = [
 	"no_prior_failure",
 	"no_publication",
 	"no_scan_schedule",
+	"no_guild_configured",
+	"invalid_guild_config",
+	"no_thread_binding",
+	"thread_binding_conflict",
+	"thread_missing",
+	"invalid_discord_id",
+	"issue_identity_unknown",
+	"issue_title_unknown",
+	"since_unknown",
+	"invalid_since",
+	"source_unavailable",
+	"source_truncated",
+	"epic_scope_unavailable",
+	"legacy_attention_unavailable",
 ] as const;
 export type MissingReason = (typeof MISSING_REASONS)[number];
 
@@ -240,15 +256,14 @@ export interface FreshnessSection {
 	next_scan: Cell<{ expected_in_seconds: number }>;
 }
 
-export interface EpicPage {
+interface EpicPageBase {
 	lead_note_policy?: Cell<{ fade_after_days: number }>;
-	schema_version: 1;
 	key: {
 		project_name: string;
 	};
 	generated_at: string;
 	generator: {
-		version: "epic-page/1";
+		version: "epic-page/1" | "epic-page/2";
 		trigger: "manual" | "event" | "scan";
 		reasons: RefreshReason[];
 	};
@@ -297,6 +312,17 @@ export interface EpicPage {
 		}>
 	>;
 }
+
+export interface EpicPageV1 extends EpicPageBase {
+	schema_version: 1;
+	generator: EpicPageBase["generator"] & { version: "epic-page/1" };
+}
+export interface EpicPageV2 extends EpicPageBase, AttentionExtension {
+	schema_version: 2;
+	generator: EpicPageBase["generator"] & { version: "epic-page/2" };
+	epic_scope: Cell<{ available: true }>;
+}
+export type EpicPage = EpicPageV1 | EpicPageV2;
 
 const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 const CELL_KEYS = new Set([
@@ -829,9 +855,13 @@ const ITEM_CELLS = [
 
 export function assertEpicPage(
 	document: unknown,
+	options: { deferSizeValidation?: boolean } = {},
 ): asserts document is EpicPage {
 	const canonical = canonicalJsonString(document);
-	if (Buffer.byteLength(canonical, "utf8") > EPIC_PAGE_MAX_DOCUMENT_BYTES) {
+	if (
+		!options.deferSizeValidation &&
+		Buffer.byteLength(canonical, "utf8") > EPIC_PAGE_MAX_DOCUMENT_BYTES
+	) {
 		throw new EpicPageSchemaError(
 			`document exceeds ${EPIC_PAGE_MAX_DOCUMENT_BYTES} bytes`,
 			"size",
@@ -849,11 +879,15 @@ export function assertEpicPage(
 			"items",
 			"freshness",
 			...ROOT_CELLS,
+			...(root.schema_version === 2
+				? ["discord", "attention_sources", "attention", "epic_scope"]
+				: []),
 		],
 		["lead_note_policy"],
 		"",
 	);
-	if (root.schema_version !== 1) fail("/schema_version", "expected 1");
+	if (root.schema_version !== 1 && root.schema_version !== 2)
+		fail("/schema_version", "expected 1 or 2");
 	requireTimestamp(root.generated_at, "/generated_at");
 
 	const key = requireRecord(root.key, "/key");
@@ -867,7 +901,7 @@ export function assertEpicPage(
 		[],
 		"/generator",
 	);
-	if (generator.version !== "epic-page/1")
+	if (generator.version !== `epic-page/${root.schema_version}`)
 		fail("/generator/version", "unexpected generator version");
 	if (!new Set(["manual", "event", "scan"]).has(String(generator.trigger))) {
 		fail("/generator/trigger", "unexpected trigger");
@@ -925,7 +959,10 @@ export function assertEpicPage(
 		scopeCell.provenance.rule !== "scope.v2"
 	)
 		fail("/header/scope_definition/provenance", "expected derived scope.v2");
-	const rootValues = (header.roots as Cell<unknown>).value;
+	const rawRoots = (header.roots as Cell<unknown>).value;
+	// Null roots are validated against the full unavailable-scope contract below.
+	const rootValues =
+		root.schema_version === 2 && rawRoots === null ? [] : rawRoots;
 	if (!Array.isArray(rootValues)) fail("/header/roots/value", "expected array");
 	const rootIds = new Set<string>();
 	for (const [index, raw] of rootValues.entries()) {
@@ -1062,6 +1099,60 @@ export function assertEpicPage(
 	}
 
 	const page = root as unknown as EpicPage;
+	if (page.schema_version === 2) {
+		assertAttention(page, page.generated_at, (cell, path) =>
+			assertCell(cell, path, page),
+		);
+		assertCell(page.epic_scope, "/epic_scope", page);
+		if (page.epic_scope.provenance.kind !== "linear")
+			fail("/epic_scope/provenance", "expected real Linear query provenance");
+		const dependent = [
+			page.header.roots,
+			page.header.items,
+			page.founder_items,
+			page.ready_items,
+			page.dependency_review,
+			page.stuck_items,
+			page.gaps,
+		];
+		if (page.epic_scope.value === null) {
+			if (
+				page.epic_scope.missing?.reason !== "epic_scope_unavailable" ||
+				page.items.length !== 0 ||
+				!Array.isArray(page.header.root_counts) ||
+				page.header.root_counts.length !== 0 ||
+				dependent.some(
+					(cell) =>
+						cell.value !== null ||
+						cell.missing?.reason !== "epic_scope_unavailable",
+				)
+			)
+				fail("/epic_scope", "inconsistent unavailable scope");
+			if (page.done_definition.value?.terminal_state !== "completed")
+				fail("/done_definition", "expected completed");
+			if (
+				page.header.scope_definition.value?.root_state_type !== "started" ||
+				page.header.scope_definition.value.daily_title_contains !== "日常" ||
+				page.header.scope_definition.value.item_state_filter !== "none"
+			)
+				fail("/header/scope_definition", "invalid scope rule");
+			return;
+		}
+		requireExactKeys(
+			requireRecord(page.epic_scope.value, "/epic_scope/value"),
+			["available"],
+			[],
+			"/epic_scope/value",
+		);
+		if (
+			page.epic_scope.value.available !== true ||
+			dependent.some(
+				(cell) => cell.missing?.reason === "epic_scope_unavailable",
+			)
+		)
+			fail("/epic_scope", "inconsistent available scope");
+	}
+
 	if (page.done_definition.value?.terminal_state !== "completed") {
 		fail("/done_definition/value/terminal_state", "expected completed");
 	}

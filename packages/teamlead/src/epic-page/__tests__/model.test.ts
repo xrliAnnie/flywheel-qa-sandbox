@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildAttention } from "../attention.js";
 import {
 	assertEpicPage,
 	type Cell,
@@ -13,6 +14,7 @@ import {
 	computeReady,
 	computeRootCounts,
 } from "../rules.js";
+import { attentionFixture, sourceCell } from "./fixtures/attention.js";
 
 const NOW = "2026-09-03T04:00:00Z";
 
@@ -805,4 +807,159 @@ describe("EpicPage content digest", () => {
 		refreshed.header.roots.value![0]!.title = "Changed";
 		expect(contentDigest(first)).not.toBe(contentDigest(refreshed));
 	});
+});
+
+describe("EpicPage v2 attention schema", () => {
+	const v2 = () => ({
+		...validPage(),
+		schema_version: 2,
+		generator: { ...validPage().generator, version: "epic-page/2" },
+		...buildAttention(attentionFixture(), NOW),
+		epic_scope: {
+			value: { available: true },
+			provenance: {
+				kind: "linear",
+				entity: "issues",
+				id: "FLY",
+				field: "active_scope",
+			},
+			observed_at: NOW,
+		},
+	});
+	it("accepts exact sourced v2 alongside v1", () => {
+		expect(() => assertEpicPage(v2())).not.toThrow();
+		expect(() => assertEpicPage(validPage())).not.toThrow();
+	});
+	it.each(["discord", "attention_sources", "attention", "epic_scope"])(
+		"rejects v2 missing %s",
+		(key) => {
+			const page: Record<string, unknown> = v2();
+			delete page[key];
+			expectSchemaFailure(page);
+		},
+	);
+	it.each(["kind", "action", "since", "thread_url"])(
+		"rejects forged %s values",
+		(leaf) => {
+			const page = v2();
+			page.attention[0][leaf as "kind"].value = "forged";
+			expectSchemaFailure(page);
+		},
+	);
+	it("rejects nonexistent derived pointers and duplicate canonical keys", () => {
+		const page = v2();
+		page.attention[0].thread_url.provenance = {
+			kind: "derived",
+			rule: "attention.v1",
+			from: ["/absent"],
+		};
+		expectSchemaFailure(page);
+		const duplicate = v2();
+		duplicate.attention.push(duplicate.attention[0]);
+		expectSchemaFailure(duplicate);
+	});
+	it("requires mailbox recipient roles and forbids them on nonmailbox facts", () => {
+		const page = v2();
+		delete page.attention[1].sources[0].recipient_role;
+		expectSchemaFailure(page);
+		const extra = v2();
+		extra.attention[0].sources[0].recipient_role = sourceCell(
+			"lead",
+			"commdb",
+			"mailbox",
+		);
+		expectSchemaFailure(extra);
+	});
+	it("rejects false identity and budget counts", () => {
+		const page = v2();
+		page.attention_sources.identity.value = { resolved: 0, unresolved: 0 };
+		expectSchemaFailure(page);
+		const budget = v2();
+		budget.attention_sources.budget.value = { retained: 1 };
+		expectSchemaFailure(budget);
+	});
+	it("rejects invalid calendar time and mismatched URL source ids", () => {
+		const page = v2();
+		page.attention[0].sources[0].since.value = "2026-02-30T00:00:00Z";
+		expectSchemaFailure(page);
+		const forged = v2();
+		forged.attention[0].thread.value!.thread_id = "999";
+		expectSchemaFailure(forged);
+	});
+	it("rejects forged canonical identity provenance and zero source counts with retained facts", () => {
+		const page = v2();
+		page.attention[0].issue_id.provenance = {
+			kind: "linear",
+			entity: "issue",
+			id: "wrong",
+		};
+		expectSchemaFailure(page);
+		const count = v2();
+		count.attention_sources.questions.value = { count: 0 };
+		expectSchemaFailure(count);
+	});
+	it("rejects excluded blocked/stopped kinds as a fourth attention source", () => {
+		const page = v2();
+		page.attention[0].sources[0].fact.value!.kind = "declared_blocked";
+		expectSchemaFailure(page);
+	});
+	it("rejects a falsely empty complete document while healthy reads contain facts", () => {
+		const input = attentionFixture();
+		input.candidates = [];
+		const page = { ...v2(), ...buildAttention(input, NOW) };
+		expectSchemaFailure(page);
+	});
+	it("validates healthy unresolved counts separately from an actual identity query failure", () => {
+		const input = attentionFixture();
+		input.candidates[1].issue_id = {
+			...input.candidates[1].issue_id,
+			value: null,
+			missing: { reason: "issue_identity_unknown" },
+		};
+		const healthy = { ...v2(), ...buildAttention(input, NOW) };
+		expect(healthy.attention_sources.identity.value).toEqual({
+			resolved: 2,
+			unresolved: 1,
+		});
+		expect(() => assertEpicPage(healthy)).not.toThrow();
+		input.identityReads.linear = {
+			...input.identityReads.linear,
+			value: null,
+			missing: { reason: "source_unavailable" },
+		};
+		const failed = { ...v2(), ...buildAttention(input, NOW) };
+		expect(failed.attention_sources.identity.missing?.reason).toBe(
+			"source_unavailable",
+		);
+		expect(() => assertEpicPage(failed)).not.toThrow();
+		failed.attention_sources.identity.value = { resolved: 2, unresolved: 1 };
+		delete failed.attention_sources.identity.missing;
+		expectSchemaFailure(failed);
+	});
+	it("requires both raw identity read Cells and exact source provenance", () => {
+		const page = v2();
+		delete (page.attention_sources as Partial<typeof page.attention_sources>)
+			.identity_reads;
+		expectSchemaFailure(page);
+		const wrong = v2();
+		wrong.attention_sources.identity_reads.linear.provenance = {
+			kind: "derived",
+			rule: "attention.v1",
+			from: [],
+		};
+		expectSchemaFailure(wrong);
+	});
+	it.each(["fact", "since", "recipient_role"] as const)(
+		"rejects substituted %s mailbox question provenance",
+		(leaf) => {
+			const page = v2();
+			const cell = page.attention[1].sources[0][leaf]!;
+			cell.provenance = {
+				kind: "commdb",
+				table: "mailbox",
+				key: { question_id: "different-question" },
+			};
+			expectSchemaFailure(page);
+		},
+	);
 });

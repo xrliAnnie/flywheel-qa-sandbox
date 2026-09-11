@@ -48,7 +48,7 @@ export type EpicPageAttemptInput = Omit<MaterializeEpicPageInput, "version">;
 
 type MaterializedEpicPage = {
 	page: EpicPage;
-	snapshot: LinearActiveScopeSnapshot;
+	snapshot: LinearActiveScopeSnapshot | null;
 	receipt: EpicPageRenderReceipt;
 };
 

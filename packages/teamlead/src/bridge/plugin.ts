@@ -109,7 +109,8 @@ import {
 	wireCodexQuotaDispatcher,
 } from "../codex-quota/runtime.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
-import { generateEpicPage } from "../epic-page/generate.js";
+import { readAttentionSources } from "../epic-page/attention-sources.js";
+import { generateAttentionEpicPage } from "../epic-page/generate.js";
 import { materializeEpicPage } from "../epic-page/materialize.js";
 import { buildEpicPageRenderReceipt } from "../epic-page/receipt.js";
 import { readSignals } from "../epic-page/signals.js";
@@ -5087,6 +5088,7 @@ export async function startBridge(
 	const admissionCrossingBarrier = new AdmissionCrossingBarrier();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	store.syncDiscordConfig(config.discordGuildId);
 	const capacityDeps = makeCapacitySnapshotDeps(store, config);
 	// FLY-2121: schema first, then a pure registry compile + DB-aware preflight,
 	// then verified backup and one catalog transaction. This runs before any
@@ -6244,6 +6246,18 @@ export async function startBridge(
 					materializeEpicPage(
 						{
 							fetchSnapshot: fetchLinearActiveScopeSnapshot,
+							readAttention: (request, generatedAt) =>
+								readAttentionSources(
+									{ stateStore: store },
+									{
+										...request,
+										now: generatedAt,
+										channelIds:
+											projects
+												.find((p) => p.projectName === request.projectName)
+												?.leads.map((l) => l.chatChannel) ?? [],
+									},
+								),
 							readItemFacts: (projectName, item) =>
 								readEpicItemFacts(store, projectName, item),
 							readSignals: (projectName, items, generatedAt) =>
@@ -6257,7 +6271,7 @@ export async function startBridge(
 								history: store.getEpicPageFreshness(projectName),
 								publication: store.getEpicPagePublication(projectName),
 							}),
-							generatePage: generateEpicPage,
+							generatePage: generateAttentionEpicPage,
 							buildReceipt: buildEpicPageRenderReceipt,
 							now: () => new Date(),
 						},

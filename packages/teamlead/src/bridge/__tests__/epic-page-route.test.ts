@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import type Database from "better-sqlite3";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { attentionFixture } from "../../epic-page/__tests__/fixtures/attention.js";
 import {
 	EPIC_SHAPE_NOW,
 	epicShapeSnapshot,
@@ -132,12 +133,32 @@ describe("Epic page router", () => {
 				projects,
 				linearApiKey: "linear-key",
 				fetchSnapshot: vi.fn(async () => epicShapeSnapshot()),
+				readAttention: async () => attentionFixture(),
 				now: () => EPIC_SHAPE_NOW,
 				...overrides,
 			}),
 		);
 		return application;
 	}
+
+	it("returns a v2 attention page when no Epic declaration exists", async () => {
+		const result = await request(
+			app({
+				fetchSnapshot: async () => {
+					throw new ActiveScopeNotFoundError();
+				},
+			}),
+			{ token: "master", body: { projectName: "example" } },
+		);
+		expect(result.status).toBe(200);
+		expect(result.body?.document).toMatchObject({
+			schema_version: 2,
+			epic_scope: { value: null },
+		});
+		expect(
+			(result.body?.document as { attention: unknown[] }).attention,
+		).toHaveLength(3);
+	});
 
 	it("requires the master token and rejects the scoped token", async () => {
 		const application = app();
@@ -224,7 +245,11 @@ describe("Epic page router", () => {
 	});
 
 	it.each([
-		[new ActiveScopeNotFoundError(), 422, "active_scope_not_found"],
+		[
+			new ActiveScopeNotFoundError("disappeared", "declaration_disappeared"),
+			422,
+			"active_scope_not_found",
+		],
 		[new EpicTooLargeError(), 422, "scope_too_large"],
 		[
 			new EpicSnapshotTruncatedError("labels overflow"),
@@ -341,7 +366,7 @@ describe("Epic page router", () => {
 			contentType: expect.stringContaining("application/json"),
 			body: {
 				receipt: { version: 1 },
-				document: { schema_version: 1 },
+				document: { schema_version: 2 },
 			},
 		});
 		expect(

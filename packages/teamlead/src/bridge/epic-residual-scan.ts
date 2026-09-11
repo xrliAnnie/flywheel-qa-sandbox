@@ -1,6 +1,7 @@
+import { readAttentionSources } from "../epic-page/attention-sources.js";
 import {
-	type GenerateEpicPageInput,
-	generateEpicPage,
+	type GenerateAttentionEpicPageInput,
+	generateAttentionEpicPage,
 } from "../epic-page/generate.js";
 import { materializeEpicPage } from "../epic-page/materialize.js";
 import type { EpicPage } from "../epic-page/model.js";
@@ -51,7 +52,7 @@ export interface EpicResidualScanDeps {
 		apiKey: string,
 		binding: NonNullable<ProjectEntry["linear"]>,
 	) => Promise<LinearActiveScopeSnapshot>;
-	generatePage?: (input: GenerateEpicPageInput) => EpicPage;
+	generatePage?: (input: GenerateAttentionEpicPageInput) => EpicPage;
 	buildReceipt?: (page: EpicPage) => EpicPageRenderReceipt;
 	runAttempt?: (input: EpicPageAttemptInput) => Promise<EpicPageAttemptResult>;
 	now?: () => Date;
@@ -105,6 +106,18 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 							{
 								fetchSnapshot:
 									deps.fetchSnapshot ?? fetchLinearActiveScopeSnapshot,
+								readAttention: (request, generatedAt) =>
+									readAttentionSources(
+										{ stateStore: deps.store },
+										{
+											...request,
+											now: generatedAt,
+											channelIds:
+												deps.projects
+													.find((p) => p.projectName === request.projectName)
+													?.leads.map((l) => l.chatChannel) ?? [],
+										},
+									),
 								readItemFacts: (projectName, item) =>
 									readEpicItemFacts(deps.store, projectName, item),
 								readSignals: (projectName, items, generatedAt) =>
@@ -118,7 +131,7 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 									history: deps.store.getEpicPageFreshness(projectName),
 									publication: deps.store.getEpicPagePublication(projectName),
 								}),
-								generatePage: deps.generatePage ?? generateEpicPage,
+								generatePage: deps.generatePage ?? generateAttentionEpicPage,
 								buildReceipt: deps.buildReceipt ?? buildEpicPageRenderReceipt,
 								now,
 							},
@@ -169,6 +182,11 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 				return { kind: "unavailable", token: result.token };
 			}
 			const { page, snapshot } = result.materialized;
+			if (!snapshot)
+				return {
+					kind: "unavailable",
+					token: "structural: active_scope_not_found",
+				};
 			(deps.log ?? console.log)(
 				`[patrol_tick] epic scan project=${project.projectName} items=${snapshot.items.length} ms=${Math.max(0, Date.now() - startedAt)}`,
 			);

@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
 import { escapeHtml } from "../bridge/xhs-review-html.js";
+import {
+	attentionActionText,
+	attentionLink,
+	attentionMissing,
+	attentionPublicKey,
+	attentionSourceText,
+	attentionSummary,
+	attentionWait,
+} from "./attention-presentation.js";
 import { AuditDictionary } from "./audit-dictionary.js";
 import { AuditSidecar } from "./audit-sidecar.js";
 import {
@@ -574,6 +583,26 @@ function renderDependencyReview(entries: DependencyReviewEntry[]): string {
 		.join("");
 }
 
+function renderAttention(page: EpicPage, now: Date): string {
+	const heading = `<h2>${escapeHtml(label("section.attention"))}</h2>`;
+	if (page.schema_version === 1)
+		return `<section class="attention-section" data-attention-section>${heading}<p>${escapeHtml(label("attention.legacy"))}</p></section>`;
+	return `<section class="attention-section" data-attention-section>${heading}<p class="attention-status">${escapeHtml(attentionSummary(page))}</p>${page.attention
+		.map((item) => {
+			const link = attentionLink(page, item);
+			const where = link.url
+				? `<a href="${escapeHtml(link.url)}">${escapeHtml(label("attention.open_thread"))}</a>`
+				: `<span aria-disabled="true">${escapeHtml(label("attention.unknown"))}（${escapeHtml(attentionMissing(link.reason))}）</span>`;
+			return `<article class="attention-item" data-attention-key="${attentionPublicKey(page.key.project_name, item.key)}"><dl>
+		<div data-attention-part="what"><dt>① ${escapeHtml(label("attention.what"))}</dt><dd>${escapeHtml([item.kind.value ?? label("attention.unknown"), item.identifier.value ?? label("attention.unknown"), item.title.value ?? label("attention.unknown")].join(" · "))}</dd></div>
+		<div data-attention-part="action"><dt>② ${escapeHtml(label("attention.action"))}</dt><dd>${escapeHtml(attentionActionText(item))}</dd></div>
+		<div data-attention-part="wait"><dt>③ ${escapeHtml(label("attention.wait"))}</dt><dd>${escapeHtml(attentionWait(item.since, now))}</dd></div>
+		<div data-attention-part="where"><dt>④ ${escapeHtml(label("attention.where"))}</dt><dd>${where}</dd></div>
+		</dl><details class="attention-sources"><summary>${escapeHtml(label("attention.sources", { n: item.sources.length }))}</summary><ul>${item.sources.map((source) => `<li>${escapeHtml(attentionSourceText(source, now))}</li>`).join("")}</ul></details></article>`;
+		})
+		.join("")}</section>`;
+}
+
 /** Single-response diagnostic preview retains its inline audit for offline use. */
 export function renderEpicPageHtml(page: EpicPage, now = new Date()): string {
 	return renderHtml(page, now, new RenderAudit());
@@ -613,7 +642,9 @@ function renderHtml(
 	now: Date,
 	dictionary: RenderAudit,
 ): string {
-	const view = buildFounderView(page);
+	const scopeUnavailable =
+		page.schema_version === 2 && page.epic_scope.value === null;
+	const view = scopeUnavailable ? null : buildFounderView(page);
 	const ready = page.ready_items.value ?? [];
 	const founder = page.founder_items.value ?? [];
 	const itemById = new Map(page.items.map((item) => [item.identifier, item]));
@@ -656,12 +687,17 @@ function renderHtml(
 .epic{background:var(--card);border:1px solid var(--line);border-radius:12px;margin:12px 0;overflow:hidden}.epic>summary{cursor:pointer;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:16px}.epic>summary:before{content:"▸";color:var(--muted)}.epic[open]>summary:before{content:"▾"}.e-st,.s{font-size:12px;border-radius:6px;padding:3px 7px;background:#f2f4f7;color:#344054}.epic[data-state-type=started] .e-st,.s-live{background:#ecfdf3;color:#05603a}.e-id,.kid-id{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}.e-n{font-weight:650;flex:1;min-width:120px}.e-c{font-size:12px;color:var(--muted)}.e-wait{flex-basis:100%;margin-left:20px;color:var(--amber)}.e-b{padding:0 16px 16px}.kid{padding:14px 0;border-top:1px solid var(--line)}.kid-h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}.kid-a{margin:6px 0;color:#475467}.src{font-size:11px;color:var(--muted);margin-left:8px}.s-waiting{background:#fff4e5;color:#93370d}.s-free{background:#eff4ff;color:#174a78}.audit{display:block;margin:7px 0}.audit-head,.view-rule{font-size:11px;color:var(--muted);overflow-wrap:anywhere}.view-rule{padding:6px 0}.lead-panel{margin-top:28px}.lead-panel>summary{cursor:pointer;color:var(--muted);padding:12px 0}.terminal-tail,.epic-hidden{color:var(--muted);font-size:12px}.unattached{margin-top:24px}.order-audit>summary{font-size:11px;color:var(--muted)}summary:focus-visible,a:focus-visible{outline:2px solid var(--blue);outline-offset:4px}.kid,.epic{overflow-wrap:anywhere}@media(max-width:600px){.e-c{flex-basis:100%;margin-left:20px}.e-b{padding:0 12px 12px}.epic>summary{padding:14px 12px}.kid-h{gap:6px}}
 
 	footer{overflow-wrap:anywhere}
+		.attention-section{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--blue);border-radius:16px;padding:22px 24px;margin:0 0 18px;overflow-wrap:anywhere}.attention-section>h2{font-size:23px;line-height:1.3}.attention-status{color:var(--muted);margin:8px 0 14px}.attention-item{padding:16px 0;border-top:1px solid var(--line)}.attention-item:last-child{padding-bottom:0}.attention-item dl{display:grid;gap:9px;margin:0}.attention-item dl>div{display:grid;grid-template-columns:140px minmax(0,1fr);gap:12px}.attention-item dt{font-weight:600;color:var(--muted)}.attention-item dd{margin:0;max-width:74ch}.attention-item [aria-disabled="true"]{color:var(--muted)}.attention-sources{margin-top:12px;font-size:12px;color:var(--muted)}.attention-sources summary{cursor:pointer;width:fit-content}.attention-sources ul{padding-left:20px}.attention-sources li+li{margin-top:6px}.attention-section a:focus-visible,.attention-sources summary:focus-visible{outline:2px solid var(--blue);outline-offset:3px;border-radius:2px}@media(max-width:600px){.attention-section{padding:18px 16px}.attention-item dl>div{grid-template-columns:1fr;gap:2px}.attention-item dl{gap:12px}}
 		.lead-note{background:#eff6ff;border-left:3px solid #3b82f6;border-radius:6px;padding:10px 12px;margin:7px 0;overflow-wrap:anywhere;color:#1e3a5f}.lead-note p{margin:5px 0;font-size:14px}.lead-note time,.lead-note small{display:block;font-size:11px;color:#475467}.lead-note [data-lead-stale]{margin-left:8px;font-size:11px}.lead-note-stale{background:#f8fafc;border-left-color:#cbd5e1;color:#334155}.root-entry{min-width:0}
 .lead-note-compact{display:block;flex-basis:100%;min-width:0;max-width:100%;margin:0}.lead-note-compact .lead-note-text{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lead-note-compact time,.lead-note-compact small{display:block}
 </style>
 </head>
 <body><main>
-	<!-- Slot A: merged renderAttention(page, now) is first, including legacy fallback. -->
+	${renderAttention(page, now)}
+	${
+		view === null
+			? `<p class="scope-unavailable">${escapeHtml(label("attention.scope_unavailable"))}</p>`
+			: `
 	<header data-generated-at="${escapeHtml(page.generated_at)}">
 		<div class="eyebrow">${escapeHtml(label("page.overview"))}</div>
 		<h1>${escapeHtml(page.key.project_name)} · ${escapeHtml(label("page.title"))}</h1>
@@ -686,6 +722,7 @@ function renderHtml(
 		${renderOverviewCell("/done_definition", label("section.done"), escapeHtml(`terminal_state=${page.done_definition.value?.terminal_state ?? label("page.none")}`), page.done_definition, now, dictionary)}
 		${renderOverviewCell("/gaps", label("section.gaps"), page.gaps.value?.length ? escapeHtml(`${page.gaps.value.length} ${label("page.gaps_unit")}`) : escapeHtml(label("page.none")), page.gaps, now, dictionary)}
 	</div>
- </details>
+ </details>`
+	}
 ${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");const update=()=>{document.querySelectorAll("[data-lead-written-at]").forEach(note=>{const written=Date.parse(note.getAttribute("data-lead-written-at")||"");const days=Number(note.getAttribute("data-lead-fade-days"));if(!Number.isFinite(written)||!Number.isFinite(days)||days<=0)return;const elapsed=Math.max(0,Date.now()-written);const hours=Math.floor(elapsed/3600000);const relative=note.querySelector("[data-lead-relative]");if(relative)relative.textContent=note.getAttribute("data-lead-role")+" · "+(hours<1?"刚写":hours+" 小时前写");const stale=elapsed>days*86400000;note.classList.toggle("lead-note-stale",stale);const badge=note.querySelector("[data-lead-stale]");if(badge)badge.hidden=!stale;});if(!root||!age)return;const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
 }

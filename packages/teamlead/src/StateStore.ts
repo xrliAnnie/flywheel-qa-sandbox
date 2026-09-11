@@ -1,6 +1,7 @@
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { makeGateAuthorityView } from "./bridge/approval-signal/gate-authority-view.js";
 import {
 	existsSync,
 	mkdirSync,
@@ -2443,6 +2444,54 @@ export interface VoiceSessionReservation {
 	createdAt: string;
 }
 
+export interface DiscordConfigRow {
+	singleton_key: "discord";
+	guild_id: string | null;
+	state: "configured" | "missing" | "invalid";
+	source: "DISCORD_GUILD_ID";
+	source_updated_at: string;
+}
+
+export interface AttentionGateFact {
+	holder_id: string;
+	question_id: string;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	issue_id: string;
+	execution_id: string;
+	state: "awaiting_review";
+	authority_mode: "land" | "runner_ship" | "engine_terminal";
+	kind: "ship" | "founder_gate";
+	since: string | null;
+}
+
+export type AttentionQuestionIdentity =
+	| {
+			status: "resolved";
+			issue_id: string;
+			identifier: string | null;
+			aliases: string[];
+			run_id: string | null;
+			channel_id: string | null;
+	  }
+	| { status: "unknown" | "conflict" };
+
+export type AttentionThreadBinding =
+	| {
+			status: "resolved";
+			thread_id: string;
+			channel_id: string;
+	  }
+	| {
+			status:
+				| "no_thread_binding"
+				| "thread_binding_conflict"
+				| "thread_missing"
+				| "invalid_discord_id"
+				| "issue_identity_unknown";
+	  };
+
 export class StateStore {
 	private db: CompatDb;
 	private dbPath: string;
@@ -2564,6 +2613,288 @@ export class StateStore {
 	 */
 	getDbPath(): string {
 		return this.dbPath;
+	}
+
+	/** Persist the resolved configuration before page consumers start. */
+	syncDiscordConfig(value: unknown, observedAt = new Date().toISOString()): void {
+		const normalized = typeof value === "string" ? value.trim() : null;
+		const missing = value == null || normalized === "";
+		const valid =
+			normalized !== null &&
+			/^[1-9][0-9]{0,19}$/.test(normalized) &&
+			BigInt(normalized) <= 18446744073709551615n;
+		const state: DiscordConfigRow["state"] = missing
+			? "missing"
+			: valid
+				? "configured"
+				: "invalid";
+		// One atomic statement makes concurrent identical syncs retain the original clock.
+		// Errors propagate; callers must not substitute an unpersisted in-memory value.
+		this.db.run(
+			`
+			INSERT INTO discord_config (singleton_key, guild_id, state, source, source_updated_at)
+			VALUES ('discord', ?, ?, 'DISCORD_GUILD_ID', ?)
+			ON CONFLICT(singleton_key) DO UPDATE SET
+				guild_id = excluded.guild_id, state = excluded.state,
+				source_updated_at = excluded.source_updated_at
+			WHERE discord_config.guild_id IS NOT excluded.guild_id
+				OR discord_config.state <> excluded.state
+		`,
+			[valid ? normalized : null, state, observedAt],
+		);
+	}
+
+	readDiscordConfig(): DiscordConfigRow | null {
+		return (
+			(this.db.raw
+				.prepare(
+					"SELECT singleton_key, guild_id, state, source, source_updated_at FROM discord_config WHERE singleton_key = ?",
+				)
+				.get("discord") as DiscordConfigRow | undefined) ?? null
+		);
+	}
+
+	listAttentionGateFacts(
+		projectName: string,
+		options: { limit?: number } = {},
+	): {
+		facts: AttentionGateFact[];
+		truncated: boolean;
+		rawCount: number;
+	} {
+		return this.readAttentionGateFacts(projectName, options);
+	}
+
+	private readAttentionGateFacts(
+		projectName: string,
+		options: { limit?: number; questionId?: string },
+	): {
+		facts: AttentionGateFact[];
+		truncated: boolean;
+		rawCount: number;
+	} {
+		const limit = Math.max(
+			1,
+			Math.min(1000, Math.trunc(options.limit ?? 1000) || 1000),
+		);
+		const rows = this.db.raw
+			.prepare(`
+			SELECT h.question_id AS holder_id, h.question_id, h.run_id,
+				h.gate_node_id AS node_id, h.attempt, r.issue_id,
+				h.source_execution_id AS execution_id, h.state,
+				strftime('%Y-%m-%dT%H:%M:%SZ', COALESCE(h.created_at, n.started_at)) AS since
+			FROM workflow_gate_holder h
+			JOIN workflow_run r ON r.run_id = h.run_id
+			JOIN workflow_run_node n ON n.run_id = h.run_id AND n.node_id = h.gate_node_id AND n.attempt = h.attempt
+			WHERE r.project_name = ? AND (? IS NULL OR h.question_id = ?) AND r.status = 'active'
+				AND r.current_node_id = h.gate_node_id AND h.state = 'awaiting_review'
+				AND n.state = 'review' AND n.ended_at IS NULL AND h.card_void_state IS NULL
+				AND NOT EXISTS (SELECT 1 FROM workflow_gate_holder newer
+					WHERE newer.run_id = h.run_id AND newer.gate_node_id = h.gate_node_id
+					AND newer.state != 'superseded'
+					AND (newer.created_at > h.created_at OR (newer.created_at = h.created_at AND newer.rowid > h.rowid)))
+			ORDER BY h.created_at, h.question_id LIMIT ?
+		`)
+			.all(
+				projectName,
+				options.questionId ?? null,
+				options.questionId ?? null,
+				limit + 1,
+			) as Omit<AttentionGateFact, "authority_mode" | "kind">[];
+		const authorityView = makeGateAuthorityView(this);
+		const facts: AttentionGateFact[] = [];
+		for (const row of rows.slice(0, limit)) {
+			const authority = authorityView.resolve(
+				row.question_id,
+				row.execution_id,
+			);
+			if (
+				!authority ||
+				authority.state !== "awaiting_review" ||
+				authority.runId !== row.run_id ||
+				authority.projectName !== projectName
+			)
+				continue;
+			facts.push({
+				...row,
+				authority_mode: authority.authorityMode,
+				kind:
+					authority.authorityMode === "engine_terminal"
+						? "founder_gate"
+						: "ship",
+			});
+		}
+		return { facts, truncated: rows.length > limit, rawCount: rows.length };
+	}
+
+	classifyAttentionMailboxGate(
+		projectName: string,
+		questionId: string,
+	): "legacy" | "current" | "excluded" {
+		const bound = this.db.raw
+			.prepare("SELECT 1 FROM workflow_gate_holder WHERE question_id=?")
+			.get(questionId);
+		if (!bound) return "legacy";
+		return this.readAttentionGateFacts(projectName, { questionId, limit: 1 })
+			.facts.length === 1
+			? "current"
+			: "excluded";
+	}
+
+	resolveAttentionQuestionIdentity(
+		projectName: string,
+		questionId: string,
+		executionId: string,
+	): AttentionQuestionIdentity {
+		const exact = this.db.raw
+			.prepare(`
+			SELECT r.run_id, r.issue_id FROM founder_review_card_binding b JOIN workflow_run r ON r.run_id=b.run_id
+			WHERE b.question_id=? AND r.project_name=?
+			UNION SELECT r.run_id, r.issue_id FROM workflow_gate_holder h JOIN workflow_run r ON r.run_id=h.run_id
+			WHERE h.question_id=? AND r.project_name=?
+		`)
+			.all(questionId, projectName, questionId, projectName) as {
+			run_id: string;
+			issue_id: string;
+		}[];
+		if (exact.length > 1) return { status: "conflict" };
+		let issueId = exact[0]?.issue_id;
+		let runId: string | null = exact[0]?.run_id ?? null;
+		const cardBindings = this.db.raw
+			.prepare(`SELECT issue_id,
+			json_extract(payload,'$.threadId') AS thread_id
+			FROM session_events WHERE project_name=? AND event_type='ship_gate_msg_binding'
+			AND json_valid(payload) AND json_extract(payload,'$.questionId')=?
+			AND execution_id=? AND json_extract(payload,'$.executionId')=execution_id
+			AND json_extract(payload,'$.issueId')=issue_id`)
+			.all(projectName, questionId, executionId) as {
+			issue_id: string;
+			thread_id: string | null;
+		}[];
+		if (
+			new Set(cardBindings.map((b) => b.issue_id)).size > 1 ||
+			(issueId && cardBindings.some((b) => b.issue_id !== issueId))
+		)
+			return { status: "conflict" };
+		issueId ??= cardBindings[0]?.issue_id;
+		if (!issueId) {
+			const session = this.db.raw
+				.prepare(
+					"SELECT issue_id FROM sessions WHERE execution_id=? AND project_name=?",
+				)
+				.get(executionId, projectName) as { issue_id: string } | undefined;
+			issueId = session?.issue_id;
+		}
+		if (!issueId) {
+			const bindings = this.db.raw
+				.prepare(`SELECT r.run_id,r.issue_id FROM workflow_execution_binding b
+				JOIN workflow_run r ON r.run_id=b.run_id WHERE b.execution_id=? AND r.project_name=? LIMIT 2`)
+				.all(executionId, projectName) as {
+				run_id: string;
+				issue_id: string;
+			}[];
+			if (bindings.length > 1) return { status: "conflict" };
+			issueId = bindings[0]?.issue_id;
+			runId = bindings[0]?.run_id ?? null;
+		}
+		if (!issueId) return { status: "unknown" };
+		const aliases = new Set([issueId]);
+		if (runId) {
+			for (const row of this.db.raw
+				.prepare(
+					"SELECT issue_alias FROM workflow_run_issue_alias WHERE run_id=?",
+				)
+				.all(runId) as { issue_alias: string }[])
+				aliases.add(row.issue_alias);
+		}
+		let changed = true;
+		while (changed) {
+			changed = false;
+			for (const session of this.getSessionsForIssueAliases([
+				...aliases,
+			]).filter((s) => s.project_name === projectName)) {
+				for (const alias of [session.issue_id, session.issue_identifier]) {
+					if (alias && !aliases.has(alias)) {
+						aliases.add(alias);
+						changed = true;
+					}
+				}
+			}
+		}
+		const uuids = [...aliases].filter((a) => UUID_PATTERN.test(a));
+		const identifiers = [...aliases].filter((a) =>
+			ISSUE_IDENTIFIER_PATTERN.test(a),
+		);
+		if (uuids.length > 1 || identifiers.length > 1)
+			return { status: "conflict" };
+		let channelId: string | null = null;
+		const threadIds = new Set(
+			cardBindings
+				.map((b) => b.thread_id)
+				.filter((id): id is string => typeof id === "string"),
+		);
+		if (threadIds.size > 1) return { status: "conflict" };
+		for (const threadId of threadIds) {
+			const thread = this.db.raw
+				.prepare(
+					"SELECT channel_id,issue_id FROM chat_threads WHERE thread_id=?",
+				)
+				.get(threadId) as { channel_id: string; issue_id: string } | undefined;
+			if (thread && aliases.has(thread.issue_id)) channelId = thread.channel_id;
+		}
+		return {
+			status: "resolved",
+			issue_id: uuids[0] ?? issueId,
+			identifier: identifiers[0] ?? null,
+			aliases: [...aliases].sort(),
+			run_id: runId,
+			channel_id: channelId,
+		};
+	}
+
+	/** The caller supplies aliases verified in this project and all configured project channels. */
+	resolveAttentionThreadBinding(input: {
+		projectName: string;
+		aliases: readonly string[];
+		channelIds: readonly string[];
+		authoritativeChannelId?: string;
+	}): AttentionThreadBinding {
+		if (!input.projectName || input.aliases.length === 0)
+			return { status: "issue_identity_unknown" };
+		const channels = [...new Set(input.channelIds)];
+		if (
+			channels.length === 0 ||
+			(input.authoritativeChannelId &&
+				!channels.includes(input.authoritativeChannelId))
+		)
+			return { status: "no_thread_binding" };
+		const rows = this.db.raw
+			.prepare(`SELECT thread_id,channel_id,discord_missing_at FROM chat_threads
+			WHERE issue_id IN (${input.aliases.map(() => "?").join(",")}) AND channel_id IN (${channels.map(() => "?").join(",")})`)
+			.all(...input.aliases, ...channels) as {
+			thread_id: string;
+			channel_id: string;
+			discord_missing_at: string | null;
+		}[];
+		const candidates = input.authoritativeChannelId
+			? rows.filter((r) => r.channel_id === input.authoritativeChannelId)
+			: rows;
+		if (candidates.length === 0) return { status: "no_thread_binding" };
+		if (candidates.length > 1) return { status: "thread_binding_conflict" };
+		const row = candidates[0]!;
+		if (row.discord_missing_at) return { status: "thread_missing" };
+		if (
+			![row.thread_id, row.channel_id].every(
+				(id) =>
+					/^[1-9][0-9]{0,19}$/.test(id) && BigInt(id) <= 18446744073709551615n,
+			)
+		)
+			return { status: "invalid_discord_id" };
+		return {
+			status: "resolved",
+			thread_id: row.thread_id,
+			channel_id: row.channel_id,
+		};
 	}
 
 	private voiceSessionFromRow(
@@ -4942,6 +5273,17 @@ export class StateStore {
 	}
 
 	migrate(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS discord_config (
+				singleton_key TEXT PRIMARY KEY CHECK (singleton_key = 'discord'),
+				guild_id TEXT,
+				state TEXT NOT NULL CHECK (state IN ('configured','missing','invalid')),
+				source TEXT NOT NULL CHECK (source = 'DISCORD_GUILD_ID'),
+				source_updated_at TEXT NOT NULL,
+				CHECK ((state = 'configured' AND guild_id IS NOT NULL)
+					OR (state IN ('missing','invalid') AND guild_id IS NULL))
+			)
+		`);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS session_events (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,

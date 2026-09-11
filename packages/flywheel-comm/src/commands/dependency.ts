@@ -183,9 +183,11 @@ export async function runDependency(
 		const result = parsed as {
 			error?: unknown;
 			document?: {
+				schema_version?: unknown;
+				epic_scope?: { value?: unknown; missing?: { reason?: unknown } };
 				generated_at?: unknown;
-				ready_items?: { value?: unknown };
-				dependency_review?: { value?: unknown };
+				ready_items?: { value?: unknown; missing?: { reason?: unknown } };
+				dependency_review?: { value?: unknown; missing?: { reason?: unknown } };
 			};
 		};
 		if (!response.ok) {
@@ -197,6 +199,32 @@ export async function runDependency(
 		}
 		const ready = result.document?.ready_items?.value;
 		const review = result.document?.dependency_review?.value;
+		const document = result.document;
+		const scopeUnavailable = (
+			cell: { value?: unknown; missing?: { reason?: unknown } } | undefined,
+		) =>
+			cell?.value === null && cell.missing?.reason === "epic_scope_unavailable";
+		if (
+			document?.schema_version === 2 &&
+			scopeUnavailable(document.epic_scope) &&
+			scopeUnavailable(document.ready_items) &&
+			scopeUnavailable(document.dependency_review)
+		) {
+			return fail(
+				"active_scope_not_found",
+				"dependency show: Epic 范围不可用，请补齐 Epic/日常筐前置",
+			);
+		}
+		if (
+			document?.schema_version === 2 &&
+			(document.epic_scope?.value === null ||
+				document.epic_scope?.missing?.reason === "epic_scope_unavailable")
+		) {
+			return fail(
+				"invalid_response",
+				"dependency show: invalid Bridge response",
+			);
+		}
 		if (!Array.isArray(ready) || !Array.isArray(review)) {
 			return fail(
 				"invalid_response",

@@ -107,8 +107,16 @@ describe("FLY-2141 production plugin wiring", () => {
 
 	it("creates one scan, emits boot warnings once, and injects the production owner resolver", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const bridge = await startBridge(config(), projects);
+		const bridge = await startBridge(
+			{ ...config(), discordGuildId: "123456789" },
+			projects,
+		);
 		closeBridge = bridge.close;
+		expect(bridge.store.readDiscordConfig()).toMatchObject({
+			guild_id: "123456789",
+			state: "configured",
+			source: "DISCORD_GUILD_ID",
+		});
 
 		expect(epicResidualMocks.createEpicResidualScan).toHaveBeenCalledOnce();
 		expect(epicResidualMocks.epicResidualBootWarnings).toHaveBeenCalledOnce();

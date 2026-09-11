@@ -1,4 +1,5 @@
 import type { LinearActiveScopeSnapshot } from "../bridge/linear-epic-query.js";
+import type { ProjectLinearBinding } from "../ProjectConfig.js";
 import type {
 	EpicItemFacts,
 	EpicPageFactRead,
@@ -7,8 +8,10 @@ import type {
 	EpicPageTrigger,
 	LeadNoteRecord,
 } from "../StateStore.js";
+import { type AttentionInput, buildAttention } from "./attention.js";
 import { buildFreshness } from "./freshness.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS } from "./lead-note.js";
+import type { EpicPageV1, EpicPageV2 } from "./model.js";
 import {
 	assertEpicPage,
 	type Cell,
@@ -102,17 +105,53 @@ function statestoreCell<T>(
 	};
 }
 
-export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
-	if (input.itemFacts.length !== input.snapshot.items.length) {
+export interface GenerateAttentionEpicPageInput
+	extends Omit<GenerateEpicPageInput, "snapshot"> {
+	snapshot: LinearActiveScopeSnapshot | null;
+	scopeBinding: ProjectLinearBinding;
+	attention: AttentionInput;
+	/** Only for an unsubmitted candidate immediately passed through the byte budget. */
+	deferSizeValidation?: boolean;
+}
+
+/** Legacy v1 generation, retained for old-document fixtures and compatibility tests. */
+export function generateEpicPage(input: GenerateEpicPageInput): EpicPageV1 {
+	return generatePage(input) as EpicPageV1;
+}
+export function generateAttentionEpicPage(
+	input: GenerateAttentionEpicPageInput,
+): EpicPageV2 {
+	if (!input.attention || !input.scopeBinding?.team)
+		throw new Error(
+			"Explicit attention sources and project binding are required",
+		);
+	return generatePage(input) as EpicPageV2;
+}
+function generatePage(
+	input: GenerateEpicPageInput | GenerateAttentionEpicPageInput,
+): EpicPage {
+	const withAttention = "attention" in input;
+	const generatedAt = input.now.toISOString();
+	const snapshot: LinearActiveScopeSnapshot = input.snapshot ?? {
+		fetchedAt: generatedAt,
+		descendantIds: [],
+		boundary: {
+			teamKey: withAttention ? input.scopeBinding.team : "",
+			project: withAttention ? (input.scopeBinding.project ?? null) : null,
+			label: withAttention ? (input.scopeBinding.label ?? null) : null,
+		},
+		roots: [],
+		items: [],
+	};
+	const extension = withAttention
+		? buildAttention(input.attention, generatedAt)
+		: null;
+	if (input.itemFacts.length !== snapshot.items.length) {
 		throw new Error("Epic item facts must match the Linear scope snapshot");
 	}
-	if (
-		input.itemSignals &&
-		input.itemSignals.length !== input.snapshot.items.length
-	) {
+	if (input.itemSignals && input.itemSignals.length !== snapshot.items.length) {
 		throw new Error("Epic item signals must match the Linear scope snapshot");
 	}
-	const generatedAt = input.now.toISOString();
 	const notesByIssue = new Map<string, Cell<string>[]>();
 	for (const note of [...(input.leadNotes ?? [])].sort((a, b) =>
 		a.role < b.role ? -1 : a.role > b.role ? 1 : 0,
@@ -136,8 +175,8 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 		(input.trigger === "event"
 			? (["session_completed"] as const)
 			: ([input.trigger] as const));
-	const linearObservedAt = input.snapshot.fetchedAt;
-	const items: EpicItem[] = input.snapshot.items.map((child, index) => {
+	const linearObservedAt = snapshot.fetchedAt;
+	const items: EpicItem[] = snapshot.items.map((child, index) => {
 		const facts = input.itemFacts[index]!;
 		const itemSignals = input.itemSignals?.[index];
 		const issueSource = {
@@ -350,7 +389,7 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				],
 	);
 	const sourceCells = [
-		...input.snapshot.roots.flatMap((root, index) =>
+		...snapshot.roots.flatMap((root, index) =>
 			(notesByIssue.get(root.id) ?? []).map((note, noteIndex) => ({
 				path: `/header/roots/value/${index}/lead_note/${noteIndex}`,
 				observedAt: note.observed_at,
@@ -404,6 +443,20 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 			},
 		]),
 	];
+	if (extension) {
+		const collect = (value: unknown, path: string) => {
+			if (!value || typeof value !== "object") return;
+			if ("value" in value && "observed_at" in value && "provenance" in value) {
+				const cell = value as Cell<unknown>;
+				if (cell.provenance.kind !== "derived")
+					sourceCells.push({ path, observedAt: cell.observed_at });
+				return;
+			}
+			for (const [key, child] of Object.entries(value))
+				collect(child, `${path}/${key}`);
+		};
+		collect(extension, "");
+	}
 	const freshness = buildFreshness({
 		projectName: input.projectName,
 		generatedAt,
@@ -417,7 +470,7 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 		sourceCells,
 		scanSchedule: input.freshness?.scanSchedule,
 	});
-	const page: EpicPage = {
+	const legacy: EpicPageV1 = {
 		schema_version: 1,
 		key: { project_name: input.projectName },
 		generated_at: generatedAt,
@@ -427,14 +480,12 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 			reasons: [...reasons].sort() as RefreshReason[],
 		},
 		header: {
-			root_counts: computeRootCounts(items, input.snapshot.roots).map(
-				(result) => ({
-					value: result.value,
-					provenance: { kind: "derived", rule: "counts.v1", from: result.from },
-					observed_at: generatedAt,
-					...(result.missing ? { missing: result.missing } : {}),
-				}),
-			),
+			root_counts: computeRootCounts(items, snapshot.roots).map((result) => ({
+				value: result.value,
+				provenance: { kind: "derived", rule: "counts.v1", from: result.from },
+				observed_at: generatedAt,
+				...(result.missing ? { missing: result.missing } : {}),
+			})),
 			scope_definition: {
 				value: {
 					root_state_type: "started",
@@ -449,7 +500,7 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				observed_at: generatedAt,
 			},
 			roots: linearCell(
-				input.snapshot.roots.map((root) => ({
+				snapshot.roots.map((root) => ({
 					identifier: root.identifier,
 					title: root.title,
 					url: root.url,
@@ -460,7 +511,7 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				})),
 				{
 					entity: "issues",
-					id: input.snapshot.boundary.teamKey,
+					id: snapshot.boundary.teamKey,
 					field: "state.type=started,parent=null,children!=null",
 					observedAt: linearObservedAt,
 				},
@@ -469,7 +520,9 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 				items.map((item) => item.identifier),
 				{
 					entity: "children",
-					id: input.snapshot.roots.map((root) => root.id).join(","),
+					id:
+						snapshot.roots.map((root) => root.id).join(",") ||
+						snapshot.boundary.teamKey,
 					field: "subtree",
 					observedAt: linearObservedAt,
 				},
@@ -544,6 +597,41 @@ export function generateEpicPage(input: GenerateEpicPageInput): EpicPage {
 			observed_at: generatedAt,
 		},
 	};
-	assertEpicPage(page);
+	let page: EpicPage = legacy;
+	if (extension && withAttention) {
+		page = {
+			...legacy,
+			...extension,
+			schema_version: 2,
+			generator: { ...legacy.generator, version: "epic-page/2" },
+			epic_scope: linearCell(
+				{ available: true as const },
+				{
+					entity: "issues",
+					id: input.scopeBinding.team,
+					field: "active_scope",
+					observedAt: snapshot.fetchedAt,
+				},
+			),
+		};
+		if (input.snapshot === null) {
+			for (const cell of [
+				page.epic_scope,
+				page.header.roots,
+				page.header.items,
+				page.founder_items,
+				page.ready_items,
+				page.dependency_review,
+				page.stuck_items,
+				page.gaps,
+			]) {
+				cell.value = null;
+				cell.missing = { reason: "epic_scope_unavailable" };
+			}
+		}
+	}
+	assertEpicPage(page, {
+		deferSizeValidation: withAttention && input.deferSizeValidation,
+	});
 	return page;
 }

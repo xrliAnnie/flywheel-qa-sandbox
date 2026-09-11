@@ -1,3 +1,11 @@
+import {
+	attentionActionText,
+	attentionLink,
+	attentionMissing,
+	attentionSourceText,
+	attentionSummary,
+	attentionWait,
+} from "./attention-presentation.js";
 import { escapeMarkdownTableCell } from "./escape.js";
 import { type LabelKey, label, leadNoteRoleLabel } from "./labels.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS, leadNoteAge } from "./lead-note.js";
@@ -394,10 +402,42 @@ function renderDependencyReview(entries: DependencyReviewEntry[]): string {
 		.join("\n");
 }
 
+function renderAttention(page: EpicPage, now: Date): string {
+	const heading = `## ${label("section.attention")}`;
+	if (page.schema_version === 1)
+		return `${heading}\n\n${label("attention.legacy")}`;
+	return [
+		heading,
+		attentionSummary(page),
+		...page.attention.map((item) => {
+			const link = attentionLink(page, item);
+			const where = link.url
+				? `[${label("attention.open_thread")}](${link.url})`
+				: `${label("attention.unknown")}（${attentionMissing(link.reason)}）`;
+			return [
+				`- **① ${label("attention.what")}**：${markdownText([item.kind.value ?? label("attention.unknown"), item.identifier.value ?? label("attention.unknown"), item.title.value ?? label("attention.unknown")].join(" · "))}`,
+				`- **② ${label("attention.action")}**：${markdownText(attentionActionText(item))}`,
+				`- **③ ${label("attention.wait")}**：${markdownText(attentionWait(item.since, now))}`,
+				`- **④ ${label("attention.where")}**：${where}`,
+				`\n<details><summary>${label("attention.sources", { n: item.sources.length })}</summary>\n\n${item.sources.map((source) => `- ${markdownText(attentionSourceText(source, now))}`).join("\n")}\n\n</details>`,
+			].join("\n");
+		}),
+	].join("\n\n");
+}
+
 export function renderEpicPageMarkdown(
 	page: EpicPage,
 	now = new Date(),
 ): string {
+	if (page.schema_version === 2 && page.epic_scope.value === null) {
+		return [
+			`# ${label("page.title")}: ${markdownText(page.key.project_name)}`,
+			renderAttention(page, now),
+			label("attention.scope_unavailable"),
+			`${label("page.generated_at")}: ${page.generated_at}`,
+			renderFreshness(page),
+		].join("\n\n");
+	}
 	const fadeDays =
 		page.lead_note_policy?.value?.fade_after_days ??
 		DEFAULT_LEAD_NOTE_FADE_DAYS;
@@ -425,6 +465,7 @@ export function renderEpicPageMarkdown(
 		.join(", ");
 	return [
 		`# ${label("page.title")}: ${markdownText(page.key.project_name)}`,
+		renderAttention(page, now),
 		`${label("page.generated_at")}: ${page.generated_at}`,
 		renderFreshness(page),
 		`## ${label("section.ready")}`,

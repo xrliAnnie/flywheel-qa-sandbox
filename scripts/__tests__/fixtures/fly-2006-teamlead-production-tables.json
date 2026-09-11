@@ -38,6 +38,7 @@
 	"deployment_events",
 	"design_review_manifest",
 	"detection_escalations",
+	"discord_config",
 	"disposition_receipts",
 	"doa_backoff",
 	"doa_backoff_participants",

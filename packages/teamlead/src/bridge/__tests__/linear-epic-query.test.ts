@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	ActiveScopeNotFoundError,
 	EpicSnapshotTruncatedError,
 	EpicTooLargeError,
 	fetchLinearActiveScopeSnapshot,
@@ -304,6 +303,13 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 		});
 	});
 
+	it("identifies absent scope separately from disappeared declarations", async () => {
+		mockRawRequest.mockResolvedValueOnce(rootsResponse([]));
+		await expect(
+			fetchLinearActiveScopeSnapshot("token", { team: "EPX" }, { now }),
+		).rejects.toMatchObject({ reason: "no_active_roots" });
+	});
+
 	it("fails loud when the permanent 日常 parent declaration is absent", async () => {
 		mockRawRequest.mockResolvedValueOnce(
 			rootsResponse([scopeRoot("EPX-100", "Active Epic")]),
@@ -311,7 +317,10 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 
 		await expect(
 			fetchLinearActiveScopeSnapshot("token", { team: "EPX" }, { now }),
-		).rejects.toBeInstanceOf(ActiveScopeNotFoundError);
+		).rejects.toMatchObject({
+			name: "ActiveScopeNotFoundError",
+			reason: "missing_daily_root",
+		});
 		expect(mockRawRequest).toHaveBeenCalledTimes(1);
 	});
 
@@ -322,7 +331,10 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 
 		await expect(
 			fetchLinearActiveScopeSnapshot("token", { team: "EPX" }, { now }),
-		).rejects.toBeInstanceOf(ActiveScopeNotFoundError);
+		).rejects.toMatchObject({
+			name: "ActiveScopeNotFoundError",
+			reason: "declaration_disappeared",
+		});
 	});
 
 	it("fails closed when pagination cannot prove a complete snapshot", async () => {

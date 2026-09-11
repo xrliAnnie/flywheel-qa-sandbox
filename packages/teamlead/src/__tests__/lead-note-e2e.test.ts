@@ -18,12 +18,13 @@ import { createLeadNoteRouter } from "../bridge/lead-note-route.js";
 import type { LinearIssue } from "../bridge/linear-query.js";
 import { createReportCriticalSection } from "../bridge/report-critical-section.js";
 import { ReportRegistry } from "../bridge/report-registry.js";
+import { attentionFixture } from "../epic-page/__tests__/fixtures/attention.js";
 import {
 	EPIC_SHAPE_NOW,
 	emptyItemFacts,
 	epicShapeSnapshot,
 } from "../epic-page/__tests__/fixtures/epic-shape.js";
-import { generateEpicPage } from "../epic-page/generate.js";
+import { generateAttentionEpicPage } from "../epic-page/generate.js";
 import { materializeEpicPage } from "../epic-page/materialize.js";
 import { buildEpicPageRenderReceipt } from "../epic-page/receipt.js";
 import { readSignals } from "../epic-page/signals.js";
@@ -126,7 +127,8 @@ it("real CLI writes and clears project-isolated role notes through the queue and
 									history: store.getEpicPageFreshness(projectName),
 									publication: store.getEpicPagePublication(projectName),
 								}),
-								generatePage: generateEpicPage,
+								readAttention: async () => attentionFixture(),
+								generatePage: generateAttentionEpicPage,
 								buildReceipt: buildEpicPageRenderReceipt,
 								now: () => EPIC_SHAPE_NOW,
 							},

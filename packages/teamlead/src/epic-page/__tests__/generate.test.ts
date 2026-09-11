@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { EpicItemFacts } from "../../StateStore.js";
-import { generateEpicPage } from "../generate.js";
+import { generateAttentionEpicPage, generateEpicPage } from "../generate.js";
 import { assertEpicPage, type Signal } from "../model.js";
 import {
 	assertEpicPageRenderReceipt,
 	buildEpicPageRenderReceipt,
 } from "../receipt.js";
+import { attentionFixture } from "./fixtures/attention.js";
 import {
 	EPIC_SHAPE_NOW,
 	emptyItemFacts,
@@ -480,5 +481,114 @@ describe("generateEpicPage", () => {
 			reason: "statestore_error",
 		});
 		expect(() => assertEpicPage(page)).not.toThrow();
+	});
+});
+
+describe("generateAttentionEpicPage", () => {
+	const input = () => ({
+		snapshot: epicShapeSnapshot(),
+		itemFacts: epicShapeSnapshot().items.map(() => emptyItemFacts()),
+		now: new Date("2026-09-09T12:00:00Z"),
+		projectName: "example",
+		trigger: "manual" as const,
+		scopeBinding: { team: "FLY" },
+		attention: attentionFixture(),
+	});
+	it("produces explicit v2 while preserving successful Epic content", () => {
+		const data = input();
+		const legacy = generateEpicPage(data);
+		const page = generateAttentionEpicPage(data);
+		expect(page.schema_version).toBe(2);
+		expect(page.generator.version).toBe("epic-page/2");
+		expect(page.items).toEqual(legacy.items);
+		expect(page.header).toEqual(legacy.header);
+		expect(page.attention).toHaveLength(3);
+		expect(() => assertEpicPage(page)).not.toThrow();
+	});
+	it("keeps attention with null scope and marks every scope dependent Cell unavailable", () => {
+		const data = input();
+		const page = generateAttentionEpicPage({
+			...data,
+			snapshot: null,
+			itemFacts: [],
+		});
+		expect(page.attention).toHaveLength(3);
+		expect(page.items).toEqual([]);
+		for (const cell of [
+			page.epic_scope,
+			page.header.roots,
+			page.header.items,
+			page.founder_items,
+			page.ready_items,
+			page.dependency_review,
+			page.stuck_items,
+			page.gaps,
+		])
+			expect(cell).toMatchObject({
+				value: null,
+				missing: { reason: "epic_scope_unavailable" },
+			});
+		expect(page.header.roots.provenance).toMatchObject({
+			kind: "linear",
+			id: "FLY",
+		});
+		expect(() => assertEpicPage(page)).not.toThrow();
+		page.ready_items.value = [];
+		delete page.ready_items.missing;
+		expect(() => assertEpicPage(page)).toThrow();
+	});
+	it("includes all attention raw leaves in freshness and receipt provenance", () => {
+		const data = input();
+		data.attention.candidates[1].sources[0].recipient_role!.observed_at =
+			"2025-01-01T00:00:00Z";
+		const page = generateAttentionEpicPage(data);
+		expect(page.freshness.oldest_source.value?.path).toBe(
+			"/attention/1/sources/0/recipient_role",
+		);
+		const receipt = buildEpicPageRenderReceipt(page);
+		const paths = receipt.sources.map((source) => source.path);
+		expect(paths).toEqual(
+			expect.arrayContaining([
+				"/discord/guild_id",
+				"/attention_sources/identity_reads/statestore",
+				"/attention_sources/identity_reads/linear",
+				"/attention_sources/gates",
+				"/attention_sources/questions",
+				"/attention_sources/founder_review",
+				"/attention/1/sources/0/recipient_role",
+				"/attention/1/sources/0/fact",
+				"/attention/1/thread",
+			]),
+		);
+		expect(paths).not.toContain("/attention_sources/budget");
+		expect(paths).not.toContain("/attention/1/thread_url");
+		expect(receipt.sources.every((source) => !("value" in source))).toBe(true);
+	});
+	it("requires explicit attention input and scope binding", () => {
+		const data = input();
+		expect(() =>
+			generateAttentionEpicPage({ ...data, attention: undefined } as never),
+		).toThrow();
+		expect(() =>
+			generateAttentionEpicPage({
+				...data,
+				scopeBinding: undefined,
+				snapshot: null,
+				itemFacts: [],
+			} as never),
+		).toThrow();
+	});
+	it("includes identity query read health in freshness and source-only receipt", () => {
+		const data = input();
+		data.attention.identityReads.linear.observed_at = "2024-01-01T00:00:00Z";
+		const page = generateAttentionEpicPage(data);
+		expect(page.freshness.oldest_source.value?.path).toBe(
+			"/attention_sources/identity_reads/linear",
+		);
+		expect(
+			buildEpicPageRenderReceipt(page).sources.find(
+				(source) => source.path === "/attention_sources/identity_reads/linear",
+			)?.provenance.kind,
+		).toBe("linear");
 	});
 });

@@ -1,0 +1,31 @@
+classDiagram
+  class Page {
+    生成时间
+    三路是否查全
+  }
+  class Attention {
+    单号与标题
+    类型与动作
+    等待开始时间
+    讨论串链接
+  }
+  class Source {
+    原记录编号
+    原记录状态
+    来源与观察时间
+  }
+  class DiscordConfig {
+    唯一服务器编号
+    配置是否有效
+  }
+  class ThreadBinding {
+    本单编号
+    父频道编号
+    讨论串编号
+  }
+  Page "1" *-- "0..多" Attention : 等你的事项
+  Attention "1" *-- "1..多" Source : 可核对的依据
+  Page "1" --> "1" DiscordConfig : 一份配置
+  Attention --> ThreadBinding : 找到本单讨论串
+  DiscordConfig ..> Attention : 生成链接
+  ThreadBinding ..> Attention : 生成链接

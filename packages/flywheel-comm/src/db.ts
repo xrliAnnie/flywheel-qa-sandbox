@@ -51,6 +51,10 @@ import {
 	MAILBOX_SCHEMA,
 	MAILBOX_SCHEMA_GENERATION,
 } from "./mailbox-schema.js";
+import {
+	isRunnerStopReport,
+	RUNNER_STOP_QUESTION_ID_RE,
+} from "./runner-stop-report.js";
 import { encodeSenderRef } from "./sender-ref.js";
 import type {
 	Message,
@@ -3942,6 +3946,94 @@ export class CommDB {
          ORDER BY q.created_at ASC`,
 			)
 			.all(leadId) as Message[];
+	}
+
+	/** Project database read: no Epic, session-liveness or age restriction. */
+	listAttentionQuestions(input: {
+		limit: number;
+		cursor?: { created_at: string; id: string };
+	}) {
+		if (
+			!Number.isSafeInteger(input.limit) ||
+			input.limit < 1 ||
+			input.limit > 1000
+		) {
+			throw new Error("attention_limit_invalid");
+		}
+		if (
+			input.cursor &&
+			(typeof input.cursor.id !== "string" ||
+				!input.cursor.id.trim() ||
+				typeof input.cursor.created_at !== "string" ||
+				!input.cursor.created_at.trim())
+		) {
+			throw new Error("attention_cursor_invalid");
+		}
+		const rows = this.db
+			.prepare(`
+			SELECT id, created_at, from_agent AS execution_id,
+			       strftime('%Y-%m-%dT%H:%M:%SZ', created_at) AS since,
+			       kind, content, content_ref, checkpoint, relay_state, recipient_kind AS recipient_role
+			FROM mailbox q WHERE type = 'question'
+			AND relay_state != 'terminal_disposed' AND superseded_at IS NULL
+			AND COALESCE(checkpoint, '') NOT IN ('review_design', 'review_code')
+			AND NOT EXISTS (SELECT 1 FROM mailbox r WHERE r.ref_id = q.id AND r.type = 'response')
+			AND (@cursor IS NULL OR (created_at, id) > (@cursor, @id))
+			ORDER BY created_at, id LIMIT @limit
+		`)
+			.all({
+				cursor: input.cursor?.created_at ?? null,
+				id: input.cursor?.id ?? null,
+				limit: input.limit + 1,
+			}) as Array<{
+			id: string;
+			created_at: string;
+			execution_id: string;
+			since: string | null;
+			kind: string;
+			content: string;
+			content_ref: string | null;
+			checkpoint: string | null;
+			relay_state: string;
+			recipient_role: string | null;
+		}>;
+		const founderKinds: Record<string, string> = {
+			approve_to_ship: "ship",
+			founder_review: "founder_gate",
+			brainstorm: "founder_gate",
+		};
+		const page = rows.slice(0, input.limit);
+		const last = page.at(-1);
+		const questions = page
+			.filter((row) => !isRunnerStopReport(row))
+			.filter(
+				(row) =>
+					!(
+						row.content_ref &&
+						row.kind === "report" &&
+						RUNNER_STOP_QUESTION_ID_RE.test(row.id)
+					),
+			)
+			.map(({ content: _content, content_ref: _ref, relay_state, ...row }) => ({
+				...row,
+				// Selection above establishes an unanswered, non-disposed question.
+				state: "pending" as const,
+				classification_unknown: Boolean(_ref && row.kind == null),
+				kind:
+					relay_state === "protected" &&
+					row.checkpoint &&
+					Object.hasOwn(founderKinds, row.checkpoint)
+						? founderKinds[row.checkpoint]
+						: "question",
+			}));
+		return {
+			questions,
+			rawCount: page.length,
+			nextCursor:
+				rows.length > input.limit && last
+					? { created_at: last.created_at, id: last.id }
+					: null,
+		};
 	}
 
 	/**

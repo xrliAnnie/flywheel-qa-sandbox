@@ -1,9 +1,13 @@
 import express from "express";
+import { readAttentionSources } from "../epic-page/attention-sources.js";
 import {
-	type GenerateEpicPageInput,
-	generateEpicPage,
+	type GenerateAttentionEpicPageInput,
+	generateAttentionEpicPage,
 } from "../epic-page/generate.js";
-import { materializeEpicPage } from "../epic-page/materialize.js";
+import {
+	type MaterializeEpicPageDeps,
+	materializeEpicPage,
+} from "../epic-page/materialize.js";
 import { type EpicPage, EpicPageSchemaError } from "../epic-page/model.js";
 import {
 	buildEpicPageRenderReceipt,
@@ -45,7 +49,8 @@ export interface EpicPageRouterDeps {
 	linearApiKey?: string;
 	fetchSnapshot?: typeof fetchLinearActiveScopeSnapshot;
 	now?: () => Date;
-	generatePage?: (input: GenerateEpicPageInput) => EpicPage;
+	generatePage?: (input: GenerateAttentionEpicPageInput) => EpicPage;
+	readAttention?: MaterializeEpicPageDeps["readAttention"];
 	buildReceipt?: (page: EpicPage) => EpicPageRenderReceipt;
 	serializer?: EpicPageSerializer;
 	publisher?: EpicPagePublisher;
@@ -192,7 +197,7 @@ export function createEpicPageStatusRouter(
 export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 	const router = express.Router();
 	const fetchSnapshot = deps.fetchSnapshot ?? fetchLinearActiveScopeSnapshot;
-	const generatePage = deps.generatePage ?? generateEpicPage;
+	const generatePage = deps.generatePage ?? generateAttentionEpicPage;
 	const buildReceipt = deps.buildReceipt ?? buildEpicPageRenderReceipt;
 	const now = deps.now ?? (() => new Date());
 	const serializer = deps.serializer ?? createEpicPageSerializer();
@@ -234,6 +239,20 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 						materializeEpicPage(
 							{
 								fetchSnapshot,
+								readAttention:
+									deps.readAttention ??
+									((request, generatedAt) =>
+										readAttentionSources(
+											{ stateStore: deps.store },
+											{
+												...request,
+												now: generatedAt,
+												channelIds:
+													deps.projects
+														.find((p) => p.projectName === request.projectName)
+														?.leads.map((l) => l.chatChannel) ?? [],
+											},
+										)),
 								readItemFacts: (projectName, item) =>
 									readEpicItemFacts(deps.store, projectName, item),
 								readSignals: (projectName, items, generatedAt) =>

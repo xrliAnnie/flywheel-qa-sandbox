@@ -52,6 +52,131 @@ describe("flywheel-comm dependency", () => {
 		expect(source).toContain("dependency  Maintain the live dependency ledger");
 	});
 
+	it.each(["no_active_roots", "missing_daily_root"] as const)(
+		"reports %s from real materialization over successful HTTP",
+		async (reason) => {
+			const { generateAttentionEpicPage } = await import(
+				"../../../../teamlead/src/epic-page/generate.js"
+			);
+			const { attentionFixture } = await import(
+				"../../../../teamlead/src/epic-page/__tests__/fixtures/attention.js"
+			);
+			const { materializeEpicPage } = await import(
+				"../../../../teamlead/src/epic-page/materialize.js"
+			);
+			const { ActiveScopeNotFoundError } = await import(
+				"../../../../teamlead/src/bridge/linear-epic-query.js"
+			);
+			const { buildEpicPageRenderReceipt } = await import(
+				"../../../../teamlead/src/epic-page/receipt.js"
+			);
+			const readItemFacts = vi.fn();
+			const result = await materializeEpicPage(
+				{
+					fetchSnapshot: async () => {
+						throw new ActiveScopeNotFoundError("missing", reason);
+					},
+					readLeadNotes: () => [],
+					readAttention: async () => attentionFixture(),
+					readItemFacts,
+					readSignals: () => [],
+					readFreshness: () => ({}),
+					generatePage: generateAttentionEpicPage,
+					buildReceipt: buildEpicPageRenderReceipt,
+					now: () => new Date("2026-09-09T12:00:00Z"),
+				},
+				{
+					projectName: "flywheel",
+					binding: { team: "FLY" },
+					apiKey: "test",
+					trigger: "manual",
+					version: 1,
+					reasons: ["manual"],
+				},
+			);
+			expect(result.snapshot).toBeNull();
+			expect(readItemFacts).not.toHaveBeenCalled();
+			const document = result.page;
+
+			expect(document.attention).toHaveLength(3);
+			const input = deps({
+				fetchFn: vi.fn(async () => response({ document })),
+			});
+			expect(await runDependency(["show"], input)).toBe(1);
+			expect(JSON.parse(vi.mocked(input.log!).mock.calls[0]![0])).toEqual({
+				ok: false,
+				error: "active_scope_not_found",
+			});
+			expect(input.errorLog).toHaveBeenCalledWith(
+				"dependency show: Epic 范围不可用，请补齐 Epic/日常筐前置",
+			);
+		},
+	);
+	it.each([
+		{ schema_version: 1 },
+		{ schema_version: "2" },
+		{ epic_scope: { value: { available: true } } },
+		{ epic_scope: { value: null, missing: { reason: "source_unavailable" } } },
+		{ ready_items: { value: [] } },
+		{
+			dependency_review: {
+				value: null,
+				missing: { reason: "source_unavailable" },
+			},
+		},
+		{ ready_items: { value: null } },
+		{ epic_scope: null },
+	])("rejects contradictory scope-missing response %#", async (patch) => {
+		const missing = () => ({
+			value: null,
+			missing: { reason: "epic_scope_unavailable" },
+		});
+		const document = {
+			schema_version: 2,
+			epic_scope: missing(),
+			ready_items: missing(),
+			dependency_review: missing(),
+			...patch,
+		};
+		const input = deps({ fetchFn: vi.fn(async () => response({ document })) });
+		expect(await runDependency(["show"], input)).toBe(1);
+		expect(JSON.parse(vi.mocked(input.log!).mock.calls[0]![0])).toEqual({
+			ok: false,
+			error: "invalid_response",
+		});
+	});
+	it("preserves legacy 422 scope errors", async () => {
+		const input = deps({
+			fetchFn: vi.fn(async () =>
+				response(
+					{ error: "active_scope_not_found" },
+					{ ok: false, status: 422 },
+				),
+			),
+		});
+		expect(await runDependency(["show"], input)).toBe(1);
+		expect(JSON.parse(vi.mocked(input.log!).mock.calls[0]![0])).toEqual({
+			ok: false,
+			error: "active_scope_not_found",
+			status: 422,
+		});
+	});
+	it("preserves normal v2 ready and review arrays", async () => {
+		const input = deps({
+			fetchFn: vi.fn(async () =>
+				response({
+					document: {
+						schema_version: 2,
+						epic_scope: { value: { available: true } },
+						ready_items: { value: [] },
+						dependency_review: { value: [] },
+					},
+				}),
+			),
+		});
+		expect(await runDependency(["show"], input)).toBe(0);
+	});
+
 	it("adds a missed dependency with a generated operation id", async () => {
 		const input = deps();
 

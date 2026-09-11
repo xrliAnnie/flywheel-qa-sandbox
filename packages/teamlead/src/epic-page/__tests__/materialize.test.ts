@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { generateEpicPage } from "../generate.js";
+import { ActiveScopeNotFoundError } from "../../bridge/linear-epic-query.js";
+import { generateAttentionEpicPage, generateEpicPage } from "../generate.js";
 import { materializeEpicPage } from "../materialize.js";
 import { buildEpicPageRenderReceipt } from "../receipt.js";
+import { renderEpicPageHtml } from "../render-html.js";
+import { attentionFixture, candidate } from "./fixtures/attention.js";
 import {
 	EPIC_SHAPE_NOW,
 	emptyItemFacts,
@@ -9,6 +12,101 @@ import {
 } from "./fixtures/epic-shape.js";
 
 describe("FLY-2143 Epic page materialization inputs", () => {
+	it("budgets the complete generated HTML without losing Epic items", async () => {
+		const attention = attentionFixture();
+		attention.candidates = Array.from({ length: 200 }, (_, i) => {
+			const row = candidate(
+				i + 1000,
+				"founder_gate",
+				"statestore",
+				"workflow_gate_holder",
+			);
+			row.title.value = "<&>".repeat(600);
+			return row;
+		});
+		attention.reads.gates.value = { count: 200 };
+		attention.reads.questions.value = { count: 0 };
+		attention.reads.founder_review.value = { count: 0 };
+		const result = await materializeEpicPage(
+			{
+				fetchSnapshot: async () => epicShapeSnapshot(),
+				readAttention: async () => attention,
+				readLeadNotes: () => [],
+				readItemFacts: () => emptyItemFacts(),
+				readSignals: () =>
+					generateEpicPage({
+						snapshot: epicShapeSnapshot(),
+						itemFacts: epicShapeSnapshot().items.map(() => emptyItemFacts()),
+						projectName: "example",
+						now: EPIC_SHAPE_NOW,
+						trigger: "manual",
+					}).items.map((item) => ({
+						signals: item.signals,
+						signal_sources: item.signal_sources,
+					})),
+				readFreshness: () => ({}),
+				generatePage: generateAttentionEpicPage,
+				buildReceipt: buildEpicPageRenderReceipt,
+				now: () => new Date("2026-09-09T12:00:00Z"),
+			},
+			{
+				projectName: "example",
+				binding: { team: "EPX" },
+				apiKey: "test",
+				trigger: "manual",
+				version: 1,
+				reasons: ["manual"],
+			},
+		);
+		expect(result.page.items).toHaveLength(epicShapeSnapshot().items.length);
+		expect(
+			Buffer.byteLength(renderEpicPageHtml(result.page)),
+		).toBeLessThanOrEqual(512 * 1024);
+		expect(result.page.attention_sources.budget.missing?.reason).toBe(
+			"source_truncated",
+		);
+	});
+	it.each(["no_active_roots", "missing_daily_root"] as const)(
+		"preserves independent attention with %s",
+		async (reason) => {
+			const readAttention = vi.fn(async () => attentionFixture());
+			const readItemFacts = vi.fn();
+			const result = await materializeEpicPage(
+				{
+					fetchSnapshot: async () => {
+						throw new ActiveScopeNotFoundError("missing", reason);
+					},
+					readAttention,
+					readLeadNotes: () => [],
+					readItemFacts,
+					readSignals: () => [],
+					readFreshness: () => ({}),
+					generatePage: generateAttentionEpicPage,
+					buildReceipt: buildEpicPageRenderReceipt,
+					now: () => new Date("2026-09-09T12:00:00Z"),
+				},
+				{
+					projectName: "example",
+					binding: { team: "EPX" },
+					apiKey: "test",
+					trigger: "manual",
+					version: 1,
+					reasons: ["manual"],
+				},
+			);
+			expect(result.snapshot).toBeNull();
+			expect(result.page).toMatchObject({
+				schema_version: 2,
+				epic_scope: {
+					value: null,
+					missing: { reason: "epic_scope_unavailable" },
+				},
+			});
+			expect(result.page.attention).toHaveLength(3);
+			expect(readItemFacts).not.toHaveBeenCalled();
+			expect(readAttention).toHaveBeenCalledOnce();
+		},
+	);
 	it("injects signals, prior freshness, and the prospective version into one generation", async () => {
 		const snapshot = epicShapeSnapshot();
 		const readSignals = vi.fn((_projectName, items) =>
@@ -76,8 +174,9 @@ describe("FLY-2143 Epic page materialization inputs", () => {
 				readItemFacts: () => emptyItemFacts(),
 				readSignals,
 				readFreshness,
+				readAttention: async () => attentionFixture(),
+				generatePage: generateAttentionEpicPage,
 				readLeadNotes,
-				generatePage: generateEpicPage,
 				buildReceipt: buildEpicPageRenderReceipt,
 				now: () => EPIC_SHAPE_NOW,
 			},
