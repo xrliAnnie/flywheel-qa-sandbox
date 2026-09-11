@@ -2,15 +2,15 @@
 issue: FLY-2507
 phase: design
 phaseCursor: 1/4
-updated: 2026-09-11T02:05:48.802Z
-nextStep: plan-v3.md now incorporates Lead actor/shared suppression ledger
-  ruling and resolved path clarification; instruction DONE reported. R2 gate
-  23c50330-0a72-41b9-b1c4-ecb809f47c90 still pending. On result submit final R3
-  with plan-v3; if rejected report Lead, no fourth round.
+updated: 2026-09-11T02:11:00.851Z
+nextStep: R2 APPROVED consumed. Final R3 plan-v3.md gate
+  7edac435-c840-4e0c-bf9b-5bb34c1ee6de pending, includes Lead
+  actor/shared-ledger ruling and production-path positive guard. If R3 rejected
+  report Lead, no fourth round. No behavior code changed.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2507 progress
 **phase**: design (1/4)
-**next**: plan-v3.md now incorporates Lead actor/shared suppression ledger ruling and resolved path clarification; instruction DONE reported. R2 gate 23c50330-0a72-41b9-b1c4-ecb809f47c90 still pending. On result submit final R3 with plan-v3; if rejected report Lead, no fourth round.
+**next**: R2 APPROVED consumed. Final R3 plan-v3.md gate 7edac435-c840-4e0c-bf9b-5bb34c1ee6de pending, includes Lead actor/shared-ledger ruling and production-path positive guard. If R3 rejected report Lead, no fourth round. No behavior code changed.
