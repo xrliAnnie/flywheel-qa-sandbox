@@ -60,6 +60,7 @@ export FLYWHEEL_COMM_DB="${FLYWHEEL_COMM_DB:-${HOME}/.flywheel/comm/${FLYWHEEL_P
 export FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" # #mufasa
 # #leads-roundtable — discord_send "roundtable" alias + FLY-267 cross-dept inbound.
 export FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-1512578695468941333}"
+export FLYWHEEL_ROUNDTABLE_CHANNEL_ID="${FLYWHEEL_ROUNDTABLE_CHANNEL_ID:-1512578695468941333}"
 # Memory continuity: the SAME state dir the headless/TUI launchers pin, so the
 # persisted thread id resolves and 019eaf5d resumes verbatim. HARD-pinned (NOT
 # env-overridable): a stray FLYWHEEL_CODEX_LEAD_STATE_DIR in the sourced .env must

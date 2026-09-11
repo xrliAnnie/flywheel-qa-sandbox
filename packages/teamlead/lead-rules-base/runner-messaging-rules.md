@@ -52,6 +52,21 @@ gate response before any question or response state is written.
 - Other checkpoints (`clarify_question`, project-specific gates) are unchanged
   and use the plain `respond` command.
 
+## Recipient ID + post-send verification (FLY-1942)
+
+- `flywheel-comm send --to` / `respond` take the FULL execution UUID, or a hex PREFIX of ≥ 8
+  chars that resolves to exactly one session. The CLI refuses, with exit ≠ 0 and a reason, any
+  of: `recipient_malformed` (not hex / < 8 chars), `recipient_not_found` (no session ever had
+  this id — check `flywheel-comm sessions list --project <p>`), `recipient_ambiguous` (prefix
+  matches > 1 — use the full id), `recipient_terminal` (finalized or in a terminal status —
+  the Runner lane would dead-letter it on the next tick; re-engage a live successor or start a
+  new run via the Bridge). There is no override flag.
+- `runner-<8char>` is the SendMessage address domain, NOT a `--to` value. Strip the `runner-`.
+- Keep the printed message id. On your next patrol tick run `flywheel-comm message-status <id>`:
+  `ACKED` = consumed; `QUEUED`/`LEASED` = not yet; `DEAD` = never delivered — read `dead_reason`
+  (`recipient_missing` = you sent to a non-session; `recipient_terminal` = it died first) and
+  resend to the right live recipient. A printed id is NOT delivery.
+
 ## Driving a parked / idle Runner — use a WAKING channel (FLY-369 RC-2)
 
 To **drive or unblock a parked (awaiting-lead / idle) Runner**, use a channel that
@@ -67,7 +82,7 @@ footgun stranded parked Runners (FLY-351 S2/S3 diff-approval). Keep `respond` fo
 
 | Path | Wakes? | Why |
 |------|:------:|-----|
-| `SendMessage` / `flywheel-comm send` | ✅ | unconditional mailbox write (FLY-168) — the driver path |
+| `SendMessage` / `flywheel-comm send` | ✅ when the recipient exists and is mailbox-live | unconditional mailbox write (FLY-168) once accepted; malformed, unknown, ambiguous or terminal recipients are rejected (FLY-1942) |
 | `respond` to a checkpoint-less `ask` | ✅ | FLY-142 `wakeAskedRunnerBestEffort` (vendor-neutral) |
 | `respond` to a trusted `[REPORT]` runner-stop declaration | Rejected | ACK-only by FLY-2017; never wake a parked Runner with a response |
 | `respond` to a **marker-bearing** no-block gate (Codex) | ✅ | `wakeNoBlockGateRunnerBestEffort` via the gate marker |

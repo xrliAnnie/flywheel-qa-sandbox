@@ -20,12 +20,22 @@ describe("respond canonical mailbox write", () => {
 		const dbPath = join(root, "comm.db");
 		const markerDir = join(root, "markers");
 		const db = new CommDB(dbPath);
-		db.registerSession("exec-1", "runner", "flywheel", "issue-1", "lead-a");
-		const questionId = db.insertQuestion("exec-1", "lead-a", "question");
+		db.registerSession(
+			"b1023db2-d31b-5e51-8d7e-5aba3c296626",
+			"runner",
+			"flywheel",
+			"issue-1",
+			"lead-a",
+		);
+		const questionId = db.insertQuestion(
+			"b1023db2-d31b-5e51-8d7e-5aba3c296626",
+			"lead-a",
+			"question",
+		);
 		db.close();
 		writeAskMarker(markerDir, {
 			questionId,
-			executionId: "exec-1",
+			executionId: "b1023db2-d31b-5e51-8d7e-5aba3c296626",
 			vendor: "codex",
 		});
 		const env = createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"];
@@ -40,11 +50,13 @@ describe("respond canonical mailbox write", () => {
 		try {
 			expect(verify.getResponse(questionId)).toMatchObject({
 				from_agent: "lead-a",
-				to_agent: "exec-1",
+				to_agent: "b1023db2-d31b-5e51-8d7e-5aba3c296626",
 				content: "answer",
 				delivered_at: null,
 			});
-			expect(verify.listRunnerPhaseWakes("exec-1")).toEqual([]);
+			expect(
+				verify.listRunnerPhaseWakes("b1023db2-d31b-5e51-8d7e-5aba3c296626"),
+			).toEqual([]);
 			expect(readAskMarker(markerDir, questionId)).toBeUndefined();
 		} finally {
 			verify.close();
@@ -58,9 +70,15 @@ describe("respond canonical mailbox write", () => {
 		const markerDir = join(root, "markers");
 		const questionId = `rstop-${"a".repeat(32)}`;
 		const db = new CommDB(dbPath);
-		db.registerSession("exec-1", "runner", "flywheel", "FLY-2017", "lead-a");
+		db.registerSession(
+			"b1023db2-d31b-5e51-8d7e-5aba3c296626",
+			"runner",
+			"flywheel",
+			"FLY-2017",
+			"lead-a",
+		);
 		db.insertQuestion(
-			"exec-1",
+			"b1023db2-d31b-5e51-8d7e-5aba3c296626",
 			"lead-a",
 			"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=exec-1 route=- detail=parked: quiet-wait",
 			{ id: questionId, kind: "report" },
@@ -68,7 +86,7 @@ describe("respond canonical mailbox write", () => {
 		db.close();
 		writeAskMarker(markerDir, {
 			questionId,
-			executionId: "exec-1",
+			executionId: "b1023db2-d31b-5e51-8d7e-5aba3c296626",
 			vendor: "codex",
 		});
 		const env = createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"];
@@ -87,7 +105,9 @@ describe("respond canonical mailbox write", () => {
 		try {
 			expect(verify.getResponse(questionId)).toBeUndefined();
 			expect(readAskMarker(markerDir, questionId)).toBeDefined();
-			expect(verify.listRunnerPhaseWakes("exec-1")).toEqual([]);
+			expect(
+				verify.listRunnerPhaseWakes("b1023db2-d31b-5e51-8d7e-5aba3c296626"),
+			).toEqual([]);
 		} finally {
 			verify.close();
 		}

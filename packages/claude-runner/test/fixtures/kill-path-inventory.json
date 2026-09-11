@@ -2988,6 +2988,24 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/hooks/test-flywheel-restart-guard.py:('kill -9 \"$(pgrep -f run-bridge)\"', True),#1",
+		"path": "scripts/hooks/test-flywheel-restart-guard.py",
+		"code": "('kill -9 \"$(pgrep -f run-bridge)\"', True),",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/hooks/test-flywheel-restart-guard.py:('kill -9 $(pgrep -f run-bridge)', True),#1",
+		"path": "scripts/hooks/test-flywheel-restart-guard.py",
+		"code": "('kill -9 $(pgrep -f run-bridge)', True),",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/hooks/test-flywheel-restart-guard.py:('pgrep -f run-bridge | (xargs kill -9)', True),#1",
+		"path": "scripts/hooks/test-flywheel-restart-guard.py",
+		"code": "('pgrep -f run-bridge | (xargs kill -9)', True),",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/hooks/test-flywheel-restart-guard.py:(\"pgrep -f run-bridge | xargs kill -9\", \"P2 pgrep|xargs kill (FLY-176 form)\"),#1",
 		"path": "scripts/hooks/test-flywheel-restart-guard.py",
 		"code": "(\"pgrep -f run-bridge | xargs kill -9\", \"P2 pgrep|xargs kill (FLY-176 form)\"),",

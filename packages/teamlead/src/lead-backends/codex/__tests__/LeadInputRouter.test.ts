@@ -672,3 +672,45 @@ describe("LeadInputRouter — typing indicator (FLY-404)", () => {
 		expect(store.getById(entryId)?.state).toBe("completed");
 	});
 });
+
+describe("FLY-1942 accepted subscription callbacks", () => {
+	it("notifies only new submit and batch entries, never duplicate or journal failure", async () => {
+		const journal = new LeadJournal({ store: new InMemoryJournalStore() });
+		const accepted = vi.fn(),
+			engaged = vi.fn();
+		const router = new LeadInputRouter({
+			leadId: "lead",
+			threadId: "thread",
+			journal,
+			executor: new FakeExecutor(),
+			sender: new FakeSender(),
+			onInputAccepted: accepted,
+			onTopicEngaged: engaged,
+		});
+		const input = {
+			idempotencyKey: "one",
+			source: "discord" as const,
+			payload: "hi",
+			replyChannelId: "11111111111111111",
+		};
+		router.submit(input);
+		router.submit(input);
+		const batch = {
+			batchId: "batch",
+			memberIds: ["member"],
+			payload: "hi",
+			replyChannelId: "11111111111111111",
+		};
+		router.submitBatch(batch);
+		router.submitBatch(batch);
+		expect(accepted).toHaveBeenCalledTimes(2);
+		vi.spyOn(journal, "accept").mockImplementation(() => {
+			throw Error("disk full");
+		});
+		expect(() => router.submit({ ...input, idempotencyKey: "two" })).toThrow(
+			"disk full",
+		);
+		expect(accepted).toHaveBeenCalledTimes(2);
+		await router.whenIdle();
+	});
+});

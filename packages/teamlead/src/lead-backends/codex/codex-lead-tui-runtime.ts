@@ -720,6 +720,7 @@ export function buildTuiGeneration(
 						const replyInThread = config.replyInThread
 							? buildReplyInThreadWiring({
 									cfg: config.replyInThread,
+									stateDir: config.stateDir,
 									botToken: config.botToken,
 									botUserId: config.botUserId,
 									crossDeptChannelIds: config.crossDeptChannelIds,
@@ -744,7 +745,8 @@ export function buildTuiGeneration(
 							...(replyInThread
 								? {
 										ensureReplyRoute: replyInThread.ensureReplyRoute,
-										onTopicEngaged: replyInThread.seedBudgetForRoute,
+										onTopicEngaged: replyInThread.onTopicEngaged,
+										onInputAccepted: replyInThread.onInputAccepted,
 									}
 								: {}),
 						});
@@ -754,6 +756,14 @@ export function buildTuiGeneration(
 							leadId: config.leadId,
 							router,
 							authSecret: config.botToken,
+							...(replyInThread
+								? {
+										subscriptions: {
+											list: replyInThread.listSubscriptions,
+											remove: replyInThread.unsubscribeThread,
+										},
+									}
+								: {}),
 						});
 						// FLY-267 判 + 回: mirror the headless mention-gate + reply-routing so
 						// the TUI runtime does NOT spam shared channels and routes replies back
@@ -819,15 +829,8 @@ export function buildTuiGeneration(
 							authSecret: config.botToken,
 							server: inboxServer,
 							gateway: {
-								start: async () => {
-									await gateway.start();
-									try {
-										await replyInThread?.start();
-									} catch (error) {
-										await gateway.stop();
-										throw error;
-									}
-								},
+								start: (): Promise<void> =>
+									startCodexLeadTuiGateway(gateway, replyInThread),
 								stop: async () => {
 									try {
 										await replyInThread?.stop();
@@ -1168,4 +1171,22 @@ if (process.argv[1]?.includes("codex-lead-tui-runtime")) {
 		console.error("[codex-lead-tui-runtime] fatal:", err);
 		process.exit(1);
 	});
+}
+
+/** Restore authority before the gateway can drain persisted inbound cursors. */
+export async function startCodexLeadTuiGateway(
+	gateway: { start(): Promise<void>; stop(): Promise<void> },
+	subscriptions?: {
+		restoreState(): Promise<void>;
+		activateSource(): Promise<void>;
+	},
+): Promise<void> {
+	await subscriptions?.restoreState();
+	await gateway.start();
+	try {
+		await subscriptions?.activateSource();
+	} catch (error) {
+		await gateway.stop();
+		throw error;
+	}
 }

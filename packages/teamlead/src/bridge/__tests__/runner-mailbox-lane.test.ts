@@ -602,3 +602,42 @@ describe("RunnerMailboxLane", () => {
 		}
 	});
 });
+
+it("FLY-1942 routes missing recipient notices back to the configured sender Lead", async () => {
+	const value = queue();
+	try {
+		value.enqueue({
+			id: "missing-recipient",
+			fromAgent: "sender-lead",
+			toAgent: "missing",
+			recipientKind: "runner",
+			type: "instruction",
+			content: "continue",
+			createdAt: NOW,
+			senderRef: encodeSenderRef(),
+		});
+		const lane = new RunnerMailboxLane({
+			queue: value,
+			ownerEpoch: "owner-1",
+			now: () => new Date(NOW),
+			recipientState: () => "missing",
+			resolveOwningLead: () => undefined,
+			resolveSenderLead: (sender) =>
+				sender === "sender-lead" ? sender : undefined,
+			deliver: async () => {
+				throw new Error("dead recipients must not deliver");
+			},
+		});
+		await lane.tick();
+		expect(value.getById("missing-recipient")?.dead_reason).toBe(
+			"recipient_missing",
+		);
+		const notice = value.getById("dead_letter:missing:sender-lead:1");
+		expect(notice).toMatchObject({
+			to_agent: "sender-lead",
+			type: "dead_letter_notice",
+		});
+	} finally {
+		value.close();
+	}
+});

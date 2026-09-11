@@ -18,6 +18,7 @@ import {
 import { join } from "node:path";
 import type { LeadInputBatch, LeadInputRouter } from "./LeadInputRouter.js";
 import type { BatchAcceptStatus } from "./LeadJournal.js";
+import type { SubscriptionEntry } from "./RoundtableThreadRegistry.js";
 
 const PROTOCOL_VERSION = 2;
 const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
@@ -41,7 +42,27 @@ interface CapabilitiesRequest {
 	auth: string;
 }
 
-type InboxRequest = SubmitBatchRequest | CapabilitiesRequest;
+interface ListSubscriptionsRequest {
+	version: 2;
+	method: "listSubscriptions";
+	leadId: string;
+	auth: string;
+}
+
+interface UnsubscribeThreadRequest {
+	version: 2;
+	method: "unsubscribeThread";
+	leadId: string;
+	threadId: string;
+	reason: string;
+	auth: string;
+}
+
+type InboxRequest =
+	| SubmitBatchRequest
+	| CapabilitiesRequest
+	| ListSubscriptionsRequest
+	| UnsubscribeThreadRequest;
 
 interface SubmitBatchResponse {
 	ok: true;
@@ -74,6 +95,10 @@ export interface CodexLeadInboxServerOptions {
 	socketOwnerId?: string;
 	/** Must be the same startup projection passed to this process's gateway. */
 	ignoredAuthorIds?: readonly string[];
+	subscriptions?: {
+		list(): SubscriptionEntry[];
+		remove(threadId: string, reason: string, actor: string): Promise<boolean>;
+	};
 	/** Crash seam: throw after journal commit to simulate response loss. */
 	afterCommit?: () => void | Promise<void>;
 }
@@ -207,6 +232,25 @@ export class CodexLeadInboxServer {
 				socket.end(`${JSON.stringify({ ok: true, capabilities })}\n`);
 				return;
 			}
+			if (
+				request.method === "listSubscriptions" ||
+				request.method === "unsubscribeThread"
+			) {
+				if (!this.opts.subscriptions)
+					throw new Error("subscriptions unavailable");
+				const result =
+					request.method === "listSubscriptions"
+						? { entries: this.opts.subscriptions.list() }
+						: {
+								removed: await this.opts.subscriptions.remove(
+									request.threadId,
+									request.reason,
+									"cli",
+								),
+							};
+				socket.end(`${JSON.stringify({ ok: true, ...result })}\n`);
+				return;
+			}
 			const result = this.opts.router.submitBatch(request.batch);
 			try {
 				await this.opts.afterCommit?.();
@@ -292,8 +336,86 @@ export async function probeCodexLeadInboxCapabilities(args: {
 	return response.capabilities;
 }
 
+interface SubscriptionClientArgs {
+	socketPath: string;
+	leadId: string;
+	authSecret: string;
+	timeoutMs?: number;
+}
+
+export async function listCodexLeadSubscriptions(
+	args: SubscriptionClientArgs,
+): Promise<SubscriptionEntry[]> {
+	const request = {
+		version: 2,
+		method: "listSubscriptions",
+		leadId: args.leadId,
+	} as const;
+	const response = (await subscriptionRequest(args, request)) as {
+		entries: SubscriptionEntry[];
+	};
+	return response.entries;
+}
+
+export async function unsubscribeCodexLeadThread(
+	args: SubscriptionClientArgs & { threadId: string; reason: string },
+): Promise<boolean> {
+	const request = {
+		version: 2,
+		method: "unsubscribeThread",
+		leadId: args.leadId,
+		threadId: args.threadId,
+		reason: args.reason,
+	} as const;
+	const response = (await subscriptionRequest(args, request)) as {
+		removed: boolean;
+	};
+	return response.removed;
+}
+
+async function subscriptionRequest(
+	args: SubscriptionClientArgs,
+	request:
+		| Omit<ListSubscriptionsRequest, "auth">
+		| Omit<UnsubscribeThreadRequest, "auth">,
+): Promise<unknown> {
+	const signed = { ...request, auth: signRequest(request, args.authSecret) };
+	const response = JSON.parse(
+		await requestResponse(
+			args.socketPath,
+			`${JSON.stringify(signed)}\n`,
+			args.timeoutMs ?? 5_000,
+		),
+	);
+	if (!response.ok) throw new CodexLeadInboxRejectedError(response.error);
+	return response;
+}
+
 function parseRequest(raw: string): InboxRequest {
 	const value = JSON.parse(raw.trim()) as Partial<InboxRequest>;
+	if (
+		value?.method === "listSubscriptions" ||
+		value?.method === "unsubscribeThread"
+	) {
+		const keys =
+			value.method === "listSubscriptions"
+				? ["version", "method", "leadId", "auth"]
+				: ["version", "method", "leadId", "auth", "threadId", "reason"];
+		if (
+			value.version !== 2 ||
+			typeof value.leadId !== "string" ||
+			!value.leadId.trim() ||
+			typeof value.auth !== "string" ||
+			Object.keys(value).some((key) => !keys.includes(key)) ||
+			(value.method === "unsubscribeThread" &&
+				(typeof value.threadId !== "string" ||
+					!/^\d{17,20}$/.test(value.threadId) ||
+					typeof value.reason !== "string" ||
+					!value.reason.trim()))
+		)
+			throw new Error("malformed subscription request");
+		return value as ListSubscriptionsRequest | UnsubscribeThreadRequest;
+	}
 	if (
 		value.method === "capabilities" &&
 		value.version === 2 &&
@@ -328,10 +450,21 @@ function parseRequest(raw: string): InboxRequest {
 
 type UnsignedInboxRequest =
 	| Omit<SubmitBatchRequest, "auth">
-	| Omit<CapabilitiesRequest, "auth">;
+	| Omit<CapabilitiesRequest, "auth">
+	| Omit<ListSubscriptionsRequest, "auth">
+	| Omit<UnsubscribeThreadRequest, "auth">;
 
 function canonicalRequest(request: UnsignedInboxRequest): string {
-	return request.method === "capabilities"
+	if (request.method === "unsubscribeThread")
+		return JSON.stringify({
+			version: request.version,
+			method: request.method,
+			leadId: request.leadId,
+			threadId: request.threadId,
+			reason: request.reason,
+		});
+	return request.method === "capabilities" ||
+		request.method === "listSubscriptions"
 		? JSON.stringify({
 				version: request.version,
 				method: request.method,
@@ -360,25 +493,7 @@ function authenticateRequest(
 	authSecret: string,
 ): boolean {
 	if (!/^[0-9a-f]{64}$/i.test(request.auth)) return false;
-	const expected = Buffer.from(
-		signRequest(
-			request.method === "capabilities"
-				? {
-						version: request.version,
-						method: request.method,
-						leadId: request.leadId,
-					}
-				: {
-						version: request.version,
-						method: request.method,
-						leadId: request.leadId,
-						ownerEpoch: request.ownerEpoch,
-						batch: request.batch,
-					},
-			authSecret,
-		),
-		"hex",
-	);
+	const expected = Buffer.from(signRequest(request, authSecret), "hex");
 	const actual = Buffer.from(request.auth, "hex");
 	return actual.length === expected.length && timingSafeEqual(actual, expected);
 }

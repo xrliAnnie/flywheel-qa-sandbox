@@ -28,7 +28,7 @@ trap 'rm -rf "$T"' EXIT
 
 # Scrub launcher-behavior-changing vars from the ambient env (a parent Lead session
 # may carry them) so a clean baseline is seen.
-unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
+unset FLYWHEEL_ROUNDTABLE_CHANNEL_ID FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
 	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND \
 	TEAMLEAD_API_TOKEN FLYWHEEL_API_TOKEN FLYWHEEL_BRIDGE_URL \
 	FLYWHEEL_CODEX_LEAD_PROJECT_DIR \
@@ -96,6 +96,7 @@ envval() { grep "^$2=" "$1" | head -1 | cut -d= -f2-; }
 # ── full-access TUI env composition ─────────────────────────────────────────
 D=$(run_dry env)
 if [ -f "$D" ]; then
+	[ "$(envval "$D" FLYWHEEL_ROUNDTABLE_CHANNEL_ID)" = "1512578695468941333" ] && pass "explicit roundtable parent exported" || fail "explicit roundtable parent missing"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_PROFILE)" = "full-access" ] && pass "PROFILE=full-access" || fail "PROFILE not full-access"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_SANDBOX)" = "workspace-write" ] && pass "SANDBOX=workspace-write" || fail "SANDBOX wrong"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_MODE)" = "tui" ] && pass "MODE=tui (windowed)" || fail "MODE not tui"

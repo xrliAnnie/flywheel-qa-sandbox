@@ -110,7 +110,8 @@ export function deliverFlagScanMailboxAlert(input: {
 	const primaryState = input.leadRecipientState?.(input.primaryLeadId);
 	const primaryDefinitelyUnavailable =
 		mailboxSettlementDead(primarySettlement) ||
-		primaryState === "terminal_or_missing";
+		primaryState === "terminal" ||
+		primaryState === "missing";
 	if (!primaryDefinitelyUnavailable) {
 		return {
 			done: false,

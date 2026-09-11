@@ -48,11 +48,11 @@ describe("FLY-1573 StateStore runner recipient state", () => {
 				"terminated",
 			]) {
 				expect(store.resolveRunnerRecipientState(executionId)?.state).toBe(
-					"terminal_or_missing",
+					"terminal",
 				);
 			}
 			expect(store.resolveRunnerRecipientState("missing")?.state).toBe(
-				"terminal_or_missing",
+				"missing",
 			);
 		} finally {
 			store.close();

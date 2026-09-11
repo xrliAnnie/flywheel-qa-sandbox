@@ -171,10 +171,11 @@ describe("CLI", () => {
 	});
 
 	function bindDefaultRunner(): void {
+		defaultCliEnv.FLYWHEEL_EXEC_ID = "6fbd7c14-30b9-546a-8465-3d8ec937f918";
 		const db = new CommDB(dbPath);
 		db.registerSession(
-			"runner",
-			"runner",
+			"6fbd7c14-30b9-546a-8465-3d8ec937f918",
+			"6fbd7c14-30b9-546a-8465-3d8ec937f918",
 			"test",
 			"issue-runner",
 			"product-lead",
@@ -191,7 +192,7 @@ describe("CLI", () => {
 					"--db",
 					dbPath,
 					"--exec-id",
-					"runner",
+					"6fbd7c14-30b9-546a-8465-3d8ec937f918",
 					"--issue-id",
 					"issue-runner",
 					"--source",
@@ -208,7 +209,7 @@ describe("CLI", () => {
 			const duplicate = runStop("status-duplicate", "wording B");
 			const db = new CommDB(dbPath);
 			db.recordRunnerStopDeclaration({
-				executionId: "runner",
+				executionId: "6fbd7c14-30b9-546a-8465-3d8ec937f918",
 				leadId: "product-lead",
 				stateKey: "fallback\0idle_without_declared_completion",
 				content: "future observation",
@@ -496,6 +497,8 @@ globalThis.fetch = async () => {
 			bindDefaultRunner();
 			const qId = runCli([
 				"ask",
+				"--exec-id",
+				"6fbd7c14-30b9-546a-8465-3d8ec937f918",
 				"--lead",
 				"product-lead",
 				"--db",
@@ -533,6 +536,8 @@ globalThis.fetch = async () => {
 			bindDefaultRunner();
 			const qId = runCli([
 				"ask",
+				"--exec-id",
+				"6fbd7c14-30b9-546a-8465-3d8ec937f918",
 				"--lead",
 				"product-lead",
 				"--db",
@@ -604,15 +609,19 @@ globalThis.fetch = async () => {
 
 		it("excludes trusted runner-stop reports but keeps ordinary and near-match questions", () => {
 			const db = new CommDB(dbPath);
-			db.insertQuestion("runner", "product-lead", "ordinary question");
 			db.insertQuestion(
-				"runner",
+				"6fbd7c14-30b9-546a-8465-3d8ec937f918",
+				"product-lead",
+				"ordinary question",
+			);
+			db.insertQuestion(
+				"6fbd7c14-30b9-546a-8465-3d8ec937f918",
 				"product-lead",
 				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=runner route=- detail=parked",
 				{ id: `rstop-${"a".repeat(32)}`, kind: "report" },
 			);
 			db.insertQuestion(
-				"runner",
+				"6fbd7c14-30b9-546a-8465-3d8ec937f918",
 				"product-lead",
 				"RUNNER-STOPPED kind=runner_stopped near match",
 				{ id: "ordinary-report", kind: "report" },
@@ -634,6 +643,8 @@ globalThis.fetch = async () => {
 			bindDefaultRunner();
 			const qId = runCli([
 				"ask",
+				"--exec-id",
+				"6fbd7c14-30b9-546a-8465-3d8ec937f918",
 				"--lead",
 				"product-lead",
 				"--db",
@@ -656,9 +667,14 @@ globalThis.fetch = async () => {
 			bindDefaultRunner();
 			const questionId = "turn-wait:runner:holder:3";
 			const db = new CommDB(dbPath);
-			db.insertQuestion("runner", "product-lead", "TURN handoff overdue", {
-				id: questionId,
-			});
+			db.insertQuestion(
+				"6fbd7c14-30b9-546a-8465-3d8ec937f918",
+				"product-lead",
+				"TURN handoff overdue",
+				{
+					id: questionId,
+				},
+			);
 			db.close();
 
 			const result = runCliSafe(
@@ -801,13 +817,95 @@ globalThis.fetch = async () => {
 	});
 
 	describe("send", () => {
+		beforeEach(() => {
+			const db = new CommDB(dbPath);
+			db.registerSession(
+				"2a796bc0-8d5c-5897-b76c-60a7e03a355d",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.registerSession(
+				"e67906a2-e54d-5e70-b46d-688e85c687a8",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.registerSession(
+				"b26c27e9-0877-5381-a246-d44ec85e3de4",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.close();
+		});
+
+		it("rejects malformed recipients with exit 2 and no success stdout", () => {
+			const result = runCliCaptured([
+				"send",
+				"--from",
+				"product-lead",
+				"--to",
+				"abcdef0",
+				"--db",
+				dbPath,
+				"continue",
+			]);
+			expect(result.exitCode).toBe(2);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain("recipient_malformed");
+		});
+		it("prints only id to stdout and resolved/verify hints to stderr", () => {
+			const id = "abcdef01-2345-6789-abcd-0123456789ab";
+			const db = new CommDB(dbPath);
+			db.registerSession(id, "s:w", "test", "FLY-1942", "product-lead");
+			db.close();
+			const result = runCliCaptured([
+				"send",
+				"--from",
+				"product-lead",
+				"--to",
+				"ABCDEF01",
+				"--db",
+				dbPath,
+				"continue",
+			]);
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toMatch(/^[0-9a-f-]{36}$/);
+			expect(result.stderr).toContain(`resolved ABCDEF01 → ${id}`);
+			expect(result.stderr).toContain(
+				`verify: flywheel-comm message-status ${result.stdout}`,
+			);
+			const json = JSON.parse(
+				runCli([
+					"send",
+					"--from",
+					"product-lead",
+					"--to",
+					"abcdef01",
+					"--db",
+					dbPath,
+					"--json",
+					"continue",
+				]),
+			);
+			expect(json).toMatchObject({
+				resolved_to: id,
+				resolved_from_prefix: true,
+				verify_command: `flywheel-comm message-status ${json.instruction_id}`,
+			});
+		});
+
 		it("should output instruction ID", () => {
 			const result = runCli([
 				"send",
 				"--from",
 				"product-lead",
 				"--to",
-				"exec-123",
+				"2a796bc0-8d5c-5897-b76c-60a7e03a355d",
 				"--db",
 				dbPath,
 				"Stop current work",
@@ -823,7 +921,7 @@ globalThis.fetch = async () => {
 				"--from",
 				"product-lead",
 				"--to",
-				"exec-123",
+				"2a796bc0-8d5c-5897-b76c-60a7e03a355d",
 				"--db",
 				dbPath,
 				"--json",
@@ -837,7 +935,7 @@ globalThis.fetch = async () => {
 			const { exitCode } = runCliSafe([
 				"send",
 				"--to",
-				"exec-123",
+				"2a796bc0-8d5c-5897-b76c-60a7e03a355d",
 				"--db",
 				dbPath,
 				"instruction",
@@ -859,19 +957,58 @@ globalThis.fetch = async () => {
 	});
 
 	describe("inbox", () => {
+		beforeEach(() => {
+			const db = new CommDB(dbPath);
+			db.registerSession(
+				"6d02a1ff-14c0-5910-83cc-2889e1b42102",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.registerSession(
+				"2a796bc0-8d5c-5897-b76c-60a7e03a355d",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.registerSession(
+				"e67906a2-e54d-5e70-b46d-688e85c687a8",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.registerSession(
+				"b26c27e9-0877-5381-a246-d44ec85e3de4",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.close();
+		});
+
 		it("should show instructions via send → inbox round-trip", () => {
 			runCli([
 				"send",
 				"--from",
 				"product-lead",
 				"--to",
-				"exec-456",
+				"e67906a2-e54d-5e70-b46d-688e85c687a8",
 				"--db",
 				dbPath,
 				"Do the thing",
 			]);
 
-			const result = runCli(["inbox", "--exec-id", "exec-456", "--db", dbPath]);
+			const result = runCli([
+				"inbox",
+				"--exec-id",
+				"e67906a2-e54d-5e70-b46d-688e85c687a8",
+				"--db",
+				dbPath,
+			]);
 			expect(result).toContain("Do the thing");
 			expect(result).toContain("product-lead");
 		});
@@ -882,14 +1019,21 @@ globalThis.fetch = async () => {
 				"--from",
 				"product-lead",
 				"--to",
-				"exec-789",
+				"6d02a1ff-14c0-5910-83cc-2889e1b42102",
 				"--db",
 				dbPath,
 				"Instruction text",
 			]);
 
 			const result = JSON.parse(
-				runCli(["inbox", "--exec-id", "exec-789", "--db", dbPath, "--json"]),
+				runCli([
+					"inbox",
+					"--exec-id",
+					"6d02a1ff-14c0-5910-83cc-2889e1b42102",
+					"--db",
+					dbPath,
+					"--json",
+				]),
 			);
 			expect(result).toHaveLength(1);
 			expect(result[0].content).toBe("Instruction text");
@@ -979,14 +1123,14 @@ globalThis.fetch = async () => {
 				"--from",
 				"product-lead",
 				"--to",
-				"env-exec",
+				"b26c27e9-0877-5381-a246-d44ec85e3de4",
 				"--db",
 				dbPath,
 				"Environment-bound instruction",
 			]);
 
 			const result = runCli(["inbox", "--db", dbPath], {
-				FLYWHEEL_EXEC_ID: "env-exec",
+				FLYWHEEL_EXEC_ID: "b26c27e9-0877-5381-a246-d44ec85e3de4",
 			});
 			expect(result).toContain("Environment-bound instruction");
 		});
@@ -1088,13 +1232,46 @@ globalThis.fetch = async () => {
 	});
 
 	describe("message-status", () => {
+		beforeEach(() => {
+			const db = new CommDB(dbPath);
+			db.registerSession(
+				"d6ff3b0e-a7e3-579d-987f-330a5a288d16",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.registerSession(
+				"2a796bc0-8d5c-5897-b76c-60a7e03a355d",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.registerSession(
+				"e67906a2-e54d-5e70-b46d-688e85c687a8",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.registerSession(
+				"b26c27e9-0877-5381-a246-d44ec85e3de4",
+				"s:w",
+				"test",
+				"FLY-1942",
+				"product-lead",
+			);
+			db.close();
+		});
+
 		it("queries live evidence by exact id and exits 1 for an absent id", () => {
 			const id = runCli([
 				"send",
 				"--from",
 				"product-lead",
 				"--to",
-				"exec-status",
+				"d6ff3b0e-a7e3-579d-987f-330a5a288d16",
 				"--db",
 				dbPath,
 				"Inspect me",

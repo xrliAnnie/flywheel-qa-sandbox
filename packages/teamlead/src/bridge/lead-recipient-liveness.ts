@@ -1,5 +1,4 @@
 import type { LeadLeaseRow, ProcessTupleState } from "flywheel-comm/lead-lease";
-import type { MailboxRecipientState } from "flywheel-comm/mailbox-queue";
 
 export interface LeadLeaseReader {
 	getLease(leadKey: string): LeadLeaseRow | undefined;
@@ -10,7 +9,7 @@ export function readLeadRecipientState(input: {
 	leadKey: string;
 	leaseReader: Pick<LeadLeaseReader, "getLease">;
 	processTupleState: (pid: number, start: string) => ProcessTupleState;
-}): MailboxRecipientState {
+}): "alive" | "unknown" {
 	let lease: LeadLeaseRow | undefined;
 	try {
 		lease = input.leaseReader.getLease(input.leadKey);

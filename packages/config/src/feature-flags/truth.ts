@@ -258,6 +258,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 			"FLY-1455 full-surface census: runtime value/context/plumbing or per-invocation choice, not a persistent on/off gate",
 		]),
 	),
+	FLYWHEEL_ROUNDTABLE_SUBSCRIPTION_TTL_MS:
+		"FLY-1942 bounded subscription lifetime in milliseconds, not an on/off gate",
 	FLYWHEEL_AGENT_TEAM_ARGS:
 		"plumbing: eval-safe shell array emitted by agent-team-transport, not an environment flag",
 	FLYWHEEL_LEAD_CARRIER_START:

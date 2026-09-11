@@ -12,6 +12,7 @@ function fakeSource() {
 	return {
 		added,
 		removed,
+		isSubscribed: (id: string) => added.includes(id) && !removed.includes(id),
 		addChannel: vi.fn(async (id: string) => {
 			added.push(id);
 		}),
@@ -44,6 +45,10 @@ function make(
 		botToken: "tok",
 		registry,
 		source,
+		removeThread: async (id) => {
+			source.removeChannel(id);
+			return registry.remove(id);
+		},
 		fetchImpl: fetchReturning(body),
 		setTimer: () => ({ cancel: () => {} }),
 		logger: { warn: () => {} },
@@ -52,83 +57,53 @@ function make(
 	return { registry, source, disc };
 }
 
-describe("RoundtableThreadDiscovery.reconcileOnce", () => {
-	it("subscribes roundtable threads the bot has joined; ignores others", async () => {
+describe("RoundtableThreadDiscovery durable-only reconcile", () => {
+	it("never mints subscriptions from Discord membership", async () => {
 		const { registry, source, disc } = make({
-			threads: [
-				{ id: "t1", parent_id: RT }, // roundtable + joined → subscribe
-				{ id: "t2", parent_id: "other-channel" }, // wrong parent → ignore
-				{ id: "t3", parent_id: RT }, // roundtable but NOT joined → ignore
-			],
-			members: [{ id: "t1", user_id: BOT }],
+			threads: [{ id: "t1", parent_id: RT }],
+			members: [{ id: "t1" }],
 		});
 		await disc.reconcileOnce();
-		expect(registry.has("t1")).toBe(true);
-		expect(registry.has("t2")).toBe(false);
-		expect(registry.has("t3")).toBe(false);
+		expect(registry.has("t1")).toBe(false);
+		expect(source.added).toEqual([]);
+	});
+	it("repairs missing polling slots only for existing subscriptions", async () => {
+		const { registry, source, disc } = make({
+			threads: [{ id: "t1", parent_id: RT }],
+			members: [{ id: "t1" }],
+		});
+		registry.add("t1");
+		await disc.reconcileOnce();
+		expect(source.added).toEqual(["t1"]);
+		await disc.reconcileOnce();
 		expect(source.added).toEqual(["t1"]);
 	});
-
-	it("treats a member object without user_id as joined (Codex R2#3)", async () => {
-		const { registry, disc } = make({
-			threads: [{ id: "t1", parent_id: RT }],
-			members: [{ id: "t1" }], // no user_id
-		});
-		await disc.reconcileOnce();
-		expect(registry.has("t1")).toBe(true);
-	});
-
-	it("drops a thread that is no longer active (archived)", async () => {
+	it("removes archived entries through the durable mutation callback", async () => {
 		const registry = new RoundtableThreadRegistry();
-		registry.add("gone");
-		const source = fakeSource();
-		const disc = new RoundtableThreadDiscovery({
-			guildId: GUILD,
-			roundtableChannelId: RT,
-			botUserId: BOT,
-			botToken: "tok",
-			registry,
-			source,
-			fetchImpl: fetchReturning({ threads: [], members: [] }),
-			setTimer: () => ({ cancel: () => {} }),
-			logger: { warn: () => {} },
-		});
-		await disc.reconcileOnce();
-		expect(registry.has("gone")).toBe(false);
-		expect(source.removed).toContain("gone");
-	});
-
-	it("enforces the cap by evicting the oldest (keeps cursor via removeChannel)", async () => {
-		const { registry, source, disc } = make(
-			{
-				threads: [
-					{ id: "a", parent_id: RT },
-					{ id: "b", parent_id: RT },
-					{ id: "c", parent_id: RT },
-				],
-				members: [{ id: "a" }, { id: "b" }, { id: "c" }],
-			},
-			{ cap: 2 },
+		registry.add("t1");
+		const removeThread = vi.fn(async (id: string) => registry.remove(id));
+		const { disc } = make(
+			{ threads: [], members: [] },
+			{ registry, removeThread },
 		);
 		await disc.reconcileOnce();
-		expect(registry.size).toBe(2);
-		expect(registry.has("a")).toBe(false); // oldest evicted
-		expect(source.removed).toContain("a");
+		expect(removeThread).toHaveBeenCalledWith("t1", "archived");
+		expect(registry.has("t1")).toBe(false);
 	});
-
+	it("does not resurrect expired or unsubscribed entries", async () => {
+		const registry = new RoundtableThreadRegistry({ ttlMs: 1, now: () => 100 });
+		registry.add({ threadId: "t1", expiresAt: new Date(99).toISOString() });
+		const { source, disc } = make(
+			{ threads: [{ id: "t1", parent_id: RT }], members: [{ id: "t1" }] },
+			{ registry },
+		);
+		await disc.reconcileOnce();
+		registry.remove("t1");
+		await disc.reconcileOnce();
+		expect(source.added).toEqual([]);
+	});
 	it("does not throw on a fetch failure", async () => {
 		const { disc } = make({}, { fetchImpl: fetchReturning({}, 503) });
 		await expect(disc.reconcileOnce()).resolves.toBeUndefined();
-	});
-});
-
-describe("RoundtableThreadDiscovery.subscribe (immediate, path i)", () => {
-	it("subscribes a thread immediately + idempotent", async () => {
-		const { registry, source, disc } = make({ threads: [], members: [] });
-		await disc.subscribe("t9");
-		expect(registry.has("t9")).toBe(true);
-		expect(source.added).toEqual(["t9"]);
-		await disc.subscribe("t9"); // idempotent
-		expect(source.added).toEqual(["t9"]);
 	});
 });

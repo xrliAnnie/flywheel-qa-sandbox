@@ -28,22 +28,25 @@ describe("FLY-2248 R6#1 mailbox identity and lineage", () => {
 		const dbPath = join(root, "comm.db");
 		const bootstrap = new CommDB(dbPath);
 		bootstrap.registerSession(
-			"runner-old",
+			"3f7f7efa-59f1-43ca-9d2e-c68bcc3be06e",
 			"old-window",
 			"flywheel",
 			"FLY-2248",
 			"lead-a",
 		);
 		const questionId = bootstrap.insertQuestion(
-			"runner-old",
+			"3f7f7efa-59f1-43ca-9d2e-c68bcc3be06e",
 			"lead-a",
 			"Which contract should run?",
 		);
 		bootstrap.close();
-		const leadEnv = createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"]!;
+		const leadEnv = {
+			...createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"]!,
+			TEAMLEAD_DB_PATH: join(root, "unavailable-teamlead.db"),
+		};
 		const instructionId = await send({
 			fromAgent: "lead-a",
-			toAgent: "runner-old",
+			toAgent: "3f7f7efa-59f1-43ca-9d2e-c68bcc3be06e",
 			content: "Apply the generic contract",
 			dbPath,
 			env: leadEnv,

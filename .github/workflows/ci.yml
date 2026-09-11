@@ -1014,6 +1014,7 @@ jobs:
           bash scripts/__tests__/fly1726-lead-identity-wrapper.test.sh
           bash scripts/__tests__/fly1697-v2-lease-body.test.sh
           bash packages/teamlead/scripts/__tests__/claude-lead-comm-db-path.test.sh
+          bash packages/teamlead/scripts/__tests__/claude-lead-own-chat-channel.test.sh
           bash packages/teamlead/scripts/__tests__/canonical-lead-identity.test.sh
 
       # FLY-1708/FLY-1751: both process-birth and SessionStart(source=clear)

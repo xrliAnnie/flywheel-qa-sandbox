@@ -876,67 +876,79 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		}
 	});
 
-	it("applies the terminal truth table without touching an unexpired lease", () => {
-		const { db, queue } = fixture();
-		try {
-			enqueue(queue, "leased", {
-				toAgent: "exec-dead",
-				recipientKind: "runner",
-				fromAgent: "lead-b",
-			});
-			enqueue(queue, "queued", {
-				toAgent: "exec-dead",
-				recipientKind: "runner",
-				createdAt: at(1),
-			});
-			const batch = queue.claimRunnerBatch({
-				ownerEpoch: OWNER,
-				now: T0,
-				transportClaimTtlMs: 30_000,
-				batchWindowMs: 60_000,
-				batchMaxSize: 1,
-				inflightMaxBatches: 3,
-			});
-			expect(batch).toHaveLength(1);
-			const leasedId = batch?.[0]?.id as string;
-			queue.recordRunnerBatchDelivered({
-				batchId: batch?.[0]?.batch_id as string,
-				ownerEpoch: OWNER,
-				now: T0,
-				ackLeaseTtlMs: 30_000,
-				settlement: "on_consume",
-			});
+	it.each(["terminal", "missing", "terminal_or_missing"] as const)(
+		"applies %s truth without touching an unexpired lease",
+		(recipientState) => {
+			const { db, queue } = fixture();
+			try {
+				enqueue(queue, "leased", {
+					toAgent: "exec-dead",
+					recipientKind: "runner",
+					fromAgent: "lead-b",
+				});
+				enqueue(queue, "queued", {
+					toAgent: "exec-dead",
+					recipientKind: "runner",
+					createdAt: at(1),
+				});
+				const batch = queue.claimRunnerBatch({
+					ownerEpoch: OWNER,
+					now: T0,
+					transportClaimTtlMs: 30_000,
+					batchWindowMs: 60_000,
+					batchMaxSize: 1,
+					inflightMaxBatches: 3,
+				});
+				expect(batch).toHaveLength(1);
+				const leasedId = batch?.[0]?.id as string;
+				queue.recordRunnerBatchDelivered({
+					batchId: batch?.[0]?.batch_id as string,
+					ownerEpoch: OWNER,
+					now: T0,
+					ackLeaseTtlMs: 30_000,
+					settlement: "on_consume",
+				});
 
-			queue.reconcileExpiredLeases({
-				ownerEpoch: OWNER,
-				now: at(1),
-				recipientKind: "runner",
-				leaseRetryMax: 3,
-				recipientState: () => "terminal_or_missing",
-				maxBatches: 10,
-				maxTerminalRows: 10,
-			});
-			expect(queue.getById("queued")?.state).toBe("DEAD");
-			expect(queue.getById(leasedId)?.state).toBe("LEASED");
+				queue.reconcileExpiredLeases({
+					ownerEpoch: OWNER,
+					now: at(1),
+					recipientKind: "runner",
+					leaseRetryMax: 3,
+					recipientState: () => recipientState,
+					maxBatches: 10,
+					maxTerminalRows: 10,
+				});
+				expect(queue.getById("queued")).toMatchObject({
+					state: "DEAD",
+					dead_reason:
+						recipientState === "missing"
+							? "recipient_missing"
+							: "recipient_terminal",
+				});
+				expect(queue.getById(leasedId)?.state).toBe("LEASED");
 
-			queue.reconcileExpiredLeases({
-				ownerEpoch: OWNER,
-				now: at(31),
-				recipientKind: "runner",
-				leaseRetryMax: 3,
-				recipientState: () => "terminal_or_missing",
-				maxBatches: 10,
-				maxTerminalRows: 10,
-			});
-			expect(queue.getById(leasedId)).toMatchObject({
-				state: "DEAD",
-				dead_reason: "recipient_terminal",
-			});
-		} finally {
-			queue.close();
-			db.close();
-		}
-	});
+				queue.reconcileExpiredLeases({
+					ownerEpoch: OWNER,
+					now: at(31),
+					recipientKind: "runner",
+					leaseRetryMax: 3,
+					recipientState: () => recipientState,
+					maxBatches: 10,
+					maxTerminalRows: 10,
+				});
+				expect(queue.getById(leasedId)).toMatchObject({
+					state: "DEAD",
+					dead_reason:
+						recipientState === "missing"
+							? "recipient_missing"
+							: "recipient_terminal",
+				});
+			} finally {
+				queue.close();
+				db.close();
+			}
+		},
+	);
 
 	it("bounded terminal scans advance past a large live-recipient prefix", () => {
 		const { db, queue } = fixture();
@@ -1466,7 +1478,7 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		const listQueries = deadEligibilityQueries(
 			source.slice(listStart, listEnd),
 		);
-		expect(scanQueries).toHaveLength(4);
+		expect(scanQueries).toHaveLength(5);
 		expect(listQueries).toHaveLength(5);
 		expect(scanQueries.every((query) => !query.includes(exclusion))).toBe(true);
 		expect(listQueries.every((query) => query.includes(exclusion))).toBe(true);
@@ -1788,6 +1800,104 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 					resolveOwningLead: () => "lead-a",
 				}).inserted,
 			).toEqual([]);
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+});
+
+describe("FLY-1942 dead letter sender fallback", () => {
+	it("isolates missing-recipient notices and rate limits per sender, leaving non-Leads unroutable", () => {
+		const { db, queue } = fixture();
+		try {
+			for (const sender of ["lead-a", "lead-b", "bridge-land"]) {
+				enqueue(queue, sender, {
+					toAgent: "missing",
+					fromAgent: sender,
+					recipientKind: "runner",
+				});
+				queue.markDead(sender, at(1), "recipient_missing");
+			}
+			const input = {
+				ownerEpoch: OWNER,
+				now: at(2),
+				windowMs: 60_000,
+				maxRecipients: 10,
+				maxDeadRowsPerRecipient: 10,
+				maxSummaryBytes: 2000,
+				resolveOwningLead: () => undefined,
+				resolveSenderLead: (sender: string) =>
+					sender.startsWith("lead-") ? sender : undefined,
+			};
+			const first = queue.scanAndInsertDeadLetterNotices(input);
+			expect(first.inserted).toHaveLength(2);
+			expect(first.unroutable).toContain("missing");
+			for (const sender of ["lead-a", "lead-b"]) {
+				const notice = first.inserted
+					.map((id) => queue.getById(id)!)
+					.find((row) => row.to_agent === sender)!;
+				expect(notice.source_ref).toBe(`missing\u001f${sender}`);
+				expect(notice.content).toContain(`from ${sender}`);
+				expect(notice.content).not.toContain(
+					`from ${sender === "lead-a" ? "lead-b" : "lead-a"}`,
+				);
+				expect(notice.content).not.toContain("from bridge-land");
+				expect(notice.content).toContain("dead_reason=recipient_missing");
+			}
+			enqueue(queue, "a2", {
+				toAgent: "missing",
+				fromAgent: "lead-a",
+				recipientKind: "runner",
+			});
+			queue.markDead("a2", at(3), "recipient_missing");
+			const again = queue.scanAndInsertDeadLetterNotices({
+				...input,
+				now: at(4),
+			});
+			expect(again.inserted).toEqual([]);
+			expect(again.rateLimited).toContain("missing\u001flead-a");
+			const later = queue.scanAndInsertDeadLetterNotices({
+				...input,
+				now: at(63),
+			});
+			expect(later.inserted).toHaveLength(1);
+			expect(queue.getById(later.inserted[0]!)?.to_agent).toBe("lead-a");
+			expect(
+				queue.scanAndInsertDeadLetterNotices({ ...input, now: at(64) })
+					.inserted,
+			).toEqual([]);
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+	it("keeps owning Lead aggregation ahead of sender fallback", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "dead", {
+				toAgent: "runner",
+				fromAgent: "lead-a",
+				recipientKind: "runner",
+			});
+			queue.markDead("dead", at(1), "recipient_terminal");
+			const result = queue.scanAndInsertDeadLetterNotices({
+				ownerEpoch: OWNER,
+				now: at(2),
+				windowMs: 60_000,
+				maxRecipients: 10,
+				maxDeadRowsPerRecipient: 10,
+				maxSummaryBytes: 2000,
+				resolveOwningLead: () => "owner-lead",
+				resolveSenderLead: () => {
+					throw new Error("fallback must not run");
+				},
+			});
+			expect(result.inserted).toHaveLength(1);
+			expect(queue.getById(result.inserted[0]!)).toMatchObject({
+				to_agent: "owner-lead",
+				source_ref: "runner",
+			});
 		} finally {
 			queue.close();
 			db.close();

@@ -1,22 +1,4 @@
-/**
- * FLY-314 Phase 2 — RoundtableThreadDiscovery: keeps a Lead subscribed to the topic
- * threads it participates in, so it can SEE other Leads' in-thread replies.
- *
- * Two paths (Codex design review R1#3/#11, R2#3):
- *   (i)  immediate `subscribe(threadId)` — call when the Lead is @-mentioned in a
- *        top-level roundtable message (thread id == that message id).
- *   (ii) periodic `reconcileOnce()` — list ACTIVE GUILD threads
- *        (`GET /guilds/{guildId}/threads/active`), keep those whose `parent_id ===
- *        roundtableChannelId` AND that the bot has joined (the response `members[]`
- *        signal; `user_id` checked only when present — R2#3), and DROP threads that
- *        are no longer active (archived). Covers threads the Lead was added to without
- *        a re-mention, plus restart recovery.
- *
- * Subscription = registry membership (for gateway/mention-gate/routing) + RestPoll
- * `addChannel` (so it actually polls the thread). A cap bounds ACTIVE POLLING SLOTS
- * (R1#10): eviction calls `removeChannel` (keeps the cursor for resume), never a
- * durable-interest delete. All HTTP errors are observable (warned), never silent.
- */
+/** Reconcile durable subscriptions against Discord; discovery never creates interest. */
 
 const DISCORD_API = "https://discord.com/api/v10";
 const REQ_TIMEOUT_MS = 5_000;
@@ -33,6 +15,7 @@ interface RawThreadMember {
 export interface ChannelSubscriber {
 	addChannel(channelId: string): Promise<void>;
 	removeChannel(channelId: string): void;
+	isSubscribed(channelId: string): boolean;
 }
 
 export interface ThreadRegistryLike {
@@ -51,8 +34,8 @@ export interface RoundtableThreadDiscoveryOptions {
 	botToken: string;
 	registry: ThreadRegistryLike;
 	source: ChannelSubscriber;
-	/** Max active polling slots (oldest evicted on overflow). Default 50. */
-	cap?: number;
+	/** Removal must persist through the owning wiring before changing membership. */
+	removeThread: (threadId: string, reason: string) => Promise<boolean>;
 	reconcileIntervalMs?: number;
 	fetchImpl?: typeof fetch;
 	setTimer?: (fn: () => void, ms: number) => { cancel: () => void };
@@ -66,7 +49,10 @@ export class RoundtableThreadDiscovery {
 	private readonly botToken: string;
 	private readonly registry: ThreadRegistryLike;
 	private readonly source: ChannelSubscriber;
-	private readonly cap: number;
+	private readonly removeThread: (
+		threadId: string,
+		reason: string,
+	) => Promise<boolean>;
 	private readonly reconcileIntervalMs: number;
 	private readonly fetchImpl: typeof fetch;
 	private readonly setTimer: (
@@ -85,7 +71,7 @@ export class RoundtableThreadDiscovery {
 		this.botToken = opts.botToken;
 		this.registry = opts.registry;
 		this.source = opts.source;
-		this.cap = opts.cap ?? 50;
+		this.removeThread = opts.removeThread;
 		this.reconcileIntervalMs = opts.reconcileIntervalMs ?? 60_000;
 		this.fetchImpl = opts.fetchImpl ?? fetch;
 		this.setTimer =
@@ -109,14 +95,6 @@ export class RoundtableThreadDiscovery {
 		this.running = false;
 		this.timer?.cancel();
 		this.timer = null;
-	}
-
-	/** Immediately subscribe to a topic thread (path i — @-mention in top-level). */
-	async subscribe(threadId: string): Promise<void> {
-		if (!threadId || this.registry.has(threadId)) return;
-		this.registry.add(threadId);
-		await this.source.addChannel(threadId);
-		this.enforceCap();
 	}
 
 	private scheduleNext(): void {
@@ -146,41 +124,17 @@ export class RoundtableThreadDiscovery {
 				.map((t) => t.id)
 				.filter((id) => active.joined.has(id)),
 		);
-		// Subscribe newly-desired threads.
-		for (const id of desired) {
-			if (!this.registry.has(id)) {
-				this.registry.add(id);
-				try {
-					await this.source.addChannel(id);
-				} catch (err) {
-					this.logger.warn("[RoundtableThreadDiscovery] addChannel failed", {
-						id,
-						err: (err as Error).message,
-					});
-				}
-			}
-		}
-		// Drop threads no longer active/joined (archived).
 		for (const id of this.registry.list()) {
-			if (!desired.has(id)) {
-				this.registry.remove(id);
-				this.source.removeChannel(id);
+			try {
+				if (!desired.has(id)) await this.removeThread(id, "archived");
+				else if (!this.source.isSubscribed(id) && this.registry.has(id))
+					await this.source.addChannel(id);
+			} catch (error) {
+				this.logger.warn(
+					"[RoundtableThreadDiscovery] reconcile source failed",
+					{ id, error: String(error) },
+				);
 			}
-		}
-		this.enforceCap();
-	}
-
-	/** Evict oldest active polling slots beyond the cap (keeps cursor for resume). */
-	private enforceCap(): void {
-		while (this.registry.size > this.cap) {
-			const oldest = this.registry.oldest();
-			if (!oldest) break;
-			this.registry.remove(oldest);
-			this.source.removeChannel(oldest);
-			this.logger.warn(
-				"[RoundtableThreadDiscovery] cap reached — evicted oldest thread (cursor kept for resume)",
-				{ threadId: oldest, cap: this.cap },
-			);
 		}
 	}
 

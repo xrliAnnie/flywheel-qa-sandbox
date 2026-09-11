@@ -147,6 +147,63 @@ describe("FLY-2452 account-switch consumer", () => {
 		}
 	}
 
+	it.each(["missing", "terminal"])(
+		"rechecks recipient %s after enumeration and preserves declared state",
+		async (state) => {
+			writeStore(accountStore(switchSnapshot()), accountPath);
+			registerStateSession("raced");
+			registerCommSession("raced", "claude-code");
+			readCommDb((db) =>
+				db.upsertDeclaredState("raced", "parked", "403", nowMs, null),
+			);
+			const enumeration = store.listNonTerminalSessions();
+			if (state === "terminal")
+				store.upsertSession({
+					execution_id: "raced",
+					issue_id: "issue-raced",
+					project_name: "flywheel",
+					status: "completed",
+				});
+			// The captured enumeration is intentionally stale; the gate reads real
+			// StateStore truth. For missing, enumerate a never-created execution ID.
+			else {
+				enumeration[0].execution_id = "missing-raced";
+				registerCommSession("missing-raced", "claude-code");
+				readCommDb((db) =>
+					db.upsertDeclaredState("missing-raced", "parked", "403", nowMs, null),
+				);
+			}
+			vi.spyOn(store, "listNonTerminalSessions").mockReturnValue(enumeration);
+			await makeConsumer().tick();
+			const executionId = enumeration[0].execution_id;
+			expect(readCommDb((db) => db.getUnreadInstructions(executionId))).toEqual(
+				[],
+			);
+			expect(
+				readCommDb((db) =>
+					db.getMessageById(`account-switch-wake:g1:${executionId}`),
+				),
+			).toBeUndefined();
+			expect(
+				readCommDb((db) => db.getEffectiveDeclaredState(executionId, nowMs)),
+			).not.toBeNull();
+			expect(
+				store.getAccountSwitchActionReceipt(1, "wake_sweep"),
+			).toMatchObject({
+				status: "completed",
+				outcome: { sent: 0, skipped_recipient: 1 },
+			});
+			expect(store.getEventsByExecution(executionId)).toEqual([
+				expect.objectContaining({
+					event_type: `instruction_skipped_recipient_${state}`,
+					issue_id: "issue-raced",
+					project_name: "flywheel",
+					source: "account-switch-consumer",
+				}),
+			]);
+		},
+	);
+
 	it("begins, executes, and completes both actions from a valid account_dead lastSwitch", async () => {
 		const snapshot = switchSnapshot();
 		writeStore(accountStore(snapshot), accountPath);
@@ -226,6 +283,7 @@ describe("FLY-2452 account-switch consumer", () => {
 			skipped_vendor: 3,
 			skipped_started_after: 3,
 			skipped_not_running: 1,
+			skipped_recipient: 0,
 		});
 	});
 

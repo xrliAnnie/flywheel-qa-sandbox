@@ -1,3 +1,4 @@
+import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
@@ -711,26 +712,7 @@ export function isSqlJsCorruptionError(err: unknown): boolean {
 }
 
 /** All statuses that represent a final outcome (used by dashboard, queries). */
-export const OUTCOME_STATUSES = [
-	"completed",
-	"approved",
-	"approved_to_ship",
-	"blocked",
-	"failed",
-	"rejected",
-	"deferred",
-	"shelved",
-	"terminated",
-] as const;
-
-// Terminal states — monotonic progression: once terminal, cannot go back to running
-// Note: approved_to_ship is NOT terminal — Runner still needs to ship
-const TERMINAL_STATUSES = new Set<string>([
-	...OUTCOME_STATUSES,
-	"awaiting_review",
-]);
-// approved_to_ship is an outcome but not terminal (Runner will transition to completed)
-TERMINAL_STATUSES.delete("approved_to_ship");
+export { OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
 
 /**
  * FLY-1099 §5 (Codex R2 #4): the StateStore statuses that are IRREVERSIBLY
@@ -1545,7 +1527,7 @@ export interface DoaBackoffResetReceiptRow {
 }
 
 export interface RunnerRecipientState {
-	state: "alive" | "terminal_or_missing";
+	state: "alive" | "terminal" | "missing";
 	projectName?: string;
 	issueLabels?: string;
 }
@@ -11614,15 +11596,14 @@ export class StateStore {
 	/** FLY-1573 narrow StateStore truth used by the mailbox lease/dead-letter lane. */
 	resolveRunnerRecipientState(executionId: string): RunnerRecipientState {
 		const session = this.getSession(executionId);
-		if (!session) return { state: "terminal_or_missing" };
+		if (!session) return { state: "missing" };
 		// FLY-1774: awaiting_review is a resident, reachable runner state. Keep
 		// StateStore's broader FSM monotonicity set intact, but do not let the
 		// mailbox lease lane instant-DEAD Lead instructions for a parked runner.
 		const mailboxTerminal =
-			session.status !== "awaiting_review" &&
-			TERMINAL_STATUSES.has(session.status);
+			isMailboxTerminalStatus(session.status);
 		return {
-			state: mailboxTerminal ? "terminal_or_missing" : "alive",
+			state: mailboxTerminal ? "terminal" : "alive",
 			projectName: session.project_name,
 			issueLabels: session.issue_labels,
 		};

@@ -1,0 +1,18 @@
+flowchart TD
+  S["Lead 执行 send --to X"] --> F{"形态对吗?<br/>全 UUID 或 ≥8 位十六进制前缀"}
+  F -- 否 --> E1["当场报错 recipient_malformed<br/>信箱零行"]
+  F -- 是 --> L{"这个 ID 存在过吗?<br/>查会话血统表"}
+  L -- "0 条" --> E2["当场报错 recipient_not_found"]
+  L -- "≥2 条" --> E3["当场报错 recipient_ambiguous<br/>列出候选"]
+  L -- "恰 1 条" --> T{"它终结了吗?<br/>读 StateStore 只读快照<br/>与队列同一个判定函数"}
+  T -- "已终结" --> E4["当场报错 recipient_terminal"]
+  T -- "活着 / 待审 / 快照不可读" --> Q["入队 · 打印消息 id<br/>提示用 message-status 核 ACKED"]
+  Q --> K["Bridge 信箱 tick"]
+  K -- "收件人不存在" --> D1["DEAD recipient_missing"]
+  K -- "收件人已终结" --> D2["DEAD recipient_terminal"]
+  K -- "活着" --> OK["送达 · ACKED"]
+  D1 --> N["死信通知:找不到负责 Lead 时<br/>按 (收件人, 发信方) 回落给发信 Lead"]
+  D2 --> N
+  G["引擎写入者<br/>land 清理 / 账号切换唤醒"] --> P{"收件人活着?<br/>StateStore 三态"}
+  P -- "缺失 / 终结" --> SK["跳过 · 写 session_events 留痕"]
+  P -- "活着" --> Q

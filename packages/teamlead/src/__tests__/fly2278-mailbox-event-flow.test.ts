@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,7 +40,7 @@ async function terminalUnackedMailbox(caseId: string) {
 	const root = mkdtempSync(join(tmpdir(), `fly2278-mailbox-${caseId}-`));
 	roots.push(root);
 	const dbPath = join(root, "comm.db");
-	const recipient = `recipient-${caseId}`;
+	const recipient = randomUUID();
 	const bootstrap = new CommDB(dbPath);
 	bootstrap.registerSession(
 		recipient,
@@ -54,7 +55,10 @@ async function terminalUnackedMailbox(caseId: string) {
 		toAgent: recipient,
 		content: `instruction:${caseId}`,
 		dbPath,
-		env: createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"]!,
+		env: {
+			...createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"]!,
+			TEAMLEAD_DB_PATH: join(root, "unavailable-teamlead.db"),
+		},
 	});
 	const commDb = new CommDB(dbPath);
 	commDbs.push(commDb);
@@ -265,7 +269,7 @@ describe("FLY-2278 mailbox freeze event flow", () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2278-mailbox-freeze-"));
 		roots.push(root);
 		const dbPath = join(root, "comm.db");
-		const recipient = "recipient-freeze";
+		const recipient = randomUUID();
 		const bootstrap = new CommDB(dbPath);
 		bootstrap.registerSession(
 			recipient,
@@ -275,7 +279,10 @@ describe("FLY-2278 mailbox freeze event flow", () => {
 			"lead-a",
 		);
 		bootstrap.close();
-		const leadEnv = createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"]!;
+		const leadEnv = {
+			...createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"]!,
+			TEAMLEAD_DB_PATH: join(root, "unavailable-teamlead.db"),
+		};
 		for (let index = 0; index < 4; index += 1) {
 			await send({
 				fromAgent: "lead-a",

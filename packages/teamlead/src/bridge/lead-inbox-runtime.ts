@@ -18,7 +18,6 @@ import {
 } from "flywheel-comm/lead-lease";
 import {
 	MailboxQueue,
-	type MailboxRecipientState,
 	type MailboxSettlement,
 } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
@@ -293,6 +292,7 @@ export class LeadInboxRuntime {
 					return undefined;
 				}
 			};
+			const projectLeadIds = new Set(project.leads.map((lead) => lead.agentId));
 			const runnerLane = new RunnerMailboxLane({
 				queue,
 				ownerEpoch: this.ownerEpoch,
@@ -305,6 +305,8 @@ export class LeadInboxRuntime {
 				isTerminalDeliveryObligation: (row) =>
 					isCurrentDesignReviewManifestInstruction(opts.store, row),
 				resolveOwningLead,
+				resolveSenderLead: (sender) =>
+					projectLeadIds.has(sender) ? sender : undefined,
 				...(project.leads[0]
 					? { fallbackLeadId: project.leads[0].agentId }
 					: {}),
@@ -882,7 +884,7 @@ export class LeadInboxRuntime {
 		return queue.inspectDeliveryState(deliveryId);
 	}
 
-	getLeadRecipientState(leadId: string): MailboxRecipientState {
+	getLeadRecipientState(leadId: string): "alive" | "unknown" {
 		const identity = this.identityByLead.get(leadId);
 		if (!identity) return "unknown";
 		return readLeadRecipientState({
@@ -1031,8 +1033,7 @@ export class LeadInboxRuntime {
 					const age = Number.isFinite(heartbeat)
 						? `${Math.max(0, Math.floor((now - heartbeat) / 60_000))}m`
 						: "未知";
-					const stateLabel =
-						state === "terminal_or_missing" ? "terminal" : state;
+					const stateLabel = state;
 					return [
 						session.execution_id,
 						`StateStore 视图=${stateLabel} / 最近心跳=${age}（注意：此为登记视图非 pane 直读，处置前仍须人工验活）`,

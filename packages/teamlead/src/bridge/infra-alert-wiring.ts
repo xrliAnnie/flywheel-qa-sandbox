@@ -51,7 +51,7 @@ export interface InfraAlertRoutingDeps {
 	/** Live recipient guard; unknown/dead recipients fail safe to Claw. */
 	leadRecipientState: (
 		leadId: string,
-	) => "alive" | "terminal_or_missing" | "unknown";
+	) => "alive" | "terminal" | "missing" | "unknown";
 	/** Canonical founder id for explicit founder escalations. */
 	founderUserId?: string;
 	/** Test seams. */
@@ -175,7 +175,7 @@ export function buildInfraAlertRouting(
 		ticketSink: deps.ticketSink,
 		leadInboxSink: {
 			alert: async (payload) => {
-				let state: "alive" | "terminal_or_missing" | "unknown" = "unknown";
+				let state: "alive" | "terminal" | "missing" | "unknown" = "unknown";
 				try {
 					state = deps.leadRecipientState(payload.leadId);
 				} catch (error) {
