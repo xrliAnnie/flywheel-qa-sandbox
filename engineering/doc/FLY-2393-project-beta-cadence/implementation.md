@@ -129,3 +129,21 @@ packages总门结果：未改动的flywheel-comm dependency.test.ts在全仓并�
 按上述 Lead 裁定，下列七项只归档，不修复、不开单：attention 泳道显示 unknown；legacy lane 硬编码 6h；receipt 合同三份副本缺 drift guard；submit 吞非 BetaGitHubError；credential_shared 覆盖已诊断原因；revision 计算后未读取；bind 每 tick 开写事务。此表不声称问题已解决，不扩入本次修复范围。
 
 本轮全仓 lint PASS（16 既有 warnings）、pnpm -r build PASS。packages 首轮暴露本次新增环境变量遗漏 NON_FLAG_ALLOWLIST 的登记，config drift guard 两条失败（789 passed）；这是本分支错误，不归因宿主。补充 credential selector allowlist 分类，定向 drift guard 验证后重跑总门。原失败日志 /tmp/fly2393-r2-packages.log 保留。
+
+## R2 结论、CI 注册与 main 同步（2026-09-11）
+
+R2 effective CHANGES_REQUESTED（request 252423f8-2721-44ba-b4c0-fefca1fa588a，reviewed head c52e17e6e），完整原文 code-review-r2.json。唯一 HIGH `ci-node-suite-registration-missing`：两个新增 Node 套件虽已由 release-workflows-structure 间接运行，却没有满足 ci-shell-suite-enumeration 的字面量注册合同。实际跑门红，ci.yml root Node block 补两条 `node --test scripts/__tests__/beta-*.test.mjs` 的精确文件行后绿；49 Node suites 枚举通过，两个 beta Node suite 共9 tests PASS。修复 commit a1b955040。之前“间接接入 CI 已足够”的判断不成立，以本次修复为准。
+
+R2 其余6 MEDIUM/1 LOW仅作为非阻塞 advisories 留存：workflow/helper 合同漂移、默认 origin/main ref 测试缺口、另一项目配置不可读时 credential_shared 覆盖缺口、shutdown abort 持久冷却、published 结果未校验当前指针、空 beta_release 导致整个 ConfigLoader 失败、同pid临时结果文件残留。没有顺手修复或开单，不声明这些已解决。
+
+Lead 对 question 50f5c58b-11a8-4bab-ac73-3f7dfa6d4f02 裁定：R2若打回，修blocking后与main同步并入最终头，再请R3；不自行R4。已合 origin/main bece7de15，merge commit 90e953846。唯一冲突位于 StateStore.ts 首行，只保留本分支 BetaReleaseStore 与main workflow-rework-context双方导入；没有修改导入以外的冲突内容。
+
+### 本地全仓真实结果
+
+- c52e17e6e 产品代码上 lint / full build PASS；config 791 PASS；安全focused19 PASS；beta/store/管理台114 PASS；workflow结构23 PASS、publisher44 PASS。
+- pnpm test:packages:run 原命令 exit1：flywheel-comm visual-capture 共47失败/2180通过/2跳过，失败含全局 ProofShot ELOCK_TIMEOUT；单文件一次复跑10失败/55通过，仍全部为锁超时。既有锁当前消失不追认历史为绿，不修改全局锁。
+- 用 no-bail 补齐原命令未执行的7包：claude-runner 3失败/1253通过/2跳过并 onTaskUpdate RPC 超时；teamlead 2失败/13099通过/7跳过并同RPC超时；edge-worker1321、voice-bridge649、voice-codex122、gemini158、headphone54通过。
+- 失败文件各隔离一次：claude-runner TmuxAdapter/prompt-overflow/runner-env-isolation 174 PASS；teamlead claude-profile-cli.integration/lead-lease-self-check 17 PASS。隔离绿不把原总门改成绿。日志 /tmp/fly2393-r2-packages-final.log、/tmp/fly2393-r2-remaining-packages.log、/tmp/fly2393-r2-visual-capture-isolated.log、/tmp/fly2393-r2-runner-isolated.log、/tmp/fly2393-r2-teamlead-isolated.log。
+- main同步后 lint PASS（16既有warnings）、beta scheduler/GitHub/config/store 37 PASS；full build PASS。再次执行packages总门exit1：未改动visual-capture锁超时34失败/2232通过/2跳过（/tmp/fly2393-final-packages.log），不重复修宿主锁、不冒称全绿，最终以exact-head CI收口。该分支没有新增 *.test.sh；两份变更的shell suite已运行，新增 *.test.mjs 有显式CI注册。
+
+最终步骤：先文档与progress提交，milestone为literal last commit；普通push、开PR、最终头R3和CI。审查期间冻结；R3若仍有blocking则原文报Lead。真实浏览器/Geo入口/真实GitHub派发与权限/外部队列互斥仍为QA或授权激活前置；未在本地测试中伪造这些结果。
