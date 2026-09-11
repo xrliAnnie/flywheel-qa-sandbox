@@ -59,30 +59,12 @@ done
 [ "$ok" -eq 1 ] && pass "S2 concurrency group payload-release present in all four release workflows" \
                 || fail "S2 concurrency group missing"
 
-# ── S3 · beta = scheduled 6h + dispatch + pre-activation guard that ACTUALLY
-#    gates (Codex code R1: string presence is a false negative — the real
-#    contract is that every step AFTER the preflight step carries the
-#    activated condition, else the guard is decorative). ────────────────────
-ok=1
-STEP_STARTS=0; GATED=0
-grep -qE '^\s*schedule:' "$BETA" || ok=0
-grep -q '0 \*/6 \* \* \*' "$BETA" || ok=0
-grep -qE '^\s+workflow_dispatch:' "$BETA" || ok=0
-grep -qE '^\s+id: preflight' "$BETA" || ok=0
-# structural: after the preflight step, EVERY step start must carry the
-# activated condition (a mutation that strips the `if:` lines fails here).
-PRE_LINE="$(grep -n 'id: preflight' "$BETA" | head -1 | cut -d: -f1)"
-if [ -n "$PRE_LINE" ]; then
-  POST="$(tail -n "+$((PRE_LINE + 1))" "$BETA")"
-  STEP_STARTS="$(printf '%s\n' "$POST" | grep -cE '^      - (uses|name):')"
-  GATED="$(printf '%s\n' "$POST" | grep -cF "if: steps.preflight.outputs.activated == 'true'")"
-  [ "$STEP_STARTS" -ge 5 ] || ok=0                 # sanity: real steps exist
-  [ "$GATED" -eq "$STEP_STARTS" ] || ok=0          # every post-preflight step gated
+# S3: parsed job boundaries plus mutation guards replace the former step-count heuristic.
+if node --test "$ROOT/scripts/__tests__/beta-workflow-structure.test.mjs" "$ROOT/scripts/__tests__/beta-schedule-receipt.test.mjs"; then
+  pass "S3 beta preflight/publication/receipt jobs enforce admission and activation"
 else
-  ok=0
+  fail "S3 parsed beta workflow contract or mutation guard failed"
 fi
-[ "$ok" -eq 1 ] && pass "S3 beta workflow: schedule 6h + dispatch + EVERY post-preflight step gated by activated (guard actually no-ops before P5)" \
-                || fail "S3 beta schedule/guard not structurally gating (steps=$STEP_STARTS gated=$GATED)"
 
 # ── S4 · credential scoping over ALL workflows (the FLY-1323 rewrite) ────────
 # S4a: vendor credentials/control-plane references may appear ONLY in the
@@ -165,7 +147,7 @@ fi
 # activation: explicitly scoped infra and publication credentials. B2 signer
 # and cleanup inputs are also restricted to infra at the parsed step boundary.
 bad_secret=""
-for f in "$BETA" "$PROMOTE"; do
+for f in "$PROMOTE"; do
   while IFS= read -r name; do
     [ "$name" = "FW_BETA_PUBLISH_TOKEN" ] || bad_secret="$bad_secret $f:$name"
   done < <(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$f" | sed 's/^secrets\.//' | sort -u)
@@ -237,27 +219,31 @@ CHECKOUT_LINE="$(grep -n 'Check out the DERIVED commit' "$PROMOTE" | head -1 | c
 
 # ── S7 · main-only guard on every release workflow ──────────────────────────
 ok=1
-for f in "$BETA" "$PROMOTE"; do
+for f in "$PROMOTE"; do
   grep -q "Dispatch-ref guard (main only)" "$f" || ok=0
   grep -q 'refs/heads/main' "$f" || ok=0
 done
+grep -q "refs/heads/main" "$BETA" || ok=0
 grep -q "Guards (main-only" "$COMMIT" || ok=0
 grep -q 'refs/heads/main' "$COMMIT" || ok=0
 grep -q 'refs/heads/main' "$ACTIVATION" || ok=0
 [ "$ok" -eq 1 ] && pass "S7 main-only guard present in all four release workflows" \
                 || fail "S7 dispatch-ref guard missing"
 
-# ── S8 · dispatch inputs never interpolate into run shell text ──────────────
-ok=1
-while IFS= read -r line; do
-  case "$line" in
-    *'${{ inputs.'*)
-      echo "$line" | grep -qE "_INPUT: |if: |ref: " || ok=0
-      ;;
-  esac
-done < <(cat "$BETA" "$PROMOTE" "$COMMIT" "$ACTIVATION")
-[ "$ok" -eq 1 ] && pass "S8 dispatch inputs ride env/if/ref only — never raw in run: text (all four workflows)" \
-                || fail "S8 raw input interpolation found in a run block"
+# S8: inspect executable strings, allowing inputs only in structured env/if/ref/run-name fields.
+if node --input-type=module - "$ROOT" <<'NODE'
+import fs from 'node:fs';
+import path from 'node:path';
+import {createRequire} from 'node:module';
+const root=process.argv[2];const require=createRequire(path.join(root,'packages/teamlead/package.json'));const {parse}=require('yaml');
+for(const name of ['payload-beta-release','payload-promote','payload-promote-commit','payload-activation']){
+ const workflow=parse(fs.readFileSync(path.join(root,'.github/workflows',name+'.yml'),'utf8'));
+ for(const job of Object.values(workflow.jobs))for(const step of job.steps??[]){
+  for(const text of [step.run,step.with?.script])if(typeof text==='string'&&/\$\{\{\s*(?:github\.event\.)?inputs[.\[]/.test(text))throw new Error('input interpolation in executable text');
+ }
+}
+NODE
+then pass "S8 parsed run/script bodies contain no raw inputs interpolation"; else fail "S8 executable inputs interpolation"; fi
 
 # ── S9 · pre-existing workflows untouched: ci.yml + ship keep their names ────
 ok=1

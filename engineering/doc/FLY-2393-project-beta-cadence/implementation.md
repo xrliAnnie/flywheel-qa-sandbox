@@ -69,3 +69,17 @@ payload-release.mjs 新增可选 --result-file：从重新 readManifest + valida
 验证：payload-release-pipeline.test.sh 44 PASS / 0 FAIL（含原 force、CAS、撤回、客户 promote 回归）；scheduler/store 15 tests PASS；GitHub 7 tests PASS，新增 covered_by_newer ahead 接受/diverged 拒绝；teamlead typecheck PASS。日志 /tmp/fly2393-result-green.log、/tmp/fly2393-recovery-green.log、/tmp/fly2393-recovery-typecheck.log、/tmp/fly2393-ancestry.log。
 
 下一步重点 C3 workflow receiver/preflight/冻结来源与 receipt helper、客户三个 workflow 仅 queue:max 授权 diff、结构测试同步；随后 C4 生命周期/管理台和 C5 全仓 gates/review/PR。当前仍未部署或触发真实发布，phase 不完成。
+
+## C3 workflow receiver（2026-09-11）
+
+新增 beta-schedule-receipt.mjs 纯 receiver 契约与实际 git ancestry helper。完整 project/key/SHA 输入、main、owner 与 force 互斥验证；legacy schedule 保留6h，paused不发布，人工路径保留。真实 temp git 两次 commit 验证排队后 main 前进仍可发布冻结祖先；同 SHA no_change、已发布后代 covered_by_newer、无关源拒绝。输出不改 manifest 指针。
+
+beta workflow 拆为无锁 preflight、eligible && activated 的同组 publish job、严格只生成/上传 not_activated receipt 的 job。trusted main checkout 的 receiver/publisher/release-contract 先保存在 runner.temp；验证冻结 SHA 之后才 checkout 该 SHA，发布和回执执行保留的可信脚本。已有覆盖 beta 不再 install/build。仅 Bridge 路径启用 publisher result-file，legacy/人工保持原默认/force CLI。run-name 完整 schedule key，三个新增输入只通过 env 传递；成功 run 上传精确 receipt artifact。
+
+按 Lead bedfb3f4-ab23-42bf-bbb5-ac06f8b68df0 授权，payload-promote / payload-promote-commit / payload-activation 的 diff 各仅新增一行 queue:max，其他行不变；cancel-in-progress 保持 GitHub 默认 false。beta publish job 显式同组 queue:max/cancel-in-progress:false；停用/未激活请求不入锁。实际跨 workflow/job 锁与真实队列验收仍按 R2 residual 留待授权环境，不冒充已实测。
+
+S3 改为解析 YAML 的 job/admission/activation/receipt 权限校验及 mutation tests；S8 解析 run 与 github-script 执行正文，同时禁止 inputs 与 github.event.inputs 原文插值；S7 beta main guard由真实内嵌 preflight执行负例覆盖，其他发布 guard保持。现有CI调用的 release-workflows-structure.test.sh 现在运行两个新增 mjs suite，因此新增 receiver/结构测试进入既有发布CI。
+
+TDD：缺 receiver/helper 与 source assessment 红灯→绿灯；旧 workflow 顶层共享锁红灯→job边界绿灯；嵌入JS换行语法红灯→转义修复绿灯；三个customer队列未保留红灯→仅 queue:max绿灯。最终结构门禁23 PASS、其中新增 helper/实际内嵌脚本/祖先关系与 mutation共8 tests PASS；pipeline44 PASS；biome3 files PASS；git diff --check PASS。日志 /tmp/fly2393-receiver-structure-final.log、/tmp/fly2393-receiver-pipeline-final.log、/tmp/fly2393-receiver-biome-final.log。
+
+下一步 C4 Bridge plugin启停与只读管理台、持续错误/首次接管排空边界补强，再全仓 lint/build/packages tests、review、milestone最后提交、PR和needs_review交接。当前尚无PR，无生产配置/发布/部署变更。

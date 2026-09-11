@@ -1,105 +1,275 @@
-# FLY-1062 PR4 · beta payload release — fully automated (Annie 直令: beta
-# every 6h, no gate). No customer-facing action: publishes ONLY to the
-# internal-beta channel; the customer channel is structurally unreachable
-# with the beta-publish capability (the endpoint refuses the diff).
-#
-# CREDENTIAL DISCIPLINE (plan §3): this workflow holds ONLY the app-level
-# beta-publish capability token (internal-beta blast radius). It must NEVER
-# reference a Cloudflare/vendor credential, the customer-release token, or any
-# npm credential. Customer-facing publishes remain outside this workflow;
-# release-workflows-structure.test.sh greps for exactly that boundary.
+# FLY-2393: legacy remains 6h; only an admitted Bridge occurrence enters the publish queue.
 name: Payload Beta Release
-
+run-name: ${{ inputs.schedule-key && format('beta-schedule:{0}', inputs.schedule-key) || 'Payload Beta Release' }}
 on:
-  # every 6h, fully automated (a scheduled run uses a deterministic
-  # releaseId = beta-<HEAD sourceCommit>, so an idle main never mints a new
-  # beta.N and a crash-retry converges — plan §3 ⑤). Pre-activation guard
-  # below no-ops until FW_ENDPOINT is configured (P5), so scheduled fires
-  # before activation are silent, not failures.
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: 0 */6 * * *
   workflow_dispatch:
     inputs:
       release-id:
-        description: "explicit releaseId to FORCE a fresh beta (dispatch only; scheduled runs derive beta-<sourceCommit>)"
+        description: Explicit manual force release ID
         required: false
         type: string
-
+      schedule-key:
+        description: Bridge occurrence key
+        required: false
+        type: string
+      source-commit:
+        description: Bridge frozen default-branch commit
+        required: false
+        type: string
+      project-key:
+        description: Bridge canonical project key
+        required: false
+        type: string
 permissions:
   contents: read
-
-# single-flight with every other payload publish operation (plan §B0-8:
-# Actions concurrency + manifest etag CAS, double insurance)
-concurrency:
-  group: payload-release
-
+  actions: read
 jobs:
-  beta-release:
-    name: Build + publish beta payload
+  preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    outputs:
+      eligible: ${{ steps.preflight.outputs.eligible }}
+      activated: ${{ steps.preflight.outputs.activated }}
+      bridge: ${{ steps.preflight.outputs.bridge }}
+      workflow_id: ${{ steps.preflight.outputs.workflow_id }}
     steps:
-      # main-only: a scheduled run is always on the default branch; a dispatch
-      # from any other ref is refused (defense in depth — plan §3).
-      - name: Dispatch-ref guard (main only)
-        env:
-          GH_REF: ${{ github.ref }}
-        run: |
-          if [ "$GH_REF" != "refs/heads/main" ]; then
-            echo "::error::beta releases may only run from main (got $GH_REF)"
-            exit 1
-          fi
-
-      # pre-activation guard (plan §3 ⑤): until the endpoint is configured
-      # (P5), a scheduled fire is a clean no-op — never a red run.
-      - name: Pre-activation guard (no-op until FW_ENDPOINT configured)
+      - uses: actions/github-script@v7
         id: preflight
         env:
+          RELEASE_ID_INPUT: ${{ inputs.release-id }}
+          PROJECT_KEY: ${{ inputs.project-key }}
+          SCHEDULE_KEY: ${{ inputs.schedule-key }}
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          FW_BETA_SCHEDULER_OWNER: ${{ vars.FW_BETA_SCHEDULER_OWNER }}
           FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
-        run: |
-          if [ -z "$FW_ENDPOINT" ]; then
-            echo "FW_ENDPOINT not configured — distribution not yet activated (P5). No-op."
-            echo "activated=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "activated=true" >> "$GITHUB_OUTPUT"
-          fi
-
+          EXPECTED_PROJECT_KEY: flywheel
+        with:
+          script: |-
+            function betaInvocation(env) {
+              const owner = env.FW_BETA_SCHEDULER_OWNER || "legacy";
+              if (!["legacy", "paused", "bridge"].includes(owner))
+                throw new Error("beta_owner_invalid");
+              if (env.GITHUB_REF !== "refs/heads/main") throw new Error("beta_ref_invalid");
+              if (!["schedule", "workflow_dispatch"].includes(env.GITHUB_EVENT_NAME))
+                throw new Error("beta_event_invalid");
+              const fields = [env.PROJECT_KEY, env.SCHEDULE_KEY, env.SOURCE_COMMIT];
+              const bridge = fields.some(Boolean);
+              if (bridge) {
+                if (
+                  env.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
+                  owner !== "bridge" ||
+                  env.RELEASE_ID_INPUT ||
+                  !fields.every(Boolean) ||
+                  env.PROJECT_KEY !== env.EXPECTED_PROJECT_KEY ||
+                  !/^[a-f0-9]{64}$/.test(env.SCHEDULE_KEY) ||
+                  !/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT)
+                )
+                  throw new Error("beta_schedule_input_invalid");
+              }
+              const eligible =
+                bridge ||
+                (owner !== "paused" &&
+                  (env.GITHUB_EVENT_NAME === "workflow_dispatch" || owner === "legacy"));
+              return { eligible, activated: Boolean(env.FW_ENDPOINT), bridge };
+            }
+            const state=betaInvocation(process.env);
+            for(const [key,value] of Object.entries(state))core.setOutput(key,String(value));
+            if(state.bridge){const run=await github.rest.actions.getWorkflowRun({...context.repo,run_id:context.runId});core.setOutput('workflow_id',String(run.data.workflow_id));}
+  beta-release:
+    name: Build + publish beta payload
+    needs: preflight
+    if: needs.preflight.outputs.eligible == 'true' && needs.preflight.outputs.activated == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: payload-release
+      queue: max
+      cancel-in-progress: false
+    env:
+      TRUSTED_BETA_ROOT: ${{ runner.temp }}/beta-receiver
+    steps:
       - uses: actions/checkout@v4
-        if: steps.preflight.outputs.activated == 'true'
-
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Preserve trusted receiver before frozen checkout
+        run: |-
+          mkdir -p "$TRUSTED_BETA_ROOT/scripts" "$TRUSTED_BETA_ROOT/packages/release-contract"
+          cp -R scripts/release "$TRUSTED_BETA_ROOT/scripts/"
+          cp -R packages/release-contract/src "$TRUSTED_BETA_ROOT/packages/release-contract/"
+      - name: Verify frozen source and existing beta
+        id: assess
+        env:
+          RELEASE_ID_INPUT: ${{ inputs.release-id }}
+          PROJECT_KEY: ${{ inputs.project-key }}
+          SCHEDULE_KEY: ${{ inputs.schedule-key }}
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_BETA_PUBLISH_TOKEN: ${{ secrets.FW_BETA_PUBLISH_TOKEN }}
+        run: |-
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {pathToFileURL} from 'node:url';
+          const root=process.env.TRUSTED_BETA_ROOT;
+          const resultFile=process.env.RUNNER_TEMP+'/beta-result.json';
+          fs.rmSync(resultFile,{force:true});
+          let result=null;
+          if(process.env.SCHEDULE_KEY){
+           const {assessBetaSource}=await import(pathToFileURL(root+'/scripts/release/beta-schedule-receipt.mjs'));
+           const {makeClient}=await import(pathToFileURL(root+'/scripts/release/lib/endpoint-client.mjs'));
+           const {manifest}=await makeClient({endpoint:process.env.FW_ENDPOINT,token:process.env.FW_BETA_PUBLISH_TOKEN}).readManifest();
+           result=await assessBetaSource({repoRoot:process.env.GITHUB_WORKSPACE,sourceCommit:process.env.SOURCE_COMMIT,manifest});
+          }
+          if(result)fs.writeFileSync(resultFile,JSON.stringify(result));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,'build='+String(result===null)+'\n');
+          NODE
+      - name: Checkout validated frozen source
+        if: steps.assess.outputs.build == 'true' && needs.preflight.outputs.bridge == 'true'
+        env:
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+        run: |-
+          git checkout --detach "$SOURCE_COMMIT"
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
       - uses: pnpm/action-setup@v4
-        if: steps.preflight.outputs.activated == 'true'
-
+        if: steps.assess.outputs.build == 'true'
       - uses: actions/setup-node@v4
-        if: steps.preflight.outputs.activated == 'true'
+        if: steps.assess.outputs.build == 'true'
         with:
           node-version-file: .node-version
           cache: pnpm
-
       - name: Install dependencies
-        if: steps.preflight.outputs.activated == 'true'
+        if: steps.assess.outputs.build == 'true'
         run: pnpm install --frozen-lockfile
-
       - name: Install better-sqlite3 prebuilt binary
-        if: steps.preflight.outputs.activated == 'true'
+        if: steps.assess.outputs.build == 'true'
         run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
-
       - name: Build workspace dist (payload embeds built packages)
-        if: steps.preflight.outputs.activated == 'true'
+        if: steps.assess.outputs.build == 'true'
         run: pnpm build
-
-      # dispatch inputs never interpolate into shell text — env + quoting only.
-      # No --release-id → payload-release.mjs derives beta-<sourceCommit> and
-      # dedups (skip if that commit already has a committed beta).
       - name: Beta release (reserve → register → upload → verify → commit)
-        if: steps.preflight.outputs.activated == 'true'
+        if: steps.assess.outputs.build == 'true'
         env:
           FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
           FW_BETA_PUBLISH_TOKEN: ${{ secrets.FW_BETA_PUBLISH_TOKEN }}
           RELEASE_ID_INPUT: ${{ inputs.release-id }}
-        run: |
-          if [ -n "$RELEASE_ID_INPUT" ]; then
-            node scripts/release/payload-release.mjs --release-id "$RELEASE_ID_INPUT"
-          else
-            node scripts/release/payload-release.mjs
+          SCHEDULE_KEY: ${{ inputs.schedule-key }}
+        run: |-
+          args=(--repo-root "$GITHUB_WORKSPACE")
+          if [ -n "$SCHEDULE_KEY" ]; then
+            args+=(--result-file "$RUNNER_TEMP/beta-result.json")
           fi
+          if [ -n "$RELEASE_ID_INPUT" ]; then
+            args+=(--release-id "$RELEASE_ID_INPUT")
+          fi
+          node "$TRUSTED_BETA_ROOT/scripts/release/payload-release.mjs" "${args[@]}"
+      - uses: actions/github-script@v7
+        if: needs.preflight.outputs.bridge == 'true'
+        env:
+          RELEASE_ID_INPUT: ${{ inputs.release-id }}
+          PROJECT_KEY: ${{ inputs.project-key }}
+          SCHEDULE_KEY: ${{ inputs.schedule-key }}
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          WORKFLOW_ID: ${{ needs.preflight.outputs.workflow_id }}
+        with:
+          script: |-
+            const {betaScheduleReceipt}=await import(require('node:url').pathToFileURL(process.env.TRUSTED_BETA_ROOT+'/scripts/release/beta-schedule-receipt.mjs'));
+            const fs=require('node:fs');
+            const result=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/beta-result.json','utf8'));
+            const receipt=betaScheduleReceipt({projectName:process.env.PROJECT_KEY,scheduleKey:process.env.SCHEDULE_KEY,sourceCommit:process.env.SOURCE_COMMIT,repositoryId:Number(process.env.GITHUB_REPOSITORY_ID),workflowId:Number(process.env.WORKFLOW_ID),runId:Number(process.env.GITHUB_RUN_ID)},result);
+            const dir=process.env.RUNNER_TEMP+'/beta-schedule-receipt';
+            fs.mkdirSync(dir,{recursive:true});
+            fs.writeFileSync(dir+'/receipt.json',JSON.stringify(receipt)+'\n',{mode:0o600});
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beta-schedule-receipt
+          path: ${{ runner.temp }}/beta-schedule-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 14
+        if: needs.preflight.outputs.bridge == 'true'
+  not-activated-receipt:
+    needs: preflight
+    if: needs.preflight.outputs.eligible == 'true' && needs.preflight.outputs.bridge == 'true' && needs.preflight.outputs.activated == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          RELEASE_ID_INPUT: ${{ inputs.release-id }}
+          PROJECT_KEY: ${{ inputs.project-key }}
+          SCHEDULE_KEY: ${{ inputs.schedule-key }}
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          WORKFLOW_ID: ${{ needs.preflight.outputs.workflow_id }}
+        with:
+          script: |-
+            function betaScheduleReceipt(identity, result) {
+              const invalid = () => {
+                throw new Error("beta_receipt_invalid");
+              };
+              if (
+                !identity ||
+                !result ||
+                Object.keys(identity).sort().join(",") !==
+                  "projectName,repositoryId,runId,scheduleKey,sourceCommit,workflowId"
+              )
+                invalid();
+              if (
+                typeof identity.projectName !== "string" ||
+                !identity.projectName ||
+                identity.projectName.length > 128 ||
+                !/^[a-f0-9]{64}$/.test(identity.scheduleKey) ||
+                !/^[a-f0-9]{40}$/.test(identity.sourceCommit) ||
+                !["repositoryId", "workflowId", "runId"].every(
+                  (k) => Number.isSafeInteger(identity[k]) && identity[k] > 0,
+                )
+              )
+                invalid();
+              if (
+                Object.keys(result).sort().join(",") !==
+                "outcome,publishedAt,publishedSourceCommit,publishedVersion"
+              )
+                invalid();
+              if (result.outcome === "not_activated") {
+                if (
+                  result.publishedVersion !== null ||
+                  result.publishedSourceCommit !== null ||
+                  result.publishedAt !== null
+                )
+                  invalid();
+              } else {
+                if (
+                  !["published", "no_change", "covered_by_newer"].includes(
+                    result.outcome,
+                  ) ||
+                  typeof result.publishedVersion !== "string" ||
+                  !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(result.publishedVersion) ||
+                  typeof result.publishedSourceCommit !== "string" ||
+                  !/^[a-f0-9]{40}$/.test(result.publishedSourceCommit) ||
+                  typeof result.publishedAt !== "string" ||
+                  !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(
+                    result.publishedAt,
+                  ) ||
+                  !Number.isFinite(Date.parse(result.publishedAt))
+                )
+                  invalid();
+                if (
+                  result.outcome !== "covered_by_newer" &&
+                  result.publishedSourceCommit !== identity.sourceCommit
+                )
+                  invalid();
+              }
+              return { schemaVersion: 1, ...identity, ...result };
+            }
+            const fs=require('node:fs');
+            const result={outcome:'not_activated',publishedVersion:null,publishedSourceCommit:null,publishedAt:null};
+            const receipt=betaScheduleReceipt({projectName:process.env.PROJECT_KEY,scheduleKey:process.env.SCHEDULE_KEY,sourceCommit:process.env.SOURCE_COMMIT,repositoryId:Number(process.env.GITHUB_REPOSITORY_ID),workflowId:Number(process.env.WORKFLOW_ID),runId:Number(process.env.GITHUB_RUN_ID)},result);
+            const dir=process.env.RUNNER_TEMP+'/beta-schedule-receipt';
+            fs.mkdirSync(dir,{recursive:true});
+            fs.writeFileSync(dir+'/receipt.json',JSON.stringify(receipt)+'\n',{mode:0o600});
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beta-schedule-receipt
+          path: ${{ runner.temp }}/beta-schedule-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 14
