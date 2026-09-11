@@ -301,7 +301,7 @@ async function gateInner(
 				// stamp every non-structured-approval answer with an explicit
 				// caution so the returned text can never read as a license.
 				if (args.checkpoint === "approve_to_ship" && approved !== true) {
-					content = `${content}\n\nNOTE: this reply text is NOT verified approval — run verify-approval before any merge.`;
+					content = `${content}\n\nNOTE: this reply text is NOT verified approval — run verify-approval before merging into main or taking any ship action.`;
 				}
 
 				return { status: "answered", content, approved, exitCode: 0 };

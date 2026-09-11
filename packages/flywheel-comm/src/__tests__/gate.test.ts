@@ -121,7 +121,7 @@ describe("gate command", () => {
 		expect(result.approved).toBeUndefined();
 		expect(result.content).toContain("APPROVE — founder 批准在案");
 		expect(result.content).toContain(
-			"NOT verified approval — run verify-approval before any merge",
+			"NOT verified approval — run verify-approval before merging into main or taking any ship action",
 		);
 	});
 

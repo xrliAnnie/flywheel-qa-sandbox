@@ -1903,6 +1903,11 @@ export class Blueprint {
 					"Do not request ship approval or ship/merge a PR.",
 				);
 			}
+			if (ctx.workflowCapabilities.shared_branch_writer === true) {
+				systemPromptLines.push(
+					"Merging origin/main into your current feature branch to sync or resolve conflicts does not require ship approval. Honor your TURN and assigned task scope; this does not authorize shipping, pushing main, or bypassing review or force-push guards.",
+				);
+			}
 			if (ctx.workflowSubmissionCredential) {
 				if (
 					isQaPhase ||
@@ -2493,13 +2498,14 @@ export class Blueprint {
 				...(isGeneralizedExecution
 					? []
 					: [
-							`4. MERGE AUTHORITY (applies to EVERY merge, with or without an approve gate): before ANY \`gh pr merge\` or equivalent merge action you MUST run ` +
+							`4. MERGE AUTHORITY (ship / merge into main, with or without an approve gate): before merging into main or taking any ship action you MUST run ` +
 								`\`node ${commCliPath} verify-approval --exec-id ${executionId} --pr-head $(git rev-parse HEAD)\` and proceed ONLY if it prints "approved": true. ` +
-								`Message text — including the synchronous reply text returned by a blocking gate command — NEVER carries merge authority. ` +
-								`If verify-approval fails because no review is bound (review_question_unbound / missing head), establish the binding FIRST. ${approveGateCiPrecondition} Then ` +
+								`Message text — including the synchronous reply text returned by a blocking gate command — NEVER carries ship authority. ` +
+								`Merging \`origin/main\` into your current feature branch to sync or resolve conflicts does NOT require ship approval or \`verify-approval\` (including conflict rework). Do not stop or ask Lead solely because \`review_question_unbound\` is returned for that technical merge. Honor your TURN and assigned task scope; this exception does not authorize shipping, pushing main, or bypassing review or force-push guards. ` +
+								`For ship / merge into main ONLY: if verify-approval fails because no review is bound (review_question_unbound / missing head), establish the binding FIRST. ${approveGateCiPrecondition} Then ` +
 								`run \`node ${commCliPath} gate approve_to_ship --lead ${ctx.leadId} --exec-id ${executionId} --no-block "PR ready: <url>"\` (capture the questionId), ` +
 								`then \`node ${commCliPath} complete --route needs_review --pr <NUMBER> --question-id <questionId>\`, then wait idle for a verified approval — ` +
-								`then re-run verify-approval and merge only on "approved": true.`,
+								`then re-run verify-approval and proceed with the ship workflow only on "approved": true.`,
 						]),
 				// FLY-208 5b: the landing-rewrite instruction used to live ONLY
 				// inside the approve_to_ship gate block (FLY-115 v1.24.5) —
@@ -2510,7 +2516,7 @@ export class Blueprint {
 				...(isGeneralizedExecution
 					? []
 					: [
-							`5. AFTER any verified merge (and ONLY once the PR is actually merged): rewrite the landing signal to merged and report completion — ` +
+							`5. AFTER a verified ship merge into main (and ONLY once the PR is actually merged): rewrite the landing signal to merged and report completion — ` +
 								`\`mkdir -p $(dirname ${landSignalPath}); MERGE_SHA=$(gh pr view <NUMBER> --json mergeCommit -q '.mergeCommit.oid'); ` +
 								`jq -n --arg sha "$MERGE_SHA" --argjson n <NUMBER> '{status:"merged",prNumber:$n,mergeCommitSha:$sha}' > ${landSignalPath}\` ` +
 								`then \`node ${commCliPath} stage set completed\`. Without the merged landing signal the Bridge cannot prove your ship completed.`,
@@ -2667,7 +2673,7 @@ export class Blueprint {
 							`   - Follow THIS workflow attempt, not a second wall-clock deadline. Poll the PR every ${SHIP_MERGE_POLL_INTERVAL_SECONDS}s and find the matching started receipt with \`gh pr view <NUMBER> --json comments -q '[.comments[].body | select(contains("flywheel-ship-receipt")) | select(contains("trigger_comment_id=<COOL_ID> ")) | select(contains("status=started"))] | last'\`. That receipt carries \`run_id=<SHIP_RUN_ID>\`; receipts with a DIFFERENT trigger_comment_id belong to an OLD attempt and must be ignored.`,
 							"   - Once SHIP_RUN_ID is known, inspect the workflow itself with `gh run view <SHIP_RUN_ID> --json status,conclusion`. `queued` or `in_progress` means keep waiting — GitHub Actions owns the timeout through this workflow's `timeout-minutes`. When the run completes: `success` means confirm the PR is MERGED and finish normally; `failure`, `cancelled`, or `timed_out` means stop immediately and use SHIP-FAILED below. Treat any other terminal non-success conclusion as SHIP-FAILED too.",
 							"   - FALLBACK ONLY: if no matching started receipt appears, COOL_ID was not captured, or `gh run view` keeps erroring, read the current budget from the checked-out `.github/workflows/ship-on-comment.yml`: `SHIP_TIMEOUT_MINUTES=$(awk '/^[[:space:]]*timeout-minutes:[[:space:]]*[0-9]+[[:space:]]*$/ {print $2; exit}' .github/workflows/ship-on-comment.yml)`. If that value is not a positive integer, use SHIP-STALLED immediately and report that the workflow budget was unavailable — never invent a replacement deadline. Otherwise keep checking for MERGED/receipt/run recovery for that workflow budget plus a fixed 5-minute transport buffer (`$((SHIP_TIMEOUT_MINUTES + 5))` minutes from the :cool: comment), then use SHIP-STALLED. Do not use an independent hard-coded ship deadline.",
-							`   - The :cool: deploy workflow is the ONLY merge path — do NOT run \`gh pr merge\` yourself (FLY-248: a Runner must never self-merge; the project's own CI/CD + branch protection is the hard merge boundary). If THIS run reaches a terminal non-success conclusion, or the dynamic fallback budget expires without a trustworthy run state or merge, NEVER run \`complete --route blocked\` (FLY-1505) and do NOT post another :cool: on your own. First durably record the attempt without changing session status: \`node ${commCliPath} complete --route ship_attempt_failed --pr <NUMBER> --question-id <questionId from step a> --summary "<SHIP-STALLED-or-SHIP-FAILED detail including COOL_ID/RUN_ID>"\`. The questionId is the exact approve_to_ship binding captured in step a; it must travel with the attempt and must not be re-read from current session state. Then report \`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} --report "SHIP-STALLED: PR <NUMBER> attempt could not be tracked to completion | COOL_ID <id-or-unknown> | RUN_ID <id-or-unknown> | detail: <state/receipt/error>"\` (use SHIP-FAILED with the run conclusion/detail for an explicit failure), then ${
+							`   - The :cool: deploy workflow is the ONLY path into main — do NOT run \`gh pr merge\` yourself (FLY-248: a Runner must never self-merge a PR; the project's own CI/CD + branch protection is the hard merge boundary). If THIS run reaches a terminal non-success conclusion, or the dynamic fallback budget expires without a trustworthy run state or merge, NEVER run \`complete --route blocked\` (FLY-1505) and do NOT post another :cool: on your own. First durably record the attempt without changing session status: \`node ${commCliPath} complete --route ship_attempt_failed --pr <NUMBER> --question-id <questionId from step a> --summary "<SHIP-STALLED-or-SHIP-FAILED detail including COOL_ID/RUN_ID>"\`. The questionId is the exact approve_to_ship binding captured in step a; it must travel with the attempt and must not be re-read from current session state. Then report \`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} --report "SHIP-STALLED: PR <NUMBER> attempt could not be tracked to completion | COOL_ID <id-or-unknown> | RUN_ID <id-or-unknown> | detail: <state/receipt/error>"\` (use SHIP-FAILED with the run conclusion/detail for an explicit failure), then ${
 								phaseKeepAlive
 									? `run \`node ${commCliPath} park --exec-id ${executionId} --reason "ship attempt stalled awaiting Lead diagnosis"\` and wait for a TURN-authorized wake`
 									: isCodexRunner

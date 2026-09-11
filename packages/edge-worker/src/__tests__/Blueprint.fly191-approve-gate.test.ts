@@ -209,9 +209,9 @@ describe("Blueprint approve_to_ship instruction (FLY-191 Phase 2)", () => {
 			"merge directly: `gh pr merge <NUMBER> --squash --delete-branch`",
 		);
 
-		// Replacement: the :cool: deploy workflow is the only merge path; a stalled
+		// Replacement: the :cool: deploy workflow is the only path into main; a stalled
 		// attempt reports to the Lead and preserves the approved checkpoint.
-		expect(prompt).toContain("ONLY merge path");
+		expect(prompt).toContain("ONLY path into main");
 		expect(prompt).toContain("a Runner must never self-merge");
 		expect(prompt).toContain("NEVER run `complete --route blocked`");
 		expect(prompt).toContain("SHIP-STALLED");

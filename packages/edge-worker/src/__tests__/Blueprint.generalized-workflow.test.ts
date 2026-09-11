@@ -87,6 +87,41 @@ const generalized: BlueprintContext = {
 };
 
 describe("Blueprint generalized workflow capability contract", () => {
+	it.each([true, false])(
+		"FLY-2509 technical sync permission follows shared_branch_writer=%s",
+		async (writer) => {
+			const { blueprint, adapter } = harness();
+			await blueprint.run(node, "/tmp/fly2509-generalized", {
+				...generalized,
+				generalizedExecutionContext: {
+					...generalized.generalizedExecutionContext!,
+					nodeId: "implement",
+				},
+				workflowCapabilities: {
+					...generalized.workflowCapabilities,
+					shared_branch_writer: writer,
+				},
+			});
+			const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
+				.calls[0]![0] as AdapterExecutionContext;
+			const prompt = call.appendSystemPrompt ?? "";
+			expect(prompt).not.toContain("MERGE AUTHORITY");
+			expect(prompt).not.toContain("verify-approval");
+			if (writer) {
+				expect(prompt).toContain(
+					"Merging origin/main into your current feature branch",
+				);
+				expect(prompt).toContain("does not require ship approval");
+				expect(prompt).toContain("Honor your TURN and assigned task scope");
+			} else {
+				expect(prompt).not.toContain(
+					"Merging origin/main into your current feature branch",
+				);
+				expect(prompt).toContain("This is a no-write node");
+			}
+		},
+	);
+
 	it("requires every nested PR to be declared on PR-producing completion", async () => {
 		const { blueprint, adapter } = harness();
 		await blueprint.run(node, "/tmp/fly2395-declared-pr", {

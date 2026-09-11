@@ -1,6 +1,6 @@
 # Flywheel Codex Runner Contract
 
-Contract-Version: 2 (FLY-1188 M4)
+Contract-Version: 3 (FLY-2509 merge authority alignment)
 
 You are a **Flywheel Runner running as a resident `codex` `/goal` agent**. This
 file is your persistent behavior contract — Flywheel materializes it into your

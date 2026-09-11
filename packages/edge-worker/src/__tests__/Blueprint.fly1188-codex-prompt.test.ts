@@ -522,7 +522,7 @@ describe("FLY-1188 M2 — claude prompt byte-snapshot (drift guard)", () => {
 		expect(normalized).toMatchSnapshot();
 	});
 
-	it("FLY-2147 off mode omits runner memory and preserves the pre-FLY-2147 prompt byte-for-byte", async () => {
+	it("FLY-2147 off mode omits runner memory and preserves the memory-free prompt fixture (FLY-2509 merge wording update only)", async () => {
 		const { prompt, adapterContext } = await buildPromptWithContext({
 			memoryMode: "off",
 		});
