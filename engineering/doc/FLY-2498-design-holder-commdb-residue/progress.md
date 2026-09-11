@@ -1,15 +1,16 @@
 ---
 issue: FLY-2498
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-11T19:36:14.983Z
-nextStep: Both paths implemented; 124 focused tests green; lint/build pass. Full
-  package suite and patrol script running. Then report/milestone last commit,
-  PR, registered code review, needs_review completion.
+phaseCursor: 3/4
+updated: 2026-09-11T19:37:34.847Z
+nextStep: Implementation d41dc0e27, evidence c299890f0; focused 124 green,
+  lint/build pass. Full package test process 27407 and patrol 48227 running.
+  Create milestone last commit/PR then register code review; report final test
+  receipts and complete needs_review after gates.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2498 progress
-**phase**: implement (2/4)
-**next**: Both paths implemented; 124 focused tests green; lint/build pass. Full package suite and patrol script running. Then report/milestone last commit, PR, registered code review, needs_review completion.
+**phase**: implement (3/4)
+**next**: Implementation d41dc0e27, evidence c299890f0; focused 124 green, lint/build pass. Full package test process 27407 and patrol 48227 running. Create milestone last commit/PR then register code review; report final test receipts and complete needs_review after gates.
