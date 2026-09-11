@@ -126,11 +126,6 @@ describe("FLY-2478 resident release", () => {
 	it("renews a newer resident boundary without invalidating an in-flight revision wake", async () => {
 		const store = await verdictStore();
 		const renewedAt = T0 + 60_000;
-		rawDb(store)
-			.prepare(
-				"UPDATE workflow_resident_hold SET release_cause = 'verdict_pass', release_source = 'old-pass' WHERE execution_id = 'impl-1'",
-			)
-			.run();
 		const input = {
 			executionId: "impl-1",
 			activationId: "activation:impl-1:run-1:implement:1",
@@ -154,6 +149,24 @@ describe("FLY-2478 resident release", () => {
 		});
 		expect(store.expireResidentHoldsTx("2026-09-11T03:00:01.000Z")).toEqual([]);
 		expect(store.wakeResidentHold("impl-1", 1, renewedAt + 1)).toBe(true);
+	});
+
+	it("preserves a committed release across same-revision boundary renewal", async () => {
+		const store = await verdictStore();
+		openPark(store);
+		expect(verdict(store, "qa_pass")).toMatchObject({ok: true});
+		const before = store.getResidentHold("impl-1")!;
+		expect(store.enterResidentHold({
+			executionId: "impl-1", activationId: before.activation_id,
+			nodeId: "implement", boundarySeq: 2,
+			nowMs: Date.parse(VERDICT_AT) + 1,
+		})).toEqual({ok: true, revision: 1, graceExpiresAt: before.grace_expires_at});
+		expect(store.getResidentHold("impl-1")).toMatchObject({
+			boundary_seq: 2, revision: 1, release_cause: before.release_cause,
+			release_source: before.release_source, grace_expires_at: before.grace_expires_at,
+			grace_started_at: before.grace_started_at,
+		});
+		expect(store.expireResidentHoldsTx(new Date(Date.parse(VERDICT_AT)+2).toISOString())).toHaveLength(1);
 	});
 
 	it.each(["enter", "completion"] as const)(

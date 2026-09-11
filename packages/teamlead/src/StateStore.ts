@@ -37996,15 +37996,18 @@ export class StateStore {
 				existing?.state === "resident" &&
 				existing.boundary_seq < input.boundarySeq
 			) {
+				const renewedGrace = existing.release_cause
+					? existing.grace_expires_at
+					: graceExpiresAt;
 				this.db.run(
 					`UPDATE workflow_resident_hold
 					 SET boundary_seq = ?, grace_started_at = ?, grace_expires_at = ?,
-					     release_cause = NULL, release_source = NULL, updated_at = ?
+					     updated_at = ?
 					 WHERE execution_id = ? AND revision = ? AND state = 'resident' AND boundary_seq = ?`,
 					[
 						input.boundarySeq,
-						now,
-						graceExpiresAt,
+						existing.release_cause ? existing.grace_started_at : now,
+						renewedGrace,
 						now,
 						input.executionId,
 						existing.revision,
@@ -38013,7 +38016,7 @@ export class StateStore {
 				);
 				result =
 					this.db.getRowsModified() === 1
-						? { ok: true, revision: existing.revision, graceExpiresAt }
+						? { ok: true, revision: existing.revision, graceExpiresAt: renewedGrace }
 						: { ok: false, reason: "stale_boundary" };
 				return;
 			}
