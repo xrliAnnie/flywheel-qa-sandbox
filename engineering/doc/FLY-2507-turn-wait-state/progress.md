@@ -1,17 +1,17 @@
 ---
 issue: FLY-2507
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-11T02:23:36.287Z
-nextStep: "TDD actor/ledger core GREEN 47/47, tsc checked. Core commit only:
-  production runTurn path resolver wiring and patrol optional suppressed_reason
-  consumption STILL TODO, plus migration/CLI/remaining negative tests. Then
-  exact full gates, code review, milestone-last PR and needs_review completion.
-  Lead 716044bd authorized no R4."
+phaseCursor: 3/4
+updated: 2026-09-11T02:29:04.816Z
+nextStep: CLI and patrol wiring complete, commits 30f73647d plus run-state
+  tests. pnpm lint PASS, pnpm -r build PASS. Focused comm final 28 PASS + TURN30
+  + patrol48. Full pnpm test:packages:run RUNNING exec session 56354, log
+  /tmp/FLY-2507-packages.log; inspect before claiming green. No new shell tests.
+  Next full results, code review, milestone-last PR, needs_review completion.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2507 progress
-**phase**: implement (2/4)
-**next**: TDD actor/ledger core GREEN 47/47, tsc checked. Core commit only: production runTurn path resolver wiring and patrol optional suppressed_reason consumption STILL TODO, plus migration/CLI/remaining negative tests. Then exact full gates, code review, milestone-last PR and needs_review completion. Lead 716044bd authorized no R4.
+**phase**: implement (3/4)
+**next**: CLI and patrol wiring complete, commits 30f73647d plus run-state tests. pnpm lint PASS, pnpm -r build PASS. Focused comm final 28 PASS + TURN30 + patrol48. Full pnpm test:packages:run RUNNING exec session 56354, log /tmp/FLY-2507-packages.log; inspect before claiming green. No new shell tests. Next full results, code review, milestone-last PR, needs_review completion.
