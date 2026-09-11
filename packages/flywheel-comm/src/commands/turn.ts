@@ -17,6 +17,7 @@
  */
 
 import type { CommDB } from "../db.js";
+import { readTurnWaitSuppression } from "../turn-wait-state.js";
 
 export interface TurnStatus {
 	/** `yours` is the ONLY answer that authorizes touching the worktree. */
@@ -82,6 +83,7 @@ export function recordTurnWait(
 		observedAtMs: number;
 		askAfterMs: number;
 		noTurnClearMinMs?: number;
+		stateDbPath?: string;
 	},
 ): { asked: boolean; questionId?: string } {
 	if (status.answer === "yours") {
@@ -99,6 +101,16 @@ export function recordTurnWait(
 	if (!status.holderExecId || !status.phase || status.epoch === undefined) {
 		return { asked: false };
 	}
+	const issueId = db.getSession(execId)?.issue_id;
+	const turn = issueId ? db.getTurn(issueId) : null;
+	const suppressedReason =
+		options.stateDbPath && issueId && turn?.target_run_id
+			? readTurnWaitSuppression(options.stateDbPath, {
+					executionId: execId,
+					runId: turn.target_run_id,
+					issueId,
+				})
+			: null;
 	return db.observeTurnWait({
 		executionId: execId,
 		holderExecId: status.holderExecId,
@@ -106,6 +118,7 @@ export function recordTurnWait(
 		epoch: status.epoch,
 		observedAtMs: options.observedAtMs,
 		askAfterMs: options.askAfterMs,
+		suppressedReason,
 	});
 }
 
@@ -147,6 +160,7 @@ export function recordTurnCommandSideEffects(
 		observedAtMs: number;
 		askAfterMs: number;
 		debugOverride: boolean;
+		stateDbPath?: string;
 	},
 ): { waitAsked: boolean; turnWakeAcks: number; runnerReceiptAcks: number } {
 	if (options.debugOverride) {

@@ -242,6 +242,7 @@ CREATE TABLE IF NOT EXISTS turn_wait_ledger (
   asked_at           INTEGER,
   question_id        TEXT,
   last_error         TEXT,
+  suppressed_reason  TEXT,
   no_turn_streak     INTEGER NOT NULL DEFAULT 0,
   last_no_turn_at    INTEGER,
   PRIMARY KEY (execution_id, holder_exec_id, epoch)
@@ -1436,6 +1437,7 @@ export class CommDB {
 		for (const [name, sqlType] of [
 			["no_turn_streak", "INTEGER NOT NULL DEFAULT 0"],
 			["last_no_turn_at", "INTEGER"],
+			["suppressed_reason", "TEXT"],
 		] as const) {
 			if (waitColumns.some((column) => column.name === name)) continue;
 			this.db.exec(
@@ -6944,6 +6946,7 @@ export class CommDB {
 		epoch: number;
 		observedAtMs: number;
 		askAfterMs: number;
+		suppressedReason?: string | null;
 	}): { asked: boolean; questionId?: string } {
 		if (
 			!input.executionId.trim() ||
@@ -6986,10 +6989,15 @@ export class CommDB {
 				this.db
 					.prepare(
 						`UPDATE turn_wait_ledger
-					    SET no_turn_streak = 0, last_no_turn_at = NULL
+					    SET no_turn_streak = 0, last_no_turn_at = NULL, suppressed_reason = ?
 					  WHERE execution_id = ? AND holder_exec_id = ? AND epoch = ?`,
 					)
-					.run(input.executionId, input.holderExecId, input.epoch);
+					.run(
+						input.suppressedReason ?? null,
+						input.executionId,
+						input.holderExecId,
+						input.epoch,
+					);
 				const row = this.db
 					.prepare(
 						`SELECT first_seen_at, asked_at, question_id
@@ -7008,6 +7016,7 @@ export class CommDB {
 					};
 					return;
 				}
+				if (input.suppressedReason) return;
 				if (input.observedAtMs - row.first_seen_at < input.askAfterMs) return;
 				const identity = this.db
 					.prepare(

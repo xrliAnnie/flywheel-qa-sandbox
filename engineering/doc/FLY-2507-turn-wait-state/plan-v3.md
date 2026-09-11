@@ -30,3 +30,12 @@ CommDB patrol 读取投影携带同一 suppressed_reason；judgeLoopLight 的 cl
 严格 TDD：先写非行动者超阈值仍发问的 RED，再最小 GREEN。验证 acting running/review/admitted 各态正常一次告警，ended_at 非 NULL/他人 actor/NULL actor 正常抑制；founder_gate/land 两种名称下都以 actor 为准；多 attempt/跨 run/缺行 unknown；actor 切换解除抑制；重复 reopen/replay 去重；新 epoch 与 grant/no-turn 清理；已发问题不改写；读取失败和 debug override；新列旧库迁移、旧 readonly schema兼容、patrol 同账本不报相反等待状态。
 
 运行 pnpm lint、pnpm -r build、pnpm test:packages:run 和新增 shell tests（若有），保留真实全仓结果。最终 code review、里程碑最后 commit、PR、DONE 报告和 needs_review completion/park 按原注入合同执行。
+
+## Lead 修正（2026-09-10，问题 716044bd-f0cf-4fee-bc12-cf170331b7b5）
+
+Lead 明确以 R2 APPROVED（098a7a65-8787-45cc-afdf-172aaae3ff78）为设计批准，本版加下列三条为实施基线；不开 R4，直接 TDD，代码审查核验。以下取代上文对应表述：
+1. acting 集合为 pending/admitted/running/review，ended_at 仍须 NULL；pending 已指定行动者等待 admission/TURN 的真实逾期不得抑制。
+2. patrol 只从 redWaiters 排除 suppressed 行，不移除 blockedExecutionIds / selfWaitingExecutionIds，不把等待体转为活跃进展证据。
+3. suppressed_reason 为可选列，不进入 requiredColumns；旧 readonly 库通过 columnsFor 检测并 SELECT NULL 兼容。抑制状态改变参与现有 fingerprint，一次快照间变化按 turn_tuple_moved 处理。
+
+通用非行动者判据是 Lead 指定的行为变化：QA 正常执行期间无行动责任的实现体也不再靠等待时长问 Lead；既有 holder_process_dead / holder_terminal_attempt / holder_parked 与 turn-belt 探测保持原行为。其余 advisory 留档，不扩范围。
