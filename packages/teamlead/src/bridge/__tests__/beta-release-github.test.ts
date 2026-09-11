@@ -30,7 +30,11 @@ it("binds stable numeric repository/workflow identity with only the project cred
 		});
 	});
 	const api = new BetaReleaseGitHub({
-		env: { A_TOKEN: "scoped-a", GH_TOKEN: "wrong" },
+		env: {
+			FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN",
+			A_TOKEN: "scoped-a",
+			GH_TOKEN: "wrong",
+		},
 		fetch: fetcher,
 	});
 	const binding = await api.resolve(project, new AbortController().signal);
@@ -71,7 +75,7 @@ it("reads owner only from a complete successful variables listing; 404 never mea
 		});
 	});
 	const api = new BetaReleaseGitHub({
-		env: { A_TOKEN: "scoped-a" },
+		env: { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "scoped-a" },
 		fetch: fetcher,
 	});
 	const signal = new AbortController().signal;
@@ -114,7 +118,7 @@ it("posts only the frozen schedule tuple and treats 204 or malformed acceptance 
 		});
 	});
 	const api = new BetaReleaseGitHub({
-		env: { A_TOKEN: "scoped-a" },
+		env: { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "scoped-a" },
 		fetch: fetcher,
 	});
 	const signal = new AbortController().signal;
@@ -172,7 +176,7 @@ it("recovers all matching runs across pages and rechecks known live handles", as
 		throw new Error("unexpected url");
 	});
 	const api = new BetaReleaseGitHub({
-		env: { A_TOKEN: "scoped-a" },
+		env: { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "scoped-a" },
 		fetch: fetcher,
 	});
 	const signal = new AbortController().signal;
@@ -281,7 +285,7 @@ it("downloads and binds a successful receipt without forwarding credentials to a
 		throw new Error("unexpected request");
 	});
 	const api = new BetaReleaseGitHub({
-		env: { A_TOKEN: "scoped-a" },
+		env: { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "scoped-a" },
 		fetch: fetcher,
 	});
 	const signal = new AbortController().signal;
@@ -333,7 +337,7 @@ it("honors the request timeout and returns a bounded Retry-After without respons
 				}),
 		);
 		const api = new BetaReleaseGitHub({
-			env: { A_TOKEN: "scoped-a" },
+			env: { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "scoped-a" },
 			fetch: fetcher,
 		});
 		const pending = expect(
@@ -342,7 +346,7 @@ it("honors the request timeout and returns a bounded Retry-After without respons
 		await vi.advanceTimersByTimeAsync(10000);
 		await pending;
 		const limited = new BetaReleaseGitHub({
-			env: { A_TOKEN: "scoped-a" },
+			env: { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "scoped-a" },
 			now: () => 1000,
 			fetch: async () =>
 				new Response("sensitive server detail", {
@@ -363,7 +367,7 @@ it("honors the request timeout and returns a bounded Retry-After without respons
 });
 it("does not infer missing owner from malformed variable records", async () => {
 	const api = new BetaReleaseGitHub({
-		env: { A_TOKEN: "scoped-a" },
+		env: { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "scoped-a" },
 		fetch: async () => json({ total_count: 1, variables: [{}] }),
 	});
 	await expect(
@@ -384,7 +388,7 @@ it("does not infer missing owner from malformed variable records", async () => {
 it("checks old queued and running workflow runs before first takeover", async () => {
 	let active = true;
 	const api = new BetaReleaseGitHub({
-		env: { A_TOKEN: "scoped-a" },
+		env: { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "scoped-a" },
 		fetch: async () =>
 			json({
 				total_count: active ? 1 : 0,
@@ -407,3 +411,56 @@ it("checks old queued and running workflow runs before first takeover", async ()
 	active = false;
 	await expect(api.assertDrained(binding, signal)).resolves.toBeUndefined();
 });
+
+it("rejects unapproved credential selectors before reading secrets or making HTTP requests, including saved bindings", async () => {
+	const fetcher = vi.fn();
+	const env = {
+		FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN",
+		A_TOKEN: "scoped",
+	};
+	Object.defineProperty(env, "UNRELATED_SECRET", {
+		get() {
+			throw new Error("secret was read");
+		},
+	});
+	const api = new BetaReleaseGitHub({ env, fetch: fetcher });
+	await expect(
+		api.resolve(
+			{
+				...project,
+				config: { ...project.config!, token_env: "UNRELATED_SECRET" },
+			},
+			new AbortController().signal,
+		),
+	).rejects.toThrow("beta_credential_missing");
+	await expect(
+		api.owner(
+			{
+				projectName: "a",
+				repositoryId: 11,
+				workflowId: 22,
+				canonicalRepo: "test/a",
+				defaultBranch: "main",
+				bindingRevision: "binding",
+				tokenEnv: "UNRELATED_SECRET",
+			},
+			new AbortController().signal,
+		),
+	).rejects.toThrow("beta_credential_missing");
+	expect(fetcher).not.toHaveBeenCalled();
+});
+
+it.each([undefined, "", "B_TOKEN", "A_TOKEN,", "A_TOKEN,bad-name"])(
+	"fails closed for missing or invalid operator allowlist %s",
+	async (allowlist) => {
+		const fetcher = vi.fn();
+		const api = new BetaReleaseGitHub({
+			env: { A_TOKEN: "scoped", FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: allowlist },
+			fetch: fetcher,
+		});
+		await expect(
+			api.resolve(project, new AbortController().signal),
+		).rejects.toThrow("beta_credential_missing");
+		expect(fetcher).not.toHaveBeenCalled();
+	},
+);

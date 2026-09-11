@@ -224,3 +224,47 @@ test("the actual embedded preflight rejects wrong refs and tuples and the inacti
 	assert.equal(receipt.workflowId, 2);
 	assert.equal(receipt.runId, 3);
 });
+
+test("S4e rejects arbitrary additional secrets in beta while allowing its scoped publisher token", async () => {
+	const { execFileSync } = await import("node:child_process");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const root = fs.mkdtempSync(join(tmpdir(), "beta-secret-allowlist-"));
+	try {
+		const vars = {};
+		for (const [key, name] of Object.entries({
+			BETA: "payload-beta-release",
+			PROMOTE: "payload-promote",
+			COMMIT: "payload-promote-commit",
+			ACTIVATION: "payload-activation",
+		})) {
+			vars[key] = join(root, `${name}.yml`);
+			fs.copyFileSync(
+				new URL(`../../.github/workflows/${name}.yml`, import.meta.url),
+				vars[key],
+			);
+		}
+		const script = fs.readFileSync(
+			new URL("./release-workflows-structure.test.sh", import.meta.url),
+			"utf8",
+		);
+		const section = script.slice(
+			script.indexOf("# S4e ("),
+			script.indexOf("# S4f:"),
+		);
+		const run = () =>
+			execFileSync(
+				"bash",
+				["-c", `set -eu; pass() { :; }; fail() { exit 1; }; ${section}`],
+				{ env: { ...process.env, ...vars }, stdio: "pipe" },
+			);
+		run();
+		fs.appendFileSync(
+			vars.BETA,
+			["\n# $", "{{ secrets.UNRELATED_DEPLOY_CREDENTIAL }}\n"].join(""),
+		);
+		assert.throws(run);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});

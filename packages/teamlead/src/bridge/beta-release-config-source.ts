@@ -7,6 +7,7 @@ import {
 } from "flywheel-config";
 import { parse } from "yaml";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import { betaCredentialAllowed } from "./beta-release-credentials.js";
 
 export type BetaProject = Pick<
 	ProjectEntry,
@@ -55,7 +56,9 @@ export async function readBetaReleaseProjects(
 					revision: createHash("sha256").update(source).digest("hex"),
 					reason: !config?.workflow_file
 						? "unconfigured"
-						: !config.token_env || !env[config.token_env]?.trim()
+						: !config.token_env ||
+								!betaCredentialAllowed(config.token_env, env) ||
+								!env[config.token_env]?.trim()
 							? "credential_missing"
 							: null,
 				};
@@ -73,12 +76,13 @@ export async function readBetaReleaseProjects(
 	);
 	for (const entry of entries) {
 		const key = entry.config?.token_env;
-		if (!key) continue;
+		if (!key || !betaCredentialAllowed(key, env)) continue;
 		if (
 			entries.some(
 				(other) =>
 					other !== entry &&
 					other.config?.token_env &&
+					betaCredentialAllowed(other.config.token_env, env) &&
 					(other.config.token_env === key ||
 						(env[key] && env[key] === env[other.config.token_env])),
 			)

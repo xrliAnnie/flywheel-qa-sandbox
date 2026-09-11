@@ -113,3 +113,17 @@ packages总门结果：未改动的flywheel-comm dependency.test.ts在全仓并�
 补齐计划§8错误日志去重：按project/reason/occurrence记录一次，恢复后可重新记录；错误响应正文不入日志，roster读取失败同样去重。新增双项目故障→重复→恢复→再失败回归，先红后绿；scheduler13/13 PASS（/tmp/fly2393-log-dedup-final.log）。变更后pnpm lint PASS与teamlead build PASS（/tmp/fly2393-lint-dedup.log、/tmp/fly2393-build-dedup.log）。
 
 剩余packages进程16524继续运行。claude-runner结果1253 passed/3 failed/2 skipped，失败为未改动的async-exec-file 500ms、prompt-overflow.real-tmux 5s、runner-env-isolation.real-tmux 5s超时，另有onTaskUpdate RPC超时；保留原日志，不将其称作绿灯，不扩修无关测试。gemini-agent158、voice-headphone54通过；edge-worker及后续包继续执行。代码审查与exact-head CI仍待完成。
+
+## R1 指定凭据修复（2026-09-11，替换实现体）
+
+接续 head 45a8a175d，TURN implement epoch=5。Lead 交接 `[lead-instruction 8fe67a6d-291f-439b-ab7b-cee74f9f4319]` 确认 code R1 APPROVED（request 598da911-f14b-418b-b993-19a27393e162，gate e584a4fa-6f0f-4670-acbd-586256b39b8a），但指定修复两个涉密 MEDIUM。未触碰 stash 或已批 plan.md。
+
+- 由运维的 Bridge 进程环境 `FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS` 提供逗号分隔显式允许集，项目 YAML 只能选择其中变量；缺失/非法允许集 fail closed。canonical 配置读取、共享凭据比较和 HTTP token 读取都先检查，旧持久化绑定同样不能绕过。没有读取或修改实际生产环境。
+- S4e 恢复 beta 与 promote 的单文件 secret allowlist；新增临时 workflow 副本 mutation 回归，插入任意未知 secret 必须让实际 S4e shell 片段失败。
+- TDD：越权 selector getter 被读取红灯→读取前拒绝绿灯；配置 source 错将异常归 config_invalid 红灯→credential_missing 绿灯；S4e 未拦未知 secret 红灯→拦截绿灯。最终 19 focused tests PASS；release-workflows-structure 23 PASS/0 FAIL（含 9 个 node tests）。日志 /tmp/fly2393-credential-red.log、/tmp/fly2393-source-allowlist-red.log、/tmp/fly2393-s4e-red.log、/tmp/fly2393-security-focused.log、/tmp/fly2393-s4e-green.log。
+
+全仓 lint/build/packages 正在本次变更上重新执行，尚不能称为通过；R2、PR、exact-head CI 与 handoff 仍待执行。运维激活步骤已更新到 runbook.md；频率配置来源未改变。
+
+### Plan follow-ups 补充：code R1 非阻塞建议（不改 pinned plan 字节）
+
+按上述 Lead 裁定，下列七项只归档，不修复、不开单：attention 泳道显示 unknown；legacy lane 硬编码 6h；receipt 合同三份副本缺 drift guard；submit 吞非 BetaGitHubError；credential_shared 覆盖已诊断原因；revision 计算后未读取；bind 每 tick 开写事务。此表不声称问题已解决，不扩入本次修复范围。

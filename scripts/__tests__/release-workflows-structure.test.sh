@@ -147,7 +147,7 @@ fi
 # activation: explicitly scoped infra and publication credentials. B2 signer
 # and cleanup inputs are also restricted to infra at the parsed step boundary.
 bad_secret=""
-for f in "$PROMOTE"; do
+for f in "$BETA" "$PROMOTE"; do
   while IFS= read -r name; do
     [ "$name" = "FW_BETA_PUBLISH_TOKEN" ] || bad_secret="$bad_secret $f:$name"
   done < <(grep -oE 'secrets\.[A-Za-z_][A-Za-z0-9_]*' "$f" | sed 's/^secrets\.//' | sort -u)

@@ -12,7 +12,7 @@ Issue: FLY-2393 (https://linear.app/geoforge3d/issue/FLY-2393)
 ## 授权运维接管流程
 
 1. 先由独立更新/部署流程部署兼容 receiver 和 Bridge；本实现节点不部署。owner 保持 legacy，确认原6h路径可执行。
-2. 为每个项目配置独立仓库范围的 Actions write、Variables read、metadata/contents read 凭据。只写变量名到 canonical `.flywheel/config.yaml` 的 beta_release.token_env。不得复用两个项目的变量名或 token 值，不使用客户发布、ship、npm或Cloudflare凭据。实际验证 A 的凭据对 B 的 dispatch 被平台拒绝；本地 stub 不能替代该验收。
+2. 为每个项目配置独立仓库范围的 Actions write、Variables read、metadata/contents read 凭据。只写变量名到 canonical `.flywheel/config.yaml` 的 beta_release.token_env。Bridge 进程须由运维显式设置 `FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS`（逗号分隔的变量名允许集，例如 `FLYWHEEL_BETA_ACTIONS_TOKEN,GEOFORGE3D_BETA_ACTIONS_TOKEN`）；它不放在项目 YAML 中，不含 token 值。允许集缺失、为空、格式非法或未列入所选变量时，显示 credential_missing，读取/发送凭据前拒绝；已有数据库绑定也不能绕过。不得复用两个项目的变量名或 token 值，不使用客户发布、ship、npm或Cloudflare凭据。实际验证 A 的凭据对 B 的 dispatch 被平台拒绝；本地 stub 不能替代该验收。
 3. 配置 workflow_file basename，确认目标默认分支 workflow 声明 project-key、schedule-key、source-commit、run-name和receipt合同；flywheel明确6h，第二项目可24h。频率范围1–168安全整数，无env频率override。
 4. 用既有仓库设置权限把 FW_BETA_SCHEDULER_OWNER 设 paused，确认读取成功。列出旧 schedule/人工/Bridge queued、in_progress及未确认提交；取消或等全部终态。未知HTTP提交不能因超时当成已排空。
 5. 全排空后改 bridge。Bridge首次检查会再次拒绝仍在排队/运行的目标workflow；接管后第一个有效tick保存activatedAt，首次到期为该锚+interval，不回补接管前历史周期。

@@ -21,7 +21,7 @@ it("runs canonical project configuration without a management console and stops 
 			projects: () => [
 				{ projectName: "a", projectRoot: root, projectRepo: "test/a" },
 			],
-			env: { A_TOKEN: "scoped-a" },
+			env: { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "scoped-a" },
 			now: () => now,
 			fetch: async (url, init) => {
 				if (init?.method === "POST") {

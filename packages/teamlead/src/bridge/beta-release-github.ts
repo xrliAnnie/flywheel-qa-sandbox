@@ -6,6 +6,7 @@ import {
 	type BetaOccurrence,
 	betaOccurrenceId,
 } from "./beta-release-contract.js";
+import { betaCredentialAllowed } from "./beta-release-credentials.js";
 import {
 	type BetaReceipt,
 	validateBetaReceipt,
@@ -53,7 +54,7 @@ export class BetaReleaseGitHub {
 	private token(name: string | undefined): string {
 		if (
 			!name ||
-			!/^[A-Z][A-Z0-9_]{0,127}$/.test(name) ||
+			!betaCredentialAllowed(name, this.options.env) ||
 			!this.options.env[name]?.trim()
 		)
 			throw new BetaGitHubError("beta_credential_missing");
