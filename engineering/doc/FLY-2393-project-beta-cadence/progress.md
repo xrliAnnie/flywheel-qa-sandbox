@@ -2,14 +2,15 @@
 issue: FLY-2393
 phase: implement
 phaseCursor: 1/5
-updated: 2026-09-11T06:02:03.194Z
-nextStep: 80b48882b restores C2 storage and adds persisted cadence; 35 targeted
-  tests and typecheck pass. C2 still needs scheduler/retries/receipts; then C3
-  GitHub/workflows, C4 UI, C5 full gates/review/PR. See implementation.md.
+updated: 2026-09-11T06:10:31.322Z
+nextStep: C2 scheduler/receipt core committed; 14 targeted tests and typecheck
+  pass. Next C3 GitHub transport (10s abort, pagination, safe artifact,
+  credentials, Retry-After), then receiver/publisher and C4 plugin/UI. C2
+  incomplete until transport failure paths close; see implementation.md.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2393 progress
 **phase**: implement (1/5)
-**next**: 80b48882b restores C2 storage and adds persisted cadence; 35 targeted tests and typecheck pass. C2 still needs scheduler/retries/receipts; then C3 GitHub/workflows, C4 UI, C5 full gates/review/PR. See implementation.md.
+**next**: C2 scheduler/receipt core committed; 14 targeted tests and typecheck pass. Next C3 GitHub transport (10s abort, pagination, safe artifact, credentials, Retry-After), then receiver/publisher and C4 plugin/UI. C2 incomplete until transport failure paths close; see implementation.md.
