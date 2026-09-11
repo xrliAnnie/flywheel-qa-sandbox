@@ -5,6 +5,7 @@ import {
 	type BetaOccurrence,
 	betaOccurrenceId,
 } from "./beta-release-contract.js";
+import type { BetaReceipt } from "./beta-release-receipt.js";
 
 const laneSelect = `project_name AS projectName, repo_id AS repositoryId, canonical_repo AS canonicalRepo,
  workflow_id AS workflowId, default_branch AS defaultBranch, binding_revision AS bindingRevision,
@@ -71,6 +72,13 @@ export class BetaReleaseStore {
 				);
 			})
 			.immediate();
+	}
+	lanes(): BetaLane[] {
+		return this.db
+			.prepare(
+				`SELECT ${laneSelect} FROM beta_schedule_lanes ORDER BY project_name`,
+			)
+			.all() as BetaLane[];
 	}
 	lane(project: string): BetaLane | null {
 		return (
@@ -183,6 +191,14 @@ export class BetaReleaseStore {
 			})
 			.immediate();
 	}
+	latestResult(project: string): BetaReceipt[] | null {
+		const row = this.db
+			.prepare(
+				"SELECT result_json FROM beta_schedule_occurrences WHERE project_name=? AND result_json IS NOT NULL ORDER BY scheduled_at_ms DESC LIMIT 1",
+			)
+			.get(project) as { result_json: string } | undefined;
+		return row ? JSON.parse(row.result_json) : null;
+	}
 	transition(
 		project: string,
 		id: string,
@@ -192,7 +208,7 @@ export class BetaReleaseStore {
 				BetaOccurrence,
 				"state" | "runIds" | "attemptCount" | "retryAtMs" | "lastError"
 			>
-		>,
+		> & { result?: BetaReceipt[] },
 	): boolean {
 		return this.db
 			.transaction(() => {
@@ -203,10 +219,14 @@ export class BetaReleaseStore {
 				return (
 					this.db
 						.prepare(`UPDATE beta_schedule_occurrences SET state=@state,run_ids_json=@runIdsJson,
-			 attempt_count=@attemptCount,retry_at_ms=@retryAtMs,last_error=@lastError
+			 attempt_count=@attemptCount,retry_at_ms=@retryAtMs,last_error=@lastError,result_json=COALESCE(@resultJson,result_json)
 			 WHERE occurrence_id=@occurrenceId AND state=@expected`)
-						.run({ ...next, runIdsJson: JSON.stringify(next.runIds), expected })
-						.changes === 1
+						.run({
+							...next,
+							resultJson: patch.result ? JSON.stringify(patch.result) : null,
+							runIdsJson: JSON.stringify(next.runIds),
+							expected,
+						}).changes === 1
 				);
 			})
 			.immediate();

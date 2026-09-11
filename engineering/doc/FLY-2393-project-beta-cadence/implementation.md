@@ -37,3 +37,13 @@ TDD：缺 betaSchedules 红灯→重开 DB 与重复 reserve 绿灯；非法 sou
 2026-09-11 continuation: restored the issue-labelled salvage stash (6fdc3e1d0702a06b13441e15af39197fe06b0015) without conflicts. Added persisted interval revision and idle due calculation: change frequency from the last due/activation anchor, coalesce missed periods, freeze active occurrences, and preserve the settlement cursor when frequency has not changed. Missing due API test failed before implementation; it now passes, including backward clock and long-running settlement. Added a 48h ledger check yielding 8 versus 2 reservations for 6h/24h. This tests storage/time semantics, not GitHub publication or a running scheduler.
 
 Recovered retention tests had two remaining stale numeric assertions (205/202); updated to 207/204 for the two protected beta tables. Targeted StateStore beta + retention suites: 35 tests PASS. Teamlead typecheck PASS. Logs: /tmp/fly2393-c2-final.log and /tmp/fly2393-c2-typecheck.log. C2 remains incomplete: scheduler, bounded retry, receipt validation, owner observations and lifecycle integration are still required.
+
+## C2 调度循环与回执边界（进行中，2026-09-11）
+
+新增可注入 transport 的 60s 调度循环；4 个并发项目 worker；同实例重入合并；按 projectName 遍历；每 POST 前重读 owner 并重核绑定。prepared 暂停后恢复原 due；重启观察已知 live run；未知响应保留 occurrence/SHA，完成 run 查询后按 2/5/15 分钟退避，5 次或存活期限后保留未知请求而不伪结算。特别测试证明旧失败 run 不足以清掉后续未知 POST。已全部终态的失败可耗尽后推进下一网格。
+
+删除/非法配置项目继续按冻结 lane 观察在途，禁止新 POST；删除后结算使用原 interval。新增严格回执结构/身份校验（project/repo/workflow/run/key/source），有效回执存 result_json。not_activated 记录失败并消费周期，不计发布；下一周期可再检查激活。covered_by_newer 的 ancestry 仍由尚待实现的 GitHub adapter 负责，不能拿当前 fake transport 测试充当真实 ancestry 或 publication 证据。
+
+TDD：缺 scheduler 红灯→48h 8/2 与 legacy/paused 绿灯；未知重试/暂停后 prepared 恢复红灯→绿灯；旧 run 终态错误耗尽未知 POST 红灯→保留 active 绿灯；删除项目不结算红灯→冻结 lane 继续观察绿灯；not_activated 占住周期红灯→持久结果/下一周期绿灯。最终 14 定向 tests PASS（8 scheduler、1 receipt、5 store），teamlead typecheck PASS。日志 /tmp/fly2393-scheduler-final.log、/tmp/fly2393-scheduler-typecheck.log。
+
+待续：C2/C3 真实 transport 的 10s abort、Retry-After/错误分类、分页/所有重复 run/安全 zip、冻结凭据绑定、durable owner 观测及低频 attention；C3 receiver 与 publisher 结果文件；C4 plugin/UI；C5 全仓验证和 code review。尚未接入 plugin 或对外发布，不报告完整 A1/A11 已验收。
