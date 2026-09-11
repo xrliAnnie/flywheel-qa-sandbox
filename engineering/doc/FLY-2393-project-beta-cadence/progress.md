@@ -1,14 +1,14 @@
 ---
 issue: FLY-2393
 phase: design
-phaseCursor: 1/5
-updated: 2026-09-11T01:46:49.378Z
-nextStep: Audit per-project config and durable scheduling; resolve beta
-  publisher boundary with Lead
+phaseCursor: 2/5
+updated: 2026-09-11T01:48:44.466Z
+nextStep: Write complete scheduling, migration, publisher receipt and acceptance
+  contracts
 chunks: []
 pointers: {}
 ---
 
 # FLY-2393 progress
-**phase**: design (1/5)
-**next**: Audit per-project config and durable scheduling; resolve beta publisher boundary with Lead
+**phase**: design (2/5)
+**next**: Write complete scheduling, migration, publisher receipt and acceptance contracts
