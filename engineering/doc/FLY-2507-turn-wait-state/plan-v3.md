@@ -3,7 +3,7 @@ Issue: FLY-2507 (https://linear.app/geoforge3d/issue/FLY-2507)
 日期: 2026-09-10
 基于: research.md、Lead instruction 98d6f587-3544-4233-8126-3c1139437e1d
 
-状态：按 Lead 裁定准备，等待已登记 R2 结论和路径函数澄清后提交最后 R3。R3 若打回，只报告 Lead，不再自行扩展。
+状态：按 Lead 裁定准备，路径澄清已解决；等待已登记 R2 结论后提交最后 R3。R3 若打回，只报告 Lead，不再自行扩展。
 
 ## 锁定判据
 
@@ -23,7 +23,7 @@ StateStore 读取必须在 CommDB immediate 写事务外完成，参数化单次
 
 CommDB patrol 读取投影携带同一 suppressed_reason；judgeLoopLight 的 classifyTurnWaits 忽略被抑制行，不把其加入 blockedExecutionIds/redWaiters，避免两个判读者互相矛盾。旧 readonly schema 缺该列以 NULL 兼容，不能把整个巡检变 unknown。把该列纳入现有字段级 schema/fixture/fingerprint 检查（若适用）；无新表，不新增 retention 类别。
 
-路径：必须复用现成解析，不自建体系。当前已定位 config/commdb-path.ts 与 comm/commands/verify-approval.ts resolveStateDbPath，但未定位 Lead 所指 Bridge 成对函数；澄清问题 0d7ed9f3-7f77-4823-adf8-29228681aaff 待答，解决后才提交 R3。隔离 CommDB 不得静默读取生产 StateStore。
+路径：Lead 在问题 0d7ed9f3-7f77-4823-adf8-29228681aaff 中更正「成对函数不存在」，授权复用 resolve-db-path.ts resolveDbPath({db,project}) 和 verify-approval.ts resolveStateDbPath。runTurn 使用这两个现有解析器；可增加 --state-db 透传既有 StateStore override。隔离 CommDB 覆盖若没有显式 StateStore override 则不读取默认生产库，诊断并保留原告警。两个现有函数均不消费 FLYWHEEL_STATE_DIR，因此不凭该变量自建第三套路径规则；同一进程配置中的明确数据库覆盖为准。
 
 ## 验证
 
