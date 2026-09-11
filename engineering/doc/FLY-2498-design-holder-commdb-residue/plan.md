@@ -238,4 +238,9 @@ pnpm biome check packages/teamlead/src/bridge/run-quiescence.ts packages/teamlea
 
 ## 5. Follow-ups(评审 advisory 留档处,本版不修)
 
-(评审轮次填充)
+评审记录:Codex 设计评审 R1 在池额度耗尽处中止、未产出反馈(五个池账号全灭,见 exploration §5);Gemini 设计评审 R1(2026-09-11,Lead 指令 485216c1,
+原文见 `gemini-review-round1.md`)**APPROVED**,无 BLOCKING,两条 ADVISORY 如下,按项目规则只留档、由实现方在不改机制的前提下自行采用:
+
+- G1(ADVISORY)**ESM 循环引用**:§1.4 让 `commdb-session-prune.ts` 从 `commdb-fsm-reconcile.ts` 引 `RECONCILE_DELETABLE_STATES`,而后者已从前者引 `resolveCommDbPath`。
+  建议把该常量移到 `close-runner.ts`(两个文件都已 import 它的 `AUTO_CLOSE_STATES`),`commdb-fsm-reconcile.ts` 原位 re-export 保持既有消费者不变。§1.4 已写明此备选;实现方**优先采用 G1**。
+- G2(ADVISORY)**plugin.ts 引入方式**:§1.3(a) 二选一处,建议沿用 `plugin.ts:7564` 的动态 `await import("./run-quiescence.js")` 模式,避免给路由大文件加顶层静态引用。实现方优先采用 G2。
