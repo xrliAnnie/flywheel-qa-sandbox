@@ -1,15 +1,15 @@
 ---
 issue: FLY-2498
 phase: design
-phaseCursor: 4/6
-updated: 2026-09-11T18:37:13.490Z
-nextStep: "design-review gate: Codex pool exhausted; awaiting Lead/founder
-  ruling (q 56dedcaa answered: wait<=30min then leadAcceptance path); then
-  design-review.json + await-codex-gate + complete"
+phaseCursor: 6/6
+updated: 2026-09-11T18:45:06.687Z
+nextStep: complete --route phase_design_complete; implement node picks up
+  plan.md (ec409598a) — prioritize G1/G2 advisories; Codex pool exhausted until
+  9/14-9/17
 chunks: []
 pointers: {}
 ---
 
 # FLY-2498 progress
-**phase**: design (4/6)
-**next**: design-review gate: Codex pool exhausted; awaiting Lead/founder ruling (q 56dedcaa answered: wait<=30min then leadAcceptance path); then design-review.json + await-codex-gate + complete
+**phase**: design (6/6)
+**next**: complete --route phase_design_complete; implement node picks up plan.md (ec409598a) — prioritize G1/G2 advisories; Codex pool exhausted until 9/14-9/17
