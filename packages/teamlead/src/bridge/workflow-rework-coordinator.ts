@@ -460,12 +460,13 @@ export class WorkflowReworkCoordinator {
 		const markReplacementPending = (
 			executionId: string,
 			reason: string,
+			from: WorkflowReworkDeliveryRow["state"] = delivery.state,
 		): WorkflowReworkCoordinatorOutcome => {
 			const moved = this.deps.store.advanceWorkflowReworkDelivery({
 				requestId,
 				ownerId: this.deps.ownerId,
 				generation: claim.generation,
-				from: delivery.state,
+				from,
 				to: "replacement_pending",
 				now: this.now().toISOString(),
 				error: reason,
@@ -809,6 +810,13 @@ export class WorkflowReworkCoordinator {
 			context,
 		});
 		if (!woke.ok) {
+			if (woke.error === "resident_hold_expired") {
+				return markReplacementPending(
+					actor.execution_id,
+					"resident_hold_expired",
+					"turn_granted",
+				);
+			}
 			return this.releaseRetryable({
 				requestId,
 				generation: claim.generation,

@@ -926,6 +926,48 @@ describe("WorkflowReworkCoordinator", () => {
 		expect(h.effects.grantTurn).toHaveBeenCalledOnce();
 	});
 
+	it.each(["pending", "turn_granted"] as const)(
+		"replaces an expired resident hold from %s without consuming retry credit",
+		async (initialState) => {
+			const h = makeHarness({
+				initialState,
+				wakeResults: [{ ok: false, error: "resident_hold_expired" }],
+			});
+
+			await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+				kind: "replacement_pending",
+				executionId: session.execution_id,
+				reason: "resident_hold_expired",
+			});
+			expect(h.getDelivery()).toMatchObject({
+				state: "replacement_pending",
+				hold_count: 0,
+				owner_id: null,
+			});
+			expect(h.store.settleWorkflowReworkFailure).not.toHaveBeenCalled();
+		},
+	);
+
+	it("replaces a released completed actor without attempting wake", async () => {
+		const h = makeHarness({ registered: "absent" });
+		h.effects.getActorSession.mockReturnValue({
+			...session,
+			status: "completed",
+			tmux_session: undefined,
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "replacement_pending",
+			reason: "actor_session_terminal:completed",
+		});
+		expect(h.getDelivery()).toMatchObject({
+			state: "replacement_pending",
+			hold_count: 0,
+		});
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
+		expect(h.effects.probeRegistered).not.toHaveBeenCalled();
+	});
+
 	it("retries a failed mailbox on the same actor and with the same wake identity", async () => {
 		const h = makeHarness({
 			registered: "alive",
