@@ -61,7 +61,7 @@ export function createVoiceSessionServices(input: {
 		}
 		return { project, lead };
 	};
-	const provision = async (sessionId: string) => {
+	const provision = async (sessionId: string, signal?: AbortSignal) => {
 		const session = input.store.getVoiceSession(sessionId);
 		if (!session) return;
 		const { lead } = resolve(session);
@@ -70,6 +70,7 @@ export function createVoiceSessionServices(input: {
 			throw new Error("voice_session_founder_id_unset");
 		}
 		await runVoiceProvisioner({
+			signal,
 			store: input.store,
 			sessionId,
 			epoch: randomUUID(),
@@ -79,7 +80,19 @@ export function createVoiceSessionServices(input: {
 				leadBotToken: lead.botToken!,
 				founderUserId,
 			},
-			deps: discordDeps,
+			deps: signal
+				? createDiscordVoiceProvisionerDeps((url, init) => {
+						signal.throwIfAborted();
+						const requestSignal =
+							init?.signal ?? (url instanceof Request ? url.signal : undefined);
+						return fetchImpl(url, {
+							...init,
+							signal: requestSignal
+								? AbortSignal.any([signal, requestSignal])
+								: signal,
+						});
+					})
+				: discordDeps,
 		});
 	};
 	const resolveStart = createVoiceStartResolver({

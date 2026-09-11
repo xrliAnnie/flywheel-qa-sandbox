@@ -283,3 +283,182 @@ it.each(["root", "thread"])(
 		expect(effects.addMember).not.toHaveBeenCalled();
 	},
 );
+
+it("leaves an aborted cursor read reserved and resumes to desired after takeover", async () => {
+	const controller = new AbortController();
+	const effects = deps();
+	effects.captureCursor.mockImplementation(async () => {
+		controller.abort(new Error("deadline"));
+		return "100000000000000010";
+	});
+	await expect(
+		run({ deps: effects, signal: controller.signal }),
+	).rejects.toThrow("deadline");
+	expect(effects.postRoot).not.toHaveBeenCalled();
+	expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+		state: "provisioning",
+		provisioningStep: "reserved",
+		rootRequestedAt: null,
+		provisioningNonce: null,
+		orphanCandidates: [],
+	});
+	await expect(
+		run({ epoch: "epoch-b", now: () => "2026-09-08T20:02:01.000Z" }),
+	).resolves.toBe("desired");
+});
+
+it("does not claim an already aborted attempt", async () => {
+	const signal = AbortSignal.abort(new Error("deadline"));
+	const effects = deps();
+	await expect(run({ signal, deps: effects })).rejects.toThrow("deadline");
+	expect(effects.captureCursor).not.toHaveBeenCalled();
+	expect(store.getVoiceSession(SESSION_ID)?.provisionerEpoch).toBeNull();
+});
+
+it.each([
+	["postRoot", "thread_requested", "rootMessageId", "100000000000000011"],
+	["startThread", "member_requested", "threadId", "100000000000000011"],
+	["addMember", "thread_cursor", "memberAddedAt", T0],
+] as const)(
+	"salvages late %s success and stops before another effect",
+	async (effect, step, field, value) => {
+		const controller = new AbortController();
+		const effects = deps();
+		const original = effects[effect].getMockImplementation()!;
+		effects[effect].mockImplementation((async () => {
+			const result = await original();
+			controller.abort(new Error("deadline"));
+			return result;
+		}) as never);
+		await expect(
+			run({ signal: controller.signal, deps: effects }),
+		).rejects.toThrow("deadline");
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "provisioning",
+			provisioningStep: step,
+			[field]: value,
+		});
+		if (effect === "postRoot")
+			expect(effects.startThread).not.toHaveBeenCalled();
+		if (effect !== "addMember")
+			expect(effects.addMember).not.toHaveBeenCalled();
+		const replay = deps();
+		await expect(
+			run({
+				deps: replay,
+				epoch: "epoch-b",
+				now: () => "2026-09-08T20:02:01.000Z",
+			}),
+		).resolves.toBe("desired");
+		expect(replay.postRoot).not.toHaveBeenCalled();
+	},
+);
+
+it.each(["captureCursor", "postRoot", "startThread", "addMember"] as const)(
+	"does not terminalize or retry an aborted %s rejection",
+	async (effect) => {
+		const controller = new AbortController();
+		const effects = deps();
+		effects[effect].mockImplementation(async () => {
+			controller.abort(new Error("deadline"));
+			throw new Error("fetch aborted");
+		});
+		await expect(
+			run({ signal: controller.signal, deps: effects }),
+		).rejects.toThrow("deadline");
+		expect(store.getVoiceSession(SESSION_ID)?.state).toBe("provisioning");
+		expect(effects[effect]).toHaveBeenCalledTimes(1);
+	},
+);
+
+it("stops cancelled-session cleanup after deadline without issuing another effect", async () => {
+	store.claimVoiceProvisioner(SESSION_ID, "epoch-a", T0, T0);
+	store.updateVoiceProvisioning({
+		sessionId: SESSION_ID,
+		expectedStep: "reserved",
+		nextStep: "member_requested",
+		rootMessageId: "100000000000000011",
+		threadId: "100000000000000011",
+		provisionerEpoch: "epoch-a",
+		updatedAt: T0,
+	});
+	store.stopVoiceSession(SESSION_ID, T0);
+	const controller = new AbortController();
+	const effects = deps();
+	effects.postCancelled.mockImplementation(async () => {
+		controller.abort(new Error("deadline"));
+	});
+	await expect(
+		run({ signal: controller.signal, deps: effects }),
+	).rejects.toThrow("deadline");
+	expect(effects.archiveThread).not.toHaveBeenCalled();
+	expect(store.getVoiceSession(SESSION_ID)?.state).toBe("provisioning");
+});
+
+it.each([false, true])(
+	"preserves genuine cursor failure with optional signal=%s",
+	async (withSignal) => {
+		const effects = deps();
+		effects.captureCursor.mockRejectedValue(new Error("http_500"));
+		await expect(
+			run({
+				deps: effects,
+				signal: withSignal ? new AbortController().signal : undefined,
+			}),
+		).resolves.toBe("failed");
+		expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+			state: "failed",
+			reason: "provisioning_cursor",
+		});
+	},
+);
+
+it("reopens a database with a salvaged root and resumes without reposting", async () => {
+	const controller = new AbortController();
+	const effects = deps();
+	effects.postRoot.mockImplementation(async () => {
+		controller.abort(new Error("deadline"));
+		return "100000000000000011";
+	});
+	await expect(
+		run({ signal: controller.signal, deps: effects }),
+	).rejects.toThrow("deadline");
+	store.close();
+	store = await StateStore.create(join(cleanup[0]!, "teamlead.db"));
+	const replay = deps();
+	await expect(
+		run({
+			deps: replay,
+			epoch: "epoch-b",
+			now: () => "2026-09-08T20:02:01.000Z",
+		}),
+	).resolves.toBe("desired");
+	expect(replay.postRoot).not.toHaveBeenCalled();
+	expect(store.getVoiceSession(SESSION_ID)?.rootMessageId).toBe(
+		"100000000000000011",
+	);
+});
+
+it("does not salvage a late root into a newer owner's epoch", async () => {
+	const controller = new AbortController();
+	const effects = deps();
+	effects.postRoot.mockImplementation(async () => {
+		store.claimVoiceProvisioner(
+			SESSION_ID,
+			"epoch-b",
+			"2026-09-08T20:02:01.000Z",
+			"2026-09-08T20:00:01.000Z",
+		);
+		controller.abort(new Error("deadline"));
+		return "100000000000000011";
+	});
+	await expect(
+		run({ signal: controller.signal, deps: effects }),
+	).rejects.toThrow("deadline");
+	expect(store.getVoiceSession(SESSION_ID)).toMatchObject({
+		provisionerEpoch: "epoch-b",
+		rootMessageId: null,
+		provisioningStep: "root_requested",
+	});
+	expect(effects.startThread).not.toHaveBeenCalled();
+});
