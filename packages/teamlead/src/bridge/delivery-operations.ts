@@ -43,7 +43,7 @@ export class DeliveryOperations {
 				terminateClaude(
 					executionId: string,
 				): Promise<{ ok: boolean; error?: string }>;
-				probeClaude(
+				probeTarget(
 					executionId: string,
 				): Promise<"alive" | "dead_pin" | "absent" | "indeterminate">;
 			};
@@ -151,21 +151,46 @@ export class DeliveryOperations {
 							);
 							continue;
 						}
-						if (!shutdown || shutdown.state === "requested") continue;
-						if (shutdown.state === "failed") {
+						if (shutdown?.state === "failed") {
 							fail(shutdown.error ?? "runner_shutdown_failed");
 							continue;
 						}
-						acknowledged = shutdown.state === "acked";
+						acknowledged = shutdown?.state === "acked";
+						if (!acknowledged && this.deps.residentExpiry) {
+							try {
+								const registered = this.deps.commDb.getSession(
+									operation.executionId,
+								);
+								if (!registered || registered.status !== "running") {
+									const liveness = await this.deps.residentExpiry.probeTarget(
+										operation.executionId,
+									);
+									acknowledged =
+										liveness === "dead_pin" || liveness === "absent";
+								}
+							} catch (error) {
+								console.warn(
+									`[delivery-operations] resident expiry ${operation.operationId} liveness deferred: ${error instanceof Error ? error.message : String(error)}`,
+								);
+								continue;
+							}
+						}
 					} else {
 						if (!this.deps.residentExpiry) {
 							fail("claude_resident_expiry_effects_missing");
 							continue;
 						}
-						const liveness = await this.deps.residentExpiry.probeClaude(
-							operation.executionId,
-						);
-						acknowledged = liveness === "dead_pin" || liveness === "absent";
+						try {
+							const liveness = await this.deps.residentExpiry.probeTarget(
+								operation.executionId,
+							);
+							acknowledged = liveness === "dead_pin" || liveness === "absent";
+						} catch (error) {
+							console.warn(
+								`[delivery-operations] resident expiry ${operation.operationId} liveness deferred: ${error instanceof Error ? error.message : String(error)}`,
+							);
+							continue;
+						}
 					}
 					if (!acknowledged) continue;
 					const sent = this.deps.store.markResidentExpirySent({
