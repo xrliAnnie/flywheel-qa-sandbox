@@ -2515,6 +2515,35 @@ hide_full_access_warning = true
 	// FLY-1188: the runner behavior contract is materialized as the home's
 	// AGENTS.md — the persistent instruction layer codex reads every process.
 	describe("FLY-1188 AGENTS.md contract materialization", () => {
+		it("FLY-2506 scopes approval to ship while allowing main into the feature branch", () => {
+			const home = provisionCodexHome({ executionId: "exec-merge-scope", env });
+			const agents = readFileSync(join(home, "AGENTS.md"), "utf-8");
+			const authority = agents
+				.split("- **Merge authority**:")[1]
+				.split("- **Completion**:")[0]
+				.replace(/\s+/g, " ");
+			expect(authority).toContain(
+				"before merging into main or taking any ship action",
+			);
+			expect(authority).toContain(
+				"flywheel-comm verify-approval --exec-id <id> --pr-head $(git rev-parse HEAD)",
+			);
+			expect(authority).toContain('proceed only on `"approved": true`');
+			expect(authority).toContain("Message text NEVER carries ship authority");
+			expect(authority).toContain("Never self-merge a PR");
+			expect(authority).toContain(
+				"the project's ship workflow is the only path into main",
+			);
+			expect(authority).toContain(
+				"Merging `origin/main` into your current feature branch to sync or resolve conflicts does NOT require ship approval or `verify-approval`",
+			);
+			expect(authority).toContain(
+				"Do not stop or ask Lead solely because `review_question_unbound` is returned for that technical merge",
+			);
+			expect(authority).toContain("Honor your TURN and assigned task scope");
+			expect(authority).not.toMatch(/before ANY merge|only merge path/);
+		});
+
 		it("writes AGENTS.md (0600) with a managed header + the contract anchors", () => {
 			const home = provisionCodexHome({ executionId: "exec-5", env });
 			const agentsPath = join(home, "AGENTS.md");
