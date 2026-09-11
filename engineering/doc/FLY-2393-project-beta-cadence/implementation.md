@@ -127,3 +127,5 @@ packages总门结果：未改动的flywheel-comm dependency.test.ts在全仓并�
 ### Plan follow-ups 补充：code R1 非阻塞建议（不改 pinned plan 字节）
 
 按上述 Lead 裁定，下列七项只归档，不修复、不开单：attention 泳道显示 unknown；legacy lane 硬编码 6h；receipt 合同三份副本缺 drift guard；submit 吞非 BetaGitHubError；credential_shared 覆盖已诊断原因；revision 计算后未读取；bind 每 tick 开写事务。此表不声称问题已解决，不扩入本次修复范围。
+
+本轮全仓 lint PASS（16 既有 warnings）、pnpm -r build PASS。packages 首轮暴露本次新增环境变量遗漏 NON_FLAG_ALLOWLIST 的登记，config drift guard 两条失败（789 passed）；这是本分支错误，不归因宿主。补充 credential selector allowlist 分类，定向 drift guard 验证后重跑总门。原失败日志 /tmp/fly2393-r2-packages.log 保留。
