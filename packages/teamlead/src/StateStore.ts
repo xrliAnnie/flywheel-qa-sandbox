@@ -37989,6 +37989,31 @@ export class StateStore {
 				};
 				return;
 			}
+			if (
+				existing?.state === "resident" &&
+				existing.boundary_seq < input.boundarySeq
+			) {
+				this.db.run(
+					`UPDATE workflow_resident_hold
+					 SET boundary_seq = ?, grace_started_at = ?, grace_expires_at = ?,
+					     release_cause = NULL, release_source = NULL, updated_at = ?
+					 WHERE execution_id = ? AND revision = ? AND state = 'resident' AND boundary_seq = ?`,
+					[
+						input.boundarySeq,
+						now,
+						graceExpiresAt,
+						now,
+						input.executionId,
+						existing.revision,
+						existing.boundary_seq,
+					],
+				);
+				result =
+					this.db.getRowsModified() === 1
+						? { ok: true, revision: existing.revision, graceExpiresAt }
+						: { ok: false, reason: "stale_boundary" };
+				return;
+			}
 			if (!existing) {
 				this.db.run(
 					`INSERT INTO workflow_resident_hold (
@@ -38021,6 +38046,7 @@ export class StateStore {
 					`UPDATE workflow_resident_hold
 					    SET revision = ?, boundary_seq = ?, state = 'resident',
 					        grace_started_at = ?, grace_expires_at = ?,
+					        release_cause = NULL, release_source = NULL,
 					        closed_reason = NULL, updated_at = ?
 					  WHERE execution_id = ? AND revision = ? AND state = 'woken'`,
 					[
@@ -38062,6 +38088,7 @@ export class StateStore {
 		revision: number;
 		reason:
 			| "expired"
+			| "released"
 			| "terminal"
 			| "superseded"
 			| "replaced"
@@ -38125,6 +38152,17 @@ export class StateStore {
 				cause: "verdict_pass",
 			},
 		});
+	}
+
+	countDueResidentHolds(now: string): number {
+		if (!StateStore.workflowFiniteTimestamp(now)) return 0;
+		return Number(
+			this.workflowSelectAll(
+				`SELECT COUNT(*) AS count FROM workflow_resident_hold
+			 WHERE state IN ('resident', 'expired') AND grace_expires_at < ?`,
+				[now],
+			)[0]?.count ?? 0,
+		);
 	}
 
 	expireResidentHoldsTx(now: string): string[] {
@@ -38329,7 +38367,8 @@ export class StateStore {
 			const operation = this.workflowSelectAll(
 				`SELECT operation.run_id, operation.root_id, operation.generation,
 				        operation.shape_id, operation.target_activation_id,
-				        operation.state, hold.state AS hold_state
+				        operation.state, hold.state AS hold_state,
+				        hold.release_cause, hold.release_source
 				   FROM workflow_delivery_operation operation
 				   JOIN workflow_resident_hold hold
 				     ON hold.execution_id = operation.root_id
@@ -38356,7 +38395,9 @@ export class StateStore {
 			}
 			this.db.run(
 				`UPDATE workflow_resident_hold
-				    SET state = 'closed', closed_reason = 'expired', updated_at = ?
+				    SET state = 'closed',
+				        closed_reason = CASE WHEN release_cause IS NOT NULL THEN 'released' ELSE 'expired' END,
+				        updated_at = ?
 				  WHERE execution_id = ? AND revision = ? AND state = 'expired'`,
 				[input.now, operation.root_id, operation.generation],
 			);
@@ -38364,6 +38405,47 @@ export class StateStore {
 				throw new WorkflowEngineInvariantError(
 					`resident_expiry_hold_cas_failed:${input.operationId}`,
 				);
+			}
+			const executionId = String(operation.root_id);
+			const session = this.getSession(executionId);
+			const activation = this.resolveCurrentWorkflowActivation(executionId);
+			const sessionSettled =
+				session?.status === "ship_parked" &&
+				activation.kind === "current" &&
+				activation.binding.activation_id === operation.target_activation_id;
+			let parkSettled = false;
+			let parkSkipped = false;
+			if (sessionSettled) {
+				this.db.run(
+					"UPDATE sessions SET status = 'completed', last_activity_at = ? WHERE execution_id = ? AND status = 'ship_parked'",
+					[input.now, executionId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new WorkflowEngineInvariantError(
+						`resident_release_session_cas_failed:${input.operationId}`,
+					);
+				}
+				this.applyTerminalTimestamp(executionId, "ship_parked", "completed");
+				this.bumpLifecycleRevision(executionId);
+				const latestPark = this.workflowSelectAll(
+					"SELECT * FROM workflow_engine_park_outbox WHERE execution_id = ? ORDER BY generation DESC LIMIT 1",
+					[executionId],
+				)[0];
+				if (latestPark?.event === "park_opened") {
+					const open = this.workflowEngineParkOutboxFromRow(latestPark);
+					if (
+						open.reason === "rework_reachable_wait" &&
+						open.activation_id === operation.target_activation_id
+					) {
+						this.appendWorkflowEngineParkSettlementClearTx({
+							open,
+							createdAt: input.now,
+						});
+						parkSettled = true;
+					} else {
+						parkSkipped = true;
+					}
+				}
 			}
 			this.db.run(
 				`UPDATE workflow_delivery_operation
@@ -38379,13 +38461,21 @@ export class StateStore {
 			this.appendWorkflowRunEventCheckedTx({
 				runId: String(operation.run_id),
 				eventUid: input.operationId,
-				kind: "resident_hold_expired",
+				kind: operation.release_cause
+					? "resident_hold_released"
+					: "resident_hold_expired",
 				payload: {
 					executionId: operation.root_id,
 					activationId: operation.target_activation_id,
 					nodeId: operation.shape_id,
 					revision: Number(operation.generation),
 					requestId: input.operationId,
+					cause: operation.release_cause ?? "grace_timeout",
+					releaseSource: operation.release_source,
+					sessionSettled,
+					sessionStatusBefore: session?.status ?? null,
+					parkSettled,
+					parkSkipped,
 				},
 			});
 			result = { ok: true, idempotentReplay: false };
@@ -52167,6 +52257,7 @@ export class StateStore {
 				`UPDATE workflow_resident_hold
 				    SET revision = ?, boundary_seq = ?, state = 'resident',
 				        grace_started_at = ?, grace_expires_at = ?,
+				        release_cause = NULL, release_source = NULL,
 				        closed_reason = NULL, updated_at = ?
 				  WHERE execution_id = ? AND revision = ? AND state = 'woken'`,
 				[
@@ -56372,11 +56463,18 @@ export class StateStore {
 				}
 				if (contract && input.outcome === contract.passOutcome) {
 					const verdictLoop = snapshot.manifest.loops.find(
-						(candidate) => candidate.from === input.nodeId && candidate.loop_when === contract.failOutcome,
+						(candidate) =>
+							candidate.from === input.nodeId &&
+							candidate.loop_when === contract.failOutcome,
 					);
-					if (verdictLoop) this.releaseResidentHoldsForNodeTx({
-						runId: input.runId, nodeId: verdictLoop.to, source: transitionUid, now,
-					});
+					if (verdictLoop) {
+						this.releaseResidentHoldsForNodeTx({
+							runId: input.runId,
+							nodeId: verdictLoop.to,
+							source: transitionUid,
+							now,
+						});
+					}
 				}
 			}
 			if (loop) {

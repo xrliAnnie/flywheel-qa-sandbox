@@ -23,9 +23,11 @@ function rawDb(store: StateStore): Database.Database {
 	return (store as unknown as { db: { raw: Database.Database } }).db.raw;
 }
 
-async function verdictStore() {
+async function verdictStore(secondLoopTarget = false) {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
+	const manifest = legacyEngineeringManifest();
+	if (secondLoopTarget) manifest.loops[1]!.to = "design";
 	store.createWorkflowRun({
 		runId: "run-1",
 		issueId: "FLY-2478",
@@ -34,7 +36,7 @@ async function verdictStore() {
 		snapshotJson: JSON.stringify(
 			buildWorkflowRunSnapshotV1({
 				template: { id: "resident-release", revision: 1 },
-				manifest: legacyEngineeringManifest(),
+				manifest,
 			}),
 		),
 	});
@@ -99,7 +101,168 @@ function verdict(store: StateStore, outcome: "qa_pass" | "qa_fail") {
 	});
 }
 
+function openPark(store: StateStore, reason = "rework_reachable_wait") {
+	rawDb(store)
+		.prepare(`INSERT INTO workflow_engine_park_outbox
+		(event_id, project_name, execution_id, run_id, node_id, attempt, activation_id, generation, event, reason, created_at)
+		VALUES ('park-1','flywheel','impl-1','run-1','implement',1,'activation:impl-1:run-1:implement:1',1,'park_opened',?,?)`)
+		.run(reason, new Date(T0).toISOString());
+}
+
+function stageExpiry(store: StateStore, now: string) {
+	const ids = store.expireResidentHoldsTx(now);
+	expect(ids).toHaveLength(1);
+	const operationId = ids[0]!;
+	expect(store.applyResidentExpiry({ operationId, now })).toMatchObject({
+		ok: true,
+	});
+	expect(store.markResidentExpirySent({ operationId, now })).toMatchObject({
+		ok: true,
+	});
+	return operationId;
+}
+
 describe("FLY-2478 resident release", () => {
+	it("renews a newer resident boundary without invalidating an in-flight revision wake", async () => {
+		const store = await verdictStore();
+		const renewedAt = T0 + 60_000;
+		rawDb(store)
+			.prepare(
+				"UPDATE workflow_resident_hold SET release_cause = 'verdict_pass', release_source = 'old-pass' WHERE execution_id = 'impl-1'",
+			)
+			.run();
+		const input = {
+			executionId: "impl-1",
+			activationId: "activation:impl-1:run-1:implement:1",
+			nodeId: "implement",
+			boundarySeq: 2,
+			nowMs: renewedAt,
+		};
+		expect(store.enterResidentHold(input)).toEqual({
+			ok: true,
+			revision: 1,
+			graceExpiresAt: "2026-09-11T03:01:00.000Z",
+		});
+		expect(store.getResidentHold("impl-1")).toMatchObject({
+			boundary_seq: 2,
+			release_cause: null,
+			release_source: null,
+		});
+		expect(store.enterResidentHold({ ...input, boundarySeq: 1 })).toEqual({
+			ok: false,
+			reason: "stale_boundary",
+		});
+		expect(store.expireResidentHoldsTx("2026-09-11T03:00:01.000Z")).toEqual([]);
+		expect(store.wakeResidentHold("impl-1", 1, renewedAt + 1)).toBe(true);
+	});
+
+	it.each(["enter", "completion"] as const)(
+		"clears old release metadata when a woken actor parks through %s",
+		async (route) => {
+			const store = await verdictStore();
+			rawDb(store)
+				.prepare(
+					"UPDATE workflow_resident_hold SET release_cause = 'verdict_pass', release_source = 'old-pass' WHERE execution_id = 'impl-1'",
+				)
+				.run();
+			expect(store.wakeResidentHold("impl-1", 1, T0 + 1)).toBe(true);
+			if (route === "enter") {
+				expect(
+					store.enterResidentHold({
+						executionId: "impl-1",
+						activationId: "activation:impl-1:run-1:implement:1",
+						nodeId: "implement",
+						boundarySeq: 2,
+						nowMs: T0 + 2,
+					}),
+				).toMatchObject({ ok: true, revision: 2 });
+			} else {
+				const context = store.resolveCurrentWorkflowActivation("impl-1");
+				expect(context.kind).toBe("current");
+				const completion = store as unknown as {
+					enterResidentHoldForCompletionTx(
+						context: unknown,
+						now: string,
+					): boolean;
+				};
+				expect(
+					completion.enterResidentHoldForCompletionTx(
+						context,
+						new Date(T0 + 2).toISOString(),
+					),
+				).toBe(true);
+			}
+			expect(store.getResidentHold("impl-1")).toMatchObject({
+				state: "resident",
+				revision: 2,
+				release_cause: null,
+				release_source: null,
+			});
+		},
+	);
+	it("counts only due resident and pending expired holds", async () => {
+		const store = await verdictStore();
+		expect(store.countDueResidentHolds("2026-09-11T02:59:59.000Z")).toBe(0);
+		const now = "2026-09-11T03:00:01.000Z";
+		expect(store.countDueResidentHolds(now)).toBe(1);
+		const operationId = stageExpiry(store, now);
+		expect(store.countDueResidentHolds(now)).toBe(1);
+		expect(store.projectResidentExpiry({ operationId, now })).toMatchObject({
+			ok: true,
+		});
+		expect(store.countDueResidentHolds(now)).toBe(0);
+	});
+	it.each(["pass", "timeout"] as const)(
+		"projects %s into a terminal session and settles its rework park",
+		async (cause) => {
+			const store = await verdictStore();
+			openPark(store);
+			if (cause === "pass")
+				expect(verdict(store, "qa_pass")).toMatchObject({ ok: true });
+			const now =
+				cause === "pass"
+					? "2026-09-11T00:45:01.000Z"
+					: "2026-09-11T03:00:01.000Z";
+			const revision = store.getSession("impl-1")!.lifecycle_revision;
+			const operationId = stageExpiry(store, now);
+			expect(store.projectResidentExpiry({ operationId, now })).toMatchObject({
+				ok: true,
+			});
+			expect(store.getResidentHold("impl-1")).toMatchObject({
+				state: "closed",
+				closed_reason: cause === "pass" ? "released" : "expired",
+			});
+			expect(store.getSession("impl-1")).toMatchObject({
+				status: "completed",
+				terminal_at: expect.any(String),
+				lifecycle_revision: revision + 1,
+			});
+			expect(
+				rawDb(store)
+					.prepare(
+						"SELECT event FROM workflow_engine_park_outbox WHERE event_id = 'engine-park-settle:impl-1:1'",
+					)
+					.get(),
+			).toEqual({ event: "park_cleared" });
+			const event = rawDb(store)
+				.prepare(
+					"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
+				)
+				.get(operationId) as { kind: string; payload: string };
+			expect(event.kind).toBe(
+				cause === "pass" ? "resident_hold_released" : "resident_hold_expired",
+			);
+			expect(JSON.parse(event.payload)).toMatchObject({
+				sessionSettled: true,
+				parkSettled: true,
+				cause: cause === "pass" ? "verdict_pass" : "grace_timeout",
+			});
+			expect(store.projectResidentExpiry({ operationId, now })).toMatchObject({
+				ok: true,
+				idempotentReplay: true,
+			});
+		},
+	);
 	it("requests release at the committed pass verdict and replays once", async () => {
 		const store = await verdictStore();
 		expect(verdict(store, "qa_pass")).toMatchObject({ ok: true });
@@ -117,6 +280,131 @@ describe("FLY-2478 resident release", () => {
 			rawDb(store)
 				.prepare(
 					"SELECT * FROM workflow_run_event WHERE kind = 'resident_hold_release_requested'",
+				)
+				.all(),
+		).toHaveLength(1);
+	});
+
+	it.each(["activation", "failed", "ship_gate"] as const)(
+		"preserves unrelated %s state while closing an expired hold",
+		async (guard) => {
+			const store = await verdictStore();
+			openPark(
+				store,
+				guard === "ship_gate"
+					? "runner_ship_gate_wait"
+					: "rework_reachable_wait",
+			);
+			const now = "2026-09-11T03:00:01.000Z";
+			const operationId = stageExpiry(store, now);
+			if (guard === "activation")
+				rawDb(store)
+					.prepare(
+						"UPDATE workflow_delivery_operation SET target_activation_id = 'other-activation' WHERE operation_id = ?",
+					)
+					.run(operationId);
+			if (guard === "failed")
+				store.upsertSession({
+					execution_id: "impl-1",
+					issue_id: "FLY-2478",
+					project_name: "flywheel",
+					status: "failed",
+				});
+			const before = store.getSession("impl-1");
+			expect(store.projectResidentExpiry({ operationId, now })).toMatchObject({
+				ok: true,
+			});
+			expect(store.getResidentHold("impl-1")?.state).toBe("closed");
+			if (guard !== "ship_gate")
+				expect(store.getSession("impl-1")).toEqual(before);
+			else expect(store.getSession("impl-1")?.status).toBe("completed");
+			expect(
+				rawDb(store)
+					.prepare("SELECT event FROM workflow_engine_park_outbox")
+					.all(),
+			).toEqual([{ event: "park_opened" }]);
+			const event = rawDb(store)
+				.prepare("SELECT payload FROM workflow_run_event WHERE event_uid = ?")
+				.get(operationId) as { payload: string };
+			expect(JSON.parse(event.payload)).toMatchObject({
+				sessionSettled: guard === "ship_gate",
+				parkSettled: false,
+			});
+		},
+	);
+
+	it("rolls hold and session settlement back if park publication fails", async () => {
+		const store = await verdictStore();
+		openPark(store);
+		const now = "2026-09-11T03:00:01.000Z";
+		const operationId = stageExpiry(store, now);
+		const before = store.getSession("impl-1");
+		rawDb(
+			store,
+		).exec(`CREATE TRIGGER reject_park_clear BEFORE INSERT ON workflow_engine_park_outbox
+			WHEN NEW.event = 'park_cleared' BEGIN SELECT RAISE(ABORT, 'injected park failure'); END;`);
+		expect(() => store.projectResidentExpiry({ operationId, now })).toThrow(
+			"injected park failure",
+		);
+		expect(store.getResidentHold("impl-1")?.state).toBe("expired");
+		expect(store.getSession("impl-1")).toEqual(before);
+		expect(
+			rawDb(store)
+				.prepare(
+					"SELECT state FROM workflow_delivery_operation WHERE operation_id = ?",
+				)
+				.get(operationId),
+		).toEqual({ state: "sent" });
+	});
+
+	it("settles again at run closeout without duplicate park clears or divergence alerts", async () => {
+		const store = await verdictStore();
+		openPark(store);
+		const now = "2026-09-11T03:00:01.000Z";
+		const operationId = stageExpiry(store, now);
+		expect(store.projectResidentExpiry({ operationId, now })).toMatchObject({
+			ok: true,
+		});
+		expect(
+			store
+				.listWorkflowDivergenceCandidates()
+				.some((candidate) => candidate.executionId === "impl-1"),
+		).toBe(true);
+		expect(
+			store.commitWorkflowDivergenceObservation({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "impl-1",
+				observedStatus: "completed",
+				observedLifecycleRevision:
+					store.getSession("impl-1")!.lifecycle_revision,
+				now,
+			}),
+		).toMatchObject({ ok: true, divergence: false });
+		expect(
+			rawDb(store)
+				.prepare(
+					"SELECT * FROM workflow_run_event WHERE kind = 'workflow_node_session_divergence'",
+				)
+				.all(),
+		).toHaveLength(0);
+		const settlement = store as unknown as {
+			settleWorkflowEngineParksForRunTx(
+				runId: string,
+				at: string,
+				reasons: string[],
+			): void;
+		};
+		expect(() =>
+			settlement.settleWorkflowEngineParksForRunTx("run-1", now, [
+				"rework_reachable_wait",
+			]),
+		).not.toThrow();
+		expect(
+			rawDb(store)
+				.prepare(
+					"SELECT * FROM workflow_engine_park_outbox WHERE event = 'park_cleared'",
 				)
 				.all(),
 		).toHaveLength(1);
@@ -144,6 +432,44 @@ describe("FLY-2478 resident release", () => {
 		const before = store.getResidentHold("impl-1");
 		expect(verdict(store, "qa_pass")).toMatchObject({ ok: true });
 		expect(store.getResidentHold("impl-1")).toEqual(before);
+	});
+
+	it.each(["expired", "closed"])(
+		"does not rewrite a %s hold on pass",
+		async (state) => {
+			const store = await verdictStore();
+			rawDb(store)
+				.prepare(
+					"UPDATE workflow_resident_hold SET state = ? WHERE execution_id = 'impl-1'",
+				)
+				.run(state);
+			const before = store.getResidentHold("impl-1");
+			expect(verdict(store, "qa_pass")).toMatchObject({ ok: true });
+			expect(store.getResidentHold("impl-1")).toEqual(before);
+		},
+	);
+
+	it("does not release for a stale verdict writer or attempt", async () => {
+		const store = await verdictStore();
+		const before = store.getResidentHold("impl-1");
+		for (const [attempt, executionId] of [
+			[1, "stale-qa"],
+			[2, "qa-1"],
+		] as const) {
+			expect(
+				store.commitWorkflowTransitionTx({
+					nodeReuseEnabled: false,
+					runId: "run-1",
+					nodeId: "qa",
+					attempt,
+					executionId,
+					outcome: "qa_pass",
+					subjectDigest: HEAD,
+					now: VERDICT_AT,
+				}),
+			).toMatchObject({ ok: false, reason: "node_attempt_not_current" });
+			expect(store.getResidentHold("impl-1")).toEqual(before);
+		}
 	});
 
 	it("does not interpret founder kickback as a release verdict", async () => {
@@ -178,7 +504,7 @@ describe("FLY-2478 resident release", () => {
 	});
 
 	it("releases only the verdict loop target and leaves other resident nodes unchanged", async () => {
-		const store = await verdictStore();
+		const store = await verdictStore(true);
 		const admitted = store.admitWorkflowExecution({
 			runId: "run-1",
 			nodeId: "design",
