@@ -7636,9 +7636,10 @@ export async function startBridge(
 					}
 					return { ok: true };
 				},
-				probeTarget: async (executionId) => {
+				probeTarget: async (executionId, shutdownRequested) => {
 					const lookup = lookupTmuxTarget(executionId, projectName);
-					// Missing registry evidence cannot prove physical teardown.
+					// A gone registry is actionable only after this operation's shutdown request.
+					if (lookup.kind === "gone" && shutdownRequested) return "absent";
 					if (lookup.kind !== "found") return "indeterminate";
 					return probeRunnerProcessLiveness(lookup.target.tmuxWindow);
 				},

@@ -45,6 +45,7 @@ export class DeliveryOperations {
 				): Promise<{ ok: boolean; error?: string }>;
 				probeTarget(
 					executionId: string,
+					shutdownRequested?: boolean,
 				): Promise<"alive" | "dead_pin" | "absent" | "indeterminate">;
 			};
 		},
@@ -169,6 +170,7 @@ export class DeliveryOperations {
 								if (!registered || registered.status !== "running") {
 									const liveness = await this.deps.residentExpiry.probeTarget(
 										operation.executionId,
+										shutdown?.state === "requested",
 									);
 									acknowledged =
 										liveness === "dead_pin" || liveness === "absent";

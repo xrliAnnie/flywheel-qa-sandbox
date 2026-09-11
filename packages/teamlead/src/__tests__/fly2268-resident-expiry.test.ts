@@ -72,6 +72,7 @@ function operations(
 		): Promise<{ ok: boolean; error?: string }>;
 		probeTarget(
 			executionId: string,
+			shutdownRequested?: boolean,
 		): Promise<"alive" | "dead_pin" | "absent" | "indeterminate">;
 	},
 ) {
@@ -90,6 +91,17 @@ function operations(
 }
 
 describe("FLY-2268 resident expiry driver", () => {
+	it.each([true, false])("passes current-operation shutdown proof to the gone probe (bound=%s)", async (bound) => {
+		const {store,commDb,now,nowMs} = await fixture("codex");
+		store.applyResidentExpiry({operationId:"resident-expiry:exec-1:r1", now});
+		commDb.requestRunnerShutdown("exec-1", bound ? "resident-expiry:exec-1:r1" : "different-operation", nowMs);
+		const probeTarget = vi.fn(async (_executionId: string, shutdownRequested?: boolean) => shutdownRequested ? "absent" as const : "indeterminate" as const);
+		const runner = operations(store,commDb,{terminateClaude:vi.fn(async () => ({ok:true})),probeTarget});
+		expect(await runner.runResidentExpiryPass(now)).toMatchObject({projected:bound ? 1 : 0});
+		expect(probeTarget).toHaveBeenCalledWith("exec-1", bound);
+		expect(store.getResidentHold("exec-1")?.state).toBe(bound ? "closed" : "expired");
+	});
+
 	it("leaves old indeterminate operations to maintenance and accepts a later ACK", async () => {
 		const { store, commDb, now, nowMs } = await fixture("codex");
 		const probeTarget = vi.fn(async () => "indeterminate" as const);
@@ -182,7 +194,7 @@ describe("FLY-2268 resident expiry driver", () => {
 			projected: 1,
 			failed: 0,
 		});
-		expect(probeTarget).toHaveBeenCalledWith("exec-1");
+		expect(probeTarget).toHaveBeenCalledWith("exec-1", true);
 		expect(store.getResidentHold("exec-1")?.state).toBe("closed");
 	});
 
