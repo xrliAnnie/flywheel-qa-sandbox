@@ -22,6 +22,8 @@ describe("TURN wait actor authority (FLY-2507)", () => {
    CREATE TABLE workflow_run (run_id TEXT PRIMARY KEY, issue_id TEXT, current_node_id TEXT, status TEXT);
    CREATE TABLE workflow_run_node (run_id TEXT, node_id TEXT, attempt INTEGER, state TEXT, execution_id TEXT, ended_at TEXT, PRIMARY KEY(run_id,node_id,attempt));
    CREATE TABLE workflow_execution_binding (execution_id TEXT, run_id TEXT, node_id TEXT, attempt INTEGER);
+   CREATE TABLE workflow_gate_holder (run_id TEXT, gate_node_id TEXT, attempt INTEGER, head_sha TEXT, source_execution_id TEXT, question_id TEXT UNIQUE, authority_mode TEXT, state TEXT);
+   CREATE TABLE workflow_carrier_delivery (question_id TEXT PRIMARY KEY, run_id TEXT, gate_node_id TEXT, gate_attempt INTEGER, approved_head TEXT, source_execution_id TEXT, state TEXT);
    INSERT INTO workflow_run VALUES ('run-1','ISSUE-1','founder_gate','active');
    INSERT INTO workflow_run_node VALUES ('run-1','implement',1,'done','impl','done');
    INSERT INTO workflow_run_node VALUES ('run-1','founder_gate',1,'review',NULL,NULL);
@@ -46,6 +48,41 @@ describe("TURN wait actor authority (FLY-2507)", () => {
 			debugOverride: false,
 			stateDbPath,
 		});
+	it("restores overdue alerts for the approved ship carrier while the gate node has no actor", () => {
+		expect(observe().waitAsked).toBe(false);
+		state.exec(`
+   INSERT INTO workflow_gate_holder VALUES ('run-1','founder_gate',1,'head','impl','ship-question','runner_ship','approved');
+   INSERT INTO workflow_carrier_delivery VALUES ('ship-question','run-1','founder_gate',1,'head','impl','pending');
+  `);
+		expect(observe(300).waitAsked).toBe(true);
+		expect(observe(400).waitAsked).toBe(false);
+		expect(comm.getPendingQuestions("lead")).toHaveLength(1);
+	});
+	it.each([
+		["DELETE FROM workflow_carrier_delivery", true],
+		["UPDATE workflow_carrier_delivery SET state='completed'", true],
+		["UPDATE workflow_carrier_delivery SET state='held'", true],
+		[
+			"UPDATE workflow_carrier_delivery SET source_execution_id='replacement'",
+			false,
+		],
+		["UPDATE workflow_gate_holder SET state='awaiting_review'", false],
+		["UPDATE workflow_gate_holder SET state='superseded'", false],
+		["UPDATE workflow_gate_holder SET authority_mode='land'", false],
+		["UPDATE workflow_gate_holder SET run_id='old-run'", false],
+		["UPDATE workflow_gate_holder SET attempt=2", false],
+		["UPDATE workflow_run SET status='completed'", false],
+	])(
+		"scopes ship responsibility to current approved authority: %s",
+		(sql, asked) => {
+			state.exec(`
+   INSERT INTO workflow_gate_holder VALUES ('run-1','founder_gate',1,'head','impl','ship-question','runner_ship','approved');
+   INSERT INTO workflow_carrier_delivery VALUES ('ship-question','run-1','founder_gate',1,'head','impl','pending');
+  `);
+			state.exec(sql);
+			expect(observe().waitAsked).toBe(asked);
+		},
+	);
 	it("does not ask for a parked implement body while founder gate has no runner actor", () => {
 		expect(observe().waitAsked).toBe(false);
 		expect(comm.getPendingQuestions("lead")).toEqual([]);

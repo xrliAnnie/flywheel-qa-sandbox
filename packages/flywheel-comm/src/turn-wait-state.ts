@@ -13,7 +13,15 @@ export function readTurnWaitSuppression(
 		state = new Database(stateDbPath, { readonly: true, fileMustExist: true });
 		const row = state
 			.prepare(`
-   SELECT r.status, r.current_node_id, n.attempt, n.state, n.execution_id, n.ended_at
+   SELECT r.status, r.current_node_id, n.attempt, n.state, n.execution_id, n.ended_at,
+    EXISTS (SELECT 1 FROM workflow_gate_holder h
+     LEFT JOIN workflow_carrier_delivery d ON d.question_id = h.question_id
+      AND d.run_id = h.run_id AND d.gate_node_id = h.gate_node_id
+      AND d.gate_attempt = h.attempt AND d.approved_head = h.head_sha
+     WHERE h.run_id = r.run_id AND h.gate_node_id = r.current_node_id
+      AND h.attempt = n.attempt AND h.authority_mode = 'runner_ship'
+      AND h.state = 'approved'
+      AND COALESCE(d.source_execution_id, h.source_execution_id) = ?) AS ship_actor
    FROM workflow_run r
    LEFT JOIN workflow_run_node n ON n.run_id = r.run_id AND n.node_id = r.current_node_id
     AND n.attempt = (SELECT MAX(latest.attempt) FROM workflow_run_node latest
@@ -22,7 +30,7 @@ export function readTurnWaitSuppression(
     AND EXISTS (SELECT 1 FROM workflow_execution_binding b
      WHERE b.run_id = r.run_id AND b.execution_id = ?)
   `)
-			.get(input.runId, input.issueId, input.executionId) as
+			.get(input.executionId, input.runId, input.issueId, input.executionId) as
 			| {
 					status: string;
 					current_node_id: string | null;
@@ -30,12 +38,14 @@ export function readTurnWaitSuppression(
 					state: string | null;
 					execution_id: string | null;
 					ended_at: string | null;
+					ship_actor: number;
 			  }
 			| undefined;
 		if (!row || (row.attempt === null && row.status !== "completed"))
 			return null;
 		if (!["active", "held", "terminated", "completed"].includes(row.status))
 			return null;
+		if (row.status !== "completed" && row.ship_actor) return null;
 		if (
 			row.status !== "completed" &&
 			![

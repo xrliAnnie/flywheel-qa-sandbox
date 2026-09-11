@@ -27,3 +27,11 @@ codex:rescue companion 只读审查启动失败：sandbox helper exit 71，sandb
 ## 回退与剩余门
 
 旧程序忽略可选列，可回退代码而无需删列；保持既有 ledger/问题历史。纯后台变更，未做生产部署或真实 host 巡检证明；独立 QA 尚未执行。此报告不代表 code review/CI/QA 已通过。
+
+## R1 HIGH 修复（2026-09-10）
+
+R1 question 293254af-a4c1-43e4-88c5-9c3ea770d7c1 / request 33b68b06-732a-4496-bf86-d3747a26fb57 对 91bbfb31f 返回 CHANGES_REQUESTED。HIGH `carrier-actor-missed-in-actor-query`：runner_ship 承接者记录在 gate holder / carrier delivery，当前 gate 节点 execution_id 可以仍为 NULL。
+
+按 Lead e830b49b-8360-40c0-824b-f1bc2d1cd92a 授权，仅修此 HIGH。单次查询增加同 run、当前 gate 最新 attempt、approved runner_ship holder 的 carrier 身份；delivery 的 source_execution_id 优先于 holder，delivery receipt 完成不清除仍在进行的 ship 责任，run completed 后仍抑制。未批准、superseded、其它 run/attempt 和替换后的旧承接者不因此恢复告警。旧 schema 缺表仍按既有 unknown 路径保留告警。
+
+TDD 新回归先失败（expected true / received false），修改后通过；受影响三个测试文件 69/69 PASS（状态/CLI 35、TURN 30、patrol投影 4）。pnpm lint、pnpm -r build 均 exit 0；首次 lint 仅新增测试格式错误，格式化后绿。未重跑全量包套件，原始两次全量红记录保留。R1 HEAD 的 CI 34555742382 已 success，但不作为新修复 HEAD 的 CI 证明。MEDIUM/LOW advisories 留在原审查回执，不扩本轮范围。下一步是新 HEAD R2 正式代码审查和 CI。
