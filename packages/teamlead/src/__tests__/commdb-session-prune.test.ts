@@ -10,6 +10,8 @@ import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
 import {
+	decideCloseTmuxCommDbFinalize,
+	finalizeCommDbPaneLossResidue,
 	finalizeCommDbSession,
 	finalizeCommDbSessionCommunications,
 	finalizeCommDbTerminalSession,
@@ -45,6 +47,155 @@ describe("commdb-session-prune (FLY-638)", () => {
 			db.updateSessionStatus(execId, status);
 		}
 	}
+
+	describe("FLY-2498 close-tmux helpers", () => {
+		it("atomically deletes the exact dead target and retires its ask; replay is harmless", () => {
+			seed("dead-holder", "running");
+			db.upsertDeclaredState(
+				"dead-holder",
+				"parked",
+				"design handed off",
+				Date.now(),
+				null,
+			);
+			const ask = db.insertQuestion(
+				"dead-holder",
+				"lead-a",
+				"pending question",
+			);
+			(db as unknown as { db: { exec(sql: string): void } }).db.exec(
+				"UPDATE mailbox SET created_at = datetime('now', '-16 minutes')",
+			);
+			expect(
+				finalizeCommDbPaneLossResidue(
+					"dead-holder",
+					"flywheel",
+					"base:@dead-holder",
+					dbPath,
+				),
+			).toMatchObject({
+				ok: true,
+				outcome: "finalized",
+				deletedSessionCount: 1,
+				retiredAskCount: 1,
+			});
+			expect(db.getSession("dead-holder")).toBeUndefined();
+			expect(db.isQuestionPending(ask)).toBe(false);
+			expect(
+				finalizeCommDbPaneLossResidue(
+					"dead-holder",
+					"flywheel",
+					"base:@dead-holder",
+					dbPath,
+				),
+			).toMatchObject({
+				ok: false,
+				outcome: "target_changed",
+				deletedSessionCount: 0,
+			});
+		});
+		it.each(["target_changed", "turn_holder"])(
+			"preserves identity and pending ask on %s",
+			(reason) => {
+				seed("protected", "running");
+				const ask = db.insertQuestion("protected", "lead-a", "keep question");
+				if (reason === "turn_holder")
+					db.grantTurn("i-protected", "protected", "design", Date.now());
+				const target =
+					reason === "target_changed" ? "base:@old" : "base:@protected";
+				expect(
+					finalizeCommDbPaneLossResidue(
+						"protected",
+						"flywheel",
+						target,
+						dbPath,
+					),
+				).toMatchObject({ ok: false, outcome: reason, deletedSessionCount: 0 });
+				expect(db.getSession("protected")).toBeDefined();
+				expect(db.isQuestionPending(ask)).toBe(true);
+			},
+		);
+		it("rolls back mailbox disposal if deleting the row fails", () => {
+			seed("rollback", "running");
+			const ask = db.insertQuestion("rollback", "lead-a", "keep question");
+			(db as unknown as { db: { exec(sql: string): void } }).db.exec(
+				"UPDATE mailbox SET created_at = datetime('now', '-16 minutes')",
+			);
+			(db as unknown as { db: { exec(sql: string): void } }).db.exec(
+				"CREATE TRIGGER abort_residue BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'forced'); END",
+			);
+			expect(
+				finalizeCommDbPaneLossResidue(
+					"rollback",
+					"flywheel",
+					"base:@rollback",
+					dbPath,
+				),
+			).toMatchObject({ ok: false, outcome: "failed" });
+			expect(db.getSession("rollback")).toBeDefined();
+			expect(db.isQuestionPending(ask)).toBe(true);
+		});
+		it("does nothing without a project database", () => {
+			expect(
+				finalizeCommDbPaneLossResidue("missing", "../invalid", "base:@missing"),
+			).toMatchObject({ ok: true, outcome: "no_db", deletedSessionCount: 0 });
+		});
+		it("finalizes only a killed body in a deletable StateStore state", () => {
+			expect(
+				decideCloseTmuxCommDbFinalize({
+					killed: true,
+					daemon: "absent",
+					stateStoreStatus: "completed",
+				}),
+			).toEqual({ finalize: true });
+		});
+		it.each([
+			"completed",
+			"approved",
+			"rejected",
+			"deferred",
+			"shelved",
+			"terminated",
+		])("accepts proven death in %s", (stateStoreStatus) => {
+			for (const daemon of ["not_codex", "reaped", "absent"] as const) {
+				expect(
+					decideCloseTmuxCommDbFinalize({
+						killed: true,
+						daemon,
+						stateStoreStatus,
+					}),
+				).toEqual({ finalize: true });
+			}
+		});
+		it.each([
+			[false, "absent", "completed", "kill_failed"],
+			[true, "residual", "completed", "daemon_residual"],
+			[true, "unverifiable", "completed", "daemon_unverifiable"],
+		] as const)(
+			"rejects uncertain death %s/%s",
+			(killed, daemon, stateStoreStatus, reason) => {
+				expect(
+					decideCloseTmuxCommDbFinalize({ killed, daemon, stateStoreStatus }),
+				).toEqual({ finalize: false, reason });
+			},
+		);
+		it.each([
+			"awaiting_review",
+			"failed",
+			"blocked",
+			"design_done",
+			"running",
+			undefined,
+		])("preserves %s", (stateStoreStatus) => {
+			expect(
+				decideCloseTmuxCommDbFinalize({
+					killed: true,
+					daemon: "absent",
+					stateStoreStatus,
+				}),
+			).toEqual({ finalize: false, reason: "state_store_not_deletable" });
+		});
+	});
 
 	describe("finalizeCommDbSession", () => {
 		it("uses the same FLYWHEEL_COMM_DIR resolver as gate retirement", () => {

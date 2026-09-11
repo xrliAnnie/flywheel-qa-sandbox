@@ -25,6 +25,7 @@
 
 import { existsSync } from "node:fs";
 import { CommDB, type Session } from "flywheel-comm/db";
+import { RECONCILE_DELETABLE_STATES } from "./close-runner.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import {
 	probeTmuxWindowLiveness,
@@ -40,6 +41,35 @@ export function resolveCommDbPath(projectName: string): string | undefined {
 	if (/[/\\]|\.\./.test(projectName)) return undefined;
 	const dbPath = commDbPathForProject(projectName);
 	return existsSync(dbPath) ? dbPath : undefined;
+}
+
+/** FLY-2498: closing a window only authorizes cleanup after execution death. */
+export function decideCloseTmuxCommDbFinalize(input: {
+	killed: boolean;
+	daemon: "not_codex" | "reaped" | "absent" | "residual" | "unverifiable";
+	stateStoreStatus: string | undefined;
+}):
+	| { finalize: true }
+	| {
+			finalize: false;
+			reason:
+				| "kill_failed"
+				| "daemon_residual"
+				| "daemon_unverifiable"
+				| "state_store_not_deletable";
+	  } {
+	if (!input.killed) return { finalize: false, reason: "kill_failed" };
+	if (input.daemon === "residual")
+		return { finalize: false, reason: "daemon_residual" };
+	if (input.daemon === "unverifiable")
+		return { finalize: false, reason: "daemon_unverifiable" };
+	if (
+		!input.stateStoreStatus ||
+		!RECONCILE_DELETABLE_STATES.has(input.stateStoreStatus)
+	) {
+		return { finalize: false, reason: "state_store_not_deletable" };
+	}
+	return { finalize: true };
 }
 
 const COMM_DB_ENDED_STATUSES: ReadonlySet<string> = new Set([
@@ -193,6 +223,63 @@ export function finalizeCommDbSessionCommunications(
 	} catch (err) {
 		console.warn(
 			`[commdb-prune] finalize communications ${executionId} (${projectName}) failed: ${(err as Error).message}`,
+		);
+		return {
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+			error: (err as Error).message,
+		};
+	} finally {
+		db?.close();
+	}
+}
+
+/** FLY-2498: exact-target/TURN guarded deletion after independent death proof. */
+export function finalizeCommDbPaneLossResidue(
+	executionId: string,
+	projectName: string,
+	expectedTmuxWindow: string,
+	dbPath: string | undefined = resolveCommDbPath(projectName),
+): FinalizeCommDbResult {
+	if (!dbPath) {
+		return {
+			ok: true,
+			outcome: "no_db",
+			retiredGateCount: 0,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+		};
+	}
+	let db: CommDB | undefined;
+	try {
+		db = new CommDB(dbPath, false);
+		const finalized = db.finalizePaneLossResidue(
+			executionId,
+			expectedTmuxWindow,
+		);
+		if (!finalized.finalized) {
+			return {
+				ok: false,
+				outcome: finalized.reason,
+				retiredGateCount: 0,
+				retiredAskCount: 0,
+				deletedSessionCount: 0,
+				error: finalized.reason,
+			};
+		}
+		return {
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: finalized.result.retiredQuestionCount,
+			retiredAskCount: finalized.result.retiredAskCount,
+			deletedSessionCount: finalized.result.deletedSessionCount,
+		};
+	} catch (err) {
+		console.warn(
+			`[commdb-prune] finalize pane-loss residue ${executionId} (${projectName}) failed: ${(err as Error).message}`,
 		);
 		return {
 			ok: false,
