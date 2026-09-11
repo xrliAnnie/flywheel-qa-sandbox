@@ -1,17 +1,17 @@
 ---
 issue: FLY-2393
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-11T06:48:31.209Z
-nextStep: C4 runtime/plugin/read-only UI committed;
-  management93/runtime12/typecheck PASS. Next finish initial
-  drain/owner/cooldown audit, runbook/full gates/review/PR. Visual question
-  6a05af77-6274-43fa-9b55-68f7b60eaf69 pending; fixture
-  /tmp/fly2393-beta-console.html. See implementation.md.
+phaseCursor: 4/5
+updated: 2026-09-11T06:54:37.780Z
+nextStep: C1-C4 implemented, initial drain/owner/cooldown patched; lint and full
+  build PASS. packages gate live session72616 /tmp/fly2393-full-packages.log.
+  Commit current audit+fixture/runbook after tests, request code review (R3
+  cap), then milestone-last/PR. Visual deferred QA per Lead ruling, exact PR
+  line in runbook.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2393 progress
-**phase**: implement (1/5)
-**next**: C4 runtime/plugin/read-only UI committed; management93/runtime12/typecheck PASS. Next finish initial drain/owner/cooldown audit, runbook/full gates/review/PR. Visual question 6a05af77-6274-43fa-9b55-68f7b60eaf69 pending; fixture /tmp/fly2393-beta-console.html. See implementation.md.
+**phase**: implement (4/5)
+**next**: C1-C4 implemented, initial drain/owner/cooldown patched; lint and full build PASS. packages gate live session72616 /tmp/fly2393-full-packages.log. Commit current audit+fixture/runbook after tests, request code review (R3 cap), then milestone-last/PR. Visual deferred QA per Lead ruling, exact PR line in runbook.
