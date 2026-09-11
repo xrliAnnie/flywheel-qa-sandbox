@@ -2,16 +2,15 @@
 issue: FLY-2393
 phase: implement
 phaseCursor: 4/5
-updated: 2026-09-11T06:55:59.916Z
-nextStep: Boundary+runbook+QA fixture committed. Lint/full build PASS. packages
-  command failed unchanged comm dependency timeout; one isolated rerun42PASS.
-  Remaining7 packages live session16524 log /tmp/fly2393-remaining-packages.log.
-  Inspect final results, then code review R1 (R3cap), milestone-last PR. Visual
-  deferredQA per Lead.
+updated: 2026-09-11T07:02:06.840Z
+nextStep: "Code complete; lint/full build and post-dedup teamlead build PASS.
+  Packages original comm timeout; isolated42PASS. Remaining session16524:
+  claude-runner3 timeouts+RPC; others running. Freeze code for R1; then
+  milestone-last PR and exact-head CI. QA owns visual per Lead."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2393 progress
 **phase**: implement (4/5)
-**next**: Boundary+runbook+QA fixture committed. Lint/full build PASS. packages command failed unchanged comm dependency timeout; one isolated rerun42PASS. Remaining7 packages live session16524 log /tmp/fly2393-remaining-packages.log. Inspect final results, then code review R1 (R3cap), milestone-last PR. Visual deferredQA per Lead.
+**next**: Code complete; lint/full build and post-dedup teamlead build PASS. Packages original comm timeout; isolated42PASS. Remaining session16524: claude-runner3 timeouts+RPC; others running. Freeze code for R1; then milestone-last PR and exact-head CI. QA owns visual per Lead.
