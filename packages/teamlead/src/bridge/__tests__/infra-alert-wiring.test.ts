@@ -101,7 +101,7 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 	function makeSink(
 		routing = true,
 		tickets = false,
-		recipientState: "alive" | "terminal_or_missing" | "unknown" = "alive",
+		recipientState: "alive" | "terminal" | "unknown" = "alive",
 	) {
 		return buildInfraAlertRouting({
 			store,

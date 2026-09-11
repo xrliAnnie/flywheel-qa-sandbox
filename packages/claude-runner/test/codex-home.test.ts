@@ -2517,6 +2517,9 @@ hide_full_access_warning = true
 	describe("FLY-1188 AGENTS.md contract materialization", () => {
 		it("FLY-2506 scopes approval to ship while allowing main into the feature branch", () => {
 			const home = provisionCodexHome({ executionId: "exec-merge-scope", env });
+			expect(readFileSync(join(home, "AGENTS.md"), "utf-8")).toContain(
+				"Contract-Version: 3 (FLY-2509 merge authority alignment)",
+			);
 			const agents = readFileSync(join(home, "AGENTS.md"), "utf-8");
 			const authority = agents
 				.split("- **Merge authority**:")[1]

@@ -851,25 +851,7 @@ def _p3_hit(cmd: str, depth: int) -> bool:
     return False
 
 
-def _restart_block(cmd: str, depth: int = 0):
-    """Return a restart/scheduler pattern P1-P4, excluding brew policy."""
-    if depth > 1:
-        return None
-    non_read_cmd = _non_read_segments(cmd)
-    if P1_RE.search(non_read_cmd) and (
-        FLYWHEEL_LABEL_RE.search(cmd) or RESTART_SCRIPT_RE.search(cmd)
-    ):
-        return "P1"
-    if KILL_RE.search(non_read_cmd) and PROC_IDENT_RE.search(cmd):
-        return "P2"
-    if _p3_hit(cmd, depth):
-        return "P3"
-    if _p4_hit(cmd):
-        return "P4"
-    return None
-
-
-def scan_block(cmd: str, depth: int = 0):
+def _policy_scan_block(cmd: str, depth: int = 0):
     """Return the matched pattern name (P1/P2/P3/P4/P5/P6) or None. One level of
     shell -c recursion only (depth > 1 stops). Restart authority always wins
     over the narrower Lead/founder Homebrew exemption."""
@@ -886,6 +868,559 @@ def scan_block(cmd: str, depth: int = 0):
     if brew_hit:
         return "P5"
     return None
+
+
+# FLY-1942: small command IR. Payload words never supply mutating heads.
+LABEL_TARGET_RE = re.compile(r'com\.flywheel\.[A-Za-z0-9._-]+', re.I)
+PROTECTED_CORE_RE = re.compile(r'^com\.flywheel\.(bridge|lead\..+|updater|cmux-watcher|quota-monitor|qa\.lead\..+)$', re.I)
+
+
+def _protected_target(target):
+    label = os.path.basename(target).removesuffix('.plist')
+    if PROTECTED_CORE_RE.fullmatch(label):
+        return 'core'
+    path = Path(os.path.expanduser(target)) if target.endswith('.plist') else Path(os.environ.get('FLYWHEEL_RESTART_GUARD_LAUNCH_AGENTS_DIR', str(Path.home() / 'Library/LaunchAgents'))) / (target + '.plist')
+    try:
+        import plistlib
+        with path.open('rb') as handle:
+            data = plistlib.load(handle)
+        for key in ('KeepAlive', 'RunAtLoad', 'StartInterval'):
+            if key in data:
+                return 'plist_shape:' + key
+        return None
+    except Exception:
+        return 'plist_missing'
+
+
+def _expansions(text):
+    """Extract balanced shell substitutions without executing them."""
+    i = 0
+    while i < len(text):
+        if text[i] == '`':
+            end = text.find('`', i + 1)
+            if end >= 0:
+                yield text[i + 1:end]
+                i = end + 1
+                continue
+        if text[i:i + 2] in ('$(' , '<(', '>('):
+            start = i + 2
+            level = 1
+            i = start
+            while i < len(text) and level:
+                if text[i] == '(':
+                    level += 1
+                elif text[i] == ')':
+                    level -= 1
+                i += 1
+            if not level:
+                yield text[start:i - 1]
+            continue
+        i += 1
+
+
+def _effective_head(tokens):
+    i, payloads, wrappers, nohup = 0, [], False, False
+    while i < len(tokens):
+        token = tokens[i]
+        # Reserved words introduce an executable command at this position.
+        # They are transparent only at the head, never inside message argv.
+        if token in {'do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', '('}:
+            i += 1
+            continue
+        if ENV_ASSIGN_RE.match(token):
+            i += 1
+            continue
+        base = os.path.basename(token)
+        if base == 'cd':
+            i += 2
+            continue
+        if base not in _WRAPPERS:
+            break
+        wrappers = True
+        nohup |= base == 'nohup'
+        i += 1
+        while i < len(tokens) and tokens[i].startswith('-'):
+            flag = tokens[i]
+            i += 1
+            if base == 'env' and (flag.startswith('--split-string') or (not flag.startswith('--') and 'S' in flag)):
+                attached = flag.split('=', 1)[1] if '=' in flag else (flag[flag.index('S') + 1:] if 'S' in flag else '')
+                if attached:
+                    payloads.append(attached)
+                elif i < len(tokens):
+                    payloads.append(tokens[i])
+                    i += 1
+            elif flag in _WRAPPER_ARG_FLAGS | {'-p', '-n'}:
+                i += 1
+        if base == 'timeout' and i < len(tokens):
+            i += 1
+    if i >= len(tokens):
+        return None, [], payloads, nohup
+    if wrappers and os.path.basename(tokens[i]) not in EXECUTORS | SHELLS | {'launchctl', 'kill', 'pkill', 'killall', 'xargs'}:
+        # Preserve the established unknown wrapper-operand backstop.
+        for j in range(i, len(tokens)):
+            if os.path.basename(tokens[j]) in EXECUTORS:
+                i = j
+                break
+    return os.path.basename(tokens[i]), tokens[i + 1:], payloads, nohup
+
+
+def _parse_ir(cmd):
+    heredocs, lines, output, index = {}, cmd.splitlines(keepends=True), [], 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        matches = list(re.finditer(r'(?<!<)<<(-?)\s*([\'\"]?)(\w+)\2', line))
+        for match in reversed(matches):
+            body = []
+            while index < len(lines) and lines[index].strip() != match[3]:
+                body.append(lines[index].lstrip('\t') if match[1] else lines[index])
+                index += 1
+            if index < len(lines):
+                index += 1
+            marker = '__HEREDOC_' + str(len(heredocs)) + '__'
+            heredocs[marker] = (''.join(body), bool(match[2]))
+            line = line[:match.start()] + ' ' + marker + ' ' + line[match.end():]
+        output.append(line)
+    source = ''.join(output)
+    # shlex removes quote provenance. Mask variable references inside single
+    # quotes first so static assignment resolution cannot reinterpret literals.
+    variable_ref = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)')
+    literal_variables, masked, quote, cursor = {}, [], None, 0
+    while cursor < len(source):
+        char = source[cursor]
+        if char == '\\' and quote != "'" and cursor + 1 < len(source):
+            escaped = variable_ref.match(source, cursor + 1)
+            if escaped:
+                marker = '__LITERAL_VAR_' + str(len(literal_variables)) + '__'
+                literal_variables[marker] = escaped[0]
+                masked.append(marker)
+                cursor = escaped.end()
+            else:
+                masked.append(source[cursor:cursor + 2])
+                cursor += 2
+            continue
+        if quote == "'":
+            match = variable_ref.match(source, cursor)
+            if match:
+                marker = '__LITERAL_VAR_' + str(len(literal_variables)) + '__'
+                literal_variables[marker] = match[0]
+                masked.append(marker)
+                cursor = match.end()
+                continue
+        if char in ("'", '"'):
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+        masked.append(char)
+        cursor += 1
+    source = ''.join(masked)
+    # Mask substitutions before shlex so their spaces/control operators cannot
+    # corrupt the surrounding word or pipeline. Restore their original bytes.
+    substitutions = {}
+    for payload in list(_expansions(source)):
+        for opening, closing in (('$(', ')'), ('<(', ')'), ('>(', ')'), ('`', '`')):
+            raw = opening + payload + closing
+            if raw in source:
+                marker = '__SUB_' + str(len(substitutions)) + '__'
+                substitutions[marker] = raw
+                source = source.replace(raw, marker)
+    # Retain shell quote provenance before shlex removes it. Only complete
+    # quoted string portions without expansions qualify as inert data.
+    quoted_words, masked, cursor = {}, [], 0
+    malformed = False
+    while cursor < len(source):
+        char = source[cursor]
+        if char == '\\' and cursor + 1 < len(source):
+            masked.append(source[cursor:cursor + 2])
+            cursor += 2
+            continue
+        if char not in ("'", '"'):
+            masked.append(char)
+            cursor += 1
+            continue
+        end = cursor + 1
+        while end < len(source):
+            if source[end] == '\\' and char == '"':
+                end += 2
+                continue
+            if source[end] == char:
+                break
+            end += 1
+        if end >= len(source):
+            malformed = True
+            masked.append(source[cursor:])
+            break
+        value = shlex.split(source[cursor:end + 1])[0]
+        marker = '__QUOTED_WORD_' + str(len(quoted_words)) + '__'
+        quoted_words[marker] = (value, bool(variable_ref.search(value) or '__SUB_' in value))
+        masked.append(marker)
+        cursor = end + 1
+    source = ''.join(masked)
+    lexer = shlex.shlex(source, posix=True, punctuation_chars=';&|\n()')
+    lexer.whitespace = ' \t\r'
+    lexer.whitespace_split = True
+    tokens = []
+    try:
+        while True:
+            token = lexer.get_token()
+            if token is None:
+                break
+            tokens.append(token)
+    except ValueError:
+        # Keep complete tokens and the unfinished quoted word. An invalid
+        # quote must not throw past all guard checks into main's fail-open.
+        # Retaining the word (rather than splitting free text) keeps payload
+        # arguments distinct from executable command heads.
+        if lexer.token:
+            tokens.append(lexer.token)
+    groups, stages, words, sep = [], [], [], None
+    assignments = {}
+
+    def resolve_word(word):
+        return variable_ref.sub(lambda m: assignments.get(m[1] or m[2], m[0]), word)
+
+    def finish_stage():
+        if not words:
+            return
+        restored, surface = [], []
+        for word in words:
+            exposed = word
+            for marker, (value, executable) in quoted_words.items():
+                exposed = exposed.replace(marker, value if executable else "")
+                word = word.replace(marker, value)
+            for marker, raw in substitutions.items():
+                exposed = exposed.replace(marker, raw)
+            surface.append(resolve_word(exposed))
+            for marker, raw in substitutions.items():
+                word = word.replace(marker, raw)
+            restored.append(word)
+        literal, quoted, clean = None, True, []
+        i = 0
+        while i < len(restored):
+            word = restored[i]
+            if word in heredocs:
+                literal, quoted = heredocs[word]
+            elif word == '<<<' and i + 1 < len(restored):
+                i += 1
+                literal, quoted = restored[i], False
+            elif word.startswith('<<<'):
+                literal, quoted = word[3:], False
+            else:
+                clean.append(word)
+            i += 1
+        # Static assignments contribute only through an explicit later variable
+        # reference; unrelated prior statements never donate a target.
+        if clean and all(ENV_ASSIGN_RE.match(word) for word in clean):
+            for word in clean:
+                name, value = word.split('=', 1)
+                assignments[name] = resolve_word(value)
+        clean = [resolve_word(word) for word in clean]
+        for index, word in enumerate(clean):
+            for marker, literal in literal_variables.items():
+                word = word.replace(marker, literal)
+            clean[index] = word
+        head, args, payloads, nohup = _effective_head(clean)
+        kind = head if head in SHELLS | EXECUTORS | {'launchctl', 'kill', 'pkill', 'killall', 'echo', 'printf'} else 'other'
+        if head == 'xargs':
+            kind = 'xargs'
+            i = 0
+            while i < len(args) and args[i].startswith('-'):
+                flag = args[i]
+                i += 1
+                if flag in {'-I', '-n', '-P', '-L', '-s', '-E', '-d'}:
+                    i += 1
+            head, args, extra, nohup = _effective_head(args[i:])
+            payloads.extend(extra)
+        stages.append(dict(head=head, args=[a for a in args if not any(c.isspace() for c in a)], all_args=args, raw=shlex.join(clean), stdin_literal=literal, quoted=quoted, head_kind=kind, payloads=payloads, nohup=nohup, executable_surface=' '.join(clean if malformed else surface), malformed=malformed))
+        words.clear()
+
+    for token in tokens:
+        operators = re.findall(r'&&|\|\||;;|[;&|\n()]', token) if token and all(c in ';&|\n()' for c in token) else None
+        if operators:
+            for operator in operators:
+                finish_stage()
+                if operator not in {'|', '(', ')'}:
+                    if stages:
+                        groups.append(dict(pipelines=[dict(stages=stages[:])], sep_before=sep))
+                    stages.clear()
+                    sep = operator
+        else:
+            words.append(token)
+    finish_stage()
+    if stages:
+        groups.append(dict(pipelines=[dict(stages=stages)], sep_before=sep))
+    return groups
+
+
+def _static_output(stage):
+    args = stage['all_args']
+    if stage['head'] == 'echo':
+        return ' '.join(args)
+    if stage['head'] != 'printf' or not args:
+        return None
+    def escapes(value):
+        return value.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\')
+    fmt, data = args[0], iter(args[1:])
+    if '%' not in fmt:
+        return escapes(fmt) + '\n'.join(args[1:])
+    return escapes(re.sub(r'%([sb%]|.)', lambda m: '%' if m[1] == '%' else next(data, '') if m[1] in 'sb' else '', fmt))
+
+
+def _pipeline_targets(pipeline, stage):
+    # A shell expansion may contain spaces inside a single executable target
+    # word; retain that raw label before filtering payload text (FLY-1942).
+    candidates = list(stage['args'])
+    if stage['head'] in {'kill', 'pkill', 'killall'}:
+        # Quoted process regexes and pgrep substitutions are executable kill
+        # operands, even though their single shell word contains whitespace.
+        candidates.extend(stage['all_args'])
+    candidates.extend(a for a in stage['all_args'] if LABEL_TARGET_RE.search(a) and any(marker in a for marker in SHELL_EVAL_MARKERS))
+    for upstream in pipeline['stages']:
+        if upstream is stage:
+            break
+        candidates.extend(upstream['args'])
+    if stage['stdin_literal'] is not None:
+        candidates.extend(stage['stdin_literal'].split())
+    return candidates
+
+
+def _match(pattern, stage, target, protected_by):
+    return dict(pattern=pattern, segment=' '.join([stage['head'] or ''] + stage['args'][:3]), target=target, protected_by=protected_by)
+
+
+def _executable_carrier_payloads(stage):
+    """Known code-bearing operands override ordinary quoted-argument exemption."""
+    head, args = stage['head'] or '', stage['all_args']
+    if head == 'tmux':
+        # Resolve the actual subcommand, not a command name inside display text.
+        i = 0
+        while i < len(args) and args[i].startswith('-'):
+            flag = args[i]
+            i += 1
+            if flag in {'-L', '-S', '-f', '-T'}:
+                i += 1
+        if i >= len(args):
+            return []
+        command = args[i]
+        aliases = {'send': 'send-keys', 'send-key': 'send-keys', 'run': 'run-shell',
+                   'neww': 'new-window', 'new': 'new-session', 'splitw': 'split-window',
+                   'respawnp': 'respawn-pane', 'respawnw': 'respawn-window'}
+        command = aliases.get(command, command)
+        value_flags = {
+            'send-keys': {'-t', '-N'},
+            'run-shell': {'-t', '-d'},
+            'new-window': {'-c', '-e', '-F', '-n', '-t'},
+            'new-session': {'-c', '-e', '-f', '-F', '-n', '-s', '-t', '-x', '-y'},
+            'split-window': {'-c', '-e', '-F', '-l', '-p', '-t'},
+            'respawn-pane': {'-c', '-e', '-t'},
+            'respawn-window': {'-c', '-e', '-t'},
+            'if-shell': {'-t'},
+            'popup': {'-b', '-c', '-d', '-e', '-h', '-s', '-S', '-t', '-T', '-w', '-x', '-y'},
+        }
+        if command not in value_flags:
+            return []
+        i += 1
+        format_condition = False
+        while i < len(args) and args[i].startswith('-'):
+            flag = args[i]
+            i += 1
+            if flag == '--':
+                break
+            if command == 'if-shell' and not flag.startswith('--') and 'F' in flag:
+                format_condition = True
+            if flag in value_flags[command]:
+                i += 1
+        # if-shell's first operand executes in a shell unless -F selects a
+        # format expression. Subsequent operands are executable tmux branch
+        # commands; the conservative backstop covers their execution payload.
+        if command == 'if-shell' and format_condition:
+            i += 1
+        return [' '.join(args[i:])]
+    if head in {'watch', 'parallel'}:
+        return [' '.join(args)]
+    if head == 'trap':
+        return [next((a for a in args if not a.startswith('-')), '')]
+    if head in {'su', 'script'}:
+        payload = _extract_c_payload(args)
+        if payload is not None:
+            return [payload]
+        if head == 'script':
+            first = next((i for i, a in enumerate(args) if not a.startswith('-')), len(args))
+            return [' '.join(args[first + 1:])]
+        return []
+    if head == 'ssh':
+        i = 0
+        while i < len(args) and args[i].startswith('-'):
+            flag = args[i]
+            i += 1
+            if flag in {'-b', '-c', '-D', '-E', '-e', '-F', '-I', '-i', '-J', '-L', '-l', '-m', '-O', '-o', '-p', '-Q', '-R', '-S', '-W', '-w'}:
+                i += 1
+        return [' '.join(args[i + 1:])]
+    if head == 'find':
+        payloads = []
+        for i, arg in enumerate(args):
+            if arg in {'-exec', '-execdir', '-ok', '-okdir'}:
+                payload = []
+                for value in args[i + 1:]:
+                    if value in {';', '+'}:
+                        break
+                    payload.append(value)
+                payloads.append(' '.join(payload))
+        return payloads
+    # Inline interpreter programs are executable, including print-only programs:
+    # Lead ruling 27252ba2 requires the conservative regex layer on their code.
+    if re.fullmatch(r'(?:python|pypy)[0-9.]*', head):
+        flags = {'-c'}
+    elif head in {'perl', 'ruby', 'node', 'nodejs', 'bun', 'deno', 'osascript'}:
+        flags = {'-e', '-E', '--eval', '--print', '-p'}
+    elif head == 'php':
+        flags = {'-r'}
+    else:
+        return []
+    payloads = []
+    for i, arg in enumerate(args):
+        for flag in flags:
+            if arg == flag and i + 1 < len(args):
+                payloads.append(args[i + 1])
+            elif arg.startswith(flag + '='):
+                payloads.append(arg[len(flag) + 1:])
+            elif len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
+                payloads.append(arg[2:])
+    return payloads
+
+
+def _legacy_executable_match(code, stage):
+    """Active regex backstop, restricted to executable surfaces (27252ba2).
+
+    IR remains the first layer. Unknown unquoted stages fail closed; well-formed
+    quoted message/document arguments were removed by the provenance-aware lexer.
+    """
+    if P1_RE.search(code):
+        script = RESTART_SCRIPT_RE.search(code)
+        if script:
+            return _match('P1', stage, script[0], 'restart_script')
+        plist_paths = re.findall(r"[^\s'\"]+\.plist", code)
+        label_code = code
+        for path in plist_paths:
+            label_code = label_code.replace(path, "")
+        targets = plist_paths + LABEL_TARGET_RE.findall(label_code)
+        for target in targets:
+            protected = _protected_target(target)
+            if protected:
+                return _match('P1', stage, target, protected)
+    if KILL_RE.search(code) and PROC_IDENT_RE.search(code):
+        return _match('P2', stage, PROC_IDENT_RE.search(code)[0], 'core')
+    if _p3_hit(code, 1):
+        return _match('P3', stage, 'run-bridge', 'core')
+    return None
+
+
+def _restart_scan(cmd, depth=0):
+    if depth > 1:
+        return None
+    for group in _parse_ir(cmd):
+        for pipeline in group['pipelines']:
+            previous = None
+            for stage in pipeline['stages']:
+                head, args = stage['head'], stage['all_args']
+                if stage['stdin_literal'] is None and previous:
+                    stage['stdin_literal'] = _static_output(previous)
+                payloads = list(stage['payloads'])
+                payloads.extend(p for word in [stage['raw']] for p in _expansions(word))
+                literal = stage['stdin_literal']
+                if literal is not None and not stage['quoted']:
+                    payloads.extend(_expansions(literal))
+                if head in SHELLS:
+                    payload = _extract_c_payload(args)
+                    if payload is not None:
+                        payloads.append(payload)
+                    elif literal is not None:
+                        payloads.append(literal)
+                elif head == 'eval':
+                    payloads.append(' '.join(args))
+                elif head in EXECUTORS and literal is not None:
+                    payloads.append(literal)
+                if head == 'rg':
+                    for i, arg in enumerate(args):
+                        if arg.split('=', 1)[0] in RG_EXECUTABLE_OPTIONS:
+                            if '=' in arg:
+                                payloads.append(arg.split('=', 1)[1])
+                            elif i + 1 < len(args):
+                                payloads.append(args[i + 1])
+                targets = _pipeline_targets(pipeline, stage)
+                if head == 'launchctl' and 'submit' in args and '--' in args:
+                    nested = args[args.index('--') + 1:]
+                    payloads.append(shlex.join(nested))
+                    targets.extend(a for a in nested if not any(c.isspace() for c in a))
+                    nested_head, nested_args, _, _ = _effective_head(nested)
+                    if nested_head in SHELLS:
+                        payload = _extract_c_payload(nested_args)
+                        if payload:
+                            # submit is a command carrier, not an extra shell
+                            # evaluation level; scan its shell payload directly.
+                            payloads.append(payload)
+                            for nested_group in _parse_ir(payload):
+                                for nested_pipeline in nested_group['pipelines']:
+                                    for nested_stage in nested_pipeline['stages']:
+                                        targets.extend(nested_stage['args'])
+                for payload in payloads:
+                    hit = _restart_scan(payload, depth + 1)
+                    if hit:
+                        return hit
+                subcommand = next((a for a in stage['args'] if not a.startswith('-')), None)
+                if head == 'launchctl' and subcommand in MUTATING_LAUNCHCTL.split('|'):
+                    for token in targets:
+                        if RESTART_SCRIPT_RE.search(token):
+                            return _match('P1', stage, token, 'restart_script')
+                        candidates = [token] if token.endswith('.plist') else LABEL_TARGET_RE.findall(token)
+                        for target in candidates:
+                            protected = _protected_target(target)
+                            if protected:
+                                return _match('P1', stage, target, protected)
+                if head in {'kill', 'pkill', 'killall'}:
+                    for target in targets:
+                        if PROC_IDENT_RE.search(target):
+                            return _match('P2', stage, target, 'core')
+                if head in EXECUTORS or stage['nohup']:
+                    for target in stage['args'] + ([head] if stage['nohup'] else []):
+                        if RUN_BRIDGE_RE.search(target):
+                            return _match('P3', stage, target, 'core')
+                # Lead-approved second layer: executable stage text + known
+                # code payloads, not arbitrary quoted messages/documents.
+                surfaces = _executable_carrier_payloads(stage)
+                if not _plain_read_tokens([head or ''] + args):
+                    surfaces.append(stage['executable_surface'])
+                # Existing shell/env/eval/rg expansion edges are executable too.
+                surfaces.extend(payloads)
+                if literal is not None and not stage['quoted']:
+                    surfaces.append(literal)
+                for surface in surfaces:
+                    hit = _legacy_executable_match(surface, stage)
+                    if hit:
+                        return hit
+                previous = stage
+    if _p4_hit(cmd):
+        return dict(pattern='P4', segment='crontab', target='scheduler', protected_by='restart_script')
+    return None
+
+
+def _restart_block(cmd: str, depth: int = 0):
+    hit = _restart_scan(cmd, depth)
+    return hit['pattern'] if hit else None
+
+
+def _scan(cmd: str, depth: int = 0):
+    hit = _restart_scan(cmd, depth)
+    if hit:
+        return hit
+    pattern = _policy_scan_block(cmd, depth)
+    return dict(pattern=pattern, segment='', target='', protected_by='') if pattern else None
+
+
+def scan_block(cmd: str, depth: int = 0):
+    hit = _scan(cmd, depth)
+    return hit['pattern'] if hit else None
 
 
 # ── Bypass prefix ─────────────────────────────────────────────────────────────
@@ -1142,7 +1677,8 @@ def main() -> int:
         return 0
     try:
         calendar_candidate = _calendar_write_candidate(cmd)
-        pattern = scan_block(cmd)
+        match = _scan(cmd)
+        pattern = match["pattern"] if match else None
     except Exception:
         return 0  # judgment failure only — never reached once a hit is known
     if not pattern and calendar_candidate is None:
@@ -1154,6 +1690,7 @@ def main() -> int:
         "session_id": data.get("session_id"),
         "cwd": data.get("cwd"),
         "pattern": pattern,
+        "match": match,
         "command": cmd[:COMMAND_AUDIT_CAP],
     }
     if calendar_candidate is not None:
@@ -1222,6 +1759,7 @@ def main() -> int:
         BREW_DENY_REASON
         if pattern == "P5"
         else DENY_REASON
+        + "\nmatched: " + " ".join(f"{key}={value}" for key, value in match.items())
         + (
             CMUX_WATCHER_DENY_GUIDANCE
             if pattern == "P1" and "com.flywheel.cmux-watcher" in cmd.lower()

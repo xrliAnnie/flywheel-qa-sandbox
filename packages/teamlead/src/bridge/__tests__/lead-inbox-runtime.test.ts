@@ -27,9 +27,7 @@ afterEach(() => {
 	vi.unstubAllEnvs();
 });
 
-function runtimeStoreStub(
-	recipientState: "alive" | "terminal_or_missing" = "terminal_or_missing",
-) {
+function runtimeStoreStub(recipientState: "alive" | "terminal" = "terminal") {
 	return {
 		getActiveSessions: () => [],
 		resolveRunnerRecipientState: () => ({

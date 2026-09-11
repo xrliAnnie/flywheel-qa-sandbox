@@ -11715,7 +11715,13 @@ export async function startBridge(
 
 	// FLY-1188 §7.1 / FLY-1278 / FLY-2037: build the codex-author review
 	// coordinator and redrive jobs plus unsent governance audit posts. Jobs stay
-	// serial per execution, without a coordinator-wide concurrency ceiling. Both
+	// serial per execution, without a coordinator-wide concurrency ceiling by default.
+	// FLY-1949: FLYWHEEL_REVIEW_MAX_CONCURRENT is read once at construction:
+	// unset/empty/0 = unlimited; a positive safe integer caps active jobs globally
+	// in this Bridge coordinator. Invalid values log a warning and use unlimited.
+	// Queued jobs stay durable; gate expiry and other preflight guards still apply.
+	// Change/remove the env value before the next construction to tune/roll back.
+	// No hot reload; per-execution serialization always applies. Both
 	// runner routes read the holder at request time (503 until filled). Review
 	// governance events use the late-bound routed sink, so the eventual
 	// AlertChannelHub owns dedup/tickets.

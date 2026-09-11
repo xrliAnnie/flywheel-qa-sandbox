@@ -28,6 +28,15 @@ function respond(args: RespondArgs): Promise<void> {
 }
 
 function send(args: SendArgs): Promise<string> {
+	const db = new CommDB(args.dbPath);
+	db.registerSession(
+		args.toAgent,
+		"s:w",
+		"test",
+		`issue-${args.toAgent}`,
+		"product-lead",
+	);
+	db.close();
 	return rawSend({
 		...args,
 		env: { ...identityEnvs[args.fromAgent], ...args.env },
@@ -53,16 +62,22 @@ describe("commands round-trip", () => {
 
 	function bindRunner(execId: string, leadId: string): void {
 		const db = new CommDB(dbPath);
-		db.registerSession(execId, "runner", "test", `issue-${execId}`, leadId);
+		db.registerSession(
+			execId,
+			"6fbd7c14-30b9-546a-8465-3d8ec937f918",
+			"test",
+			`issue-${execId}`,
+			leadId,
+		);
 		db.close();
 	}
 
 	it("should complete a full ask → pending → respond → check cycle", async () => {
-		bindRunner("exec-123", "product-lead");
+		bindRunner("2a796bc0-8d5c-5897-b76c-60a7e03a355d", "product-lead");
 		// Runner asks a question
 		const questionId = ask({
 			lead: "product-lead",
-			execId: "exec-123",
+			execId: "2a796bc0-8d5c-5897-b76c-60a7e03a355d",
 			question: "Should I use REST or GraphQL?",
 			dbPath,
 		});
@@ -77,7 +92,9 @@ describe("commands round-trip", () => {
 		const pendingQs = pending({ lead: "product-lead", dbPath });
 		expect(pendingQs).toHaveLength(1);
 		expect(pendingQs[0]!.id).toBe(questionId);
-		expect(pendingQs[0]!.from_agent).toBe("exec-123");
+		expect(pendingQs[0]!.from_agent).toBe(
+			"2a796bc0-8d5c-5897-b76c-60a7e03a355d",
+		);
 		expect(pendingQs[0]!.content).toBe("Should I use REST or GraphQL?");
 
 		// Lead responds
@@ -98,10 +115,10 @@ describe("commands round-trip", () => {
 	});
 
 	it("only the explicitly matching runner consumes a gate response", async () => {
-		bindRunner("exec-owner", "product-lead");
+		bindRunner("4040198b-2405-5eb7-b858-db947b35c9e9", "product-lead");
 		const questionId = ask({
 			lead: "product-lead",
-			execId: "exec-owner",
+			execId: "4040198b-2405-5eb7-b858-db947b35c9e9",
 			question: "Ship?",
 			dbPath,
 		});
@@ -125,7 +142,11 @@ describe("commands round-trip", () => {
 		db.close();
 
 		expect(
-			check({ questionId, dbPath, executionId: "exec-owner" }).content,
+			check({
+				questionId,
+				dbPath,
+				executionId: "4040198b-2405-5eb7-b858-db947b35c9e9",
+			}).content,
 		).toBe("yes");
 		db = new CommDB(dbPath, false);
 		expect(db.getResponse(questionId)?.delivered_at).not.toBeNull();
@@ -133,10 +154,11 @@ describe("commands round-trip", () => {
 	});
 
 	it("should handle multiple runners asking different leads", async () => {
-		bindRunner("runner", "product-lead");
+		bindRunner("6fbd7c14-30b9-546a-8465-3d8ec937f918", "product-lead");
 		const q1 = ask({
 			lead: "product-lead",
 			question: "Q1 from runner-1",
+			execId: "6fbd7c14-30b9-546a-8465-3d8ec937f918",
 			dbPath,
 		});
 		const _q2 = ask({
@@ -223,13 +245,16 @@ describe("send/inbox round-trip", () => {
 	it("should complete a send → inbox round-trip", async () => {
 		const instId = await send({
 			fromAgent: "product-lead",
-			toAgent: "exec-123",
+			toAgent: "2a796bc0-8d5c-5897-b76c-60a7e03a355d",
 			content: "Stop current work and switch to GEO-999",
 			dbPath,
 		});
 		expect(instId).toBeTruthy();
 
-		const result = inbox({ execId: "exec-123", dbPath });
+		const result = inbox({
+			execId: "2a796bc0-8d5c-5897-b76c-60a7e03a355d",
+			dbPath,
+		});
 		expect(result.instructions).toHaveLength(1);
 		expect(result.instructions[0]!.id).toBe(instId);
 		expect(result.instructions[0]!.content).toBe(
@@ -241,17 +266,23 @@ describe("send/inbox round-trip", () => {
 	it("should mark instructions as read after inbox retrieval", async () => {
 		await send({
 			fromAgent: "product-lead",
-			toAgent: "exec-123",
+			toAgent: "2a796bc0-8d5c-5897-b76c-60a7e03a355d",
 			content: "Instruction 1",
 			dbPath,
 		});
 
 		// First inbox call reads and marks as read
-		const first = inbox({ execId: "exec-123", dbPath });
+		const first = inbox({
+			execId: "2a796bc0-8d5c-5897-b76c-60a7e03a355d",
+			dbPath,
+		});
 		expect(first.instructions).toHaveLength(1);
 
 		// Second inbox call should return empty
-		const second = inbox({ execId: "exec-123", dbPath });
+		const second = inbox({
+			execId: "2a796bc0-8d5c-5897-b76c-60a7e03a355d",
+			dbPath,
+		});
 		expect(second.instructions).toHaveLength(0);
 	});
 
@@ -281,11 +312,14 @@ describe("send/inbox round-trip", () => {
 	it("renders absolute creation time with a dynamic age at pull", async () => {
 		await send({
 			fromAgent: "product-lead",
-			toAgent: "exec-age",
+			toAgent: "37e00757-bbcf-5254-9524-e715ab47e7a7",
 			content: "Time-sensitive instruction",
 			dbPath,
 		});
-		const instruction = inbox({ execId: "exec-age", dbPath }).instructions[0]!;
+		const instruction = inbox({
+			execId: "37e00757-bbcf-5254-9524-e715ab47e7a7",
+			dbPath,
+		}).instructions[0]!;
 		const createdAtMs = Date.parse(instruction.created_at);
 
 		const firstPull = renderInboxInstruction(instruction, createdAtMs + 60_000);
@@ -302,22 +336,28 @@ describe("send/inbox round-trip", () => {
 	it("should isolate instructions per runner", async () => {
 		await send({
 			fromAgent: "product-lead",
-			toAgent: "exec-A",
+			toAgent: "c40d56be-266e-5b03-a063-0e8eb44840f9",
 			content: "For runner A",
 			dbPath,
 		});
 		await send({
 			fromAgent: "product-lead",
-			toAgent: "exec-B",
+			toAgent: "173d4e95-3a69-56b5-a5d1-be559ce1ab56",
 			content: "For runner B",
 			dbPath,
 		});
 
-		const inboxA = inbox({ execId: "exec-A", dbPath });
+		const inboxA = inbox({
+			execId: "c40d56be-266e-5b03-a063-0e8eb44840f9",
+			dbPath,
+		});
 		expect(inboxA.instructions).toHaveLength(1);
 		expect(inboxA.instructions[0]!.content).toBe("For runner A");
 
-		const inboxB = inbox({ execId: "exec-B", dbPath });
+		const inboxB = inbox({
+			execId: "173d4e95-3a69-56b5-a5d1-be559ce1ab56",
+			dbPath,
+		});
 		expect(inboxB.instructions).toHaveLength(1);
 		expect(inboxB.instructions[0]!.content).toBe("For runner B");
 	});
@@ -325,18 +365,21 @@ describe("send/inbox round-trip", () => {
 	it("should receive instructions from multiple leads", async () => {
 		await send({
 			fromAgent: "product-lead",
-			toAgent: "exec-123",
+			toAgent: "2a796bc0-8d5c-5897-b76c-60a7e03a355d",
 			content: "From product",
 			dbPath,
 		});
 		await send({
 			fromAgent: "ops-lead",
-			toAgent: "exec-123",
+			toAgent: "2a796bc0-8d5c-5897-b76c-60a7e03a355d",
 			content: "From ops",
 			dbPath,
 		});
 
-		const result = inbox({ execId: "exec-123", dbPath });
+		const result = inbox({
+			execId: "2a796bc0-8d5c-5897-b76c-60a7e03a355d",
+			dbPath,
+		});
 		expect(result.instructions).toHaveLength(2);
 		const contents = result.instructions.map((i) => i.content);
 		expect(contents).toContain("From product");
@@ -345,7 +388,7 @@ describe("send/inbox round-trip", () => {
 
 	it("should return empty instructions when DB does not exist", () => {
 		const result = inbox({
-			execId: "exec-123",
+			execId: "2a796bc0-8d5c-5897-b76c-60a7e03a355d",
 			dbPath: join(tmpDir, "nonexistent.db"),
 		});
 		expect(result).toEqual({

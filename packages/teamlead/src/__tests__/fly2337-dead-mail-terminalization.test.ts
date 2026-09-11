@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -205,7 +206,7 @@ async function setupDeadMailbox(
 	const root = mkdtempSync(join(tmpdir(), `fly2337-${caseId}-`));
 	roots.push(root);
 	const dbPath = join(root, "comm.db");
-	const recipient = `recipient-${caseId}`;
+	const recipient = randomUUID();
 	const bootstrap = new CommDB(dbPath);
 	bootstrap.registerSession(
 		recipient,
@@ -219,7 +220,10 @@ async function setupDeadMailbox(
 			? bootstrap.insertQuestion(recipient, "lead-a", `late question:${caseId}`)
 			: undefined;
 	bootstrap.close();
-	const leadEnv = createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"]!;
+	const leadEnv = {
+		...createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"]!,
+		TEAMLEAD_DB_PATH: join(root, "unavailable-teamlead.db"),
+	};
 	let physicalId: string;
 	if (questionId) {
 		await respond({
@@ -305,7 +309,7 @@ async function setupDeadMailbox(
 			deliver,
 			now: () => new Date("2026-09-04T10:01:00.000Z"),
 			queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,
-			recipientState: () => "terminal_or_missing",
+			recipientState: () => "terminal",
 			isTerminalDeliveryObligation: () => false,
 		});
 		expect(await lane.tick()).toMatchObject({
@@ -1733,7 +1737,7 @@ describe("FLY-2337 DEAD mailbox terminalization", () => {
 			now: () => new Date(now),
 			queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,
 			recipientState: (executionId) =>
-				executionId === "unknown-recipient" ? "unknown" : "terminal_or_missing",
+				executionId === "unknown-recipient" ? "unknown" : "terminal",
 			isTerminalDeliveryObligation: (row) =>
 				row.id === "design-review-manifest:terminal-manifest:3",
 		});

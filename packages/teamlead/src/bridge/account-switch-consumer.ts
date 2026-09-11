@@ -12,6 +12,7 @@ import type {
 	StateStore,
 } from "../StateStore.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
+import { enqueueRunnerInstructionIfDeliverable } from "./runner-instruction-gate.js";
 
 export const ACCOUNT_SWITCH_TICK_MS = 60_000;
 const ACCOUNT_SWITCH_MAX_FUTURE_MS = 5 * 60_000;
@@ -30,6 +31,7 @@ export function WAKE_TEXT(from: string, to: string): string {
 }
 
 interface AccountSwitchCommDb {
+	insertInstruction: CommDB["insertInstruction"];
 	getSession(executionId: string): { vendor?: string | null } | undefined;
 	insertInstructionWithId(
 		id: string,
@@ -55,6 +57,7 @@ export interface AccountSwitchConsumerDeps {
 		| "completeAccountSwitchAction"
 		| "insertEvent"
 		| "listNonTerminalSessions"
+		| "resolveRunnerRecipientState"
 		| "listPendingAccountSwitchActions"
 	>;
 	readStore?: () => AccountStore | null;
@@ -179,6 +182,7 @@ export function createAccountSwitchConsumer(
 			skipped_vendor: 0,
 			skipped_started_after: 0,
 			skipped_not_running: 0,
+			skipped_recipient: 0,
 		};
 		for (const session of deps.store.listNonTerminalSessions()) {
 			if (session.status !== "running") {
@@ -199,12 +203,25 @@ export function createAccountSwitchConsumer(
 					continue;
 				}
 				const dedupeId = `account-switch-wake:g${snapshot.generation}:${session.execution_id}`;
-				db.insertInstructionWithId(
-					dedupeId,
-					"bridge",
-					session.execution_id,
-					WAKE_TEXT(snapshot.from, snapshot.to),
+				const enqueue = enqueueRunnerInstructionIfDeliverable(
+					{ store: deps.store, commDb: db },
+					{
+						instructionId: dedupeId,
+						fromAgent: "bridge",
+						executionId: session.execution_id,
+						content: WAKE_TEXT(snapshot.from, snapshot.to),
+						audit: {
+							projectName: session.project_name,
+							issueId: session.issue_id,
+							source: "account-switch-consumer",
+							reason: dedupeId,
+						},
+					},
 				);
+				if (!enqueue.queued) {
+					outcome.skipped_recipient += 1;
+					continue;
+				}
 				db.clearDeclaredState(session.execution_id);
 				deps.store.insertEvent({
 					event_id: dedupeId,

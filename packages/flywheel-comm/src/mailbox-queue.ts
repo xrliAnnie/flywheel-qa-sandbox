@@ -50,7 +50,18 @@ export type MailboxSettlement =
 export type MailboxRecipientKind = "lead" | "runner" | "bridge";
 export type MailboxMessageClass = "protocol" | "model";
 export type MailboxPriority = 0 | 1 | 2 | 3;
-export type MailboxRecipientState = "alive" | "terminal_or_missing" | "unknown";
+export type MailboxRecipientState =
+	| "alive"
+	| "terminal"
+	| "missing"
+	| "unknown"
+	| /** @deprecated Use terminal or missing. */ "terminal_or_missing";
+
+function normalizeRecipientState(
+	state: MailboxRecipientState,
+): Exclude<MailboxRecipientState, "terminal_or_missing"> {
+	return state === "terminal_or_missing" ? "terminal" : state;
+}
 export type MailboxBatchDeliveryResult =
 	| "applied"
 	| "already_settled"
@@ -1945,7 +1956,9 @@ export class MailboxQueue {
 					}
 					terminalScanAtLimit = queued.length === input.maxTerminalRows;
 					for (const row of queued) {
-						const state = input.recipientState(row.to_agent);
+						const state = normalizeRecipientState(
+							input.recipientState(row.to_agent),
+						);
 						if (state === "unknown") {
 							result.skippedUnknown += 1;
 							result.terminalizationRefused.push({
@@ -1956,7 +1969,7 @@ export class MailboxQueue {
 							});
 							continue;
 						}
-						if (state !== "terminal_or_missing") continue;
+						if (state !== "terminal" && state !== "missing") continue;
 						if (isTerminalDeliveryObligation(row)) {
 							result.terminalizationRefused.push({
 								sourceId: row.id,
@@ -1969,12 +1982,17 @@ export class MailboxQueue {
 						const changed = this.db
 							.prepare(
 								`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
-								   dead_reason = 'recipient_terminal', last_error = 'recipient_terminal',
+								   dead_reason = ?, last_error = ?,
 								   claimed_by = NULL, claim_expires_at = NULL, next_retry_at = NULL,
 								   batch_id = NULL, notified_at = NULL, delivered_at = NULL
 								 WHERE id = ? AND state = 'QUEUED'`,
 							)
-							.run(input.now, row.id).changes;
+							.run(
+								input.now,
+								`recipient_${state}`,
+								`recipient_${state}`,
+								row.id,
+							).changes;
 						result.dead += changed;
 					}
 				}
@@ -2022,7 +2040,11 @@ export class MailboxQueue {
 					);
 				}
 				for (const batch of expired) {
-					const recipientState = input.recipientState(batch.to_agent);
+					const recipientState = normalizeRecipientState(
+						input.recipientState(batch.to_agent),
+					);
+					const isKillable =
+						recipientState === "terminal" || recipientState === "missing";
 					const members = this.db
 						.prepare(
 							`SELECT * FROM mailbox
@@ -2043,10 +2065,9 @@ export class MailboxQueue {
 						}
 						continue;
 					}
-					const protectedMembers =
-						recipientState === "terminal_or_missing"
-							? members.filter(isTerminalDeliveryObligation)
-							: [];
+					const protectedMembers = isKillable
+						? members.filter(isTerminalDeliveryObligation)
+						: [];
 					for (const row of protectedMembers) {
 						result.terminalizationRefused.push({
 							sourceId: row.id,
@@ -2055,19 +2076,22 @@ export class MailboxQueue {
 							reason: "protected_protocol_obligation",
 						});
 					}
-					if (
-						recipientState === "terminal_or_missing" &&
-						protectedMembers.length === 0
-					) {
+					if (isKillable && protectedMembers.length === 0) {
 						const changed = this.db
 							.prepare(
 								`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
-								   dead_reason = 'recipient_terminal', last_error = 'recipient_terminal',
+								   dead_reason = ?, last_error = ?,
 								   claimed_by = NULL, claim_expires_at = NULL, next_retry_at = NULL,
 								   batch_id = NULL
 								 WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?`,
 							)
-							.run(input.now, batch.batch_id, input.now).changes;
+							.run(
+								input.now,
+								`recipient_${recipientState}`,
+								`recipient_${recipientState}`,
+								batch.batch_id,
+								input.now,
+							).changes;
 						result.dead += changed;
 						continue;
 					}
@@ -2171,6 +2195,7 @@ export class MailboxQueue {
 		maxDeadRowsPerRecipient: number;
 		maxSummaryBytes: number;
 		resolveOwningLead: (recipient: string) => string | undefined;
+		resolveSenderLead?: (fromAgent: string) => string | undefined;
 		probeFactsByRecipient?: ReadonlyMap<string, string>;
 	}): DeadLetterNoticeScanResult {
 		for (const [name, value, allowZero] of [
@@ -2231,94 +2256,137 @@ export class MailboxQueue {
 					input.maxRecipients,
 				)) {
 					this.runnerDeadNoticeScanAfterAgent = recipient;
-					const latestNotice = this.db
-						.prepare(
-							`SELECT id, created_at FROM mailbox
+					const owner = input.resolveOwningLead(recipient);
+					const routes: Array<{
+						leadId: string;
+						sender: string | null;
+						sourceRef: string;
+					}> = [];
+					if (owner)
+						routes.push({ leadId: owner, sender: null, sourceRef: recipient });
+					else {
+						const senders = this.db
+							.prepare(`SELECT from_agent FROM mailbox
+                          WHERE recipient_kind = 'runner' AND carrier = 'inbox' AND state = 'DEAD' AND to_agent = ?
+                          GROUP BY from_agent ORDER BY from_agent`)
+							.all(recipient) as Array<{ from_agent: string }>;
+						for (const { from_agent: sender } of senders) {
+							const leadId = input.resolveSenderLead?.(sender);
+							if (leadId)
+								routes.push({
+									leadId,
+									sender,
+									sourceRef: `${recipient}\u001f${sender}`,
+								});
+							else {
+								if (!result.unroutable.includes(recipient))
+									result.unroutable.push(recipient);
+								result.uncoveredRemaining = true;
+							}
+						}
+					}
+					for (const { leadId, sender, sourceRef } of routes) {
+						const latestNotice = this.db
+							.prepare(
+								`SELECT id, created_at FROM mailbox
 							  WHERE type = 'dead_letter_notice' AND source_kind = 'dead_letter'
 							    AND source_ref = ?
 							  ORDER BY seq DESC LIMIT 1`,
-						)
-						.get(recipient) as { id: string; created_at: string } | undefined;
-					const cursorRaw = latestNotice?.id.split(":").at(-1);
-					const cursor =
-						cursorRaw && /^\d+$/.test(cursorRaw) ? Number(cursorRaw) : 0;
-					const aggregate = this.db
-						.prepare(
-							`SELECT COUNT(*) AS count, MAX(seq) AS through_seq FROM mailbox
+							)
+							.get(sourceRef) as { id: string; created_at: string } | undefined;
+						const cursorRaw = latestNotice?.id.split(":").at(-1);
+						const cursor =
+							cursorRaw && /^\d+$/.test(cursorRaw) ? Number(cursorRaw) : 0;
+						const aggregate = this.db
+							.prepare(
+								`SELECT COUNT(*) AS count, MAX(seq) AS through_seq,
+                                MAX(CASE WHEN dead_reason = 'recipient_missing' THEN 1 ELSE 0 END) AS has_missing FROM mailbox
 							  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
-							    AND state = 'DEAD' AND to_agent = ? AND seq > ?`,
-						)
-						.get(recipient, cursor) as {
-						count: number;
-						through_seq: number | null;
-					};
-					if (aggregate.count === 0 || aggregate.through_seq === null) continue;
-					if (
-						latestNotice &&
-						Date.parse(input.now) - Date.parse(latestNotice.created_at) <
-							input.windowMs
-					) {
-						result.rateLimited.push(recipient);
-						result.uncoveredRemaining = true;
-						continue;
-					}
-					const leadId = input.resolveOwningLead(recipient);
-					if (!leadId) {
-						result.unroutable.push(recipient);
-						result.uncoveredRemaining = true;
-						continue;
-					}
-					const summaries = this.db
-						.prepare(
-							`SELECT type, from_agent, content FROM mailbox
-							  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
-							    AND state = 'DEAD' AND to_agent = ? AND seq > ?
-							  ORDER BY seq LIMIT ?`,
-						)
-						.all(recipient, cursor, input.maxDeadRowsPerRecipient) as Array<{
-						type: string;
-						from_agent: string;
-						content: string;
-					}>;
-					const renderedSummaries: string[] = [];
-					for (const summary of summaries) {
-						const line = `${summary.type} from ${summary.from_agent}: ${summary.content.slice(0, 120)}`;
-						const candidate = formatDeadLetterNotice({
-							recipient,
-							count: aggregate.count,
-							probeFacts: input.probeFactsByRecipient?.get(recipient),
-							summaries: [...renderedSummaries, line],
-						});
-						if (Buffer.byteLength(candidate, "utf8") > input.maxSummaryBytes) {
-							break;
+							    AND state = 'DEAD' AND to_agent = ? AND seq > ? AND (? IS NULL OR from_agent = ?)`,
+							)
+							.get(recipient, cursor, sender, sender) as {
+							count: number;
+							has_missing: number;
+							through_seq: number | null;
+						};
+						if (aggregate.count === 0 || aggregate.through_seq === null)
+							continue;
+						if (
+							latestNotice &&
+							Date.parse(input.now) - Date.parse(latestNotice.created_at) <
+								input.windowMs
+						) {
+							result.rateLimited.push(sourceRef);
+							result.uncoveredRemaining = true;
+							continue;
 						}
-						renderedSummaries.push(line);
+						const summaries = this.db
+							.prepare(
+								`SELECT type, from_agent, content FROM mailbox
+							  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+							    AND state = 'DEAD' AND to_agent = ? AND seq > ? AND (? IS NULL OR from_agent = ?)
+							  ORDER BY seq LIMIT ?`,
+							)
+							.all(
+								recipient,
+								cursor,
+								sender,
+								sender,
+								input.maxDeadRowsPerRecipient,
+							) as Array<{
+							type: string;
+							from_agent: string;
+							content: string;
+						}>;
+						const renderedSummaries: string[] = aggregate.has_missing
+							? [
+									`dead_reason=recipient_missing: recipient ${recipient} never had a session row — check the id you sent to.`,
+								]
+							: [];
+						for (const summary of summaries) {
+							const line = `${summary.type} from ${summary.from_agent}: ${summary.content.slice(0, 120)}`;
+							const candidate = formatDeadLetterNotice({
+								recipient,
+								count: aggregate.count,
+								probeFacts: input.probeFactsByRecipient?.get(recipient),
+								summaries: [...renderedSummaries, line],
+							});
+							if (
+								Buffer.byteLength(candidate, "utf8") > input.maxSummaryBytes
+							) {
+								break;
+							}
+							renderedSummaries.push(line);
+						}
+						const content = utf8Prefix(
+							formatDeadLetterNotice({
+								recipient,
+								count: aggregate.count,
+								probeFacts: input.probeFactsByRecipient?.get(recipient),
+								summaries: renderedSummaries,
+							}),
+							input.maxSummaryBytes,
+						);
+						const id =
+							sender === null
+								? `dead_letter:${encodeURIComponent(recipient)}:${aggregate.through_seq}`
+								: `dead_letter:${encodeURIComponent(recipient)}:${encodeURIComponent(sender)}:${aggregate.through_seq}`;
+						const inserted = this.enqueue({
+							id,
+							fromAgent: "bridge",
+							toAgent: leadId,
+							recipientKind: "lead",
+							sourceKind: "dead_letter",
+							sourceRef,
+							type: "dead_letter_notice",
+							msgClass: "model",
+							content,
+							createdAt: input.now,
+							priority: 1,
+							senderRef: encodeSenderRef(),
+						});
+						if (inserted.outcome !== "archived") result.inserted.push(id);
 					}
-					const content = utf8Prefix(
-						formatDeadLetterNotice({
-							recipient,
-							count: aggregate.count,
-							probeFacts: input.probeFactsByRecipient?.get(recipient),
-							summaries: renderedSummaries,
-						}),
-						input.maxSummaryBytes,
-					);
-					const id = `dead_letter:${encodeURIComponent(recipient)}:${aggregate.through_seq}`;
-					const inserted = this.enqueue({
-						id,
-						fromAgent: "bridge",
-						toAgent: leadId,
-						recipientKind: "lead",
-						sourceKind: "dead_letter",
-						sourceRef: recipient,
-						type: "dead_letter_notice",
-						msgClass: "model",
-						content,
-						createdAt: input.now,
-						priority: 1,
-						senderRef: encodeSenderRef(),
-					});
-					if (inserted.outcome !== "archived") result.inserted.push(id);
 				}
 				return result;
 			})

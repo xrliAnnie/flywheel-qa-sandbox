@@ -60,7 +60,7 @@ import {
 } from "./commands/runner-stopped.js";
 import { runnerWakeSweep } from "./commands/runner-wake-sweep.js";
 import { search } from "./commands/search.js";
-import { send } from "./commands/send.js";
+import { sendDetailed } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { runShadowDeclareCommand } from "./commands/shadow-declare.js";
@@ -97,6 +97,7 @@ import {
 import { resolveFounderId } from "./founder-attribution.js";
 import { inspectCommittedFounderReviewArtifacts } from "./founder-review.js";
 import { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
+import { RecipientError } from "./recipient-resolve.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 import { resolveTurnWaitStateDbPath } from "./turn-wait-state.js";
 
@@ -899,17 +900,38 @@ async function runSend(args: string[]): Promise<void> {
 	}
 
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const instructionId = await send({
-		fromAgent: values.from,
-		toAgent: values.to,
-		content,
-		dbPath,
-	});
+	let sent: Awaited<ReturnType<typeof sendDetailed>>;
+	try {
+		sent = await sendDetailed({
+			fromAgent: values.from,
+			toAgent: values.to,
+			content,
+			dbPath,
+		});
+	} catch (error) {
+		if (!(error instanceof RecipientError)) throw error;
+		console.error(
+			`flywheel-comm send: ${error.message} (hint: flywheel-comm sessions list --project ${values.project ?? "<p>"})`,
+		);
+		process.exitCode = error.code === "recipient_malformed" ? 2 : 1;
+		return;
+	}
+	const verifyCommand = `flywheel-comm message-status ${sent.id}`;
 
 	if (values.json) {
-		console.log(JSON.stringify({ instruction_id: instructionId }));
+		console.log(
+			JSON.stringify({
+				instruction_id: sent.id,
+				resolved_to: sent.resolvedTo,
+				resolved_from_prefix: sent.resolvedFromPrefix,
+				verify_command: verifyCommand,
+			}),
+		);
 	} else {
-		console.log(instructionId);
+		console.log(sent.id);
+		if (sent.resolvedFromPrefix)
+			console.error(`resolved ${values.to} → ${sent.resolvedTo}`);
+		console.error(`verify: ${verifyCommand}`);
 	}
 }
 

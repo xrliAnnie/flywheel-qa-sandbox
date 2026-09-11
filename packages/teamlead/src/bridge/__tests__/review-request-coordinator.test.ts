@@ -14,7 +14,12 @@ import { findingFingerprint } from "../review-verdict-policy.js";
 
 const HEAD = "a".repeat(40);
 
+beforeEach(() => {
+	vi.stubEnv("FLYWHEEL_REVIEW_MAX_CONCURRENT", undefined);
+});
+
 afterEach(() => {
+	vi.unstubAllEnvs();
 	vi.useRealTimers();
 });
 
@@ -107,6 +112,7 @@ class FakeCommDb implements ReviewCommDb {
 }
 
 interface Harness {
+	logs: string[];
 	store: StateStore;
 	comm: FakeCommDb;
 	coordinator: ReviewRequestCoordinator;
@@ -168,6 +174,7 @@ async function makeHarness(
 	const rulingThreadPosts: string[] = [];
 	const derivedHeadPaths: string[] = [];
 	let head = HEAD;
+	const logs: string[] = [];
 	const coordinator = new ReviewRequestCoordinator({
 		store,
 		commDbPathFor: (p) => `/fake/${p}/comm.db`,
@@ -225,9 +232,10 @@ async function makeHarness(
 			wakeQuotaDaemon: harnessOpts.wakeQuotaDaemon,
 		}),
 		...(harnessOpts.setTimer && { setTimer: harnessOpts.setTimer }),
-		logger: () => {},
+		logger: (message) => logs.push(message),
 	});
 	return {
+		logs,
 		store,
 		comm,
 		coordinator,
@@ -3871,45 +3879,180 @@ describe("ReviewRequestCoordinator — scheduling", () => {
 		await settle();
 	});
 
-	it("starts ten distinct executions without a coordinator-wide concurrency ceiling", async () => {
-		const rounds = Array.from({ length: 10 }, () =>
-			deferred<ClaudeReviewOutcome>(),
+	it.each([
+		"-1",
+		"1.5",
+		"garbage",
+		"Infinity",
+		"9007199254740992",
+		"1e2",
+		"0x10",
+	])("warns and defaults to unlimited for invalid cap %s", async (value) => {
+		vi.stubEnv("FLYWHEEL_REVIEW_MAX_CONCURRENT", value);
+		const h = await makeHarness();
+		expect(h.logs).toContainEqual(
+			expect.stringContaining("invalid FLYWHEEL_REVIEW_MAX_CONCURRENT"),
 		);
+	});
+
+	it("limits different executions to one reviewer and completes the queued request", async () => {
+		vi.stubEnv("FLYWHEEL_REVIEW_MAX_CONCURRENT", "1");
+		const first = deferred<ClaudeReviewOutcome>();
 		let started = 0;
+		const approved: ClaudeReviewOutcome = {
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			raw: "",
+		};
 		const h = await makeHarness({
-			reviewRound: async () => rounds[started++]!.promise,
+			reviewRound: async () => (++started === 1 ? first.promise : approved),
 		});
-		for (let index = 0; index < rounds.length; index += 1) {
-			const executionId = `e${index}`;
-			const questionId = `q${index}`;
-			registerSession(h.store, executionId);
-			openGate(h.comm, questionId, executionId, "review_design");
+		vi.stubEnv("FLYWHEEL_REVIEW_MAX_CONCURRENT", "0");
+		for (const id of ["1", "2"]) {
+			registerSession(h.store, `e${id}`);
+			openGate(h.comm, `q${id}`, `e${id}`, "review_design");
 			await h.coordinator.accept({
-				executionId,
-				requestId: `r${index}`,
+				executionId: `e${id}`,
+				requestId: `r${id}`,
 				reviewType: "design",
-				questionId,
+				questionId: `q${id}`,
 			});
 		}
-
 		await settle();
 		const initiallyStarted = started;
-		for (const round of rounds) {
-			round.resolve({
+		const queuedStatus = h.store.getCodexReviewJob("r2")?.status;
+		first.resolve(approved);
+		await settle();
+		expect(initiallyStarted).toBe(1);
+		expect(queuedStatus).toBe("pending");
+		expect(started).toBe(2);
+		expect(h.store.getCodexReviewJob("r1")?.status).toBe("done");
+		expect(h.store.getCodexReviewJob("r2")?.status).toBe("done");
+	});
+
+	it.each(["throw", "stop", "expire"] as const)(
+		"preserves capped queue lifecycle after %s",
+		async (scenario) => {
+			vi.stubEnv("FLYWHEEL_REVIEW_MAX_CONCURRENT", "1");
+			const first = deferred<ClaudeReviewOutcome>();
+			const approved: ClaudeReviewOutcome = {
 				kind: "verdict",
 				verdict: "APPROVED",
 				findings: [],
 				reviewedHeadSha: null,
 				raw: "",
+			};
+			let started = 0;
+			const h = await makeHarness({
+				reviewRound: async () => {
+					if (++started === 1) {
+						await first.promise;
+						if (scenario === "throw") throw new Error("reviewer crashed");
+					}
+					return approved;
+				},
 			});
-		}
-		await settle();
+			for (const id of ["1", "2", "3"]) {
+				registerSession(h.store, `e${id}`);
+				openGate(h.comm, `q${id}`, `e${id}`, "review_design");
+				await h.coordinator.accept({
+					executionId: `e${id}`,
+					requestId: `r${id}`,
+					reviewType: "design",
+					questionId: `q${id}`,
+				});
+			}
+			await settle();
+			expect(started).toBe(1);
+			if (scenario === "stop") h.coordinator.stop();
+			if (scenario === "expire")
+				h.comm.questions.get("q2")!.expires_at = new Date(
+					Date.now() - 1_000,
+				).toISOString();
+			first.resolve(approved);
+			await settle();
+			if (scenario === "stop") {
+				expect(started).toBe(1);
+				expect(h.store.getCodexReviewJob("r2")?.status).toBe("pending");
+				expect(h.store.getCodexReviewJob("r3")?.status).toBe("pending");
+				const restarted = new ReviewRequestCoordinator({
+					store: h.store,
+					commDbPathFor: () => "/fake",
+					openCommDb: () => h.comm,
+					reviewRound: async () => {
+						started += 1;
+						return approved;
+					},
+					logger: () => {},
+				});
+				expect(restarted.redriveOnBoot()).toBe(2);
+				await settle();
+				expect(started).toBe(3);
+				expect(h.store.getCodexReviewJob("r2")?.status).toBe("done");
+				expect(h.store.getCodexReviewJob("r3")?.status).toBe("done");
+				restarted.stop();
+			} else if (scenario === "expire") {
+				expect(started).toBe(2);
+				expect(h.store.getCodexReviewJob("r2")).toMatchObject({
+					status: "failed",
+					failure_reason: "gate_expired",
+				});
+				expect(h.comm.getResponse("q2")).toBeUndefined();
+				expect(h.store.getCodexReviewJob("r3")?.status).toBe("done");
+			} else {
+				expect(started).toBe(3);
+				expect(h.store.getCodexReviewJob("r1")?.status).toBe("failed");
+				expect(h.store.getCodexReviewJob("r2")?.status).toBe("done");
+				expect(h.store.getCodexReviewJob("r3")?.status).toBe("done");
+			}
+		},
+	);
 
-		expect(initiallyStarted).toBe(10);
-		for (let index = 0; index < rounds.length; index += 1) {
-			expect(h.store.getCodexReviewJob(`r${index}`)?.status).toBe("done");
-		}
-	});
+	it.each([undefined, "0", "", "  ", "bad", "-1", "1.5", "9007199254740992"])(
+		"starts ten distinct executions with unlimited/default cap %s",
+		async (cap) => {
+			vi.stubEnv("FLYWHEEL_REVIEW_MAX_CONCURRENT", cap);
+			const rounds = Array.from({ length: 10 }, () =>
+				deferred<ClaudeReviewOutcome>(),
+			);
+			let started = 0;
+			const h = await makeHarness({
+				reviewRound: async () => rounds[started++]!.promise,
+			});
+			for (let index = 0; index < rounds.length; index += 1) {
+				const executionId = `e${index}`;
+				const questionId = `q${index}`;
+				registerSession(h.store, executionId);
+				openGate(h.comm, questionId, executionId, "review_design");
+				await h.coordinator.accept({
+					executionId,
+					requestId: `r${index}`,
+					reviewType: "design",
+					questionId,
+				});
+			}
+
+			await settle();
+			const initiallyStarted = started;
+			for (const round of rounds) {
+				round.resolve({
+					kind: "verdict",
+					verdict: "APPROVED",
+					findings: [],
+					reviewedHeadSha: null,
+					raw: "",
+				});
+			}
+			await settle();
+
+			expect(initiallyStarted).toBe(10);
+			for (let index = 0; index < rounds.length; index += 1) {
+				expect(h.store.getCodexReviewJob(`r${index}`)?.status).toBe("done");
+			}
+		},
+	);
 
 	it("does not reuse matching heads from different main repositories", async () => {
 		const rounds = [

@@ -8,7 +8,7 @@ skills: [implement, systematic-debugging, frontend-design, proofshot, codex-code
 
 # Flywheel Implementation Node
 
-You own the bounded implementation phase of a Flywheel DAG workflow on the shared branch. Execute the approved plan faithfully; do not redesign the product, dispatch successor nodes, merge, or deploy.
+You own the bounded implementation phase of a Flywheel DAG workflow on the shared branch. Execute the approved plan faithfully; do not redesign the product, dispatch successor nodes, merge a PR into main, or deploy.
 
 ## Work loop
 
@@ -24,5 +24,7 @@ You own the bounded implementation phase of a Flywheel DAG workflow on the share
 
 - Do not modify the approved plan after its design-review blob is pinned.
 - Do not dispatch QA; the DAG orchestrator owns graph advancement.
-- Never self-merge. Never push main. Never restart Bridge/Lead services.
+- Never self-merge a PR into main. Never push main. Never restart Bridge/Lead services.
 - Merge and deployment are separate; the independent updater owns normal deployment on its scheduled windows.
+
+- **Technical sync / conflict rework**: Merging `origin/main` into your current feature branch does not require ship approval or `verify-approval`. Do not stop or ask Lead solely because `review_question_unbound` is returned for that technical merge. Honor your TURN, assigned task scope, and any no-write capability; this exception does not authorize shipping, pushing main, or bypassing review or force-push guards.

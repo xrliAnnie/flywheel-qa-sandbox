@@ -326,11 +326,8 @@ FLYWHEEL_CODEX_BIN="$T/bin/codex" FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" 
 GATE_JS="$SCRIPT_DIR/../dist/lead-backends/codex/lead-actions/mcp-config.js"
 RUNTIME_JS="$SCRIPT_DIR/../dist/lead-backends/codex/codex-lead-runtime.js"
 
-# ════════════ FLY-1243: roundtable_autocontinue_effective — resolvable-parent rule ═══════════
-# FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD is retired (固化 default-on); the shell helper now
-# mirrors parseCodexLeadRuntimeConfig's resolvable-parent rule (a roundtable channel id,
-# else the first cross-dept id) instead of the retired flag. Exercised via ensure-home's
-# full-access profile (the marker is forwarded into config.toml's lead_actions env).
+# FLY-1942: only an explicit roundtable parent enables the marker; cross-dept
+# routing alone is not subscription authority. Exercise rendered config.toml.
 rt_marker_case() {
   local n="$1" desc="$2" expect="$3"
   shift 3
@@ -353,39 +350,27 @@ rt_marker_case() {
   fi
 }
 
-# FLY-1243: legacy flag=1 + cross-dept channel present → marker STILL expected (a
-# resolvable parent exists via cross-dept[0]; the retired flag itself is now inert).
-rt_marker_case 1 "FLY-1243: legacy REPLY_IN_THREAD=1 + cross-dept → marker present" 1 \
+rt_marker_case 1 "FLY-1942: legacy flag + cross-dept without explicit parent → no marker" 0 \
   FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1 \
   FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
-
-# FLY-1243: flag UNSET + cross-dept channel present → marker NOW expected. This is the
-# behavior CHANGE the retirement introduces: resolvability alone drives it, not the flag.
-rt_marker_case 2 "FLY-1243: REPLY_IN_THREAD unset + cross-dept → marker present (behavior change)" 1 \
+rt_marker_case 2 "FLY-1942: cross-dept without explicit parent → no marker" 0 \
   FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
-
-# FLY-1243: no resolvable parent (no roundtable channel id, no cross-dept) → no marker.
-rt_marker_case 3 "FLY-1243: no resolvable parent → no marker" 0
-
-# FLY-1806: auto-continue is fixed on whenever the parent is resolvable.
-rt_marker_case 4 "FLY-1806: resolvable parent → marker present" 1 \
+rt_marker_case 3 "FLY-1942: no parent → no marker" 0
+rt_marker_case 4 "FLY-1942: explicit parent → marker present" 1 \
+  FLYWHEEL_ROUNDTABLE_CHANNEL_ID=1512578695468941333 \
   FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
-
-# FLY-1243 (Codex R2): empty-leading cross list (" ,<id>") → after split/trim/filter the
-# first survivor is the real id → resolvable parent → marker present.
-rt_marker_case 5 "FLY-1243: empty-leading cross list → marker present" 1 \
+rt_marker_case 5 "FLY-1942: empty-leading cross list without explicit parent → no marker" 0 \
   FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=" ,1512578695468941333"
-
-# FLY-1243 (Codex R2): chat id as the ONLY cross-dept entry → base-channel exclusion drops
-# it (a chat channel must NOT be mention-gated) → no resolvable parent → no marker.
-# rt_marker_case already sets FLYWHEEL_LEAD_CHAT_CHANNEL_ID=1500600400238084307.
-rt_marker_case 6 "FLY-1243: chat id as only cross-dept entry → no marker (base-channel excluded)" 0 \
+rt_marker_case 6 "FLY-1942: chat-only cross-dept without explicit parent → no marker" 0 \
   FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1500600400238084307
-
-# FLY-1243 (Codex R3): chat id + a real cross-dept id → base-channel exclusion drops the chat
-# but the real id survives as crossDept[0] → resolvable parent → marker present.
-rt_marker_case 7 "FLY-1243: chat id + real cross-dept id → marker present (real id survives base exclusion)" 1 \
+rt_marker_case 7 "FLY-1942: chat + cross-dept without explicit parent → no marker" 0 \
   FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1500600400238084307,1512578695468941333
+rt_marker_case 8 "FLY-1942: whitespace-only explicit parent → no marker" 0 \
+  FLYWHEEL_ROUNDTABLE_CHANNEL_ID="   " \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
+rt_marker_case 9 "FLY-1942: trimmed explicit parent → marker present" 1 \
+  FLYWHEEL_ROUNDTABLE_CHANNEL_ID=" 1512578695468941333 " \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
 
 # ════════════════ FLY-398 full-access (FLYWHEEL_CODEX_LEAD_PROFILE=full-access) ════════════════
 

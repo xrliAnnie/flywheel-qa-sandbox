@@ -158,9 +158,10 @@ export interface RunnerMailboxLaneOptions {
 	queueConfig?: () => MailboxQueueConfig;
 	recipientState?: (
 		executionId: string,
-	) => "alive" | "terminal_or_missing" | "unknown";
+	) => "alive" | "terminal" | "missing" | "unknown";
 	isTerminalDeliveryObligation?: (row: MailboxRow) => boolean;
 	resolveOwningLead?: (executionId: string) => string | undefined;
+	resolveSenderLead?: (fromAgent: string) => string | undefined;
 	fallbackLeadId?: string;
 	probeFactsByRecipient?: () => ReadonlyMap<string, string>;
 }
@@ -244,7 +245,7 @@ export class RunnerMailboxLane {
 		};
 		const recipientStates = new Map<
 			string,
-			"alive" | "terminal_or_missing" | "unknown"
+			"alive" | "terminal" | "missing" | "unknown"
 		>();
 		const recipientState = (executionId: string) => {
 			const cached = recipientStates.get(executionId);
@@ -281,7 +282,7 @@ export class RunnerMailboxLane {
 				);
 			}
 		}
-		if (this.opts.resolveOwningLead) {
+		if (this.opts.resolveOwningLead || this.opts.resolveSenderLead) {
 			const scanAtMs = this.now().getTime();
 			if (
 				this.lastDeadLetterScanAtMs === undefined ||
@@ -298,6 +299,7 @@ export class RunnerMailboxLane {
 					maxDeadRowsPerRecipient: 20,
 					maxSummaryBytes: 4_000,
 					probeFactsByRecipient,
+					resolveSenderLead: this.opts.resolveSenderLead,
 					resolveOwningLead: (executionId) => {
 						if (leadByRecipient.has(executionId)) {
 							return leadByRecipient.get(executionId);

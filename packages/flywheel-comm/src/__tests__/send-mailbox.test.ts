@@ -22,7 +22,7 @@ describe("send canonical mailbox write", () => {
 	it("writes one durable Runner instruction without a runner_phase_wakes mirror", async () => {
 		const db = new CommDB(dbPath);
 		db.registerSession(
-			"exec-1",
+			"b1023db2-d31b-5e51-8d7e-5aba3c296626",
 			"session:window",
 			"project-a",
 			"FLY-1572",
@@ -32,39 +32,45 @@ describe("send canonical mailbox write", () => {
 		db.close();
 		const id = await send({
 			fromAgent: "lead-a",
-			toAgent: "exec-1",
+			toAgent: "b1023db2-d31b-5e51-8d7e-5aba3c296626",
 			content: "continue",
 			dbPath,
 			env: leadEnv,
 		});
 		const verify = new CommDB(dbPath);
 		try {
-			expect(verify.getUnreadInstructions("exec-1")).toMatchObject([
+			expect(
+				verify.getUnreadInstructions("b1023db2-d31b-5e51-8d7e-5aba3c296626"),
+			).toMatchObject([
 				{
 					id,
 					from_agent: "lead-a",
-					to_agent: "exec-1",
+					to_agent: "b1023db2-d31b-5e51-8d7e-5aba3c296626",
 					content: "continue",
 					delivered_at: null,
 				},
 			]);
-			expect(verify.listRunnerPhaseWakes("exec-1")).toEqual([]);
+			expect(
+				verify.listRunnerPhaseWakes("b1023db2-d31b-5e51-8d7e-5aba3c296626"),
+			).toEqual([]);
 		} finally {
 			verify.close();
 		}
 	});
 
-	it("keeps the mailbox row durable before a Runner session exists", async () => {
-		await send({
-			fromAgent: "lead-a",
-			toAgent: "future-exec",
-			content: "wait for Bridge delivery",
-			dbPath,
-			env: leadEnv,
-		});
+	it("rejects a nonexistent Runner before writing a mailbox row", async () => {
+		await expect(
+			send({
+				fromAgent: "lead-a",
+				toAgent: "future-exec",
+				content: "wait for Bridge delivery",
+				dbPath,
+				env: leadEnv,
+			}),
+		).rejects.toThrow(/recipient_malformed/);
 		const db = new CommDB(dbPath);
 		try {
-			expect(db.getUnreadInstructions("future-exec")).toHaveLength(1);
+			expect(db.getUnreadInstructions("future-exec")).toHaveLength(0);
 		} finally {
 			db.close();
 		}

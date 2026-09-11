@@ -40,7 +40,7 @@ describe("FLY-2278 R4#1 mailbox cancellation fence", () => {
 		)["flywheel-eng-lead"]!;
 		const setup = new CommDB(dbPath);
 		setup.registerSession(
-			"recipient-exec",
+			"228d2054-712b-5a7b-80d8-50cd8d832cbc",
 			"recipient-window",
 			"flywheel",
 			"FLY-2278",
@@ -51,7 +51,7 @@ describe("FLY-2278 R4#1 mailbox cancellation fence", () => {
 
 		const sourceId = await send({
 			fromAgent: "flywheel-eng-lead",
-			toAgent: "recipient-exec",
+			toAgent: "228d2054-712b-5a7b-80d8-50cd8d832cbc",
 			content: "run the bounded implementation",
 			dbPath,
 			env: leadEnv,
@@ -141,7 +141,7 @@ describe("FLY-2278 R4#1 mailbox cancellation fence", () => {
 		)["flywheel-eng-lead"]!;
 		const setup = new CommDB(dbPath);
 		setup.registerSession(
-			"recipient-exec",
+			"228d2054-712b-5a7b-80d8-50cd8d832cbc",
 			"recipient-window",
 			"flywheel",
 			"FLY-2337",
@@ -152,7 +152,7 @@ describe("FLY-2278 R4#1 mailbox cancellation fence", () => {
 
 		const sourceId = await send({
 			fromAgent: "flywheel-eng-lead",
-			toAgent: "recipient-exec",
+			toAgent: "228d2054-712b-5a7b-80d8-50cd8d832cbc",
 			content: "late delivery to a terminal recipient",
 			dbPath,
 			env: leadEnv,
@@ -217,7 +217,7 @@ describe("FLY-2278 R4#1 mailbox cancellation fence", () => {
 		)["flywheel-eng-lead"]!;
 		const setup = new CommDB(dbPath);
 		setup.registerSession(
-			"recipient-exec",
+			"228d2054-712b-5a7b-80d8-50cd8d832cbc",
 			"recipient-window",
 			"flywheel",
 			"FLY-2337",
@@ -228,7 +228,7 @@ describe("FLY-2278 R4#1 mailbox cancellation fence", () => {
 
 		const sourceId = await send({
 			fromAgent: "flywheel-eng-lead",
-			toAgent: "recipient-exec",
+			toAgent: "228d2054-712b-5a7b-80d8-50cd8d832cbc",
 			content: "late delivery rerouted after recipient termination",
 			dbPath,
 			env: leadEnv,

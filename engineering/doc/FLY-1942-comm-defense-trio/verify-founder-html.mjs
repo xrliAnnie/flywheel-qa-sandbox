@@ -1,0 +1,25 @@
+// Artifact-only checks for founder-design.html (no browser).
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+const html = readFileSync(new URL("./founder-design.html", import.meta.url), "utf8");
+const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+assert.equal(scripts.length, 1, "exactly one script block");
+assert.match(scripts[0][1], /nonce="__CSP_NONCE__"/, "nonce placeholder present");
+assert.doesNotMatch(html, /Content-Security-Policy/i, "no own CSP meta");
+assert.doesNotMatch(html, /\son[a-z]+\s*=/i, "no inline handlers");
+assert.doesNotMatch(html, /<(script|link|img|iframe)[^>]+(?:src|href)=/i, "no external resources");
+assert.doesNotMatch(scripts[0][2], /innerHTML/, "no innerHTML in script");
+assert.ok(Buffer.byteLength(html) < 512 * 1024, "under 512KB");
+assert.match(html, /【页面意见汇总】FLY-1942/, "summary marker present");
+assert.match(scripts[0][2], /location\.pathname/, "storage prefix includes pathname");
+const sections = [...html.matchAll(/<section\b[\s\S]*?<\/section>/g)];
+assert.ok(sections.length >= 11, "at least 11 sections");
+assert.ok(sections.every((s) => /<textarea\b[^>]*data-key=/.test(s[0])), "every section has a comment textarea");
+const keys = [...html.matchAll(/data-key="([^"]+)"/g)].map((m) => m[1]);
+assert.equal(new Set(keys).size, keys.length, "unique comment keys");
+const svgs = (html.match(/<svg\b/g) || []).length;
+const pending = (html.match(/DIAGRAM PENDING LOCAL RENDER/g) || []).length;
+assert.equal(svgs + pending, 5, "five diagrams (rendered or pending)");
+const ids = [...html.matchAll(/<svg[^>]*\sid="([^"]+)"/g)].map((m) => m[1]);
+assert.equal(new Set(ids).size, ids.length, "unique svg ids");
+console.log(`ok: sections=${sections.length} svgs=${svgs} pending=${pending} bytes=${Buffer.byteLength(html)}`);

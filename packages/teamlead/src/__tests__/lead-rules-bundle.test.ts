@@ -564,3 +564,9 @@ exit 0
 		});
 	});
 });
+
+it("includes full recipient identity and ACK verification in shared Runner messaging rules", () => {
+	expect(
+		readFileSync(join(BASE_RULES_DIR, "runner-messaging-rules.md"), "utf8"),
+	).toContain("## Recipient ID + post-send verification (FLY-1942)");
+});

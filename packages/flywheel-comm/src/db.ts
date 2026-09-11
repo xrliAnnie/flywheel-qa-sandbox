@@ -51,6 +51,7 @@ import {
 	MAILBOX_SCHEMA,
 	MAILBOX_SCHEMA_GENERATION,
 } from "./mailbox-schema.js";
+import { isLeadRecipient } from "./recipient-kind.js";
 import {
 	isRunnerStopReport,
 	RUNNER_STOP_QUESTION_ID_RE,
@@ -4324,8 +4325,7 @@ export class CommDB {
 				id,
 				fromAgent,
 				toAgent,
-				recipientKind:
-					toAgent === "lead" || toAgent.endsWith("-lead") ? "lead" : "runner",
+				recipientKind: isLeadRecipient(toAgent) ? "lead" : "runner",
 				type: "instruction",
 				content,
 				createdAt: new Date().toISOString(),
@@ -8084,6 +8084,17 @@ export class CommDB {
 				   FROM session_receipt_lineage WHERE execution_id = ?`,
 			)
 			.get(executionId) as SessionReceiptIdentity | undefined;
+	}
+
+	/** Bounded lookup over durable runner identities, including finalized sessions. */
+	findSessionReceiptIdentities(prefix: string): SessionReceiptIdentity[] {
+		return this.db
+			.prepare(
+				`SELECT execution_id, project_name, issue_id, lead_id
+			 FROM session_receipt_lineage WHERE execution_id LIKE ? || '%'
+			 ORDER BY execution_id LIMIT 3`,
+			)
+			.all(prefix) as SessionReceiptIdentity[];
 	}
 
 	/**

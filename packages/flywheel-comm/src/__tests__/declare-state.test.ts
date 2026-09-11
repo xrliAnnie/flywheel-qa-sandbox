@@ -89,17 +89,32 @@ describe("declareState (FLY-626)", () => {
 	});
 
 	it("a Lead re-engagement (send) clears an indefinite park marker (Codex #1 / FLY-369)", async () => {
+		db.registerSession(
+			"4f3f1ee5-b47f-5579-8f70-d9b001081b15",
+			"s:w",
+			"test",
+			"FLY-1942",
+			"product-lead",
+		);
 		// indefinite park on a runner that is never explicitly unparked
-		declareState(db, { action: "park", execId: "runner-e1", nowMs: T0 });
-		expect(db.getEffectiveDeclaredState("runner-e1", T0)).not.toBeNull();
+		declareState(db, {
+			action: "park",
+			execId: "4f3f1ee5-b47f-5579-8f70-d9b001081b15",
+			nowMs: T0,
+		});
+		expect(
+			db.getEffectiveDeclaredState("4f3f1ee5-b47f-5579-8f70-d9b001081b15", T0),
+		).not.toBeNull();
 		// the Lead sends an instruction — re-engagement → marker must be cleared
 		await send({
 			fromAgent: "product-lead",
-			toAgent: "runner-e1",
+			toAgent: "4f3f1ee5-b47f-5579-8f70-d9b001081b15",
 			content: "please continue iterating on the report",
 			dbPath: join(tmpDir, "comm.db"),
 			env: createTestLeadIdentityEnvs(tmpDir, ["product-lead"])["product-lead"],
 		});
-		expect(db.getEffectiveDeclaredState("runner-e1", T0)).toBeNull();
+		expect(
+			db.getEffectiveDeclaredState("4f3f1ee5-b47f-5579-8f70-d9b001081b15", T0),
+		).toBeNull();
 	});
 });

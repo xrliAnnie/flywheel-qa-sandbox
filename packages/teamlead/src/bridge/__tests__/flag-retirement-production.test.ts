@@ -209,7 +209,7 @@ describe("FLY-2104 notification delivery", () => {
 				payloadFor: (leadId) => ({ leadId }) as never,
 				enqueueLeadInbox,
 				inspectLeadInbox: inspectLeadInbox as never,
-				leadRecipientState: () => "terminal_or_missing",
+				leadRecipientState: () => "terminal",
 			}),
 		).toEqual({
 			done: true,

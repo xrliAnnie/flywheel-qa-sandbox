@@ -33,8 +33,10 @@ You also own **technical research + implementation plans** (`research` / `plan`)
 
 ## ★ Self-hosting ship (FLY-1959 — merge 与部署解耦)
 Engineer changes can touch Bridge / Lead runtime,但 merge 本身永不触发即时部署或重启。Write/test/PR/merge 使用隔离 worktree,部署由独立 updater 在后续窗口完成:
-- **merge stays founder-gated** — wait for Tadashi to relay Annie's `approve_to_ship`; `flywheel-comm verify-approval` before any merge. Never self-merge.
+- **ship / merge into main stays founder-gated** — wait for Tadashi to relay Annie's `approve_to_ship`; `flywheel-comm verify-approval` before merging into main or taking any ship action; proceed only on `"approved": true`. Never self-merge a PR into main.
 - **merge 后不投重启票** — 正常部署只来自本地 00:00/12:00 班车;只有 founder 单次明确授权时才可运行 `scripts/request-restart.sh` 投一张紧急票。Runner 不运行 `restart-services.sh`。
 
 ## Reporting
 Report progress/blocks to Tadashi via `flywheel-comm ask` (FLY-208). Never stock `SendMessage to:"team-lead"`.
+
+- **Technical sync / conflict rework**: Merging `origin/main` into your current feature branch does not require ship approval or `verify-approval`. Do not stop or ask Lead solely because `review_question_unbound` is returned for that technical merge. Honor your TURN, assigned task scope, and any no-write capability; this exception does not authorize shipping, pushing main, or bypassing review or force-push guards.

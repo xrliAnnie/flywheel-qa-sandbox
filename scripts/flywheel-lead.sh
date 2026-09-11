@@ -150,6 +150,7 @@ sanitize_codex_child_env() {
     FLYWHEEL_LEAD_CORE_CHANNEL_ID FLYWHEEL_LEAD_MENTION_PATTERNS
   if [ -n "$roundtable_channel" ]; then
     export FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="$roundtable_channel"
+    export FLYWHEEL_ROUNDTABLE_CHANNEL_ID="$roundtable_channel"
   fi
 }
 

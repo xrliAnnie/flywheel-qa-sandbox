@@ -1,7 +1,20 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseCodexLeadRuntimeConfig } from "../codex-lead-runtime.js";
 import { buildReplyInThreadWiring } from "../roundtable-reply-in-thread-wiring.js";
 
+const tempDirs: string[] = [];
+function stateDir() {
+	const dir = mkdtempSync(join(tmpdir(), "rt-existing-"));
+	tempDirs.push(dir);
+	return dir;
+}
+afterEach(() => {
+	for (const d of tempDirs.splice(0))
+		rmSync(d, { recursive: true, force: true });
+});
 const RT = "1512578695468941333";
 
 function env(over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
@@ -26,16 +39,8 @@ function env(over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
 }
 
 describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", () => {
-	// FLY-1243: FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD retired — a resolvable
-	// roundtable parent (here the sole cross-dept channel) is the switch now, so
-	// reply-in-thread activates unconditionally.
-	it("resolvable parent (cross-dept) → reply-in-thread active (固化 default-on)", () => {
-		const cfg = parseCodexLeadRuntimeConfig(env()).replyInThread;
-		expect(cfg).toEqual({
-			enabled: true,
-			parentChannelId: RT,
-			autoContinue: true,
-		});
+	it("FLY-1942 cross-dept alone does not configure subscriptions", () => {
+		expect(parseCodexLeadRuntimeConfig(env()).replyInThread).toBeUndefined();
 	});
 
 	it("flag=1 + parent in cross-dept → enabled config (with guildId; FLY-676 autoContinue default-on)", () => {
@@ -50,6 +55,7 @@ describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", ()
 			enabled: true,
 			parentChannelId: RT,
 			guildId: "guild-9",
+			subscriptionTtlMs: 86_400_000,
 			autoContinue: true,
 		});
 	});
@@ -66,6 +72,7 @@ describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", ()
 		expect(cfg).toEqual({
 			enabled: true,
 			parentChannelId: RT,
+			subscriptionTtlMs: 86_400_000,
 			autoContinue: true,
 		});
 	});
@@ -80,16 +87,17 @@ describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", ()
 		expect(cfg).toEqual({
 			enabled: true,
 			parentChannelId: RT,
+			subscriptionTtlMs: 86_400_000,
 			autoContinue: true,
 			budgetN: 3,
 		});
 	});
 
-	it("flag=1 defaults parent to the sole cross-dept channel", () => {
+	it("legacy flag cannot select a cross-dept channel as roundtable", () => {
 		const cfg = parseCodexLeadRuntimeConfig(
 			env({ FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1" }),
 		).replyInThread;
-		expect(cfg?.parentChannelId).toBe(RT);
+		expect(cfg).toBeUndefined();
 	});
 
 	it("flag=1 but parent NOT in cross-dept → throws (so it is polled + gated)", () => {
@@ -121,11 +129,13 @@ describe("buildReplyInThreadWiring (FLY-314 Phase 2)", () => {
 				added.push(id);
 			}),
 			removeChannel: vi.fn(),
+			isSubscribed: (id: string) => added.includes(id),
 		};
 	}
 
 	it("returns undefined when disabled (byte-compat)", () => {
 		const wiring = buildReplyInThreadWiring({
+			stateDir: stateDir(),
 			cfg: { enabled: false, parentChannelId: RT },
 			botToken: "tok",
 			botUserId: "bot-1",
@@ -138,6 +148,7 @@ describe("buildReplyInThreadWiring (FLY-314 Phase 2)", () => {
 	it("routes a roundtable parent message to its thread + subscribes (path i)", async () => {
 		const source = fakeSource();
 		const wiring = buildReplyInThreadWiring({
+			stateDir: stateDir(),
 			cfg: { enabled: true, parentChannelId: RT }, // no guildId → immediate-only
 			botToken: "tok",
 			botUserId: "bot-1",
@@ -154,7 +165,9 @@ describe("buildReplyInThreadWiring (FLY-314 Phase 2)", () => {
 		});
 		expect(r?.replyChannelId).toBe("100");
 		expect(r?.replyRoute?.threadId).toBe("100");
-		// subscribed (immediate path) — fire-and-forget; drain microtasks
+		expect(source.added).toEqual([]);
+		await wiring?.onTopicEngaged(r!.replyRoute!);
+		// Accepted engagement creates durable interest.
 		await new Promise((res) => setTimeout(res, 0));
 		expect(source.added).toContain("100");
 		expect(wiring?.registry.has("100")).toBe(true);
@@ -163,6 +176,7 @@ describe("buildReplyInThreadWiring (FLY-314 Phase 2)", () => {
 	it("OTHER cross-dept channel keeps FLY-267 source-channel reply, no subscribe", () => {
 		const source = fakeSource();
 		const wiring = buildReplyInThreadWiring({
+			stateDir: stateDir(),
 			cfg: { enabled: true, parentChannelId: RT },
 			botToken: "tok",
 			botUserId: "bot-1",
@@ -205,6 +219,7 @@ describe("buildReplyInThreadWiring (FLY-314 Phase 2)", () => {
 			throw new Error(`unexpected ${method} ${url}`);
 		});
 		const wiring = buildReplyInThreadWiring({
+			stateDir: stateDir(),
 			cfg: { enabled: true, parentChannelId: RT },
 			botToken: "tok",
 			botUserId: "bot-1",

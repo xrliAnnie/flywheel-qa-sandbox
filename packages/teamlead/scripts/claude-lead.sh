@@ -423,6 +423,18 @@ LEAD_CORE_CHANNEL=$(node -e "
   }).catch(() => {});
 " "$PROJECT_NAME" 2>/dev/null)
 
+# FLY-1942: derive the plugin's own top-level channel from this exact Lead,
+# never inherited Discord routing. Missing/unreadable config forwards empty.
+LEAD_CHAT_CHANNEL=$(node -e "
+  import('file://${SCRIPT_DIR}/../dist/ProjectConfig.js').then(({ loadProjects }) => {
+    try {
+      const project = loadProjects().find(e => e.projectName === process.argv[1]);
+      const lead = (project?.leads || []).find(l => l.agentId === process.argv[2]);
+      if (lead?.chatChannel) process.stdout.write(lead.chatChannel);
+    } catch {}
+  }).catch(() => {});
+" "$PROJECT_NAME" "$LEAD_ID" 2>/dev/null)
+
 # ── FLY-231: companion role detection (single source of truth) ──────────────
 # A companion Lead (Mufasa / Belle) is a non-engineering persona agent wrapped in
 # Flywheel infra. The ONLY source of truth is `companion: true` on the lead in
@@ -2109,6 +2121,7 @@ _launch_claude() {
     # plugin applies no core exemption. This explicit pass is required at the
     # same env -i barrier as TEAMLEAD_ISSUE_PREFIXES.
     -e "DISCORD_CORE_CHANNEL=${LEAD_CORE_CHANNEL:-}"
+    -e "DISCORD_OWN_CHAT_CHANNEL=${LEAD_CHAT_CHANNEL:-}"
     -e "OPENAI_API_KEY=${_cz_openai_key}"
     -e "HOME=${HOME}"
     -e "USER=${_lead_os_user}"

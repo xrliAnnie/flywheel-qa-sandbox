@@ -35,6 +35,36 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1309-enforce-"));
 		dbPath = join(dir, "comm.db");
+		const seed = new CommDB(dbPath);
+		seed.registerSession(
+			"043fe116-4328-5b45-a842-fe8a6a74e025",
+			"s:w",
+			"flywheel",
+			"FLY-1942",
+			"eng-lead",
+		);
+		seed.registerSession(
+			"8e9b7c36-8758-5f21-a042-e3795d16a1c2",
+			"s:w",
+			"flywheel",
+			"FLY-1942",
+			"eng-lead",
+		);
+		seed.registerSession(
+			"f2a1b603-7638-5754-b09c-eafffaacff0d",
+			"s:w",
+			"flywheel",
+			"FLY-1942",
+			"eng-lead",
+		);
+		seed.registerSession(
+			"a9ba8b2e-dc57-598b-974e-dc08cc6df2c8",
+			"s:w",
+			"flywheel",
+			"FLY-1942",
+			"eng-lead",
+		);
+		seed.close();
 		writerStart = "test-writer-start";
 		authorizationDeps = {
 			processStart: () => writerStart,
@@ -134,7 +164,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			await expect(
 				send({
 					fromAgent: "eng-lead",
-					toAgent: "runner-1",
+					toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 					content: "stale identity",
 					dbPath,
 					env,
@@ -171,7 +201,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			await expect(
 				send({
 					fromAgent: "eng-lead",
-					toAgent: "runner-1",
+					toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 					content: "stale summary identity",
 					dbPath,
 					env,
@@ -190,7 +220,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 
 		await send({
 			fromAgent: "eng-lead",
-			toAgent: "runner-1",
+			toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 			content: "isolated state root",
 			dbPath,
 			env,
@@ -218,7 +248,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 
 		await send({
 			fromAgent: "eng-lead",
-			toAgent: "runner-1",
+			toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 			content: "slot-local summary identity",
 			dbPath,
 			env,
@@ -236,7 +266,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "launchd-owned carrier",
 				dbPath,
 				env,
@@ -252,7 +282,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "canonical default carrier",
 				dbPath,
 				env,
@@ -269,7 +299,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-intruder",
+				toAgent: "f2a1b603-7638-5754-b09c-eafffaacff0d",
 				content: "retired carrier",
 				dbPath,
 				env,
@@ -316,7 +346,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 	function instructions(): ReturnType<CommDB["getUnreadInstructions"]> {
 		const db = new CommDB(dbPath);
 		try {
-			return db.getUnreadInstructions("runner-1");
+			return db.getUnreadInstructions("043fe116-4328-5b45-a842-fe8a6a74e025");
 		} finally {
 			db.close();
 		}
@@ -328,7 +358,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 
 		await send({
 			fromAgent: "eng-lead",
-			toAgent: "runner-1",
+			toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 			content: "current",
 			dbPath,
 			env,
@@ -373,7 +403,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "legacy row",
 				dbPath,
 				env,
@@ -390,7 +420,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "old v2 body",
 				dbPath,
 				env,
@@ -408,7 +438,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 
 		await send({
 			fromAgent: "eng-lead",
-			toAgent: "runner-1",
+			toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 			content: "degraded audit window",
 			dbPath,
 			env,
@@ -428,7 +458,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-2",
+				toAgent: "8e9b7c36-8758-5f21-a042-e3795d16a1c2",
 				content: "must not pass",
 				dbPath,
 				env,
@@ -446,7 +476,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "partial claim",
 				dbPath,
 				env,
@@ -464,7 +494,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "stale",
 				dbPath,
 				env,
@@ -481,7 +511,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 
 		await send({
 			fromAgent: "eng-lead",
-			toAgent: "runner-1",
+			toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 			content: "migration window",
 			dbPath,
 			env,
@@ -528,7 +558,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 
 		await send({
 			fromAgent: "eng-lead",
-			toAgent: "runner-1",
+			toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 			content: "old pane during migration",
 			dbPath,
 			env,
@@ -548,7 +578,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		env.FLYWHEEL_LEAD_GENERATION = "stale";
 		await send({
 			fromAgent: "eng-lead",
-			toAgent: "runner-1",
+			toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 			content: "off",
 			dbPath,
 			env,
@@ -564,7 +594,11 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		setMode("off");
 		env.TEAMLEAD_API_TOKEN = "token";
 		const db = new CommDB(dbPath);
-		const questionId = db.insertQuestion("runner-1", "eng-lead", "review?");
+		const questionId = db.insertQuestion(
+			"043fe116-4328-5b45-a842-fe8a6a74e025",
+			"eng-lead",
+			"review?",
+		);
 		db.close();
 		let body = "";
 		const fetchImpl = vi.fn(
@@ -591,7 +625,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				leadId: "eng-lead",
 				answer: '{"approved":false}',
 				sourceThread: "discord-thread",
-				expectedOwner: "runner-1",
+				expectedOwner: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				expectedCheckpoint: null,
 				identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
 			}),
@@ -606,7 +640,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "must not bypass",
 				dbPath,
 				env,
@@ -623,7 +657,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "must not land",
 				dbPath,
 				env,
@@ -641,7 +675,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "identity mismatch",
 				dbPath,
 				env,
@@ -670,7 +704,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "broken store",
 				dbPath,
 				env,
@@ -697,7 +731,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "broken episode store",
 				dbPath,
 				env,
@@ -726,7 +760,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "corrupt control",
 				dbPath,
 				env,
@@ -748,7 +782,11 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 
 	it("coalesces a persistent corrupt control across validations, then creates one new episode after recovery", async () => {
 		writeFileSync(env.FLYWHEEL_LEAD_LEASE_MODE_FILE!, "{broken");
-		for (const runner of ["runner-1", "runner-2", "runner-3"]) {
+		for (const runner of [
+			"043fe116-4328-5b45-a842-fe8a6a74e025",
+			"8e9b7c36-8758-5f21-a042-e3795d16a1c2",
+			"a9ba8b2e-dc57-598b-974e-dc08cc6df2c8",
+		]) {
 			await expect(
 				send({
 					fromAgent: "eng-lead",
@@ -794,7 +832,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "bridge",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: "internal",
 				dbPath,
 				env,
@@ -845,7 +883,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 
 		await send({
 			fromAgent: "eng-lead",
-			toAgent: "runner-1",
+			toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 			content: "carrier",
 			dbPath,
 			env,
@@ -857,7 +895,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		await expect(
 			send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-2",
+				toAgent: "8e9b7c36-8758-5f21-a042-e3795d16a1c2",
 				content: "intruder",
 				dbPath,
 				env,
@@ -865,7 +903,9 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			}),
 		).rejects.toBeInstanceOf(LeadLeaseDeniedError);
 		const verify = new CommDB(dbPath);
-		expect(verify.getUnreadInstructions("runner-2")).toEqual([]);
+		expect(
+			verify.getUnreadInstructions("8e9b7c36-8758-5f21-a042-e3795d16a1c2"),
+		).toEqual([]);
 		verify.close();
 		expect(
 			readFileSync(env.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE!, "utf8"),
@@ -900,7 +940,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 
 		await send({
 			fromAgent: "eng-lead",
-			toAgent: "runner-1",
+			toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 			content: "fresh carrier with indeterminate ps",
 			dbPath,
 			env,
@@ -953,7 +993,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 
 			await send({
 				fromAgent: "eng-lead",
-				toAgent: "runner-1",
+				toAgent: "043fe116-4328-5b45-a842-fe8a6a74e025",
 				content: `${fault} carrier migration`,
 				dbPath,
 				env,
@@ -975,7 +1015,11 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 	it("keeps repeated carrier drift validations on one specialized episode", async () => {
 		writeProjects("codex-app-server");
 		setMode("audit_only");
-		for (const runner of ["runner-1", "runner-2", "runner-3"]) {
+		for (const runner of [
+			"043fe116-4328-5b45-a842-fe8a6a74e025",
+			"8e9b7c36-8758-5f21-a042-e3795d16a1c2",
+			"a9ba8b2e-dc57-598b-974e-dc08cc6df2c8",
+		]) {
 			await send({
 				fromAgent: "eng-lead",
 				toAgent: runner,
@@ -1027,7 +1071,11 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				severity: "severe",
 			},
 		});
-		for (const runner of ["runner-1", "runner-2", "runner-3"]) {
+		for (const runner of [
+			"043fe116-4328-5b45-a842-fe8a6a74e025",
+			"8e9b7c36-8758-5f21-a042-e3795d16a1c2",
+			"a9ba8b2e-dc57-598b-974e-dc08cc6df2c8",
+		]) {
 			await send({
 				fromAgent: "eng-lead",
 				toAgent: runner,
@@ -1054,7 +1102,11 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		bindLease();
 		env.FLYWHEEL_LEAD_GENERATION = "99";
 		const db = new CommDB(dbPath);
-		const questionId = db.insertQuestion("runner-1", "eng-lead", "question");
+		const questionId = db.insertQuestion(
+			"043fe116-4328-5b45-a842-fe8a6a74e025",
+			"eng-lead",
+			"question",
+		);
 		db.close();
 
 		await expect(
@@ -1077,7 +1129,11 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		bindLease();
 		env.TEAMLEAD_API_TOKEN = "token";
 		const db = new CommDB(dbPath);
-		const questionId = db.insertQuestion("runner-1", "eng-lead", "review?");
+		const questionId = db.insertQuestion(
+			"043fe116-4328-5b45-a842-fe8a6a74e025",
+			"eng-lead",
+			"review?",
+		);
 		db.close();
 		let posted: Record<string, unknown> | undefined;
 		const fetchImpl = vi.fn(
@@ -1139,8 +1195,16 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			}),
 		);
 		const db = new CommDB(dbPath);
-		const safeQuestion = db.insertQuestion("runner-1", "eng-lead", "review?");
-		const unsafeQuestion = db.insertQuestion("runner-1", "eng-lead", "review?");
+		const safeQuestion = db.insertQuestion(
+			"043fe116-4328-5b45-a842-fe8a6a74e025",
+			"eng-lead",
+			"review?",
+		);
+		const unsafeQuestion = db.insertQuestion(
+			"043fe116-4328-5b45-a842-fe8a6a74e025",
+			"eng-lead",
+			"review?",
+		);
 		db.close();
 		let posted: Record<string, unknown> | undefined;
 		let redirect: RequestInit["redirect"];
@@ -1184,7 +1248,9 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		const verify = new CommDB(dbPath);
 		expect(verify.getResponse(unsafeQuestion)).toBeUndefined();
 		expect(
-			JSON.stringify(verify.getUnreadInstructions("runner-1")),
+			JSON.stringify(
+				verify.getUnreadInstructions("043fe116-4328-5b45-a842-fe8a6a74e025"),
+			),
 		).not.toContain(rawClaim);
 		verify.close();
 	});

@@ -1268,10 +1268,202 @@ def t12_calendar_decision_and_qa_targets():
                 )
 
 
+def t13_command_shapes():
+    import plistlib
+    mod = load_hook_module()
+    blocks = [
+        "bash <<'EOF'\nlaunchctl kickstart -k gui/501/com.flywheel.bridge\nEOF",
+        'cat <<EOF\n$(pkill -f run-bridge)\nEOF',
+        "eval 'launchctl kickstart -k gui/501/com.flywheel.bridge'",
+        'echo "launchctl bootout gui/501/com.flywheel.bridge" | bash',
+        "printf '%s\\n' 'pkill -f run-bridge' | sh",
+        'xargs -I{} launchctl kickstart -k {} <<< gui/501/com.flywheel.bridge',
+        'launchctl disable gui/501/com.flywheel.updater',
+        'launchctl bootstrap gui/501 /tmp/new.plist',
+        'grep "$(pkill -f run-bridge)" file',
+        "rg --pre 'pkill -f run-bridge' pattern file",
+        "rg --hostname-bin='pkill -f run-bridge' pattern file",
+        "launchctl submit -l com.example.x -- /bin/bash -c 'bash scripts/restart-services.sh'",
+        'launchctl kickstart gui/$(id -u)/com.flywheel.lead.x',
+        'cat <(pkill -f run-bridge)',
+        'echo `pkill -f run-bridge`',
+    ]
+    passes = [
+        'node /repo/flywheel-comm/dist/index.js ask --lead x --exec-id y "nohup npx tsx scripts/run-bridge.ts"',
+        "cat > note.md <<'EOF'\nlaunchctl kickstart -k gui/501/com.flywheel.bridge\nEOF",
+        'flywheel-comm send --to abc "please pkill -f run-bridge"',
+        'launchctl enable gui/501/com.flywheel.sub-create-nightly',
+        'git commit -m "fix: guard blocked launchctl kickstart com.flywheel.bridge"',
+        'echo com.flywheel.bridge; launchctl stop com.example.unrelated',
+        'echo run-bridge && kill 1234',
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for label in ('sub-create-nightly', 'growth-learn'):
+            Path(tmp, 'com.flywheel.' + label + '.plist').write_bytes(plistlib.dumps({'StartCalendarInterval': {'Hour': 1}}))
+        passes.append('launchctl bootstrap gui/501 ' + tmp + '/com.flywheel.growth-learn.plist')
+        for key in ('KeepAlive', 'RunAtLoad', 'StartInterval'):
+            path = Path(tmp, key + '.plist')
+            path.write_bytes(plistlib.dumps({key: False}))
+            blocks.append('launchctl bootstrap gui/501 ' + str(path))
+        prior = os.environ.get('FLYWHEEL_RESTART_GUARD_LAUNCH_AGENTS_DIR')
+        os.environ['FLYWHEEL_RESTART_GUARD_LAUNCH_AGENTS_DIR'] = tmp
+        try:
+            for expected, commands in ((True, blocks), (False, passes)):
+                for command in commands:
+                    hit = mod._scan(command) if hasattr(mod, '_scan') else None
+                    compatible = mod.scan_block(command)
+                    if bool(hit) == expected and bool(compatible) == expected:
+                        ok('T13 shape ' + command.splitlines()[0])
+                    else:
+                        bad('T13 shape ' + command.splitlines()[0], f'expected={expected} hit={hit} compat={compatible}')
+            log = Path(tmp, 'audit.log')
+            _, out = run_hook(bash_event(blocks[6]), {'FLYWHEEL_RESTART_GUARD_LOG': str(log)})
+            if 'matched: pattern=P1' in deny_reason(out) and jsonl(log)[0].get('match', {}).get('protected_by') == 'core':
+                ok('T13 structured deny and audit')
+            else:
+                bad('T13 structured deny and audit', out)
+        finally:
+            if prior is None:
+                os.environ.pop('FLYWHEEL_RESTART_GUARD_LAUNCH_AGENTS_DIR', None)
+            else:
+                os.environ['FLYWHEEL_RESTART_GUARD_LAUNCH_AGENTS_DIR'] = prior
+
+
+def t14_ir_fail_closed_regressions():
+    mod = load_hook_module()
+    cases = [
+        ('for i in 1 2; do launchctl kickstart -k gui/501/com.flywheel.bridge; done', True),
+        ('if true; then launchctl kickstart -k gui/501/com.flywheel.bridge; fi', True),
+        ('( launchctl kickstart -k gui/501/com.flywheel.bridge )', True),
+        ('(launchctl kickstart -k gui/501/com.flywheel.bridge)', True),
+        ('{ launchctl kickstart -k gui/501/com.flywheel.bridge; }', True),
+        ('while true; do pkill -f run-bridge; done', True),
+        ("pkill -f 'node .*run-bridge'", True),
+        ('kill -9 $(pgrep -f run-bridge)', True),
+        ('kill -9 "$(pgrep -f run-bridge)"', True),
+        ('L=com.flywheel.bridge; launchctl kickstart -k gui/501/$L', True),
+        ('L=com.flywheel.bridge; launchctl kickstart -k gui/501/${L}', True),
+        ("pkill -f 'run-bridge", True),
+        ("launchctl submit -l com.example.x -- bash -c \"pkill -f 'run-bridge\"", True),
+        ("L=com.flywheel.bridge; launchctl kickstart -k 'gui/501/$L'", False),
+        (r'L=com.flywheel.bridge; launchctl kickstart -k gui/501/\$L', False),
+        (r'L=com.flywheel.bridge; launchctl kickstart -k "gui/501/\$L"', False),
+        ('L=com.flywheel.bridge echo x; launchctl kickstart -k gui/501/$L', False),
+        ('node /repo/flywheel-comm/dist/index.js ask "please pkill -f run-bridge', True),
+        ('echo "do launchctl kickstart -k gui/501/com.flywheel.bridge"', False),
+        ('L=com.flywheel.bridge; launchctl kickstart -k gui/501/com.example.unrelated', False),
+        ('L=com.flywheel.bridge; echo "launchctl kickstart -k gui/501/$L"', True),
+    ]
+    for command, expected in cases:
+        try:
+            hit = mod._scan(command)
+            scanner_ok = bool(hit) == expected
+        except Exception as error:
+            hit, scanner_ok = repr(error), False
+        _, out = run_hook(bash_event(command))
+        decision = decision_of(out)
+        if scanner_ok and (decision == 'deny') == expected:
+            ok('T14 IR regression ' + command)
+        else:
+            bad('T14 IR regression ' + command, f'expected={expected} scan={hit} decision={decision}')
+
+
+def t15_executable_carriers_and_control_operators():
+    mod = load_hook_module()
+    restart = 'launchctl kickstart -k gui/501/com.flywheel.bridge'
+    cases = [
+        (f"tmux send-keys -t flywheel:0 '{restart}' Enter", True),
+        (f"tmux send -t flywheel:0 '{restart}' Enter", True),
+        (f"watch -n1 '{restart}'", True),
+        (f"su -c '{restart}'", True),
+        (f"ssh localhost '{restart}'", True),
+        (f"osascript -e 'do shell script \"{restart}\"'", True),
+        (f'''python3 -c "import os; os.system('{restart}')"''', True),
+        (f'''perl -e 'system("{restart}")' ''', True),
+        (f'script -q /dev/null {restart}', True),
+        (f"parallel ::: '{restart}'", True),
+        (f'case x in x) {restart};; esac', True),
+        (f'f() {{ {restart}; }}; f', True),
+        (f"trap '{restart}' EXIT", True),
+        (f'(echo a); ({restart})', True),
+        ('echo a;(pkill -f run-bridge)', True),
+        (f'true;({restart})', True),
+        (f'x=1;({restart})', True),
+        (f'cd /tmp;({restart})', True),
+        (f'(echo a)&&({restart})', True),
+        ('pgrep -f run-bridge | (xargs kill -9)', True),
+        (f'''python3 -c "print('{restart}')"''', True),
+        (f'''perl -e 'print "{restart}"' ''', True),
+        (f"tmux display-message '{restart}'", False),
+        (f"tmux run-shell '{restart}'", True),
+        (f"find . -exec sh -c '{restart}' \\;", True),
+        (f'opaque {restart}', True),
+        (f"opaque '{restart}'", False),
+        (f'cat <<EOF\n{restart}\nEOF', True),
+        (f"echo 'case x in x) {restart};; esac'", False),
+        (f"node cli.js ask 'python3 -c os.system({restart})'", False),
+        (f"cat <<'EOF'\npython3 -c \"os.system('{restart}')\"\nEOF", False),
+    ]
+    for command, expected in cases:
+        try:
+            hit = mod._scan(command)
+            scanner_ok = bool(hit) == expected
+        except Exception as error:
+            hit, scanner_ok = repr(error), False
+        _, out = run_hook(bash_event(command))
+        decision = decision_of(out)
+        if scanner_ok and (decision == 'deny') == expected:
+            ok('T15 executable carrier ' + command)
+        else:
+            bad('T15 executable carrier ' + command, f'expected={expected} scan={hit} decision={decision}')
+
+
+# R4 is limited by Lead instruction f9863a46 to this tmux carrier set.
+TMUX_R4_REVIEWER_CASES = [
+    "tmux new-window 'launchctl kickstart -k gui/501/com.flywheel.bridge'",
+    "tmux new-window -d -n restart 'launchctl kickstart -k gui/501/com.flywheel.bridge'",
+    "tmux new-session -d 'launchctl kickstart -k gui/501/com.flywheel.bridge'",
+    "tmux split-window -h 'launchctl kickstart -k gui/501/com.flywheel.bridge'",
+    "tmux respawn-pane -k 'launchctl kickstart -k gui/501/com.flywheel.bridge'",
+    "tmux respawn-window -k 'launchctl kickstart -k gui/501/com.flywheel.bridge'",
+    "tmux if-shell true 'launchctl kickstart -k gui/501/com.flywheel.bridge'",
+    "tmux popup -E 'launchctl kickstart -k gui/501/com.flywheel.bridge'",
+    "tmux new-window 'pkill -f run-bridge'",
+]
+
+
+def t16_tmux_carrier_operands():
+    mod = load_hook_module()
+    restart = 'launchctl kickstart -k gui/501/com.flywheel.bridge'
+    cases = [(command, True) for command in TMUX_R4_REVIEWER_CASES]
+    cases.extend((f"tmux {alias} '{restart}'", True) for alias in
+                 ('neww', 'new', 'splitw', 'respawnp', 'respawnw', 'send-key'))
+    cases.extend([
+        (f"tmux if-shell '{restart}' true", True),
+        (f"tmux if-shell -F '{restart}' true", False),
+        (f"tmux popup -E -T '{restart}' true", False),
+        (f"tmux new-window -d -n '{restart}' true", False),
+        (f"tmux if-shell -t '{restart}' true true", False),
+        (f"tmux display-message new-window '{restart}'", False),
+        (f"tmux -L fixture new-window '{restart}'", True),
+    ])
+    for command, expected in cases:
+        hit = mod._scan(command)
+        _, out = run_hook(bash_event(command))
+        if bool(hit) == expected and (decision_of(out) == 'deny') == expected:
+            ok('T16 tmux operands ' + command)
+        else:
+            bad('T16 tmux operands ' + command, f'expected={expected} scan={hit} decision={decision_of(out)}')
+
+
 def main() -> int:
     if not HOOK.exists():
         print(f"FAIL: hook not found at {HOOK}")
         return 1
+    t16_tmux_carrier_operands()
+    t15_executable_carriers_and_control_operators()
+    t14_ir_fail_closed_regressions()
+    t13_command_shapes()
     t1_t2_matrix()
     t3_deny_schema()
     t4_deny_audit_invariant()

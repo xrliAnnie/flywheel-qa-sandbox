@@ -13,6 +13,12 @@ import {
 	type LeadWriteAuthorizationDeps,
 	postCarrierClaim,
 } from "../lead-lease.js";
+import {
+	createStateStoreSnapshotReader,
+	isLeadRecipient,
+	resolveRunnerRecipient,
+	type StateStoreSnapshotReader,
+} from "../recipient-resolve.js";
 import { isRunnerStopReport } from "../runner-stop-report.js";
 
 export const GATED_CHECKPOINTS = new Set(["approve_to_ship"]);
@@ -31,6 +37,7 @@ export interface RespondArgs {
 	env?: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
 	authorizationDeps?: LeadWriteAuthorizationDeps;
+	stateStore?: StateStoreSnapshotReader;
 }
 
 /** Persist one response; the Bridge Runner lane owns the delivery doorbell. */
@@ -97,6 +104,21 @@ export async function respond(args: RespondArgs): Promise<void> {
 			return;
 		}
 
+		if (
+			!question.checkpoint &&
+			!isEngineMintedQuestionId(question.id) &&
+			!isLeadRecipient(question.from_agent)
+		) {
+			const recipient = resolveRunnerRecipient(
+				{
+					commDb: db,
+					stateStore: args.stateStore ?? createStateStoreSnapshotReader(env),
+				},
+				question.from_agent,
+			);
+			if (recipient.kind === "runner" && recipient.livenessWarning)
+				console.error(`liveness_unverified: ${recipient.livenessWarning}`);
+		}
 		db.insertGuardedResponse({
 			questionId: args.questionId,
 			authenticatedLead: args.fromAgent,
@@ -110,6 +132,16 @@ export async function respond(args: RespondArgs): Promise<void> {
 	} finally {
 		db.close();
 	}
+}
+
+function isEngineMintedQuestionId(id: string): boolean {
+	return [
+		"workflow-gate:",
+		"turn-wait:",
+		"turn-wake-alert:",
+		"dead_letter:",
+		"terminalization_refused:",
+	].some((prefix) => id.startsWith(prefix));
 }
 
 async function routeFounderResponseThroughBridge(opts: {

@@ -660,10 +660,7 @@ export function parseCodexLeadRuntimeConfig(
 	// resolvable roundtable parent channel is the de-facto switch now: absent ⇒
 	// reply-in-thread simply isn't configured for this Lead (byte-compat OFF),
 	// never a throw.
-	const parentChannelId =
-		(env.FLYWHEEL_ROUNDTABLE_CHANNEL_ID ?? "").trim() ||
-		crossDeptChannelIds[0] ||
-		"";
+	const parentChannelId = (env.FLYWHEEL_ROUNDTABLE_CHANNEL_ID ?? "").trim();
 	if (parentChannelId) {
 		if (!crossDeptChannelIds.includes(parentChannelId)) {
 			throw new Error(
@@ -681,9 +678,16 @@ export function parseCodexLeadRuntimeConfig(
 			(env.FLYWHEEL_ROUNDTABLE_THREAD_BUDGET ?? "").trim(),
 			10,
 		);
+		const ttlParsed = Number.parseInt(
+			env.FLYWHEEL_ROUNDTABLE_SUBSCRIPTION_TTL_MS ?? "",
+			10,
+		);
 		replyInThread = {
 			enabled: true,
 			parentChannelId,
+			subscriptionTtlMs: Number.isFinite(ttlParsed)
+				? Math.max(60_000, Math.min(7 * 86_400_000, ttlParsed))
+				: 86_400_000,
 			autoContinue: true,
 			...(Number.isFinite(budgetParsed) && budgetParsed > 0
 				? { budgetN: budgetParsed }
@@ -1740,6 +1744,7 @@ export function buildCodexLeadRuntime(
 			const replyInThread = config.replyInThread
 				? buildReplyInThreadWiring({
 						cfg: config.replyInThread,
+						stateDir: config.stateDir,
 						botToken: config.botToken,
 						botUserId: config.botUserId,
 						crossDeptChannelIds: config.crossDeptChannelIds,
@@ -1764,7 +1769,8 @@ export function buildCodexLeadRuntime(
 				...(replyInThread
 					? {
 							ensureReplyRoute: replyInThread.ensureReplyRoute,
-							onTopicEngaged: replyInThread.seedBudgetForRoute,
+							onTopicEngaged: replyInThread.onTopicEngaged,
+							onInputAccepted: replyInThread.onInputAccepted,
 						}
 					: {}),
 			});
@@ -1774,6 +1780,14 @@ export function buildCodexLeadRuntime(
 				leadId: config.leadId,
 				router,
 				authSecret: config.botToken,
+				...(replyInThread
+					? {
+							subscriptions: {
+								list: replyInThread.listSubscriptions,
+								remove: replyInThread.unsubscribeThread,
+							},
+						}
+					: {}),
 			});
 			// FLY-267 判 + 回: when cross-dept channels are configured, gate them on
 			// mention AND route replies back to the source channel (chat/core stay
@@ -1845,15 +1859,8 @@ export function buildCodexLeadRuntime(
 				authSecret: config.botToken,
 				server: inboxServer,
 				gateway: {
-					start: async () => {
-						await gateway.start();
-						try {
-							await replyInThread?.start();
-						} catch (error) {
-							await gateway.stop();
-							throw error;
-						}
-					},
+					start: (): Promise<void> =>
+						startCodexLeadGateway(gateway, replyInThread),
 					stop: async () => {
 						try {
 							await replyInThread?.stop();
@@ -2042,4 +2049,22 @@ if (process.argv[1]?.includes("codex-lead-runtime")) {
 		console.error("[codex-lead-runtime] fatal:", err);
 		process.exit(1);
 	});
+}
+
+/** Restore authority before the gateway can drain persisted inbound cursors. */
+export async function startCodexLeadGateway(
+	gateway: { start(): Promise<void>; stop(): Promise<void> },
+	subscriptions?: {
+		restoreState(): Promise<void>;
+		activateSource(): Promise<void>;
+	},
+): Promise<void> {
+	await subscriptions?.restoreState();
+	await gateway.start();
+	try {
+		await subscriptions?.activateSource();
+	} catch (error) {
+		await gateway.stop();
+		throw error;
+	}
 }

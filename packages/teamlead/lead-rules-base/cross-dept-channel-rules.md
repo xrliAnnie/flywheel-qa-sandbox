@@ -102,6 +102,8 @@ visible to Annie and to the addressed Lead in one place.
 
 ## Reply content discipline
 
+Guard rejection text includes `probe=` readings; quote the full rejection text when reporting a blocked reply.
+
 - This is a **free-form coordination** channel, not an issue thread. Quick
   cross-department questions, hand-offs, and availability checks belong here and
   may be answered **directly in this channel** (`#leads-roundtable`,

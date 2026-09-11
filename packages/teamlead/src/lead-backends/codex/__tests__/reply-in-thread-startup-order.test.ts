@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	CodexDiscordGateway,
@@ -6,11 +9,15 @@ import {
 import { InMemoryInboundCursorStore } from "../InboundCursorStore.js";
 import { RestPollDiscordInboundSource } from "../RestPollDiscordInboundSource.js";
 import { buildReplyInThreadWiring } from "../roundtable-reply-in-thread-wiring.js";
+import {
+	ledgerPath,
+	persistSnapshot,
+} from "../roundtable-subscription-ledger.js";
 
-const RT = "roundtable";
+const RT = "99999999999999999";
 const BOT = "bot-self";
 const GUILD = "guild-1";
-const THREAD = "t1";
+const THREAD = "11111111111111111";
 
 /** Combined Discord mock: guild active-threads (discovery) + channel messages (RestPoll). */
 function makeFetch() {
@@ -57,6 +64,20 @@ function json(body: unknown): Response {
 
 describe("FLY-314 Phase 2 startup order (Codex code review #1)", () => {
 	it("gateway-first: a resumed thread's downtime message reaches the router (not dropped)", async () => {
+		const stateDir = mkdtempSync(join(tmpdir(), "rt-startup-"));
+		persistSnapshot(ledgerPath(stateDir), {
+			version: 1,
+			entries: [
+				{
+					threadId: THREAD,
+					parentChannelId: RT,
+					source: "mention",
+					subscribedAt: new Date().toISOString(),
+					lastActivityAt: new Date().toISOString(),
+					expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+				},
+			],
+		});
 		const cursor = new InMemoryInboundCursorStore();
 		cursor.save(THREAD, "10"); // we were last at id 10 in the thread before restart
 		const fetchImpl = makeFetch();
@@ -68,6 +89,7 @@ describe("FLY-314 Phase 2 startup order (Codex code review #1)", () => {
 			setTimer: () => ({ cancel: () => {} }),
 		});
 		const wiring = buildReplyInThreadWiring({
+			stateDir,
 			cfg: { enabled: true, parentChannelId: RT, guildId: GUILD },
 			botToken: "tok",
 			botUserId: BOT,
@@ -100,14 +122,15 @@ describe("FLY-314 Phase 2 startup order (Codex code review #1)", () => {
 			logger: { warn: () => {} },
 		});
 
-		// CORRECT ORDER (the fix): gateway installs the onMessage handler first, THEN
-		// discovery drains the newly-subscribed thread.
+		// Restore authority before traffic; install handlers before dynamic drain.
+		await wiring.restoreState();
 		await gateway.start();
-		await wiring.start();
+		await wiring.activateSource();
 
 		// the downtime message (id 11) was delivered to the router, not silently dropped
 		expect(submits).toContain("11");
 		await wiring.stop();
 		await gateway.stop();
+		rmSync(stateDir, { recursive: true, force: true });
 	});
 });

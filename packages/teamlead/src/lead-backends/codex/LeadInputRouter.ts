@@ -135,6 +135,9 @@ export interface LeadInputRouterOptions {
 	 * budget reset must require a durably-accepted NEW topic, not an at-least-once
 	 * re-delivery of an old top-level message). Absent → no-op (byte-compat). */
 	onTopicEngaged?: (route: RoundtableReplyRoute) => void;
+	onInputAccepted?: (
+		entry: Pick<JournalEntry, "replyChannelId" | "replyRoute">,
+	) => void;
 	/** Durable inbound→turn→outbound completion hook. It runs only after the
 	 * journal reaches completed; failures are logged so an already-delivered
 	 * response is never mislabeled ambiguous. */
@@ -156,6 +159,7 @@ export class LeadInputRouter {
 		route: RoundtableReplyRoute,
 	) => Promise<void>;
 	private readonly onTopicEngaged?: (route: RoundtableReplyRoute) => void;
+	private readonly onInputAccepted?: LeadInputRouterOptions["onInputAccepted"];
 	private readonly onEntryCompleted?: LeadInputRouterOptions["onEntryCompleted"];
 	private readonly corr: () => string;
 	private readonly logger: {
@@ -177,6 +181,7 @@ export class LeadInputRouter {
 		this.typing = opts.typing;
 		this.ensureReplyRoute = opts.ensureReplyRoute;
 		this.onTopicEngaged = opts.onTopicEngaged;
+		this.onInputAccepted = opts.onInputAccepted;
 		this.onEntryCompleted = opts.onEntryCompleted;
 		this.corr =
 			opts.correlationFactory ?? (() => globalThis.crypto.randomUUID());
@@ -199,6 +204,7 @@ export class LeadInputRouter {
 			// re-delivery (which dedups to accepted=false here). entry.replyRoute is set
 			// only for the top-level→thread route, so this fires exactly on topic engage.
 			if (entry.replyRoute) this.onTopicEngaged?.(entry.replyRoute);
+			this.onInputAccepted?.(entry);
 			this.queue.push(entry.id);
 			void this.pump();
 		}
@@ -220,6 +226,7 @@ export class LeadInputRouter {
 			if (result.entry.replyRoute) {
 				this.onTopicEngaged?.(result.entry.replyRoute);
 			}
+			this.onInputAccepted?.(result.entry);
 			this.queue.push(result.entry.id);
 			void this.pump();
 		}

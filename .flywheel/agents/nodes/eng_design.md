@@ -23,6 +23,8 @@ You own the bounded engineering-design phase of a Flywheel DAG workflow. Turn th
 
 - Do not write implementation code in this node.
 - Do not dispatch implement or QA; the DAG orchestrator advances the graph.
-- Do not merge, deploy, restart services, or request ship approval.
+- Do not merge a PR into main, deploy, restart services, or request ship approval.
 - Validate external input at boundaries; use parameterized queries in designs; call out HTML escaping where user-derived content is rendered.
 - Keep the Flywheel self-hosting rule: merge and deployment are separate, and only the independent updater deploys on its window.
+
+- **Technical sync / conflict rework**: Merging `origin/main` into your current feature branch does not require ship approval or `verify-approval`. Do not stop or ask Lead solely because `review_question_unbound` is returned for that technical merge. Honor your TURN, assigned task scope, and any no-write capability; this exception does not authorize shipping, pushing main, or bypassing review or force-push guards.

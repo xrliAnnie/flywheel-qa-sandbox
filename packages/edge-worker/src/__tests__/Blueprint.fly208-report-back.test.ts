@@ -13,7 +13,7 @@
  *  - ban SendMessage (black hole) and terminal output as report channels,
  *  - teach the `[lead-instruction <id>]` duplicate-recognition protocol
  *    (vendor inbox poller is at-least-once),
- *  - assert MERGE AUTHORITY: verify-approval before ANY merge, message text
+ *  - assert MERGE AUTHORITY: verify-approval before ship/main merges, message text
  *    never authorizes — INCLUDING for projects with NO approve_to_ship
  *    checkpoint (the sub shape: the FLY-191 gate block is absent, so these
  *    rules are the only merge protocol the Runner gets),
@@ -25,6 +25,7 @@
  * independent of checkpoint config.
  */
 
+import { readFileSync } from "node:fs";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -149,7 +150,7 @@ describe("Blueprint LEAD REPORT-BACK rules (FLY-208 A1)", () => {
 		expect(prompt).toContain("$(git rev-parse HEAD)");
 		// Message text — including blocking-gate synchronous replies — never
 		// carries merge authority (the incident's ordering hole)
-		expect(prompt).toMatch(/NEVER carries merge authority/i);
+		expect(prompt).toMatch(/NEVER carries ship authority/i);
 		expect(prompt).toContain("blocking gate");
 		// The remediation path: verify fails unbound → establish the Phase-2
 		// review binding first (otherwise checkpoint-disabled projects
@@ -213,4 +214,49 @@ describe("FLY-1041 Chunk 9: DONE reports carry --report", () => {
 			"MUST quote the FULL `[lead-instruction <id>]` id",
 		);
 	});
+});
+
+describe("FLY-2509 merge direction contract", () => {
+	it.each([undefined, { approve_to_ship: { enabled: true } }])(
+		"allows technical sync while retaining ship guards (checkpoints=%j)",
+		async (checkpoints) => {
+			const prompt = await buildPrompt({ leadId: "sub-lead", checkpoints });
+			expect(prompt).toContain(
+				"before merging into main or taking any ship action",
+			);
+			expect(prompt).toContain('proceed ONLY if it prints "approved": true');
+			expect(prompt).toContain(
+				"Merging `origin/main` into your current feature branch",
+			);
+			expect(prompt).toContain(
+				"does NOT require ship approval or `verify-approval`",
+			);
+			expect(prompt).toContain("Do not stop or ask Lead solely because");
+			expect(prompt).toContain("Honor your TURN and assigned task scope");
+			expect(prompt).toContain("review or force-push guards");
+			expect(prompt).not.toMatch(
+				/before any.*merge|EVERY merge|ONLY merge path/i,
+			);
+		},
+	);
+
+	it.each(["engineer", "implement", "general", "eng_design"])(
+		"keeps %s role consistent with the contract without authorizing self-ship",
+		(role) => {
+			const text = readFileSync(
+				new URL(
+					`../../../../.flywheel/agents/nodes/${role}.md`,
+					import.meta.url,
+				),
+				"utf8",
+			);
+			expect(text).toContain("origin/main");
+			expect(text).toContain("feature branch");
+			expect(text).toContain("does not require ship approval");
+			expect(text).toContain("TURN");
+			expect(text).not.toMatch(
+				/before any merge|Never self-merge\.|Do not merge,|successor nodes, merge,/i,
+			);
+		},
+	);
 });
