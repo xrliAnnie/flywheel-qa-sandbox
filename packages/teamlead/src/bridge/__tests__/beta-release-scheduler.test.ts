@@ -318,3 +318,34 @@ it("isolates a failing project lookup and permits at most four concurrent projec
 	);
 	expect(JSON.stringify(scheduler.snapshot())).not.toContain("secret");
 });
+it("persists Retry-After across restart and does not poll or resubmit the lane early", async () => {
+	const { BetaGitHubError } = await import("../beta-release-github.js");
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	const f = fixture();
+	let now = 0;
+	let observations = 0;
+	const options = {
+		store: store.betaSchedules,
+		transport: f.transport,
+		projects: async () => [projects[0]!],
+		now: () => now,
+	};
+	await new BetaReleaseScheduler(options).tick();
+	now = 6 * hour;
+	await new BetaReleaseScheduler(options).tick();
+	f.transport.observe = async () => {
+		observations++;
+		throw new BetaGitHubError("beta_github_http_429", now + hour);
+	};
+	now += 60000;
+	await new BetaReleaseScheduler(options).tick();
+	expect(observations).toBe(1);
+	now += 60000;
+	await new BetaReleaseScheduler(options).tick();
+	expect(observations).toBe(1);
+	now += hour;
+	await new BetaReleaseScheduler(options).tick();
+	expect(observations).toBe(2);
+	expect(f.dispatched).toHaveLength(1);
+});

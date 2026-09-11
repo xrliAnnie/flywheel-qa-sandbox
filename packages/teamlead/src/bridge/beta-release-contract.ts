@@ -48,3 +48,11 @@ export function betaOccurrenceId(
 		.update(JSON.stringify([project, revision, due]))
 		.digest("hex");
 }
+
+export interface BetaStoredObservation {
+	owner: "legacy" | "paused" | "bridge" | "unknown";
+	status: string;
+	reason: string | null;
+	observedAtMs: number;
+	pollAfterMs: number;
+}

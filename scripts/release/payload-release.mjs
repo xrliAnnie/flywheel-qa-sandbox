@@ -26,7 +26,10 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { ENTITLEMENT_POINTER } from "../../packages/release-contract/src/index.mjs";
+import {
+	ENTITLEMENT_POINTER,
+	validateManifest,
+} from "../../packages/release-contract/src/index.mjs";
 import {
 	baseOf,
 	makeClient,
@@ -78,7 +81,36 @@ async function main() {
 		process.env.FW_PACKER ||
 		path.join(repoRoot, "scripts", "package-onboard.sh");
 
+	const resultFile = argValue("result-file", "");
+	if (resultFile) fs.rmSync(resultFile, { force: true });
 	const client = makeClient({ endpoint, token, log });
+	async function writeResult(outcome, version, expectedSource) {
+		if (!resultFile) return;
+		const { manifest } = await client.readManifest();
+		if (!manifest || validateManifest(manifest).length)
+			throw new Error("cannot produce result from an invalid manifest");
+		const entry = manifest.versions[version];
+		if (
+			!entry ||
+			entry.status !== "active" ||
+			entry.channel !== "beta" ||
+			entry.sourceCommit !== expectedSource
+		)
+			throw new Error("published result does not match an active beta version");
+		const result = {
+			outcome,
+			publishedVersion: version,
+			publishedSourceCommit: entry.sourceCommit,
+			publishedAt: entry.publishedAt,
+		};
+		const temporary = `${resultFile}.${process.pid}.tmp`;
+		fs.writeFileSync(temporary, JSON.stringify(result) + "\n", {
+			flag: "wx",
+			mode: 0o600,
+		});
+		fs.renameSync(temporary, resultFile);
+	}
+
 	const base = fs
 		.readFileSync(path.join(repoRoot, "doc", "VERSION"), "utf8")
 		.trim()
@@ -111,6 +143,7 @@ async function main() {
 		);
 		if (already) {
 			let swept = 0;
+			let winnerVersion = already[1].ver;
 			await client.casUpdate((m) => {
 				const winner = Object.entries(m.releaseOps ?? {}).find(
 					([, op]) =>
@@ -123,12 +156,14 @@ async function main() {
 						`dedup winner for sourceCommit ${sourceCommit} disappeared`,
 					);
 				}
+				winnerVersion = winner[1].ver;
 				swept = abandonOtherLiveBetaOps(m, winner[0]);
 				return swept > 0;
 			}, "dedup-sweep");
 			log(
 				`sourceCommit ${sourceCommit} already published as ${already[1].ver} — nothing to do (dedup; abandoned ${swept} live beta op(s))`,
 			);
+			await writeResult("no_change", winnerVersion, sourceCommit);
 			return;
 		}
 	}
@@ -182,6 +217,7 @@ async function main() {
 			log(
 				`releaseId ${releaseId} already committed as ${op.ver} — idempotent success`,
 			);
+			await writeResult("no_change", op.ver, sourceCommit);
 			return;
 		}
 	}
@@ -281,6 +317,7 @@ async function main() {
 		op.state = "committed";
 		return true;
 	}, "commit");
+	await writeResult("published", pinnedVer, sourceCommit);
 	log(
 		`COMMITTED: ${BETA_POINTER}.latest = ${pinnedVer} (releaseId ${releaseId})`,
 	);

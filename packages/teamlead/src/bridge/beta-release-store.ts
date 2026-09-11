@@ -3,6 +3,7 @@ import {
 	type BetaBinding,
 	type BetaLane,
 	type BetaOccurrence,
+	type BetaStoredObservation,
 	betaOccurrenceId,
 } from "./beta-release-contract.js";
 import type { BetaReceipt } from "./beta-release-receipt.js";
@@ -44,7 +45,32 @@ export class BetaReleaseStore {
 			);
 		if (!columns.some((c) => c.name === "token_env"))
 			this.db.exec("ALTER TABLE beta_schedule_lanes ADD COLUMN token_env TEXT");
+		if (!columns.some((c) => c.name === "observed_owner"))
+			this.db.exec(
+				"ALTER TABLE beta_schedule_lanes ADD COLUMN observed_owner TEXT NOT NULL DEFAULT 'unknown'",
+			);
+		if (!columns.some((c) => c.name === "poll_after_ms"))
+			this.db.exec(
+				"ALTER TABLE beta_schedule_lanes ADD COLUMN poll_after_ms INTEGER NOT NULL DEFAULT 0",
+			);
 	}
+	observation(project: string): BetaStoredObservation | null {
+		return (
+			(this.db
+				.prepare(
+					"SELECT observed_owner AS owner,status,last_error AS reason,COALESCE(observed_at_ms,0) AS observedAtMs,poll_after_ms AS pollAfterMs FROM beta_schedule_lanes WHERE project_name=?",
+				)
+				.get(project) as BetaStoredObservation | undefined) ?? null
+		);
+	}
+	recordObservation(project: string, observation: BetaStoredObservation): void {
+		this.db
+			.prepare(
+				"UPDATE beta_schedule_lanes SET observed_owner=@owner,status=@status,last_error=@reason,observed_at_ms=@observedAtMs,poll_after_ms=@pollAfterMs WHERE project_name=@project",
+			)
+			.run({ ...observation, project });
+	}
+
 	/** Persist interval changes, without undoing the no-burst cursor after settlement. */
 	due(project: string, intervalMs: number, now: number): number | null {
 		if (

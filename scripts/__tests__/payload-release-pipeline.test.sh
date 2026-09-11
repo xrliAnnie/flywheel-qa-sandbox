@@ -114,7 +114,7 @@ run_release() { # $1=release-id, rest env-prefix pairs
 # and dedups (scheduled-run form, plan §3 ⑤).
 run_release_auto() {
   env FW_ENDPOINT="$EP" FW_BETA_PUBLISH_TOKEN="$BETA_TOKEN" FW_PACKER="$PACKER" \
-    node "$RELEASE" --repo-root "$FIX"
+    node "$RELEASE" --repo-root "$FIX" --result-file "$SANDBOX/beta-result.json"
 }
 manifest() { curl -s -H "Authorization: Bearer $OPS_TOKEN" "$EP/admin/manifest"; }
 # jq_manifest <expr> — evaluate a TEST-AUTHORED (trusted, hardcoded in this
@@ -295,6 +295,10 @@ if [ "$RC_AUTO" -eq 0 ] \
 else
   fail "R-auto deterministic releaseId wrong (rc=$RC_AUTO): $OUT_AUTO"
 fi
+if node - "$SANDBOX/beta-result.json" "$HEAD_SHA" published <<'NODE'
+const fs=require('node:fs');const [file,sha,outcome]=process.argv.slice(2);const r=JSON.parse(fs.readFileSync(file));if(r.outcome!==outcome||r.publishedSourceCommit!==sha||!r.publishedVersion||!Number.isFinite(Date.parse(r.publishedAt)))process.exit(1);
+NODE
+then pass "R-result new beta writes a manifest-backed published result"; else fail "R-result published result missing or invalid"; fi
 BETAS_BEFORE_AUTO="$(jq_manifest 'Object.keys(m.versions).filter(v=>v.includes("-beta.")).length')"
 OUT_DEDUP="$(run_release_auto 2>&1)" && RC_DEDUP=0 || RC_DEDUP=$?
 BETAS_AFTER_AUTO="$(jq_manifest 'Object.keys(m.versions).filter(v=>v.includes("-beta.")).length')"
@@ -304,6 +308,11 @@ if [ "$RC_DEDUP" -eq 0 ] && grep -q "already published" <<<"$OUT_DEDUP" \
 else
   fail "R-auto dedup failed (rc=$RC_DEDUP): $OUT_DEDUP"
 fi
+
+if node - "$SANDBOX/beta-result.json" "$HEAD_SHA" no_change <<'NODE'
+const fs=require('node:fs');const [file,sha,outcome]=process.argv.slice(2);const r=JSON.parse(fs.readFileSync(file));if(r.outcome!==outcome||r.publishedSourceCommit!==sha||!r.publishedVersion||!Number.isFinite(Date.parse(r.publishedAt)))process.exit(1);
+NODE
+then pass "R-result dedup writes a manifest-backed no_change result"; else fail "R-result no_change result missing or invalid"; fi
 
 # ── P6 · FLY-1323 · commit --expected-sha256 binds the founder's approval ────
 # The founder-direct publish must bind approval to the candidate tuple, so

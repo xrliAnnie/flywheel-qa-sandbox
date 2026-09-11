@@ -1,5 +1,6 @@
 import type { BetaProjectConfig } from "./beta-release-config-source.js";
 import type { BetaBinding, BetaOccurrence } from "./beta-release-contract.js";
+import { BetaGitHubError } from "./beta-release-github.js";
 import type { BetaReceipt } from "./beta-release-receipt.js";
 import { validateBetaReceipt } from "./beta-release-receipt.js";
 import type { BetaReleaseStore } from "./beta-release-store.js";
@@ -101,7 +102,21 @@ export class BetaReleaseScheduler {
 	private async projectTick(project: BetaProjectConfig): Promise<void> {
 		const { store, transport } = this.options;
 		const now = this.options.now?.() ?? Date.now();
+
 		const signal = this.abort.signal;
+		const prior = store.observation(project.projectName);
+		if (prior && now < prior.pollAfterMs) {
+			this.observations.set(project.projectName, {
+				projectName: project.projectName,
+				owner: prior.owner,
+				intervalHours: project.config?.interval_hours ?? null,
+				status: prior.status,
+				reason: prior.reason,
+				observedAtMs: prior.observedAtMs,
+			});
+			return;
+		}
+		let pollAfterMs = 0;
 		let owner: BetaOwner | "unknown" = "unknown";
 		let status = project.reason ?? "ready";
 		let reason: string | null = project.reason;
@@ -282,11 +297,24 @@ export class BetaReleaseScheduler {
 			if (!occurrence) return;
 			owner = await this.submit(project, binding, occurrence, now);
 			status = store.active(project.projectName)?.state ?? "ready";
-		} catch {
-			// Adapter/source errors may contain credentials. Expose bounded reason codes only.
+		} catch (error) {
 			status = "attention";
-			reason = "beta_observation_failed";
+			reason =
+				error instanceof BetaGitHubError
+					? error.code
+					: "beta_observation_failed";
+			pollAfterMs = Math.max(
+				now + 900000,
+				error instanceof BetaGitHubError ? (error.retryAtMs ?? 0) : 0,
+			);
 		} finally {
+			store.recordObservation(project.projectName, {
+				owner,
+				status,
+				reason,
+				observedAtMs: now,
+				pollAfterMs,
+			});
 			this.observations.set(project.projectName, {
 				projectName: project.projectName,
 				owner,
@@ -330,8 +358,24 @@ export class BetaReleaseScheduler {
 		let runId: number | null = null;
 		try {
 			runId = await transport.dispatch(binding, occurrence, signal);
-		} catch {
-			/* Durable dispatching is ambiguous after a crash or network loss. */
+		} catch (error) {
+			// Preserve uncertain acceptance before publishing a durable observation cooldown.
+			if (error instanceof BetaGitHubError) {
+				store.transition(
+					project.projectName,
+					occurrence.occurrenceId,
+					"dispatching",
+					{
+						state: "dispatch_unknown",
+						lastError: error.code,
+						retryAtMs: Math.max(
+							now + this.backoff(attempts),
+							error.retryAtMs ?? 0,
+						),
+					},
+				);
+				throw error;
+			}
 		}
 		store.transition(
 			project.projectName,

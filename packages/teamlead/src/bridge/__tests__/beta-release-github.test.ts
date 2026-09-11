@@ -202,6 +202,8 @@ it("recovers all matching runs across pages and rechecks known live handles", as
 it("downloads and binds a successful receipt without forwarding credentials to artifact storage", async () => {
 	const { receiptZip } = await import("./beta-release-zip-fixture.js");
 	let redirect = "https://example.blob.core.windows.net/artifact";
+	let outcome = "published";
+	let ancestry = "ahead";
 	const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
 		if (url === redirect) {
 			expect(new Headers(init?.headers).get("Authorization")).toBeNull();
@@ -218,8 +220,11 @@ it("downloads and binds a successful receipt without forwarding credentials to a
 							runId: 33,
 							scheduleKey: occurrence.occurrenceId,
 							sourceCommit: occurrence.sourceCommit,
-							outcome: "published",
-							publishedSourceCommit: occurrence.sourceCommit,
+							outcome,
+							publishedSourceCommit:
+								outcome === "covered_by_newer"
+									? "c".repeat(40)
+									: occurrence.sourceCommit,
 							publishedVersion: "beta-a",
 							publishedAt: "2026-09-11T00:00:00.000Z",
 						}),
@@ -260,6 +265,12 @@ it("downloads and binds a successful receipt without forwarding credentials to a
 					},
 				],
 			});
+		if (url.includes("/compare/"))
+			return json({
+				status: ancestry,
+				behind_by: 0,
+				merge_base_commit: { sha: occurrence.sourceCommit },
+			});
 		if (url.endsWith("/artifacts/55/zip")) {
 			expect(init?.redirect).toBe("manual");
 			return new Response(null, {
@@ -293,6 +304,15 @@ it("downloads and binds a successful receipt without forwarding credentials to a
 	expect(
 		(await api.observe(binding, occurrence, signal)).runs[0]?.receipt?.outcome,
 	).toBe("published");
+	outcome = "covered_by_newer";
+	expect(
+		(await api.observe(binding, occurrence, signal)).runs[0]?.receipt?.outcome,
+	).toBe("covered_by_newer");
+	ancestry = "diverged";
+	await expect(api.observe(binding, occurrence, signal)).rejects.toThrow(
+		"beta_receipt_ancestry",
+	);
+	outcome = "published";
 	redirect = "https://evil.example/artifact";
 	await expect(api.observe(binding, occurrence, signal)).rejects.toThrow(
 		"beta_artifact_redirect",

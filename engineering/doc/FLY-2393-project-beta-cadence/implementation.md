@@ -59,3 +59,13 @@ Artifact：锁定 yauzl 3.4.0 与 @types/yauzl 3.4.0；首次 GitHub API redirec
 TDD：缺 adapter→metadata/owner 绿灯；tokenEnv 重启丢失红灯→加列持久化绿灯；缺 head/dispatch→精确输入/204 绿灯；缺 observe→分页/重复 run 绿灯；缺 ZIP parser→安全反例绿灯；成功 run 缺 artifact 红灯→受限下载与合法 receipt 绿灯；畸形 variables 被当 legacy 红灯→schema fail-closed 绿灯。新增超时与 Retry-After 元数据断言。最终 22 tests PASS（GitHub 7、artifact 1、store 6、scheduler 8），biome 8 files PASS，teamlead typecheck PASS。日志 /tmp/fly2393-adapter-final.log、/tmp/fly2393-adapter-biome.log、/tmp/fly2393-adapter-typecheck.log。
 
 未完成：scheduler 尚未消费 Retry-After/持久化 attention cooldown；binding 重新接入/排空 operator 合同、covered_by_newer 与额外分页/大流量 mutation tests；C3 workflow receiver 与 publisher result-file；C4 plugin/管理台与视觉；C5 全仓 gates/review/PR。没有真实 GitHub dispatch/部署，未声称双项目已上线。
+
+## C2/C3 限流恢复和 publisher 结果（2026-09-11）
+
+调度观测写回 lane 的 owner/status/reason/observedAt/pollAfter；429 Retry-After 与 attention 冷却持久化，重启不提前 poll。dispatch 错误先保留 dispatch_unknown 与原 occurrence，再记录冷却；不会因错误响应丢弃潜在外部请求。恢复测试先红（重启多 poll 一次）再绿。已绑定 lane 具备持久冷却；首次尚未绑定项目的错误与全局配置读取异常仍待生命周期接入时补齐。
+
+payload-release.mjs 新增可选 --result-file：从重新 readManifest + validateManifest 后的 active beta entry 生成 {outcome,publishedVersion,publishedSourceCommit,publishedAt}，新发布 published、同源 dedup/committed 重放 no_change。仅显式要求结果时执行附加读取与严格来源检查，既有 CLI 默认行为保持。结果临时文件+rename 写入；失败不留下上一轮 result。测试先缺文件红灯，再真实 endpoint fixture 下发布/dedup 绿灯。
+
+验证：payload-release-pipeline.test.sh 44 PASS / 0 FAIL（含原 force、CAS、撤回、客户 promote 回归）；scheduler/store 15 tests PASS；GitHub 7 tests PASS，新增 covered_by_newer ahead 接受/diverged 拒绝；teamlead typecheck PASS。日志 /tmp/fly2393-result-green.log、/tmp/fly2393-recovery-green.log、/tmp/fly2393-recovery-typecheck.log、/tmp/fly2393-ancestry.log。
+
+下一步重点 C3 workflow receiver/preflight/冻结来源与 receipt helper、客户三个 workflow 仅 queue:max 授权 diff、结构测试同步；随后 C4 生命周期/管理台和 C5 全仓 gates/review/PR。当前仍未部署或触发真实发布，phase 不完成。
