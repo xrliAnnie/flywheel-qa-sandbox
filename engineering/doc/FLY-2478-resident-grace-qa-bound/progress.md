@@ -2,14 +2,14 @@
 issue: FLY-2478
 phase: implement
 phaseCursor: 9/10
-updated: 2026-09-11T20:47:30.115Z
-nextStep: "Lead four-fix batch: same-revision release preserved (23 tests), wake
-  states separated (44 tests), ship park protected (55 tests). Remaining:
-  request-bound gone proof, aggregate checks, final R4 and exact-head CI."
+updated: 2026-09-11T20:49:38.634Z
+nextStep: All four Lead 453b243c fixes committed; 313 focused tests, lint, full
+  build passed. Final milestone, push, authorized final R4 and exact-head CI;
+  freeze during review. No R5. C9 independent QA.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2478 progress
 **phase**: implement (9/10)
-**next**: Lead four-fix batch: same-revision release preserved (23 tests), wake states separated (44 tests), ship park protected (55 tests). Remaining: request-bound gone proof, aggregate checks, final R4 and exact-head CI.
+**next**: All four Lead 453b243c fixes committed; 313 focused tests, lint, full build passed. Final milestone, push, authorized final R4 and exact-head CI; freeze during review. No R5. C9 independent QA.
