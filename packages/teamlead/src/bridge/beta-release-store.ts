@@ -10,7 +10,7 @@ import type { BetaReceipt } from "./beta-release-receipt.js";
 const laneSelect = `project_name AS projectName, repo_id AS repositoryId, canonical_repo AS canonicalRepo,
  workflow_id AS workflowId, default_branch AS defaultBranch, binding_revision AS bindingRevision,
  activated_at_ms AS activatedAtMs, last_due_at_ms AS lastDueAtMs, next_due_at_ms AS nextDueAtMs,
- active_occurrence_id AS activeOccurrenceId, interval_ms AS intervalMs`;
+ active_occurrence_id AS activeOccurrenceId, interval_ms AS intervalMs, token_env AS tokenEnv`;
 const occurrenceSelect = `occurrence_id AS occurrenceId, project_name AS projectName,
  binding_revision AS bindingRevision, scheduled_at_ms AS scheduledAtMs, source_commit AS sourceCommit,
  state, run_ids_json AS runIdsJson, attempt_count AS attemptCount, retry_at_ms AS retryAtMs,
@@ -42,6 +42,8 @@ export class BetaReleaseStore {
 			this.db.exec(
 				"ALTER TABLE beta_schedule_lanes ADD COLUMN interval_ms INTEGER",
 			);
+		if (!columns.some((c) => c.name === "token_env"))
+			this.db.exec("ALTER TABLE beta_schedule_lanes ADD COLUMN token_env TEXT");
 	}
 	/** Persist interval changes, without undoing the no-burst cursor after settlement. */
 	due(project: string, intervalMs: number, now: number): number | null {
@@ -74,21 +76,23 @@ export class BetaReleaseStore {
 			.immediate();
 	}
 	lanes(): BetaLane[] {
-		return this.db
-			.prepare(
-				`SELECT ${laneSelect} FROM beta_schedule_lanes ORDER BY project_name`,
-			)
-			.all() as BetaLane[];
+		return (
+			this.db
+				.prepare(
+					`SELECT ${laneSelect} FROM beta_schedule_lanes ORDER BY project_name`,
+				)
+				.all() as BetaLane[]
+		).map((lane) => ({ ...lane, tokenEnv: lane.tokenEnv ?? undefined }));
 	}
 	lane(project: string): BetaLane | null {
-		return (
-			(this.db
-				.prepare(
-					`SELECT ${laneSelect} FROM beta_schedule_lanes WHERE project_name = ?`,
-				)
-				.get(project) as BetaLane | undefined) ?? null
-		);
+		const lane = this.db
+			.prepare(
+				`SELECT ${laneSelect} FROM beta_schedule_lanes WHERE project_name=?`,
+			)
+			.get(project) as BetaLane | undefined;
+		return lane ? { ...lane, tokenEnv: lane.tokenEnv ?? undefined } : null;
 	}
+
 	active(project: string): BetaOccurrence | null {
 		const id = this.lane(project)?.activeOccurrenceId;
 		if (!id) return null;
@@ -129,9 +133,9 @@ export class BetaReleaseStore {
 					activeOccurrenceId: null,
 				};
 				this.db
-					.prepare(`INSERT INTO beta_schedule_lanes (project_name,repo_id,canonical_repo,workflow_id,default_branch,binding_revision,activated_at_ms,next_due_at_ms,interval_ms)
-			 VALUES (@projectName,@repositoryId,@canonicalRepo,@workflowId,@defaultBranch,@bindingRevision,@activatedAtMs,@nextDueAtMs,@intervalMs)`)
-					.run(lane);
+					.prepare(`INSERT INTO beta_schedule_lanes (project_name,repo_id,canonical_repo,workflow_id,default_branch,binding_revision,activated_at_ms,next_due_at_ms,interval_ms,token_env)
+			 VALUES (@projectName,@repositoryId,@canonicalRepo,@workflowId,@defaultBranch,@bindingRevision,@activatedAtMs,@nextDueAtMs,@intervalMs,@tokenEnv)`)
+					.run({ ...lane, tokenEnv: binding.tokenEnv ?? null });
 				return lane;
 			})
 			.immediate();

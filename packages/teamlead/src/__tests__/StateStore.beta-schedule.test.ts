@@ -236,3 +236,28 @@ it("keeps 6h and 24h ledgers independent over 48h", async () => {
 		store.close();
 	}
 });
+it("retains the credential variable name with the frozen binding across restart", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beta-token-binding-"));
+	let store = await StateStore.create(join(root, "state.db"));
+	try {
+		store.betaSchedules.bind(
+			{
+				projectName: "a",
+				repositoryId: 1,
+				canonicalRepo: "test/a",
+				workflowId: 2,
+				defaultBranch: "main",
+				bindingRevision: "r",
+				tokenEnv: "A_TOKEN",
+			},
+			0,
+			3600000,
+		);
+		store.close();
+		store = await StateStore.create(join(root, "state.db"));
+		expect(store.betaSchedules.lane("a")?.tokenEnv).toBe("A_TOKEN");
+	} finally {
+		store.close();
+		await rm(root, { recursive: true, force: true });
+	}
+});

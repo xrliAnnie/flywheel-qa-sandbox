@@ -7,6 +7,7 @@ export interface BetaBinding {
 	workflowId: number;
 	defaultBranch: string;
 	bindingRevision: string;
+	tokenEnv?: string;
 }
 export interface BetaLane extends BetaBinding {
 	activatedAtMs: number;

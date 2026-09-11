@@ -47,3 +47,15 @@ Recovered retention tests had two remaining stale numeric assertions (205/202); 
 TDD：缺 scheduler 红灯→48h 8/2 与 legacy/paused 绿灯；未知重试/暂停后 prepared 恢复红灯→绿灯；旧 run 终态错误耗尽未知 POST 红灯→保留 active 绿灯；删除项目不结算红灯→冻结 lane 继续观察绿灯；not_activated 占住周期红灯→持久结果/下一周期绿灯。最终 14 定向 tests PASS（8 scheduler、1 receipt、5 store），teamlead typecheck PASS。日志 /tmp/fly2393-scheduler-final.log、/tmp/fly2393-scheduler-typecheck.log。
 
 待续：C2/C3 真实 transport 的 10s abort、Retry-After/错误分类、分页/所有重复 run/安全 zip、冻结凭据绑定、durable owner 观测及低频 attention；C3 receiver 与 publisher 结果文件；C4 plugin/UI；C5 全仓验证和 code review。尚未接入 plugin 或对外发布，不报告完整 A1/A11 已验收。
+
+## C3 GitHub transport 与受限 artifact（进行中，2026-09-11）
+
+新增 beta-release-github.ts：显式项目凭据（不 fallback GH_TOKEN）、metadata 数字 repo/workflow 绑定、完整 owner variables 分页、固定 2026-03-10 API 与 api.github.com、每次请求 10s timeout、JSON 响应 2MiB 上限、错误不带响应/credential 内容。dispatch 精确三个 inputs，200 workflow_run_id + 同仓 URL 才 accepted；204/异常保持 unknown。分页查 workflow runs 并逐个重新 GET 已知/重复 run，核对 repo/workflow/event/ref/title；成功才下载 receipt。绑定新增 tokenEnv 字段，仅变量名持久化，供重启/删除项目后继续核对原 run。
+
+Artifact：锁定 yauzl 3.4.0 与 @types/yauzl 3.4.0；首次 GitHub API redirect manual，第二次仅精确后缀白名单 HTTPS blob/actions storage，剥离 Authorization/cookies，不跟随二次跳转。下载实际流量≤64KiB；lazyEntries/strictFileNames/validateEntrySizes、唯一 regular receipt.json、声明与实际展开≤4KiB，无落盘。测试拒绝 zip-slip/绝对路径/symlink/多文件/encryption/bomb/伪造 size/损坏 zip/非法 JSON/abort；成功 receipt 严格绑定 tuple。covered_by_newer 增 GitHub compare ancestry 检查，仍待该分支专门回归。
+
+官方依据（2026-09-11 查阅）：https://docs.github.com/en/rest/actions/workflows （200 返回 workflow_run_id/run_url/html_url）；https://github.com/thejoshwolfe/yauzl （安全解析选项）。
+
+TDD：缺 adapter→metadata/owner 绿灯；tokenEnv 重启丢失红灯→加列持久化绿灯；缺 head/dispatch→精确输入/204 绿灯；缺 observe→分页/重复 run 绿灯；缺 ZIP parser→安全反例绿灯；成功 run 缺 artifact 红灯→受限下载与合法 receipt 绿灯；畸形 variables 被当 legacy 红灯→schema fail-closed 绿灯。新增超时与 Retry-After 元数据断言。最终 22 tests PASS（GitHub 7、artifact 1、store 6、scheduler 8），biome 8 files PASS，teamlead typecheck PASS。日志 /tmp/fly2393-adapter-final.log、/tmp/fly2393-adapter-biome.log、/tmp/fly2393-adapter-typecheck.log。
+
+未完成：scheduler 尚未消费 Retry-After/持久化 attention cooldown；binding 重新接入/排空 operator 合同、covered_by_newer 与额外分页/大流量 mutation tests；C3 workflow receiver 与 publisher result-file；C4 plugin/管理台与视觉；C5 全仓 gates/review/PR。没有真实 GitHub dispatch/部署，未声称双项目已上线。
