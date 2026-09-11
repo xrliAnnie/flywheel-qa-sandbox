@@ -1288,6 +1288,51 @@ describe("complete command", () => {
 		}
 	});
 
+	it.each(["rework_content_not_delivered", "rework_receipt_identity_conflict"])(
+		"FLY-2504 %s refuses without retry or completion marker",
+		async (reason) => {
+			mockFetch.mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						error: "workflow_completion_rejected",
+						reason,
+						retryable: false,
+						detail: {
+							requestId: "rework-1",
+							deliveryState: "replacement_pending",
+							routeRevision: 2,
+						},
+					}),
+					{ status: 409 },
+				),
+			);
+			await expect(complete({ route: "needs_review", pr: 42 })).rejects.toThrow(
+				"process.exit(1)",
+			);
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+			expect(
+				existsSync(
+					join(
+						tmpHome,
+						".flywheel",
+						"state",
+						"complete-failed",
+						"exec-108.json",
+					),
+				),
+			).toBe(false);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("This execution is BLOCKED."),
+			);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Do NOT retry blindly."),
+			);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("rework-1"),
+			);
+		},
+	);
+
 	it("retryable Bridge 409 still retries and succeeds", async () => {
 		vi.useFakeTimers();
 		try {

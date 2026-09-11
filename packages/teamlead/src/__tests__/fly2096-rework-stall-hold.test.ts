@@ -1,9 +1,17 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IStartDispatcher } from "../bridge/retry-dispatcher.js";
 import { WorkflowEngineDispatcher } from "../bridge/workflow-engine-dispatcher.js";
+import {
+	buildWorkflowReworkContext,
+	renderWorkflowReworkLaunchStableSection,
+	workflowReworkLaunchDigest,
+} from "../bridge/workflow-rework-context.js";
 import { StateStore } from "../StateStore.js";
 import {
 	legacyWorkflowSeeds,
@@ -32,10 +40,13 @@ const hasLivenessModule = await import(
 );
 
 const stores: StateStore[] = [];
+const launchRoots: string[] = [];
 const commDbs: CommDB[] = [];
 
 afterEach(() => {
 	for (const store of stores.splice(0)) store.close();
+	for (const root of launchRoots.splice(0))
+		rmSync(root, { recursive: true, force: true });
 	for (const commDb of commDbs.splice(0)) commDb.close();
 });
 
@@ -344,6 +355,52 @@ async function seedLaunchedReplacement(): Promise<{
 		)
 		.get(REPLACEMENT_ID) as { consumed_at: string | null } | undefined;
 	expect(launchAttempt?.consumed_at).not.toBeNull();
+	const request = store.getWorkflowReworkRequest(REQUEST_ID)!;
+	const route = store.getLatestWorkflowReworkRoute(REQUEST_ID)!;
+	const built = buildWorkflowReworkContext({ request, route });
+	if (!built.ok) throw new Error(built.reason);
+	const reworkContentDigest = workflowReworkLaunchDigest({
+		requestId: REQUEST_ID,
+		routeRevision: route.revision,
+		stableSection: renderWorkflowReworkLaunchStableSection({
+			context: built.context,
+			baseRevision: request.base_revision,
+		}),
+	});
+	const root = mkdtempSync(join(tmpdir(), "fly2096-launch-"));
+	launchRoots.push(root);
+	const markerPath = join(root, "launch.json");
+	const acquired = store.recoverOrAcquireWorkflowLaunch({
+		executionId: REPLACEMENT_ID,
+		ownerId: "dispatcher",
+		now: at(-0.2),
+		leaseExpiresAt: at(10),
+		markerPath,
+	});
+	if (acquired.status !== "acquired") throw new Error(JSON.stringify(acquired));
+	expect(
+		store.prepareWorkflowIssueDelivery({
+			executionId: REPLACEMENT_ID,
+			activationId: "activation-fly2096-qa-replacement-2",
+			ownerId: "dispatcher",
+			ownerGeneration: acquired.generation,
+			deliveryAttempt: acquired.deliveryAttempt,
+			anchorCommit: HEAD,
+			reworkContentDigest,
+			candidate: { sourceKind: "authoritative", body: "FLY-2096 fixture" },
+			now: at(-0.1),
+		}),
+	).toMatchObject({ ok: true });
+	expect(
+		store.fencedCommitWorkflowLaunch({
+			executionId: REPLACEMENT_ID,
+			ownerId: "dispatcher",
+			generation: acquired.generation,
+			deliveryAttempt: acquired.deliveryAttempt,
+			markerPath,
+			now: T0,
+		}),
+	).toMatchObject({ ok: true });
 	expect(
 		store.markWorkflowReworkReplacementLaunched({
 			executionId: REPLACEMENT_ID,

@@ -63,7 +63,22 @@ describe("FLY-2248 sanctioned hold-shape registry", () => {
 				resolve(process.cwd(), "src/bridge/hold-mutation-inventory.json"),
 				"utf8",
 			),
-		) as Array<{ shapeIds: string[] }>;
+		) as Array<{
+			shapeIds: string[];
+			producerSymbols?: string[];
+			causes?: string[];
+		}>;
+		const undeliverable = inventory.find((entry) =>
+			entry.shapeIds.includes("delivery_undeliverable_no_recipient"),
+		);
+		expect(undeliverable?.producerSymbols).toEqual([
+			"finalizeUndeliverableHoldTx",
+			"recordWorkflowDeliveryRerouteOperatorRequired",
+		]);
+		expect(undeliverable?.causes).toEqual([
+			"recipient_unavailable",
+			"rework_content_not_delivered",
+		]);
 		const registered = new Set(EXPECTED_SHAPES);
 		expect(manifest.map(({ id }) => id)).toEqual(EXPECTED_SHAPES);
 		expect(new Set(inventory.flatMap(({ shapeIds }) => shapeIds))).toEqual(

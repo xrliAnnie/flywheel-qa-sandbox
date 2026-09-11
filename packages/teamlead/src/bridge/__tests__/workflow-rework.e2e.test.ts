@@ -715,6 +715,11 @@ describe("FLY-1423 capability-level rework flow", () => {
 					launches.push(request);
 					const generalized = request.generalizedExecution;
 					if (!generalized) throw new Error("generalized execution missing");
+					generalized.prepareWorkflowIssueDelivery?.({
+						sourceKind: "authoritative",
+						body: "Pinned issue context",
+						anchorCommit: baseHead,
+					});
 					const committed = generalized.commitWorkflowLaunch?.();
 					if (!committed?.ok) {
 						throw new Error(committed?.reason ?? "launch commit failed");
@@ -935,6 +940,11 @@ describe("FLY-1423 capability-level rework flow", () => {
 					launches.push(request);
 					const generalized = request.generalizedExecution;
 					if (!generalized) throw new Error("generalized execution missing");
+					generalized.prepareWorkflowIssueDelivery?.({
+						sourceKind: "authoritative",
+						body: "Pinned issue context",
+						anchorCommit: baseHead,
+					});
 					const committed = generalized.commitWorkflowLaunch?.();
 					if (!committed?.ok) {
 						throw new Error(committed?.reason ?? "launch commit failed");

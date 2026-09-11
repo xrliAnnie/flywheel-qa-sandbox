@@ -502,6 +502,7 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	if (ingestToken) headers.Authorization = `Bearer ${ingestToken}`;
 
 	let lastError: string | undefined;
+	let reworkRefusal: Record<string, unknown> | undefined;
 	let attemptsMade = 0;
 	for (let attempt = 1; attempt <= ATTEMPT_COUNT; attempt += 1) {
 		attemptsMade = attempt;
@@ -558,6 +559,14 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 			lastError = `Bridge returned ${response.status}${detail ? `: ${detail}` : ""}`;
 			if (
 				response.status === 409 &&
+				(responseJson?.reason === "rework_content_not_delivered" ||
+					responseJson?.reason === "rework_receipt_identity_conflict")
+			) {
+				reworkRefusal = responseJson;
+				break;
+			}
+			if (
+				response.status === 409 &&
 				responseJson?.reason === "consume_pending_mail"
 			) {
 				printDrainRetryGuidance(responseJson, opts);
@@ -585,6 +594,22 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 			const delay = BACKOFF_MS[attempt - 1] ?? 0;
 			await sleep(delay);
 		}
+	}
+
+	if (reworkRefusal) {
+		const detail = reworkRefusal.detail as
+			| { requestId?: unknown; deliveryState?: unknown }
+			| undefined;
+		console.error(
+			`[complete] refused (${reworkRefusal.reason}): rework ${detail?.requestId ?? "unknown"} for this node is in delivery state "${detail?.deliveryState ?? "unknown"}"; this execution never received the rework content.`,
+		);
+		console.error(
+			"This execution is BLOCKED. It cannot complete until the Lead reroutes or re-delivers the rework; the Lead has been alerted.",
+		);
+		console.error(
+			"Do NOT retry blindly. `flywheel-comm turn` / `flywheel-comm inbox` only read instructions already sent; if a Lead instruction or rework wake arrives, act on it and complete again.",
+		);
+		process.exit(1);
 	}
 
 	// All retries exhausted — fail-close + marker file.

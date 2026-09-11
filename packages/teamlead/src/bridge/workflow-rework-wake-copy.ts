@@ -1,16 +1,7 @@
-function isNodeReuseContext(context: unknown): boolean {
-	if (!context || typeof context !== "object" || Array.isArray(context)) {
-		return false;
-	}
-	const authorityContext = (context as { authorityContext?: unknown })
-		.authorityContext;
-	return (
-		authorityContext !== null &&
-		typeof authorityContext === "object" &&
-		!Array.isArray(authorityContext) &&
-		(authorityContext as { kind?: unknown }).kind === "node_reuse"
-	);
-}
+import {
+	isWorkflowReworkNodeReuseContext,
+	renderWorkflowReworkContextLine,
+} from "./workflow-rework-context.js";
 
 function renderLeadAttribution(context: unknown): string | undefined {
 	if (!context || typeof context !== "object" || Array.isArray(context)) {
@@ -72,11 +63,10 @@ export function renderWorkflowReworkWakeContent(input: {
 	executionId: string;
 	context: unknown;
 }): string {
-	const nodeReuse = isNodeReuseContext(input.context);
+	const nodeReuse = isWorkflowReworkNodeReuseContext(input.context);
 	const activation = nodeReuse
 		? "New verification round"
 		: "Workflow rework activation";
-	const contextLabel = nodeReuse ? "Verification context" : "Rework context";
 	const leadAttribution = renderLeadAttribution(input.context);
-	return `[phase-wake ${input.wakeId}] ${activation} ${input.activationId} is ready at TURN epoch ${input.epoch}. FIRST run flywheel-comm turn --exec-id ${input.executionId}; proceed only if it answers yours. ${leadAttribution ? `${leadAttribution} ` : ""}${contextLabel}: ${JSON.stringify(input.context)}`;
+	return `[phase-wake ${input.wakeId}] ${activation} ${input.activationId} is ready at TURN epoch ${input.epoch}. FIRST run flywheel-comm turn --exec-id ${input.executionId}; proceed only if it answers yours. ${leadAttribution ? `${leadAttribution} ` : ""}${renderWorkflowReworkContextLine(input.context)}`;
 }

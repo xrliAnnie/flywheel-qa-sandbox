@@ -1,0 +1,16 @@
+flowchart TB
+  A[停驻体判死<br/>送达行 → replacement_pending] --> B[引擎铸替身<br/>route revision N+1]
+  B --> C{M0 围栏<br/>本 attempt 是开放返工目标?}
+  C -->|不是本请求的替身| C1[不启动, 等协调器收敛]
+  C -->|是本请求的替身| D[M1 拼返工段放最前<br/>写入 launch 证据事件]
+  C -->|不是返工目标| D0[普通启动, 不受影响]
+  D --> E[启动替身 runner]
+  E --> F{M2 一个事务<br/>launch 已提交?<br/>证据摘要 = 重算?}
+  F -->|通过| G[送达行 → wake_delivered]
+  F -->|不通过| H[全不落<br/>送达行留在 replacement_pending]
+  G --> I[替身 complete]
+  H --> I
+  I --> J{M3 完成守卫<br/>送达行已发出?}
+  J -->|是| K[接受, 派 QA]
+  J -->|否| L[拒绝 409 + 事件 + 告警<br/>run 进入 operator 面]
+  L --> M[M4 CLI 告知已阻塞<br/>等 Lead 处置]
