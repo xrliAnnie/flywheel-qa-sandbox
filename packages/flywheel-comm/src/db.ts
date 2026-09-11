@@ -502,6 +502,7 @@ export interface PatrolTurnWaitRow {
 	holderExecId: string;
 	epoch: number;
 	firstSeenAt: number;
+	suppressedReason?: string;
 }
 
 export interface PatrolTurnWakeRow {
@@ -6851,7 +6852,8 @@ export class CommDB {
 					? []
 					: (this.db
 							.prepare(
-								`SELECT execution_id, holder_exec_id, epoch, first_seen_at
+								`SELECT execution_id, holder_exec_id, epoch, first_seen_at,
+                                ${columnsFor("turn_wait_ledger").has("suppressed_reason") ? "suppressed_reason" : "NULL"} AS suppressed_reason
 								   FROM turn_wait_ledger
 								  WHERE execution_id IN (${waitExecutionIds.map(() => "?").join(",")})
 								  ORDER BY execution_id, epoch, holder_exec_id, first_seen_at`,
@@ -6861,6 +6863,7 @@ export class CommDB {
 							holder_exec_id: string;
 							epoch: number;
 							first_seen_at: number;
+							suppressed_reason: string | null;
 						}>);
 			const waits = new Map<string, PatrolTurnWaitRow[]>();
 			for (const row of waitRows) {
@@ -6870,6 +6873,9 @@ export class CommDB {
 					holderExecId: row.holder_exec_id,
 					epoch: row.epoch,
 					firstSeenAt: row.first_seen_at,
+					...(row.suppressed_reason
+						? { suppressedReason: row.suppressed_reason }
+						: {}),
 				});
 				waits.set(row.execution_id, list);
 			}

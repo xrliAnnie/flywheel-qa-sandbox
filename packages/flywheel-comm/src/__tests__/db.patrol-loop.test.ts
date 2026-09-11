@@ -26,6 +26,44 @@ describe("FLY-1925 CommDB patrol loop snapshot", () => {
 		return { path, writer, raw };
 	}
 
+	it("projects suppression and reads old optional-column-free ledgers", () => {
+		const { path, writer, raw } = database();
+		raw.exec(
+			"INSERT INTO turn_wait_ledger (execution_id,holder_exec_id,epoch,first_seen_at,suppressed_reason) VALUES ('waiter','holder',1,1,'not_current_actor')",
+		);
+		const read = () => {
+			const reader = CommDB.openReadonly(path);
+			try {
+				return reader.readPatrolTurnSnapshot({
+					issueIds: [],
+					executionIds: ["waiter"],
+					nowMs: 100,
+				});
+			} finally {
+				reader.close();
+			}
+		};
+		try {
+			const current = read();
+			expect(current.judgment.available).toBe(true);
+			if (!current.judgment.available) throw new Error("unavailable");
+			expect(current.judgment.waits.get("waiter")?.[0]).toMatchObject({
+				suppressedReason: "not_current_actor",
+			});
+			raw.exec(`DROP TABLE turn_wait_ledger;
+    CREATE TABLE turn_wait_ledger (execution_id TEXT,holder_exec_id TEXT,epoch INTEGER,first_seen_at INTEGER);
+    INSERT INTO turn_wait_ledger VALUES ('waiter','holder',1,1);`);
+			const legacy = read();
+			expect(legacy.judgment.available).toBe(true);
+			if (!legacy.judgment.available) throw new Error("unavailable");
+			expect(
+				legacy.judgment.waits.get("waiter")?.[0]?.suppressedReason,
+			).toBeUndefined();
+		} finally {
+			writer.close();
+		}
+	});
+
 	it("takes one typed snapshot and unions an off-roster TURN holder into waits", () => {
 		const { path, writer, raw } = database();
 		const nowMs = Date.parse("2026-08-20T12:00:00.000Z");

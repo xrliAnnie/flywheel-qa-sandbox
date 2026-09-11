@@ -55,6 +55,7 @@ export interface PatrolLoopWait {
 	holderExecId: string;
 	epoch: number;
 	firstSeenAt: number;
+	suppressedReason?: string;
 }
 
 export interface PatrolLoopRun {
@@ -354,7 +355,10 @@ function classifyTurnWaits(facts: PatrolLoopFacts): {
 		}
 		if (!rosterExecutionIds.has(wait.executionId)) continue;
 		blockedExecutionIds.add(wait.executionId);
-		if (facts.nowMs - wait.firstSeenAt >= PATROL_RED_MIN_WAIT_MS) {
+		if (
+			!wait.suppressedReason &&
+			facts.nowMs - wait.firstSeenAt >= PATROL_RED_MIN_WAIT_MS
+		) {
 			redWaiters.push(wait);
 		}
 	}

@@ -1,10 +1,12 @@
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordTurnCommandSideEffects, turnStatus } from "../commands/turn.js";
 import { CommDB } from "../db.js";
+import { resolveTurnWaitStateDbPath } from "../turn-wait-state.js";
 
 describe("TURN wait actor authority (FLY-2507)", () => {
 	let dir: string;
@@ -146,5 +148,105 @@ describe("TURN wait actor authority (FLY-2507)", () => {
 			}).waitAsked,
 		).toBe(false);
 		expect(comm.listTurnWaitLedger("impl")).toEqual([]);
+	});
+	it("wires explicit StateStore into the real turn CLI without changing stdout", () => {
+		comm.observeTurnWait({
+			executionId: "impl",
+			holderExecId: "qa",
+			phase: "qa",
+			epoch: 1,
+			observedAtMs: Date.now() - 30 * 60_000,
+			askAfterMs: 60 * 60_000,
+		});
+		const result = spawnSync(
+			process.execPath,
+			[
+				"dist/index.js",
+				"turn",
+				"--db",
+				join(dir, "comm.db"),
+				"--state-db",
+				stateDbPath,
+				"--json",
+			],
+			{
+				encoding: "utf8",
+				env: {
+					...process.env,
+					FLYWHEEL_EXEC_ID: "impl",
+					FLYWHEEL_TURN_WAIT_ASK_MINUTES: "5",
+				},
+			},
+		);
+		expect(result.status, result.stderr).toBe(0);
+		expect(JSON.parse(result.stdout)).toMatchObject({
+			answer: "not-yours",
+			holderExecId: "qa",
+			epoch: 1,
+		});
+		expect(comm.getPendingQuestions("lead")).toEqual([]);
+	});
+	it("accepts the production CommDB path even when supplied by an environment override", () => {
+		const production = join(
+			homedir(),
+			".flywheel",
+			"comm",
+			"flywheel",
+			"comm.db",
+		);
+		expect(
+			resolveTurnWaitStateDbPath(production, "flywheel", undefined, {
+				FLYWHEEL_COMM_DB: production,
+			}),
+		).toBe(join(homedir(), ".flywheel", "teamlead.db"));
+	});
+	it("requires an explicit StateStore for isolated or project-less paths", () => {
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			expect(
+				resolveTurnWaitStateDbPath(
+					join(dir, "comm.db"),
+					"flywheel",
+					undefined,
+					{},
+				),
+			).toBeUndefined();
+			expect(
+				resolveTurnWaitStateDbPath(
+					join(dir, "comm.db"),
+					undefined,
+					undefined,
+					{},
+				),
+			).toBeUndefined();
+			expect(
+				resolveTurnWaitStateDbPath(
+					join(dir, "comm.db"),
+					undefined,
+					stateDbPath,
+					{},
+				),
+			).toBe(stateDbPath);
+			expect(
+				resolveTurnWaitStateDbPath(join(dir, "comm.db"), undefined, undefined, {
+					TEAMLEAD_DB_PATH: stateDbPath,
+				}),
+			).toBe(stateDbPath);
+			expect(log).toHaveBeenCalledTimes(2);
+		} finally {
+			log.mockRestore();
+		}
+	});
+	it("retains alerts with a diagnostic when the StateStore schema is unavailable", () => {
+		state.exec("DROP TABLE workflow_run");
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			expect(observe().waitAsked).toBe(true);
+			expect(log).toHaveBeenCalledWith(
+				expect.stringContaining("workflow actor unavailable"),
+			);
+		} finally {
+			log.mockRestore();
+		}
 	});
 });

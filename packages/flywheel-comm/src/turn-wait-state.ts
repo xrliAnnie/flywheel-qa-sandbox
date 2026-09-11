@@ -1,4 +1,7 @@
+import { resolve } from "node:path";
 import Database from "better-sqlite3";
+import { commDbPathForProject } from "flywheel-config";
+import { resolveStateDbPath } from "./commands/verify-approval.js";
 
 /** Read live actor authority before acquiring the CommDB write lock. */
 export function readTurnWaitSuppression(
@@ -63,4 +66,26 @@ export function readTurnWaitSuppression(
 	} finally {
 		state?.close();
 	}
+}
+
+/** Reuse existing resolvers; an isolated CommDB must name its StateStore. */
+export function resolveTurnWaitStateDbPath(
+	commDbPath: string,
+	project: string | undefined,
+	override?: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	if (
+		override?.trim() ||
+		env.FLYWHEEL_STATE_DB_PATH?.trim() ||
+		env.TEAMLEAD_DB_PATH?.trim() ||
+		(project &&
+			resolve(commDbPath) === resolve(commDbPathForProject(project, {})))
+	) {
+		return resolveStateDbPath(override, env);
+	}
+	console.error(
+		"[turn] isolated or unscoped CommDB requires --state-db or a StateStore environment override; retaining TURN wait alerts",
+	);
+	return undefined;
 }

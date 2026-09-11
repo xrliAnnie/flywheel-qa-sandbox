@@ -80,6 +80,29 @@ describe("FLY-1925 patrol loop red-light predicate", () => {
 		expect(judgeLoopLight(facts())).toEqual({ light: "red" });
 	});
 
+	it("excludes suppressed waits only from the aged red-wait predicate", () => {
+		const input = facts();
+		input.waits[0] = {
+			...input.waits[0]!,
+			suppressedReason: "not_current_actor",
+		};
+		expect(judgeLoopLight(input)).toEqual({ light: "not_triggered" });
+		input.attempts = [
+			{
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 1,
+				state: "running",
+				executionId: "exec-waiter",
+			},
+		];
+		input.parkedExecutionIds = ["exec-holder"];
+		expect(judgeLoopLight(input)).toEqual({
+			light: "red",
+			redCause: { kind: "holder_parked" },
+		});
+	});
+
 	describe("QA round 3 inactive-holder loop-existence gate", () => {
 		describe("must be red when no S1-S5 loop exists", () => {
 			it("marks shape ④ red when the holder session is completed", () => {

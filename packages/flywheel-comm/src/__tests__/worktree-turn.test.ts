@@ -394,7 +394,11 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 				.prepare("PRAGMA table_info(turn_wait_ledger)")
 				.all() as Array<{ name: string }>;
 			expect(columns.map(({ name }) => name)).toEqual(
-				expect.arrayContaining(["no_turn_streak", "last_no_turn_at"]),
+				expect.arrayContaining([
+					"no_turn_streak",
+					"last_no_turn_at",
+					"suppressed_reason",
+				]),
 			);
 		} finally {
 			migrated.close();
