@@ -464,6 +464,36 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 				nodeId: this.options.residentHold.nodeId,
 				boundarySeq,
 			});
+			if (
+				!resident.ok &&
+				resident.reason === "stale_boundary" &&
+				this.options.residentHold.current
+			) {
+				const bridgeHold = await this.options.residentHold.current({
+					executionId: this.options.executionId,
+				});
+				if (
+					bridgeHold &&
+					(bridgeHold.state === "resident" || bridgeHold.state === "woken") &&
+					bridgeHold.activationId === this.options.residentHold.activationId &&
+					bridgeHold.nodeId === this.options.residentHold.nodeId
+				) {
+					atomicMergeCodexSessionState(this.options.sessionStatePath, {
+						residentBoundarySeq: bridgeHold.boundarySeq,
+						phaseHold: {
+							schemaVersion: 2,
+							nodeId: bridgeHold.nodeId,
+							residentRevision: bridgeHold.revision,
+							graceExpiresAt: bridgeHold.graceExpiresAt,
+							state: "entering",
+							enteredAt,
+							deadlineRemainingMs: budget.deadlineRemainingMs,
+							hardDeadlineRemainingMs: budget.hardDeadlineRemainingMs,
+						},
+					});
+					return;
+				}
+			}
 			if (!resident.ok) {
 				throw new Error(`resident hold refused: ${resident.reason}`);
 			}
