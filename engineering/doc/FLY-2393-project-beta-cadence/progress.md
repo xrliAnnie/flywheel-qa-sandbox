@@ -1,14 +1,15 @@
 ---
 issue: FLY-2393
 phase: implement
-phaseCursor: 0/5
-updated: 2026-09-11T02:25:03.710Z
-nextStep: C1 config TDD; installing locked dependencies (vitest absent); Lead
-  scope question bedfb3f4-ab23-42bf-bbb5-ac06f8b68df0 pending; plan unchanged
+phaseCursor: 1/5
+updated: 2026-09-11T02:30:40.988Z
+nextStep: 739bb60cd config parser/source green; C1 numeric binding awaits C3;
+  next C2 durable lane/occurrence transactions and fake clock tests. Lead
+  queue:max ruling in implementation.md.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2393 progress
-**phase**: implement (0/5)
-**next**: C1 config TDD; installing locked dependencies (vitest absent); Lead scope question bedfb3f4-ab23-42bf-bbb5-ac06f8b68df0 pending; plan unchanged
+**phase**: implement (1/5)
+**next**: 739bb60cd config parser/source green; C1 numeric binding awaits C3; next C2 durable lane/occurrence transactions and fake clock tests. Lead queue:max ruling in implementation.md.
