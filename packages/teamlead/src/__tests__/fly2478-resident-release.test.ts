@@ -5,7 +5,10 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
-import { legacyEngineeringManifest, legacyLandEngineeringManifest } from "./fixtures/legacy-workflow-manifests.js";
+import {
+	legacyEngineeringManifest,
+	legacyLandEngineeringManifest,
+} from "./fixtures/legacy-workflow-manifests.js";
 
 const T0 = Date.parse("2026-09-11T00:00:00.000Z");
 const VERDICT_AT = "2026-09-11T00:45:00.000Z";
@@ -26,7 +29,9 @@ function rawDb(store: StateStore): Database.Database {
 async function verdictStore(secondLoopTarget = false, shipCarrier = false) {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
-	const manifest = shipCarrier ? legacyEngineeringManifest() : legacyLandEngineeringManifest();
+	const manifest = shipCarrier
+		? legacyEngineeringManifest()
+		: legacyLandEngineeringManifest();
 	if (secondLoopTarget) manifest.loops[1]!.to = "design";
 	store.createWorkflowRun({
 		runId: "run-1",
@@ -77,9 +82,11 @@ async function verdictStore(secondLoopTarget = false, shipCarrier = false) {
 			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'qa' WHERE run_id = 'run-1'",
 		)
 		.run();
-	rawDb(store).prepare(`INSERT INTO workflow_node_pr_binding
+	rawDb(store)
+		.prepare(`INSERT INTO workflow_node_pr_binding
 		(run_id,node_id,attempt,pr_number,head_sha,target_repo_identity,probe_repo_slug,target_repo_path,worktree_binding_generation,receipt_id,bound_at)
-		VALUES ('run-1','implement',1,1164,?,'__main__','xrliAnnie/flywheel','/tmp/flywheel','generation-1','receipt-1',?)`).run(HEAD,new Date(T0).toISOString());
+		VALUES ('run-1','implement',1,1164,?,'__main__','xrliAnnie/flywheel','/tmp/flywheel','generation-1','receipt-1',?)`)
+		.run(HEAD, new Date(T0).toISOString());
 	const entered = store.enterResidentHold({
 		executionId: "impl-1",
 		activationId: "activation:impl-1:run-1:implement:1",
@@ -88,7 +95,10 @@ async function verdictStore(secondLoopTarget = false, shipCarrier = false) {
 		nowMs: T0,
 	});
 	if (!entered.ok) throw new Error(entered.reason);
-	openPark(store, shipCarrier ? "runner_ship_gate_wait" : "rework_reachable_wait");
+	openPark(
+		store,
+		shipCarrier ? "runner_ship_gate_wait" : "rework_reachable_wait",
+	);
 	return store;
 }
 
@@ -131,7 +141,7 @@ describe("FLY-2478 resident release", () => {
 		const store = await verdictStore(false, true);
 		const hold = store.getResidentHold("impl-1");
 		const session = store.getSession("impl-1");
-		expect(verdict(store, "qa_pass")).toMatchObject({ok: true});
+		expect(verdict(store, "qa_pass")).toMatchObject({ ok: true });
 		expect(store.getResidentHold("impl-1")).toEqual(hold);
 		const afterCap = "2026-09-11T04:00:00.000Z";
 		expect(store.listResidentExpiryFastLaneProjects(afterCap)).toEqual([]);
@@ -139,15 +149,29 @@ describe("FLY-2478 resident release", () => {
 		expect(store.listPendingResidentExpiryOperations()).toEqual([]);
 		expect(store.getSession("impl-1")).toEqual(session);
 	});
-	it.each(["missing", "cleared", "wrong_activation"])("requires the latest matching open rework park (%s)", async (kind) => {
-		const store = await verdictStore();
-		if (kind === "missing") rawDb(store).prepare("DELETE FROM workflow_engine_park_outbox").run();
-		if (kind === "cleared") rawDb(store).prepare("UPDATE workflow_engine_park_outbox SET event='park_cleared'").run();
-		if (kind === "wrong_activation") rawDb(store).prepare("UPDATE workflow_engine_park_outbox SET activation_id='other'").run();
-		const hold = store.getResidentHold("impl-1");
-		expect(verdict(store, "qa_pass")).toMatchObject({ok:true});
-		expect(store.getResidentHold("impl-1")).toEqual(hold);
-	});
+	it.each(["missing", "cleared", "wrong_activation"])(
+		"requires the latest matching open rework park (%s)",
+		async (kind) => {
+			const store = await verdictStore();
+			if (kind === "missing")
+				rawDb(store).prepare("DELETE FROM workflow_engine_park_outbox").run();
+			if (kind === "cleared")
+				rawDb(store)
+					.prepare(
+						"UPDATE workflow_engine_park_outbox SET event='park_cleared'",
+					)
+					.run();
+			if (kind === "wrong_activation")
+				rawDb(store)
+					.prepare(
+						"UPDATE workflow_engine_park_outbox SET activation_id='other'",
+					)
+					.run();
+			const hold = store.getResidentHold("impl-1");
+			expect(verdict(store, "qa_pass")).toMatchObject({ ok: true });
+			expect(store.getResidentHold("impl-1")).toEqual(hold);
+		},
+	);
 	it("does not shut down or settle an operation after the latest park becomes a ship gate wait", async () => {
 		const store = await verdictStore();
 		const now = "2026-09-11T03:00:01.000Z";
@@ -155,7 +179,10 @@ describe("FLY-2478 resident release", () => {
 		openPark(store, "runner_ship_gate_wait");
 		const before = store.getSession("impl-1");
 		expect(store.listPendingResidentExpiryOperations()).toEqual([]);
-		expect(store.projectResidentExpiry({operationId, now})).toMatchObject({ok:false, reason: "resident_expiry_ship_park"});
+		expect(store.projectResidentExpiry({ operationId, now })).toMatchObject({
+			ok: false,
+			reason: "resident_expiry_ship_park",
+		});
 		expect(store.getSession("impl-1")).toEqual(before);
 		expect(store.getResidentHold("impl-1")?.state).toBe("expired");
 	});
@@ -191,19 +218,34 @@ describe("FLY-2478 resident release", () => {
 	it("preserves a committed release across same-revision boundary renewal", async () => {
 		const store = await verdictStore();
 		openPark(store);
-		expect(verdict(store, "qa_pass")).toMatchObject({ok: true});
+		expect(verdict(store, "qa_pass")).toMatchObject({ ok: true });
 		const before = store.getResidentHold("impl-1")!;
-		expect(store.enterResidentHold({
-			executionId: "impl-1", activationId: before.activation_id,
-			nodeId: "implement", boundarySeq: 2,
-			nowMs: Date.parse(VERDICT_AT) + 1,
-		})).toEqual({ok: true, revision: 1, graceExpiresAt: before.grace_expires_at});
+		expect(
+			store.enterResidentHold({
+				executionId: "impl-1",
+				activationId: before.activation_id,
+				nodeId: "implement",
+				boundarySeq: 2,
+				nowMs: Date.parse(VERDICT_AT) + 1,
+			}),
+		).toEqual({
+			ok: true,
+			revision: 1,
+			graceExpiresAt: before.grace_expires_at,
+		});
 		expect(store.getResidentHold("impl-1")).toMatchObject({
-			boundary_seq: 2, revision: 1, release_cause: before.release_cause,
-			release_source: before.release_source, grace_expires_at: before.grace_expires_at,
+			boundary_seq: 2,
+			revision: 1,
+			release_cause: before.release_cause,
+			release_source: before.release_source,
+			grace_expires_at: before.grace_expires_at,
 			grace_started_at: before.grace_started_at,
 		});
-		expect(store.expireResidentHoldsTx(new Date(Date.parse(VERDICT_AT)+2).toISOString())).toHaveLength(1);
+		expect(
+			store.expireResidentHoldsTx(
+				new Date(Date.parse(VERDICT_AT) + 2).toISOString(),
+			),
+		).toHaveLength(1);
 	});
 
 	it.each(["enter", "completion"] as const)(

@@ -103,3 +103,16 @@ PR #1164 原头 `e4a2e691edbcd3e3e78d67059ae2e9e396caf087` 的 CI run `346397926
 - RED：缺少项目/窗口查询；dispatcher 未传项目名单。GREEN：161 项相关测试，涵盖旧 backlog 退出快速通道、项目名单、10 秒限频，以及维护通道凭后续 ACK 完成释放。lint 与全仓 build 通过。
 
 非阻塞建议已保留供 Lead 跟进：`registry-absence-permanently-stalls-expiry`、`tmux-absence-not-daemon-death`、`release-voided-by-boundary-renewal`、`probe-test-regex-extracts-plugin-source`。本轮不扩大到已裁定保留的死亡证据问题、边界续期语义或测试结构重构。新头需要重新登记代码评审与 CI。
+
+## Lead 裁定后的最终四项修复（R4 输入）
+
+Lead 问题 `453b243c-1ace-455f-9f78-626b229ef975` 明确裁定：R3 新 HIGH 属真缺陷，允许以下四项有界修复并开最终 R4；R4 若有新 HIGH，原文上报，不开 R5。以下行为覆盖前文涉及这些四项的旧实现说明；冻结 plan 不修改。
+
+1. **ship carrier 保护**：判决释放必须匹配最新 open `rework_reachable_wait` park 与 activation。最新 park 是 `runner_ship_gate_wait` 时，到期扫描、快速项目选择、待执行操作与最终投影均跳过；session 不写 completed。正向测试改用 land manifest 并提供真实 PR binding；runner_ship 负向场景断言 PASS 后 hold/session 不变、兜底扫描不发 shutdown。过期操作与新 ship park 相遇也不能投影。
+2. **同 revision 续约**：已有 `release_cause` 时保留 cause/source、grace_started_at 与 grace_expires_at，只更新 boundary；无待释放判决时正常续期。返工后新 revision 清理 metadata 的原测试继续通过。
+3. **request-bound gone**：只有本 execution + 本 operationId 的 shutdown control 为 requested，probe 才获得放行 gone 的证据；其他请求/缺请求不可放行。lookup error 始终 indeterminate。已 acked 的请求照原途径收敛；仍 running 的登记不绕过原守卫。Claude 没有该 request-bound control，因此其 gone 仍不凭空作为 teardown 证明。
+4. **wake fence 分类**：pre-check 的 expired/closed 才返回 `resident_hold_expired` 并允许 coordinator 直接换体；woken 返回 `resident_hold_already_woken`，投递后 CAS 丢失返回 `resident_hold_wake_conflict`，后两者走原 retry 路径。
+
+RED→GREEN：续约测试复现释放期限被推后；wake 两例复现错误 expired 分类；carrier/park 五例复现误释放；request-bound probe 三例复现丢失证据参数。最终 11 个定向测试文件 **313 tests passed**；`pnpm lint` exit 0（既有 warnings）、`pnpm -r build` exit 0、diff whitespace check 通过。宿主不跑全包，按 Lead 指令交精确头 CI。
+
+剩余 LOW Follow-ups：unused `countDueResidentHolds` API、probe 测试 source extraction、短窗口内 CommDB archive-on-open 开销；未扩本轮范围。强宿主进程证明的既有 follow-up 保留。C9 真机验证仍由独立 QA 节点执行，本节点没有部署或重启生产服务。

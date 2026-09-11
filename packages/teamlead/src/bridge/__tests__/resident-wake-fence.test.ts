@@ -6,16 +6,31 @@ describe("deliverResidentWake", () => {
 		["expired", "resident_hold_expired"],
 		["closed", "resident_hold_expired"],
 		["woken", "resident_hold_already_woken"],
-	])("classifies %s before transport without inventing release", async (state, error) => {
-		const store = {getResidentHold: () => ({state, revision: 4}), wakeResidentHold: vi.fn()};
-		const deliver = vi.fn(async () => ({ok: true as const}));
-		expect(await deliverResidentWake(store, "exec-1", deliver)).toEqual({ok: false, error});
-		expect(deliver).not.toHaveBeenCalled();
-	});
+	])(
+		"classifies %s before transport without inventing release",
+		async (state, error) => {
+			const store = {
+				getResidentHold: () => ({ state, revision: 4 }),
+				wakeResidentHold: vi.fn(),
+			};
+			const deliver = vi.fn(async () => ({ ok: true as const }));
+			expect(await deliverResidentWake(store, "exec-1", deliver)).toEqual({
+				ok: false,
+				error,
+			});
+			expect(deliver).not.toHaveBeenCalled();
+		},
+	);
 	it("keeps a lost post-delivery CAS retryable even after transport succeeds", async () => {
-		const store = {getResidentHold: () => ({state: "resident", revision: 4}), wakeResidentHold: vi.fn(() => false)};
-		const deliver = vi.fn(async () => ({ok: true as const}));
-		expect(await deliverResidentWake(store, "exec-1", deliver)).toEqual({ok: false, error: "resident_hold_wake_conflict"});
+		const store = {
+			getResidentHold: () => ({ state: "resident", revision: 4 }),
+			wakeResidentHold: vi.fn(() => false),
+		};
+		const deliver = vi.fn(async () => ({ ok: true as const }));
+		expect(await deliverResidentWake(store, "exec-1", deliver)).toEqual({
+			ok: false,
+			error: "resident_hold_wake_conflict",
+		});
 		expect(deliver).toHaveBeenCalledOnce();
 	});
 

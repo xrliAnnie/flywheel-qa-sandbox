@@ -968,12 +968,18 @@ describe("WorkflowReworkCoordinator", () => {
 		expect(h.effects.probeRegistered).not.toHaveBeenCalled();
 	});
 
-	it.each(["resident_hold_already_woken", "resident_hold_wake_conflict"])("retries %s without replacing the actor", async (error) => {
-		const h = makeHarness({wakeResults: [{ok: false, error}]});
-		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({kind: "retryable", reason: `wake_failed:${error}`});
-		expect(h.getDelivery().state).not.toBe("replacement_pending");
-		expect(h.store.settleWorkflowReworkFailure).toHaveBeenCalled();
-	});
+	it.each(["resident_hold_already_woken", "resident_hold_wake_conflict"])(
+		"retries %s without replacing the actor",
+		async (error) => {
+			const h = makeHarness({ wakeResults: [{ ok: false, error }] });
+			await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+				kind: "retryable",
+				reason: `wake_failed:${error}`,
+			});
+			expect(h.getDelivery().state).not.toBe("replacement_pending");
+			expect(h.store.settleWorkflowReworkFailure).toHaveBeenCalled();
+		},
+	);
 
 	it("retries a failed mailbox on the same actor and with the same wake identity", async () => {
 		const h = makeHarness({

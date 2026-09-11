@@ -17,8 +17,10 @@ export async function deliverResidentWake(
 	if (residentHold && residentHold.state !== "resident") {
 		return {
 			ok: false,
-			error: residentHold.state === "expired" || residentHold.state === "closed"
-				? "resident_hold_expired" : "resident_hold_already_woken",
+			error:
+				residentHold.state === "expired" || residentHold.state === "closed"
+					? "resident_hold_expired"
+					: "resident_hold_already_woken",
 		};
 	}
 

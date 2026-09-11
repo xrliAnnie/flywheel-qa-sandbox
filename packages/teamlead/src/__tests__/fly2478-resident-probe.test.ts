@@ -15,11 +15,14 @@ function probe(lookup: unknown) {
 	if (!body) throw new Error("resident expiry probe callback missing");
 	const lookupTmuxTarget = vi.fn(() => lookup);
 	const probeRunnerProcessLiveness = vi.fn(async () => "dead_pin");
-	const callback = runInNewContext(`(async (executionId, shutdownRequested) => {${body[1]}})`, {
-		lookupTmuxTarget,
-		probeRunnerProcessLiveness,
-		projectName: "flywheel",
-	}) as (executionId: string, shutdownRequested?: boolean) => Promise<string>;
+	const callback = runInNewContext(
+		`(async (executionId, shutdownRequested) => {${body[1]}})`,
+		{
+			lookupTmuxTarget,
+			probeRunnerProcessLiveness,
+			projectName: "flywheel",
+		},
+	) as (executionId: string, shutdownRequested?: boolean) => Promise<string>;
 	return { callback, lookupTmuxTarget, probeRunnerProcessLiveness };
 }
 
@@ -33,10 +36,14 @@ describe("FLY-2478 resident expiry probe wiring", () => {
 		},
 	);
 	it("accepts gone only with the current operation shutdown request", async () => {
-		const wired = probe({kind: "gone"});
+		const wired = probe({ kind: "gone" });
 		await expect(wired.callback("exec-1", true)).resolves.toBe("absent");
-		await expect(wired.callback("exec-1", false)).resolves.toBe("indeterminate");
-		await expect(probe({kind:"error",error:"busy"}).callback("exec-1", true)).resolves.toBe("indeterminate");
+		await expect(wired.callback("exec-1", false)).resolves.toBe(
+			"indeterminate",
+		);
+		await expect(
+			probe({ kind: "error", error: "busy" }).callback("exec-1", true),
+		).resolves.toBe("indeterminate");
 	});
 	it("probes a resolved target before accepting process death", async () => {
 		const wired = probe({ kind: "found", target: { tmuxWindow: "runner:@1" } });
