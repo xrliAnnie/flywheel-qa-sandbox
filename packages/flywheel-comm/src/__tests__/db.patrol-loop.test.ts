@@ -157,6 +157,17 @@ describe("FLY-1925 CommDB patrol loop snapshot", () => {
 				reader.rereadJudgmentFingerprint("issue-1", ["exec-waiter"]),
 			).toEqual({ available: true, fingerprint: initial });
 
+			raw.exec(
+				"UPDATE turn_wait_ledger SET suppressed_reason='not_current_actor' WHERE execution_id='exec-waiter'",
+			);
+			const suppressed = reader.rereadJudgmentFingerprint("issue-1", [
+				"exec-waiter",
+			]);
+			expect(suppressed.available).toBe(true);
+			if (suppressed.available)
+				expect(suppressed.fingerprint).not.toBe(initial);
+			raw.exec("UPDATE turn_wait_ledger SET suppressed_reason=NULL");
+
 			raw
 				.prepare(
 					"UPDATE turn_wake_outbox SET push_count = 2 WHERE wake_id = 'wake-1'",

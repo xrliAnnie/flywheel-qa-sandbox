@@ -249,4 +249,20 @@ describe("TURN wait actor authority (FLY-2507)", () => {
 			log.mockRestore();
 		}
 	});
+	it.each(["held", "terminated"])(
+		"keeps actor responsibility while run is %s",
+		(status) => {
+			state.prepare("UPDATE workflow_run SET status=?").run(status);
+			state.exec(
+				"UPDATE workflow_run_node SET execution_id='impl' WHERE node_id='founder_gate'",
+			);
+			expect(observe().waitAsked).toBe(true);
+		},
+	);
+	it("suppresses a completed run even if an old node still names the waiter", () => {
+		state.exec(
+			"UPDATE workflow_run SET status='completed'; UPDATE workflow_run_node SET execution_id='impl' WHERE node_id='founder_gate'",
+		);
+		expect(observe().waitAsked).toBe(false);
+	});
 });
