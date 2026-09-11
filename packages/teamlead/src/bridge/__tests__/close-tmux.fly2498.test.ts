@@ -13,7 +13,25 @@ const teardown = vi.hoisted(() => ({
 	kill: vi.fn(),
 	mcp: vi.fn(async () => {}),
 	cmux: vi.fn(async () => {}),
+	discover: vi.fn(),
+	host: vi.fn(),
 }));
+vi.mock("../run-quiescence.js", async (original) => {
+	const actual = await original<typeof import("../run-quiescence.js")>();
+	return {
+		...actual,
+		probeExecutionAbsenceBeyondTarget: (
+			session: Parameters<typeof actual.probeExecutionAbsenceBeyondTarget>[0],
+			executionId: string,
+			project: string,
+		) =>
+			actual.probeExecutionAbsenceBeyondTarget(session, executionId, project, {
+				probeCodexDaemon: async () => "absent",
+				discover: teardown.discover,
+				hasHostProcess: teardown.host,
+			}),
+	};
+});
 vi.mock("../codex-daemon-teardown.js", () => ({
 	reapCodexDaemonForSession: teardown.reap,
 }));
@@ -27,6 +45,7 @@ vi.mock("../tmux-lookup.js", async (original) => ({
 describe("FLY-2498 real close-tmux route", () => {
 	let store: StateStore;
 	let db: CommDB;
+	let ask: string;
 	const exec = "fly2498-dead-design";
 	const target = "runner-flywheel:@2498";
 	beforeEach(async () => {
@@ -42,7 +61,7 @@ describe("FLY-2498 real close-tmux route", () => {
 			Date.now(),
 			null,
 		);
-		db.insertQuestion(exec, "lead-a", "aged question");
+		ask = db.insertQuestion(exec, "lead-a", "aged question");
 		(db as unknown as { db: { exec(sql: string): void } }).db.exec(
 			"UPDATE mailbox SET created_at = datetime('now', '-16 minutes')",
 		);
@@ -58,6 +77,8 @@ describe("FLY-2498 real close-tmux route", () => {
 		});
 		teardown.reap.mockReset().mockResolvedValue({ outcome: "absent" });
 		teardown.kill.mockReset().mockResolvedValue({ killed: true });
+		teardown.discover.mockReset().mockResolvedValue({ kind: "missing" });
+		teardown.host.mockReset().mockResolvedValue(false);
 	});
 	afterEach(() => {
 		db.close();
@@ -103,6 +124,48 @@ describe("FLY-2498 real close-tmux route", () => {
 			);
 		}
 	}
+	it.each(["marker_found", "host_alive", "discovery_error"])(
+		"preserves a non-Codex holder on stale-target kill success when %s",
+		async (evidence) => {
+			store.upsertSession({
+				...store.getSession(exec)!,
+				adapter_type: "claude-tmux",
+			});
+			teardown.reap.mockResolvedValue({ outcome: "not_codex" });
+			if (evidence === "marker_found")
+				teardown.discover.mockResolvedValue({
+					kind: "found",
+					tmuxWindow: "renamed:@live",
+				});
+			if (evidence === "host_alive") teardown.host.mockResolvedValue(true);
+			if (evidence === "discovery_error")
+				teardown.discover.mockRejectedValue(new Error("probe unavailable"));
+			expect(await post()).toMatchObject({
+				status: 200,
+				body: { closed: true, commDbFinalized: false },
+			});
+			expect(db.getSession(exec)?.status).toBe("running");
+			expect(db.isQuestionPending(ask)).toBe(true);
+			expect(
+				store
+					.getEventsByExecution(exec)
+					.some((event) => event.event_type === "commdb_ask_disposed"),
+			).toBe(false);
+		},
+	);
+	it("removes a non-Codex holder only after independent marker and host absence", async () => {
+		store.upsertSession({
+			...store.getSession(exec)!,
+			adapter_type: "claude-tmux",
+		});
+		teardown.reap.mockResolvedValue({ outcome: "not_codex" });
+		expect(await post()).toMatchObject({
+			body: { closed: true, commDbFinalized: true },
+		});
+		expect(teardown.discover).toHaveBeenCalledWith(exec);
+		expect(teardown.host).toHaveBeenCalledWith(exec);
+		expect(db.getSession(exec)).toBeUndefined();
+	});
 	it("removes the dead parked identity and records real ask disposition", async () => {
 		expect(await post()).toMatchObject({
 			status: 200,

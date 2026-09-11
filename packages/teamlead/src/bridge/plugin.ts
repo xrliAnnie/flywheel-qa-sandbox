@@ -3306,7 +3306,21 @@ export function createBridgeApp(
 					daemon: reap.outcome,
 					stateStoreStatus: session.status,
 				});
+				// A successful kill also means "registered name not found". Require
+				// execution-wide absence so a stale mapping cannot retire a live holder.
+				let executionAbsent = false;
 				if (decision.finalize) {
+					const { probeExecutionAbsenceBeyondTarget } = await import(
+						"./run-quiescence.js"
+					);
+					executionAbsent =
+						(await probeExecutionAbsenceBeyondTarget(
+							session,
+							executionId,
+							session.project_name,
+						)) === "dead";
+				}
+				if (decision.finalize && executionAbsent) {
 					const finalized = finalizeCommDbPaneLossResidue(
 						executionId,
 						session.project_name,
@@ -3335,7 +3349,9 @@ export function createBridgeApp(
 						event_type: "commdb_finalize_skipped",
 						source: "bridge.close-tmux",
 						payload: {
-							reason: decision.reason,
+							reason: decision.finalize
+								? "execution_absence_unproven"
+								: decision.reason,
 							tmuxWindow: target.tmuxWindow,
 							daemon: reap.outcome,
 						},

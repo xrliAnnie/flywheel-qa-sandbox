@@ -20,3 +20,5 @@ TDD 证据（本机 `/tmp/fly2498-*.log`）：
 完整 `pnpm test:packages:run` 与 patrol shell 回归另行运行；最终退出码和 exact-head CI / 评审由 PR 与 Lead 报告记录，不以集中回归替代。无新增 shell 测试。A1–A6 的实际宿主/phase wake/巡检验收归 QA 节点，当前测试不宣称已覆盖生产。无生产数据库修改、无服务重启、无合并部署。
 
 无 schema 迁移；部署后沿既有 boot/hourly 清扫节奏处理存量。回滚本 PR 恢复旧逻辑，已被原有事务原语清理的行无需恢复。
+
+R1 评审修复（`close-tmux-kill-absence-is-not-death-proof`）：`killTmuxWindow` 的成功也可能只是旧目标不存在，所以 close-tmux 现在在 eligibility 判定之后、删除之前也调用独立 absence probe；任何 adapter 都必须通过对应 daemon/marker/host 缺席检查。新增 4 个真实路由用例先红，修复后路由 11/11、相关 3 文件 27/27 绿，验证非 Codex 旧映射下 marker 存在、host 存在、探针异常时保留注册与 aged ask。未改 approved plan；遵循 R1 的唯一 HIGH 修复要求。非阻断建议（refusal-as-failure、no_db 成功响应、词表派生测试）已报 Lead 留作后续，不纳入本次修复。
