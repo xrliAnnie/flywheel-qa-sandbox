@@ -80,6 +80,7 @@ import {
 } from "./workflow-ship-carrier-coordinator.js";
 
 interface WorkflowEngineDispatcherOptions {
+	runResidentExpiryPass?: (now: string) => Promise<void>;
 	resumeDisabledCodexQuotaAdmissions?: () => Promise<void>;
 	codexQuotaRootKey?: (projectName: string) => string | undefined;
 	store: StateStore;
@@ -357,6 +358,19 @@ export class WorkflowEngineDispatcher {
 			this.reconcileWorkflowDivergence();
 			await this.reconcileDeadExecutionTripwires();
 			await this.reconcileDeadExecutions();
+			try {
+				const now = this.now().toISOString();
+				if (
+					this.options.runResidentExpiryPass &&
+					this.options.store.countDueResidentHolds(now) > 0
+				) {
+					await this.options.runResidentExpiryPass(now);
+				}
+			} catch (error) {
+				this.log(
+					`resident expiry pass deferred: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 			await this.reconcileWorkflowReworks(result);
 			await this.reconcileWorkflowCarriers(result);
 			await this.reconcileUnlaunchedWorkflowStalls();

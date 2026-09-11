@@ -1088,6 +1088,71 @@ async function storeWithFreshVerificationIntent(): Promise<{
 }
 
 describe("WorkflowEngineDispatcher", () => {
+	it.each([0, 1])(
+		"runs resident expiry only when due holds exist (count=%s)",
+		async (count) => {
+			const store = await StateStore.create(":memory:");
+			try {
+				const countDueResidentHolds = vi.fn(() => count);
+				Object.assign(store, { countDueResidentHolds });
+				const now = new Date("2026-09-11T12:00:00.000Z");
+				const runResidentExpiryPass = vi.fn(async () => {});
+				const dispatcher = new WorkflowEngineDispatcher({
+					store,
+					startDispatcher: inertStartDispatcher(),
+					now: () => now,
+					runResidentExpiryPass,
+					reconcileWorkflowRework: vi.fn(),
+				});
+				const reworks = vi.spyOn(store, "listWorkflowReworkDeliveries");
+
+				await dispatcher.reconcile();
+
+				expect(countDueResidentHolds).toHaveBeenCalledWith(now.toISOString());
+				expect(runResidentExpiryPass).toHaveBeenCalledTimes(count);
+				if (count) {
+					expect(runResidentExpiryPass).toHaveBeenCalledWith(now.toISOString());
+					expect(
+						runResidentExpiryPass.mock.invocationCallOrder[0],
+					).toBeLessThan(reworks.mock.invocationCallOrder[0]);
+				}
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it("continues reconciliation after resident expiry throws", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			Object.assign(store, { countDueResidentHolds: vi.fn(() => 1) });
+			const log = vi.fn();
+			const runResidentExpiryPass = vi.fn(async () => {
+				throw new Error("expiry unavailable");
+			});
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				log,
+				runResidentExpiryPass,
+				reconcileWorkflowRework: vi.fn(),
+			});
+			const reworks = vi.spyOn(store, "listWorkflowReworkDeliveries");
+
+			await expect(dispatcher.reconcile()).resolves.toMatchObject({
+				started: 0,
+			});
+
+			expect(runResidentExpiryPass).toHaveBeenCalledOnce();
+			expect(log).toHaveBeenCalledWith(
+				expect.stringContaining("expiry unavailable"),
+			);
+			expect(reworks).toHaveBeenCalled();
+		} finally {
+			store.close();
+		}
+	});
+
 	it("dispatches a fresh verification successor through the ordinary spawn path", async () => {
 		const { store, requestId, successorExecutionId } =
 			await storeWithFreshVerificationIntent();
