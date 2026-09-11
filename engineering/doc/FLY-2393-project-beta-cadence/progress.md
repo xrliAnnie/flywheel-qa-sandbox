@@ -2,15 +2,16 @@
 issue: FLY-2393
 phase: implement
 phaseCursor: 1/5
-updated: 2026-09-11T06:26:15.288Z
-nextStep: "Cooldown + publisher result-file done: pipeline44, scheduler/store15,
-  GitHub7 and typecheck PASS. Next workflow receiver/helper (owner inputs,
-  frozen SHA ancestry, receipt), structural gates and authorized queue:max; then
-  C4 plugin/UI and C5 full checks/review/PR. See implementation.md."
+updated: 2026-09-11T06:37:34.122Z
+nextStep: Receiver/workflow C3 implemented;
+  structure23/helper+embedded8/pipeline44 PASS. Next C4 plugin lifecycle +
+  management DTO/render; finish initial takeover drain/attention and loader
+  failure guards; then full gates/review/milestone-last/PR. See
+  implementation.md.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2393 progress
 **phase**: implement (1/5)
-**next**: Cooldown + publisher result-file done: pipeline44, scheduler/store15, GitHub7 and typecheck PASS. Next workflow receiver/helper (owner inputs, frozen SHA ancestry, receipt), structural gates and authorized queue:max; then C4 plugin/UI and C5 full checks/review/PR. See implementation.md.
+**next**: Receiver/workflow C3 implemented; structure23/helper+embedded8/pipeline44 PASS. Next C4 plugin lifecycle + management DTO/render; finish initial takeover drain/attention and loader failure guards; then full gates/review/milestone-last/PR. See implementation.md.
