@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
-import { legacyEngineeringManifest } from "./fixtures/legacy-workflow-manifests.js";
+import { legacyEngineeringManifest, legacyLandEngineeringManifest } from "./fixtures/legacy-workflow-manifests.js";
 
 const T0 = Date.parse("2026-09-11T00:00:00.000Z");
 const VERDICT_AT = "2026-09-11T00:45:00.000Z";
@@ -23,10 +23,10 @@ function rawDb(store: StateStore): Database.Database {
 	return (store as unknown as { db: { raw: Database.Database } }).db.raw;
 }
 
-async function verdictStore(secondLoopTarget = false) {
+async function verdictStore(secondLoopTarget = false, shipCarrier = false) {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
-	const manifest = legacyEngineeringManifest();
+	const manifest = shipCarrier ? legacyEngineeringManifest() : legacyLandEngineeringManifest();
 	if (secondLoopTarget) manifest.loops[1]!.to = "design";
 	store.createWorkflowRun({
 		runId: "run-1",
@@ -77,6 +77,9 @@ async function verdictStore(secondLoopTarget = false) {
 			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'qa' WHERE run_id = 'run-1'",
 		)
 		.run();
+	rawDb(store).prepare(`INSERT INTO workflow_node_pr_binding
+		(run_id,node_id,attempt,pr_number,head_sha,target_repo_identity,probe_repo_slug,target_repo_path,worktree_binding_generation,receipt_id,bound_at)
+		VALUES ('run-1','implement',1,1164,?,'__main__','xrliAnnie/flywheel','/tmp/flywheel','generation-1','receipt-1',?)`).run(HEAD,new Date(T0).toISOString());
 	const entered = store.enterResidentHold({
 		executionId: "impl-1",
 		activationId: "activation:impl-1:run-1:implement:1",
@@ -85,6 +88,7 @@ async function verdictStore(secondLoopTarget = false) {
 		nowMs: T0,
 	});
 	if (!entered.ok) throw new Error(entered.reason);
+	openPark(store, shipCarrier ? "runner_ship_gate_wait" : "rework_reachable_wait");
 	return store;
 }
 
@@ -103,7 +107,7 @@ function verdict(store: StateStore, outcome: "qa_pass" | "qa_fail") {
 
 function openPark(store: StateStore, reason = "rework_reachable_wait") {
 	rawDb(store)
-		.prepare(`INSERT INTO workflow_engine_park_outbox
+		.prepare(`INSERT OR REPLACE INTO workflow_engine_park_outbox
 		(event_id, project_name, execution_id, run_id, node_id, attempt, activation_id, generation, event, reason, created_at)
 		VALUES ('park-1','flywheel','impl-1','run-1','implement',1,'activation:impl-1:run-1:implement:1',1,'park_opened',?,?)`)
 		.run(reason, new Date(T0).toISOString());
@@ -123,6 +127,39 @@ function stageExpiry(store: StateStore, now: string) {
 }
 
 describe("FLY-2478 resident release", () => {
+	it("never releases the runner ship carrier parked at its ship gate", async () => {
+		const store = await verdictStore(false, true);
+		const hold = store.getResidentHold("impl-1");
+		const session = store.getSession("impl-1");
+		expect(verdict(store, "qa_pass")).toMatchObject({ok: true});
+		expect(store.getResidentHold("impl-1")).toEqual(hold);
+		const afterCap = "2026-09-11T04:00:00.000Z";
+		expect(store.listResidentExpiryFastLaneProjects(afterCap)).toEqual([]);
+		expect(store.expireResidentHoldsTx(afterCap)).toEqual([]);
+		expect(store.listPendingResidentExpiryOperations()).toEqual([]);
+		expect(store.getSession("impl-1")).toEqual(session);
+	});
+	it.each(["missing", "cleared", "wrong_activation"])("requires the latest matching open rework park (%s)", async (kind) => {
+		const store = await verdictStore();
+		if (kind === "missing") rawDb(store).prepare("DELETE FROM workflow_engine_park_outbox").run();
+		if (kind === "cleared") rawDb(store).prepare("UPDATE workflow_engine_park_outbox SET event='park_cleared'").run();
+		if (kind === "wrong_activation") rawDb(store).prepare("UPDATE workflow_engine_park_outbox SET activation_id='other'").run();
+		const hold = store.getResidentHold("impl-1");
+		expect(verdict(store, "qa_pass")).toMatchObject({ok:true});
+		expect(store.getResidentHold("impl-1")).toEqual(hold);
+	});
+	it("does not shut down or settle an operation after the latest park becomes a ship gate wait", async () => {
+		const store = await verdictStore();
+		const now = "2026-09-11T03:00:01.000Z";
+		const operationId = stageExpiry(store, now);
+		openPark(store, "runner_ship_gate_wait");
+		const before = store.getSession("impl-1");
+		expect(store.listPendingResidentExpiryOperations()).toEqual([]);
+		expect(store.projectResidentExpiry({operationId, now})).toMatchObject({ok:false, reason: "resident_expiry_ship_park"});
+		expect(store.getSession("impl-1")).toEqual(before);
+		expect(store.getResidentHold("impl-1")?.state).toBe("expired");
+	});
+
 	it("renews a newer resident boundary without invalidating an in-flight revision wake", async () => {
 		const store = await verdictStore();
 		const renewedAt = T0 + 60_000;
@@ -317,16 +354,11 @@ describe("FLY-2478 resident release", () => {
 		).toHaveLength(1);
 	});
 
-	it.each(["activation", "failed", "ship_gate"] as const)(
+	it.each(["activation", "failed"] as const)(
 		"preserves unrelated %s state while closing an expired hold",
 		async (guard) => {
 			const store = await verdictStore();
-			openPark(
-				store,
-				guard === "ship_gate"
-					? "runner_ship_gate_wait"
-					: "rework_reachable_wait",
-			);
+			openPark(store);
 			const now = "2026-09-11T03:00:01.000Z";
 			const operationId = stageExpiry(store, now);
 			if (guard === "activation")
@@ -347,9 +379,7 @@ describe("FLY-2478 resident release", () => {
 				ok: true,
 			});
 			expect(store.getResidentHold("impl-1")?.state).toBe("closed");
-			if (guard !== "ship_gate")
-				expect(store.getSession("impl-1")).toEqual(before);
-			else expect(store.getSession("impl-1")?.status).toBe("completed");
+			expect(store.getSession("impl-1")).toEqual(before);
 			expect(
 				rawDb(store)
 					.prepare("SELECT event FROM workflow_engine_park_outbox")
@@ -359,7 +389,7 @@ describe("FLY-2478 resident release", () => {
 				.prepare("SELECT payload FROM workflow_run_event WHERE event_uid = ?")
 				.get(operationId) as { payload: string };
 			expect(JSON.parse(event.payload)).toMatchObject({
-				sessionSettled: guard === "ship_gate",
+				sessionSettled: false,
 				parkSettled: false,
 			});
 		},

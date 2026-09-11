@@ -38128,6 +38128,14 @@ export class StateStore {
 		return changed === 1;
 	}
 
+	private openResidentParkTx(executionId: string) {
+		const park = this.workflowSelectAll(
+			"SELECT * FROM workflow_engine_park_outbox WHERE execution_id = ? ORDER BY generation DESC LIMIT 1",
+			[executionId],
+		)[0];
+		return park?.event === "park_opened" ? park : undefined;
+	}
+
 	private releaseResidentHoldsForNodeTx(input: {
 		runId: string;
 		nodeId: string;
@@ -38135,18 +38143,23 @@ export class StateStore {
 		now: string;
 	}): void {
 		const holds = this.workflowSelectAll(
-			`SELECT execution_id FROM workflow_resident_hold
+			`SELECT execution_id, activation_id FROM workflow_resident_hold
 			 WHERE run_id = ? AND node_id = ? AND state = 'resident' AND release_cause IS NULL
 			 ORDER BY execution_id`,
 			[input.runId, input.nodeId],
-		);
+		).filter((hold) => {
+			const park = this.openResidentParkTx(String(hold.execution_id));
+			return park?.reason === "rework_reachable_wait" && park.activation_id === hold.activation_id;
+		});
 		if (holds.length === 0) return;
-		this.db.run(
-			`UPDATE workflow_resident_hold
-			 SET grace_expires_at = ?, release_cause = 'verdict_pass', release_source = ?, updated_at = ?
-			 WHERE run_id = ? AND node_id = ? AND state = 'resident' AND release_cause IS NULL`,
-			[input.now, input.source, input.now, input.runId, input.nodeId],
-		);
+		for (const hold of holds) {
+			this.db.run(
+				`UPDATE workflow_resident_hold
+				 SET grace_expires_at = ?, release_cause = 'verdict_pass', release_source = ?, updated_at = ?
+				 WHERE execution_id = ? AND state = 'resident' AND release_cause IS NULL`,
+				[input.now, input.source, input.now, hold.execution_id],
+			);
+		}
 		this.appendWorkflowRunEventCheckedTx({
 			runId: input.runId,
 			eventUid: `resident-release:${input.source}`,
@@ -38169,11 +38182,19 @@ export class StateStore {
 			`SELECT DISTINCT run.project_name FROM workflow_run run
 			 JOIN workflow_resident_hold hold ON hold.run_id = run.run_id
 			 WHERE hold.state = 'resident' AND hold.grace_expires_at < ?
+			 AND NOT EXISTS (SELECT 1 FROM workflow_engine_park_outbox park
+			   WHERE park.execution_id = hold.execution_id AND park.event = 'park_opened'
+			   AND park.reason = 'runner_ship_gate_wait'
+			   AND park.generation = (SELECT MAX(latest.generation) FROM workflow_engine_park_outbox latest WHERE latest.execution_id = hold.execution_id))
 			 UNION
 			 SELECT DISTINCT run.project_name FROM workflow_run run
 			 JOIN workflow_delivery_operation operation ON operation.run_id = run.run_id
 			 WHERE operation.kind = 'resident_expiry'
 			 AND operation.state IN ('staged','applied','sent') AND operation.created_at >= ?
+			 AND NOT EXISTS (SELECT 1 FROM workflow_engine_park_outbox park
+			   WHERE park.execution_id = operation.root_id AND park.event = 'park_opened'
+			   AND park.reason = 'runner_ship_gate_wait'
+			   AND park.generation = (SELECT MAX(latest.generation) FROM workflow_engine_park_outbox latest WHERE latest.execution_id = operation.root_id))
 			 ORDER BY project_name`,
 			[now, since],
 		).map((row) => String(row.project_name));
@@ -38201,6 +38222,7 @@ export class StateStore {
 				[now],
 			) as unknown as WorkflowResidentHoldRow[];
 			for (const hold of candidates) {
+				if (this.openResidentParkTx(hold.execution_id)?.reason === "runner_ship_gate_wait") continue;
 				const operationId = `resident-expiry:${hold.execution_id}:r${hold.revision}`;
 				const canonicalDigest = canonicalSubmissionDigest({
 					kind: "resident_expiry",
@@ -38290,6 +38312,10 @@ export class StateStore {
 			  WHERE operation.kind = 'resident_expiry'
 			    AND operation.state IN ('staged','applied','sent')
 			    AND (? IS NULL OR operation.created_at >= ?)
+			 AND NOT EXISTS (SELECT 1 FROM workflow_engine_park_outbox park
+			   WHERE park.execution_id = operation.root_id AND park.event = 'park_opened'
+			   AND park.reason = 'runner_ship_gate_wait'
+			   AND park.generation = (SELECT MAX(latest.generation) FROM workflow_engine_park_outbox latest WHERE latest.execution_id = operation.root_id))
 			  ORDER BY operation.created_at, operation.operation_id`,
 			[createdAfter ?? null, createdAfter ?? null],
 		).map((row) => ({
@@ -38421,6 +38447,11 @@ export class StateStore {
 				result = { ok: false, reason: "resident_expiry_hold_changed" };
 				return;
 			}
+			const openPark = this.openResidentParkTx(String(operation.root_id));
+			if (openPark?.reason === "runner_ship_gate_wait") {
+				result = {ok: false, reason: "resident_expiry_ship_park"};
+				return;
+			}
 			this.db.run(
 				`UPDATE workflow_resident_hold
 				    SET state = 'closed',
@@ -38438,6 +38469,8 @@ export class StateStore {
 			const session = this.getSession(executionId);
 			const activation = this.resolveCurrentWorkflowActivation(executionId);
 			const sessionSettled =
+				openPark?.reason === "rework_reachable_wait" &&
+				openPark.activation_id === operation.target_activation_id &&
 				session?.status === "ship_parked" &&
 				activation.kind === "current" &&
 				activation.binding.activation_id === operation.target_activation_id;
