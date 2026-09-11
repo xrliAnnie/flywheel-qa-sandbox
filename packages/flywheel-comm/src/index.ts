@@ -98,6 +98,7 @@ import { resolveFounderId } from "./founder-attribution.js";
 import { inspectCommittedFounderReviewArtifacts } from "./founder-review.js";
 import { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
 import { resolveDbPath } from "./resolve-db-path.js";
+import { resolveTurnWaitStateDbPath } from "./turn-wait-state.js";
 
 function printUsage(): void {
 	console.log(`Usage: flywheel-comm <command> [options]
@@ -1079,6 +1080,7 @@ function runTurn(args: string[]): void {
 		options: {
 			"exec-id": { type: "string" },
 			db: { type: "string" },
+			"state-db": { type: "string" },
 			project: { type: "string" },
 			json: { type: "boolean", default: false },
 		},
@@ -1114,6 +1116,14 @@ function runTurn(args: string[]): void {
 			observedAtMs,
 			askAfterMs: turnWaitAskAfterMs(process.env),
 			debugOverride,
+			stateDbPath:
+				!debugOverride && status.answer === "not-yours"
+					? resolveTurnWaitStateDbPath(
+							dbPath,
+							values.project ?? process.env.FLYWHEEL_PROJECT_NAME,
+							values["state-db"],
+						)
+					: undefined,
 		});
 		if (values.json) {
 			console.log(JSON.stringify(status));

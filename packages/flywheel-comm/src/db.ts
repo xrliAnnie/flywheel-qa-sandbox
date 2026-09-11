@@ -242,6 +242,7 @@ CREATE TABLE IF NOT EXISTS turn_wait_ledger (
   asked_at           INTEGER,
   question_id        TEXT,
   last_error         TEXT,
+  suppressed_reason  TEXT,
   no_turn_streak     INTEGER NOT NULL DEFAULT 0,
   last_no_turn_at    INTEGER,
   PRIMARY KEY (execution_id, holder_exec_id, epoch)
@@ -501,6 +502,7 @@ export interface PatrolTurnWaitRow {
 	holderExecId: string;
 	epoch: number;
 	firstSeenAt: number;
+	suppressedReason?: string;
 }
 
 export interface PatrolTurnWakeRow {
@@ -1436,6 +1438,7 @@ export class CommDB {
 		for (const [name, sqlType] of [
 			["no_turn_streak", "INTEGER NOT NULL DEFAULT 0"],
 			["last_no_turn_at", "INTEGER"],
+			["suppressed_reason", "TEXT"],
 		] as const) {
 			if (waitColumns.some((column) => column.name === name)) continue;
 			this.db.exec(
@@ -6849,7 +6852,8 @@ export class CommDB {
 					? []
 					: (this.db
 							.prepare(
-								`SELECT execution_id, holder_exec_id, epoch, first_seen_at
+								`SELECT execution_id, holder_exec_id, epoch, first_seen_at,
+                                ${columnsFor("turn_wait_ledger").has("suppressed_reason") ? "suppressed_reason" : "NULL"} AS suppressed_reason
 								   FROM turn_wait_ledger
 								  WHERE execution_id IN (${waitExecutionIds.map(() => "?").join(",")})
 								  ORDER BY execution_id, epoch, holder_exec_id, first_seen_at`,
@@ -6859,6 +6863,7 @@ export class CommDB {
 							holder_exec_id: string;
 							epoch: number;
 							first_seen_at: number;
+							suppressed_reason: string | null;
 						}>);
 			const waits = new Map<string, PatrolTurnWaitRow[]>();
 			for (const row of waitRows) {
@@ -6868,6 +6873,9 @@ export class CommDB {
 					holderExecId: row.holder_exec_id,
 					epoch: row.epoch,
 					firstSeenAt: row.first_seen_at,
+					...(row.suppressed_reason
+						? { suppressedReason: row.suppressed_reason }
+						: {}),
 				});
 				waits.set(row.execution_id, list);
 			}
@@ -6944,6 +6952,7 @@ export class CommDB {
 		epoch: number;
 		observedAtMs: number;
 		askAfterMs: number;
+		suppressedReason?: string | null;
 	}): { asked: boolean; questionId?: string } {
 		if (
 			!input.executionId.trim() ||
@@ -6986,10 +6995,15 @@ export class CommDB {
 				this.db
 					.prepare(
 						`UPDATE turn_wait_ledger
-					    SET no_turn_streak = 0, last_no_turn_at = NULL
+					    SET no_turn_streak = 0, last_no_turn_at = NULL, suppressed_reason = ?
 					  WHERE execution_id = ? AND holder_exec_id = ? AND epoch = ?`,
 					)
-					.run(input.executionId, input.holderExecId, input.epoch);
+					.run(
+						input.suppressedReason ?? null,
+						input.executionId,
+						input.holderExecId,
+						input.epoch,
+					);
 				const row = this.db
 					.prepare(
 						`SELECT first_seen_at, asked_at, question_id
@@ -7008,6 +7022,7 @@ export class CommDB {
 					};
 					return;
 				}
+				if (input.suppressedReason) return;
 				if (input.observedAtMs - row.first_seen_at < input.askAfterMs) return;
 				const identity = this.db
 					.prepare(
