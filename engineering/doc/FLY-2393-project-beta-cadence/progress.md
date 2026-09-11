@@ -1,15 +1,16 @@
 ---
 issue: FLY-2393
 phase: implement
-phaseCursor: 1/3
-updated: 2026-09-11T20:35:02.253Z
-nextStep: "Engine conflict rework: merged main ca869ad6; sole conflict
-  StateStore imports retained both. Run required gates, final milestone, push,
-  fresh code review and exact-head CI, needs_review."
+phaseCursor: 3/3
+updated: 2026-09-11T20:37:18.588Z
+nextStep: "Conflict rework complete: main ca869ad6 merged, both imports
+  retained; lint/build/core33/Node9/workflows23/publisher44 pass; packages
+  config2 timeouts, isolated38 pass. Final milestone then freeze/push, fresh
+  review and exact-head CI, needs_review and park."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2393 progress
-**phase**: implement (1/3)
-**next**: Engine conflict rework: merged main ca869ad6; sole conflict StateStore imports retained both. Run required gates, final milestone, push, fresh code review and exact-head CI, needs_review.
+**phase**: implement (3/3)
+**next**: Conflict rework complete: main ca869ad6 merged, both imports retained; lint/build/core33/Node9/workflows23/publisher44 pass; packages config2 timeouts, isolated38 pass. Final milestone then freeze/push, fresh review and exact-head CI, needs_review and park.
