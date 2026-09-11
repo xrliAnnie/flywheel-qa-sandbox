@@ -720,6 +720,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: unavailable mailbox delivery retry limit (FLY-1750)",
 	FLYWHEEL_LAND_CLEANUP_GRACE_MS:
 		"tuning knob: per-session land cleanup opportunity grace period (FLY-1375)",
+	FLYWHEEL_REVIEW_MAX_CONCURRENT:
+		"numeric tuning: optional review concurrency cap; zero is unlimited (FLY-1949)",
 	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:
 		"tuning knob: active Claude review subprocess timeout (FLY-1254)",
 	FLYWHEEL_CRASH_REAP_GRACE_MIN: "tuning knob: crash reap grace minutes",

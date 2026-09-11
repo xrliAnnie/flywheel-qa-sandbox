@@ -17,7 +17,8 @@
  * summary and call it done" degradation.
  *
  * Scheduling: serial per execution, with no coordinator-wide concurrency
- * ceiling (§7.1 / FLY-2037). Boot redrive: pending/running jobs re-enqueue
+ * ceiling by default (§7.1 / FLY-2037); an optional cap can queue jobs.
+ * Boot redrive: pending/running jobs re-enqueue
  * (`redriveOnBoot`).
  */
 
@@ -468,12 +469,25 @@ export class ReviewRequestCoordinator {
 	private readonly setTimer: (callback: () => void, delayMs: number) => unknown;
 	private readonly clearTimer: (handle: unknown) => void;
 	private stopped = false;
+	private readonly maxConcurrent: number;
+	private active = 0;
+	private readonly slotWaiters: Array<(acquired: boolean) => void> = [];
 
 	constructor(deps: ReviewCoordinatorDeps) {
 		this.store = deps.store;
 		this.deps = deps;
 		this.log =
 			deps.logger ?? ((m: string) => console.log(`[review-coordinator] ${m}`));
+		const cap = process.env.FLYWHEEL_REVIEW_MAX_CONCURRENT?.trim() ?? "";
+		const parsedCap = cap === "" ? 0 : Number(cap);
+		if ((cap === "" || /^\d+$/.test(cap)) && Number.isSafeInteger(parsedCap)) {
+			this.maxConcurrent = parsedCap;
+		} else {
+			this.log(
+				"invalid FLYWHEEL_REVIEW_MAX_CONCURRENT; using unlimited concurrency",
+			);
+			this.maxConcurrent = 0;
+		}
 		this.now = deps.now ?? Date.now;
 		this.setTimer =
 			deps.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
@@ -483,6 +497,7 @@ export class ReviewRequestCoordinator {
 
 	stop(): void {
 		this.stopped = true;
+		for (const wake of this.slotWaiters.splice(0)) wake(false);
 		for (const handle of this.retryTimers.values()) this.clearTimer(handle);
 		this.retryTimers.clear();
 	}
@@ -1322,13 +1337,30 @@ export class ReviewRequestCoordinator {
 
 	// ── scheduling ─────────────────────────────────────────────────────────
 
+	private acquireSlot(): Promise<boolean> {
+		if (this.stopped) return Promise.resolve(false);
+		if (this.active < this.maxConcurrent) {
+			this.active += 1;
+			return Promise.resolve(true);
+		}
+		return new Promise((resolve) => this.slotWaiters.push(resolve));
+	}
+
+	private releaseSlot(): void {
+		const next = this.slotWaiters.shift();
+		if (next) next(true);
+		else this.active -= 1;
+	}
+
 	private enqueue(requestId: string, executionId: string): void {
 		const chain = this.execChains.get(executionId) ?? Promise.resolve();
 		const next = chain.then(async () => {
 			// R13 HIGH-3: this link starts only after its execution predecessor.
 			// A stop while that predecessor runs prevents this reviewer from starting.
 			if (this.stopped) return;
+			if (this.maxConcurrent > 0 && !(await this.acquireSlot())) return;
 			try {
+				if (this.stopped) return;
 				await this.runJob(requestId);
 			} catch (err) {
 				this.log(
@@ -1339,6 +1371,8 @@ export class ReviewRequestCoordinator {
 				} catch {
 					/* store unavailable — job stays running, boot redrive recovers */
 				}
+			} finally {
+				if (this.maxConcurrent > 0) this.releaseSlot();
 			}
 		});
 		this.execChains.set(executionId, next);
