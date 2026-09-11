@@ -116,6 +116,8 @@ jobs:
       # wired literally here or elsewhere in this workflow.
       - name: Test — root Node contract suites
         run: |
+          node --test scripts/__tests__/beta-schedule-receipt.test.mjs
+          node --test scripts/__tests__/beta-workflow-structure.test.mjs
           node --test scripts/__tests__/fly-2395-ship-relevance-retro.test.mjs
           node --test scripts/__tests__/fly-2397-strength-two-acceptance.test.mjs
           node --test scripts/__tests__/fly-2398-shadow-table.test.mjs
