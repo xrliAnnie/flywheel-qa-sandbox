@@ -1,15 +1,14 @@
 ---
 issue: FLY-2498
-phase: design
-phaseCursor: 6/6
-updated: 2026-09-11T18:45:06.687Z
-nextStep: complete --route phase_design_complete; implement node picks up
-  plan.md (ec409598a) — prioritize G1/G2 advisories; Codex pool exhausted until
-  9/14-9/17
+phase: implement
+phaseCursor: 0/4
+updated: 2026-09-11T19:24:54.506Z
+nextStep: "Implement approved plan v2: absence probe, parked reconcile,
+  close-tmux finalize; TDD then full gates/review/PR"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2498 progress
-**phase**: design (6/6)
-**next**: complete --route phase_design_complete; implement node picks up plan.md (ec409598a) — prioritize G1/G2 advisories; Codex pool exhausted until 9/14-9/17
+**phase**: implement (0/4)
+**next**: Implement approved plan v2: absence probe, parked reconcile, close-tmux finalize; TDD then full gates/review/PR
