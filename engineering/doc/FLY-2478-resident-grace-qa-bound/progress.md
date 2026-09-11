@@ -1,13 +1,13 @@
 ---
 issue: FLY-2478
 phase: implement
-phaseCursor: 1/10
-updated: 2026-09-11T19:05:42.790Z
-nextStep: C2 transition release; C3 saga and C6/C7 guards in parallel
+phaseCursor: 4/10
+updated: 2026-09-11T19:11:32.342Z
+nextStep: C4 atomic settlement guards green; C5 fast lane integration; C8 renewal
 chunks: []
 pointers: {}
 ---
 
 # FLY-2478 progress
-**phase**: implement (1/10)
-**next**: C2 transition release; C3 saga and C6/C7 guards in parallel
+**phase**: implement (4/10)
+**next**: C4 atomic settlement guards green; C5 fast lane integration; C8 renewal
