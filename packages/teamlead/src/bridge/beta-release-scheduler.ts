@@ -50,6 +50,7 @@ export class BetaReleaseScheduler {
 			transport: BetaReleaseTransport;
 			projects: () => Promise<BetaProjectConfig[]>;
 			now?: () => number;
+			onError?: (code: string) => void;
 		},
 	) {}
 	snapshot(): BetaScheduleObservation[] {
@@ -72,13 +73,32 @@ export class BetaReleaseScheduler {
 	tick(): Promise<void> {
 		if (this.abort.signal.aborted) return Promise.resolve();
 		if (this.running) return this.running;
-		this.running = this.runTick().finally(() => {
-			this.running = null;
-		});
+		this.running = this.runTick()
+			.catch(() => {
+				this.options.onError?.("beta_scheduler_failed");
+			})
+			.finally(() => {
+				this.running = null;
+			});
 		return this.running;
 	}
 	private async runTick(): Promise<void> {
-		const projects = await this.options.projects();
+		let projects: BetaProjectConfig[];
+		try {
+			projects = await this.options.projects();
+		} catch {
+			this.options.onError?.("beta_project_source_failed");
+			const now = this.options.now?.() ?? Date.now();
+			for (const [name, previous] of this.observations)
+				this.observations.set(name, {
+					...previous,
+					owner: "unknown",
+					status: "attention",
+					reason: "beta_project_source_failed",
+					observedAtMs: now,
+				});
+			return;
+		}
 		for (const lane of this.options.store.lanes()) {
 			if (!projects.some((p) => p.projectName === lane.projectName))
 				projects.push({

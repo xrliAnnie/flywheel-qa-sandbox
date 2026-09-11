@@ -83,3 +83,17 @@ S3 改为解析 YAML 的 job/admission/activation/receipt 权限校验及 mutati
 TDD：缺 receiver/helper 与 source assessment 红灯→绿灯；旧 workflow 顶层共享锁红灯→job边界绿灯；嵌入JS换行语法红灯→转义修复绿灯；三个customer队列未保留红灯→仅 queue:max绿灯。最终结构门禁23 PASS、其中新增 helper/实际内嵌脚本/祖先关系与 mutation共8 tests PASS；pipeline44 PASS；biome3 files PASS；git diff --check PASS。日志 /tmp/fly2393-receiver-structure-final.log、/tmp/fly2393-receiver-pipeline-final.log、/tmp/fly2393-receiver-biome-final.log。
 
 下一步 C4 Bridge plugin启停与只读管理台、持续错误/首次接管排空边界补强，再全仓 lint/build/packages tests、review、milestone最后提交、PR和needs_review交接。当前尚无PR，无生产配置/发布/部署变更。
+
+## C4 生命周期与只读管理台（2026-09-11，视觉证据待补）
+
+createBetaReleaseRuntime 接入 plugin：在 management console 可选初始化之外启动，shutdown await stop 后再停止其余服务；每 tick 读取 canonical 配置，store getter 跟随 StateStore 连接恢复。真实 config文件→GitHub stub→持久lane→6h到期POST集成测试通过；未启动管理台也运行。roster读取失败先红（未处理reject）再绿（安全错误码、下tick恢复）。
+
+新增 betaRelease management provider，仅同步读缓存/DB；projectBetaSchedules 按项目合并，betaSchedule 为 optional，schemaVersion不变。DTO 包含 owner、配置/有效频率、nextDue、active run URLs、最近真实版本/时间、更新时间/状态；不含凭据绑定。两tick旧观测变unknown；legacy明确有效6h；缺workflow显示尚未激活/目标24h。HTTP边界检查字段与github.com运行链接。
+
+现有项目页节奏区新增只读panel，所有派生文本esc，运行URL仅github.com合法路径，外链noopener noreferrer；无按钮/输入或新写API。DOM测试先缺panel红灯→实现后发现模板正则转义语法红灯→修复绿灯；恶意label/version及javascript: URL均不能变可执行内容。
+
+验证：runtime/scheduler/provider12 tests PASS；完整 management-console-* + fleet-console-html 11 files/93 tests PASS（包含新DOM安全测试）；teamlead typecheck PASS。日志 /tmp/fly2393-runtime-integration-green.log、/tmp/fly2393-management-family.log、/tmp/fly2393-c4-typecheck.log。局部biome已执行，仅剩一条测试fixture字符串warning，最终全仓gate还未跑。
+
+视觉缺口：真实源码生成 /tmp/fly2393-beta-console.html（显式fixture数据），Chrome MCP拒绝 requires approval / policy never；独立temp profile的本地headless Chrome exit134，未产截图。已问Lead question 6a05af77-6274-43fa-9b55-68f7b60eaf69 请求授权环境取证。DOM通过不能替代截图，未宣称视觉验收完成。
+
+待完成审计：首次接管前排空检查、unknown预算耗尽后的低频轮询/首次未绑定错误冷却、owner观测刷新、强负例与回滚runbook；全仓gate/review/PR及视觉证据。继续实现，不phase_complete、不标goal完成。

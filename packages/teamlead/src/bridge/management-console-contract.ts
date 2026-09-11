@@ -250,6 +250,23 @@ export interface ManagementCronView {
 	error?: string;
 }
 
+export interface ManagementBetaScheduleView {
+	owner: "legacy" | "paused" | "bridge" | "unknown";
+	configuredIntervalHours: number | null;
+	effectiveIntervalHours: number | null;
+	nextDueAtMs: number | null;
+	observedAtMs: number;
+	status: string;
+	label: string;
+	reason: string | null;
+	activeRuns: Array<{ id: number; url: string }>;
+	lastPublished: {
+		version: string;
+		sourceCommit: string;
+		publishedAt: string;
+	} | null;
+}
+
 export interface ManagementProjectView {
 	id: string;
 	name: string;
@@ -265,6 +282,7 @@ export interface ManagementProjectView {
 	dags: ManagementDagView[];
 	crons: ManagementCronView[];
 	runnerDefault?: ManagementRunnerDefaultView;
+	betaSchedule?: ManagementBetaScheduleView;
 	error?: string;
 }
 
@@ -375,6 +393,38 @@ export function assertManagementSnapshot(
 				`unknown source kind: ${isRecord(source) ? source.kind : "invalid"}`,
 			);
 		}
+	}
+	for (const project of value.projects as unknown[]) {
+		if (!isRecord(project) || project.betaSchedule === undefined) continue;
+		const beta = project.betaSchedule;
+		if (
+			!isRecord(beta) ||
+			!["legacy", "paused", "bridge", "unknown"].includes(String(beta.owner)) ||
+			typeof beta.label !== "string" ||
+			typeof beta.status !== "string" ||
+			!Number.isSafeInteger(beta.observedAtMs) ||
+			!Array.isArray(beta.activeRuns)
+		)
+			throw new Error("invalid beta schedule snapshot");
+		for (const key of ["configuredIntervalHours", "effectiveIntervalHours"])
+			if (
+				beta[key] !== null &&
+				(!Number.isSafeInteger(beta[key]) ||
+					Number(beta[key]) < 1 ||
+					Number(beta[key]) > 168)
+			)
+				throw new Error("invalid beta schedule interval");
+		for (const run of beta.activeRuns)
+			if (
+				!isRecord(run) ||
+				!Number.isSafeInteger(run.id) ||
+				Number(run.id) < 1 ||
+				typeof run.url !== "string" ||
+				!/^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+\/actions\/runs\/[1-9][0-9]*$/.test(
+					run.url,
+				)
+			)
+				throw new Error("invalid beta run URL");
 	}
 	assertNoForbiddenKeys(value);
 }

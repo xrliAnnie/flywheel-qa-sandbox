@@ -1,3 +1,5 @@
+import { createBetaReleaseRuntime } from "./beta-release-runtime.js";
+import { createBetaManagementProvider } from "./beta-release-management.js";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -5434,6 +5436,8 @@ export async function startBridge(
 	// FLY-247: fleet config snapshot provider (hot fleet-field overlay onto
 	// the boot topology; structural change → restart-required, R3#4) + the
 	// 30s evidence poller (single probe owner for Dashboard + fleet sensors, R6#5).
+    const betaReleaseRuntime=createBetaReleaseRuntime({store:()=>store.betaSchedules,projects:()=>loadProjects(),env:process.env,onError:code=>console.error(`[Bridge beta] ${code}`)});
+    betaReleaseRuntime.start();
 	const fleetConfigProvider = new ConfigSnapshotProvider(projects, {
 		loadProjects: () => loadProjects(),
 		envPinned: Boolean(process.env.FLYWHEEL_PROJECTS),
@@ -5622,6 +5626,7 @@ export async function startBridge(
 						await refreshManagementSources();
 					},
 					managementSnapshotProviders: () => [
+                        createBetaManagementProvider({get store(){return store.betaSchedules;},observations:()=>betaReleaseRuntime.snapshot()}),
 						managementProjectSource.healthProvider(),
 						...createManagementSsotProviders({
 							projects: () => managementProjects,
@@ -13463,6 +13468,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		await betaReleaseRuntime.stop();
 		voiceSessionServices.runtime.stop();
 		// FLY-1082 (Task 2.4): the clean-shutdown marker rides the SAME close
 		// path as /health shuttingDown (no extra signal handlers) — a boot that

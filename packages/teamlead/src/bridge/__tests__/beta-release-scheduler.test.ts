@@ -349,3 +349,26 @@ it("persists Retry-After across restart and does not poll or resubmit the lane e
 	expect(observations).toBe(2);
 	expect(f.dispatched).toHaveLength(1);
 });
+it("contains a roster-read failure and recovers on the next tick", async () => {
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	const f = fixture();
+	let broken = true;
+	const errors: string[] = [];
+	const scheduler = new BetaReleaseScheduler({
+		store: store.betaSchedules,
+		transport: f.transport,
+		projects: async () => {
+			if (broken) throw new Error("private config detail");
+			return [projects[0]!];
+		},
+		now: () => 0,
+		onError: (code) => errors.push(code),
+	});
+	await expect(scheduler.tick()).resolves.toBeUndefined();
+	expect(errors).toEqual(["beta_project_source_failed"]);
+	broken = false;
+	await scheduler.tick();
+	expect(store.betaSchedules.lane("a")).not.toBeNull();
+	await scheduler.stop();
+});
