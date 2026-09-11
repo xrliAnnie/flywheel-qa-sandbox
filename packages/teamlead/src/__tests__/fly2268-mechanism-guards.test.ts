@@ -64,6 +64,33 @@ describe("FLY-2268 mechanism guards", () => {
 		).toEqual([]);
 	});
 
+	it("pins the resident hold release columns without changing existing columns", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		const columns = rawStateDb(store)
+			.prepare("PRAGMA table_info(workflow_resident_hold)")
+			.all() as Array<{ name: string }>;
+		expect(columns.map(({ name }) => name).sort()).toEqual(
+			[
+				"execution_id",
+				"run_id",
+				"node_id",
+				"attempt",
+				"activation_id",
+				"vendor",
+				"revision",
+				"boundary_seq",
+				"state",
+				"grace_started_at",
+				"grace_expires_at",
+				"closed_reason",
+				"updated_at",
+				"release_cause",
+				"release_source",
+			].sort(),
+		);
+	});
+
 	it("pins the approved CommDB columns and exact shutdown request key", () => {
 		const comm = new CommDB(":memory:");
 		commDbs.push(comm);
@@ -120,7 +147,7 @@ describe("FLY-2268 mechanism guards", () => {
 				resolve(root, "packages/teamlead/src/bridge/resident-hold.ts"),
 				"utf8",
 			),
-		).toContain("RESIDENT_GRACE_MS = 1_800_000");
+		).toContain("RESIDENT_GRACE_MS = 10_800_000");
 		expect(barrier).toContain("TURN_BARRIER_RETRY_MS = 60_000");
 	});
 

@@ -381,6 +381,8 @@ export interface WorkflowResidentHoldRow {
 	grace_started_at: string;
 	grace_expires_at: string;
 	closed_reason: string | null;
+	release_cause: "verdict_pass" | null;
+	release_source: string | null;
 	updated_at: string;
 }
 
@@ -25316,10 +25318,18 @@ export class StateStore {
 				grace_started_at TEXT NOT NULL,
 				grace_expires_at TEXT NOT NULL,
 				closed_reason TEXT,
+				release_cause TEXT CHECK (release_cause IS NULL OR release_cause IN ('verdict_pass')),
+				release_source TEXT,
 				updated_at TEXT NOT NULL,
 				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
 			)
 		`);
+		this.addColumnIfMissing(
+			"workflow_resident_hold",
+			"release_cause",
+			"TEXT CHECK (release_cause IS NULL OR release_cause IN ('verdict_pass'))",
+		);
+		this.addColumnIfMissing("workflow_resident_hold", "release_source", "TEXT");
 		this.db.run(`
 			CREATE INDEX IF NOT EXISTS idx_wrh_expiring
 			ON workflow_resident_hold(state, grace_expires_at)

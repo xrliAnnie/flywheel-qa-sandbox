@@ -1,1 +1,1 @@
-export const RESIDENT_GRACE_MS = 1_800_000;
+export const RESIDENT_GRACE_MS = 10_800_000;
