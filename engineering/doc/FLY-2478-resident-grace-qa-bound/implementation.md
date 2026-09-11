@@ -84,3 +84,9 @@ Lead 对问题 `0be14023-0e25-42eb-954b-abbb2e67f40f` 裁定：本单保持锁�
 - stale-blocker / close-runner 中登记删除与进程死亡证据的缺口：按 `b24de8a9` 留作后续，不扩本单实现范围。
 - C9：真机 QA FAIL 原体复用、PASS ≤60 秒释放、释放后替身、patrol 静默及重启后停驻存活，由 QA 独立验证。
 - plugin 单飞/CommDB 生命周期目前为代码审查证据；dispatcher 行为有可执行测试。
+
+## 续跑 CI 修复（2026-09-11）
+
+PR #1164 原头 `e4a2e691edbcd3e3e78d67059ae2e9e396caf087` 的 CI run `34639792611` 中，TeamLead 两个 job 因 post-ship-finalization 测试失败。生产 post-merge 已使用 typed lookup，但该测试仍将 typed lookup 固定为 gone，目标夹具只接到旧 getter，导致清理顺序等 5 项断言失败。
+
+本地原样复现 5 项失败后，仅将 typed lookup 夹具接到相同的目标与错误配置；未改变生产行为或放宽断言。post-ship-finalization 49 项与 post-merge 19 项合计 68 项通过。原头 CI 失败不能算通过；修复头须重新运行精确 HEAD CI 与代码评审。
