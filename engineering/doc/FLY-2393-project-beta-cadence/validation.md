@@ -26,3 +26,9 @@ R1 有效 CHANGES_REQUESTED（1 HIGH、8 MEDIUM、2 LOW），完整结构化记�
 作者 runner 原渲染失败仍是实测事实，不能推出其他执行环境失败。R1 reviewer 本地成功产物 `/tmp/fly2393-d1.svg`（SHA256 `1bf1661f584a7b5eb29ef310dd03b0db4bd1b00a49496129b52a04485bc7a1b9`）、`/tmp/fly2393-d2.svg`（`41b8ce82f22619323ead1c6094979f843c13f018f22d50f1bd4efca21faa2468`）已核对标签/XML，将全部 id 和 CSS/url 引用一致加 issue/图序号前缀后收入仓并内联。没有再用占位符。
 
 happy-dom 对 Mermaid SVG 的 foreignObject/嵌套 HTML 解析不完整；最终脚本回归仅在测试输入中把 SVG 替换为静态空图容器，生产 HTML 保留完整原图。SVG 另做 XML、安全标签与跨图 ID/引用验证；不能把这个 DOM 模拟称作完整浏览器视觉验收。Chrome DevTools 连接查询长时间未返回，停止这次可选只读查询；sips 不支持该 SVG，未得到作者截图。下一轮请求 reviewer 核查实际页面。
+
+## 有效最终评审
+
+2026-09-10 R2：reviewVerdict=APPROVED，reviewerVerdict=APPROVED，request 97975305-bb76-435c-b0bb-100dd0484728，question 9c9dff1e-394c-4874-8096-b0a9e1aedc68。5 条非阻塞建议按 Lead 指令仅进入 plan §12 Follow-ups；完整原文见 review-r2.json。审批后的文档变更仅为结果元数据、建议归档与交付记录，没有继续修订实现行为。
+
+最终完整 HTML 使用 parse5 HTML5 parser 校验：0 parse errors、2 个 SVG、7 个 section、7 个评论框、69 个唯一 ID；SVG 后的复制按钮仍处于正确 DOM，且无占位图。与 happy-dom 评论 controller 运行检查共同覆盖结构/交互；未将其冒充作者浏览器截图。

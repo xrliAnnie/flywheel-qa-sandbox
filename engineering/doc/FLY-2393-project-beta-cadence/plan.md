@@ -3,7 +3,7 @@ Issue: FLY-2393 (https://linear.app/geoforge3d/issue/FLY-2393/1143b6-bridge-按�
 日期: 2026-09-10
 基于: research.md
 
-> 状态：待有效 design review。本文件是设计，不是已实施或真实发布验收证明。
+> 状态：R2 有效 design review **APPROVED**（request 97975305-bb76-435c-b0bb-100dd0484728；完整结果见 review-r2.json）。本文件是设计，不是已实施或真实发布验收证明。
 > 一句话：Bridge 按各项目自己的时钟触发内部 beta 发布，复用各仓工作流；客户每周 release 保持独立。
 
 ## 1. 范围、两态与 Lead 裁定
@@ -198,3 +198,19 @@ A1 mock 验的是调度和隔离，不能替代 A11。按照 Lead 裁定，Geo �
 唯一 HIGH `superseded-burns-cycle` 已修：取消“必须仍是 HEAD”与 superseded 成功状态，固定发布可达的已合入 SHA；如果已有真实后代 beta，核验后记 covered_by_newer，禁止回退。常规 merge 不再烧掉 6/24h 周期。
 
 同时处理 S3/S8 硬门冲突、凭据绑定位、zip 解析载体、管理台全族测试、scheduleKey 恒等关系、activatedAt 首个 tick；加入有上限且保留 live/unknown 证据的重试规则。作者自审另补 §3.1，保护客户 pending 免被 beta 顶掉。独立 Bridge 存活告警保留为明确非阻塞 follow-up 建议，未假装已实现。
+
+
+## 12. Follow-ups（非阻塞建议，只归档，不在本节点修复）
+
+按 Lead 指令 `[lead-instruction 06cef85a-86ef-49bc-a8c4-4b4b1d40ae3f]`，下列建议保留给 Lead 决定后续安排；不构成本节点新增实施工作，不开新单。R2 没有 HIGH，effective reviewVerdict=APPROVED，不启动 R3。
+
+| 来源 / findingKey | 严重性 | 原文标题 | 待决事项 |
+|---|---|---|---|
+| R1 / no-bridge-liveness-alarm | MEDIUM | owner=bridge 解除了 GitHub 侧的持久 cron，却没有任何 Bridge 存活告警 | 选择独立于 Bridge 的失联监控所有者；本计划不宣称已有该告警 |
+| R2 / pointer-rollback-check-outside-cas | MEDIUM | 「禁止把指针退回旧代码」这条硬规则被放在 CAS 之外，中间隔着几分钟构建 | 带外发布并发时的提交原子条件及反例，交 Lead 后续决定 |
+| R2 / shared-lock-across-job-and-workflow-level-unproven | MEDIUM | §3.1 把 beta 的锁降到 job 级，却没有证据证明 job 级组与另外三个 workflow 级同名组互斥 | 跨层同名并发组互斥仍是待实验核实的假设，不冒充已验证 |
+| R2 / duplicate-beta-runs-hold-customer-lock-unbounded | MEDIUM | no_change / covered_by_newer 的 beta run 仍会带着整套 install+build 占住共享发布锁，A10 只断言客户不被取消、没有断言等待有界 | 无变化任务提早退出与客户等待时间的量级，待后续安排 |
+| R2 / ancestry-check-must-not-checkout-untrusted-sha-first | LOW | 「同源 git ancestry 检查」没写清用什么算，最省事的实现会把信任顺序做反 | 实施时信任检查的具体载体与 checkout 顺序建议留档 |
+| R2 / queue-max-touches-customer-workflows-beyond-declared-scope | LOW | §3.1 顺手改了三个客户发布工作流，与 §1 自己划的范围红线擦边，建议单独取得 Lead 授权 | 三个客户 workflow 排队字段的实施范围由 Lead 后续明确；本节点没有改这三个文件 |
+
+R2 五条 finding 的完整 detail 原文保存在 review-r2.json；不得将留档解读为已修复、已验收或授权写客户工作流。R1 其余建议已在 Lead 本条指令到达之前完成设计修订，见 §11 与 review-r1.json。

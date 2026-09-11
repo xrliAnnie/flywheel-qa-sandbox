@@ -1,0 +1,103 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "97975305-bb76-435c-b0bb-100dd0484728",
+  "round": 2,
+  "findings": [
+    {
+      "id": "pointer-rollback-check-outside-cas",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 107,
+      "title": "「禁止把指针退回旧代码」这条硬规则被放在 CAS 之外，中间隔着几分钟构建",
+      "detail": "R1 的 HIGH 修得很干净——改成「冻结 SHA 只要能从默认分支到达就照发」，superseded 这个成功态被删掉，A8 也改写成「普通 merge 仍发布冻结 A」「每周期不因 merge 被跳过」。饿死周期的问题没有了，这条只针对新引入的实现合同。\n\n§5 ② 把 `禁止把指针退回旧代码` 写成硬规则，落点是 ⑤ 描述的「workflow 前置 helper 读取并验证 manifest 后产生 covered_by_newer」。但真正写指针的地方是 `scripts/release/payload-release.mjs` 第 4 步 commit CAS，它无条件执行 `m.channels[BETA_POINTER].latest = pinnedVer`，对「新版本的 sourceCommit 是不是当前指针 sourceCommit 的祖先」没有任何判断；而 §5 ③ 明确说「既有 CAS 不变」。\n\n于是 helper 读 manifest（T1）和 CAS 写指针（T2）之间隔着 checkout + pnpm install + better-sqlite3 prebuild + pnpm build + packer，按 workflow 的 30 分钟 timeout 量级就是几分钟到十几分钟。这段窗口内如果有另一次 beta commit 落地，指针就会被这一轮退回旧代码，而 CAS 不会拒绝。\n\n触发面确实窄：同仓的 workflow 驱动发布都在 `payload-release` 组里串行，所以需要一次带外的本地 `payload-release.mjs`（测试夹具和人工重试都是这么跑的）才撞得上。但既然设计把它写成硬规则而不是尽力而为，就应该由 CAS 兜住。建议在 commit CAS 里加一条前置条件：待写入版本的 sourceCommit 不得是当前 `internal-beta` 指针版本 sourceCommit 的祖先（祖先关系由 helper 预先算好、以 expected-pointer 形式传进去），不满足就 fail-closed 成 covered_by_newer。C3 的完成证据里「已有后代 beta 不回退」目前只覆盖 helper 路径，请补一条 CAS 层的反例。",
+      "findingKey": "pointer-rollback-check-outside-cas"
+    },
+    {
+      "id": "shared-lock-across-job-and-workflow-level-unproven",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 61,
+      "title": "§3.1 把 beta 的锁降到 job 级，却没有证据证明 job 级组与另外三个 workflow 级同名组互斥",
+      "detail": "§3.1 声称「保留同一个跨 workflow/job 的发布锁，不把 beta 分到另一组」。这句是整个 §3.1 的承重墙：beta 的 `group: payload-release` 移到 publish job 上，而 payload-promote / payload-promote-commit / payload-activation 三个仍然是 workflow 级同名组。只有当这两级共用同一个命名空间时，beta 发布才继续和客户发布互斥。\n\n我去核了官方并发文档。`queue: max` 这个键是真的（single 默认、max 最多 100 个 pending、且不得与 cancel-in-progress:true 同时使用），§3.1 和 research.md 的引用准确，这点没问题。但同一页对「workflow 级组与 job 级同名组是否互斥」没有任何正面表述，只有一句「concurrency group names must be unique across workflows to avoid canceling in-progress jobs or runs from other workflows」——它说明组是仓库级作用域，因此大概率确实互斥，但这是推断不是文档断言，而 workflow-syntax 那一页同样没写。\n\n如果推断错了，后果落在客户路径上：beta 的 publish job 可能与 `payload-promote-commit`（客户指针 commit）并行，`payload-beta-release.yml` 文件头自己声明的「Actions concurrency + manifest etag CAS, double insurance」就掉了一层，只剩 manifest CAS 兜底。\n\n更要紧的是 §3.1 第三条设计的隔离仓实验只验「占用发布锁 + 排队客户任务 + 后来 beta/停用 cron → 客户 run 未被取消」，验的是 queue:max 不取消，恰恰没验「job 级组挡不挡得住 workflow 级组」。请把这条单独列进那次隔离仓实验：起一个持锁的 job 级 `payload-release`，同时触发一个 workflow 级同名组的 run，断言后者进入 pending 而不是并行开跑；或者干脆放弃降级，保留 beta 的 workflow 级组，改用「preflight 步骤极早退出」来达到同样的省队列效果。",
+      "findingKey": "shared-lock-across-job-and-workflow-level-unproven"
+    },
+    {
+      "id": "duplicate-beta-runs-hold-customer-lock-unbounded",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 63,
+      "title": "no_change / covered_by_newer 的 beta run 仍会带着整套 install+build 占住共享发布锁，A10 只断言客户不被取消、没有断言等待有界",
+      "detail": "§3.1 诚实地写了「共享锁仍可能让客户等待已经运行的 beta…不能承诺零排队延迟」，A10 也相应改成「不取消它的 running/pending；客户保持等待」。但这里少了一个量级判断。\n\n当前 `.github/workflows/payload-beta-release.yml` 的步骤顺序是：ref guard → preflight → checkout → pnpm/action-setup → setup-node → install → better-sqlite3 prebuild → **build workspace dist** → 最后才跑 payload-release.mjs（job timeout 30 分钟）。§3.1 把这一整串都放进持锁的 publish job。也就是说，一次注定 no_change（main 没动）或 covered_by_newer（已有后代 beta）的 beta run，照样要在锁里烧完整个构建，客户任务就在后面排这么久。\n\n叠加两处会放大：§5 允许「重复 dispatch 可能发生」「发现多个 run 时全部记录并等待终态」，而重试上限是「最多 5 次 POST」——最坏情况有数个同 SHA 的 pending beta run 依次进锁，每个都跑满构建，客户 release 的等待时间没有任何上界。queue:max 保证它们不被取消，但不保证它们不被顶到后面等几小时。\n\n设计里已经有现成的解法没用上：§5 ⑤ 的「前置 helper 读取并验证 manifest」完全可以放在 checkout/install/build **之前**（它只需要 endpoint client 和一次 manifest 读），no_change / covered_by_newer 直接出回执退出，锁占用从十几分钟降到秒级。请在 §5 ② / §5.2 的 publish job 白名单里把这个顺序写死（helper 步骤必须先于任何 checkout/install/build），并给 A10 加一条断言：注定 no-op 的 beta run 持锁时间必须远小于一次完整构建。",
+      "findingKey": "duplicate-beta-runs-hold-customer-lock-unbounded"
+    },
+    {
+      "id": "ancestry-check-must-not-checkout-untrusted-sha-first",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 107,
+      "title": "「同源 git ancestry 检查」没写清用什么算，最省事的实现会把信任顺序做反",
+      "detail": "§5 ② 的可达性检查是这次修 HIGH 的关键防线：它同时挡住「排队期间 main 前进」（照发冻结 SHA）和「有人 dispatch 一个 PR 分支上的 SHA」（不可达 → attention）。方向完全正确，`actions/checkout` 的 `ref:` 行也正好落在既有 S8 允许的 `ref: ` 白名单里，没有额外冲突。\n\n但「同源 git ancestry 检查」这个措辞没说清算法载体，而两条实现路径的安全性不一样：\n- 用 GitHub compare API（`GET /repos/{o}/{r}/compare/{main}...{frozen}` 看 status/behind）——不需要任何 checkout，最安全；\n- 用本地 `git merge-base --is-ancestor`——需要先有一个工作区。这时最自然也最省事的写法就是先 `actions/checkout` 那个**未经验证的输入 SHA**、再在里面算祖先关系，等于先把不受信任的代码铺到 runner 上再判断它可不可信，信任顺序整个反了。\n\n§5 ② 现在的行文「验证…可从当前默认分支到达，随后 checkout 精确 SHA」顺序是对的，但没有禁止上述反写法。请补一句约束：可达性判定只许走 compare API，或只许在「仅 checkout 默认分支」的工作区里算；在判定通过之前不得 checkout 输入 SHA。A7 的「错 SHA/ref」用例顺带加一条断言：不可达的输入 SHA 在被 checkout 之前就已经被拒。",
+      "findingKey": "ancestry-check-must-not-checkout-untrusted-sha-first"
+    },
+    {
+      "id": "queue-max-touches-customer-workflows-beyond-declared-scope",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 61,
+      "title": "§3.1 顺手改了三个客户发布工作流，与 §1 自己划的范围红线擦边，建议单独取得 Lead 授权",
+      "detail": "§3.1 要求 payload-promote.yml、payload-promote-commit.yml、payload-activation.yml 三个客户侧工作流统一加 `queue: max` + `cancel-in-progress: false`。技术判断上我同意这是对的：它修的是一个**先于本单存在**的隐患——GitHub 默认 `queue: single` 会让新的 pending 顶掉旧的 pending，包括客户任务，而 `cancel-in-progress: false` 只保护 running 不保护 pending。§3.1 对这个机制的描述和官方文档一致。\n\n只是 §1 把红线划成了「不改客户 release 的频率、manifest、判据或授权」，而排队语义严格说不在这四项里，属于打擦边球。三个文件的实际改动很小（只加两个排队字段，不动触发/environment/输入/凭据/动作），plan 也自己标了「作者自审补强，须新一轮评审」，态度是对的。\n\n建议只是流程上的：这三个文件的改动要么在 PR body 里单独拎出来请 Lead 明确点头（毕竟 B6 这一单反复强调不阻塞也不触碰 flywheel-only 每周 release），要么拆成一张独立 issue 先行合入——它本来就不依赖 B6 的任何东西，先合反而能让 beta 接管时的风险面更小。另外注意 `queue: max` 与 `cancel-in-progress: true` 同时出现会直接触发 workflow validation error，§3.1 增强 S2 时加的「无 cancel-in-progress:true」负例正好也覆盖了这个语法约束，这点写得很到位。",
+      "findingKey": "queue-max-touches-customer-workflows-beyond-declared-scope"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "pointer-rollback-check-outside-cas",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 107,
+      "title": "「禁止把指针退回旧代码」这条硬规则被放在 CAS 之外，中间隔着几分钟构建",
+      "detail": "R1 的 HIGH 修得很干净——改成「冻结 SHA 只要能从默认分支到达就照发」，superseded 这个成功态被删掉，A8 也改写成「普通 merge 仍发布冻结 A」「每周期不因 merge 被跳过」。饿死周期的问题没有了，这条只针对新引入的实现合同。\n\n§5 ② 把 `禁止把指针退回旧代码` 写成硬规则，落点是 ⑤ 描述的「workflow 前置 helper 读取并验证 manifest 后产生 covered_by_newer」。但真正写指针的地方是 `scripts/release/payload-release.mjs` 第 4 步 commit CAS，它无条件执行 `m.channels[BETA_POINTER].latest = pinnedVer`，对「新版本的 sourceCommit 是不是当前指针 sourceCommit 的祖先」没有任何判断；而 §5 ③ 明确说「既有 CAS 不变」。\n\n于是 helper 读 manifest（T1）和 CAS 写指针（T2）之间隔着 checkout + pnpm install + better-sqlite3 prebuild + pnpm build + packer，按 workflow 的 30 分钟 timeout 量级就是几分钟到十几分钟。这段窗口内如果有另一次 beta commit 落地，指针就会被这一轮退回旧代码，而 CAS 不会拒绝。\n\n触发面确实窄：同仓的 workflow 驱动发布都在 `payload-release` 组里串行，所以需要一次带外的本地 `payload-release.mjs`（测试夹具和人工重试都是这么跑的）才撞得上。但既然设计把它写成硬规则而不是尽力而为，就应该由 CAS 兜住。建议在 commit CAS 里加一条前置条件：待写入版本的 sourceCommit 不得是当前 `internal-beta` 指针版本 sourceCommit 的祖先（祖先关系由 helper 预先算好、以 expected-pointer 形式传进去），不满足就 fail-closed 成 covered_by_newer。C3 的完成证据里「已有后代 beta 不回退」目前只覆盖 helper 路径，请补一条 CAS 层的反例。",
+      "findingKey": "pointer-rollback-check-outside-cas"
+    },
+    {
+      "id": "shared-lock-across-job-and-workflow-level-unproven",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 61,
+      "title": "§3.1 把 beta 的锁降到 job 级，却没有证据证明 job 级组与另外三个 workflow 级同名组互斥",
+      "detail": "§3.1 声称「保留同一个跨 workflow/job 的发布锁，不把 beta 分到另一组」。这句是整个 §3.1 的承重墙：beta 的 `group: payload-release` 移到 publish job 上，而 payload-promote / payload-promote-commit / payload-activation 三个仍然是 workflow 级同名组。只有当这两级共用同一个命名空间时，beta 发布才继续和客户发布互斥。\n\n我去核了官方并发文档。`queue: max` 这个键是真的（single 默认、max 最多 100 个 pending、且不得与 cancel-in-progress:true 同时使用），§3.1 和 research.md 的引用准确，这点没问题。但同一页对「workflow 级组与 job 级同名组是否互斥」没有任何正面表述，只有一句「concurrency group names must be unique across workflows to avoid canceling in-progress jobs or runs from other workflows」——它说明组是仓库级作用域，因此大概率确实互斥，但这是推断不是文档断言，而 workflow-syntax 那一页同样没写。\n\n如果推断错了，后果落在客户路径上：beta 的 publish job 可能与 `payload-promote-commit`（客户指针 commit）并行，`payload-beta-release.yml` 文件头自己声明的「Actions concurrency + manifest etag CAS, double insurance」就掉了一层，只剩 manifest CAS 兜底。\n\n更要紧的是 §3.1 第三条设计的隔离仓实验只验「占用发布锁 + 排队客户任务 + 后来 beta/停用 cron → 客户 run 未被取消」，验的是 queue:max 不取消，恰恰没验「job 级组挡不挡得住 workflow 级组」。请把这条单独列进那次隔离仓实验：起一个持锁的 job 级 `payload-release`，同时触发一个 workflow 级同名组的 run，断言后者进入 pending 而不是并行开跑；或者干脆放弃降级，保留 beta 的 workflow 级组，改用「preflight 步骤极早退出」来达到同样的省队列效果。",
+      "findingKey": "shared-lock-across-job-and-workflow-level-unproven"
+    },
+    {
+      "id": "duplicate-beta-runs-hold-customer-lock-unbounded",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 63,
+      "title": "no_change / covered_by_newer 的 beta run 仍会带着整套 install+build 占住共享发布锁，A10 只断言客户不被取消、没有断言等待有界",
+      "detail": "§3.1 诚实地写了「共享锁仍可能让客户等待已经运行的 beta…不能承诺零排队延迟」，A10 也相应改成「不取消它的 running/pending；客户保持等待」。但这里少了一个量级判断。\n\n当前 `.github/workflows/payload-beta-release.yml` 的步骤顺序是：ref guard → preflight → checkout → pnpm/action-setup → setup-node → install → better-sqlite3 prebuild → **build workspace dist** → 最后才跑 payload-release.mjs（job timeout 30 分钟）。§3.1 把这一整串都放进持锁的 publish job。也就是说，一次注定 no_change（main 没动）或 covered_by_newer（已有后代 beta）的 beta run，照样要在锁里烧完整个构建，客户任务就在后面排这么久。\n\n叠加两处会放大：§5 允许「重复 dispatch 可能发生」「发现多个 run 时全部记录并等待终态」，而重试上限是「最多 5 次 POST」——最坏情况有数个同 SHA 的 pending beta run 依次进锁，每个都跑满构建，客户 release 的等待时间没有任何上界。queue:max 保证它们不被取消，但不保证它们不被顶到后面等几小时。\n\n设计里已经有现成的解法没用上：§5 ⑤ 的「前置 helper 读取并验证 manifest」完全可以放在 checkout/install/build **之前**（它只需要 endpoint client 和一次 manifest 读），no_change / covered_by_newer 直接出回执退出，锁占用从十几分钟降到秒级。请在 §5 ② / §5.2 的 publish job 白名单里把这个顺序写死（helper 步骤必须先于任何 checkout/install/build），并给 A10 加一条断言：注定 no-op 的 beta run 持锁时间必须远小于一次完整构建。",
+      "findingKey": "duplicate-beta-runs-hold-customer-lock-unbounded"
+    },
+    {
+      "id": "ancestry-check-must-not-checkout-untrusted-sha-first",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 107,
+      "title": "「同源 git ancestry 检查」没写清用什么算，最省事的实现会把信任顺序做反",
+      "detail": "§5 ② 的可达性检查是这次修 HIGH 的关键防线：它同时挡住「排队期间 main 前进」（照发冻结 SHA）和「有人 dispatch 一个 PR 分支上的 SHA」（不可达 → attention）。方向完全正确，`actions/checkout` 的 `ref:` 行也正好落在既有 S8 允许的 `ref: ` 白名单里，没有额外冲突。\n\n但「同源 git ancestry 检查」这个措辞没说清算法载体，而两条实现路径的安全性不一样：\n- 用 GitHub compare API（`GET /repos/{o}/{r}/compare/{main}...{frozen}` 看 status/behind）——不需要任何 checkout，最安全；\n- 用本地 `git merge-base --is-ancestor`——需要先有一个工作区。这时最自然也最省事的写法就是先 `actions/checkout` 那个**未经验证的输入 SHA**、再在里面算祖先关系，等于先把不受信任的代码铺到 runner 上再判断它可不可信，信任顺序整个反了。\n\n§5 ② 现在的行文「验证…可从当前默认分支到达，随后 checkout 精确 SHA」顺序是对的，但没有禁止上述反写法。请补一句约束：可达性判定只许走 compare API，或只许在「仅 checkout 默认分支」的工作区里算；在判定通过之前不得 checkout 输入 SHA。A7 的「错 SHA/ref」用例顺带加一条断言：不可达的输入 SHA 在被 checkout 之前就已经被拒。",
+      "findingKey": "ancestry-check-must-not-checkout-untrusted-sha-first"
+    },
+    {
+      "id": "queue-max-touches-customer-workflows-beyond-declared-scope",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 61,
+      "title": "§3.1 顺手改了三个客户发布工作流，与 §1 自己划的范围红线擦边，建议单独取得 Lead 授权",
+      "detail": "§3.1 要求 payload-promote.yml、payload-promote-commit.yml、payload-activation.yml 三个客户侧工作流统一加 `queue: max` + `cancel-in-progress: false`。技术判断上我同意这是对的：它修的是一个**先于本单存在**的隐患——GitHub 默认 `queue: single` 会让新的 pending 顶掉旧的 pending，包括客户任务，而 `cancel-in-progress: false` 只保护 running 不保护 pending。§3.1 对这个机制的描述和官方文档一致。\n\n只是 §1 把红线划成了「不改客户 release 的频率、manifest、判据或授权」，而排队语义严格说不在这四项里，属于打擦边球。三个文件的实际改动很小（只加两个排队字段，不动触发/environment/输入/凭据/动作），plan 也自己标了「作者自审补强，须新一轮评审」，态度是对的。\n\n建议只是流程上的：这三个文件的改动要么在 PR body 里单独拎出来请 Lead 明确点头（毕竟 B6 这一单反复强调不阻塞也不触碰 flywheel-only 每周 release），要么拆成一张独立 issue 先行合入——它本来就不依赖 B6 的任何东西，先合反而能让 beta 接管时的风险面更小。另外注意 `queue: max` 与 `cancel-in-progress: true` 同时出现会直接触发 workflow validation error，§3.1 增强 S2 时加的「无 cancel-in-progress:true」负例正好也覆盖了这个语法约束，这点写得很到位。",
+      "findingKey": "queue-max-touches-customer-workflows-beyond-declared-scope"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "fccd2291-3421-484a-86b8-a1f6791a8dac"
+}
