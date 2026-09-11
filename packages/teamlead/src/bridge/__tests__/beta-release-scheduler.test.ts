@@ -28,6 +28,7 @@ function fixture() {
 	let owner: "legacy" | "paused" | "bridge" = "bridge";
 	const dispatched: { binding: BetaBinding; occurrence: BetaOccurrence }[] = [];
 	const transport: BetaReleaseTransport = {
+		async assertDrained() {},
 		async resolve(p) {
 			return {
 				projectName: p.projectName,
@@ -371,4 +372,53 @@ it("contains a roster-read failure and recovers on the next tick", async () => {
 	await scheduler.tick();
 	expect(store.betaSchedules.lane("a")).not.toBeNull();
 	await scheduler.stop();
+});
+it("does not activate a new lane until previous workflow runs are drained", async () => {
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	const f = fixture();
+	let now = 0;
+	let drained = false;
+	f.transport.assertDrained = async () => {
+		if (!drained) throw new Error("old run still live");
+	};
+	const scheduler = new BetaReleaseScheduler({
+		store: store.betaSchedules,
+		transport: f.transport,
+		projects: async () => [projects[0]!],
+		now: () => now,
+	});
+	await scheduler.tick();
+	expect(store.betaSchedules.lane("a")).toBeNull();
+	expect(f.dispatched).toHaveLength(0);
+	drained = true;
+	now = 900000;
+	await scheduler.tick();
+	expect(store.betaSchedules.lane("a")?.activatedAtMs).toBe(now);
+	expect(store.betaSchedules.lane("a")?.nextDueAtMs).toBe(now + 6 * hour);
+});
+it("backs off an authorization error before a lane has been bound", async () => {
+	const { BetaGitHubError } = await import("../beta-release-github.js");
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	const f = fixture();
+	let now = 0;
+	let calls = 0;
+	f.transport.resolve = async () => {
+		calls++;
+		throw new BetaGitHubError("beta_github_http_403");
+	};
+	const scheduler = new BetaReleaseScheduler({
+		store: store.betaSchedules,
+		transport: f.transport,
+		projects: async () => [projects[0]!],
+		now: () => now,
+	});
+	await scheduler.tick();
+	now = 60000;
+	await scheduler.tick();
+	expect(calls).toBe(1);
+	now = 900000;
+	await scheduler.tick();
+	expect(calls).toBe(2);
 });

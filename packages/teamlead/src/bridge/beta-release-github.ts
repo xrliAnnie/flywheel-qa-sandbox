@@ -254,6 +254,27 @@ export class BetaReleaseGitHub {
 			throw new BetaGitHubError("beta_owner_invalid");
 		return matches[0]!.value as BetaOwner;
 	}
+	async assertDrained(
+		binding: BetaBinding,
+		signal: AbortSignal,
+	): Promise<void> {
+		for (const status of [
+			"queued",
+			"in_progress",
+			"waiting",
+			"pending",
+			"requested",
+		]) {
+			const runs = await this.list(
+				`${this.path(binding)}/actions/workflows/${numeric(binding.workflowId)}/runs?status=${status}`,
+				"workflow_runs",
+				binding.tokenEnv,
+				signal,
+			);
+			if (runs.length) throw new BetaGitHubError("beta_takeover_not_drained");
+		}
+	}
+
 	async head(binding: BetaBinding, signal: AbortSignal): Promise<string> {
 		const commit = object(
 			(

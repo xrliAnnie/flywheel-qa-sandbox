@@ -34,6 +34,10 @@ it("runs canonical project configuration without a management console and stops 
 						}),
 					);
 				}
+				if (url.includes("/runs?status="))
+					return new Response(
+						JSON.stringify({ total_count: 0, workflow_runs: [] }),
+					);
 				const value = url.endsWith("/repos/test/a")
 					? { id: 1, full_name: "test/a", default_branch: "main" }
 					: url.includes("/actions/variables?")

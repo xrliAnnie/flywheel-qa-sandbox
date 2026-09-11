@@ -1,5 +1,9 @@
 import type { BetaProjectConfig } from "./beta-release-config-source.js";
-import type { BetaBinding, BetaOccurrence } from "./beta-release-contract.js";
+import type {
+	BetaBinding,
+	BetaOccurrence,
+	BetaStoredObservation,
+} from "./beta-release-contract.js";
 import { BetaGitHubError } from "./beta-release-github.js";
 import type { BetaReceipt } from "./beta-release-receipt.js";
 import { validateBetaReceipt } from "./beta-release-receipt.js";
@@ -14,6 +18,7 @@ export interface BetaObservedRun {
 }
 /** Adapter verifies all pages, run bindings and covered_by_newer ancestry before returning. */
 export interface BetaReleaseTransport {
+	assertDrained(binding: BetaBinding, signal: AbortSignal): Promise<void>;
 	resolve(
 		project: BetaProjectConfig,
 		signal: AbortSignal,
@@ -44,6 +49,7 @@ export class BetaReleaseScheduler {
 	private running: Promise<void> | null = null;
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private observations = new Map<string, BetaScheduleObservation>();
+	private unboundObservations = new Map<string, BetaStoredObservation>();
 	constructor(
 		private readonly options: {
 			store: BetaReleaseStore;
@@ -124,7 +130,9 @@ export class BetaReleaseScheduler {
 		const now = this.options.now?.() ?? Date.now();
 
 		const signal = this.abort.signal;
-		const prior = store.observation(project.projectName);
+		const prior =
+			store.observation(project.projectName) ??
+			this.unboundObservations.get(project.projectName);
 		if (prior && now < prior.pollAfterMs) {
 			this.observations.set(project.projectName, {
 				projectName: project.projectName,
@@ -160,6 +168,7 @@ export class BetaReleaseScheduler {
 					}
 					return;
 				}
+				owner = await transport.owner(lane, signal);
 				const { runs } = await transport.observe(lane, active, signal);
 				const ids = [...new Set([...active.runIds, ...runs.map((r) => r.id)])];
 				if (active.runIds.some((id) => !runs.some((r) => r.id === id)))
@@ -174,6 +183,7 @@ export class BetaReleaseScheduler {
 					) {
 						status = "attention";
 						reason = "beta_unknown_acceptance";
+						pollAfterMs = now + 900000;
 					} else if (
 						runs.every((r) => r.status === "completed") &&
 						!project.reason &&
@@ -291,6 +301,7 @@ export class BetaReleaseScheduler {
 					) {
 						status = "attention";
 						reason = "beta_unknown_acceptance";
+						pollAfterMs = now + 900000;
 					} else if (
 						!project.reason &&
 						now >= (active.retryAtMs ?? active.createdAtMs + 120000)
@@ -306,6 +317,11 @@ export class BetaReleaseScheduler {
 			owner = await transport.owner(binding, signal);
 			status = owner;
 			if (owner !== "bridge") return;
+			if (!store.lane(project.projectName)) {
+				await transport.assertDrained(binding, signal);
+				owner = await transport.owner(binding, signal);
+				if (owner !== "bridge") return;
+			}
 			store.bind(binding, now, interval);
 			const due = store.due(project.projectName, interval, now);
 			if (due === null) {
@@ -328,6 +344,13 @@ export class BetaReleaseScheduler {
 				error instanceof BetaGitHubError ? (error.retryAtMs ?? 0) : 0,
 			);
 		} finally {
+			this.unboundObservations.set(project.projectName, {
+				owner,
+				status,
+				reason,
+				observedAtMs: now,
+				pollAfterMs,
+			});
 			store.recordObservation(project.projectName, {
 				owner,
 				status,

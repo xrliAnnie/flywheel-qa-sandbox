@@ -381,3 +381,29 @@ it("does not infer missing owner from malformed variable records", async () => {
 		),
 	).rejects.toThrow("beta_github_schema");
 });
+it("checks old queued and running workflow runs before first takeover", async () => {
+	let active = true;
+	const api = new BetaReleaseGitHub({
+		env: { A_TOKEN: "scoped-a" },
+		fetch: async () =>
+			json({
+				total_count: active ? 1 : 0,
+				workflow_runs: active ? [{ id: 3 }] : [],
+			}),
+	});
+	const binding = {
+		projectName: "a",
+		repositoryId: 11,
+		workflowId: 22,
+		canonicalRepo: "test/a",
+		defaultBranch: "main",
+		bindingRevision: "r",
+		tokenEnv: "A_TOKEN",
+	};
+	const signal = new AbortController().signal;
+	await expect(api.assertDrained(binding, signal)).rejects.toThrow(
+		"beta_takeover_not_drained",
+	);
+	active = false;
+	await expect(api.assertDrained(binding, signal)).resolves.toBeUndefined();
+});

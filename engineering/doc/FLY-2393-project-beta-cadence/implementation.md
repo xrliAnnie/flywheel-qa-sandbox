@@ -97,3 +97,13 @@ createBetaReleaseRuntime 接入 plugin：在 management console 可选初始化�
 视觉缺口：真实源码生成 /tmp/fly2393-beta-console.html（显式fixture数据），Chrome MCP拒绝 requires approval / policy never；独立temp profile的本地headless Chrome exit134，未产截图。已问Lead question 6a05af77-6274-43fa-9b55-68f7b60eaf69 请求授权环境取证。DOM通过不能替代截图，未宣称视觉验收完成。
 
 待完成审计：首次接管前排空检查、unknown预算耗尽后的低频轮询/首次未绑定错误冷却、owner观测刷新、强负例与回滚runbook；全仓gate/review/PR及视觉证据。继续实现，不phase_complete、不标goal完成。
+
+## 最终边界补强与全仓验证启动（2026-09-11）
+
+初次接管先由GitHub adapter查queued/in_progress/waiting/pending/requested，未排空不bind；排空后再次核owner。active观察前刷新owner。未知提交预算耗尽仍保留active并15分钟低频poll；尚未绑定的认证错误增加进程内15分钟冷却。对应红灯→绿灯记录 /tmp/fly2393-drain-red.log、/tmp/fly2393-api-drain-red.log、/tmp/fly2393-unbound-red.log 与 green logs。
+
+Lead视觉裁定已采纳（question 6a05af77-6274-43fa-9b55-68f7b60eaf69）：提交fixtures/beta-console.html，真实视觉验收归QA，不阻塞实现handoff；PR需含精确延期说明。未再重试截图。
+
+全仓 pnpm lint 已执行并修复本分支格式/导入错误；第二次PASS（既有16 warnings），日志 /tmp/fly2393-full-lint-final.log。pnpm -r build PASS，日志 /tmp/fly2393-full-build.log。pnpm test:packages:run 正在执行，session 72616，日志 /tmp/fly2393-full-packages.log；不能先写测试全部通过。新增mjs测试由现有release-workflows-structure.test.sh接入CI。没有新增shell测试文件。
+
+packages总门结果：未改动的flywheel-comm dependency.test.ts在全仓并行压力下5000ms超时（2226 passed / 1 failed / 2 skipped），总命令提前退出。按Lead限制，仅隔离复跑该文件一次，42/42 PASS（/tmp/fly2393-dependency-isolated.log），未修改该测试。为覆盖提前退出后未执行的包，启动7个剩余包的pnpm -r --no-bail test:run（session16524，/tmp/fly2393-remaining-packages.log）；保留原始全仓失败，不写“全仓packages全绿”。
