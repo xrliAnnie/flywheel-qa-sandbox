@@ -50,6 +50,7 @@ export class BetaReleaseScheduler {
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private observations = new Map<string, BetaScheduleObservation>();
 	private unboundObservations = new Map<string, BetaStoredObservation>();
+	private reportedErrors = new Map<string, string>();
 	constructor(
 		private readonly options: {
 			store: BetaReleaseStore;
@@ -80,8 +81,11 @@ export class BetaReleaseScheduler {
 		if (this.abort.signal.aborted) return Promise.resolve();
 		if (this.running) return this.running;
 		this.running = this.runTick()
+			.then(() => {
+				this.reportedErrors.delete("scheduler");
+			})
 			.catch(() => {
-				this.options.onError?.("beta_scheduler_failed");
+				this.reportError("scheduler", "beta_scheduler_failed");
 			})
 			.finally(() => {
 				this.running = null;
@@ -93,7 +97,7 @@ export class BetaReleaseScheduler {
 		try {
 			projects = await this.options.projects();
 		} catch {
-			this.options.onError?.("beta_project_source_failed");
+			this.reportError("source", "beta_project_source_failed");
 			const now = this.options.now?.() ?? Date.now();
 			for (const [name, previous] of this.observations)
 				this.observations.set(name, {
@@ -105,6 +109,7 @@ export class BetaReleaseScheduler {
 				});
 			return;
 		}
+		this.reportedErrors.delete("source");
 		for (const lane of this.options.store.lanes()) {
 			if (!projects.some((p) => p.projectName === lane.projectName))
 				projects.push({
@@ -344,6 +349,19 @@ export class BetaReleaseScheduler {
 				error instanceof BetaGitHubError ? (error.retryAtMs ?? 0) : 0,
 			);
 		} finally {
+			const errorScope = `project:${project.projectName}`;
+			if (reason) {
+				this.reportError(
+					errorScope,
+					JSON.stringify({
+						project: project.projectName,
+						reason,
+						occurrence: store.active(project.projectName)?.occurrenceId ?? null,
+					}),
+				);
+			} else {
+				this.reportedErrors.delete(errorScope);
+			}
 			this.unboundObservations.set(project.projectName, {
 				owner,
 				status,
@@ -367,6 +385,11 @@ export class BetaReleaseScheduler {
 				observedAtMs: now,
 			});
 		}
+	}
+	private reportError(scope: string, code: string): void {
+		if (this.reportedErrors.get(scope) === code) return;
+		this.reportedErrors.set(scope, code);
+		this.options.onError?.(code);
 	}
 	private backoff(attempt: number): number {
 		return [120000, 300000, 900000][Math.min(2, Math.max(0, attempt - 1))]!;

@@ -422,3 +422,37 @@ it("backs off an authorization error before a lane has been bound", async () => 
 	await scheduler.tick();
 	expect(calls).toBe(2);
 });
+
+it("deduplicates project errors until recovery without combining project lanes", async () => {
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	const f = fixture();
+	let now = 0;
+	let broken = true;
+	const owner = f.transport.owner;
+	f.transport.owner = async (...args) => {
+		if (broken) throw new Error("private response must not be logged");
+		return owner(...args);
+	};
+	const errors: string[] = [];
+	const scheduler = new BetaReleaseScheduler({
+		store: store.betaSchedules,
+		transport: f.transport,
+		projects: async () => projects,
+		now: () => now,
+		onError: (code) => errors.push(code),
+	});
+	await scheduler.tick();
+	expect(errors).toHaveLength(2);
+	expect(errors.join(" ")).not.toContain("private response");
+	now += hour;
+	await scheduler.tick();
+	expect(errors).toHaveLength(2);
+	broken = false;
+	now += hour;
+	await scheduler.tick();
+	broken = true;
+	now += hour;
+	await scheduler.tick();
+	expect(errors).toHaveLength(4);
+});

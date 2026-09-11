@@ -107,3 +107,9 @@ Lead视觉裁定已采纳（question 6a05af77-6274-43fa-9b55-68f7b60eaf69）：�
 全仓 pnpm lint 已执行并修复本分支格式/导入错误；第二次PASS（既有16 warnings），日志 /tmp/fly2393-full-lint-final.log。pnpm -r build PASS，日志 /tmp/fly2393-full-build.log。pnpm test:packages:run 正在执行，session 72616，日志 /tmp/fly2393-full-packages.log；不能先写测试全部通过。新增mjs测试由现有release-workflows-structure.test.sh接入CI。没有新增shell测试文件。
 
 packages总门结果：未改动的flywheel-comm dependency.test.ts在全仓并行压力下5000ms超时（2226 passed / 1 failed / 2 skipped），总命令提前退出。按Lead限制，仅隔离复跑该文件一次，42/42 PASS（/tmp/fly2393-dependency-isolated.log），未修改该测试。为覆盖提前退出后未执行的包，启动7个剩余包的pnpm -r --no-bail test:run（session16524，/tmp/fly2393-remaining-packages.log）；保留原始全仓失败，不写“全仓packages全绿”。
+
+## 审查前合同核对（2026-09-11）
+
+补齐计划§8错误日志去重：按project/reason/occurrence记录一次，恢复后可重新记录；错误响应正文不入日志，roster读取失败同样去重。新增双项目故障→重复→恢复→再失败回归，先红后绿；scheduler13/13 PASS（/tmp/fly2393-log-dedup-final.log）。变更后pnpm lint PASS与teamlead build PASS（/tmp/fly2393-lint-dedup.log、/tmp/fly2393-build-dedup.log）。
+
+剩余packages进程16524继续运行。claude-runner结果1253 passed/3 failed/2 skipped，失败为未改动的async-exec-file 500ms、prompt-overflow.real-tmux 5s、runner-env-isolation.real-tmux 5s超时，另有onTaskUpdate RPC超时；保留原日志，不将其称作绿灯，不扩修无关测试。gemini-agent158、voice-headphone54通过；edge-worker及后续包继续执行。代码审查与exact-head CI仍待完成。
