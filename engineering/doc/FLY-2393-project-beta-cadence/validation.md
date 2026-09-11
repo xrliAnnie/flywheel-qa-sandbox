@@ -32,3 +32,5 @@ happy-dom 对 Mermaid SVG 的 foreignObject/嵌套 HTML 解析不完整；最终
 2026-09-10 R2：reviewVerdict=APPROVED，reviewerVerdict=APPROVED，request 97975305-bb76-435c-b0bb-100dd0484728，question 9c9dff1e-394c-4874-8096-b0a9e1aedc68。5 条非阻塞建议按 Lead 指令仅进入 plan §12 Follow-ups；完整原文见 review-r2.json。审批后的文档变更仅为结果元数据、建议归档与交付记录，没有继续修订实现行为。
 
 最终完整 HTML 使用 parse5 HTML5 parser 校验：0 parse errors、2 个 SVG、7 个 section、7 个评论框、69 个唯一 ID；SVG 后的复制按钮仍处于正确 DOM，且无占位图。与 happy-dom 评论 controller 运行检查共同覆盖结构/交互；未将其冒充作者浏览器截图。
+
+托管校验通过：HTTP 200、nonce placeholder=0、真实 CSP 包含脚本对应 nonce 并允许 inline styles、HTML5 errors=0、2 SVG/7 评论框。报告 ID 与 URL 见 delivery.md；该检查验证线上字节与 CSP 配置，不冒充已取得浏览器视觉截图。
