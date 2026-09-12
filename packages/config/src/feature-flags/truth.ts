@@ -244,6 +244,8 @@ const FLY1455_NON_FLAG_ENV = [
 ] as const;
 
 export const NON_FLAG_ALLOWLIST: Record<string, string> = {
+	FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS:
+		"credential selector allowlist: operator-owned comma-separated beta Actions token variable names, not a feature toggle",
 	FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS:
 		"FLY-2465 per-invocation execution timeout duration, not a persistent switch",
 	FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS:

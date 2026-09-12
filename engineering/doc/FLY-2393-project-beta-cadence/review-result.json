@@ -1,0 +1,10 @@
+{
+  "effectiveVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "round": 2,
+  "questionId": "9c9dff1e-394c-4874-8096-b0a9e1aedc68",
+  "requestId": "97975305-bb76-435c-b0bb-100dd0484728",
+  "reviewedDesignCommit": "0dd8c4d90",
+  "advisoryCount": 5,
+  "reviewRecord": "review-r2.json"
+}

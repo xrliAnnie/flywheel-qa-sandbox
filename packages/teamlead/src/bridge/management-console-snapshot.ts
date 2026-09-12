@@ -7,6 +7,7 @@ import {
 import {
 	assertManagementSnapshot,
 	MANAGEMENT_SCHEMA_VERSION,
+	type ManagementBetaScheduleView,
 	type ManagementCronView,
 	type ManagementDagView,
 	type ManagementExtensionSection,
@@ -19,6 +20,10 @@ import {
 } from "./management-console-contract.js";
 
 export interface ManagementSnapshotFragment {
+	projectBetaSchedules?: Array<{
+		projectName: string;
+		betaSchedule: ManagementBetaScheduleView;
+	}>;
 	projects?: ManagementProjectView[];
 	presentationGroups?: PresentationGroupView[];
 	flags?: ManagementFlagView[];
@@ -60,6 +65,9 @@ export function composeManagementSnapshot(input: {
 }): ManagementSnapshot {
 	const sources: ManagementSnapshot["sources"] = [];
 	const projects: ManagementProjectView[] = [];
+	const projectBetaSchedules: NonNullable<
+		ManagementSnapshotFragment["projectBetaSchedules"]
+	> = [];
 	const presentationGroups: PresentationGroupView[] = [];
 	const flags: ManagementFlagView[] = [];
 	const extensions: ManagementExtensionSection[] = [];
@@ -93,6 +101,9 @@ export function composeManagementSnapshot(input: {
 			Object.assign(modelCatalog, result.fragment.modelCatalog ?? {});
 			projectDags.push(...(result.fragment.projectDags ?? []));
 			projectCrons.push(...(result.fragment.projectCrons ?? []));
+			projectBetaSchedules.push(
+				...(result.fragment.projectBetaSchedules ?? []),
+			);
 			projectRunnerDefaults.push(
 				...(result.fragment.projectRunnerDefaults ?? []),
 			);
@@ -110,6 +121,10 @@ export function composeManagementSnapshot(input: {
 	const projectsByName = new Map(
 		projects.map((project) => [project.name, project]),
 	);
+	for (const section of projectBetaSchedules) {
+		const project = projectsByName.get(section.projectName);
+		if (project) project.betaSchedule = section.betaSchedule;
+	}
 	for (const section of projectDags) {
 		const project = projectsByName.get(section.projectName);
 		if (!project) continue;

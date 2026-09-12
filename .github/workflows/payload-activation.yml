@@ -53,6 +53,7 @@ permissions:
 # a per-run capability-stamp race impossible (design §4).
 concurrency:
   group: payload-release
+  queue: max
 
 jobs:
   activate:

@@ -23,6 +23,11 @@ export {
 	workflowRegistryBindings,
 	workflowRegistryShapes,
 } from "./agent-registry.js";
+export type { BetaReleaseConfig } from "./beta-release-config.js";
+export {
+	BETA_RELEASE_DEFAULT_INTERVAL_HOURS,
+	parseBetaReleaseConfig,
+} from "./beta-release-config.js";
 export type { ReadFileFn } from "./ConfigLoader.js";
 export {
 	agentConfigsRequireRegistry,

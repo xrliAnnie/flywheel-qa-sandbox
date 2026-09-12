@@ -1,0 +1,11 @@
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#f5f5f7','primaryTextColor':'#1d1d1f','primaryBorderColor':'#b8bdc5','lineColor':'#687384','fontFamily':'-apple-system, BlinkMacSystemFont, Arial, sans-serif'},'flowchart':{'htmlLabels':false,'curve':'stepAfter'}}}%%
+flowchart TB
+  A[Bridge 每分钟检查项目] --> B{该项目由 Bridge 接管且到期？}
+  B -->|否| C[保留游标 等下次检查]
+  B -->|是| D[先记下本次任务和代码版本]
+  D --> E[触发该项目内部测试版工作流]
+  E --> F[核对运行回执与发布结果]
+  F --> G[只推进该项目下一次时间]
+  H[客户每周发布\n沿用现有独立决策与授权]
+  style D fill:#eaf3ff,stroke:#0071e3
+  style H fill:#f5f5f7,stroke:#b8bdc5,stroke-dasharray:5 5

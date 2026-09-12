@@ -1,0 +1,202 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "17ce1582-355b-45bd-b820-20756f4b0592",
+  "round": 1,
+  "findings": [
+    {
+      "id": "superseded-burns-cycle",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 96,
+      "title": "superseded 零发布却消费整个周期，会在正常 merge 竞争下饿死 beta 发布",
+      "detail": "§5 receiver 合同 ②：occurrence 在 dispatch 时冻结默认分支 SHA，run 启动后若 source-commit 已不是当前 HEAD 则输出 `superseded`、零发布；§5 ⑥ 明确 `superseded/no_change 消费本周期`；§4 又规定 `完成后 nextDue = due + interval`。三条合起来 = 一次普通的 main 前进就让该项目整整一个周期（flywheel 6h / geoforge3d 24h）没有任何内部 beta，且账本记为正常结算、状态页显示健康。\n\n这比被替换的 legacy 行为更差：`.github/workflows/payload-beta-release.yml` 的 6h cron 走 `actions/checkout@v4` 默认 ref（schedule 事件即 run 创建时的默认分支 SHA），它总会发出**某个** SHA，从不因为 main 前进而跳过。新设计把「竞争到了」变成「什么都不发」。\n\n触发窗口不是毫秒级：本 workflow 保留 `concurrency: group: payload-release`（已实测 S2 断言锁死），与 customer release / promote / activation 共用串行组。§9 自己承认「flywheel beta 可能等待客户操作」——排队越久，POST→run 创建之间 main 前进的概率越高，而排队最久的时段恰好是 main 最活跃的发布周。可稳定复现的失败序列：Bridge 冻结 SHA_A → POST → 队列被 customer release 占住 20 分钟 → 期间合入 SHA_B → run 创建时 github.sha=SHA_B ≠ SHA_A → superseded → nextDue += interval → 本周期零 beta。下个周期若队列仍忙可重复。\n\n注意 `no_change`（同 SHA 已发过）消费周期是对的，`superseded`（SHA 变了，新 beta 恰恰是有意义的）消费周期是错的——设计把这两种语义混为一谈，A8 的「不 mint 无意义 beta」只适用于前者。\n\n最小修法二选一：(a) 收到 `superseded` 时不结算、不推进 nextDue，在同一 lane 立刻用新 HEAD 重开一个 occurrence（带次数上限，避免 main 高频变动时抖动）；(b) 去掉「必须等于冻结 SHA」这条过约束——receipt 已经带 `sourceCommit` 字段，Bridge 完全可以接受 run 实际发布的 HEAD 并据此归因，冻结 SHA 只作为「不早于」的下界。无论选哪个，A8 的断言要改成「superseded 不得让该周期净产出为零」。",
+      "findingKey": "superseded-burns-cycle"
+    },
+    {
+      "id": "no-bridge-liveness-alarm",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 43,
+      "title": "owner=bridge 解除了 GitHub 侧的持久 cron，却没有任何 Bridge 存活告警",
+      "detail": "§3 的接管把 `schedule` 事件在 owner=bridge 下变成 no-op，即「旧定时器逻辑停用」。此后唯一的触发源是跑在 founder 本机 macOS 上的 Bridge（launchd 拉起，整机重启后约 10 分钟才回来；笔记本休眠/断电期间完全不跑）。可用性从 GitHub 托管 cron 降到单台笔记本。\n\n设计对此只给了被动展示：§6 的状态页在 owner 观测 stale 超 2 个 tick 时显示 unknown——但状态页本身由 Bridge 渲染，Bridge 挂了页面就是陈旧的，没人会被通知。§6 还明确禁止写入 release gate / Lead 巡逻 / auto-ship 状态，等于主动切断了所有既有告警通道，而没有新增替代通道。\n\n后果不是「晚一点发」：PRD FLY-1098 §6 的每周 customer release 是从 green 候选 beta 里挑的，beta 静默断供会顺带饿死对外发布候选池，而且是无声的。\n\n建议：要么保留一条 GitHub 侧的 dead-man cron（owner=bridge 时不发布，只在「距上次成功 receipt > 2×interval」时开 issue / 发告警），要么在 §6 之外显式接一条已有的 alert 通道，并在 §8 增加一条验收：Bridge 停机 > 2 个周期必须产生一条可被人看到的告警。",
+      "findingKey": "no-bridge-liveness-alarm"
+    },
+    {
+      "id": "unsettled-occurrence-stalls-lane",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 92,
+      "title": "无法结算的 occurrence 会永久卡住该项目泳道，且没有尝试次数上限",
+      "detail": "§4 规定「每项目最多一个 active occurrence」且 `nextDue` 只在结算后推进；§5 规定终态失败要「查清所有 run 后才能退避重试」，退避 2/5/15 分钟封顶 15 分钟，而 `不无限发请求` 这条豁免只覆盖 `auth/binding/receipt schema` 三类错误。\n\n于是有一整类既不属于这三类、又永远好不了的情况会让泳道永久停摆并且每 15 分钟重试一次：run 在 `payload-release` 并发组里作为 pending 被更新的等待任务顶掉而 `cancelled`（research.md 自己引用了 GitHub 文档的这个行为）、runner 容量长期不足、artifact 超过 90 天保留期被清掉（§9 承认会进 attention）。这些场景下 occurrence 不结算 → nextDue 永不推进 → 该项目再也不发 beta，而且 §9 明确「不直接清空账本放行」，只能靠人工介入。\n\n设计缺的是一条上限规则。建议补：occurrence 存活超过 min(interval, N 小时) 或尝试超过 K 次即标记 `abandoned` 并把 nextDue 推进到严格晚于 now 的下一个网格点（同时记 attention），让泳道自愈；`cancelled` 应与 `failure` 分开归类，作为可重试的排队竞争而不是终态失败。§8 的 A6 目前只断言「A 有明确状态；B 仍正常」，要加一条「A 的卡死不会无限期阻止 A 自己的下一个周期」。",
+      "findingKey": "unsettled-occurrence-stalls-lane"
+    },
+    {
+      "id": "run-name-breaks-s8",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 88,
+      "title": "§5 要求的 run-name 携带 schedule key 会直接打红既有 S8 断言，而 C5 的守卫改动清单没列 S8",
+      "detail": "§5 要求 workflow 的 `run-name` 含固定前缀 `beta-schedule:<schedule-key>`，Bridge 靠它在丢响应后找回 run。实现上只能写成 `run-name: beta-schedule:${{ inputs.schedule-key }}`。\n\n但 `scripts/__tests__/release-workflows-structure.test.sh` 的 S8（第 250-260 行）逐行扫 BETA/PROMOTE/COMMIT/ACTIVATION，任何含 `${{ inputs.` 的行都必须同时匹配 `_INPUT: |if: |ref: ` 才算合格。顶层 `run-name:` 行三个都不匹配 → S8 直接 FAIL。我在当前 HEAD 跑过该套件（23 passed / 0 failed），S8 目前是绿的，所以这是一条会被这次改动打红的既有硬门。\n\n而 §7 的 C5 只写了「S3 扩为 legacy+bridge+paused 路由；S2/S4 守卫不删」，通篇没提 S8。计划里对既有守卫面的审计是不完整的——beta workflow 同时被 S2/S3/S4d/S4e/S7/S8/S13 锁着。\n\n另外提醒一个诱惑性的错误解法：改写成 `${{ github.event.inputs.schedule-key }}` 能绕过 S8 的 `*'${{ inputs.'*` 模式匹配，但那是在利用守卫盲点而不是修问题。正确做法是在 S8 里为 `run-name:` 开一个显式、有理由的例外（run-name 不是 shell 文本，不存在注入路径），并在 plan 的 C5 里写明这条例外及其理由。",
+      "findingKey": "run-name-breaks-s8"
+    },
+    {
+      "id": "not-activated-receipt-vs-s3",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 98,
+      "title": "`not_activated` receipt 与 S3 的「preflight 之后每一步都必须被 activated 门控」互斥",
+      "detail": "§5 ④ 把 `not_activated` 列为合法 receipt outcome，§5 ⑥ 要求 Bridge 据此「单独显示未激活」，§8 的 A8 直接断言 `not_activated 分开记录`。要产出这个 receipt，上传 artifact 的那一步必须在 `FW_ENDPOINT` 未配置（preflight 判定 activated=false）时**照样执行**。\n\n可是 S3（release-workflows-structure.test.sh 第 66-88 行）的真实断言是结构性的：`id: preflight` 之后的每一个 step start（`^      - (uses|name):`）数量必须与 `if: steps.preflight.outputs.activated == 'true'` 的出现次数**相等**。加一个 `if: always()` 或无条件的 receipt step 会让 STEP_STARTS 加一而 GATED 不变 → S3 FAIL。\n\n所以两条路都有代价：不加这一步，则 GeoForge3D/未激活期的每个周期都因「无 artifact」落进 attention（§5 ⑥），A8 无法通过；加这一步，就必须放松 S3 的计数不变式——而 S3 的注释写得很清楚，这个计数式是专门为了替换掉「字符串存在即通过」的假阴性检查而引入的，松掉它等于让预激活 guard 重新变成装饰品（这是一个 fail-open 方向的回退）。\n\n计划完全没有意识到这个冲突：§7 C5 只说「S3 扩为 legacy+bridge+paused 路由」。请在 plan 里显式给出解法，例如把 receipt step 做成有名字的白名单例外（S3 改成「除 receipt step 外每一步都被门控，且 receipt step 只允许 upload-artifact，不得含任何 build/publish 动作」），并把这条新不变式写进 C5 的完成证据。",
+      "findingKey": "not-activated-receipt-vs-s3"
+    },
+    {
+      "id": "no-per-project-credential-binding",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 43,
+      "title": "设计要求每项目独立受限凭据，但配置 schema 里没有任何凭据绑定位，且显式禁止 env override",
+      "detail": "§3 要求「使用独立、受限目标仓库的 Actions write + Variables read + metadata/contents read 凭据，不能借用 ship/merge token」，§5 结尾把「凭据授权」列为跨项目隔离的四大来源之一。两个项目 = 两个不同的 repo（xrliAnnie/flywheel 与 xrliAnnie/geoforge3d，我核过生产 ~/.flywheel/projects.json 的 projectRepo）= 必须是两份不同的凭据。\n\n但 §2 枚举的 `beta_release` 只有 `interval_hours` 和 `workflow_file` 两个键，并且写死「未知键全部拒绝」；同一段还写了「不存 env override」。ProjectEntry（packages/teamlead/src/ProjectConfig.ts:287）里也没有对应字段。也就是说按 plan 原样实现，validator 会拒绝任何形如 `token_env` 的新键，而设计又没给出第二个绑定位。\n\n实现者最省事的落点就是一个全局 env var——那正好是一份对两个 repo 都有 Actions write 的共享凭据，把 §5 声称的凭据隔离直接作废，而且是静默作废（测试不会发现）。§8 的 A6 有「无 token」场景，却没有「A 的凭据不能用来 dispatch B」这条反例。\n\n注意仓里已有现成的惯例可以照抄：ProjectEntry 的 `botTokenEnv` / `announcerBotTokenEnv` 就是「roster 存 env var 名字、值走 env」。建议在 `beta_release` 下加 `token_env`（只存变量名，不存值），或在 projects.json 侧加同形字段，并在 A6 补一条跨项目凭据反例。",
+      "findingKey": "no-per-project-credential-binding"
+    },
+    {
+      "id": "receipt-zip-mechanism-unspecified",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 98,
+      "title": "receipt artifact 必须解 zip，但仓里没有任何 zip 库，而 §4 又禁止主循环同步 exec",
+      "detail": "§5 ④ 要求 Bridge 对 artifact 做相当细的安全解析：「文件仅 receipt.json、解压后 ≤4 KiB、非链接、拒绝路径穿越和多文件」。GitHub 的 artifact 下载 API（`GET /repos/{o}/{r}/actions/artifacts/{id}/zip`）只给 zip，没有取单文件的接口，所以 Bridge 端必然要解 zip。\n\n我查了整个 monorepo 的 package.json：yauzl / adm-zip / jszip / node-stream-zip 一个都没有，teamlead 也没有任何 tar/zip 依赖；Node 内置也不提供 zip 容器解析（zlib 只做流压缩）。所以这一步要么引新依赖，要么 exec `unzip`/`ditto`——而 §4 明确写了「不得同步 exec/构建卡 Bridge 主循环」。\n\n计划把最细的安全约束（4 KiB、路径穿越、符号链接、多文件）写在了一个没有实现载体的位置上，这恰恰是攻击面所在（zip-slip / zip bomb）。请在 §5 或 C3 里点名机制：选哪个库（或异步 spawn + 有界输出 + 超时），谁来强制 4 KiB 上限（下载前先看 artifact 的 size_in_bytes，解压时再限流），并在 A7 的「zip 路径攻击」用例里绑定到这个具体实现。",
+      "findingKey": "receipt-zip-mechanism-unspecified"
+    },
+    {
+      "id": "console-test-scope-incomplete",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 144,
+      "title": "§8 的执行范围漏掉了 fleet-console-html 的 5 个消费者测试套件",
+      "detail": "§6 要改 `fleet-console-html.ts` 的渲染（在现有项目节奏信息旁加 betaSchedule）。我在 packages/teamlead/src/__tests__/ 下实测有 7 个套件消费这个模块：fleet-console-html.test.ts、management-console-dom.test.ts、management-console-projection-dom.test.ts、management-console-page-switch.test.ts、management-console-handbook-links.test.ts、management-console-visual-regression.test.ts、management-console-ui-contract.test.ts。\n\n§8 的命令行只列了 management-console-snapshot.test.ts 和 management-console-dom.test.ts，漏了其余 5 个。management-console-visual-regression 和 management-console-ui-contract 尤其危险——fleet-console-html.ts:560 的项目头部 subtitle 逐字写着「N 个可见 Lead · N 个 DAG · N 个 Cron」，加一个 beta 面板/页签几乎必然动到这行，而按 §8 的范围跑本地是绿的。\n\n这正是这个仓踩过的老坑（管理台合同锁在 happy-dom 真 DOM 测试族里，fleet-console-html.test.ts 只是字符串级）。请把 `src/__tests__/management-console-*.test.ts src/__tests__/fleet-console-html.test.ts` 整族加进 §8，并在 C4 的完成证据里写明「改 DOM 前先全族 grep」。",
+      "findingKey": "console-test-scope-incomplete"
+    },
+    {
+      "id": "mermaid-render-claim-false",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 166,
+      "title": "「本机 mmdc 渲染失败」的结论不成立——两张图在本机都能渲出来，占位符是不必要的降级",
+      "detail": "§10 写「两张 Mermaid 图各执行 mmdc + 标准参数重试一次，均因本机 Chromium `bootstrap_check_in ... Permission denied (1100)` 失败」，据此在 founder-design.html 里放了 2 处 `DIAGRAM PENDING LOCAL RENDER` 占位（我在未提交的 HTML 里数到 2 处）。\n\n我在同一台机器上各跑了一条命令，两张都渲染成功：\n  npx -y @mermaid-js/mermaid-cli@latest -i d2-model.mmd -o /tmp/fly2393-d2.svg  → 16890 bytes 合法 SVG\n  npx -y @mermaid-js/mermaid-cli@latest -i d1-flow.mmd -o /tmp/fly2393-d1.svg  → 18693 bytes 合法 SVG\n差别在于 PATH 上那个 mmdc 复用的是宿主 Chromium（会撞 1100），而 `npx -y @mermaid-js/mermaid-cli@latest` 会带自己的 Puppeteer Chromium。所以这不是环境硬限制，是选错了入口。\n\n结论：founder 会拿到一份两张图都是占位文字的设计稿，而这个降级是可以避免的。请用上面的入口重渲并把 SVG 内联进 HTML。内联多张 mmdc SVG 时注意本仓踩过的坑：不要直接删 `id=\"my-svg\"`（会让所有节点渲染成纯黑块），要改成唯一 id 并同步重写 `#my-svg` 选择器；发布前真看一眼渲染结果。\n\n（本条只针对 §10 那句事实判断，不涉及设计本身的对错。）",
+      "findingKey": "mermaid-render-claim-false"
+    },
+    {
+      "id": "schedule-key-identity-unstated",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 86,
+      "title": "schedule-key 与 occurrenceId 的关系从未写明",
+      "detail": "§4 定义 `occurrenceId = sha256(canonical JSON [projectName, bindingRevision, scheduledAtMs])`，§5 的 POST inputs 里出现 `schedule-key`，run-name 里出现 `beta-schedule:<schedule-key>`，receipt 字段里出现 `scheduleKey`。三处用的是同一个东西的意思很明显，但全文没有一句把它们等同起来。\n\n这在实现期是会出事的：Bridge 用 run-name 做丢响应后的找回匹配（§5），匹配键要是和 occurrence 主键不是同一个值，重启后就对不上。请补一句 `scheduleKey === occurrenceId`（或明确它是 occurrenceId 的某个前缀/派生，并给出派生规则），顺带说明 64 位 hex 放进 run-name 是否需要截断——截断会削弱唯一性，需要写明取多少位以及为什么够。",
+      "findingKey": "schedule-key-identity-unstated"
+    },
+    {
+      "id": "activated-at-write-trigger-ambiguous",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 60,
+      "title": "activatedAt 由哪一个 tick 写入没有定义，导致相邻两句自相矛盾",
+      "detail": "§3 接管步骤 ④ 说「在暂停期间记录迁移锚点 `activatedAt`，lane 初始 `nextDueAt = activatedAt + interval`」，紧接着又说「暂停导致首次 due 已经过期时只合并补一轮」。\n\n这两句只有在「activatedAt 由某个观测到 owner=paused 的 tick 写入、而 owner 改成 bridge 发生在 activatedAt + interval 之后」时才同时成立。如果按更自然的读法——Bridge 在第一次观测到 owner=bridge 时才建 lane 行并写 activatedAt——那 nextDueAt 必然在未来，「首次 due 已经过期」这个分支永远走不到，后半句就是死代码。\n\n请明确写出触发条件：是「首次观测到 owner ∈ {paused, bridge} 的 tick 建行」，还是「运维在排空完成后用某个显式动作写入」。这决定了接管后第一个 beta 到底在多久之后发出，也决定了 §8 的 A9 该断言什么。",
+      "findingKey": "activated-at-write-trigger-ambiguous"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "no-bridge-liveness-alarm",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 43,
+      "title": "owner=bridge 解除了 GitHub 侧的持久 cron，却没有任何 Bridge 存活告警",
+      "detail": "§3 的接管把 `schedule` 事件在 owner=bridge 下变成 no-op，即「旧定时器逻辑停用」。此后唯一的触发源是跑在 founder 本机 macOS 上的 Bridge（launchd 拉起，整机重启后约 10 分钟才回来；笔记本休眠/断电期间完全不跑）。可用性从 GitHub 托管 cron 降到单台笔记本。\n\n设计对此只给了被动展示：§6 的状态页在 owner 观测 stale 超 2 个 tick 时显示 unknown——但状态页本身由 Bridge 渲染，Bridge 挂了页面就是陈旧的，没人会被通知。§6 还明确禁止写入 release gate / Lead 巡逻 / auto-ship 状态，等于主动切断了所有既有告警通道，而没有新增替代通道。\n\n后果不是「晚一点发」：PRD FLY-1098 §6 的每周 customer release 是从 green 候选 beta 里挑的，beta 静默断供会顺带饿死对外发布候选池，而且是无声的。\n\n建议：要么保留一条 GitHub 侧的 dead-man cron（owner=bridge 时不发布，只在「距上次成功 receipt > 2×interval」时开 issue / 发告警），要么在 §6 之外显式接一条已有的 alert 通道，并在 §8 增加一条验收：Bridge 停机 > 2 个周期必须产生一条可被人看到的告警。",
+      "findingKey": "no-bridge-liveness-alarm"
+    },
+    {
+      "id": "unsettled-occurrence-stalls-lane",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 92,
+      "title": "无法结算的 occurrence 会永久卡住该项目泳道，且没有尝试次数上限",
+      "detail": "§4 规定「每项目最多一个 active occurrence」且 `nextDue` 只在结算后推进；§5 规定终态失败要「查清所有 run 后才能退避重试」，退避 2/5/15 分钟封顶 15 分钟，而 `不无限发请求` 这条豁免只覆盖 `auth/binding/receipt schema` 三类错误。\n\n于是有一整类既不属于这三类、又永远好不了的情况会让泳道永久停摆并且每 15 分钟重试一次：run 在 `payload-release` 并发组里作为 pending 被更新的等待任务顶掉而 `cancelled`（research.md 自己引用了 GitHub 文档的这个行为）、runner 容量长期不足、artifact 超过 90 天保留期被清掉（§9 承认会进 attention）。这些场景下 occurrence 不结算 → nextDue 永不推进 → 该项目再也不发 beta，而且 §9 明确「不直接清空账本放行」，只能靠人工介入。\n\n设计缺的是一条上限规则。建议补：occurrence 存活超过 min(interval, N 小时) 或尝试超过 K 次即标记 `abandoned` 并把 nextDue 推进到严格晚于 now 的下一个网格点（同时记 attention），让泳道自愈；`cancelled` 应与 `failure` 分开归类，作为可重试的排队竞争而不是终态失败。§8 的 A6 目前只断言「A 有明确状态；B 仍正常」，要加一条「A 的卡死不会无限期阻止 A 自己的下一个周期」。",
+      "findingKey": "unsettled-occurrence-stalls-lane"
+    },
+    {
+      "id": "run-name-breaks-s8",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 88,
+      "title": "§5 要求的 run-name 携带 schedule key 会直接打红既有 S8 断言，而 C5 的守卫改动清单没列 S8",
+      "detail": "§5 要求 workflow 的 `run-name` 含固定前缀 `beta-schedule:<schedule-key>`，Bridge 靠它在丢响应后找回 run。实现上只能写成 `run-name: beta-schedule:${{ inputs.schedule-key }}`。\n\n但 `scripts/__tests__/release-workflows-structure.test.sh` 的 S8（第 250-260 行）逐行扫 BETA/PROMOTE/COMMIT/ACTIVATION，任何含 `${{ inputs.` 的行都必须同时匹配 `_INPUT: |if: |ref: ` 才算合格。顶层 `run-name:` 行三个都不匹配 → S8 直接 FAIL。我在当前 HEAD 跑过该套件（23 passed / 0 failed），S8 目前是绿的，所以这是一条会被这次改动打红的既有硬门。\n\n而 §7 的 C5 只写了「S3 扩为 legacy+bridge+paused 路由；S2/S4 守卫不删」，通篇没提 S8。计划里对既有守卫面的审计是不完整的——beta workflow 同时被 S2/S3/S4d/S4e/S7/S8/S13 锁着。\n\n另外提醒一个诱惑性的错误解法：改写成 `${{ github.event.inputs.schedule-key }}` 能绕过 S8 的 `*'${{ inputs.'*` 模式匹配，但那是在利用守卫盲点而不是修问题。正确做法是在 S8 里为 `run-name:` 开一个显式、有理由的例外（run-name 不是 shell 文本，不存在注入路径），并在 plan 的 C5 里写明这条例外及其理由。",
+      "findingKey": "run-name-breaks-s8"
+    },
+    {
+      "id": "not-activated-receipt-vs-s3",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 98,
+      "title": "`not_activated` receipt 与 S3 的「preflight 之后每一步都必须被 activated 门控」互斥",
+      "detail": "§5 ④ 把 `not_activated` 列为合法 receipt outcome，§5 ⑥ 要求 Bridge 据此「单独显示未激活」，§8 的 A8 直接断言 `not_activated 分开记录`。要产出这个 receipt，上传 artifact 的那一步必须在 `FW_ENDPOINT` 未配置（preflight 判定 activated=false）时**照样执行**。\n\n可是 S3（release-workflows-structure.test.sh 第 66-88 行）的真实断言是结构性的：`id: preflight` 之后的每一个 step start（`^      - (uses|name):`）数量必须与 `if: steps.preflight.outputs.activated == 'true'` 的出现次数**相等**。加一个 `if: always()` 或无条件的 receipt step 会让 STEP_STARTS 加一而 GATED 不变 → S3 FAIL。\n\n所以两条路都有代价：不加这一步，则 GeoForge3D/未激活期的每个周期都因「无 artifact」落进 attention（§5 ⑥），A8 无法通过；加这一步，就必须放松 S3 的计数不变式——而 S3 的注释写得很清楚，这个计数式是专门为了替换掉「字符串存在即通过」的假阴性检查而引入的，松掉它等于让预激活 guard 重新变成装饰品（这是一个 fail-open 方向的回退）。\n\n计划完全没有意识到这个冲突：§7 C5 只说「S3 扩为 legacy+bridge+paused 路由」。请在 plan 里显式给出解法，例如把 receipt step 做成有名字的白名单例外（S3 改成「除 receipt step 外每一步都被门控，且 receipt step 只允许 upload-artifact，不得含任何 build/publish 动作」），并把这条新不变式写进 C5 的完成证据。",
+      "findingKey": "not-activated-receipt-vs-s3"
+    },
+    {
+      "id": "no-per-project-credential-binding",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 43,
+      "title": "设计要求每项目独立受限凭据，但配置 schema 里没有任何凭据绑定位，且显式禁止 env override",
+      "detail": "§3 要求「使用独立、受限目标仓库的 Actions write + Variables read + metadata/contents read 凭据，不能借用 ship/merge token」，§5 结尾把「凭据授权」列为跨项目隔离的四大来源之一。两个项目 = 两个不同的 repo（xrliAnnie/flywheel 与 xrliAnnie/geoforge3d，我核过生产 ~/.flywheel/projects.json 的 projectRepo）= 必须是两份不同的凭据。\n\n但 §2 枚举的 `beta_release` 只有 `interval_hours` 和 `workflow_file` 两个键，并且写死「未知键全部拒绝」；同一段还写了「不存 env override」。ProjectEntry（packages/teamlead/src/ProjectConfig.ts:287）里也没有对应字段。也就是说按 plan 原样实现，validator 会拒绝任何形如 `token_env` 的新键，而设计又没给出第二个绑定位。\n\n实现者最省事的落点就是一个全局 env var——那正好是一份对两个 repo 都有 Actions write 的共享凭据，把 §5 声称的凭据隔离直接作废，而且是静默作废（测试不会发现）。§8 的 A6 有「无 token」场景，却没有「A 的凭据不能用来 dispatch B」这条反例。\n\n注意仓里已有现成的惯例可以照抄：ProjectEntry 的 `botTokenEnv` / `announcerBotTokenEnv` 就是「roster 存 env var 名字、值走 env」。建议在 `beta_release` 下加 `token_env`（只存变量名，不存值），或在 projects.json 侧加同形字段，并在 A6 补一条跨项目凭据反例。",
+      "findingKey": "no-per-project-credential-binding"
+    },
+    {
+      "id": "receipt-zip-mechanism-unspecified",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 98,
+      "title": "receipt artifact 必须解 zip，但仓里没有任何 zip 库，而 §4 又禁止主循环同步 exec",
+      "detail": "§5 ④ 要求 Bridge 对 artifact 做相当细的安全解析：「文件仅 receipt.json、解压后 ≤4 KiB、非链接、拒绝路径穿越和多文件」。GitHub 的 artifact 下载 API（`GET /repos/{o}/{r}/actions/artifacts/{id}/zip`）只给 zip，没有取单文件的接口，所以 Bridge 端必然要解 zip。\n\n我查了整个 monorepo 的 package.json：yauzl / adm-zip / jszip / node-stream-zip 一个都没有，teamlead 也没有任何 tar/zip 依赖；Node 内置也不提供 zip 容器解析（zlib 只做流压缩）。所以这一步要么引新依赖，要么 exec `unzip`/`ditto`——而 §4 明确写了「不得同步 exec/构建卡 Bridge 主循环」。\n\n计划把最细的安全约束（4 KiB、路径穿越、符号链接、多文件）写在了一个没有实现载体的位置上，这恰恰是攻击面所在（zip-slip / zip bomb）。请在 §5 或 C3 里点名机制：选哪个库（或异步 spawn + 有界输出 + 超时），谁来强制 4 KiB 上限（下载前先看 artifact 的 size_in_bytes，解压时再限流），并在 A7 的「zip 路径攻击」用例里绑定到这个具体实现。",
+      "findingKey": "receipt-zip-mechanism-unspecified"
+    },
+    {
+      "id": "console-test-scope-incomplete",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 144,
+      "title": "§8 的执行范围漏掉了 fleet-console-html 的 5 个消费者测试套件",
+      "detail": "§6 要改 `fleet-console-html.ts` 的渲染（在现有项目节奏信息旁加 betaSchedule）。我在 packages/teamlead/src/__tests__/ 下实测有 7 个套件消费这个模块：fleet-console-html.test.ts、management-console-dom.test.ts、management-console-projection-dom.test.ts、management-console-page-switch.test.ts、management-console-handbook-links.test.ts、management-console-visual-regression.test.ts、management-console-ui-contract.test.ts。\n\n§8 的命令行只列了 management-console-snapshot.test.ts 和 management-console-dom.test.ts，漏了其余 5 个。management-console-visual-regression 和 management-console-ui-contract 尤其危险——fleet-console-html.ts:560 的项目头部 subtitle 逐字写着「N 个可见 Lead · N 个 DAG · N 个 Cron」，加一个 beta 面板/页签几乎必然动到这行，而按 §8 的范围跑本地是绿的。\n\n这正是这个仓踩过的老坑（管理台合同锁在 happy-dom 真 DOM 测试族里，fleet-console-html.test.ts 只是字符串级）。请把 `src/__tests__/management-console-*.test.ts src/__tests__/fleet-console-html.test.ts` 整族加进 §8，并在 C4 的完成证据里写明「改 DOM 前先全族 grep」。",
+      "findingKey": "console-test-scope-incomplete"
+    },
+    {
+      "id": "mermaid-render-claim-false",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 166,
+      "title": "「本机 mmdc 渲染失败」的结论不成立——两张图在本机都能渲出来，占位符是不必要的降级",
+      "detail": "§10 写「两张 Mermaid 图各执行 mmdc + 标准参数重试一次，均因本机 Chromium `bootstrap_check_in ... Permission denied (1100)` 失败」，据此在 founder-design.html 里放了 2 处 `DIAGRAM PENDING LOCAL RENDER` 占位（我在未提交的 HTML 里数到 2 处）。\n\n我在同一台机器上各跑了一条命令，两张都渲染成功：\n  npx -y @mermaid-js/mermaid-cli@latest -i d2-model.mmd -o /tmp/fly2393-d2.svg  → 16890 bytes 合法 SVG\n  npx -y @mermaid-js/mermaid-cli@latest -i d1-flow.mmd -o /tmp/fly2393-d1.svg  → 18693 bytes 合法 SVG\n差别在于 PATH 上那个 mmdc 复用的是宿主 Chromium（会撞 1100），而 `npx -y @mermaid-js/mermaid-cli@latest` 会带自己的 Puppeteer Chromium。所以这不是环境硬限制，是选错了入口。\n\n结论：founder 会拿到一份两张图都是占位文字的设计稿，而这个降级是可以避免的。请用上面的入口重渲并把 SVG 内联进 HTML。内联多张 mmdc SVG 时注意本仓踩过的坑：不要直接删 `id=\"my-svg\"`（会让所有节点渲染成纯黑块），要改成唯一 id 并同步重写 `#my-svg` 选择器；发布前真看一眼渲染结果。\n\n（本条只针对 §10 那句事实判断，不涉及设计本身的对错。）",
+      "findingKey": "mermaid-render-claim-false"
+    },
+    {
+      "id": "schedule-key-identity-unstated",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 86,
+      "title": "schedule-key 与 occurrenceId 的关系从未写明",
+      "detail": "§4 定义 `occurrenceId = sha256(canonical JSON [projectName, bindingRevision, scheduledAtMs])`，§5 的 POST inputs 里出现 `schedule-key`，run-name 里出现 `beta-schedule:<schedule-key>`，receipt 字段里出现 `scheduleKey`。三处用的是同一个东西的意思很明显，但全文没有一句把它们等同起来。\n\n这在实现期是会出事的：Bridge 用 run-name 做丢响应后的找回匹配（§5），匹配键要是和 occurrence 主键不是同一个值，重启后就对不上。请补一句 `scheduleKey === occurrenceId`（或明确它是 occurrenceId 的某个前缀/派生，并给出派生规则），顺带说明 64 位 hex 放进 run-name 是否需要截断——截断会削弱唯一性，需要写明取多少位以及为什么够。",
+      "findingKey": "schedule-key-identity-unstated"
+    },
+    {
+      "id": "activated-at-write-trigger-ambiguous",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2393-project-beta-cadence/plan.md",
+      "line": 60,
+      "title": "activatedAt 由哪一个 tick 写入没有定义，导致相邻两句自相矛盾",
+      "detail": "§3 接管步骤 ④ 说「在暂停期间记录迁移锚点 `activatedAt`，lane 初始 `nextDueAt = activatedAt + interval`」，紧接着又说「暂停导致首次 due 已经过期时只合并补一轮」。\n\n这两句只有在「activatedAt 由某个观测到 owner=paused 的 tick 写入、而 owner 改成 bridge 发生在 activatedAt + interval 之后」时才同时成立。如果按更自然的读法——Bridge 在第一次观测到 owner=bridge 时才建 lane 行并写 activatedAt——那 nextDueAt 必然在未来，「首次 due 已经过期」这个分支永远走不到，后半句就是死代码。\n\n请明确写出触发条件：是「首次观测到 owner ∈ {paused, bridge} 的 tick 建行」，还是「运维在排空完成后用某个显式动作写入」。这决定了接管后第一个 beta 到底在多久之后发出，也决定了 §8 的 A9 该断言什么。",
+      "findingKey": "activated-at-write-trigger-ambiguous"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "ea664c0b-05d4-4fac-b619-66b83cf67a05"
+}

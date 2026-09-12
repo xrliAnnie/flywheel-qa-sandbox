@@ -1,0 +1,9 @@
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#f5f5f7','primaryTextColor':'#1d1d1f','primaryBorderColor':'#b8bdc5','lineColor':'#687384','fontFamily':'-apple-system, BlinkMacSystemFont, Arial, sans-serif'},'flowchart':{'htmlLabels':false,'curve':'stepAfter'}}}%%
+flowchart TB
+  R[项目名册\n稳定项目标识 → 对应仓库] --> C[项目配置\n频率与内部测试版工作流]
+  R --> S[项目进度账本\n下次时间与当前任务]
+  S --> T[任务记录\n任务标识 代码版本 运行回执]
+  C --> T
+  O[目标仓库控制值\n旧定时器 / 暂停 / Bridge 接管] --> T
+  T --> P[该项目发布结果\n已发布 / 无新代码 / 失败]
+  style S fill:#eaf3ff,stroke:#0071e3

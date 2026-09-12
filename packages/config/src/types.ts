@@ -1,3 +1,6 @@
+import type { BetaReleaseConfig } from "./beta-release-config.js";
+
+export type { BetaReleaseConfig } from "./beta-release-config.js";
 /** Decision Layer autonomy progression */
 export type AutonomyLevel =
 	| "manual_only"
@@ -420,6 +423,8 @@ export type RoleBackendMap = Partial<Record<RoleName, RoleBackendConfig>>;
  * Loaded from .flywheel/config.yaml in the target project.
  */
 export interface FlywheelConfig {
+	/** Internal beta cadence; configuration alone does not authorize takeover. */
+	beta_release?: BetaReleaseConfig;
 	project: string;
 	linear: {
 		team_id: string;

@@ -136,6 +136,7 @@ button,input,select{font:inherit}.window-frame{height:calc(100vh - 36px);min-hei
 .overlay{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.38);display:none;align-items:center;justify-content:center;padding:20px}.overlay.open{display:flex}.modal{background:#fff;border-radius:14px;width:min(700px,100%);max-height:85vh;overflow:auto;padding:22px}.modal h2{font-size:19px;margin:0}.change{background:var(--wash);border-radius:9px;padding:10px;margin-top:8px}.change-values{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:start;margin-top:6px}.value{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wrap:anywhere}.old{text-decoration:line-through;color:var(--muted)}.consequence{color:var(--amber);font-size:12px;margin-top:6px}.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}.modal-actions .primary{background:var(--blue);color:#fff}.ack{background:#fff6e8;color:#6f4200;padding:10px;border-radius:8px;margin-top:12px}.progress-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;border-top:1px solid #eee;padding:9px 0}.terminal-ok{color:var(--green)}.terminal-partial{color:var(--amber)}.terminal-failed{color:var(--red)}
 @media(max-width:1050px){.lead-row{grid-template-columns:1fr}.three,.lead-row .three{grid-template-columns:1fr}.lead-row .field>label{display:block}.grid .card .model-effort{grid-column:auto}.lead-head{display:none}}
 @media(max-width:780px){body{overflow:auto;padding:0}.window-frame{height:auto;min-height:100vh;border:0;border-radius:0}.window-chrome{position:sticky;top:0;z-index:40}.app{grid-template-columns:1fr;height:auto;min-height:calc(100vh - 34px)}.side{position:sticky;top:34px;z-index:30;flex-direction:row;padding:8px}.brand{padding:7px;margin-right:auto}.brand small{display:none}.instances{grid-template-columns:1fr}.project-rail{border-right:0;border-bottom:1px solid var(--line);max-height:250px}.page,.detail,.flags-page{height:auto;overflow:visible}.pending{position:sticky}.dag-row,.flag-row,.extension-row{grid-template-columns:1fr}.dag-row .three,.cron-grid .three{grid-template-columns:1fr}.flag-head{display:none}.ov-body{padding-left:12px}.cron-card .day-row{flex-wrap:wrap}.lead-head{display:none}}
+.beta-schedule{margin:0 0 16px;padding:12px 16px;border:1px solid #dce1e7;border-radius:10px;background:#f8fafc;font-size:13px;line-height:1.8}.beta-schedule strong{font-size:14px}.beta-schedule a{color:#2563eb;margin-right:12px}
 </style>
 </head>
 <body>
@@ -549,6 +550,17 @@ const MANAGEMENT_CONSOLE_APP = `
       _availW=width;_relayouting=true;renderDetail();_relayouting=false;
     }
   }
+  function renderBetaSchedule(project){
+    var beta=project.betaSchedule;if(!beta){return "";}
+    function when(value){var date=new Date(value);return value!==null&&isFinite(date.getTime())?date.toLocaleString():"未知";}
+    var html='<section class="beta-schedule" aria-label="内部测试版节奏"><strong>内部测试版</strong><div>'+esc(beta.label)+'</div>';
+    if(beta.configuredIntervalHours!==null){html+='<span>配置 '+esc(beta.configuredIntervalHours)+' 小时</span> · ';}
+    if(beta.effectiveIntervalHours!==null){html+='<span>当前 '+esc(beta.effectiveIntervalHours)+' 小时</span>';}
+    if(beta.nextDueAtMs!==null){html+='<div>下次检查：'+esc(when(beta.nextDueAtMs))+'</div>';}
+    if(beta.lastPublished){html+='<div>最近版本：'+esc(beta.lastPublished.version)+' · '+esc(when(beta.lastPublished.publishedAt))+'</div>';}
+    (beta.activeRuns||[]).forEach(function(run){if(/^https:\\/\\/github\\.com\\/[A-Za-z0-9][A-Za-z0-9_.-]*\\/[A-Za-z0-9_.-]+\\/actions\\/runs\\/[1-9][0-9]*$/.test(run.url)){html+='<a target="_blank" rel="noopener noreferrer" href="'+esc(run.url)+'">运行 #'+esc(run.id)+'</a> ';}});
+    return html+'<div class="subtitle">状态更新：'+esc(when(beta.observedAtMs))+'</div></section>';
+  }
   function renderDetail(){
     if(!snapshot){return;}var group=selectedPresentationGroup();var project=selectedProject();
     if(group){byId("detail").innerHTML=renderGroupDetail(group);return;}
@@ -558,6 +570,7 @@ const MANAGEMENT_CONSOLE_APP = `
     var allowed=["model","dag","cron"];
     if(allowed.indexOf(activeTab)<0){activeTab="model";}
     var html='<div class="topline"><div><h1>'+esc(project.name)+'</h1><div class="subtitle">'+visibleProjectLeads(project).length+' 个可见 Lead · '+project.dags.length+' 个 DAG · '+project.crons.length+' 个 Cron</div></div></div>';
+    html+=renderBetaSchedule(project);
     if(project.error){html+='<div class="error show">'+esc(project.error)+'</div>';}
     html+='<div class="tabs"><button class="tab '+(activeTab==="model"?'active':'')+'" data-tab="model">模型</button><button class="tab '+(activeTab==="dag"?'active':'')+'" data-tab="dag">DAG 模板</button><button class="tab '+(activeTab==="cron"?'active':'')+'" data-tab="cron">Cron</button>';
     html+='</div>'+renderModelPanel(project)+renderDagPanel(project)+renderCronPanel(project);

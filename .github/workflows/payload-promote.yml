@@ -28,6 +28,7 @@ permissions:
 
 concurrency:
   group: payload-release
+  queue: max
 
 jobs:
   prepare:
