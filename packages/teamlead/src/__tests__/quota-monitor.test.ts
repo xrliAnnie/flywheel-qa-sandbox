@@ -23,6 +23,7 @@ import {
 	verifyAndRankCandidates,
 } from "../account-heal/quota-monitor.js";
 import type { DeliveryReport } from "../account-heal/quota-monitor-alert.js";
+import { computeNextDelay } from "../account-heal/quota-monitor-cli.js";
 import {
 	DEFAULT_QUOTA_MONITOR_CONFIG,
 	type LoadedQuotaMonitorConfig,
@@ -1773,8 +1774,8 @@ describe("pollOnce", () => {
 		expect(result.outcome).toBe("no_target");
 		expect(h.switchImpl).not.toHaveBeenCalled();
 		expect(h.alerts.at(-1)).toMatchObject({ kind: "quota_no_target" });
-		expect(h.alerts.at(-1)?.body).toContain("school: quota_exhausted");
-		expect(h.alerts.at(-1)?.body).toContain("business: not_in_pool");
+		expect(h.alerts.at(-1)?.body).toContain("状态：quota_exhausted");
+		expect(h.alerts.at(-1)?.body).toContain("**business**");
 	});
 
 	it("live-verifies a cooldown candidate and can rank it after a healthy observation", async () => {
@@ -1831,7 +1832,7 @@ describe("pollOnce", () => {
 			expect.anything(),
 			expect.anything(),
 		);
-		expect(h.alerts.at(-1)?.body).toContain("shopping: switch_cooldown");
+		expect(h.alerts.at(-1)?.body).toContain("状态：switch_cooldown");
 	});
 
 	it("switches school to personal for 5h pressure, then back to the lowest-7d cooldown target when personal burns its 7d quota", async () => {
@@ -3210,4 +3211,283 @@ describe("pollOnce", () => {
 		expect(result.outcome).toBe("error");
 		expect(h.alerts.map((alert) => alert.kind)).toEqual(["quota_monitor_down"]);
 	});
+});
+
+describe("active account retirement", () => {
+	it.each(["normal", "missing", "expired"])(
+		"switches at retirement before usage/backoff with %s credentials",
+		async (credential) => {
+			const h = harness();
+			const pool = store();
+			pool.activeAccount = "business";
+			pool.accounts.find((a) => a.name === "business")!.retiresAt = new Date(
+				NOW,
+			).toISOString();
+			h.setStore(pool);
+			h.setIdentity("business");
+			if (credential === "missing") delete h.credentials.business;
+			if (credential === "expired") h.credentials.business.expiresAt = NOW - 1;
+			h.usages.set("secret-business", { error: "unauthorized" });
+			h.usages.set(
+				"secret-school",
+				usage(10, 20, { seven: new Date(NOW + 60_000).toISOString() }),
+			);
+			h.deps.state.nextUsageDueAt = NOW + 3_600_000;
+			h.deps.state.backoffUntilMs = NOW + 3_600_000;
+			const result = await pollOnce(h.deps);
+			expect(result.outcome).toBe("switched");
+			expect(result.state.lastPollAt).toBe(NOW);
+			expect(h.switchImpl).toHaveBeenCalledWith(
+				expect.objectContaining({
+					trigger: {
+						kind: "account_dead",
+						profile: "business",
+						reason: "retirement",
+					},
+					preferredOrder: ["school", "shopping"],
+					markUnavailable: {
+						name: "business",
+						mark: expect.objectContaining({ reason: "retirement" }),
+					},
+				}),
+			);
+			expect(h.fetchUsage).not.toHaveBeenCalledWith("secret-business");
+			expect(h.observations.some((o) => o.name === "business")).toBe(false);
+			expect(result.state.reviveEpoch).toBeNull();
+		},
+	);
+});
+
+describe("retirement failed retry cadence", () => {
+	it.each(["no_account", "failed"])(
+		"throttles persisted %s across minute passes and preserves the initial mark",
+		async (outcome) => {
+			const h = harness();
+			const pool = store();
+			pool.accounts[0].retiresAt = new Date(NOW).toISOString();
+			h.setStore(pool);
+			h.switchImpl.mockResolvedValue(
+				outcome === "no_account"
+					? {
+							outcome: "no_account",
+							earliestReset: null,
+							reasonCode: "no_eligible_account",
+						}
+					: {
+							outcome: "failed",
+							reason: "apply failed",
+							reasonCode: "keychain_readback_mismatch",
+						},
+			);
+			const first = await pollOnce(h.deps);
+			expect(first.state.lastPollAt).toBe(NOW);
+			expect(
+				h.alerts.some((alert) => alert.body.includes("reason=retirement")),
+			).toBe(true);
+			const mark = h.switchImpl.mock.calls[0][0].markUnavailable!.mark;
+			pool.accounts[0].unavailable = mark;
+			h.setStore(pool);
+			h.deps.state = JSON.parse(JSON.stringify(first.state));
+			h.setNow(NOW + 60_000);
+			h.verifyCandidate.mockClear();
+			h.recordObservation.mockClear();
+			h.fetchUsage.mockClear();
+			const second = await pollOnce(h.deps);
+			expect(second.state.lastPollAt).toBe(NOW + 60_000);
+			expect(
+				computeNextDelay(second.state, h.deps.config.config, NOW + 60_000),
+			).toBeGreaterThan(0);
+			expect(h.switchImpl).toHaveBeenCalledTimes(1);
+			expect(h.verifyCandidate).not.toHaveBeenCalled();
+			expect(h.recordObservation).not.toHaveBeenCalled();
+			expect(h.fetchUsage).not.toHaveBeenCalled();
+			h.deps.state = second.state;
+			h.setNow(first.state.nextUsageDueAt);
+			await pollOnce(h.deps);
+			expect(h.switchImpl).toHaveBeenCalledTimes(2);
+			expect(h.switchImpl.mock.calls[1][0].markUnavailable!.mark).toEqual(mark);
+		},
+	);
+});
+
+describe("retirement warning", () => {
+	it("uses a stable receipt key across passes and state reload, only inside the final hour", async () => {
+		const h = harness();
+		const pool = store();
+		pool.accounts[0].retiresAt = new Date(NOW + 59 * 60_000).toISOString();
+		h.setStore(pool);
+		h.deps.state.nextUsageDueAt = NOW + 3_600_000;
+		const first = await pollOnce(h.deps);
+		const warning = h.alerts.find((alert) =>
+			alert.signature.startsWith("account-retirement-"),
+		);
+		expect(warning).toMatchObject({
+			kind: "quota_monitor_down",
+			severity: "warning",
+		});
+		expect(warning?.body).toContain("将于");
+		expect(warning?.body).toContain("PT 到期（不足 60 分钟）");
+		expect(warning?.body).toContain(
+			"```text\nwindow  used   left   reset (PT)",
+		);
+		h.deps.state = JSON.parse(JSON.stringify(first.state));
+		h.setNow(NOW + 60_000);
+		await pollOnce(h.deps);
+		const warnings = h.alerts.filter((alert) =>
+			alert.signature.startsWith("account-retirement-"),
+		);
+		expect(warnings).toHaveLength(2);
+		expect(warnings[1].signature).toBe(warnings[0].signature);
+		h.alerts.length = 0;
+		h.setNow(NOW - 2 * 60_000);
+		await pollOnce(h.deps);
+		expect(
+			h.alerts.some((alert) =>
+				alert.signature.startsWith("account-retirement-"),
+			),
+		).toBe(false);
+	});
+});
+
+describe("retirement revive window", () => {
+	it.each(["quota", "model"])(
+		"clamps a new %s revive epoch to source retirement",
+		async (kind) => {
+			const h = harness();
+			const pool = store();
+			pool.accounts[0].retiresAt = new Date(NOW + 10 * 60_000).toISOString();
+			h.setStore(pool);
+			if (kind === "quota") h.usages.set("secret-shopping", usage(100, 20));
+			else {
+				h.scanPanes.mockResolvedValue(paneSnapshot(["Fable 5"]));
+				h.switchImpl.mockResolvedValue({
+					outcome: "switched",
+					from: "shopping",
+					to: "school",
+					generation: 5,
+					benchUntilByModel: {
+						"Fable 5": new Date(NOW + 30 * 60_000).toISOString(),
+					},
+				});
+			}
+			const result = await pollOnce(h.deps);
+			expect(result.outcome).toBe("switched");
+			expect(result.state.reviveEpoch?.expiresAt).toBe(NOW + 10 * 60_000);
+		},
+	);
+});
+
+describe("retirement authority and existing revive guards", () => {
+	it("keeps the local scan when retirement authority is unresolved", async () => {
+		const h = harness();
+		const pool = store();
+		pool.accounts[0].retiresAt = new Date(NOW).toISOString();
+		h.setStore(pool);
+		h.deps.state.nextUsageDueAt = NOW + 3_600_000;
+		const read = h.deps.readSnapshot;
+		h.deps.readSnapshot = async () => ({
+			...(await read()),
+			authority: {
+				kind: "conflict",
+				activeMarker: "shopping",
+				identityAccount: "school",
+				ledgerAccount: "shopping",
+			},
+		});
+		const result = await pollOnce(h.deps);
+		expect(result.outcome).toBe("local_scan");
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(h.fetchUsage).not.toHaveBeenCalled();
+	});
+	it("removes an expired source revive epoch before a local scan", async () => {
+		const h = harness();
+		const pool = store();
+		pool.accounts[2].retiresAt = new Date(NOW).toISOString();
+		h.setStore(pool);
+		h.deps.state.nextUsageDueAt = NOW + 3_600_000;
+		h.deps.state.reviveEpoch = {
+			open: true,
+			sourceAccount: "business",
+			generation: 4,
+			openedAt: NOW - 60_000,
+			expiresAt: NOW + 3_600_000,
+			panes: {},
+		};
+		const result = await pollOnce(h.deps);
+		expect(result.state.reviveEpoch).toBeNull();
+		expect(h.reviveSnapshot.mock.calls[0][0].reviveEpoch).toBeNull();
+	});
+});
+
+it("shows retirement dates in the no-target panorama", async () => {
+	const h = harness();
+	const pool = store();
+	pool.accounts[0].retiresAt = new Date(NOW).toISOString();
+	pool.accounts[1].retiresAt = "2026-09-14T00:00:00-07:00";
+	h.setStore(pool);
+	h.switchImpl.mockResolvedValue({
+		outcome: "no_account",
+		earliestReset: null,
+		reasonCode: "no_eligible_account",
+	});
+	await pollOnce(h.deps);
+	expect(h.alerts.find((a) => a.kind === "quota_no_target")?.body).toContain(
+		"school** · 邮箱暂时未读到 · 到期 09-14\n```text\nwindow",
+	);
+});
+
+it("does not execute retirement mutations in monitor-only mode", async () => {
+	const h = harness();
+	const pool = store();
+	pool.accounts[0].retiresAt = new Date(NOW).toISOString();
+	h.setStore(pool);
+	h.deps.config = { ...h.deps.config, monitorOnly: true };
+	await pollOnce(h.deps);
+	expect(h.switchImpl).not.toHaveBeenCalled();
+	expect(h.verifyCandidate).not.toHaveBeenCalled();
+});
+
+it("keeps retired monitor-only passes scheduled and reports invalid configuration across reload", async () => {
+	const h = harness();
+	const pool = store();
+	pool.accounts[0].retiresAt = new Date(NOW).toISOString();
+	h.setStore(pool);
+	h.deps.config = {
+		...h.deps.config,
+		monitorOnly: true,
+		error: "invalid_json",
+	};
+	h.deps.state.lastPollAt = NOW - 3_600_000;
+	h.deps.state.nextUsageDueAt = NOW - 1;
+	const first = await pollOnce(h.deps);
+	expect(first.state.lastPollAt).toBe(NOW);
+	expect(
+		computeNextDelay(first.state, h.deps.config.config, NOW),
+	).toBeGreaterThan(0);
+	expect(first.state.nextUsageDueAt).toBeGreaterThan(NOW);
+	expect(
+		h.alerts.filter((a) => a.signature.startsWith("quota-monitor-config-")),
+	).toHaveLength(1);
+	const due = first.state.nextUsageDueAt;
+	h.deps.state = JSON.parse(JSON.stringify(first.state));
+	h.setNow(NOW + 60_000);
+	const second = await pollOnce(h.deps);
+	expect(second.state.lastPollAt).toBe(NOW + 60_000);
+	expect(second.state.nextUsageDueAt).toBe(due);
+	expect(
+		computeNextDelay(second.state, h.deps.config.config, NOW + 60_000),
+	).toBeGreaterThan(0);
+	expect(
+		h.alerts.filter((a) => a.signature.startsWith("quota-monitor-config-")),
+	).toHaveLength(1);
+	h.deps.state = JSON.parse(JSON.stringify(second.state));
+	h.setNow(due);
+	const third = await pollOnce(h.deps);
+	expect(third.state.lastPollAt).toBe(due);
+	expect(third.state.nextUsageDueAt).toBeGreaterThan(due);
+	expect(
+		h.alerts.filter((a) => a.signature.startsWith("quota-monitor-config-")),
+	).toHaveLength(2);
+	expect(h.switchImpl).not.toHaveBeenCalled();
+	expect(h.verifyCandidate).not.toHaveBeenCalled();
 });

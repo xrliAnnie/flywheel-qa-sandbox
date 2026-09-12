@@ -32,6 +32,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { retirementMs } from "./account-retirement.js";
 import { MAX_MODEL_CAP_TTL_MS, type ModelCapState } from "./model-cap.js";
 
 export type AccountSwitchTriggerKind =
@@ -58,6 +59,8 @@ export interface AccountLastSwitch {
 }
 
 export interface AccountEntry {
+	/** Optional operator-specified retirement instant with explicit timezone. */
+	retiresAt?: string;
 	name: string;
 	/** ISO instant this account is quota-unusable until; null = usable now. */
 	quotaExhaustedUntil: string | null;
@@ -500,6 +503,7 @@ export function selectNextAccount(
 					account.name === input.currentName ||
 					input.excludeNames?.has(account.name) ||
 					isAuthUnusable(account) ||
+					!(retirementMs(account.retiresAt) > nowMs) ||
 					!isModelSetUsable(account, input.models ?? [], nowMs) ||
 					!rank.has(account.name)
 				) {
@@ -534,6 +538,7 @@ export function selectNextAccount(
 			a.name !== input.currentName &&
 			!input.excludeNames?.has(a.name) &&
 			!isAuthUnusable(a) &&
+			retirementMs(a.retiresAt) > nowMs &&
 			isQuotaUsable(a, nowMs) &&
 			isModelSetUsable(a, input.models ?? [], nowMs),
 	);
@@ -544,14 +549,20 @@ export function selectNextAccount(
 		input.scope === "weekly" ||
 		input.scope === "both"
 	) {
-		// Soonest weekly reset first; unknown (null) reset sorts last.
+		// Use the earlier reset/retirement deadline; unknown deadlines sort last.
 		const sorted = [...candidates].sort((a, b) => {
-			const ra = a.weeklyResetAt
-				? Date.parse(a.weeklyResetAt)
-				: Number.POSITIVE_INFINITY;
-			const rb = b.weeklyResetAt
-				? Date.parse(b.weeklyResetAt)
-				: Number.POSITIVE_INFINITY;
+			const ra = Math.min(
+				a.weeklyResetAt
+					? Date.parse(a.weeklyResetAt)
+					: Number.POSITIVE_INFINITY,
+				retirementMs(a.retiresAt),
+			);
+			const rb = Math.min(
+				b.weeklyResetAt
+					? Date.parse(b.weeklyResetAt)
+					: Number.POSITIVE_INFINITY,
+				retirementMs(b.retiresAt),
+			);
 			if (ra !== rb) return ra - rb;
 			return a.name.localeCompare(b.name);
 		});

@@ -6,6 +6,7 @@ import {
 	truncateCodePointsFromEnd,
 } from "flywheel-comm/text-truncate";
 import type { DesignBackend } from "flywheel-config";
+import { formatAccountQuotaBlock } from "../account-heal/account-switch-notification.js";
 import { label } from "../epic-page/labels.js";
 import {
 	assertEpicResidualFact,
@@ -930,7 +931,20 @@ function renderValidCapacityLines(capacity: CapacitySnapshot): string[] {
 				}
 				age = `${ageMinutes}m 前`;
 			}
-			return `${account.active ? "★" : ""}${canonicalPatrolToken(account.name)} 5h ${fiveHPct ?? "?"}${fiveHPct === null ? "" : "%"}/7d ${sevenDPct ?? "?"}${sevenDPct === null ? "" : "%"}(${age})${account.stale ? "(stale)" : ""}`;
+			return [
+				formatAccountQuotaBlock({
+					name: `${account.active ? "★" : ""}${canonicalPatrolToken(account.name)}`,
+					retiresAt: account.retiresAt,
+					usage: {
+						fiveH: { pct: fiveHPct, resetsAt: "unknown" },
+						sevenD: {
+							pct: sevenDPct,
+							resetsAt: account.weeklyResetAt ?? "unknown",
+						},
+					},
+				}),
+				`观测：${age}${account.stale ? " (stale)" : ""}`,
+			].join("\n");
 		});
 		if (
 			(claudeQuota.activeAccount !== null &&
@@ -939,9 +953,9 @@ function renderValidCapacityLines(capacity: CapacitySnapshot): string[] {
 		) {
 			throw new Error("invalid active account");
 		}
-		claude = accounts.length === 0 ? "无账号" : accounts.join(" · ");
+		claude = accounts.length === 0 ? "无账号" : accounts.join("\n\n");
 		if (claudeUnavailable !== undefined) {
-			claude += ` · ⚠️(${claudeUnavailable})`;
+			claude += `\n⚠️(${claudeUnavailable})`;
 		}
 	}
 	if (capacity.quota.codex.source !== null) {
@@ -960,7 +974,7 @@ function renderValidCapacityLines(capacity: CapacitySnapshot): string[] {
 	return [
 		`容量(Bridge 采样 · 判断输入,不是闸门;快照 ${generatedAt}):`,
 		`- Data 可用 ${disk} | 内存 free ${memory}| 负载 ${load}| 手刹=${pressureHold} | 部署暂停=${admissionPause} | 在跑 ${runners}`,
-		`- 额度 Claude ${claude} | Codex 无数值源`,
+		`- 额度 Claude\n${claude}\n- Codex 无数值源`,
 	];
 }
 

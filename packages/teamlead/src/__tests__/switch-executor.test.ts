@@ -728,6 +728,60 @@ describe("switchAccount", () => {
 		expect(readStore(storePath).generation).toBe(1);
 	});
 
+	it("preserves retirement reason in durable success receipts without fabricating quota facts", async () => {
+		const retirement = NOW.toISOString();
+		const weeklyResetAt = "2026-07-08T09:00:00-07:00";
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{
+					name: "personal",
+					retiresAt: retirement,
+					weeklyResetAt,
+					quotaExhaustedUntil: null,
+					observedFiveHPct: 12,
+					observedSevenDPct: 34,
+				},
+				{ name: "school", weeklyResetAt: null, quotaExhaustedUntil: null },
+			],
+		});
+		const result = await switchAccount(
+			{
+				...deadInput,
+				trigger: {
+					kind: "account_dead",
+					profile: "personal",
+					reason: "retirement",
+				},
+				markUnavailable: {
+					name: "personal",
+					mark: { ...deadMark, reason: "retirement", evidence: "retirement" },
+				},
+			},
+			deps(),
+		);
+		expect(result.outcome).toBe("switched");
+		const after = readStore(storePath);
+		expect(after.accounts[0]).toMatchObject({
+			weeklyResetAt,
+			quotaExhaustedUntil: null,
+			observedFiveHPct: 12,
+			observedSevenDPct: 34,
+		});
+		expect(after.accounts[0]).not.toHaveProperty("switchCooldownUntil");
+		expect(
+			after.pendingSwitchNotifications?.find(
+				(item) => item.alert.kind === "account_dead",
+			)?.alert.body,
+		).toContain("reason=retirement");
+		expect(
+			after.pendingSwitchNotifications?.find(
+				(n) => n.alert.kind === "account_switched",
+			)?.alert.body,
+		).toContain("到期");
+	});
+
 	it("atomically quarantines a dead account, switches, records provenance, and enqueues two durable alerts", async () => {
 		seed({
 			generation: 1,

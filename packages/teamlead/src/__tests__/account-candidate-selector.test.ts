@@ -98,6 +98,50 @@ function harness(): {
 }
 
 describe("verifyAndRankCandidates", () => {
+	it.each([
+		["2026-09-01T20:00:00Z", "auth", "account_retired"],
+		["2026-09-01T19:59:59Z", "auth", "account_retired"],
+		["2026-09-02", "unverifiable", "retirement_malformed"],
+		["2026-09-02T09:00:00", "unverifiable", "retirement_malformed"],
+		["2026-02-30T09:00:00Z", "unverifiable", "retirement_malformed"],
+		[null, "unverifiable", "retirement_malformed"],
+		[123, "unverifiable", "retirement_malformed"],
+	])(
+		"excludes only the account with retirement %s",
+		async (retiresAt, excludedBy, status) => {
+			const h = harness();
+			Object.assign(
+				h.snapshot.store.accounts.find((a) => a.name === "business")!,
+				{ retiresAt },
+			);
+			const result = await verifyAndRankCandidates(h.deps, h.snapshot);
+			expect(result.ranked).toEqual(["personal", "school"]);
+			expect(result.panorama.find((a) => a.name === "business")).toMatchObject({
+				excludedBy,
+				status,
+			});
+			expect(h.verifyCandidate).not.toHaveBeenCalledWith(
+				"business",
+				expect.anything(),
+			);
+		},
+	);
+
+	it("uses retirement before weekly reset as the candidate deadline", async () => {
+		const h = harness();
+		Object.assign(
+			h.snapshot.store.accounts.find((a) => a.name === "business")!,
+			{
+				retiresAt: "2026-09-02T00:00:00-07:00",
+			},
+		);
+		const result = await verifyAndRankCandidates(h.deps, h.snapshot);
+		expect(result.ranked).toEqual(["business", "personal", "school"]);
+		expect(result.panorama.find((a) => a.name === "business")).toMatchObject({
+			retiresAt: "2026-09-02T07:00:00.000Z",
+		});
+	});
+
 	it("ranks the full live pool/store intersection by earliest weekly reset", async () => {
 		const h = harness();
 
@@ -443,4 +487,41 @@ describe("verifyAndRankCandidates", () => {
 		);
 		expect(fetchUsage).not.toHaveBeenCalled();
 	});
+});
+
+describe("retirement calendar ordering", () => {
+	it.each([
+		["2026-09-14T09:00:00-07:00", ["business", "school", "shopping"]],
+		["2026-09-13T09:00:00-07:00", ["school", "business", "shopping"]],
+	])(
+		"orders all three accounts with school reset %s",
+		async (schoolReset, order) => {
+			const h = harness();
+			const shopping = h.snapshot.store.accounts.find(
+				(a) => a.name === "personal",
+			)!;
+			shopping.name = "shopping";
+			h.snapshot.poolAccounts = ["personal1", "school", "shopping", "business"];
+			Object.assign(
+				h.snapshot.store.accounts.find((a) => a.name === "business")!,
+				{ retiresAt: "2026-09-14T00:00:00-07:00" },
+			);
+			h.deps.readPoolCredential = async (name) => ({
+				accessToken: `secret-${name}`,
+				expiresAt: NOW + 60_000,
+			});
+			h.usages.set("secret-school", usage(10, 20, schoolReset));
+			h.usages.set(
+				"secret-shopping",
+				usage(10, 20, "2026-09-15T09:00:00-07:00"),
+			);
+			h.usages.set(
+				"secret-business",
+				usage(10, 20, "2026-09-16T09:00:00-07:00"),
+			);
+			expect(
+				(await verifyAndRankCandidates(h.deps, h.snapshot)).ranked,
+			).toEqual(order);
+		},
+	);
 });

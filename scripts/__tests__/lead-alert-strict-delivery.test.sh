@@ -272,5 +272,17 @@ grep -q 'bin_integrity_drift' "$LEAD_ALERT" \
   || bad "lead-alert.sh allowlist missing bin_integrity_drift"
 
 echo ""
+# FLY-2520: retirement warnings reuse the existing receipt store across processes.
+RETIRE_SIGNATURE="account-retirement-business-1789369200000"
+OUT=$(run_routed_alert 200 quota_monitor_down "$RETIRE_SIGNATURE" "$TMP/retirement-queue" "666666666666666666" 1 2>/dev/null)
+CALLS_BEFORE=$(wc -l < "$TMP/curl.calls" | tr -d ' ')
+OUT_AGAIN=$(run_routed_alert 200 quota_monitor_down "$RETIRE_SIGNATURE" "$TMP/retirement-queue" "666666666666666666" 1 2>/dev/null)
+CALLS_AFTER=$(wc -l < "$TMP/curl.calls" | tr -d ' ')
+if [ "$OUT" = "sent" ] && [ "$OUT_AGAIN" = "sent" ] && [ "$CALLS_BEFORE" = "$CALLS_AFTER" ]; then
+  ok "retirement warning: fresh sender process reuses receipt without a second POST"
+else
+  bad "retirement warning duplicate: out=$OUT/$OUT_AGAIN calls=$CALLS_BEFORE/$CALLS_AFTER"
+fi
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

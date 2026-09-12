@@ -57,6 +57,7 @@ describe("buildCapacitySnapshot", () => {
 				},
 				{
 					name: "business",
+					retiresAt: "2026-09-14T00:00:00-07:00",
 					quotaExhaustedUntil: null,
 					weeklyResetAt: null,
 					lastObservedAt: "2026-09-03T01:59:00Z",
@@ -173,6 +174,7 @@ describe("buildCapacitySnapshot", () => {
 						},
 						{
 							name: "business",
+							retiresAt: "2026-09-14T07:00:00.000Z",
 							active: false,
 							fiveHPct: 11,
 							sevenDPct: 20,

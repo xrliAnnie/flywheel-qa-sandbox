@@ -389,6 +389,7 @@ export function isInformationalKind(kind: AlertEventType): boolean {
 }
 
 const PLAIN_DELIVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
+	"quota_monitor_down",
 	"account_switched",
 	"account_switch_degraded",
 	"quota_switch_confirmation",

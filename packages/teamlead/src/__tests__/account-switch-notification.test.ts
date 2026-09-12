@@ -7,6 +7,7 @@ import {
 } from "../account-heal/account-store.js";
 import {
 	drainSwitchNotification,
+	formatAccountQuotaBlock,
 	formatSwitchNotification,
 	type SwitchNotificationTrigger,
 } from "../account-heal/account-switch-notification.js";
@@ -199,5 +200,40 @@ describe("drainSwitchNotification", () => {
 		expect(send).toHaveBeenCalledTimes(1);
 		expect(send).toHaveBeenCalledWith(INTENT.alert);
 		expect(current.pendingSwitchNotifications).toEqual([INTENT, DEAD_INTENT]);
+	});
+});
+
+describe("retirement account blocks", () => {
+	it("uses the switch table and real PT weekday with one account heading", () => {
+		const block = formatAccountQuotaBlock({
+			name: "business",
+			email: "business@example.com",
+			retiresAt: "2026-09-14T07:00:00Z",
+			usage: {
+				fiveH: { pct: 10, resetsAt: "unknown" },
+				sevenD: { pct: 25, resetsAt: "2026-09-16T16:00:00Z" },
+			},
+		});
+		expect(block).toBe(
+			[
+				"**business** · business@example.com · 到期 09-14",
+				"```text",
+				"window  used   left   reset (PT)",
+				"5h      10%    90%    n/a",
+				"7d      25%    75%    09-16 Wed 09:00",
+				"Fable   n/a    n/a    n/a",
+				"```",
+			].join("\n"),
+		);
+	});
+	it("does not permit account metadata to break fences or inject mentions", () => {
+		const block = formatAccountQuotaBlock({
+			name: "evil\n```<@123>",
+			email: "a\n```@x",
+			retiresAt: "broken",
+		});
+		expect(block.match(/```/g)).toHaveLength(2);
+		expect(block).not.toContain("<@123>");
+		expect(block).not.toContain("到期");
 	});
 });

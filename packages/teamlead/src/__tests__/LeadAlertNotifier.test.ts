@@ -202,6 +202,30 @@ describe("LeadAlertNotifier", () => {
 		expect(deadLetter.reason).toBe("invalid-delivery-style");
 	});
 
+	it("allows the retirement warning plain layout through queued delivery validation", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			text: async () => '{"id":"123"}',
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir,
+		});
+		const result = await notifier.alert(
+			buildPayload({
+				eventType: "quota_monitor_down",
+				deliveryStyle: "plain",
+				body: "business 将于 09-14 Mon 00:00 PT 到期",
+			}),
+		);
+		expect(result).toMatchObject({ sent: true });
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+
 	it("returns skipped=duplicate and does not POST on second call with same eventId", async () => {
 		const fetchFn = vi.fn().mockResolvedValue({
 			ok: true,

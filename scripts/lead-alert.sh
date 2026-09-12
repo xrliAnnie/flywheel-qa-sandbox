@@ -223,8 +223,8 @@ esac
 
 # FLY-2051: ordinary-message rendering is a narrow capability, not a generic
 # way for alert producers to bypass ticket/alert framing.
-if [ "$PLAIN_MESSAGE" = "1" ] && ! is_quota_switch_kind "$KIND"; then
-  log "ERROR: --plain-message is allowed only for the quota switch family"
+if [ "$PLAIN_MESSAGE" = "1" ] && ! is_quota_switch_kind "$KIND" && [ "$KIND" != "quota_monitor_down" ]; then
+  log "ERROR: --plain-message is allowed only for the quota switch family or monitor warnings"
   emit_result "config_error"
   exit 1
 fi

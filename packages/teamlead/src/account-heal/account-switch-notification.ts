@@ -1,4 +1,5 @@
 import type { CandidatePanoramaEntry } from "./account-candidate-selector.js";
+import { retirementMs } from "./account-retirement.js";
 import {
 	type AccountStore,
 	ackSwitchNotification,
@@ -21,6 +22,7 @@ export type SwitchNotificationTrigger =
 	| { kind: "account_dead"; profile: string };
 
 export interface SwitchNotificationAccount {
+	retiresAt?: string;
 	name: string;
 	email: string | null;
 	usage?: SuccessfulUsage | null;
@@ -81,7 +83,10 @@ const ASCII_WEEKDAYS = [
 	"Sat",
 ] as const;
 
-function resetTimestamp(resetAt: string | null, timezone: string): string {
+export function resetTimestamp(
+	resetAt: string | null,
+	timezone: string,
+): string {
 	if (resetAt === null) return "not started";
 	const reset = localDateTime(Date.parse(resetAt), timezone);
 	if (!reset) return "n/a";
@@ -98,11 +103,17 @@ function formatPct(value: number): string {
 		: value.toFixed(1).replace(/\.0$/, "");
 }
 
-function quotaTable(
-	usage: SuccessfulUsage | null | undefined,
+export interface QuotaDisplayUsage {
+	fiveH: { pct: number | null; resetsAt: string | null };
+	sevenD: { pct: number | null; resetsAt: string | null };
+	raw?: SuccessfulUsage["raw"];
+}
+
+export function quotaTable(
+	usage: QuotaDisplayUsage | null | undefined,
 	timezone: string,
 ): string[] {
-	const fable = usage ? findModelScopedQuota(usage.raw, "Fable") : null;
+	const fable = usage?.raw ? findModelScopedQuota(usage.raw, "Fable") : null;
 	const cells = (
 		pct: number | null,
 		resetsAt: string | null,
@@ -136,6 +147,27 @@ function quotaTable(
 		...rows.map(line),
 		"```",
 	];
+}
+
+/** Shared Discord account block; the table matches switch notifications. */
+export function formatAccountQuotaBlock(
+	account: {
+		name: string;
+		email?: string | null;
+		retiresAt?: string;
+		usage?: QuotaDisplayUsage | null;
+	},
+	timezone = "America/Los_Angeles",
+): string {
+	const safe = (value: string) => value.replace(/[\r\n`*_<>]/g, " ").trim();
+	const deadline = retirementMs(account.retiresAt);
+	const expiry = Number.isFinite(deadline)
+		? ` · 到期 ${resetTimestamp(new Date(deadline).toISOString(), "America/Los_Angeles").slice(0, 5)}`
+		: "";
+	return [
+		`**${safe(account.name)}**${account.email === undefined ? "" : ` · ${account.email ? safe(account.email) : "邮箱暂时未读到"}`}${expiry}`,
+		...quotaTable(account.usage, timezone),
+	].join("\n");
 }
 
 function accountUsageLines(
@@ -180,11 +212,19 @@ export function formatSwitchNotification(
 			: []),
 		...(skipped.length > 0 ? ["", `skipped=${skipped.join(",")}`] : []),
 		"",
-		`原账号 **${input.from.name}**`,
-		...accountUsageLines(input.from, input.timezone),
+		...(input.from.retiresAt
+			? [formatAccountQuotaBlock(input.from, input.timezone)]
+			: [
+					`原账号 **${input.from.name}**`,
+					...accountUsageLines(input.from, input.timezone),
+				]),
 		"",
-		`新账号 **${input.to.name}**`,
-		...accountUsageLines(input.to, input.timezone),
+		...(input.to.retiresAt
+			? [formatAccountQuotaBlock(input.to, input.timezone)]
+			: [
+					`新账号 **${input.to.name}**`,
+					...accountUsageLines(input.to, input.timezone),
+				]),
 	].join("\n");
 	if (body.length <= MAX_NOTIFICATION_BODY) return body;
 	let prefix = body.slice(0, MAX_NOTIFICATION_BODY - TRUNCATED_SUFFIX.length);

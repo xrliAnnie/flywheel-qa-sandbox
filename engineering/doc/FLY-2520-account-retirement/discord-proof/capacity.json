@@ -1,0 +1,7 @@
+{
+  "id": "1548391600860827730",
+  "channel_id": "1519421055805165842",
+  "content": "Claude 容量快照（529 验收样例）\n容量(Bridge 采样 · 判断输入,不是闸门;快照 2026-09-03T04:00:00.000Z):\n- Data 可用 20GB | 内存 free 14%(memory_pressure,参考线<15%)| 负载 18/18核=1(阈 8)| 手刹=置位(swap-sensor 自 2026-09-03T03:58:00.000Z) | 部署暂停=剩 90s | 在跑 1 · 停车 2\n- 额度 Claude\n**★school** · school@example.com\n```text\nwindow  used   left   reset (PT)\n5h      12%    88%    n/a\n7d      34%    66%    09-14 Mon 09:00\nFable   n/a    n/a    n/a\n```\n观测：120m 前\n\n**business** · business@example.com · 到期 09-14\n```text\nwindow  used   left   reset (PT)\n5h      17%    83%    n/a\n7d      44%    56%    09-15 Tue 09:00\nFable   n/a    n/a    n/a\n```\n观测：120m 前\n\n**shopping** · shopping@example.com\n```text\nwindow  used   left   reset (PT)\n5h      22%    78%    n/a\n7d      54%    46%    09-16 Wed 09:00\nFable   n/a    n/a    n/a\n```\n观测：120m 前\n- Codex 无数值源\n按 Bridge 的账,你名下有 0 个未终结 runner(此名册是待核声明,不是结论):",
+  "timestamp": "2026-09-12T17:55:25.370000+00:00",
+  "url": "https://discord.com/channels/1485787271192907816/1519421055805165842/1548391600860827730"
+}

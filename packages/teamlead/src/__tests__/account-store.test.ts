@@ -1162,3 +1162,100 @@ describe("switch notification outbox", () => {
 		expect(readStoreStrict(path)).toBeNull();
 	});
 });
+
+describe("retirement final selection guard", () => {
+	it.each([undefined, ["business", "school"]])(
+		"rejects a target at the retirement boundary with order %s",
+		(preferredOrder) => {
+			const pool = store(
+				[
+					acct("active"),
+					acct("business", { retiresAt: NOW.toISOString() }),
+					acct("school"),
+				],
+				"active",
+			);
+			expect(
+				selectNextAccount(pool, {
+					currentName: "active",
+					scope: "weekly",
+					now: NOW,
+					preferredOrder,
+					verifiedAt: new Date(NOW.getTime() - 1).toISOString(),
+				}),
+			).toBe("school");
+		},
+	);
+});
+
+describe("retirement deadline fallback selection", () => {
+	it("uses business before Monday reset, but school before business when school resets earlier", () => {
+		const pool = store(
+			[
+				acct("active"),
+				acct("school", { weeklyResetAt: "2026-09-14T09:00:00-07:00" }),
+				acct("shopping", { weeklyResetAt: "2026-09-15T09:00:00-07:00" }),
+				acct("business", {
+					weeklyResetAt: "2026-09-16T09:00:00-07:00",
+					retiresAt: "2026-09-14T00:00:00-07:00",
+				}),
+			],
+			"active",
+		);
+		const input = {
+			currentName: "active",
+			scope: "weekly" as const,
+			now: new Date("2026-09-11T18:00:00Z"),
+		};
+		expect(selectNextAccount(pool, input)).toBe("business");
+		pool.accounts[1].weeklyResetAt = "2026-09-13T09:00:00-07:00";
+		expect(selectNextAccount(pool, input)).toBe("school");
+	});
+});
+
+describe("retirement store persistence and rollback", () => {
+	it("preserves retirement through observation/reload and tolerates a malformed sibling", () => {
+		const dir = mkdtempSync(join(tmpdir(), "retirement-store-"));
+		try {
+			const path = join(dir, "accounts.json");
+			const retirement = "2026-09-14T00:00:00-07:00";
+			writeStore(
+				store(
+					[
+						acct("active"),
+						acct("business", {
+							retiresAt: retirement,
+							weeklyResetAt: "2026-09-16T09:00:00-07:00",
+						}),
+						acct("school", { weeklyResetAt: "2026-09-14T09:00:00-07:00" }),
+						acct("broken", { retiresAt: "not-a-date" }),
+					],
+					"active",
+				),
+				path,
+			);
+			expect(
+				recordObservationInStore(path, "business", {
+					fiveHPct: 10,
+					sevenDPct: 20,
+					fiveHResetAt: null,
+					sevenDResetAt: "2026-09-16T09:00:00-07:00",
+					observedAt: "2026-09-11T18:00:00Z",
+				}),
+			).toBe("updated");
+			const reloaded = readStoreStrict(path)!;
+			expect(reloaded.accounts[1].retiresAt).toBe(retirement);
+			const input = {
+				currentName: "active",
+				scope: "weekly" as const,
+				now: new Date("2026-09-11T18:00:00Z"),
+			};
+			expect(selectNextAccount(reloaded, input)).toBe("business");
+			delete reloaded.accounts[1].retiresAt;
+			writeStore(reloaded, path);
+			expect(selectNextAccount(readStoreStrict(path)!, input)).toBe("school");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});

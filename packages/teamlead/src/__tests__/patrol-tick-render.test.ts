@@ -218,8 +218,9 @@ describe("FLY-1687 patrol tick rendering", () => {
 
 		for (const env of [legacy, grouped]) {
 			const lines = formatPatrolTick(env).split("\n");
-			expect(lines.slice(4, 7)).toEqual(expected);
-			expect(lines[7]).toBe(
+			const epicStart = lines.indexOf(expected[0]!);
+			expect(lines.slice(epicStart, epicStart + 3)).toEqual(expected);
+			expect(lines[epicStart + 3]).toBe(
 				"按 Bridge 的账,你名下有 1 个未终结 runner(此名册是待核声明,不是结论):",
 			);
 		}
@@ -448,7 +449,7 @@ describe("FLY-1687 patrol tick rendering", () => {
 		);
 	});
 
-	it("inserts the same three capacity lines after the alarm in both render paths", () => {
+	it("inserts the same capacity section after the alarm in both render paths", () => {
 		const capacity = capacitySnapshot();
 		const roster = [
 			{
@@ -471,7 +472,7 @@ describe("FLY-1687 patrol tick rendering", () => {
 		const capacityLines = [
 			"容量(Bridge 采样 · 判断输入,不是闸门;快照 2026-09-03T04:00:00.000Z):",
 			"- Data 可用 20GB | 内存 free 14%(memory_pressure,参考线<15%)| 负载 18/18核=1(阈 8)| 手刹=置位(swap-sensor 自 2026-09-03T03:58:00.000Z) | 部署暂停=剩 90s | 在跑 1 · 停车 2",
-			"- 额度 Claude ★personal 5h 9%/7d 30%(120m 前) | Codex 无数值源",
+			"- 额度 Claude",
 		];
 
 		for (const env of [
@@ -496,12 +497,12 @@ describe("FLY-1687 patrol tick rendering", () => {
 		const body = formatPatrolTick(envelope([], undefined, capacity));
 
 		expect(body).toContain("负载 38.56/18核=2.64(阈 2.54)");
-		expect(body).toContain("(37m 前)");
+		expect(body).toContain("观测：37m 前");
 		expect(body).not.toContain("38.5595703125");
 		expect(body).not.toContain("37.13908333333333");
 	});
 
-	it("keeps three lines when individual capacity cells are unavailable", () => {
+	it("keeps unavailable capacity cells visible", () => {
 		const capacity = capacitySnapshot();
 		capacity.memory = {
 			source: "memory_pressure",
@@ -560,13 +561,13 @@ describe("FLY-1687 patrol tick rendering", () => {
 		);
 		const lines = body.split("\n");
 
-		expect(lines).toHaveLength(6);
+		expect(lines).toHaveLength(8);
 		expect(lines[1]).toContain("容量(Bridge 采样 · 判断输入,不是闸门;");
 		expect(lines[2]).toBe(
 			"- Data 可用 20GB | 内存 free ?(structural: memory_pressure_missing)| 负载 ?(transient: load_probe_failed)| 手刹=?(transient: state_store_unreadable) | 部署暂停=?(transient: state_store_unreadable) | 在跑 ?(transient: session_store_unreadable)",
 		);
-		expect(lines[3]).toBe(
-			"- 额度 Claude ?(structural: account_pool_not_provisioned) | Codex 无数值源",
+		expect(lines.slice(3, 6).join("\n")).toBe(
+			"- 额度 Claude\n?(structural: account_pool_not_provisioned)\n- Codex 无数值源",
 		);
 	});
 
@@ -601,9 +602,12 @@ describe("FLY-1687 patrol tick rendering", () => {
 		];
 
 		const body = formatPatrolTick(envelope([], undefined, capacity));
-		expect(body.split("\n")).toHaveLength(5);
-		expect(body).toContain("school 5h ?/7d 10%(未观测)");
-		expect(body).toContain("shopping 5h ?/7d ?(未观测)");
+		expect(body.match(/```text/g)).toHaveLength(2);
+		expect(body).toMatch(/5h +n\/a +n\/a +n\/a/);
+		expect(body).toMatch(/7d +10% +90% +n\/a/);
+		expect(body).toContain("观测：未观测");
+		expect(body).toContain("school");
+		expect(body).toContain("shopping");
 	});
 
 	it("keeps surviving Claude accounts visible when another entry is invalid", () => {
@@ -612,7 +616,7 @@ describe("FLY-1687 patrol tick rendering", () => {
 
 		const body = formatPatrolTick(envelope([], undefined, capacity));
 
-		expect(body).toContain("★personal 5h 9%/7d 30%(120m 前)");
+		expect(body).toContain("★personal");
 		expect(body).toContain("⚠️(transient: account_entry_invalid)");
 		expect(body).not.toContain(
 			"额度 Claude ?(transient: account_entry_invalid)",
@@ -630,7 +634,7 @@ describe("FLY-1687 patrol tick rendering", () => {
 
 		const body = formatPatrolTick(envelope([], undefined, capacity));
 
-		expect(body).toContain("personal 5h 9%/7d 30%(120m 前)");
+		expect(body).toContain("personal");
 		expect(body).toContain(
 			"⚠️(transient: account_entry_invalid; transient: account_store_invalid)",
 		);
@@ -646,7 +650,7 @@ describe("FLY-1687 patrol tick rendering", () => {
 
 		const body = formatPatrolTick(envelope([], undefined, capacity));
 
-		expect(body).toContain("★personal 5h 9%/7d 30%(120m 前)");
+		expect(body).toContain("★personal");
 		expect(body).toContain(
 			"⚠️(transient: account_entry_invalid; transient: account_store_invalid; +1)",
 		);
@@ -668,7 +672,7 @@ describe("FLY-1687 patrol tick rendering", () => {
 
 		const body = formatPatrolTick(envelope([], undefined, capacity));
 		expect(body).toContain("内存 free ?(transient: memory_pressure_exit_42)");
-		expect(body).toContain("★personal 5h 9%/7d 30%(120m 前)(stale)");
+		expect(body).toContain("观测：120m 前 (stale)");
 		for (const directive of [
 			"check",
 			"verify",
@@ -1451,4 +1455,47 @@ describe("FLY-1687 patrol tick rendering", () => {
 		);
 		expect(body).not.toContain("🔴 按账面");
 	});
+});
+
+it.each([
+	["2026-09-14T07:00:00Z", "09-14"],
+	["2026-11-02T07:30:00Z", "11-01"],
+])("renders retirement %s in PT", (retiresAt, date) => {
+	const capacity = capacitySnapshot();
+	Object.assign(capacity.quota.claude.accounts[0]!, { retiresAt });
+	const body = formatPatrolTick(envelope([], undefined, capacity));
+	expect(body).toContain(`到期 ${date}`);
+});
+
+it("renders each retirement capacity account as a separate aligned quota block", () => {
+	const capacity = capacitySnapshot();
+	Object.assign(capacity.quota.claude.accounts[0]!, {
+		retiresAt: "2026-09-14T07:00:00Z",
+		weeklyResetAt: "2026-09-16T16:00:00Z",
+	});
+	capacity.quota.claude.accounts.push({
+		...capacity.quota.claude.accounts[0]!,
+		name: "shopping",
+		active: false,
+		retiresAt: undefined,
+	});
+	const body = formatPatrolTick(envelope([], undefined, capacity));
+	expect(body).toMatch(/personal[^\n]*到期 09-14\n```text/);
+	expect(body).toMatch(/window +used +left +reset \(PT\)/);
+	expect(body).toMatch(/5h +9% +91% +n\/a/);
+	expect(body).toMatch(/7d +30% +70% +09-16 Wed 09:00/);
+	expect(body).toMatch(/shopping\*\*\n```text/);
+	expect(body).not.toMatch(/personal[^\n]*shopping/);
+	expect(body).toContain("120m 前");
+});
+
+it("does not render unexpected identity data in the sanitized capacity surface", () => {
+	const capacity = capacitySnapshot();
+	Object.assign(capacity.quota.claude.accounts[0]!, {
+		email: "private@example.com",
+	});
+	const body = formatPatrolTick(envelope([], undefined, capacity));
+	expect(body).not.toContain("private@example.com");
+	expect(body).not.toContain("邮箱暂时未读到");
+	expect(body).toContain("personal");
 });

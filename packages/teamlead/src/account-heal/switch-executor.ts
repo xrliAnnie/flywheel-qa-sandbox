@@ -84,7 +84,7 @@ export type SwitchTrigger =
 			resetAt: string;
 	  }
 	| { kind: "model"; models: CanonicalModels }
-	| { kind: "account_dead"; profile: string };
+	| { kind: "account_dead"; profile: string; reason?: "retirement" };
 
 export interface ManualEligibilityOverride {
 	ignoreCooldown: boolean;
@@ -608,11 +608,14 @@ function commitSwitch(
 	const body = formatSwitchNotification({
 		from: {
 			name: input.observedAccount,
+			retiresAt: store.accounts.find((a) => a.name === input.observedAccount)
+				?.retiresAt,
 			email: context?.identityByName?.get(input.observedAccount)?.email ?? null,
 			usage: context?.usageByName?.get(input.observedAccount),
 		},
 		to: {
 			name: to,
+			retiresAt: store.accounts.find((a) => a.name === to)?.retiresAt,
 			email: context?.identityByName?.get(to)?.email ?? null,
 			usage: context?.usageByName?.get(to),
 		},
@@ -653,7 +656,7 @@ function commitSwitch(
 		},
 	});
 	if (trigger.kind !== "account_dead") return withSwitchNotification;
-	const prefix = `account_dead:${trigger.profile}\n`;
+	const prefix = `account_dead:${trigger.profile}${trigger.reason === "retirement" ? " reason=retirement" : ""}\n`;
 	let deadBody = `${prefix}${body.slice(0, 4_000 - prefix.length)}`;
 	const lastCodeUnit = deadBody.charCodeAt(deadBody.length - 1);
 	if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) {

@@ -12,6 +12,7 @@ import {
 	type AccountLiveness,
 	classifyAccountLiveness,
 } from "./account-liveness.js";
+import { retirementMs } from "./account-retirement.js";
 import {
 	type AccountEntry,
 	type AccountQuotaObservation,
@@ -20,6 +21,10 @@ import {
 	type SyncActiveAccountResult,
 	summarizeModelBenchPool,
 } from "./account-store.js";
+import {
+	formatAccountQuotaBlock,
+	resetTimestamp,
+} from "./account-switch-notification.js";
 import {
 	formatFailureDetail,
 	type ReconcileMachineResult,
@@ -548,10 +553,18 @@ async function verifyCooldownFallback(
 	};
 }
 
-function panoramaBody(panorama: PanoramaEntry[]): string {
+function panoramaBody(
+	panorama: PanoramaEntry[],
+	snapshot: AccountSnapshot,
+): string {
 	return panorama.length === 0
 		? "no configured candidates"
-		: panorama.map((entry) => `${entry.name}: ${entry.status}`).join("\n");
+		: panorama
+				.map(
+					(entry) =>
+						`${formatAccountQuotaBlock({ ...entry, email: snapshot.store.accounts.find((a) => a.name === entry.name)?.identity?.email ?? null })}\n状态：${entry.status}`,
+				)
+				.join("\n\n");
 }
 
 function candidateDecisionInputs(
@@ -787,8 +800,16 @@ interface NoTargetContext {
 }
 
 function safeNoTargetText(value: string, maxBytes: number): string {
-	const normalized = value.replace(/\p{Cc}+/gu, " ").trim();
-	return formatFailureDetail("", redactSecrets(normalized), maxBytes);
+	const normalized = value
+		.split("\n")
+		.map((line) => line.replace(/\p{Cc}+/gu, " "))
+		.join("\n")
+		.trim();
+	return formatFailureDetail(
+		"",
+		normalized.split("\n").map(redactSecrets).join("\n"),
+		maxBytes,
+	);
 }
 
 function setNoTargetContext(
@@ -1383,7 +1404,13 @@ async function handleAccountDead(
 	deps.log(
 		JSON.stringify({
 			event: "quota_switch_decision",
-			trigger: { kind: "account_dead", profile: snapshot.activeName },
+			trigger: {
+				kind: "account_dead",
+				profile: snapshot.activeName,
+				...(liveness.reason === "retirement"
+					? { reason: "retirement" as const }
+					: {}),
+			},
 			selected: candidates.ranked[0] ?? null,
 			candidates: candidateDecisionInputs(snapshot, candidates.panorama),
 		}),
@@ -1413,7 +1440,13 @@ async function handleAccountDead(
 
 	const now = deps.now();
 	const switched = await deps.switchAccount({
-		trigger: { kind: "account_dead", profile: snapshot.activeName },
+		trigger: {
+			kind: "account_dead",
+			profile: snapshot.activeName,
+			...(liveness.reason === "retirement"
+				? { reason: "retirement" as const }
+				: {}),
+		},
 		observedAccount: snapshot.activeName,
 		observedGeneration: snapshot.store.generation,
 		now: new Date(now),
@@ -1422,7 +1455,11 @@ async function handleAccountDead(
 		quotaPreverified: true,
 		markUnavailable: {
 			name: snapshot.activeName,
-			mark: {
+			mark: (liveness.reason === "retirement"
+				? snapshot.store.accounts.find(
+						(entry) => entry.name === snapshot.activeName,
+					)?.unavailable
+				: undefined) ?? {
 				reason: liveness.reason,
 				markedAt: new Date(now).toISOString(),
 				evidence: liveness.reason,
@@ -1480,7 +1517,7 @@ async function handleAccountDead(
 	await deps.persistState(state);
 	if (switched.outcome === "no_account") {
 		await openBlockedEpisode(deps, state, "both", attemptedKinds, {
-			detail: `account_dead:${snapshot.activeName}\n${panoramaBody(candidates.panorama)}`,
+			detail: `account_dead:${snapshot.activeName}${liveness.reason === "retirement" ? " reason=retirement" : ""}\n${panoramaBody(candidates.panorama, snapshot)}`,
 		});
 		return "no_target";
 	}
@@ -1494,7 +1531,10 @@ async function handleAccountDead(
 		{
 			applyExitCode: evidence?.exitCode ?? null,
 			childStarted: evidence?.childStarted ?? null,
-			detail: formatFailureDetail("", evidence?.detail ?? ""),
+			detail: formatFailureDetail(
+				liveness.reason === "retirement" ? "reason=retirement" : "",
+				evidence?.detail ?? "",
+			),
 		},
 	);
 	return "switch_failed";
@@ -1626,6 +1666,104 @@ export async function pollOnce(
 	await attemptSwitchFailureDelivery(deps, state, attemptedKinds);
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 
+	const snapshot = await deps.withAccountsLock(() => deps.readSnapshot());
+	const activeEntry = snapshot.store.accounts.find(
+		(entry) => entry.name === snapshot.activeName,
+	);
+	const clampReviveRetirement = () => {
+		if (state.reviveEpoch === null) return;
+		const source = snapshot.store.accounts.find(
+			(entry) => entry.name === state.reviveEpoch?.sourceAccount,
+		);
+		const deadline = retirementMs(source?.retiresAt);
+		if (!Number.isFinite(deadline)) return;
+		if (deadline <= now) state.reviveEpoch = null;
+		else
+			state.reviveEpoch.expiresAt = Math.min(
+				state.reviveEpoch.expiresAt,
+				deadline,
+			);
+	};
+	clampReviveRetirement();
+	const activeRetirementMs = retirementMs(activeEntry?.retiresAt);
+	if (
+		snapshot.activeName !== null &&
+		(!snapshot.authority || snapshot.authority.kind === "resolved") &&
+		activeRetirementMs > now &&
+		activeRetirementMs - now <= 60 * 60_000
+	) {
+		await deps.alert({
+			kind: "quota_monitor_down",
+			severity: "warning",
+			title: "Claude 账号即将到期",
+			body: `${snapshot.activeName} 将于 ${resetTimestamp(new Date(activeRetirementMs).toISOString(), "America/Los_Angeles")} PT 到期（不足 60 分钟）\n\n${formatAccountQuotaBlock(
+				{
+					name: snapshot.activeName,
+					email: activeEntry?.identity?.email ?? null,
+					retiresAt: activeEntry?.retiresAt,
+					usage: {
+						fiveH: {
+							pct: activeEntry?.observedFiveHPct ?? null,
+							resetsAt: "unknown",
+						},
+						sevenD: {
+							pct: activeEntry?.observedSevenDPct ?? null,
+							resetsAt: activeEntry?.weeklyResetAt ?? "unknown",
+						},
+					},
+				},
+			)}`,
+
+			// Existing sender receipts deduplicate this key across passes/restarts.
+			signature: `account-retirement-${snapshot.activeName}-${activeRetirementMs}`,
+		});
+	}
+	if (
+		snapshot.activeName !== null &&
+		(!snapshot.authority || snapshot.authority.kind === "resolved") &&
+		activeRetirementMs <= now
+	) {
+		// Retirement exits precede normal usage bookkeeping; keep installer health fresh.
+		state.lastPollAt = now;
+		if (deps.config.monitorOnly) {
+			if (state.nextUsageDueAt <= now) {
+				state.nextUsageDueAt = now + pollIntervalMs(state, deps.config.config);
+				if (deps.config.error) {
+					await deps.alert({
+						kind: "quota_monitor_down",
+						severity: "warning",
+						title: "Claude quota monitor configuration is unavailable",
+						body: `config=${deps.config.error}; monitoring continues in monitor-only mode`,
+						signature: `quota-monitor-config-${deps.config.error}-${day(now)}`,
+					});
+				}
+			}
+			await deps.persistState(state);
+			return finish("no_target", false);
+		}
+		const prior = state.deadAccountEpisode;
+		if (
+			prior?.profile === snapshot.activeName &&
+			prior.reason === "retirement" &&
+			(prior.switchOutcome === "no_account" ||
+				prior.switchOutcome === "failed") &&
+			state.nextUsageDueAt > now
+		) {
+			await processLocalSnapshot();
+			await deps.persistState(state);
+			return result("local_scan", state, deps.config.config);
+		}
+		state.nextUsageDueAt = now + pollIntervalMs(state, deps.config.config);
+		const outcome = await handleAccountDead(
+			deps,
+			state,
+			snapshot,
+			{ verdict: "dead", reason: "retirement" },
+			attemptedKinds,
+		);
+		return finish(outcome);
+	}
+
 	if (
 		state.nextUsageDueAt > now &&
 		detectedModels.length === 0 &&
@@ -1669,7 +1807,6 @@ export async function pollOnce(
 		});
 	}
 
-	const snapshot = await deps.withAccountsLock(() => deps.readSnapshot());
 	if (snapshot.authority && snapshot.authority.kind !== "resolved") {
 		await deps.alert({
 			kind: "machine_account_conflict",
@@ -1972,7 +2109,7 @@ export async function pollOnce(
 		if (modelDetection === null) {
 			if (scope === null) throw new Error("missing quota trigger scope");
 			await openBlockedEpisode(deps, state, scope, attemptedKinds, {
-				detail: panoramaBody(candidates.panorama),
+				detail: panoramaBody(candidates.panorama, snapshot),
 				...(fallbackAttempt === null
 					? {}
 					: {
@@ -1985,7 +2122,7 @@ export async function pollOnce(
 				kind: "quota_no_target",
 				severity: "severe",
 				title: "No verified Claude account has quota",
-				body: `models=${modelDetection.models.join(",")}\n${panoramaBody(candidates.panorama)}\n${formatModelBenchRetryNote(candidateAccounts, modelDetection.models, now)}`,
+				body: `models=${modelDetection.models.join(",")}\n${panoramaBody(candidates.panorama, snapshot)}\n${formatModelBenchRetryNote(candidateAccounts, modelDetection.models, now)}`,
 				signature: `quota-no-target-model-${modelDetection.models.join("+")}-${day(now)}`,
 			});
 		}
@@ -2090,7 +2227,7 @@ export async function pollOnce(
 			accountTrigger.scope,
 			attemptedKinds,
 			{
-				detail: panoramaBody(candidates.panorama),
+				detail: panoramaBody(candidates.panorama, snapshot),
 				fallbackName: switchAttempt.cooldownFallbacks[0] as string,
 				fallbackReason: switched.reasonCode,
 			},
@@ -2162,6 +2299,7 @@ export async function pollOnce(
 			finalizedAt: now,
 			confirmDelayMs: deps.config.config.confirmDelayMinutes * 60_000,
 		});
+		clampReviveRetirement();
 		await deps.persistState(state);
 		await processLocalSnapshot();
 		await refreshNewActive(deps, state, switched.to);
@@ -2184,6 +2322,7 @@ export async function pollOnce(
 		expiresAt: Date.parse(accountTrigger.resetAt) + REVIVE_GRACE_MS,
 		panes: {},
 	};
+	clampReviveRetirement();
 	await deps.persistState(state);
 	await processLocalSnapshot();
 	await openBlockedRecovery(

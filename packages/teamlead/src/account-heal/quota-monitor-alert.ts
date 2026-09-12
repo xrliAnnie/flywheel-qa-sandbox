@@ -214,16 +214,19 @@ export async function sendQuotaMonitorAlert(
 	const effectiveEnv = { ...process.env, ...opts.env };
 	const binPath = opts.binPath ?? defaultLeadAlertBinPath(effectiveEnv);
 	const project = opts.project ?? "flywheel";
-	const policy =
-		alert.kind === "account_switch_failed" &&
-		/\breason=(?:transition_journal_conflict|identity_rollback_failed)\b/.test(
-			alert.body,
-		)
-			? { mention: true, severe: true }
-			: ((ROUTING as Record<string, RoutingPolicy>)[alert.kind] ?? {
-					mention: true,
-					severe: true,
-				});
+	const policy: RoutingPolicy =
+		alert.kind === "quota_monitor_down" &&
+		alert.signature.startsWith("account-retirement-")
+			? { mention: true, severe: false, primaryStyle: "plain" }
+			: alert.kind === "account_switch_failed" &&
+					/\breason=(?:transition_journal_conflict|identity_rollback_failed)\b/.test(
+						alert.body,
+					)
+				? { mention: true, severe: true }
+				: ((ROUTING as Record<string, RoutingPolicy>)[alert.kind] ?? {
+						mention: true,
+						severe: true,
+					});
 	const mentionUser = policy.mention
 		? resolveMentionUser(effectiveEnv)
 		: undefined;

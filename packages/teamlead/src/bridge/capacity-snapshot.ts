@@ -5,6 +5,7 @@ import {
 	GB_BYTES,
 	readDataDisk as readSharedDataDisk,
 } from "flywheel-comm/snapshot-storage";
+import { retirementMs } from "../account-heal/account-retirement.js";
 import {
 	defaultStorePath,
 	readStoreStrict,
@@ -126,6 +127,7 @@ export interface CapacitySnapshot {
 				ageMinutes: number | null;
 				stale: boolean | null;
 				weeklyResetAt: string | null;
+				retiresAt?: string;
 				exhaustedUntil: string | null;
 				authUnusable: boolean;
 			}>;
@@ -411,6 +413,9 @@ export async function buildCapacitySnapshot(
 			observedMs === null ? null : Math.max(0, (nowMs - observedMs) / 60_000);
 		return {
 			name: account.name,
+			...(Number.isFinite(retirementMs(account.retiresAt))
+				? { retiresAt: new Date(retirementMs(account.retiresAt)).toISOString() }
+				: {}),
 			active: account.name === activeAccount,
 			fiveHPct: validPct(account.observedFiveHPct),
 			sevenDPct: validPct(account.observedSevenDPct),

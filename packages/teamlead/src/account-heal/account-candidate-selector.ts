@@ -1,3 +1,4 @@
+import { retirementMs } from "./account-retirement.js";
 import type {
 	AccountQuotaObservation,
 	AccountStore,
@@ -53,6 +54,7 @@ export type CandidateExclusion =
 type SuccessfulUsage = Extract<AccountUsageResult, { ok: unknown }>["ok"];
 
 export interface CandidatePanoramaEntry {
+	retiresAt?: string;
 	name: string;
 	status: string;
 	excludedBy: CandidateExclusion;
@@ -186,6 +188,17 @@ export async function verifyAndRankCandidates(
 		}
 		if (!pool.has(name)) {
 			panorama.push({ name, status: "not_in_pool", excludedBy: "pool" });
+			continue;
+		}
+		const retiresAtMs = retirementMs(entry.retiresAt);
+		if (Number.isNaN(retiresAtMs) || retiresAtMs <= now) {
+			panorama.push({
+				name,
+				status: Number.isNaN(retiresAtMs)
+					? "retirement_malformed"
+					: "account_retired",
+				excludedBy: Number.isNaN(retiresAtMs) ? "unverifiable" : "auth",
+			});
 			continue;
 		}
 		if (entry.unavailable !== undefined) {
@@ -335,14 +348,22 @@ export async function verifyAndRankCandidates(
 			resetClass: usage.ok.sevenD.resetsAt === null ? "idleUnopened" : "dated",
 		});
 		if (fallbackCooldownBypassed) cooldownFallbacks.push(name);
-		(isHighFiveH ? highFiveH : healthy).push({ name, resetMs });
+		(isHighFiveH ? highFiveH : healthy).push({
+			name,
+			resetMs: Math.min(resetMs, retiresAtMs),
+		});
 	}
 
 	const headroomDegraded = healthy.length === 0 && highFiveH.length > 0;
 	return {
 		ranked: rank(headroomDegraded ? highFiveH : healthy),
 		cooldownFallbacks,
-		panorama,
+		panorama: panorama.map((entry) => {
+			const deadline = retirementMs(accountsByName.get(entry.name)?.retiresAt);
+			return Number.isFinite(deadline)
+				? { ...entry, retiresAt: new Date(deadline).toISOString() }
+				: entry;
+		}),
 		usageByName,
 		malformedModelBenches,
 		verifiedAt,

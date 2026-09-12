@@ -33,6 +33,23 @@ afterEach(() => {
 });
 
 describe("sendQuotaMonitorAlert", () => {
+	it("renders retirement warnings plain with founder mention and no severe duplication", async () => {
+		process.env.FLYWHEEL_FOUNDER_USER_ID = "123456789";
+		process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID = "severe-channel";
+		const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+		await sendQuotaMonitorAlert(
+			{
+				...alert,
+				severity: "warning",
+				signature: "account-retirement-business-1789369200000",
+			},
+			{ execFile },
+		);
+		expect(execFile).toHaveBeenCalledTimes(1);
+		expect(execFile.mock.calls[0]?.[1]).toContain("--mention-user");
+		expect(execFile.mock.calls[0]?.[1]).toContain("--plain-message");
+	});
+
 	it("routes account_dead to the configured engineering Lead channel as an actionable severe alert", async () => {
 		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "alerts-channel";
 		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "ENGINEER_ALERT_TOKEN";

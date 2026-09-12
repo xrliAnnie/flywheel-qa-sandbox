@@ -1,0 +1,7 @@
+{
+  "id": "1548391597866221699",
+  "channel_id": "1519421055805165842",
+  "content": "<@1138241636057481306> business 将于 09-14 Mon 00:00 PT 到期（不足 60 分钟）\n\n**business** · business@example.com · 到期 09-14\n```text\nwindow  used   left   reset (PT)\n5h      12%    88%    n/a\n7d      34%    66%    09-16 Wed 09:00\nFable   n/a    n/a    n/a\n```\n\n529 验收样例 · 模拟到期前 59 分钟",
+  "timestamp": "2026-09-12T17:55:24.656000+00:00",
+  "url": "https://discord.com/channels/1485787271192907816/1519421055805165842/1548391597866221699"
+}
