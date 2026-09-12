@@ -62,6 +62,157 @@ describe("FLY-1329 A4: reconcileCommDbRunningAgainstFsm respects a park declarat
 	const fsmCompleted = () => "completed";
 	const probeDead = vi.fn(async () => "dead" as const);
 
+	describe("FLY-2498 execution-absence override", () => {
+		it("finalizes a dead parked execution and remains empty after reopening/replay", async () => {
+			seedRunning("dead-park", true);
+			const onFinalizeOutcome = vi.fn();
+			const options = {
+				dbPath,
+				probe: probeDead,
+				executionAbsence: async () => "dead" as const,
+				onFinalizeOutcome,
+			};
+			const result = await reconcileCommDbRunningAgainstFsm(
+				"flywheel",
+				fsmCompleted,
+				options,
+			);
+			expect(result).toMatchObject({
+				reconciled: 1,
+				parkedOverridden: 1,
+				parkedVetoed: 0,
+			});
+			const reopened = new CommDB(dbPath);
+			try {
+				expect(reopened.getSession("dead-park")).toBeUndefined();
+			} finally {
+				reopened.close();
+			}
+			expect(onFinalizeOutcome).toHaveBeenCalledWith(
+				"dead-park",
+				"flywheel",
+				expect.objectContaining({ ok: true, outcome: "finalized" }),
+			);
+			expect(
+				await reconcileCommDbRunningAgainstFsm(
+					"flywheel",
+					fsmCompleted,
+					options,
+				),
+			).toMatchObject({ scanned: 0, reconciled: 0, parkedOverridden: 0 });
+		});
+		it.each(["alive", "unknown", "throws"])(
+			"keeps parked execution on %s",
+			async (outcome) => {
+				seedRunning("uncertain", true);
+				const result = await reconcileCommDbRunningAgainstFsm(
+					"flywheel",
+					fsmCompleted,
+					{
+						dbPath,
+						probe: probeDead,
+						executionAbsence: async () => {
+							if (outcome === "throws") throw new Error("probe failed");
+							return outcome as "alive" | "unknown";
+						},
+					},
+				);
+				expect(result).toMatchObject({
+					reconciled: 0,
+					parkedOverridden: 0,
+					parkedVetoed: 1,
+				});
+				const db = new CommDB(dbPath);
+				try {
+					expect(db.getSession("uncertain")).toBeDefined();
+				} finally {
+					db.close();
+				}
+			},
+		);
+		it.each(["target_changed", "turn_holder"])(
+			"retains identity when %s races with finalization",
+			async (reason) => {
+				seedRunning("raced", true);
+				const result = await reconcileCommDbRunningAgainstFsm(
+					"flywheel",
+					fsmCompleted,
+					{
+						dbPath,
+						probe: probeDead,
+						executionAbsence: async () => "dead",
+						finalizePaneLossResidue: (db, exec, target) => {
+							if (reason === "turn_holder")
+								db.grantTurn("issue-raced", exec, "design", Date.now());
+							else
+								db.registerSession(
+									exec,
+									"runner-flywheel:@new",
+									"flywheel",
+									"issue-raced",
+									"eng-lead",
+								);
+							return db.finalizePaneLossResidue(exec, target);
+						},
+					},
+				);
+				expect(result.reconciled).toBe(0);
+				const db = new CommDB(dbPath);
+				try {
+					expect(db.getSession("raced")).toBeDefined();
+				} finally {
+					db.close();
+				}
+			},
+		);
+		it.each([
+			"not_parked",
+			"superseded",
+			"turn_holder",
+			"lookup_failed",
+			"failed",
+			"blocked",
+			"missing_fsm",
+		])("does not use absence override for %s", async (guard) => {
+			seedRunning("guarded", guard !== "not_parked");
+			if (guard === "turn_holder") {
+				const db = new CommDB(dbPath);
+				db.grantTurn("issue-guarded", "guarded", "design", Date.now());
+				db.close();
+			}
+			const executionAbsence = vi.fn(async () => "dead" as const);
+			const result = await reconcileCommDbRunningAgainstFsm(
+				"flywheel",
+				() =>
+					guard === "failed" || guard === "blocked"
+						? guard
+						: guard === "missing_fsm"
+							? undefined
+							: "completed",
+				{
+					dbPath,
+					probe: probeDead,
+					executionAbsence,
+					harvest: { orphanMinAgeMs: 0, nowMs: () => Date.now() + 3600000 },
+					...(guard === "superseded"
+						? { parkedGenerationEvidence: async () => "superseded" as const }
+						: {}),
+					...(guard === "lookup_failed"
+						? {
+								isParked: () => {
+									throw new Error("lookup failed");
+								},
+							}
+						: {}),
+				},
+			);
+			expect(executionAbsence).not.toHaveBeenCalled();
+			expect(result.reconciled).toBe(
+				guard === "not_parked" || guard === "superseded" ? 1 : 0,
+			);
+		});
+	});
+
 	it("KEEPS a parked runner's row even when FSM=completed and tmux probes dead", async () => {
 		seedRunning("parked-alive", true);
 

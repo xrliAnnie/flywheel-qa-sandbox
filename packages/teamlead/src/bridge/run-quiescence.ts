@@ -6,8 +6,10 @@ import type {
 } from "../StateStore.js";
 import {
 	type GeneralizedLaunchLiveness,
+	hasHostProcessByExecutionId,
 	probeGeneralizedLaunchLiveness,
 } from "./generalized-launch-recovery.js";
+import { discoverTmuxTargetByExecutionId } from "./tmux-lookup.js";
 
 export type RunExecutionLivenessProbe = (
 	executionId: string,
@@ -17,6 +19,39 @@ export type RunExecutionLivenessProbe = (
 export interface RunExecutionLivenessDeps {
 	probeCodexDaemon?: typeof probeCodexDaemonLiveness;
 	probeGeneric?: typeof probeGeneralizedLaunchLiveness;
+}
+
+/** FLY-2498: independent of the registered window name. All three absence
+ * proofs are required; a discovered marker (even on a dead pane) is uncertainty.
+ * Do not reuse generic recovery's dead-pane shortcut: it skips host evidence. */
+export async function probeExecutionAbsenceBeyondTarget(
+	session: Pick<Session, "adapter_type"> | undefined,
+	executionId: string,
+	_projectName: string,
+	deps: {
+		probeCodexDaemon?: typeof probeCodexDaemonLiveness;
+		discover?: typeof discoverTmuxTargetByExecutionId;
+		hasHostProcess?: typeof hasHostProcessByExecutionId;
+	} = {},
+): Promise<GeneralizedLaunchLiveness> {
+	try {
+		if (session?.adapter_type === "codex-tmux") {
+			const daemon = await (deps.probeCodexDaemon ?? probeCodexDaemonLiveness)(
+				executionId,
+			);
+			if (daemon !== "absent") return daemon;
+		}
+		const marker = await (deps.discover ?? discoverTmuxTargetByExecutionId)(
+			executionId,
+		);
+		if (marker.kind !== "missing") return "unknown";
+		const hasProcess = await (
+			deps.hasHostProcess ?? hasHostProcessByExecutionId
+		)(executionId);
+		return hasProcess ? "unknown" : "dead";
+	} catch {
+		return "unknown";
+	}
 }
 
 /** Production policy for the strict quiescence gate. Codex owns a detached

@@ -316,6 +316,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 			keptAliveTarget: 1,
 			finalizeFailed: 0,
 			parkedVetoed: 0,
+			parkedOverridden: 0,
 		});
 		expect(db.getSession("gone")).toBeUndefined();
 		expect(db.getSession("app")).toBeUndefined();
@@ -531,6 +532,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 				// alongside finalizeFailed; the optional harvest block still only
 				// appears when opts.harvest is set.
 				"parkedVetoed",
+				"parkedOverridden",
 			]);
 			expect(result).toEqual({
 				scanned: 2,
@@ -540,6 +542,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 				keptAliveTarget: 0,
 				finalizeFailed: 0,
 				parkedVetoed: 0,
+				parkedOverridden: 0,
 			});
 			expect(probe).not.toHaveBeenCalled();
 		});
@@ -560,6 +563,7 @@ describe("commdb-fsm-reconcile (FLY-817)", () => {
 				keptAliveTarget: 0,
 				finalizeFailed: 0,
 				parkedVetoed: 0,
+				parkedOverridden: 0,
 			});
 		});
 
