@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB, type PhaseWakeInput } from "flywheel-comm/db";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	atomicMergeCodexSessionState,
 	CodexPhaseLifecycleController,
@@ -197,6 +197,153 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 			},
 		});
 	});
+
+	it.each(["resident", "woken"] as const)(
+		"adopts the Bridge %s hold on stale boundary and advances from its boundary",
+		async (state) => {
+			const enter = vi
+				.fn()
+				.mockResolvedValueOnce({ ok: false, reason: "stale_boundary" })
+				.mockResolvedValue({
+					ok: true,
+					revision: 9,
+					graceExpiresAt: "2026-09-11T03:00:00.000Z",
+				});
+			const close = vi.fn(async () => true);
+			const current = vi.fn(async () => ({
+				activationId: "activation-1",
+				nodeId: "repair-any-name",
+				state,
+				boundarySeq: 12,
+				revision: 8,
+				graceExpiresAt: "2026-09-11T02:00:00.000Z",
+			}));
+			const options = {
+				residentHold: {
+					activationId: "activation-1",
+					nodeId: "repair-any-name",
+					enter,
+					close,
+					current,
+				},
+			};
+			const lifecycle = controller(null, options);
+			const budget = {
+				deadlineRemainingMs: 30_000,
+				hardDeadlineRemainingMs: 60_000,
+			};
+			try {
+				await expect(lifecycle.enterHold(budget)).resolves.toBeUndefined();
+				expect(current).toHaveBeenCalledWith({ executionId: "exec-1" });
+				expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+					residentBoundarySeq: 12,
+					phaseHold: {
+						schemaVersion: 2,
+						nodeId: "repair-any-name",
+						residentRevision: 8,
+						graceExpiresAt: "2026-09-11T02:00:00.000Z",
+						state: "entering",
+						...budget,
+					},
+				});
+				await lifecycle.confirmHoldPaused();
+			} finally {
+				await lifecycle.stop();
+			}
+			const restarted = controller(null, options);
+			try {
+				await restarted.enterHold(budget);
+				expect(enter).toHaveBeenLastCalledWith(
+					expect.objectContaining({ boundarySeq: 13 }),
+				);
+				expect(close).not.toHaveBeenCalled();
+			} finally {
+				await restarted.stop();
+			}
+		},
+	);
+
+	it.each(["closed", "activation mismatch", "node mismatch", "missing"])(
+		"still refuses stale boundary when the current hold is %s",
+		async (condition) => {
+			const close = vi.fn(async () => true);
+			const lifecycle = controller(null, {
+				residentHold: {
+					activationId: "activation-1",
+					nodeId: "repair-any-name",
+					enter: async () => ({ ok: false as const, reason: "stale_boundary" }),
+					close,
+					current: async () =>
+						condition === "missing"
+							? undefined
+							: {
+									activationId:
+										condition === "activation mismatch"
+											? "other-activation"
+											: "activation-1",
+									nodeId:
+										condition === "node mismatch"
+											? "other-node"
+											: "repair-any-name",
+									state:
+										condition === "closed"
+											? ("closed" as const)
+											: ("resident" as const),
+									boundarySeq: 12,
+									revision: 8,
+									graceExpiresAt: "2026-09-11T02:00:00.000Z",
+								},
+				},
+			});
+			try {
+				await expect(
+					lifecycle.enterHold({
+						deadlineRemainingMs: 30_000,
+						hardDeadlineRemainingMs: 60_000,
+					}),
+				).rejects.toThrow("resident hold refused: stale_boundary");
+				expect(lifecycle.getPhaseHold()).toBeNull();
+				expect(close).not.toHaveBeenCalled();
+			} finally {
+				await lifecycle.stop();
+			}
+		},
+	);
+
+	it.each(["activation_mismatch", "invalid_input"])(
+		"preserves %s refusal without attempting adoption",
+		async (reason) => {
+			const current = vi.fn(async () => ({
+				activationId: "activation-1",
+				nodeId: "repair-any-name",
+				state: "resident" as const,
+				boundarySeq: 12,
+				revision: 8,
+				graceExpiresAt: "2026-09-11T02:00:00.000Z",
+			}));
+			const lifecycle = controller(null, {
+				residentHold: {
+					activationId: "activation-1",
+					nodeId: "repair-any-name",
+					enter: async () => ({ ok: false as const, reason }),
+					close: async () => true,
+					current,
+				},
+			});
+			try {
+				await expect(
+					lifecycle.enterHold({
+						deadlineRemainingMs: 30_000,
+						hardDeadlineRemainingMs: 60_000,
+					}),
+				).rejects.toThrow(`resident hold refused: ${reason}`);
+				expect(current).not.toHaveBeenCalled();
+				expect(lifecycle.getPhaseHold()).toBeNull();
+			} finally {
+				await lifecycle.stop();
+			}
+		},
+	);
 
 	it("rebuilds a missing local hold from the current resident row on restart", async () => {
 		const lifecycle = controller(null, {

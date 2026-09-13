@@ -32,9 +32,9 @@ import { probeRunExecutionLiveness } from "./run-quiescence.js";
 import { reapRunnerMcp } from "./runner-teardown.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import {
-	getTmuxTargetFromCommDb,
 	killCmuxLinkedSession,
 	killTmuxWindow,
+	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	resolveCmuxAttachTarget,
 	type TmuxTarget,
@@ -233,11 +233,11 @@ export async function postMergeTmuxCleanup(
 		// controller is deliberately preserved. Only other outcomes reach legacy
 		// direct cleanup.
 		if (!phaseControllerHandled) {
-			const target = getTmuxTargetFromCommDb(
-				opts.executionId,
-				opts.projectName,
-			);
-			if (target) {
+			const lookup = lookupTmuxTarget(opts.executionId, opts.projectName);
+			if (lookup.kind === "error") {
+				result.errors.push(`tmux: ${lookup.error}`);
+			} else if (lookup.kind === "found") {
+				const target = lookup.target;
 				const direct = await cleanupTmuxTarget({ target, session });
 				result.tmuxClosed = direct.tmuxClosed;
 				physicalGone = direct.physicalGone;
@@ -271,7 +271,7 @@ export async function postMergeTmuxCleanup(
 				physicalGone = true;
 			}
 		}
-		// No target → tmux was never registered or CommDB missing. Not an error.
+		// Only a successful gone lookup permits legacy absent-target cleanup.
 	} catch (err) {
 		result.errors.push(`tmux: ${(err as Error).message}`);
 	}

@@ -179,6 +179,34 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 		).toBe(true);
 	});
 
+	it("silences pane loss for a released completed Codex actor with no target", async () => {
+		seed("released-codex", { status: "completed", adapterType: "codex-tmux" });
+		const d = deps({ lookupTarget: vi.fn(() => ({ kind: "gone" })) });
+
+		const result = await reconcilePaneLoss("flywheel", d);
+
+		expect(result).toMatchObject({ scanned: 0, advisories: 0 });
+		expect(store.getEventsByExecution("released-codex")).toEqual([]);
+		expect(d.lookupTarget).not.toHaveBeenCalled();
+		expect(d.notify).not.toHaveBeenCalled();
+	});
+
+	it("reports pane loss for the same targetless Codex actor while still parked", async () => {
+		seed("parked-codex", { status: "ship_parked", adapterType: "codex-tmux" });
+		const d = deps({ lookupTarget: vi.fn(() => ({ kind: "gone" })) });
+
+		const result = await reconcilePaneLoss("flywheel", d);
+
+		expect(result).toMatchObject({ scanned: 1, advisories: 1 });
+		expect(store.getSession("parked-codex")?.status).toBe("ship_parked");
+		expect(d.notify).toHaveBeenCalledOnce();
+		expect(
+			store
+				.getEventsByExecution("parked-codex")
+				.filter((event) => event.event_type === "runner_pane_loss_detected"),
+		).toHaveLength(1);
+	});
+
 	it("keeps parked and same-generation rows active, with class-specific truthful advisory debt", async () => {
 		seed("parked-lost", { status: "ship_parked" });
 		seed("same-generation");

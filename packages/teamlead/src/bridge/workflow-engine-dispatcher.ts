@@ -62,6 +62,7 @@ import {
 	unavailableMaterializedHeadAuthority,
 } from "./materialized-head-authority.js";
 import { parsePaneLossGenerationParams } from "./pane-loss-reconcile.js";
+import { RESIDENT_EXPIRY_FAST_RETRY_MS } from "./resident-hold.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import type { AdmissionDecision } from "./runner-admission.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
@@ -80,6 +81,10 @@ import {
 } from "./workflow-ship-carrier-coordinator.js";
 
 interface WorkflowEngineDispatcherOptions {
+	runResidentExpiryPass?: (
+		now: string,
+		projectNames: string[],
+	) => Promise<void>;
 	resumeDisabledCodexQuotaAdmissions?: () => Promise<void>;
 	codexQuotaRootKey?: (projectName: string) => string | undefined;
 	store: StateStore;
@@ -237,6 +242,7 @@ export class WorkflowEngineDispatcher {
 	private readonly ownerId = randomUUID();
 	private timer: NodeJS.Timeout | undefined;
 	private reconciling = false;
+	private residentExpiryNextPassAt = 0;
 
 	private unlaunchedThresholdMs(
 		name:
@@ -357,6 +363,24 @@ export class WorkflowEngineDispatcher {
 			this.reconcileWorkflowDivergence();
 			await this.reconcileDeadExecutionTripwires();
 			await this.reconcileDeadExecutions();
+			try {
+				const now = this.now().toISOString();
+				if (
+					this.options.runResidentExpiryPass &&
+					Date.parse(now) >= this.residentExpiryNextPassAt
+				) {
+					this.residentExpiryNextPassAt =
+						Date.parse(now) + RESIDENT_EXPIRY_FAST_RETRY_MS;
+					const projectNames =
+						this.options.store.listResidentExpiryFastLaneProjects(now);
+					if (projectNames.length > 0)
+						await this.options.runResidentExpiryPass(now, projectNames);
+				}
+			} catch (error) {
+				this.log(
+					`resident expiry pass deferred: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 			await this.reconcileWorkflowReworks(result);
 			await this.reconcileWorkflowCarriers(result);
 			await this.reconcileUnlaunchedWorkflowStalls();

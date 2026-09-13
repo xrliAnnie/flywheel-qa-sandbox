@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant QA as QA 工人
+    participant SS as StateStore<br/>(工作流账本)
+    participant DP as dispatcher<br/>(每秒巡检)
+    participant SG as 到期 saga<br/>(DeliveryOperations)
+    participant W as 停驻工人
+    participant PL as 失联巡检 / 返工投递
+
+    QA->>SS: complete(qa_pass) → commitWorkflowTransitionTx
+    Note over SS: 同一事务:node_completed + 释放请求<br/>hold.grace_expires_at = now, release_cause = verdict_pass<br/>事件 resident_hold_release_requested
+    DP->>SS: countDueResidentHolds(now) > 0 ?
+    DP->>SG: runResidentExpiryPass(now)
+    SG->>SS: expireResidentHoldsTx → hold expired + op staged
+    SG->>W: requestRunnerShutdown / terminateClaude → op applied
+    W-->>SG: acked(受控退出) 或 死证(CommDB 非 running + 探针 dead)
+    SG->>SS: markResidentExpirySent → projectResidentExpiry
+    Note over SS: 同一事务:hold closed(released)<br/>sessions ship_parked → completed<br/>park_cleared · 事件 resident_hold_released
+    PL-->>SS: 巡检读候选集(不含 completed)→ 静默
+    PL-->>SS: 返工遇 completed 体 → replacement_pending → 铸替身

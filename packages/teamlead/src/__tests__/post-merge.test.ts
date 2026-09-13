@@ -8,6 +8,7 @@ import { StateStore } from "../StateStore.js";
 // ── Mock tmux-lookup ────────────────────────────────────
 
 const mockGetTmuxTarget = vi.fn();
+const mockLookupTmuxTarget = vi.fn();
 const mockKillTmuxWindow = vi.fn();
 const mockHasHostProcessByExecutionId = vi.fn();
 const mockProbeRunExecutionLiveness = vi.fn();
@@ -44,6 +45,7 @@ vi.mock("../bridge/codex-phase-shutdown.js", () => ({
 
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
+	lookupTmuxTarget: (...args: unknown[]) => mockLookupTmuxTarget(...args),
 	killTmuxWindow: (...args: unknown[]) => mockKillTmuxWindow(...args),
 	killCmuxLinkedSession: (...args: unknown[]) =>
 		mockKillCmuxLinkedSession(...args),
@@ -97,6 +99,11 @@ describe("postMergeTmuxCleanup", () => {
 			status: "approved",
 		});
 		mockGetTmuxTarget.mockReset();
+		mockLookupTmuxTarget.mockReset();
+		mockLookupTmuxTarget.mockImplementation((...args: unknown[]) => {
+			const target = mockGetTmuxTarget(...args);
+			return target ? { kind: "found", target } : { kind: "gone" };
+		});
 		mockKillTmuxWindow.mockReset();
 		mockKillCmuxLinkedSession.mockReset();
 		mockKillCmuxLinkedSession.mockResolvedValue({ killed: true });
@@ -234,6 +241,21 @@ describe("postMergeTmuxCleanup", () => {
 		expect(result.tmuxClosed).toBe(false);
 		expect(result.commDbFinalized).toBe(true);
 		expect(result.errors).toEqual([]);
+		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2478: preserves registration when lookup returns an unknown read error", async () => {
+		mockGetTmuxTarget.mockReturnValue(undefined);
+		mockLookupTmuxTarget.mockReturnValue({
+			kind: "error",
+			error: "sqlite busy",
+		});
+
+		const result = await postMergeTmuxCleanup(makeOpts(), store);
+
+		expect(result.commDbFinalized).toBe(false);
+		expect(result.errors).toContain("tmux: sqlite busy");
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
 		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
 	});
 

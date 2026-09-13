@@ -20,7 +20,16 @@ const mockKillCmuxLinkedSession = vi.fn(async () => ({ killed: true }));
 
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
-	lookupTmuxTarget: () => ({ kind: "gone" as const }),
+	lookupTmuxTarget: (...args: unknown[]) => {
+		try {
+			const target = mockGetTmuxTarget(...args);
+			return target
+				? { kind: "found" as const, target }
+				: { kind: "gone" as const };
+		} catch (error) {
+			return { kind: "error" as const, error: String(error) };
+		}
+	},
 	probeRunnerProcessLiveness: () => Promise.resolve("absent" as const),
 	killTmuxWindow: (...args: unknown[]) => mockKillTmuxSession(...args),
 	killCmuxLinkedSession: (...args: unknown[]) =>

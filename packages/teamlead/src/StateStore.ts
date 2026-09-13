@@ -82,7 +82,10 @@ import {
 	deliveryOperationStalledCopy,
 	deliveryRerouteOutcomeCopy,
 } from "./bridge/alert-kind-copy.js";
-import { RESIDENT_GRACE_MS } from "./bridge/resident-hold.js";
+import {
+	RESIDENT_EXPIRY_FAST_WINDOW_MS,
+	RESIDENT_GRACE_MS,
+} from "./bridge/resident-hold.js";
 import type {
 	DeliveryContractClassification,
 	WorkflowDeliveryAttemptRow,
@@ -383,6 +386,8 @@ export interface WorkflowResidentHoldRow {
 	grace_started_at: string;
 	grace_expires_at: string;
 	closed_reason: string | null;
+	release_cause: "verdict_pass" | null;
+	release_source: string | null;
 	updated_at: string;
 }
 
@@ -25322,10 +25327,18 @@ export class StateStore {
 				grace_started_at TEXT NOT NULL,
 				grace_expires_at TEXT NOT NULL,
 				closed_reason TEXT,
+				release_cause TEXT CHECK (release_cause IS NULL OR release_cause IN ('verdict_pass')),
+				release_source TEXT,
 				updated_at TEXT NOT NULL,
 				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
 			)
 		`);
+		this.addColumnIfMissing(
+			"workflow_resident_hold",
+			"release_cause",
+			"TEXT CHECK (release_cause IS NULL OR release_cause IN ('verdict_pass'))",
+		);
+		this.addColumnIfMissing("workflow_resident_hold", "release_source", "TEXT");
 		this.db.run(`
 			CREATE INDEX IF NOT EXISTS idx_wrh_expiring
 			ON workflow_resident_hold(state, grace_expires_at)
@@ -38388,6 +38401,34 @@ export class StateStore {
 				};
 				return;
 			}
+			if (
+				existing?.state === "resident" &&
+				existing.boundary_seq < input.boundarySeq
+			) {
+				const renewedGrace = existing.release_cause
+					? existing.grace_expires_at
+					: graceExpiresAt;
+				this.db.run(
+					`UPDATE workflow_resident_hold
+					 SET boundary_seq = ?, grace_started_at = ?, grace_expires_at = ?,
+					     updated_at = ?
+					 WHERE execution_id = ? AND revision = ? AND state = 'resident' AND boundary_seq = ?`,
+					[
+						input.boundarySeq,
+						existing.release_cause ? existing.grace_started_at : now,
+						renewedGrace,
+						now,
+						input.executionId,
+						existing.revision,
+						existing.boundary_seq,
+					],
+				);
+				result =
+					this.db.getRowsModified() === 1
+						? { ok: true, revision: existing.revision, graceExpiresAt: renewedGrace }
+						: { ok: false, reason: "stale_boundary" };
+				return;
+			}
 			if (!existing) {
 				this.db.run(
 					`INSERT INTO workflow_resident_hold (
@@ -38420,6 +38461,7 @@ export class StateStore {
 					`UPDATE workflow_resident_hold
 					    SET revision = ?, boundary_seq = ?, state = 'resident',
 					        grace_started_at = ?, grace_expires_at = ?,
+					        release_cause = NULL, release_source = NULL,
 					        closed_reason = NULL, updated_at = ?
 					  WHERE execution_id = ? AND revision = ? AND state = 'woken'`,
 					[
@@ -38461,6 +38503,7 @@ export class StateStore {
 		revision: number;
 		reason:
 			| "expired"
+			| "released"
 			| "terminal"
 			| "superseded"
 			| "replaced"
@@ -38494,6 +38537,89 @@ export class StateStore {
 		return changed === 1;
 	}
 
+	private openResidentParkTx(executionId: string) {
+		const park = this.workflowSelectAll(
+			"SELECT * FROM workflow_engine_park_outbox WHERE execution_id = ? ORDER BY generation DESC LIMIT 1",
+			[executionId],
+		)[0];
+		return park?.event === "park_opened" ? park : undefined;
+	}
+
+	private releaseResidentHoldsForNodeTx(input: {
+		runId: string;
+		nodeId: string;
+		source: string;
+		now: string;
+	}): void {
+		const holds = this.workflowSelectAll(
+			`SELECT execution_id, activation_id FROM workflow_resident_hold
+			 WHERE run_id = ? AND node_id = ? AND state = 'resident' AND release_cause IS NULL
+			 ORDER BY execution_id`,
+			[input.runId, input.nodeId],
+		).filter((hold) => {
+			const park = this.openResidentParkTx(String(hold.execution_id));
+			return park?.reason === "rework_reachable_wait" && park.activation_id === hold.activation_id;
+		});
+		if (holds.length === 0) return;
+		for (const hold of holds) {
+			this.db.run(
+				`UPDATE workflow_resident_hold
+				 SET grace_expires_at = ?, release_cause = 'verdict_pass', release_source = ?, updated_at = ?
+				 WHERE execution_id = ? AND state = 'resident' AND release_cause IS NULL`,
+				[input.now, input.source, input.now, hold.execution_id],
+			);
+		}
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid: `resident-release:${input.source}`,
+			kind: "resident_hold_release_requested",
+			nodeId: input.nodeId,
+			payload: {
+				nodeId: input.nodeId,
+				executionIds: holds.map((hold) => String(hold.execution_id)),
+				cause: "verdict_pass",
+			},
+		});
+	}
+
+	listResidentExpiryFastLaneProjects(now: string): string[] {
+		if (!StateStore.workflowFiniteTimestamp(now)) return [];
+		const since = new Date(
+			Date.parse(now) - RESIDENT_EXPIRY_FAST_WINDOW_MS,
+		).toISOString();
+		return this.workflowSelectAll(
+			`SELECT DISTINCT run.project_name FROM workflow_run run
+			 JOIN workflow_resident_hold hold ON hold.run_id = run.run_id
+			 WHERE hold.state = 'resident' AND hold.grace_expires_at < ?
+			 AND NOT EXISTS (SELECT 1 FROM workflow_engine_park_outbox park
+			   WHERE park.execution_id = hold.execution_id AND park.event = 'park_opened'
+			   AND park.reason = 'runner_ship_gate_wait'
+			   AND park.generation = (SELECT MAX(latest.generation) FROM workflow_engine_park_outbox latest WHERE latest.execution_id = hold.execution_id))
+			 UNION
+			 SELECT DISTINCT run.project_name FROM workflow_run run
+			 JOIN workflow_delivery_operation operation ON operation.run_id = run.run_id
+			 WHERE operation.kind = 'resident_expiry'
+			 AND operation.state IN ('staged','applied','sent') AND operation.created_at >= ?
+			 AND NOT EXISTS (SELECT 1 FROM workflow_engine_park_outbox park
+			   WHERE park.execution_id = operation.root_id AND park.event = 'park_opened'
+			   AND park.reason = 'runner_ship_gate_wait'
+			   AND park.generation = (SELECT MAX(latest.generation) FROM workflow_engine_park_outbox latest WHERE latest.execution_id = operation.root_id))
+			 ORDER BY project_name`,
+			[now, since],
+		).map((row) => String(row.project_name));
+	}
+
+	countDueResidentHolds(now: string): number {
+		if (!StateStore.workflowFiniteTimestamp(now)) return 0;
+		return Number(
+			this.workflowSelectAll(
+				`SELECT COUNT(*) AS count FROM workflow_resident_hold
+			 WHERE state IN ('resident', 'expired') AND grace_expires_at < ?`,
+				[now],
+			)[0]?.count ?? 0,
+		);
+	}
+
 	expireResidentHoldsTx(now: string): string[] {
 		if (!StateStore.workflowFiniteTimestamp(now)) return [];
 		const expiredOperationIds: string[] = [];
@@ -38505,6 +38631,7 @@ export class StateStore {
 				[now],
 			) as unknown as WorkflowResidentHoldRow[];
 			for (const hold of candidates) {
+				if (this.openResidentParkTx(hold.execution_id)?.reason === "runner_ship_gate_wait") continue;
 				const operationId = `resident-expiry:${hold.execution_id}:r${hold.revision}`;
 				const canonicalDigest = canonicalSubmissionDigest({
 					kind: "resident_expiry",
@@ -38580,7 +38707,9 @@ export class StateStore {
 		return expiredOperationIds;
 	}
 
-	listPendingResidentExpiryOperations(): WorkflowResidentExpiryOperation[] {
+	listPendingResidentExpiryOperations(
+		createdAfter?: string,
+	): WorkflowResidentExpiryOperation[] {
 		return this.workflowSelectAll(
 			`SELECT operation.operation_id, operation.run_id, operation.family,
 			        operation.root_id, operation.generation, operation.shape_id,
@@ -38591,8 +38720,13 @@ export class StateStore {
 			    AND hold.revision = operation.generation
 			  WHERE operation.kind = 'resident_expiry'
 			    AND operation.state IN ('staged','applied','sent')
+			    AND (? IS NULL OR operation.created_at >= ?)
+			 AND NOT EXISTS (SELECT 1 FROM workflow_engine_park_outbox park
+			   WHERE park.execution_id = operation.root_id AND park.event = 'park_opened'
+			   AND park.reason = 'runner_ship_gate_wait'
+			   AND park.generation = (SELECT MAX(latest.generation) FROM workflow_engine_park_outbox latest WHERE latest.execution_id = operation.root_id))
 			  ORDER BY operation.created_at, operation.operation_id`,
-			[],
+			[createdAfter ?? null, createdAfter ?? null],
 		).map((row) => ({
 			operationId: String(row.operation_id),
 			executionId: String(row.root_id),
@@ -38696,7 +38830,8 @@ export class StateStore {
 			const operation = this.workflowSelectAll(
 				`SELECT operation.run_id, operation.root_id, operation.generation,
 				        operation.shape_id, operation.target_activation_id,
-				        operation.state, hold.state AS hold_state
+				        operation.state, hold.state AS hold_state,
+				        hold.release_cause, hold.release_source
 				   FROM workflow_delivery_operation operation
 				   JOIN workflow_resident_hold hold
 				     ON hold.execution_id = operation.root_id
@@ -38721,9 +38856,16 @@ export class StateStore {
 				result = { ok: false, reason: "resident_expiry_hold_changed" };
 				return;
 			}
+			const openPark = this.openResidentParkTx(String(operation.root_id));
+			if (openPark?.reason === "runner_ship_gate_wait") {
+				result = {ok: false, reason: "resident_expiry_ship_park"};
+				return;
+			}
 			this.db.run(
 				`UPDATE workflow_resident_hold
-				    SET state = 'closed', closed_reason = 'expired', updated_at = ?
+				    SET state = 'closed',
+				        closed_reason = CASE WHEN release_cause IS NOT NULL THEN 'released' ELSE 'expired' END,
+				        updated_at = ?
 				  WHERE execution_id = ? AND revision = ? AND state = 'expired'`,
 				[input.now, operation.root_id, operation.generation],
 			);
@@ -38731,6 +38873,49 @@ export class StateStore {
 				throw new WorkflowEngineInvariantError(
 					`resident_expiry_hold_cas_failed:${input.operationId}`,
 				);
+			}
+			const executionId = String(operation.root_id);
+			const session = this.getSession(executionId);
+			const activation = this.resolveCurrentWorkflowActivation(executionId);
+			const sessionSettled =
+				openPark?.reason === "rework_reachable_wait" &&
+				openPark.activation_id === operation.target_activation_id &&
+				session?.status === "ship_parked" &&
+				activation.kind === "current" &&
+				activation.binding.activation_id === operation.target_activation_id;
+			let parkSettled = false;
+			let parkSkipped = false;
+			if (sessionSettled) {
+				this.db.run(
+					"UPDATE sessions SET status = 'completed', last_activity_at = ? WHERE execution_id = ? AND status = 'ship_parked'",
+					[input.now, executionId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new WorkflowEngineInvariantError(
+						`resident_release_session_cas_failed:${input.operationId}`,
+					);
+				}
+				this.applyTerminalTimestamp(executionId, "ship_parked", "completed");
+				this.bumpLifecycleRevision(executionId);
+				const latestPark = this.workflowSelectAll(
+					"SELECT * FROM workflow_engine_park_outbox WHERE execution_id = ? ORDER BY generation DESC LIMIT 1",
+					[executionId],
+				)[0];
+				if (latestPark?.event === "park_opened") {
+					const open = this.workflowEngineParkOutboxFromRow(latestPark);
+					if (
+						open.reason === "rework_reachable_wait" &&
+						open.activation_id === operation.target_activation_id
+					) {
+						this.appendWorkflowEngineParkSettlementClearTx({
+							open,
+							createdAt: input.now,
+						});
+						parkSettled = true;
+					} else {
+						parkSkipped = true;
+					}
+				}
 			}
 			this.db.run(
 				`UPDATE workflow_delivery_operation
@@ -38746,13 +38931,21 @@ export class StateStore {
 			this.appendWorkflowRunEventCheckedTx({
 				runId: String(operation.run_id),
 				eventUid: input.operationId,
-				kind: "resident_hold_expired",
+				kind: operation.release_cause
+					? "resident_hold_released"
+					: "resident_hold_expired",
 				payload: {
 					executionId: operation.root_id,
 					activationId: operation.target_activation_id,
 					nodeId: operation.shape_id,
 					revision: Number(operation.generation),
 					requestId: input.operationId,
+					cause: operation.release_cause ?? "grace_timeout",
+					releaseSource: operation.release_source,
+					sessionSettled,
+					sessionStatusBefore: session?.status ?? null,
+					parkSettled,
+					parkSkipped,
 				},
 			});
 			result = { ok: true, idempotentReplay: false };
@@ -52822,6 +53015,7 @@ export class StateStore {
 				`UPDATE workflow_resident_hold
 				    SET revision = ?, boundary_seq = ?, state = 'resident',
 				        grace_started_at = ?, grace_expires_at = ?,
+				        release_cause = NULL, release_source = NULL,
 				        closed_reason = NULL, updated_at = ?
 				  WHERE execution_id = ? AND revision = ? AND state = 'woken'`,
 				[
@@ -57018,6 +57212,29 @@ export class StateStore {
 				executionId: input.executionId,
 				payload: { attempt: input.attempt, outcome: input.outcome },
 			});
+			if (edge) {
+				let contract: ReturnType<typeof resolveWorkflowDecisionContract>;
+				try {
+					contract = resolveWorkflowDecisionContract(snapshot, input.nodeId);
+				} catch {
+					contract = undefined;
+				}
+				if (contract && input.outcome === contract.passOutcome) {
+					const verdictLoop = snapshot.manifest.loops.find(
+						(candidate) =>
+							candidate.from === input.nodeId &&
+							candidate.loop_when === contract.failOutcome,
+					);
+					if (verdictLoop) {
+						this.releaseResidentHoldsForNodeTx({
+							runId: input.runId,
+							nodeId: verdictLoop.to,
+							source: transitionUid,
+							now,
+						});
+					}
+				}
+			}
 			if (loop) {
 				this.appendWorkflowRunEventTx({
 					runId: input.runId,

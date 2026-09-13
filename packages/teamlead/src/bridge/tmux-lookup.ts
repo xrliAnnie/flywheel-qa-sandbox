@@ -356,8 +356,9 @@ export function buildAttachCommand(
 /**
  * FLY-228 (Codex code-review MED-3): discriminated tmux-target lookup.
  *   - `found`: target resolved.
- *   - `gone`:  DB missing / session not registered / no tmux_window → there is
- *              genuinely nothing to clean up (callers treat as cleanup success).
+ *   - `gone`:  DB missing / session not registered / no tmux_window. This proves
+ *              only registry absence, not host-process teardown. Resident expiry
+ *              treats it as indeterminate without a request-bound shutdown ACK.
  *   - `error`: CommDB READ error (corruption / lock) → we could NOT determine
  *              whether tmux is alive; callers must treat this as cleanup-pending
  *              (never report unqualified success while the process may be live).

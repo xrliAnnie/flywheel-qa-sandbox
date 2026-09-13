@@ -643,6 +643,7 @@ import {
 	type RescueRuntime,
 } from "./rescue-runtime.js";
 import { createHostResidentCodexLeadPatrol } from "./resident-codex-lead-patrol.js";
+import { RESIDENT_EXPIRY_FAST_WINDOW_MS } from "./resident-hold.js";
 import { ResidentReceiverSupervisor } from "./resident-receiver-supervisor.js";
 import { deliverResidentWake } from "./resident-wake-fence.js";
 import {
@@ -7673,11 +7674,128 @@ export async function startBridge(
 				},
 			})
 		: undefined;
+	const resolveDeliveryAlertIdentity = (input: {
+		projectName: string;
+		issueId: string;
+		runId: string | null;
+	}) =>
+		resolveWorkflowRunAlertIdentity({
+			store,
+			projects,
+			defaultLeadAgentId: config.defaultLeadAgentId,
+			...input,
+			log: (message) => console.warn(`[delivery-contract] ${message}`),
+		});
+	const createProjectDeliveryOperations = (
+		projectName: string,
+		commDb: CommDB,
+	) =>
+		new DeliveryOperations({
+			store,
+			commDb,
+			projectName,
+			resolveRecipient: ({ rootId, sourceExecutionId }) =>
+				store.resolveWorkflowDeliveryRecipient(rootId, sourceExecutionId),
+			resolveAlertIdentity: resolveDeliveryAlertIdentity,
+			residentExpiry: {
+				terminateClaude: async (executionId) => {
+					const lookup = lookupTmuxTarget(executionId, projectName);
+					if (lookup.kind === "error") {
+						return { ok: false, error: lookup.error };
+					}
+					if (lookup.kind === "gone") return { ok: true };
+					const session = store.getSession(executionId);
+					const identity = session
+						? resolveTerminalViewIdentity(session, lookup.target)
+						: null;
+					const killed = await killTmuxWindow(lookup.target.tmuxWindow);
+					if (!killed.killed) {
+						return {
+							ok: false,
+							error: killed.error ?? "claude_resident_expiry_kill_failed",
+						};
+					}
+					if (identity) {
+						try {
+							await closeRunnerTerminalView({
+								baseSessionName: identity.sessionName,
+								projectName: identity.projectName,
+								executionId: identity.executionId,
+								windowId: identity.windowId,
+								sessionRole: identity.sessionRole,
+							});
+						} catch (error) {
+							console.warn(
+								`[delivery-operations] resident expiry terminal view cleanup deferred for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					}
+					return { ok: true };
+				},
+				probeTarget: async (executionId, shutdownRequested) => {
+					const lookup = lookupTmuxTarget(executionId, projectName);
+					// A gone registry is actionable only after this operation's shutdown request.
+					if (lookup.kind === "gone" && shutdownRequested) return "absent";
+					if (lookup.kind !== "found") return "indeterminate";
+					return probeRunnerProcessLiveness(lookup.target.tmuxWindow);
+				},
+			},
+		});
+
+	const residentExpiryProjectsInFlight = new Set<string>();
+	const runProjectResidentExpiryPass = async (
+		projectName: string,
+		now: string,
+		existingCommDb?: CommDB,
+		createdAfter?: string,
+	): Promise<void> => {
+		if (residentExpiryProjectsInFlight.has(projectName)) return;
+		residentExpiryProjectsInFlight.add(projectName);
+		let ownedCommDb: CommDB | undefined;
+		try {
+			let commDb = existingCommDb;
+			if (!commDb) {
+				ownedCommDb = new CommDB(commDbPathForProject(projectName), false);
+				commDb = ownedCommDb;
+			}
+			await createProjectDeliveryOperations(
+				projectName,
+				commDb,
+			).runResidentExpiryPass(now, createdAfter);
+		} finally {
+			try {
+				ownedCommDb?.close();
+			} finally {
+				residentExpiryProjectsInFlight.delete(projectName);
+			}
+		}
+	};
 	const workflowEngineDispatcher = startDispatcher
 		? new WorkflowEngineDispatcher({
 				store,
 				startDispatcher,
 				resumeDisabledCodexQuotaAdmissions,
+				runResidentExpiryPass: async (now, projectNames) => {
+					const createdAfter = new Date(
+						Date.parse(now) - RESIDENT_EXPIRY_FAST_WINDOW_MS,
+					).toISOString();
+					for (const project of projects.filter((project) =>
+						projectNames.includes(project.projectName),
+					)) {
+						try {
+							await runProjectResidentExpiryPass(
+								project.projectName,
+								now,
+								undefined,
+								createdAfter,
+							);
+						} catch (error) {
+							console.warn(
+								`[delivery-operations] resident expiry deferred for ${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					}
+				},
 				codexQuotaRootKey: () => codexQuotaRootKey,
 				alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 				workflowReworkReentryEnabled: () =>
@@ -8789,18 +8907,7 @@ export async function startBridge(
 						if (session.issue_id) activeCommIssueIds.add(session.issue_id);
 					}
 					activeCommSnapshotRead = true;
-					const resolveDeliveryAlertIdentity = (input: {
-						projectName: string;
-						issueId: string;
-						runId: string | null;
-					}) =>
-						resolveWorkflowRunAlertIdentity({
-							store,
-							projects,
-							defaultLeadAgentId: config.defaultLeadAgentId,
-							...input,
-							log: (message) => console.warn(`[delivery-contract] ${message}`),
-						});
+
 					const deliveryProjector = new DeliveryProjector({
 						store,
 						commDb: deliveryCommDb,
@@ -8825,62 +8932,10 @@ export async function startBridge(
 							return { eventId: payload.eventId, state: "sent" };
 						},
 					});
-					const deliveryOperations = new DeliveryOperations({
-						store,
-						commDb: deliveryCommDb,
-						projectName: project.projectName,
-						resolveRecipient: ({ rootId, sourceExecutionId }) =>
-							store.resolveWorkflowDeliveryRecipient(rootId, sourceExecutionId),
-						resolveAlertIdentity: resolveDeliveryAlertIdentity,
-						residentExpiry: {
-							terminateClaude: async (executionId) => {
-								const lookup = lookupTmuxTarget(
-									executionId,
-									project.projectName,
-								);
-								if (lookup.kind === "error") {
-									return { ok: false, error: lookup.error };
-								}
-								if (lookup.kind === "gone") return { ok: true };
-								const session = store.getSession(executionId);
-								const identity = session
-									? resolveTerminalViewIdentity(session, lookup.target)
-									: null;
-								const killed = await killTmuxWindow(lookup.target.tmuxWindow);
-								if (!killed.killed) {
-									return {
-										ok: false,
-										error: killed.error ?? "claude_resident_expiry_kill_failed",
-									};
-								}
-								if (identity) {
-									try {
-										await closeRunnerTerminalView({
-											baseSessionName: identity.sessionName,
-											projectName: identity.projectName,
-											executionId: identity.executionId,
-											windowId: identity.windowId,
-											sessionRole: identity.sessionRole,
-										});
-									} catch (error) {
-										console.warn(
-											`[delivery-operations] resident expiry terminal view cleanup deferred for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
-										);
-									}
-								}
-								return { ok: true };
-							},
-							probeClaude: async (executionId) => {
-								const lookup = lookupTmuxTarget(
-									executionId,
-									project.projectName,
-								);
-								if (lookup.kind === "error") throw new Error(lookup.error);
-								if (lookup.kind === "gone") return "absent";
-								return probeRunnerProcessLiveness(lookup.target.tmuxWindow);
-							},
-						},
-					});
+					const deliveryOperations = createProjectDeliveryOperations(
+						project.projectName,
+						deliveryCommDb,
+					);
 					try {
 						withSyncOpMarker(
 							"delivery-contract:legacy-dead-mail-reconcile",
@@ -8925,7 +8980,11 @@ export async function startBridge(
 							deliveryContractWatch.runPass(deliveryNow, cursor),
 						),
 					);
-					await deliveryOperations.runResidentExpiryPass(deliveryNow);
+					await runProjectResidentExpiryPass(
+						project.projectName,
+						deliveryNow,
+						deliveryCommDb,
+					);
 					let deliveryOperationsCompleted = false;
 					try {
 						await drainSynchronousPages<DeliveryOperationsCursor>((cursor) =>

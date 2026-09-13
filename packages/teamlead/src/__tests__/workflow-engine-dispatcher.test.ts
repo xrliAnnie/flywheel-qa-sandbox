@@ -1088,6 +1088,112 @@ async function storeWithFreshVerificationIntent(): Promise<{
 }
 
 describe("WorkflowEngineDispatcher", () => {
+	it("bounds resident fast retries to ten seconds and passes only owning projects", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			let now = new Date("2026-09-11T12:00:00.000Z");
+			Object.assign(store, {
+				countDueResidentHolds: () => 54,
+				listResidentExpiryFastLaneProjects: () => ["flywheel"],
+			});
+			const runResidentExpiryPass = vi.fn(async () => {});
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				now: () => now,
+				runResidentExpiryPass,
+			});
+			await dispatcher.reconcile();
+			expect(runResidentExpiryPass).toHaveBeenCalledWith(now.toISOString(), [
+				"flywheel",
+			]);
+			for (let second = 1; second < 10; second++) {
+				now = new Date(`2026-09-11T12:00:0${second}.000Z`);
+				await dispatcher.reconcile();
+			}
+			expect(runResidentExpiryPass).toHaveBeenCalledTimes(1);
+			now = new Date("2026-09-11T12:00:10.000Z");
+			await dispatcher.reconcile();
+			expect(runResidentExpiryPass).toHaveBeenCalledTimes(2);
+		} finally {
+			store.close();
+		}
+	});
+
+	it.each([0, 1])(
+		"runs resident expiry only when due holds exist (count=%s)",
+		async (count) => {
+			const store = await StateStore.create(":memory:");
+			try {
+				const listResidentExpiryFastLaneProjects = vi.fn(() =>
+					count ? ["flywheel"] : [],
+				);
+				Object.assign(store, { listResidentExpiryFastLaneProjects });
+				const now = new Date("2026-09-11T12:00:00.000Z");
+				const runResidentExpiryPass = vi.fn(async () => {});
+				const dispatcher = new WorkflowEngineDispatcher({
+					store,
+					startDispatcher: inertStartDispatcher(),
+					now: () => now,
+					runResidentExpiryPass,
+					reconcileWorkflowRework: vi.fn(),
+				});
+				const reworks = vi.spyOn(store, "listWorkflowReworkDeliveries");
+
+				await dispatcher.reconcile();
+
+				expect(listResidentExpiryFastLaneProjects).toHaveBeenCalledWith(
+					now.toISOString(),
+				);
+				expect(runResidentExpiryPass).toHaveBeenCalledTimes(count);
+				if (count) {
+					expect(runResidentExpiryPass).toHaveBeenCalledWith(
+						now.toISOString(),
+						["flywheel"],
+					);
+					expect(
+						runResidentExpiryPass.mock.invocationCallOrder[0],
+					).toBeLessThan(reworks.mock.invocationCallOrder[0]);
+				}
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it("continues reconciliation after resident expiry throws", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			Object.assign(store, {
+				listResidentExpiryFastLaneProjects: vi.fn(() => ["flywheel"]),
+			});
+			const log = vi.fn();
+			const runResidentExpiryPass = vi.fn(async () => {
+				throw new Error("expiry unavailable");
+			});
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: inertStartDispatcher(),
+				log,
+				runResidentExpiryPass,
+				reconcileWorkflowRework: vi.fn(),
+			});
+			const reworks = vi.spyOn(store, "listWorkflowReworkDeliveries");
+
+			await expect(dispatcher.reconcile()).resolves.toMatchObject({
+				started: 0,
+			});
+
+			expect(runResidentExpiryPass).toHaveBeenCalledOnce();
+			expect(log).toHaveBeenCalledWith(
+				expect.stringContaining("expiry unavailable"),
+			);
+			expect(reworks).toHaveBeenCalled();
+		} finally {
+			store.close();
+		}
+	});
+
 	it("dispatches a fresh verification successor through the ordinary spawn path", async () => {
 		const { store, requestId, successorExecutionId } =
 			await storeWithFreshVerificationIntent();

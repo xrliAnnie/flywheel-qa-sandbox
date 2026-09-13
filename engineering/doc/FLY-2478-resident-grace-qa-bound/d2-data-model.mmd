@@ -1,0 +1,16 @@
+flowchart LR
+    H["<b>workflow_resident_hold</b>(常驻宽限表,一个工人一行)<br/>execution_id · run_id · node_id · activation_id<br/>revision · boundary_seq<br/>state = resident / woken / expired / closed<br/>grace_started_at · grace_expires_at<br/>closed_reason = released / expired / terminal<br/><b>+ release_cause</b>(NULL 或 verdict_pass)【新列】<br/><b>+ release_source</b>(触发释放的 transition id)【新列】"]
+    S["<b>sessions</b>(工人会话表)<br/>status:ship_parked → completed<br/>terminal_at · lifecycle_revision"]
+    O["<b>workflow_delivery_operation</b>(saga 表)<br/>kind = resident_expiry · id 不变<br/>staged → applied → sent → projected"]
+    P["<b>workflow_engine_park_outbox</b>(park 账本)<br/>park_opened(rework_reachable_wait)<br/>park_cleared【释放投影时同事务写】"]
+    E["<b>workflow_run_event</b>(运行事件)<br/>resident_hold_release_requested【新】<br/>resident_hold_released【新】<br/>resident_hold_expired"]
+    C["<b>CommDB runner_shutdown_controls</b><br/>(execution_id, request_id) 主键<br/>requested / acked / failed<br/>死证等价 ACK = CommDB session 非 running<br/>且 tmux 探针 dead 或 absent"]
+    H -- "同一事务推进" --> S
+    H -- "释放 = 提前到期,复用同一 saga" --> O
+    O -- "关停请求 / 等 ACK" --> C
+    H -- "投影时结清 park" --> P
+    H -- "事件按 cause 二选一" --> E
+    classDef tbl fill:#fff,stroke:#1a365d,color:#1d1d1f,text-align:left;
+    classDef new fill:#eef3ff,stroke:#007aff,color:#1d1d1f,text-align:left;
+    class S,O,P,C tbl;
+    class H,E new;

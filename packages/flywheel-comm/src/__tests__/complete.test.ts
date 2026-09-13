@@ -365,7 +365,7 @@ describe("complete command", () => {
 		["runner_ship_park", "已 park 等待 ship gate;等 wake,勿自行轮询。"],
 		[
 			"loop_park",
-			"已 park 等待返工唤醒(常驻宽限 30 分钟);等 wake,勿自行轮询。",
+			"已 park 等本头的判决:判决通过即释放、打回则原体接返工;兜底 3 小时。等 wake,勿自行轮询。",
 		],
 	] as const)(
 		"prints %s completion guidance",
