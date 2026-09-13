@@ -1,0 +1,10 @@
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"-apple-system, system-ui, sans-serif","fontSize":"18px","primaryColor":"#eef5ff","primaryTextColor":"#1d1d1f","primaryBorderColor":"#007aff","lineColor":"#687080"},"flowchart":{"htmlLabels":false,"curve":"stepAfter","nodeSpacing":32,"rankSpacing":42}}}%%
+flowchart TD
+  A[引擎确认旧执行体死亡] --> B[一起提交：新路由＋旧唤醒退役记录]
+  B --> C[替身按原流程承担任务]
+  B --> D[退役待办可重放到通知库]
+  D --> E[关闭旧信，并拦住迟到副本]
+  B --> F[巡检先查退役证据]
+  F --> G[旧信结清，不暂停整条工作流]
+  classDef key fill:#eaf8ee,stroke:#34c759,color:#1d1d1f
+  class B,G key

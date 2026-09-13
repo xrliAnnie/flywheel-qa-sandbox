@@ -372,7 +372,7 @@ describe("FLY-2248 mechanism guards", () => {
 		expect(store.listLiveWorkflowDeliveryAttempts()).toEqual([]);
 	});
 
-	it("mounts baseline, projector, and watch in maintenance order", () => {
+	it("mounts baseline, retirement backfill, projector, and watch in maintenance order", () => {
 		const source = readFileSync(
 			resolve(process.cwd(), "src/bridge/plugin.ts"),
 			"utf8",
@@ -384,15 +384,22 @@ describe("FLY-2248 mechanism guards", () => {
 			"baselineWorkflowDeliveryContracts",
 			reowner,
 		);
-		const projector = source.indexOf("deliveryProjector.runPass", baseline);
+		const backfill = source.indexOf("backfillReworkWakeRetirements", baseline);
+		const projector = source.indexOf("deliveryProjector.runPass", backfill);
 		const watch = source.indexOf("deliveryContractWatch.runPass", projector);
 		expect(
-			[reowner, baseline, projector, watch].every((index) => index >= 0),
+			[reowner, baseline, backfill, projector, watch].every(
+				(index) => index >= 0,
+			),
 		).toBe(true);
 		expect(reowner).toBeLessThan(baseline);
-		expect(baseline).toBeLessThan(projector);
+		expect(baseline).toBeLessThan(backfill);
+		expect(backfill).toBeLessThan(projector);
 		expect(projector).toBeLessThan(watch);
-		expect(source.match(/await drainSynchronousPages/g)).toHaveLength(3);
+		expect(source.match(/await drainSynchronousPages/g)).toHaveLength(4);
+		expect(source).toContain(
+			'withSyncOpMarker("delivery-contract:rework-wake-backfill"',
+		);
 		expect(source).toContain(
 			'deliveryOperations.runPass(deliveryNow, { lane: "stalled" })',
 		);

@@ -2,9 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildReworkWakeId, CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it } from "vitest";
 import { classifyDeliveryAttempt } from "../bridge/delivery-contract/classify.js";
+import { DeliveryProjector } from "../bridge/delivery-contract/projector.js";
 import { DeliveryContractWatch } from "../bridge/delivery-contract/watch.js";
+import { DeliveryOperations } from "../bridge/delivery-operations.js";
 import {
 	buildWorkflowReworkContext,
 	renderWorkflowReworkLaunchStableSection,
@@ -168,13 +171,19 @@ async function seedQaIntent(): Promise<StateStore> {
 async function seedReplacementBeforeLaunchMark(
 	nodeId: "qa" | "implement" = "qa",
 	activationMode: "replacement" | "wake" = "replacement",
+	options: {
+		deadExecutionId?: string;
+		beforeReplacement?: (store: StateStore) => void;
+		omitSyntheticClaim?: boolean;
+	} = {},
 ): Promise<{
 	store: StateStore;
 	attemptId: string;
 }> {
 	const store = await seedQaIntent();
+	const deadExecutionId = options.deadExecutionId ?? DEAD_EXECUTION_ID;
 	store.upsertSession({
-		execution_id: DEAD_EXECUTION_ID,
+		execution_id: deadExecutionId,
 		issue_id: "FLY-1307",
 		project_name: "flywheel",
 		status: "failed",
@@ -185,14 +194,14 @@ async function seedReplacementBeforeLaunchMark(
 		nodeId,
 		attempt: 2,
 		state: "pending",
-		executionId: DEAD_EXECUTION_ID,
+		executionId: deadExecutionId,
 	});
 	dbRun(
 		store,
 		`INSERT OR IGNORE INTO workflow_actor
 		   (execution_id, project_name, issue_id, role, created_at)
 		 VALUES (?, 'flywheel', 'FLY-1307', '${nodeId}', ?)`,
-		[DEAD_EXECUTION_ID, at(-2)],
+		[deadExecutionId, at(-2)],
 	);
 	dbRun(
 		store,
@@ -211,7 +220,7 @@ async function seedReplacementBeforeLaunchMark(
 		    verification_policy_json, interpreted_by, interpretation_reason, created_at)
 		 VALUES (?, 1, '${nodeId}', 2, ?, '${JSON.stringify(nodeId === "qa" ? ["qa"] : ["implement", "qa"])}', '["qa_retest","founder_gate"]',
 		         'fixture', 'fixture', ?)`,
-		[REQUEST_ID, DEAD_EXECUTION_ID, at(-2)],
+		[REQUEST_ID, deadExecutionId, at(-2)],
 	);
 	dbRun(
 		store,
@@ -228,11 +237,12 @@ async function seedReplacementBeforeLaunchMark(
 		 VALUES (?, 'run-1', 1, 'pending', '${nodeId}', 2, ?)`,
 		[REQUEST_ID, at(-2)],
 	);
+	options.beforeReplacement?.(store);
 	store.baselineWorkflowDeliveryContracts(at(-2));
 	expect(
 		store.materializeWorkflowReworkReplacement({
 			requestId: REQUEST_ID,
-			deadExecutionId: DEAD_EXECUTION_ID,
+			deadExecutionId: deadExecutionId,
 			newExecutionId: REPLACEMENT_ID,
 			reason: "persisted_target_dead",
 			observedAt: at(-1),
@@ -292,9 +302,10 @@ async function seedReplacementBeforeLaunchMark(
 		)
 		.get(REPLACEMENT_ID) as { consumed_at: string | null } | undefined;
 	expect(launchAttempt?.consumed_at).not.toBeNull();
-	dbRun(
-		store,
-		`INSERT INTO workflow_claims
+	if (!options.omitSyntheticClaim) {
+		dbRun(
+			store,
+			`INSERT INTO workflow_claims
 		   (server_seq, issued_at, issue_id, workflow_run_id, node_id,
 		    decision_kind, attempt, predicate, issuer_kind,
 		    issuer_execution_id, issuer_node_id, issuer_vendor, issuer_model,
@@ -305,8 +316,10 @@ async function seedReplacementBeforeLaunchMark(
 		         ?, '${nodeId}', 'claude', 'claude-opus-5',
 		         'implement-1', 'git_head', ?, 1,
 		         'fly2096-qa-submission', 'fly2096-qa-client', ?)`,
-		[T0, REPLACEMENT_ID, HEAD, REPLACEMENT_ID],
-	);
+			[T0, REPLACEMENT_ID, HEAD, REPLACEMENT_ID],
+		);
+	}
+
 	expect(store.getWorkflowExecutionBinding(REPLACEMENT_ID)?.mode).toBe(
 		activationMode,
 	);
@@ -1231,5 +1244,333 @@ describe("FLY-2504 replacement generations", () => {
 			state: "wake_delivered",
 			route_revision: 3,
 		});
+	});
+});
+
+describe("FLY-2517 generic writer convergence", () => {
+	it("retires the wake binding when dead-writer recovery advances the same request", async () => {
+		const firstIdentity = {
+			executionId: "fly2517-first-writer",
+			activationId: "fly2517-first-wake",
+			epoch: 8,
+			wakeId: buildReworkWakeId({
+				requestId: REQUEST_ID,
+				activationId: "fly2517-first-wake",
+				epoch: 8,
+			}),
+		};
+		const { store } = await seedReplacementBeforeLaunchMark(
+			"implement",
+			"wake",
+			{
+				deadExecutionId: firstIdentity.executionId,
+				beforeReplacement: (store) => {
+					dbRun(
+						store,
+						`INSERT INTO workflow_execution_binding
+					(activation_id,execution_id,run_id,node_id,attempt,mode,rework_request_id,bound_at)
+					VALUES (?,?,'run-1','implement',2,'wake',?,?)`,
+						[
+							firstIdentity.activationId,
+							firstIdentity.executionId,
+							REQUEST_ID,
+							at(-2),
+						],
+					);
+					expect(
+						store.recordWorkflowActivationTurn({
+							activationId: firstIdentity.activationId,
+							executionId: firstIdentity.executionId,
+							issueId: "FLY-1307",
+							epoch: 8,
+							sourceEventId: "fly2517-first-turn",
+							grantedAt: at(-2),
+						}),
+					).toMatchObject({ ok: true });
+				},
+			},
+		);
+		const activationId =
+			store.getWorkflowExecutionBinding(REPLACEMENT_ID)!.activation_id;
+		expect(
+			store.recordWorkflowActivationTurn({
+				activationId,
+				executionId: REPLACEMENT_ID,
+				issueId: "FLY-1307",
+				epoch: 9,
+				sourceEventId: "fly2517-writer-turn",
+				grantedAt: at(4),
+			}),
+		).toMatchObject({ ok: true });
+		const identity = {
+			activationId,
+			executionId: REPLACEMENT_ID,
+			epoch: 9,
+			wakeId: buildReworkWakeId({
+				requestId: REQUEST_ID,
+				activationId,
+				epoch: 9,
+			}),
+		};
+		store.upsertSession({
+			execution_id: REPLACEMENT_ID,
+			project_name: "flywheel",
+			issue_id: "FLY-1307",
+			status: "failed",
+			session_role: "implement",
+		});
+		expect(
+			store.rollbackDeadWorkflowNodeExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 2,
+				deadExecutionId: REPLACEMENT_ID,
+				newExecutionId: "fly2517-next-writer",
+				reason: "terminal_session_and_dead_probe",
+				livenessEvidence: { liveness: "dead", observedAt: at(5) },
+				now: at(5),
+			}),
+		).toMatchObject({ ok: true });
+		// This fixture starts at replacement_pending; model the delivered wake lane
+		// before the coordinator reclaims it after generic writer rollback.
+		dbRun(
+			store,
+			"UPDATE workflow_rework_delivery SET state='wake_delivered' WHERE request_id=?",
+			[REQUEST_ID],
+		);
+		const claim = store.claimWorkflowReworkDelivery({
+			requestId: REQUEST_ID,
+			ownerId: "coordinator",
+			now: at(5.1),
+			leaseExpiresAt: at(10),
+		});
+		if (!claim.ok) throw new Error(JSON.stringify(claim));
+		expect(
+			store.convergeWorkflowReworkWriterReplacement({
+				requestId: REQUEST_ID,
+				ownerId: "coordinator",
+				generation: claim.generation,
+				now: at(5.2),
+			}),
+		).toMatchObject({ ok: true, executionId: "fly2517-next-writer" });
+		expect(store.resolveReworkWakeRetirementProofTx(identity)).toMatchObject({
+			kind: "proven",
+			proof: {
+				oldRouteRevision: 2,
+				newRouteRevision: 3,
+				replacementExecutionId: "fly2517-next-writer",
+			},
+		});
+		expect(
+			store.resolveReworkWakeRetirementProofTx(firstIdentity),
+		).toMatchObject({
+			kind: "proven",
+			proof: {
+				oldRouteRevision: 1,
+				newRouteRevision: 2,
+				replacementExecutionId: REPLACEMENT_ID,
+			},
+		});
+		const receipts = store.listPendingReworkWakeRetirements({ limit: 20 });
+		expect(new Set(receipts.map((row) => row.retirementId)).size).toBe(2);
+		expect(store.listPendingReworkWakeRetirements({ limit: 20 })).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ ...identity, newRouteRevision: 3 }),
+			]),
+		);
+	});
+});
+
+describe("FLY-2517 incident order", () => {
+	it("keeps QA activation resolvable after replacement completion and the old wake deadline", async () => {
+		const old = "fly2517-old-implement";
+		const activationId = "fly2517-old-wake";
+		const wakeId = buildReworkWakeId({
+			requestId: REQUEST_ID,
+			activationId,
+			epoch: 9,
+		});
+		const commDb = new CommDB(":memory:");
+		try {
+			const { store } = await seedReplacementBeforeLaunchMark(
+				"implement",
+				"replacement",
+				{
+					deadExecutionId: old,
+					omitSyntheticClaim: true,
+					beforeReplacement: (store) => {
+						dbRun(
+							store,
+							`INSERT INTO workflow_execution_binding
+      (activation_id,execution_id,run_id,node_id,attempt,mode,rework_request_id,bound_at)
+      VALUES (?,?,'run-1','implement',2,'wake',?,?)`,
+							[activationId, old, REQUEST_ID, at(-2)],
+						);
+						expect(
+							store.recordWorkflowActivationTurn({
+								activationId,
+								executionId: old,
+								issueId: "FLY-1307",
+								epoch: 9,
+								sourceEventId: "fly2517-old-turn",
+								grantedAt: at(-2),
+							}),
+						).toMatchObject({ ok: true });
+						const metadata = {
+							kind: "workflow_rework",
+							wakeId,
+							activationId,
+							epoch: 9,
+						};
+						commDb.registerSession(
+							old,
+							"window",
+							"flywheel",
+							"FLY-1307",
+							"flywheel-eng-lead",
+						);
+						commDb.enqueueTurnWake({
+							wakeId,
+							executionId: old,
+							activationId,
+							epoch: 9,
+							issueId: "FLY-1307",
+							purpose: "workflow_rework",
+							envelope: { fromAgent: "bridge", content: "rework", metadata },
+							backend: "codex",
+							createdAtMs: Date.parse(at(-2)),
+						});
+						commDb.enqueueRunnerPhaseWake(
+							old,
+							{
+								id: "fly2517-incident-old",
+								to: old,
+								content: "rework",
+								metadata,
+							},
+							Date.parse(at(-2)),
+						);
+						new DeliveryProjector({
+							store,
+							commDb,
+							projectName: "flywheel",
+						}).runPass(at(-2));
+					},
+				},
+			);
+			prepareReplacementLaunch(store, currentLaunchDigest(store));
+			expect(markReplacementStarted(store)).toMatchObject({ ok: true });
+			expect(enrolledComplete(store)).toMatchObject({ ok: true });
+			expect(store.getWorkflowReworkDelivery(REQUEST_ID)?.state).toBe(
+				"completed",
+			);
+			const qa = store.listWorkflowRunNodes("run-1", "qa").at(-1)!;
+			const qaExecution = "fly2517-next-qa";
+			store.upsertSession({
+				execution_id: qaExecution,
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+				session_role: "qa",
+				status: "running",
+				pr_head_sha: HEAD,
+			});
+			store.upsertWorkflowRunNode({
+				runId: "run-1",
+				nodeId: "qa",
+				attempt: qa.attempt + 1,
+				state: "pending",
+				executionId: qaExecution,
+			});
+			const admission = store.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "qa",
+				attempt: qa.attempt + 1,
+				executionId: qaExecution,
+				activationId: "fly2517-qa-activation",
+				activationMode: "spawn",
+				expiresAt: at(60),
+				absoluteDeadlineAt: at(120),
+				now: at(2),
+			});
+			expect(admission, JSON.stringify(admission)).toMatchObject({ ok: true });
+			for (let pass = 0; pass < 2; pass++) {
+				new DeliveryProjector({
+					store,
+					commDb,
+					projectName: "flywheel",
+				}).runPass(at(21));
+				new DeliveryContractWatch({
+					store,
+					commDb,
+					projectName: "flywheel",
+					resolveAlertIdentity: () => ALERT_IDENTITY,
+				}).runPass(at(21));
+				new DeliveryOperations({
+					store,
+					commDb,
+					projectName: "flywheel",
+					resolveRecipient: () => null,
+					resolveAlertIdentity: () => ALERT_IDENTITY,
+				}).runPass(at(21));
+			}
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(commDb.listRunnerPhaseWakes(old)[0]).toMatchObject({
+				state: "finished",
+				started_at: null,
+			});
+			expect(commDb.getTurnWake(wakeId)?.state).toBe("cancelled");
+			expect(store.resolveCurrentWorkflowActivation(qaExecution)).toMatchObject(
+				{
+					kind: "current",
+					binding: { activation_id: "fly2517-qa-activation" },
+				},
+			);
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter(
+						(e) =>
+							e.kind === "delivery_reroute_operator_required" &&
+							e.payload.runHeld === true,
+					),
+			).toHaveLength(0);
+			if (!admission.ok || !admission.submissionCredential)
+				throw new Error("QA admission credential missing");
+			store.upsertSession({
+				execution_id: REPLACEMENT_ID,
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+				status: "awaiting_review",
+				pr_number: 2096,
+				pr_head_sha: HEAD,
+			});
+			const verdict = store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
+				credential: admission.submissionCredential,
+				clientRequestId: "fly2517-after-deadline-pass",
+				predicate: "qa_passed",
+				subjectDigest: HEAD,
+				issuerVendor: "claude",
+				issuerModel: "claude-opus-5",
+				subjectProducerExecutionId: REPLACEMENT_ID,
+				subjectProducerVendor: "codex",
+				claimExpiresAt: at(60),
+				alertIdentity: ALERT_IDENTITY,
+				now: at(22),
+				gateEntryBinding: {
+					kind: "worktree",
+					prNumber: 2096,
+					headSha: HEAD,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: "/tmp/flywheel",
+					worktreeBindingGeneration: "generation-1",
+					expectedProducerMirrorHead: HEAD,
+				},
+			});
+			expect(verdict, JSON.stringify(verdict)).toMatchObject({ ok: true });
+		} finally {
+			commDb.close();
+		}
 	});
 });

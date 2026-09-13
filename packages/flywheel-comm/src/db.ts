@@ -53,6 +53,11 @@ import {
 } from "./mailbox-schema.js";
 import { isLeadRecipient } from "./recipient-kind.js";
 import {
+	buildReworkWakeId,
+	parseReworkWakeMetadata,
+	type ReworkWakeRetirementProof,
+} from "./rework-wake-identity.js";
+import {
 	isRunnerStopReport,
 	RUNNER_STOP_QUESTION_ID_RE,
 } from "./runner-stop-report.js";
@@ -113,6 +118,7 @@ export interface RunnerDeliveryProjectionRow {
 }
 
 export interface RunnerPhaseWakeProjectionRow {
+	retirement_id: string | null;
 	queue_seq: number;
 	execution_id: string;
 	message_id: string;
@@ -309,6 +315,19 @@ CREATE TABLE IF NOT EXISTS turn_source_history (
   source_event_id     TEXT NOT NULL UNIQUE,
   at                  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS runner_rework_wake_retirement (
+  retirement_id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  epoch INTEGER NOT NULL CHECK(epoch > 0),
+  wake_id TEXT NOT NULL UNIQUE,
+  proof_json TEXT NOT NULL CHECK(json_valid(proof_json)),
+  applied_at INTEGER NOT NULL,
+  UNIQUE(execution_id, activation_id, epoch)
+);
+CREATE TRIGGER IF NOT EXISTS runner_rework_wake_retirement_immutable
+BEFORE UPDATE ON runner_rework_wake_retirement
+BEGIN SELECT RAISE(ABORT, 'runner_rework_wake_retirement is immutable'); END;
 CREATE TABLE IF NOT EXISTS runner_phase_wakes (
   queue_seq             INTEGER PRIMARY KEY AUTOINCREMENT,
   execution_id          TEXT NOT NULL,
@@ -701,7 +720,14 @@ export interface PhaseWakeInput {
 	metadata?: Record<string, unknown>;
 }
 
+export type RunnerPhaseWakeStartResult =
+	| "started"
+	| "replay"
+	| "disposed"
+	| "missing";
+
 export interface RunnerPhaseWake {
+	retirement_id: string | null;
 	queue_seq: number;
 	execution_id: string;
 	message_id: string;
@@ -1431,6 +1457,11 @@ export class CommDB {
 		if (!phaseWakeColumns.some((column) => column.name === "turn_generation")) {
 			this.db.exec(
 				"ALTER TABLE runner_phase_wakes ADD COLUMN turn_generation INTEGER",
+			);
+		}
+		if (!phaseWakeColumns.some((column) => column.name === "retirement_id")) {
+			this.db.exec(
+				"ALTER TABLE runner_phase_wakes ADD COLUMN retirement_id TEXT",
 			);
 		}
 		const waitColumns = this.db
@@ -3145,7 +3176,7 @@ export class CommDB {
 		if (page?.limit !== undefined) params.push(page.limit);
 		return this.db
 			.prepare(
-				`SELECT wake.queue_seq, wake.execution_id, wake.message_id, wake.metadata_json,
+				`SELECT wake.queue_seq, wake.execution_id, wake.message_id, wake.metadata_json, wake.retirement_id,
 				        wake.queued_at, wake.first_push_at, wake.started_at,
 				        wake.finished_at, wake.state,
 				        session.status AS recipient_status,
@@ -3172,7 +3203,7 @@ export class CommDB {
 		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
 		return this.db
 			.prepare(
-				`SELECT wake.queue_seq, wake.execution_id, wake.message_id, wake.metadata_json,
+				`SELECT wake.queue_seq, wake.execution_id, wake.message_id, wake.metadata_json, wake.retirement_id,
 				        wake.queued_at, wake.first_push_at, wake.started_at,
 				        wake.finished_at, wake.state,
 				        session.status AS recipient_status,
@@ -4625,6 +4656,170 @@ export class CommDB {
 	 * commit in the same transaction. Existing rows win before source validation
 	 * so a callback retry remains acknowledgeable after later message cleanup.
 	 */
+	/** Privileged in-process effect. Callers must first resolve StateStore engine authority. */
+	applyReworkWakeRetirement(
+		proof: ReworkWakeRetirementProof,
+		nowMs: number,
+	): { ok: true; idempotentReplay: boolean } {
+		const strings = [
+			proof.retirementId,
+			proof.runId,
+			proof.requestId,
+			proof.nodeId,
+			proof.executionId,
+			proof.replacementExecutionId,
+			proof.activationId,
+			proof.wakeId,
+			proof.replacementEventUid,
+		];
+		if (
+			strings.some((value) => typeof value !== "string" || !value.trim()) ||
+			[
+				proof.attempt,
+				proof.oldRouteRevision,
+				proof.newRouteRevision,
+				proof.epoch,
+			].some((value) => !Number.isSafeInteger(value) || value <= 0) ||
+			proof.newRouteRevision !== proof.oldRouteRevision + 1 ||
+			proof.executionId === proof.replacementExecutionId ||
+			proof.wakeId !== buildReworkWakeId(proof) ||
+			!Number.isSafeInteger(nowMs) ||
+			nowMs < 0
+		) {
+			throw new Error("invalid_rework_wake_retirement");
+		}
+		const proofJson = canonicalJsonString(proof);
+		return this.db
+			.transaction(() => {
+				const prior = this.db
+					.prepare(
+						`SELECT proof_json FROM runner_rework_wake_retirement
+				  WHERE retirement_id = ? OR wake_id = ? OR (execution_id = ? AND activation_id = ? AND epoch = ?)`,
+					)
+					.all(
+						proof.retirementId,
+						proof.wakeId,
+						proof.executionId,
+						proof.activationId,
+						proof.epoch,
+					) as { proof_json: string }[];
+				if (
+					prior.length &&
+					(prior.length !== 1 || prior[0]!.proof_json !== proofJson)
+				) {
+					throw new Error("rework_wake_retirement_conflict");
+				}
+				const parent = this.getTurnWake(proof.wakeId);
+				if (
+					parent &&
+					(parent.execution_id !== proof.executionId ||
+						parent.activation_id !== proof.activationId ||
+						parent.epoch !== proof.epoch ||
+						parent.purpose !== "workflow_rework")
+				)
+					throw new Error("rework_wake_retirement_parent_conflict");
+				const activations = this.db
+					.prepare(
+						"SELECT * FROM runner_workflow_activation WHERE activation_id = ? OR (execution_id = ? AND epoch = ?)",
+					)
+					.all(
+						proof.activationId,
+						proof.executionId,
+						proof.epoch,
+					) as RunnerWorkflowActivation[];
+				if (
+					activations.some(
+						(row) =>
+							row.execution_id !== proof.executionId ||
+							row.activation_id !== proof.activationId ||
+							row.epoch !== proof.epoch ||
+							row.run_id !== proof.runId ||
+							row.node_id !== proof.nodeId ||
+							row.attempt !== proof.attempt,
+					)
+				) {
+					throw new Error("rework_wake_retirement_activation_conflict");
+				}
+				if (!prior.length)
+					this.db
+						.prepare(
+							`INSERT INTO runner_rework_wake_retirement
+				   (retirement_id,execution_id,activation_id,epoch,wake_id,proof_json,applied_at)
+				 VALUES (?,?,?,?,?,?,?)`,
+						)
+						.run(
+							proof.retirementId,
+							proof.executionId,
+							proof.activationId,
+							proof.epoch,
+							proof.wakeId,
+							proofJson,
+							nowMs,
+						);
+				if (parent)
+					this.db
+						.prepare(
+							`UPDATE turn_wake_outbox SET state = 'cancelled', cancel_reason = 'superseded_by_rework_replacement',
+				    claim_token = NULL, claim_expires_at = NULL
+				  WHERE wake_id = ? AND state IN ('pending','sent')`,
+						)
+						.run(proof.wakeId);
+				const sources = this.db
+					.prepare("SELECT * FROM runner_phase_wakes WHERE execution_id = ?")
+					.all(proof.executionId) as RunnerPhaseWake[];
+				for (const source of sources) {
+					const identity = parseReworkWakeMetadata(source.metadata_json);
+					if (
+						!identity ||
+						identity.wakeId !== proof.wakeId ||
+						identity.activationId !== proof.activationId ||
+						identity.epoch !== proof.epoch
+					)
+						continue;
+					if (
+						source.retirement_id &&
+						source.retirement_id !== proof.retirementId
+					)
+						throw new Error("rework_wake_retirement_source_conflict");
+					this.db
+						.prepare(
+							`UPDATE runner_phase_wakes SET retirement_id = ?, state = 'finished',
+					    finished_at = CASE WHEN state = 'finished' THEN finished_at ELSE ? END,
+					    claim_token = NULL, claim_expires_at = NULL
+					  WHERE execution_id = ? AND message_id = ?`,
+						)
+						.run(
+							proof.retirementId,
+							nowMs,
+							proof.executionId,
+							source.message_id,
+						);
+				}
+				return { ok: true as const, idempotentReplay: prior.length > 0 };
+			})
+			.immediate();
+	}
+
+	private findReworkWakeRetirement(
+		executionId: string,
+		metadata: unknown,
+	): string | null {
+		const identity = parseReworkWakeMetadata(metadata);
+		if (!identity) return null;
+		const row = this.db
+			.prepare(
+				`SELECT retirement_id FROM runner_rework_wake_retirement
+			  WHERE execution_id = ? AND activation_id = ? AND epoch = ? AND wake_id = ?`,
+			)
+			.get(
+				executionId,
+				identity.activationId,
+				identity.epoch,
+				identity.wakeId,
+			) as { retirement_id: string } | undefined;
+		return row?.retirement_id ?? null;
+	}
+
 	enqueueRunnerPhaseWake(
 		executionId: string,
 		message: PhaseWakeInput,
@@ -4633,7 +4828,7 @@ export class CommDB {
 			admissionState?: "queued" | "deferred_midturn";
 			turnGeneration?: number;
 		} = {},
-	): { kind: "queued" | "duplicate"; wake: RunnerPhaseWake } {
+	): { kind: "queued" | "duplicate" | "disposed"; wake: RunnerPhaseWake } {
 		if (!executionId || !message.id || !message.content) {
 			throw new Error(
 				"phase wake requires executionId, message id, and content",
@@ -4684,7 +4879,40 @@ export class CommDB {
 					sourceInstructionId,
 				) as RunnerPhaseWake | undefined;
 			if (existing) {
-				return { kind: "duplicate" as const, wake: existing };
+				return {
+					kind: existing.retirement_id
+						? ("disposed" as const)
+						: ("duplicate" as const),
+					wake: existing,
+				};
+			}
+
+			const retirementId = this.findReworkWakeRetirement(
+				executionId,
+				message.metadata,
+			);
+			if (retirementId) {
+				this.db
+					.prepare(
+						`INSERT INTO runner_phase_wakes
+					   (execution_id,message_id,content,metadata_json,state,queued_at,finished_at,retirement_id,purpose)
+					 VALUES (?,?,?,?,'finished',?,?,?,'park_wake')`,
+					)
+					.run(
+						executionId,
+						message.id,
+						message.content,
+						metadataJson,
+						nowMs,
+						nowMs,
+						retirementId,
+					);
+				const wake = this.db
+					.prepare(
+						"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
+					)
+					.get(executionId, message.id) as RunnerPhaseWake;
+				return { kind: "disposed" as const, wake };
 			}
 
 			if (sourceInstructionId) {
@@ -4755,7 +4983,7 @@ export class CommDB {
 		executionId: string,
 		message: PhaseWakeInput,
 		nowMs: number,
-	): { kind: "queued" | "duplicate"; wake: RunnerPhaseWake } {
+	): { kind: "queued" | "duplicate" | "disposed"; wake: RunnerPhaseWake } {
 		const enqueue = this.db.transaction(() => {
 			return this.enqueueRunnerPhaseWake(
 				executionId,
@@ -4776,9 +5004,12 @@ export class CommDB {
 		message: PhaseWakeInput,
 		nowMs: number,
 	):
-		| { kind: "queued" | "duplicate"; wake: RunnerPhaseWake }
+		| { kind: "queued" | "duplicate" | "disposed"; wake: RunnerPhaseWake }
 		| RunnerDoorbellWakeResult {
 		const enqueue = this.db.transaction(() => {
+			if (this.findReworkWakeRetirement(executionId, message.metadata)) {
+				return this.enqueueRunnerPhaseWake(executionId, message, nowMs);
+			}
 			if (!this.runnerDoorbellConsumerIsLive(executionId)) {
 				return { kind: "no_consumer" as const };
 			}
@@ -5198,7 +5429,12 @@ export class CommDB {
 		return [...this.listRunnerPhaseWakes(executionId)]
 			.reverse()
 			.find((wake) => {
-				if (wake.state !== "pending" || !wake.envelope_json) return false;
+				if (
+					wake.state !== "pending" ||
+					wake.retirement_id !== null ||
+					!wake.envelope_json
+				)
+					return false;
 				try {
 					const envelope = JSON.parse(wake.envelope_json) as {
 						metadata?: { questionId?: unknown };
@@ -5275,7 +5511,7 @@ export class CommDB {
 					 SET push_attempts = ?, claim_token = ?, claim_expires_at = ?,
 					     last_push_at = ?, last_push_result = ?
 					 WHERE execution_id = ? AND message_id = ?
-					   AND state = 'pending' AND admission_state = 'queued'
+					   AND state = 'pending' AND admission_state = 'queued' AND retirement_id IS NULL
 					   AND push_attempts = ?`,
 				)
 				.run(
@@ -5433,7 +5669,7 @@ export class CommDB {
 				.prepare(
 					`UPDATE runner_phase_wakes SET t2_claimed_at = ?
 					 WHERE execution_id = ? AND message_id = ?
-					   AND state = 'pending' AND admission_state = 'queued'
+					   AND state = 'pending' AND admission_state = 'queued' AND retirement_id IS NULL
 					   AND t2_claimed_at IS NULL AND queued_at <= ?`,
 				)
 				.run(claimedAt, executionId, messageId, nowMs - t2Ms);
@@ -5870,19 +6106,47 @@ export class CommDB {
 		);
 	}
 
+	claimRunnerPhaseWakeStart(
+		executionId: string,
+		messageId: string,
+		nowMs: number,
+	): RunnerPhaseWakeStartResult {
+		return this.db
+			.transaction((): RunnerPhaseWakeStartResult => {
+				const wake = this.db
+					.prepare(
+						"SELECT state, retirement_id FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
+					)
+					.get(executionId, messageId) as
+					| Pick<RunnerPhaseWake, "state" | "retirement_id">
+					| undefined;
+				if (!wake) return "missing";
+				if (wake.retirement_id) return "disposed";
+				if (wake.state === "started" || wake.state === "finished")
+					return "replay";
+				const updated = this.db
+					.prepare(
+						`UPDATE runner_phase_wakes SET state = 'started', started_at = ?,
+				 started_ack_scope = 'message'
+				 WHERE execution_id = ? AND message_id = ? AND state = 'pending'
+				 AND retirement_id IS NULL`,
+					)
+					.run(nowMs, executionId, messageId);
+				if (updated.changes !== 1)
+					throw new Error("phase wake start claim lost");
+				return "started";
+			})
+			.immediate();
+	}
+
 	markRunnerPhaseWakeStarted(
 		executionId: string,
 		messageId: string,
 		nowMs: number,
 	): boolean {
 		return (
-			this.db
-				.prepare(
-					`UPDATE runner_phase_wakes SET state = 'started', started_at = ?,
-					 started_ack_scope = 'message'
-					 WHERE execution_id = ? AND message_id = ? AND state = 'pending'`,
-				)
-				.run(nowMs, executionId, messageId).changes === 1
+			this.claimRunnerPhaseWakeStart(executionId, messageId, nowMs) ===
+			"started"
 		);
 	}
 
@@ -7214,42 +7478,54 @@ export class CommDB {
 		) {
 			throw new Error("invalid TURN wake envelope");
 		}
-		const envelopeJson = canonicalJsonString(input.envelope);
-		const prior = this.getTurnWake(input.wakeId);
-		if (prior) {
-			const matches =
-				prior.execution_id === input.executionId &&
-				prior.issue_id === input.issueId &&
-				prior.epoch === input.epoch &&
-				prior.activation_id === (input.activationId ?? null) &&
-				prior.purpose === input.purpose &&
-				prior.envelope_json === envelopeJson &&
-				prior.backend === input.backend;
-			if (!matches) {
-				throw new Error(`TURN wake identity conflict: ${input.wakeId}`);
-			}
-			return { idempotentReplay: true };
-		}
-		this.db
-			.prepare(
-				`INSERT INTO turn_wake_outbox
-				   (wake_id, execution_id, issue_id, epoch, activation_id, purpose,
-				    envelope_json, backend, episode_id, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.run(
-				input.wakeId,
-				input.executionId,
-				input.issueId,
-				input.epoch,
-				input.activationId ?? null,
-				input.purpose,
-				envelopeJson,
-				input.backend,
-				`turn-wake-no-receipt:${input.wakeId}`,
-				input.createdAtMs,
-			);
-		return { idempotentReplay: false };
+		return this.db
+			.transaction(() => {
+				const envelopeJson = canonicalJsonString(input.envelope);
+				const retirementId = this.findReworkWakeRetirement(input.executionId, {
+					kind: input.purpose,
+					wakeId: input.wakeId,
+					activationId: input.activationId,
+					epoch: input.epoch,
+				});
+				const prior = this.getTurnWake(input.wakeId);
+				if (prior) {
+					const matches =
+						prior.execution_id === input.executionId &&
+						prior.issue_id === input.issueId &&
+						prior.epoch === input.epoch &&
+						prior.activation_id === (input.activationId ?? null) &&
+						prior.purpose === input.purpose &&
+						prior.envelope_json === envelopeJson &&
+						prior.backend === input.backend;
+					if (!matches) {
+						throw new Error(`TURN wake identity conflict: ${input.wakeId}`);
+					}
+					return { idempotentReplay: true };
+				}
+				this.db
+					.prepare(
+						`INSERT INTO turn_wake_outbox
+					   (wake_id, execution_id, issue_id, epoch, activation_id, purpose,
+					    envelope_json, backend, episode_id, created_at, state, cancel_reason)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						input.wakeId,
+						input.executionId,
+						input.issueId,
+						input.epoch,
+						input.activationId ?? null,
+						input.purpose,
+						envelopeJson,
+						input.backend,
+						`turn-wake-no-receipt:${input.wakeId}`,
+						input.createdAtMs,
+						retirementId ? "cancelled" : "pending",
+						retirementId ? "superseded_by_rework_replacement" : null,
+					);
+				return { idempotentReplay: false };
+			})
+			.immediate();
 	}
 
 	getTurnWake(wakeId: string): TurnWakeOutboxRow | null {

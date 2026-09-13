@@ -2,6 +2,10 @@ import type { CommDB } from "flywheel-comm/db";
 import type { StateStore } from "../../StateStore.js";
 import { LegacyDeliveryReachabilityGuard } from "./legacy-reachability.js";
 import { DELIVERY_MAINTENANCE_PAGE_SIZE } from "./policy.js";
+import {
+	readProjectedReworkWake,
+	retireObservedReworkWakeAttempt,
+} from "./rework-wake-retirement.js";
 import { deliveryRootId } from "./types.js";
 
 function sourceKey(table: string, pk: string): string {
@@ -181,9 +185,18 @@ export class DeliveryProjector {
 			const identities =
 				this.deps.store.resolveWorkflowDeliveryProjectionIdentities(
 					rows.map((row) => {
-						const metadata = row.metadata_json
-							? (JSON.parse(row.metadata_json) as { rootId?: unknown })
-							: {};
+						let metadata: { rootId?: unknown } = {};
+						try {
+							const parsed: unknown = JSON.parse(row.metadata_json ?? "{}");
+							if (
+								parsed &&
+								typeof parsed === "object" &&
+								!Array.isArray(parsed)
+							)
+								metadata = parsed;
+						} catch {
+							// A damaged source cannot authorize retirement or starve later rows.
+						}
 						return {
 							family: "phase_wake",
 							table: "runner_phase_wakes",
@@ -205,6 +218,31 @@ export class DeliveryProjector {
 				const sourceIsActive = row.state !== "finished";
 				const issueId = row.issue_id?.trim() || "unknown";
 				const identity = identities[index]!;
+				const reworkWake = readProjectedReworkWake({
+					store: this.deps.store,
+					commDb: this.deps.commDb,
+					projectName: this.deps.projectName,
+					family: "phase_wake",
+					physicalId: row.message_id,
+				});
+				if (
+					identity.found &&
+					retireObservedReworkWakeAttempt({
+						store: this.deps.store,
+						commDb: this.deps.commDb,
+						projectName: this.deps.projectName,
+						attempt: {
+							attempt_id: identity.attemptId,
+							family: "phase_wake",
+							contract_ref_json: identity.contractRefJson!,
+						},
+						now: _now,
+					})
+				) {
+					result.advanced++;
+					continue;
+				}
+
 				if (!sourceIsActive && identity.settled) continue;
 				if (
 					sourceIsActive &&
@@ -239,7 +277,12 @@ export class DeliveryProjector {
 						? null
 						: new Date(row.started_at).toISOString();
 				const projectionInput = {
-					contractRef: { table: "runner_phase_wakes", pk: row.message_id },
+					contractRef: {
+						table: "runner_phase_wakes",
+						pk: row.message_id,
+						...(reworkWake ?? {}),
+					},
+					now: _now,
 					mintedAt: new Date(row.queued_at).toISOString(),
 					sentAt: row.first_push_at,
 					receivedAt: startedAt,
@@ -301,6 +344,31 @@ export class DeliveryProjector {
 				const receivedAt =
 					row.acked_at === null ? null : new Date(row.acked_at).toISOString();
 				const identity = identities[index]!;
+				const reworkWake = readProjectedReworkWake({
+					store: this.deps.store,
+					commDb: this.deps.commDb,
+					projectName: this.deps.projectName,
+					family: "turn_wake",
+					physicalId: row.wake_id,
+				});
+				if (
+					identity.found &&
+					retireObservedReworkWakeAttempt({
+						store: this.deps.store,
+						commDb: this.deps.commDb,
+						projectName: this.deps.projectName,
+						attempt: {
+							attempt_id: identity.attemptId,
+							family: "turn_wake",
+							contract_ref_json: identity.contractRefJson!,
+						},
+						now: _now,
+					})
+				) {
+					result.advanced++;
+					continue;
+				}
+
 				if (!sourceIsActive && identity.settled) continue;
 				if (
 					sourceIsActive &&
@@ -331,7 +399,12 @@ export class DeliveryProjector {
 					activeSources.add(sourceKey("turn_wake_outbox", row.wake_id));
 				}
 				const projectionInput = {
-					contractRef: { table: "turn_wake_outbox", pk: row.wake_id },
+					contractRef: {
+						table: "turn_wake_outbox",
+						pk: row.wake_id,
+						...(reworkWake ?? {}),
+					},
+					now: _now,
 					mintedAt: new Date(row.created_at).toISOString(),
 					sentAt:
 						row.first_push_at === null
@@ -381,6 +454,19 @@ export class DeliveryProjector {
 				redriveGeneration?: unknown;
 			};
 			if (typeof ref.table !== "string" || typeof ref.pk !== "string") continue;
+			if (
+				retireObservedReworkWakeAttempt({
+					store: this.deps.store,
+					commDb: this.deps.commDb,
+					projectName: this.deps.projectName,
+					attempt,
+					now: _now,
+				})
+			) {
+				result.advanced++;
+				continue;
+			}
+
 			const version =
 				attempt.family === "rework" && Number.isSafeInteger(ref.routeRevision)
 					? { routeRevision: Number(ref.routeRevision) }

@@ -1,0 +1,103 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "2628e8ed-1f6f-4011-9e94-57749d8dc372",
+  "round": 1,
+  "findings": [
+    {
+      "id": "retirement-lane-not-project-scoped",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2517-replacement-wake-retirement/plan.md",
+      "line": 91,
+      "title": "pending-retirement lane has no project scoping, and §5.1 contradicts itself for foreign rows",
+      "detail": "§3.2 gives `workflow_rework_wake_retirement` no project column and §3.3 declares `listPendingReworkWakeRetirements({afterId?,limit})` with no projectName filter, but §5 puts the apply lane inside `DeliveryOperations.runPass` — which is constructed per project with a project-scoped CommDB (packages/teamlead/src/bridge/plugin.ts:8732, drained inside `runSequentialChunks(projects, ...)` at :8683/:8822, `deliveryCommDb = new CommDB(commDbPathForProject(project.projectName))`). Every sibling list API in that same pass is project-filtered (`listPendingWorkflowHoldResumeOperations({projectName})` StateStore.ts:47272, `listOpenUndeliverableDeliveryEpisodes({projectName})`, `listLiveWorkflowDeliveryAttempts({projectName})`); this one is not. Worse, §5.1 states two rules that conflict for a cross-project row: `没有 source 行时也必须落此表` vs `本根 project/run 校验`. With no project column and no local source row, a project-B retirement reaching project-A's pass cannot be distinguished from a project-A retirement whose source was pruned — the literal reading writes the receipt into the wrong CommDB and CASes `projected_at`, so project B's CommDB never gets the effect and its late wake is enqueued normally. The M3.4 StateStore hold guard still prevents the run hold, so this is degradation rather than a stall, but the design should either add `project_name` to the retirement row or add a `projectName` filter to the list API and state which rule wins.",
+      "findingKey": "retirement-lane-not-project-scoped"
+    },
+    {
+      "id": "turn-wake-parent-state-vocabulary",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2517-replacement-wake-retirement/plan.md",
+      "line": 123,
+      "title": "§5 step 2 enumerates a `pushing` turn_wake state that does not exist and omits `sent`",
+      "detail": "`turn_wake_outbox` has `CHECK(state IN ('pending','sent','acked','cancelled'))` (packages/flywheel-comm/src/db.ts:253-259). There is no `pushing` state (grep for it in db.ts returns nothing). In the FLY-2517 sequence the parent outbox will be in `sent`: `deliverDurableTurnWake` (packages/flywheel-comm/src/wake.ts:190) pushes and then `finishTurnWakePush` sets `state = 'sent'` (db.ts:7412-7418), and the coordinator only reaches `awaiting_receipt` after that push succeeded. An implementer following the enumerated list literally would write `state IN ('pending')` and leave the `sent` parent live; `watch.ts` treats turn_wake as active while `state != 'acked' && state != 'cancelled'` (packages/teamlead/src/bridge/delivery-contract/watch.ts:158-160), so the turn_wake family could still freeze/hold the run — the exact outcome this ticket removes. Note the existing helper `cancelTurnWakeDelivery` (db.ts) already cancels anything that is not acked/cancelled, and T1 (plan line 232) demands the parent end `cancelled`, so the acceptance matrix contradicts §5 step 2. Fix the wording to `pending / sent → cancelled; acked preserved`.",
+      "findingKey": "turn-wake-parent-state-vocabulary"
+    },
+    {
+      "id": "alert-copy-consumer-missing-from-c5",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2517-replacement-wake-retirement/plan.md",
+      "line": 164,
+      "title": "`deliveryUndeliverableRequiredDecisions` signature change omits its founder-facing consumer alert-kind-copy.ts",
+      "detail": "§7 changes the signature to `deliveryUndeliverableRequiredDecisions(family, {retiredWakeClosable})` and states the goal is that list/resumable/execute share one capability so the UI never shows a command that cannot run. But the C5 file list (plan line 218) names only StateStore.ts, hold-shape-registry.ts, delivery-operations.ts, runs-route.ts. The third production consumer is `packages/teamlead/src/bridge/alert-kind-copy.ts:83` (`deliveryUndeliverableResumeCommand`, which renders the literal `flywheel-comm hold resume --decision '<...>'` string the operator reads) and :140 (`canCancel`, which decides whether the alert body says \"或取消\"). Called with the default second argument it will keep advertising only `reroute_to` for a retired phase_wake, i.e. the operator alert tells the founder to do the one thing that is a no-op while hiding the `cancel` that M4 just enabled. Add alert-kind-copy.ts to C5 and to the T11/T13 assertions.",
+      "findingKey": "alert-copy-consumer-missing-from-c5"
+    },
+    {
+      "id": "c4-omits-plugin-enqueue-consumer",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2517-replacement-wake-retirement/plan.md",
+      "line": 217,
+      "title": "C4 lists the receiver interface but not the only production caller of enqueueRunnerReceiverDelivery",
+      "detail": "C4 names `resident-receiver-supervisor.ts`, which only declares the `enqueueDelivery` dep type (packages/teamlead/src/bridge/resident-receiver-supervisor.ts:88). The single production call site whose return union gains `disposed` is `packages/teamlead/src/bridge/plugin.ts:7354`, which collapses it with `.kind !== \"no_consumer\"`. That collapse happens to yield the desired behaviour (`disposed` → true → no alert, no rearm), but the design's own sweep requirement (plan line 258, \"新 tests 覆盖所有新增 typed return 的生产消费者\") cannot be satisfied without naming plugin.ts, and relying on an accidental truthiness mapping for an ack/alert decision deserves an explicit assertion in T6.",
+      "findingKey": "c4-omits-plugin-enqueue-consumer"
+    },
+    {
+      "id": "claim-result-mapping-underspecified",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2517-replacement-wake-retirement/plan.md",
+      "line": 129,
+      "title": "Only the `disposed` arm of the new four-valued claim result is specified",
+      "detail": "§5 introduces `claimRunnerPhaseWakeStart` returning `started | replay | disposed | missing` but only pins `reactivateWake` behaviour for `disposed`. `missing` is unspecified. This matters because today's fallback is the hazard itself: `CodexPhaseLifecycleController.markWakeStarted` (packages/claude-runner/src/codex-phase-lifecycle.ts:541-553) treats an existing row in state `finished` as a successful replay and returns silently, after which `reactivateWake` proceeds to `client.startTurn` (codex-daemon-client.ts:1155-1157). Pin all four arms — in particular that `missing` must not fall through to the old \"look up the row, treat finished as replay\" branch — so the retirement disposal cannot be re-entered through the compatibility path.",
+      "findingKey": "claim-result-mapping-underspecified"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "retirement-lane-not-project-scoped",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2517-replacement-wake-retirement/plan.md",
+      "line": 91,
+      "title": "pending-retirement lane has no project scoping, and §5.1 contradicts itself for foreign rows",
+      "detail": "§3.2 gives `workflow_rework_wake_retirement` no project column and §3.3 declares `listPendingReworkWakeRetirements({afterId?,limit})` with no projectName filter, but §5 puts the apply lane inside `DeliveryOperations.runPass` — which is constructed per project with a project-scoped CommDB (packages/teamlead/src/bridge/plugin.ts:8732, drained inside `runSequentialChunks(projects, ...)` at :8683/:8822, `deliveryCommDb = new CommDB(commDbPathForProject(project.projectName))`). Every sibling list API in that same pass is project-filtered (`listPendingWorkflowHoldResumeOperations({projectName})` StateStore.ts:47272, `listOpenUndeliverableDeliveryEpisodes({projectName})`, `listLiveWorkflowDeliveryAttempts({projectName})`); this one is not. Worse, §5.1 states two rules that conflict for a cross-project row: `没有 source 行时也必须落此表` vs `本根 project/run 校验`. With no project column and no local source row, a project-B retirement reaching project-A's pass cannot be distinguished from a project-A retirement whose source was pruned — the literal reading writes the receipt into the wrong CommDB and CASes `projected_at`, so project B's CommDB never gets the effect and its late wake is enqueued normally. The M3.4 StateStore hold guard still prevents the run hold, so this is degradation rather than a stall, but the design should either add `project_name` to the retirement row or add a `projectName` filter to the list API and state which rule wins.",
+      "findingKey": "retirement-lane-not-project-scoped"
+    },
+    {
+      "id": "turn-wake-parent-state-vocabulary",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2517-replacement-wake-retirement/plan.md",
+      "line": 123,
+      "title": "§5 step 2 enumerates a `pushing` turn_wake state that does not exist and omits `sent`",
+      "detail": "`turn_wake_outbox` has `CHECK(state IN ('pending','sent','acked','cancelled'))` (packages/flywheel-comm/src/db.ts:253-259). There is no `pushing` state (grep for it in db.ts returns nothing). In the FLY-2517 sequence the parent outbox will be in `sent`: `deliverDurableTurnWake` (packages/flywheel-comm/src/wake.ts:190) pushes and then `finishTurnWakePush` sets `state = 'sent'` (db.ts:7412-7418), and the coordinator only reaches `awaiting_receipt` after that push succeeded. An implementer following the enumerated list literally would write `state IN ('pending')` and leave the `sent` parent live; `watch.ts` treats turn_wake as active while `state != 'acked' && state != 'cancelled'` (packages/teamlead/src/bridge/delivery-contract/watch.ts:158-160), so the turn_wake family could still freeze/hold the run — the exact outcome this ticket removes. Note the existing helper `cancelTurnWakeDelivery` (db.ts) already cancels anything that is not acked/cancelled, and T1 (plan line 232) demands the parent end `cancelled`, so the acceptance matrix contradicts §5 step 2. Fix the wording to `pending / sent → cancelled; acked preserved`.",
+      "findingKey": "turn-wake-parent-state-vocabulary"
+    },
+    {
+      "id": "alert-copy-consumer-missing-from-c5",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2517-replacement-wake-retirement/plan.md",
+      "line": 164,
+      "title": "`deliveryUndeliverableRequiredDecisions` signature change omits its founder-facing consumer alert-kind-copy.ts",
+      "detail": "§7 changes the signature to `deliveryUndeliverableRequiredDecisions(family, {retiredWakeClosable})` and states the goal is that list/resumable/execute share one capability so the UI never shows a command that cannot run. But the C5 file list (plan line 218) names only StateStore.ts, hold-shape-registry.ts, delivery-operations.ts, runs-route.ts. The third production consumer is `packages/teamlead/src/bridge/alert-kind-copy.ts:83` (`deliveryUndeliverableResumeCommand`, which renders the literal `flywheel-comm hold resume --decision '<...>'` string the operator reads) and :140 (`canCancel`, which decides whether the alert body says \"或取消\"). Called with the default second argument it will keep advertising only `reroute_to` for a retired phase_wake, i.e. the operator alert tells the founder to do the one thing that is a no-op while hiding the `cancel` that M4 just enabled. Add alert-kind-copy.ts to C5 and to the T11/T13 assertions.",
+      "findingKey": "alert-copy-consumer-missing-from-c5"
+    },
+    {
+      "id": "c4-omits-plugin-enqueue-consumer",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2517-replacement-wake-retirement/plan.md",
+      "line": 217,
+      "title": "C4 lists the receiver interface but not the only production caller of enqueueRunnerReceiverDelivery",
+      "detail": "C4 names `resident-receiver-supervisor.ts`, which only declares the `enqueueDelivery` dep type (packages/teamlead/src/bridge/resident-receiver-supervisor.ts:88). The single production call site whose return union gains `disposed` is `packages/teamlead/src/bridge/plugin.ts:7354`, which collapses it with `.kind !== \"no_consumer\"`. That collapse happens to yield the desired behaviour (`disposed` → true → no alert, no rearm), but the design's own sweep requirement (plan line 258, \"新 tests 覆盖所有新增 typed return 的生产消费者\") cannot be satisfied without naming plugin.ts, and relying on an accidental truthiness mapping for an ack/alert decision deserves an explicit assertion in T6.",
+      "findingKey": "c4-omits-plugin-enqueue-consumer"
+    },
+    {
+      "id": "claim-result-mapping-underspecified",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2517-replacement-wake-retirement/plan.md",
+      "line": 129,
+      "title": "Only the `disposed` arm of the new four-valued claim result is specified",
+      "detail": "§5 introduces `claimRunnerPhaseWakeStart` returning `started | replay | disposed | missing` but only pins `reactivateWake` behaviour for `disposed`. `missing` is unspecified. This matters because today's fallback is the hazard itself: `CodexPhaseLifecycleController.markWakeStarted` (packages/claude-runner/src/codex-phase-lifecycle.ts:541-553) treats an existing row in state `finished` as a successful replay and returns silently, after which `reactivateWake` proceeds to `client.startTurn` (codex-daemon-client.ts:1155-1157). Pin all four arms — in particular that `missing` must not fall through to the old \"look up the row, treat finished as replay\" branch — so the retirement disposal cannot be re-entered through the compatibility path.",
+      "findingKey": "claim-result-mapping-underspecified"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "deliveryNonce": "2f306ab1-167f-4cd8-bc27-7ffa81ba2a8a"
+}

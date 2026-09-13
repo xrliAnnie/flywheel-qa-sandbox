@@ -72,6 +72,7 @@ function makeClient(daemon: FakeDaemon, opts = {}) {
 }
 
 class FakePhaseLifecycle implements GoalPhaseLifecycle {
+	wakeStartResult: "started" | "replay" | "disposed" | "missing" = "started";
 	hold: ReturnType<GoalPhaseLifecycle["getPhaseHold"]> = null;
 	observations: ReturnType<GoalPhaseLifecycle["observe"]>[] = [];
 	entered: Array<{
@@ -120,6 +121,7 @@ class FakePhaseLifecycle implements GoalPhaseLifecycle {
 	}
 	markWakeStarted(id: string) {
 		this.started.push(id);
+		return this.wakeStartResult;
 	}
 	finishWake(id: string) {
 		if (this.finishFailures > 0) {
@@ -1084,6 +1086,54 @@ function goalHasBeenSet(d: FakeDaemon): boolean {
 }
 
 describe("runGoalToTerminal — FLY-1269 phase hold", () => {
+	it.each(["disposed", "missing"] as const)(
+		"FLY-2517 does not start a turn or release the phase hold for a %s wake",
+		async (claimResult) => {
+			const d = new FakeDaemon();
+			let status: GoalStatus = "active";
+			d.responders.set("thread/goal/get", () => ({
+				goal: { status, objective: "phase objective" },
+			}));
+			d.responders.set("thread/goal/set", (params) => {
+				status = (params as { status: GoalStatus }).status;
+				return {};
+			});
+			d.responders.set("turn/start", () => {
+				throw new Error("unexpected-start");
+			});
+			const phase = new FakePhaseLifecycle();
+			phase.boundary = { kind: "parked", reason: "persisted handoff" };
+			phase.wakeStartResult = claimResult;
+			phase.observations.push({
+				kind: "wake",
+				message: { id: "retired", content: "old" },
+			});
+			phase.onWait = () => {
+				if (phase.started.length) throw new Error("test-observed-still-held");
+			};
+			await expect(
+				runGoalToTerminal(makeClient(d), {
+					threadId: "t",
+					objective: "phase objective",
+					now: () => 0,
+					sleep: async () => {},
+					phaseLifecycle: phase,
+				}),
+			).rejects.toThrow("test-observed-still-held");
+			expect(
+				d.sent.filter((frame) => frame.method === "turn/start"),
+			).toHaveLength(0);
+			expect(
+				d.sent
+					.filter((frame) => frame.method === "thread/goal/set")
+					.map((frame) => (frame.params as { status: string }).status),
+			).toEqual(["paused"]);
+			expect(phase.started).toEqual(["retired"]);
+			expect(phase.left).toBe(0);
+			expect(phase.finished).toHaveLength(0);
+		},
+	);
+
 	it("a durable phase park enters hold even while the native goal remains active", async () => {
 		const d = new FakeDaemon();
 		let currentStatus: GoalStatus = "active";

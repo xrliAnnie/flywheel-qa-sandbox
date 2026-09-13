@@ -1,3 +1,4 @@
+import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
@@ -26350,6 +26351,46 @@ export class StateStore {
 			)
 		`);
 		this.migrateWorkflowReworkDeliveryBudget();
+		this.db.run(`CREATE INDEX IF NOT EXISTS idx_rework_wake_replacement_backfill
+			ON workflow_run_event(run_id, seq)
+			WHERE kind IN ('rework_replacement_materialized','rework_writer_replacement_converged')`);
+
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_rework_wake_retirement (
+				retirement_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, request_id TEXT NOT NULL,
+				node_id TEXT NOT NULL, attempt INTEGER NOT NULL CHECK (attempt > 0),
+				old_route_revision INTEGER NOT NULL CHECK (old_route_revision > 0),
+				new_route_revision INTEGER NOT NULL CHECK (new_route_revision = old_route_revision + 1),
+				execution_id TEXT NOT NULL, replacement_execution_id TEXT NOT NULL CHECK (replacement_execution_id <> execution_id),
+				activation_id TEXT NOT NULL, epoch INTEGER NOT NULL CHECK (epoch > 0), wake_id TEXT NOT NULL UNIQUE,
+				replacement_event_uid TEXT NOT NULL, created_at TEXT NOT NULL, projected_at TEXT,
+				UNIQUE (execution_id, activation_id, epoch),
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		this.db.run("CREATE INDEX IF NOT EXISTS idx_rework_wake_retirement_pending ON workflow_rework_wake_retirement(projected_at, retirement_id)");
+		this.db.run("CREATE INDEX IF NOT EXISTS idx_rework_wake_retirement_identity ON workflow_rework_wake_retirement(run_id, execution_id, activation_id, epoch)");
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS rework_wake_retirement_immutable
+			BEFORE UPDATE ON workflow_rework_wake_retirement
+			WHEN NEW.retirement_id IS NOT OLD.retirement_id OR
+			     NEW.run_id IS NOT OLD.run_id OR
+			     NEW.request_id IS NOT OLD.request_id OR
+			     NEW.node_id IS NOT OLD.node_id OR
+			     NEW.attempt IS NOT OLD.attempt OR
+			     NEW.old_route_revision IS NOT OLD.old_route_revision OR
+			     NEW.new_route_revision IS NOT OLD.new_route_revision OR
+			     NEW.execution_id IS NOT OLD.execution_id OR
+			     NEW.replacement_execution_id IS NOT OLD.replacement_execution_id OR
+			     NEW.activation_id IS NOT OLD.activation_id OR
+			     NEW.epoch IS NOT OLD.epoch OR
+			     NEW.wake_id IS NOT OLD.wake_id OR
+			     NEW.replacement_event_uid IS NOT OLD.replacement_event_uid OR
+			     NEW.created_at IS NOT OLD.created_at
+			     OR (OLD.projected_at IS NOT NULL AND NEW.projected_at IS NOT OLD.projected_at)
+			BEGIN SELECT RAISE(ABORT, 'rework_wake_retirement is immutable'); END
+		`);
+
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_rework_verification_path (
 				request_id TEXT PRIMARY KEY,
@@ -34255,6 +34296,361 @@ export class StateStore {
 			.filter((row): row is WorkflowReworkRequestRow => row !== undefined);
 	}
 
+	/** Engine authority only; transport metadata cannot authorize retirement. */
+	resolveReworkWakeRetirementProofTx(identity: ReworkWakeIdentity):
+		| { kind: "proven"; proof: ReworkWakeRetirementProof }
+		| { kind: "unproven"; reason: string } {
+		const unproven = (reason: string) => ({ kind: "unproven" as const, reason });
+		if (!identity.executionId?.trim() || !identity.activationId?.trim() ||
+			!identity.wakeId?.trim() || !Number.isSafeInteger(identity.epoch) || identity.epoch <= 0) {
+			return unproven("invalid_rework_wake_identity");
+		}
+		const binding = this.getWorkflowActivation(identity.activationId);
+		const turn = this.getWorkflowActivationTurn(identity.activationId);
+		if (!binding || binding.mode !== "wake" || !binding.rework_request_id ||
+			binding.execution_id !== identity.executionId || !turn ||
+			turn.execution_id !== identity.executionId || turn.epoch !== identity.epoch) {
+			return unproven("rework_wake_binding_mismatch");
+		}
+		const request = this.getWorkflowReworkRequest(binding.rework_request_id);
+		const run = this.getWorkflowRun(binding.run_id);
+		const actor = this.getWorkflowActor(identity.executionId);
+		if (!request || !run || run.engine_owned !== 1 || request.run_id !== run.run_id ||
+			turn.issue_id !== run.issue_id || actor?.project_name !== run.project_name ||
+			actor.issue_id !== run.issue_id || actor.role !== binding.node_id ||
+			identity.wakeId !== buildReworkWakeId({
+				requestId: request.request_id, activationId: identity.activationId, epoch: identity.epoch,
+			})) return unproven("rework_wake_scope_mismatch");
+		const routes = this.workflowSelectAll(
+			`SELECT old.revision AS old_revision, next.revision AS new_revision,
+			        next.preferred_actor_execution_id AS replacement_execution_id,
+			        next.interpreted_by
+			   FROM workflow_rework_route_revision old
+			   JOIN workflow_rework_route_revision next
+			     ON next.request_id = old.request_id AND next.revision = old.revision + 1
+			  WHERE old.request_id = ? AND old.preferred_actor_execution_id = ?
+			    AND old.target_node_id = ? AND old.target_attempt = ?
+			    AND next.target_node_id = old.target_node_id
+			    AND next.target_attempt = old.target_attempt
+			  ORDER BY old.revision`,
+			[request.request_id, identity.executionId, binding.node_id, binding.attempt],
+		);
+		for (const route of routes) {
+			const replacementExecutionId = String(route.replacement_execution_id);
+			const replacement = this.getWorkflowActor(replacementExecutionId);
+			if (replacementExecutionId === identity.executionId ||
+				replacement?.project_name !== run.project_name ||
+				replacement.issue_id !== run.issue_id || replacement.role !== binding.node_id) continue;
+			const kind = route.interpreted_by === "engine:proven_dead_replacement"
+				? "rework_replacement_materialized"
+				: route.interpreted_by === "engine:writer_replacement_convergence"
+					? "rework_writer_replacement_converged" : null;
+			if (!kind) continue;
+			const replacementEventUid = kind === "rework_replacement_materialized"
+				? `${kind}:${request.request_id}`
+				: `${kind}:${request.request_id}:${route.new_revision}`;
+			const event = this.workflowSelectAll(
+				"SELECT kind, node_id, execution_id, payload FROM workflow_run_event WHERE run_id = ? AND event_uid = ?",
+				[run.run_id, replacementEventUid],
+			)[0];
+			if (!event || event.kind !== kind || event.node_id !== binding.node_id ||
+				event.execution_id !== identity.executionId) continue;
+			let payload: Record<string, unknown>;
+			try {
+				const parsed: unknown = JSON.parse(String(event.payload));
+				if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+				payload = parsed as Record<string, unknown>;
+			} catch { continue; }
+			if (payload.requestId !== request.request_id || payload.deadExecutionId !== identity.executionId ||
+				payload.newExecutionId !== replacementExecutionId || payload.routeRevision !== Number(route.new_revision) ||
+				!Number.isSafeInteger(payload.launchOrdinal) || Number(payload.launchOrdinal) <= 0) continue;
+			const launch = this.workflowSelectAll(
+				`SELECT execution_id FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+				    AND launch_ordinal = ? AND execution_id = ?`,
+				[run.run_id, binding.node_id, binding.attempt, payload.launchOrdinal, replacementExecutionId],
+			)[0];
+			if (!launch) continue;
+			const oldRouteRevision = Number(route.old_revision);
+			return { kind: "proven", proof: {
+				...identity,
+				retirementId: `rework-wake-retirement:${canonicalSubmissionDigest([
+					run.run_id, request.request_id, oldRouteRevision, identity.executionId,
+					identity.activationId, identity.epoch,
+				])}`,
+				runId: run.run_id, requestId: request.request_id, nodeId: binding.node_id,
+				attempt: binding.attempt, oldRouteRevision, newRouteRevision: Number(route.new_revision),
+				replacementExecutionId, replacementEventUid,
+			} };
+		}
+		return unproven("rework_replacement_receipt_unproven");
+	}
+
+	resolveProjectedReworkWakeIdentity(input: {
+		identity: ReworkWakeIdentity; projectName: string; issueId: string;
+	}): (ReworkWakeIdentity & {runId: string; projectName: string; issueId: string}) | null {
+		const identity = input.identity;
+		if (!identity || [identity.wakeId, identity.executionId, identity.activationId].some(
+			value => typeof value !== "string" || !value.trim(),
+		) || !Number.isSafeInteger(identity.epoch) || identity.epoch <= 0) return null;
+		const binding = this.getWorkflowActivation(identity.activationId);
+		const turn = this.getWorkflowActivationTurn(identity.activationId);
+		const run = binding ? this.getWorkflowRun(binding.run_id) : undefined;
+		if (!binding || binding.mode !== "wake" || !binding.rework_request_id ||
+			binding.execution_id !== identity.executionId || !turn ||
+			turn.execution_id !== identity.executionId || turn.epoch !== identity.epoch ||
+			!run || run.project_name !== input.projectName || turn.issue_id !== run.issue_id ||
+			(input.issueId !== run.issue_id && !this.workflowSelectAll(
+				"SELECT 1 FROM workflow_run_issue_alias WHERE run_id = ? AND issue_alias = ?",
+				[run.run_id, input.issueId],
+			)[0]) ||
+			identity.wakeId !== buildReworkWakeId({
+				requestId: binding.rework_request_id, activationId: identity.activationId, epoch: identity.epoch,
+			})) return null;
+		const request = this.getWorkflowReworkRequest(binding.rework_request_id);
+		if (request?.run_id !== run.run_id) return null;
+		return {...identity, runId: run.run_id, projectName: run.project_name, issueId: run.issue_id};
+	}
+
+	bindProjectedReworkWakeIdentity(input: {
+		attemptId: string; physicalId: string; identity: ReworkWakeIdentity; projectName: string; issueId: string; now: string;
+	}): boolean {
+		const identity = this.resolveProjectedReworkWakeIdentity(input);
+		if (!identity || !StateStore.workflowFiniteTimestamp(input.now)) return false;
+		let bound = false;
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				"SELECT * FROM workflow_delivery_attempt WHERE attempt_id = ?", [input.attemptId],
+			)[0];
+			if (!row || (row.family !== "phase_wake" && row.family !== "turn_wake")) return;
+			const ref = JSON.parse(String(row.contract_ref_json)) as Record<string, unknown>;
+			if (typeof ref.pk !== "string" || ref.pk !== input.physicalId ||
+				(row.family === "phase_wake" ? ref.table !== "runner_phase_wakes" :
+					ref.table !== "turn_wake_outbox" || ref.pk !== identity.wakeId) ||
+				(ref.runId !== undefined && ref.runId !== identity.runId) ||
+				(ref.projectName !== undefined && ref.projectName !== identity.projectName) ||
+				(ref.targetExecutionId !== undefined && ref.targetExecutionId !== identity.executionId)) return;
+			const episodeRun = this.getWorkflowDeliveryAttemptRun(input.attemptId);
+			if (episodeRun && episodeRun.run_id !== identity.runId) return;
+			const wakeIdentity: ReworkWakeIdentity = {
+				wakeId: identity.wakeId, executionId: identity.executionId, activationId: identity.activationId, epoch: identity.epoch,
+			};
+			if (ref.reworkWake !== undefined && canonicalSubmissionDigest(ref.reworkWake) !== canonicalSubmissionDigest(wakeIdentity)) {
+				throw new Error("projected_rework_wake_identity_conflict");
+			}
+			const updated = JSON.stringify({...ref, reworkWake: wakeIdentity,
+				runId: identity.runId, projectName: identity.projectName, issueId: identity.issueId});
+			if (updated !== row.contract_ref_json) {
+				this.db.run(
+					"UPDATE workflow_delivery_attempt SET contract_ref_json = ? WHERE attempt_id = ? AND contract_ref_json = ?",
+					[updated, input.attemptId, row.contract_ref_json],
+				);
+				if (this.db.getRowsModified() !== 1) throw new Error("projected_rework_wake_identity_cas_failed");
+			}
+			bound = true;
+			this.retireProjectedReworkWakeAttemptTx(input.attemptId, input.now);
+		});
+		if (bound) this.save();
+		return bound;
+	}
+
+	retireProjectedReworkWakeAttempt(input: {attemptId: string; now: string}): boolean {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) throw new Error("invalid_retirement_time");
+		let retired = false;
+		this.db.transaction(() => { retired = this.retireProjectedReworkWakeAttemptTx(input.attemptId, input.now); });
+		if (retired) this.save();
+		return retired;
+	}
+
+	private retireProjectedReworkWakeAttemptTx(attemptId: string, now: string): boolean {
+		const row = this.workflowSelectAll("SELECT * FROM workflow_delivery_attempt WHERE attempt_id = ?", [attemptId])[0];
+		if (!row || (row.family !== "phase_wake" && row.family !== "turn_wake")) return false;
+		let ref: Record<string, unknown>;
+		try { ref = JSON.parse(String(row.contract_ref_json)); } catch { return false; }
+		if (!ref || typeof ref.pk !== "string" || !ref.reworkWake || typeof ref.projectName !== "string" ||
+			typeof ref.issueId !== "string" || typeof ref.runId !== "string") return false;
+		const identity = this.resolveProjectedReworkWakeIdentity({
+			identity: ref.reworkWake as ReworkWakeIdentity, projectName: ref.projectName, issueId: ref.issueId,
+		});
+		if (!identity || identity.runId !== ref.runId ||
+			(ref.targetExecutionId !== undefined && ref.targetExecutionId !== identity.executionId) ||
+			(row.family === "phase_wake" ? ref.table !== "runner_phase_wakes" :
+				ref.table !== "turn_wake_outbox" || ref.pk !== identity.wakeId)) return false;
+		const result = this.resolveReworkWakeRetirementProofTx({
+			executionId: identity.executionId, activationId: identity.activationId, epoch: identity.epoch, wakeId: identity.wakeId,
+		});
+		if (result.kind !== "proven") return false;
+		const proof = result.proof;
+		this.insertReworkWakeRetirementTx(proof, now);
+		if (row.settlement_reason === null && row.superseded_by_attempt_id === null) {
+			this.db.run(
+				"UPDATE workflow_delivery_attempt SET settlement_reason = 'superseded_by_rework_replacement' WHERE attempt_id = ? AND settlement_reason IS NULL AND superseded_by_attempt_id IS NULL",
+				[attemptId],
+			);
+			if (this.db.getRowsModified() !== 1) throw new Error("rework_wake_settlement_cas_failed");
+		}
+		this.db.run(
+			"UPDATE workflow_delivery_contract_episode SET closed_at = ?, closed_reason = 'terminal:settled:superseded_by_rework_replacement' WHERE attempt_id = ? AND closed_at IS NULL",
+			[now, attemptId],
+		);
+		this.appendWorkflowRunEventCheckedTx({
+			runId: proof.runId, eventUid: `rework_wake_attempt_retired:${attemptId}`, kind: "rework_wake_attempt_retired",
+			nodeId: proof.nodeId, executionId: proof.executionId,
+			payload: {retirementId: proof.retirementId, physicalId: ref.pk, rootId: row.root_id, attemptId,
+				runId: proof.runId, identity: {wakeId: proof.wakeId, activationId: proof.activationId, executionId: proof.executionId, epoch: proof.epoch}},
+		});
+		return true;
+	}
+
+	private recordReworkWakeRetirementsTx(input: {
+		requestId: string; executionId: string; nodeId: string; attempt: number; now: string;
+	}): void {
+		const rows = this.workflowSelectAll(
+			`SELECT binding.activation_id, turns.epoch
+			   FROM workflow_execution_binding binding
+			   JOIN workflow_activation_turn turns ON turns.activation_id = binding.activation_id
+			  WHERE binding.rework_request_id = ? AND binding.execution_id = ?
+			    AND binding.node_id = ? AND binding.attempt = ? AND binding.mode = 'wake'`,
+			[input.requestId, input.executionId, input.nodeId, input.attempt],
+		);
+		for (const row of rows) {
+			const identity = {
+				executionId: input.executionId, activationId: String(row.activation_id), epoch: Number(row.epoch),
+				wakeId: buildReworkWakeId({ requestId: input.requestId, activationId: String(row.activation_id), epoch: Number(row.epoch) }),
+			};
+			const result = this.resolveReworkWakeRetirementProofTx(identity);
+			if (result.kind !== "proven") throw new Error(`rework_wake_retirement_unproven:${result.reason}`);
+			this.insertReworkWakeRetirementTx(result.proof, input.now);
+			for (const attempt of this.workflowSelectAll(
+				`SELECT attempt_id FROM workflow_delivery_attempt WHERE family IN ('phase_wake','turn_wake')
+				  AND json_extract(contract_ref_json, '$.reworkWake.executionId') = ?
+				  AND json_extract(contract_ref_json, '$.reworkWake.activationId') = ?
+				  AND json_extract(contract_ref_json, '$.reworkWake.epoch') = ?`,
+				[identity.executionId, identity.activationId, identity.epoch],
+			)) this.retireProjectedReworkWakeAttemptTx(String(attempt.attempt_id), input.now);
+
+		}
+	}
+
+	private insertReworkWakeRetirementTx(proof: ReworkWakeRetirementProof, now: string): void {
+		const existing = this.workflowSelectAll(
+			"SELECT * FROM workflow_rework_wake_retirement WHERE retirement_id = ? OR wake_id = ? OR (execution_id = ? AND activation_id = ? AND epoch = ?)",
+			[proof.retirementId, proof.wakeId, proof.executionId, proof.activationId, proof.epoch],
+		);
+		if (existing.length) {
+			if (existing.length !== 1 ||
+				canonicalSubmissionDigest(this.reworkWakeRetirementFromRow(existing[0]!)) !== canonicalSubmissionDigest(proof)) {
+				throw new Error("rework_wake_retirement_conflict");
+			}
+			return;
+		}
+		this.db.run(
+			`INSERT INTO workflow_rework_wake_retirement
+			   (retirement_id, run_id, request_id, node_id, attempt, old_route_revision,
+			    new_route_revision, execution_id, replacement_execution_id, activation_id,
+			    epoch, wake_id, replacement_event_uid, created_at)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			[proof.retirementId, proof.runId, proof.requestId, proof.nodeId, proof.attempt,
+			 proof.oldRouteRevision, proof.newRouteRevision, proof.executionId, proof.replacementExecutionId,
+			 proof.activationId, proof.epoch, proof.wakeId, proof.replacementEventUid, now],
+		);
+	}
+
+	private reworkWakeRetirementFromRow(row: Record<string, unknown>): ReworkWakeRetirementProof {
+		return {
+			retirementId: String(row.retirement_id), runId: String(row.run_id), requestId: String(row.request_id),
+			nodeId: String(row.node_id), attempt: Number(row.attempt), oldRouteRevision: Number(row.old_route_revision),
+			newRouteRevision: Number(row.new_route_revision), executionId: String(row.execution_id),
+			replacementExecutionId: String(row.replacement_execution_id), activationId: String(row.activation_id),
+			epoch: Number(row.epoch), wakeId: String(row.wake_id), replacementEventUid: String(row.replacement_event_uid),
+		};
+	}
+
+	backfillReworkWakeRetirements(input: {
+		projectName: string; now: string; limit: number; after?: {runId: string; eventSeq: number};
+	}): {examined: number; retired: number; unproven: number; nextCursor?: {runId: string; eventSeq: number}} {
+		if (!input.projectName.trim() || !StateStore.workflowFiniteTimestamp(input.now) ||
+			!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 64 ||
+			(input.after && (!input.after.runId || !Number.isSafeInteger(input.after.eventSeq) || input.after.eventSeq < 0))) {
+			throw new Error("invalid_retirement_backfill_page");
+		}
+		const candidates = this.workflowSelectAll(
+			`SELECT event.run_id, event.seq, event.event_uid, event.node_id, event.execution_id, event.payload
+			   FROM workflow_run_event event JOIN workflow_run run ON run.run_id = event.run_id
+			  WHERE event.kind IN ('rework_replacement_materialized','rework_writer_replacement_converged')
+			    AND run.project_name = ? AND run.status IN ('active','held')
+			    AND (event.run_id > ? OR (event.run_id = ? AND event.seq > ?))
+			  ORDER BY event.run_id, event.seq LIMIT ?`,
+			[input.projectName, input.after?.runId ?? "", input.after?.runId ?? "", input.after?.eventSeq ?? 0, input.limit + 1],
+		);
+		const page = candidates.slice(0, input.limit);
+		const result: {examined: number; retired: number; unproven: number; nextCursor?: {runId: string; eventSeq: number}} = {
+			examined: page.length, retired: 0, unproven: 0,
+		};
+		for (const event of page) {
+			try {
+				let retired = 0;
+				this.db.transaction(() => {
+					const payload = JSON.parse(String(event.payload)) as Record<string, unknown>;
+					if (!payload || typeof payload.requestId !== "string" || !event.execution_id || !event.node_id ||
+						this.getWorkflowReworkRequest(payload.requestId)?.run_id !== event.run_id) {
+						throw new Error("replacement_receipt_unproven");
+					}
+					const bindings = this.workflowSelectAll(
+						`SELECT binding.activation_id, turns.epoch
+						   FROM workflow_execution_binding binding
+						   LEFT JOIN workflow_activation_turn turns ON turns.activation_id = binding.activation_id
+						  WHERE binding.run_id = ? AND binding.rework_request_id = ? AND binding.execution_id = ?
+						    AND binding.node_id = ? AND binding.mode = 'wake'`,
+						[event.run_id, payload.requestId, event.execution_id, event.node_id],
+					);
+					for (const binding of bindings) {
+						const identity = {
+							executionId: String(event.execution_id), activationId: String(binding.activation_id), epoch: Number(binding.epoch),
+							wakeId: buildReworkWakeId({requestId: payload.requestId, activationId: String(binding.activation_id), epoch: Number(binding.epoch)}),
+						};
+						const proven = this.resolveReworkWakeRetirementProofTx(identity);
+						if (proven.kind !== "proven" || proven.proof.replacementEventUid !== event.event_uid) throw new Error("replacement_binding_unproven");
+						this.insertReworkWakeRetirementTx(proven.proof, input.now);
+						retired++;
+					}
+				});
+				result.retired += retired;
+			} catch {
+				result.unproven++;
+				this.appendWorkflowRunEvent({
+					runId: String(event.run_id), eventUid: `rework_wake_retirement_unproven:${event.event_uid}`,
+					kind: "rework_wake_retirement_unproven",
+					payload: {replacementEventUid: event.event_uid, reason: "replacement_receipt_or_binding_unproven"},
+				});
+			}
+		}
+		if (candidates.length > page.length) {
+			const last = page[page.length - 1]!;
+			result.nextCursor = {runId: String(last.run_id), eventSeq: Number(last.seq)};
+		}
+		if (result.retired) this.save();
+		return result;
+	}
+
+	listPendingReworkWakeRetirements(input: { afterId?: string; limit: number }): ReworkWakeRetirementProof[] {
+		if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 1000) throw new Error("invalid_retirement_page");
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_rework_wake_retirement
+			  WHERE projected_at IS NULL AND retirement_id > ? ORDER BY retirement_id LIMIT ?`,
+			[input.afterId ?? "", input.limit],
+		).map(row => this.reworkWakeRetirementFromRow(row));
+	}
+
+	markReworkWakeRetirementProjected(input: { retirementId: string; now: string }): void {
+		if (!input.retirementId.trim() || !StateStore.workflowFiniteTimestamp(input.now)) throw new Error("invalid_retirement_projection");
+		this.db.run(
+			"UPDATE workflow_rework_wake_retirement SET projected_at = ? WHERE retirement_id = ? AND projected_at IS NULL",
+			[input.now, input.retirementId],
+		);
+		this.save();
+	}
+
 	getWorkflowActivationTurn(
 		activationId: string,
 	): WorkflowActivationTurnRow | undefined {
@@ -34883,6 +35279,10 @@ export class StateStore {
 					heldPaneLossRecovery: false,
 				},
 			});
+			this.recordReworkWakeRetirementsTx({
+				requestId: input.requestId, executionId: route.preferred_actor_execution_id,
+				nodeId: route.target_node_id, attempt: route.target_attempt, now: input.now,
+			});
 			result = {
 				ok: true,
 				executionId: replacementExecutionId,
@@ -35208,6 +35608,10 @@ export class StateStore {
 					reason: input.reason,
 					heldPaneLossRecovery,
 				},
+			});
+			this.recordReworkWakeRetirementsTx({
+				requestId: input.requestId, executionId: input.deadExecutionId,
+				nodeId: route.target_node_id, attempt: route.target_attempt, now: input.observedAt,
 			});
 			const resumeTransitionUid = `rework_replacement:${input.requestId}`;
 			const resumeReceipt = {
@@ -43282,13 +43686,14 @@ export class StateStore {
 		contractRef: Record<string, unknown>;
 		mintedAt: string;
 		legacyRearmAt?: string;
+		now?: string;
 		sentAt?: string | null;
 		receivedAt?: string | null;
 		consumedAt?: string | null;
 	}): { minted: number; advanced: number } {
 		const result = { minted: 0, advanced: 0 };
 		this.db.transaction(() => {
-			const contractRefJson = JSON.stringify(input.contractRef);
+			let contractRefJson = JSON.stringify(input.contractRef);
 			let effectiveAttemptId = input.attemptId;
 			let effectiveMintedAt = input.mintedAt;
 			const legacy = this.workflowSelectAll(
@@ -43373,6 +43778,20 @@ export class StateStore {
 			) {
 				throw new Error(`delivery_attempt_identity_conflict:${input.attemptId}`);
 			}
+			const priorRef = JSON.parse(String(existing.contract_ref_json)) as Record<string, unknown>;
+			if (priorRef.reworkWake !== undefined) {
+				if (input.contractRef.reworkWake !== undefined &&
+					canonicalSubmissionDigest(input.contractRef.reworkWake) !== canonicalSubmissionDigest(priorRef.reworkWake)) {
+					throw new Error("projected_rework_wake_identity_conflict");
+				}
+				for (const key of ["table", "pk", "runId", "projectName", "issueId", "targetExecutionId"] as const) {
+					if (input.contractRef[key] !== undefined && priorRef[key] !== input.contractRef[key]) {
+						throw new Error("projected_rework_wake_scope_conflict");
+					}
+				}
+				contractRefJson = JSON.stringify({...priorRef, ...input.contractRef, reworkWake: priorRef.reworkWake,
+					runId: priorRef.runId, projectName: priorRef.projectName, issueId: priorRef.issueId});
+			}
 			if (existing.contract_ref_json !== contractRefJson) {
 				this.db.run(
 					`UPDATE workflow_delivery_attempt SET contract_ref_json = ?
@@ -43405,6 +43824,7 @@ export class StateStore {
 				);
 				result.advanced += this.db.getRowsModified();
 			}
+			this.retireProjectedReworkWakeAttemptTx(effectiveAttemptId, input.now ?? new Date().toISOString());
 		});
 		this.save();
 		return result;
@@ -43852,6 +44272,7 @@ export class StateStore {
 		episodeId: string;
 		targetExecutionId: string;
 		sourceExecutionId?: string;
+		sourceHold?: {runId: string; holdEventUid: string};
 		now: string;
 		allowOverCap: boolean;
 	}):
@@ -43866,8 +44287,18 @@ export class StateStore {
 				childPhysicalId: string;
 				generation: number;
 		  }
+		| {kind: "noop"; reason: "target_obligation_completed"; retirementId: string; completionEventUid: string}
 		| { kind: "operator_required"; reason?: string }
 		| { kind: "rejected"; reason: string } {
+		if (input.sourceHold && input.allowOverCap) {
+			const completed = this.resolveCompletedReworkWakeTargetTx({...input.sourceHold, targetExecutionId: input.targetExecutionId});
+			if (completed.kind === "noop") {
+				const episode = this.workflowSelectAll("SELECT run_id, attempt_id, root_id FROM workflow_delivery_contract_episode WHERE episode_id = ?", [input.episodeId])[0];
+				if (episode && (episode.run_id !== input.sourceHold.runId || episode.attempt_id !== completed.attemptId || episode.root_id !== completed.rootId))
+					return {kind: "rejected", reason: "completed_rework_wake_source_mismatch"};
+				return {kind: "noop", reason: completed.reason, retirementId: completed.retirementId, completionEventUid: completed.completionEventUid};
+			}
+		}
 		let result:
 			| {
 					kind: "staged";
@@ -43880,7 +44311,8 @@ export class StateStore {
 					childPhysicalId: string;
 					generation: number;
 			  }
-			| { kind: "operator_required"; reason?: string }
+			| {kind: "noop"; reason: "target_obligation_completed"; retirementId: string; completionEventUid: string}
+		| { kind: "operator_required"; reason?: string }
 			| { kind: "rejected"; reason: string } = { kind: "operator_required" };
 		{
 			const row = this.workflowSelectAll(
@@ -44100,6 +44532,7 @@ export class StateStore {
 		episodeId: string;
 		targetExecutionId: string;
 		sourceExecutionId?: string;
+		sourceHold?: {runId: string; holdEventUid: string};
 		now: string;
 		allowOverCap?: boolean;
 	}):
@@ -44114,6 +44547,7 @@ export class StateStore {
 				childPhysicalId: string;
 				generation: number;
 		  }
+		| {kind: "noop"; reason: "target_obligation_completed"; retirementId: string; completionEventUid: string}
 		| { kind: "operator_required"; reason?: string }
 		| { kind: "rejected"; reason: string } {
 		let result:
@@ -44128,11 +44562,13 @@ export class StateStore {
 					childPhysicalId: string;
 					generation: number;
 			  }
-			| { kind: "operator_required"; reason?: string }
+			| {kind: "noop"; reason: "target_obligation_completed"; retirementId: string; completionEventUid: string}
+		| { kind: "operator_required"; reason?: string }
 			| { kind: "rejected"; reason: string } = { kind: "operator_required" };
 		this.db.transaction(() => {
 			result = this.stageWorkflowDeliveryRerouteTx({
 				episodeId: input.episodeId,
+				sourceHold: input.sourceHold,
 				targetExecutionId: input.targetExecutionId,
 				...(input.sourceExecutionId
 					? { sourceExecutionId: input.sourceExecutionId }
@@ -44405,10 +44841,12 @@ export class StateStore {
 				     ON attempt.attempt_id = episode.attempt_id
 				   JOIN workflow_run run ON run.run_id = episode.run_id
 				  WHERE episode.episode_id = ? AND episode.closed_at IS NULL
-				    AND episode.stage = 'undeliverable'`,
+				    AND episode.stage = 'undeliverable'
+				    AND attempt.settlement_reason IS NULL AND attempt.superseded_by_attempt_id IS NULL`,
 				[input.episodeId],
 			)[0];
 			if (!row) return;
+			if (this.retireProjectedReworkWakeAttemptTx(String(row.attempt_id), input.now)) return;
 			const session = this.getSession(input.recipientExecutionId);
 			const evidence: LivenessEvidence = {
 				heartbeatAtMs: parseSqliteUtcMs(session?.heartbeat_at),
@@ -44926,7 +45364,8 @@ export class StateStore {
 		if (
 			result.held ||
 			result.reason === "operator_required" ||
-			result.reason === "source_terminal"
+			result.reason === "source_terminal" ||
+			result.reason === "superseded_by_rework_replacement"
 		) {
 			this.save();
 		}
@@ -44960,6 +45399,14 @@ export class StateStore {
 			[input.episodeId],
 		)[0];
 		if (!row) return { held: false, reason: "episode_not_open" };
+		const retirementRef = JSON.parse(String(row.contract_ref_json)) as {
+			runId?: unknown; reworkWake?: {executionId?: unknown};
+		};
+		if (retirementRef.runId === row.run_id &&
+			retirementRef.reworkWake?.executionId === input.recipientExecutionId &&
+			this.retireProjectedReworkWakeAttemptTx(String(row.attempt_id), input.now)) {
+			return {held: false, reason: "superseded_by_rework_replacement"};
+		}
 		if (row.run_status !== "active") {
 			return { held: false, reason: "run_not_active" };
 		}
@@ -45574,9 +46021,117 @@ export class StateStore {
 		return "live_attempt";
 	}
 
+	resolveCompletedReworkWakeTargetTx(input: {runId: string; holdEventUid: string; targetExecutionId: string}):
+		| {kind: "noop"; reason: "target_obligation_completed"; retirementId: string; proof: ReworkWakeRetirementProof;
+			attemptId: string; rootId: string; physicalId: string; targetActivationId: string; completionEventUid: string}
+		| {kind: "unproven"; reason: string} {
+		const no = () => ({kind: "unproven" as const, reason: "completed_rework_wake_target_unproven"});
+		const retired = this.resolveRetiredWakeHoldCloseTx(input);
+		if (retired.kind !== "proven" || retired.proof.replacementExecutionId !== input.targetExecutionId) return no();
+		const proof = retired.proof;
+		if (this.workflowSelectAll(
+			"SELECT 1 FROM workflow_delivery_operation WHERE kind = 'reroute' AND source_attempt_id = ? AND state != 'failed' LIMIT 1",
+			[retired.attemptId],
+		)[0]) return no();
+		const run = this.getWorkflowRun(input.runId);
+		if (!run || !["active", "held"].includes(run.status)) return no();
+		const completion = this.getWorkflowNodeCompletion(input.runId, proof.nodeId, proof.attempt);
+		if (!completion || completion.execution_id !== input.targetExecutionId || !completion.activation_id ||
+			!completion.completion_submission_digest.trim()) return no();
+		const binding = this.getWorkflowActivation(completion.activation_id);
+		if (!binding || binding.mode !== "replacement" || binding.execution_id !== input.targetExecutionId ||
+			binding.run_id !== input.runId || binding.node_id !== proof.nodeId || binding.attempt !== proof.attempt ||
+			binding.rework_request_id !== proof.requestId) return no();
+		const delivery = this.getWorkflowReworkDelivery(proof.requestId);
+		const route = this.getLatestWorkflowReworkRoute(proof.requestId);
+		if (delivery?.state !== "completed" || delivery.route_revision !== proof.newRouteRevision ||
+			route?.revision !== proof.newRouteRevision || route.preferred_actor_execution_id !== input.targetExecutionId ||
+			route.target_node_id !== proof.nodeId || route.target_attempt !== proof.attempt) return no();
+		try {
+			const event = this.workflowSelectAll(
+				"SELECT kind, node_id, execution_id, payload FROM workflow_run_event WHERE run_id = ? AND event_uid = ?",
+				[input.runId, completion.event_uid],
+			)[0];
+			if (event?.kind !== "node_completed" || event.node_id !== proof.nodeId || event.execution_id !== input.targetExecutionId) return no();
+			const body = JSON.parse(String(event.payload));
+			if (body.attempt !== proof.attempt ||
+				(body.route !== undefined ? body.route !== completion.route : typeof body.outcome !== "string" || !body.outcome.trim())) return no();
+			const launch = this.workflowSelectAll(
+				"SELECT kind, node_id, execution_id, payload FROM workflow_run_event WHERE run_id = ? AND event_uid = ?",
+				[input.runId, `rework_replacement_launched:${proof.requestId}:${proof.newRouteRevision}:${input.targetExecutionId}`],
+			)[0];
+			if (launch?.kind !== "rework_replacement_launched" || launch.node_id !== proof.nodeId || launch.execution_id !== input.targetExecutionId) return no();
+			const content = JSON.parse(String(launch.payload));
+			if (content.requestId !== proof.requestId || content.routeRevision !== proof.newRouteRevision ||
+				content.carrier !== "launch_envelope" || typeof content.contentDigest !== "string" ||
+				!/^[0-9a-f]{64}$/.test(content.contentDigest) ||
+				(content.activationId !== undefined && content.activationId !== binding.activation_id) ||
+				(content.attempt !== undefined && content.attempt !== proof.attempt)) return no();
+			return {kind: "noop", reason: "target_obligation_completed", retirementId: proof.retirementId, proof,
+				attemptId: retired.attemptId, rootId: retired.rootId, physicalId: retired.physicalId,
+				targetActivationId: binding.activation_id, completionEventUid: completion.event_uid};
+		} catch {
+			return no();
+		}
+	}
+
+	resolveRetiredWakeHoldCloseTx(input: {runId: string; holdEventUid: string}):
+		| {kind: "proven"; proof: ReworkWakeRetirementProof; attemptId: string; rootId: string; physicalId: string}
+		| {kind: "unproven"; reason: string} {
+		const no = () => ({kind: "unproven" as const, reason: "phase_wake_retirement_unproven"});
+		const event = this.workflowSelectAll(
+			"SELECT kind, payload FROM workflow_run_event WHERE run_id = ? AND event_uid = ?",
+			[input.runId, input.holdEventUid],
+		)[0];
+		if (event?.kind !== "delivery_reroute_operator_required") return no();
+		try {
+			const payload = JSON.parse(String(event.payload)) as Record<string, unknown>;
+			if (!payload || payload.family !== "phase_wake" ||
+				(payload.shape !== undefined && payload.shape !== "delivery_undeliverable_no_recipient")) return no();
+			const {attemptId, rootId, physicalId, recipientExecutionId} = payload;
+			if (![attemptId, rootId, physicalId, recipientExecutionId].every(value => typeof value === "string" && value.trim())) return no();
+			const attempt = this.workflowSelectAll(
+				"SELECT * FROM workflow_delivery_attempt WHERE attempt_id = ?", [attemptId],
+			)[0];
+			let identity: ReworkWakeIdentity;
+			let auditRetirementId: unknown;
+			if (attempt) {
+				const ref = JSON.parse(String(attempt.contract_ref_json));
+				if (attempt.family !== "phase_wake" || attempt.root_id !== rootId ||
+					ref.table !== "runner_phase_wakes" || ref.pk !== physicalId || ref.runId !== input.runId ||
+					(ref.targetExecutionId !== undefined && ref.targetExecutionId !== recipientExecutionId)) return no();
+				const resolved = this.resolveProjectedReworkWakeIdentity({
+					identity: ref.reworkWake, projectName: ref.projectName, issueId: ref.issueId,
+				});
+				if (!resolved || resolved.runId !== input.runId) return no();
+				identity = resolved;
+			} else {
+				const audit = this.workflowSelectAll(
+					"SELECT kind, payload FROM workflow_run_event WHERE run_id = ? AND event_uid = ?",
+					[input.runId, `rework_wake_attempt_retired:${attemptId}`],
+				)[0];
+				if (audit?.kind !== "rework_wake_attempt_retired") return no();
+				const binding = JSON.parse(String(audit.payload));
+				if (binding.attemptId !== attemptId || binding.rootId !== rootId ||
+					binding.physicalId !== physicalId || binding.runId !== input.runId) return no();
+				identity = binding.identity;
+				auditRetirementId = binding.retirementId;
+			}
+			if (!identity || identity.executionId !== recipientExecutionId) return no();
+			const resolved = this.resolveReworkWakeRetirementProofTx({wakeId: identity.wakeId, activationId: identity.activationId, executionId: identity.executionId, epoch: identity.epoch});
+			if (resolved.kind !== "proven" || resolved.proof.runId !== input.runId ||
+				(!attempt && auditRetirementId !== resolved.proof.retirementId)) return no();
+			return {kind: "proven", proof: resolved.proof, attemptId: String(attemptId),
+				rootId: String(rootId), physicalId: String(physicalId)};
+		} catch {
+			return no();
+		}
+	}
+
 	private workflowHoldAuthoritativePrecondition(input: {
 		runId: string;
 		descriptor: HoldShapeDescriptor;
+		holdEventUid: string;
 		payload: Record<string, unknown>;
 		nodeId: string | null;
 		executionId: string | null;
@@ -45727,6 +46282,7 @@ export class StateStore {
 			);
 		}
 		if (input.descriptor.id === "delivery_undeliverable_no_recipient") {
+			if (this.resolveRetiredWakeHoldCloseTx(input).kind === "proven") return result(true, "exact rework replacement retired this phase wake");
 			const attemptId = payloadId("attemptId");
 			const rootId = payloadId("rootId");
 			const terminalMailbox = payloadId("family") === "mailbox";
@@ -45858,7 +46414,9 @@ export class StateStore {
 					: undefined;
 			const requiredDecision =
 				descriptor.id === "delivery_undeliverable_no_recipient"
-					? deliveryUndeliverableRequiredDecisions(String(payload.family ?? ""))
+					? deliveryUndeliverableRequiredDecisions(String(payload.family ?? ""), {
+						retiredWakeClosable: this.resolveRetiredWakeHoldCloseTx({runId, holdEventUid}).kind === "proven",
+					})
 					: descriptor.requiredDecision;
 			const preconditions = [
 				{
@@ -45896,6 +46454,7 @@ export class StateStore {
 				},
 				this.workflowHoldAuthoritativePrecondition({
 					runId,
+					holdEventUid,
 					descriptor,
 					payload,
 					nodeId: typeof row.node_id === "string" ? row.node_id : null,
@@ -46953,6 +47512,14 @@ export class StateStore {
 				candidate.shape === input.shape &&
 				candidate.holdEventUid === input.holdEventUid,
 		);
+		const retiredWake = input.shape === "delivery_undeliverable_no_recipient"
+			? this.resolveRetiredWakeHoldCloseTx(input) : {kind: "unproven" as const};
+		const retiredCancel = retiredWake.kind === "proven" && decision === "cancel";
+		const completedWake = retiredWake.kind === "proven" && decision?.startsWith("reroute_to ")
+			? this.resolveCompletedReworkWakeTargetTx({...input, targetExecutionId: decision.slice("reroute_to ".length).trim()})
+			: {kind: "unproven" as const};
+		const retiredClose = retiredCancel || completedWake.kind === "noop";
+
 		const inProcessMailboxTerminalNoop =
 			request.sourceResolution !== undefined &&
 			input.shape === "delivery_undeliverable_no_recipient";
@@ -47059,10 +47626,10 @@ export class StateStore {
 			) {
 				return { ok: false, reason: "hold_changed" };
 			}
-			if (actualSourceResolution !== "live_attempt" && family !== "mailbox") {
+			if (actualSourceResolution !== "live_attempt" && family !== "mailbox" && !retiredClose) {
 				return { ok: false, reason: "hold_changed" };
 			}
-			if (sourceResolution !== "live_attempt" && decision !== "cancel") {
+			if (sourceResolution !== "live_attempt" && decision !== "cancel" && !retiredClose) {
 				return { ok: false, reason: "hold_changed" };
 			}
 			const episode =
@@ -47076,16 +47643,17 @@ export class StateStore {
 							[input.runId, attemptId],
 						)[0]
 					: undefined;
-			if (sourceResolution === "live_attempt" && !episode) {
+			if (sourceResolution === "live_attempt" && !episode && !retiredClose) {
 				return { ok: false, reason: "hold_changed" };
 			}
-			if (decision === "cancel" && family === "phase_wake") {
+			if (decision === "cancel" && family === "phase_wake" && !retiredCancel) {
 				return { ok: false, reason: "cancel_not_supported_for_phase_wake" };
 			}
 			const targetActivationId = decision?.startsWith("reroute_to ")
 				? decision.slice("reroute_to ".length).trim()
 				: null;
-			if (targetActivationId) {
+			if (targetActivationId && retiredWake.kind === "proven" && completedWake.kind !== "noop") return {ok: false, reason: "completed_rework_wake_target_unproven"};
+			if (targetActivationId && completedWake.kind !== "noop") {
 				const run = this.getWorkflowRun(input.runId);
 				const target = this.getSession(targetActivationId);
 				if (
@@ -47105,7 +47673,7 @@ export class StateStore {
 				sourceAttemptId: attempt ? String(attempt.attempt_id) : null,
 				targetActivationId,
 				resolutionReason:
-					sourceResolution === "live_attempt" ? null : sourceResolution,
+					sourceResolution === "live_attempt" || retiredClose ? null : sourceResolution,
 			};
 		}
 		const stateNativeDelivery =
@@ -47129,6 +47697,17 @@ export class StateStore {
 			) {
 				legacyPreconditionChanged = true;
 				return;
+			}
+			if (retiredClose && retiredWake.kind === "proven") {
+				const current = this.resolveRetiredWakeHoldCloseTx(input);
+				if (current.kind !== "proven" || current.proof.retirementId !== retiredWake.proof.retirementId)
+					throw new Error("phase_wake_retirement_proof_changed");
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId, eventUid: `retired_wake_hold_staged:${operationId}`, kind: "retired_wake_hold_staged",
+					payload: {operationId, holdEventUid: input.holdEventUid, retirementId: current.proof.retirementId,
+						attemptId: current.attemptId, rootId: current.rootId, physicalId: current.physicalId,
+						...(completedWake.kind === "noop" ? {completionEventUid: completedWake.completionEventUid, targetActivationId: completedWake.targetActivationId} : {})},
+				});
 			}
 			this.db.run(
 				`INSERT INTO workflow_delivery_operation (
@@ -47436,30 +48015,114 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_hold_resume_failure" };
 		}
-		const current = this.workflowSelectAll(
-			`SELECT state FROM workflow_delivery_operation
-			  WHERE operation_id = ? AND kind = 'hold_resume'`,
-			[input.operationId],
-		)[0];
-		if (!current) return { ok: false, reason: "hold_resume_operation_missing" };
-		if (current.state === "failed") {
-			return { ok: true, idempotentReplay: true };
-		}
-		if (current.state !== "staged" && current.state !== "applied") {
-			return { ok: false, reason: "hold_resume_operation_changed" };
-		}
-		this.db.run(
-			`UPDATE workflow_delivery_operation
-			    SET state = 'failed', last_error = ?, updated_at = ?
-			  WHERE operation_id = ? AND kind = 'hold_resume'
-			    AND state IN ('staged','applied')`,
-			[input.error.trim().slice(0, 1000), input.now, input.operationId],
-		);
-		if (this.db.getRowsModified() !== 1) {
-			return { ok: false, reason: "hold_resume_operation_changed" };
-		}
-		this.save();
-		return { ok: true, idempotentReplay: false };
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "hold_resume_operation_changed",
+		};
+		this.db.transaction(() => {
+			result = (() => {
+				const current = this.workflowSelectAll(
+					`SELECT state, run_id, hold_event_uid, source_attempt_id, target_activation_id
+					 FROM workflow_delivery_operation
+					  WHERE operation_id = ? AND kind = 'hold_resume'`,
+					[input.operationId],
+				)[0];
+				if (!current)
+					return {
+						ok: false as const,
+						reason: "hold_resume_operation_missing",
+					};
+				if (current.state === "failed") {
+					return { ok: true as const, idempotentReplay: true };
+				}
+				if (current.state !== "staged" && current.state !== "applied") {
+					return {
+						ok: false as const,
+						reason: "hold_resume_operation_changed",
+					};
+				}
+				this.db.run(
+					`UPDATE workflow_delivery_operation
+					    SET state = 'failed', last_error = ?, updated_at = ?
+					  WHERE operation_id = ? AND kind = 'hold_resume'
+					    AND state IN ('staged','applied')`,
+					[input.error.trim().slice(0, 1000), input.now, input.operationId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					return {
+						ok: false as const,
+						reason: "hold_resume_operation_changed",
+					};
+				}
+				this.appendWorkflowRunEventCheckedTx({
+					runId: String(current.run_id),
+					eventUid: `hold_resume_failed:${input.operationId}`,
+					kind: "hold_resume_failed",
+					payload: {
+						operationId: input.operationId,
+						holdEventUid: current.hold_event_uid,
+						sourceAttemptId: current.source_attempt_id,
+						targetExecutionId: current.target_activation_id,
+						reason: input.error.trim().slice(0, 1000),
+					},
+				});
+				return { ok: true as const, idempotentReplay: false };
+			})();
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	applyCompletedReworkWakeHoldNoop(input: {operationId: string; now: string}):
+		{ok: true; idempotentReplay: boolean} | {ok: false; reason: string} {
+		let result: {ok: true; idempotentReplay: boolean} | {ok: false; reason: string} = {ok: false, reason: "completed_rework_wake_target_unproven"};
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				"SELECT * FROM workflow_delivery_operation WHERE operation_id = ? AND kind = 'hold_resume' AND family = 'phase_wake' AND target_activation_id IS NOT NULL",
+				[input.operationId],
+			)[0];
+			if (!operation) return;
+			if (operation.state === "applied" || operation.state === "projected") {
+				const receipt = this.workflowSelectAll("SELECT 1 FROM workflow_run_event WHERE run_id = ? AND event_uid = ?", [operation.run_id, `delivery_reroute_noop:${input.operationId}`])[0];
+				if (receipt) result = {ok: true, idempotentReplay: true};
+				return;
+			}
+			if (operation.state !== "staged") return;
+			const resolved = this.resolveCompletedReworkWakeTargetTx({
+				runId: String(operation.run_id), holdEventUid: String(operation.hold_event_uid),
+				targetExecutionId: String(operation.target_activation_id),
+			});
+			if (resolved.kind !== "noop" || (operation.source_attempt_id !== null && operation.source_attempt_id !== resolved.attemptId) ||
+				operation.root_id !== resolved.rootId) return;
+			if (this.workflowSelectAll(
+				"SELECT 1 FROM workflow_delivery_operation WHERE kind = 'reroute' AND source_attempt_id = ? AND state != 'failed' LIMIT 1",
+				[resolved.attemptId],
+			)[0]) { result = {ok: false, reason: "physical_reroute_recovery_required"}; return; }
+			const staged = this.workflowSelectAll("SELECT payload FROM workflow_run_event WHERE run_id = ? AND event_uid = ?", [operation.run_id, `retired_wake_hold_staged:${input.operationId}`])[0];
+			if (staged) {
+				let binding: Record<string, unknown>;
+				try { binding = JSON.parse(String(staged.payload)); } catch { return; }
+				if (binding.retirementId !== resolved.retirementId || binding.attemptId !== resolved.attemptId ||
+					binding.physicalId !== resolved.physicalId || binding.completionEventUid !== resolved.completionEventUid ||
+					binding.targetActivationId !== resolved.targetActivationId) return;
+			}
+			if (!this.workflowSelectAll("SELECT 1 FROM workflow_rework_wake_retirement WHERE retirement_id = ? AND projected_at IS NOT NULL", [resolved.retirementId])[0]) return;
+			this.retireProjectedReworkWakeAttemptTx(resolved.attemptId, input.now);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: String(operation.run_id), eventUid: `delivery_reroute_noop:${input.operationId}`, kind: "delivery_reroute_noop",
+				payload: {operationId: input.operationId, holdEventUid: operation.hold_event_uid,
+					retirementId: resolved.retirementId, sourceAttemptId: resolved.attemptId, physicalId: resolved.physicalId,
+					targetExecutionId: operation.target_activation_id, targetActivationId: resolved.targetActivationId,
+					completionEventUid: resolved.completionEventUid, reason: "target_obligation_completed"},
+			});
+			this.db.run("UPDATE workflow_delivery_operation SET state = 'applied', updated_at = ? WHERE operation_id = ? AND state = 'staged'", [input.now, input.operationId]);
+			if (this.db.getRowsModified() !== 1) throw new Error("completed_rework_wake_noop_cas_failed");
+			result = {ok: true, idempotentReplay: false};
+		});
+		if (result.ok) this.save();
+		return result;
 	}
 
 	applyWorkflowDeliveryCancellation(input: {
@@ -47479,6 +48142,35 @@ export class StateStore {
 			reason: "delivery_cancellation_not_applied",
 		};
 		this.db.transaction(() => {
+			const retiredOperation = this.workflowSelectAll(
+				"SELECT * FROM workflow_delivery_operation WHERE operation_id = ? AND kind = 'hold_resume' AND family = 'phase_wake' AND target_activation_id IS NULL",
+				[input.operationId],
+			)[0];
+			if (retiredOperation) {
+				if (retiredOperation.state === "applied" || retiredOperation.state === "projected") {
+					result = {ok: true, idempotentReplay: true}; return;
+				}
+				const current = this.resolveRetiredWakeHoldCloseTx({
+					runId: String(retiredOperation.run_id), holdEventUid: String(retiredOperation.hold_event_uid),
+				});
+				const staged = this.workflowSelectAll(
+					"SELECT payload FROM workflow_run_event WHERE run_id = ? AND event_uid = ? AND kind = 'retired_wake_hold_staged'",
+					[retiredOperation.run_id, `retired_wake_hold_staged:${input.operationId}`],
+				)[0];
+				let binding: Record<string, unknown> = {};
+				try { binding = JSON.parse(String(staged?.payload)); } catch {}
+				if (retiredOperation.state !== "staged" || current.kind !== "proven" ||
+					binding.retirementId !== current.proof.retirementId || binding.attemptId !== current.attemptId ||
+					binding.physicalId !== current.physicalId || binding.rootId !== current.rootId ||
+					(retiredOperation.source_attempt_id !== null && retiredOperation.source_attempt_id !== current.attemptId) ||
+					!this.workflowSelectAll("SELECT 1 FROM workflow_rework_wake_retirement WHERE retirement_id = ? AND projected_at IS NOT NULL", [current.proof.retirementId])[0]) {
+					result = {ok: false, reason: "phase_wake_retirement_unproven"}; return;
+				}
+				this.retireProjectedReworkWakeAttemptTx(current.attemptId, input.now);
+				this.db.run("UPDATE workflow_delivery_operation SET state = 'applied', updated_at = ? WHERE operation_id = ? AND state = 'staged'", [input.now, input.operationId]);
+				if (this.db.getRowsModified() !== 1) throw new Error("retired_wake_hold_apply_cas_failed");
+				result = {ok: true, idempotentReplay: false}; return;
+			}
 			const operation = this.workflowSelectAll(
 				`SELECT operation.state, operation.source_attempt_id,
 				        operation.family, attempt.contract_ref_json

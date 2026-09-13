@@ -1,0 +1,79 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2517 · 换体后，旧唤醒一起退役</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.7 -apple-system,system-ui,sans-serif}main{max-width:960px;margin:auto;padding:36px 20px 64px}header{margin:12px 0 30px}.eyebrow{color:#007aff;font-weight:650;letter-spacing:.08em}h1{font-size:clamp(28px,5vw,43px);line-height:1.2;margin:10px 0 16px;letter-spacing:-.04em}h2{font-size:24px;line-height:1.35;margin:0 0 15px}p{margin:12px 0}.card{background:white;border-radius:12px;border-left:4px solid #007aff;padding:28px;margin:22px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}.lead{font-size:23px;line-height:1.55;font-weight:600}.muted{color:#68686e;font-size:14px}.diagram-pending{border:1px dashed #b97712;background:#fff8e9;padding:22px;border-radius:10px;margin:24px 0}.diagram-pending strong{font-size:14px;color:#86560e}.diagram-pending p{font-size:15px}table{border-collapse:collapse;width:100%;font-size:15px;margin:20px 0}th,td{text-align:left;padding:13px 12px;border-bottom:1px solid #e5e5ea;vertical-align:top}th{color:#1a365d;background:#f5f8fc}td:first-child{width:30%;font-weight:550}code{font:14px 'SF Mono',monospace;background:#f2f3f6;padding:2px 5px;border-radius:4px}.feedback{border-top:1px solid #e5e5ea;padding-top:18px;margin-top:24px}label{display:block;font-size:14px;font-weight:600;margin-bottom:8px}textarea{width:100%;min-height:84px;resize:vertical;border:1px solid #c9cbd1;border-radius:8px;font:15px/1.6 -apple-system,system-ui,sans-serif;padding:12px;background:#fcfcfd;color:#1d1d1f}textarea:focus,button:focus-visible{outline:3px solid #90bfff;outline-offset:2px}button{border:0;background:#007aff;color:white;padding:11px 18px;border-radius:8px;font:600 15px -apple-system,system-ui,sans-serif;cursor:pointer}button:disabled{opacity:.45;cursor:default}.chunk{border-top:1px solid #e5e5ea;padding:16px 0}.chunk textarea{min-height:160px;margin:10px 0}#copy-status{color:#3a6544;min-height:1.6em}footer{color:#68686e;font-size:13px;margin-top:30px}@media(max-width:600px){main{padding:22px 12px 40px}.card{padding:21px 16px}th,td{padding:10px 7px;font-size:14px}.lead{font-size:20px}h2{font-size:22px}}@media print{body{background:white}.feedback,#comments button,footer{display:none}.card{box-shadow:none;border:1px solid #ddd;break-inside:avoid}}</style></head><body><main><header><p class="eyebrow">FLY-2517 · ENGINEERING DESIGN</p><h1>换体后，旧唤醒一起退役</h1><p class="muted">2026-09-11 · 可逐节留下意见 · 页面意见属于修改反馈，不表示批准</p></header>
+<section class="card" aria-labelledby="title-summary"><h2 id="title-summary">一句话决定</h2><p class="lead">换体成功时，让旧唤醒一起退役；替身继续工作，旧信不再把整条流程暂停。</p><p>同时修复恢复操作的自锁：改投被拒绝要给出失败结果；目标已有精确完成凭据，就关闭旧通知，无需再次投递。</p><p class="muted">FLY-2517 · 含 Lead 指定并入的 FLY-2518 两项恢复设计 · 设计方案，尚未实现</p><div class="feedback"><label for="comment-summary">对「一句话决定」的意见</label><textarea data-comment data-title="一句话决定" id="comment-summary" placeholder="写下你的意见，输入时自动保存在此浏览器"></textarea></div></section>
+<section class="card" aria-labelledby="title-flow"><h2 id="title-flow">核心流程</h2><p>退役表示这封通知不再需要送达。它不代表任务已经收到，也不代表替身已经完成。</p><div class="diagram-pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>核心流程图待本地渲染。两次 Mermaid 渲染均因沙箱禁止 Chromium 启动而失败；源码已保留在 flow.mmd。</p></div><p>引擎在同一次数据库提交中记录新负责人和旧通知退役。随后可重试地清理通知库；巡检在决定暂停流程前，先核对这份退役证据。</p><div class="feedback"><label for="comment-flow">对「核心流程」的意见</label><textarea data-comment data-title="核心流程" id="comment-flow" placeholder="写下你的意见，输入时自动保存在此浏览器"></textarea></div></section>
+<section class="card" aria-labelledby="title-model"><h2 id="title-model">数据怎么对上</h2><p><code>activation</code> 是一次阶段任务的身份编号。<code>execution</code> 是承担任务的一次执行体编号。<code>epoch</code> 是这次获准工作的序号。三者与返工编号一起核对，避免碰到下一轮任务。</p><div class="diagram-pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>数据关系图待本地渲染，源码已保留在 model.mmd；与核心图遇到相同的本地启动限制。</p></div><table><thead><tr><th>保存在哪里</th><th>记录什么</th><th>承担什么责任</th></tr></thead><tbody><tr><td>引擎库</td><td>旧任务身份、换体凭据、退役待办</td><td>决定哪封旧通知失去暂停流程的资格</td></tr><tr><td>通知库</td><td>已接收的退役凭据</td><td>清理已有信件，拦住迟到副本</td></tr><tr><td>投递记录</td><td>旧通知结清原因</td><td>留下审计证据，保留真实接收时间</td></tr></tbody></table><p>两个数据库各自提交，所以中间步骤必须能在崩溃后重复执行。旧信被清理后，退役凭据继续保留。</p><div class="feedback"><label for="comment-model">对「数据怎么对上」的意见</label><textarea data-comment data-title="数据怎么对上" id="comment-model" placeholder="写下你的意见，输入时自动保存在此浏览器"></textarea></div></section>
+<section class="card" aria-labelledby="title-recovery"><h2 id="title-recovery">已经暂停的流程怎么恢复</h2><table><thead><tr><th>情况</th><th>设计后的结果</th></tr></thead><tbody><tr><td>旧信有精确换体凭据</td><td>允许操作员关闭这项暂停原因</td></tr><tr><td>目标已完成对应的返工任务</td><td>核对任务身份、换体关系和完成凭据后，直接关闭旧通知；不再发信</td></tr><tr><td>改投被拒绝</td><td>这次操作记为失败并留下原因；操作员可以重新发起</td></tr><tr><td>还存在其他暂停原因</td><td>继续保持暂停，等待对应原因解决</td></tr><tr><td>身份不符或证据缺失</td><td>拒绝自动关闭，保留原保护和明确诊断</td></tr></tbody></table><p><code>cancel</code> 是现有的操作员关闭决定。本设计仅在上述证据成立时让旧唤醒接受它，不开放任意丢弃任务。</p><div class="feedback"><label for="comment-recovery">对「已经暂停的流程怎么恢复」的意见</label><textarea data-comment data-title="已经暂停的流程怎么恢复" id="comment-recovery" placeholder="写下你的意见，输入时自动保存在此浏览器"></textarea></div></section>
+<section class="card" aria-labelledby="title-tradeoffs"><h2 id="title-tradeoffs">为什么选择这条路</h2><table><thead><tr><th>比较方案</th><th>取舍</th></tr></thead><tbody><tr><td>所有阶段通知都不再暂停流程</td><td>拒绝：真正没执行的任务也会失去保护</td></tr><tr><td>只清理已经看得见的旧信</td><td>不足：迟到的副本可能再次入队</td></tr><tr><td>把旧信直接交给替身</td><td>拒绝：旧身份和工作授权不可搬用；替身可能已经做完</td></tr><tr><td>按精确换体证据退役，并让清理可重放</td><td>采用：需要两处持久记录，但能覆盖崩溃和迟到信</td></tr></tbody></table><div class="feedback"><label for="comment-tradeoffs">对「为什么选择这条路」的意见</label><textarea data-comment data-title="为什么选择这条路" id="comment-tradeoffs" placeholder="写下你的意见，输入时自动保存在此浏览器"></textarea></div></section>
+<section class="card" aria-labelledby="title-boundary"><h2 id="title-boundary">验证与诚实边界</h2><p>实施验收要重演：旧体死亡、换体、替身完成，再推进时钟超过 20 分钟。旧信应结清，整条流程保持运行；未完成的新任务仍受原有告警和暂停保护。</p><p>还要验证崩溃重放、迟到新副本、操作被拒后重试、其他暂停并存，以及把另一轮任务误当本轮完成时必须拒绝。</p><p>已经发出的启动请求无法撤回。若旧请求先获准启动，最后仍由 <code>TURN</code> 围栏保护；它是决定哪个执行体现在有权修改工作区和提交结果的检查。</p><p>本交付是设计文档，不是已上线修复。本节点没有改生产数据库或操作真实测试槽。图表渲染失败已明确保留；当前页面也没有浏览器视觉验收证据。合并与上线分开，部署由独立更新器执行。</p><div class="feedback"><label for="comment-boundary">对「验证与诚实边界」的意见</label><textarea data-comment data-title="验证与诚实边界" id="comment-boundary" placeholder="写下你的意见，输入时自动保存在此浏览器"></textarea></div></section>
+<section class="card" id="comments" aria-labelledby="title-comments"><h2 id="title-comments">页面意见汇总</h2><p>填写的意见会即时出现在这里。超过约 1800 字时自动分块，每块都带本页标记；可整段复制或逐块复制。</p><div class="feedback"><label for="comment-overall">补充整体意见</label><textarea id="comment-overall" data-comment data-title="整体意见" placeholder="其他需要调整的地方"></textarea></div><p id="save-status" class="muted" role="status"></p><button id="copy-all" type="button">复制全部意见</button><p id="copy-status" role="status" aria-live="polite"></p><div id="chunks" aria-live="polite"></div></section><footer>仅本浏览器保存意见。分享页面不会自动传送评论；请复制意见后发送。设计证据以同目录 plan.md 为准。</footer></main>
+<script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2517';
+  const prefix = 'flywheel:report-comments:' + location.pathname + ':';
+  const fields = Array.from(document.querySelectorAll('[data-comment]'));
+  const summary = document.getElementById('chunks');
+  const copyAll = document.getElementById('copy-all');
+  const copyStatus = document.getElementById('copy-status');
+  const saveStatus = document.getElementById('save-status');
+  let blocks = [];
+  let storageFailed = false;
+  const notice = () => { saveStatus.textContent = storageFailed ? '浏览器存储不可用，意见仍可复制；请在离开页面前保存。' : '意见已在此浏览器自动保存，不会自动发送。'; };
+  const fallbackCopy = text => {
+    const target = document.createElement('textarea');
+    target.value = text;
+    target.setAttribute('aria-label', '待复制意见');
+    target.style.position = 'fixed';
+    target.style.left = '-10000px';
+    document.body.appendChild(target);
+    const focused = document.activeElement;
+    target.focus(); target.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } finally { target.remove(); if (focused && typeof focused.focus === 'function') focused.focus(); }
+    if (!ok) throw new Error('copy_failed');
+  };
+  const copyText = async text => {
+    try {
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') throw new Error('clipboard_unavailable');
+      await navigator.clipboard.writeText(text);
+    } catch (_) { fallbackCopy(text); }
+  };
+  const performCopy = async text => {
+    try { await copyText(text); copyStatus.textContent = '已复制。'; }
+    catch (_) { copyStatus.textContent = '自动复制未成功，请选中下方文本手动复制。'; }
+  };
+  const aggregate = () => {
+    const entries = fields.filter(field => field.value.trim()).map(field => '【' + field.dataset.title + '】\n' + field.value.trim());
+    const raw = entries.join('\n\n');
+    const chars = Array.from(raw);
+    blocks = [];
+    let piece = '';
+    for (const char of chars) {
+      if (piece.length + char.length > 1680) { blocks.push(marker + '\n' + piece); piece = ''; }
+      piece += char;
+    }
+    if (piece) blocks.push(marker + '\n' + piece);
+    summary.replaceChildren();
+    copyAll.disabled = blocks.length === 0;
+    if (!blocks.length) {
+      const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = '还没有意见，填写任一段即可生成汇总。'; summary.appendChild(empty); return;
+    }
+    blocks.forEach((text, index) => {
+      const item = document.createElement('div'); item.className = 'chunk';
+      const label = document.createElement('label'); label.htmlFor = 'chunk-' + index; label.textContent = '第 ' + (index + 1) + ' / ' + blocks.length + ' 段';
+      const output = document.createElement('textarea'); output.id = 'chunk-' + index; output.readOnly = true; output.value = text;
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制这一段'; button.addEventListener('click', () => { void performCopy(text); });
+      item.append(label, output, button); summary.appendChild(item);
+    });
+  };
+  fields.forEach(field => {
+    try { field.value = localStorage.getItem(prefix + field.id) || ''; } catch (_) { storageFailed = true; }
+    field.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + field.id, field.value); } catch (_) { storageFailed = true; }
+      notice(); aggregate();
+    });
+  });
+  copyAll.addEventListener('click', () => { void performCopy(blocks.join('\n\n')); });
+  notice(); aggregate();
+})();
+</script></body></html>

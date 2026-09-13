@@ -1,3 +1,4 @@
+import type { RunnerPhaseWakeStartResult } from "flywheel-comm/db";
 /**
  * FLY-1188 M4 — codex remote-control daemon client (runner side).
  *
@@ -203,7 +204,7 @@ export interface GoalPhaseLifecycle {
 	confirmHoldPaused(): Promise<void>;
 	observe(): GoalPhaseObservation;
 	waitForActivity(timeoutMs: number): Promise<void>;
-	markWakeStarted(messageId: string): void;
+	markWakeStarted(messageId: string): RunnerPhaseWakeStartResult;
 	finishWake(messageId: string): void;
 	leaveHold(): Promise<void>;
 }
@@ -1152,7 +1153,19 @@ export async function runGoalToTerminal(
 		message: Extract<GoalPhaseObservation, { kind: "wake" }>["message"],
 	): Promise<boolean> => {
 		if (!phase || !phaseHold) return false;
-		phase.markWakeStarted(message.id);
+		const claim = phase.markWakeStarted(message.id);
+		switch (claim) {
+			case "disposed":
+			case "missing":
+				return false;
+			case "started":
+			case "replay":
+				break;
+			default: {
+				const unreachable: never = claim;
+				throw new Error(`Unknown phase wake start claim: ${unreachable}`);
+			}
+		}
 		try {
 			beginTurnDispatch();
 			const turnId = await client.startTurn(

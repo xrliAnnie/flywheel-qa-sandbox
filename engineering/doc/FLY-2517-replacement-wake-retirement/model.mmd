@@ -1,0 +1,9 @@
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"-apple-system, system-ui, sans-serif","fontSize":"18px","primaryColor":"#eef5ff","primaryTextColor":"#1d1d1f","primaryBorderColor":"#007aff","lineColor":"#687080"},"flowchart":{"htmlLabels":false,"curve":"stepAfter","nodeSpacing":34,"rankSpacing":44}}}%%
+flowchart TD
+  P[不可变证明：旧任务身份＋换体回执] --> R[引擎库：一条精确退役待办]
+  R --> L[投递合同：结清旧通知]
+  R --> C[通知库：保存退役接收回执]
+  C --> O[逻辑父通知：停止重试]
+  C --> M[实际信件：已存在或迟到都退役]
+  classDef key fill:#eaf8ee,stroke:#34c759,color:#1d1d1f
+  class R key

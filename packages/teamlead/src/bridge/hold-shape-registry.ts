@@ -11,8 +11,9 @@ const PHASE_WAKE_UNDELIVERABLE_DECISIONS = Object.freeze([
 
 export function deliveryUndeliverableRequiredDecisions(
 	family: string,
+	options: { retiredWakeClosable?: boolean } = {},
 ): readonly ("reroute_to" | "cancel")[] {
-	return family === "phase_wake"
+	return family === "phase_wake" && !options.retiredWakeClosable
 		? PHASE_WAKE_UNDELIVERABLE_DECISIONS
 		: DELIVERY_UNDELIVERABLE_DECISIONS;
 }

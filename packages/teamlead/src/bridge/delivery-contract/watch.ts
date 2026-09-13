@@ -20,6 +20,7 @@ import {
 	MAILBOX_SLOT_FREEZE_AFTER_MS,
 	TURN_WAKE_FREEZE_AFTER_MS,
 } from "./policy.js";
+import { retireObservedReworkWakeAttempt } from "./rework-wake-retirement.js";
 import { observeRunnerMailboxDelivery } from "./sources/mailbox.js";
 import { observeRunnerTurnWakeDelivery } from "./sources/turn-wake.js";
 import type { DeliveryTerminal } from "./types.js";
@@ -93,6 +94,19 @@ export class DeliveryContractWatch {
 				if (this.deps.projectName && projectName !== this.deps.projectName)
 					continue;
 				result.observed++;
+				if (
+					retireObservedReworkWakeAttempt({
+						store: this.deps.store,
+						commDb: this.deps.commDb,
+						projectName,
+						attempt,
+						now: _now,
+					})
+				) {
+					result.closed++;
+					continue;
+				}
+
 				const classification = classifyDeliveryAttempt(attempt, _now);
 				const mailboxRow =
 					ref.table === "mailbox" && typeof ref.pk === "string"

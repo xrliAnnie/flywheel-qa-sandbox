@@ -8904,6 +8904,17 @@ export async function startBridge(
 							}`,
 						);
 					}
+					await drainSynchronousPages<{ runId: string; eventSeq: number }>(
+						(cursor) =>
+							withSyncOpMarker("delivery-contract:rework-wake-backfill", () =>
+								store.backfillReworkWakeRetirements({
+									projectName: project.projectName,
+									now: deliveryNow,
+									limit: 64,
+									after: cursor,
+								}),
+							),
+					);
 					await drainSynchronousPages<DeliveryProjectorCursor>((cursor) =>
 						withSyncOpMarker("delivery-contract:projector", () =>
 							deliveryProjector.runPass(deliveryNow, cursor),

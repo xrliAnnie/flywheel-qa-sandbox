@@ -44,6 +44,7 @@ export type {
 	RunnerDeliveryProjectionRow,
 	RunnerDoorbellWakeResult,
 	RunnerPhaseWake,
+	RunnerPhaseWakeStartResult,
 	RunnerShutdownControl,
 	RunnerTurnWakeProjectionRow,
 	TurnWakeOutboxRow,
@@ -96,6 +97,12 @@ export {
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
 	MailboxQueue,
 } from "./mailbox-queue.js";
+export {
+	buildReworkWakeId,
+	parseReworkWakeMetadata,
+	type ReworkWakeIdentity,
+	type ReworkWakeRetirementProof,
+} from "./rework-wake-identity.js";
 export type {
 	ArtifactFile,
 	SelectionResult,

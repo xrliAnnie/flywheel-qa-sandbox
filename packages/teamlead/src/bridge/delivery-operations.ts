@@ -1,11 +1,14 @@
 import type { CommDB, RunnerShutdownControl } from "flywheel-comm/db";
+import { canonicalSubmissionDigest } from "flywheel-config";
 import type { StateStore, WorkflowEngineAlertIdentity } from "../StateStore.js";
 import { collectRecipientLivenessEvidence } from "./delivery-contract/liveness.js";
 import { DELIVERY_MAINTENANCE_PAGE_SIZE } from "./delivery-contract/policy.js";
+import { retireObservedReworkWakeAttempt } from "./delivery-contract/rework-wake-retirement.js";
 import type { WorkflowDeliveryAttemptRow } from "./delivery-contract/types.js";
 
 export interface DeliveryOperationsCursor {
-	lane: "hold" | "episode" | "stalled";
+	lane: "hold" | "episode" | "stalled" | "retirement";
+	retirementAfter?: string;
 	after?: string;
 	afterFamily?: WorkflowDeliveryAttemptRow["family"];
 }
@@ -192,6 +195,67 @@ export class DeliveryOperations {
 	}
 
 	runPass(
+		now: string,
+		cursor?: DeliveryOperationsCursor,
+	): DeliveryOperationsPassResult {
+		// Retirement has its own bounded quota; it cannot consume the hold/episode budget.
+		const candidates = this.deps.store.listPendingReworkWakeRetirements({
+			afterId: cursor?.retirementAfter,
+			limit: DELIVERY_MAINTENANCE_PAGE_SIZE + 1,
+		});
+		const page = candidates.slice(0, DELIVERY_MAINTENANCE_PAGE_SIZE);
+		for (const proof of page) {
+			try {
+				const run = this.deps.store.getWorkflowRun(proof.runId);
+				if (
+					!run ||
+					(this.deps.projectName && run.project_name !== this.deps.projectName)
+				)
+					continue;
+				const authorized =
+					this.deps.store.resolveReworkWakeRetirementProofTx(proof);
+				if (
+					authorized.kind !== "proven" ||
+					canonicalSubmissionDigest(authorized.proof) !==
+						canonicalSubmissionDigest(proof)
+				) {
+					throw new Error("retirement_authority_changed");
+				}
+				this.deps.commDb.applyReworkWakeRetirement(proof, Date.parse(now));
+				this.deps.store.markReworkWakeRetirementProjected({
+					retirementId: proof.retirementId,
+					now,
+				});
+			} catch (error) {
+				console.warn(
+					`[delivery-operations] retirement ${proof.retirementId} deferred: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+		const nextRetirement =
+			candidates.length > page.length ? page.at(-1)?.retirementId : undefined;
+		const result =
+			cursor?.lane === "retirement"
+				? ({
+						examined: 0,
+						rerouted: 0,
+						operatorRequired: 0,
+					} as DeliveryOperationsPassResult)
+				: this.runDeliveryPass(now, cursor);
+		if (result.nextCursor) {
+			// Keep the retirement scan's position even after its final page while other lanes drain.
+			result.nextCursor.retirementAfter =
+				nextRetirement ?? page.at(-1)?.retirementId ?? cursor?.retirementAfter;
+		} else if (nextRetirement) {
+			result.nextCursor = {
+				lane: "retirement",
+				retirementAfter: nextRetirement,
+			};
+		}
+		return result;
+	}
+
+	private runDeliveryPass(
 		_now: string,
 		cursor?: DeliveryOperationsCursor,
 	): DeliveryOperationsPassResult {
@@ -238,10 +302,77 @@ export class DeliveryOperations {
 								continue;
 							}
 							if (
+								operation.family === "phase_wake" &&
+								operation.targetActivationId
+							) {
+								const completed =
+									this.deps.store.resolveCompletedReworkWakeTargetTx({
+										...operation,
+										targetExecutionId: operation.targetActivationId,
+									});
+								if (completed.kind === "noop") {
+									this.deps.commDb.applyReworkWakeRetirement(
+										completed.proof,
+										Date.parse(_now),
+									);
+									this.deps.store.markReworkWakeRetirementProjected({
+										retirementId: completed.retirementId,
+										now: _now,
+									});
+									const applied =
+										this.deps.store.applyCompletedReworkWakeHoldNoop({
+											operationId: operation.operationId,
+											now: _now,
+										});
+									if (applied.ok) {
+										this.deps.store.projectWorkflowHoldResume({
+											operationId: operation.operationId,
+											now: _now,
+										});
+										continue;
+									}
+									if (applied.reason !== "physical_reroute_recovery_required")
+										throw new Error(applied.reason);
+								}
+							}
+							if (
+								operation.family === "phase_wake" &&
+								!operation.targetActivationId
+							) {
+								const retired =
+									this.deps.store.resolveRetiredWakeHoldCloseTx(operation);
+								if (retired.kind === "proven") {
+									this.deps.commDb.applyReworkWakeRetirement(
+										retired.proof,
+										Date.parse(_now),
+									);
+									this.deps.store.markReworkWakeRetirementProjected({
+										retirementId: retired.proof.retirementId,
+										now: _now,
+									});
+									const applied =
+										this.deps.store.applyWorkflowDeliveryCancellation({
+											operationId: operation.operationId,
+											now: _now,
+										});
+									if (!applied.ok) throw new Error(applied.reason);
+									this.deps.store.projectWorkflowHoldResume({
+										operationId: operation.operationId,
+										now: _now,
+									});
+									continue;
+								}
+							}
+							if (
 								!operation.physicalId ||
 								!operation.sourceAttemptId ||
 								!operation.episodeId
 							) {
+								this.deps.store.markWorkflowHoldResumeFailed({
+									operationId: operation.operationId,
+									now: _now,
+									error: "delivery_reroute_operator_required",
+								});
 								continue;
 							}
 							if (operation.state === "staged") {
@@ -291,11 +422,57 @@ export class DeliveryOperations {
 								if (operation.targetActivationId) {
 									const staged = this.deps.store.stageWorkflowDeliveryReroute({
 										episodeId: operation.episodeId,
+										sourceHold: {
+											runId: operation.runId,
+											holdEventUid: operation.holdEventUid,
+										},
 										targetExecutionId: operation.targetActivationId,
 										now: _now,
 										allowOverCap: true,
 									});
-									if (staged.kind !== "staged") continue;
+									switch (staged.kind) {
+										case "rejected":
+										case "operator_required":
+											this.deps.store.markWorkflowHoldResumeFailed({
+												operationId: operation.operationId,
+												now: _now,
+												error:
+													staged.reason ?? "delivery_reroute_operator_required",
+											});
+											continue;
+										case "noop": {
+											const completed =
+												this.deps.store.resolveCompletedReworkWakeTargetTx({
+													...operation,
+													targetExecutionId: operation.targetActivationId,
+												});
+											if (completed.kind !== "noop")
+												throw new Error(
+													"completed_rework_wake_target_unproven",
+												);
+											this.deps.commDb.applyReworkWakeRetirement(
+												completed.proof,
+												Date.parse(_now),
+											);
+											this.deps.store.markReworkWakeRetirementProjected({
+												retirementId: completed.retirementId,
+												now: _now,
+											});
+											const applied =
+												this.deps.store.applyCompletedReworkWakeHoldNoop({
+													operationId: operation.operationId,
+													now: _now,
+												});
+											if (!applied.ok) throw new Error(applied.reason);
+											this.deps.store.projectWorkflowHoldResume({
+												operationId: operation.operationId,
+												now: _now,
+											});
+											continue;
+										}
+										case "staged":
+											break;
+									}
 									stagedRerouteOperationId = staged.operationId;
 									const rerouteInput = {
 										sourceId: staged.sourcePhysicalId,
@@ -520,6 +697,17 @@ export class DeliveryOperations {
 							runId: episode.run_id,
 						});
 						rerouteAlertIdentity = alertIdentity;
+						if (
+							retireObservedReworkWakeAttempt({
+								store: this.deps.store,
+								commDb: this.deps.commDb,
+								projectName,
+								attempt: episode,
+								now: _now,
+							})
+						)
+							continue;
+
 						const ref = JSON.parse(episode.contract_ref_json) as {
 							pk?: unknown;
 						};

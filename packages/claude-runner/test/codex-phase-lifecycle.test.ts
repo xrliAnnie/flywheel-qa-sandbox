@@ -271,6 +271,45 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 		});
 	});
 
+	it("FLY-2517 returns disposed when an observed wake is retired before claim", () => {
+		const metadata = {
+			kind: "workflow_rework",
+			wakeId: "rework-wake:request:activation:request:epoch:9",
+			activationId: "activation:request",
+			epoch: 9,
+		};
+		db.enqueueRunnerPhaseWake(
+			"exec-1",
+			{ id: "retired-cached", to: "exec-1", content: "wake", metadata },
+			1000,
+		);
+		const lifecycle = controller();
+		expect(lifecycle.observe()).toMatchObject({
+			kind: "wake",
+			message: { id: "retired-cached" },
+		});
+		db.applyReworkWakeRetirement(
+			{
+				retirementId: "retirement",
+				runId: "run",
+				requestId: "request",
+				nodeId: "implement",
+				attempt: 2,
+				oldRouteRevision: 1,
+				newRouteRevision: 2,
+				executionId: "exec-1",
+				replacementExecutionId: "replacement",
+				activationId: metadata.activationId,
+				epoch: 9,
+				wakeId: metadata.wakeId,
+				replacementEventUid: "rework_replacement_materialized:request",
+			},
+			2000,
+		);
+		expect(lifecycle.markWakeStarted("retired-cached")).toBe("disposed");
+		expect(db.listRunnerPhaseWakes("exec-1")[0]?.started_at).toBeNull();
+	});
+
 	it("wake state transitions are idempotent for controller reconstruction", () => {
 		db.enqueueRunnerPhaseWake(
 			"exec-1",

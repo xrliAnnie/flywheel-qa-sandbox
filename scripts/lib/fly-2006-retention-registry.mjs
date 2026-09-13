@@ -79,7 +79,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		workflow_resume_attachment workflow_resume_attachment_state workflow_resume_probe
 		workflow_resident_hold
 		workflow_resume_response workflow_rework_delivery workflow_rework_request
-		workflow_rework_route_revision workflow_rework_verification_path
+		workflow_rework_route_revision workflow_rework_verification_path workflow_rework_wake_retirement
 		workflow_route_decision workflow_route_reminder_outbox workflow_run
 		workflow_run_collect_alias workflow_run_collect_receipt workflow_run_issue_alias workflow_run_node
 		workflow_side_effect_ledger workflow_source_cursor workflow_source_deadletter
@@ -97,7 +97,7 @@ export const COMM_TABLE_CLASSIFICATION = Object.freeze({
 		lead_inbox_fenced_root lead_inbox_freeze_install lead_inbox_sanitation_audit
 		loop_heartbeat loop_owner mailbox_archive mailbox_identity mailbox_migration_meta
 		mailbox_terminal_archive
-		runner_declared_states runner_stop_declarations runner_workflow_activation session_receipt_lineage sessions
+		runner_declared_states runner_stop_declarations runner_workflow_activation runner_rework_wake_retirement session_receipt_lineage sessions
 		three_stage_turn turn_source_history turn_wait_ledger turn_wake_outbox
 		workflow_engine_park workflow_engine_park_cursor workflow_source_event
 	`),

@@ -1,4 +1,4 @@
-import type { CommDB } from "flywheel-comm/db";
+import { buildReworkWakeId, type CommDB } from "flywheel-comm/db";
 import type {
 	GeneralizedWorkflowAdmissionResult,
 	WorkflowEngineAlertIdentity,
@@ -800,7 +800,11 @@ export class WorkflowReworkCoordinator {
 			}
 		}
 
-		const wakeId = `rework-wake:${requestId}:${activationId}:epoch:${turn.epoch}`;
+		const wakeId = buildReworkWakeId({
+			requestId,
+			activationId,
+			epoch: turn.epoch,
+		});
 		const woke = await this.deps.effects.wakeActor({
 			session: actor,
 			wakeId,

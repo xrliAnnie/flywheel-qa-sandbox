@@ -181,6 +181,7 @@
 	"workflow_rework_request",
 	"workflow_rework_route_revision",
 	"workflow_rework_verification_path",
+	"workflow_rework_wake_retirement",
 	"workflow_route_decision",
 	"workflow_route_reminder_outbox",
 	"workflow_run",

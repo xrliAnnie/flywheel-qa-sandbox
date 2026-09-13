@@ -11,7 +11,11 @@ import {
 	writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { CommDB, type RunnerPhaseWake } from "flywheel-comm/db";
+import {
+	CommDB,
+	type RunnerPhaseWake,
+	type RunnerPhaseWakeStartResult,
+} from "flywheel-comm/db";
 
 export type CodexPhaseRole = "design" | "implement" | "qa";
 
@@ -162,11 +166,11 @@ interface PhaseLifecycleDb {
 		executionId: string,
 		nowMs: number,
 	): { kind: "parked" | "long_task"; reason: string | null } | null;
-	markRunnerPhaseWakeStarted(
+	claimRunnerPhaseWakeStart(
 		executionId: string,
 		messageId: string,
 		nowMs: number,
-	): boolean;
+	): RunnerPhaseWakeStartResult;
 	finishRunnerPhaseWake(
 		executionId: string,
 		messageId: string,
@@ -261,7 +265,7 @@ export interface CodexPhaseLifecycle {
 	confirmHoldPaused(): Promise<void>;
 	waitForActivity(timeoutMs: number): Promise<void>;
 	leaveHold(): Promise<void>;
-	markWakeStarted(messageId: string): void;
+	markWakeStarted(messageId: string): RunnerPhaseWakeStartResult;
 	finishWake(messageId: string): void;
 	ackShutdown(
 		requestId: string,
@@ -538,21 +542,12 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 		});
 	}
 
-	markWakeStarted(messageId: string): void {
-		if (
-			this.db.markRunnerPhaseWakeStarted(
-				this.options.executionId,
-				messageId,
-				this.now(),
-			)
-		) {
-			return;
-		}
-		const existing = this.db
-			.listRunnerPhaseWakes(this.options.executionId)
-			.find((wake) => wake.message_id === messageId);
-		if (existing?.state === "started" || existing?.state === "finished") return;
-		throw new Error(`phase wake ${messageId} could not transition to started`);
+	markWakeStarted(messageId: string): RunnerPhaseWakeStartResult {
+		return this.db.claimRunnerPhaseWakeStart(
+			this.options.executionId,
+			messageId,
+			this.now(),
+		);
 	}
 
 	finishWake(messageId: string): void {

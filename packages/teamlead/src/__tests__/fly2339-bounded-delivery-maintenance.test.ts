@@ -394,6 +394,7 @@ describe("FLY-2339 bounded delivery maintenance", () => {
 		);
 		let projected = 0;
 		const store = {
+			listPendingReworkWakeRetirements: () => [],
 			listPendingWorkflowHoldResumeOperations: listPending,
 			getWorkflowRun: vi.fn(() => ({
 				project_name: "flywheel",
@@ -503,6 +504,7 @@ describe("FLY-2339 bounded delivery maintenance", () => {
 		}));
 		const alertStalled = vi.fn(() => 0);
 		const store = {
+			listPendingReworkWakeRetirements: () => [],
 			listOpenUndeliverableDeliveryEpisodes: vi.fn(() => episodes),
 			getWorkflowRun: vi.fn(() => undefined),
 			hasWorkflowDeliveryRerouteOperatorRequired: vi.fn(() => false),

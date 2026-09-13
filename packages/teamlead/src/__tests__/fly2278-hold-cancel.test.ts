@@ -489,3 +489,138 @@ describe("FLY-2278 canonical undeliverable cancel", () => {
 		).toEqual({ ok: false, reason: "hold_changed" });
 	});
 });
+
+describe("FLY-2518 rejected manual reroute", () => {
+	it.each(["rejected", "operator_required"] as const)(
+		"terminates %s staging once and releases the request slot without closing the hold",
+		async (outcome) => {
+			const { store, commDb, runId, hold, episode } =
+				await commFixture("phase_wake");
+			const target = "replacement-target";
+			store.upsertSession({
+				execution_id: target,
+				issue_id: "FLY-2278",
+				project_name: "flywheel",
+				status: "running",
+				workflow_node_id: "worker",
+			});
+			store.upsertWorkflowRunNode({
+				runId,
+				nodeId: "worker",
+				attempt: 2,
+				state: "running",
+				executionId: target,
+			});
+			const input = {
+				runId,
+				shape: hold.shape,
+				holdEventUid: hold.holdEventUid,
+				decision: `reroute_to ${target}`,
+				reason: "retry exact target",
+				principal: "master" as const,
+				clientRequestId: "fly2518-first",
+				now: observedAt,
+			};
+			const staged = resumeHold(store, input);
+			expect(staged).toMatchObject({ ok: true, state: "staged" });
+			if (!staged.ok) throw new Error("fixture failed");
+			rawDb(store).exec(`
+				CREATE TRIGGER reject_failure_receipt BEFORE INSERT ON workflow_run_event
+				WHEN NEW.kind = 'hold_resume_failed'
+				BEGIN SELECT RAISE(ABORT, 'test_failure_receipt'); END;
+			`);
+			expect(() =>
+				store.markWorkflowHoldResumeFailed({
+					operationId: staged.operationId,
+					now: observedAt,
+					error: "test failure",
+				}),
+			).toThrow("test_failure_receipt");
+			expect(resumeHold(store, input)).toMatchObject({
+				ok: true,
+				state: "staged",
+			});
+			rawDb(store).exec("DROP TRIGGER reject_failure_receipt");
+			if (outcome === "rejected") {
+				store.upsertSession({
+					execution_id: target,
+					issue_id: "FLY-2278",
+					project_name: "flywheel",
+					status: "completed",
+					workflow_node_id: "worker",
+				});
+			} else {
+				rawDb(store)
+					.prepare(
+						"UPDATE workflow_delivery_contract_episode SET closed_at = ? WHERE episode_id = ?",
+					)
+					.run(observedAt, episode.episode_id);
+			}
+			const runStatus = store.getWorkflowRun(runId)?.status;
+			const runner = () =>
+				new DeliveryOperations({
+					store,
+					commDb,
+					projectName: "flywheel",
+					resolveRecipient: () => null,
+					resolveAlertIdentity: () => alertIdentity,
+				});
+			runner().runPass(observedAt);
+			runner().runPass(observedAt);
+			expect(resumeHold(store, input)).toMatchObject({
+				ok: true,
+				state: "failed",
+				idempotentReplay: true,
+			});
+			const events = rawDb(store)
+				.prepare(
+					"SELECT payload FROM workflow_run_event WHERE run_id = ? AND kind = 'hold_resume_failed'",
+				)
+				.all(runId) as { payload: string }[];
+			expect(events).toHaveLength(1);
+			expect(JSON.parse(events[0]!.payload)).toMatchObject({
+				operationId: staged.operationId,
+				holdEventUid: hold.holdEventUid,
+				targetExecutionId: target,
+				reason:
+					outcome === "rejected"
+						? "target_not_current"
+						: "delivery_reroute_operator_required",
+			});
+			expect(store.getWorkflowRun(runId)?.status).toBe(runStatus);
+			expect(
+				store
+					.listWorkflowHolds(runId)
+					.some((h) => h.holdEventUid === hold.holdEventUid),
+			).toBe(true);
+			expect(
+				rawDb(store)
+					.prepare(
+						"SELECT COUNT(*) AS count FROM workflow_run_event WHERE run_id = ? AND kind = 'hold_resumed'",
+					)
+					.get(runId),
+			).toEqual({ count: 0 });
+			store.upsertSession({
+				execution_id: "replacement-retry",
+				issue_id: "FLY-2278",
+				project_name: "flywheel",
+				status: "running",
+				workflow_node_id: "worker",
+			});
+			if (outcome === "operator_required") {
+				rawDb(store)
+					.prepare(
+						"UPDATE workflow_delivery_contract_episode SET closed_at = NULL WHERE episode_id = ?",
+					)
+					.run(episode.episode_id);
+			}
+			expect(
+				resumeHold(store, {
+					...input,
+					decision: "reroute_to replacement-retry",
+					clientRequestId: "fly2518-new",
+				}),
+			).toMatchObject({ ok: true, state: "staged" });
+		},
+	);
+});
