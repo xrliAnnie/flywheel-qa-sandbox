@@ -144,7 +144,7 @@ sanitize_codex_child_env() {
   if [ -n "${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-}" ]; then
     log "ignoring ambient FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS; registry routing is authoritative"
   fi
-  unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS \
+  unset FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS \
     FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD FLYWHEEL_ROUNDTABLE_CHANNEL_ID \
     FLYWHEEL_ROUNDTABLE_ENABLED FLYWHEEL_ROUNDTABLE_GUILD_ID \
     FLYWHEEL_LEAD_CORE_CHANNEL_ID FLYWHEEL_LEAD_MENTION_PATTERNS
@@ -168,7 +168,8 @@ compose_codex_child_env() {
   export FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST
   FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST="$(jq -er '.projectsDigest' <<<"$selector")"
   export FLYWHEEL_CODEX_LEAD_MODE=tui
-  export FLYWHEEL_CODEX_LEAD_PROFILE=full-access
+  FLYWHEEL_CODEX_LEAD_PROFILE="$(jq -er '.genericCodexDefaultProfile' <<<"$selector")" || return 78
+  export FLYWHEEL_CODEX_LEAD_PROFILE
   export FLYWHEEL_CODEX_LEAD_SANDBOX=workspace-write
   export FLYWHEEL_LEAD_CHAT_CHANNEL_ID
   FLYWHEEL_LEAD_CHAT_CHANNEL_ID="$(jq -er '.chatChannel' <<<"$selector")"
@@ -230,6 +231,8 @@ run_manifest() {
 
   [ "$(jq -r '.codexProfile // ""' <<<"$selector")" = "full-access" ] \
     || { fail "Codex launcher supports only codexProfile=full-access" 78; return $?; }
+  jq -e '.codexCapabilities.eligible == true' <<<"$selector" >/dev/null \
+    || { fail "Codex Lead capability configuration is not eligible" 78; return $?; }
   token_env="$(jq -er '.botTokenEnv | select(test("^[A-Za-z_][A-Za-z0-9_]*$"))' <<<"$selector")" \
     || { fail "Codex selector has an invalid botTokenEnv" 78; return $?; }
   [ -n "${!token_env:-}" ] || { fail "$token_env is unset or empty" 78; return $?; }
@@ -293,7 +296,7 @@ preflight_executable() {
 preflight_manifest() {
   local manifest="$1" selector token_env project_root identity_file
   local check_plugin update_plugin installed_wrapper source_wrapper
-  local address_lib codex_home codex_bin codex_launcher state_dir link_truth
+  local address_lib codex_home codex_bin codex_launcher state_dir link_truth link_inspection
   local actions_main tui_runtime root_preflight target_sha probe_rc probe_output
   local activation_rc activation_output runtime_rc runtime_output
   PREFLIGHT_FAILURES=0
@@ -411,6 +414,11 @@ preflight_manifest() {
     else
       preflight_fail "Codex profile must be full-access"
     fi
+    if jq -e '.codexCapabilities.eligible == true' <<<"$selector" >/dev/null; then
+      preflight_pass "Codex Lead capability configuration"
+    else
+      preflight_fail "Codex Lead capability configuration is not eligible"
+    fi
     address_lib="${FLYWHEEL_BIN_DIR}/lib/lead-address.sh"
     [ -f "$address_lib" ] || address_lib="${FLYWHEEL_DIR}/scripts/lib/lead-address.sh"
     if [ -f "$address_lib" ]; then
@@ -429,18 +437,20 @@ preflight_manifest() {
       preflight_fail "Codex home missing or unsafe: ${codex_home:-<unresolved>}"
     fi
     preflight_executable "$codex_bin" "standalone Codex"
-    if [ -f "${codex_home}/auth.json" ] && [ ! -L "${codex_home}/auth.json" ]; then
+    if [ -f "${codex_home}/auth.json" ]; then
       preflight_pass "Codex auth.json"
     else
       preflight_fail "Codex auth.json missing or unsafe: ${codex_home}/auth.json"
     fi
     link_truth="${FLYWHEEL_BIN_DIR}/codex-home-link-truth.sh"
     [ -x "$link_truth" ] || link_truth="${FLYWHEEL_DIR}/scripts/codex-home-link-truth.sh"
+    link_inspection=""
     if [ -x "$link_truth" ] && [ ! -L "$link_truth" ] \
-      && "$link_truth" --lead "${RUN_PROJECT}/${RUN_LEAD}" "$codex_home" >/dev/null 2>&1; then
+      && link_inspection="$("$link_truth" --inspect --lead "${RUN_PROJECT}/${RUN_LEAD}" "$codex_home" 2>/dev/null)" \
+      && jq -e '.state == "already"' <<<"$link_inspection" >/dev/null 2>&1; then
       preflight_pass "Codex home link truth"
     else
-      preflight_fail "codex-home-link-truth.sh verification failed"
+      preflight_fail "Codex auth link truth is unverified; prepare the home before preflight"
     fi
     actions_main="${FLYWHEEL_TEAMLEAD_ROOT}/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
     tui_runtime="${FLYWHEEL_TEAMLEAD_ROOT}/dist/lead-backends/codex/codex-lead-tui-runtime.js"
@@ -965,4 +975,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

@@ -1602,6 +1602,42 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		return loadProjects();
 	}
 
+	it("FLY-2459 accepts explicit department runner capability", () => {
+		const projects = loadWith(
+			fleetLead({
+				backend: "codex-app-server",
+				codexProfile: "full-access",
+				canSpawnRunners: true,
+				codexRunnerActions: true,
+			}),
+		);
+		expect(projects[0]!.leads[0]!.codexRunnerActions).toBe(true);
+	});
+	it("FLY-2459 rejects implicit canSpawn before normalization even on Claude", () => {
+		expect(() =>
+			loadWith(
+				fleetLead({
+					backend: "claude-code",
+					codexProfile: "full-access",
+					codexRunnerActions: true,
+				}),
+			),
+		).toThrow(/codexRunnerActions/);
+	});
+	it.each(["true", null, 1])(
+		"FLY-2459 rejects malformed opt-in %j",
+		(codexRunnerActions) => {
+			expect(() =>
+				loadWith(
+					fleetLead({
+						canSpawnRunners: true,
+						codexProfile: "full-access",
+						codexRunnerActions,
+					} as unknown as Partial<LeadConfig>),
+				),
+			).toThrow(/codexRunnerActions/);
+		},
+	);
 	it("accepts claude-code backend with a model, fields preserved verbatim", () => {
 		const projects = loadWith(
 			fleetLead({ model: "claude-fable-5", backend: "claude-code" }),

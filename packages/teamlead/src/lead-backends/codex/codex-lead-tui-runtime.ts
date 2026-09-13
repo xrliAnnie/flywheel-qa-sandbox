@@ -1,3 +1,4 @@
+import { resolveRunnerActionMcpContext } from "./runner-action-mcp.js";
 /**
  * FLY-259 PR-D — codex-lead-tui-runtime: the ③ (real interactive terminal)
  * entrypoint. One shared `codex remote-control` daemon; this sidecar is the
@@ -222,6 +223,7 @@ export function buildTuiDaemonEnv(opts: {
 			env.FLYWHEEL_API_TOKEN?.trim();
 		return {
 			...buildFullAccessEnv(env),
+			...resolveRunnerActionMcpContext(env)?.env,
 			...(bridgeUrl ? { BRIDGE_URL: bridgeUrl } : {}),
 			...(apiToken ? { TEAMLEAD_API_TOKEN: apiToken } : {}),
 			...(alertChannel
@@ -1060,6 +1062,7 @@ export async function main(
 			);
 		}
 		const expectedMcp = buildFullAccessLeadActionsMcpServerConfig({
+			runnerContext: config.runnerActionContext,
 			nodeBin: env.FLYWHEEL_LEAD_ACTIONS_NODE_BIN?.trim() || "node",
 			mainJsPath,
 			leadId: config.leadId,

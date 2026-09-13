@@ -15,7 +15,16 @@
  * old baseline-to-latest behavior (byte-compat).
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fchmodSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
 export interface InboundCursorStore {
@@ -72,7 +81,20 @@ export class FileInboundCursorStore implements InboundCursorStore {
 		map[channelId] = messageId;
 		mkdirSync(dirname(this.path), { recursive: true });
 		const tmp = `${this.path}.tmp`;
-		writeFileSync(tmp, JSON.stringify(map), "utf8");
+		const fd = openSync(
+			tmp,
+			constants.O_WRONLY |
+				constants.O_CREAT |
+				constants.O_TRUNC |
+				constants.O_NOFOLLOW,
+			0o600,
+		);
+		try {
+			fchmodSync(fd, 0o600);
+			writeFileSync(fd, JSON.stringify(map), "utf8");
+		} finally {
+			closeSync(fd);
+		}
 		renameSync(tmp, this.path);
 	}
 }

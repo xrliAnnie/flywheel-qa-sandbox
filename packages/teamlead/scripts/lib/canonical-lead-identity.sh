@@ -47,7 +47,7 @@ canonical_lead_identity_resolve() {
   local selected_lead="${2:?lead selector required}"
   local projects_file="${3:-${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}}"
   local comm_cli="${FLYWHEEL_COMM_CLI:-}"
-  local identity_json
+  local identity_json canonical_runner_actions
   local canonical_lead canonical_project canonical_key canonical_team
   local canonical_bot_id canonical_token_env canonical_state_dir
   local canonical_backend canonical_role projects_digest identity_digest
@@ -79,8 +79,9 @@ canonical_lead_identity_resolve() {
     --projects-file "$projects_file" \
     --project "$selected_project" \
     --lead "$selected_lead" \
-    --format json)" || return 1
+    --format json --include-capabilities)" || return 1
 
+  canonical_runner_actions="$(jq -er '.codexCapabilities.runnerActionsEnabled | if . == true then "1" elif . == false then "0" else error("runner capability must be boolean") end' <<<"$identity_json")" || return 1
   canonical_lead="$(jq -er '.leadId | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
   canonical_project="$(jq -er '.projectName | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
   canonical_key="$(jq -er '.leadKey | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
@@ -132,6 +133,7 @@ canonical_lead_identity_resolve() {
   canonical_lead_identity_assert_existing FLYWHEEL_PROJECT_NAME "$canonical_project" || return 1
   canonical_lead_identity_assert_existing PROJECT_NAME "$canonical_project" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_KEY "$canonical_key" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS "$canonical_runner_actions" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_BACKEND "$canonical_backend" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_MODEL "$canonical_model" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_EFFORT "$canonical_effort" || return 1
@@ -170,6 +172,7 @@ canonical_lead_identity_resolve() {
   export FLYWHEEL_LEAD_HAS_SUMMARY_DUTY="$canonical_has_summary_duty"
   export FLYWHEEL_SUMMARY_GRANULARITY="$canonical_summary_granularity"
   export FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_assignment_digest"
+  export FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS="$canonical_runner_actions"
   export FLYWHEEL_LEAD_BACKEND="$canonical_backend"
   if [ -n "$canonical_model" ]; then
     export FLYWHEEL_LEAD_MODEL="$canonical_model"

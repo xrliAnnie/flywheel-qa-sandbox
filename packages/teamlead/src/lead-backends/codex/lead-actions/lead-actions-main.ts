@@ -1,3 +1,7 @@
+import {
+	registerRunnerActions,
+	runnerActionsOptionsFromEnv,
+} from "../runner-actions.js";
 /**
  * FLY-350 — lead-actions MCP entrypoint: the narrow proactive-action channel
  * shared by full-access Codex Leads (the FLY-245 gateway's sibling).
@@ -26,27 +30,13 @@ import { appendRotatedLogSync } from "flywheel-config";
 import { CodexOutboundSender } from "../CodexOutboundSender.js";
 import { runDiscordSend } from "../discord-send-core.js";
 import { parseLeadActionsConfig } from "./config.js";
-import { LEAD_ACTIONS_TOOLS } from "./mcp-config.js";
 import {
 	SendIdempotencyCache,
 	SlidingWindowRateLimiter,
 } from "./send-guard.js";
 
-// FLY-350 code-review MED-4: tie the registered tool name to the SHARED constant
-// (single source of truth with the §10 gate's LEAD_ACTIONS_TOOLS). The server
-// exposes EXACTLY one tool; assert that invariant at load so the literal
-// below and the gate constant can never drift apart.
 const DISCORD_SEND_TOOL = "discord_send";
 const ACK_BATCH_TOOL = "ack_batch";
-if (
-	LEAD_ACTIONS_TOOLS.length !== 2 ||
-	LEAD_ACTIONS_TOOLS[0] !== DISCORD_SEND_TOOL ||
-	LEAD_ACTIONS_TOOLS[1] !== ACK_BATCH_TOOL
-) {
-	throw new Error(
-		`lead-actions: LEAD_ACTIONS_TOOLS must be exactly ${JSON.stringify([DISCORD_SEND_TOOL, ACK_BATCH_TOOL])} (got ${JSON.stringify(LEAD_ACTIONS_TOOLS)})`,
-	);
-}
 
 /**
  * Resolve the Bridge API token from the MCP child's env, fail-closed. The
@@ -91,6 +81,7 @@ export async function leadActionsMain(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
 	const cfg = parseLeadActionsConfig(env);
+	const runnerOptions = runnerActionsOptionsFromEnv(env);
 	mkdirSync(cfg.stateDir, { recursive: true });
 
 	// Resolve only the credential selected by the parent runtime. Each mode fails
@@ -259,6 +250,7 @@ export async function leadActionsMain(
 	);
 
 	const transport = new StdioServerTransport();
+	registerRunnerActions(server, runnerOptions);
 	await server.connect(transport);
 	process.stderr.write(
 		`[lead-actions] ${cfg.leadId}@${cfg.projectName} ready (chat=${cfg.chatChannelId}, crossDept=${cfg.crossDeptChannelIds.length}, outbound=${cfg.outboundMode}, discordCredential=${cfg.outboundMode === "direct" ? "present" : "absent"}, mailboxAck=enabled)\n`,

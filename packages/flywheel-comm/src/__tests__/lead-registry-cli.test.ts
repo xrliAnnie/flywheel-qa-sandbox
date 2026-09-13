@@ -21,6 +21,17 @@ function sha256(value: string): string {
 }
 
 describe("flywheel-comm lead-registry", () => {
+	it("prints the shared generic Codex profile without registry access", () => {
+		const output: string[] = [];
+		expect(
+			runLeadRegistryCommand(["generic-codex-profile"], {
+				stdout: (line) => output.push(line),
+				homeDir: "/absent",
+			}),
+		).toBe(0);
+		expect(output).toEqual(["full-access"]);
+	});
+
 	const dirs: string[] = [];
 	afterEach(() => {
 		for (const dir of dirs.splice(0))
@@ -96,6 +107,168 @@ describe("flywheel-comm lead-registry", () => {
 		);
 		return { homeDir, projectsPath, receiptPath, registry };
 	}
+
+	function backendFixture() {
+		const f = fixture();
+		const projectRoot = join(f.homeDir, "project");
+		mkdirSync(projectRoot);
+		spawnSync("git", ["init", projectRoot]);
+		spawnSync(
+			"git",
+			[
+				"-c",
+				"user.name=Fixture",
+				"-c",
+				"user.email=fixture@example.invalid",
+				"commit",
+				"--allow-empty",
+				"-m",
+				"fixture",
+			],
+			{ cwd: projectRoot },
+		);
+		const deploymentSha = spawnSync("git", ["rev-parse", "HEAD"], {
+			cwd: projectRoot,
+			encoding: "utf8",
+		}).stdout.trim();
+		f.registry[0]!.projectRoot = projectRoot;
+		const row = f.registry[0]!.leads[0]!;
+		row.agentId = "flywheel-product-lead";
+		Object.assign(row, { backend: "claude-code", canSpawnRunners: true });
+		writeFileSync(f.projectsPath, JSON.stringify(f.registry));
+		const selection = {
+			state: "selected" as const,
+			granularity: "per-lead" as const,
+			setBy: "founder",
+			setAt: "2026-09-08T00:00:00.000Z",
+		};
+		const projection = compileSummaryAssignments(f.registry, selection);
+		const receipt = JSON.parse(readFileSync(f.receiptPath, "utf8"));
+		receipt.summaryAssignmentDigest = projection.digest;
+		receipt.assignments = projection.leads.map(
+			({ projectName, leadId, summaryRole }) => ({
+				projectName,
+				leadId,
+				summaryRole,
+			}),
+		);
+		writeFileSync(f.receiptPath, JSON.stringify(receipt));
+		const state = join(f.homeDir, ".flywheel");
+		mkdirSync(join(state, "manifests"));
+		mkdirSync(join(f.homeDir, "Library/LaunchAgents"), { recursive: true });
+		writeFileSync(
+			join(state, "manifests/flywheel-flywheel-product-lead.json"),
+			JSON.stringify({
+				projectName: "flywheel",
+				leadId: "flywheel-product-lead",
+				projectDir: "/tmp/flywheel",
+				leadBackend: { backendId: "claude-code" },
+			}),
+		);
+		writeFileSync(
+			join(
+				f.homeDir,
+				"Library/LaunchAgents/com.flywheel.lead.flywheel-flywheel-product-lead.plist",
+			),
+			"fixture-plist",
+		);
+		writeFileSync(join(state, "deployed-sha"), deploymentSha);
+		const out = join(
+			state,
+			"lead-backend-migrations/FLY-2459-honey-lemon.json",
+		);
+		return {
+			...f,
+			out,
+			args: [
+				"plan-backend-migration",
+				"--project",
+				"flywheel",
+				"--lead",
+				"flywheel-product-lead",
+				"--to-backend",
+				"codex-app-server",
+				"--model",
+				"astra",
+				"--effort",
+				"high",
+				"--runner-actions",
+				"--out",
+				out,
+			],
+		};
+	}
+	it("plans a backend migration without changing registry or summary receipt", () => {
+		const f = backendFixture(),
+			stdout: string[] = [],
+			stderr: string[] = [];
+		const before = readFileSync(f.projectsPath),
+			receipt = readFileSync(f.receiptPath);
+		expect(
+			runLeadRegistryCommand(f.args, {
+				homeDir: f.homeDir,
+				stdout: (s) => stdout.push(s),
+				stderr: (s) => stderr.push(s),
+				now: () => "2026-09-11T00:00:00.000Z",
+			}),
+			stderr.join("\n"),
+		).toBe(0);
+		const intent = JSON.parse(readFileSync(f.out, "utf8"));
+		expect(intent.target.model).toBe("gpt-6-astra");
+		expect(intent.target.codexProfile).toBe("full-access");
+		expect(readFileSync(f.projectsPath)).toEqual(before);
+		expect(readFileSync(f.receiptPath)).toEqual(receipt);
+		const first = readFileSync(f.out);
+		expect(
+			runLeadRegistryCommand(f.args, {
+				homeDir: f.homeDir,
+				stdout: () => {},
+				stderr: () => {},
+				now: () => "2026-09-12T00:00:00.000Z",
+			}),
+		).toBe(0);
+		expect(readFileSync(f.out)).toEqual(first);
+	});
+	it("rejects an expected deployment absent from the target repository", () => {
+		const f = backendFixture();
+		expect(
+			runLeadRegistryCommand([...f.args, "--deployment-sha", "d".repeat(40)], {
+				homeDir: f.homeDir,
+				stdout: () => {},
+				stderr: () => {},
+				validateTeamleadCandidate: () => {},
+			}),
+		).not.toBe(0);
+		expect(existsSync(f.out)).toBe(false);
+	});
+
+	it("rejects unsupported migration profile before producing intent", () => {
+		const f = backendFixture();
+		expect(
+			runLeadRegistryCommand([...f.args, "--codex-profile", "write-capable"], {
+				homeDir: f.homeDir,
+				stdout: () => {},
+				stderr: () => {},
+				validateTeamleadCandidate: () => {},
+			}),
+		).not.toBe(0);
+		expect(existsSync(f.out)).toBe(false);
+	});
+	it("refuses a migration with stale summary activation", () => {
+		const f = backendFixture();
+		const receipt = JSON.parse(readFileSync(f.receiptPath, "utf8"));
+		receipt.summaryAssignmentDigest = "e".repeat(64);
+		writeFileSync(f.receiptPath, JSON.stringify(receipt));
+		expect(
+			runLeadRegistryCommand(f.args, {
+				homeDir: f.homeDir,
+				stdout: () => {},
+				stderr: () => {},
+				validateTeamleadCandidate: () => {},
+			}),
+		).not.toBe(0);
+		expect(existsSync(f.out)).toBe(false);
+	});
 
 	function writeIntent(
 		f: ReturnType<typeof fixture>,
@@ -226,6 +399,12 @@ describe("flywheel-comm lead-registry", () => {
 				generalChannel: "10000000000000001",
 				backend: "codex-app-server",
 				codexProfile: "full-access",
+				genericCodexDefaultProfile: "full-access",
+				codexCapabilities: {
+					eligible: true,
+					runnerActionsEnabled: false,
+					reason: null,
+				},
 				botTokenEnv: "RAYA_PRODUCT_BOT_TOKEN",
 				roundtableChannel: "40000000000000002",
 				alertChannel: "20000000000000001",

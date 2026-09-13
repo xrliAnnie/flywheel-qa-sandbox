@@ -26,6 +26,23 @@ function lead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 	};
 }
 
+it("FLY-2459 admits only an explicit department runner opt-in", () => {
+	expect(
+		isCodexEligible(
+			lead({
+				canSpawnRunners: true,
+				codexProfile: "full-access",
+				codexRunnerActions: true,
+			}),
+		),
+	).toBe(true);
+	expect(
+		isCodexEligible(
+			lead({ canSpawnRunners: true, codexProfile: "full-access" }),
+		),
+	).toBe(false);
+});
+
 describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () => {
 	it("projects Claude tier choices from the canonical Lead model catalog", () => {
 		const catalogModels = buildModelCatalog("lead").providers.find(
@@ -59,9 +76,26 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 		]);
 	});
 
-	it("Codex tier = single read-only GPT-5 (display-only)", () => {
+	it.each(["gpt-6-astra", "historical-unknown"])(
+		"projects actual Codex model %s without granting a switch target",
+		(model) => {
+			const cap = computeLeadCapabilities(
+				lead({ backend: "codex-app-server", model, effort: "high" }),
+			);
+			expect(cap.tierOptions).toEqual([
+				{
+					id: model,
+					label: model === "gpt-6-astra" ? "GPT-6 Astra" : model,
+					readonly: true,
+				},
+			]);
+			expect(cap.allowedModelTargets).toEqual([null]);
+		},
+	);
+
+	it("Codex unspecified tier remains explicitly unknown (display-only)", () => {
 		expect(CODEX_TIER_OPTIONS).toEqual([
-			{ id: null, label: "GPT-5", readonly: true },
+			{ id: null, label: "账号默认", readonly: true },
 		]);
 	});
 

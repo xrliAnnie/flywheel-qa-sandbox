@@ -1,3 +1,8 @@
+import { buildFullAccessLeadActionsMcpServerConfig } from "./lead-actions/mcp-config.js";
+import {
+	type RunnerActionMcpContext,
+	resolveRunnerActionMcpContext,
+} from "./runner-action-mcp.js";
 /**
  * FLY-224 Phase 7 block 2 — codex-lead-runtime: the entrypoint `codex-lead.sh`
  * execs. It reads its config from the environment, assembles the 15-component
@@ -31,7 +36,7 @@ import {
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import {
 	assertGatewayOnlyToolSurface,
-	GATEWAY_ACTION_TOOL_NAMES,
+	gatewayActionToolNames,
 } from "./action-surface.js";
 import {
 	buildCodexLeadMcpArgv,
@@ -73,6 +78,7 @@ import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
 
 export interface CodexLeadRuntimeConfig {
+	runnerActionContext?: RunnerActionMcpContext;
 	projectName: string;
 	leadId: string;
 	leadKey: string;
@@ -452,10 +458,16 @@ export function buildFullAccessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 export function buildFullAccessAppServerEnv(
 	env: NodeJS.ProcessEnv,
-	pins: { botToken: string; bridgeUrl: string; apiToken: string },
+	pins: {
+		botToken: string;
+		bridgeUrl: string;
+		apiToken: string;
+		runnerActionContext?: RunnerActionMcpContext;
+	},
 ): NodeJS.ProcessEnv {
 	return {
 		...buildFullAccessEnv(env),
+		...pins.runnerActionContext?.env,
 		DISCORD_BOT_TOKEN: pins.botToken,
 		...(pins.bridgeUrl ? { BRIDGE_URL: pins.bridgeUrl } : {}),
 		...(pins.apiToken ? { TEAMLEAD_API_TOKEN: pins.apiToken } : {}),
@@ -573,11 +585,11 @@ export function parseCodexLeadRuntimeConfig(
 	const commDbPath = req("FLYWHEEL_COMM_DB");
 	// Bridge fields: required only when outbound routes through the Bridge.
 	const bridgeUrl =
-		outboundMode === "bridge"
+		outboundMode === "bridge" || env.FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS === "1"
 			? req("FLYWHEEL_BRIDGE_URL")
 			: opt("FLYWHEEL_BRIDGE_URL");
 	const apiToken =
-		outboundMode === "bridge"
+		outboundMode === "bridge" || env.FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS === "1"
 			? req("FLYWHEEL_API_TOKEN")
 			: opt("FLYWHEEL_API_TOKEN");
 	if (missing.length > 0) {
@@ -885,6 +897,9 @@ export function parseCodexLeadRuntimeConfig(
 	}
 
 	return {
+		...(env.FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS !== undefined
+			? { runnerActionContext: resolveRunnerActionMcpContext(env) }
+			: {}),
 		projectName,
 		leadId,
 		leadKey,
@@ -1001,6 +1016,7 @@ function fullAccessLeadActionsMcpConfig(
 		| "stateDir"
 		| "commDbPath"
 		| "leadActionsChannelAliases"
+		| "runnerActionContext"
 		| "outboundMode"
 	>,
 	entry: string,
@@ -1010,39 +1026,20 @@ function fullAccessLeadActionsMcpConfig(
 	// raw env (Codex R4#1). Both call sites (live + dry-run) pass the same value.
 	roundtableAutoContinue: boolean,
 ): LeadActionsMcpConfig {
-	const env: Record<string, string> = {
-		FLYWHEEL_LEAD_ID: config.leadId,
-		FLYWHEEL_PROJECT_NAME: config.projectName,
-		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: config.chatChannelId,
-		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: config.crossDeptChannelIds.join(","),
-		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: config.stateDir,
-		FLYWHEEL_COMM_DB: config.commDbPath,
-		FLYWHEEL_CODEX_LEAD_OUTBOUND: config.outboundMode,
-		// R1#2: forward explicit alias pins so the documented roundtable
-		// disambiguation works for full-access (non-secret).
-		...(config.leadActionsChannelAliases
-			? {
-					FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:
-						config.leadActionsChannelAliases,
-				}
-			: {}),
-		// FLY-676: effective roundtable autoContinue (non-secret). Present only when ON so the
-		// OFF config keeps its prior env shape (byte-compat). The child fail-soft refuses a
-		// proactive target="roundtable" send when this is "1" (FLY-680 engage hook pending).
-		...(roundtableAutoContinue
-			? { FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE: "1" }
-			: {}),
-	};
-	return {
-		command: process.execPath,
-		args: [entry],
-		env,
-		// Forward only the credential names required by the selected transport.
-		envVarNames:
-			config.outboundMode === "bridge"
-				? ["BRIDGE_URL", "TEAMLEAD_API_TOKEN"]
-				: ["DISCORD_BOT_TOKEN"],
-	};
+	return buildFullAccessLeadActionsMcpServerConfig({
+		nodeBin: process.execPath,
+		mainJsPath: entry,
+		leadId: config.leadId,
+		projectName: config.projectName,
+		chatChannelId: config.chatChannelId,
+		crossDeptChannelIds: config.crossDeptChannelIds,
+		stateDir: config.stateDir,
+		commDbPath: config.commDbPath,
+		outboundMode: config.outboundMode,
+		explicitAliases: config.leadActionsChannelAliases,
+		roundtableAutoContinue,
+		runnerContext: config.runnerActionContext,
+	});
 }
 
 /** Walk up from `start` to the nearest directory containing a `package.json`
@@ -1438,6 +1435,9 @@ export function buildCodexLeadRuntime(
 		? buildCodexLeadMcpArgv({
 				chrome: config.chrome,
 				gateway: {
+					...(config.runnerActionContext
+						? { env: config.runnerActionContext.env }
+						: {}),
 					command: process.execPath,
 					args: [release.gatewayEntry],
 					envVarNames: [
@@ -1570,11 +1570,16 @@ export function buildCodexLeadRuntime(
 					getProcessStart(process.pid),
 				),
 			});
+			if (config.runnerActionContext && broker)
+				broker.setRunnerCarrierClaim(carrierInstanceId);
 			const transport = spawnCodexAppServer({
 				codexBin: config.codexBin,
 				mcpArgv: spawnArgv,
 				codexHome: config.codexHome,
-				carrierInstanceId,
+				carrierInstanceId:
+					writeCapable && config.runnerActionContext
+						? undefined
+						: carrierInstanceId,
 				leadId: config.leadId,
 				projectName: config.projectName,
 				// FLY-350 full-access: the app-server child inherits the H-1 positive
@@ -1685,7 +1690,10 @@ export function buildCodexLeadRuntime(
 				// thread is usable. (The MCP inventory above already guarantees no
 				// OTHER MCP server; this catches the tool granularity + non-MCP
 				// built-ins the Phase F threat matrix pins.)
-				assertGatewayOnlyToolSurface(inventory.observedTools());
+				assertGatewayOnlyToolSurface(
+					inventory.observedTools(),
+					!!config.runnerActionContext,
+				);
 				// ⑤ thread-descriptor hard assertion on START **and** RESUME
 				// (R1#9): the echoed policy must equal the expected confinement;
 				// any drift (net on, extra root, wrong cwd, unvetted cliVersion)
@@ -1955,7 +1963,7 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 	const writeCapableZ = config.sandboxMode === "workspace-write" && !fullAccess;
 	const writeCapableLines = writeCapableZ
 		? [
-				`(Z) gateway   : flywheel_gateway MCP — tool surface = EXACTLY [${GATEWAY_ACTION_TOOL_NAMES.join(", ")}] (⑧ runtime assert)`,
+				`(Z) gateway   : flywheel_gateway MCP — tool surface = EXACTLY [${gatewayActionToolNames(!!config.runnerActionContext).join(", ")}] (⑧ runtime assert)`,
 				`(Z) network   : OFF (buildConfinementArgv network_access=false — shell cannot curl/push)`,
 				`(Z) writable  : ${config.workspace ?? "(unset — release gate fail-closes)"} (ONLY writable root; net-off)`,
 				`(Z) PR scope  : repo=${config.projectRepo ?? "(unset — release gate fail-closes)"} GH_TOKEN=${config.githubToken ? `${redactSecret(config.githubToken)} (broker-served to gateway ONLY; washed from model env)` : "(unset — git_push/open_pr fail-closed)"}`,

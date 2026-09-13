@@ -4366,6 +4366,29 @@ export class CommDB {
 		);
 	}
 
+	/** Atomically re-engage a Runner only for a newly inserted instruction. */
+	insertInstructionAndClearDeclaredState(
+		id: string,
+		fromAgent: string,
+		toAgent: string,
+		content: string,
+		provenance?: MessageProvenance,
+	): boolean {
+		return this.db
+			.transaction(() => {
+				const inserted = this.insertInstructionWithId(
+					id,
+					fromAgent,
+					toAgent,
+					content,
+					provenance,
+				);
+				if (inserted) this.clearDeclaredState(toAgent);
+				return inserted;
+			})
+			.immediate();
+	}
+
 	/** Trusted text/card ship decision and founder authority source. */
 	trustedFounderGateResponse(
 		input: TrustedFounderGateResponseInput,

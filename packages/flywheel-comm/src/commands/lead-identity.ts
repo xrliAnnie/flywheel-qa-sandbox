@@ -1,3 +1,4 @@
+import { resolveCodexLeadCapabilities } from "flywheel-config";
 export interface LeadIdentityCommandDeps {
 	stdout?: (line: string) => void;
 	stderr?: (line: string) => void;
@@ -36,6 +37,7 @@ export function runLeadIdentityCommand(
 				code: { type: "string" },
 				message: { type: "string" },
 				format: { type: "string", default: "json" },
+				"include-capabilities": { type: "boolean", default: false },
 				"roster-file": { type: "string" },
 				"backup-file": { type: "string" },
 				"summary-config-home": { type: "string" },
@@ -104,16 +106,30 @@ export function runLeadIdentityCommand(
 		if (values.format !== "json" && values.format !== "env") {
 			throw new Error('--format must be "json" or "env"');
 		}
-		const identity = resolveLeadIdentity({
+		const row = resolveLeadIdentityRow({
 			projectsPath,
 			projectName,
 			leadId,
 			homeDir: summaryConfigHome ?? deps.homeDir,
 		});
+		const identity = row.identity;
+		const capabilities = values["include-capabilities"]
+			? resolveCodexLeadCapabilities(row.lead)
+			: undefined;
 		if (values.format === "json") {
-			stdout(JSON.stringify(identity));
+			stdout(
+				JSON.stringify(
+					capabilities
+						? { ...identity, codexCapabilities: capabilities }
+						: identity,
+				),
+			);
 		} else {
 			for (const line of identityEnvProjection(identity)) stdout(line);
+			if (capabilities)
+				stdout(
+					`FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS=${capabilities.runnerActionsEnabled ? "1" : "0"}`,
+				);
 		}
 		return 0;
 	} catch (error) {
@@ -166,44 +182,14 @@ function required(value: string | undefined, name: string): string {
 	return value;
 }
 
-export function identityEnvProjection(
-	identity: CanonicalLeadIdentity,
-): string[] {
-	return [
-		`FLYWHEEL_LEAD_ID=${identity.leadId}`,
-		`LEAD_ID=${identity.leadId}`,
-		`FLYWHEEL_PROJECT_NAME=${identity.projectName}`,
-		`PROJECT_NAME=${identity.projectName}`,
-		`FLYWHEEL_LEAD_KEY=${identity.leadKey}`,
-		`FLYWHEEL_LEAD_ROLE=${identity.role}`,
-		`FLYWHEEL_LEAD_BACKEND=${identity.backend}`,
-		...(identity.model !== undefined
-			? [`FLYWHEEL_LEAD_MODEL=${identity.model}`]
-			: []),
-		...(identity.effort !== undefined
-			? [`FLYWHEEL_LEAD_EFFORT=${identity.effort}`]
-			: []),
-		...(identity.modelContextWindow !== undefined
-			? [`FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW=${identity.modelContextWindow}`]
-			: []),
-		`FLYWHEEL_LEAD_SUMMARY_ROLE=${identity.summaryRole}`,
-		`FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=${identity.hasSummaryDuty ? "1" : "0"}`,
-		`FLYWHEEL_SUMMARY_GRANULARITY=${identity.summaryGranularity ?? ""}`,
-		`FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=${identity.summaryAssignmentDigest ?? ""}`,
-		`DISCORD_STATE_DIR=${identity.discordStateDir}`,
-		`DISCORD_EXPECTED_BOT_USER_ID=${identity.botUserId ?? ""}`,
-		"DISCORD_IDENTITY_MODE=managed",
-		`FLYWHEEL_LEAD_IDENTITY_DIGEST=${identity.identityDigest}`,
-		`FLYWHEEL_LEAD_PROJECTS_DIGEST=${identity.projectsDigest}`,
-	];
-}
+export { identityEnvProjection } from "../lead-identity.js";
 
 import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import {
-	type CanonicalLeadIdentity,
+	identityEnvProjection,
 	LeadIdentityError,
-	resolveLeadIdentity,
+	resolveLeadIdentityRow,
 } from "../lead-identity.js";
 import { writeLeadIdentityFailureMarker } from "../lead-identity-failure.js";
 import {

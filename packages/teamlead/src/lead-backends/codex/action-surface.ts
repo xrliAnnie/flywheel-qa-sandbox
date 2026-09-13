@@ -1,3 +1,4 @@
+import { RUNNER_ACTION_TOOL_NAMES } from "./runner-action-names.js";
 /**
  * FLY-245 Phase A3 — non-MCP action-surface guard (plan §3.5 / Codex R2#1).
  *
@@ -50,7 +51,7 @@ export type NonMcpActionSurface = (typeof NON_MCP_ACTION_SURFACES)[number];
  *    branch / open a PR ≠ merge; the net-off shell holds no GH_TOKEN and the
  *    gateway exposes no merge/:cool: tool, so self-merge is structurally
  *    impossible).
- * `start_runner`/`read_runner_tmux`/etc. are FLY-251 and deliberately NOT here.
+ * Explicit runner capability appends the shared FLY-2459 tools at runtime.
  */
 export const GATEWAY_ACTION_TOOL_NAMES = [
 	"request_runner_lifecycle",
@@ -108,8 +109,14 @@ export function assertActionToolSurface(
  * usable — an observed surface that isn't exactly the gateway's two reserved
  * tools fails the Lead closed.
  */
+export function gatewayActionToolNames(runners = false): readonly string[] {
+	return runners
+		? [...GATEWAY_ACTION_TOOL_NAMES, ...RUNNER_ACTION_TOOL_NAMES]
+		: GATEWAY_ACTION_TOOL_NAMES;
+}
 export function assertGatewayOnlyToolSurface(
 	observed: readonly string[],
+	runners = false,
 ): void {
-	assertActionToolSurface(observed, GATEWAY_ACTION_TOOL_NAMES);
+	assertActionToolSurface(observed, gatewayActionToolNames(runners));
 }

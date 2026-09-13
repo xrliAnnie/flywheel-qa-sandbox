@@ -1,3 +1,7 @@
+import {
+	registerRunnerActions,
+	runnerActionsOptionsFromEnv,
+} from "../runner-actions.js";
 /**
  * FLY-245 F-a — the Flywheel Lead gateway entrypoint: the ONLY out-of-sandbox
  * action channel a write-capable Codex Lead has (plan §4).
@@ -1099,6 +1103,15 @@ export async function gatewayMain(
 	timer.unref();
 
 	const transport = new StdioServerTransport();
+	registerRunnerActions(
+		server,
+		runnerActionsOptionsFromEnv({
+			...env,
+			...secrets,
+			FLYWHEEL_COMM_DB: cfg.commDbPath,
+			FLYWHEEL_GATEWAY_STATE_DB: cfg.stateDbPath,
+		}),
+	);
 	await server.connect(transport);
 	process.stderr.write(
 		`[gateway] ${cfg.leadId}@${cfg.projectName} ready (founder ${cfg.founderId})\n`,

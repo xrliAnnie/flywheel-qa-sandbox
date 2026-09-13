@@ -783,6 +783,7 @@ expected_shard_tests = {
         "Test — NPM packaging pipeline + packaged-mode seams",
         "Test — FLY-2190 host tmux selection S0",
         "Test — FLY-2444 generalized Lead launcher",
+        "Test — FLY-2459 Codex department capability and migration",
         "Test — FLY-1501 restart brake + heartbeat guard contracts",
         "Test — FLY-1634 restart net-deletion contracts",
         "Test — FLY-1959 updater sources + body provenance contracts",

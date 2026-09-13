@@ -117,7 +117,7 @@
 		},
 		{
 			"file": "packages/flywheel-comm/src/commands/lead-registry.ts",
-			"sync_child": 1,
+			"sync_child": 3,
 			"disposition": "one_shot_cli"
 		},
 		{
@@ -148,6 +148,11 @@
 		{
 			"file": "packages/flywheel-comm/src/founder-review.ts",
 			"sync_child": 6,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/lead-backend-migration-owner.ts",
+			"sync_child": 1,
 			"disposition": "one_shot_cli"
 		},
 		{
@@ -200,6 +205,21 @@
 			"file": "packages/teamlead/src/account-heal/quota-pool-rebuild-cli.ts",
 			"sync_child": 12,
 			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/teamlead/src/bin/backend-migration-authority.ts",
+			"disposition": "one_shot_cli: bounded checkout identity probe under updater-owned migration window",
+			"sync_child": 1
+		},
+		{
+			"file": "packages/teamlead/src/bin/backend-migration-config-lock.ts",
+			"disposition": "one_shot_cli: existing config flock held only for synchronous migration file CAS",
+			"raw_spawn": 1
+		},
+		{
+			"file": "packages/teamlead/src/bin/execute-backend-migration.ts",
+			"sync_child": 2,
+			"disposition": "one_shot_cli: bounded stopped-owner probe and registry validator under updater window"
 		},
 		{
 			"file": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts",

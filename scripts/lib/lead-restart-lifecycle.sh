@@ -561,13 +561,15 @@ _lead_restart_validate_authority_once() {
       [ "$arg2" = "$manifest" ] || return 1
       [ "$project_backend" = "codex-app-server" ] || return 1
       case "$manifest_backend" in ""|codex-app-server) ;; *) return 1 ;; esac
+      local capability_selector comm_cli
+      comm_cli="${FLYWHEEL_COMM_CLI:-${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}/packages/flywheel-comm/dist/index.js}"
+      capability_selector="$(node "$comm_cli" lead-registry selector \
+        --projects-file "$projects_file" --project "$project" --lead "$lead_id")" || return 1
       jq -e --arg project "$project" --arg lead "$lead_id" '
-        [.[] | select(.projectName == $project) | (.leads // [])[] | select(.agentId == $lead)] as $matches |
-        ($matches | length) == 1 and
-        $matches[0].codexProfile == "full-access" and
-        $matches[0].canSpawnRunners == false and
-        ($matches[0].companion // false) == false
-      ' "$projects_file" >/dev/null 2>&1 || return 1
+        .projectName == $project and .leadId == $lead and
+        .backend == "codex-app-server" and .codexProfile == "full-access" and
+        .codexCapabilities.eligible == true
+      ' <<<"$capability_selector" >/dev/null 2>&1 || return 1
       backend="codex-app-server"
       ;;
     flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh)

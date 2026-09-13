@@ -10,7 +10,12 @@
  * target. Codex remains a display-only backend option here.
  */
 
-import { getModelConfigSnapshot, ROLE_EFFORT_LEVELS } from "flywheel-config";
+import {
+	getModelConfigSnapshot,
+	getModelRegistryEntry,
+	ROLE_EFFORT_LEVELS,
+	resolveCodexLeadCapabilities,
+} from "flywheel-config";
 import {
 	effectiveLeadBackend,
 	type LeadBackendId,
@@ -65,9 +70,9 @@ export const CLAUDE_TIER_OPTIONS: readonly TierOption[] = [
 	...claudeTierOptions(),
 ];
 
-/** Codex tier options: single, read-only GPT-5 (display-only; not switchable). */
+/** Unspecified Codex model: do not invent a runtime model for display. */
 export const CODEX_TIER_OPTIONS: readonly TierOption[] = [
-	{ id: null, label: "GPT-5", readonly: true },
+	{ id: null, label: "账号默认", readonly: true },
 ];
 
 /**
@@ -101,27 +106,30 @@ export function computeAllowedEffortTargets(
 	return [null, ...ROLE_EFFORT_LEVELS];
 }
 
-export const DISABLED_BACKEND_SWITCH = "受管后端切换 = FLY-264";
+export const DISABLED_BACKEND_SWITCH =
+	"跨厂商切换需受控迁移 projects.json 与 launchd 配置，并由 updater 班车或 founder 紧急票重启（FLY-2459）";
 export const DISABLED_WRITE_LEAD_CODEX =
-	"write-capable Lead 切 Codex 需 FLY-245";
+	"部门 Lead 切 Codex 需显式 codexRunnerActions 与兼容 profile（FLY-2459）";
 
-/**
- * Whether a Lead can legally run the Codex backend. Post-FLY-245/FLY-350 a Codex
- * Lead is no longer "companion-only": a read-only companion (`companion === true`),
- * OR a Lead that declares an EXPLICIT `codexProfile` (companion / write-capable /
- * full-access), is eligible — provided it does NOT
- * spawn Runners (`canSpawnRunners === false`; Codex runner-spawn awaits FLY-251).
- * Mirrors the cross-field invariant enforced in `parseAndValidateProjects`.
- */
+/** Shared raw-registry eligibility; no implicit department runner grant. */
 export function isCodexEligible(lead: LeadConfig): boolean {
-	if (lead.canSpawnRunners !== false) return false;
-	return lead.companion === true || lead.codexProfile !== undefined;
+	return resolveCodexLeadCapabilities(lead).eligible;
 }
 
 /** Tier options for the Lead's effective backend. */
 export function computeTierOptions(
 	backend: LeadBackendId,
+	model?: string,
 ): readonly TierOption[] {
+	if (backend === "codex-app-server" && model) {
+		return [
+			{
+				id: model,
+				label: getModelRegistryEntry(model)?.label ?? model,
+				readonly: true,
+			},
+		];
+	}
 	return backend === "codex-app-server"
 		? CODEX_TIER_OPTIONS
 		: claudeTierOptions();
@@ -145,8 +153,8 @@ export function computeAllowedModelTargets(
 
 /**
  * Backend chip options for a Lead. In inc2a EVERY non-current backend is
- * disabled (managed switch deferred to FLY-264); a write-capable Lead's Codex
- * option carries the more fundamental FLY-245 reason instead.
+ * disabled; the manual migration uses the existing controlled restart path.
+ * Ineligible departments also receive the explicit capability requirement.
  */
 export function computeBackendOptions(
 	lead: LeadConfig,
@@ -158,9 +166,8 @@ export function computeBackendOptions(
 			// The current backend is what the Lead already runs; not a "switch".
 			return { backend, switchable: false };
 		}
-		// Non-current backend: switching is FLY-264 work and not in inc2a.
-		// For Codex specifically, a write-capable Lead is additionally blocked by
-		// the FLY-245 schema fail-close — surface that as the reason.
+		// Cross-vendor changes remain a controlled migration, with explicit
+		// capability validation before a department can adopt Codex.
 		if (backend === "codex-app-server" && !isCodexEligible(lead)) {
 			return {
 				backend,
@@ -203,7 +210,7 @@ export function computeLeadCapabilities(
 		currentBackend: backend,
 		backendSource: source,
 		backendOptions: computeBackendOptions(lead, backend),
-		tierOptions: computeTierOptions(backend),
+		tierOptions: computeTierOptions(backend, lead.model),
 		allowedModelTargets: computeAllowedModelTargets(backend),
 		effortOptions: computeEffortOptions(backend),
 		allowedEffortTargets: computeAllowedEffortTargets(backend),

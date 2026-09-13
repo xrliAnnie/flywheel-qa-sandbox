@@ -1,0 +1,76 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2459 · Honey Lemon 使用 Astra</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:920px;margin:auto;padding:48px 20px 70px}header{margin-bottom:28px}h1{font-size:36px;letter-spacing:-1px;line-height:1.2;margin:10px 0}h2{font-size:22px;line-height:1.4;margin:0 0 16px}.eyebrow{font-size:13px;color:#0071e3;font-weight:650}.muted{color:#6e6e73;font-size:14px}.card{background:white;border:1px solid #e5e5e7;border-radius:20px;padding:28px;margin:18px 0;box-shadow:0 3px 15px #00000003}.card p{margin:12px 0}.lead{font-size:18px}.diagram{border:1px dashed #b76a00;border-radius:12px;padding:18px;background:#fffbf2;margin:18px 0;color:#805000}.diagram strong{display:block}.comment{border-top:1px solid #eee;padding-top:18px;margin-top:22px}label{display:block;font-size:14px;color:#6e6e73;margin-bottom:8px}textarea{width:100%;resize:vertical;min-height:84px;border:1px solid #d2d2d7;border-radius:10px;padding:12px;background:#fbfbfd;font:inherit}textarea:focus{outline:3px solid #0071e32a;border-color:#0071e3}button{border:0;border-radius:9px;background:#0071e3;color:white;font:inherit;padding:9px 16px;cursor:pointer}button:focus-visible{outline:3px solid #0071e36b;outline-offset:3px}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;background:#f5f5f7;border-radius:12px;font:14px/1.7 -apple-system,sans-serif}.chunk{margin:16px 0}#copy-status{min-height:24px}.badge{display:inline-block;padding:4px 10px;background:#eaf2ff;border-radius:20px;color:#005bb5;font-size:13px}@media(max-width:600px){main{padding:28px 14px}h1{font-size:29px}.card{padding:20px;border-radius:16px}h2{font-size:20px}}</style></head><body><main><header><div class="eyebrow">FLYWHEEL · FLY-2459 · 设计方案</div><h1>Honey Lemon 使用 Astra，<br>也能派出产品 runner。</h1><p class="muted">2026-09-10 · 设计交付不代表已上线</p><span class="badge">显式能力 · 原部门闸 · 受控班车</span></header>
+<section class="card" data-section="goal" data-title="一句话：换引擎，保留 Honey Lemon 的部门责任"><h2>一句话：换引擎，保留 Honey Lemon 的部门责任</h2>
+<p class="lead">让 Honey Lemon 用 Astra / high 运行，并在核心频道被提及后派出一个产品 runner，同时沿用原部门闸和重启规则。</p><p class="muted">Lead 是部门负责人；runner 是被她派去执行具体工单的工作进程。当前交付是设计，生产仍待后续实施与获授权验收。</p><div class="comment"><label for="comment-goal">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-goal" data-comment="goal" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="flow" data-title="核心流程：从一句 @ 到真正派单"><h2>核心流程：从一句 @ 到真正派单</h2>
+<div class="diagram" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><span>本地 Mermaid 渲染失败；源文件：flow.mmd。下方文字描述流程，图形待本地渲染。</span></div>
+<p class="lead">核心频道提及 → 标准收件箱 → 显式开放的动作 → 校验产品部门 → 原调度器 → 执行回执与活动 runner。</p><p class="muted">Bridge 是统一接收派单请求并执行权限检查的服务。越部门请求仍返回 403，表示拒绝；不会因为换成 Codex 就放宽。</p><div class="comment"><label for="comment-flow">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-flow" data-comment="flow" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="model" data-title="结构：稳定身份与可更换配置"><h2>结构：稳定身份与可更换配置</h2>
+<div class="diagram" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><span>本地 Mermaid 渲染失败；源文件：model.mmd。下方文字描述流程，图形待本地渲染。</span></div>
+<p class="lead">身份保持 flywheel / flywheel-product-lead；bot、频道、产品部门与已有任务保持。目标引擎为 codex-app-server，模型 gpt-6-astra，思考强度 high。</p><p class="muted">profile 是这位 Lead 的运行权限档位；它使用公共配置参数，默认沿用现行启动器，目前为 full-access。当前不支持的档位会在生成迁移计划前拒绝。新开关 codexRunnerActions 必须显式开启，已有 canSpawnRunners 不自动赋予新动作。</p><div class="comment"><label for="comment-model">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-model" data-comment="model" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="tools" data-title="六个动作，共用一份实现"><h2>六个动作，共用一份实现</h2>
+<p class="lead">启动 runner、列出自己的 runner、查看状态、读取终端输出、发普通指令、回答普通问题。两个现有工具入口共用相同参数与校验。</p><p class="muted">MCP 是让模型调用工具的接口。Honey Lemon 的标准路径使用 lead_actions；旧受限路径使用 gateway。标准终端在启动前核对工具配置，不等待每轮临时出现的工具广播。模型只能选本 Lead 已采纳的菜单，项目与身份固定。</p><div class="comment"><label for="comment-tools">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-tools" data-comment="tools" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="truth" data-title="如何判断真的成功"><h2>如何判断真的成功</h2>
+<p class="lead">“已入箱”表示指令已保存，还要看到 runner 消费它。“正在启动”或结果不明时保留原请求编号，先查询原执行，不盲目再派一个。</p><p class="muted">issue_delivery 是系统记录“工单已交给这次执行”的回执。验收必须连上原始 @ 消息、Codex 处理轮次、派单请求、该回执和活动 runner。管理台配置值单独不能证明进程已切换。</p><div class="comment"><label for="comment-truth">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-truth" data-comment="truth" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="cutover" data-title="切换：交给既有班车执行"><h2>切换：交给既有班车执行</h2>
+<div class="diagram" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><span>本地 Mermaid 渲染失败；源文件：cutover.mmd。下方文字描述流程，图形待本地渲染。</span></div>
+<p class="lead">先核对账户与未决工作；班车停旧进程并确认退出；受锁更新本 Lead 配置和启动文件；补齐停机窗口消息；只启动一个可见 Codex 终端。</p><p class="muted">updater 班车是独立部署程序，只按原定时窗口或 founder 紧急票执行。启动新终端后便返回，让班车正常结束；解除派单暂停后，再由验收责任人做真实 @ 和派单。成功回执在窗口外核对补齐，班车不等待人工往返。</p><div class="comment"><label for="comment-cutover">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-cutover" data-comment="cutover" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="tradeoffs" data-title="关键取舍"><h2>关键取舍</h2>
+<p class="lead">选择：明确的手动迁移路书，管理台显示配置与操作指引。暂不增加跨厂商在线切换按钮，因为它还需要完整的进程替换事务。</p><p class="muted">拒绝：仅换模型名；给全部 Codex Lead 自动开放派单；把返回错误当成未启动；回滚时覆盖所有 Lead 配置或倒退已处理消息。</p><div class="comment"><label for="comment-tradeoffs">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-tradeoffs" data-comment="tradeoffs" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="acceptance" data-title="验收：五组可核对证据"><h2>验收：五组可核对证据</h2>
+<p class="lead">① 可见 Codex 终端实际运行 Astra/high。② 真正 @ Honey Lemon 后，她为带 Flywheel-Product 标签的产品任务派出 runner。③ 越部门请求 403 且无执行。④ 无显式开关的 Lead 不获新工具。⑤ 后续获授权班车重启仍保持新配置。</p><p class="muted">FLY-2457 作为产品任务类型参考；实际测试使用获授权且未在运行的验收单。不能代 Honey Lemon 直接调用接口冒充端到端成功。</p><div class="comment"><label for="comment-acceptance">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-acceptance" data-comment="acceptance" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="boundary" data-title="边界与已知限制"><h2>边界与已知限制</h2>
+<p class="lead">不改 implement 节点模板或其他 Lead 的身份校验摘要；不改变 R1 / R2 / R4 的 founder 授权规则。Honey Lemon 继续依靠现有启动服务自动拉起与普通班车，不新增专用巡检自愈。真实迁移、重启和派单验收属于后续阶段。</p><p class="muted">R1 / R2 / R4 是现有的操作授权规则，换后端不获得新的批准权。三张 Mermaid 图的本地渲染均被 Chromium 权限拒绝，首次和标准重试均失败；保留源文件并如实标注，未使用远程渲染。</p><div class="comment"><label for="comment-boundary">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-boundary" data-comment="boundary" rows="3" placeholder="写下你希望调整的地方"></textarea></div></section>
+<section class="card" data-section="summary" data-title="页面总体意见"><h2>页面意见汇总</h2><p class="muted">每段都会带上所属标题。长意见按约 1800 字拆段，可分别复制。此标记表示修改意见，不表示批准。</p><div class="comment"><label for="comment-summary">这一节的意见 · 自动保存在本浏览器</label><textarea id="comment-summary" data-comment="summary" rows="3" placeholder="写下你希望调整的地方"></textarea></div><div id="chunks" aria-live="polite"></div><button type="button" id="copy-all">复制全部意见</button><p id="copy-status" class="muted" role="status"></p></section></main>
+<script nonce="__CSP_NONCE__">
+(function(){
+'use strict';
+const marker='【页面意见汇总】FLY-2459';
+const prefix='flywheel-comments:'+location.pathname+':';
+const inputs=Array.from(document.querySelectorAll('[data-comment]'));
+const box=document.getElementById('chunks');
+const status=document.getElementById('copy-status');
+let chunks=[];
+function fallbackCopy(text){
+ const temp=document.createElement('textarea');
+ temp.value=text;temp.setAttribute('readonly','');temp.style.position='fixed';temp.style.opacity='0';
+ document.body.appendChild(temp);temp.select();
+ let ok=false;try{ok=document.execCommand('copy');}finally{temp.remove();}
+ if(!ok)throw new Error('copy unavailable');
+}
+async function copy(text){
+ try{
+  if(navigator.clipboard&&typeof navigator.clipboard.writeText==='function'){
+   try{await navigator.clipboard.writeText(text);}catch(_){fallbackCopy(text);}
+  }else{fallbackCopy(text);}
+  status.textContent='已复制。';
+ }catch(_){status.textContent='无法自动复制，请选中汇总文字手动复制。';}
+}
+function render(){
+ const entries=inputs.map(input=>{
+  const value=input.value.trim();
+  return value?'【'+input.closest('[data-section]').dataset.title+'】\n'+value:'';
+ }).filter(Boolean);
+ const body=entries.join('\n\n');
+ const chars=Array.from(body);const size=1750-Array.from(marker).length;
+ chunks=[];
+ if(!chars.length)chunks.push(marker+'\n暂无意见');
+ else for(let i=0;i<chars.length;i+=size)chunks.push(marker+'\n'+chars.slice(i,i+size).join(''));
+ box.replaceChildren();
+ chunks.forEach((text,index)=>{
+  const row=document.createElement('div');row.className='chunk';
+  const pre=document.createElement('pre');pre.textContent=text;row.appendChild(pre);
+  if(chunks.length>1){const button=document.createElement('button');button.type='button';button.textContent='复制第 '+(index+1)+' / '+chunks.length+' 段';button.addEventListener('click',()=>copy(text));row.appendChild(button);}
+  box.appendChild(row);
+ });
+}
+inputs.forEach(input=>{
+ try{input.value=localStorage.getItem(prefix+input.dataset.comment)||'';}catch(_){}
+ input.addEventListener('input',()=>{
+  try{localStorage.setItem(prefix+input.dataset.comment,input.value);}catch(_){status.textContent='浏览器无法保存，本页仍可汇总复制。';}
+  render();
+ });
+});
+document.getElementById('copy-all').addEventListener('click',()=>copy(chunks.join('\n\n')));
+render();
+})();
+</script></body></html>

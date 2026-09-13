@@ -374,10 +374,7 @@ cat > "$GEN_STATE/bin/host-tmux-selection-gate.sh" <<'SH'
 #!/bin/bash
 exit 0
 SH
-cat > "$GEN_STATE/bin/codex-home-link-truth.sh" <<'SH'
-#!/bin/bash
-exit 0
-SH
+# Use the packaged auth-link inspector fallback, not the old empty-output stub.
 cat > "$GEN_STATE/bin/tmux" <<'SH'
 #!/bin/bash
 exit 0
@@ -410,6 +407,16 @@ cat > "$GEN_CODEX_HOME/packages/standalone/current/codex" <<'SH'
 exit 0
 SH
 chmod +x "$GEN_CODEX_HOME/packages/standalone/current/codex"
+# Isolated synthetic identity; exercise the shipped read-only truth inspector.
+mkdir -p "$GEN_HOME/.codex"
+printf '%s\n' '{"version":1,"primary":"personal","profiles":[{"name":"school","email":"school@example.test","role":"manual_backup"},{"name":"personal","email":"personal@example.test","role":"primary"},{"name":"business","email":"business@example.test","role":"manual_backup"}]}' > "$GEN_HOME/account-registry.json"
+python3 - "$GEN_HOME/.codex/auth.json" <<'PY_AUTH'
+import base64, json, pathlib, sys
+payload = base64.urlsafe_b64encode(json.dumps({"email":"personal@example.test","https://api.openai.com/auth":{"chatgpt_account_id":"acct-personal","chatgpt_plan_type":"pro"}}).encode()).decode().rstrip("=")
+pathlib.Path(sys.argv[1]).write_text(json.dumps({"tokens":{"id_token":"e30.%s.sig" % payload,"access_token":"fixture-access","refresh_token":"fixture-refresh"}}))
+PY_AUTH
+chmod 600 "$GEN_HOME/.codex/auth.json"
+GEN_AUTH_TRUTH="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$GEN_HOME/.codex/auth.json")"
 printf '%s\n' '{}' > "$GEN_CODEX_HOME/auth.json"
 bash "$PKG_ROOT/scripts/materialize-lead-manifests.sh" \
   --home "$GEN_HOME" --projects "$GEN_STATE/projects.json" \
@@ -418,6 +425,7 @@ bash "$PKG_ROOT/scripts/materialize-lead-manifests.sh" \
 run_generalized() {
   env -i HOME="$GEN_HOME" PATH="$GEN_STATE/bin:$PATH" \
     FLYWHEEL_DIR="$PKG_ROOT" FLYWHEEL_STATE_DIR="$GEN_STATE" \
+    FLYWHEEL_CODEX_ACCOUNT_REGISTRY_PATH="$GEN_HOME/account-registry.json" \
     FLYWHEEL_LEAD_DRY_RUN="${FLYWHEEL_LEAD_DRY_RUN:-}" \
     "$@"
 }
@@ -434,6 +442,18 @@ run_generalized "$GEN_LAUNCHER" preflight \
   "$GEN_STATE/manifests/smoke-claude-project-smoke-claude.json" \
   > "$SANDBOX/generalized-claude.out" 2> "$SANDBOX/generalized-claude.err" \
   || GEN_CLAUDE_RC=$?
+GEN_UNLINKED_RC=0
+run_generalized "$GEN_LAUNCHER" preflight \
+  "$GEN_STATE/manifests/smoke-codex-project-smoke-codex.json" \
+  > "$SANDBOX/generalized-unlinked.out" 2> "$SANDBOX/generalized-unlinked.err" \
+  || GEN_UNLINKED_RC=$?
+if [ "$GEN_UNLINKED_RC" -ne 0 ] && grep -q 'Codex auth link truth is unverified' "$SANDBOX/generalized-unlinked.err"; then
+  pass "④e unlinked synthetic Codex auth remains rejected"
+else
+  fail "④e unlinked Codex auth did not fail closed"
+fi
+rm "$GEN_CODEX_HOME/auth.json"
+ln -s "$GEN_AUTH_TRUTH" "$GEN_CODEX_HOME/auth.json"
 GEN_CODEX_RC=0
 run_generalized "$GEN_LAUNCHER" preflight \
   "$GEN_STATE/manifests/smoke-codex-project-smoke-codex.json" \
@@ -463,7 +483,7 @@ GEN_RAYA_HOME="$GEN_HOME/.codex-raya"
 mkdir -p "$GEN_RAYA_HOME/packages/standalone/current"
 cp "$GEN_CODEX_HOME/packages/standalone/current/codex" \
   "$GEN_RAYA_HOME/packages/standalone/current/codex"
-printf '%s\n' '{}' > "$GEN_RAYA_HOME/auth.json"
+ln -s "$GEN_AUTH_TRUTH" "$GEN_RAYA_HOME/auth.json"
 GEN_RAYA_REGISTER_RC=0
 run_generalized "$GEN_LAUNCHER" register \
   --project-name raya --project-root "$GEN_RAYA_ROOT" \

@@ -21,7 +21,7 @@ chmod +x "$TMP/bin/node"
 printf '%s\n' '// test stub' > "$TMP/flywheel-comm.js"
 
 export RESOLVE_CALLS="$TMP/resolve-calls"
-export RESOLVED_IDENTITY_JSON="$(printf '{"schemaVersion":1,"leadId":"product-lead","projectName":"flywheel","leadKey":"flywheel-product-lead","agentTeamName":"product-lead","botUserId":"12345678901234567","botTokenEnv":"PRODUCT_TOKEN","discordStateDir":"%s/discord-product","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"%s","projectsDigest":"%s","identityDigest":"%s"}' "$TMP" "$(printf 'c%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'a%.0s' {1..64})")"
+export RESOLVED_IDENTITY_JSON="$(printf '{"schemaVersion":1,"codexCapabilities":{"eligible":true,"runnerActionsEnabled":false,"reason":null},"leadId":"product-lead","projectName":"flywheel","leadKey":"flywheel-product-lead","agentTeamName":"product-lead","botUserId":"12345678901234567","botTokenEnv":"PRODUCT_TOKEN","discordStateDir":"%s/discord-product","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"%s","projectsDigest":"%s","identityDigest":"%s"}' "$TMP" "$(printf 'c%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'a%.0s' {1..64})")"
 
 SUCCESS_ENV="$TMP/success-env"
 (
@@ -29,7 +29,7 @@ SUCCESS_ENV="$TMP/success-env"
     FLYWHEEL_LEAD_KEY FLYWHEEL_LEAD_BACKEND FLYWHEEL_LEAD_ROLE \
     FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY \
     FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST \
-    FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST \
+    FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS \
     DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID DISCORD_IDENTITY_MODE FLYWHEEL_LEAD_BOT_USER_ID
   export PATH="$TMP/bin:$PATH"
   export FLYWHEEL_COMM_CLI="$TMP/flywheel-comm.js"

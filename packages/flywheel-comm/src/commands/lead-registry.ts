@@ -18,6 +18,19 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import {
+	getModelRegistryEntry,
+	resolveCodexLeadCapabilities,
+	resolveGenericCodexProfile,
+} from "flywheel-config";
+import {
+	applyMigrationFields,
+	planBackendMigration,
+} from "../lead-backend-migration.js";
+import {
+	readMigrationIntent,
+	writeMigrationIntent,
+} from "../lead-backend-migration-io.js";
 import { compileLeadIdentityRows } from "../lead-identity.js";
 import {
 	LeadRegistryAddError,
@@ -1293,6 +1306,8 @@ function runSelector(
 				? { generalChannel: match.project.generalChannel }
 				: {}),
 			backend: match.identity.backend,
+			codexCapabilities: resolveCodexLeadCapabilities(match.lead),
+			genericCodexDefaultProfile: resolveGenericCodexProfile(),
 			...(match.lead.codexProfile !== undefined
 				? { codexProfile: match.lead.codexProfile }
 				: {}),
@@ -1314,6 +1329,155 @@ function runSelector(
 	return 0;
 }
 
+function runPlanBackendMigration(
+	args: string[],
+	deps: LeadRegistryCommandDeps,
+	homeDir: string,
+	stdout: (line: string) => void,
+): number {
+	const { values } = parseArgs({
+		args,
+		options: {
+			project: { type: "string" },
+			lead: { type: "string" },
+			"to-backend": { type: "string" },
+			model: { type: "string" },
+			effort: { type: "string" },
+			"runner-actions": { type: "boolean" },
+			"codex-profile": { type: "string" },
+			out: { type: "string" },
+			"deployment-sha": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+	// Refuse unsupported profile before any intent directory or candidate is created.
+	resolveGenericCodexProfile(values["codex-profile"]);
+	const state = join(homeDir, ".flywheel");
+	const projectsPath = join(state, "projects.json");
+	const receiptPath = join(
+		state,
+		"state/summary-registry/migration-receipt.json",
+	);
+	if (pathEntryExists(`${receiptPath}.lead-registry-intent.json`))
+		throw new Error("lead registry recovery required");
+	const source = readJsonNoFollow<unknown>(projectsPath, "projects registry");
+	readRegularFileNoFollow(receiptPath, "summary receipt");
+	const validator =
+		deps.validateTeamleadCandidate ??
+		((path: string) => defaultTeamleadValidator(path, deps.env ?? process.env));
+	const receipt = verifySummaryRegistryActivation(
+		{ projectsPath, receiptPath, homeDir },
+		{ validateTeamleadCandidate: validator },
+	);
+	const manifestPath = join(
+		state,
+		"manifests/flywheel-flywheel-product-lead.json",
+	);
+	const plistPath = join(
+		homeDir,
+		"Library/LaunchAgents/com.flywheel.lead.flywheel-flywheel-product-lead.plist",
+	);
+	const manifest = readJsonNoFollow<{
+		projectName?: string;
+		leadId?: string;
+		leadBackend?: { backendId?: string };
+	}>(manifestPath, "Lead manifest");
+	if (
+		manifest.value.projectName !== "flywheel" ||
+		manifest.value.leadId !== "flywheel-product-lead" ||
+		(manifest.value.leadBackend?.backendId ?? "claude-code") !== "claude-code"
+	)
+		throw new Error("source manifest identity mismatch");
+	const plist = readRegularFileNoFollow(plistPath, "Lead plist");
+	const rawModel = required(values.model, "--model");
+	const model = getModelRegistryEntry(rawModel);
+	if (!model) throw new Error("unknown migration model");
+	const out = required(values.out, "--out");
+	const existing = pathEntryExists(out)
+		? readMigrationIntent(homeDir, out)
+		: undefined;
+	const plan = planBackendMigration({
+		registry: source.value,
+		projectName: required(values.project, "--project"),
+		leadId: required(values.lead, "--lead"),
+		toBackend: required(values["to-backend"], "--to-backend"),
+		model: model.id,
+		effort: required(values.effort, "--effort"),
+		runnerActions: values["runner-actions"] === true,
+		codexProfile: values["codex-profile"],
+		deploymentSha:
+			values["deployment-sha"] ??
+			readRegularFileNoFollow(
+				join(state, "deployed-sha"),
+				"deployment receipt",
+			).trim(),
+		manifestSha: sha256(manifest.text),
+		plistSha: sha256(plist),
+		createdAt: existing?.createdAt ?? deps.now?.() ?? new Date().toISOString(),
+	});
+	const rows = compileLeadIdentityRows(source.value, { homeDir });
+	const targetRow = rows.find(
+		(row) =>
+			row.identity.projectName === plan.projectName &&
+			row.identity.leadId === plan.leadId,
+	);
+	if (!targetRow || typeof targetRow.project.projectRoot !== "string")
+		throw new Error("migration target missing");
+	const commit = spawnSync(
+		"git",
+		["cat-file", "-e", `${plan.deploymentSha}^{commit}`],
+		{
+			cwd: targetRow.project.projectRoot,
+			encoding: "utf8",
+			timeout: 10000,
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	);
+	if (commit.error || commit.status !== 0)
+		throw new Error("expected deployment commit is unavailable");
+	const candidate = applyMigrationFields(source.value, plan);
+	const projection = compileSummaryAssignments(
+		candidate,
+		readSummaryGranularity({ homeDir }),
+	);
+	if (projection.digest !== receipt.summaryAssignmentDigest)
+		throw new Error("migration changes summary assignment");
+	const candidatePath = join(
+		state,
+		`.backend-migration-validate-${randomUUID()}.json`,
+	);
+	try {
+		writeDurableFile(candidatePath, JSON.stringify(candidate), 0o600);
+		validator(candidatePath);
+	} finally {
+		if (existsSync(candidatePath)) unlinkSync(candidatePath);
+	}
+	if (
+		readRegularFileNoFollow(projectsPath, "projects registry") !==
+			source.text ||
+		readRegularFileNoFollow(manifestPath, "Lead manifest") !== manifest.text ||
+		readRegularFileNoFollow(plistPath, "Lead plist") !== plist
+	)
+		throw new Error("migration preimage changed during planning");
+	verifySummaryRegistryActivation(
+		{ projectsPath, receiptPath, homeDir },
+		{ validateTeamleadCandidate: validator },
+	);
+	const result = writeMigrationIntent(homeDir, out, plan);
+	stdout(
+		JSON.stringify({
+			result,
+			intentPath: out,
+			migrationId: plan.migrationId,
+			deploymentSha: plan.deploymentSha,
+			target: plan.target,
+			phase: plan.phase,
+			restartAuthorized: false,
+		}),
+	);
+	return 0;
+}
+
 export function runLeadRegistryCommand(
 	args: string[],
 	deps: LeadRegistryCommandDeps = {},
@@ -1323,6 +1487,32 @@ export function runLeadRegistryCommand(
 	const homeDir = deps.homeDir ?? homedir();
 	try {
 		const subcommand = args[0];
+		if (subcommand === "verify-backend-migration") {
+			const entry = join(
+				dirname(fileURLToPath(import.meta.url)),
+				"../../../teamlead/dist/bin/verify-backend-migration.js",
+			);
+			const result = spawnSync(process.execPath, [entry, ...args.slice(1)], {
+				encoding: "utf8",
+				env: deps.env ?? process.env,
+				timeout: 45000,
+				maxBuffer: 262144,
+			});
+			if (result.stdout?.trim()) stdout(result.stdout.trim());
+			if (result.status !== 0 || result.error) {
+				stderr(
+					"migration verification incomplete; inspect the receipt and verifier prerequisites",
+				);
+				return result.status === 64 ? 64 : 78;
+			}
+			return 0;
+		}
+		if (subcommand === "plan-backend-migration")
+			return runPlanBackendMigration(args.slice(1), deps, homeDir, stdout);
+		if (subcommand === "generic-codex-profile" && args.length === 1) {
+			stdout(resolveGenericCodexProfile());
+			return 0;
+		}
 		if (subcommand === "selector") {
 			return runSelector(args.slice(1), homeDir, stdout);
 		}
@@ -1338,7 +1528,7 @@ export function runLeadRegistryCommand(
 		throw new LeadRegistryCommandError(
 			"lead_registry_usage",
 			64,
-			"expected subcommand: add|import-cos-context|recover|selector",
+			"expected subcommand: add|import-cos-context|recover|selector|generic-codex-profile|plan-backend-migration|verify-backend-migration",
 		);
 	} catch (error) {
 		const parseArgsError =

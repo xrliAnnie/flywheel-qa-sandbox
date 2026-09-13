@@ -264,6 +264,8 @@ if ! HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
 fi
 
 TEAMLEAD_FIXTURE="$TMP/teamlead"
+mkdir -p "$TEAMLEAD_FIXTURE/lead-rules-base"
+cp "$REPO_ROOT/packages/teamlead/lead-rules-base/codex-runner-actions.md" "$TEAMLEAD_FIXTURE/lead-rules-base/"
 mkdir -p "$TEAMLEAD_FIXTURE/scripts/lib" \
   "$TEAMLEAD_FIXTURE/dist/lead-backends/codex/lead-actions" \
   "$TEAMLEAD_FIXTURE/dist/lead-backends/codex"
@@ -284,7 +286,7 @@ cat >"$TEAMLEAD_FIXTURE/dist/lead-backends/codex/codex-lead-tui-runtime.js" <<'J
 const fs = require("node:fs");
 const names = [
   "FLYWHEEL_PROJECTS_FILE", "FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST",
-  "FLYWHEEL_LEAD_PROJECTS_DIGEST", "FLYWHEEL_CODEX_LEAD_MODE",
+  "FLYWHEEL_LEAD_PROJECTS_DIGEST", "FLYWHEEL_CODEX_LEAD_MODE", "FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS",
   "FLYWHEEL_CODEX_LEAD_PROFILE", "FLYWHEEL_CODEX_LEAD_SANDBOX",
   "FLYWHEEL_LEAD_CHAT_CHANNEL_ID", "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
   "FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD", "FLYWHEEL_ROUNDTABLE_CHANNEL_ID",
@@ -326,6 +328,7 @@ FLYWHEEL_ROUNDTABLE_ENABLED=1
 FLYWHEEL_ROUNDTABLE_GUILD_ID=forbidden-guild
 FLYWHEEL_LEAD_CORE_CHANNEL_ID=forbidden-core-channel
 FLYWHEEL_LEAD_MENTION_PATTERNS=forbidden-mention
+FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS=1
 FLYWHEEL_HOST_TMUX_GATE_TEST_MODE=1
 ENV
 
@@ -352,6 +355,7 @@ if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
       .FLYWHEEL_PROJECTS_FILE == $projects and
       .FLYWHEEL_LEAD_EXPECTED_PROJECTS_DIGEST == .FLYWHEEL_LEAD_PROJECTS_DIGEST and
       .FLYWHEEL_CODEX_LEAD_MODE == "tui" and
+      .FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS == "0" and
       .FLYWHEEL_CODEX_LEAD_PROFILE == "full-access" and
       .FLYWHEEL_CODEX_LEAD_SANDBOX == "workspace-write" and
       .FLYWHEEL_LEAD_CHAT_CHANNEL_ID == "10000000000000003" and
@@ -379,6 +383,28 @@ if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
 else
   fail "Codex run composition failed: $(cat "$TMP/codex-run.err"); capture=$(cat "$CODEX_CAPTURE" 2>/dev/null || true)"
 fi
+
+# Verify actual child delivery for the explicit department capability and fail closed otherwise.
+cp "$STATE/projects.json" "$TMP/before-runner-capability.json"
+for capability in true false; do
+  jq --argjson enabled "$capability" 'map(if .projectName == "codex-demo" then .leads |= map(. + {canSpawnRunners:true,codexRunnerActions:$enabled}) else . end)' \
+    "$TMP/before-runner-capability.json" > "$STATE/projects.json"
+  rm -f "$CODEX_CAPTURE"
+  cap_rc=0
+  HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
+    FLYWHEEL_STATE_DIR="$STATE" FLYWHEEL_COMM_CLI="$CLI" \
+    FLYWHEEL_TEAMLEAD_ROOT="$TEAMLEAD_FIXTURE" FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" FLYWHEEL_LEAD_DRY_RUN=1 \
+    CODEX_CAPTURE="$CODEX_CAPTURE" HOST_GATE_CALLS="$HOST_GATE_CALLS" \
+    "$LAUNCHER" run "$codex_manifest" >"$TMP/capability.out" 2>"$TMP/capability.err" || cap_rc=$?
+  if [ "$capability" = true ]; then
+    if [ "$cap_rc" -eq 0 ] && jq -e '.FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS == "1"' "$CODEX_CAPTURE" >/dev/null; then
+      pass "explicit department capability reaches the Codex child"
+    else fail "explicit capability child failed: $(cat "$TMP/capability.err")"; fi
+  elif [ "$cap_rc" -eq 78 ] && [ ! -f "$CODEX_CAPTURE" ]; then
+    pass "department without opt-in is rejected before launching the child"
+  else fail "department without opt-in reached child"; fi
+done
+mv "$TMP/before-runner-capability.json" "$STATE/projects.json"
 
 TOOLCHAIN_BIN="$H/.local/bin"
 mkdir -p "$TOOLCHAIN_BIN"
@@ -506,9 +532,12 @@ exit 0
 SH
 cat >"$STATE/bin/codex-home-link-truth.sh" <<'SH'
 #!/bin/bash
-exit 0
+[ "$1" = --inspect ] || exit 99
+printf '%s\n' '{"state":"already"}'
 SH
 chmod +x "$CODEX_HOME_DIR/packages/standalone/current/codex" "$STATE/bin/codex-home-link-truth.sh"
+mv "$CODEX_HOME_DIR/auth.json" "$H/auth-truth-fixture.json"
+ln -s "$H/auth-truth-fixture.json" "$CODEX_HOME_DIR/auth.json"
 before_preflight="$(state_snapshot)"
 if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
   FLYWHEEL_STATE_DIR="$STATE" FLYWHEEL_COMM_CLI="$CLI" \

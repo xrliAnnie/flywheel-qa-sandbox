@@ -628,6 +628,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"secret: short-lived per-execution workflow submission credential",
 	FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED:
 		"plumbing: engine-owned workflow submission credential expectation sentinel (FLY-1425)",
+	FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS:
+		"plumbing: canonical Lead runner-action capability projection; handlers revalidate explicit registry configuration, so this env marker cannot independently grant capability (FLY-2459)",
 	FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL:
 		"secret: one-shot generalized workflow output credential",
 	FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV:

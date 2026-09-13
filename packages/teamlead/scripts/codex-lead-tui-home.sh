@@ -741,41 +741,13 @@ append_full_access_lead_actions_mcp() {
   # env table: non-secret coords ONLY, NO broker socket (auth is by NAME).
   local rt_eff
   rt_eff="$(roundtable_autocontinue_effective)"  # FLY-676 — see helper; gate-matched
-  local env_toml
-  env_toml="$(python3 - "$lead_id" "$project" "$chat" "$cross" "$state_dir" "$comm_db" "$aliases" "$outbound_mode" "$rt_eff" <<'PYENV'
-import sys, json
-keys = ["FLYWHEEL_LEAD_ID","FLYWHEEL_PROJECT_NAME","FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
-        "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS","FLYWHEEL_LEAD_ACTIONS_STATE_DIR",
-        "FLYWHEEL_COMM_DB","FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES",
-        "FLYWHEEL_CODEX_LEAD_OUTBOUND"]
-vals = sys.argv[1:9]
-pairs = []
-for k, v in zip(keys, vals):
-    if k == "FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES" and not v:
-        continue  # optional
-    # FLY-1243: FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS is already normalized+base-filtered by
-    # the shell (normalized_cross_dept_ids) — written verbatim to match the gate exactly.
-    pairs.append(f"{k} = {json.dumps(v)}")
-# FLY-676: effective roundtable autoContinue flag — ONLY when on (matches the runtime
-# full-access builder's conditional include; preserves the prior OFF env shape).
-if len(sys.argv) > 9 and sys.argv[9] == "1":
-    pairs.append(f'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = {json.dumps("1")}')
-print(", ".join(pairs))
-PYENV
-)" || die "append_full_access_lead_actions_mcp: failed to render env table"
-  {
-    printf '\n# FLY-398/FLY-2445 full-access lead-actions MCP — approve + selected credential by NAME\n'
-    printf '[mcp_servers.lead_actions]\n'
-    printf 'command = %s\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$node_bin")"
-    printf 'args = [%s]\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$main_js")"
-    printf 'default_tools_approval_mode = "approve"\n'
-    if [ "$outbound_mode" = "bridge" ]; then
-      printf 'env_vars = ["BRIDGE_URL", "TEAMLEAD_API_TOKEN"]\n'
-    else
-      printf 'env_vars = ["DISCORD_BOT_TOKEN"]\n'
-    fi
-    printf 'env = { %s }\n' "$env_toml"
-  } >> "$CONFIG"
+  local renderer fragment
+  renderer="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dist/bin/render-lead-actions-config.js"
+  [ -f "$renderer" ] || die "trusted lead-actions config renderer missing: $renderer; build TeamLead before launch"
+  fragment="$(FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="$cross" \
+    FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE="$rt_eff" \
+    "$node_bin" "$renderer")" || die "lead-actions config rendering failed"
+  printf '\n%s\n' "$fragment" >> "$CONFIG"
   log "config.toml: appended [mcp_servers.lead_actions] (full-access: approve + outbound=$outbound_mode credential by name)"
 }
 

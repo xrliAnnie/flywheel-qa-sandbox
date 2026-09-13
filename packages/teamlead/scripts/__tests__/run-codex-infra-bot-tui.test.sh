@@ -26,6 +26,8 @@ SUT="$SCRIPT_DIR/run-codex-infra-bot-tui.sh"
 [ -f "$SUT" ] || { echo "FATAL: $SUT missing"; exit 1; }
 REAL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)" # real teamlead package root (for lead-rules-base)
 REPO_ROOT="$(cd "$REAL_ROOT/../.." && pwd)"
+export PROFILE_TEST_NODE="$(command -v node)"
+export PROFILE_TEST_CLI="$REPO_ROOT/packages/flywheel-comm/dist/index.js"
 
 T=$(mktemp -d /tmp/clibt.XXXXX) || { echo "FATAL: mktemp"; exit 1; }
 trap 'rm -rf "$T"' EXIT
@@ -72,6 +74,9 @@ chmod +x "$REPO/scripts/codex-home-link-truth.sh"
 mkdir -p "$T/bin"
 cat > "$T/bin/node" <<'EOF'
 #!/bin/bash
+if [[ " $* " == *" lead-registry generic-codex-profile "* ]]; then
+  exec "$PROFILE_TEST_NODE" "$PROFILE_TEST_CLI" lead-registry generic-codex-profile
+fi
 if [[ " $* " == *" lead-identity resolve "* ]]; then
   printf '%s\n' "$CANONICAL_JSON"
   exit 0
@@ -86,13 +91,13 @@ run_dry() {
 	ENVDUMP="$T/envdump.$$.$RANDOM"
 	export ENVDUMP
 	HOME="$T/home" PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
-		CANONICAL_JSON='{"schemaVersion":1,"leadId":"codex-infra-bot-lead","projectName":"flywheel","leadKey":"flywheel-codex-infra-bot-lead","agentTeamName":"codex-infra-bot-lead","botUserId":"12345678901234567","botTokenEnv":"CODEX_INFRA_BOT_TOKEN","discordStateDir":"/tmp/discord-infra","backend":"codex-app-server","role":"dept","summaryRole":"exempt","summaryGranularity":"per-lead","hasSummaryDuty":false,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+		CANONICAL_JSON='{"codexCapabilities":{"runnerActionsEnabled":false},"schemaVersion":1,"leadId":"codex-infra-bot-lead","projectName":"flywheel","leadKey":"flywheel-codex-infra-bot-lead","agentTeamName":"codex-infra-bot-lead","botUserId":"12345678901234567","botTokenEnv":"CODEX_INFRA_BOT_TOKEN","discordStateDir":"/tmp/discord-infra","backend":"codex-app-server","role":"dept","summaryRole":"exempt","summaryGranularity":"per-lead","hasSummaryDuty":false,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 		FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
 		FLYWHEEL_INFRA_BOT_USER_ID=U123 \
 		FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID=C123 \
 		FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=C456 \
 		CODEX_INFRA_BOT_TOKEN=DRY \
-		"$@" /bin/bash "$SUT" >/dev/null 2>&1
+		"$@" /bin/bash "$SUT" >/dev/null 2>"$T/launcher.stderr"
 	echo "$ENVDUMP"
 }
 envval() { grep "^$2=" "$1" | head -1 | cut -d= -f2-; }
@@ -136,7 +141,8 @@ if [ -f "$D" ]; then
 		fail "retired FLYWHEEL_TUI_WINDOW_ALERT pin is still emitted"
 	else pass "FLY-2105: no retired TUI alert env pin"; fi
 else
-	fail "dry-run did not exec mock node (no env dump)"
+	cat "$T/launcher.stderr" >&2
+ fail "dry-run did not exec mock node (no env dump)"
 fi
 
 mkdir -p "$T/home/.codex-infra-bot/packages/standalone/current"
@@ -147,7 +153,7 @@ LINK_DUMP="$T/link-dump" ENVDUMP="$T/real-envdump" \
 	FLYWHEEL_LEAD_DRY_RUN=0 FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
 	FLYWHEEL_INFRA_BOT_USER_ID=U123 FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID=C123 \
 	FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=C456 CODEX_INFRA_BOT_TOKEN=DRY \
-	CANONICAL_JSON='{"schemaVersion":1,"leadId":"codex-infra-bot-lead","projectName":"flywheel","leadKey":"flywheel-codex-infra-bot-lead","agentTeamName":"codex-infra-bot-lead","botUserId":"12345678901234567","botTokenEnv":"CODEX_INFRA_BOT_TOKEN","discordStateDir":"/tmp/discord-infra","backend":"codex-app-server","role":"dept","summaryRole":"exempt","summaryGranularity":"per-lead","hasSummaryDuty":false,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+	CANONICAL_JSON='{"codexCapabilities":{"runnerActionsEnabled":false},"schemaVersion":1,"leadId":"codex-infra-bot-lead","projectName":"flywheel","leadKey":"flywheel-codex-infra-bot-lead","agentTeamName":"codex-infra-bot-lead","botUserId":"12345678901234567","botTokenEnv":"CODEX_INFRA_BOT_TOKEN","discordStateDir":"/tmp/discord-infra","backend":"codex-app-server","role":"dept","summaryRole":"exempt","summaryGranularity":"per-lead","hasSummaryDuty":false,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 	/bin/bash "$RT/scripts/run-codex-infra-bot-tui.sh" >/dev/null 2>&1
 real_rc=$?
 if [ "$real_rc" -eq 0 ] \

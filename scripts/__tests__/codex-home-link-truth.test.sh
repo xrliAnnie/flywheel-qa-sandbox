@@ -180,5 +180,16 @@ else
 	fail "the migration gate is absent from onboarding packaging"
 fi
 
+T_INSPECT="$TMP_ROOT/inspect"; make_fixture "$T_INSPECT"
+if LINK_TRUTH_PS_MODE=fail run_sut "$T_INSPECT" --inspect "$T_INSPECT/home/runner" >"$T_INSPECT/out" 2>&1 \
+  && jq -e '.state == "requires-migration"' "$T_INSPECT/out" >/dev/null \
+  && [ ! -L "$T_INSPECT/home/runner/auth.json" ] \
+  && [ "$(cat "$T_INSPECT/home/runner/auth.json")" = legacy-copy ]; then
+  pass "inspect reports an unlinked home without mutation or process fencing"
+else fail "readonly inspect failed or changed auth"; fi
+if run_sut "$T_INSPECT" --inspect --unlink "$T_INSPECT/home/runner" >/dev/null 2>&1; then
+  fail "inspect accepted mutation flags"
+else pass "inspect refuses mutation flags"; fi
+
 printf 'Results: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

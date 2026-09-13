@@ -213,6 +213,38 @@ else
     || fail "M9 failed but not via gate④: $(tail -3 "$SANDBOX/cont.log")"
 fi
 
+# FLY-2459: the compiled console line only emits a static documentation href.
+# Register its exact line; a changed href or an appended fetch/clone stays denied.
+DOC_TREE="$SANDBOX/doc-link"
+DOC_REL="node_modules/flywheel-teamlead/dist/bridge/fleet-console-html.js"
+mkdir -p "$DOC_TREE/$(dirname "$DOC_REL")"
+cp "$LEGIT/package.json" "$LEGIT/.flywheel-prebuilt" "$LEGIT/.flywheel-build-sha" "$DOC_TREE/"
+printf 'package.json\n.flywheel-prebuilt\n.flywheel-build-sha\n%s\n' "$DOC_REL" > "$ROOT/scripts/doc-files.allow"
+DOC_LINE="$(grep 'href="https://github.com/xrliAnnie/flywheel/blob/main/engineering/doc/FLY-2459-codex-department-lead/honey-lemon-cutover.md"' "$REPO_ROOT/packages/teamlead/dist/bridge/fleet-console-html.js")"
+if [ -z "$DOC_LINE" ]; then
+  fail "M10 compiled migration guidance line missing"
+else
+  doc_gate() {
+    env PACKAGE_ONBOARD_SOURCED=1 PO_FILES_ALLOWLIST="$ROOT/scripts/doc-files.allow" \
+      PO_GREP_ALLOWLIST="$REPO_ROOT/scripts/packaged/audit-grep-allowlist.tsv" \
+      bash -c 'source "$1"; shift; po_gate "$@"' _ "$REPO_ROOT/scripts/package-onboard.sh" \
+      "$DOC_TREE" "$ROOT" > "$SANDBOX/doc-gate.log" 2>&1
+  }
+  printf '%s\n' "$DOC_LINE" > "$DOC_TREE/$DOC_REL"
+  if doc_gate; then pass "M10 exact static migration href is registered";
+  else fail "M10 exact static migration href refused: $(tail -3 "$SANDBOX/doc-gate.log")"; fi
+  for DOC_EXTRA in 'fetch("https://github.com/xrliAnnie/flywheel");' 'git clone https://github.com/xrliAnnie/flywheel.git'; do
+    printf '%s %s\n' "$DOC_LINE" "$DOC_EXTRA" > "$DOC_TREE/$DOC_REL"
+    if doc_gate; then fail "M11 href registration cleared added repository access";
+    elif grep -q 'UNREGISTERED repo-access' "$SANDBOX/doc-gate.log"; then pass "M11 href registration rejects added repository access";
+    else fail "M11 rejected for an unexpected reason"; fi
+  done
+  printf '%s\n' "${DOC_LINE/honey-lemon-cutover.md/other.md}" > "$DOC_TREE/$DOC_REL"
+  if doc_gate; then fail "M12 edited migration href was accepted";
+  elif grep -q 'UNREGISTERED repo-access' "$SANDBOX/doc-gate.log"; then pass "M12 edited migration href needs fresh registration";
+  else fail "M12 rejected for an unexpected reason"; fi
+fi
+
 echo ""
 echo "gate4-allowlist-masking: PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" -eq 0 ]

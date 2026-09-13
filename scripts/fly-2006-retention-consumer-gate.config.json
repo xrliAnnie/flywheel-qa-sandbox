@@ -559,6 +559,20 @@
 			"baseTable": "lead_events",
 			"usage": "read",
 			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/bin/backend-migration-evidence.ts",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/lead-backends/codex/runner-actions.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
 		}
 	]
 }

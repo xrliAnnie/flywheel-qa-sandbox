@@ -12,6 +12,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SANDBOX="$(mktemp -d -t fly2444-restart-authority-XXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
 export HOME="$SANDBOX/home"
+export FLYWHEEL_COMM_CLI="$REPO_ROOT/packages/flywheel-comm/dist/index.js"
 mkdir -p "$HOME/.flywheel/manifests" "$HOME/.flywheel/bin"
 
 # shellcheck source=../lib/lead-restart-lifecycle.sh
@@ -21,17 +22,17 @@ PROJECTS="$HOME/.flywheel/projects.json"
 cat > "$PROJECTS" <<JSON
 [
   {"projectName":"demo","projectRoot":"$HOME/Dev/demo","leads":[
-    {"agentId":"claude-lead","backend":"claude-code","carrier":"v2"},
-    {"agentId":"codex-lead","backend":"codex-app-server","codexProfile":"full-access","canSpawnRunners":false,"companion":false}
+    {"summaryRole":"producer","agentId":"claude-lead","backend":"claude-code","carrier":"v2"},
+    {"summaryRole":"producer","agentId":"codex-lead","backend":"codex-app-server","codexProfile":"full-access","canSpawnRunners":false,"companion":false}
   ]},
   {"projectName":"growth","projectRoot":"$HOME/Dev/growth","leads":[
-    {"agentId":"mufasa-lead","backend":"codex-app-server"}
+    {"summaryRole":"producer","agentId":"mufasa-lead","backend":"codex-app-server"}
   ]},
   {"projectName":"flywheel","projectRoot":"$HOME/Dev/flywheel","leads":[
-    {"agentId":"codex-infra-bot-lead","backend":"codex-app-server"}
+    {"summaryRole":"producer","agentId":"codex-infra-bot-lead","backend":"codex-app-server"}
   ]},
   {"projectName":"raya","projectRoot":"$HOME/Dev/raya","leads":[
-    {"agentId":"raya","backend":"codex-app-server","codexProfile":"full-access","canSpawnRunners":false,"companion":false}
+    {"summaryRole":"producer","agentId":"raya","backend":"codex-app-server","codexProfile":"full-access","canSpawnRunners":false,"companion":false}
   ]}
 ]
 JSON
@@ -131,6 +132,13 @@ if lead_restart_validate_authority "$GENERIC_MANIFEST" "$GENERIC_PLIST" "$PROJEC
 else
   fail "generic Codex authority rejected the reviewed exact shape"
 fi
+
+cp "$PROJECTS" "$SANDBOX/pre-opt-in.json"
+jq '.[0].leads[1] += {canSpawnRunners:true,codexRunnerActions:true}' "$PROJECTS" > "$PROJECTS.tmp"
+mv "$PROJECTS.tmp" "$PROJECTS"
+assert_authorized "$GENERIC_MANIFEST" "$GENERIC_PLIST" \
+  com.flywheel.lead.demo-codex-lead "explicit runner opt-in permits generic department carrier"
+mv "$SANDBOX/pre-opt-in.json" "$PROJECTS"
 
 GENERIC_NEGATIVE_OK=1
 for mutation in profile spawn companion project-backend manifest-backend argv; do

@@ -323,6 +323,7 @@ describe("run-codex-lead-mufasa-fullaccess.sh (full-access cutover launcher)", (
 				FLYWHEEL_COMM_CLI: "",
 				MUFASA_BOT_TOKEN: "x",
 				CANONICAL_JSON: JSON.stringify({
+					codexCapabilities: { runnerActionsEnabled: false },
 					schemaVersion: 1,
 					leadId: "mufasa-lead",
 					projectName: "growth",

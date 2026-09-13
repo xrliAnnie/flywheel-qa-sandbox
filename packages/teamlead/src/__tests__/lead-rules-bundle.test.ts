@@ -501,6 +501,7 @@ exit 0
 				),
 				GROWTH_BOT_TOKEN: "x",
 				CANONICAL_JSON: JSON.stringify({
+					codexCapabilities: { runnerActionsEnabled: false },
 					schemaVersion: 1,
 					leadId: "growth-lead",
 					projectName: "growth",

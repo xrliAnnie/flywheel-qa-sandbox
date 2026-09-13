@@ -47,7 +47,11 @@ export function washActionSecretEnv(
 	const washed: Record<string, string> = {};
 	for (const [k, v] of Object.entries(env)) {
 		if (v === undefined) continue;
-		if (ACTION_SECRET_ENV_PATTERN.test(k)) continue;
+		if (
+			ACTION_SECRET_ENV_PATTERN.test(k) ||
+			k === "FLYWHEEL_LEAD_CARRIER_INSTANCE_ID"
+		)
+			continue;
 		washed[k] = v;
 	}
 	return washed;
@@ -60,7 +64,8 @@ export interface SecretBrokerOptions {
 
 export class SecretBroker {
 	readonly socketPath: string;
-	private readonly payload: string;
+	private payload: string;
+	private readonly secrets: Readonly<Record<string, string>>;
 	private server: Server | undefined;
 
 	constructor(opts: SecretBrokerOptions) {
@@ -75,8 +80,15 @@ export class SecretBroker {
 			}
 		}
 		this.socketPath = opts.socketPath;
+		this.secrets = { ...opts.secrets };
 		// Serialized once, held in memory only — never written to disk.
 		this.payload = `${JSON.stringify(opts.secrets)}\n`;
+	}
+
+	/** Rotate with each confined app-server incarnation; never serialize to disk/env. */
+	setRunnerCarrierClaim(claim: string): void {
+		if (!claim) throw new Error("runner carrier claim must be non-empty");
+		this.payload = `${JSON.stringify({ ...this.secrets, FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: claim })}\n`;
 	}
 
 	/** Start listening. Replaces a stale socket file from a crashed previous

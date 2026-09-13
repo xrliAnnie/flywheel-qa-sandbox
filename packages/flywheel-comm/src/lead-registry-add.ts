@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { resolveGenericCodexProfile } from "flywheel-config";
 import { compileLeadIdentityRows, type SummaryRole } from "./lead-identity.js";
 import { compileSummaryAssignments } from "./summary-assignment.js";
 import type { SummaryGranularitySelection } from "./summary-config.js";
@@ -99,7 +100,9 @@ function leadRow(input: LeadRegistryAddInput): Record<string, unknown> {
 		canSpawnRunners: input.canSpawnRunners ?? false,
 		backend,
 		...(input.harness === "claude" ? { carrier: "v2" } : {}),
-		...(input.harness === "codex" ? { codexProfile: "full-access" } : {}),
+		...(input.harness === "codex"
+			? { codexProfile: resolveGenericCodexProfile() }
+			: {}),
 		...(input.model !== undefined ? { model: input.model } : {}),
 		...(input.effort !== undefined ? { effort: input.effort } : {}),
 		...(input.modelContextWindow !== undefined

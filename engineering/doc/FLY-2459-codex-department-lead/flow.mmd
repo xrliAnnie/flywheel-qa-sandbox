@@ -1,0 +1,10 @@
+flowchart TD
+    A["Annie 在核心频道提及 Honey Lemon"] --> B["标准 Codex Lead 收件箱"]
+    B --> C["显式开启 runner 动作"]
+    C --> D["固定项目与 Lead 身份"]
+    D --> E["Bridge 核对产品部门与任务类别"]
+    E -->|"越部门：403"| F["拒绝；不创建执行"]
+    E -->|"允许"| G["现有工作流调度器"]
+    G --> H["产品 runner 与 issue_delivery 回执"]
+    H --> I["同一身份查询状态、发指令、答普通问题"]
+    I --> J["保留 founder 独占的审批与生命周期入口"]

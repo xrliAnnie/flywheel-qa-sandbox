@@ -54,6 +54,28 @@ function prodProjects(): ProjectEntry[] {
 	];
 }
 
+it("shows Honey Lemon's configured Codex Astra/high with read-only migration guidance", () => {
+	const view = buildConsoleLeadView(
+		"flywheel",
+		lead({
+			agentId: "flywheel-product-lead",
+			backend: "codex-app-server",
+			codexProfile: "full-access",
+			codexRunnerActions: true,
+			model: "gpt-6-astra",
+			effort: "high",
+		}),
+	);
+	expect(view.currentModelLabel).toBe("GPT-6 Astra");
+	expect(view.currentEffortLabel).toBe("high");
+	expect(
+		view.backendOptions.find((option) => option.backend === "claude-code"),
+	).toMatchObject({
+		switchable: false,
+		disabledReason: expect.stringContaining("updater"),
+	});
+});
+
 describe("fleet-console-model — buildConsoleSnapshot (R5 #1: default-off gate)", () => {
 	it("returns ALL leads even when none has explicit model/backend (no empty console)", () => {
 		const snap = buildConsoleSnapshot([
@@ -139,11 +161,11 @@ describe("fleet-console-model — buildConsoleSnapshot (R5 #1: default-off gate)
 		expect(view.currentModelLabel).toBe("Opus 4.8 (1M)");
 	});
 
-	it("migrated Mufasa → Codex backend, GPT-5 read-only, only-null model target", () => {
+	it("migrated Mufasa → Codex backend, account default read-only, only-null model target", () => {
 		const snap = buildConsoleSnapshot(prodProjects());
 		const mufasa = snap.leads.find((l) => l.leadId === "mufasa")!;
 		expect(mufasa.currentBackend).toBe("codex-app-server");
-		expect(mufasa.currentModelLabel).toBe("GPT-5");
+		expect(mufasa.currentModelLabel).toBe("账号默认");
 		expect(mufasa.allowedModelTargets).toEqual([null]);
 		expect(mufasa.tierOptions[0]!.readonly).toBe(true);
 	});

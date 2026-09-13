@@ -1,8 +1,49 @@
-import { describe, expect, it } from "vitest";
+import { runInNewContext } from "node:vm";
+import { describe, expect, it, vi } from "vitest";
 import { getFleetConsoleHtml } from "../bridge/fleet-console-html.js";
 
 describe("management console HTML", () => {
 	const html = getFleetConsoleHtml();
+	it("links controlled Lead migration guidance and identifies configured values", () => {
+		expect(html).toContain("当前显示配置值；实际生效以进程验收为准。");
+		expect(html).toContain(
+			'href="https://github.com/xrliAnnie/flywheel/blob/main/engineering/doc/FLY-2459-codex-department-lead/honey-lemon-cutover.md"',
+		);
+		expect(html).toContain("受控迁移指引");
+	});
+
+	it("renders the migration guide as static navigation without fetching a repository", () => {
+		const source = html.match(
+			/ {2}function renderLeadRows\([\s\S]*?\n {2}\}/,
+		)?.[0];
+		expect(source).toBeDefined();
+		const fetch = vi.fn(() => {
+			throw Error("unexpected repository fetch");
+		});
+		const open = vi.fn(() => {
+			throw Error("unexpected navigation");
+		});
+		const render = runInNewContext(`(${source})`, {
+			esc: (value: unknown) => String(value),
+			modelControl: () => "<span>model control</span>",
+			fetch,
+			open,
+		});
+		const row = render([
+			{
+				displayName: "Honey Lemon",
+				online: "online",
+				backend: "codex-app-server",
+				dispatch: {},
+			},
+		]);
+		expect(row).toContain(
+			'href="https://github.com/xrliAnnie/flywheel/blob/main/engineering/doc/FLY-2459-codex-department-lead/honey-lemon-cutover.md"',
+		);
+		expect(row).toContain('rel="noopener noreferrer"');
+		expect(fetch).not.toHaveBeenCalled();
+		expect(open).not.toHaveBeenCalled();
+	});
 
 	it("is a complete full-window Flywheel management console", () => {
 		expect(html.startsWith("<!DOCTYPE html>")).toBe(true);

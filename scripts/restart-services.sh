@@ -2677,6 +2677,29 @@ do_restart_all_leads() {
         echo "skipped:0 failed:1 total:0"
         return 0
     fi
+    # FLY-2459: only the existing updater window can consume this bounded
+    # migration. Its internal entry rechecks ancestry, lock and admission owner.
+    # This local value comes from live observation in THIS invocation, never a
+    # retained receipt. A later deployment must execute and revalidate again.
+    local migration_activated_key="" migration_result="" migration_helper=""
+    if [[ "${RESTART_REASON:-}" == updater && ( -e "${HOME}/.flywheel/lead-backend-migrations/FLY-2459-honey-lemon.json" \
+      || -L "${HOME}/.flywheel/lead-backend-migrations/FLY-2459-honey-lemon.json" ) ]]; then
+        migration_helper="${FLYWHEEL_DIR}/scripts/lib/lead-backend-migration.sh"
+        if [[ ! -f "$migration_helper" || -L "$migration_helper" ]] \
+          || ! source "$migration_helper" \
+          || ! migration_result="$(lead_backend_migration_run "$HOME")" \
+          || ! jq -e '.status == "deployed_unverified" or .status == "skipped"' <<<"$migration_result" >/dev/null; then
+            log "ERROR: backend migration held — refusing the remaining Lead wave" >&2
+            record_lead_restart_detail wave_error "backend migration held"
+            echo "skipped:0 failed:1 total:0"
+            return 0
+        fi
+        if jq -e '.status == "deployed_unverified"' <<<"$migration_result" >/dev/null; then
+            migration_activated_key="flywheel-flywheel-product-lead"
+        else
+            log "backend migration not consumed — continuing ordinary Lead wave" >&2
+        fi
+    fi
     # FLY-1507: one authoritative inventory (manifest + positively loaded plist),
     # deduplicated by exact
     # (projectName, leadId) daemon key. QA candidates never affect counts.
@@ -2736,6 +2759,10 @@ do_restart_all_leads() {
                 log "Skipping test-slot Lead candidate (lifecycle-owned, not deploy-blocking): key=$key sources=$sources" >&2
                 ;;
             restart)
+                if [[ -n "$migration_activated_key" && "$key" == "$migration_activated_key" ]]; then
+                    log "Migration activation already verified in this wave: $key" >&2
+                    continue
+                fi
                 if [[ "$mf" == "-" || ! -f "$mf" ]]; then
                     log "ERROR: restart candidate $key has no readable manifest" >&2
                     failed=$((failed + 1))

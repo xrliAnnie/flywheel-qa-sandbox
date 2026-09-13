@@ -80,6 +80,50 @@ describe("flywheel-comm lead-identity resolve", () => {
 			botUserId: "12345678901234567",
 		});
 	});
+	it("projects runner capability separately without changing the canonical identity digest", () => {
+		const raw = JSON.parse(readFileSync(projectsPath, "utf8"));
+		Object.assign(raw[0].leads[0], {
+			backend: "codex-app-server",
+			codexProfile: "full-access",
+			canSpawnRunners: true,
+		});
+		writeFileSync(projectsPath, JSON.stringify(raw));
+		const resolve = (extra: string[] = []) => {
+			const output: string[] = [];
+			expect(
+				runLeadIdentityCommand(
+					[
+						"resolve",
+						"--projects-file",
+						projectsPath,
+						"--project",
+						"flywheel",
+						"--lead",
+						"eng-lead",
+						...extra,
+					],
+					{ stdout: (line) => output.push(line), homeDir: dir },
+				),
+			).toBe(0);
+			return output;
+		};
+		const before = JSON.parse(resolve()[0]!);
+		raw[0].leads[0].codexRunnerActions = true;
+		writeFileSync(projectsPath, JSON.stringify(raw));
+		const after = JSON.parse(resolve()[0]!);
+		expect(after.identityDigest).toBe(before.identityDigest);
+		expect(after).not.toHaveProperty("codexCapabilities");
+		const projected = JSON.parse(resolve(["--include-capabilities"])[0]!);
+		expect(projected.identityDigest).toBe(before.identityDigest);
+		expect(projected.codexCapabilities).toEqual({
+			eligible: true,
+			runnerActionsEnabled: true,
+			reason: null,
+		});
+		expect(resolve(["--include-capabilities", "--format", "env"])).toContain(
+			"FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS=1",
+		);
+	});
 
 	it("accepts an explicit summary config home for an isolated launcher", () => {
 		const summaryHome = join(dir, "qa-summary-home");

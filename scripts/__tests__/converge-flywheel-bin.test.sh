@@ -37,7 +37,7 @@ for f in flywheel-lead-wrapper-v2.sh \
     flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
     flywheel-bridge-wrapper.sh restart-services.sh \
     host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh \
-    lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/codex-quota-summary.mjs; do
+    lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs; do
   { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$FR/scripts/$f"
 done
 # FLY-1577: the gate is PYTHON. It is in FILES because the cmux watcher's
@@ -54,7 +54,7 @@ done
 # must start from a converged copy-lane steady state — otherwise the widened
 # FILES makes converge repair the un-seeded entries and the "exactly one alert"
 # assertions below count repairs they never meant to trigger.
-COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/codex-quota-summary.mjs"
+COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh lib/lead-host-tmux-gate.sh lib/raya-standard-migration.sh lib/lead-backend-migration.sh lib/codex-quota-summary.mjs"
 seed_steady_state() {  # <state-dir>
   local st="$1" f
   for f in $COPY_FILES; do
@@ -268,7 +268,8 @@ if [ "$RC" -eq 0 ] \
   && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh" "$FR/scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh" \
   && cmp -s "$ST/bin/resident-codex-lead-recover.sh" "$FR/scripts/resident-codex-lead-recover.sh" \
   && cmp -s "$ST/bin/lib/raya-standard-migration.sh" "$FR/scripts/lib/raya-standard-migration.sh" \
-  && [ "$(grep -c 'adoption baseline FAILED' "$SB/alerts.log")" -eq 5 ]; then
+   && cmp -s "$ST/bin/lib/lead-backend-migration.sh" "$FR/scripts/lib/lead-backend-migration.sh" \
+  && [ "$(grep -c 'adoption baseline FAILED' "$SB/alerts.log")" -eq 6 ]; then
   pass "C9d: adoption-marker failure alerts without blocking healthy runtime bytes"
 else fail "C9d: bookkeeping marker blocked healthy convergence (rc=$RC)"
   cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
@@ -287,6 +288,7 @@ if [ "$RC" -eq 0 ] && [ -d "$ST/bin/lib" ] \
    && cmp -s "$ST/bin/lib/lead-address.sh" "$FR/scripts/lib/lead-address.sh" \
    && cmp -s "$ST/bin/lib/lead-host-tmux-gate.sh" "$FR/scripts/lib/lead-host-tmux-gate.sh" \
    && cmp -s "$ST/bin/lib/raya-standard-migration.sh" "$FR/scripts/lib/raya-standard-migration.sh" \
+   && cmp -s "$ST/bin/lib/lead-backend-migration.sh" "$FR/scripts/lib/lead-backend-migration.sh" \
    && [ "$(t_mode "$ST/bin/lib/bounded-run.sh")" = "555" ] \
    && [ "$(t_mode "$ST/bin/lib/lead-address.sh")" = "555" ] \
    && [ "$(t_mode "$ST/bin/lib/lead-host-tmux-gate.sh")" = "555" ] \

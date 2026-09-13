@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
 import type { SummaryRole } from "flywheel-comm/lead-identity";
 import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
+import { resolveCodexLeadCapabilities } from "flywheel-config";
 import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
@@ -70,6 +71,8 @@ export interface LeadConfig {
 	 * After `loadProjects()`, this field is normalized to a boolean (no `undefined`).
 	 */
 	canSpawnRunners?: boolean;
+	/** Explicit opt-in to Codex runner tools; validated before defaults. */
+	codexRunnerActions?: boolean;
 	/**
 	 * FLY-137 v1.27.2: optional explicit department identifier. If absent,
 	 * `resolveLeadDepartment(lead)` derives it from `match.labels[0]?.toLowerCase()`.
@@ -177,12 +180,9 @@ export interface LeadConfig {
 	 *                              founder-gate rule bundle + branch protection (the
 	 *                              SAME model every Claude Lead runs under). Opt-in.
 	 *
-	 * Cross-field invariant (FLY-245/FLY-350): `codex-app-server` requires
-	 * `canSpawnRunners` resolving to false AND a recognized tier — either
-	 * `companion === true` OR an explicit `codexProfile`. `write-capable` and
-	 * `full-access` additionally require `companion !== true` (a write tier is not a
-	 * companion). canSpawnRunners stays false until FLY-251 wires Codex Lead
-	 * runner-spawn end-to-end.
+	 * Codex requires a recognized non-spawning tier or explicit department
+	 * runner authorization via codexRunnerActions. Write tiers cannot be companions.
+	 * Capability validation uses raw values before canSpawnRunners normalization.
 	 *
 	 * Absent = unchanged behavior (derived from `companion`); NOT normalized into
 	 * the object (FLY-231 reverse-compat pattern).
@@ -764,6 +764,17 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 					`Project "${entry.projectName}" leads[${i}].canSpawnRunners: must be a boolean, got ${JSON.stringify(lead.canSpawnRunners)}`,
 				);
 			}
+			// Capture capability from raw values: a normalized default is not consent.
+			const codexCapability = resolveCodexLeadCapabilities(lead);
+			if (
+				lead.codexRunnerActions !== undefined &&
+				codexCapability.reason &&
+				lead.codexRunnerActions !== false
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}]: ${codexCapability.reason}`,
+				);
+			}
 			// FLY-127 / FLY-163: Normalize canSpawnRunners default to `true`.
 			// PM / triage Leads must explicitly opt out with `canSpawnRunners: false`.
 			// The PM/Triage validator below enforces this.
@@ -963,22 +974,12 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 						`got ${JSON.stringify(lead.codexProfile)}`,
 				);
 			}
-			// Cross-field invariant (FLY-245/FLY-350, runs AFTER canSpawnRunners
-			// normalization above): codex-app-server requires canSpawnRunners:false
-			// (Codex runner-spawn awaits FLY-251) AND a recognized tier — companion:
-			// true OR an explicit codexProfile. FLY-350 (Z): "write-capable" is a
-			// recognized tier but is NOT a companion — reject the mixture so the
-			// declared capability is unambiguous (R2-4).
+			// FLY-2459: use the capability captured before default normalization.
+			// Existing profile-specific error messages remain below.
 			if (lead.backend === "codex-app-server") {
-				const recognizedTier =
-					lead.companion === true || lead.codexProfile !== undefined;
-				if (lead.canSpawnRunners !== false || !recognizedTier) {
+				if (!codexCapability.eligible) {
 					throw new Error(
-						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
-							`backend "codex-app-server" requires canSpawnRunners: false AND a ` +
-							`recognized Codex tier (companion: true OR codexProfile: ` +
-							`"companion"|"write-capable"|"full-access"). Codex ` +
-							`runner-spawn awaits FLY-251 (FLY-245 fail-close).`,
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ${codexCapability.reason}`,
 					);
 				}
 				if (lead.codexProfile === "write-capable" && lead.companion === true) {

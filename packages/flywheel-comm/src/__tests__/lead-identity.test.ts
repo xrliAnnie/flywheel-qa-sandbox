@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	compileLeadIdentityRows,
 	type LeadIdentityError,
 	resolveLeadIdentity,
 } from "../lead-identity.js";
@@ -51,6 +52,42 @@ describe("FLY-1726 canonical Lead identity", () => {
 	function write(projects: unknown): void {
 		writeFileSync(projectsPath, JSON.stringify(projects));
 	}
+
+	it("keeps v1 identity bytes unchanged when capability flags change across a fleet", () => {
+		const registry = [
+			{
+				projectName: "flywheel",
+				projectRoot: dir,
+				leads: [
+					lead("product", {
+						botUserId: "12345678901234567",
+						backend: "codex-app-server",
+						codexProfile: "full-access",
+						canSpawnRunners: true,
+					}),
+					lead("infra", {
+						botUserId: "22345678901234567",
+						backend: "codex-app-server",
+						codexProfile: "full-access",
+						canSpawnRunners: false,
+					}),
+					lead("eng", { botUserId: "32345678901234567" }),
+				],
+			},
+		];
+		const before = compileLeadIdentityRows(registry, { homeDir: dir });
+		for (const flag of [false, true]) {
+			const changed = structuredClone(registry);
+			Object.assign(changed[0]!.leads[0]!, { codexRunnerActions: flag });
+			Object.assign(changed[0]!.leads[1]!, { codexRunnerActions: false });
+			const after = compileLeadIdentityRows(changed, { homeDir: dir });
+			const identityBytes = (row: (typeof before)[number]) => {
+				const { projectsDigest: _registryBytes, ...identity } = row.identity;
+				return JSON.stringify(identity);
+			};
+			expect(after.map(identityBytes)).toEqual(before.map(identityBytes));
+		}
+	});
 
 	it("resolves every runtime identity face from one exact registry row", () => {
 		write([

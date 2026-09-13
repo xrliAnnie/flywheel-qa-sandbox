@@ -48,6 +48,11 @@ const afUnixAvailable = await new Promise<boolean>((resolve) => {
 });
 
 describe("washActionSecretEnv (E)", () => {
+	it("removes an inherited runner carrier bearer", () => {
+		expect(
+			washActionSecretEnv({ FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "test-bearer" }),
+		).toEqual({});
+	});
 	it("strips every key containing TOKEN / SECRET / KEY (case-insensitive)", () => {
 		const washed = washActionSecretEnv({
 			DISCORD_BOT_TOKEN: "t1",
@@ -111,6 +116,21 @@ describe.skipIf(!afUnixAvailable)("SecretBroker over unix socket (E)", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	it("rotates the runner carrier claim in memory without changing other secrets", async () => {
+		const socketPath = join(dir, "broker.sock");
+		broker = new SecretBroker({ socketPath, secrets: SECRETS });
+		await broker.listen();
+		broker.setRunnerCarrierClaim("first-carrier");
+		expect(await fetchSecretsFromBroker(socketPath)).toEqual({
+			...SECRETS,
+			FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "first-carrier",
+		});
+		broker.setRunnerCarrierClaim("second-carrier");
+		expect(await fetchSecretsFromBroker(socketPath)).toEqual({
+			...SECRETS,
+			FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: "second-carrier",
+		});
+	});
 	it("gateway fetches the secrets over the socket (memory → socket → memory; no file)", async () => {
 		const socketPath = join(dir, "broker.sock");
 		broker = new SecretBroker({ socketPath, secrets: SECRETS });

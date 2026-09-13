@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { scanReceiptResidue } from "../fly1645-receipt-residue-gate.mjs";
 
@@ -129,4 +129,41 @@ test("supports a main-only CI scan without a sibling plugin checkout", () => {
 	});
 	assert.equal(result.ok, true);
 	assert.deepEqual(result.scannedFiles, { main: 2 });
+});
+
+test("allows the audited Codex question consumer but still rejects unrelated relay consumers and debt APIs", () => {
+	const { mainRoot, pluginRoot, config } = fixture();
+	const productionConfig = JSON.parse(
+		readFileSync(
+			new URL("../fly1645-receipt-residue-gate.config.json", import.meta.url),
+			"utf8",
+		),
+	);
+	config.relayStateAllowedFiles = productionConfig.relayStateAllowedFiles;
+	config.repositories.main.includeRoots.push("packages");
+	const consumer =
+		"packages/teamlead/src/lead-backends/codex/runner-actions.ts";
+	const other = "packages/teamlead/src/lead-backends/codex/unrelated.ts";
+	mkdirSync(dirname(join(mainRoot, consumer)), { recursive: true });
+	writeFileSync(
+		join(mainRoot, "src/migration.ts"),
+		"DROP TABLE IF EXISTS legacy_receipt_table;\n",
+	);
+	writeFileSync(
+		join(mainRoot, consumer),
+		'if (question.relay_state === "terminal_disposed") refuse();\n',
+	);
+	assert.equal(scanReceiptResidue({ mainRoot, pluginRoot, config }).ok, true);
+	writeFileSync(join(mainRoot, other), "const state = delivery.relay_state;\n");
+	const outside = scanReceiptResidue({ mainRoot, pluginRoot, config });
+	assert.deepEqual(
+		outside.violations.map(({ kind, path }) => ({ kind, path })),
+		[{ kind: "relay_state_outside_question_domain", path: other }],
+	);
+	writeFileSync(join(mainRoot, other), "");
+	writeFileSync(join(mainRoot, consumer), "settleLegacyDebt();\n");
+	assert.equal(
+		scanReceiptResidue({ mainRoot, pluginRoot, config }).violations[0]?.kind,
+		"denied_symbol",
+	);
 });

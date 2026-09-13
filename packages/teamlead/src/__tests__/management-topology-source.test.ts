@@ -73,6 +73,34 @@ async function loadedConfigs(names: string[]) {
 	return result;
 }
 
+it("projects Codex department dispatch and controlled cross-vendor migration guidance", () => {
+	const view = buildTopologyView({
+		projects: [
+			project("flywheel", [
+				{
+					...lead("flywheel-product-lead", "product"),
+					backend: "codex-app-server",
+					codexProfile: "full-access",
+					codexRunnerActions: true,
+					model: "gpt-6-astra",
+					effort: "high",
+				},
+			]),
+		],
+		configs: new Map(),
+		projectsRevision: "test-revision",
+	});
+	const honey = view.projects[0]!.leads[0]!;
+	expect(honey).toMatchObject({
+		backend: "codex-app-server",
+		backendWritable: false,
+		backendDisabledReason: expect.stringContaining("projects.json"),
+		dispatch: {
+			current: { provider: "openai", model: "gpt-6-astra", effort: "high" },
+		},
+	});
+});
+
 describe("management topology source", () => {
 	it("discovers new Leads and sorts projects without a source list", async () => {
 		const projects = [project("zeta", [lead("z-lead")]), project("alpha", [])];

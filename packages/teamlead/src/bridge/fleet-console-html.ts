@@ -367,7 +367,7 @@ const MANAGEMENT_CONSOLE_APP = `
   }
   function renderLeadRows(leads,emptyMessage){
     if(!leads.length){return '<div class="empty">'+esc(emptyMessage||"未发现 Lead")+'</div>';}
-    return '<div class="lead-list"><div class="lead-head"><span>Lead</span><span>公司 → 型号 → effort</span></div>'+leads.map(function(lead){return '<article class="lead-row"><div class="lead-meta"><div class="inline"><h3>'+esc(lead.displayName)+'</h3><span class="status '+esc(lead.online)+'"></span></div><div class="subtitle">'+esc(lead.department||lead.backend)+'</div></div>'+modelControl(lead.dispatch,"lead","公司 → 型号 → effort",true,true)+'</article>';}).join("")+'</div>';
+    return '<p class="help">当前显示配置值；实际生效以进程验收为准。跨厂商切换请按<a href="https://github.com/xrliAnnie/flywheel/blob/main/engineering/doc/FLY-2459-codex-department-lead/honey-lemon-cutover.md" target="_blank" rel="noopener noreferrer">受控迁移指引</a>操作。</p><div class="lead-list"><div class="lead-head"><span>Lead</span><span>公司 → 型号 → effort</span></div>'+leads.map(function(lead){return '<article class="lead-row"><div class="lead-meta"><div class="inline"><h3>'+esc(lead.displayName)+'</h3><span class="status '+esc(lead.online)+'"></span></div><div class="subtitle">'+esc(lead.department||lead.backend)+'</div></div>'+modelControl(lead.dispatch,"lead","公司 → 型号 → effort",true,true)+'</article>';}).join("")+'</div>';
   }
   function renderModelPanel(project){
     var leads=visibleProjectLeads(project);var labels=derivedGroupLabels(project);var groupedCount=project.leads.length-leads.length;

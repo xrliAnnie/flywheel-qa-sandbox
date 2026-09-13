@@ -1,0 +1,22 @@
+classDiagram
+    class LeadIdentity {
+      projectName = flywheel
+      agentId = flywheel-product-lead
+      botUserId 保持原值
+      部门与频道保持原值
+    }
+    class LeadConfiguration {
+      backend = codex-app-server
+      model = gpt-6-astra
+      effort = high
+      canSpawnRunners = true
+      显式 runner 动作开关
+    }
+    class RuntimeEvidence {
+      可见终端与唯一进程
+      实际模型与思考强度
+      sourceMessageId
+      runId 与 issue_delivery
+    }
+    LeadIdentity "1" --> "1" LeadConfiguration : 持久配置
+    LeadIdentity "1" --> "1" RuntimeEvidence : 切换后逐项核验

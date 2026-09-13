@@ -195,3 +195,65 @@ test("registers the isolated voice QA mailbox read without exempting it from sca
 		[`unclassified_retention_consumer:${file}:mailbox:read`],
 	);
 });
+
+for (const [file, table] of [
+	[
+		"packages/teamlead/src/bin/backend-migration-evidence.ts",
+		"workflow_run_event",
+	],
+	["packages/teamlead/src/lead-backends/codex/runner-actions.ts", "mailbox"],
+]) {
+	test(`registers the exact guarded migration/question read: ${file}`, () => {
+		const source = readFileSync(
+			new URL(`../../${file}`, import.meta.url),
+			"utf8",
+		);
+		const consumers = scanRetentionConsumers({
+			files: new Map([[file, source]]),
+			targetTables: [table],
+		});
+		assert.deepEqual(consumers, [
+			{ file, relation: table, baseTable: table, usage: "read" },
+		]);
+		const config = JSON.parse(
+			readFileSync(
+				new URL(
+					"../fly-2006-retention-consumer-gate.config.json",
+					import.meta.url,
+				),
+				"utf8",
+			),
+		);
+		const entries = config.consumers.filter((entry) => entry.file === file);
+		// Missing retained evidence refuses the operation; registration does not
+		// change retention policy or turn absence into dispatch/response authority.
+		assert.deepEqual(entries, [
+			{ ...consumers[0], disposition: "candidate_guarded" },
+		]);
+		assert.equal(
+			auditRetentionConsumers({
+				consumers,
+				config: { version: 1, consumers: entries },
+			}).ok,
+			true,
+		);
+		assert.deepEqual(
+			auditRetentionConsumers({
+				consumers,
+				config: { version: 1, consumers: [] },
+			}).errors,
+			[`unclassified_retention_consumer:${file}:${table}:read`],
+		);
+		const foreign = {
+			...consumers[0],
+			file: "packages/teamlead/src/unregistered-reader.ts",
+		};
+		assert.equal(
+			auditRetentionConsumers({
+				consumers: [foreign],
+				config: { version: 1, consumers: entries },
+			}).ok,
+			false,
+		);
+	});
+}

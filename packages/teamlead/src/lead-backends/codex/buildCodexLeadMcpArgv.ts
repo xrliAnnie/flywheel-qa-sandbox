@@ -47,6 +47,8 @@ export interface ChromeMcpConfig {
 
 /** The resolved gateway MCP server command (built by the runtime in Phase F). */
 export interface GatewayMcpConfig {
+	/** Canonical non-secret runner context, injected by the trusted runtime. */
+	env?: Record<string, string>;
 	command: string;
 	args: string[];
 	/** Env var NAMES only (never values) forwarded to the gateway child. */
@@ -59,6 +61,7 @@ export interface GatewayMcpConfig {
  * Claude-equal) — never a literal in argv. The non-secret channel coordinates
  * travel as literal `env` values. */
 export interface LeadActionsMcpConfig {
+	enabledTools?: readonly string[];
 	command: string;
 	args: string[];
 	/** Literal NON-SECRET env values (channel coords, state dir). A secret-shaped
@@ -92,6 +95,7 @@ export type McpToolsApprovalMode = "auto" | "prompt" | "approve";
 /** A resolved MCP server to inject (no raw secrets — env values are NON-SECRET
  * coordinates only; secrets travel by NAME via `envVarNames`). */
 export interface McpServerSpec {
+	enabledTools?: readonly string[];
 	name: string;
 	command: string;
 	args: string[];
@@ -147,6 +151,7 @@ export function buildCodexLeadMcpArgv(
 		}
 		specs.push({
 			name: GATEWAY_MCP_SERVER_NAME,
+			...(opts.gateway.env ? { env: opts.gateway.env } : {}),
 			command: opts.gateway.command,
 			args: opts.gateway.args,
 			...(opts.gateway.envVarNames
@@ -161,6 +166,9 @@ export function buildCodexLeadMcpArgv(
 		if (opts.leadActions) {
 			specs.push({
 				name: LEAD_ACTIONS_MCP_SERVER_NAME,
+				...(opts.leadActions.enabledTools
+					? { enabledTools: opts.leadActions.enabledTools }
+					: {}),
 				command: opts.leadActions.command,
 				args: opts.leadActions.args,
 				...(opts.leadActions.env ? { env: opts.leadActions.env } : {}),
@@ -260,6 +268,11 @@ function specToArgv(spec: McpServerSpec): string[] {
 			`${base}.default_tools_approval_mode=${tomlValue(spec.defaultToolsApprovalMode)}`,
 		);
 	}
+	if (spec.enabledTools)
+		out.push(
+			"-c",
+			`${base}.enabled_tools=${JSON.stringify(spec.enabledTools)}`,
+		);
 	// FLY-304: literal NON-SECRET env values (e.g. channel coords) as dotted
 	// overrides. Sorted for deterministic argv / configHash.
 	if (spec.env) {
@@ -310,7 +323,10 @@ function assertNoRawSecret(spec: McpServerSpec): void {
 	// able to smuggle `{ SAFE_COORD: "sk-…" }` into argv). The token must travel by
 	// NAME via `env_vars` instead.
 	for (const [k, v] of Object.entries(spec.env ?? {})) {
-		if (/token|secret|api[_-]?key|password|bearer/i.test(k)) {
+		if (
+			/token|secret|api[_-]?key|password|bearer/i.test(k) ||
+			k === "FLYWHEEL_LEAD_CARRIER_INSTANCE_ID"
+		) {
 			throw new Error(
 				`buildCodexLeadMcpArgv: literal env key "${k}" is secret-shaped — a secret must travel by NAME via env_vars, never as a literal value in argv`,
 			);

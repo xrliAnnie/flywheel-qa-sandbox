@@ -7,7 +7,10 @@ import type {
 } from "flywheel-config";
 import { getModelRegistryEntry } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import { computeLeadCapabilities } from "./fleet-capabilities.js";
+import {
+	computeLeadCapabilities,
+	DISABLED_BACKEND_SWITCH,
+} from "./fleet-capabilities.js";
 import {
 	buildTargetId,
 	type ManagementLeadView,
@@ -116,7 +119,7 @@ function buildLead(
 			onlineByLead?.get(`${project.projectName}-${lead.agentId}`) ?? "unknown",
 		backend: capabilities.currentBackend,
 		backendWritable: false,
-		backendDisabledReason: "跨厂商 Lead 切换在 v1 中只读",
+		backendDisabledReason: DISABLED_BACKEND_SWITCH,
 		dispatch: {
 			targetId: buildTargetId("lead", [
 				project.projectName,

@@ -14,6 +14,8 @@ export interface SendArgs {
 	fromAgent: string;
 	toAgent: string;
 	content: string;
+	/** Stable identity for an at-least-once caller; omitted by the ordinary CLI. */
+	instructionId?: string;
 	dbPath: string;
 	env?: NodeJS.ProcessEnv;
 	authorizationDeps?: LeadWriteAuthorizationDeps;
@@ -45,15 +47,14 @@ export async function sendDetailed(
 			recipient.kind === "lead" ? recipient.toAgent : recipient.executionId;
 		if (recipient.kind === "runner" && recipient.livenessWarning)
 			console.error(`liveness_unverified: ${recipient.livenessWarning}`);
-		const id = randomUUID();
-		db.insertInstructionWithId(
+		const id = args.instructionId ?? randomUUID();
+		db.insertInstructionAndClearDeclaredState(
 			id,
 			args.fromAgent,
 			resolvedTo,
 			args.content,
 			authorization.provenance,
 		);
-		db.clearDeclaredState(resolvedTo);
 		return {
 			id,
 			resolvedTo,

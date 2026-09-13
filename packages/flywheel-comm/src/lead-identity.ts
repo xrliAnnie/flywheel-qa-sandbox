@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import type { CodexLeadCapabilityInput } from "flywheel-config";
 import { compileSummaryAssignmentRows } from "./summary-assignment-core.js";
 import {
 	readSummaryGranularity,
@@ -71,7 +72,9 @@ export interface CanonicalLeadIdentity {
 	identityDigest: string;
 }
 
-export interface IdentityLeadRow extends Record<string, unknown> {
+export interface IdentityLeadRow
+	extends Record<string, unknown>,
+		CodexLeadCapabilityInput {
 	agentId: string;
 	summaryRole: SummaryRole;
 }
@@ -501,6 +504,13 @@ export function compileLeadIdentityRegistry(
 export function resolveLeadIdentity(
 	input: ResolveLeadIdentityInput,
 ): CanonicalLeadIdentity {
+	return resolveLeadIdentityRow(input).identity;
+}
+
+/** Identity and capability consumers share one exact raw registry read. */
+export function resolveLeadIdentityRow(
+	input: ResolveLeadIdentityInput,
+): CompiledLeadIdentityRow {
 	let rawText: string;
 	let raw: unknown;
 	try {
@@ -534,5 +544,38 @@ export function resolveLeadIdentity(
 			`more than one Lead row matches ${input.projectName}/${input.leadId}`,
 		);
 	}
-	return matches[0]!.identity;
+	return matches[0]!;
+}
+
+/** Non-secret runtime projection; capability authorization is deliberately separate. */
+export function identityEnvProjection(
+	identity: CanonicalLeadIdentity,
+): string[] {
+	return [
+		`FLYWHEEL_LEAD_ID=${identity.leadId}`,
+		`LEAD_ID=${identity.leadId}`,
+		`FLYWHEEL_PROJECT_NAME=${identity.projectName}`,
+		`PROJECT_NAME=${identity.projectName}`,
+		`FLYWHEEL_LEAD_KEY=${identity.leadKey}`,
+		`FLYWHEEL_LEAD_ROLE=${identity.role}`,
+		`FLYWHEEL_LEAD_BACKEND=${identity.backend}`,
+		...(identity.model !== undefined
+			? [`FLYWHEEL_LEAD_MODEL=${identity.model}`]
+			: []),
+		...(identity.effort !== undefined
+			? [`FLYWHEEL_LEAD_EFFORT=${identity.effort}`]
+			: []),
+		...(identity.modelContextWindow !== undefined
+			? [`FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW=${identity.modelContextWindow}`]
+			: []),
+		`FLYWHEEL_LEAD_SUMMARY_ROLE=${identity.summaryRole}`,
+		`FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=${identity.hasSummaryDuty ? "1" : "0"}`,
+		`FLYWHEEL_SUMMARY_GRANULARITY=${identity.summaryGranularity ?? ""}`,
+		`FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=${identity.summaryAssignmentDigest ?? ""}`,
+		`DISCORD_STATE_DIR=${identity.discordStateDir}`,
+		`DISCORD_EXPECTED_BOT_USER_ID=${identity.botUserId ?? ""}`,
+		"DISCORD_IDENTITY_MODE=managed",
+		`FLYWHEEL_LEAD_IDENTITY_DIGEST=${identity.identityDigest}`,
+		`FLYWHEEL_LEAD_PROJECTS_DIGEST=${identity.projectsDigest}`,
+	];
 }

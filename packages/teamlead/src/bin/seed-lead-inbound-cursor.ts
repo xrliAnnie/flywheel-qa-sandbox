@@ -26,6 +26,8 @@ export interface CursorSeed {
 	writerStopped: boolean;
 	unresolved: string[];
 	channels: Array<{ channelId: string; lastConfirmedMessageId: string }>;
+	/** Explicit REST-confirmed empty channels resume with after=0, never baseline to latest. */
+	emptyChannels?: string[];
 }
 
 export type CursorSeedResult = {
@@ -53,7 +55,16 @@ function canonicalMap(seed: CursorSeed): Record<string, string> {
 	if (!Array.isArray(seed.unresolved) || seed.unresolved.length !== 0) {
 		throw new Error("cursor seed has unresolved side effects");
 	}
-	if (!Array.isArray(seed.channels) || seed.channels.length === 0) {
+	const emptyChannels = seed.emptyChannels ?? [];
+	if (
+		!Array.isArray(emptyChannels) ||
+		emptyChannels.some((id) => typeof id !== "string" || !SNOWFLAKE.test(id))
+	)
+		throw new Error("invalid empty seed channel");
+	if (
+		!Array.isArray(seed.channels) ||
+		seed.channels.length + emptyChannels.length === 0
+	) {
 		throw new Error("cursor seed channels are missing");
 	}
 	const entries = seed.channels.map(({ channelId, lastConfirmedMessageId }) => {
@@ -62,6 +73,7 @@ function canonicalMap(seed: CursorSeed): Record<string, string> {
 		}
 		return [channelId, lastConfirmedMessageId] as const;
 	});
+	entries.push(...emptyChannels.map((id) => [id, "0"] as const));
 	entries.sort(([left], [right]) =>
 		BigInt(left) < BigInt(right) ? -1 : BigInt(left) > BigInt(right) ? 1 : 0,
 	);
@@ -90,7 +102,7 @@ function parseExisting(path: string): Record<string, string> {
 			([channelId, messageId]) =>
 				!SNOWFLAKE.test(channelId) ||
 				typeof messageId !== "string" ||
-				!SNOWFLAKE.test(messageId),
+				(messageId !== "0" && !SNOWFLAKE.test(messageId)),
 		)
 	) {
 		throw new Error("existing cursor is invalid");

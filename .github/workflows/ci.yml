@@ -752,6 +752,13 @@ jobs:
           bash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh
           bash packages/teamlead/scripts/__tests__/codex-lead-state-dir-parity.test.sh
 
+      - name: Test — FLY-2459 Codex department capability and migration
+        run: |
+          bash scripts/__tests__/codex-runner-capability-env.test.sh
+          bash scripts/__tests__/lead-backend-migration.test.sh
+          bash scripts/__tests__/lead-backend-migration-load.test.sh
+          bash scripts/__tests__/lead-backend-migration-wave.test.sh
+
       # FLY-1501: the restart-storm brake and the launchd heartbeat guard are
       # the mechanisms that stop a production restart storm, so their contract
       # suites must not be hand-run only. The script-tests job enumerates files

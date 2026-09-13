@@ -202,6 +202,16 @@ if [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ]; then
   log "FLY-350 full-access governance bundle (${FLY350_FULL_ACCESS_ROLE:-dept}): ${FLY350_FULL_ACCESS_BUNDLE:-}"
 fi
 
+# The explicit capability owns this tool contract in either action profile.
+if [ "${FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS:-0}" = "1" ]; then
+  runner_rules="${SCRIPT_DIR}/../lead-rules-base/codex-runner-actions.md"
+  if [ ! -f "$runner_rules" ]; then
+    log "ERROR: enabled runner action rules are missing."
+    exit 78
+  fi
+  export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:+${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES},}${runner_rules}"
+fi
+
 # FLY-259 ③: TUI mode — the Lead runs as the daemon-WS sidecar runtime and a
 # REAL interactive `codex resume --remote` TUI shares its thread in cmux.
 # Opt-in via FLYWHEEL_CODEX_LEAD_MODE=tui (default = FLY-224 headless,

@@ -38,6 +38,14 @@ export {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "./canonical-json.js";
+export type {
+	CodexLeadCapability,
+	CodexLeadCapabilityInput,
+} from "./codex-lead-capabilities.js";
+export {
+	resolveCodexLeadCapabilities,
+	resolveGenericCodexProfile,
+} from "./codex-lead-capabilities.js";
 export type { CommBackend } from "./comm-backend.js";
 export { resolveCommBackend } from "./comm-backend.js";
 export { commDbPathForProject, commDbRootDir } from "./commdb-path.js";

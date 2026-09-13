@@ -10,6 +10,7 @@ RECOVER_BIN="${FLYWHEEL_CODEX_LINK_RECOVER_BIN:-$SCRIPT_DIR/resident-codex-lead-
 LEAD=""
 UNLINK=0
 KEEP_BACKUP=0
+INSPECT=0
 
 fail() {
 	local code="$1" reason="$2" home="${HOME_ARG:-unknown}"
@@ -25,12 +26,14 @@ while [ "$#" -gt 1 ] && [[ "$1" == --* ]]; do
 			shift 2
 			;;
 		--unlink) UNLINK=1; shift ;;
+		--inspect) INSPECT=1; shift ;;
 		--keep-backup) KEEP_BACKUP=1; shift ;;
 		*) fail 2 "unknown-option" ;;
 	esac
 done
 [ "$#" -eq 1 ] && [[ "$1" != --* ]] || fail 2 "usage"
 HOME_ARG="$1"
+[ "$INSPECT" -eq 0 ] || { [ "$UNLINK" -eq 0 ] && [ "$KEEP_BACKUP" -eq 0 ]; } || fail 2 "inspect-mutation-flags"
 
 [ -n "${HOME:-}" ] && [[ "$HOME" = /* ]] || fail 2 "invalid-user-home"
 [[ "$HOME_ARG" = /* ]] || fail 2 "home-not-absolute"
@@ -54,6 +57,10 @@ PY
 inspect="$($HELPER --inspect "$HOME_ARG" 2>&1)" || fail 2 "truth-or-home-invalid:${inspect//$'\n'/ }"
 inspect_state="$(printf '%s\n' "$inspect" | jq -er '.state')" \
 	|| fail 2 "inspect-invalid"
+if [ "$INSPECT" -eq 1 ]; then
+	printf '%s\n' "$inspect"
+	exit 0
+fi
 if [ "$UNLINK" -eq 0 ] && [ "$inspect_state" = already ]; then
 	printf '[link-truth] home=%s state=already reason=already\n' "$HOME_ARG"
 	exit 0

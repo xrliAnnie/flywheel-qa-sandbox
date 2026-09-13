@@ -69,6 +69,7 @@ mkdir -p "$HARNESS/scripts/lib" "$HARNESS/dist/lead-backends/codex" "$TMP/home"
 cp "$CODEX_LEAD" "$HARNESS_SCRIPT"
 cat >"$HARNESS/scripts/lib/canonical-lead-identity.sh" <<'SH'
 canonical_lead_identity_resolve() {
+  export FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS="${STUB_RUNNER_ACTIONS:-0}"
   export FLYWHEEL_PROJECT_NAME="$1"
   export FLYWHEEL_LEAD_ID="$2"
   export FLYWHEEL_LEAD_PROJECTS_DIGEST="${STUB_PROJECTS_DIGEST:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
@@ -89,6 +90,7 @@ chmod +x "$HARNESS/scripts/codex-lead-tui-home.sh"
 cat >"$HARNESS/dist/lead-backends/codex/codex-lead-tui-runtime.js" <<'JS'
 const fs = require("node:fs");
 fs.writeFileSync(process.env.CAPTURE_FILE, JSON.stringify({
+  promptFiles: process.env.FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES,
   stateDir: process.env.FLYWHEEL_CODEX_LEAD_STATE_DIR,
   actionsStateDir: process.env.FLYWHEEL_LEAD_ACTIONS_STATE_DIR,
   projectsDigest: process.env.FLYWHEEL_LEAD_PROJECTS_DIGEST,
@@ -167,5 +169,17 @@ else
 fi
 
 echo ""
+mkdir -p "$HARNESS/lead-rules-base"
+printf 'runner rules\n' > "$HARNESS/lead-rules-base/codex-runner-actions.md"
+for profile in full-access write-capable; do
+  if run_harness env FLYWHEEL_CODEX_LEAD_PROFILE="$profile" STUB_RUNNER_ACTIONS=1 >"$TMP/rules.out" 2>"$TMP/rules.err" && node -e 'const x=require(process.argv[1]); if(!x.promptFiles?.includes("codex-runner-actions.md")) process.exit(1)' "$CAPTURE"; then
+    pass "$profile loads explicit runner action rules"
+  else fail "$profile missing runner action rules"; fi
+done
+rm "$HARNESS/lead-rules-base/codex-runner-actions.md"
+if run_harness env FLYWHEEL_CODEX_LEAD_PROFILE=full-access STUB_RUNNER_ACTIONS=1 >"$TMP/rules.out" 2>"$TMP/rules.err"; then
+  fail "missing enabled runner rules must reject launch"
+else pass "missing enabled runner rules rejects launch"; fi
+
 echo "[codex-lead-args] passed=$PASSED failed=$FAILED"
 [ "$FAILED" -eq 0 ]

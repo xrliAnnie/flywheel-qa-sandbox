@@ -1,6 +1,16 @@
 /** FLY-398 — full-access lead-actions MCP config + fail-closed gates (pure). */
 
 import { parse as parseToml } from "smol-toml";
+import {
+	NONSECRET_RUNNER_KEY_NAMES,
+	type RunnerActionMcpContext,
+	resolveRunnerActionMcpContext,
+} from "../runner-action-mcp.js";
+import {
+	leadActionCredentialNames,
+	RUNNER_ACTION_TOOL_NAMES,
+	RUNNER_CARRIER_ENV_NAMES,
+} from "../runner-action-names.js";
 
 /** The MCP server name as it appears in config.toml / the tool-name prefix. */
 export const LEAD_ACTIONS_MCP_SERVER_NAME = "lead_actions";
@@ -113,6 +123,7 @@ export interface LeadActionsFullAccessMcpServerConfig {
 	envVarNames: string[];
 	/** FLY-398: pinned to "approve" so codex auto-approves the trusted tools. */
 	defaultToolsApprovalMode: "approve";
+	enabledTools?: readonly string[];
 }
 
 export const LEAD_ACTIONS_BRIDGE_ENV_VARS = [
@@ -122,6 +133,7 @@ export const LEAD_ACTIONS_BRIDGE_ENV_VARS = [
 export const LEAD_ACTIONS_DIRECT_ENV_VARS = ["DISCORD_BOT_TOKEN"] as const;
 
 export interface BuildFullAccessLeadActionsMcpOptions {
+	runnerContext?: RunnerActionMcpContext;
 	nodeBin: string;
 	mainJsPath: string;
 	leadId: string;
@@ -152,6 +164,13 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 		FLYWHEEL_COMM_DB: opts.commDbPath,
 		FLYWHEEL_CODEX_LEAD_OUTBOUND: opts.outboundMode,
 	};
+	if (opts.runnerContext) {
+		for (const [key, value] of Object.entries(opts.runnerContext.env)) {
+			if (key in env && env[key] !== value)
+				throw new Error(`runner context conflicts with ${key}`);
+			env[key] = value;
+		}
+	}
 	if (opts.explicitAliases) {
 		env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES = opts.explicitAliases;
 	}
@@ -161,7 +180,10 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 		env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = "1";
 	}
 	for (const k of Object.keys(env)) {
-		if (FORBIDDEN_ENV_KEY.test(k)) {
+		if (
+			(FORBIDDEN_ENV_KEY.test(k) && !NONSECRET_RUNNER_KEY_NAMES.has(k)) ||
+			(RUNNER_CARRIER_ENV_NAMES as readonly string[]).includes(k)
+		) {
 			throw new Error(
 				`buildFullAccessLeadActionsMcpServerConfig: literal env key "${k}" is secret-shaped — secrets travel BY NAME via env_vars, never as literals in config.toml`,
 			);
@@ -171,10 +193,13 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 		command: opts.nodeBin,
 		args: [opts.mainJsPath],
 		env,
-		envVarNames:
-			opts.outboundMode === "bridge"
-				? [...LEAD_ACTIONS_BRIDGE_ENV_VARS]
-				: [...LEAD_ACTIONS_DIRECT_ENV_VARS],
+		envVarNames: leadActionCredentialNames(
+			opts.outboundMode,
+			!!opts.runnerContext,
+		),
+		...(opts.runnerContext
+			? { enabledTools: [...LEAD_ACTIONS_TOOLS, ...RUNNER_ACTION_TOOL_NAMES] }
+			: {}),
 		defaultToolsApprovalMode: "approve",
 	};
 }
@@ -196,6 +221,9 @@ export function toFullAccessMcpServerToml(
 		`args = [${argsToml}]`,
 		`default_tools_approval_mode = ${tomlString(cfg.defaultToolsApprovalMode)}`,
 		`env_vars = [${envVarsToml}]`,
+		...(cfg.enabledTools
+			? [`enabled_tools = [${cfg.enabledTools.map(tomlString).join(", ")}]`]
+			: []),
 		`env = { ${envPairs} }`,
 		"",
 	].join("\n");
@@ -299,7 +327,10 @@ export function assertFullAccessLeadActionsConfigGate(
 	}
 	const envObj = env as Record<string, unknown>;
 	for (const [k, v] of Object.entries(envObj)) {
-		if (SECRET_SHAPED_KEY.test(k)) {
+		if (
+			(SECRET_SHAPED_KEY.test(k) && !NONSECRET_RUNNER_KEY_NAMES.has(k)) ||
+			(RUNNER_CARRIER_ENV_NAMES as readonly string[]).includes(k)
+		) {
 			throw new ConfigGateError(
 				`secret-shaped env key "${k}" — the token must travel BY NAME via env_vars, never a literal in config.toml (fail-closed)`,
 			);
@@ -327,16 +358,49 @@ export function assertFullAccessLeadActionsConfigGate(
 			);
 		}
 	}
+	if (expected.enabledTools && !("enabled_tools" in s))
+		throw new ConfigGateError("runner capability requires exact enabled_tools");
+	const expectedTools = expected.enabledTools ?? LEAD_ACTIONS_TOOLS;
 	if ("enabled_tools" in s) {
 		const et = s.enabled_tools;
 		if (
 			!Array.isArray(et) ||
-			et.length !== LEAD_ACTIONS_TOOLS.length ||
-			et.some((t, i) => t !== LEAD_ACTIONS_TOOLS[i])
+			et.length !== expectedTools.length ||
+			et.some((t, i) => t !== expectedTools[i])
 		) {
 			throw new ConfigGateError(
-				`lead_actions.enabled_tools, if present, must be exactly ${JSON.stringify(LEAD_ACTIONS_TOOLS)} (got ${JSON.stringify(et)})`,
+				`lead_actions.enabled_tools, if present, must be exactly ${JSON.stringify(expectedTools)} (got ${JSON.stringify(et)})`,
 			);
 		}
 	}
+}
+
+/** Trusted shell renderer input; normalized channel/roundtable values come from the launcher. */
+export function fullAccessLeadActionsConfigFromEnv(
+	env: NodeJS.ProcessEnv,
+): LeadActionsFullAccessMcpServerConfig {
+	const required = (key: string): string => {
+		const value = env[key]?.trim();
+		if (!value) throw new Error(`missing ${key}`);
+		return value;
+	};
+	return buildFullAccessLeadActionsMcpServerConfig({
+		nodeBin: env.FLYWHEEL_LEAD_ACTIONS_NODE_BIN?.trim() || "node",
+		mainJsPath: required("FLYWHEEL_LEAD_ACTIONS_MAIN_JS"),
+		leadId: required("FLYWHEEL_LEAD_ID"),
+		projectName: required("FLYWHEEL_PROJECT_NAME"),
+		chatChannelId: required("FLYWHEEL_LEAD_CHAT_CHANNEL_ID"),
+		crossDeptChannelIds: (env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS ?? "")
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean),
+		stateDir: required("FLYWHEEL_LEAD_ACTIONS_STATE_DIR"),
+		commDbPath: required("FLYWHEEL_COMM_DB"),
+		outboundMode:
+			env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge" ? "bridge" : "direct",
+		explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
+		roundtableAutoContinue:
+			env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE === "1",
+		runnerContext: resolveRunnerActionMcpContext(env),
+	});
 }
