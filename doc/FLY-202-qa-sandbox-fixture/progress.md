@@ -1,13 +1,14 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-14T00:35:14.600Z
-nextStep: Inventory the current tree, QA framework README, and existing sandbox notes
+phaseCursor: 2/4
+updated: 2026-09-14T00:35:56.671Z
+nextStep: Run the baseline verifier, then refresh sandbox-notes.md against the
+  merged tree
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (1/4)
-**next**: Inventory the current tree, QA framework README, and existing sandbox notes
+**phase**: implement (2/4)
+**next**: Run the baseline verifier, then refresh sandbox-notes.md against the merged tree
