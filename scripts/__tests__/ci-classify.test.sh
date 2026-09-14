@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SUBJECT="$ROOT/scripts/ci-classify.sh"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP" || { printf "warning: cleanup failed: %s\n" "$TMP" >&2 || true; }' EXIT
 REPO="$TMP/repo"
 mkdir -p "$REPO"
 
@@ -14,8 +14,42 @@ pass() { PASSED=$((PASSED + 1)); printf '[TEST] ✓ %s\n' "$1"; }
 fail() { FAILED=$((FAILED + 1)); printf '[TEST] ✗ %s\n' "$1" >&2; }
 
 git -C "$REPO" init -q
+# Keep fixture writes synchronous; automatic maintenance can outlive the suite.
+git -C "$REPO" config gc.auto 0
+git -C "$REPO" config maintenance.auto false
 git -C "$REPO" config user.email ci@example.test
 git -C "$REPO" config user.name CI
+
+# Exercise the installed EXIT trap without deleting the real fixture.
+cleanup_trap="$(trap -p EXIT)"
+for cleanup_rm_status in 0 1; do
+  for expected_status in 0 42; do
+    set +e
+    (
+      set -e
+      rm() { return "$cleanup_rm_status"; }
+      eval "$cleanup_trap"
+      exit "$expected_status"
+    ) 2>"$TMP/cleanup-stderr"
+    cleanup_status=$?
+    set -e
+    if [[ "$cleanup_status" -eq "$expected_status" ]] &&
+      { [[ "$cleanup_rm_status" -eq 0 && ! -s "$TMP/cleanup-stderr" ]] ||
+        { [[ "$cleanup_rm_status" -eq 1 ]] && grep -Fq 'warning: cleanup failed' "$TMP/cleanup-stderr"; }; }; then
+      pass "cleanup rm=$cleanup_rm_status preserves exit=$expected_status and warns only on failure"
+    else
+      fail "cleanup rm=$cleanup_rm_status expected exit=$expected_status, got $cleanup_status (stderr=$(cat "$TMP/cleanup-stderr"))"
+    fi
+  done
+done
+for setting in gc.auto=0 maintenance.auto=false; do
+  if [[ "$(git -C "$REPO" config --local --get "${setting%=*}")" == "${setting#*=}" ]]; then
+    pass "fixture config $setting"
+  else
+    fail "fixture config $setting"
+  fi
+done
+
 printf 'base\n' >"$REPO/README.md"
 git -C "$REPO" add README.md
 git -C "$REPO" commit -qm base
