@@ -905,54 +905,102 @@ else
 fi
 
 printf '[TEST] Case: SIGTERM aborts the run and releases its lock\n'
-signal_dir="$MAIN_HOME/generated_images/signal-candidates"
-mkdir -p "$signal_dir"
-signal_i=0
-while [[ "$signal_i" -lt 600 ]]; do
-  printf 'signal candidate\n' > "$signal_dir/$signal_i.png"
-  signal_i=$((signal_i + 1))
-done
-touch -t 202001010000 "$signal_dir"/*.png
-signal_out="$ROOT/signal.out"
-run_janitor --dry-run --module codex_artifacts > "$signal_out" 2>&1 &
-signal_launcher_pid=$!
-signal_pid=""
-signal_wait=0
-# A loaded macOS host may take several seconds to acquire the lock while the
-# 600-file fixture is being discovered. Wait long enough to observe the public
-# lock seam, then fail normally if the process completed before we can signal.
-while [[ "$signal_wait" -lt 1000 ]]; do
-  if [[ -r "$STATE_DIR/lock.d/pid" ]]; then
-    IFS= read -r signal_pid < "$STATE_DIR/lock.d/pid" || signal_pid=""
-    [[ "$signal_pid" =~ ^[0-9]+$ ]] && break
-  fi
+run_signal_contract() (
+  signal_dir="$MAIN_HOME/generated_images/signal-candidates"
+  signal_lsof="$ROOT/signal-lsof"
+  signal_out="$ROOT/signal.out"
+  signal_launcher_pid=""
+  signal_watchdog_pid=""
+  # Invoked by the subshell EXIT trap, including failure paths.
+  # shellcheck disable=SC2329
+  cleanup_signal_contract() {
+    # Unblock the fixture before reaping the janitor; keep the watchdog alive
+    # until wait completes. Never remove ROOT while the fixture is using it.
+    : > "$signal_lsof.release"
+    if [[ -n "$signal_launcher_pid" ]]; then
+      wait "$signal_launcher_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$signal_watchdog_pid" ]]; then
+      kill "$signal_watchdog_pid" 2>/dev/null || true
+      wait "$signal_watchdog_pid" 2>/dev/null || true
+    fi
+    rm -rf "$signal_dir"
+  }
+  trap cleanup_signal_contract EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  mkdir -p "$signal_dir"
+  printf 'signal candidate\n' > "$signal_dir/old.png"
+  touch -t 202001010000 "$signal_dir/old.png"
+  cat > "$signal_lsof" <<'EOF'
+#!/usr/bin/env bash
+# This existing probe seam is reached only after the janitor installs traps.
+: > "$0.ready"
+fixture_wait=0
+while [[ ! -f "$0.release" && "$fixture_wait" -lt 3000 ]]; do
   /bin/sleep 0.01
-  signal_wait=$((signal_wait + 1))
+  fixture_wait=$((fixture_wait + 1))
 done
-/bin/sleep 0.05
-signal_sent=0
-if [[ "$signal_pid" =~ ^[0-9]+$ ]] && kill -TERM "$signal_pid" 2>/dev/null; then
-  signal_sent=1
+if [[ ! -f "$0.release" ]]; then
+  : > "$0.timed-out"
+  exit 2
 fi
-signal_watchdog_pid=""
-if [[ "$signal_pid" =~ ^[0-9]+$ ]]; then
+exit 1
+EOF
+  chmod +x "$signal_lsof"
+  JANITOR_TEST_LSOF_BIN="$signal_lsof"
+  run_janitor --dry-run --module codex_artifacts > "$signal_out" 2>&1 &
+  signal_launcher_pid=$!
   (
-    /bin/sleep 10
-    kill -KILL "$signal_pid" 2>/dev/null || true
+    # Budget order: ready poll 10s < fixture wait 30s < watchdog 60s.
+    # Reap the watchdog's sleep as well when the normal path cancels it.
+    /bin/sleep 60 &
+    watchdog_sleep=$!
+    trap 'kill "$watchdog_sleep" 2>/dev/null || true; wait "$watchdog_sleep" 2>/dev/null || true; exit' TERM INT
+    wait "$watchdog_sleep"
+    : > "$signal_lsof.release"
+    if [[ -r "$STATE_DIR/lock.d/pid" ]]; then
+      IFS= read -r watchdog_target < "$STATE_DIR/lock.d/pid" || watchdog_target=""
+      if [[ "$watchdog_target" =~ ^[0-9]+$ ]]; then
+        kill -KILL "$watchdog_target" 2>/dev/null || true
+      fi
+    fi
+    kill -KILL "$signal_launcher_pid" 2>/dev/null || true
   ) &
   signal_watchdog_pid=$!
-fi
-wait "$signal_launcher_pid"
-signal_rc=$?
-if [[ -n "$signal_watchdog_pid" ]]; then
-  kill "$signal_watchdog_pid" 2>/dev/null || true
-  wait "$signal_watchdog_pid" 2>/dev/null || true
-fi
-rm -rf "$signal_dir"
-if [[ "$signal_sent" -eq 1 && "$signal_rc" -eq 143 && ! -d "$STATE_DIR/lock.d" ]]; then
+  signal_pid=""
+  signal_wait=0
+  while [[ "$signal_wait" -lt 1000 ]]; do
+    if [[ -f "$signal_lsof.ready" && -r "$STATE_DIR/lock.d/pid" ]]; then
+      IFS= read -r signal_pid < "$STATE_DIR/lock.d/pid" || signal_pid=""
+      [[ "$signal_pid" =~ ^[0-9]+$ ]] && break
+    fi
+    /bin/sleep 0.01
+    signal_wait=$((signal_wait + 1))
+  done
+  signal_sent=0
+  if [[ "$signal_pid" =~ ^[0-9]+$ ]] && kill -TERM "$signal_pid" 2>/dev/null; then
+    signal_sent=1
+  fi
+  # Bash can defer TERM while waiting for the probe's command substitution.
+  # Release it only after sending TERM, so it cannot race into normal exit.
+  : > "$signal_lsof.release"
+  wait "$signal_launcher_pid"
+  signal_rc=$?
+  signal_launcher_pid=""
+  if [[ -f "$signal_lsof.ready" && ! -f "$signal_lsof.timed-out" \
+    && "$signal_sent" -eq 1 && "$signal_rc" -eq 143 && ! -d "$STATE_DIR/lock.d" ]]; then
+    return 0
+  fi
+  printf '[TEST] SIGTERM contract failed (ready=%s sent=%s rc=%s output=%s)\n' \
+    "$([[ -f "$signal_lsof.ready" ]] && printf 1 || printf 0)" \
+    "$signal_sent" "$signal_rc" "$(<"$signal_out")" >&2
+  return 1
+)
+if run_signal_contract; then
   pass "SIGTERM exits 143 instead of continuing without the lock"
 else
-  fail "SIGTERM contract failed (sent=$signal_sent rc=$signal_rc output=$(<"$signal_out"))"
+  fail "SIGTERM must interrupt the ready probe and release its lock"
 fi
 
 printf '[TEST] Case: symlink escape targets are never followed\n'

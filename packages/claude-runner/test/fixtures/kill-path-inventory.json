@@ -1968,9 +1968,15 @@
 		"classification": "qa-only"
 	},
 	{
-		"key": "scripts/__tests__/flywheel-log-janitor.test.sh:kill -KILL \"$signal_pid\" 2>/dev/null || true#1",
+		"key": "scripts/__tests__/flywheel-log-janitor.test.sh:kill -KILL \"$signal_launcher_pid\" 2>/dev/null || true#1",
 		"path": "scripts/__tests__/flywheel-log-janitor.test.sh",
-		"code": "kill -KILL \"$signal_pid\" 2>/dev/null || true",
+		"code": "kill -KILL \"$signal_launcher_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/flywheel-log-janitor.test.sh:kill -KILL \"$watchdog_target\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/flywheel-log-janitor.test.sh",
+		"code": "kill -KILL \"$watchdog_target\" 2>/dev/null || true",
 		"classification": "qa-only"
 	},
 	{
