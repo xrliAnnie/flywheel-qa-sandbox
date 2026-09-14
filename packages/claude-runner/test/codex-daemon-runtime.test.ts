@@ -50,6 +50,130 @@ describe("FLY-1940 codex daemon execution ownership", () => {
 		return { root, env, executionId };
 	}
 
+	it.each([false, true])(
+		"gracefulOnly=%s preserves the requested escalation policy",
+		async (gracefulOnly) => {
+			const f = ownershipFixture();
+			const signals: NodeJS.Signals[] = [];
+			try {
+				const result = await reapCodexDaemonForExecution(f.executionId, {
+					env: f.env,
+					isSocketLive: async () => true,
+					socketHolderPids: () => [7654],
+					processGroupOf: () => 4321,
+					processGroupState: () => "alive",
+					killGroup: (_pgid, signal) => {
+						signals.push(signal);
+					},
+					exitWaitMs: 0,
+					...(gracefulOnly ? { gracefulOnly: true } : {}),
+				});
+				expect(result.outcome).toBe("residual");
+				expect(signals).toEqual(
+					gracefulOnly ? ["SIGTERM"] : ["SIGTERM", "SIGKILL"],
+				);
+			} finally {
+				rmSync(f.root, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it.each(["false", "throw"])(
+		"fails closed when the final guard returns %s after asynchronous evidence",
+		async (rejection) => {
+			const f = ownershipFixture();
+			const killGroup = vi.fn();
+			let evidenceFinished = false;
+			let guardedAfterEvidence = false;
+			const beforeSignal = vi.fn(() => {
+				guardedAfterEvidence = evidenceFinished;
+				if (rejection === "throw") throw new Error("owner unavailable");
+				return false;
+			});
+			try {
+				const result = await reapCodexDaemonForExecution(f.executionId, {
+					env: f.env,
+					isSocketLive: async () => {
+						await Promise.resolve();
+						evidenceFinished = true;
+						return true;
+					},
+					socketHolderPids: () => [7654],
+					processGroupOf: () => 4321,
+					processGroupState: () => "alive",
+					killGroup,
+					beforeSignal,
+					exitWaitMs: 0,
+				});
+				expect(result.outcome).toBe("unverifiable");
+				expect(beforeSignal).toHaveBeenCalledOnce();
+				expect(guardedAfterEvidence).toBe(true);
+				expect(killGroup).not.toHaveBeenCalled();
+			} finally {
+				rmSync(f.root, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it("confirms graceful reaping only after socket and group disappear", async () => {
+		const f = ownershipFixture();
+		const steps: string[] = [];
+		let alive = true;
+		try {
+			const result = await reapCodexDaemonForExecution(f.executionId, {
+				env: f.env,
+				isSocketLive: async () => {
+					steps.push("evidence");
+					return alive;
+				},
+				socketHolderPids: () => [7654],
+				processGroupOf: () => 4321,
+				processGroupState: () => (alive ? "alive" : "absent"),
+				beforeSignal: () => {
+					steps.push("guard");
+					return true;
+				},
+				killGroup: (_pgid, signal) => {
+					steps.push(signal);
+					alive = false;
+				},
+				gracefulOnly: true,
+				exitWaitMs: 0,
+			});
+			expect(result.outcome).toBe("reaped");
+			expect(steps).toEqual(["evidence", "guard", "SIGTERM", "evidence"]);
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
+	it("rechecks the final guard after waiting before escalation", async () => {
+		const f = ownershipFixture();
+		const signals: NodeJS.Signals[] = [];
+		let allowed = true;
+		try {
+			const result = await reapCodexDaemonForExecution(f.executionId, {
+				env: f.env,
+				isSocketLive: async () => {
+					if (signals.length) allowed = false;
+					return true;
+				},
+				socketHolderPids: () => [7654],
+				processGroupOf: () => 4321,
+				processGroupState: () => "alive",
+				killGroup: (_pgid, signal) => {
+					signals.push(signal);
+				},
+				beforeSignal: () => allowed,
+				exitWaitMs: 0,
+			});
+			expect(result.outcome).toBe("unverifiable");
+			expect(signals).toEqual(["SIGTERM"]);
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
 	it("classifies alive only when the socket holder belongs to the persisted group", async () => {
 		const f = ownershipFixture();
 		try {

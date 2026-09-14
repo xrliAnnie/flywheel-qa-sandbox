@@ -37,6 +37,7 @@
 
 import { CommDB } from "flywheel-comm/db";
 import { CRASH_PRESERVE_STATES } from "./close-runner.js";
+import type { CodexTerminalHarvestResult } from "./codex-terminal-harvest.js";
 import { RECONCILE_DELETABLE_STATES } from "./commdb-deletable-states.js";
 import {
 	type FinalizeCommDbResult,
@@ -133,6 +134,13 @@ export async function reconcileCommDbRunningAgainstFsm(
 			executionId: string,
 			projectName: string,
 		) => Promise<"alive" | "dead" | "unknown">;
+		/** FLY-2555: explicit full-harvest opt-in; a close attempt retains this pass. */
+		harvestCodexDaemon?: (
+			executionId: string,
+			projectName: string,
+			tmuxWindow: string,
+			targetUnchangedAndNoTurn: () => boolean,
+		) => Promise<CodexTerminalHarvestResult>;
 		parkedGenerationEvidence?: (
 			executionId: string,
 			tmuxWindow: string,
@@ -247,6 +255,36 @@ export async function reconcileCommDbRunningAgainstFsm(
 					continue;
 				}
 			}
+			let codexAbsent = false;
+			let canFinalizeCodex: (() => boolean) | undefined;
+			if (
+				opts.harvest &&
+				opts.harvestCodexDaemon &&
+				(fsm === "completed" || fsm === "failed" || fsm === "terminated")
+			) {
+				const currentDb = db;
+				const harvest = await opts
+					.harvestCodexDaemon(
+						s.execution_id,
+						projectName,
+						s.tmux_window,
+						() =>
+							currentDb.getSession(s.execution_id)?.tmux_window ===
+								s.tmux_window &&
+							!currentDb
+								.listTurns()
+								.some((turn) => turn.holder_exec_id === s.execution_id),
+					)
+					.catch(() => "keep" as const);
+				if (harvest === "keep") {
+					result.keptAliveTarget++;
+					continue;
+				}
+				if (typeof harvest === "object") {
+					codexAbsent = true;
+					canFinalizeCodex = harvest.canFinalize;
+				}
+			}
 			// FLY-1329 (A4, Codex R1 HIGH-2): an unexpired park declaration vetoes
 			// the delete. The `dead` verdict above is `isTmuxAbsenceMessage` — tmux
 			// could not find the window at this name, which a stale mapping produces
@@ -276,8 +314,11 @@ export async function reconcileCommDbRunningAgainstFsm(
 				if (evidence === "superseded") {
 					parkedSuperseded = true;
 				} else {
-					const absence =
-						fsm && RECONCILE_DELETABLE_STATES.has(fsm) && opts.executionAbsence
+					const absence = codexAbsent
+						? "dead"
+						: fsm &&
+								RECONCILE_DELETABLE_STATES.has(fsm) &&
+								opts.executionAbsence
 							? await opts
 									.executionAbsence(s.execution_id, projectName)
 									.catch(() => "unknown" as const)
@@ -298,6 +339,11 @@ export async function reconcileCommDbRunningAgainstFsm(
 				}
 			}
 			try {
+				// No asynchronous boundary between this authority check and finalization.
+				if (canFinalizeCodex && !canFinalizeCodex()) {
+					result.parkedVetoed++;
+					continue;
+				}
 				const raw = (
 					parkedSuperseded
 						? finalizePaneLossResidue(db, s.execution_id, s.tmux_window)

@@ -10,6 +10,24 @@ const session = {
 };
 
 describe("FLY-1940 Bridge codex daemon teardown", () => {
+	it("forwards opt-in graceful teardown and the synchronous signal guard", async () => {
+		const beforeSignal = () => true;
+		const reap = vi.fn(async () => ({
+			outcome: "residual" as const,
+			socketPath: "/tmp/owned.sock",
+		}));
+		await reapCodexDaemonForSession(
+			{ insertEvent: vi.fn() } as unknown as StateStore,
+			session,
+			"test.harvest",
+			{ reap, gracefulOnly: true, beforeSignal },
+		);
+		expect(reap).toHaveBeenCalledWith(session.execution_id, {
+			gracefulOnly: true,
+			beforeSignal,
+		});
+	});
+
 	it("records the host-process teardown receipt", async () => {
 		const insertEvent = vi.fn();
 		const result = await reapCodexDaemonForSession(

@@ -1,0 +1,282 @@
+{
+  "readAt": "2026-09-14T18:05:34.880807+00:00",
+  "authority": "question 6c36e867-a574-4449-b6d8-fa9668699fe7 readonly SELECT ruling",
+  "sessions": [
+    {
+      "execution_id": "35f0dbf9-87ca-43f9-af24-795d5e9d1a95",
+      "tmux_window": "runner-flywheel:pending",
+      "project_name": "flywheel",
+      "issue_id": "FLY-2045",
+      "lead_id": null,
+      "started_at": "2026-08-25 15:49:00",
+      "ended_at": null,
+      "status": "running",
+      "vendor": null,
+      "phase_keep_alive": 0
+    },
+    {
+      "execution_id": "296488f3-9c4c-4aae-894e-317e4b660568",
+      "tmux_window": "runner-flywheel:pending",
+      "project_name": "flywheel",
+      "issue_id": "FLY-2080",
+      "lead_id": null,
+      "started_at": "2026-08-27 07:17:10",
+      "ended_at": null,
+      "status": "running",
+      "vendor": null,
+      "phase_keep_alive": 0
+    },
+    {
+      "execution_id": "86021b5f-374d-4083-a872-d5583f298026",
+      "tmux_window": "runner-flywheel:@7",
+      "project_name": "flywheel",
+      "issue_id": "FLY-2244",
+      "lead_id": "flywheel-product-lead",
+      "started_at": "2026-09-11 20:23:29",
+      "ended_at": null,
+      "status": "running",
+      "vendor": "claude-code",
+      "phase_keep_alive": 0
+    },
+    {
+      "execution_id": "412485c1-93e3-4bbf-b228-b12410649347",
+      "tmux_window": "runner-flywheel:@2877",
+      "project_name": "flywheel",
+      "issue_id": "FLY-2519",
+      "lead_id": "flywheel-eng-lead",
+      "started_at": "2026-09-13 22:32:40",
+      "ended_at": null,
+      "status": "running",
+      "vendor": "codex",
+      "phase_keep_alive": 1
+    },
+    {
+      "execution_id": "4c428168-c403-4b03-b2b9-ffa47bf68433",
+      "tmux_window": "runner-flywheel:@4717",
+      "project_name": "flywheel",
+      "issue_id": "FLY-2519",
+      "lead_id": "flywheel-eng-lead",
+      "started_at": "2026-09-14 07:40:58",
+      "ended_at": null,
+      "status": "running",
+      "vendor": "codex",
+      "phase_keep_alive": 1
+    },
+    {
+      "execution_id": "ed0040d2-b967-4079-b8ce-f8aa2b23cf02",
+      "tmux_window": "runner-flywheel:@4815",
+      "project_name": "flywheel",
+      "issue_id": "FLY-2519",
+      "lead_id": "flywheel-eng-lead",
+      "started_at": "2026-09-14 08:12:27",
+      "ended_at": null,
+      "status": "running",
+      "vendor": "codex",
+      "phase_keep_alive": 1
+    },
+    {
+      "execution_id": "3e41382f-1047-428a-964f-15894a5f49d6",
+      "tmux_window": "runner-flywheel:@6631",
+      "project_name": "flywheel",
+      "issue_id": "FLY-2553",
+      "lead_id": "flywheel-eng-lead",
+      "started_at": "2026-09-14 17:49:01",
+      "ended_at": null,
+      "status": "running",
+      "vendor": "codex",
+      "phase_keep_alive": 1
+    },
+    {
+      "execution_id": "d9a5e9d2-d52b-40df-aa34-07bd6fe0b0b6",
+      "tmux_window": "runner-flywheel:@6648",
+      "project_name": "flywheel",
+      "issue_id": "FLY-2554",
+      "lead_id": "flywheel-eng-lead",
+      "started_at": "2026-09-14 17:57:34",
+      "ended_at": null,
+      "status": "running",
+      "vendor": "codex",
+      "phase_keep_alive": 1
+    },
+    {
+      "execution_id": "172975a6-c095-4c75-91c8-52bbb1e98c59",
+      "tmux_window": "runner-flywheel:@6651",
+      "project_name": "flywheel",
+      "issue_id": "FLY-2555",
+      "lead_id": "flywheel-eng-lead",
+      "started_at": "2026-09-14 17:58:27",
+      "ended_at": null,
+      "status": "running",
+      "vendor": "codex",
+      "phase_keep_alive": 1
+    }
+  ],
+  "stateSessions": [
+    {
+      "execution_id": "172975a6-c095-4c75-91c8-52bbb1e98c59",
+      "issue_identifier": "FLY-2555",
+      "project_name": "flywheel",
+      "status": "running",
+      "adapter_type": "codex-tmux",
+      "session_role": "implement",
+      "tmux_session": null
+    },
+    {
+      "execution_id": "296488f3-9c4c-4aae-894e-317e4b660568",
+      "issue_identifier": "FLY-2080",
+      "project_name": "flywheel",
+      "status": "terminated",
+      "adapter_type": "codex-tmux",
+      "session_role": "implement",
+      "tmux_session": null
+    },
+    {
+      "execution_id": "35f0dbf9-87ca-43f9-af24-795d5e9d1a95",
+      "issue_identifier": "FLY-2045",
+      "project_name": "flywheel",
+      "status": "completed",
+      "adapter_type": "claude-tmux",
+      "session_role": "main",
+      "tmux_session": null
+    },
+    {
+      "execution_id": "3e41382f-1047-428a-964f-15894a5f49d6",
+      "issue_identifier": "FLY-2553",
+      "project_name": "flywheel",
+      "status": "running",
+      "adapter_type": "codex-tmux",
+      "session_role": "implement",
+      "tmux_session": null
+    },
+    {
+      "execution_id": "412485c1-93e3-4bbf-b228-b12410649347",
+      "issue_identifier": "FLY-2519",
+      "project_name": "flywheel",
+      "status": "completed",
+      "adapter_type": "codex-tmux",
+      "session_role": "design",
+      "tmux_session": null
+    },
+    {
+      "execution_id": "4c428168-c403-4b03-b2b9-ffa47bf68433",
+      "issue_identifier": "FLY-2519",
+      "project_name": "flywheel",
+      "status": "completed",
+      "adapter_type": "codex-tmux",
+      "session_role": "design",
+      "tmux_session": null
+    },
+    {
+      "execution_id": "86021b5f-374d-4083-a872-d5583f298026",
+      "issue_identifier": "FLY-2244",
+      "project_name": "flywheel",
+      "status": "running",
+      "adapter_type": "claude-tmux",
+      "session_role": "main",
+      "tmux_session": null
+    },
+    {
+      "execution_id": "d9a5e9d2-d52b-40df-aa34-07bd6fe0b0b6",
+      "issue_identifier": "FLY-2554",
+      "project_name": "flywheel",
+      "status": "running",
+      "adapter_type": "codex-tmux",
+      "session_role": "implement",
+      "tmux_session": null
+    },
+    {
+      "execution_id": "ed0040d2-b967-4079-b8ce-f8aa2b23cf02",
+      "issue_identifier": "FLY-2519",
+      "project_name": "flywheel",
+      "status": "running",
+      "adapter_type": "codex-tmux",
+      "session_role": "implement",
+      "tmux_session": null
+    }
+  ],
+  "declaredStates": [
+    {
+      "execution_id": "412485c1-93e3-4bbf-b228-b12410649347",
+      "kind": "parked",
+      "reason": "FLY-2519 phase_design_complete delivered and TURN transferred to implement epoch=2; design artifacts approved, published and reported; awaiting a future authorized design rework wake.",
+      "created_at": 1789341434846,
+      "expires_at": null,
+      "updated_at": 1789341434846
+    },
+    {
+      "execution_id": "4c428168-c403-4b03-b2b9-ffa47bf68433",
+      "kind": "parked",
+      "reason": "FLY-2519 design complete; replayed doorbell checked, R1 fixed/R2 APPROVED, no unread instructions; implement holds TURN epoch5",
+      "created_at": 1789373635864,
+      "expires_at": null,
+      "updated_at": 1789373635864
+    }
+  ],
+  "turns": [
+    {
+      "issue_id": "FLY-2244",
+      "holder_exec_id": "86021b5f-374d-4083-a872-d5583f298026",
+      "phase": "pm",
+      "epoch": 2,
+      "granted_at": 1789158169566,
+      "target_run_id": "dce298bc-6f00-41c5-b216-989991640e1b",
+      "target_node_id": "pm",
+      "target_attempt": 1,
+      "activation_id": "activation:86021b5f-374d-4083-a872-d5583f298026:dce298bc-6f00-41c5-b216-989991640e1b:pm:1",
+      "active_turn_id": null,
+      "turn_generation": 2
+    },
+    {
+      "issue_id": "FLY-2519",
+      "holder_exec_id": "ed0040d2-b967-4079-b8ce-f8aa2b23cf02",
+      "phase": "implement",
+      "epoch": 5,
+      "granted_at": 1789373546066,
+      "target_run_id": "c176229a-5fe3-4d4d-886b-e1e7527ec9e2",
+      "target_node_id": "implement",
+      "target_attempt": 1,
+      "activation_id": "activation:ed0040d2-b967-4079-b8ce-f8aa2b23cf02:c176229a-5fe3-4d4d-886b-e1e7527ec9e2:implement:1",
+      "active_turn_id": null,
+      "turn_generation": 5
+    },
+    {
+      "issue_id": "FLY-2553",
+      "holder_exec_id": "3e41382f-1047-428a-964f-15894a5f49d6",
+      "phase": "implement",
+      "epoch": 1,
+      "granted_at": 1789408137245,
+      "target_run_id": "6f79c0d0-d1c3-4117-acd9-21cbef332048",
+      "target_node_id": "implement",
+      "target_attempt": 1,
+      "activation_id": "activation:3e41382f-1047-428a-964f-15894a5f49d6:6f79c0d0-d1c3-4117-acd9-21cbef332048:implement:1",
+      "active_turn_id": null,
+      "turn_generation": 1
+    },
+    {
+      "issue_id": "FLY-2554",
+      "holder_exec_id": "d9a5e9d2-d52b-40df-aa34-07bd6fe0b0b6",
+      "phase": "implement",
+      "epoch": 1,
+      "granted_at": 1789408648593,
+      "target_run_id": "fff384ea-14de-45b3-a671-3cf1fa328f13",
+      "target_node_id": "implement",
+      "target_attempt": 1,
+      "activation_id": "activation:d9a5e9d2-d52b-40df-aa34-07bd6fe0b0b6:fff384ea-14de-45b3-a671-3cf1fa328f13:implement:1",
+      "active_turn_id": null,
+      "turn_generation": 1
+    },
+    {
+      "issue_id": "FLY-2555",
+      "holder_exec_id": "172975a6-c095-4c75-91c8-52bbb1e98c59",
+      "phase": "implement",
+      "epoch": 1,
+      "granted_at": 1789408703347,
+      "target_run_id": "1bb66b99-910f-40e0-a454-972646e337df",
+      "target_node_id": "implement",
+      "target_attempt": 1,
+      "activation_id": "activation:172975a6-c095-4c75-91c8-52bbb1e98c59:1bb66b99-910f-40e0-a454-972646e337df:implement:1",
+      "active_turn_id": null,
+      "turn_generation": 1
+    }
+  ]
+}

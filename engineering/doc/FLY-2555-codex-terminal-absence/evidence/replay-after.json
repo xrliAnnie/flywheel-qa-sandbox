@@ -1,0 +1,49 @@
+{
+  "replayedAt": "2026-09-14T18:31:24.040Z",
+  "sourceReadAt": "2026-09-14T18:05:34.880807+00:00",
+  "probeSource": "production rows and captured daemon evidence; controlled unowned runtime/socket-holder/group/signal/post-close host simulation; no production signals",
+  "firstPass": {
+    "scanned": 9,
+    "reconciled": 0,
+    "keptNonTerminal": 0,
+    "keptPreserve": 0,
+    "keptAliveTarget": 4,
+    "finalizeFailed": 0,
+    "parkedVetoed": 5,
+    "parkedOverridden": 0,
+    "harvest": {
+      "orphanHarvested": 0,
+      "preserveHarvested": 0,
+      "keptOrphanCandidate": 0,
+      "keptPreserveAlive": 0
+    }
+  },
+  "signals": [
+    "SIGTERM"
+  ],
+  "auditEvents": [
+    "exec_host_processes_reaped"
+  ],
+  "beforeCount": 9,
+  "afterCount": 8,
+  "targetRetained": false,
+  "removed": [
+    "412485c1-93e3-4bbf-b228-b12410649347"
+  ],
+  "result": {
+    "scanned": 9,
+    "reconciled": 1,
+    "keptNonTerminal": 0,
+    "keptPreserve": 0,
+    "keptAliveTarget": 3,
+    "finalizeFailed": 0,
+    "parkedVetoed": 5,
+    "parkedOverridden": 1,
+    "harvest": {
+      "orphanHarvested": 0,
+      "preserveHarvested": 0,
+      "keptOrphanCandidate": 0,
+      "keptPreserveAlive": 0
+    }
+  }
+}

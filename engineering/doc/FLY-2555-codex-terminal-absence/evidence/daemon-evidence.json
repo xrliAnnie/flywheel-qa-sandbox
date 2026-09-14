@@ -1,0 +1,10 @@
+{
+  "observedAt": "2026-09-14T18:07:09.486Z",
+  "executionId": "412485c1-93e3-4bbf-b228-b12410649347",
+  "evidence": {
+    "liveness": "unknown",
+    "ledger": "valid_group",
+    "socketLive": true,
+    "spawnLock": "live"
+  }
+}

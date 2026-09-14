@@ -6,6 +6,8 @@ import {
 import type { Session, StateStore } from "../StateStore.js";
 
 export interface CodexDaemonTeardownDeps {
+	gracefulOnly?: boolean;
+	beforeSignal?: () => boolean;
 	reap?: typeof reapCodexDaemonForExecution;
 }
 
@@ -59,6 +61,12 @@ export async function reapCodexDaemonForSession(
 	try {
 		result = await (deps.reap ?? reapCodexDaemonForExecution)(
 			session.execution_id,
+			{
+				...(deps.gracefulOnly !== undefined
+					? { gracefulOnly: deps.gracefulOnly }
+					: {}),
+				...(deps.beforeSignal ? { beforeSignal: deps.beforeSignal } : {}),
+			},
 		);
 	} catch (error) {
 		reapFailure = classifyReapFailure(error);

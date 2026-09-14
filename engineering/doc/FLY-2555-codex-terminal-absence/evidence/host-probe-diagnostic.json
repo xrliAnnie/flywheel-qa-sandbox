@@ -1,0 +1,5 @@
+{
+  "code": 3,
+  "stdout": "",
+  "stderr": "sysmon request failed with error: sysmond service not found\npgrep: Cannot get process list\n"
+}

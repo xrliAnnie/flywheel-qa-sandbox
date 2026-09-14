@@ -1,0 +1,19 @@
+# Lead Patrol Snapshot
+project: flywheel
+lead: flywheel-eng-lead
+captured_at: 2026-09-14T18:32:21Z
+
+## STEP 1
+STEP 1: LEAD-JUDGMENT-REQUIRED
+ROSTER_EVIDENCE target=runner-flywheel:@4717 exec=4c428168-c403-4b03-b2b9-ffa47bf68433 live_panes=1 findings=none
+ROSTER_EVIDENCE target=runner-flywheel:@4815 exec=ed0040d2-b967-4079-b8ce-f8aa2b23cf02 live_panes=1 findings=none
+ROSTER_EVIDENCE target=runner-flywheel:@6631 exec=3e41382f-1047-428a-964f-15894a5f49d6 live_panes=1 findings=none
+ROSTER_EVIDENCE target=runner-flywheel:@6648 exec=d9a5e9d2-d52b-40df-aa34-07bd6fe0b0b6 live_panes=1 findings=none
+ROSTER_EVIDENCE target=runner-flywheel:@6651 exec=172975a6-c095-4c75-91c8-52bbb1e98c59 live_panes=1 findings=none
+OWNED_RUNNER_PANES:
+%4717	runner-flywheel	runner-flywheel:@4717	FLY-2519-design-codex-G-2441-Codex-Lead-Claude-Lea	codex	0
+%4815	runner-flywheel	runner-flywheel:@4815	FLY-2519-implement-codex-G-2441-Codex-Lead-Claude-	codex	0
+%6631	runner-flywheel	runner-flywheel:@6631	FLY-2553-implement-codex-G-E5-Epic-PRD-v2-1-2141-f	codex	0
+%6648	runner-flywheel	runner-flywheel:@6648	FLY-2554-implement-codex-G-thread-ship-done-thread	codex	0
+%6651	runner-flywheel	runner-flywheel:@6651	FLY-2555-implement-codex-G-Codex-CommDB-parked-rec	codex	0
+

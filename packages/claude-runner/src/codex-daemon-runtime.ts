@@ -103,6 +103,10 @@ export type CodexDaemonLiveness = "alive" | "absent" | "unknown";
 export type ProcessGroupState = "alive" | "absent" | "unknown";
 
 export interface CodexDaemonOwnershipDeps {
+	/** Opt-in terminal harvest must never escalate beyond SIGTERM. */
+	gracefulOnly?: boolean;
+	/** Synchronous final authorization after async evidence; false/throw vetoes. */
+	beforeSignal?: () => boolean;
 	isPidAlive?: (pid: number) => boolean;
 	env?: NodeJS.ProcessEnv;
 	isSocketLive?: (socketPath: string) => Promise<boolean>;
@@ -388,6 +392,19 @@ export async function reapCodexDaemonForExecution(
 			await sleep(Math.min(100, Math.max(1, deadline - now())));
 		}
 	};
+	const signalAllowed = (): boolean => {
+		try {
+			return deps.beforeSignal ? deps.beforeSignal() === true : true;
+		} catch {
+			return false;
+		}
+	};
+	const unverifiable: CodexDaemonReapResult = {
+		outcome: "unverifiable",
+		pgid: initial.pgid,
+		socketPath: initial.socketPath,
+	};
+	if (!signalAllowed()) return unverifiable;
 	try {
 		killGroup(initial.pgid, "SIGTERM");
 	} catch {
@@ -401,6 +418,14 @@ export async function reapCodexDaemonForExecution(
 			socketPath: initial.socketPath,
 		};
 	}
+	if (deps.gracefulOnly) {
+		return {
+			outcome: "residual",
+			pgid: initial.pgid,
+			socketPath: initial.socketPath,
+		};
+	}
+	if (!signalAllowed()) return unverifiable;
 	try {
 		killGroup(initial.pgid, "SIGKILL");
 	} catch {

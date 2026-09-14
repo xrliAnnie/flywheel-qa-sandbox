@@ -7029,6 +7029,41 @@ export async function startBridge(
 						db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
 					parkedGenerationEvidence,
 					executionAbsence,
+					harvestCodexDaemon: async (
+						executionId,
+						project,
+						_target,
+						targetUnchangedAndNoTurn,
+					) => {
+						const { harvestTerminalCodexDaemon } = await import(
+							"./codex-terminal-harvest.js"
+						);
+						const { probeCodexDaemonEvidence } = await import(
+							"flywheel-claude-runner"
+						);
+						return harvestTerminalCodexDaemon(executionId, project, {
+							getSession: () => store.getSession(executionId),
+							// Registry is initialized later; read only when the full pass runs.
+							// An injected dispatcher does not share our ownership authority.
+							isOwned: () =>
+								!internalDispatcher ||
+								Boolean(opts?.startDispatcher) ||
+								codexExecutionOwners.isExecutionOwned(executionId),
+							residentHoldState: () =>
+								store.getResidentHold(executionId)?.state,
+							targetUnchangedAndNoTurn,
+							discover: () => discoverTmuxTargetByExecutionId(executionId),
+							evidence: () => probeCodexDaemonEvidence(executionId),
+							absence: () => executionAbsence(executionId, project),
+							close: (session, beforeSignal) =>
+								reapCodexDaemonForSession(
+									store,
+									session,
+									"bridge.codex-terminal-harvest",
+									{ gracefulOnly: true, beforeSignal },
+								),
+						});
+					},
 				},
 			);
 			if (result.reconciled > 0) {
