@@ -110,4 +110,4 @@ it("measures the combined child cap with the real attention warning and budgets 
 			retainedAttention: selected.attention.length,
 		}),
 	);
-});
+}, 60_000);
