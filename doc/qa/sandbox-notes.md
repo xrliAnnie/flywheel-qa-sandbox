@@ -1,8 +1,8 @@
 # Flywheel QA Sandbox Notes
 
-The `flywheel-qa-sandbox` repository is an isolated GitHub fork of Flywheel used by the QA test-slot framework to exercise **real Runner** behavior end to end. Each slot clones this repository into its own temporary workspace under `/tmp/flywheel-test-slot-<N>/`, starts a slot-local Bridge and Lead, and spawns a genuine Runner from a Linear issue. Nothing about the workflow is stubbed — the framework deliberately offers no synthetic fixture mode, because the failures it is built to catch (worktree collisions, gate deadlocks, branch/PR wiring, teardown leaks) only appear on the real path.
+The `flywheel-qa-sandbox` repository is an isolated, standalone mirror of Flywheel used by the QA test-slot framework to exercise **real Runner** behavior end to end. Each slot clones this repository into its own temporary workspace under `/tmp/flywheel-test-slot-<N>/`, starts a slot-local Bridge and Lead, and spawns a genuine Runner from a Linear issue. Nothing about the workflow is stubbed — the framework deliberately offers no synthetic fixture mode, because the failures it is built to catch (worktree collisions, gate deadlocks, branch/PR wiring, teardown leaks) only appear on the real path.
 
-That isolation is what makes the fork a safe blast radius. A test can create branches, commit, push, open pull requests, block on gates, and be torn down without touching production repositories, production Discord channels, or the production alert queue. The slot-suffixed clone basename (`project-slot-<N>`) keeps WorktreeManager-derived Runner branches from colliding on the sandbox remote when two slots run the same issue, and `FLYWHEEL_RUNNER_START_POINT` lets a slot Bridge start Runner worktrees from a selected sandbox branch so framework changes travel the same Git and GitHub operations a live run would.
+That isolation is what makes the sandbox a safe blast radius. A test can create branches, commit, push, open pull requests, block on gates, and be torn down without touching production repositories, production Discord channels, or the production alert queue. The slot-suffixed clone basename (`project-slot-<N>`) keeps WorktreeManager-derived Runner branches from colliding on the sandbox remote when two slots run the same issue, and `FLYWHEEL_RUNNER_START_POINT` lets a slot Bridge start Runner worktrees from a selected sandbox branch so framework changes travel the same Git and GitHub operations a live run would.
 
 The sandbox is disposable integration-test infrastructure, not a second source of truth. Its contents mirror Flywheel closely enough to be realistic, but any state here may be reset or rewritten by the next QA run. Work should stay inside the slot clone and go through the framework's `test-deploy.sh` / `inject-linear-issue.sh` / `test-teardown.sh` scripts so concurrent slots do not collide and residual worktrees, branches, and local databases get cleaned up. Production Leads and Runners must not pick up sandbox fixture issues.
 
@@ -36,7 +36,7 @@ The sandbox is disposable integration-test infrastructure, not a second source o
 - Adoption is copy-and-fill: start from `templates/qa-config.yaml`, declare your domains / API config / test skills, add a test-suite config, and import `QaConfig` for typed access.
 - The test-slot framework (FLY-96 + FLY-115) spawns parallel isolated slots, each running a **real Runner** against `xrliAnnie/flywheel-qa-sandbox` — no synthetic or fixture mode exists.
 - Three scripts drive a slot: `test-deploy.sh` (clone + slot Bridge + slot Lead), `inject-linear-issue.sh` (POST `/api/runs/start` to spawn the Runner), and `test-teardown.sh` (kill processes, clean worktrees, branches, `SLOT_DIR`, and CommDB).
-- Real-Runner runs require `LINEAR_API_KEY`, an authenticated `gh` with push access to the fork, the fork itself, and the branch under test pushed to it; `test-deploy.sh` fails fast (exit 2) at pre-flight otherwise.
+- Real-Runner runs require `LINEAR_API_KEY`, an authenticated `gh` with push access to the standalone sandbox, the sandbox repository itself, and the branch under test pushed to it; `test-deploy.sh` fails fast (exit 2) at pre-flight otherwise.
 - `FLYWHEEL_RUNNER_START_POINT` is read by `WorktreeManager.create()` as a fallback start point and is set on the slot Bridge only — production launchers keep the default `origin/main` behavior.
 - The specialized suites cover the FLY-60 hard gates (one happy path plus six variants), shared-channel mirror mode (FLY-153), and FLY-529 roundtable and alert mirrors; the shared-channel modes intentionally reject Runner E2E unless their explicit escape flags are supplied, while alert overrides remain byte-compatible when disabled.
 - The framework's guides document real-Runner operation and sandbox synchronization, while `contracts/PLAN_SOURCE_CONTRACT.md` defines plan discovery across worktrees and `skills/SKILL_INTERFACE.md` defines the contract for QA test skills.
@@ -46,7 +46,7 @@ The sandbox is disposable integration-test infrastructure, not a second source o
 Command: `ls -R doc/ | head -50`
 
 ```text
-FLY-202-generalized-e2e
+FLY-145-s6-retry-product-test
 FLY-202-qa-sandbox-fixture
 VERSION
 architecture
@@ -56,8 +56,17 @@ qa
 reference
 retro
 
-doc//FLY-202-generalized-e2e:
+doc//FLY-145-s6-retry-product-test:
+design-review.md
 design.html
+exploration.md
+flow.mmd
+flow.svg
+model.mmd
+model.svg
+plan.md
+progress.md
+research.md
 
 doc//FLY-202-qa-sandbox-fixture:
 FLY-202-d1-e2e-chain.mmd
@@ -87,13 +96,4 @@ v2.0-product-vision.md
 
 doc//architecture/archive:
 v0.1.0-flywheel-orchestrator.md
-
-doc//engineer:
-deep-research
-exploration
-implementation
-onboarding
-plan
-qa
-research
 ```
