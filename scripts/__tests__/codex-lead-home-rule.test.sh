@@ -58,7 +58,7 @@ assert_launcher() {
 	export_count="$(grep -cF 'export CODEX_HOME="${CODEX_HOME:-$codex_home_default}"' "$launcher" || true)"
 	legacy_count="$(grep -cF 'CODEX_HOME:-${HOME}/' "$launcher" || true)"
 	unsafe_export_count="$(grep -cF 'export CODEX_HOME="${CODEX_HOME:-$(derive_codex_lead_home' "$launcher" || true)"
-	link_count="$(grep -cF '"$link_truth" --lead "$FLYWHEEL_PROJECT_NAME/$FLYWHEEL_LEAD_ID" "$CODEX_HOME"' "$launcher" || true)"
+	link_count="$(grep -cF '"$link_truth" "$CODEX_HOME"' "$launcher" || true)"
 	if [ "$key_count" -eq 1 ] && [ "$derive_count" -eq 1 ] \
 		&& [ "$safe_default_count" -eq 1 ] && [ "$export_count" -eq 1 ] \
 		&& [ "$legacy_count" -eq 0 ] && [ "$unsafe_export_count" -eq 0 ] \

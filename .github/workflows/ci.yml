@@ -935,6 +935,7 @@ jobs:
       - name: Test — FLY-2404 shared Codex credential truth
         run: |
           bash scripts/__tests__/codex-home-link-truth.test.sh
+          bash scripts/__tests__/codex-lead-launchd-preflight.test.sh
           bash scripts/__tests__/codex-credential-cutover.test.sh
           bash scripts/__tests__/codex-home-credential-sweep.test.sh
 

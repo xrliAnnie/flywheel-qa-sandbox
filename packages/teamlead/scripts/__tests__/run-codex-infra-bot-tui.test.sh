@@ -157,8 +157,8 @@ LINK_DUMP="$T/link-dump" ENVDUMP="$T/real-envdump" \
 	/bin/bash "$RT/scripts/run-codex-infra-bot-tui.sh" >/dev/null 2>&1
 real_rc=$?
 if [ "$real_rc" -eq 0 ] \
-	&& [ "$(cat "$T/link-dump" 2>/dev/null)" = "--lead flywheel/codex-infra-bot-lead $T/home/.codex-infra-bot" ]; then
-	pass "real launch gates InfraBot with the exact flywheel/codex-infra-bot-lead tuple"
+	&& [ "$(cat "$T/link-dump" 2>/dev/null)" = "$T/home/.codex-infra-bot" ]; then
+	pass "real launch checks only InfraBot home without the offline --lead fence"
 else
 	fail "real InfraBot link-truth gate contract (rc=$real_rc args=$(cat "$T/link-dump" 2>/dev/null))"
 fi

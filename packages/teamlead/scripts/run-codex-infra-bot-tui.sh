@@ -107,7 +107,8 @@ fi
 if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" != "1" ]; then
 	link_truth="${SCRIPT_DIR}/../../../scripts/codex-home-link-truth.sh"
 	[ -x "$link_truth" ] || { echo "codex-home-link-truth missing at $link_truth" >&2; exit 1; }
-	"$link_truth" --lead "$FLYWHEEL_PROJECT_NAME/$FLYWHEEL_LEAD_ID" "$CODEX_HOME" || {
+	# This launcher is the launchd job; --lead is an offline cutover fence.
+	"$link_truth" "$CODEX_HOME" || {
 		rc=$?; echo "codex-home-link-truth failed rc=$rc" >&2; exit "$rc";
 	}
 	if [ ! -x "${FLYWHEEL_CODEX_BIN}" ]; then

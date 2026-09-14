@@ -169,7 +169,7 @@ else
 	fail "invalid outbound mode accepted"
 fi
 
-# ── FLY-2404: real branch calls link-truth with the canonical tuple ────────
+# ── FLY-2530: startup checks the home without the offline --lead fence ────────
 mkdir -p "$T/home/.codex-mufasa/packages/standalone/current"
 printf '#!/bin/bash\nexit 0\n' > "$T/home/.codex-mufasa/packages/standalone/current/codex"
 chmod +x "$T/home/.codex-mufasa/packages/standalone/current/codex"
@@ -182,8 +182,8 @@ LINK_DUMP="$T/link-dump" ENVDUMP="$T/real-envdump" \
 	/bin/bash "$RT/scripts/run-codex-lead-mufasa-tui-fullaccess.sh" >/dev/null 2>&1
 real_rc=$?
 if [ "$real_rc" -eq 0 ] \
-	&& [ "$(cat "$T/link-dump" 2>/dev/null)" = "--lead growth/mufasa-lead $T/home/.codex-mufasa" ]; then
-	pass "real launch gates Mufasa with the exact growth/mufasa-lead tuple"
+	&& [ "$(cat "$T/link-dump" 2>/dev/null)" = "$T/home/.codex-mufasa" ]; then
+	pass "real launch checks only Mufasa home without the offline --lead fence"
 else
 	fail "real Mufasa link-truth gate contract (rc=$real_rc args=$(cat "$T/link-dump" 2>/dev/null))"
 fi
