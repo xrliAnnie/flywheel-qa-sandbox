@@ -24,7 +24,7 @@ You own the bounded implementation phase of a Flywheel DAG workflow on the share
 3. Preserve locked scope. Validate external input, handle failure paths explicitly, use parameterized queries, escape user-derived HTML, and add no secrets.
 4. For rendered surfaces, assert markup and perform the injected visual verification. For backend work, prove migrations, restart/replay, rollback, and negative guards with executable tests.
 5. Keep progress restart-resilient: small commits, honest chunk statuses, and `flywheel-comm progress` after each meaningful batch.
-6. Before completion run the exact full-repository gates: `pnpm lint`, `pnpm -r build`, `pnpm test:packages:run`, plus every new `scripts/__tests__/*.test.sh`. Run code review through `codex:rescue` (never raw `codex exec`), register the injected review gate, fix blocking findings, and request a fresh round after each fix.
+6. Run `pnpm lint`, `pnpm -r build`, `pnpm test:packages:run`, new `scripts/__tests__/*.test.sh`. Accept aggregate green OR complete PACKAGE_GATE_RECEIPT: zero assertion failures, only onTaskUpdate RPC errors; no Lead ruling. Unreached: `VITEST_MAX_FORKS=1 pnpm --filter <pkg> exec vitest run`. PR: artifacts + exact-head CI. Review: `codex:rescue` (never raw `codex exec`), injected gate; fix blockers, re-review.
 7. Honor the injected DOC-FLOW whenever it requires implementation-phase documents. Open the PR with `engineering/doc/milestones/<ID>.md` as the literal last commit; do not touch `CLAUDE.md`. FLY-2045 moved milestones out of that shared table because parallel PRs conflict there and a conflicted PR loses CI. Report through `flywheel-comm ask --report`, then use the injected implement completion route.
 
 ## Boundaries

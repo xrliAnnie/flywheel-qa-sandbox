@@ -32,6 +32,10 @@
 				{
 					"before": "- Do not modify the approved plan after its design-review blob is pinned.\n- Do not dispatch QA; the DAG orchestrator owns graph advancement.",
 					"after": ""
+				},
+				{
+					"before": "6. Before completion run the exact full-repository gates: `pnpm lint`, `pnpm -r build`, `pnpm test:packages:run`, plus every new `scripts/__tests__/*.test.sh`. Run code review through `codex:rescue` (never raw `codex exec`), register the injected review gate, fix blocking findings, and request a fresh round after each fix.",
+					"after": "6. Run `pnpm lint`, `pnpm -r build`, `pnpm test:packages:run`, new `scripts/__tests__/*.test.sh`. Accept aggregate green OR complete PACKAGE_GATE_RECEIPT: zero assertion failures, only onTaskUpdate RPC errors; no Lead ruling. Unreached: `VITEST_MAX_FORKS=1 pnpm --filter <pkg> exec vitest run`. PR: artifacts + exact-head CI. Review: `codex:rescue` (never raw `codex exec`), injected gate; fix blockers, re-review."
 				}
 			]
 		},
@@ -47,6 +51,10 @@
 				{
 					"before": "- **DAG QA:** when the injected phase prompt requires a ship report, publish successfully **BEFORE emitting qa-result --status pass**. Follow that prompt's exact gate/completion sequence after the verdict.",
 					"after": ""
+				},
+				{
+					"before": "3. **Run** the verification (the package's own tests where relevant: `pnpm test:packages:run`; plus the real behavior — Bridge / Lead / Discord live, or the rendered surface via proofshot / Claude-in-Chrome).",
+					"after": "3. **Run** the verification (the package's own tests where relevant: `pnpm test:packages:run`; plus the real behavior — Bridge / Lead / Discord live, or the rendered surface via proofshot / Claude-in-Chrome). Package gate: aggregate green OR only onTaskUpdate worker RPC errors with zero assertion failures and complete per-package receipts (PACKAGE_GATE_RECEIPT; artifact exit 2, real failure exit 1). Run every unreached Vitest package with `VITEST_MAX_FORKS=1 pnpm --filter <pkg> exec vitest run`; preserve required original script options, commands and exit codes. Other errors or incomplete results never qualify. Disclose artifacts in the PR; exact-head CI is required; no Lead ruling is needed for this bounded exception."
 				}
 			]
 		},

@@ -159,6 +159,12 @@ jobs:
           node --test scripts/__tests__/fly1645-receipt-residue-gate.test.mjs
           node scripts/fly1645-receipt-residue-gate.mjs --main-only
 
+      - name: Package gate receipt and retry guards (FLY-2467)
+        run: |
+          node --test scripts/__tests__/package-gate.test.mjs
+          node --test scripts/__tests__/teamlead-shards.test.mjs
+          node --test scripts/__tests__/vitest-worker-rpc.test.mjs
+
       - name: Enforce FLY-2006 retention consumer gate
         run: |
           node --test scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs
@@ -166,6 +172,10 @@ jobs:
 
   unit-tests:
     name: Unit (${{ matrix.name }})
+    env:
+      # The teamlead helper raises only its parallel project to two forks.
+      VITEST_MAX_FORKS: "1"
+      VITEST_MIN_FORKS: "1"
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
@@ -174,12 +184,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: teamlead 1 of 3
-            cmd: pnpm --filter flywheel-teamlead test:run --shard=1/3
-          - name: teamlead 2 of 3
-            cmd: pnpm --filter flywheel-teamlead test:run --shard=2/3
-          - name: teamlead 3 of 3
-            cmd: pnpm --filter flywheel-teamlead test:run --shard=3/3
+          - name: teamlead 1 of 4
+            cmd: node scripts/teamlead-ci-shard.mjs --shard=1/4
+          - name: teamlead 2 of 4
+            cmd: node scripts/teamlead-ci-shard.mjs --shard=2/4
+          - name: teamlead 3 of 4
+            cmd: node scripts/teamlead-ci-shard.mjs --shard=3/4
+          - name: teamlead 4 of 4
+            cmd: node scripts/teamlead-ci-shard.mjs --shard=4/4
           - name: heavy
             cmd: pnpm --filter flywheel-claude-runner --filter flywheel-comm --filter flywheel-edge-worker test:run
           - name: light
@@ -221,14 +233,17 @@ jobs:
       # FLY-2453: whole-gate mutants must fail both writer and unit controls.
       # scripts/fly-2453-narrow-gate-529.mjs is manual-only: isolated 529 evidence.
       - name: FLY-2453 whole-gate writer mutations
-        if: matrix.name == 'teamlead 1 of 3'
+        if: matrix.name == 'teamlead 1 of 4'
         run: node scripts/fly-2453-narrow-gate-mutations.mjs
+
+      - name: Record matrix worker budget
+        run: node -e "console.log(JSON.stringify({cpus:require('node:os').availableParallelism(),maxForks:process.env.VITEST_MAX_FORKS,minForks:process.env.VITEST_MIN_FORKS}))"
 
       - name: Run matrix tests
         run: ${{ matrix.cmd }}
 
       - name: FLY-1883 stub-hygiene pairing
-        if: matrix.name == 'teamlead 1 of 3'
+        if: matrix.name == 'teamlead 1 of 4'
         run: pnpm --filter flywheel-teamlead test:stub-hygiene
 
   script-tests:

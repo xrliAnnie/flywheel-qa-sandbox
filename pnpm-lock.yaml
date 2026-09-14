@@ -16,6 +16,9 @@ patchedDependencies:
   mem0ai@2.3.0:
     hash: da93692eeeaf85bd7b8a9eb6bb47a89447322e7df483ffc1cb97bee2b36d8879
     path: patches/mem0ai@2.3.0.patch
+  vitest@3.2.4:
+    hash: 6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3
+    path: patches/vitest@3.2.4.patch
 
 importers:
 
@@ -61,7 +64,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/claude-runner:
     dependencies:
@@ -122,7 +125,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/config:
     dependencies:
@@ -138,7 +141,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/core:
     dependencies:
@@ -163,7 +166,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/edge-worker:
     dependencies:
@@ -239,7 +242,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
       vitest-mock-extended:
         specifier: ^3.1.0
         version: 3.1.0(typescript@5.9.3)(vitest@3.2.4)
@@ -264,7 +267,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/flywheel-comm:
     dependencies:
@@ -292,7 +295,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/gemini-agent:
     dependencies:
@@ -317,7 +320,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/github-event-transport:
     dependencies:
@@ -336,7 +339,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/inbox-mcp:
     dependencies:
@@ -367,7 +370,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/linear-event-transport:
     dependencies:
@@ -389,7 +392,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.2.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/onboard-shell: {}
 
@@ -425,7 +428,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/release-contract:
     devDependencies:
@@ -453,7 +456,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/teamlead:
     dependencies:
@@ -544,7 +547,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/terminal-mcp:
     dependencies:
@@ -566,7 +569,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/token-usage:
     dependencies:
@@ -588,7 +591,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/voice-bridge:
     dependencies:
@@ -622,7 +625,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/voice-codex:
     dependencies:
@@ -650,7 +653,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/voice-core:
     dependencies:
@@ -669,7 +672,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/voice-headphone:
     dependencies:
@@ -688,7 +691,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^3.1.4
-        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+        version: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
 packages:
 
@@ -5661,7 +5664,7 @@ snapshots:
       std-env: 3.9.0
       test-exclude: 7.0.1
       tinyrainbow: 2.0.0
-      vitest: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+      vitest: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -5710,7 +5713,7 @@ snapshots:
       sirv: 3.0.2
       tinyglobby: 0.2.15
       tinyrainbow: 2.0.0
-      vitest: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+      vitest: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
     optional: true
 
   '@vitest/utils@3.2.4':
@@ -7771,9 +7774,9 @@ snapshots:
     dependencies:
       ts-essentials: 10.1.1(typescript@5.9.3)
       typescript: 5.9.3
-      vitest: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
+      vitest: 3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1)
 
-  vitest@3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1):
+  vitest@3.2.4(patch_hash=6cbeb8d38c9eed4658931e19d90e0e53737ce8d36a3f4728bfe00d01a103e5e3)(@types/node@20.19.21)(@vitest/ui@3.2.4)(happy-dom@20.10.6)(tsx@4.20.6)(yaml@2.8.1):
     dependencies:
       '@types/chai': 5.2.2
       '@vitest/expect': 3.2.4

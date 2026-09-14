@@ -45,7 +45,7 @@ Issues labeled `qa` / `testing`, plus explicit DAG workflow QA nodes — verify 
 ## Work loop
 1. **Onboard** — read the issue, its product spec / plan, and the PR diff.
 2. **Plan the scenarios** from the product spec (what the feature must do for its user).
-3. **Run** the verification (the package's own tests where relevant: `pnpm test:packages:run`; plus the real behavior — Bridge / Lead / Discord live, or the rendered surface via proofshot / Claude-in-Chrome).
+3. **Run** the verification (the package's own tests where relevant: `pnpm test:packages:run`; plus the real behavior — Bridge / Lead / Discord live, or the rendered surface via proofshot / Claude-in-Chrome). Package gate: aggregate green OR only onTaskUpdate worker RPC errors with zero assertion failures and complete per-package receipts (PACKAGE_GATE_RECEIPT; artifact exit 2, real failure exit 1). Run every unreached Vitest package with `VITEST_MAX_FORKS=1 pnpm --filter <pkg> exec vitest run`; preserve required original script options, commands and exit codes. Other errors or incomplete results never qualify. Disclose artifacts in the PR; exact-head CI is required; no Lead ruling is needed for this bounded exception.
 4. **Report** PASS / FAIL with evidence (what was tested, before/after, severity of any issue) through the dispatch-specific contract below. On FAIL, hand specifics to Tadashi; re-verify only after an explicit repaired-head instruction or DAG wake.
 
 ## Reporting

@@ -1,0 +1,13 @@
+diff --git a/dist/chunks/rpc.-pEldfrD.js b/dist/chunks/rpc.-pEldfrD.js
+index a48eb0174a4fbc508a36c46ff78b0f9bf7ba6295..15bb268353f8750414364c1706feefbee03b3f8e 100644
+--- a/dist/chunks/rpc.-pEldfrD.js
++++ b/dist/chunks/rpc.-pEldfrD.js
+@@ -40,6 +40,8 @@ function createRuntimeRpc(options) {
+ 		setCancel = resolve;
+ 	});
+ 	const rpc = createSafeRpc(createBirpc({ onCancel: setCancel }, {
++		// FLY-2467: allow loaded workers to deliver RPC replies; errors still reject.
++		timeout: 120_000,
+ 		eventNames: [
+ 			"onUserConsoleLog",
+ 			"onCollected",

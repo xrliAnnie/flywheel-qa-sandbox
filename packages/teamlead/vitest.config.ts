@@ -1,8 +1,25 @@
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
+import TeamleadSequencer, { serialFiles } from "./vitest.shards.mjs";
 
 export default defineConfig({
 	test: {
+		sequence: { sequencer: TeamleadSequencer },
+		projects: [
+			{ extends: true, test: { name: "serial", include: serialFiles } },
+			{
+				extends: true,
+				test: {
+					name: "parallel",
+					exclude: [...configDefaults.exclude, ...serialFiles],
+				},
+			},
+		],
+		// FLY-2467: bound host contention; VITEST_MAX_FORKS remains Vitest's
+		// explicit override. This is not an assertion or hook timeout change.
+		pool: "forks",
+		poolOptions: { forks: { minForks: 1, maxForks: 1 } },
+		teardownTimeout: 60_000,
 		watch: false,
 		globals: true,
 		unstubGlobals: true,

@@ -12,7 +12,7 @@
 		"lint": "biome check",
 		"format": "biome check --write --unsafe",
 		"test:packages": "pnpm --filter './packages/*' test",
-		"test:packages:run": "pnpm --filter './packages/*' test:run",
+		"test:packages:run": "node scripts/package-gate.mjs",
 		"test:apps": "pnpm --filter './apps/*' test",
 		"test:cycle-time": "node --test scripts/cycle-time/__tests__/*.test.mjs",
 		"verify:workflow-seeds": "node scripts/verify-workflow-seeds.mjs",
@@ -57,7 +57,8 @@
 			"zod": "4.3.6"
 		},
 		"patchedDependencies": {
-			"mem0ai@2.3.0": "patches/mem0ai@2.3.0.patch"
+			"mem0ai@2.3.0": "patches/mem0ai@2.3.0.patch",
+			"vitest@3.2.4": "patches/vitest@3.2.4.patch"
 		},
 		"onlyBuiltDependencies": [
 			"better-sqlite3"

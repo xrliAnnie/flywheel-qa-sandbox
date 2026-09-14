@@ -45,6 +45,21 @@ function digest(value) {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+export function hasMutationFailures(output, mutant) {
+	// Vitest projects add a plain or pipe-delimited name before the test path.
+	const cleanOutput = stripVTControlCharacters(output).replace(
+		/^\s*FAIL\s+(?:(?:serial|parallel|\|serial\||\|parallel\|)\s+)?(?=src\/)/gm,
+		"FAIL  ",
+	);
+	return (
+		cleanOutput.includes(
+			`FAIL  ${WRITER_TEST} > QA writer-level three-gate negatives > ${mutant.gate} negative:`,
+		) &&
+		cleanOutput.includes(`FAIL  ${UNIT_TEST}`) &&
+		cleanOutput.includes(mutant.unitFailure)
+	);
+}
+
 export function runNarrowGateMutations() {
 	const original = readFileSync(SOURCE, "utf8");
 	const originalDigest = digest(original);
@@ -119,15 +134,7 @@ export function runNarrowGateMutations() {
 			writeFileSync(sourceCopy, mutated);
 			const { result, output } = run();
 			process.stdout.write(`\n${mutant.name} exit=${result.status}\n${output}`);
-			const cleanOutput = stripVTControlCharacters(output);
-			if (
-				result.status === 0 ||
-				!cleanOutput.includes(
-					`FAIL  ${WRITER_TEST} > QA writer-level three-gate negatives > ${mutant.gate} negative:`,
-				) ||
-				!cleanOutput.includes(`FAIL  ${UNIT_TEST}`) ||
-				!cleanOutput.includes(mutant.unitFailure)
-			) {
+			if (result.status === 0 || !hasMutationFailures(output, mutant)) {
 				throw new Error(
 					`${mutant.name}: missing writer and unit gate assertion failures`,
 				);

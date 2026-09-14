@@ -47,6 +47,10 @@ include = workflow["jobs"]["unit-tests"]["strategy"]["matrix"]["include"]
 seen, rows = set(), []
 for entry in include:
     cmd = str(entry["cmd"])
+    # The bounded teamlead entrypoint executes the same package twice across
+    # disjoint projects. Its executable partition contract is tested separately.
+    if re.fullmatch(r"node scripts/teamlead-ci-shard\.mjs --shard=[1-4]/4", cmd):
+        cmd = cmd.replace("node scripts/teamlead-ci-shard.mjs", "pnpm --filter flywheel-teamlead test:run")
     # Shard siblings differ ONLY by --shard=k/N and target the same package, so they
     # must be collapsed or "pairwise disjoint" would flag them against each other.
     # Collapse ONLY rows that actually carry a --shard flag: deduping on the stripped

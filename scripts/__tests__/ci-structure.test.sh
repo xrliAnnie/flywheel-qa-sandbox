@@ -429,16 +429,20 @@ require(isinstance(include, list), "unit-tests matrix.include must be a list")
 
 expected_matrix = [
     {
-        "name": "teamlead 1 of 3",
-        "cmd": "pnpm --filter flywheel-teamlead test:run --shard=1/3",
+        "name": "teamlead 1 of 4",
+        "cmd": "node scripts/teamlead-ci-shard.mjs --shard=1/4",
     },
     {
-        "name": "teamlead 2 of 3",
-        "cmd": "pnpm --filter flywheel-teamlead test:run --shard=2/3",
+        "name": "teamlead 2 of 4",
+        "cmd": "node scripts/teamlead-ci-shard.mjs --shard=2/4",
     },
     {
-        "name": "teamlead 3 of 3",
-        "cmd": "pnpm --filter flywheel-teamlead test:run --shard=3/3",
+        "name": "teamlead 3 of 4",
+        "cmd": "node scripts/teamlead-ci-shard.mjs --shard=3/4",
+    },
+    {
+        "name": "teamlead 4 of 4",
+        "cmd": "node scripts/teamlead-ci-shard.mjs --shard=4/4",
     },
     {
         "name": "heavy",
@@ -472,6 +476,11 @@ require(
 
 def filters(command: str) -> list[str]:
     tokens = shlex.split(command)
+    if tokens[:2] == ["node", "scripts/teamlead-ci-shard.mjs"]:
+        with open(os.path.join(repo_root, tokens[1]), encoding="utf-8") as handle:
+            helper = handle.read()
+        require(re.search(r'"--filter",\s*"flywheel-teamlead",\s*"test:run"', helper), "teamlead helper must execute the original package test script")
+        return ["flywheel-teamlead"]
     values = []
     for index, token in enumerate(tokens[:-1]):
         if token == "--filter":
@@ -1386,6 +1395,16 @@ require(
     "matrix.cmd execution step must not swallow failures",
 )
 
+matrix_names = {entry["name"] for entry in actual_matrix}
+for step in unit_steps:
+    condition = str(step.get("if", ""))
+    for name in re.findall(r"matrix\.name\s*==\s*'([^']+)'", condition):
+        require(name in matrix_names, f"conditional step targets absent matrix row: {name}")
+writer_mutations = [step for step in unit_steps if step.get("name") == "FLY-2453 whole-gate writer mutations"]
+require(len(writer_mutations) == 1, "writer mutation gate must appear exactly once")
+require(writer_mutations[0].get("if") == "matrix.name == 'teamlead 1 of 4'", "writer mutation gate must run in shard 1")
+require("continue-on-error" not in writer_mutations[0], "writer mutation gate must not swallow failures")
+
 stub_hygiene_steps = [
     step
     for step in unit_steps
@@ -1398,7 +1417,7 @@ require(
 stub_hygiene_step = stub_hygiene_steps[0]
 require(
     str(stub_hygiene_step.get("if", "")).strip()
-    == "matrix.name == 'teamlead 1 of 3'",
+    == "matrix.name == 'teamlead 1 of 4'",
     "FLY-1883 stub-hygiene pairing must run only in teamlead shard 1",
 )
 require(
