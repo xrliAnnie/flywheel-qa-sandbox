@@ -8357,6 +8357,18 @@ export async function startBridge(
 	};
 	const codexSessionReowner = new CodexSessionReowner({
 		store,
+		alertIdentity: (session) => {
+			const bound = store.getCodexRecoveryAlertBinding(session.execution_id);
+			if (!bound) return undefined;
+			return resolveWorkflowRunAlertIdentity({
+				store,
+				projects,
+				defaultLeadAgentId: config.defaultLeadAgentId,
+				projectName: session.project_name,
+				issueId: session.issue_id,
+				runId: bound.run_id,
+			});
+		},
 		owners: codexExecutionOwners,
 		isCurrentBinding: (session) => {
 			const bound = store.getWorkflowRunNodeForExecution(session.execution_id);
@@ -8404,7 +8416,7 @@ export async function startBridge(
 		reap: (executionId) => reapCodexDaemonForExecution(executionId),
 		revive: async (
 			session,
-			{ capabilities, onRecoveryOwnershipEstablished },
+			{ capabilities, onRecoveryOwnershipEstablished, isRecoveryCommitted },
 		) => {
 			const runtime = codexRecoveryRuntimes.get(session.project_name);
 			if (!runtime) {
@@ -8504,7 +8516,7 @@ export async function startBridge(
 			});
 			return runtime.resume(
 				context,
-				{ onRecoveryOwnershipEstablished },
+				{ onRecoveryOwnershipEstablished, isRecoveryCommitted },
 				windowDecision.founderWindow === "open"
 					? {
 							founderWindow: "open",
@@ -8577,6 +8589,24 @@ export async function startBridge(
 			}
 		},
 		onRecoveryExhausted: async (session, attempts) => {
+			const fresh = store.getSession(session.execution_id);
+			const revision =
+				typeof attempts === "number"
+					? session.lifecycle_revision
+					: attempts.lifecycleRevision;
+			if (
+				!fresh ||
+				fresh.retry_successor ||
+				fresh.lifecycle_revision !== revision ||
+				![
+					"running",
+					"ship_parked",
+					"awaiting_review",
+					"design_done",
+					"approved_to_ship",
+				].includes(fresh.status)
+			)
+				return;
 			const runtime = codexRecoveryRuntimes.get(session.project_name);
 			if (!runtime) {
 				throw new Error(
@@ -9201,6 +9231,9 @@ export async function startBridge(
 				),
 			);
 		},
+	);
+	heartbeatService.setCodexRecoveryExhaustionHandler((executionId) =>
+		codexSessionReowner.finalizeDueExhaustion(executionId),
 	);
 	heartbeatServiceRef.current = heartbeatService;
 	livenessWiring.liveness = true;

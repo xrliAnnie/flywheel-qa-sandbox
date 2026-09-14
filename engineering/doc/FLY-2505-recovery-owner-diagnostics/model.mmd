@@ -1,0 +1,28 @@
+classDiagram
+  class OriginalTask {
+    原执行编号
+    原线程编号
+    当前状态版本
+  }
+  class RecoveryEpisode {
+    恢复轮次编号
+    普通失败额度
+    准备失败次数
+    固定重试截止时间
+    最后失败证据
+  }
+  class Reservation {
+    单调启动编号
+    临时持有锁
+    本轮是否已结算
+  }
+  class FailureEvidence {
+    稳定错误类别
+    发生步骤
+    可读说明
+    进程清理证明
+    扣数或退回决定
+  }
+  OriginalTask "1" --> "多轮" RecoveryEpisode : 保持原身份
+  RecoveryEpisode "1" --> "多次" Reservation : 编号不复用
+  Reservation "1" --> "0或1" FailureEvidence : 原子保存与结算

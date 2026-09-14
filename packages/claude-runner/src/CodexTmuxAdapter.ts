@@ -58,7 +58,13 @@ import type {
 	IAdapter,
 	IHookCallbackServer,
 } from "flywheel-core";
-import { sanitizeTmuxName } from "flywheel-core";
+import {
+	CodexRecoveryError,
+	createCodexRecoveryFailure,
+	normalizeCodexRecoveryFailure,
+	sanitizeTmuxName,
+	withRecoveryCleanup,
+} from "flywheel-core";
 import {
 	buildDaemonSandboxWritableRoots,
 	buildGoalKickText,
@@ -227,6 +233,7 @@ export interface CodexLaunchSnapshot {
 }
 
 export interface CodexRecoveryCommitHooks {
+	isRecoveryCommitted?(): boolean;
 	onRecoveryOwnershipEstablished: NonNullable<
 		RunGoalInput["onRecoveryOwnershipEstablished"]
 	>;
@@ -734,20 +741,32 @@ export class CodexTmuxAdapter implements IAdapter {
 		try {
 			snapshot = readCodexLaunchSnapshot(ctx.executionId);
 		} catch (error) {
+			let diagnostic = normalizeCodexRecoveryFailure(error, {
+				stage: "context",
+			});
 			if (ctx.codexAgentHome?.createdLease) {
 				try {
 					await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
-				} catch (releaseError) {
+				} catch {
+					diagnostic = withRecoveryCleanup(diagnostic, "unconfirmed");
 					console.warn(
-						`[CodexTmuxAdapter] keyed_home_retire_failed exec=${ctx.executionId}: ${safeErr(releaseError)}`,
+						`[CodexTmuxAdapter] keyed_home_retire_failed exec=${ctx.executionId}: cleanup_unconfirmed`,
 					);
 				}
 			}
-			return this.ownershipFailureResult(ctx, safeErr(error));
+			return this.ownershipFailureResult(ctx, diagnostic);
 		}
+		let ownershipCommitted = false;
 		return this.runWithOwnership(ctx, "rescue", {
 			snapshot,
-			hooks,
+			hooks: {
+				isRecoveryCommitted: () =>
+					hooks.isRecoveryCommitted?.() ?? ownershipCommitted,
+				onRecoveryOwnershipEstablished: async (receipt) => {
+					await hooks.onRecoveryOwnershipEstablished(receipt);
+					ownershipCommitted = true;
+				},
+			},
 			founderWindow: options?.founderWindow ?? "open",
 			...(options?.founderWindow === "open" && options.windowName
 				? { windowName: options.windowName }
@@ -762,19 +781,21 @@ export class CodexTmuxAdapter implements IAdapter {
 	): Promise<AdapterExecutionResult> {
 		const lease = this.executionOwners?.claim(ctx.executionId, kind);
 		if (this.executionOwners && !lease) {
+			let diagnostic = createCodexRecoveryFailure({
+				code: "owner_admission_failed",
+				stage: "owner_admission",
+			});
 			if (ctx.codexAgentHome?.createdLease) {
 				try {
 					await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
-				} catch (error) {
+				} catch {
+					diagnostic = withRecoveryCleanup(diagnostic, "unconfirmed");
 					console.warn(
-						`[CodexTmuxAdapter] keyed_home_retire_failed exec=${ctx.executionId}: ${safeErr(error)}`,
+						`[CodexTmuxAdapter] keyed_home_retire_failed exec=${ctx.executionId}: cleanup_unconfirmed`,
 					);
 				}
 			}
-			return this.ownershipFailureResult(
-				ctx,
-				`execution ${ctx.executionId} already has a process-local owner`,
-			);
+			return this.ownershipFailureResult(ctx, diagnostic);
 		}
 		let retired = false;
 		let retirement: Promise<void> | undefined;
@@ -790,22 +811,39 @@ export class CodexTmuxAdapter implements IAdapter {
 				});
 			return retirement;
 		};
+		let result: AdapterExecutionResult | undefined;
 		try {
-			return await this.executeOwned(ctx, recovery, retireOnce);
+			result = await this.executeOwned(ctx, recovery, retireOnce);
+		} catch (error) {
+			// Dispatch callers retain their existing preflight throw contract.
+			if (!recovery) throw error;
+			result = this.ownershipFailureResult(ctx, error, "preflight");
 		} finally {
 			lease?.release();
-			if (!ctx.codexAgentHome) {
+			try {
 				await retireOnce();
-			} else {
-				try {
-					await retireOnce();
-				} catch (error) {
-					console.warn(
-						`[CodexTmuxAdapter] keyed_home_retire_failed exec=${ctx.executionId}: ${safeErr(error)}`,
-					);
+			} catch {
+				if (result) {
+					const primary = result.success
+						? createCodexRecoveryFailure({
+								code: "cleanup_unconfirmed",
+								stage: "teardown",
+							})
+						: normalizeCodexRecoveryFailure(result.recoveryFailure, {
+								failureReason: result.failure?.failureReason,
+								resultText: result.resultText,
+							});
+					result.recoveryFailure = withRecoveryCleanup(primary, "unconfirmed");
+					if (recovery && !recovery.hooks.isRecoveryCommitted?.())
+						result.resultText = result.recoveryFailure.summary;
+					result.success = false;
 				}
+				console.warn(
+					`[CodexTmuxAdapter] keyed_home_retire_failed exec=${ctx.executionId}: cleanup_unconfirmed`,
+				);
 			}
 		}
+		return result;
 	}
 
 	private agentHomeHandle(ctx: AdapterExecutionContext): CodexAgentHomeHandle {
@@ -845,15 +883,21 @@ export class CodexTmuxAdapter implements IAdapter {
 
 	private ownershipFailureResult(
 		ctx: AdapterExecutionContext,
-		reason: string,
+		reason: unknown,
+		stage: "context" | "preflight" | "owner_admission" = "owner_admission",
 	): AdapterExecutionResult {
-		this.log(`[CodexTmuxAdapter] recovery refused: ${reason}`);
+		const diagnostic = normalizeCodexRecoveryFailure(reason, {
+			stage,
+			failureReason: typeof reason === "string" ? reason : undefined,
+		});
+		this.log(`[CodexTmuxAdapter] recovery refused: ${diagnostic.summary}`);
 		return {
 			success: false,
 			sessionId: ctx.executionId,
 			durationMs: 0,
 			timedOut: false,
-			resultText: reason,
+			resultText: diagnostic.summary,
+			recoveryFailure: diagnostic,
 		};
 	}
 
@@ -1050,23 +1094,36 @@ export class CodexTmuxAdapter implements IAdapter {
 			if (recovery) {
 				const snapshot = recovery.snapshot;
 				const expectedContext = snapshot.launchContext;
-				if (
-					snapshot.cwd !== sandboxCwd ||
-					expectedContext.model !== (ctx.model ?? null) ||
-					expectedContext.effort !== (ctx.effort ?? null) ||
-					expectedContext.skillFrameworkMode !==
-						(ctx.skillFrameworkMode ?? null) ||
-					expectedContext.phaseRole !== (ctx.phaseKeepAlive?.role ?? null) ||
-					(expectedContext.loopTargetNodeId !== undefined &&
+				const checks = {
+					cwd: snapshot.cwd !== sandboxCwd,
+					model: expectedContext.model !== (ctx.model ?? null),
+					effort: expectedContext.effort !== (ctx.effort ?? null),
+					skillFrameworkMode:
+						expectedContext.skillFrameworkMode !==
+						(ctx.skillFrameworkMode ?? null),
+					phaseRole:
+						expectedContext.phaseRole !== (ctx.phaseKeepAlive?.role ?? null),
+					loopTargetNodeId:
+						expectedContext.loopTargetNodeId !== undefined &&
 						expectedContext.loopTargetNodeId !==
-							(ctx.residentLoopTarget?.nodeId ?? null)) ||
-					expectedContext.capabilityDigest !==
-						capabilityDigest(ctx, { phaseRole: expectedContext.phaseRole }) ||
-					JSON.stringify(expectedContext.sandboxWritableRoots) !==
-						JSON.stringify(writableRoots)
-				) {
-					throw new Error(
-						`immutable launch snapshot does not match rehydrated context for ${ctx.executionId}`,
+							(ctx.residentLoopTarget?.nodeId ?? null),
+					capabilityDigest:
+						expectedContext.capabilityDigest !==
+						capabilityDigest(ctx, { phaseRole: expectedContext.phaseRole }),
+					sandboxWritableRoots:
+						JSON.stringify(expectedContext.sandboxWritableRoots) !==
+						JSON.stringify(writableRoots),
+				};
+				const mismatchFields = (
+					Object.keys(checks) as Array<keyof typeof checks>
+				).filter((key) => checks[key]);
+				if (mismatchFields.length) {
+					throw new CodexRecoveryError(
+						createCodexRecoveryFailure({
+							code: "launch_snapshot_mismatch",
+							stage: "context",
+							mismatchFields,
+						}),
 					);
 				}
 				objective = snapshot.objective;
@@ -1894,7 +1951,11 @@ export class CodexTmuxAdapter implements IAdapter {
 						// non-fatal (legacy behavior)
 					}
 				}
-				await retireOnce();
+				try {
+					await retireOnce();
+				} catch (error) {
+					teardownError ??= error;
+				}
 				if (windowName) {
 					try {
 						this.killWindow(
@@ -1951,6 +2012,23 @@ export class CodexTmuxAdapter implements IAdapter {
 			};
 		}
 		if (!success) {
+			let diagnostic = normalizeCodexRecoveryFailure(caughtError, {
+				failureReason: result.failure?.failureReason ?? cls.failureReason,
+				resultText: cls.resultText,
+			});
+			if (teardownError) {
+				diagnostic =
+					caughtError || !cls.success
+						? withRecoveryCleanup(diagnostic, "unconfirmed")
+						: createCodexRecoveryFailure({
+								code: "cleanup_unconfirmed",
+								stage: "teardown",
+								cleanup: "unconfirmed",
+							});
+			}
+			result.recoveryFailure = diagnostic;
+			if (recovery && !recovery.hooks.isRecoveryCommitted?.())
+				result.resultText = diagnostic.summary;
 			const reason =
 				cls.failureReason ??
 				(teardownError

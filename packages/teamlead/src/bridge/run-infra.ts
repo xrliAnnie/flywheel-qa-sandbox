@@ -1,3 +1,4 @@
+import { normalizeCodexRecoveryFailure } from "flywheel-core";
 /**
  * FLY-22/FLY-50: Run infrastructure setup — creates per-project Blueprint + RunDispatcher.
  *
@@ -77,6 +78,7 @@ import { DirectEventSink } from "../DirectEventSink.js";
 import { isWakeTerminalStatus } from "../operational-terminal-status.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import {
+	type CodexRecoveryExhaustion,
 	isStateStoreIrreversibleTerminalForZombie,
 	type Session,
 	type StateStore,
@@ -207,7 +209,10 @@ export interface CodexRecoveryRuntime {
 		hooks: CodexRecoveryCommitHooks,
 		options?: CodexRecoveryOptions,
 	): Promise<AdapterExecutionResult>;
-	failExhausted(session: Session, attempts: number): Promise<void>;
+	failExhausted(
+		session: Session,
+		attempts: number | CodexRecoveryExhaustion,
+	): Promise<void>;
 }
 
 type CodexRecoveryRuntimeInput = {
@@ -228,7 +233,10 @@ export function createCodexRecoveryRuntime(
 				options,
 			}),
 		failExhausted: async (session, attempts) => {
-			const reason = `Codex recovery exhausted after ${attempts} attempts`;
+			const reason =
+				typeof attempts === "number"
+					? `Codex recovery exhausted after ${attempts} attempts`
+					: `${attempts.reason}; charged=${attempts.chargedAttempts}, readiness=${attempts.readinessFailures}; ${attempts.lastFailure.code}/${attempts.lastFailure.stage}: ${attempts.lastFailure.summary}; event=${attempts.lastFailureEventId}`;
 			await input.sink.emitFailed(
 				{
 					executionId: session.execution_id,
@@ -252,7 +260,13 @@ export function createCodexRecoveryRuntime(
 				},
 				reason,
 				undefined,
-				{ failureKind: "reown_exhausted", failureReason: reason },
+				{
+					failureKind: "reown_exhausted",
+					failureReason: reason,
+					...(typeof attempts === "number"
+						? {}
+						: { failureCode: attempts.reason }),
+				},
 			);
 		},
 	};
@@ -273,17 +287,29 @@ export async function runCodexRecoveryOwner(input: {
 	let committed = false;
 	const recoveredSessionRole =
 		input.context.sessionRole ?? input.context.phaseKeepAlive?.role;
-	const result = await input.adapter.resumeExistingExecution(
-		input.context,
-		{
-			onRecoveryOwnershipEstablished: async (receipt) => {
-				await input.hooks.onRecoveryOwnershipEstablished(receipt);
-				committed = true;
+	let result: AdapterExecutionResult;
+	try {
+		result = await input.adapter.resumeExistingExecution(
+			input.context,
+			{
+				isRecoveryCommitted: input.hooks.isRecoveryCommitted,
+				onRecoveryOwnershipEstablished: async (receipt) => {
+					await input.hooks.onRecoveryOwnershipEstablished(receipt);
+					committed = true;
+				},
 			},
-		},
-		input.options,
-	);
-	if (!committed) return result;
+			input.options,
+		);
+	} catch (error) {
+		const recoveryFailure = normalizeCodexRecoveryFailure(error);
+		result = {
+			success: false,
+			sessionId: input.context.executionId,
+			recoveryFailure,
+			resultText: recoveryFailure.summary,
+		};
+	}
+	if (!(input.hooks.isRecoveryCommitted?.() ?? committed)) return result;
 	const env = {
 		executionId: input.context.executionId,
 		issueId: input.context.issueId,

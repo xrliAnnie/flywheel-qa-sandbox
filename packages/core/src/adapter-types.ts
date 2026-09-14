@@ -1,3 +1,4 @@
+import type { CodexRecoveryFailureV1 } from "./codex-recovery-failure.js";
 /**
  * Unified Adapter Protocol — GEO-157
  *
@@ -532,6 +533,8 @@ export interface AdapterExecutionResult {
 	resultText?: string;
 	/** Typed terminal cause for failures whose semantics must not be flattened. */
 	failure?: TerminalFailureInfo;
+	/** Structured precommit recovery diagnostic; independent of terminal failure classification. */
+	recoveryFailure?: CodexRecoveryFailureV1;
 
 	// -- Session persistence --
 

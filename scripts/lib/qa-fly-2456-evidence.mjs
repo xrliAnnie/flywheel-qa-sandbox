@@ -13,6 +13,23 @@ const require = createRequire(
 );
 const Database = require("better-sqlite3");
 const quote = (s) => `"${s.replaceAll('"', '""')}"`;
+// Optional additive accounting columns; never project tokens or raw diagnostics.
+export const recoveryObservationColumns = [
+	"execution_id",
+	"episode_id",
+	"episode_attempts",
+	"episode_state",
+	"recovery_policy_version",
+	"reservation_seq",
+	"lease_purpose",
+	"pending_reservation_until_ms",
+	"episode_lifecycle_revision",
+	"readiness_failures",
+	"first_readiness_at_ms",
+	"readiness_deadline_ms",
+	"next_retry_at_ms",
+	"exhaustion_kind",
+];
 const columnsByKind = {
 	production: {
 		sessions: [
@@ -56,7 +73,7 @@ const columnsByKind = {
 			"execution_id",
 			"payload",
 		],
-		recovery_claim: ["execution_id", "episode_id", "episode_attempts"],
+		recovery_claim: recoveryObservationColumns,
 	},
 };
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");

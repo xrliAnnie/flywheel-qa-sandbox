@@ -193,3 +193,75 @@ describe("FLY-2211 run-infra recovery owner", () => {
 		);
 	});
 });
+
+it("FLY-2505 commit truth survives a subsequent reconcile rejection", async () => {
+	let committed = false;
+	const sink = {
+		emitCompleted: vi.fn(),
+		emitFailed: vi.fn(async () => undefined),
+	};
+	await runCodexRecoveryOwner({
+		context,
+		sink,
+		hooks: {
+			isRecoveryCommitted: () => committed,
+			onRecoveryOwnershipEstablished: async () => {
+				committed = true;
+				throw new Error("reconcile failed");
+			},
+		},
+		adapter: {
+			resumeExistingExecution: async (_ctx, hooks) => {
+				try {
+					await hooks.onRecoveryOwnershipEstablished({
+						kind: "turn_started",
+						threadId: "thread-1",
+						turnId: "turn-1",
+					});
+				} catch {}
+				return {
+					success: false,
+					sessionId: "thread-1",
+					resultText: "reconcile failed",
+				};
+			},
+		},
+	});
+	expect(sink.emitFailed).toHaveBeenCalledTimes(1);
+	expect(sink.emitCompleted).not.toHaveBeenCalled();
+});
+
+it.each([false, true])(
+	"FLY-2505 adapter rejection uses the canonical sink only after commit=%s",
+	async (commitFirst) => {
+		const sink = {
+			emitCompleted: vi.fn(),
+			emitFailed: vi.fn(async () => undefined),
+		};
+		let committed = false;
+		const result = await runCodexRecoveryOwner({
+			context,
+			sink,
+			hooks: {
+				isRecoveryCommitted: () => committed,
+				onRecoveryOwnershipEstablished: async () => {
+					committed = true;
+				},
+			},
+			adapter: {
+				resumeExistingExecution: async (_ctx, hooks) => {
+					if (commitFirst)
+						await hooks.onRecoveryOwnershipEstablished({
+							kind: "turn_started",
+							threadId: "thread-1",
+							turnId: "turn-1",
+						});
+					throw new Error("owner failed unexpectedly");
+				},
+			},
+		});
+		expect(result.success).toBe(false);
+		expect(result.resultText?.trim()).toBeTruthy();
+		expect(sink.emitFailed).toHaveBeenCalledTimes(commitFirst ? 1 : 0);
+	},
+);

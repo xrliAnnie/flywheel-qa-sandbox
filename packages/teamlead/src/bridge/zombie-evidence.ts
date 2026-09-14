@@ -52,7 +52,10 @@ export function isZombieLastError(
  * to `unparseable` — the caller must NOT invent probe facts for those.
  */
 export function parseZombieLastError(lastError: string): ZombieEvidence {
-	const m = PARSE_RE.exec(lastError);
+	// Recovery fallback appends a persisted diagnostic; the original probe marker stays intact.
+	const marker =
+		lastError.split("; readiness_retry_exhausted:", 1)[0] ?? lastError;
+	const m = PARSE_RE.exec(marker);
 	const target = m?.[1];
 	const probedAt = m?.[3];
 	if (!m || !target || !probedAt) {

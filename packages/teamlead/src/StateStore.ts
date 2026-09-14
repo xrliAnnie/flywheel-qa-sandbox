@@ -1,3 +1,15 @@
+import {
+	type CodexRecoveryFailureV1,
+	createCodexRecoveryFailure,
+	normalizeCodexRecoveryFailure,
+	parseCodexRecoveryFailure,
+	isReadinessFailure,
+	MAX_CHARGED_ATTEMPTS,
+	MAX_READINESS_FAILURES,
+	READINESS_WINDOW_MS,
+	READINESS_RETRY_DELAY_MS,
+	RECOVERY_PRECOMMIT_OBSERVATION_MS,
+} from "flywheel-core";
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
@@ -1399,12 +1411,149 @@ export interface CodexRecoveryEpisodeRow {
 	expectedLifecycleRevision: number | null;
 }
 
+interface RecoveryPolicyRow {
+	claim_token: string | null;
+	holder: string | null;
+	acquired_at_ms: number | null;
+	expires_at_ms: number | null;
+	episode_id: string;
+	episode_state: "open" | "closed";
+	episode_attempts: number;
+	expected_lifecycle_revision: number | null;
+	recovery_policy_version: number;
+	reservation_seq: number;
+	lease_purpose: "recovery" | "mutation" | null;
+	pending_reservation_until_ms: number | null;
+	episode_lifecycle_revision: number | null;
+	readiness_failures: number;
+	first_readiness_at_ms: number | null;
+	readiness_deadline_ms: number | null;
+	next_retry_at_ms: number | null;
+	last_failure_json: string | null;
+	exhaustion_kind: "charged" | "readiness" | null;
+}
+export interface CodexRecoverySettlement {
+	eventId: string;
+	diagnosticVersion: 1;
+	episodeId: string;
+	reservationSeq: number;
+	attempt: number;
+	lifecycleRevision: number;
+	reason: string;
+	failure: CodexRecoveryFailureV1;
+	chargedAttempts: number;
+	readinessFailures: number;
+	budgetDecision: "charged" | "refunded";
+	nextRetryAtMs: number | null;
+	readinessDeadlineMs: number | null;
+	exhaustionKind: "charged" | "readiness" | null;
+	exhaustionTrigger:
+		| "charged_count"
+		| "readiness_count"
+		| "readiness_deadline"
+		| null;
+}
+export interface CodexRecoveryExhaustion {
+ episodeId:string; lifecycleRevision:number; reason:"episode_exhausted"|"readiness_retry_exhausted";
+ exhaustionTrigger:"charged_count"|"readiness_count"|"readiness_deadline";
+ chargedAttempts:number; readinessFailures:number; lastFailureEventId:string; lastFailure:CodexRecoveryFailureV1;
+}
+
+export type CodexRecoverySettlementResult =
+	| ({ ok: true } & CodexRecoverySettlement)
+	| { ok: false; reason: "claim_lost" };
+
+/** Bounded database reads use a whitelist; persisted prose never carries authority. */
+function parseRecoverySettlement(
+	value: unknown,
+): CodexRecoverySettlement | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		return undefined;
+	const p = value as CodexRecoverySettlement;
+	const failure = parseCodexRecoveryFailure(p.failure);
+	if (
+		!failure ||
+		p.diagnosticVersion !== 1 ||
+		typeof p.eventId !== "string" ||
+		p.eventId.length > 512 ||
+		typeof p.episodeId !== "string" ||
+		!p.episodeId ||
+		p.episodeId.length > 128
+	)
+		return undefined;
+	if (
+		![
+			p.reservationSeq,
+			p.attempt,
+			p.lifecycleRevision,
+			p.chargedAttempts,
+			p.readinessFailures,
+		].every((n) => Number.isSafeInteger(n) && n >= 0) ||
+		p.reservationSeq < 1 ||
+		p.attempt !== p.reservationSeq ||
+		p.chargedAttempts > MAX_CHARGED_ATTEMPTS ||
+		p.readinessFailures > MAX_READINESS_FAILURES
+	)
+		return undefined;
+	if (
+		!["charged", "refunded"].includes(p.budgetDecision) ||
+		(p.budgetDecision === "refunded" && !isReadinessFailure(failure))
+	)
+		return undefined;
+	if (
+		![null, "charged", "readiness"].includes(p.exhaustionKind) ||
+		![null, "charged_count", "readiness_count", "readiness_deadline"].includes(
+			p.exhaustionTrigger,
+		)
+	)
+		return undefined;
+	if (
+		(p.exhaustionKind === null) !== (p.exhaustionTrigger === null) ||
+		(p.exhaustionKind === "charged" &&
+			p.exhaustionTrigger !== "charged_count") ||
+		(p.exhaustionKind === "readiness" &&
+			p.exhaustionTrigger === "charged_count")
+	)
+		return undefined;
+	if (
+		[p.nextRetryAtMs, p.readinessDeadlineMs].some(
+			(n) => n !== null && (!Number.isSafeInteger(n) || n < 0),
+		)
+	)
+		return undefined;
+	if (
+		p.nextRetryAtMs !== null &&
+		(p.budgetDecision !== "refunded" ||
+			p.exhaustionKind !== null ||
+			p.readinessDeadlineMs === null ||
+			p.nextRetryAtMs > p.readinessDeadlineMs)
+	)
+		return undefined;
+	return {
+		eventId: p.eventId,
+		diagnosticVersion: 1,
+		episodeId: p.episodeId,
+		reservationSeq: p.reservationSeq,
+		attempt: p.attempt,
+		lifecycleRevision: p.lifecycleRevision,
+		reason: failure.summary,
+		failure,
+		chargedAttempts: p.chargedAttempts,
+		readinessFailures: p.readinessFailures,
+		budgetDecision: p.budgetDecision,
+		nextRetryAtMs: p.nextRetryAtMs,
+		readinessDeadlineMs: p.readinessDeadlineMs,
+		exhaustionKind: p.exhaustionKind,
+		exhaustionTrigger: p.exhaustionTrigger,
+	};
+}
 export type CodexRecoveryClaimResult =
 	| {
 			ok: true;
 			claimToken: string;
 			episodeId: string;
 			attempt: number;
+			reservationSeq: number;
 			expiresAtMs: number;
 		}
 	| {
@@ -1415,7 +1564,11 @@ export type CodexRecoveryClaimResult =
 				| "stale_revision"
 				| "superseded"
 				| "lease_held"
-				| "episode_exhausted";
+				| "episode_exhausted"
+				| "retry_not_due"
+				| "readiness_retry_exhausted";
+			retryAtMs?: number;
+			exhaustion?: CodexRecoveryExhaustion;
 			currentRevision?: number;
 			attempts?: number;
 			holder?: string;
@@ -5657,6 +5810,35 @@ export class StateStore {
 				FOREIGN KEY (execution_id) REFERENCES sessions(execution_id)
 			)
 		`);
+
+		// FLY-2505: additive only; legacy episodes keep their existing charged
+		// budget and remain policy 0 until an authoritative recovery claim.
+		for (const [column, definition] of [
+			["recovery_policy_version", "INTEGER NOT NULL DEFAULT 0"],
+			[
+				"reservation_seq",
+				"INTEGER NOT NULL DEFAULT 0 CHECK (reservation_seq >= 0)",
+			],
+			[
+				"lease_purpose",
+				"TEXT CHECK (lease_purpose IN ('recovery', 'mutation'))",
+			],
+			["pending_reservation_until_ms", "INTEGER"],
+			["episode_lifecycle_revision", "INTEGER"],
+			[
+				"readiness_failures",
+				"INTEGER NOT NULL DEFAULT 0 CHECK (readiness_failures >= 0)",
+			],
+			["first_readiness_at_ms", "INTEGER"],
+			["readiness_deadline_ms", "INTEGER"],
+			["next_retry_at_ms", "INTEGER"],
+			["last_failure_json", "TEXT"],
+			[
+				"exhaustion_kind",
+				"TEXT CHECK (exhaustion_kind IN ('charged', 'readiness'))",
+			],
+		] as const)
+			this.addColumnIfMissing("recovery_claim", column, definition);
 
 		// FLY-1257: chronology anchor for zombie-gate hygiene. Existing terminal
 		// rows intentionally remain NULL: without an observed entry timestamp the
@@ -10474,6 +10656,7 @@ export class StateStore {
 					randomUUID(),
 					expectedLifecycleRevision,
 				);
+			this.db.raw.prepare("UPDATE recovery_claim SET lease_purpose = 'mutation', pending_reservation_until_ms = NULL WHERE execution_id = ? AND claim_token = ?").run(executionId, claimToken);
 			result = { ok: true, claimToken, expiresAtMs };
 		}).immediate();
 		this.save();
@@ -10519,12 +10702,13 @@ export class StateStore {
 			}
 			const claim = this.db.raw
 				.prepare(
-					`SELECT claim_token, expires_at_ms, expected_lifecycle_revision
+					`SELECT claim_token, expires_at_ms, expected_lifecycle_revision, lease_purpose
 					   FROM recovery_claim WHERE execution_id = ?`,
 				)
 				.get(executionId) as
 				| {
 						claim_token: string | null;
+						lease_purpose: string | null;
 						expires_at_ms: number | null;
 						expected_lifecycle_revision: number | null;
 				  }
@@ -10532,6 +10716,7 @@ export class StateStore {
 			if (
 				!claim ||
 				claim.claim_token !== claimToken ||
+				(claim.lease_purpose !== null && claim.lease_purpose !== "mutation") ||
 				Number(claim.expected_lifecycle_revision) !== expectedLifecycleRevision
 			) {
 				result = { ok: false, reason: "claim_lost" };
@@ -10550,6 +10735,10 @@ export class StateStore {
 					    SET claim_token = NULL, holder = NULL,
 					        acquired_at_ms = NULL, expires_at_ms = NULL,
 					        episode_state = 'closed', episode_attempts = 0,
+					        recovery_policy_version = 0, lease_purpose = NULL,
+					        pending_reservation_until_ms = NULL, episode_lifecycle_revision = NULL,
+					        readiness_failures = 0, first_readiness_at_ms = NULL, readiness_deadline_ms = NULL,
+					        next_retry_at_ms = NULL, exhaustion_kind = NULL,
 					        expected_lifecycle_revision = NULL
 					  WHERE execution_id = ? AND claim_token = ?`,
 				)
@@ -10576,6 +10765,7 @@ export class StateStore {
 			nowMs: number;
 			ttlMs: number;
 			maxAttempts?: number;
+			alertIdentity?: WorkflowEngineAlertIdentity;
 		},
 	): CodexRecoveryClaimResult {
 		if (!input.holder.trim()) throw new Error("recovery holder is required");
@@ -10585,6 +10775,8 @@ export class StateStore {
 		if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0) {
 			throw new Error("recovery ttlMs must be a positive integer");
 		}
+		if (!Number.isSafeInteger(input.nowMs + input.ttlMs))
+			throw new Error("invalid recovery authority deadline");
 		const maxAttempts = input.maxAttempts ?? 2;
 		if (!Number.isSafeInteger(maxAttempts) || maxAttempts <= 0) {
 			throw new Error("recovery maxAttempts must be a positive integer");
@@ -10594,101 +10786,192 @@ export class StateStore {
 			ok: false,
 			reason: "session_missing",
 		};
-		this.db.raw.transaction(() => {
-			const session = this.db.raw
-				.prepare(
-					`SELECT status, lifecycle_revision, retry_successor
-					   FROM sessions WHERE execution_id = ?`,
-				)
-				.get(executionId) as
-				| {
-						status: string;
-						lifecycle_revision: number;
-						retry_successor: string | null;
-				  }
-				| undefined;
-			if (!session) return;
-			const currentRevision = Number(session.lifecycle_revision ?? 0);
-			if (currentRevision !== expectedLifecycleRevision) {
-				result = {
-					ok: false,
-					reason: "stale_revision",
-					currentRevision,
-				};
-				return;
-			}
-			if (session.retry_successor) {
-				result = { ok: false, reason: "superseded" };
-				return;
-			}
-			if (
-				![
-					"running",
-					"ship_parked",
-					"awaiting_review",
-					"design_done",
-					"approved_to_ship",
-				].includes(session.status)
-			) {
-				result = { ok: false, reason: "ineligible_status" };
-				return;
-			}
-
-			const prior = this.db.raw
-				.prepare("SELECT * FROM recovery_claim WHERE execution_id = ?")
-				.get(executionId) as
-				| {
-						claim_token: string | null;
-						holder: string | null;
-						expires_at_ms: number | null;
-						episode_id: string;
-						episode_state: "open" | "closed";
-						episode_attempts: number;
-				  }
-				| undefined;
-			if (
-				prior?.claim_token &&
-				prior.expires_at_ms !== null &&
-				Number(prior.expires_at_ms) > input.nowMs
-			) {
-				result = {
-					ok: false,
-					reason: "lease_held",
-					...(prior.holder ? { holder: prior.holder } : {}),
-					expiresAtMs: Number(prior.expires_at_ms),
-				};
-				return;
-			}
-
-			const episodeId =
-				prior?.episode_state === "open" ? prior.episode_id : randomUUID();
-			const attempts =
-				prior?.episode_state === "open"
-					? Number(prior.episode_attempts)
-					: 0;
-			if (attempts >= maxAttempts) {
-				this.db.raw
+		this.db.raw
+			.transaction(() => {
+				const session = this.db.raw
 					.prepare(
-						`UPDATE recovery_claim
+						`SELECT status, lifecycle_revision, retry_successor
+					   FROM sessions WHERE execution_id = ?`,
+					)
+					.get(executionId) as
+					| {
+							status: string;
+							lifecycle_revision: number;
+							retry_successor: string | null;
+					  }
+					| undefined;
+				if (!session) return;
+				const currentRevision = Number(session.lifecycle_revision ?? 0);
+				if (currentRevision !== expectedLifecycleRevision) {
+					result = {
+						ok: false,
+						reason: "stale_revision",
+						currentRevision,
+					};
+					return;
+				}
+				if (session.retry_successor) {
+					result = { ok: false, reason: "superseded" };
+					return;
+				}
+				if (
+					![
+						"running",
+						"ship_parked",
+						"awaiting_review",
+						"design_done",
+						"approved_to_ship",
+					].includes(session.status)
+				) {
+					result = { ok: false, reason: "ineligible_status" };
+					return;
+				}
+
+				let prior = this.db.raw
+					.prepare("SELECT * FROM recovery_claim WHERE execution_id = ?")
+					.get(executionId) as RecoveryPolicyRow | undefined;
+				if (
+					prior?.claim_token &&
+					Number.isSafeInteger(prior.expires_at_ms) &&
+					Number.isSafeInteger(prior.acquired_at_ms) &&
+					prior.acquired_at_ms! <= input.nowMs &&
+					Number(prior.expires_at_ms) > input.nowMs
+				) {
+					result = {
+						ok: false,
+						reason: "lease_held",
+						...(prior.holder ? { holder: prior.holder } : {}),
+						expiresAtMs: Number(prior.expires_at_ms),
+					};
+					return;
+				}
+
+				if (
+					prior?.claim_token &&
+					prior.recovery_policy_version === 1 &&
+					prior.lease_purpose === "recovery"
+				) {
+					const settled = this.settleCodexRecoveryFailureInternal(
+						executionId,
+						prior.claim_token,
+						prior.expected_lifecycle_revision!,
+						prior.reservation_seq,
+						createCodexRecoveryFailure({
+							code: "owner_result_missing",
+							stage: "owner_admission",
+							cleanup: "unconfirmed",
+						}),
+						input.nowMs,
+						input.alertIdentity,
+						expectedLifecycleRevision,
+					);
+					if (!settled.ok) {
+						result = { ok: false, reason: "stale_revision" };
+						return;
+					}
+					prior = this.db.raw
+						.prepare("SELECT * FROM recovery_claim WHERE execution_id = ?")
+						.get(executionId) as RecoveryPolicyRow;
+				}
+
+				const corruptCooldown = Boolean(
+					prior?.episode_state === "open" &&
+						prior.recovery_policy_version === 1 &&
+						!prior.claim_token &&
+						((prior.first_readiness_at_ms === null &&
+						prior.readiness_deadline_ms === null
+							? prior.readiness_failures !== 0
+							: !Number.isSafeInteger(prior.first_readiness_at_ms) ||
+								prior.first_readiness_at_ms! < 0 ||
+								prior.first_readiness_at_ms! > input.nowMs ||
+								!Number.isSafeInteger(prior.readiness_deadline_ms) ||
+								prior.readiness_deadline_ms !==
+									prior.first_readiness_at_ms! + READINESS_WINDOW_MS) ||
+							(prior.next_retry_at_ms !== null &&
+								(!Number.isSafeInteger(prior.next_retry_at_ms) ||
+									prior.next_retry_at_ms < 0 ||
+									prior.readiness_deadline_ms === null ||
+									prior.next_retry_at_ms > prior.readiness_deadline_ms))),
+				);
+				if (
+					prior?.episode_state === "open" &&
+					prior.recovery_policy_version === 1 &&
+					!corruptCooldown
+				) {
+					if (
+						prior.exhaustion_kind !== null ||
+						(prior.readiness_deadline_ms !== null &&
+							input.nowMs >= prior.readiness_deadline_ms)
+					) {
+						const exhaustion = this.finalizeCodexRecoveryExhaustion(
+							executionId,
+							expectedLifecycleRevision,
+							input.nowMs,
+							input.alertIdentity,
+						);
+						result = {
+							ok: false,
+							reason:
+								exhaustion?.reason ??
+								(prior.exhaustion_kind === "charged"
+									? "episode_exhausted"
+									: "readiness_retry_exhausted"),
+							...(exhaustion ? { exhaustion } : {}),
+						};
+						return;
+					}
+					if (
+						prior.episode_attempts < maxAttempts &&
+						prior.next_retry_at_ms !== null &&
+						input.nowMs < prior.next_retry_at_ms
+					) {
+						result = {
+							ok: false,
+							reason: "retry_not_due",
+							retryAtMs: prior.next_retry_at_ms,
+						};
+						return;
+					}
+				}
+
+				const episodeId =
+					prior?.episode_state === "open" ? prior.episode_id : randomUUID();
+				const attempts =
+					prior?.episode_state === "open" ? Number(prior.episode_attempts) : 0;
+				if (attempts >= maxAttempts) {
+					this.db.raw
+						.prepare(
+							`UPDATE recovery_claim
 						    SET claim_token = NULL, holder = NULL,
 						        acquired_at_ms = NULL, expires_at_ms = NULL
 						  WHERE execution_id = ?`,
-					)
-					.run(executionId);
-				result = {
-					ok: false,
-					reason: "episode_exhausted",
-					attempts,
-				};
-				return;
-			}
+						)
+						.run(executionId);
+					result = {
+						ok: false,
+						reason: "episode_exhausted",
+						attempts,
+					};
+					return;
+				}
 
-			const claimToken = randomUUID();
-			const attempt = attempts + 1;
-			const expiresAtMs = input.nowMs + input.ttlMs;
-			this.db.raw
-				.prepare(
-					`INSERT INTO recovery_claim
+				const reservationSeq =
+					Math.max(
+						prior?.reservation_seq ?? 0,
+						prior?.recovery_policy_version === 0 ? attempts : 0,
+					) + 1;
+				if (
+					!Number.isSafeInteger(reservationSeq) ||
+					reservationSeq < 1 ||
+					!Number.isSafeInteger(input.nowMs + RECOVERY_PRECOMMIT_OBSERVATION_MS)
+				)
+					throw new Error("invalid recovery reservation");
+				const claimToken = randomUUID();
+				const attempt = attempts + 1;
+				const expiresAtMs = input.nowMs + input.ttlMs;
+				this.db.raw
+					.prepare(
+						`INSERT INTO recovery_claim
 					   (execution_id, claim_token, holder, acquired_at_ms, expires_at_ms,
 					    episode_id, episode_state, episode_attempts,
 					    expected_lifecycle_revision)
@@ -10702,21 +10985,597 @@ export class StateStore {
 					   episode_state = 'open',
 					   episode_attempts = excluded.episode_attempts,
 					   expected_lifecycle_revision = excluded.expected_lifecycle_revision`,
-				)
-				.run(
-					executionId,
+					)
+					.run(
+						executionId,
+						claimToken,
+						input.holder,
+						input.nowMs,
+						expiresAtMs,
+						episodeId,
+						attempt,
+						expectedLifecycleRevision,
+					);
+				this.db.raw
+					.prepare(
+						`UPDATE recovery_claim SET recovery_policy_version = 1, reservation_seq = ?, lease_purpose = 'recovery', pending_reservation_until_ms = ?, episode_lifecycle_revision = ?, next_retry_at_ms = NULL WHERE execution_id = ?`,
+					)
+					.run(
+						reservationSeq,
+						input.nowMs + RECOVERY_PRECOMMIT_OBSERVATION_MS,
+						expectedLifecycleRevision,
+						executionId,
+					);
+				if (corruptCooldown) {
+					const settled = this.settleCodexRecoveryFailure(
+						executionId,
+						claimToken,
+						expectedLifecycleRevision,
+						reservationSeq,
+						createCodexRecoveryFailure({
+							code: "owner_failed_unknown",
+							stage: "unknown",
+							cleanup: "not_started",
+						}),
+						input.nowMs,
+						input.alertIdentity,
+					);
+					if (!settled.ok)
+						throw new Error(
+							"corrupt recovery clock settlement lost reservation",
+						);
+					const exhaustion = this.finalizeCodexRecoveryExhaustion(
+						executionId,
+						expectedLifecycleRevision,
+						input.nowMs,
+						input.alertIdentity,
+					);
+					result = exhaustion
+						? { ok: false, reason: exhaustion.reason, exhaustion }
+						: { ok: false, reason: "retry_not_due", retryAtMs: input.nowMs };
+					return;
+				}
+				result = {
+					ok: true,
 					claimToken,
-					input.holder,
-					input.nowMs,
-					expiresAtMs,
 					episodeId,
 					attempt,
-					expectedLifecycleRevision,
-				);
-			result = { ok: true, claimToken, episodeId, attempt, expiresAtMs };
-		}).immediate();
+					expiresAtMs,
+					reservationSeq,
+				};
+			})
+			.immediate();
 		this.save();
 		return result;
+	}
+
+	/** Settle only the still-current reservation, even after its mutation lease expires. */
+	settleCodexRecoveryFailure(
+		executionId: string,
+		claimToken: string,
+		expectedRevision: number,
+		reservationSeq: number,
+		failureInput: unknown,
+		nowMs: number,
+		alertIdentity?: WorkflowEngineAlertIdentity,
+	): CodexRecoverySettlementResult {
+		return this.settleCodexRecoveryFailureInternal(
+			executionId,
+			claimToken,
+			expectedRevision,
+			reservationSeq,
+			failureInput,
+			nowMs,
+			alertIdentity,
+		);
+	}
+
+	// Only claim admission may charge an abandoned reservation across a revision
+	// change. Owner callbacks must still match the current session revision.
+	private settleCodexRecoveryFailureInternal(
+		executionId: string,
+		claimToken: string,
+		expectedRevision: number,
+		reservationSeq: number,
+		failureInput: unknown,
+		nowMs: number,
+		alertIdentity?: WorkflowEngineAlertIdentity,
+		takeoverRevision?: number,
+	): CodexRecoverySettlementResult {
+		if (
+			!Number.isSafeInteger(nowMs) ||
+			nowMs < 0 ||
+			!Number.isSafeInteger(reservationSeq) ||
+			reservationSeq < 1
+		)
+			throw new Error("invalid recovery settlement coordinates");
+		let result: CodexRecoverySettlementResult = {
+			ok: false,
+			reason: "claim_lost",
+		};
+		this.db.raw
+			.transaction(() => {
+				const row = this.db.raw
+					.prepare("SELECT * FROM recovery_claim WHERE execution_id = ?")
+					.get(executionId) as RecoveryPolicyRow | undefined;
+				if (!row) return;
+				const eventId = `reown_revive_failed:v1:${executionId}:${row.episode_id}:${reservationSeq}`;
+				const existing = this.db.raw
+					.prepare(
+						"SELECT payload FROM session_events WHERE event_id = ? AND execution_id = ?",
+					)
+					.get(eventId, executionId) as { payload: string } | undefined;
+				if (existing) {
+					if (existing.payload.length > 8192) return;
+					try {
+						const raw: unknown = JSON.parse(existing.payload);
+						const payload = parseRecoverySettlement(raw);
+						if (
+							!payload ||
+							payload.eventId !== eventId ||
+							payload.episodeId !== row.episode_id ||
+							payload.reservationSeq !== reservationSeq ||
+							payload.lifecycleRevision !== expectedRevision
+						)
+							return;
+						const digest = (raw as Record<string, unknown>)
+							.settlementClaimDigest;
+						if (
+							digest === createHash("sha256").update(claimToken).digest("hex")
+						)
+							result = { ok: true, ...payload };
+					} catch {
+						/* malformed receipts cannot settle or refund */
+					}
+					return;
+				}
+				const session = this.db.raw
+					.prepare(
+						"SELECT status, lifecycle_revision, retry_successor, issue_id, project_name FROM sessions WHERE execution_id = ?",
+					)
+					.get(executionId) as
+					| {
+							status: string;
+							lifecycle_revision: number;
+							retry_successor: string | null;
+							issue_id: string;
+							project_name: string;
+					  }
+					| undefined;
+				if (
+					!session ||
+					session.retry_successor ||
+					session.lifecycle_revision !== (takeoverRevision ?? expectedRevision) ||
+					![
+						"running",
+						"ship_parked",
+						"awaiting_review",
+						"design_done",
+						"approved_to_ship",
+					].includes(session.status)
+				)
+					return;
+				if (
+					row.recovery_policy_version !== 1 ||
+					row.episode_state !== "open" ||
+					row.lease_purpose !== "recovery" ||
+					row.claim_token !== claimToken ||
+					row.reservation_seq !== reservationSeq ||
+					row.expected_lifecycle_revision !== expectedRevision ||
+					row.episode_lifecycle_revision !== expectedRevision
+				)
+					return;
+				if (
+					!Number.isSafeInteger(row.episode_attempts) ||
+					row.episode_attempts < 1 ||
+					!Number.isSafeInteger(row.readiness_failures) ||
+					row.readiness_failures < 0
+				)
+					throw new Error("invalid recovery budget state");
+				if (
+					takeoverRevision !== undefined &&
+					(!Number.isSafeInteger(row.expires_at_ms) ||
+						row.expires_at_ms! > nowMs ||
+						parseCodexRecoveryFailure(failureInput)?.code !== "owner_result_missing")
+				) return;
+				const validWindow =
+					row.first_readiness_at_ms === null &&
+					row.readiness_deadline_ms === null
+						? row.readiness_failures === 0
+						: Number.isSafeInteger(row.first_readiness_at_ms) &&
+							row.first_readiness_at_ms! >= 0 &&
+							nowMs >= row.first_readiness_at_ms! &&
+							Number.isSafeInteger(row.readiness_deadline_ms) &&
+							row.readiness_deadline_ms ===
+								row.first_readiness_at_ms! + READINESS_WINDOW_MS;
+				const validTimes =
+					Number.isSafeInteger(row.acquired_at_ms) &&
+					row.acquired_at_ms! >= 0 &&
+					nowMs >= row.acquired_at_ms! &&
+					Number.isSafeInteger(row.expires_at_ms) &&
+					row.expires_at_ms! >= row.acquired_at_ms! &&
+					validWindow &&
+					Number.isSafeInteger(nowMs + READINESS_WINDOW_MS);
+				// Corrupt or reversed clocks cannot grant retry credit or keep a
+				// reservation held indefinitely. Preserve its charged slot and audit.
+				const failure = validTimes
+					? normalizeCodexRecoveryFailure(failureInput)
+					: createCodexRecoveryFailure({
+							code: "owner_failed_unknown",
+							stage: "unknown",
+							cleanup: "unconfirmed",
+						});
+				const refunded = validTimes && isReadinessFailure(failure);
+				const chargedAttempts = row.episode_attempts - (refunded ? 1 : 0);
+				const readinessFailures = row.readiness_failures + (refunded ? 1 : 0);
+				const firstReadinessAtMs = validTimes
+					? (row.first_readiness_at_ms ?? (refunded ? nowMs : null))
+					: null;
+				const readinessDeadlineMs = validTimes
+					? (row.readiness_deadline_ms ??
+						(refunded ? nowMs + READINESS_WINDOW_MS : null))
+					: null;
+				const exhaustionTrigger =
+					readinessFailures >= MAX_READINESS_FAILURES
+						? "readiness_count"
+						: readinessDeadlineMs !== null && nowMs >= readinessDeadlineMs
+							? "readiness_deadline"
+							: chargedAttempts >= MAX_CHARGED_ATTEMPTS
+								? "charged_count"
+								: null;
+				const exhaustionKind =
+					exhaustionTrigger === "charged_count"
+						? "charged"
+						: exhaustionTrigger
+							? "readiness"
+							: null;
+				const nextRetryAtMs =
+					refunded && !exhaustionKind
+						? Math.min(nowMs + READINESS_RETRY_DELAY_MS, readinessDeadlineMs!)
+						: null;
+				const payload: CodexRecoverySettlement = {
+					eventId,
+					diagnosticVersion: 1,
+					episodeId: row.episode_id,
+					reservationSeq,
+					attempt: reservationSeq,
+					lifecycleRevision: expectedRevision,
+					reason: failure.summary,
+					failure,
+					chargedAttempts,
+					readinessFailures,
+					budgetDecision: refunded ? "refunded" : "charged",
+					nextRetryAtMs,
+					readinessDeadlineMs,
+					exhaustionKind,
+					exhaustionTrigger,
+				};
+				this.db.raw
+					.prepare(
+						`INSERT INTO session_events (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source) VALUES (?, ?, ?, ?, 'reown_revive_failed', 'warning', ?, 'codex-recovery')`,
+					)
+					.run(
+						eventId,
+						executionId,
+						session.issue_id,
+						session.project_name,
+						JSON.stringify({
+							...payload,
+							settlementClaimDigest: createHash("sha256")
+								.update(claimToken)
+								.digest("hex"),
+						}),
+					);
+				this.db.raw
+					.prepare(
+						`UPDATE recovery_claim SET claim_token = NULL, holder = NULL, acquired_at_ms = NULL, expires_at_ms = NULL, expected_lifecycle_revision = NULL, lease_purpose = NULL, pending_reservation_until_ms = NULL, episode_attempts = ?, readiness_failures = ?, first_readiness_at_ms = ?, readiness_deadline_ms = ?, next_retry_at_ms = ?, last_failure_json = ?, exhaustion_kind = ?, episode_lifecycle_revision = ? WHERE execution_id = ?`,
+					)
+					.run(
+						chargedAttempts,
+						readinessFailures,
+						firstReadinessAtMs,
+						readinessDeadlineMs,
+						nextRetryAtMs,
+						JSON.stringify(payload),
+						exhaustionKind,
+						takeoverRevision ?? row.episode_lifecycle_revision,
+						executionId,
+					);
+				if (exhaustionKind)
+					this.finalizeCodexRecoveryExhaustion(
+						executionId,
+						takeoverRevision ?? expectedRevision,
+						nowMs,
+						alertIdentity,
+					);
+				result = { ok: true, ...payload };
+			})
+			.immediate();
+		this.save();
+		return result;
+	}
+
+	/** Alert routing only: retained bindings survive clearing a node's execution pointer. */
+	getCodexRecoveryAlertBinding(
+		executionId: string,
+	): { run_id: string; node_id: string } | undefined {
+		const rows = this.db.raw
+			.prepare(
+				`SELECT DISTINCT b.run_id, b.node_id, r.status
+				 FROM workflow_execution_binding b JOIN workflow_run r ON r.run_id = b.run_id
+				 WHERE b.execution_id = ?`,
+			)
+			.all(executionId) as Array<{ run_id: string; node_id: string; status: string }>;
+		if (rows.length === 0) return undefined;
+		const active = rows.filter((row) => row.status === "active");
+		if (active.length !== 1)
+			throw new Error("recovery_exhaustion_binding_ambiguous");
+		return { run_id: active[0]!.run_id, node_id: active[0]!.node_id };
+	}
+
+	/** Durable closeout can be retried until the existing lifecycle sink succeeds. */
+	finalizeCodexRecoveryExhaustion(
+		executionId: string,
+		expectedRevision: number,
+		nowMs: number,
+		alertIdentity?: WorkflowEngineAlertIdentity,
+	): CodexRecoveryExhaustion | undefined {
+		if (!Number.isSafeInteger(nowMs) || nowMs < 0)
+			throw new Error("invalid recovery exhaustion time");
+		let result: CodexRecoveryExhaustion | undefined;
+		this.db.raw
+			.transaction(() => {
+				const row = this.db.raw
+					.prepare("SELECT * FROM recovery_claim WHERE execution_id = ?")
+					.get(executionId) as RecoveryPolicyRow | undefined;
+				const session = this.db.raw
+					.prepare(
+						"SELECT status, lifecycle_revision, retry_successor, issue_id, project_name FROM sessions WHERE execution_id = ?",
+					)
+					.get(executionId) as
+					| {
+							status: string;
+							lifecycle_revision: number;
+							retry_successor: string | null;
+							issue_id: string;
+							project_name: string;
+					  }
+					| undefined;
+				if (
+					!row ||
+					!session ||
+					row.recovery_policy_version !== 1 ||
+					row.episode_state !== "open" ||
+					row.episode_lifecycle_revision !== expectedRevision ||
+					session.lifecycle_revision !== expectedRevision ||
+					session.retry_successor ||
+					![
+						"running",
+						"ship_parked",
+						"awaiting_review",
+						"design_done",
+						"approved_to_ship",
+					].includes(session.status)
+				)
+					return;
+				if (
+					row.claim_token &&
+					row.expires_at_ms !== null &&
+					row.expires_at_ms > nowMs
+				)
+					return;
+				let last: CodexRecoverySettlement | undefined;
+				try {
+					if (row.last_failure_json && row.last_failure_json.length <= 8192)
+						last = parseRecoverySettlement(JSON.parse(row.last_failure_json));
+				} catch {
+					return;
+				}
+				if (
+					!last ||
+					last.episodeId !== row.episode_id ||
+					last.reservationSeq !== row.reservation_seq ||
+					last.lifecycleRevision !== expectedRevision
+				)
+					return;
+				const due =
+					Number.isSafeInteger(row.first_readiness_at_ms) &&
+					Number.isSafeInteger(row.readiness_deadline_ms) &&
+					row.readiness_deadline_ms ===
+						row.first_readiness_at_ms! + READINESS_WINDOW_MS &&
+					nowMs >= row.readiness_deadline_ms!;
+				const trigger =
+					last.exhaustionTrigger ?? (due ? "readiness_deadline" : null);
+				if (!trigger) return;
+				const kind = trigger === "charged_count" ? "charged" : "readiness";
+				const exhaustion: CodexRecoveryExhaustion = {
+					episodeId: row.episode_id,
+					lifecycleRevision: expectedRevision,
+					reason:
+						kind === "charged"
+							? "episode_exhausted"
+							: "readiness_retry_exhausted",
+					exhaustionTrigger: trigger,
+					chargedAttempts: last.chargedAttempts,
+					readinessFailures: last.readinessFailures,
+					lastFailureEventId: last.eventId,
+					lastFailure: last.failure,
+				};
+				const eventId = `reown_exhausted:v1:${executionId}:${row.episode_id}`;
+				const priorEvent = this.db.raw
+					.prepare("SELECT payload FROM session_events WHERE event_id = ?")
+					.get(eventId) as { payload: string } | undefined;
+				if (!priorEvent)
+					this.db.raw
+						.prepare(
+							`INSERT INTO session_events (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source) VALUES (?, ?, ?, ?, 'reown_revive_failed', 'warning', ?, 'codex-recovery')`,
+						)
+						.run(
+							eventId,
+							executionId,
+							session.issue_id,
+							session.project_name,
+							JSON.stringify(exhaustion),
+						);
+				const binding = this.getCodexRecoveryAlertBinding(executionId);
+				if (binding) {
+					const uid = `reown-exhausted:${executionId}:${row.episode_id}`;
+					const existing = this.db.raw
+						.prepare(
+							"SELECT run_id, payload_json FROM workflow_alert_outbox WHERE escalation_uid = ?",
+						)
+						.get(uid) as { run_id: string; payload_json: string } | undefined;
+					if (existing) {
+						const stored = JSON.parse(
+							existing.payload_json,
+						) as WorkflowEngineAlertPayload;
+						if (
+							existing.run_id !== binding.run_id ||
+							stored.eventId !== uid ||
+							stored.metadata?.workflowEngine?.executionId !== executionId ||
+							stored.metadata.workflowEngine.recoveryExhaustion?.episodeId !==
+								row.episode_id
+						)
+							throw new Error(`workflow_alert_uid_conflict:${uid}`);
+					} else {
+						if (
+							!alertIdentity?.leadId.trim() ||
+							alertIdentity.projectName !== session.project_name
+						)
+							throw new Error("recovery_exhaustion_alert_identity_missing");
+						this.enqueueWorkflowEngineAlertTx({
+							escalationUid: uid,
+							runId: binding.run_id,
+							now: new Date(nowMs).toISOString(),
+							payload: {
+								leadId: alertIdentity.leadId,
+								projectName: alertIdentity.projectName,
+								eventId: uid,
+								eventType: "workflow_engine_escalation",
+								severity: "severe",
+								sessionKey: `recovery:${executionId}:${row.episode_id}`,
+								title: `${session.issue_id} recovery exhausted`,
+								body: `${exhaustion.reason}; charged=${exhaustion.chargedAttempts}, readiness=${exhaustion.readinessFailures}; ${last.failure.code}/${last.failure.stage}: ${last.failure.summary}; event=${last.eventId}`,
+								metadata: {
+									workflowEngine: {
+										runId: binding.run_id,
+										issueId: session.issue_id,
+										nodeId: binding.node_id,
+										executionId,
+										disposition: "recovery_limit_reached",
+										failureCode: exhaustion.reason,
+										reason: last.failure.summary,
+										attempts: last.chargedAttempts,
+										leadResolution: alertIdentity.leadResolution,
+										recoveryExhaustion: exhaustion,
+									},
+								},
+							},
+						});
+					}
+				}
+				this.db.raw
+					.prepare(
+						"UPDATE recovery_claim SET exhaustion_kind = ?, next_retry_at_ms = NULL WHERE execution_id = ?",
+					)
+					.run(kind, executionId);
+				result = exhaustion;
+			})
+			.immediate();
+		this.save();
+		return result;
+	}
+
+	/** Monitoring grace never grants spawn or worktree mutation authority. */
+	getCodexRecoveryDeferral(
+		executionId: string,
+		nowMs: number,
+	):
+		| false
+		| {
+				episodeId: string;
+				untilMs: number;
+				reason: "pending_reservation" | "readiness" | "expired_readiness";
+				lastFailureEventId?: string;
+				lastFailure?: CodexRecoveryFailureV1;
+		  } {
+		if (!Number.isSafeInteger(nowMs) || nowMs < 0) return false;
+		const row = this.db.raw
+			.prepare(
+				`SELECT r.* FROM recovery_claim r JOIN sessions s ON s.execution_id = r.execution_id WHERE r.execution_id = ? AND s.adapter_type = 'codex-tmux' AND s.status = 'running' AND s.retry_successor IS NULL AND r.episode_lifecycle_revision = s.lifecycle_revision`,
+			)
+			.get(executionId) as RecoveryPolicyRow | undefined;
+		if (
+			!row ||
+			row.recovery_policy_version !== 1 ||
+			row.episode_state !== "open" ||
+			row.exhaustion_kind === "charged" ||
+			!Number.isSafeInteger(row.reservation_seq) ||
+			row.reservation_seq < 1
+		)
+			return false;
+		if (
+			!row.exhaustion_kind &&
+			row.lease_purpose === "recovery" &&
+			row.claim_token &&
+			row.expected_lifecycle_revision === row.episode_lifecycle_revision &&
+			Number.isSafeInteger(row.acquired_at_ms) &&
+			row.acquired_at_ms! <= nowMs &&
+			Number.isSafeInteger(row.pending_reservation_until_ms) &&
+			row.pending_reservation_until_ms ===
+				row.acquired_at_ms! + RECOVERY_PRECOMMIT_OBSERVATION_MS &&
+			nowMs < row.pending_reservation_until_ms
+		)
+			return {
+				episodeId: row.episode_id,
+				untilMs: row.pending_reservation_until_ms,
+				reason: "pending_reservation",
+			};
+		if (
+			row.lease_purpose !== null ||
+			row.claim_token ||
+			row.readiness_failures < 1 ||
+			row.readiness_failures > MAX_READINESS_FAILURES ||
+			!Number.isSafeInteger(row.first_readiness_at_ms) ||
+			!Number.isSafeInteger(row.readiness_deadline_ms) ||
+			row.readiness_deadline_ms !==
+				row.first_readiness_at_ms! + READINESS_WINDOW_MS ||
+			nowMs < row.first_readiness_at_ms!
+		)
+			return false;
+		try {
+			if (!row.last_failure_json || row.last_failure_json.length > 8192) return false;
+			const last = parseRecoverySettlement(JSON.parse(row.last_failure_json));
+			if (
+				!last ||
+				last.budgetDecision !== "refunded" ||
+				last.episodeId !== row.episode_id ||
+				last.reservationSeq !== row.reservation_seq ||
+				!isReadinessFailure(last.failure)
+			)
+				return false;
+			if (nowMs >= row.readiness_deadline_ms!)
+				return {
+					episodeId: row.episode_id,
+					untilMs: row.readiness_deadline_ms!,
+					reason: "expired_readiness",
+					lastFailureEventId: last.eventId,
+					lastFailure: last.failure,
+				};
+		} catch {
+			return false;
+		}
+		if (
+			row.exhaustion_kind ||
+			row.readiness_failures >= MAX_READINESS_FAILURES ||
+			!Number.isSafeInteger(row.next_retry_at_ms)
+		)
+			return false;
+		return {
+			episodeId: row.episode_id,
+			untilMs: row.readiness_deadline_ms!,
+			reason: "readiness",
+		};
 	}
 
 	abortCodexRecovery(
@@ -10784,7 +11643,7 @@ export class StateStore {
 			}
 			const claim = this.db.raw
 				.prepare(
-					`SELECT claim_token, expires_at_ms, episode_id, episode_attempts,
+					`SELECT claim_token, expires_at_ms, episode_id, episode_attempts, reservation_seq, recovery_policy_version,
 					        expected_lifecycle_revision
 					   FROM recovery_claim WHERE execution_id = ?`,
 				)
@@ -10794,6 +11653,8 @@ export class StateStore {
 						expires_at_ms: number | null;
 						episode_id: string;
 						episode_attempts: number;
+						reservation_seq: number;
+						recovery_policy_version: number;
 						expected_lifecycle_revision: number | null;
 				  }
 				| undefined;
@@ -10841,7 +11702,9 @@ export class StateStore {
 				return;
 			}
 			const context = resolved;
-			const eventUid = `codex_recovery_capabilities_prepared:${executionId}:${claim.episode_id}:${claim.episode_attempts}`;
+			const eventUid = claim.recovery_policy_version === 1
+				? `codex_recovery_capabilities_prepared:v1:${executionId}:${claim.episode_id}:${claim.reservation_seq}`
+				: `codex_recovery_capabilities_prepared:${executionId}:${claim.episode_id}:${claim.episode_attempts}`;
 			if (
 				this.workflowSelectAll(
 					"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
@@ -10961,7 +11824,10 @@ export class StateStore {
 				payload: {
 					attempt: context.binding.attempt,
 					recoveryEpisodeId: claim.episode_id,
-					recoveryAttempt: claim.episode_attempts,
+					recoveryAttempt: claim.recovery_policy_version === 1 ? claim.reservation_seq : claim.episode_attempts,
+					...(claim.recovery_policy_version === 1
+						? { reservationSeq: claim.reservation_seq, chargedAttempts: claim.episode_attempts }
+						: {}),
 					hasOutputCredential: Boolean(workflowOutputCredential),
 					hasSubmissionCredential: Boolean(workflowSubmissionCredential),
 				},
@@ -11026,12 +11892,13 @@ export class StateStore {
 			}
 			const claim = this.db.raw
 				.prepare(
-					`SELECT claim_token, expires_at_ms, expected_lifecycle_revision
+					`SELECT claim_token, expires_at_ms, expected_lifecycle_revision, lease_purpose
 					   FROM recovery_claim WHERE execution_id = ?`,
 				)
 				.get(executionId) as
 				| {
 						claim_token: string | null;
+						lease_purpose: string | null;
 						expires_at_ms: number | null;
 						expected_lifecycle_revision: number | null;
 				  }
@@ -11039,6 +11906,7 @@ export class StateStore {
 			if (
 				!claim ||
 				claim.claim_token !== claimToken ||
+				(claim.lease_purpose !== null && claim.lease_purpose !== "recovery") ||
 				Number(claim.expected_lifecycle_revision) !== expectedLifecycleRevision
 			) {
 				result = { ok: false, reason: "claim_lost" };
@@ -11081,6 +11949,10 @@ export class StateStore {
 					    SET claim_token = NULL, holder = NULL,
 					        acquired_at_ms = NULL, expires_at_ms = NULL,
 					        episode_state = 'closed', episode_attempts = 0,
+					        recovery_policy_version = 0, lease_purpose = NULL,
+					        pending_reservation_until_ms = NULL, episode_lifecycle_revision = NULL,
+					        readiness_failures = 0, first_readiness_at_ms = NULL, readiness_deadline_ms = NULL,
+					        next_retry_at_ms = NULL, exhaustion_kind = NULL,
 					        expected_lifecycle_revision = NULL
 					  WHERE execution_id = ? AND claim_token = ?`,
 				)
@@ -74771,6 +75643,7 @@ export interface WorkflowEngineAlertPayload {
 				| "legacy_dead_mail_reconcile_exhausted"
 				| "delivery_operation_stalled"
 				| "observation_corrupt";
+			recoveryExhaustion?: CodexRecoveryExhaustion;
 			launchCount?: number;
 			maxBlindReplacements?: number;
 			outputExistsForAttempt?: boolean;

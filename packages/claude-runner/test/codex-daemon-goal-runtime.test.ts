@@ -636,7 +636,13 @@ describe("CodexDaemonGoalRuntime", () => {
 			},
 			runGoalFn: (async () => COMPLETE) as never,
 		});
-		await expect(rt.runGoal({ objective: "x" })).rejects.toThrow(/no socket/);
+		await expect(rt.runGoal({ objective: "x" })).rejects.toMatchObject({
+			recoveryFailure: {
+				code: "owner_admission_failed",
+				stage: "socket_connect",
+				cleanup: "confirmed_absent",
+			},
+		});
 		expect(stops).toBe(1); // daemon torn down on connect failure
 		expect(transportClosed).toBe(false); // no transport was created
 	});
@@ -668,7 +674,12 @@ describe("CodexDaemonGoalRuntime", () => {
 			},
 			runGoalFn: (async () => COMPLETE) as never,
 		});
-		await expect(rt.runGoal({ objective: "x" })).rejects.toThrow(/client boom/);
+		await expect(rt.runGoal({ objective: "x" })).rejects.toMatchObject({
+			recoveryFailure: {
+				code: "owner_failed_unknown",
+				cleanup: "confirmed_absent",
+			},
+		});
 		expect(stops).toBe(1); // daemon torn down
 		expect(transportClosed).toBe(true); // orphaned transport closed
 	});
@@ -711,9 +722,12 @@ describe("CodexDaemonGoalRuntime", () => {
 			}) as never,
 			sleep: () => Promise.resolve(), // make the exit races resolve instantly
 		});
-		await expect(rt.runGoal({ objective: "x" })).rejects.toThrow(
-			/did not exit after SIGKILL/,
-		);
+		await expect(rt.runGoal({ objective: "x" })).rejects.toMatchObject({
+			recoveryFailure: {
+				cleanup: "unconfirmed",
+				secondaryCode: "cleanup_unconfirmed",
+			},
+		});
 	});
 
 	it("HIGH: drained() re-throws when stop()'s teardown cannot confirm the daemon exited", async () => {
@@ -918,7 +932,10 @@ describe("FLY-2465 pre-auth quota fence", () => {
 		});
 		await expect(
 			new CodexDaemonGoalRuntime(h.opts).runGoal({ objective: "x" }),
-		).rejects.toThrow("codex_quota_pre_auth_rejected");
+		).rejects.toMatchObject({
+			message: "codex_quota_pre_auth_rejected",
+			recoveryFailure: { code: "owner_admission_failed", stage: "preflight" },
+		});
 		expect(h.spawns).toHaveLength(0);
 	});
 	it.each(["stale", "foreign", "identity_drift"])(
@@ -941,7 +958,9 @@ describe("FLY-2465 pre-auth quota fence", () => {
 			});
 			await expect(
 				new CodexDaemonGoalRuntime(h.opts).runGoal({ objective: "x" }),
-			).rejects.toThrow("codex_quota_pre_auth_rejected");
+			).rejects.toMatchObject({
+				recoveryFailure: { code: "owner_admission_failed", stage: "preflight" },
+			});
 			expect(h.spawns).toHaveLength(1);
 		},
 	);
@@ -1058,4 +1077,65 @@ it("FLY-2460 stop aborts admission and drains without creating a runner thread",
 	expect(signal?.aborted).toBe(true);
 	expect(h.clients[0].started).toEqual([]);
 	expect(h.stops).toBe(1);
+});
+
+describe("FLY-2505 connect readiness provenance", () => {
+	it.each(["ENOENT", "ECONNREFUSED", "EACCES", "EPERM", "ETIMEDOUT"])(
+		"classifies connect %s at its source after drain",
+		async (code) => {
+			const h = makeHarness({
+				runGoalScript: [],
+				connectTransport: async () => {
+					throw Object.assign(new Error("secret /private/socket"), { code });
+				},
+			});
+			await expect(
+				new CodexDaemonGoalRuntime(h.opts).runGoal({ objective: "test" }),
+			).rejects.toMatchObject({
+				recoveryFailure: {
+					code:
+						code === "ENOENT" || code === "ECONNREFUSED"
+							? "daemon_connect_not_ready"
+							: code === "EACCES" || code === "EPERM"
+								? "permission_denied"
+								: "owner_admission_failed",
+					stage: "socket_connect",
+					cleanup: "confirmed_absent",
+				},
+			});
+			expect(h.stops).toBe(1);
+		},
+	);
+
+	it.each(["socket_live", "child_live", "probe_throws"])(
+		"keeps connect primary when cleanup is %s",
+		async (mode) => {
+			const handle = fakeHandle(() => {});
+			if (mode === "child_live") handle.stop = () => {};
+			handle.ensureDead = async () => {
+				if (mode === "probe_throws") throw new Error("probe failed");
+				return false;
+			};
+			const h = makeHarness({
+				runGoalScript: [],
+				spawnDaemon: async () => handle,
+				sleep: async () => {},
+				exitWaitMs: 1,
+				connectTransport: async () => {
+					throw Object.assign(new Error("socket missing"), { code: "ENOENT" });
+				},
+			});
+			await expect(
+				new CodexDaemonGoalRuntime(h.opts).runGoal({ objective: "test" }),
+			).rejects.toMatchObject({
+				recoveryFailure: {
+					code: "daemon_connect_not_ready",
+					stage: "socket_connect",
+					systemCode: "ENOENT",
+					cleanup: "unconfirmed",
+					secondaryCode: "cleanup_unconfirmed",
+				},
+			});
+		},
+	);
 });

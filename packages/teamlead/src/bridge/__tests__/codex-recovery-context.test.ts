@@ -342,7 +342,13 @@ describe("FLY-2211 recovery context", () => {
 				},
 			}),
 		).toThrow(
-			/workflow capability drift for exec-1: snapshot=submission:true,founderReview:false current=submission:false,founderReview:false/,
+			expect.objectContaining({
+				recoveryFailure: expect.objectContaining({
+					code: "capability_mismatch",
+					stage: "context",
+					cleanup: "not_started",
+				}),
+			}),
 		);
 	});
 });

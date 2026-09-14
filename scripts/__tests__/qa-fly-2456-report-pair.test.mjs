@@ -430,3 +430,41 @@ test("real verdict to pair publication excludes argv and nested secrets but pres
 	assert.match(r.markdown, /"attempt":2/);
 	assert.ok(r.evidence.every((e) => /^[a-f0-9]{64}$/.test(e.sha256)));
 });
+
+test("v1 public recovery fields expose only fixed diagnostics, counters and references", async () => {
+	const { publicEvent } = await import("../lib/qa-fly-2456-report-fields.mjs");
+	const row = publicEvent({
+		event_id: "event-1",
+		parsedPayload: {
+			diagnosticVersion: 1,
+			reservationSeq: 8,
+			chargedAttempts: 0,
+			readinessFailures: 2,
+			budgetDecision: "refunded",
+			episodeId: "episode-v1",
+			exhaustionTrigger: "readiness_deadline",
+			lastFailureEventId: "failure-8",
+			lastFailure: {
+				code: "daemon_socket_not_ready",
+				stage: "daemon_spawn",
+				summary: "PRIVATE_TEXT",
+			},
+			claimToken: "PRIVATE_TOKEN",
+		},
+	});
+	assert.equal(row.reservationSeq, 8);
+	assert.equal(row.chargedAttempts, 0);
+	assert.equal(row.failureCode, "daemon_socket_not_ready");
+	assert.equal(row.failureStage, "daemon_spawn");
+	assert.equal(row.exhaustionTrigger, "readiness_deadline");
+	assert.equal(row.lastFailureEventId, "failure-8");
+	assert.equal(JSON.stringify(row).includes("PRIVATE"), false);
+	assert.equal(
+		publicEvent({
+			parsedPayload: {
+				failure: { code: "PRIVATE_SECRET", stage: "PRIVATE_PATH" },
+			},
+		}).failureCode,
+		undefined,
+	);
+});

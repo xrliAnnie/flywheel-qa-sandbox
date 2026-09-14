@@ -913,6 +913,10 @@ export class HeartbeatService implements ReconnectController {
 				// Confirm-window suppression token for THIS pass (INV-3b) — held
 				// until the declaration actually succeeds.
 				ctx.held.add(execId);
+				if (this.isCodexRecoveryProtected(execId, false)) {
+					this.zombieDeadStreak.delete(execId);
+					break;
+				}
 				// Server-up proof adjacent to THIS candidate's own probe (R2 #2):
 				// "no server running" also reads as absent, and that fleet case
 				// belongs to FLY-1082 — reset, never advance, on down/unknown.
@@ -1116,6 +1120,57 @@ export class HeartbeatService implements ReconnectController {
 	 * force-overridden) → append-first persist. Returns true when the session
 	 * was actually transitioned.
 	 */
+	private codexRecoveryExhaustionHandler?: (
+		executionId: string,
+	) => Promise<unknown>;
+
+	setCodexRecoveryExhaustionHandler(
+		handler: (executionId: string) => Promise<unknown>,
+	): void {
+		this.codexRecoveryExhaustionHandler = handler;
+	}
+
+	private async finalizeExpiredCodexRecovery(
+		executionId: string,
+	): Promise<void> {
+		const deferral = this.store.getCodexRecoveryDeferral?.(
+			executionId,
+			Date.now(),
+		);
+		if (!deferral || deferral.reason !== "expired_readiness") return;
+		try {
+			await this.codexRecoveryExhaustionHandler?.(executionId);
+		} catch {
+			console.warn(
+				`[HeartbeatService] recovery exhaustion handler failed for ${executionId}; fixed deadline grace applies`,
+			);
+		}
+	}
+
+	private isCodexRecoveryProtected(
+		executionId: string,
+		includeExpiredGrace = true,
+	): boolean {
+		const deferral = this.store.getCodexRecoveryDeferral?.(
+			executionId,
+			Date.now(),
+		);
+		return Boolean(
+			deferral &&
+				(deferral.reason !== "expired_readiness" ||
+					(includeExpiredGrace && Date.now() < deferral.untilMs + 300_000)),
+		);
+	}
+
+	private codexRecoveryFallbackReason(executionId: string): string {
+		const deferral = this.store.getCodexRecoveryDeferral?.(
+			executionId,
+			Date.now(),
+		);
+		if (!deferral || deferral.reason !== "expired_readiness") return "";
+		return `; readiness_retry_exhausted: ${deferral.lastFailure?.code ?? "unknown_precommit"}/${deferral.lastFailure?.stage ?? "unknown"}: ${deferral.lastFailure?.summary ?? "Recovery readiness deadline reached"}; lastFailureEventId=${deferral.lastFailureEventId ?? "unavailable"}`;
+	}
+
 	private async declareZombie(
 		session: Session,
 		streak: number,
@@ -1124,6 +1179,7 @@ export class HeartbeatService implements ReconnectController {
 		if (this.zombieDeclaring.has(execId)) return false;
 		this.zombieDeclaring.add(execId);
 		try {
+			await this.finalizeExpiredCodexRecovery(execId);
 			// 1) Slow read-only forensics BEFORE any mutation (INV-4/INV-9).
 			const inspection = await inspectWorktreeForUnpushedWork(
 				session.worktree_path,
@@ -1153,6 +1209,18 @@ export class HeartbeatService implements ReconnectController {
 				return false;
 			}
 
+			const current = this.store.getSession(execId);
+			if (
+				!current ||
+				current.status !== "running" ||
+				current.retry_successor ||
+				current.lifecycle_revision !== fresh.lifecycle_revision ||
+				this.isCodexRecoveryProtected(execId)
+			) {
+				this.zombieDeadStreak.delete(execId);
+				return false;
+			}
+
 			// 3) Prepare the alert (sync, read-only — R4 #1/R5 #1).
 			const target = freshLiveness.target ?? "unknown";
 			const evidence: ZombieEvidence = {
@@ -1160,8 +1228,9 @@ export class HeartbeatService implements ReconnectController {
 				liveness: { verdict: "dead", target, probedAt: freshLiveness.probedAt },
 				streak,
 			};
+			const fallbackReason = this.codexRecoveryFallbackReason(execId);
 			const prepared = this.notifier.prepareSessionZombieDetected(
-				fresh,
+				fallbackReason ? { ...fresh, last_error: fallbackReason } : fresh,
 				evidence,
 				inspection,
 			);
@@ -1171,11 +1240,9 @@ export class HeartbeatService implements ReconnectController {
 				.toISOString()
 				.replace("T", " ")
 				.replace(/\.\d+Z$/, "");
-			const lastError = formatZombieLastError(
-				target,
-				streak,
-				freshLiveness.probedAt,
-			);
+			const lastError =
+				formatZombieLastError(target, streak, freshLiveness.probedAt) +
+				fallbackReason;
 			if (this.transitionOpts) {
 				const result = applyTransition(
 					this.transitionOpts,
@@ -2053,7 +2120,7 @@ export class HeartbeatService implements ReconnectController {
 			if (!orphanIds.has(id)) this.notifiedOrphans.delete(id);
 		}
 
-		for (const session of orphans) {
+		for (let session of orphans) {
 			// FLY-720: a confirmed dead-pin the crash reaper owns this cycle is
 			// reaped there (→ terminated + teardown + archive); reapOrphans must NOT
 			// force-fail it to `failed` (a CRASH_PRESERVE state that never archives).
@@ -2070,6 +2137,19 @@ export class HeartbeatService implements ReconnectController {
 			if (zombieHeld.has(session.execution_id)) continue;
 			if (this.markerRetryPending.has(session.execution_id)) continue;
 			if (this.notifiedOrphans.has(session.execution_id)) continue;
+			if (session.adapter_type === "codex-tmux") {
+				await this.finalizeExpiredCodexRecovery(session.execution_id);
+				const fresh = this.store.getSession(session.execution_id);
+				if (!fresh || fresh.status !== "running" || fresh.retry_successor)
+					continue;
+				session = fresh;
+				if (
+					this.isMonitorSuppressed(session.execution_id) ||
+					this.markerRetryPending.has(session.execution_id)
+				)
+					continue;
+			}
+			if (this.isCodexRecoveryProtected(session.execution_id)) continue;
 
 			let minutesSince = this.orphanThresholdMinutes;
 			if (session.heartbeat_at) {
@@ -2081,6 +2161,15 @@ export class HeartbeatService implements ReconnectController {
 				);
 			}
 
+			if (
+				session.adapter_type === "codex-tmux" &&
+				minutesSince < this.orphanThresholdMinutes
+			)
+				continue;
+			const fallbackReason = this.codexRecoveryFallbackReason(
+				session.execution_id,
+			);
+			const lastError = `Orphaned: no heartbeat for ${minutesSince} minutes${fallbackReason}`;
 			try {
 				// Force-fail the orphaned session
 				const now = new Date()
@@ -2100,7 +2189,7 @@ export class HeartbeatService implements ReconnectController {
 						},
 						{
 							last_activity_at: now,
-							last_error: `Orphaned: no heartbeat for ${minutesSince} minutes`,
+							last_error: lastError,
 						},
 					);
 				} else {
@@ -2108,11 +2197,14 @@ export class HeartbeatService implements ReconnectController {
 						session.execution_id,
 						"failed",
 						now,
-						`Orphaned: no heartbeat for ${minutesSince} minutes`,
+						lastError,
 					);
 				}
 
-				await this.notifier.onSessionOrphaned(session, minutesSince);
+				await this.notifier.onSessionOrphaned(
+					fallbackReason ? { ...session, last_error: lastError } : session,
+					minutesSince,
+				);
 				this.notifiedOrphans.add(session.execution_id);
 			} catch {
 				// Notification failed — don't dedup so it's retried next cycle
@@ -2156,6 +2248,9 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			project_name: session.project_name,
 			status: "failed",
 			minutes_since_activity: minutes,
+			...(session.last_error?.includes("readiness_retry_exhausted")
+				? { notification_context: session.last_error }
+				: {}),
 			session_role: session.session_role ?? "main",
 		};
 		await this.deliverHook(session, hookPayload);
@@ -2554,7 +2649,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			issue_title: session.issue_title,
 			project_name: session.project_name,
 			status: "failed",
-			notification_context: `Runner ${label}: ${evidenceSummary}. The session was force-failed (it was still reported running). Worktree check: ${workSummary} Lead decides rescue (commit/push) — NOT auto-committed.`,
+			notification_context: `Runner ${label}: ${evidenceSummary}. The session was force-failed (it was still reported running). Worktree check: ${workSummary} Lead decides rescue (commit/push) — NOT auto-committed.${session.last_error?.includes("readiness_retry_exhausted") ? ` Recovery: ${session.last_error}` : ""}`,
 			session_role: session.session_role ?? "main",
 			unpushed_work: inspection,
 		};

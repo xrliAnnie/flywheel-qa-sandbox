@@ -14,7 +14,11 @@
 import {
 	type AdapterExecutionContext,
 	type CodexQuotaBindingV1,
+	CodexRecoveryError,
+	createCodexRecoveryFailure,
+	normalizeCodexRecoveryFailure,
 	parseCodexQuotaBindingV1,
+	withRecoveryCleanup,
 } from "flywheel-core";
 import {
 	CodexDaemonClient,
@@ -350,7 +354,15 @@ export class CodexDaemonGoalRuntime {
 				}
 			} catch {
 				// Pre-auth refusal is not a transport death and must never trigger blind restarts.
-				throw new Error("codex_quota_pre_auth_rejected");
+				const refusal = new CodexRecoveryError(
+					createCodexRecoveryFailure({
+						code: "owner_admission_failed",
+						stage: "preflight",
+					}),
+				);
+				// Keep the dispatch error identity while carrying the safe recovery category.
+				refusal.message = "codex_quota_pre_auth_rejected";
+				throw refusal;
 			}
 		}
 		if (this.stopped) throw new Error("runtime stopped before daemon spawn");
@@ -384,8 +396,21 @@ export class CodexDaemonGoalRuntime {
 		): Promise<never> => {
 			for (const c of closables) safeClose(c);
 			safeStop(handle);
-			await this.drainExit(dying);
-			throw err;
+			const primary = normalizeCodexRecoveryFailure(err, {
+				stage: "owner_admission",
+			});
+			try {
+				await this.drainExit(dying);
+			} catch {
+				throw new CodexRecoveryError(
+					withRecoveryCleanup(primary, "unconfirmed"),
+					{ cause: err },
+				);
+			}
+			throw new CodexRecoveryError(
+				withRecoveryCleanup(primary, "confirmed_absent"),
+				{ cause: err },
+			);
 		};
 
 		if (this.stopped) {
@@ -398,7 +423,30 @@ export class CodexDaemonGoalRuntime {
 			// SUN_LEN-safe path, NOT one derived from CODEX_HOME).
 			transport = await this.connectTransport({ socketPath: this.socketPath });
 		} catch (err) {
-			return failClose(err);
+			const code =
+				err && typeof err === "object" && "code" in err ? err.code : undefined;
+			const systemCode =
+				code === "ENOENT" ||
+				code === "ECONNREFUSED" ||
+				code === "EACCES" ||
+				code === "EPERM"
+					? code
+					: undefined;
+			return failClose(
+				new CodexRecoveryError(
+					createCodexRecoveryFailure({
+						code:
+							code === "ENOENT" || code === "ECONNREFUSED"
+								? "daemon_connect_not_ready"
+								: code === "EACCES" || code === "EPERM"
+									? "permission_denied"
+									: "owner_admission_failed",
+						stage: "socket_connect",
+						...(systemCode ? { systemCode } : {}),
+					}),
+					{ cause: err },
+				),
+			);
 		}
 		if (this.stopped) {
 			return failClose(
@@ -682,7 +730,19 @@ export class CodexDaemonGoalRuntime {
 					// killSession returns null there.)
 					const dead = this.killSession();
 					if (dead) {
-						await this.drainExit(dead);
+						try {
+							await this.drainExit(dead);
+						} catch {
+							throw new CodexRecoveryError(
+								withRecoveryCleanup(
+									normalizeCodexRecoveryFailure(err, {
+										stage: "owner_admission",
+									}),
+									"unconfirmed",
+								),
+								{ cause: err },
+							);
+						}
 					} else if (this.stopped) {
 						// stop() concurrently took the session — wait for ITS teardown
 						// so this run doesn't complete before the daemon is confirmed

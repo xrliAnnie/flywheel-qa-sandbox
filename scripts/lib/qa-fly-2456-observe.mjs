@@ -1,4 +1,7 @@
-import { openEvidence } from "./qa-fly-2456-evidence.mjs";
+import {
+	openEvidence,
+	recoveryObservationColumns,
+} from "./qa-fly-2456-evidence.mjs";
 
 const text = (value) =>
 	typeof value === "string" && value.length > 0 && !value.includes("\0");
@@ -188,6 +191,61 @@ function replacementProof(db, events, body) {
 	return candidates.length === 1 ? candidates[0] : undefined;
 }
 
+// Versioned receipts carry the accounting evidence; current claim state may
+// already belong to a later episode and must not repair missing history.
+function v1Exhausted(events, episodeId) {
+	const failures = events.filter(
+		(e) =>
+			e.event_type === "reown_revive_failed" &&
+			e.parsedPayload.episodeId === episodeId &&
+			e.parsedPayload.diagnosticVersion === 1,
+	);
+	if (!failures.length) return false;
+	let charged = 0,
+		readiness = 0,
+		previous = 0;
+	for (const event of failures) {
+		const p = event.parsedPayload;
+		if (!bound(p.reservationSeq) || p.reservationSeq <= previous) return false;
+		previous = p.reservationSeq;
+		if (p.budgetDecision === "charged") charged++;
+		else if (
+			p.budgetDecision === "refunded" &&
+			p.failure?.cleanup === "confirmed_absent" &&
+			["daemon_socket_not_ready", "daemon_connect_not_ready"].includes(
+				p.failure?.code,
+			)
+		)
+			readiness++;
+		else return false;
+		if (p.chargedAttempts !== charged || p.readinessFailures !== readiness)
+			return false;
+	}
+	const last = failures.at(-1);
+	return events.some((e) => {
+		const p = e.parsedPayload;
+		return (
+			e.id > last.id &&
+			e.event_type === "reown_revive_failed" &&
+			p.episodeId === episodeId &&
+			p.lastFailureEventId === last.event_id &&
+			p.chargedAttempts === charged &&
+			p.readinessFailures === readiness &&
+			p.lastFailure?.code === last.parsedPayload.failure?.code &&
+			((p.exhaustionTrigger === "charged_count" &&
+				charged === 2 &&
+				p.reason === "episode_exhausted") ||
+				(p.exhaustionTrigger === "readiness_count" &&
+					readiness === 3 &&
+					p.reason === "readiness_retry_exhausted") ||
+				(p.exhaustionTrigger === "readiness_deadline" &&
+					readiness >= 1 &&
+					readiness < 3 &&
+					p.reason === "readiness_retry_exhausted"))
+		);
+	});
+}
+
 function classify(db, body, sessionEvents, workflowEvents) {
 	const session = db
 		.prepare(
@@ -198,7 +256,13 @@ function classify(db, body, sessionEvents, workflowEvents) {
 	const claim =
 		db
 			.prepare(
-				"SELECT execution_id,episode_id,episode_attempts FROM recovery_claim WHERE execution_id=?",
+				`SELECT ${db
+					.prepare("PRAGMA table_info(recovery_claim)")
+					.all()
+					.map((c) => c.name)
+					.filter((name) => recoveryObservationColumns.includes(name))
+					.map((name) => `"${name}"`)
+					.join(",")} FROM recovery_claim WHERE execution_id=?`,
 			)
 			.get(body.executionId) ?? null;
 	const anchor = sessionEvents.find((e) => text(e.parsedPayload.episodeId));
@@ -227,7 +291,17 @@ function classify(db, body, sessionEvents, workflowEvents) {
 			(e) =>
 				e.node_id === body.nodeId &&
 				e.parsedPayload.recoveryEpisodeId === episodeId &&
-				e.parsedPayload.attempt === 2,
+				((!Object.hasOwn(e.parsedPayload, "reservationSeq") &&
+					e.parsedPayload.attempt === 2) ||
+					(bound(e.parsedPayload.reservationSeq) &&
+						e.parsedPayload.recoveryAttempt ===
+							e.parsedPayload.reservationSeq &&
+						episodeEvents.some(
+							(f) =>
+								f.parsedPayload.diagnosticVersion === 1 &&
+								f.parsedPayload.episodeId === episodeId &&
+								f.parsedPayload.reservationSeq < e.parsedPayload.reservationSeq,
+						))),
 		);
 	let classification = "other";
 	let replacement;
@@ -253,7 +327,16 @@ function classify(db, body, sessionEvents, workflowEvents) {
 		)
 	)
 		classification = "succeeded";
-	else if (episodeId) {
+	else if (
+		episodeId &&
+		episodeEvents.some((e) => e.parsedPayload.diagnosticVersion === 1)
+	) {
+		if (v1Exhausted(episodeEvents, episodeId) && session.status === "failed") {
+			classification = "failed_exhausted_no_replacement";
+			replacement = replacementProof(db, workflowEvents, body);
+			if (replacement) classification = "replaced";
+		}
+	} else if (episodeId) {
 		const failures = episodeEvents.filter(
 			(e) =>
 				e.event_type === "reown_revive_failed" &&
@@ -338,7 +421,7 @@ export function observeRound({ dbPath, bounds, bodies }) {
 			throw new Error("bounds invalid");
 		const sessionEvents = db
 			.prepare(
-				"SELECT id,event_id,ts,event_type,payload,execution_id,source FROM session_events WHERE id>? AND source='bridge.codex-session-reown' AND execution_id IN (?,?,?) ORDER BY id",
+				"SELECT id,event_id,ts,event_type,payload,execution_id,source FROM session_events WHERE id>? AND source IN ('bridge.codex-session-reown','codex-recovery') AND execution_id IN (?,?,?) ORDER BY id",
 			)
 			.all(bounds.sessionEventsMaxId, ...entries.map(([, b]) => b.executionId))
 			.map(decode);
@@ -366,7 +449,7 @@ export function observeRound({ dbPath, bounds, bodies }) {
 			bodies: classified,
 			capabilityDriftEvents: db
 				.prepare(
-					"SELECT id,event_id,ts,event_type,payload,execution_id,source FROM session_events WHERE id>? AND instr(lower(payload),'capability drift')>0 ORDER BY id",
+					"SELECT id,event_id,ts,event_type,payload,execution_id,source FROM session_events WHERE id>? AND (instr(lower(payload),'capability drift')>0 OR CASE WHEN json_valid(payload) THEN json_extract(payload,'$.failure.code')='capability_mismatch' ELSE 0 END) ORDER BY id",
 				)
 				.all(bounds.sessionEventsMaxId)
 				.map(decode),

@@ -733,3 +733,179 @@ describe("M4 cohort aggregation + flush ownership", () => {
 		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(3);
 	});
 });
+
+describe("FLY-2505 bounded recovery protection", () => {
+	it.each(["pending_reservation", "readiness"])(
+		"protects %s from dead probes and direct orphan reap without refreshing heartbeat",
+		async (reason) => {
+			const candidate = sess({ adapter_type: "codex-tmux" });
+			store.getSession.mockReturnValue(candidate);
+			store.getOrphanSessions.mockReturnValue([candidate]);
+			store.getCodexRecoveryDeferral = vi.fn(() => ({
+				episodeId: "episode",
+				untilMs: Date.now() + 60000,
+				reason,
+			}));
+			mockedProbe.mockResolvedValue("absent");
+			await service.reconcileMonitorLoss();
+			await service.reconcileMonitorLoss();
+			await service.reapOrphans();
+			expect(store.forceStatus).not.toHaveBeenCalled();
+			expect(store.updateHeartbeat).not.toHaveBeenCalled();
+			expect(mockedInspect).not.toHaveBeenCalled();
+		},
+	);
+	it("rechecks recovery protection after slow zombie forensics", async () => {
+		const candidate = sess({ adapter_type: "codex-tmux" });
+		store.getSession.mockReturnValue(candidate);
+		store.getOrphanSessions.mockReturnValue([candidate]);
+		let recovering = false;
+		store.getCodexRecoveryDeferral = vi.fn(() =>
+			recovering
+				? {
+						episodeId: "episode",
+						untilMs: Date.now() + 60000,
+						reason: "pending_reservation",
+					}
+				: false,
+		);
+		mockedProbe.mockResolvedValue("absent");
+		mockedInspect.mockImplementationOnce(async () => {
+			recovering = true;
+			return { ok: false, reason: "test" } as never;
+		});
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+		expect(mockedInspect).toHaveBeenCalledTimes(1);
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+});
+
+describe("FLY-2505 readiness deadline handoff", () => {
+	function expired(deadline = Date.now() - 1000) {
+		const candidate = sess({
+			adapter_type: "codex-tmux",
+			lifecycle_revision: 0,
+		});
+		store.getSession.mockReturnValue(candidate);
+		store.getOrphanSessions.mockReturnValue([candidate]);
+		store.getCodexRecoveryDeferral = vi.fn(() => ({
+			episodeId: "episode",
+			reason: "expired_readiness",
+			untilMs: deadline,
+			lastFailureEventId: "last-failure",
+			lastFailure: {
+				code: "daemon_socket_not_ready",
+				stage: "daemon_spawn",
+				summary: "Daemon socket not ready",
+			},
+		}));
+		mockedProbe.mockResolvedValue("absent");
+		return candidate;
+	}
+	it("runs exhaustion before forensics and re-proves the pane after a successful resume", async () => {
+		const candidate = expired();
+		const handler = vi.fn(async () => {
+			store.getSession.mockReturnValue({ ...candidate, lifecycle_revision: 1 });
+			store.getCodexRecoveryDeferral.mockReturnValue(false);
+			mockedProbe.mockResolvedValue("alive");
+		});
+		service.setCodexRecoveryExhaustionHandler(handler);
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+		expect(handler).toHaveBeenCalledWith("exec-z1");
+		expect(mockedInspect.mock.invocationCallOrder[0]).toBeGreaterThan(
+			handler.mock.invocationCallOrder[0],
+		);
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+	it("re-reads heartbeat after direct orphan exhaustion await", async () => {
+		const candidate = expired();
+		service.setCodexRecoveryExhaustionHandler(async () => {
+			store.getSession.mockReturnValue({
+				...candidate,
+				heartbeat_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+			});
+			store.getCodexRecoveryDeferral.mockReturnValue(false);
+		});
+		await service.reapOrphans();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+	it("bounds missing-handler grace by the persisted deadline and retains the diagnostic on fallback", async () => {
+		expired();
+		await service.reapOrphans();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		store.getCodexRecoveryDeferral.mockReturnValue({
+			...store.getCodexRecoveryDeferral(),
+			untilMs: Date.now() - 300001,
+		});
+		await service.reapOrphans();
+		expect(store.forceStatus).toHaveBeenCalledWith(
+			"exec-z1",
+			"failed",
+			expect.any(String),
+			expect.stringContaining("readiness_retry_exhausted"),
+		);
+		expect(store.forceStatus.mock.calls[0][3]).toContain("last-failure");
+		expect(notifier.onSessionOrphaned.mock.calls[0][0].last_error).toContain(
+			"daemon_socket_not_ready",
+		);
+	});
+});
+
+it("FLY-2505 zombie fallback retains parseable probe evidence alongside the recovery diagnostic", async () => {
+	const { formatZombieLastError, parseZombieLastError } = await import(
+		"../bridge/zombie-evidence.js"
+	);
+	const marker = formatZombieLastError(
+		"runner:@42",
+		2,
+		"2026-09-11T00:00:00.000Z",
+	);
+	expect(
+		parseZombieLastError(
+			`${marker}; readiness_retry_exhausted: daemon_socket_not_ready/daemon_spawn; lastFailureEventId=event-1`,
+		),
+	).toEqual(parseZombieLastError(marker));
+});
+
+it("FLY-2505 rejects a successor installed during the final server probe", async () => {
+	const candidate = sess({ adapter_type: "codex-tmux", lifecycle_revision: 0 });
+	store.getSession.mockReturnValue(candidate);
+	store.getOrphanSessions.mockReturnValue([candidate]);
+	mockedProbe.mockResolvedValue("absent");
+	mockedServer
+		.mockResolvedValueOnce("up")
+		.mockResolvedValueOnce("up")
+		.mockImplementationOnce(async () => {
+			store.getSession.mockReturnValue({
+				...candidate,
+				retry_successor: "exec-successor",
+			});
+			return "up";
+		});
+	await service.reconcileMonitorLoss();
+	await service.reconcileMonitorLoss();
+	expect(store.forceStatus).not.toHaveBeenCalled();
+});
+
+it("FLY-2505 throwing deadline handler still re-proves liveness before fallback", async () => {
+	const candidate = sess({ adapter_type: "codex-tmux" });
+	store.getSession.mockReturnValue(candidate);
+	store.getOrphanSessions.mockReturnValue([candidate]);
+	store.getCodexRecoveryDeferral = vi.fn(() => ({
+		episodeId: "episode",
+		reason: "expired_readiness",
+		untilMs: Date.now() - 300001,
+	}));
+	mockedProbe.mockResolvedValue("absent");
+	service.setCodexRecoveryExhaustionHandler(async () => {
+		mockedProbe.mockResolvedValue("alive");
+		throw new Error("sink unavailable");
+	});
+	await service.reconcileMonitorLoss();
+	await service.reconcileMonitorLoss();
+	expect(mockedInspect).toHaveBeenCalledTimes(1);
+	expect(mockedProbe).toHaveBeenCalledTimes(3);
+	expect(store.forceStatus).not.toHaveBeenCalled();
+});

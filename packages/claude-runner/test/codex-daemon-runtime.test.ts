@@ -454,6 +454,74 @@ describe("spawnCodexDaemon", () => {
 		...extra,
 	});
 
+	it.each([
+		"confirmed",
+		"child_live",
+		"socket_live",
+		"unlink_throws",
+		"probe_throws",
+	])("FLY-2505: socket deadline cleanup proof: %s", async (mode) => {
+		const child = new FakeChild();
+		let clock = 0;
+		const release = vi.fn();
+		const p = spawnCodexDaemon({
+			...baseOpts(child),
+			socketExists: () => false,
+			socketWaitTimeoutMs: 1,
+			childExitWaitMs: 2,
+			now: () => ++clock,
+			killGroup: () => {
+				if (mode !== "child_live") child.emitExit(null, "SIGKILL");
+			},
+			isSocketLive: async () => {
+				if (mode === "probe_throws") throw new Error("probe failed");
+				return mode === "socket_live";
+			},
+			removeStaleSocket: () => {
+				if (mode === "unlink_throws") throw new Error("unlink failed");
+			},
+			acquireLock: () => ({ release }),
+		});
+		await expect(p).rejects.toMatchObject({
+			recoveryFailure: {
+				code: "daemon_socket_not_ready",
+				stage: "daemon_spawn",
+				cleanup: mode === "confirmed" ? "confirmed_absent" : "unconfirmed",
+				...(mode !== "confirmed"
+					? { secondaryCode: "cleanup_unconfirmed" }
+					: {}),
+			},
+		});
+		expect(release).toHaveBeenCalledTimes(mode === "confirmed" ? 1 : 0);
+	});
+
+	it.each(["ENOENT", "EACCES", "EPERM", "early_exit"])(
+		"FLY-2505: spawn %s never becomes readiness",
+		async (code) => {
+			const child = new FakeChild();
+			const p = spawnCodexDaemon({
+				...baseOpts(child),
+				socketExists: () => false,
+			});
+			if (code === "early_exit") child.emitExit(1);
+			else
+				child.emitError(
+					Object.assign(new Error("secret /private/credential"), { code }),
+				);
+			await expect(p).rejects.toMatchObject({
+				recoveryFailure: {
+					code:
+						code === "EACCES" || code === "EPERM"
+							? "permission_denied"
+							: "daemon_start_failed",
+					stage: "daemon_spawn",
+					cleanup: "confirmed_absent",
+					...(code !== "early_exit" ? { systemCode: code } : {}),
+				},
+			});
+		},
+	);
+
 	it("spawns the app-server with --remote-control + CODEX_HOME and resolves once the socket appears", async () => {
 		const child = new FakeChild();
 		let spawnedArgs: string[] = [];
@@ -524,7 +592,13 @@ describe("spawnCodexDaemon", () => {
 					throw new Error("socket probe must not run");
 				},
 			}),
-		).rejects.toThrow("session identity persist failed");
+		).rejects.toMatchObject({
+			message: "session identity persist failed",
+			recoveryFailure: {
+				code: "owner_failed_unknown",
+				summary: "session identity persist failed",
+			},
+		});
 		expect(groupSignals).toEqual(["SIGKILL"]);
 	});
 
@@ -641,7 +715,7 @@ describe("spawnCodexDaemon", () => {
 			socketExists: () => false,
 		});
 		child.emitExit(1, null); // dies immediately
-		await expect(p).rejects.toThrow(/exited early/);
+		await expect(p).rejects.toThrow("daemon exited early (code=1 signal=null)");
 		expect(child.killed).toContain("SIGKILL");
 	});
 
@@ -652,7 +726,7 @@ describe("spawnCodexDaemon", () => {
 			socketExists: () => false,
 		});
 		child.emitError(new Error("ENOENT codex"));
-		await expect(p).rejects.toThrow(/spawn error/);
+		await expect(p).rejects.toThrow("ENOENT codex");
 		expect(child.killed).toContain("SIGKILL");
 	});
 
@@ -668,7 +742,9 @@ describe("spawnCodexDaemon", () => {
 			},
 			socketWaitTimeoutMs: 5000,
 		});
-		await expect(p).rejects.toThrow(/did not appear/);
+		await expect(p).rejects.toThrow(
+			"codex daemon socket did not appear within 5000ms",
+		);
 		expect(child.killed).toContain("SIGKILL");
 	});
 
@@ -705,7 +781,9 @@ describe("spawnCodexDaemon", () => {
 					removed = true;
 				},
 			}),
-		).rejects.toThrow(/live codex daemon is already listening/);
+		).rejects.toMatchObject({
+			recoveryFailure: { code: "daemon_start_failed" },
+		});
 		expect(removed).toBe(false); // never unlinked the live socket
 		expect(spawned).toBe(false); // never spawned a second daemon
 	});
@@ -767,7 +845,9 @@ describe("spawnCodexDaemon", () => {
 					socketExists: () => true,
 					isSocketLive: () => Promise.resolve(true), // a live daemon owns it
 				}),
-			).rejects.toThrow(/live codex daemon is already listening/);
+			).rejects.toMatchObject({
+				recoveryFailure: { code: "daemon_start_failed" },
+			});
 		}
 		expect(killedAnything).toBe(false); // never SIGKILLed an unproven pid
 		expect(spawned).toBe(false); // never clobbered a live daemon
@@ -789,7 +869,9 @@ describe("spawnCodexDaemon", () => {
 				socketExists: () => true,
 				isSocketLive: () => Promise.resolve(true),
 			}),
-		).rejects.toThrow(/live codex daemon is already listening/);
+		).rejects.toMatchObject({
+			recoveryFailure: { code: "daemon_start_failed" },
+		});
 		expect(groupProbes).toBe(10);
 	});
 
@@ -817,7 +899,9 @@ describe("spawnCodexDaemon", () => {
 				now: clock,
 				childExitWaitMs: 50,
 			}),
-		).rejects.toThrow(/did not die after reap/);
+		).rejects.toMatchObject({
+			recoveryFailure: { code: "daemon_start_failed" },
+		});
 		expect(spawned).toBe(false); // never clobbered a still-live daemon
 	});
 
@@ -972,7 +1056,9 @@ describe("spawnCodexDaemon", () => {
 					sleep: noSleep,
 					// ensureDir NOT injected → exercises defaultEnsureSecureDir
 				}),
-			).rejects.toThrow(/symlink/);
+			).rejects.toMatchObject({
+				recoveryFailure: { code: "daemon_start_failed" },
+			});
 		} finally {
 			rmSync(base, { recursive: true, force: true });
 		}
@@ -1115,7 +1201,9 @@ describe("spawnCodexDaemon — HIGH-2: no orphaned codex app-server", () => {
 				},
 				isSocketLive: () => Promise.resolve(true),
 			}),
-		).rejects.toThrow(/live codex daemon is already listening/);
+		).rejects.toMatchObject({
+			recoveryFailure: { code: "daemon_start_failed" },
+		});
 		expect(killedAnything).toBe(false); // "not provable = don't act"
 	});
 });
@@ -1160,7 +1248,9 @@ describe("spawnCodexDaemon — Codex R9: the teardown holes", () => {
 				killGroup: () => {},
 				socketWaitTimeoutMs: 5,
 			}),
-		).rejects.toThrow(/socket never appeared|did not|timed out/i);
+		).rejects.toMatchObject({
+			recoveryFailure: { code: "daemon_socket_not_ready" },
+		});
 		expect(removed).toEqual([]); // a live daemon's socket is NOT ours to delete
 		expect(released).toBe(false); // ...and nobody else may bind this path
 	});
@@ -1209,7 +1299,9 @@ describe("spawnCodexDaemon — Codex R9: the teardown holes", () => {
 				socketExists: () => true,
 				isSocketLive: () => Promise.resolve(true),
 			}),
-		).rejects.toThrow(/live codex daemon is already listening/);
+		).rejects.toMatchObject({
+			recoveryFailure: { code: "daemon_start_failed" },
+		});
 		expect(killedAnything).toBe(false);
 	});
 

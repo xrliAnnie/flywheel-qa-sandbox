@@ -695,3 +695,202 @@ test("holder skip followed by superseded skips remains the negative control (#15
 	);
 	assert.equal(result.bodies.B3.classification, "skipped_not_holder");
 });
+
+function v1Failure(db, seq, charged, readiness, episodeId = "episode-v1") {
+	const payload = {
+		diagnosticVersion: 1,
+		episodeId,
+		reservationSeq: seq,
+		attempt: seq,
+		chargedAttempts: charged,
+		readinessFailures: readiness,
+		budgetDecision: charged ? "charged" : "refunded",
+		failure: {
+			version: 1,
+			code: charged ? "owner_result_missing" : "daemon_socket_not_ready",
+			stage: "daemon_spawn",
+			cleanup: "confirmed_absent",
+			summary: "private diagnostic",
+		},
+	};
+	const id = sessionEvent(db, "reown_revive_failed", payload);
+	db.prepare(
+		"UPDATE session_events SET source='codex-recovery' WHERE id=?",
+	).run(id);
+	return { id, eventId: `event-${id}`, payload };
+}
+function v1Exhaustion(db, last, trigger, episodeId = "episode-v1") {
+	const id = sessionEvent(db, "reown_revive_failed", {
+		episodeId,
+		exhaustionTrigger: trigger,
+		reason:
+			trigger === "charged_count"
+				? "episode_exhausted"
+				: "readiness_retry_exhausted",
+		chargedAttempts: last.payload.chargedAttempts,
+		readinessFailures: last.payload.readinessFailures,
+		lastFailureEventId: last.eventId,
+		lastFailure: last.payload.failure,
+	});
+	db.prepare(
+		"UPDATE session_events SET source='codex-recovery' WHERE id=?",
+	).run(id);
+	db.prepare(
+		"UPDATE sessions SET status='failed',last_error='structured recovery exhaustion' WHERE execution_id='exec-B1'",
+	).run();
+}
+test("v1 multiple refunded reservations then success preserves preparation identity", (t) => {
+	const dbPath = fixture(t, (db) => {
+		v1Failure(db, 7, 0, 1);
+		v1Failure(db, 8, 0, 2);
+		runEvent(db, "codex_recovery_capabilities_prepared", {
+			recoveryEpisodeId: "episode-v1",
+			recoveryAttempt: 8,
+			reservationSeq: 8,
+			chargedAttempts: 1,
+		});
+		sessionEvent(db, "reown_revive_succeeded", {
+			episodeId: "episode-v1",
+			attempt: 1,
+		});
+	});
+	const r = observeRound({ dbPath, bounds, bodies });
+	assert.equal(r.bodies.B1.classification, "succeeded");
+	assert.equal(r.bodies.B1.attempt2PreparedProof, true);
+	assert.equal(r.bodies.B1.sessionEvents.length, 3);
+});
+for (const trigger of [
+	"charged_count",
+	"readiness_count",
+	"readiness_deadline",
+]) {
+	test(`v1 ${trigger} uses actual counters and same-episode last failure`, (t) => {
+		const dbPath = fixture(t, (db) => {
+			let last;
+			const count =
+				trigger === "charged_count" ? 2 : trigger === "readiness_count" ? 3 : 1;
+			for (let n = 1; n <= count; n++)
+				last = v1Failure(
+					db,
+					n,
+					trigger === "charged_count" ? n : 0,
+					trigger === "charged_count" ? 0 : n,
+				);
+			v1Exhaustion(db, last, trigger);
+		});
+		const r = observeRound({ dbPath, bounds, bodies });
+		assert.equal(r.bodies.B1.classification, "failed_exhausted_no_replacement");
+	});
+}
+test("v1 later episode cannot repair an earlier episode missing its exhaustion", (t) => {
+	const dbPath = fixture(t, (db) => {
+		v1Failure(db, 1, 1, 0);
+		v1Failure(db, 2, 2, 0);
+		const later = v1Failure(db, 3, 1, 0, "later");
+		v1Exhaustion(db, later, "charged_count", "later");
+	});
+	assert.equal(
+		observeRound({ dbPath, bounds, bodies }).bodies.B1.classification,
+		"other",
+	);
+});
+
+test("v1 evidence projection keeps accounting fields and excludes claim credentials", async (t) => {
+	const { deriveEvidence } = await import("../lib/qa-fly-2456-evidence.mjs");
+	const dbPath = fixture(t, (db) => {
+		for (const [name, type] of [
+			["recovery_policy_version", "INTEGER"],
+			["reservation_seq", "INTEGER"],
+			["readiness_failures", "INTEGER"],
+			["last_failure_json", "TEXT"],
+		]) {
+			if (
+				!db
+					.prepare("PRAGMA table_info(recovery_claim)")
+					.all()
+					.some((c) => c.name === name)
+			)
+				db.exec(`ALTER TABLE recovery_claim ADD COLUMN ${name} ${type}`);
+		}
+		db.prepare(
+			"INSERT INTO recovery_claim(execution_id,episode_id,episode_state,episode_attempts,claim_token,recovery_policy_version,reservation_seq,readiness_failures,last_failure_json) VALUES('exec-B1','episode-v1','open',0,'PRIVATE_TOKEN',1,8,2,'PRIVATE_RAW')",
+		).run();
+	});
+	const path = dbPath + ".evidence.json";
+	deriveEvidence(dbPath, path, "observation");
+	const raw = readFileSync(path, "utf8");
+	assert.equal(raw.includes("PRIVATE_TOKEN"), false);
+	assert.equal(raw.includes("PRIVATE_RAW"), false);
+	const r = observeRound({ dbPath: path, bounds, bodies });
+	assert.equal(r.bodies.B1.claim.reservation_seq, 8);
+	assert.equal(r.bodies.B1.claim.readiness_failures, 2);
+});
+
+for (const mutation of [
+	"missing receipt",
+	"wrong reference",
+	"wrong counter",
+]) {
+	test(`v1 exhaustion refuses ${mutation}`, (t) => {
+		const dbPath = fixture(t, (db) => {
+			const first = v1Failure(db, 1, 1, 0),
+				last = v1Failure(db, 2, 2, 0);
+			v1Exhaustion(db, last, "charged_count");
+			if (mutation === "missing receipt")
+				db.prepare("DELETE FROM session_events WHERE id=?").run(first.id);
+			else {
+				const row = db
+					.prepare(
+						"SELECT id,payload FROM session_events ORDER BY id DESC LIMIT 1",
+					)
+					.get();
+				const payload = JSON.parse(row.payload);
+				if (mutation === "wrong reference")
+					payload.lastFailureEventId = "unrelated";
+				else payload.chargedAttempts = 1;
+				db.prepare("UPDATE session_events SET payload=? WHERE id=?").run(
+					JSON.stringify(payload),
+					row.id,
+				);
+			}
+		});
+		assert.equal(
+			observeRound({ dbPath, bounds, bodies }).bodies.B1.classification,
+			"other",
+		);
+	});
+}
+
+test("v1 workflow attempt 2 is not evidence of a second recovery reservation", (t) => {
+	const dbPath = fixture(t, (db) => {
+		v1Failure(db, 7, 0, 1);
+		runEvent(db, "codex_recovery_capabilities_prepared", {
+			recoveryEpisodeId: "episode-v1",
+			attempt: 2,
+			recoveryAttempt: 7,
+			reservationSeq: 7,
+			chargedAttempts: 1,
+		});
+	});
+	assert.equal(
+		observeRound({ dbPath, bounds, bodies }).bodies.B1.attempt2PreparedProof,
+		false,
+	);
+});
+test("v1 capability mismatch remains visible in the global drift guard", (t) => {
+	const dbPath = fixture(t, (db) =>
+		sessionEvent(
+			db,
+			"reown_revive_failed",
+			{
+				diagnosticVersion: 1,
+				failure: { code: "capability_mismatch", stage: "context" },
+			},
+			"unrelated",
+		),
+	);
+	assert.equal(
+		observeRound({ dbPath, bounds, bodies }).capabilityDriftEvents.length,
+		1,
+	);
+});

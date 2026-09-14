@@ -301,3 +301,5 @@ export {
 // EdgeWorker and other high-level code should use these generic names via issue-tracker exports
 
 export * from "./codex-quota.js";
+
+export * from "./codex-recovery-failure.js";

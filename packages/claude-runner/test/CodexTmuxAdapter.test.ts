@@ -24,7 +24,11 @@ import {
 	listGateMarkersForExecution,
 	writeGateMarker,
 } from "flywheel-comm/gate-marker";
-import type { AdapterExecutionContext } from "flywheel-core";
+import {
+	type AdapterExecutionContext,
+	CodexRecoveryError,
+	createCodexRecoveryFailure,
+} from "flywheel-core";
 import { parse as parseToml } from "smol-toml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -38,6 +42,7 @@ import {
 	TUI_OPEN_DEADLINE_MS,
 	TUI_OPEN_MAX_ATTEMPTS,
 } from "../src/CodexTmuxAdapter.js";
+import * as outcomeHelpers from "../src/codex-daemon-adapter-helpers.js";
 import type {
 	CodexDaemonClient,
 	CodexDaemonEvents,
@@ -2780,7 +2785,15 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			}),
 		);
 
-		expect(result).toMatchObject({ success: false });
+		expect(result).toMatchObject({
+			success: false,
+			recoveryFailure: {
+				code: "owner_admission_failed",
+				stage: "owner_admission",
+				cleanup: "unconfirmed",
+				secondaryCode: "cleanup_unconfirmed",
+			},
+		});
 		expect(console.warn).toHaveBeenCalledWith(
 			expect.stringContaining("keyed_home_retire_failed"),
 		);
@@ -2989,6 +3002,138 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			unknownFutureField: "preserve-me",
 		});
 	});
+
+	it.each(["dispatch", "postcommit", "postcommit-without-hook"])(
+		"preserves classified task output for %s failures",
+		async (lane) => {
+			const adapter = makeAdapter();
+			if (lane !== "dispatch") await adapter.execute(ctx());
+			const output =
+				"Task failed after reviewing execution 12345678-abcd-1234-abcd-123456789012";
+			const classify = outcomeHelpers.classifyGoalOutcome;
+			const spy = vi
+				.spyOn(outcomeHelpers, "classifyGoalOutcome")
+				.mockImplementation((input) => {
+					const result = classify(input);
+					return result.success ? result : { ...result, resultText: output };
+				});
+			try {
+				let committed = false;
+				runtime = new FakeRuntime(async (input) => {
+					await input.onRecoveryOwnershipEstablished?.({
+						kind: "turn_started",
+						threadId: THREAD_ID,
+						turnId: "turn-rescued",
+					});
+					throw new Error("goal failed");
+				});
+				const result =
+					lane === "dispatch"
+						? await adapter.execute(ctx())
+						: await adapter.resumeExistingExecution(ctx(), {
+								onRecoveryOwnershipEstablished: async () => {
+									committed = true;
+								},
+								...(lane === "postcommit"
+									? { isRecoveryCommitted: () => committed }
+									: {}),
+							});
+				expect(result.success).toBe(false);
+				expect(result.resultText).toBe(output);
+			} finally {
+				spy.mockRestore();
+			}
+		},
+	);
+
+	it("FLY-2505: missing snapshot returns a safe context diagnostic", async () => {
+		const result = await makeAdapter().resumeExistingExecution(ctx(), {
+			onRecoveryOwnershipEstablished: vi.fn(),
+		});
+		expect(result).toMatchObject({
+			success: false,
+			recoveryFailure: { code: "owner_failed_unknown", stage: "context" },
+		});
+		expect(result.resultText).not.toContain(dir);
+		expect(result.resultText?.trim()).toBeTruthy();
+		expect(runtime.runGoalInputs).toHaveLength(0);
+	});
+
+	it("FLY-2505: credential retirement rejection retains the primary failure and releases ownership", async () => {
+		runtime = new FakeRuntime(async () => {
+			throw new CodexRecoveryError(
+				createCodexRecoveryFailure({
+					code: "permission_denied",
+					stage: "socket_connect",
+				}),
+			);
+		});
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{
+				...makeDeps(),
+				scrubCredential: () => {
+					throw new Error("private retirement secret");
+				},
+			},
+		);
+		const result = await adapter.execute(ctx());
+		expect(result).toMatchObject({
+			success: false,
+			recoveryFailure: {
+				code: "permission_denied",
+				stage: "socket_connect",
+				cleanup: "unconfirmed",
+				secondaryCode: "cleanup_unconfirmed",
+			},
+		});
+		expect(result.resultText ?? "").not.toContain("secret");
+		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+		expect(killWindowCalls.length).toBeGreaterThan(0);
+	});
+
+	it("FLY-2505: recovery snapshot mismatches name only changed fields", async () => {
+		await makeAdapter().execute(ctx());
+		const result = await makeAdapter().resumeExistingExecution(
+			ctx({ model: "different-model" }),
+			{
+				onRecoveryOwnershipEstablished: vi.fn(async () => undefined),
+			},
+		);
+		expect(result.success).toBe(false);
+		expect(result.recoveryFailure).toMatchObject({
+			code: "launch_snapshot_mismatch",
+			stage: "context",
+			mismatchFields: ["model"],
+		});
+		expect(result.resultText).not.toContain("different-model");
+	});
+
+	it.each([new Error("owner failed"), undefined, "   "])(
+		"FLY-2505: failed owner always returns a structured nonempty diagnostic (%s)",
+		async (error) => {
+			await makeAdapter().execute(ctx());
+			runtime = new FakeRuntime(async () => {
+				throw error;
+			});
+			const result = await makeAdapter().resumeExistingExecution(ctx(), {
+				onRecoveryOwnershipEstablished: vi.fn(),
+				isRecoveryCommitted: () => false,
+			});
+			expect(result.success).toBe(false);
+			expect(result.resultText?.trim().length).toBeGreaterThan(0);
+			expect(result.recoveryFailure).toMatchObject({
+				version: 1,
+				code: "owner_failed_unknown",
+				stage: "unknown",
+			});
+		},
+	);
 
 	it("HIGH-6: an unconfirmed daemon teardown (drained rejects) fails the run", async () => {
 		runtime = new FakeRuntime(async (input) => {

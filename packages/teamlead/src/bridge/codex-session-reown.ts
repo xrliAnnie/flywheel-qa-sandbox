@@ -17,7 +17,17 @@ import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
 } from "flywheel-core";
-import type { Session, StateStore } from "../StateStore.js";
+import {
+	CodexRecoveryError,
+	createCodexRecoveryFailure,
+	normalizeCodexRecoveryFailure,
+} from "flywheel-core";
+import type {
+	CodexRecoveryExhaustion,
+	Session,
+	StateStore,
+	WorkflowEngineAlertIdentity,
+} from "../StateStore.js";
 import type {
 	RunnerTmuxWindowInventory,
 	TmuxTargetLookup,
@@ -49,6 +59,7 @@ export function acceptReownTurnReconciliation(result: {
 }
 
 export interface CodexRecoveryReceiptHook {
+	isRecoveryCommitted?(): boolean;
 	onRecoveryOwnershipEstablished(
 		receipt: RecoveryOwnershipReceipt,
 	): Promise<void>;
@@ -67,6 +78,8 @@ export interface CodexSessionReownDeps {
 		| "prepareCodexRecoveryCapabilities"
 		| "abortCodexRecovery"
 		| "commitCodexRecovery"
+		| "settleCodexRecoveryFailure"
+		| "finalizeCodexRecoveryExhaustion"
 	>;
 	owners: Pick<CodexExecutionOwnershipRegistry, "isExecutionOwned">;
 	isCurrentBinding(session: Session): boolean | Promise<boolean>;
@@ -88,7 +101,11 @@ export interface CodexSessionReownDeps {
 	): Promise<AdapterExecutionResult>;
 	reconcileTurn(session: Session, threadId?: string): Promise<void>;
 	readTurnHolder(session: Session): Promise<string | null>;
-	onRecoveryExhausted(session: Session, attempts: number): Promise<void>;
+	onRecoveryExhausted(
+		session: Session,
+		exhaustion: number | CodexRecoveryExhaustion,
+	): Promise<void>;
+	alertIdentity?(session: Session): WorkflowEngineAlertIdentity | undefined;
 	record(
 		event: CodexReownEvent,
 		session: Session,
@@ -211,8 +228,12 @@ export function buildCodexRecoveryContext(input: {
 			input.capabilities.workflowSubmissionExpected ||
 		raw.founderReviewRequired !== input.capabilities.founderReviewRequired
 	) {
-		throw new Error(
-			`workflow capability drift for ${input.session.execution_id}: snapshot=submission:${raw.workflowSubmissionExpected},founderReview:${raw.founderReviewRequired} current=submission:${input.capabilities.workflowSubmissionExpected},founderReview:${input.capabilities.founderReviewRequired}`,
+		throw new CodexRecoveryError(
+			createCodexRecoveryFailure({
+				code: "capability_mismatch",
+				stage: "context",
+				cleanup: "not_started",
+			}),
 		);
 	}
 	const launch = input.snapshot.launchContext;
@@ -416,9 +437,82 @@ export class CodexSessionReowner {
 			snapshot.map((session) => session.execution_id),
 		);
 		for (const session of snapshot) {
-			await this.inspectCandidate(session);
+			try {
+				await this.inspectCandidate(session);
+			} catch (error) {
+				const failure = this.observationFailure(error);
+				try {
+					this.record("reown_revive_failed", session, {
+						reason: failure.summary,
+						failure,
+						accounting: false,
+						phase: "candidate_inspection",
+					});
+				} catch {
+					console.warn(
+						"[codex-session-reown] candidate failure observation could not be persisted",
+					);
+				}
+				try {
+					await this.deps.alert(
+						session,
+						`Recovery candidate inspection failed: ${failure.summary}`,
+					);
+				} catch {
+					console.warn(
+						"[codex-session-reown] candidate failure alert could not be delivered",
+					);
+				}
+			}
 		}
 		return { snapshot, activeExecutionIds };
+	}
+
+	async finalizeDueExhaustion(executionId: string): Promise<boolean> {
+		const candidate = this.deps.store
+			.getReadoptCandidateSessions()
+			.find((s) => s.execution_id === executionId);
+		if (
+			!candidate ||
+			candidate.adapter_type !== "codex-tmux" ||
+			candidate.retry_successor ||
+			this.deps.isExcluded(candidate) ||
+			!(await this.deps.isCurrentBinding(candidate))
+		)
+			return false;
+		const fresh = this.deps.store
+			.getReadoptCandidateSessions()
+			.find((s) => s.execution_id === executionId);
+		if (
+			!fresh ||
+			fresh.lifecycle_revision !== candidate.lifecycle_revision ||
+			fresh.retry_successor ||
+			this.deps.isExcluded(fresh) ||
+			this.deps.owners.isExecutionOwned(executionId)
+		)
+			return false;
+		return this.finalizeSessionExhaustion(fresh);
+	}
+
+	private async finalizeSessionExhaustion(session: Session): Promise<boolean> {
+		const alertIdentity = this.deps.alertIdentity?.(session);
+		const exhaustion = this.deps.store.finalizeCodexRecoveryExhaustion(
+			session.execution_id,
+			session.lifecycle_revision ?? 0,
+			this.deps.nowMs(),
+			alertIdentity,
+		);
+		if (exhaustion) {
+			await this.deps.onRecoveryExhausted(session, exhaustion);
+			if (!alertIdentity)
+				await this.deps.alert(
+					session,
+					`${exhaustion.reason}: ${exhaustion.lastFailure.summary}`,
+				);
+			return true;
+		}
+
+		return false;
 	}
 
 	private async inspectCandidate(session: Session): Promise<void> {
@@ -439,6 +533,8 @@ export class CodexSessionReowner {
 		}
 		// Dimension zero: an in-process dispatch/rescue owner is authoritative.
 		if (this.deps.owners.isExecutionOwned(session.execution_id)) return;
+
+		if (await this.finalizeSessionExhaustion(session)) return;
 
 		let liveness: CodexDaemonLiveness;
 		let gateHeld: boolean;
@@ -557,16 +653,20 @@ export class CodexSessionReowner {
 		try {
 			await this.deps.preflightRecovery?.(session);
 		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			this.record("reown_revive_failed", session, {
-				reason: `preflight_${reason}`,
+			const failure = normalizeCodexRecoveryFailure(error, {
+				stage: "preflight",
 			});
-			await this.deps.alert(session, reason);
+			this.record("reown_revive_failed", session, {
+				reason: failure.summary,
+				failure,
+			});
+			await this.deps.alert(session, failure.summary);
 			return;
 		}
 		// Recheck immediately before the durable attempt reservation.
 		if (this.deps.owners.isExecutionOwned(session.execution_id)) return;
 		const expectedRevision = session.lifecycle_revision ?? 0;
+		const alertIdentity = this.deps.alertIdentity?.(session);
 		const claim = this.deps.store.claimCodexRecovery(
 			session.execution_id,
 			expectedRevision,
@@ -575,6 +675,7 @@ export class CodexSessionReowner {
 				nowMs: this.deps.nowMs(),
 				ttlMs: CODEX_RECOVERY_CLAIM_TTL_MS,
 				maxAttempts: 2,
+				alertIdentity,
 			},
 		);
 		if (!claim.ok) {
@@ -582,211 +683,313 @@ export class CodexSessionReowner {
 				this.record("reown_skipped_superseded", session, {
 					reason: claim.reason,
 				});
-			} else if (claim.reason === "episode_exhausted") {
-				const attempts = claim.attempts ?? 2;
-				this.record("reown_revive_failed", session, {
-					reason: claim.reason,
-					attempts,
-				});
-				await this.deps.onRecoveryExhausted(session, attempts);
-				await this.deps.alert(
+			} else if (
+				claim.reason === "episode_exhausted" ||
+				claim.reason === "readiness_retry_exhausted"
+			) {
+				if (!(await this.deps.isCurrentBinding(session))) return;
+				if (!claim.exhaustion)
+					this.record("reown_revive_failed", session, {
+						reason: claim.reason,
+						attempts: claim.attempts ?? 2,
+					});
+				await this.deps.onRecoveryExhausted(
 					session,
-					`Codex recovery episode exhausted after ${attempts} attempts`,
+					claim.exhaustion ?? claim.attempts ?? 2,
 				);
+				if (!alertIdentity)
+					await this.deps.alert(
+						session,
+						claim.exhaustion
+							? `${claim.exhaustion.reason}: ${claim.exhaustion.lastFailure.summary}`
+							: "Codex recovery episode exhausted",
+					);
 			}
 			return;
 		}
-
-		const abort = (
-			event: CodexReownEvent,
-			reason: string,
-			input: { releaseAttempt?: boolean } = {},
-		): void => {
-			this.deps.store.abortCodexRecovery(
-				session.execution_id,
-				claim.claimToken,
-				input,
-			);
-			this.record(event, session, {
-				reason,
-				episodeId: claim.episodeId,
-				attempt: claim.attempt,
-			});
-		};
-
-		// Binding and ownership can change while probe/claim I/O was in flight.
-		if (
-			this.deps.owners.isExecutionOwned(session.execution_id) ||
-			!(await this.deps.isCurrentBinding(session))
-		) {
-			abort("reown_fence_lost", "owner_or_binding_changed_after_claim", {
-				releaseAttempt: true,
-			});
-			return;
-		}
-		let observedTurnHolder: string | null;
-		try {
-			observedTurnHolder = await this.deps.readTurnHolder(session);
-		} catch (error) {
-			abort(
-				"reown_fence_lost",
-				`turn_holder_unreadable:${error instanceof Error ? error.message : String(error)}`,
-				{ releaseAttempt: true },
-			);
-			return;
-		}
-		if (observedTurnHolder !== session.execution_id) {
-			abort(
-				isParked(session)
-					? "reown_skipped_not_turn_holder"
-					: "reown_fence_lost",
-				"turn_holder_changed_before_recycle",
-				{
-					releaseAttempt: true,
-				},
-			);
-			return;
-		}
-
-		if (classification.liveness === "alive") {
-			const reaped = await this.deps.reap(session.execution_id);
-			if (reaped.outcome !== "reaped" && reaped.outcome !== "absent") {
-				abort("reown_revive_failed", `recycle_${reaped.outcome}`);
-				return;
-			}
-		}
-
-		const capabilities = this.deps.store.prepareCodexRecoveryCapabilities(
-			session.execution_id,
-			claim.claimToken,
-			expectedRevision,
-			this.deps.nowMs(),
-		);
-		if (!capabilities.ok) {
-			abort("reown_revive_failed", `capabilities_${capabilities.reason}`);
-			return;
-		}
-
-		// Last destructive/spawn boundary check required by the approved fence.
-		if (
-			this.deps.owners.isExecutionOwned(session.execution_id) ||
-			!(await this.deps.isCurrentBinding(session))
-		) {
-			abort("reown_fence_lost", "owner_or_binding_changed_before_spawn");
-			return;
-		}
-
-		this.record("reown_revive_started", session, {
-			episodeId: claim.episodeId,
-			attempt: claim.attempt,
-			...classification,
-			posture: isParked(session) ? "parked" : "running",
-		});
 
 		let committed = false;
 		let precommitSettled = false;
-		const failPrecommit = (reason: string): void => {
+		const failPrecommit = (failure: unknown): void => {
 			if (committed || precommitSettled) return;
 			precommitSettled = true;
-			this.deps.store.abortCodexRecovery(
-				session.execution_id,
-				claim.claimToken,
-			);
-			this.record("reown_revive_failed", session, {
-				reason,
-				episodeId: claim.episodeId,
-				attempt: claim.attempt,
-			});
-			void Promise.resolve(this.deps.alert(session, reason)).catch(() => {});
+			const diagnostic = normalizeCodexRecoveryFailure(failure);
+			let settled: ReturnType<
+				CodexSessionReownDeps["store"]["settleCodexRecoveryFailure"]
+			>;
+			try {
+				settled = this.deps.store.settleCodexRecoveryFailure(
+					session.execution_id,
+					claim.claimToken,
+					expectedRevision,
+					claim.reservationSeq,
+					diagnostic,
+					this.deps.nowMs(),
+					alertIdentity,
+				);
+			} catch (error) {
+				// The atomic settlement rolled back. This observation never grants credit.
+				this.record("reown_revive_failed", session, {
+					reason: diagnostic.summary,
+					failure: diagnostic,
+					settlement: "write_failed",
+					accounting: false,
+					settlementFailure: this.observationFailure(error),
+					episodeId: claim.episodeId,
+					reservationSeq: claim.reservationSeq,
+					attempt: claim.reservationSeq,
+				});
+				throw error;
+			}
+			if (!settled.ok) {
+				this.record("reown_revive_failed", session, {
+					reason: diagnostic.summary,
+					failure: diagnostic,
+					settlement: settled.reason,
+					accounting: false,
+					stale: true,
+					episodeId: claim.episodeId,
+					reservationSeq: claim.reservationSeq,
+					attempt: claim.reservationSeq,
+				});
+			}
 		};
 
-		let terminal: Promise<AdapterExecutionResult>;
 		try {
-			terminal = this.deps.revive(session, {
-				capabilities,
-				onRecoveryOwnershipEstablished: async (receipt) => {
-					if (committed) return;
-					const threadId = receipt.threadId;
-					const turnId =
-						receipt.kind === "turn_started" ? receipt.turnId : undefined;
-					const goalStatus =
-						receipt.kind === "turn_started" ? undefined : receipt.goalStatus;
-					const observedTurnHolder = await this.deps.readTurnHolder(session);
-					const result = this.deps.store.commitCodexRecovery(
-						session.execution_id,
-						claim.claimToken,
-						expectedRevision,
-						{
-							nowMs: this.deps.nowMs(),
-							observedTurnHolder,
-						},
+			const abort = (
+				event: CodexReownEvent,
+				reason: string,
+				input: {
+					releaseAttempt?: boolean;
+					failureStage?: "context" | "teardown";
+				} = {},
+			): void => {
+				if (event === "reown_revive_failed") {
+					failPrecommit(
+						normalizeCodexRecoveryFailure(undefined, {
+							failureReason: `recovery ${reason.replace(/_/g, " ")}`,
+							stage: input.failureStage ?? "preflight",
+						}),
 					);
-					if (!result.ok) {
-						this.record("reown_fence_lost", session, {
-							reason: result.reason,
+					return;
+				}
+				this.deps.store.abortCodexRecovery(
+					session.execution_id,
+					claim.claimToken,
+					input,
+				);
+				this.record(event, session, {
+					reason,
+					episodeId: claim.episodeId,
+					attempt: claim.attempt,
+				});
+			};
+
+			// Binding and ownership can change while probe/claim I/O was in flight.
+			if (
+				this.deps.owners.isExecutionOwned(session.execution_id) ||
+				!(await this.deps.isCurrentBinding(session))
+			) {
+				abort("reown_fence_lost", "owner_or_binding_changed_after_claim", {
+					releaseAttempt: true,
+				});
+				return;
+			}
+			let observedTurnHolder: string | null;
+			try {
+				observedTurnHolder = await this.deps.readTurnHolder(session);
+			} catch (error) {
+				abort(
+					"reown_fence_lost",
+					`turn_holder_unreadable:${error instanceof Error ? error.message : String(error)}`,
+					{ releaseAttempt: true },
+				);
+				return;
+			}
+			if (observedTurnHolder !== session.execution_id) {
+				abort(
+					isParked(session)
+						? "reown_skipped_not_turn_holder"
+						: "reown_fence_lost",
+					"turn_holder_changed_before_recycle",
+					{
+						releaseAttempt: true,
+					},
+				);
+				return;
+			}
+
+			if (classification.liveness === "alive") {
+				const reaped = await this.deps.reap(session.execution_id);
+				if (reaped.outcome !== "reaped" && reaped.outcome !== "absent") {
+					abort("reown_revive_failed", `recycle_${reaped.outcome}`, {
+						failureStage: "teardown",
+					});
+					return;
+				}
+			}
+
+			const capabilities = this.deps.store.prepareCodexRecoveryCapabilities(
+				session.execution_id,
+				claim.claimToken,
+				expectedRevision,
+				this.deps.nowMs(),
+			);
+			if (!capabilities.ok) {
+				abort("reown_revive_failed", `capabilities_${capabilities.reason}`, {
+					failureStage: "context",
+				});
+				return;
+			}
+
+			// Last destructive/spawn boundary check required by the approved fence.
+			if (
+				this.deps.owners.isExecutionOwned(session.execution_id) ||
+				!(await this.deps.isCurrentBinding(session))
+			) {
+				abort("reown_fence_lost", "owner_or_binding_changed_before_spawn");
+				return;
+			}
+
+			this.record("reown_revive_started", session, {
+				episodeId: claim.episodeId,
+				attempt: claim.attempt,
+				...classification,
+				posture: isParked(session) ? "parked" : "running",
+			});
+
+			let terminal: Promise<AdapterExecutionResult>;
+			try {
+				terminal = this.deps.revive(session, {
+					capabilities,
+					isRecoveryCommitted: () => committed,
+					onRecoveryOwnershipEstablished: async (receipt) => {
+						if (committed) return;
+						if (precommitSettled)
+							throw new CodexRecoveryError(
+								createCodexRecoveryFailure({
+									code: "commit_refused",
+									stage: "commit",
+								}),
+							);
+						const threadId = receipt.threadId;
+						const turnId =
+							receipt.kind === "turn_started" ? receipt.turnId : undefined;
+						const goalStatus =
+							receipt.kind === "turn_started" ? undefined : receipt.goalStatus;
+						const observedTurnHolder = await this.deps.readTurnHolder(session);
+						if (precommitSettled)
+							throw new CodexRecoveryError(
+								createCodexRecoveryFailure({
+									code: "commit_refused",
+									stage: "commit",
+								}),
+							);
+						const result = this.deps.store.commitCodexRecovery(
+							session.execution_id,
+							claim.claimToken,
+							expectedRevision,
+							{
+								nowMs: this.deps.nowMs(),
+								observedTurnHolder,
+							},
+						);
+						if (!result.ok) {
+							this.record("reown_fence_lost", session, {
+								reason: result.reason,
+								episodeId: claim.episodeId,
+								attempt: claim.attempt,
+								threadId,
+								receiptKind: receipt.kind,
+								...(turnId ? { turnId } : {}),
+								...(goalStatus ? { goalStatus } : {}),
+							});
+							throw new CodexRecoveryError(
+								createCodexRecoveryFailure({
+									code: "commit_refused",
+									stage: "commit",
+								}),
+							);
+						}
+						committed = true;
+						if (!(await this.reconcileBeforeArm(session, threadId))) {
+							throw new Error(
+								"turn reconciliation failed after recovery commit",
+							);
+						}
+						this.record("reown_revive_succeeded", session, {
 							episodeId: claim.episodeId,
 							attempt: claim.attempt,
 							threadId,
 							receiptKind: receipt.kind,
 							...(turnId ? { turnId } : {}),
 							...(goalStatus ? { goalStatus } : {}),
+							lifecycleRevision: result.lifecycleRevision,
 						});
-						throw new Error(`recovery commit refused: ${result.reason}`);
-					}
-					committed = true;
-					if (!(await this.reconcileBeforeArm(session, threadId))) {
-						throw new Error("turn reconciliation failed after recovery commit");
-					}
-					this.record("reown_revive_succeeded", session, {
-						episodeId: claim.episodeId,
-						attempt: claim.attempt,
-						threadId,
-						receiptKind: receipt.kind,
-						...(turnId ? { turnId } : {}),
-						...(goalStatus ? { goalStatus } : {}),
-						lifecycleRevision: result.lifecycleRevision,
-					});
-				},
-			});
-		} catch (error) {
-			failPrecommit(error instanceof Error ? error.message : String(error));
-			return;
-		}
+					},
+				});
+			} catch (error) {
+				failPrecommit(error);
+				return;
+			}
 
-		void terminal.then(
-			(result) => {
-				if (!result.success) {
-					const reason =
-						result.resultText ?? "recovery owner failed before commit";
-					if (committed) {
-						this.record("reown_revive_failed", session, {
-							reason,
-							episodeId: claim.episodeId,
-							attempt: claim.attempt,
-							postCommit: true,
-						});
-					} else {
-						failPrecommit(reason);
-					}
-				}
-			},
-			(error) => {
-				const reason = error instanceof Error ? error.message : String(error);
-				if (committed) {
-					this.record("reown_revive_failed", session, {
-						reason,
-						episodeId: claim.episodeId,
-						attempt: claim.attempt,
-						postCommit: true,
-					});
-					void Promise.resolve(this.deps.alert(session, reason)).catch(
-						() => {},
-					);
-				} else {
-					failPrecommit(reason);
-				}
-			},
-		);
+			void terminal
+				.then(
+					(result) => {
+						if (!committed) {
+							failPrecommit(
+								result.success
+									? createCodexRecoveryFailure({
+											code: "owner_result_missing",
+											stage: "owner_admission",
+										})
+									: normalizeCodexRecoveryFailure(result.recoveryFailure, {
+											failureReason: result.failure?.failureReason,
+											resultText: result.resultText,
+										}),
+							);
+						} else if (!result.success) {
+							const failure = normalizeCodexRecoveryFailure(
+								result.recoveryFailure,
+								{
+									failureReason: result.failure?.failureReason,
+									resultText: result.resultText,
+								},
+							);
+							this.record("reown_revive_failed", session, {
+								reason: failure.summary,
+								failure,
+								episodeId: claim.episodeId,
+								attempt: claim.reservationSeq,
+								postCommit: true,
+							});
+						}
+					},
+					(error) => {
+						if (!committed) failPrecommit(error);
+						else {
+							const failure = normalizeCodexRecoveryFailure(error);
+							this.record("reown_revive_failed", session, {
+								reason: failure.summary,
+								failure,
+								episodeId: claim.episodeId,
+								attempt: claim.reservationSeq,
+								postCommit: true,
+							});
+						}
+					},
+				)
+				.catch(() =>
+					Promise.resolve(
+						this.deps.alert(
+							session,
+							"Recovery failure settlement could not be persisted; reservation retained",
+						),
+					).catch(() => {}),
+				);
+		} catch (error) {
+			failPrecommit(error);
+		}
 	}
 
 	private async reconcileBeforeArm(
@@ -803,6 +1006,18 @@ export class CodexSessionReowner {
 			});
 			return false;
 		}
+	}
+
+	private observationFailure(error: unknown) {
+		const message = error instanceof Error ? error.message : "";
+		const fixed = message.startsWith("workflow_alert_uid_conflict:")
+			? "recovery exhaustion alert UID conflict"
+			: message === "recovery_exhaustion_binding_ambiguous"
+				? "recovery exhaustion binding ambiguous"
+				: message === "recovery_exhaustion_alert_identity_missing"
+					? "recovery exhaustion alert identity missing"
+					: undefined;
+		return normalizeCodexRecoveryFailure(error, { failureReason: fixed });
 	}
 
 	private record(

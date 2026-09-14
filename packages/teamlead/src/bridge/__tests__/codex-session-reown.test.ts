@@ -1,7 +1,7 @@
 import type { CodexLaunchSnapshot } from "flywheel-claude-runner";
 import type { AdapterExecutionContext } from "flywheel-core";
 import { describe, expect, it, vi } from "vitest";
-import type { Session } from "../../StateStore.js";
+import { type Session, StateStore } from "../../StateStore.js";
 import {
 	acceptReownTurnReconciliation,
 	CODEX_REOWN_ROLLOUT_STALE_MS,
@@ -45,6 +45,7 @@ function harness(
 			claimToken: "claim-1",
 			episodeId: "episode-1",
 			attempt: 1,
+			reservationSeq: 1,
 			expiresAtMs: 61_000,
 		};
 	});
@@ -93,6 +94,11 @@ function harness(
 			prepareCodexRecoveryCapabilities: prepareCapabilities,
 			abortCodexRecovery: abort,
 			commitCodexRecovery: commit,
+			finalizeCodexRecoveryExhaustion: vi.fn(() => undefined),
+			settleCodexRecoveryFailure: vi.fn(() => {
+				order.push("settle");
+				return { ok: false as const, reason: "claim_lost" as const };
+			}),
 		},
 		owners: {
 			isExecutionOwned: vi.fn(() => owned),
@@ -555,18 +561,16 @@ describe("FLY-2211 Codex session re-owner", () => {
 				probeRolloutMtime: typeof probeRolloutMtime;
 			}
 		).probeRolloutMtime = probeRolloutMtime;
-		vi.mocked(h.deps.nowMs)
-			.mockReturnValueOnce(1_000)
-			.mockReturnValueOnce(1_000 + CODEX_REOWN_ROLLOUT_STALE_MS - 1)
-			.mockReturnValueOnce(1_000 + CODEX_REOWN_ROLLOUT_STALE_MS)
-			.mockReturnValueOnce(1_000 + CODEX_REOWN_ROLLOUT_STALE_MS + 5 * 60_000);
+		let now = 1000;
+		h.deps.nowMs = () => now;
 		const reowner = new CodexSessionReowner(h.deps);
-
 		await reowner.runPass();
+		now = 1000 + CODEX_REOWN_ROLLOUT_STALE_MS - 1;
 		await reowner.runPass();
 		expect(h.events).not.toContain("reown_probe_unknown");
-
+		now = 1000 + CODEX_REOWN_ROLLOUT_STALE_MS;
 		await reowner.runPass();
+		now = 1000 + CODEX_REOWN_ROLLOUT_STALE_MS + 5 * 60000;
 		await reowner.runPass();
 
 		expect(probeRolloutMtime).toHaveBeenCalledTimes(4);
@@ -653,7 +657,7 @@ describe("FLY-2211 Codex session re-owner", () => {
 
 		await reowner.runPass();
 
-		expect(h.order).toEqual(["claim", "reap", "abort"]);
+		expect(h.order).toEqual(["claim", "reap", "settle"]);
 		expect(h.revive).not.toHaveBeenCalled();
 		expect(h.events).toContain("reown_revive_failed");
 	});
@@ -668,15 +672,21 @@ describe("FLY-2211 Codex session re-owner", () => {
 
 		await reowner.runPass();
 
-		expect(h.order).toEqual(["claim", "abort"]);
+		expect(h.order).toEqual(["claim", "settle"]);
 		expect(h.revive).not.toHaveBeenCalled();
-		expect(h.abort).toHaveBeenCalledWith("exec-1", "claim-1", {});
-		expect(h.deps.record).toHaveBeenCalledWith(
-			"reown_revive_failed",
-			h.candidate,
+		expect(h.deps.store.settleCodexRecoveryFailure).toHaveBeenCalled();
+		expect(h.abort).not.toHaveBeenCalled();
+		expect(h.deps.store.settleCodexRecoveryFailure).toHaveBeenCalledWith(
+			"exec-1",
+			"claim-1",
+			7,
+			1,
 			expect.objectContaining({
-				reason: "capabilities_activation_ambiguous",
+				code: "owner_failed_unknown",
+				stage: "context",
 			}),
+			1000,
+			undefined,
 		);
 	});
 
@@ -778,7 +788,7 @@ describe("FLY-2211 Codex session re-owner", () => {
 		await reowner.runPass();
 		await settle();
 
-		expect(h.order).toEqual(["claim", "revive", "commit", "abort"]);
+		expect(h.order).toEqual(["claim", "revive", "commit", "settle"]);
 		expect(h.events).toContain("reown_fence_lost");
 		expect(h.events).toContain("reown_revive_failed");
 	});
@@ -803,4 +813,346 @@ describe("FLY-2211 Codex session re-owner", () => {
 		expect(h.events).toContain("reown_revive_failed");
 		expect(h.deps.alert).toHaveBeenCalledTimes(1);
 	});
+});
+
+describe("FLY-2505 durable reown settlement", () => {
+	it.each(["readiness", "success_without_receipt"])(
+		"settles %s using the production store",
+		async (kind) => {
+			const store = await StateStore.create(":memory:");
+			try {
+				store.upsertSession({
+					execution_id: "exec-1",
+					issue_id: "issue-1",
+					project_name: "flywheel",
+					status: "running",
+					adapter_type: "codex-tmux",
+				});
+				const h = harness({ candidate: store.getSession("exec-1")! });
+				h.deps.store = store;
+				let now = 1000;
+				h.deps.nowMs = () => now;
+				h.deps.revive = async () => {
+					now = 71000;
+					return kind === "readiness"
+						? {
+								success: false,
+								sessionId: "exec-1",
+								recoveryFailure: {
+									version: 1,
+									code: "daemon_socket_not_ready",
+									stage: "daemon_spawn",
+									summary: "socket not ready",
+									cleanup: "confirmed_absent",
+								},
+							}
+						: { success: true, sessionId: "exec-1" };
+				};
+				await new CodexSessionReowner(h.deps).runPass();
+				await settle();
+				const events = store.getEventsByExecution("exec-1");
+				expect(events).toHaveLength(1);
+				expect(events[0].payload).toMatchObject({
+					failure: {
+						code:
+							kind === "readiness"
+								? "daemon_socket_not_ready"
+								: "owner_result_missing",
+					},
+					budgetDecision: kind === "readiness" ? "refunded" : "charged",
+				});
+				expect(store.getCodexRecoveryEpisode("exec-1")?.episodeAttempts).toBe(
+					kind === "readiness" ? 0 : 1,
+				);
+				expect(store.getSession("exec-1")?.status).toBe("running");
+			} finally {
+				store.close();
+			}
+		},
+	);
+});
+
+describe("FLY-2505 late recovery receipt fences", () => {
+	it.each(["before_receipt", "during_turn_read"])(
+		"rejects a receipt after settlement %s",
+		async (mode) => {
+			const store = await StateStore.create(":memory:");
+			try {
+				store.upsertSession({
+					execution_id: "exec-1",
+					issue_id: "issue-1",
+					project_name: "flywheel",
+					status: "running",
+					adapter_type: "codex-tmux",
+				});
+				const h = harness({ candidate: store.getSession("exec-1")! });
+				h.deps.store = store;
+				let hooks: Parameters<CodexSessionReownDeps["revive"]>[1] | undefined;
+				let receipt: Promise<void> | undefined;
+				let release: ((holder: string) => void) | undefined;
+				const evidence = {
+					kind: "turn_started" as const,
+					threadId: "thread-1",
+					turnId: "turn-1",
+				};
+				h.deps.revive = async (_session, input) => {
+					hooks = input;
+					if (mode === "during_turn_read") {
+						h.deps.readTurnHolder = () =>
+							new Promise((resolve) => {
+								release = resolve;
+							});
+						receipt = input.onRecoveryOwnershipEstablished(evidence);
+					}
+					return { success: true, sessionId: "exec-1" };
+				};
+				await new CodexSessionReowner(h.deps).runPass();
+				await settle();
+				if (mode === "before_receipt")
+					receipt = hooks!.onRecoveryOwnershipEstablished(evidence);
+				else release!("exec-1");
+				await expect(receipt).rejects.toThrow(/commit_refused/);
+				expect(store.getSession("exec-1")?.lifecycle_revision).toBe(0);
+				expect(store.getEventsByExecution("exec-1")).toHaveLength(1);
+			} finally {
+				store.close();
+			}
+		},
+	);
+});
+
+it("FLY-2505 a reap rejection settles the reserved attempt with a safe diagnostic", async () => {
+	const store = await StateStore.create(":memory:");
+	try {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "flywheel",
+			status: "running",
+			adapter_type: "codex-tmux",
+		});
+		const h = harness({
+			candidate: store.getSession("exec-1")!,
+			liveness: "alive",
+			gateHeld: true,
+		});
+		h.deps.store = store;
+		h.deps.reap = async () => {
+			throw new Error("error password=private-secret /Users/private/path");
+		};
+		await new CodexSessionReowner(h.deps).runPass();
+		await settle();
+		const events = store.getEventsByExecution("exec-1");
+		expect(events).toHaveLength(1);
+		expect(events[0].payload).toMatchObject({
+			budgetDecision: "charged",
+			failure: { code: "owner_failed_unknown" },
+		});
+		expect(JSON.stringify(events)).not.toContain("private-secret");
+	} finally {
+		store.close();
+	}
+});
+
+it("FLY-2505 preflight exceptions never echo raw credentials to events or alerts", async () => {
+	const h = harness();
+	h.deps.preflightRecovery = () => {
+		throw new Error("error password=private-secret /Users/private/path");
+	};
+	await new CodexSessionReowner(h.deps).runPass();
+	expect(
+		JSON.stringify([
+			vi.mocked(h.deps.record).mock.calls,
+			vi.mocked(h.deps.alert).mock.calls,
+		]),
+	).not.toContain("private-secret");
+	expect(h.claim).not.toHaveBeenCalled();
+});
+
+it("FLY-2505 retries durable exhaustion before probing or preflight after a sink failure", async () => {
+	const store = await StateStore.create(":memory:");
+	try {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "flywheel",
+			status: "running",
+			adapter_type: "codex-tmux",
+		});
+		for (let n = 0; n < 2; n++) {
+			const claim = store.claimCodexRecovery("exec-1", 0, {
+				holder: "bridge",
+				nowMs: n * 100000,
+				ttlMs: 60000,
+			});
+			if (!claim.ok) throw new Error("claim failed");
+			store.settleCodexRecoveryFailure(
+				"exec-1",
+				claim.claimToken,
+				0,
+				claim.reservationSeq,
+				undefined,
+				n * 100000 + 1,
+			);
+		}
+		const h = harness({
+			candidate: store.getSession("exec-1")!,
+			liveness: "unknown",
+		});
+		h.deps.store = store;
+		h.deps.nowMs = () => 200000;
+		h.deps.preflightRecovery = vi.fn(() => {
+			throw new Error("snapshot missing");
+		});
+		h.onRecoveryExhausted.mockRejectedValueOnce(new Error("sink unavailable"));
+		const reowner = new CodexSessionReowner(h.deps);
+		await expect(reowner.runPass()).resolves.toBeDefined();
+		await reowner.finalizeDueExhaustion("exec-1");
+		expect(h.onRecoveryExhausted).toHaveBeenCalledTimes(2);
+		expect(h.deps.probe).not.toHaveBeenCalled();
+		expect(h.deps.preflightRecovery).not.toHaveBeenCalled();
+		expect(store.getEventsByExecution("exec-1")).toHaveLength(3);
+	} finally {
+		store.close();
+	}
+});
+
+it.each([
+	"stale_revision",
+	"lease_expired",
+	"activation_ambiguous",
+	"claim_lost",
+])("retains capabilities failure %s with context stage", async (reason) => {
+	const h = harness();
+	vi.mocked(h.deps.store.prepareCodexRecoveryCapabilities).mockReturnValue({
+		ok: false,
+		reason,
+	} as never);
+	await new CodexSessionReowner(h.deps).runPass();
+	const failure = vi.mocked(h.deps.store.settleCodexRecoveryFailure).mock
+		.calls[0]?.[4];
+	expect(failure).toMatchObject({
+		code: "owner_failed_unknown",
+		stage: "context",
+		summary: `recovery capabilities ${reason.replace(/_/g, " ")}`,
+	});
+	expect(h.revive).not.toHaveBeenCalled();
+});
+it.each(["refused", "indeterminate"] as const)(
+	"retains recycle failure %s with teardown stage",
+	async (reason) => {
+		const h = harness({
+			liveness: "alive",
+			gateHeld: true,
+			reapOutcome: reason,
+		});
+		await new CodexSessionReowner(h.deps).runPass();
+		const failure = vi.mocked(h.deps.store.settleCodexRecoveryFailure).mock
+			.calls[0]?.[4];
+		expect(failure).toMatchObject({
+			code: "owner_failed_unknown",
+			stage: "teardown",
+			summary: `recovery recycle ${reason}`,
+		});
+		expect(h.revive).not.toHaveBeenCalled();
+	},
+);
+
+it("records a sanitized nonaccounting observation when precommit settlement loses its claim", async () => {
+	const h = harness();
+	h.revive.mockImplementation(async () => ({
+		success: false,
+		sessionId: "exec-1",
+		durationMs: 1,
+		timedOut: false,
+		resultText: "owner failed token=private-secret",
+	}));
+	await new CodexSessionReowner(h.deps).runPass();
+	await settle();
+	expect(h.deps.record).toHaveBeenCalledWith(
+		"reown_revive_failed",
+		h.candidate,
+		expect.objectContaining({
+			settlement: "claim_lost",
+			accounting: false,
+			stale: true,
+			failure: expect.objectContaining({
+				code: "owner_failed_unknown",
+				summary: "owner failed [credential]",
+			}),
+			reservationSeq: 1,
+		}),
+	);
+	const observations = vi
+		.mocked(h.deps.record)
+		.mock.calls.filter(([event]) => event === "reown_revive_failed");
+	expect(observations).toHaveLength(1);
+	expect(JSON.stringify(observations)).not.toContain("private-secret");
+	expect(observations[0][2]).not.toHaveProperty("budgetDecision");
+	expect(h.deps.store.settleCodexRecoveryFailure).toHaveBeenCalledTimes(1);
+});
+
+it("isolates a poisoned exhaustion candidate and records the failure before recovering later candidates", async () => {
+	const h = harness({ liveness: "alive" });
+	const later = session({ execution_id: "exec-later" });
+	vi.mocked(h.deps.store.getReadoptCandidateSessions).mockReturnValue([
+		h.candidate,
+		later,
+	]);
+	vi.mocked(
+		h.deps.store.finalizeCodexRecoveryExhaustion,
+	).mockImplementationOnce(() => {
+		throw new Error("recovery_exhaustion_alert_identity_missing");
+	});
+	await expect(
+		new CodexSessionReowner(h.deps).runPass(),
+	).resolves.toBeDefined();
+	expect(h.deps.probe).toHaveBeenCalledWith(later.execution_id);
+	expect(h.deps.record).toHaveBeenCalledWith(
+		"reown_revive_failed",
+		h.candidate,
+		expect.objectContaining({
+			accounting: false,
+			phase: "candidate_inspection",
+			failure: expect.objectContaining({ code: "owner_failed_unknown" }),
+		}),
+	);
+	expect(h.deps.record).toHaveBeenCalledWith(
+		"reown_watch_started",
+		later,
+		expect.anything(),
+	);
+});
+
+it("records original owner failure outside a rolled-back settlement transaction", async () => {
+	const h = harness();
+	h.revive.mockImplementation(async () => ({
+		success: false,
+		sessionId: "exec-1",
+		durationMs: 1,
+		timedOut: false,
+		resultText: "owner failed token=private-secret",
+	}));
+	vi.mocked(h.deps.store.settleCodexRecoveryFailure).mockImplementation(() => {
+		throw new Error("workflow_alert_uid_conflict:private-uid");
+	});
+	await new CodexSessionReowner(h.deps).runPass();
+	await settle();
+	expect(h.deps.record).toHaveBeenCalledWith(
+		"reown_revive_failed",
+		h.candidate,
+		expect.objectContaining({
+			accounting: false,
+			settlement: "write_failed",
+			failure: expect.objectContaining({
+				summary: "owner failed [credential]",
+			}),
+			settlementFailure: expect.objectContaining({
+				summary: "recovery exhaustion alert UID conflict",
+			}),
+		}),
+	);
+	expect(JSON.stringify(vi.mocked(h.deps.record).mock.calls)).not.toMatch(
+		/private-secret|private-uid/,
+	);
 });

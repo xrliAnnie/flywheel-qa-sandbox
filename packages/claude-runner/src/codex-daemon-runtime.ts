@@ -37,6 +37,12 @@ import {
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+	CodexRecoveryError,
+	createCodexRecoveryFailure,
+	normalizeCodexRecoveryFailure,
+	withRecoveryCleanup,
+} from "flywheel-core";
 import { stripInheritedSecretEnv, stripSecretEnv } from "./codex-home.js";
 import type { BoundaryEvidence } from "./isolation-boundary.js";
 import {
@@ -642,7 +648,11 @@ export async function spawnCodexDaemon(
 	const childExitWaitMs =
 		opts.childExitWaitMs ?? codexDaemonExitWaitMs(process.env);
 
-	ensureDir(dirnameOf(opts.socketPath));
+	try {
+		ensureDir(dirnameOf(opts.socketPath));
+	} catch (error) {
+		throw daemonSpawnFailure(error);
+	}
 
 	// R-M4c R2 HIGH: single-owner must be ATOMIC. An O_EXCL lockfile is the gate
 	// — only the process holding `<socket>.lock` may own this exec's daemon, so
@@ -787,15 +797,17 @@ export async function spawnCodexDaemon(
 		// instead of polling a socket that will never appear. `childReaped` marks
 		// that there is no live process left to wait on (already exited, or the
 		// spawn errored so it never ran) — cleanup then skips the exit wait.
-		let deadReason: string | null = null;
+		let deadReason: Error | null = null;
 		let childReaped = false;
 		child.once("exit", (code, signal) => {
 			childReaped = true;
-			deadReason ??= `daemon exited early (code=${code} signal=${signal})`;
+			deadReason ??= daemonSpawnFailure(
+				new Error(`daemon exited early (code=${code} signal=${signal})`),
+			);
 		});
 		child.once("error", (err) => {
 			childReaped = true;
-			deadReason ??= `daemon spawn error: ${err.message}`;
+			deadReason ??= daemonSpawnFailure(err);
 		});
 
 		/**
@@ -913,33 +925,48 @@ export async function spawnCodexDaemon(
 		// and LEAVE the socket, failing loud rather than clobbering a
 		// possibly-live daemon.
 		const cleanupAndThrow = async (error: string | Error): Promise<never> => {
-			// The whole TREE (QA · FLY-1188 HIGH-2) — a failed spawn that reaped only
-			// the shim would leak the app-server exactly like a successful one did.
-			killTree("SIGKILL");
-			const exitDeadline = now() + childExitWaitMs;
-			while (!childReaped && child.exitCode === null && now() < exitDeadline) {
-				await sleep(Math.min(50, Math.max(0, exitDeadline - now())));
+			const primary = normalizeCodexRecoveryFailure(error, {
+				stage: "daemon_spawn",
+			});
+			// Own the lock's fate before any fallible cleanup: probe/unlink errors
+			// must never make the outer catch release a possibly-live daemon's lock.
+			lockHandled = true;
+			let confirmed = false;
+			try {
+				killTree("SIGKILL");
+				const exitDeadline = now() + childExitWaitMs;
+				while (
+					!childReaped &&
+					child.exitCode === null &&
+					now() < exitDeadline
+				) {
+					await sleep(Math.min(50, Math.max(0, exitDeadline - now())));
+				}
+				const socketDeadline = now() + childExitWaitMs;
+				while (
+					now() < socketDeadline &&
+					(await isSocketLive(opts.socketPath))
+				) {
+					await sleep(Math.min(pollMs, Math.max(0, socketDeadline - now())));
+				}
+				const stillListening = await isSocketLive(opts.socketPath);
+				if (!stillListening && (childReaped || child.exitCode !== null)) {
+					removeStaleSocket(opts.socketPath);
+					releaseLock();
+					confirmed = true;
+				}
+			} catch {
+				// Preserve the first failure; inability to prove cleanup is secondary.
 			}
-			// Codex R9 HIGH: the shim exiting is NOT the daemon dying — the app-server
-			// it forked can still hold the socket. Proving cleanup by `childReaped`
-			// alone is the same false probe QA caught, and here it would UNLINK a
-			// socket a live daemon still owns. Ask the socket, under the lock.
-			const socketDeadline = now() + childExitWaitMs;
-			while (now() < socketDeadline && (await isSocketLive(opts.socketPath))) {
-				await sleep(Math.min(pollMs, Math.max(0, socketDeadline - now())));
-			}
-			const stillListening = await isSocketLive(opts.socketPath);
-			if (!stillListening && (childReaped || child.exitCode !== null)) {
-				removeStaleSocket(opts.socketPath);
-				releaseLock();
-				lockHandled = true;
-			} else {
-				lockHandled = true; // keep the lock held; the outer catch won't release
-				log(
-					`WARNING: codex daemon could not be CONFIRMED dead after SIGKILL within ${childExitWaitMs}ms (socket still listening=${stillListening}) — holding lock + leaving socket ${opts.socketPath} to avoid clobbering a possibly-live daemon`,
-				);
-			}
-			throw typeof error === "string" ? new Error(error) : error;
+			const failure = new CodexRecoveryError(
+				withRecoveryCleanup(
+					primary,
+					confirmed ? "confirmed_absent" : "unconfirmed",
+				),
+				{ cause: error },
+			);
+			failure.message = error instanceof Error ? error.message : error;
+			throw failure;
 		};
 
 		if (opts.onSpawnIdentity) {
@@ -966,9 +993,14 @@ export async function spawnCodexDaemon(
 				return handle;
 			}
 			if (now() >= deadline) {
-				return await cleanupAndThrow(
-					`codex daemon socket did not appear within ${timeoutMs}ms: ${opts.socketPath}`,
+				const timeout = new CodexRecoveryError(
+					createCodexRecoveryFailure({
+						code: "daemon_socket_not_ready",
+						stage: "daemon_spawn",
+					}),
 				);
+				timeout.message = `codex daemon socket did not appear within ${timeoutMs}ms: ${opts.socketPath}`;
+				return await cleanupAndThrow(timeout);
 			}
 			await sleep(Math.min(pollMs, Math.max(0, deadline - now())));
 		}
@@ -978,8 +1010,37 @@ export async function spawnCodexDaemon(
 		// decided the lock's fate (released it, or is deliberately holding it
 		// because a possibly-live daemon could not be confirmed dead).
 		if (!lockHandled) releaseLock();
-		throw err;
+		throw err instanceof CodexRecoveryError ? err : daemonSpawnFailure(err);
 	}
+}
+
+function daemonSpawnFailure(error: unknown): CodexRecoveryError {
+	const code =
+		error && typeof error === "object" && "code" in error
+			? error.code
+			: undefined;
+	const systemCode =
+		code === "ENOENT" ||
+		code === "ECONNREFUSED" ||
+		code === "EACCES" ||
+		code === "EPERM"
+			? code
+			: undefined;
+	const failure = new CodexRecoveryError(
+		createCodexRecoveryFailure({
+			code:
+				code === "EACCES" || code === "EPERM"
+					? "permission_denied"
+					: "daemon_start_failed",
+			stage: "daemon_spawn",
+			...(systemCode ? { systemCode } : {}),
+		}),
+		{ cause: error },
+	);
+	// Error.message remains the dispatch contract; only recoveryFailure is public audit data.
+	if (error instanceof Error) failure.message = error.message;
+	else if (typeof error === "string") failure.message = error;
+	return failure;
 }
 
 // ── default (real) OS seams ──────────────────────────────────────────────

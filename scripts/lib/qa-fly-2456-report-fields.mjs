@@ -48,6 +48,49 @@ export function publicEvent(row) {
 		payload.reason.startsWith("workflow capability drift for ")
 	)
 		result.failureKind = "workflow capability drift";
+	Object.assign(
+		result,
+		pick(payload, {
+			diagnosticVersion: oneOf(1),
+			reservationSeq: Number.isSafeInteger,
+			chargedAttempts: number,
+			readinessFailures: number,
+			episodeId: id,
+			lastFailureEventId: id,
+			budgetDecision: oneOf("charged", "refunded"),
+			exhaustionTrigger: oneOf(
+				"charged_count",
+				"readiness_count",
+				"readiness_deadline",
+			),
+		}),
+	);
+	const diagnostic = payload?.failure ?? payload?.lastFailure;
+	const code = oneOf(
+		"daemon_socket_not_ready",
+		"daemon_connect_not_ready",
+		"launch_snapshot_mismatch",
+		"capability_mismatch",
+		"permission_denied",
+		"daemon_start_failed",
+		"owner_admission_failed",
+		"commit_refused",
+		"owner_result_missing",
+		"owner_failed_unknown",
+		"cleanup_unconfirmed",
+	);
+	const stage = oneOf(
+		"preflight",
+		"context",
+		"daemon_spawn",
+		"socket_connect",
+		"owner_admission",
+		"commit",
+		"teardown",
+		"unknown",
+	);
+	if (code(diagnostic?.code)) result.failureCode = diagnostic.code;
+	if (stage(diagnostic?.stage)) result.failureStage = diagnostic.stage;
 	return result;
 }
 export function publicReplacement(row) {
