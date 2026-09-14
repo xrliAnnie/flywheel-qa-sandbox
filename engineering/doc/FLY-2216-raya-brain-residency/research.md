@@ -1,4 +1,7 @@
 # FLY-2216 Raya 脑常驻体制 — 调研
+
+> FLY-2362 更正（2026-09-13）：TUI runtime 的 router/executor 路径确实产生 turn 生命周期，`turn_stalled` 与 `activeTurn`/`lastTurn` 保留。未接入该 observer 的是 TUI 自主 `/goal` 路径；不能把 executor 观测覆盖扩大为所有 TUI turn，也不能从健康 heartbeat 推断 `/goal` turn 健康。mufasa-lead 日志只读复核为 106 次 turn_started、15 次 turn_completed、91 次 turn_failed，推翻了“整个 TUI 载体无 turn 事件”的推断。详见 [载体观测边界](../../../doc/architecture/codex-lead-turn-observation.md)，缺口由 FLY-2540 跟踪。
+
 Issue: FLY-2216 (https://linear.app/geoforge3d/issue/FLY-2216/raya驻场-raya-脑常驻体制与-codex-lead-同级的常驻-pane-假活自愈-可观察日志8-31我下线了僵尸一天无人知)
 日期: 2026-08-31
 基于: exploration.md

@@ -1,4 +1,7 @@
 # FLY-2239 Codex Lead 全员 cutover — 实施计划
+
+> FLY-2362 更正（2026-09-13）：TUI runtime 的 router/executor 路径确实产生 turn 生命周期，`turn_stalled` 与 `activeTurn`/`lastTurn` 保留。未接入该 observer 的是 TUI 自主 `/goal` 路径；不能把 executor 观测覆盖扩大为所有 TUI turn，也不能从健康 heartbeat 推断 `/goal` turn 健康。mufasa-lead 日志只读复核为 106 次 turn_started、15 次 turn_completed、91 次 turn_failed，推翻了“整个 TUI 载体无 turn 事件”的推断。详见 [载体观测边界](../../../doc/architecture/codex-lead-turn-observation.md)，缺口由 FLY-2540 跟踪。
+
 Issue: FLY-2239 (https://linear.app/geoforge3d/issue/FLY-2239/cutover-resident-codex-lead-全员切换2216-ship-后名册-opt-in-激活五步-pane-告警对齐)
 日期: 2026-09-05
 基于: research.md
