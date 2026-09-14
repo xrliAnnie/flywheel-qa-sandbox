@@ -984,6 +984,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/__tests__/fixtures/loop-guard/run-kill-harness.ts:process.kill(-pid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/__tests__/fixtures/loop-guard/run-kill-harness.ts",
+		"code": "process.kill(-pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/__tests__/isolation-boundary.real-process.test.ts:process.kill(-holderPgid, \"SIGKILL\");#1",
 		"path": "packages/teamlead/src/__tests__/isolation-boundary.real-process.test.ts",
 		"code": "process.kill(-holderPgid, \"SIGKILL\");",

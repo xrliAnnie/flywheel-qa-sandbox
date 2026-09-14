@@ -10,7 +10,7 @@
  *  - POSIX child-process test of the actual SIGKILL recovery path
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
 	existsSync,
 	mkdtempSync,
@@ -29,6 +29,11 @@ import {
 	type LoopGuardWorkerData,
 	type WorkerLike,
 } from "../bridge/BridgeEventLoopGuard.js";
+
+import {
+	canInspectProcesses,
+	runKillHarness,
+} from "./fixtures/loop-guard/run-kill-harness.js";
 
 describe("isLoopStalled", () => {
 	it("fresh heartbeat is not stalled", () => {
@@ -491,64 +496,30 @@ Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
 		}
 	});
 
-	it.skipIf(process.platform === "win32")(
-		"production kill: a real spawnSync stall is SIGKILLed with child attribution",
-		async () => {
-			const dir = mkdtempSync(join(tmpdir(), "fly307-wd-"));
-			try {
-				const psAvailable =
-					spawnSync("/bin/ps", ["-axo", "pid=,ppid=,etime=,comm="], {
-						stdio: "ignore",
-					}).status === 0;
-				const srcPath = join(dir, "worker-source.js");
-				writeFileSync(srcPath, LOOP_GUARD_WORKER_SOURCE);
-				const logPath = join(dir, "loop-guard.log");
-
-				const harnessPath = join(dir, "harness.mjs");
-				writeFileSync(
-					harnessPath,
-					`
-import { Worker } from "node:worker_threads";
-import { readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-const source = readFileSync(process.argv[2], "utf8");
-const sab = new SharedArrayBuffer(8);
-const view = new BigInt64Array(sab);
-Atomics.store(view, 0, BigInt(Date.now()));
-new Worker(source, {
-  eval: true,
-  workerData: { sab, stallThresholdMs: 200, checkIntervalMs: 25, logPath: process.argv[3], testMode: false, pid: process.pid, bootTs: Date.now(), syncOpMarkerPath: "" },
-});
-setInterval(() => Atomics.store(view, 0, BigInt(Date.now())), 20);
-setTimeout(() => spawnSync("/bin/sleep", ["0.6"]), 150);
-`,
+	it.skipIf(process.platform === "win32").each([0, 800])(
+		"production kill: a real spawnSync stall is SIGKILLed with child attribution (exec delay %i ms)",
+		async (execDelayMs) => {
+			const psAvailable = canInspectProcesses();
+			const { result, forensic, ready, harnessPid } = await runKillHarness({
+				psAvailable,
+				execDelayMs,
+			});
+			expect(result.signal).toBe("SIGKILL");
+			expect(result.code).toBeNull();
+			expect(forensic.pid).toBe(harnessPid);
+			expect(forensic.tick_gap_ms).toBeLessThan(200);
+			if (psAvailable) {
+				expect(ready?.ppid).toBe(harnessPid);
+				expect(ready?.pid).toBeGreaterThan(0);
+				expect(forensic.children).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ pid: ready?.pid, comm: "sleep" }),
+					]),
 				);
-
-				const child = spawn(process.execPath, [harnessPath, srcPath, logPath]);
-				const result = await new Promise<{
-					code: number | null;
-					signal: NodeJS.Signals | null;
-				}>((resolve) => {
-					child.on("exit", (code, signal) => resolve({ code, signal }));
-				});
-
-				expect(result.signal).toBe("SIGKILL");
-				expect(result.code).toBeNull();
-				const forensic = JSON.parse(readFileSync(logPath, "utf8").trim());
-				expect(forensic.tick_gap_ms).toBeLessThan(200);
-				if (psAvailable) {
-					expect(forensic.children).toEqual(
-						expect.arrayContaining([
-							expect.objectContaining({ comm: "sleep" }),
-						]),
-					);
-					expect(forensic.attribution).toBe("child");
-				} else {
-					expect(forensic.children).toBeNull();
-					expect(forensic.attribution).toBe("unknown");
-				}
-			} finally {
-				rmSync(dir, { recursive: true, force: true });
+				expect(forensic.attribution).toBe("child");
+			} else {
+				expect(forensic.children).toBeNull();
+				expect(forensic.attribution).toBe("unknown");
 			}
 		},
 		15_000,
