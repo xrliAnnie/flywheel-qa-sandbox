@@ -1,5 +1,4 @@
 import {
-	appendFileSync,
 	chmodSync,
 	lstatSync,
 	mkdirSync,
@@ -7,6 +6,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { appendRotatedLogSync } from "flywheel-config";
 
 export type ResidentCodexLeadPollFailureClass =
 	| "auth"
@@ -77,6 +77,14 @@ export class ResidentCodexLeadLifecycleObserver {
 	private readonly now: () => string;
 	private readonly log: (message: string) => void;
 	private sequence = 0;
+	private readonly pollStatus = new Map<string, "ok" | "failed">();
+	private readonly attemptedChannels = new Set<string>();
+	private pollWindow: {
+		start: string;
+		attempt: number;
+		ok: number;
+		fail: number;
+	};
 	private readonly heartbeat: ResidentCodexLeadHeartbeat;
 
 	constructor(options: ResidentCodexLeadLifecycleObserverOptions) {
@@ -94,6 +102,7 @@ export class ResidentCodexLeadLifecycleObserver {
 		this.now = options.now ?? (() => new Date().toISOString());
 		this.log = options.log ?? (() => {});
 		const createdAt = this.now();
+		this.pollWindow = { start: createdAt, attempt: 0, ok: 0, fail: 0 };
 		this.heartbeat = {
 			v: 1,
 			generationId: options.generationId.slice(0, 256),
@@ -115,10 +124,20 @@ export class ResidentCodexLeadLifecycleObserver {
 
 	pollAttempt(channelId: string): void {
 		const at = this.now();
+		this.flushPollSummary(at);
+		this.pollWindow.attempt++;
+		const channel = channelId.slice(0, 128);
+		const firstAttempt = !this.attemptedChannels.has(channel);
+		this.attemptedChannels.add(channel);
 		this.heartbeat.lastGatewayPollAttemptAt = at;
-		this.emit("gateway_poll_attempt", at, {
-			channelId: channelId.slice(0, 128),
-		});
+		this.emit(
+			"gateway_poll_attempt",
+			at,
+			{
+				channelId: channel,
+			},
+			firstAttempt,
+		);
 	}
 
 	pollResult(
@@ -132,16 +151,27 @@ export class ResidentCodexLeadLifecycleObserver {
 			  },
 	): void {
 		const at = this.now();
+		this.flushPollSummary(at);
+		const channelId = result.channelId.slice(0, 128);
+		const previous = this.pollStatus.get(channelId);
+		this.pollStatus.set(channelId, result.ok ? "ok" : "failed");
 		this.heartbeat.lastGatewayPollResultAt = at;
 		this.heartbeat.lastGatewayPollStatus = result.ok ? "ok" : "failed";
 		if (result.ok) {
+			this.pollWindow.ok++;
 			delete this.heartbeat.lastGatewayPollFailureClass;
 			delete this.heartbeat.lastGatewayPollStatusCode;
-			this.emit("gateway_poll_ok", at, {
-				channelId: result.channelId.slice(0, 128),
-			});
+			this.emit(
+				"gateway_poll_ok",
+				at,
+				{
+					channelId,
+				},
+				previous !== "ok",
+			);
 			return;
 		}
+		this.pollWindow.fail++;
 		this.heartbeat.lastGatewayPollFailureClass = result.failureClass;
 		if (result.status !== undefined)
 			this.heartbeat.lastGatewayPollStatusCode = result.status;
@@ -186,31 +216,52 @@ export class ResidentCodexLeadLifecycleObserver {
 
 	generationLost(): void {
 		const at = this.now();
+		this.flushPollSummary(at, true);
 		this.heartbeat.state = "generation_lost";
 		this.emit("generation_lost", at);
 	}
 
 	shutdown(): void {
 		const at = this.now();
+		this.flushPollSummary(at, true);
 		this.heartbeat.state = "shutdown";
 		this.emit("shutdown", at);
 	}
 
-	private emit(
+	private flushPollSummary(at: string, force = false): void {
+		if (!force && Date.parse(at) - Date.parse(this.pollWindow.start) < 300_000)
+			return;
+		if (
+			this.pollWindow.attempt + this.pollWindow.ok + this.pollWindow.fail ===
+			0
+		)
+			return;
+		if (
+			this.writeEvent("gateway_poll_summary", at, {
+				...this.pollWindow,
+				end: at,
+			})
+		) {
+			this.pollWindow = { start: at, attempt: 0, ok: 0, fail: 0 };
+		}
+	}
+
+	private prepareRoot(): void {
+		mkdirSync(this.root, { recursive: true, mode: 0o700 });
+		const rootStat = lstatSync(this.root);
+		if (rootStat.isSymbolicLink() || !rootStat.isDirectory())
+			throw new Error("brain state root is not a regular directory");
+		chmodSync(this.root, 0o700);
+	}
+
+	private writeEvent(
 		event: string,
 		at: string,
 		detail: Record<string, unknown> = {},
-	): void {
-		this.heartbeat.updatedAt = at;
-		this.heartbeat.lastLifecycleEvent = event;
+	): boolean {
 		try {
-			mkdirSync(this.root, { recursive: true, mode: 0o700 });
-			const rootStat = lstatSync(this.root);
-			if (rootStat.isSymbolicLink() || !rootStat.isDirectory())
-				throw new Error("brain state root is not a regular directory");
-			chmodSync(this.root, 0o700);
+			this.prepareRoot();
 			assertSafeFile(this.lifecyclePath);
-			assertSafeFile(this.heartbeatPath);
 			const row = {
 				v: 1,
 				at,
@@ -219,10 +270,44 @@ export class ResidentCodexLeadLifecycleObserver {
 				threadId: this.heartbeat.threadId,
 				...detail,
 			};
-			appendFileSync(this.lifecyclePath, `${JSON.stringify(row)}\n`, {
-				encoding: "utf8",
-				mode: 0o600,
-			});
+			const result = appendRotatedLogSync(
+				this.lifecyclePath,
+				`${JSON.stringify(row)}\n`,
+				{
+					maxBytes: 2_000_000,
+					keep: 7,
+					maxFileAgeMs: 86_400_000,
+					maxAgeMs: 7 * 86_400_000,
+					nowMs: Date.parse(at),
+					strict: true,
+				},
+			);
+			if (result.rotationDue && !result.rotated)
+				this.log(
+					"resident Codex Lead lifecycle rotation deferred; event appended",
+				);
+			return true;
+		} catch (error) {
+			this.log(
+				`resident Codex Lead lifecycle write failed (${event}): ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return false;
+		}
+	}
+
+	private emit(
+		event: string,
+		at: string,
+		detail: Record<string, unknown> = {},
+		record = true,
+	): void {
+		this.flushPollSummary(at);
+		this.heartbeat.updatedAt = at;
+		this.heartbeat.lastLifecycleEvent = event;
+		if (record) this.writeEvent(event, at, detail);
+		try {
+			this.prepareRoot();
+			assertSafeFile(this.heartbeatPath);
 			const tmp = `${this.heartbeatPath}.tmp.${process.pid}.${this.sequence++}`;
 			writeFileSync(tmp, `${JSON.stringify(this.heartbeat)}\n`, {
 				encoding: "utf8",
@@ -232,7 +317,7 @@ export class ResidentCodexLeadLifecycleObserver {
 			renameSync(tmp, this.heartbeatPath);
 		} catch (error) {
 			this.log(
-				`resident Codex Lead lifecycle write failed (${event}): ${error instanceof Error ? error.message : String(error)}`,
+				`resident Codex Lead heartbeat write failed (${event}): ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	}

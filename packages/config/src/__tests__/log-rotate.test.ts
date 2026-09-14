@@ -36,6 +36,77 @@ afterEach(() => {
 });
 
 describe("rotated log helpers", () => {
+	it("expires archives without rotating a young active file, and honors a live lock", () => {
+		const log = join(tempRoot(), "audit.log");
+		writeFileSync(log, "current\n");
+		const nowMs = Date.now();
+		const options = {
+			maxBytes: 10_000,
+			keep: 3,
+			maxAgeMs: 1000,
+			nowMs,
+			strict: true,
+		};
+		writeFileSync(`${log}.1`, "expired\n");
+		utimesSync(`${log}.1`, new Date(nowMs - 1000), new Date(nowMs - 1000));
+		mkdirSync(`${log}.rotate.lock`);
+		appendRotatedLogSync(log, "with-lock\n", options);
+		expect(existsSync(`${log}.1`)).toBe(true);
+		rmSync(`${log}.rotate.lock`, { recursive: true });
+		appendRotatedLogSync(log, "after-lock\n", options);
+		expect(existsSync(`${log}.1`)).toBe(false);
+		expect(readFileSync(log, "utf8")).toBe("current\nwith-lock\nafter-lock\n");
+	});
+
+	it("cleans stale archives on restart with a missing active file without following archive symlinks", () => {
+		const log = join(tempRoot(), "audit.log");
+		const target = `${log}.target`;
+		writeFileSync(target, "private\n");
+		writeFileSync(`${log}.1`, "expired\n");
+		const old = new Date(Date.now() - 10_000);
+		utimesSync(`${log}.1`, old, old);
+		symlinkSync(target, `${log}.2`);
+		appendRotatedLogSync(log, "restarted\n", { maxAgeMs: 1000, strict: true });
+		expect(existsSync(`${log}.1`)).toBe(false);
+		expect(lstatSync(`${log}.2`).isSymbolicLink()).toBe(true);
+		expect(readFileSync(target, "utf8")).toBe("private\n");
+		expect(readFileSync(log, "utf8")).toBe("restarted\n");
+	});
+
+	it.each([{ maxAgeMs: 0 }, { maxFileAgeMs: -1 }, { nowMs: Number.NaN }])(
+		"rejects invalid age options before strict append: %j",
+		(options) => {
+			const log = join(tempRoot(), "audit.log");
+			expect(() =>
+				appendRotatedLogSync(log, "invalid\n", { ...options, strict: true }),
+			).toThrow("invalid_log_rotation_options");
+			expect(existsSync(log)).toBe(false);
+		},
+	);
+
+	it("rotates an aged active file and prunes expired archives under the retention lock", () => {
+		const log = join(tempRoot(), "lifecycle.jsonl");
+		writeFileSync(log, "retained-event\n");
+		const createdAt = lstatSync(log).birthtimeMs;
+		writeFileSync(`${log}.1`, "expired-event\n");
+		utimesSync(
+			`${log}.1`,
+			new Date(createdAt - 8 * 86_400_000),
+			new Date(createdAt - 8 * 86_400_000),
+		);
+		appendRotatedLogSync(log, "new-event\n", {
+			maxBytes: 2_000_000,
+			keep: 7,
+			maxFileAgeMs: 86_400_000,
+			maxAgeMs: 7 * 86_400_000,
+			nowMs: createdAt + 86_400_000,
+			strict: true,
+		});
+		expect(readFileSync(log, "utf8")).toBe("new-event\n");
+		expect(readFileSync(`${log}.1`, "utf8")).toBe("retained-event\n");
+		expect(existsSync(`${log}.2`)).toBe(false);
+	});
+
 	it("publishes the shared 10 MiB / three-generation defaults", () => {
 		expect(DEFAULT_LOG_MAX_BYTES).toBe(10 * 1024 * 1024);
 		expect(DEFAULT_LOG_RETENTION).toBe(3);

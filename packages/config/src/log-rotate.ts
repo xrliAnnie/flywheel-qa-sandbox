@@ -22,6 +22,11 @@ export interface RotateLogOptions {
 	maxBytes?: number;
 	keep?: number;
 	lockStaleMs?: number;
+	/** Opt-in rotation based on active-file creation time, independent of appends. */
+	maxFileAgeMs?: number;
+	/** Opt-in removal of archives whose last write is older than this age. */
+	maxAgeMs?: number;
+	nowMs?: number;
 	/** Move unsafe generation entries aside instead of letting them block rotation. */
 	quarantineUnsafeGenerations?: boolean;
 }
@@ -42,6 +47,24 @@ export interface AppendRotatedLogResult {
 
 function positiveInteger(value: number): boolean {
 	return Number.isSafeInteger(value) && value > 0;
+}
+
+function ageOptionsValid(options: RotateLogOptions): boolean {
+	return (
+		(options.maxFileAgeMs === undefined ||
+			positiveInteger(options.maxFileAgeMs)) &&
+		(options.maxAgeMs === undefined || positiveInteger(options.maxAgeMs)) &&
+		(options.nowMs === undefined || Number.isFinite(options.nowMs))
+	);
+}
+
+function rotationDue(stats: Stats, options: RotateLogOptions): boolean {
+	const createdAt = stats.birthtimeMs > 0 ? stats.birthtimeMs : stats.mtimeMs;
+	return (
+		stats.size >= (options.maxBytes ?? DEFAULT_LOG_MAX_BYTES) ||
+		(options.maxFileAgeMs !== undefined &&
+			(options.nowMs ?? Date.now()) - createdAt >= options.maxFileAgeMs)
+	);
 }
 
 function restoreQuarantinedLockIfUnclaimed(
@@ -169,7 +192,8 @@ export function rotateLogIfNeeded(
 	if (
 		!positiveInteger(maxBytes) ||
 		!positiveInteger(keep) ||
-		!positiveInteger(lockStaleMs)
+		!positiveInteger(lockStaleMs) ||
+		!ageOptionsValid(options)
 	) {
 		return false;
 	}
@@ -180,23 +204,43 @@ export function rotateLogIfNeeded(
 		if (
 			!initial.isFile() ||
 			initial.isSymbolicLink() ||
-			initial.size < maxBytes
+			(!rotationDue(initial, options) && options.maxAgeMs === undefined)
 		) {
 			return false;
 		}
-	} catch {
-		return false;
+	} catch (error) {
+		if (
+			(error as NodeJS.ErrnoException).code !== "ENOENT" ||
+			options.maxAgeMs === undefined
+		)
+			return false;
 	}
 
 	const lock = `${path}.rotate.lock`;
 	if (!acquireRotationLock(lock, lockStaleMs)) return false;
 
 	try {
+		if (options.maxAgeMs !== undefined) {
+			for (let generation = 1; generation <= keep; generation += 1) {
+				const archive = `${path}.${generation}`;
+				try {
+					const stats = lstatSync(archive);
+					if (
+						stats.isFile() &&
+						!stats.isSymbolicLink() &&
+						(options.nowMs ?? Date.now()) - stats.mtimeMs >= options.maxAgeMs
+					)
+						rmSync(archive);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+				}
+			}
+		}
 		const current = lstatSync(path);
 		if (
 			!current.isFile() ||
 			current.isSymbolicLink() ||
-			current.size < maxBytes
+			!rotationDue(current, options)
 		) {
 			return false;
 		}
@@ -274,7 +318,8 @@ export function appendRotatedLogSync(
 		options.strict &&
 		(!positiveInteger(maxBytes) ||
 			!positiveInteger(keep) ||
-			!positiveInteger(lockStaleMs))
+			!positiveInteger(lockStaleMs) ||
+			!ageOptionsValid(options))
 	) {
 		throw new Error("invalid_log_rotation_options");
 	}
@@ -291,7 +336,7 @@ export function appendRotatedLogSync(
 		}
 	}
 	const sizeBefore = initial?.size ?? 0;
-	const rotationDue = positiveInteger(maxBytes) && sizeBefore >= maxBytes;
+	const due = initial !== undefined && rotationDue(initial, options);
 	const rotationEnabled = options.rotationEnabled ?? true;
 	const rotated = rotationEnabled
 		? rotateLogIfNeeded(path, {
@@ -300,7 +345,7 @@ export function appendRotatedLogSync(
 			})
 		: false;
 	let rotationStalled = false;
-	if (options.strict && rotationDue && !rotated) {
+	if (options.strict && due && !rotated) {
 		const current = regularFileOrMissing(path, "active_log");
 		const stalledBytes = Math.min(Number.MAX_SAFE_INTEGER, maxBytes * 2);
 		if (current && current.size >= stalledBytes) {
@@ -310,5 +355,5 @@ export function appendRotatedLogSync(
 
 	if (options.strict) appendNoFollowSync(path, data);
 	else appendFileSync(path, data, { mode: 0o600 });
-	return { sizeBefore, rotationDue, rotated, rotationStalled };
+	return { sizeBefore, rotationDue: due, rotated, rotationStalled };
 }
