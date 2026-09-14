@@ -1,7 +1,14 @@
 /** Defaults apply only after explicit beta configuration and scheduler takeover. */
 export const BETA_RELEASE_DEFAULT_INTERVAL_HOURS = 24;
 
+export const BETA_SOURCE_ORIGINS = [
+	"default_branch_head",
+	"local_deployed_sha",
+] as const;
+export type BetaSourceOrigin = (typeof BETA_SOURCE_ORIGINS)[number];
+
 export interface BetaReleaseConfig {
+	source_commit: BetaSourceOrigin;
 	interval_hours: number;
 	workflow_file?: string;
 	token_env?: string;
@@ -17,10 +24,27 @@ export function parseBetaReleaseConfig(
 	const raw = value as Record<string, unknown>;
 	if (
 		Object.keys(raw).some(
-			(key) => !["interval_hours", "workflow_file", "token_env"].includes(key),
+			(key) =>
+				![
+					"interval_hours",
+					"workflow_file",
+					"token_env",
+					"source_commit",
+				].includes(key),
 		)
 	) {
 		throw new Error("beta_release contains an unknown field");
+	}
+	const source = Object.hasOwn(raw, "source_commit")
+		? raw.source_commit
+		: "default_branch_head";
+	if (
+		typeof source !== "string" ||
+		!BETA_SOURCE_ORIGINS.includes(source as BetaSourceOrigin)
+	) {
+		throw new Error(
+			"beta_release.source_commit must be default_branch_head or local_deployed_sha",
+		);
 	}
 	const interval = Object.hasOwn(raw, "interval_hours")
 		? raw.interval_hours
@@ -56,6 +80,7 @@ export function parseBetaReleaseConfig(
 	}
 	return {
 		interval_hours: interval,
+		source_commit: source as BetaSourceOrigin,
 		...(typeof raw.workflow_file === "string"
 			? { workflow_file: raw.workflow_file }
 			: {}),

@@ -1,3 +1,4 @@
+import type { BetaSourceOrigin } from "flywheel-config";
 import type { BetaProjectConfig } from "./beta-release-config-source.js";
 import type {
 	BetaBinding,
@@ -9,6 +10,15 @@ import type { BetaReceipt } from "./beta-release-receipt.js";
 import { validateBetaReceipt } from "./beta-release-receipt.js";
 import type { BetaReleaseStore } from "./beta-release-store.js";
 
+class BetaSourceError extends Error {
+	constructor(
+		readonly code:
+			| "beta_source_unavailable"
+			| "beta_source_not_on_default_branch",
+	) {
+		super(code);
+	}
+}
 export type BetaOwner = "legacy" | "paused" | "bridge";
 export interface BetaObservedRun {
 	id: number;
@@ -24,6 +34,11 @@ export interface BetaReleaseTransport {
 		signal: AbortSignal,
 	): Promise<BetaBinding>;
 	owner(binding: BetaBinding, signal: AbortSignal): Promise<BetaOwner>;
+	onDefaultBranch(
+		binding: BetaBinding,
+		sha: string,
+		signal: AbortSignal,
+	): Promise<boolean>;
 	head(binding: BetaBinding, signal: AbortSignal): Promise<string>;
 	dispatch(
 		binding: BetaBinding,
@@ -40,6 +55,7 @@ export interface BetaScheduleObservation {
 	projectName: string;
 	owner: BetaOwner | "unknown";
 	intervalHours: number | null;
+	sourceOrigin: BetaSourceOrigin | null;
 	status: string;
 	observedAtMs: number;
 	reason: string | null;
@@ -56,6 +72,7 @@ export class BetaReleaseScheduler {
 			store: BetaReleaseStore;
 			transport: BetaReleaseTransport;
 			projects: () => Promise<BetaProjectConfig[]>;
+			localDeployedSha?: () => string | null;
 			now?: () => number;
 			onError?: (code: string) => void;
 		},
@@ -143,6 +160,7 @@ export class BetaReleaseScheduler {
 				projectName: project.projectName,
 				owner: prior.owner,
 				intervalHours: project.config?.interval_hours ?? null,
+				sourceOrigin: project.config?.source_commit ?? null,
 				status: prior.status,
 				reason: prior.reason,
 				observedAtMs: prior.observedAtMs,
@@ -333,15 +351,32 @@ export class BetaReleaseScheduler {
 				status = "ready";
 				return;
 			}
-			const sha = await transport.head(binding, signal);
-			const occurrence = store.reserve(project.projectName, due, sha, now);
+			const origin = project.config!.source_commit;
+			let sha: string;
+			if (origin === "local_deployed_sha") {
+				const deployed = this.options.localDeployedSha?.();
+				if (typeof deployed !== "string" || !/^[a-f0-9]{40}$/.test(deployed))
+					throw new BetaSourceError("beta_source_unavailable");
+				if (!(await transport.onDefaultBranch(binding, deployed, signal)))
+					throw new BetaSourceError("beta_source_not_on_default_branch");
+				sha = deployed;
+			} else {
+				sha = await transport.head(binding, signal);
+			}
+			const occurrence = store.reserve(
+				project.projectName,
+				due,
+				sha,
+				now,
+				origin,
+			);
 			if (!occurrence) return;
 			owner = await this.submit(project, binding, occurrence, now);
 			status = store.active(project.projectName)?.state ?? "ready";
 		} catch (error) {
 			status = "attention";
 			reason =
-				error instanceof BetaGitHubError
+				error instanceof BetaGitHubError || error instanceof BetaSourceError
 					? error.code
 					: "beta_observation_failed";
 			pollAfterMs = Math.max(
@@ -380,6 +415,7 @@ export class BetaReleaseScheduler {
 				projectName: project.projectName,
 				owner,
 				intervalHours: project.config?.interval_hours ?? null,
+				sourceOrigin: project.config?.source_commit ?? null,
 				status,
 				reason,
 				observedAtMs: now,

@@ -1,0 +1,30 @@
+erDiagram
+  CONFIG_YAML {
+    string source_commit "default_branch_head 或 local_deployed_sha(新增)"
+    int interval_hours "多久检查一次"
+    string workflow_file "用哪条发布工作流"
+  }
+  DEPLOYED_SHA_FILE {
+    string sha "本机当前跑的版本(不改)"
+  }
+  BETA_OCCURRENCE {
+    string occurrence_id "这一轮的编号"
+    string source_commit "冻结的源版本"
+    string source_origin "新增:源来自哪里"
+    string state "受理 / 运行 / 成功 / 失败"
+  }
+  BETA_RECEIPT {
+    string sourceCommit "请求的源版本"
+    string publishedSourceCommit "真正发布的源版本"
+    string outcome "published / no_change / covered_by_newer"
+  }
+  B3_VERDICT {
+    string sourceCommit "被评估的版本"
+    string localDeployedSha "本机当前版本"
+    string state "green / hold / unknown"
+  }
+  CONFIG_YAML ||--o{ BETA_OCCURRENCE : "决定取源策略"
+  DEPLOYED_SHA_FILE ||--o{ BETA_OCCURRENCE : "local_deployed_sha 时提供 sha"
+  BETA_OCCURRENCE ||--|| BETA_RECEIPT : "一轮一回执"
+  BETA_RECEIPT ||--o| B3_VERDICT : "B4 用 publishedSourceCommit 去问"
+  DEPLOYED_SHA_FILE ||--o{ B3_VERDICT : "提供 localDeployedSha"

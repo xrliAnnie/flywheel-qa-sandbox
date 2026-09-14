@@ -290,6 +290,41 @@ export class BetaReleaseGitHub {
 			throw new BetaGitHubError("beta_github_schema");
 		return commit.sha;
 	}
+
+	async onDefaultBranch(
+		binding: BetaBinding,
+		sha: string,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		if (!/^[a-f0-9]{40}$/.test(sha))
+			throw new BetaGitHubError("beta_github_schema");
+		const comparison = object(
+			(
+				await this.request(
+					`${this.path(binding)}/compare/${sha}...${encodeURIComponent(binding.defaultBranch)}`,
+					binding.tokenEnv,
+					signal,
+				)
+			).body,
+		);
+		const base = object(comparison.merge_base_commit);
+		if (
+			typeof comparison.status !== "string" ||
+			!["identical", "ahead", "behind", "diverged"].includes(
+				comparison.status,
+			) ||
+			!Number.isSafeInteger(comparison.behind_by) ||
+			Number(comparison.behind_by) < 0 ||
+			typeof base.sha !== "string" ||
+			!/^[a-f0-9]{40}$/.test(base.sha)
+		)
+			throw new BetaGitHubError("beta_github_schema");
+		return (
+			["identical", "ahead"].includes(comparison.status) &&
+			comparison.behind_by === 0 &&
+			base.sha === sha
+		);
+	}
 	async dispatch(
 		binding: BetaBinding,
 		occurrence: BetaOccurrence,

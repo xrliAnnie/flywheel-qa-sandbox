@@ -36,3 +36,35 @@ Issue: FLY-2393 (https://linear.app/geoforge3d/issue/FLY-2393)
 打开 `fixtures/beta-console.html`：测试数据中的flywheel ready与geoforge3d unconfigured；点击两项目检查布局和响应式。页面fixture不会调用生产API。根据Lead对问题6a05af77-6274-43fa-9b55-68f7b60eaf69的裁定：visual acceptance deferred to QA (sandbox Chromium unavailable)。实现侧DOM/XSS与管理台全族93测试是结构证据，不代替真实浏览器视觉验收。
 
 授权隔离仓还需证明跨workflow/job同名共享锁互斥、排队客户不被后来的beta取消、停用cron不入锁，以及A/B真实凭据隔离。生产A11单独保留；未取得这些证据不得宣称双项目已上线或外部授权验证已完成。
+
+## FLY-2508：取源策略与回滚
+
+项目的 canonical `.flywheel/config.yaml` 中，`beta_release.source_commit`
+可选 `default_branch_head`（缺省）或 `local_deployed_sha`。
+前者保持从默认分支最新 commit 取源；后者仅适用于运行在该宿主机上的自托管项目，
+读取 `FLYWHEEL_DEPLOYED_SHA_FILE` 或 `~/.flywheel/deployed-sha`。
+这个文件是宿主机全局状态，不是每项目文件；误配其他项目将受默认分支 compare 守卫约束。
+
+沿用上文的凭据配置、暂停、排空与 owner 接管步骤；本改动不会自动接管 legacy。
+经运维授权接管 flywheel 时，在既有 beta_release 段内添加：
+
+```yaml
+source_commit: local_deployed_sha
+```
+
+源缺失、非法或不在默认分支上时，泳道进入 attention，15 分钟后重试；
+不会回退到默认分支 HEAD。管理台“当前配置：内部测试版取自 …”表示当前配置，
+在途 occurrence 保留原先冻结的 source_commit 与 source_origin。
+
+验收须使用真实 occurrence 和真实 beta 回执：
+`published | no_change` 的 `publishedSourceCommit` 必须等于 occurrence 的 source_commit，
+并用该 SHA 请求 B3 verdict，核对 `subject.sourceCommit === evidence.localDeployedSha`。
+Lead 裁定允许 `soak_insufficient | green | hold`，
+但不能含 `no_deployment_evidence` 或 `not_currently_deployed`。
+`covered_by_newer` 表示已有后代版本，安全结算但不能充当同 SHA 对齐验收；
+等待后续 `published | no_change`。真实运行还依赖 FLY-2534 workflow 修复落地。
+
+回滚二进制时，必须同时从配置删除 `source_commit` 键：
+旧解析器不认识此键，会将配置判为 config_invalid 并停止新派发。
+数据库的 nullable source_origin 列可保留，历史行保持 NULL，无需删除列或回填数据。
+本策略不改变 updater 节奏、B3 soak policy 或发布工作流。

@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import type { BetaProjectConfig } from "../beta-release-config-source.js";
 import type { BetaBinding, BetaOccurrence } from "../beta-release-contract.js";
@@ -20,6 +20,7 @@ const projects: BetaProjectConfig[] = ["a", "b"].map((name, i) => ({
 	reason: null,
 	config: {
 		interval_hours: i ? 24 : 6,
+		source_commit: "default_branch_head",
 		workflow_file: "beta.yml",
 		token_env: `TOKEN_${name.toUpperCase()}`,
 	},
@@ -41,6 +42,9 @@ function fixture() {
 		},
 		async owner() {
 			return owner;
+		},
+		async onDefaultBranch() {
+			return true;
 		},
 		async head() {
 			return "a".repeat(40);
@@ -455,4 +459,185 @@ it("deduplicates project errors until recovery without combining project lanes",
 	now += hour;
 	await scheduler.tick();
 	expect(errors).toHaveLength(4);
+});
+
+it.each(["missing", "uninjected", "invalid", "off-branch", "github"] as const)(
+	"fails closed for deployed source %s and recovers after cooldown",
+	async (mode) => {
+		const { BetaGitHubError } = await import("../beta-release-github.js");
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		const f = fixture();
+		let now = 0;
+		let source: string | null =
+			mode === "missing" ? null : mode === "invalid" ? "oops" : "b".repeat(40);
+		let broken = true;
+		const head = vi.spyOn(f.transport, "head");
+		const compare = vi
+			.spyOn(f.transport, "onDefaultBranch")
+			.mockImplementation(async () => {
+				if (broken && mode === "github")
+					throw new BetaGitHubError("beta_github_http_404");
+				return !(broken && mode === "off-branch");
+			});
+		const project = {
+			...projects[0]!,
+			config: {
+				...projects[0]!.config!,
+				source_commit: "local_deployed_sha" as const,
+			},
+		};
+		const options = {
+			store: store.betaSchedules,
+			transport: f.transport,
+			projects: async () => [project],
+			now: () => now,
+			...(mode === "uninjected" ? {} : { localDeployedSha: () => source }),
+		};
+		const scheduler = new BetaReleaseScheduler(options);
+		await scheduler.tick();
+		now = 6 * hour;
+		await scheduler.tick();
+		const reason =
+			mode === "github"
+				? "beta_github_http_404"
+				: mode === "off-branch"
+					? "beta_source_not_on_default_branch"
+					: "beta_source_unavailable";
+		expect(scheduler.snapshot()[0]).toMatchObject({
+			status: "attention",
+			reason,
+			sourceOrigin: "local_deployed_sha",
+		});
+		expect(store.betaSchedules.observation("a")?.pollAfterMs).toBe(
+			now + 900000,
+		);
+		expect(store.betaSchedules.active("a")).toBeNull();
+		expect(f.dispatched).toHaveLength(0);
+		expect(head).not.toHaveBeenCalled();
+		if (["missing", "invalid", "uninjected"].includes(mode))
+			expect(compare).not.toHaveBeenCalled();
+		source = "b".repeat(40);
+		broken = false;
+		const resumed = new BetaReleaseScheduler({
+			...options,
+			localDeployedSha: () => source,
+		});
+		now += 899999;
+		await resumed.tick();
+		expect(f.dispatched).toHaveLength(0);
+		now = 19 * hour;
+		await resumed.tick();
+		expect(f.dispatched).toHaveLength(1);
+		expect(f.dispatched[0]!.occurrence).toMatchObject({
+			sourceCommit: source,
+			sourceOrigin: "local_deployed_sha",
+			scheduledAtMs: 18 * hour,
+		});
+		expect(head).not.toHaveBeenCalled();
+	},
+);
+
+it("keeps default sourcing independent and freezes active source across a policy change", async () => {
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	const f = fixture();
+	let now = 0;
+	const project = { ...projects[0]!, config: { ...projects[0]!.config! } };
+	const localDeployedSha = vi.fn(() => "b".repeat(40));
+	const head = vi.spyOn(f.transport, "head");
+	const compare = vi.spyOn(f.transport, "onDefaultBranch");
+	const scheduler = new BetaReleaseScheduler({
+		store: store.betaSchedules,
+		transport: f.transport,
+		projects: async () => [project],
+		now: () => now,
+		localDeployedSha,
+	});
+	await scheduler.tick();
+	now = 6 * hour;
+	await scheduler.tick();
+	expect(head).toHaveBeenCalledTimes(1);
+	expect(compare).not.toHaveBeenCalled();
+	expect(localDeployedSha).not.toHaveBeenCalled();
+	const frozen = store.betaSchedules.active("a");
+	project.config.source_commit = "local_deployed_sha";
+	const observe = f.transport.observe;
+	f.transport.observe = async (_b, o) => ({
+		runs: o.runIds.map((id) => ({
+			id,
+			status: "in_progress",
+			conclusion: null,
+		})),
+	});
+	await scheduler.tick();
+	expect(store.betaSchedules.active("a")).toMatchObject({
+		sourceCommit: frozen!.sourceCommit,
+		sourceOrigin: "default_branch_head",
+	});
+	expect(scheduler.snapshot()[0]?.sourceOrigin).toBe("local_deployed_sha");
+	f.transport.observe = observe;
+	await scheduler.tick();
+	now = 12 * hour;
+	await scheduler.tick();
+	expect(f.dispatched[1]!.occurrence).toMatchObject({
+		sourceCommit: "b".repeat(40),
+		sourceOrigin: "local_deployed_sha",
+	});
+});
+
+it("settles covered_by_newer safely but only published receipts prove same-source alignment", async () => {
+	const store = await StateStore.create(":memory:");
+	stores.push(store);
+	const f = fixture();
+	let now = 0;
+	let covered = true;
+	const observe = f.transport.observe;
+	f.transport.observe = async (b, o, s) => {
+		const result = await observe(b, o, s);
+		if (covered)
+			for (const run of result.runs)
+				if (run.receipt)
+					run.receipt = {
+						...run.receipt,
+						outcome: "covered_by_newer",
+						publishedSourceCommit: "c".repeat(40),
+					};
+		return result;
+	};
+	const scheduler = new BetaReleaseScheduler({
+		store: store.betaSchedules,
+		transport: f.transport,
+		now: () => now,
+		projects: async () => [
+			{
+				...projects[0]!,
+				config: {
+					...projects[0]!.config!,
+					source_commit: "local_deployed_sha",
+				},
+			},
+		],
+		localDeployedSha: () => "b".repeat(40),
+	});
+	await scheduler.tick();
+	now = 6 * hour;
+	await scheduler.tick();
+	const old = f.dispatched[0]!.occurrence;
+	await scheduler.tick();
+	expect(store.betaSchedules.active("a")).toBeNull();
+	const rollback = store.betaSchedules.latestResult("a")![0]!;
+	expect(rollback.outcome).toBe("covered_by_newer");
+	expect(rollback.sourceCommit).toBe(old.sourceCommit);
+	expect(rollback.publishedSourceCommit).not.toBe(old.sourceCommit);
+	expect(scheduler.snapshot()[0]?.status).toBe("published");
+	covered = false;
+	now = 12 * hour;
+	await scheduler.tick();
+	await scheduler.tick();
+	const published = store.betaSchedules.latestResult("a")![0]!;
+	expect(published.outcome).toBe("published");
+	expect(published.publishedSourceCommit).toBe(
+		f.dispatched[1]!.occurrence.sourceCommit,
+	);
 });

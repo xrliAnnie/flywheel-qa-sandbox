@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { BETA_SOURCE_ORIGINS, type BetaSourceOrigin } from "flywheel-config";
 import {
 	type BetaBinding,
 	type BetaLane,
@@ -13,7 +14,7 @@ const laneSelect = `project_name AS projectName, repo_id AS repositoryId, canoni
  activated_at_ms AS activatedAtMs, last_due_at_ms AS lastDueAtMs, next_due_at_ms AS nextDueAtMs,
  active_occurrence_id AS activeOccurrenceId, interval_ms AS intervalMs, token_env AS tokenEnv`;
 const occurrenceSelect = `occurrence_id AS occurrenceId, project_name AS projectName,
- binding_revision AS bindingRevision, scheduled_at_ms AS scheduledAtMs, source_commit AS sourceCommit,
+ binding_revision AS bindingRevision, scheduled_at_ms AS scheduledAtMs, source_commit AS sourceCommit, source_origin AS sourceOrigin,
  state, run_ids_json AS runIdsJson, attempt_count AS attemptCount, retry_at_ms AS retryAtMs,
  last_error AS lastError, created_at_ms AS createdAtMs, settled_at_ms AS settledAtMs`;
 
@@ -36,6 +37,13 @@ export class BetaReleaseStore {
 				UNIQUE(project_name, binding_revision, scheduled_at_ms)
 			);
 		`);
+		const occurrenceColumns = this.db
+			.prepare("PRAGMA table_info(beta_schedule_occurrences)")
+			.all() as { name: string }[];
+		if (!occurrenceColumns.some((c) => c.name === "source_origin"))
+			this.db.exec(
+				"ALTER TABLE beta_schedule_occurrences ADD COLUMN source_origin TEXT",
+			);
 		const columns = this.db
 			.prepare("PRAGMA table_info(beta_schedule_lanes)")
 			.all() as { name: string }[];
@@ -171,7 +179,10 @@ export class BetaReleaseStore {
 		due: number,
 		sourceCommit: string,
 		now: number,
+		sourceOrigin: BetaSourceOrigin,
 	): BetaOccurrence | null {
+		if (!BETA_SOURCE_ORIGINS.includes(sourceOrigin))
+			throw new Error("beta source origin invalid");
 		if (!/^[a-f0-9]{40}$/.test(sourceCommit))
 			throw new Error("beta source commit invalid");
 		if (
@@ -198,6 +209,7 @@ export class BetaReleaseStore {
 					bindingRevision: lane.bindingRevision,
 					scheduledAtMs: due,
 					sourceCommit,
+					sourceOrigin,
 					state: "prepared",
 					runIds: [],
 					attemptCount: 0,
@@ -208,8 +220,8 @@ export class BetaReleaseStore {
 				};
 				const inserted = this.db
 					.prepare(`INSERT OR IGNORE INTO beta_schedule_occurrences
-			 (occurrence_id,project_name,binding_revision,scheduled_at_ms,source_commit,state,run_ids_json,attempt_count,created_at_ms)
-			 VALUES (@occurrenceId,@projectName,@bindingRevision,@scheduledAtMs,@sourceCommit,@state,'[]',0,@createdAtMs)`)
+			 (occurrence_id,project_name,binding_revision,scheduled_at_ms,source_commit,source_origin,state,run_ids_json,attempt_count,created_at_ms)
+			 VALUES (@occurrenceId,@projectName,@bindingRevision,@scheduledAtMs,@sourceCommit,@sourceOrigin,@state,'[]',0,@createdAtMs)`)
 					.run(occurrence);
 				if (!inserted.changes) return null;
 				this.db

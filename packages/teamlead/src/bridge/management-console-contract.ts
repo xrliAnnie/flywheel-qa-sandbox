@@ -5,6 +5,7 @@ import type {
 	ModelCatalog,
 	ModelSurface,
 } from "flywheel-config";
+import { BETA_SOURCE_ORIGINS, type BetaSourceOrigin } from "flywheel-config";
 import type { WorkflowMenuNodePolicy } from "../workflow-menu-policy.js";
 import type { WorkflowNodeType } from "../workflow-template.js";
 
@@ -251,6 +252,7 @@ export interface ManagementCronView {
 }
 
 export interface ManagementBetaScheduleView {
+	sourceOrigin: BetaSourceOrigin | null;
 	owner: "legacy" | "paused" | "bridge" | "unknown";
 	configuredIntervalHours: number | null;
 	effectiveIntervalHours: number | null;
@@ -406,6 +408,12 @@ export function assertManagementSnapshot(
 			!Array.isArray(beta.activeRuns)
 		)
 			throw new Error("invalid beta schedule snapshot");
+		if (
+			beta.sourceOrigin !== null &&
+			(typeof beta.sourceOrigin !== "string" ||
+				!BETA_SOURCE_ORIGINS.includes(beta.sourceOrigin as BetaSourceOrigin))
+		)
+			throw new Error("invalid beta schedule source origin");
 		for (const key of ["configuredIntervalHours", "effectiveIntervalHours"])
 			if (
 				beta[key] !== null &&

@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2508 · 让内部测试版和本机跑的版本对上号 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  .scroll { overflow-x:auto; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .state { display:inline-block; padding:2px 10px; border-radius:8px; font-weight:700; font-size:13px; }
+  .state.g { background:#e6f9ed; color:#1d7a3d; }
+  .state.h { background:#fff2dd; color:#8a5200; }
+  .state.u { background:#ececf0; color:#515154; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2508 · 让内部测试版和本机跑的版本对上号</h1>
+<div class="meta">Issue <code>FLY-2508</code> · 1143 Epic 的 B3a · 设计节点 · 2026-09-13 · __REVIEW_META__ · 文档:<code>engineering/doc/FLY-2508-updater-beta-alignment/</code></div>
+
+<section class="card green" data-title="一句话">
+  <h2>一句话</h2>
+  <p class="summary-line">以后 flywheel 的<strong>内部测试版</strong>(beta,先给自己人用的试用版)不再从 GitHub 主分支的最新代码铸,而是从<strong>你这台机器此刻真正在跑的那个版本</strong>铸 —— 这样 B3(那张「这版稳不稳」的健康表)问到的版本,就恰好是它有证据的那一个。</p>
+  <p class="note">名词解释:<strong>更新器 updater</strong> = 每天 00:00 / 12:00 自动把这台机器的 Flywheel 更新到主分支最新代码的小程序;<strong>deployed-sha</strong> = 更新器写在本机的一行记录,内容是「现在跑的是哪个版本」(版本用一串代码指纹标识);<strong>B3</strong> = FLY-2390 造的判据,它只对本机真跑过的版本说 green / hold;<strong>B4</strong> = 将来「你不喊停就自动对外发布」的那扇门,它要先问 B3。</p>
+  <div class="cbox"><label for="c-summary">对「一句话」的意见</label><textarea id="c-summary" data-key="summary" data-title="一句话" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card red" data-title="现场事实">
+  <h2>现场事实:为什么今天永远对不上</h2>
+  <ul>
+    <li><strong>两条线各自采样</strong>:更新器每天两次把本机推进到主分支最新;内部测试版每 6 小时从主分支最新另切一次。今天(09-13)本机跑的是 <code>4bad8ae</code>,主分支已经到 <code>26ebc49</code>,中间隔了 3 次合并。</li>
+    <li><strong>B3 只认本机跑过的</strong>:它的部署证据来自 deployed-sha;拿一个本机没跑过的版本去问,答案固定是「说不清(没有部署证据)」。所以 B4 基本永远拿不到 green —— 这不是 B3 坏了,是两条线没对齐。</li>
+    <li><strong>Bridge 的内部测试版调度器(FLY-2393)还没接管</strong>:生产里它的两张账本是空的,GitHub 上也没有那个「谁来调度」的控制开关,现在铸版的仍是 GitHub 上那条旧的 6 小时定时任务;GitHub 读不到你机器上的文件。</li>
+  </ul>
+  <div class="callout red"><strong>顺带发现的故障(已报给 Tadashi;他裁定这是已有主的 FLY-2534,本单不修)</strong>:FLY-2393 合入主分支之后,那条旧的 6 小时定时任务的配置文件被 GitHub 判为无法解析 —— 09-12 晚上起主分支每次提交都留下一条「0 个步骤、失败」的运行记录,09-13 一整天没有铸出任何内部测试版。根因是配置里一处引用了 GitHub 不允许在那个位置用的变量,FLY-2534 正在修并给所有工作流加一道语法守卫。在它修好之前,没有真实的内部测试版可以拿来验收本单。</div>
+  <div class="cbox"><label for="c-facts">对「现场事实」的意见</label><textarea id="c-facts" data-key="facts" data-title="现场事实" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程:一份文件,四个读者</h2>
+  <p>deployed-sha 这份文件今天已经有三个读者:更新器(判断要不要更新)、重启脚本(记部署账)、B3(判断有没有证据)。本单只是让第四个读者 —— Bridge 的内部测试版调度器 —— 在 flywheel 这条泳道上也读它:到期时不再去 GitHub 问「主分支最新是谁」,而是读这份文件,把本机正在跑的版本交给 GitHub 的发布流程去铸内部测试版。</p>
+  <div class="diagram"><!--DIAGRAM:d1--></div>
+  <div class="cap">图 1 · 对齐之后的完整流向(流程图)</div>
+  <ul>
+    <li><strong>按项目配置,不写死项目名</strong>:在项目自己的配置文件里加一行 <code>source_commit: local_deployed_sha</code>(「源版本取本机已部署的」);不写就是老行为(取主分支最新)。GeoForge3D 这类不在本机跑的项目保持老行为。</li>
+    <li><strong>拿不准就停</strong>:文件读不到或内容不像版本指纹 ⇒ 这条泳道标「需要检查」、不发版、<strong>不悄悄退回主分支最新</strong>;版本不在主分支上(比如误配到别的项目)⇒ 同样停下。这两个守卫都发生在「冻结这一轮」之前,所以修好之后下一次检查自动恢复,不会补发一串历史版本。</li>
+    <li><strong>接收端不用改</strong>:GitHub 那边的发布流程本来就会检查「这个版本在主分支上吗」,并且遇到「已经有更新的内部测试版了」会记为 covered_by_newer(不把指针退回旧代码)、遇到「这个版本已经铸过」会记为 no_change。回滚、紧急部署这些情形都被它现有的逻辑兜住。</li>
+  </ul>
+  <div class="cbox"><label for="c-flow">对「核心流程」的意见</label><textarea id="c-flow" data-key="flow" data-title="核心流程" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card purple" data-title="数据与结构模型">
+  <h2>数据与结构模型:只加两个字段</h2>
+  <div class="diagram"><!--DIAGRAM:d2--></div>
+  <div class="cap">图 2 · 配置、本机记录、每一轮铸版、回执、B3 结论之间的关系(实体关系图)</div>
+  <ul>
+    <li><strong>配置里加一个键</strong> <code>beta_release.source_commit</code>,只允许两个值:<code>default_branch_head</code>(主分支最新,默认)/ <code>local_deployed_sha</code>(本机已部署)。放在 FLY-2393 已经定好的唯一位置,不进环境变量、不进名册。</li>
+    <li><strong>每一轮铸版记一个来源</strong> <code>source_origin</code>,冻结后不变,历史行为空。这样事后能一眼看出「这个内部测试版是从本机版本铸的」,是验收证据链的第一环。</li>
+    <li><strong>不动的</strong>:deployed-sha 文件、部署账本、B3 的判定与结论格式、更新器、GitHub 发布流程。</li>
+    <li><strong>回滚干净</strong>:新字段是惰性的,还原代码即可。唯一注意:老代码不认识新配置键,会把整段配置判为无效并停发(这是安全方向),所以回退代码时要同时删掉那一行配置 —— 已写进运维手册。</li>
+  </ul>
+  <div class="cbox"><label for="c-model">对「数据与结构模型」的意见</label><textarea id="c-model" data-key="model" data-title="数据与结构模型" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card amber" data-title="关键取舍与否决的方案">
+  <h2>关键取舍与否决的方案</h2>
+  <div class="diagram"><!--DIAGRAM:d3--></div>
+  <div class="cap">图 3 · 三个候选与取舍(流程图);Tadashi 已裁定采纳候选 1</div>
+  <div class="scroll"><table>
+    <tr><th>问题</th><th>选了</th><th>否决了什么、为什么</th></tr>
+    <tr><td>谁向谁对齐</td><td><span class="badge do">选</span>内部测试版向本机对齐(从本机版本铸)</td><td><span class="badge no">否</span>B3 按「祖先关系」把没跑过的版本视同跑过 —— 那些代码的字节从没在本机跑过,判 green 就是拿没验证过的东西冒充验证过;还要长期维护一张「哪些改动算运行时改动」的名单,分类错一次就出事。<span class="badge no">否</span>更新器改去部署内部测试版 —— 你紧急部署一个更新的版本之后,下一次更新器回不到旧的内部测试版,会每 12 小时告警一次;本机能不能更新还会绑死在外部发布服务上。</td></tr>
+    <tr><td>旧的 6 小时定时任务要不要也对齐</td><td><span class="badge do">选</span>不对齐,等 FLY-2393 接管</td><td><span class="badge no">否</span>让本机把版本号推到 GitHub 的变量里给旧任务读 —— 为一个注定要退出的过渡态多造一条带凭据的出站写通道。</td></tr>
+    <tr><td>读不到本机版本时怎么办</td><td><span class="badge do">选</span>停下、标「需要检查」</td><td><span class="badge no">否</span>退回主分支最新 —— 那就又对不上了,而且是悄悄的。</td></tr>
+    <tr><td>怎么防误配</td><td><span class="badge do">选</span>发版前用 GitHub 已有的「比较两个版本」接口确认它在主分支上</td><td><span class="badge no">否</span>在代码里写死「只有 flywheel 能用这个选项」—— 项目名硬编码是另一套要维护的镜像词表。</td></tr>
+  </table></div>
+  <div class="cbox"><label for="c-tradeoffs">对「关键取舍」的意见</label><textarea id="c-tradeoffs" data-key="tradeoffs" data-title="关键取舍与否决的方案" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="Tadashi 已裁的两个问题">
+  <h2>Tadashi 已裁的两个问题(设计期间非阻塞提问,已折入)</h2>
+  <ol>
+    <li><strong>方案取舍与生效前置?</strong> → 采纳候选 1,否决 2 和 3;对齐只在 Bridge 接管之后生效,过渡期不另造写通道。</li>
+    <li><strong>对齐之后还有第二道坎</strong>:B3 要求一个版本<strong>连续跑满 12 小时</strong>而且<strong>此刻仍在跑</strong>才可能 green;可更新器每 12 小时只要主分支有新东西就换版本 —— 所以一个版本的「在跑时段」也就 12 小时左右,green 的窗口几乎为零,只有主分支半天没动才可能 green。→ Tadashi 裁定本单<strong>不动</strong>「跑满多久」这个参数、也不动更新器节奏;验收改为「B3 的答案离开『没有部署证据』,落到『还没跑够』/ green / hold 之一」。把「跑满多久」降到 12 小时以下是一个产品参数,由 Tadashi 另行向你呈报。</li>
+  </ol>
+  <div class="cbox"><label for="c-lead">对「已裁问题」的意见</label><textarea id="c-lead" data-key="lead" data-title="Tadashi 已裁的两个问题" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="怎么验收">
+  <h2>怎么验收</h2>
+  <div class="scroll"><table>
+    <tr><th>issue 要求</th><th>本单怎么证明</th></tr>
+    <tr><td>用一张真实的内部测试版跑一次 B3,答案不再是「没有部署证据」</td><td>接管后第一轮铸版:账本里这一轮的来源 = 本机已部署;GitHub 回执里发布的版本 = 本机版本;拿它去问 B3,答案落在「还没跑够 / green / hold」之一,原因列表里没有「没有部署证据」「不是当前在跑的」</td></tr>
+    <tr><td>能看到归因依据</td><td>证据链三环:账本来源字段 → 回执的发布版本 → B3 结论里「被评估的版本」与「本机当前版本」两个指纹相等</td></tr>
+    <tr><td>默认行为不变</td><td>没配这个键的项目,现有全部测试原样通过,GitHub「主分支最新」接口照常被调用,新守卫不被触发</td></tr>
+    <tr><td>拿不准就停</td><td>文件缺失 / 内容非法 / 版本不在主分支 / GitHub 接口出错四种情况:不冻结、不发版、标「需要检查」、15 分钟后再试;修好后自动恢复且不补发历史轮次</td></tr>
+  </table></div>
+  <p class="note">验收有三个前置:FLY-2390(B3)的代码合入;FLY-2534 把旧定时任务的解析故障修好;按 FLY-2393 的运维手册完成接管。没有真实内部测试版时,不用模拟的来冒充验收。</p>
+  <div class="cbox"><label for="c-accept">对「怎么验收」的意见</label><textarea id="c-accept" data-key="accept" data-title="怎么验收" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card gray" data-title="诚实边界">
+  <h2>诚实边界:这单做什么、不做什么</h2>
+  <h3>做</h3>
+  <ul>
+    <li>配置里一个新键、调度器里一个取源分支和两个守卫、每轮铸版一个来源字段、管理台一行「内部测试版取自:本机已部署版本」、运维手册一小节。</li>
+  </ul>
+  <h3>不做</h3>
+  <ul>
+    <li>不改 B3 的判定、不改「跑满多久」的默认值;不改更新器的节奏或部署目标。</li>
+    <li>不改 GitHub 发布流程、不修那条旧定时任务的解析故障(那是 FLY-2534 的事)。</li>
+    <li>不执行接管、不改生产配置、不铸任何版本、不部署。</li>
+    <li>不做 B4;不做「祖先关系视同跑过」。</li>
+  </ul>
+  <div class="callout amber"><strong>三条要说清的</strong>:① 对齐只在 Bridge 接管之后生效,接管前 B4 仍然拿「说不清」。② 对齐之后 B3 的常见答案会从「没有部署证据」变成「还没跑够 12 小时」,要真正拿到 green 还得解决第二道坎(参数或节奏),那是另一个决定。③ FLY-2534 把旧定时任务修好之前,没有任何新的内部测试版,验收做不了。</div>
+  <div class="cbox"><label for="c-boundary">对「诚实边界」的意见</label><textarea id="c-boundary" data-key="boundary" data-title="诚实边界" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页所有意见</button>
+    <span class="status" id="copy-status"></span>
+  </div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2508";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

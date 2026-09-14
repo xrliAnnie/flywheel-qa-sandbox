@@ -140,3 +140,29 @@ it("requires an operator allowlist before inspecting a project's selected creden
 			.reason,
 	).toBe("credential_missing");
 });
+
+it("refreshes the source policy through the shared parser and rejects invalid policy configuration", async () => {
+	const a = await project(
+		"a",
+		"beta_release: {workflow_file: beta.yml, token_env: A_TOKEN}",
+	);
+	const env = { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "token" };
+	expect(
+		(await readBetaReleaseProjects([a], env))[0]?.config?.source_commit,
+	).toBe("default_branch_head");
+	await writeFile(
+		join(a.projectRoot, ".flywheel/config.yaml"),
+		"beta_release: {workflow_file: beta.yml, token_env: A_TOKEN, source_commit: local_deployed_sha}",
+	);
+	expect(
+		(await readBetaReleaseProjects([a], env))[0]?.config?.source_commit,
+	).toBe("local_deployed_sha");
+	await writeFile(
+		join(a.projectRoot, ".flywheel/config.yaml"),
+		"beta_release: {workflow_file: beta.yml, token_env: A_TOKEN, source_commit: private-invalid}",
+	);
+	const invalid = (await readBetaReleaseProjects([a], env))[0]!;
+	expect(invalid.reason).toBe("config_invalid");
+	expect(invalid.config).toBeUndefined();
+	expect(JSON.stringify(invalid)).not.toContain("private-invalid");
+});

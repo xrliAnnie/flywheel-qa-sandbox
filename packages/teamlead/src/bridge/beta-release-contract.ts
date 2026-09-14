@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { BetaSourceOrigin } from "flywheel-config";
 
 export interface BetaBinding {
 	projectName: string;
@@ -22,6 +23,7 @@ export interface BetaOccurrence {
 	bindingRevision: string;
 	scheduledAtMs: number;
 	sourceCommit: string;
+	sourceOrigin: BetaSourceOrigin | null;
 	state:
 		| "prepared"
 		| "dispatching"

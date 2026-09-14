@@ -22,6 +22,7 @@ it("atomically reserves one occurrence per lane and preserves it across reopenin
 			6 * 3600000,
 			"a".repeat(40),
 			6 * 3600000,
+			"default_branch_head",
 		);
 		expect(first?.state).toBe("prepared");
 		expect(first?.occurrenceId).toMatch(/^[a-f0-9]{64}$/);
@@ -31,6 +32,7 @@ it("atomically reserves one occurrence per lane and preserves it across reopenin
 				6 * 3600000,
 				"b".repeat(40),
 				6 * 3600000,
+				"default_branch_head",
 			),
 		).toBeNull();
 		store.close();
@@ -60,11 +62,23 @@ it("stores auditable binding and occurrence columns and rejects future or malfor
 			0,
 			100,
 		);
-		expect(() => store.betaSchedules.reserve("a", 100, "invalid", 100)).toThrow(
-			"source",
-		);
+		expect(() =>
+			store.betaSchedules.reserve(
+				"a",
+				100,
+				"invalid",
+				100,
+				"default_branch_head",
+			),
+		).toThrow("source");
 		expect(
-			store.betaSchedules.reserve("a", 100, "a".repeat(40), 99),
+			store.betaSchedules.reserve(
+				"a",
+				100,
+				"a".repeat(40),
+				99,
+				"default_branch_head",
+			),
 		).toBeNull();
 		const db = (
 			store as unknown as {
@@ -106,7 +120,13 @@ it("guards dispatch ownership and only advances the settled project's next grid 
 				0,
 				100,
 			);
-		const first = store.betaSchedules.reserve("a", 100, "a".repeat(40), 100)!;
+		const first = store.betaSchedules.reserve(
+			"a",
+			100,
+			"a".repeat(40),
+			100,
+			"default_branch_head",
+		)!;
 		expect(
 			store.betaSchedules.transition("a", first.occurrenceId, "prepared", {
 				state: "dispatching",
@@ -132,7 +152,13 @@ it("guards dispatch ownership and only advances the settled project's next grid 
 		expect(store.betaSchedules.lane("b")?.nextDueAtMs).toBe(100);
 		expect(store.betaSchedules.active("a")).toBeNull();
 		expect(
-			store.betaSchedules.reserve("a", 100, "a".repeat(40), 500),
+			store.betaSchedules.reserve(
+				"a",
+				100,
+				"a".repeat(40),
+				500,
+				"default_branch_head",
+			),
 		).toBeNull();
 	} finally {
 		store.close();
@@ -163,6 +189,7 @@ it("recalculates idle cadence only when interval changes, coalesces downtime and
 			18 * hour,
 			"a".repeat(40),
 			19 * hour,
+			"default_branch_head",
 		)!;
 		expect(store.betaSchedules.due("a", 24 * hour, 30 * hour)).toBeNull();
 		expect(store.betaSchedules.active("a")?.scheduledAtMs).toBe(18 * hour);
@@ -215,6 +242,7 @@ it("keeps 6h and 24h ledgers independent over 48h", async () => {
 					due,
 					"a".repeat(40),
 					time,
+					"default_branch_head",
 				)!;
 				counts[name]++;
 				store.betaSchedules.transition(

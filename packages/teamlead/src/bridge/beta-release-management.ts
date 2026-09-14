@@ -47,6 +47,7 @@ export function createBetaManagementProvider(options: {
 					label,
 					reason: stale ? "observation_stale" : observation.reason,
 					configuredIntervalHours: observation.intervalHours,
+					sourceOrigin: observation.sourceOrigin,
 					effectiveIntervalHours:
 						owner === "legacy"
 							? 6

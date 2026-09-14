@@ -556,6 +556,8 @@ const MANAGEMENT_CONSOLE_APP = `
     var html='<section class="beta-schedule" aria-label="内部测试版节奏"><strong>内部测试版</strong><div>'+esc(beta.label)+'</div>';
     if(beta.configuredIntervalHours!==null){html+='<span>配置 '+esc(beta.configuredIntervalHours)+' 小时</span> · ';}
     if(beta.effectiveIntervalHours!==null){html+='<span>当前 '+esc(beta.effectiveIntervalHours)+' 小时</span>';}
+    var sourceLabel=beta.sourceOrigin==="default_branch_head"?"主分支最新":beta.sourceOrigin==="local_deployed_sha"?"本机已部署版本":null;
+    if(sourceLabel){html+='<div>当前配置：内部测试版取自 '+esc(sourceLabel)+'</div>';}
     if(beta.nextDueAtMs!==null){html+='<div>下次检查：'+esc(when(beta.nextDueAtMs))+'</div>';}
     if(beta.lastPublished){html+='<div>最近版本：'+esc(beta.lastPublished.version)+' · '+esc(when(beta.lastPublished.publishedAt))+'</div>';}
     (beta.activeRuns||[]).forEach(function(run){if(/^https:\\/\\/github\\.com\\/[A-Za-z0-9][A-Za-z0-9_.-]*\\/[A-Za-z0-9_.-]+\\/actions\\/runs\\/[1-9][0-9]*$/.test(run.url)){html+='<a target="_blank" rel="noopener noreferrer" href="'+esc(run.url)+'">运行 #'+esc(run.id)+'</a> ';}});

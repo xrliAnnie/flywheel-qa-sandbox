@@ -4,9 +4,13 @@ import { parseBetaReleaseConfig } from "../beta-release-config.js";
 describe("beta release authoring", () => {
 	it("keeps an absent block unconfigured and defaults only a present block to 24h", () => {
 		expect(parseBetaReleaseConfig(undefined)).toBeUndefined();
-		expect(parseBetaReleaseConfig({})).toEqual({ interval_hours: 24 });
+		expect(parseBetaReleaseConfig({})).toEqual({
+			interval_hours: 24,
+			source_commit: "default_branch_head",
+		});
 		expect(parseBetaReleaseConfig({ interval_hours: 6 })).toEqual({
 			interval_hours: 6,
+			source_commit: "default_branch_head",
 		});
 	});
 });
@@ -50,6 +54,7 @@ it("rejects malformed configuration without including supplied values in errors"
 			token_env: "PROJECT_ACTIONS_TOKEN",
 		}),
 	).toEqual({
+		source_commit: "default_branch_head",
 		interval_hours: 168,
 		workflow_file: "beta-release.yaml",
 		token_env: "PROJECT_ACTIONS_TOKEN",
@@ -68,6 +73,10 @@ decision_layer: {autonomy_level: observer, escalation_channel: dev}
 		["", undefined],
 		["beta_release: {}", {}],
 		["beta_release: {interval_hours: 6}", { interval_hours: 6 }],
+		[
+			"beta_release: {source_commit: local_deployed_sha}",
+			{ source_commit: "local_deployed_sha" },
+		],
 	] as const) {
 		const config = await new ConfigLoader(async () => base + yaml).load(
 			"/project",
@@ -82,4 +91,25 @@ decision_layer: {autonomy_level: observer, escalation_channel: dev}
 	await expect(
 		new ConfigLoader(async () => `${base}beta_release: null`).load("/project"),
 	).rejects.toThrow("beta_release");
+});
+
+it("accepts only the two source policies without echoing invalid inputs", () => {
+	for (const source_commit of ["default_branch_head", "local_deployed_sha"]) {
+		expect(parseBetaReleaseConfig({ source_commit })).toEqual({
+			interval_hours: 24,
+			source_commit,
+		});
+	}
+	for (const source_commit of [
+		1,
+		"main",
+		null,
+		"",
+		"private-secret",
+		undefined,
+	]) {
+		expect(() => parseBetaReleaseConfig({ source_commit })).toThrow(
+			"beta_release.source_commit must be default_branch_head or local_deployed_sha",
+		);
+	}
 });

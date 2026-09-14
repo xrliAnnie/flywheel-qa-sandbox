@@ -9,6 +9,7 @@ const project: BetaProjectConfig = {
 	reason: null,
 	config: {
 		interval_hours: 6,
+		source_commit: "default_branch_head",
 		workflow_file: "beta.yml",
 		token_env: "A_TOKEN",
 	},
@@ -130,6 +131,7 @@ it("posts only the frozen schedule tuple and treats 204 or malformed acceptance 
 		bindingRevision: binding.bindingRevision,
 		scheduledAtMs: 3600000,
 		sourceCommit: "b".repeat(40),
+		sourceOrigin: "default_branch_head" as const,
 		state: "prepared" as const,
 		runIds: [],
 		attemptCount: 0,
@@ -188,6 +190,7 @@ it("recovers all matching runs across pages and rechecks known live handles", as
 		bindingRevision: binding.bindingRevision,
 		scheduledAtMs: 3600000,
 		sourceCommit: "b".repeat(40),
+		sourceOrigin: "default_branch_head" as const,
 		state: "dispatch_unknown",
 		runIds: [33],
 		attemptCount: 2,
@@ -297,6 +300,7 @@ it("downloads and binds a successful receipt without forwarding credentials to a
 		bindingRevision: binding.bindingRevision,
 		scheduledAtMs: 3600000,
 		sourceCommit: "b".repeat(40),
+		sourceOrigin: "default_branch_head" as const,
 		state: "accepted",
 		runIds: [33],
 		attemptCount: 1,
@@ -464,3 +468,65 @@ it.each([undefined, "", "B_TOKEN", "A_TOKEN,", "A_TOKEN,bad-name"])(
 		expect(fetcher).not.toHaveBeenCalled();
 	},
 );
+
+it("checks deployed source ancestry and preserves HTTP/schema failures", async () => {
+	const sha = "a".repeat(40);
+	const binding = {
+		projectName: "a",
+		repositoryId: 1,
+		canonicalRepo: "test/a",
+		workflowId: 2,
+		defaultBranch: "release/main",
+		bindingRevision: "r",
+		tokenEnv: "A_TOKEN",
+	};
+	let body: unknown;
+	let status = 200;
+	const fetcher = vi.fn(async (url: string) => {
+		expect(url).toBe(
+			`https://api.github.com/repos/test/a/compare/${sha}...release%2Fmain`,
+		);
+		return json(body, status);
+	});
+	const api = new BetaReleaseGitHub({
+		env: { FLYWHEEL_BETA_ACTIONS_TOKEN_ENVS: "A_TOKEN", A_TOKEN: "test" },
+		fetch: fetcher,
+	});
+	const signal = new AbortController().signal;
+	for (const relation of ["identical", "ahead", "behind", "diverged"]) {
+		body = { status: relation, behind_by: 0, merge_base_commit: { sha } };
+		expect(await api.onDefaultBranch(binding, sha, signal)).toBe(
+			["identical", "ahead"].includes(relation),
+		);
+	}
+	body = {
+		status: "ahead",
+		behind_by: 0,
+		merge_base_commit: { sha: "b".repeat(40) },
+	};
+	expect(await api.onDefaultBranch(binding, sha, signal)).toBe(false);
+	body = { status: "ahead", behind_by: 1, merge_base_commit: { sha } };
+	expect(await api.onDefaultBranch(binding, sha, signal)).toBe(false);
+	for (const malformed of [
+		{},
+		{ status: "ahead", behind_by: "0", merge_base_commit: { sha } },
+		{ status: "ahead", behind_by: 0, merge_base_commit: { sha: "invalid" } },
+		{ status: "surprise", behind_by: 0, merge_base_commit: { sha } },
+	]) {
+		body = malformed;
+		await expect(api.onDefaultBranch(binding, sha, signal)).rejects.toThrow(
+			"beta_github_schema",
+		);
+	}
+	for (const code of [404, 500]) {
+		status = code;
+		await expect(api.onDefaultBranch(binding, sha, signal)).rejects.toThrow(
+			`beta_github_http_${code}`,
+		);
+	}
+	fetcher.mockClear();
+	await expect(
+		api.onDefaultBranch(binding, "../evil", signal),
+	).rejects.toThrow();
+	expect(fetcher).not.toHaveBeenCalled();
+});
