@@ -8,6 +8,10 @@ import {
 	parseFounderReviewQuestionContent,
 } from "../founder-review.js";
 import { probeShipCiGreen, type ShipCiGuardResult } from "../ship-ci-guard.js";
+import {
+	stageQueueTransportFromEnv,
+	withStageQueueFence,
+} from "../stage-queue.js";
 import { truncateWithEllipsis } from "../text-truncate.js";
 import {
 	CONTENT_REF_THRESHOLD,
@@ -23,6 +27,7 @@ import {
 export type TimeoutBehaviorSource = "default" | "flag";
 
 export interface GateArgs {
+	stageQueueFence?: boolean;
 	checkpoint: string;
 	lead: string;
 	execId: string;
@@ -136,78 +141,91 @@ async function gateInner(
 ): Promise<GateResult> {
 	const pollInterval = args.pollIntervalMs ?? 15_000;
 
-	// Phase 1: Create question with checkpoint
-	const db = new CommDB(args.dbPath);
-	let questionId: string;
-	try {
-		let questionContent = args.message;
-		let priorFounderReviewQuestions: Array<{
-			id: string;
-			fromAgent: string;
-		}> = [];
-		if (
-			args.checkpoint === FOUNDER_REVIEW_CHECKPOINT &&
-			args.founderReviewEvidence
-		) {
-			const priorRounds = db
-				.getQuestionsByCheckpoint(FOUNDER_REVIEW_CHECKPOINT)
-				.map((question) => ({
-					question,
-					content: parseFounderReviewQuestionContent(
-						db.getFounderReviewFamily(question.id)?.question.content ??
-							question.content,
-					),
-				}))
-				.filter(
-					(candidate) =>
-						candidate.content?.runId === args.founderReviewEvidence?.runId,
-				);
-			priorFounderReviewQuestions = priorRounds.map((candidate) => ({
-				id: candidate.question.id,
-				fromAgent: candidate.question.from_agent,
-			}));
-			const round =
-				Math.max(
-					0,
-					...priorRounds.map((candidate) => candidate.content?.round ?? 0),
-				) + 1;
-			questionContent = createFounderReviewQuestionContent({
-				round,
-				evidence: args.founderReviewEvidence,
-			});
-		}
-		const useRef =
-			Buffer.byteLength(questionContent, "utf-8") > CONTENT_REF_THRESHOLD;
-		let contentRef: string | undefined;
-		let dbContent = questionContent;
+	const publishQuestion = async (): Promise<string> => {
+		// Phase 1: Create question with checkpoint
+		const db = new CommDB(args.dbPath);
+		let questionId: string;
+		try {
+			let questionContent = args.message;
+			let priorFounderReviewQuestions: Array<{
+				id: string;
+				fromAgent: string;
+			}> = [];
+			if (
+				args.checkpoint === FOUNDER_REVIEW_CHECKPOINT &&
+				args.founderReviewEvidence
+			) {
+				const priorRounds = db
+					.getQuestionsByCheckpoint(FOUNDER_REVIEW_CHECKPOINT)
+					.map((question) => ({
+						question,
+						content: parseFounderReviewQuestionContent(
+							db.getFounderReviewFamily(question.id)?.question.content ??
+								question.content,
+						),
+					}))
+					.filter(
+						(candidate) =>
+							candidate.content?.runId === args.founderReviewEvidence?.runId,
+					);
+				priorFounderReviewQuestions = priorRounds.map((candidate) => ({
+					id: candidate.question.id,
+					fromAgent: candidate.question.from_agent,
+				}));
+				const round =
+					Math.max(
+						0,
+						...priorRounds.map((candidate) => candidate.content?.round ?? 0),
+					) + 1;
+				questionContent = createFounderReviewQuestionContent({
+					round,
+					evidence: args.founderReviewEvidence,
+				});
+			}
+			const useRef =
+				Buffer.byteLength(questionContent, "utf-8") > CONTENT_REF_THRESHOLD;
+			let contentRef: string | undefined;
+			let dbContent = questionContent;
 
-		if (useRef) {
-			// Two-phase write: create ref file first, then DB row
-			const tempId = crypto.randomUUID();
-			contentRef = writeContentRef(args.dbPath, tempId, questionContent);
-			dbContent = `[content_ref: ${contentRef}]`;
+			if (useRef) {
+				// Two-phase write: create ref file first, then DB row
+				const tempId = crypto.randomUUID();
+				contentRef = writeContentRef(args.dbPath, tempId, questionContent);
+				dbContent = `[content_ref: ${contentRef}]`;
+			}
+
+			questionId = db.insertQuestion(args.execId, args.lead, dbContent, {
+				...(args.questionId ? { id: args.questionId } : {}),
+				checkpoint: args.checkpoint,
+				contentRef,
+				contentType: useRef ? "ref" : "text",
+				...(args.deadlineAt ? { deadlineAt: args.deadlineAt } : {}),
+				...(args.checkpoint === FOUNDER_REVIEW_CHECKPOINT
+					? { ttlSeconds: 7 * 24 * 60 * 60 }
+					: {}),
+			});
+			for (const previous of priorFounderReviewQuestions) {
+				db.retireQuestionGuarded(previous.id, {
+					expectedFromAgent: previous.fromAgent,
+					requireUnanswered: true,
+					supersededBy: questionId,
+				});
+			}
+		} finally {
+			db.close();
 		}
 
-		questionId = db.insertQuestion(args.execId, args.lead, dbContent, {
-			...(args.questionId ? { id: args.questionId } : {}),
-			checkpoint: args.checkpoint,
-			contentRef,
-			contentType: useRef ? "ref" : "text",
-			...(args.deadlineAt ? { deadlineAt: args.deadlineAt } : {}),
-			...(args.checkpoint === FOUNDER_REVIEW_CHECKPOINT
-				? { ttlSeconds: 7 * 24 * 60 * 60 }
-				: {}),
-		});
-		for (const previous of priorFounderReviewQuestions) {
-			db.retireQuestionGuarded(previous.id, {
-				expectedFromAgent: previous.fromAgent,
-				requireUnanswered: true,
-				supersededBy: questionId,
-			});
-		}
-	} finally {
-		db.close();
-	}
+		return questionId;
+	};
+	const published = args.stageQueueFence
+		? await withStageQueueFence(
+				args.execId,
+				stageQueueTransportFromEnv(),
+				publishQuestion,
+			)
+		: { settled: true as const, value: await publishQuestion() };
+	if (!published.settled) return { status: "error", exitCode: 2 };
+	const questionId = published.value;
 
 	// Notify outer scope that question was created (for cleanup on error)
 	onQuestionCreated(questionId);

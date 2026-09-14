@@ -1,3 +1,7 @@
+vi.mock("../../bridge-pressure-snapshot.js", () => ({
+	printBridgePressure: vi.fn(),
+}));
+
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,

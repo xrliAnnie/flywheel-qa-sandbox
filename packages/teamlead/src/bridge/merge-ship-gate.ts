@@ -14,6 +14,7 @@
  */
 
 import {
+	evaluateCompletedShipEligibility,
 	evaluateShipEligibility,
 	type ShipEligibilityArgs,
 	type ShipEligibilityDecision,
@@ -60,8 +61,13 @@ export function computeShipDecision(
 	prHead: string,
 	env: NodeJS.ProcessEnv = process.env,
 	ciProbe?: ShipEligibilityArgs["ciProbe"],
+	completedRecovery = false,
 ): ShipEligibilityDecision {
-	return evaluateShipEligibility({
+	return (
+		completedRecovery
+			? evaluateCompletedShipEligibility
+			: evaluateShipEligibility
+	)({
 		execId: session.execution_id,
 		prHead,
 		// Defensive: a session without a project_name cannot resolve a CommDB path;
@@ -285,6 +291,7 @@ export async function computeAuthoritativeShipDecision(
 	env: NodeJS.ProcessEnv = process.env,
 	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
 	ciProbe?: ShipEligibilityArgs["ciProbe"],
+	completedRecovery = false,
 ): Promise<AuthoritativeShipDecision> {
 	const engine = engineShipContext(store, session.execution_id);
 	const typedEngine =
@@ -366,6 +373,7 @@ export async function computeAuthoritativeShipDecision(
 		authoritativeHead,
 		env,
 		ciProbe,
+		completedRecovery,
 	);
 	if (typedEngine) {
 		const workflow = evaluateEngineShipClaims(

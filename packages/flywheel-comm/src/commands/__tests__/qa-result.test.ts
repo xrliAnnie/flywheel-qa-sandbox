@@ -1,4 +1,9 @@
+vi.mock("../../bridge-pressure-snapshot.js", () => ({
+	printBridgePressure: vi.fn(),
+}));
+
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -13,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { measureRunnerMemoryIndex } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { printBridgePressure } from "../../bridge-pressure-snapshot.js";
 import { CommDB } from "../../db.js";
 import {
 	buildGitHubAuthEnvironment,
@@ -25,12 +31,16 @@ import {
 	type WorkflowQaDecisionBody,
 } from "../qa-result.js";
 
+let isolatedQaHome: string;
 beforeEach(() => {
+	isolatedQaHome = mkdtempSync(join(tmpdir(), "fly1956-qa-test-"));
+	vi.stubEnv("HOME", isolatedQaHome);
 	vi.stubEnv("FLYWHEEL_RUNNER_MEMORY_DIR", "");
 	vi.stubEnv("FLYWHEEL_RUNNER_MEMORY_SNAPSHOT", "");
 });
 
 afterEach(() => {
+	rmSync(isolatedQaHome, { recursive: true, force: true });
 	vi.useRealTimers();
 	vi.unstubAllEnvs();
 	vi.unstubAllGlobals();
@@ -314,8 +324,8 @@ describe("credential-backed qa-result delivery", () => {
 				targetExec: "impl-1",
 				prHeadSha: "b".repeat(40),
 			}),
-		).rejects.toThrow("exit:1");
-		expect(exit).toHaveBeenCalledWith(1);
+		).resolves.toMatchObject({ exitCode: 1 });
+		expect(exit).not.toHaveBeenCalled();
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
@@ -521,6 +531,8 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 		writeFileSync(unusableHome, "not a directory");
 		stubHandshakeEnv(unusableHome);
 		const exit = stubFailureExit();
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		await expect(
@@ -532,10 +544,12 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 				},
 				{ sourceRepoPath: join(root, "missing-worktree") },
 			),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 3 });
 
-		expect(exit).toHaveBeenCalledWith(1);
+		expect(exit).not.toHaveBeenCalled();
+		expect(fetchMock).not.toHaveBeenCalled();
 		const stderr = error.mock.calls.flat().join("\n");
+		expect(stderr).toContain("UNRECORDED");
 		expect(stderr).toContain('"targetExecutionId":"impl-2"');
 		expect(stderr).toContain('"issueId":"FLY-1686"');
 		expect(stderr).toContain('"status":"fail"');
@@ -560,9 +574,9 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 				summary: "activation failure must not erase this verdict",
 				prHeadSha: expectedHeadOid,
 			}),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 
-		expect(exit).toHaveBeenCalledWith(1);
+		expect(exit).not.toHaveBeenCalled();
 		const marker = JSON.parse(
 			readFileSync(
 				join(home, ".flywheel", "state", "qa-result-failed", "qa-engine.json"),
@@ -595,9 +609,9 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 				summary: "delivery env is unavailable",
 				prHeadSha: expectedHeadOid,
 			}),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 
-		expect(exit).toHaveBeenCalledWith(1);
+		expect(exit).not.toHaveBeenCalled();
 		const marker = JSON.parse(
 			readFileSync(
 				join(home, ".flywheel", "state", "qa-result-failed", "qa-engine.json"),
@@ -622,12 +636,34 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 			`fly1686-first-post-${process.pid}-${Date.now()}`,
 		);
 		const { logicalCalls: gitCalls, runGit } = createHandshakeGit();
+		const freshId = vi.fn(() => "fresh-request-id");
+		let markerBeforePush: Record<string, unknown> | undefined;
 		const fetchMock = vi
 			.fn()
 			.mockImplementationOnce(async () => {
 				expect(gitCalls).toEqual([]);
 				expect(existsSync(stagingRoot)).toBe(false);
-				return notAtTipResponse();
+				const response = notAtTipResponse();
+				const text = response.text.bind(response);
+				response.text = async () => {
+					// A competing invocation reaches ownership after the first 409,
+					// before the owner can publish its replacement id or push.
+					let clock = Date.now();
+					const now = vi.spyOn(Date, "now").mockImplementation(() => {
+						clock += 60_001;
+						return clock;
+					});
+					try {
+						expect(
+							await qaResult({ status: "fail", targetExec: "impl-1" }),
+						).toMatchObject({ exitCode: 2, label: "lock_owned" });
+						expect(gitCalls).toEqual([]);
+					} finally {
+						now.mockRestore();
+					}
+					return text();
+				};
+				return response;
 			})
 			.mockResolvedValueOnce(acceptedResponse());
 		vi.stubGlobal("fetch", fetchMock);
@@ -639,9 +675,24 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 				prHeadSha: expectedHeadOid,
 			},
 			{
-				runGit,
+				runGit: (args, opts) => {
+					if (logicalGitArgs(args)[0] === "push")
+						markerBeforePush = JSON.parse(
+							readFileSync(
+								join(
+									process.env.HOME!,
+									".flywheel",
+									"state",
+									"qa-result-failed",
+									"qa-engine.json",
+								),
+								"utf8",
+							),
+						);
+					return runGit(args, opts);
+				},
 				stagingRoot,
-				createClientRequestId: () => "fresh-request-id",
+				createClientRequestId: freshId,
 			},
 		);
 
@@ -651,6 +702,8 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 			`${expectedHeadOid}:refs/heads/fly-1686-docs`,
 		]);
 		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(freshId).toHaveBeenCalledOnce();
+		expect(gitCalls.filter((args) => args[0] === "push")).toHaveLength(1);
 		const first = JSON.parse(
 			(fetchMock.mock.calls[0]?.[1] as { body: string }).body,
 		) as Record<string, unknown>;
@@ -658,6 +711,13 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 			(fetchMock.mock.calls[1]?.[1] as { body: string }).body,
 		) as Record<string, unknown>;
 		expect(second.client_request_id).toBe("fresh-request-id");
+		expect(markerBeforePush).toMatchObject({
+			phase: "in_flight",
+			client_request_id: "fresh-request-id",
+			body_digest: createHash("sha256")
+				.update(JSON.stringify(second))
+				.digest("hex"),
+		});
 		expect(second.client_request_id).not.toBe(first.client_request_id);
 		expect(second).toMatchObject({
 			credential: first.credential,
@@ -695,7 +755,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 			},
 		);
 		await vi.advanceTimersByTimeAsync(250);
-		await expect(submission).resolves.toBeUndefined();
+		await expect(submission).resolves.toMatchObject({ exitCode: 0 });
 
 		expect(Date.now() - startedAt).toBe(250);
 		expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -746,7 +806,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 				},
 			},
 		);
-		await expect(submission).rejects.toThrow("exit:1");
+		await expect(submission).resolves.toMatchObject({ exitCode: 1 });
 
 		expect(nowMs - startedAt).toBe(5000);
 		expect(settleDelays).toEqual(Array(20).fill(250));
@@ -907,7 +967,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 					runGitHubCredential,
 				},
 			),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 
 		expect(runGitHubCredential).toHaveBeenCalledOnce();
 		expect(logicalCalls.some(([command]) => command === "push")).toBe(false);
@@ -942,7 +1002,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 				},
 				{ runGit, githubCliPath: false },
 			),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 		expect(logicalCalls.some(([command]) => command === "push")).toBe(false);
 		expect(error).toHaveBeenCalledWith(
 			expect.stringContaining(
@@ -1043,7 +1103,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 					},
 					{ runGit },
 				),
-			).rejects.toThrow("exit:1");
+			).resolves.toMatchObject({ exitCode: 1 });
 			expect(logicalCalls.some(([command]) => command === "push")).toBe(false);
 			rmSync(home, { recursive: true, force: true });
 		},
@@ -1072,7 +1132,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 				},
 				{ runGit },
 			),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 		expect(runGit).toHaveBeenCalledTimes(1);
 		expect(logicalCalls).toEqual([
 			["check-ref-format", "refs/heads/bad..branch"],
@@ -1114,7 +1174,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 					sleep: settleSleep,
 				},
 			),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 		expect(settleSleep).not.toHaveBeenCalled();
 		expect(logicalCalls.filter(([command]) => command === "push")).toHaveLength(
@@ -1164,7 +1224,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 					},
 				},
 			),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 		expect(fetchMock).toHaveBeenCalledOnce();
 		expect(logicalCalls.some(([command]) => command === "push")).toBe(false);
 		rmSync(home, { recursive: true, force: true });
@@ -1197,7 +1257,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 				},
 				{ runGit },
 			),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 		expect(fetchMock).toHaveBeenCalledTimes(4);
 		expect(runGit).not.toHaveBeenCalled();
 		rmSync(home, { recursive: true, force: true });
@@ -1227,7 +1287,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 				},
 				{ runGit },
 			),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 		expect(fetchMock).toHaveBeenCalledOnce();
 		expect(runGit).not.toHaveBeenCalled();
 		rmSync(home, { recursive: true, force: true });
@@ -1266,7 +1326,7 @@ describe("FLY-1686 authorized land-head push handshake", () => {
 					runGitHubCredential: validGitHubCredential,
 				},
 			),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 		expect(error).toHaveBeenCalledWith(
 			expect.stringContaining("authorized git push failed"),
 		);
@@ -1386,8 +1446,8 @@ describe("FLY-1425 qa-result fail-loud contract", () => {
 				targetExec: "impl-1",
 				prHeadSha: "a".repeat(40),
 			}),
-		).rejects.toThrow("exit:1");
-		expect(exit).toHaveBeenCalledWith(1);
+		).resolves.toMatchObject({ exitCode: 1 });
+		expect(exit).not.toHaveBeenCalled();
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
@@ -1407,8 +1467,8 @@ describe("FLY-1425 qa-result fail-loud contract", () => {
 				targetExec: "impl-1",
 				prHeadSha: "a".repeat(40),
 			}),
-		).rejects.toThrow("exit:1");
-		expect(exit).toHaveBeenCalledWith(1);
+		).resolves.toMatchObject({ exitCode: 1 });
+		expect(exit).not.toHaveBeenCalled();
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
@@ -1433,9 +1493,14 @@ describe("FLY-1425 qa-result fail-loud contract", () => {
 				targetExec: "impl-1",
 				prHeadSha: "a".repeat(40),
 			}),
-		).rejects.toThrow("exit:1");
-		expect(exit).toHaveBeenCalledWith(1);
+		).resolves.toMatchObject({ exitCode: 1 });
+		expect(exit).not.toHaveBeenCalled();
 		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(printBridgePressure).toHaveBeenCalledWith(
+			process.env.FLYWHEEL_BRIDGE_URL,
+			"qa-result",
+			expect.any(Function),
+		);
 		const markerPath = join(
 			home,
 			".flywheel",
@@ -1483,7 +1548,7 @@ describe("FLY-1425 qa-result fail-loud contract", () => {
 				targetExec: "impl-1",
 				prHeadSha: "a".repeat(40),
 			}),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 		const rendered = error.mock.calls.flat().join("\n");
 		expect(rendered).toContain("detail=");
 		expect(rendered).toContain("packages/?danger.ts");
@@ -1516,7 +1581,7 @@ describe("FLY-1425 qa-result fail-loud contract", () => {
 				targetExec: "impl-1",
 				prHeadSha: "a".repeat(40),
 			}),
-		).rejects.toThrow("exit:1");
+		).resolves.toMatchObject({ exitCode: 1 });
 		expect(fetchMock).toHaveBeenCalledOnce();
 		expect(error).toHaveBeenCalledWith(
 			expect.stringContaining(
@@ -1548,7 +1613,7 @@ describe("FLY-1425 qa-result fail-loud contract", () => {
 					targetExec: "impl-1",
 					prHeadSha: "a".repeat(40),
 				}),
-			).rejects.toThrow("exit:1");
+			).resolves.toMatchObject({ exitCode: 1 });
 			expect(fetchMock).toHaveBeenCalledTimes(4);
 		},
 	);
@@ -1581,8 +1646,8 @@ describe("FLY-1425 qa-result fail-loud contract", () => {
 				targetExec: "impl-1",
 				prHeadSha: "a".repeat(40),
 			}),
-		).rejects.toThrow("exit:1");
-		expect(exit).toHaveBeenCalledWith(1);
+		).resolves.toMatchObject({ exitCode: 1 });
+		expect(exit).not.toHaveBeenCalled();
 		expect(fetchMock).toHaveBeenCalledTimes(4);
 	});
 

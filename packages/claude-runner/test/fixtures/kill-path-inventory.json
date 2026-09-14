@@ -672,6 +672,30 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/flywheel-comm/src/__tests__/stage-crash-replay.test.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/flywheel-comm/src/__tests__/stage-crash-replay.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/stage-crash-replay.test.ts:child.kill(\"SIGKILL\");#2",
+		"path": "packages/flywheel-comm/src/__tests__/stage-crash-replay.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/stage-crash-replay.test.ts:child.kill(\"SIGKILL\");#3",
+		"path": "packages/flywheel-comm/src/__tests__/stage-crash-replay.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/stage-crash-replay.test.ts:first.kill(\"SIGKILL\");#1",
+		"path": "packages/flywheel-comm/src/__tests__/stage-crash-replay.test.ts",
+		"code": "first.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/flywheel-comm/src/__tests__/verify-report.test.ts:expect(() => process.kill(-pgid, 0)).toThrow(#1",
 		"path": "packages/flywheel-comm/src/__tests__/verify-report.test.ts",
 		"code": "expect(() => process.kill(-pgid, 0)).toThrow(",
@@ -682,6 +706,18 @@
 		"path": "packages/flywheel-comm/src/cleanup.ts",
 		"code": "execFileSync(\"tmux\", [\"kill-window\", \"-t\", tmuxWindow], {",
 		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/flywheel-comm/src/commands/__tests__/qa-result-lock.test.ts:crashed.kill(\"SIGKILL\");#1",
+		"path": "packages/flywheel-comm/src/commands/__tests__/qa-result-lock.test.ts",
+		"code": "crashed.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/commands/__tests__/qa-result-lock.test.ts:crashed.kill(\"SIGKILL\");#2",
+		"path": "packages/flywheel-comm/src/commands/__tests__/qa-result-lock.test.ts",
+		"code": "crashed.kill(\"SIGKILL\");",
+		"classification": "qa-only"
 	},
 	{
 		"key": "packages/flywheel-comm/src/lead-lease.ts:process.kill(pid, 0);#1",

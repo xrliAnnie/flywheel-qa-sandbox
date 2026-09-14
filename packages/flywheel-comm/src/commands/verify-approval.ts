@@ -265,6 +265,20 @@ export function resolveStateDbPath(
 }
 
 export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
+	return verifyBoundApproval(args, "approved_to_ship");
+}
+
+/** Recovery only: revalidate every bound approval guard after terminal transition. */
+export function verifyCompletedShipApproval(
+	args: VerifyApprovalArgs,
+): VerifyApprovalResult {
+	return verifyBoundApproval(args, "completed");
+}
+
+function verifyBoundApproval(
+	args: VerifyApprovalArgs,
+	expectedStatus: "approved_to_ship" | "completed",
+): VerifyApprovalResult {
 	const env = args.env ?? process.env;
 	const notApproved = (
 		reason: VerifyApprovalReason,
@@ -537,7 +551,7 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 	}
 
 	// 4. Status + PR-head binding.
-	if (row.status !== "approved_to_ship") {
+	if (row.status !== expectedStatus) {
 		return notApproved("status_not_approved_to_ship", {
 			questionId,
 			responseFrom,

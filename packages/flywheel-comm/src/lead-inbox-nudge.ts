@@ -40,7 +40,7 @@ export async function nudgeLeadInboxBestEffort(
 ): Promise<void> {
 	const bridgeUrl = args.bridgeUrl?.trim();
 	if (!bridgeUrl) return;
-	const timeoutMs = args.timeoutMs ?? 200;
+	const timeoutMs = args.timeoutMs ?? 1500;
 	const warn =
 		args.warn ?? ((message: string) => process.stderr.write(`${message}\n`));
 	const fetchImpl = args.fetchImpl ?? fetch;
@@ -91,12 +91,12 @@ export async function nudgeLeadInboxBestEffort(
 		}
 		if (!response.ok) {
 			warn(
-				`[flywheel-comm] lead inbox nudge returned ${response.status}; durable queue row retained`,
+				`[flywheel-comm] lead inbox doorbell returned ${response.status}; durable queue row retained — a healthy Lead loop retries on its next poll (nominally <=30 s)`,
 			);
 		}
 	} catch (error) {
 		warn(
-			`[flywheel-comm] lead inbox nudge failed: ${(error as Error).message}; durable queue row retained`,
+			`[flywheel-comm] lead inbox doorbell not delivered (${(error as Error).message}); durable queue row retained — a healthy Lead loop retries on its next poll (nominally <=30 s)`,
 		);
 	}
 }

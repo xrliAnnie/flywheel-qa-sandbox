@@ -95,6 +95,7 @@ import {
 	makeFinalizeWorkflowPhaseRoles,
 	markEvidenceGapCompletion,
 	runPostShipFinalization,
+	runResumablePostShipFinalization,
 	settleShipAttemptFailed,
 } from "./post-ship-finalization.js";
 import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
@@ -339,17 +340,60 @@ function isSafePlanPath(planPath: string): boolean {
  * Handle stage_changed → design_review / pr_created. Reads session
  * state (codex_skip + worktree_path + plan_path) and either writes
  * skip.json or writes a CommDB instruction to the Runner inbox.
- * Failures are logged + non-fatal; the parent stage transition still
- * succeeds.
+ * Returns pending when its durable sink fails so stage replay can retry.
  */
-function handleCodexAutoTrigger(
+export function handleCodexAutoTrigger(
 	store: StateStore,
 	event: IngestEvent,
 	stage: string,
 	payloadPlanPath: string | undefined,
-): void {
+): "settled" | "pending" | "not_applicable" {
 	const reviewType = codexReviewTypeFor(stage);
-	if (!reviewType) return;
+	if (!reviewType) return "not_applicable";
+
+	// A replay settles the obligation already bound to this source event.
+	// Re-reading a revised/missing plan would bind a different blob or correction
+	// message to the same id and permanently poison the ordered CLI queue.
+	if (reviewType === "design") {
+		try {
+			const manifest = store.getDesignReviewManifestForSourceEvent(
+				event.execution_id,
+				event.event_id,
+			);
+			if (manifest) {
+				if (manifest.project_name !== event.project_name) return "pending";
+				const current = store.getCurrentDesignReviewManifest(
+					event.execution_id,
+				);
+				if (current && current.revision > manifest.revision) return "settled";
+				deliverDesignReviewManifest(store, manifest);
+				return "settled";
+			}
+			const dbPath = commDbPathForProject(event.project_name);
+			if (existsSync(dbPath)) {
+				const commDb = CommDB.openReadonly(dbPath);
+				try {
+					const correction = commDb.getMessageById(
+						`codex-trigger-correction:${event.event_id}`,
+					);
+					if (correction) {
+						return correction.type === "instruction" &&
+							correction.from_agent === "bridge" &&
+							correction.to_agent === event.execution_id
+							? "settled"
+							: "pending";
+					}
+				} finally {
+					commDb.close();
+				}
+			}
+		} catch (error) {
+			console.warn(
+				`[codex-trigger] design obligation replay failed for ${event.execution_id}: ${(error as Error).message}`,
+			);
+			return "pending";
+		}
+	}
 
 	const session = store.getSession(event.execution_id);
 	const worktree = resolveWorktreeForCodex(
@@ -375,7 +419,9 @@ function handleCodexAutoTrigger(
 	const refreshedSession = store.getSession(event.execution_id);
 	const codexSkip = !!refreshedSession?.codex_skip;
 	const persistedPlanPath = refreshedSession?.plan_path;
-	const queueDesignPlanCorrection = (detail?: string): void => {
+	const queueDesignPlanCorrection = (
+		detail?: string,
+	): "settled" | "pending" => {
 		try {
 			const dbPath = commDbPathForProject(event.project_name);
 			mkdirSync(dirname(dbPath), { recursive: true });
@@ -385,10 +431,12 @@ function handleCodexAutoTrigger(
 					"bridge",
 					event.execution_id,
 					buildMissingDesignPlanInstruction(event.execution_id, detail),
+					{ dedupeId: `codex-trigger-correction:${event.event_id}` },
 				);
 				console.log(
 					`[codex-trigger] unbindable plan — correction instruction sent for ${event.execution_id}`,
 				);
+				return "settled";
 			} finally {
 				commDb.close();
 			}
@@ -396,6 +444,7 @@ function handleCodexAutoTrigger(
 			console.warn(
 				`[codex-trigger] failed to write plan correction instruction for ${event.execution_id}: ${(err as Error).message}`,
 			);
+			return "pending";
 		}
 	};
 
@@ -437,7 +486,7 @@ function handleCodexAutoTrigger(
 		console.log(
 			`[codex-trigger] ${event.execution_id} is a codex-tmux author — ${reviewType} review is request-driven (FLY-1188 §7.1); legacy trigger skipped`,
 		);
-		return;
+		return "not_applicable";
 	}
 
 	if (codexSkip) {
@@ -456,34 +505,35 @@ function handleCodexAutoTrigger(
 			console.log(
 				`[codex-trigger] skip ${reviewType} review for ${event.execution_id} (codex-skip label) → ${skipPath}`,
 			);
+			return "settled";
 		} catch (err) {
 			console.warn(
 				`[codex-trigger] failed to write skip.json for ${event.execution_id}: ${(err as Error).message}`,
 			);
+			return "pending";
 		}
-		return;
 	}
 
 	// Missing plan_path on design_review → fail-closed instruction so
 	// Runner re-issues stage with --plan; await-codex-gate will time
 	// out (no skip.json, no result) → Runner reports to Lead.
 	if (reviewType === "design" && !persistedPlanPath) {
-		queueDesignPlanCorrection("stage_changed requires --plan <relative-path>");
-		return;
+		return queueDesignPlanCorrection(
+			"stage_changed requires --plan <relative-path>",
+		);
 	}
 
 	// FLY-1718 P3: default-on exact plan binding. The manifest write precedes
 	// CommDB delivery; a stable instruction id plus boot/periodic reconciliation
 	// closes the crash window between those two durable stores.
 	if (reviewType === "design") {
-		if (!refreshedSession || !persistedPlanPath) return;
+		if (!refreshedSession || !persistedPlanPath) return "pending";
 		const snapshot = snapshotDesignReviewPlan(
 			refreshedSession,
 			persistedPlanPath,
 		);
 		if (!snapshot.ok) {
-			queueDesignPlanCorrection(snapshot.message);
-			return;
+			return queueDesignPlanCorrection(snapshot.message);
 		}
 		try {
 			const manifest = store.advanceDesignReviewManifest({
@@ -497,12 +547,13 @@ function handleCodexAutoTrigger(
 			console.log(
 				`[codex-trigger] ${delivered.deduped ? "reconciled" : "queued"} design review manifest ${event.execution_id}/${manifest.revision}`,
 			);
+			return "settled";
 		} catch (err) {
 			console.warn(
 				`[codex-trigger] failed to bind/deliver design instruction for ${event.execution_id}: ${(err as Error).message}`,
 			);
+			return "pending";
 		}
-		return;
 	}
 
 	// Happy path: write the Codex review instruction to the Runner inbox.
@@ -516,10 +567,13 @@ function handleCodexAutoTrigger(
 				persistedPlanPath,
 				event.execution_id,
 			);
-			commDb.insertInstruction("bridge", event.execution_id, content);
+			commDb.insertInstruction("bridge", event.execution_id, content, {
+				dedupeId: `codex-trigger:${event.event_id}`,
+			});
 			console.log(
 				`[codex-trigger] queued ${reviewType} review instruction for ${event.execution_id}`,
 			);
+			return "settled";
 		} finally {
 			commDb.close();
 		}
@@ -527,6 +581,7 @@ function handleCodexAutoTrigger(
 		console.warn(
 			`[codex-trigger] failed to write instruction for ${event.execution_id}: ${(err as Error).message}`,
 		);
+		return "pending";
 	}
 }
 
@@ -649,8 +704,443 @@ export function createEventRouter(
 		res.json({ ok: true });
 	});
 
+	async function applyStageEvent(
+		row: ReturnType<StateStore["insertStageChangedEvent"]>["row"],
+		duplicate: boolean,
+	) {
+		const event: IngestEvent = {
+			...row,
+			payload: row.payload as IngestEvent["payload"],
+		};
+		const payload = event.payload ?? {};
+		const now = row.ts;
+		const ctx = {
+			executionId: event.execution_id,
+			issueId: event.issue_id,
+			projectName: event.project_name,
+			trigger: event.event_type,
+		};
+		let transitionRejected = false;
+		let superseded = false;
+		let fly324Completed = false;
+		const branches: Record<string, "settled" | "pending" | "not_applicable"> = {
+			projection: "pending",
+			display_refresh: "not_applicable",
+			reconnecting: "not_applicable",
+			codex_trigger: "not_applicable",
+			proofshot: "not_applicable",
+			completed_w2: "not_applicable",
+			completed_fly324: "not_applicable",
+			terminal_archive: "not_applicable",
+		};
+		const result = () => ({
+			branches,
+			pending: Object.keys(branches).filter(
+				(key) => branches[key] === "pending",
+			),
+			transitionRejected,
+			superseded,
+			fly324Completed,
+		});
+		// GEO-292: Runner-reported pipeline stage change
+		const stage = asString(payload.stage);
+		if (stage && VALID_STAGES.has(stage)) {
+			store.patchSessionMetadata(event.execution_id, {
+				session_stage: stage,
+				stage_updated_at: now,
+				last_activity_at: now,
+			});
+			const projected = store.getSession(event.execution_id);
+			if (
+				projected?.session_stage !== stage ||
+				projected.stage_updated_at !== now
+			)
+				return result();
+			branches.projection = "settled";
+
+			// FLY-623 (Codex code-review R1 HIGH): a genuinely ACCEPTED +
+			// PERSISTED stage_changed proves the Runner's own event channel is
+			// live again AND it is still running — leave the reconnecting state
+			// so normal stuck/orphan/idle monitoring resumes. The
+			// stampStageEmojiForSession call just below restamps the real stage
+			// badge (clearing "⚠️重连中"). Placed AFTER the persist + the FLY-598
+			// implement-gate early-return, so a rejected stage never clears.
+			// Terminal removal is owned by the reconcile cycle's status check.
+			reconnectHolder?.current?.clearReconnecting(event.execution_id);
+			branches.reconnecting = reconnectHolder?.current
+				? "settled"
+				: "not_applicable";
+
+			// FLY-560 Feature A: auto-stamp the stage emoji onto the issue's
+			// [FLY-XX] thread title so Annie reads status at a glance. Wired
+			// only when the feature flag is on (plugin.ts passes the creator);
+			// fully fire-and-forget so it never blocks/breaks the transition.
+			if (
+				chatThreadCreator &&
+				(issueStatusEmojiEnabled || issueAttachPinEnabled)
+			) {
+				const sessionForStamp = store.getSession(event.execution_id);
+				if (sessionForStamp) {
+					if (issueDisplayRefresh?.current) {
+						// FLY-907: ONE unified derive-from-state refresh of all
+						// three faces (the persisted session_stage above is what
+						// the derivation reads, so the reported stage is honored).
+						issueDisplayRefresh.current.enqueue(event.issue_id);
+					} else {
+						// Legacy per-face fallback while the refresher is not yet wired.
+						if (issueStatusEmojiEnabled) {
+							stampStageEmojiForSession(
+								{ store, projects, config, chatThreadCreator },
+								sessionForStamp,
+								stage,
+							);
+						}
+						// FLY-560 Feature C: keep the pinned `tmux attach` command
+						// current (post on first stage once tmux_window registers;
+						// update only when the command changes).
+						if (issueAttachPinEnabled) {
+							pinRunnerAttachForSession(
+								{ store, projects, config, chatThreadCreator },
+								sessionForStamp,
+							);
+						}
+					}
+				}
+			}
+
+			branches.display_refresh =
+				chatThreadCreator && (issueStatusEmojiEnabled || issueAttachPinEnabled)
+					? "settled"
+					: "not_applicable";
+			// FLY-137 Phase 5: Codex auto-trigger fires on design_review
+			// and pr_created. Honors codex-skip label snapshot (writes
+			// skip.json), enforces plan_path requirement for design_review
+			// (fail-closed via missing-plan instruction), otherwise queues
+			// a CommDB instruction to the Runner inbox.
+			if (stage === "design_review" || stage === "pr_created") {
+				const planPath = asString(payload.plan_path);
+				branches.codex_trigger = handleCodexAutoTrigger(
+					store,
+					event,
+					stage,
+					planPath,
+				);
+			}
+
+			// GEO-151: ProofShot auto-trigger. Reads
+			// `session_params.proofshot.config` (persisted by
+			// DirectEventSink.emitStarted) and filters on
+			// `config.capture_stages`. Default config has enabled=false
+			// → handler short-circuits for projects that don't opt in.
+			// The durable sink receipt determines whether the CLI may
+			// remove this stage event from its replay queue.
+
+			try {
+				branches.proofshot = await handleProofShotAutoTrigger(
+					store,
+					projects,
+					event,
+					stage,
+				);
+			} catch {
+				branches.proofshot = "pending";
+			}
+
+			// FLY-60 W2: post-merge re-finalize path. When stage=completed
+			// and the payload carries `landing_status.status="merged"`, the
+			// Runner has finished shipping and rewritten land-status.json
+			// to merged after PR merge. Earlier `session_completed` event
+			// (DirectEventSink) may have mapped status to `awaiting_review`
+			// because landingStatus was still "ready_to_merge" at that time.
+			// We re-evaluate the predicate with the now-merged landing
+			// status and fire `runPostShipFinalization` to drive the
+			// kill-Runner-tmux + chat-thread-cleanup chain.
+			//
+			// Scope (per plan §12.3): Run-#4-repair only — requires prior
+			// `session_completed` to have written `decision_route`. The
+			// "session=running, no prior session_completed" case is out of
+			// scope (would need stage payload to carry route).
+			if (stage === "completed") {
+				const landingStatus = payload.landing_status as
+					| {
+							status?: string;
+							prNumber?: number;
+							mergeCommitSha?: string;
+					  }
+					| undefined;
+				if (landingStatus?.status === "merged")
+					branches.completed_w2 = "pending";
+				const sessionAtStage = store.getSession(event.execution_id);
+				const stageRoute = asString(sessionAtStage?.decision_route);
+				// FLY-869 B: compute ship-eligibility BEFORE applyTransition→completed
+				// (design R2 HIGH-4 — the W2 re-finalize surface must gate too). A
+				// merged-but-unapproved session is parked, NOT transitioned/finalized.
+				const w2PrHead = sessionAtStage?.pr_head_sha?.trim();
+				const w2Decision =
+					landingStatus?.status === "merged"
+						? await computeAuthoritativeShipDecision(
+								store,
+								sessionAtStage ?? {
+									execution_id: event.execution_id,
+									project_name: event.project_name,
+								},
+								w2PrHead,
+								process.env,
+								materializedHeadAuthority,
+								mergedPrCiProbe,
+								duplicate && sessionAtStage?.status === "completed",
+							)
+						: undefined;
+				const w2ShipEligible =
+					landingStatus?.status === "merged"
+						? (w2Decision?.eligible ?? false)
+						: undefined;
+				if (
+					landingStatus?.status === "merged" &&
+					w2ShipEligible === false &&
+					sessionAtStage
+				) {
+					const claimed = parkMergeBlock(
+						store,
+						sessionAtStage,
+						w2Decision?.authoritativeHead ?? w2PrHead ?? "",
+						w2Decision ?? {
+							eligible: false,
+							mergeApprovalOk: false,
+							qaOk: false,
+							mergeReason: "no_pr_head",
+							qaReason: "session_not_found",
+						},
+					);
+					if (claimed) {
+						console.warn(
+							`[event-route W2] FLY-869 merge_without_approval — ${event.execution_id} ` +
+								`merged head=${w2PrHead ?? "(none)"} NOT ship-eligible; parked (no finalize).`,
+						);
+						// FLY-869 决定③: one loud Discord alert (once per head).
+						void reviewAuthorizationAlerts?.current?.alertMergeWithoutApproval(
+							sessionAtStage,
+							`⛔ Runner ${event.execution_id}（${sessionAtStage.issue_id}）自行 merge 但未获批准（stage=completed，merged head ${w2PrHead ?? "(none)"} 未通过 ship 闸：merge=${w2Decision?.mergeReason ?? "no_head"} qa=${w2Decision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
+						);
+					}
+				}
+				if (
+					landingStatus?.status === "merged" &&
+					isPostApproveShipComplete({
+						existingStatus: sessionAtStage?.status,
+						route: stageRoute,
+						landingStatus,
+						// FLY-869 B: gated — returns false when parked (not eligible).
+						shipEligible: w2ShipEligible,
+					})
+				) {
+					// (i) FSM transition FIRST via canonical applyTransition;
+					// pr_number patched via sessionFields so write is tied to
+					// the validated transition (codex R4 M2). merge_commit_sha
+					// is NOT a StateStore.Session column — it stays in the
+					// payload for downstream stage_context consumption only.
+					let transitionApplied = false;
+					if (transitionOpts) {
+						const sessionFields: Partial<{
+							pr_number: number;
+							last_activity_at: string;
+						}> = { last_activity_at: now };
+						if (landingStatus.prNumber !== undefined) {
+							sessionFields.pr_number = landingStatus.prNumber;
+						}
+						const w2Result =
+							duplicate && sessionAtStage?.status === "completed"
+								? { ok: true as const }
+								: applyTransition(
+										transitionOpts,
+										event.execution_id,
+										"completed",
+										ctx,
+										sessionFields,
+									);
+						if (!w2Result.ok) {
+							superseded = true;
+							console.warn(
+								`[event-route W2] FSM rejected ${sessionAtStage?.status}→completed for ${event.execution_id}: ${w2Result.error}`,
+							);
+							transitionRejected = true;
+						} else {
+							transitionApplied = true;
+						}
+					} else {
+						// Defensive: production plugin.ts always passes
+						// transitionOpts. If somehow absent, refuse to fire
+						// finalization (no legacy fallback for stage_changed
+						// handler). codex R5 M1.
+						transitionRejected = true;
+						console.warn(
+							`[event-route W2] missing transitionOpts; refusing post-ship finalization for ${event.execution_id}`,
+						);
+					}
+
+					// (ii) Fire orchestrator with the EXACT PostShipOpts shape
+					// used at the session_completed branch (line ~567). Do NOT
+					// pass landingStatus/decisionRoute/prNumber as fields — they
+					// are not part of PostShipOpts and TS would reject.
+					if (transitionApplied) {
+						branches.completed_w2 = "pending";
+						const report = await runResumablePostShipFinalization(
+							{
+								executionId: event.execution_id,
+								runId: store.getWorkflowRunIdForExecution(event.execution_id),
+								...(Number.isInteger(landingStatus.prNumber) &&
+								landingStatus.prNumber! > 0 &&
+								!!w2PrHead
+									? {
+											mergedPr: {
+												prNumber: landingStatus.prNumber!,
+												headSha: w2PrHead,
+											},
+										}
+									: {}),
+								issueId: event.issue_id,
+								issueIdentifier:
+									sessionAtStage?.issue_identifier ??
+									resolveIdentifier(payload, event.issue_id),
+								projectName: event.project_name,
+								sessionStatus: "completed",
+								discordOwnerUserId: config.chatThreadsEnabled
+									? config.discordOwnerUserId
+									: undefined,
+								fallbackBotToken: config.discordBotToken,
+							},
+							{
+								store,
+								projects,
+								removeCleanWorktree,
+								// FLY-887: close parked design + implement phases before worktree removal.
+								finalizeWorkflowPhaseRoles,
+								// FLY-799: auto-flip the shipped issue to Done (ship-success gated
+								// by runPostShipFinalization's merge-evidence predicate).
+								markIssueDone: makeLinearDoneFinalizer({
+									...config,
+									onChanged: ({ projectName }) =>
+										onEpicChange?.(projectName, "linear_done"),
+								}),
+								// FLY-907: final terminal-state display refresh (before archive).
+								refreshIssueDisplay: (issueId) =>
+									issueDisplayRefresh?.current?.refresh(issueId) ??
+									Promise.resolve(),
+								// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
+								...lifecycleInfra,
+							},
+						).catch((err) => {
+							console.error(
+								`[event-route W2] runPostShipFinalization failed for ${event.execution_id}:`,
+								(err as Error).message,
+							);
+						});
+						if (report?.complete) branches.completed_w2 = "settled";
+					}
+				} else if (
+					landingStatus?.status !== "merged" &&
+					!landingStatus?.prNumber &&
+					(isDoneButRunning(sessionAtStage ?? {}) ||
+						(duplicate &&
+							sessionAtStage?.status === "completed" &&
+							isDoneButRunning({ ...sessionAtStage, status: "running" }))) &&
+					!hasPendingCompleteMarker(event.execution_id)
+				) {
+					// FLY-324: a no-PR / no-code / QA Runner that finishes via
+					// `flywheel-comm stage set completed` only emits this
+					// stage_changed event — `complete --route` (which drives the
+					// `session_completed` FSM transition) is never called. The
+					// session is then stuck at `running`: close_runner rejects it,
+					// its tmux + worktree linger until the next Bridge restart, and
+					// idle detection false-positived session_stuck. `running →
+					// completed` is a legal FSM edge; apply it so the auto-close /
+					// reaper / notifier chain unblocks. isDoneButRunning guards on
+					// status===running + stage===completed + no decision_route + no
+					// pr_number; the non-merged landing check keeps the FLY-60 W2
+					// merged-ship path above as the sole owner of merged sessions.
+					//
+					// Design-review #3: also skip when the INCOMING land-status
+					// carries a prNumber. `stage set completed` attaches
+					// land-status.json (status + prNumber); a PR-created session
+					// whose `complete --route` was lost without a marker could match
+					// isDoneButRunning (pr_number not yet persisted), but a PR exists,
+					// so it must go through review, not be force-completed here.
+					//
+					// Scope (design-review #1): this live path treats a
+					// stage=completed report as a TERMINAL "done" assertion. A Runner
+					// that intends to stay parked must NOT report stage=completed. The
+					// Lead exclude list is a CUTOVER boot-sweep-only safety net for
+					// the pre-fix backlog where that contract wasn't yet in force.
+					if (
+						transitionOpts &&
+						isRunnerDeclaredParked(
+							event.execution_id,
+							// Authoritative project from the resolved session row, not the
+							// event envelope: a mismatched event.project_name would look up
+							// the wrong comm.db and silently miss the veto (Codex R2 HIGH).
+							sessionAtStage?.project_name ?? event.project_name,
+						)
+					) {
+						// FLY-1329 (A5): the runner declared itself parked — a
+						// stage=completed report that contradicts that must not
+						// force-complete it. Mirrors the boot sweep's veto.
+						console.log(
+							`[event-route FLY-324] prune_skipped_parked_conflict: ${event.execution_id} declares itself parked — NOT force-completing (FLY-1329 A5)`,
+						);
+					} else if (transitionOpts) {
+						const r324 =
+							duplicate && sessionAtStage?.status === "completed"
+								? { ok: true as const }
+								: applyTransition(
+										transitionOpts,
+										event.execution_id,
+										"completed",
+										ctx,
+										{ last_activity_at: now },
+									);
+						if (!r324.ok) {
+							superseded = true;
+							console.warn(
+								`[event-route FLY-324] FSM rejected running→completed for ${event.execution_id}: ${r324.error}`,
+							);
+							transitionRejected = true;
+						} else {
+							// FLY-1282 Part C: an ACCEPTED FLY-324 completion is a
+							// targeted terminal-archive enqueue site.
+							fly324Completed = true;
+						}
+					}
+				}
+			}
+
+			// NOTE: stage_changed values OTHER than "completed" (and the
+			// FLY-324 running→completed branch above) remain informational
+			// only — they do NOT trigger FSM transitions or orchestrators.
+			// The FSM status change for merged-ship completion flows through
+			// `session_completed` / the FLY-60 W2 merged branch.
+		}
+		if (fly324Completed) {
+			branches.completed_fly324 = "settled";
+			if (terminalArchiveEnqueue) {
+				try {
+					const admission = terminalArchiveEnqueue(event.issue_id);
+					branches.terminal_archive =
+						admission === "accepted" || admission === "deduped"
+							? "settled"
+							: "pending";
+				} catch (error) {
+					branches.terminal_archive = "pending";
+					console.error(
+						`[event-route] terminal-archive enqueue threw for ${event.issue_id}: ${(error as Error).message}`,
+					);
+				}
+			}
+		}
+		return result();
+	}
+
 	router.post("/", async (req, res) => {
-		const event = req.body as IngestEvent | undefined;
+		let event = req.body as IngestEvent | undefined;
 		if (!event || typeof event !== "object") {
 			res.status(400).json({ error: "expected JSON object" });
 			return;
@@ -1508,8 +1998,7 @@ export function createEventRouter(
 			return;
 		}
 
-		// Store event (idempotent)
-		const isNew = store.insertEvent({
+		const persistedInput = {
 			event_id: event.event_id,
 			execution_id: event.execution_id,
 			issue_id: event.issue_id,
@@ -1517,11 +2006,53 @@ export function createEventRouter(
 			event_type: event.event_type,
 			payload: event.payload,
 			source: typeof event.source === "string" ? event.source : "orchestrator",
-		});
-
-		if (!isNew) {
-			res.json({ ok: true, duplicate: true });
-			return;
+		};
+		const stagePending = new Set<string>();
+		let stageSuperseded = false;
+		let stageRecord:
+			| ReturnType<StateStore["insertStageChangedEvent"]>
+			| undefined;
+		let isNew: boolean;
+		if (event.event_type === "stage_changed") {
+			const stage = asString(event.payload?.stage);
+			if (!stage || !VALID_STAGES.has(stage)) {
+				res.status(400).json({ ok: false, reason: "invalid_stage_event" });
+				return;
+			}
+			stageRecord = store.insertStageChangedEvent(persistedInput, stage);
+			if (stageRecord.kind === "payload_conflict") {
+				res
+					.status(409)
+					.json({ ok: false, reason: "stage_event_payload_conflict" });
+				return;
+			}
+			isNew = stageRecord.kind === "inserted";
+			event = {
+				...stageRecord.row,
+				payload: stageRecord.row.payload as IngestEvent["payload"],
+			};
+			const latest = store.latestStageEvent(event.execution_id);
+			if (latest && latest.id !== stageRecord.row.id) {
+				store.patchSessionMetadata(latest.execution_id, {
+					session_stage: (latest.payload as { stage: string }).stage,
+					stage_updated_at: latest.ts,
+					last_activity_at: latest.ts,
+				});
+				res.json({
+					ok: true,
+					duplicate: !isNew,
+					applied: true,
+					superseded: true,
+					latest_event_id: latest.event_id,
+				});
+				return;
+			}
+		} else {
+			isNew = store.insertEvent(persistedInput);
+			if (!isNew) {
+				res.json({ ok: true, duplicate: true });
+				return;
+			}
 		}
 
 		// FLY-827: a Codex CODE review verdict (from `await-codex-gate code`). Record
@@ -1553,7 +2084,7 @@ export function createEventRouter(
 		// terminal removal (post-persist, so a rejected terminal never clears).
 
 		// Update session read model
-		const now = sqliteDatetime();
+		const now = stageRecord?.row.ts ?? sqliteDatetime();
 		const payload = event.payload ?? {};
 		let transitionRejected = false;
 		// FLY-1282 Part C: source-side exclusions for the targeted
@@ -1564,7 +2095,6 @@ export function createEventRouter(
 		// accepted FLY-324 running→completed transition — the W2 merged branch
 		// is structurally excluded (post-ship owner).
 		let terminalArchiveExcluded = false;
-		let fly324Completed = false;
 		try {
 			const ctx = {
 				executionId: event.execution_id,
@@ -2770,348 +3300,11 @@ export function createEventRouter(
 						});
 					}
 				}
-			} else if (event.event_type === "stage_changed") {
-				// GEO-292: Runner-reported pipeline stage change
-				const stage = asString(payload.stage);
-				if (stage && VALID_STAGES.has(stage)) {
-					store.patchSessionMetadata(event.execution_id, {
-						session_stage: stage,
-						stage_updated_at: now,
-						last_activity_at: now,
-					});
-
-					// FLY-623 (Codex code-review R1 HIGH): a genuinely ACCEPTED +
-					// PERSISTED stage_changed proves the Runner's own event channel is
-					// live again AND it is still running — leave the reconnecting state
-					// so normal stuck/orphan/idle monitoring resumes. The
-					// stampStageEmojiForSession call just below restamps the real stage
-					// badge (clearing "⚠️重连中"). Placed AFTER the persist + the FLY-598
-					// implement-gate early-return, so a rejected stage never clears.
-					// Terminal removal is owned by the reconcile cycle's status check.
-					reconnectHolder?.current?.clearReconnecting(event.execution_id);
-
-					// FLY-560 Feature A: auto-stamp the stage emoji onto the issue's
-					// [FLY-XX] thread title so Annie reads status at a glance. Wired
-					// only when the feature flag is on (plugin.ts passes the creator);
-					// fully fire-and-forget so it never blocks/breaks the transition.
-					if (
-						chatThreadCreator &&
-						(issueStatusEmojiEnabled || issueAttachPinEnabled)
-					) {
-						const sessionForStamp = store.getSession(event.execution_id);
-						if (sessionForStamp) {
-							if (issueDisplayRefresh?.current) {
-								// FLY-907: ONE unified derive-from-state refresh of all
-								// three faces (the persisted session_stage above is what
-								// the derivation reads, so the reported stage is honored).
-								issueDisplayRefresh.current.enqueue(event.issue_id);
-							} else {
-								// Legacy per-face fallback while the refresher is not yet wired.
-								if (issueStatusEmojiEnabled) {
-									stampStageEmojiForSession(
-										{ store, projects, config, chatThreadCreator },
-										sessionForStamp,
-										stage,
-									);
-								}
-								// FLY-560 Feature C: keep the pinned `tmux attach` command
-								// current (post on first stage once tmux_window registers;
-								// update only when the command changes).
-								if (issueAttachPinEnabled) {
-									pinRunnerAttachForSession(
-										{ store, projects, config, chatThreadCreator },
-										sessionForStamp,
-									);
-								}
-							}
-						}
-					}
-
-					// FLY-137 Phase 5: Codex auto-trigger fires on design_review
-					// and pr_created. Honors codex-skip label snapshot (writes
-					// skip.json), enforces plan_path requirement for design_review
-					// (fail-closed via missing-plan instruction), otherwise queues
-					// a CommDB instruction to the Runner inbox.
-					if (stage === "design_review" || stage === "pr_created") {
-						const planPath = asString(payload.plan_path);
-						handleCodexAutoTrigger(store, event, stage, planPath);
-					}
-
-					// GEO-151: ProofShot auto-trigger. Reads
-					// `session_params.proofshot.config` (persisted by
-					// DirectEventSink.emitStarted) and filters on
-					// `config.capture_stages`. Default config has enabled=false
-					// → handler short-circuits for projects that don't opt in.
-					// Fire-and-forget: handler is async but parent stage
-					// transition must not block on mailbox write.
-					void handleProofShotAutoTrigger(store, projects, event, stage).catch(
-						(err: unknown) => {
-							console.warn(
-								`[proofshot-trigger] async handler threw for ${event.execution_id} stage=${stage}:`,
-								err instanceof Error ? err.message : err,
-							);
-						},
-					);
-
-					// FLY-60 W2: post-merge re-finalize path. When stage=completed
-					// and the payload carries `landing_status.status="merged"`, the
-					// Runner has finished shipping and rewritten land-status.json
-					// to merged after PR merge. Earlier `session_completed` event
-					// (DirectEventSink) may have mapped status to `awaiting_review`
-					// because landingStatus was still "ready_to_merge" at that time.
-					// We re-evaluate the predicate with the now-merged landing
-					// status and fire `runPostShipFinalization` to drive the
-					// kill-Runner-tmux + chat-thread-cleanup chain.
-					//
-					// Scope (per plan §12.3): Run-#4-repair only — requires prior
-					// `session_completed` to have written `decision_route`. The
-					// "session=running, no prior session_completed" case is out of
-					// scope (would need stage payload to carry route).
-					if (stage === "completed") {
-						const landingStatus = payload.landing_status as
-							| {
-									status?: string;
-									prNumber?: number;
-									mergeCommitSha?: string;
-							  }
-							| undefined;
-						const sessionAtStage = store.getSession(event.execution_id);
-						const stageRoute = asString(sessionAtStage?.decision_route);
-						// FLY-869 B: compute ship-eligibility BEFORE applyTransition→completed
-						// (design R2 HIGH-4 — the W2 re-finalize surface must gate too). A
-						// merged-but-unapproved session is parked, NOT transitioned/finalized.
-						const w2PrHead = sessionAtStage?.pr_head_sha?.trim();
-						const w2Decision =
-							landingStatus?.status === "merged"
-								? await computeAuthoritativeShipDecision(
-										store,
-										sessionAtStage ?? {
-											execution_id: event.execution_id,
-											project_name: event.project_name,
-										},
-										w2PrHead,
-										process.env,
-										materializedHeadAuthority,
-										mergedPrCiProbe,
-									)
-								: undefined;
-						const w2ShipEligible =
-							landingStatus?.status === "merged"
-								? (w2Decision?.eligible ?? false)
-								: undefined;
-						if (
-							landingStatus?.status === "merged" &&
-							w2ShipEligible === false &&
-							sessionAtStage
-						) {
-							const claimed = parkMergeBlock(
-								store,
-								sessionAtStage,
-								w2Decision?.authoritativeHead ?? w2PrHead ?? "",
-								w2Decision ?? {
-									eligible: false,
-									mergeApprovalOk: false,
-									qaOk: false,
-									mergeReason: "no_pr_head",
-									qaReason: "session_not_found",
-								},
-							);
-							if (claimed) {
-								console.warn(
-									`[event-route W2] FLY-869 merge_without_approval — ${event.execution_id} ` +
-										`merged head=${w2PrHead ?? "(none)"} NOT ship-eligible; parked (no finalize).`,
-								);
-								// FLY-869 决定③: one loud Discord alert (once per head).
-								void reviewAuthorizationAlerts?.current?.alertMergeWithoutApproval(
-									sessionAtStage,
-									`⛔ Runner ${event.execution_id}（${sessionAtStage.issue_id}）自行 merge 但未获批准（stage=completed，merged head ${w2PrHead ?? "(none)"} 未通过 ship 闸：merge=${w2Decision?.mergeReason ?? "no_head"} qa=${w2Decision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
-								);
-							}
-						}
-						if (
-							landingStatus?.status === "merged" &&
-							isPostApproveShipComplete({
-								existingStatus: sessionAtStage?.status,
-								route: stageRoute,
-								landingStatus,
-								// FLY-869 B: gated — returns false when parked (not eligible).
-								shipEligible: w2ShipEligible,
-							})
-						) {
-							// (i) FSM transition FIRST via canonical applyTransition;
-							// pr_number patched via sessionFields so write is tied to
-							// the validated transition (codex R4 M2). merge_commit_sha
-							// is NOT a StateStore.Session column — it stays in the
-							// payload for downstream stage_context consumption only.
-							let transitionApplied = false;
-							if (transitionOpts) {
-								const sessionFields: Partial<{
-									pr_number: number;
-									last_activity_at: string;
-								}> = { last_activity_at: now };
-								if (landingStatus.prNumber !== undefined) {
-									sessionFields.pr_number = landingStatus.prNumber;
-								}
-								const w2Result = applyTransition(
-									transitionOpts,
-									event.execution_id,
-									"completed",
-									ctx,
-									sessionFields,
-								);
-								if (!w2Result.ok) {
-									console.warn(
-										`[event-route W2] FSM rejected ${sessionAtStage?.status}→completed for ${event.execution_id}: ${w2Result.error}`,
-									);
-									transitionRejected = true;
-								} else {
-									transitionApplied = true;
-								}
-							} else {
-								// Defensive: production plugin.ts always passes
-								// transitionOpts. If somehow absent, refuse to fire
-								// finalization (no legacy fallback for stage_changed
-								// handler). codex R5 M1.
-								transitionRejected = true;
-								console.warn(
-									`[event-route W2] missing transitionOpts; refusing post-ship finalization for ${event.execution_id}`,
-								);
-							}
-
-							// (ii) Fire orchestrator with the EXACT PostShipOpts shape
-							// used at the session_completed branch (line ~567). Do NOT
-							// pass landingStatus/decisionRoute/prNumber as fields — they
-							// are not part of PostShipOpts and TS would reject.
-							if (transitionApplied) {
-								runPostShipFinalization(
-									{
-										executionId: event.execution_id,
-										runId: store.getWorkflowRunIdForExecution(
-											event.execution_id,
-										),
-										...(Number.isInteger(landingStatus.prNumber) &&
-										landingStatus.prNumber! > 0 &&
-										!!w2PrHead
-											? {
-													mergedPr: {
-														prNumber: landingStatus.prNumber!,
-														headSha: w2PrHead,
-													},
-												}
-											: {}),
-										issueId: event.issue_id,
-										issueIdentifier:
-											sessionAtStage?.issue_identifier ??
-											resolveIdentifier(payload, event.issue_id),
-										projectName: event.project_name,
-										sessionStatus: "completed",
-										discordOwnerUserId: config.chatThreadsEnabled
-											? config.discordOwnerUserId
-											: undefined,
-										fallbackBotToken: config.discordBotToken,
-									},
-									{
-										store,
-										projects,
-										removeCleanWorktree,
-										// FLY-887: close parked design + implement phases before worktree removal.
-										finalizeWorkflowPhaseRoles,
-										// FLY-799: auto-flip the shipped issue to Done (ship-success gated
-										// by runPostShipFinalization's merge-evidence predicate).
-										markIssueDone: makeLinearDoneFinalizer({
-											...config,
-											onChanged: ({ projectName }) =>
-												onEpicChange?.(projectName, "linear_done"),
-										}),
-										// FLY-907: final terminal-state display refresh (before archive).
-										refreshIssueDisplay: (issueId) =>
-											issueDisplayRefresh?.current?.refresh(issueId) ??
-											Promise.resolve(),
-										// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
-										...lifecycleInfra,
-									},
-								).catch((err) => {
-									console.error(
-										`[event-route W2] runPostShipFinalization failed for ${event.execution_id}:`,
-										(err as Error).message,
-									);
-								});
-							}
-						} else if (
-							landingStatus?.status !== "merged" &&
-							!landingStatus?.prNumber &&
-							isDoneButRunning(sessionAtStage ?? {}) &&
-							!hasPendingCompleteMarker(event.execution_id)
-						) {
-							// FLY-324: a no-PR / no-code / QA Runner that finishes via
-							// `flywheel-comm stage set completed` only emits this
-							// stage_changed event — `complete --route` (which drives the
-							// `session_completed` FSM transition) is never called. The
-							// session is then stuck at `running`: close_runner rejects it,
-							// its tmux + worktree linger until the next Bridge restart, and
-							// idle detection false-positived session_stuck. `running →
-							// completed` is a legal FSM edge; apply it so the auto-close /
-							// reaper / notifier chain unblocks. isDoneButRunning guards on
-							// status===running + stage===completed + no decision_route + no
-							// pr_number; the non-merged landing check keeps the FLY-60 W2
-							// merged-ship path above as the sole owner of merged sessions.
-							//
-							// Design-review #3: also skip when the INCOMING land-status
-							// carries a prNumber. `stage set completed` attaches
-							// land-status.json (status + prNumber); a PR-created session
-							// whose `complete --route` was lost without a marker could match
-							// isDoneButRunning (pr_number not yet persisted), but a PR exists,
-							// so it must go through review, not be force-completed here.
-							//
-							// Scope (design-review #1): this live path treats a
-							// stage=completed report as a TERMINAL "done" assertion. A Runner
-							// that intends to stay parked must NOT report stage=completed. The
-							// Lead exclude list is a CUTOVER boot-sweep-only safety net for
-							// the pre-fix backlog where that contract wasn't yet in force.
-							if (
-								transitionOpts &&
-								isRunnerDeclaredParked(
-									event.execution_id,
-									// Authoritative project from the resolved session row, not the
-									// event envelope: a mismatched event.project_name would look up
-									// the wrong comm.db and silently miss the veto (Codex R2 HIGH).
-									sessionAtStage?.project_name ?? event.project_name,
-								)
-							) {
-								// FLY-1329 (A5): the runner declared itself parked — a
-								// stage=completed report that contradicts that must not
-								// force-complete it. Mirrors the boot sweep's veto.
-								console.log(
-									`[event-route FLY-324] prune_skipped_parked_conflict: ${event.execution_id} declares itself parked — NOT force-completing (FLY-1329 A5)`,
-								);
-							} else if (transitionOpts) {
-								const r324 = applyTransition(
-									transitionOpts,
-									event.execution_id,
-									"completed",
-									ctx,
-									{ last_activity_at: now },
-								);
-								if (!r324.ok) {
-									console.warn(
-										`[event-route FLY-324] FSM rejected running→completed for ${event.execution_id}: ${r324.error}`,
-									);
-									transitionRejected = true;
-								} else {
-									// FLY-1282 Part C: an ACCEPTED FLY-324 completion is a
-									// targeted terminal-archive enqueue site.
-									fly324Completed = true;
-								}
-							}
-						}
-					}
-
-					// NOTE: stage_changed values OTHER than "completed" (and the
-					// FLY-324 running→completed branch above) remain informational
-					// only — they do NOT trigger FSM transitions or orchestrators.
-					// The FSM status change for merged-ship completion flows through
-					// `session_completed` / the FLY-60 W2 merged branch.
-				}
+			} else if (event.event_type === "stage_changed" && stageRecord) {
+				const settlement = await applyStageEvent(stageRecord.row, !isNew);
+				for (const branch of settlement.pending) stagePending.add(branch);
+				transitionRejected = settlement.transitionRejected;
+				stageSuperseded = settlement.superseded;
 			}
 		} catch (err) {
 			console.error(
@@ -3137,6 +3330,15 @@ export function createEventRouter(
 
 		// Skip notification when FSM rejected the transition
 		if (transitionRejected) {
+			if (stageSuperseded) {
+				res.json({
+					ok: true,
+					...(!isNew ? { duplicate: true } : {}),
+					applied: true,
+					superseded: true,
+				});
+				return;
+			}
 			// FLY-921 Fix C (Codex code R1 HIGH): a killed PARKED holder is exactly
 			// this shape — the FSM has no awaiting_review→failed edge, so the
 			// terminal signal is rejected and this early return would skip the
@@ -3325,14 +3527,14 @@ export function createEventRouter(
 		// confirms the row actually landed completed (FSM-rejected / duplicate
 		// terminal → zero enqueue). Post-ship completions and FLY-208
 		// evidence-gap completions are excluded at their source sites;
-		// stage_changed only enqueues via the accepted FLY-324 transition (the
-		// W2 merged branch is post-ship-owned and structurally never enqueues).
+		// stage_changed owns its replayable admission inside applyStageEvent;
+		// W2 merged finalization remains post-ship-owned.
 		// Sister call: DirectEventSink.ts.
 		if (
 			terminalArchiveEnqueue &&
 			!terminalArchiveExcluded &&
 			!transitionRejected &&
-			(event.event_type === "session_completed" || fly324Completed)
+			event.event_type === "session_completed"
 		) {
 			const freshTerminalRow = store.getSession(event.execution_id);
 			if (freshTerminalRow?.status === "completed") {
@@ -3516,7 +3718,16 @@ export function createEventRouter(
 			}
 		}
 
-		res.json({ ok: true });
+		res.json({
+			ok: true,
+			...(stageRecord
+				? {
+						...(!isNew ? { duplicate: true } : {}),
+						applied: stagePending.size === 0,
+						...(stagePending.size ? { pending: [...stagePending] } : {}),
+					}
+				: {}),
+		});
 	});
 
 	return router;

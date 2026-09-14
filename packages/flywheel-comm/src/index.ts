@@ -99,6 +99,11 @@ import { inspectCommittedFounderReviewArtifacts } from "./founder-review.js";
 import { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
 import { RecipientError } from "./recipient-resolve.js";
 import { resolveDbPath } from "./resolve-db-path.js";
+import {
+	preflightStageQueue,
+	stageQueueTransportFromEnv,
+	withStageQueueFence,
+} from "./stage-queue.js";
 import { resolveTurnWaitStateDbPath } from "./turn-wait-state.js";
 
 function printUsage(): void {
@@ -261,11 +266,19 @@ async function main(): Promise<void> {
 	const command = args[0];
 
 	if (!command || command === "--help" || command === "-h") {
+		await preflightStageQueue(process.env.FLYWHEEL_EXEC_ID);
 		printUsage();
 		process.exit(0);
 	}
 	// Parse global options from remaining args
 	const commandArgs = args.slice(1);
+	if (
+		!["gate", "request-review", "qa-result", "complete", "stage"].includes(
+			command,
+		)
+	) {
+		await preflightStageQueue(process.env.FLYWHEEL_EXEC_ID);
+	}
 
 	switch (command) {
 		case "ask":
@@ -1371,6 +1384,7 @@ async function runComplete(args: string[]): Promise<void> {
 		allowPositionals: false,
 	});
 
+	await preflightStageQueue(process.env.FLYWHEEL_EXEC_ID, true);
 	await complete({
 		route: values.route ?? "",
 		pr: values.pr ? Number.parseInt(values.pr, 10) : undefined,
@@ -1480,14 +1494,30 @@ async function runRequestReview(args: string[]): Promise<void> {
 		allowPositionals: false,
 	});
 
-	await requestReview({
-		execId: values["exec-id"],
-		type: values.type,
-		questionId: values["question-id"],
-		planPath: values.plan,
-		targetRepoPath: values["target-repo"],
-		requestId: values["request-id"],
-	});
+	const execId = (
+		values["exec-id"] ??
+		process.env.FLYWHEEL_EXEC_ID ??
+		""
+	).trim();
+	const invoke = () =>
+		requestReview({
+			execId: values["exec-id"],
+			type: values.type,
+			questionId: values["question-id"],
+			planPath: values.plan,
+			targetRepoPath: values["target-repo"],
+			requestId: values["request-id"],
+		});
+	if (!execId) {
+		process.exitCode = await invoke();
+		return;
+	}
+	const fenced = await withStageQueueFence(
+		execId,
+		stageQueueTransportFromEnv(),
+		invoke,
+	);
+	process.exitCode = fenced.settled ? fenced.value : 2;
 }
 
 // FLY-1278: supervised governance for an already-delivered review finding.
@@ -1541,17 +1571,24 @@ async function runQaResult(args: string[]): Promise<void> {
 			status: { type: "string" },
 			summary: { type: "string" },
 			"pr-head": { type: "string" },
+			"discard-marker": { type: "boolean", default: false },
 		},
 		allowPositionals: false,
 	});
 
-	await qaResult({
+	await preflightStageQueue(
+		values["exec-id"] ?? process.env.FLYWHEEL_EXEC_ID,
+		true,
+	);
+	const result = await qaResult({
 		status: values.status ?? "",
 		targetExec: values["target-exec"] ?? "",
 		summary: values.summary,
 		execId: values["exec-id"],
 		prHeadSha: values["pr-head"],
+		discardMarker: values["discard-marker"],
 	});
+	process.exitCode = result.exitCode;
 }
 
 async function runWorkflowOutput(args: string[]): Promise<void> {
@@ -2212,6 +2249,7 @@ async function runGate(args: string[]): Promise<void> {
 			: undefined;
 
 	const result = await gate({
+		stageQueueFence: true,
 		checkpoint,
 		lead: values.lead,
 		execId: values["exec-id"],

@@ -13,18 +13,28 @@
  * exact branch those tests pin, so it is not re-driven end-to-end here.
  */
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import type http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import type { EventEnvelope } from "flywheel-edge-worker";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
+import * as headAuthority from "../bridge/head-authority.js";
+import * as shipGate from "../bridge/merge-ship-gate.js";
 import { createBridgeApp } from "../bridge/plugin.js";
+import * as finalization from "../bridge/post-ship-finalization.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import {
+	insertHistoricalAutoQaRecord,
+	setHistoricalQaRequiredSnapshot,
+} from "./helpers/historical-qa.js";
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -220,6 +230,7 @@ describe("DirectEventSink enqueue site", () => {
 
 describe("event-route enqueue site (HTTP /events)", () => {
 	let store: StateStore;
+	let tempRoot: string;
 	let server: http.Server;
 	let baseUrl: string;
 	let enqueue: ReturnType<typeof vi.fn>;
@@ -232,7 +243,9 @@ describe("event-route enqueue site (HTTP /events)", () => {
 	};
 
 	beforeEach(async () => {
-		store = await StateStore.create(":memory:");
+		tempRoot = mkdtempSync(join(tmpdir(), "fly1956-terminal-"));
+		vi.stubEnv("FLYWHEEL_COMM_DIR", join(tempRoot, "comm"));
+		store = await StateStore.create(join(tempRoot, "teamlead.db"));
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
 		const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
@@ -269,6 +282,8 @@ describe("event-route enqueue site (HTTP /events)", () => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
+		vi.unstubAllEnvs();
+		rmSync(tempRoot, { recursive: true, force: true });
 		warnSpy.mockRestore();
 		errorSpy.mockRestore();
 	});
@@ -293,6 +308,200 @@ describe("event-route enqueue site (HTTP /events)", () => {
 			payload: { issueIdentifier: "GEO-100", issueTitle: "t" },
 		});
 	}
+
+	it("acknowledges an out-of-order completed stage as superseded without finalizing", async () => {
+		await startRunning("exec-1", "issue-1");
+		store.persistTransition("exec-1", "failed", {
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			decision_route: "needs_review",
+			pr_head_sha: "a".repeat(40),
+		});
+		const eligibility = vi
+			.spyOn(shipGate, "computeAuthoritativeShipDecision")
+			.mockResolvedValue({ eligible: true } as Awaited<
+				ReturnType<typeof shipGate.computeAuthoritativeShipDecision>
+			>);
+		const resume = vi
+			.spyOn(finalization, "runResumablePostShipFinalization")
+			.mockResolvedValue({ complete: true, outcome: "completed", details: {} });
+		try {
+			const event = {
+				event_id: "obsolete-completed",
+				execution_id: "exec-1",
+				issue_id: "issue-1",
+				project_name: "geoforge3d",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: { status: "merged", prNumber: 42 },
+				},
+			};
+			for (let attempt = 0; attempt < 2; attempt++) {
+				expect(await (await post(event)).json()).toMatchObject({
+					ok: true,
+					superseded: true,
+					applied: true,
+				});
+				expect(store.getSession("exec-1")?.status).toBe("failed");
+			}
+			expect(resume).not.toHaveBeenCalled();
+			expect(enqueue).not.toHaveBeenCalled();
+		} finally {
+			eligibility.mockRestore();
+			resume.mockRestore();
+		}
+	});
+
+	it.each(["valid", "unbound", "head-drift"] as const)(
+		"revalidates real approval for partial post-ship replay: %s",
+		async (binding) => {
+			await startRunning("exec-1", "issue-1");
+			store.upsertSession({
+				execution_id: "exec-1",
+				issue_id: "issue-1",
+				project_name: "geoforge3d",
+				status: "approved_to_ship",
+				decision_route: "needs_review",
+				pr_head_sha: "a".repeat(40),
+			});
+			mkdirSync(join(tempRoot, "comm", "geoforge3d"), { recursive: true });
+			const comm = new CommDB(join(tempRoot, "comm", "geoforge3d", "comm.db"));
+			const questionId = comm.insertQuestion("exec-1", "product-lead", "Ship", {
+				checkpoint: "approve_to_ship",
+			});
+			comm.insertResponse(
+				questionId,
+				"bridge",
+				JSON.stringify({ approved: true }),
+			);
+			comm.close();
+			store.setReviewBinding("exec-1", {
+				questionId,
+				prHeadSha: "a".repeat(40),
+			});
+			store.upsertSession({
+				execution_id: "exec-1",
+				issue_id: "issue-1",
+				project_name: "geoforge3d",
+				status: "approved_to_ship",
+				pr_number: 42,
+			});
+			setHistoricalQaRequiredSnapshot(store, {
+				executionId: "exec-1",
+				required: 1,
+				reason: "test",
+			});
+			insertHistoricalAutoQaRecord(store, {
+				parentExecutionId: "exec-1",
+				targetPrHeadSha: "a".repeat(40),
+				issueId: "issue-1",
+				projectName: "geoforge3d",
+				status: "passed",
+			});
+			store.recordCodexReviewApproved({
+				executionId: "exec-1",
+				targetPrHeadSha: "a".repeat(40),
+				issueId: "issue-1",
+				projectName: "geoforge3d",
+			});
+			const authority = vi
+				.spyOn(headAuthority, "resolveWorkflowHeadAuthority")
+				.mockResolvedValue({ prHeadSha: "a".repeat(40) } as Awaited<
+					ReturnType<typeof headAuthority.resolveWorkflowHeadAuthority>
+				>);
+			const legacy = vi
+				.spyOn(finalization, "runPostShipFinalization")
+				.mockResolvedValue(undefined);
+			const resume = vi
+				.spyOn(finalization, "runResumablePostShipFinalization")
+				.mockResolvedValueOnce({
+					complete: false,
+					outcome: "partial",
+					details: {},
+				})
+				.mockResolvedValue({
+					complete: true,
+					outcome: "completed",
+					details: {},
+				});
+			try {
+				const event = {
+					event_id: "merged-stage-retry",
+					execution_id: "exec-1",
+					issue_id: "issue-1",
+					project_name: "geoforge3d",
+					event_type: "stage_changed",
+					payload: {
+						stage: "completed",
+						landing_status: { status: "merged", prNumber: 42 },
+					},
+				};
+				expect(await (await post(event)).json()).toMatchObject({
+					ok: true,
+					applied: false,
+					pending: ["completed_w2"],
+				});
+				expect(store.getSession("exec-1")?.status).toBe("completed");
+				if (binding !== "valid") {
+					store.setReviewBinding("exec-1", {
+						questionId: binding === "unbound" ? null : questionId,
+						prHeadSha:
+							binding === "head-drift" ? "b".repeat(40) : "a".repeat(40),
+					});
+					expect(await (await post(event)).json()).toMatchObject({
+						ok: true,
+						duplicate: true,
+						applied: false,
+						pending: ["completed_w2"],
+					});
+					expect(resume).toHaveBeenCalledTimes(1);
+					return;
+				}
+				expect(await (await post(event)).json()).toMatchObject({
+					ok: true,
+					duplicate: true,
+					applied: true,
+				});
+				expect(resume).toHaveBeenCalledTimes(2);
+				expect(legacy).not.toHaveBeenCalled();
+				expect(enqueue).not.toHaveBeenCalled();
+			} finally {
+				authority.mockRestore();
+				legacy.mockRestore();
+				resume.mockRestore();
+			}
+		},
+	);
+
+	it("retries stage completion archive admission after the terminal transition already committed", async () => {
+		await startRunning("exec-1", "issue-1");
+		const event = {
+			event_id: "stage-completion-retry",
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			event_type: "stage_changed",
+			payload: { stage: "completed" },
+		};
+		enqueue
+			.mockImplementationOnce(() => {
+				throw new Error("archive unavailable");
+			})
+			.mockReturnValue("deduped");
+		expect(await (await post(event)).json()).toMatchObject({
+			ok: true,
+			applied: false,
+			pending: ["terminal_archive"],
+		});
+		expect(store.getSession("exec-1")?.status).toBe("completed");
+		expect(await (await post(event)).json()).toMatchObject({
+			ok: true,
+			duplicate: true,
+			applied: true,
+		});
+		expect(enqueue).toHaveBeenCalledTimes(2);
+	});
 
 	it("session_completed main transition → exactly one enqueue; a duplicate terminal adds zero", async () => {
 		await startRunning("exec-1", "issue-1");

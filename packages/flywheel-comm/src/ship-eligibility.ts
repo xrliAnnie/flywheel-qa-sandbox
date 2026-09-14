@@ -23,6 +23,7 @@ import {
 	resolveStateDbPath,
 	type VerifyApprovalArgs,
 	verifyApproval,
+	verifyCompletedShipApproval,
 } from "./commands/verify-approval.js";
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/;
@@ -298,7 +299,21 @@ export interface ShipEligibilityDecision {
 export function evaluateShipEligibility(
 	args: ShipEligibilityArgs,
 ): ShipEligibilityDecision {
-	const approval = verifyApproval({
+	return evaluateBoundShipEligibility(args, verifyApproval);
+}
+
+/** Terminal recovery retains approval, review and QA checks for the bound head. */
+export function evaluateCompletedShipEligibility(
+	args: ShipEligibilityArgs,
+): ShipEligibilityDecision {
+	return evaluateBoundShipEligibility(args, verifyCompletedShipApproval);
+}
+
+function evaluateBoundShipEligibility(
+	args: ShipEligibilityArgs,
+	verify: typeof verifyApproval,
+): ShipEligibilityDecision {
+	const approval = verify({
 		execId: args.execId,
 		prHead: args.prHead,
 		dbPath: args.commDbPath,

@@ -15,6 +15,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { normalizeOptionalBearer } from "flywheel-config";
+import { printBridgePressure } from "../bridge-pressure-snapshot.js";
+import {
+	enqueueStageEvent,
+	flushStageQueue,
+	VALID_STAGES,
+} from "../stage-queue.js";
 
 interface LandingStatus {
 	status?: string;
@@ -71,23 +77,6 @@ function readLandingStatus(execId: string): LandingStatus | null {
 
 // FLY-137 v1.27.2: must stay in sync with packages/teamlead/src/bridge/stage-utils.ts
 // (Bridge-side VALID_STAGES). `onboard` inserted between `started` and `brainstorm`.
-const VALID_STAGES = new Set([
-	"started",
-	"onboard",
-	"brainstorm",
-	"research",
-	"plan",
-	"design_review",
-	"implement",
-	"test",
-	"code_review",
-	"pr_created",
-	"approve",
-	"ship",
-	"completed",
-]);
-
-const TIMEOUT_MS = 2000;
 
 /**
  * FLY-137 Phase 5: validate `--plan <relative-path>` against worktree.
@@ -210,30 +199,43 @@ export async function stage(opts: {
 	if (ingestToken) {
 		headers.Authorization = `Bearer ${ingestToken}`;
 	}
-
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+	let queuedPath: string;
 	try {
-		const response = await fetch(`${bridgeUrl}/events`, {
-			method: "POST",
-			headers,
-			body: JSON.stringify(body),
-			signal: controller.signal,
-		});
-		clearTimeout(timeout);
+		queuedPath = await enqueueStageEvent(body);
+	} catch (error) {
+		console.error(
+			`[flywheel-comm stage] UNRECORDED: ${opts.stageName} could not be queued (${error instanceof Error ? error.message : String(error)})`,
+		);
+		console.error(JSON.stringify(body));
+		process.exitCode = 3;
+		return;
+	}
 
-		if (!response.ok) {
-			console.error(
-				`[flywheel-comm stage] Warning: Bridge returned ${response.status} — stage not recorded`,
+	try {
+		const result = await flushStageQueue(execId, {
+			bridgeUrl,
+			headers,
+			retryPath: queuedPath,
+		});
+		if (result.refused.includes(queuedPath)) {
+			await printBridgePressure(bridgeUrl, "stage", console.error);
+			return;
+		}
+		if (!existsSync(queuedPath)) {
+			const receipt = result.receipts[queuedPath];
+			console.log(
+				`Stage: ${opts.stageName}${receipt === "replayed" || receipt === "superseded" ? ` (${receipt})` : ""}`,
 			);
 		} else {
-			console.log(`Stage: ${opts.stageName}`);
+			console.error(
+				`[flywheel-comm stage] DEFERRED: ${opts.stageName} queued; replayed before the next flywheel-comm command`,
+			);
+			await printBridgePressure(bridgeUrl, "stage", console.error);
 		}
-	} catch (err) {
-		clearTimeout(timeout);
-		const message = err instanceof Error ? err.message : String(err);
+	} catch (error) {
 		console.error(
-			`[flywheel-comm stage] Warning: ${message} — stage not recorded`,
+			`[flywheel-comm stage] DEFERRED: ${opts.stageName} queued (${error instanceof Error ? error.message : String(error)}); retained for replay`,
 		);
+		await printBridgePressure(bridgeUrl, "stage", console.error);
 	}
 }

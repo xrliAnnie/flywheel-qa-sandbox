@@ -177,10 +177,14 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 		expect(store.getSession(EXEC_ID)?.session_stage).toBe("implement");
 	});
 
-	it("ignores an invalid stage (no stamp)", async () => {
+	it("rejects an invalid stage before stamping", async () => {
 		store.upsertChatThread(THREAD_ID, CHAT_CHANNEL, ISSUE_ID);
 		const res = await postStage(buildApp(fakeCreator), "bogus", "evt-4");
-		expect(res.ok).toBe(true);
+		expect(res.status).toBe(400);
+		expect(await res.json()).toMatchObject({
+			ok: false,
+			reason: "invalid_stage_event",
+		});
 		expect(stampSpy).not.toHaveBeenCalled();
 	});
 
@@ -219,7 +223,11 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 			"bogus",
 			"evt-rc-2",
 		);
-		expect(res.ok).toBe(true);
+		expect(res.status).toBe(400);
+		expect(await res.json()).toMatchObject({
+			ok: false,
+			reason: "invalid_stage_event",
+		});
 		// stage rejected before persist → suppression must NOT be cleared
 		expect(clearReconnecting).not.toHaveBeenCalled();
 	});

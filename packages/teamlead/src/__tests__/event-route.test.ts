@@ -3176,7 +3176,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 		expect(session!.session_stage).toBe("implement");
 	});
 
-	it("stage_changed with invalid stage is ignored", async () => {
+	it("stage_changed with invalid stage is refused without recording the event", async () => {
 		// Create session first
 		await postEvent();
 
@@ -3185,7 +3185,13 @@ describe("Event route — GEO-292 stage tracking", () => {
 			event_type: "stage_changed",
 			payload: { stage: "nonexistent_stage" },
 		});
-		expect(res.status).toBe(200);
+		expect(res.status).toBe(400);
+		expect(await res.json()).toMatchObject({ reason: "invalid_stage_event" });
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((event) => event.event_id === "evt-stage-invalid"),
+		).toBe(false);
 
 		const session = store.getSession("exec-1");
 		// Should still be "started" from session_started

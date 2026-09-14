@@ -590,6 +590,7 @@ import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
 import { sweepOrphanFounderReviewGates } from "./orphan-founder-review-monitor.js";
+import { OutboundPressureMeter } from "./outbound-pressure.js";
 import { isTransientThrottlePane } from "./pane-blocked-classifier.js";
 import { fingerprintOutput } from "./pane-fingerprint.js";
 import {
@@ -1435,6 +1436,7 @@ export interface BridgeAppOptions {
 	eventLoopAttribution?: {
 		healthSnapshot(): EventLoopHealthSnapshot;
 		snapshot(): unknown;
+		recordSpan?(name: string, startMs: number, endMs: number): void;
 	};
 	vercelToken?: string | (() => string | undefined);
 	/** Private object storage used by hosted reports after the gateway cutover. */
@@ -1715,6 +1717,10 @@ export function createBridgeApp(
 	opts?: BridgeAppOptions,
 ): express.Application {
 	const app = express();
+	const outboundPressure = new OutboundPressureMeter({
+		recordSpan: (name, startMs, endMs) =>
+			opts?.eventLoopAttribution?.recordSpan?.(name, startMs, endMs),
+	});
 	const capacityDeps = makeCapacitySnapshotDeps(store, config);
 	const flagStore = opts?.flagStore;
 	if (flagStore)
@@ -2202,6 +2208,7 @@ export function createBridgeApp(
 		"/api/workflow",
 		createWorkflowDecisionRouter({
 			store,
+			pressure: outboundPressure,
 			nodeReuseEnabled: workflowDecisionRoutes,
 			materializedHeadAuthority: opts?.materializedHeadAuthority,
 			gateCarrierRebind: {
@@ -2347,6 +2354,7 @@ export function createBridgeApp(
 			// shutdown so the deploy health check + wrapper preflight treat a
 			// draining Bridge as not-ready. `shuttingDown` is additive.
 			ok: !shuttingDown,
+			outbound_pressure: outboundPressure.snapshot(),
 			shuttingDown,
 			uptime: process.uptime(),
 			sessions_count: active.length,
@@ -2502,6 +2510,7 @@ export function createBridgeApp(
 	const issueAttachPinEnabled = true;
 	app.use(
 		"/events",
+		outboundPressure.observe("events"),
 		tokenAuthMiddleware(config.ingestToken),
 		createEventRouter(
 			store,
@@ -3183,6 +3192,7 @@ export function createBridgeApp(
 	// authority, so a lost/duplicate nudge cannot lose or duplicate delivery.
 	app.post(
 		"/api/lead-inbox/nudge",
+		outboundPressure.observe("lead_inbox_nudge"),
 		masterOrIngestAuthMiddleware(config.apiToken, config.ingestToken),
 		(req, res) => {
 			const { leadId, project } = (req.body ?? {}) as {

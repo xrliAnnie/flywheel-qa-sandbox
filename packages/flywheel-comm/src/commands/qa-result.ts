@@ -13,10 +13,15 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
+	closeSync,
 	existsSync,
+	fsyncSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
+	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	statSync,
 	unlinkSync,
@@ -29,7 +34,9 @@ import {
 	parseGitHubPushEndpoint,
 	type RunnerMemoryCloseoutReceipt,
 	sanitizeOneLine,
+	withMkdirLock,
 } from "flywheel-config";
+import { printBridgePressure } from "../bridge-pressure-snapshot.js";
 import { collectRunnerMemoryCloseout } from "../runner-memory-closeout.js";
 import { currentWorkflowCredentialFromEnv } from "./workflow-activation.js";
 
@@ -42,7 +49,7 @@ export const QA_GITHUB_CLI_CANDIDATES = [
 ] as const;
 
 const ATTEMPT_COUNT = 4;
-const ATTEMPT_TIMEOUT_MS = 5000;
+const ATTEMPT_TIMEOUT_MS = 20000;
 const BACKOFF_MS = [1000, 2000, 4000] as const;
 const LAND_HEAD_SETTLE_INTERVAL_MS = 250;
 const LAND_HEAD_SETTLE_TIMEOUT_MS = 5000;
@@ -102,6 +109,7 @@ export function classifyQaResultRejection(
 }
 
 export interface QaResultOpts {
+	discardMarker?: boolean;
 	/** "pass" | "fail" — the QA verdict. */
 	status: string;
 	/** The parent (implementer/main) execution id this verdict gates. */
@@ -560,10 +568,71 @@ function runQaGit(
 	});
 }
 
+export interface QaResultOutcome {
+	exitCode: 0 | 1 | 2 | 3;
+	label: string;
+}
+
 export async function qaResult(
 	opts: QaResultOpts,
 	dependencies: QaResultDependencies = {},
-): Promise<void> {
+): Promise<QaResultOutcome> {
+	const execId = (opts.execId ?? process.env.FLYWHEEL_EXEC_ID ?? "").trim();
+	// Argument refusals happen before filesystem ownership or network work.
+	if (
+		!VALID_STATUSES.has((opts.status ?? "").trim().toLowerCase()) ||
+		!opts.targetExec?.trim() ||
+		!execId
+	) {
+		return runQaResultCore(opts, dependencies);
+	}
+	const dir = join(
+		process.env.HOME ?? homedir(),
+		".flywheel",
+		"state",
+		"qa-result-failed",
+	);
+	let entered = false;
+	try {
+		mkdirSync(dir, { recursive: true });
+		return await withMkdirLock(
+			join(dir, `${execId}.lock`),
+			async () => {
+				entered = true;
+				return runQaResultCore(opts, dependencies);
+			},
+			{ timeoutMs: 60_000 },
+		);
+	} catch (error) {
+		if (entered) throw error;
+		if (errorMessage(error).startsWith("withMkdirLock: timeout acquiring")) {
+			console.error(
+				"[qa-result] another qa-result process owns the verdict lock; retry later",
+			);
+			return { exitCode: 2, label: "lock_owned" };
+		}
+		console.error(
+			`[qa-result] UNRECORDED: verdict lock could not be acquired (${errorMessage(error)}); no request was sent`,
+		);
+		console.error(
+			`[qa-result] RECOVERABLE VERDICT: ${JSON.stringify({
+				executionId: execId,
+				targetExecutionId: opts.targetExec.trim(),
+				issueId: process.env.FLYWHEEL_ISSUE_ID?.trim() ?? "",
+				projectName: process.env.FLYWHEEL_PROJECT_NAME?.trim() ?? "",
+				status: opts.status.trim().toLowerCase(),
+				...(opts.summary?.trim() ? { summary: opts.summary.trim() } : {}),
+				...(opts.prHeadSha?.trim() ? { prHeadSha: opts.prHeadSha.trim() } : {}),
+			})}`,
+		);
+		return { exitCode: 3, label: "unrecorded" };
+	}
+}
+
+async function runQaResultCore(
+	opts: QaResultOpts,
+	dependencies: QaResultDependencies = {},
+): Promise<QaResultOutcome> {
 	let git: QaGitContext | undefined;
 	const getGit = (): QaGitContext => {
 		if (!git) git = createQaGitContext(dependencies);
@@ -578,12 +647,12 @@ export async function qaResult(
 		console.error(
 			`--status is required and must be one of: ${[...VALID_STATUSES].join(", ")}`,
 		);
-		process.exit(1);
+		return { exitCode: 1, label: "refused" };
 	}
 	const targetExec = (opts.targetExec ?? "").trim();
 	if (!targetExec) {
 		console.error("--target-exec <parent-execution-id> is required");
-		process.exit(1);
+		return { exitCode: 1, label: "refused" };
 	}
 
 	const qaExecId = (opts.execId ?? process.env.FLYWHEEL_EXEC_ID ?? "").trim();
@@ -591,20 +660,107 @@ export async function qaResult(
 		console.error(
 			"--exec-id or FLYWHEEL_EXEC_ID is required (this QA runner's own execution id)",
 		);
-		process.exit(1);
+		return { exitCode: 1, label: "refused" };
 	}
 	const issueId = process.env.FLYWHEEL_ISSUE_ID?.trim() ?? "";
 	const projectName = process.env.FLYWHEEL_PROJECT_NAME?.trim() ?? "";
 	const bridgeUrl = process.env.FLYWHEEL_BRIDGE_URL?.trim() ?? "";
-	const requestId = randomUUID();
-	const suppliedPrHeadSha = opts.prHeadSha?.trim() || undefined;
+	let requestId: string = randomUUID();
+	let summary = opts.summary?.trim() || undefined;
+	let suppliedPrHeadSha = opts.prHeadSha?.trim() || undefined;
+	const markerPath = join(
+		process.env.HOME ?? homedir(),
+		".flywheel",
+		"state",
+		"qa-result-failed",
+		`${qaExecId}.json`,
+	);
+	try {
+		if (opts.discardMarker && existsSync(markerPath)) {
+			renameSync(
+				markerPath,
+				`${markerPath}.discarded-${new Date().toISOString()}`,
+			);
+		}
+		const marker = parseResponseObject(readFileSync(markerPath, "utf8"));
+		const rawVerdict = marker?.recoverable_verdict;
+		const verdict =
+			rawVerdict && typeof rawVerdict === "object" && !Array.isArray(rawVerdict)
+				? (rawVerdict as Record<string, unknown>)
+				: undefined;
+		if (
+			verdict &&
+			typeof verdict === "object" &&
+			typeof marker?.client_request_id === "string" &&
+			marker.client_request_id &&
+			verdict.clientRequestId === marker.client_request_id &&
+			verdict.executionId === qaExecId &&
+			typeof verdict.targetExecutionId === "string" &&
+			verdict.targetExecutionId &&
+			(verdict.status === "pass" || verdict.status === "fail") &&
+			(typeof verdict.prHeadSha === "string" ||
+				verdict.prHeadSha === undefined) &&
+			(typeof verdict.summary === "string" || verdict.summary === undefined)
+		) {
+			if (
+				verdict.targetExecutionId !== targetExec ||
+				verdict.status !== status ||
+				(verdict.prHeadSha &&
+					suppliedPrHeadSha &&
+					verdict.prHeadSha !== suppliedPrHeadSha)
+			) {
+				console.error(
+					`[qa-result] refused: marker verdict conflicts with this invocation; ${JSON.stringify(
+						{
+							marker: {
+								target: verdict.targetExecutionId,
+								status: verdict.status,
+								prHeadSha: verdict.prHeadSha,
+							},
+							requested: {
+								target: targetExec,
+								status,
+								prHeadSha: suppliedPrHeadSha,
+							},
+							client_request_id: marker.client_request_id,
+							phase: marker.phase,
+							error: marker.error,
+						},
+					)}`,
+				);
+				return { exitCode: 1, label: "marker_conflict" };
+			}
+			requestId = marker.client_request_id;
+			if (summary !== verdict.summary)
+				console.error(
+					"[qa-result] marker summary wins (server digest binds it); pass --discard-marker to submit a fresh verdict",
+				);
+			summary = verdict.summary;
+			suppliedPrHeadSha ??= verdict.prHeadSha;
+		} else {
+			renameSync(
+				markerPath,
+				`${markerPath}.unreadable-${new Date().toISOString()}`,
+			);
+			console.error(
+				"[qa-result] unreadable legacy marker preserved; starting a new request",
+			);
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			console.error(
+				`[qa-result] UNRECORDED: marker could not be read (${errorMessage(error)}); no request was sent`,
+			);
+			return { exitCode: 3, label: "unrecorded" };
+		}
+	}
 	const recoverableVerdict: RecoverableQaVerdict = {
 		executionId: qaExecId,
 		targetExecutionId: targetExec,
 		issueId,
 		projectName,
 		status: status as "pass" | "fail",
-		...(opts.summary?.trim() ? { summary: opts.summary.trim() } : {}),
+		...(summary ? { summary } : {}),
 		clientRequestId: requestId,
 		...(suppliedPrHeadSha ? { prHeadSha: suppliedPrHeadSha } : {}),
 	};
@@ -614,7 +770,7 @@ export async function qaResult(
 		["FLYWHEEL_BRIDGE_URL", bridgeUrl],
 	].find(([, value]) => !value)?.[0];
 	if (missingDeliveryEnv) {
-		writeDeterministicFailure({
+		return writeDeterministicFailure({
 			execId: qaExecId,
 			requestId,
 			body: recoverableVerdict,
@@ -630,7 +786,7 @@ export async function qaResult(
 			envName: "FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
 		});
 	} catch (error) {
-		writeDeterministicFailure({
+		return writeDeterministicFailure({
 			execId: qaExecId,
 			requestId,
 			body: recoverableVerdict,
@@ -639,7 +795,7 @@ export async function qaResult(
 		});
 	}
 	if (!workflowCredential) {
-		writeDeterministicFailure({
+		return writeDeterministicFailure({
 			execId: qaExecId,
 			requestId,
 			body: recoverableVerdict,
@@ -655,7 +811,7 @@ export async function qaResult(
 		// receipt-backed/no-worktree review nodes can submit.
 		prHeadSha = suppliedPrHeadSha;
 	} catch (error) {
-		writeDeterministicFailure({
+		return writeDeterministicFailure({
 			execId: qaExecId,
 			requestId,
 			body: recoverableVerdict,
@@ -687,10 +843,25 @@ export async function qaResult(
 		client_request_id: requestId,
 		status: status as "pass" | "fail",
 		...(prHeadSha ? { client_pr_head_sha: prHeadSha } : {}),
-		...(opts.summary?.trim() ? { summary: opts.summary.trim() } : {}),
+		...(summary ? { summary } : {}),
 		...(memoryReceipt ? { runner_memory_closeout: memoryReceipt } : {}),
 	};
 	const endpoint = `${bridgeUrl.replace(/\/$/, "")}/api/workflow/decision`;
+	if (
+		!writeMarker({
+			execId: qaExecId,
+			requestId,
+			body: submissionBody,
+			recoverableVerdict,
+			lastError: undefined,
+			phase: "in_flight",
+		})
+	) {
+		console.error(
+			"[qa-result] UNRECORDED: marker could not be persisted; no request was sent",
+		);
+		return { exitCode: 3, label: "unrecorded" };
+	}
 
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
@@ -709,6 +880,8 @@ export async function qaResult(
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
 			let response: Response;
+			let rawBody: string;
+			let parsed: Record<string, unknown> | undefined;
 			try {
 				response = await fetch(endpoint, {
 					method: "POST",
@@ -716,11 +889,11 @@ export async function qaResult(
 					body: JSON.stringify(submissionBody),
 					signal: controller.signal,
 				});
+				rawBody = await response.text();
+				parsed = parseResponseObject(rawBody);
 			} finally {
 				clearTimeout(timer);
 			}
-			const rawBody = await response.text();
-			const parsed = parseResponseObject(rawBody);
 			const reason = responseReason(parsed);
 			const hint = typeof parsed?.hint === "string" ? parsed.hint : undefined;
 			const detail = parsed?.detail;
@@ -737,9 +910,12 @@ export async function qaResult(
 				} else {
 					clearMarker(qaExecId);
 					console.log(
+						`[qa-result] RECEIPT landed=true replay=${parsed.idempotentReplay} claimId=${parsed.claimId} serverSeq=${parsed.serverSeq}`,
+					);
+					console.log(
 						`[qa-result] decision consumed (claimId=${parsed.claimId} serverSeq=${parsed.serverSeq} idempotentReplay=${parsed.idempotentReplay}) for target=${targetExec} (attempt ${attempt}/${ATTEMPT_COUNT})`,
 					);
-					return;
+					return { exitCode: 0, label: "landed" };
 				}
 			} else if (
 				response.status === 409 &&
@@ -816,6 +992,10 @@ export async function qaResult(
 							};
 						}
 						if (!deterministicFailure && nextRequestId) {
+							const pendingBody = {
+								...submissionBody,
+								client_request_id: nextRequestId,
+							};
 							const pendingVerdict = {
 								...recoverableVerdict,
 								clientRequestId: nextRequestId,
@@ -823,9 +1003,10 @@ export async function qaResult(
 							const markerWritten = writeMarker({
 								execId: qaExecId,
 								requestId: nextRequestId,
-								body: submissionBody,
+								body: pendingBody,
 								recoverableVerdict: pendingVerdict,
 								lastError: "authorized_land_head_push_pending",
+								phase: "in_flight",
 							});
 							if (!markerWritten) {
 								deterministicFailure = {
@@ -836,6 +1017,7 @@ export async function qaResult(
 							// Spend the mutation budget before entering any operation that may
 							// have pushed successfully before throwing.
 							landHeadPushUsed = markerWritten;
+							if (markerWritten) submissionBody = pendingBody;
 							const authorization = markerWritten
 								? performAuthorizedLandHeadPush(detail, getGit())
 								: { ok: false as const, error: "marker_not_persisted" };
@@ -894,12 +1076,13 @@ export async function qaResult(
 			);
 		}
 		if (deterministicFailure) {
+			await printBridgePressure(bridgeUrl, "qa-result", console.error);
 			if (deterministicFailure.reason === "replay_payload_mismatch") {
 				console.error(
 					"[qa-result] The credential was consumed by another submission. This does NOT prove the current verdict was recorded. Stop retrying, never strip the credential, and report both conclusions to the Lead.",
 				);
 			}
-			writeDeterministicFailure({
+			return writeDeterministicFailure({
 				execId: qaExecId,
 				requestId: activeClientRequestId(submissionBody, requestId),
 				body: submissionBody,
@@ -930,13 +1113,22 @@ export async function qaResult(
 			clientRequestId: activeClientRequestId(submissionBody, requestId),
 		},
 		lastError,
+		phase: "exhausted",
 	});
 	console.error(
 		`[qa-result] FAIL-CLOSE: ${ATTEMPT_COUNT} attempts failed. ${
 			markerWritten ? "Marker written." : "Marker NOT written (see above)."
 		} Last error: ${lastError}`,
 	);
-	process.exit(1);
+	if (markerWritten)
+		console.error(
+			`[qa-result] DEFERRED: rerun the same command; client_request_id=${activeClientRequestId(submissionBody, requestId)} is persisted and will be replayed`,
+		);
+	await printBridgePressure(bridgeUrl, "qa-result", console.error);
+	return {
+		exitCode: markerWritten ? 1 : 3,
+		label: markerWritten ? "deferred" : "unrecorded",
+	};
 }
 
 function parseResponseObject(raw: string): Record<string, unknown> | undefined {
@@ -1373,14 +1565,14 @@ function writeDeterministicFailure(args: {
 	body: unknown;
 	recoverableVerdict: RecoverableQaVerdict;
 	lastError: string;
-}): never {
-	const markerWritten = writeMarker(args);
+}): QaResultOutcome {
+	const markerWritten = writeMarker({ ...args, phase: "refused" });
 	console.error(
 		`[qa-result] FAIL-CLOSE: deterministic rejection. ${
 			markerWritten ? "Marker written." : "Marker NOT written (see above)."
 		} ${args.lastError}`,
 	);
-	process.exit(1);
+	return { exitCode: 1, label: "refused" };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1393,18 +1585,29 @@ function writeMarker(args: {
 	body: unknown;
 	recoverableVerdict?: RecoverableQaVerdict;
 	lastError: string | undefined;
+	phase?: "in_flight" | "exhausted" | "refused";
 }): boolean {
 	const home = process.env.HOME ?? homedir();
 	const dir = join(home, ".flywheel", "state", "qa-result-failed");
 	const markerPath = join(dir, `${args.execId}.json`);
-	const marker = buildQaResultFailureMarker(args);
+	const marker = {
+		...buildQaResultFailureMarker(args),
+		...(args.phase ? { phase: args.phase } : {}),
+	};
+	const temporaryPath = join(
+		dir,
+		`.${args.execId}.${process.pid}.${randomUUID()}.tmp`,
+	);
 	try {
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(markerPath, JSON.stringify(marker, null, 2), {
-			encoding: "utf8",
-			mode: 0o600,
-		});
-		chmodSync(markerPath, 0o600);
+		const fd = openSync(temporaryPath, "wx", 0o600);
+		try {
+			writeFileSync(fd, JSON.stringify(marker, null, 2), "utf8");
+			fsyncSync(fd);
+		} finally {
+			closeSync(fd);
+		}
+		renameSync(temporaryPath, markerPath);
 		return true;
 	} catch (err) {
 		console.error(
@@ -1418,6 +1621,14 @@ function writeMarker(args: {
 			);
 		}
 		return false;
+	} finally {
+		try {
+			rmSync(temporaryPath, { force: true });
+		} catch (error) {
+			console.error(
+				`[qa-result] temporary marker cleanup failed: ${errorMessage(error)}`,
+			);
+		}
 	}
 }
 

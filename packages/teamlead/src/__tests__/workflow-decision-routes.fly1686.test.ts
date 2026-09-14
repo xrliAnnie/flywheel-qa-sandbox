@@ -88,6 +88,16 @@ describe("FLY-1686 workflow decision route", () => {
 			pr_head_sha: "b".repeat(40),
 		};
 		const store = {
+			replayWorkflowDecisionReceipt: () =>
+				consumedAt
+					? {
+							ok: true,
+							claimId: 1,
+							serverSeq: 1,
+							leadEventSeq: 41,
+							idempotentReplay: true,
+						}
+					: undefined,
 			getWorkflowSubmissionCredentialByToken: () => ({
 				id: 7,
 				activation_id: "activation-qa-route",

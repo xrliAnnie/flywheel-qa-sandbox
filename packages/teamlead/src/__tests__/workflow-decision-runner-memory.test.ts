@@ -87,8 +87,8 @@ describe("FLY-2148 workflow decision closeout persistence", () => {
 			"utf8",
 		);
 		const handler = source.slice(
-			source.indexOf('router.post("/decision"'),
-			source.indexOf('router.post("/re-qa/stage"'),
+			source.indexOf("async function runDecision("),
+			source.indexOf("const inflight = new Map"),
 		);
 		expect(handler.match(/persistRunnerMemoryCloseout\(/g)).toHaveLength(2);
 	});

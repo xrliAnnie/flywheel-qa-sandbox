@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant R as Runner 命令行
+    participant M as 本地落盘(幂等键)
+    participant B as Bridge
+    participant S as 数据库
+    R->>M: 1. 先把幂等键原子写到磁盘
+    Note over R,M: 写不进去就直接报 UNRECORDED,不发请求
+    R->>B: 2. 发请求(带幂等键),等待 20 秒
+    B->>S: 3. 落账(同键只落一次)
+    Note over R,B: 机器忙时,回复可能 5 到 30 秒才来
+    R--xB: 4. 等不到回复,放弃这一次
+    R->>B: 5. 用同一个幂等键再发
+    B->>S: 6. 只查已经落账的记录
+    B-->>R: 7. 回执:已落账(replay = true)
+    R->>M: 8. 删掉本地键,打印 RECEIPT landed

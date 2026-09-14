@@ -38,6 +38,9 @@ export interface ProofShotRunRecord {
 	updatedAt: number;
 	/** Last error string when state='failed', null otherwise. */
 	lastError: string | null;
+	/** Stable sink identity and content for verification of an active capture. */
+	sourceEventId?: string;
+	instructionMd?: string;
 }
 
 /** Schema for `session_params.proofshot`. All fields optional. */

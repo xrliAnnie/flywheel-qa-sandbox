@@ -1,8 +1,13 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { printBridgePressure } from "../bridge-pressure-snapshot.js";
 import { stage } from "../commands/stage.js";
+
+vi.mock("../bridge-pressure-snapshot.js", () => ({
+	printBridgePressure: vi.fn(),
+}));
 
 describe("stage command", () => {
 	const originalEnv = { ...process.env };
@@ -10,8 +15,11 @@ describe("stage command", () => {
 	let exitSpy: ReturnType<typeof vi.spyOn>;
 	let errorSpy: ReturnType<typeof vi.spyOn>;
 	let logSpy: ReturnType<typeof vi.spyOn>;
+	let isolatedHome: string;
 
 	beforeEach(() => {
+		isolatedHome = mkdtempSync(join(tmpdir(), "fly1956-stage-test-"));
+		process.env.HOME = isolatedHome;
 		// Set up required env vars
 		process.env.FLYWHEEL_EXEC_ID = "exec-test-1";
 		process.env.FLYWHEEL_ISSUE_ID = "GEO-292";
@@ -20,7 +28,11 @@ describe("stage command", () => {
 		delete process.env.FLYWHEEL_INGEST_TOKEN;
 
 		// Mock fetch
-		mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+		mockFetch = vi
+			.fn()
+			.mockImplementation(
+				async () => new Response(JSON.stringify({ ok: true })),
+			);
 		vi.stubGlobal("fetch", mockFetch);
 
 		// Mock process.exit to throw instead of killing the process
@@ -33,6 +45,8 @@ describe("stage command", () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
+		rmSync(isolatedHome, { recursive: true, force: true });
 		process.env = { ...originalEnv };
 		vi.unstubAllGlobals();
 		vi.restoreAllMocks();
@@ -55,6 +69,7 @@ describe("stage command", () => {
 		expect(body.event_id).toBeTruthy();
 
 		expect(logSpy).toHaveBeenCalledWith("Stage: implement");
+		expect(printBridgePressure).not.toHaveBeenCalled();
 	});
 
 	it("stage set with invalid stage exits with error", async () => {
@@ -95,22 +110,33 @@ describe("stage command", () => {
 	});
 
 	it("stage set with HTTP failure outputs warning but does not throw", async () => {
+		vi.useFakeTimers();
 		mockFetch.mockResolvedValue({ ok: false, status: 500 });
 
 		// Should NOT throw — fail-open behavior
-		await stage({ subcommand: "set", stageName: "plan" });
+		const pending = stage({ subcommand: "set", stageName: "plan" });
+		await vi.runAllTimersAsync();
+		await pending;
 
 		expect(errorSpy).toHaveBeenCalledWith(
 			expect.stringContaining("Warning: Bridge returned 500"),
 		);
 		// No process.exit(1) — exits 0 implicitly
 		expect(exitSpy).not.toHaveBeenCalled();
+		expect(printBridgePressure).toHaveBeenCalledWith(
+			"http://localhost:9292",
+			"stage",
+			expect.any(Function),
+		);
 	});
 
 	it("stage set with fetch network error outputs warning but does not throw", async () => {
+		vi.useFakeTimers();
 		mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
 
-		await stage({ subcommand: "set", stageName: "plan" });
+		const pending = stage({ subcommand: "set", stageName: "plan" });
+		await vi.runAllTimersAsync();
+		await pending;
 
 		expect(errorSpy).toHaveBeenCalledWith(
 			expect.stringContaining("ECONNREFUSED"),
@@ -378,7 +404,7 @@ describe("stage command", () => {
 		mockFetch.mockResolvedValue({ ok: false, status: 409 });
 		await stage({ subcommand: "set", stageName: "implement" });
 		expect(errorSpy).toHaveBeenCalledWith(
-			expect.stringContaining("stage not recorded"),
+			expect.stringContaining("refused: Bridge returned 409"),
 		);
 	});
 });

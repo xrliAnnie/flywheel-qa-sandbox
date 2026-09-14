@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
@@ -89,10 +95,12 @@ function gitWorktree(): { path: string; head: string } {
 }
 
 async function reviewFixture(options: {
+	dbPath?: string;
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 	prProbe?: () => Promise<WorkflowPrProbeResult>;
+	onDecisionRequest?: () => void;
 }) {
-	const store = await StateStore.create(":memory:");
+	const store = await StateStore.create(options.dbPath ?? ":memory:");
 	const worktree = gitWorktree();
 	const materializedHead = "c".repeat(40);
 	const seed = pinLegacyWorkflowSeedAgents(
@@ -260,29 +268,32 @@ async function reviewFixture(options: {
 	const enqueueLeadEvent = vi.fn();
 	const app = express();
 	app.use(express.json());
-	app.use(
-		"/api/workflow",
-		createWorkflowDecisionRouter({
-			store,
-			materializedHeadAuthority: options.materializedHeadAuthority,
-			prProbe:
-				options.prProbe ??
-				(async () => ({
-					state: "OPEN",
-					isDraft: false,
-					isCrossRepository: false,
-					headRefName: "fly-1307",
-					headRefOid: materializedHead,
-				})),
-			now: () => T0,
-			resolveAlertIdentity: () => ({
-				leadId: "flywheel-eng-lead",
-				projectName: "flywheel",
-				leadResolution: "resolved",
-			}),
-			enqueueLeadEvent,
+	app.use((req, _res, next) => {
+		if (req.path.endsWith("/decision")) options.onDecisionRequest?.();
+		next();
+	});
+	const routerDeps: Parameters<typeof createWorkflowDecisionRouter>[0] = {
+		store,
+		materializedHeadAuthority: options.materializedHeadAuthority,
+		prProbe:
+			options.prProbe ??
+			(async () => ({
+				state: "OPEN",
+				isDraft: false,
+				isCrossRepository: false,
+				headRefName: "fly-1307",
+				headRefOid: materializedHead,
+			})),
+		now: () => T0,
+		resolveAlertIdentity: () => ({
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved",
 		}),
-	);
+		enqueueLeadEvent,
+	};
+	app.use("/api/workflow", createWorkflowDecisionRouter(routerDeps));
+	app.use("/api/workflow-alt", createWorkflowDecisionRouter(routerDeps));
 	const server = app.listen(0, "127.0.0.1");
 	await new Promise<void>((resolve) => server.once("listening", resolve));
 	const address = server.address();
@@ -394,6 +405,85 @@ async function fixture(nodeReuseEnabled?: () => boolean) {
 }
 
 describe("schema-v1 workflow recovery decision routes", () => {
+	it("clears a rejected in-flight promise so the same request can recover", async () => {
+		const f = await fixture();
+		try {
+			const lookup = vi.spyOn(
+				f.store,
+				"getWorkflowSubmissionCredentialByToken",
+			);
+			lookup.mockImplementationOnce(() => {
+				throw new Error("temporary receipt read failure");
+			});
+			const post = () =>
+				fetch(`${f.baseUrl}/decision`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						credential: f.credential,
+						client_request_id: "retry-after-rejection",
+						status: "pass",
+					}),
+				});
+			expect((await post()).status).toBe(500);
+			const recovered = await post();
+			expect(recovered.status).toBe(200);
+			expect(await recovered.json()).toMatchObject({
+				ok: true,
+				idempotentReplay: false,
+			});
+			expect(lookup).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.restoreAllMocks();
+			await f.close();
+		}
+	});
+
+	it("replays a consumed receipt before consulting mutable session or identity state", async () => {
+		const f = await fixture();
+		try {
+			const post = () =>
+				fetch(`${f.baseUrl}/decision`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						credential: f.credential,
+						client_request_id: "receipt-first",
+						status: "pass",
+						summary: "verified",
+						client_pr_head_sha: f.worktree.head,
+					}),
+				});
+			const first = await post();
+			expect(first.status).toBe(200);
+			const accepted = await first.json();
+			const getSession = vi
+				.spyOn(f.store, "getSession")
+				.mockImplementation(() => {
+					throw new Error("mutable session unavailable");
+				});
+			const submit = vi.spyOn(f.store, "submitWorkflowDecisionByCredential");
+			const insert = vi.spyOn(f.store, "insertEvent");
+			f.setServerNow("2030-01-01T00:00:00.000Z");
+			const replay = await post();
+			expect(replay.status).toBe(200);
+			expect(await replay.json()).toMatchObject({
+				ok: true,
+				claimId: accepted.claimId,
+				serverSeq: accepted.serverSeq,
+				idempotentReplay: true,
+				requestId: "receipt-first",
+			});
+			expect(getSession).not.toHaveBeenCalled();
+			expect(submit).not.toHaveBeenCalled();
+			expect(insert).not.toHaveBeenCalled();
+			expect(f.enqueueLeadEvent).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.restoreAllMocks();
+			await f.close();
+		}
+	});
+
 	it("reports the request target when a test-server fetch fails", async () => {
 		await expect(fetch("http://127.0.0.1:1/unavailable")).rejects.toThrow(
 			"workflow-decision test request failed: GET http://127.0.0.1:1/unavailable",
@@ -441,9 +531,8 @@ describe("schema-v1 workflow recovery decision routes", () => {
 				claimId: accepted.claimId,
 			});
 			expect(f.store.countWorkflowClaims("run-1")).toBe(1);
-			expect(f.enqueueLeadEvent).toHaveBeenCalledTimes(2);
+			expect(f.enqueueLeadEvent).toHaveBeenCalledTimes(1);
 			const firstEnvelope = f.enqueueLeadEvent.mock.calls[0]?.[0];
-			const replayEnvelope = f.enqueueLeadEvent.mock.calls[1]?.[0];
 			expect(firstEnvelope).toMatchObject({
 				eventId: `workflow_claim:${accepted.claimId}`,
 				leadId: "flywheel-eng-lead",
@@ -453,16 +542,12 @@ describe("schema-v1 workflow recovery decision routes", () => {
 					project_name: "flywheel",
 				},
 			});
-			expect(replayEnvelope).toMatchObject({
-				seq: firstEnvelope.seq,
-				eventId: firstEnvelope.eventId,
-			});
 		} finally {
 			await f.close();
 		}
 	});
 
-	it("reads the node-reuse switch on every credential decision", async () => {
+	it("reads the node-reuse switch for admission and skips it for receipt replay", async () => {
 		let enabled = false;
 		const nodeReuseEnabled = vi.fn(() => enabled);
 		const f = await fixture(nodeReuseEnabled);
@@ -483,10 +568,10 @@ describe("schema-v1 workflow recovery decision routes", () => {
 			enabled = true;
 			expect((await post()).status).toBe(200);
 
-			expect(nodeReuseEnabled).toHaveBeenCalledTimes(2);
+			expect(nodeReuseEnabled).toHaveBeenCalledTimes(1);
 			expect(
 				submit.mock.calls.map(([input]) => input.nodeReuseEnabled),
-			).toEqual([false, true]);
+			).toEqual([false]);
 		} finally {
 			await f.close();
 		}
@@ -875,7 +960,101 @@ describe("schema-v1 workflow recovery decision routes", () => {
 });
 
 describe("engine-owned review decision canonicalization", () => {
+	it.each([
+		{ change: {}, separateRouter: false },
+		{ change: {}, separateRouter: true },
+		{ change: { summary: "changed" }, separateRouter: false },
+		{ change: { status: "fail" }, separateRouter: false },
+		{ change: { client_pr_head_sha: "a".repeat(40) }, separateRouter: false },
+	])(
+		"coalesces concurrent decisions only for identical payloads: %j",
+		async ({ change, separateRouter }) => {
+			let release!: () => void;
+			const barrier = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let bothArrived!: () => void;
+			const arrivals = new Promise<void>((resolve) => {
+				bothArrived = resolve;
+			});
+			let count = 0;
+			let f: Awaited<ReturnType<typeof reviewFixture>>;
+			const probe = vi.fn(async () => {
+				await barrier;
+				return {
+					state: "OPEN",
+					isDraft: false,
+					isCrossRepository: false,
+					headRefName: "fly-1307",
+					headRefOid: f.materializedHead,
+				};
+			});
+			f = await reviewFixture({
+				prProbe: probe,
+				onDecisionRequest: () => {
+					if (++count === 2) bothArrived();
+				},
+				materializedHeadAuthority: {
+					resolve: async () => ({
+						head: f.materializedHead,
+						outputId: f.outputId,
+						attempt: 1,
+						...f.materialization,
+					}),
+				},
+			});
+			try {
+				const replay = vi.spyOn(f.store, "replayWorkflowDecisionReceipt");
+				const post = (
+					payload: Record<string, string> = {},
+					baseUrl = f.baseUrl,
+				) =>
+					fetch(`${baseUrl}/decision`, {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							credential: f.credential,
+							client_request_id: "concurrent",
+							status: "pass",
+							...payload,
+						}),
+					});
+				const first = post();
+				const second = post(
+					change,
+					separateRouter
+						? f.baseUrl.replace("/api/workflow", "/api/workflow-alt")
+						: f.baseUrl,
+				);
+				await arrivals;
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				release();
+				const responses = await Promise.all([first, second]);
+				const bodies = await Promise.all(
+					responses.map((response) => response.json()),
+				);
+				if (Object.keys(change).length === 0 && !separateRouter) {
+					expect(responses.map((response) => response.status)).toEqual([
+						200, 200,
+					]);
+					expect(bodies[0]).toEqual(bodies[1]);
+					expect(probe).toHaveBeenCalledTimes(1);
+					expect(f.enqueueLeadEvent).toHaveBeenCalledTimes(1);
+					expect(replay).toHaveBeenCalledTimes(1);
+				} else {
+					expect(replay).toHaveBeenCalledTimes(2);
+					expect(bodies[0]).not.toEqual(bodies[1]);
+				}
+			} finally {
+				release();
+				await f.close();
+			}
+		},
+	);
+
 	it("derives review authority from the pinned node and advances the DAG", async () => {
+		const receiptDir = mkdtempSync(join(tmpdir(), "fly1956-engine-reopen-"));
+		const receiptDb = join(receiptDir, "state.db");
 		let f: Awaited<ReturnType<typeof reviewFixture>> | undefined;
 		const authority: MaterializedHeadAuthority = {
 			resolve: vi.fn(async () => {
@@ -888,7 +1067,10 @@ describe("engine-owned review decision canonicalization", () => {
 				};
 			}),
 		};
-		f = await reviewFixture({ materializedHeadAuthority: authority });
+		f = await reviewFixture({
+			materializedHeadAuthority: authority,
+			dbPath: receiptDb,
+		});
 		try {
 			const body = {
 				credential: f.credential,
@@ -955,8 +1137,36 @@ describe("engine-owned review decision canonicalization", () => {
 			expect(f.store.countWorkflowClaims("run-review")).toBe(
 				f.claimCountBeforeReview + 1,
 			);
+			// Reopen the actual persisted engine receipt after its workflow has
+			// advanced and the producer worktree is gone. No runtime probes/writes.
+			f.store.close();
+			rmSync(f.worktree.path, { recursive: true, force: true });
+			const reopened = await StateStore.create(receiptDb);
+			try {
+				const raw = (
+					reopened as unknown as { db: { raw: { pragma(sql: string): void } } }
+				).db.raw;
+				raw.pragma("query_only = ON");
+				expect(
+					reopened.replayWorkflowDecisionReceipt({
+						credential: body.credential,
+						clientRequestId: body.client_request_id,
+						status: "pass",
+						clientHead: body.client_pr_head_sha,
+					}),
+				).toMatchObject({
+					ok: true,
+					idempotentReplay: true,
+					claimId: accepted.claimId,
+					leadEventSeq: accepted.serverSeq,
+				});
+				raw.pragma("query_only = OFF");
+			} finally {
+				reopened.close();
+			}
 		} finally {
 			await f.close();
+			rmSync(receiptDir, { recursive: true, force: true });
 		}
 	});
 

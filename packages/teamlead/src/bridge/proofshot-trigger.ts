@@ -11,7 +11,7 @@
  * filter (from project config), so they don't fight over which stages trigger.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { CommDB } from "flywheel-comm/db";
@@ -27,7 +27,6 @@ import { resolveCommBackend } from "./plugin.js";
 import {
 	getLastArtifact,
 	getProofShotParams,
-	markProofShotRunFailed,
 	patchSessionParams,
 } from "./proofshot-session.js";
 
@@ -46,6 +45,7 @@ export const PROOFSHOT_TTL_MS = 30 * 60 * 1000;
 
 /** Minimal event shape consumed by the handler (avoids depending on event-route IngestEvent). */
 export interface ProofShotTriggerEvent {
+	event_id?: string;
 	execution_id: string;
 	issue_id: string;
 	project_name: string;
@@ -185,8 +185,8 @@ export function buildProofShotDedupKey(
 
 /**
  * Bridge stage_changed handler. Idempotent + restart-safe via per-run state
- * machine in `session_params.proofshot.runs[dedupKey]`. Failures are logged
- * + non-fatal; the parent stage transition still succeeds.
+ * machine in `session_params.proofshot.runs[dedupKey]`. A pending result
+ * tells the stage handler to retain the event for replay.
  *
  * Backend selection via `resolveCommBackend()`:
  * - `mailbox` (default) → `MailboxTransport.writeVerified()` with real
@@ -195,14 +195,16 @@ export function buildProofShotDedupKey(
  * - `commdb` (rollback) → `CommDB.insertInstruction('bridge', execId, content)`.
  *
  * State transitions:
- * - Pre-write: writes `{state: 'pending', attempt, updatedAt: now, lastError: null}`
- *   to runs[dedupKey]. If a prior run with same dedupKey is `completed`, return
+ * - Write the stable instruction before recording pending in runs[dedupKey].
+ *   If a prior run with the same dedupKey is `completed`, return
  *   immediately (AC14 dedup). If `pending`/`running` and updatedAt within TTL,
- *   return (active capture in flight). Otherwise (stale, failed, or absent),
+ *   verify the original sink instruction without changing state or TTL.
+ *   Otherwise (stale, failed, or absent),
  *   advance attempt and retry.
- * - Write failure → `markProofShotRunFailed(execId, dedupKey, err.message)`
- *   transitions to `failed` so subsequent stage_changed can retry.
- * - Write success → state stays `pending`; `handleArtifactEvent` (A6) advances
+ * - Sink failure records failed so a subsequent stage_changed can retry.
+ * - Pending projection failure preserves the prior attempt so replay sends
+ *   the same instruction ID and content to the idempotent sink.
+ * - Write success records `pending`; `handleArtifactEvent` (A6) advances
  *   to `completed` when the artifact is delivered to the Lead.
  */
 export async function handleProofShotAutoTrigger(
@@ -210,17 +212,17 @@ export async function handleProofShotAutoTrigger(
 	projects: ProjectEntry[],
 	event: ProofShotTriggerEvent,
 	stage: string,
-): Promise<void> {
+): Promise<"settled" | "pending" | "not_applicable"> {
 	const session = store.getSession(event.execution_id);
-	if (!session) return;
+	if (!session) return "pending";
 
 	const params = store.getSessionParams(event.execution_id);
 	const proofParams = getProofShotParams(params);
 	const cfg = proofParams.config;
-	if (!cfg?.enabled) return; // AC16 kill switch (default DEFAULT_PROOFSHOT_CONFIG has enabled=false)
+	if (!cfg?.enabled) return "not_applicable"; // AC16 kill switch (default DEFAULT_PROOFSHOT_CONFIG has enabled=false)
 
 	const captureStages = cfg.capture_stages ?? DEFAULT_PROOFSHOT_CAPTURE_STAGES;
-	if (!captureStages.includes(stage)) return; // AC4 — stage filter
+	if (!captureStages.includes(stage)) return "not_applicable"; // AC4 — stage filter
 
 	const labels = store.getSessionLabels(event.execution_id) ?? [];
 	const lastArtifact = getLastArtifact(params);
@@ -237,79 +239,82 @@ export async function handleProofShotAutoTrigger(
 	const runs = proofParams.runs ?? {};
 	const prev = runs[dedupKey];
 	const now = Date.now();
-	if (prev) {
-		if (prev.state === "completed") return; // AC14 dedup
-		if (
-			(prev.state === "pending" || prev.state === "running") &&
-			now - prev.updatedAt < PROOFSHOT_TTL_MS
-		) {
-			return; // active capture in flight
-		}
-		// else: stale pending/running OR failed → fall through and retry
-	}
+	if (prev?.state === "completed") return "settled"; // AC14 dedup
+	const active =
+		!!prev &&
+		(prev.state === "pending" || prev.state === "running") &&
+		now - prev.updatedAt < PROOFSHOT_TTL_MS;
+	// An active projection is not a sink receipt. Reverify its original
+	// instruction without advancing its attempt, state or TTL timestamp.
+	const attempt = active ? prev.attempt : (prev?.attempt ?? 0) + 1;
+	const eventId = active
+		? (prev.sourceEventId ?? event.event_id ?? dedupKey)
+		: (event.event_id ?? dedupKey);
+	let instructionMd: string;
 
-	const attempt = (prev?.attempt ?? 0) + 1;
-	// Pre-write: mark pending BEFORE actually writing the mailbox/CommDB
-	// instruction. If the write fails, we transition to 'failed' so the next
-	// stage_changed can retry; never leave the slot empty mid-write.
-	patchSessionParams(store, event.execution_id, (cur) => {
-		const curProofs = getProofShotParams(cur);
-		const curRuns = curProofs.runs ?? {};
-		return {
-			...cur,
-			proofshot: {
-				...curProofs,
-				runs: {
-					...curRuns,
-					[dedupKey]: {
-						state: "pending",
-						dedupKey,
-						attempt,
-						updatedAt: now,
-						lastError: null,
+	const recordRun = (state: "pending" | "failed", lastError: string | null) => {
+		patchSessionParams(store, event.execution_id, (cur) => {
+			const curProofs = getProofShotParams(cur);
+			const curRuns = curProofs.runs ?? {};
+			return {
+				...cur,
+				proofshot: {
+					...curProofs,
+					runs: {
+						...curRuns,
+						[dedupKey]: {
+							state,
+							dedupKey,
+							attempt,
+							updatedAt: now,
+							lastError,
+							sourceEventId: eventId,
+							...(instructionMd ? { instructionMd } : {}),
+						},
 					},
 				},
-			},
-		};
-	});
+			};
+		});
+	};
 
 	// Resolve lead (throws on unknown project — wrap try/catch).
 	let lead: LeadConfig;
 	try {
 		({ lead } = resolveLeadForIssue(projects, event.project_name, labels));
 	} catch (err) {
-		markProofShotRunFailed(
-			store,
-			event.execution_id,
-			dedupKey,
-			`resolveLeadForIssue: ${errMessage(err)}`,
-		);
-		return;
+		if (!active) recordRun("failed", `resolveLeadForIssue: ${errMessage(err)}`);
+		return "pending";
 	}
 
 	const visionEnabled =
 		cfg.vision_default !== false && !labels.includes("no-vision");
-	const outputDir = `~/.flywheel/screens/${event.execution_id}/${randomUUID()}`;
-	const instructionMd = renderProofShotInstruction({
-		stage,
-		cfg,
-		captureKind,
-		attempt,
-		dedupKey,
-		execId: event.execution_id,
-		issueId: event.issue_id,
-		projectName: event.project_name,
-		visionEnabled,
-		outputDir,
-		modelPath: captureKind === "3d" ? lastArtifact.model_path : undefined,
-		modelViewerUrl: cfg.model_viewer_url,
-		angles: captureKind === "3d" ? cfg.model_capture_angles : undefined,
-	});
+	const outputKey = createHash("sha256")
+		.update(`${eventId}:${attempt}`)
+		.digest("hex");
+	const outputDir = `~/.flywheel/screens/${event.execution_id}/${outputKey}`;
+	instructionMd =
+		(active ? prev.instructionMd : undefined) ??
+		renderProofShotInstruction({
+			stage,
+			cfg,
+			captureKind,
+			attempt,
+			dedupKey,
+			execId: event.execution_id,
+			issueId: event.issue_id,
+			projectName: event.project_name,
+			visionEnabled,
+			outputDir,
+			modelPath: captureKind === "3d" ? lastArtifact.model_path : undefined,
+			modelViewerUrl: cfg.model_viewer_url,
+			angles: captureKind === "3d" ? cfg.model_capture_angles : undefined,
+		});
 
 	const backend = resolveCommBackend(); // normalize 'mailbox' | 'commdb'
 	const recipient = `runner-${event.execution_id.slice(0, 8)}`;
-	const flywheelId = `proofshot-${dedupKey}-${attempt}`;
+	const flywheelId = `proofshot:${eventId}:${attempt}`;
 
+	let sinkCommitted = false;
 	try {
 		if (backend === "mailbox") {
 			// FLY-142 prod default: mailbox transport. Real payload shape is
@@ -349,26 +354,29 @@ export async function handleProofShotAutoTrigger(
 			mkdirSync(dirname(dbPath), { recursive: true });
 			const commDb = new CommDB(dbPath);
 			try {
-				commDb.insertInstruction("bridge", event.execution_id, instructionMd);
+				commDb.insertInstruction("bridge", event.execution_id, instructionMd, {
+					dedupeId: flywheelId,
+				});
 			} finally {
 				commDb.close();
 			}
 		}
+		sinkCommitted = true;
+		if (!active) recordRun("pending", null);
+
 		console.log(
 			`[proofshot-trigger] queued ${captureKind} capture for ${event.execution_id} ` +
 				`(stage=${stage}, attempt=${attempt}, dedupKey=${dedupKey}, backend=${backend})`,
 		);
 	} catch (err) {
-		markProofShotRunFailed(
-			store,
-			event.execution_id,
-			dedupKey,
-			`${backend} write failed: ${errMessage(err)}`,
-		);
+		if (!sinkCommitted && !active)
+			recordRun("failed", `${backend} write failed: ${errMessage(err)}`);
+		return "pending";
 	}
 	// Success → state stays 'pending'. handleArtifactEvent (A6) advances to
 	// 'completed' when the artifact event reaches the Lead. TTL bounds the
 	// stuck window.
+	return "settled";
 }
 
 function errMessage(err: unknown): string {

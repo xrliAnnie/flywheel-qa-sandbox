@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	verifyApproval,
 	verifyApprovalWithBridgeHead,
+	verifyCompletedShipApproval,
 } from "../commands/verify-approval.js";
 import { CommDB } from "../db.js";
 import { MailboxQueue } from "../mailbox-queue.js";
@@ -227,6 +228,30 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		});
 		return qid;
 	}
+
+	it.each(["approved_to_ship", "completed", "failed"])(
+		"separates ship authorization from completed recovery: %s",
+		(status) => {
+			const questionId = setupFullyApproved();
+			writeStateSession({
+				execution_id: EXEC,
+				status,
+				pr_head_sha: HEAD,
+				review_question_id: questionId,
+			});
+			expect(run().approved).toBe(status === "approved_to_ship");
+			expect(
+				verifyCompletedShipApproval({
+					execId: EXEC,
+					prHead: HEAD,
+					dbPath: commDbPath,
+					stateDbPath,
+					codexDotenvPath: join(tmpDir, "nonexistent.env"),
+					ciProbe: () => ({ green: true, reason: "ci_green" }),
+				}).approved,
+			).toBe(status === "completed");
+		},
+	);
 
 	// ── The one approving path ──
 

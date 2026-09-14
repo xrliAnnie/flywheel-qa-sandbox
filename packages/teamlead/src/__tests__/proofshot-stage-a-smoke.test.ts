@@ -310,7 +310,7 @@ describe("GEO-151 Stage A — end-to-end smoke (handler → wrapper → notify �
 		}
 	});
 
-	it("idempotent: re-firing handleProofShotAutoTrigger before artifact arrives → second skipped (active pending within TTL)", async () => {
+	it("idempotent: active pending replay verifies the identical durable instruction", async () => {
 		await handleProofShotAutoTrigger(
 			store,
 			testProjects,
@@ -323,8 +323,9 @@ describe("GEO-151 Stage A — end-to-end smoke (handler → wrapper → notify �
 			{ execution_id: execId, issue_id: issueId, project_name: "GeoForge3D" },
 			stage,
 		);
-		// Only one mailbox write — second call short-circuited.
-		expect(mailboxWrites).toHaveLength(1);
+		// Replay re-verifies the sink using the same stable id and payload.
+		expect(mailboxWrites).toHaveLength(2);
+		expect(mailboxWrites[1]).toEqual(mailboxWrites[0]);
 	});
 
 	it("stale artifact (wrong attempt) does NOT mark run completed", async () => {

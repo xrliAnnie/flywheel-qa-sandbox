@@ -5,6 +5,56 @@ import { describe, expect, it, vi } from "vitest";
 import { nudgeLeadInboxBestEffort } from "../lead-inbox-nudge.js";
 
 describe("FLY-1373 lead inbox doorbell", () => {
+	it("FLY-1956: allows a one-second doorbell response but bounds a stalled request at 1500ms", async () => {
+		vi.useFakeTimers();
+		try {
+			const warn = vi.fn();
+			const fetchImpl = vi.fn<typeof fetch>(
+				(_url, init) =>
+					new Promise((resolve, reject) => {
+						init?.signal?.addEventListener(
+							"abort",
+							() => reject(new Error("aborted")),
+							{ once: true },
+						);
+						setTimeout(
+							() => resolve(new Response(null, { status: 202 })),
+							1000,
+						);
+					}),
+			);
+			const pending = nudgeLeadInboxBestEffort({
+				bridgeUrl: "http://bridge",
+				leadId: "lead",
+				fetchImpl,
+				warn,
+			});
+			await vi.advanceTimersByTimeAsync(1000);
+			await pending;
+			expect(warn).not.toHaveBeenCalled();
+			const stalled = nudgeLeadInboxBestEffort({
+				bridgeUrl: "http://bridge",
+				leadId: "lead",
+				warn,
+				fetchImpl: (_url, init) =>
+					new Promise((_resolve, reject) => {
+						init?.signal?.addEventListener(
+							"abort",
+							() => reject(new Error("aborted")),
+							{ once: true },
+						);
+					}),
+			});
+			await vi.advanceTimersByTimeAsync(1499);
+			expect(warn).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			await stalled;
+			expect(warn).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("posts the target Lead and project with bearer auth", async () => {
 		const fetchImpl = vi.fn(async () => new Response(null, { status: 202 }));
 
@@ -42,7 +92,7 @@ describe("FLY-1373 lead inbox doorbell", () => {
 			}),
 		).resolves.toBeUndefined();
 		expect(warn).toHaveBeenCalledWith(
-			expect.stringContaining("connection refused"),
+			"[flywheel-comm] lead inbox doorbell not delivered (connection refused); durable queue row retained — a healthy Lead loop retries on its next poll (nominally <=30 s)",
 		);
 	});
 
@@ -145,7 +195,9 @@ describe("FLY-1373 lead inbox doorbell", () => {
 		expect(fetchImpl).toHaveBeenCalledOnce();
 		expect(resolveApiToken).not.toHaveBeenCalled();
 		expect(warn).toHaveBeenCalledOnce();
-		expect(warn).toHaveBeenCalledWith(expect.stringContaining("returned 500"));
+		expect(warn).toHaveBeenCalledWith(
+			"[flywheel-comm] lead inbox doorbell returned 500; durable queue row retained — a healthy Lead loop retries on its next poll (nominally <=30 s)",
+		);
 	});
 
 	it("FLY-1715: ingest is normalized, used when master is absent, and never triggers master reload", async () => {

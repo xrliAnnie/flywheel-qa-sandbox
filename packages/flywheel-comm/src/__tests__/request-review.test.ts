@@ -44,13 +44,7 @@ describe("request-review", () => {
 	}
 
 	async function run(opts: Parameters<typeof requestReview>[0]) {
-		try {
-			await requestReview({ stateDir: dir, env: baseEnv, ...opts });
-			throw new Error("did not exit");
-		} catch (err) {
-			if (err instanceof ExitSentinel) return err.code;
-			throw err;
-		}
+		return requestReview({ stateDir: dir, env: baseEnv, ...opts });
 	}
 
 	it("durable-accepted ack → exit 0, marker flips posting→accepted", async () => {

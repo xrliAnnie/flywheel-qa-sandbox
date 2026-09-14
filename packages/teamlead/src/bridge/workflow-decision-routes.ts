@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import express from "express";
 import {
 	adapterTypeToFamily,
@@ -13,6 +14,7 @@ import type {
 	WorkflowGateEntryBinding,
 	WorkflowLoopReentryCanonical,
 } from "../StateStore.js";
+import { hashCapabilityToken } from "../workflow-claims.js";
 import { resolveWorkflowDecisionContract } from "../workflow-run-snapshot.js";
 import { workflowApprovalGate } from "../workflow-template.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
@@ -28,6 +30,7 @@ import {
 	type MaterializedHeadAuthorityResult,
 	unavailableMaterializedHeadAuthority,
 } from "./materialized-head-authority.js";
+import type { OutboundPressureMeter } from "./outbound-pressure.js";
 import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
 import {
 	probeWorkflowPr,
@@ -85,6 +88,7 @@ export function persistRunnerMemoryCloseout(
 }
 
 export interface WorkflowDecisionRouterDeps {
+	pressure?: Pick<OutboundPressureMeter, "observe">;
 	store: StateStore;
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 	prProbe?: (input: {
@@ -691,32 +695,55 @@ export function createWorkflowDecisionRouter(
 		}
 	});
 
-	router.post("/decision", async (req, res) => {
-		if (rejectNonLoopback(req, res)) return;
-		const body = (req.body ?? {}) as WorkflowDecisionBody;
+	type DecisionResult = { status: number; json: unknown };
+	async function runDecision(
+		body: WorkflowDecisionBody,
+	): Promise<DecisionResult> {
 		const credential = stringField(body.credential);
 		const clientRequestId = stringField(body.client_request_id);
 		const status = stringField(body.status)?.toLowerCase();
 		const summary = stringField(body.summary);
 		const clientHead = stringField(body.client_pr_head_sha)?.toLowerCase();
 		if (!credential || !clientRequestId || !status) {
-			res.status(400).json({ ok: false, reason: "invalid_request" });
-			return;
+			return { status: 400, json: { ok: false, reason: "invalid_request" } };
 		}
 		if (status !== "pass" && status !== "fail") {
-			res.status(400).json({ ok: false, reason: "invalid_status" });
-			return;
+			return { status: 400, json: { ok: false, reason: "invalid_status" } };
 		}
 		if (clientHead && !/^[0-9a-f]{40}$/.test(clientHead)) {
-			res.status(400).json({ ok: false, reason: "invalid_client_head" });
-			return;
+			return {
+				status: 400,
+				json: { ok: false, reason: "invalid_client_head" },
+			};
 		}
 
 		const credentialRow =
 			deps.store.getWorkflowSubmissionCredentialByToken(credential);
 		if (!credentialRow) {
-			res.status(401).json({ ok: false, reason: "credential_not_found" });
-			return;
+			return {
+				status: 401,
+				json: { ok: false, reason: "credential_not_found" },
+			};
+		}
+		const receipt = deps.store.replayWorkflowDecisionReceipt({
+			credential,
+			clientRequestId,
+			status,
+			summary,
+			clientHead,
+		});
+		if (receipt !== undefined) {
+			if (!receipt.ok) {
+				return {
+					status: decisionRejectionStatus(receipt.reason),
+					json: receipt,
+				};
+			} else {
+				return {
+					status: 200,
+					json: { ...receipt, requestId: clientRequestId },
+				};
+			}
 		}
 		let engineCanonical: EngineDecisionCanonical | undefined;
 		try {
@@ -726,23 +753,27 @@ export function createWorkflowDecisionRouter(
 				status as "pass" | "fail",
 			);
 		} catch (error) {
-			res.status(409).json({
-				ok: false,
-				reason:
-					error instanceof Error
-						? error.message
-						: "decision_authority_unavailable",
-			});
-			return;
+			return {
+				status: 409,
+				json: {
+					ok: false,
+					reason:
+						error instanceof Error
+							? error.message
+							: "decision_authority_unavailable",
+				},
+			};
 		}
 		if (engineCanonical) {
 			if (clientHead && clientHead !== engineCanonical.serverHead) {
-				res.status(409).json({
-					ok: false,
-					reason: "head_authority_mismatch",
-					expectedPrHeadSha: engineCanonical.serverHead,
-				});
-				return;
+				return {
+					status: 409,
+					json: {
+						ok: false,
+						reason: "head_authority_mismatch",
+						expectedPrHeadSha: engineCanonical.serverHead,
+					},
+				};
 			}
 			let gateEntryBinding:
 				| Awaited<ReturnType<typeof resolveGateEntryBinding>>
@@ -754,17 +785,19 @@ export function createWorkflowDecisionRouter(
 					? undefined
 					: await resolveGateEntryBinding(deps, engineCanonical);
 			} catch (error) {
-				res.status(409).json({
-					ok: false,
-					reason:
-						error instanceof Error
-							? error.message
-							: "land_head_pr_identity_unavailable",
-					...(error instanceof WorkflowDecisionRejection && error.detail
-						? { detail: error.detail }
-						: {}),
-				});
-				return;
+				return {
+					status: 409,
+					json: {
+						ok: false,
+						reason:
+							error instanceof Error
+								? error.message
+								: "land_head_pr_identity_unavailable",
+						...(error instanceof WorkflowDecisionRejection && error.detail
+							? { detail: error.detail }
+							: {}),
+					},
+				};
 			}
 			const result = deps.store.submitWorkflowDecisionByCredential({
 				nodeReuseEnabled: deps.nodeReuseEnabled?.() ?? false,
@@ -787,8 +820,7 @@ export function createWorkflowDecisionRouter(
 				now: deps.now?.(),
 			});
 			if (!result.ok) {
-				res.status(decisionRejectionStatus(result.reason)).json(result);
-				return;
+				return { status: decisionRejectionStatus(result.reason), json: result };
 			}
 			enqueueCommittedWorkflowClaim(deps, result);
 			deps.store.insertEvent({
@@ -812,14 +844,16 @@ export function createWorkflowDecisionRouter(
 				body.runner_memory_closeout,
 				"[workflow-decision]",
 			);
-			res.json({
-				ok: true,
-				claimId: result.claimId,
-				serverSeq: result.serverSeq,
-				idempotentReplay: result.idempotentReplay,
-				requestId: clientRequestId,
-			});
-			return;
+			return {
+				status: 200,
+				json: {
+					ok: true,
+					claimId: result.claimId,
+					serverSeq: result.serverSeq,
+					idempotentReplay: result.idempotentReplay,
+					requestId: clientRequestId,
+				},
+			};
 		}
 		const reporting = deps.store.getSession(credentialRow.execution_id);
 		if (
@@ -827,8 +861,10 @@ export function createWorkflowDecisionRouter(
 			(reporting.session_role ?? "main") !== "qa" ||
 			(reporting.chat_thread_role ?? "main") !== "qa"
 		) {
-			res.status(409).json({ ok: false, reason: "not_durable_qa_execution" });
-			return;
+			return {
+				status: 409,
+				json: { ok: false, reason: "not_durable_qa_execution" },
+			};
 		}
 
 		let serverHead: string;
@@ -837,19 +873,23 @@ export function createWorkflowDecisionRouter(
 				await resolveWorkflowHeadAuthority(deps.store, reporting.execution_id)
 			).prHeadSha;
 		} catch (error) {
-			res.status(409).json({
-				ok: false,
-				reason: error instanceof Error ? error.message : "head_unavailable",
-			});
-			return;
+			return {
+				status: 409,
+				json: {
+					ok: false,
+					reason: error instanceof Error ? error.message : "head_unavailable",
+				},
+			};
 		}
 		if (clientHead && clientHead !== serverHead) {
-			res.status(409).json({
-				ok: false,
-				reason: "head_authority_mismatch",
-				expectedPrHeadSha: serverHead,
-			});
-			return;
+			return {
+				status: 409,
+				json: {
+					ok: false,
+					reason: "head_authority_mismatch",
+					expectedPrHeadSha: serverHead,
+				},
+			};
 		}
 
 		const producerNode = deps.store
@@ -859,8 +899,7 @@ export function createWorkflowDecisionRouter(
 			)
 			.at(-1);
 		if (!producerNode?.execution_id) {
-			res.status(409).json({ ok: false, reason: "producer_not_found" });
-			return;
+			return { status: 409, json: { ok: false, reason: "producer_not_found" } };
 		}
 		// The ledger stores one row per logical attempt. A normal QA kickback
 		// therefore leaves historical implement rows behind; select the latest
@@ -868,14 +907,15 @@ export function createWorkflowDecisionRouter(
 		// ambiguity. ORDER BY attempt in listWorkflowRunNodes makes this stable.
 		const producer = deps.store.getSession(producerNode.execution_id);
 		if (!producer) {
-			res.status(409).json({ ok: false, reason: "producer_not_found" });
-			return;
+			return { status: 409, json: { ok: false, reason: "producer_not_found" } };
 		}
 		const now = deps.now?.() ?? new Date().toISOString();
 		const nowMs = Date.parse(now);
 		if (!Number.isFinite(nowMs)) {
-			res.status(500).json({ ok: false, reason: "invalid_server_clock" });
-			return;
+			return {
+				status: 500,
+				json: { ok: false, reason: "invalid_server_clock" },
+			};
 		}
 		const result = deps.store.submitWorkflowDecisionByCredential({
 			nodeReuseEnabled: deps.nodeReuseEnabled?.() ?? false,
@@ -904,8 +944,7 @@ export function createWorkflowDecisionRouter(
 			now,
 		});
 		if (!result.ok) {
-			res.status(decisionRejectionStatus(result.reason)).json(result);
-			return;
+			return { status: decisionRejectionStatus(result.reason), json: result };
 		}
 		enqueueCommittedWorkflowClaim(deps, result);
 
@@ -931,14 +970,63 @@ export function createWorkflowDecisionRouter(
 			body.runner_memory_closeout,
 			"[workflow-decision]",
 		);
-		res.json({
-			ok: true,
-			claimId: result.claimId,
-			serverSeq: result.serverSeq,
-			idempotentReplay: result.idempotentReplay,
-			requestId: clientRequestId,
-		});
-	});
+		return {
+			status: 200,
+			json: {
+				ok: true,
+				claimId: result.claimId,
+				serverSeq: result.serverSeq,
+				idempotentReplay: result.idempotentReplay,
+				requestId: clientRequestId,
+			},
+		};
+	}
+
+	const inflight = new Map<
+		string,
+		{ digest: string; promise: Promise<DecisionResult> }
+	>();
+	router.post(
+		"/decision",
+		deps.pressure?.observe("workflow_decision") ??
+			((_req, _res, next) => next()),
+		async (req, res) => {
+			if (rejectNonLoopback(req, res)) return;
+			const body = (req.body ?? {}) as WorkflowDecisionBody;
+			const credential = stringField(body.credential);
+			const clientRequestId = stringField(body.client_request_id);
+			if (!credential || !clientRequestId) {
+				const result = await runDecision(body);
+				res.status(result.status).json(result.json);
+				return;
+			}
+			const key = `${hashCapabilityToken(credential)}:${clientRequestId}`;
+			const digest = createHash("sha256")
+				.update(
+					JSON.stringify({
+						status: body.status,
+						summary: body.summary ?? null,
+						client_pr_head_sha: body.client_pr_head_sha ?? null,
+					}),
+				)
+				.digest("hex");
+			const existing = inflight.get(key);
+			let promise: Promise<DecisionResult>;
+			if (existing) {
+				promise =
+					existing.digest === digest ? existing.promise : runDecision(body);
+			} else {
+				const entry = { digest, promise: runDecision(body) };
+				entry.promise = entry.promise.finally(() => {
+					if (inflight.get(key) === entry) inflight.delete(key);
+				});
+				inflight.set(key, entry);
+				promise = entry.promise;
+			}
+			const result = await promise;
+			res.status(result.status).json(result.json);
+		},
+	);
 
 	router.post("/re-qa/stage", (req, res) => {
 		if (!deps.reQa) {

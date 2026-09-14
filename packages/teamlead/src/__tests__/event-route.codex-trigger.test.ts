@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
+import { handleCodexAutoTrigger } from "../bridge/event-route.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -180,6 +181,229 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 			db.close();
 		}
 	}
+
+	it.each(["pr_created", "design_review"])(
+		"settles %s only after a durable instruction and deduplicates replay",
+		(stage) => {
+			const event = {
+				event_id: "settlement-event",
+				execution_id: execId,
+				issue_id: issueId,
+				project_name: "geoforge3d-codex-test",
+				event_type: "stage_changed",
+				payload: { stage },
+			};
+			const insert = vi.spyOn(CommDB.prototype, "insertInstruction");
+			insert.mockImplementationOnce(() => {
+				throw new Error("sink temporarily unavailable");
+			});
+			expect(handleCodexAutoTrigger(store, event, stage, undefined)).toBe(
+				"pending",
+			);
+			expect(readCommDbInstructions()).toHaveLength(0);
+			expect(handleCodexAutoTrigger(store, event, stage, undefined)).toBe(
+				"settled",
+			);
+			expect(handleCodexAutoTrigger(store, event, stage, undefined)).toBe(
+				"settled",
+			);
+			expect(readCommDbInstructions()).toHaveLength(1);
+			expect(insert.mock.calls.at(-1)?.[3]?.dedupeId).toBe(
+				stage === "pr_created"
+					? "codex-trigger:settlement-event"
+					: "codex-trigger-correction:settlement-event",
+			);
+		},
+	);
+
+	it.each([false, true])(
+		"replays the persisted design blob after plan revision (lost delivery=%s)",
+		async (lostDelivery) => {
+			const event = {
+				event_id: "design-revision-replay",
+				execution_id: execId,
+				issue_id: issueId,
+				project_name: "geoforge3d-codex-test",
+				event_type: "stage_changed",
+				payload: { stage: "design_review", plan_path: committedPlanPath },
+			};
+			if (lostDelivery)
+				vi.spyOn(
+					CommDB.prototype,
+					"insertInstructionWithId",
+				).mockImplementationOnce(() => {
+					throw new Error("delivery lost");
+				});
+			expect(await (await postEvent(event)).json()).toMatchObject({
+				applied: !lostDelivery,
+			});
+			const original = store.getCurrentDesignReviewManifest(execId)!;
+			writeFileSync(join(tmpWorktree, committedPlanPath), "# revised plan\n");
+			execFileSync("git", ["add", committedPlanPath], { cwd: tmpWorktree });
+			execFileSync("git", ["commit", "-qm", "revise plan"], {
+				cwd: tmpWorktree,
+			});
+			expect(await (await postEvent(event)).json()).toMatchObject({
+				applied: true,
+				duplicate: true,
+			});
+			expect(
+				store.getCurrentDesignReviewManifest(execId)?.expected_blob_sha,
+			).toBe(original.expected_blob_sha);
+			expect(readCommDbInstructions()).toHaveLength(1);
+			expect(
+				await (
+					await postEvent({ ...event, event_id: "next-design-round" })
+				).json(),
+			).toMatchObject({ applied: true });
+			expect(store.getCurrentDesignReviewManifest(execId)?.revision).toBe(
+				original.revision + 1,
+			);
+			const current = store.getCurrentDesignReviewManifest(execId);
+			expect(
+				handleCodexAutoTrigger(
+					store,
+					event,
+					"design_review",
+					committedPlanPath,
+				),
+			).toBe("settled");
+			expect(store.getCurrentDesignReviewManifest(execId)).toEqual(current);
+			expect(readCommDbInstructions()).toHaveLength(2);
+		},
+	);
+
+	it("settles an existing correction after its mutable failure detail changes", async () => {
+		writeFileSync(join(tmpWorktree, committedPlanPath), "# dirty\n");
+		const event = {
+			event_id: "correction-replay",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "design_review", plan_path: committedPlanPath },
+		};
+		expect(await (await postEvent(event)).json()).toMatchObject({
+			applied: true,
+		});
+		const original = readCommDbInstructions();
+		rmSync(join(tmpWorktree, committedPlanPath));
+		expect(await (await postEvent(event)).json()).toMatchObject({
+			applied: true,
+			duplicate: true,
+		});
+		expect(readCommDbInstructions()).toEqual(original);
+	});
+
+	it("reports an unqueued design manifest as pending and settles its exact retry", () => {
+		const event = {
+			event_id: "manifest-settlement",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "design_review", plan_path: committedPlanPath },
+		};
+		const insert = vi.spyOn(CommDB.prototype, "insertInstructionWithId");
+		insert.mockImplementationOnce(() => {
+			throw new Error("manifest sink unavailable");
+		});
+		expect(
+			handleCodexAutoTrigger(store, event, "design_review", committedPlanPath),
+		).toBe("pending");
+		const manifest = store.getCurrentDesignReviewManifest(execId);
+		expect(manifest).toBeDefined();
+		expect(readCommDbInstructions()).toHaveLength(0);
+		expect(
+			handleCodexAutoTrigger(store, event, "design_review", committedPlanPath),
+		).toBe("settled");
+		expect(
+			handleCodexAutoTrigger(store, event, "design_review", committedPlanPath),
+		).toBe("settled");
+		expect(store.getCurrentDesignReviewManifest(execId)?.revision).toBe(
+			manifest?.revision,
+		);
+		expect(readCommDbInstructions()).toHaveLength(1);
+	});
+
+	it("retains an unsettled stage and retries its durable trigger on duplicate delivery", async () => {
+		const event = {
+			event_id: "retry-stage-trigger",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "pr_created" },
+		};
+		vi.spyOn(CommDB.prototype, "insertInstruction").mockImplementationOnce(
+			() => {
+				throw new Error("sink unavailable");
+			},
+		);
+		expect(await (await postEvent(event)).json()).toMatchObject({
+			ok: true,
+			applied: false,
+			pending: ["codex_trigger"],
+		});
+		expect(readCommDbInstructions()).toHaveLength(0);
+		expect(await (await postEvent(event)).json()).toMatchObject({
+			ok: true,
+			duplicate: true,
+			applied: true,
+		});
+		expect(readCommDbInstructions()).toHaveLength(1);
+	});
+
+	it("refuses changed stage payload and does not replay superseded triggers", async () => {
+		const event = {
+			event_id: "older-stage",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "pr_created" },
+		};
+		expect((await postEvent(event)).status).toBe(200);
+		const conflict = await postEvent({
+			...event,
+			payload: { stage: "design_review" },
+		});
+		expect(conflict.status).toBe(409);
+		expect(await conflict.json()).toMatchObject({
+			reason: "stage_event_payload_conflict",
+		});
+		await postEvent({
+			...event,
+			event_id: "newer-stage",
+			payload: { stage: "test" },
+		});
+		const trigger = vi.spyOn(CommDB.prototype, "insertInstruction");
+		expect(await (await postEvent(event)).json()).toMatchObject({
+			ok: true,
+			duplicate: true,
+			applied: true,
+			superseded: true,
+			latest_event_id: "newer-stage",
+		});
+		expect(store.getSession(execId)?.session_stage).toBe("test");
+		expect(trigger).not.toHaveBeenCalled();
+	});
+
+	it("does not acknowledge an applied stage without its session projection", async () => {
+		const response = await postEvent({
+			event_id: "missing-projection",
+			execution_id: "missing-session",
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "test" },
+		});
+		expect(await response.json()).toMatchObject({
+			ok: true,
+			applied: false,
+			pending: ["projection"],
+		});
+	});
 
 	it("design_review stage with plan_path queues a Runner instruction in CommDB", async () => {
 		const res = await postEvent({

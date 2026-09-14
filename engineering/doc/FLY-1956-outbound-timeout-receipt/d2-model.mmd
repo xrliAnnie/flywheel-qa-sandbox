@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph local["Runner 本机"]
+        QM["qa-result marker<br/>execId.json<br/>client_request_id · verdict · phase"]
+        QL["qa-result 锁<br/>execId.lock<br/>pid · started_at · nonce"]
+        SQ["stage 队列<br/>stage-queue/execId/000001-eventId.json<br/>完整事件 body · queued_at"]
+        SL["stage 队列锁<br/>.lock<br/>pid · started_at · nonce"]
+    end
+    subgraph bridge["Bridge 数据库"]
+        CR["workflow_submission_credential<br/>consumed_client_request_id<br/>consumed_submission_digest · claim_id"]
+        CL["workflow_claims<br/>predicate · subject_digest · evidence<br/>client_request_id · submission_digest"]
+        LE["lead_events<br/>event_id = workflow_claim:claimId"]
+        SE["session_events<br/>event_id 唯一 · id 递增"]
+        SS["sessions<br/>session_stage · stage_updated_at"]
+    end
+    QM -- "同 client_request_id 重放" --> CR
+    CR --> CL
+    CL --> LE
+    SQ -- "同 event_id 重放" --> SE
+    SE -- "同一事务投影" --> SS
+    QL -. "整次调用持有" .- QM
+    SL -. "只在发布时持有" .- SQ

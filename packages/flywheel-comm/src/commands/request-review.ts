@@ -53,33 +53,33 @@ export interface RequestReviewAck {
 /** Exit codes: 0 = durable-accepted; 1 = usage/env; 2 = NOT registered. */
 export async function requestReview(
 	opts: RequestReviewOptions,
-): Promise<never> {
+): Promise<number> {
 	const env = opts.env ?? process.env;
 	const execId = (opts.execId ?? env.FLYWHEEL_EXEC_ID ?? "").trim();
 	if (!execId) {
 		console.error("--exec-id or FLYWHEEL_EXEC_ID is required");
-		process.exit(1);
+		return 1;
 	}
 	const reviewType = (opts.type ?? "").trim();
 	if (reviewType !== "design" && reviewType !== "code") {
 		console.error("--type design|code is required");
-		process.exit(1);
+		return 1;
 	}
 	const questionId = (opts.questionId ?? "").trim();
 	if (!questionId) {
 		console.error(
 			"--question-id is required (open the review gate with `gate review_design|review_code --no-block` first)",
 		);
-		process.exit(1);
+		return 1;
 	}
 	if (reviewType === "design" && !opts.planPath?.trim()) {
 		console.error("--plan <path> is required for --type design");
-		process.exit(1);
+		return 1;
 	}
 	const bridgeUrl = (env.FLYWHEEL_BRIDGE_URL ?? "").trim();
 	if (!bridgeUrl) {
 		console.error("FLYWHEEL_BRIDGE_URL environment variable is required");
-		process.exit(1);
+		return 1;
 	}
 
 	const requestId = (opts.requestId ?? "").trim() || randomUUID();
@@ -110,7 +110,7 @@ export async function requestReview(
 		console.error(
 			`[request-review] FAIL-CLOSE: cannot persist the local intent marker under ${stateDir} — aborting before any POST. Fix the state dir and retry with --request-id ${requestId}.`,
 		);
-		process.exit(2);
+		return 2;
 	}
 
 	const headers: Record<string, string> = {
@@ -157,7 +157,7 @@ export async function requestReview(
 				timestamp: new Date().toISOString(),
 			});
 			console.log(JSON.stringify({ ...body, requestId }));
-			process.exit(0);
+			return 0;
 		}
 		if (response) {
 			if (!response.ok && response.status >= 400 && response.status < 500) {
@@ -187,7 +187,7 @@ export async function requestReview(
 		`[request-review] FAIL-CLOSE: review request ${requestId} was NOT registered with the Bridge (${lastError}). ` +
 			`Do NOT wait on gate ${questionId} — report to your Lead or retry with --request-id ${requestId}.`,
 	);
-	process.exit(2);
+	return 2;
 }
 
 function writeAtomic(path: string, value: unknown): boolean {

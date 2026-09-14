@@ -17,6 +17,7 @@ import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "fl
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
+import { VALID_STAGES } from "./bridge/stage-utils.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { makeGateAuthorityView } from "./bridge/approval-signal/gate-authority-view.js";
 import {
@@ -788,6 +789,16 @@ export interface SessionEvent {
 	 * that need event ages (getEventsByExecution); optional/additive. */
 	ts?: string;
 }
+
+export interface PersistedStageEvent extends SessionEvent {
+	id: number;
+	ts: string;
+}
+
+export type StageEventInsertResult =
+	| { kind: "inserted"; row: PersistedStageEvent }
+	| { kind: "duplicate"; row: PersistedStageEvent; source: "hot" | "archived" }
+	| { kind: "payload_conflict"; row: PersistedStageEvent };
 
 /** FLY-2118: durable Bridge-owned continuity for one unclaimed tmux target. */
 export interface PatrolOrphanWatch {
@@ -9949,6 +9960,116 @@ export class StateStore {
 		);
 	}
 
+	insertStageChangedEvent(
+		event: SessionEvent,
+		stage: string,
+	): StageEventInsertResult {
+		if (
+			event.event_type !== "stage_changed" ||
+			!VALID_STAGES.has(stage) ||
+			!event.payload ||
+			typeof event.payload !== "object" ||
+			(event.payload as Record<string, unknown>).stage !== stage
+		) {
+			throw new Error("invalid_stage_event");
+		}
+		let result!: StageEventInsertResult;
+		this.db.transaction(() => {
+			const archived = findArchivedTerminalRow(this.db.raw, "session_events", [
+				event.event_id,
+			]);
+			const existing =
+				archived ??
+				this.workflowSelectAll(
+					"SELECT * FROM session_events WHERE event_id = ?",
+					[event.event_id],
+				)[0];
+			if (existing) {
+				const row = StateStore.persistedStageEvent(existing);
+				const canonical = (value: SessionEvent) =>
+					canonicalJsonString({
+						execution_id: value.execution_id,
+						issue_id: value.issue_id,
+						project_name: value.project_name,
+						event_type: value.event_type,
+						source: value.source,
+						severity: value.severity ?? "info",
+						payload: value.payload ?? null,
+					});
+				result =
+					canonical(row) === canonical(event)
+						? { kind: "duplicate", row, source: archived ? "archived" : "hot" }
+						: { kind: "payload_conflict", row };
+				return;
+			}
+			if (!this.insertEvent(event))
+				throw new Error("stage_event_already_exists");
+			const stored = this.workflowSelectAll(
+				"SELECT * FROM session_events WHERE event_id = ?",
+				[event.event_id],
+			)[0];
+			if (!stored) throw new Error("stage_event_missing_after_insert");
+			const row = StateStore.persistedStageEvent(stored);
+			this.patchSessionMetadata(row.execution_id, {
+				session_stage: stage,
+				stage_updated_at: row.ts,
+				last_activity_at: row.ts,
+			});
+			result = { kind: "inserted", row };
+		});
+		return result;
+	}
+
+	latestStageEvent(executionId: string): PersistedStageEvent | undefined {
+		let latest: PersistedStageEvent | undefined;
+		this.db.transaction(() => {
+			const stages = [...VALID_STAGES];
+			const placeholders = stages.map(() => "?").join(",");
+			const hot = this.workflowSelectAll(
+				`SELECT * FROM session_events WHERE execution_id = ?
+				 AND event_type = 'stage_changed' AND json_valid(payload)
+				 AND json_extract(payload, '$.stage') IN (${placeholders})
+				 ORDER BY id DESC LIMIT 1`,
+				[executionId, ...stages],
+			)[0];
+			const archived = this.workflowSelectAll(
+				`SELECT row_json FROM workflow_terminal_archive
+				 WHERE source_table = 'session_events'
+				 AND json_extract(row_json, '$.execution_id') = ?
+				 AND json_extract(row_json, '$.event_type') = 'stage_changed'
+				 AND json_valid(json_extract(row_json, '$.payload'))
+				 AND json_extract(json_extract(row_json, '$.payload'), '$.stage') IN (${placeholders})
+				 ORDER BY CAST(json_extract(row_json, '$.id') AS INTEGER) DESC LIMIT 1`,
+				[executionId, ...stages],
+			)[0];
+			if (hot) latest = StateStore.persistedStageEvent(hot);
+			if (archived) {
+				const row = StateStore.persistedStageEvent(
+					JSON.parse(String(archived.row_json)) as Record<string, unknown>,
+				);
+				if (!latest || row.id > latest.id) latest = row;
+			}
+		});
+		return latest;
+	}
+
+	private static persistedStageEvent(
+		row: Record<string, unknown>,
+	): PersistedStageEvent {
+		return {
+			id: Number(row.id),
+			event_id: String(row.event_id),
+			execution_id: String(row.execution_id),
+			issue_id: String(row.issue_id),
+			project_name: String(row.project_name),
+			event_type: String(row.event_type),
+			source: String(row.source),
+			severity: String(row.severity),
+			ts: String(row.ts),
+			payload: row.payload ? JSON.parse(String(row.payload)) : undefined,
+		};
+	}
+
 	insertEvent(event: SessionEvent): boolean {
 		if (
 			findArchivedTerminalRow(this.db.raw, "session_events", [event.event_id])
@@ -15081,6 +15202,13 @@ export class StateStore {
 			: null;
 		stmt.free();
 		return manifest;
+	}
+
+	getDesignReviewManifestForSourceEvent(
+		executionId: string,
+		sourceEventId: string,
+	): DesignReviewManifest | null {
+		return this.findDesignReviewManifest(executionId, "source_event_id", sourceEventId);
 	}
 
 	advanceDesignReviewManifest(input: {
@@ -56779,6 +56907,122 @@ export class StateStore {
 			result = { ok: true, status: "inserted", row };
 		});
 		this.save();
+		return result;
+	}
+
+	/** Recover a consumed receipt using only immutable persisted bindings. */
+	replayWorkflowDecisionReceipt(input: {
+		credential: string;
+		clientRequestId: string;
+		status: "pass" | "fail";
+		summary?: string;
+		clientHead?: string;
+	}): WorkflowCredentialSubmissionResult | undefined {
+		let result: WorkflowCredentialSubmissionResult | undefined;
+		this.db.transaction(() => {
+			const credential = this.workflowSelectAll(
+				"SELECT * FROM workflow_submission_credential WHERE credential_hash = ?",
+				[hashCapabilityToken(input.credential)],
+			)[0];
+			if (!credential || credential.consumed_at == null) return;
+			result = { ok: false, reason: "credential_receipt_corrupt" };
+			if (credential.consumed_client_request_id !== input.clientRequestId) {
+				result = { ok: false, reason: "replay_payload_mismatch" };
+				return;
+			}
+			let claim: WorkflowClaimRow | undefined;
+			try {
+				claim = this.getWorkflowClaim(Number(credential.claim_id));
+			} catch (error) {
+				if (error instanceof SyntaxError) return;
+				throw error;
+			}
+			if (!claim) return;
+			const family = credential.family as WorkflowDecisionFamily;
+			const allowed = WORKFLOW_DECISION_FAMILIES[family] as
+				| readonly string[]
+				| undefined;
+			if (
+				claim.client_request_id !== input.clientRequestId ||
+				claim.submission_digest !== credential.consumed_submission_digest ||
+				claim.workflow_run_id !== credential.run_id ||
+				claim.node_id !== credential.node_id ||
+				claim.attempt !== credential.attempt ||
+				claim.issuer_execution_id !== credential.execution_id ||
+				claim.issuer_node_id !== credential.node_id ||
+				claim.decision_kind !== family ||
+				!allowed?.includes(claim.predicate)
+			) {
+				return;
+			}
+			if (credential.decision_capability_id != null) {
+				const capability = this.getWorkflowDecisionCapability(
+					Number(credential.decision_capability_id),
+				);
+				if (
+					!capability ||
+					claim.authority_id !== String(capability.id) ||
+					capability.consumed_claim_id !== claim.id ||
+					capability.consumed_at == null ||
+					capability.run_id !== credential.run_id ||
+					capability.node_id !== credential.node_id ||
+					capability.execution_id !== credential.execution_id ||
+					capability.attempt !== credential.attempt ||
+					capability.allowed_predicate_family !== family
+				) {
+					return;
+				}
+			}
+			const passPredicates = [
+				"qa_passed",
+				"codex_approved",
+				"design_review_approved",
+				"founder_approved",
+				"qa_exempt",
+			];
+			const predicateStatus = passPredicates.includes(claim.predicate)
+				? "pass"
+				: "fail";
+			if (
+				predicateStatus !== input.status ||
+				JSON.stringify(claim.evidence ?? null) !==
+					JSON.stringify(input.summary ? { summary: input.summary } : null) ||
+				(input.clientHead !== undefined && input.clientHead !== claim.subject_digest)
+			) {
+				result = { ok: false, reason: "replay_payload_mismatch" };
+				return;
+			}
+			const events = this.workflowSelectAll(
+				"SELECT seq, payload FROM lead_events WHERE event_id = ? AND event_type = 'workflow_claim_recorded'",
+				[`workflow_claim:${claim.id}`],
+			);
+			if (events.length !== 1) return;
+			let payload: Record<string, unknown> | null;
+			try {
+				payload = JSON.parse(String(events[0]?.payload)) as Record<
+					string,
+					unknown
+				> | null;
+			} catch {
+				return;
+			}
+			if (
+				!payload ||
+				payload.workflow_claim_id !== claim.id ||
+				payload.workflow_run_id !== claim.workflow_run_id ||
+				payload.workflow_node_id !== claim.node_id ||
+				payload.workflow_attempt !== claim.attempt
+			) {
+				return;
+			}
+			result = {
+				ok: true,
+				claimId: claim.id,
+				serverSeq: claim.server_seq,
+				leadEventSeq: Number(events[0]?.seq),
+				idempotentReplay: true,
+			};
+		});
 		return result;
 	}
 

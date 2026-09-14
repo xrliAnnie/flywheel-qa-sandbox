@@ -246,6 +246,24 @@ describe("handleProofShotAutoTrigger (GEO-151 A2)", () => {
 	});
 
 	describe("AC2 — mailbox writeVerified shape", () => {
+		it("writes the instruction before pending state and replays the same payload after projection loss", async () => {
+			await seedSession(store, "exec-ps-1", "GeoForge3D", {
+				proofshot: { config: { enabled: true, capture_stages: ["test"] } },
+			});
+			const setParams = vi.spyOn(store, "setSessionParams");
+			setParams.mockImplementationOnce(() => {
+				expect(mailboxWrites).toHaveLength(1);
+				throw new Error("pending projection lost");
+			});
+			const event = { ...makeEvent(), event_id: "proof-event-1" };
+			await handleProofShotAutoTrigger(store, testProjects, event, "test");
+			expect(mailboxWrites).toHaveLength(1);
+			await handleProofShotAutoTrigger(store, testProjects, event, "test");
+			expect(mailboxWrites).toHaveLength(2);
+			expect(mailboxWrites[1]).toEqual(mailboxWrites[0]);
+			setParams.mockRestore();
+		});
+
 		it("calls writeVerified with real MailboxPayload shape {from,to,content,metadata}", async () => {
 			await seedSession(store, "exec-ps-12345678", "GeoForge3D", {
 				proofshot: { config: { enabled: true, capture_stages: ["test"] } },
@@ -273,7 +291,7 @@ describe("handleProofShotAutoTrigger (GEO-151 A2)", () => {
 			expect(args.payload.to).toBe("runner-exec-ps-");
 			expect(args.payload.content).toContain("flywheel-comm visual-capture");
 			expect(args.payload.metadata.flywheelId).toBe(
-				"proofshot-exec-ps-12345678|test|ui-1",
+				"proofshot:exec-ps-12345678|test|ui:1",
 			);
 			expect(args.payload.metadata.dedupKey).toBe("exec-ps-12345678|test|ui");
 			expect(args.payload.metadata.attempt).toBe(1);
@@ -294,6 +312,18 @@ describe("handleProofShotAutoTrigger (GEO-151 A2)", () => {
 			);
 			// No mailbox write
 			expect(mailboxWrites).toHaveLength(0);
+			// Simulate losing only the projection after the durable sink commit.
+			store.setSessionParams("exec-ps-cdb", {
+				proofshot: { config: { enabled: true, capture_stages: ["test"] } },
+			});
+			expect(
+				await handleProofShotAutoTrigger(
+					store,
+					testProjects,
+					makeEvent({ execution_id: "exec-ps-cdb" }),
+					"test",
+				),
+			).toBe("settled");
 			// CommDB row written under the FLYWHEEL_COMM_DIR-isolated root (FLY-493:
 			// resolve via the shared helper so it matches the Bridge write path).
 			const dbPath = commDbPathForProject("GeoForge3D");
@@ -314,23 +344,77 @@ describe("handleProofShotAutoTrigger (GEO-151 A2)", () => {
 	});
 
 	describe("AC14 — dedup + TTL stale recovery", () => {
-		it("second call with same dedupKey is short-circuited (active pending)", async () => {
+		it.each(["pending", "running"] as const)(
+			"does not settle %s from state alone when the sink cannot verify it",
+			async (state) => {
+				const key = buildProofShotDedupKey("exec-ps-1", "test", "ui");
+				await seedSession(store, "exec-ps-1", "GeoForge3D", {
+					proofshot: {
+						config: { enabled: true, capture_stages: ["test"] },
+						runs: {
+							[key]: {
+								state,
+								dedupKey: key,
+								attempt: 1,
+								updatedAt: Date.now(),
+								lastError: null,
+							},
+						},
+					},
+				});
+				const before = store.getSessionParams("exec-ps-1");
+				mailboxShouldThrow = true;
+				expect(
+					await handleProofShotAutoTrigger(
+						store,
+						testProjects,
+						makeEvent(),
+						"test",
+					),
+				).toBe("pending");
+				expect(store.getSessionParams("exec-ps-1")).toEqual(before);
+				mailboxShouldThrow = false;
+				expect(
+					await handleProofShotAutoTrigger(
+						store,
+						testProjects,
+						makeEvent(),
+						"test",
+					),
+				).toBe("settled");
+				expect(mailboxWrites).toHaveLength(1);
+				expect(store.getSessionParams("exec-ps-1")).toEqual(before);
+			},
+		);
+
+		it("second call with same dedupKey verifies the same active instruction", async () => {
 			await seedSession(store, "exec-ps-1", "GeoForge3D", {
 				proofshot: { config: { enabled: true, capture_stages: ["test"] } },
 			});
 			await handleProofShotAutoTrigger(
 				store,
 				testProjects,
-				makeEvent(),
+				makeEvent({ event_id: "original-proof-event" }),
 				"test",
 			);
+			const params = store.getSessionParams("exec-ps-1") ?? {};
+			const proofshot = getProofShotParams(params);
+			store.setSessionParams("exec-ps-1", {
+				...params,
+				proofshot: {
+					...proofshot,
+					config: { ...proofshot.config, vision_default: false },
+				},
+			});
+
 			await handleProofShotAutoTrigger(
 				store,
 				testProjects,
-				makeEvent(),
+				makeEvent({ event_id: "later-proof-event" }),
 				"test",
 			);
-			expect(mailboxWrites).toHaveLength(1); // second call no-op (pending within TTL)
+			expect(mailboxWrites).toHaveLength(2); // idempotent sink verification
+			expect(mailboxWrites[1]).toEqual(mailboxWrites[0]);
 		});
 
 		it("completed run is permanently dedup'd", async () => {

@@ -1,0 +1,11 @@
+flowchart TD
+    A["关键写操作开始"] --> B{"幂等键能否原子落盘?"}
+    B -- 否 --> U["UNRECORDED<br/>退出码 3,零请求"]
+    B -- 是 --> C["发请求,同键重试"]
+    C --> D{"Bridge 的回答"}
+    D -- "2xx 且 applied / replay" --> L["landed<br/>删本地键,打印 RECEIPT"]
+    D -- "4xx 确定性拒绝" --> F["refused<br/>不重试,标记 .rejected"]
+    D -- "超时 / 5xx / 回执不足" --> E{"预算用完?"}
+    E -- 否 --> C
+    E -- 是 --> P["deferred<br/>键留在磁盘,下一次命令前先重放"]
+    P -. "下一次 flywheel-comm 调用" .-> C
