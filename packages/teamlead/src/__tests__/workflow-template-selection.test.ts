@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resetModelConfigCacheForTests } from "flywheel-config";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyDurableLaunchDrain } from "../../../../scripts/lib/qa-generalized-e2e-lib.mjs";
 import { StateStore } from "../StateStore.js";
 import { loadWorkflowMenuSeeds } from "../workflow-menu.js";
+import * as phaseProtocols from "../workflow-phase-protocol.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
 import {
@@ -15,9 +16,14 @@ import {
 } from "../workflow-template-selection.js";
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
+vi.mock("../workflow-phase-protocol.js", async (original) => ({
+	...(await original<typeof import("../workflow-phase-protocol.js")>()),
+}));
+
 const roots: string[] = [];
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 afterEach(() => {
+	vi.restoreAllMocks();
 	for (const root of roots.splice(0))
 		rmSync(root, { recursive: true, force: true });
 });
@@ -1237,4 +1243,107 @@ describe("workflow template selection", () => {
 		expect(store.getActiveWorkflowRunForIssue("FLY-X")).toBeUndefined();
 		store.close();
 	});
+});
+
+it("rejects unavailable protocols before any materialization, leaves shadows intact, and retries the same key", async () => {
+	const store = await StateStore.create(":memory:");
+	try {
+		const root = setupRoot();
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		store.applyWorkflowLedgerBatch({
+			projectName: "flywheel",
+			issueId: "FLY-X",
+			newRunId: "shadow-run",
+			ops: [
+				{
+					op: "dispatch",
+					node: "main",
+					attempt: 1,
+					executionId: "shadow-dead",
+				},
+			],
+		});
+		store.upsertSession({
+			execution_id: "shadow-dead",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "failed",
+		});
+		const input = {
+			project: "flywheel",
+			issueId: "FLY-X",
+			taskCategory: "research",
+			selectedBy: "lead",
+			actor: "master",
+			authKind: "master" as const,
+			canonicalRoot: root,
+			idempotencyKey: "protocol-retry",
+			entryKind: "workflow_v2" as const,
+			env: enabled,
+			idFactory: (() => {
+				const ids = [
+					"protocol-run",
+					"protocol-exec",
+					"protocol-run",
+					"protocol-exec",
+				];
+				return () => ids.shift()!;
+			})(),
+			now: "2026-07-20T00:10:00.000Z",
+			probeRunExecutionLiveness: async () => "dead" as const,
+		};
+		const db = (store as unknown as { db: { exec(sql: string): unknown } }).db;
+		const durableState = () =>
+			db.exec(
+				"SELECT (SELECT COUNT(*) FROM workflow_run) AS runs, (SELECT COUNT(*) FROM workflow_start_reservation) AS reservations, (SELECT COUNT(*) FROM sessions) AS sessions, (SELECT COUNT(*) FROM workflow_side_effect_ledger) AS effects",
+			);
+		const countsBefore = durableState();
+		const before = store.getWorkflowRun("shadow-run");
+		const events = store.listWorkflowRunEvents("shadow-run");
+		const loader = vi
+			.spyOn(phaseProtocols, "loadWorkflowPhaseProtocols")
+			.mockImplementation(() => {
+				throw phaseProtocols.workflowPhaseProtocolError(
+					"unresolved",
+					"generic",
+					"missing",
+				);
+			});
+		await expect(
+			resolveWorkflowTemplateSelection(store, input),
+		).rejects.toThrow(
+			"WORKFLOW_PHASE_PROTOCOL_UNAVAILABLE node=research type=generic cause=missing",
+		);
+		expect(durableState()).toEqual(countsBefore);
+		expect(store.getWorkflowStartReservation("protocol-retry")).toBeUndefined();
+		expect(store.getWorkflowRun("protocol-run")).toBeUndefined();
+		expect(store.getWorkflowRun("shadow-run")).toEqual(before);
+		expect(store.listWorkflowRunEvents("shadow-run")).toEqual(events);
+		loader.mockRestore();
+		const selected = await resolveWorkflowTemplateSelection(store, input);
+		expect(selected?.runId).toBe("protocol-run");
+		const pinned = store.getWorkflowRun("protocol-run")?.snapshot;
+		vi.spyOn(phaseProtocols, "loadWorkflowPhaseProtocols").mockImplementation(
+			() => {
+				throw new Error("live protocol removed after success");
+			},
+		);
+		const replay = await resolveWorkflowTemplateSelection(store, {
+			...input,
+			idFactory: () => {
+				throw new Error("replay allocation");
+			},
+		});
+		expect(replay?.runId).toBe(selected?.runId);
+		expect(store.getWorkflowRun("protocol-run")?.snapshot).toBe(pinned);
+	} finally {
+		store.close();
+	}
 });

@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -18,6 +19,10 @@ import {
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
 } from "./fixtures/legacy-workflow-manifests.js";
+import {
+	installSelfHostedWorkflowAgentProject,
+	installWorkflowDomainAgentFixture,
+} from "./fixtures/workflow-agent-project.js";
 
 const generalizedManifest = () => ({
 	schema_version: 2,
@@ -690,29 +695,37 @@ describe("workflow template manifest v2", () => {
 	});
 
 	it("resolves coherent gate authority for every bundled seed snapshot", () => {
-		const canonicalRoot = resolve(process.cwd(), "../..");
-		for (const seed of legacyWorkflowSeeds()) {
-			const template = { id: seed.templateId, revision: 1 };
-			const executableSeed =
-				seed.manifest.schema_version === 1
-					? seed
-					: pinLegacyWorkflowSeedAgents(seed);
-			const snapshot =
-				executableSeed.manifest.schema_version === 1
-					? buildWorkflowRunSnapshotV1({
-							template,
-							manifest: executableSeed.manifest,
-						})
-					: buildWorkflowRunSnapshotV2({
-							template,
-							manifest: executableSeed.manifest,
-							canonicalRoot,
-						});
+		const canonicalRoot = mkdtempSync(
+			resolve(tmpdir(), "fly2533-seed-authority-"),
+		);
+		try {
+			installSelfHostedWorkflowAgentProject(canonicalRoot);
+			installWorkflowDomainAgentFixture(canonicalRoot, "qa");
+			for (const seed of legacyWorkflowSeeds()) {
+				const template = { id: seed.templateId, revision: 1 };
+				const executableSeed =
+					seed.manifest.schema_version === 1
+						? seed
+						: pinLegacyWorkflowSeedAgents(seed);
+				const snapshot =
+					executableSeed.manifest.schema_version === 1
+						? buildWorkflowRunSnapshotV1({
+								template,
+								manifest: executableSeed.manifest,
+							})
+						: buildWorkflowRunSnapshotV2({
+								template,
+								manifest: executableSeed.manifest,
+								canonicalRoot,
+							});
 
-			expect(
-				() => resolveWorkflowGateAuthority(snapshot),
-				seed.templateId,
-			).not.toThrow();
+				expect(
+					() => resolveWorkflowGateAuthority(snapshot),
+					seed.templateId,
+				).not.toThrow();
+			}
+		} finally {
+			rmSync(canonicalRoot, { recursive: true, force: true });
 		}
 	});
 

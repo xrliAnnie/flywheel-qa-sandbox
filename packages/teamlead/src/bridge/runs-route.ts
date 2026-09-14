@@ -3099,7 +3099,16 @@ export function createRunsRouter(
 				success: false,
 				code: "DAG_ENTRY_NOT_MATERIALIZED",
 				reason:
-					"fresh main-role code dispatch did not resolve a schema-v2 workflow binding; refusing a legacy runner with no QA evidence path",
+					"fresh main-role code dispatch did not resolve a schema-v2 workflow binding; refusing a legacy runner with no QA evidence path; " +
+					`pass taskCategory (${WORK_KIND_CATEGORIES.join("|")}) or bind category "*"` +
+					(requestAuthKind === "master"
+						? ""
+						: "; fresh DAG entry requires master authentication"),
+				taskCategory:
+					typeof req.body.taskCategory === "string"
+						? req.body.taskCategory
+						: null,
+				authKind: requestAuthKind,
 				silent: false,
 			});
 			return;

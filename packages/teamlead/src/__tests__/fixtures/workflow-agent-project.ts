@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,5 +23,25 @@ export function installSelfHostedWorkflowAgentProject(
 	writeFileSync(
 		join(projectRoot, ".flywheel", "config.yaml"),
 		"project: flywheel\n",
+	);
+}
+
+/** Opt-in domain-only handbook for tests whose node type differs from its role.
+ * Keep production assets and the default real-agent installer unchanged.
+ */
+export function installWorkflowDomainAgentFixture(
+	projectRoot: string,
+	role: "qa" | "general" | "implement",
+): void {
+	if (realpathSync(projectRoot) === realpathSync(REPO_ROOT)) {
+		throw new Error(
+			"Domain fixture requires a temporary project, not the source repository",
+		);
+	}
+	writeFileSync(
+		join(projectRoot, ".flywheel", "agents", "nodes", `${role}.md`),
+		role === "implement"
+			? "Produce the pinned output artifact.\n"
+			: "Review the pinned output independently.\n",
 	);
 }

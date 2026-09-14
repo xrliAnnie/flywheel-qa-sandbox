@@ -1,0 +1,97 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2533 · 执行器阶段协议</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}main{max-width:960px;margin:auto;padding:32px 20px 64px}.card{background:white;border:1px solid #e4e4e9;border-left:4px solid #007aff;border-radius:12px;padding:28px;margin:0 0 20px;box-shadow:0 1px 3px rgba(0,0,0,.06)}h1{font-size:36px;line-height:1.2;letter-spacing:-.6px;margin:0 0 20px}h2{font-size:24px;line-height:1.35;margin:0 0 14px}.eyebrow{font-size:13px;color:#52617b;letter-spacing:.08em}.lead{font-size:21px}.pending{border:1px dashed #cf8a23;border-radius:8px;background:#fff8eb;padding:18px;color:#71490d}.pending strong{font-size:14px}.pending p{margin-bottom:0}table{width:100%;border-collapse:collapse;margin:18px 0}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #e5e5ea;padding:12px 8px}th{font-size:14px;color:#52617b}td:first-child{width:24%;font-weight:600}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 "SF Mono",monospace;background:#f5f5f7;border-radius:8px;padding:16px}code{font-family:"SF Mono",monospace}details{margin:18px 0}summary{cursor:pointer;color:#005fc9}label{display:block;font-size:14px;color:#52617b;margin:22px 0 7px}textarea{display:block;width:100%;resize:vertical;min-height:82px;border:1px solid #d2d2d7;border-radius:8px;padding:12px;font:15px/1.5 inherit;color:#1d1d1f;background:#fbfbfd}textarea:focus{outline:2px solid #007aff;outline-offset:2px}button{font:inherit;border:0;border-radius:8px;padding:10px 16px;background:#007aff;color:white;cursor:pointer;margin:10px 8px 0 0}button:focus-visible{outline:3px solid #1a365d;outline-offset:2px}.boundary{border-left:3px solid #ff9500;padding-left:16px}.small{font-size:14px;color:#606067}.export{min-height:160px;margin-top:12px}.status{min-height:1.6em;color:#52617b}.count{font-size:14px;color:#606067}li{padding:5px 0}footer{font-size:13px;color:#606067;padding:8px 4px}svg{max-width:100%;height:auto}@media(max-width:600px){main{padding:18px 12px 40px}.card{padding:20px 16px}h1{font-size:29px}h2{font-size:21px}.lead{font-size:19px}td,th{padding:10px 5px;font-size:14px}td:first-child{width:29%}}</style></head><body><main>
+<section class="card" aria-labelledby="title-summary"><h1 id="title-summary">执行器开工前，先拿到完成规则</h1><p class="eyebrow">FLY-2533 · B‴ · 设计交接</p><p class="lead">把平台的阶段协议放进运行快照的开头；缺协议就拒绝启动，并把分类缺省造成的 409 错误讲清楚。</p><p>阶段协议是“何时交卷、如何报验”的统一规则。运行快照是一次任务已固定的指令与配置。本页交付设计；实现与真实验收由后续节点完成。</p><label for="comment-summary">对「执行器开工前，先拿到完成规则」的意见</label><textarea id="comment-summary" data-comment="summary" data-title="执行器开工前，先拿到完成规则" placeholder="写下意见，会自动保存在此浏览器"></textarea></section>
+<section class="card" aria-labelledby="title-flow"><h2 id="title-flow">一次启动，会经过什么</h2><p>Bridge 是启动并协调执行器的服务。它先按正式节点类型选择规则，再与项目领域手册一起固定。</p><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地 Chromium 被 macOS 沙箱拒绝启动；两次渲染均失败。下方保留真实 Mermaid 源，尚未生成图像。</p></div><details><summary>查看 Mermaid 流程图源</summary><pre>flowchart TD
+  A[项目选择领域执行器] --&gt; B[按正式节点类型读取平台协议]
+  B --&gt; C{协议完整且可读?}
+  C --&gt;|否| D[启动前报错\n点名节点类型]
+  C --&gt;|是| E[协议放在手册前\n总长超 40,000 则拒绝]
+  E --&gt; F[内容与摘要写入运行快照]
+  F --&gt; G[沿既有通道交给 Claude 或 Codex]
+  G --&gt; H[按阶段提交可核验的完成记录]
+  classDef focus fill:#e8f2ff,stroke:#007aff,color:#1d1d1f;
+  classDef stop fill:#fff0ee,stroke:#ff3b30,color:#1d1d1f;
+  class E,F focus;
+  class D stop;
+</pre></details><p>缺失、空白或损坏的协议必须在创建运行记录之前报错，并点名节点类型。协议完整放在前面；协议加手册超过 40,000 字符就拒绝启动，点名节点类型，不截短任何部分。</p><label for="comment-flow">对「一次启动，会经过什么」的意见</label><textarea id="comment-flow" data-comment="flow" data-title="一次启动，会经过什么" placeholder="写下意见，会自动保存在此浏览器"></textarea></section>
+<section class="card" aria-labelledby="title-model"><h2 id="title-model">平台规则与项目知识，各自有来源</h2><p>领域手册描述业务怎么做；平台协议描述做完怎么交接。digest 是内容校验摘要，文字变化会产生不同的校验值。</p><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>结构图同样等待本地渲染；没有使用远程服务或手绘替代图。</p></div><details><summary>查看 Mermaid 结构图源</summary><pre>flowchart TD
+  P[平台协议文件\n唯一人工维护来源] --&gt; A[agent.content\n平台协议 + 领域手册]
+  H[项目领域手册\n项目保留业务知识] --&gt; A
+  A --&gt; D[agent.digest\n内容的校验摘要]
+  A --&gt; S[运行快照\n固定节点、内容与摘要]
+  D --&gt; S
+  S --&gt; R[snapshot_digest\n整份快照的校验摘要]
+  classDef focus fill:#e8f2ff,stroke:#007aff,color:#1d1d1f;
+  class S focus;
+</pre></details><table><thead><tr><th>内容</th><th>来源与规则</th></tr></thead><tbody><tr><td>平台协议</td><td>Flywheel 安装包内唯一人工维护来源；项目不能改路径来替换它。</td></tr><tr><td>项目手册</td><td>继续由项目维护；不需要新增 registry（集中角色登记表）。</td></tr><tr><td>运行快照</td><td>同时固定协议与手册；沿用已有摘要，不加另一套校验字段。</td></tr><tr><td>旧运行</td><td>恢复时读取原快照，不偷偷换成最新规则。</td></tr></tbody></table><label for="comment-model">对「平台规则与项目知识，各自有来源」的意见</label><textarea id="comment-model" data-comment="model" data-title="平台规则与项目知识，各自有来源" placeholder="写下意见，会自动保存在此浏览器"></textarea></section>
+<section class="card" aria-labelledby="title-roles"><h2 id="title-roles">不同阶段，按各自规则交卷</h2><table><thead><tr><th>阶段</th><th>交付动作</th></tr></thead><tbody><tr><td>设计</td><td>完成计划与正式评审，提交并发布设计页面，再交接。</td></tr><tr><td>实现</td><td>按已批准计划改动、测试、评审并创建 PR。PR 是供审查合入的变更请求。</td></tr><tr><td>QA（独立验收）</td><td>实测后提交 qa-result；需要交付报告时先发布，再提交通过结果。</td></tr><tr><td>通用与评审</td><td>服从当前任务固定的产物与判决合同，不自动获得 QA 或合并权限。</td></tr></tbody></table><p>claim 是服务器接受的结果记录。会话显示 running，或执行器说“完成”，都不能代替 claim。QA 与实现的角色名单若指向同一真实文件，加载时会拒绝。</p><label for="comment-roles">对「不同阶段，按各自规则交卷」的意见</label><textarea id="comment-roles" data-comment="roles" data-title="不同阶段，按各自规则交卷" placeholder="写下意见，会自动保存在此浏览器"></textarea></section>
+<section class="card" aria-labelledby="title-error"><h2 id="title-error">409 错误要告诉人下一步</h2><p>taskCategory 是本次任务的流程分类。非强制分类项目省略它时，当前解析器会查询 <code>*</code> 绑定；没有这一行，就不能创建流程。</p><pre>pass taskCategory (code|simple_code|prd|product_design_flow|prototype|generic) or bind category &quot;*&quot;</pre><p>响应还会带上收到的 taskCategory，以及服务器识别出的 authKind（认证种类）。缺省分类回显为 null，不假装调用者传了星号。</p><p>scoped 是权限受限的认证，master 是允许新建主流程的认证。补上分类不会把 scoped 升为 master；错误也会明确说明这一点。系统继续保持显式绑定，不自动添加星号默认路由。</p><label for="comment-error">对「409 错误要告诉人下一步」的意见</label><textarea id="comment-error" data-comment="error" data-title="409 错误要告诉人下一步" placeholder="写下意见，会自动保存在此浏览器"></textarea></section>
+<section class="card" aria-labelledby="title-tradeoffs"><h2 id="title-tradeoffs">兼容旧入口，代价说清楚</h2><p>有些旧入口直接读取节点文件。抽取后的协议会生成兼容文件，并检查其与唯一来源完全一致；新快照移除精确重复段，再把协议放到开头一次。</p><table><thead><tr><th>选择</th><th>原因与代价</th></tr></thead><tbody><tr><td>快照里固定协议</td><td>一次任务的规则可追溯；旧任务不会自动得到新规则。</td></tr><tr><td>保留生成的兼容文件</td><td>旧入口仍可读取；增加一项生成一致性检查。</td></tr><tr><td>不在派发时另拼规则</td><td>保持既有通道，避免快照与实际指令不一致。</td></tr><tr><td>不自动补默认路由</td><td>分类选择继续由项目明确决定。</td></tr></tbody></table><label for="comment-tradeoffs">对「兼容旧入口，代价说清楚」的意见</label><textarea id="comment-tradeoffs" data-comment="tradeoffs" data-title="兼容旧入口，代价说清楚" placeholder="写下意见，会自动保存在此浏览器"></textarea></section>
+<section class="card" aria-labelledby="title-evidence"><h2 id="title-evidence">怎样证明有效，以及尚未证明什么</h2><ol><li><b>A：</b>前置规则后，内容摘要变化，协议起始位置为零。</li><li><b>B：</b>在 529 隔离测试房，用不含协议的领域手册启动真实 Claude QA，取得服务器接受的验收记录，并与基线对照。</li><li><b>C：</b>移走测试房内协议后，启动被拒，没有新的运行会话。</li><li><b>D：</b>QA 与实现同文件被拒，独立文件继续可用。</li><li><b>E：</b>分类缺省的 409 包含提示与认证回显，权限边界不变。</li><li><b>F：</b>Flywheel 原有有效指令语义保持，协议一次、领域内容保留，完整指令增长不超过 10%。</li></ol><p class="boundary">诚实边界：本页不代表代码或 529 实测已完成。模型未必服从指令，仍以服务器接纳记录为准；超长手册会拒绝启动，需要精简后重试。若基线也正常提交结果，应报告未复现，不能编写“注入前卡死”的结论。本次不触碰生产、不部署、不启动后继节点。</p><label for="comment-evidence">对「怎样证明有效，以及尚未证明什么」的意见</label><textarea id="comment-evidence" data-comment="evidence" data-title="怎样证明有效，以及尚未证明什么" placeholder="写下意见，会自动保存在此浏览器"></textarea></section>
+<section class="card" aria-labelledby="title-comments"><h2 id="title-comments">页面意见汇总</h2><p>意见仅保存在本浏览器。复制后发回即可；这里的意见标记不是批准信号。</p><label for="comment-export">对「页面意见汇总」的意见</label><textarea id="comment-export" data-comment="export" data-title="页面意见汇总" placeholder="补充整体意见"></textarea><p id="storage-status" class="small" role="status"></p><p id="comment-count" class="count"></p><div id="exports"></div><button id="copy-all" type="button">复制全部意见</button><p id="copy-status" class="status" role="status" aria-live="polite"></p></section><footer>FLY-2533 · 2026-09-13 · 设计交接材料 · 页面意见不授予实施或合并权限</footer></main>
+<script nonce="__CSP_NONCE__">
+'use strict';
+const marker = '【页面意见汇总】FLY-2533';
+const prefix = 'flywheel-comments:' + location.pathname + ':';
+const fields = Array.from(document.querySelectorAll('[data-comment]'));
+const exportsBox = document.getElementById('exports');
+const storageStatus = document.getElementById('storage-status');
+const copyStatus = document.getElementById('copy-status');
+let chunks = [];
+function cpLength(text) { return Array.from(text).length; }
+function buildChunks(entries) {
+  const result = [];
+  let current = marker;
+  for (const entry of entries) {
+    const heading = '\n\n[' + entry.title + ']\n';
+    let rest = Array.from(entry.value);
+    while (rest.length) {
+      let available = 1800 - cpLength(current) - cpLength(heading);
+      if (available < 1) { result.push(current); current = marker; available = 1800 - cpLength(current) - cpLength(heading); }
+      current += heading + rest.splice(0, available).join('');
+      if (rest.length) { result.push(current); current = marker; }
+    }
+  }
+  if (current !== marker || !result.length) result.push(current);
+  return result;
+}
+async function copyText(text) {
+  let copied = false;
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try { await navigator.clipboard.writeText(text); copied = true; } catch (_) {}
+  }
+  if (!copied) {
+    const helper = document.createElement('textarea');
+    helper.value = text; helper.setAttribute('aria-label', '临时复制内容');
+    helper.style.position = 'fixed'; helper.style.left = '-9999px';
+    const active = document.activeElement;
+    document.body.appendChild(helper); helper.focus(); helper.select();
+    try { copied = document.execCommand('copy'); } catch (_) {}
+    helper.remove(); if (active && typeof active.focus === 'function') active.focus();
+  }
+  copyStatus.textContent = copied ? '已复制，可粘贴发回。' : '自动复制不可用，请手动选择下方汇总文字复制。';
+}
+function refresh() {
+  const entries = fields.filter(field => field.value.trim()).map(field => ({title: field.dataset.title, value: field.value.trim()}));
+  chunks = buildChunks(entries);
+  document.getElementById('comment-count').textContent = entries.length + ' 处意见 · ' + chunks.length + ' 个可复制分段（每段不超过 1800 字符）';
+  exportsBox.replaceChildren();
+  chunks.forEach((chunk, index) => {
+    const label = document.createElement('label');
+    label.htmlFor = 'export-' + index; label.textContent = '意见分段 ' + (index + 1);
+    const area = document.createElement('textarea');
+    area.id = 'export-' + index; area.className = 'export'; area.readOnly = true; area.value = chunk;
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制第 ' + (index + 1) + ' 段';
+    button.addEventListener('click', () => { void copyText(chunk); });
+    exportsBox.append(label, area, button);
+  });
+}
+fields.forEach(field => {
+  try { field.value = localStorage.getItem(prefix + field.dataset.comment) || ''; } catch (_) { storageStatus.textContent = '本浏览器未允许本地保存；本页仍可输入和复制意见。'; }
+  field.addEventListener('input', () => {
+    try { localStorage.setItem(prefix + field.dataset.comment, field.value); } catch (_) { storageStatus.textContent = '本地保存失败；关闭页面前请复制意见。'; }
+    refresh();
+  });
+});
+document.getElementById('copy-all').addEventListener('click', () => { void copyText(chunks.join('\n\n')); });
+refresh();
+</script></body></html>

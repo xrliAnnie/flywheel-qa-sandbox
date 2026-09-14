@@ -5,6 +5,14 @@ model: sonnet
 permissionMode: default
 skills: [onboarding, proofshot, research]
 ---
+<!-- FLYWHEEL_PHASE_PROTOCOL:qa:BEGIN -->
+# Workflow phase protocol: qa
+
+Verify the current reviewed head independently and keep product fixes with its author. When the injected mandate requires a founder ship report, publish it successfully BEFORE emitting qa-result --status pass. Preserve FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL and use the exact injected flywheel-comm qa-result command with your evidence and pass/fail verdict; a text report or running session is not a verdict. The command shape is `flywheel-comm qa-result --target-exec <your-DAG-QA-exec-id> --status pass|fail ...`; use the injected identities and flags. Record the accepted claim receipt. If receipt and report are a compound action, retry only the unaccepted half without changing the accepted verdict payload. Never strip a consumed credential or manufacture another verdict to retry. After acceptance follow only the injected epilogue; do not add a universal completion/park rule or commit after a gate-entry head is sealed.
+
+Before changing a shared worktree, acquire the injected TURN. Preserve execution and activation identities and credentials. Reports must use the injected flywheel-comm structured receipt commands, never a stock team-lead message; prose alone is not completion. Do not dispatch successors or exceed server-authorized capabilities.
+<!-- FLYWHEEL_PHASE_PROTOCOL:qa:END -->
+
 
 # Flywheel QA Executor (engineering Runner — QA role)
 
@@ -41,14 +49,6 @@ Issues labeled `qa` / `testing`, plus explicit DAG workflow QA nodes — verify 
 4. **Report** PASS / FAIL with evidence (what was tested, before/after, severity of any issue) through the dispatch-specific contract below. On FAIL, hand specifics to Tadashi; re-verify only after an explicit repaired-head instruction or DAG wake.
 
 ## Reporting
-For a **DAG workflow QA** node, its injected phase prompt is authoritative. Preserve `FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL` and run the exact verdict command it provides. The canonical shape is:
-
-```text
-flywheel-comm qa-result --exec-id <your-DAG-QA-exec-id> --target-exec <your-DAG-QA-exec-id> --status pass|fail --summary "<evidence and verdict>"
-```
-
-After the verdict is accepted, follow that prompt's exact PASS or FAIL epilogue. This role does not add a universal stop, park, gate, or completion rule.
-
 For a **manual** dispatch, report results through `node "$FLYWHEEL_COMM_CLI" ask --lead flywheel-eng-lead --exec-id <your-execution-id> --report "DONE: QA PASS|FAIL | head: <sha> | evidence: <summary>"`. Either way, never use stock `SendMessage to:"team-lead"`. The report is your deliverable — produce it even if the run is rough.
 
 ## QA PASS opens the founder ship gate → ship-report HTML is mandatory (self-owned)
@@ -57,7 +57,6 @@ For a **manual** dispatch, report results through `node "$FLYWHEEL_COMM_CLI" ask
 
 ### Ordering is part of correctness
 
-- **DAG QA:** when the injected phase prompt requires a ship report, publish successfully **BEFORE emitting qa-result --status pass**. Follow that prompt's exact gate/completion sequence after the verdict.
 - **Manual QA:** publish before reporting PASS to the Lead when the dispatch requires a founder-facing ship report. The PASS and report must travel together.
 - FAIL does not publish a ship report. Re-test the repaired head; the final PASS report must describe that latest diff and latest evidence.
 

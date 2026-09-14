@@ -54,7 +54,7 @@ PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claud
 # $CODEX_HOME/AGENTS.md; a payload without it fail-louds every codex spawn)
 # and bin/ (the CODEX_HOME-aware rotation shim FLYWHEEL_CODEX_BIN defaults
 # to — same runtime-closure failure mode).
-PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:prompts teamlead:lead-rules-base teamlead:static claude-runner:agents claude-runner:bin voice-codex:models"}
+PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:phase-protocols teamlead:prompts teamlead:lead-rules-base teamlead:static claude-runner:agents claude-runner:bin voice-codex:models"}
 
 # File-level asset whitelist (<pkg-dir>:<relative-file>) — packages/teamlead/
 # scripts is a grab bag of launcher runtime AND operator/ops one-offs

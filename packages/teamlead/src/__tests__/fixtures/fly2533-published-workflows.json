@@ -1,0 +1,393 @@
+{
+	"capturedOn": "2026-09-13 America/Los_Angeles",
+	"source": "Read-only SELECT of non-retired current published workflow_template revisions; no database copy or writes.",
+	"templates": [
+		{
+			"templateId": "tpl_code",
+			"revision": 13,
+			"manifest": {
+				"schema_version": 2,
+				"nodes": [
+					{
+						"id": "eng_design",
+						"label": "设计(工程)",
+						"type": "design",
+						"vendor": "claude",
+						"model": "fable",
+						"effort": "high"
+					},
+					{
+						"id": "implement",
+						"label": "实现",
+						"type": "implement",
+						"vendor": "codex",
+						"model": "astra",
+						"effort": "medium"
+					},
+					{
+						"id": "qa",
+						"label": "QA 验证",
+						"type": "qa",
+						"vendor": "claude",
+						"model": "claude-opus-5",
+						"effort": "high"
+					},
+					{
+						"id": "founder_gate",
+						"label": "创始人门",
+						"type": "gate"
+					},
+					{
+						"id": "land",
+						"label": "合入",
+						"type": "land",
+						"execution": "engine"
+					}
+				],
+				"edges": [
+					{
+						"id": "design_done",
+						"from": "eng_design",
+						"to": "implement",
+						"condition": "design_done"
+					},
+					{
+						"id": "implement_done",
+						"from": "implement",
+						"to": "qa",
+						"condition": "implement_done"
+					},
+					{
+						"id": "qa_pass",
+						"from": "qa",
+						"to": "founder_gate",
+						"condition": "qa_pass"
+					},
+					{
+						"id": "founder_gate_approved",
+						"from": "founder_gate",
+						"to": "land",
+						"condition": "founder_approved"
+					}
+				],
+				"loops": [
+					{
+						"id": "qa_retry",
+						"from": "qa",
+						"to": "implement",
+						"loop_when": "qa_fail",
+						"exit_when": "qa_pass"
+					},
+					{
+						"id": "founder_rework",
+						"from": "founder_gate",
+						"to": "implement",
+						"loop_when": "founder_feedback_kickback",
+						"exit_when": "founder_approved"
+					}
+				],
+				"approval_gate": {
+					"node": "founder_gate",
+					"predicate": "founder_approved"
+				},
+				"terminal_node": {
+					"node": "land"
+				},
+				"ship_claims": ["qa_passed", "founder_approved"]
+			}
+		},
+		{
+			"templateId": "tpl_design",
+			"revision": 9,
+			"manifest": {
+				"schema_version": 3,
+				"nodes": [
+					{
+						"id": "product_design",
+						"label": "产品设计",
+						"type": "generic",
+						"vendor": "claude",
+						"model": "claude-opus-5",
+						"effort": "high",
+						"handbook_ref": "product_design",
+						"founder_review": true
+					},
+					{
+						"id": "founder_gate",
+						"label": "创始人门",
+						"type": "gate"
+					},
+					{
+						"id": "land",
+						"label": "合入",
+						"type": "land",
+						"execution": "engine"
+					}
+				],
+				"edges": [
+					{
+						"id": "product_design_done",
+						"from": "product_design",
+						"to": "founder_gate",
+						"condition": "node_done"
+					},
+					{
+						"id": "founder_gate_approved",
+						"from": "founder_gate",
+						"to": "land",
+						"condition": "founder_approved"
+					}
+				],
+				"loops": [],
+				"approval_gate": {
+					"node": "founder_gate",
+					"predicate": "founder_approved"
+				},
+				"terminal_node": {
+					"node": "land"
+				},
+				"ship_claims": ["founder_approved"]
+			}
+		},
+		{
+			"templateId": "tpl_generic_menu",
+			"revision": 8,
+			"manifest": {
+				"schema_version": 3,
+				"nodes": [
+					{
+						"id": "general",
+						"label": "通用执行",
+						"type": "generic",
+						"vendor": "claude",
+						"model": "claude-opus-5",
+						"effort": "high",
+						"handbook_ref": "general"
+					},
+					{
+						"id": "founder_gate",
+						"label": "创始人门",
+						"type": "gate"
+					},
+					{
+						"id": "land",
+						"label": "合入",
+						"type": "land",
+						"execution": "engine"
+					}
+				],
+				"edges": [
+					{
+						"id": "general_done",
+						"from": "general",
+						"to": "founder_gate",
+						"condition": "node_done"
+					},
+					{
+						"id": "founder_gate_approved",
+						"from": "founder_gate",
+						"to": "land",
+						"condition": "founder_approved"
+					}
+				],
+				"loops": [],
+				"approval_gate": {
+					"node": "founder_gate",
+					"predicate": "founder_approved"
+				},
+				"terminal_node": {
+					"node": "land"
+				},
+				"ship_claims": ["founder_approved"]
+			}
+		},
+		{
+			"templateId": "tpl_prd",
+			"revision": 9,
+			"manifest": {
+				"schema_version": 3,
+				"nodes": [
+					{
+						"id": "pm",
+						"label": "产品需求",
+						"type": "generic",
+						"vendor": "claude",
+						"model": "claude-opus-5",
+						"effort": "high",
+						"handbook_ref": "pm",
+						"founder_review": true
+					},
+					{
+						"id": "founder_gate",
+						"label": "创始人门",
+						"type": "gate"
+					},
+					{
+						"id": "land",
+						"label": "合入",
+						"type": "land",
+						"execution": "engine"
+					}
+				],
+				"edges": [
+					{
+						"id": "pm_done",
+						"from": "pm",
+						"to": "founder_gate",
+						"condition": "node_done"
+					},
+					{
+						"id": "founder_gate_approved",
+						"from": "founder_gate",
+						"to": "land",
+						"condition": "founder_approved"
+					}
+				],
+				"loops": [],
+				"approval_gate": {
+					"node": "founder_gate",
+					"predicate": "founder_approved"
+				},
+				"terminal_node": {
+					"node": "land"
+				},
+				"ship_claims": ["founder_approved"]
+			}
+		},
+		{
+			"templateId": "tpl_prototype",
+			"revision": 9,
+			"manifest": {
+				"schema_version": 3,
+				"nodes": [
+					{
+						"id": "proto",
+						"label": "原型",
+						"type": "generic",
+						"vendor": "claude",
+						"model": "claude-opus-5",
+						"effort": "high",
+						"handbook_ref": "proto",
+						"founder_review": true
+					},
+					{
+						"id": "founder_gate",
+						"label": "创始人门",
+						"type": "gate"
+					},
+					{
+						"id": "land",
+						"label": "合入",
+						"type": "land",
+						"execution": "engine"
+					}
+				],
+				"edges": [
+					{
+						"id": "proto_done",
+						"from": "proto",
+						"to": "founder_gate",
+						"condition": "node_done"
+					},
+					{
+						"id": "founder_gate_approved",
+						"from": "founder_gate",
+						"to": "land",
+						"condition": "founder_approved"
+					}
+				],
+				"loops": [],
+				"approval_gate": {
+					"node": "founder_gate",
+					"predicate": "founder_approved"
+				},
+				"terminal_node": {
+					"node": "land"
+				},
+				"ship_claims": ["founder_approved"]
+			}
+		},
+		{
+			"templateId": "tpl_simple_code",
+			"revision": 5,
+			"manifest": {
+				"schema_version": 3,
+				"nodes": [
+					{
+						"id": "implement",
+						"label": "实现",
+						"type": "implement",
+						"vendor": "codex",
+						"model": "astra",
+						"effort": "medium",
+						"handbook_ref": "implement"
+					},
+					{
+						"id": "qa",
+						"label": "QA 验证",
+						"type": "qa",
+						"vendor": "claude",
+						"model": "claude-opus-5",
+						"effort": "high",
+						"handbook_ref": "qa"
+					},
+					{
+						"id": "founder_gate",
+						"label": "创始人门",
+						"type": "gate"
+					},
+					{
+						"id": "land",
+						"label": "合入",
+						"type": "land",
+						"execution": "engine"
+					}
+				],
+				"edges": [
+					{
+						"id": "implement_done",
+						"from": "implement",
+						"to": "qa",
+						"condition": "implement_done"
+					},
+					{
+						"id": "qa_pass",
+						"from": "qa",
+						"to": "founder_gate",
+						"condition": "qa_pass"
+					},
+					{
+						"id": "founder_gate_approved",
+						"from": "founder_gate",
+						"to": "land",
+						"condition": "founder_approved"
+					}
+				],
+				"loops": [
+					{
+						"id": "qa_retry",
+						"from": "qa",
+						"to": "implement",
+						"loop_when": "qa_fail",
+						"exit_when": "qa_pass"
+					},
+					{
+						"id": "founder_rework",
+						"from": "founder_gate",
+						"to": "implement",
+						"loop_when": "founder_feedback_kickback",
+						"exit_when": "founder_approved"
+					}
+				],
+				"approval_gate": {
+					"node": "founder_gate",
+					"predicate": "founder_approved"
+				},
+				"terminal_node": {
+					"node": "land"
+				},
+				"ship_claims": ["qa_passed", "founder_approved"]
+			}
+		}
+	]
+}

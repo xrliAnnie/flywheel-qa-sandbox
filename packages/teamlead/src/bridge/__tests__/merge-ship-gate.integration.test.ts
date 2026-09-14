@@ -29,7 +29,10 @@ import {
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
 } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
-import { installWorkflowAgentFiles } from "../../__tests__/fixtures/workflow-agent-project.js";
+import {
+	installWorkflowAgentFiles,
+	installWorkflowDomainAgentFixture,
+} from "../../__tests__/fixtures/workflow-agent-project.js";
 import {
 	insertHistoricalAutoQaRecord,
 	setHistoricalQaRequiredSnapshot,
@@ -284,6 +287,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	function productWithReviewPredicate(
 		predicate: "codex_approved" | "design_review_approved",
 	) {
+		installWorkflowDomainAgentFixture(worktreePath, "qa");
 		const seed = pinLegacyWorkflowSeedAgents(
 			legacyWorkflowSeeds().find(
 				(candidate) => candidate.templateId === "tpl_product_v1",

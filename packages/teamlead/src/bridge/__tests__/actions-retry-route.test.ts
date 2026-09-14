@@ -23,7 +23,10 @@ import {
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
 } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
-import { installSelfHostedWorkflowAgentProject } from "../../__tests__/fixtures/workflow-agent-project.js";
+import {
+	installSelfHostedWorkflowAgentProject,
+	installWorkflowDomainAgentFixture,
+} from "../../__tests__/fixtures/workflow-agent-project.js";
 import { StateStore } from "../../StateStore.js";
 import {
 	compileWorkflowMenuSeed,
@@ -68,6 +71,7 @@ function bindPredecessorToGeneralizedWorkflow(): void {
 	generalizedRoot = mkdtempSync(join(tmpdir(), "fly1336-actions-pending-"));
 	process.env.HOME = generalizedRoot;
 	installSelfHostedWorkflowAgentProject(generalizedRoot);
+	installWorkflowDomainAgentFixture(generalizedRoot, "qa");
 	const seed = pinLegacyWorkflowSeedAgents(
 		legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_product_v1",

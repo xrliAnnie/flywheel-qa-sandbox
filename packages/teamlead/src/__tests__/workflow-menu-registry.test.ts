@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process";
 import {
 	existsSync,
+	linkSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
 	compileWorkflowMenuSeed,
+	loadLegacyProjectRoster,
 	loadWorkflowMenuLibrary,
 	resolveLeadMenus,
 	resolveNodeAgentFile,
@@ -260,4 +263,52 @@ describe("FLY-2121 registry-backed workflow menus", () => {
 			".flywheel/agents/proto.md",
 		);
 	});
+});
+
+describe("FLY-2533 legacy roster file identity", () => {
+	function fixture(roster: string) {
+		const root = mkdtempSync(join(tmpdir(), "fly2533-roster-"));
+		fixtureRoots.push(root);
+		mkdirSync(join(root, ".flywheel", "menus"), { recursive: true });
+		writeFileSync(join(root, "implement.md"), "Same domain handbook\n");
+		writeFileSync(join(root, "qa.md"), "Same domain handbook\n");
+		writeFileSync(join(root, ".flywheel", "menus", "ic-roster.yaml"), roster);
+		return root;
+	}
+	it.each(["same", "dot", "symlink", "hardlink"])(
+		"rejects %s aliases of the implementation file",
+		(kind) => {
+			const qa =
+				kind === "same"
+					? "implement.md"
+					: kind === "dot"
+						? "./implement.md"
+						: "alias.md";
+			const root = fixture(`implement: implement.md\nqa: ${qa}\n`);
+			if (kind === "symlink") symlinkSync("implement.md", join(root, qa));
+			if (kind === "hardlink")
+				linkSync(join(root, "implement.md"), join(root, qa));
+			expect(() => loadLegacyProjectRoster(root)).toThrow(
+				`IC_ROSTER_QA_IMPLEMENT_SAME_FILE: ic-roster.qa (${qa}) and ic-roster.implement (implement.md) must resolve to different files`,
+			);
+		},
+	);
+	it.each([
+		"implement: implement.md\nqa: qa.md\n",
+		"general: implement.md\n",
+		"implement: implement.md\n",
+		"qa: qa.md\n",
+	])("accepts independent or partial roster %s", (roster) => {
+		expect(loadLegacyProjectRoster(fixture(roster))).toEqual(parse(roster));
+	});
+	it.each(["/tmp/outside.md", "../outside.md", "missing.md"])(
+		"retains invalid path rejection for %s",
+		(qa) => {
+			expect(() =>
+				loadLegacyProjectRoster(
+					fixture(`implement: implement.md\nqa: ${qa}\n`),
+				),
+			).toThrow();
+		},
+	);
 });

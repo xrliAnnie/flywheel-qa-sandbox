@@ -453,6 +453,9 @@ jobs:
           bash scripts/__tests__/fly2204-qa-calendar-config.test.sh
           bash scripts/__tests__/lead-alert-strict-delivery.test.sh
 
+      - name: Test — FLY-2533 packed phase protocols
+        run: bash scripts/__tests__/fly2533-phase-protocol-assets.test.sh
+
       - name: Test — FLY-2007 phase-0 analyser contract
         run: bash scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh
 
@@ -604,6 +607,7 @@ jobs:
 
       - name: Test — FLY-2456 hermetic restart drill evidence
         run: |
+          node --test scripts/__tests__/qa-fly-2533-phase-protocol.test.mjs
           node --test scripts/__tests__/qa-fly-2456-drill-tools.test.mjs
           node --test scripts/__tests__/qa-fly-2456-scan.test.mjs
           node --test scripts/__tests__/qa-fly-2456-adopt.test.mjs

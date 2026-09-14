@@ -25,7 +25,10 @@ import {
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
 } from "./fixtures/legacy-workflow-manifests.js";
-import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
+import {
+	installSelfHostedWorkflowAgentProject,
+	installWorkflowDomainAgentFixture,
+} from "./fixtures/workflow-agent-project.js";
 
 const cleanups: string[] = [];
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -54,7 +57,10 @@ function createRun(
 ) {
 	const root = mkdtempSync(join(tmpdir(), "flywheel-generalized-"));
 	cleanups.push(root);
-	if (options.loopTarget) installSelfHostedWorkflowAgentProject(root);
+	if (options.loopTarget) {
+		installSelfHostedWorkflowAgentProject(root);
+		installWorkflowDomainAgentFixture(root, "general");
+	}
 	mkdirSync(join(root, "agents"));
 	writeFileSync(join(root, "agents", "generic.md"), "Execute safely.\n");
 	const node = {
@@ -686,6 +692,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		const root = mkdtempSync(join(tmpdir(), "flywheel-review-producer-"));
 		cleanups.push(root);
 		installSelfHostedWorkflowAgentProject(root);
+		installWorkflowDomainAgentFixture(root, "qa");
 		mkdirSync(join(root, "agents"));
 		writeFileSync(join(root, "agents", "generic.md"), "Produce nothing.\n");
 		const snapshot = buildWorkflowRunSnapshotV2({
@@ -796,6 +803,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		const root = mkdtempSync(join(tmpdir(), "flywheel-same-vendor-"));
 		cleanups.push(root);
 		installSelfHostedWorkflowAgentProject(root);
+		installWorkflowDomainAgentFixture(root, "qa");
 		const seed = pinLegacyWorkflowSeedAgents(
 			structuredClone(
 				legacyWorkflowSeeds().find(

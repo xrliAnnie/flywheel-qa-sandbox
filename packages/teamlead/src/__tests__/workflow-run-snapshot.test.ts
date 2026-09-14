@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalSubmissionDigest, NODE_TYPE_REGISTRY } from "flywheel-config";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
@@ -27,10 +27,19 @@ it("derives resident eligibility only from inbound pinned loops", () => {
 	expect(isLoopTargetNode(snapshot, "review")).toBe(false);
 });
 
+import * as phaseProtocols from "../workflow-phase-protocol.js";
+
+vi.mock("../workflow-phase-protocol.js", async (original) => ({
+	...(await original<typeof import("../workflow-phase-protocol.js")>()),
+}));
+
+import { loadWorkflowPhaseProtocols } from "../workflow-phase-protocol.js";
+
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const roots: string[] = [];
 afterEach(() => {
+	vi.restoreAllMocks();
 	for (const root of roots.splice(0))
 		rmSync(root, { recursive: true, force: true });
 });
@@ -158,7 +167,8 @@ describe("typed generalized workflow snapshot", () => {
 			},
 		});
 		expect(snapshot.resolved.nodes[0]?.agent?.content).toBe(
-			"Do the bounded task.\n",
+			loadWorkflowPhaseProtocols(["generic"]).get("generic")!.trimEnd() +
+				"\n\n---\n\nDo the bounded task.\n",
 		);
 		expect(parseWorkflowRunSnapshot(JSON.stringify(snapshot))).toEqual(
 			snapshot,
@@ -425,7 +435,10 @@ describe("typed generalized workflow snapshot", () => {
 				completion_route: "needs_review",
 			},
 		});
-		expect(execute?.agent?.content).toBe("Do the bounded task.\n");
+		expect(execute?.agent?.content).toBe(
+			loadWorkflowPhaseProtocols(["generic"]).get("generic")!.trimEnd() +
+				"\n\n---\n\nDo the bounded task.\n",
+		);
 	});
 
 	it("assigns ship authority only to an arbitrary terminal land node", () => {
@@ -769,4 +782,90 @@ describe("typed generalized workflow snapshot", () => {
 			/design-node.*shared branch writer/i,
 		);
 	});
+});
+
+describe("phase protocol snapshot materialization", () => {
+	it.each([2, 3] as const)(
+		"pins protocol first and covers all effective bytes in schema %s",
+		(schema) => {
+			const { root, manifest } = schema === 2 ? fixture() : handbookFixture();
+			const builder =
+				schema === 2 ? buildWorkflowRunSnapshotV2 : buildWorkflowRunSnapshotV3;
+			const input = {
+				canonicalRoot: root,
+				template: { id: "protocol", revision: 1 },
+				manifest: { ...manifest, schema_version: schema },
+			};
+			const snapshot = builder(input);
+			const agent = snapshot.resolved.nodes[0].agent!;
+			const protocol = loadWorkflowPhaseProtocols(["generic"]).get("generic")!;
+			expect(agent.content).toBe(
+				protocol.trimEnd() + "\n\n---\n\nDo the bounded task.\n",
+			);
+			expect(agent.digest).toBe(canonicalSubmissionDigest(agent.content));
+			const oldAgent = {
+				content: "Do the bounded task.\n",
+				digest: canonicalSubmissionDigest("Do the bounded task.\n"),
+			};
+			const { snapshot_digest: _, ...body } = snapshot;
+			const oldBody = {
+				...body,
+				resolved: {
+					nodes: body.resolved.nodes.map((node, i) =>
+						i === 0 ? { ...node, agent: oldAgent } : node,
+					),
+				},
+			};
+			const oldSnapshot = {
+				...oldBody,
+				snapshot_digest: canonicalSubmissionDigest(oldBody),
+			};
+			expect(oldSnapshot.manifest_digest).toBe(snapshot.manifest_digest);
+			expect(oldSnapshot.snapshot_digest).not.toBe(snapshot.snapshot_digest);
+			expect(parseWorkflowRunSnapshot(JSON.stringify(oldSnapshot))).toEqual(
+				oldSnapshot,
+			);
+			writeFileSync(join(root, "agents", "generic.md"), "Changed domain.\n");
+			const changed = builder(input);
+			expect(changed.snapshot_digest).not.toBe(snapshot.snapshot_digest);
+			expect(parseWorkflowRunSnapshot(JSON.stringify(snapshot))).toEqual(
+				snapshot,
+			);
+		},
+	);
+	it("rejects oversized handbooks instead of truncating", () => {
+		const { root, manifest } = fixture();
+		writeFileSync(join(root, "agents", "generic.md"), "x".repeat(40000));
+		expect(() =>
+			buildWorkflowRunSnapshotV2({
+				canonicalRoot: root,
+				template: { id: "protocol", revision: 1 },
+				manifest,
+			}),
+		).toThrow(
+			"WORKFLOW_PHASE_PROTOCOL_UNAVAILABLE node=execute type=generic cause=oversize",
+		);
+	});
+});
+
+it("a protocol-only byte change changes both digests without changing manifest or old replay", () => {
+	const { root, manifest } = fixture();
+	const input = {
+		canonicalRoot: root,
+		template: { id: "protocol", revision: 1 },
+		manifest,
+	};
+	const before = buildWorkflowRunSnapshotV2(input);
+	const actual = phaseProtocols.loadWorkflowPhaseProtocols;
+	vi.spyOn(phaseProtocols, "loadWorkflowPhaseProtocols").mockImplementation(
+		(types) =>
+			new Map([...actual(types)].map(([type, text]) => [type, text + "X\n"])),
+	);
+	const after = buildWorkflowRunSnapshotV2(input);
+	expect(after.manifest_digest).toBe(before.manifest_digest);
+	expect(after.resolved.nodes[0].agent!.digest).not.toBe(
+		before.resolved.nodes[0].agent!.digest,
+	);
+	expect(after.snapshot_digest).not.toBe(before.snapshot_digest);
+	expect(parseWorkflowRunSnapshot(JSON.stringify(before))).toEqual(before);
 });

@@ -9,7 +9,10 @@ import {
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
 } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
-import { installSelfHostedWorkflowAgentProject } from "../../__tests__/fixtures/workflow-agent-project.js";
+import {
+	installSelfHostedWorkflowAgentProject,
+	installWorkflowDomainAgentFixture,
+} from "../../__tests__/fixtures/workflow-agent-project.js";
 import { StateStore } from "../../StateStore.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
 import type { PhaseLiveness } from "../phase-actor-reentry.js";
@@ -84,6 +87,7 @@ async function createHarness(
 	if (!qaSeed) throw new Error("tpl_eng_heavy QA node missing");
 	delete qaSeed.submissionWindowMinutes;
 	if (options.implementProducesOutput) {
+		installWorkflowDomainAgentFixture(canonicalRoot, "implement");
 		const implementSeed = seed.manifest.nodes.find(
 			(node) => node.id === "implement",
 		);

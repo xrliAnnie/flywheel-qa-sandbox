@@ -511,6 +511,10 @@ export function loadLegacyProjectRoster(
 		"ic-roster",
 	);
 	const roster: Record<string, string> = {};
+	const identities = new Map<
+		string,
+		{ canonicalPath: string; dev: number; ino: number }
+	>();
 	for (const [role, rawPath] of Object.entries(rosterRaw)) {
 		const cleanRole = nonempty(role, "ic-roster role");
 		const configuredPath = safeProjectRelativePath(
@@ -528,6 +532,22 @@ export function loadLegacyProjectRoster(
 			throw new Error(`ic-roster.${cleanRole} escapes the project root`);
 		}
 		roster[cleanRole] = configuredPath;
+		if (cleanRole === "qa" || cleanRole === "implement") {
+			const { dev, ino } = statSync(canonicalFile);
+			identities.set(cleanRole, { canonicalPath: canonicalFile, dev, ino });
+		}
+	}
+	const qa = identities.get("qa");
+	const implement = identities.get("implement");
+	if (
+		qa &&
+		implement &&
+		(qa.canonicalPath === implement.canonicalPath ||
+			(qa.dev === implement.dev && qa.ino === implement.ino))
+	) {
+		throw new Error(
+			`IC_ROSTER_QA_IMPLEMENT_SAME_FILE: ic-roster.qa (${roster.qa}) and ic-roster.implement (${roster.implement}) must resolve to different files`,
+		);
 	}
 	return roster;
 }

@@ -18,6 +18,10 @@ import {
 	FLYWHEEL_MARKER_DIR,
 } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	composeWorkflowPhaseAgent,
+	loadWorkflowPhaseProtocols,
+} from "../../teamlead/src/workflow-phase-protocol.js";
 
 // We'll test TmuxAdapter by injecting a mock execFileFn
 import type { AsyncExecFileFn, ExecFileFn } from "../src/TmuxAdapter.js";
@@ -1449,6 +1453,34 @@ describe("TmuxAdapter", () => {
 		const allArgs = newWindow!.args.join(" ");
 		expect(allArgs).not.toContain("--print");
 		expect(allArgs).not.toContain("--output-format");
+	});
+
+	it("FLY-2533 writes complete composed QA protocol and domain to the Claude prompt file", async () => {
+		const protocol = loadWorkflowPhaseProtocols(["qa"]).get("qa")!;
+		const source = readFileSync(
+			new URL("../../../.flywheel/agents/nodes/qa.md", import.meta.url),
+			"utf8",
+		);
+		const content = composeWorkflowPhaseAgent({
+			nodeId: "qa",
+			nodeType: "qa",
+			protocol,
+			source,
+		}).content;
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		await adapter.execute(
+			makeCtx({
+				executionId: "exec-fly2533-phase-file",
+				appendSystemPrompt: content,
+			}),
+		);
+		const args = calls.find((call) => call.args[0] === "new-window")!.args;
+		const promptPath = args[args.indexOf("--append-system-prompt-file") + 1];
+		const bytes = readFileSync(promptPath);
+		expect(bytes).toEqual(Buffer.from(content));
+		expect(bytes.toString().startsWith(protocol.trimEnd())).toBe(true);
+		expect(bytes.toString().split(protocol.trimEnd())).toHaveLength(2);
 	});
 
 	it("includes --permission-mode and --append-system-prompt-file (FLY-154 hotfix)", async () => {

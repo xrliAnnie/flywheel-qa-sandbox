@@ -3558,6 +3558,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/qa-fly-2533-phase-protocol.mjs:process.kill(lease.pid, 0);#1",
+		"path": "scripts/qa-fly-2533-phase-protocol.mjs",
+		"code": "process.kill(lease.pid, 0);",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/qa-fly-60-driver.sh:if ! kill -0 \"$claude_pid\" 2>/dev/null; then#1",
 		"path": "scripts/qa-fly-60-driver.sh",
 		"code": "if ! kill -0 \"$claude_pid\" 2>/dev/null; then",

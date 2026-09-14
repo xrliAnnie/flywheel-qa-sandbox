@@ -1,17 +1,25 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CheckpointsConfig } from "flywheel-config";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
 	IAdapter,
 } from "flywheel-core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	composeWorkflowPhaseAgent,
+	loadWorkflowPhaseProtocols,
+} from "../../../teamlead/src/workflow-phase-protocol.js";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import { Blueprint } from "../Blueprint.js";
 import type { DagNode } from "../dag-node.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 
-function harness(checkpoints?: CheckpointsConfig) {
+function harness(checkpoints?: CheckpointsConfig, worktree?: string) {
 	const adapter: IAdapter = {
 		type: "mock",
 		supportsStreaming: false,
@@ -50,7 +58,23 @@ function harness(checkpoints?: CheckpointsConfig) {
 			git,
 			() => adapter,
 			shell,
-			undefined,
+			worktree
+				? ({
+						expectedWorktree: () => ({
+							path: worktree,
+							branch: "fly2533-test",
+						}),
+						isRegistered: async () => false,
+						removeIfExists: async () => true,
+						create: async () => ({
+							projectName: "flywheel",
+							issueId: "FLY-1281",
+							worktreePath: worktree,
+							branch: "fly2533-test",
+							mainRepoPath: worktree,
+						}),
+					} as unknown as import("../WorktreeManager.js").WorktreeManager)
+				: undefined,
 			undefined,
 			undefined,
 			undefined,
@@ -487,4 +511,125 @@ describe("Blueprint generalized workflow capability contract", () => {
 			).appendSystemPrompt ?? "";
 		expect(prompt).not.toContain("/tmp/flywheel-snapshots/<exec>/");
 	});
+});
+
+describe("FLY-2533 paired effective phase prompts", () => {
+	const fixture = JSON.parse(
+		readFileSync(
+			new URL("./fixtures/fly2533-phase-baseline.json", import.meta.url),
+			"utf8",
+		),
+	) as {
+		revision: string;
+		nodes: Array<{
+			name: string;
+			type: "design" | "implement" | "qa" | "generic";
+			baseline: string;
+			platformMigration: Array<{ before: string; after: string }>;
+		}>;
+	};
+	const roots: string[] = [];
+	afterEach(() => {
+		for (const root of roots.splice(0))
+			rmSync(root, { recursive: true, force: true });
+	});
+	const cases = fixture.nodes.flatMap(({ name }) =>
+		["claude-tmux", "codex-tmux"].map((backend) => [name, backend] as const),
+	);
+	it.each(cases)(
+		"preserves %s on %s with full domain, one protocol and <=10% growth",
+		async (name, backend) => {
+			const { type, baseline, platformMigration } = fixture.nodes.find(
+				(entry) => entry.name === name,
+			)!;
+			expect(fixture.revision).toBe("26ebc4931");
+			const source = readFileSync(
+				new URL(
+					`../../../../.flywheel/agents/nodes/${name}.md`,
+					import.meta.url,
+				),
+				"utf8",
+			);
+			const protocol = loadWorkflowPhaseProtocols([type]).get(type)!;
+			const composed = composeWorkflowPhaseAgent({
+				nodeId: name,
+				nodeType: type,
+				protocol,
+				source,
+			}).content;
+			const prefix = `${protocol.trimEnd()}\n\n---\n\n`;
+			expect(composed.startsWith(prefix)).toBe(true);
+			const domain = composed.slice(prefix.length);
+			// The pinned migration removes only reviewed platform lines. Every remaining
+			// nonempty baseline line must survive verbatim, in order, including variants.
+			let expectedDomain = baseline;
+			for (const { before, after } of platformMigration) {
+				expect(expectedDomain).toContain(before);
+				expectedDomain = expectedDomain.replace(before, after);
+			}
+			expect(domain.split("\n").filter((line) => line.trim())).toEqual(
+				expectedDomain.split("\n").filter((line) => line.trim()),
+			);
+			const worktree = mkdtempSync(join(tmpdir(), "fly2533-prompt-"));
+			roots.push(worktree);
+			execFileSync("git", ["init", "-q", worktree]);
+			const prompts: string[] = [];
+			for (const workflowAgentContent of [baseline, composed]) {
+				const { blueprint, adapter } = harness(undefined, worktree);
+				Object.assign(blueprint, {
+					codexAgentHomeAdmitter: async () => ({
+						handle: {
+							project: "flywheel",
+							role: name,
+							home: worktree,
+							executionId: "exec-1",
+							token: "0123456789abcdef0123456789abcdef",
+						},
+						effectiveAssemblyArm: "superpowers",
+						inherited: false,
+						liveLeases: 1,
+						createdLease: false,
+						memorySeed: "not_requested",
+					}),
+				});
+				await blueprint.run(node, "/tmp/fly2533-paired-prompt", {
+					...generalized,
+					runnerBackend: backend,
+					runnerName: backend === "codex-tmux" ? "codex" : "claude",
+					generalizedExecutionContext: {
+						...generalized.generalizedExecutionContext!,
+						nodeId: name,
+					},
+					workflowAgentContent,
+				});
+				prompts.push(
+					(adapter.execute as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+						.appendSystemPrompt,
+				);
+			}
+			const [before, after] = prompts;
+			process.stdout.write(
+				`FLY2533_PROMPT_MEASUREMENT ${JSON.stringify({
+					role: name,
+					vendor: backend === "codex-tmux" ? "codex" : "claude",
+					backend,
+					utf16: { before: before.length, after: after.length },
+					utf8: {
+						before: Buffer.byteLength(before),
+						after: Buffer.byteLength(after),
+					},
+				})}\n`,
+			);
+			expect(after.split(protocol.trimEnd())).toHaveLength(2);
+			expect(after).toContain(composed);
+			expect(
+				after.length,
+				`${name}/${backend} UTF16 ${after.length}/${before.length}`,
+			).toBeLessThanOrEqual(before.length * 1.1);
+			expect(
+				Buffer.byteLength(after),
+				`${name}/${backend} UTF8 ${Buffer.byteLength(after)}/${Buffer.byteLength(before)}`,
+			).toBeLessThanOrEqual(Buffer.byteLength(before) * 1.1);
+		},
+	);
 });

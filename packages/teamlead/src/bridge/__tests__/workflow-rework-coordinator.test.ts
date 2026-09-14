@@ -8,6 +8,10 @@ import {
 	legacyEngineeringSeed,
 	pinLegacyWorkflowSeedAgents,
 } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
+import {
+	installSelfHostedWorkflowAgentProject,
+	installWorkflowDomainAgentFixture,
+} from "../../__tests__/fixtures/workflow-agent-project.js";
 import type {
 	WorkflowReworkDeliveryRow,
 	WorkflowReworkRequestRow,
@@ -48,11 +52,24 @@ function buildSnapshot(implementProducesOutput = false) {
 			throw new Error("implement edge missing from test seed");
 		implementEdge.condition = "node_done";
 	}
-	return buildWorkflowRunSnapshotV2({
-		template: { id: "tpl-rework-coordinator-unit", revision: 1 },
-		canonicalRoot: REPO_ROOT,
-		manifest: seed.manifest,
-	});
+	// This output-capability fixture deliberately retains the implement role while
+	// using generic type. Install its protocol-free domain manual only in TEMP.
+	const temporaryRoot = implementProducesOutput
+		? mkdtempSync(join(tmpdir(), "fly1423-output-agent-"))
+		: undefined;
+	try {
+		if (temporaryRoot) {
+			installSelfHostedWorkflowAgentProject(temporaryRoot);
+			installWorkflowDomainAgentFixture(temporaryRoot, "implement");
+		}
+		return buildWorkflowRunSnapshotV2({
+			template: { id: "tpl-rework-coordinator-unit", revision: 1 },
+			canonicalRoot: temporaryRoot ?? REPO_ROOT,
+			manifest: seed.manifest,
+		});
+	} finally {
+		if (temporaryRoot) rmSync(temporaryRoot, { recursive: true, force: true });
+	}
 }
 
 const SNAPSHOT = buildSnapshot();

@@ -616,31 +616,34 @@ describe("founder-approved workflow menu source", () => {
 			manifest: seed.manifest,
 			canonicalRoot: REPO_ROOT,
 		});
-		const engDesign = snapshot.resolved.nodes.find(
-			(node) => node.id === "eng_design",
-		)!;
-		const implement = snapshot.resolved.nodes.find(
-			(node) => node.id === "implement",
-		)!;
-		const qa = snapshot.resolved.nodes.find((node) => node.id === "qa")!;
-		expect(engDesign.agent?.content).toBe(
-			readFileSync(
-				`${REPO_ROOT}/.flywheel/agents/nodes/eng_design.md`,
+		for (const [nodeId, type] of [
+			["eng_design", "design"],
+			["implement", "implement"],
+			["qa", "qa"],
+		]) {
+			const node = snapshot.resolved.nodes.find(
+				(candidate) => candidate.id === nodeId,
+			)!;
+			const source = readFileSync(
+				`${REPO_ROOT}/.flywheel/agents/nodes/${nodeId}.md`,
 				"utf8",
-			).slice(0, 40_000),
-		);
-		expect(implement.agent?.content).toBe(
-			readFileSync(
-				`${REPO_ROOT}/.flywheel/agents/nodes/implement.md`,
+			);
+			const protocol = `${readFileSync(
+				`${REPO_ROOT}/packages/teamlead/phase-protocols/${type}.md`,
 				"utf8",
-			).slice(0, 40_000),
-		);
-		expect(qa.agent?.content).toBe(
-			readFileSync(`${REPO_ROOT}/.flywheel/agents/nodes/qa.md`, "utf8").slice(
-				0,
-				40_000,
-			),
-		);
+			).replace(/\n+$/, "")}\n`;
+			const block = `<!-- FLYWHEEL_PHASE_PROTOCOL:${type}:BEGIN -->\n${protocol}<!-- FLYWHEEL_PHASE_PROTOCOL:${type}:END -->`;
+			expect(source.split(block)).toHaveLength(2);
+			expect(node.agent?.content).toBe(
+				protocol.replace(/\n+$/, "") +
+					"\n\n---\n\n" +
+					source.replace(block, ""),
+			);
+			expect(node.agent?.content.split(protocol.trim())).toHaveLength(2);
+			expect(node.agent!.content.length).toBeLessThanOrEqual(
+				source.length * 1.1,
+			);
+		}
 	});
 
 	it("pins a validated API override into the run snapshot and idempotency digest", async () => {

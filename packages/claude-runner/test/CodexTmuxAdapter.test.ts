@@ -31,6 +31,10 @@ import {
 } from "flywheel-core";
 import { parse as parseToml } from "smol-toml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	composeWorkflowPhaseAgent,
+	loadWorkflowPhaseProtocols,
+} from "../../teamlead/src/workflow-phase-protocol.js";
 import type {
 	CodexDaemonAdapterDeps,
 	CodexDaemonGoalRuntimeLike,
@@ -1762,6 +1766,27 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		await makeAdapter().execute(ctx());
 		const env = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
 		expect(env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBeUndefined();
+	});
+
+	it("FLY-2533 delivers complete composed QA protocol and domain in the Codex kick", async () => {
+		const protocol = loadWorkflowPhaseProtocols(["qa"]).get("qa")!;
+		const source = readFileSync(
+			new URL("../../../.flywheel/agents/nodes/qa.md", import.meta.url),
+			"utf8",
+		);
+		const content = composeWorkflowPhaseAgent({
+			nodeId: "qa",
+			nodeType: "qa",
+			protocol,
+			source,
+		}).content;
+		await makeAdapter().execute(ctx({ appendSystemPrompt: content }));
+		const kick = runtime.runGoalInputs[0]?.kickText;
+		expect(Buffer.from(kick!)).toEqual(
+			Buffer.from(`${content}\n\n---\n\ndo the task`),
+		);
+		expect(kick!.startsWith(protocol.trimEnd())).toBe(true);
+		expect(kick!.split(protocol.trimEnd())).toHaveLength(2);
 	});
 
 	it("FLY-1236: delivers appendSystemPrompt + prompt via the KICK turn (not the /goal objective)", async () => {

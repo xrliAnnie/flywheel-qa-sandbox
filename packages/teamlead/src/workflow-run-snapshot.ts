@@ -19,6 +19,10 @@ import {
 	resolveNodeAgentFile,
 } from "./workflow-menu.js";
 import {
+	composeWorkflowPhaseAgent,
+	loadWorkflowPhaseProtocols,
+} from "./workflow-phase-protocol.js";
+import {
 	isWorkflowManifestLand,
 	isWorkflowManifestV1Land,
 	validatePinnedWorkflowManifest,
@@ -273,7 +277,12 @@ function snapshotBody<T extends Omit<WorkflowRunSnapshot, "snapshot_digest">>(
 	return snapshot;
 }
 
-function readAgent(canonicalRoot: string, agentFile: string) {
+function readAgent(
+	canonicalRoot: string,
+	agentFile: string,
+	node: { id: string; type: WorkflowNodeType },
+	protocol: string,
+) {
 	let root: string;
 	let target: string;
 	try {
@@ -289,7 +298,12 @@ function readAgent(canonicalRoot: string, agentFile: string) {
 		throw new Error("workflow agent file escapes the canonical project root");
 	}
 	const source = readFileSync(target, "utf8");
-	const content = source.slice(0, 40_000);
+	const { content } = composeWorkflowPhaseAgent({
+		nodeId: node.id,
+		nodeType: node.type,
+		protocol,
+		source,
+	});
 	if (!content.trim()) {
 		throw new Error("workflow agent content must be non-empty");
 	}
@@ -414,6 +428,33 @@ function buildGeneralizedWorkflowRunSnapshot(
 			`typed generalized snapshot requires schema_version ${schemaVersion}`,
 		);
 	}
+	const protocols = new Map<WorkflowNodeType, string>();
+	for (const node of validated.nodes) {
+		if (
+			node.type === "gate" ||
+			node.type === "land" ||
+			protocols.has(node.type)
+		)
+			continue;
+		try {
+			protocols.set(
+				node.type,
+				loadWorkflowPhaseProtocols([node.type]).get(node.type)!,
+			);
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.message.startsWith(
+					"WORKFLOW_PHASE_PROTOCOL_UNAVAILABLE node=unresolved ",
+				)
+			) {
+				throw new Error(
+					error.message.replace("node=unresolved ", `node=${node.id} `),
+				);
+			}
+			throw error;
+		}
+	}
 	const hasArtifactProducingGeneric = validated.nodes.some(
 		(node) => node.type === "generic" && node.produces_output === true,
 	);
@@ -479,12 +520,21 @@ function buildGeneralizedWorkflowRunSnapshot(
 			},
 			...(node.output ? { output: node.output } : {}),
 			...(node.agent_file
-				? { agent: readAgent(input.canonicalRoot, node.agent_file) }
+				? {
+						agent: readAgent(
+							input.canonicalRoot,
+							node.agent_file,
+							node,
+							protocols.get(node.type)!,
+						),
+					}
 				: node.role || isBundledWorkflowNodeName(node.id)
 					? {
 							agent: readAgent(
 								input.canonicalRoot,
 								resolveNodeAgentFile(input.canonicalRoot, node.role ?? node.id),
+								node,
+								protocols.get(node.type)!,
 							),
 						}
 					: (() => {

@@ -16,7 +16,10 @@ import {
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
 } from "./fixtures/legacy-workflow-manifests.js";
-import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
+import {
+	installSelfHostedWorkflowAgentProject,
+	installWorkflowDomainAgentFixture,
+} from "./fixtures/workflow-agent-project.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -76,6 +79,7 @@ function gitWorktree(): { path: string; head: string } {
 	execFileSync("git", ["-C", path, "add", "README.md"]);
 	execFileSync("git", ["-C", path, "commit", "-qm", "head"]);
 	installSelfHostedWorkflowAgentProject(path);
+	installWorkflowDomainAgentFixture(path, "qa");
 	return {
 		path,
 		head: execFileSync("git", ["-C", path, "rev-parse", "HEAD"], {

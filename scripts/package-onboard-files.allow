@@ -159,3 +159,10 @@ node_modules/flywheel-voice-codex/package.json
 node_modules/flywheel-voice-codex/dist/*
 node_modules/flywheel-voice-codex/models/silero_vad.onnx
 node_modules/flywheel-voice-codex/models/LICENSE.silero-vad
+
+# Fixed Bridge phase protocols (FLY-2533)
+node_modules/flywheel-teamlead/phase-protocols/design.md
+node_modules/flywheel-teamlead/phase-protocols/implement.md
+node_modules/flywheel-teamlead/phase-protocols/qa.md
+node_modules/flywheel-teamlead/phase-protocols/generic.md
+node_modules/flywheel-teamlead/phase-protocols/review.md

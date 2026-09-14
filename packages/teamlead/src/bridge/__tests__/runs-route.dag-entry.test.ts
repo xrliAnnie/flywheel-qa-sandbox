@@ -34,12 +34,16 @@ import {
 	type WorkflowResumeAttachmentRow,
 } from "../../StateStore.js";
 import { importWorkflowMenuSeeds } from "../../workflow-menu.js";
+import * as phaseProtocols from "../../workflow-phase-protocol.js";
 import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
 import { initializeFlagStore } from "../flag-store-runtime.js";
 import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
-
 import { createRunsRouter } from "../runs-route.js";
+
+vi.mock("../../workflow-phase-protocol.js", async (original) => ({
+	...(await original<typeof import("../../workflow-phase-protocol.js")>()),
+}));
 
 // ── Linear pre-flight mock (route does a dynamic import) ──
 const linearMock = {
@@ -404,6 +408,15 @@ async function startHarness(options: {
 		});
 	});
 	return { url, store, calls, projectRoot };
+}
+
+function entrySideEffectCounts(store: StateStore) {
+	const db = (store as unknown as { db: { exec(sql: string): unknown } }).db;
+	return db.exec(`SELECT
+  (SELECT COUNT(*) FROM workflow_run) AS runs,
+  (SELECT COUNT(*) FROM workflow_start_reservation) AS reservations,
+  (SELECT COUNT(*) FROM sessions) AS sessions,
+  (SELECT COUNT(*) FROM workflow_side_effect_ledger) AS effects`);
 }
 
 async function post(
@@ -878,6 +891,80 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		const run = h.store.getWorkflowRun(json.workflowRunId as string)!;
 		expect(run).toMatchObject({ engine_owned: 1, entry_kind: "workflow_v2" });
 	});
+
+	it.each([
+		undefined,
+		"",
+		"   ",
+		42,
+		{ private: "do not echo" },
+		"simple_code",
+	])(
+		"FLY-2533 diagnoses missing non-work-kind binding for %j",
+		async (taskCategory) => {
+			const h = await startHarness({
+				seedBinding: false,
+				pipelineWorkKind: false,
+			});
+			const countsBefore = entrySideEffectCounts(h.store);
+			const { status, json } = await post(h.url, { taskCategory });
+			expect(status).toBe(409);
+			expect(json).toMatchObject({
+				success: false,
+				code: "DAG_ENTRY_NOT_MATERIALIZED",
+				silent: false,
+				taskCategory: typeof taskCategory === "string" ? taskCategory : null,
+				authKind: "master",
+			});
+			expect(json.reason).toBe(
+				'fresh main-role code dispatch did not resolve a schema-v2 workflow binding; refusing a legacy runner with no QA evidence path; pass taskCategory (code|simple_code|prd|product_design_flow|prototype|generic) or bind category "*"',
+			);
+			expect(h.calls).toHaveLength(0);
+			expect(entrySideEffectCounts(h.store)).toEqual(countsBefore);
+			expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeUndefined();
+		},
+	);
+	it("FLY-2533 echoes actual scoped auth and preserves master-only DAG entry", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			bindingCategory: "simple_code",
+			pipelineWorkKind: false,
+		});
+		const countsBefore = entrySideEffectCounts(h.store);
+		const { status, json } = await post(
+			h.url,
+			{ taskCategory: "simple_code", authKind: "master" },
+			SCOPED,
+		);
+		expect(status).toBe(409);
+		expect(json).toMatchObject({
+			code: "DAG_ENTRY_NOT_MATERIALIZED",
+			taskCategory: "simple_code",
+			authKind: "scoped",
+		});
+		expect(json.reason).toContain(
+			"; fresh DAG entry requires master authentication",
+		);
+		expect(h.calls).toHaveLength(0);
+		expect(entrySideEffectCounts(h.store)).toEqual(countsBefore);
+	});
+	it.each(["simple_code", "*"])(
+		"FLY-2533 preserves explicitly bound %s master entry",
+		async (bindingCategory) => {
+			const h = await startHarness({
+				templateSchema: 2,
+				bindingCategory,
+				pipelineWorkKind: false,
+			});
+			const { status, json } = await post(
+				h.url,
+				bindingCategory === "*" ? {} : { taskCategory: bindingCategory },
+			);
+			expect(status).toBe(200);
+			expect(json.generalized).toBe(true);
+			expect(h.calls).toHaveLength(1);
+		},
+	);
 
 	it("fails closed instead of starting legacy when a default-on project lacks a binding", async () => {
 		const h = await startHarness({
@@ -1888,3 +1975,36 @@ describe("FLY-1385 operator run management", () => {
 		expect(h.store.getWorkflowRun("operator-run")?.status).toBe("terminated");
 	});
 });
+
+it.each(["missing", "empty", "invalid_block"])(
+	"FLY-2533 refuses %s phase protocols before dispatch",
+	async (cause) => {
+		const h = await startHarness({
+			templateSchema: 2,
+			prepareIssueDelivery: true,
+		});
+		const before = entrySideEffectCounts(h.store);
+		const loader = vi
+			.spyOn(phaseProtocols, "loadWorkflowPhaseProtocols")
+			.mockImplementation((types) => {
+				throw phaseProtocols.workflowPhaseProtocolError(
+					"unresolved",
+					types[0],
+					cause,
+				);
+			});
+		try {
+			const { status, json } = await post(h.url, {});
+			expect(status).toBe(409);
+			expect(json.code).toBe("GENERALIZED_WORKFLOW_REJECTED");
+			expect(json.reason).toMatch(
+				/WORKFLOW_PHASE_PROTOCOL_UNAVAILABLE node=\S+ type=\S+/,
+			);
+			expect(json.reason).toContain(`cause=${cause}`);
+			expect(h.calls).toHaveLength(0);
+			expect(entrySideEffectCounts(h.store)).toEqual(before);
+		} finally {
+			loader.mockRestore();
+		}
+	},
+);

@@ -757,6 +757,7 @@ expected_shard_tests = {
         "Test — FLY-1814 launchd fleet contracts",
         "Test — FLY-1929 voucher watch contracts",
         "Test — FLY-913/2204 restart + calendar isolation guards",
+        "Test — FLY-2533 packed phase protocols",
         "Test — FLY-2007 phase-0 analyser contract",
     ],
     "script-tests-2": [

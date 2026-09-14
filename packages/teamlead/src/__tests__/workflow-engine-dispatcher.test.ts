@@ -36,7 +36,10 @@ import {
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
 } from "./fixtures/legacy-workflow-manifests.js";
-import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
+import {
+	installSelfHostedWorkflowAgentProject,
+	installWorkflowDomainAgentFixture,
+} from "./fixtures/workflow-agent-project.js";
 
 const generalizedRecoveryMocks = vi.hoisted(() => ({
 	waitForDelivery: vi.fn(),
@@ -524,6 +527,7 @@ async function storeWithProductOutputIntent() {
 	const store = await StateStore.create(":memory:");
 	const canonicalRoot = mkdtempSync(join(tmpdir(), "fly1307-product-agent-"));
 	installSelfHostedWorkflowAgentProject(canonicalRoot);
+	installWorkflowDomainAgentFixture(canonicalRoot, "qa");
 	const seed = pinLegacyWorkflowSeedAgents(
 		legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_product_v1",
@@ -585,6 +589,7 @@ async function storeWithBundledOutputFirstIntent(input: {
 	const store = await StateStore.create(":memory:");
 	const canonicalRoot = mkdtempSync(join(tmpdir(), `${input.runId}-agent-`));
 	installSelfHostedWorkflowAgentProject(canonicalRoot);
+	installWorkflowDomainAgentFixture(canonicalRoot, "qa");
 	const seed = pinLegacyWorkflowSeedAgents(
 		legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === input.templateId,

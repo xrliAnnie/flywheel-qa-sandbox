@@ -204,9 +204,10 @@ function menuHost(_, request, host) {
 		"flywheel-test-4: [simple_code]\n",
 	);
 	writeFileSync(join(host, "agent.md"), "test");
+	writeFileSync(join(host, "qa-agent.md"), "test");
 	writeFileSync(
 		join(host, ".flywheel", "menus", "ic-roster.yaml"),
-		"implement: agent.md\nqa: agent.md\n",
+		"implement: agent.md\nqa: qa-agent.md\n",
 	);
 	request.overrides = { implement: { effort: "low" } };
 }

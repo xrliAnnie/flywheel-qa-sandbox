@@ -14,7 +14,10 @@ import {
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
 } from "./fixtures/legacy-workflow-manifests.js";
-import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
+import {
+	installSelfHostedWorkflowAgentProject,
+	installWorkflowDomainAgentFixture,
+} from "./fixtures/workflow-agent-project.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -470,6 +473,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "fly1307-product-source-"));
 		installSelfHostedWorkflowAgentProject(root);
+		installWorkflowDomainAgentFixture(root, "qa");
 		const seed = pinLegacyWorkflowSeedAgents(
 			legacyWorkflowSeeds().find(
 				(candidate) => candidate.templateId === "tpl_product_v1",

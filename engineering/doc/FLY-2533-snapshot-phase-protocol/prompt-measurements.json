@@ -1,0 +1,301 @@
+{
+  "issue": "FLY-2533",
+  "baselineSha": "26ebc4931ba41e0a626ee14075f6de5359815ab5",
+  "measurement": "Complete Blueprint appendSystemPrompt, baseline versus composed candidate with identical context per vendor. UTF16 counts JavaScript code units; UTF8 counts bytes. Domain migration and exact-once assertions passed.",
+  "command": "pnpm --filter flywheel-edge-worker exec vitest run src/__tests__/Blueprint.generalized-workflow.test.ts -t FLY-2533",
+  "testResult": {
+    "passed": 18,
+    "failed": 0,
+    "skipped": 12
+  },
+  "candidateSourceSha256": {
+    "packages/edge-worker/src/__tests__/Blueprint.generalized-workflow.test.ts": "b48e7f9501009b2bcf66fb9025d7ab2c57e19588112c0e171315706bedcb5481",
+    "packages/edge-worker/src/__tests__/fixtures/fly2533-phase-baseline.json": "b8ba124272eb9bc8289b9ff81a1ffd455f4f5e67264e44d29eb340f92fad913b",
+    "packages/teamlead/src/workflow-phase-protocol.ts": "5667df31e33b2ed57044702504c09a728588a3630790938ebfd9fe66c7e40f71",
+    ".flywheel/agents/nodes/eng_design.md": "cfb1ba98ca520bec819612d5c220c644c8df8a9b337cacc7b58a1e2a52a1844e",
+    ".flywheel/agents/nodes/general.md": "6a3bbd90281a8595f38c5aa6129a2478c57cca2993d8b2bcaec3f310c0b458e8",
+    ".flywheel/agents/nodes/general.bare.md": "6ec1c34732bc9a833f1e6efc27f851ecbbc5bfc60ccf1e93f008aeaa84ad1c16",
+    ".flywheel/agents/nodes/general.matt.md": "266168e7080dcbdb13f2dcf5067143f4e6ad12bb69a6f5a62acc895a1e8a9709",
+    ".flywheel/agents/nodes/implement.md": "c6276f9e6f805f82f7d358f6dc20991092f4ed3b95fc3593d7515f1b14f8b108",
+    ".flywheel/agents/nodes/pm.md": "2021336cee260656715c26a38bb7ce821eb913eae094333dd6eedaf8d020354b",
+    ".flywheel/agents/nodes/product_design.md": "01976dbcb6a25c03f90bc4cf515e76d80c4fcbeaba321d24bde49ec1f0c002f4",
+    ".flywheel/agents/nodes/proto.md": "be89a5b7aacf37df214c0e5814d3930f68dc4fc1397152050d6474e616a82d7b",
+    ".flywheel/agents/nodes/qa.md": "90f8e3715fcf7a3acf5020d40ddf5e86deec65d1affd2e3f36da5f222a2656de",
+    "packages/teamlead/phase-protocols/design.md": "8c43fe2456e41f2c84250ff373775517b53b7ecdca0e364cbcf8913214a38697",
+    "packages/teamlead/phase-protocols/implement.md": "bb36ac45b453a4dfca44e2b1f1d8536d833b571b1970ca1d635fe3cd9485c84d",
+    "packages/teamlead/phase-protocols/qa.md": "07c9c569da4154c3b421e5beebda0204084d673b70a1e1f9d10f3471e0f97fea",
+    "packages/teamlead/phase-protocols/generic.md": "e315af709fc2a5d557d936cc7a299a8d82178eb5e4ea960ae90fd7cee19383e5"
+  },
+  "measurements": [
+    {
+      "role": "eng_design",
+      "vendor": "claude",
+      "backend": "claude-tmux",
+      "utf16": {
+        "before": 5455,
+        "after": 5840,
+        "growthPercent": 7.0577
+      },
+      "utf8": {
+        "before": 5469,
+        "after": 5854,
+        "growthPercent": 7.0397
+      }
+    },
+    {
+      "role": "eng_design",
+      "vendor": "codex",
+      "backend": "codex-tmux",
+      "utf16": {
+        "before": 5556,
+        "after": 5941,
+        "growthPercent": 6.9294
+      },
+      "utf8": {
+        "before": 5572,
+        "after": 5957,
+        "growthPercent": 6.9095
+      }
+    },
+    {
+      "role": "implement",
+      "vendor": "claude",
+      "backend": "claude-tmux",
+      "utf16": {
+        "before": 6289,
+        "after": 6823,
+        "growthPercent": 8.491
+      },
+      "utf8": {
+        "before": 6303,
+        "after": 6837,
+        "growthPercent": 8.4722
+      }
+    },
+    {
+      "role": "implement",
+      "vendor": "codex",
+      "backend": "codex-tmux",
+      "utf16": {
+        "before": 6390,
+        "after": 6924,
+        "growthPercent": 8.3568
+      },
+      "utf8": {
+        "before": 6406,
+        "after": 6940,
+        "growthPercent": 8.3359
+      }
+    },
+    {
+      "role": "qa",
+      "vendor": "claude",
+      "backend": "claude-tmux",
+      "utf16": {
+        "before": 13306,
+        "after": 13888,
+        "growthPercent": 4.374
+      },
+      "utf8": {
+        "before": 13407,
+        "after": 13989,
+        "growthPercent": 4.341
+      }
+    },
+    {
+      "role": "qa",
+      "vendor": "codex",
+      "backend": "codex-tmux",
+      "utf16": {
+        "before": 13407,
+        "after": 13989,
+        "growthPercent": 4.341
+      },
+      "utf8": {
+        "before": 13510,
+        "after": 14092,
+        "growthPercent": 4.3079
+      }
+    },
+    {
+      "role": "general",
+      "vendor": "claude",
+      "backend": "claude-tmux",
+      "utf16": {
+        "before": 4781,
+        "after": 5255,
+        "growthPercent": 9.9142
+      },
+      "utf8": {
+        "before": 4805,
+        "after": 5279,
+        "growthPercent": 9.8647
+      }
+    },
+    {
+      "role": "general",
+      "vendor": "codex",
+      "backend": "codex-tmux",
+      "utf16": {
+        "before": 4882,
+        "after": 5356,
+        "growthPercent": 9.7091
+      },
+      "utf8": {
+        "before": 4908,
+        "after": 5382,
+        "growthPercent": 9.6577
+      }
+    },
+    {
+      "role": "general.bare",
+      "vendor": "claude",
+      "backend": "claude-tmux",
+      "utf16": {
+        "before": 16647,
+        "after": 16781,
+        "growthPercent": 0.8049
+      },
+      "utf8": {
+        "before": 16819,
+        "after": 16945,
+        "growthPercent": 0.7492
+      }
+    },
+    {
+      "role": "general.bare",
+      "vendor": "codex",
+      "backend": "codex-tmux",
+      "utf16": {
+        "before": 16748,
+        "after": 16882,
+        "growthPercent": 0.8001
+      },
+      "utf8": {
+        "before": 16922,
+        "after": 17048,
+        "growthPercent": 0.7446
+      }
+    },
+    {
+      "role": "general.matt",
+      "vendor": "claude",
+      "backend": "claude-tmux",
+      "utf16": {
+        "before": 18566,
+        "after": 18700,
+        "growthPercent": 0.7217
+      },
+      "utf8": {
+        "before": 18756,
+        "after": 18882,
+        "growthPercent": 0.6718
+      }
+    },
+    {
+      "role": "general.matt",
+      "vendor": "codex",
+      "backend": "codex-tmux",
+      "utf16": {
+        "before": 18667,
+        "after": 18801,
+        "growthPercent": 0.7178
+      },
+      "utf8": {
+        "before": 18859,
+        "after": 18985,
+        "growthPercent": 0.6681
+      }
+    },
+    {
+      "role": "pm",
+      "vendor": "claude",
+      "backend": "claude-tmux",
+      "utf16": {
+        "before": 23644,
+        "after": 24035,
+        "growthPercent": 1.6537
+      },
+      "utf8": {
+        "before": 25128,
+        "after": 25517,
+        "growthPercent": 1.5481
+      }
+    },
+    {
+      "role": "pm",
+      "vendor": "codex",
+      "backend": "codex-tmux",
+      "utf16": {
+        "before": 23745,
+        "after": 24136,
+        "growthPercent": 1.6467
+      },
+      "utf8": {
+        "before": 25231,
+        "after": 25620,
+        "growthPercent": 1.5418
+      }
+    },
+    {
+      "role": "product_design",
+      "vendor": "claude",
+      "backend": "claude-tmux",
+      "utf16": {
+        "before": 13488,
+        "after": 13869,
+        "growthPercent": 2.8247
+      },
+      "utf8": {
+        "before": 13620,
+        "after": 13999,
+        "growthPercent": 2.7827
+      }
+    },
+    {
+      "role": "product_design",
+      "vendor": "codex",
+      "backend": "codex-tmux",
+      "utf16": {
+        "before": 13589,
+        "after": 13970,
+        "growthPercent": 2.8037
+      },
+      "utf8": {
+        "before": 13723,
+        "after": 14102,
+        "growthPercent": 2.7618
+      }
+    },
+    {
+      "role": "proto",
+      "vendor": "claude",
+      "backend": "claude-tmux",
+      "utf16": {
+        "before": 21146,
+        "after": 21537,
+        "growthPercent": 1.849
+      },
+      "utf8": {
+        "before": 23021,
+        "after": 23410,
+        "growthPercent": 1.6898
+      }
+    },
+    {
+      "role": "proto",
+      "vendor": "codex",
+      "backend": "codex-tmux",
+      "utf16": {
+        "before": 21247,
+        "after": 21638,
+        "growthPercent": 1.8403
+      },
+      "utf8": {
+        "before": 23124,
+        "after": 23513,
+        "growthPercent": 1.6822
+      }
+    }
+  ]
+}

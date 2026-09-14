@@ -9,7 +9,10 @@ import {
 	legacyWorkflowSeeds,
 	pinLegacyWorkflowSeedAgents,
 } from "./fixtures/legacy-workflow-manifests.js";
-import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
+import {
+	installSelfHostedWorkflowAgentProject,
+	installWorkflowDomainAgentFixture,
+} from "./fixtures/workflow-agent-project.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -182,6 +185,7 @@ async function engineRunWithOutputFromDeadExecution(
 	const store = await StateStore.create(":memory:");
 	const canonicalRoot = mkdtempSync(join(tmpdir(), "fly1385-output-"));
 	installSelfHostedWorkflowAgentProject(canonicalRoot);
+	installWorkflowDomainAgentFixture(canonicalRoot, "qa");
 	const seed = pinLegacyWorkflowSeedAgents(
 		legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_product_v1",

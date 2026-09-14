@@ -1,0 +1,12 @@
+flowchart TD
+  A[项目选择领域执行器] --> B[按正式节点类型读取平台协议]
+  B --> C{协议完整且可读?}
+  C -->|否| D[启动前报错\n点名节点类型]
+  C -->|是| E[协议放在手册前\n总长超 40,000 则拒绝]
+  E --> F[内容与摘要写入运行快照]
+  F --> G[沿既有通道交给 Claude 或 Codex]
+  G --> H[按阶段提交可核验的完成记录]
+  classDef focus fill:#e8f2ff,stroke:#007aff,color:#1d1d1f;
+  classDef stop fill:#fff0ee,stroke:#ff3b30,color:#1d1d1f;
+  class E,F focus;
+  class D stop;

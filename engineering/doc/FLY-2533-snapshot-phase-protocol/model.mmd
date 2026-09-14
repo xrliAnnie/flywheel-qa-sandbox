@@ -1,0 +1,9 @@
+flowchart TD
+  P[平台协议文件\n唯一人工维护来源] --> A[agent.content\n平台协议 + 领域手册]
+  H[项目领域手册\n项目保留业务知识] --> A
+  A --> D[agent.digest\n内容的校验摘要]
+  A --> S[运行快照\n固定节点、内容与摘要]
+  D --> S
+  S --> R[snapshot_digest\n整份快照的校验摘要]
+  classDef focus fill:#e8f2ff,stroke:#007aff,color:#1d1d1f;
+  class S focus;

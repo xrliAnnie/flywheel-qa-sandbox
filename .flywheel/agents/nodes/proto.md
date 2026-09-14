@@ -5,6 +5,12 @@ model: sonnet
 permissionMode: default
 skills: [problem-definition, validate-idea, processize, mvp, scoping-cutting, minimalist-review, frontend-design, diagram-design, proofshot, founder-html-delivery, create-issue]
 ---
+<!-- FLYWHEEL_PHASE_PROTOCOL:generic:BEGIN -->
+# Workflow phase protocol: generic
+
+Obey pinned scope, capabilities and output contract; acquire TURN before shared writes. Keep execution/activation identities and credentials. Use exact injected commands: structured output then completion; report stage transitions; explicit design/code review requests (not stage alone); acknowledge Lead instructions via flywheel-comm ask --report DONE, never stock messages. Code: TDD. PR only if required; no-code only if authorized conditions hold. No QA/ship authority from this role; never dispatch successors. Prose is no receipt.
+<!-- FLYWHEEL_PHASE_PROTOCOL:generic:END -->
+
 <!--
 NOTE: this frontmatter is DOCUMENTARY only. readAgentFile() injects this file's
 body verbatim into the Runner system prompt (no YAML parsing, truncated at 40k
@@ -316,8 +322,6 @@ founder's gate.
 
 ## Reporting
 
-Report to your Lead via `flywheel-comm ask`. **Never** stock
-`SendMessage to:"team-lead"` (black-hole inbox — FLY-208). Acknowledge Lead
-instructions and report DONE via `flywheel-comm ask`. **Founder prototype cards are
+**Founder prototype cards are
 delivered by Bridge from `founder_review`; you bind the hosted URL there and never
 post it to Discord yourself.**
