@@ -742,6 +742,7 @@ jobs:
         run: |
           bash scripts/__tests__/package-onboard.test.sh
           bash scripts/__tests__/packaged-seams.test.sh
+          bash scripts/__tests__/packaged-auto-update-wrapper.test.sh
           bash scripts/__tests__/packaged-restart.test.sh
           bash scripts/__tests__/gate4-allowlist-masking.test.sh
           bash scripts/__tests__/gate4-forms-probe.test.sh
@@ -828,6 +829,7 @@ jobs:
         run: |
           bash packages/onboard-shell/__tests__/onboard-shell-install.test.sh
           bash packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh
+          node --test packages/onboard-shell/__tests__/*.test.mjs
           bash packages/onboard-shell/__tests__/onboard-shell-rotation.test.sh
           bash packages/onboard-shell/__tests__/onboard-shell-secret.test.sh
           bash packages/onboard-shell/__tests__/onboard-shell-publish-gate.test.sh
@@ -1386,6 +1388,7 @@ jobs:
           node --test \
             scripts/__tests__/dist-tag.test.mjs \
             scripts/__tests__/endpoint-client-etag.test.mjs \
+            scripts/__tests__/endpoint-client-server-time.test.mjs \
             scripts/__tests__/release-id.test.mjs \
             scripts/__tests__/payload-promote-controls.test.mjs \
             scripts/__tests__/shell-publish-helper.test.mjs
@@ -1445,6 +1448,9 @@ jobs:
 
       - name: Release pipeline (beta line + two-stage promote + withdraw)
         run: bash scripts/__tests__/payload-release-pipeline.test.sh
+
+      - name: Customer automatic update and emergency rollback acceptance
+        run: bash scripts/__tests__/customer-auto-update-acceptance.test.sh
 
       # FLY-1323 (Codex R7#4): the two preflight matrices were standalone and ran
       # NOWHERE in CI, so their O1-O7 / registry fail-closed guards could regress

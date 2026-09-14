@@ -13,7 +13,7 @@
 # Notes:
 #   • the git auto-updater job (com.flywheel.updater) is NOT installed on the
 #     packaged path — packaged updates flow through the installer's `update`
-#     command (research §7; npm-ified auto-update is a registered follow-up);
+#     command through com.flywheel.auto-update;
 #   • wrappers land in <state>/bin WITH their support-lib closure
 #     (lib/host-config.sh — Codex R2#2: a copied wrapper without it silently
 #     falls back to ~/Dev/flywheel);
@@ -21,7 +21,7 @@
 #     never clobbering operator fields).
 #
 # Usage: bootstrap-services.sh [--pkg-root DIR] [--state-dir DIR]
-#                              [--no-leads] [--dry-run]
+#                              [--no-leads] [--dry-run] [--only auto-update]
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +29,7 @@ PKG_ROOT="$(cd "$SELF_DIR/../.." && pwd)"
 STATE_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}"
 DRY_RUN=0
 INSTALL_LEADS=1
+ONLY=""
 
 log() { echo "[packaged-bootstrap] $*"; }
 warn() { echo "[packaged-bootstrap][warn] $*" >&2; }
@@ -40,9 +41,10 @@ while [ "$#" -gt 0 ]; do
     --pkg-root) PKG_ROOT="$(cd "$2" && pwd)"; shift 2 ;;
     --state-dir) STATE_DIR="$2"; shift 2 ;;
     --no-leads) INSTALL_LEADS=0; shift ;;
+    --only) [ "${2:-}" = "auto-update" ] || die "unsupported --only service"; ONLY="$2"; INSTALL_LEADS=0; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help)
-      echo "Usage: bootstrap-services.sh [--pkg-root DIR] [--state-dir DIR] [--no-leads] [--dry-run]"
+      echo "Usage: bootstrap-services.sh [--pkg-root DIR] [--state-dir DIR] [--no-leads] [--dry-run] [--only auto-update]"
       exit 0 ;;
     *) die "unknown arg: $1" ;;
   esac
@@ -93,6 +95,13 @@ ensure_host_json() {
 # ── wrappers + support-lib closure into <state>/bin ─────────────────────────
 install_bin() {
   local f
+  mkdir -p "$STATE_DIR/bin" "$STATE_DIR/logs"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] would install flywheel-auto-update.sh -> $STATE_DIR/bin/flywheel-auto-update.sh"
+  else
+    install_script_atomic "$SCRIPTS/packaged/flywheel-auto-update.sh" "$STATE_DIR/bin/flywheel-auto-update.sh" || die "auto-update wrapper install failed"
+  fi
+  [ "$ONLY" = "auto-update" ] && return 0
   mkdir -p "$STATE_DIR/bin/lib" "$STATE_DIR/pids" "$STATE_DIR/state" "$STATE_DIR/logs" "$STATE_DIR/manifests"
   for f in flywheel-bridge-wrapper.sh flywheel-lead.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh host-tmux-selection-gate.sh; do
     [ -f "$SCRIPTS/$f" ] || die "wrapper missing from package: scripts/$f"
@@ -112,6 +121,17 @@ install_bin() {
 
 # ── service specs (same shape both platforms; supervisor renders per-OS) ────
 emit_specs() {
+  local config='{}'
+  if [ -f "$STATE_DIR/auto-update.json" ]; then config="$(jq -c . "$STATE_DIR/auto-update.json" 2>/dev/null)" || config='{}'; fi
+  jq -nc --arg state "$STATE_DIR" --argjson cfg "$config" '
+    (if ($cfg|type)=="object" and $cfg.schemaVersion==1
+      and ([1,2,3,4,6,8,12,24]|index($cfg.checkEveryHours))!=null
+      and ($cfg.applyHour|type)=="number" and $cfg.applyHour==($cfg.applyHour|floor) and $cfg.applyHour>=0 and $cfg.applyHour<24
+      and ($cfg.applyGraceHours|type)=="number" and $cfg.applyGraceHours==($cfg.applyGraceHours|floor) and $cfg.applyGraceHours>=1 and $cfg.applyGraceHours<=6
+     then $cfg else {checkEveryHours:6,applyHour:3} end) as $c |
+    {name:"auto-update",kind:"timer",exec:("/bin/bash "+$state+"/bin/flywheel-auto-update.sh "+$state),
+     schedule:([range(0;24;$c.checkEveryHours)|{hour:((.+$c.applyHour)%24),minute:0}]|sort_by(.hour))}'
+  [ "$ONLY" = "auto-update" ] && return 0
   supervisor_bridge_spec "$STATE_DIR/bin/flywheel-bridge-wrapper.sh"
   jq -nc --arg cur "$CURRENT" \
     '{name:"daily-standup",kind:"timer",exec:("/bin/bash "+$cur+"/scripts/daily-standup.sh"),schedule:[{hour:3,minute:0}]}'
@@ -135,7 +155,7 @@ emit_specs() {
 
 main() {
   log "pkg-root: $PKG_ROOT | state: $STATE_DIR | runtime root: $CURRENT | backend: $(supervisor_backend)"
-  ensure_host_json
+  if [ -z "$ONLY" ]; then ensure_host_json; fi
   install_bin
   # Materialize Lead manifests from projects.json (idempotent; same tool the
   # linux provisioner uses). Missing projects.json = first Buddy run hasn't

@@ -4,6 +4,14 @@
 // jargon, never a leaked path/secret. Each maps a failure to "what happened +
 // what to do", nothing more.
 export const MSG = {
+	currentDamaged: "当前安装已损坏,请把这条信息发给我们。",
+	installVersionNone: "已经是这个版本,不需要重新安装。",
+	installVersionDone: "指定版本已安装并通过启动检查。",
+	rollbackNone: "没有可回退的本地版本,请联系我们确认恢复方式。",
+	rollbackDone: "已切回上一个版本并通过启动检查。",
+	rollbackFailedRestored: "回退版本启动失败,已恢复到刚才使用的版本。",
+	heldSkip: "这个版本暂不安装。请等待新版本,或联系我们确认后重试。",
+	ledgerCorrupt: "更新记录损坏,请把这条信息发给我们。",
 	keyMissing:
 		"需要你的授权码才能安装。请在提示后粘贴授权码(粘贴时不会显示出来,这是正常的)。",
 	keyPromptHidden: "请粘贴授权码,然后按回车:",
@@ -12,10 +20,14 @@ export const MSG = {
 	keyInvalid:
 		"授权码不对,或者已经失效了。请核对后重试;拿不准的话联系我们要一个新的授权码。",
 	network: "连不上安装服务器。请检查一下网络,稍后再运行同样的命令重试。",
+	paused: "目前没有可用的安装版本,更新已暂停。已安装的版本会保留,请稍后重试。",
+	notActivated: "安装服务还未开放,请稍后重试;需要帮助请联系我们。",
+	versionNotAvailable:
+		"这个版本已不可下载,可能已被撤回或超过保留期。请重新检查可用版本。",
 	generic:
 		"安装没能完成(可能是磁盘空间、权限或安装服务返回了异常)。已经清理干净,请重新运行安装命令重试;仍然不行请把这条信息发给我们。",
 	unknownCommand:
-		"不认识这个命令。可用:直接运行(安装)· license set(换授权码)· update(更新)。",
+		"不认识这个命令。可用:直接运行(安装)· license set(换授权码)· update(更新)· rollback(回退)· install 版本号(安装指定版本)· auto-update on/off/status(自动更新)。",
 	checksum:
 		"下载的安装包校验没通过(可能下载中断了)。已经清理干净,请重新运行安装命令重试,不会留下半成品。",
 	updateNone: "已经是最新版本了,不需要更新。",

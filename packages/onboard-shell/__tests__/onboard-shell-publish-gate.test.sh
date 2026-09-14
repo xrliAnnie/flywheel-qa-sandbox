@@ -72,6 +72,16 @@ lib/journal.mjs
 lib/onboard.mjs
 lib/update.mjs
 lib/license.mjs
+lib/lock.mjs
+lib/ledger.mjs
+lib/apply.mjs
+lib/preflight.mjs
+lib/prune.mjs
+lib/rollback.mjs
+lib/install-version.mjs
+lib/shell-copy.mjs
+lib/auto-update.mjs
+lib/schedule.mjs
 EOF
 # exact-set = subset (no stray packed file) AND superset (no missing required
 # file). Subset-only would let a required file silently drop out (Codex R3).

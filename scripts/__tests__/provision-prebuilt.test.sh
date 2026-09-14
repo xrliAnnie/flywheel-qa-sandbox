@@ -68,6 +68,7 @@ mk_root() {
     cp -p "$REPO_ROOT/scripts/$f" "$rr/scripts/$f"
   done
   cp -p "$REPO_ROOT/scripts/packaged/bootstrap-services.sh" "$rr/scripts/packaged/"
+  cp -p "$REPO_ROOT/scripts/packaged/flywheel-auto-update.sh" "$rr/scripts/packaged/"
   [ "$prebuilt" = "prebuilt" ] && echo "1.0.0-test" > "$rr/.flywheel-prebuilt"
   return 0
 }
@@ -201,10 +202,15 @@ EOF
 out="$(_prov "$H" "$RR" "$FD" launchd)"; rc=$?
 BR_PLIST="$H/launchd/com.flywheel.bridge.plist"
 SU_PLIST="$H/launchd/com.flywheel.daily-standup.plist"
+AU_PLIST="$H/launchd/com.flywheel.auto-update.plist"
 CLAUDE_PLIST="$H/launchd/com.flywheel.lead-custproj-cos-lead.plist"
 CODEX_PLIST="$H/launchd/com.flywheel.lead-custproj-codex-lead.plist"
 if [ "$rc" -eq 0 ] \
    && [ -f "$BR_PLIST" ] && [ -f "$SU_PLIST" ] && [ -f "$CLAUDE_PLIST" ] \
+   && [ -f "$AU_PLIST" ] \
+   && grep -q "StartCalendarInterval" "$AU_PLIST" \
+   && grep -q "flywheel-auto-update.sh" "$AU_PLIST" \
+   && grep -q "<integer>21</integer>" "$AU_PLIST" \
    && [ ! -e "$CODEX_PLIST" ] \
    && grep -q "$H/.flywheel/bin/flywheel-bridge-wrapper.sh" "$BR_PLIST" \
    && grep -q "$H/.flywheel/bin/flywheel-lead-wrapper-v2.sh" "$CLAUDE_PLIST" \

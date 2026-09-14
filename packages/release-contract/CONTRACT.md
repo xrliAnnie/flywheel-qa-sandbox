@@ -228,7 +228,7 @@ C-3、C-4 的融合递增、C-6b、C-7 状态机是 transition-only 规则,由 e
 | beta publish | main 代码;无人门 | `schedule` 每 6h + `workflow_dispatch`;main-only;pre-activation guard | `payload-beta-release.yml` | 只持 beta-publish,不能切 customer pointer | 无 |
 | promote prepare | 无人工门 | `workflow_dispatch` + main-only | `payload-promote.yml` | 只准备 op,不切 customer pointer | 无 |
 | promote commit | B4 veto window 沉默或 founder 显式 go;B1 期间仅 founder 每次实例化的 go 经 Lead 核身后 dispatch;不使用 🆒/merge/ship 账本 | `workflow_dispatch` + main-only + `environment: release` + `confirm=COMMIT` | `payload-promote-commit.yml` | env `release` secret `FW_CUSTOMER_RELEASE_TOKEN`;仅 `{releaseId,expectedSha256}`、零构建、完整 `validateManifest`、C-6b | 无 |
-| abandon / withdraw | 与 promote commit 相同;paused/无 fallback 决策仍归 B5 | 与 commit 同一 workflow;`action=abandon|withdraw`;withdraw 必须逐字绑定当前 `customer-release` pointer | `payload-promote-commit.yml` | 同一 CAS abandon 候选,或 quarantine 当前版并 re-pin 显式 active fallback | 无 |
+| abandon / withdraw | 与 promote commit 相同;paused/无 fallback 见 Amendment B5 | 与 commit 同一 workflow;`action=abandon|withdraw`;withdraw 必须逐字绑定当前 `customer-release` pointer | `payload-promote-commit.yml` | 同一 CAS abandon 候选,或 quarantine 当前版并按 Amendment B5 回退/暂停 | 无 |
 
 workflow 结构测试 S13 把真实 trigger set 锁为 beta=`{schedule,workflow_dispatch}`,promote=`{workflow_dispatch}`,activation=`{workflow_dispatch}` 且保留 `confirm`;三者都没有 `push` 或 `pull_request`,所以 release 不是 merge 副作用。
 
@@ -259,7 +259,7 @@ v1 的 200 body 不含 wire version 字段。不能通过底层 manifest `schema
 
 数据迁移为无:`schemaVersion` 仍为 1、manifest 字段不变。语义变化只有 C-1b 放宽与 C-6b 对新 release commit 收紧。B1 customer-release action 的生产执行门是完整 `validateManifest`;不能把每条形状错误都称为 C-0。CI 的 differential corpus 锁定 JSON Schema 的 accept/reject 形状与运行时 validator 一致;有 Ajv 的环境可以额外跑 schema,但生产执行不依赖 Ajv。
 
-以下 B0 时态句已由 Amendment A1 取代:「本合同不新增 promote-commit workflow」「不改变 S4b」「不改变 broker/FLY-1323 凭据姿态」「不实现 npm prerelease dist-tag」。仍不实现 B4 决策账本、B5 paused/无 fallback 客户话术或 `/v2/manifest`,也不授权或执行任何真实发布、R2 或 npm 动作。
+以下 B0 时态句已由 Amendment A1 取代:「本合同不新增 promote-commit workflow」「不改变 S4b」「不改变 broker/FLY-1323 凭据姿态」「不实现 npm prerelease dist-tag」。B5 paused/无 fallback 由 Amendment B5 定义;仍不实现 B4 决策账本或 `/v2/manifest`,也不授权或执行任何真实发布、R2 或 npm 动作。
 
 ## Amendment A1 (FLY-2388, 2026-09-08)
 
@@ -270,7 +270,7 @@ v1 的 200 body 不含 wire version 字段。不能通过底层 manifest `schema
 | §7 REQ-0 promote commit 行 | `B1 尚未实现` / `B1` / `当前无 workflow` | 执行面是 `.github/workflows/payload-promote-commit.yml`:`workflow_dispatch`、main-only、`environment: release`、`confirm=COMMIT`;凭据只来自 env `release` secret `FW_CUSTOMER_RELEASE_TOKEN`。授权源不变:B1 期间是 founder 每次实例化的 go 经 Lead 核身后 dispatch,B4 后由否决窗口机器门 dispatch。 |
 | §9 S4b 时态 | `不改变 S4b` | `FW_CUSTOMER_RELEASE_TOKEN` 的 workflow 白名单恰为 `{payload-promote-commit.yml,payload-activation.yml}`;前者执行 customer action,后者只派生并灌入 capability sha256;二者都必须受 `environment: release` 与 main-only job gate 保护。 |
 | §1.2 / §9 dist-tag 时态 | `不实现 npm prerelease dist-tag` | 已实现 `scripts/release/lib/dist-tag.mjs`:clean shell 版本 → `latest`,prerelease → `next`,非法形状拒绝;S15 锁定 pack output 到 preflight/publish/verify 的 tag 绑定。 |
-| §7 withdraw 行 | `withdraw / paused` 全归 B5 | 有显式 active fallback 的 withdraw 已由同一 commit workflow 的 `action=withdraw` 执行,且脚本只允许撤当前 customer pointer;paused/无 fallback 仍归 B5。 |
+| §7 withdraw 行 | `withdraw / paused` 全归 B5 | 有显式 active fallback 的 withdraw 已由同一 commit workflow 的 `action=withdraw` 执行,且脚本只允许撤当前 customer pointer;paused/无 fallback 由下方 Amendment B5 定义。 |
 | §6 §7.3-7 staging 清理 | 仅 `expire→tombstone→delete` | 工程定稿见下列六条;对象上传与 manifest commit 继续分处否决窗口两侧。 |
 | §9 激活门 | `schema + validateManifest` | 生产执行门是完整 `validateManifest`;schema-reject ⇒ runtime 至少一个 error 以及所有合法形状双接受,由 CI differential corpus 锁定;不声称每条 shape error 都是 C-0。有 Ajv 时可额外跑 schema。 |
 
@@ -303,3 +303,15 @@ v1 的 200 body 不含 wire version 字段。不能通过底层 manifest `schema
 唯一 lifecycle 执行器仍是 manifest 时钟 + expire→tombstone CAS→全集物理 sweep；失败删除保留标记，后续运行重试。原生 R2 只 abort 未完成 multipart 7 天，不设置 payload/manifest/key 的完整对象 TTL。不增加存储、迁移、计费、账号、席位或计量；B1/REQ-0 的 ship/release 独立性不变。
 
 读取预算与限制：每次客户请求不缓存 key/manifest，最多各读取一条 key/manifest，并完整执行一次 validator；presigned payload 另读一次 HEAD。当前 validator 的 tombstone 交叉检查随历史增长，应用尚未承诺 manifest 规模/CPU SLA，也未增加截断阈值。Worker 的平台 CPU 限额仍有效，规模与校验成本预算由 Lead follow-up 处理，不把本地 fixture 的延迟当生产容量结论。
+
+
+## Amendment B5 — 客户撤版的确定终态(FLY-2392)
+
+manifest schema、C-n 不变量、customer v1 wire 均不变。发布控制面新增以下规则:
+
+- `GET /admin/manifest` 返回可选响应头 `x-fw-server-time`(canonical ISO,端点请求开始时钟)。客户端在头存在时严格校验;仅 withdraw 强制要求该头,其余命令兼容无头端点。端点必须先于新版 withdraw 脚本部署。
+- customer-release capability 可 expire 已过期的 release entry,仍由服务端保留期守卫校验;不能 expire beta、tombstone 或删除 payload。
+- withdraw 在同一 CAS 中 quarantine 当前客户版并 re-pin 可用 previous-good。默认按 retentionSince、publishedAt 降序选 active 且未过 28 天保留期的 release。显式 fallback 必须 exact binding,过期时零写失败。
+- 无可用 previous-good 时,只有显式 `--allow-pause` 才可同 CAS 将剩余过期 active release 标记 expired、latest 置 null,满足 C-1b。该开关与显式 fallback 互斥,且有候选时仍选择回退。
+- 时间来源只用该次 GET 的端点时间。GET→POST 跨保留期导致的两个指定时间守卫 422 可有界重派生(最多三次);其余 422 不重试。结果包含 `withdrawn/fallback/latest/outcome/expired`,auto 重放报告当前 latest 且零写。
+- 客户暂停响应仍为 `503 {"error":"no-release-available"}`;历史全坏与 previous-good 已过期都明确进入 paused,不留下 dangling pointer。不执行或授权任何真实发布动作。

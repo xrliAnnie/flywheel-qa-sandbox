@@ -54,6 +54,7 @@ test("readManifest normalizes a weak response ETag", async () => {
 				headers: {
 					"content-type": "application/json",
 					etag: `W/"${"a".repeat(32)}"`,
+					"x-fw-server-time": "2026-09-13T00:00:00.000Z",
 				},
 			}),
 		async () => {
@@ -63,6 +64,7 @@ test("readManifest normalizes a weak response ETag", async () => {
 			});
 			const current = await client.readManifest();
 			assert.equal(current.etag, "a".repeat(32));
+			assert.equal(current.serverNowMs, Date.parse("2026-09-13T00:00:00.000Z"));
 		},
 	);
 });

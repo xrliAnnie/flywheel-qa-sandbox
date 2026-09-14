@@ -5,13 +5,16 @@
 import { execFileSync } from "node:child_process";
 import { fetchManifest } from "./endpoint.mjs";
 import { hiddenPrompt, persistKey } from "./key.mjs";
+import { LockBusy } from "./lock.mjs";
 import { MSG } from "./messages.mjs";
 import { messageFor, runOnboard } from "./onboard.mjs";
+import { mutatorPreflight } from "./preflight.mjs";
 
-export async function runLicenseSet(
+async function runLicenseSetLocked(
 	cfg,
 	{
 		io,
+		ctx,
 		exec = execFileSync,
 		fetchImpl = fetch,
 		promptFn = hiddenPrompt,
@@ -39,5 +42,18 @@ export async function runLicenseSet(
 	persistKey(cfg.envFile, k);
 	io.out("授权码已更新。\n");
 	// continue the normal install flow with the freshly stored key.
-	return runOnboard(cfg, { io, exec, fetchImpl, promptFn, env });
+	return runOnboard(cfg, { io, exec, fetchImpl, promptFn, env, ctx });
+}
+
+export async function runLicenseSet(cfg, options = {}) {
+	let ctx;
+	try {
+		ctx = await mutatorPreflight(cfg, options);
+		return await runLicenseSetLocked(cfg, { ...options, ctx });
+	} catch (error) {
+		options.io.err(messageFor(error));
+		return error instanceof LockBusy ? 75 : 1;
+	} finally {
+		ctx?.lock.release();
+	}
 }

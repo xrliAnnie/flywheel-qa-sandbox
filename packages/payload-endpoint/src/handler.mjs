@@ -273,7 +273,10 @@ export async function handleRequest(request, deps) {
 					);
 				return respond(
 					"/admin/manifest",
-					json(200, cur.manifest, { etag: cur.httpEtag ?? `"${cur.etag}"` }),
+					json(200, cur.manifest, {
+						etag: cur.httpEtag ?? `"${cur.etag}"`,
+						"x-fw-server-time": new Date(requestStartedAt).toISOString(),
+					}),
 				);
 			}
 

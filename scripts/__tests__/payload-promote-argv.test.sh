@@ -67,6 +67,12 @@ rejects "P11 commit rejects malformed releaseId" "invalid releaseId" \
 rejects "P11 abandon rejects malformed releaseId" "invalid releaseId" \
   abandon --release-id 'bad/id'
 
+rejects "W3 withdraw requires target" "--withdraw <ver> required" withdraw --allow-pause
+rejects "W3 withdraw rejects same fallback" "must differ" withdraw --withdraw 1.2.3 --fallback 1.2.3
+rejects "W3 fallback and pause conflict" "mutually exclusive" withdraw --withdraw 1.2.3 --fallback 1.2.2 --allow-pause
+parser_accepts "W3 auto fallback" withdraw --withdraw 1.2.3
+parser_accepts "W3 explicit pause consent" withdraw --withdraw 1.2.3 --allow-pause
+
 echo ""
 echo "payload-promote-argv: PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" -eq 0 ]

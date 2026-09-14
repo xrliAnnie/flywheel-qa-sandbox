@@ -105,7 +105,10 @@ function abandonManifest() {
 	return manifest;
 }
 
-async function startEndpoint(manifest) {
+async function startEndpoint(
+	manifest,
+	{ now = () => new Date("2026-09-08T12:00:00.000Z"), beforeRequest } = {},
+) {
 	const bucket = new MemoryBucket();
 	bucket.seed("manifest.json", JSON.stringify(manifest));
 	const deps = {
@@ -113,13 +116,14 @@ async function startEndpoint(manifest) {
 		secrets: {
 			customerReleaseTokenSha256: sha256Hex(RELEASE_TOKEN),
 		},
-		now: () => new Date("2026-09-08T12:00:00.000Z"),
+		now,
 		delivery: { mode: "stream" },
 	};
 	const server = http.createServer(async (request, response) => {
 		const chunks = [];
 		for await (const chunk of request) chunks.push(chunk);
 		const body = Buffer.concat(chunks);
+		await beforeRequest?.(request, bucket);
 		const headers = new Headers();
 		for (const [name, value] of Object.entries(request.headers)) {
 			if (typeof value === "string") headers.set(name, value);
@@ -200,16 +204,20 @@ async function startWithdrawRaceProxy(target) {
 	};
 }
 
-async function invoke(endpoint, args, { githubOutput } = {}) {
+async function invoke(endpoint, args, { githubOutput, nodeArgs = [] } = {}) {
 	try {
-		const result = await execFileAsync(process.execPath, [CLI, ...args], {
-			env: {
-				...process.env,
-				FW_ENDPOINT: endpoint,
-				FW_CUSTOMER_RELEASE_TOKEN: RELEASE_TOKEN,
-				...(githubOutput ? { GITHUB_OUTPUT: githubOutput } : {}),
+		const result = await execFileAsync(
+			process.execPath,
+			[...nodeArgs, CLI, ...args],
+			{
+				env: {
+					...process.env,
+					FW_ENDPOINT: endpoint,
+					FW_CUSTOMER_RELEASE_TOKEN: RELEASE_TOKEN,
+					...(githubOutput ? { GITHUB_OUTPUT: githubOutput } : {}),
+				},
 			},
-		});
+		);
 		return { code: 0, stdout: result.stdout, stderr: result.stderr };
 	} catch (error) {
 		return {
@@ -365,6 +373,8 @@ test("W2 withdraw binds the current release pointer and has one exact idempotent
 			action: "withdraw",
 			withdrawn: "1.55.0",
 			fallback: "1.54.9",
+			latest: "1.54.9",
+			expired: [],
 			outcome: "withdrawn",
 		});
 
@@ -395,6 +405,80 @@ test("W2 withdraw binds the current release pointer and has one exact idempotent
 	}
 });
 
+test("W3a auto withdraw selects the most recently unpinned release and replays without writes", async () => {
+	const seed = fixtureManifest();
+	addCommittedPair(seed, "1.54.9", "d");
+	addCommittedPair(seed, "1.54.8", "f");
+	seed.versions["1.54.8"].retentionSince = "2026-09-02T00:00:00.000Z";
+	const endpoint = await startEndpoint(seed);
+	try {
+		const args = ["withdraw", "--withdraw", "1.55.0"];
+		const result = await invoke(endpoint.endpoint, args);
+		assert.equal(result.code, 0, result.stderr);
+		assert.deepEqual(resultFrom(result.stdout), {
+			action: "withdraw",
+			withdrawn: "1.55.0",
+			fallback: "1.54.8",
+			latest: "1.54.8",
+			expired: [],
+			outcome: "withdrawn",
+		});
+		const after = manifest(endpoint.bucket);
+		assert.equal(after.versions["1.54.8"].retentionSince, null);
+		assert.equal(after.versions["1.55.0"].status, "quarantined");
+		const before = rawManifest(endpoint.bucket);
+		const replay = await invoke(endpoint.endpoint, args);
+		assert.equal(replay.code, 0, replay.stderr);
+		assert.equal(resultFrom(replay.stdout).outcome, "idempotent");
+		assert.equal(rawManifest(endpoint.bucket), before);
+	} finally {
+		await endpoint.close();
+	}
+});
+
+for (const oldVersion of [true, false]) {
+	test(`W3b/c/d/g no usable previous-good (${oldVersion ? "expired" : "first release"}) requires explicit pause and replays`, async () => {
+		const seed = fixtureManifest();
+		if (oldVersion) {
+			addCommittedPair(seed, "1.54.9", "d");
+			seed.versions["1.54.9"].retentionSince = "2026-07-01T00:00:00.000Z";
+		}
+		const endpoint = await startEndpoint(seed);
+		try {
+			const before = rawManifest(endpoint.bucket);
+			const args = ["withdraw", "--withdraw", "1.55.0"];
+			const refused = await invoke(endpoint.endpoint, args);
+			assert.notEqual(refused.code, 0);
+			assert.match(refused.stderr, /no re-pinnable previous-good/);
+			assert.equal(rawManifest(endpoint.bucket), before);
+			const result = await invoke(endpoint.endpoint, [
+				...args,
+				"--allow-pause",
+			]);
+			assert.equal(result.code, 0, result.stderr);
+			assert.deepEqual(resultFrom(result.stdout), {
+				action: "withdraw",
+				withdrawn: "1.55.0",
+				fallback: null,
+				latest: null,
+				expired: oldVersion ? ["1.54.9"] : [],
+				outcome: "paused",
+			});
+			const after = manifest(endpoint.bucket);
+			assert.equal(after.channels["customer-release"].latest, null);
+			assert.equal(after.versions["1.55.0"].status, "quarantined");
+			if (oldVersion) assert.equal(after.versions["1.54.9"].status, "expired");
+			const replayBefore = rawManifest(endpoint.bucket);
+			const replay = await invoke(endpoint.endpoint, args);
+			assert.equal(replay.code, 0, replay.stderr);
+			assert.equal(resultFrom(replay.stdout).outcome, "idempotent");
+			assert.equal(rawManifest(endpoint.bucket), replayBefore);
+		} finally {
+			await endpoint.close();
+		}
+	});
+}
+
 test("W2d a CAS retry re-judges a concurrently advanced customer pointer", async () => {
 	const seed = fixtureManifest();
 	addCommittedPair(seed, "1.54.9", "d");
@@ -416,6 +500,173 @@ test("W2d a CAS retry re-judges a concurrently advanced customer pointer", async
 		assert.equal(after.versions["1.55.0"].status, "active");
 	} finally {
 		await proxy.close();
+		await endpoint.close();
+	}
+});
+
+for (const conflict of [false, true]) {
+	test(`W3i/j server deadline crosses before POST (CAS conflict=${conflict}), re-derives paused`, async () => {
+		const seed = fixtureManifest();
+		addCommittedPair(seed, "1.54.9", "d");
+		let nowMs = Date.parse("2026-09-28T23:59:59.999Z");
+		let posts = 0;
+		const endpoint = await startEndpoint(seed, {
+			now: () => new Date(nowMs),
+			beforeRequest: (request, bucket) => {
+				if (request.method !== "POST") return;
+				if (++posts !== 1) return;
+				nowMs++;
+				if (conflict) {
+					// Same valid manifest, different ETag: concurrent storage write.
+					bucket.seed("manifest.json", `${JSON.stringify(seed)}\n`);
+				}
+			},
+		});
+		try {
+			const result = await invoke(endpoint.endpoint, [
+				"withdraw",
+				"--withdraw",
+				"1.55.0",
+				"--allow-pause",
+			]);
+			assert.equal(result.code, 0, result.stderr);
+			assert.equal(posts, 2);
+			assert.equal(resultFrom(result.stdout).outcome, "paused");
+			assert.deepEqual(resultFrom(result.stdout).expired, ["1.54.9"]);
+			assert.equal(
+				manifest(endpoint.bucket).versions["1.54.9"].status,
+				"expired",
+			);
+			assert.equal(
+				manifest(endpoint.bucket).channels["customer-release"].latest,
+				null,
+			);
+		} finally {
+			await endpoint.close();
+		}
+	});
+}
+
+test("W3 explicit expired fallback and conflicting options are zero-write refusals; allow-pause still prefers a candidate", async () => {
+	const seed = fixtureManifest();
+	addCommittedPair(seed, "1.54.9", "d");
+	addCommittedPair(seed, "1.54.8", "f");
+	seed.versions["1.54.8"].retentionSince = "2026-07-01T00:00:00.000Z";
+	const endpoint = await startEndpoint(seed);
+	try {
+		for (const extra of [
+			["--fallback", "1.54.8"],
+			["--fallback", "1.54.9", "--allow-pause"],
+		]) {
+			const before = rawManifest(endpoint.bucket);
+			const result = await invoke(endpoint.endpoint, [
+				"withdraw",
+				"--withdraw",
+				"1.55.0",
+				...extra,
+			]);
+			assert.notEqual(result.code, 0);
+			assert.equal(rawManifest(endpoint.bucket), before);
+		}
+		const result = await invoke(endpoint.endpoint, [
+			"withdraw",
+			"--withdraw",
+			"1.55.0",
+			"--allow-pause",
+		]);
+		assert.equal(result.code, 0, result.stderr);
+		assert.equal(resultFrom(result.stdout).fallback, "1.54.9");
+		assert.equal(resultFrom(result.stdout).outcome, "withdrawn");
+		assert.equal(manifest(endpoint.bucket).versions["1.54.8"].status, "active");
+	} finally {
+		await endpoint.close();
+	}
+});
+
+test("W3h runner clock skew of either sign does not change fallback selection", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fly2392-clock-"));
+	try {
+		for (const days of [-30, 30]) {
+			const preload = path.join(dir, `clock-${days}.mjs`);
+			fs.writeFileSync(
+				preload,
+				`const Original = Date; const fixed = ${Date.parse("2026-09-08T12:00:00.000Z")} + ${days} * 86400000; globalThis.Date = class extends Original { constructor(...args) { super(...(args.length ? args : [fixed])); } static now() { return fixed; } };`,
+			);
+			const seed = fixtureManifest();
+			addCommittedPair(seed, "1.54.9", "d");
+			const endpoint = await startEndpoint(seed);
+			try {
+				const result = await invoke(
+					endpoint.endpoint,
+					["withdraw", "--withdraw", "1.55.0", "--allow-pause"],
+					{ nodeArgs: ["--import", preload] },
+				);
+				assert.equal(result.code, 0, result.stderr);
+				assert.equal(resultFrom(result.stdout).fallback, "1.54.9");
+			} finally {
+				await endpoint.close();
+			}
+		}
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("W3e auto withdraw refuses a concurrently advanced pointer", async () => {
+	const seed = fixtureManifest();
+	addCommittedPair(seed, "1.54.9", "d");
+	addCommittedPair(seed, "1.54.8", "f");
+	const endpoint = await startEndpoint(seed);
+	const proxy = await startWithdrawRaceProxy(endpoint.endpoint);
+	try {
+		const result = await invoke(proxy.endpoint, [
+			"withdraw",
+			"--withdraw",
+			"1.55.0",
+		]);
+		assert.notEqual(result.code, 0);
+		assert.match(result.stderr, /not the current customer-release pointer/);
+		assert.equal(manifest(endpoint.bucket).versions["1.55.0"].status, "active");
+		assert.equal(
+			manifest(endpoint.bucket).channels["customer-release"].latest,
+			"1.54.8",
+		);
+	} finally {
+		await proxy.close();
+		await endpoint.close();
+	}
+});
+
+test("W3f auto replay reports the current latest after a later withdrawal", async () => {
+	const seed = fixtureManifest();
+	addCommittedPair(seed, "1.54.9", "d");
+	addCommittedPair(seed, "1.54.8", "f");
+	const endpoint = await startEndpoint(seed);
+	try {
+		for (const [withdraw, fallback] of [
+			["1.55.0", "1.54.9"],
+			["1.54.9", "1.54.8"],
+		]) {
+			const result = await invoke(endpoint.endpoint, [
+				"withdraw",
+				"--withdraw",
+				withdraw,
+				"--fallback",
+				fallback,
+			]);
+			assert.equal(result.code, 0, result.stderr);
+		}
+		const before = rawManifest(endpoint.bucket);
+		const replay = await invoke(endpoint.endpoint, [
+			"withdraw",
+			"--withdraw",
+			"1.55.0",
+		]);
+		assert.equal(replay.code, 0, replay.stderr);
+		assert.equal(resultFrom(replay.stdout).latest, "1.54.8");
+		assert.equal(resultFrom(replay.stdout).outcome, "idempotent");
+		assert.equal(rawManifest(endpoint.bucket), before);
+	} finally {
 		await endpoint.close();
 	}
 });

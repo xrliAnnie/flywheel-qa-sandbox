@@ -726,6 +726,36 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/onboard-shell/__tests__/apply-state.test.mjs:const code = `import {runInstallVersion} from ${JSON.stringify(new URL(\"../lib/install-version.mjs\", import.meta.url).href)};await runInstallVersion(JSON.parse(process.argv[1]),'1.2.4',{io:{out(){},err(){}},fetchImpl:async()=>new Response(JSON.stringify({latest:'1.2.4',versions:[{ver:'1.2.4',sha256:'a'.repeat(64)}]})),exec(){throw new Error('unhealthy')},checkpoint(name){if(name==='failure_receipt')process.kill(process.pid,'SIGKILL')}});`;#1",
+		"path": "packages/onboard-shell/__tests__/apply-state.test.mjs",
+		"code": "const code = `import {runInstallVersion} from ${JSON.stringify(new URL(\"../lib/install-version.mjs\", import.meta.url).href)};await runInstallVersion(JSON.parse(process.argv[1]),'1.2.4',{io:{out(){},err(){}},fetchImpl:async()=>new Response(JSON.stringify({latest:'1.2.4',versions:[{ver:'1.2.4',sha256:'a'.repeat(64)}]})),exec(){throw new Error('unhealthy')},checkpoint(name){if(name==='failure_receipt')process.kill(process.pid,'SIGKILL')}});`;",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/apply-state.test.mjs:const code = `import {runRollback} from ${JSON.stringify(new URL(\"../lib/rollback.mjs\", import.meta.url).href)}; await runRollback(JSON.parse(process.argv[1]), {io:{out(){},err(){}},exec(){},checkpoint(name){if(name===process.argv[2])process.kill(process.pid,'SIGKILL');}});`;#1",
+		"path": "packages/onboard-shell/__tests__/apply-state.test.mjs",
+		"code": "const code = `import {runRollback} from ${JSON.stringify(new URL(\"../lib/rollback.mjs\", import.meta.url).href)}; await runRollback(JSON.parse(process.argv[1]), {io:{out(){},err(){}},exec(){},checkpoint(name){if(name===process.argv[2])process.kill(process.pid,'SIGKILL');}});`;",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/fixtures/apply-crash-child.mjs:const kill = () => process.kill(process.pid, \"SIGKILL\");#1",
+		"path": "packages/onboard-shell/__tests__/fixtures/apply-crash-child.mjs",
+		"code": "const kill = () => process.kill(process.pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/lock-ledger.test.mjs:holder.kill(\"SIGKILL\");#1",
+		"path": "packages/onboard-shell/__tests__/lock-ledger.test.mjs",
+		"code": "holder.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/lock-ledger.test.mjs:holder.kill(\"SIGKILL\");#2",
+		"path": "packages/onboard-shell/__tests__/lock-ledger.test.mjs",
+		"code": "holder.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/onboard-shell/__tests__/onboard-shell-install.test.sh:kill -0 \"$STUB_PID\" 2>/dev/null || break#1",
 		"path": "packages/onboard-shell/__tests__/onboard-shell-install.test.sh",
 		"code": "kill -0 \"$STUB_PID\" 2>/dev/null || break",
@@ -778,6 +808,18 @@
 		"path": "packages/onboard-shell/__tests__/onboard-shell-secret.test.sh",
 		"code": "[ -n \"$PORT\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1",
 		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/shell-copy.test.mjs:const code = `import {refreshShellCopy} from ${JSON.stringify(new URL(\"../lib/shell-copy.mjs\", import.meta.url).href)};refreshShellCopy({stateDir:process.argv[1]},{source:process.argv[2],checkpoint(name){if(name===process.argv[3])process.kill(process.pid,'SIGKILL')}});`;#1",
+		"path": "packages/onboard-shell/__tests__/shell-copy.test.mjs",
+		"code": "const code = `import {refreshShellCopy} from ${JSON.stringify(new URL(\"../lib/shell-copy.mjs\", import.meta.url).href)};refreshShellCopy({stateDir:process.argv[1]},{source:process.argv[2],checkpoint(name){if(name===process.argv[3])process.kill(process.pid,'SIGKILL')}});`;",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/lib/lock.mjs:process.kill(owner.pid, 0);#1",
+		"path": "packages/onboard-shell/lib/lock.mjs",
+		"code": "process.kill(owner.pid, 0);",
+		"classification": "signal-0-probe"
 	},
 	{
 		"key": "packages/payload-endpoint/__tests__/serve-node.test.mjs:child.kill();#1",
@@ -1599,6 +1641,12 @@
 		"key": "scripts/__tests__/customer-e2e-acceptance.test.sh:kill -0 \"$SERVER_PID\" 2>/dev/null || break#1",
 		"path": "scripts/__tests__/customer-e2e-acceptance.test.sh",
 		"code": "kill -0 \"$SERVER_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fixtures/customer-auto-update-acceptance.mjs:server.kill();#1",
+		"path": "scripts/__tests__/fixtures/customer-auto-update-acceptance.mjs",
+		"code": "server.kill();",
 		"classification": "qa-only"
 	},
 	{

@@ -19,7 +19,10 @@ import {
 	storedKey,
 	stripKeyFromEnv,
 } from "./key.mjs";
+import { LockBusy } from "./lock.mjs";
 import { MSG } from "./messages.mjs";
+import { LedgerCorrupt, mutatorPreflight } from "./preflight.mjs";
+import { refreshUpdater } from "./shell-copy.mjs";
 
 // messageFor <error> → the honest customer message for a failure kind.
 // Only a genuine network failure gets the "check your network" advice; a
@@ -27,10 +30,15 @@ import { MSG } from "./messages.mjs";
 // permissions, npm, mirror) gets a generic honest message — never mis-advise
 // the customer to check their network for a local problem (Codex R1#7).
 export function messageFor(e) {
+	if (e instanceof LedgerCorrupt) return MSG.ledgerCorrupt;
+	if (e instanceof LockBusy) return e.message;
 	if (e instanceof EndpointError) {
 		if (e.kind === "unauthorized") return MSG.keyInvalid;
 		if (e.kind === "checksum") return MSG.checksum;
 		if (e.kind === "network") return MSG.network;
+		if (e.kind === "paused") return MSG.paused;
+		if (e.kind === "notActivated") return MSG.notActivated;
+		if (e.kind === "notAvailable") return MSG.versionNotAvailable;
 		return MSG.generic; // protocol / anything else
 	}
 	return MSG.generic;
@@ -152,10 +160,25 @@ function handoff(cfg, exec, io) {
 }
 
 // runOnboard <cfg> <opts> → exit code. opts.io = {out,err,input,output}.
-export async function runOnboard(
+export async function runOnboard(cfg, options = {}) {
+	let ctx = options.ctx;
+	try {
+		ctx ??= await mutatorPreflight(cfg, options);
+		return await runOnboardLocked(cfg, { ...options, ctx });
+	} catch (error) {
+		options.io.err(messageFor(error));
+		return error instanceof LockBusy ? 75 : 1;
+	} finally {
+		if (ctx && !ctx.updaterRefreshed) refreshUpdater(cfg, options);
+		ctx?.lock.release();
+	}
+}
+
+async function runOnboardLocked(
 	cfg,
 	{
 		io,
+		ctx,
 		exec = execFileSync,
 		fetchImpl = fetch,
 		promptFn = hiddenPrompt,
@@ -167,6 +190,9 @@ export async function runOnboard(
 		// any inherited key from the env first so the exec'd child can't read
 		// it (Codex R1#1 — the fast path skipped this).
 		stripKeyFromEnv(env);
+		refreshUpdater(cfg, { exec, env });
+		ctx.updaterRefreshed = true;
+		ctx.lock.release();
 		return handoff(cfg, exec, io);
 	}
 	let key = null;
@@ -236,5 +262,8 @@ export async function runOnboard(
 		key = null;
 	}
 	io.out(`${MSG.done}\n`);
+	refreshUpdater(cfg, { exec, env });
+	ctx.updaterRefreshed = true;
+	ctx.lock.release();
 	return handoff(cfg, exec, io);
 }

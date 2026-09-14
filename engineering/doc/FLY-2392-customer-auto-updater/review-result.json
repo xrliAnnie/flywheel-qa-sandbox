@@ -1,0 +1,13 @@
+{
+  "effectiveVerdict": "APPROVED",
+  "reviewerVerdict": "CHANGES_REQUESTED@R5",
+  "rounds": 5,
+  "codexThreadId": "01a09cfc-2033-7010-b89b-001eb73ca2ea",
+  "leadAcceptance": {
+    "questionId": "7e62f2d4-9eca-4ee8-98f7-2a3c3e65fffe",
+    "acceptedBy": "flywheel-eng-lead",
+    "basis": "R5 authorized with scope of three items; ruling: after R5 close out regardless \u2014 leadAcceptance per FLY-2443 precedent, R5 items verbatim in review.md, fix blockers only, no R6"
+  },
+  "reviewRecord": "review.md",
+  "planVersion": "v6"
+}

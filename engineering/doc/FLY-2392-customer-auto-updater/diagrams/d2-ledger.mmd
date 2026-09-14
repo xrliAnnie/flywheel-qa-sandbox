@@ -1,0 +1,14 @@
+flowchart LR
+  subgraph disk["磁盘上的事实(唯一真相)"]
+    CUR["runtime/current 指针<br/>→ 正在运行的版本目录"]
+    VER["runtime/versions/<版本>/<br/>当前 + 上一个可用版本"]
+  end
+  subgraph ledger["update-ledger.json(更新账本)"]
+    KG["knownGood: 通过过健康检查的版本<br/>(含「被换下的上一版」)"]
+    HD["holds: 黑名单<br/>启动失败 / 手动退回 / 已被撤回<br/>每版最多两次尝试"]
+    AP["applying: 进行中的更新意图<br/>做什么 · 装哪版 · 从哪版来 · 到哪一步了"]
+    LR["lastRun: 上次结果与原因"]
+  end
+  CUR -. "上一个可用版 = knownGood 里最新且目录仍在、仍健康、不在黑名单的那个" .-> KG
+  AP -. "程序中途被杀: 下次启动按「到哪一步了」+ 指针实际指向<br/>先补黑名单, 再复验旧版, 再收尾" .-> CUR
+  HD -. "黑名单只在发布方换版或用户明确 install <版本> 时解除" .-> KG

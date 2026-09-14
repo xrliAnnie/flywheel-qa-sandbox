@@ -31,9 +31,14 @@ on:
         required: false
         type: string
       fallback-version:
-        description: "withdraw-only active clean fallback"
+        description: "withdraw-only clean fallback; empty selects latest available previous-good"
         required: false
         type: string
+      allow-pause:
+        description: "withdraw-only: allow pausing updates when no previous-good remains"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -60,6 +65,7 @@ jobs:
           EXPECTED_SHA256_INPUT: ${{ inputs.expected-sha256 }}
           WITHDRAW_VERSION_INPUT: ${{ inputs.withdraw-version }}
           FALLBACK_VERSION_INPUT: ${{ inputs.fallback-version }}
+          ALLOW_PAUSE_INPUT: ${{ inputs.allow-pause }}
         run: |
           set -euo pipefail
           RELEASE_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$'
@@ -70,6 +76,10 @@ jobs:
           fi
           if [ "$CONFIRM_INPUT" != "COMMIT" ]; then
             echo "::error::confirm input must be exactly COMMIT"
+            exit 1
+          fi
+          if [ "$ACTION_INPUT" != "withdraw" ] && [ "$ALLOW_PAUSE_INPUT" = "true" ]; then
+            echo "::error::allow-pause is withdraw-only"
             exit 1
           fi
           case "$ACTION_INPUT" in
@@ -91,9 +101,13 @@ jobs:
               [ -z "$RELEASE_ID_INPUT$EXPECTED_SHA256_INPUT" ] \
                 || { echo "::error::withdraw rejects commit/abandon inputs"; exit 1; }
               [[ "$WITHDRAW_VERSION_INPUT" =~ $CLEAN_SEMVER_RE ]] \
-                && [[ "$FALLBACK_VERSION_INPUT" =~ $CLEAN_SEMVER_RE ]] \
-                && [ "$WITHDRAW_VERSION_INPUT" != "$FALLBACK_VERSION_INPUT" ] \
-                || { echo "::error::withdraw requires two different clean versions"; exit 1; }
+                || { echo "::error::withdraw requires a clean version"; exit 1; }
+              if [ -n "$FALLBACK_VERSION_INPUT" ]; then
+                [[ "$FALLBACK_VERSION_INPUT" =~ $CLEAN_SEMVER_RE ]] \
+                  && [ "$WITHDRAW_VERSION_INPUT" != "$FALLBACK_VERSION_INPUT" ] \
+                  && [ "$ALLOW_PAUSE_INPUT" != "true" ] \
+                  || { echo "::error::fallback must differ and is mutually exclusive with allow-pause"; exit 1; }
+              fi
               ;;
             *) echo "::error::unsupported action"; exit 1 ;;
           esac
@@ -140,10 +154,12 @@ jobs:
           FW_CUSTOMER_RELEASE_TOKEN: ${{ secrets.FW_CUSTOMER_RELEASE_TOKEN }}
           WITHDRAW_VERSION_INPUT: ${{ inputs.withdraw-version }}
           FALLBACK_VERSION_INPUT: ${{ inputs.fallback-version }}
+          ALLOW_PAUSE_INPUT: ${{ inputs.allow-pause }}
         run: |
-          node scripts/release/payload-promote.mjs withdraw \
-            --withdraw "$WITHDRAW_VERSION_INPUT" \
-            --fallback "$FALLBACK_VERSION_INPUT"
+          args=(withdraw --withdraw "$WITHDRAW_VERSION_INPUT")
+          if [ -n "$FALLBACK_VERSION_INPUT" ]; then args+=(--fallback "$FALLBACK_VERSION_INPUT"); fi
+          if [ "$ALLOW_PAUSE_INPUT" = "true" ]; then args+=(--allow-pause); fi
+          node scripts/release/payload-promote.mjs "${args[@]}"
 
       - name: Render result (always)
         if: always()

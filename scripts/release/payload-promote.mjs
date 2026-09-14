@@ -21,8 +21,8 @@
 //       nothing is rebuilt after that gate.
 //
 //   withdraw (same environment-gated workflow and capability as commit)
-//     node payload-promote.mjs withdraw --withdraw <ver> --fallback <ver>
-//     • quarantine + pointer back to an explicit known-good, ONE CAS; the
+//     node payload-promote.mjs withdraw --withdraw <ver> [--fallback <ver> | --allow-pause]
+//     • quarantine + pointer to available previous-good (or explicit pause), ONE CAS; the
 //       fallback re-pin resets its retention clock (server-stamped).
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -34,6 +34,7 @@ import {
 	deriveVetoBinding,
 	ENTITLEMENT_POINTER,
 	isCleanSemver,
+	RETENTION_WINDOW_MS,
 	validateManifest,
 } from "../../packages/release-contract/src/index.mjs";
 import {
@@ -510,63 +511,102 @@ async function cmdCommit() {
 }
 
 async function cmdWithdraw() {
-	const args = parseCommandArgs({ valueFlags: ["withdraw", "fallback"] });
+	const args = parseCommandArgs({
+		valueFlags: ["withdraw", "fallback"],
+		booleanFlags: ["allow-pause"],
+		exclusive: [["fallback", "allow-pause"]],
+	});
 	const ver = args.withdraw ?? "";
-	const fallback = args.fallback ?? "";
-	if (!ver || !fallback)
-		die("withdraw: --withdraw <ver> --fallback <ver> required");
-	if (!isCleanSemver(ver) || !isCleanSemver(fallback)) {
-		die("withdraw: both versions must be clean payload semvers");
-	}
-	if (ver === fallback)
+	const explicitFallback = args.fallback ?? null;
+	if (!ver) die("withdraw: --withdraw <ver> required");
+	if (
+		!isCleanSemver(ver) ||
+		(explicitFallback !== null && !isCleanSemver(explicitFallback))
+	)
+		die("withdraw: versions must be clean payload semvers");
+	if (ver === explicitFallback)
 		die("withdraw: withdrawn and fallback versions must differ");
 	const client = clientFor("FW_CUSTOMER_RELEASE_TOKEN");
 	let outcome = "withdrawn";
-	await client.casUpdate((m) => {
-		const e = m.versions[ver];
-		if (!e) throw new Error(`withdraw: no such version ${ver}`);
-		const f = m.versions[fallback];
-		if (
-			!f ||
-			f.channel !== "release" ||
-			f.status !== "active" ||
-			!isCleanSemver(fallback)
-		) {
-			throw new Error(
-				`withdraw: fallback ${fallback} must be an ACTIVE release (fail-closed)`,
+	let fallback = null;
+	const expired = [];
+	await client.casUpdate(
+		(m, _current, { serverNowMs }) => {
+			expired.length = 0;
+			outcome = "withdrawn";
+			const e = m.versions[ver];
+			if (!e) throw new Error(`withdraw: no such version ${ver}`);
+			const latest = m.channels[CUSTOMER_POINTER].latest;
+			if (e.status === "quarantined") {
+				if (explicitFallback !== null && latest !== explicitFallback)
+					throw new Error(
+						"withdraw: quarantined version is not bound to the requested fallback",
+					);
+				fallback = latest;
+				outcome = "idempotent";
+				return false;
+			}
+			if (e.channel !== "release" || e.status !== "active")
+				throw new Error(`withdraw: ${ver} must be an ACTIVE release`);
+			if (latest !== ver)
+				throw new Error(
+					`withdraw: ${ver} is not the current ${CUSTOMER_POINTER} pointer`,
+				);
+			const candidates = Object.entries(m.versions).filter(
+				([v, entry]) =>
+					v !== ver &&
+					entry.channel === "release" &&
+					entry.status === "active" &&
+					(entry.retentionSince === null ||
+						Date.parse(entry.retentionSince) + RETENTION_WINDOW_MS.release >
+							serverNowMs),
 			);
-		}
-		if (
-			e.status === "quarantined" &&
-			m.channels[CUSTOMER_POINTER].latest === fallback
-		) {
-			outcome = "idempotent";
-			return false; // already withdrawn to this fallback (idempotent)
-		}
-		if (
-			e.channel !== "release" ||
-			e.status !== "active" ||
-			!isCleanSemver(ver)
-		) {
-			throw new Error(`withdraw: ${ver} must be an ACTIVE release`);
-		}
-		if (m.channels[CUSTOMER_POINTER].latest !== ver) {
-			throw new Error(
-				`withdraw: ${ver} is not the current ${CUSTOMER_POINTER} pointer`,
+			if (
+				explicitFallback !== null &&
+				!candidates.some(([v]) => v === explicitFallback)
+			)
+				throw new Error(
+					`withdraw: fallback ${explicitFallback} not re-pinnable (expired or not an active release)`,
+				);
+			candidates.sort(
+				(a, b) =>
+					(Date.parse(b[1].retentionSince) || 0) -
+						(Date.parse(a[1].retentionSince) || 0) ||
+					Date.parse(b[1].publishedAt) - Date.parse(a[1].publishedAt),
 			);
-		}
-		e.status = "quarantined";
-		m.channels[CUSTOMER_POINTER].latest = fallback;
-		return true;
-	}, "withdraw");
-	log(
-		`WITHDRAWN: ${ver} quarantined; ${CUSTOMER_POINTER}.latest = ${fallback} (fallback re-pin resets its retention clock server-side)`,
+			fallback = explicitFallback ?? candidates[0]?.[0] ?? null;
+			if (fallback === null) {
+				if (!args["allow-pause"])
+					throw new Error(
+						"withdraw: no re-pinnable previous-good; rerun with --allow-pause",
+					);
+				for (const [v, entry] of Object.entries(m.versions)) {
+					if (
+						v !== ver &&
+						entry.channel === "release" &&
+						entry.status === "active"
+					) {
+						entry.status = "expired";
+						expired.push(v);
+					}
+				}
+				outcome = "paused";
+			}
+			e.status = "quarantined";
+			m.channels[CUSTOMER_POINTER].latest = fallback;
+			return true;
+		},
+		"withdraw",
+		{ requireServerTime: true, timeGuardRetries: 3 },
 	);
+	log(`WITHDRAWN: ${ver}; ${CUSTOMER_POINTER}.latest = ${fallback}`);
 	emitResult({
 		action: "withdraw",
 		withdrawn: ver,
 		fallback,
+		latest: fallback,
 		outcome,
+		expired,
 	});
 }
 

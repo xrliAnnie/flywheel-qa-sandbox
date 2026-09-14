@@ -79,6 +79,7 @@ scripts/lib/lead-body-evidence.sh
 scripts/lib/bounded-run.sh
 scripts/packaged/create-compat-mirror.sh
 scripts/packaged/bootstrap-services.sh
+scripts/packaged/flywheel-auto-update.sh
 scripts/packaged/restart-packaged-services.sh
 # ── reviewed asset dirs (class patterns) ──
 scripts/lib/agent-cli-providers/*

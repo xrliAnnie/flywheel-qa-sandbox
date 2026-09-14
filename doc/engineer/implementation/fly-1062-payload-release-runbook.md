@@ -56,9 +56,21 @@ FW_ENDPOINT=… FW_BETA_PUBLISH_TOKEN=… node scripts/release/payload-release.m
 3. 候选被否 → 同一 workflow `action=abandon` + `release-id` → op `state=abandoned`。B1 期间仍须 founder go;B4 落地后由 B4 dispatch。对象随后按 §5 tombstone→delete。
 4. **失败恢复**:重跑 `payload-promote.mjs validate-snapshot`,再用完全相同的 action 输入重试。committed/abandoned 已达态为幂等成功;sha、kind、state 或当前指针不匹配一律 fail closed。
 
-## 4. withdraw(撤版;显式 fallback)
+## 4. withdraw(撤版;自动 previous-good 或显式暂停)
 
-有已知 active previous-good 时,在同一 `payload-promote-commit.yml` dispatch `action=withdraw`,`withdraw-version=<当前客户版本>`,`fallback-version=<已知好版本>`。脚本会在 CAS 内再次确认被撤版本就是当前 `customer-release` pointer,然后一次 CAS 将坏版本 quarantined 并回指 fallback;fallback re-pin 自动清零 retention 钟(服务端盖章)。不是当前 pointer、fallback 非 active release 或保留期已到、两版本相同或并发漂移都零写拒绝。客户视图即时回退;paused / 无 previous-good 仍归 FLY-1143 B5。
+先部署包含 `x-fw-server-time` admin 响应头与 release expire 权限的端点,再使用新版 withdraw 脚本。端点未升级或时间头不合法时,withdraw 在任何写入前失败;其它发布命令不强制此响应头。合入后先按 `payload-activation.yml` 部署 Worker,再 dispatch withdraw。
+
+在 `payload-promote-commit.yml` 的 release environment 中 dispatch `action=withdraw`,`withdraw-version=<当前客户版本>`:
+
+- `fallback-version` 留空:按服务端时间选择仍在 28 天保留期内、最近离开客户指针的 active release;时间相同则取发布时间较晚者。一次 CAS quarantine 坏版并 re-pin fallback,服务端清零其保留期时钟。
+- 指定 `fallback-version`:严格绑定该版本。已过期、不可见、非 active release、与撤版相同或重复调用时指针已不匹配均拒绝,绝不自动改选。
+- 无可用 previous-good 时默认零写拒绝。确认应暂停更新后设置 `allow-pause=true`:同一 CAS quarantine 坏版、将已过期 active release 标记 expired,并将客户指针设为 null。若仍有可用 fallback,即使允许暂停也优先回退。`allow-pause` 与显式 fallback 互斥。
+
+GET 与 POST 之间跨过保留期时,脚本只对指定的 re-pin/expire 时间守卫 422 最多重读重判三次;其它 422 直接失败。CAS 冲突也重新判定当前指针,不会撤掉并发推进的新版本。auto/allow-pause 的重复撤版不再写入,报告当前 latest;显式 fallback 的重放仍要求 exact binding。
+
+paused 客户 manifest 返回 `503 {"error":"no-release-available"}`;已有安装保持原版,新安装收到可重试错误。quarantine 后坏版不再出现在客户 manifest 或可下载版本中。恢复服务需按正常 prepare/commit 流程发布新版本,不复用被撤版本号。
+
+结果示例:`PROMOTE_RESULT {"action":"withdraw","withdrawn":"1.2.3","fallback":null,"latest":null,"outcome":"paused","expired":["1.2.2"]}`。此处命令与示例不代表已执行生产撤版。
 
 ## 5. retention 清理(dry-run 默认)
 
@@ -143,3 +155,40 @@ FLY-2102 已删除 broker、socket CLI、`FW_NPM_GAT_TOKEN` 和 Bridge token 供
 定时运行可延迟。运营核对最近一次**实际 apply 成功**，超过2小时没有成功就排查，必要时授权 dispatch 同一个 cleanup workflow。未激活 skip 不刷新成功时间。cleanup 无权 abandon live reservation；继续按 A1 先收口，再由全集 tombstone sweep 清理。读侧在14/28天截止立即隐藏历史，不依赖 scheduler。
 
 回退只回退 Worker 程序或停止调度；不回滚 schema1 manifest、pointer、keys、tombstones，不恢复已吊销 key。代码回退不能找回已删除对象。需要临时 stream 构建时保留 C1 的不可覆盖 key 与 PUT 当前对象保护，不能原样回到有破坏性竞态的旧 handler；stream 恢复服务仍不满足 B2 presign 验收。泄漏短链接等待最多60秒；signer secret 泄漏时吊销并更换 R2 credential，期间返回503，不把 bucket 改公开。REQ-0 仍禁止 merge/ship 自动触发客户 release。
+
+## B5 客户自动更新运维（FLY-2392）
+
+客户命令为 `npx @flywheel-ai/onboard auto-update on|off|status`，
+`status --json` 可供支持工具读取。人工 `install` / `update` 会刷新薄壳固定副本和
+`auto-update` 定时器；存量客户也可直接 `auto-update on` 迁移。旧 payload 不支持
+`bootstrap-services.sh --only auto-update` 时，先人工更新 payload。
+
+默认每 6 小时检查，安装时窗为本地 03:00 起 2 小时。配置在
+`<stateDir>/auto-update.json`，格式与范围见薄壳 README。修改后运行 `auto-update on`
+重装定时器。开启时先保留 `<stateDir>/auto-update.off`，成功安装载体后才移除；
+触发失败会恢复标记。关闭先写标记，即使停止 supervisor 失败，后续 tick 也跳过。
+
+- `<stateDir>/shell/current` 指向固定薄壳副本，保留当前和一个旧副本。
+- `<stateDir>/update-ledger.json` 保存 known-good、hold、pending 和 applying。
+  损坏账本拒绝修改安装状态，保留原字节供人工诊断；不要直接删掉账本绕过恢复。
+- `<stateDir>/logs/auto-update.log` 记录 tick 结果和拒绝原因；wrapper 运行前保留最近
+  256 KiB。日志和账本不含许可证密钥。
+- macOS 使用内核独占锁；进程退出自动释放，**不要删除 `update.lock`**。
+  Linux 使用目录锁；进程死亡后不自动回收。只有人工确认原进程已退出、没有活跃更新
+  后，才清理 `<stateDir>/update.lock.d` 再重试。活锁冲突退出 75，不改账本。
+
+更新失败先持久化本次失败记录，再恢复旧目录和服务。新进程先结算 applying，再进行
+任何安装、换授权码、更新或回滚；同一次失败重放不会重复增加 attempts。
+`health_failed` 一小时后允许第二次尝试，两次失败后停止自动重试。
+`manual_rollback` 与 `withdrawn_observed` 不自动过期；后者是客户端根据 manifest
+不再包含当前版本推断出的观察标签，不是 v1 wire 提供的撤版原因。
+
+`rollback` 不访问服务端，只用本地通过完整性验证的 previous-good；
+`install VERSION` 先验证客户 manifest 可见性，成功后清除该版本 hold。
+中央 quarantine/withdraw 后不可通过显式安装绕过，已过期的服务端版本也不可下载。
+撤版有可用 fallback 时，下一次启用的 tick 不受安装时窗限制；无 fallback 且明确
+`--allow-pause` 时，existing current 保持运行，首次安装诚实报暂停，不能声称已恢复。
+
+v1 检查的是安装后的即时重启结果，没有忙闲/会议检测，也不处理晚期 crash-loop。
+因此默认低活动时窗是运行约束；真正客户机的 launchd/systemd、服务健康与体验验收
+属于 QA/host 证据，夹具 E2E 不能替代。

@@ -53,32 +53,50 @@ export function makeClient({ endpoint, token, log = () => {} }) {
 		return res;
 	}
 
-	async function readManifest() {
+	async function readManifest({ requireServerTime = false } = {}) {
 		const res = await api("GET", "/admin/manifest");
 		if (res.status === 404) return { manifest: null, etag: null };
 		if (res.status !== 200) {
 			throw new Error(`cannot read manifest (HTTP ${res.status})`);
 		}
+		const time = res.headers.get("x-fw-server-time");
+		const serverNowMs = time === null ? null : Date.parse(time);
+		if (
+			(time === null && requireServerTime) ||
+			(time !== null &&
+				(!Number.isFinite(serverNowMs) ||
+					new Date(serverNowMs).toISOString() !== time))
+		) {
+			throw new Error("invalid or missing manifest server time");
+		}
 		return {
 			manifest: await res.json(),
 			etag: normalizeEtag(res.headers.get("etag")),
+			serverNowMs,
 		};
 	}
 
-	// casUpdate <mutate> <describe> — mutate(copy, current) returns:
+	// casUpdate <mutate> <describe> — mutate(copy, current, {serverNowMs}) returns:
 	//   true  → POST the mutated copy
 	//   false → nothing to do (idempotent success — e.g. a rerun found the
 	//           state already reached)
 	// mutate may also THROW to fail closed (e.g. same id, different tuple).
-	async function casUpdate(mutate, describe) {
+	async function casUpdate(
+		mutate,
+		describe,
+		{ requireServerTime = false, timeGuardRetries = 0 } = {},
+	) {
+		let timeGuardAttempts = 0;
 		for (let attempt = 0; attempt < CAS_RETRIES; attempt++) {
-			const { manifest, etag } = await readManifest();
+			const { manifest, etag, serverNowMs } = await readManifest({
+				requireServerTime,
+			});
 			if (!manifest)
 				throw new Error(
 					`${describe}: no manifest — initialize per runbook first`,
 				);
 			const copy = structuredClone(manifest);
-			if (!(await mutate(copy, manifest)))
+			if (!(await mutate(copy, manifest, { serverNowMs })))
 				return { manifest, etag, skipped: true };
 			const res = await api("POST", "/admin/manifest", {
 				baseEtag: etag,
@@ -97,6 +115,25 @@ export function makeClient({ endpoint, token, log = () => {} }) {
 				continue;
 			}
 			const err = await res.json().catch(() => ({}));
+			if (
+				res.status === 422 &&
+				timeGuardAttempts < timeGuardRetries &&
+				Array.isArray(err.violations) &&
+				err.violations.length > 0 &&
+				err.violations.every(
+					(violation) =>
+						typeof violation === "string" &&
+						/^versions\[[^\]]+\]: (?:re-pin refused — retention deadline passed|expire refused — retention window not elapsed)$/.test(
+							violation,
+						),
+				)
+			) {
+				timeGuardAttempts++;
+				log(
+					`${describe}: time guard — re-reading and re-judging (retry ${timeGuardAttempts})`,
+				);
+				continue;
+			}
 			throw new Error(
 				`${describe}: endpoint refused (HTTP ${res.status}) ${err.error ?? ""} ${
 					err.violations ? JSON.stringify(err.violations) : ""

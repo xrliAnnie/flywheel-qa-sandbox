@@ -15,6 +15,7 @@ import {
 	postManifest,
 	request,
 	seedBucketForManifest,
+	seedKey,
 	sha256Hex,
 	TOKENS,
 } from "./harness.mjs";
@@ -32,6 +33,27 @@ function seeded(manifest = fixtureManifest()) {
 function rawManifestBytes(bucket) {
 	return bucket.rawBytes("manifest.json").toString("utf8");
 }
+
+test("admin manifest time is canonical and follows the injected request clock", async () => {
+	const { deps, clock } = seeded();
+	for (const iso of ["2026-07-11T00:00:00.000Z", "2026-08-12T03:04:05.678Z"]) {
+		clock.set(iso);
+		const response = await request(deps, "GET", "/admin/manifest", {
+			token: TOKENS.release,
+		});
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.get("x-fw-server-time"), iso);
+	}
+});
+
+test("customer manifest does not expose the admin server-time header", async () => {
+	const { deps, bucket } = seeded();
+	const key = `fwk_${"e".repeat(32)}`;
+	seedKey(bucket, key);
+	const response = await request(deps, "GET", "/manifest", { token: key });
+	assert.equal(response.status, 200);
+	assert.equal(response.headers.get("x-fw-server-time"), null);
+});
 
 test("key issuance is create-only; identical replay writes nothing and cannot revive revoked keys", async () => {
 	const { deps, bucket, clock } = seeded();

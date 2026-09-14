@@ -141,6 +141,7 @@ lib/bounded-run.sh
 lib/codex-quota-summary.mjs
 packaged/create-compat-mirror.sh
 packaged/bootstrap-services.sh
+packaged/flywheel-auto-update.sh
 packaged/restart-packaged-services.sh"}
 
 # Whole asset dirs under scripts/ copied recursively.

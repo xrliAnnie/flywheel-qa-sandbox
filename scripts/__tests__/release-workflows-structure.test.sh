@@ -331,7 +331,7 @@ if "confirm" not in commit_inputs:
     failures.append("S13:commit-confirm-input-missing")
 expected_commit_inputs = {
     "confirm", "action", "release-id", "expected-sha256",
-    "withdraw-version", "fallback-version",
+    "withdraw-version", "fallback-version", "allow-pause",
 }
 if set(commit_inputs) != expected_commit_inputs:
     failures.append(f"S13:commit-inputs={sorted(commit_inputs)}")

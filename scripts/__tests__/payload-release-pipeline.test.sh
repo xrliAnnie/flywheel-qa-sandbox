@@ -553,7 +553,7 @@ const srv = http.createServer(async (req, res) => {
       m.releaseOps[id].sha256 = evilSha;
       m.releaseOps[id].ver = evilVer;
     }
-    res.writeHead(up.status, {"content-type": "application/json", etag: up.headers.get("etag") || ""});
+    res.writeHead(up.status, {"content-type": "application/json", etag: up.headers.get("etag") || "", "x-fw-server-time": up.headers.get("x-fw-server-time") || ""});
     res.end(JSON.stringify(m));
     return;
   }
@@ -660,6 +660,7 @@ const server = http.createServer(async (request, response) => {
 		response.writeHead(upstream.status, {
 			"content-type": "application/json",
 			etag: upstream.headers.get("etag") || "",
+			"x-fw-server-time": upstream.headers.get("x-fw-server-time") || "",
 		});
 		response.end(JSON.stringify(manifest));
 		return;
@@ -794,6 +795,7 @@ const server = http.createServer((request, response) => {
 		response.writeHead(200, {
 			"content-type": "application/json",
 			etag: '"cccccccccccccccccccccccccccccccc"',
+			"x-fw-server-time": "2026-09-08T12:00:00.000Z",
 		});
 		response.end(JSON.stringify(manifest));
 		return;

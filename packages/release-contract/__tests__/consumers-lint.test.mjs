@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const SCAN_ROOTS = [
 	path.join(ROOT, "packages/payload-endpoint/src"),
+	path.join(ROOT, "packages/onboard-shell/lib"),
 	path.join(ROOT, "scripts/release"),
 ];
 

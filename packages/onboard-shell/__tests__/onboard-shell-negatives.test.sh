@@ -215,6 +215,52 @@ else
 fi
 stop_stub
 
+# B5-N5-N8: exact error classification, without a network or installation side effect.
+if node --input-type=module - "$PKG_DIR" <<'JS'
+import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
+const root = pathToFileURL(`${process.argv[2]}/`);
+const { fetchManifest, downloadPayload, EndpointError } = await import(new URL("lib/endpoint.mjs", root));
+const { messageFor, exchangeWithRotation } = await import(new URL("lib/onboard.mjs", root));
+const { MSG } = await import(new URL("lib/messages.mjs", root));
+for (const [body, kind, message] of [
+  ['{"error":"no-release-available"}', "paused", "paused"],
+  ['{"error":"not activated"}', "notActivated", "notActivated"],
+  ['{"error":"download unavailable"}', "network", "network"],
+  ['{"error":"no-release-available-ish"}', "network", "network"],
+  ['not-json', "network", "network"],
+]) {
+  await assert.rejects(fetchManifest("https://fixture.test", "fixture-key", {
+    fetchImpl: async () => new Response(body, { status: 503 }),
+  }), error => {
+    assert.ok(error instanceof EndpointError);
+    assert.equal(error.kind, kind);
+    assert.equal(typeof MSG[message], "string");
+    assert.equal(messageFor(error), MSG[message]);
+    if (kind !== "network") assert.doesNotMatch(messageFor(error), /网络/);
+    return true;
+  });
+}
+await assert.rejects(exchangeWithRotation({ endpoint: "https://fixture.test" }, {
+  key: "fixture-key", persistOnSuccess: false,
+  fetchImpl: async () => new Response(JSON.stringify({ latest: "1.2.3", versions: [] })),
+}), error => {
+  assert.equal(error.kind, "protocol");
+  assert.equal(messageFor(error), MSG.generic);
+  return true;
+});
+await assert.rejects(downloadPayload("https://fixture.test", "fixture-key", "1.2.3", "a".repeat(64), {
+  fetchImpl: async () => new Response(null, { status: 404 }),
+}), error => {
+  assert.equal(error.kind, "notAvailable");
+  assert.equal(typeof MSG.versionNotAvailable, "string");
+  assert.equal(messageFor(error), MSG.versionNotAvailable);
+  return true;
+});
+JS
+then pass "B5-N5-N8 paused/not-activated/payload-404 classifications and honest messages"
+else fail "B5-N5-N8 endpoint classifications"; fi
+
 echo ""
 echo "onboard-shell-negatives: PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" -eq 0 ]

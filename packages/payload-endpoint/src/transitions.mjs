@@ -97,7 +97,12 @@ export function applyTransition(oldM, clientM, now) {
 			} else if (nu.status === "quarantined") {
 				ops.push({ type: "quarantine", ver });
 			} else {
-				ops.push({ type: "expire", ver, fromStatus: old.status });
+				ops.push({
+					type: "expire",
+					ver,
+					fromStatus: old.status,
+					channel: old.channel,
+				});
 			}
 		}
 	}
@@ -328,6 +333,11 @@ export function capabilityAllows(capability, op) {
 		case "quarantine":
 			return capability === RELEASE_CAPABILITY;
 		case "expire":
+			return (
+				capability === "ops-admin" ||
+				capability === "cleanup" ||
+				(capability === RELEASE_CAPABILITY && op.channel === "release")
+			);
 		case "tombstone":
 			return capability === "ops-admin" || capability === "cleanup";
 		default:

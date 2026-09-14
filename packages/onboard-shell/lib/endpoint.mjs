@@ -14,7 +14,7 @@ import { isSafeVersion } from "./config.mjs";
 export class EndpointError extends Error {
 	constructor(kind, message) {
 		super(message);
-		this.kind = kind; // "unauthorized" | "network" | "protocol"
+		this.kind = kind; // unauthorized/network/protocol/checksum/paused/notActivated/notAvailable
 	}
 }
 
@@ -38,6 +38,13 @@ export async function fetchManifest(endpoint, key, { fetchImpl = fetch } = {}) {
 			"unauthorized",
 			`endpoint rejected the key (${res.status})`,
 		);
+	}
+	if (res.status === 503) {
+		const body = await res.json().catch(() => null);
+		if (body?.error === "no-release-available")
+			throw new EndpointError("paused", "release updates paused");
+		if (body?.error === "not activated")
+			throw new EndpointError("notActivated", "release channel not activated");
 	}
 	if (!res.ok)
 		throw new EndpointError("network", `manifest HTTP ${res.status}`);
@@ -100,6 +107,8 @@ export async function downloadPayload(
 			`endpoint rejected the key (${res.status})`,
 		);
 	}
+	if (res.status === 404)
+		throw new EndpointError("notAvailable", "payload version unavailable");
 	if (!res.ok) throw new EndpointError("network", `payload HTTP ${res.status}`);
 	let buf;
 	try {
