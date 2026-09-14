@@ -279,6 +279,9 @@ jobs:
         timeout-minutes: 8
         run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
 
+      - name: Test — FLY-2549 summary preflight with stale workspace dist
+        run: bash scripts/__tests__/restart-summary-source-preflight.test.sh
+
       # FLY-2331: run the real 70s nonblocking child arm and the same fixture's
       # 61s sync mutant under the production EventLoopGuard. The harness owns
       # isolated HOME/state/process groups and has independent hard deadlines.

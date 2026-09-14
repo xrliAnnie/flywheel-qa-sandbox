@@ -1,0 +1,11 @@
+{
+	"compilerOptions": {
+		"paths": {
+			"flywheel-config": ["../packages/config/src/index.ts"],
+			"flywheel-core": ["../packages/core/src/index.ts"],
+			"flywheel-comm/lead-identity": [
+				"../packages/flywheel-comm/src/lead-identity.ts"
+			]
+		}
+	}
+}

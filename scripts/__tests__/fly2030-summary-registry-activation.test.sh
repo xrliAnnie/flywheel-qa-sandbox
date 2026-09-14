@@ -26,6 +26,7 @@ awk '
 cat > "$ROOT/bin/pnpm" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PNPM_CALLS"
+printf '%s\n' "${TSX_TSCONFIG_PATH:-}" >> "$PNPM_CALLS.tsconfig"
 exit "${PNPM_RC:-0}"
 FAKE
 chmod +x "$ROOT/bin/pnpm"
@@ -52,6 +53,9 @@ fi
 grep -Fq -- "--dir $ROOT/repo exec tsx $ROOT/repo/packages/flywheel-comm/src/bin/summary-registry.ts verify-activation --projects-file $ROOT/projects.json --receipt-file $ROOT/receipt.json" "$ROOT/pnpm.calls" \
   && pass "verifier receives the exact live registry and receipt paths" \
   || fail "verifier argv drifted"
+grep -Fxq "$ROOT/repo/scripts/tsconfig.restart-preflight.json" "$ROOT/pnpm.calls.tsconfig" \
+  && pass "source mapping is exported for both tsx verifier processes" \
+  || fail "source mapping environment is missing"
 
 PNPM_RC=23
 if run_preflight >/dev/null 2>&1; then

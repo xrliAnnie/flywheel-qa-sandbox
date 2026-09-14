@@ -736,6 +736,7 @@ expected_setup = [
 ]
 expected_shard_tests = {
     "script-tests": [
+        "Test — FLY-2549 summary preflight with stale workspace dist",
         "Test — FLY-2331 Bridge async-child guard regression",
         "Test — FLY-1707 incident replay",
         "Test — FLY-1393 flag truth CLI",

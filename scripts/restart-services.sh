@@ -197,8 +197,9 @@ log() {
 
 # FLY-2030: the new required summary assignment schema/rule bundle may activate
 # only after the live registry passes BOTH parser entrances and still matches
-# its migration receipt. This source-mode preflight runs after pulling main but
-# before build, Bridge stop, Lead bootout, or any other service mutation.
+# its migration receipt. Source mappings also reach the child TeamLead validator,
+# so this pre-build check never mixes new source with deployed workspace dist.
+# It runs before Bridge stop, Lead bootout, or any other service mutation.
 summary_registry_activation_preflight() {
     local source_cli="${FLYWHEEL_DIR}/packages/flywheel-comm/src/bin/summary-registry.ts"
     local projects_path="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
@@ -211,6 +212,7 @@ summary_registry_activation_preflight() {
         log "ERROR: summary registry activation refuses inline FLYWHEEL_PROJECTS split-brain"
         return 1
     fi
+    TSX_TSCONFIG_PATH="${FLYWHEEL_DIR}/scripts/tsconfig.restart-preflight.json" \
     pnpm --dir "$FLYWHEEL_DIR" exec tsx "$source_cli" verify-activation \
         --projects-file "$projects_path" \
         --receipt-file "$receipt_path"
