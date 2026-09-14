@@ -1563,7 +1563,12 @@ describe("DirectEventSink — FLY-2293 Linear started-state sync", () => {
 	it("times out without failing the already-running session", async () => {
 		vi.useFakeTimers();
 		vi.spyOn(console, "warn").mockImplementation(() => {});
-		linearSdk.issue.mockReturnValue(new Promise(() => undefined));
+		const issueRequested = new Promise<void>((resolve) => {
+			linearSdk.issue.mockImplementation(() => {
+				resolve();
+				return new Promise(() => undefined);
+			});
+		});
 		const sink = new DirectEventSink(
 			store,
 			makeConfig({ linearApiKey: "k" }),
@@ -1571,6 +1576,8 @@ describe("DirectEventSink — FLY-2293 Linear started-state sync", () => {
 		);
 
 		const emitted = sink.emitStarted(makeEnvelope());
+		// Finish the SDK import before timing out, so its mock cannot leak into the next test.
+		await issueRequested;
 		await vi.advanceTimersByTimeAsync(15_000);
 		await expect(emitted).resolves.toBeUndefined();
 
