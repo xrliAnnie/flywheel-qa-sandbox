@@ -147,6 +147,13 @@ export class BetaReleaseScheduler {
 			}),
 		);
 	}
+	private readDeployedSource(): string {
+		const deployed = this.options.localDeployedSha?.();
+		if (typeof deployed !== "string" || !/^[a-f0-9]{40}$/.test(deployed))
+			throw new BetaSourceError("beta_source_unavailable");
+		return deployed;
+	}
+
 	private async projectTick(project: BetaProjectConfig): Promise<void> {
 		const { store, transport } = this.options;
 		const now = this.options.now?.() ?? Date.now();
@@ -341,6 +348,8 @@ export class BetaReleaseScheduler {
 			status = owner;
 			if (owner !== "bridge") return;
 			if (!store.lane(project.projectName)) {
+				if (project.config!.source_commit === "local_deployed_sha")
+					this.readDeployedSource();
 				await transport.assertDrained(binding, signal);
 				owner = await transport.owner(binding, signal);
 				if (owner !== "bridge") return;
@@ -354,9 +363,7 @@ export class BetaReleaseScheduler {
 			const origin = project.config!.source_commit;
 			let sha: string;
 			if (origin === "local_deployed_sha") {
-				const deployed = this.options.localDeployedSha?.();
-				if (typeof deployed !== "string" || !/^[a-f0-9]{40}$/.test(deployed))
-					throw new BetaSourceError("beta_source_unavailable");
+				const deployed = this.readDeployedSource();
 				if (!(await transport.onDefaultBranch(binding, deployed, signal)))
 					throw new BetaSourceError("beta_source_not_on_default_branch");
 				sha = deployed;

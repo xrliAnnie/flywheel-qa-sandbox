@@ -494,8 +494,18 @@ it.each(["missing", "uninjected", "invalid", "off-branch", "github"] as const)(
 			now: () => now,
 			...(mode === "uninjected" ? {} : { localDeployedSha: () => source }),
 		};
+		const drained = vi.spyOn(f.transport, "assertDrained");
 		const scheduler = new BetaReleaseScheduler(options);
 		await scheduler.tick();
+		const unavailable = ["missing", "invalid", "uninjected"].includes(mode);
+		if (unavailable) {
+			expect(store.betaSchedules.lane("a")).toBeNull();
+			expect(drained).not.toHaveBeenCalled();
+			expect(scheduler.snapshot()[0]).toMatchObject({
+				status: "attention",
+				reason: "beta_source_unavailable",
+			});
+		}
 		now = 6 * hour;
 		await scheduler.tick();
 		const reason =
@@ -509,9 +519,10 @@ it.each(["missing", "uninjected", "invalid", "off-branch", "github"] as const)(
 			reason,
 			sourceOrigin: "local_deployed_sha",
 		});
-		expect(store.betaSchedules.observation("a")?.pollAfterMs).toBe(
-			now + 900000,
-		);
+		if (!unavailable)
+			expect(store.betaSchedules.observation("a")?.pollAfterMs).toBe(
+				now + 900000,
+			);
 		expect(store.betaSchedules.active("a")).toBeNull();
 		expect(f.dispatched).toHaveLength(0);
 		expect(head).not.toHaveBeenCalled();
@@ -519,20 +530,28 @@ it.each(["missing", "uninjected", "invalid", "off-branch", "github"] as const)(
 			expect(compare).not.toHaveBeenCalled();
 		source = "b".repeat(40);
 		broken = false;
-		const resumed = new BetaReleaseScheduler({
-			...options,
-			localDeployedSha: () => source,
-		});
+		options.localDeployedSha = () => source;
+		// Unbound cooldown is process-local; bound lanes persist it across restart.
+		const resumed = unavailable ? scheduler : new BetaReleaseScheduler(options);
 		now += 899999;
 		await resumed.tick();
 		expect(f.dispatched).toHaveLength(0);
 		now = 19 * hour;
 		await resumed.tick();
+		if (unavailable) {
+			expect(f.dispatched).toHaveLength(0);
+			expect(store.betaSchedules.lane("a")).toMatchObject({
+				activatedAtMs: now,
+				nextDueAtMs: now + 6 * hour,
+			});
+			now += 6 * hour;
+			await resumed.tick();
+		}
 		expect(f.dispatched).toHaveLength(1);
 		expect(f.dispatched[0]!.occurrence).toMatchObject({
 			sourceCommit: source,
 			sourceOrigin: "local_deployed_sha",
-			scheduledAtMs: 18 * hour,
+			scheduledAtMs: (unavailable ? 25 : 18) * hour,
 		});
 		expect(head).not.toHaveBeenCalled();
 	},

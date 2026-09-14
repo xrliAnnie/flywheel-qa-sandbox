@@ -46,7 +46,7 @@ Issue: FLY-2393 (https://linear.app/geoforge3d/issue/FLY-2393)
 这个文件是宿主机全局状态，不是每项目文件；误配其他项目将受默认分支 compare 守卫约束。
 
 沿用上文的凭据配置、暂停、排空与 owner 接管步骤；本改动不会自动接管 legacy。
-经运维授权接管 flywheel 时，在既有 beta_release 段内添加：
+经运维授权接管 flywheel 时，先通过下述 FLY-2541 reader 激活守卫，再在既有 beta_release 段内添加：
 
 ```yaml
 source_commit: local_deployed_sha
@@ -59,7 +59,8 @@ source_commit: local_deployed_sha
 验收须使用真实 occurrence 和真实 beta 回执：
 `published | no_change` 的 `publishedSourceCommit` 必须等于 occurrence 的 source_commit，
 并用该 SHA 请求 B3 verdict，核对 `subject.sourceCommit === evidence.localDeployedSha`。
-Lead 裁定允许 `soak_insufficient | green | hold`，
+FLY-2541 第二轮按本单 QA 判据要求 `green | hold`；旧 FLY-2508 曾允许的
+`soak_insufficient` 在本轮只能记为尚未验收，不能修改 soak policy 凑通过，
 但不能含 `no_deployment_evidence` 或 `not_currently_deployed`。
 `covered_by_newer` 表示已有后代版本，安全结算但不能充当同 SHA 对齐验收；
 等待后续 `published | no_change`。真实运行还依赖 FLY-2534 workflow 修复落地。
@@ -68,3 +69,40 @@ Lead 裁定允许 `soak_insufficient | green | hold`，
 旧解析器不认识此键，会将配置判为 config_invalid 并停止新派发。
 数据库的 nullable source_origin 列可保留，历史行保持 NULL，无需删除列或回填数据。
 本策略不改变 updater 节奏、B3 soak policy 或发布工作流。
+
+
+## FLY-2541：真实 reader 激活守卫
+
+接管前必须已由独立部署流程部署包含 FLY-2541 runtime 接线和首次激活守卫的 Bridge。
+仅部署 #1156 的 B3 endpoint，或仅配置 source_commit，都不能证明 beta runtime 已接线。
+以部署回执中的构建 SHA 对照已合入的实现版本；不依靠配置标签判断运行字节。
+
+在 owner 仍为 legacy 时，由授权运维请求**同一实际 Bridge 进程**的鉴权接口：
+`GET /api/release-readiness/verdict?baseVersion=<真实基础版本>&commit=<真实beta sourceCommit>`。
+使用既有 Bridge 凭据通道，不把 token 写进记录。此 GET 会追加 verdict 历史，是有记录的验收动作。
+保存返回的 subject、evaluatedAt、evidence.localDeployedSha。后者必须是有效 40 位小写 SHA，
+并与计划取源的宿主部署 commit 相符；B3 和 beta runtime 共用该 Bridge 的
+FLYWHEEL_DEPLOYED_SHA_FILE（未设时 ~/.flywheel/deployed-sha）。shell 中单独 cat 不算进程读取证明。
+HTTP 错误、缺少 evidence 或 localDeployedSha=null 时拒绝接管。
+这个探针证明 reader 当时可读，不代表 beta 已发布或 B3 已通过。
+
+通过探针后才执行上文 paused、排空、bridge 的授权步骤。
+local_deployed_sha 策略在尚未绑定 lane 时，scheduler 会在 owner=bridge 后、
+assertDrained 之前再次校验实际 reader；缺席、null 或非法 SHA 均报
+attention / beta_source_unavailable，不创建 activatedAt、不 reserve、不 dispatch、不回退 HEAD。
+文件在探针后消失也会被这道守卫拦住。
+恢复 reader 后遵循既有 15 分钟冷却，成功激活时才开始完整 interval 计时：
+6h lane 首次到期为恢复激活后 6h，24h lane 为 24h，不补发失败期间的周期。
+到期再读文件并执行默认分支 compare；已冻结的在途 occurrence 沿用原 SHA 恢复。
+
+失败时不得强行改 owner=bridge。若仍在 legacy，保持原供给；
+若已 paused，按回滚段排空 live/unknown 提交后恢复 legacy 才能恢复原 6h 供给。
+paused 本身会停止供给，不能把它当作正常运行状态。
+
+第二轮验收另存真实 beta version、Actions run URL、published/no_change receipt、
+occurrence 的 source_commit/source_origin、publishedSourceCommit 和 B3 verdict。
+要求 subject.sourceCommit、publishedSourceCommit、occurrence.source_commit、
+evidence.localDeployedSha 同 SHA，并记录默认分支 compare 的 identical/ahead 关系及 SHA。
+B3 返回的 state 必须为 green 或 hold，且有实际归因；不得含 no_deployment_evidence 或 not_currently_deployed，
+lane 不再报 beta_source_unavailable。covered_by_newer 不算同源验收。
+实现侧临时文件和网络 fixture 测试不能替代这份真实记录。
