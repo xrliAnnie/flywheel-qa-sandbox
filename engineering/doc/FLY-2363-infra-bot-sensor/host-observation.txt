@@ -1,0 +1,32 @@
+Observed at 2026-09-13T22:46:25.797206+00:00
+Checkout HEAD 26ebc4931ba41e0a626ee14075f6de5359815ab5
+FLYWHEEL_CODEX_INFRA_BOT_JOB in .env: []
+FLYWHEEL_FLEET_SENSOR_BOT in .env: []
+{"plist": "/Users/xiaorongli/Library/LaunchAgents/com.flywheel.bridge.plist", "Label": "com.flywheel.bridge", "KeepAlive": true, "ThrottleInterval": 30, "targetEnv": {"FLYWHEEL_CODEX_INFRA_BOT_JOB": null, "FLYWHEEL_FLEET_SENSOR_BOT": null}}
+launchctl print gui/501/com.flywheel.bridge rc=0
+	state = running
+	runs = 135
+	pid = 64987
+	last exit code = 143
+		state = active
+		state = active
+	job state = running
+{"plist": "/Users/xiaorongli/Library/LaunchAgents/com.flywheel.lead.flywheel-codex-infra-bot-lead.plist", "Label": "com.flywheel.lead.flywheel-codex-infra-bot-lead", "KeepAlive": true, "ThrottleInterval": 30, "targetEnv": {"FLYWHEEL_CODEX_INFRA_BOT_JOB": null, "FLYWHEEL_FLEET_SENSOR_BOT": null}}
+launchctl print gui/501/com.flywheel.lead.flywheel-codex-infra-bot-lead rc=0
+	state = running
+	runs = 137
+	pid = 66949
+	last exit code = 3
+		state = active
+		state = active
+ps -E denied: [Errno 1] Operation not permitted: 'ps'
+Selected recent log lines from /tmp/flywheel-lead-flywheel-codex-infra-bot-lead.log
+[codex-infra-bot-wrapper] 15:45:23 Starting Codex InfraBot WINDOWED FULL-ACCESS (TUI) Lead (projectDir=/Users/xiaorongli/Dev/flywheel)
+[link-truth] home=/Users/xiaorongli/.codex-infra-bot state=refused reason=lead-job-running
+codex-home-link-truth failed rc=3
+[codex-infra-bot-wrapper] 15:45:53 Starting Codex InfraBot WINDOWED FULL-ACCESS (TUI) Lead (projectDir=/Users/xiaorongli/Dev/flywheel)
+[link-truth] home=/Users/xiaorongli/.codex-infra-bot state=refused reason=lead-job-running
+codex-home-link-truth failed rc=3
+[codex-infra-bot-wrapper] 15:46:24 Starting Codex InfraBot WINDOWED FULL-ACCESS (TUI) Lead (projectDir=/Users/xiaorongli/Dev/flywheel)
+[link-truth] home=/Users/xiaorongli/.codex-infra-bot state=refused reason=lead-job-running
+codex-home-link-truth failed rc=3

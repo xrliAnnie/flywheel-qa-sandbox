@@ -1054,6 +1054,7 @@ jobs:
       # above (jq/sqlite3/shasum), so CI already has the deps.
       - name: Test — FLY-927 infra-alert shell path
         run: |
+          node --test scripts/__tests__/infra-bot-sensor-preflight.test.mjs
           bash scripts/__tests__/lead-alert-fly927.test.sh
           bash scripts/__tests__/lead-alert-external-kind.test.sh
           bash scripts/__tests__/bridge-wrapper-fail-loud.test.sh
