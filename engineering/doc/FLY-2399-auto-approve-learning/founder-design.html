@@ -1,0 +1,86 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2399 · 自动审批判断与学习</title><style>
+:root{color-scheme:light;--ink:#1d1d1f;--muted:#6e6e73;--blue:#007aff}
+*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif;line-height:1.75}
+main{max-width:960px;margin:auto;padding:40px 22px 80px}header{padding:10px 6px 30px}h1{font-size:clamp(28px,5vw,42px);line-height:1.25;letter-spacing:-.04em;margin:8px 0 12px}h2{font-size:21px;letter-spacing:-.015em;margin:0 0 20px}.eyebrow{font-size:12px;letter-spacing:.15em;color:var(--blue);font-weight:650}.muted,.small{color:var(--muted);font-size:13px}.card{background:#fff;border:1px solid #e8e8ed;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:28px;margin-bottom:20px}.hero{font-size:24px;line-height:1.65;margin-top:0}p{margin:12px 0}.tag{display:inline-block;padding:5px 10px;background:#edf5ff;color:#145b9b;border-radius:6px;font-size:12px;margin:8px 8px 0 0}.diagram{overflow-x:auto}.diagram svg{display:block;max-width:100%;height:auto;margin:8px auto 24px}.pending{padding:20px;border:1px dashed #c58c33;border-radius:8px;background:#fffaf0;color:#725320;font-size:14px;margin:12px 0 22px}.pending strong{font-size:12px;letter-spacing:.06em}.pending p{margin:6px 0}dl{margin:18px 0}dt{font-weight:650;color:#15599c;margin-top:18px}dd{margin:5px 0 0}.sample{background:#f5f5f7;padding:18px;border-radius:8px}code{font:13px "SFMono-Regular",Consolas,monospace;background:#f5f5f7;padding:3px 6px;border-radius:4px}li{margin:7px 0}.comment{border-top:1px solid #ececf0;margin-top:24px;padding-top:18px}label{display:block;font-size:13px;color:var(--muted);margin-bottom:8px}label span{margin-left:12px;color:#237343}textarea{width:100%;min-height:76px;resize:vertical;border:1px solid #d2d2d7;border-radius:8px;padding:12px;font:inherit;font-size:14px;background:#fcfcfd}textarea:focus{outline:2px solid #7ab7ff;outline-offset:2px}button{background:var(--blue);color:#fff;border:0;border-radius:7px;padding:10px 16px;font:inherit;font-size:14px;cursor:pointer;margin:14px 12px 0 0}.secondary{background:#eaf3ff;color:#15599c}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui,sans-serif;background:#f5f5f7;padding:16px;border-radius:8px}.chunk{margin-top:18px}#copy-status{font-size:13px;color:var(--muted)}a{color:#0067d6;text-decoration:none}@media(max-width:600px){main{padding:22px 12px 50px}.card{padding:22px 18px;border-radius:12px}.hero{font-size:21px}h2{font-size:18px}}
+</style></head><body><main><header><div class="eyebrow">FLY-2399 · 设计说明 · 2026-09-10 PT</div><h1>先说清为什么，再从你的决定里学。</h1><p class="muted">每卡三点意见 · 仍由你批准 · 每节都能留言</p></header><section class="card" id="summary"><h2>01 / 一句话</h2><p class="hero">每张卡先说清<strong>按要求做了吗、会撞别的工作吗、测试覆盖了吗</strong>，再对照你的决定学习。</p><p>Lead 是工程组长；dry_run 是只试判、不代你批准。本轮先用于Flywheel项目。你照旧过卡，也可以直接否决。</p><span class="tag">代码也能建议可</span><span class="tag">没有60分钟否决窗</span><span class="tag">本次不放开自动批准</span><div class="comment"><label for="comment-summary">这一节的意见<span data-saved="summary" aria-live="polite"></span></label><textarea id="comment-summary" data-comment="summary" data-title="01 / 一句话" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="flow"><h2>02 / 从一张卡，到一条可核对的判断</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>Mermaid 本地图待渲染；两次本地尝试均被浏览器启动权限阻止。下方文字保留完整流程含义。</p></div><p>新卡出现后，系统固定这一刻的要求、设计和测试材料；给出三点意见；你作决定；有分歧就在原讨论串问一句，再保留双方依据。</p><p>只有在你决定前已经贴到卡下的意见，才算提前预测；这不等于证明你已读过它。晚到的意见照样留档，但不拿来算成绩。</p><div class="comment"><label for="comment-flow">这一节的意见<span data-saved="flow" aria-live="polite"></span></label><textarea id="comment-flow" data-comment="flow" data-title="02 / 从一张卡，到一条可核对的判断" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="criteria"><h2>03 / 三点，各自看证据</h2><dl><dt>① 按已确认要求做了吗</dt><dd>PRD 是产品要求文档。模型对照它、设计计划和已确认修订，把每条要求连到改动文件与原文。</dd><dt>② 会撞正在做的工作吗</dt><dd>PR 是一组待合并改动。系统检查它能否合进当前主分支，再检查同项目所有已公开待审改动有没有改同一文件；有同改就指出具体PR与路径。</dd><dt>③ 所有使用情形都测了吗</dt><dd>QA 是质量验证。每个 use case 就是用户可能遇到的一种操作情形，必须对应测试、结果和报告位置；测试总数很多不等于覆盖完整。</dd></dl><p>冲突检查只证明主分支合并与在飞文件交集这两个范围，不能声称排除了全部运行时冲突。</p><div class="comment"><label for="comment-criteria">这一节的意见<span data-saved="criteria" aria-live="polite"></span></label><textarea id="comment-criteria" data-comment="criteria" data-title="03 / 三点，各自看证据" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="verdict"><h2>04 / 四种回答，避免把不清楚说成否决</h2><dl><dt>可</dt><dd>三点都有证据且通过。代码、配置、保护路径都可以被这样建议。</dd><dt>不可</dt><dd>发现已知阻碍，例如与在飞PR改同一文件，需要先协调。</dd><dt>建议拒</dt><dd>已证实偏离要求或关键测试失败，建议你打回。</dd><dt>不可判定</dt><dd>材料不全、引用对不上、模型失败或超过预算；这是不知道，不是已判工作不好。</dd></dl><p>以上全是机器意见，不是批准。新的「可」不会改写现有自动批准规则。</p><div class="comment"><label for="comment-verdict">这一节的意见<span data-saved="verdict" aria-live="polite"></span></label><textarea id="comment-verdict" data-comment="verdict" data-title="04 / 四种回答，避免把不清楚说成否决" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="model"><h2>05 / 每句话都能追到当时材料</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>Mermaid 本地图待渲染；两次本地尝试均被浏览器启动权限阻止。下方文字保留完整流程含义。</p></div><p>卡片固定全部仓库的改动版本，输入包固定当时读到的要求、设计与测试；机器意见记录原句依据和何时让你看见；实际决定记录作者和原话；澄清把双方连接起来。</p><p>head 是改动的版本指纹。换了版本就重新判断，旧意见不能套到新代码。审计是可追溯的记录：旧判断保留，修正以新记录追加。</p><div class="comment"><label for="comment-model">这一节的意见<span data-saved="model" aria-live="polite"></span></label><textarea id="comment-model" data-comment="model" data-title="05 / 每句话都能追到当时材料" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="learning"><h2>06 / 判断不同，就问清差在哪</h2><p>机器说「可」，你打回或取消；或机器劝退，你批准：系统在原讨论串问一句，并附双方依据。你明确回复这条问题后，答案进入学习账，收到「已记录，未改变批准」收据。</p><div class="sample"><p>问题示例：这次我按三点建议可，你决定取消，是哪条要求被我漏看了，还是方向变了？</p></div><p>FLY-2107已有这种分歧；取消原因仍待你确认。暂按产品方向否决记录，不把推测训练成规则。</p><p>事后回看6条不是提前预测；尚未决定、代理决定、自动批准和不可判定各自列出。系统不会拿自己的自动批准教自己，也不会自动改规矩或开启开关。</p><div class="comment"><label for="comment-learning">这一节的意见<span data-saved="learning" aria-live="polite"></span></label><textarea id="comment-learning" data-comment="learning" data-title="06 / 判断不同，就问清差在哪" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="visibility"><h2>07 / 卡、审计和进度页都能找到</h2><p>卡下保留一条机器意见和原检查时间；无关评论、标签变化不重写消息，实际结论变化才更新。项目进度页预览最新20张卡并显示总数；点开独立历史页，每页20条，可查看最近30天的机器建议、你的决定和待澄清项，包括已经完成的工作。更早记录仍可按审计编号查询。历史页最多每30分钟更新一次，内容没变沿用原链接；它发布失败或缓慢不会拖住当前进度页。</p><p>现行纯文档自动道若批准，卡上写「窄口自动批」并记录来源；它与「机器建议可」是不同的事实。组长自己的判断继续放在原来的位置。</p><p><strong>一键撤销尚未定案，本轮不建。</strong>撤销走现有 revert PR，即提交一份抵消原改动的新改动。它不等于立即恢复线上数据。合并后仍由独立更新服务按原窗口部署。</p><div class="comment"><label for="comment-visibility">这一节的意见<span data-saved="visibility" aria-live="polite"></span></label><textarea id="comment-visibility" data-comment="visibility" data-title="07 / 卡、审计和进度页都能找到" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="cost"><h2>08 / 判断有资源上限，失败照样可见</h2><p>采用中央配置的 Opus 模型档，保存实际模型版本。单次最多120秒、一次只评一张卡、每卡最多3个模型材料版本、每项目每天最多30次。</p><p>只改主分支或在飞文件时刷新机械检查，不重跑模型。模型超限会给出「不可判定：预算上限」。每卡每小时最多6版意见、6次消息编辑；额外变化合并等待，进度页显示待更新，旧意见不计当前预测成绩。模型只读冻结材料，不给它操作仓库、联网查资料或批准的工具；输入太大不谎称读完。</p><p>订阅资源也有成本。记录用量和耗时；工具没提供的成本写未知，不编造金额。</p><div class="comment"><label for="comment-cost">这一节的意见<span data-saved="cost" aria-live="polite"></span></label><textarea id="comment-cost" data-comment="cost" data-title="08 / 判断有资源上限，失败照样可见" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="tradeoffs"><h2>09 / 这轮选择与舍弃</h2><p><strong>采用三点证据判断＋人工对照。</strong>能覆盖代码工作，又能看到它何时判断错了。</p><p>旧纯文档三闸的快照与样本继续收集，保留在既有自动道中，不再充当新机器意见的判据；新模块只在试判模式出意见。</p><p>不采用直接让模型批准、只看测试数量、仅用文件类别、事后补录冒充预测。澄清答案也不会直接更新规则，规律要带反例再审查。</p><div class="comment"><label for="comment-tradeoffs">这一节的意见<span data-saved="tradeoffs" aria-live="polite"></span></label><textarea id="comment-tradeoffs" data-comment="tradeoffs" data-title="09 / 这轮选择与舍弃" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="boundary"><h2>10 / 你仍有决定权；当前交付的边界</h2><p>合并前，照旧可以批准、打回、取消。合并后的解释只追加到学习账，不能取消已经合并的代码；进一步改动由组长沿现有任务与撤销流程推进。</p><p>这份设计已经按新指令进入引擎功能范围，后续另有实现和独立QA。本节点只交设计与页面，尚无真实模型质量或整条链路通过的证明。</p><p>本轮不修改授权规则、不放开自动批准、不做一键撤销、不部署。B4两周表不存在且已从本单前置中移除。</p><p class="small">图的本地浏览器启动被系统权限阻止，标准参数重试仍失败；保留Mermaid源码与待渲染标记。评论逻辑可做隔离脚本验证，但这不等于浏览器视觉验收。</p><div class="comment"><label for="comment-boundary">这一节的意见<span data-saved="boundary" aria-live="polite"></span></label><textarea id="comment-boundary" data-comment="boundary" data-title="10 / 你仍有决定权；当前交付的边界" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="feedback"><h2>11 / 意见汇总</h2><p>每节留言实时汇总，长意见分段复制；这里只保存修改意见，不是通过信号。留言不跨设备同步，不会自动发给组长。</p><div class="comment"><label for="comment-feedback">这一节的意见<span data-saved="feedback" aria-live="polite"></span></label><textarea id="comment-feedback" data-comment="feedback" data-title="11 / 总体意见" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div><button type="button" id="copy-all">复制全部意见</button><span id="copy-status" role="status"></span><div id="comment-chunks"></div></section><script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2399';
+  const prefix = 'flywheel:design-comments:' + location.pathname + ':';
+  const inputs = Array.from(document.querySelectorAll('textarea[data-comment]'));
+  const chunksBox = document.getElementById('comment-chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  function splitText(text) {
+    const chars = Array.from(text);
+    const room = 1800 - Array.from(marker).length - 1;
+    if (!chars.length) return [marker + '\n（暂无意见）'];
+    const result = [];
+    let part = '';
+    for (const char of chars) {
+      if (part.length + char.length > room) {
+        result.push(marker + '\n' + part);
+        part = '';
+      }
+      part += char;
+    }
+    if (part) result.push(marker + '\n' + part);
+    return result;
+  }
+  function fallbackCopy(text) {
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('aria-label', '复制意见');
+    helper.style.position = 'fixed';
+    helper.style.left = '-10000px';
+    document.body.appendChild(helper);
+    helper.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    helper.remove();
+    return ok;
+  }
+  async function copyText(text) {
+    let ok = false;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try { await navigator.clipboard.writeText(text); ok = true; }
+      catch (_) { ok = fallbackCopy(text); }
+    } else { ok = fallbackCopy(text); }
+    status.textContent = ok ? '已复制' : '复制失败，请选中下方文字手动复制';
+  }
+  function updateSummary() {
+    const entries = inputs.filter(input => input.value.trim()).map(input =>
+      input.dataset.title + '\n' + input.value.trim());
+    chunks = splitText(entries.join('\n\n'));
+    chunksBox.replaceChildren();
+    chunks.forEach((chunk, index) => {
+      const block = document.createElement('div');
+      block.className = 'chunk';
+      const text = document.createElement('pre');
+      text.textContent = chunk;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => copyText(chunk));
+      block.appendChild(text);
+      block.appendChild(button);
+      chunksBox.appendChild(block);
+    });
+  }
+  inputs.forEach(input => {
+    const saved = document.querySelector('[data-saved="' + input.dataset.comment + '"]');
+    try { input.value = localStorage.getItem(prefix + input.dataset.comment) || ''; }
+    catch (_) { if (saved) saved.textContent = '无法读取本机保存'; }
+    input.addEventListener('input', () => {
+      try {
+        localStorage.setItem(prefix + input.dataset.comment, input.value);
+        if (saved) saved.textContent = '已保存';
+      } catch (_) { if (saved) saved.textContent = '未保存；仍可复制'; }
+      updateSummary();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => copyText(chunks.join('\n\n')));
+  updateSummary();
+})();
+</script></main></body></html>

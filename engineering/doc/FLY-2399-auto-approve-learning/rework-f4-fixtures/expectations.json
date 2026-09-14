@@ -1,0 +1,20 @@
+{
+  "kind": "synthetic finite-domain evaluator smoke; not production QA acceptance",
+  "positive": {
+    "alignment": "pass",
+    "coverage": "pass"
+  },
+  "ab": {
+    "before": [
+      "english",
+      "chinese"
+    ],
+    "after": [
+      "english",
+      "english"
+    ]
+  },
+  "calls": 5,
+  "retries": 0,
+  "concurrency": 1
+}

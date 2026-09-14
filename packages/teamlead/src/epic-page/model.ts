@@ -2,6 +2,14 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
+import {
+	type EpicJudgment,
+	epicJudgmentSchema,
+} from "../ship-judgment/epic-facts.js";
+import {
+	type EpicHistory,
+	epicHistorySchema,
+} from "../ship-judgment/epic-history.js";
 import { type AttentionExtension, assertAttention } from "./attention.js";
 import { computeReady, computeRootCounts, isSchedulable } from "./rules.js";
 import { EpicPageSchemaError } from "./schema-error.js";
@@ -87,6 +95,7 @@ export const REFRESH_REASONS = [
 	"linear_done",
 	"dependency_changed",
 	"lead_note_changed",
+	"ship_judgment_history",
 	"scan",
 	"manual",
 ] as const;
@@ -178,6 +187,7 @@ export interface RootCountsResult {
 }
 
 export interface EpicItem {
+	ship_judgment?: Cell<EpicJudgment | null>;
 	lead_note?: Cell<string>[];
 	parent: Cell<string>;
 	identifier: string;
@@ -257,6 +267,7 @@ export interface FreshnessSection {
 }
 
 interface EpicPageBase {
+	ship_judgment_history?: Cell<EpicHistory>;
 	lead_note_policy?: Cell<{ fade_after_days: number }>;
 	key: {
 		project_name: string;
@@ -883,9 +894,23 @@ export function assertEpicPage(
 				? ["discord", "attention_sources", "attention", "epic_scope"]
 				: []),
 		],
-		["lead_note_policy"],
+		["lead_note_policy", "ship_judgment_history"],
 		"",
 	);
+	if (root.ship_judgment_history !== undefined) {
+		assertCell(root.ship_judgment_history, "/ship_judgment_history", root);
+		const cell = root.ship_judgment_history as Cell<EpicHistory>;
+		if (cell.value !== null && !epicHistorySchema.safeParse(cell.value).success)
+			fail("/ship_judgment_history/value", "invalid history preview");
+		if (
+			cell.provenance.kind !== "statestore" ||
+			cell.provenance.table !== "ship_judgment_project_state"
+		)
+			fail(
+				"/ship_judgment_history/provenance",
+				"expected history state source",
+			);
+	}
 	if (root.schema_version !== 1 && root.schema_version !== 2)
 		fail("/schema_version", "expected 1 or 2");
 	requireTimestamp(root.generated_at, "/generated_at");
@@ -996,10 +1021,25 @@ export function assertEpicPage(
 		requireExactKeys(
 			item,
 			["identifier", ...ITEM_CELLS, "signals", "signal_sources"],
-			["lead_note"],
+			["lead_note", "ship_judgment"],
 			itemPath,
 		);
 		requireNonEmptyString(item.identifier, `${itemPath}/identifier`);
+		if (item.ship_judgment !== undefined) {
+			const path = `${itemPath}/ship_judgment`;
+			assertCell(item.ship_judgment, path, root);
+			const judgment = item.ship_judgment as Cell<EpicJudgment>;
+			if (
+				judgment.value !== null &&
+				!epicJudgmentSchema.safeParse(judgment.value).success
+			)
+				fail(`${path}/value`, "invalid ship judgment");
+			if (
+				judgment.provenance.kind !== "statestore" ||
+				judgment.provenance.table !== "ship_judgment_opinion"
+			)
+				fail(`${path}/provenance`, "expected ship judgment source");
+		}
 		if (item.lead_note !== undefined)
 			assertLeadNotes(item.lead_note, `${itemPath}/lead_note`, root);
 		for (const name of ITEM_CELLS) {

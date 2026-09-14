@@ -706,6 +706,53 @@ export class ReportRegistry {
 		);
 	}
 
+	/** Rebuild an ordinary staged write from durable metadata without renewing its token or TTL.
+	 * Call and commit inside the shared short critical section, after network upload.
+	 */
+	resumePublish(
+		entry: ReportEntry,
+		html: string,
+		binding: HostingBinding,
+		signal?: AbortSignal,
+	): StagedPublish {
+		const now = this.now(),
+			created = Date.parse(entry.createdAt);
+		if (
+			!REPORT_TOKEN_RE.test(entry.token) ||
+			!entry.projectName ||
+			entry.projectName.length > 64 ||
+			!Number.isFinite(created) ||
+			created > now ||
+			isReportExpired(now, created) ||
+			new Date(created).toISOString() !== entry.createdAt ||
+			!Number.isSafeInteger(entry.bytes) ||
+			entry.bytes !== Buffer.byteLength(injectHeadMeta(html), "utf8")
+		)
+			throw new Error("invalid resumed report metadata");
+		const existing = this.load().reports.find(
+			(report) => report.token === entry.token,
+		);
+		if (
+			existing &&
+			(existing.projectName !== entry.projectName ||
+				existing.createdAt !== entry.createdAt ||
+				existing.bytes !== entry.bytes ||
+				existing.title !== entry.title ||
+				this.readReportHtml(entry.token) !== html)
+		)
+			throw new Error("resumed report token conflict");
+		return this.stageReport(
+			entry.projectName,
+			html,
+			entry.token,
+			entry.title,
+			true,
+			binding,
+			entry,
+			signal,
+		);
+	}
+
 	/** Replace one project's hosted Epic page at its reserved stable token. */
 	stageEpicPageRepublish(
 		projectName: string,
@@ -735,6 +782,8 @@ export class ReportRegistry {
 		title: string | undefined,
 		replaceToken: boolean,
 		binding: HostingBinding,
+		restoredEntry?: ReportEntry,
+		signal?: AbortSignal,
 	): StagedPublish {
 		const hardened = injectHeadMeta(html);
 		const committed = this.load();
@@ -744,14 +793,16 @@ export class ReportRegistry {
 		const vercelProjectName =
 			committed.vercelProjectName ?? `fw-reports-${this.randomHex(3)}`;
 
-		const entry: ReportEntry = {
-			...(replaceToken ? { mutable: true as const } : {}),
-			token,
-			projectName,
-			title,
-			createdAt: new Date(this.now()).toISOString(),
-			bytes: Buffer.byteLength(hardened, "utf-8"),
-		};
+		const entry: ReportEntry = restoredEntry
+			? { ...restoredEntry }
+			: {
+					...(replaceToken ? { mutable: true as const } : {}),
+					token,
+					projectName,
+					title,
+					createdAt: new Date(this.now()).toISOString(),
+					bytes: Buffer.byteLength(hardened, "utf-8"),
+				};
 
 		// TTL is the only retention rule (founder requirement: links expire after
 		// 14 days). Aggregate count and byte limits would evict valid reports
@@ -787,6 +838,7 @@ export class ReportRegistry {
 				throw new Error("[report-registry] commit/abort already called");
 			done = true;
 			await this.withLock(async () => {
+				signal?.throwIfAborted();
 				const fresh = this.load();
 				if (bindingOf(fresh).hostingKey !== binding.hostingKey)
 					throw new ReportHostingBindingConflict();

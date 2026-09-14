@@ -715,6 +715,17 @@ import {
 } from "./session-capture.js";
 import { reconcileSessionlessWorkflowGates } from "./sessionless-founder-gate-reconciler.js";
 import { createShipApprovalHandler } from "./ship-approval-route.js";
+import { createShipJudgmentHistoryRuntime } from "./ship-judgment-history-runtime.js";
+import { createShipJudgmentReadRouter } from "./ship-judgment-read-routes.js";
+import { handleShipJudgmentReference } from "./ship-judgment-reference-route.js";
+import {
+	createShipJudgmentReplyObserver,
+	listShipJudgmentReplyThreads,
+} from "./ship-judgment-routes.js";
+import {
+	createShipJudgmentBridgeRuntime,
+	readShipJudgmentGithubToken,
+} from "./ship-judgment-runtime.js";
 import {
 	buildWorkflowShipRelevantRunRefresh,
 	type ShipRelevantRunRefresh,
@@ -3172,6 +3183,49 @@ export function createBridgeApp(
 			);
 		}
 	}
+
+	app.use(
+		"/api/ship-judgment",
+		config.apiToken
+			? tokenAuthMiddleware(config.apiToken)
+			: (_req, res) => {
+					res
+						.status(503)
+						.json({ error: "statistics endpoint requires TEAMLEAD_API_TOKEN" });
+				},
+		createShipJudgmentReadRouter(store),
+	);
+
+	app.post(
+		"/api/ship-judgment/reference",
+		config.apiToken
+			? tokenAuthMiddleware(config.apiToken)
+			: (_req, res) => {
+					res.status(503).json({
+						error: "learning reference endpoint requires TEAMLEAD_API_TOKEN",
+					});
+				},
+		async (req, res) => {
+			const result = await handleShipJudgmentReference(
+				{
+					store,
+					projects,
+					mode: () =>
+						flagStore
+							? readAutoNarrowRuntimeControl(flagStore, "flywheel").mode
+							: "off",
+					canonicalFounderId: () =>
+						deriveCanonicalFounderId(
+							config.discordOwnerUserId,
+							config.founderConsent?.founderUserId,
+						) ?? undefined,
+					defaultBotToken: config.discordBotToken,
+				},
+				req.body,
+			);
+			res.status(result.code).json(result.body);
+		},
+	);
 
 	app.use(
 		"/api/founder-routing/runner-response",
@@ -6484,6 +6538,8 @@ export async function startBridge(
 									{ stateStore: store },
 									{ projectName, items, now: generatedAt },
 								),
+							readShipJudgmentHistory: (asOf) =>
+								store.getEpicShipJudgmentHistory(asOf),
 							readLeadNotes: (projectName, ids) =>
 								store.getLeadNotes(projectName, ids),
 							readFreshness: (projectName) => ({
@@ -6510,6 +6566,17 @@ export async function startBridge(
 		projects,
 		linearApiKey: config.linearApiKey,
 		runAttempt: runEpicPageRefreshAttempt,
+	});
+	const shipJudgmentHistoryRuntime = createShipJudgmentHistoryRuntime({
+		credentials: reportHostingCredentials,
+		store,
+		projects,
+		registry: hostedReportRegistry,
+		blob: reportBlobStore,
+		critical: reportCriticalSection,
+		hostOverride: Boolean(reportHostOverride),
+		onChanged: () =>
+			epicPageRefresher.requestRefresh("flywheel", "ship_judgment_history"),
 	});
 	const reportBlobSweepTimer = installReportBlobSweep({
 		credentials: reportHostingCredentials,
@@ -10442,6 +10509,8 @@ export async function startBridge(
 								});
 							}
 							materialized = result.ok;
+							if (result.ok)
+								shipJudgmentRuntime?.scanner.enqueue(holder.question_id);
 							return result;
 						},
 						log: (message) => console.warn(message),
@@ -11048,6 +11117,22 @@ export async function startBridge(
 		}),
 	}));
 
+	const shipJudgmentRuntime = createShipJudgmentBridgeRuntime({
+		store,
+		projects,
+		linearApiKey: config.linearApiKey,
+		defaultBotToken: config.discordBotToken,
+		guildId: config.discordGuildId,
+		mode: () => readAutoNarrowRuntimeControl(flagStore, "flywheel").mode,
+		registry: hostedReportRegistry,
+		hosting: {
+			vercelProjectName: hostedReportRegistry.vercelProjectName(),
+			hostOverride: reportHostOverride,
+		},
+		token: readShipJudgmentGithubToken,
+		modelBin: () => "claude",
+		onError: (code) => console.warn(`[ship-judgment] ${code}`),
+	});
 	let autoNarrowGateScanCursor: string | undefined;
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
@@ -11100,6 +11185,8 @@ export async function startBridge(
 			await reconcileAutoNarrowOpinionDeliveries({
 				store,
 				mode: control.mode,
+				readMode: () =>
+					readAutoNarrowRuntimeControl(flagStore, "flywheel").mode,
 				post: async ({
 					questionId,
 					threadId,
@@ -11570,6 +11657,22 @@ export async function startBridge(
 		discordBotToken: config.discordBotToken,
 		discordOwnerUserId: config.discordOwnerUserId,
 		tryFounderShipApproval: founderShipApprovalCallback,
+		observeShipJudgmentReply: createShipJudgmentReplyObserver({
+			store,
+			projects,
+			mode: () => readAutoNarrowRuntimeControl(flagStore, "flywheel").mode,
+			canonicalFounderId: founderCanonicalId,
+			defaultBotToken: config.discordBotToken,
+		}),
+		listShipJudgmentReplyThreads: (after) =>
+			listShipJudgmentReplyThreads(
+				{
+					store,
+					projects,
+					mode: () => readAutoNarrowRuntimeControl(flagStore, "flywheel").mode,
+				},
+				after,
+			),
 		readCurrentBinding: (executionId, questionId, prHeadSha) =>
 			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
 		// FLY-1099 §4.3: the deferred-approval rebind pass — the SAME production
@@ -12229,7 +12332,21 @@ export async function startBridge(
 	// FLY-1505 M1: the first GatePoller tick may re-wake an approved ship
 	// runner. Start it only after durable failed-attempt markers have restored
 	// their suppression state (or the drain has failed loudly and retained them).
+	if (!process.env.VITEST)
+		store.invalidateAutoNarrowLegacyFreezeOnStartup(new Date().toISOString());
 	gatePoller.start();
+	if (!process.env.VITEST) {
+		try {
+			shipJudgmentRuntime?.start();
+		} catch {
+			console.error("[ship-judgment] mode_read_failed");
+		}
+		try {
+			shipJudgmentHistoryRuntime?.start();
+		} catch {
+			console.error("[ship-judgment] history_state_unavailable");
+		}
+	}
 
 	try {
 		const activateWakeHolder = (
@@ -13869,6 +13986,8 @@ export async function startBridge(
 		heartbeatService?.stop();
 		await residentReceiverSupervisor.stop();
 		gatePoller.stop();
+		await shipJudgmentRuntime?.stop();
+		await shipJudgmentHistoryRuntime?.stop();
 		await codexQuotaRuntime?.stop();
 		await eventLoopAttribution.stop();
 		// FLY-1188 §7.2 (R12 HIGH): stop accepting new review jobs and reap

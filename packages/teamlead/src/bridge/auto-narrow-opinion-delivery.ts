@@ -9,6 +9,7 @@ const OPINION_DISCORD_TIMEOUT_MS = 10_000;
 export interface AutoNarrowOpinionDeliveryDeps {
 	store: StateStore;
 	mode: "off" | "dry_run" | "auto";
+	readMode?(): "off" | "dry_run" | "auto";
 	now?: () => string;
 	post(input: {
 		questionId: string;
@@ -101,6 +102,76 @@ export async function reconcileAutoNarrowOpinionDeliveries(
 		skipped: 0,
 	};
 	const sweepNow = deps.now?.() ?? new Date().toISOString();
+	if (deps.mode === "dry_run") {
+		deps.store.requestAutoNarrowLegacyFreeze(sweepNow);
+		for (const row of deps.store.listAutoNarrowLegacyFreezeWork(sweepNow)) {
+			if (deps.readMode && deps.readMode() !== "dry_run") break;
+			result.scanned += 1;
+			const now = deps.now?.() ?? new Date().toISOString();
+			if (
+				!row.followupMessageId &&
+				(row.state === "posting" || row.state === "uncertain")
+			) {
+				const scan = await deps.scan({
+					questionId: row.questionId,
+					threadId: row.issueThreadId,
+					postedAt: row.postingAt ?? now,
+					correlationMarker: row.correlationMarker,
+				});
+				if (!deps.readMode || deps.readMode() === "dry_run") {
+					deps.store.recordAutoNarrowOpinionRecovery({
+						questionId: row.questionId,
+						kind: scan.kind,
+						now,
+						frontier: scan.frontier,
+						expectedGeneration: row.generation,
+						...(scan.kind === "found" ? { messageId: scan.messageId } : {}),
+					});
+				}
+				result.deferred += 1;
+				continue;
+			}
+			const claim = deps.store.beginAutoNarrowLegacyFreeze(
+				row.questionId,
+				row.generation,
+				now,
+			);
+			if (!claim) {
+				result.skipped += 1;
+				continue;
+			}
+			let ok = true;
+			if (claim.followupMessageId) {
+				try {
+					ok = (
+						await deps.edit({
+							questionId: claim.questionId,
+							threadId: claim.issueThreadId,
+							messageId: claim.followupMessageId,
+							content: `旧三闸历史意见：当前试判见本卡的新机器意见；仍由 founder 批准。\n\`${claim.correlationMarker}\``,
+							signal: AbortSignal.timeout(OPINION_DISCORD_TIMEOUT_MS),
+						})
+					).ok;
+				} catch {
+					ok = false;
+				}
+			}
+			if (deps.readMode && deps.readMode() !== "dry_run") {
+				result.deferred += 1;
+				continue;
+			}
+			const finished = deps.store.finishAutoNarrowLegacyFreeze(
+				claim.questionId,
+				claim.generation,
+				deps.now?.() ?? now,
+				ok,
+			);
+			if (finished && ok) result.delivered += 1;
+			else result.deferred += 1;
+		}
+		return result;
+	}
+
 	for (const work of deps.store.listAutoNarrowOpinionDeliveryWork(
 		20,
 		sweepNow,

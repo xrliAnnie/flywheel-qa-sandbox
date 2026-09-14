@@ -384,6 +384,11 @@
 			"disposition": "lead_runtime_bounded"
 		},
 		{
+			"file": "packages/teamlead/src/ship-judgment/subscription-process.ts",
+			"raw_spawn": 1,
+			"disposition": "FLY-2399 isolated subscription evaluator: async child, minimal environment, 120s deadline, bounded output, abort and TERM/KILL drain"
+		},
+		{
 			"file": "packages/voice-codex/src/adapters.ts",
 			"raw_spawn": 1,
 			"disposition": "standalone_runtime_observed"

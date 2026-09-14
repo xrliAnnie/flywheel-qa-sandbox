@@ -604,6 +604,41 @@
 			"baseTable": "mailbox",
 			"usage": "read",
 			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/ship-judgment/history-query.ts",
+			"relation": "chat_threads",
+			"baseTable": "chat_threads",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/ship-judgment/learning-delivery.ts",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/ship-judgment/learning.ts",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/ship-judgment/outcomes.ts",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/ship-judgment/statistics.ts",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "protect"
 		}
 	]
 }

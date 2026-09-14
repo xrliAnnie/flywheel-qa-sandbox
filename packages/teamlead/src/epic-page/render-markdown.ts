@@ -6,7 +6,9 @@ import {
 	attentionSummary,
 	attentionWait,
 } from "./attention-presentation.js";
+import { judgmentSummary } from "./audit-dictionary.js";
 import { escapeMarkdownTableCell } from "./escape.js";
+import { renderHistoryPreview } from "./history-preview.js";
 import { type LabelKey, label, leadNoteRoleLabel } from "./labels.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS, leadNoteAge } from "./lead-note.js";
 import type {
@@ -331,6 +333,12 @@ function renderItem(
 		`- **${label("cell.item.state")}**: ${markdownText(`${state} (${item.state.value?.type ?? label("cell.missing")})`)}`,
 		`- **${label("page.accounted_execution")}**: ${markdownText(executionSummary(item))} · ${label("cell.ledger_note")}`,
 		renderLeadNotes(item.lead_note, now, fadeDays),
+		...(item.ship_judgment
+			? [
+					`- **${judgmentSummary(item.ship_judgment)}**`,
+					`- 依据: ${markdownText(item.ship_judgment)}`,
+				]
+			: []),
 		`- **${label("section.stuck")}**: ${
 			item.signals.filter((signal) => signal.kind !== "waiting_founder")
 				.length > 0
@@ -511,5 +519,6 @@ export function renderEpicPageMarkdown(
 		renderCell("/gaps", "cell.gaps", page.gaps, now),
 		`## ${label("section.what")}`,
 		...page.items.map((item, index) => renderItem(item, index, now, fadeDays)),
+		renderHistoryPreview(page.ship_judgment_history),
 	].join("\n\n");
 }

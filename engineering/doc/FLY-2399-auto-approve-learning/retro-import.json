@@ -1,0 +1,223 @@
+{
+  "schemaVersion": 1,
+  "sourceDigest": "b41d99542c5a0220a5acf9b35698fb110bbb32a740f14af68c56ae602dc7c69d",
+  "sourceBytes": 7008,
+  "records": [
+    {
+      "id": "5250a15c532015fc657ffa30951820ae25e699f9e238942d2234cd6b4538a553",
+      "source": "legacy_retro",
+      "sourceDigest": "b41d99542c5a0220a5acf9b35698fb110bbb32a740f14af68c56ae602dc7c69d",
+      "line": 1,
+      "status": "quarantined",
+      "prospective": false,
+      "authorship": "unknown",
+      "reasons": [
+        "unverified_binding",
+        "unverified_founder_source",
+        "missing_full_head",
+        "missing_question",
+        "missing_prediction_time"
+      ],
+      "rawLine": "{\"issue\": \"FLY-2484\", \"pr\": 1151, \"head\": \"4a58846a\", \"my_verdict\": \"可自动批\", \"reasons\": {\"prd_align\": \"PRD FLY-2457 §6.2/§8/§9 逐条落地,QA 判据 14 条对表\", \"conflict\": \"与 #1147/#1148 同改 epic-page,已知互撞;单独合入无冲突\", \"qa_coverage\": \"两轮 QA,390/1440 视觉硬门,变异体断言,14/14 CI\"}, \"founder_decision\": \"approved\", \"decided_at\": \"2026-09-10T21:27:30Z\", \"divergent\": false, \"retro\": true}\n",
+      "original": {
+        "issue": "FLY-2484",
+        "pr": 1151,
+        "head": "4a58846a",
+        "my_verdict": "可自动批",
+        "reasons": {
+          "prd_align": "PRD FLY-2457 §6.2/§8/§9 逐条落地,QA 判据 14 条对表",
+          "conflict": "与 #1147/#1148 同改 epic-page,已知互撞;单独合入无冲突",
+          "qa_coverage": "两轮 QA,390/1440 视觉硬门,变异体断言,14/14 CI"
+        },
+        "founder_decision": "approved",
+        "decided_at": "2026-09-10T21:27:30Z",
+        "divergent": false,
+        "retro": true
+      }
+    },
+    {
+      "id": "3bba7bd179f5b85b51d44a9bb8d98e7d3ae4e56405175bb96004df40d1de7b3d",
+      "source": "legacy_retro",
+      "sourceDigest": "b41d99542c5a0220a5acf9b35698fb110bbb32a740f14af68c56ae602dc7c69d",
+      "line": 2,
+      "status": "quarantined",
+      "prospective": false,
+      "authorship": "unknown",
+      "reasons": [
+        "unverified_binding",
+        "unverified_founder_source",
+        "missing_full_head",
+        "missing_question",
+        "missing_prediction_time"
+      ],
+      "rawLine": "{\"issue\": \"FLY-2456\", \"pr\": 1150, \"head\": \"517b58a7\", \"my_verdict\": \"可自动批\", \"reasons\": {\"prd_align\": \"演练 plan v4 + 六条返工令逐条落地;主结论按证据改真\", \"conflict\": \"仅增工具/文档/证据,不碰生产行为\", \"qa_coverage\": \"QA7 四判据全过,76 件 hash 全量 cmp,变异承重\"}, \"founder_decision\": \"approved\", \"decided_at\": \"2026-09-10T22:04:30Z\", \"divergent\": false, \"retro\": true}\n",
+      "original": {
+        "issue": "FLY-2456",
+        "pr": 1150,
+        "head": "517b58a7",
+        "my_verdict": "可自动批",
+        "reasons": {
+          "prd_align": "演练 plan v4 + 六条返工令逐条落地;主结论按证据改真",
+          "conflict": "仅增工具/文档/证据,不碰生产行为",
+          "qa_coverage": "QA7 四判据全过,76 件 hash 全量 cmp,变异承重"
+        },
+        "founder_decision": "approved",
+        "decided_at": "2026-09-10T22:04:30Z",
+        "divergent": false,
+        "retro": true
+      }
+    },
+    {
+      "id": "30b5c52ee9fab428820b766d6137d70c51d1cd5cec83634f8170fc36ae4b1e11",
+      "source": "legacy_retro",
+      "sourceDigest": "b41d99542c5a0220a5acf9b35698fb110bbb32a740f14af68c56ae602dc7c69d",
+      "line": 3,
+      "status": "quarantined",
+      "prospective": false,
+      "authorship": "unknown",
+      "reasons": [
+        "unverified_binding",
+        "unverified_founder_source",
+        "missing_full_head",
+        "missing_question",
+        "missing_prediction_time"
+      ],
+      "rawLine": "{\"issue\": \"FLY-2389\", \"pr\": 1149, \"head\": \"9512cbc7\", \"my_verdict\": \"可自动批\", \"reasons\": {\"prd_align\": \"PRD 1098 §7.2/§9 B2 边界;设计审 APPROVED\", \"conflict\": \"独立包(payload/R2),无同改\", \"qa_coverage\": \"判据 1/2/3/5/6/7 实测,30 mutant 杀 29,SigV4 独立重算\"}, \"founder_decision\": \"approved\", \"decided_at\": \"2026-09-10T23:28:37Z\", \"divergent\": false, \"retro\": true}\n",
+      "original": {
+        "issue": "FLY-2389",
+        "pr": 1149,
+        "head": "9512cbc7",
+        "my_verdict": "可自动批",
+        "reasons": {
+          "prd_align": "PRD 1098 §7.2/§9 B2 边界;设计审 APPROVED",
+          "conflict": "独立包(payload/R2),无同改",
+          "qa_coverage": "判据 1/2/3/5/6/7 实测,30 mutant 杀 29,SigV4 独立重算"
+        },
+        "founder_decision": "approved",
+        "decided_at": "2026-09-10T23:28:37Z",
+        "divergent": false,
+        "retro": true
+      }
+    },
+    {
+      "id": "9f9f877506fa31ffa60b2813e7e4ef3c9f0985b272e7b01e826302f2d244b9ea",
+      "source": "legacy_retro",
+      "sourceDigest": "b41d99542c5a0220a5acf9b35698fb110bbb32a740f14af68c56ae602dc7c69d",
+      "line": 4,
+      "status": "quarantined",
+      "prospective": false,
+      "authorship": "unknown",
+      "reasons": [
+        "unverified_binding",
+        "unverified_founder_source",
+        "missing_full_head",
+        "missing_question",
+        "missing_prediction_time"
+      ],
+      "rawLine": "{\"issue\": \"FLY-2485\", \"pr\": 1148, \"head\": \"fd0f20d7\", \"my_verdict\": \"可自动批\", \"reasons\": {\"prd_align\": \"PRD F12/F13 + Lead 折叠态可见裁定;QA 56/56 逐项\", \"conflict\": \"与 #1147 同改 epic-page(已知),合入时 MERGEABLE\", \"qa_coverage\": \"三轮 QA,真机 Chromium 双视口,注入正文验证\"}, \"founder_decision\": \"approved\", \"decided_at\": \"2026-09-10T23:29:45Z\", \"divergent\": false, \"retro\": true}\n",
+      "original": {
+        "issue": "FLY-2485",
+        "pr": 1148,
+        "head": "fd0f20d7",
+        "my_verdict": "可自动批",
+        "reasons": {
+          "prd_align": "PRD F12/F13 + Lead 折叠态可见裁定;QA 56/56 逐项",
+          "conflict": "与 #1147 同改 epic-page(已知),合入时 MERGEABLE",
+          "qa_coverage": "三轮 QA,真机 Chromium 双视口,注入正文验证"
+        },
+        "founder_decision": "approved",
+        "decided_at": "2026-09-10T23:29:45Z",
+        "divergent": false,
+        "retro": true
+      }
+    },
+    {
+      "id": "4e69b0061cd69f87c4c423e8e19aa4452b2df6f2b01ff6ceb13f208791e7d6f7",
+      "source": "legacy_retro",
+      "sourceDigest": "b41d99542c5a0220a5acf9b35698fb110bbb32a740f14af68c56ae602dc7c69d",
+      "line": 5,
+      "status": "quarantined",
+      "prospective": false,
+      "authorship": "unknown",
+      "reasons": [
+        "unverified_binding",
+        "unverified_founder_source",
+        "missing_full_head",
+        "missing_question",
+        "missing_prediction_time"
+      ],
+      "rawLine": "{\"issue\": \"FLY-2352\", \"pr\": 1128, \"head\": \"b3ed3cc9\", \"my_verdict\": \"可自动批(修一半,不引入退化)\", \"reasons\": {\"prd_align\": \"病根单,修 capability drift;演练证明目标病消失(2→0)\", \"conflict\": \"碰 codex-session-reown(保护路径);无同改在跑单\", \"qa_coverage\": \"QA attempt 2 PASS 14/14 + 真机演练两轮\"}, \"founder_decision\": \"approved\", \"decided_at\": \"2026-09-10T23:33:22Z\", \"divergent\": false, \"retro\": true, \"note\": \"founder 先按 2456 演练结果再按;第二病根 2505 另开\"}\n",
+      "original": {
+        "issue": "FLY-2352",
+        "pr": 1128,
+        "head": "b3ed3cc9",
+        "my_verdict": "可自动批(修一半,不引入退化)",
+        "reasons": {
+          "prd_align": "病根单,修 capability drift;演练证明目标病消失(2→0)",
+          "conflict": "碰 codex-session-reown(保护路径);无同改在跑单",
+          "qa_coverage": "QA attempt 2 PASS 14/14 + 真机演练两轮"
+        },
+        "founder_decision": "approved",
+        "decided_at": "2026-09-10T23:33:22Z",
+        "divergent": false,
+        "retro": true,
+        "note": "founder 先按 2456 演练结果再按;第二病根 2505 另开"
+      }
+    },
+    {
+      "id": "41fa95912ff78433bbae50850a927b69c758021b071d22987111e25d91250e70",
+      "source": "legacy_retro",
+      "sourceDigest": "b41d99542c5a0220a5acf9b35698fb110bbb32a740f14af68c56ae602dc7c69d",
+      "line": 6,
+      "status": "quarantined",
+      "prospective": false,
+      "authorship": "unknown",
+      "reasons": [
+        "unverified_binding",
+        "unverified_founder_source",
+        "missing_full_head",
+        "missing_question",
+        "missing_prediction_time"
+      ],
+      "rawLine": "{\"issue\": \"FLY-2107\", \"pr\": 1129, \"head\": \"7358e9c0\", \"my_verdict\": \"可自动批\", \"reasons\": {\"prd_align\": \"按 founder 9-10 02:02Z 收窄后的通用方案实现,设计审 R3 APPROVED\", \"conflict\": \"碰 mailbox-queue(信箱核心);无同改\", \"qa_coverage\": \"三轮 QA PASS,8 判据逐条\"}, \"founder_decision\": \"canceled\", \"decided_at\": \"2026-09-10T22:03:58Z\", \"divergent\": true, \"retro\": true, \"clarification\": \"founder 原话「2107 还是不改了吧,直接 cancel」——未追问原因;推断:她不想改信箱运输机制(此前已两次收窄)。待学:产品方向类否决不是质量问题,三点判断判不出来。\"}\n",
+      "original": {
+        "issue": "FLY-2107",
+        "pr": 1129,
+        "head": "7358e9c0",
+        "my_verdict": "可自动批",
+        "reasons": {
+          "prd_align": "按 founder 9-10 02:02Z 收窄后的通用方案实现,设计审 R3 APPROVED",
+          "conflict": "碰 mailbox-queue(信箱核心);无同改",
+          "qa_coverage": "三轮 QA PASS,8 判据逐条"
+        },
+        "founder_decision": "canceled",
+        "decided_at": "2026-09-10T22:03:58Z",
+        "divergent": true,
+        "retro": true,
+        "clarification": "founder 原话「2107 还是不改了吧,直接 cancel」——未追问原因;推断:她不想改信箱运输机制(此前已两次收窄)。待学:产品方向类否决不是质量问题,三点判断判不出来。"
+      }
+    }
+  ],
+  "skipped": [
+    {
+      "line": 7,
+      "reason": "not_explicit_retro"
+    },
+    {
+      "line": 8,
+      "reason": "not_explicit_retro"
+    },
+    {
+      "line": 9,
+      "reason": "not_explicit_retro"
+    },
+    {
+      "line": 10,
+      "reason": "not_explicit_retro"
+    },
+    {
+      "line": 11,
+      "reason": "not_explicit_retro"
+    }
+  ]
+}

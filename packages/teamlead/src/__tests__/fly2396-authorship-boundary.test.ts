@@ -11,6 +11,7 @@ const AUTHORITY_FACT =
 const ALLOWED = new Set([
 	"engineering/doc/FLY-2396-founder-gate-head-origin/retro-bind.sql",
 	"packages/teamlead/src/StateStore.ts",
+	"packages/teamlead/src/ship-judgment/outcomes.ts",
 	"scripts/fly-2398-shadow-table.mjs",
 	"scripts/fly2396-retro-report.mjs",
 	"scripts/lib/fly-2006-retention-registry.mjs",
@@ -39,7 +40,7 @@ function sourceFiles(path: string): string[] {
 }
 
 describe("FLY-2396 authorship fact isolation", () => {
-	it("allows only the narrow core to consume authorship as a negative veto", () => {
+	it("allows only the core negative veto and exact read-only history consumer", () => {
 		const references = [
 			...sourceFiles(resolve(REPO_ROOT, "packages")),
 			...sourceFiles(resolve(REPO_ROOT, "scripts")),
@@ -51,6 +52,7 @@ describe("FLY-2396 authorship fact isolation", () => {
 			.filter((file) => AUTHORITY_FACT.test(readFileSync(file, "utf8")))
 			.map((file) => relative(REPO_ROOT, file))
 			.sort();
+		expect(ALLOWED.size).toBe(6);
 		expect(references).toEqual([...ALLOWED].sort());
 		for (const forbidden of [
 			"land-executor",

@@ -87,6 +87,7 @@ import {
 	type RuntimeRegistry,
 } from "./runtime-registry.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
+import type { ShipJudgmentReplyThreadPage } from "./ship-judgment-routes.js";
 import {
 	classifyStaleShipRunnerLiveness,
 	DEFAULT_REWAKE_BACKOFF_MS,
@@ -230,6 +231,10 @@ export interface GatePollerConfig {
 	 * been verified. Absent preserves the legacy Lead-handoff behavior.
 	 */
 	tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
+	observeShipJudgmentReply?: FounderReplyDeliverDeps["observeShipJudgmentReply"];
+	listShipJudgmentReplyThreads?: (
+		after?: string,
+	) => ShipJudgmentReplyThreadPage;
 	/**
 	 * FLY-1448: durable ship-card binding reader used for exact reply-to-card
 	 * targeting when more than one ship gate is pending in the issue thread.
@@ -2324,6 +2329,17 @@ export class GatePoller {
 		this.retryPendingDeadLetters();
 
 		const sessions = this.config.store.listNonTerminalSessions();
+		let historical: ShipJudgmentReplyThreadPage = { threads: [] };
+		try {
+			historical =
+				this.config.listShipJudgmentReplyThreads?.(
+					this.founderReplyScanCursor ?? undefined,
+				) ?? historical;
+		} catch (error) {
+			console.warn(
+				`[GatePoller] learning reply thread scan failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 		const resources = new Map<
 			string,
 			{ readonlyDb: CommDB; writerDb: CommDB }
@@ -2407,6 +2423,27 @@ export class GatePoller {
 							questions: [],
 						});
 					}
+					for (const thread of historical.threads) {
+						if (
+							thread.projectName !== project.projectName ||
+							thread.leadId !== lead.agentId ||
+							byThread.has(thread.threadId)
+						)
+							continue;
+						byThread.set(thread.threadId, {
+							ctx: {
+								issueId: thread.issueId,
+								projectName: project.projectName,
+								threadId: thread.threadId,
+								botToken,
+								ownerUserId: ownerUserId as string,
+								graceMs,
+								commDbPath: dbPath,
+								leadId: lead.agentId,
+							},
+							questions: [],
+						});
+					}
 					for (const q of pending) {
 						// FLY-1041 Chunk 9 (Fix D): a runner's `ask --report` status report
 						// is NEVER a founder-reply binding candidate — it neither absorbs
@@ -2475,6 +2512,8 @@ export class GatePoller {
 				}
 			}
 
+			if (tasks.length === 0 && historical.nextCursor)
+				this.founderReplyScanCursor = historical.nextCursor;
 			tasks.sort((left, right) =>
 				compareThreadIds(left.ctx.threadId, right.ctx.threadId),
 			);
@@ -2510,6 +2549,7 @@ export class GatePoller {
 						commDbLeaseFactory: () => ({ db: writerDb, release: () => {} }),
 						deliverAmbiguousToLead,
 						tryFounderShipApproval: this.config.tryFounderShipApproval,
+						observeShipJudgmentReply: this.config.observeShipJudgmentReply,
 						readCurrentBinding: this.config.readCurrentBinding,
 						ensureDecisionConvergence: (input) => {
 							this.config.store.ensureFounderDecisionConvergence(input);

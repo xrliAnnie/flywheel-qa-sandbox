@@ -1,0 +1,338 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "cbc19a65-2b25-4aa7-8098-1c18722669ef",
+  "round": 1,
+  "findings": [
+    {
+      "id": "production-model-bin-is-profile-script",
+      "severity": "HIGH",
+      "file": "packages/teamlead/src/bridge/plugin.ts",
+      "line": 11001,
+      "title": "Production evaluator runs the account-switch script instead of the claude CLI, so no model opinion is ever produced",
+      "detail": "createShipJudgmentBridgeRuntime is wired with `modelBin: claudeProfileBinPath`. That function (account-heal/claude-profile-cli.ts:257) returns FLYWHEEL_CLAUDE_PROFILE_BIN ?? 'flywheel-claude-profile'. bridge/ship-judgment-runtime.ts:367 passes it as `bin`, and subscription-process.ts:79 does `spawn(options.bin, [...argv])`. The script's only dispatch (packages/claude-runner/bin/flywheel-claude-profile:2477) sends `-p` to `*) usage`, and usage() ends with `exit 1`. What happens for every Flywheel dry_run card: (1) the child spawns and gets spawned=true and model_exit_failed; (2) jobs.finish writes an immutable failed evaluation; (3) one of the 30 daily spawns is consumed; (4) under the no-retry rule that semantic input is permanently dead, so each card's 3 semantic versions are burned in turn. The founder only ever sees undetermined opinions, and the append-only ledgers (UPDATE/DELETE triggers) are permanently filled with failures. Tests use `modelBin: () => 'must-not-run'`, and every real-model evidence run (rework.md, ab-probe.mjs, replay-ship-judgment.mjs --bin) passes /Users/xiaorongli/.local/bin/claude directly, so the production wiring was never exercised. Fix: resolve the real claude binary (the one existing Claude runners use) and add a wiring test asserting that the Bridge-provided bin is not the profile script.",
+      "findingKey": "production-model-bin-is-profile-script"
+    },
+    {
+      "id": "github-pagination-link-path-mismatch",
+      "severity": "HIGH",
+      "file": "packages/teamlead/src/ship-judgment/github-api.ts",
+      "line": 119,
+      "title": "Pagination Link validation rejects GitHub's real Link format; any PR with >100 files makes the whole project's conflict check undetermined",
+      "detail": "nextPage() throws invalid_pagination unless `next.pathname === current.pathname`. Requests go to `https://api.github.com/repos/${repo}/pulls/...`, but GitHub's Link header uses the repository-id form. Verified with a read-only call on this repo: `Link: <https://api.github.com/repositories/1164340454/pulls/1163/files?per_page=100&page=2>; rel=\"next\"`. The test fixture (__tests__/github-api.test.ts) uses the /repos/owner/repo form, so it is green. Failure chain: an open non-draft PR with >100 changed files (PR #1163 itself has 201 files, 3 pages), or >100 open PRs, makes the project refresh fail. store.fail follows and every card's conflict point is undetermined, so overall is undetermined. The reserved API calls are consumed on every failed round and the 120/hour budget is quickly exhausted. Fix: validate origin plus page/per_page (optionally accept /repositories/<id>/ with the same suffix), and use the real header format in the tests. Fix this together with page-number-pagination-race-can-miss-pr.",
+      "findingKey": "github-pagination-link-path-mismatch"
+    },
+    {
+      "id": "page-number-pagination-race-can-miss-pr",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/github-api.ts",
+      "line": 61,
+      "title": "Page-number pagination of open PRs can silently skip a PR and yield a false conflict pass",
+      "detail": "The open-PR list is paged with `page=N` (default created-desc). If a PR closes or merges between fetching page 1 and page 2, the next page shifts by one and one PR is never seen. The snapshot refine rejects duplicates but not omissions, so checkFileConflicts can return pass without the overlapping PR. This is currently masked by github-pagination-link-path-mismatch and only applies with >100 open PRs. Advisory-only (dry_run), but it contradicts the plan's 'successfully exhausted' evidence requirement. A mitigation: re-read page 1 / total count after the last page, and treat a change as undetermined.",
+      "findingKey": "page-number-pagination-race-can-miss-pr"
+    },
+    {
+      "id": "transient-collection-voids-input",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/worker.ts",
+      "line": 82,
+      "title": "A transient collection failure permanently fails a queued input without any spawn",
+      "detail": "worker.prepare re-collects live material (runtime.ts:55-61); any non-ready result (Linear/GitHub/QA hiccup) returns null. The worker then claims and calls confirmNotSpawned(claim,'input_superseded'), which sets state='failed' (jobs.ts:64). jobs.enqueue is only INSERT OR IGNORE on freeze status 'created' (inputs.ts:177), so a later freeze of the same digest returns 'existing' and never re-queues. The semantic version is lost with zero spawns, contrary to plan §5.3 (only real spawns are non-retryable), and the reason code is misleading.",
+      "findingKey": "transient-collection-voids-input"
+    },
+    {
+      "id": "spawn-without-credentials-or-after-abort",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/subscription-process.ts",
+      "line": 63,
+      "title": "Evaluator spawns even when authentication is unavailable or the signal aborted during Keychain read",
+      "detail": "`if (authentication) {...}` has no else branch. A locked or timed-out Keychain still spawns an unauthenticated CLI, which yields spawned=true, consumes daily budget, and permanently fails the input. subscriptionAuthentication swallows AbortError and returns null. `signal.aborted` is only re-checked after spawn() (line 99), so a Bridge shutdown during the up-to-5s Keychain read also spawns and burns budget. Return spawned:false before spawn in both cases.",
+      "findingKey": "spawn-without-credentials-or-after-abort"
+    },
+    {
+      "id": "refresh-token-written-to-temp-config",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/subscription-process.ts",
+      "line": 64,
+      "title": "Full OAuth credential including refreshToken is copied to a temp .credentials.json",
+      "detail": "The oauth schema keeps optional refreshToken (subscription-auth.ts:11), and the whole object is written to the per-call config dir while CLAUDE_CODE_OAUTH_TOKEN is also set. If the CLI prefers the env token, the refresh token on disk is unnecessary exposure. It can persist in $TMPDIR after a crash or a close-only-resolution hang, and there is no startup sweep of ship-judgment-model-*. If the CLI refreshes from the file, rotation could invalidate the shared host credential. Files are 0600 in a 0700 dir. Write only the access token.",
+      "findingKey": "refresh-token-written-to-temp-config"
+    },
+    {
+      "id": "close-only-resolution-descendant-hang",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/subscription-process.ts",
+      "line": 117,
+      "title": "Process result resolves only on 'close'; a descendant holding stdio after SIGKILL hangs the worker and Bridge shutdown",
+      "detail": "child.kill targets only the direct child (not detached, no process group), and there is no post-KILL deadline. If a grandchild inherits the pipes, 'close' never fires. The effects: worker.active never settles, so all further judgments stall (recoverExpired runs only inside drain); `finally rm(root)` never runs, leaving the credential copy; and plugin.ts stop awaits shipJudgmentRuntime.stop() forever. Low likelihood with --tools '', but add a hard deadline after KILL (resolve on 'exit' + timeout) or kill the process group.",
+      "findingKey": "close-only-resolution-descendant-hang"
+    },
+    {
+      "id": "git-fetch-outside-api-budget-full-history",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/prepare-git.ts",
+      "line": 139,
+      "title": "Per-card git fetch into a fresh bare repo is uncapped by the 120/hour GitHub budget and fetches full history",
+      "detail": "The API reservation wraps only REST calls (project-refresh.ts:124). prepare-git creates a new empty bare repo and runs `git fetch https://github.com/<slug>.git <shas>` with no --depth, for every target of every scanned card (up to 50 cards per 30s tick), with no cross-card reuse. This contradicts plan §4.2's project GitHub call cap. The 20s per-call timeout on a large repo will likely cause recurring undetermined results and heavy network/disk churn.",
+      "findingKey": "git-fetch-outside-api-budget-full-history"
+    },
+    {
+      "id": "binary-diff-permanently-undetermined",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/git-input.ts",
+      "line": 130,
+      "title": "Any binary file in a PR makes the card permanently undetermined",
+      "detail": "`complete: !/^Binary files .+ differ$/m.test(text)`, and collect.ts:157 throws CollectionFailure('diff_incomplete') when !diff.complete. A PR that adds a png is therefore never judgeable. Plan §4.1 requires binary/truncated files to be explicitly listed, not to void the whole input.",
+      "findingKey": "binary-diff-permanently-undetermined"
+    },
+    {
+      "id": "secondary-rate-limit-retry-after-ignored",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/github-api.ts",
+      "line": 156,
+      "title": "GitHub secondary rate limit (403 with retry-after) is not honored",
+      "detail": "retry-after is read only for 429, or for 403 with x-ratelimit-remaining==='0'. Secondary rate limits return 403 with remaining>0 and a retry-after header. Those fall to a generic github_http_403 and are retried after the normal 60s cadence, contrary to plan §4.2 ('429 同时遵守retry-after'). Also read retry-after on any 403 that carries it.",
+      "findingKey": "secondary-rate-limit-retry-after-ignored"
+    },
+    {
+      "id": "observer-retry-blocks-thread-approvals",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/founder-reply-deliverer.ts",
+      "line": 644,
+      "title": "Learning observer 'retry' or throw halts the founder-reply scan of the whole thread, delaying ship-card approvals",
+      "detail": "Every reply-type founder message goes through observeShipJudgmentReply before card routing. Observer 'retry' → ok:false; a throw (e.g. replyTarget's mode/DB read) → process_exception. Either one enters the retry ledger and `break`s the scan (lines 533-557), so later messages in that thread wait up to FOUNDER_REPLY_RETRY_MAX (10) rounds / 30 min before dead-letter. Two scenarios: (a) the founder answers a clarification while the Discord fetch 429s or the lead-label check fails (ship-judgment-routes.ts:64-81 return 'retry'), and then replies 通过 to the ship card — approval is delayed; (b) if replyTarget throws, the ship-card reply itself can be dead-lettered and never reach tryFounderShipApproval (alerted, not silent). An advisory feature should fail open: map observer exceptions to 'ignored' and avoid breaking the thread for learning-only retries. No test covers an observer throw.",
+      "findingKey": "observer-retry-blocks-thread-approvals"
+    },
+    {
+      "id": "historical-thread-backlog-replay",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/gate-poller.ts",
+      "line": 2316,
+      "title": "Threads with delivered clarifications re-enter founder-reply scanning indefinitely and replay backlog from stale cursors",
+      "detail": "listShipJudgmentReplyThreads adds threads of terminal runs, with questions: [] and no expiry (clarifications.replyThreads). The founder-reply cursor is durable, so on re-entry every founder message posted since the thread left the scan set is processed. Messages that are not clarification replies fall through to deliverAmbiguousToLead, and replies to superseded cards trigger oldCardGuidance posts. Bootstrap these threads to head or clamp `after` to the clarification's visible_at.",
+      "findingKey": "historical-thread-backlog-replay"
+    },
+    {
+      "id": "duplicate-file-aborts-collection",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/inputs.ts",
+      "line": 60,
+      "title": "Two declared PRs in the same repo touching one path throw out of freeze with no undetermined opinion",
+      "detail": "Collect keys files on (repo_identity,path) per target. Two same-repo targets editing the same file make freeze `throw new Error('duplicate_file')`, which is a raw throw rather than a CollectionFailure. It escapes to scanner/worker onError without calling unavailable(), so the card silently gets no opinion and the collection is retried each tick (including git fetches).",
+      "findingKey": "duplicate-file-aborts-collection"
+    },
+    {
+      "id": "legacy-freeze-repatch-on-every-boot",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/StateStore.ts",
+      "line": 56062,
+      "title": "Startup freeze invalidation re-edits every frozen legacy message on each Bridge boot and can clog the legacy work queue",
+      "detail": "invalidateAutoNarrowLegacyFreezeOnStartup (called unconditionally in plugin.ts before gatePoller.start) clears legacy_frozen_at on every row with either freeze column set. In dry_run, every frozen legacy followup message is PATCHed again with identical text on each restart ('(edited)' churn). In auto/off, rows frozen without a message stay state='pending' with legacy_freeze_requested_at set. listAutoNarrowOpinionDeliveryWork still selects them (legacy_frozen_at IS NULL) while beginAutoNarrowOpinionDelivery refuses them and no backoff is written, so they can occupy the LIMIT 20 window. No approval impact: commitAutoNarrowSourceIfEligible does not read delivery state.",
+      "findingKey": "legacy-freeze-repatch-on-every-boot"
+    },
+    {
+      "id": "cancel-authorship-from-linear-state",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/outcomes.ts",
+      "line": 149,
+      "title": "canceled outcomes counted as founder_verified from Linear terminal state without founder identity",
+      "detail": "founder_verified canceled is derived from Linear canceled + terminal_authorized=1 + closeout event/run mapping. terminal_authorized means a terminal state after a non-terminal one, not that the founder performed it. A Lead or bot cancel is counted as a human decision and can trigger a clarification about a decision she never made. implementation.md records a Lead ruling accepting this, but plan §7.2 requires an authenticated founder message; state it explicitly in reports.",
+      "findingKey": "cancel-authorship-from-linear-state"
+    },
+    {
+      "id": "epic-refresh-full-history-recompute",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/epic-history.ts",
+      "line": 37,
+      "title": "Every Epic materialization synchronously recomputes the full 30-day history to show 20 rows",
+      "detail": "readEpicHistory runs ShipJudgmentHistory.read(asOf), which loops up to 10000 cards with several prepared queries plus learning.pair() each (history-query.ts), and then uses only slice(0,20) and total. This runs on the Bridge event loop on every Epic refresh (5s debounce). Use a LIMIT 20 + COUNT query or the published manifest.",
+      "findingKey": "epic-refresh-full-history-recompute"
+    },
+    {
+      "id": "published-url-invalid-never-written",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/ship-judgment/history-state.ts",
+      "line": 185,
+      "title": "Known-invalid history URL renewal branch is unreachable",
+      "detail": "Renewal checks last_error === 'published_url_invalid', but nothing in src ever writes that value. A history page that 404s before day 12 stays linked until the TTL renewal.",
+      "findingKey": "published-url-invalid-never-written"
+    },
+    {
+      "id": "scan-may-adopt-lead-authored-marker",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/ship-judgment/discord-scan.ts",
+      "line": 91,
+      "title": "Uncertain-POST scan accepts any message by the same bot user carrying the marker",
+      "detail": "The scan only checks author.id===botUserId && bot. The Lead's free-form messages use the same bot identity, so a Lead message quoting the marker line while the delivery is uncertain could be adopted and later PATCHed. Requires the original post to be absent (otherwise ambiguous).",
+      "findingKey": "scan-may-adopt-lead-authored-marker"
+    },
+    {
+      "id": "test-ref-citation-too-loose",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/ship-judgment/evaluate.ts",
+      "line": 160,
+      "title": "Coverage test_ref verification only checks substring inclusion",
+      "detail": "`citation.quote.includes(useCase.test_ref)`, and test_ref may be a single character, so almost any QA quote verifies a test reference. This affects advisory quality only.",
+      "findingKey": "test-ref-citation-too-loose"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "page-number-pagination-race-can-miss-pr",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/github-api.ts",
+      "line": 61,
+      "title": "Page-number pagination of open PRs can silently skip a PR and yield a false conflict pass",
+      "detail": "The open-PR list is paged with `page=N` (default created-desc). If a PR closes or merges between fetching page 1 and page 2, the next page shifts by one and one PR is never seen. The snapshot refine rejects duplicates but not omissions, so checkFileConflicts can return pass without the overlapping PR. This is currently masked by github-pagination-link-path-mismatch and only applies with >100 open PRs. Advisory-only (dry_run), but it contradicts the plan's 'successfully exhausted' evidence requirement. A mitigation: re-read page 1 / total count after the last page, and treat a change as undetermined.",
+      "findingKey": "page-number-pagination-race-can-miss-pr"
+    },
+    {
+      "id": "transient-collection-voids-input",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/worker.ts",
+      "line": 82,
+      "title": "A transient collection failure permanently fails a queued input without any spawn",
+      "detail": "worker.prepare re-collects live material (runtime.ts:55-61); any non-ready result (Linear/GitHub/QA hiccup) returns null. The worker then claims and calls confirmNotSpawned(claim,'input_superseded'), which sets state='failed' (jobs.ts:64). jobs.enqueue is only INSERT OR IGNORE on freeze status 'created' (inputs.ts:177), so a later freeze of the same digest returns 'existing' and never re-queues. The semantic version is lost with zero spawns, contrary to plan §5.3 (only real spawns are non-retryable), and the reason code is misleading.",
+      "findingKey": "transient-collection-voids-input"
+    },
+    {
+      "id": "spawn-without-credentials-or-after-abort",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/subscription-process.ts",
+      "line": 63,
+      "title": "Evaluator spawns even when authentication is unavailable or the signal aborted during Keychain read",
+      "detail": "`if (authentication) {...}` has no else branch. A locked or timed-out Keychain still spawns an unauthenticated CLI, which yields spawned=true, consumes daily budget, and permanently fails the input. subscriptionAuthentication swallows AbortError and returns null. `signal.aborted` is only re-checked after spawn() (line 99), so a Bridge shutdown during the up-to-5s Keychain read also spawns and burns budget. Return spawned:false before spawn in both cases.",
+      "findingKey": "spawn-without-credentials-or-after-abort"
+    },
+    {
+      "id": "refresh-token-written-to-temp-config",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/subscription-process.ts",
+      "line": 64,
+      "title": "Full OAuth credential including refreshToken is copied to a temp .credentials.json",
+      "detail": "The oauth schema keeps optional refreshToken (subscription-auth.ts:11), and the whole object is written to the per-call config dir while CLAUDE_CODE_OAUTH_TOKEN is also set. If the CLI prefers the env token, the refresh token on disk is unnecessary exposure. It can persist in $TMPDIR after a crash or a close-only-resolution hang, and there is no startup sweep of ship-judgment-model-*. If the CLI refreshes from the file, rotation could invalidate the shared host credential. Files are 0600 in a 0700 dir. Write only the access token.",
+      "findingKey": "refresh-token-written-to-temp-config"
+    },
+    {
+      "id": "close-only-resolution-descendant-hang",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/subscription-process.ts",
+      "line": 117,
+      "title": "Process result resolves only on 'close'; a descendant holding stdio after SIGKILL hangs the worker and Bridge shutdown",
+      "detail": "child.kill targets only the direct child (not detached, no process group), and there is no post-KILL deadline. If a grandchild inherits the pipes, 'close' never fires. The effects: worker.active never settles, so all further judgments stall (recoverExpired runs only inside drain); `finally rm(root)` never runs, leaving the credential copy; and plugin.ts stop awaits shipJudgmentRuntime.stop() forever. Low likelihood with --tools '', but add a hard deadline after KILL (resolve on 'exit' + timeout) or kill the process group.",
+      "findingKey": "close-only-resolution-descendant-hang"
+    },
+    {
+      "id": "git-fetch-outside-api-budget-full-history",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/prepare-git.ts",
+      "line": 139,
+      "title": "Per-card git fetch into a fresh bare repo is uncapped by the 120/hour GitHub budget and fetches full history",
+      "detail": "The API reservation wraps only REST calls (project-refresh.ts:124). prepare-git creates a new empty bare repo and runs `git fetch https://github.com/<slug>.git <shas>` with no --depth, for every target of every scanned card (up to 50 cards per 30s tick), with no cross-card reuse. This contradicts plan §4.2's project GitHub call cap. The 20s per-call timeout on a large repo will likely cause recurring undetermined results and heavy network/disk churn.",
+      "findingKey": "git-fetch-outside-api-budget-full-history"
+    },
+    {
+      "id": "binary-diff-permanently-undetermined",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/git-input.ts",
+      "line": 130,
+      "title": "Any binary file in a PR makes the card permanently undetermined",
+      "detail": "`complete: !/^Binary files .+ differ$/m.test(text)`, and collect.ts:157 throws CollectionFailure('diff_incomplete') when !diff.complete. A PR that adds a png is therefore never judgeable. Plan §4.1 requires binary/truncated files to be explicitly listed, not to void the whole input.",
+      "findingKey": "binary-diff-permanently-undetermined"
+    },
+    {
+      "id": "secondary-rate-limit-retry-after-ignored",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/github-api.ts",
+      "line": 156,
+      "title": "GitHub secondary rate limit (403 with retry-after) is not honored",
+      "detail": "retry-after is read only for 429, or for 403 with x-ratelimit-remaining==='0'. Secondary rate limits return 403 with remaining>0 and a retry-after header. Those fall to a generic github_http_403 and are retried after the normal 60s cadence, contrary to plan §4.2 ('429 同时遵守retry-after'). Also read retry-after on any 403 that carries it.",
+      "findingKey": "secondary-rate-limit-retry-after-ignored"
+    },
+    {
+      "id": "observer-retry-blocks-thread-approvals",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/founder-reply-deliverer.ts",
+      "line": 644,
+      "title": "Learning observer 'retry' or throw halts the founder-reply scan of the whole thread, delaying ship-card approvals",
+      "detail": "Every reply-type founder message goes through observeShipJudgmentReply before card routing. Observer 'retry' → ok:false; a throw (e.g. replyTarget's mode/DB read) → process_exception. Either one enters the retry ledger and `break`s the scan (lines 533-557), so later messages in that thread wait up to FOUNDER_REPLY_RETRY_MAX (10) rounds / 30 min before dead-letter. Two scenarios: (a) the founder answers a clarification while the Discord fetch 429s or the lead-label check fails (ship-judgment-routes.ts:64-81 return 'retry'), and then replies 通过 to the ship card — approval is delayed; (b) if replyTarget throws, the ship-card reply itself can be dead-lettered and never reach tryFounderShipApproval (alerted, not silent). An advisory feature should fail open: map observer exceptions to 'ignored' and avoid breaking the thread for learning-only retries. No test covers an observer throw.",
+      "findingKey": "observer-retry-blocks-thread-approvals"
+    },
+    {
+      "id": "historical-thread-backlog-replay",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/gate-poller.ts",
+      "line": 2316,
+      "title": "Threads with delivered clarifications re-enter founder-reply scanning indefinitely and replay backlog from stale cursors",
+      "detail": "listShipJudgmentReplyThreads adds threads of terminal runs, with questions: [] and no expiry (clarifications.replyThreads). The founder-reply cursor is durable, so on re-entry every founder message posted since the thread left the scan set is processed. Messages that are not clarification replies fall through to deliverAmbiguousToLead, and replies to superseded cards trigger oldCardGuidance posts. Bootstrap these threads to head or clamp `after` to the clarification's visible_at.",
+      "findingKey": "historical-thread-backlog-replay"
+    },
+    {
+      "id": "duplicate-file-aborts-collection",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/inputs.ts",
+      "line": 60,
+      "title": "Two declared PRs in the same repo touching one path throw out of freeze with no undetermined opinion",
+      "detail": "Collect keys files on (repo_identity,path) per target. Two same-repo targets editing the same file make freeze `throw new Error('duplicate_file')`, which is a raw throw rather than a CollectionFailure. It escapes to scanner/worker onError without calling unavailable(), so the card silently gets no opinion and the collection is retried each tick (including git fetches).",
+      "findingKey": "duplicate-file-aborts-collection"
+    },
+    {
+      "id": "legacy-freeze-repatch-on-every-boot",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/StateStore.ts",
+      "line": 56062,
+      "title": "Startup freeze invalidation re-edits every frozen legacy message on each Bridge boot and can clog the legacy work queue",
+      "detail": "invalidateAutoNarrowLegacyFreezeOnStartup (called unconditionally in plugin.ts before gatePoller.start) clears legacy_frozen_at on every row with either freeze column set. In dry_run, every frozen legacy followup message is PATCHed again with identical text on each restart ('(edited)' churn). In auto/off, rows frozen without a message stay state='pending' with legacy_freeze_requested_at set. listAutoNarrowOpinionDeliveryWork still selects them (legacy_frozen_at IS NULL) while beginAutoNarrowOpinionDelivery refuses them and no backoff is written, so they can occupy the LIMIT 20 window. No approval impact: commitAutoNarrowSourceIfEligible does not read delivery state.",
+      "findingKey": "legacy-freeze-repatch-on-every-boot"
+    },
+    {
+      "id": "cancel-authorship-from-linear-state",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/outcomes.ts",
+      "line": 149,
+      "title": "canceled outcomes counted as founder_verified from Linear terminal state without founder identity",
+      "detail": "founder_verified canceled is derived from Linear canceled + terminal_authorized=1 + closeout event/run mapping. terminal_authorized means a terminal state after a non-terminal one, not that the founder performed it. A Lead or bot cancel is counted as a human decision and can trigger a clarification about a decision she never made. implementation.md records a Lead ruling accepting this, but plan §7.2 requires an authenticated founder message; state it explicitly in reports.",
+      "findingKey": "cancel-authorship-from-linear-state"
+    },
+    {
+      "id": "epic-refresh-full-history-recompute",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/epic-history.ts",
+      "line": 37,
+      "title": "Every Epic materialization synchronously recomputes the full 30-day history to show 20 rows",
+      "detail": "readEpicHistory runs ShipJudgmentHistory.read(asOf), which loops up to 10000 cards with several prepared queries plus learning.pair() each (history-query.ts), and then uses only slice(0,20) and total. This runs on the Bridge event loop on every Epic refresh (5s debounce). Use a LIMIT 20 + COUNT query or the published manifest.",
+      "findingKey": "epic-refresh-full-history-recompute"
+    },
+    {
+      "id": "published-url-invalid-never-written",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/ship-judgment/history-state.ts",
+      "line": 185,
+      "title": "Known-invalid history URL renewal branch is unreachable",
+      "detail": "Renewal checks last_error === 'published_url_invalid', but nothing in src ever writes that value. A history page that 404s before day 12 stays linked until the TTL renewal.",
+      "findingKey": "published-url-invalid-never-written"
+    },
+    {
+      "id": "scan-may-adopt-lead-authored-marker",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/ship-judgment/discord-scan.ts",
+      "line": 91,
+      "title": "Uncertain-POST scan accepts any message by the same bot user carrying the marker",
+      "detail": "The scan only checks author.id===botUserId && bot. The Lead's free-form messages use the same bot identity, so a Lead message quoting the marker line while the delivery is uncertain could be adopted and later PATCHed. Requires the original post to be absent (otherwise ambiguous).",
+      "findingKey": "scan-may-adopt-lead-authored-marker"
+    },
+    {
+      "id": "test-ref-citation-too-loose",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/ship-judgment/evaluate.ts",
+      "line": 160,
+      "title": "Coverage test_ref verification only checks substring inclusion",
+      "detail": "`citation.quote.includes(useCase.test_ref)`, and test_ref may be a single character, so almost any QA quote verifies a test reference. This affects advisory quality only.",
+      "findingKey": "test-ref-citation-too-loose"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "reviewedHeadSha": "2aca30140c6dee125f67d97745b45baf3e630cc5",
+  "deliveryNonce": "7d8facec-4eb1-4e38-9d23-a0b9efb32327"
+}

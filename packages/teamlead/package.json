@@ -79,6 +79,7 @@
 		"flywheel-edge-worker": "workspace:*",
 		"flywheel-release-contract": "workspace:*",
 		"flywheel-voice-core": "workspace:*",
+		"parse5": "7.3.0",
 		"smol-toml": "^1.6.1",
 		"sql.js": "^1.14.1",
 		"ws": "^8.19.0",

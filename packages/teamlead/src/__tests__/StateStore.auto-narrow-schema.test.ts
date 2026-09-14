@@ -383,6 +383,24 @@ describe("StateStore auto narrow schema", () => {
 				/immutable/,
 			);
 		}
+		expect(store.getAutoNarrowOpinionDelivery("q")).toMatchObject({
+			legacyFreezeRequestedAt: null,
+			legacyFrozenAt: null,
+		});
+		db.prepare(
+			"UPDATE auto_narrow_opinion_delivery SET legacy_freeze_requested_at=?,legacy_frozen_at=? WHERE question_id='q'",
+		).run(NOW, NOW);
+		expect(store.getAutoNarrowOpinionDelivery("q")).toMatchObject({
+			legacyFreezeRequestedAt: NOW,
+			legacyFrozenAt: NOW,
+		});
+		expect(store.beginAutoNarrowOpinionDelivery("q", NOW)).toBeUndefined();
+		db.prepare(
+			"UPDATE auto_narrow_opinion_delivery SET legacy_freeze_requested_at=NULL,legacy_frozen_at=NULL WHERE question_id='q'",
+		).run();
+		expect(store.beginAutoNarrowOpinionDelivery("q", NOW)).toMatchObject({
+			state: "posting",
+		});
 		expect(
 			db
 				.prepare(

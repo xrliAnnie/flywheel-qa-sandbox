@@ -5548,6 +5548,46 @@ it("FLY-2465 dispatcher services disabled admission queues even without a dispat
 	}
 });
 
+it.each(["ship_judgment_visible", "ship_judgment_delivery_error"])(
+	"ignores %s audit events for dispatch and transitions",
+	async (kind) => {
+		const store = await storeWithRootImplementIntent();
+		const root = mkdtempSync(join(tmpdir(), "ship-judgment-audit-"));
+		try {
+			const fake = fakeStartDispatcher(store);
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				env: WORKFLOW_ON,
+				stateRoot: root,
+				resolvePredecessorHead: async () => HEAD,
+			});
+			await dispatcher.reconcile();
+			const before = store.listWorkflowRunNodes("simple-run");
+			const count = fake.requests.length;
+			expect(count).toBeGreaterThan(0);
+			store.appendWorkflowRunEvent({
+				runId: "simple-run",
+				eventUid: "ship-judgment-test",
+				kind,
+				payload: {
+					opinion_id: "o",
+					message_id: "123456789012345680",
+					receipt_time: new Date().toISOString(),
+					outcome: "approved",
+					nodeId: "founder_gate",
+				},
+			});
+			await dispatcher.reconcile();
+			expect(store.listWorkflowRunNodes("simple-run")).toEqual(before);
+			expect(fake.requests).toHaveLength(count);
+		} finally {
+			store.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+);
+
 async function fly2504ReplacementHarness() {
 	const store = await storeWithQaFailKickback();
 	const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;

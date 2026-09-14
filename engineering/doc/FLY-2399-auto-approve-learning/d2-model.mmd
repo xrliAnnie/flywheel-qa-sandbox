@@ -1,0 +1,26 @@
+erDiagram
+ CARD ||--o{ INPUT : freezes
+ INPUT ||--o{ OPINION : produces
+ CARD ||--o{ DECISION : receives
+ OPINION ||--o{ CLARIFICATION : compares
+ DECISION ||--o{ CLARIFICATION : explains
+ CARD {
+  string card_id "卡片身份"
+  string versions "全部仓库的改动版本"
+ }
+ INPUT {
+  string digest "当时材料的指纹"
+  string sources "要求 设计 测试与文件"
+ }
+ OPINION {
+  string three_points "三点判断与原文依据"
+  string visible_at "何时让你看见"
+ }
+ DECISION {
+  string author "谁作了决定"
+  string result "批准 打回 或取消"
+ }
+ CLARIFICATION {
+  string question "哪里判断不同"
+  string answer "你的原话与出处"
+ }

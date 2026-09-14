@@ -8,6 +8,7 @@ import type {
 	EpicPageTrigger,
 	LeadNoteRecord,
 } from "../StateStore.js";
+import type { EpicHistory } from "../ship-judgment/epic-history.js";
 import { type AttentionInput, buildAttention } from "./attention.js";
 import { buildFreshness } from "./freshness.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS } from "./lead-note.js";
@@ -31,6 +32,7 @@ import {
 import type { EpicPageItemSignals } from "./signals.js";
 
 export interface GenerateEpicPageInput {
+	shipJudgmentHistory?: EpicHistory;
 	leadNotes?: LeadNoteRecord[];
 	leadNoteFadeDays?: number;
 	snapshot: LinearActiveScopeSnapshot;
@@ -201,6 +203,17 @@ function generatePage(
 				};
 		return {
 			identifier: child.identifier,
+			...(facts.ship_judgment &&
+			(!facts.ship_judgment.ok || facts.ship_judgment.value !== null)
+				? {
+						ship_judgment: statestoreCell(
+							facts.ship_judgment,
+							"ship_judgment_opinion",
+							child,
+							generatedAt,
+						),
+					}
+				: {}),
 			...(notesByIssue.has(child.id)
 				? { lead_note: notesByIssue.get(child.id)! }
 				: {}),
@@ -529,6 +542,19 @@ function generatePage(
 			),
 		},
 		items,
+		...(input.shipJudgmentHistory
+			? {
+					ship_judgment_history: {
+						value: input.shipJudgmentHistory,
+						observed_at: generatedAt,
+						provenance: {
+							kind: "statestore" as const,
+							table: "ship_judgment_project_state",
+							key: { project_name: input.projectName },
+						},
+					},
+				}
+			: {}),
 		lead_note_policy: {
 			value: {
 				fade_after_days: input.leadNoteFadeDays ?? DEFAULT_LEAD_NOTE_FADE_DAYS,

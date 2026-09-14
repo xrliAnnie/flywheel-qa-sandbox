@@ -65,3 +65,23 @@ export class AuditDictionary {
 		);
 	}
 }
+
+/** Fixed labels only; raw evidence never participates in the compact summary. */
+export function judgmentSummary(
+	cell: Cell<import("../ship-judgment/epic-facts.js").EpicJudgment | null>,
+): string {
+	if (!cell.value) return "机器意见：读取失败";
+	const display = { pending: "待展示", published: "已展示", history: "历史" }[
+		cell.value.display
+	];
+	const overall =
+		cell.value.overall === null
+			? "待判断"
+			: {
+					can: "可",
+					cannot: "不可",
+					recommend_reject: "建议拒绝",
+					undetermined: "无法判断",
+				}[cell.value.overall];
+	return `机器意见：${display} · ${overall}`;
+}

@@ -65,6 +65,8 @@ import { sendDetailed } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { runShadowDeclareCommand } from "./commands/shadow-declare.js";
+import { runShipJudgment } from "./commands/ship-judgment.js";
+import { runShipJudgmentRef } from "./commands/ship-judgment-ref.js";
 import { runSnapshotCommand } from "./commands/snapshot.js";
 import { stage } from "./commands/stage.js";
 import { runSummaryCommand } from "./commands/summary.js";
@@ -192,6 +194,8 @@ Commands:
             [--timeout-ms <n>] [--shot-timeout-ms <n>]
             [--chrome-bin <absolute executable>]. Always prints a one-line JSON
             envelope to stdout.
+	  ship-judgment      Read judgment audits (show) or statistics (report --project --from --to).
+	  ship-judgment-ref  Re-fetch a referenced founder explanation (Lead only; no approval).
 	  feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
 	            report [--project <name>] [--channel <id>] [--out <file>]
             [--bridge-url <url>]  — fetch the read-only flag report from the
@@ -427,6 +431,12 @@ async function main(): Promise<void> {
 			break;
 		case "verify-report":
 			await runVerifyReport(commandArgs);
+			break;
+		case "ship-judgment":
+			process.exitCode = await runShipJudgment(commandArgs);
+			break;
+		case "ship-judgment-ref":
+			process.exitCode = await runShipJudgmentRef(commandArgs);
 			break;
 		case "feature-flags":
 			await runFeatureFlags(commandArgs);

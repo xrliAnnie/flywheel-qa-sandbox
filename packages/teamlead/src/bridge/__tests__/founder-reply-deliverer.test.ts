@@ -170,6 +170,41 @@ describe("FLY-1392 v2 founder ingress", () => {
 		vi.restoreAllMocks();
 	});
 
+	it.each(["handled", "retry"] as const)(
+		"routes explicit learning replies before broad classification (%s)",
+		async (result) => {
+			const msg: RawMsg = {
+				id: snowflakeAt(Date.now() - 30_000),
+				content: "approve",
+				author: { id: OWNER },
+				type: 19,
+				message_reference: {
+					message_id: "323456789012345678",
+					channel_id: THREAD,
+				},
+			};
+			const before = cursor.load(THREAD),
+				handoff = vi.fn(async () => true);
+			const observeShipJudgmentReply = vi.fn(async () => result);
+			await emitFounderReplyDeliveryForThread(ctx(dbPath), [], {
+				store: store(),
+				cursorStore: cursor,
+				fetchImpl: discordGet([msg]),
+				deliverAmbiguousToLead: handoff,
+				observeShipJudgmentReply,
+			});
+			expect(observeShipJudgmentReply).toHaveBeenCalledExactlyOnceWith({
+				projectName: "flywheel",
+				leadId: "test-lead",
+				threadId: THREAD,
+				messageId: msg.id,
+				replyToMessageId: "323456789012345678",
+			});
+			expect(handoff).not.toHaveBeenCalled();
+			expect(cursor.load(THREAD)).toBe(result === "handled" ? msg.id : before);
+		},
+	);
+
 	it("records one canonical row and forwards founder text unchanged to Lead", async () => {
 		const msg: RawMsg = {
 			id: snowflakeAt(Date.now() - 30_000),
@@ -559,88 +594,94 @@ describe("FLY-1392 v2 founder ingress", () => {
 		verify.close();
 	});
 
-	it("still routes an explicit reply to the current ship card during a review round", async () => {
-		const db = new CommDB(dbPath);
-		const reviewQuestionId = insertFounderReviewQuestion(db, "review-1", 1);
-		const shipQuestionId = db.insertQuestion(
-			"exec-ship",
-			"test-lead",
-			"ship?",
-			{ checkpoint: "approve_to_ship" },
-		);
-		db.close();
-		const borrowedDb = new CommDB(dbPath, false);
-		const release = vi.fn();
-		const handoff = vi.fn(async () => true);
-		const tryFounderShipApproval = vi.fn(async () => ({
-			bound: [{ questionId: shipQuestionId, decision: "approve" as const }],
-			deferred: [],
-			retry: false,
-		}));
-		const readCurrentBinding = vi.fn(() => ({
-			questionId: shipQuestionId,
-			executionId: "exec-ship",
-			issueId: "FLY-1392",
-			prHeadSha: "b".repeat(40),
-			threadId: THREAD,
-			gateMessageId: "ship-card",
-			checkpoint: "approve_to_ship",
-			postedAt: new Date().toISOString(),
-		}));
+	it.each(["approve", "reject"] as const)(
+		"still routes explicit ship-card %s after the learning observer declines it",
+		async (decision) => {
+			const db = new CommDB(dbPath);
+			const reviewQuestionId = insertFounderReviewQuestion(db, "review-1", 1);
+			const shipQuestionId = db.insertQuestion(
+				"exec-ship",
+				"test-lead",
+				"ship?",
+				{ checkpoint: "approve_to_ship" },
+			);
+			db.close();
+			const borrowedDb = new CommDB(dbPath, false);
+			const release = vi.fn();
+			const handoff = vi.fn(async () => true);
+			const observeShipJudgmentReply = vi.fn(async () => "ignored" as const);
+			const tryFounderShipApproval = vi.fn(async () => ({
+				bound: [{ questionId: shipQuestionId, decision }],
+				deferred: [],
+				retry: false,
+			}));
+			const readCurrentBinding = vi.fn(() => ({
+				questionId: shipQuestionId,
+				executionId: "exec-ship",
+				issueId: "FLY-1392",
+				prHeadSha: "b".repeat(40),
+				threadId: THREAD,
+				gateMessageId: "ship-card",
+				checkpoint: "approve_to_ship",
+				postedAt: new Date().toISOString(),
+			}));
 
-		const outcome = await emitFounderReplyDeliveryForThread(
-			ctx(dbPath),
-			[
-				{
-					questionId: reviewQuestionId,
-					checkpoint: "founder_review",
-					executionId: "exec-review-1",
-					createdAtMs: Date.now() - 60 * 60_000,
-				},
-				{
-					questionId: shipQuestionId,
-					checkpoint: "approve_to_ship",
-					executionId: "exec-ship",
-					createdAtMs: Date.now() - 60 * 60_000,
-				},
-			],
-			{
-				store: founderReviewStore([
-					{ questionId: reviewQuestionId, messageId: "review-card" },
-				]),
-				fetchImpl: discordGet([
+			const outcome = await emitFounderReplyDeliveryForThread(
+				ctx(dbPath),
+				[
 					{
-						id: snowflakeAt(Date.now() - 10_000),
-						content: "approve",
-						author: { id: OWNER },
-						type: 19,
-						message_reference: {
-							type: 0,
-							message_id: "ship-card",
-							channel_id: THREAD,
-						},
+						questionId: reviewQuestionId,
+						checkpoint: "founder_review",
+						executionId: "exec-review-1",
+						createdAtMs: Date.now() - 60 * 60_000,
 					},
-				]),
-				cursorStore: cursor,
-				commDbLeaseFactory: () => ({ db: borrowedDb, release }),
-				deliverAmbiguousToLead: handoff,
-				tryFounderShipApproval,
-				readCurrentBinding,
-			},
-		);
+					{
+						questionId: shipQuestionId,
+						checkpoint: "approve_to_ship",
+						executionId: "exec-ship",
+						createdAtMs: Date.now() - 60 * 60_000,
+					},
+				],
+				{
+					store: founderReviewStore([
+						{ questionId: reviewQuestionId, messageId: "review-card" },
+					]),
+					fetchImpl: discordGet([
+						{
+							id: snowflakeAt(Date.now() - 10_000),
+							content: decision,
+							author: { id: OWNER },
+							type: 19,
+							message_reference: {
+								type: 0,
+								message_id: "ship-card",
+								channel_id: THREAD,
+							},
+						},
+					]),
+					cursorStore: cursor,
+					commDbLeaseFactory: () => ({ db: borrowedDb, release }),
+					deliverAmbiguousToLead: handoff,
+					tryFounderShipApproval,
+					observeShipJudgmentReply,
+					readCurrentBinding,
+				},
+			);
 
-		expect(outcome.result).toBe("advanced");
-		expect(tryFounderShipApproval).toHaveBeenCalledOnce();
-		expect(tryFounderShipApproval.mock.calls[0]?.[0]).toMatchObject({
-			shipGates: [{ questionId: shipQuestionId }],
-			replyToCard: true,
-		});
-		expect(tryFounderShipApproval.mock.calls[0]?.[0].db).toBe(borrowedDb);
-		expect(release).toHaveBeenCalledOnce();
-		expect(borrowedDb.getPendingQuestions("test-lead")).toHaveLength(2);
-		borrowedDb.close();
-		expect(handoff).not.toHaveBeenCalled();
-	});
+			expect(outcome.result).toBe("advanced");
+			expect(observeShipJudgmentReply).toHaveBeenCalledOnce();
+			expect(tryFounderShipApproval).toHaveBeenCalledOnce();
+			expect(tryFounderShipApproval.mock.calls[0]?.[0]).toMatchObject({
+				shipGates: [{ questionId: shipQuestionId }],
+				replyToCard: true,
+			});
+			expect(tryFounderShipApproval.mock.calls[0]?.[0].db).toBe(borrowedDb);
+			expect(release).toHaveBeenCalledOnce();
+			expect(borrowedDb.getPendingQuestions("test-lead")).toHaveLength(2);
+			borrowedDb.close();
+			expect(handoff).not.toHaveBeenCalled();
+		},
+	);
 
 	it("never sends free thread speech through the ship verdict classifier", async () => {
 		const db = new CommDB(dbPath);

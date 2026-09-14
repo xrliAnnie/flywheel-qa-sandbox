@@ -19,6 +19,7 @@ interface AutoNarrowGateStore {
 		controlAppliedAt?: string;
 		at: string;
 		metrics?: AutoNarrowMetrics;
+		captureOnly?: boolean;
 	}): unknown;
 	commitAutoNarrowSourceIfEligible(input: {
 		questionId: string;
@@ -138,9 +139,11 @@ export function refreshAutoNarrowOpinionTrace(input: {
 			questionId: input.questionId,
 			issueThreadId: input.issueThreadId,
 			...input.opinionControl,
+			...(input.opinionControl.mode === "dry_run" ? { captureOnly: true } : {}),
 			at: input.at,
 			...(input.metrics ? { metrics: input.metrics } : {}),
 		});
+		if (input.opinionControl.mode === "dry_run") return true;
 		const delivery = input.store.getAutoNarrowOpinionDelivery(input.questionId);
 		return Boolean(delivery && delivery.state !== "gone");
 	} catch (error) {

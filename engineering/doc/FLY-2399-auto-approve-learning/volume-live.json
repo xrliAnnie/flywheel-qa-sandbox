@@ -1,0 +1,42 @@
+{
+  "at": "2026-09-14T03:28:25.688Z",
+  "measured": [
+    {
+      "path": "/repos/xrliAnnie/flywheel/pulls",
+      "query": "?state=open&per_page=20&page=1",
+      "bytes": 371241,
+      "status": 200
+    },
+    {
+      "path": "/repos/xrliAnnie/flywheel/pulls/1163/files",
+      "query": "?per_page=20&page=1",
+      "bytes": 262563,
+      "status": 200
+    },
+    {
+      "path": "/repos/xrliAnnie/flywheel/pulls/1163/files",
+      "query": "?per_page=20&page=2",
+      "bytes": 184682,
+      "status": 200
+    }
+  ],
+  "results": [
+    {
+      "items": 20,
+      "nextPage": 2,
+      "retainedBytes": 3497
+    },
+    {
+      "items": 20,
+      "nextPage": 2,
+      "retainedBytes": 1538
+    },
+    {
+      "items": 20,
+      "nextPage": 3,
+      "retainedBytes": 1677
+    }
+  ],
+  "modelCalls": 0,
+  "apiCalls": 3
+}

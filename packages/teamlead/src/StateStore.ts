@@ -1,3 +1,13 @@
+import { readEpicHistory } from "./ship-judgment/epic-history.js";
+import { readEpicJudgment, type EpicJudgment } from "./ship-judgment/epic-facts.js";
+import { ShipJudgmentHistoryState } from "./ship-judgment/history-state.js";
+import { ShipJudgmentHistory } from "./ship-judgment/history-query.js";
+import { ShipJudgmentReader } from "./ship-judgment/show.js";
+import { ShipJudgmentDelivery } from "./ship-judgment/delivery.js";
+import { ShipJudgmentStatistics } from "./ship-judgment/statistics.js";
+import { ShipJudgmentOutcomes } from "./ship-judgment/outcomes.js";
+import { ShipJudgmentClarifications, type ReplySource } from "./ship-judgment/clarifications.js";
+import { LearningDelivery } from "./ship-judgment/learning-delivery.js";
 import type { ReleaseSignalEvent, ReleasePublication, ReadinessInput, ReleaseHeartbeat, ReleaseSignalGap, ReleaseReadinessRecord } from "./bridge/release-readiness/evaluate.js";
 import {
 	PRE_ADAPTER_FAILURE_KINDS,
@@ -18,6 +28,11 @@ import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "fl
 import { buildWorkflowReworkContext, renderWorkflowReworkLaunchStableSection, workflowReworkLaunchDigest } from "./bridge/workflow-rework-context.js";
 import { type CodexQuotaSignalV1, parseCodexQuotaSignalV1 } from "flywheel-core";
 import { CodexQuotaStore } from "./bridge/codex-quota-store.js";
+import { ShipJudgmentJobs } from "./ship-judgment/jobs.js";
+import { ShipJudgmentInputs } from "./ship-judgment/inputs.js";
+import { ShipJudgmentOpinions } from "./ship-judgment/opinions.js";
+import { ProjectRefreshStore } from "./ship-judgment/project-refresh.js";
+import { DELIVERY_ERROR_AUDIT_MIGRATION, repositorySlugSchema, type ShipJudgmentBinding } from "./ship-judgment/contract.js";
 import { VALID_STAGES } from "./bridge/stage-utils.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { makeGateAuthorityView } from "./bridge/approval-signal/gate-authority-view.js";
@@ -2485,6 +2500,7 @@ export type EpicPageFactRead<T> =
 	| { ok: false; table: string };
 
 export interface EpicItemFacts {
+	ship_judgment?: EpicPageFactRead<EpicJudgment | null>;
 	session: EpicPageFactRead<EpicPageSessionValue>;
 	run: EpicPageFactRead<EpicPageRunValue[]>;
 	attempt: EpicPageFactRead<EpicPageAttemptValue[]>;
@@ -5289,6 +5305,314 @@ export class StateStore {
 				INSERT OR IGNORE INTO state_store_migration (migration_id, applied_at)
 					VALUES ('fly-2453-auto-narrow-v1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 			`);
+		})();
+	}
+
+	getShipJudgmentDelivery(): ShipJudgmentDelivery {
+		return new ShipJudgmentDelivery(this.db.raw,(questionId,channelId)=>this.readShipJudgmentBinding(questionId,channelId),event=>this.appendWorkflowRunEventTx(event));
+	}
+
+	getEpicShipJudgmentHistory(asOf: string) {
+		return readEpicHistory(this.db.raw, asOf);
+	}
+
+	getEpicPageShipJudgmentFact(projectName:string,issueKeys:string[]) {
+		return readEpicJudgment(this.db.raw,projectName,issueKeys);
+	}
+
+	getShipJudgmentHistoryState(): ShipJudgmentHistoryState {
+		return new ShipJudgmentHistoryState(this.db.raw);
+	}
+
+	getShipJudgmentHistory(): ShipJudgmentHistory {
+		return new ShipJudgmentHistory(this.db.raw);
+	}
+
+	getShipJudgmentReader(): ShipJudgmentReader {
+		return new ShipJudgmentReader(this.db.raw);
+	}
+
+	getShipJudgmentStatistics(): ShipJudgmentStatistics {
+		return new ShipJudgmentStatistics(this.db.raw);
+	}
+
+	getShipJudgmentOutcomes(): ShipJudgmentOutcomes {
+		return new ShipJudgmentOutcomes(this.db.raw);
+	}
+
+	getShipJudgmentClarifications(mode: () => string, source?:ReplySource): ShipJudgmentClarifications {
+		return new ShipJudgmentClarifications(this.db.raw, mode, source);
+	}
+
+	getShipJudgmentLearningDelivery(mode: () => string): LearningDelivery {
+		return new LearningDelivery(this.db.raw, mode);
+	}
+
+	getShipJudgmentJobs(): ShipJudgmentJobs {
+		return new ShipJudgmentJobs(this.db.raw);
+	}
+
+	getShipJudgmentInputs(): ShipJudgmentInputs {
+		return new ShipJudgmentInputs(this.db.raw, (questionId, channelId) => this.readShipJudgmentBinding(questionId, channelId));
+	}
+
+	getShipJudgmentOpinions(): ShipJudgmentOpinions {
+		return new ShipJudgmentOpinions(this.db.raw, (questionId, channelId) => this.readShipJudgmentBinding(questionId, channelId));
+	}
+
+	getShipJudgmentProjectRefresh(): ProjectRefreshStore {
+		return new ProjectRefreshStore(this.db.raw);
+	}
+
+	/** Bounded current-card scan; rotates after the durable cursor without changing gate authority. */
+	readShipJudgmentRepositories(primarySlug: string): {repo_identity:string;repo_slug:string}[] | undefined {
+		if (!repositorySlugSchema.safeParse(primarySlug).success) return undefined;
+		const incomplete=this.db.raw.prepare(`SELECT 1 FROM workflow_pr_manifest m JOIN workflow_run r ON r.run_id=m.run_id
+			WHERE r.project_name='flywheel' AND r.status='active' AND (m.sealed_at IS NULL OR m.current_revision<1 OR
+			m.expected_count<>(SELECT COUNT(*) FROM workflow_declared_pr d WHERE d.run_id=m.run_id AND d.revision=m.current_revision)) LIMIT 1`).get();
+		if(incomplete) return undefined;
+		const rows=this.db.raw.prepare(`SELECT DISTINCT b.target_repo_identity AS repo_identity,b.probe_repo_slug AS repo_slug
+			FROM workflow_node_pr_binding b JOIN workflow_run r ON r.run_id=b.run_id WHERE r.project_name='flywheel' AND r.status='active'
+			AND b.attempt=(SELECT MAX(n.attempt) FROM workflow_run_node n WHERE n.run_id=b.run_id AND n.node_id=b.node_id)
+			UNION SELECT d.repo_identity,d.probe_repo_slug FROM workflow_declared_pr d JOIN workflow_run r ON r.run_id=d.run_id
+			JOIN workflow_pr_manifest m ON m.run_id=d.run_id AND m.current_revision=d.revision
+			WHERE r.project_name='flywheel' AND r.status='active' LIMIT 201`).all() as {repo_identity:string;repo_slug:string}[];
+		if(rows.length>200) return undefined;
+		const repos=new Map<string,string>([["__main__",primarySlug]]);
+		for(const row of rows) {
+			if(!row.repo_identity || !repositorySlugSchema.safeParse(row.repo_slug).success || (repos.has(row.repo_identity) && repos.get(row.repo_identity)!==row.repo_slug)) return undefined;
+			repos.set(row.repo_identity,row.repo_slug);
+		}
+		if(repos.size>200) return undefined;
+		return [...repos].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([repo_identity,repo_slug])=>({repo_identity,repo_slug}));
+	}
+
+	listShipJudgmentScanQuestions(): string[] {
+		const cursor = this.db.raw.prepare("SELECT scan_cursor FROM ship_judgment_project_state WHERE project_name='flywheel'").get() as {scan_cursor: string | null} | undefined;
+		return (this.db.raw.prepare(`SELECT h.question_id FROM workflow_gate_holder h
+			JOIN workflow_run r ON r.run_id=h.run_id
+			WHERE r.project_name='flywheel' AND r.status='active' AND h.gate_node_id='founder_gate'
+			AND h.authority_mode='land' AND h.subject_kind='git_head' AND h.carrier_binding_state='bound'
+			AND h.state='awaiting_review' AND h.materialization_stage='completed' AND h.card_message_id IS NOT NULL
+			ORDER BY CASE WHEN h.question_id > ? THEN 0 ELSE 1 END,h.question_id LIMIT 50`).all(cursor?.scan_cursor ?? "") as {question_id:string}[]).map(row=>row.question_id);
+	}
+
+	advanceShipJudgmentScanCursor(questionId: string): void {
+		if (!questionId || questionId.length > 200) throw new Error("invalid_scan_cursor");
+		this.db.raw.prepare(`INSERT INTO ship_judgment_project_state(project_name,scan_cursor) VALUES ('flywheel',?)
+			ON CONFLICT(project_name) DO UPDATE SET scan_cursor=excluded.scan_cursor`).run(questionId);
+	}
+
+	/** Read-only source selection. A newer pending/failed review prevents fallback to an older approval. */
+	readShipJudgmentPlanReference(runId: string, repoIdentity: string): { requestId: string; path: string; expectedBlobSha?: string } | undefined {
+		const row = this.db.raw.prepare(`SELECT j.* FROM codex_review_job j
+			JOIN workflow_run_node n ON n.execution_id=j.execution_id
+			JOIN workflow_run r ON r.run_id=n.run_id
+			WHERE r.run_id=? AND r.project_name='flywheel' AND r.status='active'
+			AND j.project_name=r.project_name AND j.issue_id=r.issue_id
+			AND j.review_type='design' AND j.target_repo_identity=?
+			AND n.attempt=(SELECT MAX(n2.attempt) FROM workflow_run_node n2 WHERE n2.run_id=n.run_id AND n2.node_id=n.node_id)
+			ORDER BY j.created_at DESC,j.round DESC,j.request_id DESC LIMIT 1`).get(runId, repoIdentity) as
+			{ request_id: string; execution_id: string; target_path: string | null; status: string; verdict: string | null } | undefined;
+		if (!row || row.status !== "done" || row.verdict !== "APPROVED" || !row.target_path) return undefined;
+		const manifest = this.getCurrentDesignReviewManifest(row.execution_id);
+		if (manifest && manifest.expected_plan_path !== row.target_path) return undefined;
+		return { requestId: row.request_id, path: row.target_path,
+			...(manifest ? { expectedBlobSha: manifest.expected_blob_sha } : {}) };
+	}
+
+	readShipJudgmentBinding(questionId: string, channelId: string): ShipJudgmentBinding | undefined {
+		const holder = this.getCurrentWorkflowGateHolderByQuestionId(questionId);
+		if (!holder || holder.gate_node_id !== "founder_gate" || holder.authority_mode !== "land" ||
+			holder.subject_kind !== "git_head" || holder.carrier_binding_state !== "bound" ||
+			holder.state !== "awaiting_review" || holder.materialization_stage !== "completed" || !holder.card_message_id) return undefined;
+		const run = this.getWorkflowRun(holder.run_id);
+		if (!run || run.project_name !== "flywheel" || run.status !== "active") return undefined;
+		const thread = this.getChatThreadByIssue(run.issue_id, channelId);
+		if (!thread) return undefined;
+		const target = this.db.raw.prepare("SELECT superseded_at FROM workflow_ship_target_binding WHERE approve_question_id=?").get(questionId) as { superseded_at: string | null } | undefined;
+		if (!target || target.superseded_at) return undefined;
+		let primary: ReturnType<StateStore["resolveFounderGateBindingTx"]>;
+		try {
+			primary = this.resolveFounderGateBindingTx({ runId: run.run_id, questionId });
+		} catch (error) {
+			if (error instanceof Error && error.message.startsWith("founder decision source payload invalid: verdict unbound")) return undefined;
+			throw error;
+		}
+		const manifest = this.getWorkflowPrManifest(run.run_id);
+		let targets: ShipJudgmentBinding["targets"] = [{ repo_identity: primary.repoIdentity, repo_slug: primary.repoSlug, pr_number: primary.prNumber, head_sha: primary.headSha }];
+		if (manifest) {
+			const rows = this.listCurrentWorkflowDeclaredPrs(run.run_id);
+			if (!manifest.sealed_at || manifest.current_revision < 1 || rows.length !== manifest.expected_count ||
+				rows.some(row => row.state !== "declared" || !/^[0-9a-f]{40}$/.test(row.frozen_head_sha))) return undefined;
+			if (!rows.some(row => row.repo_identity === primary.repoIdentity && row.probe_repo_slug === primary.repoSlug &&
+				row.pr_number === primary.prNumber && row.frozen_head_sha === primary.headSha)) return undefined;
+			targets = rows.map(row => ({ repo_identity: row.repo_identity, repo_slug: row.probe_repo_slug, pr_number: row.pr_number, head_sha: row.frozen_head_sha }));
+		}
+		if (this.currentWorkflowPrBindingRows(run.run_id).some(row => !targets.some(target =>
+			target.repo_identity === row.target_repo_identity && target.repo_slug === row.probe_repo_slug &&
+			target.pr_number === row.pr_number && target.head_sha === row.head_sha))) return undefined;
+		return { projectName: "flywheel", runId: run.run_id, questionId, issueId: run.issue_id,
+			cardMessageId: holder.card_message_id, threadId: thread.thread_id,
+			manifestRevision: manifest?.current_revision ?? 0, targets };
+	}
+
+	private migrateShipJudgmentLedger(): void {
+		this.db.raw.transaction(() => {
+			this.db.raw.exec(`
+				CREATE TABLE IF NOT EXISTS ship_judgment_input (
+					input_id TEXT PRIMARY KEY, project_name TEXT NOT NULL CHECK(project_name='flywheel'),
+					run_id TEXT NOT NULL REFERENCES workflow_run(run_id),
+					question_id TEXT NOT NULL REFERENCES workflow_gate_holder(question_id),
+					card_message_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+					semantic_ordinal INTEGER NOT NULL CHECK(semantic_ordinal BETWEEN 1 AND 3),
+					targets_digest TEXT NOT NULL, targets_json TEXT NOT NULL CHECK(json_valid(targets_json)),
+					sources_json TEXT NOT NULL CHECK(json_valid(sources_json) AND length(CAST(sources_json AS BLOB))<=98304),
+					requirements_json TEXT NOT NULL CHECK(json_valid(requirements_json)),
+					semantic_digest TEXT NOT NULL, policy_version TEXT NOT NULL,
+					model_snapshot_digest TEXT NOT NULL, model_snapshot_json TEXT NOT NULL CHECK(json_valid(model_snapshot_json)),
+					requested_at TEXT NOT NULL,
+					UNIQUE(question_id,semantic_digest,policy_version,model_snapshot_digest),
+					UNIQUE(question_id,semantic_ordinal)
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_evaluation (
+					evaluation_id TEXT PRIMARY KEY,
+					input_id TEXT NOT NULL UNIQUE REFERENCES ship_judgment_input(input_id),
+					alignment TEXT NOT NULL CHECK(alignment IN ('pass','fail','undetermined')),
+					coverage TEXT NOT NULL CHECK(coverage IN ('pass','fail','undetermined')),
+					result_json TEXT NOT NULL CHECK(json_valid(result_json) AND length(CAST(result_json AS BLOB))<=65536),
+					result_code TEXT NOT NULL, created_at TEXT NOT NULL,
+					duration_ms INTEGER NOT NULL CHECK(duration_ms>=0),
+					usage_json TEXT CHECK(usage_json IS NULL OR json_valid(usage_json)),
+					cost_usd REAL CHECK(cost_usd IS NULL OR cost_usd>=0)
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_opinion (
+					opinion_id TEXT PRIMARY KEY,
+					question_id TEXT NOT NULL REFERENCES workflow_gate_holder(question_id),
+					input_id TEXT REFERENCES ship_judgment_input(input_id),
+					evaluation_id TEXT REFERENCES ship_judgment_evaluation(evaluation_id),
+					ordinal INTEGER NOT NULL CHECK(ordinal>0),
+					mechanical_json TEXT NOT NULL CHECK(json_valid(mechanical_json)),
+					mechanical_digest TEXT NOT NULL, presentation_digest TEXT NOT NULL,
+					alignment TEXT NOT NULL CHECK(alignment IN ('pass','fail','undetermined')),
+					conflict TEXT NOT NULL CHECK(conflict IN ('pass','fail','undetermined')),
+					coverage TEXT NOT NULL CHECK(coverage IN ('pass','fail','undetermined')),
+					overall TEXT NOT NULL CHECK(overall IN ('can','cannot','recommend_reject','undetermined')),
+					status TEXT NOT NULL CHECK(status IN ('complete','undetermined','stale')),
+					reason TEXT NOT NULL, created_at TEXT NOT NULL,
+					CHECK((input_id IS NOT NULL AND evaluation_id IS NOT NULL) OR overall='undetermined'),
+					UNIQUE(question_id,ordinal)
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_job (
+					input_id TEXT PRIMARY KEY REFERENCES ship_judgment_input(input_id),
+					state TEXT NOT NULL CHECK(state IN ('queued','running','done','failed')),
+					lease_owner TEXT, generation INTEGER NOT NULL DEFAULT 0 CHECK(generation>=0),
+					expires_at TEXT, budget_day TEXT, reserved_at TEXT, spawned_at TEXT, finished_at TEXT,
+					last_error TEXT
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_outcome (
+					outcome_id TEXT PRIMARY KEY, source_kind TEXT NOT NULL, source_id TEXT NOT NULL,
+					question_id TEXT NOT NULL REFERENCES workflow_gate_holder(question_id),
+					run_id TEXT NOT NULL REFERENCES workflow_run(run_id), card_message_id TEXT NOT NULL,
+					targets_digest TEXT NOT NULL,
+					authorship TEXT NOT NULL CHECK(authorship IN ('founder_verified','lead_proxy','auto','unknown')),
+					decision TEXT NOT NULL CHECK(decision IN ('approved','rework','canceled')),
+					decided_at TEXT NOT NULL, observed_at TEXT NOT NULL,
+					verdict_id TEXT REFERENCES workflow_founder_gate_verdict(verdict_id),
+					evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+					UNIQUE(source_kind,source_id)
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_clarification (
+					clarification_id TEXT PRIMARY KEY,
+					opinion_id TEXT NOT NULL REFERENCES ship_judgment_opinion(opinion_id),
+					outcome_id TEXT NOT NULL REFERENCES ship_judgment_outcome(outcome_id),
+					reply_source_id TEXT, reply_text TEXT, reply_digest TEXT,
+					founder_id TEXT, verified_at TEXT,
+					resolution TEXT NOT NULL CHECK(resolution IN ('pending','explained','unavailable')),
+					supersedes TEXT REFERENCES ship_judgment_clarification(clarification_id),
+					UNIQUE(reply_source_id,reply_digest),
+					CHECK(resolution<>'explained' OR (reply_source_id IS NOT NULL AND reply_text IS NOT NULL
+						AND reply_digest IS NOT NULL AND founder_id IS NOT NULL AND verified_at IS NOT NULL AND supersedes IS NOT NULL))
+				);
+				CREATE UNIQUE INDEX IF NOT EXISTS ship_judgment_clarification_root
+					ON ship_judgment_clarification(opinion_id,outcome_id) WHERE supersedes IS NULL;
+				CREATE TABLE IF NOT EXISTS ship_judgment_delivery (
+					purpose TEXT NOT NULL CHECK(purpose IN ('opinion','clarification','ack')),
+					subject_id TEXT NOT NULL,
+					question_id TEXT NOT NULL REFERENCES workflow_gate_holder(question_id),
+					thread_id TEXT NOT NULL, card_message_id TEXT NOT NULL,
+					desired_id TEXT, posted_id TEXT, message_id TEXT, visible_at TEXT,
+					state TEXT NOT NULL CHECK(state IN ('pending','posting','uncertain','delivered','gone','unavailable')),
+					generation INTEGER NOT NULL DEFAULT 0 CHECK(generation>=0),
+					lease_owner TEXT, expires_at TEXT, retry_after TEXT,
+					attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt>=0), marker TEXT NOT NULL,
+					first_zero_scan_at TEXT, scan_frontier TEXT, last_error TEXT,
+					latest_candidate_json TEXT CHECK(latest_candidate_json IS NULL OR
+						(json_valid(latest_candidate_json) AND length(CAST(latest_candidate_json AS BLOB))<=98304)),
+					latest_candidate_digest TEXT, dirty_since TEXT, next_eligible_at TEXT,
+					post_reserved_times TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(post_reserved_times) AND json_array_length(post_reserved_times)<=2),
+					patch_reserved_times TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(patch_reserved_times) AND json_array_length(patch_reserved_times)<=6),
+					PRIMARY KEY(purpose,subject_id)
+				);
+				CREATE TABLE IF NOT EXISTS ship_judgment_project_state (
+					project_name TEXT PRIMARY KEY CHECK(project_name='flywheel'),
+					mechanical_cache_json TEXT CHECK(mechanical_cache_json IS NULL OR
+						(json_valid(mechanical_cache_json) AND length(CAST(mechanical_cache_json AS BLOB))<=4194304)),
+					mechanical_digest TEXT, fetched_at TEXT, lease_owner TEXT,
+					generation INTEGER NOT NULL DEFAULT 0 CHECK(generation>=0), expires_at TEXT,
+					api_reserved_times TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(api_reserved_times) AND json_array_length(api_reserved_times)<=120),
+					scan_cursor TEXT,
+					history_dirty INTEGER NOT NULL DEFAULT 0 CHECK(history_dirty IN (0,1)),
+					history_digest TEXT, last_attempt_at TEXT, next_due_at TEXT,
+					published_manifest TEXT CHECK(published_manifest IS NULL OR json_valid(published_manifest)),
+					published_url TEXT, published_expires_at TEXT, published_as_of TEXT,
+					building_manifest TEXT CHECK(building_manifest IS NULL OR json_valid(building_manifest)),
+					history_lease_owner TEXT, history_generation INTEGER NOT NULL DEFAULT 0,
+					history_expires_at TEXT, last_error TEXT
+				);
+				CREATE INDEX IF NOT EXISTS ship_judgment_input_project ON ship_judgment_input(project_name,requested_at);
+				CREATE INDEX IF NOT EXISTS ship_judgment_job_work ON ship_judgment_job(state,expires_at);
+				CREATE INDEX IF NOT EXISTS ship_judgment_opinion_question ON ship_judgment_opinion(question_id,created_at);
+				CREATE INDEX IF NOT EXISTS ship_judgment_outcome_question ON ship_judgment_outcome(question_id,decided_at);
+			`);
+			for (const name of ["input", "evaluation", "opinion", "outcome", "clarification"] as const) {
+				for (const operation of ["UPDATE", "DELETE"] as const) {
+					this.db.raw.exec(`CREATE TRIGGER IF NOT EXISTS ship_judgment_${name}_no_${operation.toLowerCase()}
+						BEFORE ${operation} ON ship_judgment_${name}
+						BEGIN SELECT RAISE(ABORT, 'ship_judgment_${name} is immutable'); END;`);
+				}
+			}
+			// History invalidation follows immutable inserts in the same transaction, including imports.
+			for (const name of ["opinion", "outcome", "clarification"] as const) {
+				const question = name === "clarification"
+					? "(SELECT question_id FROM ship_judgment_opinion WHERE opinion_id=NEW.opinion_id)"
+					: "NEW.question_id";
+				this.db.raw.exec(`CREATE TRIGGER IF NOT EXISTS ship_judgment_${name}_history_dirty
+					AFTER INSERT ON ship_judgment_${name}
+					WHEN EXISTS (SELECT 1 FROM workflow_gate_holder h JOIN workflow_run r ON r.run_id=h.run_id WHERE h.question_id=${question} AND r.project_name='flywheel')
+					BEGIN
+						INSERT INTO ship_judgment_project_state(project_name,history_dirty) VALUES ('flywheel',1)
+						ON CONFLICT(project_name) DO UPDATE SET history_dirty=1;
+					END;`);
+			}
+			const deliveryColumns = this.db.raw.prepare("PRAGMA table_info(ship_judgment_delivery)").all() as {name:string}[];
+			const projectColumns = this.db.raw.prepare("PRAGMA table_info(ship_judgment_project_state)").all() as {name:string}[];
+			if (!projectColumns.some(column => column.name === "learning_cursor")) this.db.raw.exec("ALTER TABLE ship_judgment_project_state ADD COLUMN learning_cursor INTEGER NOT NULL DEFAULT 0 CHECK(learning_cursor>=0)");
+			for(const column of ["validated_presentation_digest","validated_at","presentation_state_changed_at"] as const) {
+				if(!deliveryColumns.some(existing=>existing.name===column)) this.db.raw.exec(`ALTER TABLE ship_judgment_delivery ADD COLUMN ${column} TEXT NULL`);
+			}
+            if (!deliveryColumns.some(column => column.name === "delivery_mode")) this.db.raw.exec("ALTER TABLE ship_judgment_delivery ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'dry_run' CHECK(delivery_mode IN ('dry_run','auto','off'))");
+            if (!deliveryColumns.some(column => column.name === "mode_label")) this.db.raw.exec("ALTER TABLE ship_judgment_delivery ADD COLUMN mode_label TEXT NOT NULL DEFAULT 'current' CHECK(mode_label IN ('current','history'))");
+			const columns = this.db.raw.prepare("PRAGMA table_info(auto_narrow_opinion_delivery)").all() as { name: string }[];
+			for (const column of ["legacy_freeze_requested_at", "legacy_frozen_at"] as const) {
+				if (!columns.some(existing => existing.name === column)) {
+					this.db.raw.exec(`ALTER TABLE auto_narrow_opinion_delivery ADD COLUMN ${column} TEXT NULL`);
+				}
+			}
+			this.db.raw.prepare("INSERT OR IGNORE INTO state_store_migration(migration_id,applied_at) VALUES (?,?)")
+				.run("fly-2399-ship-judgment-v1", new Date().toISOString());
+			this.db.raw.prepare("INSERT OR IGNORE INTO state_store_migration(migration_id,applied_at) VALUES (?,?)")
+				.run(DELIVERY_ERROR_AUDIT_MIGRATION, new Date().toISOString());
 		})();
 	}
 
@@ -27705,6 +28029,7 @@ export class StateStore {
 		this.migrateFounderGateVerdictLedger();
 		this.migrateAutoMergeShadowLedger();
 		this.migrateAutoNarrowGateLedger();
+		this.migrateShipJudgmentLedger();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_rework_route_revision (
 				request_id TEXT NOT NULL,
@@ -56223,6 +56548,8 @@ export class StateStore {
 			lastErrorCode: (row.last_error_code as string | null) ?? null,
 			reactionApplied: row.reaction_applied as AutoNarrowOpinionDeliveryRow["reactionApplied"],
 			automaticLabelPending: Number(row.automatic_label_pending) as 0 | 1,
+			legacyFreezeRequestedAt: (row.legacy_freeze_requested_at as string | null) ?? null,
+			legacyFrozenAt: (row.legacy_frozen_at as string | null) ?? null,
 		};
 	}
 
@@ -56236,6 +56563,99 @@ export class StateStore {
 		return row ? this.autoNarrowOpinionDeliveryRow(row) : undefined;
 	}
 
+	/** Bridge boot only: a rollback may have rewritten the owned message while ignoring these nullable fields. */
+	invalidateAutoNarrowLegacyFreezeOnStartup(at: string): void {
+		this.db.run(`UPDATE auto_narrow_opinion_delivery SET generation=generation+1,
+		legacy_freeze_requested_at=COALESCE(legacy_freeze_requested_at,?),legacy_frozen_at=NULL,next_attempt_at=NULL
+		WHERE legacy_freeze_requested_at IS NOT NULL OR legacy_frozen_at IS NOT NULL`, [at]);
+	}
+	requestAutoNarrowLegacyFreeze(at: string): void {
+		this.db.raw
+			.transaction(() => {
+				this.db.run(
+					`UPDATE auto_narrow_opinion_delivery SET generation=generation+1,
+ legacy_freeze_requested_at=?,legacy_frozen_at=CASE WHEN followup_message_id IS NULL AND state NOT IN ('posting','uncertain') THEN ? ELSE NULL END,
+ next_attempt_at=NULL
+ WHERE question_id IN (SELECT d.question_id FROM auto_narrow_opinion_delivery d
+ JOIN auto_narrow_opinion_snapshot s ON s.opinion_id=d.desired_opinion_id
+ WHERE s.project_name='flywheel' AND d.legacy_freeze_requested_at IS NULL AND d.legacy_frozen_at IS NULL
+ ORDER BY d.question_id LIMIT 20)`,
+					[at, at],
+				);
+			})
+			.immediate();
+	}
+	listAutoNarrowLegacyFreezeWork(at: string): AutoNarrowOpinionDeliveryRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM auto_narrow_opinion_delivery
+ WHERE legacy_freeze_requested_at IS NOT NULL AND legacy_frozen_at IS NULL
+ AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY question_id LIMIT 20`,
+			[at],
+		).map((row) => this.autoNarrowOpinionDeliveryRow(row));
+	}
+	beginAutoNarrowLegacyFreeze(
+		questionId: string,
+		generation: number,
+		at: string,
+	): AutoNarrowOpinionDeliveryRow | undefined {
+		return this.db.raw
+			.transaction(() => {
+				this.db.run(
+					`UPDATE auto_narrow_opinion_delivery SET generation=generation+1,attempt=attempt+1,next_attempt_at=?
+ WHERE question_id=? AND generation=? AND legacy_freeze_requested_at IS NOT NULL AND legacy_frozen_at IS NULL
+ AND (next_attempt_at IS NULL OR next_attempt_at<=?)`,
+					[
+						new Date(Date.parse(at) + 30_000).toISOString(),
+						questionId,
+						generation,
+						at,
+					],
+				);
+				return this.db.getRowsModified() === 1
+					? this.getAutoNarrowOpinionDelivery(questionId)
+					: undefined;
+			})
+			.immediate();
+	}
+	finishAutoNarrowLegacyFreeze(
+		questionId: string,
+		generation: number,
+		at: string,
+		ok: boolean,
+	): boolean {
+		return this.db.raw
+			.transaction(() => {
+				const current = this.getAutoNarrowOpinionDelivery(questionId);
+				if (
+					!current ||
+					current.generation !== generation ||
+					!current.legacyFreezeRequestedAt ||
+					current.legacyFrozenAt
+				)
+					return false;
+				const delay =
+					current.attempt <= 5
+						? 60_000 * 2 ** Math.max(0, current.attempt - 1)
+						: 3_600_000;
+				this.db.run(
+					`UPDATE auto_narrow_opinion_delivery SET legacy_frozen_at=?,
+ state=CASE WHEN ?=1 AND followup_message_id IS NOT NULL THEN 'delivered' ELSE state END,
+ next_attempt_at=?,last_error_code=?,attempt=CASE WHEN ?=1 THEN 0 ELSE attempt END
+ WHERE question_id=? AND generation=?`,
+					[
+						ok ? at : null,
+						ok ? 1 : 0,
+						ok ? null : new Date(Date.parse(at) + delay).toISOString(),
+						ok ? null : "legacy_freeze_failed",
+						ok ? 1 : 0,
+						questionId,
+						generation,
+					],
+				);
+				return this.db.getRowsModified() === 1;
+			})
+			.immediate();
+	}
 	listAutoNarrowOpinionDeliveryWork(
 		limit = 20,
 		now = new Date().toISOString(),
@@ -56247,6 +56667,7 @@ export class StateStore {
 			   LEFT JOIN auto_narrow_decision_audit a ON a.question_id = d.question_id
 			   LEFT JOIN auto_narrow_control_event c ON c.event_id = a.opening_event_id
 			  WHERE d.desired_opinion_id IS NOT NULL AND d.state <> 'gone'
+			    AND d.legacy_frozen_at IS NULL
 			    AND (d.state <> 'delivered' OR d.automatic_label_pending = 1
 			         OR d.desired_opinion_id <> d.posted_opinion_id)
 			    AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
@@ -56276,7 +56697,7 @@ export class StateStore {
 		return this.db.raw
 			.transaction(() => {
 				const current = this.getAutoNarrowOpinionDelivery(questionId);
-				if (!current || current.state !== "pending") return undefined;
+				if (!current || current.state !== "pending" || current.legacyFreezeRequestedAt || current.legacyFrozenAt) return undefined;
 				this.db.run(
 					`UPDATE auto_narrow_opinion_delivery
 					    SET state='posting', generation=generation+1, attempt=attempt+1,
@@ -56350,6 +56771,7 @@ export class StateStore {
 			  WHERE question_id=? AND generation=? AND state='posting'
 			    AND followup_message_id IS NOT NULL
 			    AND desired_opinion_id=posted_opinion_id
+			    AND legacy_freeze_requested_at IS NULL AND legacy_frozen_at IS NULL
 			    AND reaction_applied=? AND automatic_label_pending=0`,
 			[
 				input.questionId,
@@ -56408,12 +56830,14 @@ export class StateStore {
 		now: string;
 		frontier: string | null;
 		messageId?: string;
+		expectedGeneration?: number;
 	}): "recovered" | "waiting" | "retry" {
 		return this.db.raw
 			.transaction(() => {
 				const current = this.getAutoNarrowOpinionDelivery(input.questionId);
 				if (
 					!current ||
+ (input.expectedGeneration !== undefined && current.generation !== input.expectedGeneration) ||
 					(current.state !== "posting" && current.state !== "uncertain")
 				) {
 					return "waiting";
@@ -56429,7 +56853,7 @@ export class StateStore {
 					);
 					return "recovered";
 				}
-				if (current.attempt >= AUTO_NARROW_OPINION_MAX_ATTEMPTS) {
+				if (!current.legacyFreezeRequestedAt && current.attempt >= AUTO_NARROW_OPINION_MAX_ATTEMPTS) {
 					this.db.run(
 						`UPDATE auto_narrow_opinion_delivery
 						    SET state='gone', posting_at=NULL, next_attempt_at=NULL,
@@ -56508,6 +56932,7 @@ export class StateStore {
 		controlAppliedAt?: string;
 		at: string;
 		metrics?: AutoNarrowMetrics;
+		captureOnly?: boolean;
 	}): AutoNarrowOpinionRefreshResult {
 		if (input.mode === "off") return { status: "off" };
 		return this.db.raw
@@ -56531,9 +56956,9 @@ export class StateStore {
 					computeAutoNarrowMetrics(
 						this.autoNarrowMetricSamplesTx("flywheel", input.at),
 					);
-				const latest = this.listAutoNarrowOpinionSnapshots(
-					input.questionId,
-				).at(-1);
+				const latest = this.listAutoNarrowOpinionSnapshots(input.questionId).at(
+					-1,
+				);
 				const same =
 					latest &&
 					latest.headSha === candidate.binding.headSha &&
@@ -56545,8 +56970,7 @@ export class StateStore {
 					latest.declarationId ===
 						(candidate.declaration?.declaration_id ?? null) &&
 					latest.machineReason === candidate.observation.machine_reason &&
-					latest.s2BasisRecordId ===
-						candidate.observation.s2_basis_record_id &&
+					latest.s2BasisRecordId === candidate.observation.s2_basis_record_id &&
 					latest.reasonCode === reasonCode &&
 					latest.sampleN === metrics.sampleN &&
 					latest.agreeN === metrics.agreeN &&
@@ -56558,7 +56982,11 @@ export class StateStore {
 					latest.lastEligibleHumanAt === metrics.lastEligibleHumanAt &&
 					(!input.controlAppliedAt ||
 						latest.capturedAt >= input.controlAppliedAt);
-				if (same) return { status: "unchanged", snapshot: latest };
+				if (same) {
+					if (!input.captureOnly)
+						this.ensureAutoNarrowLegacyIntentTx(latest, input.issueThreadId);
+					return { status: "unchanged", snapshot: latest };
+				}
 				const ordinal = (latest?.ordinal ?? 0) + 1;
 				const opinionId = `${input.questionId}:${ordinal}`;
 				this.db.run(
@@ -56597,30 +57025,12 @@ export class StateStore {
 						metrics.lastEligibleHumanAt,
 					],
 				);
-				const marker = `auto-narrow-opinion:${createHash("sha256")
-					.update(input.questionId)
-					.digest("hex")
-					.slice(0, 16)}`;
-				this.db.run(
-					`INSERT INTO auto_narrow_opinion_delivery
-					  (question_id, issue_thread_id, card_message_id,
-					   desired_opinion_id, state, correlation_marker)
-					 VALUES (?, ?, ?, ?, 'pending', ?)
-					 ON CONFLICT(question_id) DO UPDATE SET
-					   issue_thread_id=excluded.issue_thread_id,
-					   card_message_id=excluded.card_message_id,
-					   desired_opinion_id=excluded.desired_opinion_id,
-					   state=CASE WHEN state IN ('posting', 'uncertain') THEN state ELSE 'pending' END,
-					   next_attempt_at=CASE WHEN state IN ('posting', 'uncertain') THEN next_attempt_at ELSE NULL END,
-					   last_error_code=CASE WHEN state IN ('posting', 'uncertain') THEN last_error_code ELSE NULL END`,
-					[
-						input.questionId,
-						input.issueThreadId,
-						candidate.holder.card_message_id,
-						opinionId,
-						marker,
-					],
-				);
+				const saved = this.listAutoNarrowOpinionSnapshots(input.questionId).at(
+					-1,
+				)!;
+				if (!input.captureOnly)
+					this.ensureAutoNarrowLegacyIntentTx(saved, input.issueThreadId);
+
 				return {
 					status: "created",
 					snapshot: this.listAutoNarrowOpinionSnapshots(input.questionId).at(
@@ -56631,6 +57041,33 @@ export class StateStore {
 			.immediate();
 	}
 
+	private ensureAutoNarrowLegacyIntentTx(
+		snapshot: AutoNarrowOpinionSnapshotRow,
+		threadId: string,
+	): void {
+		const marker = `auto-narrow-opinion:${createHash("sha256").update(snapshot.questionId).digest("hex").slice(0, 16)}`;
+		this.db.run(
+			`INSERT INTO auto_narrow_opinion_delivery
+ (question_id,issue_thread_id,card_message_id,desired_opinion_id,state,correlation_marker)
+ VALUES (?,?,?,?,'pending',?)
+ ON CONFLICT(question_id) DO UPDATE SET
+ issue_thread_id=excluded.issue_thread_id,card_message_id=excluded.card_message_id,desired_opinion_id=excluded.desired_opinion_id,
+ generation=generation+CASE WHEN legacy_freeze_requested_at IS NOT NULL OR legacy_frozen_at IS NOT NULL THEN 1 ELSE 0 END,
+ legacy_freeze_requested_at=NULL,legacy_frozen_at=NULL,
+ state=CASE WHEN state IN ('posting','uncertain') THEN state ELSE 'pending' END,
+ next_attempt_at=CASE WHEN state IN ('posting','uncertain') THEN next_attempt_at ELSE NULL END,
+ last_error_code=CASE WHEN state IN ('posting','uncertain') THEN last_error_code ELSE NULL END
+ WHERE desired_opinion_id<>excluded.desired_opinion_id OR issue_thread_id<>excluded.issue_thread_id
+ OR card_message_id<>excluded.card_message_id OR legacy_freeze_requested_at IS NOT NULL OR legacy_frozen_at IS NOT NULL`,
+			[
+				snapshot.questionId,
+				threadId,
+				snapshot.cardMessageId,
+				snapshot.opinionId,
+				marker,
+			],
+		);
+	}
 	getAutoNarrowOpinionMetrics(at: string): AutoNarrowMetrics {
 		return this.db.raw
 			.transaction(() =>
@@ -75433,6 +75870,8 @@ export interface AutoNarrowOpinionDeliveryRow {
 	lastErrorCode: string | null;
 	reactionApplied: "none" | "eligible" | "ineligible";
 	automaticLabelPending: 0 | 1;
+	legacyFreezeRequestedAt: string | null;
+	legacyFrozenAt: string | null;
 }
 
 export interface AutoNarrowOpinionDeliveryWork {
@@ -76872,8 +77311,12 @@ export function readEpicItemFacts(
 	const run = read("workflow_run", () =>
 		store.getEpicPageRunFact(projectName, keys),
 	);
+	const shipJudgment = projectName === "flywheel" ? {
+		ship_judgment: read("ship_judgment_opinion",()=>store.getEpicPageShipJudgmentFact(projectName,keys)),
+	} : {};
 	if (!run.ok) {
 		return {
+			...shipJudgment,
 			session,
 			run,
 			attempt: failed("workflow_run_node"),
@@ -76886,6 +77329,7 @@ export function readEpicItemFacts(
 	const activeRun = run.value[0];
 	if (!activeRun) {
 		return {
+			...shipJudgment,
 			session,
 			run,
 			attempt: { ok: true, value: [] },
@@ -76910,6 +77354,7 @@ export function readEpicItemFacts(
 			error instanceof Error ? error.message : String(error),
 		);
 		return {
+			...shipJudgment,
 			session,
 			run,
 			attempt,
@@ -76920,6 +77365,7 @@ export function readEpicItemFacts(
 	}
 
 	return {
+		...shipJudgment,
 		session,
 		run,
 		attempt,

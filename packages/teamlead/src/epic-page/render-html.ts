@@ -9,7 +9,7 @@ import {
 	attentionSummary,
 	attentionWait,
 } from "./attention-presentation.js";
-import { AuditDictionary } from "./audit-dictionary.js";
+import { AuditDictionary, judgmentSummary } from "./audit-dictionary.js";
 import { AuditSidecar } from "./audit-sidecar.js";
 import {
 	buildFounderView,
@@ -17,6 +17,7 @@ import {
 	type EpicView,
 	type ViewProvenance,
 } from "./founder-view.js";
+import { renderHistoryPreview } from "./history-preview.js";
 import { type LabelKey, label, leadNoteRoleLabel } from "./labels.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS, leadNoteAge } from "./lead-note.js";
 import type {
@@ -29,8 +30,17 @@ import type {
 	StuckItem,
 } from "./model.js";
 
+export interface EpicOptionalRows {
+	judgmentRows?: number;
+	historyRows?: number;
+}
 class RenderAudit extends AuditDictionary {
-	constructor(readonly sidecar?: AuditSidecar) {
+	judgmentCount = 0;
+	omittedJudgments = 0;
+	constructor(
+		readonly sidecar?: AuditSidecar,
+		readonly limits: EpicOptionalRows = {},
+	) {
 		super();
 	}
 }
@@ -471,6 +481,31 @@ function renderChildAudit(
 		.join("");
 	return `<details class="audit"><summary>${escapeHtml(label("page.all_cells", { count: 15 }))}</summary><div class="audit-head">${item.url.value ? safeLinearLink(item.url.value, item.url.value) : ""} · ${escapeHtml(executionSummary(item))}</div><div class="audit-list">${cells}</div>${child.blockerScope ? renderViewRule(child.blockerScope, dictionary) : ""}${renderViewRule(child.progress.view, dictionary)}</details>`;
 }
+function renderJudgment(item: EpicItem, dictionary: RenderAudit): string {
+	const cell = item.ship_judgment;
+	if (!cell) return "";
+	const summary = escapeHtml(judgmentSummary(cell));
+	if (dictionary.sidecar) {
+		const id = dictionary.sidecar.add(cell);
+		if (
+			dictionary.judgmentCount++ >= (dictionary.limits.judgmentRows ?? Infinity)
+		) {
+			dictionary.omittedJudgments++;
+			return "";
+		}
+		return `<div data-judgment>${summary} <a href="__EPIC_JUDGMENT_AUDIT__#${id}">依据 #${id}</a></div>`;
+	}
+	return `<details data-judgment data-src="${dictionary.add(cell)}"><summary>${summary}</summary><code>${htmlValue(cell)}</code></details>`;
+}
+function renderJudgmentHistory(
+	page: EpicPage,
+	dictionary: RenderAudit,
+): string {
+	const cell = page.ship_judgment_history;
+	if (!cell) return "";
+	dictionary.sidecar?.add(cell);
+	return renderHistoryPreview(cell, dictionary.limits.historyRows);
+}
 function renderChild(
 	page: EpicPage,
 	child: ChildView,
@@ -481,7 +516,7 @@ function renderChild(
 	const signals = item.signals.length
 		? `<div class="kid-signals">${item.signals.some((s) => s.kind !== "waiting_founder") ? signalList(item.signals.filter((s) => s.kind !== "waiting_founder")) : ""}${item.signals.some((s) => s.kind === "waiting_founder") ? signalList(item.signals.filter((s) => s.kind === "waiting_founder")) : ""}</div>`
 		: "";
-	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span><span class="kid-id">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span>${escapeHtml(child.title)}</span></div><div class="kid-a" data-machine-line>${escapeHtml(progressText(child))} <span class="src">${escapeHtml(label("progress.source"))}</span></div>${renderLeadNotes(item.lead_note, now, page.lead_note_policy?.value?.fade_after_days ?? DEFAULT_LEAD_NOTE_FADE_DAYS)}${signals}${renderChildAudit(item, child, dictionary)}</div>`;
+	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span><span class="kid-id">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span>${escapeHtml(child.title)}</span></div><div class="kid-a" data-machine-line>${escapeHtml(progressText(child))} <span class="src">${escapeHtml(label("progress.source"))}</span></div>${renderLeadNotes(item.lead_note, now, page.lead_note_policy?.value?.fade_after_days ?? DEFAULT_LEAD_NOTE_FADE_DAYS)}${renderJudgment(item, dictionary)}${signals}${renderChildAudit(item, child, dictionary)}</div>`;
 }
 function countsText(epic: EpicView): string {
 	if (!epic.counts)
@@ -621,13 +656,17 @@ export interface EpicPageBundle {
 export function renderEpicPageBundle(
 	page: EpicPage,
 	now = new Date(),
+	limits: EpicOptionalRows = {},
 ): EpicPageBundle {
 	const sidecar = new AuditSidecar();
-	const html = renderHtml(page, now, new RenderAudit(sidecar));
+	const html = renderHtml(page, now, new RenderAudit(sidecar, limits));
 	const json = sidecar.json();
 	const sha256 = createHash("sha256").update(json).digest("hex");
 	return {
-		html,
+		html: html.replaceAll(
+			'href="__EPIC_JUDGMENT_AUDIT__#',
+			`href="${sha256}/index.audit.json#`,
+		),
 		audit: {
 			json,
 			sha256,
@@ -724,5 +763,7 @@ function renderHtml(
 	</div>
  </details>`
 	}
+${renderJudgmentHistory(page, dictionary)}
+${dictionary.omittedJudgments ? "<p>机器意见摘要已缩减；完整依据见审计附件。</p>" : ""}
 ${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");const update=()=>{document.querySelectorAll("[data-lead-written-at]").forEach(note=>{const written=Date.parse(note.getAttribute("data-lead-written-at")||"");const days=Number(note.getAttribute("data-lead-fade-days"));if(!Number.isFinite(written)||!Number.isFinite(days)||days<=0)return;const elapsed=Math.max(0,Date.now()-written);const hours=Math.floor(elapsed/3600000);const relative=note.querySelector("[data-lead-relative]");if(relative)relative.textContent=note.getAttribute("data-lead-role")+" · "+(hours<1?"刚写":hours+" 小时前写");const stale=elapsed>days*86400000;note.classList.toggle("lead-note-stale",stale);const badge=note.querySelector("[data-lead-stale]");if(badge)badge.hidden=!stale;});if(!root||!age)return;const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
 }

@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "inputSha256": "1afc117fe526166ca280f9bd3cea05600616d8cf13229184727581a2e076bb0f",
+  "model": {
+    "model": "claude-opus-5",
+    "effort": "high",
+    "configuration_digest": "416217e6dcc34a075dfe69e312077d4a2345385177484dc6d76050829b0b1f38"
+  },
+  "targets": [
+    {
+      "repo_identity": "xrliAnnie/flywheel",
+      "pr_number": 1163,
+      "head_sha": "a4d8c0b051e019ec27660bb69712ec4a0959d2df",
+      "diff_base_sha": "bece7de15102c45b376eb2df4cc85eeb55b85e62"
+    }
+  ],
+  "questionId": "implement-f4-positive-inc",
+  "transport": "isolated_subscription_process",
+  "acceptance": "not_assessed",
+  "authorityWrites": 0,
+  "rawEnvelope": "{\"duration_api_ms\":33697,\"stop_reason\":\"end_turn\",\"session_id\":\"82540e0a-aa9a-4a00-8630-0829585a62bc\",\"total_cost_usd\":0.1094265,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":1792,\"cache_read_input_tokens\":725,\"output_tokens\":3568,\"output_tokens_details\":{\"thinking_tokens\":2576},\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":1792,\"ephemeral_5m_input_tokens\":0},\"inference_geo\":\"not_available\",\"iterations\":[{\"input_tokens\":2,\"output_tokens\":3568,\"cache_read_input_tokens\":725,\"cache_creation_input_tokens\":1792,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":1792},\"type\":\"message\"}],\"speed\":\"standard\"},\"modelUsage\":{\"claude-haiku-4-5-20251001\":{\"inputTokens\":1864,\"outputTokens\":14,\"cacheReadInputTokens\":0,\"cacheCreationInputTokens\":0,\"webSearchRequests\":0,\"costUSD\":0.001934,\"contextWindow\":200000,\"maxOutputTokens\":32000,\"thinkingTokens\":0,\"canonicalModel\":\"claude-haiku-4-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"},\"claude-opus-5\":{\"inputTokens\":2,\"outputTokens\":3568,\"cacheReadInputTokens\":725,\"cacheCreationInputTokens\":1792,\"webSearchRequests\":0,\"costUSD\":0.10749249999999999,\"contextWindow\":1000000,\"maxOutputTokens\":64000,\"thinkingTokens\":2576,\"canonicalModel\":\"claude-opus-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subagent_stats\":{\"spawned\":0,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":0},\"started_in_background\":0,\"max_depth\":0,\"spawned_by_subagents\":0,\"completed\":0,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"{\\\"schema_version\\\":1,\\\"alignment\\\":{\\\"verdict\\\":\\\"pass\\\",\\\"evidence\\\":[{\\\"source_id\\\":\\\"plan\\\",\\\"quote_start\\\":0,\\\"quote_end\\\":35,\\\"quote\\\":\\\"R1: Export inc(n), returning n + 1.\\\"},{\\\"source_id\\\":\\\"plan\\\",\\\"quote_start\\\":36,\\\"quote_end\\\":94,\\\"quote\\\":\\\"Accepted input domain is exactly the integers 0, 1, and 2.\\\"},{\\\"source_id\\\":\\\"diff\\\",\\\"quote_start\\\":41,\\\"quote_end\\\":98,\\\"quote\\\":\\\"+export function inc(n: number): number { return n + 1; }\\\",\\\"file_path\\\":\\\"inc.ts\\\"}],\\\"reason_code\\\":\\\"diff implements exactly the accepted scope: a single exported inc(n) returning n + 1, with no out-of-scope validation or side effects\\\"},\\\"coverage\\\":{\\\"verdict\\\":\\\"pass\\\",\\\"evidence\\\":[{\\\"source_id\\\":\\\"qa\\\",\\\"quote_start\\\":55,\\\"quote_end\\\":84,\\\"quote\\\":\\\"inc_zero: PASS, inc(0) === 1.\\\"},{\\\"source_id\\\":\\\"qa\\\",\\\"quote_start\\\":85,\\\"quote_end\\\":113,\\\"quote\\\":\\\"inc_one: PASS, inc(1) === 2.\\\"},{\\\"source_id\\\":\\\"qa\\\",\\\"quote_start\\\":114,\\\"quote_end\\\":142,\\\"quote\\\":\\\"inc_two: PASS, inc(2) === 3.\\\"},{\\\"source_id\\\":\\\"qa\\\",\\\"quote_start\\\":143,\\\"quote_end\\\":195,\\\"quote\\\":\\\"These three cases exhaust the accepted input domain.\\\"},{\\\"source_id\\\":\\\"plan\\\",\\\"quote_start\\\":36,\\\"quote_end\\\":94,\\\"quote\\\":\\\"Accepted input domain is exactly the integers 0, 1, and 2.\\\"}],\\\"reason_code\\\":\\\"the accepted input domain is enumerable as {0,1,2} and each member has a named passing test in the QA report, so every required use case is mapped\\\"},\\\"requirements\\\":[{\\\"requirement_id\\\":\\\"R1\\\",\\\"implementation_evidence\\\":[{\\\"source_id\\\":\\\"diff\\\",\\\"quote_start\\\":41,\\\"quote_end\\\":98,\\\"quote\\\":\\\"+export function inc(n: number): number { return n + 1; }\\\",\\\"file_path\\\":\\\"inc.ts\\\"},{\\\"source_id\\\":\\\"plan\\\",\\\"quote_start\\\":0,\\\"quote_end\\\":35,\\\"quote\\\":\\\"R1: Export inc(n), returning n + 1.\\\"}],\\\"use_cases\\\":[{\\\"use_case_id\\\":\\\"inc-0\\\",\\\"test_ref\\\":\\\"inc_zero\\\",\\\"result\\\":\\\"pass\\\",\\\"report_evidence\\\":[{\\\"source_id\\\":\\\"qa\\\",\\\"quote_start\\\":55,\\\"quote_end\\\":84,\\\"quote\\\":\\\"inc_zero: PASS, inc(0) === 1.\\\"}]},{\\\"use_case_id\\\":\\\"inc-1\\\",\\\"test_ref\\\":\\\"inc_one\\\",\\\"result\\\":\\\"pass\\\",\\\"report_evidence\\\":[{\\\"source_id\\\":\\\"qa\\\",\\\"quote_start\\\":85,\\\"quote_end\\\":113,\\\"quote\\\":\\\"inc_one: PASS, inc(1) === 2.\\\"}]},{\\\"use_case_id\\\":\\\"inc-2\\\",\\\"test_ref\\\":\\\"inc_two\\\",\\\"result\\\":\\\"pass\\\",\\\"report_evidence\\\":[{\\\"source_id\\\":\\\"qa\\\",\\\"quote_start\\\":114,\\\"quote_end\\\":142,\\\"quote\\\":\\\"inc_two: PASS, inc(2) === 3.\\\"}]}]}]}\",\"ttft_ms\":24606,\"type\":\"result\",\"duration_ms\":32728,\"uuid\":\"3a33e509-d976-44f8-832e-a65f9a15c4d3\",\"ttft_stream_ms\":712,\"time_to_request_ms\":14,\"first_content_frame_ms\":1111,\"queued_turn_count\":0,\"result_index\":0}\n",
+  "spawned": true,
+  "evaluation": {
+    "alignment": "pass",
+    "coverage": "pass",
+    "resultCode": "evaluated",
+    "result": {
+      "schema_version": 1,
+      "alignment": {
+        "verdict": "pass",
+        "evidence": [
+          {
+            "source_id": "plan",
+            "quote_start": 0,
+            "quote_end": 35,
+            "quote": "R1: Export inc(n), returning n + 1."
+          },
+          {
+            "source_id": "plan",
+            "quote_start": 36,
+            "quote_end": 94,
+            "quote": "Accepted input domain is exactly the integers 0, 1, and 2."
+          },
+          {
+            "source_id": "diff",
+            "quote_start": 41,
+            "quote_end": 98,
+            "quote": "+export function inc(n: number): number { return n + 1; }",
+            "file_path": "inc.ts"
+          }
+        ],
+        "reason_code": "diff implements exactly the accepted scope: a single exported inc(n) returning n + 1, with no out-of-scope validation or side effects"
+      },
+      "coverage": {
+        "verdict": "pass",
+        "evidence": [
+          {
+            "source_id": "qa",
+            "quote_start": 55,
+            "quote_end": 84,
+            "quote": "inc_zero: PASS, inc(0) === 1."
+          },
+          {
+            "source_id": "qa",
+            "quote_start": 85,
+            "quote_end": 113,
+            "quote": "inc_one: PASS, inc(1) === 2."
+          },
+          {
+            "source_id": "qa",
+            "quote_start": 114,
+            "quote_end": 142,
+            "quote": "inc_two: PASS, inc(2) === 3."
+          },
+          {
+            "source_id": "qa",
+            "quote_start": 143,
+            "quote_end": 195,
+            "quote": "These three cases exhaust the accepted input domain."
+          },
+          {
+            "source_id": "plan",
+            "quote_start": 36,
+            "quote_end": 94,
+            "quote": "Accepted input domain is exactly the integers 0, 1, and 2."
+          }
+        ],
+        "reason_code": "the accepted input domain is enumerable as {0,1,2} and each member has a named passing test in the QA report, so every required use case is mapped"
+      },
+      "requirements": [
+        {
+          "requirement_id": "R1",
+          "implementation_evidence": [
+            {
+              "source_id": "diff",
+              "quote_start": 41,
+              "quote_end": 98,
+              "quote": "+export function inc(n: number): number { return n + 1; }",
+              "file_path": "inc.ts"
+            },
+            {
+              "source_id": "plan",
+              "quote_start": 0,
+              "quote_end": 35,
+              "quote": "R1: Export inc(n), returning n + 1."
+            }
+          ],
+          "use_cases": [
+            {
+              "use_case_id": "inc-0",
+              "test_ref": "inc_zero",
+              "result": "pass",
+              "report_evidence": [
+                {
+                  "source_id": "qa",
+                  "quote_start": 55,
+                  "quote_end": 84,
+                  "quote": "inc_zero: PASS, inc(0) === 1."
+                }
+              ]
+            },
+            {
+              "use_case_id": "inc-1",
+              "test_ref": "inc_one",
+              "result": "pass",
+              "report_evidence": [
+                {
+                  "source_id": "qa",
+                  "quote_start": 85,
+                  "quote_end": 113,
+                  "quote": "inc_one: PASS, inc(1) === 2."
+                }
+              ]
+            },
+            {
+              "use_case_id": "inc-2",
+              "test_ref": "inc_two",
+              "result": "pass",
+              "report_evidence": [
+                {
+                  "source_id": "qa",
+                  "quote_start": 114,
+                  "quote_end": 142,
+                  "quote": "inc_two: PASS, inc(2) === 3."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "durationMs": 33589,
+    "usage": {
+      "input_tokens": 2,
+      "output_tokens": 3568,
+      "cache_creation_input_tokens": 1792,
+      "cache_read_input_tokens": 725,
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 1792,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "not_available",
+      "speed": "standard",
+      "output_tokens_details": {
+        "thinking_tokens": 2576
+      },
+      "iterations": [
+        {
+          "input_tokens": 2,
+          "output_tokens": 3568,
+          "cache_read_input_tokens": 725,
+          "cache_creation_input_tokens": 1792,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 1792
+          },
+          "type": "message"
+        }
+      ]
+    },
+    "costUsd": 0.1094265
+  }
+}

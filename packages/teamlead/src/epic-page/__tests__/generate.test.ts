@@ -25,6 +25,70 @@ function generate(facts?: EpicItemFacts[]) {
 }
 
 describe("generateEpicPage", () => {
+	it("carries local history metadata in a sourced optional Cell", () => {
+		const snapshot = epicShapeSnapshot();
+		const history = {
+			rows: [],
+			total: 0,
+			url: "https://reports.example/r/old",
+			publishedAsOf: "2026-09-01T00:00:00.000Z",
+			error: "history_round_failed",
+			dirty: true,
+			readError: true,
+		};
+		const page = generateEpicPage({
+			snapshot,
+			itemFacts: snapshot.items.map(() => emptyItemFacts()),
+			now: EPIC_SHAPE_NOW,
+			projectName: "flywheel",
+			trigger: "manual",
+			shipJudgmentHistory: history,
+		});
+		expect(page.ship_judgment_history).toMatchObject({
+			value: history,
+			provenance: { kind: "statestore", table: "ship_judgment_project_state" },
+		});
+		expect(() => assertEpicPage(page)).not.toThrow();
+		const bad = structuredClone(page);
+		bad.ship_judgment_history!.value!.url = "javascript:alert(1)";
+		expect(() => assertEpicPage(bad)).toThrow();
+	});
+
+	it("preserves judgment source clocks and exposes independent read failures", () => {
+		const facts = epicShapeSnapshot().items.map(() => emptyItemFacts());
+		const value = {
+			question_id: "q",
+			opinion_id: null,
+			input_id: null,
+			evaluation_id: null,
+			source: "machine" as const,
+			overall: null,
+			alignment: null,
+			conflict: null,
+			coverage: null,
+			display: "pending" as const,
+			reason: "no_opinion",
+			policy_version: "v1",
+			model_snapshot_digest: null,
+			evidence: { evaluation: null, mechanical: null },
+		};
+		const source_updated_at = "2026-09-01T00:00:00.000Z";
+		facts[0]!.ship_judgment = { ok: true, value, source_updated_at };
+		facts[1]!.ship_judgment = { ok: false, table: "ship_judgment_opinion" };
+		const page = generate(facts);
+		expect(page.items[0]!.ship_judgment).toMatchObject({
+			value,
+			source_updated_at,
+		});
+		expect(page.items[1]!.ship_judgment).toMatchObject({
+			value: null,
+			missing: { reason: "statestore_error" },
+		});
+		expect(() => assertEpicPage(page)).not.toThrow();
+		const malformed = structuredClone(page);
+		(malformed.items[0]!.ship_judgment!.value as any).display = "approved";
+		expect(() => assertEpicPage(malformed)).toThrow();
+	});
 	it("projects sorted multi-role notes on roots and items without changing machine facts", () => {
 		const snapshot = epicShapeSnapshot();
 		const input = {

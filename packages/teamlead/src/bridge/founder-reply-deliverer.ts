@@ -180,6 +180,14 @@ export interface FounderReplyRetryLedger {
 
 export interface FounderReplyDeliverDeps {
 	store: StateStore;
+	/** Ref-only learning observer: handled means an explanation was durably received, never approved. */
+	observeShipJudgmentReply?: (reference: {
+		projectName: string;
+		leadId: string;
+		threadId: string;
+		messageId: string;
+		replyToMessageId: string;
+	}) => Promise<"handled" | "ignored" | "retry">;
 	fetchImpl?: typeof fetch;
 	cursorStore?: InboundCursorStore;
 	commDbLeaseFactory?: (path: string) => {
@@ -488,6 +496,7 @@ export async function emitFounderReplyDeliveryForThread(
 					db,
 					deliverAmbiguousToLead: deps.deliverAmbiguousToLead,
 					tryFounderShipApproval: deps.tryFounderShipApproval,
+					observeShipJudgmentReply: deps.observeShipJudgmentReply,
 					retryLedger: deps.retryLedger,
 					readCurrentBinding: deps.readCurrentBinding,
 					ensureDecisionConvergence: deps.ensureDecisionConvergence,
@@ -602,6 +611,7 @@ async function processFounderMessage(
 		db: CommDB;
 		deliverAmbiguousToLead?: FounderReplyDeliverDeps["deliverAmbiguousToLead"];
 		tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
+		observeShipJudgmentReply?: FounderReplyDeliverDeps["observeShipJudgmentReply"];
 		retryLedger?: FounderReplyRetryLedger;
 		readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
 		ensureDecisionConvergence?: FounderReplyDeliverDeps["ensureDecisionConvergence"];
@@ -614,6 +624,30 @@ async function processFounderMessage(
 	const rawAnswer = msg.content ?? "";
 	const nowDate = new Date();
 	const now = nowDate.toISOString();
+	if (
+		msg.type === DISCORD_MESSAGE_TYPE_REPLY &&
+		msg.message_reference?.message_id &&
+		(msg.message_reference.type === undefined ||
+			msg.message_reference.type === 0) &&
+		(msg.message_reference.channel_id === undefined ||
+			msg.message_reference.channel_id === ctx.threadId) &&
+		deps.observeShipJudgmentReply
+	) {
+		const learning = await deps.observeShipJudgmentReply({
+			projectName: ctx.projectName,
+			leadId: ctx.leadId,
+			threadId: ctx.threadId,
+			messageId: msg.id,
+			replyToMessageId: msg.message_reference.message_id,
+		});
+		if (learning === "handled") return { ok: true };
+		if (learning === "retry")
+			return {
+				ok: false,
+				stage: "learning_reply_retry",
+				reason: "learning_observation_unavailable",
+			};
+	}
 	const oldCardGuidance =
 		"这是上一轮的审批卡，这条尚未批准；请回复最新的当前审批卡回「通过」，或在最新卡上点 ✅。";
 	// Protocol guidance carries no authority. Delivery failure must not block

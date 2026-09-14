@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { ActiveScopeNotFoundError } from "../../bridge/linear-epic-query.js";
 import { generateAttentionEpicPage, generateEpicPage } from "../generate.js";
 import { materializeEpicPage } from "../materialize.js";
+import {
+	hostedBundleBytes,
+	renderEpicPageBudgetBundle,
+} from "../optional-budget.js";
 import { buildEpicPageRenderReceipt } from "../receipt.js";
-import { renderEpicPageHtml } from "../render-html.js";
 import { attentionFixture, candidate } from "./fixtures/attention.js";
 import {
 	EPIC_SHAPE_NOW,
@@ -12,7 +15,7 @@ import {
 } from "./fixtures/epic-shape.js";
 
 describe("FLY-2143 Epic page materialization inputs", () => {
-	it("budgets the complete generated HTML without losing Epic items", async () => {
+	it("budgets the complete hardened hosted HTML without losing Epic items", async () => {
 		const attention = attentionFixture();
 		attention.candidates = Array.from({ length: 200 }, (_, i) => {
 			const row = candidate(
@@ -60,7 +63,9 @@ describe("FLY-2143 Epic page materialization inputs", () => {
 		);
 		expect(result.page.items).toHaveLength(epicShapeSnapshot().items.length);
 		expect(
-			Buffer.byteLength(renderEpicPageHtml(result.page)),
+			hostedBundleBytes(
+				renderEpicPageBudgetBundle(result.page, EPIC_SHAPE_NOW),
+			),
 		).toBeLessThanOrEqual(512 * 1024);
 		expect(result.page.attention_sources.budget.missing?.reason).toBe(
 			"source_truncated",
@@ -107,114 +112,175 @@ describe("FLY-2143 Epic page materialization inputs", () => {
 			expect(readAttention).toHaveBeenCalledOnce();
 		},
 	);
-	it("injects signals, prior freshness, and the prospective version into one generation", async () => {
-		const snapshot = epicShapeSnapshot();
-		const readSignals = vi.fn((_projectName, items) =>
-			items.map((_item: unknown, index: number) => ({
-				signals:
-					index === 0
-						? [
-								{
-									kind: "declared_blocked" as const,
-									since: "2026-09-03T03:45:00.000Z",
-									execution_id8: "exec-one",
-									provenance: {
-										kind: "statestore" as const,
-										table: "sessions",
-										key: { execution_id: "exec-one-full" },
+	it.each(["example", "flywheel"])(
+		"injects signals, freshness and local history for %s",
+		async (projectName) => {
+			const snapshot = epicShapeSnapshot();
+			const readSignals = vi.fn((_projectName, items) =>
+				items.map((_item: unknown, index: number) => ({
+					signals:
+						index === 0
+							? [
+									{
+										kind: "declared_blocked" as const,
+										since: "2026-09-03T03:45:00.000Z",
+										execution_id8: "exec-one",
+										provenance: {
+											kind: "statestore" as const,
+											table: "sessions",
+											key: { execution_id: "exec-one-full" },
+										},
+										observed_at: EPIC_SHAPE_NOW.toISOString(),
 									},
-									observed_at: EPIC_SHAPE_NOW.toISOString(),
-								},
-							]
-						: [],
-				signal_sources: {
-					statestore: {
-						value: { signals: index === 0 ? 1 : 0 },
-						provenance: {
-							kind: "statestore" as const,
-							table: "sessions",
-							key: { issue_id: snapshot.items[index]!.id },
+								]
+							: [],
+					signal_sources: {
+						statestore: {
+							value: { signals: index === 0 ? 1 : 0 },
+							provenance: {
+								kind: "statestore" as const,
+								table: "sessions",
+								key: { issue_id: snapshot.items[index]!.id },
+							},
+							observed_at: EPIC_SHAPE_NOW.toISOString(),
 						},
-						observed_at: EPIC_SHAPE_NOW.toISOString(),
-					},
-					commdb: {
-						value: { signals: 0 },
-						provenance: {
-							kind: "commdb" as const,
-							table: "mailbox",
-							key: { issue_identifier: snapshot.items[index]!.identifier },
+						commdb: {
+							value: { signals: 0 },
+							provenance: {
+								kind: "commdb" as const,
+								table: "mailbox",
+								key: { issue_identifier: snapshot.items[index]!.identifier },
+							},
+							observed_at: EPIC_SHAPE_NOW.toISOString(),
 						},
-						observed_at: EPIC_SHAPE_NOW.toISOString(),
 					},
+				})),
+			);
+			const readFreshness = vi.fn(() => ({
+				history: {
+					last_generated: {
+						version: 8,
+						attempted_at: "2026-09-03T03:30:00.000Z",
+						trigger: "scan" as const,
+					},
+					publish_failures_since_last_published: 1,
 				},
-			})),
-		);
-		const readFreshness = vi.fn(() => ({
-			history: {
-				last_generated: {
-					version: 8,
-					attempted_at: "2026-09-03T03:30:00.000Z",
-					trigger: "scan" as const,
+			}));
+			const readLeadNotes = vi.fn(() => [
+				{
+					issue_uuid: snapshot.roots[0]!.id,
+					role: "engineering",
+					text: "判断",
+					written_at: "2026-09-01T12:00:00.000Z",
 				},
-				publish_failures_since_last_published: 1,
-			},
-		}));
-		const readLeadNotes = vi.fn(() => [
-			{
-				issue_uuid: snapshot.roots[0]!.id,
-				role: "engineering",
-				text: "判断",
-				written_at: "2026-09-01T12:00:00.000Z",
-			},
-		]);
+			]);
 
-		const result = await materializeEpicPage(
-			{
-				fetchSnapshot: vi.fn(async () => snapshot),
-				readItemFacts: () => emptyItemFacts(),
-				readSignals,
-				readFreshness,
-				readAttention: async () => attentionFixture(),
-				generatePage: generateAttentionEpicPage,
-				readLeadNotes,
-				buildReceipt: buildEpicPageRenderReceipt,
-				now: () => EPIC_SHAPE_NOW,
-			},
-			{
-				projectName: "example",
-				binding: { team: "EPX", project: "Example" },
-				apiKey: "linear-key",
-				trigger: "event",
+			const history = {
+				rows: [],
+				total: 0,
+				url: null,
+				publishedAsOf: null,
+				error: null,
+				dirty: false,
+				readError: false,
+			};
+			const readShipJudgmentHistory = vi.fn(() => history);
+			const result = await materializeEpicPage(
+				{
+					fetchSnapshot: vi.fn(async () => snapshot),
+					readItemFacts: () => emptyItemFacts(),
+					readSignals,
+					readFreshness,
+					readLeadNotes,
+					readShipJudgmentHistory,
+					generatePage: generateAttentionEpicPage,
+					readAttention: async () => attentionFixture(),
+					buildReceipt: buildEpicPageRenderReceipt,
+					now: () => EPIC_SHAPE_NOW,
+				},
+				{
+					projectName,
+					binding: { team: "EPX", project: "Example" },
+					apiKey: "linear-key",
+					trigger: "event",
+					version: 9,
+					leadNoteFadeDays: 2.5,
+					reasons: ["session_completed"],
+				},
+			);
+
+			if (projectName === "flywheel") {
+				expect(readShipJudgmentHistory).toHaveBeenCalledExactlyOnceWith(
+					EPIC_SHAPE_NOW.toISOString(),
+				);
+				expect(result.page.ship_judgment_history?.value).toEqual(history);
+			} else {
+				expect(readShipJudgmentHistory).not.toHaveBeenCalled();
+				expect(result.page.ship_judgment_history).toBeUndefined();
+			}
+			expect(readSignals).toHaveBeenCalledWith(
+				projectName,
+				snapshot.items.map((item) => ({
+					uuid: item.id,
+					identifier: item.identifier,
+				})),
+				EPIC_SHAPE_NOW,
+			);
+			expect(readFreshness).toHaveBeenCalledWith(projectName);
+			expect(readLeadNotes).toHaveBeenCalledExactlyOnceWith(projectName, [
+				...new Set(
+					[...snapshot.roots, ...snapshot.items].map((item) => item.id),
+				),
+			]);
+			expect(result.page.header.roots.value![0]!.lead_note?.[0]?.value).toBe(
+				"判断",
+			);
+			expect(result.page.lead_note_policy?.value).toEqual({
+				fade_after_days: 2.5,
+			});
+			expect(result.page.freshness.current.value).toEqual({
 				version: 9,
-				leadNoteFadeDays: 2.5,
+				trigger: "event",
 				reasons: ["session_completed"],
-			},
-		);
-
-		expect(readSignals).toHaveBeenCalledWith(
-			"example",
-			snapshot.items.map((item) => ({
-				uuid: item.id,
-				identifier: item.identifier,
-			})),
-			EPIC_SHAPE_NOW,
-		);
-		expect(readFreshness).toHaveBeenCalledWith("example");
-		expect(readLeadNotes).toHaveBeenCalledExactlyOnceWith("example", [
-			...new Set([...snapshot.roots, ...snapshot.items].map((item) => item.id)),
-		]);
-		expect(result.page.header.roots.value![0]!.lead_note?.[0]?.value).toBe(
-			"判断",
-		);
-		expect(result.page.lead_note_policy?.value).toEqual({
-			fade_after_days: 2.5,
-		});
-		expect(result.page.freshness.current.value).toEqual({
-			version: 9,
-			trigger: "event",
-			reasons: ["session_completed"],
-		});
-		expect(result.page.items[0]?.signals[0]?.kind).toBe("declared_blocked");
-		expect(result.receipt.reasons).toEqual(["session_completed"]);
-	});
+			});
+			expect(result.page.items[0]?.signals[0]?.kind).toBe("declared_blocked");
+			expect(result.receipt.reasons).toEqual(["session_completed"]);
+		},
+	);
 });
+
+it("budgets the hosted representation for full notes and judgment history without dropping Epic tasks", async () => {
+	const { pageForShipJudgmentAttentionBudget } = await import(
+		"./fixtures/founder-budget.js"
+	);
+	const candidate = await pageForShipJudgmentAttentionBudget(60);
+	const { renderEpicPageBudgetBundle, hostedBundleBytes } = await import(
+		"../optional-budget.js"
+	);
+	const result = await materializeEpicPage(
+		{
+			fetchSnapshot: async () => epicShapeSnapshot(),
+			readAttention: async () => attentionFixture(),
+			readLeadNotes: () => [],
+			readItemFacts: () => emptyItemFacts(),
+			readSignals: () => [],
+			readFreshness: () => ({}),
+			generatePage: () => candidate,
+			buildReceipt: buildEpicPageRenderReceipt,
+			now: () => EPIC_SHAPE_NOW,
+		},
+		{
+			projectName: "flywheel",
+			binding: { team: "EPX" },
+			apiKey: "fixture",
+			trigger: "manual",
+			version: 1,
+			reasons: ["manual"],
+		},
+	);
+	expect(result.page.items).toHaveLength(60);
+	expect(result.page.header.roots.value).toHaveLength(8);
+	expect(
+		hostedBundleBytes(renderEpicPageBudgetBundle(result.page, EPIC_SHAPE_NOW)),
+	).toBeLessThanOrEqual(524288);
+}, 15_000);

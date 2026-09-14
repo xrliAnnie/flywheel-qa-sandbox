@@ -16,13 +16,19 @@ import type {
 	GenerateEpicPageInput,
 } from "./generate.js";
 import { assertEpicPage, type EpicPage } from "./model.js";
+import {
+	hostedBudgetHtml,
+	renderEpicPageBudgetBundle,
+} from "./optional-budget.js";
 import type { EpicPageRenderReceipt } from "./receipt.js";
-import { renderEpicPageHtml } from "./render-html.js";
 import type { EpicPageItemSignals } from "./signals.js";
 
 export const MAX_EPIC_SCOPE_ITEMS = 500;
 
 export interface MaterializeEpicPageDeps {
+	readShipJudgmentHistory?: (
+		asOf: string,
+	) => NonNullable<GenerateEpicPageInput["shipJudgmentHistory"]>;
 	readAttention: (
 		input: MaterializeEpicPageInput,
 		now: Date,
@@ -111,7 +117,12 @@ export async function materializeEpicPage(
 			),
 		),
 	]);
+	const shipJudgmentHistory =
+		input.projectName === "flywheel"
+			? deps.readShipJudgmentHistory?.(generatedAt.toISOString())
+			: undefined;
 	const candidate = deps.generatePage({
+		...(shipJudgmentHistory ? { shipJudgmentHistory } : {}),
 		leadNotes,
 		leadNoteFadeDays: input.leadNoteFadeDays,
 		snapshot,
@@ -133,7 +144,7 @@ export async function materializeEpicPage(
 	const page =
 		candidate.schema_version === 2
 			? applyAttentionBudget(candidate, (page) =>
-					renderEpicPageHtml(page, generatedAt),
+					hostedBudgetHtml(renderEpicPageBudgetBundle(page, generatedAt)),
 				)
 			: candidate;
 	assertEpicPage(page);

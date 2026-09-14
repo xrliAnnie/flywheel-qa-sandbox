@@ -1,0 +1,10 @@
+{
+  "writtenBeforeCall": true,
+  "kind": "synthetic frozen evaluator smoke, not deployed product proof",
+  "positive": {
+    "resultCode": "evaluated",
+    "alignment": "pass",
+    "coverage": "pass"
+  },
+  "mutationEvidence": "scripts/__tests__/ship-judgment-mutations.test.mjs provides synthetic paired outputs only; real model mutants remain QA-owned"
+}

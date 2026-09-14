@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
 import { type EpicPage, hostedContentDigest } from "../epic-page/model.js";
-import {
-	type EpicPageBundle,
-	renderEpicPageBundle,
-} from "../epic-page/render-html.js";
+import { renderEpicPageBudgetBundle } from "../epic-page/optional-budget.js";
+import type { EpicPageBundle } from "../epic-page/render-html.js";
 import type { StateStore } from "../StateStore.js";
 import {
 	EpicAuditGatewayError,
@@ -66,7 +64,7 @@ export function createEpicPagePublisher(
 ): EpicPagePublisher {
 	const now = deps.now ?? (() => new Date());
 	const renderBundle = (page: EpicPage): EpicPageBundle =>
-		renderEpicPageBundle(page, now());
+		renderEpicPageBudgetBundle(page, now());
 	return {
 		async publishHosted(page): Promise<EpicPagePublishOutcome> {
 			const version = page.freshness.current.value?.version;

@@ -74,6 +74,35 @@ describe("hosted Epic page publisher", () => {
 		});
 	}
 
+	it("publishes a reduced history preview and retains the last page when essential content cannot fit", async () => {
+		const { pageForShipJudgmentBudget } = await import(
+			"../epic-page/__tests__/fixtures/founder-budget.js"
+		);
+		const { renderEpicPageBundle } = await import(
+			"../epic-page/render-html.js"
+		);
+		const page = pageForShipJudgmentBudget();
+		page.items[0]!.title.value = "X".repeat(70000);
+		expect(
+			Buffer.byteLength(renderEpicPageBundle(page, EPIC_SHAPE_NOW).html),
+		).toBeGreaterThan(524288);
+		expect(await publisher().publishHosted(page)).toBe("ok:1");
+		const previous = store.getEpicPagePublication("flywheel");
+		const html = blobs.get(previous!.token)!;
+		expect(Buffer.byteLength(html) + 88).toBeLessThanOrEqual(524288);
+		expect(html.match(/class="kid"/g)).toHaveLength(60);
+		expect(html.match(/data-root=/g)).toHaveLength(8);
+		expect(html.match(/data-history-row/g)!.length).toBeLessThan(20);
+		expect(html).toContain("Content-Security-Policy");
+		page.items[0]!.title.value = "X".repeat(150000);
+		expect(await publisher().publishHosted(page)).toBe(
+			"structural: epic_html_too_large",
+		);
+		expect(putEpicPage).toHaveBeenCalledOnce();
+		expect(store.getEpicPagePublication("flywheel")).toEqual(previous);
+		expect(blobs.get(previous!.token)).toBe(html);
+	});
+
 	it("reserves, uploads, commits, and publishes one first-ever stable page", async () => {
 		const outcome = await publisher().publishHosted(epicPage());
 		const publication = store.getEpicPagePublication("example");

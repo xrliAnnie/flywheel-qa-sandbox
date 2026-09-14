@@ -46,6 +46,12 @@ export interface BoundReportBlobStore extends ReportBlobStore {
 }
 
 export interface ReportBlobStore {
+	resumeReport?(
+		token: string,
+		html: string,
+		signal: AbortSignal,
+		options?: ReportBlobWriteOptions,
+	): Promise<void>;
 	bind(snapshot: CredentialSnapshot): BoundReportBlobStore;
 	putRawObject(pathname: string, body: Buffer): Promise<ReportBlobUpload>;
 	headReportSize(token: string): Promise<number>;
@@ -79,7 +85,12 @@ export interface ReportBlobClient {
 	): Promise<{ size: number }>;
 	get?(
 		pathname: string,
-		options: { access: "private"; token: string; useCache: false },
+		options: {
+			access: "private";
+			token: string;
+			useCache: false;
+			abortSignal?: AbortSignal;
+		},
 	): Promise<{
 		statusCode: number;
 		stream: ReadableStream<Uint8Array> | null;
@@ -94,6 +105,7 @@ export interface ReportBlobClient {
 			cacheControlMaxAge: number;
 			contentType: string;
 			token: string;
+			abortSignal?: AbortSignal;
 		},
 	): Promise<ReportBlobUpload>;
 	list(options: {
@@ -157,6 +169,76 @@ export class VercelBlobReportStore implements ReportBlobStore {
 		options?: ReportBlobWriteOptions,
 	): Promise<ReportBlobUpload> {
 		return this.putReportObject(token, html, false, options);
+	}
+
+	/** Recover an ordinary upload without replacing an existing object or renewing its TTL. */
+	async resumeReport(
+		token: string,
+		html: string,
+		signal: AbortSignal,
+		options: ReportBlobWriteOptions = {},
+	): Promise<void> {
+		signal.throwIfAborted();
+		if (!REPORT_TOKEN_RE.test(token) || !this.client.get)
+			throw new Error("report_resume_unavailable");
+		const pathname = `r/${token}/index.html`;
+		const current = await this.client.get(pathname, {
+			access: "private",
+			token: this.token,
+			useCache: false,
+			abortSignal: signal,
+		});
+		signal.throwIfAborted();
+		if (!current || current.statusCode === 404) {
+			await this.client.put(
+				pathname,
+				options.gzip ? gzipSync(html, { level: 9 }) : html,
+				{
+					access: "private",
+					addRandomSuffix: false,
+					allowOverwrite: false,
+					cacheControlMaxAge: 60,
+					contentType: "text/html; charset=utf-8",
+					token: this.token,
+					abortSignal: signal,
+				},
+			);
+			signal.throwIfAborted();
+			return;
+		}
+		if (current.statusCode !== 200 || !current.stream)
+			throw new Error("report_resume_read_failed");
+		const reader = current.stream.getReader(),
+			expected = Buffer.from(html),
+			chunks: Uint8Array[] = [];
+		let bytes = 0;
+		const cancel = () => {
+			void reader.cancel().catch(() => {});
+		};
+		signal.addEventListener("abort", cancel, { once: true });
+		try {
+			for (;;) {
+				signal.throwIfAborted();
+				const chunk = await reader.read();
+				signal.throwIfAborted();
+				if (chunk.done) break;
+				bytes += chunk.value.byteLength;
+				if (bytes > expected.length + 1024)
+					throw new Error("report_resume_content_conflict");
+				chunks.push(chunk.value);
+			}
+			const raw = Buffer.concat(chunks);
+			const decoded =
+				raw[0] === 0x1f && raw[1] === 0x8b
+					? gunzipSync(raw, { maxOutputLength: expected.length + 1 })
+					: raw;
+			if (!decoded.equals(expected))
+				throw new Error("report_resume_content_conflict");
+		} finally {
+			signal.removeEventListener("abort", cancel);
+			await reader.cancel().catch(() => {});
+			reader.releaseLock();
+		}
 	}
 
 	/** Idempotent overwrite for one stable hosted Epic page token. */

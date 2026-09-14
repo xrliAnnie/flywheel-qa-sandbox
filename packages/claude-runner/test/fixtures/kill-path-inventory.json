@@ -1392,6 +1392,24 @@
 		"classification": "out-of-scope"
 	},
 	{
+		"key": "packages/teamlead/src/ship-judgment/__tests__/subscription-process.test.ts:expect(() => process.kill(pid, 0)).toThrow();#1",
+		"path": "packages/teamlead/src/ship-judgment/__tests__/subscription-process.test.ts",
+		"code": "expect(() => process.kill(pid, 0)).toThrow();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/ship-judgment/subscription-process.ts:() => child.kill(\"SIGKILL\"),#1",
+		"path": "packages/teamlead/src/ship-judgment/subscription-process.ts",
+		"code": "() => child.kill(\"SIGKILL\"),",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/ship-judgment/subscription-process.ts:child.kill(\"SIGTERM\");#1",
+		"path": "packages/teamlead/src/ship-judgment/subscription-process.ts",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts:[\"-S\", privateSocket, \"kill-session\", \"-t\", \"=lead-seat\"],#1",
 		"path": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts",
 		"code": "[\"-S\", privateSocket, \"kill-session\", \"-t\", \"=lead-seat\"],",

@@ -1050,6 +1050,47 @@ describe("StateStore auto narrow approval", () => {
 				s2_basis_record_id: "44444444-4444-4444-8444-444444444444",
 			},
 		]);
+		const beforeHistoryRead = rawDb(store)
+			.prepare("SELECT total_changes() AS n")
+			.get();
+		expect(
+			store
+				.getShipJudgmentReader()
+				.show({ project: "flywheel", id: source.sourceEventId }),
+		).toMatchObject({
+			record: {
+				kind: "auto_narrow_decision",
+				source: "auto_narrow_gate",
+				data: { decision_source: "auto_narrow_gate" },
+			},
+		});
+		expect(
+			store
+				.getShipJudgmentReader()
+				.show({ project: "flywheel", question: questionId }),
+		).toMatchObject({
+			records: expect.arrayContaining([
+				expect.objectContaining({
+					id: source.sourceEventId,
+					source: "auto_narrow_gate",
+				}),
+			]),
+		});
+		expect(
+			store
+				.getShipJudgmentHistory()
+				.read("2026-09-09T03:01:05.000Z")
+				.rows.find((row) => row.questionId === questionId),
+		).toMatchObject({
+			source: "auto_narrow_gate",
+			decisionSource: "auto_narrow_gate",
+			authorship: "auto",
+			decision: "approved",
+			auditId: source.sourceEventId,
+		});
+		expect(rawDb(store).prepare("SELECT total_changes() AS n").get()).toEqual(
+			beforeHistoryRead,
+		);
 		expect(store.listAutoMergeShadowObservations()).toHaveLength(1);
 		expect(store.listFounderGateVerdicts()).toMatchObject([
 			{ founder_authored: 0, verdict: "approved" },
@@ -1479,4 +1520,286 @@ describe("QA writer-level three-gate negatives", () => {
 		});
 		store.close();
 	});
+});
+
+it("captures legacy dry-run samples without delivery intent and explicitly restores auto delivery for an unchanged snapshot", async () => {
+	const { store, questionId } = await fixture();
+	try {
+		const input = {
+			questionId,
+			issueThreadId: "1517000000000000050",
+			mode: "dry_run" as const,
+			at: OPEN_AT,
+			captureOnly: true,
+		};
+		const first = store.refreshAutoNarrowOpinion(input);
+		expect(first.status).toBe("created");
+		expect(store.listAutoNarrowOpinionSnapshots(questionId)).toHaveLength(1);
+		expect(store.getAutoNarrowOpinionDelivery(questionId)).toBeUndefined();
+		const restored = store.refreshAutoNarrowOpinion({
+			...input,
+			mode: "auto",
+			captureOnly: false,
+		});
+		expect(restored.status).toBe("unchanged");
+		expect(store.getAutoNarrowOpinionDelivery(questionId)).toMatchObject({
+			state: "pending",
+			desiredOpinionId: `${questionId}:1`,
+		});
+		expect(store.listAutoNarrowOpinionSnapshots(questionId)).toHaveLength(1);
+	} finally {
+		store.close();
+	}
+});
+
+it("freezes only the owned legacy message once and restores its auto intent without adopting a new sender message", async () => {
+	const { store, questionId } = await fixture();
+	try {
+		const at = DECISION_AT;
+		store.refreshAutoNarrowOpinion({
+			questionId,
+			issueThreadId: "1517000000000000050",
+			mode: "auto",
+			at,
+		});
+		const claim = store.beginAutoNarrowOpinionDelivery(questionId, at)!;
+		store.bindAutoNarrowOpinionMessage({
+			questionId,
+			generation: claim.generation,
+			messageId: "1517000000000000051",
+			opinionId: claim.desiredOpinionId!,
+		});
+		rawDb(store)
+			.prepare(
+				"UPDATE auto_narrow_opinion_delivery SET state='delivered',posted_opinion_id=desired_opinion_id WHERE question_id=?",
+			)
+			.run(questionId);
+		const edit = vi.fn(
+				async (_input: { messageId: string; content: string }) => ({
+					ok: true,
+				}),
+			),
+			post = vi.fn(),
+			scan = vi.fn();
+		const deps = {
+			store,
+			mode: "dry_run" as const,
+			now: () => at,
+			edit,
+			post,
+			scan,
+			setReaction: vi.fn(),
+			markCard: vi.fn(),
+		};
+		await reconcileAutoNarrowOpinionDeliveries(deps);
+		expect(edit).toHaveBeenCalledTimes(1);
+		expect(edit.mock.calls[0]?.[0]).toMatchObject({
+			messageId: "1517000000000000051",
+			content: expect.stringContaining("旧三闸历史意见"),
+		});
+		expect(store.getAutoNarrowOpinionDelivery(questionId)).toMatchObject({
+			state: "delivered",
+			legacyFrozenAt: at,
+		});
+		await reconcileAutoNarrowOpinionDeliveries(deps);
+		expect(edit).toHaveBeenCalledTimes(1);
+		expect(post).not.toHaveBeenCalled();
+		expect(scan).not.toHaveBeenCalled();
+		store.refreshAutoNarrowOpinion({
+			questionId,
+			issueThreadId: "1517000000000000050",
+			mode: "auto",
+			at,
+		});
+		expect(store.getAutoNarrowOpinionDelivery(questionId)).toMatchObject({
+			state: "pending",
+			followupMessageId: "1517000000000000051",
+			legacyFrozenAt: null,
+			legacyFreezeRequestedAt: null,
+		});
+	} finally {
+		store.close();
+	}
+});
+
+it("recovers legacy uncertain POST before freezing and rejects a late freeze completion after auto restore", async () => {
+	const { store, questionId } = await fixture();
+	try {
+		const at = DECISION_AT;
+		const input = {
+			questionId,
+			issueThreadId: "1517000000000000050",
+			mode: "auto" as const,
+			at,
+		};
+		store.refreshAutoNarrowOpinion(input);
+		const posting = store.beginAutoNarrowOpinionDelivery(questionId, at)!;
+		const edit = vi.fn(async () => ({ ok: true })),
+			post = vi.fn();
+		const scan = vi.fn(async () => ({
+			kind: "found" as const,
+			messageId: "1517000000000000051",
+			frontier: "1517000000000000052",
+		}));
+		const deps = {
+			store,
+			mode: "dry_run" as const,
+			now: () => at,
+			edit,
+			post,
+			scan,
+			setReaction: vi.fn(),
+			markCard: vi.fn(),
+		};
+		await reconcileAutoNarrowOpinionDeliveries(deps);
+		expect(scan).toHaveBeenCalledOnce();
+		expect(edit).not.toHaveBeenCalled();
+		expect(
+			store.bindAutoNarrowOpinionMessage({
+				questionId,
+				generation: posting.generation,
+				messageId: "1517000000000000053",
+				opinionId: posting.desiredOpinionId!,
+			}),
+		).toBe(false);
+		const freeze = store.beginAutoNarrowLegacyFreeze(
+			questionId,
+			store.getAutoNarrowOpinionDelivery(questionId)!.generation,
+			at,
+		)!;
+		store.refreshAutoNarrowOpinion(input);
+		expect(
+			store.finishAutoNarrowLegacyFreeze(
+				questionId,
+				freeze.generation,
+				at,
+				true,
+			),
+		).toBe(false);
+		expect(store.getAutoNarrowOpinionDelivery(questionId)).toMatchObject({
+			legacyFrozenAt: null,
+			legacyFreezeRequestedAt: null,
+			followupMessageId: "1517000000000000051",
+		});
+		expect(post).not.toHaveBeenCalled();
+	} finally {
+		store.close();
+	}
+});
+
+it("freezes a legacy intent with no message without creating a historical empty message", async () => {
+	const { store, questionId } = await fixture();
+	try {
+		store.refreshAutoNarrowOpinion({
+			questionId,
+			issueThreadId: "1517000000000000050",
+			mode: "auto",
+			at: DECISION_AT,
+		});
+		const deps = {
+			store,
+			mode: "dry_run" as const,
+			now: () => DECISION_AT,
+			edit: vi.fn(),
+			post: vi.fn(),
+			scan: vi.fn(),
+			setReaction: vi.fn(),
+			markCard: vi.fn(),
+		};
+		await reconcileAutoNarrowOpinionDeliveries(deps);
+		expect(store.getAutoNarrowOpinionDelivery(questionId)).toMatchObject({
+			state: "pending",
+			followupMessageId: null,
+			legacyFrozenAt: DECISION_AT,
+		});
+		expect(deps.post).not.toHaveBeenCalled();
+		expect(deps.edit).not.toHaveBeenCalled();
+		expect(deps.scan).not.toHaveBeenCalled();
+	} finally {
+		store.close();
+	}
+});
+
+it("does not retire an unconfirmed legacy POST as gone while freezing", async () => {
+	const { store, questionId } = await fixture();
+	try {
+		store.refreshAutoNarrowOpinion({
+			questionId,
+			issueThreadId: "1517000000000000050",
+			mode: "auto",
+			at: DECISION_AT,
+		});
+		store.beginAutoNarrowOpinionDelivery(questionId, DECISION_AT);
+		rawDb(store)
+			.prepare(
+				"UPDATE auto_narrow_opinion_delivery SET attempt=100 WHERE question_id=?",
+			)
+			.run(questionId);
+		await reconcileAutoNarrowOpinionDeliveries({
+			store,
+			mode: "dry_run",
+			now: () => DECISION_AT,
+			scan: async () => ({ kind: "ambiguous", frontier: null }),
+			edit: vi.fn(),
+			post: vi.fn(),
+			setReaction: vi.fn(),
+			markCard: vi.fn(),
+		});
+		expect(store.getAutoNarrowOpinionDelivery(questionId)).toMatchObject({
+			state: "uncertain",
+			legacyFrozenAt: null,
+			followupMessageId: null,
+		});
+	} finally {
+		store.close();
+	}
+});
+
+it("rebuilds historical freeze receipts on startup while off keeps the message untouched", async () => {
+	const { store, questionId } = await fixture();
+	try {
+		const at = DECISION_AT;
+		store.refreshAutoNarrowOpinion({
+			questionId,
+			issueThreadId: "1517000000000000050",
+			mode: "auto",
+			at,
+		});
+		const posting = store.beginAutoNarrowOpinionDelivery(questionId, at)!;
+		store.bindAutoNarrowOpinionMessage({
+			questionId,
+			generation: posting.generation,
+			messageId: "1517000000000000051",
+			opinionId: posting.desiredOpinionId!,
+		});
+		rawDb(store)
+			.prepare(
+				"UPDATE auto_narrow_opinion_delivery SET state='delivered',posted_opinion_id=desired_opinion_id,legacy_freeze_requested_at=?,legacy_frozen_at=? WHERE question_id=?",
+			)
+			.run(at, at, questionId);
+		store.invalidateAutoNarrowLegacyFreezeOnStartup(at);
+		expect(store.getAutoNarrowOpinionDelivery(questionId)).toMatchObject({
+			legacyFrozenAt: null,
+			legacyFreezeRequestedAt: at,
+			generation: posting.generation + 1,
+		});
+		const deps = {
+			store,
+			now: () => at,
+			post: vi.fn(),
+			edit: vi.fn(async () => ({ ok: true })),
+			scan: vi.fn(),
+			setReaction: vi.fn(),
+			markCard: vi.fn(),
+		};
+		await reconcileAutoNarrowOpinionDeliveries({ ...deps, mode: "off" });
+		expect(deps.edit).not.toHaveBeenCalled();
+		await reconcileAutoNarrowOpinionDeliveries({ ...deps, mode: "dry_run" });
+		expect(deps.edit).toHaveBeenCalledTimes(1);
+		expect(store.getAutoNarrowOpinionDelivery(questionId)).toMatchObject({
+			legacyFrozenAt: at,
+		});
+	} finally {
+		store.close();
+	}
 });

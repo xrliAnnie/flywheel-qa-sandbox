@@ -1,0 +1,19 @@
+{
+  "at": "2026-09-14T03:30:32.306Z",
+  "elapsedMs": 48457,
+  "calls": 109,
+  "status": "ready",
+  "prs": 39,
+  "complete": 39,
+  "incomplete": [],
+  "own": [
+    {
+      "pr": 1163,
+      "complete": true,
+      "files": 203
+    }
+  ],
+  "retainedBytes": 61639,
+  "productionDbAccess": false,
+  "modelCalls": 0
+}
