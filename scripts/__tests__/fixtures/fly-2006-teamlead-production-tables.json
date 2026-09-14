@@ -93,6 +93,7 @@
 	"node_dwell_review",
 	"patrol_orphan_watch",
 	"phase_chat_threads",
+	"pre_adapter_failure_receipts",
 	"quiet_wake_notified",
 	"receipt_activation_episodes",
 	"receipt_alert_outbox",

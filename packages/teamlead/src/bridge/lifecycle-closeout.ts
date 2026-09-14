@@ -1201,6 +1201,12 @@ async function closeoutOneNode(
 				store.getSession(executionId),
 				executionId,
 				projectName,
+				{
+					storeFacts: (id) => ({
+						failureKind: store.getPreAdapterFailureReceipt(id)?.failureKind,
+						launchClaimState: store.getLaunchClaim(id)?.state,
+					}),
+				},
 			));
 
 	// (1) fresh status re-read — the collected snapshot is NOT authority.

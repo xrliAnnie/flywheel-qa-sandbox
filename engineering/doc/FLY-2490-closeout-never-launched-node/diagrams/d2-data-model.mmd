@@ -1,0 +1,66 @@
+classDiagram
+  direction LR
+  class StateStore_sessions {
+    execution_id
+    status: failed / blocked / running ...
+    adapter_type: codex-tmux / claude-tmux
+    tmux_session: 常为空, 不是证据
+    last_error: worktree_takeover_failed ...
+  }
+  class CommDB_sessions {
+    execution_id
+    tmux_window: 关窗定位用
+    ended_at / status
+    收尾时会被删, 缺行不是证据
+  }
+  class CodexSessionJson {
+    ~/.flywheel/state/codex-sessions/【exec】/session.json
+    daemonPgid: spawn 后同步写, 写失败即杀组
+    tmuxWindow
+    gateHold
+  }
+  class CodexSocket {
+    ~/.flywheel/cdx-sock/【sha1(exec)前16位】.sock
+    有人监听 = daemon 活着
+  }
+  class TmuxWindow {
+    @flywheel_exec_id 标记
+    按 execution id 发现
+  }
+  class HostProcess {
+    pgrep -f 【execution id】
+    daemon argv 不含 exec id
+  }
+  class PreAdapterFailureReceipt {
+    表 pre_adapter_failure_receipts [新]
+    只由 Bridge 进程内 DirectEventSink 写
+    failure_kind = worktree_takeover_failed [白名单]
+    HTTP /events 对该类别直接 400
+    lifecycle_launch_claims.state 必须 = closed
+  }
+  class CodexDaemonEvidence {
+    liveness: alive / absent / unknown
+    ledger: missing / no_group / valid_group / unreadable  [新]
+    socketLive: socket 有无人  [新]
+    spawnLock: absent / stale / live / unreadable  [新]
+  }
+  class LandCloseoutCause {
+    ... 既有 12 个
+    nodes_not_confirmed_gone  [新]
+    lifecycle_conflict: 只留给真冲突
+  }
+  class ClosureReport_node {
+    transition.state / prerequisite
+    teardown.state / reason
+    confirmedGone
+    communicationsFinalized
+  }
+
+  PreAdapterFailureReceipt --> CodexDaemonEvidence : 承重门 ②③ (v1.5)
+  CodexSessionJson --> CodexDaemonEvidence : ledger 态
+  CodexSocket --> CodexDaemonEvidence : socketLive
+  StateStore_sessions --> CodexDaemonEvidence : status 门 failed/blocked
+  CodexDaemonEvidence --> TmuxWindow : 零证据时才问
+  CodexDaemonEvidence --> HostProcess : 零证据时才问
+  CommDB_sessions --> TmuxWindow : 先查 target
+  ClosureReport_node --> LandCloseoutCause : 推 cause

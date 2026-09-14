@@ -1,0 +1,35 @@
+sequenceDiagram
+  autonumber
+  participant L as land 操作 (post-ship)
+  participant C as lifecycle closeout
+  participant R as closeRunner
+  participant Q as 探活 probeRunExecutionLiveness
+  participant D as Codex daemon 证据
+  participant G as generic 探针 (tmux + 进程表)
+
+  Note over L,G: 修复前 (FLY-2351 实况, 18 轮全部相同)
+  L->>C: shipped 收尾
+  C->>R: 关这个 failed 节点 (forcePreserved=false)
+  R-->>C: preserved: crash_preserve (窗口本来就不存在)
+  C->>Q: 独立探活
+  Q->>D: 有 daemon 吗?
+  D-->>Q: unknown (其实是: 从来没有 session.json)
+  Q-->>C: unknown (不再问 tmux / 进程表)
+  C-->>L: blocked, confirmed_gone=false
+  L->>L: 标签 lifecycle_conflict, 退避 9 次后 held
+
+  Note over L,G: 修复后
+  L->>C: shipped 收尾 (Lead resume 一次)
+  C->>R: 关这个 failed 节点 (不变)
+  R-->>C: preserved: crash_preserve (不变)
+  C->>Q: 独立探活
+  Q->>D: 有 daemon 吗?
+  D-->>Q: unknown + session.json 不存在 + socket 无人 + lock 不存在
+  Q->>Q: ① status=failed ② Bridge 内部 receipt: worktree_takeover_failed(从未进入适配器) ③ claim 已 closed ⇒ 允许 generic 说话
+  Q->>G: CommDB target? tmux 标记? pgrep?
+  G-->>Q: 三者皆无 ⇒ dead
+  Q->>D: 终复核: 三轴仍无痕迹?
+  D-->>Q: 仍无
+  Q-->>C: dead
+  C-->>L: complete (confirmedGone=true, CommDB finalize 0 行 ok)
+  L->>L: thread 归档 / Linear Done (幂等)

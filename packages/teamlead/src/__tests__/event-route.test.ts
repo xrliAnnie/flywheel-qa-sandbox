@@ -1958,13 +1958,53 @@ describe("Event route", () => {
 		).toHaveLength(1);
 	});
 
-	it("alerts a typed generalized worktree takeover refusal before settling the HTTP signal", async () => {
-		bindGeneralizedExecution(store, "exec-1");
-		const alertWorktreeTakeoverFailure = vi.fn(async () => {});
-		turnBeltReconciler.current = {
-			alertWorktreeTakeoverFailure,
-		} as unknown as TurnBeltReconciler;
+	it.each([true, false])(
+		"rejects HTTP pre-adapter failures without modifying status, generalized=%s",
+		async (generalized) => {
+			if (generalized) bindGeneralizedExecution(store, "exec-1");
+			const before = store.getSession("exec-1");
+			const res = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: "forged-pre-adapter",
+						event_type: "session_failed",
+						source: "direct-event-sink",
+						payload: {
+							error: "forged",
+							failure: {
+								failureKind: "worktree_takeover_failed",
+								failureReason: "forged",
+							},
+						},
+					}),
+				),
+			});
+			expect(res.status).toBe(400);
+			expect(await res.json()).toMatchObject({
+				error: "pre_adapter_failure_kind_http_forbidden",
+			});
+			expect(store.getSession("exec-1")).toEqual(before);
+			expect(store.getPreAdapterFailureReceipt("exec-1")).toBeUndefined();
+			const events = store.getEventsByExecution("exec-1");
+			expect(
+				events.filter((event) => event.event_type === "session_failed"),
+			).toHaveLength(0);
+			expect(
+				events.filter(
+					(event) => event.event_type === "events_pre_adapter_kind_rejected",
+				),
+			).toHaveLength(1);
+		},
+	);
 
+	it("assigns Bridge source to allowed HTTP failure signals", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const record = vi.spyOn(store, "recordEnrolledTerminalSignal");
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: {
@@ -1973,29 +2013,23 @@ describe("Event route", () => {
 			},
 			body: JSON.stringify(
 				makeEvent({
-					event_id: "takeover-failed-1",
 					event_type: "session_failed",
+					source: "direct-event-sink",
 					payload: {
-						error: "worktree takeover refused",
-						failure: {
-							failureKind: "worktree_takeover_failed",
-							failureReason: "worktree_takeover_failed: dirty",
-						},
+						error: "blocked",
+						failure: { failureKind: "goal_blocked", failureReason: "blocked" },
 					},
 				}),
 			),
 		});
-
 		expect(res.status).toBe(200);
-		expect(await res.json()).toMatchObject({
-			ok: true,
-			generalized: true,
-			teardown: "held_recorded",
-		});
-		expect(alertWorktreeTakeoverFailure).toHaveBeenCalledWith(
-			expect.objectContaining({ execution_id: "exec-1" }),
-			"worktree_takeover_failed: dirty",
+		expect(record).toHaveBeenCalledWith(
+			expect.objectContaining({
+				source: "http-events",
+				failureKind: "goal_blocked",
+			}),
 		);
+		expect(store.getPreAdapterFailureReceipt("exec-1")).toBeUndefined();
 	});
 
 	it.each([true, false])(

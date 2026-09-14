@@ -1,3 +1,4 @@
+import { PRE_ADAPTER_FAILURE_KINDS } from "flywheel-core";
 /**
  * GEO-168: DirectEventSink — bridge-local ExecutionEventEmitter that writes
  * directly to StateStore instead of HTTP self-post. Mirrors event-route.ts logic.
@@ -1339,6 +1340,18 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.codexExecutionOwners?.releaseReservation(env.executionId);
 		const now = sqliteDatetime();
 		const normalizedFailure = normalizeTerminalFailureInfo(failure);
+		const sourceEventId = randomUUID();
+		if (
+			normalizedFailure &&
+			PRE_ADAPTER_FAILURE_KINDS.has(normalizedFailure.failureKind)
+		) {
+			this.store.recordPreAdapterFailureReceipt({
+				executionId: env.executionId,
+				failureKind: normalizedFailure.failureKind,
+				sourceEventId,
+				now,
+			});
+		}
 		if (
 			failure &&
 			(failure.failureKind === "goal_usage_limited" ||
@@ -1377,7 +1390,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			});
 			const recorded = this.store.recordEnrolledTerminalSignal({
 				executionId: env.executionId,
-				sourceEventId: randomUUID(),
+				sourceEventId,
 				signal: "failed",
 				failureKind: normalizedFailure?.failureKind,
 				quotaSignal: normalizedFailure?.quotaSignal,
@@ -1433,7 +1446,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		if (quotaFailure) {
 			const recorded = this.store.recordLegacyCodexQuotaFailure({
 				executionId: env.executionId,
-				sourceEventId: randomUUID(),
+				sourceEventId,
 				issueId: env.issueId,
 				projectName: env.projectName,
 				source: "direct-event-sink",
@@ -1456,7 +1469,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const preFailureSession = this.store.getSession(env.executionId);
 
 		this.store.insertEvent({
-			event_id: randomUUID(),
+			event_id: sourceEventId,
 			execution_id: env.executionId,
 			issue_id: env.issueId,
 			project_name: env.projectName,

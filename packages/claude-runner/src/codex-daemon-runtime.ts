@@ -27,7 +27,6 @@ import {
 	lstatSync,
 	mkdirSync,
 	openSync,
-	readFileSync,
 	readSync,
 	rmSync,
 	statSync,
@@ -104,6 +103,7 @@ export type CodexDaemonLiveness = "alive" | "absent" | "unknown";
 export type ProcessGroupState = "alive" | "absent" | "unknown";
 
 export interface CodexDaemonOwnershipDeps {
+	isPidAlive?: (pid: number) => boolean;
 	env?: NodeJS.ProcessEnv;
 	isSocketLive?: (socketPath: string) => Promise<boolean>;
 	socketHolderPids?: (socketPath: string) => number[];
@@ -122,27 +122,107 @@ export interface CodexDaemonReapResult {
 	socketPath: string;
 }
 
-function readPersistedDaemonPgid(
+export type CodexDaemonLedgerState =
+	| { state: "missing" }
+	| { state: "no_group" }
+	| { state: "valid_group"; pgid: number }
+	| { state: "unreadable" };
+
+export type CodexDaemonSpawnLockState =
+	| "absent"
+	| "stale"
+	| "live"
+	| "unreadable";
+
+export interface CodexDaemonEvidence {
+	liveness: CodexDaemonLiveness;
+	ledger: CodexDaemonLedgerState["state"];
+	socketLive: boolean;
+	spawnLock: CodexDaemonSpawnLockState;
+}
+
+/** Bound the read itself even if the file grows after fstat. Never follow links
+ * or block on a FIFO. Callers distinguish ENOENT from all other failures. */
+function readDaemonEvidenceObject(
+	path: string,
+	maxBytes: number,
+): Record<string, unknown> {
+	const fd = openSync(
+		path,
+		fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+	);
+	try {
+		const stat = fstatSync(fd);
+		if (!stat.isFile() || stat.size > maxBytes)
+			throw new Error("invalid_evidence_file");
+		const buffer = Buffer.alloc(maxBytes + 1);
+		let length = 0;
+		while (length < buffer.length) {
+			const read = readSync(fd, buffer, length, buffer.length - length, null);
+			if (read === 0) break;
+			length += read;
+		}
+		if (length > maxBytes) throw new Error("oversized_evidence");
+		const raw: unknown = JSON.parse(
+			buffer.subarray(0, length).toString("utf8"),
+		);
+		if (!raw || typeof raw !== "object" || Array.isArray(raw))
+			throw new Error("invalid_evidence_object");
+		return raw as Record<string, unknown>;
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function readPersistedDaemonLedger(
 	executionId: string,
 	env: NodeJS.ProcessEnv,
-): number | undefined {
+): CodexDaemonLedgerState {
 	try {
-		const raw = JSON.parse(
-			readFileSync(
-				join(codexSessionStateDir(executionId, env), "session.json"),
-				"utf8",
-			),
-		) as { daemonPgid?: unknown; daemonPid?: unknown };
-		// daemonPid is a read-only migration fallback for pre-FLY-1940 state. New
-		// writes use daemonPgid exclusively.
-		const candidate = raw.daemonPgid ?? raw.daemonPid;
-		return typeof candidate === "number" &&
-			Number.isSafeInteger(candidate) &&
-			candidate > 1
-			? candidate
-			: undefined;
+		const raw = readDaemonEvidenceObject(
+			join(codexSessionStateDir(executionId, env), "session.json"),
+			1024 * 1024,
+		);
+		// A present but invalid daemonPgid must never fall through to legacy daemonPid.
+		const key = Object.hasOwn(raw, "daemonPgid")
+			? "daemonPgid"
+			: Object.hasOwn(raw, "daemonPid")
+				? "daemonPid"
+				: undefined;
+		if (!key) return { state: "no_group" };
+		const pgid = raw[key];
+		return typeof pgid === "number" && Number.isSafeInteger(pgid) && pgid > 1
+			? { state: "valid_group", pgid }
+			: { state: "unreadable" };
+	} catch (error) {
+		return {
+			state:
+				(error as NodeJS.ErrnoException).code === "ENOENT"
+					? "missing"
+					: "unreadable",
+		};
+	}
+}
+
+function inspectDaemonSpawnLock(
+	path: string,
+	deps: CodexDaemonOwnershipDeps,
+): CodexDaemonSpawnLockState {
+	let raw: Record<string, unknown>;
+	try {
+		raw = readDaemonEvidenceObject(path, 4096);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT"
+			? "absent"
+			: "unreadable";
+	}
+	const pid = raw.pid;
+	if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 1)
+		return "unreadable";
+	try {
+		return (deps.isPidAlive ?? defaultIsPidAlive)(pid) ? "live" : "stale";
 	} catch {
-		return undefined;
+		return "unreadable";
 	}
 }
 
@@ -163,6 +243,7 @@ async function inspectCodexDaemonOwnership(
 	deps: CodexDaemonOwnershipDeps,
 ): Promise<{
 	liveness: CodexDaemonLiveness;
+	ledger: CodexDaemonLedgerState["state"];
 	pgid?: number;
 	socketPath: string;
 	socketLive: boolean;
@@ -170,9 +251,11 @@ async function inspectCodexDaemonOwnership(
 }> {
 	const env = deps.env ?? process.env;
 	const socketPath = resolveDaemonSocketPath(executionId, env);
-	const pgid = readPersistedDaemonPgid(executionId, env);
+	const ledger = readPersistedDaemonLedger(executionId, env);
+	const pgid = ledger.state === "valid_group" ? ledger.pgid : undefined;
 	if (pgid === undefined) {
 		return {
+			ledger: ledger.state,
 			liveness: "unknown",
 			socketPath,
 			socketLive: await (deps.isSocketLive ?? defaultIsSocketLive)(socketPath),
@@ -185,6 +268,7 @@ async function inspectCodexDaemonOwnership(
 	const groupState = processGroupState(pgid);
 	if (!socketLive) {
 		return {
+			ledger: ledger.state,
 			liveness: groupState === "absent" ? "absent" : "unknown",
 			pgid,
 			socketPath,
@@ -194,6 +278,7 @@ async function inspectCodexDaemonOwnership(
 	}
 	if (groupState !== "alive") {
 		return {
+			ledger: ledger.state,
 			liveness: "unknown",
 			pgid,
 			socketPath,
@@ -209,11 +294,26 @@ async function inspectCodexDaemonOwnership(
 		.slice(0, 10)
 		.some((holder) => processGroupOf(holder) === pgid);
 	return {
+		ledger: ledger.state,
 		liveness: proven ? "alive" : "unknown",
 		pgid,
 		socketPath,
 		socketLive,
 		groupState,
+	};
+}
+
+/** Read lock evidence only for callers that need pre-launch consistency checks. */
+export async function probeCodexDaemonEvidence(
+	executionId: string,
+	deps: CodexDaemonOwnershipDeps = {},
+): Promise<CodexDaemonEvidence> {
+	const inspected = await inspectCodexDaemonOwnership(executionId, deps);
+	return {
+		liveness: inspected.liveness,
+		ledger: inspected.ledger,
+		socketLive: inspected.socketLive,
+		spawnLock: inspectDaemonSpawnLock(`${inspected.socketPath}.lock`, deps),
 	};
 }
 

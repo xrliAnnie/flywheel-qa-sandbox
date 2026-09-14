@@ -8,6 +8,7 @@ export const LAND_CLOSEOUT_CAUSES = [
 	"window_identity_pending",
 	"commdb_finalize_failed",
 	"worktree_branch_mismatch",
+	"nodes_not_confirmed_gone",
 	"lifecycle_conflict",
 	"archive_failed",
 	"source_session_unavailable",
@@ -56,8 +57,10 @@ export function inferLandCloseoutCause(errors: string[]): LandCloseoutCause {
 
 type CloseoutCauseReportShape = {
 	nodes: Array<{
-		transition: { state: string; error?: string };
-		teardown: { state: string; error?: string };
+		transition: { state: string; error?: string; prerequisite?: string };
+		teardown: { state: string; error?: string; reason?: string };
+		confirmedGone?: boolean;
+		communicationsFinalized?: boolean;
 	}>;
 };
 
@@ -69,7 +72,25 @@ export function inferLandCloseoutCauseFromClosureReport(
 			outcome.state === "failed" && outcome.error ? [outcome.error] : [],
 		),
 	);
-	return errors.length > 0 ? inferLandCloseoutCause(errors) : undefined;
+	if (errors.length > 0) return inferLandCloseoutCause(errors);
+	if (
+		report.nodes.some(
+			(node) =>
+				(node.transition.state === "blocked" &&
+					node.transition.prerequisite?.startsWith("authority_")) ||
+				(node.teardown.state === "skipped" &&
+					node.teardown.reason?.startsWith("authority_")),
+		)
+	)
+		return "lifecycle_conflict";
+	if (
+		report.nodes.some(
+			(node) =>
+				node.confirmedGone === false || node.communicationsFinalized === false,
+		)
+	)
+		return "nodes_not_confirmed_gone";
+	return undefined;
 }
 
 export function landIssueCloseoutResultFromClosureReport<
@@ -102,6 +123,8 @@ export function describeLandCloseoutCause(cause: LandCloseoutCause): string {
 			return "Runner 窗口身份仍未完成注册";
 		case "worktree_branch_mismatch":
 			return "worktree 或分支状态与预期不一致";
+		case "nodes_not_confirmed_gone":
+			return "有 Runner 节点尚未被证明已消失（见 closeout_issue_items_blocked 审计事件）";
 		case "lifecycle_conflict":
 			return "issue 生命周期状态发生冲突";
 		case "archive_failed":

@@ -1,6 +1,9 @@
+import { execFileSync } from "node:child_process";
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -18,6 +21,7 @@ import {
 	createDefaultKillGroup,
 	type DaemonChild,
 	daemonSocketDir,
+	probeCodexDaemonEvidence,
 	probeCodexDaemonLiveness,
 	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
@@ -1354,4 +1358,313 @@ describe("spawnCodexDaemon — Codex R9: the teardown holes", () => {
 		await expect(handle.ensureDead()).resolves.toBe(false);
 		expect(released).toBe(false);
 	});
+});
+
+describe("FLY-2490 daemon evidence", () => {
+	it("distinguishes missing launch evidence from an unknown daemon", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2490-"));
+		try {
+			const env = {
+				FLYWHEEL_CODEX_SESSION_DIR: join(root, "s"),
+				FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT: join(root, "d"),
+			};
+			await expect(
+				probeCodexDaemonEvidence("never-launched", {
+					env,
+					isSocketLive: async () => false,
+				}),
+			).resolves.toEqual({
+				liveness: "unknown",
+				ledger: "missing",
+				socketLive: false,
+				spawnLock: "absent",
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("FLY-2490 bounded daemon evidence reads", () => {
+	function fixture() {
+		const root = mkdtempSync(join(tmpdir(), "fly2490-"));
+		const env = {
+			FLYWHEEL_CODEX_SESSION_DIR: join(root, "s"),
+			FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT: join(root, "d"),
+		};
+		const id = "evidence";
+		const dir = codexSessionStateDir(id, env);
+		mkdirSync(dir, { recursive: true });
+		const socket = resolveDaemonSocketPath(id, env);
+		mkdirSync(join(root, "d"), { recursive: true });
+		return {
+			root,
+			env,
+			id,
+			ledger: join(dir, "session.json"),
+			lock: `${socket}.lock`,
+		};
+	}
+	const invalid = [
+		"{",
+		"[]",
+		"null",
+		"true",
+		"12",
+		...[null, true, "12", 0, -5, 1, 1.5, 2 ** 53].map((daemonPgid) =>
+			JSON.stringify({ daemonPgid }),
+		),
+	];
+	it.each(invalid)("rejects invalid ledger %s", async (raw) => {
+		const f = fixture();
+		try {
+			writeFileSync(f.ledger, raw);
+			const deps = {
+				env: f.env,
+				isSocketLive: async () => false,
+				processGroupState: () => "absent" as const,
+			};
+			expect(await probeCodexDaemonEvidence(f.id, deps)).toMatchObject({
+				ledger: "unreadable",
+				liveness: "unknown",
+			});
+			expect(await probeCodexDaemonLiveness(f.id, deps)).toBe("unknown");
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+	it.each([
+		[{ codexAgentHome: "/unused" }, "no_group"],
+		[{ daemonPid: 4321 }, "valid_group"],
+		[{ daemonPgid: 4321, daemonPid: null }, "valid_group"],
+		[{ daemonPgid: null, daemonPid: 4321 }, "unreadable"],
+	] as const)("keeps explicit ledger state for %j", async (raw, state) => {
+		const f = fixture();
+		try {
+			writeFileSync(f.ledger, JSON.stringify(raw));
+			const deps = {
+				env: f.env,
+				isSocketLive: async () => false,
+				processGroupState: () => "absent" as const,
+			};
+			const evidence = await probeCodexDaemonEvidence(f.id, deps);
+			expect(evidence.ledger).toBe(state);
+			expect(evidence.liveness).toBe(
+				state === "valid_group" ? "absent" : "unknown",
+			);
+			expect(await probeCodexDaemonLiveness(f.id, deps)).toBe(
+				evidence.liveness,
+			);
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+	it.each(["ledger", "lock"] as const)(
+		"rejects unsafe %s file types without blocking",
+		async (axis) => {
+			const f = fixture();
+			try {
+				for (const shape of [
+					"directory",
+					"symlink",
+					"fifo",
+					"oversized",
+					"permissions",
+				]) {
+					const path = f[axis];
+					if (shape === "directory") mkdirSync(path);
+					if (shape === "symlink") {
+						writeFileSync(`${path}.target`, '{"daemonPgid":4321,"pid":4321}');
+						symlinkSync(`${path}.target`, path);
+					}
+					if (shape === "fifo") execFileSync("mkfifo", [path]);
+					if (shape === "oversized")
+						writeFileSync(
+							path,
+							" ".repeat(axis === "ledger" ? 1024 * 1024 + 1 : 4097),
+						);
+					if (shape === "permissions") {
+						writeFileSync(path, "{}");
+						chmodSync(path, 0);
+					}
+					try {
+						if (shape !== "permissions" || process.getuid?.() !== 0) {
+							const deps = {
+								env: f.env,
+								isSocketLive: async () => false,
+								processGroupState: () => "absent" as const,
+							};
+							expect(
+								(await probeCodexDaemonEvidence(f.id, deps))[
+									axis === "ledger" ? "ledger" : "spawnLock"
+								],
+							).toBe("unreadable");
+							expect(await probeCodexDaemonLiveness(f.id, deps)).toBe(
+								"unknown",
+							);
+						}
+					} finally {
+						if (shape === "permissions") chmodSync(path, 0o600);
+						rmSync(path, { recursive: true, force: true });
+					}
+				}
+			} finally {
+				rmSync(f.root, { recursive: true, force: true });
+			}
+		},
+	);
+	it.each([
+		"{",
+		"{}",
+		"[]",
+		...[null, true, "12", 0, 1, -1, 1.5, 2 ** 53].map((pid) =>
+			JSON.stringify({ pid }),
+		),
+	])("rejects invalid lock %s without probing pid", async (raw) => {
+		const f = fixture();
+		try {
+			writeFileSync(f.lock, raw);
+			const isPidAlive = vi.fn(() => true);
+			expect(
+				(
+					await probeCodexDaemonEvidence(f.id, {
+						env: f.env,
+						isSocketLive: async () => false,
+						isPidAlive,
+					})
+				).spawnLock,
+			).toBe("unreadable");
+			expect(isPidAlive).not.toHaveBeenCalled();
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+	it.each(["live", "stale", "unreadable"] as const)(
+		"reports %s lock independently of daemon liveness",
+		async (state) => {
+			const f = fixture();
+			try {
+				writeFileSync(f.lock, JSON.stringify({ pid: 4321 }));
+				const isPidAlive = vi.fn(() => {
+					if (state === "unreadable") throw new Error("probe failed");
+					return state === "live";
+				});
+				const deps = {
+					env: f.env,
+					isSocketLive: async () => false,
+					isPidAlive,
+				};
+				expect(await probeCodexDaemonLiveness(f.id, deps)).toBe("unknown");
+				expect(isPidAlive).not.toHaveBeenCalled();
+				expect((await probeCodexDaemonEvidence(f.id, deps)).spawnLock).toBe(
+					state,
+				);
+				expect(isPidAlive).toHaveBeenCalledWith(4321);
+			} finally {
+				rmSync(f.root, { recursive: true, force: true });
+			}
+		},
+	);
+	it("matches the previous regular-file probe across ledger and ownership states", async () => {
+		const f = fixture();
+		try {
+			const rawCases = [
+				undefined,
+				"{}",
+				'{"daemonPid":4321}',
+				'{"daemonPgid":4321}',
+				...invalid,
+			];
+			for (const raw of rawCases) {
+				if (raw === undefined) rmSync(f.ledger, { force: true });
+				else writeFileSync(f.ledger, raw);
+				// Previous readPersistedDaemonPgid, kept as a regression oracle.
+				let pgid: number | undefined;
+				try {
+					const old = JSON.parse(readFileSync(f.ledger, "utf8"));
+					const candidate = old.daemonPgid ?? old.daemonPid;
+					pgid =
+						typeof candidate === "number" &&
+						Number.isSafeInteger(candidate) &&
+						candidate > 1
+							? candidate
+							: undefined;
+				} catch {
+					pgid = undefined;
+				}
+				for (const groupState of ["alive", "absent", "unknown"] as const) {
+					for (const socketLive of [true, false]) {
+						for (const holderMatches of [true, false]) {
+							const expected =
+								pgid === undefined
+									? "unknown"
+									: !socketLive
+										? groupState === "absent"
+											? "absent"
+											: "unknown"
+										: groupState === "alive" && holderMatches
+											? "alive"
+											: "unknown";
+							const deps = {
+								env: f.env,
+								isSocketLive: async () => socketLive,
+								processGroupState: () => groupState,
+								socketHolderPids: () => [99],
+								processGroupOf: () => (holderMatches ? 4321 : 9999),
+							};
+							expect(await probeCodexDaemonLiveness(f.id, deps)).toBe(expected);
+							expect(
+								(await probeCodexDaemonEvidence(f.id, deps)).liveness,
+							).toBe(expected);
+						}
+					}
+				}
+			}
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
+	it.each(["alive", "absent", "unknown"] as const)(
+		"preserves regular ledger liveness for group %s",
+		async (groupState) => {
+			const f = fixture();
+			try {
+				writeFileSync(f.ledger, '{"daemonPgid":4321}');
+				for (const socketLive of [false, true]) {
+					const deps = {
+						env: f.env,
+						isSocketLive: async () => socketLive,
+						processGroupState: () => groupState,
+						socketHolderPids: () => [99],
+						processGroupOf: () => 4321,
+					};
+					const expected = socketLive
+						? groupState === "alive"
+							? "alive"
+							: "unknown"
+						: groupState === "absent"
+							? "absent"
+							: "unknown";
+					expect((await probeCodexDaemonEvidence(f.id, deps)).liveness).toBe(
+						expected,
+					);
+					expect(await probeCodexDaemonLiveness(f.id, deps)).toBe(expected);
+				}
+				rmSync(f.ledger);
+				expect(
+					await probeCodexDaemonEvidence(f.id, {
+						env: f.env,
+						isSocketLive: async () => true,
+					}),
+				).toMatchObject({
+					ledger: "missing",
+					socketLive: true,
+					liveness: "unknown",
+				});
+			} finally {
+				rmSync(f.root, { recursive: true, force: true });
+			}
+		},
+	);
 });

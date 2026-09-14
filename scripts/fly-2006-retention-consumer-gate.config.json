@@ -561,6 +561,13 @@
 			"disposition": "candidate_guarded"
 		},
 		{
+			"file": "scripts/fly-2490-backfill-receipts.mjs",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
 			"file": "packages/teamlead/src/bin/backend-migration-evidence.ts",
 			"relation": "workflow_run_event",
 			"baseTable": "workflow_run_event",

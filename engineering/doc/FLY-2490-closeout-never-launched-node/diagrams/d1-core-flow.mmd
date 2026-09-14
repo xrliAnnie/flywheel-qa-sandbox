@@ -1,0 +1,30 @@
+flowchart TD
+  A["PR 已合入<br/>post-ship 收尾开始"] --> B["issue 级 closeout<br/>逐个节点确认已消失"]
+  B --> C{"节点 status<br/>= failed / blocked?"}
+  C -- 否 --> D["closeRunner 正常关窗<br/>alreadyGone / closed"]
+  C -- 是 --> E["closeRunner preserve 门<br/>返回 preserved (crash_preserve)<br/>(FLY-116, 不改)"]
+  E --> F["独立探活<br/>probeRunExecutionLiveness<br/>(FLY-2313 救援路径)"]
+  F --> G{"adapter =<br/>codex-tmux?"}
+  G -- 否 --> H["generic 探针:<br/>CommDB 无 target +<br/>tmux marker 缺席 +<br/>pgrep 无进程 → dead"]
+  G -- 是 --> I["读 daemon 证据<br/>session.json / socket / spawn lock"]
+  I --> J{"daemon 证据"}
+  J -- "alive" --> K["alive → 继续阻塞(正确)"]
+  J -- "absent (有 pgid 记录且组已消失)" --> H
+  J -- "unknown" --> M{"本单新增四道门<br/>① 状态 failed/blocked<br/>② Bridge 进程内写下的 receipt:<br/>失败类别 = 从未进入适配器 (白名单)<br/>(HTTP /events 伪造不了)<br/>③ launch claim 已 closed<br/>④ 当前 root 三轴全无痕迹"}
+  M -- "任一不满足" --> L["unknown → 阻塞<br/>(FLY-1940 fail-closed, 不变)"]
+  M -- "全部满足" --> H
+  H --> N{"三重缺席?"}
+  N -- 否 --> L
+  N -- 是 --> R{"终复核:<br/>三轴仍无痕迹?"}
+  R -- 否 --> L
+  R -- 是 --> O["confirmedGone = true<br/>CommDB finalize (无行 = 0 changes, ok)<br/>→ thread 归档 / Linear Done"]
+  D --> O
+  L --> P["land: issue_closeout_incomplete<br/>cause = nodes_not_confirmed_gone<br/>(原来错贴 lifecycle_conflict)"]
+
+  style E fill:#fff4e5,stroke:#ff9500
+  style M fill:#e8f5e9,stroke:#34c759
+  style R fill:#e8f5e9,stroke:#34c759
+  style H fill:#e3f2fd,stroke:#007aff
+  style O fill:#e8f5e9,stroke:#34c759
+  style L fill:#fdecea,stroke:#ff3b30
+  style P fill:#f3e5f5,stroke:#af52de

@@ -8,7 +8,7 @@
  *   legacy route-patch persistence timing stays byte-identical (#14d).
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
@@ -255,6 +255,18 @@ describe("FLY-1385 enrolled teardown seam", () => {
 				failureReason: "worktree_takeover_failed: dirty",
 			},
 		);
+
+		const receipt = store.getPreAdapterFailureReceipt("teardown-exec");
+		expect(receipt).toMatchObject({
+			failureKind: "worktree_takeover_failed",
+			sourceEventId: expect.any(String),
+			recordedAt: expect.any(String),
+		});
+		expect(
+			store
+				.getEventsByExecution("teardown-exec")
+				.some((event) => event.event_id === receipt?.sourceEventId),
+		).toBe(true);
 
 		expect(store.getSession("teardown-exec")).toMatchObject({
 			status: "failed",
@@ -514,4 +526,40 @@ describe("FLY-2465 quota direct intake", () => {
 		expect(store.codexQuota.listOutbox()).toHaveLength(1);
 		expect(store.codexQuota.listOutbox()[0]?.kind).toBe("lead_diagnostic");
 	});
+});
+
+it("keeps receipt writes Bridge-local and first-write stable on repeated failures", async () => {
+	const { store, sink } = await harness();
+	const env = {
+		executionId: "receipt-repeat",
+		issueId: "FLY-2490",
+		projectName: "flywheel",
+	};
+	await sink.emitFailed(env, "takeover failed", undefined, {
+		failureKind: "worktree_takeover_failed",
+		failureReason: "dirty",
+	});
+	const first = store.getPreAdapterFailureReceipt(env.executionId);
+	expect(first).toBeDefined();
+	await sink.emitFailed(env, "takeover failed", undefined, {
+		failureKind: "worktree_takeover_failed",
+		failureReason: "dirty",
+	});
+	expect(store.getPreAdapterFailureReceipt(env.executionId)).toEqual(first);
+	await sink.emitFailed(
+		{ ...env, executionId: "other-failure" },
+		"blocked",
+		undefined,
+		{ failureKind: "goal_blocked", failureReason: "blocked" },
+	);
+	expect(store.getPreAdapterFailureReceipt("other-failure")).toBeUndefined();
+	expect(
+		readFileSync(new URL("../bridge/event-route.ts", import.meta.url), "utf8"),
+	).not.toContain("recordPreAdapterFailureReceipt");
+	expect(
+		readFileSync(
+			new URL("../DirectEventSink.ts", import.meta.url),
+			"utf8",
+		).match(/recordPreAdapterFailureReceipt/g),
+	).toHaveLength(1);
 });

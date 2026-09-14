@@ -1148,6 +1148,48 @@ describe("runPostShipFinalization", () => {
 			expect(markIssueDone).not.toHaveBeenCalled();
 		},
 	);
+	it.each([
+		{ outcome: "blocked", cause: undefined, expected: "unknown" },
+		{ outcome: "conflict", cause: undefined, expected: "lifecycle_conflict" },
+		{
+			outcome: "blocked",
+			cause: "nodes_not_confirmed_gone",
+			expected: "nodes_not_confirmed_gone",
+		},
+	] as const)(
+		"distinguishes blocked from conflict: %j",
+		async ({ outcome, cause, expected }) => {
+			const removeCleanWorktree = vi.fn();
+			const markIssueDone = vi.fn();
+			const result = await runResumablePostShipFinalization(
+				{
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+				},
+				{
+					store,
+					projects: PROJECTS,
+					issueCloseout: vi.fn().mockResolvedValue({
+						outcome,
+						cause,
+					}),
+					removeCleanWorktree,
+					markIssueDone,
+				},
+			);
+
+			expect(result).toMatchObject({
+				complete: false,
+				outcome: "partial",
+				reason: `issue_closeout_incomplete:cause=${expected}`,
+				cause: { token: expected },
+			});
+			expect(removeCleanWorktree).not.toHaveBeenCalled();
+			expect(markIssueDone).not.toHaveBeenCalled();
+		},
+	);
 
 	it("runs shipped-husk escalation before cleanup and preserves its bounded cause", async () => {
 		const landOperation = seedLandOperationClaim(store);

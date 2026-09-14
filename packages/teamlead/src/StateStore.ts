@@ -1,4 +1,5 @@
 import {
+	PRE_ADAPTER_FAILURE_KINDS,
 	type CodexRecoveryFailureV1,
 	createCodexRecoveryFailure,
 	normalizeCodexRecoveryFailure,
@@ -5433,6 +5434,14 @@ export class StateStore {
 				source_updated_at TEXT NOT NULL,
 				CHECK ((state = 'configured' AND guild_id IS NOT NULL)
 					OR (state IN ('missing','invalid') AND guild_id IS NULL))
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS pre_adapter_failure_receipts (
+				execution_id TEXT PRIMARY KEY,
+				failure_kind TEXT NOT NULL,
+				source_event_id TEXT NOT NULL,
+				recorded_at TEXT NOT NULL
 			)
 		`);
 		this.db.run(`
@@ -20192,6 +20201,33 @@ export class StateStore {
 				 WHERE seq = ? AND state = 'pending_alert'`,
 			)
 			.run(now, seq);
+	}
+
+	recordPreAdapterFailureReceipt(input: {
+		executionId: string;
+		failureKind: string;
+		sourceEventId: string;
+		now: string;
+	}): { ok: true; inserted: boolean } | { ok: false; reason: "kind_not_pre_adapter" } {
+		if (!PRE_ADAPTER_FAILURE_KINDS.has(input.failureKind)) {
+			return { ok: false, reason: "kind_not_pre_adapter" };
+		}
+		const result = this.db.raw.prepare(
+			`INSERT OR IGNORE INTO pre_adapter_failure_receipts
+			 (execution_id, failure_kind, source_event_id, recorded_at) VALUES (?, ?, ?, ?)`,
+		).run(input.executionId, input.failureKind, input.sourceEventId, input.now);
+		return { ok: true, inserted: result.changes > 0 };
+	}
+
+	getPreAdapterFailureReceipt(executionId: string): {
+		failureKind: string;
+		sourceEventId: string;
+		recordedAt: string;
+	} | undefined {
+		return this.db.raw.prepare(
+			`SELECT failure_kind AS failureKind, source_event_id AS sourceEventId,
+			 recorded_at AS recordedAt FROM pre_adapter_failure_receipts WHERE execution_id = ?`,
+		).get(executionId) as { failureKind: string; sourceEventId: string; recordedAt: string } | undefined;
 	}
 
 	recordAlertDeliveryReceipt(

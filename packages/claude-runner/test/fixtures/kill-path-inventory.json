@@ -1134,6 +1134,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/bridge/__tests__/lifecycle-closeout.test.ts:liveGroup.kill();#1",
+		"path": "packages/teamlead/src/bridge/__tests__/lifecycle-closeout.test.ts",
+		"code": "liveGroup.kill();",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts:tmux([\"kill-session\", \"-t\", SESSION]);#1",
 		"path": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts",
 		"code": "tmux([\"kill-session\", \"-t\", SESSION]);",

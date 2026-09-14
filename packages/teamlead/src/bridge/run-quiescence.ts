@@ -1,9 +1,15 @@
-import { probeCodexDaemonLiveness } from "flywheel-claude-runner";
+import {
+	type CodexDaemonEvidence,
+	probeCodexDaemonEvidence,
+	probeCodexDaemonLiveness,
+} from "flywheel-claude-runner";
+import { PRE_ADAPTER_FAILURE_KINDS } from "flywheel-core";
 import type {
 	RunQuiescenceEvidence,
 	Session,
 	StateStore,
 } from "../StateStore.js";
+import { CRASH_PRESERVE_STATES } from "./close-runner-states.js";
 import {
 	type GeneralizedLaunchLiveness,
 	hasHostProcessByExecutionId,
@@ -16,7 +22,15 @@ export type RunExecutionLivenessProbe = (
 	projectName: string,
 ) => Promise<GeneralizedLaunchLiveness>;
 
+export interface ExecutionStoreFacts {
+	failureKind?: string;
+	launchClaimState?: string;
+}
+
 export interface RunExecutionLivenessDeps {
+	probeCodexDaemonEvidence?: typeof probeCodexDaemonEvidence;
+	/** Bridge-local pre-adapter receipt only; never session_events payloads. */
+	storeFacts?: (executionId: string) => ExecutionStoreFacts;
 	probeCodexDaemon?: typeof probeCodexDaemonLiveness;
 	probeGeneric?: typeof probeGeneralizedLaunchLiveness;
 }
@@ -56,26 +70,60 @@ export async function probeExecutionAbsenceBeyondTarget(
 
 /** Production policy for the strict quiescence gate. Codex owns a detached
  * daemon outside tmux, so generic target/argv evidence cannot prove it dead.
- * Only after the shared daemon probe proves socket+group absence may the
- * existing tmux/discovery/host policy classify the execution dead. */
+ * Socket+group absence, or a closed pre-adapter failure receipt with no daemon
+ * evidence, permits the existing tmux/discovery/host absence checks. */
 export async function probeRunExecutionLiveness(
-	session: Pick<Session, "adapter_type"> | undefined,
+	session:
+		| (Pick<Session, "adapter_type"> & Partial<Pick<Session, "status">>)
+		| undefined,
 	executionId: string,
 	projectName: string,
 	deps: RunExecutionLivenessDeps = {},
 ): Promise<GeneralizedLaunchLiveness> {
-	if (session?.adapter_type === "codex-tmux") {
-		const daemon = await (deps.probeCodexDaemon ?? probeCodexDaemonLiveness)(
+	const generic = () =>
+		(deps.probeGeneric ?? probeGeneralizedLaunchLiveness)(
 			executionId,
+			projectName,
+			{ allowMissingTargetHostAbsence: true },
 		);
-		if (daemon === "alive") return "alive";
-		if (daemon === "unknown") return "unknown";
-	}
-	return (deps.probeGeneric ?? probeGeneralizedLaunchLiveness)(
-		executionId,
-		projectName,
-		{ allowMissingTargetHostAbsence: true },
-	);
+	if (session?.adapter_type !== "codex-tmux") return generic();
+
+	// Existing callers and legacy injection retain the liveness-only probe.
+	const probeEvidence = async (): Promise<CodexDaemonEvidence> => {
+		if (deps.probeCodexDaemonEvidence)
+			return deps.probeCodexDaemonEvidence(executionId);
+		if (deps.probeCodexDaemon || !deps.storeFacts) {
+			return {
+				liveness: await (deps.probeCodexDaemon ?? probeCodexDaemonLiveness)(
+					executionId,
+				),
+				ledger: "valid_group",
+				socketLive: false,
+				spawnLock: "unreadable",
+			};
+		}
+		return probeCodexDaemonEvidence(executionId);
+	};
+	const first = await probeEvidence();
+	if (first.liveness === "alive") return "alive";
+	if (first.liveness === "absent") return generic();
+	if (!deps.storeFacts || !CRASH_PRESERVE_STATES.has(session.status ?? ""))
+		return "unknown";
+	const facts = deps.storeFacts(executionId);
+	if (
+		!PRE_ADAPTER_FAILURE_KINDS.has(facts.failureKind ?? "") ||
+		facts.launchClaimState !== "closed"
+	)
+		return "unknown";
+	const isZeroEvidence = (e: CodexDaemonEvidence) =>
+		e.liveness === "unknown" &&
+		e.ledger === "missing" &&
+		!e.socketLive &&
+		e.spawnLock === "absent";
+	if (!isZeroEvidence(first)) return "unknown";
+	const result = await generic();
+	if (result !== "dead") return result;
+	return isZeroEvidence(await probeEvidence()) ? "dead" : "unknown";
 }
 
 /**

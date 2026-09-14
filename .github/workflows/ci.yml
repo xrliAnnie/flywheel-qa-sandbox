@@ -135,6 +135,7 @@ jobs:
           node --test scripts/__tests__/fly-2395-ship-relevance-retro.test.mjs
           node --test scripts/__tests__/fly-2397-strength-two-acceptance.test.mjs
           node --test scripts/__tests__/fly-2398-shadow-table.test.mjs
+          node --test scripts/__tests__/fly-2490-backfill-receipts.test.mjs
           node --test scripts/__tests__/fly1165-sweep-decision.test.mjs
           node --test scripts/__tests__/fly2074-founder-disclosure-guard.test.mjs
 

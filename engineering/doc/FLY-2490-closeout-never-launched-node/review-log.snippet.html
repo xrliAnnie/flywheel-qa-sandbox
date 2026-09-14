@@ -1,0 +1,6 @@
+  <ul>
+    <li><b>工具链</b>：Codex 三个 Pro 账号一度同时打满（founder 兑重置卡后 18:45Z 恢复）；期间 Gemini 个人 OAuth 通道已被 Google 下线，改用 API-key 认证跑了一轮独立评审（<b>APPROVED</b>，3 条 LOW 已吸收），Lead 认作补充证据。</li>
+    <li><b>Codex 设计评审 5 轮</b>（xhigh，原文 <code>codex-review-round1..5.md</code>）：R1 3 条 → R2 4 条 → R3 3 条 → R4 3 条 → R5 1 条，全部 CHANGES REQUESTED，但每轮都确认上一轮已闭合、再给出更窄的反例。攻击面递进：daemon 记录不可读被当成「从未记录」→ Bridge 在起进程途中被杀的竞态 → 目录漂移 / daemon 自删证据 → Runner 可通过 <code>/events</code> 伪造失败类别 → Runner 对 <code>teamlead.db</code> 有直接写权限。前四条已全部吸收（v1.1→v1.5：四态记录、只认「从未拿过锁」、承重改为 Bridge 进程内写的回执表、<code>/events</code> 拒绝伪造）。</li>
+    <li><b>R5 残留</b>：回执所在的数据库与 StateStore 其它所有事实一样处于 Codex Runner 的可写 sandbox 内。这不是本单引入的面，修法（HMAC / 收窄 sandbox 可写目录 / Bridge 专用存储）是独立的基础设施单，记在 plan §10.4。工程 Lead 按事前规则（三轮后一轮确认、终轮同一条更窄反例即 leadAcceptance）书面接受本设计交接实现。</li>
+    <li><b>Lead 三次裁定</b>：cd22cf2c（不切共享 Codex 账号、Gemini 替代）、581f8ca0（授权 R4 确认轮、白名单只加「adapter 之前」类别）、1bc772cf（R4 的 provenance 是真实新面、v1.5 + R5 终轮）。</li>
+  </ul>

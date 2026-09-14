@@ -18,7 +18,10 @@ import {
 	type SkillFrameworkVia,
 	verifyRepositoryBaselineSet,
 } from "flywheel-config";
-import { isNoOutEdgeTerminalStatus } from "flywheel-core";
+import {
+	isNoOutEdgeTerminalStatus,
+	PRE_ADAPTER_FAILURE_KINDS,
+} from "flywheel-core";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import {
@@ -719,6 +722,29 @@ export function createEventRouter(
 		const normalizedTerminalFailure =
 			normalizeTerminalFailureInfo(rawTerminalFailure);
 		if (
+			normalizedTerminalFailure &&
+			PRE_ADAPTER_FAILURE_KINDS.has(normalizedTerminalFailure.failureKind)
+		) {
+			store.insertEvent({
+				event_id: `pre-adapter-rejected:${event.event_id}`,
+				execution_id: event.execution_id,
+				issue_id: event.issue_id,
+				project_name: event.project_name,
+				event_type: "events_pre_adapter_kind_rejected",
+				source: "bridge.event-route",
+				payload: {
+					failureKind: normalizedTerminalFailure.failureKind,
+					claimedSource: event.source,
+				},
+			});
+			res.status(400).json({
+				error: "pre_adapter_failure_kind_http_forbidden",
+				failureKind: normalizedTerminalFailure.failureKind,
+			});
+			return;
+		}
+
+		if (
 			rawTerminalFailure &&
 			typeof rawTerminalFailure === "object" &&
 			((rawTerminalFailure as Record<string, unknown>).failureKind ===
@@ -1408,8 +1434,7 @@ export function createEventRouter(
 						failure?.failureKind === "goal_blocked" || quotaFailure
 							? failure!.failureReason
 							: asString(event.payload?.error),
-					source:
-						typeof event.source === "string" ? event.source : "orchestrator",
+					source: "http-events",
 					...(leadIntent ? { leadIntent } : {}),
 				});
 				if (!recorded.ok) {
@@ -1421,15 +1446,6 @@ export function createEventRouter(
 				}
 				if (recorded.statusChanged) {
 					notifyEpicChanged(event.project_name, "session_failed");
-				}
-				if (failure?.failureKind === "worktree_takeover_failed") {
-					const failedSession = store.getSession(event.execution_id);
-					if (failedSession) {
-						await turnBeltReconciler?.current?.alertWorktreeTakeoverFailure(
-							failedSession,
-							failure.failureReason,
-						);
-					}
 				}
 				if (registry && recorded.leadEventSeq !== undefined) {
 					try {

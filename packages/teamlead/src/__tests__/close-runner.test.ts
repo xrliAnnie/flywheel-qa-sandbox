@@ -18,11 +18,17 @@ import type { ApplyTransitionOpts } from "../applyTransition.js";
 import {
 	CLOSE_ELIGIBLE_STATES,
 	type CloseRunnerResult,
+	CRASH_PRESERVE_STATES,
 	closeRunner,
 } from "../bridge/close-runner.js";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
 import * as commDbSessionPrune from "../bridge/commdb-session-prune.js";
 import { StateStore } from "../StateStore.js";
+
+it("re-exports the shared crash-preserve state set", async () => {
+	const states = await import("../bridge/close-runner-states.js");
+	expect(CRASH_PRESERVE_STATES).toBe(states.CRASH_PRESERVE_STATES);
+});
 
 // FLY-1238: omission must stay a compile error; otherwise callers can silently
 // treat a physically closed runner as fully finalized.

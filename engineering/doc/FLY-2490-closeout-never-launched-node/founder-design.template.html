@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2490 · 起步即失败的 Codex 空体不再永久卡住 issue 收尾 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  .badge.new { background:#e8f0fe; color:#1d4ed8; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+  .mock { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#fbfbfd; border:1px solid #e5e5ea; border-radius:8px; padding:12px; white-space:pre-wrap; }
+  .kv { display:grid; grid-template-columns: 1fr 2fr; gap:6px 12px; font-size:14px; }
+  .kv b { color:#1a365d; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2490 · 起步即失败的 Codex 空体，不再永久卡住 issue 的收尾</h1>
+<div class="meta">
+  设计交付 · 2026-09-11 · 病根单（巡检 2026-09-10T05:48Z，×36）· 证据全部来自只读快照（<code>VACUUM INTO</code>，2026-09-11 10:58）<br/>
+  分支 <code>flywheel-FLY-2490</code> 自 <code>main ca869ad6d</code> · 文档 <code>engineering/doc/FLY-2490-closeout-never-launched-node/</code>{exploration, research, plan}.md · 评审记录见最后一节
+</div>
+
+<section class="card green" data-title="一句话结论">
+  <h2>一句话结论</h2>
+  <p class="summary-line">一具在 <span class="term" title="worktree 接管：新阶段想复用上一阶段留下的工作目录；目录不干净或提交点对不上就拒绝，这具体就是在这一步失败的">worktree 接管</span>阶段就失败、从来没起过窗口和进程的 Codex 实现体，被收尾流程当成「需要留着给人看的崩溃现场」永久保护；而收尾自己的「独立验尸」又因为把「<b>根本没有 daemon 记录</b>」和「<b>daemon 状态查不清</b>」混成同一个「不确定」，永远拿不到死亡证明。本单只补这一格证据判断，<b>不动</b>保护崩溃现场的那道门。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:34%">你在 issue 里写的方向</th><th>本设计怎么落</th></tr>
+    <tr><td>「无东西可保留」的体应视为 already gone</td><td><span class="badge do">采纳精神</span> 但不用「没有 CommDB 行 / 没有 tmux 记录」这种表面判断（它们在收尾后都会被删，不是证据），改为让既有的三重缺席探针说话</td></tr>
+    <tr><td>或传 <code>forcePreserved</code> 走 issue 终态权威</td><td><span class="badge no">否决</span> 那会让有窗口的崩溃体在 shipped 收尾时被杀窗，破坏 FLY-116</td></tr>
+    <tr><td>⛔ 不要「failed 一律直接杀」</td><td><span class="badge do">遵守</span> 门不动；只对「Bridge 进程内写下的失败回执（receipt）说这具体从未进入适配器（目前只有 worktree 接管失败；HTTP 通道伪造不了）+ launch claim 已 closed + 状态 failed/blocked + 当前 root 无任何 daemon 痕迹」放行到既有探针，三重缺席才判死，判死后再复核一次</td></tr>
+    <tr><td>把 <code>lifecycle_conflict</code> 换成可诊断的 token</td><td><span class="badge new">新增</span> <code>nodes_not_confirmed_gone</code>，与审计事件里的 reason 同一个词</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「一句话结论」的意见</label><textarea data-key="s01" data-title="一句话结论"></textarea></div>
+</section>
+
+<section class="card red" data-title="发生了什么">
+  <h2>发生了什么（FLY-2351 / PR #1133 实况）</h2>
+  <ul>
+    <li>9-9 07:24：实现体 <code>c070fce7…</code> 在 worktree 接管时失败，状态 <code>failed</code>，适配器 <code>codex-tmux</code>。它没有 tmux 窗口、没有 <span class="term" title="daemon：Codex 在 tmux 之外单独跑的常驻进程，Flywheel 用一个 socket 文件和一个进程组号来认领它">daemon</span>、没有 CommDB 行，磁盘上也没有 <code>session.json</code> 和 socket 文件。</li>
+    <li>9-9 19:00：PR 合入，issue 级收尾开始。收尾逐个节点确认「已消失」，轮到这具体：<code>closeRunner</code> 见状态是 <code>failed</code> 就按 FLY-116 规则返回「保留取证」；收尾再做独立验尸，Codex 分支先问 daemon 探针，探针因为没有 <code>daemonPgid</code> 返回「不确定」，收尾就此停手。</li>
+    <li>随后每小时一轮：18 轮 <code>closeout_report outcome=blocked</code>，每轮一条 <code>closeout_issue_items_blocked</code>，阻塞项恒为这一个节点（<code>confirmed_gone_false, communications_finalized_false</code>）。</li>
+    <li>land 操作把 cause 标成 <code>lifecycle_conflict</code>（其实没有任何冲突：founder 停手意图 0 行、Linear 取消观测 0 行），重试 9 次后进入 <code>held</code>；Lead 9-10 05:20 手动 resume 一次，再 9 次，09:20 再次 held。</li>
+  </ul>
+  <div class="callout amber">founder 可见影响为 0（thread 已手动归档、Linear 已 Done）。同形的还有 FLY-2382（PR #1107），同样 held 在 <code>lifecycle_conflict</code>；今天新出现的两次 blocked（FLY-2509 / FLY-1949）是正常完成体的例行收尾，不属本族。</div>
+  <div class="cbox"><label>给「发生了什么」的意见</label><textarea data-key="s02" data-title="发生了什么"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程：收尾如何确认一个节点「已消失」</h2>
+  <div class="diagram"><!--DIAGRAM_1--></div>
+  <div class="cap">图 1 · 橙色：FLY-116 的保护门，不改；绿色菱形：本单新增的四道门与终复核；蓝色：既有的三重缺席探针；红色：仍然 fail-closed 的分支</div>
+  <ol>
+    <li>节点状态是 <code>failed/blocked</code> ⇒ <code>closeRunner</code> 返回「保留取证」。这是对的：有窗口的崩溃体要留给人看。</li>
+    <li>收尾做独立验尸（FLY-2313 加的路径，已被测试证明「探针说 dead + 定位不到窗口 ⇒ 收尾完成」）。</li>
+    <li>Codex 体先看 daemon 证据。<b>新增</b>：证据分三种——活着、已死、不确定；「不确定」时再过四道门（图 1 绿色菱形）。</li>
+    <li>四道门：① 状态已是 <code>failed/blocked</code>；② StateStore 里有一张<b>只由 Bridge 进程内部写的失败回执</b>（<span class="term" title="receipt：新表 pre_adapter_failure_receipts；Blueprint 在调用适配器之前失败时，由进程内的 DirectEventSink 写下；Runner 能碰到的 HTTP /events 通道写不了它，且对这类失败直接拒绝">receipt</span>），说这具体的失败类别属于「从未进入适配器」白名单（目前只有 worktree 接管失败——Blueprint 在调用适配器之前就返回了，所以这具体在任何目录下都不可能起过 daemon）；③ 它的 <span class="term" title="launch claim：Bridge 派发一具体之前先登记的一张「我要起这具体」的票；closed 表示派发流程已经彻底结束，不会再起；cancelled 则可能与已出生的 Runner 共存，所以不认">launch claim</span> 已 closed；④ 当前目录下也没有任何 daemon 痕迹（无 session.json、无 spawn lock、socket 无人）。四道门全过才把问题交给既有的 <span class="term" title="generic 探针：依次查 CommDB 有没有窗口记录、tmux 里有没有带这个执行号标记的窗口、进程表里有没有带这个执行号的进程；三者都没有才算死">generic 探针</span>；三重缺席才判死，判死后再读一次证据做终复核。</li>
+    <li>承重的是第 ② 道门，而且必须是 Bridge 自己写的回执——评审第 3 轮指出「文件不在」在目录漂移、daemon 自己删文件、复核后才起进程这三种情况下都不算证据；第 4 轮又指出 Runner 拿着 <code>/events</code> 的 token 可以伪造一条「我是 worktree 接管失败」的事件。所以回执单独建表、只有进程内的 DirectEventSink 能写，<code>/events</code> 见到这类失败直接拒绝并留审计。</li>
+    <li>判死后走既有路径：通信账本收尾（无行 = 0 改动、成功）、thread 归档、Linear 一致性。</li>
+  </ol>
+  <div class="cbox"><label>给「核心流程」的意见</label><textarea data-key="s03" data-title="核心流程"></textarea></div>
+</section>
+
+<section class="card purple" data-title="证据模型">
+  <h2>证据模型：哪些东西算证据，哪些不算</h2>
+  <div class="diagram"><!--DIAGRAM_2--></div>
+  <div class="cap">图 2 · 标 [新] 的是本单新增的证据字段和 cause 词；标 [白名单] 的是承重证据；其余都是既有数据</div>
+  <div class="kv">
+    <b>不算证据</b><span>StateStore 的 <code>tmux_session</code> 列（快照里 592 个 failed/blocked 行绝大多数为空，包括曾经有窗口的）；CommDB 行（收尾时被删）。所以不能用「没有行」推「从未起过」。</span>
+    <b>承重证据</b><span>新表 <code>pre_adapter_failure_receipts</code> 里的一行回执：只由 Bridge 进程内的 DirectEventSink 在「Blueprint 在调用适配器之前失败」时写下，Runner 可见的 HTTP 通道写不了（对这类失败直接 400）。回执说 <code>worktree_takeover_failed</code> 就意味着这具体在任何目录下都没起过 daemon。加上 launch claim 已 closed（快照里这一族 57 具全部 closed）。</span>
+    <b>一致性核对</b><span>当前目录下 <code>session.json</code> 的四态（不存在 / 有文件无 pgid / 有合法 pgid / 不可读）、spawn lock 的四态（不存在 / 持有者已死 / 持有者活着 / 不可读）、socket 有没有人监听。只有「不存在 + 不存在 + 无人」这一种组合算「无痕迹」；「有文件无 pgid」和「持有者已死」都可能是 Bridge 在起进程途中被杀的形状，一律不放行。</span>
+    <b>状态门</b><span>只对 StateStore 已判 <code>failed/blocked</code> 的行放行；除了 issue 收尾这条线，其它 5 个探针调用者不接「数据库事实」钩子，行为一个字节不变。</span>
+    <b>新 cause 词</b><span><code>nodes_not_confirmed_gone</code>：从收尾报告里节点的 <code>confirmedGone / communicationsFinalized</code> 推出；<code>lifecycle_conflict</code> 只留给真正的冲突（Linear 被取消、founder 停手、权威中途变更）。</span>
+  </div>
+  <div class="cbox"><label>给「证据模型」的意见</label><textarea data-key="s04" data-title="证据模型"></textarea></div>
+</section>
+
+<section class="card amber" data-title="修复前后">
+  <h2>修复前后：同一具体的两次收尾</h2>
+  <div class="diagram"><!--DIAGRAM_3--></div>
+  <div class="cap">图 3 · 上半是 18 轮都相同的实况；下半是修复后 Lead resume 一次的预期</div>
+  <p class="note">修复后不会自己收敛：land 已经 <code>held</code>，需要 Lead 对 FLY-2351 与 FLY-2382 各调一次 <code>POST /api/lifecycle/land/&lt;operation-id&gt;/resume</code>。命令与验收 SQL 写在 plan §5。</p>
+  <div class="cbox"><label>给「修复前后」的意见</label><textarea data-key="s05" data-title="修复前后"></textarea></div>
+</section>
+
+<section class="card gray" data-title="取舍与否决">
+  <h2>取舍与被否决的方案</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:30%">方案</th><th>结论</th><th>为什么</th></tr>
+    <tr><td>A · 在 <code>closeRunner</code> 里把「无 CommDB target ⇒ already gone」提到保护门之前</td><td><span class="badge no">否决</span></td><td>CommDB 行被删过的崩溃体也会被判死，正是 FLY-2313 刚修掉的假死；而且 <code>closeRunner</code> 是 Lead/founder 的保留动作入口，不该在这里放宽</td></tr>
+    <tr><td>B · shipped 收尾对 failed 节点传 <code>forcePreserved</code></td><td><span class="badge no">否决</span></td><td>会真的去杀窗：有窗口的崩溃现场在 shipped 收尾时被清掉，违背 FLY-116；对本体也没必要，问题不在门在证据</td></tr>
+    <tr><td>C · 探针区分「零 daemon 证据」与「daemon 不确定」</td><td><span class="badge do">采纳</span></td><td>改动最小；既有救援路径和测试已经证明后半段是通的；<code>closeRunner</code> 零改动</td></tr>
+    <tr><td>只看文件系统痕迹（无 session.json / 无 lock / socket 无人）就放行</td><td><span class="badge no">否决</span>（评审第 2、3 轮）</td><td>持有者已死的 lock 不能证明 detached daemon 已死；目录漂移、daemon 自己删文件、复核后才起进程都能让「无痕迹」与活 daemon 共存。改为以 StateStore 的结构化失败类别为承重证据</td></tr>
+    <tr><td>把「有 session.json 但无 pgid」也算无痕迹</td><td><span class="badge no">否决</span></td><td>它与「Bridge 在起进程途中被杀」同形，fail-closed</td></tr>
+    <tr><td>从 <code>session_failed</code> 事件里读失败类别当承重证据</td><td><span class="badge no">否决</span>（评审第 4 轮）</td><td>Runner 持有 <code>/events</code> 的 token，事件表里任何一行都能伪造。改为单独的回执表，只有 Bridge 进程内能写</td></tr>
+    <tr><td>放行条件用全部终态而不只 failed/blocked</td><td><span class="badge maybe">不做</span></td><td>正常完成的 Codex 体必然写过 <code>daemonPgid</code>；其它终态由正常关窗路径处理。保持最窄</td></tr>
+    <tr><td>自动扫所有 held 的 land 操作并 resume</td><td><span class="badge no">不做</span></td><td>held 是有意的停手信号；清单只有两条，Lead 手动 resume 更可控</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「取舍与否决」的意见</label><textarea data-key="s06" data-title="取舍与否决"></textarea></div>
+</section>
+
+<section class="card red" data-title="诚实边界">
+  <h2>诚实边界：这个设计做什么、不做什么</h2>
+  <ul>
+    <li><b>做</b>：Bridge 回执证明「从未进入适配器」（目前只有 worktree 接管失败）、claim 已 closed、状态 failed/blocked、当前目录无痕迹的 Codex 空体，从此可被三重缺席探针判死；<code>/events</code> 拒绝伪造这类失败；land 的 cause 标签如实反映「有节点没被证明消失」。</li>
+    <li><b>不做</b>：不改 FLY-116 保护门；不改 daemon 探针对「有记录但查不清」的 fail-closed；不改 Codex 恢复（revive）那条线的探针；不加环境变量、不加开关；唯一的表变更是新增一张回执表（只增不改），不自动回填历史数据。</li>
+    <li><b>不承诺</b>：held 的 land 操作自动恢复——而且 FLY-2351 / FLY-2382 这两具体是修复之前失败的，没有回执，合入后 resume 仍会阻塞；要么由 Lead 决定跑一次随 PR 附带、默认不执行的补写回执脚本，要么按 FLY-2486 的形状人工收尾；claude-tmux 体的任何行为变化（路径字节不变）。</li>
+    <li><b>不顺带修</b>：run 级的静默判定（hold / terminate / 死体清扫）与另外 4 个探针调用者不接「数据库事实」钩子，行为一个字节不变；Bridge 在起进程途中被杀留下的 Codex 体（有 session.json 无 pgid、lock 持有者已死）仍永远「不确定」，作为后续单处理。</li>
+    <li><b>回滚</b>：纯代码，revert 一个 PR；回滚后行为回到「不确定」，不会产生新的误判死。</li>
+  </ul>
+  <div class="cbox"><label>给「诚实边界」的意见</label><textarea data-key="s07" data-title="诚实边界"></textarea></div>
+</section>
+
+<section class="card" data-title="测试与验收">
+  <h2>测试与验收（实现节点要交的证据）</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:28%">层</th><th>要证明的事</th></tr>
+    <tr><td>daemon 证据函数（claude-runner）</td><td>三种夹具各得到正确的 <code>persistedGroup / socketLive</code>；旧函数 <code>probeCodexDaemonLiveness</code> 对任意输入返回值不变（parity）</td></tr>
+    <tr><td>探针（run-quiescence）</td><td>真值表八行各一条用例；旧的「不确定 ⇒ fail-closed」用例原样通过；不接钩子 / 失败类别不在白名单 / claim 未终结 / 状态 running 或缺失 / 有 pgid 记录 / 记录不可读 / lock 持有者已死或活着 / 有文件无 pgid，全部不放行；放行后 generic 说 alive 仍是 alive；终复核发现新痕迹撤回判死</td></tr>
+    <tr><td>回执与入口（DirectEventSink / events 路由）</td><td>进程内 emitFailed 写回执且幂等，非白名单类别写不进；HTTP 带 Runner token 发同类失败 ⇒ 400、无回执、状态不变、留审计；源码守卫：events 路由文件里没有回执写入函数</td></tr>
+    <tr><td>收尾（lifecycle-closeout）</td><td>走生产默认闭包（真实 daemon 证据函数 + 真实数据库事实钩子，临时目录），空体收尾完成；有 <code>daemonPgid</code> / 损坏 JSON / lock 持有者活着或已死 / 有文件无 pgid / 只有伪造事件没有回执 / 回执类别不在白名单 / claim 仍 active 或 cancelled 的负向都仍阻塞；状态被并发改回 running 的仍阻塞</td></tr>
+    <tr><td>cause 标签</td><td>blocked 报告推出 <code>nodes_not_confirmed_gone</code>；失败错误串仍优先；权威变更仍是 <code>lifecycle_conflict</code>；文案不含原始 JSON</td></tr>
+    <tr><td>现网验收</td><td>Bridge 跑上新构建后 Lead resume 两个 held 操作；快照里 FLY-2351 最新 <code>closeout_report.outcome = complete</code>，land 离开 held</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「测试与验收」的意见</label><textarea data-key="s08" data-title="测试与验收"></textarea></div>
+</section>
+
+<section class="card gray" data-title="评审记录">
+  <h2>评审记录</h2>
+  <!--REVIEW_LOG-->
+  <div class="cbox"><label>给「评审记录」的意见</label><textarea data-key="s09" data-title="评审记录"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里；这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈，不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页意见</button>
+  </div>
+  <div class="status" id="copy-status"></div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2490";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

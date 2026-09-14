@@ -1,3 +1,13 @@
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import {
+	codexSessionStateDir,
+	resolveDaemonSocketPath,
+} from "flywheel-claude-runner";
+import * as genericLiveness from "../generalized-launch-recovery.js";
 /**
  * FLY-1185 §2.12 — unified lifecycle-closeout executor tests.
  * Plan §4 pins: #31 disposition full-status matrix (canceled NEVER fabricates
@@ -1987,5 +1997,145 @@ describe("Codex R2 fixes", () => {
 		);
 		expect(qaTimeout).toMatchObject({ rejected: true });
 		expect((qaTimeout as { reason: string }).reason).toContain("node_status");
+	});
+});
+
+describe("FLY-2490 default closeout liveness wiring", () => {
+	it.each([
+		"missing",
+		"valid_group",
+		"corrupt",
+		"live_lock",
+		"stale_lock",
+		"no_group",
+		"running",
+		"forged_event",
+		"wrong_kind",
+		"active_claim",
+		"cancelled_claim",
+	])("handles %s evidence through the production closure", async (shape) => {
+		const root = mkdtempSync(join(tmpdir(), "fly2490-"));
+		const store = await freshStore();
+		let liveGroup: ChildProcess | undefined;
+		vi.stubEnv("FLYWHEEL_CODEX_SESSION_DIR", join(root, "s"));
+		vi.stubEnv("FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT", join(root, "d"));
+		const probe = vi
+			.spyOn(genericLiveness, "probeGeneralizedLaunchLiveness")
+			.mockResolvedValue("dead");
+		try {
+			store.upsertSession({
+				execution_id: "never",
+				issue_id: UUID,
+				project_name: "proj",
+				status: shape === "running" ? "running" : "failed",
+				adapter_type: "codex-tmux",
+			});
+			store.insertLaunchClaim({
+				executionId: "never",
+				rootUuid: UUID,
+				project: "proj",
+			});
+			const state =
+				shape === "active_claim"
+					? "active"
+					: shape === "cancelled_claim"
+						? "cancelled"
+						: "closed";
+			expect(store.casLaunchClaimState("never", "starting", state)).toBe(true);
+			if (shape === "forged_event") {
+				store.insertEvent({
+					event_id: "forged",
+					execution_id: "never",
+					issue_id: UUID,
+					project_name: "proj",
+					event_type: "session_failed",
+					source: "direct-event-sink",
+					payload: { failure: { failureKind: "worktree_takeover_failed" } },
+				});
+			} else {
+				const receipt = store.recordPreAdapterFailureReceipt({
+					executionId: "never",
+					failureKind:
+						shape === "wrong_kind"
+							? "goal_blocked"
+							: "worktree_takeover_failed",
+					sourceEventId: "trusted",
+					now: new Date().toISOString(),
+				});
+				expect(receipt.ok).toBe(shape !== "wrong_kind");
+			}
+			const dir = codexSessionStateDir("never", process.env);
+			mkdirSync(dir, { recursive: true });
+			if (shape === "valid_group") {
+				liveGroup = spawn(
+					process.execPath,
+					["-e", "setInterval(() => {}, 1000)"],
+					{ detached: true, stdio: "ignore" },
+				);
+				await once(liveGroup, "spawn");
+				writeFileSync(
+					join(dir, "session.json"),
+					JSON.stringify({ daemonPgid: liveGroup.pid }),
+				);
+			}
+			if (shape === "corrupt") writeFileSync(join(dir, "session.json"), "{");
+			if (shape === "no_group")
+				writeFileSync(
+					join(dir, "session.json"),
+					'{"codexAgentHome":"/unused"}',
+				);
+			if (shape === "live_lock" || shape === "stale_lock") {
+				const lock = `${resolveDaemonSocketPath("never", process.env)}.lock`;
+				mkdirSync(dirname(lock), { recursive: true });
+				const pid =
+					shape === "live_lock"
+						? process.pid
+						: Number(
+								execFileSync(
+									process.execPath,
+									["-e", "process.stdout.write(String(process.pid))"],
+									{ encoding: "utf8" },
+								),
+							);
+				writeFileSync(lock, JSON.stringify({ pid }));
+			}
+			const deps = baseDeps(store, {
+				probeExecutionLiveness: undefined,
+				closeRunnerFn: vi.fn(async () => ({
+					closed: false,
+					commDbFinalized: false,
+					retiredGateCount: 0,
+					preserved: true,
+					reason: "crash_preserve" as const,
+				})) as never,
+			});
+			const report = await closeoutIssue(deps, {
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "shipped",
+				authority: "ship_complete",
+			});
+			expect(report.outcome).toBe(shape === "missing" ? "complete" : "blocked");
+			expect(report.nodes[0].confirmedGone).toBe(shape === "missing");
+			if (shape === "missing") {
+				expect(report.nodes[0]).toMatchObject({
+					communicationsFinalized: true,
+					teardown: { state: "skipped", reason: "crash_preserve" },
+				});
+				expect(deps.finalizeCommDbSessionFn).toHaveBeenCalledTimes(1);
+			} else {
+				expect(probe).not.toHaveBeenCalled();
+			}
+		} finally {
+			if (liveGroup && liveGroup.exitCode === null) {
+				const exited = once(liveGroup, "exit");
+				liveGroup.kill();
+				await exited;
+			}
+			probe.mockRestore();
+			vi.unstubAllEnvs();
+			store.close();
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

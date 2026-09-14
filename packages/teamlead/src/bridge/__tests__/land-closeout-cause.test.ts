@@ -118,3 +118,78 @@ describe("land closeout cause", () => {
 		expect(partial).not.toContain("secret-exec");
 	});
 });
+
+describe("FLY-2490 closeout diagnostic precedence", () => {
+	const node = {
+		transition: { state: "skipped" },
+		teardown: { state: "skipped", reason: "crash_preserve" },
+		confirmedGone: false,
+		communicationsFinalized: false,
+	};
+	it("reports unconfirmed nodes and renders the typed cause", () => {
+		expect(
+			landIssueCloseoutResultFromClosureReport({
+				outcome: "blocked",
+				nodes: [node],
+			}),
+		).toEqual({ outcome: "blocked", cause: "nodes_not_confirmed_gone" });
+		expect(
+			landCloseoutCauseFromReason(
+				"retry_exhausted:issue_closeout_incomplete:cause=nodes_not_confirmed_gone",
+			),
+		).toBe("nodes_not_confirmed_gone");
+		expect(describeLandCloseoutCause("nodes_not_confirmed_gone")).toContain(
+			"尚未被证明已消失",
+		);
+		expect(
+			renderLandThreadNotification("finalization_partial", 1, {
+				reason: "issue_closeout_incomplete:cause=nodes_not_confirmed_gone",
+			}),
+		).not.toContain("{");
+	});
+	it("keeps teardown errors ahead of unconfirmed nodes", () => {
+		expect(
+			inferLandCloseoutCauseFromClosureReport({
+				nodes: [
+					{
+						...node,
+						teardown: { state: "failed", error: "commdb finalize: busy" },
+					},
+				],
+			}),
+		).toBe("commdb_finalize_failed");
+	});
+	it("keeps transition authority loss ahead of unconfirmed nodes", () => {
+		expect(
+			inferLandCloseoutCauseFromClosureReport({
+				nodes: [
+					{
+						...node,
+						transition: {
+							state: "blocked",
+							prerequisite: "authority_reopened",
+						},
+					},
+				],
+			}),
+		).toBe("lifecycle_conflict");
+	});
+	it.each(["done", "skipped"])(
+		"keeps teardown authority loss after transition %s",
+		(state) => {
+			for (const reason of ["authority_reopened", "authority_unknown"]) {
+				expect(
+					inferLandCloseoutCauseFromClosureReport({
+						nodes: [
+							{
+								...node,
+								transition: { state },
+								teardown: { state: "skipped", reason },
+							},
+						],
+					}),
+				).toBe("lifecycle_conflict");
+			}
+		},
+	);
+});

@@ -1088,7 +1088,8 @@ async function runPostShipFinalizationInner(
 			(closeoutRes.outcome === "blocked" || closeoutRes.outcome === "conflict")
 		) {
 			closeoutBlocked = true;
-			closeoutCause ??= "lifecycle_conflict";
+			closeoutCause ??=
+				closeoutRes.outcome === "conflict" ? "lifecycle_conflict" : "unknown";
 			console.warn(
 				`[post-ship] issue closeout ${closeoutRes.outcome} for ${opts.issueIdentifier ?? opts.issueId} — thread archive + Linear Done deferred to the next pass`,
 			);

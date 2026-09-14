@@ -55,7 +55,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		land_recovery_episode land_repo_admission lead_inbox lead_note lead_pending_escalation
 		lifecycle_apply_claims lifecycle_launch_claims linear_state_observations
 		loop_heartbeat loop_owner merged_gate_guard_failure messages
-		node_dwell_review patrol_orphan_watch
+		node_dwell_review patrol_orphan_watch pre_adapter_failure_receipts
 		receipt_activation_episodes receipt_alert_outbox receipt_exemption_audit
 		receipt_handle_requests receipt_resend_deliveries retry_dispatch_intents
 		recovery_claim

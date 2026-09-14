@@ -464,6 +464,11 @@ export type TerminalFailureKind =
 	| "worktree_takeover_failed"
 	| "reown_exhausted";
 
+/** Bridge-proven failures before adapter.execute(); never infer these from HTTP events. */
+export const PRE_ADAPTER_FAILURE_KINDS: ReadonlySet<string> = new Set([
+	"worktree_takeover_failed",
+]);
+
 export interface TerminalFailureInfo {
 	failureKind: TerminalFailureKind;
 	quotaSignal?: CodexQuotaSignalV1;
