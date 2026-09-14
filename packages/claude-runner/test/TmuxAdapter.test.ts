@@ -3575,26 +3575,33 @@ describe("ensureRunnerSession (FLY-758)", () => {
 	});
 
 	it("fails closed with a typed hold instead of falling back to plain create", async () => {
-		const fn: ExecFileFn = () => ({ stdout: "" });
-		const asyncFn: AsyncExecFileFn = async () => {
-			const err = new Error("guarded hold") as Error & {
-				code: number;
-				stdout: string;
+		// Keep the 1ms budget intact until the mocked helper returns its typed hold.
+		// Host scheduling must not exhaust it before the first guard call.
+		const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+		try {
+			const fn: ExecFileFn = () => ({ stdout: "" });
+			const asyncFn: AsyncExecFileFn = async () => {
+				const err = new Error("guarded hold") as Error & {
+					code: number;
+					stdout: string;
+				};
+				err.code = 2;
+				err.stdout = JSON.stringify({
+					action: "hold_saturated",
+					evidence: { reason: "socket_present_unreachable" },
+				});
+				throw err;
 			};
-			err.code = 2;
-			err.stdout = JSON.stringify({
-				action: "hold_saturated",
-				evidence: { reason: "socket_present_unreachable" },
-			});
-			throw err;
-		};
-		await expect(
-			ensureRunnerSession(fn, "runner-test", {
-				asyncExecFileFn: asyncFn,
-				deadlineMs: 1,
-				retryDelayMs: 0,
-			}),
-		).rejects.toMatchObject({ kind: "saturated" });
+			await expect(
+				ensureRunnerSession(fn, "runner-test", {
+					asyncExecFileFn: asyncFn,
+					deadlineMs: 1,
+					retryDelayMs: 0,
+				}),
+			).rejects.toMatchObject({ kind: "saturated" });
+		} finally {
+			clock.mockRestore();
+		}
 	});
 
 	it("rejects an exit-0 helper payload whose action is not a success verdict", async () => {
