@@ -221,6 +221,37 @@ else
     "collect=$COLLECT_RC census=$CENSUS_RC $(cat "$SANDBOX/census.err" 2>/dev/null)"
 fi
 
+# Registration can precede the shuttle-owned install. Only an absent plist
+# and positively unloaded job qualify; a dangling link or probe failure does not.
+rm "$PLIST_DIR/com.flywheel.lead.raya-raya.plist"
+lead_restart_launchd_probe() { printf '%s\n' "${PROBE_STATE:-unloaded}"; }
+lead_restart_collect_candidates "$HOME/.flywheel/manifests" "$PLIST_DIR" \
+  "$PROJECTS" "$CANDIDATES"
+if awk -F '\t' '$1 == "raya-raya" && $5 == "pending-install" { found=1 } END { exit !found }' "$CANDIDATES" \
+  && [ "$(awk -F '\t' '$5 == "restart" {n++} END {print n+0}' "$CANDIDATES")" = 4 ]; then
+  pass "registered unloaded Raya without plist is pending-install; installed peers remain restart candidates"
+else
+  fail "registration before installation must not produce a failing restart candidate"
+fi
+for PROBE_STATE in loaded error; do
+  lead_restart_collect_candidates "$HOME/.flywheel/manifests" "$PLIST_DIR" \
+    "$PROJECTS" "$CANDIDATES"
+  if awk -F '\t' '$1 == "raya-raya" && $5 == "pending-install" { found=1 } END { exit !found }' "$CANDIDATES"; then
+    fail "$PROBE_STATE launchd evidence must not be treated as pending-install"
+  else
+    pass "$PROBE_STATE launchd evidence does not qualify as pending-install"
+  fi
+done
+PROBE_STATE=unloaded
+ln -s "$SANDBOX/missing.plist" "$PLIST_DIR/com.flywheel.lead.raya-raya.plist"
+lead_restart_collect_candidates "$HOME/.flywheel/manifests" "$PLIST_DIR" \
+  "$PROJECTS" "$CANDIDATES"
+if awk -F '\t' '$1 == "raya-raya" && $5 == "pending-install" { found=1 } END { exit !found }' "$CANDIDATES"; then
+  fail "dangling plist symlink must not be treated as pending-install"
+else
+  pass "dangling plist symlink remains outside pending-install"
+fi
+
 echo ""
 echo "lead-restart-lifecycle-generic-carrier: PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" -eq 0 ] || exit 1

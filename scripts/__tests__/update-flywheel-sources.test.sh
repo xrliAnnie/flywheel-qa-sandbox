@@ -214,6 +214,7 @@ updater_sync_fable_model() {
   [ "${MODEL_SYNC_MODE:-ok}" = ok ]
 }
 severe_alert() { printf '%s|%s\n' "$1" "$2" >> "$ALERT_CALLS"; }
+PRODUCTION_RAYA_PASS_DEFINITION="$(declare -f updater_raya_pass)"
 updater_raya_pass() {
   printf 'call wake=%s result=%s\n' "${UPDATER_WAKE_KIND:-unknown}" "${UPDATER_CYCLE_RESULT:-unknown}" >> "$RAYA_CALLS"
   RAYA_DEPLOY_STATE="${RAYA_STUB_STATE:-current}"
@@ -312,6 +313,25 @@ if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ] \
   pass "caught-up schedule runs one independent Raya pass after the Flywheel cycle"
 else
   fail "caught-up schedule/model sync/Raya wiring drifted (rc=$rc deploys=$(deploy_count) raya=$(cat "$RAYA_CALLS") syncs=$(cat "$MODEL_SYNC_CALLS"))"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+(
+  # update_main restores its caller's EXIT trap; this subshell must not run
+  # the outer suite cleanup and remove fixtures needed by subsequent cases.
+  trap - EXIT
+  eval "$PRODUCTION_RAYA_PASS_DEFINITION"
+  update_main > "$TMP/missing-ledger-wake.log" 2>&1
+  [[ "$RAYA_DEPLOY_STATE" == not_configured && "$RAYA_DEPLOY_DETAIL" == migration-ledger-absent ]] \
+    && [[ "$(rg -c migration-ledger-absent "$TMP/missing-ledger-wake.log")" == 1 ]] \
+    && [[ ! -e "$RAYA_DEPLOY_LOCK_DIR" && ! -e "$RAYA_DEPLOY_RECEIPT" ]] \
+    && ! rg -q 'Raya deploy failed' "$TMP/missing-ledger-wake.log"
+)
+if [[ $? == 0 ]]; then
+  pass "scheduled wake reports missing migration ledger exactly once without deployment side effects"
+else
+  fail "scheduled wake must report missing migration ledger exactly once without deployment side effects"
 fi
 
 reset_case

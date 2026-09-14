@@ -458,6 +458,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: event-loop diagnostics dir override for isolated slot runtimes (FLY-1995)",
 	FLYWHEEL_PROJECTS_FILE:
 		"plumbing: canonical Lead identity registry path selector (FLY-1726), not a rollout gate",
+	FLYWHEEL_DEPLOYED_SHA_FILE:
+		"plumbing: deployed Flywheel commit identity file for readiness and Raya migration binding/recovery (FLY-2390, FLY-2496), not an on/off gate",
 	FLYWHEEL_SUMMARY_CONFIG_HOME:
 		"plumbing: absolute home root for canonical summary config in isolated QA runtimes (FLY-2030), not a rollout gate",
 	FLYWHEEL_REPORT_HOST_OVERRIDE_URL:
@@ -688,8 +690,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_READINESS_IGNORE_KINDS:
 		"config value: readiness excluded event kinds (FLY-2390)",
 	FLYWHEEL_BUG_LABEL: "config value: team-scoped bug label name (FLY-2390)",
-	FLYWHEEL_DEPLOYED_SHA_FILE:
-		"config value: deployed commit identity file (FLY-2390)",
 	FLYWHEEL_READINESS_REPORT_CHANNEL:
 		"config value: readiness report channel (FLY-2390)",
 	FLYWHEEL_FOUNDER_TZ:

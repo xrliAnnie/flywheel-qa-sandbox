@@ -180,5 +180,51 @@ grep -q 'alert_severe "port-fail-loud-${reason}"' "$RS" \
 	|| fail "bp_fail_loud Discord leg not migrated"
 
 echo ""
+# FLY-2496: execute the real fleet loop with one not-yet-installed candidate
+# and sixteen installed peers; no real launchd, Bridge or Discord operations.
+awk '/^do_restart_all_leads\(\)/,/^}/ {print}' "$RS" > "$ROOT/fleet-loop.sh"
+(
+  trap - EXIT
+  source "$FUNCS"
+  source "$ROOT/fleet-loop.sh"
+  export HOME="$ROOT/fleet-home"
+  export FLYWHEEL_DIR="$FLYWHEEL_FAKE"
+  export LA_CALLS="$ROOT/fleet-alerts" META_CALLS="$ROOT/fleet-meta" LA_RC=0
+  mkdir -p "$HOME/.flywheel" "$FLYWHEEL_DIR/scripts"
+  printf '#!/bin/bash\nexit 0\n' > "$FLYWHEEL_DIR/scripts/converge-flywheel-bin.sh"
+  touch "$ROOT/installed-manifest.json"
+  git() { printf '%040d\n' 1; }
+  restart_host_tmux_gate() { return 0; }
+  restart_host_tmux_census() { return 0; }
+  register_restart_transient_file() { :; }
+  record_lead_restart_detail() { printf '%s\n' "$*" >> "$ROOT/fleet-details"; }
+  record_successful_lead_verify_timing() { :; }
+  record_successful_lead_body_observation() { :; }
+  restart_lead() {
+    printf 'restart\n' >> "$ROOT/fleet-restarts"
+    VERIFIED_LEAD_ELAPSED_SECONDS=1 VERIFIED_LEAD_PID=123 VERIFIED_LEAD_START=fixture
+  }
+  lead_restart_collect_candidates() {
+    local i
+    printf 'raya-raya\traya\traya\t%s\tpending-install\tmanifest\n' "$ROOT/installed-manifest.json" > "$4"
+    for i in {1..16}; do
+      printf 'peer-%s\tpeer\t%s\t%s\trestart\tmanifest,plist\n' "$i" "$i" "$ROOT/installed-manifest.json" >> "$4"
+    done
+  }
+  LA_RC=0
+  : > "$LA_CALLS"
+  result="$(do_restart_all_leads immediate 2> "$ROOT/fleet-stderr")"
+  [[ "$result" == 'skipped:1 failed:0 total:17' ]] \
+    && [[ "$(wc -l < "$ROOT/fleet-restarts" | tr -d ' ')" == 16 ]] \
+    && grep -q 'WARNING:.*raya-raya' "$ROOT/fleet-stderr" \
+    && grep -q 'lead-restart-pending-install-raya-raya' "$LA_CALLS" \
+    && grep -q 'skipped raya-raya' "$ROOT/fleet-details"
+)
+if [[ $? == 0 ]]; then
+  pass "fleet reports pending-install as one warning and skipped seat with sixteen successful peers"
+else
+  fail "pending-install must not increment fleet failures or restart the uninstalled Lead"
+fi
+
 echo "[TEST] restart-services-notify: ${PASSED} passed, ${FAILED} failed"
 [[ $FAILED -eq 0 ]]

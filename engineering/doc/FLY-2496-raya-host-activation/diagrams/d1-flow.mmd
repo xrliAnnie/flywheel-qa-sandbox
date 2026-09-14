@@ -1,0 +1,13 @@
+flowchart TB
+  F["founder 一条授权消息<br/>FLY-2496 AUTHORIZE register cutover=9d63a2b2 urgent-restart baseline=quiet15m"] --> H1["H1 Lead: 建工作区 + 接 Codex 账号<br/>(不改变谁在回 #raya)"]
+  H1 --> H2["H2 Lead: register raya<br/>+ 紧急票全舰重启<br/>(Bridge 认得 raya, 17 席身份重算)"]
+  H2 --> H3["H3 Lead: 写迁移账本<br/>(核授权消息 / 两份旧 plist / 探针 bot 真能发)"]
+  H3 --> N0["班车 N 00:00 PT · pre-stop<br/>目标 SHA 一致 → scratch 构建 → 探针能力<br/>→ #raya 安静 15 分钟 → ff → 复验"]
+  N0 -->|任一失败| N0X["prestop-failed<br/>旧壳零变更, 下一班重试"]
+  N0 --> N2["P2 停旧壳(逐 job 记毫秒时间戳)<br/>→ 晋升已构建产物"]
+  N2 --> N3["P3 发窗口探针(intent 先落账本)<br/>→ 停机窗口无人类消息 → 写 seed 游标"]
+  N3 -->|窗口内有人类消息| N3X["unresolved, 停在 P3<br/>Lead 人工对账后 resolve"]
+  N3 --> N5["P4b preflight → install → verify<br/>P5 新 Raya Lead 在收信<br/>回执: refused / awaiting_proof"]
+  N5 --> H4["H4 Lead: 发文字探针<br/>等一个 6h summary 轮<br/>proof 工具取证 → proof.json"]
+  H4 --> N7["班车 N+1<br/>(Flywheel 变了则自动 rebind, activation 不变)<br/>P6 校验 → P7 v2 回执, anchor 前移"]
+  N7 --> V["验收: v2 receipt + verify --stage live<br/>之后观察: 6h 边界 Raya 读收据 merge"]

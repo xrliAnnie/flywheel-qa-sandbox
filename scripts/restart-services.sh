@@ -2788,6 +2788,13 @@ do_restart_all_leads() {
                       "$key" "$pn" "$lid" "$VERIFIED_LEAD_PID" "$VERIFIED_LEAD_START"
                 fi
                 ;;
+            pending-install)
+                log "WARNING: registered Lead $key is pending-install; the job is unloaded and has no plist" >&2
+                alert_warning "lead-restart-pending-install-${key}" "Lead install pending" \
+                    "Lead $key 已注册但尚未安装，本次跳过重启，等待所属安装流程。"
+                skipped=$((skipped + 1))
+                record_lead_restart_detail skipped "$key"
+                ;;
             manifestless)
                 log "WARNING: loaded/running Lead $key has no manifest — visible but not restarted (sources=$sources)" >&2
                 alert_warning "lead-restart-manifestless-${key}" "Lead restart skipped" \

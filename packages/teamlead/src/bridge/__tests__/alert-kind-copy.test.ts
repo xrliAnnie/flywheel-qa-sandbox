@@ -10,6 +10,16 @@ import {
 } from "../alert-kind-copy.js";
 
 describe("alert kind copy", () => {
+	it("renders activation probes as informational checks without echoing pane content", () => {
+		expect(titleFor("activation_probe")).toBe("Raya activation probe");
+		expect(severityFor("activation_probe")).toBe("info");
+		expect(bodyFor("activation_probe", "private pane content")).toContain(
+			"激活",
+		);
+		expect(bodyFor("activation_probe", "private pane content")).not.toContain(
+			"private pane content",
+		);
+	});
 	it("gives a dead Claude account actionable operator copy", () => {
 		expect(titleFor("account_dead")).toBe("Claude 账号已死,已拉黑");
 		expect(bodyFor("account_dead", "ignored")).toContain("已标记不可用");

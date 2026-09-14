@@ -203,6 +203,8 @@ export function computeEventId(
 }
 export function titleFor(kind: AlertEventType): string {
 	switch (kind) {
+		case "activation_probe":
+			return "Raya activation probe";
 		case "rate_limit":
 			return "Lead hit rate limit";
 		case "usage_limit":
@@ -462,6 +464,7 @@ export function titleFor(kind: AlertEventType): string {
 }
 
 export function severityFor(kind: AlertEventType): AlertPayload["severity"] {
+	if (kind === "activation_probe") return "info";
 	if (kind === "model_family_updated") return "info";
 	if (
 		kind === "crash_loop" ||
@@ -485,6 +488,8 @@ export function severityFor(kind: AlertEventType): AlertPayload["severity"] {
  */
 export function bodyFor(kind: AlertEventType, _pane: string): string {
 	switch (kind) {
+		case "activation_probe":
+			return "Raya 激活流程正在核验告警通路，可忽略此探针。";
 		case "rate_limit":
 			return "Anthropic API rate limit reached. Wait ~1 hr for reset, or check whether the Lead is in a tight loop.";
 		case "usage_limit":

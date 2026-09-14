@@ -105,7 +105,7 @@ run_census() {
     case ",$sources," in *,plist,*) ;; *) continue ;; esac
     case "$classification" in
       restart) : ;;
-      skip-test|config-drift|probe-error|manifestless) continue ;;
+      skip-test|pending-install|config-drift|probe-error|manifestless) continue ;;
       *) die "invalid loaded Lead classification for $key: $classification" ;;
     esac
     case "$key" in *[!A-Za-z0-9._-]*) die "invalid loaded Lead key: $key" ;; esac

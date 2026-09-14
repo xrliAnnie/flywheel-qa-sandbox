@@ -107,6 +107,11 @@ for how this list contracts as calibration data accumulates.
 - 若 launchd identity 需要修复，唯一入口是公共
   `flywheel-lead.sh install --project raya --lead raya`，且仍需 founder 当前、
   明确授权；不得另造手工部署脚本、Raya 专属 wrapper 或新的调度器。
+- FLY-2496 首次标准载体激活时，人手仅做工作区/Codex home 准备及公共
+  `flywheel-lead.sh register`；`install` 归定时班车 P4b，人手不得提前执行。
+  founder 授权消息必须含完整一行
+  `FLY-2496 AUTHORIZE register cutover=<目标 SHA 前 8 位> urgent-restart baseline=quiet15m`。
+  `baseline=quiet15m` 明确授权更早历史不补录；停机窗口人类消息仍须逐条对账。
 
 ### Narrow exemption — Raya's read-receipt merges (founder-decided 2026-08-18; FLY-2030)
 

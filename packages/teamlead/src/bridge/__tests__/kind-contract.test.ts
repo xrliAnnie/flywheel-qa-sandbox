@@ -38,6 +38,15 @@ const FLEET_KINDS = [
 	"zombie_session_backlog",
 ] as const;
 
+it("keeps activation_probe root-only with no ticket or ARC lifecycle", () => {
+	expect(ALERT_EVENT_TYPES).toContain("activation_probe");
+	expect(INFORMATIONAL_KINDS.has("activation_probe")).toBe(true);
+	expect(KIND_CONTRACTS.activation_probe).toEqual({
+		owner: "claude",
+		arc: "human_by_design",
+	});
+});
+
 const QUOTA_MONITOR_KINDS = [
 	"account_switched",
 	"account_dead",
@@ -59,6 +68,7 @@ const QUOTA_MONITOR_KINDS = [
 ] as const;
 
 const QUOTA_INFORMATIONAL_KINDS = new Set([
+	"activation_probe",
 	"account_switched",
 	"model_family_updated",
 	"model_cap_switched",

@@ -41,7 +41,9 @@ raya_standard_manifest_checkpoint() {
     and .checkpoint == $checkpoint
     and (.unresolved | type == "array")
     and (.cursor | type == "object")
-    and (.cursor.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+    and (if .cursor.sha256 == null then
+      (.checkpoint == "P2" or .checkpoint == "P3")
+    else (.cursor.sha256 | type == "string" and test("^[0-9a-f]{64}$")) end)
   ' "$manifest" >/dev/null 2>&1
 }
 

@@ -70,6 +70,7 @@ export interface MetaAlertSink {
  * can never silently miss echo stripping (the FLY-220 storm family).
  */
 export const ALERT_EVENT_TYPES = [
+	"activation_probe",
 	"rate_limit",
 	"usage_limit",
 	"login_expired",
@@ -374,6 +375,7 @@ export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
 
 /** Root-only notices that must never open a ticket/thread/ARC lifecycle. */
 export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
+	"activation_probe",
 	"account_switched",
 	"model_family_updated",
 	"model_cap_switched",

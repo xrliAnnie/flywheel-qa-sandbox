@@ -1259,7 +1259,7 @@ _cnd_lead_candidate_is_expected() {
     return 1
   fi
   case "$classification" in
-    restart|manifestless|config-drift|probe-error|skip-test|plist-complement) ;;
+    restart|pending-install|manifestless|config-drift|probe-error|skip-test|plist-complement) ;;
     *) _CND_LEAD_EXCLUSION="invalid"; return 1 ;;
   esac
   case "${label}|${lead_id}|${classification}" in

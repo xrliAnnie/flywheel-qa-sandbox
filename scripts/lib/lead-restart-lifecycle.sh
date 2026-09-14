@@ -778,6 +778,13 @@ lead_restart_collect_candidates() {
       *) lead_restart_project_backend "$projects_file" "$project" "$lead_id" >/dev/null 2>&1 \
            && class="restart" || class="config-drift" ;;
     esac
+    if [ "$class" = restart ] && [ ! -e "$plist_dir/com.flywheel.lead.${key}.plist" ] \
+      && [ ! -L "$plist_dir/com.flywheel.lead.${key}.plist" ]; then
+      case "$(lead_restart_launchd_probe "gui/$(id -u)/com.flywheel.lead.${key}")" in
+        unloaded) class="pending-install" ;;
+        error) class="probe-error" ;;
+      esac
+    fi
     _lead_restart_candidate_add "$raw" "$key" "$project" "$lead_id" "$manifest" "$class" "manifest"
   done
 

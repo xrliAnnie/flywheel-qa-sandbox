@@ -564,6 +564,13 @@
 			"disposition": "candidate_guarded"
 		},
 		{
+			"file": "packages/teamlead/src/bin/raya-migration-proof-evidence.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
 			"file": "packages/teamlead/src/StateStore.ts",
 			"relation": "release_signal_events",
 			"baseTable": "release_signal_events",

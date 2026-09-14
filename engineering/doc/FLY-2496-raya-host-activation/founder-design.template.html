@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2496 Raya 宿主激活 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Helvetica Neue",sans-serif; line-height:1.55; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 16px 60px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:22px; }
+  .sub code { font-family:"SF Mono",Menlo,monospace; color:#1a365d; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:20px 22px; margin:0 0 18px; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; } .card.amber { border-left-color:#ff9500; } .card.green { border-left-color:#34c759; } .card.purple { border-left-color:#af52de; } .card.gray { border-left-color:#86868b; } .card.navy { border-left-color:#1a365d; }
+  .card h2 { font-size:18px; margin:0 0 10px; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; margin-right:6px; vertical-align:middle; }
+  .badge.new { background:#e9f9ee; color:#1f8a3b; } .badge.update { background:#fff4e5; color:#b85c00; } .badge.candidate { background:#f5e9fb; color:#7a2ea8; } .badge.urgent { background:#ffe9e7; color:#c0271d; } .badge.medium { background:#f2f2f7; color:#5c5c61; }
+  p { margin:8px 0; }
+  ul { margin:6px 0 6px 20px; padding:0; } li { margin:4px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:8px 0; }
+  th, td { border-bottom:1px solid #eee; padding:7px 8px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; font-weight:600; }
+  code { font-family:"SF Mono",Menlo,monospace; font-size:13px; background:#f2f2f7; padding:1px 5px; border-radius:4px; }
+  pre { background:#1a365d; color:#f5f5f7; padding:12px 14px; border-radius:8px; overflow-x:auto; font-size:13px; }
+  pre code { background:none; color:inherit; padding:0; }
+  .term { border-bottom:1px dotted #86868b; }
+  .note { color:#86868b; font-size:13px; }
+  .diagram { overflow-x:auto; margin:10px 0; padding:8px; background:#fafafa; border-radius:8px; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:13px; color:#86868b; margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:64px; box-sizing:border-box; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fff; }
+  .comment textarea:focus { outline:none; border-color:#007aff; box-shadow:0 0 0 3px rgba(0,122,255,.15); }
+  .summary pre { background:#f2f2f7; color:#1d1d1f; white-space:pre-wrap; word-break:break-word; }
+  .btn { background:#007aff; color:#fff; border:0; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#f2f2f7; color:#1d1d1f; }
+  .status { font-size:13px; color:#86868b; margin-left:4px; }
+  .chunk { margin:10px 0; padding:10px; border:1px solid #e5e5ea; border-radius:8px; }
+  .kv { display:grid; grid-template-columns: 180px 1fr; gap:4px 12px; font-size:14px; }
+  .kv b { color:#1a365d; font-weight:600; }
+  @media (max-width:600px){ .kv { grid-template-columns:1fr; } .card { padding:16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2496 Raya 宿主激活 — 设计</h1>
+  <div class="sub">Issue FLY-2496 · 2026-09-13 · 设计节点交付 · 基于 <code>engineering/doc/FLY-2496-raya-host-activation/{exploration,research,plan}.md</code>（plan v4，Codex 三轮评审 10→6→3 条后上报 Lead 裁定）</div>
+
+  <!-- 1 -->
+  <div class="card green" data-section="一句话">
+    <h2><span class="badge new">一句话</span>这份设计要做什么</h2>
+    <p>让 founder <b>授权一次</b>，Lead 在宿主做四件不改变"谁在回 #raya"的准备，然后由已经存在的定时班车在凌晨那班把 Raya 从旧壳切到标准 Lead，并用一份 v2 回执证明它真的上线了。</p>
+    <p class="note">名词：<span class="term">班车</span>= <code>com.flywheel.updater</code>，每天 00:00 / 12:00 PT 自动跑的部署脚本，是唯一被允许部署和重启舰队的东西。<span class="term">旧壳</span>= 2026-09-06 那版 Raya 自带的"小脑"进程（launchd job <code>com.xrli.raya.brain</code>，pid 54811），现在还在回你的话。<span class="term">标准 Lead</span>= 和 Mufasa 一样走 Flywheel 公共信箱、公共启动器的 Codex Lead。</p>
+    <div class="comment"><label for="c1">你的意见（自动保存在本机浏览器）</label><textarea id="c1" data-key="s1" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 2 -->
+  <div class="card red" data-section="现状与根因">
+    <h2><span class="badge urgent">现状</span>为什么 issue 里"跑一条命令，下一班车自动割接"在生产上走不通</h2>
+    <p>2026-09-13 只读实测：生产 Raya 还在 <code>0f77e977</code>，<code>origin/main</code> 已是 <code>9d63a2b2</code>（FLY-2445 删掉旧壳、只留 CoS 业务）；班车从 09-10 起每班都判 <code>host-capability-absent</code> 跳过。缺的不只是一份 manifest，而是 <b>五道闸</b>：</p>
+    <table>
+      <tr><th>缺什么</th><th>是什么</th><th>谁能补</th></tr>
+      <tr><td><code>manifests/raya-raya.json</code></td><td>标准 Lead 的"身份证"（canonical manifest）</td><td><code>flywheel-lead.sh register</code>（不是 issue 写的 <code>install</code>：<code>install</code> 不产 manifest，而且会<b>立刻</b>起新 Lead，旧壳还活着就变成两个 Raya 同时回你）</td></tr>
+      <tr><td><code>projects.json</code> 的 raya 行</td><td>唯一身份来源；同一步产生</td><td>同上</td></tr>
+      <tr><td><code>~/Dev/raya-lead-workspace</code>、<code>~/.codex-raya</code></td><td>新 Lead 的工作区与 Codex 账号目录</td><td>Lead 按公共流程准备，不拷旧凭据</td></tr>
+      <tr><td><code>migrations/FLY-2445-standard-lead/manifest.json</code></td><td><span class="term">迁移账本</span>：班车 P2 起步就要读它（游标种子、bot 身份、digest……）</td><td><b>仓里没有任何工具产它</b>（只有测试夹具会写）——这是本单最大的发现</td></tr>
+      <tr><td><code>RAYA_MIGRATION_ALLOW_LEGACY_STOP=1</code></td><td>停旧壳的授权开关</td><td>班车环境里没有；本设计让它只能从账本里的 founder 授权派生</td></tr>
+    </table>
+    <p>还有三条互相咬死的现有规则：register 之后 16 个在飞 Lead 的身份摘要立刻失效（必须马上全舰重启）；全舰重启又会把"有 manifest、没 plist"的 raya 记成失败；P6 又硬要求一条"旧停新启之间"到达 #raya 的真实消息，可那几分钟只有班车醒着。这三条都在设计里逐一解开。</p>
+    <div class="comment"><label for="c2">你的意见</label><textarea id="c2" data-key="s2" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 3 -->
+  <div class="card navy" data-section="核心流程">
+    <h2><span class="badge candidate">流程</span>核心流程：一次授权，两班车，四个人手步骤</h2>
+    <div class="diagram">__SVG_D1__</div>
+    <ul>
+      <li><b>H0</b> 你发一条固定格式的授权消息（见"你需要做什么"）。</li>
+      <li><b>H1–H3</b> Lead 在宿主：建工作区、接 Codex 账号 → <code>register</code> + 一张紧急重启票让 Bridge 认得 raya → 写迁移账本（工具会去核你的授权消息、两份旧 plist、探针 bot 真能在 #raya 发言）。</li>
+      <li><b>班车 N</b>（00:00 PT）：先把能提前做的全做完并确认能成（目标版本一致、代码在旁边构建好、#raya 已安静 15 分钟），<b>才</b>停旧壳；然后自己发一条探针到 #raya 证明停机窗口没丢信，装好新 Lead。</li>
+      <li><b>H4</b> Lead 发一条文字、等一个 6 小时 summary 轮，用取证工具把证据写成 proof。</li>
+      <li><b>班车 N+1</b> 核对证据，写下 v2 回执。</li>
+    </ul>
+    <p class="note"><span class="term">探针</span>= 一条由另一枚 bot（不是 Raya、更不是你本人）发到 #raya 的标记消息；新 Raya 必须收到并回复它，这就是"窗口没丢信"的证据。<span class="term">seed 游标</span>= 告诉新 Lead"从哪条消息之后开始收信"的一个数字。</p>
+    <div class="comment"><label for="c3">你的意见</label><textarea id="c3" data-key="s3" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 4 -->
+  <div class="card purple" data-section="数据模型">
+    <h2><span class="badge candidate">结构</span>数据 / 结构模型：六份文件怎么串起来</h2>
+    <div class="diagram">__SVG_D2__</div>
+    <p>只有两份是本单新增的工具产出：<b>迁移账本</b>（Lead 在 H3 写，班车之后一路往里记账）和 <b>proof</b>（Lead 在 H4 用取证工具写）。其余四份都是 FLY-2445 已合入的现有格式，本单一个字段都不改它们的校验。账本新增的字段（授权块、两个旧 job 的停机记录、探针意图、基线声明、待对账列表、Flywheel 重绑定记录）全部是追加，不破坏现有 31 条班车测试。</p>
+    <div class="comment"><label for="c4">你的意见</label><textarea id="c4" data-key="s4" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 5 -->
+  <div class="card amber" data-section="不可逆边界与回滚">
+    <h2><span class="badge update">边界</span>不可逆边界、失败态与回滚</h2>
+    <div class="diagram">__SVG_D3__</div>
+    <table>
+      <tr><th>时点</th><th>能回什么</th><th>不能回什么</th></tr>
+      <tr><td>register 之后、账本之前</td><td>受锁注销 + 再一张紧急票；这段里班车每班只打一行 info</td><td>已发出的重启</td></tr>
+      <tr><td>班车 N 停旧壳之前</td><td>什么都没变（旧壳、代码 checkout 都没动）</td><td>—</td></tr>
+      <tr><td><b>停旧壳之后</b></td><td><b>没有自动把旧脑拉回来</b>（FLY-2445 已定、issue 明令"不做"）。失败 = 新通路维护态 + 信件持久保存，修好前置后下一班续跑</td><td>旧壳；要恢复它是恢复被退役的架构，需要单独授权</td></tr>
+      <tr><td>停机窗口出现你的消息</td><td>停在 P3 不装新 Lead；Lead 逐条对账后写不可变回执再续</td><td>—</td></tr>
+    </table>
+    <div class="comment"><label for="c5">你的意见</label><textarea id="c5" data-key="s5" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 6 -->
+  <div class="card gray" data-section="关键取舍">
+    <h2><span class="badge medium">取舍</span>关键取舍与被否决的方案</h2>
+    <table>
+      <tr><th>问题</th><th>选定</th><th>否决</th></tr>
+      <tr><td>谁产迁移账本、授权开关放哪</td><td>新增一次性工具写账本，授权块随账本；班车只从账本派生停旧壳的开关</td><td>改 updater 的 plist 加环境变量（要重装 updater 自身、授权无痕迹）；让班车自己 register（16 席会失声 12 小时）</td></tr>
+      <tr><td>register 后全舰重启会把 raya 记成失败</td><td>重启脚本新增 <code>pending-install</code> 分类：有身份证没 plist 的 Lead 只警告不计失败</td><td>register 后马上人手 install（两个 Raya 同时在线）；等下一班顺带重启（失声时长不可控）</td></tr>
+      <tr><td>P6 要的"停机窗口消息"谁发</td><td>班车停旧壳后用另一枚 bot 自己发探针；发前先把意图记进账本，重跑按 nonce 回找，绝不重发</td><td>人在凌晨那几分钟发消息；用 Raya 自己的 bot 发（收信源忽略自己的消息）</td></tr>
+      <tr><td>旧壳处理到哪条消息了</td><td>旧壳<b>没有</b>任何可机读的处理记录（日志 0 字节、回复不带引用），所以<b>不猜</b>：只在 #raya 安静 15 分钟后切换，停机窗口内出现的消息一律停下等人对账；更早的历史由你的授权行 <code>baseline=quiet15m</code> 明确划为不补录范围</td><td>用"最后一条 Raya 回复"推断之前都处理过（旧壳有两个独立入口各自异步处理，推不出来；Codex 评审两轮否决）</td></tr>
+      <tr><td>班车 N 到 N+1 之间 Flywheel 自己发了新版怎么办</td><td>不冻结发布；班车自动重绑定 Flywheel 版本号，激活身份绑定"迁移事务"而不是进程号，旧 proof 作废由 Lead 重采</td><td>冻结 Flywheel 12–24 小时不许合并（不现实）</td></tr>
+      <tr><td>停旧壳之后还要不要构建</td><td>不要。代码在停之前就在旁边构建好、算好摘要；停之后只做纯 git 快进和搬产物</td><td>停了再构建（构建失败就没有旧脑可回）</td></tr>
+      <tr><td>Raya 统管 14 位 Lead 的名册元数据（cos-context 导入）</td><td>移出关键路径，列 follow-up（消费者至今没接线，Lead 已裁定）</td><td>塞进同一次激活（多一次名册写入、多一份冻结面）</td></tr>
+    </table>
+    <div class="comment"><label for="c6">你的意见</label><textarea id="c6" data-key="s6" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 7 -->
+  <div class="card navy" data-section="你需要做什么">
+    <h2><span class="badge new">行动</span>你需要做什么（实现合入并部署之后）</h2>
+    <p>在 #flywheel-engineer 发<b>一条</b>消息，正文里含下面这一行（其余文字随意）：</p>
+    <pre><code>FLY-2496 AUTHORIZE register cutover=9d63a2b2 urgent-restart baseline=quiet15m</code></pre>
+    <div class="kv">
+      <b>register</b><span>允许 Lead 把 raya 注册成标准 Lead（改 projects.json、生成身份证）</span>
+      <b>cutover=9d63a2b2</b><span>允许班车把 Raya 切到这个精确版本；版本变了这行就失效，要重发</span>
+      <b>urgent-restart</b><span>允许 Lead 打一张紧急重启票让 Bridge 认得 raya（合规的 R4 第二来源）</span>
+      <b>baseline=quiet15m</b><span>你确认：切换只在 #raya 安静 15 分钟时进行，更早的历史不在本次"补收"范围</span>
+    </div>
+    <p>账本工具会去读这条消息、核对作者是你、逐 token 匹配；Lead 不能替你扩大范围。建议时间：Lead 在 23:00–23:20 PT 做 register 和紧急重启，00:00 PT 那班车切换，你睡觉时完成。</p>
+    <div class="comment"><label for="c7">你的意见</label><textarea id="c7" data-key="s7" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 7b -->
+  <div class="card red" data-section="需要你点头的一条">
+    <h2><span class="badge urgent">要你点头</span>一条只有你能拍的判断：<code>baseline=quiet15m</code></h2>
+    <p><b>事实</b>：旧 Raya 没有留下"哪条消息处理过"的任何记录（日志是空的、回复不带引用），所以没有办法用机器证明"停机前的消息都处理完了"。</p>
+    <p><b>设计怎么处理</b>：班车只在 #raya 已经安静 15 分钟（没有人发言）时才停旧壳，否则推迟到下一班；停机那几秒里若出现你的消息，一律停下等 Lead 逐条对账；<b>更早的历史一律不再补收</b>——这一条不是证明，是你的授权声明。</p>
+    <p><b>你在授权行里写 <code>baseline=quiet15m</code> 就等于确认</b>：切换发生在你 15 分钟没说话之后；那之前的对话，旧 Raya 当时怎么答的就是怎么答的，新 Raya 不会回头再答一遍。Lead（Tadashi）已认可这是合理设计，但最终由你确认。如果你不接受，唯一替代是人工逐条对账旧 Raya 整个生命周期的 #raya 消息。</p>
+    <div class="comment"><label for="c7b">你的意见（同意 / 不同意 / 想改成什么）</label><textarea id="c7b" data-key="s7b" placeholder="例如：同意；或：15 分钟太短/太长；或：我要人工对账…"></textarea></div>
+  </div>
+
+  <!-- 8 -->
+  <div class="card green" data-section="验收">
+    <h2><span class="badge new">验收</span>怎么算"上线了"</h2>
+    <ul>
+      <li><code>~/.flywheel/raya/deploy-receipt.json</code> 是 <code>schemaVersion 2</code>、<code>carrier standard-lead</code>、<code>outcome deployed</code>，Raya 版本 = <code>9d63a2b2</code>，Flywheel 版本 = 当时已部署版本。</li>
+      <li><code>flywheel-lead.sh verify --stage live</code> 通过；探针消息在 Raya 信箱里有投递记录且有回复。</li>
+      <li>之后的第一个 6 小时边界：Raya 收到 summary 轮次，并对至少一张 summary PR 做了读收据 merge（若那轮没有候选 PR，记 <code>no-candidate</code>，不算失败）。</li>
+      <li>巡检的 <code>raya_checkout_overdue</code> 告警在第一班之后停止。</li>
+    </ul>
+    <p class="note">"合入 ≠ 上线"：PR 合并、旧 v1 回执、anchor 文件都不算。</p>
+    <div class="comment"><label for="c8">你的意见</label><textarea id="c8" data-key="s8" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 9 -->
+  <div class="card red" data-section="诚实边界">
+    <h2><span class="badge urgent">边界</span>诚实边界：这份设计做什么、不做什么</h2>
+    <ul>
+      <li><b>做</b>：宿主激活包（4 个人手步骤 + 2 个新工具）、班车 6 处最小改动、v2 回执验收、激活后的 summary 观察项。</li>
+      <li><b>不做</b>：不回滚 Raya 仓；不绕班车手动部署；不新造调度器/专属 wrapper；不恢复语音（FLY-2446）；不做 cos-context 名册导入（follow-up）。</li>
+      <li><b>不能证明的</b>：旧壳停机前到底处理了哪些消息——它没留账，所以用"安静 15 分钟 + 你的基线授权"代替证明；读收据 merge 的 GitHub 操作者是不是 Raya bot（回执没有 actor 字段，follow-up）。</li>
+      <li><b>残余风险</b>：register 到新 Lead 起来之间若恰好撞上一个 6 小时边界，那一槽 summary 事件会留空（和今天一样，不是倒退）；快进代码之后停旧壳若失败，旧壳进程还活着但被 launchd 重拉会起不来（前置已两次核验，窗口很窄，会 severe 告警）；Flywheel 版本重绑定依赖既有的重启状态回执，是间接绑定（follow-up）。</li>
+      <li><b>本节点没有</b>：没实现代码、没动生产、没部署；设计完成 ≠ Raya 已激活。</li>
+    </ul>
+    <div class="comment"><label for="c9">你的意见</label><textarea id="c9" data-key="s9" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 10 -->
+  <div class="card gray" data-section="评审记录">
+    <h2><span class="badge medium">评审</span>设计评审记录</h2>
+    <p>Codex 四轮：R1 10 条（全部采纳）→ R2 6 条重开（收紧）→ R3 3 条重开（边界算法、停机前置顺序、版本重绑定）→ R4（Lead 授权的确认轮）仍 3 条：2 条阻断级已修入（游标最终边界的精确定义、版本重绑定的两文件写入顺序），1 条经源码实核驳回（Codex 误读了旧壳身份校验的字段）。按 Lead 裁定不开第五轮，以 Lead acceptance 作为有效结论，全过程逐字记录在 <code>review.md</code> 与 <code>codex-review/round1-4.md</code>。四轮里最重要的转变：从"推断旧壳处理到哪"改成"不推断，只在安静时切换，其余交给你的基线授权"。</p>
+    <div class="comment"><label for="c10">你的意见</label><textarea id="c10" data-key="s10" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- summary -->
+  <div class="card navy summary" data-section="汇总">
+    <h2>页面意见汇总</h2>
+    <p class="note">下面实时汇总你在各节留下的意见。点"复制全部"后把内容粘到 Discord 给 Lead；超过约 1800 字会自动分块，每块都带标记行。</p>
+    <div id="summaryChunks"></div>
+    <button class="btn" id="copyAll" type="button">复制全部意见</button>
+    <button class="btn secondary" id="clearAll" type="button">清空本页意见</button>
+    <span class="status" id="copyStatus"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = 'FLY-2496';
+  var MARK = '【页面意见汇总】' + ISSUE;
+  var PREFIX = 'fly2496-comments:' + location.pathname + ':';
+  var LIMIT = 1800;
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  function lsDel(k) { try { localStorage.removeItem(PREFIX + k); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+  function sectionTitle(ta) {
+    var card = ta.closest('.card');
+    return card && card.getAttribute('data-section') ? card.getAttribute('data-section') : ta.getAttribute('data-key');
+  }
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push('[' + sectionTitle(ta) + '] ' + v);
+    });
+    return parts;
+  }
+  function chunk(parts) {
+    var chunks = [], cur = MARK;
+    parts.forEach(function (p) {
+      var next = cur + '\n' + p;
+      if (next.length > LIMIT && cur !== MARK) { chunks.push(cur); cur = MARK + '\n' + p; }
+      else cur = next;
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+  function render() {
+    var box = document.getElementById('summaryChunks');
+    while (box.firstChild) box.removeChild(box.firstChild);
+    var parts = collect();
+    var chunks = chunk(parts);
+    chunks.forEach(function (c, i) {
+      var d = document.createElement('div'); d.className = 'chunk';
+      var h = document.createElement('div'); h.className = 'note'; h.textContent = chunks.length > 1 ? ('第 ' + (i + 1) + ' / ' + chunks.length + ' 块') : (parts.length ? '共 ' + parts.length + ' 条意见' : '还没有意见');
+      var pre = document.createElement('pre'); pre.textContent = c;
+      d.appendChild(h); d.appendChild(pre); box.appendChild(d);
+    });
+  }
+  areas.forEach(function (ta) {
+    ta.value = lsGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () { lsSet(ta.getAttribute('data-key'), ta.value); render(); });
+  });
+  function setStatus(t) { document.getElementById('copyStatus').textContent = t; }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '-1000px';
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  document.getElementById('copyAll').addEventListener('click', function () {
+    var text = chunk(collect()).join('\n\n');
+    var done = function (ok) { setStatus(ok ? '已复制 ' + text.length + ' 字' : '复制失败，请手动选中上方文本'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else { done(fallbackCopy(text)); }
+  });
+  document.getElementById('clearAll').addEventListener('click', function () {
+    areas.forEach(function (ta) { ta.value = ''; lsDel(ta.getAttribute('data-key')); });
+    render(); setStatus('已清空');
+  });
+  render();
+})();
+</script>
+</body>
+</html>

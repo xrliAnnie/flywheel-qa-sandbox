@@ -39,6 +39,13 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/curl" <<'FAKE'
 #!/bin/bash
 printf 'call\n' >> "${CURL_CALLS:?}"
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -o && $# -ge 2 ]]; then
+    printf '{"id":"777777777777777777"}\n' > "$2"
+    shift
+  fi
+  shift
+done
 printf '%s' "${CURL_HTTP_CODE:-200}"
 exit 0
 FAKE
@@ -281,6 +288,25 @@ if [ "$OUT" = "sent" ] && [ "$OUT_AGAIN" = "sent" ] && [ "$CALLS_BEFORE" = "$CAL
   ok "retirement warning: fresh sender process reuses receipt without a second POST"
 else
   bad "retirement warning duplicate: out=$OUT/$OUT_AGAIN calls=$CALLS_BEFORE/$CALLS_AFTER"
+fi
+
+# Activation proof needs the actual direct Discord id. Every older kind keeps
+# the existing strict status line (the assertions above pin compatibility).
+OUT=$(run_alert 200 --lead flywheel-eng-lead --kind activation_probe --severity info \
+  --signature activation-direct --strict-delivery 2>/dev/null); RC=$?
+if [[ "$RC" == 0 && "$OUT" == 'sent message_id=777777777777777777' ]]; then
+  ok "activation probe direct receipt has one status line with the Discord message id"
+else
+  bad "activation probe direct receipt: rc=$RC out=$OUT"
+fi
+OUT=$(run_alert 500 --lead flywheel-eng-lead --kind activation_probe --severity info \
+  --signature activation-queued --strict-delivery 2>/dev/null); RC=$?
+PROBE_RECORD=$(find "$TMP" -name '*activation_probe*.json' -print -quit)
+if [[ "$RC" == 2 && "$OUT" == queued_transient ]] \
+  && jq -e '.eventType == "activation_probe" and .severity == "info"' "$PROBE_RECORD" >/dev/null; then
+  ok "queued activation probe remains informational and makes no claim of a Discord message id"
+else
+  bad "queued activation probe: rc=$RC out=$OUT record=$PROBE_RECORD"
 fi
 
 echo "$PASS passed, $FAIL failed"

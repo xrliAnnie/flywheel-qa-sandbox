@@ -217,8 +217,50 @@ if not isinstance(environment, dict) or environment.get("RAYA_ENV_FILE") != env_
 PY
 }
 
+raya_legacy_stop_authorized() {
+  raya_manifest_base_valid || return 1
+  jq -e '
+    def snowflake: type == "string" and test("^[0-9]{17,20}$");
+    (.target_raya_sha | type == "string" and test("^[0-9a-f]{40}$")) and
+    .authorization.legacy_stop == true and .authorization.granted_by == "founder" and
+    (.authorization.evidence_message_id | snowflake) and
+    (.authorization.evidence_channel_id | snowflake) and
+    (.authorization.evidence_author_id | snowflake) and
+    (.authorization.content_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    .authorization.canonical_line ==
+      ("FLY-2496 AUTHORIZE register cutover=" + .target_raya_sha[0:8] +
+       " urgent-restart baseline=quiet15m")
+  ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1
+}
+
+# A bootout alone does not survive login: ignored legacy dist can still run.
+raya_legacy_disabled() {
+  local disabled=""
+  disabled="$(launchctl print-disabled "gui/$(id -u)" 2>/dev/null)" || return 1
+  printf '%s\n' "$disabled" | awk -v key="\"$1\"" '
+    $1 == key { seen++; if ($2 == "=>" && ($3 == "disabled" || $3 == "true")) enabled++ }
+    END { exit !(seen == 1 && enabled == 1) }'
+}
+
+raya_verify_legacy_retired() {
+  local label=""
+  jq -e '([.legacy_owner[].label] | sort) == ["com.xrli.raya.brain","com.xrli.raya.voice"] and
+    all(.legacy_owner[]; (.disabled_at_ms | type == "number") and (.stopped_at_ms | type == "number"))' \
+    "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
+  for label in com.xrli.raya.brain com.xrli.raya.voice; do
+    raya_legacy_disabled "$label" || return 1
+    local observation=""
+    if observation="$(launchctl print "gui/$(id -u)/$label" 2>&1)"; then return 1; fi
+    case "$observation" in *"Could not find service"*|*"Could not find specified service"*) ;; *) return 1 ;; esac
+  done
+}
+
 raya_quiesce_legacy_owner() {
-  local app="" label="" plist="" found=0
+  # Only the verified ledger grants this call authority. Never trust inherited
+  # environment state, even when this function is invoked outside the pass.
+  local RAYA_MIGRATION_ALLOW_LEGACY_STOP=0
+  if raya_legacy_stop_authorized; then RAYA_MIGRATION_ALLOW_LEGACY_STOP=1; fi
+  local app="" label="" plist="" found=0 loaded="" pid="" start="" digest="" now=""
   for app in brain voice; do
     label="com.xrli.raya.$app"
     plist="${RAYA_LEGACY_PLIST_DIR:-${HOME}/Library/LaunchAgents}/${label}.plist"
@@ -227,8 +269,46 @@ raya_quiesce_legacy_owner() {
       [[ "${RAYA_MIGRATION_ALLOW_LEGACY_STOP:-0}" == 1 ]] || return 1
       [[ -f "$plist" && ! -L "$plist" ]] || return 1
       raya_legacy_plist_matches "$plist" "$app" "$label" || return 1
-      launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || return 1
-      launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && return 1
+      digest="$(raya_sha256 "$plist")" || return 1
+      jq -e --arg label "$label" --arg digest "$digest" '
+        [.legacy_owner[] | select(.label == $label)] |
+        length == 1 and .[0].plist_sha256 == $digest
+      ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
+      if loaded="$(launchctl print "gui/$(id -u)/$label" 2>/dev/null)"; then
+        pid="$(printf '%s\n' "$loaded" | awk '$1 == "pid" && $2 == "=" {print $3}')"
+        [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+        start="$(raya_process_start "$pid")" || return 1
+        [[ -n "$start" ]] || return 1
+        jq -e --arg label "$label" --argjson pid "$pid" --arg start "$start" '
+          .legacy_owner[] | select(.label == $label) |
+          .pid == $pid and .start == $start and .stopped_at_ms == null
+        ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
+        now="$("$RAYA_STANDARD_NODE_BIN" -p 'Date.now()')" || return 1
+        raya_manifest_transform P2 P2 '
+          (.legacy_owner[] | select(.label == $label)) |=
+            (.stop_started_at_ms //= $now)
+        ' --arg label "$label" --argjson now "$now" || return 1
+        launchctl disable "gui/$(id -u)/$label" >/dev/null 2>&1 || return 1
+        raya_legacy_disabled "$label" || return 1
+        raya_manifest_transform P2 P2 '
+          (.legacy_owner[] | select(.label == $label)).disabled_at_ms //= $now
+        ' --arg label "$label" --argjson now "$now" || return 1
+        launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || return 1
+        launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && return 1
+      fi
+      # Also disable an already unloaded job; a crash after bootout must not
+      # allow its RunAtLoad plist and ignored runtime to revive at login.
+      if ! raya_legacy_disabled "$label"; then
+        launchctl disable "gui/$(id -u)/$label" >/dev/null 2>&1 || return 1
+        raya_legacy_disabled "$label" || return 1
+      fi
+      # An already unloaded matching job is a completed stop, including a
+      # crash after bootout but before recording its receipt.
+      now="$("$RAYA_STANDARD_NODE_BIN" -p 'Date.now()')" || return 1
+      raya_manifest_transform P2 P2 '
+        (.legacy_owner[] | select(.label == $label)) |=
+          (.stop_started_at_ms //= $now | .disabled_at_ms //= $now | .stopped_at_ms //= $now)
+      ' --arg label "$label" --argjson now "$now" || return 1
     fi
   done
   [[ "$found" == 0 || "${RAYA_MIGRATION_ALLOW_LEGACY_STOP:-0}" == 1 ]]
@@ -241,11 +321,18 @@ raya_ensure_legacy_quiesced() {
     "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
   if jq -e '(.old_stopped_at | type == "string" and length > 0)' \
     "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1; then
-    return 0
+    raya_verify_legacy_retired
+    return
   fi
   jq -e '(.old_stopped_at // null) == null' \
     "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
   raya_quiesce_legacy_owner || return 1
+  jq -e '
+    .legacy_owner == null or
+    (([.legacy_owner[].label] | sort) == ["com.xrli.raya.brain", "com.xrli.raya.voice"] and
+     all(.legacy_owner[]; (.stop_started_at_ms | type == "number") and
+       (.stopped_at_ms | type == "number") and .stopped_at_ms >= .stop_started_at_ms))
+  ' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
   stopped_at="$(raya_now_iso)" || return 1
   raya_manifest_transform P2 P2 '.old_stopped_at = $stopped' \
     --arg stopped "$stopped_at"
@@ -261,6 +348,13 @@ raya_bridge_token_ready() {
 }
 
 raya_standard_lead() { /bin/bash "$FLYWHEEL_LEAD_BIN" "$@"; }
+
+raya_shuttle_step() {
+  "$RAYA_STANDARD_NODE_BIN" "$FLYWHEEL_TEAMLEAD_ROOT/dist/bin/raya-migration-manifest.js" \
+    "$1" --lock-owner "$$"
+}
+raya_emit_window_probe() { raya_shuttle_step cutover-probe; }
+raya_compute_seed_boundary() { raya_shuttle_step seed-boundary; }
 
 raya_manifest_record_cursor() {
   local receipt="$1" digest="" status="" seeded_at=""
@@ -288,6 +382,8 @@ raya_standard_cutover() {
         raya_manifest_transform P2 P3 '.old_stopped_at = $stopped' --arg stopped "$stopped_at" || return 1
         ;;
       P3)
+        raya_emit_window_probe || return 1
+        raya_compute_seed_boundary || return 1
         cursor="$(jq -er '.cursor.path | select(type == "string" and startswith("/"))' "$RAYA_MIGRATION_MANIFEST")" || return 1
         input="$(jq -er '.cursor.seed_input | select(type == "string" and startswith("/"))' "$RAYA_MIGRATION_MANIFEST")" || return 1
         receipt="$(raya_standard_seed_inbound_cursor "$cursor" "$input")" || return 1
@@ -502,6 +598,7 @@ raya_write_deployed_sha() {
 }
 
 raya_standard_finalize() {
+  raya_verify_legacy_retired || return 1
   local current=""
   raya_validate_p6_manifest || return 1
   raya_verify_frozen_source || return 1
@@ -599,6 +696,7 @@ raya_verify_previous_standard() {
 }
 
 raya_begin_followup_transaction() {
+  raya_verify_legacy_retired || return 1
   local previous_raya="" previous_flywheel="" previous_manifest=""
   local target="" flywheel_sha="" manifest_sha="" remote=""
   raya_verify_previous_standard || return 1
@@ -680,6 +778,144 @@ raya_materialize_business() {
   RAYA_PERSONA_DIGEST="$persona"
 }
 
+raya_verify_legacy_owners() {
+  if jq -e 'all(.legacy_owner[]; .stopped_at_ms != null)' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1; then
+    raya_verify_legacy_retired
+    return
+  fi
+  local app="" label="" plist="" loaded="" pid="" start="" hash=""
+  raya_legacy_stop_authorized || return 1
+  jq -e '([.legacy_owner[].label] | sort) == ["com.xrli.raya.brain","com.xrli.raya.voice"]' \
+    "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
+  for app in brain voice; do
+    label="com.xrli.raya.$app"
+    plist="${RAYA_LEGACY_PLIST_DIR:-${HOME}/Library/LaunchAgents}/${label}.plist"
+    [[ -f "$plist" && ! -L "$plist" ]] || return 1
+    raya_legacy_plist_matches "$plist" "$app" "$label" || return 1
+    hash="$(raya_sha256 "$plist")" || return 1
+    jq -e --arg label "$label" --arg hash "$hash" '.legacy_owner[] | select(.label==$label) | .plist_sha256==$hash' \
+      "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
+    if loaded="$(launchctl print "gui/$(id -u)/$label" 2>&1)"; then
+      pid="$(printf '%s\n' "$loaded" | awk '$1 == "pid" && $2 == "=" {print $3}')"
+      [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+      start="$(raya_process_start "$pid")" || return 1
+      [[ -n "$start" ]] || return 1
+      jq -e --arg label "$label" --argjson pid "$pid" --arg start "$start" '
+        .legacy_owner[] | select(.label==$label) | .pid==$pid and .start==$start and .stopped_at_ms==null
+      ' "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
+    else
+      case "$loaded" in *"Could not find service"*|*"Could not find specified service"*) ;; *) return 1 ;; esac
+      jq -e --arg label "$label" '.legacy_owner[] | select(.label==$label) | .pid==null or .stop_started_at_ms!=null' \
+        "$RAYA_MIGRATION_MANIFEST" >/dev/null || return 1
+    fi
+  done
+}
+
+raya_verify_candidate_artifact() {
+  local candidate="$RAYA_HOME/build-check/$RAYA_TARGET.export" persona="" artifact=""
+  [[ "$(jq -r .prepared_candidate.path "$RAYA_MIGRATION_MANIFEST")" == "$candidate" ]] || return 1
+  [[ -d "$candidate" && ! -L "$candidate" ]] || return 1
+  [[ -z "$(find "$candidate" -type l -print)" ]] || return 1
+  artifact="$(raya_tree_digest "$candidate")" || return 1
+  persona="$(raya_sha256 "$candidate/.lead/raya/identity.md")" || return 1
+  local version="$RAYA_WORKSPACE/.flywheel-managed/versions/$RAYA_TARGET"
+  if [[ -e "$version" || -L "$version" ]]; then
+    [[ -d "$version" && ! -L "$version" && -z "$(find "$version" -type l -print)" \
+      && "$(raya_tree_digest "$version")" == "$artifact" ]] || return 1
+  fi
+  [[ "$artifact" == "$(jq -r .prepared_candidate.digest "$RAYA_MIGRATION_MANIFEST")" \
+    && "$persona" == "$(jq -r .prepared_candidate.persona_digest "$RAYA_MIGRATION_MANIFEST")" \
+    && "$persona" == "$(raya_sha256 "$RAYA_WORKSPACE/.lead/raya/identity.md")" \
+    && "$(raya_sha256 "$RAYA_CANONICAL_MANIFEST")" == "$(jq -r .canonical_manifest_digest "$RAYA_MIGRATION_MANIFEST")" ]]
+}
+
+raya_verify_candidate() {
+  raya_verify_candidate_artifact || return 1
+  [[ "$(sed -n '1p' "$FLYWHEEL_DEPLOYED_SHA_FILE")" == "$(jq -r .flywheel_deployed_sha "$RAYA_MIGRATION_MANIFEST")" ]]
+}
+
+raya_prestop_prepare() {
+  local scratch="" candidate="" remote="" flywheel="" canonical="" persona="" artifact=""
+  raya_legacy_stop_authorized || return 1
+  raya_verify_legacy_owners || return 1
+  RAYA_TARGET="$(jq -r .target_raya_sha "$RAYA_MIGRATION_MANIFEST")"
+  scratch="$RAYA_HOME/build-check/$RAYA_TARGET"
+  candidate="$scratch.export"
+  remote="$(raya_git remote get-url origin 2>/dev/null || true)"
+  case "$remote" in https://github.com/xrliAnnie/raya.git|git@github.com:xrliAnnie/raya.git) ;;
+    file://*|/*) [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" == 1 ]] || return 1 ;;
+    *) return 1 ;;
+  esac
+  raya_git_fetch_bounded || return 1
+  [[ "$(raya_git rev-parse origin/main)" == "$RAYA_TARGET" ]] || return 1
+  raya_git merge-base --is-ancestor "$RAYA_CHECKOUT_BEFORE" "$RAYA_TARGET" || return 1
+  [[ ! -L "$RAYA_HOME/build-check" && ! -L "$scratch" && ! -L "$candidate" ]] || return 1
+  mkdir -p "$RAYA_HOME/build-check" || return 1
+  if [[ ! -d "$scratch" ]]; then raya_git worktree add --detach "$scratch" "$RAYA_TARGET" || return 1; fi
+  [[ "$(git -C "$scratch" rev-parse HEAD)" == "$RAYA_TARGET" \
+    && -z "$(git -C "$scratch" status --porcelain)" ]] || return 1
+  (
+    local RAYA_CODE_DIR="$scratch"
+    raya_run_bounded_in_checkout "$RAYA_INSTALL_TIMEOUT_SECONDS" pnpm install --frozen-lockfile || exit 1
+    raya_run_bounded_in_checkout "$RAYA_BUILD_TIMEOUT_SECONDS" pnpm build
+  ) || return 1
+  [[ "$(git -C "$scratch" rev-parse HEAD)" == "$RAYA_TARGET" \
+    && -z "$(git -C "$scratch" status --porcelain)" \
+    && -f "$scratch/.lead/raya/identity.md" && ! -L "$scratch/.lead/raya/identity.md" \
+    && -f "$scratch/packages/cos/package.json" && ! -L "$scratch/packages/cos/package.json" \
+    && -d "$scratch/packages/cos/dist" && ! -L "$scratch/packages/cos/dist" \
+    && -z "$(find "$scratch/packages/cos/dist" -type l -print)" ]] || return 1
+  persona="$(raya_sha256 "$scratch/.lead/raya/identity.md")" || return 1
+  [[ -f "$RAYA_WORKSPACE/.lead/raya/identity.md" && ! -L "$RAYA_WORKSPACE/.lead/raya/identity.md" \
+    && "$persona" == "$(raya_sha256 "$RAYA_WORKSPACE/.lead/raya/identity.md")" ]] || return 1
+  # This bounded export is prepared before any bootout and reused after a crash.
+  rm -rf "$candidate" || return 1
+  mkdir -p "$candidate/.lead/raya" "$candidate/packages/cos" || return 1
+  cp "$scratch/.lead/raya/identity.md" "$candidate/.lead/raya/identity.md" || return 1
+  cp "$scratch/packages/cos/package.json" "$candidate/packages/cos/package.json" || return 1
+  cp -R "$scratch/packages/cos/dist" "$candidate/packages/cos/dist" || return 1
+  "$RAYA_STANDARD_NODE_BIN" - "$candidate" <<'NODE' || return 1
+const fs = require('node:fs'), path = require('node:path');
+function syncTree(root) {
+  const stat = fs.lstatSync(root);
+  if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) throw new Error('candidate-file-invalid');
+  if (stat.isDirectory()) for (const child of fs.readdirSync(root)) syncTree(path.join(root, child));
+  const fd = fs.openSync(root, 'r');
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+syncTree(process.argv[2]);
+const parent = fs.openSync(path.dirname(process.argv[2]), 'r');
+try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
+NODE
+  artifact="$(raya_tree_digest "$candidate")" || return 1
+  flywheel="$(sed -n '1p' "$FLYWHEEL_DEPLOYED_SHA_FILE")" || return 1
+  canonical="$(raya_sha256 "$RAYA_CANONICAL_MANIFEST")" || return 1
+  raya_is_sha40 "$flywheel" && raya_is_sha256 "$artifact" && raya_is_sha256 "$canonical" || return 1
+  raya_shuttle_step prestop-probe || return 1
+  raya_shuttle_step quiet-check || return 1
+  raya_manifest_transform P2 P2 '
+    .raya_sha=$raya | .flywheel_deployed_sha=$flywheel | .canonical_manifest_digest=$canonical |
+    .prepared_candidate={path:$path,digest:$artifact,persona_digest:$persona}
+  ' --arg raya "$RAYA_TARGET" --arg flywheel "$flywheel" --arg canonical "$canonical" \
+    --arg path "$candidate" --arg artifact "$artifact" --arg persona "$persona" || return 1
+  [[ "$RAYA_CHECKOUT_BEFORE" == "$RAYA_TARGET" ]] || raya_git merge --ff-only "$RAYA_TARGET" --quiet || return 1
+  RAYA_NEW_HEAD="$(raya_git rev-parse HEAD)" || return 1
+  [[ "$RAYA_NEW_HEAD" == "$RAYA_TARGET" && -z "$(raya_git status --porcelain)" ]] || return 1
+  raya_verify_candidate || return 1
+  raya_verify_legacy_owners || return 1
+  raya_shuttle_step quiet-check
+}
+
+raya_promote_candidate() {
+  raya_verify_candidate || return 1
+  local RAYA_CODE_DIR="$RAYA_HOME/build-check/$RAYA_TARGET.export"
+  raya_materialize_business || return 1
+  [[ "$RAYA_ARTIFACT_DIGEST" == "$(jq -r .prepared_candidate.digest "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
+  raya_manifest_transform P2 P2 '
+    .artifact={digest:$artifact,persona_digest:$persona,workspace:$workspace,state_schema_version:1}
+  ' --arg artifact "$RAYA_ARTIFACT_DIGEST" --arg persona "$RAYA_PERSONA_DIGEST" --arg workspace "$RAYA_WORKSPACE"
+}
+
 raya_prepare_source() {
   local branch="" dirty="" remote="" attempt=1 fetch_rc=0 flywheel_sha="" manifest_sha="" checkpoint=""
   raya_validate_canonical_manifest || return 1
@@ -701,9 +937,28 @@ raya_prepare_source() {
     fi
   fi
   if [[ "$checkpoint" != P2 ]]; then
+    raya_verify_legacy_retired || return 1
     RAYA_TARGET="$(jq -er '.raya_sha | select(test("^[0-9a-f]{40}$"))' "$RAYA_MIGRATION_MANIFEST")" || return 1
     RAYA_NEW_HEAD="$RAYA_CHECKOUT_BEFORE"
     raya_verify_frozen_source
+    return
+  fi
+  if [[ "$(jq -r '.mode // "migration"' "$RAYA_MIGRATION_MANIFEST")" != standard-update ]]; then
+    if jq -e 'any(.legacy_owner[]?; .stop_started_at_ms != null)' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1; then
+      RAYA_TARGET="$(jq -r .target_raya_sha "$RAYA_MIGRATION_MANIFEST")"
+      RAYA_NEW_HEAD="$RAYA_CHECKOUT_BEFORE"
+      raya_is_sha40 "$RAYA_TARGET" && [[ "$RAYA_NEW_HEAD" == "$RAYA_TARGET" ]] || return 1
+      raya_verify_candidate || return 1
+    else
+      if ! raya_prestop_prepare; then
+        RAYA_DEPLOY_STATE=prestop-failed
+        RAYA_DEPLOY_DETAIL=prestop-validation-failed
+        raya_manifest_transform P2 P2 '.prestop_retry=true' >/dev/null 2>&1 || true
+        return 1
+      fi
+    fi
+    raya_ensure_legacy_quiesced || return 1
+    raya_promote_candidate
     return
   fi
   raya_ensure_legacy_quiesced || return 1
@@ -771,8 +1026,104 @@ raya_fail() {
   return "$rc"
 }
 
+# Called only while holding the shared deploy lock. A healthy fleet restart
+# changes the process and Flywheel build, but not the Raya activation transaction.
+raya_rebind_flywheel() {
+  local current="$1" checkpoint="" status="" health="" loaded="" pid="" start="" recorded="" stale=""
+  [[ "$RAYA_LOCK_OWNED" == 1 ]] || return 1
+  raya_is_sha40 "$current" || return 1
+  checkpoint="$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" || return 1
+  [[ "$checkpoint" == P5 || "$checkpoint" == P6 ]] || return 1
+  status="$(dirname "$FLYWHEEL_DEPLOYED_SHA_FILE")/leads-restart-status.json"
+  [[ -f "$status" && ! -L "$status" ]] || return 1
+  jq -e --arg sha "$current" '
+    .schemaVersion == 1 and .codeDeployedSha == $sha and
+    .leadsRestartStatus == "healthy" and .failed == 0 and .skipped == 0 and .total == 17
+  ' "$status" >/dev/null 2>&1 || return 1
+  health="$(curl -q -fsS --max-time 5 "${FLYWHEEL_BRIDGE_URL:-${BRIDGE_URL:-http://localhost:9876}}/health")" || return 1
+  jq -e --arg sha "$current" '.ok == true and .buildSha == $sha' <<<"$health" >/dev/null 2>&1 || return 1
+  raya_standard_lead verify --stage live "$RAYA_CANONICAL_MANIFEST" >/dev/null 2>&1 || return 1
+  loaded="$(launchctl print "gui/$(id -u)/$RAYA_STANDARD_LABEL" 2>/dev/null)" || return 1
+  pid="$(printf '%s\n' "$loaded" | awk '$1 == "pid" && $2 == "=" {print $3}')"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  start="$(raya_process_start "$pid")" || return 1
+  [[ -n "$start" ]] || return 1
+  recorded="$(jq -er '.recordedAt | select(type == "string")' "$status")" || return 1
+  "$RAYA_STANDARD_NODE_BIN" - "$RAYA_MIGRATION_MANIFEST" "$recorded" "$start" <<'NODE' || return 1
+const fs = require("node:fs");
+const [file, recorded, start] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+const activation = Date.parse(manifest.activated_at);
+const rebinds = manifest.flywheel_rebinds;
+if (rebinds !== undefined && !Array.isArray(rebinds)) process.exit(1);
+const bound = rebinds?.length ? Date.parse(rebinds[rebinds.length - 1].at) : activation;
+const restart = Date.parse(recorded);
+const processStart = Date.parse(start);
+if (![activation, bound, restart, processStart].every(Number.isFinite) ||
+    restart <= activation || restart <= bound || processStart <= bound || processStart >= restart) process.exit(1);
+NODE
+  [[ "$(raya_git rev-parse HEAD 2>/dev/null)" == "$(jq -r .raya_sha "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
+  [[ -z "$(raya_git status --porcelain)" ]] || return 1
+  [[ "$(raya_sha256 "$RAYA_CANONICAL_MANIFEST")" == "$(jq -r .canonical_manifest_digest "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
+  raya_verify_materialized_artifact || return 1
+  # Quarantine first: a crash here leaves the old ledger eligible for rebind.
+  # The reverse order would leave a stale proof attached to a new SHA owner.
+  if [[ -e "$RAYA_STANDARD_PROOF_FILE" || -L "$RAYA_STANDARD_PROOF_FILE" ]]; then
+    raya_owner_file "$RAYA_STANDARD_PROOF_FILE" || return 1
+    stale="$(dirname "$RAYA_STANDARD_PROOF_FILE")/proof.stale-$(raya_sha256 "$RAYA_STANDARD_PROOF_FILE").json"
+    raya_atomic_replace "$RAYA_STANDARD_PROOF_FILE" "$stale" || return 1
+  fi
+  raya_manifest_transform "$checkpoint" P5 '
+    .flywheel_rebinds += [{from:.flywheel_deployed_sha,to:$sha,at:$at,
+      lead_pid:$pid,restart_recorded_at:$recorded}] |
+    .flywheel_deployed_sha=$sha | .lead=null | .checks=null | .cutover=null
+  ' --arg sha "$current" --arg at "$(raya_now_iso)" --argjson pid "$pid" --arg recorded "$recorded"
+}
+
+# Before activation there may be no installed Raya process. Keep the frozen
+# Raya/registry/artifact bindings, prove the current Bridge and registered
+# carrier, then resume the same checkpoint under the new Flywheel build.
+raya_rebind_before_activation() {
+  local current="$1" checkpoint="" root="" health="" registry="" summary=""
+  [[ "$RAYA_LOCK_OWNED" == 1 ]] || return 1
+  raya_is_sha40 "$current" || return 1
+  raya_legacy_stop_authorized || return 1
+  checkpoint="$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")" || return 1
+  [[ "$checkpoint" == P2 || "$checkpoint" == P3 || "$checkpoint" == P4b ]] || return 1
+  jq -e '.mode != "standard-update" and
+    (.checkpoint != "P2" or any(.legacy_owner[]?; .stop_started_at_ms != null)) and
+    (.pre_activation_rebinds == null or (.pre_activation_rebinds | type == "array"))' \
+    "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1 || return 1
+  raya_validate_canonical_manifest || return 1
+  RAYA_TARGET="$(jq -r .target_raya_sha "$RAYA_MIGRATION_MANIFEST")"
+  [[ "$(raya_git symbolic-ref --short HEAD)" == main && -z "$(raya_git status --porcelain)" \
+    && "$(raya_git rev-parse HEAD)" == "$RAYA_TARGET" \
+    && "$(jq -r .raya_sha "$RAYA_MIGRATION_MANIFEST")" == "$RAYA_TARGET" \
+    && "$(raya_sha256 "$RAYA_CANONICAL_MANIFEST")" == "$(jq -r .canonical_manifest_digest "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
+  root="$(dirname "$FLYWHEEL_DEPLOYED_SHA_FILE")"
+  registry="$root/projects.json"
+  summary="$root/state/summary-registry/migration-receipt.json"
+  [[ -f "$registry" && ! -L "$registry" && -f "$summary" && ! -L "$summary" \
+    && "$(raya_sha256 "$registry")" == "$(jq -r .registry_digest "$RAYA_MIGRATION_MANIFEST")" \
+    && "$(raya_sha256 "$summary")" == "$(jq -r .summary_receipt_digest "$RAYA_MIGRATION_MANIFEST")" ]] || return 1
+  if [[ "$checkpoint" == P2 ]]; then
+    raya_verify_candidate_artifact || return 1
+  else
+    raya_verify_materialized_artifact || return 1
+  fi
+  health="$(curl -q -fsS --max-time 5 "${FLYWHEEL_BRIDGE_URL:-${BRIDGE_URL:-http://localhost:9876}}/health")" || return 1
+  jq -e --arg sha "$current" '.ok == true and .buildSha == $sha' <<<"$health" >/dev/null 2>&1 || return 1
+  raya_standard_lead verify --stage registered "$RAYA_CANONICAL_MANIFEST" >/dev/null 2>&1 || return 1
+  [[ "$(sed -n '1p' "$FLYWHEEL_DEPLOYED_SHA_FILE")" == "$current" ]] || return 1
+  raya_manifest_transform "$checkpoint" "$checkpoint" '
+    .pre_activation_rebinds += [{from:.flywheel_deployed_sha,to:$sha,at:$at,checkpoint:.checkpoint}] |
+    .flywheel_deployed_sha=$sha
+  ' --arg sha "$current" --arg at "$(raya_now_iso)"
+}
+
 updater_raya_pass() {
-  local proof_rc=0
+  local proof_rc=0 checkpoint="" current_flywheel=""
+  unset RAYA_MIGRATION_ALLOW_LEGACY_STOP
   raya_configure_runtime_paths
   RAYA_DEPLOY_STATE=not_run
   RAYA_DEPLOY_DETAIL=""
@@ -783,17 +1134,68 @@ updater_raya_pass() {
     RAYA_DEPLOY_DETAIL=canonical-standard-lead-absent
     return 1
   fi
+  if ! raya_manifest_base_valid; then
+    RAYA_DEPLOY_STATE=not_configured
+    RAYA_DEPLOY_DETAIL=migration-ledger-absent
+    return 1
+  fi
   raya_lock_acquire || {
     RAYA_DEPLOY_STATE=locked
     RAYA_DEPLOY_DETAIL="lock-${RAYA_LOCK_FAILURE:-unknown}"
     return 1
   }
-  raya_prepare_source || { raya_fail source-prepare-failed 2; return; }
-  raya_standard_cutover || { raya_fail cutover-failed 3; return; }
+  checkpoint="$(jq -r .checkpoint "$RAYA_MIGRATION_MANIFEST")"
+  current_flywheel="$(sed -n '1p' "$FLYWHEEL_DEPLOYED_SHA_FILE" 2>/dev/null || true)"
+  if [[ "$current_flywheel" != "$(jq -r .flywheel_deployed_sha "$RAYA_MIGRATION_MANIFEST")" ]] \
+    && jq -e '.mode != "standard-update" and
+      (.checkpoint == "P3" or .checkpoint == "P4b" or
+       (.checkpoint == "P2" and any(.legacy_owner[]?; .stop_started_at_ms != null)))' \
+      "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1; then
+    if ! raya_rebind_before_activation "$current_flywheel"; then
+      RAYA_DEPLOY_STATE=awaiting_rebind
+      RAYA_DEPLOY_DETAIL=awaiting_pre_activation_rebind
+      raya_write_standard_receipt refused "$RAYA_DEPLOY_DETAIL" >/dev/null 2>&1 || true
+      raya_lock_release
+      return 2
+    fi
+  fi
+  if [[ ( "$checkpoint" == P5 || "$checkpoint" == P6 ) \
+    && "$current_flywheel" != "$(jq -r .flywheel_deployed_sha "$RAYA_MIGRATION_MANIFEST")" ]]; then
+    RAYA_DEPLOY_STATE=awaiting_proof
+    RAYA_DEPLOY_DETAIL=awaiting_rebind
+    RAYA_TARGET="$(jq -r .raya_sha "$RAYA_MIGRATION_MANIFEST")"
+    if raya_rebind_flywheel "$current_flywheel"; then RAYA_DEPLOY_DETAIL=awaiting_rebind_proof; fi
+    raya_write_standard_receipt refused "$RAYA_DEPLOY_DETAIL" >/dev/null 2>&1 || true
+    raya_lock_release
+    return 2
+  fi
+  if ! raya_prepare_source; then
+    if [[ "$RAYA_DEPLOY_STATE" == prestop-failed ]]; then
+      raya_log "$RAYA_DEPLOY_STATE $RAYA_DEPLOY_DETAIL"
+      raya_lock_release
+      return 2
+    fi
+    raya_fail source-prepare-failed 2
+    return
+  fi
+  if ! raya_standard_cutover; then
+    if jq -e '.checkpoint == "P3" and (.unresolved | length) > 0' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1; then
+      RAYA_DEPLOY_STATE=awaiting_reconciliation
+      RAYA_DEPLOY_DETAIL=p3-unresolved-window
+      raya_write_standard_receipt refused "$RAYA_DEPLOY_DETAIL" >/dev/null 2>&1 || true
+      raya_lock_release
+      return 2
+    fi
+    raya_fail cutover-failed 3
+    return
+  fi
   raya_standard_collect_proof; proof_rc=$?
   if (( proof_rc == 2 )); then
     RAYA_DEPLOY_STATE=awaiting_proof
     RAYA_DEPLOY_DETAIL=p5-awaiting-real-p6-evidence
+    if jq -e '(.flywheel_rebinds // [] | length) > 0' "$RAYA_MIGRATION_MANIFEST" >/dev/null 2>&1; then
+      RAYA_DEPLOY_DETAIL=awaiting_rebind_proof
+    fi
     raya_write_standard_receipt refused "$RAYA_DEPLOY_DETAIL" >/dev/null 2>&1 || true
     raya_lock_release
     return 2

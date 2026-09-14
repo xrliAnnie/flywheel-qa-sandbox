@@ -1,0 +1,50 @@
+classDiagram
+  class CanonicalManifest {
+    +projectName raya
+    +leadId raya
+    +leadBackend.backendId codex-app-server
+    +projectDir ~/Dev/raya-lead-workspace
+    register 产生, 只是 projects.json 的投影
+  }
+  class MigrationLedger {
+    +migration_id
+    +checkpoint P2..P7
+    +target_raya_sha 9d63a2b2
+    +authorization 五 token 授权行
+    +legacy_owner[] 两个旧 job 的停机记录
+    +window_probe / cutover_probe
+    +cursor path+seed_input+sha256
+    +baseline quiet15m
+    +unresolved[] / resolutions[]
+    +flywheel_rebinds[]
+  }
+  class SeedInput {
+    +migrationId
+    +expectedBeforeSha256 null
+    +writerStopped true
+    +channels[channelId, lastConfirmedMessageId]
+  }
+  class InboundCursor {
+    +channelId -> lastConfirmedMessageId
+    新 Lead 从这里往后收信
+  }
+  class Proof {
+    +lead pid/start/activation_id/thread_id/tui
+    +business source_sha/artifact/persona
+    +checks preflight/pump/text/summary/alert
+    +cutover seed/window ids/unresolved_count 0
+  }
+  class DeployReceiptV2 {
+    +schemaVersion 2
+    +carrier standard-lead
+    +outcome deployed
+    +deployed_sha (Raya)
+    +flywheel_deployed_sha
+    +lead/business/checks/cutover
+    +rollback_target null(首次)
+  }
+  CanonicalManifest --> MigrationLedger : 班车 host_capable 后读账本
+  MigrationLedger --> SeedInput : P3 写
+  SeedInput --> InboundCursor : seed 工具写
+  MigrationLedger --> Proof : H4 工具读账本取证
+  Proof --> DeployReceiptV2 : 班车 N+1 P6 校验后写

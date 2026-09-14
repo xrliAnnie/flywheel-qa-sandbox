@@ -197,6 +197,7 @@ test("registers the isolated voice QA mailbox read without exempting it from sca
 });
 
 for (const [file, table] of [
+	["packages/teamlead/src/bin/raya-migration-proof-evidence.ts", "mailbox"],
 	[
 		"packages/teamlead/src/bin/backend-migration-evidence.ts",
 		"workflow_run_event",
