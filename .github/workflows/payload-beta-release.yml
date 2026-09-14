@@ -87,9 +87,9 @@ jobs:
       group: payload-release
       queue: max
       cancel-in-progress: false
-    env:
-      TRUSTED_BETA_ROOT: ${{ runner.temp }}/beta-receiver
     steps:
+      - name: Initialize trusted receiver path
+        run: printf 'TRUSTED_BETA_ROOT=%s/beta-receiver\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           ref: main

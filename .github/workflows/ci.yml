@@ -103,6 +103,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Validate workflow startup syntax and contexts (FLY-2534)
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/fly2534-actionlint"
+          archive="actionlint_1.7.12_linux_amd64.tar.gz"
+          mkdir -p "$install_dir"
+          curl --retry 3 --connect-timeout 15 --max-time 120 -fsSLo "$install_dir/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$archive"
+          printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' "$install_dir/$archive" | sha256sum -c -
+          tar -xzf "$install_dir/$archive" -C "$install_dir" actionlint
+          export PATH="$install_dir:$PATH"
+          node scripts/check-workflow-startup.mjs
+          node --test scripts/__tests__/workflow-startup.test.mjs
+
       - name: Enforce FLY-1781 flag-governance safety contracts
         run: |
           bash scripts/__tests__/flag-governance-cos-contract.test.sh
