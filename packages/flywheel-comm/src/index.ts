@@ -48,6 +48,7 @@ import {
 	publishReport,
 } from "./commands/publish-report.js";
 import { qaResult } from "./commands/qa-result.js";
+import { runReleaseBugTag } from "./commands/release-bug-tag.js";
 import { reportDeployed } from "./commands/report-deployed.js";
 import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
@@ -207,6 +208,9 @@ Commands:
 	            status is read-only; generate/show/render recompute the active Linear scope.
   dependency  Maintain the live dependency ledger. Subcommands:
               add | remove | note | discover | log | show.
+  release-bug-tag  Record an existing bug: --issue ID [--commit SHA --base-version X.Y.Z].
+            Resolve: --resolve-intent ID (--issue ID | --abandon --reason TEXT).
+            Uses FLYWHEEL_BRIDGE_URL and TEAMLEAD_API_TOKEN.
   lead-note   Set, show or clear a role-declared judgment beside machine facts.
               set | show | clear --project <project> --issue <ID> [--role <role>] [--text <text>].
   founder-time   Print Annie's current local time and timezone. Uses the host
@@ -435,6 +439,9 @@ async function main(): Promise<void> {
 			break;
 		case "lead-note":
 			process.exitCode = await runLeadNote(commandArgs);
+			break;
+		case "release-bug-tag":
+			process.exitCode = await runReleaseBugTag(commandArgs);
 			break;
 		case "founder-time":
 			founderTime(commandArgs);

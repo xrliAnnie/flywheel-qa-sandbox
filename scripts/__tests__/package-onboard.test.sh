@@ -130,7 +130,7 @@ run_po() {
   env PACKAGE_ONBOARD_SOURCED=1 \
     NPM_CONFIG_CACHE="$SANDBOX/npm-cache" \
     PO_PACKAGES="alpha beta" \
-    PO_PACKAGE_ASSETS=" " \
+    PO_PACKAGE_ASSETS="${TEST_PACKAGE_ASSETS:- }" \
     PO_PACKAGE_ASSET_FILES=" " \
     PO_SCRIPT_FILES="flywheel-onboard.sh" \
     PO_SCRIPT_DIRS=" " \
@@ -172,6 +172,42 @@ if run_po po_assemble "$FIX" "$TREE" >/dev/null 2>&1; then
 else
   fail "A1 po_assemble failed: $(run_po po_assemble "$FIX" "$TREE" 2>&1 | tail -5)"
 fi
+
+# Native JS entrypoints must be explicitly included in the asset policy.
+mv "$FIX/packages/beta/dist" "$FIX/packages/beta/src"
+jq '.main = "src/index.js"' "$FIX/packages/beta/package.json" > "$FIX/beta.json"
+mv "$FIX/beta.json" "$FIX/packages/beta/package.json"
+if run_po po_assemble "$FIX" "$SANDBOX/native-unregistered" >/dev/null 2>&1; then
+  fail "A1b undeclared native entrypoint bypassed the dist guard"
+else
+  pass "A1b undeclared native entrypoint remains fail-closed"
+fi
+if TEST_PACKAGE_ASSETS="beta:src" run_po po_assemble "$FIX" "$SANDBOX/native-registered" >/dev/null 2>&1 \
+  && [ -f "$SANDBOX/native-registered/node_modules/fw-beta/src/index.js" ]; then
+  pass "A1c declared native runtime asset ships without a synthetic build"
+else
+  fail "A1c declared native runtime asset missing"
+fi
+echo 'node_modules/fw-beta/src/*' >> "$FIX/files.allow"
+if TEST_PACKAGE_ASSETS="beta:src" run_po po_gate "$SANDBOX/native-registered" "$FIX" > "$SANDBOX/native-gate.log" 2>&1; then
+  pass "A1c native runtime passes the real release gates"
+else
+  fail "A1c native runtime failed release gates: $(tail -4 "$SANDBOX/native-gate.log")"
+fi
+echo 'const leak: string = "x";' > "$SANDBOX/native-registered/node_modules/fw-beta/src/leak.ts"
+if TEST_PACKAGE_ASSETS="beta:src" run_po po_gate "$SANDBOX/native-registered" "$FIX" > "$SANDBOX/native-gate.log" 2>&1; then
+  fail "A1c native runtime exemption admitted TypeScript"
+else
+  grep -q 'gate③' "$SANDBOX/native-gate.log" && pass "A1c native runtime still rejects TypeScript" \
+    || fail "A1c TypeScript rejected for the wrong reason"
+fi
+rm "$FIX/packages/beta/src/index.js"
+if TEST_PACKAGE_ASSETS="beta:src" run_po po_assemble "$FIX" "$SANDBOX/native-missing" >/dev/null 2>&1; then
+  fail "A1d missing native main was shipped"
+else
+  pass "A1d missing native main remains fail-closed"
+fi
+mk_fixture
 
 # ── A2 · onboard skin patch ──────────────────────────────────────────────────
 onboard="$TREE/scripts/flywheel-onboard.sh"

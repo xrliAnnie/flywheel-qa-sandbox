@@ -1,0 +1,291 @@
+[
+  {
+    "state": "green",
+    "reasons": [],
+    "evidence": {
+      "founder": {
+        "days": []
+      },
+      "counts": {
+        "severe": 0,
+        "warning": 1,
+        "unattributedSevere": 0,
+        "captureGaps": 0,
+        "bugs": 0,
+        "pendingBugs": 0,
+        "unattributedBugs": 0
+      },
+      "window": {
+        "from": "2026-09-08T12:00:00.000Z",
+        "to": "2026-09-11T12:00:00.000Z",
+        "episodeFrom": "2026-09-08T12:00:00.000Z",
+        "episodeTo": null,
+        "windowTruncated": false
+      },
+      "heartbeat": {
+        "coveredHours": 72,
+        "gapMin": 0,
+        "lastHeartbeatAt": "2026-09-11T12:00:00.000Z",
+        "ageMin": 0
+      },
+      "outbox": {
+        "gapsPending": 0,
+        "gapsInvalid": 0,
+        "publicationsPending": 0,
+        "publicationsInvalid": 0,
+        "oldestPendingAt": null,
+        "readErrors": []
+      },
+      "localDeployedSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "policy": {
+        "soakHours": 12,
+        "heartbeatFreshMin": 10,
+        "gapToleranceMin": 30,
+        "backlogAgeMaxS": 600,
+        "severeHold": 1,
+        "warningHold": 5,
+        "bugHold": 1,
+        "projects": [
+          "flywheel",
+          "machine"
+        ],
+        "ignoreKinds": [],
+        "bugLabel": "Bug",
+        "founderChannelConfigured": true,
+        "policyDefaulted": []
+      },
+      "policyDefaulted": []
+    },
+    "subject": {
+      "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "baseVersion": "1.56.0"
+    },
+    "evaluatedAt": "2026-09-11T12:00:00.000Z",
+    "verdictId": "rr-replay-green"
+  },
+  {
+    "state": "hold",
+    "reasons": [
+      {
+        "code": "founder_thumbs_down",
+        "detail": {
+          "days": [
+            {
+              "day": "2026-09-09",
+              "messageId": "20260909"
+            }
+          ]
+        }
+      },
+      {
+        "code": "bug_reports_over_threshold",
+        "detail": {
+          "count": 1,
+          "threshold": 1,
+          "identifiers": [
+            "FLY-942"
+          ]
+        }
+      }
+    ],
+    "evidence": {
+      "founder": {
+        "days": [
+          {
+            "day": "2026-09-09",
+            "messageId": "20260909",
+            "sentiment": "down",
+            "founderUserId": "fixture-founder",
+            "subjectCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "observedAt": "2026-09-09T08:01:00.000Z"
+          },
+          {
+            "day": "2026-09-10",
+            "messageId": "20260910",
+            "sentiment": "up",
+            "founderUserId": "fixture-founder",
+            "subjectCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "observedAt": "2026-09-10T08:01:00.000Z"
+          }
+        ]
+      },
+      "counts": {
+        "severe": 0,
+        "warning": 1,
+        "unattributedSevere": 0,
+        "captureGaps": 0,
+        "bugs": 1,
+        "pendingBugs": 0,
+        "unattributedBugs": 0
+      },
+      "window": {
+        "from": "2026-09-08T12:00:00.000Z",
+        "to": "2026-09-11T12:00:00.000Z",
+        "episodeFrom": "2026-09-08T12:00:00.000Z",
+        "episodeTo": null,
+        "windowTruncated": false
+      },
+      "heartbeat": {
+        "coveredHours": 72,
+        "gapMin": 0,
+        "lastHeartbeatAt": "2026-09-11T12:00:00.000Z",
+        "ageMin": 0
+      },
+      "outbox": {
+        "gapsPending": 0,
+        "gapsInvalid": 0,
+        "publicationsPending": 0,
+        "publicationsInvalid": 0,
+        "oldestPendingAt": null,
+        "readErrors": []
+      },
+      "localDeployedSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "policy": {
+        "soakHours": 12,
+        "heartbeatFreshMin": 10,
+        "gapToleranceMin": 30,
+        "backlogAgeMaxS": 600,
+        "severeHold": 1,
+        "warningHold": 5,
+        "bugHold": 1,
+        "projects": [
+          "flywheel",
+          "machine"
+        ],
+        "ignoreKinds": [],
+        "bugLabel": "Bug",
+        "founderChannelConfigured": true,
+        "policyDefaulted": []
+      },
+      "policyDefaulted": []
+    },
+    "subject": {
+      "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "baseVersion": "1.56.0"
+    },
+    "evaluatedAt": "2026-09-11T12:00:00.000Z",
+    "verdictId": "rr-replay-hold"
+  },
+  {
+    "state": "unknown",
+    "reasons": [
+      {
+        "code": "heartbeat_stale",
+        "detail": {
+          "lastHeartbeatAt": "2026-09-11T10:00:00.000Z",
+          "ageMin": 120,
+          "freshMin": 10
+        }
+      },
+      {
+        "code": "heartbeat_gap",
+        "detail": {
+          "gapMin": 15960,
+          "toleranceMin": 30,
+          "largestGap": {
+            "from": "2026-08-28T12:00:00.000Z",
+            "to": "2026-09-08T12:00:00.000Z"
+          }
+        }
+      },
+      {
+        "code": "outbox_pending",
+        "detail": {
+          "gapsPending": 2,
+          "gapsInvalid": 1,
+          "publicationsPending": 1,
+          "publicationsInvalid": 0,
+          "oldestPendingAt": "2026-09-11T12:00:00.000Z",
+          "readErrors": []
+        }
+      },
+      {
+        "code": "unattributed_severe",
+        "detail": {
+          "count": 1,
+          "sampleEventIds": [
+            "replay-no-version-tag"
+          ]
+        }
+      },
+      {
+        "code": "bug_source_unhealthy",
+        "detail": {
+          "lastFailureAt": "2026-09-11T12:00:00.000Z",
+          "lastSuccessAt": "2026-09-10T00:00:00.000Z",
+          "label": "Bug"
+        }
+      },
+      {
+        "code": "severe_alerts",
+        "detail": {
+          "count": 1,
+          "threshold": 1,
+          "byKind": {
+            "deploy_failed": 1
+          }
+        }
+      }
+    ],
+    "evidence": {
+      "founder": {
+        "days": []
+      },
+      "counts": {
+        "severe": 1,
+        "warning": 1,
+        "unattributedSevere": 1,
+        "captureGaps": 0,
+        "bugs": 0,
+        "pendingBugs": 0,
+        "unattributedBugs": 0
+      },
+      "window": {
+        "from": "2026-08-28T12:00:00.000Z",
+        "to": "2026-09-11T12:00:00.000Z",
+        "episodeFrom": "2026-08-22T12:00:00.000Z",
+        "episodeTo": null,
+        "windowTruncated": true
+      },
+      "heartbeat": {
+        "coveredHours": 70,
+        "gapMin": 15960,
+        "lastHeartbeatAt": "2026-09-11T10:00:00.000Z",
+        "ageMin": 120
+      },
+      "outbox": {
+        "gapsPending": 2,
+        "gapsInvalid": 1,
+        "publicationsPending": 1,
+        "publicationsInvalid": 0,
+        "oldestPendingAt": "2026-09-11T12:00:00.000Z",
+        "readErrors": []
+      },
+      "localDeployedSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "policy": {
+        "soakHours": 12,
+        "heartbeatFreshMin": 10,
+        "gapToleranceMin": 30,
+        "backlogAgeMaxS": 600,
+        "severeHold": 1,
+        "warningHold": 5,
+        "bugHold": 1,
+        "projects": [
+          "flywheel",
+          "machine"
+        ],
+        "ignoreKinds": [],
+        "bugLabel": "Bug",
+        "founderChannelConfigured": true,
+        "policyDefaulted": []
+      },
+      "policyDefaulted": []
+    },
+    "subject": {
+      "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "baseVersion": "1.56.0"
+    },
+    "evaluatedAt": "2026-09-11T12:00:00.000Z",
+    "verdictId": "rr-replay-unknown"
+  }
+]

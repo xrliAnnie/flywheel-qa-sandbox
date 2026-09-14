@@ -140,6 +140,8 @@ export interface GatePollerConfig {
 	onHealthTick?: () => void | Promise<void>;
 	/** FLY-1687: pure alarm producer on the existing 60s rider cadence. */
 	onLeadPatrolTick?: () => void | Promise<void>;
+	/** FLY-2390: readiness ingestion on the existing 60s cadence. */
+	onReleaseReadinessTick?: () => void | Promise<void>;
 	/** FLY-2131: durable Raya summary-absorption producer on the same cadence. */
 	onSummaryAbsorptionTick?: () => void | Promise<void>;
 	/** FLY-2118: machine-wide orphan-pane fallback on the same 60s rider cadence. */
@@ -753,6 +755,23 @@ export class GatePoller {
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] FLY-513 codex-health probe error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (
+				this.config.onReleaseReadinessTick &&
+				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
+			) {
+				void Promise.resolve()
+					.then(() =>
+						this.withSpan("gate-poller.release-readiness", () =>
+							this.config.onReleaseReadinessTick?.(),
+						),
+					)
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] readiness tick error (non-fatal): ${String(err)}`,
 						),
 					);
 			}

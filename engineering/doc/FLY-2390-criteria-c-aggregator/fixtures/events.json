@@ -1,0 +1,32 @@
+[
+  {
+    "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "baseVersion": "1.56.0",
+    "projectName": "flywheel",
+    "kind": "deploy_failed",
+    "eventId": "replay-old-episode",
+    "occurrence": 1,
+    "severity": "severe",
+    "observedAt": "2026-09-01T13:00:00.000Z"
+  },
+  {
+    "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "baseVersion": "1.56.0",
+    "projectName": "flywheel",
+    "kind": "deploy_failed",
+    "eventId": "replay-shared-event",
+    "occurrence": 1,
+    "severity": "info",
+    "observedAt": "2026-09-09T13:00:00.000Z"
+  },
+  {
+    "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "baseVersion": "1.56.0",
+    "projectName": "flywheel",
+    "kind": "deploy_failed",
+    "eventId": "replay-shared-event",
+    "occurrence": 2,
+    "severity": "warning",
+    "observedAt": "2026-09-10T13:00:00.000Z"
+  }
+]

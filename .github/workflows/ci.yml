@@ -1078,6 +1078,9 @@ jobs:
         run: |
           node --test scripts/__tests__/infra-bot-sensor-preflight.test.mjs
           bash scripts/__tests__/lead-alert-fly927.test.sh
+          /bin/bash scripts/__tests__/lead-alert-version-observation.test.sh
+          /bin/bash scripts/__tests__/release-readiness-report.test.sh
+          node scripts/verify-release-readiness-report.mjs
           bash scripts/__tests__/lead-alert-external-kind.test.sh
           bash scripts/__tests__/bridge-wrapper-fail-loud.test.sh
 

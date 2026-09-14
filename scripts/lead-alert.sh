@@ -221,6 +221,54 @@ case "$SEVERITY" in
     ;;
 esac
 
+# FLY-2390: capture intent precedes config/tool exits. Keep it until the
+# observation transaction lands; a missing tool/token must not look healthy.
+readiness_json_string() {
+  local value="$1" char code
+  printf '"'
+  while [ -n "$value" ]; do
+    char="${value:0:1}"; value="${value:1}"
+    case "$char" in
+      '"') printf '\\"' ;;
+      '\') printf '\\\\' ;;
+      *) printf -v code '%d' "'$char"
+         if [ "$code" -lt 32 ]; then printf '\\u%04x' "$code"; else printf '%s' "$char"; fi ;;
+    esac
+  done
+  printf '"'
+}
+READINESS_GAPS="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state/release-readiness/gaps"
+READINESS_REPO="${FLYWHEEL_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
+READINESS_SHA_FILE="${FLYWHEEL_DEPLOYED_SHA_FILE:-${HOME}/.flywheel/deployed-sha}"
+READINESS_SHA="null"
+READINESS_BASE=""
+if [ -r "$READINESS_SHA_FILE" ]; then
+  readiness_sha=$(<"$READINESS_SHA_FILE")
+  if [[ "$readiness_sha" =~ ^[0-9a-f]{40}$ ]]; then READINESS_SHA="$readiness_sha"; fi
+fi
+if [ -r "$READINESS_REPO/doc/VERSION" ]; then
+  readiness_base=$(<"$READINESS_REPO/doc/VERSION")
+  readiness_base=${readiness_base//[$' \t\r\n']/}
+  readiness_base=${readiness_base#v}
+  if [[ "$readiness_base" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then READINESS_BASE="$readiness_base"; fi
+fi
+READINESS_AT=$(/bin/date -u '+%Y-%m-%dT%H:%M:%S.000Z')
+READINESS_UNIX=$(/bin/date +%s)
+READINESS_INTENT="$READINESS_GAPS/${READINESS_UNIX}-$$-${RANDOM}-${RANDOM}.intent.json"
+if mkdir -p "$READINESS_GAPS" && {
+  printf '{"eventIdHint":null,"kind":'; readiness_json_string "$KIND"
+  printf ',"severity":'; readiness_json_string "$SEVERITY"
+  printf ',"projectName":'; readiness_json_string "$PROJECT_NAME"
+  printf ',"leadId":'; readiness_json_string "$LEAD_ID"
+  printf ',"baseVersion":'; if [ -n "$READINESS_BASE" ]; then readiness_json_string "$READINESS_BASE"; else printf null; fi
+  printf ',"sourceCommit":'; if [ "$READINESS_SHA" != null ]; then readiness_json_string "$READINESS_SHA"; else printf null; fi
+  printf ',"observedAt":"%s","reason":"shell_preflight"}\n' "$READINESS_AT"
+} > "$READINESS_INTENT.tmp" && mv "$READINESS_INTENT.tmp" "$READINESS_INTENT"; then
+  :
+else
+  log "ERROR: release signal capture intent could not be written"
+fi
+
 # FLY-2051: ordinary-message rendering is a narrow capability, not a generic
 # way for alert producers to bypass ticket/alert framing.
 if [ "$PLAIN_MESSAGE" = "1" ] && ! is_quota_switch_kind "$KIND" && [ "$KIND" != "quota_monitor_down" ]; then
@@ -503,6 +551,9 @@ LEASE_NOW=$(date +%s)
 LEASE_UNTIL=$((LEASE_NOW + LEASE_SECONDS))
 LEASE_TOKEN="${LEASE_NOW}-$$-${RANDOM}"
 
+READINESS_BASE_SQL=NULL
+if [ -n "$READINESS_BASE" ]; then READINESS_BASE_SQL="'$READINESS_BASE'"; fi
+
 CLAIM_SQL=$(cat <<SQL
 .timeout 5000
 CREATE TABLE IF NOT EXISTS alert_claims (
@@ -520,7 +571,24 @@ CREATE TABLE IF NOT EXISTS alert_deliveries (
   updated_at INTEGER NOT NULL,
   last_error TEXT
 );
+CREATE TABLE IF NOT EXISTS alert_version_observations (
+  event_id TEXT NOT NULL,
+  source_commit_key TEXT NOT NULL,
+  occurrence INTEGER NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('info','warning','severe')),
+  project_name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  base_version TEXT,
+  observed_at INTEGER NOT NULL,
+  PRIMARY KEY (event_id, source_commit_key, occurrence)
+);
+CREATE INDEX IF NOT EXISTS idx_alert_version_observations_cursor
+  ON alert_version_observations(observed_at, event_id, source_commit_key, occurrence);
 BEGIN IMMEDIATE;
+INSERT INTO alert_version_observations (event_id, source_commit_key, occurrence, severity, project_name, kind, base_version, observed_at)
+  VALUES ('${EVENT_ID}', '${READINESS_SHA}',
+    (SELECT COALESCE(MAX(occurrence),0)+1 FROM alert_version_observations WHERE event_id='${EVENT_ID}' AND source_commit_key='${READINESS_SHA}'),
+    '${SEVERITY}', '$(sql_quote "$PROJECT_NAME")', '${KIND}', ${READINESS_BASE_SQL}, ${READINESS_UNIX});
 INSERT OR IGNORE INTO alert_claims VALUES ('${EVENT_ID}', '$(sql_quote "$LEAD_ID")', '${KIND}', strftime('%s','now'));
 INSERT OR IGNORE INTO alert_deliveries
   (event_id, state, lease_token, lease_until, attempt_count, updated_at, last_error)
@@ -544,6 +612,12 @@ CLAIM_RESULT=$(sqlite3 "$CLAIMS_DB" <<<"$CLAIM_SQL" 2>&1) || {
   DELIVERY_DB_OK=0
   CLAIM_RESULT="leased|${LEASE_TOKEN}"
 }
+
+if [ "$DELIVERY_DB_OK" = 1 ] && [ -f "$READINESS_INTENT" ]; then
+  if ! { mkdir -p "$READINESS_GAPS/landed" && mv "$READINESS_INTENT" "$READINESS_GAPS/landed/"; }; then
+    log "ERROR: release signal observation landed but intent could not be retired"
+  fi
+fi
 
 # Last non-empty stdout line is the companion delivery state and lease owner.
 DELIVERY_ROW=$(printf '%s\n' "$CLAIM_RESULT" | awk 'NF' | tail -n 1)

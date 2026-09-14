@@ -1,3 +1,4 @@
+import type { ReleaseSignalEvent, ReleasePublication, ReadinessInput, ReleaseHeartbeat, ReleaseSignalGap, ReleaseReadinessRecord } from "./bridge/release-readiness/evaluate.js";
 import {
 	PRE_ADAPTER_FAILURE_KINDS,
 	type CodexRecoveryFailureV1,
@@ -4588,6 +4589,331 @@ export class StateStore {
 		}
 	}
 
+	appendReleaseReadinessVerdict(input: Omit<ReleaseReadinessRecord, "verdictId">): ReleaseReadinessRecord {
+		const record = {...input, verdictId: `rr-${randomUUID()}`};
+		this.db.raw.prepare(`INSERT INTO release_readiness_verdicts
+			(verdict_id, subject_commit, base_version, local_deployed_sha, state, reasons_json, evidence_json, policy_json, evaluated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(record.verdictId, record.subject.sourceCommit, record.subject.baseVersion,
+			input.evidence.localDeployedSha, input.state, JSON.stringify(input.reasons), JSON.stringify(input.evidence), JSON.stringify(input.evidence.policy), input.evaluatedAt);
+		return record;
+	}
+
+	getReleaseReadinessVerdicts(sourceCommit: string, limit = 20): ReleaseReadinessRecord[] {
+		if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid history limit");
+		const rows = this.db.raw.prepare(`SELECT verdict_id, subject_commit, base_version, state, reasons_json, evidence_json, evaluated_at
+			FROM release_readiness_verdicts WHERE subject_commit=? ORDER BY evaluated_at DESC, rowid DESC LIMIT ?`).all(sourceCommit, limit) as {
+			verdict_id: string; subject_commit: string; base_version: string; state: string; reasons_json: string; evidence_json: string; evaluated_at: string;
+		}[];
+		return rows.map(row => ({verdictId: row.verdict_id, subject: {sourceCommit: row.subject_commit, baseVersion: row.base_version},
+			state: row.state, reasons: JSON.parse(row.reasons_json) as ReleaseReadinessRecord["reasons"],
+			evidence: JSON.parse(row.evidence_json) as ReleaseReadinessRecord["evidence"], evaluatedAt: row.evaluated_at}));
+	}
+
+	recordReleaseFounderScan(publicationId: string, input: {at: string} & (
+		{ok: false; error: string} | {ok: true; founderUserId: string; sentiment: "up" | "down" | null}
+	)): void {
+		this.db.raw.transaction(() => {
+			const publication = this.db.raw.prepare(`SELECT day, message_id, subject_commit FROM release_report_publications
+				WHERE publication_id=? AND status='published' AND message_id IS NOT NULL`).get(publicationId) as {day: string; message_id: string; subject_commit: string} | undefined;
+			if (!publication) throw new Error("published report not found");
+			if (!input.ok) {
+				this.db.raw.prepare("UPDATE release_report_publications SET last_scan_at=?, last_scan_error=? WHERE publication_id=?").run(input.at, input.error, publicationId);
+				return;
+			}
+			this.db.raw.prepare(`UPDATE release_report_publications SET first_scan_ok_at=COALESCE(first_scan_ok_at, ?),
+				last_scan_ok_at=?, last_scan_at=?, last_scan_error=NULL WHERE publication_id=?`).run(input.at, input.at, input.at, publicationId);
+			if (input.sentiment) this.db.raw.prepare(`INSERT INTO release_founder_verdicts(day, message_id, sentiment, founder_user_id, subject_commit, observed_at)
+				VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(day) DO UPDATE SET sentiment=excluded.sentiment, observed_at=excluded.observed_at
+				WHERE release_founder_verdicts.sentiment='up' AND excluded.sentiment='down'`)
+				.run(publication.day, publication.message_id, input.sentiment, input.founderUserId, publication.subject_commit, input.at);
+		}).immediate();
+	}
+
+	appendReleaseHeartbeat(h: ReleaseHeartbeat): void {
+		this.db.raw.prepare(`INSERT INTO release_signal_heartbeat
+			(tick_at, source_commit, base_version, w1_freshness, alert_delivery_enabled, claims_db_ok, ingest_ok, gaps_dir_ok,
+			 bridge_capture_failures, rejected_rows, backlog_age_s, outbox_pending, outbox_invalid)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(h.tickAt, h.sourceCommit, h.baseVersion, h.w1Freshness,
+			Number(h.alertDeliveryEnabled), Number(h.claimsDbOk), Number(h.ingestOk), Number(h.gapsDirOk), h.bridgeCaptureFailures, h.rejectedRows, h.backlogAgeS, h.outboxPending, h.outboxInvalid);
+	}
+
+	insertReleaseSignalGap(g: ReleaseSignalGap & {baseVersion: string | null; kind: string; severity: ReleaseSignalEvent["severity"]; ingestedAt: string}): void {
+		this.db.raw.prepare(`INSERT INTO release_signal_gaps
+			(gap_id, event_id, reason, severity, project_name, kind, source_commit, base_version, observed_at, ingested_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(gap_id) DO NOTHING`)
+			.run(g.gapId, g.eventId, g.reason, g.severity, g.projectName, g.kind, g.sourceCommit, g.baseVersion, g.observedAt, g.ingestedAt);
+	}
+
+	recordReleaseBugSourceHealth(input: {label: string; ok: boolean; error?: string; at: string}): void {
+		this.db.raw.prepare(`INSERT INTO release_bug_source_health(key, label, last_success_at, last_failure_at, last_error)
+			VALUES ('bug_label', ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET label=excluded.label,
+			last_success_at=COALESCE(excluded.last_success_at, last_success_at),
+			last_failure_at=COALESCE(excluded.last_failure_at, last_failure_at), last_error=excluded.last_error`)
+			.run(input.label, input.ok ? input.at : null, input.ok ? null : input.at, input.ok ? null : input.error ?? "label lookup failed");
+	}
+
+	getReleaseReadinessEvidence(sourceCommit: string, from: string, to: string): Pick<ReadinessInput, "events" | "gaps" | "heartbeats" | "bugs" | "bugSourceHealth" | "publications" | "founderVerdicts"> {
+		const params = [sourceCommit, from, to];
+		return {
+			events: this.db.raw.prepare(`SELECT event_id AS eventId, source_commit AS sourceCommit, base_version AS baseVersion,
+				occurrence, project_name AS projectName, kind, severity, observed_at AS observedAt FROM release_signal_events
+				WHERE (source_commit=? OR source_commit IS NULL) AND observed_at>=? AND observed_at<=? ORDER BY observed_at, __rowid`).all(...params) as ReadinessInput["events"],
+			gaps: this.db.raw.prepare(`SELECT gap_id AS gapId, event_id AS eventId, source_commit AS sourceCommit,
+				project_name AS projectName, reason, observed_at AS observedAt FROM release_signal_gaps
+				WHERE (source_commit=? OR source_commit IS NULL) AND observed_at>=? AND observed_at<=? ORDER BY observed_at, gap_id`).all(...params) as ReadinessInput["gaps"],
+			heartbeats: (this.db.raw.prepare(`SELECT tick_at AS tickAt, source_commit AS sourceCommit, base_version AS baseVersion,
+				w1_freshness AS w1Freshness, alert_delivery_enabled AS alertDeliveryEnabled, claims_db_ok AS claimsDbOk,
+				ingest_ok AS ingestOk, gaps_dir_ok AS gapsDirOk, bridge_capture_failures AS bridgeCaptureFailures,
+				rejected_rows AS rejectedRows, backlog_age_s AS backlogAgeS, outbox_pending AS outboxPending, outbox_invalid AS outboxInvalid
+				FROM release_signal_heartbeat WHERE source_commit=? AND tick_at>=? AND tick_at<=? ORDER BY tick_at, seq`).all(...params) as ReleaseHeartbeat[])
+				.map(h => ({...h, alertDeliveryEnabled: !!h.alertDeliveryEnabled, claimsDbOk: !!h.claimsDbOk, ingestOk: !!h.ingestOk, gapsDirOk: !!h.gapsDirOk})),
+			bugs: this.db.raw.prepare(`SELECT intent_id AS intentId, issue_identifier AS issueIdentifier, status,
+				source_commit AS sourceCommit, base_version AS baseVersion, created_at AS createdAt FROM release_bug_reports
+				WHERE (source_commit=? OR source_commit IS NULL) AND created_at>=? AND created_at<=? ORDER BY created_at, intent_id`).all(...params) as ReadinessInput["bugs"],
+			bugSourceHealth: this.db.raw.prepare(`SELECT label, last_success_at AS lastSuccessAt, last_failure_at AS lastFailureAt,
+				last_error AS lastError FROM release_bug_source_health WHERE key='bug_label'`).get() as ReadinessInput["bugSourceHealth"] ?? null,
+			publications: this.db.raw.prepare(`SELECT publication_id AS publicationId, day, subject_commit AS subjectCommit, base_version AS baseVersion,
+				status, channel_id AS channelId, message_id AS messageId, intent_at AS intentAt, published_at AS publishedAt,
+				first_scan_ok_at AS firstScanOkAt, last_scan_ok_at AS lastScanOkAt, last_scan_at AS lastScanAt, last_scan_error AS lastScanError
+				FROM release_report_publications WHERE subject_commit=? AND intent_at>=? AND intent_at<=? ORDER BY day`).all(...params) as ReadinessInput["publications"],
+			founderVerdicts: this.db.raw.prepare(`SELECT v.day, v.message_id AS messageId, v.sentiment, v.founder_user_id AS founderUserId,
+				v.subject_commit AS subjectCommit, v.observed_at AS observedAt FROM release_founder_verdicts v
+				JOIN release_report_publications p ON p.day=v.day AND p.message_id=v.message_id AND p.subject_commit=v.subject_commit
+				WHERE v.subject_commit=? AND p.intent_at>=? AND p.intent_at<=? ORDER BY v.day`).all(...params) as ReadinessInput["founderVerdicts"],
+		};
+	}
+
+	listDeploymentEpisodesForSha(sourceCommit: string): NonNullable<ReadinessInput["anchor"]>[] {
+		return this.db.raw.prepare(`WITH source_rows AS (
+			SELECT id, deployed_sha, deployed_at FROM deployment_events WHERE project_name='flywheel' AND environment='production'
+			UNION ALL SELECT 0, source_commit, episode_from FROM release_deployment_anchors
+			UNION ALL SELECT -1, NULL, episode_to FROM release_deployment_anchors WHERE episode_to IS NOT NULL
+		), timeline AS (
+			SELECT id, deployed_sha, strftime('%Y-%m-%dT%H:%M:%fZ', deployed_at) AS deployed_at,
+				LAG(deployed_sha) OVER (ORDER BY julianday(deployed_at), id) AS previous_sha,
+				ROW_NUMBER() OVER (ORDER BY julianday(deployed_at), id) AS row_number
+			FROM source_rows
+		), starts AS (
+			SELECT id, deployed_sha, deployed_at FROM timeline WHERE row_number=1 OR previous_sha IS NOT deployed_sha
+		), episodes AS (
+			SELECT deployed_sha AS sourceCommit, deployed_at AS episodeFrom,
+				LEAD(deployed_at) OVER (ORDER BY deployed_at, id) AS episodeTo FROM starts
+		) SELECT * FROM episodes WHERE sourceCommit=? ORDER BY episodeFrom`).all(sourceCommit) as NonNullable<ReadinessInput["anchor"]>[];
+	}
+
+	upsertReleaseDeploymentAnchor(input: NonNullable<ReadinessInput["anchor"]>, firstSeenAt: string): void {
+		this.db.raw.prepare(`INSERT INTO release_deployment_anchors(anchor_id, source_commit, episode_from, episode_to, first_seen_at)
+			VALUES (?, ?, ?, ?, ?) ON CONFLICT(source_commit, episode_from) DO UPDATE SET
+			episode_to=COALESCE(release_deployment_anchors.episode_to, excluded.episode_to)`)
+			.run(`${input.sourceCommit}:${input.episodeFrom}`, input.sourceCommit, input.episodeFrom, input.episodeTo, firstSeenAt);
+	}
+
+	getReleaseDeploymentAnchor(sourceCommit: string): ReadinessInput["anchor"] {
+		return this.db.raw.prepare(`SELECT source_commit AS sourceCommit, episode_from AS episodeFrom, episode_to AS episodeTo
+			FROM release_deployment_anchors WHERE source_commit=? ORDER BY episode_from DESC LIMIT 1`).get(sourceCommit) as NonNullable<ReadinessInput["anchor"]> | undefined ?? null;
+	}
+
+	upsertReleasePublication(input: ReleasePublication): void {
+		this.db.raw.transaction(() => {
+			const old = this.db.raw.prepare(`SELECT status, day, subject_commit, base_version, channel_id, intent_at, message_id, published_at
+				FROM release_report_publications WHERE publication_id=?`).get(input.publicationId) as {status: string; day: string; subject_commit: string; base_version: string; channel_id: string; intent_at: string; message_id: string | null; published_at: string | null} | undefined;
+			if (old) {
+				if (old.day !== input.day || old.subject_commit !== input.subjectCommit || old.base_version !== input.baseVersion || old.channel_id !== input.channelId || old.intent_at !== input.intentAt || (old.message_id !== null && old.message_id !== input.messageId && input.status !== "intent")) throw new Error("publication identity conflict");
+				if (old.status !== "intent" && old.status !== input.status) throw new Error("publication regression");
+				if (old.status !== "intent") return;
+			}
+			if (input.status === "published" && (!input.messageId || !input.publishedAt)) throw new Error("published receipt required");
+			this.db.raw.prepare(`INSERT INTO release_report_publications
+				(publication_id, day, subject_commit, base_version, status, channel_id, message_id, intent_at, published_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(publication_id) DO UPDATE SET
+				status=excluded.status, message_id=excluded.message_id, published_at=excluded.published_at`)
+				.run(input.publicationId, input.day, input.subjectCommit, input.baseVersion, input.status, input.channelId, input.messageId, input.intentAt, input.publishedAt);
+		}).immediate();
+	}
+
+	insertReleaseSignalObservation(input: Omit<ReleaseSignalEvent, "occurrence"> & {
+		origin: "bridge" | "shell"; ingestedAt: string; occurrence?: number;
+	}): number {
+		return this.db.raw.transaction(() => {
+			const commitKey = input.sourceCommit ?? "null";
+			const occurrence = input.occurrence ?? (this.db.raw.prepare(`SELECT COALESCE(MAX(occurrence),0)+1 n
+				FROM release_signal_events WHERE event_id=? AND source_commit_key=? AND origin=?`).get(input.eventId, commitKey, input.origin) as {n: number}).n;
+			this.db.raw.prepare(`INSERT INTO release_signal_events
+				(event_id, source_commit_key, occurrence, kind, severity, project_name, base_version, source_commit, origin, observed_at, ingested_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(event_id, source_commit_key, origin, occurrence) DO NOTHING`).run(input.eventId, commitKey, occurrence, input.kind, input.severity, input.projectName, input.baseVersion, input.sourceCommit, input.origin, input.observedAt, input.ingestedAt);
+			return occurrence;
+		}).immediate();
+	}
+
+	getReleaseSignalCursor(): {sourceRowid: number | null; observedAtUnix: number; eventId: string; commitKey: string; occurrence: number} | null {
+		return this.db.raw.prepare(`SELECT last_observed_at_unix AS observedAtUnix, last_event_id AS eventId,
+			last_commit_key AS commitKey, last_occurrence AS occurrence, last_source_rowid AS sourceRowid FROM release_signal_cursor WHERE key='claims'`).get() as {sourceRowid: number | null; observedAtUnix: number; eventId: string; commitKey: string; occurrence: number} | undefined ?? null;
+	}
+
+	projectReleaseSignalBatch(events: (ReleaseSignalEvent & {ingestedAt: string})[], cursor: {
+		sourceRowid?: number | null; observedAtUnix: number; eventId: string; commitKey: string; occurrence: number;
+	}, updatedAt: string): void {
+		this.db.raw.transaction(() => {
+			for (const event of events) this.insertReleaseSignalObservation({...event, origin: "shell"});
+			this.db.raw.prepare(`INSERT INTO release_signal_cursor
+				(key, last_observed_at_unix, last_event_id, last_commit_key, last_occurrence, updated_at, last_source_rowid)
+				VALUES ('claims', ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET
+				last_observed_at_unix=excluded.last_observed_at_unix, last_event_id=excluded.last_event_id,
+				last_commit_key=excluded.last_commit_key, last_occurrence=excluded.last_occurrence, updated_at=excluded.updated_at,
+				last_source_rowid=excluded.last_source_rowid
+				WHERE last_source_rowid IS NULL OR excluded.last_source_rowid >= last_source_rowid`)
+				.run(cursor.observedAtUnix, cursor.eventId, cursor.commitKey, cursor.occurrence, updatedAt, cursor.sourceRowid ?? null);
+		}).immediate();
+	}
+
+	insertReleaseBugIntent(input: {
+		intentId: string; sourceCommit: string | null; baseVersion: string | null;
+		reporter: string | null; createdAt: string;
+	}): void {
+		this.db.raw.prepare(`INSERT INTO release_bug_reports
+			(intent_id, status, source_commit, base_version, reporter, created_at)
+			VALUES (?, 'pending', ?, ?, ?, ?)`).run(input.intentId, input.sourceCommit, input.baseVersion, input.reporter, input.createdAt);
+	}
+
+	recordReleaseBugReport(input: {issueIdentifier: string; sourceCommit: string | null; baseVersion: string | null; reporter: string | null; at: string}) {
+		return this.db.raw.transaction(() => {
+			const read = () => this.db.raw.prepare(`SELECT intent_id AS intentId, issue_identifier AS issueIdentifier,
+				source_commit AS sourceCommit, base_version AS baseVersion, reporter, status, created_at AS createdAt
+				FROM release_bug_reports WHERE issue_identifier=?`).get(input.issueIdentifier) as {
+				intentId: string; issueIdentifier: string; sourceCommit: string | null; baseVersion: string | null;
+				reporter: string | null; status: string; createdAt: string;
+			} | undefined;
+			const existing = read();
+			if (existing) return {created: false, report: existing};
+			this.db.raw.prepare(`INSERT INTO release_bug_reports
+				(intent_id, issue_identifier, status, source_commit, base_version, reporter, created_at, finalized_at)
+				VALUES (?, ?, 'finalized', ?, ?, ?, ?, ?)`).run(`rb-${randomUUID()}`, input.issueIdentifier, input.sourceCommit, input.baseVersion, input.reporter, input.at, input.at);
+			return {created: true, report: read()!};
+		}).immediate();
+	}
+
+	resolveReleaseBugIntent(input: {
+		intentId: string; resolvedBy: "master-api-token" | "create-issue"; resolvedAt: string;
+	} & ({issueIdentifier: string; abandon?: never; reason?: never} | {abandon: true; reason: string; issueIdentifier?: never})): {
+		status: "finalized" | "abandoned"; issueIdentifier: string | null;
+		receiptId: string; resolvedBy: string; reason: string | null;
+	} | null {
+		if (input.abandon && (!input.reason.trim() || input.reason.length > 200)) throw new Error("abandon reason required");
+		return this.db.raw.transaction(() => {
+			const row = this.db.raw.prepare("SELECT status FROM release_bug_reports WHERE intent_id=?").get(input.intentId) as {status: string} | undefined;
+			if (!row) return null;
+			if (row.status === "pending") {
+				const status = input.abandon ? "abandoned" : "finalized";
+				const updated = this.db.raw.prepare(`UPDATE release_bug_reports SET status=?, issue_identifier=?, finalized_at=?, note=?
+					WHERE intent_id=? AND status='pending'`).run(status, input.issueIdentifier ?? null, input.resolvedAt, input.reason ?? null, input.intentId);
+				if (updated.changes) this.db.raw.prepare(`INSERT INTO release_bug_resolution_receipts
+					(receipt_id, intent_id, action, issue_identifier, reason, resolved_by, resolved_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?)`).run(`br-${randomUUID()}`, input.intentId, input.abandon ? "abandon" : "finalize", input.issueIdentifier ?? null, input.reason ?? null, input.resolvedBy, input.resolvedAt);
+			}
+			const result = this.db.raw.prepare(`SELECT b.status, b.issue_identifier AS issueIdentifier,
+				r.receipt_id AS receiptId, r.resolved_by AS resolvedBy, r.reason
+				FROM release_bug_reports b JOIN release_bug_resolution_receipts r ON r.intent_id=b.intent_id
+				WHERE b.intent_id=?`).get(input.intentId) as {status: "finalized" | "abandoned"; issueIdentifier: string | null; receiptId: string; resolvedBy: string; reason: string | null} | undefined;
+			if (!result) throw new Error("release bug resolution receipt missing");
+			return result;
+		}).immediate();
+	}
+
+	private migrateReleaseReadiness(): void {
+		this.db.raw.transaction(() => {
+			this.db.raw.exec(`
+				CREATE TABLE IF NOT EXISTS release_signal_events (
+					__rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+					event_id TEXT NOT NULL, source_commit_key TEXT NOT NULL,
+					occurrence INTEGER NOT NULL CHECK(occurrence > 0), kind TEXT NOT NULL,
+					severity TEXT NOT NULL CHECK(severity IN ('info','warning','severe')),
+					project_name TEXT NOT NULL, base_version TEXT, source_commit TEXT,
+					origin TEXT NOT NULL CHECK(origin IN ('bridge','shell')),
+					observed_at TEXT NOT NULL, ingested_at TEXT NOT NULL,
+					UNIQUE(event_id, source_commit_key, origin, occurrence)
+				);
+				CREATE INDEX IF NOT EXISTS release_signal_events_subject ON release_signal_events(source_commit, observed_at);
+				CREATE INDEX IF NOT EXISTS release_signal_events_time ON release_signal_events(observed_at);
+				CREATE TABLE IF NOT EXISTS release_signal_cursor (
+					key TEXT PRIMARY KEY CHECK(key='claims'), last_observed_at_unix INTEGER NOT NULL,
+					last_event_id TEXT NOT NULL, last_commit_key TEXT NOT NULL,
+					last_occurrence INTEGER NOT NULL, updated_at TEXT NOT NULL
+				);
+				CREATE TABLE IF NOT EXISTS release_signal_heartbeat (
+					seq INTEGER PRIMARY KEY AUTOINCREMENT, tick_at TEXT NOT NULL,
+					source_commit TEXT, base_version TEXT, w1_freshness TEXT NOT NULL,
+					alert_delivery_enabled INTEGER NOT NULL CHECK(alert_delivery_enabled IN (0,1)),
+					claims_db_ok INTEGER NOT NULL CHECK(claims_db_ok IN (0,1)),
+					ingest_ok INTEGER NOT NULL CHECK(ingest_ok IN (0,1)),
+					gaps_dir_ok INTEGER NOT NULL CHECK(gaps_dir_ok IN (0,1)),
+					bridge_capture_failures INTEGER NOT NULL, rejected_rows INTEGER NOT NULL,
+					backlog_age_s INTEGER NOT NULL, outbox_pending INTEGER NOT NULL, outbox_invalid INTEGER NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS release_signal_heartbeat_subject ON release_signal_heartbeat(source_commit, tick_at);
+				CREATE INDEX IF NOT EXISTS release_signal_heartbeat_time ON release_signal_heartbeat(tick_at);
+				CREATE TABLE IF NOT EXISTS release_signal_gaps (
+					gap_id TEXT PRIMARY KEY, event_id TEXT,
+					reason TEXT NOT NULL CHECK(reason IN ('shell_preflight','shell_claim_db','bridge_ledger_write')),
+					severity TEXT NOT NULL CHECK(severity IN ('info','warning','severe')),
+					project_name TEXT NOT NULL, kind TEXT NOT NULL,
+					source_commit TEXT, base_version TEXT, observed_at TEXT NOT NULL, ingested_at TEXT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS release_signal_gaps_time ON release_signal_gaps(observed_at);
+				CREATE TABLE IF NOT EXISTS release_deployment_anchors (
+					anchor_id TEXT PRIMARY KEY, source_commit TEXT NOT NULL,
+					episode_from TEXT NOT NULL, episode_to TEXT, first_seen_at TEXT NOT NULL,
+					UNIQUE(source_commit, episode_from)
+				);
+				CREATE TABLE IF NOT EXISTS release_bug_reports (
+					intent_id TEXT PRIMARY KEY, issue_identifier TEXT UNIQUE,
+					status TEXT NOT NULL CHECK(status IN ('pending','finalized','abandoned')),
+					base_version TEXT, source_commit TEXT, reporter TEXT,
+					created_at TEXT NOT NULL, finalized_at TEXT, note TEXT
+				);
+				CREATE INDEX IF NOT EXISTS release_bug_reports_subject ON release_bug_reports(source_commit, status);
+				CREATE INDEX IF NOT EXISTS release_bug_reports_time ON release_bug_reports(created_at);
+				CREATE TABLE IF NOT EXISTS release_bug_resolution_receipts (
+					receipt_id TEXT PRIMARY KEY, intent_id TEXT NOT NULL,
+					action TEXT NOT NULL CHECK(action IN ('finalize','abandon')),
+					issue_identifier TEXT, reason TEXT, resolved_by TEXT NOT NULL, resolved_at TEXT NOT NULL
+				);
+				CREATE TRIGGER IF NOT EXISTS release_bug_receipt_no_update BEFORE UPDATE ON release_bug_resolution_receipts
+					BEGIN SELECT RAISE(ABORT, 'release bug receipt is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS release_bug_receipt_no_delete BEFORE DELETE ON release_bug_resolution_receipts
+					BEGIN SELECT RAISE(ABORT, 'release bug receipt is immutable'); END;
+				CREATE TABLE IF NOT EXISTS release_bug_source_health (
+					key TEXT PRIMARY KEY CHECK(key='bug_label'), label TEXT NOT NULL,
+					last_success_at TEXT, last_failure_at TEXT, last_error TEXT
+				);
+				CREATE TABLE IF NOT EXISTS release_report_publications (
+					publication_id TEXT PRIMARY KEY, day TEXT NOT NULL UNIQUE,
+					subject_commit TEXT NOT NULL, base_version TEXT NOT NULL,
+					status TEXT NOT NULL CHECK(status IN ('intent','published','failed')),
+					channel_id TEXT NOT NULL, message_id TEXT UNIQUE,
+					intent_at TEXT NOT NULL, published_at TEXT, first_scan_ok_at TEXT,
+					last_scan_ok_at TEXT, last_scan_at TEXT, last_scan_error TEXT
+				);
+				CREATE INDEX IF NOT EXISTS release_report_publications_subject ON release_report_publications(subject_commit);
+				CREATE TABLE IF NOT EXISTS release_founder_verdicts (
+					day TEXT PRIMARY KEY, message_id TEXT NOT NULL,
+					sentiment TEXT NOT NULL CHECK(sentiment IN ('down','up')),
+					founder_user_id TEXT NOT NULL, subject_commit TEXT NOT NULL, observed_at TEXT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS release_founder_verdicts_subject ON release_founder_verdicts(subject_commit);
+				CREATE TABLE IF NOT EXISTS release_readiness_verdicts (
+					verdict_id TEXT PRIMARY KEY, subject_commit TEXT NOT NULL, base_version TEXT NOT NULL,
+					local_deployed_sha TEXT, state TEXT NOT NULL CHECK(state IN ('green','hold','unknown')),
+					reasons_json TEXT NOT NULL, evidence_json TEXT NOT NULL, policy_json TEXT NOT NULL, evaluated_at TEXT NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS release_readiness_verdicts_subject ON release_readiness_verdicts(subject_commit, evaluated_at);
+				INSERT OR IGNORE INTO state_store_migration(migration_id, applied_at)
+					VALUES('fly-2390-release-readiness-v1', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+			`);
+			this.addColumnIfMissing("release_signal_cursor", "last_source_rowid", "INTEGER");
+		})();
+	}
+
 	private migrateFounderGateVerdictLedger(): void {
 		this.db.raw.transaction(() => {
 			this.db.raw.exec(`
@@ -7469,6 +7795,7 @@ export class StateStore {
 		this.migrateFlagRetirementScan();
 		this.migrateFly1427TerminalStatusCorrections();
 		this.migrateEpicPage();
+		this.migrateReleaseReadiness();
 		this.db.run(`CREATE TABLE IF NOT EXISTS lead_note (
 			project_name TEXT NOT NULL,
 			issue_uuid TEXT NOT NULL,

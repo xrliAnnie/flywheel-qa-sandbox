@@ -1,0 +1,18 @@
+[
+  {
+    "day": "2026-09-09",
+    "messageId": "20260909",
+    "sentiment": "down",
+    "founderUserId": "fixture-founder",
+    "subjectCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "observedAt": "2026-09-09T08:01:00.000Z"
+  },
+  {
+    "day": "2026-09-10",
+    "messageId": "20260910",
+    "sentiment": "up",
+    "founderUserId": "fixture-founder",
+    "subjectCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "observedAt": "2026-09-10T08:01:00.000Z"
+  }
+]

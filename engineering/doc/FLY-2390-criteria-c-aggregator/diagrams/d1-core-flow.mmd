@@ -1,0 +1,12 @@
+flowchart TB
+  A1["告警发生(shell 路径:更新器/重启失败)"] --> C["登记事务里先记一条观测<br/>(事件 + 当刻版本 + 严重度)<br/>事务失败 ⇒ 本地缺口文件"]
+  A2["告警发生(Bridge 路径:100 种 kind)"] --> C2["进入告警函数的第一步<br/>直接写 Bridge 账本一条观测<br/>写失败 ⇒ 缺口行"]
+  C --> R["Bridge 每 60 秒的 rider<br/>① 把 shell 的观测与缺口文件搬进账本<br/>② 追加一行心跳(这一刻我活着、来源健康吗、积压多老)<br/>③ 看日报消息上的 👍/👎(翻到最后一页)"]
+  C2 --> E
+  D["更新器部署记录<br/>(哪个 commit 从几点跑到几点)"] --> E
+  B["报 bug(create-issue)<br/>先记「意图」→ 建 Linear 单 → 填回 issue 号"] --> E
+  R --> E["evaluateReadiness(纯函数)<br/>先判 unknown → 再判 hold → 最后才 green"]
+  E --> V["verdict 落账<br/>state + 原因码 + 证据 + 当时的阈值"]
+  V --> RP["每日日报<br/>先落「发布意图」→ 发 Discord → 记回消息 id"]
+  V --> B4["B4 否决窗口(未来)<br/>只问:这个 sourceCommit + 版本号现在是什么状态"]
+  RP -. "Annie 点 👍/👎" .-> R

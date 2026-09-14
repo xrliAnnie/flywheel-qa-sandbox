@@ -194,6 +194,80 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 	}
 
 	// --- Team resolution ---
+	it("recognizes Bug UUID labels and never creates externally if the intent cannot be stored", async () => {
+		mockSingleTeam();
+		mockIssueLabels.mockResolvedValue({ nodes: [{ id: CALLER_LABEL_UUID }] });
+		mockIssueCreated();
+		const intent = vi
+			.spyOn(store, "insertReleaseBugIntent")
+			.mockImplementationOnce(() => {
+				throw new Error("disk full");
+			});
+		expect(
+			(await post({ title: "uuid bug", labels: [CALLER_LABEL_UUID] })).status,
+		).toBe(502);
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+		intent.mockRestore();
+		const response = await post({
+			title: "uuid bug",
+			labels: [CALLER_LABEL_UUID],
+		});
+		expect(response.status).toBe(200);
+		expect((await response.json()).readiness.intentId).toMatch(/^rb-/);
+		expect(mockIssueLabels).toHaveBeenCalledWith(
+			expect.objectContaining({
+				filter: { name: { eq: "Bug" }, team: { id: { eq: "team-geo-id" } } },
+			}),
+		);
+	});
+	it("keeps failed creates pending and records Bug label lookup failures", async () => {
+		mockSingleTeam();
+		mockIssueLabels.mockRejectedValue(new Error("label unavailable"));
+		mockCreateIssue.mockRejectedValue(new Error("create unavailable"));
+		const intent = vi.spyOn(store, "insertReleaseBugIntent");
+		expect((await post({ title: "broken", bug: true })).status).toBe(502);
+		const written = intent.mock.calls[0]![0];
+		const evidence = store.getReleaseReadinessEvidence(
+			written.sourceCommit ?? "a".repeat(40),
+			"2000-01-01T00:00:00.000Z",
+			"2099-01-01T00:00:00.000Z",
+		);
+		expect(evidence.bugs[0]?.status).toBe("pending");
+		expect(evidence.bugSourceHealth?.lastError).toContain("label unavailable");
+		const health = vi.spyOn(store, "recordReleaseBugSourceHealth");
+		await post({ title: "named bug", labels: ["Bug"] });
+		expect(health).toHaveBeenCalledWith(
+			expect.objectContaining({ ok: false, label: "Bug" }),
+		);
+	});
+	it("rejects nonboolean bug and records a pending versioned intent before creating a bug", async () => {
+		mockSingleTeam();
+		mockIssueLabels.mockResolvedValue({ nodes: [{ id: "bug-label" }] });
+		mockIssueCreated();
+		expect((await post({ title: "bug", bug: "true" })).status).toBe(400);
+		expect(mockCreateIssue).not.toHaveBeenCalled();
+		const intent = vi.spyOn(store, "insertReleaseBugIntent");
+		const finalize = vi.spyOn(store, "resolveReleaseBugIntent");
+		const response = await post({
+			title: "bug",
+			description: "details",
+			bug: true,
+		});
+		expect(response.status).toBe(200);
+		expect(intent).toHaveBeenCalledOnce();
+		expect(intent.mock.invocationCallOrder[0]).toBeLessThan(
+			mockCreateIssue.mock.invocationCallOrder[0]!,
+		);
+		expect(finalize).toHaveBeenCalledWith(
+			expect.objectContaining({
+				resolvedBy: "create-issue",
+				issueIdentifier: "GEO-300",
+			}),
+		);
+		expect(mockCreateIssue.mock.calls[0]?.[0].description).toContain(
+			"<!-- flywheel-release:",
+		);
+	});
 
 	it("creates issue with explicit team key in multi-team workspace", async () => {
 		mockMultiTeam();
@@ -357,9 +431,12 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 		mockProjects.mockResolvedValue({
 			nodes: [{ id: "proj-fly", name: "Flywheel" }],
 		});
-		mockIssueLabels.mockResolvedValue({
-			nodes: [{ id: "lbl-fly", name: "Flywheel" }],
-		});
+		mockIssueLabels.mockImplementation(async ({ filter }) => ({
+			nodes:
+				filter.name.eq === "Bug"
+					? [{ id: "lbl-bug", name: "Bug" }]
+					: [{ id: "lbl-fly", name: "Flywheel" }],
+		}));
 		mockParentIssue();
 		mockIssueCreated("FLY-101");
 
@@ -766,8 +843,8 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 		expect(res.status).toBe(200);
 		const call = mockCreateIssue.mock.calls[0][0];
 		expect(call.labelIds).toEqual([CALLER_LABEL_UUID, "lbl-fly"]);
-		// UUID-shaped entries never hit the resolver — only the scope label did.
-		expect(mockIssueLabels).toHaveBeenCalledTimes(1);
+		// Scope label and readiness Bug lookup; UUID is still passed through.
+		expect(mockIssueLabels).toHaveBeenCalledTimes(2);
 	});
 
 	it("returns 400 for a non-string projectName (JSON body 123)", async () => {
@@ -891,6 +968,6 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 		expect(res.status).toBe(200);
 		const call = mockCreateIssue.mock.calls[0][0];
 		expect(call.labelIds).toEqual([CALLER_LABEL_UUID, "lbl-bug"]);
-		expect(mockIssueLabels).toHaveBeenCalledTimes(1);
+		expect(mockIssueLabels).toHaveBeenCalledTimes(2);
 	});
 });

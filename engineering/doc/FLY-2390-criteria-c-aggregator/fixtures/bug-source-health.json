@@ -1,0 +1,6 @@
+{
+  "label": "Bug",
+  "lastSuccessAt": "2026-09-10T00:00:00.000Z",
+  "lastFailureAt": "2026-09-11T12:00:00.000Z",
+  "lastError": "fixture: team label unavailable"
+}

@@ -166,7 +166,7 @@ COMMIT;
  * timeout: SIGKILL on overrun, surfaces an Error so the caller can fall
  * through to "claim infra broken → null".
  */
-function sqliteRunWithStdin(
+export function sqliteRunWithStdin(
 	dbPath: string,
 	sql: string,
 	timeoutMs: number,
@@ -218,7 +218,7 @@ function sqliteRunWithStdin(
  * parameter binding because we issue `BEGIN/INSERT/SELECT/COMMIT` over
  * stdin (single transaction).
  */
-function sqlString(value: string): string {
+export function sqlString(value: string): string {
 	return `'${value.replace(/'/g, "''")}'`;
 }
 

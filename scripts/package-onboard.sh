@@ -44,7 +44,7 @@ po_die() { po_err "$*"; exit 1; }
 # closure of the customer MVP runtime (Bridge + Lead + Buddy + comm CLIs +
 # MCP servers and generic voice) — see research.md §1/§2. qa-framework /
 # flywheel-cli are deliberately NOT customer runtime.
-PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claude-runner agent-team-transport inbox-mcp terminal-mcp token-usage github-event-transport linear-event-transport slack-event-transport voice-core voice-bridge voice-codex"}
+PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claude-runner agent-team-transport inbox-mcp terminal-mcp token-usage github-event-transport linear-event-transport slack-event-transport voice-core voice-bridge voice-codex release-contract"}
 
 # Extra runtime asset dirs per package (beyond package.json + dist/), colon
 # separated as <pkg-dir>:<asset-dir>. claude-lead.sh + Lead runtime read these
@@ -54,7 +54,7 @@ PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claud
 # $CODEX_HOME/AGENTS.md; a payload without it fail-louds every codex spawn)
 # and bin/ (the CODEX_HOME-aware rotation shim FLYWHEEL_CODEX_BIN defaults
 # to — same runtime-closure failure mode).
-PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:phase-protocols teamlead:prompts teamlead:lead-rules-base teamlead:static claude-runner:agents claude-runner:bin voice-codex:models"}
+PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:phase-protocols teamlead:prompts teamlead:lead-rules-base teamlead:static claude-runner:agents claude-runner:bin voice-codex:models release-contract:src"}
 
 # File-level asset whitelist (<pkg-dir>:<relative-file>) — packages/teamlead/
 # scripts is a grab bag of launcher runtime AND operator/ops one-offs
@@ -626,12 +626,19 @@ po_assemble() {
     cp -p "$root/.flywheel/agents/$f" "$tree/.flywheel/agents/$f" || return 1
   done <<<"$PO_AGENT_FILES"
 
-  # 4. workspace packages → node_modules/<npm-name>/ (dist REQUIRED — an
-  #    unbuilt package must fail the build, never ship hollow).
-  local dir name mirror_json="{}"
+  # 4. Ship built dist, or an existing native main explicitly declared as an asset.
+  #    Undeclared/unbuilt entrypoints still fail closed.
+  local dir name entry mirror_json="{}"
   for dir in $PO_PACKAGES; do
     name="$(po_pkg_npm_name "$root" "$dir")" || { po_err "packages/$dir has no npm name"; return 1; }
-    [ -d "$root/packages/$dir/dist" ] || { po_err "packages/$dir/dist missing — run pnpm build first (fail-closed)"; return 1; }
+    if [ ! -d "$root/packages/$dir/dist" ]; then
+      entry="$(jq -r '.main // ""' "$root/packages/$dir/package.json")"
+      if [ ! -f "$root/packages/$dir/$entry" ] \
+        || ! printf '%s\n' $PO_PACKAGE_ASSETS | grep -Fxq "$dir:${entry%/*}"; then
+        po_err "packages/$dir/dist missing and no declared native main (fail-closed)"
+        return 1
+      fi
+    fi
     mkdir -p "$tree/node_modules/$name"
     # Strip the package's own `files` whitelist from the embedded copy: npm
     # pack re-applies it to BUNDLED deps too (verified empirically — teamlead's
@@ -640,7 +647,9 @@ po_assemble() {
     # runtime set, so the payload allowlist gate is the content authority.
     jq 'del(.files)' "$root/packages/$dir/package.json" > "$tree/node_modules/$name/package.json" \
       || { po_err "cannot rewrite package.json for $name"; return 1; }
-    cp -Rp "$root/packages/$dir/dist" "$tree/node_modules/$name/dist" || return 1
+    if [ -d "$root/packages/$dir/dist" ]; then
+      cp -Rp "$root/packages/$dir/dist" "$tree/node_modules/$name/dist" || return 1
+    fi
     mirror_json="$(jq -c --arg d "$dir" --arg n "$name" '. + {($d): $n}' <<<"$mirror_json")"
   done
   local spec
@@ -841,6 +850,20 @@ po_gate() {
   #   applies to it), zero tests/doc/git history.
   local hits
   hits="$(cd "$tree" && find . \( -name "*.ts" -o -name "*.mts" -o -name "*.cts" \) -o \( -type d -name "src" ! -path "*/dist/*" ! -path "./vendor/*" \) -o -type d -name "__tests__" -o -type d -name "doc" -o -name ".git" | sed 's|^\./||')"
+  # An explicitly shipped native main may live in src; TypeScript/test hits stay.
+  local spec dir name entry
+  for spec in $PO_PACKAGE_ASSETS; do
+    [ "${spec#*:}" = "src" ] || continue
+    dir="${spec%%:*}"
+    name="$(po_pkg_npm_name "$root" "$dir")" || continue
+    entry="$(jq -r '.main // ""' "$tree/node_modules/$name/package.json")"
+    case "$entry" in
+      src/*.js|src/*.mjs|src/*.cjs)
+        if [ -f "$tree/node_modules/$name/$entry" ]; then
+          hits="$(printf '%s\n' "$hits" | grep -Fvx "node_modules/$name/src" || true)"
+        fi ;;
+    esac
+  done
   if [ -n "$hits" ]; then
     po_err "gate③: forbidden content in release tree:"
     printf '%s\n' "$hits" >&2

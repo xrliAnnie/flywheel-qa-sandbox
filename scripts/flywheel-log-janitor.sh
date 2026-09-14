@@ -1565,6 +1565,7 @@ run_state_residue() {
   local archive_root cache clone archive_cutoff dir file name mtime cutoff bytes files
   local destination destination_parent
   local -a loose_gate_archives=()
+  local -a readiness_files=()
   state_root="$(physical_dir "$FLYWHEEL_STATE_ROOT" 2>/dev/null)" || {
     audit_event "$module" skip "$FLYWHEEL_STATE_ROOT" 0 "state-root-unavailable"
     SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
@@ -1577,6 +1578,19 @@ run_state_residue() {
     SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
     return 0
   }
+
+  for name in gaps publications; do
+    dir="$FLYWHEEL_STATE_ROOT/release-readiness/$name/landed"
+    [[ -d "$dir" && ! -L "$dir" && "$(physical_dir "$dir" 2>/dev/null)" == "$state_root/release-readiness/$name/landed" ]] || continue
+    while IFS= read -r -d '' file; do
+      [[ "$file" == *.json ]] && readiness_files+=("$file")
+    done < <(collect_expired_files "$dir" 14)
+  done
+  if [[ ${#readiness_files[@]} -gt 0 ]] && probe_open_candidates "$module" "${readiness_files[@]}"; then
+    for file in "${readiness_files[@]}"; do
+      record_candidate "$module" "$file" "readiness-landed-retention-exceeded" 14
+    done
+  fi
 
   cache="$FLYWHEEL_STATE_ROOT/fly2054-playwright"
   if [[ -d "$cache" && ! -L "$cache" ]]; then

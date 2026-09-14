@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { ReadinessSubject } from "./bridge/release-readiness/subject.js";
 /**
  * FLY-83: Bridge-side alert emitter for Lead lifecycle incidents.
  *
@@ -699,6 +701,7 @@ export type ClaimsClaimer = (
 ) => Promise<boolean | null>;
 
 export interface LeadAlertNotifierConfig {
+	readinessSubject?: ReadinessSubject | null;
 	store: StateStore;
 	projects: ProjectEntry[];
 	/** FLY-2076: call-time master delivery gate; OFF still journals intake. */
@@ -780,6 +783,8 @@ function isSendChainFallthrough(status: number | undefined): boolean {
 
 export class LeadAlertNotifier {
 	private store: StateStore;
+	private readinessSubject: ReadinessSubject | null;
+	private captureFailures = 0;
 	private projects: ProjectEntry[];
 	private fetchFn: FetchLike;
 	private queueDir: string;
@@ -824,6 +829,7 @@ export class LeadAlertNotifier {
 
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
+		this.readinessSubject = config.readinessSubject ?? null;
 		this.projects = config.projects;
 		this.deliveryEnabled = config.deliveryEnabled ?? (() => true);
 		this.fetchFn = config.fetchFn ?? (globalThis.fetch as FetchLike);
@@ -927,10 +933,43 @@ export class LeadAlertNotifier {
 		);
 	}
 
+	peekCaptureFailures(): number {
+		return this.captureFailures;
+	}
+
+	ackCaptureFailures(count: number): void {
+		this.captureFailures = Math.max(0, this.captureFailures - count);
+	}
+
 	async alert(
 		payload: AlertPayload,
 		attempt: AlertAttemptOptions = {},
 	): Promise<AlertResult> {
+		const observedAt = new Date().toISOString();
+		const observation = {
+			eventId: payload.eventId,
+			kind: payload.eventType,
+			severity: payload.severity,
+			projectName: payload.projectName,
+			sourceCommit: this.readinessSubject?.sourceCommit ?? null,
+			baseVersion: this.readinessSubject?.baseVersion ?? null,
+			origin: "bridge" as const,
+			observedAt,
+			ingestedAt: observedAt,
+		};
+		try {
+			this.store.insertReleaseSignalObservation(observation);
+		} catch {
+			try {
+				this.store.insertReleaseSignalGap({
+					...observation,
+					gapId: `rg-${randomUUID()}`,
+					reason: "bridge_ledger_write",
+				});
+			} catch {
+				this.captureFailures += 1;
+			}
+		}
 		if (!this.deliveryEnabled()) {
 			this.store.recordAlertSystemSuppression({
 				leadId: payload.leadId,

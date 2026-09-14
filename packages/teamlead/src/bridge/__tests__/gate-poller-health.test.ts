@@ -27,6 +27,16 @@ async function tick(poller: GatePoller, n: number) {
 	}
 }
 
+it("runs readiness on the existing 60s cadence and contains rejected ticks", async () => {
+	const onReleaseReadinessTick = vi
+		.fn()
+		.mockRejectedValue(new Error("readiness disk failure"));
+	await expect(
+		tick(makePoller({ onReleaseReadinessTick }), 21),
+	).resolves.toBeUndefined();
+	expect(onReleaseReadinessTick).toHaveBeenCalledTimes(2);
+});
+
 describe("FLY-513 GatePoller onHealthTick piggyback", () => {
 	it("fires on tick 1 and then every N ticks (cadence)", async () => {
 		const onHealthTick = vi.fn();

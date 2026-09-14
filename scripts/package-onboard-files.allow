@@ -161,6 +161,12 @@ node_modules/flywheel-voice-codex/dist/*
 node_modules/flywheel-voice-codex/models/silero_vad.onnx
 node_modules/flywheel-voice-codex/models/LICENSE.silero-vad
 
+# Release readiness runtime identity contract (FLY-2390).
+node_modules/flywheel-release-contract/package.json
+node_modules/flywheel-release-contract/src/index.mjs
+node_modules/flywheel-release-contract/src/grammar.mjs
+node_modules/flywheel-release-contract/src/identity.mjs
+node_modules/flywheel-release-contract/src/validator.mjs
 # Fixed Bridge phase protocols (FLY-2533)
 node_modules/flywheel-teamlead/phase-protocols/design.md
 node_modules/flywheel-teamlead/phase-protocols/implement.md

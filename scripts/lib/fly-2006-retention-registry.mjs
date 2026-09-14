@@ -1,4 +1,4 @@
-export const RETENTION_MS = 14 * 24 * 60 * 60 * 1_000;
+export { READINESS_WINDOW_MS as RETENTION_MS } from "../../packages/teamlead/dist/bridge/release-readiness/evaluate.js";
 
 function words(value) {
 	return Object.freeze(value.trim().split(/\s+/));
@@ -11,6 +11,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		legacy_cutover_quarantine legacy_render_fallback legacy_stock_suppressed
 		phase_chat_threads quiet_wake_notified roundtable_topic_threads session_events
 		tmux_hold workflow_completion_drain_challenge workflow_run_event
+		release_signal_events release_signal_heartbeat release_signal_gaps
 	`),
 	retiredOptional: words(`
 		founder_page_ledger runbook_issues ticket_escalations
@@ -62,6 +63,8 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		runner_declared_states runner_phase_wakes runner_shutdown_controls
 		runner_wake_failure_episode runner_workflow_activation server_loss_episode sessions
 		ship_relevant_declared_pr ship_relevant_diff_snapshot
+		release_signal_cursor release_deployment_anchors release_bug_reports release_bug_resolution_receipts
+		release_bug_source_health release_report_publications release_founder_verdicts release_readiness_verdicts
 		ship_relevant_pr_snapshot state_store_migration strength_two_evidence_record three_stage_turn
 		workflow_activation_turn workflow_actor workflow_alert_outbox
 		workflow_binding_cutover_claim workflow_carrier_delivery

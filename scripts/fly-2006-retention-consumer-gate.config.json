@@ -25,7 +25,10 @@
 		"receipt_alert_outbox",
 		"runner_phase_wakes",
 		"runner_shutdown_controls",
-		"runner_wake_failure_episode"
+		"runner_wake_failure_episode",
+		"release_signal_events",
+		"release_signal_heartbeat",
+		"release_signal_gaps"
 	],
 	"consumers": [
 		{
@@ -559,6 +562,27 @@
 			"baseTable": "lead_events",
 			"usage": "read",
 			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "release_signal_events",
+			"baseTable": "release_signal_events",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "release_signal_gaps",
+			"baseTable": "release_signal_gaps",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "release_signal_heartbeat",
+			"baseTable": "release_signal_heartbeat",
+			"usage": "read",
+			"disposition": "protect"
 		},
 		{
 			"file": "scripts/fly-2490-backfill-receipts.mjs",

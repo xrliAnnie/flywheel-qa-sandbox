@@ -173,6 +173,7 @@ scripts/xiaohongshu-learning-tick.sh
 scripts/com.flywheel.log-janitor.plist
 scripts/launchd/com.flywheel.voucher-watch.plist
 scripts/launchd/com.flywheel.daily-digest.plist
+scripts/launchd/com.flywheel.release-readiness-report.plist
 scripts/launchd/com.flywheel.token-usage-daily.plist
 scripts/launchd/com.flywheel.codex-log-guard.plist
 scripts/launchd/com.flywheel.bridge-liveness-probe.plist

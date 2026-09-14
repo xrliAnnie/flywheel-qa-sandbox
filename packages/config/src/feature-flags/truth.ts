@@ -669,6 +669,29 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: comma-separated projects excluded from founder auto-approve (FLY-799)",
 	FLYWHEEL_DIGEST_CHANNEL: "config value: daily digest channel id (FLY-727)",
 	FLYWHEEL_DIGEST_TZ: "config value: daily digest timezone (FLY-727)",
+	FLYWHEEL_READINESS_SOAK_HOURS:
+		"config value: readiness soak duration (FLY-2390)",
+	FLYWHEEL_READINESS_HEARTBEAT_FRESH_MIN:
+		"config value: readiness heartbeat freshness (FLY-2390)",
+	FLYWHEEL_READINESS_GAP_TOLERANCE_MIN:
+		"config value: readiness coverage gap tolerance (FLY-2390)",
+	FLYWHEEL_READINESS_BACKLOG_AGE_MAX_S:
+		"config value: readiness ingest backlog age (FLY-2390)",
+	FLYWHEEL_READINESS_SEVERE_HOLD:
+		"config value: readiness severe event threshold (FLY-2390)",
+	FLYWHEEL_READINESS_WARNING_HOLD:
+		"config value: readiness warning event threshold (FLY-2390)",
+	FLYWHEEL_READINESS_BUG_HOLD:
+		"config value: readiness bug threshold (FLY-2390)",
+	FLYWHEEL_READINESS_PROJECTS:
+		"config value: readiness evidence projects (FLY-2390)",
+	FLYWHEEL_READINESS_IGNORE_KINDS:
+		"config value: readiness excluded event kinds (FLY-2390)",
+	FLYWHEEL_BUG_LABEL: "config value: team-scoped bug label name (FLY-2390)",
+	FLYWHEEL_DEPLOYED_SHA_FILE:
+		"config value: deployed commit identity file (FLY-2390)",
+	FLYWHEEL_READINESS_REPORT_CHANNEL:
+		"config value: readiness report channel (FLY-2390)",
 	FLYWHEEL_FOUNDER_TZ:
 		"config value: founder local timezone override (FLY-1319)",
 	FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE:

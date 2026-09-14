@@ -1,0 +1,11 @@
+{
+  "eventIdHint": null,
+  "kind": "deploy_failed",
+  "severity": "severe",
+  "projectName": "flywheel",
+  "leadId": "updater",
+  "sourceCommit": null,
+  "baseVersion": null,
+  "observedAt": "2026-09-11T12:00:00.000Z",
+  "reason": "shell_preflight"
+}

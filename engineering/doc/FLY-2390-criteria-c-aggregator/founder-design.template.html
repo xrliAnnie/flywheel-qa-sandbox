@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2390 · 判据 c:这个版本稳不稳,机器怎么给出 green / hold / unknown — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  .scroll { overflow-x:auto; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  .state { display:inline-block; padding:2px 10px; border-radius:8px; font-weight:700; font-size:13px; }
+  .state.g { background:#e6f9ed; color:#1d7a3d; }
+  .state.h { background:#fff2dd; color:#8a5200; }
+  .state.u { background:#ececf0; color:#515154; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2390 · 判据 c:这个版本稳不稳,机器怎么给出 green / hold / unknown</h1>
+<div class="meta">Issue <code>FLY-2390</code> · 1143 Epic 的 B3 · 设计节点 · 2026-09-10 · Codex 设计评审 3 轮(R1 6+1、R2 6+1 全部采纳;R3 7 项按 Lead 裁定 1d9ea778 收口)后 effective APPROVED · 文档:<code>engineering/doc/FLY-2390-criteria-c-aggregator/</code></div>
+
+<section class="card green" data-title="一句话">
+  <h2>一句话</h2>
+  <p class="summary-line">给「我们自己机器上跑的这个版本」装一个会说人话的健康表:它把这版跑出来的告警、报上来的 bug、你随手点的 👎 汇成一个结论 —— <span class="state g">green</span> 可以发、<span class="state h">hold</span> 先别发、<span class="state u">unknown</span> 说不清;而且<strong>只要它自己不确定,就一律说「说不清」,绝不把「没看见事」当成「没事」</strong>。</p>
+  <p class="note">名词解释:<strong>判据 c</strong> = PRD 1098 里定的「这版稳不稳」的三个信号(告警数、bug 数、你的手感);<strong>B3</strong> = 1143 Epic 里负责算这个结论的那一块,它算出来的结论会喂给将来的 B4(「你不喊停就自动发」的那扇门);<strong>sourceCommit</strong> = 一个版本对应的那一次代码提交的指纹,是本单里所有账都对得上的唯一身份。</p>
+  <div class="cbox"><label for="c-summary">对「一句话」的意见</label><textarea id="c-summary" data-key="summary" data-title="一句话" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card red" data-title="审计发现的三件现场事实">
+  <h2>审计发现的三件现场事实(设计前必须知道)</h2>
+  <h3>事实 A:issue 标题里写的「FLY-942 原始事件」,它的探测器已经被拆了</h3>
+  <p>FLY-942 当年造的「盯着每个 runner 看它卡没卡」的看门狗,在 FLY-1570 / FLY-1560 被整体拆除(仓库里还有一条守卫测试,专门禁止它复活)。今天真正还在产出「原始事件」的,是<strong>告警系统本身</strong>:每一条发到 Discord 的告警(崩溃、重启失败、部署失败、死信……)在发出去之前都会先在同一个本地小数据库里「登记领取」。生产库里有 3.4 万条这样的登记,最近 30 天里包括 26 次部署失败、21 次崩溃循环、142 次 Bridge 非正常退出。<strong>所以本单消费的是这条告警登记流</strong>,不是一个已不存在的看门狗。</p>
+  <h3>事实 B:这些事件今天都不带「哪个版本」</h3>
+  <p>告警登记只有四列(事件 id、哪个 Lead、什么类型、几点),没有版本、没有严重度。部署记录倒是有(更新器每次把新代码部署上来都会记「哪个 commit、几点」),但事件和部署之间只能靠时间硬对,重启窗口里对不准。</p>
+  <h3>事实 C:我们自己机器上跑的 commit,和「beta 版」的 commit 通常不是同一个</h3>
+  <p>更新器每天 00:00 / 12:00 把 main 上最新的代码部署到这台机器;而 beta 版是每 6 小时从 main 上另切一次的。实核当天:机器上跑的是 <code>d964e9f</code>,最新的 beta 1.56.0-beta.4 切自 <code>92532e2</code>。两条线各走各的,这是 PRD 自己写明的设计。</p>
+  <div class="callout amber"><strong>这条事实决定了一个重要取舍</strong>:本单只对「这台机器<strong>真的跑过</strong>的那个 commit」给结论;将来 B4 拿一个机器没跑过的 beta 来问,答案就是「说不清(没有部署证据)」。Tadashi 已裁定接受,并另立一张单去把更新器和 beta 线对齐。</div>
+  <div class="cbox"><label for="c-facts">对「现场事实」的意见</label><textarea id="c-facts" data-key="facts" data-title="审计发现的三件现场事实" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程:在事件发生的那一刻盖章,而不是事后猜</h2>
+  <p>核心动作只有一个:<strong>每条告警在被看见的那一刻,记一条「这个事件 + 此刻机器跑的版本 + 有多严重」的观测</strong>。Bridge 程序发的告警,在进入告警函数的第一步就直接写进 Bridge 自己的账本(比任何「去重」「没 token」的提前退出都靠前,所以一条都漏不掉);shell 脚本发的告警(部署失败这类最要命的),在它「登记领取」的那笔本地数据库事务里先记观测,事务失败就先落一个本地缺口文件再继续发。同一个事件如果换了版本再出现,是一条新的观测(Codex 评审抓到的一个真坑:事件 id 里不含版本)。之后 Bridge 里一个每 60 秒跑一次的小任务(仓库里叫 <strong>rider</strong>,就是「搭现有定时器便车、不新开定时器」的意思)把 shell 的观测和缺口搬进账本,并追加一行自己的<strong>心跳</strong>(「这一刻我活着,告警系统没被关掉,登记库读得到,积压最老的一条有多久」)。</p>
+  <div class="diagram"><!--DIAGRAM:d1--></div>
+  <div class="cap">图 1 · 从告警发生到日报与 B4 的完整流向(流程图)</div>
+  <ul>
+    <li><strong>报 bug</strong>:走 Bridge 的建单接口时,只要 label 是 Bug,就自动在描述末尾加一行 <code>Reported-on-version: 1.56.0 @ d964e9f…</code>;并且<strong>先在本地账本记一条「意图」,再去 Linear 建单,建成后把 issue 号填回去</strong>。中间任何一步断了,意图会一直停在「未落定」,结论就一直是「说不清」,直到有人用命令收口 —— 一个真实的 bug 绝不会因为程序崩了一下就从账上消失。「这版 N 个 bug」数的是这本账,不去查 Linear(生产里 Bridge 对 Linear 的绑定是空的,查不到)。</li>
+    <li><strong>你的 👍/👎</strong>:每天的日报会发一条 Discord 消息,Bridge 只看<strong>那条消息</strong>上你本人点的反应(用现有的「核实是 Annie 本人」的逻辑,翻到最后一页为止)。👎 = 直接 hold;👍 = 不改判(健康由客观信号说了算);不点 = 不阻塞。发消息之后先把「哪一天、哪条消息」写进本地文件再登记,登记失败也不会重发消息;还没成功看过反应的那一天,结论按「说不清」处理,而不是当成「你没点」。</li>
+    <li><strong>评估是一个纯函数</strong>:同样的输入永远给同样的结论,所以能用回放的历史事件做验收,每个结论都带「原因码 + 证据 + 当时用的阈值」落账,随时可查。</li>
+  </ul>
+  <div class="cbox"><label for="c-flow">对「核心流程」的意见</label><textarea id="c-flow" data-key="flow" data-title="核心流程" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card amber" data-title="三态怎么判">
+  <h2>三态怎么判:先问「我能不能下结论」,再问「好不好」</h2>
+  <p>顺序是固定的:<strong>先把所有「说不清」的情况排掉,再看「该不该拦」,最后剩下的才是 green</strong>。这就是 PRD 里 Codex 反复强调的 fail-closed(拿不准就往安全的方向倒)。</p>
+  <div class="diagram"><!--DIAGRAM:d3--></div>
+  <div class="cap">图 2 · 判定顺序;所有阈值都是配置项,默认值写在表里(流程图)</div>
+  <div class="scroll"><table>
+    <tr><th>结论</th><th>触发条件(默认阈值,全部可配,并且每次结论都会把当时用的阈值一起记下来)</th></tr>
+    <tr><td><span class="state u">unknown</span></td><td>这个 commit 在本机没有部署记录 / 本机现在跑的不是它 / 问的版本号和它跑时记下的版本号对不上 / 跑够的时间不到 12 小时 / 最新心跳超过 10 分钟没更新 / 期间心跳缺口累计超过 30 分钟(开头结尾都算)/ 期间任何一次心跳说「来源不健康」(Bridge 主循环不新鲜、告警投递被关、登记库读不到、搬运失败、积压太老、缺口目录写不了、有坏行)/ 评估这一刻还有没搬进账本或损坏的本地文件 / 有 severe 告警但观测时不知道版本 / 有任何一条「本该采到却没采到」的缺口 / 有还没落定的 bug 意图 / 「Bug」这个 label 最近一次解析失败 / 期间任何一天的日报消息还没成功看过反应、看的失败了、或看的太久没更新</td></tr>
+    <tr><td><span class="state h">hold</span></td><td>期间<strong>任何一天</strong>的日报上你点过 👎(后来某天点 👍 不会抵消)/ severe 告警 ≥ 1 / warning 告警 ≥ 5 / 打了这版 tag 的 bug ≥ 1</td></tr>
+    <tr><td><span class="state g">green</span></td><td>以上全都不成立</td></tr>
+  </table></div>
+  <p class="note">「期间」= 这个 commit 这一次连续部署的时段,但<strong>最多只看最近 14 天</strong>(和账本的保留期同一个数字,日报会标明「已截断」)。只算 flywheel 自己(以及整机级)的告警;GeoForge3D、growth 这些项目的告警和 flywheel 的版本无关,不计。info 级别的通知不计。同一个事件重复出现按一件算、严重度取最高。</p>
+  <div class="cbox"><label for="c-decision">对「三态怎么判」的意见</label><textarea id="c-decision" data-key="decision" data-title="三态怎么判" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card purple" data-title="数据与结构模型">
+  <h2>数据与结构模型:一张盖章表、六张账本</h2>
+  <p>左上角那张 <code>alert_version_observations</code> 是 shell 路径的「观测表」,住在告警登记的同一个小数据库里(现有的四列登记表和它后面的租约语句<strong>一个字都不动</strong>,只在前面加一条插入,这在仓库里有先例)。其余八张住在 Bridge 的主账本里;<code>deployment_events</code> 是更新器早就在写的部署记录,本单只读。</p>
+  <div class="diagram"><!--DIAGRAM:d2--></div>
+  <div class="cap">图 3 · 表与表之间怎么喂给最终的 verdict(实体关系图);心跳每 60 秒追加一行、永不覆盖,失败的那一行不会被后面成功的一行抹掉</div>
+  <ul>
+    <li><strong>verdict 同时记两个指纹</strong>:被评估的 <code>subject_commit</code> 和评估那一刻机器上的 <code>local_deployed_sha</code>,方便对账「机器到底跑没跑过它」(Tadashi 的附加要求)。</li>
+    <li><strong>不回填历史</strong>:上线之前的告警没有版本章,就不猜;评估窗口自然从第一条心跳开始。</li>
+    <li><strong>回滚干净</strong>:全是新表,老代码不读它们;还原 PR 即可,不需要清数据。</li>
+    <li><strong>收口有据</strong>:把一条「未落定的 bug 意图」标成放弃或补上 issue 号,只能用最高权限的 token,必须写理由,并留一条不可改的收据 —— 因为这是唯一一种能把「说不清」变回「可以发」的人工操作。</li>
+  </ul>
+  <div class="cbox"><label for="c-model">对「数据与结构模型」的意见</label><textarea id="c-model" data-key="model" data-title="数据与结构模型" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card amber" data-title="关键取舍与否决的方案">
+  <h2>关键取舍与否决的方案</h2>
+  <div class="scroll"><table>
+    <tr><th>问题</th><th>选了</th><th>否决了什么、为什么</th></tr>
+    <tr><td>事件怎么知道自己属于哪个版本</td><td><span class="badge do">选</span>发生那一刻盖章</td><td><span class="badge no">否</span>事后按时间和部署记录硬对 —— 重启窗口里事件和部署交叉,对不准;而且告警的投递日志是「一个收件人一行」,要先去重。</td></tr>
+    <tr><td>用什么当版本身份</td><td><span class="badge do">选</span>sourceCommit + 基础版本号</td><td><span class="badge no">否</span>用 beta 号(1.56.0-beta.4)—— 这台机器从来不「装」beta 包,跑的是更新器部署的 main 代码;beta 号只是同一个 commit 在版本目录里的名字,而且可能根本没有。</td></tr>
+    <tr><td>哪些告警算数</td><td><span class="badge do">选</span>按严重度(发出方定)+ 按项目</td><td><span class="badge no">否</span>维护一张「哪些类型算数」的名单 —— 100 种类型,名单必漂(FLY-2386 的教训);要摘掉噪音走配置项,有变更记录。</td></tr>
+    <tr><td>bug 数从哪来</td><td><span class="badge do">选</span>本地账本(建单时同一处记)</td><td><span class="badge no">否</span>去 Linear 数 —— 生产里 Bridge 的 Linear 绑定全是空的;<span class="badge no">否</span>每个版本建一个 Linear label —— 你的 /create-issue 规矩是「不建新 label」。</td></tr>
+    <tr><td>怎么收你的 👍/👎</td><td><span class="badge do">选</span>盯日报那条消息的反应</td><td><span class="badge no">否</span>让你敲命令或点按钮 —— 违背「减少 human-in-loop、只在想拦时出手」。</td></tr>
+    <tr><td>定时任务怎么跑</td><td><span class="badge do">选</span>搭现有 60 秒定时器的便车</td><td><span class="badge no">否</span>新开定时器 —— FLY-1560 之后的仓库规矩:零新定时器。</td></tr>
+    <tr><td>新账本留多久</td><td><span class="badge do">选</span>沿用仓库现有的统一 14 天清理;小账本永不删</td><td><span class="badge no">否</span>为本单另造 30/90 天的保留策略 —— 现有清理引擎只有一个 14 天刻度,要跑够的时间才 12 小时,14 天足够;少造一套机制(Codex R1)。</td></tr>
+    <tr><td>一个版本要看多长的历史</td><td><span class="badge do">选</span>有界窗口 = 这次部署时段与最近 14 天取交集;部署的起止点单独快照进一张不删的表</td><td><span class="badge no">否</span>看「完整部署时段」—— 账本 14 天就清,超过 14 天的部署会因为开头被删而永远「说不清」,或者悄悄忘掉早期的坏事(Codex R3);现在是明说「只看 14 天」。</td></tr>
+    <tr><td>观察者自己的健康放哪</td><td><span class="badge do">选</span>自己的心跳表</td><td><span class="badge no">否</span>塞进 <code>/health</code> —— 那份契约被测试锁死,不碰。</td></tr>
+  </table></div>
+  <div class="cbox"><label for="c-tradeoffs">对「关键取舍」的意见</label><textarea id="c-tradeoffs" data-key="tradeoffs" data-title="关键取舍与否决的方案" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="Tadashi 已裁的三个问题">
+  <h2>Tadashi 已裁的三个问题(设计期间非阻塞提问,已折入)</h2>
+  <ol>
+    <li><strong>机器没跑过的 beta 怎么答?</strong> → 答「说不清(没有部署证据)」,不放宽;更新器与 beta 线的对齐另开一张 1143 子单;每个结论同时带两个指纹方便对账。</li>
+    <li><strong>阈值默认值?</strong> → 先按上表(跑 12 小时、severe ≥1、warning ≥5、bug ≥1、心跳 10 分钟、缺口 30 分钟),全部可配并随结论落账。</li>
+    <li><strong>shell 路径的告警怎么进来?</strong> → 盖章必须本地完成、不依赖 Discord token、发送失败也要盖。本设计把盖章放在「登记领取」那一笔事务里,它发生在任何 token / 频道判定<strong>之前</strong>,满足条件。</li>
+  </ol>
+  <div class="cbox"><label for="c-lead">对「已裁问题」的意见</label><textarea id="c-lead" data-key="lead" data-title="Tadashi 已裁的三个问题" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="怎么验收">
+  <h2>怎么验收(issue 原文的验收,一条条对应)</h2>
+  <div class="scroll"><table>
+    <tr><th>issue 要求</th><th>本单怎么证明</th></tr>
+    <tr><td>回放的 FLY-942 事件</td><td>从生产登记库匿名化导出 30 条真实类型组合(部署失败、崩溃循环、Bridge 非正常退出、死信……)做成回放夹具,评估函数直接吃它</td></tr>
+    <tr><td>注入的心跳缺失</td><td>一份完整 14 小时心跳、一份中间挖掉 45 分钟 → 后者必须得 unknown,原因码 <code>heartbeat_gap</code></td></tr>
+    <tr><td>注入的版本 tag</td><td>两条 bug,其中一条打了目标 commit 的 tag → hold,原因码 <code>bug_reports_over_threshold</code>,并列出 issue 号</td></tr>
+    <tr><td>三态各一例、理由可查</td><td>green(只有 2 条 warning)/ hold(一条部署失败 severe;另一例只点了 👎)/ unknown(心跳缺口;另一例 commit 没部署过)—— 每例断言原因码与证据字段逐字</td></tr>
+    <tr><td>日报生成一份</td><td>渲染函数对上面每个结论各出一份 HTML,并把其中一份作为样例提交进仓库</td></tr>
+  </table></div>
+  <p class="note">上线后第一个非「说不清」的结论最早要等 12 小时(要跑够时间),这是设计,不是故障。</p>
+  <div class="cbox"><label for="c-accept">对「怎么验收」的意见</label><textarea id="c-accept" data-key="accept" data-title="怎么验收" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card gray" data-title="诚实边界">
+  <h2>诚实边界:这单做什么、不做什么</h2>
+  <h3>做</h3>
+  <ul>
+    <li>告警盖版本章(shell + Bridge 两条路径)、Bridge 心跳与搬运、bug 页脚与账本、👍/👎 采集、三态评估与落账、日报渲染 + 每日投递脚本、给 B4 的查询接口。</li>
+  </ul>
+  <h3>不做</h3>
+  <ul>
+    <li>不做否决窗口、送达回执、决策记录、任何真实发布或撤回(B1 / B4 / B5)。</li>
+    <li>不读版本目录(manifest)、不持有任何发布凭据、不推算 beta 号。</li>
+    <li>不做 Beta 分频(B6);日报只展示当前「每 6 小时」这个节奏文字。</li>
+    <li>不改 <code>/health</code>、不改现有的每日 standup、不复活任何看门狗、不为本单造新的保留期策略。</li>
+    <li>不自动去 Linear 对账:意图没落定时,由人用最高权限的命令收口(填 issue 号或标放弃,必须写理由,收据上的操作者由服务端固定,不信任请求自报)。</li>
+    <li>Codex 第三轮提的 4 条「把极端故障也完整持久化」的加固(R3 #2–#5),本单只做了每条最便宜的 fail-closed 守卫,完整版留在 plan 的 follow-ups 里,由 Tadashi 裁定。</li>
+    <li>不回填历史告警的版本。</li>
+  </ul>
+  <div class="callout red"><strong>最重要的三条诚实</strong>:① v1 有偏差 —— bug 只算报上来并经过 Bridge 建单接口的那些;你自己用 /create-issue 直接建的单不会自动带版本章(那条命令在仓库外,列为部署前置项)。② 「机器跑过的 commit」和「要发给客户的 beta」今天大概率不是同一个,所以在对齐子单落地前,B4 会经常拿到「说不清」,这是设计如实反映现状,不是 B3 坏了。③ 「说不清」不等于「有问题」,它只表示「我没有足够证据说没问题」。</div>
+  <div class="cbox"><label for="c-boundary">对「诚实边界」的意见</label><textarea id="c-boundary" data-key="boundary" data-title="诚实边界" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页所有意见</button>
+    <span class="status" id="copy-status"></span>
+  </div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2390";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

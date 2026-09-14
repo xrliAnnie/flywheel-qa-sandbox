@@ -49,6 +49,25 @@ TARBALL="$SANDBOX/payload/flywheel-onboard-payload-$VERSION.tgz"
 [ -f "$TARBALL" ] && pass "①a packaging pipeline: gated tarball produced (v$VERSION)" \
                   || { fail "①a tarball missing at $TARBALL"; exit 1; }
 
+# The readiness subject's runtime dependency must survive the real payload.
+if jq -e '.flywheelPackagesMirror["release-contract"] == "flywheel-release-contract" and
+  ([.dependencies[] | select(startswith("workspace:"))] | length) == 0' \
+  "$SANDBOX/payload/tree/package.json" >/dev/null \
+  && node --input-type=module - "$SANDBOX/payload/tree/package.json" <<'NODE'
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+const entry = createRequire(process.argv[2]).resolve('flywheel-release-contract');
+const { normalizeVersionFile } = await import(pathToFileURL(entry).href);
+assert.equal(normalizeVersionFile('v1.56.0\n'), '1.56.0');
+NODE
+then
+  pass "①a release contract resolves from the payload with no workspace protocol"
+else
+  fail "①a release contract runtime closure missing or workspace protocol leaked"
+  exit 1
+fi
+
 # Generic voice is part of TeamLead's runtime dependency closure.
 if jq -e '
   ([.dependencies[] | select(startswith("workspace:"))] | length) == 0 and

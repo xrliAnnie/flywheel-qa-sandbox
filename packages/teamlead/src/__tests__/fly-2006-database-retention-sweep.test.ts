@@ -524,7 +524,7 @@ describe("FLY-2006 retention registry", () => {
 			"ticket_escalations",
 		];
 
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(18);
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(21);
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toContain(
 			"alert_mailbox_ledger",
 		);
@@ -540,7 +540,7 @@ describe("FLY-2006 retention registry", () => {
 		);
 		expect(
 			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
-		).toHaveLength(148);
+		).toHaveLength(156);
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toEqual(
 			expect.arrayContaining([
 				"pre_adapter_failure_receipts",
@@ -599,13 +599,13 @@ describe("FLY-2006 retention registry", () => {
 
 		const teamleadNames = Object.values(TEAMLEAD_TABLE_CLASSIFICATION).flat();
 		const commNames = Object.values(COMM_TABLE_CLASSIFICATION).flat();
-		expect(new Set(teamleadNames).size).toBe(209);
+		expect(new Set(teamleadNames).size).toBe(220);
 		expect(TEAMLEAD_PRODUCTION_TABLES).toEqual([...teamleadNames].sort());
 		expect(new Set(commNames).size).toBe(29);
 		expect(
 			assertClassifiedSchema("teamlead", TEAMLEAD_PRODUCTION_TABLES),
 		).toMatchObject({
-			total: 209,
+			total: 220,
 		});
 		expect(
 			assertClassifiedSchema(
@@ -614,7 +614,7 @@ describe("FLY-2006 retention registry", () => {
 					(name) => !retiredNames.includes(name),
 				),
 			),
-		).toMatchObject({ total: 206 });
+		).toMatchObject({ total: 217 });
 		expect(assertClassifiedSchema("comm", commNames)).toMatchObject({
 			total: 29,
 		});
@@ -1042,6 +1042,118 @@ describe("FLY-2006 SQLite evidence and legacy reader", () => {
 });
 
 describe("FLY-2006 multi-target inventory", () => {
+	it("inventories, deletes and receipts old release evidence while retaining cutoff rows and deployment anchors", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2390-retention-"));
+		const teamleadPath = join(root, "teamlead.db"),
+			commPath = join(root, "comm.db");
+		const now = new Date().toISOString();
+		const cutoff = new Date(Date.parse(now) - RETENTION_MS).toISOString();
+		let store: StateStore | undefined;
+		try {
+			store = await StateStore.create(teamleadPath);
+			new Database(commPath).close();
+			const sha = "a".repeat(40);
+			for (const [id, at] of [
+				["old", "2000-01-01T00:00:00.000Z"],
+				["cutoff", cutoff],
+				["new", now],
+			]) {
+				store.insertReleaseSignalObservation({
+					eventId: id,
+					sourceCommit: sha,
+					baseVersion: "1.56.0",
+					kind: "deploy_failed",
+					severity: "severe",
+					projectName: "flywheel",
+					origin: "bridge",
+					observedAt: at,
+					ingestedAt: now,
+				});
+				store.insertReleaseSignalGap({
+					gapId: id,
+					eventId: id,
+					sourceCommit: sha,
+					baseVersion: "1.56.0",
+					kind: "deploy_failed",
+					severity: "severe",
+					projectName: "flywheel",
+					reason: "shell_preflight",
+					observedAt: at,
+					ingestedAt: now,
+				});
+				store.appendReleaseHeartbeat({
+					tickAt: at,
+					sourceCommit: sha,
+					baseVersion: "1.56.0",
+					w1Freshness: "fresh",
+					alertDeliveryEnabled: true,
+					claimsDbOk: true,
+					ingestOk: true,
+					gapsDirOk: true,
+					bridgeCaptureFailures: 0,
+					rejectedRows: 0,
+					backlogAgeS: 0,
+					outboxPending: 0,
+					outboxInvalid: 0,
+				});
+			}
+			store.upsertReleaseDeploymentAnchor(
+				{
+					sourceCommit: sha,
+					episodeFrom: "2000-01-01T00:00:00.000Z",
+					episodeTo: null,
+				},
+				now,
+			);
+			store.close();
+			store = undefined;
+			const inventory = await executeFly2006Inventory({
+				teamleadDbPath: teamleadPath,
+				commDbPath: commPath,
+				evidenceDir: join(root, "evidence"),
+				now,
+				allowFixturePaths: true,
+				allowFixtureSchema: true,
+			});
+			for (const key of [
+				"releaseSignalEvents",
+				"releaseSignalHeartbeat",
+				"releaseSignalGaps",
+			])
+				expect(inventory.manifest.targets[key].candidateCount).toBe(1);
+			const applied = await executeFly2006Apply({
+				manifestPath: inventory.manifestPath,
+				allowFixturePaths: true,
+				founderGateAudit: FOUNDER_DISCORD_AUDIT,
+			});
+			const receipt = JSON.parse(
+				readFileSync(applied.applyReceiptPath, "utf8"),
+			);
+			for (const key of [
+				"releaseSignalEvents",
+				"releaseSignalHeartbeat",
+				"releaseSignalGaps",
+			]) {
+				expect(applied.deleted[key]).toBe(1);
+				expect(receipt.deleted[key]).toBe(1);
+			}
+			store = await StateStore.create(teamleadPath);
+			const evidence = store.getReleaseReadinessEvidence(
+				sha,
+				"2000-01-01T00:00:00.000Z",
+				now,
+			);
+			expect(evidence.events.map((e) => e.eventId)).toEqual(["cutoff", "new"]);
+			expect(evidence.gaps.map((g) => g.gapId)).toEqual(["cutoff", "new"]);
+			expect(evidence.heartbeats.map((h) => h.tickAt)).toEqual([cutoff, now]);
+			expect(store.getReleaseDeploymentAnchor(sha)?.episodeFrom).toBe(
+				"2000-01-01T00:00:00.000Z",
+			);
+		} finally {
+			store?.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 	it("has one explicit policy for every delete-target table", () => {
 		for (const [database, expected] of [
 			["teamlead", TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget],

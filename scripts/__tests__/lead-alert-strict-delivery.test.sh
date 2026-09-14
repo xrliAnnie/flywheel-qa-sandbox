@@ -92,8 +92,7 @@ run_routed_alert() {
   # $1 = http code, $2 = kind, $3 = signature, $4 = queue dir, $5 = channel,
   # $6 = optional 1 for the ordinary-message delivery style.
   local http="$1" kind="$2" signature="$3" queue_dir="$4" channel="$5" plain="${6:-0}"
-  local style_args=()
-  if [ "$plain" = "1" ]; then style_args=(--plain-message); fi
+  if [ "$plain" = "1" ]; then set -- --plain-message; else set --; fi
   PATH="$TMP/bin:$PATH" \
   CURL_CALLS="$TMP/curl.calls" \
   CURL_HTTP_CODE="$http" \
@@ -106,7 +105,7 @@ run_routed_alert() {
   FLY913_ALERT_TOKEN="CANARY-TOKEN" \
   bash "$LEAD_ALERT" --project flywheel --lead flywheel-eng-lead \
     --kind "$kind" --severity severe --title T --body B \
-    --signature "$signature" --strict-delivery "${style_args[@]}"
+    --signature "$signature" --strict-delivery "$@"
 }
 
 # ── 1. sent ──────────────────────────────────────────────────────────────────

@@ -455,6 +455,13 @@ printf 'recent loose archive\n' > "$recent_loose_gate_archive"
 printf 'unclassified loose archive\n' > "$unclassified_loose_gate_archive"
 printf 'guard\n' > "$push_guard/evidence"
 printf 'pending\n' > "$pending_reports/report.html"
+readiness_root="$FLYWHEEL_STATE_ROOT/release-readiness"
+mkdir -p "$readiness_root/gaps/landed" "$readiness_root/publications/landed"
+printf '{}' > "$readiness_root/gaps/landed/old.intent.json"
+printf '{}' > "$readiness_root/publications/landed/old.json"
+printf '{}' > "$readiness_root/gaps/landed/recent.json"
+printf '{}' > "$readiness_root/gaps/pending.json"
+touch -t 202001010000 "$readiness_root/gaps/landed/old.intent.json" "$readiness_root/publications/landed/old.json" "$readiness_root/gaps/pending.json"
 touch -t 202001010000 "$playwright_cache" "$playwright_cache/browser.bin"
 touch -t 202001010000 "$old_loose_gate_archive" "$unclassified_loose_gate_archive"
 state_dry_out="$(run_janitor --dry-run --module state_residue 2>&1)"
@@ -465,6 +472,11 @@ state_dry_preserved=0
   || state_dry_preserved=1
 state_apply_out="$(run_janitor --apply --module state_residue 2>&1)"
 state_apply_rc=$?
+if [[ ! -e "$readiness_root/gaps/landed/old.intent.json" && ! -e "$readiness_root/publications/landed/old.json" && -e "$readiness_root/gaps/landed/recent.json" && -e "$readiness_root/gaps/pending.json" ]]; then
+  pass "readiness cleanup removes only old landed evidence and preserves pending/recent files"
+else
+  fail "readiness landed retention contract failed"
+fi
 archived_clone="$(find "$FLYWHEEL_ARCHIVE_ROOT/state-residue" -type f -name repo.pack -print 2>/dev/null | sed -n '1p')"
 if [[ "$state_dry_rc" -eq 0 \
   && "$state_apply_rc" -eq 0 \

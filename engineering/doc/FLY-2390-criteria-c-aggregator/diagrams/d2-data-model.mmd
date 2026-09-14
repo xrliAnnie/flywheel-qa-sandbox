@@ -1,0 +1,75 @@
+erDiagram
+  alert_version_observations {
+    text event_id PK
+    text source_commit_key PK
+    text severity
+    text project_name
+    text kind
+    text base_version
+    int observed_at
+  }
+  release_signal_events {
+    text event_id PK
+    text source_commit_key PK
+    text kind
+    text severity
+    text source_commit
+    text origin
+    text observed_at
+  }
+  release_signal_gaps {
+    text gap_id PK
+    text event_id
+    text reason
+    text severity
+    text observed_at
+  }
+  release_signal_heartbeat {
+    int seq PK
+    text tick_at
+    text source_commit
+    text w1_freshness
+    int claims_db_ok
+    int ingest_ok
+    int backlog_age_s
+  }
+  deployment_events {
+    text deployed_sha
+    text deployed_at
+  }
+  release_bug_reports {
+    text intent_id PK
+    text issue_identifier
+    text status
+    text source_commit
+    text created_at
+  }
+  release_report_publications {
+    text publication_id PK
+    text day
+    text status
+    text message_id
+    text last_scan_ok_at
+  }
+  release_founder_verdicts {
+    text day PK
+    text sentiment
+    text message_id
+  }
+  release_readiness_verdicts {
+    text verdict_id PK
+    text subject_commit
+    text local_deployed_sha
+    text state
+    text reasons_json
+    text evidence_json
+    text policy_json
+  }
+  alert_version_observations ||--o| release_signal_events : "rider 按复合游标搬运(shell 路径)"
+  release_signal_events }o--|| release_readiness_verdicts : "按 source_commit 计数;NULL 的按窗口时间阻断"
+  release_signal_gaps }o--|| release_readiness_verdicts : "任一缺口 ⇒ unknown"
+  release_signal_heartbeat }o--|| release_readiness_verdicts : "覆盖率、新鲜度、每一行的健康"
+  deployment_events }o--|| release_readiness_verdicts : "决定评估窗口"
+  release_bug_reports }o--|| release_readiness_verdicts : "这版 N 个 bug;pending ⇒ unknown"
+  release_report_publications ||--o| release_founder_verdicts : "同 day"
+  release_founder_verdicts |o--|| release_readiness_verdicts : "👎 直接 hold"

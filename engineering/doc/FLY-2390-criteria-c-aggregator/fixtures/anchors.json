@@ -1,0 +1,17 @@
+[
+  {
+    "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "episodeFrom": "2026-09-01T12:00:00.000Z",
+    "episodeTo": "2026-09-02T12:00:00.000Z"
+  },
+  {
+    "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "episodeFrom": "2026-09-08T12:00:00.000Z",
+    "episodeTo": null
+  },
+  {
+    "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "episodeFrom": "2026-08-22T12:00:00.000Z",
+    "episodeTo": null
+  }
+]

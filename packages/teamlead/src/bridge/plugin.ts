@@ -617,6 +617,12 @@ import { createPublishHtmlRouter } from "./publish-html-route.js";
 import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
 import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
+import { appendBugVersionFooter } from "./release-readiness/bug-footer.js";
+import { ReleaseReadinessRider } from "./release-readiness/ingest-rider.js";
+import { readReadinessPolicy } from "./release-readiness/policy.js";
+import { createReadinessRouter } from "./release-readiness/routes.js";
+import { ReleaseReadinessService } from "./release-readiness/service.js";
+import { readRunningSubject } from "./release-readiness/subject.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
 	type ReportBlobStore,
@@ -3842,6 +3848,10 @@ export function createBridgeApp(
 			}
 			const { title, description, priority, labels, team, project, parentId } =
 				req.body ?? {};
+			if (req.body?.bug !== undefined && typeof req.body.bug !== "boolean") {
+				res.status(400).json({ error: "bug must be a boolean" });
+				return;
+			}
 			// FLY-371: optional Flywheel projectName → resolve a Linear binding
 			// (team / project / scope-label). Raw value validated inside the helper.
 			const projectNameRaw = req.body?.projectName;
@@ -4021,6 +4031,7 @@ export function createBridgeApp(
 				// label-bearing create 502'd ("labelIds must be a UUID"). Each name
 				// now resolves exactly like the scope label; UUID-shaped entries pass
 				// through untouched (pre-F1 id-passing callers stay byte-compatible).
+				const bugLabel = readReadinessPolicy().bugLabel;
 				const resolveTeamScopedLabel = async (
 					name: string,
 					kind: "Label" | "Scope label",
@@ -4028,13 +4039,31 @@ export function createBridgeApp(
 					| { ok: true; id: string }
 					| { ok: false; status: number; error: string }
 				> => {
-					const matches = await client.issueLabels({
-						first: 2,
-						filter: {
-							name: { eq: name },
-							team: { id: { eq: targetTeam.id } },
-						},
-					});
+					const matches = await client
+						.issueLabels({
+							first: 2,
+							filter: {
+								name: { eq: name },
+								team: { id: { eq: targetTeam.id } },
+							},
+						})
+						.catch((error) => {
+							if (name === bugLabel)
+								store.recordReleaseBugSourceHealth({
+									label: bugLabel,
+									ok: false,
+									error: String(error),
+									at: new Date().toISOString(),
+								});
+							throw error;
+						});
+					if (name === bugLabel && matches.nodes.length !== 1)
+						store.recordReleaseBugSourceHealth({
+							label: bugLabel,
+							ok: false,
+							error: `Bug label resolution returned ${matches.nodes.length} matches`,
+							at: new Date().toISOString(),
+						});
 					if (matches.nodes.length === 0) {
 						return {
 							ok: false,
@@ -4083,10 +4112,43 @@ export function createBridgeApp(
 					labelIds = merged;
 				}
 
+				let bugLabelId: string | undefined;
+				let bugLabelError: string | undefined;
+				try {
+					const resolved = await resolveTeamScopedLabel(bugLabel, "Label");
+					if (resolved.ok) bugLabelId = resolved.id;
+					else bugLabelError = resolved.error;
+				} catch (error) {
+					bugLabelError = String(error);
+				}
+				store.recordReleaseBugSourceHealth({
+					label: bugLabel,
+					ok: bugLabelId !== undefined,
+					error: bugLabelError,
+					at: new Date().toISOString(),
+				});
+				const isBug =
+					req.body?.bug === true ||
+					(bugLabelId !== undefined && labelIds?.includes(bugLabelId));
+				const readiness = isBug
+					? {
+							intentId: `rb-${randomUUID()}`,
+							sourceCommit: readinessSubject?.sourceCommit ?? null,
+							baseVersion: readinessSubject?.baseVersion ?? null,
+						}
+					: undefined;
+				if (readiness)
+					store.insertReleaseBugIntent({
+						...readiness,
+						reporter: null,
+						createdAt: new Date().toISOString(),
+					});
 				const issue = await client.createIssue({
 					teamId: targetTeam.id,
 					title,
-					description: description ?? "",
+					description: readiness
+						? appendBugVersionFooter(description ?? "", readinessSubject)
+						: (description ?? ""),
 					priority: priority ?? 0,
 					labelIds,
 					...(projectId && { projectId }),
@@ -4094,8 +4156,19 @@ export function createBridgeApp(
 				});
 
 				const created = await issue.issue;
+				if (readiness) {
+					if (!created?.identifier)
+						throw new Error("created bug identifier missing");
+					store.resolveReleaseBugIntent({
+						intentId: readiness.intentId,
+						issueIdentifier: created.identifier,
+						resolvedBy: "create-issue",
+						resolvedAt: new Date().toISOString(),
+					});
+				}
 				res.json({
 					ok: true,
+					...(readiness ? { readiness } : {}),
 					issue: {
 						id: created?.id,
 						identifier: created?.identifier,
@@ -4876,6 +4949,45 @@ export function createBridgeApp(
 		"/api/reports",
 		reportsAuthMiddleware(config.apiToken, config.ingestToken),
 		reportsRouter,
+	);
+
+	const readinessSubject = readRunningSubject(
+		join(
+			process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+				process.env.FLYWHEEL_REPO?.trim() ||
+				resolve(
+					dirname(fileURLToPath(import.meta.url)),
+					"..",
+					"..",
+					"..",
+					"..",
+				),
+			"doc",
+			"VERSION",
+		),
+		buildIdentity,
+	);
+	app.use(
+		"/api/release-readiness",
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		createReadinessRouter({
+			store,
+			subject: () => readinessSubject,
+			masterToken: config.apiToken,
+			scopedToken: config.geminiAgentToken,
+			service: new ReleaseReadinessService(store, {
+				outboxRoot: join(
+					process.env.FLYWHEEL_STATE_DIR?.trim() ||
+						join(homedir(), ".flywheel"),
+					"state",
+					"release-readiness",
+				),
+				deployedShaPath:
+					process.env.FLYWHEEL_DEPLOYED_SHA_FILE ??
+					join(homedir(), ".flywheel", "deployed-sha"),
+				policy: readReadinessPolicy(),
+			}),
+		}),
 	);
 
 	// FLY-727: /api/digest — daily completion digest render endpoint.
@@ -10946,6 +11058,7 @@ export async function startBridge(
 		runtimeRegistry: registry,
 		refreshShipRelevance,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
+		onReleaseReadinessTick: () => releaseReadinessRider.tick(),
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: async () => {
 			await landOperationTick();
@@ -11619,8 +11732,24 @@ export async function startBridge(
 	// FLY-927 (T1): unified-channel root-message rate cap (production: 20/min).
 	// Env unset ⇒ no limiter ⇒ byte-compat unlimited sends.
 	const alertRatePerMin = rateLimitPerMinuteFromEnv(process.env);
+	const readinessSubject = readRunningSubject(
+		join(
+			process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+				process.env.FLYWHEEL_REPO?.trim() ||
+				resolve(
+					dirname(fileURLToPath(import.meta.url)),
+					"..",
+					"..",
+					"..",
+					"..",
+				),
+			"doc",
+			"VERSION",
+		),
+	);
 	const leadAlertNotifier = new LeadAlertNotifier({
 		store,
+		readinessSubject,
 		projects,
 		deliveryEnabled: () => storeAlertSystemEnabled(flagStore),
 		claimsReader,
@@ -11638,6 +11767,46 @@ export async function startBridge(
 		// local paths so test alerts never land in the production queue/dead-letter
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
+	});
+	const releaseReadinessRider = new ReleaseReadinessRider(store, {
+		outboxRoot: join(
+			process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel"),
+			"state",
+			"release-readiness",
+		),
+		claimsPath:
+			process.env.FLYWHEEL_CLAIMS_DB ??
+			join(homedir(), ".flywheel", "alerts", "claims.db"),
+		deployedShaPath:
+			process.env.FLYWHEEL_DEPLOYED_SHA_FILE ??
+			join(homedir(), ".flywheel", "deployed-sha"),
+		subject: readinessSubject,
+		notifier: leadAlertNotifier,
+		sourceHealth: () => ({
+			w1Freshness: livenessTrackers.liveness.snapshot({
+				wired: livenessWiring.liveness,
+				effectiveEnabled: true,
+			}).freshness,
+			alertDeliveryEnabled: storeAlertSystemEnabled(flagStore),
+		}),
+		founder: {
+			userId: founderCanonicalId,
+			fetchReactions: async ({ channelId, messageId, emoji, after }) => {
+				if (!config.discordBotToken)
+					throw new Error("Discord bot token unavailable");
+				const response = await fetch(
+					`https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions/${encodeURIComponent(emoji)}?limit=100${after ? `&after=${encodeURIComponent(after)}` : ""}`,
+					{
+						headers: { Authorization: `Bot ${config.discordBotToken}` },
+						signal: AbortSignal.timeout(10_000),
+					},
+				);
+				return {
+					status: response.status,
+					body: response.status === 200 ? await response.json() : undefined,
+				};
+			},
+		},
 	});
 	codexQuotaOutboxHolder.flush = createCodexQuotaOutboxDelivery({
 		store,

@@ -1,0 +1,10 @@
+[
+  {
+    "intentId": "rb-fixture",
+    "issueIdentifier": "FLY-942",
+    "status": "finalized",
+    "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "baseVersion": "1.56.0",
+    "createdAt": "2026-09-10T09:00:00.000Z"
+  }
+]

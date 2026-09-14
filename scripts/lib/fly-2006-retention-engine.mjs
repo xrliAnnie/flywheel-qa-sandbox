@@ -144,6 +144,27 @@ function staticPolicy(key, database, table, primaryKey, predicate, params) {
 
 export const RETENTION_TARGET_POLICIES = Object.freeze([
 	staticPolicy(
+		"releaseSignalEvents",
+		"teamlead",
+		"release_signal_events",
+		"__rowid",
+		"julianday(t.observed_at)<julianday(?)",
+	),
+	staticPolicy(
+		"releaseSignalHeartbeat",
+		"teamlead",
+		"release_signal_heartbeat",
+		"seq",
+		"julianday(t.tick_at)<julianday(?)",
+	),
+	staticPolicy(
+		"releaseSignalGaps",
+		"teamlead",
+		"release_signal_gaps",
+		"gap_id",
+		"julianday(t.observed_at)<julianday(?)",
+	),
+	staticPolicy(
 		"alertMailboxLedger",
 		"teamlead",
 		"alert_mailbox_ledger",
@@ -990,17 +1011,16 @@ function genericCandidateSpec(policy, db, cutoff14, active) {
 	const candidate = policy.candidate({ cutoff14, active });
 	const params = [...candidate.params];
 	const activeGuard = genericActiveGuard(db, policy.table, active, params);
-	const projection =
-		policy.primaryKey === "__rowid" ? "t.rowid AS __rowid,t.*" : "t.*";
+	const tableColumns = columns(db, policy.table);
+	const syntheticRowid =
+		policy.primaryKey === "__rowid" && !tableColumns.includes("__rowid");
+	const projection = syntheticRowid ? "t.rowid AS __rowid,t.*" : "t.*";
 	const orderBy =
 		policy.primaryKey === "__rowid" ? "t.rowid" : `t."${policy.primaryKey}"`;
 	const query = `SELECT ${projection} FROM "${policy.table}" t
 		WHERE (${candidate.sql}) AND ${activeGuard}
 		ORDER BY ${orderBy}`;
-	const casFields = [
-		...(policy.primaryKey === "__rowid" ? ["__rowid"] : []),
-		...columns(db, policy.table),
-	];
+	const casFields = [...(syntheticRowid ? ["__rowid"] : []), ...tableColumns];
 	return {
 		query,
 		params,
@@ -1291,7 +1311,10 @@ function snapshotRows(target, batch) {
 	});
 	try {
 		const projection =
-			target.primaryKey === "__rowid" ? "rowid AS __rowid,*" : "*";
+			target.primaryKey === "__rowid" &&
+			!columns(snapshot, target.table).includes("__rowid")
+				? "rowid AS __rowid,*"
+				: "*";
 		const params = [];
 		const filter = batchFilter(target, batch, params).replaceAll(
 			"candidate.",

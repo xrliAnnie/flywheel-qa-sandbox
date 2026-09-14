@@ -1,0 +1,11 @@
+{
+  "publicationId": "rp-pending",
+  "day": "2026-09-11",
+  "subjectCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "baseVersion": "1.56.0",
+  "status": "intent",
+  "channelId": "100",
+  "messageId": null,
+  "intentAt": "2026-09-11T12:00:00.000Z",
+  "publishedAt": null
+}
