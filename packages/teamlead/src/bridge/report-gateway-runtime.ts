@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { get as getBlob } from "@vercel/blob";
 import { htmlMetaHttpEquivContent } from "./report-gateway-html.js";
 import { MIGRATED_REPORT_CREATED_AT } from "./report-gateway-migration-manifest.js";
@@ -26,6 +27,26 @@ export interface ReportGatewayDeps {
 	blobToken: () => string | undefined;
 	migratedCreatedAt?: Readonly<Record<string, string>>;
 	logError?: (message: string) => void;
+}
+
+/** An explicit gzip quality overrides wildcard; invalid qualities fail closed. */
+export function parseAcceptEncoding(header: string | null): boolean {
+	let wildcard = 0;
+	for (const item of (header ?? "").split(",")) {
+		const [name, ...parameters] = item.trim().toLowerCase().split(";");
+		let quality = 1;
+		for (const parameter of parameters) {
+			const [key, value] = parameter.trim().split("=");
+			if (key === "q")
+				quality =
+					value && /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(value.trim())
+						? Number(value.trim())
+						: 0;
+		}
+		if (name?.trim() === "gzip") return quality > 0;
+		if (name?.trim() === "*") wildcard = quality;
+	}
+	return wildcard > 0;
 }
 
 export function extractReportCsp(html: string): string | undefined {
@@ -107,18 +128,34 @@ export function createReportGatewayHandler(
 			await result.stream.cancel();
 			return serveAudit(deps, token, audit, blobToken);
 		}
-		const html = await new Response(result.stream).text();
+		let bytes: Buffer;
+		let html: string;
+		let compressed: boolean;
+		try {
+			bytes = Buffer.from(await new Response(result.stream).arrayBuffer());
+			compressed = bytes[0] === 0x1f && bytes[1] === 0x8b;
+			html = (
+				compressed ? gunzipSync(bytes, { maxOutputLength: 1_048_576 }) : bytes
+			).toString("utf8");
+		} catch {
+			return new Response("Report storage unavailable", { status: 502 });
+		}
 		const csp = extractReportCsp(html);
 		if (!csp) {
 			return new Response("Report storage unavailable", { status: 502 });
 		}
 		try {
-			return new Response(html, {
+			const sendGzip =
+				compressed &&
+				parseAcceptEncoding(request.headers.get("accept-encoding"));
+			return new Response(sendGzip ? new Uint8Array(bytes) : html, {
 				status: 200,
 				headers: {
 					"Cache-Control": "private, no-store",
 					"Content-Security-Policy": csp,
 					"Content-Type": "text/html; charset=utf-8",
+					Vary: "Accept-Encoding",
+					...(sendGzip ? { "Content-Encoding": "gzip" } : {}),
 					"X-Content-Type-Options": "nosniff",
 					"X-Frame-Options": "DENY",
 					"X-Robots-Tag": "noindex, nofollow, noarchive",
@@ -185,14 +222,32 @@ interface NodeGatewayResponse {
 }
 
 /** Raw Vercel `/api/*.js` functions use the Node request/response contract. */
-export default async function reportGatewayNodeHandler(
-	request: NodeGatewayRequest,
-	response: NodeGatewayResponse,
-): Promise<void> {
-	const webResponse = await GET(
-		new Request(new URL(request.url ?? "/", "https://report.invalid")),
-	);
-	response.statusCode = webResponse.status;
-	webResponse.headers.forEach((value, name) => response.setHeader(name, value));
-	response.end(new Uint8Array(await webResponse.arrayBuffer()));
+export function createReportGatewayNodeHandler(
+	handler: (request: Request) => Promise<Response> = GET,
+) {
+	return async (
+		request: NodeGatewayRequest,
+		response: NodeGatewayResponse,
+	): Promise<void> => {
+		const encoding = request.headers["accept-encoding"];
+		const webResponse = await handler(
+			new Request(new URL(request.url ?? "/", "https://report.invalid"), {
+				headers:
+					encoding === undefined
+						? {}
+						: {
+								"accept-encoding": Array.isArray(encoding)
+									? encoding.join(", ")
+									: encoding,
+							},
+			}),
+		);
+		response.statusCode = webResponse.status;
+		webResponse.headers.forEach((value, name) =>
+			response.setHeader(name, value),
+		);
+		response.end(new Uint8Array(await webResponse.arrayBuffer()));
+	};
 }
+
+export default createReportGatewayNodeHandler();

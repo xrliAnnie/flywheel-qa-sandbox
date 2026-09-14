@@ -1,0 +1,22 @@
+flowchart TB
+  subgraph OP["运维日(operator)"]
+    A["新 Vercel 账号<br/>Full Account token"] --> B["pnpm migrate:report-hosting --retarget"]
+    B --> C["改 ~/.flywheel/.env 两行"]
+  end
+  subgraph CMD["--retarget 命令(幂等,可重跑)"]
+    B --> S1["1 项目<br/>GET→缺则 POST"]
+    S1 --> S2["2 private store<br/>intent→POST→GET 校验"]
+    S2 --> S3["3 连接 store→项目"]
+    S3 --> S4["4 取 RW token<br/>env 解密 / --blob-token-env"]
+    S4 --> S6["6 搬保留期报告<br/>gzip put,journal 逐 token 记账"]
+    S6 --> S7["7 部署双格式网关"]
+    S7 --> S8["8 探针 + 抽验<br/>200/404/502"]
+    S8 --> S9["9 registry CAS 写标记<br/>stale ⇒ 回到 6"]
+  end
+  subgraph BR["Bridge(不重启)"]
+    C --> H["publish 时读 .env 单快照"]
+    H --> G{"token 的 store id<br/>= registry storeId?"}
+    G -- 否 --> X["503 有意拒绝"]
+    G -- 是 --> P["gzip put 到新 store"]
+  end
+  S9 -. 标记切到新 store .-> G

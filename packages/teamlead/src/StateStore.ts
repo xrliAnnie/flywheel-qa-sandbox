@@ -2364,10 +2364,12 @@ export const EPIC_PAGE_REFRESH_OUTCOMES = [
 	"ok_unpublished:<version>:manual",
 	"ok_unpublished:<version>:skipped_hosting_not_configured",
 	"ok_unpublished:<version>:skipped_hosting_unsupported",
+	"ok_unpublished:<version>:unchanged_digest",
 	"transient: publish_failed:stage",
 	"transient: publish_failed:blob",
 	"transient: publish_failed:audit_gateway",
 	"transient: publish_failed:registry",
+	"transient: publish_failed:credentials",
 	"transient: publish_failed:publication",
 	"structural: epic_html_too_large",
 	"skipped: project_unbound",
@@ -2381,7 +2383,7 @@ export function parseEpicPageRefreshOutcome(value: unknown): string {
 	}
 	if (/^ok:[1-9]\d*$/.test(value)) return value;
 	if (
-		/^ok_unpublished:[1-9]\d*:(?:manual|skipped_hosting_not_configured|skipped_hosting_unsupported)$/.test(
+		/^ok_unpublished:[1-9]\d*:(?:manual|skipped_hosting_not_configured|skipped_hosting_unsupported|unchanged_digest)$/.test(
 			value,
 		)
 	) {
@@ -2392,6 +2394,8 @@ export function parseEpicPageRefreshOutcome(value: unknown): string {
 }
 
 export interface EpicPagePublicationRead {
+	last_content_digest?: string | null;
+	last_hosting_key?: string | null;
 	token: string;
 	published: boolean;
 	first_published_at?: string;
@@ -7607,6 +7611,8 @@ export class StateStore {
 				this.db.run("DROP TABLE epic_page_fly2140_legacy");
 			}
 		});
+		this.addColumnIfMissing("epic_page_publication", "last_content_digest", "TEXT");
+		this.addColumnIfMissing("epic_page_publication", "last_hosting_key", "TEXT");
 	}
 
 	/** FLY-1778/2100: scoped current-value rows plus append-only operator audit. */
@@ -12845,9 +12851,13 @@ export class StateStore {
 		token: string;
 		publishedAt: string;
 		version: number;
+		contentDigest: string;
+		hostingKey: string;
 	}): void {
 		if (
 			!/^[a-f0-9]{32}$/.test(input.token) ||
+			!/^[a-f0-9]{64}$/.test(input.contentDigest) ||
+			typeof input.hostingKey !== "string" || !input.hostingKey.trim() ||
 			!Number.isSafeInteger(input.version) ||
 			input.version < 1 ||
 			!Number.isFinite(Date.parse(input.publishedAt))
@@ -12857,12 +12867,14 @@ export class StateStore {
 		this.db.run(
 			`UPDATE epic_page_publication
 			    SET first_published_at = COALESCE(first_published_at, ?),
-			        last_published_at = ?, last_version = ?
+			        last_published_at = ?, last_version = ?, last_content_digest = ?, last_hosting_key = ?
 			  WHERE project_name = ? AND token = ?`,
 			[
 				input.publishedAt,
 				input.publishedAt,
 				input.version,
+				input.contentDigest,
+				input.hostingKey,
 				input.projectName,
 				input.token,
 			],
@@ -12877,7 +12889,7 @@ export class StateStore {
 		projectName: string,
 	): EpicPagePublicationRead | undefined {
 		const row = this.workflowSelectAll(
-			`SELECT token, first_published_at, last_published_at, last_version
+			`SELECT token, first_published_at, last_published_at, last_version, last_content_digest, last_hosting_key
 			   FROM epic_page_publication
 			  WHERE project_name = ?`,
 			[projectName],
@@ -12892,6 +12904,8 @@ export class StateStore {
 			first_published_at: String(row.first_published_at),
 			last_published_at: String(row.last_published_at),
 			last_version: Number(row.last_version),
+			last_content_digest: row.last_content_digest == null ? null : String(row.last_content_digest),
+			last_hosting_key: row.last_hosting_key == null ? null : String(row.last_hosting_key),
 		};
 	}
 

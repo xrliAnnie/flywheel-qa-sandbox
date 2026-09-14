@@ -1,3 +1,4 @@
+import type { EpicReportPublication } from "./report-epic-publications.js";
 /**
  * FLY-203: ReportRegistry — local source of truth for the remote report
  * pipeline's hosted set.
@@ -24,7 +25,7 @@
  * unprotected.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	mkdirSync,
 	readFileSync,
@@ -44,6 +45,7 @@ import {
 	isExternalScript,
 	scanHtmlTags,
 } from "flywheel-comm/report-html";
+import { type MkdirLockOpts, withMkdirLock } from "flywheel-config";
 import { isReportExpired, REPORT_RETENTION_MS } from "./report-retention.js";
 
 /** Founder requirement (FLY-2283, 2026-09-02): retain report links for 14 days. */
@@ -274,6 +276,8 @@ function hasMetaAttribute(
 }
 
 export interface ReportEntry {
+	/** Reserved Epic token whose object is intentionally overwritten. */
+	mutable?: true;
 	token: string;
 	projectName: string;
 	title?: string;
@@ -286,6 +290,54 @@ export interface ReportHostingState {
 	provider: "vercel-blob";
 	migratedAt: string;
 	gatewayDeploymentId: string;
+	storeId?: string;
+	storeApiId?: string;
+	gatewayFormat?: "gzip-v1";
+	blobHost?: string;
+	manifestDigest?: string;
+	contentDigest?: string;
+	retargetedFrom?: { vercelProjectName: string; migratedAt: string };
+}
+
+export interface HostingBinding {
+	vercelProjectName?: string;
+	storeId?: string;
+	storeApiId?: string;
+	gatewayFormat?: "gzip-v1";
+	migratedAt?: string;
+	hostingKey: string;
+}
+
+export class ReportRegistryLockBusy extends Error {
+	constructor() {
+		super("report registry busy");
+		this.name = "ReportRegistryLockBusy";
+	}
+}
+
+export class ReportRetargetManifestStale extends Error {
+	constructor() {
+		super("retained reports changed during migration");
+		this.name = "ReportRetargetManifestStale";
+	}
+}
+
+export class ReportHostingBindingConflict extends Error {
+	constructor() {
+		super("report hosting binding changed");
+		this.name = "ReportHostingBindingConflict";
+	}
+}
+
+function bindingOf(data: ReportRegistryData): HostingBinding {
+	return {
+		vercelProjectName: data.vercelProjectName,
+		storeId: data.hosting?.storeId,
+		storeApiId: data.hosting?.storeApiId,
+		gatewayFormat: data.hosting?.gatewayFormat,
+		migratedAt: data.hosting?.migratedAt,
+		hostingKey: `${data.vercelProjectName ?? "-"}/${data.hosting?.storeId ?? "-"}`,
+	};
 }
 
 interface ReportRegistryData {
@@ -295,6 +347,7 @@ interface ReportRegistryData {
 }
 
 export interface StagedPublish {
+	binding: HostingBinding;
 	entry: ReportEntry;
 	/** Hardened HTML for the single-object hosting upload. */
 	html: string;
@@ -307,12 +360,14 @@ export interface StagedPublish {
 	/** Reports that reached the fixed 14-day boundary in this staged view. */
 	expired: readonly ReportEntry[];
 	/** Call after Blob upload success. Fixed order: file → registry rename → prune. */
-	commit(): void;
+	commit(): Promise<void>;
 	/** Call after Blob upload failure. Disk stays untouched. */
 	abort(): void;
 }
 
 export interface ReportRegistryOptions {
+	/** Deterministic lock timing/identity seams for contention tests. */
+	lockOptions?: MkdirLockOpts;
 	/** Clock seam for tests. Defaults to Date.now. */
 	now?: () => number;
 	/** Test seam — defaults to crypto.randomBytes hex. */
@@ -328,9 +383,11 @@ export class ReportRegistry {
 	private readonly now: () => number;
 	private readonly randomHex: (bytes: number) => string;
 	private readonly warn: (msg: string) => void;
+	private readonly lockOptions: MkdirLockOpts;
 
 	constructor(baseDir: string, opts: ReportRegistryOptions = {}) {
 		this.baseDir = baseDir;
+		this.lockOptions = opts.lockOptions ?? {};
 		this.filesDir = join(baseDir, "files");
 		this.registryPath = join(baseDir, "registry.json");
 		this.now = opts.now ?? (() => Date.now());
@@ -339,9 +396,189 @@ export class ReportRegistry {
 		this.warn = opts.warn ?? ((msg) => console.warn(msg));
 	}
 
+	/** Serialize short registry transactions across Bridge and migration processes. */
+	async withLock<T>(fn: () => Promise<T>): Promise<T> {
+		return this.locked("registry.lock.d", fn, 5_000, 50);
+	}
+
+	async withHostingMutationLock<T>(fn: () => Promise<T>): Promise<T> {
+		return this.locked("hosting-mutation.lock.d", fn, 2_000, 100);
+	}
+
+	private async locked<T>(
+		name: string,
+		fn: () => Promise<T>,
+		timeoutMs: number,
+		retryMs: number,
+	): Promise<T> {
+		mkdirSync(this.baseDir, { recursive: true });
+		let entered = false;
+		try {
+			return await withMkdirLock(
+				join(this.baseDir, name),
+				async () => {
+					entered = true;
+					return fn();
+				},
+				{ timeoutMs, retryMs, ...this.lockOptions },
+			);
+		} catch (error) {
+			if (
+				!entered &&
+				error instanceof Error &&
+				error.message.startsWith("withMkdirLock: timeout acquiring ")
+			)
+				throw new ReportRegistryLockBusy();
+			throw error;
+		}
+	}
+
 	/** Preview root — the CLI↔Bridge screenshot handoff contract directory. */
 	previewsDir(): string {
 		return join(this.baseDir, "previews");
+	}
+
+	/** Restore only stable-token identities proven by the publication table. */
+	async markMutableReports(
+		publications: readonly EpicReportPublication[],
+	): Promise<void> {
+		const identities = new Map<string, string>();
+		for (const publication of publications) {
+			if (
+				!REPORT_TOKEN_RE.test(publication.token) ||
+				!publication.projectName.trim() ||
+				(identities.has(publication.token) &&
+					identities.get(publication.token) !== publication.projectName)
+			)
+				throw new Error("invalid Epic publication identity");
+			identities.set(publication.token, publication.projectName);
+		}
+		await this.withLock(async () => {
+			const fresh = this.load();
+			let changed = false;
+			for (const entry of fresh.reports) {
+				const projectName = identities.get(entry.token);
+				if (projectName === undefined) continue;
+				if (entry.projectName !== projectName)
+					throw new Error(
+						"Epic publication identity does not match report project",
+					);
+				if (!entry.mutable) {
+					entry.mutable = true;
+					changed = true;
+				}
+			}
+			if (changed) this.saveAtomic(fresh);
+		});
+	}
+
+	/** Snapshot metadata and exact local bytes for migration proof. Caller holds the registry lock. */
+	retainedSnapshot() {
+		const now = this.now();
+		const reports = this.load()
+			.reports.filter((entry) => {
+				const created = Date.parse(entry.createdAt);
+				return Number.isFinite(created) && !isReportExpired(now, created);
+			})
+			.sort((a, b) => a.token.localeCompare(b.token));
+		const contents = reports.map((entry) => {
+			if (!REPORT_TOKEN_RE.test(entry.token))
+				throw new Error("[report-registry] invalid report token");
+			const html = readFileSync(
+				join(this.filesDir, `${entry.token}.html`),
+				"utf8",
+			);
+			return {
+				...entry,
+				html,
+				bytes: Buffer.byteLength(html),
+				sha256: createHash("sha256").update(html).digest("hex"),
+			};
+		});
+		const digest = (rows: unknown[]) =>
+			createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+		return {
+			reports: contents,
+			manifestDigest: digest(
+				contents.map(({ token, createdAt, mutable }) =>
+					mutable ? [token, createdAt, "mutable"] : [token, createdAt],
+				),
+			),
+			contentDigest: digest(
+				contents.map(({ token, createdAt, bytes, sha256 }) => [
+					token,
+					createdAt,
+					bytes,
+					sha256,
+				]),
+			),
+		};
+	}
+
+	async commitRetarget(input: {
+		expectedSourceHostingKey: string;
+		expectedManifestDigest: string;
+		expectedContentDigest: string;
+		vercelProjectName: string;
+		hosting: Omit<ReportHostingState, "migratedAt">;
+		now: () => number;
+	}): Promise<{ cutoverAt: string; written: boolean }> {
+		return this.withLock(async () => {
+			const fresh = this.load();
+			const targetKey = `${input.vercelProjectName}/${input.hosting.storeId ?? "-"}`;
+			const freshKey = bindingOf(fresh).hostingKey;
+			if (freshKey !== input.expectedSourceHostingKey && freshKey !== targetKey)
+				throw new ReportHostingBindingConflict();
+			const snapshot = this.retainedSnapshot();
+			if (
+				snapshot.manifestDigest !== input.expectedManifestDigest ||
+				snapshot.contentDigest !== input.expectedContentDigest
+			)
+				throw new ReportRetargetManifestStale();
+			const hosting: ReportHostingState = {
+				...input.hosting,
+				manifestDigest: snapshot.manifestDigest,
+				contentDigest: snapshot.contentDigest,
+				migratedAt:
+					freshKey === targetKey && fresh.hosting
+						? fresh.hosting.migratedAt
+						: new Date(input.now()).toISOString(),
+				retargetedFrom:
+					freshKey === targetKey
+						? fresh.hosting?.retargetedFrom
+						: input.hosting.retargetedFrom,
+			};
+			const changed = {
+				...fresh,
+				vercelProjectName: input.vercelProjectName,
+				hosting,
+			};
+			const same =
+				freshKey === targetKey &&
+				fresh.hosting &&
+				(Object.keys(hosting) as Array<keyof ReportHostingState>).every(
+					(key) =>
+						JSON.stringify(fresh.hosting?.[key]) ===
+						JSON.stringify(hosting[key]),
+				);
+			if (same) return { cutoverAt: hosting.migratedAt, written: false };
+			try {
+				const original = readFileSync(this.registryPath);
+				writeFileSync(
+					`${this.registryPath}.bak-${Date.now()}-${process.pid}-${randomBytes(3).toString("hex")}`,
+					original,
+					{ flag: "wx" },
+				);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+			this.saveAtomic(changed);
+			return { cutoverAt: hosting.migratedAt, written: true };
+		});
+	}
+
+	hostingBinding(): HostingBinding {
+		return bindingOf(this.load());
 	}
 
 	/** Committed Vercel project name (undefined before publish/migration bootstrap). */
@@ -350,12 +587,14 @@ export class ReportRegistry {
 	}
 
 	/** Persist a stable gateway name so an empty reports directory can migrate. */
-	ensureVercelProjectName(): string {
-		const committed = this.load();
-		if (committed.vercelProjectName) return committed.vercelProjectName;
-		const vercelProjectName = `fw-reports-${this.randomHex(3)}`;
-		this.saveAtomic({ ...committed, vercelProjectName });
-		return vercelProjectName;
+	async ensureVercelProjectName(): Promise<string> {
+		return this.withLock(async () => {
+			const committed = this.load();
+			if (committed.vercelProjectName) return committed.vercelProjectName;
+			const vercelProjectName = `fw-reports-${this.randomHex(3)}`;
+			this.saveAtomic({ ...committed, vercelProjectName });
+			return vercelProjectName;
+		});
 	}
 
 	/** Committed retained entries, oldest first. */
@@ -379,14 +618,72 @@ export class ReportRegistry {
 		return readFileSync(join(this.filesDir, `${token}.html`), "utf8");
 	}
 
-	markHostingMigrated(hosting: ReportHostingState): void {
-		const committed = this.load();
-		if (!committed.vercelProjectName) {
-			throw new Error(
-				"[report-registry] cannot mark Blob hosting before a gateway project exists",
-			);
-		}
-		this.saveAtomic({ ...committed, hosting });
+	async markHostingMigrated(
+		hosting: ReportHostingState,
+		options: { expectedHostingKey: string },
+	): Promise<void> {
+		await this.withLock(async () => {
+			const committed = this.load();
+			if (bindingOf(committed).hostingKey !== options.expectedHostingKey)
+				throw new ReportHostingBindingConflict();
+			if (!committed.vercelProjectName)
+				throw new Error(
+					"[report-registry] cannot mark Blob hosting before a gateway project exists",
+				);
+			this.saveAtomic({ ...committed, hosting });
+		});
+	}
+
+	async recordHostingStoreId(input: {
+		expectedProjectName: string;
+		storeId: string;
+		storeApiId?: string;
+		blobHost: string;
+	}): Promise<void> {
+		await this.withLock(async () => {
+			const fresh = this.load();
+			if (
+				fresh.vercelProjectName !== input.expectedProjectName ||
+				!fresh.hosting
+			)
+				throw new ReportHostingBindingConflict();
+			const storeId = input.storeId.replace(/^store_/i, "").toLowerCase();
+			if (!/^[a-z0-9]+$/.test(storeId))
+				throw new Error("invalid report hosting store id");
+			if (fresh.hosting.storeId && fresh.hosting.storeId !== storeId)
+				throw new ReportHostingBindingConflict();
+			this.saveAtomic({
+				...fresh,
+				hosting: {
+					...fresh.hosting,
+					storeId,
+					storeApiId: input.storeApiId ?? fresh.hosting.storeApiId,
+					blobHost: input.blobHost,
+				},
+			});
+		});
+	}
+
+	async markGatewayFormat(input: {
+		expectedHostingKey: string;
+		gatewayDeploymentId: string;
+	}): Promise<void> {
+		await this.withLock(async () => {
+			const fresh = this.load();
+			if (
+				bindingOf(fresh).hostingKey !== input.expectedHostingKey ||
+				!fresh.hosting
+			)
+				throw new ReportHostingBindingConflict();
+			this.saveAtomic({
+				...fresh,
+				hosting: {
+					...fresh.hosting,
+					gatewayFormat: "gzip-v1",
+					gatewayDeploymentId: input.gatewayDeploymentId,
+				},
+			});
+		});
 	}
 
 	/**
@@ -396,7 +693,8 @@ export class ReportRegistry {
 	stagePublish(
 		projectName: string,
 		html: string,
-		title?: string,
+		title: string | undefined,
+		binding: HostingBinding,
 	): StagedPublish {
 		return this.stageReport(
 			projectName,
@@ -404,6 +702,7 @@ export class ReportRegistry {
 			this.randomHex(16),
 			title,
 			false,
+			binding,
 		);
 	}
 
@@ -412,7 +711,8 @@ export class ReportRegistry {
 		projectName: string,
 		html: string,
 		token: string,
-		title?: string,
+		title: string | undefined,
+		binding: HostingBinding,
 	): StagedPublish {
 		if (!REPORT_TOKEN_RE.test(token)) {
 			throw new Error("[report-registry] invalid report token");
@@ -425,7 +725,7 @@ export class ReportRegistry {
 				"[report-registry] stable report token belongs to another project",
 			);
 		}
-		return this.stageReport(projectName, html, token, title, true);
+		return this.stageReport(projectName, html, token, title, true, binding);
 	}
 
 	private stageReport(
@@ -434,14 +734,18 @@ export class ReportRegistry {
 		token: string,
 		title: string | undefined,
 		replaceToken: boolean,
+		binding: HostingBinding,
 	): StagedPublish {
 		const hardened = injectHeadMeta(html);
 		const committed = this.load();
+		if (bindingOf(committed).hostingKey !== binding.hostingKey)
+			throw new ReportHostingBindingConflict();
 
 		const vercelProjectName =
 			committed.vercelProjectName ?? `fw-reports-${this.randomHex(3)}`;
 
 		const entry: ReportEntry = {
+			...(replaceToken ? { mutable: true as const } : {}),
 			token,
 			projectName,
 			title,
@@ -477,35 +781,57 @@ export class ReportRegistry {
 				all.push(e);
 			}
 		}
-		const retained = all;
 		let done = false;
-		const commit = (): void => {
+		const commit = async (): Promise<void> => {
 			if (done)
 				throw new Error("[report-registry] commit/abort already called");
 			done = true;
-			// ① new report file
-			mkdirSync(this.filesDir, { recursive: true });
-			writeFileSync(
-				join(this.filesDir, `${entry.token}.html`),
-				hardened,
-				"utf-8",
-			);
-			// ② registry.json atomic rename — THE commit point
-			this.saveAtomic({
-				vercelProjectName,
-				hosting: committed.hosting,
-				reports: retained,
-			});
-			// ③ best-effort prune deletion (after the rename, warn-only)
-			for (const p of pruned) {
-				try {
-					rmSync(join(this.filesDir, `${p.token}.html`));
-				} catch (err) {
-					this.warn(
-						`[report-registry] failed to delete pruned report file token=${p.token}: ${(err as Error).message}`,
-					);
+			await this.withLock(async () => {
+				const fresh = this.load();
+				if (bindingOf(fresh).hostingKey !== binding.hostingKey)
+					throw new ReportHostingBindingConflict();
+				const retained: ReportEntry[] = [];
+				pruned.length = 0;
+				expired.length = 0;
+				for (const report of [
+					...fresh.reports.filter(
+						(item) => !replaceToken || item.token !== token,
+					),
+					entry,
+				]) {
+					const createdAt = Date.parse(report.createdAt);
+					if (
+						!Number.isFinite(createdAt) ||
+						isReportExpired(this.now(), createdAt)
+					) {
+						pruned.push(report);
+						if (Number.isFinite(createdAt)) expired.push(report);
+					} else retained.push(report);
 				}
-			}
+				// ① new report file
+				mkdirSync(this.filesDir, { recursive: true });
+				writeFileSync(
+					join(this.filesDir, `${entry.token}.html`),
+					hardened,
+					"utf-8",
+				);
+				// ② registry.json atomic rename — THE commit point
+				this.saveAtomic({
+					vercelProjectName: fresh.vercelProjectName ?? vercelProjectName,
+					hosting: fresh.hosting,
+					reports: retained,
+				});
+				// ③ best-effort prune deletion (after the rename, warn-only)
+				for (const p of pruned) {
+					try {
+						rmSync(join(this.filesDir, `${p.token}.html`));
+					} catch (err) {
+						this.warn(
+							`[report-registry] failed to delete pruned report file token=${p.token}: ${(err as Error).message}`,
+						);
+					}
+				}
+			});
 		};
 
 		const abort = (): void => {
@@ -516,6 +842,7 @@ export class ReportRegistry {
 		};
 
 		return {
+			binding,
 			entry,
 			html: hardened,
 			vercelProjectName,

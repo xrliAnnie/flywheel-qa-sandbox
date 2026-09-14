@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { expect, it, vi } from "vitest";
 import { VercelBlobReportStore } from "../bridge/report-blob-store.js";
 
@@ -9,7 +10,7 @@ const previous = "2".repeat(64);
 const obsolete = "3".repeat(64);
 const html = `<html><head></head><body><footer><a href="${hash}/index.audit.json">audit</a></footer></body></html>`;
 function fixture() {
-	const objects = new Map<string, string>([
+	const objects = new Map<string, string | Buffer>([
 		[
 			`r/${token}/index.html`,
 			`<a href="${previous}/index.audit.json">audit</a>`,
@@ -18,7 +19,7 @@ function fixture() {
 			(h) => [`r/${token}/${h}/index.audit.json`, "old"] as [string, string],
 		),
 	]);
-	const put = vi.fn(async (path: string, body: string) => {
+	const put = vi.fn(async (path: string, body: string | Buffer) => {
 		objects.set(path, body);
 		return {
 			pathname: path,
@@ -46,11 +47,13 @@ function fixture() {
 }
 it("writes audit before HTML and keeps only current and actual previous remote audit after restart", async () => {
 	const f = fixture();
-	await f.store.putEpicPage(token, html, {
-		json,
-		sha256: hash,
-		verifyGateway: async () => true,
-	});
+	await (
+		await f.store.putEpicPage(token, html, {
+			json,
+			sha256: hash,
+			verifyGateway: async () => true,
+		})
+	).afterCommit?.();
 	expect(f.put.mock.calls.map((c) => c[0])).toEqual([
 		`r/${token}/${hash}/index.audit.json`,
 		`r/${token}/index.html`,
@@ -87,23 +90,31 @@ it("rejects hash mismatch before network mutation", async () => {
 	).rejects.toThrow("audit");
 	expect(f.put).not.toHaveBeenCalled();
 });
-it("includes audit objects when deleting a report token", async () => {
+it("retains audit objects for the daily sweep when deleting a report token", async () => {
 	const f = fixture();
 	await f.store.deleteReports([token]);
-	expect(f.objects.size).toBe(0);
+	expect(f.objects.has(`r/${token}/index.html`)).toBe(false);
+	expect(f.objects.size).toBeGreaterThan(0);
+	expect(
+		[...f.objects.keys()].every((path) => path.endsWith("/index.audit.json")),
+	).toBe(true);
 });
 it("does not prune the previous audit on an identical publication retry", async () => {
 	const f = fixture();
-	await f.store.putEpicPage(token, html, {
-		json,
-		sha256: hash,
-		verifyGateway: async () => true,
-	});
-	await f.store.putEpicPage(token, html, {
-		json,
-		sha256: hash,
-		verifyGateway: async () => true,
-	});
+	await (
+		await f.store.putEpicPage(token, html, {
+			json,
+			sha256: hash,
+			verifyGateway: async () => true,
+		})
+	).afterCommit?.();
+	await (
+		await f.store.putEpicPage(token, html, {
+			json,
+			sha256: hash,
+			verifyGateway: async () => true,
+		})
+	).afterCommit?.();
 	expect(f.objects.has(`r/${token}/${previous}/index.audit.json`)).toBe(true);
 });
 it("fails closed when current HTML cannot be read", async () => {
@@ -135,11 +146,13 @@ it("preserves previous HTML and audits on HTML upload failure, then converges on
 	expect(f.objects.get(`r/${token}/index.html`)).toContain(previous);
 	expect(f.del).not.toHaveBeenCalled();
 	f.put.mockImplementation(realPut);
-	await f.store.putEpicPage(token, html, {
-		json,
-		sha256: hash,
-		verifyGateway: async () => true,
-	});
+	await (
+		await f.store.putEpicPage(token, html, {
+			json,
+			sha256: hash,
+			verifyGateway: async () => true,
+		})
+	).afterCommit?.();
 	expect(f.objects.has(`r/${token}/${previous}/index.audit.json`)).toBe(true);
 	expect(f.objects.has(`r/${token}/${obsolete}/index.audit.json`)).toBe(false);
 });
@@ -167,4 +180,25 @@ it("probes the gateway after audit upload and preserves HTML if it is unavailabl
 	expect(probe).toHaveBeenCalledOnce();
 	expect(f.put).toHaveBeenCalledTimes(1);
 	expect(f.del).not.toHaveBeenCalled();
+});
+
+it("reads the previous audit from gzip HTML and keeps audit JSON uncompressed", async () => {
+	const f = fixture();
+	f.objects.set(
+		`r/${token}/index.html`,
+		gzipSync(f.objects.get(`r/${token}/index.html`)!),
+	);
+	await (
+		await f.store.putEpicPage(
+			token,
+			html,
+			{ json, sha256: hash, verifyGateway: async () => true },
+			{ gzip: true },
+		)
+	).afterCommit?.();
+	expect(f.objects.has(`r/${token}/${previous}/index.audit.json`)).toBe(true);
+	expect(
+		gunzipSync(f.objects.get(`r/${token}/index.html`) as Buffer).toString(),
+	).toContain(`data-previous-audit="${previous}"`);
+	expect(f.objects.get(`r/${token}/${hash}/index.audit.json`)).toBe(json);
 });

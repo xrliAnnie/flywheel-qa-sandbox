@@ -7,6 +7,7 @@ import {
 	EPIC_PAGE_MAX_DOCUMENT_BYTES,
 	type EpicPage,
 	EpicPageSchemaError,
+	hostedContentDigest,
 	stripTimestamps,
 } from "../model.js";
 import {
@@ -962,4 +963,17 @@ describe("EpicPage v2 attention schema", () => {
 			expectSchemaFailure(page);
 		},
 	);
+});
+
+it("hosted digest ignores refresh bookkeeping but preserves substantive changes", () => {
+	const page = validPage();
+	const refreshed = structuredClone(page);
+	refreshed.generated_at = "2026-09-03T06:00:00Z";
+	refreshed.generator.version = "next-generator";
+	refreshed.freshness.current.value!.version += 1;
+	refreshed.header.roots.observed_at = "2026-09-03T06:00:00Z";
+	expect(hostedContentDigest(refreshed)).toBe(hostedContentDigest(page));
+	refreshed.header.roots.value![0]!.title = "changed";
+	expect(hostedContentDigest(refreshed)).not.toBe(hostedContentDigest(page));
+	expect(page.generator.version).not.toBe("next-generator");
 });

@@ -1401,3 +1401,21 @@ export function stripTimestamps<T>(value: T): T {
 export function contentDigest(document: EpicPage): string {
 	return canonicalSubmissionDigest(stripTimestamps(document));
 }
+
+/** Hosting changes only for substantive content; freshness is refreshed by the 24h keepalive. */
+export function hostedContentDigest(document: EpicPage): string {
+	const { freshness: _freshness, ...content } = stripTimestamps(document);
+	const stripVersions = (value: unknown): unknown => {
+		if (Array.isArray(value)) return value.map(stripVersions);
+		if (!isRecord(value)) return value;
+		return Object.fromEntries(
+			Object.entries(value)
+				.filter(
+					([key, child]) =>
+						key !== "version" || (child !== null && typeof child === "object"),
+				)
+				.map(([key, child]) => [key, stripVersions(child)]),
+		);
+	};
+	return canonicalSubmissionDigest(stripVersions(content));
+}

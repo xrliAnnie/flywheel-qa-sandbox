@@ -98,6 +98,8 @@ describe("Epic page render receipts", () => {
 				"first_published_at",
 				"last_published_at",
 				"last_version",
+				"last_content_digest",
+				"last_hosting_key",
 			]);
 			expect(
 				rawDb(store)
@@ -122,6 +124,8 @@ describe("Epic page render receipts", () => {
 			});
 			expect(() =>
 				store.commitEpicPagePublication({
+					contentDigest: "a".repeat(64),
+					hostingKey: "fw-reports-abcdef/store",
 					projectName: "example",
 					token: "f".repeat(32),
 					publishedAt: "2026-09-03T04:00:00Z",
@@ -129,12 +133,16 @@ describe("Epic page render receipts", () => {
 				}),
 			).toThrow("epic_page_publication_token_mismatch");
 			store.commitEpicPagePublication({
+				contentDigest: "a".repeat(64),
+				hostingKey: "fw-reports-abcdef/store",
 				projectName: "example",
 				token: first.token,
 				publishedAt: "2026-09-03T04:00:00Z",
 				version: 1,
 			});
 			store.commitEpicPagePublication({
+				contentDigest: "a".repeat(64),
+				hostingKey: "fw-reports-abcdef/store",
 				projectName: "example",
 				token: first.token,
 				publishedAt: "2026-09-03T05:00:00Z",
@@ -146,6 +154,8 @@ describe("Epic page render receipts", () => {
 				first_published_at: "2026-09-03T04:00:00Z",
 				last_published_at: "2026-09-03T05:00:00Z",
 				last_version: 2,
+				last_content_digest: "a".repeat(64),
+				last_hosting_key: "fw-reports-abcdef/store",
 			});
 		} finally {
 			store.close();
@@ -823,6 +833,60 @@ it("retains an explicit audit gateway failure in publication freshness", async (
 		);
 		expect(freshness.publish_failures_since_last_published).toBe(1);
 		expect(freshness.last_published).toBeUndefined();
+	} finally {
+		store.close();
+	}
+});
+
+it("migrates and persists the hosting-bound publication proof across restart", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "fly2538-publication-"));
+	cleanups.push(dir);
+	const path = join(dir, "test.db");
+	let store = await StateStore.create(path);
+	const { token } = store.reserveEpicPageToken("example");
+	rawDb(store)
+		.prepare(
+			"UPDATE epic_page_publication SET first_published_at=?,last_published_at=?,last_version=1 WHERE project_name=?",
+		)
+		.run("2026-09-03T04:00:00Z", "2026-09-03T04:00:00Z", "example");
+	for (const column of ["last_content_digest", "last_hosting_key"]) {
+		if (
+			rawDb(store)
+				.prepare("PRAGMA table_info(epic_page_publication)")
+				.all()
+				.some((row) => (row as { name: string }).name === column)
+		)
+			rawDb(store).exec(
+				`ALTER TABLE epic_page_publication DROP COLUMN ${column}`,
+			);
+	}
+	store.close();
+	store = await StateStore.create(path);
+	try {
+		expect(store.getEpicPagePublication("example")).toMatchObject({
+			token,
+			published: true,
+			last_content_digest: null,
+			last_hosting_key: null,
+		});
+		store.commitEpicPagePublication({
+			projectName: "example",
+			token,
+			publishedAt: "2026-09-03T05:00:00Z",
+			version: 2,
+			contentDigest: "a".repeat(64),
+			hostingKey: "fw-reports-abcdef/store",
+		});
+	} finally {
+		store.close();
+	}
+	store = await StateStore.create(path);
+	try {
+		expect(store.getEpicPagePublication("example")).toMatchObject({
+			last_content_digest: "a".repeat(64),
+			last_hosting_key: "fw-reports-abcdef/store",
+			last_version: 2,
+		});
 	} finally {
 		store.close();
 	}

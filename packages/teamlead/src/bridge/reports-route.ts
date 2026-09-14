@@ -49,10 +49,18 @@ import {
 } from "./report-critical-section.js";
 import type { ReportHostOverride } from "./report-host-override.js";
 import {
+	assertReportHostingCredentialBinding,
+	blobStoreIdFromToken,
+	type CredentialSnapshot,
+	ReportHostingCredentialMismatch,
+	type ReportHostingCredentials,
+} from "./report-hosting-credentials.js";
+import {
+	ReportHostingBindingConflict,
 	ReportHtmlInvalidError,
 	type ReportRegistry,
+	ReportRegistryLockBusy,
 } from "./report-registry.js";
-import { reportUrlForToken } from "./report-url.js";
 import { deployFilesToVercel, type VercelDeployFile } from "./vercel-deploy.js";
 
 const MAX_HTML_SIZE = 512 * 1024; // 512 KB — same cap as /api/publish-html
@@ -70,8 +78,10 @@ export type ReportPostTextFn = (
 ) => Promise<PostDiscordResult>;
 
 export interface ReportsRouterOptions {
-	blobStore?: Pick<ReportBlobStore, "putReport" | "deleteReports">;
-	vercelToken?: string;
+	blobStore?: Pick<ReportBlobStore, "putReport" | "deleteReports"> &
+		Partial<Pick<ReportBlobStore, "bind">>;
+	credentials?: ReportHostingCredentials;
+	vercelToken?: string | (() => string | undefined);
 	discordBotToken: string | undefined;
 	/** Call-time sender resolution for identities that can change after boot. */
 	resolveDiscordBotToken?: () => string | undefined;
@@ -272,8 +282,13 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 					return;
 				}
 			}
+			const hostVercelToken = hostOverride
+				? typeof opts.vercelToken === "function"
+					? opts.vercelToken()
+					: opts.vercelToken
+				: undefined;
 			if (hostOverride) {
-				if (!opts.vercelToken) {
+				if (!hostVercelToken) {
 					res.status(501).json({
 						error:
 							"report publishing not available — VERCEL_TOKEN not configured",
@@ -325,13 +340,47 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			}
 
 			let staged: ReturnType<ReportRegistry["stagePublish"]>;
+			let operationStore = blobStore;
+			let snapshot: CredentialSnapshot | undefined;
 			try {
+				if (!hostOverride && opts.credentials) {
+					snapshot = opts.credentials.snapshot("BLOB_READ_WRITE_TOKEN");
+					if (!snapshot.value) {
+						res.status(501).json({
+							error:
+								"report publishing not available — BLOB_READ_WRITE_TOKEN not configured",
+						});
+						return;
+					}
+				}
+				const binding = opts.registry.hostingBinding();
+				if (snapshot) {
+					assertReportHostingCredentialBinding(binding.storeId, snapshot);
+					if (!blobStore?.bind)
+						throw new Error("report credential binding unavailable");
+					operationStore = blobStore.bind(snapshot);
+				}
 				staged = opts.registry.stagePublish(
 					projectName.trim(),
 					html,
 					title as string | undefined,
+					binding,
 				);
 			} catch (err) {
+				if (err instanceof ReportHostingCredentialMismatch) {
+					res.status(503).json({
+						error: err.message,
+						expectedStoreId8: err.expectedStoreId8,
+						actualStoreId8: err.actualStoreId8,
+					});
+					return;
+				}
+				if (err instanceof ReportHostingBindingConflict) {
+					res
+						.status(503)
+						.json({ error: "report hosting changed during publish" });
+					return;
+				}
 				if (err instanceof ReportHtmlInvalidError) {
 					res.status(400).json({ error: err.message });
 					return;
@@ -344,14 +393,16 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			try {
 				if (hostOverride) {
 					await deployFiles(
-						opts.vercelToken as string,
+						hostVercelToken as string,
 						staged.vercelProjectName,
 						buildLoopbackDeployFiles(opts.registry, staged),
 						undefined,
 						hostOverride.apiBaseUrl,
 					);
 				} else {
-					await blobStore!.putReport(staged.entry.token, staged.html);
+					await operationStore!.putReport(staged.entry.token, staged.html, {
+						gzip: staged.binding.gatewayFormat === "gzip-v1",
+					});
 				}
 			} catch {
 				staged.abort();
@@ -365,44 +416,48 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			}
 
 			try {
-				staged.commit();
-			} catch {
+				await staged.commit();
+			} catch (error) {
 				if (!hostOverride && blobStore) {
-					await blobStore.deleteReports([staged.entry.token]).catch(() => {
-						console.warn(
-							"[reports] failed to delete orphan Blob after registry commit failure",
-						);
-					});
+					await operationStore!
+						.deleteReports([staged.entry.token])
+						.catch(() => {
+							console.warn(
+								"[reports] failed to delete orphan Blob after registry commit failure",
+							);
+						});
+				}
+				if (error instanceof ReportRegistryLockBusy) {
+					res.status(503).json({ error: "report registry busy" });
+					return;
+				}
+				if (error instanceof ReportHostingBindingConflict) {
+					res
+						.status(503)
+						.json({ error: "report hosting changed during publish" });
+					return;
 				}
 				console.error("[reports] commit failed after successful Blob upload");
 				res.status(502).json({ error: "report publish commit failed" });
 				return;
 			}
 			if (!hostOverride && blobStore && staged.expired.length > 0) {
-				await blobStore
+				await operationStore!
 					.deleteReports(staged.expired.map((entry) => entry.token))
 					.catch(() => {
 						console.warn("[reports] expired Blob cleanup deferred");
 					});
 			}
 			console.info(
-				`[reports] publish succeeded credentialTier=${credentialTier} project=${JSON.stringify(projectName.trim())}`,
+				`[reports] publish succeeded credentialTier=${credentialTier} project=${JSON.stringify(projectName.trim())}${snapshot ? ` store=${blobStoreIdFromToken(snapshot.value ?? "")?.slice(0, 8) ?? "-"} credentialSource=${snapshot.source} generation=${snapshot.generation}` : ""}`,
 			);
 
 			res.json({
-				url:
-					(hostOverride
-						? publicReportUrl(
-								hostOverride,
-								staged.vercelProjectName,
-								staged.entry.token,
-							)
-						: reportUrlForToken(opts.registry, staged.entry.token)) ??
-					publicReportUrl(
-						undefined,
-						staged.vercelProjectName,
-						staged.entry.token,
-					),
+				url: publicReportUrl(
+					hostOverride,
+					staged.vercelProjectName,
+					staged.entry.token,
+				),
 				reportId: staged.entry.token,
 			});
 		};

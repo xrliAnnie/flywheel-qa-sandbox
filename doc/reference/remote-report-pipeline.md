@@ -47,13 +47,14 @@ flywheel-comm publish-report \
 | `TEAMLEAD_API_TOKEN` | Bridge bearer token（`/api/reports/*` 必须有 token 才会服务） |
 | `FLYWHEEL_REPORTS_DIR` | registry/previews 根目录（默认 `~/.flywheel/reports`） |
 | `FLYWHEEL_REPORT_SHOT_WIDTH` | 截图 viewport 宽度 px（默认 860 ≈ 报告内容宽；320-3840）。截图 = **全页 @ 2x**（Annie 拍板形态:图扫结构+链接细读）;2x 失败或 >25MB 自动降 1x 重试,再失败降纯链接 |
-| `BLOB_READ_WRITE_TOKEN` | Bridge 侧私有 Vercel Blob 凭证（未配 → publish 501） |
-| `VERCEL_TOKEN` | 生产只用于一次性托管迁移/网关发布，正常 `publish-report` 不读取；529 有 API token 的 slot 会铸独立随机值并放进 launch spec secret file，供 loopback host 鉴权 |
+| `BLOB_READ_WRITE_TOKEN` | 私有 Blob 凭据，每次操作读取并固定到上传、补偿和清理。未配 → publish 501，与 registry store 不符 → 503。 |
+| `REPORT_HOSTING_VERCEL_TOKEN` | 报告账号专用 Full Account token；水位检查按调用读取，不回落到 `VERCEL_TOKEN`。新 CLI 模式使用显式指定的环境变量。 |
+| `VERCEL_TOKEN` | 旧 `/api/publish-html` 按调用读取；无参数首次迁移保留该历史接口。529 slot 独立随机凭据仍用于 loopback host 鉴权。 |
 | `FLYWHEEL_REPORT_HOST_OVERRIDE_URL` | **仅 529 台架内部**：严格的 `http://127.0.0.1:<port>` 托管 seam；由 slot wrapper 在 exec Bridge 时注入。生产不要设置；远端、别名、路径或 query 形状会拒绝启动 |
 
 报告链接固定保留 14 天。稳定网关直接使用 Blob `get()` 结果自带的 `blob.uploadedAt`；迁移对象则
 使用随网关部署的原始 `createdAt` manifest。读路径无法取得有效时间时记录固定、无凭据错误并
-fail-closed 502，绝不静默延长。Bridge 每小时按 registry 中的原始 `createdAt` 回收已到期对象；
+fail-closed 502，绝不静默延长。Bridge 每日按 registry 中的原始 `createdAt` 回收已到期对象；
 registry 时间无效时，删除器只回落到同次 list 返回的 Blob `uploadedAt`，回落值也已满 14 天才删，
 两者都不可得或 Blob 仍年轻则保留。正常发布也会顺手清理本地 registry 中刚到期的对象。没有数量
 上限、总字节上限或环境变量旁路。
@@ -140,3 +141,39 @@ slot wrapper 与 Bridge 共用进程身份：wrapper 先起 host、确认 bearer
 self-check 成功，再 `exec` Bridge；host 持续校验父 PID，Bridge 停止后自退。
 Bridge cycle 会分配新端口，旧 Discord loopback 链接失效，需在新 host 上重新
 publish；teardown 不维护独立 report-host pid/stop 逻辑。
+
+## 账号轮换运行手册
+
+Bridge 从 `${FLYWHEEL_STATE_DIR || ~/.flywheel}/.env` 按 mtime/size 变化热读凭据。文件不可读或键缺失时回落进程环境，显式空值表示未配置。CLI 只读取显式指定的进程环境变量，不读取或修改该文件。
+
+首次升级：
+
+1. updater 正常窗口部署 Bridge。registry 没有 `gatewayFormat` 时继续写明文。
+2. operator 配置并在 shell 导出当前报告账号的 `REPORT_HOSTING_VERCEL_TOKEN`。运行 `pnpm migrate:report-hosting --usage-check --vercel-token-env REPORT_HOSTING_VERCEL_TOKEN --store-id <当前-store-id>`，确认 store 与当前网关相连后补录缺失的身份。
+3. 运行 `pnpm migrate:report-hosting --deploy-gateway-only --vercel-token-env REPORT_HOSTING_VERCEL_TOKEN --blob-token-env BLOB_READ_WRITE_TOKEN`。双格式网关部署及四项探针通过后才写 gzip-v1 数据门；后续 HTML 使用 gzip level 9，audit JSON 保持明文。
+
+retarget 对未标记的历史报告从权威 Bridge 数据库的 epic_page_publication 表只读恢复 Epic 稳定 token 身份。默认读取 ~/.flywheel/teamlead.db；自定义部署设置 TEAMLEAD_DB_PATH。数据库缺失、损坏或身份冲突会在远端变更前以 exit 2 停止，不猜测普通报告身份。新 Epic 发布直接持久化 mutable 标记。
+
+storeId 用于不区分大小写的本地比较，storeApiId 保留 Vercel API 资源 ID 的原始大小写；手工补录时传入 dashboard/API 返回的完整 store ID。
+
+轮换日：
+
+1. 新 Hobby 账号创建 Full Account token，导出到 `REPORT_HOSTING_VERCEL_TOKEN_NEXT`。
+2. 运行 `pnpm migrate:report-hosting --retarget --vercel-token-env REPORT_HOSTING_VERCEL_TOKEN_NEXT --project-name fw-reports-<新6hex>`。可用 `--blob-token-env <ENV_NAME>` 提供目标 store 的 RW token。
+3. 命令创建或重验项目、私有 store、连接，搬运保留期报告，部署并验证网关，再以 registry CAS 切换。并发 publish 导致快照过期时最多补跑三轮。
+4. 成功后按最终 JSON 的 envHint 修改两行凭据。解密 token 只写入 reportsDir 的 `retarget.<project>.secrets.env`（当前 uid、0600、单行），终端只输出路径。粘贴后删除文件。marker 已切而凭据尚未切时 publish 返回 503，这是有意的交接窗口。
+5. 不重启 Bridge。运行 `publish-report --publish-only` 并检查日志中的新 `store=<前8位>`。复跑同一 retarget 命令应跳过已证明的上传、部署及探针，每次仍重验项目/store/连接。
+
+退出码：0 成功；1 远端或验证失败；2 参数、前置条件、锁争用或创建结果不明；3 等待 dashboard 凭据交接。创建 POST 结果不明时不会自动再建：到 dashboard 查 journal 中的名称，存在则带 `--store-id` 恢复，不存在则带 `--abandon-store-intent --store-name <新名称>` 归档后重跑。命令不删除旧账号资源。
+
+网关按 gzip magic 识别明文与压缩对象。接受 gzip 时返回 Content-Encoding: gzip，无该能力或 gzip;q=0 时返回解压明文，两者都有 Vary: Accept-Encoding。损坏或解压超过 1 MiB 的对象返回 502。普通报告保留原始 createdAt 的迁移 manifest 时间语义；Epic 稳定 token 排除冻结 manifest，按最新对象 uploadedAt 计算保留期，刷新后不会被首次迁移时间永久挡住。单独部署网关保持这一区分。
+
+固定 Epic 页只有内容 digest、hosting 绑定变化或上次成功发布满 24 小时才上传；digest 忽略时间戳、freshness 和 version。跳过时不刷新成功发布记录。跨 token 不共享对象，每条链接独立保留 14 天。
+
+## 水位检查与回滚
+
+Bridge 无条件安装小时级水位定时器，启动先查一次。按 founder 本地日期去重；存储达到 800,000,000 bytes、配额超限或 limits-exceeded 状态时，以 infra 身份发往 FLYWHEEL_NOTIFY_CHANNEL。正文含 count 和 retarget 命令，不含凭据。attempting 保留 30 分钟，失败退避 60 分钟，每日最多 6 次；换日或换 store 重新计数。该告警覆盖存储和状态，不代表带宽或操作次数有余量。
+
+`--usage-check --vercel-token-env <ENV>` 只打印用量，不发通知或写通知回执。带 `--token <32hex> --blob-token-env <ENV>` 可读取对象存储字节数。交接文件尚在时会显示其年龄。
+
+回滚需要匹配的 registry 和凭据：确认无并发 publish、registry 锁未持有后，由 operator 恢复 `registry.json.bak-*`，再恢复旧账号的两行凭据；旧账号必须仍可用。回退 Bridge 可恢复明文写入，双格式网关可继续使用，新数据库列和回执键可保留。

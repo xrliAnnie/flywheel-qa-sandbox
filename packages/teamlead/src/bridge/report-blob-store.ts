@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
-import { del, get, list, put } from "@vercel/blob";
+import { gunzipSync, gzipSync } from "node:zlib";
+import { del, get, head, list, put } from "@vercel/blob";
+import {
+	blobStoreIdFromToken,
+	type CredentialSnapshot,
+} from "./report-hosting-credentials.js";
 import { isReportExpired } from "./report-retention.js";
+
+export const REPORT_BLOB_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const REPORT_TOKEN_RE = /^[0-9a-f]{32}$/;
 const REPORT_PATH_RE =
@@ -18,18 +25,46 @@ export interface EpicAuditUpload {
 }
 
 export interface ReportBlobUpload {
+	/** Deferred Epic audit pruning; invoke only after registry commit succeeds. */
+	afterCommit?: () => Promise<void>;
 	pathname: string;
 	url: string;
 }
 
+export interface ReportBlobWriteOptions {
+	gzip?: boolean;
+}
+
+export class ReportBlobCredentialMissing extends Error {
+	constructor() {
+		super("report Blob credential missing");
+		this.name = "ReportBlobCredentialMissing";
+	}
+}
+export interface BoundReportBlobStore extends ReportBlobStore {
+	readonly storeId: string;
+}
+
 export interface ReportBlobStore {
-	putReport(token: string, html: string): Promise<ReportBlobUpload>;
+	bind(snapshot: CredentialSnapshot): BoundReportBlobStore;
+	putRawObject(pathname: string, body: Buffer): Promise<ReportBlobUpload>;
+	headReportSize(token: string): Promise<number>;
+	putReport(
+		token: string,
+		html: string,
+		options?: ReportBlobWriteOptions,
+	): Promise<ReportBlobUpload>;
 	putEpicPage(
 		token: string,
 		html: string,
 		audit?: EpicAuditUpload,
+		options?: ReportBlobWriteOptions,
 	): Promise<ReportBlobUpload>;
-	putMigratedReport(token: string, html: string): Promise<ReportBlobUpload>;
+	putMigratedReport(
+		token: string,
+		html: string,
+		options?: ReportBlobWriteOptions,
+	): Promise<ReportBlobUpload>;
 	deleteReports(tokens: readonly string[]): Promise<void>;
 	sweepExpiredReports(
 		now?: number,
@@ -38,6 +73,10 @@ export interface ReportBlobStore {
 }
 
 export interface ReportBlobClient {
+	head?(
+		pathname: string,
+		options: { token: string },
+	): Promise<{ size: number }>;
 	get?(
 		pathname: string,
 		options: { access: "private"; token: string; useCache: false },
@@ -47,7 +86,7 @@ export interface ReportBlobClient {
 	} | null>;
 	put(
 		pathname: string,
-		body: string,
+		body: string | Buffer,
 		options: {
 			access: "private";
 			addRandomSuffix: false;
@@ -72,6 +111,7 @@ export interface ReportBlobClient {
 }
 
 const defaultClient: ReportBlobClient = {
+	head: (pathname, options) => head(pathname, options),
 	get: (pathname, options) => get(pathname, options),
 	put: (pathname, body, options) => put(pathname, body, options),
 	list: (options) => list(options as Parameters<typeof list>[0]),
@@ -86,20 +126,37 @@ export class VercelBlobReportStore implements ReportBlobStore {
 	private warnedMissingCreatedAt = false;
 
 	constructor(
-		token: string,
+		token: string | undefined = undefined,
 		client: ReportBlobClient = defaultClient,
 		warn: (message: string) => void = console.warn,
 	) {
-		if (token.trim().length === 0) {
+		if (token !== undefined && token.trim().length === 0) {
 			throw new Error("BLOB_READ_WRITE_TOKEN must be non-empty");
 		}
-		this.token = token;
+		this.token = token ?? "";
 		this.client = client;
 		this.warn = warn;
 	}
 
-	async putReport(token: string, html: string): Promise<ReportBlobUpload> {
-		return this.putReportObject(token, html, false);
+	get storeId(): string {
+		return blobStoreIdFromToken(this.token) ?? "";
+	}
+	bind(snapshot: CredentialSnapshot): BoundReportBlobStore {
+		if (!snapshot.value) throw new ReportBlobCredentialMissing();
+		if (
+			snapshot.key !== "BLOB_READ_WRITE_TOKEN" ||
+			!blobStoreIdFromToken(snapshot.value)
+		)
+			throw new Error("invalid report Blob credential");
+		return new VercelBlobReportStore(snapshot.value, this.client, this.warn);
+	}
+
+	async putReport(
+		token: string,
+		html: string,
+		options?: ReportBlobWriteOptions,
+	): Promise<ReportBlobUpload> {
+		return this.putReportObject(token, html, false, options);
 	}
 
 	/** Idempotent overwrite for one stable hosted Epic page token. */
@@ -107,8 +164,9 @@ export class VercelBlobReportStore implements ReportBlobStore {
 		token: string,
 		html: string,
 		audit?: EpicAuditUpload,
+		options: ReportBlobWriteOptions = {},
 	): Promise<ReportBlobUpload> {
-		if (!audit) return this.putReportObject(token, html, true);
+		if (!audit) return this.putReportObject(token, html, true, options);
 		if (
 			!REPORT_TOKEN_RE.test(token) ||
 			!/^[0-9a-f]{64}$/.test(audit.sha256) ||
@@ -128,10 +186,17 @@ export class VercelBlobReportStore implements ReportBlobStore {
 				(current.statusCode === 200 && !current.stream))
 		)
 			throw new Error("epic audit previous publication unavailable");
-		const oldHtml =
-			current?.statusCode === 200 && current.stream
-				? await new Response(current.stream).text()
-				: "";
+		let oldHtml = "";
+		if (current?.statusCode === 200 && current.stream) {
+			const bytes = Buffer.from(
+				await new Response(current.stream).arrayBuffer(),
+			);
+			oldHtml = (
+				bytes[0] === 0x1f && bytes[1] === 0x8b
+					? gunzipSync(bytes, { maxOutputLength: 1_048_576 })
+					: bytes
+			).toString("utf8");
+		}
 		const oldHash = /href="([0-9a-f]{64})\/index\.audit\.json"/.exec(
 			oldHtml,
 		)?.[1];
@@ -153,19 +218,22 @@ export class VercelBlobReportStore implements ReportBlobStore {
 		const boundHtml = previous
 			? html.replace("<footer", `<footer data-previous-audit="${previous}"`)
 			: html;
-		const result = await this.putReportObject(token, boundHtml, true);
-		// Upload failures preserve the old HTML and all audit versions. Prune only
-		// after the new HTML is visible; retries read the remote publication again.
-		try {
-			const stale = (await this.auditPaths(token)).filter((path) => {
-				const hash = AUDIT_PATH_RE.exec(path)![2];
-				return hash !== audit.sha256 && hash !== previous;
-			});
-			if (stale.length) await this.client.del(stale, { token: this.token });
-		} catch (error) {
-			this.warn(`[reports] epic audit cleanup failed: ${String(error)}`);
-		}
-		return result;
+		const result = await this.putReportObject(token, boundHtml, true, options);
+		return {
+			...result,
+			afterCommit: async () => {
+				// Keep the stable HTML and both audit versions untouched until the caller commits.
+				try {
+					const stale = (await this.auditPaths(token)).filter((path) => {
+						const hash = AUDIT_PATH_RE.exec(path)![2];
+						return hash !== audit.sha256 && hash !== previous;
+					});
+					if (stale.length) await this.client.del(stale, { token: this.token });
+				} catch {
+					this.warn("[reports] epic audit cleanup failed");
+				}
+			},
+		};
 	}
 
 	private async auditPaths(token: string): Promise<string[]> {
@@ -193,8 +261,30 @@ export class VercelBlobReportStore implements ReportBlobStore {
 	async putMigratedReport(
 		token: string,
 		html: string,
+		options: ReportBlobWriteOptions = {},
 	): Promise<ReportBlobUpload> {
-		return this.putReportObject(token, html, true);
+		return this.putReportObject(token, html, true, options);
+	}
+
+	async putRawObject(
+		pathname: string,
+		body: Buffer,
+	): Promise<ReportBlobUpload> {
+		if (!/^r\/[0-9a-f]{32}\/index\.html$/.test(pathname))
+			throw new Error("invalid report probe path");
+		return this.putObject(pathname, body, true, "text/html; charset=utf-8");
+	}
+
+	async headReportSize(token: string): Promise<number> {
+		if (!REPORT_TOKEN_RE.test(token))
+			throw new Error("report token must be 32 lowercase hex characters");
+		if (!this.client.head) throw new Error("report size lookup unavailable");
+		const result = await this.client.head(`r/${token}/index.html`, {
+			token: this.token,
+		});
+		if (!Number.isSafeInteger(result.size) || result.size < 0)
+			throw new Error("invalid report object size");
+		return result.size;
 	}
 
 	async deleteReports(tokens: readonly string[]): Promise<void> {
@@ -205,8 +295,7 @@ export class VercelBlobReportStore implements ReportBlobStore {
 			return `r/${token}/index.html`;
 		});
 		if (pathnames.length > 0) {
-			for (const token of tokens)
-				pathnames.push(...(await this.auditPaths(token)));
+			// Audit objects expire by their uploadedAt in the daily sweep (up to 14 days later).
 			await this.client.del(pathnames, { token: this.token });
 		}
 	}
@@ -265,20 +354,21 @@ export class VercelBlobReportStore implements ReportBlobStore {
 		token: string,
 		html: string,
 		allowOverwrite: boolean,
+		options: ReportBlobWriteOptions = {},
 	): Promise<ReportBlobUpload> {
 		if (!REPORT_TOKEN_RE.test(token)) {
 			throw new Error("report token must be 32 lowercase hex characters");
 		}
 		return this.putObject(
 			`r/${token}/index.html`,
-			html,
+			options.gzip ? gzipSync(html, { level: 9 }) : html,
 			allowOverwrite,
 			"text/html; charset=utf-8",
 		);
 	}
 	private async putObject(
 		pathname: string,
-		body: string,
+		body: string | Buffer,
 		allowOverwrite: boolean,
 		contentType: string,
 	): Promise<ReportBlobUpload> {
@@ -299,6 +389,8 @@ export class VercelBlobReportStore implements ReportBlobStore {
 		if (
 			uploaded.pathname !== pathname ||
 			uploadedUrl.protocol !== "https:" ||
+			(this.storeId !== "" &&
+				uploadedUrl.hostname.split(".")[0] !== this.storeId) ||
 			!uploadedUrl.hostname.endsWith(".private.blob.vercel-storage.com") ||
 			uploadedUrl.pathname !== `/${pathname}`
 		) {

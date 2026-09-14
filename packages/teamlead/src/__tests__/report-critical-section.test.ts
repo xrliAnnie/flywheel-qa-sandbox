@@ -73,27 +73,36 @@ describe("ReportCriticalSection", () => {
 			const firstEntered = deferred();
 			const releaseFirst = deferred();
 			const ordinary = criticalSection.run(async () => {
-				const staged = registry.stagePublish("ordinary", HTML);
+				const staged = registry.stagePublish(
+					"ordinary",
+					HTML,
+					undefined,
+					registry.hostingBinding(),
+				);
 				firstEntered.resolve();
 				await releaseFirst.promise;
-				staged.commit();
+				await staged.commit();
 			});
 			await firstEntered.promise;
 			const epicOne = criticalSection.run(async () => {
-				registry
+				await registry
 					.stageEpicPageRepublish(
 						"epic-one",
 						HTML,
 						"11111111111111111111111111111111",
+						undefined,
+						registry.hostingBinding(),
 					)
 					.commit();
 			});
 			const epicTwo = criticalSection.run(async () => {
-				registry
+				await registry
 					.stageEpicPageRepublish(
 						"epic-two",
 						HTML,
 						"22222222222222222222222222222222",
+						undefined,
+						registry.hostingBinding(),
 					)
 					.commit();
 			});
@@ -117,7 +126,15 @@ describe("ReportCriticalSection", () => {
 			const registry = new ReportRegistry(dir, { now: () => now });
 			const criticalSection = createReportCriticalSection();
 			const token = "33333333333333333333333333333333";
-			registry.stageEpicPageRepublish("epic", HTML, token).commit();
+			await registry
+				.stageEpicPageRepublish(
+					"epic",
+					HTML,
+					token,
+					undefined,
+					registry.hostingBinding(),
+				)
+				.commit();
 			const blobs = new Set([token]);
 			now += 14 * 24 * 60 * 60 * 1000;
 			const republishEntered = deferred();
@@ -127,11 +144,13 @@ describe("ReportCriticalSection", () => {
 					"epic",
 					"<html><head></head><body>fresh</body></html>",
 					token,
+					undefined,
+					registry.hostingBinding(),
 				);
 				republishEntered.resolve();
 				await releaseRepublish.promise;
 				blobs.add(token);
-				staged.commit();
+				await staged.commit();
 			});
 			await republishEntered.promise;
 			const sweep = criticalSection.run(async () => {

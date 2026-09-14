@@ -92,12 +92,15 @@ async function createHarness(): Promise<Harness> {
 	const dir = mkdtempSync(join(tmpdir(), "fly2143-liveness-"));
 	const store = await StateStore.create(":memory:");
 	const registry = new ReportRegistry(dir);
-	registry.ensureVercelProjectName();
-	registry.markHostingMigrated({
-		provider: "vercel-blob",
-		migratedAt: "2026-09-03T03:00:00.000Z",
-		gatewayDeploymentId: "dpl_gateway",
-	});
+	await registry.ensureVercelProjectName();
+	await registry.markHostingMigrated(
+		{
+			provider: "vercel-blob",
+			migratedAt: "2026-09-03T03:00:00.000Z",
+			gatewayDeploymentId: "dpl_gateway",
+		},
+		{ expectedHostingKey: registry.hostingBinding().hostingKey },
+	);
 	const blobs = new Map<string, string>();
 	const putEpicPage = vi.fn(async (token: string, html: string) => {
 		blobs.set(token, html);
@@ -268,6 +271,23 @@ describe("FLY-2143 Epic page liveness E2E", () => {
 			firstPublication.token,
 			firstPublication.token,
 		]);
+	});
+
+	it("records unchanged_digest on a second identical scan without another Blob put", async () => {
+		const subject = await harness();
+		await subject.scan.materializeForScan(project);
+		const publication = subject.store.getEpicPagePublication("example");
+		await subject.scan.materializeForScan(project);
+		expect(subject.putEpicPage).toHaveBeenCalledTimes(1);
+		expect(subject.store.getEpicPagePublication("example")).toEqual(
+			publication,
+		);
+		const last = rawDb(subject.store)
+			.prepare(
+				"SELECT outcome FROM epic_page_refresh ORDER BY rowid DESC LIMIT 1",
+			)
+			.get() as { outcome: string };
+		expect(last.outcome).toMatch(/^ok_unpublished:[1-9]\d*:unchanged_digest$/);
 	});
 
 	it("lets the scan road recover no-op events while both absent roads leave no trace", async () => {

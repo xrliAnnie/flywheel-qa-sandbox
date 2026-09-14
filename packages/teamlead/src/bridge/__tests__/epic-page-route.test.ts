@@ -502,6 +502,8 @@ describe("Epic page router", () => {
 		});
 		const { token } = store.reserveEpicPageToken("example");
 		store.commitEpicPagePublication({
+			contentDigest: "a".repeat(64),
+			hostingKey: "fw-reports-abcdef/store",
 			projectName: "example",
 			token,
 			publishedAt: "2026-09-03T03:00:01.000Z",
@@ -610,6 +612,8 @@ describe("Epic page router", () => {
 		});
 
 		store.commitEpicPagePublication({
+			contentDigest: "a".repeat(64),
+			hostingKey: "fw-reports-abcdef/store",
 			projectName: "example",
 			token,
 			publishedAt: "2026-09-03T03:00:01.000Z",

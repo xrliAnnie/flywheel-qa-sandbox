@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
-import type { ReportBlobUpload } from "./report-blob-store.js";
+import type { ReportBlobStore, ReportBlobUpload } from "./report-blob-store.js";
+import {
+	type GatewayRequest,
+	probeGatewayFormats,
+} from "./report-gateway-probe.js";
 import type { ReportRegistry } from "./report-registry.js";
 import { isReportExpired } from "./report-retention.js";
 import { deployFilesToVercel, type VercelDeployFile } from "./vercel-deploy.js";
@@ -164,6 +168,14 @@ function assertGatewayLocalImportsResolve(
 export async function migrateReportHosting(
 	options: ReportHostingMigrationOptions,
 ): Promise<void> {
+	return options.registry.withHostingMutationLock(() =>
+		migrateReportHostingLocked(options),
+	);
+}
+
+async function migrateReportHostingLocked(
+	options: ReportHostingMigrationOptions,
+): Promise<void> {
 	if (options.registry.hosting()?.provider === "vercel-blob") return;
 	const now = options.now?.() ?? Date.now();
 	const retained = options.registry.list().filter((entry) => {
@@ -176,7 +188,9 @@ export async function migrateReportHosting(
 		return !isReportExpired(now, createdAt);
 	});
 	const migratedCreatedAt = Object.fromEntries(
-		retained.map((entry) => [entry.token, entry.createdAt]),
+		retained
+			.filter((entry) => !entry.mutable)
+			.map((entry) => [entry.token, entry.createdAt]),
 	);
 	const gatewayRuntimeSource =
 		options.gatewayRuntimeSource ??
@@ -200,7 +214,8 @@ export async function migrateReportHosting(
 		reportRetentionSource,
 		options.blobPackageVersion ?? "2.8.0",
 	);
-	const projectName = options.registry.ensureVercelProjectName();
+	const projectName = await options.registry.ensureVercelProjectName();
+	const binding = options.registry.hostingBinding();
 	await (options.verifyGatewayEnvironment ?? assertGatewayBlobEnvironment)(
 		options.vercelToken,
 		projectName,
@@ -218,9 +233,93 @@ export async function migrateReportHosting(
 		files,
 		REPORT_GATEWAY_DEPLOY_TIMEOUT_MS,
 	);
-	options.registry.markHostingMigrated({
-		provider: "vercel-blob",
-		migratedAt: new Date(now).toISOString(),
-		gatewayDeploymentId: result.deploymentId,
+	await options.registry.markHostingMigrated(
+		{
+			provider: "vercel-blob",
+			migratedAt: new Date(now).toISOString(),
+			gatewayDeploymentId: result.deploymentId,
+		},
+		{ expectedHostingKey: binding.hostingKey },
+	);
+}
+
+export interface DeployReportGatewayOptions
+	extends Omit<ReportHostingMigrationOptions, "blobStore"> {
+	bound: Pick<ReportBlobStore, "putRawObject" | "deleteReports"> & {
+		readonly storeId?: string;
+	};
+	request?: GatewayRequest;
+	probeGateway?: typeof probeGatewayFormats;
+}
+
+export async function deployReportGatewayOnly(
+	options: DeployReportGatewayOptions,
+): Promise<{ deploymentId: string }> {
+	return options.registry.withHostingMutationLock(async () => {
+		const snapshot = await options.registry.withLock(async () => ({
+			binding: options.registry.hostingBinding(),
+			hosting: options.registry.hosting(),
+			reports: options.registry.list(),
+		}));
+		const { binding, hosting } = snapshot;
+		if (binding.storeId && options.bound.storeId !== binding.storeId)
+			throw new Error("report hosting credentials do not match registry store");
+
+		if (
+			!hosting ||
+			!binding.vercelProjectName ||
+			!Number.isFinite(Date.parse(hosting.migratedAt))
+		)
+			throw new Error(
+				"report hosting must be migrated before deploying the gateway",
+			);
+		const manifest = Object.fromEntries(
+			snapshot.reports
+				.filter(
+					(entry) =>
+						!entry.mutable &&
+						Date.parse(entry.createdAt) <= Date.parse(hosting.migratedAt),
+				)
+				.map((entry) => [entry.token, entry.createdAt]),
+		);
+		const files = buildReportGatewayFiles(
+			manifest,
+			options.gatewayRuntimeSource ??
+				readFileSync(
+					new URL("./report-gateway-runtime.js", import.meta.url),
+					"utf8",
+				),
+			options.gatewayHtmlSource ??
+				readFileSync(
+					new URL(
+						"../../../flywheel-comm/dist/report-html.js",
+						import.meta.url,
+					),
+					"utf8",
+				),
+			options.reportRetentionSource ??
+				readFileSync(new URL("./report-retention.js", import.meta.url), "utf8"),
+			options.blobPackageVersion ?? "2.8.0",
+		);
+		await (options.verifyGatewayEnvironment ?? assertGatewayBlobEnvironment)(
+			options.vercelToken,
+			binding.vercelProjectName,
+		);
+		const result = await (options.deployGateway ?? deployFilesToVercel)(
+			options.vercelToken,
+			binding.vercelProjectName,
+			files,
+			REPORT_GATEWAY_DEPLOY_TIMEOUT_MS,
+		);
+		await (options.probeGateway ?? probeGatewayFormats)({
+			bound: options.bound,
+			projectName: binding.vercelProjectName,
+			request: options.request,
+		});
+		await options.registry.markGatewayFormat({
+			expectedHostingKey: binding.hostingKey,
+			gatewayDeploymentId: result.deploymentId,
+		});
+		return { deploymentId: result.deploymentId };
 	});
 }

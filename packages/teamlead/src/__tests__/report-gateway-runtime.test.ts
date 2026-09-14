@@ -1,6 +1,8 @@
+import { gunzipSync, gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import {
 	createReportGatewayHandler,
+	createReportGatewayNodeHandler,
 	REPORT_GATEWAY_RETENTION_MS,
 	default as reportGatewayNodeHandler,
 } from "../bridge/report-gateway-runtime.js";
@@ -396,3 +398,89 @@ describe("report gateway runtime", () => {
 		).toBe(502);
 	});
 });
+
+it.each([
+	["gzip", true],
+	["GZip; q=1", true],
+	["br, gzip;q=0.5", true],
+	["gzip;q=0", false],
+	["gzip;q=0.0, *;q=1", false],
+	["*;q=0.5", true],
+	["*;q=0", false],
+	["br", false],
+	["", false],
+])(
+	"serves gzip objects according to Accept-Encoding %s",
+	async (encoding, compressed) => {
+		const html = injectHeadMeta(
+			"<html><head></head><body><script>ok()</script></body></html>",
+		);
+		const bytes = gzipSync(html);
+		const handler = createReportGatewayHandler({
+			get: async () => ({
+				statusCode: 200,
+				stream: new Blob([bytes]).stream(),
+				headers: new Headers(),
+				blob: { uploadedAt: new Date(NOW), etag: "x" },
+			}),
+			now: () => NOW,
+			blobToken: () => "fake",
+		});
+		const response = await handler(
+			new Request(`https://report.invalid/api/report?token=${TOKEN}`, {
+				headers: { "Accept-Encoding": encoding },
+			}),
+		);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("vary")).toBe("Accept-Encoding");
+		expect(response.headers.get("content-encoding")).toBe(
+			compressed ? "gzip" : null,
+		);
+		expect(response.headers.get("content-security-policy")).toContain("nonce-");
+		const body = Buffer.from(await response.arrayBuffer());
+		expect(compressed ? gunzipSync(body).toString() : body.toString()).toBe(
+			html,
+		);
+	},
+);
+
+it("forwards Node Accept-Encoding arrays into the Web handler", async () => {
+	const handler = vi.fn(
+		async (request: Request) =>
+			new Response(request.headers.get("accept-encoding")),
+	);
+	const nodeHandler = createReportGatewayNodeHandler(handler);
+	const end = vi.fn();
+	await nodeHandler(
+		{
+			url: "/api/report",
+			headers: { "accept-encoding": ["br", "gzip;q=0.5"] },
+		},
+		{ statusCode: 0, setHeader: vi.fn(), end },
+	);
+	expect(handler.mock.calls[0]?.[0].headers.get("accept-encoding")).toBe(
+		"br, gzip;q=0.5",
+	);
+	expect(Buffer.from(end.mock.calls[0]![0]).toString()).toBe("br, gzip;q=0.5");
+});
+
+it.each([Buffer.from([0x1f, 0x8b, 0, 1]), gzipSync("x".repeat(1_048_577))])(
+	"rejects corrupt or oversized gzip without exposing decoder errors",
+	async (bytes) => {
+		const handler = createReportGatewayHandler({
+			get: async () => ({
+				statusCode: 200,
+				stream: new Blob([bytes]).stream(),
+				headers: new Headers(),
+				blob: { uploadedAt: new Date(NOW), etag: "x" },
+			}),
+			now: () => NOW,
+			blobToken: () => "fake",
+		});
+		const response = await handler(
+			new Request(`https://report.invalid/api/report?token=${TOKEN}`),
+		);
+		expect(response.status).toBe(502);
+		expect(await response.text()).toBe("Report storage unavailable");
+	},
+);

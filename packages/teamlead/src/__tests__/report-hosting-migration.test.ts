@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	assertGatewayBlobEnvironment,
+	deployReportGatewayOnly,
 	migrateReportHosting,
 } from "../bridge/report-hosting-migration.js";
 import { ReportRegistry } from "../bridge/report-registry.js";
@@ -68,8 +69,17 @@ describe("report hosting migration", () => {
 		const registry = new ReportRegistry(dir, {
 			randomHex: (bytes) => String(++sequence).padStart(bytes * 2, "0"),
 		});
-		registry.stagePublish("flywheel", HTML, "one").commit();
-		registry.stagePublish("personal-assistant", HTML, "two").commit();
+		await registry
+			.stagePublish("flywheel", HTML, "one", registry.hostingBinding())
+			.commit();
+		await registry
+			.stagePublish(
+				"personal-assistant",
+				HTML,
+				"two",
+				registry.hostingBinding(),
+			)
+			.commit();
 		const putMigratedReport = vi
 			.fn()
 			.mockImplementation(async (token: string) => ({
@@ -174,7 +184,9 @@ describe("report hosting migration", () => {
 		const registry = new ReportRegistry(dir, {
 			randomHex: (bytes) => "1".padStart(bytes * 2, "0"),
 		});
-		registry.stagePublish("flywheel", HTML).commit();
+		await registry
+			.stagePublish("flywheel", HTML, undefined, registry.hostingBinding())
+			.commit();
 		const putMigratedReport = vi.fn();
 		const deployGateway = vi.fn();
 
@@ -203,7 +215,9 @@ describe("report hosting migration", () => {
 		const registry = new ReportRegistry(dir, {
 			randomHex: (bytes) => "1".padStart(bytes * 2, "0"),
 		});
-		registry.stagePublish("flywheel", HTML).commit();
+		await registry
+			.stagePublish("flywheel", HTML, undefined, registry.hostingBinding())
+			.commit();
 		const deployGateway = vi.fn();
 
 		await expect(
@@ -230,7 +244,9 @@ describe("report hosting migration", () => {
 		const registry = new ReportRegistry(dir, {
 			randomHex: (bytes) => "4".padStart(bytes * 2, "0"),
 		});
-		registry.stagePublish("flywheel", HTML).commit();
+		await registry
+			.stagePublish("flywheel", HTML, undefined, registry.hostingBinding())
+			.commit();
 		const putMigratedReport = vi.fn();
 		const deployGateway = vi.fn();
 		const verifyGatewayEnvironment = vi.fn();
@@ -259,7 +275,9 @@ describe("report hosting migration", () => {
 		const registry = new ReportRegistry(dir, {
 			randomHex: (bytes) => "3".padStart(bytes * 2, "0"),
 		});
-		registry.stagePublish("flywheel", HTML).commit();
+		await registry
+			.stagePublish("flywheel", HTML, undefined, registry.hostingBinding())
+			.commit();
 		const registryPath = join(dir, "registry.json");
 		const data = JSON.parse(readFileSync(registryPath, "utf8")) as {
 			reports: Array<{ createdAt: string }>;
@@ -290,7 +308,9 @@ describe("report hosting migration", () => {
 		const registry = new ReportRegistry(dir, {
 			randomHex: (bytes) => "2".padStart(bytes * 2, "0"),
 		});
-		registry.stagePublish("flywheel", HTML).commit();
+		await registry
+			.stagePublish("flywheel", HTML, undefined, registry.hostingBinding())
+			.commit();
 
 		await expect(
 			migrateReportHosting({
@@ -317,12 +337,17 @@ describe("report hosting migration", () => {
 	it("is idempotent after the durable cutover marker is committed", async () => {
 		dir = mkdtempSync(join(tmpdir(), "fly2283-migrate-"));
 		const registry = new ReportRegistry(dir);
-		registry.stagePublish("flywheel", HTML).commit();
-		registry.markHostingMigrated({
-			provider: "vercel-blob",
-			migratedAt: "2026-09-03T16:00:00.000Z",
-			gatewayDeploymentId: "dpl_existing",
-		});
+		await registry
+			.stagePublish("flywheel", HTML, undefined, registry.hostingBinding())
+			.commit();
+		await registry.markHostingMigrated(
+			{
+				provider: "vercel-blob",
+				migratedAt: "2026-09-03T16:00:00.000Z",
+				gatewayDeploymentId: "dpl_existing",
+			},
+			{ expectedHostingKey: registry.hostingBinding().hostingKey },
+		);
 		const putMigratedReport = vi.fn();
 		const deployGateway = vi.fn();
 		const verifyGatewayEnvironment = vi.fn();
@@ -341,4 +366,143 @@ describe("report hosting migration", () => {
 		expect(putMigratedReport).not.toHaveBeenCalled();
 		expect(deployGateway).not.toHaveBeenCalled();
 	});
+});
+
+it("legacy migration participates in the registry-wide hosting mutation lock", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "fly2538-legacy-lock-"));
+	try {
+		const holder = new ReportRegistry(dir);
+		const registry = new ReportRegistry(dir, {
+			lockOptions: { timeoutMs: 25, retryMs: 5 },
+		});
+		const put = vi.fn();
+		const deploy = vi.fn();
+		await holder.withHostingMutationLock(async () => {
+			await expect(
+				migrateReportHosting({
+					registry,
+					blobStore: { putMigratedReport: put },
+					vercelToken: "fake",
+					deployGateway: deploy,
+					gatewayRuntimeSource: "",
+					gatewayHtmlSource: "",
+					reportRetentionSource: "",
+					verifyGatewayEnvironment: async () => {},
+				}),
+			).rejects.toMatchObject({ name: "ReportRegistryLockBusy" });
+		});
+		expect(put).not.toHaveBeenCalled();
+		expect(deploy).not.toHaveBeenCalled();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+it.each([false, true])(
+	"deploy-only keeps the original retention manifest and writes the format gate only after probes (failure=%s)",
+	async (failProbe) => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2538-deploy-only-"));
+		let now = Date.now();
+		const registry = new ReportRegistry(dir, { now: () => now });
+		try {
+			const old = registry.stagePublish(
+				"old",
+				HTML,
+				undefined,
+				registry.hostingBinding(),
+			);
+			await old.commit();
+			await registry.markHostingMigrated(
+				{
+					provider: "vercel-blob",
+					migratedAt: new Date(now).toISOString(),
+					gatewayDeploymentId: "prior",
+				},
+				{ expectedHostingKey: registry.hostingBinding().hostingKey },
+			);
+			now += 1000;
+			const fresh = registry.stagePublish(
+				"fresh",
+				HTML,
+				undefined,
+				registry.hostingBinding(),
+			);
+			await fresh.commit();
+			const bound = { putRawObject: vi.fn(), deleteReports: vi.fn() };
+			const probeGateway = vi.fn(async () => {
+				if (failProbe) throw new Error("probe rejected");
+			});
+			const deployGateway = vi
+				.fn()
+				.mockResolvedValue({ deploymentId: "proved" });
+			const operation = deployReportGatewayOnly({
+				registry,
+				bound,
+				vercelToken: "fake",
+				deployGateway,
+				probeGateway,
+				verifyGatewayEnvironment: async () => {},
+				gatewayRuntimeSource: "export function GET() {}",
+				gatewayHtmlSource: "",
+				reportRetentionSource: RETENTION_SOURCE,
+			});
+			if (failProbe) await expect(operation).rejects.toThrow("probe rejected");
+			else await operation;
+			expect(probeGateway.mock.calls[0]?.[0].bound).toBe(bound);
+			const manifest = deployGateway.mock.calls[0]![2].find(
+				(file: { file: string }) =>
+					file.file === "api/report-gateway-migration-manifest.js",
+			).data;
+			expect(manifest).toContain(old.entry.token);
+			expect(manifest).not.toContain(fresh.entry.token);
+			expect(registry.hosting()?.gatewayFormat).toBe(
+				failProbe ? undefined : "gzip-v1",
+			);
+			expect(registry.hosting()?.gatewayDeploymentId).toBe(
+				failProbe ? "prior" : "proved",
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	},
+);
+
+it("checks the bound Blob store against the binding inside the deployment lock", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "report-deploy-binding-"));
+	try {
+		const registry = new ReportRegistry(dir);
+		await registry.ensureVercelProjectName();
+		await registry.markHostingMigrated(
+			{
+				provider: "vercel-blob",
+				migratedAt: new Date().toISOString(),
+				gatewayDeploymentId: "old",
+				storeId: "storeb",
+			},
+			{ expectedHostingKey: registry.hostingBinding().hostingKey },
+		);
+		const deployGateway = vi.fn();
+		const verifyGatewayEnvironment = vi.fn();
+		await expect(
+			deployReportGatewayOnly({
+				registry,
+				vercelToken: "account",
+				probeGateway: vi.fn().mockRejectedValue(new Error("unexpected probe")),
+				bound: {
+					storeId: "storea",
+					putRawObject: vi.fn(),
+					deleteReports: vi.fn(),
+				},
+				deployGateway,
+				verifyGatewayEnvironment,
+				gatewayRuntimeSource: "export default function handler() {}",
+				gatewayHtmlSource: "export {};",
+				reportRetentionSource: "export {};",
+			}),
+		).rejects.toThrow("credentials");
+		expect(deployGateway).not.toHaveBeenCalled();
+		expect(verifyGatewayEnvironment).not.toHaveBeenCalled();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });

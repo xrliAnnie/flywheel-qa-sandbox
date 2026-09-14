@@ -1,0 +1,16 @@
+stateDiagram-v2
+  [*] --> Plain : registry 无 gatewayFormat
+  Plain --> Probing : deploy-gateway-only 部署双格式网关
+  Probing --> Plain : 任一探针失败(不写门)
+  Probing --> Gzip : 四例探针通过,写 gatewayFormat=gzip-v1
+  Gzip --> Gzip : Bridge 重启(仍读到门,继续 gzip)
+  Gzip --> Retarget : --retarget 到新 store
+  Retarget --> Gzip : 探针通过并 CAS 写标记(新 store 也带门)
+  note right of Plain
+    Bridge 写明文
+    网关明文/gzip 都能服务
+  end note
+  note right of Gzip
+    Bridge 写 gzip
+    浏览器 Accept-Encoding gzip 时透传
+  end note

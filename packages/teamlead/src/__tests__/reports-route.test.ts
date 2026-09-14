@@ -1,3 +1,5 @@
+import { VercelBlobReportStore } from "../bridge/report-blob-store.js";
+import { FileReportHostingCredentials } from "../bridge/report-hosting-credentials.js";
 /**
  * FLY-203: /api/reports router tests — real ReportRegistry on tmp fs,
  * mocked private Blob + Discord post seams, real HTTP via express app.
@@ -19,7 +21,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ReportRegistry } from "../bridge/report-registry.js";
+import {
+	ReportRegistry,
+	ReportRegistryLockBusy,
+} from "../bridge/report-registry.js";
 import {
 	buildReportMessage,
 	createReportsRouter,
@@ -58,7 +63,7 @@ describe("reports-route", () => {
 	let postWithFileMock: ReturnType<typeof vi.fn>;
 	let postTextMock: ReturnType<typeof vi.fn>;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		dir = mkdtempSync(join(tmpdir(), "fly203-route-"));
 		registry = new ReportRegistry(dir, { warn: () => {} });
 		writeFileSync(
@@ -69,11 +74,14 @@ describe("reports-route", () => {
 			}),
 			"utf8",
 		);
-		registry.markHostingMigrated({
-			provider: "vercel-blob",
-			migratedAt: "2026-09-03T16:00:00.000Z",
-			gatewayDeploymentId: "dpl_gateway",
-		});
+		await registry.markHostingMigrated(
+			{
+				provider: "vercel-blob",
+				migratedAt: "2026-09-03T16:00:00.000Z",
+				gatewayDeploymentId: "dpl_gateway",
+			},
+			{ expectedHostingKey: registry.hostingBinding().hostingKey },
+		);
 		blobPutMock = vi.fn().mockImplementation(async (token: string) => ({
 			pathname: `r/${token}/index.html`,
 			url: `https://store.private.blob.vercel-storage.com/r/${token}/index.html`,
@@ -428,6 +436,170 @@ describe("reports-route", () => {
 		consoleError.mockRestore();
 	});
 
+	it("rejects hosting changes between caller snapshot and staging before any put", async () => {
+		await startApp();
+		const stage = registry.stagePublish.bind(registry);
+		vi.spyOn(registry, "stagePublish").mockImplementationOnce((...args) => {
+			writeFileSync(
+				join(dir, "registry.json"),
+				JSON.stringify({
+					vercelProjectName: "fw-reports-abcdef",
+					reports: [],
+					hosting: { ...registry.hosting(), storeId: "next" },
+				}),
+			);
+			return stage(...args);
+		});
+		const result = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+		expect(result.status).toBe(503);
+		expect(blobPutMock).not.toHaveBeenCalled();
+		expect(registry.list()).toEqual([]);
+	});
+
+	it("publish: hosting changes during Blob put return 503 and clean up the orphan", async () => {
+		await startApp();
+		blobPutMock.mockImplementationOnce(async () => {
+			await registry.markHostingMigrated(
+				{
+					...registry.hosting()!,
+					storeId: "replacement",
+				},
+				{ expectedHostingKey: registry.hostingBinding().hostingKey },
+			);
+			return { pathname: "unused", url: "https://unused.example" };
+		});
+		const result = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+		expect(result.status).toBe(503);
+		expect(registry.list()).toEqual([]);
+		expect(blobDeleteMock).toHaveBeenCalledOnce();
+	});
+
+	it("guards store mismatch and keeps upload/cleanup on one call-time snapshot", async () => {
+		const a = "vercel_blob_rw_storea_secret";
+		const b = "vercel_blob_rw_storeb_secret";
+		let value = b;
+		const snapshot = vi.fn(() => ({
+			key: "BLOB_READ_WRITE_TOKEN" as const,
+			value,
+			source: "file" as const,
+			generation: 1,
+		}));
+		await registry.markHostingMigrated(
+			{ ...registry.hosting()!, storeId: "storea" },
+			{ expectedHostingKey: registry.hostingBinding().hostingKey },
+		);
+		const del = vi.fn();
+		const put = vi.fn(
+			async (pathname: string, _body: unknown, options: { token: string }) => {
+				value = b;
+				mkdirSync(join(dir, "registry.json.tmp"));
+				return {
+					pathname,
+					url: `https://${options.token.split("_")[3]}.private.blob.vercel-storage.com/${pathname}`,
+				};
+			},
+		);
+		await startApp({
+			credentials: { snapshot },
+			blobStore: new VercelBlobReportStore(undefined, {
+				put,
+				del,
+				list: vi.fn(),
+			}),
+		});
+		expect(
+			(await post("/api/reports/publish", { projectName: "p", html: HTML }))
+				.status,
+		).toBe(503);
+		expect(put).not.toHaveBeenCalled();
+		value = a;
+		expect(
+			(await post("/api/reports/publish", { projectName: "p", html: HTML }))
+				.status,
+		).toBe(502);
+		expect(put.mock.calls[0]![2].token).toBe(a);
+		expect(del.mock.calls[0]![1].token).toBe(a);
+		expect(snapshot).toHaveBeenCalledTimes(2);
+	});
+
+	it("reloads the credential file in one running router after the registry retargets", async () => {
+		const envPath = join(dir, ".env");
+		const credentials = new FileReportHostingCredentials({
+			envPath,
+			env: {},
+			warn: vi.fn(),
+		});
+		const put = vi.fn(
+			async (pathname: string, _body: unknown, options: { token: string }) => ({
+				pathname,
+				url: `https://${options.token.split("_")[3]}.private.blob.vercel-storage.com/${pathname}`,
+			}),
+		);
+		await startApp({
+			credentials,
+			blobStore: new VercelBlobReportStore(undefined, {
+				put,
+				del: vi.fn(),
+				list: vi.fn(),
+			}),
+		});
+		expect(
+			(await post("/api/reports/publish", { projectName: "p", html: HTML }))
+				.status,
+		).toBe(501);
+		for (const id of ["storea", "longerstoreb"]) {
+			writeFileSync(
+				envPath,
+				`BLOB_READ_WRITE_TOKEN=vercel_blob_rw_${id}_secret
+`,
+			);
+			await registry.markHostingMigrated(
+				{ ...registry.hosting()!, storeId: id },
+				{ expectedHostingKey: registry.hostingBinding().hostingKey },
+			);
+			expect(
+				(await post("/api/reports/publish", { projectName: "p", html: HTML }))
+					.status,
+			).toBe(200);
+		}
+		expect(put.mock.calls.map((call) => call[2].token)).toEqual([
+			"vercel_blob_rw_storea_secret",
+			"vercel_blob_rw_longerstoreb_secret",
+		]);
+	});
+
+	it("enables gzip writes only after the registry gateway format marker", async () => {
+		await startApp();
+		await post("/api/reports/publish", { projectName: "p", html: HTML });
+		expect(blobPutMock.mock.calls[0]?.[2]).toEqual({ gzip: false });
+		await registry.markGatewayFormat({
+			expectedHostingKey: registry.hostingBinding().hostingKey,
+			gatewayDeploymentId: "proved",
+		});
+		await post("/api/reports/publish", { projectName: "p", html: HTML });
+		expect(blobPutMock.mock.calls[1]?.[2]).toEqual({ gzip: true });
+	});
+
+	it("publish: registry lock timeout returns retryable 503", async () => {
+		await startApp();
+		vi.spyOn(registry, "withLock").mockRejectedValueOnce(
+			new ReportRegistryLockBusy(),
+		);
+		const result = await post("/api/reports/publish", {
+			projectName: "p",
+			html: HTML,
+		});
+		expect(result.status).toBe(503);
+		expect(result.json.error).toBe("report registry busy");
+		expect(registry.list()).toEqual([]);
+	});
+
 	it("publish: commit failure after successful Blob upload → 502, registry stays old", async () => {
 		await startApp();
 		// sabotage atomic write: registry.json.tmp as a directory
@@ -452,8 +624,8 @@ describe("reports-route", () => {
 		);
 		const stagePublish = registry.stagePublish.bind(registry);
 		vi.spyOn(registry, "stagePublish").mockImplementationOnce(
-			(projectName, html, title) => ({
-				...stagePublish(projectName, html, title),
+			(projectName, html, title, binding) => ({
+				...stagePublish(projectName, html, title, binding),
 				commit: () => {
 					throw new Error(`commit failed with credential ${blobCredential}`);
 				},
@@ -518,11 +690,14 @@ describe("reports-route", () => {
 	it("FLY-2283: a successful publish deletes objects that reached 14 days, never younger objects", async () => {
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		registry = new ReportRegistry(dir, { now: () => now });
-		registry.markHostingMigrated({
-			provider: "vercel-blob",
-			migratedAt: new Date(now).toISOString(),
-			gatewayDeploymentId: "dpl_gateway",
-		});
+		await registry.markHostingMigrated(
+			{
+				provider: "vercel-blob",
+				migratedAt: new Date(now).toISOString(),
+				gatewayDeploymentId: "dpl_gateway",
+			},
+			{ expectedHostingKey: registry.hostingBinding().hostingKey },
+		);
 		await startApp();
 		const old = await post("/api/reports/publish", {
 			projectName: "p",
@@ -544,11 +719,14 @@ describe("reports-route", () => {
 	it("publish: removes malformed registry entries from accounting without deleting their Blobs", async () => {
 		const now = Date.parse("2026-06-04T00:00:00.000Z");
 		registry = new ReportRegistry(dir, { now: () => now });
-		registry.markHostingMigrated({
-			provider: "vercel-blob",
-			migratedAt: new Date(now).toISOString(),
-			gatewayDeploymentId: "dpl_gateway",
-		});
+		await registry.markHostingMigrated(
+			{
+				provider: "vercel-blob",
+				migratedAt: new Date(now).toISOString(),
+				gatewayDeploymentId: "dpl_gateway",
+			},
+			{ expectedHostingKey: registry.hostingBinding().hostingKey },
+		);
 		await startApp();
 		const old = await post("/api/reports/publish", {
 			projectName: "p",
@@ -579,11 +757,14 @@ describe("reports-route", () => {
 		const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		registry = new ReportRegistry(dir, { now: () => now });
-		registry.markHostingMigrated({
-			provider: "vercel-blob",
-			migratedAt: new Date(now).toISOString(),
-			gatewayDeploymentId: "dpl_gateway",
-		});
+		await registry.markHostingMigrated(
+			{
+				provider: "vercel-blob",
+				migratedAt: new Date(now).toISOString(),
+				gatewayDeploymentId: "dpl_gateway",
+			},
+			{ expectedHostingKey: registry.hostingBinding().hostingKey },
+		);
 		await startApp();
 		expect(
 			(

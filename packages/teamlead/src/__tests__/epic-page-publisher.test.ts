@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,7 @@ import {
 } from "../epic-page/__tests__/fixtures/epic-shape.js";
 import { generateEpicPage } from "../epic-page/generate.js";
 import type { EpicPage } from "../epic-page/model.js";
-import { StateStore } from "../StateStore.js";
+import { parseEpicPageRefreshOutcome, StateStore } from "../StateStore.js";
 
 function epicPage(): EpicPage {
 	const snapshot = epicShapeSnapshot();
@@ -39,12 +39,15 @@ describe("hosted Epic page publisher", () => {
 		dir = mkdtempSync(join(tmpdir(), "fly2143-publisher-"));
 		store = await StateStore.create(":memory:");
 		registry = new ReportRegistry(dir);
-		registry.ensureVercelProjectName();
-		registry.markHostingMigrated({
-			provider: "vercel-blob",
-			migratedAt: "2026-09-03T03:00:00.000Z",
-			gatewayDeploymentId: "dpl_gateway",
-		});
+		await registry.ensureVercelProjectName();
+		await registry.markHostingMigrated(
+			{
+				provider: "vercel-blob",
+				migratedAt: "2026-09-03T03:00:00.000Z",
+				gatewayDeploymentId: "dpl_gateway",
+			},
+			{ expectedHostingKey: registry.hostingBinding().hostingKey },
+		);
 		blobs = new Map();
 		putEpicPage = vi.fn(async (token: string, html: string) => {
 			blobs.set(token, html);
@@ -84,6 +87,195 @@ describe("hosted Epic page publisher", () => {
 		expect(blobs.get(publication?.token ?? "")).toContain(
 			"Content-Security-Policy",
 		);
+	});
+
+	it("rejects hosting changes between caller snapshot and staging before any put", async () => {
+		const stage = registry.stageEpicPageRepublish.bind(registry);
+		vi.spyOn(registry, "stageEpicPageRepublish").mockImplementationOnce(
+			(...args) => {
+				writeFileSync(
+					join(dir, "registry.json"),
+					JSON.stringify({
+						vercelProjectName: "fw-reports-abcdef",
+						reports: [],
+						hosting: { ...registry.hosting(), storeId: "next" },
+					}),
+				);
+				return stage(...args);
+			},
+		);
+		const result = await publisher().publishHosted(epicPage());
+		expect(result).toBe("transient: publish_failed:credentials");
+		expect(putEpicPage).not.toHaveBeenCalled();
+		expect(registry.list()).toEqual([]);
+	});
+
+	it("reports a credential conflict without deleting the stable page after retarget during put", async () => {
+		const del = vi.fn();
+		putEpicPage.mockImplementationOnce(async (token: string, html: string) => {
+			blobs.set(token, html);
+			await registry.markHostingMigrated(
+				{
+					...registry.hosting()!,
+					storeId: "newstore",
+				},
+				{ expectedHostingKey: registry.hostingBinding().hostingKey },
+			);
+		});
+		const outcome = await publisher({
+			blobStore: { putEpicPage, deleteReports: del },
+		}).publishHosted(epicPage());
+		expect(outcome).toBe("transient: publish_failed:credentials");
+		expect(parseEpicPageRefreshOutcome(outcome)).toBe(outcome);
+		expect(registry.list()).toEqual([]);
+		expect(blobs.size).toBe(1);
+		expect(del).not.toHaveBeenCalled();
+	});
+
+	it.each([true, false])(
+		"defers real Epic cleanup until registry commit succeeds (conflict=%s)",
+		async (conflict) => {
+			const objects = new Map<string, string | Buffer>();
+			let listSawCommitted = false;
+			const list = vi.fn(async () => {
+				listSawCommitted = registry.list().length === 1;
+				return { blobs: [], hasMore: false };
+			});
+			const del = vi.fn();
+			const actual = new VercelBlobReportStore("fake", {
+				get: vi.fn().mockResolvedValue(null),
+				list,
+				del,
+				put: async (pathname, body) => {
+					objects.set(pathname, body);
+					if (conflict && pathname.endsWith("/index.html"))
+						await registry.markHostingMigrated(
+							{ ...registry.hosting()!, storeId: "replacement" },
+							{ expectedHostingKey: registry.hostingBinding().hostingKey },
+						);
+					return {
+						pathname,
+						url: `https://store.private.blob.vercel-storage.com/${pathname}`,
+					};
+				},
+			});
+			expect(
+				await publisher({
+					blobStore: actual,
+					probeAudit: async () => true,
+				}).publishHosted(epicPage()),
+			).toBe(conflict ? "transient: publish_failed:credentials" : "ok:1");
+			expect(objects.size).toBe(2);
+			expect(list).toHaveBeenCalledTimes(conflict ? 0 : 1);
+			expect(listSawCommitted).toBe(!conflict);
+			expect(del).not.toHaveBeenCalled();
+			expect(registry.list()).toHaveLength(conflict ? 0 : 1);
+		},
+	);
+
+	it("uses one credential snapshot across Epic audit IO and skips resolving unchanged publications", async () => {
+		const a = "vercel_blob_rw_storea_secret";
+		let value = "vercel_blob_rw_storeb_secret";
+		const snapshot = vi.fn(() => ({
+			key: "BLOB_READ_WRITE_TOKEN" as const,
+			value,
+			source: "file" as const,
+			generation: 1,
+		}));
+		await registry.markHostingMigrated(
+			{ ...registry.hosting()!, storeId: "storea" },
+			{ expectedHostingKey: registry.hostingBinding().hostingKey },
+		);
+		const list = vi.fn().mockResolvedValue({ blobs: [], hasMore: false });
+		const put = vi.fn(
+			async (pathname: string, _body: unknown, options: { token: string }) => {
+				value = "vercel_blob_rw_storeb_secret";
+				return {
+					pathname,
+					url: `https://${options.token.split("_")[3]}.private.blob.vercel-storage.com/${pathname}`,
+				};
+			},
+		);
+		const actual = new VercelBlobReportStore(undefined, {
+			put,
+			list,
+			del: vi.fn(),
+			get: vi.fn().mockResolvedValue(null),
+		});
+		const subject = publisher({
+			credentials: { snapshot },
+			blobStore: actual,
+			probeAudit: async () => true,
+		});
+		expect(await subject.publishHosted(epicPage())).toBe(
+			"transient: publish_failed:credentials",
+		);
+		expect(put).not.toHaveBeenCalled();
+		value = a;
+		expect(await subject.publishHosted(epicPage())).toBe("ok:1");
+		expect(put.mock.calls.map((call) => call[2].token)).toEqual([a, a]);
+		expect(list.mock.calls[0]![0].token).toBe(a);
+		snapshot.mockClear();
+		expect(await subject.publishHosted(epicPage())).toBe(
+			"ok_unpublished:1:unchanged_digest",
+		);
+		expect(snapshot).not.toHaveBeenCalled();
+	});
+
+	it("skips an unchanged Epic on the same hosting within the 24-hour keepalive", async () => {
+		const page = epicPage();
+		expect(await publisher().publishHosted(page)).toBe("ok:1");
+		page.freshness.current.value!.version = 2;
+		const binding = vi.spyOn(registry, "hostingBinding");
+		const result = await publisher({
+			now: () => new Date(EPIC_SHAPE_NOW.getTime() + 60 * 60 * 1000),
+		}).publishHosted(page);
+		expect(result).toBe("ok_unpublished:2:unchanged_digest");
+		expect(parseEpicPageRefreshOutcome(result)).toBe(result);
+		expect(() => parseEpicPageRefreshOutcome("ok_unpublished:2:bogus")).toThrow(
+			"epic_page_refresh_outcome_invalid",
+		);
+		expect(putEpicPage).toHaveBeenCalledTimes(1);
+		expect(binding).toHaveBeenCalledTimes(1);
+		expect(store.getEpicPagePublication("example")?.last_version).toBe(1);
+	});
+
+	it.each(["24h", "25h", "content", "hosting", "legacy-null"])(
+		"reuploads instead of skipping when %s invalidates publication proof",
+		async (reason) => {
+			const page = epicPage();
+			expect(await publisher().publishHosted(page)).toBe("ok:1");
+			if (reason === "content") page.items[0]!.title.value = "changed content";
+			if (reason === "hosting")
+				await registry.markHostingMigrated(
+					{ ...registry.hosting()!, storeId: "replacement" },
+					{ expectedHostingKey: registry.hostingBinding().hostingKey },
+				);
+			if (reason === "legacy-null")
+				(store as unknown as { db: { run(sql: string): void } }).db.run(
+					"UPDATE epic_page_publication SET last_content_digest = NULL",
+				);
+			const hours = reason === "24h" ? 24 : reason === "25h" ? 25 : 1;
+			expect(
+				await publisher({
+					now: () =>
+						new Date(EPIC_SHAPE_NOW.getTime() + hours * 60 * 60 * 1000),
+				}).publishHosted(page),
+			).toBe("ok:1");
+			expect(putEpicPage).toHaveBeenCalledTimes(2);
+			expect(store.getEpicPagePublication("example")?.last_hosting_key).toBe(
+				registry.hostingBinding().hostingKey,
+			);
+		},
+	);
+
+	it("passes the verified gateway format to the Epic Blob write", async () => {
+		await registry.markGatewayFormat({
+			expectedHostingKey: registry.hostingBinding().hostingKey,
+			gatewayDeploymentId: "proved",
+		});
+		expect(await publisher().publishHosted(epicPage())).toBe("ok:1");
+		expect(putEpicPage.mock.calls[0]?.[3]).toEqual({ gzip: true });
 	});
 
 	it("passes a hash-bound sidecar to the hosted upload", async () => {
@@ -171,8 +363,8 @@ describe("hosted Epic page publisher", () => {
 		const originalStage = registry.stageEpicPageRepublish.bind(registry);
 		const abort = vi.fn();
 		vi.spyOn(registry, "stageEpicPageRepublish").mockImplementation(
-			(projectName, html, token, title) => {
-				const staged = originalStage(projectName, html, token, title);
+			(projectName, html, token, title, binding) => {
+				const staged = originalStage(projectName, html, token, title, binding);
 				abort.mockImplementation(staged.abort);
 				return { ...staged, abort };
 			},
@@ -226,8 +418,8 @@ describe("hosted Epic page publisher", () => {
 		const originalStage = registry.stageEpicPageRepublish.bind(registry);
 		const abort = vi.fn();
 		vi.spyOn(registry, "stageEpicPageRepublish").mockImplementation(
-			(projectName, html, token, title) => {
-				const staged = originalStage(projectName, html, token, title);
+			(projectName, html, token, title, binding) => {
+				const staged = originalStage(projectName, html, token, title, binding);
 				abort.mockImplementation(staged.abort);
 				return { ...staged, abort };
 			},
@@ -259,6 +451,7 @@ describe("hosted Epic page publisher", () => {
 			})
 			.mockImplementation(realCommit);
 		const state = {
+			getEpicPagePublication: store.getEpicPagePublication.bind(store),
 			reserveEpicPageToken: store.reserveEpicPageToken.bind(store),
 			commitEpicPagePublication,
 		};

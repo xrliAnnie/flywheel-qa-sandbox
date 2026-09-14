@@ -1,0 +1,33 @@
+sequenceDiagram
+  participant O as operator
+  participant CLI as migrate --retarget
+  participant V as Vercel API
+  participant S as 新 Blob store
+  participant R as registry.json
+  participant B as Bridge
+  O->>CLI: --vercel-token-env / --project-name
+  CLI->>CLI: 取 hosting-mutation 长锁
+  CLI->>V: GET/POST 项目
+  CLI->>CLI: journal 写 intent
+  CLI->>V: POST store(access=private)
+  CLI->>V: GET store 校验 private/available
+  CLI->>V: POST connections
+  CLI->>V: GET env 解密 RW token
+  CLI->>CLI: secrets.env(0600)
+  loop 保留期每份报告(journal 三元组不同才传)
+    CLI->>S: put gzip r/token/index.html
+  end
+  CLI->>V: 部署双格式网关
+  CLI->>S: 探针对象 put/get/del
+  CLI->>R: commitRetarget CAS(source key + 两个 digest)
+  alt stale(期间有新 publish)
+    R-->>CLI: ReportRetargetManifestStale
+    CLI->>S: 补传 → 重部署 → 重验(最多 3 pass)
+  else 成功
+    R-->>CLI: cutoverAt
+  end
+  CLI-->>O: JSON + envHint + secrets 路径
+  O->>O: 改 .env 两行,rm secrets
+  B->>B: 下次 publish 读到新 token
+  B->>R: token store id == hosting.storeId
+  B->>S: gzip put

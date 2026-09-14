@@ -1,0 +1,31 @@
+flowchart TB
+  subgraph REG["~/.flywheel/reports/registry.json(唯一真相)"]
+    R1["vercelProjectName<br/>fw-reports-&lt;6hex&gt;"]
+    R2["hosting<br/>provider · migratedAt · gatewayDeploymentId<br/>storeId · blobHost · gatewayFormat<br/>manifestDigest · contentDigest · retargetedFrom"]
+    R3["reports[]<br/>token · createdAt · bytes · title"]
+  end
+  subgraph LOCKS["锁(flywheel-config withMkdirLock)"]
+    L1["registry.lock.d<br/>短锁:每次读改写"]
+    L2["hosting-mutation.lock.d<br/>长锁:整条 retarget / deploy-gateway 命令"]
+  end
+  subgraph J["retarget.&lt;project&gt;.json(journal,命令锁内)"]
+    J1["projectId · storeId · storeCreateIntent"]
+    J2["uploaded{token → createdAt,bytes,sha256}"]
+    J3["manifestDigest · contentDigest<br/>gatewayDeploymentId · verified · cutoverAt"]
+  end
+  subgraph SS["teamlead.db(StateStore)"]
+    E1["epic_page_publication<br/>+ last_content_digest<br/>+ last_hosting_key"]
+  end
+  subgraph RC["notify-receipts.json"]
+    U1["report_hosting_usage<br/>date · storeId · phase · attempts"]
+  end
+  subgraph ENV["~/.flywheel/.env(call-time 读)"]
+    V1["BLOB_READ_WRITE_TOKEN"]
+    V2["REPORT_HOSTING_VERCEL_TOKEN(新)"]
+    V3["VERCEL_TOKEN(仅 publish-html)"]
+  end
+  L1 --- REG
+  L2 --- J
+  J3 -- CAS 成功后写 --> R2
+  V1 -- store id 必须匹配 --> R2
+  E1 -- hostingKey 来自 --> R2

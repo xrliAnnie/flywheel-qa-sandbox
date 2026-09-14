@@ -10,7 +10,7 @@ import { deployToVercel } from "./vercel-deploy.js";
 const MAX_HTML_SIZE = 512 * 1024; // 512 KB
 
 export function createPublishHtmlRouter(
-	vercelToken: string | undefined,
+	vercelToken: string | undefined | (() => string | undefined),
 	opts?: { disabledByReportHostOverride?: boolean },
 ): Router {
 	const router = Router();
@@ -23,7 +23,9 @@ export function createPublishHtmlRouter(
 			});
 			return;
 		}
-		if (!vercelToken) {
+		const token =
+			typeof vercelToken === "function" ? vercelToken() : vercelToken;
+		if (!token) {
 			res.status(501).json({
 				error: "HTML publishing not available — VERCEL_TOKEN not configured",
 			});
@@ -66,7 +68,7 @@ export function createPublishHtmlRouter(
 		}
 
 		try {
-			const result = await deployToVercel(vercelToken, sanitized, html);
+			const result = await deployToVercel(token, sanitized, html);
 			res.json({ url: result.url });
 		} catch (err) {
 			console.error("[publish-html] deploy failed:", (err as Error).message);

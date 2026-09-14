@@ -65,12 +65,15 @@ it("real CLI writes and clears project-isolated role notes through the queue and
 		}),
 	);
 	const registry = new ReportRegistry(dir);
-	registry.ensureVercelProjectName();
-	registry.markHostingMigrated({
-		provider: "vercel-blob",
-		migratedAt: EPIC_SHAPE_NOW.toISOString(),
-		gatewayDeploymentId: "fixture",
-	});
+	await registry.ensureVercelProjectName();
+	await registry.markHostingMigrated(
+		{
+			provider: "vercel-blob",
+			migratedAt: EPIC_SHAPE_NOW.toISOString(),
+			gatewayDeploymentId: "fixture",
+		},
+		{ expectedHostingKey: registry.hostingBinding().hostingKey },
+	);
 	const blobs = new Map<string, string>();
 	const publisher = createEpicPagePublisher({
 		store,

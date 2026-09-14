@@ -314,3 +314,32 @@ describe("POST /api/publish-html", () => {
 		expect(res.status).toBe(200);
 	});
 });
+
+it("resolves the legacy deployment credential on each request", async () => {
+	const deployModule = await import("../bridge/vercel-deploy.js");
+	const deploy = vi.spyOn(deployModule, "deployToVercel").mockResolvedValue({
+		url: "https://test.vercel.app",
+		deploymentId: "fake",
+	});
+	let value: string | undefined;
+	const app = express();
+	app.use(express.json());
+	app.use(
+		"/api/publish-html",
+		createPublishHtmlRouter(() => value),
+	);
+	try {
+		expect(
+			(await makeRequest(app, { projectName: "test", html: "<html></html>" }))
+				.status,
+		).toBe(501);
+		value = "new-legacy-token";
+		expect(
+			(await makeRequest(app, { projectName: "test", html: "<html></html>" }))
+				.status,
+		).toBe(200);
+		expect(deploy).toHaveBeenCalledWith(value, "test", "<html></html>");
+	} finally {
+		deploy.mockRestore();
+	}
+});

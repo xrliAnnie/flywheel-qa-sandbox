@@ -79,7 +79,12 @@ describe("ReportRegistry", () => {
 
 		for (const template of templates) {
 			const source = readFileSync(join(REPO_ROOT, template), "utf-8");
-			const staged = makeRegistry().stagePublish("flywheel", source, template);
+			const staged = makeRegistry().stagePublish(
+				"flywheel",
+				source,
+				template,
+				makeRegistry().hostingBinding(),
+			);
 			const verification = await verifyReport({
 				url: `https://reports.example/r/${staged.entry.token}/`,
 				fetchImpl: async () =>
@@ -98,7 +103,12 @@ describe("ReportRegistry", () => {
 	it("stagePublish performs zero filesystem mutation", () => {
 		const registry = makeRegistry();
 		const before = diskSnapshot();
-		const staged = registry.stagePublish("flywheel", HTML, "Title");
+		const staged = registry.stagePublish(
+			"flywheel",
+			HTML,
+			"Title",
+			registry.hostingBinding(),
+		);
 
 		expect(diskSnapshot()).toEqual(before);
 		expect(staged.entry.token).toHaveLength(32);
@@ -113,7 +123,12 @@ describe("ReportRegistry", () => {
 			"<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none';\r\nstyle-src 'unsafe-inline'\"></head><body></body></html>";
 
 		expect(() =>
-			registry.stagePublish("flywheel", html, "multiline CSP"),
+			registry.stagePublish(
+				"flywheel",
+				html,
+				"multiline CSP",
+				registry.hostingBinding(),
+			),
 		).toThrow(
 			/Content-Security-Policy must be a single line without CR or LF characters/,
 		);
@@ -122,17 +137,24 @@ describe("ReportRegistry", () => {
 
 	it("upload failure followed by abort leaves no registry or report file", () => {
 		const registry = makeRegistry();
-		registry.stagePublish("flywheel", HTML).abort();
+		registry
+			.stagePublish("flywheel", HTML, undefined, registry.hostingBinding())
+			.abort();
 
 		expect(diskSnapshot()).toEqual([]);
 		expect(registry.vercelProjectName()).toBeUndefined();
 		expect(registry.list()).toEqual([]);
 	});
 
-	it("commit writes the hardened report, registry entry, and stable gateway name", () => {
+	it("commit writes the hardened report, registry entry, and stable gateway name", async () => {
 		const registry = makeRegistry();
-		const staged = registry.stagePublish("flywheel", HTML, "T1");
-		staged.commit();
+		const staged = registry.stagePublish(
+			"flywheel",
+			HTML,
+			"T1",
+			registry.hostingBinding(),
+		);
+		await staged.commit();
 
 		expect(
 			readFileSync(join(dir, "files", `${staged.entry.token}.html`), "utf8"),
@@ -167,40 +189,52 @@ describe("ReportRegistry", () => {
 		);
 	});
 
-	it("second publish stages one object and preserves the prior registry entry", () => {
+	it("second publish stages one object and preserves the prior registry entry", async () => {
 		const registry = makeRegistry();
-		const first = registry.stagePublish("flywheel", HTML, "first");
-		first.commit();
-		const second = registry.stagePublish("flywheel", HTML, "second");
+		const first = registry.stagePublish(
+			"flywheel",
+			HTML,
+			"first",
+			registry.hostingBinding(),
+		);
+		await first.commit();
+		const second = registry.stagePublish(
+			"flywheel",
+			HTML,
+			"second",
+			registry.hostingBinding(),
+		);
 
 		expect(second).not.toHaveProperty("deployFiles");
 		expect(second.vercelProjectName).toBe(first.vercelProjectName);
-		second.commit();
+		await second.commit();
 		expect(registry.list().map((entry) => entry.token)).toEqual([
 			first.entry.token,
 			second.entry.token,
 		]);
 	});
 
-	it("republishes one Epic at one stable token and replaces its bytes", () => {
+	it("republishes one Epic at one stable token and replaces its bytes", async () => {
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		const registry = makeRegistry(() => now);
 		const token = "abcdefabcdefabcdefabcdefabcdefab";
-		registry
+		await registry
 			.stageEpicPageRepublish(
 				"flywheel",
 				"<html><head></head><body>v1</body></html>",
 				token,
 				"Epic v1",
+				registry.hostingBinding(),
 			)
 			.commit();
 		now += 1;
-		registry
+		await registry
 			.stageEpicPageRepublish(
 				"flywheel",
 				"<html><head></head><body>v2</body></html>",
 				token,
 				"Epic v2",
+				registry.hostingBinding(),
 			)
 			.commit();
 
@@ -214,23 +248,45 @@ describe("ReportRegistry", () => {
 		expect(registry.readReportHtml(token)).toContain("<body>v2</body>");
 	});
 
-	it("refuses to replace another project's stable Epic token", () => {
+	it("refuses to replace another project's stable Epic token", async () => {
 		const registry = makeRegistry();
 		const token = "abcdefabcdefabcdefabcdefabcdefab";
-		registry.stageEpicPageRepublish("first", HTML, token).commit();
+		await registry
+			.stageEpicPageRepublish(
+				"first",
+				HTML,
+				token,
+				undefined,
+				registry.hostingBinding(),
+			)
+			.commit();
 		const before = registry.list();
 
 		expect(() =>
-			registry.stageEpicPageRepublish("second", HTML, token),
+			registry.stageEpicPageRepublish(
+				"second",
+				HTML,
+				token,
+				undefined,
+				registry.hostingBinding(),
+			),
 		).toThrow("belongs to another project");
 		expect(registry.list()).toEqual(before);
 	});
 
-	it("replaces an exactly 14-day-old Epic before age pruning", () => {
+	it("replaces an exactly 14-day-old Epic before age pruning", async () => {
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		const registry = makeRegistry(() => now);
 		const token = "abcdefabcdefabcdefabcdefabcdefab";
-		registry.stageEpicPageRepublish("p", HTML, token, "old").commit();
+		await registry
+			.stageEpicPageRepublish(
+				"p",
+				HTML,
+				token,
+				"old",
+				registry.hostingBinding(),
+			)
+			.commit();
 		now += 14 * DAY_MS;
 
 		const replacement = registry.stageEpicPageRepublish(
@@ -238,10 +294,11 @@ describe("ReportRegistry", () => {
 			"<html><head></head><body>fresh</body></html>",
 			token,
 			"fresh",
+			registry.hostingBinding(),
 		);
 
 		expect(replacement.expired).toEqual([]);
-		replacement.commit();
+		await replacement.commit();
 		expect(registry.list()).toHaveLength(1);
 		expect(registry.list()[0]?.createdAt).toBe(new Date(now).toISOString());
 		expect(registry.readReportHtml(token)).toContain("fresh");
@@ -250,22 +307,38 @@ describe("ReportRegistry", () => {
 	it("rejects malformed fixed Epic tokens before staging", () => {
 		const registry = makeRegistry();
 		expect(() =>
-			registry.stageEpicPageRepublish("p", HTML, "../not-a-token"),
+			registry.stageEpicPageRepublish(
+				"p",
+				HTML,
+				"../not-a-token",
+				undefined,
+				registry.hostingBinding(),
+			),
 		).toThrow("invalid report token");
 		expect(diskSnapshot()).toEqual([]);
 	});
 
-	it("commit and abort are single-shot", () => {
+	it("commit and abort are single-shot", async () => {
 		const registry = makeRegistry();
-		const committed = registry.stagePublish("flywheel", HTML);
-		committed.commit();
-		expect(() => committed.commit()).toThrow(/already called/);
-		const aborted = registry.stagePublish("flywheel", HTML);
+		const committed = registry.stagePublish(
+			"flywheel",
+			HTML,
+			undefined,
+			registry.hostingBinding(),
+		);
+		await committed.commit();
+		await expect(committed.commit()).rejects.toThrow(/already called/);
+		const aborted = registry.stagePublish(
+			"flywheel",
+			HTML,
+			undefined,
+			registry.hostingBinding(),
+		);
 		aborted.abort();
-		expect(() => aborted.commit()).toThrow(/already called/);
+		await expect(aborted.commit()).rejects.toThrow(/already called/);
 	});
 
-	it("FLY-2283: aggregate count and bytes never evict a report before 14 days", () => {
+	it("FLY-2283: aggregate count and bytes never evict a report before 14 days", async () => {
 		const now = Date.parse("2026-09-03T16:00:00.000Z");
 		const reports = Array.from({ length: 2500 }, (_, index) => ({
 			token: index.toString(16).padStart(32, "0"),
@@ -287,15 +360,16 @@ describe("ReportRegistry", () => {
 			"personal-assistant",
 			HTML,
 			"weekly-menu",
+			registry.hostingBinding(),
 		);
-		staged.commit();
+		await staged.commit();
 
 		expect(registry.list()).toHaveLength(2501);
 		expect(registry.list()[0]?.token).toBe(reports[0]?.token);
 		expect(registry.list().at(-1)?.token).toBe(staged.entry.token);
 	});
 
-	it("keeps 1000 unexpired reports when adding a stable Epic page", () => {
+	it("keeps 1000 unexpired reports when adding a stable Epic page", async () => {
 		const now = Date.parse("2026-09-03T16:00:00.000Z");
 		const reports = Array.from({ length: 1000 }, (_, index) => ({
 			token: index.toString(16).padStart(32, "0"),
@@ -310,26 +384,42 @@ describe("ReportRegistry", () => {
 		);
 		const registry = makeRegistry(() => now);
 
-		registry
-			.stageEpicPageRepublish("epic", HTML, "ffffffffffffffffffffffffffffffff")
+		await registry
+			.stageEpicPageRepublish(
+				"epic",
+				HTML,
+				"ffffffffffffffffffffffffffffffff",
+				undefined,
+				registry.hostingBinding(),
+			)
 			.commit();
 
 		expect(registry.list()).toHaveLength(1001);
 	});
 
-	it("uses one fixed 14-day TTL even when the retired env is present", () => {
+	it("uses one fixed 14-day TTL even when the retired env is present", async () => {
 		const previous = process.env.FLYWHEEL_REPORTS_TTL_DAYS;
 		process.env.FLYWHEEL_REPORTS_TTL_DAYS = "0";
 		try {
 			let now = Date.parse("2026-06-04T00:00:00.000Z");
 			const registry = makeRegistry(() => now);
-			const old = registry.stagePublish("p", HTML, "old");
-			old.commit();
+			const old = registry.stagePublish(
+				"p",
+				HTML,
+				"old",
+				registry.hostingBinding(),
+			);
+			await old.commit();
 			now += 13 * DAY_MS;
-			expect(registry.stagePublish("p", HTML).expired).toEqual([]);
+			expect(
+				registry.stagePublish("p", HTML, undefined, registry.hostingBinding())
+					.expired,
+			).toEqual([]);
 			now += DAY_MS;
 			expect(
-				registry.stagePublish("p", HTML).expired.map((entry) => entry.token),
+				registry
+					.stagePublish("p", HTML, undefined, registry.hostingBinding())
+					.expired.map((entry) => entry.token),
 			).toContain(old.entry.token);
 			expect(DEFAULT_RETENTION_MAX_AGE_MS).toBe(14 * DAY_MS);
 		} finally {
@@ -338,16 +428,26 @@ describe("ReportRegistry", () => {
 		}
 	});
 
-	it("expires a report at the exact 14-day boundary and deletes its local copy on commit", () => {
+	it("expires a report at the exact 14-day boundary and deletes its local copy on commit", async () => {
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		const registry = makeRegistry(() => now);
-		const old = registry.stagePublish("p", HTML, "old");
-		old.commit();
+		const old = registry.stagePublish(
+			"p",
+			HTML,
+			"old",
+			registry.hostingBinding(),
+		);
+		await old.commit();
 		now += 14 * DAY_MS;
-		const next = registry.stagePublish("p", HTML, "new");
+		const next = registry.stagePublish(
+			"p",
+			HTML,
+			"new",
+			registry.hostingBinding(),
+		);
 
 		expect(next.expired.map((entry) => entry.token)).toEqual([old.entry.token]);
-		next.commit();
+		await next.commit();
 		expect(registry.list().map((entry) => entry.token)).toEqual([
 			next.entry.token,
 		]);
@@ -356,44 +456,71 @@ describe("ReportRegistry", () => {
 		);
 	});
 
-	it("keeps a report for the complete interval before 14 days", () => {
+	it("keeps a report for the complete interval before 14 days", async () => {
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		const registry = makeRegistry(() => now);
-		const old = registry.stagePublish("p", HTML, "young");
-		old.commit();
+		const old = registry.stagePublish(
+			"p",
+			HTML,
+			"young",
+			registry.hostingBinding(),
+		);
+		await old.commit();
 		now += 14 * DAY_MS - 1;
 
-		const staged = registry.stagePublish("p", HTML, "new");
+		const staged = registry.stagePublish(
+			"p",
+			HTML,
+			"new",
+			registry.hostingBinding(),
+		);
 		expect(staged.expired).toEqual([]);
 		staged.abort();
 	});
 
-	it("prunes malformed timestamps from accounting without marking them safe for remote deletion", () => {
+	it("prunes malformed timestamps from accounting without marking them safe for remote deletion", async () => {
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		const registry = makeRegistry(() => now);
-		const old = registry.stagePublish("p", HTML);
-		old.commit();
+		const old = registry.stagePublish(
+			"p",
+			HTML,
+			undefined,
+			registry.hostingBinding(),
+		);
+		await old.commit();
 		const registryPath = join(dir, "registry.json");
 		const data = JSON.parse(readFileSync(registryPath, "utf8"));
 		data.reports[0].createdAt = "not-a-date";
 		writeFileSync(registryPath, JSON.stringify(data), "utf8");
 		now += 30 * DAY_MS;
 
-		const staged = registry.stagePublish("p", HTML);
+		const staged = registry.stagePublish(
+			"p",
+			HTML,
+			undefined,
+			registry.hostingBinding(),
+		);
 		expect(staged.expired).toEqual([]);
-		staged.commit();
+		await staged.commit();
 		expect(registry.list().map((entry) => entry.token)).toEqual([
 			staged.entry.token,
 		]);
 	});
 
-	it("abort after expiry staging leaves the prior registry and file untouched", () => {
+	it("abort after expiry staging leaves the prior registry and file untouched", async () => {
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		const registry = makeRegistry(() => now);
-		const old = registry.stagePublish("p", HTML);
-		old.commit();
+		const old = registry.stagePublish(
+			"p",
+			HTML,
+			undefined,
+			registry.hostingBinding(),
+		);
+		await old.commit();
 		now += 15 * DAY_MS;
-		registry.stagePublish("p", HTML).abort();
+		registry
+			.stagePublish("p", HTML, undefined, registry.hostingBinding())
+			.abort();
 
 		expect(registry.list().map((entry) => entry.token)).toEqual([
 			old.entry.token,
@@ -403,16 +530,25 @@ describe("ReportRegistry", () => {
 		);
 	});
 
-	it("commit failure before registry rename preserves the old entry and file", () => {
+	it("commit failure before registry rename preserves the old entry and file", async () => {
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		const registry = makeRegistry(() => now);
-		const old = registry.stagePublish("p", HTML, "old");
-		old.commit();
+		const old = registry.stagePublish(
+			"p",
+			HTML,
+			"old",
+			registry.hostingBinding(),
+		);
+		await old.commit();
 		const registryBefore = readFileSync(join(dir, "registry.json"), "utf8");
 		mkdirSync(join(dir, "registry.json.tmp"));
 		now += 15 * DAY_MS;
 
-		expect(() => registry.stagePublish("p", HTML, "new").commit()).toThrow();
+		await expect(
+			registry
+				.stagePublish("p", HTML, "new", registry.hostingBinding())
+				.commit(),
+		).rejects.toThrow();
 		expect(readFileSync(join(dir, "registry.json"), "utf8")).toBe(
 			registryBefore,
 		);
@@ -421,19 +557,29 @@ describe("ReportRegistry", () => {
 		);
 	});
 
-	it("local expired-file deletion failure is warn-only after the registry commit", () => {
+	it("local expired-file deletion failure is warn-only after the registry commit", async () => {
 		let now = Date.parse("2026-06-04T00:00:00.000Z");
 		const registry = makeRegistry(() => now);
-		const old = registry.stagePublish("p", HTML, "old");
-		old.commit();
+		const old = registry.stagePublish(
+			"p",
+			HTML,
+			"old",
+			registry.hostingBinding(),
+		);
+		await old.commit();
 		const oldPath = join(dir, "files", `${old.entry.token}.html`);
 		rmSync(oldPath);
 		mkdirSync(oldPath);
 		writeFileSync(join(oldPath, "block"), "x");
 		now += 15 * DAY_MS;
-		const next = registry.stagePublish("p", HTML, "new");
+		const next = registry.stagePublish(
+			"p",
+			HTML,
+			"new",
+			registry.hostingBinding(),
+		);
 
-		expect(() => next.commit()).not.toThrow();
+		await expect(next.commit()).resolves.toBeUndefined();
 		expect(warns.some((message) => message.includes("failed to delete"))).toBe(
 			true,
 		);
@@ -442,32 +588,42 @@ describe("ReportRegistry", () => {
 		]);
 	});
 
-	it("preserves the durable Blob-hosting cutover marker across publishes", () => {
+	it("preserves the durable Blob-hosting cutover marker across publishes", async () => {
 		const registry = makeRegistry();
-		registry.stagePublish("p", HTML).commit();
+		await registry
+			.stagePublish("p", HTML, undefined, registry.hostingBinding())
+			.commit();
 		const hosting = {
 			provider: "vercel-blob" as const,
 			migratedAt: "2026-09-03T16:00:00.000Z",
 			gatewayDeploymentId: "dpl_gateway",
 		};
-		registry.markHostingMigrated(hosting);
-		registry.stagePublish("p", HTML).commit();
+		await registry.markHostingMigrated(hosting, {
+			expectedHostingKey: registry.hostingBinding().hostingKey,
+		});
+		await registry
+			.stagePublish("p", HTML, undefined, registry.hostingBinding())
+			.commit();
 
 		expect(registry.hosting()).toEqual(hosting);
 	});
 
-	it("corrupted or invalid registry data fails loudly", () => {
+	it("corrupted or invalid registry data fails loudly", async () => {
 		const registry = makeRegistry();
-		registry.stagePublish("p", HTML).commit();
+		await registry
+			.stagePublish("p", HTML, undefined, registry.hostingBinding())
+			.commit();
 		writeFileSync(join(dir, "registry.json"), "{not json", "utf8");
 		expect(() => registry.list()).toThrow(/refusing to silently rebuild/);
 		writeFileSync(join(dir, "registry.json"), '{"reports":"nope"}', "utf8");
 		expect(() => registry.list()).toThrow(/invalid shape/);
 	});
 
-	it("atomic writes leave no temporary residue", () => {
+	it("atomic writes leave no temporary residue", async () => {
 		const registry = makeRegistry();
-		registry.stagePublish("p", HTML).commit();
+		await registry
+			.stagePublish("p", HTML, undefined, registry.hostingBinding())
+			.commit();
 		expect(existsSync(join(dir, "registry.json.tmp"))).toBe(false);
 		expect(registry.previewsDir()).toBe(join(dir, "previews"));
 	});
@@ -484,7 +640,14 @@ describe("ReportRegistry", () => {
 		for (const html of externalHtmlDocuments) {
 			let publishError: string | undefined;
 			try {
-				makeRegistry().stagePublish("flywheel", html).abort();
+				makeRegistry()
+					.stagePublish(
+						"flywheel",
+						html,
+						undefined,
+						makeRegistry().hostingBinding(),
+					)
+					.abort();
 			} catch (error) {
 				publishError = (error as Error).message;
 			}

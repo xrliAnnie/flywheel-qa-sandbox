@@ -14,7 +14,21 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+export interface ReportHostingUsageReceipt {
+	date: string;
+	storeId: string;
+	phase: "attempting" | "sent" | "checked" | "failed";
+	attemptedAt: string;
+	attempts: number;
+	pct?: number;
+	sizeBytes?: number;
+	count?: number;
+	status?: string;
+	messageId?: string;
+	error?: string;
+}
 export interface NotifyReceipts {
+	report_hosting_usage?: ReportHostingUsageReceipt;
 	token_report?: {
 		/** The report day (YYYY-MM-DD) this delivery covered — CLI-computed. */
 		date: string;
@@ -80,4 +94,23 @@ export function writeTokenReportReceipt(
 			`[notify-receipts] receipt write failed (delivery already succeeded): ${(err as Error).message}`,
 		);
 	}
+}
+
+export function readReportHostingUsageReceipt(
+	path = defaultReceiptsPath(),
+): ReportHostingUsageReceipt | undefined {
+	return readNotifyReceipts(path).report_hosting_usage;
+}
+
+/** Synchronous merge preserves other receipt kinds; failure prevents an unrecorded attempt. */
+export function writeReportHostingUsageReceipt(
+	entry: ReportHostingUsageReceipt,
+	path = defaultReceiptsPath(),
+): void {
+	const receipts = readNotifyReceipts(path);
+	receipts.report_hosting_usage = entry;
+	mkdirSync(dirname(path), { recursive: true });
+	const temporary = `${path}.tmp-${process.pid}`;
+	writeFileSync(temporary, `${JSON.stringify(receipts, null, "\t")}\n`, "utf8");
+	renameSync(temporary, path);
 }

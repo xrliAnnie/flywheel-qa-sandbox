@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { EpicPage } from "../epic-page/model.js";
+import { type EpicPage, hostedContentDigest } from "../epic-page/model.js";
 import {
 	type EpicPageBundle,
 	renderEpicPageBundle,
@@ -11,7 +11,15 @@ import {
 } from "./report-blob-store.js";
 import type { ReportCriticalSection } from "./report-critical-section.js";
 import type { ReportHostOverride } from "./report-host-override.js";
-import type { ReportRegistry } from "./report-registry.js";
+import {
+	assertReportHostingCredentialBinding,
+	ReportHostingCredentialMismatch,
+	type ReportHostingCredentials,
+} from "./report-hosting-credentials.js";
+import {
+	ReportHostingBindingConflict,
+	type ReportRegistry,
+} from "./report-registry.js";
 
 export const EPIC_PAGE_MAX_HTML_BYTES = 512 * 1024;
 
@@ -19,11 +27,13 @@ export type EpicPagePublishOutcome =
 	| `ok:${number}`
 	| `ok_unpublished:${number}:skipped_hosting_not_configured`
 	| `ok_unpublished:${number}:skipped_hosting_unsupported`
+	| `ok_unpublished:${number}:unchanged_digest`
 	| "structural: epic_html_too_large"
 	| "transient: publish_failed:stage"
 	| "transient: publish_failed:blob"
 	| "transient: publish_failed:audit_gateway"
 	| "transient: publish_failed:registry"
+	| "transient: publish_failed:credentials"
 	| "transient: publish_failed:publication";
 
 export interface EpicPagePublisher {
@@ -31,9 +41,19 @@ export interface EpicPagePublisher {
 }
 
 export interface EpicPagePublisherDeps {
-	store: Pick<StateStore, "reserveEpicPageToken" | "commitEpicPagePublication">;
-	registry: Pick<ReportRegistry, "hosting" | "stageEpicPageRepublish">;
-	blobStore?: Pick<ReportBlobStore, "putEpicPage">;
+	store: Pick<
+		StateStore,
+		| "reserveEpicPageToken"
+		| "commitEpicPagePublication"
+		| "getEpicPagePublication"
+	>;
+	registry: Pick<
+		ReportRegistry,
+		"hosting" | "hostingBinding" | "stageEpicPageRepublish"
+	>;
+	blobStore?: Pick<ReportBlobStore, "putEpicPage"> &
+		Partial<Pick<ReportBlobStore, "bind">>;
+	credentials?: ReportHostingCredentials;
 	criticalSection: ReportCriticalSection;
 	hostOverride?: ReportHostOverride;
 	now?: () => Date;
@@ -77,17 +97,43 @@ export function createEpicPagePublisher(
 				return "structural: epic_html_too_large";
 			}
 
+			const digest = hostedContentDigest(page);
 			return deps.criticalSection.run<EpicPagePublishOutcome>(async () => {
 				let staged: ReturnType<ReportRegistry["stageEpicPageRepublish"]>;
+				let afterCommit: (() => Promise<void>) | undefined;
+				let operationStore = blobStore;
 				try {
+					const binding = deps.registry.hostingBinding();
+					const publication = deps.store.getEpicPagePublication(projectName);
+					const age =
+						now().getTime() - Date.parse(publication?.last_published_at ?? "");
+					if (
+						publication?.published &&
+						publication.last_content_digest === digest &&
+						publication.last_hosting_key === binding.hostingKey &&
+						age >= 0 &&
+						age < 24 * 60 * 60 * 1000
+					)
+						return `ok_unpublished:${version}:unchanged_digest`;
+					if (deps.credentials) {
+						const snapshot = deps.credentials.snapshot("BLOB_READ_WRITE_TOKEN");
+						if (!snapshot.value || !blobStore.bind)
+							return "transient: publish_failed:credentials";
+						assertReportHostingCredentialBinding(binding.storeId, snapshot);
+						operationStore = blobStore.bind(snapshot);
+					}
 					staged = deps.registry.stageEpicPageRepublish(
 						projectName,
 						html,
 						token,
 						`${projectName} Epic`,
+						binding,
 					);
-				} catch {
-					return "transient: publish_failed:stage";
+				} catch (error) {
+					return error instanceof ReportHostingBindingConflict ||
+						error instanceof ReportHostingCredentialMismatch
+						? "transient: publish_failed:credentials"
+						: "transient: publish_failed:stage";
 				}
 				// Include CSP hardening and the optional previous-hash attribute
 				// written by Blob storage; the final hosted object must fit too.
@@ -102,7 +148,7 @@ export function createEpicPagePublisher(
 					return "structural: epic_html_too_large";
 				}
 				try {
-					await blobStore.putEpicPage(
+					const uploaded = await operationStore.putEpicPage(
 						token,
 						staged.html,
 						audit
@@ -115,7 +161,9 @@ export function createEpicPagePublisher(
 										),
 								}
 							: undefined,
+						{ gzip: staged.binding.gatewayFormat === "gzip-v1" },
 					);
+					afterCommit = uploaded?.afterCommit;
 				} catch (error) {
 					try {
 						staged.abort();
@@ -127,16 +175,22 @@ export function createEpicPagePublisher(
 						: "transient: publish_failed:blob";
 				}
 				try {
-					staged.commit();
-				} catch {
-					return "transient: publish_failed:registry";
+					await staged.commit();
+				} catch (error) {
+					return error instanceof ReportHostingBindingConflict ||
+						error instanceof ReportHostingCredentialMismatch
+						? "transient: publish_failed:credentials"
+						: "transient: publish_failed:registry";
 				}
+				await afterCommit?.();
 				try {
 					deps.store.commitEpicPagePublication({
 						projectName,
 						token,
 						publishedAt: now().toISOString(),
 						version,
+						contentDigest: digest,
+						hostingKey: staged.binding.hostingKey,
 					});
 				} catch {
 					return "transient: publish_failed:publication";
