@@ -15,6 +15,7 @@
 
 import type { StateStore } from "../StateStore.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
+import { recordBotThreadSend } from "./bot-send-rearchive.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 
@@ -790,6 +791,7 @@ export async function postChatMessage(
 				error: `Discord ${res.status}: ${body.slice(0, 200)}`,
 			};
 		}
+		recordBotThreadSend(input.channelId);
 		const data = (await res.json()) as { id?: string };
 		if (!data.id) return { posted: false, error: "no message ID in response" };
 		return { posted: true, messageId: data.id };

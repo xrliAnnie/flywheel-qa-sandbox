@@ -102,6 +102,26 @@ function makeDeps(
 }
 
 describe("M9 targeted mode — happy path + archive-once", () => {
+	it("FLY-2554: send-trigger selects the exact archived thread among issue aliases", async () => {
+		seedSession("exec-a");
+		store.upsertChatThread("thread-other", "ch-other", UUID, "tadashi");
+		store.markChatThreadArchived("thread-other");
+		store.upsertChatThread("thread-1", "ch-eng", UUID, "tadashi");
+		store.markChatThreadArchived("thread-1");
+		const deps = makeDeps({ threadId: "thread-1" });
+		const outcome = await runTargetedArchiveCheck(IDENT, deps);
+		expect(outcome).toEqual({ kind: "archived", threadId: "thread-1" });
+		expect(deps.archiveSinkFn).toHaveBeenCalledWith(
+			store,
+			expect.objectContaining({ threadId: "thread-1" }),
+			"tok-tadashi",
+			expect.objectContaining({
+				authority: "terminal",
+				allowPostShipBotTail: true,
+			}),
+		);
+	});
+
 	it("FLY-2028: terminal sink authority defers a quiet-window retry", async () => {
 		seedSession("exec-a");
 		store.upsertChatThread("thread-1", "ch-eng", UUID, "tadashi");
@@ -351,6 +371,67 @@ describe("M9 scheduler — targeted queue lifecycle", () => {
 		});
 		return { handle, runOnce };
 	}
+
+	it("FLY-2554: completion and exact-thread sends retain distinct queue identities", async () => {
+		const runTargeted = vi.fn(async () => ({ done: true }));
+		const { handle } = makeScheduler({ runTargeted });
+		try {
+			expect(handle.enqueue(IDENT)).toBe("accepted");
+			expect(handle.enqueueThread(IDENT, "thread-a")).toBe("accepted");
+			expect(handle.enqueueThread(IDENT, "thread-b")).toBe("accepted");
+			expect(handle.enqueueThread(IDENT, "thread-a")).toBe("deduped");
+			await vi.advanceTimersByTimeAsync(3_000);
+			expect(runTargeted.mock.calls).toEqual([
+				[IDENT],
+				[IDENT, "thread-a"],
+				[IDENT, "thread-b"],
+			]);
+		} finally {
+			await handle.stop();
+		}
+	});
+
+	it("FLY-2554: a bot send during a suspended check schedules one more pass", async () => {
+		let release!: (value: { done: boolean }) => void;
+		const runTargeted = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						release = resolve;
+					}),
+			)
+			.mockResolvedValue({ done: true });
+		const { handle } = makeScheduler({ runTargeted });
+		try {
+			handle.enqueueThread(IDENT, "thread-a");
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(runTargeted).toHaveBeenCalledTimes(1);
+			expect(handle.enqueueThread(IDENT, "thread-a")).toBe("deduped");
+			expect(handle.enqueueThread(IDENT, "thread-a")).toBe("deduped");
+			release({ done: true });
+			await vi.advanceTimersByTimeAsync(2_000);
+			expect(runTargeted).toHaveBeenCalledTimes(2);
+		} finally {
+			await handle.stop();
+		}
+	});
+
+	it("FLY-2554: send capacity does not consume completion admission", async () => {
+		const { handle } = makeScheduler({
+			runTargeted: async () => ({ done: false }),
+		});
+		try {
+			for (let i = 0; i < 16; i++)
+				expect(handle.enqueueThread(IDENT, `thread-${i}`)).toBe("accepted");
+			expect(handle.enqueueThread(IDENT, "overflow")).toBe("refused");
+			for (let i = 0; i < 64; i++)
+				expect(handle.enqueue(`FLY-${i}`)).toBe("accepted");
+			expect(handle.enqueue("FLY-overflow")).toBe("refused");
+		} finally {
+			await handle.stop();
+		}
+	});
 
 	it("vetoed_active → capped-backoff retries → archives well before any 6h sweep; dequeues after done", async () => {
 		let calls = 0;

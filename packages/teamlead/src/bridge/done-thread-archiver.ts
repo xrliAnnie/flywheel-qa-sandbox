@@ -44,6 +44,7 @@ import type {
 	StateStore,
 	ThreadArchiveCompensationCause,
 } from "../StateStore.js";
+import { latestThreadLandOperation } from "./bot-send-rearchive.js";
 import {
 	type ArchiveChatThreadResult,
 	archiveChatThread,
@@ -70,6 +71,8 @@ export interface ArchiveThreadDeps {
 	timing?: "quiet" | "immediate";
 	/** Minimum inactivity before an automatic archive. */
 	quietWindowMs?: number;
+	/** Reconcile-only exception for a verified bot tail after ship closeout. */
+	allowPostShipBotTail?: boolean;
 	/** Optional deterministic success receipt supplied by a closeout caller. */
 	successReceipt?: {
 		eventId: string;
@@ -349,6 +352,39 @@ export async function archiveThreadAndRecord(
 			: messageAt;
 		const current = nowMs();
 		return lastActivity <= current && current - lastActivity >= quietWindowMs;
+	};
+
+	const hasPostShipBotTail = async (
+		frontier: string,
+		archivedAt?: string,
+	): Promise<boolean> => {
+		if (!deps.allowPostShipBotTail || authority !== "terminal") return false;
+		const operation = latestThreadLandOperation(
+			store,
+			input.projectName,
+			input.issueId,
+		);
+		if (!operation?.merge_confirmed_at) return false;
+		const shipAt = stateTimestampMs(operation.merge_confirmed_at);
+		const archiveAt = archivedAt ? archiveEpochInterval(archivedAt)?.endMs : 0;
+		const messageAt = snowflakeToMs(frontier);
+		if (shipAt === null || archiveAt === undefined || messageAt === null)
+			return false;
+		const anchor = Math.max(shipAt, archiveAt);
+		// A future clock cannot establish that we inspected the whole tail.
+		if (anchor > nowMs() || anchor > messageAt) return false;
+		const terminal = store
+			.listLandOperationSteps(operation.operation_id)
+			.find((step) => step.step === "terminal_notified");
+		if (terminal?.receipt.threadId !== input.threadId) return false;
+		// Include the boundary rather than losing messages to timestamp precision.
+		const tail = await classifyFn(
+			input.threadId,
+			botToken,
+			anchor - 2_000,
+			displayDeps,
+		);
+		return tail.kind === "bot_only" && tail.frontierMessageId === frontier;
 	};
 
 	const deferredQuietWindow = (): ArchiveChatThreadResult => ({
@@ -708,7 +744,12 @@ export async function archiveThreadAndRecord(
 					if (quiet === null) {
 						return audit(reopenFailure("invalid message clock"));
 					}
-					if (!quiet) return deferredQuietWindow();
+					if (
+						!quiet &&
+						!(await hasPostShipBotTail(frontier.messageId, archivedAtRaw))
+					) {
+						return deferredQuietWindow();
+					}
 				}
 				return reArchiveWithQuietWindow(
 					archivedAtRaw,
@@ -804,7 +845,9 @@ export async function archiveThreadAndRecord(
 				const quiet = isQuiet(frontier.messageId, probe.archiveTimestamp);
 				if (quiet === null)
 					return audit(reopenFailure("invalid message clock"));
-				if (!quiet) return deferredQuietWindow();
+				if (!quiet && !(await hasPostShipBotTail(frontier.messageId))) {
+					return deferredQuietWindow();
+				}
 			}
 
 			if (deps.discordOwnerUserId) {

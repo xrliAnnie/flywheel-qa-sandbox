@@ -6,6 +6,7 @@
 
 import type { StateStore } from "../StateStore.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
+import { recordBotThreadSend } from "./bot-send-rearchive.js";
 import {
 	addThreadMember,
 	parseRetryAfterMs,
@@ -1132,6 +1133,7 @@ export class ChatThreadCreator {
 			);
 			return undefined;
 		}
+		recordBotThreadSend(threadId);
 		const data = (await res.json().catch(() => ({}))) as { id?: unknown };
 		return typeof data.id === "string" ? data.id : undefined;
 	}

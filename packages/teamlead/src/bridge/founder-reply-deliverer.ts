@@ -19,6 +19,7 @@ import { isFixedFounderCardApproval } from "../workflow-rework-hint.js";
 import { reactToFounderMessage as addFounderReaction } from "./approval-signal/founder-ack.js";
 import type { GateMessageBinding } from "./approval-signal/gate-message-binding.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
+import { recordBotThreadSend } from "./bot-send-rearchive.js";
 import {
 	msToSnowflakeLowerBound,
 	snowflakeToMs,
@@ -270,6 +271,7 @@ export async function postFounderReviewThreadReply(
 				signal: controller.signal,
 			},
 		);
+		if (response.ok) recordBotThreadSend(threadId);
 		return response.ok;
 	} catch {
 		return false;

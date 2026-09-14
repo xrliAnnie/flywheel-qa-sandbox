@@ -7,6 +7,8 @@ import {
 	markAutomatedDiscordText,
 } from "./automated-message.js";
 
+import { recordBotThreadSend } from "./bot-send-rearchive.js";
+
 export const DISCORD_API = "https://discord.com/api/v10";
 export const MAX_DISCORD_MESSAGE_LENGTH = 1900; // Discord limit is 2000, leave margin
 
@@ -281,6 +283,7 @@ export async function postDiscordMessageToChannel(
 			};
 		}
 
+		recordBotThreadSend(threadId);
 		let data: { id?: string };
 		try {
 			data = (await res.json()) as { id?: string };

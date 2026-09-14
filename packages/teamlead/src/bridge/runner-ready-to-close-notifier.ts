@@ -16,6 +16,7 @@
 import { randomUUID } from "node:crypto";
 import type { StateStore } from "../StateStore.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
+import { recordBotThreadSend } from "./bot-send-rearchive.js";
 
 /**
  * Derived type — avoids adding a new StateStore export.
@@ -157,6 +158,8 @@ export async function emitRunnerReadyToCloseNotification(
 		});
 		return;
 	}
+
+	recordBotThreadSend(thread.thread_id);
 
 	// ── (D) SUCCESS AUDIT ──
 	store.insertEvent({

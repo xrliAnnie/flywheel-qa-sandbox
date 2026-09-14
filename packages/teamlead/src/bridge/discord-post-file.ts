@@ -20,6 +20,7 @@
  */
 
 import { markAutomatedDiscordText } from "./automated-message.js";
+import { recordBotThreadSend } from "./bot-send-rearchive.js";
 import { DISCORD_API } from "./discord-utils.js";
 
 export interface DiscordFileAttachment {
@@ -82,6 +83,7 @@ export async function postDiscordMessageWithFile(
 		};
 	}
 
+	recordBotThreadSend(channelId);
 	let data: { id?: string };
 	try {
 		data = (await res.json()) as { id?: string };

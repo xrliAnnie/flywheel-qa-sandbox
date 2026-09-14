@@ -17,6 +17,7 @@ import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review"
 import type { StateStore } from "../StateStore.js";
 import { extractGateMessageId } from "./approval-signal/gate-message-binding.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
+import { recordBotThreadSend } from "./bot-send-rearchive.js";
 import { parseRetryAfterMs } from "./chat-thread-utils.js";
 import { isDiscordSnowflake, truncate } from "./founder-notify-utils.js";
 
@@ -355,6 +356,7 @@ async function postFounderThreadCore(
 		);
 		clearTimeout(headerTimer);
 		if (res.ok) {
+			recordBotThreadSend(threadId);
 			// FLY-799 A-0b: capture the created message id so the ship-gate path can
 			// durably bind (questionId,prHeadSha)->gateMessageId for ReactionSource.
 			// Best-effort: a body-parse failure must NOT change the posted outcome.

@@ -3,7 +3,9 @@
  * Covers the self-heal path (pin 403 → retry next stage), idempotent skip,
  * edit-on-change, 404 repost, concurrency serialization, and mention-safety.
  */
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { watchIssueThreadBotSends } from "../bridge/bot-send-rearchive.js";
 import { ChatThreadCreator } from "../bridge/ChatThreadCreator.js";
 import type { PinResult } from "../bridge/chat-thread-utils.js";
 import { StateStore } from "../StateStore.js";
@@ -73,6 +75,22 @@ describe("ChatThreadCreator.ensureRunnerAttachPin (FLY-560)", () => {
 	const pinned: PinResult = { outcome: "pinned", status: 204 };
 	const forbidden: PinResult = { outcome: "forbidden", status: 403 };
 	const missing: PinResult = { outcome: "missing", status: 404 };
+
+	it("FLY-2554: a successful attach POST on an archived issue requests rearchive", async () => {
+		store.markChatThreadArchived(THREAD);
+		const enqueue = vi.fn(() => "accepted" as const);
+		const stop = watchIssueThreadBotSends({ store, projects: [], enqueue });
+		try {
+			routeFetch({ postMessageId: "msg-2554" });
+			await creator.ensureRunnerAttachPin(ctx, THREAD, CMD, {
+				pinImpl: async () => pinned,
+				now: NOW,
+			});
+			expect(enqueue).toHaveBeenCalledWith(ISSUE, THREAD);
+		} finally {
+			stop();
+		}
+	});
 
 	it("first call: POSTs the command (mention-safe) + pins + records pinnedAt", async () => {
 		routeFetch({ postMessageId: "msg-1" });

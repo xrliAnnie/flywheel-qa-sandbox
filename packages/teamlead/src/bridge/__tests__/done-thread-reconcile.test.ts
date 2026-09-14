@@ -599,6 +599,160 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 	});
 });
 
+describe("FLY-2554 shipped bot-reopened threads", () => {
+	it.each([
+		...(
+			[
+				"missing-terminal",
+				"wrong-thread",
+				"unknown-author",
+				"full-page",
+				"future-ship",
+				"changed-frontier",
+				"mixed-human",
+			] as const
+		).map((scenario) => ({
+			name: scenario,
+			scenario,
+			reopened: true,
+			bot: true,
+			eligible: false,
+			alias: false,
+		})),
+		{
+			name: "UUID land receipt with identifier thread",
+			reopened: true,
+			bot: true,
+			eligible: true,
+			alias: true,
+		},
+		{ name: "reopened stage echo", reopened: true, bot: true, eligible: true },
+		{
+			name: "first archive after bot relay",
+			reopened: false,
+			bot: true,
+			eligible: true,
+		},
+		{
+			name: "reopened founder message",
+			reopened: true,
+			bot: false,
+			eligible: false,
+		},
+		{
+			name: "first archive after human message",
+			reopened: false,
+			bot: false,
+			eligible: false,
+		},
+	])(
+		"same-pass policy: $name",
+		async ({ reopened, bot, eligible, alias = false, scenario = "normal" }) => {
+			const store = await freshStore();
+			const now = Date.now();
+			vi.useFakeTimers();
+			try {
+				vi.setSystemTime(now - 30_000);
+				store.upsertChatThread("t-bot", "ch-eng", "FLY-2554", "tadashi");
+				if (alias)
+					seedSession(store, {
+						execution_id: "exec-alias",
+						issue_id: "uuid-FLY-2554",
+						issue_identifier: "FLY-2554",
+					});
+				const operation = store.ensureLandOperation({
+					issueId: alias ? "uuid-FLY-2554" : "FLY-2554",
+					projectName: "flywheel",
+					prNumber: 2554,
+					approvedHead: "a".repeat(40),
+					now: new Date(now - 30_000).toISOString(),
+				});
+				const claim = store.claimLandOperation({
+					operationId: operation.operation_id,
+					ownerId: "land-worker",
+					now: new Date(now - 30_000).toISOString(),
+					leaseExpiresAt: new Date(now + 60_000).toISOString(),
+				});
+				if (!claim) throw new Error("land claim missing");
+				for (const [step, receipt] of [
+					["merge_confirmed", { headSha: "a".repeat(40) }],
+					["terminal_notified", { threadId: "t-bot", prNumber: 2554 }],
+				] as const) {
+					if (step === "terminal_notified" && scenario === "missing-terminal")
+						continue;
+					expect(
+						store.recordLandOperationStep({
+							operationId: operation.operation_id,
+							ownerId: claim.ownerId,
+							generation: claim.generation,
+							step,
+							receipt:
+								step === "terminal_notified" && scenario === "wrong-thread"
+									? { threadId: "other-thread" }
+									: receipt,
+							now: new Date(
+								scenario === "future-ship" ? now + 10_000 : now - 20_000,
+							).toISOString(),
+						}).ok,
+					).toBe(true);
+				}
+				vi.setSystemTime(now - 10_000);
+				if (reopened) store.markChatThreadArchived("t-bot");
+				vi.setSystemTime(now);
+				const messageId = (
+					(BigInt(now - 1000) - 1420070400000n) <<
+					22n
+				).toString();
+				let archived = false;
+				const archiveFn = vi.fn(async () => {
+					archived = true;
+					return OK_ARCHIVE;
+				});
+				const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+					if (String(url).includes("/messages?")) {
+						const isTail = String(url).includes("after=");
+						const author =
+							isTail && scenario === "unknown-author" ? undefined : { bot };
+						const id =
+							isTail && scenario === "changed-frontier"
+								? (BigInt(messageId) + 1n).toString()
+								: messageId;
+						const messages = [{ id, author }];
+						if (isTail && scenario === "full-page")
+							messages.push(
+								...Array.from({ length: 99 }, () => ({ id, author })),
+							);
+						if (isTail && scenario === "mixed-human")
+							messages.push({ id, author: { bot: false } });
+						return new Response(JSON.stringify(messages));
+					}
+					return new Response(
+						JSON.stringify({ name: "thread", thread_metadata: { archived } }),
+					);
+				});
+				const result = await reconcileDoneThreads(
+					makeDeps(store, {
+						archiveSinkFn: undefined,
+						archiveFn,
+						fetchImpl: fetchImpl as typeof fetch,
+						listDiscordOpenThreadIds: async () => ({
+							ok: true,
+							ids: new Set(["t-bot"]),
+						}),
+					}),
+				);
+				expect(result.discoveredReopened).toBe(reopened ? 1 : 0);
+				expect(result.deferredQuiet).toBe(eligible ? 0 : 1);
+				expect(result.archived).toBe(eligible ? 1 : 0);
+				expect(archiveFn).toHaveBeenCalledTimes(eligible ? 1 : 0);
+			} finally {
+				vi.useRealTimers();
+				store.close();
+			}
+		},
+	);
+});
+
 describe("FLY-2028 Discord-open discovery pass", () => {
 	it("archives only DB-recorded reopened rows with terminal authority and no lifecycle mutators", async () => {
 		const store = await freshStore();

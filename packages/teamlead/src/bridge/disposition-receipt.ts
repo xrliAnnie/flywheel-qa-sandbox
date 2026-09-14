@@ -27,6 +27,7 @@ import type { DispositionReceiptRow, StateStore } from "../StateStore.js";
 // Inventory contract (automated-message-inventory.test.ts): every direct
 // Discord text POST sender marks its content as automated.
 import { markAutomatedDiscordText } from "./automated-message.js";
+import { recordBotThreadSend } from "./bot-send-rearchive.js";
 import { resolveBotTokenForThread } from "./done-thread-archiver.js";
 
 export const RECEIPT_BATCH_PER_PASS = 5;
@@ -131,6 +132,7 @@ export async function postThreadMessage(
 		if (!res.ok) {
 			throw new Error(`discord post failed: ${res.status}`);
 		}
+		recordBotThreadSend(threadId);
 	} finally {
 		clearTimeout(timer);
 	}

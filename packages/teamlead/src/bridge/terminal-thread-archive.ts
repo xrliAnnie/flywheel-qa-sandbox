@@ -106,6 +106,8 @@ export function mapArchiveSinkResult(
 }
 
 export interface TargetedArchiveDeps {
+	/** Bot-send admission targets one thread, including a recorded archive. */
+	threadId?: string;
 	store: StateStore;
 	projects: ProjectEntry[];
 	linearApiKey?: string;
@@ -227,9 +229,16 @@ async function runInsideLock(
 	// ── Thread lookup: UUID + identifier canonicalized; terminal
 	// thread_missing ONLY when every alias misses (R12 #2). ──
 	const aliasSet = new Set(aliasKeys);
-	const threads = store
-		.getUnarchivedIssueChatThreads()
-		.filter((t) => aliasSet.has(t.issue_id));
+	const sentThread = deps.threadId
+		? store.getChatThreadByThreadId(deps.threadId)
+		: undefined;
+	const threads = (
+		deps.threadId
+			? sentThread
+				? [sentThread]
+				: []
+			: store.getUnarchivedIssueChatThreads()
+	).filter((t) => aliasSet.has(t.issue_id));
 	if (threads.length === 0) {
 		// Distinguish "never had a thread / all archived" — archive-once means
 		// an already-archived thread is a terminal success for the queue.
@@ -291,6 +300,7 @@ async function runInsideLock(
 		botToken,
 		{
 			authority: "terminal",
+			allowPostShipBotTail: true,
 			archiveFn: deps.archiveFn,
 			discordOwnerUserId: deps.discordOwnerUserId,
 			fetchImpl: deps.fetchImpl,

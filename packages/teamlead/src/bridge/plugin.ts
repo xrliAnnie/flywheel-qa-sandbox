@@ -224,6 +224,7 @@ import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
 import { createBetaManagementProvider } from "./beta-release-management.js";
 import { createBetaReleaseRuntime } from "./beta-release-runtime.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
+import { watchIssueThreadBotSends } from "./bot-send-rearchive.js";
 import { makeShipRemoteBranchCleanup } from "./branch-cleanup.js";
 // FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
 import {
@@ -9600,9 +9601,10 @@ export async function startBridge(
 		// FLY-1282 Part C: archive-only targeted consumption — same scheduler,
 		// shared single-flight with the global pass. dryRun is re-read per
 		// invocation so a dry-run flip takes effect without restart.
-		runTargeted: async (issueId) => {
+		runTargeted: async (issueId, threadId) => {
 			const targetedCfg = resolveDoneThreadReconcileConfig();
 			const outcome = await runTargetedArchiveCheck(issueId, {
+				threadId,
 				store,
 				projects: projects ?? [],
 				linearApiKey: config.linearApiKey,
@@ -9619,13 +9621,23 @@ export async function startBridge(
 				lookupTarget: lookupTmuxTarget,
 				probeLiveness: (w) => probeRunnerProcessLiveness(w),
 			});
-			return { done: !isRetryableOutcome(outcome), note: outcome.kind };
+			return {
+				done: threadId
+					? outcome.kind !== "transient_error"
+					: !isRetryableOutcome(outcome),
+				note: outcome.kind,
+			};
 		},
 	});
 	// FLY-1282 Part C: bind the pre-created enqueue buffer to the scheduler's
 	// targeted queue — completion enqueues that arrived before this point
 	// (bounded 64) flush now.
 	terminalArchiveBuffer.bind((issueId) => doneThreadReconcile.enqueue(issueId));
+	const stopWatchingBotSends = watchIssueThreadBotSends({
+		store,
+		projects: projects ?? [],
+		enqueue: doneThreadReconcile.enqueueThread,
+	});
 	const idleThreadSweep =
 		infraDiscordIdentity && idleThreadSweepChannelIds.length > 0
 			? makeIdleThreadArchiveSweep({
@@ -14065,6 +14077,7 @@ export async function startBridge(
 		// the in-flight pass) BEFORE store.close() below — a pass writing
 		// archived_at into a closed store would throw.
 		await idleThreadSweepScheduler?.stop();
+		stopWatchingBotSends();
 		await doneThreadReconcile.stop();
 		leadInboxRuntime.close();
 		await registry.shutdownAll();

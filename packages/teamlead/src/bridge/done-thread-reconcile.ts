@@ -699,6 +699,7 @@ export async function reconcileDoneThreads(
 						botToken,
 						{
 							authority: "terminal",
+							allowPostShipBotTail: true,
 							archiveFn: deps.archiveFn,
 							removeUserFn: deps.removeUserFn,
 							fetchImpl: deps.fetchImpl,
@@ -885,6 +886,7 @@ export async function reconcileDoneThreads(
 								botToken,
 								{
 									authority: "terminal",
+									allowPostShipBotTail: true,
 									archiveFn: deps.archiveFn,
 									removeUserFn: deps.removeUserFn,
 									fetchImpl: deps.fetchImpl,
@@ -1109,7 +1111,10 @@ export interface DoneThreadReconcileSchedulerOpts {
 	 * → the scheduler is byte-identical to pre-FLY-1282 ({enqueue} is a loud
 	 * no-op).
 	 */
-	runTargeted?: (issueId: string) => Promise<{ done: boolean; note?: string }>;
+	runTargeted?: (
+		issueId: string,
+		threadId?: string,
+	) => Promise<{ done: boolean; note?: string }>;
 	now?: () => number;
 }
 
@@ -1124,6 +1129,10 @@ export function startDoneThreadReconcileScheduler(
 	opts: DoneThreadReconcileSchedulerOpts,
 ): {
 	enqueue: (issueId: string) => TerminalArchiveAdmission;
+	enqueueThread: (
+		issueId: string,
+		threadId: string,
+	) => TerminalArchiveAdmission;
 	stop: () => Promise<void>;
 } {
 	const resolveConfig =
@@ -1143,6 +1152,9 @@ export function startDoneThreadReconcileScheduler(
 	// the SAME inFlight single-flight as global passes — never concurrent). ──
 	interface TargetedItem {
 		issueId: string;
+		threadId?: string;
+		checking?: boolean;
+		sentWhileChecking?: boolean;
 		attempts: number;
 		enqueuedAt: number;
 		nextEligibleAt: number;
@@ -1152,6 +1164,21 @@ export function startDoneThreadReconcileScheduler(
 	// completion re-fired while the targeted check is suspended must not mint
 	// a second logical item (double backoff entries, wasted capacity).
 	const targetedMembers = new Set<string>();
+	// Reserve completion capacity: bot sends have their own small admission cap.
+	const sentThreads = new Map<string, TargetedItem>();
+	const retireItem = (item: TargetedItem) => {
+		if (item.threadId) sentThreads.delete(item.threadId);
+		else targetedMembers.delete(item.issueId);
+	};
+
+	const replayNewSend = (item: TargetedItem): boolean => {
+		if (!item.threadId || !item.sentWhileChecking || stopped) return false;
+		item.sentWhileChecking = false;
+		item.attempts = 0;
+		item.nextEligibleAt = now();
+		targetedQueue.push(item);
+		return true;
+	};
 
 	const shouldAbort = () => stopped;
 
@@ -1171,10 +1198,20 @@ export function startDoneThreadReconcileScheduler(
 	const startTargeted = (item: TargetedItem) => {
 		const runTargeted = opts.runTargeted;
 		if (!runTargeted || stopped || inFlight) return;
-		inFlight = runTargeted(item.issueId)
+		item.checking = true;
+		inFlight = (
+			item.threadId
+				? runTargeted(item.issueId, item.threadId)
+				: runTargeted(item.issueId)
+		)
 			.then((outcome) => {
-				if (outcome.done) {
-					targetedMembers.delete(item.issueId);
+				if (replayNewSend(item)) return;
+				if (outcome.done || (item.threadId && item.attempts >= 2)) {
+					if (!outcome.done)
+						log(
+							`bot-send archive retry cap for ${item.threadId}; periodic sweep remains the backstop`,
+						);
+					retireItem(item);
 					return;
 				}
 				// Retryable: capped backoff, fair tail rotation; after 24h drop
@@ -1197,6 +1234,14 @@ export function startDoneThreadReconcileScheduler(
 				targetedQueue.push(item); // tail — later items are not starved
 			})
 			.catch((err) => {
+				if (replayNewSend(item)) return;
+				if (item.threadId && item.attempts >= 2) {
+					retireItem(item);
+					log(
+						`bot-send archive retry cap for ${item.threadId}: ${String(err)}`,
+					);
+					return;
+				}
 				item.attempts += 1;
 				item.nextEligibleAt =
 					now() +
@@ -1210,6 +1255,7 @@ export function startDoneThreadReconcileScheduler(
 				);
 			})
 			.finally(() => {
+				item.checking = false;
 				inFlight = null;
 			});
 	};
@@ -1258,7 +1304,7 @@ export function startDoneThreadReconcileScheduler(
 			}
 			if (stopped) return "refused";
 			if (targetedMembers.has(issueId)) return "deduped"; // queued OR in flight
-			if (targetedQueue.length >= TARGETED_QUEUE_CAP) {
+			if (targetedMembers.size >= TARGETED_QUEUE_CAP) {
 				log(
 					`targeted queue full (${TARGETED_QUEUE_CAP}) — REFUSING enqueue for ${issueId}; periodic sweep is the backstop when enabled`,
 				);
@@ -1273,6 +1319,31 @@ export function startDoneThreadReconcileScheduler(
 			});
 			return "accepted";
 		},
+		enqueueThread: (issueId: string, threadId: string) => {
+			if (stopped || !opts.runTargeted || !issueId || !threadId)
+				return "refused";
+			const pending = sentThreads.get(threadId);
+			if (pending) {
+				if (pending.checking) pending.sentWhileChecking = true;
+				return "deduped";
+			}
+			if (sentThreads.size >= 16) {
+				log(
+					`bot-send archive queue full (16); refusing ${threadId}; periodic sweep remains the backstop`,
+				);
+				return "refused";
+			}
+			const item: TargetedItem = {
+				issueId,
+				threadId,
+				attempts: 0,
+				enqueuedAt: now(),
+				nextEligibleAt: now(),
+			};
+			sentThreads.set(threadId, item);
+			targetedQueue.push(item);
+			return "accepted";
+		},
 		// Cooperative drain: new runs stop immediately; an in-flight pass exits
 		// between candidates via shouldAbort and is awaited before returning —
 		// callers MUST stop() before store.close(). Queued targeted items are
@@ -1283,6 +1354,7 @@ export function startDoneThreadReconcileScheduler(
 			clearInterval(tickTimer);
 			targetedQueue.length = 0;
 			targetedMembers.clear();
+			sentThreads.clear();
 			if (inFlight) {
 				try {
 					await inFlight;
