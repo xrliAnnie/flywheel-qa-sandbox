@@ -1,14 +1,14 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 3/4
-updated: 2026-09-14T00:43:04.358Z
-nextStep: Push the committed head, obtain code review, then submit needs_review
-  for PR 194
+phaseCursor: 4/4
+updated: 2026-09-14T00:46:17.510Z
+nextStep: Commit and push the final handoff payload, obtain final-head review
+  and green CI, then complete needs_review for PR 194
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (3/4)
-**next**: Push the committed head, obtain code review, then submit needs_review for PR 194
+**phase**: implement (4/4)
+**next**: Commit and push the final handoff payload, obtain final-head review and green CI, then complete needs_review for PR 194
