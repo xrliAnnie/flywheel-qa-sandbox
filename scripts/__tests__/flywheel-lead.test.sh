@@ -559,7 +559,7 @@ if ! HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
   FLYWHEEL_STATE_DIR="$STATE" FLYWHEEL_COMM_CLI="$CLI" \
   FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" \
   "$LAUNCHER" register \
-    --project-name raya-smoke --project-root "$RAYA_PROJECT" \
+    --project-name raya --project-root "$RAYA_PROJECT" \
     --lead-id raya --chat-channel 10000000000000004 \
     --bot-token-env RAYA_SMOKE_BOT_TOKEN --bot-user-id 20000000000000004 \
     --harness codex >"$TMP/raya-register.out" 2>"$TMP/raya-register.err"; then
@@ -573,14 +573,14 @@ cp "$CODEX_HOME_DIR/packages/standalone/current/codex" \
   "$RAYA_CODEX_HOME/packages/standalone/current/codex"
 cp "$STATE/.env" "$TMP/flywheel.env.before-raya-parser"
 printf '%s\n' 'RAYA_SMOKE_BOT_TOKEN=raya-token' 'RAYA_METRICS_DIR=relative-path' >>"$STATE/.env"
-raya_manifest="$STATE/manifests/raya-smoke-raya.json"
+raya_manifest="$STATE/manifests/raya-raya.json"
 if HOME="$H" PATH="$STATE/bin:$PATH" FLYWHEEL_DIR="$REPO_ROOT" \
   FLYWHEEL_STATE_DIR="$STATE" FLYWHEEL_COMM_CLI="$CLI" \
   FLYWHEEL_TEAMLEAD_ROOT="$REPO_ROOT/packages/teamlead" \
   FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR="$VALIDATOR" \
   "$LAUNCHER" preflight "$raya_manifest" \
     >"$TMP/raya-parser.out" 2>"$TMP/raya-parser.err" \
-  && grep -q 'PASS preflight complete for raya-smoke/raya' "$TMP/raya-parser.out"; then
+  && grep -q 'PASS preflight complete for raya/raya' "$TMP/raya-parser.out"; then
   pass "ignores the retired Raya-only metrics override during standard Lead preflight"
 else
   fail "standard Raya preflight still depends on the retired metrics override: $(cat "$TMP/raya-parser.err")"
@@ -959,6 +959,175 @@ if [ "$CODEX_VERIFY_RC" -eq 0 ] \
 else
   fail "Codex outbound verification did not close #10: rc=$CODEX_VERIFY_RC $(cat "$TMP/verify-codex-live.err")"
 fi
+
+# FLY-2559: the real register output must prepare credentials before install.
+unset FLYWHEEL_CODEX_LEAD_STATE_DIRS
+run_raya_authority() {
+  HOME="$H" FLYWHEEL_COMM_CLI="$CLI" \
+    "$REPO_ROOT/scripts/resident-codex-lead-recover.sh" --project raya --lead raya "$@"
+}
+if jq -e '[.[] | select(.projectName == "raya") | .leads[] | select(.agentId == "raya")][0] | has("codexResidencyPatrol") | not' "$STATE/projects.json" >/dev/null; then
+  pass "real register leaves residency patrol unset"
+else fail "Raya fixture must not invent residency opt-in"; fi
+RAYA_PLIST="$LAUNCHD_DIR/com.flywheel.lead.raya-raya.plist"
+if [ ! -e "$RAYA_PLIST" ] && run_raya_authority --authority >"$TMP/raya-authority.json" 2>"$TMP/raya-authority.err" \
+  && jq -e --arg home "$RAYA_CODEX_HOME" '.codexHome == $home and .stage == "pre-install" and .wrapper == "flywheel-lead.sh"' "$TMP/raya-authority.json" >/dev/null; then
+  pass "registered Raya resolves pre-install authority without residency opt-in"
+else fail "pre-install authority failed: $(cat "$TMP/raya-authority.err")"; fi
+
+mkdir -p "$H/.codex" "$TMP/link-tools"
+printf '%s\n' '{"version":1,"primary":"personal","profiles":[{"name":"school","email":"school@example.test","role":"manual_backup"},{"name":"personal","email":"personal@example.test","role":"primary"},{"name":"business","email":"business@example.test","role":"manual_backup"}]}' >"$TMP/link-registry.json"
+python3 - "$H/.codex/auth.json" <<'PY'
+import base64,json,pathlib,sys
+payload=base64.urlsafe_b64encode(json.dumps({'email':'personal@example.test','https://api.openai.com/auth':{'chatgpt_account_id':'acct-personal','chatgpt_plan_type':'pro'}}).encode()).decode().rstrip('=')
+pathlib.Path(sys.argv[1]).write_text(json.dumps({'tokens':{'id_token':'e30.'+payload+'.sig','access_token':'fixture-access','refresh_token':'fixture-refresh'}}))
+PY
+chmod 600 "$H/.codex/auth.json" "$RAYA_CODEX_HOME/auth.json"
+printf '#!/bin/bash\nexit 0\n' >"$TMP/link-tools/ps"
+cat >"$TMP/link-tools/launchctl" <<'SH'
+#!/bin/bash
+[ "$1" = print ] || exit 99
+exit 1
+SH
+chmod +x "$TMP/link-tools/ps" "$TMP/link-tools/launchctl"
+run_raya_link() {
+  HOME="$H" FLYWHEEL_COMM_CLI="$CLI" \
+    FLYWHEEL_CODEX_SOURCE_HOME="$H/.codex" FLYWHEEL_CODEX_ACCOUNT_REGISTRY_PATH="$TMP/link-registry.json" \
+    FLYWHEEL_CODEX_LINK_PS_BIN="$TMP/link-tools/ps" FLYWHEEL_CODEX_LINK_LAUNCHCTL_BIN="$TMP/link-tools/launchctl" \
+    "$REPO_ROOT/scripts/codex-home-link-truth.sh" "$@" --lead raya/raya "$RAYA_CODEX_HOME"
+}
+if run_raya_link >"$TMP/raya-link.out" 2>&1 && [ -L "$RAYA_CODEX_HOME/auth.json" ] \
+  && run_raya_link --inspect | jq -e '.state == "already"' >/dev/null; then
+  pass "real link-truth prepares registered Raya credentials before plist exists"
+else fail "registered Raya credential preparation failed: $(cat "$TMP/raya-link.out")"; fi
+# Exercise preflight with the real inspector and official two-symlink layout.
+cp "$REPO_ROOT/scripts/codex-home-link-truth.sh" "$STATE/bin/codex-home-link-truth.sh"
+export FLYWHEEL_CODEX_LINK_HELPER="$REPO_ROOT/packages/claude-runner/bin/flywheel-codex-link-truth.mjs"
+export FLYWHEEL_CODEX_SOURCE_HOME="$H/.codex" FLYWHEEL_CODEX_ACCOUNT_REGISTRY_PATH="$TMP/link-registry.json"
+printf '%s\n' 'RAYA_SMOKE_BOT_TOKEN=raya-token' >>"$STATE/.env"
+STANDALONE="$RAYA_CODEX_HOME/packages/standalone"
+mv "$STANDALONE/current" "$STANDALONE/release-stage"
+mkdir -p "$STANDALONE/releases/0.154.0/bin"
+mv "$STANDALONE/release-stage/codex" "$STANDALONE/releases/0.154.0/bin/codex"
+rmdir "$STANDALONE/release-stage"
+ln -s bin/codex "$STANDALONE/releases/0.154.0/codex"
+ln -s "$STANDALONE/releases/0.154.0" "$STANDALONE/current"
+if run_lifecycle verify --stage registered "$raya_manifest" >"$TMP/raya-registered.out" 2>&1; then
+  pass "registered verification accepts official current and codex symlinks"
+else fail "registered double-symlink verification failed: $(cat "$TMP/raya-registered.out")"; fi
+
+for unsafe in external prefix dangling directory no-exec world-file world-dir root-escape; do
+  bin="$STANDALONE/releases/0.154.0/bin/codex"
+  cp "$bin" "$TMP/codex-good"
+  case "$unsafe" in
+    external) rm "$bin"; ln -s "$TMP/codex-good" "$bin" ;;
+    prefix) mkdir -p "$RAYA_CODEX_HOME/packages/standalone-other"; cp "$bin" "$RAYA_CODEX_HOME/packages/standalone-other/codex"; rm "$bin"; ln -s "$RAYA_CODEX_HOME/packages/standalone-other/codex" "$bin" ;;
+    dangling) rm "$bin"; ln -s "$TMP/missing-codex" "$bin" ;;
+    directory) rm "$bin"; mkdir "$bin" ;;
+    no-exec) chmod 600 "$bin" ;;
+    world-file) chmod 777 "$bin" ;;
+    world-dir) chmod 777 "$(dirname "$bin")" ;;
+    root-escape) mv "$STANDALONE" "$TMP/escaped-standalone"; ln -s "$TMP/escaped-standalone" "$STANDALONE" ;;
+  esac
+  if run_lifecycle preflight "$raya_manifest" >"$TMP/unsafe-$unsafe.out" 2>&1; then
+    fail "unsafe standalone accepted: $unsafe"
+  elif grep -q 'FAIL standalone Codex' "$TMP/unsafe-$unsafe.out"; then
+    pass "standalone refuses $unsafe"
+  else fail "unsafe standalone failed for wrong reason: $unsafe"; fi
+  if [ "$unsafe" = root-escape ]; then rm "$STANDALONE"; mv "$TMP/escaped-standalone" "$STANDALONE"; fi
+  if [ "$unsafe" = directory ]; then rmdir "$bin"; else rm "$bin"; fi
+  cp "$TMP/codex-good" "$bin"
+  chmod 755 "$(dirname "$bin")" "$bin"
+done
+
+if run_lifecycle install --project raya --lead raya >"$TMP/raya-install.out" 2>&1 \
+  && run_raya_authority --authority >"$TMP/raya-installed.json" 2>"$TMP/raya-installed.err" \
+  && jq -e --arg home "$RAYA_CODEX_HOME" '.codexHome == $home and (keys|sort) == ["codexHome","label","wrapper"]' "$TMP/raya-installed.json" >/dev/null; then
+  pass "installed standard Raya retains authority without residency opt-in"
+else fail "installed Raya authority failed: $(cat "$TMP/raya-install.out") $(cat "$TMP/raya-installed.err" 2>/dev/null)"; fi
+if [ -L "$RAYA_CODEX_HOME/auth.json" ]; then rm "$RAYA_CODEX_HOME/auth.json"; fi
+if run_raya_link >"$TMP/raya-relink.out" 2>&1 && [ -L "$RAYA_CODEX_HOME/auth.json" ]; then
+  pass "installed standard Raya can prepare credentials through lead authority"
+else fail "installed Raya relink failed: $(cat "$TMP/raya-relink.out")"; fi
+# Authority must fail closed on registration or installed-carrier drift.
+cp "$STATE/projects.json" "$TMP/raya-projects-good"
+cp "$raya_manifest" "$TMP/raya-manifest-good"
+if [ -f "$RAYA_PLIST" ]; then
+  cp "$RAYA_PLIST" "$TMP/raya-plist-good"
+  for bad in manifest-root manifest-projects duplicate backend profile runner-unopted carrier-missing carrier-symlink plist-malformed plist-dangling plist-legacy plist-argv; do
+    case "$bad" in
+      manifest-root) jq '.projectDir="/wrong"' "$TMP/raya-manifest-good" >"$raya_manifest" ;;
+      manifest-projects) jq '.projectsFile="/wrong"' "$TMP/raya-manifest-good" >"$raya_manifest" ;;
+      duplicate) jq '. += [.[]|select(.projectName=="raya")]' "$TMP/raya-projects-good" >"$STATE/projects.json" ;;
+      backend) jq 'map(if .projectName=="raya" then .leads[0].backend="claude-code" else . end)' "$TMP/raya-projects-good" >"$STATE/projects.json" ;;
+      profile) jq 'map(if .projectName=="raya" then .leads[0].codexProfile="read-only" else . end)' "$TMP/raya-projects-good" >"$STATE/projects.json" ;;
+      runner-unopted) jq 'map(if .projectName=="raya" then .leads[0].canSpawnRunners=true | .leads[0].codexRunnerActions=false else . end)' "$TMP/raya-projects-good" >"$STATE/projects.json" ;;
+      carrier-missing) mv "$STATE/bin/flywheel-lead.sh" "$TMP/raya-carrier-good" ;;
+      carrier-symlink) mv "$STATE/bin/flywheel-lead.sh" "$TMP/raya-carrier-good"; ln -s "$TMP/raya-carrier-good" "$STATE/bin/flywheel-lead.sh" ;;
+      plist-malformed) printf 'invalid\n' >"$RAYA_PLIST" ;;
+      plist-dangling) rm "$RAYA_PLIST"; ln -s "$TMP/no-plist" "$RAYA_PLIST" ;;
+      plist-legacy|plist-argv)
+        python3 - "$RAYA_PLIST" "$bad" "$STATE" <<'PY'
+import plistlib,sys
+p,kind,state=sys.argv[1:]
+with open(p,'rb') as f: value=plistlib.load(f)
+if kind=='plist-legacy': value['ProgramArguments']=['/bin/bash',state+'/bin/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh']
+else: value['ProgramArguments'].append('--unexpected')
+with open(p,'wb') as f: plistlib.dump(value,f)
+PY
+        ;;
+    esac
+    if run_raya_authority --authority >"$TMP/raya-negative.out" 2>&1; then fail "authority accepts $bad"
+    else pass "authority refuses $bad"; fi
+    cp "$TMP/raya-projects-good" "$STATE/projects.json"
+    cp "$TMP/raya-manifest-good" "$raya_manifest"
+    rm "$RAYA_PLIST"; cp "$TMP/raya-plist-good" "$RAYA_PLIST"
+    case "$bad" in
+      carrier-missing) mv "$TMP/raya-carrier-good" "$STATE/bin/flywheel-lead.sh" ;;
+      carrier-symlink) rm "$STATE/bin/flywheel-lead.sh"; mv "$TMP/raya-carrier-good" "$STATE/bin/flywheel-lead.sh" ;;
+    esac
+  done
+  # Repeat binding guards without plist: no invalid installed state may become
+  # a valid first-install credential authority.
+  rm "$RAYA_PLIST"
+  for bad in manifest-root manifest-symlink registry-missing registry-symlink carrier-missing; do
+    case "$bad" in
+      manifest-root) jq '.projectDir="/wrong"' "$TMP/raya-manifest-good" >"$raya_manifest" ;;
+      manifest-symlink) rm "$raya_manifest"; ln -s "$TMP/raya-manifest-good" "$raya_manifest" ;;
+      registry-missing) rm "$STATE/projects.json" ;;
+      registry-symlink) rm "$STATE/projects.json"; ln -s "$TMP/raya-projects-good" "$STATE/projects.json" ;;
+      carrier-missing) mv "$STATE/bin/flywheel-lead.sh" "$TMP/raya-carrier-good" ;;
+    esac
+    if run_raya_authority --authority >"$TMP/raya-negative.out" 2>&1; then fail "pre-install authority accepts $bad"
+    else pass "pre-install authority refuses $bad"; fi
+    rm -f "$STATE/projects.json" "$raya_manifest"
+    cp "$TMP/raya-projects-good" "$STATE/projects.json"
+    cp "$TMP/raya-manifest-good" "$raya_manifest"
+    if [ "$bad" = carrier-missing ]; then mv "$TMP/raya-carrier-good" "$STATE/bin/flywheel-lead.sh"; fi
+  done
+  for mode in --probe --recover; do
+    recovery_args=()
+    if [ "$mode" = --recover ]; then recovery_args=(--expected-pid 4242 --expected-lstart 'Tue Sep  1 05:00:00 2026' --expected-generation generation-a --expected-carrier-instance carrier-a); fi
+    if run_raya_authority "$mode" "${recovery_args[@]+${recovery_args[@]}}" >"$TMP/raya-negative.out" 2>&1; then fail "pre-install $mode authorized"
+    elif grep -q 'projects/manifest/plist authority failed' "$TMP/raya-negative.out"; then pass "pre-install $mode remains refused"
+    else fail "pre-install $mode failed outside authority"; fi
+  done
+  cp "$TMP/raya-plist-good" "$RAYA_PLIST"
+else fail "installed Raya plist missing for negative authority cases"; fi
+
+cp "$STATE/projects.json" "$TMP/projects-before-optin.json"
+for optin in false true; do
+  jq --argjson optin "$optin" 'map(if .projectName=="raya" then .leads |= map(.codexResidencyPatrol=$optin) else . end)' "$TMP/projects-before-optin.json" >"$STATE/projects.json"
+  for mode in --probe --recover; do
+    recovery_args=()
+    if [ "$mode" = --recover ]; then recovery_args=(--expected-pid 4242 --expected-lstart 'Tue Sep  1 05:00:00 2026' --expected-generation generation-a --expected-carrier-instance carrier-a); fi
+    if run_raya_authority "$mode" "${recovery_args[@]+${recovery_args[@]}}" >"$TMP/raya-recovery.out" 2>&1; then
+      fail "standard $mode unexpectedly authorized optin=$optin"
+    elif grep -q "projects/manifest/plist authority failed" "$TMP/raya-recovery.out"; then pass "standard $mode stays refused optin=$optin"
+    else fail "standard $mode failed outside authority optin=$optin"; fi
+  done
+done
+cp "$TMP/projects-before-optin.json" "$STATE/projects.json"
 
 echo ""
 echo "[flywheel-lead] passed=$PASSED failed=$FAILED"

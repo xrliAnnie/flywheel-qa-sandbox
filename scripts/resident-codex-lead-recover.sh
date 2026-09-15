@@ -225,11 +225,67 @@ probe_mode() {
 	printf '%s\n' "$snapshot"
 }
 
+# Credential-home authority for the standard carrier is deliberately separate
+# from residency opt-in and the destructive recovery whitelist above.
+load_standard_home_authority() {
+	local selector project_root plist_json manifest_digest projects_digest wrapper_digest
+	local carrier="$HOME_ROOT/.flywheel/bin/flywheel-lead.sh"
+	local comm_cli="${FLYWHEEL_COMM_CLI:-${FLYWHEEL_DIR:-${HOME_ROOT}/Dev/flywheel}/packages/flywheel-comm/dist/index.js}"
+	STANDARD_AUTHORITY_STAGE=""
+	[ -f "$MANIFEST_FILE" ] && [ ! -L "$MANIFEST_FILE" ] \
+		&& [ -f "$PROJECTS_FILE" ] && [ ! -L "$PROJECTS_FILE" ] \
+		&& [ -f "$carrier" ] && [ -x "$carrier" ] && [ ! -L "$carrier" ] || return 1
+	manifest_digest="$(lead_restart_file_digest "$MANIFEST_FILE")" || return 1
+	projects_digest="$(lead_restart_file_digest "$PROJECTS_FILE")" || return 1
+	wrapper_digest="$(lead_restart_file_digest "$carrier")" || return 1
+	selector="$(HOME="$HOME_ROOT" node "$comm_cli" lead-registry selector \
+		--projects-file "$PROJECTS_FILE" --project "$PROJECT" --lead "$LEAD_ID")" || return 1
+	jq -e --arg project "$PROJECT" --arg lead "$LEAD_ID" '
+		.projectName == $project and .leadId == $lead and
+		.backend == "codex-app-server" and .codexProfile == "full-access" and
+		.codexCapabilities.eligible == true
+	' <<<"$selector" >/dev/null 2>&1 || return 1
+	project_root="$(jq -er '.projectRoot | select(type == "string" and length > 0)' <<<"$selector")" || return 1
+	case "$project_root" in /*) ;; *) project_root="$HOME_ROOT/$project_root" ;; esac
+	jq -e --arg project "$PROJECT" --arg lead "$LEAD_ID" \
+		--arg root "$project_root" --arg projects "$PROJECTS_FILE" '
+		.projectName == $project and .leadId == $lead and
+		.projectDir == $root and .projectsFile == $projects and
+		.leadBackend.backendId == "codex-app-server"
+	' "$MANIFEST_FILE" >/dev/null 2>&1 || return 1
+	if [ -e "$PLIST_FILE" ] || [ -L "$PLIST_FILE" ]; then
+		# Do not reinterpret a legacy or unknown plist after load_authority fails.
+		plist_json="$(_lead_restart_plist_json "$PLIST_FILE")" || return 1
+		jq -e --arg carrier "$carrier" --arg manifest "$MANIFEST_FILE" --arg label "$LABEL" '
+			.label == $label and .argv == ["/bin/bash", $carrier, $manifest]
+		' <<<"$plist_json" >/dev/null 2>&1 || return 1
+		lead_restart_validate_authority "$MANIFEST_FILE" "$PLIST_FILE" "$PROJECTS_FILE" "$LABEL" || return 1
+		lead_restart_authority_unchanged || return 1
+	else
+		# These existing Leads use legacy home keys, not their registry lead ids.
+		case "$LEAD_ID" in mufasa-lead|codex-infra-bot-lead) return 1 ;; esac
+		STANDARD_AUTHORITY_STAGE=pre-install
+	fi
+	[ "$manifest_digest" = "$(lead_restart_file_digest "$MANIFEST_FILE")" ] \
+		&& [ "$projects_digest" = "$(lead_restart_file_digest "$PROJECTS_FILE")" ] \
+		&& [ "$wrapper_digest" = "$(lead_restart_file_digest "$carrier")" ] || return 1
+	if [ "$STANDARD_AUTHORITY_STAGE" = pre-install ]; then
+		[ ! -e "$PLIST_FILE" ] && [ ! -L "$PLIST_FILE" ] || return 1
+	fi
+	WRAPPER=flywheel-lead.sh
+	EXPECTED_CODEX_HOME="$(derive_codex_lead_home "$LEAD_ID" "$HOME_ROOT")" || return 1
+}
+
 authority_mode() {
-	load_authority || fail 20 "resident Codex Lead projects/manifest/plist authority failed"
+	local stage=""
+	if ! load_authority; then
+		load_standard_home_authority || fail 20 "resident Codex Lead projects/manifest/plist authority failed"
+		stage="$STANDARD_AUTHORITY_STAGE"
+	fi
 	jq -cn --arg codexHome "$EXPECTED_CODEX_HOME" --arg label "$LABEL" \
-		--arg wrapper "$WRAPPER" \
-		'{codexHome:$codexHome,label:$label,wrapper:$wrapper}'
+		--arg wrapper "$WRAPPER" --arg stage "$stage" \
+		'{codexHome:$codexHome,label:$label,wrapper:$wrapper}
+		 + (if $stage == "pre-install" then {stage:$stage} else {} end)'
 }
 
 recover_mode() {

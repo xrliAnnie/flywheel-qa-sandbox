@@ -1,0 +1,129 @@
+=== lead-raya-exact ===
+[TEST] ✓ publishes the bounded generalized Lead command surface
+[TEST] ✓ register dry-run validates the candidate and exits with zero writes
+[TEST] ✓ rejects test-only registry path overrides at the production register entrypoint
+[TEST] ✓ register transactionally adds one Claude Lead and materializes its bound manifest
+[TEST] ✓ retries a post-commit materializer failure as a zero-write continuation
+[TEST] ✓ dispatches Claude through wrapper-v2 and treats one manifest positional as run
+[TEST] ✓ rejects a drifted manifest before backend dispatch
+[TEST] ✓ rejects run while a registry recovery intent is pending
+[TEST] ✓ composes the Codex full-access env and resolves canonical identity exactly once
+[TEST] ✓ explicit department capability reaches the Codex child
+[TEST] ✓ department without opt-in is rejected before launching the child
+[TEST] ✓ Codex carrier owns a user/Homebrew toolchain PATH under launchd defaults
+[TEST] ✓ preflights Claude through the real checker contract without filesystem writes
+[TEST] ✓ rejects a stale summary activation receipt
+[TEST] ✓ rejects preflight while a registry recovery intent is pending
+[TEST] ✓ lists all missing Claude prerequisites before exiting 78
+[TEST] ✓ preflights Codex full-access with the runtime project-root validator and zero writes
+[TEST] ✓ ignores the retired Raya-only metrics override during standard Lead preflight
+[TEST] ✓ rejects a non-default state root with exit 78
+[TEST] ✓ rejects an existing mismatched manifest without rewriting registry state
+[TEST] ✓ reports a no-op recovery through the locked registry command
+[TEST] ✓ bounds registry lock contention with exit 75
+[TEST] ✓ install preflights and renders the exact Claude launchd carrier
+[TEST] ✓ install preflights and renders the exact generalized Codex carrier
+[TEST] ✓ stop removes only the exact owned service and preserves registry artifacts
+[TEST] ✓ stop rejects an unowned plist without bootout or deletion
+[TEST] ✓ install preflight failure leaves plist and supervisor state untouched
+[TEST] ✓ registered verification proves only the four local registration checks
+[TEST] ✓ installed verification distinguishes Bridge health from pump mounting
+[TEST] ✓ reports the expected post-registration pre-Bridge-restart intermediate state
+[TEST] ✓ live Claude verification proves one process, inbox, and ACKED mailbox delivery
+[TEST] ✓ live verification rejects a non-unique Lead process
+[TEST] ✓ Codex live verification proves the exact message through Lead and Bridge outbound ledgers
+[TEST] ✓ real register leaves residency patrol unset
+[TEST] ✓ registered Raya resolves pre-install authority without residency opt-in
+[TEST] ✓ real link-truth prepares registered Raya credentials before plist exists
+[TEST] ✓ registered verification accepts official current and codex symlinks
+[TEST] ✓ standalone refuses external
+[TEST] ✓ standalone refuses prefix
+[TEST] ✓ standalone refuses dangling
+[TEST] ✓ standalone refuses directory
+[TEST] ✓ standalone refuses no-exec
+[TEST] ✓ standalone refuses world-file
+[TEST] ✓ standalone refuses world-dir
+[TEST] ✓ standalone refuses root-escape
+[TEST] ✓ installed standard Raya retains authority without residency opt-in
+[TEST] ✓ installed standard Raya can prepare credentials through lead authority
+[TEST] ✓ authority refuses manifest-root
+[TEST] ✓ authority refuses manifest-projects
+[TEST] ✓ authority refuses duplicate
+[TEST] ✓ authority refuses backend
+[TEST] ✓ authority refuses profile
+[TEST] ✓ authority refuses runner-unopted
+[TEST] ✓ authority refuses carrier-missing
+[TEST] ✓ authority refuses carrier-symlink
+[TEST] ✓ authority refuses plist-malformed
+[TEST] ✓ authority refuses plist-dangling
+[TEST] ✓ authority refuses plist-legacy
+[TEST] ✓ authority refuses plist-argv
+[TEST] ✓ pre-install authority refuses manifest-root
+[TEST] ✓ pre-install authority refuses manifest-symlink
+[TEST] ✓ pre-install authority refuses registry-missing
+[TEST] ✓ pre-install authority refuses registry-symlink
+[TEST] ✓ pre-install authority refuses carrier-missing
+[TEST] ✓ pre-install --probe remains refused
+[TEST] ✓ pre-install --recover remains refused
+[TEST] ✓ standard --probe stays refused optin=false
+[TEST] ✓ standard --recover stays refused optin=false
+[TEST] ✓ standard --probe stays refused optin=true
+[TEST] ✓ standard --recover stays refused optin=true
+[flywheel-lead] passed=70 failed=0
+=== recover-green ===
+[TEST] ok - authority resolves the configured home without process evidence
+[TEST] ok - probe returns only the exact resident Codex process identity
+[TEST] ok - probe keeps secret-bearing process environment off parser argv
+[TEST] ok - eligible recovery receipts before bounded exact-label kickstart and converges
+[TEST] ok - backend drift is zero-mutation
+[TEST] ok - non-opted existing Codex Lead remains on its unchanged path
+[TEST] ok - pid+lstart mismatch is zero-mutation
+[TEST] ok - second authority check blocks TOCTOU
+[TEST] ok - receipt failure is zero-mutation
+[TEST] ok - missing new heartbeat is an explicit post-mutation failure
+[TEST] ok - durably observed generation permits recovery after heartbeat loss
+[TEST] ok - never-observed heartbeat loss is zero-mutation
+[TEST] ok - recovery helper is executable
+[TEST] ok - recovery helper ships in scripts/converge-flywheel-bin.sh
+[TEST] ok - recovery helper ships in scripts/package-onboard.sh
+[TEST] ok - recovery helper ships in scripts/package-onboard-files.allow
+[TEST] ok - recovery helper ships in scripts/lib/path-hygiene.sh
+[TEST] ok - recovery helper ships in scripts/provision-fleet-host.sh
+[TEST] ok - infra-bot retains its legacy home and exact authority JSON
+[TEST] ok - missing infra-bot plist remains refused despite standard carrier presence
+[TEST] ok - raya wrapper remains refused
+[TEST] ok - unknown wrapper remains refused
+Results: 22 passed, 0 failed
+=== generic-green ===
+[TEST] ✓ all five Lead plists retain exact argv arrays and manifest extraction
+[TEST] ✓ existing Claude v2 authority remains accepted
+[TEST] ✓ existing Mufasa authority remains accepted
+[TEST] ✓ existing infra authority remains accepted
+[TEST] ✓ Raya uses standard generic Codex authority
+[TEST] ✓ generic Codex authority binds exact manifest and full-access registry row
+[TEST] ✓ explicit runner opt-in permits generic department carrier
+[TEST] ✓ generic authority rejects argv, backend, profile, spawn, and companion drift
+[TEST] ✓ unregistered carrier basename remains outside restart authority
+[TEST] ✓ restart authority contains exactly one literal generic carrier case
+[TEST] ✓ dry-run fleet inventory and census converge with Raya on the standard carrier
+[TEST] ✓ registered unloaded Raya without plist is pending-install; installed peers remain restart candidates
+[TEST] ✓ loaded launchd evidence does not qualify as pending-install
+[TEST] ✓ error launchd evidence does not qualify as pending-install
+[TEST] ✓ dangling plist symlink remains outside pending-install
+lead-restart-lifecycle-generic-carrier: PASSED=15 FAILED=0
+=== link-green ===
+[TEST] ok - an idle ordinary credential becomes the canonical link
+[TEST] ok - an already-correct link returns before the process fence
+[TEST] ok - an already-correct link returns before validating the process-fence executable
+[TEST] ok - the default empty-option path works under macOS Bash 3.2
+[TEST] ok - an unavailable process fence fails closed without mutation
+[TEST] ok - a live Codex process for the home blocks migration
+[TEST] ok - the CLI rejects options placed after the home
+[TEST] ok - rollback restores a 0600 ordinary copy
+[TEST] ok - keep-backup is private and the metadata report contains no token material
+[TEST] ok - keep-backup repairs a missing link without inventing a backup
+[TEST] ok - post-mutation report failure returns a distinct linked-but-uncertain result
+[TEST] ok - the migration gate ships in the onboarding payload
+[TEST] ok - inspect reports an unlinked home without mutation or process fencing
+[TEST] ok - inspect refuses mutation flags
+Results: 14 passed, 0 failed

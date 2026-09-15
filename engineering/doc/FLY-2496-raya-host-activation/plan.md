@@ -59,6 +59,9 @@ FLY-2496 AUTHORIZE register cutover=9d63a2b2 urgent-restart baseline=quiet15m
 
 ### H1 工作区与 Codex home（不改变任何运行中的东西）
 
+> **FLY-2559 修正**：保留原 H1/H2 记录，执行顺序修正为：先准备工作区和 standalone Codex home，再执行 H2 的 register；在 register 成功、canonical manifest 与 projects.json 一致后，才执行下面 H1 中的两条 `--lead raya/raya` link-truth 命令；之后再 verify registered / 后续安装。未注册的 Lead 不具备 pre-install authority。退役 Raya wrapper 不再授权，标准 carrier 为 `flywheel-lead.sh`。此修正不增加重启、安装或部署授权。
+
+
 ```bash
 set -euo pipefail; umask 077
 W="$HOME/Dev/raya-lead-workspace"; M="$HOME/.flywheel/raya/memory"

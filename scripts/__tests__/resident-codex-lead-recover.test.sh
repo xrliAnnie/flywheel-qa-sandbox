@@ -98,7 +98,7 @@ run_helper() {
 	FLYWHEEL_CODEX_RESIDENCY_PS_BIN="$t/bin/ps" \
 	FLYWHEEL_CODEX_RESIDENCY_BOUNDED_RUN_BIN="$t/bin/bounded-run" \
 	CODEX_LEAD_RESIDENCY_VERIFY_ATTEMPTS=2 CODEX_LEAD_RESIDENCY_VERIFY_INTERVAL_SECONDS=0 \
-		"$SUT" --project growth --lead mufasa-lead "$@"
+		"$SUT" --project "${RECOVER_TEST_PROJECT:-growth}" --lead "${RECOVER_TEST_LEAD:-mufasa-lead}" "$@"
 }
 
 T1="$TMP_ROOT/success"; make_fixture "$T1"
@@ -220,6 +220,38 @@ for closure in \
 	else
 		fail "recovery helper missing from ${closure#$ROOT/}"
 	fi
+done
+
+# FLY-2559: preserve legacy home mappings and refuse retired carriers.
+for identity in infra raya unknown; do
+  t="$TMP_ROOT/legacy-$identity"; make_fixture "$t"
+  python3 - "$t" "$identity" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); identity=sys.argv[2]
+project,lead,wrapper={'infra':('flywheel','codex-infra-bot-lead','flywheel-codex-lead-wrapper-codex-infra-bot.sh'),'raya':('raya','raya','flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh'),'unknown':('growth','mufasa-lead','flywheel-codex-lead-wrapper-unknown.sh')}[identity]
+for name in ['projects.json','manifest.json','plist']:
+ f=p/name
+ s=f.read_text().replace('flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh',wrapper).replace('mufasa-lead',lead).replace('growth',project)
+ f.write_text(s)
+PY
+  case "$identity" in infra) project=flywheel; lead=codex-infra-bot-lead ;; raya) project=raya; lead=raya ;; *) project=growth; lead=mufasa-lead ;; esac
+  result="$(RECOVER_TEST_PROJECT="$project" RECOVER_TEST_LEAD="$lead" run_helper "$t" --authority 2>/dev/null)"; result_rc=$?
+  if [ "$identity" = infra ]; then
+    if [ "$result_rc" -eq 0 ] && jq -e --arg home "$t/home/.codex-infra-bot" '.codexHome==$home and (keys|sort)==["codexHome","label","wrapper"]' <<<"$result" >/dev/null; then
+      pass "infra-bot retains its legacy home and exact authority JSON"
+    else fail "infra-bot legacy mapping changed: $result"; fi
+    rm "$t/plist"
+    mkdir -p "$t/home/.flywheel/bin"
+    printf '#!/bin/bash\nexit 0\n' >"$t/home/.flywheel/bin/flywheel-lead.sh"
+    chmod +x "$t/home/.flywheel/bin/flywheel-lead.sh"
+    jq --arg file "$t/projects.json" '.projectsFile=$file' "$t/manifest.json" >"$t/m.tmp" && mv "$t/m.tmp" "$t/manifest.json"
+    jq '.[0].leads[0].codexProfile="full-access"' "$t/projects.json" >"$t/p.tmp" && mv "$t/p.tmp" "$t/projects.json"
+    if RECOVER_TEST_PROJECT="$project" RECOVER_TEST_LEAD="$lead" run_helper "$t" --authority >/dev/null 2>&1; then
+      fail "missing legacy infra-bot plist acquired a different pre-install home"
+    else pass "missing infra-bot plist remains refused despite standard carrier presence"; fi
+  elif [ "$result_rc" -ne 0 ]; then pass "$identity wrapper remains refused"
+  else fail "$identity wrapper acquired authority"; fi
 done
 
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"
