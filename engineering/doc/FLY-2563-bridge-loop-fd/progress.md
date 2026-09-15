@@ -2,19 +2,17 @@
 issue: FLY-2563
 phase: implement
 phaseCursor: 6/7
-updated: 2026-09-15T08:16:07.847Z
-nextStep: CI fixtures fixed; measured perf cost now assigns existing serial1fork
-  lane. All run1-12 evidence retained; local loaded-host spikes remain red.
-  Typecheck/lint green. Package aggregate23253 LIVE
-  log/tmp/fly2563-resume-packages.log; shard suite62860 LIVE
-  log/tmp/fly2563-shard-classification.log. Next literal-last milestone commit
-  and push candidate; register fresh review and freeze writes until verdict;
-  verify final-head CI plus aggregate before needs_review. No production QA or
-  dispatch.
+updated: 2026-09-15T08:53:50.370Z
+nextStep: R1 limited health/alert and zero-progress response implemented;
+  budgets and required perf thresholds unchanged under formal Lead rulings. 34
+  focused tests and typecheck green; contract tests/lint/build running.
+  Aggregate23253 still live, not final-head evidence. Next commit candidate with
+  milestone last, push, obtain new exact-head CI and one final effective review;
+  freeze while review runs.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2563 progress
 **phase**: implement (6/7)
-**next**: CI fixtures fixed; measured perf cost now assigns existing serial1fork lane. All run1-12 evidence retained; local loaded-host spikes remain red. Typecheck/lint green. Package aggregate23253 LIVE log/tmp/fly2563-resume-packages.log; shard suite62860 LIVE log/tmp/fly2563-shard-classification.log. Next literal-last milestone commit and push candidate; register fresh review and freeze writes until verdict; verify final-head CI plus aggregate before needs_review. No production QA or dispatch.
+**next**: R1 limited health/alert and zero-progress response implemented; budgets and required perf thresholds unchanged under formal Lead rulings. 34 focused tests and typecheck green; contract tests/lint/build running. Aggregate23253 still live, not final-head evidence. Next commit candidate with milestone last, push, obtain new exact-head CI and one final effective review; freeze while review runs.
