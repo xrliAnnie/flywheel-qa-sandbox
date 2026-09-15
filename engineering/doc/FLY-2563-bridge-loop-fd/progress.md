@@ -2,18 +2,19 @@
 issue: FLY-2563
 phase: implement
 phaseCursor: 0/7
-updated: 2026-09-15T07:27:23.751Z
-nextStep: "Voice leak fixed93d4af284 green28+types. Full lint/build now exit0
-  (import ordering only); aggregate pnpm test:packages:run LIVE exec
-  session26020 log/tmp/fly2563-package-gate.log: poll same handle, do not
-  restart. Finish102-site owner audit; snapshot owner missing injected API
-  token, Lead questionc870e05f-1086-4107-badd-0bdec19e9fc3 pending. Perf
-  first154.5ms spike retained, two later pass. Effective review/non-draft PR
-  remain; no review running."
+updated: 2026-09-15T07:28:50.286Z
+nextStep: Full lint/build exit0. Aggregate package gate LIVE exec session26020
+  log/tmp/fly2563-package-gate.log; poll same handle (latest claude-runner), do
+  not restart. Voice leak fixed93d4af284 green28+types. Lead ruled runner token
+  absence intentional; no workaround. Lead comm snapshot read-only verified.
+  Teamlead incident writable-context request
+  b07d0b86-d375-4dab-b37a-9ed4e3fde5f4 pending; check it and inbox.
+  Finish102-site owner audit, exact snapshot/perf spike/full gates/effective
+  review/non-draft PR. No review running.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2563 progress
 **phase**: implement (0/7)
-**next**: Voice leak fixed93d4af284 green28+types. Full lint/build now exit0 (import ordering only); aggregate pnpm test:packages:run LIVE exec session26020 log/tmp/fly2563-package-gate.log: poll same handle, do not restart. Finish102-site owner audit; snapshot owner missing injected API token, Lead questionc870e05f-1086-4107-badd-0bdec19e9fc3 pending. Perf first154.5ms spike retained, two later pass. Effective review/non-draft PR remain; no review running.
+**next**: Full lint/build exit0. Aggregate package gate LIVE exec session26020 log/tmp/fly2563-package-gate.log; poll same handle (latest claude-runner), do not restart. Voice leak fixed93d4af284 green28+types. Lead ruled runner token absence intentional; no workaround. Lead comm snapshot read-only verified. Teamlead incident writable-context request b07d0b86-d375-4dab-b37a-9ed4e3fde5f4 pending; check it and inbox. Finish102-site owner audit, exact snapshot/perf spike/full gates/effective review/non-draft PR. No review running.
