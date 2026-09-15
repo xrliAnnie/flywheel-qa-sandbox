@@ -1,0 +1,104 @@
+packages/teamlead/src/bridge/unanswerable-workflow-gate-reconciler.ts:153:	const openDb = deps.openDb ?? ((path: string) => new CommDB(path, false));
+packages/teamlead/src/bridge/gate-materializer.ts:225:		const comm = new CommDB(deps.commDbPath);
+packages/teamlead/src/bridge/founder-routing-response-route.ts:185:			db = new CommDB(deps.commDbPathForProject(projectName), false);
+packages/teamlead/src/bridge/legacy-ack-drain.ts:39:			const db = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/legacy-ack-drain.ts:119:			const db = new CommDB(route.commDbPath, false);
+packages/teamlead/src/bridge/workflow-engine-park-projector.ts:15:	const openDb = deps.openDb ?? ((path: string) => new CommDB(path, false));
+packages/teamlead/src/bridge/shipped-husk-escalation.ts:208:	const openDb = deps.openCommDb ?? ((path: string) => new CommDB(path));
+packages/teamlead/src/bridge/terminal-gate-retirement.ts:46:		this.openDb = options.openDb ?? ((path) => new CommDB(path, false));
+packages/teamlead/src/bridge/tmux-lookup.ts:384:		db = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/bootstrap-generator.ts:229:			db = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/workflow-turn-ledger-validator.ts:113:			db = new CommDB(input.commDbPathForProject(expectation.projectName));
+packages/teamlead/src/bridge/account-switch-consumer.ts:141:		deps.openCommDb ?? ((path: string) => new CommDB(path, false));
+packages/teamlead/src/bridge/land-cleanup-opportunity.ts:36:	const db = new CommDB(deps.commDbPathForProject(operation.project_name));
+packages/teamlead/src/bridge/runner-mailbox-lane.ts:55:		this.db = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/commdb-probes.ts:35:	return existsSync(dbPath) ? CommDB.openReadonly(dbPath) : undefined;
+packages/teamlead/src/bridge/codex-phase-shutdown.ts:195:	const openDb = deps.openCommDb ?? ((path: string) => new CommDB(path));
+packages/teamlead/src/bridge/plugin.ts:1163:	return new CommDBLeadRuntime(commDbPath, lead.agentId);
+packages/teamlead/src/bridge/plugin.ts:5440:		openDb: (dbPath) => new CommDB(dbPath, false),
+packages/teamlead/src/bridge/plugin.ts:5444:			const db = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/plugin.ts:5494:		openCommDb: (project) => new CommDB(commDbPathForProject(project)),
+packages/teamlead/src/bridge/plugin.ts:6889:		const db = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/plugin.ts:7323:		const db = new CommDB(commDbPathForProject(operation.project_name));
+packages/teamlead/src/bridge/plugin.ts:7597:			db = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/plugin.ts:7670:				db = CommDB.openReadonly(candidate.commDbPath);
+packages/teamlead/src/bridge/plugin.ts:7682:			const db = new CommDB(candidate.commDbPath);
+packages/teamlead/src/bridge/plugin.ts:7992:				ownedCommDb = new CommDB(commDbPathForProject(projectName), false);
+packages/teamlead/src/bridge/plugin.ts:8637:				db = CommDB.openReadonly(commDbPathForProject(session.project_name));
+packages/teamlead/src/bridge/plugin.ts:8799:				const db = new CommDB(commDbPathForProject(session.project_name));
+packages/teamlead/src/bridge/plugin.ts:8820:				db = CommDB.openReadonly(commDbPathForProject(session.project_name));
+packages/teamlead/src/bridge/plugin.ts:9163:					deliveryCommDb = new CommDB(
+packages/teamlead/src/bridge/plugin.ts:10132:			const db = new CommDB(commDbPathForProject(projectName), false);
+packages/teamlead/src/bridge/plugin.ts:10239:					return new CommDB(canonical, false) as unknown as GateResponseDb;
+packages/teamlead/src/bridge/plugin.ts:10316:				db = new CommDB(commDbPathForProject(project.projectName));
+packages/teamlead/src/bridge/plugin.ts:10337:				db = new CommDB(commDbPathForProject(project.projectName));
+packages/teamlead/src/bridge/plugin.ts:10823:				const db = new CommDB(commDbPathForProject(row.project_name), false);
+packages/teamlead/src/bridge/plugin.ts:10938:				return CommDB.openReadonly(commDbPathForProject(projectName));
+packages/teamlead/src/bridge/plugin.ts:11016:			const db = CommDB.openReadonly(commDbPathForProject(projectName));
+packages/teamlead/src/bridge/plugin.ts:11226:				openCommDb: (project) => new CommDB(commDbPathForProject(project)),
+packages/teamlead/src/bridge/plugin.ts:11548:								const db = new CommDB(commDbPathForProject(projectName));
+packages/teamlead/src/bridge/plugin.ts:12273:			openCommDb: (path) => new CommDB(path, false),
+packages/teamlead/src/bridge/plugin.ts:12411:						new CommDB(commDbPathForProject(projectName)),
+packages/teamlead/src/bridge/plugin.ts:12448:						const db = new CommDB(dbPath);
+packages/teamlead/src/bridge/plugin.ts:12462:					const db = new CommDB(dbPath);
+packages/teamlead/src/bridge/plugin.ts:12472:					const db = new CommDB(dbPath);
+packages/teamlead/src/bridge/plugin.ts:12526:				const db = new CommDB(commDbPathForProject(projectName));
+packages/teamlead/src/bridge/plugin.ts:12560:				const db = new CommDB(commDbPathForProject(session.project_name ?? ""));
+packages/teamlead/src/bridge/plugin.ts:12693:					const db = new CommDB(commDbPathForProject(projectName));
+packages/teamlead/src/bridge/plugin.ts:12704:					const db = new CommDB(commDbPathForProject(input.projectName));
+packages/teamlead/src/bridge/plugin.ts:12753:						const db = new CommDB(
+packages/teamlead/src/bridge/plugin.ts:12822:						const db = new CommDB(commDbPathForProject(input.projectName));
+packages/teamlead/src/bridge/plugin.ts:12898:								const db = new CommDB(
+packages/teamlead/src/bridge/plugin.ts:13539:			new CommDB(commDbPathForProject(projectName)).insertInstruction(
+packages/teamlead/src/bridge/plugin.ts:13575:				const rows = new CommDB(
+packages/teamlead/src/bridge/commdb-lead-runtime.ts:48:		this.commDb = new CommDB(commDbPath);
+packages/teamlead/src/bridge/sessionless-founder-gate-reconciler.ts:130:	const openDb = deps.openDb ?? ((path: string) => new CommDB(path, false));
+packages/teamlead/src/bridge/lead-inbox-runtime.ts:254:				const commDb = new CommDB(dbPath);
+packages/teamlead/src/bridge/commdb-fsm-reconcile.ts:182:		db = new CommDB(dbPath);
+packages/teamlead/src/bridge/external-merge-reconcile.ts:252:		const db = CommDB.openReadonly(commDbPathForProject(session.project_name));
+packages/teamlead/src/bridge/external-merge-reconcile.ts:380:			db = CommDB.openReadonly(commDbPathForProject(projectName));
+packages/teamlead/src/bridge/external-merge-reconcile.ts:425:			db = new CommDB(commDbPathForProject(projectName));
+packages/teamlead/src/bridge/post-ship-finalization.ts:592:			const db = new CommDB(commDbPathForProject(projectName));
+packages/teamlead/src/bridge/question-admission.ts:63:		this.db ??= new CommDB(this.opts.dbPath, false);
+packages/teamlead/src/bridge/actions.ts:274:		const db = new CommDB(commDbPath, false);
+packages/teamlead/src/bridge/actions.ts:507:		const db = new CommDB(commDbPathForProject(session.project_name), false);
+packages/teamlead/src/bridge/gate-poller.ts:1476:			const db = new CommDB(dbPath);
+packages/teamlead/src/bridge/gate-poller.ts:1572:			const db = new CommDB(dbPath);
+packages/teamlead/src/bridge/gate-poller.ts:1635:			db = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/gate-poller.ts:1751:		const commDb = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/gate-poller.ts:1853:			const rdb = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/gate-poller.ts:1865:			const wdb = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/gate-poller.ts:2361:					readonlyDb = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/gate-poller.ts:2363:						writerDb = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/gate-poller.ts:2878:					return new CommDB(
+packages/teamlead/src/bridge/gate-poller.ts:2921:					db = new CommDB(defaultGetCommDbPath(projectName), false);
+packages/teamlead/src/bridge/gate-poller.ts:2957:					db = new CommDB(defaultGetCommDbPath(project.projectName), false);
+packages/teamlead/src/bridge/gate-poller.ts:3051:					const rdb = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/gate-poller.ts:3090:					db = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/gate-poller.ts:3237:					db = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/commdb-session-prune.ts:92:		db = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/commdb-session-prune.ts:149:		db = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/commdb-session-prune.ts:199:		db = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/commdb-session-prune.ts:258:		db = new CommDB(dbPath, false);
+packages/teamlead/src/bridge/commdb-session-prune.ts:542:	const openReadonly = opts.openReadonly ?? CommDB.openReadonly;
+packages/teamlead/src/bridge/commdb-session-prune.ts:544:		opts.openWritable ?? ((path: string) => new CommDB(path));
+packages/teamlead/src/bridge/commdb-session-prune.ts:627:		db = new CommDB(dbPath);
+packages/teamlead/src/bridge/founder-consent/gate-response-router.ts:242:		const db = new CommDB(canonicalPath, false);
+packages/teamlead/src/bridge/run-dispatcher.ts:997:					const db = new CommDB(defaultGetCommDbPath(req.projectName));
+packages/teamlead/src/bridge/run-dispatcher.ts:1242:			const db = new CommDB(dbPath);
+packages/teamlead/src/bridge/run-dispatcher.ts:1270:			const db = new CommDB(dbPath);
+packages/teamlead/src/bridge/run-dispatcher.ts:1725:					const db = new CommDB(dbPath);
+packages/teamlead/src/bridge/session-capture.ts:95:		const db = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/design-review-manifest.ts:229:	const commDb = new CommDB(dbPath);
+packages/teamlead/src/bridge/proofshot-trigger.ts:355:			const commDb = new CommDB(dbPath);
+packages/teamlead/src/bridge/founder-review-authority.ts:62:	const commDb = CommDB.openReadonly(input.commDbPath);
+packages/teamlead/src/bridge/codex-instruction.ts:146:		const commDb = new CommDB(dbPath);
+packages/teamlead/src/bridge/founder-reply-deliverer.ts:311:			const db = new CommDB(path, false);
+packages/teamlead/src/bridge/turn-wake-patrol.ts:44:		const db = new CommDB(input.commDbPathForProject(projectName));
+packages/teamlead/src/bridge/dead-exec-activity.ts:58:		db = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/event-route.ts:144:		declaredDb = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/event-route.ts:374:				const commDb = CommDB.openReadonly(dbPath);
+packages/teamlead/src/bridge/event-route.ts:428:			const commDb = new CommDB(dbPath);
+packages/teamlead/src/bridge/event-route.ts:563:		const commDb = new CommDB(dbPath);
+packages/teamlead/src/bridge/event-route.ts:1690:							comm = CommDB.openReadonly(
+packages/teamlead/src/bridge/event-route.ts:2802:						const commDb = new CommDB(

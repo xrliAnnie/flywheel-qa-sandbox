@@ -1,0 +1,53 @@
+{
+  "sqlite": "3.53.1",
+  "source": "existing incident backup opened immutable read-only; already indexed, not an unmodified pre-mitigation snapshot",
+  "plan": [
+    [
+      12,
+      0,
+      208,
+      "SCAN h USING INDEX sqlite_autoindex_workflow_gate_holder_1"
+    ],
+    [
+      15,
+      0,
+      46,
+      "SEARCH r USING INDEX sqlite_autoindex_workflow_run_1 (run_id=?)"
+    ],
+    [
+      24,
+      0,
+      61,
+      "SEARCH e USING INDEX idx_session_events_closeout_canceled (project_name=? AND source=?)"
+    ],
+    [
+      50,
+      0,
+      0,
+      "CORRELATED SCALAR SUBQUERY 1"
+    ],
+    [
+      54,
+      50,
+      39,
+      "SEARCH a USING COVERING INDEX sqlite_autoindex_workflow_run_issue_alias_1 (run_id=? AND issue_alias=?)"
+    ],
+    [
+      64,
+      0,
+      46,
+      "SEARCH o USING INDEX sqlite_autoindex_ship_judgment_outcome_2 (source_kind=? AND source_id=?) LEFT-JOIN"
+    ],
+    [
+      104,
+      0,
+      0,
+      "USE TEMP B-TREE FOR ORDER BY"
+    ]
+  ],
+  "holders": 536,
+  "events": 8016867,
+  "closeouts": 2729,
+  "baseline_rows": 0,
+  "baseline_ms": 350.41
+}

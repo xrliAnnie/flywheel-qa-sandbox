@@ -1,0 +1,41 @@
+packages/claude-runner/src/codex-phase-lifecycle.ts:313:		this.shutdownTimer = setInterval(
+packages/claude-runner/src/CodexTmuxAdapter.ts:612:				const timer = setInterval(heartbeat, intervalMs);
+packages/claude-runner/src/CodexTmuxAdapter.ts:2359:		const timer = setInterval(tick, this.pollIntervalMs);
+packages/claude-runner/src/TmuxAdapter.ts:1523:				poller = setInterval(() => {
+packages/claude-runner/src/TmuxAdapter.ts:1561:									gracePollerRef = setInterval(() => {
+packages/claude-runner/src/TmuxAdapter.ts:1629:				poller = setInterval(() => {
+packages/teamlead/src/lead-backends/codex/gateway/gateway-main.ts:1096:	const timer = setInterval(() => {
+packages/teamlead/src/HeartbeatService.ts:551:		this.timer = setInterval(() => {
+packages/teamlead/src/ship-judgment/worker.ts:35:		this.timer = setInterval(() => {
+packages/teamlead/src/bridge/beta-release-scheduler.ts:85:		this.timer = setInterval(() => {
+packages/teamlead/src/bridge/workflow-launch-outcome.ts:18:	const heartbeat = setInterval(() => {
+packages/teamlead/src/bridge/voice-session-runtime.ts:138:		this.timer = setInterval(() => {
+packages/teamlead/src/bridge/workflow-engine-dispatcher.ts:334:		this.timer = setInterval(() => {
+packages/teamlead/src/bridge/founder-approval-projector.ts:376:	const timer = setInterval(() => void drain(), args.intervalMs ?? 5_000);
+packages/teamlead/src/bridge/workflow-docs-materializer.ts:114:		this.timer = setInterval(
+packages/teamlead/src/bridge/BridgeEventLoopGuard.ts:14: *   main loop  →  setInterval(heartbeatIntervalMs): Atomics.store(view, 0, BigInt(now))
+packages/teamlead/src/bridge/BridgeEventLoopGuard.ts:15: *   worker     →  setInterval(checkIntervalMs): if now - lastBeat > stallThresholdMs → SIGKILL self
+packages/teamlead/src/bridge/BridgeEventLoopGuard.ts:216:		timer = setInterval(check, checkIntervalMs);
+packages/teamlead/src/bridge/BridgeEventLoopGuard.ts:437:		this.heartbeatTimer = setInterval(() => {
+packages/teamlead/src/bridge/event-loop-attribution.ts:109:		this.timer = setInterval(() => {
+packages/teamlead/src/bridge/plugin.ts:1413:		this.poller = setInterval(() => {
+packages/teamlead/src/bridge/plugin.ts:1429:		this.heartbeat = setInterval(() => {
+packages/teamlead/src/bridge/plugin.ts:2748:			const timer = setInterval(push, 1000);
+packages/teamlead/src/bridge/plugin.ts:6070:			fleetReconcileTimer = setInterval(() => {
+packages/teamlead/src/bridge/plugin.ts:6348:		runtimeRetryTimer = setInterval(async () => {
+packages/teamlead/src/bridge/plugin.ts:8510:	const designReviewManifestTimer = setInterval(
+packages/teamlead/src/bridge/plugin.ts:9777:		chromeReaperTimer = setInterval(
+packages/teamlead/src/bridge/plugin.ts:12027:	const doaBackoffMaintenanceTimer = setInterval(
+packages/teamlead/src/bridge/plugin.ts:13946:	const leadAlertDrainTimer = setInterval(() => {
+packages/teamlead/src/bridge/gate-poller.ts:511:		this.timerHandle = setInterval(() => {
+packages/teamlead/src/ship-judgment/scanner.ts:24:		this.timer = setInterval(() => {
+packages/teamlead/src/lead-backends/codex/DiscordTypingNotifier.ts:98:			opts.scheduler?.setInterval ?? ((cb, ms) => setInterval(cb, ms));
+packages/teamlead/src/lead-backends/codex/CodexDiscordRuntimeOwnership.ts:94:			this.pollTimer = setInterval(
+packages/teamlead/src/ship-judgment/history-runtime.ts:45:		this.timer = setInterval(() => {
+packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts:919:							livenessTimer = setInterval(
+packages/teamlead/src/bridge/report-hosting-maintenance.ts:53:	const timer = setInterval(() => void tick(), REPORT_BLOB_SWEEP_INTERVAL_MS);
+packages/teamlead/src/account-heal/switch-executor.ts:736:			const timer = setInterval(() => {
+packages/teamlead/src/ship-judgment/runtime.ts:75:			this.modeTimer = setInterval(() => {
+packages/teamlead/src/bridge/report-hosting-usage.ts:179:	const timer = setInterval(() => void tick(), REPORT_HOSTING_USAGE_TICK_MS);
+packages/teamlead/src/bridge/done-thread-reconcile.ts:1270:	const tickTimer = setInterval(() => {
+packages/teamlead/src/bridge/fleet-data.ts:815:		this.timer = setInterval(() => void this.collectOnce(), this.intervalMs);
