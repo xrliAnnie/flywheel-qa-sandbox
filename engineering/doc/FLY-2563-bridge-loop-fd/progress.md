@@ -2,16 +2,16 @@
 issue: FLY-2563
 phase: implement
 phaseCursor: 6/7
-updated: 2026-09-15T08:54:42.282Z
-nextStep: R1 bounded response committed748117057; 34 focused+141 contracts
-  green, lint/build/typecheck passed. Formal rulings retain budgets/perf gate.
-  Aggregate23253 still running with earlier-head caveat. Next milestone-last
-  push, final review round and exact-head CI; freeze all writes during review.
-  No completion before effective verdict and verification receipts.
+updated: 2026-09-15T09:10:19.439Z
+nextStep: R2 APPROVED but Lead519bb162 required two new advisory defects fixed,
+  superseding deferral. Both reproduced red then minimal fix written; final
+  focused suite32092 and build6471 running. One code commit then milestone-last
+  push and final round3 review required. Six older advisories deferred.
+  Aggregate23253 remains live and predates final head.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2563 progress
 **phase**: implement (6/7)
-**next**: R1 bounded response committed748117057; 34 focused+141 contracts green, lint/build/typecheck passed. Formal rulings retain budgets/perf gate. Aggregate23253 still running with earlier-head caveat. Next milestone-last push, final review round and exact-head CI; freeze all writes during review. No completion before effective verdict and verification receipts.
+**next**: R2 APPROVED but Lead519bb162 required two new advisory defects fixed, superseding deferral. Both reproduced red then minimal fix written; final focused suite32092 and build6471 running. One code commit then milestone-last push and final round3 review required. Six older advisories deferred. Aggregate23253 remains live and predates final head.
