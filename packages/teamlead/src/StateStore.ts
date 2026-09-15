@@ -6,7 +6,7 @@ import { ShipJudgmentReader } from "./ship-judgment/show.js";
 import { ShipJudgmentDelivery } from "./ship-judgment/delivery.js";
 import { ShipJudgmentStatistics } from "./ship-judgment/statistics.js";
 import { ShipJudgmentOutcomes } from "./ship-judgment/outcomes.js";
-import { installObservationStorage, ObservationSchemaDrift, type ObservationStorageState } from "./ship-judgment/observation-cursor.js";
+import { installObservationStorage, ObservationSchemaDrift, enqueueRestoredObservation, type ObservationReplayReceipt, type ObservationStorageState } from "./ship-judgment/observation-cursor.js";
 import { ShipJudgmentClarifications, type ReplySource } from "./ship-judgment/clarifications.js";
 import { LearningDelivery } from "./ship-judgment/learning-delivery.js";
 import type { ReleaseSignalEvent, ReleasePublication, ReadinessInput, ReleaseHeartbeat, ReleaseSignalGap, ReleaseReadinessRecord } from "./bridge/release-readiness/evaluate.js";
@@ -8144,8 +8144,10 @@ export class StateStore {
 	restoreTerminalRow(input: {
 		sourceTable: "session_events" | "workflow_run_event" | "lead_events";
 		sourceIdentity: string;
-	}): { outcome: "restored" | "idempotent" } {
-		return restoreTerminalRowInDatabase(this.db.raw, input);
+	}): { outcome: "restored" | "idempotent"; observationReplay?: ObservationReplayReceipt } {
+		const receipt = restoreTerminalRowInDatabase(this.db.raw, input);
+		const observationReplay = enqueueRestoredObservation(this.db.raw, input);
+		return observationReplay ? { ...receipt, observationReplay } : receipt;
 	}
 
 	setLeadNote(input: {

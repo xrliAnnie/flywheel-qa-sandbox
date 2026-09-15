@@ -177,7 +177,7 @@ export function observeCloseoutPage(
 		const pending =
 			db.prepare(`INSERT INTO ship_judgment_observation_pending(project_name,source_kind,source_id,run_after,question_after,reason,next_attempt_at,updated_at)
 		 VALUES ('flywheel','closeout',?,?,?,?,?,?) ON CONFLICT(project_name,source_kind,source_id) DO UPDATE SET
-		 run_after=excluded.run_after,question_after=excluded.question_after,reason=excluded.reason,next_attempt_at=excluded.next_attempt_at,updated_at=excluded.updated_at,attempts=ship_judgment_observation_pending.attempts+1`);
+		 run_after=excluded.run_after,question_after=excluded.question_after,reason=excluded.reason,next_attempt_at=CASE WHEN ship_judgment_observation_pending.attempts>=9 AND excluded.reason='dependency' THEN NULL ELSE excluded.next_attempt_at END,updated_at=excluded.updated_at,attempts=ship_judgment_observation_pending.attempts+1`);
 		const clear = db.prepare(
 			"DELETE FROM ship_judgment_observation_pending WHERE project_name='flywheel' AND source_kind='closeout' AND source_id=?",
 		);
@@ -387,6 +387,256 @@ export function observeCloseoutPage(
 			db.prepare(
 				"UPDATE ship_judgment_observation_cursor SET last_event_id=?,updated_at=? WHERE project_name='flywheel' AND source_kind='closeout'",
 			).run(stats.cursorAfter, now);
+	}).immediate();
+	stats.elapsedMs = performance.now() - started;
+	return stats;
+}
+
+export interface VerdictPageStats {
+	sourceCandidates: number;
+	holderCandidates: number;
+	outcomes: number;
+	elapsedMs: number;
+	reconciled: number;
+}
+
+export type ObservationReplayReceipt =
+	| { status: "enqueued"; sourceId: string }
+	| { status: "unavailable"; reason: "replay_enqueue_failed" };
+
+/** Call only after an exact terminal-row restore has returned its success receipt. */
+export function enqueueRestoredObservation(
+	db: Database.Database,
+	input: { sourceTable: string; sourceIdentity: string },
+): ObservationReplayReceipt | undefined {
+	if (input.sourceTable !== "session_events") return;
+	try {
+		const id = Number(input.sourceIdentity);
+		if (
+			!Number.isSafeInteger(id) ||
+			id <= 0 ||
+			String(id) !== input.sourceIdentity
+		)
+			throw new Error("invalid_restore_identity");
+		const source = db
+			.prepare(
+				"SELECT id FROM session_events WHERE id=? AND project_name='flywheel' AND source='bridge.lifecycle-closeout' AND event_type='closeout_report'",
+			)
+			.get(id);
+		if (!source) return;
+		db.prepare(`INSERT INTO ship_judgment_observation_pending(project_name,source_kind,source_id,reason,next_attempt_at,updated_at)
+		 VALUES ('flywheel','closeout',?,'restore_replay','',?) ON CONFLICT(project_name,source_kind,source_id) DO NOTHING`).run(
+			input.sourceIdentity,
+			new Date().toISOString(),
+		);
+		return { status: "enqueued", sourceId: input.sourceIdentity };
+	} catch {
+		// The source restore has already committed; its caller must retain both receipts.
+		return { status: "unavailable", reason: "replay_enqueue_failed" };
+	}
+}
+interface VerdictCursor {
+	last_recorded_at: string;
+	last_verdict_id: string;
+	reconcile_recorded_at: string;
+	reconcile_verdict_id: string;
+	reconcile_ceiling_at: string;
+	reconcile_ceiling_id: string;
+	reconcile_next_at: string | null;
+}
+
+/** B2 uses its public ordering key; backfilled timestamps have a separate bounded reconciliation lane. */
+export function observeVerdictPage(
+	db: Database.Database,
+	now: string,
+	consume: (verdictId: string, recordedMs: number) => boolean,
+): VerdictPageStats {
+	const started = performance.now(),
+		deadline = started + 25;
+	const stats: VerdictPageStats = {
+		sourceCandidates: 0,
+		holderCandidates: 0,
+		outcomes: 0,
+		elapsedMs: 0,
+		reconciled: 0,
+	};
+	db.transaction(() => {
+		const cursor = db
+			.prepare(
+				"SELECT * FROM ship_judgment_observation_cursor WHERE project_name='flywheel' AND source_kind='b2'",
+			)
+			.get() as VerdictCursor | undefined;
+		if (
+			!cursor ||
+			[
+				cursor.last_recorded_at,
+				cursor.last_verdict_id,
+				cursor.reconcile_recorded_at,
+				cursor.reconcile_verdict_id,
+				cursor.reconcile_ceiling_at,
+				cursor.reconcile_ceiling_id,
+			].some((value) => typeof value !== "string")
+		)
+			throw new Error("observation_cursor_invalid");
+		if (
+			cursor.reconcile_next_at !== null &&
+			!Number.isFinite(Date.parse(cursor.reconcile_next_at))
+		)
+			throw new Error("observation_cursor_invalid");
+		const clear = db.prepare(
+			"DELETE FROM ship_judgment_observation_pending WHERE project_name='flywheel' AND source_kind='b2' AND source_id=?",
+		);
+		const pending = db.prepare(
+			"SELECT reason,next_attempt_at,attempts FROM ship_judgment_observation_pending WHERE project_name='flywheel' AND source_kind='b2' AND source_id=?",
+		);
+		const defer = (id: string, reason: string, next: string | null) => {
+			db.prepare(`INSERT INTO ship_judgment_observation_pending(project_name,source_kind,source_id,reason,next_attempt_at,updated_at)
+			 VALUES ('flywheel','b2',?,?,?,?) ON CONFLICT(project_name,source_kind,source_id) DO UPDATE SET
+			 reason=excluded.reason,next_attempt_at=CASE WHEN ship_judgment_observation_pending.attempts>=9 AND excluded.reason='dependency' THEN NULL ELSE excluded.next_attempt_at END,
+			 attempts=ship_judgment_observation_pending.attempts+1,updated_at=excluded.updated_at`).run(
+				id,
+				reason,
+				next,
+				now,
+			);
+		};
+		const processSource = (id: string) => {
+			stats.sourceCandidates++;
+			if (
+				db
+					.prepare(
+						"SELECT 1 FROM ship_judgment_outcome WHERE source_kind='b2' AND source_id=?",
+					)
+					.get(id)
+			) {
+				clear.run(id);
+				return;
+			}
+			const held = pending.get(id) as
+				| { next_attempt_at: string | null }
+				| undefined;
+			if (held && (held.next_attempt_at === null || held.next_attempt_at > now))
+				return;
+			const source = db
+				.prepare(
+					`SELECT run_id,length(CAST(author_evidence_json AS BLOB)) AS payload_bytes,${utcMs("recorded_at")} AS recorded_ms FROM workflow_founder_gate_verdict WHERE verdict_id=?`,
+				)
+				.get(id) as
+				| { run_id: string; payload_bytes: number; recorded_ms: number | null }
+				| undefined;
+			if (!source) {
+				defer(
+					id,
+					"dependency",
+					new Date(Date.parse(now) + 60_000).toISOString(),
+				);
+				return;
+			}
+			if (source.recorded_ms === null || source.payload_bytes > 65536) {
+				defer(id, "invalid_source", null);
+				return;
+			}
+			if (source.recorded_ms > Date.parse(now)) {
+				defer(id, "future", new Date(source.recorded_ms).toISOString());
+				return;
+			}
+			const run = db
+				.prepare("SELECT project_name FROM workflow_run WHERE run_id=?")
+				.get(source.run_id) as { project_name: string } | undefined;
+			if (run && run.project_name !== "flywheel") {
+				clear.run(id);
+				return;
+			}
+			stats.holderCandidates++;
+			if (run && consume(id, source.recorded_ms)) {
+				stats.outcomes++;
+				clear.run(id);
+			} else
+				defer(
+					id,
+					"dependency",
+					new Date(Date.parse(now) + 60_000).toISOString(),
+				);
+		};
+		const due = db
+			.prepare(
+				`SELECT source_id FROM ship_judgment_observation_pending WHERE project_name='flywheel' AND source_kind='b2' AND next_attempt_at<=? ORDER BY next_attempt_at,source_id LIMIT 8`,
+			)
+			.all(now) as { source_id: string }[];
+		for (const row of due) {
+			if (performance.now() >= started + 12.5 || stats.holderCandidates >= 8)
+				break;
+			processSource(row.source_id);
+		}
+		const reconcileDue =
+			cursor.reconcile_next_at === null || cursor.reconcile_next_at <= now;
+		const normalLimit = reconcileDue ? 12 : 16;
+		const page = db
+			.prepare(`SELECT recorded_at,verdict_id FROM workflow_founder_gate_verdict INDEXED BY idx_fly2563_verdict_cursor
+		 WHERE (recorded_at,verdict_id)>(?,?) ORDER BY recorded_at,verdict_id LIMIT 16`)
+			.all(cursor.last_recorded_at, cursor.last_verdict_id) as {
+			recorded_at: string;
+			verdict_id: string;
+		}[];
+		for (const row of page) {
+			if (
+				performance.now() >= deadline ||
+				stats.holderCandidates >= normalLimit
+			)
+				break;
+			processSource(row.verdict_id);
+			cursor.last_recorded_at = row.recorded_at;
+			cursor.last_verdict_id = row.verdict_id;
+		}
+		if (
+			reconcileDue &&
+			performance.now() < deadline &&
+			stats.holderCandidates < 16
+		) {
+			if (!cursor.reconcile_ceiling_id) {
+				cursor.reconcile_ceiling_at = cursor.last_recorded_at;
+				cursor.reconcile_ceiling_id = cursor.last_verdict_id;
+				cursor.reconcile_recorded_at = cursor.reconcile_verdict_id = "";
+			}
+			const history = db
+				.prepare(`SELECT recorded_at,verdict_id FROM workflow_founder_gate_verdict INDEXED BY idx_fly2563_verdict_cursor
+			 WHERE (recorded_at,verdict_id)>(?,?) AND (recorded_at,verdict_id)<=(?,?) ORDER BY recorded_at,verdict_id LIMIT 16`)
+				.all(
+					cursor.reconcile_recorded_at,
+					cursor.reconcile_verdict_id,
+					cursor.reconcile_ceiling_at,
+					cursor.reconcile_ceiling_id,
+				) as { recorded_at: string; verdict_id: string }[];
+			let inspected = 0;
+			for (const row of history) {
+				if (performance.now() >= deadline || stats.holderCandidates >= 16)
+					break;
+				processSource(row.verdict_id);
+				cursor.reconcile_recorded_at = row.recorded_at;
+				cursor.reconcile_verdict_id = row.verdict_id;
+				inspected++;
+				stats.reconciled++;
+			}
+			if (inspected === history.length && history.length < 16) {
+				cursor.reconcile_ceiling_at = cursor.reconcile_ceiling_id = "";
+				cursor.reconcile_recorded_at = cursor.reconcile_verdict_id = "";
+			}
+			cursor.reconcile_next_at = new Date(
+				Date.parse(now) + 60_000,
+			).toISOString();
+		}
+		db.prepare(
+			`UPDATE ship_judgment_observation_cursor SET last_recorded_at=?,last_verdict_id=?,reconcile_recorded_at=?,reconcile_verdict_id=?,reconcile_ceiling_at=?,reconcile_ceiling_id=?,reconcile_next_at=?,updated_at=? WHERE project_name='flywheel' AND source_kind='b2'`,
+		).run(
+			cursor.last_recorded_at,
+			cursor.last_verdict_id,
+			cursor.reconcile_recorded_at,
+			cursor.reconcile_verdict_id,
+			cursor.reconcile_ceiling_at,
+			cursor.reconcile_ceiling_id,
+			cursor.reconcile_next_at,
+			now,
+		);
 	}).immediate();
 	stats.elapsedMs = performance.now() - started;
 	return stats;

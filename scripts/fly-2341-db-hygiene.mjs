@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MailboxQueue } from "../packages/flywheel-comm/dist/mailbox-queue.js";
+import { enqueueRestoredObservation } from "../packages/teamlead/dist/ship-judgment/observation-cursor.js";
 import {
 	archiveTerminalRows,
 	installTerminalRowArchiveSchema,
@@ -185,7 +186,10 @@ export function executeFly2341Restore(input) {
 	const db = new Database(dbPath);
 	try {
 		installTerminalRowArchiveSchema(db);
-		return restoreTerminalRow(db, { sourceTable, sourceIdentity });
+		const input = { sourceTable, sourceIdentity };
+		const receipt = restoreTerminalRow(db, input);
+		const observationReplay = enqueueRestoredObservation(db, input);
+		return observationReplay ? { ...receipt, observationReplay } : receipt;
 	} finally {
 		db.close();
 	}

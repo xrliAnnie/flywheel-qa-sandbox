@@ -46,6 +46,18 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 
 ## 验收状态（仍未完成）
 
+## T1 第二批：B2增量与精确恢复回放
+
+- B2从`(recorded_at,verdict_id)`索引取≤16个源身份，不先联holder；每轮共享16pair/25ms预算，独立pending预算。按PK核对项目/时间/payload大小后才读原holder；原verdict/outcome身份和归因保持。
+- 每60秒最多16身份的reconciliation持久化位置和ceiling；已记录outcome先点查跳过，不重新查终态holder。为到期reconciliation预留4个pair，避免新源连续到达时饿死补读。
+- 覆盖同时间较小ID、倒填历史时间、中轮重建观察器、在已越过位置后补入旧行并于下一轮发现；正常水位不倒退。future/invalid隔离，写失败回滚水位与结果。
+- StateStore与运维restore调用方在原restore成功之后单独enqueue精确closeout源；返回附加observationReplay回执，失败明确`replay_enqueue_failed`，不伪造源未恢复或回滚已成功restore。idempotent restore可重试enqueue；零匹配回放正常结束，无依赖重试。
+- 真缺依赖的pending每60秒重试，10次后next_attempt_at=NULL保留诊断。不会清空全局cursor或修改权威表触发器。
+- RED：B2三项新增用例失败；restore三项因缺回放回执失败；依赖重试上界用例失败。GREEN：最终6文件79/79，含原归档21项及运维脚本4项；teamlead类型检查通过，teamlead构建通过；retention consumer gate通过。
+- 仍需：T6归档未消费源/pending保护、T4健康与诊断告警、T3完整owner/lease审计、T5同步SQL计时及T7大库与完整门。上述源码通过不代表指定备份性能、生产15分钟/2小时QA或exact-head CI通过。
+
+## 总体验收状态
+
 | 项目 | 当前证据 |
 |---|---|
 | A 真实备份取消 <50ms | pending |

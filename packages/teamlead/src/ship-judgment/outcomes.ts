@@ -5,10 +5,13 @@ import {
 	type CloseoutPair,
 	type ObservationPageStats,
 	observeCloseoutPage,
+	observeVerdictPage,
+	type VerdictPageStats,
 } from "./observation-cursor.js";
 
 type Authorship = "founder_verified" | "lead_proxy" | "auto" | "unknown";
 interface VerdictRow {
+	recorded_ms: number;
 	verdict_id: string;
 	source_event_id: string;
 	run_id: string;
@@ -75,7 +78,7 @@ function attribution(row: VerdictRow, evidence: unknown): Authorship {
 			m.card_message_id === row.card_message_id &&
 			Date.parse(m.card_message_ts) <= Date.parse(m.message_ts) &&
 			Date.parse(m.message_ts) <= Date.parse(m.verified_at) &&
-			Date.parse(m.verified_at) <= Date.parse(row.recorded_at)
+			Date.parse(m.verified_at) <= row.recorded_ms
 		)
 			return "founder_verified";
 	}
@@ -364,91 +367,101 @@ export class ShipJudgmentOutcomes {
 			return undefined;
 		}
 	}
+	private lastVerdictPage: VerdictPageStats = {
+		sourceCandidates: 0,
+		holderCandidates: 0,
+		outcomes: 0,
+		elapsedMs: 0,
+		reconciled: 0,
+	};
+	verdictPageStats(): VerdictPageStats {
+		return { ...this.lastVerdictPage };
+	}
 	observeVerdicts(now: string): number {
 		z.string().datetime().parse(now);
-		return this.db
-			.transaction(() => {
-				const rows = this.db
+		this.lastVerdictPage = observeVerdictPage(
+			this.db,
+			now,
+			(id, recordedMs) => {
+				const row = this.db
 					.prepare(`SELECT v.*,h.card_message_id,h.run_id AS holder_run_id,h.attempt AS holder_attempt,h.gate_node_id AS holder_node_id
- FROM workflow_founder_gate_verdict v JOIN workflow_run r ON r.run_id=v.run_id
- JOIN workflow_gate_holder h ON h.question_id=v.question_id
- LEFT JOIN ship_judgment_outcome o ON o.source_kind='b2' AND o.source_id=v.verdict_id
- WHERE r.project_name='flywheel' AND o.outcome_id IS NULL AND v.recorded_at<=?
- ORDER BY v.recorded_at,v.verdict_id LIMIT 50`)
-					.all(now) as VerdictRow[];
-				for (const row of rows) {
-					const evidence =
-						Buffer.byteLength(row.author_evidence_json) <= 65536
-							? JSON.parse(row.author_evidence_json)
-							: {
-									kind: "oversize",
-									digest: canonicalDigest(row.author_evidence_json),
-								};
-					const consistent =
-						row.holder_run_id === row.run_id &&
-						row.holder_attempt === row.attempt &&
-						row.holder_node_id === row.gate_node_id;
-					const authorship = consistent
-						? attribution(row, evidence)
-						: "unknown";
-					const target = {
-						repo_identity: row.repo_identity,
-						repo_slug: row.repo_slug,
-						pr_number: row.pr_number,
-						head_sha: row.head_sha,
+ FROM workflow_founder_gate_verdict v JOIN workflow_gate_holder h ON h.question_id=v.question_id WHERE v.verdict_id=?`)
+					.get(id) as VerdictRow | undefined;
+				if (!row) return false;
+				row.recorded_ms = recordedMs;
+				this.recordVerdict(row, now);
+				return true;
+			},
+		);
+		return this.lastVerdictPage.outcomes;
+	}
+	private recordVerdict(row: VerdictRow, now: string): void {
+		const evidence =
+			Buffer.byteLength(row.author_evidence_json) <= 65536
+				? JSON.parse(row.author_evidence_json)
+				: {
+						kind: "oversize",
+						digest: canonicalDigest(row.author_evidence_json),
 					};
-					const original = founderMessage.safeParse(evidence);
-					const decidedAt =
-						authorship === "founder_verified" && original.success
-							? new Date(original.data.message_ts).toISOString()
-							: new Date(row.recorded_at).toISOString();
-					const context = consistent
-						? this.frozenTargetContext(row, decidedAt)
-						: undefined;
-					const targetsDigest =
-						context?.targetsDigest ??
-						canonicalDigest({ unresolved: true, source_target: target });
-					const delivery = this.db
-						.prepare(
-							"SELECT dirty_since,latest_candidate_digest,delivery_mode,presentation_state_changed_at FROM ship_judgment_delivery WHERE purpose='opinion' AND question_id=?",
-						)
-						.get(row.question_id) as
-						| {
-								dirty_since: string | null;
-								latest_candidate_digest: string | null;
-								delivery_mode: string;
-								presentation_state_changed_at: string | null;
-						  }
-						| undefined;
-					this.db
-						.prepare(`INSERT INTO ship_judgment_outcome(outcome_id,source_kind,source_id,question_id,run_id,card_message_id,targets_digest,authorship,decision,decided_at,observed_at,verdict_id,evidence_json)
+		const consistent =
+			row.holder_run_id === row.run_id &&
+			row.holder_attempt === row.attempt &&
+			row.holder_node_id === row.gate_node_id;
+		const authorship = consistent ? attribution(row, evidence) : "unknown";
+		const target = {
+			repo_identity: row.repo_identity,
+			repo_slug: row.repo_slug,
+			pr_number: row.pr_number,
+			head_sha: row.head_sha,
+		};
+		const original = founderMessage.safeParse(evidence);
+		const decidedAt =
+			authorship === "founder_verified" && original.success
+				? new Date(original.data.message_ts).toISOString()
+				: new Date(row.recorded_ms).toISOString();
+		const context = consistent
+			? this.frozenTargetContext(row, decidedAt)
+			: undefined;
+		const targetsDigest =
+			context?.targetsDigest ??
+			canonicalDigest({ unresolved: true, source_target: target });
+		const delivery = this.db
+			.prepare(
+				"SELECT dirty_since,latest_candidate_digest,delivery_mode,presentation_state_changed_at FROM ship_judgment_delivery WHERE purpose='opinion' AND question_id=?",
+			)
+			.get(row.question_id) as
+			| {
+					dirty_since: string | null;
+					latest_candidate_digest: string | null;
+					delivery_mode: string;
+					presentation_state_changed_at: string | null;
+			  }
+			| undefined;
+		this.db
+			.prepare(`INSERT INTO ship_judgment_outcome(outcome_id,source_kind,source_id,question_id,run_id,card_message_id,targets_digest,authorship,decision,decided_at,observed_at,verdict_id,evidence_json)
  VALUES (?,'b2',?,?,?,?,?,?,?,?,?,?,?)`)
-						.run(
-							canonicalDigest(["b2", row.verdict_id]),
-							row.verdict_id,
-							row.question_id,
-							row.run_id,
-							row.card_message_id ?? "",
-							targetsDigest,
-							authorship,
-							row.verdict,
-							decidedAt,
-							now,
-							row.verdict_id,
-							JSON.stringify({
-								source_event_id: row.source_event_id,
-								source_target: target,
-								source_evidence: evidence,
-								binding_status: context ? "resolved" : "unresolved",
-								input_id: context?.inputId ?? null,
-								delivery_at_observation: delivery,
-								refresh_history: refreshHistoryAt(delivery, decidedAt),
-								source_recorded_at: row.recorded_at,
-							}),
-						);
-				}
-				return rows.length;
-			})
-			.immediate();
+			.run(
+				canonicalDigest(["b2", row.verdict_id]),
+				row.verdict_id,
+				row.question_id,
+				row.run_id,
+				row.card_message_id ?? "",
+				targetsDigest,
+				authorship,
+				row.verdict,
+				decidedAt,
+				now,
+				row.verdict_id,
+				JSON.stringify({
+					source_event_id: row.source_event_id,
+					source_target: target,
+					source_evidence: evidence,
+					binding_status: context ? "resolved" : "unresolved",
+					input_id: context?.inputId ?? null,
+					delivery_at_observation: delivery,
+					refresh_history: refreshHistoryAt(delivery, decidedAt),
+					source_recorded_at: row.recorded_at,
+				}),
+			);
 	}
 }
