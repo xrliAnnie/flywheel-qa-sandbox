@@ -7,6 +7,32 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
 
 describe("CommDB open diagnostics", () => {
+	it("opens an existing scoped writer without migration and fails fast on a held write lock", () => {
+		const path = join(tmpDir, "scoped.db");
+		new CommDB(path).close();
+		const owner = new Database(path);
+		const schema = owner
+			.prepare("SELECT sql FROM sqlite_master ORDER BY name")
+			.all();
+		const writer = CommDB.openExistingWriter(path);
+		try {
+			expect(
+				owner.prepare("SELECT sql FROM sqlite_master ORDER BY name").all(),
+			).toEqual(schema);
+			const raw = (writer as unknown as { db: Database.Database }).db;
+			expect(raw.pragma("busy_timeout", { simple: true })).toBe(0);
+			owner.exec("BEGIN IMMEDIATE");
+			expect(() => writer.insertInstruction("bridge", "lead", "text")).toThrow(
+				"locked",
+			);
+		} finally {
+			writer.close();
+			owner.close();
+		}
+		const missing = join(tmpDir, "missing.db");
+		expect(() => CommDB.openExistingWriter(missing)).toThrow();
+		expect(existsSync(missing)).toBe(false);
+	});
 	let tmpDir: string;
 
 	beforeEach(() => {

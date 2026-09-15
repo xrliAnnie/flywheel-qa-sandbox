@@ -1275,6 +1275,24 @@ export class CommDB {
 		return instance;
 	}
 
+	/** A synchronous write scope after boot migration. Never create, migrate or wait on a lock. */
+	static openExistingWriter(dbPath: string): CommDB {
+		const instance = Object.create(CommDB.prototype) as CommDB;
+		let phase: CommDbOpenPhase = "database-open";
+		let opened: Database.Database | undefined;
+		try {
+			opened = new Database(dbPath, { fileMustExist: true, timeout: 0 });
+			installSqlTiming(opened, "comm");
+			instance.db = opened;
+			phase = "generation-assert";
+			assertMailboxGeneration(opened, dbPath);
+		} catch (error) {
+			closeAfterOpenFailure(opened);
+			augmentCommDbOpenError(error, dbPath, phase);
+		}
+		return instance;
+	}
+
 	private applyMigrations(): void {
 		const runnerStopColumns = this.db
 			.prepare("PRAGMA table_info(runner_stop_declarations)")

@@ -153,6 +153,21 @@ function insertFounderReviewQuestion(
 }
 
 describe("FLY-1392 v2 founder ingress", () => {
+	it("releases owned CommDB before a learning observer waits", async () => {
+		let live=0;
+		let finish!: (result:"handled")=>void;
+		let entered!: ()=>void;
+		const started=new Promise<void>(resolve=>{entered=resolve;});
+		const run=emitFounderReplyDeliveryForThread(ctx(dbPath),[],{
+			store:store(),cursorStore:cursor,
+			fetchImpl:discordGet([{id:snowflakeAt(Date.now()-30000),content:"why",author:{id:OWNER},type:19,message_reference:{message_id:"323456789012345678",channel_id:THREAD}}]),
+			commDbLeaseFactory:()=>{const db=new CommDB(dbPath,false);live++;return {db,release:()=>{db.close();live--;}};},
+			observeShipJudgmentReply:()=>{entered();return new Promise(resolve=>{finish=resolve;});},
+		});
+		await started;
+		try {expect(live).toBe(0);} finally {finish("handled");await run;}
+		expect(live).toBe(0);
+	});
 	let dir: string;
 	let dbPath: string;
 	let cursor: InMemoryInboundCursorStore;
