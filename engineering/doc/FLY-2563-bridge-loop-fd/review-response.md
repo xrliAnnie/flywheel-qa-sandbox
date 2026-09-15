@@ -36,4 +36,17 @@ Gate `6ba20130-08e0-4db2-8772-a37fb8e3b713`，request `aec4ca61-1d09-4555-845c-8
 - lag严格max若被范围外GC/其他timer击穿，保存失败窗口与profile并记录后续，不擅自放宽验收。
 - Mermaid本地浏览器权限限制继续保留；没有远程渲染或视觉QA替代声明。
 
-修订仍仅包含设计文档及HTML；没有执行产品实现、迁移、重启、部署或继任派发。需要NEW review gate + NEW request-review取得有效批准。
+修订仅包含设计文档及HTML；没有执行产品实现、迁移、重启、部署或继任派发。R1后已注册NEW review gate + NEW request-review，并在R2取得有效批准。
+
+## R2 APPROVED — Follow-ups / 实施交接
+
+Gate `8b68f7f7-65a6-44b4-b6aa-319babf09006`，request `c755c5f6-2501-4038-8c6a-e61c6fdf2995`，reviewVerdict=APPROVED，reviewerVerdict=APPROVED，round=2；审阅设计基线`eeb375e14`。原结构化结论见review-r2.json。以下4条LOW为非阻塞建议，已登记供Lead及实施节点处理；不改变本轮批准状态、不新开设计或评审。
+
+| findingKey | 实施时的具体处理建议 |
+|---|---|
+| julianday-ms-rounding | SQL输出UTC毫秒统一`CAST(round((julianday(x)-2440587.5)*86400000) AS INTEGER)`，或全SQL等价比较；补与JS整数毫秒完全相等的闭区间边界回归。 |
+| restore-replay-caller-unmapped | 补查并映射`StateStore.restoreTerminalRow`包装及`scripts/fly-2341-db-hygiene.mjs:188`实际调用；显式restore replay仍按普通规则消费零匹配，不将正常零匹配变成无尽依赖重试；纳入T1/T6。 |
+| rollback-text-stale-trigger | plan.md回滚段落的“table/trigger”与“旧版本留下pending”是R1遗留措辞。以§2/T1已批准的无trigger方案为准：回滚版本写入旧时间B2不会自动留下pending；再次升级后由60秒有界reconciliation补获。不得按这句旧文案重新加trigger。 |
+| observation-storage-reason-unbounded-string | 未鉴权health的`observation_storage.reason`限定静态错误码枚举，如`migration_failed/schema_drift/busy/disk`；具体异常文本及路径只记内部日志。 |
+
+本附录保留评审通过时的plan.md基线，将建议明确交给实施节点；不声称产品修复或上述回归已运行。

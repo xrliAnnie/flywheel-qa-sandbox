@@ -9,7 +9,7 @@ Issue: FLY-2563 (https://linear.app/geoforge3d/issue/FLY-2563/bridge-ship-judgme
 - Gate question：`6ba20130-08e0-4db2-8772-a37fb8e3b713`。
 - request-review receipt：`aec4ca61-1d09-4555-845c-8fcd597e4e70`，accepted=true，skipped=false。
 - R1有效状态：CHANGES_REQUESTED（2 HIGH，其他MEDIUM/LOW为advisories）；原答复去除delivery nonce后保存在review-r1.json。已按review-response.md修订，须新一轮有效批准才可交接。
-- R2审阅设计提交：`eeb375e14`；gate `8b68f7f7-65a6-44b4-b6aa-319babf09006`；request `c755c5f6-2501-4038-8c6a-e61c6fdf2995` accepted=true/skipped=false；当前pending。修订回报Lead回执`709e97ca-dd4f-4a37-b994-2f58cb25da06`。
+- R2审阅设计提交：`eeb375e14`；gate `8b68f7f7-65a6-44b4-b6aa-319babf09006`；request `c755c5f6-2501-4038-8c6a-e61c6fdf2995` accepted=true/skipped=false；有效reviewVerdict=APPROVED，reviewerVerdict=APPROVED，round=2。去除delivery nonce的结构化答复见review-r2.json。4条LOW建议记录于review-response.md的R2 Follow-ups，设计门已通过，不重开评审。修订回报Lead回执`709e97ca-dd4f-4a37-b994-2f58cb25da06`。
 - 语义确认：Lead question `90054f86-ebf0-4256-ab41-9b1d37213565` 明确终态事件首次消费一次、例行扫描非终态、保留holder与swap阈值。回复已应用并通过ask --report回执 `8b8df6ad-ff63-43ec-9d7c-04112c12714a` 汇报。
 
 ## 已完成的设计证据
@@ -34,6 +34,6 @@ Issue: FLY-2563 (https://linear.app/geoforge3d/issue/FLY-2563/bridge-ship-judgme
 
 ## 待完成
 
-有效设计评审、最终HTML提交推送、publish-only、托管HTTP/nonce/CSP一致性验证、DESIGN-HTML ready回执、phase_design_complete与park。
+最终交付记录提交推送、publish-only、托管HTTP/nonce/CSP一致性验证、DESIGN-HTML ready回执、phase_design_complete与park。
 
 产品实现、迁移与CI、15分钟HTTP/lag、2小时fd、真实副本修复后性能均由实施/QA完成，本节点未执行。
