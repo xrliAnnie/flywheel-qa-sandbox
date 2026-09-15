@@ -195,6 +195,7 @@ import {
 	findArchivedTerminalRow,
 	installTerminalRowArchiveSchema,
 	maxArchivedWorkflowRunEventSeq,
+	MAX_TERMINAL_ARCHIVE_DURATION_MS,
 	restoreTerminalRow as restoreTerminalRowInDatabase,
 	type TerminalArchiveInput,
 	type TerminalArchiveResult,
@@ -2674,6 +2675,7 @@ export type AttentionThreadBinding =
 
 export class StateStore {
 	private observationStorage: ObservationStorageState = { status: "unavailable", reason: "not_initialized" };
+	private observationZeroProgress = { verdict: 0, closeout: 0, clarification: 0, archive: 0 };
 	get betaSchedules(): BetaReleaseStore {
 		return new BetaReleaseStore(this.db.raw);
 	}
@@ -5350,6 +5352,13 @@ export class StateStore {
 	}
 	getShipJudgmentObservationStorage(): ObservationStorageState {
 		return { ...this.observationStorage };
+	}
+	getShipJudgmentObservationProgress() {
+		return { zero_progress_ticks: { ...this.observationZeroProgress }, starved: Object.values(this.observationZeroProgress).some(count => count >= 3) };
+	}
+	recordShipJudgmentObservationProgress(kind: "verdict" | "closeout" | "clarification" | "archive", inspected: number, elapsedMs: number, budgetMs: number): void {
+		this.observationZeroProgress[kind] = inspected === 0 && elapsedMs >= budgetMs
+			? Math.min(Number.MAX_SAFE_INTEGER, this.observationZeroProgress[kind] + 1) : 0;
 	}
 
 	getShipJudgmentClarifications(mode: () => string, source?:ReplySource): ShipJudgmentClarifications {
@@ -8162,7 +8171,10 @@ export class StateStore {
 	}
 
 	archiveTerminalRows(input: TerminalArchiveInput): TerminalArchiveResult {
-		return archiveTerminalRowsInDatabase(this.db.raw, { ...input, observationStorageReady: this.observationStorage.status === "ready" });
+		const started = performance.now();
+		const result = archiveTerminalRowsInDatabase(this.db.raw, { ...input, observationStorageReady: this.observationStorage.status === "ready" });
+		this.recordShipJudgmentObservationProgress("archive", result.scanned, performance.now() - started, MAX_TERMINAL_ARCHIVE_DURATION_MS);
+		return result;
 	}
 
 	restoreTerminalRow(input: {

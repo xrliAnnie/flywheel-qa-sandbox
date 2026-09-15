@@ -101,6 +101,13 @@ export class ShipJudgmentRuntime {
 			const mode = this.deps.mode();
 			if (mode === "off") {
 				this.deliveryAbort?.abort();
+				for (const source of ["verdict", "closeout", "clarification"] as const)
+					this.deps.store.recordShipJudgmentObservationProgress?.(
+						source,
+						0,
+						0,
+						25,
+					);
 				if (this.lastObservedMode !== "off") {
 					try {
 						this.deps.store
@@ -125,20 +132,41 @@ export class ShipJudgmentRuntime {
 			["observeCancellations", "cancellation_observation_failed"],
 		] as const) {
 			if (!this.observationEnabled()) return;
+			const started = performance.now();
+			let inspected = 0;
 			try {
-				this.deps.store
-					.getShipJudgmentOutcomes()
-					[method](new Date(this.now()).toISOString());
+				const observer = this.deps.store.getShipJudgmentOutcomes();
+				observer[method](new Date(this.now()).toISOString());
+				const stats = observer.pageStats();
+				inspected = stats.sourceCandidates + stats.holderCandidates;
 			} catch {
 				this.deps.onError?.(error);
+			} finally {
+				this.deps.store.recordShipJudgmentObservationProgress?.(
+					method === "observeVerdicts" ? "verdict" : "closeout",
+					inspected,
+					performance.now() - started,
+					25,
+				);
 			}
 			await yieldToEventLoop();
 		}
 		if (!this.observationEnabled()) return;
+		const started = performance.now();
+		let inspected = 0;
 		try {
-			this.deps.store.getShipJudgmentClarifications(this.deps.mode).sweep();
+			inspected = this.deps.store
+				.getShipJudgmentClarifications(this.deps.mode)
+				.sweep();
 		} catch {
 			this.deps.onError?.("clarification_sweep_failed");
+		} finally {
+			this.deps.store.recordShipJudgmentObservationProgress?.(
+				"clarification",
+				inspected,
+				performance.now() - started,
+				25,
+			);
 		}
 		await yieldToEventLoop();
 		if (this.observationEnabled()) this.startDelivery();

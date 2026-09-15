@@ -293,6 +293,7 @@ export const ALERT_EVENT_TYPES = [
 	// external liveness probe (scripts/bridge-liveness-probe.sh, Codex bot).
 	"bridge_abnormal_exit",
 	"bridge_fd_pressure",
+	"ship_judgment_observation_unavailable",
 	// One of the two infra bots (claude / codex windowed Leads) is down —
 	// launchd job dead or lead pane gone. CROSS-owned via
 	// metadata.infraBotDown.provider ("nobody rescues their own side": the dead

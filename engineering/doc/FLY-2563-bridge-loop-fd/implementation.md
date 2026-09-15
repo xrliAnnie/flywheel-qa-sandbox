@@ -213,3 +213,19 @@ Lead question b07d0b86-d375-4dab-b37a-9ed4e3fde5f4 授权唯一 writable inciden
 - 同时本机loadavg约65–68、18个可用CPU、freeMemory约298MB；这是环境观察，不是豁免阈值或证明全部尖峰根因。聚合和本机多任务尚在执行，不并发启动更多性能重跑。
 - 查明常规CI helper把parallel项目强制升至2 forks，而新性能文件尚未登记耗时，被分入parallel。以独立CI34943318979/job104296927883实测37,703ms（命令至首文件完成，测试体33,066ms）写入既有cost表，并保存该条独立来源。现有≥2500ms规则因此把它纳入serial/1fork，专用性能lane也仍是1fork；没有排除测试或放宽阈值。分类断言先红后绿，完整shard测试仍运行。
 - 最新teamlead typecheck、pnpm lint exit0。全包聚合仍无终态receipt；这不是有效package gate或性能验收通过。后续必须核对最终HEAD CI、effective code review，最后才能needs_review交接。
+
+## Code review R1 bounded response — 2026-09-15
+
+Reviewed head `f7e4b92a13f49d2cd656afeb6831b24983cbbdb5`; effective verdict CHANGES_REQUESTED, full receipt `code-review-r1.json`. That head passed all 15 exact-head CI checks in run 34946059550, including strict cancellation 28.647ms / modeTick 17.804ms maxima.
+
+Lead question `0554eafa-9a0c-4843-9c6b-14c6073c9f7c` resolved with server governance rulings: `observation-budget-zero-progress` overruled by `d9c796fb-2529-41b7-ae08-bdb1914e7bc4`, and `flaky-wallclock-perf-job-in-required-ci` overruled by `d0b4a057-fb75-4d8a-96ad-4e16a8fea321`. The original budgets include lock/BEGIN/preparation time and remain unchanged; no forced work, clock reset, or relaxed performance gate. Required single-worker 50/100ms CI remains blocking.
+
+Authorized response fixes `observation-storage-failure-never-surfaced` and adds consecutive budget-exhausted zero-progress counters for verdict, closeout, clarification and archive. `/health.ship_judgment.observation_storage` exposes cached startup status, static reason, counters and starvation after three consecutive zero-progress budget exhaustions. A stable per-episode unified alert retries through the existing drain timer, preserves delivery identity, and reconciles after recovery. Successful inspection or an idle tick below budget resets its counter. Mode off clears the learning counters.
+
+Red evidence: health field absent; alert module absent; zero-progress methods absent. Green evidence: real schema-drift HTTP response, alert retry/receipt/recovery/single-flight/shutdown, real runtime stalled before candidate work, resumed progress, and archive integration. Final archive/alert/progress group: 34/34; teamlead typecheck passed. No observer or archive budget changed.
+
+Deferred advisories, explicitly outside this response: `commdb-open-existing-writer-zero-busy-timeout`, `oversize-closeout-payload-permanently-quarantined`, `archive-oversize-rows-never-retired`, `archive-throughput-now-bounded-by-candidates-not-eligible-rows`, `gate-poller-opens-migrating-writer-only-to-close-it`, `restore-replay-receipt-claims-enqueued-on-conflict`. Lead allows at most one additional code-review round; freeze head during that review and do not complete until its effective verdict resolves.
+
+The original package aggregate remains running (session 23253, `/tmp/fly2563-resume-packages.log`). It started at 41965da9 and spans later changes, including a temporary diagnostic test observed in its comm output; it is not an exact-final-head receipt. Claude-runner completed both attempts with zero assertion failures and only onTaskUpdate RPC errors. No aggregate acceptance is claimed before its terminal structured receipt. Production health/fd duration acceptance remains independent QA work.
+
+R1 final focused validation: 141/141 routing/kind/hub/health/runtime tests passed; 34/34 archive/zero-progress/alert tests passed. `pnpm lint` completed without errors (existing warnings); `pnpm -r build` and teamlead typecheck passed. New head CI and effective review remain pending.

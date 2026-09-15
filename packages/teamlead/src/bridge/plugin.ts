@@ -594,6 +594,10 @@ import { receiptBackedMaterializedHeadAuthority } from "./materialized-head-auth
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
+import {
+	ObservationStorageAlert,
+	observationStorageHealth,
+} from "./observation-storage-alert.js";
 import { sweepOrphanFounderReviewGates } from "./orphan-founder-review-monitor.js";
 import { OutboundPressureMeter } from "./outbound-pressure.js";
 import { isTransientThrottlePane } from "./pane-blocked-classifier.js";
@@ -2408,6 +2412,7 @@ export function createBridgeApp(
 			...(opts?.processResources
 				? { fd: opts.processResources.snapshot() }
 				: {}),
+			ship_judgment: { observation_storage: observationStorageHealth(store) },
 		});
 	});
 
@@ -5451,6 +5456,7 @@ export async function startBridge(
 	});
 	await eventLoopAttribution.start();
 	let fdPressureAlert: FdPressureAlert | undefined;
+	let observationStorageAlert: ObservationStorageAlert | undefined;
 	const fdBootId = `${process.pid}:${randomUUID()}`;
 	const processResources = new ProcessResourceMonitor({
 		alert: (sample) => fdPressureAlert?.alert(sample) ?? Promise.resolve(false),
@@ -13364,8 +13370,10 @@ export async function startBridge(
 					fleetRecovery: async (row) =>
 						row.event_type === "bridge_fd_pressure"
 							? (fdPressureAlert?.recoveryProbe(row) ?? null)
-							: ((await fleetSensorsHolder.current?.recoveryProbe(row)) ??
-								null),
+							: row.event_type === "ship_judgment_observation_unavailable"
+								? (observationStorageAlert?.recoveryProbe(row) ?? null)
+								: ((await fleetSensorsHolder.current?.recoveryProbe(row)) ??
+									null),
 				})
 			: undefined;
 	const founderEscalationConfigured = isDiscordSnowflake(
@@ -13449,6 +13457,17 @@ export async function startBridge(
 				await alertHub.resolve(key, eventId);
 		},
 	});
+	observationStorageAlert = new ObservationStorageAlert({
+		bootId: fdBootId,
+		store,
+		alert: (payload) => routedAlertSink.alert(payload),
+	});
+	const retryObservationStorageAlert = () => {
+		void observationStorageAlert!.tick().catch(() => {
+			console.warn("[Bridge] observation_storage_alert_delivery_failed");
+		});
+	};
+	retryObservationStorageAlert();
 	await reportFlagScanOwnerResolution(flagScanOwnerStatus, routedAlertSink);
 	workflowEngineAlertHolder.current = routedAlertSink;
 	paneLossNotifyHolder.current = async (
@@ -13988,6 +14007,7 @@ export async function startBridge(
 	let drainStuckCycles = 0;
 	let leadAlertDraining = false;
 	const leadAlertDrainTimer = setInterval(() => {
+		retryObservationStorageAlert();
 		if (leadAlertDraining) return;
 		leadAlertDraining = true;
 		leadAlertNotifier
@@ -14069,6 +14089,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		await observationStorageAlert?.stop();
 		await processResources.stop();
 		await betaReleaseRuntime.stop();
 		voiceSessionServices.runtime.stop();

@@ -258,6 +258,12 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		remediationRef:
 			"Inspect fd ownership and effective process limit; no automatic restart (FLY-2563)",
 	},
+	ship_judgment_observation_unavailable: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef:
+			"Inspect observation migration diagnostics; recover only through authorized deployment (FLY-2563)",
+	},
 	infra_bot_down: {
 		owner: "cross_by_provider",
 		arc: "auto",
