@@ -129,6 +129,7 @@ it.each(["modeSweep", "learningSweep"] as const)(
 			});
 			const first = runtime.modeTick();
 			expect(runtime.modeTick()).toBe(first);
+			await first;
 			expect(modeSweep).toHaveBeenCalledOnce();
 			await runtime.stop();
 			await first;
@@ -139,6 +140,103 @@ it.each(["modeSweep", "learningSweep"] as const)(
 		}
 	},
 );
+
+it("keeps observing while delivery hangs, and stop waits for abort cleanup", async () => {
+	const { store } = await bindingFixture();
+	const observer = store.getShipJudgmentOutcomes();
+	const observe = vi.spyOn(observer, "observeCancellations").mockReturnValue(0);
+	vi.spyOn(store, "getShipJudgmentOutcomes").mockReturnValue(observer);
+	let cleanup!: () => void;
+	let aborted = false;
+	const modeSweep = vi.fn(
+		(signal: AbortSignal) =>
+			new Promise<void>((resolve) => {
+				cleanup = resolve;
+				signal.addEventListener(
+					"abort",
+					() => {
+						aborted = true;
+					},
+					{ once: true },
+				);
+			}),
+	);
+	const runtime = new ShipJudgmentRuntime({
+		store,
+		owner: "fixture",
+		mode: () => "auto_merge_narrow_gate",
+		collect: vi.fn(),
+		evaluate: vi.fn(),
+		material: vi.fn(),
+		unavailable: vi.fn(),
+		modeSweep,
+	});
+	try {
+		let finished = false;
+		const first = runtime.modeTick().then(() => {
+			finished = true;
+		});
+		for (let i = 0; i < 5; i++)
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(finished).toBe(true);
+		await first;
+		await runtime.modeTick();
+		expect(observe).toHaveBeenCalledTimes(2);
+		expect(modeSweep).toHaveBeenCalledOnce();
+		let stopped = false;
+		const stopping = runtime.stop().then(() => {
+			stopped = true;
+		});
+		await Promise.resolve();
+		expect(aborted).toBe(true);
+		expect(stopped).toBe(false);
+		cleanup();
+		await stopping;
+	} finally {
+		cleanup?.();
+		await runtime.stop();
+		store.close();
+	}
+});
+
+it("rechecks off after yielding and clears the local latch without network dependencies", async () => {
+	const { store } = await bindingFixture();
+	let mode = "auto_merge_narrow_gate";
+	const observer = store.getShipJudgmentOutcomes();
+	const verdicts = vi
+		.spyOn(observer, "observeVerdicts")
+		.mockImplementation(() => {
+			setImmediate(() => {
+				mode = "off";
+			});
+			return 0;
+		});
+	const cancellations = vi
+		.spyOn(observer, "observeCancellations")
+		.mockReturnValue(0);
+	vi.spyOn(store, "getShipJudgmentOutcomes").mockReturnValue(observer);
+	const runtime = new ShipJudgmentRuntime({
+		store,
+		owner: "fixture",
+		mode: () => mode,
+		collect: vi.fn(),
+		evaluate: vi.fn(),
+		material: vi.fn(),
+		unavailable: vi.fn(),
+	});
+	try {
+		await runtime.modeTick();
+		expect(cancellations).not.toHaveBeenCalled();
+		verdicts.mockReturnValue(0);
+		mode = "auto_merge_narrow_gate";
+		await runtime.modeTick();
+		await runtime.modeTick();
+		expect(cancellations).toHaveBeenCalledTimes(2);
+	} finally {
+		await runtime.stop();
+		store.close();
+	}
+});
 
 it.each(["observeVerdicts", "observeCancellations"] as const)(
 	"isolates %s failures from other decision sources and mode history",
@@ -185,6 +283,58 @@ it.each(["observeVerdicts", "observeCancellations"] as const)(
 		}
 	},
 );
+
+it("uses the actual interval for local pages while a timed-out transport retains its single flight", async () => {
+	const { store } = await bindingFixture();
+	vi.useFakeTimers({
+		toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"],
+	});
+	let cleanup!: () => void;
+	let signal!: AbortSignal;
+	const observer = store.getShipJudgmentOutcomes();
+	const cancellations = vi
+		.spyOn(observer, "observeCancellations")
+		.mockReturnValue(0);
+	vi.spyOn(store, "getShipJudgmentOutcomes").mockReturnValue(observer);
+	const modeSweep = vi.fn((input: AbortSignal) => {
+		signal = input;
+		return new Promise<void>((resolve) => {
+			cleanup = resolve;
+		});
+	});
+	const runtime = new ShipJudgmentRuntime({
+		store,
+		owner: "fixture",
+		mode: () => "auto_merge_narrow_gate",
+		collect: vi.fn(),
+		evaluate: vi.fn(),
+		material: vi.fn(),
+		unavailable: vi.fn(),
+		modeSweep,
+	});
+	// These independent loops have their own tests; exercise the mode interval.
+	vi.spyOn(runtime.scanner, "start").mockImplementation(() => {});
+	vi.spyOn(runtime.worker, "start").mockImplementation(() => {});
+	try {
+		runtime.start();
+		await runtime.modeTick();
+		expect(cancellations).toHaveBeenCalledTimes(1);
+		for (let i = 0; i < 5; i++) {
+			vi.advanceTimersByTime(3_000);
+			await runtime.modeTick();
+		}
+		expect(cancellations).toHaveBeenCalledTimes(6);
+		expect(signal.aborted).toBe(true);
+		expect(modeSweep).toHaveBeenCalledOnce();
+		cleanup();
+		await runtime.stop();
+	} finally {
+		cleanup?.();
+		await runtime.stop();
+		vi.useRealTimers();
+		store.close();
+	}
+});
 
 it("off performs no observation, writes, delivery or model calls", async () => {
 	const { store, db } = await bindingFixture();

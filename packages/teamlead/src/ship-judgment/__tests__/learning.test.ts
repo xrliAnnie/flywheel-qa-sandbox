@@ -648,9 +648,11 @@ it("bounds learning scans and resumes after excluded outcomes without consuming 
 		for (let i = 0; i < 51; i++)
 			insert.run(`outcome-${i}`, `source-${i}`, "a".repeat(64), NOW, NOW);
 		let mode = "dry_run";
-		expect(new ShipJudgmentClarifications(db, () => mode).sweep()).toBe(50);
+		expect(new ShipJudgmentClarifications(db, () => mode).sweep()).toBe(16);
 		db.exec("VACUUM");
-		expect(new ShipJudgmentClarifications(db, () => mode).sweep()).toBe(1);
+		expect(new ShipJudgmentClarifications(db, () => mode).sweep()).toBe(16);
+		expect(new ShipJudgmentClarifications(db, () => mode).sweep()).toBe(16);
+		expect(new ShipJudgmentClarifications(db, () => mode).sweep()).toBe(3);
 		insert.run("new-outcome", "new-source", "a".repeat(64), NOW, NOW);
 		mode = "off";
 		expect(new ShipJudgmentClarifications(db, () => mode).sweep()).toBe(0);
@@ -660,6 +662,41 @@ it("bounds learning scans and resumes after excluded outcomes without consuming 
 			db.prepare("SELECT count(*) AS n FROM ship_judgment_clarification").get(),
 		).toEqual({ n: 0 });
 	} finally {
+		store.close();
+	}
+});
+
+it("commits only inspected clarification outcomes when its synchronous budget is spent", async () => {
+	const { store, db } = await bindingFixture();
+	let clock: ReturnType<typeof vi.spyOn> | undefined;
+	try {
+		const insert =
+			db.prepare(`INSERT INTO ship_judgment_outcome(outcome_id,source_kind,source_id,question_id,run_id,card_message_id,targets_digest,authorship,decision,decided_at,observed_at,evidence_json)
+ VALUES (?,'fixture',?,'q','r','123456789012345678',?,'unknown','approved',?,?,'{}')`);
+		for (let i = 0; i < 3; i++)
+			insert.run(`budget-${i}`, `budget-${i}`, "a".repeat(64), NOW, NOW);
+		const observer = new ShipJudgmentClarifications(db, () => "dry_run");
+		const ensure = observer.ensure.bind(observer);
+		let elapsed = 0;
+		clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+		vi.spyOn(observer, "ensure").mockImplementation((id) => {
+			const result = ensure(id);
+			elapsed += 25;
+			return result;
+		});
+		expect(observer.sweep()).toBe(1);
+		expect(
+			db
+				.prepare(
+					"SELECT learning_cursor FROM ship_judgment_project_state WHERE project_name='flywheel'",
+				)
+				.get(),
+		).toEqual({ learning_cursor: 1 });
+		expect(observer.sweep()).toBe(1);
+		expect(observer.sweep()).toBe(1);
+		expect(observer.sweep()).toBe(0);
+	} finally {
+		clock?.mockRestore();
 		store.close();
 	}
 });

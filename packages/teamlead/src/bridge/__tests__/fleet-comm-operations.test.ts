@@ -76,6 +76,9 @@ describe("fleet short-lived CommDB ownership", () => {
 		expect(existsSync(path)).toBe(false);
 		writeFileSync(path, "corrupt database");
 		expect(() => readZombieCandidates(path, "project")).toThrow();
+		expect(() =>
+			readZombieCandidates(join(path, "comm.db"), "project"),
+		).toThrow();
 	});
 
 	it("releases the database before an asynchronous liveness probe hangs", async () => {

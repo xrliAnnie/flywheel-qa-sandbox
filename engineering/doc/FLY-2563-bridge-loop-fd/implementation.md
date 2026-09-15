@@ -21,6 +21,19 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 
 ## 验收矩阵
 
+## T2 第一批：独立本地轮次与网络 lane
+
+- modeTick 的本地 latch 在 Promise 回调执行前安装，finally 只清理本次 flight；verdict、cancel、clarification 之间使用 setImmediate yield，每次重新检查 off/stop。
+- 网络 sweep 使用独立单飞 Promise 和 AbortController，15秒 deadline 传给底层，超时仍等待实际 settle 后才释放单飞；stop abort 并等待清理。mode=off 仅转换时结算历史。
+- clarification 每页最多16条、25ms，cursor 仅推进最后已检查行；预算包含事务锁等待。未触及 authority 写入。
+- RED：runtime 4项失败（含旧共用 flight 等待超时、off yield缺失）；clarification 16条上限/25ms游标测试分别失败。
+- GREEN：runtime 10、runtime-collect 1、learning 26、fleet 4，合计41/41；teamlead typecheck exit=0。
+- 真实 interval 入口验证3秒本地页继续、15秒abort传播、未settle不重叠；另覆盖stop等待清理与无网络依赖latch释放。
+- T2仍待T1接入后的真实大库完整modeTick <100ms；目前取消/verdict旧SQL尚未替换，不能声称总耗时达标。SQL与off结算计时待T5。
+- T3补充：缺失路径只捕获ENOENT；ENOTDIR/损坏库显式失败。新ENOTDIR用例先红后绿，避免existsSync把路径错误伪装成未初始化。
+
+## 总体验收矩阵
+
 | 项目 | 当前证据 |
 |---|---|
 | A 真实备份取消 <50ms | pending |

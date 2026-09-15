@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { CommDB } from "flywheel-comm/db";
 
 /** Own the connection only for this synchronous write, including failure. */
@@ -23,7 +23,12 @@ export function insertLeadInstruction(
 
 /** Materialize rows and release the owner before any asynchronous probe. */
 export function readZombieCandidates(path: string, projectName: string) {
-	if (!existsSync(path)) return [];
+	try {
+		statSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
 	const db = CommDB.openReadonly(path);
 	try {
 		return db.listSessions(projectName, ["running"]);
