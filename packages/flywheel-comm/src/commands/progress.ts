@@ -31,6 +31,7 @@ import {
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import Database from "better-sqlite3";
 import {
+	installSqlTiming,
 	type ProgressChunk,
 	type ProgressLedger,
 	parseProgress,
@@ -324,10 +325,13 @@ function liveDeps(): ProgressDeps {
 		readSession: (execId) => {
 			const statePath = resolveStateDbPath(undefined, process.env);
 			if (!existsSync(statePath)) return undefined;
-			const db = new Database(statePath, {
-				readonly: true,
-				fileMustExist: true,
-			});
+			const db = installSqlTiming(
+				new Database(statePath, {
+					readonly: true,
+					fileMustExist: true,
+				}),
+				"teamlead",
+			);
 			try {
 				return db
 					.prepare(
@@ -341,10 +345,13 @@ function liveDeps(): ProgressDeps {
 		latestActiveExecId: (issueIdentifier, role) => {
 			const statePath = resolveStateDbPath(undefined, process.env);
 			if (!existsSync(statePath)) return undefined;
-			const db = new Database(statePath, {
-				readonly: true,
-				fileMustExist: true,
-			});
+			const db = installSqlTiming(
+				new Database(statePath, {
+					readonly: true,
+					fileMustExist: true,
+				}),
+				"teamlead",
+			);
 			try {
 				const row = db
 					.prepare(

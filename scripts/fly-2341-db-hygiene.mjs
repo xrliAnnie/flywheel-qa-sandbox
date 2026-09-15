@@ -4,6 +4,7 @@ import { lstatSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installSqlTiming } from "../packages/config/dist/index.js";
 import { MailboxQueue } from "../packages/flywheel-comm/dist/mailbox-queue.js";
 import { enqueueRestoredObservation } from "../packages/teamlead/dist/ship-judgment/observation-cursor.js";
 import {
@@ -39,7 +40,10 @@ function count(db, table) {
 }
 
 function inspect(path, hotTables, coldTable) {
-	const db = new Database(path, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(path, { readonly: true, fileMustExist: true }),
+		"hygiene",
+	);
 	try {
 		return {
 			bytes: statSync(path).size,
@@ -82,8 +86,8 @@ export async function executeFly2341Archive(input) {
 	const commDbPath = databasePath(input?.commDbPath, "comm-db");
 	if (!Number.isFinite(Date.parse(input?.now)))
 		throw new Error("now must be an ISO timestamp");
-	const teamlead = new Database(teamleadDbPath);
-	const comm = new Database(commDbPath);
+	const teamlead = installSqlTiming(new Database(teamleadDbPath), "teamlead");
+	const comm = installSqlTiming(new Database(commDbPath), "comm");
 	const queue = new MailboxQueue(comm);
 	const archived = { teamlead: 0, commFamilies: 0, commIdentities: 0 };
 	const commIdentityFailures = new Map();
@@ -193,7 +197,7 @@ export function executeFly2341Restore(input) {
 		!sourceIdentity
 	)
 		throw new Error("teamlead key must be <source-table>:<source-identity>");
-	const db = new Database(dbPath);
+	const db = installSqlTiming(new Database(dbPath), "hygiene");
 	try {
 		installTerminalRowArchiveSchema(db);
 		const input = { sourceTable, sourceIdentity };
@@ -208,7 +212,7 @@ export function executeFly2341Restore(input) {
 export function executeFly2341Vacuum(input) {
 	const dbPath = databasePath(input?.dbPath, "db");
 	const before = statSync(dbPath).size;
-	const db = new Database(dbPath);
+	const db = installSqlTiming(new Database(dbPath), "hygiene");
 	try {
 		db.exec("VACUUM");
 	} finally {

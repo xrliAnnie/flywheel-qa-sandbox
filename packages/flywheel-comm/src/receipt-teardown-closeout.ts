@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3";
-import { canonicalJsonString } from "flywheel-config";
+import { canonicalJsonString, installSqlTiming } from "flywheel-config";
 import {
 	dropReceiptLedgerSchema,
 	installMailboxRelayInvariantTriggers,
@@ -188,7 +188,10 @@ function inspectShard(
 	resolutionMap: Map<string, Fly1645ExternalDisposition>,
 ): ShardInspection {
 	assertDatabaseExists(path);
-	const db = new Database(path, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(path, { readonly: true, fileMustExist: true }),
+		"comm",
+	);
 	try {
 		db.pragma("query_only = ON");
 		db.pragma("busy_timeout = 5000");
@@ -307,7 +310,10 @@ async function backupDatabase(path: string, now: string) {
 		backupDir,
 		`${basename(path, ".db")}-pre-fly1645-${stamp}-${randomUUID()}.db`,
 	);
-	const db = new Database(path, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(path, { readonly: true, fileMustExist: true }),
+		"comm",
+	);
 	try {
 		await db.backup(destination);
 	} finally {
@@ -391,7 +397,10 @@ function applyShard(
 	resolutionMap: Map<string, Fly1645ExternalDisposition>,
 	now: string,
 ): void {
-	const db = new Database(inspection.path, { fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(inspection.path, { fileMustExist: true }),
+		"comm",
+	);
 	try {
 		db.pragma("journal_mode = WAL");
 		db.pragma("foreign_keys = ON");

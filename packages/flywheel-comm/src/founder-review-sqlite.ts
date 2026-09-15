@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 import { CommDB } from "./db.js";
 import {
 	createFounderReviewStateReader,
@@ -16,7 +17,10 @@ export function createReadonlySqliteFounderReviewStateReader(input: {
 	stateDbPath: string;
 	commDbPath: string;
 }): CloseableFounderReviewStateReader {
-	const stateDb = new Database(input.stateDbPath, { readonly: true });
+	const stateDb = installSqlTiming(
+		new Database(input.stateDbPath, { readonly: true }),
+		"teamlead",
+	);
 	let commDb: CommDB | undefined;
 	try {
 		stateDb.pragma("busy_timeout = 5000");

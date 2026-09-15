@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import Database from "better-sqlite3";
-import { commDbPathForProject } from "flywheel-config";
+import { commDbPathForProject, installSqlTiming } from "flywheel-config";
 import { resolveStateDbPath } from "./commands/verify-approval.js";
 
 /** Read live actor authority before acquiring the CommDB write lock. */
@@ -10,7 +10,10 @@ export function readTurnWaitSuppression(
 ): string | null {
 	let state: Database.Database | undefined;
 	try {
-		state = new Database(stateDbPath, { readonly: true, fileMustExist: true });
+		state = installSqlTiming(
+			new Database(stateDbPath, { readonly: true, fileMustExist: true }),
+			"teamlead",
+		);
 		const row = state
 			.prepare(`
    SELECT r.status, r.current_node_id, n.attempt, n.state, n.execution_id, n.ended_at,

@@ -109,3 +109,11 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - RED：入口测试4条预期慢日志为0；marker新增慢同步断言失败。GREEN：config3/3；marker4/4；真实SQLite与原marker覆盖合跑9/9，扩展MailboxQueue后真实连接3/3；CommDB打开/FLY2268迁移24/24。覆盖真实锁等待后SQLITE_BUSY、原始错误/日志异常、6条连接/访问路径、yield后执行、native事务别名和iterator cleanup。
 - config/comm/claude-runner构建通过，teamlead与config类型检查通过；新核心计时/marker文件Biome检查通过。测试中实际marker慢调用现已按静态标识输出日志，不隐去红/慢证据。
 - T5仍未完成：剩余原生DB旁路/恢复/独立进程入口分类和timer-sites完整矩阵、补相应入口及覆盖。当前搜索找到67条原生new Database/BetterSqlite3文本命中（包含独立CLI及bin测试），不能把该搜索当完整执行覆盖。下一批先审计这些入口，随后继续T3剩余lease审计与T7大夹具/指定快照/全库门/review/PR。
+
+## T5 第二批：原生旁路及timer入口矩阵
+
+- 对三包非测试better-sqlite3构造点做AST清点：57处TS原生打开点均有实例计时；本批新增覆盖其中47处（32文件），另接运维归档/恢复命令5处连接。构造参数、readonly/timeout、事务及close归属不变；只增加原始实例的计时安装。
+- timer-sites更新为40个实际AST调度调用（含typing adapter/调用两层），去掉类型/注释误计；timer-sql-matrix.md逐项映射StateStore/CommDB/raw/本地库入口，明确browser模板、guard worker、独立gateway和CLI边界。token-report/qa-framework独立工具不被误称为Bridge timer。
+- 新增publication reader真实旁路回归，RED为缺慢SQL日志；GREEN为入口测试4/4。原生存储/reader组35/35，comm snapshot/lease组42/42，memory-distill51/51，归档/恢复运维5/5；comm/runner构建和teamlead类型检查通过。32文件Biome检查exit0，仅保留既有字符串拼接信息提示，未做无关修复。
+- 清单是源码/连接级覆盖证据，不冒充生产每个timer的实际触发或15分钟健康验收；真实锁等待、async yield后SQL、readonly/borrowed与native事务/iterator行为由上一批及本批测试覆盖。
+- 下一步T3剩余CommDB owner/lease审计（founder-reply-deliverer在外部await期间持lease仍待处理），然后T7 1.7M事件/500holder、指定快照与全库门、有效code review/PR。未执行生产写入/重启/QA派发。

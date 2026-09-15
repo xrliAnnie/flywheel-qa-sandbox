@@ -1,3 +1,4 @@
+import { installSqlTiming } from "flywheel-config";
 /**
  * FLY-245 D2 / Codex code-review R1 HIGH-3 — durable launch claim keyed by
  * execution id.
@@ -38,7 +39,7 @@ export class LaunchClaimStore {
 
 	constructor(dbPath: string) {
 		mkdirSync(dirname(dbPath), { recursive: true });
-		this.db = new Database(dbPath);
+		this.db = installSqlTiming(new Database(dbPath), "bridge-local");
 		this.db.pragma("journal_mode = WAL");
 		this.db.exec(
 			`CREATE TABLE IF NOT EXISTS launch_claims (

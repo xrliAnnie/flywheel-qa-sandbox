@@ -3,6 +3,7 @@ import { lstatSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import Database from "better-sqlite3";
 import { deriveRunnerStartKey } from "flywheel-comm/runner-start";
+import { installSqlTiming } from "flywheel-config";
 export interface MigrationRunEvidence {
 	issueId: string;
 	runId: string;
@@ -37,7 +38,10 @@ export function verifyMigrationRunEvidence(input: {
 		issueId: e.issueId,
 		idempotencyKey: `discord:${source.channelId}:${source.messageId}`,
 	}).key;
-	const db = new Database(input.path, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(input.path, { readonly: true, fileMustExist: true }),
+		"teamlead",
+	);
 	try {
 		const rows = db
 			.prepare(`SELECT r.created_at AS reserved_at, w.created_at AS run_at,

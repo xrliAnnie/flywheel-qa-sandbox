@@ -28,7 +28,7 @@ import Database from "better-sqlite3";
 
 export { Database };
 
-import { canonicalJsonString } from "flywheel-config";
+import { canonicalJsonString, installSqlTiming } from "flywheel-config";
 import {
 	type EnqueueMailboxInput,
 	MailboxQueue,
@@ -191,7 +191,10 @@ function tableType(db: Database.Database, name: string): string | undefined {
 }
 
 export function classifyMailboxDatabase(dbPath: string): MailboxDbState {
-	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(dbPath, { readonly: true, fileMustExist: true }),
+		"comm",
+	);
 	try {
 		const messages = tableType(db, "messages");
 		const leadInbox = tableType(db, "lead_inbox");
@@ -943,7 +946,7 @@ export function migrateLegacyDatabaseFile(
 	options: { now?: string; faultAt?: MailboxMigrationFault } = {},
 ): MailboxMigrationResult {
 	const now = options.now ?? new Date().toISOString();
-	const db = new Database(dbPath);
+	const db = installSqlTiming(new Database(dbPath), "comm");
 	try {
 		const generation =
 			tableType(db, "mailbox_migration_meta") === "table"
@@ -1158,7 +1161,10 @@ function sha256File(path: string): string {
 }
 
 function verifySqlite(path: string): void {
-	const db = new Database(path, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(path, { readonly: true, fileMustExist: true }),
+		"comm",
+	);
 	try {
 		const integrity = db.pragma("integrity_check") as Array<{
 			integrity_check: string;
@@ -1298,7 +1304,10 @@ export async function backupCommDb(
 		return backupPath;
 	}
 	const temp = `${backupPath}.tmp-${randomUUID()}`;
-	const source = new Database(dbPath, { readonly: true, fileMustExist: true });
+	const source = installSqlTiming(
+		new Database(dbPath, { readonly: true, fileMustExist: true }),
+		"comm",
+	);
 	try {
 		await source.backup(temp);
 	} finally {
@@ -1765,7 +1774,10 @@ function countLegacyRows(dbPath: string): {
 	messages: number;
 	leadInbox: number;
 } {
-	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(dbPath, { readonly: true, fileMustExist: true }),
+		"comm",
+	);
 	try {
 		return {
 			messages: (
@@ -1786,7 +1798,10 @@ function countLegacyRows(dbPath: string): {
 
 export function verifyMigratedDatabase(dbPath: string): MailboxMigrationResult {
 	verifySqlite(dbPath);
-	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(dbPath, { readonly: true, fileMustExist: true }),
+		"comm",
+	);
 	try {
 		if (tableType(db, "mailbox_migration_meta") !== "table") {
 			throw new Error(`mailbox migration marker missing: ${dbPath}`);

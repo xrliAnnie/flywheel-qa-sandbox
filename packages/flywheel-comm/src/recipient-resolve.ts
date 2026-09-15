@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 import type { CommDB } from "./db.js";
 import { isLeadRecipient } from "./recipient-kind.js";
 import { isMailboxTerminalStatus } from "./session-terminal.js";
@@ -24,7 +25,10 @@ export function createStateStoreSnapshotReader(
 		readStatus(executionId) {
 			let db: Database.Database | undefined;
 			try {
-				db = new Database(path, { readonly: true, fileMustExist: true });
+				db = installSqlTiming(
+					new Database(path, { readonly: true, fileMustExist: true }),
+					"teamlead",
+				);
 				db.pragma("busy_timeout = 5000");
 				const row = db
 					.prepare("SELECT status FROM sessions WHERE execution_id = ?")

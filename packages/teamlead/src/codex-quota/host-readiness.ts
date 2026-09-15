@@ -4,6 +4,7 @@ import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 import type { CodexQuotaHomeObservation } from "./readiness.js";
 
 const execFileAsync = promisify(execFile);
@@ -181,11 +182,14 @@ export function createCodexQuotaHostCollector(
 			}
 			for (const path of databases) {
 				plainFile(path);
-				const db = new Database(path, {
-					readonly: true,
-					fileMustExist: true,
-					timeout: 1000,
-				});
+				const db = installSqlTiming(
+					new Database(path, {
+						readonly: true,
+						fileMustExist: true,
+						timeout: 1000,
+					}),
+					"teamlead",
+				);
 				try {
 					const rows = db
 						.prepare(

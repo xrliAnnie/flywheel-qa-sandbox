@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 import {
 	type ProcessTupleState,
 	processTupleStateWithStart,
@@ -37,10 +38,13 @@ export function assertMigrationWriterStopped(input: {
 	};
 	if (input.launchdState() !== "unloaded") return fail();
 	assertDead(input.oldCarrier.pid, input.oldCarrier.start);
-	const db = new Database(input.dbPath, {
-		readonly: true,
-		fileMustExist: true,
-	});
+	const db = installSqlTiming(
+		new Database(input.dbPath, {
+			readonly: true,
+			fileMustExist: true,
+		}),
+		"lead-lease",
+	);
 	try {
 		const query = db.prepare(
 			"SELECT lead_key, generation, holder_pid, holder_start, supervisor_pid, supervisor_start FROM lead_lease WHERE project = ? AND lead_id = ?",

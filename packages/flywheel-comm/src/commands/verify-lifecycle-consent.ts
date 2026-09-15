@@ -1,3 +1,4 @@
+import { installSqlTiming } from "flywheel-config";
 /**
  * FLY-245 Phase D-c — `verifyLifecycleConsent`: the runner-lifecycle founder
  * authority check (plan §5.5, Codex R1#10 + R1#13).
@@ -138,10 +139,13 @@ export function verifyLifecycleConsent(
 		| { lifecycle_revision?: number; project_name?: string }
 		| undefined;
 	try {
-		const stateDb = new Database(statePath, {
-			readonly: true,
-			fileMustExist: true,
-		});
+		const stateDb = installSqlTiming(
+			new Database(statePath, {
+				readonly: true,
+				fileMustExist: true,
+			}),
+			"teamlead",
+		);
 		try {
 			stateRow = stateDb
 				.prepare(

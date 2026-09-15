@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS continuity_fresh_start_audit (
@@ -42,7 +43,7 @@ export class ContinuityAudit {
 	private database(): Database.Database {
 		if (this.db) return this.db;
 		mkdirSync(dirname(this.dbPath), { recursive: true });
-		this.db = new Database(this.dbPath);
+		this.db = installSqlTiming(new Database(this.dbPath), "bridge-local");
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");
 		this.db.exec(SCHEMA);

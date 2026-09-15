@@ -7,6 +7,7 @@ import { authorizeLeadWrite } from "flywheel-comm/lead-lease";
 import { respond } from "flywheel-comm/respond";
 import { deriveRunnerStartKey } from "flywheel-comm/runner-start";
 import { send } from "flywheel-comm/send";
+import { installSqlTiming } from "flywheel-config";
 import { z } from "zod";
 import { matchesLead } from "../../bridge/lead-scope.js";
 import { parseAndValidateProjects } from "../../ProjectConfig.js";
@@ -65,7 +66,10 @@ export interface RunnerActionsOptions {
 	resolveMenus?: () => string[];
 }
 function readOnly<T>(path: string, read: (db: Database.Database) => T): T {
-	const db = new Database(path, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(path, { readonly: true, fileMustExist: true }),
+		"teamlead",
+	);
 	try {
 		return read(db);
 	} finally {

@@ -115,3 +115,29 @@ it("times StateStore and CommDB writable, readonly and maintenance work after a 
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+it("also instruments the publication reader that bypasses StateStore", async () => {
+	const { readEpicReportPublications } = await import(
+		"../report-epic-publications.js"
+	);
+	const root = mkdtempSync(join(tmpdir(), "fly2563-publication-sql-"));
+	const path = join(root, "state.db");
+	const db = new Database(path);
+	db.exec("CREATE TABLE epic_page_publication(project_name TEXT, token TEXT)");
+	db.close();
+	let now = 0;
+	const clock = vi.spyOn(performance, "now").mockImplementation(() => {
+		now += 251;
+		return now;
+	});
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		expect(readEpicReportPublications(path)).toEqual([]);
+		expect(
+			warn.mock.calls.some(([line]) => String(line).includes('"method":"all"')),
+		).toBe(true);
+	} finally {
+		clock.mockRestore();
+		warn.mockRestore();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

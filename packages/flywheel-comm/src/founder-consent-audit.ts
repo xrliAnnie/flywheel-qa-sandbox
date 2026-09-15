@@ -1,3 +1,4 @@
+import { installSqlTiming } from "flywheel-config";
 /**
  * FLY-175 Track 2 — Founder Consent audit store (the calibration corpus).
  *
@@ -193,7 +194,7 @@ export class FounderConsentAuditStore {
 
 	constructor(dbPath: string) {
 		mkdirSync(dirname(dbPath), { recursive: true });
-		this.db = new Database(dbPath);
+		this.db = installSqlTiming(new Database(dbPath), "consent-audit");
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");
 		this.db.exec(FOUNDER_CONSENT_AUDIT_SCHEMA);

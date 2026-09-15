@@ -1,3 +1,4 @@
+import { installSqlTiming } from "flywheel-config";
 /**
  * FLY-224 Phase 2b — SqliteOutboundDedupStore: the durable better-sqlite3 backing
  * for CodexLeadOutboundHandler's exactly-once dedup (plan §6.4, Phase 0A §4).
@@ -35,7 +36,7 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
 	constructor(dbPath: string, now: () => number = () => Date.now()) {
 		this.now = now;
 		mkdirSync(dirname(dbPath), { recursive: true });
-		this.db = new Database(dbPath);
+		this.db = installSqlTiming(new Database(dbPath), "bridge-local");
 		this.db.pragma("journal_mode = WAL");
 		this.db.exec(`
 			CREATE TABLE IF NOT EXISTS outbound_dedup (
