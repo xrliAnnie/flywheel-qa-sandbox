@@ -142,7 +142,7 @@ export class ShipJudgmentStatistics {
 			for (const pair of paired) {
 				const key = JSON.stringify([
 					pair.policyVersion,
-					pair.modelSnapshotDigest,
+					pair.modelSnapshotDigest ?? "none",
 				]);
 				const group = versions.get(key) ?? [];
 				group.push(pair);

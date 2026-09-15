@@ -55,6 +55,23 @@ it("renders the persisted three-point opinion without approval language, unsafe 
 		expect(text).not.toContain("@everyone");
 		expect(text).not.toContain("[click](");
 		expect(text.length).toBeLessThanOrEqual(2000);
+		for (const reason of [
+			"project_sources_unavailable",
+			"input_unavailable:repositories_unavailable",
+		]) {
+			const unavailable = renderJudgmentMessage({
+				...view,
+				mechanical: {
+					...view.mechanical,
+					reason,
+					checkedRepos: 0,
+					openPrCount: null,
+				},
+			});
+			expect(unavailable).toContain("输入不可得：");
+			expect(unavailable).toContain("三项按已得证据判");
+			expect(unavailable).not.toContain("0 仓");
+		}
 		expect(store.getShipJudgmentDelivery().view("q", "wrong")).toBeUndefined();
 	} finally {
 		store.close();

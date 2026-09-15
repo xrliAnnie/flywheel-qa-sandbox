@@ -1,6 +1,14 @@
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { canonicalDigest, targetSchema, targetSetDigest } from "./contract.js";
+import {
+	canonicalDigest,
+	JUDGMENT_VISIBLE_EVENT,
+	targetSchema,
+} from "./contract.js";
+import {
+	evidenceLedgerSchema,
+	evidenceTargetDigest,
+} from "./evidence-ledger.js";
 
 type Authorship = "founder_verified" | "lead_proxy" | "auto" | "unknown";
 interface VerdictRow {
@@ -184,7 +192,9 @@ export class ShipJudgmentOutcomes {
 						.get(row.question_id, decidedAt) as
 						| { mechanical_json: string }
 						| undefined;
-					let context: { inputId: string; targetsDigest: string } | undefined;
+					let context:
+						| { inputId: string | null; targetsDigest: string }
+						| undefined;
 					try {
 						const target = z
 							.object({
@@ -254,10 +264,10 @@ export class ShipJudgmentOutcomes {
 			| "head_sha"
 		>,
 		decidedAt: string,
-	): { inputId: string; targetsDigest: string } | undefined {
-		const frozen = this.db
+	): { inputId: string | null; targetsDigest: string } | undefined {
+		let frozen = this.db
 			.prepare(`SELECT i.input_id,i.targets_json,i.targets_digest,i.requested_at,o.mechanical_json FROM ship_judgment_opinion o
-		LEFT JOIN ship_judgment_input i ON i.input_id=o.input_id
+		JOIN ship_judgment_input i ON i.input_id=o.input_id
 		WHERE o.question_id=? AND o.created_at<=? ORDER BY o.created_at DESC,o.ordinal DESC LIMIT 1`)
 			.get(row.question_id, decidedAt) as
 			| {
@@ -268,15 +278,57 @@ export class ShipJudgmentOutcomes {
 					mechanical_json: string;
 			  }
 			| undefined;
-		if (
-			!frozen?.input_id ||
-			!frozen.targets_json ||
-			frozen.requested_at > decidedAt
-		)
-			return undefined;
 		try {
+			if (!frozen) {
+				const opinion = this.db
+					.prepare(`SELECT o.evidence_json,o.mechanical_json,o.created_at FROM ship_judgment_opinion o
+					JOIN workflow_run_event e ON e.run_id=? AND e.kind=?
+					AND json_extract(e.payload,'$.opinion_id')=o.opinion_id AND json_extract(e.payload,'$.question_id')=o.question_id
+					WHERE o.question_id=? AND o.input_id IS NULL AND o.evidence_json IS NOT NULL
+					AND julianday(o.created_at)<=julianday(?) AND julianday(json_extract(e.payload,'$.receipt_time'))<=julianday(?)
+					AND julianday(COALESCE(json_extract(e.payload,'$.observed_at'),e.at))<=julianday(?)
+					ORDER BY julianday(json_extract(e.payload,'$.receipt_time')) DESC,o.ordinal DESC LIMIT 1`)
+					.get(
+						row.run_id,
+						JUDGMENT_VISIBLE_EVENT,
+						row.question_id,
+						decidedAt,
+						decidedAt,
+						decidedAt,
+					) as
+					| {
+							evidence_json: string;
+							mechanical_json: string;
+							created_at: string;
+					  }
+					| undefined;
+				if (!opinion) return undefined;
+				const ledger = evidenceLedgerSchema.parse(
+					JSON.parse(opinion.evidence_json),
+				);
+				frozen = {
+					input_id: null,
+					targets_json: JSON.stringify(
+						ledger.targets.map((t) => ({
+							repo_identity: t.r,
+							pr_number: t.p,
+							head_sha: t.h,
+							diff_base_sha: t.b,
+						})),
+					),
+					targets_digest: ledger.targetsDigest,
+					requested_at: opinion.created_at,
+					mechanical_json: opinion.mechanical_json,
+				};
+			}
+			if (!frozen.targets_json || frozen.requested_at > decidedAt)
+				return undefined;
 			const targets = z
-				.array(targetSchema)
+				.array(
+					targetSchema.extend({
+						diff_base_sha: targetSchema.shape.diff_base_sha.nullable(),
+					}),
+				)
 				.min(1)
 				.max(200)
 				.parse(JSON.parse(frozen.targets_json));
@@ -369,8 +421,15 @@ export class ShipJudgmentOutcomes {
 			const expected = new Set(keys(binding.targets));
 			if (keys(rebound).some((key) => !expected.has(key))) return undefined;
 			if (
-				targetSetDigest(targets, binding.manifestRevision) !==
-				frozen.targets_digest
+				evidenceTargetDigest(
+					targets.map((t) => ({
+						r: t.repo_identity,
+						p: t.pr_number,
+						h: t.head_sha,
+						b: t.diff_base_sha,
+					})),
+					binding.manifestRevision,
+				) !== frozen.targets_digest
 			)
 				return undefined;
 			return { inputId: frozen.input_id, targetsDigest: frozen.targets_digest };

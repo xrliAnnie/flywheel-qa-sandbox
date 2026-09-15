@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import { z } from "zod";
+import { evidenceSummaryText } from "./evidence-labels.js";
+import { evidenceLedgerSchema } from "./evidence-ledger.js";
 import {
 	type HistoryRow,
 	historyContentDigest,
@@ -64,13 +66,14 @@ export class ShipJudgmentHistory {
 			for (const card of cards) {
 				const opinion = this.db
 					.prepare(
-						"SELECT opinion_id,overall,reason,created_at FROM ship_judgment_opinion WHERE question_id=? AND julianday(created_at)<=julianday(?) ORDER BY julianday(created_at) DESC,ordinal DESC LIMIT 1",
+						"SELECT opinion_id,overall,reason,created_at,evidence_json FROM ship_judgment_opinion WHERE question_id=? AND julianday(created_at)<=julianday(?) ORDER BY julianday(created_at) DESC,ordinal DESC LIMIT 1",
 					)
 					.get(card.question_id, asOf) as
 					| {
 							opinion_id: string;
 							overall: HistoryRow["overall"];
 							reason: string;
+							evidence_json: string | null;
 							created_at: string;
 					  }
 					| undefined;
@@ -194,7 +197,11 @@ export class ShipJudgmentHistory {
 									? "explained"
 									: "none",
 						clarificationAuditId: explanation?.clarification_id ?? null,
-						summary: opinion?.reason ?? "",
+						summary: opinion?.evidence_json
+							? evidenceSummaryText(
+									evidenceLedgerSchema.parse(JSON.parse(opinion.evidence_json)),
+								)
+							: (opinion?.reason ?? ""),
 						cardUrl:
 							validId(thread) && validId(message)
 								? `https://discord.com/channels/@me/${thread}/${message}`

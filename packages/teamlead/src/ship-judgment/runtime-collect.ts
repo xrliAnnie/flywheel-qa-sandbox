@@ -12,8 +12,9 @@ import {
 import { canonicalDigest, type ShipJudgmentBinding } from "./contract.js";
 import type { FrozenGitReader } from "./git-input.js";
 import { readJudgmentIssueSource } from "./issue-source.js";
+import type { EvidenceStore } from "./materials.js";
 import { readReviewedPlanSource } from "./plan-source.js";
-import { readHostedQaSource } from "./qa-source.js";
+import { readClaimQaSource, readHostedQaSource } from "./qa-source.js";
 import {
 	JUDGMENT_PROMPT,
 	judgmentModelSnapshot,
@@ -36,7 +37,8 @@ export interface LiveCollectionDependencies {
 		| "readShipJudgmentBinding"
 		| "readShipJudgmentPlanReference"
 		| "listStrengthTwoRecordsForHead"
-	>;
+	> &
+		Partial<EvidenceStore>;
 	linearApiKey: string;
 	planRepoIdentity: string;
 	git: PreparedJudgmentGit[];
@@ -55,10 +57,27 @@ export async function collectLiveJudgment(
 ): Promise<CollectionResult> {
 	const binding = deps.store.readShipJudgmentBinding(questionId, channelId);
 	if (!binding) return { status: "undetermined", reason: "binding_missing" };
-	const reference = deps.store.readShipJudgmentPlanReference(
-		binding.runId,
-		deps.planRepoIdentity,
-	);
+	if (!deps.linearApiKey)
+		return { status: "undetermined", reason: "linear_credentials_missing" };
+	const readReference = () => {
+		const aliases =
+			deps.store.readShipJudgmentIssueAliases?.(binding.runId) ?? [];
+		const approval = deps.store.readShipJudgmentDesignApproval?.(
+			binding.issueId,
+			aliases,
+			deps.planRepoIdentity,
+		);
+		if (approval && approval.status !== "approved") return undefined;
+		const preferred = deps.store.readShipJudgmentPlanReference(
+			binding.runId,
+			deps.planRepoIdentity,
+		);
+		return preferred &&
+			(!approval || preferred.requestId === approval.requestId)
+			? preferred
+			: approval;
+	};
+	const reference = readReference();
 	const planTargets = binding.targets.filter(
 		(target) => target.repo_identity === deps.planRepoIdentity,
 	);
@@ -90,21 +109,36 @@ export async function collectLiveJudgment(
 	)
 		return { status: "undetermined", reason: "git_material_missing" };
 	const qaDigests = new Map<string, string>();
-	const readQa = (target: ShipJudgmentBinding["targets"][number]) =>
-		readHostedQaSource(
-			{
-				runId: binding.runId,
-				repoIdentity: target.repo_identity,
-				headSha: target.head_sha,
-			},
-			deps.store.listStrengthTwoRecordsForHead(
-				binding.runId,
-				target.repo_identity,
-				target.head_sha,
-			),
-			deps.registry,
-			deps.hosting,
+	const readQa = (target: ShipJudgmentBinding["targets"][number]) => {
+		const request = {
+			runId: binding.runId,
+			repoIdentity: target.repo_identity,
+			headSha: target.head_sha,
+		};
+		const authority = deps.store.readShipJudgmentQaAuthority?.(
+			binding.runId,
+			target.repo_identity,
+			target.head_sha,
+			new Date().toISOString(),
 		);
+		return (
+			readClaimQaSource(request, authority, deps.registry, deps.hosting) ??
+			readHostedQaSource(
+				{
+					runId: binding.runId,
+					repoIdentity: target.repo_identity,
+					headSha: target.head_sha,
+				},
+				deps.store.listStrengthTwoRecordsForHead(
+					binding.runId,
+					target.repo_identity,
+					target.head_sha,
+				),
+				deps.registry,
+				deps.hosting,
+			)
+		);
+	};
 	try {
 		return await collectJudgmentInput(
 			{
@@ -153,10 +187,7 @@ export async function collectLiveJudgment(
 					};
 				},
 				currentBinding: () => {
-					const currentReference = deps.store.readShipJudgmentPlanReference(
-						binding.runId,
-						deps.planRepoIdentity,
-					);
+					const currentReference = readReference();
 					if (
 						canonicalDigest(reference ?? null) !==
 						canonicalDigest(currentReference ?? null)

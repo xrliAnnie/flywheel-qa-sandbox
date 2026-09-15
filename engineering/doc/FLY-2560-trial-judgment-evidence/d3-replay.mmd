@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant R as 回放脚本（只读）
+  participant DB as 生产库快照副本
+  participant G as 本地仓库 checkout
+  participant H as 托管页面
+  R->>DB: 取 12 张卡的 founder 决定（只认 founder 本人按的）
+  R->>DB: 取每张卡当时冻结的 PR 目标与精确 head
+  loop 每张卡，截止时间 = founder 按下的时刻
+    R->>DB: ① 设计评审 + 代码评审@head（只取截止前的记录）
+    R->>G: ① plan 文档在 head 上存在？diff 取到？
+    R->>DB: ③ QA 判决 claim@head（截止前，当前 attempt，正确签发者）
+    R->>DB: ② 事后：合入记录 merge_confirmed_at（标注为事后证据）
+    R->>R: 账本判定 → 机器总判 vs founder 决定
+  end
+  R->>H: 表 + 汇总：若开自动批会批 N / 错 M / 弃权 K

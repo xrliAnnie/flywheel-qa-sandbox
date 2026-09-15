@@ -8,11 +8,18 @@ import {
 	projectSnapshotSchema,
 	refreshConfigSchema,
 } from "./contract.js";
+import type { JudgmentMaterials } from "./evidence-ledger.js";
+import {
+	cachePreparedMaterial,
+	type EvidenceStore,
+	readAuthorityMaterials,
+} from "./materials.js";
 import { prepareJudgmentGit } from "./prepare-git.js";
 import type {
 	ProjectRefreshStore,
 	SharedProjectRefresh,
 } from "./project-refresh.js";
+import { readClaimQaSource } from "./qa-source.js";
 import {
 	collectLiveJudgment,
 	type LiveCollectionDependencies,
@@ -22,10 +29,12 @@ type Mechanical = OpinionCandidate["mechanical"];
 export interface ProductionCollectionDependencies {
 	source: Omit<LiveCollectionDependencies, "git"> & {
 		store: LiveCollectionDependencies["store"] &
-			Pick<StateStore, "getShipJudgmentInputs">;
+			Pick<StateStore, "getShipJudgmentInputs"> &
+			EvidenceStore;
 	};
 	repositories: { repo_identity: string; repo_slug: string }[];
-	refresh: Pick<SharedProjectRefresh, "refresh">;
+	refresh: Pick<SharedProjectRefresh, "refresh"> &
+		Partial<Pick<SharedProjectRefresh, "metadata">>;
 	/** Return only the shared store's currently valid (at most sixty seconds old) snapshot. */
 	currentSnapshot(): ProjectSnapshot | undefined;
 	token(signal: AbortSignal): Promise<string>;
@@ -42,7 +51,11 @@ export async function collectProductionJudgment(
 	channelId: string,
 	deps: ProductionCollectionDependencies,
 	signal: AbortSignal,
-): Promise<{ collection: CollectionResult; mechanical: Mechanical }> {
+): Promise<{
+	collection: CollectionResult;
+	mechanical: Mechanical;
+	materials: JudgmentMaterials;
+}> {
 	const now = deps.now ?? Date.now;
 	const unknown = (reason: string): Mechanical => ({
 		verdict: "undetermined",
@@ -54,9 +67,21 @@ export async function collectProductionJudgment(
 		openPrCount: null,
 		overlaps: [],
 	});
+	let materials: JudgmentMaterials = {
+		targets: [],
+		mechanical: unknown("binding_missing"),
+		input: { status: "unavailable", reason: "binding_missing" },
+		computedAt: new Date(now()).toISOString(),
+	};
 	const fail = (reason: string) => ({
 		collection: { status: "undetermined" as const, reason },
 		mechanical: unknown(reason),
+		materials: {
+			...materials,
+			mechanical: unknown(reason),
+			...(reason === "binding_changed" ? { targets: [] } : {}),
+			input: { status: "unavailable" as const, reason },
+		},
 	});
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), 60_000);
@@ -70,6 +95,12 @@ export async function collectProductionJudgment(
 		);
 		if (!binding || binding.projectName !== "flywheel")
 			return fail("binding_missing");
+		materials = readAuthorityMaterials(
+			deps.source.store,
+			binding,
+			unknown("mechanical_pending"),
+			new Date(now()).toISOString(),
+		);
 		const config = refreshConfigSchema.parse({
 			projectName: "flywheel",
 			repositories: deps.repositories,
@@ -92,13 +123,26 @@ export async function collectProductionJudgment(
 			)
 		)
 			return fail("repository_not_configured");
-		const refreshed = await deps.refresh.refresh(config);
+		const refreshing = deps.refresh.refresh(config).catch(() => ({
+			status: "unavailable" as const,
+			reason: "project_refresh_failed",
+		}));
+		// Start Git as soon as the identities are known, independently of file inventory success.
+		const metadata = deps.refresh.metadata
+			? await deps.refresh.metadata(config)
+			: await refreshing.then((value) =>
+					value.status === "ready" ? value.snapshot : undefined,
+				);
 		bound.throwIfAborted();
-		if (refreshed.status !== "ready") return fail(refreshed.reason);
-		const snapshot = projectSnapshotSchema.parse(refreshed.snapshot);
+		if (!metadata) {
+			const result = await refreshing;
+			return fail(
+				result.status === "ready" ? "target_snapshot_missing" : result.reason,
+			);
+		}
+		let snapshot = projectSnapshotSchema.parse(metadata);
 		if (snapshot.configurationDigest !== canonicalDigest(config.repositories))
 			return fail("repository_configuration_changed");
-		const snapshotDigest = canonicalDigest(snapshot);
 		const targets = binding.targets.map((target) =>
 			snapshot.prs.find(
 				(pr) =>
@@ -113,6 +157,10 @@ export async function collectProductionJudgment(
 			.getShipJudgmentInputs()
 			.latestForQuestion(questionId);
 		const merges: Awaited<ReturnType<typeof checkGitMerge>>[] = [];
+		const unsaved: {
+			key: Parameters<ProjectRefreshStore["saveMergeProbe"]>[0];
+			result: Awaited<ReturnType<typeof checkGitMerge>>;
+		}[] = [];
 		for (const target of binding.targets) {
 			bound.throwIfAborted();
 			const pr = targets.find(
@@ -145,8 +193,67 @@ export async function collectProductionJudgment(
 				},
 				bound,
 			);
+			git.material = cachePreparedMaterial(git.material);
 			prepared.push(git);
 			bound.throwIfAborted();
+			const material = materials.targets.find(
+				(m) =>
+					m.repoIdentity === target.repo_identity &&
+					m.prNumber === target.pr_number,
+			)!;
+			material.diffBaseSha = git.material.diffBaseSha;
+			const reader = git.material.reader(bound);
+			try {
+				material.diff = await reader.diff(
+					git.material.diffBaseSha,
+					target.head_sha,
+				);
+			} catch (error) {
+				const code =
+					error instanceof Error
+						? (error.cause as { code?: unknown } | undefined)?.code
+						: undefined;
+				materials.input = {
+					status: "unavailable",
+					reason:
+						code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+							? "diff_budget_exceeded"
+							: "git_diff_unavailable",
+				};
+			}
+			if (material.designApproval?.status === "approved") {
+				const prior = deps.source.store.readShipJudgmentPlanReference(
+					binding.runId,
+					target.repo_identity,
+				);
+				const reference =
+					prior?.requestId === material.designApproval.requestId
+						? prior
+						: material.designApproval;
+				try {
+					material.planBlob = await reader.readText(
+						target.head_sha,
+						reference.path,
+					);
+				} catch {
+					/* Missing frozen plan affects alignment only. */
+				}
+			}
+			const report = readClaimQaSource(
+				{
+					runId: binding.runId,
+					repoIdentity: target.repo_identity,
+					headSha: target.head_sha,
+				},
+				material.qaAuthority,
+				deps.source.registry,
+				deps.source.hosting,
+			);
+			if (report)
+				material.qaReport = {
+					id: report.reportToken,
+					observedAt: material.qaAuthority!.issuedAt!,
+				};
 			const key = {
 				repoIdentity: target.repo_identity,
 				mainSha: repo.main_sha,
@@ -166,19 +273,25 @@ export async function collectProductionJudgment(
 				signal: bound,
 			});
 			bound.throwIfAborted();
-			const saved = deps.mergeCache?.saveMergeProbe(key, result, now());
-			merges.push(
-				saved === false
-					? { verdict: "undetermined", reason: "merge_probe_cache_unavailable" }
-					: result,
-			);
+			unsaved.push({ key, result });
+			merges.push(result);
 		}
-		const collection = await (deps.collect ?? collectLiveJudgment)(
-			questionId,
-			channelId,
-			{ ...deps.source, git: prepared.map((git) => git.material) },
-			bound,
-		);
+		let collection: CollectionResult;
+		try {
+			collection = await (deps.collect ?? collectLiveJudgment)(
+				questionId,
+				channelId,
+				{ ...deps.source, git: prepared.map((git) => git.material) },
+				bound,
+			);
+		} catch {
+			collection = {
+				status: "undetermined",
+				reason: "source_collection_failed",
+			};
+		}
+		bound.throwIfAborted();
+		const refreshed = await refreshing;
 		bound.throwIfAborted();
 		const currentBinding = deps.source.store.readShipJudgmentBinding(
 			questionId,
@@ -189,12 +302,87 @@ export async function collectProductionJudgment(
 			canonicalDigest(currentBinding) !== canonicalDigest(binding)
 		)
 			return fail("binding_changed");
+		const latestAuthorities = readAuthorityMaterials(
+			deps.source.store,
+			binding,
+			materials.mechanical,
+			new Date(now()).toISOString(),
+		);
+		for (const material of materials.targets) {
+			const latest = latestAuthorities.targets.find(
+				(t) =>
+					t.repoIdentity === material.repoIdentity &&
+					t.prNumber === material.prNumber,
+			)!;
+			if (
+				canonicalDigest(material.designApproval ?? null) !==
+				canonicalDigest(latest.designApproval ?? null)
+			)
+				delete material.planBlob;
+			if (
+				canonicalDigest(material.qaAuthority ?? null) !==
+				canonicalDigest(latest.qaAuthority ?? null)
+			)
+				delete material.qaReport;
+			for (const key of [
+				"designApproval",
+				"codeReview",
+				"qaAuthority",
+			] as const) {
+				if (
+					canonicalDigest(material[key] ?? null) !==
+					canonicalDigest(latest[key] ?? null)
+				)
+					collection = {
+						status: "undetermined",
+						reason: "source_authority_changed",
+					};
+			}
+			Object.assign(material, {
+				designApproval: latest.designApproval,
+				codeReview: latest.codeReview,
+				qaAuthority: latest.qaAuthority,
+			});
+		}
+		if (latestAuthorities.input.status === "unavailable")
+			materials.input = latestAuthorities.input;
+		materials.computedAt = new Date(now()).toISOString();
+		if (refreshed.status !== "ready") return fail(refreshed.reason);
+		const complete = projectSnapshotSchema.parse(refreshed.snapshot);
+		const identityDigest = (value: ProjectSnapshot) =>
+			canonicalDigest({
+				repositories: value.repositories,
+				prs: value.prs.map(
+					({
+						files: _files,
+						filesComplete: _complete,
+						filesError: _error,
+						...identity
+					}) => identity,
+				),
+			});
+		if (identityDigest(complete) !== identityDigest(snapshot))
+			return fail("mechanical_snapshot_changed_or_expired");
+		snapshot = complete;
+		const snapshotDigest = canonicalDigest(snapshot);
 		const current = deps.currentSnapshot();
 		if (!current || canonicalDigest(current) !== snapshotDigest)
 			return {
 				collection,
 				mechanical: unknown("mechanical_snapshot_changed_or_expired"),
+				materials: {
+					...materials,
+					mechanical: unknown("mechanical_snapshot_changed_or_expired"),
+					input: {
+						status: "unavailable",
+						reason: "mechanical_snapshot_changed_or_expired",
+					},
+				},
 			};
+		for (const { key, result } of unsaved) {
+			if (deps.mergeCache?.saveMergeProbe(key, result, now()) === false)
+				return fail("merge_probe_cache_unavailable");
+		}
 		const inventory = snapshot.prs.map(
 			({
 				base_ref: _baseRef,
@@ -217,23 +405,21 @@ export async function collectProductionJudgment(
 		const failed =
 			files.verdict === "fail" ||
 			merges.some((merge) => merge.verdict === "fail");
-		return {
-			collection,
-			mechanical: {
-				verdict: undetermined ? "undetermined" : failed ? "fail" : "pass",
-				reason: undetermined
-					? "mechanical_check_incomplete"
-					: failed
-						? "coordination_required"
-						: "mechanical_checks_clear",
-				digest: canonicalDigest({ snapshot, merges, files }),
-				checkedAt: new Date(now()).toISOString(),
-				scope: "main合并＋目标分支合并＋同项目在飞文件",
-				checkedRepos: prepared.length,
-				openPrCount: files.openPrCount,
-				overlaps: files.overlaps,
-			},
+		const mechanical: Mechanical = {
+			verdict: undetermined ? "undetermined" : failed ? "fail" : "pass",
+			reason: undetermined
+				? "mechanical_check_incomplete"
+				: failed
+					? "coordination_required"
+					: "mechanical_checks_clear",
+			digest: canonicalDigest({ snapshot, merges, files }),
+			checkedAt: new Date(now()).toISOString(),
+			scope: "main合并＋目标分支合并＋同项目在飞文件",
+			checkedRepos: prepared.length,
+			openPrCount: files.openPrCount,
+			overlaps: files.overlaps,
 		};
+		return { collection, mechanical, materials: { ...materials, mechanical } };
 	} catch {
 		return fail(
 			bound.aborted ? "collection_aborted" : "production_collection_failed",

@@ -378,7 +378,7 @@ it("persists per-PR failures, completes large real GitHub pages, and retries onl
 				if (n === 2 && page === "1")
 					return new Response(largeFiles, {
 						headers: {
-							Link: '<https://api.github.com/repositories/1164340454/pulls/2/files?per_page=20&page=2>; rel="next"',
+							Link: '<https://api.github.com/repositories/1164340454/pulls/2/files?per_page=100&page=2>; rel="next"',
 						},
 					});
 				return Response.json([{ filename: `src/final${n}.ts` }]);

@@ -1,0 +1,43 @@
+classDiagram
+  class 证据账本 {
+    version 1
+    policyVersion
+    evidence[≤64] 证据池
+    targets[1..50] 每个 PR 目标
+    alignment 卡级①
+    conflict 卡级②
+    coverage 卡级③
+    semantic 语义复核状态
+    input 输入自检结果
+  }
+  class 目标 {
+    repo_identity
+    pr_number
+    head_sha 精确头
+    diff_base_sha 可空
+    a 该目标的①
+    c 该目标的③
+  }
+  class 判定点 {
+    verdict 通过|不通过|缺
+    reason 稳定原因码
+    missing[≤8] 缺哪样
+    refs[≤4] 指向证据池
+  }
+  class 证据条目 {
+    kind 设计评审|代码评审|diff|QA claim|报告|合并探针|快照
+    id
+    label
+    observedAt 观测时间
+  }
+  class 意见行_ship_judgment_opinion {
+    alignment conflict coverage overall
+    evidence_json 新列
+    input_id evaluation_id 可空
+  }
+  证据账本 "1" *-- "1..50" 目标
+  目标 *-- "2" 判定点
+  证据账本 *-- "3" 判定点 : 卡级
+  判定点 ..> 证据条目 : refs 下标
+  证据账本 *-- "≤64" 证据条目
+  意见行_ship_judgment_opinion --> 证据账本 : evidence_json

@@ -14,10 +14,16 @@ import {
 	scanLearningMessages,
 } from "../ship-judgment/discord-scan.js";
 import { writeJudgmentMessage } from "../ship-judgment/discord-transport.js";
+import {
+	buildEvidenceLedger,
+	type EvidenceLedger,
+	type JudgmentMaterials,
+} from "../ship-judgment/evidence-ledger.js";
 import { GithubProjectApi } from "../ship-judgment/github-api.js";
 import { sendJudgmentHistory } from "../ship-judgment/history-sender.js";
 import { sendLearningMessage } from "../ship-judgment/learning-sender.js";
 import { writeLearningMessage } from "../ship-judgment/learning-transport.js";
+import { readAuthorityMaterials } from "../ship-judgment/materials.js";
 import { collectProductionJudgment } from "../ship-judgment/production-collect.js";
 import { SharedProjectRefresh } from "../ship-judgment/project-refresh.js";
 import { ShipJudgmentRuntime } from "../ship-judgment/runtime.js";
@@ -27,6 +33,63 @@ import type {
 	RecordUrlClassificationOptions,
 	StrengthTwoReportRegistry,
 } from "./strength-two-probes.js";
+
+type InputPreflight =
+	| {
+			status: "ready";
+			reason: "evidence_complete";
+			repositories: { repo_identity: string; repo_slug: string }[];
+	  }
+	| { status: "unavailable"; reason: string };
+
+/** Read-only checks; never expose credential values or provider error messages. */
+export async function preflightShipJudgmentInputs(
+	deps: {
+		projectRepo?: string;
+		linearApiKey?: string;
+		repositories(
+			slug: string,
+		): { repo_identity: string; repo_slug: string }[] | undefined;
+		token(signal: AbortSignal): Promise<string>;
+	},
+	signal: AbortSignal,
+): Promise<InputPreflight> {
+	const unavailable = (reason: string): InputPreflight => ({
+		status: "unavailable",
+		reason,
+	});
+	const slug = repositorySlugSchema.safeParse(deps.projectRepo);
+	if (!slug.success) return unavailable("repository_slug_invalid");
+	let repositories: { repo_identity: string; repo_slug: string }[] | undefined;
+	try {
+		repositories = deps.repositories(slug.data.toLowerCase());
+	} catch {
+		return unavailable("repositories_unavailable");
+	}
+	if (!repositories?.length) return unavailable("repositories_unavailable");
+	if (!deps.linearApiKey?.trim())
+		return unavailable("linear_credentials_missing");
+	const controller = new AbortController();
+	const bound = AbortSignal.any([signal, controller.signal]);
+	const timeout = setTimeout(() => controller.abort(), 20_000);
+	let onAbort: () => void = () => {};
+	try {
+		bound.throwIfAborted();
+		const aborted = new Promise<never>((_resolve, reject) => {
+			onAbort = () => reject(new Error("input_preflight_aborted"));
+			bound.addEventListener("abort", onAbort, { once: true });
+		});
+		const token = await Promise.race([deps.token(bound), aborted]);
+		if (!token.trim()) return unavailable("github_credentials_unavailable");
+		return { status: "ready", reason: "evidence_complete", repositories };
+	} catch {
+		return unavailable("github_credentials_unavailable");
+	} finally {
+		clearTimeout(timeout);
+		bound.removeEventListener("abort", onAbort);
+		controller.abort();
+	}
+}
 
 export function createShipJudgmentBridgeRuntime(deps: {
 	store: StateStore;
@@ -45,6 +108,38 @@ export function createShipJudgmentBridgeRuntime(deps: {
 		(project) => project.projectName === "flywheel",
 	);
 	if (!project) return undefined;
+	const inputAbort = new AbortController();
+	let latestInput: InputPreflight | undefined;
+	let inputFlight: Promise<InputPreflight> | undefined;
+	const checkInputs = (signal: AbortSignal): Promise<InputPreflight> => {
+		if (inputFlight) return inputFlight;
+		inputFlight = preflightShipJudgmentInputs(
+			{
+				projectRepo: project.projectRepo,
+				linearApiKey: deps.linearApiKey,
+				repositories: (slug) => deps.store.readShipJudgmentRepositories(slug),
+				token: deps.token,
+			},
+			AbortSignal.any([signal, inputAbort.signal]),
+		)
+			.then((result) => {
+				if (
+					result.status === "unavailable" &&
+					(latestInput?.status !== result.status ||
+						latestInput.reason !== result.reason)
+				) {
+					deps.onError(`input_unavailable:${result.reason}`);
+				}
+				latestInput = result;
+				return result;
+			})
+			.finally(() => {
+				inputFlight = undefined;
+			});
+		return inputFlight;
+	};
+	// Startup diagnostics run even when there are no cards, but off/auto do no source I/O.
+	if (deps.mode() === "dry_run") void checkInputs(inputAbort.signal);
 	const context = (questionId: string) => {
 		const holder =
 			deps.store.getCurrentWorkflowGateHolderByQuestionId(questionId);
@@ -91,7 +186,14 @@ export function createShipJudgmentBridgeRuntime(deps: {
 	};
 	let refresh: SharedProjectRefresh | undefined,
 		configurationDigest: string | undefined;
-	const latest = new Map<string, OpinionCandidate["mechanical"]>();
+	const latest = new Map<
+		string,
+		{
+			mechanical: OpinionCandidate["mechanical"];
+			evidence?: EvidenceLedger;
+			bindingDigest: string;
+		}
+	>();
 	const unknown = (reason: string): OpinionCandidate["mechanical"] => ({
 		verdict: "undetermined",
 		reason,
@@ -105,9 +207,45 @@ export function createShipJudgmentBridgeRuntime(deps: {
 	const remember = (
 		questionId: string,
 		mechanical: OpinionCandidate["mechanical"],
+		materials?: JudgmentMaterials,
 	) => {
+		const current = context(questionId);
+		if (!current) {
+			latest.delete(questionId);
+			return;
+		}
+		let evidence: EvidenceLedger | undefined;
+		try {
+			const raw =
+				materials ??
+				readAuthorityMaterials(
+					deps.store,
+					current.binding,
+					mechanical,
+					new Date().toISOString(),
+				);
+			if (!materials)
+				raw.input = {
+					status: "unavailable",
+					reason: mechanical.reason
+						.replace(/^input_unavailable:/, "")
+						.slice(0, 64),
+				};
+			evidence = buildEvidenceLedger(raw, current.binding);
+		} catch (error) {
+			const code =
+				error instanceof Error && error.message.includes("ledger_budget")
+					? "evidence_budget_exceeded"
+					: "evidence_invalid";
+			deps.onError(`input_unavailable:${code}`);
+			mechanical = unknown(`input_unavailable:${code}`);
+		}
 		latest.delete(questionId);
-		latest.set(questionId, mechanical);
+		latest.set(questionId, {
+			mechanical,
+			evidence,
+			bindingDigest: canonicalDigest(current.binding),
+		});
 		while (latest.size > 200) latest.delete(latest.keys().next().value!);
 	};
 	const offer = (
@@ -118,7 +256,12 @@ export function createShipJudgmentBridgeRuntime(deps: {
 		if (deps.mode() !== "dry_run") return;
 		const current = context(questionId);
 		if (!current) return;
-		const mechanical = latest.get(questionId) ?? unknown(reason);
+		if (
+			latest.get(questionId)?.bindingDigest !== canonicalDigest(current.binding)
+		)
+			remember(questionId, unknown(reason));
+		const record = latest.get(questionId);
+		const mechanical = record?.mechanical ?? unknown(reason);
 		deps.store.getShipJudgmentOpinions().offer(
 			{
 				questionId,
@@ -127,6 +270,7 @@ export function createShipJudgmentBridgeRuntime(deps: {
 				inputId,
 				reason,
 				mechanical,
+				...(record?.evidence ? { evidence: record.evidence } : {}),
 			},
 			Date.now(),
 		);
@@ -299,21 +443,38 @@ export function createShipJudgmentBridgeRuntime(deps: {
 			});
 		},
 		stopSources: async () => {
+			inputAbort.abort();
+			await inputFlight;
 			await refresh?.stop();
 		},
 		collect: async (questionId, signal) => {
 			const current = context(questionId);
 			if (!current)
 				return { status: "undetermined", reason: "binding_missing" };
-			const slug = repositorySlugSchema.safeParse(project.projectRepo);
-			const repositories = slug.success
-				? deps.store.readShipJudgmentRepositories(slug.data)
-				: undefined;
-			if (!repositories || !deps.linearApiKey) {
-				remember(questionId, unknown("project_sources_unavailable"));
+			const input = await checkInputs(signal);
+			if (
+				input.status === "unavailable" &&
+				input.reason !== "linear_credentials_missing"
+			) {
+				const reason = `input_unavailable:${input.reason}`;
+				remember(questionId, unknown(reason));
 				return {
 					status: "undetermined",
-					reason: "project_sources_unavailable",
+					reason,
+				};
+			}
+			const repositories =
+				input.status === "ready"
+					? input.repositories
+					: deps.store.readShipJudgmentRepositories(project.projectRepo ?? "");
+			if (!repositories?.length) {
+				remember(
+					questionId,
+					unknown("input_unavailable:repositories_unavailable"),
+				);
+				return {
+					status: "undetermined",
+					reason: "input_unavailable:repositories_unavailable",
 				};
 			}
 			const digest = canonicalDigest(repositories);
@@ -330,24 +491,25 @@ export function createShipJudgmentBridgeRuntime(deps: {
 				);
 				configurationDigest = digest;
 			}
-			const plans = current.binding.targets.filter((target) =>
-				deps.store.readShipJudgmentPlanReference(
-					current.binding.runId,
-					target.repo_identity,
-				),
+			const aliases = deps.store.readShipJudgmentIssueAliases(
+				current.binding.runId,
 			);
-			if (plans.length !== 1) {
-				remember(questionId, unknown("reviewed_plan_ambiguous"));
-				return { status: "undetermined", reason: "reviewed_plan_ambiguous" };
-			}
+			const plans = current.binding.targets.filter(
+				(target) =>
+					deps.store.readShipJudgmentDesignApproval(
+						current.binding.issueId,
+						aliases,
+						target.repo_identity,
+					)?.status === "approved",
+			);
 			const result = await collectProductionJudgment(
 				questionId,
 				current.channelId,
 				{
 					source: {
 						store: deps.store,
-						linearApiKey: deps.linearApiKey,
-						planRepoIdentity: plans[0]!.repo_identity,
+						linearApiKey: deps.linearApiKey ?? "",
+						planRepoIdentity: plans.length === 1 ? plans[0]!.repo_identity : "",
 						registry: deps.registry,
 						hosting: deps.hosting,
 					},
@@ -360,7 +522,12 @@ export function createShipJudgmentBridgeRuntime(deps: {
 				},
 				signal,
 			);
-			remember(questionId, result.mechanical);
+			if (input.status === "unavailable")
+				result.materials.input = {
+					status: "unavailable",
+					reason: input.reason,
+				};
+			remember(questionId, result.mechanical, result.materials);
 			return result.collection;
 		},
 		evaluate: (packet, signal) =>

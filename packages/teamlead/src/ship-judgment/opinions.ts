@@ -7,6 +7,10 @@ import {
 	type PointVerdict,
 	type ShipJudgmentBinding,
 } from "./contract.js";
+import {
+	applySemanticEvidence,
+	evidenceLedgerDigest,
+} from "./evidence-ledger.js";
 import { ShipJudgmentInputs } from "./inputs.js";
 
 export type OfferResult =
@@ -24,6 +28,7 @@ interface EvaluationRow {
 	alignment: PointVerdict;
 	coverage: PointVerdict;
 	result_json: string;
+	result_code: string;
 }
 interface OpinionRow {
 	opinion_id: string;
@@ -58,7 +63,25 @@ export class ShipJudgmentOpinions {
 				);
 				if (!binding || canonicalDigest(binding) !== candidate.bindingDigest)
 					return { status: "binding_changed" };
+				if (
+					candidate.evidence &&
+					(candidate.evidence.manifestRevision !== binding.manifestRevision ||
+						candidate.evidence.targets.length !== binding.targets.length ||
+						candidate.evidence.targets.some(
+							(t) =>
+								!binding.targets.some(
+									(b) =>
+										b.repo_identity === t.r &&
+										b.pr_number === t.p &&
+										b.head_sha === t.h,
+								),
+						) ||
+						candidate.evidence.conflict.verdict !==
+							candidate.mechanical.verdict)
+				)
+					return { status: "binding_changed" };
 				let evaluation: EvaluationRow | undefined;
+				let modelSnapshotDigest: string | undefined;
 				const delivery = this.db
 					.prepare(
 						"SELECT card_message_id,thread_id FROM ship_judgment_delivery WHERE purpose='opinion' AND subject_id=?",
@@ -89,14 +112,47 @@ export class ShipJudgmentOpinions {
 						.get(candidate.questionId) as { ordinal: number };
 					if (latest.ordinal !== input.ordinal)
 						return { status: "binding_changed" };
+					if (
+						candidate.evidence &&
+						candidate.evidence.targetsDigest !== input.targetsDigest
+					)
+						return { status: "binding_changed" };
+					modelSnapshotDigest = canonicalDigest(input.model);
 					evaluation = this.db
 						.prepare(
-							"SELECT evaluation_id,alignment,coverage,result_json FROM ship_judgment_evaluation WHERE input_id=?",
+							"SELECT evaluation_id,alignment,coverage,result_json,result_code FROM ship_judgment_evaluation WHERE input_id=?",
 						)
 						.get(candidate.inputId) as EvaluationRow | undefined;
 				}
-				const alignment = evaluation?.alignment ?? "undetermined";
-				const coverage = evaluation?.coverage ?? "undetermined";
+				const evidence = candidate.evidence
+					? applySemanticEvidence(
+							candidate.evidence,
+							evaluation && modelSnapshotDigest
+								? {
+										status:
+											["ok", "evaluated"].includes(evaluation.result_code) &&
+											([evaluation.alignment, evaluation.coverage].includes(
+												"fail",
+											) ||
+												![evaluation.alignment, evaluation.coverage].includes(
+													"undetermined",
+												))
+												? "evaluated"
+												: "undetermined",
+										evaluationId: evaluation.evaluation_id,
+										modelSnapshotDigest,
+										alignment: evaluation.alignment,
+										coverage: evaluation.coverage,
+									}
+								: undefined,
+						)
+					: undefined;
+				const alignment =
+					evidence?.alignment.verdict ??
+					evaluation?.alignment ??
+					"undetermined";
+				const coverage =
+					evidence?.coverage.verdict ?? evaluation?.coverage ?? "undetermined";
 				const overall = aggregateJudgment(
 					alignment,
 					candidate.mechanical.verdict,
@@ -108,6 +164,7 @@ export class ShipJudgmentOpinions {
 					...displayMechanical
 				} = candidate.mechanical;
 				const presentationDigest = canonicalDigest({
+					...(evidence ? { evidence: evidenceLedgerDigest(evidence) } : {}),
 					inputId: candidate.inputId,
 					evaluationId: evaluation?.evaluation_id ?? null,
 					semanticEvidence: evaluation
@@ -176,7 +233,7 @@ export class ShipJudgmentOpinions {
 				const opinionId = randomUUID();
 				this.db
 					.prepare(`INSERT INTO ship_judgment_opinion(opinion_id,question_id,input_id,evaluation_id,ordinal,mechanical_json,mechanical_digest,presentation_digest,
-				alignment,conflict,coverage,overall,status,reason,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+				alignment,conflict,coverage,overall,status,reason,created_at,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 					.run(
 						opinionId,
 						candidate.questionId,
@@ -193,6 +250,7 @@ export class ShipJudgmentOpinions {
 						overall === "undetermined" ? "undetermined" : "complete",
 						candidate.reason,
 						at,
+						evidence ? JSON.stringify(evidence) : null,
 					);
 				this.db
 					.prepare(`UPDATE ship_judgment_delivery SET desired_id=?,validated_presentation_digest=?,validated_at=?,generation=generation+1,

@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { GithubProjectApi } from "../github-api.js";
 
+it("requests one hundred files per page within the shared request budget", async () => {
+	const fetcher = vi.fn(async (_url: string) => new Response("[]"));
+	const api = new GithubProjectApi(["owner/repo"], () => "fixture", fetcher);
+	await api.files("owner/repo", 1, 1, new AbortController().signal);
+	expect(
+		new URL(fetcher.mock.calls[0]![0] as string).searchParams.get("per_page"),
+	).toBe("100");
+});
+
 describe("bounded GitHub project reader", () => {
 	it("normalizes PR and rename pages, keeps requests on the allowlisted repository and uses one HTTP call per method", async () => {
 		const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
@@ -10,7 +19,7 @@ describe("bounded GitHub project reader", () => {
 					JSON.stringify([{ filename: "new.ts", previous_filename: "old.ts" }]),
 					{
 						headers: {
-							Link: '<https://api.github.com/repos/owner/repo/pulls/1/files?per_page=20&page=2>; rel="next"',
+							Link: '<https://api.github.com/repos/owner/repo/pulls/1/files?per_page=100&page=2>; rel="next"',
 						},
 					},
 				);
@@ -112,7 +121,7 @@ it.each(["repos/owner/repo", "repositories/1164340454"])(
 					new Response("[]", {
 						headers: url.endsWith("page=1")
 							? {
-									Link: `<https://api.github.com/${prefix}${suffix}?per_page=20&page=2>; rel="next"`,
+									Link: `<https://api.github.com/${prefix}${suffix}?per_page=${suffix === "/pulls" ? 20 : 100}&page=2>; rel="next"`,
 								}
 							: {},
 					}),
@@ -131,18 +140,18 @@ it.each(["repos/owner/repo", "repositories/1164340454"])(
 			expect((await read(first.nextPage!)).nextPage).toBeNull();
 			expect(fetcher).toHaveBeenCalledTimes(2);
 			expect(fetcher.mock.calls[1]![0]).toBe(
-				`https://api.github.com/repos/owner/repo${suffix}?${suffix === "/pulls" ? "state=open&" : ""}per_page=20&page=2`,
+				`https://api.github.com/repos/owner/repo${suffix}?${suffix === "/pulls" ? "state=open&" : ""}per_page=${suffix === "/pulls" ? 20 : 100}&page=2`,
 			);
 		}
 	},
 );
 
 it.each([
-	"https://api.github.com/repositories/1164340454/pulls/999/files?per_page=20&page=2",
-	"https://api.github.com/repositories/not-an-id/pulls/1163/files?per_page=20&page=2",
-	"https://api.github.com/repos/other/repo/pulls/1163/files?per_page=20&page=2",
-	"https://evil.invalid/repositories/1164340454/pulls/1163/files?per_page=20&page=2",
-	"https://api.github.com/repositories/1164340454/pulls/1163/files?per_page=20&page=3",
+	"https://api.github.com/repositories/1164340454/pulls/999/files?per_page=100&page=2",
+	"https://api.github.com/repositories/not-an-id/pulls/1163/files?per_page=100&page=2",
+	"https://api.github.com/repos/other/repo/pulls/1163/files?per_page=100&page=2",
+	"https://evil.invalid/repositories/1164340454/pulls/1163/files?per_page=100&page=2",
+	"https://api.github.com/repositories/1164340454/pulls/1163/files?per_page=100&page=3",
 	"https://api.github.com/repositories/1164340454/pulls/1163/files?per_page=50&page=2",
 ])(
 	"rejects pagination outside the requested resource or next page: %s",
@@ -196,7 +205,7 @@ it.each(["prs", "files"] as const)(
 			return new Response(body, {
 				headers: first
 					? {
-							Link: `<https://api.github.com/repositories/1164340454${suffix}?per_page=20&page=2>; rel="next"`,
+							Link: `<https://api.github.com/repositories/1164340454${suffix}?per_page=${suffix === "/pulls" ? 20 : 100}&page=2>; rel="next"`,
 						}
 					: {},
 			});
@@ -216,7 +225,9 @@ it.each(["prs", "files"] as const)(
 		expect(fetcher).toHaveBeenCalledTimes(2);
 		for (const [url] of fetcher.mock.calls) {
 			expect(new URL(url).pathname).toBe(`/repos/owner/repo${suffix}`);
-			expect(new URL(url).searchParams.get("per_page")).toBe("20");
+			expect(new URL(url).searchParams.get("per_page")).toBe(
+				kind === "prs" ? "20" : "100",
+			);
 		}
 	},
 );

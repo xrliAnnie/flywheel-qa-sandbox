@@ -37,7 +37,7 @@ export type Pairing =
 			decidedAt: string;
 			readGapMs: number;
 			policyVersion: string;
-			modelSnapshotDigest: string;
+			modelSnapshotDigest: string | null;
 	  }
 	| {
 			status:
@@ -69,6 +69,10 @@ interface Outcome {
 	evidence_json: string;
 }
 
+export type CanonicalOutcome =
+	| { status: "canonical"; outcome: Outcome }
+	| Exclude<Pairing, { status: "paired" }>;
+
 /** Reads only the new learning ledger and non-authoritative visibility receipts. Never changes a gate. */
 export class ShipJudgmentLearning {
 	constructor(private readonly db: Database.Database) {}
@@ -79,7 +83,20 @@ export class ShipJudgmentLearning {
 		).toISOString();
 		return this.db.transaction(() => this.pairSnapshot(outcomeId, cutoff))();
 	}
-	private pairSnapshot(outcomeId: string, asOf: string): Pairing {
+	/** Canonical founder decisions shared with offline replay; needs no opinion/evaluation schema. */
+	canonical(
+		outcomeId: string,
+		asOf = "9999-12-31T23:59:59.999Z",
+	): CanonicalOutcome {
+		z.string().min(1).max(200).parse(outcomeId);
+		const cutoff = new Date(
+			z.string().datetime({ offset: true }).parse(asOf),
+		).toISOString();
+		return this.db.transaction(() =>
+			this.canonicalSnapshot(outcomeId, cutoff),
+		)();
+	}
+	private canonicalSnapshot(outcomeId: string, asOf: string): CanonicalOutcome {
 		const outcome = this.db
 			.prepare(
 				"SELECT * FROM ship_judgment_outcome WHERE outcome_id=? AND julianday(observed_at)<=julianday(?) AND julianday(decided_at)<=julianday(?)",
@@ -156,6 +173,17 @@ export class ShipJudgmentLearning {
 						? "timing_ambiguous"
 						: "post_decision_override",
 			};
+		return { status: "canonical", outcome };
+	}
+	private pairSnapshot(outcomeId: string, asOf: string): Pairing {
+		const canonical = this.canonicalSnapshot(outcomeId, asOf);
+		if (canonical.status !== "canonical") return canonical;
+		const outcome = canonical.outcome;
+		const decided = Date.parse(outcome.decided_at);
+		const evidence = JSON.parse(outcome.evidence_json) as Record<
+			string,
+			unknown
+		>;
 		if (evidence.binding_status !== "resolved")
 			return { status: "unresolved_binding" };
 		if (evidence.refresh_history === "pending")
@@ -163,8 +191,8 @@ export class ShipJudgmentLearning {
 		if (evidence.refresh_history === "inactive") return { status: "inactive" };
 		if (evidence.refresh_history !== "clear")
 			return { status: "refresh_unknown" };
-		const match = this.db
-			.prepare(`SELECT o.opinion_id,o.overall,o.created_at,v.created_at AS evaluated_at,i.policy_version,i.model_snapshot_digest,
+		let match = this.db
+			.prepare(`SELECT o.opinion_id,o.overall,o.created_at,v.created_at AS evaluated_at,COALESCE(json_extract(o.evidence_json,'$.policyVersion'),i.policy_version) AS policy_version,i.model_snapshot_digest,
  json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.receipt_time') AS visible_at
  FROM ship_judgment_opinion o JOIN ship_judgment_input i ON i.input_id=o.input_id
  LEFT JOIN ship_judgment_evaluation v ON v.evaluation_id=o.evaluation_id
@@ -195,14 +223,45 @@ export class ShipJudgmentLearning {
 					created_at: string;
 					evaluated_at: string | null;
 					policy_version: string;
-					model_snapshot_digest: string;
+					model_snapshot_digest: string | null;
 					visible_at: string;
 			  }
 			| undefined;
+		const evidenceOnly = this.db
+			.prepare(`SELECT o.opinion_id,o.overall,o.created_at,NULL AS evaluated_at,
+			json_extract(o.evidence_json,'$.policyVersion') AS policy_version,
+			json_extract(o.evidence_json,'$.semantic.modelSnapshotDigest') AS model_snapshot_digest,
+			json_extract(e.payload,'$.receipt_time') AS visible_at
+			FROM ship_judgment_opinion o JOIN workflow_run_event e ON e.run_id=? AND e.kind=?
+			AND json_extract(e.payload,'$.opinion_id')=o.opinion_id AND json_extract(e.payload,'$.question_id')=o.question_id
+			WHERE o.question_id=? AND o.input_id IS NULL AND o.evidence_json IS NOT NULL
+			AND json_extract(o.mechanical_json,'$.binding.runId')=? AND json_extract(o.mechanical_json,'$.binding.cardMessageId')=?
+			AND json_extract(o.evidence_json,'$.targetsDigest')=? AND json_extract(e.payload,'$.receipt_time')<=?
+			AND julianday(o.created_at)<=julianday(?) AND julianday(COALESCE(json_extract(e.payload,'$.observed_at'),e.at))<=julianday(?)
+			ORDER BY visible_at DESC,o.created_at DESC,o.ordinal DESC LIMIT 1`)
+			.get(
+				outcome.run_id,
+				JUDGMENT_VISIBLE_EVENT,
+				outcome.question_id,
+				outcome.run_id,
+				outcome.card_message_id,
+				outcome.targets_digest,
+				outcome.decided_at,
+				asOf,
+				asOf,
+			) as typeof match;
+		if (
+			evidenceOnly &&
+			(!match ||
+				evidenceOnly.visible_at > match.visible_at ||
+				(evidenceOnly.visible_at === match.visible_at &&
+					evidenceOnly.created_at > match.created_at))
+		)
+			match = evidenceOnly;
 		if (!match) {
 			const matching = this.db
 				.prepare(
-					`SELECT 1 FROM ship_judgment_opinion o JOIN ship_judgment_input i ON i.input_id=o.input_id WHERE o.question_id=? AND i.targets_digest=? AND julianday(o.created_at)<=julianday(?) LIMIT 1`,
+					`SELECT 1 FROM ship_judgment_opinion o LEFT JOIN ship_judgment_input i ON i.input_id=o.input_id WHERE o.question_id=? AND COALESCE(i.targets_digest,json_extract(o.evidence_json,'$.targetsDigest'))=? AND julianday(o.created_at)<=julianday(?) LIMIT 1`,
 				)
 				.get(outcome.question_id, outcome.targets_digest, asOf);
 			if (matching) return { status: "late" };

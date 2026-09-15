@@ -137,6 +137,7 @@ jobs:
           node --test scripts/__tests__/fly-2398-shadow-table.test.mjs
           node --test scripts/__tests__/import-ship-judgment-retro.test.mjs
           node --test scripts/__tests__/replay-ship-judgment.test.mjs
+          node --test scripts/__tests__/replay-ship-judgment-cards.test.mjs
           node --test scripts/__tests__/ship-judgment-timer.test.mjs
           node --test scripts/__tests__/ship-judgment-mutations.test.mjs
           node --test scripts/__tests__/fly-2490-backfill-receipts.test.mjs

@@ -1,0 +1,268 @@
+{
+  "githubRequests": 93,
+  "requestPaths": [
+    "/repos/xrliannie/flywheel/git/ref/heads/main",
+    "/repos/xrliannie/flywheel/pulls",
+    "/repos/xrliannie/flywheel/pulls",
+    "/repos/xrliannie/flywheel/pulls",
+    "/repos/xrliannie/flywheel/pulls/1203/files",
+    "/repos/xrliannie/flywheel/pulls/1203",
+    "/repos/xrliannie/flywheel/pulls/1202/files",
+    "/repos/xrliannie/flywheel/pulls/1202",
+    "/repos/xrliannie/flywheel/pulls/1201/files",
+    "/repos/xrliannie/flywheel/pulls/1201",
+    "/repos/xrliannie/flywheel/pulls/1200/files",
+    "/repos/xrliannie/flywheel/pulls/1200",
+    "/repos/xrliannie/flywheel/pulls/1199/files",
+    "/repos/xrliannie/flywheel/pulls/1199",
+    "/repos/xrliannie/flywheel/pulls/1198/files",
+    "/repos/xrliannie/flywheel/pulls/1198",
+    "/repos/xrliannie/flywheel/pulls/1196/files",
+    "/repos/xrliannie/flywheel/pulls/1196/files",
+    "/repos/xrliannie/flywheel/pulls/1196/files",
+    "/repos/xrliannie/flywheel/pulls/1196",
+    "/repos/xrliannie/flywheel/pulls/1195/files",
+    "/repos/xrliannie/flywheel/pulls/1195",
+    "/repos/xrliannie/flywheel/pulls/1194/files",
+    "/repos/xrliannie/flywheel/pulls/1194",
+    "/repos/xrliannie/flywheel/pulls/1191/files",
+    "/repos/xrliannie/flywheel/pulls/1191/files",
+    "/repos/xrliannie/flywheel/pulls/1191/files",
+    "/repos/xrliannie/flywheel/pulls/1191/files",
+    "/repos/xrliannie/flywheel/pulls/1191",
+    "/repos/xrliannie/flywheel/pulls/1117/files",
+    "/repos/xrliannie/flywheel/pulls/1117",
+    "/repos/xrliannie/flywheel/pulls/1037/files",
+    "/repos/xrliannie/flywheel/pulls/1037",
+    "/repos/xrliannie/flywheel/pulls/1030/files",
+    "/repos/xrliannie/flywheel/pulls/1030",
+    "/repos/xrliannie/flywheel/pulls/1024/files",
+    "/repos/xrliannie/flywheel/pulls/1024",
+    "/repos/xrliannie/flywheel/pulls/1022/files",
+    "/repos/xrliannie/flywheel/pulls/1022",
+    "/repos/xrliannie/flywheel/pulls/1020/files",
+    "/repos/xrliannie/flywheel/pulls/1020",
+    "/repos/xrliannie/flywheel/pulls/530/files",
+    "/repos/xrliannie/flywheel/pulls/530",
+    "/repos/xrliannie/flywheel/pulls/361/files",
+    "/repos/xrliannie/flywheel/pulls/361",
+    "/repos/xrliannie/flywheel/pulls/359/files",
+    "/repos/xrliannie/flywheel/pulls/359",
+    "/repos/xrliannie/flywheel/pulls/358/files",
+    "/repos/xrliannie/flywheel/pulls/358",
+    "/repos/xrliannie/flywheel/pulls/357/files",
+    "/repos/xrliannie/flywheel/pulls/357",
+    "/repos/xrliannie/flywheel/pulls/346/files",
+    "/repos/xrliannie/flywheel/pulls/346",
+    "/repos/xrliannie/flywheel/pulls/343/files",
+    "/repos/xrliannie/flywheel/pulls/343",
+    "/repos/xrliannie/flywheel/pulls/338/files",
+    "/repos/xrliannie/flywheel/pulls/338",
+    "/repos/xrliannie/flywheel/pulls/337/files",
+    "/repos/xrliannie/flywheel/pulls/337",
+    "/repos/xrliannie/flywheel/pulls/305/files",
+    "/repos/xrliannie/flywheel/pulls/305",
+    "/repos/xrliannie/flywheel/pulls/301/files",
+    "/repos/xrliannie/flywheel/pulls/301",
+    "/repos/xrliannie/flywheel/pulls/300/files",
+    "/repos/xrliannie/flywheel/pulls/300",
+    "/repos/xrliannie/flywheel/pulls/299/files",
+    "/repos/xrliannie/flywheel/pulls/299",
+    "/repos/xrliannie/flywheel/pulls/297/files",
+    "/repos/xrliannie/flywheel/pulls/297",
+    "/repos/xrliannie/flywheel/pulls/291/files",
+    "/repos/xrliannie/flywheel/pulls/291",
+    "/repos/xrliannie/flywheel/pulls/248/files",
+    "/repos/xrliannie/flywheel/pulls/248",
+    "/repos/xrliannie/flywheel/pulls/216/files",
+    "/repos/xrliannie/flywheel/pulls/216",
+    "/repos/xrliannie/flywheel/pulls/213/files",
+    "/repos/xrliannie/flywheel/pulls/213",
+    "/repos/xrliannie/flywheel/pulls/175/files",
+    "/repos/xrliannie/flywheel/pulls/175",
+    "/repos/xrliannie/flywheel/pulls/172/files",
+    "/repos/xrliannie/flywheel/pulls/172",
+    "/repos/xrliannie/flywheel/pulls/169/files",
+    "/repos/xrliannie/flywheel/pulls/169",
+    "/repos/xrliannie/flywheel/pulls/128/files",
+    "/repos/xrliannie/flywheel/pulls/128",
+    "/repos/xrliannie/flywheel/pulls/118/files",
+    "/repos/xrliannie/flywheel/pulls/118",
+    "/repos/xrliannie/flywheel/pulls/105/files",
+    "/repos/xrliannie/flywheel/pulls/105",
+    "/repos/xrliannie/flywheel/pulls/103/files",
+    "/repos/xrliannie/flywheel/pulls/103",
+    "/repos/xrliannie/flywheel/pulls/11/files",
+    "/repos/xrliannie/flywheel/pulls/11"
+  ],
+  "timings": {
+    "preflightMs": 105,
+    "collectMs": 34455
+  },
+  "preflight": [
+    {
+      "status": "ready",
+      "reason": "evidence_complete",
+      "repositories": [
+        {
+          "repo_identity": "__main__",
+          "repo_slug": "xrliannie/flywheel"
+        }
+      ]
+    },
+    {
+      "status": "unavailable",
+      "reason": "linear_credentials_missing"
+    },
+    {
+      "status": "unavailable",
+      "reason": "github_credentials_unavailable"
+    }
+  ],
+  "collection": {
+    "status": "undetermined",
+    "reason": "source_collection_failed"
+  },
+  "mechanical": {
+    "verdict": "fail",
+    "reason": "coordination_required",
+    "digest": "a3dfcddd385a1c99f04e48a298b5766c71822a566ee748789cf309501723adcd",
+    "checkedAt": "2026-09-15T02:37:36.890Z",
+    "scope": "main合并＋目标分支合并＋同项目在飞文件",
+    "checkedRepos": 1,
+    "openPrCount": 41,
+    "overlaps": [
+      {
+        "repo_identity": "__main__",
+        "pr_number": 1199,
+        "path": "packages/teamlead/src/StateStore.ts"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 1191,
+        "path": "packages/teamlead/src/StateStore.ts"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 1200,
+        "path": ".github/workflows/ci.yml"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 1196,
+        "path": ".github/workflows/ci.yml"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 1198,
+        "path": "scripts/fly-2006-retention-consumer-gate.config.json"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 1191,
+        "path": ".github/workflows/ci.yml"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 118,
+        "path": "packages/teamlead/src/StateStore.ts"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 213,
+        "path": "packages/teamlead/src/StateStore.ts"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 1200,
+        "path": "scripts/fly-2006-retention-consumer-gate.config.json"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 297,
+        "path": "packages/teamlead/src/StateStore.ts"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 1198,
+        "path": ".github/workflows/ci.yml"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 1201,
+        "path": ".github/workflows/ci.yml"
+      },
+      {
+        "repo_identity": "__main__",
+        "pr_number": 11,
+        "path": "packages/teamlead/src/StateStore.ts"
+      }
+    ]
+  },
+  "input": {
+    "status": "ready",
+    "reason": "evidence_complete"
+  },
+  "material": {
+    "diffBaseSha": "579c79ed662e49e7799b5d61ccd6d11a00fce3f2",
+    "diff": {
+      "digest": "cab555af344a9fd40f429566d227a478e9c561331a43415d14fbb8d75962e16f",
+      "files": 62,
+      "complete": true
+    },
+    "code": {
+      "requestId": "c22a8307-7a78-49d4-8006-68880735a0be",
+      "round": 2,
+      "verdict": "APPROVED",
+      "respondedAt": "2026-09-15T01:45:51.000Z"
+    },
+    "qa": {
+      "verdict": "undetermined",
+      "reason": "evidence_missing"
+    }
+  },
+  "offer": {
+    "status": "created",
+    "opinionId": "f7cbc569-c11f-4411-9f4b-4a4809db1dba"
+  },
+  "persisted": [
+    {
+      "overall": "undetermined",
+      "alignment": "undetermined",
+      "conflict": "fail",
+      "coverage": "undetermined",
+      "bytes": 1481
+    }
+  ],
+  "points": {
+    "a": {
+      "verdict": "undetermined",
+      "reason": "evidence_missing",
+      "missing": [
+        "design_review",
+        "plan_at_head"
+      ],
+      "refs": [
+        0,
+        1
+      ]
+    },
+    "c": {
+      "verdict": "fail",
+      "reason": "overlapping_files",
+      "missing": [],
+      "refs": [
+        2
+      ]
+    },
+    "q": {
+      "verdict": "undetermined",
+      "reason": "evidence_missing",
+      "missing": [
+        "qa_claim"
+      ],
+      "refs": []
+    }
+  },
+  "text": "**机器试判：不可自动批：②** · dry_run\n① PRD / 设计对齐：缺 设计评审、当前 head 设计文档 · APPROVED@​53426fc3 c22a8307-7a78-49d4-8006-68880735a0be · 62 files cab555af344a9fd40f429566d227a478e9c561331a43415d14fbb8d75962e16f\n② 合并与在飞文件：不通过 · overlapping\\_files a3dfcddd385a1c99f04e48a298b5766c71822a566ee748789cf309501723adcd · 同改：\\_\\_main\\_\\_ #1199 packages/teamlead/src/StateStore.ts · 同改：\\_\\_main\\_\\_ #1191 packages/teamlead/src/StateStore.ts · 同改：\\_\\_main\\_\\_ #1200 .github/workflows/ci.yml · 同改：\\_\\_main\\_\\_ #1196 .github/workflows/ci.yml · 同改：\\_\\_main\\_\\_ #1198 scripts/fly-2006-retention-consumer-gate.config.json · 同改：\\_\\_main\\_\\_ #1191 .github/workflows/ci.yml · 同改：\\_\\_main\\_\\_ #118 packages/teamlead/src/StateStore.ts · 同改：\\_\\_main\\_\\_ #213 packages/teamlead/src/StateStore.ts · 同改：\\_\\_main\\_\\_ #1200 scripts/fly-2006-retention-consumer-gate.config.json · 同改：\\_\\_main\\_\\_ #297 packages/teamlead/src/StateStore.ts · 同改：\\_\\_main\\_\\_ #1198 .github/workflows/ci.yml · 同改：\\_\\_main\\_\\_ #1201 .github/workflows/ci.yml · 同改：\\_\\_main\\_\\_ #11 packages/teamlead/src/StateStore.ts\n③ QA 用例覆盖：缺 QA 判决\n缺证据：① 设计评审、当前 head 设计文档；③ QA 判决\n语义复核：未跑\n检查范围：main合并＋目标分支合并＋同项目在飞文件；1 仓，在飞 PR 41。\n截至 2026-09-15T02:37:36.890Z 的试判；后续检查可能待更新，仍由你批准。\n旧窄口三闸/样本统计（非本次语义得分）：QA 真链路\n`ship-judgment:q opinion:f7cbc569-c11f-4411-9f4b-4a4809db1dba`"
+}
