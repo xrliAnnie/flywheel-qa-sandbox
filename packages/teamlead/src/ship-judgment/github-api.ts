@@ -6,6 +6,7 @@ import {
 } from "./project-refresh.js";
 
 const PAGE_SIZE = 20;
+const FILE_PAGE_SIZE = 100;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 const sha = z.string().regex(/^[0-9a-f]{40}$/);
@@ -84,12 +85,12 @@ export class GithubProjectApi implements ProjectFetchApi {
 		z.number().int().positive().safe().parse(page);
 		const { body, link, url } = await this.get(
 			repo,
-			`/pulls/${pr}/files?per_page=${PAGE_SIZE}&page=${page}`,
+			`/pulls/${pr}/files?per_page=${FILE_PAGE_SIZE}&page=${page}`,
 			signal,
 		);
 		const items = z
 			.array(fileSchema)
-			.max(PAGE_SIZE)
+			.max(FILE_PAGE_SIZE)
 			.parse(body)
 			.map((file) => ({
 				path: file.filename,
@@ -97,7 +98,10 @@ export class GithubProjectApi implements ProjectFetchApi {
 					? { previous_path: file.previous_filename }
 					: {}),
 			}));
-		return { items, nextPage: this.nextPage(link, url, page, items.length) };
+		return {
+			items,
+			nextPage: this.nextPage(link, url, page, items.length, FILE_PAGE_SIZE),
+		};
 	}
 
 	private nextPage(
@@ -105,6 +109,7 @@ export class GithubProjectApi implements ProjectFetchApi {
 		requestUrl: string,
 		page: number,
 		count: number,
+		pageSize = PAGE_SIZE,
 	): number | null {
 		const links = [
 			...(link ?? "").matchAll(/<([^>]+)>;\s*rel="([^"]+)"/g),
@@ -113,7 +118,7 @@ export class GithubProjectApi implements ProjectFetchApi {
 		if (!links.length) {
 			if (link?.includes("next"))
 				throw new ProjectFetchFailure("invalid_pagination");
-			return count === PAGE_SIZE && !link ? page + 1 : null;
+			return count === pageSize && !link ? page + 1 : null;
 		}
 		const next = new URL(links[0]![1]!);
 		const current = new URL(requestUrl);
@@ -134,7 +139,7 @@ export class GithubProjectApi implements ProjectFetchApi {
 			next.password ||
 			next.hash ||
 			next.searchParams.get("page") !== String(page + 1) ||
-			next.searchParams.get("per_page") !== String(PAGE_SIZE)
+			next.searchParams.get("per_page") !== String(pageSize)
 		)
 			throw new ProjectFetchFailure("invalid_pagination");
 		return page + 1;

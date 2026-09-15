@@ -17,7 +17,7 @@ it.each([false, true])(
 			const project: ProjectEntry = {
 				projectName: "flywheel",
 				projectRoot: "/tmp/fixture",
-				projectRepo: "owner/repo",
+				projectRepo: "invalid slug",
 				leads: [
 					{
 						agentId: "lead",
@@ -77,7 +77,7 @@ it.each([false, true])(
 				db.prepare("SELECT overall,reason FROM ship_judgment_opinion").get(),
 			).toEqual({
 				overall: "undetermined",
-				reason: "project_sources_unavailable",
+				reason: "input_unavailable:repository_slug_invalid",
 			});
 			await runtime.scanner.tick();
 			expect(
@@ -85,7 +85,9 @@ it.each([false, true])(
 			).toEqual({ n: 1 });
 			expect(token).not.toHaveBeenCalled();
 			expect(modelBin).not.toHaveBeenCalled();
-			expect(deps.onError).not.toHaveBeenCalled();
+			expect(deps.onError).toHaveBeenCalledWith(
+				"input_unavailable:repository_slug_invalid",
+			);
 			expect(discord).toHaveBeenCalledTimes(botConfigured ? 1 : 0);
 			if (botConfigured) {
 				expect(

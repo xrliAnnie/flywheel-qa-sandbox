@@ -1,0 +1,124 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "aab41fca-06e7-46df-beaf-fcff86282c20",
+  "round": 1,
+  "findings": [
+    {
+      "id": "competing-writer-veto-stale-running-row",
+      "severity": "HIGH",
+      "file": "packages/teamlead/src/patrol-continuity-collector.ts",
+      "line": 292,
+      "title": "同分支上的 CommDB running 残留行会永久关闭远端 head 反证，使正在推送的 runner 被判 STALLED_60M",
+      "detail": "`competing` 的候选集来自 StateStore `sessions WHERE project_name=? AND worktree_binding_branch=?`，完全不过滤 status（terminated/completed 行也算候选）；随后只要该候选在 CommDB 里 `status='running'`，且其 issue 在 `three_stage_turn` 里没有行（`!otherTurn` 直接 return true），就判定为 competing writer ⇒ `canAttributeRemote=false` ⇒ evaluateContinuity 第 231-249 行的 remote_head 分支被跳过，远端 head 推进永远不算 progress。我已实测复现：(a) 用 collector fixture 加一条『StateStore=terminated、CommDB=running、issue 无 turn 行、同 branch』的兄弟会话，真实 collector 返回 `ownershipComplete=true sourcesComplete=true canAttributeRemote=false`；(b) 把该观测喂给 evaluateContinuity，两次采样相隔 3600s 且 headSha 从 a…a 变成 b…b 时，canAttributeRemote=true 得到 `ACTIVE/remote_head_changed`，false 则得到 `STALLED_60M/no_observed_progress`（branch_activity=true 只是被记录，不构成否决）。触发条件在生产已存在：`~/.flywheel/comm/flywheel/comm.db` 现有 2 条 status='running' 且 issue 无 turn 行的残留（exec 35f0dbf9…/FLY-2045、296488f3…/FLY-2080），二者在 StateStore 里分别是 completed/terminated 但都持有 `worktree_binding_branch` = flywheel-FLY-2045 / flywheel-FLY-2080；只要这两个 issue 再开一个 runner（返工很常见），新 runner 就会共用同名分支并永久落入该分支。此时报告门全部通过（sourcesComplete=true、无 effectiveWait、interval≥3600），`--recheck` 又用同一个 evaluator ⇒ 判 `stalled-confirmed`，Lead 被授权去 nudge 一个每几分钟就在推提交的 runner —— 正是 FLY-1945 要消灭的那一类假报。建议：候选集加 StateStore 活跃状态过滤（或按 worktree_binding_generation 限定），并把『对方没有 turn 行』当作未知而不是『对方可能是 writer』（至少要求对方有最近心跳/活跃证据），否则残留行等于对该分支永久关闭反证通道。",
+      "failure_scenario": "FLY-2080 返工派一个新 runner，分支 flywheel-FLY-2080；CommDB 里 296488f3-… 仍是 status='running' 且 FLY-2080 无 three_stage_turn 行 ⇒ competing=true ⇒ canAttributeRemote=false。新 runner 每 20 分钟推一次提交、stage 一小时未变 ⇒ 巡检报 findings=STALLED_60M，--recheck 回 stalled-confirmed，Lead 打断正在正常工作的 runner。",
+      "findingKey": "competing-writer-veto-stale-running-row"
+    },
+    {
+      "id": "long-task-declaration-ignored",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/patrol-continuity-collector.ts",
+      "line": 328,
+      "title": "effectiveWait 只认 runner_declared_states.kind='parked'，忽略 long_task（系统自身的『合法安静』声明）",
+      "detail": "查询写死 `kind='parked'`。但 `runner_declared_states` 的另一种 kind `long_task` 在 packages/flywheel-comm/src/db.ts:422-425 的定义就是『actively working on something that legitimately produces no pane activity for a while (codex review, big build) — always bounded by expires_at』，而 packages/teamlead/src/bridge/quiet-classifier.ts:70-71 对它的裁决是 `self_long_task` + `mayWake:false`。新巡检器不把它算成 effectiveWait ⇒ 一个正确声明了 busy 的 runner，在没有 stage 跃迁、没有远端推送的 60 分钟后仍会被判 STALLED_60M 候选，与 Bridge 自己的 quiet-classifier 结论直接矛盾。缓解因素：生产 comm.db 目前 0 行 long_task（436 行 parked），所以现网触发频率低，因此不按 HIGH 计。建议把 `kind IN ('parked','long_task')` 一并纳入，并在 effectiveWait.kind 上区分二者以便审计。",
+      "failure_scenario": "runner 执行 `flywheel-comm` busy 声明（写入 kind='long_task'，expires_at=now+2h）后跑一个 90 分钟的构建/评审；巡检第二个 tick 时 stage 未变、无 push ⇒ 报 STALLED_60M，而 quiet-classifier 对同一 runner 的裁决是 mayWake:false。",
+      "findingKey": "long-task-declaration-ignored"
+    },
+    {
+      "id": "sidecar-entries-never-pruned",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/patrol-continuity-cli.ts",
+      "line": 207,
+      "title": "CLI 从不传 inventoryComplete，v2 sidecar 条目只增不删（相对被替换的 v1 TSV 是状态卫生回归）",
+      "detail": "`sampleContinuity` 在 patrol-continuity.ts:511 实现了 `if (input.inventoryComplete) …delete` 的清理分支，但 CLI 的调用点（patrol-continuity-cli.ts:207-216）只传 path/project/lead/nowMs/executionIds/collect，永远不传 `inventoryComplete`。结果：`~/.flywheel/patrol-continuity/<lead>/<project>.v2.json` 会为该 Lead 在该项目下**历史上出现过的每一个 execution** 保留一条 entry，runner 退役后永不回收。被它替换掉的 v1 TSV 是每轮由当前 pane 集合整体重写的（旧代码的 CONTINUITY_CONTENT 只累加本轮 pane），测试里 `orphan continuity is no longer kept by department Leads` 断言的正是这个性质——新实现把它丢了。代价：文件无界增长（flywheel 项目历史 session 已 3000+，按每条 ~600-900B 估算为数 MB），且每个 tick 都要整文件读取 + 对每条 entry 跑 2 次 sha256（validSidecar 的 identity/semanticState digest 校验）+ 整文件重写。建议要么在 CLI 传 `inventoryComplete: true`（executions-file 就是完整 owned 清单），要么按 lastSuccessfulObservationAtMs 加 TTL 回收。",
+      "failure_scenario": "Lead 连续运行巡检数月后，<project>.v2.json 累积数千条已退役 execution 的 entry；每个 tick 都要解析并 sha256 校验全部条目再整文件重写，磁盘与 CPU 随历史线性增长且无回收路径。",
+      "findingKey": "sidecar-entries-never-pruned"
+    },
+    {
+      "id": "unknown-activity-suppresses-step2-findings",
+      "severity": "MEDIUM",
+      "file": "scripts/lead-patrol-snapshot.sh",
+      "line": 508,
+      "title": "任一 pane 的 activity=UNKNOWN 就把 STEP2_STATUS 抢成 UNAVAILABLE，挡住其它 pane 真实 finding 的 FINDING-CANDIDATE 路径",
+      "detail": "pane 循环里 `case \"$activity\"` 块（508-521 行）先于 `if [ \"$findings\" != none ]` 块（523-530 行）执行；UNKNOWN 分支把 STEP2_STATUS 设成 `UNAVAILABLE(structural: continuity_incomplete)`，而 findings 块的 `case \"$STEP2_STATUS\" in UNAVAILABLE*) ;;` 会因此跳过 FINDING-CANDIDATE。之后完成门（awk `for (step in detail) if (!required[step]…) bad=1`，以及 patrol-report.ts 的 `finding_step_mismatch`）会拒绝任何 `FINDING step=2` 行，因为 STEP 2 不是 FINDING。这与本 PR 自己写进 runner-patrol-rules.md 的『UNKNOWN …也不覆盖其他 quota/menu/dead-pane finding 的处置』相矛盾。而 UNKNOWN 并不罕见：任何一次 gh 探测失败都会走到（例如 runner 刚起、分支尚未 push，`/git/ref/heads/<branch>` 返回 404 ⇒ probe reject ⇒ sourcesComplete=false ⇒ UNKNOWN），此时同一份报告里另一个 pane 的 LIMIT_LIVE / INTERACTIVE_MENU / PANE_DEAD 就没法按 FINDING 立账，只能靠 Lead 手改 STEP 状态绕过——恰好绕过了本设计想守住的机械信号。建议让 UNKNOWN 与 FINDING-CANDIDATE 共存（例如 UNKNOWN 只贡献 UNAVAILABLE_CAUSE，STEP 状态按『有真实 finding 优先 FINDING』裁决），或显式定义二者的优先级并在规则文里写清。",
+      "failure_scenario": "一个 Lead 名下两个 pane：pane A 刚 spawn、分支未 push ⇒ activity=UNKNOWN；pane B 撞到 usage limit ⇒ findings=LIMIT_LIVE。STEP2_STATUS 被 A 抢成 UNAVAILABLE ⇒ Lead 无法为 B 写 `FINDING step=2`（写了 awk 门与 validatePatrolReport 都判 bad/finding_step_mismatch），quota 处置失去 receipt 路径。",
+      "findingKey": "unknown-activity-suppresses-step2-findings"
+    },
+    {
+      "id": "missing-observation-fallback-key-mismatch",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/patrol-continuity.ts",
+      "line": 500,
+      "title": "observation_missing 兜底 fact 用 continuityDigest({ id }) 当 key，却挂了身份 digest 不同的旧 entry，会让整份报告被 activity_record_integrity 判废",
+      "detail": "sampleContinuity 里 `facts[id] ??= { key: continuityDigest({ id }), …, entry: old, activity:'UNKNOWN' }`。当 old 存在时，validatePatrolReport（patrol-continuity.ts:553-560）会因 `record.entry !== null` 进入完整性校验并断言 `continuityDigest(e.identity) === record.id`——而这里的 key 是 `{id}` 的 digest，与 `old.identity` 的 digest 必然不同 ⇒ push `activity_record_integrity` ⇒ 整份巡检报告的 JSON 门返回 valid:false。同一函数的另一条兜底（failed() 的 468-473 行）用的是 `continuityDigest(old.identity)`，两处不一致。当前生产路径下 collectPatrolObservations 总会为每个 id 返回一条观测（失败也返回 empty()），所以该分支实际难以走到，但它是 fail-open 的相反面：一旦注入的 collect 少返回一条，报告就无法闭合且错误信息指向伪造嫌疑而非缺观测。建议统一成 `old ? continuityDigest(old.identity) : continuityDigest({project, lead, execution: id})`。",
+      "failure_scenario": "任何让 collect 少返回一条观测的路径（自定义 collector、部分取消、未来重构）配合 sidecar 里已有该 execution 的旧 entry ⇒ 报告里出现 id 与 entry.identity 不匹配的 ACTIVITY_RECORD ⇒ `flywheel-patrol-continuity validate-report` 退出 1，巡检完成门被一个并非 Lead 造成的问题钉死。",
+      "findingKey": "missing-observation-fallback-key-mismatch"
+    },
+    {
+      "id": "dead-continuity-shell-vars",
+      "severity": "LOW",
+      "file": "scripts/lead-patrol-snapshot.sh",
+      "line": 115,
+      "title": "v1 sidecar 相关的 shell 变量在切到 helper 后已成死代码",
+      "detail": "`CONTINUITY_DIR`（115 行）、`CONTINUITY_FILE`（116 行）以及 trap 里引用的 `CONTINUITY_TMP`（22、25 行）在本次改动后不再有任何写入方或读取方——v1 TSV 既不再被读取（旧的 previous_state/previous_change 继承逻辑已删）也不再被写入（CONTINUITY_CONTENT 落盘块已删），helper 自己在 `$STATE_DIR/patrol-continuity/<lead>/` 下建目录。留着会让下一个读者误以为脚本仍在维护 v1 sidecar（测试里『legacy sidecar is preserved for rollback』断言的是文件字节不变，不是脚本还在用它）。按仓库 CLAUDE.md 的 dead code hygiene，建议删除或加一行注释说明保留原因。",
+      "failure_scenario": "后续维护者看到 CONTINUITY_FILE 仍被定义，误以为 v1 TSV 仍是活跃状态源，在回滚或排障时读取一份早已冻结、与实际判定无关的文件。",
+      "findingKey": "dead-continuity-shell-vars"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "long-task-declaration-ignored",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/patrol-continuity-collector.ts",
+      "line": 328,
+      "title": "effectiveWait 只认 runner_declared_states.kind='parked'，忽略 long_task（系统自身的『合法安静』声明）",
+      "detail": "查询写死 `kind='parked'`。但 `runner_declared_states` 的另一种 kind `long_task` 在 packages/flywheel-comm/src/db.ts:422-425 的定义就是『actively working on something that legitimately produces no pane activity for a while (codex review, big build) — always bounded by expires_at』，而 packages/teamlead/src/bridge/quiet-classifier.ts:70-71 对它的裁决是 `self_long_task` + `mayWake:false`。新巡检器不把它算成 effectiveWait ⇒ 一个正确声明了 busy 的 runner，在没有 stage 跃迁、没有远端推送的 60 分钟后仍会被判 STALLED_60M 候选，与 Bridge 自己的 quiet-classifier 结论直接矛盾。缓解因素：生产 comm.db 目前 0 行 long_task（436 行 parked），所以现网触发频率低，因此不按 HIGH 计。建议把 `kind IN ('parked','long_task')` 一并纳入，并在 effectiveWait.kind 上区分二者以便审计。",
+      "failure_scenario": "runner 执行 `flywheel-comm` busy 声明（写入 kind='long_task'，expires_at=now+2h）后跑一个 90 分钟的构建/评审；巡检第二个 tick 时 stage 未变、无 push ⇒ 报 STALLED_60M，而 quiet-classifier 对同一 runner 的裁决是 mayWake:false。",
+      "findingKey": "long-task-declaration-ignored"
+    },
+    {
+      "id": "sidecar-entries-never-pruned",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/patrol-continuity-cli.ts",
+      "line": 207,
+      "title": "CLI 从不传 inventoryComplete，v2 sidecar 条目只增不删（相对被替换的 v1 TSV 是状态卫生回归）",
+      "detail": "`sampleContinuity` 在 patrol-continuity.ts:511 实现了 `if (input.inventoryComplete) …delete` 的清理分支，但 CLI 的调用点（patrol-continuity-cli.ts:207-216）只传 path/project/lead/nowMs/executionIds/collect，永远不传 `inventoryComplete`。结果：`~/.flywheel/patrol-continuity/<lead>/<project>.v2.json` 会为该 Lead 在该项目下**历史上出现过的每一个 execution** 保留一条 entry，runner 退役后永不回收。被它替换掉的 v1 TSV 是每轮由当前 pane 集合整体重写的（旧代码的 CONTINUITY_CONTENT 只累加本轮 pane），测试里 `orphan continuity is no longer kept by department Leads` 断言的正是这个性质——新实现把它丢了。代价：文件无界增长（flywheel 项目历史 session 已 3000+，按每条 ~600-900B 估算为数 MB），且每个 tick 都要整文件读取 + 对每条 entry 跑 2 次 sha256（validSidecar 的 identity/semanticState digest 校验）+ 整文件重写。建议要么在 CLI 传 `inventoryComplete: true`（executions-file 就是完整 owned 清单），要么按 lastSuccessfulObservationAtMs 加 TTL 回收。",
+      "failure_scenario": "Lead 连续运行巡检数月后，<project>.v2.json 累积数千条已退役 execution 的 entry；每个 tick 都要解析并 sha256 校验全部条目再整文件重写，磁盘与 CPU 随历史线性增长且无回收路径。",
+      "findingKey": "sidecar-entries-never-pruned"
+    },
+    {
+      "id": "unknown-activity-suppresses-step2-findings",
+      "severity": "MEDIUM",
+      "file": "scripts/lead-patrol-snapshot.sh",
+      "line": 508,
+      "title": "任一 pane 的 activity=UNKNOWN 就把 STEP2_STATUS 抢成 UNAVAILABLE，挡住其它 pane 真实 finding 的 FINDING-CANDIDATE 路径",
+      "detail": "pane 循环里 `case \"$activity\"` 块（508-521 行）先于 `if [ \"$findings\" != none ]` 块（523-530 行）执行；UNKNOWN 分支把 STEP2_STATUS 设成 `UNAVAILABLE(structural: continuity_incomplete)`，而 findings 块的 `case \"$STEP2_STATUS\" in UNAVAILABLE*) ;;` 会因此跳过 FINDING-CANDIDATE。之后完成门（awk `for (step in detail) if (!required[step]…) bad=1`，以及 patrol-report.ts 的 `finding_step_mismatch`）会拒绝任何 `FINDING step=2` 行，因为 STEP 2 不是 FINDING。这与本 PR 自己写进 runner-patrol-rules.md 的『UNKNOWN …也不覆盖其他 quota/menu/dead-pane finding 的处置』相矛盾。而 UNKNOWN 并不罕见：任何一次 gh 探测失败都会走到（例如 runner 刚起、分支尚未 push，`/git/ref/heads/<branch>` 返回 404 ⇒ probe reject ⇒ sourcesComplete=false ⇒ UNKNOWN），此时同一份报告里另一个 pane 的 LIMIT_LIVE / INTERACTIVE_MENU / PANE_DEAD 就没法按 FINDING 立账，只能靠 Lead 手改 STEP 状态绕过——恰好绕过了本设计想守住的机械信号。建议让 UNKNOWN 与 FINDING-CANDIDATE 共存（例如 UNKNOWN 只贡献 UNAVAILABLE_CAUSE，STEP 状态按『有真实 finding 优先 FINDING』裁决），或显式定义二者的优先级并在规则文里写清。",
+      "failure_scenario": "一个 Lead 名下两个 pane：pane A 刚 spawn、分支未 push ⇒ activity=UNKNOWN；pane B 撞到 usage limit ⇒ findings=LIMIT_LIVE。STEP2_STATUS 被 A 抢成 UNAVAILABLE ⇒ Lead 无法为 B 写 `FINDING step=2`（写了 awk 门与 validatePatrolReport 都判 bad/finding_step_mismatch），quota 处置失去 receipt 路径。",
+      "findingKey": "unknown-activity-suppresses-step2-findings"
+    },
+    {
+      "id": "missing-observation-fallback-key-mismatch",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/patrol-continuity.ts",
+      "line": 500,
+      "title": "observation_missing 兜底 fact 用 continuityDigest({ id }) 当 key，却挂了身份 digest 不同的旧 entry，会让整份报告被 activity_record_integrity 判废",
+      "detail": "sampleContinuity 里 `facts[id] ??= { key: continuityDigest({ id }), …, entry: old, activity:'UNKNOWN' }`。当 old 存在时，validatePatrolReport（patrol-continuity.ts:553-560）会因 `record.entry !== null` 进入完整性校验并断言 `continuityDigest(e.identity) === record.id`——而这里的 key 是 `{id}` 的 digest，与 `old.identity` 的 digest 必然不同 ⇒ push `activity_record_integrity` ⇒ 整份巡检报告的 JSON 门返回 valid:false。同一函数的另一条兜底（failed() 的 468-473 行）用的是 `continuityDigest(old.identity)`，两处不一致。当前生产路径下 collectPatrolObservations 总会为每个 id 返回一条观测（失败也返回 empty()），所以该分支实际难以走到，但它是 fail-open 的相反面：一旦注入的 collect 少返回一条，报告就无法闭合且错误信息指向伪造嫌疑而非缺观测。建议统一成 `old ? continuityDigest(old.identity) : continuityDigest({project, lead, execution: id})`。",
+      "failure_scenario": "任何让 collect 少返回一条观测的路径（自定义 collector、部分取消、未来重构）配合 sidecar 里已有该 execution 的旧 entry ⇒ 报告里出现 id 与 entry.identity 不匹配的 ACTIVITY_RECORD ⇒ `flywheel-patrol-continuity validate-report` 退出 1，巡检完成门被一个并非 Lead 造成的问题钉死。",
+      "findingKey": "missing-observation-fallback-key-mismatch"
+    },
+    {
+      "id": "dead-continuity-shell-vars",
+      "severity": "LOW",
+      "file": "scripts/lead-patrol-snapshot.sh",
+      "line": 115,
+      "title": "v1 sidecar 相关的 shell 变量在切到 helper 后已成死代码",
+      "detail": "`CONTINUITY_DIR`（115 行）、`CONTINUITY_FILE`（116 行）以及 trap 里引用的 `CONTINUITY_TMP`（22、25 行）在本次改动后不再有任何写入方或读取方——v1 TSV 既不再被读取（旧的 previous_state/previous_change 继承逻辑已删）也不再被写入（CONTINUITY_CONTENT 落盘块已删），helper 自己在 `$STATE_DIR/patrol-continuity/<lead>/` 下建目录。留着会让下一个读者误以为脚本仍在维护 v1 sidecar（测试里『legacy sidecar is preserved for rollback』断言的是文件字节不变，不是脚本还在用它）。按仓库 CLAUDE.md 的 dead code hygiene，建议删除或加一行注释说明保留原因。",
+      "failure_scenario": "后续维护者看到 CONTINUITY_FILE 仍被定义，误以为 v1 TSV 仍是活跃状态源，在回滚或排障时读取一份早已冻结、与实际判定无关的文件。",
+      "findingKey": "dead-continuity-shell-vars"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "reviewedHeadSha": "07b777d39dbfc441dd6896c2b4a47e5ffa871382",
+  "deliveryNonce": "12b3977e-7ee4-42c7-a858-8e6d1d558988"
+}

@@ -66,3 +66,54 @@ describe("frozen Git input reader", () => {
 		}
 	});
 });
+
+it("reads a complete PR diff above 256 KiB while retaining a 2 MiB raw-diff bound", async () => {
+	const root = mkdtempSync(join(tmpdir(), "ship-large-diff-")),
+		work = join(root, "work"),
+		bare = join(root, "objects.git");
+	const git = (...args: string[]) =>
+		execFileSync("git", args, {
+			cwd: root,
+			encoding: "utf8",
+			env: {
+				...process.env,
+				GIT_CONFIG_NOSYSTEM: "1",
+				GIT_CONFIG_GLOBAL: "/dev/null",
+			},
+			stdio: ["ignore", "pipe", "pipe"],
+		}).trim();
+	try {
+		git("init", "-q", "-b", "main", work);
+		git("-C", work, "config", "user.name", "Fixture");
+		git("-C", work, "config", "user.email", "test@example.invalid");
+		writeFileSync(join(work, "plan.md"), "plan\n");
+		git("-C", work, "add", ".");
+		git("-C", work, "commit", "-qm", "base");
+		const base = git("-C", work, "rev-parse", "HEAD");
+		writeFileSync(
+			join(work, "changes.ts"),
+			("x".repeat(120) + "\n").repeat(11000),
+		);
+		git("-C", work, "add", ".");
+		git("-C", work, "commit", "-qm", "large diff");
+		const head = git("-C", work, "rev-parse", "HEAD");
+		writeFileSync(
+			join(work, "changes.ts"),
+			("y".repeat(120) + "\n").repeat(19000),
+		);
+		git("-C", work, "add", ".");
+		git("-C", work, "commit", "-qm", "oversize diff");
+		const oversized = git("-C", work, "rev-parse", "HEAD");
+		git("clone", "--bare", "-q", work, bare);
+		const reader = new FrozenGitReader(bare),
+			diff = await reader.diff(base, head);
+		expect(Buffer.byteLength(diff.text)).toBeGreaterThan(1287593);
+		expect(diff.complete).toBe(true);
+		expect(diff.files).toEqual([{ path: "changes.ts", status: "A" }]);
+		await expect(reader.diff(base, oversized)).rejects.toThrow(
+			"git_input_read_failed",
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});

@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { overallSchema, POLICY_VERSION, verdictSchema } from "./contract.js";
+import { evidenceSummary, evidenceSummarySchema } from "./evidence-labels.js";
+import { evidenceLedgerSchema } from "./evidence-ledger.js";
 
 // Keep the page document bounded independently of HTML/attention budgets.
 // Full records remain available through the existing evaluation/opinion audit IDs.
@@ -30,6 +32,7 @@ export const epicJudgmentSchema = z
 		reason: z.string(),
 		policy_version: z.string(),
 		model_snapshot_digest: z.string().nullable(),
+		points: evidenceSummarySchema.optional(),
 		evidence: z
 			.object({ evaluation: z.unknown(), mechanical: z.unknown() })
 			.strict()
@@ -83,6 +86,7 @@ export function readEpicJudgment(
 					model_snapshot_digest: string | null;
 					result_json: string | null;
 					mechanical_json: string;
+					evidence_json: string | null;
 			  }
 			| undefined;
 		const delivery = db
@@ -114,6 +118,9 @@ export function readEpicJudgment(
 			delivery.visible_at &&
 			delivery.validated_presentation_digest === row.presentation_digest &&
 			!delivery.dirty_since;
+		const ledger = row?.evidence_json
+			? evidenceLedgerSchema.parse(JSON.parse(row.evidence_json))
+			: undefined;
 		const value = epicJudgmentSchema.parse({
 			question_id: holder.question_id,
 			opinion_id: row?.opinion_id ?? null,
@@ -126,8 +133,12 @@ export function readEpicJudgment(
 			coverage: row?.coverage ?? null,
 			display: historical ? "history" : published ? "published" : "pending",
 			reason: row?.reason ?? "no_opinion",
-			policy_version: row?.policy_version ?? POLICY_VERSION,
-			model_snapshot_digest: row?.model_snapshot_digest ?? null,
+			policy_version:
+				ledger?.policyVersion ?? row?.policy_version ?? POLICY_VERSION,
+			model_snapshot_digest: ledger
+				? ledger.semantic.modelSnapshotDigest
+				: (row?.model_snapshot_digest ?? null),
+			...(ledger ? { points: evidenceSummary(ledger) } : {}),
 			evidence: {
 				evaluation: pageEvidence(row?.result_json, row?.evaluation_id),
 				mechanical: pageEvidence(row?.mechanical_json, row?.opinion_id),

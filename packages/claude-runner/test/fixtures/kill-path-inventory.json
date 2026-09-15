@@ -1002,6 +1002,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/__tests__/patrol-continuity-store.test.ts:process.kill(pid!, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/__tests__/patrol-continuity-store.test.ts",
+		"code": "process.kill(pid!, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/__tests__/rules-bundle-truth-process.test.ts:for (const child of children) child.kill(\"SIGTERM\");#1",
 		"path": "packages/teamlead/src/__tests__/rules-bundle-truth-process.test.ts",
 		"code": "for (const child of children) child.kill(\"SIGTERM\");",
@@ -1354,6 +1360,12 @@
 		"path": "packages/teamlead/src/codex-quota/probe.ts",
 		"code": "process.kill(-child.pid, signal);",
 		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/__tests__/codex-lead-tui-runtime.rotation.test.ts:mocks.kill();#1",
+		"path": "packages/teamlead/src/lead-backends/codex/__tests__/codex-lead-tui-runtime.rotation.test.ts",
+		"code": "mocks.kill();",
+		"classification": "qa-only"
 	},
 	{
 		"key": "packages/teamlead/src/lead-backends/codex/__tests__/tui-window.test.ts:\"kill-window\",#1",

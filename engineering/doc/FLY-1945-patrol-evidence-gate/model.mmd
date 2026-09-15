@@ -1,0 +1,22 @@
+classDiagram
+ class TaskIdentity {
+  项目与负责人
+  本次执行与激活
+  工作区绑定代次
+ }
+ class Observation {
+  真实状态与等待对象
+  采样区间与提交号
+  最后变化与证据完整性
+ }
+ class MechanismFinding {
+  发现编号与根因类别
+  根因与验收反例
+ }
+ class Disposition {
+  已有单或新建单或不立原因
+  关联单与回读凭据
+ }
+ TaskIdentity "1" --> "many" Observation : 绑定
+ MechanismFinding "1" --> "1" Disposition : 逐条闭合
+ Observation --> MechanismFinding : 支持判断

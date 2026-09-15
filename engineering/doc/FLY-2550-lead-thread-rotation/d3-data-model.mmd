@@ -1,0 +1,21 @@
+flowchart TB
+  subgraph state["~/.flywheel/state/codex-lead/mufasa-lead/ (运行时状态目录,本设计只写这里)"]
+    TID["thread-id<br/>唯一线程真相 · 原子写"]
+    HIS["thread-id.history<br/>append: 时间 旧→新 原因"]
+    LED["thread-rotation.json (0600)<br/>currentThreadId · startedAt<br/>previousThreadId · lastAttemptAt<br/>lastAttemptOutcome · pending{requestedAt, fromThreadId, reason}"]
+    RCT["thread-rotation.jsonl (append-only 回执)<br/>reconciled / rotation_requested / handoff_ok<br/>handoff_failed / rotated / rotation_failed"]
+    JNL["journal.db (既有)<br/>accepted 条目在新代重派到新线程"]
+    BRN["brain/lifecycle.jsonl · heartbeat.json (既有)<br/>形状不变,新代写新 threadId"]
+  end
+  subgraph home["~/.codex-mufasa (CODEX_HOME,本设计零写入)"]
+    ST["state_5.sqlite threads<br/>archived=0 · memory_mode=enabled<br/>updated_at_ms 冻结在最后一轮"]
+    RO["sessions/**/rollout-…-T_old.jsonl<br/>末尾 = 交接一轮"]
+    MEM["memories_1.sqlite jobs / stage1_outputs<br/>memories/rollout_summaries/ · memory_summary.md"]
+    CFG["config.toml<br/>[features] memories=true (FLY-2357 pin,不动)"]
+  end
+  FLAG["项目级 SQLite 开关<br/>codex_lead_thread_rotation=0<br/>下一 generation 生效 · 回滚栓"] --> LED
+  TID -->|对账以它为准| LED
+  LED --> RCT
+  TID --> HIS
+  RO -->|Codex stage1 读| MEM
+  ST -->|候选 SQL| MEM

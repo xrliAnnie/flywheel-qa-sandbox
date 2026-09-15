@@ -25,7 +25,8 @@ import { resolveRunnerActionMcpContext } from "./runner-action-mcp.js";
 
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -35,8 +36,10 @@ import {
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { storeCodexLeadThreadRotationEnabled } from "../../bridge/flag-store-runtime.js";
 import { loadProjects, type ProjectEntry } from "../../ProjectConfig.js";
 import { findResidentCodexLeadTargets } from "../../resident-codex-lead-roster.js";
+import { StateStore } from "../../StateStore.js";
 import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
@@ -60,10 +63,25 @@ import {
 	dryRunReport,
 	parseCodexLeadRuntimeConfig,
 	readBaseInstructions,
-	readThreadId,
 	resolveCoreStrictChannelIds,
 	writeThreadId,
 } from "./codex-lead-runtime.js";
+import {
+	appendRotationReceipt,
+	boundedTurnsList,
+	FENCE_IDLE_WAIT_MS,
+	isRotationDue,
+	ROTATION_CHECK_INTERVAL_MS,
+	ROTATION_READY_TIMEOUT_MS,
+	type RotationLedger,
+	readRotationLedger,
+	readThreadIdStrict,
+	reconcileRotationLedger,
+	rolloutTimestampFor,
+	rotationDeveloperNote,
+	THREAD_ID_RE,
+	writeRotationLedger,
+} from "./codex-lead-thread-rotation.js";
 import { recordContextUsage } from "./context-usage-recorder.js";
 import { DaemonConnectionSupervisor } from "./DaemonConnectionSupervisor.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
@@ -90,6 +108,7 @@ import {
 	ensureTuiWindow,
 	isTuiWindowAlive,
 	killTuiWindow,
+	SAFE_ID,
 	type TuiWindowSpec,
 } from "./tui-window.js";
 import { createTuiWindowAlertGuard } from "./tui-window-alert.js";
@@ -107,6 +126,7 @@ const TUI_LIVENESS_INTERVAL_MS = 20_000;
 export interface CodexLeadTuiRuntimeConfig extends CodexLeadRuntimeConfig {
 	/** Working directory for the founder's TUI (`-C`). */
 	tuiCwd: string;
+	flagStoreDbPath: string;
 	/** Runtime-only generation capability; absent while parsing/dry-running. */
 	carrierInstanceId?: string;
 }
@@ -121,7 +141,12 @@ export function parseCodexLeadTuiRuntimeConfig(
 			"codex-lead-tui-runtime: missing required env: FLYWHEEL_CODEX_TUI_CWD",
 		);
 	}
-	return { ...base, tuiCwd };
+	return {
+		...base,
+		tuiCwd,
+		flagStoreDbPath:
+			env.TEAMLEAD_DB_PATH ?? join(homedir(), ".flywheel", "teamlead.db"),
+	};
 }
 
 export function createResidentCodexLeadLifecycleForGeneration(opts: {
@@ -284,6 +309,7 @@ export interface DemuxedWiring {
  */
 export function wireDemuxedProcess(args: {
 	proc: CodexLeadProcess;
+	onFounderTurnStarted?: (turnId: string) => void;
 	onFounderTurnCompleted: (turnId: string) => void;
 	onTokenUsage?: (params: unknown) => void;
 	onActivity?: () => void;
@@ -325,7 +351,10 @@ export function wireDemuxedProcess(args: {
 		toObserver: (method, params) => {
 			// One observe row per founder turn — keyed on its completion (bounded,
 			// idempotent; deltas are visible live in the TUI anyway).
-			if (method === "turn/completed") {
+			if (method === "turn/started") {
+				const id = extractTurnId(params);
+				if (id) args.onFounderTurnStarted?.(id);
+			} else if (method === "turn/completed") {
 				const id = extractTurnId(params);
 				if (id) args.onFounderTurnCompleted(id);
 			}
@@ -476,6 +505,7 @@ export function requirePersona(
 // ── generation assembly (glue — validated by real bring-up) ────────────────
 
 export interface TuiGenerationDeps {
+	requestRebuild?: (reason: string) => boolean;
 	connectDaemon?: typeof connectDaemonWs;
 	createSender?: (config: CodexLeadTuiRuntimeConfig) => OutboundSender;
 	preflight?: typeof runOutboundPreflight;
@@ -517,6 +547,7 @@ export function buildTuiGeneration(
 		log: (m) => logger.warn(m),
 	});
 	return () => {
+		let threadRotationEnabled = false;
 		let runtime: CodexLeadRuntime | null = null;
 		let proc: CodexLeadProcess | null = null;
 		let residencyLifecycle: ResidentCodexLeadLifecycleObserver | null = null;
@@ -529,6 +560,117 @@ export function buildTuiGeneration(
 		let tuiSpec: TuiWindowSpec | null = null;
 		let livenessTimer: ReturnType<typeof setInterval> | null = null;
 		let stopped = false;
+		let ledger: RotationLedger | null = null;
+		const ledgerPath = join(config.stateDir, "thread-rotation.json");
+		let rotationDisabledThisGeneration = false;
+		let rotationFenceHeld = false;
+		let attemptInFlight = false;
+		let founderTurnActive: boolean | "unknown" = "unknown";
+		let founderTurnId: string | null = null;
+		let lastActivityAt = Date.now();
+		let gatewayReady = false;
+		let rotationTimer: ReturnType<typeof setInterval> | null = null;
+		const emit = (event: string, fields: Record<string, unknown> = {}) => {
+			if (!threadRotationEnabled) return;
+			appendRotationReceipt(
+				join(config.stateDir, "thread-rotation.jsonl"),
+				{
+					v: 1,
+					at: new Date().toISOString(),
+					event,
+					leadId: config.leadId,
+					projectName: config.projectName,
+					...fields,
+				},
+				(message) => logger.warn(message),
+			);
+		};
+		const persist = (
+			next: RotationLedger,
+			disableOnFailure = true,
+		): boolean => {
+			try {
+				writeRotationLedger(ledgerPath, next, Date.now());
+				ledger = next;
+				return true;
+			} catch {
+				if (disableOnFailure) rotationDisabledThisGeneration = true;
+				logger.warn("[codex-lead-thread-rotation] ledger write failed");
+				return false;
+			}
+		};
+		const recordAttempt = (
+			outcome: RotationLedger["lastAttemptOutcome"],
+		): boolean => {
+			if (!ledger) return false;
+			return persist({
+				...ledger,
+				pending: null,
+				lastAttemptAt: new Date().toISOString(),
+				lastAttemptOutcome: outcome,
+			});
+		};
+		const history = (from: string, to: string, reason: string) => {
+			try {
+				appendFileSync(
+					join(config.stateDir, "thread-id.history"),
+					`${new Date().toISOString()} ${from} -> ${to} reason=${reason}\n`,
+					{ mode: 0o600 },
+				);
+			} catch {
+				logger.warn("[codex-lead-thread-rotation] history append failed");
+			}
+		};
+		const settleReadiness = (paneAlive: boolean) => {
+			if (
+				!threadRotationEnabled ||
+				stopped ||
+				rotationDisabledThisGeneration ||
+				!ledger?.readinessPending
+			)
+				return;
+			const pending = ledger.readinessPending;
+			const readyMs = Date.now() - Date.parse(pending.requestedAt);
+			if (pending.to !== ledger.currentThreadId) {
+				if (persist({ ...ledger, readinessPending: null }, false))
+					emit("rotation_degraded", {
+						to: pending.to,
+						requestedAt: pending.requestedAt,
+						reason: "superseded",
+					});
+			} else if (gatewayReady && paneAlive) {
+				if (persist({ ...ledger, readinessPending: null }, false))
+					emit("rotation_ready", {
+						to: pending.to,
+						requestedAt: pending.requestedAt,
+						readyMs,
+						late: readyMs > ROTATION_READY_TIMEOUT_MS,
+					});
+			} else if (
+				readyMs > ROTATION_READY_TIMEOUT_MS &&
+				pending.degradedAt === null
+			) {
+				if (
+					persist(
+						{
+							...ledger,
+							readinessPending: {
+								...pending,
+								degradedAt: new Date().toISOString(),
+							},
+						},
+						false,
+					)
+				)
+					emit("rotation_degraded", {
+						to: pending.to,
+						requestedAt: pending.requestedAt,
+						gatewayReady,
+						paneAlive,
+					});
+			}
+		};
+
 		// Single TUI-health entry, used by wire() and the liveness cadence (review
 		// R2 HIGH-2 + R4 MED-1). Ownership-aware:
 		//   - ownedTuiThreadId !== this thread → UNCONDITIONAL ensure (PR-C
@@ -539,7 +681,8 @@ export function buildTuiGeneration(
 		//   - same thread, already owned → only re-create if the founder's live
 		//     window actually died (never flap a healthy session on rebuild).
 		const ensureTuiHealthy = () => {
-			if (stopped || !tuiSpec) return;
+			if (stopped || !tuiSpec) return false;
+			if (rotationFenceHeld) return isTuiWindowAlive(tuiSpec);
 			// Derive one health signal per tick and feed the silent-no-pane guard
 			// (W2). healthy=false unifies "create failed" and "died, re-create
 			// failed"; a genuinely alive owned window is healthy without a rebuild.
@@ -556,6 +699,110 @@ export function buildTuiGeneration(
 				healthy = ensureTuiWindow(tuiSpec, { log: (m) => logger.warn(m) });
 			}
 			tuiWindowAlertGuard?.record(healthy);
+			return healthy && isTuiWindowAlive(tuiSpec);
+		};
+		const attemptRotation = async (router: LeadInputRouter) => {
+			if (
+				!ledger ||
+				!proc ||
+				!tuiSpec ||
+				!gatewayReady ||
+				!isRotationDue({
+					ledger,
+					now: Date.now(),
+					enabled: threadRotationEnabled,
+					stopped,
+					disabled: rotationDisabledThisGeneration,
+					attemptInFlight,
+					completedSinceStart: journal.countCompletedSince(
+						Date.parse(ledger.startedAt),
+					),
+					routerIdle: router.isIdle(),
+					founderTurnActive,
+					lastActivityAt,
+				})
+			)
+				return;
+			attemptInFlight = true;
+			rotationFenceHeld = true;
+			router.pause();
+			const from = ledger.currentThreadId;
+			let idleTimer: ReturnType<typeof setTimeout> | undefined;
+			let reason:
+				| "fence_error"
+				| "pane_kill_unverified"
+				| "router_busy"
+				| "founder_turn_active"
+				| "turns_list_busy"
+				| "pending_write_failed"
+				| "rebuild_refused"
+				| null = null;
+			try {
+				if (!killTuiWindow(tuiSpec, { log: (message) => logger.warn(message) }))
+					reason = "pane_kill_unverified";
+				else {
+					const idle = await Promise.race([
+						router.whenIdle().then(() => true),
+						new Promise<false>((resolve) => {
+							idleTimer = setTimeout(() => resolve(false), FENCE_IDLE_WAIT_MS);
+						}),
+					]);
+					if (stopped) return;
+					if (!idle) reason = "router_busy";
+					else if (founderTurnActive === true) reason = "founder_turn_active";
+					else if (!(await boundedTurnsList(proc.request.bind(proc), from)))
+						reason = "turns_list_busy";
+					if (stopped) return;
+					if (!reason) {
+						founderTurnActive = false;
+						const pending = {
+							requestedAt: new Date().toISOString(),
+							fromThreadId: from,
+							reason: "period" as const,
+							attemptStartedAt: null,
+						};
+						if (!persist({ ...ledger, pending }, false))
+							reason = "pending_write_failed";
+						else {
+							emit("rotation_requested", {
+								from,
+								requestedAt: pending.requestedAt,
+								completedSinceStart: journal.countCompletedSince(
+									Date.parse(ledger.startedAt),
+								),
+							});
+							if (deps.requestRebuild?.("thread_rotation")) return;
+							reason = "rebuild_refused";
+						}
+					}
+				}
+			} catch (error) {
+				reason = "fence_error";
+				logger.error("[codex-lead-thread-rotation] fence failed", {
+					error: String(error),
+				});
+			} finally {
+				if (idleTimer !== undefined) clearTimeout(idleTimer);
+				if (reason && !stopped) {
+					// A pending record that cannot be cleared still authorizes a later generation.
+					// Keep its old input fence intact until that generation reconciles it.
+					const cleared = recordAttempt(
+						reason === "fence_error"
+							? "rotation_failed:fence_error"
+							: `rotation_skipped:${reason}`,
+					);
+					if (cleared || ledger.pending === null) {
+						router.resume();
+						rotationFenceHeld = false;
+						ensureTuiHealthy();
+					}
+					emit(
+						reason === "fence_error" ? "rotation_failed" : "rotation_skipped",
+						{ reason, from },
+					);
+				}
+				attemptInFlight = false;
+			}
 		};
 		return {
 			start: async () => {
@@ -564,6 +811,25 @@ export function buildTuiGeneration(
 				// this point `runtime` is unassigned, so stop() couldn't close it).
 				// Re-read on every (re)build so a persona edit takes effect on restart.
 				const baseInstructions = requirePersona(config);
+				let flagStore: StateStore | undefined;
+				try {
+					flagStore = await StateStore.openForMaintenance(
+						config.flagStoreDbPath,
+						{ readonly: true },
+					);
+					threadRotationEnabled = storeCodexLeadThreadRotationEnabled(
+						{ mode: "ready", store: flagStore },
+						config.projectName,
+					);
+				} catch (error) {
+					logger.warn(
+						"[codex-lead-thread-rotation] flag read failed; disabled for this generation",
+						{ error: String(error) },
+					);
+				} finally {
+					flagStore?.close();
+				}
+
 				const ws = await (deps.connectDaemon ?? connectDaemonWs)({
 					codexHome: config.codexHome,
 				});
@@ -582,7 +848,14 @@ export function buildTuiGeneration(
 				let activeThreadId: string | null = null;
 				const { facade, awaitTurnCompletion } = wireDemuxedProcess({
 					proc,
+					onFounderTurnStarted: (turnId) => {
+						founderTurnActive = true;
+						founderTurnId = turnId;
+						lastActivityAt = Date.now();
+					},
 					onFounderTurnCompleted: (turnId) => {
+						if (founderTurnId === turnId) founderTurnActive = false;
+						lastActivityAt = Date.now();
 						journal.recordObservation({
 							idempotencyKey: `founder:${turnId}`,
 							payload: "founder terminal turn (observed; see TUI/rollout)",
@@ -606,6 +879,10 @@ export function buildTuiGeneration(
 							}
 						: {}),
 					log: (m) => logger.warn(m),
+				});
+
+				facade.on("turnCompleted", () => {
+					lastActivityAt = Date.now();
 				});
 
 				const builtSender: OutboundSender =
@@ -650,20 +927,126 @@ export function buildTuiGeneration(
 						}
 					},
 					ensureThread: async (): Promise<string> => {
-						const saved = readThreadId(config.threadIdPath);
+						const strict = readThreadIdStrict(config.threadIdPath);
+						if (strict.kind !== "ok" && strict.kind !== "missing")
+							throw new Error(
+								`[codex-lead-thread-rotation] thread-id ${config.threadIdPath}: ${strict.kind}`,
+							);
+						const saved = strict.kind === "ok" ? strict.id : undefined;
+						if (saved && threadRotationEnabled) {
+							const reconciled = reconcileRotationLedger(
+								saved,
+								readRotationLedger(ledgerPath, Date.now()),
+								Date.now(),
+								rolloutTimestampFor(config.codexHome, saved, Date.now()),
+							);
+							ledger = reconciled.ledger;
+							if (reconciled.reason) {
+								persist(ledger);
+								emit("reconciled", {
+									reason: reconciled.reason,
+									currentThreadId: saved,
+									startedAt: ledger.startedAt,
+								});
+							}
+							const pending = ledger.pending;
+							if (pending && !rotationDisabledThisGeneration) {
+								const started = Date.now();
+								const fail = (
+									reason:
+										| "attempt_mark_failed"
+										| "thread_start_failed"
+										| "thread_id_invalid"
+										| "thread_id_write_failed",
+								) => {
+									recordAttempt(`rotation_failed:${reason}`);
+									emit("rotation_failed", {
+										reason,
+										from: saved,
+										requestedAt: pending.requestedAt,
+										wallMs: Date.now() - started,
+									});
+								};
+								if (!(await boundedTurnsList(p.request.bind(p), saved))) {
+									recordAttempt("reconciled:pending_busy");
+									emit("reconciled", {
+										reason: "pending_busy",
+										currentThreadId: saved,
+									});
+								} else if (
+									!persist(
+										{
+											...ledger,
+											pending: {
+												...pending,
+												attemptStartedAt: new Date().toISOString(),
+											},
+										},
+										false,
+									)
+								)
+									fail("attempt_mark_failed");
+								else {
+									const note = rotationDeveloperNote(Date.now(), saved);
+									let id: string | undefined;
+									try {
+										id = await p.startThread({
+											...threadParams,
+											developerInstructions: note,
+										});
+									} catch {
+										fail("thread_start_failed");
+									}
+									if (id !== undefined) {
+										if (!THREAD_ID_RE.test(id) || !SAFE_ID.test(id))
+											fail("thread_id_invalid");
+										else {
+											let committed = false;
+											try {
+												writeThreadId(config.threadIdPath, id);
+												committed = true;
+											} catch {
+												fail("thread_id_write_failed");
+											}
+											if (committed) {
+												history(saved, id, "period");
+												const at = new Date().toISOString();
+												const ledgerWriteFailed = !persist({
+													...ledger,
+													currentThreadId: id,
+													previousThreadId: saved,
+													startedAt: at,
+													lastAttemptAt: at,
+													lastAttemptOutcome: "rotated",
+													pending: null,
+													readinessPending: {
+														to: id,
+														requestedAt: pending.requestedAt,
+														degradedAt: null,
+													},
+												});
+												emit("rotated", {
+													from: saved,
+													to: id,
+													requestedAt: pending.requestedAt,
+													developerNoteChars: note.length,
+													wallMs: Date.now() - started,
+													ledgerWriteFailed,
+												});
+												activeThreadId = id;
+												return id;
+											}
+										}
+									}
+								}
+							}
+						}
 						if (saved) {
 							try {
-								await p.resumeThread(saved, threadParams); // re-pin (HIGH-1)
+								await p.resumeThread(saved, threadParams);
 								activeThreadId = saved;
 								return saved;
 							} catch (err) {
-								// Real-machine finding: a TURNLESS thread has no rollout —
-								// once evicted from daemon memory it is unrecoverable
-								// ("no rollout found", JSON-RPC -32600). Nothing to preserve
-								// (zero turns) → self-heal with a fresh thread.
-								// Review HIGH-3: gate on the STRUCTURED rpc code -32600 AND the
-								// exact message (see isTurnlessRolloutError). Any other failure
-								// rethrows (memory loss is never silent).
 								if (!isTurnlessRolloutError(err)) throw err;
 								logger.warn(
 									"saved thread has no persisted rollout (turnless) — starting a fresh thread",
@@ -672,7 +1055,29 @@ export function buildTuiGeneration(
 							}
 						}
 						const id = await p.startThread(threadParams);
+						if (!THREAD_ID_RE.test(id) || !SAFE_ID.test(id))
+							throw new Error("thread-id: invalid new thread id");
 						writeThreadId(config.threadIdPath, id);
+						if (threadRotationEnabled) {
+							const reconciled = reconcileRotationLedger(
+								id,
+								{ kind: "missing" },
+								Date.now(),
+								Date.now(),
+								true,
+							);
+							ledger = {
+								...reconciled.ledger,
+								previousThreadId: saved ?? null,
+							};
+							persist(ledger);
+							if (saved) history(saved, id, "turnless");
+							emit("reconciled", {
+								reason: saved ? "thread_changed_turnless" : "pristine",
+								currentThreadId: id,
+								startedAt: ledger.startedAt,
+							});
+						}
 						activeThreadId = id;
 						return id;
 					},
@@ -736,6 +1141,7 @@ export function buildTuiGeneration(
 							executor,
 							sender: builtSender,
 							onEntryCompleted: (entry) => {
+								lastActivityAt = Date.now();
 								if (
 									entry.source === "discord" &&
 									(entry.replyChannelId || entry.replyRoute)
@@ -743,12 +1149,15 @@ export function buildTuiGeneration(
 									externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
 								}
 							},
+							onInputAccepted: (entry) => {
+								lastActivityAt = Date.now();
+								replyInThread?.onInputAccepted(entry);
+							},
 							...(typing ? { typing } : {}),
 							...(replyInThread
 								? {
 										ensureReplyRoute: replyInThread.ensureReplyRoute,
 										onTopicEngaged: replyInThread.onTopicEngaged,
-										onInputAccepted: replyInThread.onInputAccepted,
 									}
 								: {}),
 						});
@@ -848,7 +1257,9 @@ export function buildTuiGeneration(
 						// thread has no rollout and the TUI's resume bootstrap fails with
 						// "no rollout found". Run one tiny turn (await completion, bounded)
 						// BEFORE creating the window.
+						let bootstrapOutcome: string = "skipped_rollout_exists";
 						if (!rolloutExistsFor(config.codexHome, threadId)) {
+							bootstrapOutcome = "dispatch_failed";
 							let bootstrapTurnId: string | undefined;
 							try {
 								bootstrapTurnId = await facade.startTurn({
@@ -876,6 +1287,7 @@ export function buildTuiGeneration(
 									bootstrapTurnId,
 									90_000,
 								);
+								bootstrapOutcome = outcome;
 								if (outcome === "completed") {
 									logger.info("bootstrap turn completed (rollout persisted)");
 								} else {
@@ -886,6 +1298,16 @@ export function buildTuiGeneration(
 								}
 							}
 						}
+						if (
+							threadRotationEnabled &&
+							!rotationDisabledThisGeneration &&
+							ledger?.readinessPending?.to === threadId
+						)
+							emit("rotation_bootstrap", {
+								to: threadId,
+								requestedAt: ledger.readinessPending.requestedAt,
+								outcome: bootstrapOutcome,
+							});
 						// TUI window AFTER the thread is known (the founder's client
 						// resumes the SAME machine-owned thread). Fail-open. Pass the
 						// VALIDATED codex binary (review HIGH-4) — a bare `codex` under a
@@ -917,10 +1339,22 @@ export function buildTuiGeneration(
 						// holds the process open; cleared on stop().
 						if (!livenessTimer) {
 							livenessTimer = setInterval(
-								ensureTuiHealthy,
+								() => settleReadiness(ensureTuiHealthy()),
 								TUI_LIVENESS_INTERVAL_MS,
 							);
 							(livenessTimer as { unref?: () => void }).unref?.();
+						}
+						lastActivityAt = Date.now();
+						if (threadRotationEnabled) {
+							rotationTimer = setInterval(() => {
+								void attemptRotation(router).catch(() => {
+									rotationDisabledThisGeneration = true;
+									logger.error(
+										"[codex-lead-thread-rotation] fence failed unexpectedly; disabled this generation",
+									);
+								});
+							}, ROTATION_CHECK_INTERVAL_MS);
+							rotationTimer.unref();
 						}
 						return {
 							recover: () => router.recover(),
@@ -939,9 +1373,16 @@ export function buildTuiGeneration(
 								// FLY-1373: open Bridge batch ingress only AFTER journal recovery
 								// (CodexLeadRuntime orders recover() before startGateway()).
 								await ownership.start();
+								gatewayReady = true;
+								settleReadiness(
+									!!tuiSpec &&
+										ownedTuiThreadId === tuiSpec.threadId &&
+										isTuiWindowAlive(tuiSpec),
+								);
 								residencyLifecycle?.online();
 							},
 							stopGateway: async () => {
+								gatewayReady = false;
 								try {
 									await ownership.stop();
 								} finally {
@@ -963,6 +1404,10 @@ export function buildTuiGeneration(
 				// `codex resume --remote` window (connected to the still-live daemon)
 				// must survive that. The orphan-kill on real shutdown lives in main().
 				stopped = true;
+				if (rotationTimer) {
+					clearInterval(rotationTimer);
+					rotationTimer = null;
+				}
 				if (livenessTimer) {
 					clearInterval(livenessTimer);
 					livenessTimer = null;
@@ -1126,11 +1571,15 @@ export async function main(
 		);
 		reportSuccessfulDaemonEnsure(stderr, console.warn);
 	};
-	const supervisor = new DaemonConnectionSupervisor({
-		buildGeneration: buildTuiGeneration(carrierConfig, console),
-		ensureDaemon,
-		log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`),
-	});
+	const supervisor: DaemonConnectionSupervisor = new DaemonConnectionSupervisor(
+		{
+			buildGeneration: buildTuiGeneration(carrierConfig, console, {
+				requestRebuild: (reason) => supervisor.requestRebuild(reason),
+			}),
+			ensureDaemon,
+			log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`),
+		},
+	);
 	const shutdown = (sig: NodeJS.Signals) => {
 		console.warn(`[codex-lead-tui-runtime] ${sig} → stopping`);
 		supervisor

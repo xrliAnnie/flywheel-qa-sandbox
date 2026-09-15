@@ -384,6 +384,24 @@ function fakeProc() {
 }
 
 describe("wireDemuxedProcess", () => {
+	it("observes founder started/completed but never sidecar starts including early replay", async () => {
+		const f = fakeProc();
+		const started: string[] = [],
+			completed: string[] = [];
+		const { facade } = wireDemuxedProcess({
+			proc: f.proc,
+			onFounderTurnStarted: (id) => started.push(id),
+			onFounderTurnCompleted: (id) => completed.push(id),
+		});
+		f.fire("notification", "turn/started", { turn: { id: "founder" } });
+		f.fire("turnCompleted", { turn: { id: "founder" } });
+		const own = facade.startTurn({ threadId: "th", input: [] });
+		f.fire("notification", "turn/started", { turn: { id: "t1" } });
+		await own;
+		f.fire("turnCompleted", { turn: { id: "t1" } });
+		expect(started).toEqual(["founder"]);
+		expect(completed).toEqual(["founder"]);
+	});
 	it("claimed sidecar turn: early deltas replay, completion delivered, turn released", async () => {
 		const f = fakeProc();
 		const founderCompleted: string[] = [];

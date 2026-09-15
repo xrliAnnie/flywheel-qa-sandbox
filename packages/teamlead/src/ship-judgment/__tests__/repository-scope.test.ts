@@ -1,6 +1,25 @@
 import { expect, it } from "vitest";
 import { bindingFixture } from "./binding-fixture.js";
 
+it("normalizes configured and bound slugs before comparing repository identities", async () => {
+	const { store, db } = await bindingFixture();
+	try {
+		expect(store.readShipJudgmentRepositories("Owner/Repo")).toEqual([
+			{ repo_identity: "__main__", repo_slug: "owner/repo" },
+		]);
+		db.prepare(
+			"UPDATE workflow_node_pr_binding SET probe_repo_slug='OWNER/REPO'",
+		).run();
+		expect(store.readShipJudgmentRepositories("owner/repo")).toEqual([
+			{ repo_identity: "__main__", repo_slug: "owner/repo" },
+		]);
+		expect(store.readShipJudgmentRepositories("other/repo")).toBeUndefined();
+		expect(store.readShipJudgmentRepositories("invalid slug")).toBeUndefined();
+	} finally {
+		store.close();
+	}
+});
+
 it("derives configured and declared Flywheel repositories and rejects conflicting identities", async () => {
 	const { store, db } = await bindingFixture();
 	try {

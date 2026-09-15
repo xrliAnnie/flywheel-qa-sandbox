@@ -1,0 +1,89 @@
+{
+  "issue": "FLY-1945",
+  "implementationHead": "45763e311",
+  "receipts": [
+    {
+      "name": "focused",
+      "path": "/tmp/fly1945-medium-focused.log",
+      "exitCode": 0,
+      "testsPassed": 170,
+      "sha256": "9439d794ae526f470014dc10b762234af462266554b575746106fa1ab3a90217"
+    },
+    {
+      "name": "snapshot-focused",
+      "path": "/tmp/fly1945-snapshot-medium-green.log",
+      "exitCode": 0,
+      "testsPassed": 41,
+      "sha256": "d333148ba393db024db9b31f36aff6ef370f30f67c4bb3842b8e2ceda776440b"
+    },
+    {
+      "name": "rules-final",
+      "path": "/tmp/fly1945-rules-medium.log",
+      "exitCode": 0,
+      "testsPassed": 59,
+      "sha256": "4737bd860e66369ff48677b918e5b69669ac3f9b83e974b900372d4848c4f9ed"
+    },
+    {
+      "name": "launcher-final",
+      "path": "/tmp/fly1945-launcher-medium.log",
+      "exitCode": 0,
+      "testsPassed": null,
+      "sha256": "60e3d5ec5f240c3bf2bd86d3c65734662e6d98098c6ff146e4d88cd9b1dbef68"
+    },
+    {
+      "name": "lint-final",
+      "path": "/tmp/fly1945-medium-lint.log",
+      "exitCode": 0,
+      "testsPassed": null,
+      "sha256": "30f58c6f4ee78a6c276c5c747aca7bbe18bec98e068675bda3488a6f99537ae8"
+    },
+    {
+      "name": "teamlead-build",
+      "path": "/tmp/fly1945-medium-build.log",
+      "exitCode": 0,
+      "testsPassed": null,
+      "sha256": "3679ac0176f819b4fa30cfe683ddde1cd8c4d5ae540ea10874815e7fa62c6e9f"
+    },
+    {
+      "name": "snapshot-full",
+      "path": "/tmp/fly1945-snapshot-final-medium.log",
+      "exitCode": 0,
+      "testsPassed": 392,
+      "sha256": "f2d250cbab65d267a37ab6977c5171a5f94349e1434a844ea7dab139e78add96"
+    },
+    {
+      "name": "converge-fixture",
+      "path": "/tmp/fly1945-converge1389-green.log",
+      "exitCode": 0,
+      "testsPassed": 22,
+      "sha256": "0d37515e1f0f81b5372309481836737abc8d76a1db21b97300189e194abc31f2"
+    },
+    {
+      "name": "alert-arrival-fixture",
+      "path": "/tmp/fly1945-alert-arrival-green.log",
+      "exitCode": 0,
+      "testsPassed": 7,
+      "sha256": "670d1011c46245cbc3ccd1037ae1c79b8180eaec785b1debe26475ab81ee667c"
+    },
+    {
+      "name": "legacy-residue",
+      "path": "/tmp/fly1945-residue-green.log",
+      "exitCode": 0,
+      "testsPassed": 79,
+      "sha256": "0f7533ddfae8d3920488fd4dd4505a7eb8919e3821440a955953a9af85d76ade"
+    }
+  ],
+  "pending": [
+    "effective code review",
+    "PR final-head CI"
+  ],
+  "productionVerified": false,
+  "localAggregate": {
+    "status": "interrupted \u2014 not relied on",
+    "sessionId": 2112,
+    "receipt": "/tmp/flywheel-package-gate-LZn0D1/summary.json",
+    "authority": "lead-instruction 87babdab-fcc9-4169-870a-828818781d16",
+    "restart": false,
+    "handoffTestAuthority": "exact-head CI"
+  }
+}

@@ -1,0 +1,13 @@
+Baseline: 579c79ed6
+Command: extracted FLY-2080-FINDING-GATE awk applied to this synthetic report.
+Expected FLY-1945 behavior: reject missing disposition.
+Actual baseline exit: 0 (accepted)
+
+STEP 1: OK
+STEP 2: OK
+STEP 3: OK
+STEP 4: OK
+STEP 5: OK
+STEP 6: FINDING
+STEP DWELL: OK
+FINDING step=6 category=mechanism_defect bridge_problem=no result=escalated-with-plan evidence=fixture owner=agent:flywheel-eng-lead next=inspect:fixture epic=n/a epic_marker=n/a

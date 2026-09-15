@@ -380,3 +380,39 @@ describe("DaemonConnectionSupervisor — R2 races", () => {
 		expect(events).toContain("stop:1"); // swept after settle
 	});
 });
+
+describe("requested rotation rebuild", () => {
+	it("stops exactly once, rebuilds immediately, fences concurrent loss", async () => {
+		const h = harness();
+		expect(h.sup.requestRebuild("thread_rotation")).toBe(false);
+		await h.sup.start();
+		expect(h.sup.requestRebuild("thread_rotation")).toBe(true);
+		expect(h.sup.requestRebuild("thread_rotation")).toBe(false);
+		h.gens[0]!.loseConnection();
+		await flush();
+		expect(h.gens).toHaveLength(2);
+		expect(h.gens[0]!.stopCalls).toBe(1);
+		expect(h.sleeps).toEqual([]);
+		expect(h.events).toEqual([
+			"ensureDaemon",
+			"build:1",
+			"start:1",
+			"stop:1",
+			"ensureDaemon",
+			"build:2",
+			"start:2",
+		]);
+		await h.sup.stop();
+		expect(h.sup.requestRebuild("thread_rotation")).toBe(false);
+	});
+	it("after the immediate attempt fails, resumes the existing bounded backoff", async () => {
+		const h = harness({ failStartIds: [2] });
+		await h.sup.start();
+		expect(h.sup.requestRebuild("thread_rotation")).toBe(true);
+		await flush();
+		expect(h.gens).toHaveLength(3);
+		expect(h.sleeps).toEqual([10]);
+		expect(h.gens[1]!.stopCalls).toBe(1);
+		await h.sup.stop();
+	});
+});

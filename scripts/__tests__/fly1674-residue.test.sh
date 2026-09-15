@@ -37,6 +37,9 @@ allowed_hits=(
   'packages/teamlead/src/__tests__/fly369-patrol-rule.test.ts|three_stage_turn'
   'scripts/lead-patrol-snapshot.sh|three_stage_turn'
   'scripts/__tests__/lead-patrol-snapshot.test.sh|three_stage_turn'
+  # FLY-1945 only reads the current TURN projection for exact patrol ownership.
+  'packages/teamlead/src/patrol-continuity-collector.ts|three_stage_turn'
+  'packages/teamlead/src/__tests__/patrol-continuity-collector.test.ts|three_stage_turn'
   # FLY-2456 read-only evidence over live three_stage_turn.
   'scripts/lib/qa-fly-2456-shape.mjs|three_stage_turn'
   'scripts/lib/qa-fly-2456-scan.mjs|three_stage_turn'

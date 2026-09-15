@@ -1,0 +1,337 @@
+{
+  "schemaVersion": 1,
+  "kind": "assembled-package-recovery-evidence",
+  "head": "cdb2f4e17e7a8c787d5dcd21d6fb1e9e924489b5",
+  "generatedAt": "2026-09-15T02:49:16.090332+00:00",
+  "complete": true,
+  "status": "accepted",
+  "originalAggregateStatus": "failed",
+  "originalAggregateReceipt": "/tmp/fly2562-evidence/package-recovery/original-aggregate-summary.json",
+  "expectedPackages": [
+    "flywheel-claude-runner",
+    "flywheel-comm",
+    "flywheel-config",
+    "flywheel-core",
+    "flywheel-edge-worker",
+    "flywheel-gemini-agent",
+    "flywheel-github-event-transport",
+    "flywheel-linear-event-transport",
+    "flywheel-qa-framework",
+    "flywheel-release-contract",
+    "flywheel-slack-event-transport",
+    "flywheel-teamlead",
+    "flywheel-token-usage",
+    "flywheel-voice-bridge",
+    "flywheel-voice-codex",
+    "flywheel-voice-core",
+    "flywheel-voice-headphone"
+  ],
+  "packageSourcesUnchanged": true,
+  "build": {
+    "command": [
+      "pnpm",
+      "-r",
+      "build"
+    ],
+    "startedAt": "2026-09-14T23:44:43.813Z",
+    "finishedAt": "2026-09-14T23:47:21.339Z",
+    "exitCode": 0,
+    "signal": null,
+    "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/build.log"
+  },
+  "selectedPackages": [
+    {
+      "name": "flywheel-claude-runner",
+      "status": "accepted",
+      "provenance": "single-worker complete-package recovery",
+      "source": "/tmp/fly2562-evidence/claude-runner-recovery.json",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 50,
+        "files": 50,
+        "passed": 1340,
+        "failed": 0,
+        "skipped": 2,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-comm",
+      "status": "accepted",
+      "provenance": "single-worker complete-package recovery",
+      "source": "/tmp/fly2562-evidence/comm-recovery.json",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 190,
+        "files": 190,
+        "passed": 2551,
+        "failed": 0,
+        "skipped": 3,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-config",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/2-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 53,
+        "files": 53,
+        "passed": 825,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-core",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/3-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 22,
+        "files": 22,
+        "passed": 263,
+        "failed": 0,
+        "skipped": 2,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-edge-worker",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/4-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 117,
+        "files": 117,
+        "passed": 1347,
+        "failed": 0,
+        "skipped": 14,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-gemini-agent",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/5-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 12,
+        "files": 12,
+        "passed": 158,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-github-event-transport",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/6-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 4,
+        "files": 4,
+        "passed": 73,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-linear-event-transport",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/7-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 1,
+        "files": 1,
+        "passed": 18,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-qa-framework",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/8-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 6,
+        "files": 6,
+        "passed": 83,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-release-contract",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/9-1.log",
+      "receipt": null
+    },
+    {
+      "name": "flywheel-slack-event-transport",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/10-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 3,
+        "files": 3,
+        "passed": 56,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-teamlead",
+      "status": "accepted",
+      "provenance": "per-file reconciliation of two complete unchanged-source package runs",
+      "source": "/tmp/fly2562-evidence/teamlead-reconciled-receipt.json",
+      "receipt": {
+        "schemaVersion": 1,
+        "kind": "derived-per-file-recovery-receipt",
+        "complete": true,
+        "reason": "per_file_reconciliation",
+        "expectedFiles": 1116,
+        "files": 1116,
+        "passed": 14398,
+        "failed": 0,
+        "skipped": 7,
+        "errors": [
+          {
+            "message": "[vitest-worker]: Timeout calling \"onTaskUpdate\"",
+            "source": "original full run"
+          },
+          {
+            "message": "[vitest-worker]: Timeout calling \"onTaskUpdate\"",
+            "source": "recovery full run"
+          }
+        ],
+        "nativeFullPackageRunsPassed": false,
+        "decisionQuestion": "9ded8c3a-e84d-420b-8b47-efe9135f3e93",
+        "note": "Every file passed in at least one of two complete unchanged-source runs. This is derived evidence, not a rewritten native test receipt. Raw failed receipts are retained.",
+        "reconciliationFile": "teamlead-file-reconciliation.json"
+      }
+    },
+    {
+      "name": "flywheel-token-usage",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/12-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 11,
+        "files": 11,
+        "passed": 173,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-voice-bridge",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/13-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 60,
+        "files": 60,
+        "passed": 649,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-voice-codex",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/14-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 19,
+        "files": 19,
+        "passed": 122,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-voice-core",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/15-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 33,
+        "files": 33,
+        "passed": 320,
+        "failed": 0,
+        "skipped": 4,
+        "errors": []
+      }
+    },
+    {
+      "name": "flywheel-voice-headphone",
+      "status": "accepted",
+      "provenance": "original aggregate package",
+      "source": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/16-1.log",
+      "receipt": {
+        "schemaVersion": 1,
+        "complete": true,
+        "reason": "passed",
+        "expectedFiles": 6,
+        "files": 6,
+        "passed": 54,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+      }
+    }
+  ]
+}

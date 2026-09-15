@@ -1,3 +1,5 @@
+import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
+import { migrateEvidenceLedger } from "./ship-judgment/evidence-migration.js";
 import { readEpicHistory } from "./ship-judgment/epic-history.js";
 import { readEpicJudgment, type EpicJudgment } from "./ship-judgment/epic-facts.js";
 import { ShipJudgmentHistoryState } from "./ship-judgment/history-state.js";
@@ -5388,10 +5390,12 @@ export class StateStore {
 			JOIN workflow_pr_manifest m ON m.run_id=d.run_id AND m.current_revision=d.revision
 			WHERE r.project_name='flywheel' AND r.status='active' LIMIT 201`).all() as {repo_identity:string;repo_slug:string}[];
 		if(rows.length>200) return undefined;
-		const repos=new Map<string,string>([["__main__",primarySlug]]);
+		const repos=new Map<string,string>([["__main__",primarySlug.toLowerCase()]]);
 		for(const row of rows) {
-			if(!row.repo_identity || !repositorySlugSchema.safeParse(row.repo_slug).success || (repos.has(row.repo_identity) && repos.get(row.repo_identity)!==row.repo_slug)) return undefined;
-			repos.set(row.repo_identity,row.repo_slug);
+			if(!row.repo_identity || !repositorySlugSchema.safeParse(row.repo_slug).success) return undefined;
+			const slug = row.repo_slug.toLowerCase();
+			if(repos.has(row.repo_identity) && repos.get(row.repo_identity)!==slug) return undefined;
+			repos.set(row.repo_identity,slug);
 		}
 		if(repos.size>200) return undefined;
 		return [...repos].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([repo_identity,repo_slug])=>({repo_identity,repo_slug}));
@@ -5414,6 +5418,22 @@ export class StateStore {
 	}
 
 	/** Read-only source selection. A newer pending/failed review prevents fallback to an older approval. */
+	readShipJudgmentIssueAliases(runId: string): string[] {
+		return new EvidenceAuthorityReader(this.db.raw).aliases(runId);
+	}
+
+	readShipJudgmentDesignApproval(issueId: string, aliases: string[], repoIdentity: string, asOf?: string) {
+		return new EvidenceAuthorityReader(this.db.raw).designApproval(issueId, aliases, repoIdentity, asOf);
+	}
+
+	readShipJudgmentCodeReviewAtHead(issueId: string, aliases: string[], repoIdentity: string, headSha: string, asOf?: string) {
+		return new EvidenceAuthorityReader(this.db.raw).codeReviewAtHead(issueId, aliases, repoIdentity, headSha, asOf);
+	}
+
+	readShipJudgmentQaAuthority(runId: string, repoIdentity: string, headSha: string, asOf: string) {
+		return new EvidenceAuthorityReader(this.db.raw).qaAuthority(runId, repoIdentity, headSha, asOf);
+	}
+
 	readShipJudgmentPlanReference(runId: string, repoIdentity: string): { requestId: string; path: string; expectedBlobSha?: string } | undefined {
 		const row = this.db.raw.prepare(`SELECT j.* FROM codex_review_job j
 			JOIN workflow_run_node n ON n.execution_id=j.execution_id
@@ -28049,6 +28069,7 @@ export class StateStore {
 			this.observationStorage = { status: "unavailable", reason: error instanceof ObservationSchemaDrift ? "schema_drift" : "migration_failed" };
 			console.warn("[ship-judgment] observation storage unavailable", this.observationStorage.reason);
 		}
+		migrateEvidenceLedger(this.db.raw);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_rework_route_revision (
 				request_id TEXT NOT NULL,

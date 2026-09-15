@@ -439,6 +439,12 @@ describe("feature-flag drift guard", () => {
 					"storeWorkflowNodeReuseEnabled",
 				],
 				[
+					"codex_lead_thread_rotation",
+					"packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts",
+					"buildTuiGeneration",
+					"storeCodexLeadThreadRotationEnabled",
+				],
+				[
 					"codex_memory_distill",
 					"packages/teamlead/src/bridge/run-infra.ts",
 					"setupRunInfrastructure",

@@ -3,6 +3,9 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { canonicalDigest, prFileInventorySchema } from "./contract.js";
 
+// Raw PR material can exceed a single document. Model packets and persisted ledgers
+// retain their independent, smaller budgets. Keep this temporary read bounded.
+export const RAW_PR_DIFF_BYTES = 2 * 1024 * 1024;
 const shaSchema = z.string().regex(/^[0-9a-f]{40}$/);
 const pathSchema = prFileInventorySchema.shape.files.element.shape.path;
 export interface FrozenDiff {
@@ -122,7 +125,7 @@ export class FrozenGitReader {
 			if (files.length > 1000) throw new Error("git_file_budget_exceeded");
 		}
 		const text = this.text(
-			await this.git([...args, base, head, "--"], 262_144),
+			await this.git([...args, base, head, "--"], RAW_PR_DIFF_BYTES),
 		);
 		return {
 			files,
@@ -180,7 +183,9 @@ export class FrozenGitReader {
 					},
 				},
 				(error, stdout) =>
-					error ? reject(new Error("git_input_read_failed")) : resolve(stdout),
+					error
+						? reject(new Error("git_input_read_failed", { cause: error }))
+						: resolve(stdout),
 			);
 		});
 	}

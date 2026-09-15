@@ -83,5 +83,6 @@ export function judgmentSummary(
 					recommend_reject: "建议拒绝",
 					undetermined: "无法判断",
 				}[cell.value.overall];
-	return `机器意见：${display} · ${overall}`;
+	const points = cell.value.points;
+	return `机器意见：${display} · ${overall}${points ? ` · ① ${points.alignment} · ② ${points.conflict} · ③ ${points.coverage}` : ""}`;
 }

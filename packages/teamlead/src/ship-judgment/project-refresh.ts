@@ -44,7 +44,11 @@ export class SharedProjectRefresh {
 	private stopped = false;
 	private controller: AbortController | undefined;
 	private running:
-		| { digest: string; promise: Promise<ProjectRefreshResult> }
+		| {
+				digest: string;
+				promise: Promise<ProjectRefreshResult>;
+				metadata: Promise<ProjectSnapshot | undefined>;
+		  }
 		| undefined;
 	constructor(
 		private readonly store: ProjectRefreshStore,
@@ -99,19 +103,47 @@ export class SharedProjectRefresh {
 				status: "unavailable",
 				reason: `refresh_${lease.status}`,
 			});
-		const promise = this.collect(config.repositories, digest, lease).finally(
-			() => {
-				this.running = undefined;
-			},
-		);
-		this.running = { digest, promise };
+		let publish!: (snapshot: ProjectSnapshot | undefined) => void;
+		const metadata = new Promise<ProjectSnapshot | undefined>((resolve) => {
+			publish = resolve;
+		});
+		const promise = this.collect(
+			config.repositories,
+			digest,
+			lease,
+			publish,
+		).finally(() => {
+			this.running = undefined;
+		});
+		this.running = { digest, promise, metadata };
 		return promise;
+	}
+
+	/** Metadata is not a complete conflict inventory. Consumers may prepare Git while files are collected. */
+	metadata(value: unknown): Promise<ProjectSnapshot | undefined> {
+		const config = refreshConfigSchema.parse(value);
+		if (this.stopped || config.projectName !== "flywheel")
+			return Promise.resolve(undefined);
+		const result = this.refresh(config);
+		config.repositories.sort((a, b) =>
+			a.repo_identity < b.repo_identity
+				? -1
+				: a.repo_identity > b.repo_identity
+					? 1
+					: 0,
+		);
+		if (this.running?.digest === canonicalDigest(config.repositories))
+			return this.running.metadata;
+		return result.then((value) =>
+			value.status === "ready" ? value.snapshot : undefined,
+		);
 	}
 
 	private async collect(
 		repositories: { repo_identity: string; repo_slug: string }[],
 		digest: string,
 		lease: RefreshLease,
+		publish: (snapshot: ProjectSnapshot | undefined) => void,
 	): Promise<ProjectRefreshResult> {
 		const controller = new AbortController();
 		this.controller = controller;
@@ -141,13 +173,14 @@ export class SharedProjectRefresh {
 				if (abort) signal.removeEventListener("abort", abort);
 			}
 		};
+		const snapshot: ProjectSnapshot = {
+			configurationDigest: digest,
+			repositories: [],
+			prs: [],
+		};
 		try {
 			const prior = this.store.cacheForReuse();
-			const snapshot: ProjectSnapshot = {
-				configurationDigest: digest,
-				repositories: [],
-				prs: [],
-			};
+			// Collect all identities first so target Git preparation does not depend on file pagination.
 			for (const repo of repositories) {
 				const main = z
 					.string()
@@ -169,96 +202,113 @@ export class SharedProjectRefresh {
 					for (const pr of response.items.filter((pr) => !pr.draft)) {
 						if (snapshot.prs.length >= 200)
 							throw new ProjectFetchFailure("pr_budget_exceeded");
-						const cached =
-							prior?.configurationDigest === digest
-								? prior.prs.find(
-										(old) =>
-											old.repo_identity === repo.repo_identity &&
-											old.pr_number === pr.pr_number &&
-											old.filesComplete &&
-											old.head_sha === pr.head_sha &&
-											old.base_ref === pr.base_ref,
-									)
-								: undefined;
-						if (cached) {
-							snapshot.prs.push({ ...cached, base_sha: pr.base_sha });
-							continue;
-						}
-						try {
-							const files: ProjectSnapshot["prs"][number]["files"] = [];
-							let filePage: number | null = 1;
-							while (filePage !== null) {
-								const currentFilePage: number = filePage;
-								const result = filePageSchema.parse(
-									await request((signal) =>
-										this.api.files(
-											repo.repo_slug,
-											pr.pr_number,
-											currentFilePage,
-											signal,
-										),
-									),
-								);
-								if (
-									result.nextPage !== null &&
-									result.nextPage !== currentFilePage + 1
-								)
-									throw new ProjectFetchFailure("invalid_pagination");
-								files.push(...result.items);
-								if (files.length > 1000)
-									throw new ProjectFetchFailure("file_budget_exceeded");
-								filePage = result.nextPage;
-							}
-							const identity = prIdentitySchema.parse(
-								await request((signal) =>
-									this.api.pr(repo.repo_slug, pr.pr_number, signal),
-								),
-							);
-							if (
-								identity.head_sha !== pr.head_sha ||
-								identity.base_ref !== pr.base_ref ||
-								identity.base_sha !== pr.base_sha ||
-								identity.draft ||
-								identity.state !== "open" ||
-								identity.changed_files !== files.length ||
-								new Set(files.map((file) => file.path)).size !== files.length
-							)
-								throw new ProjectFetchFailure("pr_changed_during_collection");
-							snapshot.prs.push({
-								repo_identity: repo.repo_identity,
-								pr_number: pr.pr_number,
-								head_sha: pr.head_sha,
-								base_ref: pr.base_ref,
-								base_sha: pr.base_sha,
-								filesComplete: true,
-								files,
-							});
-						} catch (error) {
-							// Exhausted shared budgets, shutdown and rate limits remain project-wide.
-							if (
-								controller.signal.aborted ||
-								(error instanceof ProjectFetchFailure &&
-									["request_budget_or_lease", "github_rate_limit"].includes(
-										error.code,
-									))
-							)
-								throw error;
-							snapshot.prs.push({
-								repo_identity: repo.repo_identity,
-								pr_number: pr.pr_number,
-								head_sha: pr.head_sha,
-								base_ref: pr.base_ref,
-								base_sha: pr.base_sha,
-								filesComplete: false,
-								files: [],
-								filesError:
-									error instanceof ProjectFetchFailure
-										? error.code
-										: "pr_fetch_failed",
-							});
-						}
+						snapshot.prs.push({
+							repo_identity: repo.repo_identity,
+							pr_number: pr.pr_number,
+							head_sha: pr.head_sha,
+							base_ref: pr.base_ref,
+							base_sha: pr.base_sha,
+							filesComplete: false,
+							files: [],
+							filesError: "files_pending",
+						});
 					}
 					page = response.nextPage;
+				}
+			}
+			publish(projectSnapshotSchema.parse(snapshot));
+			for (let index = 0; index < snapshot.prs.length; index++) {
+				const pr = snapshot.prs[index]!;
+				const repo = snapshot.repositories.find(
+					(repo) => repo.repo_identity === pr.repo_identity,
+				)!;
+				const cached =
+					prior?.configurationDigest === digest
+						? prior.prs.find(
+								(old) =>
+									old.repo_identity === repo.repo_identity &&
+									old.pr_number === pr.pr_number &&
+									old.filesComplete &&
+									old.head_sha === pr.head_sha &&
+									old.base_ref === pr.base_ref,
+							)
+						: undefined;
+				if (cached) {
+					snapshot.prs[index] = { ...cached, base_sha: pr.base_sha };
+					continue;
+				}
+				try {
+					const files: ProjectSnapshot["prs"][number]["files"] = [];
+					let filePage: number | null = 1;
+					while (filePage !== null) {
+						const currentFilePage: number = filePage;
+						const result = filePageSchema.parse(
+							await request((signal) =>
+								this.api.files(
+									repo.repo_slug,
+									pr.pr_number,
+									currentFilePage,
+									signal,
+								),
+							),
+						);
+						if (
+							result.nextPage !== null &&
+							result.nextPage !== currentFilePage + 1
+						)
+							throw new ProjectFetchFailure("invalid_pagination");
+						files.push(...result.items);
+						if (files.length > 1000)
+							throw new ProjectFetchFailure("file_budget_exceeded");
+						filePage = result.nextPage;
+					}
+					const identity = prIdentitySchema.parse(
+						await request((signal) =>
+							this.api.pr(repo.repo_slug, pr.pr_number, signal),
+						),
+					);
+					if (
+						identity.head_sha !== pr.head_sha ||
+						identity.base_ref !== pr.base_ref ||
+						identity.base_sha !== pr.base_sha ||
+						identity.draft ||
+						identity.state !== "open" ||
+						identity.changed_files !== files.length ||
+						new Set(files.map((file) => file.path)).size !== files.length
+					)
+						throw new ProjectFetchFailure("pr_changed_during_collection");
+					snapshot.prs[index] = {
+						repo_identity: repo.repo_identity,
+						pr_number: pr.pr_number,
+						head_sha: pr.head_sha,
+						base_ref: pr.base_ref,
+						base_sha: pr.base_sha,
+						filesComplete: true,
+						files,
+					};
+				} catch (error) {
+					// Exhausted shared budgets, shutdown and rate limits remain project-wide.
+					if (
+						controller.signal.aborted ||
+						(error instanceof ProjectFetchFailure &&
+							["request_budget_or_lease", "github_rate_limit"].includes(
+								error.code,
+							))
+					)
+						throw error;
+					snapshot.prs[index] = {
+						repo_identity: repo.repo_identity,
+						pr_number: pr.pr_number,
+						head_sha: pr.head_sha,
+						base_ref: pr.base_ref,
+						base_sha: pr.base_sha,
+						filesComplete: false,
+						files: [],
+						filesError:
+							error instanceof ProjectFetchFailure
+								? error.code
+								: "pr_fetch_failed",
+					};
 				}
 			}
 			return this.store.finish(lease, snapshot, this.now())
@@ -274,9 +324,13 @@ export class SharedProjectRefresh {
 				reason,
 				this.now(),
 				error instanceof ProjectFetchFailure ? error.retryAfter : undefined,
+				projectSnapshotSchema.safeParse(snapshot).success
+					? snapshot
+					: undefined,
 			);
 			return { status: "unavailable", reason };
 		} finally {
+			publish(undefined);
 			clearTimeout(timer);
 			controller.abort();
 			if (this.controller === controller) this.controller = undefined;
@@ -415,6 +469,7 @@ export class ProjectRefreshStore {
 		errorCode: string,
 		now: number,
 		retryAfter = now,
+		partial?: ProjectSnapshot,
 	): boolean {
 		z.string().min(1).max(64).parse(errorCode);
 		return this.db
@@ -429,7 +484,61 @@ export class ProjectRefreshStore {
 				const prior = row.mechanical_cache_json
 					? envelopeSchema.parse(JSON.parse(row.mechanical_cache_json))
 					: { snapshot: null, fetchedAt: null };
-				let json = JSON.stringify({ ...prior, error: errorCode });
+				let reusable = partial && projectSnapshotSchema.parse(partial);
+				if (
+					reusable &&
+					prior.snapshot &&
+					reusable.configurationDigest === prior.snapshot.configurationDigest
+				) {
+					// A failed pass is not an inventory: absent PRs may simply be unvisited.
+					const repositories = new Map(
+						prior.snapshot.repositories.map((repo) => [
+							repo.repo_identity,
+							repo,
+						]),
+					);
+					for (const repo of reusable.repositories)
+						repositories.set(repo.repo_identity, repo);
+					const key = (pr: ProjectSnapshot["prs"][number]) =>
+						canonicalDigest([pr.repo_identity, pr.pr_number]);
+					const prs = new Map(prior.snapshot.prs.map((pr) => [key(pr), pr]));
+					for (const pr of reusable.prs) {
+						const old = prs.get(key(pr));
+						prs.set(
+							key(pr),
+							!pr.filesComplete &&
+								old?.filesComplete &&
+								old.head_sha === pr.head_sha &&
+								old.base_ref === pr.base_ref
+								? { ...old, base_sha: pr.base_sha }
+								: pr,
+						);
+					}
+					const merged = projectSnapshotSchema.safeParse({
+						...reusable,
+						repositories: [...repositories.values()],
+						prs: [...prs.values()],
+					});
+					// Keep the previous bounded cache if the union exceeds existing limits.
+					reusable = merged.success ? merged.data : prior.snapshot;
+				}
+				let json = JSON.stringify({
+					...prior,
+					...(partial
+						? {
+								snapshot: reusable,
+								fetchedAt: null,
+								mergeProbes: [],
+							}
+						: {}),
+					error: errorCode,
+				});
+				if (Buffer.byteLength(json) > 4_194_304)
+					json = JSON.stringify({
+						snapshot: prior.snapshot,
+						fetchedAt: null,
+						error: errorCode,
+					});
 				if (Buffer.byteLength(json) > 4_194_304)
 					json = JSON.stringify({
 						snapshot: null,

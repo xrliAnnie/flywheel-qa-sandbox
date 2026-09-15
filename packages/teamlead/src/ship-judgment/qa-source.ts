@@ -6,6 +6,45 @@ import {
 } from "../bridge/strength-two-probes.js";
 import type { StrengthTwoEvidenceRecordRow } from "../StateStore.js";
 import type { QaSourceBody } from "./collect.js";
+import type { QaAuthority } from "./evidence-ledger.js";
+import { selectQaReportReference } from "./qa-report-reference.js";
+
+/** Only a single report on the configured host can supply semantic QA bytes. */
+export function readClaimQaSource(
+	target: { runId: string; repoIdentity: string; headSha: string },
+	claim: QaAuthority | undefined,
+	registry: Pick<StrengthTwoReportRegistry, "readReportHtml">,
+	hosting: RecordUrlClassificationOptions,
+): (QaSourceBody & { reportToken: string }) | null {
+	if (
+		!claim?.claimId ||
+		!claim.summary ||
+		claim.summary.length > 65_536 ||
+		!["evidence_complete", "qa_failed"].includes(claim.reason) ||
+		claim.revoked
+	)
+		return null;
+	const reference = selectQaReportReference(claim.summary);
+	if (!reference) return null;
+	const location = classifyRecordUrl(reference.url, hosting);
+	if (location.kind !== "hosted_report") return null;
+	const reportToken = location.token;
+	try {
+		const body = registry.readReportHtml(reportToken);
+		if (!body.trim() || Buffer.byteLength(body) > 262_144) return null;
+		return {
+			...target,
+			body,
+			format: "html",
+			revision: JSON.stringify({ claim: claim.claimId, report: reportToken }),
+			digest: createHash("sha256").update(body).digest("hex"),
+			withdrawn: false,
+			reportToken,
+		};
+	} catch {
+		return null;
+	}
+}
 
 export type QaEvidenceRow = Pick<
 	StrengthTwoEvidenceRecordRow,

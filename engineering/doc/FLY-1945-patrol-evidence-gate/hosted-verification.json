@@ -1,0 +1,13 @@
+{
+  "url": "https://fw-reports-624a39.vercel.app/r/4d7ee41046d4bb36281f79f675cccf8a/",
+  "httpStatus": 200,
+  "sourceCommit": "fba169ad0",
+  "hostedSha256": "9ebf36408bc11e98da1e6aea06dcbbc60c265fab9958d2ba7671d812998bae57",
+  "noncePlaceholderAbsent": true,
+  "singleScriptNonceMatchesCsp": true,
+  "approvedStatusPresent": true,
+  "commentMarkerPresent": true,
+  "diagramPendingLabelPresent": true,
+  "externalAssetReferences": 0,
+  "scope": "HTTP/CSP/document verification, not browser visual QA"
+}

@@ -1,0 +1,15 @@
+{
+  "executionId": "3f011ac5-8038-4be8-850e-0d04c022905a",
+  "questionId": "919671d9-769e-4ed6-bd8b-f20cf0238601",
+  "requestId": "ebe15afb-0277-44d6-a99b-a16f60e1cd96",
+  "round": 2,
+  "status": "approved",
+  "plan": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+  "previousRequest": {
+    "questionId": "d8d5fcb0-ffa0-4bc1-8aea-fd414e03b31e",
+    "requestId": "c51d966e-06c6-46ea-a747-6a647cca4b45",
+    "reviewVerdict": "CHANGES_REQUESTED",
+    "receipt": "review-round-1.json"
+  },
+  "receipt": "review-receipt.json"
+}

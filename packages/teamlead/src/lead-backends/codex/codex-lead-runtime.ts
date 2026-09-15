@@ -1,3 +1,4 @@
+import { writeAtomicFile } from "./codex-lead-thread-rotation.js";
 import { buildFullAccessLeadActionsMcpServerConfig } from "./lead-actions/mcp-config.js";
 import {
 	type RunnerActionMcpContext,
@@ -18,13 +19,7 @@ import {
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	realpathSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1164,7 +1159,7 @@ export function readThreadId(path: string): string | undefined {
 
 export function writeThreadId(path: string, threadId: string): void {
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, threadId, "utf8");
+	writeAtomicFile(path, threadId);
 }
 
 // ── FLY-245 F-b: the write-capable release gate (plan §7) ────────────────────

@@ -714,3 +714,68 @@ describe("FLY-1942 accepted subscription callbacks", () => {
 		await router.whenIdle();
 	});
 });
+
+describe("LeadInputRouter rotation fence", () => {
+	it("durably accepts inputs and batches while paused, then dispatches on resume", async () => {
+		const { router, executor, store } = make();
+		router.pause();
+		const first = router.submit({
+			source: "discord",
+			payload: "one",
+			idempotencyKey: "paused-1",
+		});
+		const batch = router.submitBatch({
+			batchId: "paused-batch",
+			memberIds: ["p2", "p3"],
+			payload: "two",
+		});
+		expect(store.getById(first.entryId)?.state).toBe("accepted");
+		expect(store.getById(batch.entryId)?.state).toBe("accepted");
+		expect(executor.startCalls).toHaveLength(0);
+		await router.whenIdle();
+		expect(router.isIdle()).toBe(true);
+		router.resume();
+		await router.whenIdle();
+		expect(executor.startCalls.map((call) => call.input)).toEqual([
+			"one",
+			"two",
+		]);
+		expect(store.getById(first.entryId)?.state).toBe("completed");
+		expect(store.getById(batch.entryId)?.state).toBe("completed");
+	});
+	it("pause waits for the active turn, leaves the next entry accepted", async () => {
+		const { router, executor, store } = make();
+		let finish!: (value: { output: string }) => void;
+		vi.spyOn(executor, "awaitCompletion").mockReturnValueOnce(
+			new Promise((resolve) => {
+				finish = resolve;
+			}),
+		);
+		router.submit({
+			source: "discord",
+			payload: "active",
+			idempotencyKey: "active",
+		});
+		router.pause();
+		const queued = router.submit({
+			source: "discord",
+			payload: "queued",
+			idempotencyKey: "queued",
+		});
+		expect(router.isIdle()).toBe(false);
+		let idle = false;
+		const waiting = router.whenIdle().then(() => {
+			idle = true;
+		});
+		await Promise.resolve();
+		expect(idle).toBe(false);
+		finish({ output: "done" });
+		await waiting;
+		expect(router.isIdle()).toBe(true);
+		expect(store.getById(queued.entryId)?.state).toBe("accepted");
+		expect(executor.startCalls).toHaveLength(1);
+		router.resume();
+		await router.whenIdle();
+		expect(store.getById(queued.entryId)?.state).toBe("completed");
+	});
+});

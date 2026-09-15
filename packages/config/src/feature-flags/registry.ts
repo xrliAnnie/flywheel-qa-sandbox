@@ -547,6 +547,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 
 	// ─── project config flags (per-project scope) ───
 	{
+		name: "codex_lead_thread_rotation",
+		category: "kill_switch",
+		source: "project_config",
+		scope: "project",
+		configKey: "codex.lead_thread_rotation_enabled",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2550: rotate quiet resident Codex Lead threads so old threads can enter native memory distillation",
+		whenOn:
+			"常驻 Codex Lead 在满足周期与空闲条件时开启新对话页，让旧页可进入原生记忆整理",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts",
+				"buildTuiGeneration",
+				"storeCodexLeadThreadRotationEnabled",
+			),
+		],
+		toggleable: "conversational",
+		note: "SQLite only: project override, then global * row, then default on. Read at each generation start; changes apply to the next generation. Read failure disables rotation for that generation. configKey is metadata, not a config.yaml read channel.",
+	},
+	{
 		name: "codex_memory_distill",
 		category: "kill_switch",
 		source: "project_config",

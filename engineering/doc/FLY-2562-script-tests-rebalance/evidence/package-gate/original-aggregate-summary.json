@@ -1,0 +1,645 @@
+{
+  "schemaVersion": 1,
+  "directory": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr",
+  "root": "/Users/xiaorongli/Dev/flywheel-FLY-2562",
+  "head": "d3973d788ab9af1d384d7477823e2733a4e957d2",
+  "startedAt": "2026-09-14T23:44:43.811Z",
+  "packages": [
+    {
+      "name": "flywheel-claude-runner",
+      "script": "vitest run",
+      "status": "failed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-claude-runner",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/0-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-14T23:47:21.360Z",
+          "finishedAt": "2026-09-15T00:41:22.158Z",
+          "exitCode": 1,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/0-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "failed",
+            "expectedFiles": 50,
+            "files": 50,
+            "passed": 1321,
+            "failed": 34,
+            "skipped": 2,
+            "errors": [
+              {
+                "message": "worker 2 exited 1: node:fs:2397\n    return binding.writeFileUtf8(\n                   ^\n\nError: ENOENT: no such file or directory, open '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-2'\n    at writeFileSync (node:fs:2397:20)\n    at <anonymous> (/Users/xiaorongli/Dev/flywheel-FLY-2562/packages/claude-runner/test/fixtures/codex-agent-home-concurrent-worker.ts:20:1)\n    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-2'\n}\n\nNode.js v25.6.1\n"
+              },
+              {
+                "message": "worker 6 exited 1: node:fs:2397\n    return binding.writeFileUtf8(\n                   ^\n\nError: ENOENT: no such file or directory, open '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-6'\n    at writeFileSync (node:fs:2397:20)\n    at <anonymous> (/Users/xiaorongli/Dev/flywheel-FLY-2562/packages/claude-runner/test/fixtures/codex-agent-home-concurrent-worker.ts:20:1)\n    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-6'\n}\n\nNode.js v25.6.1\n"
+              },
+              {
+                "message": "worker 5 exited 1: node:fs:2397\n    return binding.writeFileUtf8(\n                   ^\n\nError: ENOENT: no such file or directory, open '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-5'\n    at writeFileSync (node:fs:2397:20)\n    at <anonymous> (/Users/xiaorongli/Dev/flywheel-FLY-2562/packages/claude-runner/test/fixtures/codex-agent-home-concurrent-worker.ts:20:1)\n    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-5'\n}\n\nNode.js v25.6.1\n"
+              },
+              {
+                "message": "worker 1 exited 1: node:fs:2397\n    return binding.writeFileUtf8(\n                   ^\n\nError: ENOENT: no such file or directory, open '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-1'\n    at writeFileSync (node:fs:2397:20)\n    at <anonymous> (/Users/xiaorongli/Dev/flywheel-FLY-2562/packages/claude-runner/test/fixtures/codex-agent-home-concurrent-worker.ts:20:1)\n    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-1'\n}\n\nNode.js v25.6.1\n"
+              },
+              {
+                "message": "worker 4 exited 1: node:fs:2397\n    return binding.writeFileUtf8(\n                   ^\n\nError: ENOENT: no such file or directory, open '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-4'\n    at writeFileSync (node:fs:2397:20)\n    at <anonymous> (/Users/xiaorongli/Dev/flywheel-FLY-2562/packages/claude-runner/test/fixtures/codex-agent-home-concurrent-worker.ts:20:1)\n    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-4'\n}\n\nNode.js v25.6.1\n"
+              },
+              {
+                "message": "worker 7 exited 1: node:fs:2397\n    return binding.writeFileUtf8(\n                   ^\n\nError: ENOENT: no such file or directory, open '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-7'\n    at writeFileSync (node:fs:2397:20)\n    at <anonymous> (/Users/xiaorongli/Dev/flywheel-FLY-2562/packages/claude-runner/test/fixtures/codex-agent-home-concurrent-worker.ts:20:1)\n    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-7'\n}\n\nNode.js v25.6.1\n"
+              },
+              {
+                "message": "worker 0 exited 1: node:fs:2397\n    return binding.writeFileUtf8(\n                   ^\n\nError: ENOENT: no such file or directory, open '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-0'\n    at writeFileSync (node:fs:2397:20)\n    at <anonymous> (/Users/xiaorongli/Dev/flywheel-FLY-2562/packages/claude-runner/test/fixtures/codex-agent-home-concurrent-worker.ts:20:1)\n    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-0'\n}\n\nNode.js v25.6.1\n"
+              },
+              {
+                "message": "worker 3 exited 1: node:fs:2397\n    return binding.writeFileUtf8(\n                   ^\n\nError: ENOENT: no such file or directory, open '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-3'\n    at writeFileSync (node:fs:2397:20)\n    at <anonymous> (/Users/xiaorongli/Dev/flywheel-FLY-2562/packages/claude-runner/test/fixtures/codex-agent-home-concurrent-worker.ts:20:1)\n    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/fly123-home-vz88tV/ready-3'\n}\n\nNode.js v25.6.1\n"
+              },
+              {
+                "message": "[vitest-worker]: Timeout calling \"onTaskUpdate\""
+              },
+              {
+                "message": "[vitest-worker]: Timeout calling \"onTaskUpdate\""
+              }
+            ]
+          },
+          "status": "failed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-comm",
+      "script": "vitest run",
+      "status": "failed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-comm",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/1-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T00:41:22.170Z",
+          "finishedAt": "2026-09-15T00:51:26.111Z",
+          "exitCode": 1,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/1-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "failed",
+            "expectedFiles": 190,
+            "files": 190,
+            "passed": 2543,
+            "failed": 19,
+            "skipped": 3,
+            "errors": [
+              {
+                "message": "[vitest-worker]: Timeout calling \"onTaskUpdate\""
+              }
+            ]
+          },
+          "status": "failed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-config",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-config",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/2-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T00:51:26.112Z",
+          "finishedAt": "2026-09-15T00:52:11.949Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/2-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 53,
+            "files": 53,
+            "passed": 825,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-core",
+      "script": "vitest run --passWithNoTests",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-core",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/3-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T00:52:11.949Z",
+          "finishedAt": "2026-09-15T00:52:22.757Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/3-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 22,
+            "files": 22,
+            "passed": 263,
+            "failed": 0,
+            "skipped": 2,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-edge-worker",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-edge-worker",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/4-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T00:52:22.758Z",
+          "finishedAt": "2026-09-15T00:56:00.805Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/4-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 117,
+            "files": 117,
+            "passed": 1347,
+            "failed": 0,
+            "skipped": 14,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-gemini-agent",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-gemini-agent",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/5-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T00:56:00.806Z",
+          "finishedAt": "2026-09-15T00:56:08.568Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/5-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 12,
+            "files": 12,
+            "passed": 158,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-github-event-transport",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-github-event-transport",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/6-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T00:56:08.568Z",
+          "finishedAt": "2026-09-15T00:56:12.086Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/6-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 4,
+            "files": 4,
+            "passed": 73,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-linear-event-transport",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-linear-event-transport",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/7-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T00:56:12.086Z",
+          "finishedAt": "2026-09-15T00:56:14.628Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/7-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 1,
+            "files": 1,
+            "passed": 18,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-qa-framework",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-qa-framework",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/8-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T00:56:14.629Z",
+          "finishedAt": "2026-09-15T00:56:21.197Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/8-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 6,
+            "files": 6,
+            "passed": 83,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-release-contract",
+      "script": "node --test __tests__/*.test.mjs",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-release-contract",
+            "test:run"
+          ],
+          "startedAt": "2026-09-15T00:56:21.197Z",
+          "finishedAt": "2026-09-15T00:56:22.607Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/9-1.log",
+          "receipt": null,
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-slack-event-transport",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-slack-event-transport",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/10-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T00:56:22.608Z",
+          "finishedAt": "2026-09-15T00:56:26.233Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/10-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 3,
+            "files": 3,
+            "passed": 56,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-teamlead",
+      "script": "vitest run",
+      "status": "failed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-teamlead",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/11-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T00:56:26.233Z",
+          "finishedAt": "2026-09-15T01:46:25.849Z",
+          "exitCode": 1,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/11-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "failed",
+            "expectedFiles": 1116,
+            "files": 1116,
+            "passed": 14397,
+            "failed": 3,
+            "skipped": 7,
+            "errors": [
+              {
+                "message": "[vitest-worker]: Timeout calling \"onTaskUpdate\""
+              }
+            ]
+          },
+          "status": "failed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-token-usage",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-token-usage",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/12-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T01:46:25.850Z",
+          "finishedAt": "2026-09-15T01:46:31.766Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/12-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 11,
+            "files": 11,
+            "passed": 173,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-voice-bridge",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-voice-bridge",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/13-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T01:46:31.767Z",
+          "finishedAt": "2026-09-15T01:47:06.880Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/13-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 60,
+            "files": 60,
+            "passed": 649,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-voice-codex",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-voice-codex",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/14-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T01:47:06.882Z",
+          "finishedAt": "2026-09-15T01:47:20.318Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/14-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 19,
+            "files": 19,
+            "passed": 122,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-voice-core",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-voice-core",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/15-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T01:47:20.319Z",
+          "finishedAt": "2026-09-15T01:47:40.697Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/15-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 33,
+            "files": 33,
+            "passed": 320,
+            "failed": 0,
+            "skipped": 4,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    },
+    {
+      "name": "flywheel-voice-headphone",
+      "script": "vitest run",
+      "status": "passed",
+      "attempts": [
+        {
+          "command": [
+            "pnpm",
+            "--filter",
+            "flywheel-voice-headphone",
+            "test:run",
+            "--reporter=default",
+            "--outputFile=/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/16-1.json",
+            "--reporter=/Users/xiaorongli/Dev/flywheel-FLY-2562/scripts/package-gate-reporter.mjs"
+          ],
+          "startedAt": "2026-09-15T01:47:40.698Z",
+          "finishedAt": "2026-09-15T01:47:46.485Z",
+          "exitCode": 0,
+          "signal": null,
+          "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/16-1.log",
+          "receipt": {
+            "schemaVersion": 1,
+            "complete": true,
+            "reason": "passed",
+            "expectedFiles": 6,
+            "files": 6,
+            "passed": 54,
+            "failed": 0,
+            "skipped": 0,
+            "errors": []
+          },
+          "status": "passed"
+        }
+      ]
+    }
+  ],
+  "build": {
+    "command": [
+      "pnpm",
+      "-r",
+      "build"
+    ],
+    "startedAt": "2026-09-14T23:44:43.813Z",
+    "finishedAt": "2026-09-14T23:47:21.339Z",
+    "exitCode": 0,
+    "signal": null,
+    "log": "/var/folders/zl/nz5kfm5976q8p6kbt4d0cpgr0000gn/T/flywheel-package-gate-fBDDOr/build.log"
+  },
+  "status": "failed",
+  "exitCode": 1,
+  "finishedAt": "2026-09-15T01:47:46.485Z"
+}

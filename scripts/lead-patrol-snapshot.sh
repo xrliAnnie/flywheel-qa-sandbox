@@ -14,6 +14,7 @@ case "$(basename "${BASH_SOURCE[0]}")" in
 esac
 SNAPSHOT_SOURCE_DIR="$(node -e 'const {dirname}=require("node:path");const {realpathSync}=require("node:fs");process.stdout.write(dirname(realpathSync(process.argv[1])))' "${BASH_SOURCE[0]}" 2>/dev/null || true)"
 SNAPSHOT_CONTROL="${SNAPSHOT_SOURCE_DIR:+$SNAPSHOT_SOURCE_DIR/flywheel-snapshot-control.mjs}"
+PATROL_CONTINUITY="${SNAPSHOT_SOURCE_DIR:+$SNAPSHOT_SOURCE_DIR/flywheel-patrol-continuity.mjs}"
 WORK_TMP="$(mktemp -d "${TMPDIR:-/tmp}/flywheel-patrol.XXXXXX")" || {
   echo "[patrol-snapshot] ERROR: temp_directory_unavailable" >&2
   exit 1
@@ -331,6 +332,9 @@ if [ "$PROJECT_REGISTRY_OK" -eq 1 ]; then
     index_rc=$?
     case "$index_rc" in
       0)
+        if [ "$(printf '%s\n' "$INDEX_ROWS" | awk 'NF {n++} END {print n+0}')" -ge 2000 ]; then
+          OWNER_INDEX_COMPLETE=0
+        fi
         if [ -n "$INDEX_ROWS" ]; then
           OWNER_INDEX="${OWNER_INDEX}${OWNER_INDEX:+$'\n'}$INDEX_ROWS"
         fi
@@ -427,12 +431,32 @@ fi
 
 PANE_COUNT="$(printf '%s\n' "$RUNNER_PANES" | awk 'NF {n++} END {print n+0}')"
 
-NOW_EPOCH="$(date +%s)"
-CONTINUITY_CONTENT=""
-CONTINUITY_WRITE_READY=1
-if ! mkdir -p "$CONTINUITY_DIR" 2>/dev/null; then
-  CONTINUITY_WRITE_READY=0
-  STEP2_STATUS="UNAVAILABLE(structural: continuity_state_unavailable)"
+NOW_EPOCH="$PATROL_NOW_EPOCH"
+CONTINUITY_FACTS="$WORK_TMP/continuity.json"
+CONTINUITY_OK=0
+# The trusted helper owns all continuity timing. Rendered lines remain diagnostics.
+printf '%s\n' "$RUNNER_PANES" > "$WORK_TMP/owned-panes.tsv"
+printf '%s\n' "$OWNED_TARGET_ROWS" > "$WORK_TMP/owned-targets.tsv"
+CONTINUITY_INVENTORY_COMPLETE=false
+if command -v jq >/dev/null 2>&1 \
+ && awk -F '\t' 'NR==FNR {if(NF)targets[$3]=1;next} targets[$1] {print $2}' \
+   "$WORK_TMP/owned-panes.tsv" "$WORK_TMP/owned-targets.tsv" \
+   | jq -Rsc 'split("\n") | map(select(length>0)) | unique' > "$WORK_TMP/executions.json"; then
+  if [ "$OWNER_INDEX_COMPLETE" -eq 1 ] && [ "$AMBIGUOUS_TARGET_COUNT" -eq 0 ] \
+   && [ "$PANE_LIST_RC" -eq 0 ] \
+   && [ "$(jq 'length' "$WORK_TMP/executions.json")" -eq "$(awk 'NF {n++} END {print n+0}' "$WORK_TMP/owned-targets.tsv")" ]; then
+    CONTINUITY_INVENTORY_COMPLETE=true
+  fi
+  if { [ "$PANE_COUNT" -gt 0 ] || [ "$CONTINUITY_INVENTORY_COMPLETE" = true ]; } \
+   && [ -x "$PATROL_CONTINUITY" ] \
+   && PATROL_NOW_EPOCH="$NOW_EPOCH" "$PATROL_CONTINUITY" sample \
+     --project "$PROJECT_NAME" --lead "$LEAD_ID" --db "$STATE_DB" --comm-db "$COMM_DB" \
+     --projects "$PROJECTS_FILE" --state-dir "$STATE_DIR" --executions-file "$WORK_TMP/executions.json" \
+     --inventory-complete "$CONTINUITY_INVENTORY_COMPLETE" \
+     > "$CONTINUITY_FACTS" 2>/dev/null \
+   && jq -e '(.facts|type)=="object" and (.evidence|type)=="array"' "$CONTINUITY_FACTS" >/dev/null 2>&1; then
+    CONTINUITY_OK=1
+  fi
 fi
 while IFS=$'\t' read -r pane_id session_name target window_name pane_command pane_dead; do
   [ -n "$pane_id" ] || continue
@@ -441,13 +465,6 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
   findings="none"
   action="none"
   result="clear"
-  previous_state=""
-  previous_change=""
-  previous_continuity=""
-  if [ -f "$CONTINUITY_FILE" ]; then
-    previous_continuity="$(awk -F '\t' -v target="$target" '$1 == target {print; exit}' "$CONTINUITY_FILE" 2>/dev/null || true)"
-    IFS=$'\t' read -r _continuity_target previous_state previous_change _legacy_unclaimed <<< "$previous_continuity"
-  fi
   if [ "$pane_dead" = 1 ]; then
     findings="$(append_finding "$findings" PANE_DEAD)"
   fi
@@ -475,26 +492,6 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
       state_hash="unavailable"
       findings="$(append_finding "$findings" HASH_UNAVAILABLE)"
       STEP2_STATUS="UNAVAILABLE(structural: hash_unavailable)"
-    else
-      if [ "$previous_state" = "$state_hash" ]; then
-        case "$previous_change" in
-          ''|*[!0-9]*)
-            findings="$(append_finding "$findings" CONTINUITY_STATE_INVALID)"
-            STEP2_STATUS="UNAVAILABLE(structural: continuity_state_invalid)"
-            ;;
-          *)
-            if [ "$previous_change" -le "$NOW_EPOCH" ]; then
-              last_change_epoch="$previous_change"
-            else
-              findings="$(append_finding "$findings" CONTINUITY_STATE_INVALID)"
-              STEP2_STATUS="UNAVAILABLE(structural: continuity_state_invalid)"
-            fi
-            ;;
-        esac
-      fi
-      if [ $((NOW_EPOCH - last_change_epoch)) -ge 3600 ]; then
-        findings="$(append_finding "$findings" STALLED_60M)"
-      fi
     fi
     filtered_capture="$(grep -Eiv 'not your (session|usage) limit' "$capture_file" 2>/dev/null || true)"
     recent_capture="$(printf '%s\n' "$filtered_capture" | tail -80)"
@@ -508,30 +505,52 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
     fi
   fi
   rm -f "$capture_file" 2>/dev/null || true
-  CONTINUITY_CONTENT="${CONTINUITY_CONTENT}${CONTINUITY_CONTENT:+$'\n'}${target}"$'\t'"${state_hash}"$'\t'"${last_change_epoch}"
+  activity="UNKNOWN"
+  last_change_basis="baseline"
+  semantic_hash="unavailable"
+  activity_key="$(sha256_text "$PROJECT_NAME:$LEAD_ID:$execution_id")"
+  continuity_reason="helper_unavailable"
+  last_change_epoch=0
+  if [ "$CONTINUITY_OK" -eq 1 ]; then
+    activity_row="$(jq -er --arg exec "$execution_id" '.facts[$exec] | select(. != null) | [.activity,.last_change_epoch,.last_change_basis,(.entry.semanticDigest // "unavailable"),.key,.reason] | @tsv' "$CONTINUITY_FACTS" 2>/dev/null || true)"
+    if [ -n "$activity_row" ]; then
+      IFS=$'\t' read -r activity last_change_epoch last_change_basis semantic_hash activity_key continuity_reason <<< "$activity_row"
+    fi
+  fi
+  case "$activity" in
+    STALLED_60M) findings="$(append_finding "$findings" STALLED_60M)" ;;
+    ACTIVE|WAITING|OBSERVING) ;;
+    *)
+      activity="UNKNOWN"
+      action="REQUIRED"
+      result="UNSET"
+      case "$STEP2_STATUS" in
+        UNAVAILABLE*|FINDING-CANDIDATE) ;;
+        *) STEP2_STATUS="UNAVAILABLE(structural: continuity_incomplete)" ;;
+      esac
+      ;;
+  esac
 
   if [ "$findings" != none ]; then
     action="REQUIRED"
     result="UNSET"
     case "$STEP2_STATUS" in
+      "UNAVAILABLE(structural: continuity_incomplete)") STEP2_STATUS="FINDING-CANDIDATE" ;;
       UNAVAILABLE*) ;;
       *) STEP2_STATUS="FINDING-CANDIDATE" ;;
     esac
   fi
-  evidence="PANE_EVIDENCE pane=$pane_id target=$target owner=$owner exec=$execution_id capture_sha256=$capture_hash lines=$line_count bytes=$byte_count state_sha256=$state_hash last_change_epoch=$last_change_epoch findings=$findings action=$action result=$result"
+  evidence="PANE_EVIDENCE pane=$pane_id target=$target owner=$owner exec=$execution_id capture_sha256=$capture_hash lines=$line_count bytes=$byte_count state_sha256=$state_hash last_change_epoch=$last_change_epoch findings=$findings action=$action result=$result schema=2 activity=$activity semantic_sha256=$semantic_hash last_change_basis=$last_change_basis last_checked_epoch=$NOW_EPOCH activity_evidence=$activity_key"
   STEP2_FACTS="${STEP2_FACTS}${STEP2_FACTS:+$'\n'}$evidence"
 done <<< "$RUNNER_PANES"
 
-if [ "$PANE_LIST_RC" -eq 0 ] && [ "$CONTINUITY_WRITE_READY" -eq 1 ]; then
-  CONTINUITY_TMP="$CONTINUITY_DIR/.$PROJECT_NAME.tsv.tmp.$$"
-  if ! printf '%s%s' "$CONTINUITY_CONTENT" "${CONTINUITY_CONTENT:+$'\n'}" > "$CONTINUITY_TMP" \
-    || ! chmod 0600 "$CONTINUITY_TMP" 2>/dev/null \
-    || ! mv -f "$CONTINUITY_TMP" "$CONTINUITY_FILE"; then
-    rm -f "$CONTINUITY_TMP" 2>/dev/null || true
-    STEP2_STATUS="UNAVAILABLE(structural: continuity_state_unavailable)"
-    STEP2_FACTS="${STEP2_FACTS}${STEP2_FACTS:+$'\n'}CONTINUITY_STATE_WRITE_FAILED"
-  fi
-  CONTINUITY_TMP=""
+if [ "$CONTINUITY_OK" -eq 1 ]; then
+  ACTIVITY_FACTS="$(jq -r '.evidence[]' "$CONTINUITY_FACTS")"
+  CONTINUITY_CAUSES="$(jq -r '[.facts[] | select(.activity=="UNKNOWN")] | group_by(.reason)[] | "UNAVAILABLE_CAUSE step=2 class=structural token=continuity_\(.[0].reason) affected=\(length)"' "$CONTINUITY_FACTS")"
+  STEP2_FACTS="${STEP2_FACTS}${ACTIVITY_FACTS:+$'\n'}${ACTIVITY_FACTS}${CONTINUITY_CAUSES:+$'\n'}${CONTINUITY_CAUSES}"
+elif [ "$PANE_COUNT" -gt 0 ]; then
+  STEP2_FACTS="${STEP2_FACTS}
+UNAVAILABLE_CAUSE step=2 class=structural token=continuity_helper_unavailable affected=$PANE_COUNT"
 fi
 
 STEP2_FACTS="pane_count=$PANE_COUNT${STEP2_FACTS:+$'\n'}${STEP2_FACTS}"
@@ -1789,6 +1808,7 @@ $DWELL_ROUTE_ACTIONS"
 fi
 
 REPORT_CONTENT="# Lead Patrol Snapshot
+patrol_schema=2
 project: $PROJECT_NAME
 lead: $LEAD_ID
 captured_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -1816,6 +1836,8 @@ ${STEP5_FACTS:-(none)}
 ## STEP 6
 STEP 6: $STEP6_STATUS
 ${STEP6_FACTS:-(none)}
+MECHANISM_REVIEW result=LEAD-JUDGMENT-REQUIRED
+<!-- Declare each mechanism defect before choosing existing, created, or no_issue; see runner-patrol-rules.md. -->
 
 ## STEP DWELL
 STEP DWELL: $STEP_DWELL_STATUS

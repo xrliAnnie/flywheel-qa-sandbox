@@ -190,9 +190,23 @@ describe("isTuiWindowAlive (identity echo — #248 smoke finding)", () => {
 });
 
 describe("killTuiWindow (shutdown orphan teardown — review HIGH-1)", () => {
+	it.each([
+		[false, undefined, true],
+		[true, "growth-mufasa-lead 0", false],
+		[true, undefined, true],
+	] as const)("kill ok=%s, probe=%s ⇒ verified=%s", (ok, out, expected) => {
+		expect(
+			killTuiWindow(SPEC, {
+				exec: () => ({ ok }),
+				execOut: () => out,
+			}),
+		).toBe(expected);
+	});
+
 	it("issues a name-scoped kill-window for the lead's TUI window", () => {
 		const calls: string[][] = [];
 		killTuiWindow(SPEC, {
+			execOut: () => undefined,
 			exec: (cmd, args) => {
 				calls.push([cmd, ...args]);
 				return { ok: true };

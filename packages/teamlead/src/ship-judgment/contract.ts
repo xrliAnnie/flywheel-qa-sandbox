@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { evidenceLedgerSchema } from "./evidence-ledger.js";
 
 export const POLICY_VERSION = "ship-judgment-v1";
 export const JUDGMENT_PROJECT = "flywheel";
@@ -249,6 +250,7 @@ export const opinionCandidateSchema = z
 		channelId: id,
 		bindingDigest: digest,
 		inputId: id.nullable(),
+		evidence: z.lazy(() => evidenceLedgerSchema).optional(),
 		reason: z.string().min(1).max(2000),
 		mechanical: z
 			.object({

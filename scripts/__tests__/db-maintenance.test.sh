@@ -101,24 +101,52 @@ fi
 
 GNU_STAT_BIN="$ROOT/gnu-stat-bin"
 mkdir -p "$GNU_STAT_BIN"
+# Model x.999 -> (x + 1).000 between now and the GNU stat fallback.
+fixture_clock="$ROOT/fixture-clock-ms"
+printf '2000000000999\n' > "$fixture_clock"
+fixture_real_date="$(command -v date)"
+# A file mtime is captured at fixture creation, never synthesized on read.
+fixture_mtime=2000000000
+cat > "$GNU_STAT_BIN/date" <<'EOF'
+#!/usr/bin/env bash
+if [[ -z "${FIXTURE_CLOCK:-}" || -z "${FIXTURE_MTIME:-}" || -z "${FIXTURE_REAL_DATE:-}" ]]; then
+  printf 'date: missing fixture environment\n' >> "${BASH_SOURCE[0]%/*}/fixture-errors"
+  exit 2
+fi
+if [[ "$1" == "+%s" ]]; then
+  read -r clock_ms < "$FIXTURE_CLOCK"
+  printf '%s\n' "$((clock_ms / 1000))"
+  exit 0
+fi
+exec "$FIXTURE_REAL_DATE" "$@"
+EOF
 cat > "$GNU_STAT_BIN/stat" <<'EOF'
 #!/usr/bin/env bash
+if [[ -z "${FIXTURE_CLOCK:-}" || -z "${FIXTURE_MTIME:-}" || -z "${FIXTURE_REAL_DATE:-}" ]]; then
+  printf 'stat: missing fixture environment\n' >> "${BASH_SOURCE[0]%/*}/fixture-errors"
+  exit 2
+fi
 if [[ "$1" == "-f" && "$2" == "%m" ]]; then
+  printf '2000000001000\n' > "$FIXTURE_CLOCK"
   printf '/\n'
   exit 0
 fi
 if [[ "$1" == "-c" && "$2" == "%Y" && -f "$3" ]]; then
-  date +%s
+  printf '%s\n' "$FIXTURE_MTIME"
   exit 0
 fi
 exit 1
 EOF
-chmod +x "$GNU_STAT_BIN/stat"
-second_out="$(HOME="$TEST_HOME" PATH="$GNU_STAT_BIN:$PATH" bash "$SCRIPT" 2>&1)"
+chmod +x "$GNU_STAT_BIN/stat" "$GNU_STAT_BIN/date"
+second_out="$(HOME="$TEST_HOME" PATH="$GNU_STAT_BIN:$PATH" \
+  FIXTURE_CLOCK="$fixture_clock" FIXTURE_REAL_DATE="$fixture_real_date" \
+  FIXTURE_MTIME="$fixture_mtime" \
+  bash "$SCRIPT" 2>&1)"
 second_rc=$?
 second_receipts="$(find "$TEST_HOME/.flywheel/maintenance/fly-2139/db-maintenance" -type f -name 'maintenance-*-receipt.json' 2>/dev/null | wc -l | tr -d ' ')"
 if [[ "$second_rc" -eq 0 && "$second_receipts" -eq 3 \
-  && "$second_out" == *"weekly-success-marker-current"* ]]; then
+  && "$(cat "$fixture_clock")" == "2000000001000" \
+  && "$(printf '%s\n' "$second_out" | grep -c 'weekly-success-marker-current')" -eq 3 ]]; then
   pass "a complete weekly receipt suppresses repeat VACUUM while the shuttle still runs"
 else
   fail "weekly lifecycle repeated or failed (rc=$second_rc receipts=$second_receipts output=$second_out)"
@@ -159,6 +187,55 @@ if [[ -d "$checkpoint_only_evidence" ]]; then
 else
   fail "evidence rotation mistook an intermediate checkpoint for terminal proof"
 fi
+
+printf '[db-maintenance] Case: a future marker does not suppress VACUUM\n'
+FUTURE_HOME="$ROOT/future-home"
+make_database "$FUTURE_HOME/.flywheel/teamlead.db"
+mkdir -p "$FUTURE_HOME/.flywheel/state/db-maintenance"
+jq -n --arg digest "$(printf '%064d' 0)" \
+  '{schemaVersion:1,issue:"FLY-2139",receiptSha256:$digest}' \
+  > "$FUTURE_HOME/.flywheel/state/db-maintenance/teamlead-teamlead-last-success.json"
+printf '2000000000999\n' > "$fixture_clock"
+future_out="$(HOME="$FUTURE_HOME" PATH="$GNU_STAT_BIN:$PATH" \
+  FIXTURE_CLOCK="$fixture_clock" FIXTURE_REAL_DATE="$fixture_real_date" \
+  FIXTURE_MTIME="$((fixture_mtime + 1))" bash "$SCRIPT" 2>&1)"
+future_rc=$?
+future_receipts="$(find "$FUTURE_HOME/.flywheel/maintenance/fly-2139/db-maintenance" \
+  -type f -name 'maintenance-*-receipt.json' 2>/dev/null | wc -l | tr -d ' ')"
+if [[ "$future_rc" -eq 0 && "$future_receipts" -eq 1 \
+  && "$future_out" == *"complete teamlead-teamlead receipt="* \
+  && "$future_out" != *"weekly-success-marker-current"* ]]; then
+  pass "a marker one second ahead of now is rejected by the production guard"
+else
+  fail "future marker suppressed maintenance (rc=$future_rc receipts=$future_receipts output=$future_out)"
+fi
+
+printf '[db-maintenance] Case: weekly marker expires exactly at seven days\n'
+for marker_age in 604799 604800; do
+  EXPIRY_HOME="$ROOT/expiry-$marker_age-home"
+  make_database "$EXPIRY_HOME/.flywheel/teamlead.db"
+  mkdir -p "$EXPIRY_HOME/.flywheel/state/db-maintenance"
+  jq -n --arg digest "$(printf '%064d' 0)" \
+    '{schemaVersion:1,issue:"FLY-2139",receiptSha256:$digest}' \
+    > "$EXPIRY_HOME/.flywheel/state/db-maintenance/teamlead-teamlead-last-success.json"
+  printf '2000000000999\n' > "$fixture_clock"
+  expiry_out="$(HOME="$EXPIRY_HOME" PATH="$GNU_STAT_BIN:$PATH" \
+    FIXTURE_CLOCK="$fixture_clock" FIXTURE_REAL_DATE="$fixture_real_date" \
+    FIXTURE_MTIME="$((fixture_mtime - marker_age))" bash "$SCRIPT" 2>&1)"
+  expiry_rc=$?
+  expiry_receipts="$(find "$EXPIRY_HOME/.flywheel/maintenance/fly-2139/db-maintenance" \
+    -type f -name 'maintenance-*-receipt.json' 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "$marker_age" -eq 604799 && "$expiry_rc" -eq 0 && "$expiry_receipts" -eq 0 \
+    && "$expiry_out" == *"skip teamlead-teamlead weekly-success-marker-current"* ]]; then
+    pass "a marker one second short of seven days still suppresses VACUUM"
+  elif [[ "$marker_age" -eq 604800 && "$expiry_rc" -eq 0 && "$expiry_receipts" -eq 1 \
+    && "$expiry_out" == *"complete teamlead-teamlead receipt="* \
+    && "$expiry_out" != *"weekly-success-marker-current"* ]]; then
+    pass "a marker exactly seven days old no longer suppresses VACUUM"
+  else
+    fail "weekly expiry boundary failed (age=$marker_age rc=$expiry_rc receipts=$expiry_receipts output=$expiry_out)"
+  fi
+done
 
 printf '[db-maintenance] Case: backup failure blocks checkpoint and VACUUM and leaves durable evidence\n'
 FAIL_HOME="$ROOT/fail-home"
@@ -226,6 +303,14 @@ if [[ "$partial_rc" -ne 0 \
   pass "checkpoint busy with unflushed pages stays a durable safe skip"
 else
   fail "partially checkpointed busy tuple crossed the mutation boundary (rc=$partial_rc output=$partial_out)"
+fi
+
+# Production treats unreadable marker metadata as non-current. Keep fixture
+# errors separate so that fallback cannot make a negative guard test pass.
+if [[ ! -e "$GNU_STAT_BIN/fixture-errors" ]]; then
+  pass "clock fixtures received every required environment variable"
+else
+  fail "clock fixture environment missing: $(cat "$GNU_STAT_BIN/fixture-errors")"
 fi
 
 printf '[db-maintenance] %d passed, %d failed\n' "$PASS" "$FAIL"

@@ -1,0 +1,694 @@
+[
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-2549 summary preflight with stale workspace dist",
+      "run": "bash scripts/__tests__/restart-summary-source-preflight.test.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1707 incident replay",
+      "run": "bash scripts/__tests__/qa-fly-1707-incident-replay.test.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1393 flag truth CLI",
+      "run": "bash scripts/__tests__/check-flag-truth.test.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1436 work-kind cutover CLI",
+      "run": "node --test scripts/__tests__/workkind-cutover.test.mjs"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1759 reap-first worktree teardown",
+      "run": "bash scripts/__tests__/test-reap-worktree-lib.test.sh\nbash scripts/__tests__/test-worktree-removal-contract.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1867/2026 Playwright lifecycle tools",
+      "run": "bash scripts/__tests__/fly-1867-playwright-orphan-census.test.sh\nbash scripts/__tests__/fly-2026-browser-idle-census.test.sh\nbash scripts/__tests__/fly-1867-legacy-profiles-quarantine.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1572 mailbox migration CLI",
+      "run": "bash scripts/__tests__/migrate-fly1572-mailbox.test.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-2278 attempt-version rollback",
+      "run": "bash scripts/__tests__/fly2278-rollback-attempt-versions.test.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1764 legacy swap broadcast retirement",
+      "run": "bash scripts/__tests__/legacy-swap-broadcast-retirement.test.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1327 cycle-time report",
+      "run": "sqlite3 --version\npnpm test:cycle-time\n"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Integration test — cmux-sync hooks",
+      "run": "bash scripts/test-cmux-sync-hooks-integration.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1944 host terminal cutover brake",
+      "run": "bash scripts/__tests__/host-terminal-cutover.test.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-2274 cutover window artifacts",
+      "run": "bash scripts/__tests__/fly2264-supervisor-window.test.sh\nbash scripts/__tests__/fly2264-stop-old-tmux-servers.test.sh\nbash scripts/__tests__/fly2264-phase-b-link.test.sh\nbash scripts/__tests__/fly2264-verify-native-cutover.test.sh\nbash scripts/__tests__/fly2264-install-window-artifacts.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — Discord adapter orphan reaper (FLY-183)",
+      "run": "bash packages/teamlead/scripts/__tests__/adapter-reap.test.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — Lead rules single-bundle load chain (FLY-1402)",
+      "run": "bash packages/teamlead/scripts/__tests__/fly1402-single-bundle.test.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1496 model resolution + Lead derivation",
+      "run": "bash scripts/__tests__/fly1496-model-policy.test.sh\nbash packages/teamlead/scripts/__tests__/fly241-lead-model-override.test.sh\nbash packages/teamlead/scripts/__tests__/lead-model-authority-receipt.test.sh\nbash scripts/__tests__/fly1496-qa-acceptance.test.sh\nbash packages/teamlead/scripts/__tests__/fly1650-companion-effort.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1830 non-Lead daemon convergence",
+      "run": "bash scripts/__tests__/converge-nonlead-daemons.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1814 launchd fleet contracts",
+      "run": "bash scripts/__tests__/flywheel-voice-wrapper.test.sh\nbash scripts/__tests__/launchd-units-manifest.test.sh\nbash scripts/__tests__/launchd-units-manifest-fail-closed.test.sh\nbash scripts/__tests__/launchd-census.test.sh\nbash scripts/__tests__/launchd-census-wiring.test.sh\nbash scripts/__tests__/fly1814-operator-tools.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-1929 voucher watch contracts",
+      "run": "bash scripts/__tests__/voucher-watch.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-913/2204 restart + calendar isolation guards",
+      "run": "python3 scripts/hooks/test-flywheel-restart-guard.py\nbash scripts/hooks/test-restart-guard-install.sh\nbash scripts/__tests__/test-calendar-write-sweep.test.sh\nbash scripts/__tests__/test-install-calendar-sweep.test.sh\nbash scripts/__tests__/fly2204-calendar-isolation-negative.test.sh\nbash scripts/__tests__/fly2204-calendar-oauth-probe.test.sh\nbash scripts/__tests__/fly2204-calendar-peer-proxy.test.sh\nbash scripts/__tests__/fly2204-calendar-service-installer.test.sh\nbash scripts/__tests__/fly2204-qa-calendar-config.test.sh\nbash scripts/__tests__/lead-alert-strict-delivery.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-2533 packed phase protocols",
+      "run": "bash scripts/__tests__/fly2533-phase-protocol-assets.test.sh"
+    }
+  },
+  {
+    "job": "script-tests",
+    "step": {
+      "name": "Test — FLY-2007 phase-0 analyser contract",
+      "run": "bash scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1905 CI apt-install helper",
+      "timeout-minutes": 10,
+      "run": "bash scripts/__tests__/ci-apt-install.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-519 fleet provisioning + zero-secret gate",
+      "run": "bash scripts/__tests__/fleet-sanitize.test.sh\nbash scripts/__tests__/fleet-capture.test.sh\nbash scripts/__tests__/provision-fleet-host.test.sh\nbash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2034 Belle staged credential gate",
+      "run": "bash scripts/__tests__/fly2034-onboarding-credential-gate.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1356 skill-framework vendor + variant contracts",
+      "run": "bash scripts/__tests__/skill-framework-variants.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1609 four-arm analysis contract",
+      "run": "bash scripts/__tests__/test-fly1609-design-compare.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-648 one-command setup wizard",
+      "run": "bash scripts/__tests__/flywheel-setup-engine.test.sh\nbash scripts/__tests__/flywheel-setup-config.test.sh\nbash scripts/__tests__/flywheel-setup-bot.test.sh\nbash scripts/__tests__/flywheel-setup-channels.test.sh\nbash scripts/__tests__/flywheel-setup-linear.test.sh\nbash scripts/__tests__/flywheel-setup-services.test.sh\nbash scripts/__tests__/flywheel-setup-poc.test.sh\nbash scripts/__tests__/flywheel-setup-resume-e2e.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1023 Buddy onboarding (step CLI + provider contract)",
+      "run": "bash scripts/__tests__/flywheel-buddy-steps.test.sh\nbash scripts/__tests__/agent-cli-provider-contract.test.sh\nbash scripts/__tests__/flywheel-onboard.test.sh\nbash scripts/__tests__/flywheel-buddy.test.sh\nbash scripts/__tests__/flywheel-buddy-github.test.sh\nbash scripts/__tests__/flywheel-buddy-captain.test.sh\nbash scripts/__tests__/flywheel-buddy-connect.test.sh\nbash scripts/__tests__/buddy-escalate.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1189 multi-Lead campaign harness",
+      "run": "bash scripts/__tests__/test-deploy-multilead.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2237 slot Bridge cycle",
+      "run": "bash scripts/__tests__/test-cycle-bridge.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2270 QA report host stub",
+      "run": "bash scripts/__tests__/qa-report-host.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2270 slot Bridge launch boundary",
+      "run": "bash scripts/__tests__/test-deploy-launch-boundary.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2454 slot isolation contracts",
+      "run": "bash scripts/__tests__/qa-slot-env-contract.test.sh\nbash scripts/__tests__/run-bridge-isolation-boot.test.sh\nbash scripts/__tests__/qa-fly-2454-fleet-snapshot.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2456 hermetic restart drill evidence",
+      "run": "node --test scripts/__tests__/qa-fly-2533-phase-protocol.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-drill-tools.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-scan.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-adopt.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-shape.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-observe.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-cli.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-liveness.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-proc.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-room-info.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-alerts.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-fleet.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-dry-run.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-file-adopt.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-launch-delta.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-rework-adopt.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-terminate-adopt.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-park-adopt.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-runner-windows.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-verdict.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-qa-identity.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-selection.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-report-pair.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-host-runbook.test.mjs\nnode --test scripts/__tests__/qa-fly-2456-proc-comparison.test.mjs\npython3 scripts/__tests__/qa-fly-2456-comparison.test.py\npython3 scripts/qa-fly-2456-guard-receipt.py engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md scripts/hooks/flywheel-restart-guard.py \"$RUNNER_TEMP/fly2456-runbook-guard.json\"\nnode scripts/qa-fly-2456-drill-tools.mjs dry-run --runbook engineering/doc/FLY-2456-bridge-restart-drill/host-runbook.md --scanner scripts/hooks/flywheel-restart-guard.py --receipt \"$RUNNER_TEMP/fly2456-runbook-guard.json\"\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1775 generalized-DAG 529 room",
+      "run": "bash scripts/__tests__/test-deploy-generalized.test.sh\nbash scripts/__tests__/fly2121-node-contract-and-setup.test.sh\nnode --test scripts/__tests__/qa-generalized-helper.test.mjs\nnode --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs\nnode --test scripts/__tests__/qa-generalized-codex-stub.test.mjs\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2383 voice concurrency measurement contract",
+      "run": "node --test scripts/__tests__/fly2383-voice-soak-measure.test.mjs\nnode --test scripts/__tests__/fly2383-voice-soak-calibration.test.mjs\nnode --test scripts/__tests__/fly2383-voice-soak-evidence.test.mjs\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2446 two-Lead voice driver",
+      "run": "node --test scripts/__tests__/fly2446-two-lead-run.test.mjs"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1189 fault injector safety lock",
+      "run": "bash scripts/__tests__/qa-fly-1189-fault-inject.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1189 assert library + driver trap owner",
+      "run": "bash scripts/__tests__/qa-fly-1189-assert.test.sh\nbash scripts/__tests__/qa-fly-1189-driver.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1389 path-hygiene + 529-Room repair batch",
+      "run": "bash scripts/__tests__/path-hygiene.test.sh\nbash scripts/__tests__/converge-flywheel-bin.test.sh\nbash scripts/__tests__/converge-fly1389.test.sh\nbash scripts/__tests__/fly1577-cmux-bin-closure.test.sh\nbash scripts/__tests__/fly1577-alert-arrival.test.sh\nbash scripts/__tests__/check-global-path-hygiene.test.sh\nbash scripts/__tests__/install-hooks-fly1389.test.sh\nbash scripts/__tests__/register-local-marketplace.test.sh\nbash scripts/__tests__/v2-retirement-cleanup.test.sh\nbash scripts/__tests__/test-deploy-fly1389.test.sh\nbash scripts/__tests__/test-deploy-preflight-github.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — resident Codex recovery contracts",
+      "run": "bash scripts/__tests__/resident-codex-lead-recover.test.sh\n# FLY-2259: pure-shell generic Codex Lead home rule + production wiring.\nbash scripts/__tests__/codex-lead-home-rule.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — NPM packaging pipeline + packaged-mode seams",
+      "run": "bash scripts/__tests__/package-onboard.test.sh\nbash scripts/__tests__/packaged-seams.test.sh\nbash scripts/__tests__/packaged-auto-update-wrapper.test.sh\nbash scripts/__tests__/packaged-restart.test.sh\nbash scripts/__tests__/gate4-allowlist-masking.test.sh\nbash scripts/__tests__/gate4-forms-probe.test.sh\nbash scripts/__tests__/setup-prebuilt.test.sh\nbash scripts/__tests__/provision-prebuilt.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2190 host tmux selection S0",
+      "run": "bash scripts/__tests__/host-tmux-selection-census.test.sh\nbash scripts/__tests__/host-tmux-selection-gate.test.sh\nbash scripts/__tests__/host-tmux-selection-mounts.test.sh\nbash scripts/__tests__/host-tmux-selection-restart-mounts.test.sh\nbash scripts/__tests__/host-tmux-selection-s0-scope.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2444 generalized Lead launcher",
+      "run": "bash scripts/__tests__/flywheel-lead.test.sh\nbash scripts/__tests__/flywheel-lead-packaging.test.sh\nbash scripts/__tests__/host-tmux-selection-gate-probe.test.sh\nbash scripts/__tests__/lead-restart-lifecycle-generic-carrier.test.sh\nbash packages/teamlead/scripts/__tests__/codex-lead-args.test.sh\nbash packages/teamlead/scripts/__tests__/codex-lead-state-dir-parity.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-2459 Codex department capability and migration",
+      "run": "bash scripts/__tests__/codex-runner-capability-env.test.sh\nbash scripts/__tests__/lead-backend-migration.test.sh\nbash scripts/__tests__/lead-backend-migration-load.test.sh\nbash scripts/__tests__/lead-backend-migration-wave.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1501 restart brake + heartbeat guard contracts",
+      "run": "bash scripts/__tests__/restart-storm-gate.test.sh\nbash scripts/__tests__/qa-fly1501-brake-missing-alert.test.sh\nbash scripts/__tests__/qa-fly1501-bounded-run.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1634 restart net-deletion contracts",
+      "run": "bash scripts/__tests__/lead-body-hard-clear.test.sh\nbash scripts/__tests__/lead-restart-controlled-wave.test.sh\nbash packages/teamlead/scripts/__tests__/test-lead-identity-preflight.sh\nbash scripts/__tests__/restart-self-detach.test.sh\nbash scripts/__tests__/fly1783-restart-detach-contract.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1959 updater sources + body provenance contracts",
+      "run": "bash scripts/__tests__/lead-body-evidence.test.sh\nbash scripts/__tests__/lead-body-provenance.test.sh\nbash scripts/__tests__/request-restart.test.sh\nbash scripts/__tests__/updater-trigger-policy.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — payload real-install smoke",
+      "run": "bash scripts/__tests__/package-onboard-smoke.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — onboard-shell public install chain",
+      "run": "bash packages/onboard-shell/__tests__/onboard-shell-install.test.sh\nbash packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh\nnode --test packages/onboard-shell/__tests__/*.test.mjs\nbash packages/onboard-shell/__tests__/onboard-shell-rotation.test.sh\nbash packages/onboard-shell/__tests__/onboard-shell-secret.test.sh\nbash packages/onboard-shell/__tests__/onboard-shell-publish-gate.test.sh\nbash packages/onboard-shell/__tests__/onboard-shell-qa-gaps.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-882 Discord bot token pool",
+      "run": "bash scripts/__tests__/discord-bot-pool.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-513 global-codex repoint apply-path",
+      "run": "bash packages/teamlead/scripts/__tests__/fly-513-repoint.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1955/2211 Codex daemon mutation safety",
+      "run": "bash packages/teamlead/scripts/__tests__/codex-lead-tui-home.test.sh\nbash packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh\nbash scripts/__tests__/kill-ledger.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-697 codex-log-guard",
+      "run": "bash scripts/__tests__/codex-log-guard.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-2",
+    "step": {
+      "name": "Test — FLY-1330 log janitor",
+      "run": "bash scripts/__tests__/flywheel-log-janitor.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-2139 database maintenance",
+      "run": "bash scripts/__tests__/db-maintenance.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1887 one-shot Codex hard timeout",
+      "run": "bash scripts/__tests__/codex-guard.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-2465 isolated Codex quota contracts",
+      "run": "bash scripts/__tests__/codex-quota-client.test.sh\nnode --test scripts/__tests__/codex-quota-client.test.mjs\nbash scripts/__tests__/codex-quota-readiness-receipt.test.sh\nbash scripts/__tests__/codex-quota-summary.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-2404 shared Codex credential truth",
+      "run": "bash scripts/__tests__/codex-home-link-truth.test.sh\nbash scripts/__tests__/codex-lead-launchd-preflight.test.sh\nbash scripts/__tests__/codex-credential-cutover.test.sh\nbash scripts/__tests__/codex-home-credential-sweep.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1887 bounded Flywheel logs",
+      "run": "bash scripts/__tests__/flywheel-log-rotate.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1961 dual-vendor workspace trust",
+      "run": "bash scripts/__tests__/test-runner-workspace-trust.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1018 gemini-agent guard",
+      "run": "bash scripts/gemini-agent-guard.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-880 PM executor role contract",
+      "run": "bash scripts/__tests__/test-pm-executor-contract.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-2015 diagram-design role routing",
+      "run": "bash scripts/__tests__/fly2015-diagram-design-roles.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-2022 diagram-design project install",
+      "run": "bash scripts/__tests__/fly2022-diagram-design-install.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1787 CoS identity contract",
+      "run": "bash scripts/__tests__/cos-identity-contract.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1461 QA executor 529 N-to-N contract",
+      "run": "bash scripts/__tests__/test-qa-executor-529-nton-contract.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1463 QA executor ship-report contract",
+      "run": "bash scripts/__tests__/test-qa-executor-ship-report-contract.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1981 runtime role auto-QA retirement",
+      "run": "bash scripts/__tests__/runtime-role-auto-qa-retirement.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1434 unified restart + quota caller",
+      "run": "bash scripts/__tests__/setup-quota-monitor.test.sh\nbash scripts/__tests__/restart-account-switch-runtime-preflight.test.sh\nbash scripts/__tests__/restart-quota-monitor.test.sh\nbash scripts/test-restart-services.sh\nbash scripts/__tests__/restart-services-admission-pause.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1715 runner boundary shell contracts",
+      "run": "bash scripts/__tests__/runner-tier-token-preflight.test.sh\nbash scripts/__tests__/restart-services-voice-bridge.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-2126 Raya voice scenario wrapper",
+      "run": "bash scripts/__tests__/qa-raya-voice.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-2033 meeting artifact closure",
+      "run": "bash scripts/__tests__/meeting-notes-alert.test.sh\nbash scripts/__tests__/meeting-notes-tick.test.sh\nbash scripts/__tests__/meeting-notes-card.test.sh\nbash scripts/__tests__/meeting-notes-window.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1726 canonical Lead identity delivery",
+      "run": "bash scripts/__tests__/fly1726-default-lead-delivery.test.sh\nbash scripts/__tests__/fly1726-lead-identity-wrapper.test.sh\nbash scripts/__tests__/fly1697-v2-lease-body.test.sh\nbash packages/teamlead/scripts/__tests__/claude-lead-comm-db-path.test.sh\nbash packages/teamlead/scripts/__tests__/claude-lead-own-chat-channel.test.sh\nbash packages/teamlead/scripts/__tests__/canonical-lead-identity.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — Lead in-flight mailbox adoption contracts",
+      "run": "command -v python3\ncommand -v rg\nbash scripts/__tests__/autocompact-override-retirement.test.sh\nbash scripts/__tests__/session-ctx-usage.test.sh\nbash scripts/__tests__/lead-session-resume-gate.test.sh\nbash scripts/__tests__/lead-clear-session-authority.test.sh\nbash scripts/__tests__/test-claude-lead-adopt-inflight.test.sh\nbash scripts/__tests__/test-claude-lead-session-start-adopt.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1649 r4 migration-window hardening",
+      "run": "bash scripts/__tests__/rollback-r4.test.sh\nbash scripts/__tests__/r4-window.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-927 infra-alert shell path",
+      "run": "node --test scripts/__tests__/infra-bot-sensor-preflight.test.mjs\nbash scripts/__tests__/lead-alert-fly927.test.sh\n/bin/bash scripts/__tests__/lead-alert-version-observation.test.sh\n/bin/bash scripts/__tests__/release-readiness-report.test.sh\nnode scripts/verify-release-readiness-report.mjs\nbash scripts/__tests__/lead-alert-external-kind.test.sh\nbash scripts/__tests__/bridge-wrapper-fail-loud.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-957 record_deployed_range best-effort",
+      "run": "bash scripts/__tests__/restart-deployed-range.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1729/1743 restart update + consistency guards",
+      "run": "bash scripts/__tests__/restart-pull-preflight.test.sh\nbash scripts/__tests__/restart-deploy-consistency.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1081 notify-path migration",
+      "run": "bash scripts/__tests__/restart-notify-routine.test.sh\nbash scripts/__tests__/restart-services-notify.test.sh\nbash scripts/__tests__/update-flywheel-sources.test.sh\nbash scripts/__tests__/auto-narrow-rollback-precheck.test.sh\nbash scripts/__tests__/updater-raya-deploy.test.sh\nbash scripts/__tests__/raya-prestop.test.sh\nbash scripts/__tests__/simba-grep-zero.test.sh\n# QA alert: drives the REAL lead-alert.sh in the production\n# --lead deploy call form — infra identity used, no Simba fallback.\nbash scripts/__tests__/qa-fly1081-notify-identity.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1861 CI cancellation and classification contracts",
+      "run": "bash scripts/__tests__/ship-await-ci.test.sh\nbash scripts/__tests__/ship-report-failure.test.sh\nbash scripts/__tests__/ci-classify.test.sh\nnode --test scripts/__tests__/flywheel-snapshot-control.test.mjs\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1674 legacy-path residue guard",
+      "run": "bash scripts/__tests__/fly1674-residue.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-2144 retired dispatch residue guard",
+      "run": "bash scripts/__tests__/fly2144-retired-dispatch-residue.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-2102 startup flag freeze residue guard",
+      "run": "bash scripts/__tests__/fly2102-flag-freeze.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1338 matrix coverage parity (QA)",
+      "run": "bash scripts/__tests__/ci-matrix-coverage.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1855 executable Lead patrol snapshot",
+      "run": "bash scripts/__tests__/lead-patrol-snapshot.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-2403 Astra/Fable design outcome report",
+      "run": "bash scripts/__tests__/fly2403-design-model-comparison.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1986 load probe contract",
+      "run": "bash scripts/__tests__/qa-fly-1986-load-probe.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1678 statusline model-scoped bar + installer",
+      "run": "bash scripts/__tests__/fly1678-statusline-fable.test.sh\nbash scripts/__tests__/fly1678-install-statusline.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-3",
+    "step": {
+      "name": "Test — FLY-1870 job elapsed tripwire contract",
+      "run": "bash scripts/__tests__/ci-job-elapsed-tripwire.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-4",
+    "step": {
+      "name": "Test — FLY-2145 Lead memory private repository",
+      "env": {
+        "GITLEAKS_VERSION": "8.30.1",
+        "GITLEAKS_LINUX_X64_SHA256": "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+      },
+      "run": "install_dir=\"$RUNNER_TEMP/fly2145-gitleaks\"\narchive=\"gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz\"\nmkdir -p \"$install_dir\"\ncurl -fsSLo \"$install_dir/$archive\" \\\n  \"https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive\"\nprintf '%s  %s\\n' \"$GITLEAKS_LINUX_X64_SHA256\" \"$install_dir/$archive\" | sha256sum -c -\ntar -xzf \"$install_dir/$archive\" -C \"$install_dir\" gitleaks\ntest \"$($install_dir/gitleaks version)\" = \"$GITLEAKS_VERSION\"\n\nbash scripts/__tests__/test-lead-memory-guard.test.sh\nFLY2145_REAL_GITLEAKS_BIN=\"$install_dir/gitleaks\" \\\n  bash scripts/__tests__/test-lead-memory-hooks.test.sh\nbash scripts/__tests__/test-lead-memory-bootstrap.test.sh\nFLY2145_REAL_GITLEAKS_BIN=\"$install_dir/gitleaks\" \\\n  bash scripts/__tests__/test-lead-memory-scan.test.sh\nbash scripts/__tests__/test-lead-memory-workflow.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-4",
+    "step": {
+      "name": "Test — FLY-1364 cmux sync repair",
+      "env": {
+        "FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH": "1"
+      },
+      "run": "bash scripts/test-cmux-sync.sh\nbash scripts/__tests__/fly1944-attach-protocol.test.sh\nbash scripts/__tests__/fly1944-birth-adoption.test.sh\nbash scripts/__tests__/fly1944-dead-view-rebuild.test.sh\nbash scripts/__tests__/fly1944-helper-reap.test.sh\nbash scripts/__tests__/cmux-cleanup-lifecycle.test.sh\nbash scripts/__tests__/cmux-view-rebind.test.sh\nbash scripts/__tests__/fly2048-cmux-convergence.test.sh\nbash scripts/__tests__/fly1884-view-attach.test.sh\nbash scripts/__tests__/fly1884-attach-recovery.test.sh\nbash scripts/__tests__/fly1884-node-presence.test.sh\nbash scripts/__tests__/tmux-server-rescue.test.sh\nbash scripts/__tests__/tmux-server-rescue-lock.test.sh\nbash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh\nbash scripts/__tests__/tmux-server-rescue-real-tmux.test.sh\nbash scripts/__tests__/flywheel-cmux-install-link-only.test.sh\nbash scripts/__tests__/test-cmux-autostart-flags.test.sh\nbash scripts/__tests__/test-teardown-cmux-ownership.test.sh\nbash scripts/__tests__/test-teardown-live-watcher-e2e.test.sh\nbash scripts/__tests__/test-teardown-lease-contract.test.sh\nbash scripts/__tests__/qa-teardown-finalize.test.sh\nbash scripts/__tests__/restart-cmux-watcher.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-5",
+    "step": {
+      "name": "Test — FLY-2331 Bridge async-child guard regression",
+      "timeout-minutes": 4,
+      "run": "bash scripts/__tests__/fly2331-bridge-async-child.test.sh"
+    }
+  },
+  {
+    "job": "script-tests-5",
+    "step": {
+      "name": "Test — FLY-1663 launchd-native Lead lifecycle",
+      "run": "bash scripts/__tests__/fly1663-launchd-foundation.test.sh\nbash scripts/__tests__/fly1663-lead-v2-runtime.test.sh\nbash scripts/__tests__/fly1663-cmux-v2.test.sh\nbash scripts/__tests__/fly2266-cmux-lead-attach-health.test.sh\nbash scripts/__tests__/fly1663-bridge-launchd.test.sh\nbash scripts/__tests__/fly1663-qa-launchd.test.sh\nnode --test scripts/__tests__/qa-lead-diagnostics.test.mjs\nbash scripts/__tests__/qa-lead-artifact-fixtures.test.sh\nbash scripts/__tests__/fly1663-qa-launchd-mutants.test.sh\nbash scripts/__tests__/codex-lead-state-root.test.sh\nbash scripts/__tests__/qa-codex-lead-layers.test.sh\nbash scripts/__tests__/qa-codex-tmux-isolation.test.sh\nbash scripts/__tests__/qa-metadata-snapshot.test.sh\nbash scripts/__tests__/qa-fly-2301-codex-lead-drill.test.sh\nbash scripts/__tests__/fly1679-dev-channels-v2.test.sh\nbash scripts/__tests__/fly1680-v1-extinction.test.sh\nbash scripts/__tests__/flywheel-daemon-install-verify.test.sh\nbash scripts/__tests__/materialize-lead-manifests.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-5",
+    "step": {
+      "name": "Test — FLY-2146 Lead memory remote sync",
+      "env": {
+        "GITLEAKS_VERSION": "8.30.1",
+        "GITLEAKS_LINUX_X64_SHA256": "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+      },
+      "run": "install_dir=\"$RUNNER_TEMP/fly2146-gitleaks\"\narchive=\"gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz\"\nmkdir -p \"$install_dir\"\ncurl -fsSLo \"$install_dir/$archive\" \\\n  \"https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive\"\nprintf '%s  %s\\n' \"$GITLEAKS_LINUX_X64_SHA256\" \"$install_dir/$archive\" | sha256sum -c -\ntar -xzf \"$install_dir/$archive\" -C \"$install_dir\" gitleaks\ntest \"$($install_dir/gitleaks version)\" = \"$GITLEAKS_VERSION\"\n\nFLY2145_REAL_GITLEAKS_BIN=\"$install_dir/gitleaks\" bash scripts/__tests__/test-lead-memory-sync.test.sh\nbash scripts/__tests__/test-lead-memory-arrival-check.test.sh\nbash scripts/__tests__/test-lead-memory-freshness-report.test.sh\nbash scripts/__tests__/test-lead-memory-observe-workflow.test.sh\nbash scripts/__tests__/test-lead-memory-retire.test.sh\n"
+    }
+  },
+  {
+    "job": "script-tests-5",
+    "step": {
+      "name": "Test — FLY-2134 artifact freshness monitor",
+      "run": "bash scripts/__tests__/artifact-freshness-manifest.test.sh\nbash scripts/__tests__/artifact-freshness-check.test.sh\nbash scripts/__tests__/bridge-liveness-probe-w4.test.sh\n"
+    }
+  }
+]

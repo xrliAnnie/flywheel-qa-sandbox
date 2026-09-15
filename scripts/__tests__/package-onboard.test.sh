@@ -452,6 +452,13 @@ else
   fail "X0 Lead launcher body assets missing from PO_PACKAGE_ASSET_FILES"
 fi
 
+if env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; grep -qx "flywheel-patrol-continuity.mjs" <<<"$PO_SCRIPT_FILES"' _ "$PO" \
+ && grep -qx 'scripts/flywheel-patrol-continuity.mjs' "$REPO_ROOT/scripts/package-onboard-files.allow"; then
+ pass "X0b patrol continuity trusted launcher is in the payload closure"
+else
+ fail "X0b patrol continuity trusted launcher is missing from payload closure"
+fi
+
 # ── X1 · audit-table closure over the REAL default whitelist ─────────────────
 AUDIT="$REPO_ROOT/engineering/doc/FLY-1062-npm-distribution/packaged-path-audit.md"
 if [ -f "$AUDIT" ]; then

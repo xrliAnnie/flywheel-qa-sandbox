@@ -111,6 +111,7 @@ restart-storm-gate.py
 host-tmux-selection-gate.sh
 lead-patrol-snapshot.sh
 flywheel-node-dwell-control.mjs
+flywheel-patrol-continuity.mjs
 lead-alert.sh
 meta-alert.sh
 update-flywheel.sh

@@ -235,6 +235,13 @@ export function storeNodeDwellEnabled(
 	return readScopedBoolean(runtime, "node_dwell", projectName);
 }
 
+export function storeCodexLeadThreadRotationEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "codex_lead_thread_rotation", projectName);
+}
+
 export function storeCodexMemoryDistillEnabled(
 	runtime: FlagStoreRuntime,
 	projectName: string,

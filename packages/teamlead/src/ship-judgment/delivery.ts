@@ -12,6 +12,10 @@ import {
 	type ShipJudgmentBinding,
 	verdictSchema,
 } from "./contract.js";
+import {
+	type EvidenceLedger,
+	evidenceLedgerSchema,
+} from "./evidence-ledger.js";
 
 export interface DeliveryView {
 	opinionId: string;
@@ -25,6 +29,7 @@ export interface DeliveryView {
 	coverage: PointVerdict;
 	mechanical: OpinionCandidate["mechanical"];
 	evaluation: unknown;
+	evidence?: EvidenceLedger;
 }
 interface DeliveryRow {
 	delivery_mode: "dry_run" | "auto" | "off";
@@ -256,6 +261,13 @@ export class ShipJudgmentDelivery {
 			coverage: verdictSchema.parse(row.coverage),
 			mechanical: opinionCandidateSchema.shape.mechanical.parse(mechanical),
 			evaluation: row.result_json ? JSON.parse(String(row.result_json)) : null,
+			...(row.evidence_json
+				? {
+						evidence: evidenceLedgerSchema.parse(
+							JSON.parse(String(row.evidence_json)),
+						),
+					}
+				: {}),
 		};
 	}
 	claim(

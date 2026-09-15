@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "derived-per-file-recovery-receipt",
+  "complete": true,
+  "reason": "per_file_reconciliation",
+  "expectedFiles": 1116,
+  "files": 1116,
+  "passed": 14398,
+  "failed": 0,
+  "skipped": 7,
+  "errors": [
+    {
+      "message": "[vitest-worker]: Timeout calling \"onTaskUpdate\"",
+      "source": "original full run"
+    },
+    {
+      "message": "[vitest-worker]: Timeout calling \"onTaskUpdate\"",
+      "source": "recovery full run"
+    }
+  ],
+  "nativeFullPackageRunsPassed": false,
+  "decisionQuestion": "9ded8c3a-e84d-420b-8b47-efe9135f3e93",
+  "note": "Every file passed in at least one of two complete unchanged-source runs. This is derived evidence, not a rewritten native test receipt. Raw failed receipts are retained.",
+  "reconciliationFile": "teamlead-file-reconciliation.json"
+}

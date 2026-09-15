@@ -286,7 +286,32 @@ preflight_fail() {
 }
 
 preflight_executable() {
-  if [ -x "$1" ] && [ ! -L "$1" ]; then
+  # The standalone installer uses both current and codex symlinks. Validate the
+  # resolved file and its directory chain, without executing an untrusted target.
+  if python3 - "$1" "$3" <<'PYCODE'
+import os, stat, sys
+try:
+    home = os.path.realpath(sys.argv[2])
+    root = os.path.join(home, "packages", "standalone")
+    target = os.path.realpath(sys.argv[1])
+    if os.path.realpath(root) != root or os.path.commonpath([root, target]) != root:
+        raise ValueError("standalone target escaped its home")
+    mode = os.stat(target).st_mode
+    if not stat.S_ISREG(mode) or mode & stat.S_IWOTH or not os.access(target, os.X_OK):
+        raise ValueError("standalone target is not a safe executable")
+    directory = os.path.dirname(target)
+    while True:
+        mode = os.stat(directory).st_mode
+        if not stat.S_ISDIR(mode) or mode & stat.S_IWOTH:
+            raise ValueError("standalone directory is unsafe")
+        if directory == home:
+            break
+        directory = os.path.dirname(directory)
+except (OSError, ValueError) as error:
+    print(str(error), file=sys.stderr)
+    sys.exit(1)
+PYCODE
+  then
     preflight_pass "$2"
   else
     preflight_fail "$2 missing or unsafe: $1"
@@ -436,7 +461,7 @@ preflight_manifest() {
     else
       preflight_fail "Codex home missing or unsafe: ${codex_home:-<unresolved>}"
     fi
-    preflight_executable "$codex_bin" "standalone Codex"
+    preflight_executable "$codex_bin" "standalone Codex" "$codex_home"
     if [ -f "${codex_home}/auth.json" ]; then
       preflight_pass "Codex auth.json"
     else

@@ -81,6 +81,8 @@ test -f "$HOME/.codex-$FW_LEAD_ID/auth.json" && test ! -L "$HOME/.codex-$FW_LEAD
 
 成功判据：`auth.json` 检查退出 0，最后一条打印 standalone Codex 版本。这是 FLY-2259 §4.0.2 的通用化同形，Codex home key 固定为 Lead id。
 
+**FLY-2559 顺序修正**：标准 Codex Lead 先准备 home 和二进制，再完成下一节 register，之后才能执行 `codex-home-link-truth.sh --lead "$FW_PROJECT/$FW_LEAD_ID" "$HOME/.codex-$FW_LEAD_ID"` 并 `--inspect` 确认 already，最后 verify registered / install。registered 尚无 plist 时，authority 验证 canonical manifest、registry 与标准 carrier；安装后仍按标准 plist 验证。标准凭据 authority 不要求 `codexResidencyPatrol`；本单未增加标准 carrier 的 probe/recover 能力，人工启用 residency patrol 仍会得到 uncertain，不能用该字段修复安装。
+
 使用宿主统一 Codex 账号池的 Lead，按公共 [codex-home-link-truth.sh](../../../scripts/codex-home-link-truth.sh) 连接并 `--inspect` 核验；FLY-2496 Raya 的具体准备顺序见 [激活计划 H1](../FLY-2496-raya-host-activation/plan.md#h1-工作区与-codex-home不改变任何运行中的东西)。
 
 ## 2. 注册

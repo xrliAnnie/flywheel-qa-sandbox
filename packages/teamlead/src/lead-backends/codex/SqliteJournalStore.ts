@@ -102,6 +102,7 @@ export class SqliteJournalStore implements JournalStore {
 				updated_at INTEGER NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS journal_state_idx ON journal(state);
+			CREATE INDEX IF NOT EXISTS journal_state_created_idx ON journal(state, created_at);
 			CREATE TABLE IF NOT EXISTS journal_member (
 				entry_id TEXT NOT NULL,
 				delivery_id TEXT NOT NULL UNIQUE,
@@ -143,6 +144,16 @@ export class SqliteJournalStore implements JournalStore {
 
 	close(): void {
 		this.db.close();
+	}
+
+	countCompletedSince(sinceMs: number): number {
+		return (
+			this.db
+				.prepare(
+					"SELECT count(*) AS count FROM journal WHERE state='completed' AND created_at > ?",
+				)
+				.get(sinceMs) as { count: number }
+		).count;
 	}
 
 	insertAccepted(entry: JournalEntry): {

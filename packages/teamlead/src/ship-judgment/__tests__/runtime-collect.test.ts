@@ -19,6 +19,7 @@ describe("runtime material assembly", () => {
 				targetPath: "engineering/doc/FLY-2399-x/plan.md",
 			});
 			store.completeCodexReviewJob("review", "APPROVED");
+			store.stampCodexReviewJobResponded("review");
 			const body = "<p>R1 test PASS</p>";
 			const row = {
 				run_id: "r",
@@ -74,7 +75,31 @@ describe("runtime material assembly", () => {
 				],
 			};
 			const result = await collectLiveJudgment("q", CHANNEL, deps);
-			expect(result.status).toBe("ready");
+			expect(result.status, JSON.stringify(result)).toBe("ready");
+			const absentSameRunPlan = vi
+				.spyOn(store, "readShipJudgmentPlanReference")
+				.mockReturnValue(undefined);
+			expect((await collectLiveJudgment("q", CHANNEL, deps)).status).toBe(
+				"ready",
+			);
+			absentSameRunPlan.mockRestore();
+			const claim = vi
+				.spyOn(store, "readShipJudgmentQaAuthority")
+				.mockReturnValue({
+					verdict: "pass",
+					reason: "evidence_complete",
+					claimId: "1148",
+					issuedAt: "2026-09-10T00:00:00.000Z",
+					summary: `QA ${row.record_url}`,
+				});
+			vi.mocked(store.listStrengthTwoRecordsForHead).mockReturnValue([]);
+			expect((await collectLiveJudgment("q", CHANNEL, deps)).status).toBe(
+				"ready",
+			);
+			claim.mockRestore();
+			vi.mocked(store.listStrengthTwoRecordsForHead).mockImplementation(() => [
+				row,
+			]);
 			if (result.status !== "ready") throw new Error(result.reason);
 			expect(result.packet.sources.map((source) => source.kind)).toEqual([
 				"issue",

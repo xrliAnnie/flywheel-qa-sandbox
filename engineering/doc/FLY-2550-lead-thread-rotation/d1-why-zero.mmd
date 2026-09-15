@@ -1,0 +1,18 @@
+flowchart LR
+  subgraph today["今天:Mufasa 只有一条线程"]
+    T0["主线程 019eaf5d<br/>2026-06-09 至今<br/>7.1 MB rollout"]
+    S0["Bridge 每 6h 投 summary_due<br/>+ Discord 消息"]
+    S0 -->|turn/start| T0
+    T0 -->|每次 turn 触发| M0["Codex 记忆启动任务"]
+    M0 -->|"候选 = 别的线程 ∧ 静置≥6h ∧ ≤10天 ∧ 未归档"| Z["候选 = 0<br/>(唯一够新的就是自己)"]
+  end
+  subgraph after["改后:每 7 天换一页"]
+    T1["旧线程 T_old<br/>原地不动,不归档"]
+    T2["新线程 T_new<br/>交接便签 developerInstructions"]
+    S1["summary_due / Discord"] -->|turn/start| T2
+    T2 -->|触发| M1["Codex 记忆启动任务"]
+    M1 -->|"T_old 静置≥6h ⇒ 候选"| P1["stage1 摘要 T_old<br/>→ rollout_summaries/"]
+    P1 --> P2["phase2 合并<br/>→ memory_summary.md"]
+    P2 -.->|下一次新上下文窗口注入| T2
+  end
+  today ==>|"本单设计"| after

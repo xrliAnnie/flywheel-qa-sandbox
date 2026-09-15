@@ -166,6 +166,7 @@ export interface JournalStore {
 	}): JournalEntry;
 	/** Non-terminal entries (crash recovery), oldest first — COPIES. */
 	listUnfinished(): JournalEntry[];
+	countCompletedSince(sinceMs: number): number;
 }
 
 export type BatchAcceptStatus =
@@ -338,6 +339,10 @@ export class LeadJournal {
 		return this.store.listUnfinished();
 	}
 
+	countCompletedSince(sinceMs: number): number {
+		return this.store.countCompletedSince(sinceMs);
+	}
+
 	/** Durable cross-store reconciliation lookup by the transport idempotency key. */
 	getByIdempotencyKey(key: string): JournalEntry | undefined {
 		return this.store.getByIdempotencyKey(key);
@@ -489,6 +494,12 @@ export class InMemoryJournalStore implements JournalStore {
 			.filter((e) => !TERMINAL_STATES.has(e.state))
 			.sort((a, b) => (this.seqOf.get(a.id) ?? 0) - (this.seqOf.get(b.id) ?? 0))
 			.map(copyEntry);
+	}
+
+	countCompletedSince(sinceMs: number): number {
+		return [...this.byId.values()].filter(
+			(entry) => entry.state === "completed" && entry.createdAt > sinceMs,
+		).length;
 	}
 }
 
