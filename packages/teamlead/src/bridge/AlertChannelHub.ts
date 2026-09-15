@@ -272,6 +272,7 @@ const FLEET_RECOVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"tmux_hold",
 	"tmux_split_brain",
 	"bridge_abnormal_exit",
+	"bridge_fd_pressure",
 	"infra_bot_down",
 ]);
 

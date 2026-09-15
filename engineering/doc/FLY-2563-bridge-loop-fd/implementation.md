@@ -92,3 +92,11 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - RED：新module缺失及HTTP缺fd字段。GREEN：最终8/8（资源7+真实HTTP1），teamlead类型检查通过。HTTP反复读取未触发新probe，shutdown的ok/shuttingDown保持。
 - 隔离原生Node探针输出used26、rlimit_soft1048575，但当前环境kernel_per_process_limit不可得，因此limit=null/status=unavailable。此为开发子进程，不是生产Bridge，不满足F；未修改主机配置或生产进程。
 - 下一步：给bridge_fd_pressure注册kind/owner并接routedAlertSink持久化回执、同启动episode身份及恢复；增加AlertChannelHub/路由合跑，再做T5 SQL计时、T3剩余lease审计、T7完整门及性能、review/PR。
+
+## T4 第三批：统一fd压力告警与恢复
+
+- 新FdPressureAlert用machine项目、Bridge启动实例sessionKey和递增episode eventId绑定同次压力事件；重试复用完全相同payload。sent/queued/deadLettered为交付回执；duplicate必须另查StateStore的alert_delivery_receipts，尝试claim本身不算成功。
+- bridge_fd_pressure注册kind、owner=claude、human_by_design及完整展示文案，经routedAlertSink进入现有值班路由；ProcessResourceMonitor回调在路由准备后绑定，提前采样不会虚报已通知。无自动restart/dispatch开关改动。
+- 两个低位新鲜样本后按correlation+eventId安静resolve；失败保留原episode重试。Hub的fleet recovery纳入该kind，处理恢复之后才送达的同启动实例旧episode；其它启动实例或无效身份返回unknown，不跨实例误清。
+- RED：新helper缺失；回执夹具初用无效queued枚举触发CHECK，改用真实queued_durable格式；类型检查指出新增kind缺展示分支，补齐后green。验证：kind/路由/helper组60/60；文案/Hub/fleet身份/helper组65/65；teamlead类型检查通过。包含真实StateStore回执和延迟Hub送达后恢复测试，无外部通知。
+- 尚未宣告T4生产验收：当前开发探针kernel上限不可得，生产同PID/start identity、F及受控统一回执/恢复仍需部署后独立QA。剩余T5计时入口/计时器矩阵、T3完整lease审计、T7大夹具/指定快照/全库门、review/PR未完成。

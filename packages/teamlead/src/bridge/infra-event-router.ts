@@ -78,6 +78,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"tmux_hold",
 		"tmux_split_brain",
 		"bridge_abnormal_exit",
+		"bridge_fd_pressure",
 		"infra_bot_down",
 		"zombie_session_backlog",
 		"cmux_cleanup",

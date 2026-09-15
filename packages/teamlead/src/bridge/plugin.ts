@@ -376,6 +376,7 @@ import {
 	ProcessResourceMonitor,
 	type FdHealth,
 } from "./process-resource-monitor.js";
+import { FdPressureAlert } from "./fd-pressure-alert.js";
 import {
 	drainSynchronousPages,
 	runSequentialChunks,
@@ -5449,7 +5450,12 @@ export async function startBridge(
 		profilerEnabled: () => storeLoopProfilerEnabled(flagStore),
 	});
 	await eventLoopAttribution.start();
-	const processResources = new ProcessResourceMonitor();
+	let fdPressureAlert: FdPressureAlert | undefined;
+	const fdBootId = `${process.pid}:${randomUUID()}`;
+	const processResources = new ProcessResourceMonitor({
+		alert: (sample) => fdPressureAlert?.alert(sample) ?? Promise.resolve(false),
+		resolve: () => fdPressureAlert?.resolve() ?? Promise.resolve(false),
+	});
 	processResources.start();
 	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
 	// only StateStore-authoritative failed/blocked outcomes asynchronously. All
@@ -13356,7 +13362,10 @@ export async function startBridge(
 					// FLY-1082: fleet-kind recovery probe (watermark cleared / bot back
 					// alive / boot reconcile done) — holder-backed; null = cannot tell.
 					fleetRecovery: async (row) =>
-						(await fleetSensorsHolder.current?.recoveryProbe(row)) ?? null,
+						row.event_type === "bridge_fd_pressure"
+							? (fdPressureAlert?.recoveryProbe(row) ?? null)
+							: ((await fleetSensorsHolder.current?.recoveryProbe(row)) ??
+								null),
 				})
 			: undefined;
 	const founderEscalationConfigured = isDiscordSnowflake(
@@ -13429,6 +13438,17 @@ export async function startBridge(
 		},
 	};
 	routedAlertSinkHolder.current = routedAlertSink;
+	fdPressureAlert = new FdPressureAlert({
+		bootId: fdBootId,
+		store,
+		alert: (payload) => routedAlertSink.alert(payload),
+		resolve: async (key, eventId) => {
+			// An alert still queued to its owner may not have a Hub row yet. Its
+			// eventual thread is handled by the same fenced recovery probe.
+			if (alertHub && store.getActiveAlertThread(key)?.event_id === eventId)
+				await alertHub.resolve(key, eventId);
+		},
+	});
 	await reportFlagScanOwnerResolution(flagScanOwnerStatus, routedAlertSink);
 	workflowEngineAlertHolder.current = routedAlertSink;
 	paneLossNotifyHolder.current = async (
