@@ -147,3 +147,13 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - 真实损坏schema复现owned MailboxQueue安装失败泄漏3个fd；注入pragma异常复现readonly与底层writable打开失败各泄漏1个fd。借用原生连接失败仍保持可用。
 - owned Queue在连接返回后的所有初始化异常关闭连接；openCommDbWritable的最外层清理覆盖计时安装/pragma与receipt rename等返回前失败，保持原异常与既有stale-receipt正常返回语义。
 - RED：4项中3项fd未回基线；GREEN：open-lifetime4、open-hardening4、queue-schema12共20/20，queue23+FLY2268 migration22共45/45；comm build通过。无GC/生产数据库操作。
+
+## T7 第一批：真实大库性能与独立CI项
+
+- 新`observation-performance.test.ts`使用文件型完整StateStore，1,700,000事件、500 holder、2,729 canceled closeout，其中50源各匹配500 holder。补读从cursor=0开始，完整清空后得到25,000 outcome；三次以上无新增输入时source/holderCandidates/outcomes均为0，末端再追加取消事件证明继续推进。
+- 每组保留5个完整调用样本；造数/建索引单列约10–12秒、数据库约434MB，关闭后删除临时库。modeTick测真实本地verdict/cancel/clarification轮次及yield，两种mode均执行，不mock观察器或放宽阈值。
+- CI新增`Unit (observation performance)`固定任务，继承单worker环境，不跳过失败。常规teamlead shard仍包含此测试。
+- 所有结果在`performance-runs.jsonl`：run1 FAIL（backlog最大27.083ms、steady0.252ms、tail154.543ms；auto64.449ms/dry72.367ms）；run2源码未变PASS；run3增加CPU/GC观测PASS（backlog21.803ms、steady1.266ms、tail4.924ms、auto9.916ms/dry31.822ms）。不删除或筛掉首轮失败，不将后来PASS当作首轮尖峰的归因或豁免。run3取消窗口无GC重叠，不能反推run1原因；首轮尖峰仍未定位，需结合exact-head CI及后续证据判断。
+- 诊断插入脚本首次匹配失败，run2实际为未改源码重复运行，已明确记账。性能assert始终为取消<50ms/modeTick<100ms，5次全部纳入max/p95。源码缺陷尚未由run1单点证明，不为追绿改变生产行为。
+- 初步AST owner discovery现有102处Bridge CommDB打开点，其中19处factory/常驻owner需跨函数追踪、31处包含await；该清点只是定位，不宣称完成完整owner audit（临时输出`/tmp/fly2563-owner-discovery.json`）。指定事故快照、全仓门、代码评审和PR仍pending。
+- 本批teamlead typecheck通过；shard/真实Vitest分区9/9通过（包含实际子进程分片约89秒）；CI枚举检查通过318项shell分类和61项Node登记。曾误调用不存在的`check-ci-shell-tests.mjs`，该调用exit1，不是有效门；随后运行仓库真实`ci-shell-suite-enumeration.test.sh`并通过。
