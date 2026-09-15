@@ -2,15 +2,15 @@
 issue: FLY-2563
 phase: implement
 phaseCursor: 0/7
-updated: 2026-09-15T02:36:01.633Z
-nextStep: a78542fb4 migration + bounded cancellation cursor/fanout. Latest
-  payload guard tests41/41+types green; prior combined55/55; retention gate ok.
-  Next B2 incremental/reconciliation, restore replay and remaining T3-T7. No
-  phase completion.
+updated: 2026-09-15T02:47:00.931Z
+nextStep: edbd83eb8 B2 incremental+60s reconciliation and exact restore replay;
+  final79/79+types green, build green. Next T6 bounded archive+unconsumed source
+  protection, T4 resources, T5 SQL timing, remaining T3 audit, T7 full
+  gates/performance/review/PR.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2563 progress
 **phase**: implement (0/7)
-**next**: a78542fb4 migration + bounded cancellation cursor/fanout. Latest payload guard tests41/41+types green; prior combined55/55; retention gate ok. Next B2 incremental/reconciliation, restore replay and remaining T3-T7. No phase completion.
+**next**: edbd83eb8 B2 incremental+60s reconciliation and exact restore replay; final79/79+types green, build green. Next T6 bounded archive+unconsumed source protection, T4 resources, T5 SQL timing, remaining T3 audit, T7 full gates/performance/review/PR.
