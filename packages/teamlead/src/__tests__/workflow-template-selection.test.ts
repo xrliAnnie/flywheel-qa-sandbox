@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { resetModelConfigCacheForTests } from "flywheel-config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyDurableLaunchDrain } from "../../../../scripts/lib/qa-generalized-e2e-lib.mjs";
 import { StateStore } from "../StateStore.js";
+import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import { loadWorkflowMenuSeeds } from "../workflow-menu.js";
 import * as phaseProtocols from "../workflow-phase-protocol.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
@@ -1346,4 +1348,145 @@ it("rejects unavailable protocols before any materialization, leaves shadows int
 	} finally {
 		store.close();
 	}
+});
+
+describe("FLY-2570 real percentage admission", () => {
+	it.each([0, 75, 100])(
+		"materializes and dispatches the CLI percentage %s through StateStore",
+		async (percent) => {
+			const root = setupRoot();
+			const path = join(root, "models.json");
+			execFileSync(process.execPath, [
+				join(REPO_ROOT, "scripts/design-model-split.mjs"),
+				"set",
+				"--codex-percent",
+				String(percent),
+				"--config",
+				path,
+			]);
+			const priorPath = process.env.FLYWHEEL_MODELS_CONFIG;
+			process.env.FLYWHEEL_MODELS_CONFIG = path;
+			resetModelConfigCacheForTests();
+			let store = await StateStore.create(join(root, "state.db"));
+			try {
+				const seed = loadWorkflowMenuSeeds().find(
+					(seed) => seed.templateId === "tpl_code",
+				)!;
+				store.importWorkflowTemplateSeed(seed);
+				store.bindWorkflowCategory({
+					project: "flywheel",
+					taskCategory: "code",
+					templateId: seed.templateId,
+					updatedBy: "test",
+				});
+				const startInput = {
+					project: "flywheel",
+					issueId: "FLY-2570",
+					taskCategory: "code",
+					selectedBy: "eng-lead",
+					actor: "master",
+					authKind: "master" as const,
+					canonicalRoot: REPO_ROOT,
+					idempotencyKey: "percentage-start",
+					workKindEnforced: false,
+				};
+				const materialize = vi.spyOn(store, "materializeWorkflowRun");
+				const selected = await resolveWorkflowTemplateSelection(
+					store,
+					startInput,
+				);
+				expect(selected).not.toBeNull();
+				const expected =
+					percent === 100
+						? { arm: "A", model: "gpt-6-astra" }
+						: { arm: "B", model: "claude-fable-5-1" };
+				const receipts = store
+					.listWorkflowRunEvents(selected!.runId)
+					.filter((event) => event.kind === "design_model_arm_assigned");
+				expect(receipts).toHaveLength(1);
+				expect(receipts[0]).toMatchObject({
+					execution_id: null,
+					payload: {
+						...expected,
+						basis: {
+							rule: "issue_number_percentage",
+							codexPercent: percent,
+							issueNumber: 2570,
+						},
+					},
+				});
+				expect(
+					resolveNodeDispatchAtLaunch(store, {
+						runId: selected!.runId,
+						nodeId: "eng_design",
+					}),
+				).toMatchObject({
+					dispatch: { model: expected.model },
+					modelAssignment: expected,
+				});
+				const originalMaterialization = materialize.mock.calls[0]![0];
+				for (const field of [
+					"bucket",
+					"ruleVersion",
+					"arm",
+					"modelAlias",
+					"issueNumber",
+					"issueIdentifier",
+				] as const) {
+					const invalid = structuredClone(originalMaterialization);
+					const assignment = invalid.modelAssignments!.eng_design!;
+					if (assignment.basis.rule !== "issue_number_percentage")
+						throw new Error("expected percentage fixture");
+					if (field === "arm") assignment.arm = "wrong";
+					else if (field === "modelAlias") assignment.modelAlias = "wrong";
+					else if (field === "bucket" || field === "issueNumber")
+						assignment.basis[field] += 1;
+					else assignment.basis[field] += "-wrong";
+					expect(() => store.materializeWorkflowRun(invalid)).toThrow(
+						"workflow_model_assignment_invalid:eng_design",
+					);
+				}
+				execFileSync(process.execPath, [
+					join(REPO_ROOT, "scripts/design-model-split.mjs"),
+					"set",
+					"--codex-percent",
+					String(percent === 0 ? 75 : 0),
+					"--config",
+					path,
+				]);
+				store.close();
+				store = await StateStore.create(join(root, "state.db"));
+				await expect(
+					resolveWorkflowTemplateSelection(store, startInput),
+				).resolves.toMatchObject({ ...selected, replayed: true });
+				await expect(
+					resolveWorkflowTemplateSelection(store, {
+						...startInput,
+						issueIdentifier: "FLY-9999",
+					}),
+				).rejects.toThrow(/assignment invalid/);
+				writeFileSync(path, "{");
+				await expect(
+					resolveWorkflowTemplateSelection(store, startInput),
+				).resolves.toMatchObject({ ...selected, replayed: true });
+				await expect(
+					resolveWorkflowTemplateSelection(store, {
+						...startInput,
+						selectedBy: "different-lead",
+					}),
+				).rejects.toThrow(/payload mismatch/);
+				await expect(
+					resolveWorkflowTemplateSelection(store, {
+						...startInput,
+						idempotencyKey: "new-start",
+					}),
+				).rejects.toThrow(/invalid.*model split/i);
+			} finally {
+				store.close();
+				if (priorPath === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
+				else process.env.FLYWHEEL_MODELS_CONFIG = priorPath;
+				resetModelConfigCacheForTests();
+			}
+		},
+	);
 });

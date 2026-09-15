@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	existsSync,
 	mkdtempSync,
@@ -35,6 +36,7 @@ function withRuntimeModelConfig(
 		typeof config === "string"
 			? config
 			: JSON.stringify({ version: 1, ...config }),
+		{ mode: 0o600 },
 	);
 	process.env.FLYWHEEL_MODELS_CONFIG = configPath;
 	resetModelConfigCacheForTests();
@@ -186,14 +188,11 @@ describe("FLY-2403 automatic design model split", () => {
 			},
 			() => {
 				const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-				const invalid = resolveMenuOverrides(code(), undefined, {
-					issueIdentifier: "FLY-2403",
-				});
-				expect(invalid.assignments).toEqual({});
-				expect(invalid.receipts.eng_design).toMatchObject({
-					model: "fable (= claude-fable-5-1)",
-					overridden: false,
-				});
+				expect(() =>
+					resolveMenuOverrides(code(), undefined, {
+						issueIdentifier: "FLY-2403",
+					}),
+				).toThrow(/invalid.*model split/i);
 				expect(warn).toHaveBeenCalledWith(
 					expect.stringContaining(
 						"modelSplit segment ignored: enabled must be boolean",
@@ -205,14 +204,11 @@ describe("FLY-2403 automatic design model split", () => {
 
 		withRuntimeModelConfig("{", () => {
 			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-			const invalidFile = resolveMenuOverrides(code(), undefined, {
-				issueIdentifier: "FLY-2403",
-			});
-			expect(invalidFile.assignments).toEqual({});
-			expect(invalidFile.receipts.eng_design).toMatchObject({
-				model: "fable (= claude-fable-5-1)",
-				overridden: false,
-			});
+			expect(() =>
+				resolveMenuOverrides(code(), undefined, {
+					issueIdentifier: "FLY-2403",
+				}),
+			).toThrow(/invalid.*model split/i);
 			expect(warn).toHaveBeenCalledWith(
 				expect.stringContaining("using built-in model policy:"),
 			);
@@ -304,5 +300,90 @@ describe("FLY-2403 automatic design model split", () => {
 
 		expect(resolved.assignments).toEqual({});
 		expect(resolved.receipts).not.toHaveProperty("eng_design");
+	});
+});
+
+const percentagePolicy = (codexPercent: number) => ({
+	enabled: true,
+	rule: "issue_number_percentage",
+	codexPercent,
+	codex: { arm: "A", model: "astra" },
+	fable: { arm: "B", model: "fable" },
+});
+describe("FLY-2570 hot design percentage", () => {
+	it("sees an atomic ratio change on the next decision with the same loaded menu", () => {
+		withRuntimeModelConfig({ modelSplit: percentagePolicy(0) }, (path) => {
+			const menu = code();
+			const before = resolveMenuOverrides(menu, undefined, {
+				issueIdentifier: "FLY-2571",
+			});
+			expect(before.assignments.eng_design).toMatchObject({
+				arm: "B",
+				modelAlias: "fable",
+				basis: { codexPercent: 0, rule: "issue_number_percentage" },
+			});
+			const output = JSON.parse(
+				execFileSync(
+					process.execPath,
+					[
+						join(REPO_ROOT, "scripts/design-model-split.mjs"),
+						"set",
+						"--codex-percent",
+						"100",
+						"--config",
+						path,
+					],
+					{ encoding: "utf8" },
+				),
+			);
+			expect(output.codexPercent).toBe(100);
+			const after = resolveMenuOverrides(menu, undefined, {
+				issueIdentifier: "FLY-2571",
+			});
+			expect(after.assignments.eng_design).toMatchObject({
+				arm: "A",
+				modelAlias: "astra",
+				basis: { codexPercent: 100 },
+			});
+			expect(after.assignments.eng_design.basis.ruleVersion).toBe(
+				output.ruleVersion,
+			);
+			expect(after.assignments.eng_design.basis.ruleVersion).not.toBe(
+				before.assignments.eng_design.basis.ruleVersion,
+			);
+			expect(after.assignments).toEqual(
+				resolveMenuOverrides(menu, undefined, { issueIdentifier: "FLY-2571" })
+					.assignments,
+			);
+			expect(after.receipts.implement).toEqual(before.receipts.implement);
+			expect(after.receipts.qa).toEqual(before.receipts.qa);
+		});
+	});
+	it("rejects a conflicting explicit override with reproducible assignment details", () => {
+		withRuntimeModelConfig({ modelSplit: percentagePolicy(0) }, () => {
+			expect(() =>
+				resolveMenuOverrides(
+					code(),
+					{ eng_design: { model: "astra" } },
+					{ issueIdentifier: "FLY-2571" },
+				),
+			).toThrow(/FLY-2571.*bucket.*0.*B.*fable/);
+			expect(
+				resolveMenuOverrides(
+					code(),
+					{ eng_design: { model: "fable" } },
+					{ issueIdentifier: "FLY-2571" },
+				).assignments.eng_design.arm,
+			).toBe("B");
+		});
+	});
+	it("only the code design node declares a split in the bundled registry", () => {
+		expect(
+			loadWorkflowMenuLibrary().flatMap((menu) =>
+				menu.nodes
+					.filter((n) => n.modelSplit)
+					.map((n) => `${menu.shape}.${n.id}`),
+			),
+		).toEqual(["code.eng_design"]);
 	});
 });

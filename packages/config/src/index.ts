@@ -164,6 +164,10 @@ export {
 	validateLeaseProof,
 	withMkdirLock,
 } from "./mkdir-lock.js";
+export {
+	canonicalModelAuthorityPath,
+	withModelAuthorityLock,
+} from "./model-authority-lock.js";
 export type {
 	LeadLaunchSelection,
 	ModelConfigSnapshot,
@@ -178,6 +182,7 @@ export {
 	resolveAllowedCanonicalModel,
 	resolveAllowedEffort,
 	resolveLeadLaunchSelection,
+	validateModelConfigDocument,
 	validateModelWrite,
 } from "./model-config.js";
 export type {
@@ -215,6 +220,11 @@ export {
 	MODEL_REGISTRY,
 	resolveCurrentModel,
 } from "./model-registry.js";
+export {
+	type PercentageModelSplitPolicy,
+	parsePercentageModelSplit,
+	resolvePercentageModelSplit,
+} from "./model-split.js";
 // FLY-728: per-issue model routing — tier vocabulary (dispatch whitelist +
 // tier→model default + F/O/S/H short code).
 export type { ModelTier, ModelTierSpec } from "./model-tiers.js";

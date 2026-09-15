@@ -7,7 +7,9 @@ import {
 	getNodeTypeRegistryEntry,
 	loadBundledRegistry,
 	type ModelConfigSnapshot,
+	type PercentageModelSplitPolicy,
 	type RegistryModelSplitPolicy,
+	resolvePercentageModelSplit,
 	resolveProjectRegistry,
 } from "flywheel-config";
 import { parse } from "yaml";
@@ -52,10 +54,17 @@ export interface WorkflowModelAssignmentReceipt {
 	basis: {
 		issueIdentifier: string;
 		issueNumber: number;
-		parity: "odd" | "even";
-		rule: "issue_number_parity";
 		ruleVersion: string;
-	};
+	} & (
+		| { rule: "issue_number_parity"; parity: "odd" | "even" }
+		| {
+				rule: "issue_number_percentage";
+				bucket: number;
+				codexPercent: number;
+				codex: PercentageModelSplitPolicy["codex"];
+				fable: PercentageModelSplitPolicy["fable"];
+		  }
+	);
 }
 
 export interface WorkflowMenuEdge {
@@ -733,11 +742,18 @@ export function resolveMenuOverrides(
 		let requestedModel = callerModel;
 		let modelPolicy = callerModelPolicy;
 		let automaticAssignment = false;
-		const modelSplit = node.modelSplit
-			? modelConfig.runtimeModelSplitStatus === "invalid"
-				? undefined
-				: (modelConfig.modelSplit ?? node.modelSplit)
-			: undefined;
+		const scopedSplit =
+			menu.shape === "code" && node.id === "eng_design" && node.modelSplit;
+		if (scopedSplit && modelConfig.runtimeModelSplitStatus === "invalid") {
+			throw new WorkflowMenuValidationError(
+				"MODEL_SPLIT_CONFIG_INVALID",
+				`invalid runtime model split configuration at ${modelConfig.sourcePath}; repair the authority before dispatch`,
+				[],
+			);
+		}
+		const modelSplit = scopedSplit
+			? (modelConfig.modelSplit ?? node.modelSplit)
+			: node.modelSplit;
 		if (modelSplit?.enabled) {
 			const match = /-(\d+)$/.exec(context.issueIdentifier.trim());
 			const issueNumber = match ? Number(match[1]) : Number.NaN;
@@ -749,11 +765,35 @@ export function resolveMenuOverrides(
 				);
 			}
 			const parity = issueNumber % 2 === 1 ? "odd" : "even";
-			const arm = modelSplit[parity];
+			const percentage =
+				modelSplit.rule === "issue_number_percentage"
+					? resolvePercentageModelSplit(modelSplit, issueNumber)
+					: undefined;
+			const arm =
+				modelSplit.rule === "issue_number_parity"
+					? modelSplit[parity]
+					: percentage!.arm;
+			const assignmentBasis: WorkflowModelAssignmentReceipt["basis"] = {
+				issueIdentifier: context.issueIdentifier.trim(),
+				issueNumber,
+				ruleVersion: modelSplit.version,
+				...(modelSplit.rule === "issue_number_parity"
+					? { rule: modelSplit.rule, parity }
+					: {
+							rule: modelSplit.rule,
+							bucket: percentage!.bucket,
+							codexPercent: modelSplit.codexPercent,
+							codex: modelSplit.codex,
+							fable: modelSplit.fable,
+						}),
+			};
+			const reason = percentage
+				? `${context.issueIdentifier.trim()} bucket ${percentage.bucket}; Codex threshold ${modelSplit.rule === "issue_number_percentage" ? modelSplit.codexPercent : 0}%; arm ${arm.arm}/${arm.model}`
+				: `${context.issueIdentifier.trim()} ${parity} arm ${arm.arm}/${arm.model}`;
 			if (override?.model !== undefined && callerModel !== arm.model) {
 				throw new WorkflowMenuValidationError(
 					"MODEL_SPLIT_OVERRIDE_CONFLICT",
-					`model ${callerModel} conflicts with ${modelSplit.version} ${parity} assignment ${arm.model}`,
+					`model ${callerModel} conflicts with ${modelSplit.version}: ${reason}`,
 					[arm.model],
 				);
 			}
@@ -775,13 +815,7 @@ export function resolveMenuOverrides(
 				arm: arm.arm,
 				modelAlias: requestedModel,
 				model: resolved.model,
-				basis: {
-					issueIdentifier: context.issueIdentifier.trim(),
-					issueNumber,
-					parity,
-					rule: modelSplit.rule,
-					ruleVersion: modelSplit.version,
-				},
+				basis: assignmentBasis,
 			};
 		}
 		const effort =

@@ -842,6 +842,7 @@ expected_shard_tests = {
         "Test — FLY-1855 executable Lead patrol snapshot",
         "Test — FLY-1945 trusted patrol helper closure",
         "Test — FLY-2403 Astra/Fable design outcome report",
+        "Test — FLY-2570 dynamic design ratio operator",
         "Test — FLY-1986 load probe contract",
         "Test — FLY-1678 statusline model-scoped bar + installer",
         "Test — FLY-1870 job elapsed tripwire contract",

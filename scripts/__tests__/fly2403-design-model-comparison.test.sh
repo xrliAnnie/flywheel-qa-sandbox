@@ -719,6 +719,17 @@ addEvent({
 // closed fixture to a self-contained journal mode so sqlite3 can reopen the
 // chmod-0444 main file without needing writable WAL/SHM sidecars.
 db.run("PRAGMA journal_mode = DELETE");
+// FLY-2570 immutable cohorts: 3 Astra / 1 Fable, with distinct observation Ns.
+for (const runId of ["astra-clean", "astra-no-review", "astra-null-edge", "fable-clean"]) {
+ addEvent({runId,kind:"design_model_arm_assigned",nodeId:"eng_design",payload:{basis:{ruleVersion:"fly2570-v1:fixture75"}}});
+}
+addEvent({runId:"fable-no-review",kind:"design_model_arm_assigned",nodeId:"eng_design",payload:{basis:{ruleVersion:"fly2403-v1"}}});
+// Same-arm multi-execution run straddles versions; must enter neither cohort.
+for (const [executionId,version] of [["astra-multi-design-1","fly2570-v1:fixture75"],["astra-multi-design-2","fly2403-v1"]]) {
+ addEvent({runId:"astra-multi-design",kind:"design_model_arm_assigned",nodeId:"eng_design",executionId,payload:{basis:{ruleVersion:version}}});
+}
+// Duplicate identical evidence is still ambiguous.
+for (let i=0;i<2;i++) addEvent({runId:"astra-missing-duration",kind:"design_model_arm_assigned",nodeId:"eng_design",executionId:"astra-missing-duration-design",payload:{basis:{ruleVersion:"fly2570-v1:fixture75"}}});
 store.close();
 TS
 
@@ -817,3 +828,20 @@ if ! awk -F, 'NR > 1 {
 fi
 
 printf 'PASS: FLY-2403 report emitted four deterministic read-only arm metrics\n'
+
+# Percent cohorts derive only from saved assignment versions, preserving each N.
+sed "s/CAST(NULL AS TEXT) AS rule_version/'fly2570-v1:fixture75' AS rule_version/" "$REPORT" > "$FILTERED_REPORT"
+sqlite3 -readonly -header -csv "$DB" < "$FILTERED_REPORT" > "$FILTERED_ACTUAL"
+awk -F, 'NR > 1 {
+ expected_n = ($1 == "design_review_approval_rounds" || $1 == "qa_kickbacks") ? 2 : 3;
+ if ($4 != expected_n || $7 != 1) exit 1;
+ if ($1 == "design_review_approval_rounds" && ($3 != 6 || $6 != 7)) exit 1;
+ if ($1 == "qa_kickbacks" && ($3 != 2 || $6 != 0)) exit 1;
+ if ($1 == "founder_kickbacks" && ($3 != 2 || $6 != 0)) exit 1;
+ if ($1 == "design_duration_hours" && ($3 != 9 || $6 != 1)) exit 1;
+ rows++;
+} END {exit rows == 4 ? 0 : 1}' "$FILTERED_ACTUAL" || { cat "$FILTERED_ACTUAL"; exit 1; }
+sed "s/CAST(NULL AS TEXT) AS rule_version/'fly2403-v1' AS rule_version/" "$REPORT" > "$FILTERED_REPORT"
+sqlite3 -readonly -header -csv "$DB" < "$FILTERED_REPORT" > "$FILTERED_ACTUAL"
+awk -F, 'NR > 1 {expected_fable = $1 == "design_review_approval_rounds" ? 0 : 1; if ($4 != 0 || $7 != expected_fable) exit 1; rows++} END {exit rows == 4 ? 0 : 1}' "$FILTERED_ACTUAL"
+printf 'PASS: FLY-2570 frozen version cohorts preserve unequal per-metric N and reject mixed/duplicate/missing receipts\n'

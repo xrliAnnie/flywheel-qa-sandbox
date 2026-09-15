@@ -1,6 +1,11 @@
 -- FLY-2403: read-only Astra/Fable design-outcome comparison.
 -- Rule fly2403-v1: odd issue = A/Astra; even issue = B/Fable.
 --
+-- Optional rule_version filters immutable design_model_arm_assigned basis.ruleVersion.
+-- The run/node has one immutable assignment shared by all design executions.
+-- Duplicate assignments are ambiguous, even when versions agree. Missing/ambiguous evidence is never fabricated v1.
+-- No ratio balance is assumed: every metric retains its own N.
+--
 -- Edit report_parameters to change the experiment cohort or arm definitions.
 -- The immutable workflow_execution_runtime row is arm authority. A matching
 -- dispatch_vendor_resolved event is corroborating audit evidence: zero events
@@ -12,7 +17,7 @@
 -- Astra requires a done APPROVED review job; Fable requires its current
 -- manifest to be delivered. Request-looking evidence alone is not counted as
 -- approval. Every workflow event kind read here (dispatch_vendor_resolved,
--- node_completed, loop_iteration, loop_limit_escalated, and
+-- design_model_arm_assigned, node_completed, loop_iteration, loop_limit_escalated, and
 -- founder_feedback_kickback) is outside both workflow_run_event cleanup
 -- allowlists. workflow_run_node/runtime are protected current/reference tables,
 -- and both review ledgers are protected authority tables. Terminal session stage
@@ -24,6 +29,7 @@ WITH
 report_parameters AS (
 	SELECT CAST(NULL AS TEXT) AS cohort_started_at,
 	       CAST(NULL AS TEXT) AS cohort_ended_before,
+	       CAST(NULL AS TEXT) AS rule_version,
 	       'eng_design' AS design_node_id,
 	       'qa' AS qa_node_id,
 	       'founder_gate' AS founder_node_id,
@@ -40,7 +46,7 @@ report_parameters AS (
 	       'loop_limit_escalated' AS loop_escalated_kind,
 	       'founder_feedback_kickback' AS founder_kickback_kind
 ),
-design_execution_universe AS (
+design_execution_unfiltered AS (
 	SELECT DISTINCT node.run_id,
 	       node.node_id,
 	       node.execution_id,
@@ -85,6 +91,28 @@ design_execution_universe AS (
 	        AND node.node_id = runtime.node_id
 	        AND node.execution_id = runtime.execution_id
 	   )
+),
+design_assignment_versions AS (
+ SELECT receipt.run_id,
+        COUNT(*) AS receipt_n,
+        MIN(CASE WHEN json_valid(receipt.payload)
+                 THEN json_extract(receipt.payload, '$.basis.ruleVersion') END) AS rule_version
+ FROM workflow_run_event AS receipt
+ CROSS JOIN report_parameters AS parameters
+ WHERE receipt.kind = 'design_model_arm_assigned'
+   AND receipt.node_id = parameters.design_node_id
+ GROUP BY receipt.run_id
+),
+design_execution_universe AS (
+ SELECT design.*
+ FROM design_execution_unfiltered AS design
+ CROSS JOIN report_parameters AS parameters
+ WHERE parameters.rule_version IS NULL OR EXISTS (
+   SELECT 1 FROM design_assignment_versions AS evidence
+   WHERE evidence.run_id = design.run_id
+     AND evidence.receipt_n = 1
+     AND evidence.rule_version = parameters.rule_version
+ )
 ),
 design_execution_audit_counts AS (
 	SELECT design.*,

@@ -11,6 +11,10 @@ import {
 import { fileURLToPath, URL } from "node:url";
 import { parse } from "yaml";
 import { getModelRegistryEntry } from "./model-registry.js";
+import {
+	type PercentageModelSplitPolicy,
+	parsePercentageModelSplit,
+} from "./model-split.js";
 import type { WorkflowNodeTypeId } from "./node-type-registry.js";
 
 export type RegistryWorkflowEffort =
@@ -48,7 +52,11 @@ export interface RegistryModelSplitArm {
 	model: string;
 }
 
-export interface RegistryModelSplitPolicy {
+export type RegistryModelSplitPolicy =
+	| RegistryParityModelSplitPolicy
+	| PercentageModelSplitPolicy;
+
+export interface RegistryParityModelSplitPolicy {
 	enabled: boolean;
 	rule: "issue_number_parity";
 	version: string;
@@ -287,6 +295,13 @@ function parseModelSplit(
 	models: RegistryModelPolicy[],
 ): RegistryModelSplitPolicy {
 	const raw = record(value, path);
+	if (raw.rule === "issue_number_percentage") {
+		const policy = parsePercentageModelSplit(raw);
+		const declared = new Set(models.map((model) => model.model));
+		parseModelSplitArm(policy.codex, `${path}.codex`, declared);
+		parseModelSplitArm(policy.fable, `${path}.fable`, declared);
+		return policy;
+	}
 	exactKeys(raw, ["enabled", "rule", "version", "odd", "even"], path);
 	if (typeof raw.enabled !== "boolean") {
 		throw new Error(`${path}.enabled must be boolean`);

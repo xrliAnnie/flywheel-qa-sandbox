@@ -11,6 +11,7 @@
  * 400 · #9b/#9c candidate missing · #10 param echo · #13 v2 untouched.
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	mkdirSync,
@@ -23,8 +24,12 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
-import { canonicalSubmissionDigest } from "flywheel-config";
+import {
+	canonicalSubmissionDigest,
+	resetModelConfigCacheForTests,
+} from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
@@ -2008,3 +2013,68 @@ it.each(["missing", "empty", "invalid_block"])(
 		}
 	},
 );
+
+it("FLY-2570 starts real menu requests with hot percentages and replays frozen starts", async () => {
+	const h = await startHarness({ menuMode: true });
+	const path = join(h.projectRoot, "models.json");
+	const previous = process.env.FLYWHEEL_MODELS_CONFIG;
+	const set = (percent: number) =>
+		execFileSync(process.execPath, [
+			fileURLToPath(
+				new URL(
+					"../../../../../scripts/design-model-split.mjs",
+					import.meta.url,
+				),
+			),
+			"set",
+			"--codex-percent",
+			String(percent),
+			"--config",
+			path,
+		]);
+	set(0);
+	process.env.FLYWHEEL_MODELS_CONFIG = path;
+	resetModelConfigCacheForTests();
+	const request = {
+		issueId: "FLY-803",
+		leadId: "flywheel-eng-lead",
+		taskCategory: "code",
+		idempotencyKey: "percentage-route",
+	};
+	try {
+		const first = await post(h.url, request);
+		expect(first.status, JSON.stringify(first.json)).toBe(200);
+		expect(h.calls[0]!.generalizedExecution?.dispatch).toMatchObject({
+			vendor: "claude",
+			model: "claude-fable-5-1",
+		});
+		set(100);
+		const replay = await post(h.url, request);
+		expect(replay.status, JSON.stringify(replay.json)).toBe(200);
+		expect(replay.json.workflowRunId).toBe(first.json.workflowRunId);
+		expect(h.calls).toHaveLength(1);
+		const second = await post(h.url, {
+			...request,
+			issueId: "FLY-802",
+			idempotencyKey: "percentage-route-next",
+		});
+		expect(second.status, JSON.stringify(second.json)).toBe(200);
+		expect(h.calls[1]!.generalizedExecution?.dispatch).toMatchObject({
+			vendor: "codex",
+			model: "gpt-6-astra",
+		});
+		writeFileSync(path, "{");
+		expect((await post(h.url, request)).status).toBe(200);
+		const invalid = await post(h.url, {
+			...request,
+			issueId: "FLY-805",
+			idempotencyKey: "percentage-route-invalid",
+		});
+		expect(invalid.status).toBe(400);
+		expect(h.calls).toHaveLength(2);
+	} finally {
+		if (previous === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
+		else process.env.FLYWHEEL_MODELS_CONFIG = previous;
+		resetModelConfigCacheForTests();
+	}
+});

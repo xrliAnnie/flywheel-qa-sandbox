@@ -1,3 +1,4 @@
+import { assertPercentageModelAssignment } from "./workflow-model-assignment.js";
 import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
 import { migrateEvidenceLedger } from "./ship-judgment/evidence-migration.js";
 import { readEpicHistory } from "./ship-judgment/epic-history.js";
@@ -30820,14 +30821,24 @@ export class StateStore {
 				!node?.dispatch ||
 				node.dispatch.model !== assignment.model ||
 				!aliases.has(assignment.basis.issueIdentifier) ||
-				assignment.basis.rule !== "issue_number_parity" ||
+				!["issue_number_parity", "issue_number_percentage"].includes(
+					assignment.basis.rule,
+				) ||
 				!assignment.basis.ruleVersion ||
 				!suffix ||
 				Number(suffix[1]) !== assignment.basis.issueNumber ||
-				(assignment.basis.issueNumber % 2 === 1 ? "odd" : "even") !==
-					assignment.basis.parity
+				(assignment.basis.rule === "issue_number_parity" &&
+					(assignment.basis.issueNumber % 2 === 1 ? "odd" : "even") !==
+						assignment.basis.parity)
 			) {
 				throw new Error(`workflow_model_assignment_invalid:${nodeId}`);
+			}
+			if (assignment.basis.rule === "issue_number_percentage") {
+				try {
+					assertPercentageModelAssignment(assignment);
+				} catch {
+					throw new Error(`workflow_model_assignment_invalid:${nodeId}`);
+				}
 			}
 		}
 		this.db.transaction(() => {

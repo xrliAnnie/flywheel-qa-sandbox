@@ -984,6 +984,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/__tests__/fable-model-sync.test.ts:writer?.kill();#1",
+		"path": "packages/teamlead/src/__tests__/fable-model-sync.test.ts",
+		"code": "writer?.kill();",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/__tests__/fixtures/loop-guard/run-kill-harness.ts:process.kill(-pid, \"SIGKILL\");#1",
 		"path": "packages/teamlead/src/__tests__/fixtures/loop-guard/run-kill-harness.ts",
 		"code": "process.kill(-pid, \"SIGKILL\");",
@@ -1725,6 +1731,12 @@
 		"key": "scripts/__tests__/customer-e2e-acceptance.test.sh:kill -0 \"$SERVER_PID\" 2>/dev/null || break#1",
 		"path": "scripts/__tests__/customer-e2e-acceptance.test.sh",
 		"code": "kill -0 \"$SERVER_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/design-model-split.test.sh:const closed=once(holder,'close'); holder.kill('SIGKILL'); await closed;#1",
+		"path": "scripts/__tests__/design-model-split.test.sh",
+		"code": "const closed=once(holder,'close'); holder.kill('SIGKILL'); await closed;",
 		"classification": "qa-only"
 	},
 	{

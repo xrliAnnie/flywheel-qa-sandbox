@@ -1,6 +1,7 @@
 import { resolveAllowedEffort } from "flywheel-config";
 import type { StateStore } from "./StateStore.js";
 import type { WorkflowModelAssignmentReceipt } from "./workflow-menu.js";
+import { assertPercentageModelAssignment } from "./workflow-model-assignment.js";
 import { parseWorkflowRunSnapshot } from "./workflow-run-snapshot.js";
 import {
 	validateWorkflowManifest,
@@ -40,10 +41,20 @@ function resolveModelAssignment(
 	if (
 		!assignment ||
 		assignment.model !== input.model ||
-		assignment.basis?.rule !== "issue_number_parity" ||
+		!assignment.basis ||
+		!["issue_number_parity", "issue_number_percentage"].includes(
+			assignment.basis.rule,
+		) ||
 		!assignment.basis.ruleVersion
 	) {
 		throw new Error("workflow_dispatch_model_assignment_invalid");
+	}
+	if (assignment.basis.rule === "issue_number_percentage") {
+		try {
+			assertPercentageModelAssignment(assignment);
+		} catch {
+			throw new Error("workflow_dispatch_model_assignment_invalid");
+		}
 	}
 	return assignment;
 }

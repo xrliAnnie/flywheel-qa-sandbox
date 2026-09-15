@@ -16,6 +16,7 @@ import {
 	resolveMenuOverrides,
 	type WorkflowModelAssignmentReceipt,
 } from "./workflow-menu.js";
+import { assertPercentageModelAssignment } from "./workflow-model-assignment.js";
 import {
 	parseWorkflowRunSnapshot,
 	type ResolvedWorkflowNodeV2,
@@ -104,6 +105,48 @@ function resolveAutomaticModelSplit(
 				assignments: resolved.assignments,
 			}
 		: { assignments: {} };
+}
+
+/** A committed start reuses its immutable policy, even if today's authority is invalid. */
+function resolveFrozenModelSplit(
+	store: StateStore,
+	runId: string,
+	issueIdentifier: string,
+): ReturnType<typeof resolveAutomaticModelSplit> {
+	const run = store.getWorkflowRun(runId);
+	if (!run?.snapshot) throw new Error("reserved workflow run snapshot missing");
+	const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+	const assignments: Record<string, WorkflowModelAssignmentReceipt> = {};
+	const nodes: NonNullable<WorkflowTemplateOverride["nodes"]> = {};
+	for (const event of store.listWorkflowRunEvents(runId)) {
+		if (event.kind !== "design_model_arm_assigned") continue;
+		const node = snapshot.resolved.nodes.find(
+			(node) => node.id === event.node_id,
+		);
+		const assignment = event.payload as
+			| WorkflowModelAssignmentReceipt
+			| undefined;
+		if (
+			!node?.dispatch ||
+			!assignment?.basis ||
+			assignments[node.id] ||
+			assignment.model !== node.dispatch.model ||
+			assignment.basis.issueIdentifier !== issueIdentifier ||
+			!assignment.basis.ruleVersion ||
+			!["issue_number_parity", "issue_number_percentage"].includes(
+				assignment.basis.rule,
+			)
+		) {
+			throw new Error("reserved workflow model assignment invalid");
+		}
+		if (assignment.basis.rule === "issue_number_percentage")
+			assertPercentageModelAssignment(assignment);
+		assignments[node.id] = assignment;
+		nodes[node.id] = { ...node.dispatch };
+	}
+	return Object.keys(assignments).length
+		? { assignments, override: { reason: "automatic_model_split", nodes } }
+		: { assignments };
 }
 
 function resolveWorkflowTemplateCandidate(
@@ -277,10 +320,18 @@ export async function resolveWorkflowTemplateSelection(
 			"workflow selection cannot combine tier and menu overrides",
 		);
 	}
-	const automaticModelSplit = resolveAutomaticModelSplit(
-		templateId,
-		input.issueIdentifier ?? input.issueId,
-	);
+	const key = input.idempotencyKey.trim();
+	const prior = store.getWorkflowStartReservation(key);
+	const automaticModelSplit = prior
+		? resolveFrozenModelSplit(
+				store,
+				prior.run_id,
+				input.issueIdentifier ?? input.issueId,
+			)
+		: resolveAutomaticModelSplit(
+				templateId,
+				input.issueIdentifier ?? input.issueId,
+			);
 	const selectionOverride = mergeAutomaticModelSplit(
 		input.override,
 		automaticModelSplit.override,
@@ -316,7 +367,6 @@ export async function resolveWorkflowTemplateSelection(
 			? { modelAssignments: automaticModelSplit.assignments }
 			: {}),
 	});
-	const key = input.idempotencyKey.trim();
 	const resolveReplay = (
 		prior: NonNullable<ReturnType<StateStore["getWorkflowStartReservation"]>>,
 	): WorkflowTemplateSelectionResult => {
@@ -351,7 +401,6 @@ export async function resolveWorkflowTemplateSelection(
 				: {}),
 		};
 	};
-	const prior = store.getWorkflowStartReservation(key);
 	if (prior) return resolveReplay(prior);
 	let supersedeShadow:
 		| {

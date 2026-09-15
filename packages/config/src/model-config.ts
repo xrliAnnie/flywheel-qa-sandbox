@@ -22,6 +22,10 @@ import {
 	modelFamilyCode,
 	supportedRoleEfforts,
 } from "./model-builtins.js";
+import {
+	type PercentageModelSplitPolicy,
+	parsePercentageModelSplit,
+} from "./model-split.js";
 import type { RoleEffort } from "./types.js";
 
 const CONFIG_VERSION = 1;
@@ -78,7 +82,11 @@ export interface RuntimeModelSplitArm {
 	readonly model: string;
 }
 
-export interface RuntimeModelSplitPolicy {
+export type RuntimeModelSplitPolicy =
+	| RuntimeParityModelSplitPolicy
+	| PercentageModelSplitPolicy;
+
+export interface RuntimeParityModelSplitPolicy {
 	readonly enabled: boolean;
 	readonly rule: "issue_number_parity";
 	readonly version: string;
@@ -201,6 +209,12 @@ function parseRuntimeModelSplit(
 	if (value === undefined) return undefined;
 	try {
 		if (!isObject(value)) throw new Error("expected an object");
+		if (value.rule === "issue_number_percentage") {
+			const policy = parsePercentageModelSplit(value);
+			parseRuntimeModelSplitArm(policy.codex, "modelSplit.codex", lookup);
+			parseRuntimeModelSplitArm(policy.fable, "modelSplit.fable", lookup);
+			return policy;
+		}
 		const allowed = new Set(["enabled", "rule", "version", "odd", "even"]);
 		const unknown = Object.keys(value).find((key) => !allowed.has(key));
 		if (unknown) throw new Error(`unknown key: ${unknown}`);
@@ -706,6 +720,24 @@ function createSnapshot(
 		buildModelCatalog,
 		resolveCurrentModel,
 	});
+}
+
+/** Operator validation rejects every runtime fallback before replacing authority bytes. */
+export function validateModelConfigDocument(
+	value: unknown,
+): ModelConfigSnapshot {
+	if (!isObject(value) || value.version !== CONFIG_VERSION)
+		throw new Error(`expected object with version ${CONFIG_VERSION}`);
+	const warnings: string[] = [];
+	const snapshot = createSnapshot(
+		"<candidate>",
+		"candidate",
+		value,
+		"valid",
+		warnings,
+	);
+	if (warnings.length) throw new Error(warnings.join("; "));
+	return snapshot;
 }
 
 function loadSnapshot(

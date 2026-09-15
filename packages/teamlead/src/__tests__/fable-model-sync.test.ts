@@ -1,3 +1,5 @@
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import {
 	mkdtempSync,
 	readFileSync,
@@ -399,4 +401,130 @@ describe("Fable model authority sync", () => {
 		});
 		expect(readFileSync(authorityPath, "utf8")).toBe(original);
 	});
+});
+
+it("preserves a percentage update made while the Fable API probe is pending", async () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2570-fable-race-"));
+	const path = join(root, "models.json");
+	writeFileSync(
+		path,
+		JSON.stringify({
+			version: 1,
+			modelSplit: {
+				enabled: true,
+				rule: "issue_number_percentage",
+				codexPercent: 75,
+				codex: { arm: "A", model: "astra" },
+				fable: { arm: "B", model: "fable" },
+			},
+		}),
+		{ mode: 0o600 },
+	);
+	try {
+		const result = await syncFableModelAuthority({
+			authorityPath: path,
+			readCredential: async () => ({
+				accessToken: "fixture",
+				expiresAt: Date.now() + 60000,
+			}),
+			fetchFn: async () => {
+				execFileSync(process.execPath, [
+					"../../scripts/design-model-split.mjs",
+					"set",
+					"--codex-percent",
+					"0",
+					"--config",
+					path,
+				]);
+				return new Response(
+					JSON.stringify({
+						data: [{ id: "claude-fable-5-2", max_input_tokens: 1000000 }],
+					}),
+				);
+			},
+		});
+		expect(result.status).toBe("updated");
+		expect(JSON.parse(readFileSync(path, "utf8")).modelSplit.codexPercent).toBe(
+			0,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it("retains authority with actionable busy guidance while the operator lock is held", async () => {
+	const { withModelAuthorityLock } = await import("flywheel-config");
+	const root = mkdtempSync(join(tmpdir(), "fly2570-busy-"));
+	const path = join(root, "models.json");
+	const original = JSON.stringify({ version: 1, models: [] });
+	writeFileSync(path, original, { mode: 0o600 });
+	const messages: string[] = [];
+	try {
+		await withModelAuthorityLock(path, async () => {
+			const result = await syncFableModelAuthority({
+				authorityPath: path,
+				readCredential: async () => ({
+					accessToken: "fixture",
+					expiresAt: Date.now() + 60000,
+				}),
+				fetchFn: async () =>
+					new Response(
+						JSON.stringify({
+							data: [{ id: "claude-fable-5-2", max_input_tokens: 1000000 }],
+						}),
+					),
+				log: (message) => messages.push(message),
+			});
+			expect(result).toEqual({ status: "retained", reason: "authority_busy" });
+			expect(readFileSync(path, "utf8")).toBe(original);
+			expect(messages.join(" ")).toMatch(/acquisition budget exhausted.*Retry/);
+		});
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+}, 45000);
+
+it("finishes verification rollback before a waiting percentage writer can commit", async () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2570-rollback-race-"));
+	const path = join(root, "models.json");
+	writeFileSync(path, JSON.stringify({ version: 1, models: [] }), {
+		mode: 0o600,
+	});
+	let writer: ReturnType<typeof spawn> | undefined;
+	let closed: Promise<unknown[]> | undefined;
+	try {
+		const result = await syncFableModelAuthority({
+			authorityPath: path,
+			readCredential: async () => ({
+				accessToken: "fixture",
+				expiresAt: Date.now() + 60000,
+			}),
+			fetchFn: async () =>
+				new Response(
+					JSON.stringify({
+						data: [{ id: "claude-fable-5-2", max_input_tokens: 1000000 }],
+					}),
+				),
+			afterWrite: () => {
+				writer = spawn(process.execPath, [
+					"../../scripts/design-model-split.mjs",
+					"set",
+					"--codex-percent",
+					"0",
+					"--config",
+					path,
+				]);
+				closed = once(writer, "close");
+				writeFileSync(path, "{");
+			},
+		});
+		expect(result.reason).toBe("verification_failed");
+		expect(await closed).toEqual([0, null]);
+		const current = JSON.parse(readFileSync(path, "utf8"));
+		expect(current.modelSplit.codexPercent).toBe(0);
+		expect(current.models).toEqual([]);
+	} finally {
+		writer?.kill();
+		rmSync(root, { recursive: true, force: true });
+	}
 });

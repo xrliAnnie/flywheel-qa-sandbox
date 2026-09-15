@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import BetterSqlite3 from "better-sqlite3";
 import {
 	canonicalSubmissionDigest,
+	parsePercentageModelSplit,
 	resetModelConfigCacheForTests,
+	resolvePercentageModelSplit,
 } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
@@ -98,7 +100,9 @@ function v2Seed() {
 	return { ...seed, contentHash: workflowSeedContentHash(seed) };
 }
 
-async function v2Run(options: { legacyMutable?: boolean } = {}) {
+async function v2Run(
+	options: { legacyMutable?: boolean; astra?: boolean } = {},
+) {
 	const root = mkdtempSync(join(tmpdir(), "fly1385-dispatch-"));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	mkdirSync(join(root, "agents"));
@@ -107,6 +111,11 @@ async function v2Run(options: { legacyMutable?: boolean } = {}) {
 	const store = await StateStore.create(dbPath);
 	cleanups.push(() => store.close());
 	const seed = v2Seed();
+	if (options.astra) {
+		const node = seed.manifest.nodes.find((n) => n.id === "work")!;
+		node.model = "gpt-6-astra";
+		seed.contentHash = workflowSeedContentHash(seed);
+	}
 	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
 	store.bindWorkflowCategory({
 		project: "flywheel",
@@ -150,7 +159,7 @@ async function v2Run(options: { legacyMutable?: boolean } = {}) {
 			.run(JSON.stringify(snapshot), "run-v2");
 		raw.close();
 	}
-	return { store, seed };
+	return { store, seed, dbPath, root };
 }
 
 describe("workflow dispatch resolution at launch", () => {
@@ -612,3 +621,98 @@ describe("workflow dispatch resolution at launch", () => {
 		await v1Run();
 	});
 });
+
+it.each(["valid", "bucket", "version", "arm", "issue", "duplicate"])(
+	"replays frozen percentage receipt after config change/reopen: %s",
+	async (mode) => {
+		const { store, dbPath, root } = await v2Run({
+			legacyMutable: false,
+			astra: true,
+		});
+		const policy = parsePercentageModelSplit({
+			enabled: true,
+			rule: "issue_number_percentage",
+			codexPercent: 100,
+			codex: { arm: "A", model: "astra" },
+			fable: { arm: "B", model: "fable" },
+		});
+		const choice = resolvePercentageModelSplit(policy, 2570);
+		const receipt = {
+			arm: "A",
+			modelAlias: "astra",
+			model: "gpt-6-astra",
+			basis: {
+				issueIdentifier: "FLY-2570",
+				issueNumber: 2570,
+				rule: policy.rule,
+				ruleVersion: policy.version,
+				bucket: choice.bucket,
+				codexPercent: 100,
+				codex: policy.codex,
+				fable: policy.fable,
+			},
+		};
+		if (mode === "bucket") receipt.basis.bucket += 1;
+		if (mode === "version") receipt.basis.ruleVersion = "fly2570-v1:wrong";
+		if (mode === "arm") receipt.arm = "B";
+		if (mode === "issue") receipt.basis.issueIdentifier = "FLY-1";
+		store.appendWorkflowRunEvent({
+			runId: "run-v2",
+			nodeId: "work",
+			eventUid: "split",
+			kind: "design_model_arm_assigned",
+			payload: receipt,
+		});
+		if (mode === "duplicate")
+			store.appendWorkflowRunEvent({
+				runId: "run-v2",
+				nodeId: "work",
+				eventUid: "split-duplicate",
+				kind: "design_model_arm_assigned",
+				payload: receipt,
+			});
+		const previous = process.env.FLYWHEEL_MODELS_CONFIG;
+		process.env.FLYWHEEL_MODELS_CONFIG = join(root, "changed-models.json");
+		writeFileSync(
+			process.env.FLYWHEEL_MODELS_CONFIG,
+			JSON.stringify({
+				version: 1,
+				modelSplit: { ...policy, codexPercent: 0 },
+			}),
+		);
+		resetModelConfigCacheForTests();
+		try {
+			store.close();
+			const reopened = await StateStore.create(dbPath);
+			try {
+				if (mode === "valid")
+					expect(
+						resolveNodeDispatchAtLaunch(reopened, {
+							runId: "run-v2",
+							nodeId: "work",
+						}),
+					).toMatchObject({
+						dispatch: { model: "gpt-6-astra" },
+						modelAssignment: receipt,
+					});
+				else
+					expect(() =>
+						resolveNodeDispatchAtLaunch(reopened, {
+							runId: "run-v2",
+							nodeId: "work",
+						}),
+					).toThrow(
+						mode === "duplicate"
+							? "workflow_dispatch_model_assignment_ambiguous"
+							: "workflow_dispatch_model_assignment_invalid",
+					);
+			} finally {
+				reopened.close();
+			}
+		} finally {
+			if (previous === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
+			else process.env.FLYWHEEL_MODELS_CONFIG = previous;
+			resetModelConfigCacheForTests();
+		}
+	},
+);

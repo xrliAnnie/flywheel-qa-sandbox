@@ -16,6 +16,7 @@ import {
 	MODEL_IDS,
 	type ModelConfigSnapshot,
 	resetModelConfigCacheForTests,
+	withModelAuthorityLock,
 } from "flywheel-config";
 import { readKeychainMonitorCredential } from "./quota-monitor-credentials.js";
 
@@ -135,7 +136,11 @@ export function planFableAuthorityUpdate(
 	currentCanonical: string,
 	candidate: FableModelCandidate,
 ): FableAuthorityUpdatePlan {
-	if (!isRecord(input) || input.version !== 1 || !Array.isArray(input.models)) {
+	if (
+		!isRecord(input) ||
+		input.version !== 1 ||
+		(input.models !== undefined && !Array.isArray(input.models))
+	) {
 		throw new Error("invalid model authority document");
 	}
 	const currentVersion = parseFableVersion(currentCanonical);
@@ -146,7 +151,7 @@ export function planFableAuthorityUpdate(
 		currentVersion,
 	);
 	const original = structuredClone(input) as Record<string, unknown>;
-	const models = original.models;
+	const models = original.models ?? [];
 	if (!Array.isArray(models) || models.some((entry) => !isRecord(entry))) {
 		throw new Error("invalid model authority entries");
 	}
@@ -252,7 +257,8 @@ export interface SyncFableModelAuthorityResult {
 		| "malformed_response"
 		| "unsupported_1m"
 		| "write_failed"
-		| "verification_failed";
+		| "verification_failed"
+		| "authority_busy";
 }
 
 function authorityIsSafe(path: string): boolean {
@@ -381,7 +387,7 @@ export async function syncFableModelAuthority(
 	} catch {
 		return { status: "retained", reason: "invalid_authority" };
 	}
-	const previousCanonical = before.getDispatchCanonical("fable");
+	let previousCanonical = before.getDispatchCanonical("fable");
 	if (previousCanonical === null) {
 		return { status: "retained", reason: "invalid_authority" };
 	}
@@ -430,81 +436,107 @@ export async function syncFableModelAuthority(
 			canonical: previousCanonical,
 		};
 	}
-	let plan: FableAuthorityUpdatePlan;
 	try {
-		plan = planFableAuthorityUpdate(original, previousCanonical, candidate);
-	} catch {
-		return {
-			status: "retained",
-			reason: "invalid_authority",
-			previousCanonical,
-			canonical: previousCanonical,
-		};
-	}
-	if (plan.status === "retained") {
-		return {
-			status: "retained",
-			reason: "unsupported_1m",
-			previousCanonical,
-			canonical: previousCanonical,
-		};
-	}
-	if (plan.status === "unchanged") {
-		return {
-			status: "unchanged",
-			previousCanonical,
-			canonical: previousCanonical,
-		};
-	}
-	const nextBytes = `${JSON.stringify(plan.authority, null, 2)}\n`;
-	try {
-		atomicReplace(path, nextBytes, opts.beforeRename);
-	} catch {
-		return {
-			status: "retained",
-			reason: "write_failed",
-			previousCanonical,
-			canonical: previousCanonical,
-		};
-	}
-	let verified = false;
-	try {
-		opts.afterWrite?.(path);
-		const after = readVerifiedSnapshot(path);
-		const base = after.getModelRegistryEntry(candidate.id);
-		const oneM = after.getModelRegistryEntry(`${candidate.id}[1m]`);
-		const managedHeavy = plan.authority.tiers.heavy === "fable";
-		verified =
-			after.getDispatchCanonical("fable") === candidate.id &&
-			(!managedHeavy || after.tiers.heavy.id === candidate.id) &&
-			base?.maxInputTokens === candidate.maxInputTokens &&
-			oneM?.maxInputTokens === candidate.maxInputTokens &&
-			oneM.contextWindowTokens === ONE_MILLION;
-	} catch {
-		verified = false;
-	}
-	if (!verified) {
-		try {
-			atomicReplace(path, originalBytes);
-			readVerifiedSnapshot(path);
-		} catch {
-			// The result remains verification_failed and never claims success.
+		return await withModelAuthorityLock(path, async (path) => {
+			// Credential/network work is finished; derive the update from the latest locked preimage.
+			if (!authorityIsSafe(path))
+				return { status: "retained", reason: "unsafe_authority" };
+			try {
+				originalBytes = readFileSync(path, "utf8");
+				original = JSON.parse(originalBytes);
+				before = readVerifiedSnapshot(path);
+				previousCanonical = before.getDispatchCanonical("fable");
+			} catch {
+				return { status: "retained", reason: "invalid_authority" };
+			}
+			if (previousCanonical === null)
+				return { status: "retained", reason: "invalid_authority" };
+			let plan: FableAuthorityUpdatePlan;
+			try {
+				plan = planFableAuthorityUpdate(original, previousCanonical, candidate);
+			} catch {
+				return {
+					status: "retained",
+					reason: "invalid_authority",
+					previousCanonical,
+					canonical: previousCanonical,
+				};
+			}
+			if (plan.status === "retained") {
+				return {
+					status: "retained",
+					reason: "unsupported_1m",
+					previousCanonical,
+					canonical: previousCanonical,
+				};
+			}
+			if (plan.status === "unchanged") {
+				return {
+					status: "unchanged",
+					previousCanonical,
+					canonical: previousCanonical,
+				};
+			}
+			const nextBytes = `${JSON.stringify(plan.authority, null, 2)}\n`;
+			try {
+				atomicReplace(path, nextBytes, opts.beforeRename);
+			} catch {
+				return {
+					status: "retained",
+					reason: "write_failed",
+					previousCanonical,
+					canonical: previousCanonical,
+				};
+			}
+			let verified = false;
+			try {
+				opts.afterWrite?.(path);
+				const after = readVerifiedSnapshot(path);
+				const base = after.getModelRegistryEntry(candidate.id);
+				const oneM = after.getModelRegistryEntry(`${candidate.id}[1m]`);
+				const managedHeavy = plan.authority.tiers.heavy === "fable";
+				verified =
+					after.getDispatchCanonical("fable") === candidate.id &&
+					(!managedHeavy || after.tiers.heavy.id === candidate.id) &&
+					base?.maxInputTokens === candidate.maxInputTokens &&
+					oneM?.maxInputTokens === candidate.maxInputTokens &&
+					oneM.contextWindowTokens === ONE_MILLION;
+			} catch {
+				verified = false;
+			}
+			if (!verified) {
+				try {
+					atomicReplace(path, originalBytes);
+					readVerifiedSnapshot(path);
+				} catch {
+					// The result remains verification_failed and never claims success.
+				}
+				return {
+					status: "retained",
+					reason: "verification_failed",
+					previousCanonical,
+					canonical: previousCanonical,
+				};
+			}
+			if (plan.status === "normalized") {
+				(opts.log ?? console.info)(
+					`[fable-model-sync] normalized authority ${path}: bindings.fable, Fable dispatch metadata, and tiers.heavy`,
+				);
+			}
+			return {
+				status: plan.status,
+				previousCanonical,
+				canonical: candidate.id,
+			};
+		});
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			error.message.includes("lock acquisition budget exhausted")
+		) {
+			(opts.log ?? console.warn)(`[fable-model-sync] ${error.message}`);
+			return { status: "retained", reason: "authority_busy" };
 		}
-		return {
-			status: "retained",
-			reason: "verification_failed",
-			previousCanonical,
-			canonical: previousCanonical,
-		};
+		return { status: "retained", reason: "unsafe_authority" };
 	}
-	if (plan.status === "normalized") {
-		(opts.log ?? console.info)(
-			`[fable-model-sync] normalized authority ${path}: bindings.fable, Fable dispatch metadata, and tiers.heavy`,
-		);
-	}
-	return {
-		status: plan.status,
-		previousCanonical,
-		canonical: candidate.id,
-	};
 }

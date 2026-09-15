@@ -1151,6 +1151,9 @@ jobs:
       - name: Test — FLY-2403 Astra/Fable design outcome report
         run: bash scripts/__tests__/fly2403-design-model-comparison.test.sh
 
+      - name: Test — FLY-2570 dynamic design ratio operator
+        run: bash scripts/__tests__/design-model-split.test.sh
+
       # FLY-1986: the Phase-0 load probe is read-only by contract. This suite
       # mutates the probe and requires every contract to go RED, so a check that
       # can no longer fail is itself caught. ⚠ Placed on THIS shard, not shard 1:
