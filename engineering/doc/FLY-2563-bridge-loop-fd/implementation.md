@@ -178,3 +178,12 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - Lead对snapshot问题的正式答复（response `fcaf00dc-a633-4274-b69c-e654803816b5`）：runner不注入TEAMLEAD_API_TOKEN是最小权限设计，禁止绕过；Lead提供只读comm快照`~/.flywheel/patrol-repairs/FLY-2563__comm-flywheel__2026-09-15T07:27:01.539Z__5aa3e82a-8dbe-4d48-9a1f-52b01ca86886.db`。已用CommDB.openReadonly验证generation，listSessions返回50条后close；未写此文件。
 - 按Lead指示一次性请求teamlead上下文，question `b07d0b86-d375-4dab-b37a-9ed4e3fde5f4`：需指定9-14原事故备份的隔离可写副本/合规benchmark执行路线，原因是完整observer会安装索引并提交outcome/cursor。未用当前comm快照冒充事故teamlead验收。已用DONE report `778c21bf-586f-4375-93ef-c49d764a185a`回执Lead指令。
 - aggregate gate最近一次poll确认session26020仍运行，正在claude-runner测试；结果尚未到达。此turn分类为progress + verified wait，而非完成/blocked。
+
+
+## T7 指定事故副本实测（2026-09-15）
+
+Lead question b07d0b86-d375-4dab-b37a-9ed4e3fde5f4 授权唯一 writable incident copy；原件/live不动、不删除文件、不绕过runner token边界。SQLite 3.51.3，1,687,121 events、536 holders。只安装当前 observation migration并调用当前compiled observeCancellations；migration 4333.09ms单列，不混入观察器耗时。
+
+24页从水位0推进至7982863，整轮最大6.646ms；随后5次idle为0.112–0.163ms，source/holder/outcome均为0且水位不动。全部原始页值见incident-observer-receipt.json。历史快照无匹配holder，不将其冒充非空写入证明；非空25,000 outcome由1.7M合成fixture另证。所有句柄已关闭，并已按完整instruction id报告copy可回收（未自行删除）。
+
+归档指定备份写操作及生产15分钟health/2小时fd仍留在独立QA矩阵；本次授权只用于取消观察器。最早synthetic尾部154.543ms红样本仍保留，原因未定位；后续绿色样本不抹除该限制。package aggregate session26020仍运行，尚无终态receipt；lint/build先前exit0不是aggregate通过。
