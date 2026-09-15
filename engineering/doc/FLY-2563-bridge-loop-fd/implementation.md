@@ -117,3 +117,12 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - 新增publication reader真实旁路回归，RED为缺慢SQL日志；GREEN为入口测试4/4。原生存储/reader组35/35，comm snapshot/lease组42/42，memory-distill51/51，归档/恢复运维5/5；comm/runner构建和teamlead类型检查通过。32文件Biome检查exit0，仅保留既有字符串拼接信息提示，未做无关修复。
 - 清单是源码/连接级覆盖证据，不冒充生产每个timer的实际触发或15分钟健康验收；真实锁等待、async yield后SQL、readonly/borrowed与native事务/iterator行为由上一批及本批测试覆盖。
 - 下一步T3剩余CommDB owner/lease审计（founder-reply-deliverer在外部await期间持lease仍待处理），然后T7 1.7M事件/500holder、指定快照与全库门、有效code review/PR。未执行生产写入/重启/QA派发。
+
+## T3 第二批：接续 WIP，验证 founder reply 短作用域
+
+- 本轮接续 `df5e3ceb8`，TURN epoch=4/implement；在线复核R2 effective APPROVED，未重开设计。Lead handoff `cbef1acb-619b-4f45-9251-e12a992415d3` 要求继续批准计划、审计WIP、非draft PR且review期间不push，已采纳。
+- WIP的`openExistingWriter`只打开既有库，检查mailbox generation，不运行CommDB构造器的migration/purge，busy_timeout=0。founder回复按同步调用打开/释放，跨await只传递GateResponseDb方法包装；founder_review可信写仍在单一同步作用域内。既有ship handler在异步分类后核对当前session/question/head，写入仍走原可信writer。
+- 首次继承验证43/47通过；4项旧测试仍要求整轮同一实例/仅release一次。改为核对可用的门读取结果、每次acquire与release一一配对，保留借用对象由owner关闭的断言。新增默认生产writer在Lead handoff挂起与reject时numeric fd回基线、拒绝时cursor不推进；生成检查拒绝连续20次也回基线，无GC。
+- RED：临时使用WIP之前的deliverer运行3个生命周期回归，全部失败：learning await时live=1，默认路径numeric fd=17 vs baseline14。随后恢复当前源码；红回执`/tmp/fly2563-founder-scope-red.log`。测试初稿误写reject结果为retry，按现有ThreadScanOutcome的process_failed合同更正，cursor不推进断言保留。
+- GREEN：founder deliverer49、ship handler29、factory5、fleet4、gate-poller-health10、lifecycle15，合计112/112；CommDB open-hardening含既有writer锁/缺失库/旧代拒绝；comm build与teamlead typecheck通过。仅本地定向证据，非全仓/CI/生产验收。
+- 待续：T3完整owner清单与默认/legacy多项目寿命夹具；T7 1.7M性能、指定备份、全仓门、code review、非draft PR及needs_review完成回执。未派发QA、未重启/部署。

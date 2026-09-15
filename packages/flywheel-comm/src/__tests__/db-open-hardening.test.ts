@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -33,6 +39,24 @@ describe("CommDB open diagnostics", () => {
 		expect(() => CommDB.openExistingWriter(missing)).toThrow();
 		expect(existsSync(missing)).toBe(false);
 	});
+	it("closes every scoped writer rejected by the mailbox generation guard", () => {
+		const legacyPath = join(tmpDir, "scoped-legacy.db");
+		const legacy = new Database(legacyPath);
+		legacy.exec("CREATE TABLE legacy_only (id TEXT PRIMARY KEY)");
+		legacy.close();
+		const fdDirectory =
+			process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";
+		const count = () =>
+			readdirSync(fdDirectory).filter((name) => /^\d+$/.test(name)).length;
+		const baseline = count();
+		for (let i = 0; i < 20; i++) {
+			expect(() => CommDB.openExistingWriter(legacyPath)).toThrowError(
+				`Legacy or partial CommDB at ${legacyPath}; run the FLY-1572 mailbox migration before opening it`,
+			);
+			expect(count()).toBeLessThanOrEqual(baseline);
+		}
+	});
+
 	let tmpDir: string;
 
 	beforeEach(() => {

@@ -1,8 +1,8 @@
-import {
-	scopedGateResponseDb,
-	type FounderReplyCommScope,
-} from "./founder-reply-comm-scope.js";
 import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
+import {
+	type FounderReplyCommScope,
+	scopedGateResponseDb,
+} from "./founder-reply-comm-scope.js";
 /**
  * Founder issue-thread ingress. Bridge records one canonical Lead receipt and
  * forwards the original message to Lead without classifying, answering, or
