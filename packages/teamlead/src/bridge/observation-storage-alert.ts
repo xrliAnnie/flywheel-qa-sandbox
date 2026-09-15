@@ -49,6 +49,7 @@ export class ObservationStorageAlert {
 	private stopped = false;
 	private payload: AlertPayload | null = null;
 	private episode = 1;
+	private failureMode: string | null = null;
 	constructor(
 		private readonly deps: {
 			store: StorageReader & Pick<StateStore, "getAlertDeliveryReceipt">;
@@ -64,10 +65,21 @@ export class ObservationStorageAlert {
 			if (this.payload) {
 				this.episode++;
 				this.payload = null;
+				this.failureMode = null;
 				this.delivered = false;
 			}
 			return Promise.resolve(true);
 		}
+		const failureMode =
+			state.status === "unavailable" ? state.reason : "starved";
+		if (this.payload && this.failureMode !== failureMode) {
+			// A new failure mode needs a fresh delivery identity: the routed sink
+			// deduplicates already delivered events and replaces older episodes.
+			this.episode++;
+			this.payload = null;
+			this.delivered = false;
+		}
+		this.failureMode = failureMode;
 		if (this.delivered) return Promise.resolve(true);
 		this.payload ??= {
 			projectName: FLEET_ALERT_PROJECT,

@@ -193,3 +193,46 @@ it("keeps a single delivery flight and waits for it before shutdown", async () =
 		store.close();
 	}
 });
+
+it("refreshes delivered alert bodies on every failure-mode transition without a healthy tick", async () => {
+	const store = await StateStore.create(":memory:");
+	try {
+		const read = vi
+			.spyOn(store, "getShipJudgmentObservationStorage")
+			.mockReturnValue({ status: "ready", reason: null });
+		for (let i = 0; i < 3; i++)
+			store.recordShipJudgmentObservationProgress("verdict", 0, 30, 25);
+		const alert = vi.fn().mockResolvedValue({ queued: true });
+		const source = new ObservationStorageAlert({
+			store,
+			bootId: "transition",
+			alert,
+		});
+		await source.tick();
+		expect(alert.mock.calls[0][0].body).toContain("zero-progress");
+		read.mockReturnValue({ status: "unavailable", reason: "schema_drift" });
+		await source.tick();
+		expect(alert).toHaveBeenCalledTimes(2);
+		expect(alert.mock.calls[1][0].body).toContain("schema_drift");
+		read.mockReturnValue({ status: "unavailable", reason: "migration_failed" });
+		await source.tick();
+		expect(alert.mock.calls[2][0].body).toContain("migration_failed");
+		read.mockReturnValue({ status: "ready", reason: null });
+		await source.tick();
+		expect(alert.mock.calls[3][0].body).toContain("zero-progress");
+		expect(
+			new Set(alert.mock.calls.map(([payload]) => payload.eventId)).size,
+		).toBe(4);
+		await source.tick();
+		expect(alert).toHaveBeenCalledTimes(4);
+		const old = alert.mock.calls[0][0];
+		expect(
+			source.recoveryProbe({
+				event_id: old.eventId,
+				session_key: old.sessionKey,
+			}),
+		).toBe(true);
+	} finally {
+		store.close();
+	}
+});

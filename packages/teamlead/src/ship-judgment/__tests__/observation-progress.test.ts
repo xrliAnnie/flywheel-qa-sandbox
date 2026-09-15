@@ -1,7 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { observationStorageHealth } from "../../bridge/observation-storage-alert.js";
+import { ShipJudgmentOutcomes } from "../outcomes.js";
 import { ShipJudgmentRuntime } from "../runtime.js";
-import { bindingFixture, NOW } from "./binding-fixture.js";
+import { bindingFixture, HEAD, NOW } from "./binding-fixture.js";
 
 it("counts exhausted archive calls without forcing a candidate and clears after an unstalled pass", async () => {
 	const { store, db } = await bindingFixture();
@@ -133,6 +134,69 @@ it("keeps exhausted real observer pages empty, exposes starvation, and resumes n
 	} finally {
 		await runtime.stop();
 		spy.mockRestore();
+		clock.mockRestore();
+		store.close();
+	}
+});
+
+it("does not report productive slow verdict pages as starvation", async () => {
+	const { store, db } = await bindingFixture();
+	let elapsed = 0;
+	const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+	const original = ShipJudgmentOutcomes.prototype.observeVerdicts;
+	const observe = vi
+		.spyOn(ShipJudgmentOutcomes.prototype, "observeVerdicts")
+		.mockImplementation(function (now) {
+			const result = original.call(this, now);
+			elapsed += 30;
+			return result;
+		});
+	const runtime = new ShipJudgmentRuntime({
+		store,
+		owner: "productive",
+		mode: () => "dry_run",
+		now: () => Date.parse(NOW),
+		collect: vi.fn(),
+		evaluate: vi.fn(),
+		material: vi.fn(),
+		unavailable: vi.fn(),
+	});
+	try {
+		db.prepare(`INSERT INTO workflow_rework_request(request_id,run_id,source_event_id,authority,source_node_id,source_attempt,base_revision,authority_context_json,authority_context_digest,founder_feedback_verbatim,requested_at)
+ VALUES ('rework','r','source','founder','founder_gate',1,?,'{}',?,'feedback',?)`).run(
+			HEAD,
+			"b".repeat(64),
+			NOW,
+		);
+		const insert =
+			db.prepare(`INSERT INTO workflow_founder_gate_verdict(verdict_id,source_event_id,run_id,gate_node_id,attempt,verdict,question_id,repo_identity,repo_slug,pr_number,head_sha,rework_request_id,claim_id,founder_authored,author_evidence_json,row_digest,recorded_at)
+ VALUES (?,?,'r','founder_gate',1,'rework','q','__main__','owner/repo',2399,?,'rework',NULL,0,'{}',?,?)`);
+		for (let i = 0; i < 60; i++)
+			insert.run(
+				`v-${String(i).padStart(3, "0")}`,
+				`source-${i}`,
+				HEAD,
+				"c".repeat(64),
+				NOW,
+			);
+		let previous = 0;
+		for (let i = 0; i < 3; i++) {
+			await runtime.modeTick();
+			const count = (
+				db.prepare("SELECT count(*) AS n FROM ship_judgment_outcome").get() as {
+					n: number;
+				}
+			).n;
+			expect(count).toBeGreaterThan(previous);
+			previous = count;
+		}
+		expect(observationStorageHealth(store)).toMatchObject({
+			starved: false,
+			zero_progress_ticks: { verdict: 0 },
+		});
+	} finally {
+		await runtime.stop();
+		observe.mockRestore();
 		clock.mockRestore();
 		store.close();
 	}

@@ -1,0 +1,157 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "55c3ee0b-0f60-4024-98ed-03084a9f4e02",
+  "round": 2,
+  "findings": [
+    {
+      "id": "verdict-lane-progress-reads-wrong-pagestats",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/runtime.ts",
+      "line": 140,
+      "title": "The new starvation counter reads closeout page stats for the verdict lane, so `inspected` is structurally always 0 and productive slow ticks are reported as starved",
+      "detail": "runLocalPages runs the same block for both `observeVerdicts` and `observeCancellations`, and computes `inspected` from `observer.pageStats()` (runtime.ts:140). In outcomes.ts, `pageStats()` (line 132) returns `lastPage`, which only `observeCancellations` writes; `observeVerdicts` writes `lastVerdictPage`, exposed by `verdictPageStats()` (line 434). Because StateStore.getShipJudgmentOutcomes() constructs a fresh ShipJudgmentOutcomes per call, the verdict branch always reads the zero initializer, so `inspected` is always 0 and recordShipJudgmentObservationProgress('verdict', 0, elapsed, 25) degenerates to 'did this tick take >=25ms'. Proven empirically at this HEAD: with 60 pending verdicts and 30ms of wall clock charged after the verdict page finished its work (so the internal 25ms budget was untouched), three modeTicks wrote 44 real b2 outcomes \u2014 maximum forward progress \u2014 yet observationStorageHealth reported {zero_progress_ticks:{verdict:3}, starved:true}, which fires the ship_judgment_observation_unavailable founder ticket and sets a wrong /health field. Note the direction is over-reporting only: a genuinely starved verdict tick still has inspected=0 and elapsed>=25, so ruling d9c796fb's required starvation detection is not blinded \u2014 this is false-positive noise on a human_by_design ticket kind, not missed detection, so it does not dispute that ruling. The existing tests cannot catch it: observation-progress.test.ts:129 freezes performance.now() after unstalling, so elapsed is 0 and the counter resets regardless of `inspected`. Fix: use `verdictPageStats()` for the observeVerdicts branch (its sourceCandidates + holderCandidates), or have the observer expose a single last-page accessor keyed by method.",
+      "findingKey": "verdict-lane-progress-reads-wrong-pagestats"
+    },
+    {
+      "id": "commdb-open-existing-writer-zero-busy-timeout",
+      "severity": "MEDIUM",
+      "file": "packages/flywheel-comm/src/db.ts",
+      "line": 1284,
+      "title": "openExistingWriter uses timeout:0, removing the 5s lock budget from the founder approval / voice write paths",
+      "detail": "Unchanged at this HEAD. CommDB.openExistingWriter opens with `{ fileMustExist: true, timeout: 0 }` (busy_timeout=0) and now backs the founder-reply lease (founder-reply-deliverer.ts:316), the voice gate factory (voice-comm-scope.ts:9) and question admission (question-admission.ts:60), replacing `new CommDB(path, false)` which set busy_timeout=5000. comm.db has concurrent writers (Bridge, mailbox queue, Lead CLI processes), so a held write lock is a normal condition. Confirmed empirically in round 1 against a real CommDB with a concurrent BEGIN IMMEDIATE holder: openExistingWriter + insertInstruction failed with 'database is locked' after 2ms, while the pre-change lease connection retried for 11.6s. Failure is retry-safe at the pass level (cursor pins, next poll retries), but each BUSY consumes one of FOUNDER_REPLY_RETRY_MAX=10 cumulative attempts in the founder-reply retry ledger (gate-poller.ts:333), and past the dead-letter age threshold a single BUSY dead-letters a founder approval message. Consider a small non-zero busy_timeout (250-1000ms), which still bounds event-loop blocking without discarding the lock budget entirely.",
+      "findingKey": "commdb-open-existing-writer-zero-busy-timeout"
+    },
+    {
+      "id": "oversize-closeout-payload-permanently-quarantined",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/observation-cursor.ts",
+      "line": 225,
+      "title": "Closeouts with payload >64KiB produce no learning outcome at all and are parked forever with next_attempt_at=NULL",
+      "detail": "Unchanged at this HEAD. `if (source.closed_ms === null || source.payload_bytes > 65536) { defer(id, ..., 'invalid_source', null); return; }` parks oversize closeout sources permanently \u2014 the due query at line 351 never selects a NULL next_attempt_at. The pre-change code still recorded the outcome for these rows with a degraded payload, and that fallback is still present but unreachable at outcomes.ts:146 (`Buffer.byteLength(row.payload) <= 65536 ? JSON.parse(...) : {}`). The same cutoff applies to B2 at line 535 on author_evidence_json, leaving the live `kind:'oversize'` digest fallback at outcomes.ts:457 similarly unreachable. Net effect: oversize sources silently drop out of the learning ledger instead of being recorded with degraded evidence. Since the byte-length pre-check already avoids parsing large payloads, prefer routing them through the existing degraded-evidence path rather than quarantining them.",
+      "findingKey": "oversize-closeout-payload-permanently-quarantined"
+    },
+    {
+      "id": "archive-oversize-rows-never-retired",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/terminal-row-archive.ts",
+      "line": 666,
+      "title": "Rows with payload >64KiB are never archived and therefore never deleted, so the largest rows escape retention forever",
+      "detail": "Unchanged at this HEAD. `row` is only materialized when `size <= 65536`; otherwise it stays undefined, the candidate counts as `skipped`, and the cursor advances past it. Each new cycle restarts with a fresh cutoff (line 596), so the same oversize rows are re-skipped every cycle and never reach workflow_terminal_archive \u2014 and the append-only delete triggers (line 393) require an archive row before a hot row may be deleted. The new test 'retains oversize payloads and fails safe on an oversized active snapshot' in StateStore.fly2341-terminal-archive.test.ts encodes this: after the sweep only the oversize row remains in session_events. FLY-2341 exists to bound StateStore growth and >64KiB rows dominate size. Consider a separate low-frequency path for oversize rows, or raise the per-row cap while keeping the 1MiB per-page byte budget.",
+      "findingKey": "archive-oversize-rows-never-retired"
+    },
+    {
+      "id": "archive-throughput-now-bounded-by-candidates-not-eligible-rows",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/terminal-row-archive.ts",
+      "line": 643,
+      "title": "Archive throughput dropped from up to 128 eligible rows per call to at most 128 inspected candidates per call",
+      "detail": "Unchanged at this HEAD. The old implementation let SQLite apply the full eligibility predicate inside the paged SELECT, so up to MAX_TERMINAL_ARCHIVE_PAGES_PER_CALL(2) x TERMINAL_ARCHIVE_SELECT_PAGE_SIZE(64) = 128 archivable rows could be retired per call. The new candidate query filters only on kind + time window and re-checks eligibility one row at a time, so the same 128 slots are consumed by candidates regardless of eligibility. On tables where most in-window rows are ineligible (active sessions, undelivered lead_events, unconsumed closeouts), effective retirement rate falls by the ineligible fraction, and the cycle restarts from scratch with a new cutoff once completed. This is a deliberate trade per implementation.md, but it is worth confirming against real StateStore row distributions that hygiene still outpaces ingestion. The changed test at line 891 ('does not start candidate validation after the page time budget expires', archived 2 -> 0) shows the same direction.",
+      "findingKey": "archive-throughput-now-bounded-by-candidates-not-eligible-rows"
+    },
+    {
+      "id": "observation-alert-body-stale-across-failure-modes",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/observation-storage-alert.ts",
+      "line": 72,
+      "title": "The alert payload is frozen with `??=`, so a ticket minted for starvation keeps starvation copy after the failure mode becomes storage-unavailable (and vice versa)",
+      "detail": "`this.payload ??= {...}` builds the body from whichever state was observed first, and the payload is only cleared when health returns to ready-and-not-starved (line 64). If the Bridge transitions directly from starved to unavailable (or the reverse) without a healthy tick in between, the open ticket keeps the original body \u2014 e.g. 'Consecutive budget-exhausted zero-progress ticks: {...}' while the real condition is now `schema_drift`, sending the operator down the wrong remediation path named in KIND_CONTRACTS.remediationRef. Also note `if (this.delivered) return` (line 71) short-circuits before any body refresh, so no later tick can correct it. Consider keying the episode on the failure mode, or refreshing the body while keeping eventId stable.",
+      "findingKey": "observation-alert-body-stale-across-failure-modes"
+    },
+    {
+      "id": "gate-poller-opens-migrating-writer-only-to-close-it",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/gate-poller.ts",
+      "line": 2358,
+      "title": "founderReplyDeliverPass opens a full migrating CommDB writer per pass per project purely as a presence probe and closes it unused",
+      "detail": "Unchanged at this HEAD. `writerDb = new CommDB(dbPath, false)` is constructed and then closed in the same `finally` (line 2384) without a single use \u2014 the deliverer opens its own short scopes. The CommDB constructor synchronously replays installMailboxTerminalArchiveSchema + SCHEMA + the whole applyMigrations suite + purgeExpired; this is exactly the hotspot the deleted FLY-1601 comment in question-admission.ts described, now running once per founder-reply pass per project on the Bridge event loop. If the intent is only 'CommDB exists and is migrated', CommDB.openReadonly (which already asserts the mailbox generation) or existsSync would be far cheaper; if the migrating open is deliberately load-bearing, a comment saying so would stop it being removed as dead code later.",
+      "findingKey": "gate-poller-opens-migrating-writer-only-to-close-it"
+    },
+    {
+      "id": "restore-replay-receipt-claims-enqueued-on-conflict",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/ship-judgment/observation-cursor.ts",
+      "line": 427,
+      "title": "enqueueRestoredObservation returns status:'enqueued' even when ON CONFLICT DO NOTHING left a permanently parked pending row",
+      "detail": "Unchanged at this HEAD. The insert uses `ON CONFLICT(project_name,source_kind,source_id) DO NOTHING`, then unconditionally returns `{status:'enqueued', sourceId}`. If a pending row already exists with next_attempt_at=NULL (reason 'invalid_source', or 'dependency' after 10 attempts), the replay is a no-op \u2014 the due query at line 351 never selects a NULL next_attempt_at \u2014 yet StateStore.restoreTerminalRow (line 8180) hands the operator a receipt saying it was enqueued. The archive's closeout protection makes this hard to reach via archive->restore, but restoreTerminalRow is an operator-callable entry point. Either use DO UPDATE to re-arm next_attempt_at='' for restore_replay, or return a distinct status when `changes === 0`.",
+      "findingKey": "restore-replay-receipt-claims-enqueued-on-conflict"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "verdict-lane-progress-reads-wrong-pagestats",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/runtime.ts",
+      "line": 140,
+      "title": "The new starvation counter reads closeout page stats for the verdict lane, so `inspected` is structurally always 0 and productive slow ticks are reported as starved",
+      "detail": "runLocalPages runs the same block for both `observeVerdicts` and `observeCancellations`, and computes `inspected` from `observer.pageStats()` (runtime.ts:140). In outcomes.ts, `pageStats()` (line 132) returns `lastPage`, which only `observeCancellations` writes; `observeVerdicts` writes `lastVerdictPage`, exposed by `verdictPageStats()` (line 434). Because StateStore.getShipJudgmentOutcomes() constructs a fresh ShipJudgmentOutcomes per call, the verdict branch always reads the zero initializer, so `inspected` is always 0 and recordShipJudgmentObservationProgress('verdict', 0, elapsed, 25) degenerates to 'did this tick take >=25ms'. Proven empirically at this HEAD: with 60 pending verdicts and 30ms of wall clock charged after the verdict page finished its work (so the internal 25ms budget was untouched), three modeTicks wrote 44 real b2 outcomes \u2014 maximum forward progress \u2014 yet observationStorageHealth reported {zero_progress_ticks:{verdict:3}, starved:true}, which fires the ship_judgment_observation_unavailable founder ticket and sets a wrong /health field. Note the direction is over-reporting only: a genuinely starved verdict tick still has inspected=0 and elapsed>=25, so ruling d9c796fb's required starvation detection is not blinded \u2014 this is false-positive noise on a human_by_design ticket kind, not missed detection, so it does not dispute that ruling. The existing tests cannot catch it: observation-progress.test.ts:129 freezes performance.now() after unstalling, so elapsed is 0 and the counter resets regardless of `inspected`. Fix: use `verdictPageStats()` for the observeVerdicts branch (its sourceCandidates + holderCandidates), or have the observer expose a single last-page accessor keyed by method.",
+      "findingKey": "verdict-lane-progress-reads-wrong-pagestats"
+    },
+    {
+      "id": "commdb-open-existing-writer-zero-busy-timeout",
+      "severity": "MEDIUM",
+      "file": "packages/flywheel-comm/src/db.ts",
+      "line": 1284,
+      "title": "openExistingWriter uses timeout:0, removing the 5s lock budget from the founder approval / voice write paths",
+      "detail": "Unchanged at this HEAD. CommDB.openExistingWriter opens with `{ fileMustExist: true, timeout: 0 }` (busy_timeout=0) and now backs the founder-reply lease (founder-reply-deliverer.ts:316), the voice gate factory (voice-comm-scope.ts:9) and question admission (question-admission.ts:60), replacing `new CommDB(path, false)` which set busy_timeout=5000. comm.db has concurrent writers (Bridge, mailbox queue, Lead CLI processes), so a held write lock is a normal condition. Confirmed empirically in round 1 against a real CommDB with a concurrent BEGIN IMMEDIATE holder: openExistingWriter + insertInstruction failed with 'database is locked' after 2ms, while the pre-change lease connection retried for 11.6s. Failure is retry-safe at the pass level (cursor pins, next poll retries), but each BUSY consumes one of FOUNDER_REPLY_RETRY_MAX=10 cumulative attempts in the founder-reply retry ledger (gate-poller.ts:333), and past the dead-letter age threshold a single BUSY dead-letters a founder approval message. Consider a small non-zero busy_timeout (250-1000ms), which still bounds event-loop blocking without discarding the lock budget entirely.",
+      "findingKey": "commdb-open-existing-writer-zero-busy-timeout"
+    },
+    {
+      "id": "oversize-closeout-payload-permanently-quarantined",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/ship-judgment/observation-cursor.ts",
+      "line": 225,
+      "title": "Closeouts with payload >64KiB produce no learning outcome at all and are parked forever with next_attempt_at=NULL",
+      "detail": "Unchanged at this HEAD. `if (source.closed_ms === null || source.payload_bytes > 65536) { defer(id, ..., 'invalid_source', null); return; }` parks oversize closeout sources permanently \u2014 the due query at line 351 never selects a NULL next_attempt_at. The pre-change code still recorded the outcome for these rows with a degraded payload, and that fallback is still present but unreachable at outcomes.ts:146 (`Buffer.byteLength(row.payload) <= 65536 ? JSON.parse(...) : {}`). The same cutoff applies to B2 at line 535 on author_evidence_json, leaving the live `kind:'oversize'` digest fallback at outcomes.ts:457 similarly unreachable. Net effect: oversize sources silently drop out of the learning ledger instead of being recorded with degraded evidence. Since the byte-length pre-check already avoids parsing large payloads, prefer routing them through the existing degraded-evidence path rather than quarantining them.",
+      "findingKey": "oversize-closeout-payload-permanently-quarantined"
+    },
+    {
+      "id": "archive-oversize-rows-never-retired",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/terminal-row-archive.ts",
+      "line": 666,
+      "title": "Rows with payload >64KiB are never archived and therefore never deleted, so the largest rows escape retention forever",
+      "detail": "Unchanged at this HEAD. `row` is only materialized when `size <= 65536`; otherwise it stays undefined, the candidate counts as `skipped`, and the cursor advances past it. Each new cycle restarts with a fresh cutoff (line 596), so the same oversize rows are re-skipped every cycle and never reach workflow_terminal_archive \u2014 and the append-only delete triggers (line 393) require an archive row before a hot row may be deleted. The new test 'retains oversize payloads and fails safe on an oversized active snapshot' in StateStore.fly2341-terminal-archive.test.ts encodes this: after the sweep only the oversize row remains in session_events. FLY-2341 exists to bound StateStore growth and >64KiB rows dominate size. Consider a separate low-frequency path for oversize rows, or raise the per-row cap while keeping the 1MiB per-page byte budget.",
+      "findingKey": "archive-oversize-rows-never-retired"
+    },
+    {
+      "id": "archive-throughput-now-bounded-by-candidates-not-eligible-rows",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/terminal-row-archive.ts",
+      "line": 643,
+      "title": "Archive throughput dropped from up to 128 eligible rows per call to at most 128 inspected candidates per call",
+      "detail": "Unchanged at this HEAD. The old implementation let SQLite apply the full eligibility predicate inside the paged SELECT, so up to MAX_TERMINAL_ARCHIVE_PAGES_PER_CALL(2) x TERMINAL_ARCHIVE_SELECT_PAGE_SIZE(64) = 128 archivable rows could be retired per call. The new candidate query filters only on kind + time window and re-checks eligibility one row at a time, so the same 128 slots are consumed by candidates regardless of eligibility. On tables where most in-window rows are ineligible (active sessions, undelivered lead_events, unconsumed closeouts), effective retirement rate falls by the ineligible fraction, and the cycle restarts from scratch with a new cutoff once completed. This is a deliberate trade per implementation.md, but it is worth confirming against real StateStore row distributions that hygiene still outpaces ingestion. The changed test at line 891 ('does not start candidate validation after the page time budget expires', archived 2 -> 0) shows the same direction.",
+      "findingKey": "archive-throughput-now-bounded-by-candidates-not-eligible-rows"
+    },
+    {
+      "id": "observation-alert-body-stale-across-failure-modes",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/observation-storage-alert.ts",
+      "line": 72,
+      "title": "The alert payload is frozen with `??=`, so a ticket minted for starvation keeps starvation copy after the failure mode becomes storage-unavailable (and vice versa)",
+      "detail": "`this.payload ??= {...}` builds the body from whichever state was observed first, and the payload is only cleared when health returns to ready-and-not-starved (line 64). If the Bridge transitions directly from starved to unavailable (or the reverse) without a healthy tick in between, the open ticket keeps the original body \u2014 e.g. 'Consecutive budget-exhausted zero-progress ticks: {...}' while the real condition is now `schema_drift`, sending the operator down the wrong remediation path named in KIND_CONTRACTS.remediationRef. Also note `if (this.delivered) return` (line 71) short-circuits before any body refresh, so no later tick can correct it. Consider keying the episode on the failure mode, or refreshing the body while keeping eventId stable.",
+      "findingKey": "observation-alert-body-stale-across-failure-modes"
+    },
+    {
+      "id": "gate-poller-opens-migrating-writer-only-to-close-it",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/gate-poller.ts",
+      "line": 2358,
+      "title": "founderReplyDeliverPass opens a full migrating CommDB writer per pass per project purely as a presence probe and closes it unused",
+      "detail": "Unchanged at this HEAD. `writerDb = new CommDB(dbPath, false)` is constructed and then closed in the same `finally` (line 2384) without a single use \u2014 the deliverer opens its own short scopes. The CommDB constructor synchronously replays installMailboxTerminalArchiveSchema + SCHEMA + the whole applyMigrations suite + purgeExpired; this is exactly the hotspot the deleted FLY-1601 comment in question-admission.ts described, now running once per founder-reply pass per project on the Bridge event loop. If the intent is only 'CommDB exists and is migrated', CommDB.openReadonly (which already asserts the mailbox generation) or existsSync would be far cheaper; if the migrating open is deliberately load-bearing, a comment saying so would stop it being removed as dead code later.",
+      "findingKey": "gate-poller-opens-migrating-writer-only-to-close-it"
+    },
+    {
+      "id": "restore-replay-receipt-claims-enqueued-on-conflict",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/ship-judgment/observation-cursor.ts",
+      "line": 427,
+      "title": "enqueueRestoredObservation returns status:'enqueued' even when ON CONFLICT DO NOTHING left a permanently parked pending row",
+      "detail": "Unchanged at this HEAD. The insert uses `ON CONFLICT(project_name,source_kind,source_id) DO NOTHING`, then unconditionally returns `{status:'enqueued', sourceId}`. If a pending row already exists with next_attempt_at=NULL (reason 'invalid_source', or 'dependency' after 10 attempts), the replay is a no-op \u2014 the due query at line 351 never selects a NULL next_attempt_at \u2014 yet StateStore.restoreTerminalRow (line 8180) hands the operator a receipt saying it was enqueued. The archive's closeout protection makes this hard to reach via archive->restore, but restoreTerminalRow is an operator-callable entry point. Either use DO UPDATE to re-arm next_attempt_at='' for restore_replay, or return a distinct status when `changes === 0`.",
+      "findingKey": "restore-replay-receipt-claims-enqueued-on-conflict"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "reviewedHeadSha": "a03ec3b8f9318509af1a7f9b8ee4cc7ffa779802"
+}

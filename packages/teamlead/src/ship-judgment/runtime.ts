@@ -137,7 +137,10 @@ export class ShipJudgmentRuntime {
 			try {
 				const observer = this.deps.store.getShipJudgmentOutcomes();
 				observer[method](new Date(this.now()).toISOString());
-				const stats = observer.pageStats();
+				const stats =
+					method === "observeVerdicts"
+						? observer.verdictPageStats()
+						: observer.pageStats();
 				inspected = stats.sourceCandidates + stats.holderCandidates;
 			} catch {
 				this.deps.onError?.(error);
