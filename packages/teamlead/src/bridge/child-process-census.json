@@ -352,6 +352,11 @@
 			"disposition": "FLY-2465 isolated quota reader/probe only: async raw Codex child, sanitized environment, account lease, bounded deadline and output, abort process-group drain before credential persistence"
 		},
 		{
+			"file": "packages/teamlead/src/lead-auto-compact.ts",
+			"sync_child": 2,
+			"disposition": "FLY-2567 separate launcher probe process only; two CLI probes bounded by 5s timeout and 16KiB output each; not imported by Bridge"
+		},
+		{
 			"file": "packages/teamlead/src/lead-backends/codex/ProcessLifetimeFileLock.ts",
 			"raw_spawn": 1,
 			"disposition": "observed_async_lifecycle"

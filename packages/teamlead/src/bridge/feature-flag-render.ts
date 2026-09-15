@@ -28,6 +28,7 @@ export function esc(s: string): string {
 
 /** 生效路径 label (how a change to this flag takes effect). */
 export function effectLabel(flag: FlagView): string {
+	if (flag.name === "lead_token_savings") return "即时 / 下次 Lead 启动";
 	if (flag.source === "project_config") return "新 run 生效";
 	if (
 		flag.readTimings.length > 0 &&
@@ -70,7 +71,11 @@ export function effectSentence(flag: FlagView): string {
 	if (flag.dormant) hints.push("已登记但 runtime 暂不加载(预留项),只读。");
 	if (flag.valueKind !== "bool") hints.push("这是取值型设置，当前值见上方。");
 	const proj =
-		flag.scope === "project" ? "每个项目单独设,改后对新 run 生效。" : "";
+		flag.scope === "project"
+			? flag.name === "lead_token_savings"
+				? `每个项目单独设。${flag.note ?? "Bootstrap 与事件即时生效，规则与压缩窗口在下次 Lead 启动生效。"}`
+				: "每个项目单独设,改后对新 run 生效。"
+			: "";
 	if (proj) hints.push(proj);
 	return [meaning, ...hints].join(" ");
 }

@@ -225,7 +225,7 @@ function database(verbose?: (message?: unknown) => void): Database.Database {
 			UNIQUE(run_id, seq)
 		);
 		CREATE TABLE lead_events (
-			seq INTEGER PRIMARY KEY AUTOINCREMENT,
+			delivery_disposition TEXT NOT NULL DEFAULT 'model',			seq INTEGER PRIMARY KEY AUTOINCREMENT,
 			lead_id TEXT NOT NULL,
 			event_id TEXT NOT NULL,
 			event_type TEXT NOT NULL,
@@ -398,6 +398,70 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 				.get(event.event_id),
 		).toEqual({ n: 0 });
 		store.close();
+	});
+
+	it("archives audit-only events without fabricating delivery receipts", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			const seq = store.appendLeadEvent(
+				"audit-lead",
+				"audit-event",
+				"stage_changed",
+				"{}",
+				undefined,
+				"audit_only",
+			);
+			raw
+				.prepare("UPDATE lead_events SET created_at=? WHERE seq=?")
+				.run(OLD, seq);
+			expect(store.getLeadEventBySeq(seq)?.delivered_at).toBeUndefined();
+			expect(
+				store.archiveTerminalRows({
+					now: NOW,
+					limit: 1,
+					sourceTable: "lead_events",
+				}).archived,
+			).toBe(1);
+			expect(
+				store.appendLeadEvent(
+					"audit-lead",
+					"audit-event",
+					"stage_changed",
+					"{}",
+				),
+			).toBe(seq);
+			expect(store.listUndeliveredLeadEvents()).toEqual([]);
+			expect(store.isLeadEventAuditOnly(seq, "audit-lead")).toBe(true);
+			expect(
+				store
+					.getLeadAuditEventPage("audit-lead", 1)
+					.items.map((row) => row.seq),
+			).toEqual([seq]);
+			expect(store.getLeadAuditEventPage("other-lead", 1).items).toEqual([]);
+			raw
+				.prepare(`INSERT INTO workflow_terminal_archive
+                (source_table,source_identity,source_created_at,archived_at,row_json,row_sha256)
+                SELECT source_table,?,source_created_at,archived_at,
+                json_set(row_json,'$.seq',?,'$.lead_id','corrupt-lead'),'0000000000000000000000000000000000000000000000000000000000000000'
+                FROM workflow_terminal_archive WHERE source_table='lead_events' AND source_identity=?`)
+				.run(String(seq + 100), seq + 100, String(seq));
+			expect(() => store.getLeadAuditEventPage("corrupt-lead", 1)).toThrow(
+				"archive_digest_invalid",
+			);
+
+			restoreTerminalRow(raw, {
+				sourceTable: "lead_events",
+				sourceIdentity: String(seq),
+			});
+			expect(store.getLeadEventBySeq(seq)?.delivery_disposition).toBe(
+				"audit_only",
+			);
+			expect(store.listUndeliveredLeadEvents()).toEqual([]);
+		} finally {
+			store.close();
+		}
 	});
 
 	it("preserves lead event idempotency after the hot row is archived", async () => {

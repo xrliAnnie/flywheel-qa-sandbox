@@ -33,7 +33,9 @@ allowed_hits=(
   'packages/flywheel-comm/src/db.ts|three_stage_turn'
   'scripts/lib/fly-2006-retention-registry.mjs|three_stage_turn'
   'scripts/__tests__/fixtures/fly-2006-teamlead-production-tables.json|three_stage_turn'
-  'packages/teamlead/lead-rules-base/runner-patrol-rules.md|three_stage_turn'
+  'packages/teamlead/lead-rules-base/runbooks/patrol-v1.md|three_stage_turn'
+  # FLY-2567 OFF keeps the same read-only TURN recipe inline (paired byte guard).
+  'packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md|three_stage_turn'
   'packages/teamlead/src/__tests__/fly369-patrol-rule.test.ts|three_stage_turn'
   'scripts/lead-patrol-snapshot.sh|three_stage_turn'
   'scripts/__tests__/lead-patrol-snapshot.test.sh|three_stage_turn'

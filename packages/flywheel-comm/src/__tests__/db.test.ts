@@ -103,6 +103,81 @@ describe("CommDB", () => {
 	});
 
 	describe("pending questions", () => {
+		it("pages pending obligations by durable kind and identity without losing equal timestamps", () => {
+			const ids = Array.from({ length: 4 }, (_, i) =>
+				db.insertQuestion(
+					"runner-1",
+					"product-lead",
+					"DONE: still a question",
+					{ id: `ask-${i}` },
+				),
+			);
+			const report = db.insertQuestion(
+				"runner-1",
+				"product-lead",
+				"Can you act?",
+				{ kind: "report" },
+			);
+			const gate = db.insertQuestion("runner-1", "product-lead", "Approve", {
+				checkpoint: "approve_to_ship",
+			});
+			db.insertQuestion("runner-1", "ops-lead", "Private");
+			db.insertResponse(ids[0]!, "product-lead", "Answered");
+			(db as any).db
+				.prepare(
+					"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
+				)
+				.run(ids[1]);
+			(db as any).db
+				.prepare(
+					"UPDATE mailbox SET created_at = '2026-09-14 00:00:00' WHERE type = 'question'",
+				)
+				.run();
+			const first = db.getPendingQuestions("product-lead", {
+				kind: "ask",
+				limit: 1,
+			});
+			expect(first.map((q) => q.id)).toEqual([ids[2]]);
+			const second = db.getPendingQuestions("product-lead", {
+				kind: "ask",
+				limit: 1,
+				cursor: first[0],
+			});
+			expect(second.map((q) => q.id)).toEqual([ids[3]]);
+			expect(
+				db.getPendingQuestions("product-lead", {
+					kind: "ask",
+					limit: 1,
+					cursor: second[0],
+				}),
+			).toEqual([]);
+			expect(
+				db
+					.getPendingQuestions("product-lead", { kind: "report", limit: 50 })
+					.map((q) => q.id),
+			).toEqual([report]);
+			expect(
+				db
+					.getPendingQuestions("product-lead", { kind: "gate", limit: 50 })
+					.map((q) => q.id),
+			).toEqual([gate]);
+		});
+
+		it("rejects malformed pending page bounds and cursors", () => {
+			for (const limit of [0, 51, 1.5, NaN]) {
+				expect(() =>
+					db.getPendingQuestions("product-lead", { kind: "ask", limit }),
+				).toThrow();
+			}
+			expect(() =>
+				db.getPendingQuestions("product-lead", {
+					kind: "ask",
+					limit: 1,
+					cursor: { id: "", created_at: "now" },
+				}),
+			).toThrow();
+		});
+
 		it("should list unanswered questions for a lead", () => {
 			const q1 = db.insertQuestion("runner-1", "product-lead", "Q1?");
 			const q2 = db.insertQuestion("runner-2", "product-lead", "Q2?");

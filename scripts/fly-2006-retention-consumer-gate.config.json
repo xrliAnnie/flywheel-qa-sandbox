@@ -133,6 +133,13 @@
 			"file": "packages/flywheel-comm/src/mailbox-queue.ts",
 			"relation": "mailbox",
 			"baseTable": "mailbox",
+			"usage": "anti_join",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/flywheel-comm/src/mailbox-queue.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
 			"usage": "read",
 			"disposition": "candidate_guarded"
 		},

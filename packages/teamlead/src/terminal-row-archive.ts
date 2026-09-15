@@ -131,7 +131,7 @@ const ARCHIVE_INDEX_DEFINITIONS = [
 		name: "idx_lead_events_archive_keyset",
 		sql: `CREATE INDEX IF NOT EXISTS idx_lead_events_archive_keyset
 			ON lead_events(julianday(created_at), seq)
-			WHERE event_type IN (${LEAD_EVENT_TYPES_SQL})`,
+			WHERE event_type IN (${LEAD_EVENT_TYPES_SQL}) OR delivery_disposition = 'audit_only'`,
 	},
 	...Object.entries(TERMINAL_ARCHIVE_LOOKUPS).map(
 		([sourceTable, { indexName, expressions }]) => ({
@@ -495,11 +495,11 @@ function policies(cutoff: string, active: ActiveSnapshot): ArchivePolicy[] {
 			timeColumn: "created_at",
 			select: (limit, cursor) => ({
 				sql: `SELECT e.* FROM lead_events e INDEXED BY idx_lead_events_archive_keyset
-					WHERE e.event_type IN (${LEAD_EVENT_TYPES_SQL})
+					WHERE (e.event_type IN (${LEAD_EVENT_TYPES_SQL}) OR e.delivery_disposition = 'audit_only')
 					  AND julianday(e.created_at) IS NOT NULL
 					  AND julianday(e.created_at) < julianday(?)
 					  ${cursor ? "AND (julianday(e.created_at) > julianday(?) OR (julianday(e.created_at) = julianday(?) AND e.seq > ?))" : ""}
-					  AND e.delivered_at IS NOT NULL
+					  AND (e.delivered_at IS NOT NULL OR e.delivery_disposition = 'audit_only')
 					  AND (e.ack_required=0 OR e.acked_at IS NOT NULL OR e.ack_retired_at IS NOT NULL
 					       OR (e.dead_lettered_at IS NOT NULL AND e.ingress_disposed_at IS NOT NULL))
 					  AND NOT EXISTS (SELECT 1 FROM lead_event_delivery_attempts child WHERE child.event_seq=e.seq)

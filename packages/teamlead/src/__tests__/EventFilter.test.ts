@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { EventFilter } from "../bridge/EventFilter.js";
+import {
+	EventFilter,
+	leadEventDeliveryDisposition,
+} from "../bridge/EventFilter.js";
 import type { HookPayload } from "../bridge/hook-payload.js";
 
 function makePayload(
@@ -197,5 +200,86 @@ describe("EventFilter", () => {
 				expect(result.reason).toBeTruthy();
 			}
 		});
+	});
+});
+
+describe("routine event delivery disposition", () => {
+	it("audits only structured routine events from trusted Bridge producers", () => {
+		for (const stage of [
+			"onboard",
+			"brainstorm",
+			"research",
+			"plan",
+			"implement",
+			"test",
+		]) {
+			expect(
+				leadEventDeliveryDisposition(
+					"stage_changed",
+					{ stage, status: "running" },
+					true,
+				),
+			).toBe("audit_only");
+			expect(
+				leadEventDeliveryDisposition("stage_changed", { stage }, false),
+			).toBe("model");
+		}
+		expect(
+			leadEventDeliveryDisposition(
+				"session_monitoring_reestablished",
+				{},
+				true,
+			),
+		).toBe("audit_only");
+		expect(
+			leadEventDeliveryDisposition(
+				"session_monitoring_reestablished",
+				{},
+				false,
+			),
+		).toBe("model");
+	});
+	it("keeps unknown, actionable, failed, review, ship and founder traffic", () => {
+		for (const stage of [
+			undefined,
+			"unknown",
+			"completed",
+			"approve",
+			"design_review",
+			"code_review",
+			"ship",
+			"pr_created",
+		]) {
+			expect(
+				leadEventDeliveryDisposition("stage_changed", { stage }, true),
+			).toBe("model");
+		}
+		for (const extra of [
+			{ status: "failed" },
+			{ last_error: "failure" },
+			{ decision_route: "needs_review" },
+			{ needs_action: true },
+			{ checkpoint: "question" },
+			{ messages: [{ author: "founder" }] },
+		]) {
+			expect(
+				leadEventDeliveryDisposition(
+					"stage_changed",
+					{ stage: "test", ...extra },
+					true,
+				),
+			).toBe("model");
+		}
+		for (const type of [
+			"chat",
+			"founder_message",
+			"unknown",
+			"session_failed",
+			"review_code",
+		]) {
+			expect(leadEventDeliveryDisposition(type, { stage: "test" }, true)).toBe(
+				"model",
+			);
+		}
 	});
 });

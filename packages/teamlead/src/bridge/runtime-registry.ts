@@ -23,6 +23,7 @@ export interface DurableQueueReceipt {
 }
 
 export interface LeadEventDispatchResult extends DeliveryResult {
+	auditOnly?: true;
 	queued?: true;
 }
 
@@ -53,6 +54,7 @@ export class RuntimeRegistry {
 	private wrappedRuntimes = new Map<string, LeadRuntime>();
 	private deliveryInterceptor?: DeliveryInterceptor;
 	private leadEventEnqueuer?: LeadEventEnqueuer;
+	private isAuditOnly?: (envelope: LeadEventEnvelope) => boolean;
 	private leadInboxNudge?: (leadId: string, projectName?: string) => boolean;
 
 	register(lead: LeadConfig, runtime: LeadRuntime): void {
@@ -62,13 +64,19 @@ export class RuntimeRegistry {
 
 	getForLead(agentId: string): LeadRuntime | undefined {
 		const runtime = this.runtimes.get(agentId);
-		if (!runtime || !this.deliveryInterceptor) return runtime;
+		if (!runtime || (!this.deliveryInterceptor && !this.isAuditOnly))
+			return runtime;
 		const existing = this.wrappedRuntimes.get(agentId);
 		if (existing) return existing;
 		const interceptor = this.deliveryInterceptor;
 		const wrapped: LeadRuntime = {
 			type: runtime.type,
-			deliver: (envelope) => interceptor(runtime, envelope),
+			deliver: (envelope) =>
+				this.isAuditOnly?.(envelope)
+					? Promise.resolve({ delivered: false, auditOnly: true })
+					: interceptor
+						? interceptor(runtime, envelope)
+						: runtime.deliver(envelope),
 			...(runtime.renderEnvelope
 				? { renderEnvelope: (envelope) => runtime.renderEnvelope!(envelope) }
 				: {}),
@@ -89,11 +97,19 @@ export class RuntimeRegistry {
 		this.wrappedRuntimes.clear();
 	}
 
+	setAuditOnlyPredicate(
+		predicate: (envelope: LeadEventEnvelope) => boolean,
+	): void {
+		this.isAuditOnly = predicate;
+		this.wrappedRuntimes.clear();
+	}
+
 	setLeadEventEnqueuer(enqueuer?: LeadEventEnqueuer): void {
 		this.leadEventEnqueuer = enqueuer;
 	}
 
 	enqueueLeadEvent(envelope: LeadEventEnvelope): DurableQueueReceipt {
+		if (this.isAuditOnly?.(envelope)) throw new Error("audit_only_lead_event");
 		if (!this.leadEventEnqueuer) {
 			throw new Error("Lead event queue is not configured");
 		}
@@ -109,6 +125,8 @@ export class RuntimeRegistry {
 	async dispatchLeadEvent(
 		envelope: LeadEventEnvelope,
 	): Promise<LeadEventDispatchResult> {
+		if (this.isAuditOnly?.(envelope))
+			return { delivered: false, auditOnly: true };
 		if (this.leadEventEnqueuer) {
 			this.enqueueLeadEvent(envelope);
 			return { delivered: false, queued: true };

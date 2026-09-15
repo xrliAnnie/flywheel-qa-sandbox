@@ -20,6 +20,18 @@ export interface LeadCoSContext {
 	writableRoots: string[];
 }
 
+/** Measurement evidence for an optional Claude compaction window, not model authority. */
+export interface LeadAutoCompactBaseline {
+	inputFloorTokens: number;
+	/** Full Bootstrap floor under launched ON rules, required before canary admission. */
+	inputFloorOffTokens?: number;
+	claudeVersion: string;
+	model: string;
+	rulesBodySha: string;
+	toolsConfigSha: string;
+	bootstrapPolicyVersion: string;
+}
+
 export interface LeadConfig {
 	agentId: string;
 	/** FLY-2030: explicit summary inflow assignment. Missing/unknown values fail config load. */
@@ -139,6 +151,9 @@ export interface LeadConfig {
 	/** FLY-2131: Codex-only protocol context-window pin. The numeric registry
 	 * field is projected to FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW by the launcher. */
 	modelContextWindow?: number;
+	/** Claude-only optimization; absent preserves the native window. */
+	autoCompactWindowTokens?: number;
+	autoCompactBaseline?: LeadAutoCompactBaseline;
 	/**
 	 * FLY-1867: identity-bound opt-in for the official Playwright MCP plugin.
 	 * Machine settings keep the plugin disabled by default; `claude-lead.sh`
@@ -941,6 +956,38 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 					throw new Error(
 						`Project "${entry.projectName}" leads[${i}].effort: must be "low"|"medium"|"high"|"xhigh"|"max", got ${JSON.stringify(lead.effort)}`,
 					);
+				}
+			}
+			if (
+				lead.autoCompactWindowTokens !== undefined ||
+				lead.autoCompactBaseline !== undefined
+			) {
+				const baseline = lead.autoCompactBaseline;
+				if (
+					lead.backend === "codex-app-server" ||
+					!Number.isSafeInteger(lead.autoCompactWindowTokens) ||
+					(lead.autoCompactWindowTokens ?? 0) < 400000 ||
+					(lead.autoCompactWindowTokens ?? 0) > 1000000 ||
+					(baseline !== undefined &&
+						(!baseline ||
+							!Number.isSafeInteger(baseline.inputFloorTokens) ||
+							baseline.inputFloorTokens < 1 ||
+							!Number.isSafeInteger(baseline.inputFloorOffTokens) ||
+							(baseline.inputFloorOffTokens ?? 0) < 1 ||
+							[
+								baseline.claudeVersion,
+								baseline.model,
+								baseline.bootstrapPolicyVersion,
+							].some((v) => typeof v !== "string" || !v.trim()) ||
+							[baseline.rulesBodySha, baseline.toolsConfigSha].some(
+								(v) => typeof v !== "string" || !/^[a-f0-9]{64}$/.test(v),
+							)))
+				) {
+					console.warn(
+						`[ProjectConfig] ${entry.projectName}/${lead.agentId}: canary_not_applied invalid autoCompact configuration`,
+					);
+					delete lead.autoCompactWindowTokens;
+					delete lead.autoCompactBaseline;
 				}
 			}
 			if (lead.modelContextWindow !== undefined) {

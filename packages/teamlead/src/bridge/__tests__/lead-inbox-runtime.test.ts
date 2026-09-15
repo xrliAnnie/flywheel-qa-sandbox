@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -18,7 +18,7 @@ import {
 	LeadInboxRuntime,
 	resolveCodexLeadStateDir,
 } from "../lead-inbox-runtime.js";
-import type { LeadRuntime } from "../lead-runtime.js";
+import type { LeadEventEnvelope, LeadRuntime } from "../lead-runtime.js";
 import { RuntimeRegistry } from "../runtime-registry.js";
 
 const runtimes: LeadInboxRuntime[] = [];
@@ -29,6 +29,7 @@ afterEach(() => {
 
 function runtimeStoreStub(recipientState: "alive" | "terminal" = "terminal") {
 	return {
+		isLeadEventAuditOnly: () => false,
 		getActiveSessions: () => [],
 		resolveRunnerRecipientState: () => ({
 			state: recipientState,
@@ -2183,4 +2184,73 @@ describe("LeadInboxRuntime", () => {
 		runtimes.splice(runtimes.indexOf(runtime), 1);
 		store.close();
 	});
+});
+
+it("rejects audit-only queue admission even after archival and raw registry dispatch", async () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2567-inbox-audit-"));
+	const store = await StateStore.create(":memory:");
+	const registry = new RuntimeRegistry();
+	registry.setAuditOnlyPredicate((envelope) =>
+		store.isLeadEventAuditOnly(envelope.seq, envelope.leadId),
+	);
+	const runtime = new LeadInboxRuntime({
+		projects,
+		store,
+		registry,
+		commDbPathForProject: () => join(root, "comm.db"),
+		ownerEpoch: "audit-test",
+		runLegacyCutover: () => {},
+		adapterForLead: () => ({
+			async deliverBatch() {
+				throw new Error("must not deliver");
+			},
+		}),
+	});
+	try {
+		const seq = store.appendLeadEvent(
+			"lead-a",
+			"routine",
+			"stage_changed",
+			JSON.stringify({ stage: "test" }),
+			undefined,
+			"audit_only",
+		);
+		const envelope = {
+			seq,
+			eventId: "routine",
+			leadId: "lead-a",
+			event: { event_type: "stage_changed" },
+			sessionKey: "",
+			timestamp: new Date().toISOString(),
+		} as LeadEventEnvelope;
+		expect(() => runtime.enqueueLeadEvent(envelope, "routine")).toThrow(
+			"audit_only_lead_event",
+		);
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		raw
+			.prepare("UPDATE lead_events SET created_at='2026-08-01' WHERE seq=?")
+			.run(seq);
+		expect(
+			store.archiveTerminalRows({
+				now: "2026-09-15",
+				limit: 1,
+				sourceTable: "lead_events",
+			}).archived,
+		).toBe(1);
+		expect(() => runtime.enqueueLeadEvent(envelope, "routine")).toThrow(
+			"audit_only_lead_event",
+		);
+		expect(await registry.dispatchLeadEvent(envelope)).toEqual({
+			delivered: false,
+			auditOnly: true,
+		});
+		expect(
+			runtime.getLeadEventSettlement("project-a", "lead_event:lead-a:routine")
+				.kind,
+		).toBe("absent_identity");
+	} finally {
+		runtime.close();
+		store.close();
+		rmSync(root, { recursive: true, force: true });
+	}
 });

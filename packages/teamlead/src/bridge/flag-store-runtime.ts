@@ -11,6 +11,13 @@ import type { StateStore } from "../StateStore.js";
 
 export type FlagStoreRuntime = { mode: "ready"; store: StateStore };
 
+type ScopedFlagStore = {
+	getFlagValueRow(
+		name: string,
+		scope?: string,
+	): { hasOverride: boolean; raw: string | null } | undefined;
+};
+
 export type AutoNarrowRuntimeControl = {
 	degraded: boolean;
 	reason?: "invalid_raw" | "receipt_missing" | "revision_mismatch";
@@ -87,7 +94,7 @@ function readBoolean(runtime: FlagStoreRuntime, name: string): boolean {
 }
 
 export function readScopedBoolean(
-	runtime: FlagStoreRuntime,
+	runtime: { store: ScopedFlagStore },
 	name: string,
 	projectName: string,
 ): boolean {
@@ -226,6 +233,33 @@ export function storeNodeDwellThresholdHours(
 		);
 	}
 	return value;
+}
+
+export function storeLeadTokenSavingsEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	try {
+		return readScopedBoolean(
+			{
+				store: {
+					getFlagValueRow(name, scope) {
+						const row = runtime.store.getFlagValueRow(name, scope);
+						if (row?.hasOverride && row.raw !== "0" && row.raw !== "1")
+							throw new Error("invalid lead_token_savings value");
+						return row;
+					},
+				},
+			},
+			"lead_token_savings",
+			projectName,
+		);
+	} catch (error) {
+		console.warn(
+			`[lead-token-savings] unavailable; restoring full behavior: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return false;
+	}
 }
 
 export function storeNodeDwellEnabled(

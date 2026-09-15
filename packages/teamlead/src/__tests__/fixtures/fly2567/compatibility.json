@@ -1,0 +1,117 @@
+{
+	"owner": "flywheel-eng-lead",
+	"reviewBy": "2026-10-15",
+	"policy": "Change detection only, not semantic equivalence. A bare digest refresh is not a valid disposition; review both modes and update the per-pair rationale. No wall-clock production or CI action.",
+	"pairs": [
+		{
+			"id": "department-lead-rules.md",
+			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence.",
+			"members": [
+				{
+					"path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
+					"sha256": "ca84299c54dc6def51d5ba902ca304098ed5d541663dd5e86fc69c5abaf2527c"
+				},
+				{
+					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/department-lead-rules.md",
+					"sha256": "757ba4427b0c4fe306542e89de4173f227ee5a42b2ab738b417716126bfeb548"
+				}
+			]
+		},
+		{
+			"id": "runner-messaging-rules.md",
+			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence.",
+			"members": [
+				{
+					"path": "packages/teamlead/lead-rules-base/runner-messaging-rules.md",
+					"sha256": "bbbfe978013d2894528810f260c1b8460db4fd344b1adbeafc5e828e74d48f10"
+				},
+				{
+					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-messaging-rules.md",
+					"sha256": "bea5a4e6512ff3c10340e9652666b0858e73dd42d012e227414d772bfbdb1bcc"
+				}
+			]
+		},
+		{
+			"id": "runner-patrol-rules.md",
+			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence.",
+			"members": [
+				{
+					"path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
+					"sha256": "4c2cf85f6101852572c67b4ac0d1e40be36e0682c096981b7732a1243a058b20"
+				},
+				{
+					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
+					"sha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c"
+				}
+			]
+		},
+		{
+			"id": "inbox-ack-rule.md",
+			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence.",
+			"members": [
+				{
+					"path": "packages/teamlead/scripts/inbox-ack-rule.md",
+					"sha256": "3a544e64a85d422c33a777979827f1616e284d530ec31de7102adbd722621614"
+				},
+				{
+					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/inbox-ack-rule.md",
+					"sha256": "26207a075496f647b3b12ff6d82b9f0235189a6eab61665c1a9c72bc6c1615ae"
+				}
+			]
+		},
+		{
+			"id": "patrol-runbook",
+			"rationale": "ON moves operational recipes to this runbook; OFF retains inline recipes. Shared procedure corrections require checking both copies.",
+			"members": [
+				{
+					"path": "packages/teamlead/lead-rules-base/runbooks/patrol-v1.md",
+					"sha256": "8e79bd0c350f775b624b5f25c463baad3fa52811aa627851fe5e5461c0e947b2"
+				},
+				{
+					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
+					"sha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c"
+				}
+			]
+		},
+		{
+			"id": "bootstrap-generator",
+			"rationale": "ON pages and classifies pending work; OFF preserves historical unpaged ordering and payload. The independent historical fixture verifies OFF behavior. Fixture import order/whitespace is Biome-normalized; the independent oracle normalizes only imports before checking the historical digest, leaving implementation bytes exact.",
+			"members": [
+				{
+					"path": "packages/teamlead/src/bridge/bootstrap-generator.ts",
+					"sha256": "77f259207b109f51df655911bf46082a26715c8d7e9dbefc78884ed42d78b9ae"
+				},
+				{
+					"path": "packages/teamlead/src/__tests__/fixtures/fly2567/bootstrap-generator-legacy.ts",
+					"sha256": "f5fde352fc614f6dbd3a3960514a3fef3a8c96d307778a071d172baaee0a99de"
+				},
+				{
+					"path": "packages/flywheel-comm/src/db.ts",
+					"sha256": "bd8d421513642771535bfc3840092c3c1796c75674391c3e016c4b111c0e106e"
+				}
+			]
+		},
+		{
+			"id": "bootstrap-format",
+			"rationale": "ON bounds rendering; OFF preserves complete historical bytes. Both transports must retain the same selector.",
+			"members": [
+				{
+					"path": "packages/teamlead/src/bridge/bootstrap-format.ts",
+					"sha256": "954d225f30cc71b0e13915bb56349f4ed5a1837fd61c6927ddab1f5eddcc7c2b"
+				},
+				{
+					"path": "packages/teamlead/src/bridge/bootstrap-format-legacy.ts",
+					"sha256": "7eb9d4e45fc168feacf1852c83bd2d0c082400190e81502ccd3a1e695eb1983e"
+				},
+				{
+					"path": "packages/teamlead/src/bridge/mailbox-lead-runtime.ts",
+					"sha256": "68c704eacbe5ff1c3384b96d2c63bf0ebd818434210b5d317715b0b60f40ba61"
+				},
+				{
+					"path": "packages/teamlead/src/bridge/commdb-lead-runtime.ts",
+					"sha256": "d04711f2edea47a4ce8094145787548c570f91bd0e3c12588b0d0e3f688ec378"
+				}
+			]
+		}
+	]
+}

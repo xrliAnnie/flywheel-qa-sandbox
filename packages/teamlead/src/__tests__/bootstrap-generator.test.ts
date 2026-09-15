@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	findProjectForLead,
 	generateBootstrap,
+	getBootstrapQuestionPage,
 } from "../bridge/bootstrap-generator.js";
 import { defaultGetCommDbPath } from "../bridge/session-capture.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -563,15 +564,18 @@ describe("Bootstrap Generator — FLY-161 pendingRunnerQuestions", () => {
 		warnSpy.mockRestore();
 	});
 
-	function insertQuestion(opts: {
-		from: string;
-		to: string;
-		content: string;
-		checkpoint?: string;
-		id?: string;
-		kind?: "report";
-	}): string {
-		const db = new CommDB(dbPath);
+	function insertQuestion(
+		opts: {
+			from: string;
+			to: string;
+			content: string;
+			checkpoint?: string;
+			id?: string;
+			kind?: "report";
+		},
+		seedDb?: CommDB,
+	): string {
+		const db = seedDb ?? new CommDB(dbPath);
 		try {
 			return db.insertQuestion(opts.from, opts.to, opts.content, {
 				checkpoint: opts.checkpoint,
@@ -579,9 +583,93 @@ describe("Bootstrap Generator — FLY-161 pendingRunnerQuestions", () => {
 				kind: opts.kind,
 			});
 		} finally {
-			db.close();
+			if (!seedDb) db.close();
 		}
 	}
+
+	it("pages across filtered gates and separates reports from unanswered asks", async () => {
+		store.upsertSession({
+			execution_id: "exec-page",
+			issue_id: "issue-page",
+			project_name: "geoforge3d",
+			status: "completed",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		const seedDb = new CommDB(dbPath);
+		const seed = (opts: Parameters<typeof insertQuestion>[0]) =>
+			insertQuestion(opts, seedDb);
+		try {
+			for (let i = 0; i < 51; i++)
+				seed({
+					from: "exec-page",
+					to: "product-lead",
+					content: "stale gate",
+					checkpoint: "brainstorm",
+					id: `gate-${String(i).padStart(3, "0")}`,
+				});
+			seed({
+				from: "exec-page",
+				to: "product-lead",
+				content: "DONE: needs answer",
+				id: "ask-page",
+			});
+			seed({
+				from: "exec-page",
+				to: "product-lead",
+				content: "Please follow up?",
+				kind: "report",
+				id: "report-page",
+			});
+			for (let i = 0; i < 200; i++)
+				seed({
+					from: "exec-page",
+					to: "product-lead",
+					content: "Report body",
+					kind: "report",
+					id: `report-more-${i}`,
+				});
+		} finally {
+			seedDb.close();
+		}
+		const recovered: string[] = [];
+		let cursor: { created_at: string; id: string } | undefined;
+		do {
+			const page = getBootstrapQuestionPage(
+				"product-lead",
+				store,
+				FLY161_PROJECTS,
+				{ kind: "report", limit: 50, cursor },
+			);
+			recovered.push(...page.items.map((q) => q.questionId));
+			cursor = page.nextCursor ?? undefined;
+		} while (cursor);
+		expect(new Set(recovered).size).toBe(201);
+		const first = getBootstrapQuestionPage(
+			"product-lead",
+			store,
+			FLY161_PROJECTS,
+			{ kind: "gate", limit: 50 },
+		);
+		expect(first.items).toEqual([]);
+		expect(first.nextCursor).not.toBeNull();
+		const last = getBootstrapQuestionPage(
+			"product-lead",
+			store,
+			FLY161_PROJECTS,
+			{ kind: "gate", limit: 50, cursor: first.nextCursor! },
+		);
+		expect(last.items).toEqual([]);
+		expect(last.nextCursor).toBeNull();
+		const snapshot = await generateBootstrap(
+			"product-lead",
+			store,
+			FLY161_PROJECTS,
+		);
+		expect(snapshot.pendingRunnerQuestions?.map((q) => q.questionId)).toEqual([
+			"ask-page",
+		]);
+		expect(snapshot.pendingReports).toHaveLength(201);
+	});
 
 	it("AC9: collects pendingRunnerQuestions for non-checkpoint questions across active + completed sessions", async () => {
 		store.upsertSession({
@@ -695,10 +783,8 @@ describe("Bootstrap Generator — FLY-161 pendingRunnerQuestions", () => {
 			FLY161_PROJECTS,
 		);
 
-		expect(bootstrap.pendingRunnerQuestions).toHaveLength(1);
-		expect(bootstrap.pendingRunnerQuestions?.[0]?.questionId).toBe(
-			"rstop-near-match",
-		);
+		expect(bootstrap.pendingReports).toHaveLength(1);
+		expect(bootstrap.pendingReports?.[0]?.questionId).toBe("rstop-near-match");
 	});
 
 	it("AC18: excludes completed-session gate questions from pendingGateQuestions", async () => {

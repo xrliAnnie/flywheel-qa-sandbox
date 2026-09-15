@@ -1,0 +1,927 @@
+{
+  "legacyRevision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+  "now": "2026-09-15T00:00:00.000Z",
+  "scope": "Historical renderer bytes only; does not prove current generator, delivery, or runtime toggle behavior.",
+  "cases": [
+    {
+      "name": "empty",
+      "snapshot": {
+        "leadId": "fixture-lead",
+        "activeSessions": [],
+        "pendingDecisions": [],
+        "recentFailures": [],
+        "recentEvents": [],
+        "memoryRecall": null
+      }
+    },
+    {
+      "name": "overflow-unicode-mixed",
+      "snapshot": {
+        "leadId": "fixture-lead",
+        "activeSessions": [
+          {
+            "issueId": "issue-0",
+            "issueIdentifier": null,
+            "issueTitle": "任务 0 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-1",
+            "issueIdentifier": "FLY-1",
+            "issueTitle": "任务 1 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-1",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-2",
+            "issueIdentifier": null,
+            "issueTitle": "任务 2 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-3",
+            "issueIdentifier": "FLY-3",
+            "issueTitle": "任务 3 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "chatThreadId": "thread-3",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-4",
+            "issueIdentifier": null,
+            "issueTitle": "任务 4 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-5",
+            "issueIdentifier": "FLY-5",
+            "issueTitle": "任务 5 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-5",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-6",
+            "issueIdentifier": null,
+            "issueTitle": "任务 6 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-7",
+            "issueIdentifier": "FLY-7",
+            "issueTitle": "任务 7 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-7",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-8",
+            "issueIdentifier": null,
+            "issueTitle": "任务 8 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-9",
+            "issueIdentifier": "FLY-9",
+            "issueTitle": "任务 9 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "chatThreadId": "thread-9",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-10",
+            "issueIdentifier": null,
+            "issueTitle": "任务 10 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-11",
+            "issueIdentifier": "FLY-11",
+            "issueTitle": "任务 11 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-11",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-12",
+            "issueIdentifier": null,
+            "issueTitle": "任务 12 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-13",
+            "issueIdentifier": "FLY-13",
+            "issueTitle": "任务 13 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-13",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-14",
+            "issueIdentifier": null,
+            "issueTitle": "任务 14 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          }
+        ],
+        "pendingDecisions": [
+          {
+            "issueId": "issue-0",
+            "issueIdentifier": null,
+            "issueTitle": "任务 0 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-1",
+            "issueIdentifier": "FLY-1",
+            "issueTitle": "任务 1 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-1",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-2",
+            "issueIdentifier": null,
+            "issueTitle": "任务 2 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-3",
+            "issueIdentifier": "FLY-3",
+            "issueTitle": "任务 3 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "chatThreadId": "thread-3",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-4",
+            "issueIdentifier": null,
+            "issueTitle": "任务 4 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-5",
+            "issueIdentifier": "FLY-5",
+            "issueTitle": "任务 5 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-5",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-6",
+            "issueIdentifier": null,
+            "issueTitle": "任务 6 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-7",
+            "issueIdentifier": "FLY-7",
+            "issueTitle": "任务 7 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-7",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-8",
+            "issueIdentifier": null,
+            "issueTitle": "任务 8 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-9",
+            "issueIdentifier": "FLY-9",
+            "issueTitle": "任务 9 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "chatThreadId": "thread-9",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-10",
+            "issueIdentifier": null,
+            "issueTitle": "任务 10 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-11",
+            "issueIdentifier": "FLY-11",
+            "issueTitle": "任务 11 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-11",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-12",
+            "issueIdentifier": null,
+            "issueTitle": "任务 12 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-13",
+            "issueIdentifier": "FLY-13",
+            "issueTitle": "任务 13 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-13",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-14",
+            "issueIdentifier": null,
+            "issueTitle": "任务 14 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          }
+        ],
+        "recentFailures": [
+          {
+            "issueId": "issue-0",
+            "issueIdentifier": null,
+            "issueTitle": "任务 0 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-1",
+            "issueIdentifier": "FLY-1",
+            "issueTitle": "任务 1 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-1",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-2",
+            "issueIdentifier": null,
+            "issueTitle": "任务 2 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-3",
+            "issueIdentifier": "FLY-3",
+            "issueTitle": "任务 3 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "chatThreadId": "thread-3",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-4",
+            "issueIdentifier": null,
+            "issueTitle": "任务 4 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-5",
+            "issueIdentifier": "FLY-5",
+            "issueTitle": "任务 5 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-5",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-6",
+            "issueIdentifier": null,
+            "issueTitle": "任务 6 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-7",
+            "issueIdentifier": "FLY-7",
+            "issueTitle": "任务 7 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-7",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-8",
+            "issueIdentifier": null,
+            "issueTitle": "任务 8 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-9",
+            "issueIdentifier": "FLY-9",
+            "issueTitle": "任务 9 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "chatThreadId": "thread-9",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-10",
+            "issueIdentifier": null,
+            "issueTitle": "任务 10 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-11",
+            "issueIdentifier": "FLY-11",
+            "issueTitle": "任务 11 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-11",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-12",
+            "issueIdentifier": null,
+            "issueTitle": "任务 12 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "main",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-13",
+            "issueIdentifier": "FLY-13",
+            "issueTitle": "任务 13 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-13",
+            "decisionRoute": "needs_review",
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          },
+          {
+            "issueId": "issue-14",
+            "issueIdentifier": null,
+            "issueTitle": "任务 14 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 ",
+            "status": "running",
+            "sessionRole": "implement",
+            "decisionRoute": null,
+            "lastError": "故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭"
+          }
+        ],
+        "recentEvents": [
+          {
+            "seq": 1,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-0",
+              "issue_identifier": null
+            }
+          },
+          {
+            "seq": 2,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-1",
+              "issue_identifier": "FLY-1"
+            }
+          },
+          {
+            "seq": 3,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-2",
+              "issue_identifier": null
+            }
+          },
+          {
+            "seq": 4,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-3",
+              "issue_identifier": "FLY-3"
+            }
+          },
+          {
+            "seq": 5,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-4",
+              "issue_identifier": null
+            }
+          },
+          {
+            "seq": 6,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-5",
+              "issue_identifier": "FLY-5"
+            }
+          },
+          {
+            "seq": 7,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-6",
+              "issue_identifier": null
+            }
+          },
+          {
+            "seq": 8,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-7",
+              "issue_identifier": "FLY-7"
+            }
+          },
+          {
+            "seq": 9,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-8",
+              "issue_identifier": null
+            }
+          },
+          {
+            "seq": 10,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-9",
+              "issue_identifier": "FLY-9"
+            }
+          },
+          {
+            "seq": 11,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-10",
+              "issue_identifier": null
+            }
+          },
+          {
+            "seq": 12,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-11",
+              "issue_identifier": "FLY-11"
+            }
+          },
+          {
+            "seq": 13,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-12",
+              "issue_identifier": null
+            }
+          },
+          {
+            "seq": 14,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-13",
+              "issue_identifier": "FLY-13"
+            }
+          },
+          {
+            "seq": 15,
+            "event": {
+              "event_type": "stage_changed",
+              "issue_id": "issue-14",
+              "issue_identifier": null
+            }
+          }
+        ],
+        "memoryRecall": "memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 ",
+        "pendingGateQuestions": [
+          {
+            "questionId": "question-0",
+            "checkpoint": "question",
+            "executionId": "exec-0",
+            "issueIdentifier": null,
+            "sessionRole": "main",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-1",
+            "checkpoint": "review_code",
+            "executionId": "exec-1",
+            "issueIdentifier": "FLY-1",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-1",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-2",
+            "checkpoint": "question",
+            "executionId": "exec-2",
+            "issueIdentifier": null,
+            "sessionRole": "implement",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-3",
+            "checkpoint": "review_code",
+            "executionId": "exec-3",
+            "issueIdentifier": "FLY-3",
+            "sessionRole": "main",
+            "chatThreadId": "thread-3",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-4",
+            "checkpoint": "question",
+            "executionId": "exec-4",
+            "issueIdentifier": null,
+            "sessionRole": "implement",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-5",
+            "checkpoint": "review_code",
+            "executionId": "exec-5",
+            "issueIdentifier": "FLY-5",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-5",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-6",
+            "checkpoint": "question",
+            "executionId": "exec-6",
+            "issueIdentifier": null,
+            "sessionRole": "main",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-7",
+            "checkpoint": "review_code",
+            "executionId": "exec-7",
+            "issueIdentifier": "FLY-7",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-7",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-8",
+            "checkpoint": "question",
+            "executionId": "exec-8",
+            "issueIdentifier": null,
+            "sessionRole": "implement",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-9",
+            "checkpoint": "review_code",
+            "executionId": "exec-9",
+            "issueIdentifier": "FLY-9",
+            "sessionRole": "main",
+            "chatThreadId": "thread-9",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-10",
+            "checkpoint": "question",
+            "executionId": "exec-10",
+            "issueIdentifier": null,
+            "sessionRole": "implement",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-11",
+            "checkpoint": "review_code",
+            "executionId": "exec-11",
+            "issueIdentifier": "FLY-11",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-11",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-12",
+            "checkpoint": "question",
+            "executionId": "exec-12",
+            "issueIdentifier": null,
+            "sessionRole": "main",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-13",
+            "checkpoint": "review_code",
+            "executionId": "exec-13",
+            "issueIdentifier": "FLY-13",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-13",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-14",
+            "checkpoint": "question",
+            "executionId": "exec-14",
+            "issueIdentifier": null,
+            "sessionRole": "implement",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          }
+        ],
+        "pendingRunnerQuestions": [
+          {
+            "questionId": "question-0",
+            "checkpoint": "question",
+            "executionId": "exec-0",
+            "issueIdentifier": null,
+            "sessionRole": "main",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-1",
+            "checkpoint": "review_code",
+            "executionId": "exec-1",
+            "issueIdentifier": "FLY-1",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-1",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-2",
+            "checkpoint": "question",
+            "executionId": "exec-2",
+            "issueIdentifier": null,
+            "sessionRole": "implement",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-3",
+            "checkpoint": "review_code",
+            "executionId": "exec-3",
+            "issueIdentifier": "FLY-3",
+            "sessionRole": "main",
+            "chatThreadId": "thread-3",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-4",
+            "checkpoint": "question",
+            "executionId": "exec-4",
+            "issueIdentifier": null,
+            "sessionRole": "implement",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-5",
+            "checkpoint": "review_code",
+            "executionId": "exec-5",
+            "issueIdentifier": "FLY-5",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-5",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-6",
+            "checkpoint": "question",
+            "executionId": "exec-6",
+            "issueIdentifier": null,
+            "sessionRole": "main",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-7",
+            "checkpoint": "review_code",
+            "executionId": "exec-7",
+            "issueIdentifier": "FLY-7",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-7",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-8",
+            "checkpoint": "question",
+            "executionId": "exec-8",
+            "issueIdentifier": null,
+            "sessionRole": "implement",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-9",
+            "checkpoint": "review_code",
+            "executionId": "exec-9",
+            "issueIdentifier": "FLY-9",
+            "sessionRole": "main",
+            "chatThreadId": "thread-9",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-10",
+            "checkpoint": "question",
+            "executionId": "exec-10",
+            "issueIdentifier": null,
+            "sessionRole": "implement",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-11",
+            "checkpoint": "review_code",
+            "executionId": "exec-11",
+            "issueIdentifier": "FLY-11",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-11",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-12",
+            "checkpoint": "question",
+            "executionId": "exec-12",
+            "issueIdentifier": null,
+            "sessionRole": "main",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-13",
+            "checkpoint": "review_code",
+            "executionId": "exec-13",
+            "issueIdentifier": "FLY-13",
+            "sessionRole": "implement",
+            "chatThreadId": "thread-13",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          },
+          {
+            "questionId": "question-14",
+            "checkpoint": "question",
+            "executionId": "exec-14",
+            "issueIdentifier": null,
+            "sessionRole": "implement",
+            "commDbPath": "/fixture/comm.db",
+            "createdAt": "2026-09-15T00:00:00.000Z",
+            "content": "Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context "
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "backend": "mailbox",
+      "name": "empty",
+      "content": "## Bootstrap — Lead: fixture-lead\nGenerated at 2026-09-15T00:00:00.000Z\n",
+      "bytes": 74,
+      "sha256": "57e63c081fac69df569de4223e68d8683b4887ef9ce19b359adb90f95b477462"
+    },
+    {
+      "backend": "mailbox",
+      "name": "overflow-unicode-mixed",
+      "content": "## Bootstrap — Lead: fixture-lead\nGenerated at 2026-09-15T00:00:00.000Z\n\n### Active Sessions\n- issue-0: 任务 0 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-1 [IMPLEMENT]: 任务 1 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-1)\n- issue-2 [IMPLEMENT]: 任务 2 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-3: 任务 3 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-3)\n- issue-4 [IMPLEMENT]: 任务 4 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-5 [IMPLEMENT]: 任务 5 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-5)\n- issue-6: 任务 6 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-7 [IMPLEMENT]: 任务 7 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-7)\n- issue-8 [IMPLEMENT]: 任务 8 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-9: 任务 9 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-9)\n- issue-10 [IMPLEMENT]: 任务 10 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-11 [IMPLEMENT]: 任务 11 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-11)\n- issue-12: 任务 12 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-13 [IMPLEMENT]: 任务 13 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-13)\n- issue-14 [IMPLEMENT]: 任务 14 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n\n### Pending Decisions\n- issue-0: 任务 0 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-1 [IMPLEMENT]: 任务 1 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-2 [IMPLEMENT]: 任务 2 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-3: 任务 3 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-4 [IMPLEMENT]: 任务 4 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-5 [IMPLEMENT]: 任务 5 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-6: 任务 6 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-7 [IMPLEMENT]: 任务 7 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-8 [IMPLEMENT]: 任务 8 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-9: 任务 9 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-10 [IMPLEMENT]: 任务 10 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-11 [IMPLEMENT]: 任务 11 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-12: 任务 12 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-13 [IMPLEMENT]: 任务 13 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-14 [IMPLEMENT]: 任务 14 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n\n### Recent Failures\n- issue-0: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-1 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-2 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-3: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-4 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-5 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-6: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-7 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-8 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-9: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-10 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-11 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-12: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-13 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-14 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n\n### Recent Events (last 5 min — 15 events)\n- [#1] stage_changed — issue-0\n- [#2] stage_changed — FLY-1\n- [#3] stage_changed — issue-2\n- [#4] stage_changed — FLY-3\n- [#5] stage_changed — issue-4\n- [#6] stage_changed — FLY-5\n- [#7] stage_changed — issue-6\n- [#8] stage_changed — FLY-7\n- [#9] stage_changed — issue-8\n- [#10] stage_changed — FLY-9\n- [#11] stage_changed — issue-10\n- [#12] stage_changed — FLY-11\n- [#13] stage_changed — issue-12\n- [#14] stage_changed — FLY-13\n- [#15] stage_changed — issue-14\n\n### Pending Gate Questions\n- [QUESTION] exec-0 (ID: question-0, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [REVIEW_CODE] FLY-1 (ID: question-1, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [QUESTION] exec-2 (ID: question-2, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [REVIEW_CODE] FLY-3 (ID: question-3, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [QUESTION] exec-4 (ID: question-4, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [REVIEW_CODE] FLY-5 (ID: question-5, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [QUESTION] exec-6 (ID: question-6, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [REVIEW_CODE] FLY-7 (ID: question-7, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [QUESTION] exec-8 (ID: question-8, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [REVIEW_CODE] FLY-9 (ID: question-9, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [QUESTION] exec-10 (ID: question-10, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [REVIEW_CODE] FLY-11 (ID: question-11, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [QUESTION] exec-12 (ID: question-12, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [REVIEW_CODE] FLY-13 (ID: question-13, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [QUESTION] exec-14 (ID: question-14, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\nAction: For each, relay to Annie, then: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> \"reply\"\n\n### Pending Runner Questions\n- [ASK] exec-0 (ID: question-0, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [ASK] FLY-1 (ID: question-1, DB: /fixture/comm.db) (Chat-Thread: thread-1): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [ASK] exec-2 (ID: question-2, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [ASK] FLY-3 (ID: question-3, DB: /fixture/comm.db) (Chat-Thread: thread-3): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [ASK] exec-4 (ID: question-4, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [ASK] FLY-5 (ID: question-5, DB: /fixture/comm.db) (Chat-Thread: thread-5): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [ASK] exec-6 (ID: question-6, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [ASK] FLY-7 (ID: question-7, DB: /fixture/comm.db) (Chat-Thread: thread-7): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [ASK] exec-8 (ID: question-8, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [ASK] FLY-9 (ID: question-9, DB: /fixture/comm.db) (Chat-Thread: thread-9): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [ASK] exec-10 (ID: question-10, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [ASK] FLY-11 (ID: question-11, DB: /fixture/comm.db) (Chat-Thread: thread-11): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [ASK] exec-12 (ID: question-12, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [ASK] FLY-13 (ID: question-13, DB: /fixture/comm.db) (Chat-Thread: thread-13): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [ASK] exec-14 (ID: question-14, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\nAction: Surface each to Annie (Runner is continuing work — non-blocking). Reply with: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> \"reply\"\n\n### Memory Recall\nmemory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 \n",
+      "bytes": 27157,
+      "sha256": "21f93970333811f869cd78a2c39136919dab39cb8b664c44151f3bdea7955f43"
+    },
+    {
+      "backend": "commdb",
+      "name": "empty",
+      "content": "## Bootstrap — Lead: fixture-lead\nGenerated at 2026-09-15T00:00:00.000Z\n",
+      "bytes": 74,
+      "sha256": "57e63c081fac69df569de4223e68d8683b4887ef9ce19b359adb90f95b477462"
+    },
+    {
+      "backend": "commdb",
+      "name": "overflow-unicode-mixed",
+      "content": "## Bootstrap — Lead: fixture-lead\nGenerated at 2026-09-15T00:00:00.000Z\n\n### Active Sessions\n- issue-0: 任务 0 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-1 [IMPLEMENT]: 任务 1 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-1)\n- issue-2 [IMPLEMENT]: 任务 2 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-3: 任务 3 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-3)\n- issue-4 [IMPLEMENT]: 任务 4 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-5 [IMPLEMENT]: 任务 5 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-5)\n- issue-6: 任务 6 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-7 [IMPLEMENT]: 任务 7 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-7)\n- issue-8 [IMPLEMENT]: 任务 8 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-9: 任务 9 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-9)\n- issue-10 [IMPLEMENT]: 任务 10 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-11 [IMPLEMENT]: 任务 11 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-11)\n- issue-12: 任务 12 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n- FLY-13 [IMPLEMENT]: 任务 13 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running] (Chat-Thread: thread-13)\n- issue-14 [IMPLEMENT]: 任务 14 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  [running]\n\n### Pending Decisions\n- issue-0: 任务 0 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-1 [IMPLEMENT]: 任务 1 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-2 [IMPLEMENT]: 任务 2 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-3: 任务 3 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-4 [IMPLEMENT]: 任务 4 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-5 [IMPLEMENT]: 任务 5 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-6: 任务 6 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-7 [IMPLEMENT]: 任务 7 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-8 [IMPLEMENT]: 任务 8 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-9: 任务 9 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-10 [IMPLEMENT]: 任务 10 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-11 [IMPLEMENT]: 任务 11 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-12: 任务 12 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n- FLY-13 [IMPLEMENT]: 任务 13 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (needs_review)\n- issue-14 [IMPLEMENT]: 任务 14 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭 long title 🧭  (unknown)\n\n### Recent Failures\n- issue-0: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-1 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-2 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-3: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-4 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-5 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-6: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-7 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-8 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-9: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-10 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-11 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-12: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- FLY-13 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n- issue-14 [IMPLEMENT]: 故障 🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭🧭\ud83e\n\n### Recent Events (last 5 min — 15 events)\n- [#1] stage_changed — issue-0\n- [#2] stage_changed — FLY-1\n- [#3] stage_changed — issue-2\n- [#4] stage_changed — FLY-3\n- [#5] stage_changed — issue-4\n- [#6] stage_changed — FLY-5\n- [#7] stage_changed — issue-6\n- [#8] stage_changed — FLY-7\n- [#9] stage_changed — issue-8\n- [#10] stage_changed — FLY-9\n- [#11] stage_changed — issue-10\n- [#12] stage_changed — FLY-11\n- [#13] stage_changed — issue-12\n- [#14] stage_changed — FLY-13\n- [#15] stage_changed — issue-14\n\n### Pending Gate Questions\n- [QUESTION] exec-0 (ID: question-0, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [REVIEW_CODE] FLY-1 (ID: question-1, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [QUESTION] exec-2 (ID: question-2, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [REVIEW_CODE] FLY-3 (ID: question-3, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [QUESTION] exec-4 (ID: question-4, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [REVIEW_CODE] FLY-5 (ID: question-5, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [QUESTION] exec-6 (ID: question-6, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [REVIEW_CODE] FLY-7 (ID: question-7, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [QUESTION] exec-8 (ID: question-8, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [REVIEW_CODE] FLY-9 (ID: question-9, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [QUESTION] exec-10 (ID: question-10, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [REVIEW_CODE] FLY-11 (ID: question-11, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [QUESTION] exec-12 (ID: question-12, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [REVIEW_CODE] FLY-13 (ID: question-13, DB: /fixture/comm.db): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [QUESTION] exec-14 (ID: question-14, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\nAction: For each, relay to Annie, then: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> \"reply\"\n\n### Pending Runner Questions\n- [ASK] exec-0 (ID: question-0, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [ASK] FLY-1 (ID: question-1, DB: /fixture/comm.db) (Chat-Thread: thread-1): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [ASK] exec-2 (ID: question-2, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [ASK] FLY-3 (ID: question-3, DB: /fixture/comm.db) (Chat-Thread: thread-3): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [ASK] exec-4 (ID: question-4, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [ASK] FLY-5 (ID: question-5, DB: /fixture/comm.db) (Chat-Thread: thread-5): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [ASK] exec-6 (ID: question-6, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [ASK] FLY-7 (ID: question-7, DB: /fixture/comm.db) (Chat-Thread: thread-7): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [ASK] exec-8 (ID: question-8, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [ASK] FLY-9 (ID: question-9, DB: /fixture/comm.db) (Chat-Thread: thread-9): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [ASK] exec-10 (ID: question-10, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [ASK] FLY-11 (ID: question-11, DB: /fixture/comm.db) (Chat-Thread: thread-11): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [ASK] exec-12 (ID: question-12, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\n- [IMPLEMENT] [ASK] FLY-13 (ID: question-13, DB: /fixture/comm.db) (Chat-Thread: thread-13): DONE: report 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭conte...\n- [IMPLEMENT] [ASK] exec-14 (ID: question-14, DB: /fixture/comm.db): Please decide 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭context 🧭cont...\nAction: Surface each to Annie (Runner is continuing work — non-blocking). Reply with: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> \"reply\"\n\n### Memory Recall\nmemory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 memory 🧭 \n",
+      "bytes": 27157,
+      "sha256": "21f93970333811f869cd78a2c39136919dab39cb8b664c44151f3bdea7955f43"
+    }
+  ]
+}

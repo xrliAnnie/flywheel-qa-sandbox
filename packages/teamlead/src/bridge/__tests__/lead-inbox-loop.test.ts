@@ -109,6 +109,44 @@ function loop(
 }
 
 describe("LeadInboxLoop mailbox consumption", () => {
+	it.each([false, true])(
+		"FLY-2567 consumes protocol before admission; protocol failure=%s still runs expiry",
+		async (fail) => {
+			const queue = makeQueue();
+			queue.enqueue({
+				id: "early-ack",
+				fromAgent: "lead-a",
+				toAgent: "bridge",
+				recipientKind: "bridge",
+				type: "ack_batch",
+				msgClass: "protocol",
+				content: JSON.stringify({ batch_id: "old-batch" }),
+				senderRef: encodeSenderRef(),
+			});
+			const order: string[] = [];
+			const reconcile = vi.spyOn(queue, "reconcileExpiredLeases");
+			const handler = vi.fn(async () => {
+				order.push("protocol");
+				if (fail) throw new Error("protocol unavailable");
+				return { disposition: "done" };
+			});
+			const result = await loop(
+				queue,
+				{ deliverBatch: vi.fn() },
+				{
+					handleProtocol: handler,
+					admit: async () => {
+						order.push("admit");
+					},
+				},
+			).tick();
+			expect(order[0]).toBe("protocol");
+			expect(reconcile).toHaveBeenCalledOnce();
+			expect(result.ok).toBe(!fail);
+			if (fail) expect(queue.getById("early-ack")?.state).not.toBe("ACKED");
+		},
+	);
+
 	it("probes one Lead incarnation only once while reconciling several expired batches", async () => {
 		const queue = makeQueue();
 		const claimAt = "2099-07-19T11:59:50.000Z";

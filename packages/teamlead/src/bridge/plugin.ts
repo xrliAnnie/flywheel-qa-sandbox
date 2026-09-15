@@ -223,6 +223,7 @@ import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
 import { createBetaManagementProvider } from "./beta-release-management.js";
 import { createBetaReleaseRuntime } from "./beta-release-runtime.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
+import { createBootstrapReadRouter } from "./bootstrap-route.js";
 import { watchIssueThreadBotSends } from "./bot-send-rearchive.js";
 import { makeShipRemoteBranchCleanup } from "./branch-cleanup.js";
 // FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
@@ -4726,6 +4727,18 @@ export function createBridgeApp(
 		},
 	);
 
+	app.use(
+		"/api/bootstrap",
+		createBootstrapReadRouter({
+			store,
+			projects,
+			apiToken: config.apiToken,
+			geminiAgentToken: config.geminiAgentToken,
+			memoryService,
+			chatThreadsEnabled: config.chatThreadsEnabled,
+		}),
+	);
+
 	// GEO-195: Bootstrap endpoint — crash recovery for Claude Lead sessions
 	app.post(
 		"/api/bootstrap/:leadId",
@@ -6316,6 +6329,9 @@ export async function startBridge(
 				}
 			: {}),
 	});
+	registry.setAuditOnlyPredicate((envelope) =>
+		store.isLeadEventAuditOnly(envelope.seq, envelope.leadId),
+	);
 	registry.setLeadEventEnqueuer((envelope, content) =>
 		leadInboxRuntime.enqueueLeadEvent(envelope, content),
 	);

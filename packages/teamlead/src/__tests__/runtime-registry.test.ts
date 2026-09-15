@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { LeadRuntime } from "../bridge/lead-runtime.js";
+import type { LeadEventEnvelope, LeadRuntime } from "../bridge/lead-runtime.js";
 import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 
@@ -40,6 +40,46 @@ const projects: ProjectEntry[] = [
 ];
 
 describe("RuntimeRegistry", () => {
+	it("does not dispatch persisted audit-only events through direct or queued paths", async () => {
+		const reg = new RuntimeRegistry();
+		const runtime = makeRuntime();
+		reg.register(makeLead(), runtime);
+		const event = {
+			seq: 1,
+			leadId: "product-lead",
+			event: { event_type: "stage_changed" },
+			sessionKey: "s",
+			timestamp: "now",
+		} as LeadEventEnvelope;
+		reg.setAuditOnlyPredicate((envelope) => envelope.seq === 1);
+		expect(await reg.dispatchLeadEvent(event)).toEqual({
+			delivered: false,
+			auditOnly: true,
+		});
+		expect(await reg.getForLead("product-lead")!.deliver(event)).toEqual({
+			delivered: false,
+			auditOnly: true,
+		});
+		const enqueue = vi.fn(() => ({
+			queued: true as const,
+			deliveryId: "model",
+			seq: 2,
+		}));
+		reg.setLeadEventEnqueuer(enqueue);
+		expect(await reg.dispatchLeadEvent(event)).toEqual({
+			delivered: false,
+			auditOnly: true,
+		});
+		expect(() => reg.enqueueLeadEvent(event)).toThrow("audit_only_lead_event");
+		expect(runtime.deliver).not.toHaveBeenCalled();
+		expect(enqueue).not.toHaveBeenCalled();
+		expect(await reg.dispatchLeadEvent({ ...event, seq: 2 })).toEqual({
+			delivered: false,
+			queued: true,
+		});
+		expect(enqueue).toHaveBeenCalledTimes(1);
+	});
+
 	it("register + getForLead", () => {
 		const reg = new RuntimeRegistry();
 		const lead = makeLead();

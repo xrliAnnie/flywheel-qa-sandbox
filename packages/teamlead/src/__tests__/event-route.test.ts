@@ -3024,6 +3024,140 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		store.close();
 	});
 
+	it("hot toggles routine stage delivery and restores the exact old payload shape", async () => {
+		store.upsertSession({
+			execution_id: "exec-toggle",
+			issue_id: "issue-toggle",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["PM"]),
+		});
+		const rows: { payload: string; delivery_disposition: string }[] = [];
+		for (const [index, enabled] of [true, false, true].entries()) {
+			expect(
+				store.applyScopedFlagValueChange({
+					name: "lead_token_savings",
+					scope: "geoforge3d",
+					op: "set",
+					rawTo: enabled ? "1" : "0",
+					expectedChangeSeq: store.getFlagValueChangeSeq(
+						"lead_token_savings",
+						"geoforge3d",
+					),
+					actor: "fixture-lead",
+					reason: "hot rollback regression",
+				}).ok,
+			).toBe(true);
+			const response = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify({
+					event_id: `toggle-${index}`,
+					execution_id: "exec-toggle",
+					issue_id: "issue-toggle",
+					project_name: "geoforge3d",
+					event_type: "stage_changed",
+					source: "flywheel-comm",
+					payload: { stage: "test" },
+				}),
+			});
+			expect(response.status).toBe(200);
+			expect(store.getSession("exec-toggle")?.session_stage).toBe("test");
+			rows.push(
+				(store as any).db.raw
+					.prepare(
+						"SELECT payload,delivery_disposition FROM lead_events WHERE event_id=?",
+					)
+					.get(`toggle-${index}`),
+			);
+			expect(rows[index]!.delivery_disposition).toBe(
+				enabled ? "audit_only" : "model",
+			);
+		}
+		const { stage: _stage, ...oldPayload } = JSON.parse(rows[0]!.payload);
+		expect(rows[1]!.payload).toBe(JSON.stringify(oldPayload));
+		expect(
+			capturedEnvelopes.filter((e) => e.event.event_type === "stage_changed"),
+		).toHaveLength(1);
+		expect(
+			capturedEnvelopes.find((e) => e.event.event_type === "stage_changed")!
+				.event,
+		).toEqual(oldPayload);
+	});
+
+	it("audits routine stages after persisting progress and retains actionable stages", async () => {
+		store.upsertSession({
+			execution_id: "exec-routine",
+			issue_id: "issue-routine",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["PM"]),
+		});
+		for (const stage of [
+			"onboard",
+			"brainstorm",
+			"research",
+			"plan",
+			"implement",
+			"test",
+			"approve",
+		]) {
+			const response = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify({
+					event_id: `routine-${stage}`,
+					execution_id: "exec-routine",
+					issue_id: "issue-routine",
+					project_name: "geoforge3d",
+					event_type: "stage_changed",
+					source: "flywheel-comm",
+					payload: { stage },
+				}),
+			});
+			expect(response.status).toBe(200);
+			expect(store.getSession("exec-routine")?.session_stage).toBe(stage);
+			const row = (store as any).db.raw
+				.prepare(
+					"SELECT delivery_disposition,payload FROM lead_events WHERE event_id=?",
+				)
+				.get(`routine-${stage}`);
+			expect(row.delivery_disposition).toBe(
+				stage === "approve" ? "model" : "audit_only",
+			);
+			expect(JSON.parse(row.payload).stage).toBe(stage);
+		}
+		expect(
+			capturedEnvelopes.filter((e) => e.event.event_type === "stage_changed"),
+		).toHaveLength(1);
+		const response = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify({
+				event_id: "routine-action",
+				execution_id: "exec-routine",
+				issue_id: "issue-routine",
+				project_name: "geoforge3d",
+				event_type: "stage_changed",
+				source: "flywheel-comm",
+				payload: { stage: "test", status: "failed" },
+			}),
+		});
+		expect(response.status).toBe(200);
+		expect(
+			capturedEnvelopes.filter((e) => e.event.event_type === "stage_changed"),
+		).toHaveLength(2);
+	});
+
 	it("session_started event delivers to runtime for PM lead via chat_channel", async () => {
 		await fetch(`${baseUrl}/events`, {
 			method: "POST",

@@ -64,6 +64,86 @@ const claimLead = (queue: MailboxQueue, batchId: string, now = T0) =>
 	});
 
 describe("FLY-1573 mailbox queue capabilities", () => {
+	it.each([
+		"queued",
+		"expired-claim",
+		"live-claim",
+		"wrong-sender",
+		"malformed",
+		"wrong-batch",
+		"dead",
+		"mixed-recipient",
+	])("FLY-2567 expiry respects durable ACK: %s", (scenario) => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "ack-race");
+			claimLead(queue, "ack-race-batch");
+			queue.recordLeadBatchDelivered({
+				batchId: "ack-race-batch",
+				ownerEpoch: OWNER,
+				now: T0,
+				ackLeaseTtlMs: 1000,
+			});
+			queue.enqueue({
+				id: "queued-ack",
+				fromAgent: scenario === "wrong-sender" ? "other-lead" : "lead-a",
+				toAgent: "bridge",
+				recipientKind: "bridge",
+				type: "ack_batch",
+				msgClass: "protocol",
+				content:
+					scenario === "malformed"
+						? "null"
+						: JSON.stringify({
+								batch_id:
+									scenario === "wrong-batch" ? "other-batch" : "ack-race-batch",
+							}),
+				senderRef: SENDER_REF,
+				createdAt: at(1),
+			});
+			if (scenario.endsWith("claim"))
+				db.prepare(
+					"UPDATE mailbox SET state = 'LEASED', claimed_by = 'other-owner', claim_expires_at = ? WHERE id = 'queued-ack'",
+				).run(scenario === "live-claim" ? at(20) : at(1));
+			if (scenario === "dead")
+				db.prepare(
+					"UPDATE mailbox SET state = 'DEAD' WHERE id = 'queued-ack'",
+				).run();
+			if (scenario === "mixed-recipient") {
+				enqueue(queue, "other-member", { toAgent: "other-lead" });
+				db.prepare(
+					"UPDATE mailbox SET batch_id = 'ack-race-batch', state = 'ACKED' WHERE id = 'other-member'",
+				).run();
+			}
+			const result = queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(2),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "alive",
+				maxBatches: 10,
+				maxTerminalRows: 0,
+			});
+			const valid = ["queued", "expired-claim", "live-claim"].includes(
+				scenario,
+			);
+			expect(result.requeued).toBe(valid ? 0 : 1);
+			expect(queue.getById("ack-race")?.state).toBe(
+				scenario === "live-claim" ? "LEASED" : valid ? "ACKED" : "QUEUED",
+			);
+			if (scenario === "live-claim")
+				expect(queue.getById("queued-ack")).toMatchObject({
+					state: "LEASED",
+					claimed_by: "other-owner",
+				});
+			else if (valid) expect(queue.getById("queued-ack")?.state).toBe("ACKED");
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
 	it("derives uncovered Lead and unroutable-runner dead letters without writing mailbox rows", () => {
 		const { db, queue } = fixture();
 		try {

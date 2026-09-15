@@ -20449,6 +20449,7 @@ export class StateStore {
 		eventType: string,
 		payload: string,
 		sessionKey?: string,
+		deliveryDisposition: "model" | "audit_only" = "model",
 	): number {
 		const archived = findArchivedTerminalRow(this.db.raw, "lead_events", [
 			leadId,
@@ -20478,8 +20479,8 @@ export class StateStore {
 				`INSERT INTO lead_events (
 				   lead_id, event_id, event_type, payload, session_key,
 				   ack_required, ack_policy, ack_protocol_version,
-				   routing_snapshot, ack_owner_lead_id
-				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				   routing_snapshot, ack_owner_lead_id, delivery_disposition
+				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					leadId,
 					eventId,
@@ -20491,6 +20492,7 @@ export class StateStore {
 					null,
 					routingSnapshot,
 					leadId,
+					deliveryDisposition,
 				],
 			);
 		} catch (err) {
@@ -20709,7 +20711,7 @@ export class StateStore {
 	/** Mark a lead event as delivered. */
 	markLeadEventDelivered(seq: number): void {
 		this.db.run(
-			"UPDATE lead_events SET delivered_at = datetime('now') WHERE seq = ?",
+			"UPDATE lead_events SET delivered_at = datetime('now') WHERE seq = ? AND delivery_disposition = 'model'",
 			[seq],
 		);
 	}
@@ -20758,6 +20760,70 @@ export class StateStore {
 			[leadId, eventId],
 		);
 		return rows.length > 0 && (rows[0]?.values?.length ?? 0) > 0;
+	}
+
+	/** Delivery policy survives hot-row retention; an archive is not a fresh event. */
+	isLeadEventAuditOnly(seq: number, leadId: string): boolean {
+		let row: Record<string, unknown> | undefined = this.db.raw.prepare("SELECT lead_id,delivery_disposition FROM lead_events WHERE seq=?").get(seq) as Record<string, unknown> | undefined;
+		if (!row) {
+			const archived = this.db.raw.prepare("SELECT row_json,row_sha256 FROM workflow_terminal_archive WHERE source_table='lead_events' AND source_identity=?").get(String(seq)) as {row_json:string;row_sha256:string} | undefined;
+			if (archived) {
+				if (createHash("sha256").update(archived.row_json).digest("hex") !== archived.row_sha256) throw new Error("archive_digest_invalid");
+				row = JSON.parse(archived.row_json) as Record<string, unknown>;
+			}
+		}
+		return row?.lead_id === leadId && row?.delivery_disposition === "audit_only";
+	}
+
+	/** On-demand audit history, including retained cold rows; never a delivery input. */
+	getLeadAuditEventPage(
+		leadId: string,
+		limit = 50,
+		beforeSeq = Number.MAX_SAFE_INTEGER,
+	): { items: LeadEventRow[]; nextCursor: string | null } {
+		if (
+			!Number.isSafeInteger(limit) ||
+			limit < 1 ||
+			limit > 50 ||
+			!Number.isSafeInteger(beforeSeq) ||
+			beforeSeq < 1
+		)
+			throw new Error("invalid_audit_page");
+		const hot = this.db.raw
+			.prepare(`SELECT * FROM lead_events
+			WHERE lead_id=? AND delivery_disposition='audit_only' AND seq<? ORDER BY seq DESC LIMIT ?`)
+			.all(leadId, beforeSeq, limit + 1) as Record<string, unknown>[];
+		const cold = this.db.raw
+			.prepare(`SELECT row_json,row_sha256 FROM workflow_terminal_archive
+			WHERE source_table='lead_events' AND json_extract(row_json,'$.lead_id')=?
+			AND json_extract(row_json,'$.delivery_disposition')='audit_only'
+			AND json_extract(row_json,'$.seq')<? ORDER BY json_extract(row_json,'$.seq') DESC LIMIT ?`)
+			.all(leadId, beforeSeq, limit + 1) as {
+			row_json: string;
+			row_sha256: string;
+		}[];
+		const rows = new Map<number, LeadEventRow>();
+		for (const archived of cold) {
+			if (
+				createHash("sha256").update(archived.row_json).digest("hex") !==
+				archived.row_sha256
+			)
+				throw new Error("archive_digest_invalid");
+			const row = mapLeadEventRow(
+				JSON.parse(archived.row_json) as Record<string, unknown>,
+			);
+			rows.set(row.seq, row);
+		}
+		for (const raw of hot) {
+			const row = mapLeadEventRow(raw);
+			rows.set(row.seq, row);
+		}
+		const sorted = [...rows.values()].sort((a, b) => b.seq - a.seq);
+		const items = sorted.slice(0, limit);
+		return {
+			items,
+			nextCursor: sorted.length > limit ? String(items.at(-1)!.seq) : null,
+		};
 	}
 
 	getLeadEventBySeq(seq: number): LeadEventRow | null {
@@ -20839,7 +20905,7 @@ export class StateStore {
 					// never worked. `delivered_at` is untouched: a quarantined row was
 					// NOT delivered and must never claim otherwise.
 					`SELECT * FROM lead_events
-					 WHERE delivered_at IS NULL
+					 WHERE delivered_at IS NULL AND delivery_disposition = 'model'
 					   AND NOT EXISTS (
 					     SELECT 1 FROM legacy_cutover_quarantine q
 					      WHERE q.seq = lead_events.seq AND q.replayed_at IS NULL
@@ -20865,7 +20931,7 @@ export class StateStore {
 		const rows = this.db.raw
 			.prepare(
 				`SELECT * FROM lead_events
-				  WHERE delivered_at IS NULL
+				  WHERE delivered_at IS NULL AND delivery_disposition = 'model' AND delivery_disposition = 'model'
 				    AND lead_id = ?
 				    AND json_valid(payload) = 1
 				    AND json_extract(payload, '$.project_name') = ?
@@ -23397,7 +23463,7 @@ export class StateStore {
 	/** Record a delivery failure: increment attempts, store error. */
 	recordDeliveryFailure(seq: number, error: string): void {
 		this.db.run(
-			`UPDATE lead_events SET delivery_attempts = delivery_attempts + 1, last_delivery_error = ? WHERE seq = ?`,
+			`UPDATE lead_events SET delivery_attempts = delivery_attempts + 1, last_delivery_error = ? WHERE seq = ? AND delivery_disposition = 'model'`,
 			[error, seq],
 		);
 	}
@@ -23413,7 +23479,7 @@ export class StateStore {
 		const result = this.db.exec(
 			`SELECT seq, lead_id, event_id, event_type, payload, session_key, delivered_at, created_at, delivery_attempts, last_delivery_error
 			 FROM lead_events
-			 WHERE lead_id = ? AND delivered_at IS NULL
+			 WHERE lead_id = ? AND delivered_at IS NULL AND delivery_disposition = 'model'
 			   AND event_type IN (${placeholders})
 			   AND delivery_attempts < ?
 			 ORDER BY seq ASC`,
@@ -24400,7 +24466,7 @@ export class StateStore {
 		const result = this.db.exec(
 			`SELECT seq, lead_id, event_id, event_type, payload, session_key, delivered_at, created_at, delivery_attempts, last_delivery_error
 			 FROM lead_events
-			 WHERE delivered_at IS NULL
+			 WHERE delivered_at IS NULL AND delivery_disposition = 'model'
 			   AND (delivery_attempts >= ? OR created_at <= datetime(?, 'unixepoch'))${notIn}
 			 ORDER BY seq ASC
 			 LIMIT 100`,
@@ -24444,7 +24510,7 @@ export class StateStore {
 		last_failure_error: string | null;
 		last_failure_at: string | null;
 	} {
-		const whereClause = leadId ? "WHERE lead_id = ?" : "";
+		const whereClause = "WHERE delivery_disposition = 'model'" + (leadId ? " AND lead_id = ?" : "");
 		const params = leadId ? [leadId] : [];
 
 		const pendingResult = this.db.exec(
@@ -24499,6 +24565,7 @@ export class StateStore {
 			);
 		}
 		const additions: Array<[string, string]> = [
+			["delivery_disposition", "TEXT NOT NULL DEFAULT 'model' CHECK(delivery_disposition IN ('model','audit_only'))"],
 			["ack_required", "INTEGER NOT NULL DEFAULT 0"],
 			["ack_policy", "TEXT"],
 			["ack_protocol_version", "INTEGER"],
@@ -24526,6 +24593,7 @@ export class StateStore {
 				this.db.run(`ALTER TABLE lead_events ADD COLUMN ${column} ${ddl}`);
 			}
 		}
+		this.db.run("CREATE INDEX IF NOT EXISTS idx_lead_events_model_pending ON lead_events(seq) WHERE delivery_disposition = 'model' AND delivered_at IS NULL");
 		// Historical rows are ACK-exempt; only fill the mutable owner identity so
 		// observability and a future explicit transfer have a total value. Migration
 		// errors deliberately escape: starting with a half-migrated delivery journal
@@ -77251,6 +77319,7 @@ export interface WorkflowLedgerBatchResult {
 }
 
 export interface LeadEventRow {
+	delivery_disposition?: "model" | "audit_only";
 	seq: number;
 	lead_id: string;
 	event_id: string;
@@ -77439,6 +77508,7 @@ export function readEpicItemFacts(
 
 function mapLeadEventRow(row: Record<string, unknown>): LeadEventRow {
 	return {
+		delivery_disposition: row.delivery_disposition === "audit_only" ? "audit_only" : "model",
 		seq: Number(row.seq),
 		lead_id: String(row.lead_id),
 		event_id: String(row.event_id),

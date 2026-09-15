@@ -1,0 +1,1015 @@
+# Patrol procedure v1 — FLY-2567
+
+按需操作手册，与常驻 runner-patrol-rules.md 同版本发布。以下迁移保留原步骤、配方与完成门；不授予超出常驻 founder-only-authority.md 的权限。只读相关步骤，修复前读完整对应配方。
+
+## 0. `patrol_tick` — scheduled independent patrol (FLY-1687)
+
+**巡检的 goal 是把 orchestrator 持续推进到每个 issue 的 Ship card，而不是做记录仪。**
+Founder 2026-08-26 19:42:58 直令：
+
+> 「既然这样的话,巡检还有一个 goal 需要写进去,就是每一个 Lead 都需要知道,他们的 goal 是要把 orchestrator 一直推到每个 issue 最后到达 Ship card 那个地方。唯一需要停下来的情况,就是如果有真正的问题必须要我来回答才可以,那 OK,可以停下来等我回答。但除此以外,必须非常激进地去推进这些项目,比如有问题了就去修、runner 卡住了就去推,必须非常激进地往前推进,而不是记录一下发生了什么情况然后就去休息了。我希望在 2080 中,也能够通过巡检让 Lead 明确知道必须做到这一点」
+
+Founder 2026-08-26 19:43:17 直令：
+
+> 「我希望的是,我把事情派给你之后,我就可以去休息了。在这个过程中,你有问题就来问我;没有问题你就往前推,一直推到我有时间来看的时候,这个东西已经推进到我可以 review 的状态。而不是我中途发现好像有一堆问题,而你又坐在那什么都不干。」
+
+Founder 2026-08-26 19:13 在 FLY-2029 的两步直令：
+
+> 「过去几周我们一直都是从头重跑,浪费了太多时间。我需要你把巡检加进去,巡检其实需要做两件事情:
+>
+> 1. 发现问题并补账:自己去 identify 发现了什么问题,把漏的账补上,让 Bridge 继续操作
+> 2. 记录问题:光查漏补缺也不是办法,还是希望 Bridge 能够正确执行。每次遇到问题都要记录下来(可以在 Linear 的某个 Epic 下面),这样我们隔段时间可以 review 一下 Bridge 当前的问题到底在哪里、有哪些重复出现的问题可以解决
+>    让所有的巡检都带上这两个步骤」
+
+因此每个 finding 都必须完成 **步骤 A — 发现即补账推进** 与 **步骤 B —
+记录进病根 Epic**。A/B 是实现上述 goal 的手段：唯一可以停在原地的形状是确有
+真实性、权限或业务答案必须由 founder 回答；除此以外必须修、推、验证接力并记账，
+不得写成「已知，等着」后休息。本规则不扩大巡检检测面或频率，也不改变 founder-only
+merge/stop、authority、approval、claim 等硬边界。
+
+**范围合同**:检测范围 = Department Lead **只巡检自己名下** Runner pane + 当前项目主仓的外部
+真相;处置权限 = **只覆盖你名下 Runner**。owner scope 的权威是当前项目
+`comm.sessions.lead_id = LEAD_ID` 且 status=`running|blocked` 的绑定；先从 owner
+index 得到名下 target，再与 tmux pane 元数据取交集，绝不从整机 pane 出发逐个 capture
+后再过滤。canonical Runner pane 的唯一口径是:session name 以 `runner-` 开头且
+window name 以 Linear identifier 开头;`cmux-*` 显示镜像不重复计算。tick 名册只是
+Bridge 对「你名下」的**待核声明**,两账不一致是 finding，但它不扩大可见面。
+无主 canonical pane 由 **Bridge orphan sweeper** 独立枚举，连续两个 slot 仍无主才发
+`orphan_pane` 工单；`claude-infra-bot-lead`(Claw)是唯一责任席位。任何 Department
+Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
+
+**产出物合同**:每条 tick 必产一份六个 numeric STEP + 一个命名 `STEP DWELL` 的报告:
+`~/.flywheel/patrol-reports/<leadId>/<UTC>-tickNA.md`。先运行快照;它会原子
+落下含六段的候选骨架并在最后打印 `REPORT_PATH=<absolute path>`。骨架里的
+`LEAD-JUDGMENT-REQUIRED` / `*-CANDIDATE` 不是完成;每一行都定稿为
+`OK | FINDING | UNAVAILABLE(<稳定原因>)` 才算巡完。「全部健康」也必须六个 numeric
+状态行加一条 `STEP DWELL` 状态行齐全。第 2 步还必须无条件含 `pane_count=N` 和恰好 N 行 `PANE_EVIDENCE`;
+零 pane 或 tmux unavailable 也写 `pane_count=0`。自动骨架本身不是巡检完成证据。
+
+**UNAVAILABLE 出口**:命令失败、对象不存在、或无法理解要求时,该步必须写
+`UNAVAILABLE(transient|structural: <稳定 token>)`;禁止静默跳过。structural
+首次出现就走第 6 步建工程单;`sqlite_busy` 等 transient 连续两个 tick 才建。
+
+`[patrol_tick]` 仍是**纯闹钟**。本巡检用以下**独立信源**,不采信 Bridge
+单方转述。第 0 步必须先读上一报告,再启动新快照,run:
+`PATROL_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/patrol-reports/${LEAD_ID:?LEAD_ID required}"; PREVIOUS_REPORT="$(find "$PATROL_DIR" -maxdepth 1 -type f -name '*-tick*.md' -print 2>/dev/null | sort | tail -1)"; test -z "$PREVIOUS_REPORT" || sed -n '1,260p' "$PREVIOUS_REPORT"`。
+若上一份有未建单 UNAVAILABLE,先在第 6 步补账。然后 run:
+`SNAPSHOT_BIN="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/bin/flywheel-patrol-snapshot"; SNAPSHOT_OUTPUT="$("$SNAPSHOT_BIN" --project "${PROJECT_NAME:?PROJECT_NAME required}" --lead "${LEAD_ID:?LEAD_ID required}")"; SNAPSHOT_RC=$?; printf '%s\n' "$SNAPSHOT_OUTPUT"; test "$SNAPSHOT_RC" -eq 0 || exit "$SNAPSHOT_RC"; REPORT_PATH="$(printf '%s\n' "$SNAPSHOT_OUTPUT" | sed -n 's/^REPORT_PATH=//p' | tail -1)"; test -n "$REPORT_PATH" && test -f "$REPORT_PATH"`。
+后续六步共用这一个 `REPORT_PATH`,不得重跑快照制造第二份报告。
+
+1. **名册核对(ground truth)** — run:
+   `awk '/^## STEP 1$/{show=1; next} /^## STEP 2$/{show=0} show' "$REPORT_PATH"`。
+   脚本先只读全 registry owner index 做 target cardinality 预检，再从当前项目
+   `comm.sessions.lead_id = LEAD_ID` 物化名下 target；只有 index 完整且 target 唯一时，
+   才执行一次 `TMUX= tmux list-panes -a -F '<pane_id> <session_name> <target> <window_name> ...'`
+   的元数据读取并写 `OWNED_RUNNER_PANES := canonical panes ∩ owned targets`。全机列表
+   只在脚本内用于求交，不落报告，也不触发 capture。名下 index 与 live pane 对账
+   多了少了都是 finding：index 有 target 但无 pane 写 `MISSING_PANE`；pane 无名下
+   index 不进入本报告，由 Bridge orphan sweeper 独立判断。忽略正常 `zsh` scaffolds、
+   `cmux-*` 镜像、Codex Lead TUI；Claude Lead 在私有 socket。任何复核都不得另跑
+   全机 capture 扩大本 Lead 的可见面。
+2. **pane 实况** — run:
+   `awk '/^## STEP 2$/{show=1; next} /^## STEP 3$/{show=0} show' "$REPORT_PATH"`。
+   快照对第 1 步的**每一个名下** canonical Runner pane 用 5s 有界
+   `TMUX= tmux capture-pane -p -S - -t <pane_id>` 读完整 scrollback;零抽样、零
+   `tail -40`。原文可能含 secret,所以报告只存 SHA-256/行数/字节数/最后非空状态行
+   SHA-256,并逐 pane 写:
+   `PANE_EVIDENCE ... owner=owned exec=<id> ... last_change_epoch=<epoch> findings=<csv|none> action=<none|REQUIRED> result=<clear|UNSET>`。
+   owner 来自 projects registry 全项目只读 `comm.sessions.tmux_window` cardinality 预检
+   与本项目 `comm.sessions.lead_id` scope，其中 owning status 是 `running|blocked`。
+   index 缺库、缺 schema、绑定 target 的 lead_id 为空都必须
+   `UNAVAILABLE(transient|structural: owner_index_incomplete)` 并在 capture 前 fail closed；
+   同一 target 有多条 active claim 必须
+   `UNAVAILABLE(structural: session_target_ambiguous)`，任何 claimant 都不得 capture。
+   无主 pane 不在 Department Lead 的 PANE_EVIDENCE/continuity 中；它只由 Bridge
+   orphan sweeper 观察并投递给 Claw。
+   `shasum` 缺失/失败必须标 `HASH_UNAVAILABLE` 且 STEP 2 为
+   `UNAVAILABLE(structural: hash_unavailable)`,禁止留下空 hash 或自动报 clear。
+
+   对每行执行这些唯一判据/动作:
+   - 全 scrollback grep `You've hit your session limit` / `You've hit your usage limit`
+     / `Claude usage limit reached`(排除 `not your usage limit`)。live 区命中为
+     `LIMIT_LIVE`;reset 已过且 `owner=owned` 时 run:
+     `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: usage/session limit reset has passed; resume now"`。
+     reset 无法解析写 `UNAVAILABLE(structural: limit_reset_unparseable)`。
+   - `patrol-continuity/<lead>/<project>.v2.json` 的 machine-owned 0600 sidecar
+     以 exact execution / activation / TURN episode / repo-source identity 为身份，
+     `last_change_epoch` 只锚真实状态跃迁或该身份的远端 head 推进；初次采样是 baseline。
+     渲染行 hash、spinner、poll、重复 stage、park 续期、报告重排或 result 修改均不刷新。
+     旧 TSV 不迁移 epoch。`state_sha256` 仅用于渲染诊断，不能判停滞。
+     任何 `STALLED_60M` 都是带完整 interval/ref 证据的待核候选：有效 gate/park/phase 等待或有未到期 expires_at 的 long_task 声明为 WAITING，
+     source 不完整为 UNKNOWN，只有完整连续观测满 3600 秒才可生成候选。
+     任何 exact 同期 push receipt 都能证伪：作者/committer 时间和 PR updated_at 不算 push。
+     当前 head 改变以及最近 3600 秒内已验证推进为 ACTIVE；保留活动的观察区间。
+     发送前 run `flywheel-patrol-continuity --recheck --report "$REPORT_PATH" --evidence-id "$ACTIVITY_EVIDENCE_ID"`
+     复查机器记录的同一 episode、interval 和 exact ref。`ACTIVITY_RECORD <JSON>`
+     保留原始 `{id,entry,sampledAtMs,activity,interval_start,interval_end}`；和
+     `ACTIVITY_EVIDENCE` 一样属于不可改写的机器记录，只能修改 pane action/result。
+     STALLED 必须关联同 exec 的完整 ref digest、semantic digest、coverage 和 ≥3600 秒 interval。`stalled-falsified` 不发继续指令；
+     `waiting-confirmed` 保留等待；仅有 UNKNOWN 时标 STEP 2 UNAVAILABLE，禁止由停滞触发 nudge。
+     只有复核后仍是同一 episode 的候选才能按名下既有 send 授权要求状态说明，
+     不是 terminate/restart 权限。本报告没有跨 Lead pane；跨 key 分支推进仅为 branch_activity。
+     UNKNOWN 每 pane 留原因，按 `(source,cause)` 聚合 `UNAVAILABLE_CAUSE` 和 affected count；
+     不把同一故障按 runner 重复立单。连续性 UNKNOWN 与 quota/menu/dead-pane finding 共存时，
+     STEP 2 保持 FINDING，缺失证据仍用 UNAVAILABLE_CAUSE 和逐 pane UNKNOWN 显式保留，不能清为 healthy。
+     仅 owner index 完整、无归属冲突且所有 owned targets 均进入本次采样清单时，允许清理已退役的 v2 entry；
+     清单不完整时保留旧 entry，不以 tmux/source 暂时失败推断退役。
+   - live 区命中 `Press Enter to confirm` / `Press Enter to continue` / 已知 resume
+     menu 时标 `INTERACTIVE_MENU`;只有名下且手册明确允许 Enter 才 run:
+     `TMUX= tmux send-keys -t "$PANE_ID" Enter`,随后完整 capture 复核。未知 menu
+     写 `UNAVAILABLE(structural: menu_unrecognized)`,禁止盲按。
+   clear 行由脚本封口 `action=none result=clear`;任何 finding/capture failure 初始
+   `action=REQUIRED result=UNSET`,Lead 只能原位修改 `action=` / `result=` 值并留证,
+   不得删除、改名或重排 `PANE_EVIDENCE` 的机器字段。
+   **“大概没问题”不是证据。**
+3. **交接账**(`TURN belt` = CommDB `three_stage_turn`;engine node table =
+   StateStore `workflow_run_node`) — run:
+   `awk '/^## STEP 3$/{show=1; next} /^## STEP 4$/{show=0} show' "$REPORT_PATH"`。
+   快照已按当前 project + active workflow + owner attribution 只读联查；先按 execution
+   精确归属，否则只看当前 issue cohort，再退到最新 historical cohort；只保留
+   attributed lead = 当前 `LEAD_ID`。归属缺失或 cohort 歧义时整步写
+   `UNAVAILABLE(structural: owner_attribution_incomplete)`，且只输出聚合原因/计数。
+   对名下 active issue，
+   无 TURN、holder 不在同 issue live execution、`no_turn_streak >= 3`、或 active
+   node 无 live session都是 finding;历史 terminal 行不得重报。
+4. **投递账 + verdict/receipt 一致性** — run:
+   `awk '/^## STEP 4$/{show=1; next} /^## STEP 5$/{show=0} show' "$REPORT_PATH"`。
+   live Runner 明确定义为 StateStore status
+   `running|ship_parked|awaiting_review|design_done|approved_to_ship`;只看这些 Runner
+   的超窗 `mailbox`、active `turn_wake_outbox` 未 ack、近 24h
+   且 `state='pending'` 的 `dead_letter_alerts`、以及 active PR binding head 与
+   有效 git-head verdict claim。各类事实复用第 3 步的 owner attribution，
+   `dead_letter_alerts` 还必须同时匹配当前 project + `LEAD_ID`；归属不完整同样整步
+   `UNAVAILABLE(structural: owner_attribution_incomplete)`。`accepted` dead letter 禁止重报。输出只含
+   allowlist 元数据;禁止消息正文、envelope、summary、token、evidence 原文。
+
+   **第六维度“判决层”由 STEP 4 承载**：每个 tick 直接联查 active run 的
+   `workflow_claims`、同 run 的 `claim_written` marker 与 `lead_events`，不能把 Runner
+   信箱或 pane 文案当成 verdict 是否已投递的事实。只检查 credential-backed
+   `issuer_kind='runner_node'` claim，且 marker 必须含
+   `leadEventRequired=true` 与稳定 `leadEventId=workflow_claim:<claimId>`；旧的 unmarked
+   claim、founder-source claim 与 `bridge_policy/qa_exempt` 不进入这条 rollout 合同。
+   输出必须含 claim id、`decision_kind`、`predicate`、`issued_at`、node、attempt 与 execution，
+   禁止输出 claim `evidence` 或 Lead event `summary`。
+
+   - marker 存在但 event 不存在写 `CLAIM_DELIVERY_MISSING`。这是同事务原子不变量被
+     restore/tamper/corruption 破坏的 canary；Lead 必须带账本证据升级，不能假装持有已消费
+     credential 自愈。
+   - owning Lead 的 event 仍 `delivered_at IS NULL` 写 `CLAIM_DELIVERY_PENDING`。这是
+     FLY-2139 同形的静默压单信号；恢复对应 Lead runtime/投递后复核 durable delivery。
+   - 稳定 event id 只落在其他 owner 名下写 `CLAIM_DELIVERY_OWNER_MISMATCH`。修 owner
+     resolver 与既有 event 的投递归属，禁止另铸 event。
+   - marker duplicate/malformed 或 claim owner 无法唯一归属时只输出聚合
+     `CLAIM_ATTRIBUTION_INCOMPLETE`。claim 使用独立 attribution guard；它不得压掉本步已经
+     取得的 mailbox、wake、dead-letter 或 head-mismatch facts。
+5. **外部真相(整仓维度)** — run:
+   `awk '/^## STEP 5$/{show=1; next} /^## STEP 6$/{show=0} show' "$REPORT_PATH"`。
+   周期快照用 `GH_REPO=<projectRepo> gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=50'`
+   与 REST actions runs 投影整仓时刻;周期巡检面不得用 GraphQL。单个 PR 人工下钻可 run:
+   `gh pr view <n> --repo <projectRepo> --json state,mergeable,headRefOid,statusCheckRollup`。
+   Discord 最多检查 tick 名册最近活动的 2 个 identifier。先 run:
+   `PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/projects.json}"; CHAT_CHANNEL_ID="$(jq -er --arg project "$PROJECT_NAME" --arg lead "$LEAD_ID" 'first(.[] | select(.projectName == $project) | .leads[] | select(.agentId == $lead) | .chatChannel)' "$PROJECTS_FILE")"`。
+   每个 identifier run(Bridge 只解地址,secret header 只走 stdin):
+   `IDENTIFIER='<FLY-XX>'; THREAD_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "${BRIDGE_URL:?BRIDGE_URL required}/api/chat-threads?issueId=$IDENTIFIER&channelId=$CHAT_CHANNEL_ID")"; THREAD_ID="$(printf '%s' "$THREAD_JSON" | jq -r '.threadId // empty')"; test -n "$THREAD_ID"`;
+   最后 run: Discord MCP `fetch_messages(chat_id=$THREAD_ID, limit=20)`。消息与
+   archive 状态以 Discord 为真,`chat_threads` 不是状态 oracle。
+
+   **Data 卷容量（FLY-2351）**。同段必须有且仅有一条
+   `disk_volume=/System/Volumes/Data disk_avail_bytes=<integer>` 和
+   `disk_below_threshold=<yes|no>` 事实；`disk_avail_gb` 只用于展示，判定一律用
+   原始 bytes。`disk_below_threshold=yes`（即 `<20000000000`）强制把 STEP 5
+   定稿为 `FINDING`，即使 gh 或 Raya 同时 unavailable 也不得覆盖；各
+   `UNAVAILABLE_CAUSE` 仍保留。追加：
+   `FINDING step=5 bridge_problem=no result=escalated-with-plan evidence=data_volume_low owner=agent:<lead-id> next=repair:disk-space epic=n/a epic_marker=n/a`。
+   同机低盘事件使用既有巡检告警去重，每小时最多一次；恢复到阈值后再次跌破是新事件。
+   磁盘事实 unavailable 时 STEP 5 不得定稿 `OK`；保留稳定 token 并走本规则的
+   UNAVAILABLE 建单流程。人工复核只准 run
+   `df -h /System/Volumes/Data`，不得用 `df -h /`（macOS 的 `/` 是密封系统卷）。
+   低盘 finding 后，任何数据库写修复都必须先执行
+   `engineering/doc/FLY-2351-snapshot-disk-guard/runbook.md#低盘紧急处置顺序`：只读
+   inventory → 仅清理可删旧快照和已结束的受管副本 → 重测 5×。仍不足时停止修改
+   数据库，并向 Lead 报告 measured avail、required bytes 和不可删除项；禁止降到 2×、
+   裸 sqlite 绕过门槛或用 db-maintenance backup/VACUUM 腾空间。
+
+   **Raya 生产 checkout（仅 flywheel 项目）**。读取同段的 `raya checkout=` 事实行：
+
+   - `overdue=yes` 时，本 tick 必须在 `CHAT_CHANNEL_ID`（#flywheel-engineer）发 warning，
+     内容包含原事实行与 `FLY-2385`。以
+     `raya_checkout_overdue.<head8>.<origin8|none>` 为 evidence；同一 evidence 同一 UTC 日只发一次，
+     重复 tick 仍须留下事实但不得刷屏。投递成功后把 STEP 5 定稿为 `FINDING` 并写：
+     `FINDING step=5 bridge_problem=no result=advanced evidence=raya_checkout_overdue.<head8>.<origin8|none> owner=n/a next=n/a epic=n/a epic_marker=n/a`。
+     投递失败也必须定稿 `FINDING`，写：
+     `FINDING step=5 bridge_problem=no result=escalated-with-plan evidence=raya_checkout_overdue.<head8>.<origin8|none> owner=agent:flywheel-eng-lead next=retry:raya-overdue-warning epic=n/a epic_marker=n/a`。
+     连续两个 tick 仍 overdue 时，第 6 步按 token `raya_checkout_overdue` 搜重并建工程单。
+   - `raya checkout=UNAVAILABLE(structural: <token>)` 时，追加
+     `UNAVAILABLE_CAUSE step=5 class=structural token=<token>`；STEP 5 没有其他
+     UNAVAILABLE 时定稿 `STEP 5: UNAVAILABLE(structural: <token>)`。若 gh 同时不可用，
+     STEP 5 保留 gh 的 token，Raya cause 仍须单独记账并按 UNAVAILABLE 规则建单。
+   - `overdue=no` 是正常态，不发 warning，也不产生 Raya finding。
+
+**STEP DWELL — 节点停留处置维度(FLY-2210)** — run:
+`awk '/^## STEP DWELL$/{show=1; next} show' "$REPORT_PATH"`。这是独立命名维度，
+不是 numeric STEP 7；六个 numeric STEP 的既有编号、提取器和含义不变。快照只读
+`workflow_run.status='active'` JOIN `workflow_run_node`，只取 `ended_at IS NULL` 且
+`state IN ('running','review','admitted')` 的节点；停留基线是
+`max(started_at, node_dwell_review 最新 examined_at)`。整体机制先读取项目级布尔
+flag `node_dwell`：它是 `default-on`、conversational toggleable，并在每个 tick
+call-time 重读，开关生效无需重启。`node_dwell=off` 时 `STEP DWELL` 直接为 `OK`，
+不得产生任何 `NODE_DWELL` 行、提醒、`DWELL_ACTION` 或强制 `FINDING`；flag 读取失败
+仍须 fail closed 为 UNAVAILABLE，禁止静默降级成永远 off。阈值来自 `flag_values` 的
+`node_dwell_threshold_hours`，项目 scope 优先、`*` 次之、默认 3 小时。任何阈值、
+schema、owner 或历史 gate 映射不可读/不唯一都 fail closed 为 UNAVAILABLE，禁止
+偷偷回退到默认值或猜 deep dive。
+
+超阈后按以下唯一顺序处置：
+
+1. **先判是否等待 founder(三个判据取或)**：① `node_id='founder_gate'` 且
+   `state='review'`；② canonical CommDB question 的
+   `checkpoint='approve_to_ship'` 尚无 response 子消息，且以当前
+   `workflow_gate_holder.run_id -> question_id` 精确绑定；仅旧数据缺 holder 时才准用
+   `question.from_agent -> comm.sessions.execution_id -> issue_id` 的唯一映射，缺失或歧义
+   写 `gate_mapping_incomplete`，绝不误走 deep dive；③ canonical CommDB question 的
+   `checkpoint='founder_review'` 尚无 response、未 supersede 或 terminal dispose，且
+   `founder_review_card_binding.question_id` 精确绑定这张已投递卡、binding 的 `run_id`
+   等于当前 run、question `from_agent` 等于当前节点 `execution_id`。不得把 `pm` 节点
+   一律视为等待 founder，也不得仅按 issue 或节点类型猜测。命中等待 founder 时，对**同一 issue**
+   的所有超阈节点合并成该单 thread **一条提醒**，不得逐节点刷屏；仍复用现有 patrol
+   tick 与 thread 通道，禁止新增 daemon、timer 或独立告警器。更重要的是：
+   **同一 waiting episode 只提醒一次**。提醒投递成功后写下的 `waiting_founder`
+   收据是持久抑制证据；机器在重启后仍必须恢复同一 episode，输出
+   `waiting_episode_reminded=yes`，且不生成第二条提醒或强制 finding。纯时间流逝
+   永远不能重新武装提醒，也不再采用“每 3 小时再催一次”的旧语义。
+
+   waiting episode 的持久起点取当前 node admission、canonical `gate state/head`
+   活动、与 route 使用同一 open-question + card-binding + run + execution 精确连接的
+   最新 `founder_review_card_binding.created_at`，以及 founder 在该 issue thread 发言
+   四类 durable 事实的最新值。只有 founder
+   已有动作后才重新武装：批准/打回造成 gate state 变化、新 head 再次进入等待，或
+   founder 在该 issue thread 发言，或新 founder_review 卡被绑定；该动作先重置阈值计时，节点从新起点再次超阈后，
+   才允许新 episode 的一条 grouped reminder。live `mailbox` 与 append-only
+   `mailbox_log` 同时覆盖消息在进程重启或归档后的证据。
+   `waiting_founder` receipt 会让 STEP DWELL 在本 episode 不再周期性复查节点 liveness；
+   这是既有 `approve_to_ship` 路径已接受并由 runner/engine liveness 机制承接的取舍，
+   不能把被抑制的 deep dive 描述成没有诊断价值。
+2. **非 founder 等待必须强制 deep dive**：先读该 run 的**最新 workflow transition**，
+   再读目标 Runner 的**终端内容**与该节点的**工作日志**，把内容证据判成「推进中」或
+   「原地空转」。**禁止只看画面刷不刷**、最后一行或 pane 指纹是否变化，或
+   不读内容就以“还在刷新”封口。FLY-2178 在 2026-08-31 的原文教训必须保留：
+   「03:25 2178 实现节点进场；06:25 巡检本应读终端发现『原地轮询等门』=空转有问题
+   并当场解，今天实际 11:55 才解开；规则在的话 06:25 就抓到了。」这就是三小时阈值
+   强制读内容而不是看刷新动画的原因。
+3. `started_at` 不因同 attempt 重入而重写；若最新 transition 证明 threshold 窗内刚发生
+   **same-attempt re-admission**，这是 v2 已知的首轮 false positive。仍须完成终端内容与
+   工作日志核验，然后写 `normal` 收据重置基线；不得借“预期误报”跳过检查，也不得无界
+   重复下钻。
+4. verdict domain 只有 `normal|cleared|fixed|waiting_founder`：deep dive 结论只用
+   `normal|cleared|fixed`；提醒分支只用 `waiting_founder`。把同一
+   issue 本轮所有节点组成一个 JSON batch，stdin 的唯一 schema 是
+   `{"items":[{"runId":"<run>","nodeId":"<node>","attempt":<n>,"episodeStartedAt":"<该 NODE_DWELL 行的 episode>"}]}`；字段名和
+   camelCase 逐字固定，禁止从报告字段自行猜 `nodes/run_id/node_id` 变体。经
+   `${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/bin/flywheel-patrol-snapshot --project "$PROJECT_NAME" --lead "$LEAD_ID" --record-dwell-receipts <verdict> --note '<bounded conclusion>'`
+   从 stdin 提交。只有内容核验完成，或 founder **提醒投递成功后**，才可 INSERT 收据；
+   发送失败不得先写 `waiting_founder`。`waiting_founder` 必须逐项原样回传快照的
+   `episode`；收据把它持久化为 `episode_started_at`，不能用更晚的 DB-generated
+   `examined_at` 猜 episode，否则上一轮的迟到收据会吞掉新卡。`examined_at` 仍是下轮计时基线；
+   `normal|cleared|fixed` 在下一阈值窗后可再次 deep dive，而 `waiting_founder` 还作为
+   当前 waiting episode 的持久去重凭据，纯时间流逝不再触发 founder 重报。
+
+快照按每个 distinct `issue + route` 生成一条
+`DWELL_ACTION step=DWELL issue=<FLY-N> route=<deep_dive|founder_reminder> action=REQUIRED result=UNSET evidence=node_dwell_table`；
+同一 issue 的多个 founder-wait 节点必须只出现一条，多 issue 必须各有一条。结构性
+cause 使用 `issue=aggregate route=repair_<cause>`，每个 cause 一条。它们是待办占位，
+不是完成账：处理后必须把**每个 `DWELL_ACTION` 原位替换**为合法的
+`FINDING step=DWELL bridge_problem=... result=... evidence=... owner=... next=... epic=... epic_marker=...`；
+不得保留 `action=REQUIRED/result=UNSET`，也不得让快照预先伪造 finalized finding。
+
+机器表中任何 `NODE_DWELL ... over_threshold=yes` 都强制 `STEP DWELL: FINDING`，并须有
+合法 `FINDING step=DWELL` accountability 行；不能把超阈行藏在 `OK` 或
+`UNAVAILABLE`。`UNAVAILABLE_CAUSE step=DWELL` 每一条也必须有对应 accountability，
+但 UNAVAILABLE 报告中禁止同时出现 overdue row。`multiple_unavailable 只允许 STEP 6`；
+STEP DWELL 多 cause 统一使用稳定 `node_dwell_incomplete` token，逐 cause 留账。
+
+6. **处置 + 完成报告** — 打开 `"$REPORT_PATH"`,逐行定稿并写证据。名下
+   finding 按上面的唯一命令或对应 emergency procedure 有界修复。然后对每个
+   distinct finding 强制执行下面 A/B；不允许跳过后只写观察结果。
+
+   **步骤 A — 发现即补账推进**：
+
+   1. 从报告拿到 exact shape 与 Bridge 的结构化诊断（稳定错误码、run/request/execution id、
+      当前 state/revision），把可复跑的只读 query 与相关 `workflow_run_event seq/kind`
+      结果写进报告；只引用负责该诊断的 source symbol/path 作为 owner 入口，不摘录或
+      枚举实现条件。错误文案只作索引；证据不足以判定 guard 类别时写 `UNAVAILABLE` +
+      owner + 下一动作，不得猜是哪笔账。
+   2. 逐守卫分类。防篡改/真实性 guard（`digest`、authority、`head fingerprint`、
+      founder consent、`approval`、`claim`、授权或头指纹）必须停手，不改账，带
+      classification、evidence、owner 和下一动作上报 founder，result 写
+      `escalated-with-plan`。防漏账 guard 只限引擎已产生真实事实、但漏写或漏联
+      ledger/route/delivery/event 且“补上即真”的账；按本节附录 exact recipe 当场补，
+      不能逐次再请示。此处执行权来自 founder 三次直令：2026-08-19
+      FLY-1894/FLY-1877「这个东西你为什么要等我 你自己做决定就可以」；
+      2026-08-23 FLY-2072「拨 这个你可以自己决定 不需要问我」；以及上方
+      2026-08-26 19:13 两步直令。R5 authority registry 的正式 entry 另单修订；
+      本文件不借此扩大 universal contract。
+   3. 四条硬边界永远成立：真实性 guard 停手；永不写 authority/gate/approval/claim；
+      永不终结 Runner、替换真实身份或丢失 work/context；每次修复都保留 before/after
+      evidence 并执行步骤 B。任一 recipe precondition 不满足时不得硬拨，必须明确
+      owner + 下一动作 + evidence，写 `escalated-with-plan`。
+   4. 补账后至少等一个 Bridge reconcile tick，并记录 baseline 之后由引擎追加的
+      `workflow_run_event seq/kind`；接力 event 必须同时满足 `seq > BASELINE_SEQ` 与
+      `event_uid NOT LIKE 'patrol:%'`，因为 patrol 自写 event 只证明 transaction commit。
+      SQL `changes()==1` 或目标 pane 内容变化本身都不是接力证据。只有 finding 已消失
+      可写 `fixed`；Bridge 已进入下一可执行状态可写 `advanced`。没有新 engine event
+      时只能按附录做有界 pane 诊断并留下 owner/下一动作，不能写 `fixed|advanced`。
+   5. 禁止 `known-waiting`、`known_waiting`、`known`、`waiting`、
+      「已知，等着」等归档值；“已知”不是处置，修掉或带可执行 plan 升级才是。
+
+   **步骤 B — 记录进病根 Epic**：Founder 2026-08-27 03:19 选择 A：**一类病根 =
+   FLY-2072 Epic 下挂一张子 issue**。每个 `bridge_problem=yes` 的 finding，无论 A
+   是补账还是停手升级，都必须命中或新建这张类别子 issue；禁止再把新记录直接写成
+   FLY-2072 根 issue 的 comment。**2080 之前的记录存于 FLY-2072 评论区(历史),新记录一律走子 issue**；不迁移二十余条旧 comment，历史需要时只读
+   `/api/linear/comments?issueId=FLY-2072&limit=100`，不得用
+   `/api/linear/comment` 往 FLY-2072 根 issue 追加新账。
+
+   **判同类（先判、再写）**：从步骤 A 的 exact evidence 归一化三元组
+   `ERROR_CODE | GUARD_KEY | STRUCTURAL_SHAPE`。`ERROR_CODE` 是源码实际抛出的稳定
+   错误码；`GUARD_KEY` 是同一源码文件 + symbol + 精确 `WHERE`/`if` 守卫（不用易漂的
+   line number）；`STRUCTURAL_SHAPE` 是同一缺账表/字段/状态转移，把 run/request/
+   execution/pane id、时间戳、attempt 数等实例值删掉。三项**全部相同**才是同类；
+   任一项不同就是另一类，证据不足则停写并报 UNAVAILABLE，禁止按标题相似度猜。
+   run：
+
+   ```sh
+   ROOT_KEY_INPUT="$ERROR_CODE|$GUARD_KEY|$STRUCTURAL_SHAPE"
+   ROOT_KEY="$(printf '%s' "$ROOT_KEY_INPUT" | shasum -a 256 | awk '{print $1}')"
+   case "$ROOT_KEY" in ''|*[!0-9a-f]*) exit 64;; esac
+   test "${#ROOT_KEY}" -eq 64
+   ```
+
+   用 `mcp__linear-api__list_issues({team:"FLY",parentId:"FLY-2072",includeArchived:true,limit:250})`
+   只查 FLY-2072 的子 issue；必须沿 cursor 分页到 `hasNextPage=false`，任一页不可读或
+   cursor 断裂都视为查重不完整、报 UNAVAILABLE，禁止把前 250 条当全集。`list_issues`
+   的 description 会截断，分页结果只用于取得完整 candidate identifier 集；必须对每个
+   candidate 调 `mcp__linear-api__get_issue({id:"<candidate child identifier>"})`，任一张
+   不可读就报 UNAVAILABLE。只在逐张 fresh read 返回的完整 description 中精确找
+   `class_key:<ROOT_KEY>`。匹配 0 张走首次；恰好 1 张走重复；>1 张说明类别账已分叉，
+   不再写任何一张，报 `UNAVAILABLE(structural: root_class_duplicate)`。标题只帮助人读，
+   `class_key` 才是去重权威。
+
+   **首次出现（0 张）**：生成稳定短名，调用：
+
+   ```text
+   mcp__linear-api__save_issue({
+     title: "[病根] <稳定短名> · ×1",
+     team: "FLY",
+     parentId: "FLY-2072",
+     labels: ["Flywheel"],
+     description: "class_key:<ROOT_KEY>\n形状: <错误码/卡点/结构形状>\n根因: <漏的表字段或断裂剧本>\n处置: <补了什么 + baseline 后非 patrol engine event seq:kind；无 event 则 owner/下一动作>\n首见时间: <UTC ISO-8601>\n\noccurrences: 1\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
+   })
+   ```
+
+   description 的固定四字段就是 `形状/根因/处置/首见时间`，不得拿实例 id 充当类别；
+   `occurrences` 与 `class_key` 是机器元数据。创建后立即用
+   `mcp__linear-api__get_issue({id:"<child identifier>"})` 复核：
+   team=`Flywheel`、parent=`FLY-2072`、label 含 `Flywheel`、title=`[病根] ... · ×1`、
+   description 四字段齐全且含 marker。任一不符都不得报记账成功，也不得退化成顶层 issue。
+   Linear MCP 的 issue `id` 是 `FLY-<number>` identifier，不是完成门要的 UUID；复核后必须
+   用 Bridge 的 exact-identifier 读口取真实 child UUID（secret header 只走 stdin）：
+
+   ```sh
+   CHILD_IDENTIFIER='<child identifier>'
+   CHILD_LOOKUP_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS --get --data-urlencode "query=$CHILD_IDENTIFIER" "${BRIDGE_URL:?BRIDGE_URL required}/api/linear/issue")"
+   CHILD_UUID="$(printf '%s' "$CHILD_LOOKUP_JSON" | jq -er --arg identifier "$CHILD_IDENTIFIER" 'select(.matchType == "identifier" and .issue.identifier == $identifier) | .issue.id')"
+   printf '%s\n' "$CHILD_UUID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+   ```
+
+   curl、JSON、identifier 精确匹配或 UUID 格式任一失败都不得拿 `FLY-<number>` 冒充
+   receipt UUID，必须走下方 `linear_epic_unavailable`。
+
+   **同类再次出现（恰好 1 张）**：绝不新建。先 fresh read 类别子 issue，读取
+   `occurrences: N`，并用 `mcp__linear-api__list_comments` 分页到尽头，按本次
+   `patrol-finding:` marker 精确搜重；marker 已存在就复用原 comment UUID、只校准
+   count，不再 POST。marker 不存在才调用：
+
+   ```text
+   mcp__linear-api__save_comment({
+     issueId: "<child identifier>",
+     body: "本次实例: <UTC + stable run/request/execution id>\n形状: <本次错误码/卡点>\n处置: <本次补账或升级动作>\n引擎接力证据: <baseline 后非 patrol engine event seq:kind；无 event 则 owner/下一动作>\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
+   })
+   mcp__linear-api__save_issue({
+     id: "<child identifier>",
+     title: "[病根] <同一稳定短名> · ×<N+1>",
+     description: "<原 description，仅把 occurrences: N 改成 occurrences: N+1>"
+   })
+   ```
+
+   写后再次 fresh read；只有 comment UUID/body marker 可读、`occurrences=N+1` 且标题
+   `×N+1` 一致才算成功。并发导致 N 已变化时重读后只重试 count 更新，绝不重复 comment。
+   `是否重复` 由同一 child 下的实例 comments + `occurrences` 直接表达，不再靠根 issue
+   评论区人工写“见过”。Founder 定期 review 时打开 FLY-2072 看子 issue 列表：标题就是
+   类别，`×N` 就是热度；反复出现的类别直接成为正经修引擎的排期依据。
+
+   `EPIC_MARKER` 是 `patrol-finding:` 稳定行末尾的 64-hex。首次的 receipt UUID 是上面
+   Bridge exact lookup 返回的 `CHILD_UUID`，重复的 receipt UUID 是本次 comment UUID；沿用完成门既有字段，写
+   `epic=FLY-2072#<receipt UUID>` 与 `epic_marker=<EPIC_MARKER>`。只有 marker 在新建
+   description 或本次 comment 中可回读、且上述 parent/count 检查通过才能封口。Linear
+   MCP 不可用、Bridge exact lookup 失败、查重不完整或任何写后验证失败，必须写
+   `UNAVAILABLE_CAUSE step=6 class=transient token=linear_epic_unavailable`，并按既有
+   UNAVAILABLE 建单流程逐 cause 搜重；不得假装记账成功。多 cause 每个各写一行
+   `UNAVAILABLE_CAUSE`，STEP 6 唯一状态行用 `multiple_unavailable` 聚合（任一
+   structural 则 structural，否则 transient）。
+
+   每个 distinct finding 最后追加一行，字段和值不得含空格：
+   `FINDING step=<1-6|DWELL> bridge_problem=<yes|no> result=<fixed|advanced|escalated-with-plan> evidence=<stable-token> owner=<agent:agent-id|founder|n/a> next=<inspect:token|repair:token|authorize:token|route:token|file:token|retry:token|n/a> epic=<FLY-2072#comment-uuid|n/a|unavailable> epic_marker=<64hex|n/a>`。
+   `fixed|advanced` 必须 `owner=n/a next=n/a`；`escalated-with-plan` 必须有
+   `owner=founder|agent:<registered-id>` 与有限动词下一步。`bridge_problem=no` 必须
+   `epic=n/a epic_marker=n/a`。
+
+   UNAVAILABLE 建单前 run(精确标题搜重;secret header 只走 stdin):
+   `TITLE='[patrol-unavailable] step <n>: <稳定原因>'; DEDUP_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "$BRIDGE_URL/api/linear/issues?project=Flywheel&labels=Flywheel&state=triage,backlog,unstarted,started&limit=250&slim=true")"; DEDUP_RC=$?; TRUNCATED="$(printf '%s' "$DEDUP_JSON" | jq -r '.truncated // false')"; PARSE_RC=$?`。
+   若 `DEDUP_RC != 0`、`PARSE_RC != 0`、`TRUNCATED` 不是 `true|false` 或为 `true`,报告记
+   `UNAVAILABLE(transient: dedupe_unverified)`并**禁止建单**。否则 run:
+   `EXISTING="$(printf '%s' "$DEDUP_JSON" | jq -r --arg title "$TITLE" '.issues[] | select(.title == $title) | .identifier' | head -1)"`;
+   非空则把 identifier 写进报告且禁止重复建单。只有空且满足 structural 首现或
+   transient 连续 2 tick 时 run:
+   `PAYLOAD="$(jq -n --arg title "$TITLE" --arg description "patrol report: $REPORT_PATH" '{title:$title, description:$description, team:"FLY", project:"Flywheel", labels:["Flywheel"]}')"; printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS -X POST -H 'Content-Type: application/json' "$BRIDGE_URL/api/linear/create-issue" -d "$PAYLOAD"`。
+### FLY-1945 机制缺陷 finding：声明后必须三选一
+
+机制设计不合理必须作为 `category=mechanism_defect` finding 声明，账落 Linear，不落 memory；
+立单不等于派工，禁止 create 后 activate/dispatch。普通故障用 `category=incident`，
+不能从 `bridge_problem` 推导类别。所有 FINDING 增加唯一 `id=<64hex> category=...`。
+
+报告必须唯一 `patrol_schema=2`，第 6 步先留
+`MECHANISM_REVIEW result=LEAD-JUDGMENT-REQUIRED`，Lead 判断后改为
+`MECHANISM_REVIEW result=none count=0` 或 `result=findings count=<声明数>`。
+每个机制项先声明：
+`MECHANISM_DEFECT id=<64hex> step=<1-6|DWELL> class_key=<64hex> root_cause_ref=<token> counterexample_ref=<token>`。
+id 为稳定 report identity + step + 首次 ordinal + class_key 的 digest，重排不得重新分配；
+class_key 用既有错误码/guard/结构形状，没有错误码则用 mechanism_design + 规则源码路径/symbol
++ 缺失转移形状，不按标题相似度归类。每条声明必须恰好一个同 id 的机制 FINDING。
+根因可注明有证据的假设；验收反例写具体输入、错误结果和应有结果。
+
+同一 FINDING 追加 `disposition=existing|created|no_issue repair_issue=<FLY-number|n/a>
+repair_receipt=<uuid|n/a> disposition_ref=<stable-token>`。报告内添加唯一
+`MECHANISM_DISPOSITION <JSON>`，其严格字段为：
+`{ref,findingId,mode,reason,issueIdentifier,issueUuid,issueUrl,receiptUuid,verifiedAt,rootCause,counterexample,dedupEvidence,linear_record}`。
+ref 与 disposition_ref、root_cause_ref、counterexample_ref 同值；findingId 与 id 同值。
+reason/rootCause/counterexample 是正常中文和空格的 JSON 字符串，各至少 10 个字符，禁止 TODO/TBD/UNSET。
+
+- existing：完整查重后 fresh read 已有单的 identifier/UUID/URL、scope、class_key、根因与反例，
+  补本次 marker comment/description 并回读 receipt；不能只填任意 ticket ID。
+- created：先完整查重为 0；通过人工 draft/backlog 路径建单，正文包含根因、反例、class_key、
+  finding marker，再 fresh read 完整字段和 marker。禁止把 API 不支持的 state 参数当成已生效。
+- no_issue：写具体不立原因、根因、反例；有相关 Linear 源 issue 时把原因以同 marker comment
+  记回该单，`linear_record=comment`，repair_issue=n/a，repair_receipt 为该 comment UUID。
+  没有相关 Linear 源 issue 时允许 `linear_record=not_applicable`，reason 明确说明没有相关
+  Linear 源 issue 及原因；issueIdentifier/issueUuid/issueUrl/receiptUuid/verifiedAt/dedupEvidence
+  均为 JSON null，repair_issue/repair_receipt=n/a。不得为了不立单而强制建修复单，
+  但 Linear 不可用、暂时没查、稍后处理或先记 memory 均不能冒充 no_issue。
+
+对有 Linear 记录的三条路径，verifiedAt 为回读 ISO 时间，issueUrl 为该 identifier 的
+https://linear.app/<workspace>/issue/<identifier> URL，UUID 必须完整；repair receipt 必须一致。
+dedupEvidence 严格为 `{complete:true,includeArchived:true,fullDescriptions:true,beforeCount:0|1,
+afterCount:1,markerVerified:true,classKey:<声明class_key>,findingId:<声明id>,scopeVerified:true}`。
+created 的 beforeCount=0，existing/no_issue-comment 为 1；no_issue-comment 查重对象是源 issue
+上的本 finding marker，写入前无 marker 时先写再回读唯一 marker，beforeCount 表示本次选择的源单数。
+该对象是 Lead 回读证据的记录，机械门验证闭合，不把自述 receipt 当服务端授权或语义正确性证明。
+
+查重必须分页到底，Bridge 查 FLY-2072 或明确关联单，非 Bridge 查当前项目含 archived 候选，
+逐张 get 完整 description；不能用 250 条无 continuation 列表伪装全集。0 命中新建，1 命中复用，
+>1 为 mechanism_class_duplicate 并停止封口。网络超时后先分页回读 comments 的本次 marker，
+不得盲重发。写后核对 identifier/UUID/project/parent（适用时）/class_key/marker/正文。
+同 Bridge 病根单可同时作为 repair issue，直接补反例，避免重复开单；exact lookup 只辅助 UUID，
+parent/team 仍用完整 get 复核。创建后再次全量查重；并发重复时 Lead 选择 canonical、留 duplicate
+关联并复读后才闭合，不能声称 Linear 创建原子唯一。只写自己报告的账，不派工。
+
+`bridge_problem=yes` 继续满足下方原 FLY-2080 病根单/occurrence gate，no_issue 不豁免；
+epic=unavailable 不能替代新的 disposition。工具不自动识别未声明的自然语言问题；Lead 必须先声明。
+删除 category、把 STEP 改 OK、同 STEP 只处理一项都不能隐藏已声明机制项。
+
+   最后 run(完成门):
+   `FINAL_STEP_COUNT="$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; DWELL_STEP_COUNT="$(grep -Ec '^STEP DWELL: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; PANE_COUNT="$(sed -n 's/^pane_count=//p' "$REPORT_PATH" | tail -1)"; EVIDENCE_COUNT="$(grep -c '^PANE_EVIDENCE ' "$REPORT_PATH")"; WELL_FORMED_EVIDENCE="$(awk '/^PANE_EVIDENCE / && / pane=[^ ]+/ && / target=[^ ]+/ && / capture_sha256=[^ ]+/ && / state_sha256=[^ ]+/ && / last_change_epoch=[0-9]+/ && / findings=[^ ]+/ && / action=[^ ]+/ && / result=[^ ]+/{n++} END{print n+0}' "$REPORT_PATH")"; case "$PANE_COUNT" in ''|*[!0-9]*) false;; esac && test "$FINAL_STEP_COUNT" -eq 6 && test "$DWELL_STEP_COUNT" -eq 1 && test "$PANE_COUNT" -eq "$EVIDENCE_COUNT" && test "$PANE_COUNT" -eq "$WELL_FORMED_EVIDENCE" && ! grep -Eq '^STEP (0|[7-9]|[1-9][0-9]+): |LEAD-JUDGMENT-REQUIRED|-CANDIDATE$|action=REQUIRED|result=UNSET' "$REPORT_PATH"`。
+   再 run 磁盘一致性门；非零同样没有完成：
+   `awk '/^## STEP 5$/{in5=1;next}/^## STEP 6$/{in5=0} in5&&/^STEP 5: /{status=$0} in5&&/disk_below_threshold=yes/{disk=1;low=1} in5&&/disk_below_threshold=no/{disk=1} in5&&/^UNAVAILABLE_CAUSE step=5 /&&/(data_volume|snapshot_helper)/{unknown=1} END{if(low&&status!="STEP 5: FINDING")exit 1;if(!disk&&!unknown)exit 1;if(unknown&&status=="STEP 5: OK")exit 1}' "$REPORT_PATH"`。
+   再 run 以下 finding validator；非零同样没有完成：
+
+# FLY-2080-FINDING-GATE-BEGIN
+awk '
+function parse(    i,n,k,v) {
+  for (k in fields) delete fields[k]
+  for (i=2; i<=NF; i++) {
+    n=index($i,"="); k=substr($i,1,n-1); v=substr($i,n+1)
+    if (!n || !length(v) || k in fields) bad=1
+    fields[k]=v
+  }
+}
+function value(name) { return fields[name] }
+/^patrol_schema/ { schema_seen++; if ($0!="patrol_schema=2") bad=1; next }
+/^(NODE_DWELL|UNAVAILABLE_CAUSE|FINDING|MECHANISM_REVIEW|MECHANISM_DEFECT)( |$)/ { parse() }
+/^MECHANISM_REVIEW( |$)/ {
+  review_seen++; review_result=value("result"); review_count=value("count")
+  for (k in fields) if (k!="result" && k!="count") bad=1
+  next
+}
+/^MECHANISM_DEFECT( |$)/ {
+  id=value("id"); declared[id]++; declaration_step[id]=value("step"); mechanism_count++
+  if (!hex64(id) || !hex64(value("class_key")) || value("step") !~ /^([1-6]|DWELL)$/ || value("root_cause_ref") !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ || value("counterexample_ref") !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/) bad=1
+  for (k in fields) if (k!="id" && k!="step" && k!="class_key" && k!="root_cause_ref" && k!="counterexample_ref") bad=1
+  next
+}
+function uuid(v,    body,n,a) {
+  if (index(v,"FLY-2072#") != 1) return 0
+  body=substr(v,10); n=split(body,a,"-")
+  return n==5 && length(a[1])==8 && length(a[2])==4 && length(a[3])==4 && length(a[4])==4 && length(a[5])==12 && body !~ /[^0-9a-f-]/
+}
+function hex64(v) { return length(v)==64 && v !~ /[^0-9a-f]/ }
+function normalized_step(v) { sub(/:$/, "", v); return v }
+/^STEP ([1-6]|DWELL): OK$/ {
+  step=normalized_step($2); status[step]="OK"; status_seen[step]++; next
+}
+/^STEP ([1-6]|DWELL): FINDING$/ {
+  step=normalized_step($2); status[step]="FINDING"; status_seen[step]++; required[step]=1; next
+}
+/^STEP ([1-6]|DWELL): UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\)$/ {
+  step=normalized_step($2); status[step]="UNAVAILABLE"; status_seen[step]++
+  if ($0 ~ /: multiple_unavailable\)$/ && step!="6") bad=1
+  next
+}
+/^STEP / { bad=1; next }
+/^NODE_DWELL / {
+  if ($0 ~ / over_threshold=yes( |$)/) {
+    dwell_overdue=1; issue=value("issue"); route=value("route")
+    if (route=="deep_dive" || route=="founder_reminder") {
+      if (issue=="") bad=1
+      key=issue SUBSEP route
+      if (!dwell_action_seen[key]++) dwell_action_required++
+    }
+  }
+  next
+}
+/^UNAVAILABLE_CAUSE / {
+  step=value("step"); class=value("class"); token=value("token")
+  if (step !~ /^([1-6]|DWELL)$/) bad=1; else unavailable_cause[step]++
+  if (step=="6" && class=="transient" && token=="linear_epic_unavailable") linear_unavailable=1
+  next
+}
+/^FINDING( |$)/ {
+  id=value("id"); category=value("category"); finding_ids[id]++
+  if (!hex64(id) || (category!="incident" && category!="mechanism_defect")) bad=1
+  for (k in fields) if (k !~ /^(id|category|step|bridge_problem|result|evidence|owner|next|epic|epic_marker|disposition|repair_issue|repair_receipt|disposition_ref)$/) bad=1
+  if (category=="mechanism_defect") {
+    mechanism_finding[id]++; mechanism_step[id]=value("step")
+    if (value("disposition") !~ /^(existing|created|no_issue)$/ || value("disposition_ref") !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ || value("repair_issue")=="" || value("repair_receipt")=="") bad=1
+  }
+  step=value("step"); bridge=value("bridge_problem"); result=value("result")
+  evidence=value("evidence"); owner=value("owner"); next_action=value("next")
+  epic=value("epic"); marker=value("epic_marker")
+  if (step !~ /^([1-6]|DWELL)$/) bad=1; else detail[step]++
+  if (bridge!="yes" && bridge!="no") bad=1
+  if (result!="fixed" && result!="advanced" && result!="escalated-with-plan") bad=1
+  if (evidence !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/) bad=1
+  if (result=="fixed" || result=="advanced") {
+    if (owner!="n/a" || next_action!="n/a") bad=1
+  } else {
+    if (owner!="founder" && owner !~ /^agent:[A-Za-z0-9][A-Za-z0-9._-]*$/) bad=1
+    if (next_action !~ /^(inspect|repair|authorize|route|file|retry):[A-Za-z0-9][A-Za-z0-9._:-]*$/) bad=1
+  }
+  if (bridge=="yes") {
+    if (epic=="unavailable") { if (marker!="n/a") bad=1; needs_linear_unavailable=1 }
+    else if (!uuid(epic) || !hex64(marker)) bad=1
+  } else if (epic!="n/a" || marker!="n/a") bad=1
+}
+END {
+  if (schema_seen!=1 || review_seen!=1 || review_count !~ /^(0|[1-9][0-9]*)$/ || review_count+0!=mechanism_count+0 || (mechanism_count==0 && review_result!="none") || (mechanism_count>0 && review_result!="findings")) bad=1
+  for (id in finding_ids) if (finding_ids[id]!=1) bad=1
+  for (id in declared) if (declared[id]!=1 || mechanism_finding[id]!=1 || declaration_step[id]!=mechanism_step[id]) bad=1
+  for (id in mechanism_finding) if (declared[id]!=1) bad=1
+  for (step in status_seen) if (status_seen[step]!=1) bad=1
+  for (step in required) if (!detail[step]) bad=1
+  for (step in detail) if (!required[step] && !(step=="DWELL" && unavailable_cause[step]>0)) bad=1
+  if (dwell_action_required + unavailable_cause["DWELL"] > detail["DWELL"]) bad=1
+  if (dwell_overdue && status["DWELL"]!="FINDING") bad=1
+  if (needs_linear_unavailable && !linear_unavailable) bad=1
+  exit bad
+}
+' "$REPORT_PATH"
+# FLY-2080-FINDING-GATE-END
+
+   再执行 `flywheel-patrol-continuity validate-report --report "$REPORT_PATH"`。必须原基本完整性、磁盘、上述 awk 和 JSON helper 四层都成功，才能完成；helper 缺失或失败不能跳过。
+
+   失败就没有完成;无法理解本段也必须记 UNAVAILABLE,禁止静默跳过。
+
+### FLY-2080 附录 A — receipt 死结完整配方
+
+只在步骤 A 已证明“目标 execution 已真实收到并完成 rework，但 receipt 剧本漏记”时
+执行。核心不是单拨一行：`workflow_rework_delivery held→wake_delivered` 与
+`workflow_run held→active` 必须同一 transaction；否则下一轮会撞 chain CAS。route、
+target `workflow_run_node`、可选 `workflow_rework_verification_path` 与
+`rework_delivery_wake_delivered` event 也必须一起闭合。
+
+先从只读错误现场取得精确 id，验证 id 字符集，保存 0600 backup 和 engine event
+baseline。`TARGET_PANE` 继续用于事务前真实性证明或 event 为空后的有界诊断，不为
+pane 输出建立 baseline 指纹：
+
+```sh
+STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-$HOME/.flywheel/teamlead.db}}"
+REQUEST_ID='<exact request_id from the read-only probe>'
+TARGET_PANE='<exact canonical pane id>'
+REPAIR_ISSUE_IDENTIFIER='<exact issue that owns this run>'
+case "$REQUEST_ID:$TARGET_PANE" in *[!A-Za-z0-9._:%-]*) exit 64;; esac
+case "$REPAIR_ISSUE_IDENTIFIER" in [A-Z]*-[1-9][0-9]*) ;; *) exit 64;; esac
+PATROL_SNAPSHOT="$(command -v flywheel-patrol-snapshot)" || exit $?
+SNAPSHOT_SOURCE_DIR="$(node -e 'const {dirname}=require("node:path");const {realpathSync}=require("node:fs");process.stdout.write(dirname(realpathSync(process.argv[1])))' "$PATROL_SNAPSHOT")" || exit $?
+SNAPSHOT_CONTROL="$SNAPSHOT_SOURCE_DIR/flywheel-snapshot-control.mjs"
+BACKUP_JSON="$(node "$SNAPSHOT_CONTROL" repair --source "$STATE_DB" --kind teamlead --issue "$REPAIR_ISSUE_IDENTIFIER")" || exit $?
+BACKUP_PATH="$(printf '%s' "$BACKUP_JSON" | jq -er 'if .ok == true and (.path | type == "string") then .path else empty end')" || exit 1
+BASELINE_SEQ="$(sqlite3 -bail "$STATE_DB" "PRAGMA busy_timeout=5000; SELECT COALESCE(MAX(e.seq),0) FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID';")"
+```
+
+先 run 此 read-only probe，并把输出逐字段写入报告。它必须恰好一行，且：delivery
+`state='held' AND last_error='delivery_awaiting_receipt'`；run
+`engine_owned=1 AND status='held'`；route 是 latest；target node 恰为 `admitted` 且
+execution 等于 route actor；path 不存在或恰为 `pending`；同 run 没有
+`workflow_carrier_delivery state='held' AND last_error LIKE 'run_inactive:%'`：
+
+```sh
+sqlite3 -bail -header -column "$STATE_DB" <<SQL
+PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+SELECT d.request_id,q.run_id,d.generation,d.route_revision,d.state AS delivery_state,
+       d.last_error,r.status AS run_status,r.engine_owned,
+       rr.target_node_id,rr.target_attempt,rr.preferred_actor_execution_id,
+       n.state AS node_state,n.execution_id,p.state AS path_state,
+       (SELECT MAX(x.revision) FROM workflow_rework_route_revision x
+         WHERE x.request_id=d.request_id) AS latest_revision,
+       (SELECT COUNT(*) FROM workflow_carrier_delivery c WHERE c.run_id=q.run_id
+         AND c.state='held' AND c.last_error LIKE 'run_inactive:%') AS held_carriers
+  FROM workflow_rework_delivery d
+  JOIN workflow_rework_request q ON q.request_id=d.request_id
+  JOIN workflow_run r ON r.run_id=q.run_id
+  JOIN workflow_rework_route_revision rr
+    ON rr.request_id=d.request_id AND rr.revision=d.route_revision
+  JOIN workflow_run_node n ON n.run_id=q.run_id
+    AND n.node_id=rr.target_node_id AND n.attempt=rr.target_attempt
+  LEFT JOIN workflow_rework_verification_path p ON p.request_id=d.request_id
+ WHERE d.request_id='$REQUEST_ID'
+   AND d.state='held' AND d.last_error='delivery_awaiting_receipt'
+   AND r.engine_owned=1 AND r.status='held'
+   AND d.route_revision=(SELECT MAX(x.revision) FROM workflow_rework_route_revision x
+                          WHERE x.request_id=d.request_id)
+   AND n.state='admitted' AND n.execution_id=rr.preferred_actor_execution_id
+   AND (p.request_id IS NULL OR (p.route_revision=d.route_revision AND p.state='pending'))
+   AND NOT EXISTS (SELECT 1 FROM workflow_carrier_delivery c WHERE c.run_id=q.run_id
+                    AND c.state='held' AND c.last_error LIKE 'run_inactive:%');
+SQL
+```
+
+pane/commit/TURN 必须另行证明 `preferred_actor_execution_id` 已完成这次 rework；不成立
+就是伪造 receipt，按防篡改类停手。若 pane 参与这项事务前真实性证明，只 run
+`TMUX= tmux capture-pane -p -S -40 -t "$TARGET_PANE" | tail -40`；不落原文、不做
+哈希、不与事务前后的输出做前后比较，只在报告写非敏感 `pane_marker=<state>` 与
+`observed_at=<UTC>`。probe 恰好一行后才可 run 下列
+`BEGIN IMMEDIATE`。每个 `patrol_assert_*` 都用 `CHECK(v=1)` 把竞态变成 rollback；新
+route revision 还会重新武装以 revision 为键的 stall watchdog：
+
+```sh
+sqlite3 -bail "$STATE_DB" <<SQL
+PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+BEGIN IMMEDIATE;
+CREATE TEMP TABLE patrol_ctx AS
+SELECT d.request_id,q.run_id,d.generation,d.route_revision AS old_revision,
+       d.route_revision+1 AS new_revision,rr.target_node_id,rr.target_attempt,
+       rr.preferred_actor_execution_id,
+       (SELECT COUNT(*) FROM workflow_rework_verification_path p
+         WHERE p.request_id=d.request_id AND p.route_revision=d.route_revision
+           AND p.state='pending') AS path_count
+  FROM workflow_rework_delivery d
+  JOIN workflow_rework_request q ON q.request_id=d.request_id
+  JOIN workflow_run r ON r.run_id=q.run_id
+  JOIN workflow_rework_route_revision rr
+    ON rr.request_id=d.request_id AND rr.revision=d.route_revision
+  JOIN workflow_run_node n ON n.run_id=q.run_id AND n.node_id=rr.target_node_id
+    AND n.attempt=rr.target_attempt AND n.execution_id=rr.preferred_actor_execution_id
+ WHERE d.request_id='$REQUEST_ID'
+   AND d.state='held' AND d.last_error='delivery_awaiting_receipt'
+   AND r.engine_owned=1 AND r.status='held' AND n.state='admitted'
+   AND d.route_revision=(SELECT MAX(x.revision) FROM workflow_rework_route_revision x
+                          WHERE x.request_id=d.request_id)
+   AND NOT EXISTS (SELECT 1 FROM workflow_carrier_delivery c WHERE c.run_id=q.run_id
+                    AND c.state='held' AND c.last_error LIKE 'run_inactive:%');
+CREATE TEMP TABLE patrol_assert_preflight(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_preflight SELECT COUNT(*) FROM patrol_ctx;
+CREATE TEMP TABLE patrol_assert_path_shape(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_path_shape SELECT CASE WHEN path_count IN (0,1) THEN 1 ELSE 0 END FROM patrol_ctx;
+
+INSERT INTO workflow_rework_route_revision
+ (request_id,revision,target_node_id,target_attempt,preferred_actor_execution_id,
+  invalidation_scope_json,verification_policy_json,interpreted_by,
+  interpretation_reason,created_at)
+SELECT old.request_id,c.new_revision,old.target_node_id,old.target_attempt,
+       old.preferred_actor_execution_id,old.invalidation_scope_json,
+       old.verification_policy_json,'patrol:FLY-2080',
+       'receipt ledger repair after exact guard proof',datetime('now')
+  FROM patrol_ctx c JOIN workflow_rework_route_revision old
+    ON old.request_id=c.request_id AND old.revision=c.old_revision;
+CREATE TEMP TABLE patrol_assert_route(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_route VALUES(changes());
+
+UPDATE workflow_rework_delivery
+   SET route_revision=(SELECT new_revision FROM patrol_ctx),
+       state='wake_delivered',hold_count=0,owner_id=NULL,lease_expires_at=NULL,
+       next_retry_at=NULL,last_error=NULL,updated_at=datetime('now')
+ WHERE request_id=(SELECT request_id FROM patrol_ctx)
+   AND route_revision=(SELECT old_revision FROM patrol_ctx)
+   AND state='held' AND last_error='delivery_awaiting_receipt';
+CREATE TEMP TABLE patrol_assert_delivery(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_delivery VALUES(changes());
+
+UPDATE workflow_run_node SET state='running'
+ WHERE run_id=(SELECT run_id FROM patrol_ctx)
+   AND node_id=(SELECT target_node_id FROM patrol_ctx)
+   AND attempt=(SELECT target_attempt FROM patrol_ctx)
+   AND execution_id=(SELECT preferred_actor_execution_id FROM patrol_ctx)
+   AND state='admitted';
+CREATE TEMP TABLE patrol_assert_node(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_node VALUES(changes());
+
+UPDATE workflow_rework_verification_path
+   SET route_revision=(SELECT new_revision FROM patrol_ctx),state='active',updated_at=datetime('now')
+ WHERE request_id=(SELECT request_id FROM patrol_ctx)
+   AND route_revision=(SELECT old_revision FROM patrol_ctx) AND state='pending';
+CREATE TEMP TABLE patrol_assert_path(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_path
+SELECT CASE WHEN changes()=(SELECT path_count FROM patrol_ctx) THEN 1 ELSE 0 END;
+
+UPDATE workflow_run SET status='active'
+ WHERE run_id=(SELECT run_id FROM patrol_ctx) AND engine_owned=1 AND status='held'
+   AND EXISTS (SELECT 1 FROM workflow_rework_delivery d JOIN patrol_ctx c
+                ON c.request_id=d.request_id
+                WHERE d.route_revision=c.new_revision AND d.state='wake_delivered')
+   AND EXISTS (SELECT 1 FROM workflow_run_node n JOIN patrol_ctx c ON c.run_id=n.run_id
+                WHERE n.node_id=c.target_node_id AND n.attempt=c.target_attempt
+                  AND n.execution_id=c.preferred_actor_execution_id AND n.state='running')
+   AND NOT EXISTS (SELECT 1 FROM workflow_rework_verification_path p JOIN patrol_ctx c
+                    ON c.request_id=p.request_id
+                    WHERE p.route_revision<>c.new_revision OR p.state<>'active');
+CREATE TEMP TABLE patrol_assert_run(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_run VALUES(changes());
+
+INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,execution_id,payload,at)
+SELECT run_id,(SELECT COALESCE(MAX(e.seq),0)+1 FROM workflow_run_event e WHERE e.run_id=c.run_id),
+       'patrol:FLY-2080:receipt:'||request_id||':rev'||new_revision,
+       'rework_delivery_wake_delivered',target_node_id,preferred_actor_execution_id,
+       json_object('requestId',request_id,'generation',generation,'from','held',
+         'fromReason','delivery_awaiting_receipt','to','wake_delivered',
+         'routeRevision',new_revision),datetime('now')
+  FROM patrol_ctx c
+ WHERE NOT EXISTS (SELECT 1 FROM workflow_run_event e
+                    WHERE e.event_uid='patrol:FLY-2080:receipt:'||c.request_id||':rev'||c.new_revision);
+CREATE TEMP TABLE patrol_assert_event(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_event VALUES(changes());
+COMMIT;
+SQL
+```
+
+事务后必须静态复核 delivery=`wake_delivered`、node=`running`、path absent/`active`、
+run=`active`，再等至少一个 reconcile tick 并 run：
+
+```sh
+sleep 10
+AFTER_EVENTS="$(sqlite3 -bail "$STATE_DB" "SELECT e.seq||':'||e.kind FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID' AND e.seq>$BASELINE_SEQ AND e.event_uid NOT LIKE 'patrol:%' ORDER BY e.seq;")"
+printf 'engine_handoff events=%s\n' "$AFTER_EVENTS"
+test -n "$AFTER_EVENTS"
+```
+
+所有 `patrol:%` event 都由 patrol 配方自己写入，只证明 transaction commit，必须从
+接力事件中排除；否则 Bridge 已停机时也会假绿。`test -n` 失败时，不把“暂时没有
+event”解释为修复失败；仍用上方已校验的 `TARGET_PANE` 做同一条 40 行有界读取，
+不落原文、不做哈希、不做前后比较，只记录 `pane_marker`、`observed_at` 与明确
+`next=inspect|repair|retry:<token>`。pane_marker 不能单独支持 `fixed|advanced`。
+predecessor 分支也只认 baseline 后的新非 patrol engine event。
+
+### FLY-2080 附录 B — replacement 铸造漏账完整配方
+
+输入必须是引擎已经 reserve 的 `NEW_EXECUTION_ID`；本配方绝不创建
+`workflow_actor`、execution、authority、approval 或 claim。先执行与附录 A 相同的
+DB path、受管 repair snapshot 与 event baseline；如需 pane 参与事务前真实性证明或事后
+诊断，也复用附录 A 的字符校验、40 行读取与不落原文合同。再设置并校验：
+
+```sh
+REQUEST_ID='<exact request_id from the read-only probe>'
+NEW_EXECUTION_ID='<engine-reserved replacement execution id>'
+case "$REQUEST_ID:$NEW_EXECUTION_ID" in *[!A-Za-z0-9._:%-]*) exit 64;; esac
+```
+
+read-only probe 必须恰好一组：request/run 存在且 `engine_owned=1`、run
+`status IN ('active','held')`、`base_revision` 是 lowercase 40-hex；latest route 仍
+指旧 execution；delivery 指 latest 非终态 revision；`workflow_actor` 与同
+run/node/attempt 的 `workflow_run_node` 已指向新 execution，node state 在
+`pending|admitted|running`；新 execution 恰好一条且为该 attempt 最大
+`launch_ordinal` 的 dispatch `workflow_side_effect_ledger`，state 是
+`intent_recorded|launch_committed`、reason empty；没有 route 已指向新 execution。
+任一身份事实不存在都按真实性类停手，禁止人工铸造：
+
+```sh
+sqlite3 -bail -header -column "$STATE_DB" <<SQL
+PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+SELECT q.request_id,q.run_id,q.base_revision,r.engine_owned,r.status AS run_status,
+       d.route_revision,d.state AS delivery_state,d.last_error,
+       old.target_node_id,old.target_attempt,
+       old.preferred_actor_execution_id AS old_execution_id,
+       a.execution_id AS new_execution_id,n.state AS new_node_state,
+       l.launch_ordinal,l.state AS ledger_state,l.reason
+  FROM workflow_rework_request q JOIN workflow_run r ON r.run_id=q.run_id
+  JOIN workflow_rework_delivery d ON d.request_id=q.request_id
+  JOIN workflow_rework_route_revision old ON old.request_id=q.request_id
+    AND old.revision=d.route_revision
+  JOIN workflow_actor a ON a.execution_id='$NEW_EXECUTION_ID'
+    AND a.project_name=r.project_name AND a.issue_id=r.issue_id
+  JOIN workflow_run_node n ON n.run_id=q.run_id AND n.node_id=old.target_node_id
+    AND n.attempt=old.target_attempt AND n.execution_id=a.execution_id
+  JOIN workflow_side_effect_ledger l ON l.run_id=q.run_id
+    AND l.node_id=n.node_id AND l.attempt=n.attempt AND l.kind='dispatch'
+    AND l.execution_id=a.execution_id
+ WHERE q.request_id='$REQUEST_ID' AND r.engine_owned=1
+   AND r.status IN ('active','held')
+   AND length(q.base_revision)=40 AND q.base_revision NOT GLOB '*[^0-9a-f]*'
+   AND d.route_revision=(SELECT MAX(x.revision) FROM workflow_rework_route_revision x
+                          WHERE x.request_id=q.request_id)
+   AND d.state NOT IN ('completed','needs_lead')
+   AND n.state IN ('pending','admitted','running')
+   AND l.launch_ordinal=(SELECT MAX(x.launch_ordinal) FROM workflow_side_effect_ledger x
+                         WHERE x.run_id=l.run_id AND x.node_id=l.node_id
+                           AND x.attempt=l.attempt AND x.kind='dispatch')
+   AND l.state IN ('intent_recorded','launch_committed')
+   AND (l.reason IS NULL OR trim(l.reason)='')
+   AND NOT EXISTS (SELECT 1 FROM workflow_rework_route_revision x
+                    WHERE x.request_id=q.request_id
+                      AND x.preferred_actor_execution_id=a.execution_id);
+SQL
+```
+
+只有恰好一行才 run 主事务。它将 dispatch reason 补为
+`rework_replacement:<requestId>`，append 指向新 execution 的 route revision，
+delivery→`replacement_pending`，同步可选 path；仅当同一 delivery
+`last_error='delivery_replacement_pending'` 导致 run held 才恢复 active。held carrier
+存在则 preflight 为零行、整单 rollback：
+
+```sh
+sqlite3 -bail "$STATE_DB" <<SQL
+PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+BEGIN IMMEDIATE;
+CREATE TEMP TABLE patrol_ctx AS
+SELECT q.request_id,q.run_id,q.base_revision,d.route_revision AS old_revision,
+       d.route_revision+1 AS new_revision,d.state AS old_delivery_state,d.last_error,
+       old.target_node_id,old.target_attempt,'$NEW_EXECUTION_ID' AS new_execution_id,
+       l.launch_ordinal,l.state AS ledger_state,
+       (SELECT COUNT(*) FROM workflow_rework_verification_path p
+         WHERE p.request_id=q.request_id AND p.route_revision=d.route_revision
+           AND p.state IN ('pending','active')) AS path_count,
+       CASE WHEN r.status='held' AND d.last_error='delivery_replacement_pending' THEN 1 ELSE 0 END AS wake_run
+  FROM workflow_rework_request q JOIN workflow_run r ON r.run_id=q.run_id
+  JOIN workflow_rework_delivery d ON d.request_id=q.request_id
+  JOIN workflow_rework_route_revision old ON old.request_id=q.request_id AND old.revision=d.route_revision
+  JOIN workflow_actor a ON a.execution_id='$NEW_EXECUTION_ID'
+    AND a.project_name=r.project_name AND a.issue_id=r.issue_id
+  JOIN workflow_run_node n ON n.run_id=q.run_id AND n.node_id=old.target_node_id
+    AND n.attempt=old.target_attempt AND n.execution_id=a.execution_id
+  JOIN workflow_side_effect_ledger l ON l.run_id=q.run_id AND l.node_id=n.node_id
+    AND l.attempt=n.attempt AND l.kind='dispatch' AND l.execution_id=a.execution_id
+ WHERE q.request_id='$REQUEST_ID' AND r.engine_owned=1 AND r.status IN ('active','held')
+   AND length(q.base_revision)=40 AND q.base_revision NOT GLOB '*[^0-9a-f]*'
+   AND d.route_revision=(SELECT MAX(x.revision) FROM workflow_rework_route_revision x WHERE x.request_id=q.request_id)
+   AND d.state NOT IN ('completed','needs_lead') AND n.state IN ('pending','admitted','running')
+   AND l.launch_ordinal=(SELECT MAX(x.launch_ordinal) FROM workflow_side_effect_ledger x
+                         WHERE x.run_id=l.run_id AND x.node_id=l.node_id AND x.attempt=l.attempt AND x.kind='dispatch')
+   AND l.state IN ('intent_recorded','launch_committed') AND (l.reason IS NULL OR trim(l.reason)='')
+   AND NOT EXISTS (SELECT 1 FROM workflow_rework_route_revision x WHERE x.request_id=q.request_id AND x.preferred_actor_execution_id=a.execution_id)
+   AND NOT EXISTS (SELECT 1 FROM workflow_carrier_delivery c WHERE c.run_id=q.run_id AND c.state='held');
+CREATE TEMP TABLE patrol_assert_preflight(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_preflight SELECT COUNT(*) FROM patrol_ctx;
+CREATE TEMP TABLE patrol_assert_path_shape(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_path_shape SELECT CASE WHEN path_count IN (0,1) THEN 1 ELSE 0 END FROM patrol_ctx;
+
+UPDATE workflow_side_effect_ledger SET reason='rework_replacement:'||'$REQUEST_ID',updated_at=datetime('now')
+ WHERE run_id=(SELECT run_id FROM patrol_ctx) AND node_id=(SELECT target_node_id FROM patrol_ctx)
+   AND attempt=(SELECT target_attempt FROM patrol_ctx) AND kind='dispatch'
+   AND launch_ordinal=(SELECT launch_ordinal FROM patrol_ctx)
+   AND execution_id=(SELECT new_execution_id FROM patrol_ctx)
+   AND state=(SELECT ledger_state FROM patrol_ctx) AND (reason IS NULL OR trim(reason)='');
+CREATE TEMP TABLE patrol_assert_ledger(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_ledger VALUES(changes());
+
+INSERT INTO workflow_rework_route_revision
+ (request_id,revision,target_node_id,target_attempt,preferred_actor_execution_id,
+  invalidation_scope_json,verification_policy_json,interpreted_by,interpretation_reason,created_at)
+SELECT old.request_id,c.new_revision,old.target_node_id,old.target_attempt,c.new_execution_id,
+       old.invalidation_scope_json,old.verification_policy_json,'patrol:FLY-2080',
+       'replacement ledger repair after exact guard proof',datetime('now')
+  FROM patrol_ctx c JOIN workflow_rework_route_revision old
+    ON old.request_id=c.request_id AND old.revision=c.old_revision;
+CREATE TEMP TABLE patrol_assert_route(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_route VALUES(changes());
+
+UPDATE workflow_rework_delivery
+   SET route_revision=(SELECT new_revision FROM patrol_ctx),state='replacement_pending',
+       hold_count=0,owner_id=NULL,lease_expires_at=NULL,next_retry_at=NULL,
+       last_error=NULL,updated_at=datetime('now')
+ WHERE request_id=(SELECT request_id FROM patrol_ctx)
+   AND route_revision=(SELECT old_revision FROM patrol_ctx)
+   AND state=(SELECT old_delivery_state FROM patrol_ctx);
+CREATE TEMP TABLE patrol_assert_delivery(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_delivery VALUES(changes());
+
+UPDATE workflow_rework_verification_path
+   SET route_revision=(SELECT new_revision FROM patrol_ctx),updated_at=datetime('now')
+ WHERE request_id=(SELECT request_id FROM patrol_ctx)
+   AND route_revision=(SELECT old_revision FROM patrol_ctx) AND state IN ('pending','active');
+CREATE TEMP TABLE patrol_assert_path(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_path SELECT CASE WHEN changes()=(SELECT path_count FROM patrol_ctx) THEN 1 ELSE 0 END;
+
+UPDATE workflow_run SET status='active'
+ WHERE run_id=(SELECT run_id FROM patrol_ctx) AND engine_owned=1 AND status='held'
+   AND (SELECT wake_run FROM patrol_ctx)=1;
+CREATE TEMP TABLE patrol_assert_run(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_run SELECT CASE WHEN changes()=(SELECT wake_run FROM patrol_ctx) THEN 1 ELSE 0 END;
+COMMIT;
+SQL
+```
+
+主事务后重读 dispatcher replacement guard：reason prefix、request/run、route
+node/attempt/execution、delivery revision/state 与 base SHA 必须同时成立。再用附录 A 的
+baseline event gate 验证 Bridge launch/advance；只见 rows changed 不算接力。同步遵守
+附录 A 的 event-empty 诊断合同：pane_marker 只能决定下一动作，不能单独过完成门。
+
+#### 仅限 `engine_predecessor_unavailable` 的 predecessor 事件分支
+
+replacement-context dispatch 不走本分支。只有 generic replacement 后确切错误码为
+`engine_predecessor_unavailable`，才沿每个
+`execution_dead_rolled_back.payload.newExecutionId` 唯一回溯至最初 target execution；
+必须同时证明它没有以 `successorExecutionId` 出现在既有 `edge_traversed`，且恰好一个
+既有 `node_completed`（`json_extract(payload,'$.outcome')='qa_fail'`）+
+`workflow_rework_request` + target node/attempt + snapshot loop edge 组合证明 transition。
+候选为 0 或多条均停手。source QA execution 的 `sessions` row 必须仍存在，并用引擎
+同一个 read-only `resolveWorkflowHeadAuthority` probe 得到 lowercase 40-hex
+`prHeadSha`；缺 session/head invalid 均禁止写 append-only event。
+
+从上述唯一 probe 固定 `RUN_ID SOURCE_NODE_ID SOURCE_EXECUTION_ID SOURCE_ATTEMPT
+EDGE_ID TARGET_NODE_ID TARGET_ATTEMPT SUCCESSOR_EXECUTION_ID REQUEST_ID
+MAX_ITERATIONS_OR_NULL`。有界 loop 用 snapshot 中的正整数；无上限 loop 必须用 SQL
+`NULL`，不能猜一个额度。`loopIteration` 必须按 authoritative counter
+`COUNT(kind IN ('loop_iteration','loop_limit_escalated') AND edge_id=EDGE_ID)+1`，不能
+从报告猜。完整 payload 字段名固定为 `targetNodeId`、`targetAttempt`、
+`sourceAttempt`、`outcome`、`successorExecutionId`、`reworkRequestId`、
+`loopIteration`。在一个 `BEGIN IMMEDIATE` 中先 append canonical `edge_traversed`，
+再 append companion `loop_iteration`，两条各用 next seq；INSERT 前再次查 absence，
+任一 UID/事实已存在即整单 rollback：
+
+```sql
+PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+BEGIN IMMEDIATE;
+-- Values below come only from the unique read-only proof described above.
+CREATE TEMP TABLE patrol_edge_ctx AS
+SELECT '<RUN_ID>' run_id,'<SOURCE_NODE_ID>' source_node_id,
+       '<SOURCE_EXECUTION_ID>' source_execution_id,<SOURCE_ATTEMPT> source_attempt,
+       '<EDGE_ID>' edge_id,'<TARGET_NODE_ID>' target_node_id,<TARGET_ATTEMPT> target_attempt,
+       '<SUCCESSOR_EXECUTION_ID>' successor_execution_id,'<REQUEST_ID>' request_id,
+       <MAX_ITERATIONS_OR_NULL> max_iterations,
+       1+(SELECT COUNT(*) FROM workflow_run_event e WHERE e.run_id='<RUN_ID>'
+           AND e.edge_id='<EDGE_ID>' AND e.kind IN ('loop_iteration','loop_limit_escalated')) loop_iteration;
+CREATE TEMP TABLE patrol_assert_edge_absent(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_edge_absent
+SELECT CASE WHEN COUNT(*)=0 THEN 1 ELSE 0 END FROM workflow_run_event e,patrol_edge_ctx c
+ WHERE e.run_id=c.run_id AND e.kind='edge_traversed'
+   AND json_extract(e.payload,'$.successorExecutionId')=c.successor_execution_id;
+INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,edge_id,execution_id,payload,at)
+SELECT run_id,(SELECT COALESCE(MAX(seq),0)+1 FROM workflow_run_event WHERE run_id=c.run_id),
+       'patrol:FLY-2080:edge:'||request_id||':'||successor_execution_id,
+       'edge_traversed',source_node_id,edge_id,source_execution_id,
+       json_object('edgeId',edge_id,'targetNodeId',target_node_id,'targetAttempt',target_attempt,
+         'sourceAttempt',source_attempt,'outcome','qa_fail',
+         'successorExecutionId',successor_execution_id,'reworkRequestId',request_id,
+         'loopIteration',loop_iteration),datetime('now') FROM patrol_edge_ctx c;
+CREATE TEMP TABLE patrol_assert_edge(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_edge VALUES(changes());
+INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,edge_id,execution_id,payload,at)
+SELECT run_id,(SELECT COALESCE(MAX(seq),0)+1 FROM workflow_run_event WHERE run_id=c.run_id),
+       'patrol:FLY-2080:loop:'||request_id||':'||successor_execution_id,
+       'loop_iteration',source_node_id,edge_id,source_execution_id,
+       CASE WHEN max_iterations IS NULL
+         THEN json_object('iteration',loop_iteration)
+         ELSE json_object('iteration',loop_iteration,'maxIterations',max_iterations) END,
+       datetime('now')
+  FROM patrol_edge_ctx c;
+CREATE TEMP TABLE patrol_assert_loop(v INTEGER CHECK(v=1));
+INSERT INTO patrol_assert_loop VALUES(changes());
+COMMIT;
+```
+
+把占位值替换后以 `sqlite3 -bail "$STATE_DB"` 执行。事务后仍必须等 Bridge reconcile，
+只有 baseline 后的新非 patrol engine event 能证明 dispatcher 已接力，才可记
+`advanced|fixed`；event 为空时只做附录 A 的有界诊断并留下下一动作。
+
+`runner_terminal_list` remains a useful internal starting point, but it is one
+system view only;不采信 Bridge 单方转述. It must be crossed with `TMUX= tmux`, never used alone. The tick
+is the scheduled trigger; the existing inbox-batch and task-boundary cadence
+remains an event-driven supplement. The Lead must not create another timer.
+

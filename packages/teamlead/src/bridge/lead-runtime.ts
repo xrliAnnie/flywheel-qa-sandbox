@@ -75,6 +75,8 @@ export interface LeadEventEnvelope {
 
 /** Bootstrap snapshot for crash recovery. */
 export interface LeadBootstrap {
+	/** Frozen for this recovery; false restores the complete legacy payload. */
+	tokenSavingsEnabled?: boolean;
 	leadId: string;
 	activeSessions: BootstrapSession[];
 	pendingDecisions: BootstrapDecision[];
@@ -91,6 +93,8 @@ export interface LeadBootstrap {
 	 * regardless of when the Lead responds).
 	 */
 	pendingRunnerQuestions?: BootstrapRunnerQuestion[];
+	/** One-way reports retain their pending consumption obligation. */
+	pendingReports?: BootstrapRunnerQuestion[];
 }
 
 /** FLY-62: Gate question included in bootstrap for crash recovery */
@@ -114,6 +118,9 @@ export interface BootstrapGateQuestion {
  * the bootstrap until the Lead responds (or the CommDB row TTLs out).
  */
 export interface BootstrapRunnerQuestion {
+	kind?: string | null;
+	readAt?: string | null;
+	relayState?: "open" | "protected" | "terminal_disposed";
 	questionId: string;
 	executionId: string;
 	issueIdentifier?: string;

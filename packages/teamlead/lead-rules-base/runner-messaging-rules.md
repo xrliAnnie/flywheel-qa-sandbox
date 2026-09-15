@@ -34,8 +34,13 @@ answerable `[ASK] runner_question`.
   flywheel-comm respond --db <DB-path-from-gate-question> \
     --lead <your-id> <question-id> "<your-reply>"
   ```
-- The Bridge bootstrap message includes the exact command for each pending
-  gate question — copy-paste it.
+- Bootstrap is a bounded recovery preview. Follow its authenticated GET pointers
+  for `gate`, `ask`, and `report` pages (at most 50 items); use each returned full
+  question ID and DB path with the command above. Continue through `nextCursor`,
+  including empty filtered pages, until it is null. Counts are a snapshot;
+  restart paging if new obligations arrive. Do not dump the unbounded `pending`
+  CLI into context for recovery. Reports are one-way, but their pending actions
+  still require review; omission from the preview does not consume them.
 
 ### `approve_to_ship` is founder-gated
 

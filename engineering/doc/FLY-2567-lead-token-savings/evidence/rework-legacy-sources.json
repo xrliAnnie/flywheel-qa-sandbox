@@ -1,0 +1,81 @@
+{
+  "reworkBase": "7c33f205abd25ff19c3ec203cc20a697b3dc0810",
+  "legacyRevision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+  "meaning": "Current merged upstream semantics before FLY-2567 savings, including unrelated upstream patrol changes. Source hashes only, not passing regression receipts.",
+  "sources": [
+    {
+      "path": "packages/teamlead/src/bridge/bootstrap-generator.ts",
+      "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+      "bytes": 12451,
+      "sha256": "c0629838bc6c80044f0a729e213abc038572f08baa04b38d01f5d3cfe29729b9"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/mailbox-lead-runtime.ts",
+      "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+      "bytes": 17455,
+      "sha256": "d5f1fcfa4a9f8024900e5298b360ad782331a1d1ea070fc1706a9d34be7851bc"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/commdb-lead-runtime.ts",
+      "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+      "bytes": 12642,
+      "sha256": "deae0a3b974c27e9362020c2bd540657f2c6e4c166ea0ff9e5e81dbb8037a42f"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/event-route.ts",
+      "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+      "bytes": 141741,
+      "sha256": "f40c28e04f725c5deb62e38f153153e0984254515424828ecc04873d702a62f1"
+    },
+    {
+      "path": "packages/teamlead/src/HeartbeatService.ts",
+      "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+      "bytes": 106058,
+      "sha256": "e9c726f9a9eed52aa7ca4ac608c2973ac9c6c1395e048b25dfee9818fb660602"
+    },
+    {
+      "path": "packages/teamlead/scripts/inbox-ack-rule.md",
+      "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+      "bytes": 4446,
+      "sha256": "26207a075496f647b3b12ff6d82b9f0235189a6eab61665c1a9c72bc6c1615ae"
+    },
+    {
+      "path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
+      "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+      "bytes": 40511,
+      "sha256": "757ba4427b0c4fe306542e89de4173f227ee5a42b2ab738b417716126bfeb548"
+    },
+    {
+      "path": "packages/teamlead/lead-rules-base/runner-messaging-rules.md",
+      "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+      "bytes": 7056,
+      "sha256": "bea5a4e6512ff3c10340e9652666b0858e73dd42d012e227414d772bfbdb1bcc"
+    },
+    {
+      "path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
+      "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
+      "bytes": 88192,
+      "sha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c"
+    }
+  ],
+  "constraints": [
+    {
+      "path": "packages/teamlead/scripts/claude-lead.sh",
+      "lines": [
+        3012,
+        3064
+      ],
+      "finding": "One immutable per-process bundle appended as startup argument."
+    },
+    {
+      "path": "packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
+      "lines": [
+        1640,
+        1660,
+        1719
+      ],
+      "finding": "Read once into baseInstructions, re-passed on resume/restart; not a live flag consumer."
+    }
+  ],
+  "pendingQuestion": "fd187a87-6c43-4ec5-adc2-4179ccba0433"
+}

@@ -1,0 +1,51 @@
+{
+  "status": "in_progress",
+  "meaning": "Completed checkpoint logs; full build/lint predate final registry/wrapper fixes and will be rerun. Aggregate package gate, exact-head CI and effective code review are not yet passed.",
+  "logs": [
+    {
+      "log": "/tmp/fly2567-rework-build.log",
+      "sha256": "73a695af006762de14ca416f071225e6336c5078befe82d60c5a12b8208cbc5b"
+    },
+    {
+      "log": "/tmp/fly2567-rework-lint2.log",
+      "sha256": "fccd7fe975bb20211f7a42aef88dd6a0639a63008284dc2f61036e96be0836fe"
+    },
+    {
+      "log": "/tmp/fly2567-whole-bundle.log",
+      "sha256": "1b375de6d34bfc9df39f10543941f9524ac7037b4a06a4078f78d80871b7cd4b"
+    },
+    {
+      "log": "/tmp/fly2567-drift-launch-green.log",
+      "sha256": "7d31ac8c852b92ab20676a830766c763968143b29ed840485991ef195d3fa7a3"
+    },
+    {
+      "log": "/tmp/fly2567-oracle-format-green2.log",
+      "sha256": "9623b79a8189c5e40d93cabed7f5df9958c9b307da707e51efdee09374138b3a"
+    },
+    {
+      "log": "/tmp/fly2567-rework-single-bundle.log",
+      "sha256": "aa9c748431fbe5434234fa57338158b71ffcf6108c2ac4213e63a6f1e9779f2e"
+    },
+    {
+      "log": "/tmp/fly2567-rework-claude-final.log",
+      "sha256": "fe1eb75cc3856c49b526504293eeac5dec3368e0a9e07f70b3f246d4b11f3611"
+    },
+    {
+      "log": "/tmp/fly2567-rework-toggle-routes.log",
+      "sha256": "4205b276181e7e76d2b3327c9fa710510836a026c98bebd649bf92286e711484"
+    },
+    {
+      "log": "/tmp/fly2567-rework-residue-test2.log",
+      "sha256": "a57e6be38032c9fe5fb247eac5d6b581963b5052a9dbd021ec8c3d1cc88723cd"
+    },
+    {
+      "log": "/tmp/fly2567-rework-residue-unit.log",
+      "sha256": "3350e943c1411c6713515d2e1493d637862b64e25151546fe80eff0d61d50c2b"
+    },
+    {
+      "log": "/tmp/fly2567-rework-retention.log",
+      "sha256": "9bac6541d80e64566b4e1006b7a29b2550686f9ab60553c90551db790256f93d"
+    }
+  ],
+  "production": "No activation/restart, real founder Discord probe or D1/D7 remeasurement during implement."
+}

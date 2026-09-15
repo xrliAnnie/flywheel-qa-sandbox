@@ -1,0 +1,12 @@
+{
+  "url": "https://fw-reports-624a39.vercel.app/r/8afc0df84093dd6fd32ba9f82e9d7b12/",
+  "status": 200,
+  "inline_script_matches_committed_source": true,
+  "nonce_placeholder_absent": true,
+  "external_assets_absent": true,
+  "inline_handlers_absent": true,
+  "expected_model_requests": true,
+  "expected_floor_gate": true,
+  "diagrams": "PENDING_LOCAL_RENDER",
+  "visual_browser": "NOT_RUN"
+}

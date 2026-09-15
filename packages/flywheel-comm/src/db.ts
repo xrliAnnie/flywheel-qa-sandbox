@@ -3985,7 +3985,27 @@ export class CommDB {
 		return bytes.toString("utf8");
 	}
 
-	getPendingQuestions(leadId: string): Message[] {
+	getPendingQuestions(
+		leadId: string,
+		page?: {
+			kind: "gate" | "ask" | "report";
+			limit: number;
+			cursor?: { created_at: string; id: string };
+		},
+	): Message[] {
+		if (
+			page &&
+			(!["gate", "ask", "report"].includes(page.kind) ||
+				!Number.isSafeInteger(page.limit) ||
+				page.limit < 1 ||
+				page.limit > 50 ||
+				(page.cursor &&
+					(typeof page.cursor.created_at !== "string" ||
+						!page.cursor.created_at.trim() ||
+						typeof page.cursor.id !== "string" ||
+						!page.cursor.id.trim())))
+		)
+			throw new Error("pending_page_invalid");
 		const answerable = "q.relay_state != 'terminal_disposed'";
 		return this.db
 			.prepare(
@@ -3995,9 +4015,26 @@ export class CommDB {
            SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response'
          )
 		 AND ${answerable}
-         ORDER BY q.created_at ASC`,
+         ${
+						page
+							? `AND (CASE WHEN q.kind = 'report' THEN 'report' WHEN q.checkpoint IS NOT NULL THEN 'gate' ELSE 'ask' END) = ?
+         AND (? IS NULL OR (q.created_at, q.id) > (?, ?))
+         ORDER BY q.created_at ASC, q.id ASC LIMIT ?`
+							: "ORDER BY q.created_at ASC"
+					}`,
 			)
-			.all(leadId) as Message[];
+			.all(
+				...(page
+					? [
+							leadId,
+							page.kind,
+							page.cursor?.created_at ?? null,
+							page.cursor?.created_at ?? null,
+							page.cursor?.id ?? null,
+							page.limit,
+						]
+					: [leadId]),
+			) as Message[];
 	}
 
 	/** Project attention read: exclude reports and ended ordinary asks before pagination. */

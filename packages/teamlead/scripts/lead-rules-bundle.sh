@@ -21,10 +21,50 @@
 # The resolver functions are pure (ordered paths on stdout, diagnostics on
 # stderr). The FLY-1402 materializer below writes one caller-selected bundle.
 
+# Launch-local read receipt; this is not a separately configurable env flag.
+lead_token_savings_read_launch() {
+  local project="$1" helper script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
+  helper="$script_dir/../dist/lead-token-savings.js"
+  _LEAD_TOKEN_SAVINGS_LAUNCH=0
+  if [ -r "$helper" ]; then
+    _LEAD_TOKEN_SAVINGS_LAUNCH="$(node "$helper" "$project")" || _LEAD_TOKEN_SAVINGS_LAUNCH=0
+  else
+    printf '[lead-token-savings] launch reader unavailable; using full rules/default window\n' >&2
+  fi
+  case "$_LEAD_TOKEN_SAVINGS_LAUNCH" in 0|1) ;; *) _LEAD_TOKEN_SAVINGS_LAUNCH=0 ;; esac
+}
+
+rules_bundle_select_source() {
+  local path="$1" parent name legacy=""
+  if [ "${_LEAD_TOKEN_SAVINGS_LAUNCH:-1}" != 0 ]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  parent="${path%/*}"
+  parent="${parent%/}"
+  name="${path##*/}"
+  case "${parent##*/}/$name" in
+    lead-rules-base/department-lead-rules.md|lead-rules-base/runner-messaging-rules.md|lead-rules-base/runner-patrol-rules.md)
+      legacy="$parent/legacy-token-savings/$name" ;;
+    scripts/inbox-ack-rule.md)
+      legacy="$parent/../lead-rules-base/legacy-token-savings/$name" ;;
+  esac
+  if [ -n "$legacy" ]; then
+    if [ ! -f "$legacy" ] || [ ! -r "$legacy" ]; then
+      printf 'MISSING_REQUIRED_LEGACY:%s\n' "$legacy" >&2
+      return 10
+    fi
+    path="$legacy"
+  fi
+  printf '%s\n' "$path"
+}
+
 # Emit <path> on stdout iff it exists + is readable. When <required>=1 and the file
 # is missing, print MISSING_REQUIRED:<path> to stderr and return 10 (fail-closed).
 _lrb_emit() {
-  local path="$1" required="${2:-0}"
+  local path required="${2:-0}"
+  path="$(rules_bundle_select_source "$1")" || return 10
   if [ -f "$path" ] && [ -r "$path" ]; then
     printf '%s\n' "$path"
     return 0
@@ -45,13 +85,15 @@ rules_bundle_reset() {
 
 # rules_bundle_add <absolute-source-path> <layer-label>
 rules_bundle_add() {
-  RULES_BUNDLE_FILES+=("$1")
+  local selected
+  selected="$(rules_bundle_select_source "$1")" || return 10
+  RULES_BUNDLE_FILES+=("$selected")
   RULES_BUNDLE_LABELS+=("$2")
   # Emergency compatibility valve: preserve today's argv byte-for-byte while
   # still recording the selected sources for the active receipt/truth checker.
   # CLAUDE_ARGS is owned by the sourcing launcher (bash dynamic/global scope).
   if [ "${RULES_BUNDLE_MODE:-bundle}" = "legacy" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$1")
+    CLAUDE_ARGS+=(--append-system-prompt-file "$selected")
   fi
 }
 
@@ -410,6 +452,7 @@ compute_lead_rule_bundle() {
 # return: 0 ok; non-zero = a required governance file is missing (caller fail-STOPs).
 assemble_full_access_governance() {
   local lead_id="$1" base_rules_dir="$2"
+  lead_token_savings_read_launch "${FLYWHEEL_PROJECT_NAME:-${PROJECT_NAME:-}}" || return 1
   # role: a full-access Lead is never a companion (ProjectConfig rejects the mix);
   # cos when LEAD_ID/role says so, else dept (mirrors claude-lead.sh role detection).
   local role="dept"

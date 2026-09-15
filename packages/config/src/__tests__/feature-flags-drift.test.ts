@@ -463,6 +463,30 @@ describe("feature-flag drift guard", () => {
 					"storeDatabaseArchiveEnabled",
 				],
 				[
+					"lead_token_savings",
+					"packages/teamlead/src/bridge/bootstrap-generator.ts",
+					"generateBootstrap",
+					"storeLeadTokenSavingsEnabled",
+				],
+				[
+					"lead_token_savings",
+					"packages/teamlead/src/bridge/event-route.ts",
+					"createEventRouter",
+					"storeLeadTokenSavingsEnabled",
+				],
+				[
+					"lead_token_savings",
+					"packages/teamlead/src/HeartbeatService.ts",
+					"RegistryHeartbeatNotifier.appendAndDeliverRow",
+					"storeLeadTokenSavingsEnabled",
+				],
+				[
+					"lead_token_savings",
+					"packages/teamlead/src/lead-token-savings.ts",
+					"readLeadTokenSavingsAtLaunch",
+					"storeLeadTokenSavingsEnabled",
+				],
+				[
 					"node_dwell",
 					"packages/teamlead/src/node-dwell-control.ts",
 					"readNodeDwellEnabled",

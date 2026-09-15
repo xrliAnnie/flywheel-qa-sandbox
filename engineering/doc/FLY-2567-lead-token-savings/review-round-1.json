@@ -1,0 +1,147 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "bf64ba40-ac3e-4040-b027-1a4807639827",
+  "round": 1,
+  "findings": [
+    {
+      "id": "autocompact-200k-below-context-floor",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 78,
+      "title": "200k 原生压缩窗口低于实测上下文底线，生产 Lead 会反复压缩，预计节省也算不成立",
+      "detail": "用本 plan 自带的 evidence/requests.csv 复算 input+cache_write+cache_read：三天里真实请求的最小值是 169,201 token（9/12 为 230,675，9/13 为 173,108，9/14 为 169,201）。9/14 的 P1 是 186,870。当天 6 次压缩后的第一个请求都在 169k–185k 之间，也就是 system prompt、tools、18 份规则 bundle 和 compact summary 加起来的底线。第 22602 行压缩到 169k，Bootstrap 进来后只过 2 个请求就到 215k。所以 150k 情景（省 11.537 亿，74.3%）不可能发生。第 156 行把「平均缓存读落在 150–200k」当目标区间，这个前提也不成立。设成 200k 后只剩约 15–30k 余量；Claude Code 触发压缩前还要预留输出空间，实际余量更少。结果会是每几个请求压缩一次，或者进入「压缩 → PostCompact bootstrap → 超窗口 → 再压缩」的循环。每次压缩还要再读约 200k 并产出摘要，founder 消息会在压缩期间变慢。第 24 行「规划净省 7–10 亿」建立在一个做不到的前提上。第 84 行的回滚只在出事后才生效，挡不住第一次上线就把生产 Lead 打进循环。建议：(1) 灰度前先实测静态前缀底线（新会话或压缩后首个请求的 total input），作为硬门；(2) 把规则包瘦身（第 5 项）提到第 2 项之前，或者把窗口定为「底线 + 实测工作余量」（按数据约 350–400k 起），并按压缩频率、压缩输出和 PostCompact bootstrap 成本重算节省；(3) 删掉 150k 情景；(4) launcher 在配置窗口小于已记录底线的安全倍数时拒绝加参数，并记为 canary_not_applied。",
+      "findingKey": "autocompact-200k-below-context-floor"
+    },
+    {
+      "id": "autocompact-cli-capability-probe",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 78,
+      "title": "--autocompact 不被接受时 claude 会在参数解析阶段直接退出，缺少能力探测和降级",
+      "detail": "已实测 2.1.272：`claude --autocompact 50k --version` 和 `--autocompact bogus` 在参数解析时就报 error 退出，200000 和 200k 可以通过。事故会话用的是 2.1.270，plan 没证明这个版本支持该 flag。如果 Lead 用的 claude 版本不支持或取值非法，launch_args 会让 Lead 一直 crash-loop。T2 的 shell 测试用 stub，覆盖不到真实 CLI 解析。建议 launcher 先对当前 claude 二进制跑一次不计费的探测（例如 `claude --autocompact N --version` 返回 0），失败就不加该参数并记为 canary_not_applied，和 last-good receipt 的 fail-open 策略保持一致。",
+      "findingKey": "autocompact-cli-capability-probe"
+    },
+    {
+      "id": "audit-only-delivered-at-consumers",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 90,
+      "title": "audit_only 行的 delivered_at 一直为 NULL，影响范围没列全；表名也写错了",
+      "detail": "代码里的表是 lead_events，没有 lead_event_journal（第 88 行）。plan 只要求重驱动查询排除 audit_only，但 delivered_at IS NULL 还有别的读取方：terminal-row-archive.ts 的归档条件要求 delivered_at IS NOT NULL，而 session_monitoring_reestablished 在 LEAD_EVENT_TYPES 里，这些 audit_only 行会永远归档不掉；StateStore 的 listUndeliveredLeadEvents、getUndeliveredLeadEventsForReconcile、getDeliveryStats 也按 delivered_at IS NULL 判定。目前 lead-inbox-runtime 的重驱动只覆盖 workflow_* 两种类型，所以回滚洪峰的风险比 plan 写的小，但需要明确列出每个 delivered_at 消费方的处理方式，并补回归测试（包括归档）。",
+      "findingKey": "audit-only-delivered-at-consumers"
+    },
+    {
+      "id": "ack-reorder-protocol-failure-starves-expiry",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 112,
+      "title": "ACK 前移后，protocol 处理失败会跳过本轮租约回收；事务内消费 LEASED 行会和 claim 冲突",
+      "detail": "lead-inbox-loop.ts 目前的顺序是 reconcileExpiredLeases 在前，protocol 循环在后，且 protocol 非终态失败会直接 throw 出 tick。改成 protocol 在前以后，一条失败的 protocol 行会让这一轮的租约回收和 batch claim 都不执行。另外，expiry 事务里如果消费状态为 LEASED 的 ack_batch 行，而这行正被 claimBridgeProtocol 持有，之后的 queue.ack(row.id) 会失败，报 owner fence lost，被当成投递失败并记重试。建议：plan 写明 protocol 失败时租约回收仍要执行（例如放进 finally 或 catch 后继续）；事务内只消费没有 claim 或 claim 已过期的 ACK 行，或者按 claimed_by/claim_expires_at 做 fence。另外 ackBatchByRecipient 遇到 recipient mismatch 会 throw，在事务内复用时要先校验，避免整个 expiry 事务回滚。",
+      "findingKey": "ack-reorder-protocol-failure-starves-expiry"
+    },
+    {
+      "id": "followups-no-instruction-source",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 104,
+      "title": "FOLLOWUPS 行为在列出的规则文件里找不到，T5 改那些文件管不到它",
+      "detail": "在 lead-rules-base/*.md、scripts/*.md、agents 和 Lead 的 memory 目录里 grep FOLLOWUPS / followups，结果都是 0。这是 Lead 自己形成的习惯，第 100 行列出的触点里没有它的来源。~/.flywheel/lead-workspace/flywheel-eng-lead/FOLLOWUPS.md 现在是 1,282,439 bytes，这是一个具体的大体积读取来源。plan 应先查清这个行为从哪里来，给出能生效的机制（例如只读当前段落的规则入口、文件轮转或大小上限），否则这 452 个请求 / 2.827 亿对应的改动无法落地，也无法验收。",
+      "findingKey": "followups-no-instruction-source"
+    },
+    {
+      "id": "bootstrap-budget-nonquestion-sections",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 68,
+      "title": "12k 总预算会挤掉会话/待决/失败区段，但它们没有取回方式；已有的 pending CLI 不受预算限制",
+      "detail": "「门禁/ASK 优先」加上总量 ≤12,000 code points，可能挤掉 Active Sessions、Pending Decisions（awaiting_review，需要行动）和 Recent Failures。新 GET 路由只支持 kind=gate|ask|report，这几个区段没有定义 omittedCount 和取回方式（可以指向已有的 `flywheel-comm sessions`）。另外，已有的 `flywheel-comm pending`（commands/pending.ts）会不分 kind、不设上限地返回全部未答 question 的正文，包括全部 report。Lead 按旧习惯调用它，仍会一次灌入几十万字符。plan 应规定它的边界（加上 kind 和 limit），或者在规则里改为指向新的分页入口。",
+      "findingKey": "bootstrap-budget-nonquestion-sections"
+    },
+    {
+      "id": "questions-route-auth-principal-nonexistent",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 69,
+      "title": "「认证 principal 作用域检查」在现有代码里不存在，鉴权表述需要落实",
+      "detail": "POST /api/bootstrap/:leadId 用的 tokenAuthMiddleware 只有 master bearer 和 gemini 路径白名单，没配 token 时直接放行，没有按 Lead 限定的 principal。新的 GET 会在 HTTP 响应里返回完整问题正文和 ref 内容，是一个新增的读取面。建议 plan 明确写：只允许 master token；不加进 isGeminiScopedReachable；external/companion Lead（token 为空）拿不到内容；并补 401/403 集成测试。",
+      "findingKey": "questions-route-auth-principal-nonexistent"
+    },
+    {
+      "id": "rule-misquote-inflight",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 103,
+      "title": "对 ACK 规则现有表述的引用不准确",
+      "detail": "scripts/inbox-ack-rule.md 原文是「holds one of the three in-flight slots」（占三个槽中的一个），不是「占三个 inflight 槽」。真正和代码不一致的是「re-delivered under the same durable batch id when its lease expires」：mailbox-queue 在过期 requeue 时会把 batch_id 置为 NULL，重新下发时是新 batch。建议按原文修正引用，免得删错条款。",
+      "findingKey": "rule-misquote-inflight"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "autocompact-cli-capability-probe",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 78,
+      "title": "--autocompact 不被接受时 claude 会在参数解析阶段直接退出，缺少能力探测和降级",
+      "detail": "已实测 2.1.272：`claude --autocompact 50k --version` 和 `--autocompact bogus` 在参数解析时就报 error 退出，200000 和 200k 可以通过。事故会话用的是 2.1.270，plan 没证明这个版本支持该 flag。如果 Lead 用的 claude 版本不支持或取值非法，launch_args 会让 Lead 一直 crash-loop。T2 的 shell 测试用 stub，覆盖不到真实 CLI 解析。建议 launcher 先对当前 claude 二进制跑一次不计费的探测（例如 `claude --autocompact N --version` 返回 0），失败就不加该参数并记为 canary_not_applied，和 last-good receipt 的 fail-open 策略保持一致。",
+      "findingKey": "autocompact-cli-capability-probe"
+    },
+    {
+      "id": "audit-only-delivered-at-consumers",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 90,
+      "title": "audit_only 行的 delivered_at 一直为 NULL，影响范围没列全；表名也写错了",
+      "detail": "代码里的表是 lead_events，没有 lead_event_journal（第 88 行）。plan 只要求重驱动查询排除 audit_only，但 delivered_at IS NULL 还有别的读取方：terminal-row-archive.ts 的归档条件要求 delivered_at IS NOT NULL，而 session_monitoring_reestablished 在 LEAD_EVENT_TYPES 里，这些 audit_only 行会永远归档不掉；StateStore 的 listUndeliveredLeadEvents、getUndeliveredLeadEventsForReconcile、getDeliveryStats 也按 delivered_at IS NULL 判定。目前 lead-inbox-runtime 的重驱动只覆盖 workflow_* 两种类型，所以回滚洪峰的风险比 plan 写的小，但需要明确列出每个 delivered_at 消费方的处理方式，并补回归测试（包括归档）。",
+      "findingKey": "audit-only-delivered-at-consumers"
+    },
+    {
+      "id": "ack-reorder-protocol-failure-starves-expiry",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 112,
+      "title": "ACK 前移后，protocol 处理失败会跳过本轮租约回收；事务内消费 LEASED 行会和 claim 冲突",
+      "detail": "lead-inbox-loop.ts 目前的顺序是 reconcileExpiredLeases 在前，protocol 循环在后，且 protocol 非终态失败会直接 throw 出 tick。改成 protocol 在前以后，一条失败的 protocol 行会让这一轮的租约回收和 batch claim 都不执行。另外，expiry 事务里如果消费状态为 LEASED 的 ack_batch 行，而这行正被 claimBridgeProtocol 持有，之后的 queue.ack(row.id) 会失败，报 owner fence lost，被当成投递失败并记重试。建议：plan 写明 protocol 失败时租约回收仍要执行（例如放进 finally 或 catch 后继续）；事务内只消费没有 claim 或 claim 已过期的 ACK 行，或者按 claimed_by/claim_expires_at 做 fence。另外 ackBatchByRecipient 遇到 recipient mismatch 会 throw，在事务内复用时要先校验，避免整个 expiry 事务回滚。",
+      "findingKey": "ack-reorder-protocol-failure-starves-expiry"
+    },
+    {
+      "id": "followups-no-instruction-source",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 104,
+      "title": "FOLLOWUPS 行为在列出的规则文件里找不到，T5 改那些文件管不到它",
+      "detail": "在 lead-rules-base/*.md、scripts/*.md、agents 和 Lead 的 memory 目录里 grep FOLLOWUPS / followups，结果都是 0。这是 Lead 自己形成的习惯，第 100 行列出的触点里没有它的来源。~/.flywheel/lead-workspace/flywheel-eng-lead/FOLLOWUPS.md 现在是 1,282,439 bytes，这是一个具体的大体积读取来源。plan 应先查清这个行为从哪里来，给出能生效的机制（例如只读当前段落的规则入口、文件轮转或大小上限），否则这 452 个请求 / 2.827 亿对应的改动无法落地，也无法验收。",
+      "findingKey": "followups-no-instruction-source"
+    },
+    {
+      "id": "bootstrap-budget-nonquestion-sections",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 68,
+      "title": "12k 总预算会挤掉会话/待决/失败区段，但它们没有取回方式；已有的 pending CLI 不受预算限制",
+      "detail": "「门禁/ASK 优先」加上总量 ≤12,000 code points，可能挤掉 Active Sessions、Pending Decisions（awaiting_review，需要行动）和 Recent Failures。新 GET 路由只支持 kind=gate|ask|report，这几个区段没有定义 omittedCount 和取回方式（可以指向已有的 `flywheel-comm sessions`）。另外，已有的 `flywheel-comm pending`（commands/pending.ts）会不分 kind、不设上限地返回全部未答 question 的正文，包括全部 report。Lead 按旧习惯调用它，仍会一次灌入几十万字符。plan 应规定它的边界（加上 kind 和 limit），或者在规则里改为指向新的分页入口。",
+      "findingKey": "bootstrap-budget-nonquestion-sections"
+    },
+    {
+      "id": "questions-route-auth-principal-nonexistent",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 69,
+      "title": "「认证 principal 作用域检查」在现有代码里不存在，鉴权表述需要落实",
+      "detail": "POST /api/bootstrap/:leadId 用的 tokenAuthMiddleware 只有 master bearer 和 gemini 路径白名单，没配 token 时直接放行，没有按 Lead 限定的 principal。新的 GET 会在 HTTP 响应里返回完整问题正文和 ref 内容，是一个新增的读取面。建议 plan 明确写：只允许 master token；不加进 isGeminiScopedReachable；external/companion Lead（token 为空）拿不到内容；并补 401/403 集成测试。",
+      "findingKey": "questions-route-auth-principal-nonexistent"
+    },
+    {
+      "id": "rule-misquote-inflight",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 103,
+      "title": "对 ACK 规则现有表述的引用不准确",
+      "detail": "scripts/inbox-ack-rule.md 原文是「holds one of the three in-flight slots」（占三个槽中的一个），不是「占三个 inflight 槽」。真正和代码不一致的是「re-delivered under the same durable batch id when its lease expires」：mailbox-queue 在过期 requeue 时会把 batch_id 置为 NULL，重新下发时是新 batch。建议按原文修正引用，免得删错条款。",
+      "findingKey": "rule-misquote-inflight"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

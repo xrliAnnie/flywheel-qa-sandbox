@@ -635,6 +635,50 @@ describe("MailboxLeadRuntime", () => {
 	});
 
 	describe("sendBootstrap", () => {
+		it("bounds the whole recovery message and keeps omitted reports discoverable", async () => {
+			const transport = makeMockTransport();
+			const runtime = new MailboxLeadRuntime({ leadId: "cos-lead", transport });
+			await runtime.sendBootstrap({
+				leadId: "cos-lead",
+				activeSessions: Array.from({ length: 200 }, (_, i) => ({
+					executionId: `exec-${i}`,
+					issueId: `issue-${i}`,
+					issueTitle: "😀".repeat(2000),
+					status: "running",
+					projectName: "p",
+				})),
+				pendingDecisions: [],
+				recentFailures: [],
+				recentEvents: [],
+				memoryRecall: "😀".repeat(20000),
+				pendingReports: Array.from({ length: 200 }, (_, i) => ({
+					questionId: `report-${i}`,
+					executionId: `exec-${i}`,
+					content: `Please act? ${"😀".repeat(2000)}`,
+					commDbPath: "/tmp/comm.db",
+					createdAt: "2026-09-14",
+				})),
+				pendingRunnerQuestions: [
+					{
+						questionId: "ask-kept",
+						executionId: "exec-ask",
+						content: "DONE: still unanswered",
+						commDbPath: "/tmp/comm.db",
+						createdAt: "2026-09-14",
+					},
+				],
+			});
+			const content = (transport.write as ReturnType<typeof vi.fn>).mock
+				.calls[0][0].payload.content as string;
+			expect([...content].length).toBeLessThanOrEqual(12000);
+			expect(content).toContain("ask-kept");
+			expect(content).toContain("### Pending Reports");
+			expect(content).toContain("kind=report&limit=50");
+			expect(content).toContain("omittedCount=197");
+			expect(content).not.toContain("[ASK] exec-0");
+			expect(content).toContain("kind=activeSessions&limit=50");
+		});
+
 		it("writes bootstrap snapshot to mailbox", async () => {
 			const transport = makeMockTransport();
 			const runtime = new MailboxLeadRuntime({

@@ -1,0 +1,66 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "23d7ddbc-e62f-46db-8e9e-b39195a3b65f",
+  "round": 2,
+  "findings": [
+    {
+      "id": "retirement-horizon-ci-time-bomb",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 203,
+      "title": "The 2026-10-15 retirement horizon is enforced as a wall-clock test failure, which turns the whole monorepo's CI red on that date",
+      "detail": "Correction item 3 says \"The guard fails on an expired horizon until that reviewed decision is committed\". .github/workflows/ci.yml runs on every push to main and every pull_request, so a Vitest assertion on real wall-clock time fails every PR and every main build repo-wide the moment the horizon lapses — including unrelated hot-fix PRs, at a time nobody is watching. I found no precedent for this pattern: every dated test in the repo freezes time (`now: () => new Date(...)`, `Date.parse(...)`) rather than comparing against the real clock. The codebase already owns the mechanism this needs: registry fields `retiring` / `longTermKeep` / `keepReason` (validateKeepFieldContract) plus the weekly runtime `flag_retirement_scan` (packages/config/src/feature-flags/scan.ts, FLAG_SCAN_INTERVAL_MS) that surfaces stable flags to the founder for retirement. Prefer routing the horizon through that scan or an alert ticket owned by Lead; if the date must also be encoded in a test, make it fail only the FLY-2567 guard file with a self-serve message naming the exact line to extend, and require a pre-date notification so the deadline is not discovered as a red pipeline.",
+      "findingKey": "retirement-horizon-ci-time-bomb"
+    },
+    {
+      "id": "upstream-check-scope-overbroad",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 201,
+      "title": "The final-head byte-equality check covers all nine recorded paths, including the two hot files that have no frozen copy — it will trip on routine upstream churn and invite waivers",
+      "detail": "Item 1 requires that, for each of the nine paths in evidence/rework-legacy-sources.json, the merge-base blob equal the recorded legacy revision, and \"A difference fails acceptance until the affected legacy sources and independent oracles are re-derived from the new merge-base\". Two of those paths — packages/teamlead/src/bridge/event-route.ts (17 commits in the 30 days before the baseline) and packages/teamlead/src/HeartbeatService.ts (10) — are restored by behavioral flag gating, not by a frozen copy or byte oracle, so there is literally nothing to \"re-derive\" when they change; the same is largely true for inbox-ack-rule.md's launcher wiring. As written, a normal upstream edit to either hot file blocks acceptance with a remedy that does not exist, and the predictable resolution is to wave the check through — which erodes the guard that closed the blocking finding. Split the gate: byte-equality only for the copy-backed paths (the four rule sources, bootstrap-generator.ts, bootstrap-format.ts/-legacy.ts and the two runtime formatter consumers), and for the behaviorally gated files require instead a re-run of the OFF-path behavior tests (event-route + Heartbeat append/dispatch, old payload shape, redrive) against the new merge-base, with the result recorded.",
+      "findingKey": "upstream-check-scope-overbroad"
+    },
+    {
+      "id": "generator-oracle-commdb-dependency-exception",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 224,
+      "title": "The independent-generator-oracle rule should name flywheel-comm/db.ts as the known-changed dependency and state the exact allowed exception",
+      "detail": "The new paragraph says to verify dependency source hashes and, \"if any relevant query differs, use the upstream module for that dependency or run an isolated baseline checkout\". packages/flywheel-comm/src/db.ts is changed by this PR (getPendingQuestions gained the optional `page` parameter), so its hash will differ every time, while the already-committed fixture (packages/teamlead/src/__tests__/fixtures/fly2567/bootstrap-generator-legacy.ts + lead-token-savings-generator-oracle.test.ts, commit 7f2a074ed) imports the current CommDB rather than an upstream one. The unpaged branch is in fact textually equivalent (same `ORDER BY q.created_at ASC`, same single `leadId` parameter), so this is defensible — but the plan should say so explicitly: name db.ts as the one permitted exception, state the evidence for it (unpaged SQL and bind parameters unchanged), and keep the \"use the upstream module\" rule mandatory for any other differing dependency, so the ambiguity is not resolved silently in the convenient direction.",
+      "findingKey": "generator-oracle-commdb-dependency-exception"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "retirement-horizon-ci-time-bomb",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 203,
+      "title": "The 2026-10-15 retirement horizon is enforced as a wall-clock test failure, which turns the whole monorepo's CI red on that date",
+      "detail": "Correction item 3 says \"The guard fails on an expired horizon until that reviewed decision is committed\". .github/workflows/ci.yml runs on every push to main and every pull_request, so a Vitest assertion on real wall-clock time fails every PR and every main build repo-wide the moment the horizon lapses — including unrelated hot-fix PRs, at a time nobody is watching. I found no precedent for this pattern: every dated test in the repo freezes time (`now: () => new Date(...)`, `Date.parse(...)`) rather than comparing against the real clock. The codebase already owns the mechanism this needs: registry fields `retiring` / `longTermKeep` / `keepReason` (validateKeepFieldContract) plus the weekly runtime `flag_retirement_scan` (packages/config/src/feature-flags/scan.ts, FLAG_SCAN_INTERVAL_MS) that surfaces stable flags to the founder for retirement. Prefer routing the horizon through that scan or an alert ticket owned by Lead; if the date must also be encoded in a test, make it fail only the FLY-2567 guard file with a self-serve message naming the exact line to extend, and require a pre-date notification so the deadline is not discovered as a red pipeline.",
+      "findingKey": "retirement-horizon-ci-time-bomb"
+    },
+    {
+      "id": "upstream-check-scope-overbroad",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 201,
+      "title": "The final-head byte-equality check covers all nine recorded paths, including the two hot files that have no frozen copy — it will trip on routine upstream churn and invite waivers",
+      "detail": "Item 1 requires that, for each of the nine paths in evidence/rework-legacy-sources.json, the merge-base blob equal the recorded legacy revision, and \"A difference fails acceptance until the affected legacy sources and independent oracles are re-derived from the new merge-base\". Two of those paths — packages/teamlead/src/bridge/event-route.ts (17 commits in the 30 days before the baseline) and packages/teamlead/src/HeartbeatService.ts (10) — are restored by behavioral flag gating, not by a frozen copy or byte oracle, so there is literally nothing to \"re-derive\" when they change; the same is largely true for inbox-ack-rule.md's launcher wiring. As written, a normal upstream edit to either hot file blocks acceptance with a remedy that does not exist, and the predictable resolution is to wave the check through — which erodes the guard that closed the blocking finding. Split the gate: byte-equality only for the copy-backed paths (the four rule sources, bootstrap-generator.ts, bootstrap-format.ts/-legacy.ts and the two runtime formatter consumers), and for the behaviorally gated files require instead a re-run of the OFF-path behavior tests (event-route + Heartbeat append/dispatch, old payload shape, redrive) against the new merge-base, with the result recorded.",
+      "findingKey": "upstream-check-scope-overbroad"
+    },
+    {
+      "id": "generator-oracle-commdb-dependency-exception",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 224,
+      "title": "The independent-generator-oracle rule should name flywheel-comm/db.ts as the known-changed dependency and state the exact allowed exception",
+      "detail": "The new paragraph says to verify dependency source hashes and, \"if any relevant query differs, use the upstream module for that dependency or run an isolated baseline checkout\". packages/flywheel-comm/src/db.ts is changed by this PR (getPendingQuestions gained the optional `page` parameter), so its hash will differ every time, while the already-committed fixture (packages/teamlead/src/__tests__/fixtures/fly2567/bootstrap-generator-legacy.ts + lead-token-savings-generator-oracle.test.ts, commit 7f2a074ed) imports the current CommDB rather than an upstream one. The unpaged branch is in fact textually equivalent (same `ORDER BY q.created_at ASC`, same single `leadId` parameter), so this is defensible — but the plan should say so explicitly: name db.ts as the one permitted exception, state the evidence for it (unpaged SQL and bind parameters unchanged), and keep the \"use the upstream module\" rule mandatory for any other differing dependency, so the ambiguity is not resolved silently in the convenient direction.",
+      "findingKey": "generator-oracle-commdb-dependency-exception"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

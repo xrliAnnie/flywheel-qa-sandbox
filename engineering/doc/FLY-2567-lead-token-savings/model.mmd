@@ -1,0 +1,24 @@
+classDiagram
+ class ModelRequest {
+  requestId 唯一模型请求
+  usage 读缓存 写缓存 输出
+  sourceUuid 输入来源
+ }
+ class Obligation {
+  questionId 原始义务
+  kind 问题或单向报告
+  response 持久答复
+ }
+ class Delivery {
+  deliveryId 逻辑交付
+  batchId 本次投递组
+  attempt 重试次数
+ }
+ class FounderMessage {
+  messageId 原始消息
+  authorId 真实发件人
+  channelId 回复去向
+ }
+ FounderMessage --> Delivery : 原消息身份
+ Obligation --> Delivery : 独立于收件确认
+ Delivery --> ModelRequest : 进入处理上下文

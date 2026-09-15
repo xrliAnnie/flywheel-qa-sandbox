@@ -1,0 +1,90 @@
+{
+  "by_day": {
+    "2026-09-12": {
+      "keys": 418,
+      "nonzero_input_requests": 308,
+      "zero_usage_model_counts": {
+        "<synthetic>": 110
+      },
+      "min_nonzero_input": 230675,
+      "p01_nonzero_input": 233885,
+      "p50_nonzero_input": 566024
+    },
+    "2026-09-13": {
+      "keys": 812,
+      "nonzero_input_requests": 810,
+      "zero_usage_model_counts": {
+        "<synthetic>": 2
+      },
+      "min_nonzero_input": 173108,
+      "p01_nonzero_input": 177364,
+      "p50_nonzero_input": 695026
+    },
+    "2026-09-14": {
+      "keys": 2663,
+      "nonzero_input_requests": 2662,
+      "zero_usage_model_counts": {
+        "<synthetic>": 1
+      },
+      "min_nonzero_input": 169201,
+      "p01_nonzero_input": 186870,
+      "p50_nonzero_input": 562478
+    }
+  },
+  "compact_boundaries": [
+    {
+      "line": 22570,
+      "timestamp": "2026-09-14T03:28:34.470Z",
+      "pre_tokens": 967270,
+      "summary_tokens": 9883,
+      "duration_ms": 110291,
+      "next_request_id": "req_011Cf2d34yjgXqY4tB59KKRr",
+      "next_total_input": 169201
+    },
+    {
+      "line": 27152,
+      "timestamp": "2026-09-14T07:47:41.842Z",
+      "pre_tokens": 969025,
+      "summary_tokens": 15766,
+      "duration_ms": 103524,
+      "next_request_id": "req_011Cf2xo8hfcPqo82cmHUrpe",
+      "next_total_input": 183257
+    },
+    {
+      "line": 31703,
+      "timestamp": "2026-09-14T11:50:33.022Z",
+      "pre_tokens": 972013,
+      "summary_tokens": 16527,
+      "duration_ms": 127483,
+      "next_request_id": "req_011Cf3HKEfGpQ89gCd6Za1Zi",
+      "next_total_input": 184617
+    },
+    {
+      "line": 36226,
+      "timestamp": "2026-09-14T19:01:49.017Z",
+      "pre_tokens": 967122,
+      "summary_tokens": 15043,
+      "duration_ms": 131826,
+      "next_request_id": "req_011Cf3rCfa7nF7RvyE63bRFV",
+      "next_total_input": 181912
+    },
+    {
+      "line": 39640,
+      "timestamp": "2026-09-14T20:53:53.670Z",
+      "pre_tokens": 968957,
+      "summary_tokens": 13540,
+      "duration_ms": 167972,
+      "next_request_id": "req_011Cf3zkNW2uxxqdGe3mDJeo",
+      "next_total_input": 177710
+    },
+    {
+      "line": 43426,
+      "timestamp": "2026-09-14T23:42:36.317Z",
+      "pre_tokens": 967334,
+      "summary_tokens": 13347,
+      "duration_ms": 154987,
+      "next_request_id": "req_011Cf4DcZe3V5W8v6MpcUh1U",
+      "next_total_input": 177028
+    }
+  ]
+}

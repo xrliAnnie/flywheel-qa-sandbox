@@ -459,6 +459,11 @@ describe("codex-lead.sh — full-access governance wiring (H-2)", () => {
 			writeFileSync(
 				shim,
 				`#!/bin/sh
+case " $* " in *"lead-token-savings.js"*)
+  printf '%s\\n' "$FIXTURE_SAVINGS"
+  exit 0
+;;
+esac
 case " $* " in *" lead-identity resolve "*)
   printf '%s\\n' "$CANONICAL_JSON"
   exit 0
@@ -525,6 +530,27 @@ exit 0
 		afterEach(() => {
 			rmSync(home, { recursive: true, force: true });
 			rmSync(shimDir, { recursive: true, force: true });
+		});
+
+		it("selects OFF and ON rules on successive real Codex launcher invocations", () => {
+			for (const value of ["0", "1"]) {
+				execFileSync(
+					"bash",
+					[join(SCRIPTS, "codex-lead.sh"), "growth-lead", home, "growth"],
+					{
+						encoding: "utf8",
+						env: launcherEnv({
+							FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
+							FIXTURE_SAVINGS: value,
+						}),
+					},
+				);
+				const dumped = readFileSync(dumpFile, "utf8");
+				expect(
+					dumped.includes("legacy-token-savings/department-lead-rules.md"),
+				).toBe(value === "0");
+				expect(dumped).toContain("founder-only-authority.md");
+			}
 		});
 
 		it("full-access run assembles founder-only-authority into the prompt files", () => {

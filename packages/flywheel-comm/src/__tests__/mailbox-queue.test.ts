@@ -37,6 +37,131 @@ function enqueueLead(
 }
 
 describe("FLY-1572 MailboxQueue", () => {
+	it.each(["restart", "rollback", "late"])(
+		"FLY-2567 ACK expiry %s preserves exact batch authority",
+		(mode) => {
+			const root = mkdtempSync(join(tmpdir(), "fly2567-ack-"));
+			const path = join(root, "comm.db");
+			let queue = new MailboxQueue(path);
+			const later = "2026-08-05T12:00:02.000Z";
+			const enqueueAck = () =>
+				queue.enqueue({
+					id: "durable-ack",
+					fromAgent: "lead-a",
+					toAgent: "bridge",
+					recipientKind: "bridge",
+					type: "ack_batch",
+					msgClass: "protocol",
+					content: JSON.stringify({ batch_id: "exact-batch" }),
+					senderRef: SENDER_REF,
+					createdAt: NOW,
+				});
+			const expire = () =>
+				queue.reconcileExpiredLeases({
+					ownerEpoch: "owner",
+					now: later,
+					recipientKind: "lead",
+					toAgent: "lead-a",
+					leaseRetryMax: 3,
+					recipientState: () => "alive",
+					maxBatches: 10,
+					maxTerminalRows: 0,
+				});
+			try {
+				queue.acquireOrRenewOwner({
+					ownerEpoch: "owner",
+					now: NOW,
+					leaseTtlMs: 60_000,
+				});
+				enqueueLead(queue, "member");
+				queue.claimLeadBatchQueue({
+					toAgent: "lead-a",
+					msgClass: "model",
+					ownerEpoch: "owner",
+					batchId: "exact-batch",
+					now: NOW,
+					transportClaimTtlMs: 1000,
+					batchWindowMs: 0,
+					batchMaxSize: 5,
+					inflightMaxBatches: 3,
+				});
+				queue.recordLeadBatchDelivered({
+					batchId: "exact-batch",
+					ownerEpoch: "owner",
+					now: NOW,
+					ackLeaseTtlMs: 1000,
+				});
+				if (mode === "late") {
+					expect(expire().requeued).toBe(1);
+					queue.claimLeadBatchQueue({
+						toAgent: "lead-a",
+						msgClass: "model",
+						ownerEpoch: "owner",
+						batchId: "new-batch",
+						now: later,
+						transportClaimTtlMs: 1000,
+						batchWindowMs: 0,
+						batchMaxSize: 5,
+						inflightMaxBatches: 3,
+					});
+					enqueueAck();
+					expect(
+						queue.ackBatchByRecipient({
+							batchId: "exact-batch",
+							fromAgent: "lead-a",
+							now: later,
+						}),
+					).toBe("ack_late_noop");
+					expect(queue.getById("member")).toMatchObject({
+						state: "LEASED",
+						batch_id: "new-batch",
+					});
+					return;
+				}
+				enqueueAck();
+				if (mode === "restart") {
+					queue.close();
+					queue = new MailboxQueue(path);
+				}
+				if (mode === "rollback") {
+					const db = new Database(path);
+					try {
+						db.exec(
+							"CREATE TRIGGER fail_ack_consume BEFORE UPDATE OF state ON mailbox WHEN NEW.id = 'durable-ack' AND NEW.state = 'ACKED' BEGIN SELECT RAISE(ABORT, 'injected_ack_failure'); END",
+						);
+						expect(expire).toThrow("injected_ack_failure");
+						expect(queue.getById("member")).toMatchObject({
+							state: "LEASED",
+							batch_id: "exact-batch",
+							acked_at: null,
+						});
+						expect(queue.getById("durable-ack")?.state).toBe("QUEUED");
+						db.exec("DROP TRIGGER fail_ack_consume");
+					} finally {
+						db.close();
+					}
+				}
+				expect(expire().requeued).toBe(0);
+				expect(queue.getById("member")).toMatchObject({
+					state: "ACKED",
+					batch_id: "exact-batch",
+					lease_retry_count: 0,
+				});
+				expect(queue.getById("durable-ack")?.state).toBe("ACKED");
+				expect(
+					queue.ackBatchByRecipient({
+						batchId: "exact-batch",
+						fromAgent: "lead-a",
+						now: later,
+					}),
+				).toBe("duplicate");
+			} finally {
+				queue.close();
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+
 	it("births only questions with an open relay state", () => {
 		const queue = new MailboxQueue(":memory:");
 		try {

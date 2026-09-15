@@ -169,6 +169,7 @@
 		"scripts/lib/fly-2006-mailbox-archive.mjs",
 		"scripts/lib/fly-2006-retention-engine.mjs",
 		"scripts/lib/fly-2006-retention-registry.mjs",
-		"scripts/fly-1998-database-retention-sweep.mjs"
+		"scripts/fly-1998-database-retention-sweep.mjs",
+		"packages/teamlead/src/bridge/bootstrap-generator.ts"
 	]
 }

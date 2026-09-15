@@ -29,14 +29,27 @@ function makeRegistryFixture(opts?: { deliverImpl?: MockFn }): {
 } {
 	const deliver = opts?.deliverImpl ?? vi.fn(async () => ({ delivered: true }));
 	const appendPayloads: string[] = [];
+	let auditOnly = false;
 	const store: MockStore = {
+		// Healthy flag store with no override: token savings stays default ON.
+		// The OFF-path in this suite refers to the independent zombie handling path.
+		getFlagValueRow: vi.fn().mockReturnValue(undefined),
 		getSessionLabels: vi.fn().mockReturnValue([]),
 		appendLeadEvent: vi.fn(
-			(_agent: string, _eventId: string, _type: string, payload: string) => {
+			(
+				_agent: string,
+				_eventId: string,
+				_type: string,
+				payload: string,
+				_source: unknown,
+				disposition: string,
+			) => {
+				auditOnly = disposition === "audit_only";
 				appendPayloads.push(payload);
 				return 41;
 			},
 		),
+		isLeadEventAuditOnly: vi.fn(() => auditOnly),
 		markLeadEventDelivered: vi.fn(),
 		recordDeliveryFailure: vi.fn(),
 	};
@@ -91,6 +104,9 @@ describe("OFF-path golden — RegistryHeartbeatNotifier payload + delivery lifec
 		// (not the registry mock), so it needs a routable project.
 		const deliver = vi.fn(async () => ({ delivered: true }));
 		const store: MockStore = {
+			// Healthy flag store with no override: token savings stays default ON.
+			// The OFF-path in this suite refers to the independent zombie handling path.
+			getFlagValueRow: vi.fn().mockReturnValue(undefined),
 			getSessionLabels: vi.fn().mockReturnValue([]),
 			appendLeadEvent: vi.fn().mockReturnValue(41),
 			markLeadEventDelivered: vi.fn(),
@@ -134,11 +150,12 @@ describe("OFF-path golden — RegistryHeartbeatNotifier payload + delivery lifec
 		expect("liveness_probe" in payload).toBe(false);
 	});
 
-	it("deliver returning delivered:false on advisory → marked delivered anyway (best-effort golden)", async () => {
+	it("monitoring restoration is audited without invoking transport or recording delivery", async () => {
 		const deliver = vi.fn(async () => ({ delivered: false, error: "boom" }));
 		const { notifier, store } = makeRegistryFixture({ deliverImpl: deliver });
 		await notifier.onSessionMonitoringReestablished(sess(), 5, {});
-		expect(store.markLeadEventDelivered).toHaveBeenCalledWith(41);
+		expect(deliver).not.toHaveBeenCalled();
+		expect(store.markLeadEventDelivered).not.toHaveBeenCalled();
 		expect(store.recordDeliveryFailure).not.toHaveBeenCalled();
 	});
 
@@ -164,11 +181,11 @@ describe("OFF-path golden — RegistryHeartbeatNotifier payload + delivery lifec
 		expect(appendPayloads).toHaveLength(1); // row WAS appended before the throw
 		expect(store.recordDeliveryFailure).not.toHaveBeenCalled();
 		expect(store.markLeadEventDelivered).not.toHaveBeenCalled();
-		// Advisory type throws identically (same no-catch semantics).
+		// Routine restoration never invokes the throwing transport.
 		const adv = makeRegistryFixture({ deliverImpl: deliver });
 		await expect(
 			adv.notifier.onSessionMonitoringReestablished(sess(), 5, {}),
-		).rejects.toThrow("transport exploded");
+		).resolves.toBeUndefined();
 		expect(adv.store.recordDeliveryFailure).not.toHaveBeenCalled();
 		expect(adv.store.markLeadEventDelivered).not.toHaveBeenCalled();
 	});

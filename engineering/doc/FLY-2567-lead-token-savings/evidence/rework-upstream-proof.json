@@ -1,0 +1,52 @@
+{
+  "mergeBase": "e43c4b567ed8f67e8ec82d21f07f0bdf1bbd0956",
+  "originMain": "e43c4b567ed8f67e8ec82d21f07f0bdf1bbd0956",
+  "sources": [
+    {
+      "path": "packages/teamlead/src/bridge/bootstrap-generator.ts",
+      "sha256": "c0629838bc6c80044f0a729e213abc038572f08baa04b38d01f5d3cfe29729b9",
+      "matchesLegacy": true
+    },
+    {
+      "path": "packages/teamlead/src/bridge/mailbox-lead-runtime.ts",
+      "sha256": "d5f1fcfa4a9f8024900e5298b360ad782331a1d1ea070fc1706a9d34be7851bc",
+      "matchesLegacy": true
+    },
+    {
+      "path": "packages/teamlead/src/bridge/commdb-lead-runtime.ts",
+      "sha256": "deae0a3b974c27e9362020c2bd540657f2c6e4c166ea0ff9e5e81dbb8037a42f",
+      "matchesLegacy": true
+    },
+    {
+      "path": "packages/teamlead/src/bridge/event-route.ts",
+      "sha256": "f40c28e04f725c5deb62e38f153153e0984254515424828ecc04873d702a62f1",
+      "matchesLegacy": true
+    },
+    {
+      "path": "packages/teamlead/src/HeartbeatService.ts",
+      "sha256": "e9c726f9a9eed52aa7ca4ac608c2973ac9c6c1395e048b25dfee9818fb660602",
+      "matchesLegacy": true
+    },
+    {
+      "path": "packages/teamlead/scripts/inbox-ack-rule.md",
+      "sha256": "26207a075496f647b3b12ff6d82b9f0235189a6eab61665c1a9c72bc6c1615ae",
+      "matchesLegacy": true
+    },
+    {
+      "path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
+      "sha256": "757ba4427b0c4fe306542e89de4173f227ee5a42b2ab738b417716126bfeb548",
+      "matchesLegacy": true
+    },
+    {
+      "path": "packages/teamlead/lead-rules-base/runner-messaging-rules.md",
+      "sha256": "bea5a4e6512ff3c10340e9652666b0858e73dd42d012e227414d772bfbdb1bcc",
+      "matchesLegacy": true
+    },
+    {
+      "path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
+      "sha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c",
+      "matchesLegacy": true
+    }
+  ],
+  "meaning": "Post-sync merge-base comparison. All nine legacy sources remain byte-identical to f022a0a7, so no copy rederivation is needed. Event-route and Heartbeat also retain behavioral OFF regression requirements."
+}

@@ -22,7 +22,11 @@ import {
 	reapCrashedRunners,
 } from "./bridge/crash-reaper.js";
 import { hasPendingCompleteMarker } from "./bridge/done-running-reconciler.js";
-import type { EventFilter } from "./bridge/EventFilter.js";
+import {
+	type EventFilter,
+	leadEventDeliveryDisposition,
+} from "./bridge/EventFilter.js";
+import { storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
 import {
@@ -2557,7 +2561,18 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			row.eventType,
 			row.payloadJson,
 			row.sessionKey,
+			storeLeadTokenSavingsEnabled(
+				{ store: this.store },
+				row.payloadForEnvelope.project_name ?? "",
+			)
+				? leadEventDeliveryDisposition(
+						row.eventType,
+						{ ...row.payloadForEnvelope },
+						true,
+					)
+				: "model",
 		);
+		if (this.store.isLeadEventAuditOnly(seq, row.leadId)) return seq;
 		const isGuardrail = GUARDRAIL_EVENT_TYPES.has(row.eventType);
 		if (!row.runtime) {
 			this.store.recordDeliveryFailure(seq, "no runtime registered");

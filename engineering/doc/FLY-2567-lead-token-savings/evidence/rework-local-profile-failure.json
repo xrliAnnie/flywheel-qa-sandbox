@@ -1,0 +1,28 @@
+{
+  "status": "local_aggregate_assertion_failure",
+  "test": "delegated mode: SIGTERM while holding the claude-json lock still releases it (global EXIT trap)",
+  "failures": [
+    "reachedPatch false at line2259",
+    "teardown ENOTEMPTY",
+    "onTaskUpdate RPC timeout"
+  ],
+  "files": [
+    {
+      "path": "packages/claude-runner/test/claude-profile.test.ts",
+      "sha256": "d26396456c0c7c124aa60e181feb96964af3dfed93b6b903a84fc99957dca2d0",
+      "unchanged": true
+    },
+    {
+      "path": "packages/claude-runner/bin/flywheel-claude-profile",
+      "sha256": "dc0f49627f5b0f3bf6e38489e64e629d8ba4ea4114af53c9461c72d815d24f20",
+      "unchanged": true
+    }
+  ],
+  "repro": {
+    "command": "VITEST_MAX_FORKS=1 pnpm --filter flywheel-claude-runner exec vitest run test/claude-profile.test.ts -t 'delegated mode: SIGTERM while holding'",
+    "result": "1 passed,125 unselected",
+    "testMilliseconds": 5495,
+    "log": "/tmp/fly2567-profile-sigterm-repro.log"
+  },
+  "meaning": "Focused recovery does not establish aggregate green or RPC-only status. Preserve the original failure; no test skip, assertion/timeout relaxation, or production change."
+}

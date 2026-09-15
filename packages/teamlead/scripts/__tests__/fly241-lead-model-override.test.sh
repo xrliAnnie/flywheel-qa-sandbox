@@ -28,6 +28,15 @@ make_home() {
   mkdir -p "$h/project/.lead/eng-lead" "$h/.flywheel/manifests"
   printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$h/.flywheel/summary-config.json"
   printf -- '---\nname: eng-lead\n---\nLead\n' > "$h/project/.lead/eng-lead/identity.md"
+  node --input-type=module - "$h" "$DIST" <<'NODE'
+import {createRequire} from 'node:module';
+const [root,dist] = process.argv.slice(2);
+const Database=createRequire(`${dist}/index.js`)('better-sqlite3');
+const db=new Database(`${root}/.flywheel/teamlead.db`);
+db.exec("CREATE TABLE flag_values(flag_name TEXT,scope TEXT,has_override INTEGER,raw_value TEXT)");
+db.prepare("INSERT INTO flag_values VALUES ('lead_token_savings','flywheel',1,'1')").run();
+db.close();
+NODE
   echo "$h"
 }
 
@@ -171,6 +180,65 @@ PLAN=$(printf '%s\n' "$OUT" | plan_of)
 [ -z "$PLAN" ] && printf '%s\n' "$OUT" | grep -q "identity_env_conflict" \
   && ok "conflicting inherited summary duty fails before launch" \
   || bad "conflicting inherited summary duty was not rejected"
+rm -rf "$H"
+
+# FLY-2567: native window is optional evidence from the frozen decision.
+H=$(make_home)
+mkdir -p "$H/bin"
+cat > "$H/bin/claude" <<'CLAUDE'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo 2.test; exit 0; fi
+if [ "$1" = "-p" ] && [ "$2" = "--autocompact" ] && [ "$3" = "400000" ]; then
+  echo 'Error: Input must be provided either through stdin or as a prompt argument when using --print' >&2
+  exit 1
+fi
+exit 5
+CLAUDE
+chmod +x "$H/bin/claude"
+P=$(fixture_projects "$H" fable)
+OUT=$(run_dry "$H" "$P" PATH="$H/bin:$PATH")
+printf '%s\n' "$OUT" > "$H/plan.txt"
+BASELINE=$(node --input-type=module - "$DIST" "$H" <<'NODE'
+import {readFileSync} from 'node:fs';
+const [dist, root] = process.argv.slice(2);
+const {leadToolsConfigSha} = await import(`${dist}/lead-auto-compact.js`);
+const args = readFileSync(`${root}/plan.txt`, 'utf8').split('\n').filter(line => line.startsWith('ARG\t')).map(line => line.slice(4));
+const bundle = args[args.indexOf('--append-system-prompt-file') + 1];
+const rulesBodySha = readFileSync(bundle, 'utf8').match(/^RULES_BUNDLE_SHA=([^ ]+)/m)?.[1];
+const mcpPath = readFileSync(`${root}/plan.txt`, 'utf8').match(/MCP config: (.+) \(mode /)?.[1];
+const mcp = JSON.parse(readFileSync(mcpPath, 'utf8'));
+console.log(JSON.stringify({inputFloorTokens:180000,inputFloorOffTokens:190000, claudeVersion:'2.test', model:'claude-fable-5-1', rulesBodySha, toolsConfigSha:leadToolsConfigSha(mcp,args), bootstrapPolicyVersion:'bounded-v1'}));
+NODE
+)
+P=$(printf '%s' "$P" | jq --argjson b "$BASELINE" '.[0].leads[0] += {autoCompactWindowTokens:400000,autoCompactBaseline:$b}')
+OUT=$(run_dry "$H" "$P" PATH="$H/bin:$PATH")
+PLAN=$(printf '%s\n' "$OUT" | plan_of)
+[ "$(arg_value "$PLAN" --autocompact)" = 400000 ] && ok "verified native window reaches launch argv" || bad "verified native window missing from argv"
+# The SAME configured window must disappear when the project kill-switch is OFF.
+node --input-type=module - "$H" "$DIST" <<'NODE'
+import {createRequire} from 'node:module';
+const [root,dist]=process.argv.slice(2);
+const Database=createRequire(`${dist}/index.js`)('better-sqlite3');
+const db=new Database(`${root}/.flywheel/teamlead.db`);
+db.prepare("UPDATE flag_values SET raw_value='0' WHERE scope='flywheel'").run();
+db.close();
+NODE
+OFF_OUT=$(run_dry "$H" "$P" PATH="$H/bin:$PATH")
+OFF_PLAN=$(printf '%s\n' "$OFF_OUT" | plan_of)
+OFF_BUNDLE=$(arg_value "$OFF_PLAN" --append-system-prompt-file)
+[ -n "$OFF_PLAN" ] && [ -z "$(arg_value "$OFF_PLAN" --autocompact)" ] && ok "OFF launch omits the configured native window" || bad "OFF launch kept the optimization"
+[ -f "$OFF_BUNDLE" ] && grep -q 'legacy-token-savings/department-lead-rules.md' "$OFF_BUNDLE" && grep -q 'legacy-token-savings/inbox-ack-rule.md' "$OFF_BUNDLE" && ok "OFF Claude launch materializes legacy rule sources" || bad "OFF Claude rules were not restored"
+node --input-type=module - "$H" "$DIST" <<'NODE'
+import {createRequire} from 'node:module';
+const [root,dist]=process.argv.slice(2);
+const Database=createRequire(`${dist}/index.js`)('better-sqlite3');
+const db=new Database(`${root}/.flywheel/teamlead.db`);
+db.prepare("UPDATE flag_values SET raw_value='1' WHERE scope='flywheel'").run();
+db.close();
+NODE
+OUT=$(run_dry "$H" "$P" PATH="$H/bin:$PATH" CLAUDE_CODE_AUTO_COMPACT_WINDOW=600000)
+PLAN=$(printf '%s\n' "$OUT" | plan_of)
+[ -n "$PLAN" ] && [ -z "$(arg_value "$PLAN" --autocompact)" ] && ok "conflicting environment omits only the optimization" || bad "conflicting compact environment did not fail open"
 rm -rf "$H"
 
 echo ""

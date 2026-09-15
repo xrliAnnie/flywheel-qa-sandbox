@@ -21,6 +21,17 @@ import { isRunnerStopReport } from "./runner-stop-report.js";
 import { decodeSenderRef, encodeSenderRef } from "./sender-ref.js";
 import { isValidRefPath } from "./utils/content-ref.js";
 
+export function parseBatchAck(content: string): string | null {
+	try {
+		const parsed = JSON.parse(content) as { batch_id?: unknown };
+		return typeof parsed.batch_id === "string" && parsed.batch_id.trim()
+			? parsed.batch_id
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 export type MailboxState = "QUEUED" | "LEASED" | "ACKED" | "DEAD";
 export interface MailboxDeliveryEvidence {
 	deadReason: string | null;
@@ -2073,6 +2084,43 @@ export class MailboxQueue {
 						)
 						.all(batch.batch_id, input.now) as MailboxRow[];
 					if (members.length === 0) continue;
+					// An ACK durably queued before this transaction wins over expiry.
+					// A live foreign protocol claim holds the batch; never steal its effect.
+					const pendingAck = (
+						this.db
+							.prepare(
+								`SELECT * FROM mailbox WHERE recipient_kind = 'bridge' AND carrier = 'inbox'
+						 AND to_agent = 'bridge' AND from_agent = ? AND msg_class = 'protocol'
+						 AND type = 'ack_batch' AND state IN ('QUEUED','LEASED')
+						 AND NOT EXISTS (SELECT 1 FROM mailbox AS member WHERE member.batch_id = ? AND member.to_agent <> ?)
+						 ORDER BY priority, seq`,
+							)
+							.all(
+								batch.to_agent,
+								batch.batch_id,
+								batch.to_agent,
+							) as MailboxRow[]
+					).find((row) => parseBatchAck(row.content) === batch.batch_id);
+					if (pendingAck) {
+						if (
+							pendingAck.claimed_by &&
+							pendingAck.claimed_by !== input.ownerEpoch &&
+							(!pendingAck.claim_expires_at ||
+								pendingAck.claim_expires_at >= input.now)
+						)
+							continue;
+						const ack = this.ackBatchByRecipient({
+							batchId: batch.batch_id,
+							fromAgent: pendingAck.from_agent,
+							now: input.now,
+						});
+						if (ack === "applied" || ack === "duplicate") {
+							if (!this.ack(pendingAck.id, input.now))
+								throw new Error("batch ACK settlement lost");
+							continue;
+						}
+					}
+
 					if (recipientState === "unknown") {
 						result.skippedUnknown += 1;
 						for (const row of members) {

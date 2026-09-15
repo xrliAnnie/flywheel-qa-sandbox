@@ -12,6 +12,8 @@ import { RETIRED_CONFIG_PATHS, RETIRED_FLAGS } from "../feature-flags/truth.js";
 import { auditFly1981LegacyLedger } from "./fly1981-legacy-snapshot.js";
 
 const EXPECTED_WHEN_ON = {
+	lead_token_savings:
+		"恢复时先给摘要与分页入口，例行进度保留审计但不唤醒 Lead；常驻规则精简，巡检细节按需读取。",
 	codex_lead_thread_rotation:
 		"常驻 Codex Lead 在满足周期与空闲条件时开启新对话页，让旧页可进入原生记忆整理",
 	codex_memory_distill:
@@ -76,7 +78,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(29);
+		expect(FEATURE_FLAGS).toHaveLength(30);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);

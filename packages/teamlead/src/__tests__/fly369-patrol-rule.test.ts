@@ -44,7 +44,14 @@ function reportV2(text: string): string {
 }
 
 describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
-	const patrol = readFileSync(PATROL_PATH, "utf8");
+	// FLY-2567: validate the unchanged procedure at its versioned on-demand
+	// destination; resident safety and budget have their own contract tests.
+	const resident = readFileSync(PATROL_PATH, "utf8");
+	const procedure = readFileSync(join(BASE, "runbooks/patrol-v1.md"), "utf8");
+	const patrol =
+		resident.slice(0, resident.indexOf("## 0.")) +
+		procedure.slice(procedure.indexOf("## 0.")) +
+		resident.slice(resident.indexOf("### 0.9"));
 	const msg = readFileSync(MSG_PATH, "utf8");
 	const readme = readFileSync(README_PATH, "utf8");
 	const sh = readFileSync(SH_PATH, "utf8");

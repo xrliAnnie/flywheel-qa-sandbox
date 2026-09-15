@@ -1,0 +1,120 @@
+{
+  "observed_at_utc": "2026-09-15T01:39:18.101458+00:00",
+  "generated_at": "2026-09-15T00:41:18Z",
+  "bundle_bytes": 234795,
+  "bundle_chars": 215011,
+  "bundle_sha256": "e894ef59f0ba90f695bbd34d87b7246397d82f41172ea0328fd9c7cdda8ac474",
+  "manifest_body_sha": "19f1bc1d8f590cec367b60a36991c44af6e5bece353bdb766df73ef115bcf4b1",
+  "file_count": 18,
+  "append_target_count": 1,
+  "sources": [
+    {
+      "basename": "inbox-ack-rule.md",
+      "bytes": 4446,
+      "chars": 4378,
+      "sha256": "26207a075496f647b3b12ff6d82b9f0235189a6eab61665c1a9c72bc6c1615ae"
+    },
+    {
+      "basename": "department-lead-rules.md",
+      "bytes": 40511,
+      "chars": 39542,
+      "sha256": "757ba4427b0c4fe306542e89de4173f227ee5a42b2ab738b417716126bfeb548"
+    },
+    {
+      "basename": "runner-messaging-rules.md",
+      "bytes": 7056,
+      "chars": 7002,
+      "sha256": "bea5a4e6512ff3c10340e9652666b0858e73dd42d012e227414d772bfbdb1bcc"
+    },
+    {
+      "basename": "executor-routing.md",
+      "bytes": 8083,
+      "chars": 8017,
+      "sha256": "548dcfd10016b38ecc9b3c5873140c4c0662703e30dbe773e1f7997b5c18130d"
+    },
+    {
+      "basename": "model-routing.md",
+      "bytes": 6175,
+      "chars": 6133,
+      "sha256": "5178a4657e303a90214cf7d27b6f1663ab076272b8555f2a9da67d531752bb58"
+    },
+    {
+      "basename": "stuck-runner-remanage.md",
+      "bytes": 1637,
+      "chars": 1633,
+      "sha256": "a6e7e0ed196791f461b740bfd784ad97ea876dc20103fc09a45cf804edcb5cc7"
+    },
+    {
+      "basename": "runner-reengage-rules.md",
+      "bytes": 3199,
+      "chars": 3169,
+      "sha256": "56fa4771e19c9f645b3f2b7f1fbcd0e9b7b1ee334eb834e1d396de3ae4f538ed"
+    },
+    {
+      "basename": "doc-flow-rules.md",
+      "bytes": 3690,
+      "chars": 1986,
+      "sha256": "5b414c377a56f8497fd7bb3cc6087e3eda83573b123448617562da3d770fa9fb"
+    },
+    {
+      "basename": "default-enable-policy.md",
+      "bytes": 3507,
+      "chars": 3483,
+      "sha256": "d971c5fde3984a62a01ed5d069707bad3ee6c5a6da10f80ab1fec58d840ad71e"
+    },
+    {
+      "basename": "xiaohongshu-memory-rules.md",
+      "bytes": 5006,
+      "chars": 4988,
+      "sha256": "d42bcff55c8cd56e4efa40524ad9b16c8b1e6ab63cc5487e32ef77614c1375b7"
+    },
+    {
+      "basename": "summary-inflow.md",
+      "bytes": 3062,
+      "chars": 2894,
+      "sha256": "5f76ef672f4b78d6f46cfc8cd69d7d75c6aa965c2a3f942381b77a8c41c7f509"
+    },
+    {
+      "basename": "runner-patrol-rules.md",
+      "bytes": 79335,
+      "chars": 65210,
+      "sha256": "fb3479d4b6355e6778783fcc02db2600e1351a8979207baa1a2dfe7bbe203f11"
+    },
+    {
+      "basename": "founder-local-time.md",
+      "bytes": 1267,
+      "chars": 1249,
+      "sha256": "db3f7d20ef9002d05304618e0258d8c3ac059c7e50aa6ba18e1446b5cee83be8"
+    },
+    {
+      "basename": "founder-only-authority.md",
+      "bytes": 46576,
+      "chars": 44766,
+      "sha256": "1362514394ce39dd1e6005862646a79895bf4201a12274f0961ef37e80cfaf9f"
+    },
+    {
+      "basename": "founder-html-delivery.md",
+      "bytes": 1078,
+      "chars": 1072,
+      "sha256": "c3347b2f94d6de678e8e3f14233ca93069c367b943bf706f06fddf033ab56edc"
+    },
+    {
+      "basename": "cross-dept-channel-rules.md",
+      "bytes": 10115,
+      "chars": 10009,
+      "sha256": "01b5f22f576f20086b4fabcf1516372fc354ca6fcf2bbf9760957e23b7d21004"
+    },
+    {
+      "basename": "discord-reply-contract.md",
+      "bytes": 1088,
+      "chars": 1080,
+      "sha256": "e82fe7bfb5d71d4aefe64d81fac665b36e1aeb32570ce17c0b4c1160a0ea9172"
+    },
+    {
+      "basename": "screencapture-l3-skill.md",
+      "bytes": 4897,
+      "chars": 4585,
+      "sha256": "ce9bfdd71a6d9b9050d032c8aff88c9e5cc6ee6c3c1a7632804e8ac2f25752db"
+    }
+  ]
+}

@@ -640,6 +640,46 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "lead_token_savings",
+		configKey: "lead.token_savings_enabled",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"Lead token savings. Disable: feature-flags set --name lead_token_savings --to off --project <project> --reason <reason>. Bootstrap/events change immediately; rules/window at next Lead launch.",
+		whenOn:
+			"恢复时先给摘要与分页入口，例行进度保留审计但不唤醒 Lead；常驻规则精简，巡检细节按需读取。",
+		note: "关闭后，后续 Bootstrap 与事件投递立即恢复；常驻规则与压缩窗口到下次 Lead 重启才恢复（定时班车或 founder 授权紧急重启）。若待办漏处理、进度更新缺失或回复变慢，关闭并查收据。已审计历史不会自动补投。call_time 指读取时机，启动参数仍在下次 Lead 启动生效。Lead 于 2026-10-15 前依据 D7 证据复核退役，或明确延期并补齐双模式兼容证据。",
+		retiring: "FLY-2567",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/bootstrap-generator.ts",
+				"generateBootstrap",
+				"storeLeadTokenSavingsEnabled",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/bridge/event-route.ts",
+				"createEventRouter",
+				"storeLeadTokenSavingsEnabled",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/HeartbeatService.ts",
+				"RegistryHeartbeatNotifier.appendAndDeliverRow",
+				"storeLeadTokenSavingsEnabled",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/lead-token-savings.ts",
+				"readLeadTokenSavingsAtLaunch",
+				"storeLeadTokenSavingsEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "node_dwell",
 		category: "feature",
 		source: "project_config",

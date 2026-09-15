@@ -153,6 +153,7 @@ export interface HookPayload {
 	/** FLY-1259: effective per-dispatch backend locked for a design phase. */
 	design_backend?: DesignBackend;
 	// FLY-47: stage context — explicit guidance for Lead (e.g., "Runner completed work, PR still needs review")
+	stage?: string;
 	stage_context?: string;
 	// EventFilter fields (GEO-187)
 	filter_priority?: "high" | "normal" | "low";

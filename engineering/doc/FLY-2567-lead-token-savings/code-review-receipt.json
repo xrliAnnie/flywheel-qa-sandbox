@@ -1,0 +1,154 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "270c43c6-5448-4664-ba39-8205aa31c71d",
+  "round": 1,
+  "findings": [
+    {
+      "id": "audit-only-events-have-no-read-surface",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/bootstrap-generator.ts",
+      "line": 312,
+      "title": "audit_only lead events are unreachable through every supported read path",
+      "detail": "Rows written with delivery_disposition='audit_only' never receive delivered_at (markLeadEventDelivered now filters on 'model'), and every reader was narrowed: listUndeliveredLeadEvents (StateStore.ts:20813), listUndeliveredLeadInboxEvents (20839), listUndeliveredLeadEventsByType (23387), getUndeliveredLeadEventsForReconcile (24374) and getDeliveryStats (24418) all exclude them. The remaining reader, getRecentDeliveredEvents (20676), requires delivered_at IS NOT NULL, so audit-only rows are also absent from bootstrap `recentEvents` and from the new GET /api/bootstrap/:leadId/sections?kind=recentEvents that is built on the same snapshot. No new API, CLI or query lists them, and terminal-row-archive.ts:484 later deletes them into workflow_terminal_archive. The design contract ('仅审计 可查询', and the R1 follow-up bootstrap-budget-nonquestion-sections requiring every omitted item to keep a queryable entry) is therefore not met by the code. Failure scenario: a runner transitions to stage=implement on a running session; the event is persisted as audit_only, the Lead is not told, and neither the Lead nor an operator can list it through any shipped interface — only raw SQL against lead_events / workflow_terminal_archive. Suggest adding a read surface (e.g. a `kind=auditedEvents` section on the new bootstrap router) before the canary.",
+      "failure_scenario": "Runner posts stage_changed{stage:'implement'} for a running, error-free session → lead_events row is stored with delivery_disposition='audit_only' and delivered_at NULL → the row is filtered out of all five undelivered/stat queries and out of getRecentDeliveredEvents, so GET /api/bootstrap/<lead>/sections?kind=recentEvents returns it nowhere; after the retention cutoff terminal-row-archive deletes the hot row, leaving no supported way to enumerate what was suppressed.",
+      "findingKey": "audit-only-events-have-no-read-surface"
+    },
+    {
+      "id": "fly2006-retention-engine-misses-audit-only",
+      "severity": "MEDIUM",
+      "file": "scripts/lib/fly-2006-retention-engine.mjs",
+      "line": 232,
+      "title": "Second lead_events retention consumer still keys on delivered_at IS NOT NULL",
+      "detail": "The consumer sweep updated terminal-row-archive.ts (both the keyset index predicate and the select) to treat delivery_disposition='audit_only' as archive-eligible without delivered_at, but scripts/lib/fly-2006-retention-engine.mjs's `leadEvents` policy still requires `t.delivered_at IS NOT NULL` (and `t.event_type IN (LEAD_EVENT_NARRATIVE_TYPES)`). That file is a registered consumer in scripts/fly-2006-retention-consumer-gate.config.json (relation lead_events, usage read) and the gate still passes because the change does not touch it. In practice the in-process archiver deletes audit-only rows so they do not accumulate, but the two retention owners now disagree about what 'settled' means for the same table — if the in-process archiver is disabled or its leadInactive guard holds a row, the offline engine will never reclaim it. Same class of gap the R1 follow-up `audit-only-delivered-at-consumers` was meant to close; its enumeration (listUndeliveredLeadEvents / getUndeliveredLeadEventsForReconcile / getDeliveryStats / terminal-row-archive) omitted this file.",
+      "failure_scenario": "Deployment runs the FLY-2006 offline retention engine while the in-process archiveTerminalRows loop is paused or its leadInactive predicate keeps a Lead active; audit_only stage_changed rows older than the 14-day cutoff are skipped forever by the offline policy because delivered_at is NULL, so lead_events grows without bound with rows no reader can see.",
+      "findingKey": "fly2006-retention-engine-misses-audit-only"
+    },
+    {
+      "id": "bootstrap-sections-page-regenerates-full-snapshot",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/bootstrap-route.ts",
+      "line": 110,
+      "title": "/sections paging rebuilds the whole bootstrap snapshot, including full question pagination, per request",
+      "detail": "The `sections` branch calls generateBootstrap() and then slices `rows.slice(offset, offset+limit)`. generateBootstrap now pages through every pending gate/ask/report for the Lead (bootstrap-generator.ts:360-378, `do { getBootstrapQuestionPage(... limit: 50 ...) } while (cursor)`), and getBootstrapQuestionPage re-opens and closes every project's CommDB on each page (CommDB.openReadonly / db.close per project per page). So a single GET for one page of `activeSessions` performs ceil(pending/50) × projects readonly opens plus the memory-recall-free snapshot build, and walking a section to completion is O(n²) in pending questions. With the inventory this issue documents (876 ASK + ~399 report) that is roughly 26 page round-trips per project per request. Not a correctness bug, but it makes the recovery surface the most expensive route on the Bridge exactly when a Lead is recovering with a large backlog.",
+      "failure_scenario": "A Lead with ~1,300 pending questions across 3 projects recovers and follows the pointers: each GET /api/bootstrap/<lead>/sections?kind=activeSessions&cursor=N re-runs generateBootstrap, which opens/closes 3 CommDBs ~26 times and re-reads every question row before discarding all of them to return 50 session rows.",
+      "findingKey": "bootstrap-sections-page-regenerates-full-snapshot"
+    },
+    {
+      "id": "rule-budget-test-depends-on-doc-evidence-path",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/__tests__/fly2567-rule-budget.test.ts",
+      "line": 10,
+      "title": "Unit test hard-codes a path into engineering/doc/, which the repo's doc lifecycle moves",
+      "detail": "The test readFileSync's `../../../../engineering/doc/FLY-2567-lead-token-savings/evidence/rules-inventory.json` at module scope, so the whole file throws at collection time if that artifact moves or is pruned. CLAUDE.md's documented lifecycle explicitly prescribes `git mv`-ing finished docs into `archive/` subdirectories, and this folder is a per-issue evidence dump, not a stable fixture. The assertion itself (bundle_chars + delta <= bundle_chars * 0.75) is a reasonable regression guard, but the baseline should live next to the test (e.g. under src/__tests__/fixtures/) rather than in a doc tree that is expected to be relocated.",
+      "failure_scenario": "Someone archives the FLY-2567 doc folder per the CLAUDE.md lifecycle (`git mv engineering/doc/FLY-2567-... .../archive/`); fly2567-rule-budget.test.ts throws ENOENT during collection and the flywheel-teamlead test job goes red with no code change.",
+      "findingKey": "rule-budget-test-depends-on-doc-evidence-path"
+    },
+    {
+      "id": "reconcile-ack-scan-unbounded-and-runs-on-runner-lane",
+      "severity": "LOW",
+      "file": "packages/flywheel-comm/src/mailbox-queue.ts",
+      "line": 2069,
+      "title": "pendingAck lookup loads every open ack_batch row per expired batch and can never match on the runner lane",
+      "detail": "Inside the reconcileExpiredLeases transaction, each expired batch runs a SELECT * over all QUEUED/LEASED bridge protocol ack_batch rows for that agent and then filters in JS with `.find(row => parseBatchAck(row.content) === batch.batch_id)` — no LIMIT, no batch_id predicate in SQL, and the full row (content included) is materialized. It runs up to maxBatches times per tick (100 for the Lead loop, maxPerTick for the runner lane). On the runner lane (runner-mailbox-lane.ts:257, recipientKind 'runner', no toAgent) `batch.to_agent` is an execution id and runners never insert ack_batch rows (only CommDB.insertBatchAckReceipt, called by inbox-mcp / lead-actions with the Lead id), so the scan is pure overhead there and executes for every expired runner batch. Correctness is fine (the transaction makes the two reads consistent, the NOT EXISTS member guard means ackBatchByRecipient can never hit its recipient-mismatch throw, and ack() accepts QUEUED or LEASED), but a batch_id predicate in SQL plus a LIMIT and a recipientKind==='lead' short-circuit would remove the cost entirely.",
+      "failure_scenario": "A Bridge tick reconciles 100 expired runner batches; each one runs a full scan of the bridge protocol lane that is guaranteed to return zero matching rows, inside the same write transaction that holds the mailbox lock.",
+      "findingKey": "reconcile-ack-scan-unbounded-and-runs-on-runner-lane"
+    },
+    {
+      "id": "heartbeat-passes-trustedbridge-unconditionally",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/HeartbeatService.ts",
+      "line": 2563,
+      "title": "appendAndDeliverRow asserts producer trust for every event type instead of deriving it",
+      "detail": "leadEventDeliveryDisposition's contract comment says 'Source trust is supplied by the validated producer, never by message content', and event-route.ts:3675 honours that by deriving it (`event.event_type === 'stage_changed' && Boolean(stageRecord)` — trust comes from a successfully validated, persisted stage row). HeartbeatService.appendAndDeliverRow instead hard-codes `true` for whatever eventType/payload it is handed. That is safe today because all four deliverHook call sites (onSessionOrphaned / onSessionStale / onSessionMonitoringLost / onSessionMonitoringReestablished) and the zombie path build the HookPayload in-process, but the trustedBridge flag is the only thing preventing an `event_type: 'session_monitoring_reestablished'` payload from being silently suppressed, and nothing in the function ties the flag to that fact. A narrower assertion (e.g. only pass true for the eventTypes this class constructs) would keep the gate closed if a future producer is routed through the shared append→deliver helper.",
+      "failure_scenario": "A later change routes an externally-sourced hook payload through appendAndDeliverRow; a payload declaring event_type='session_monitoring_reestablished' with status='running' is persisted as audit_only and never reaches the Lead, with no validation step having vouched for the producer.",
+      "findingKey": "heartbeat-passes-trustedbridge-unconditionally"
+    },
+    {
+      "id": "duplicate-disposition-predicate",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/StateStore.ts",
+      "line": 20839,
+      "title": "listUndeliveredLeadInboxEvents repeats the same predicate twice",
+      "detail": "`WHERE delivered_at IS NULL AND delivery_disposition = 'model' AND delivery_disposition = 'model'` — a copy-paste artifact. Semantically a no-op, but it is the kind of duplication that makes a future reader assume one of the two was meant to be a different column (e.g. a disposition on a joined row) and 'fix' it incorrectly.",
+      "failure_scenario": "No runtime impact; a later editor reading the doubled clause assumes one copy was meant to filter a different table/column and rewrites the query incorrectly.",
+      "findingKey": "duplicate-disposition-predicate"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "audit-only-events-have-no-read-surface",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/bootstrap-generator.ts",
+      "line": 312,
+      "title": "audit_only lead events are unreachable through every supported read path",
+      "detail": "Rows written with delivery_disposition='audit_only' never receive delivered_at (markLeadEventDelivered now filters on 'model'), and every reader was narrowed: listUndeliveredLeadEvents (StateStore.ts:20813), listUndeliveredLeadInboxEvents (20839), listUndeliveredLeadEventsByType (23387), getUndeliveredLeadEventsForReconcile (24374) and getDeliveryStats (24418) all exclude them. The remaining reader, getRecentDeliveredEvents (20676), requires delivered_at IS NOT NULL, so audit-only rows are also absent from bootstrap `recentEvents` and from the new GET /api/bootstrap/:leadId/sections?kind=recentEvents that is built on the same snapshot. No new API, CLI or query lists them, and terminal-row-archive.ts:484 later deletes them into workflow_terminal_archive. The design contract ('仅审计 可查询', and the R1 follow-up bootstrap-budget-nonquestion-sections requiring every omitted item to keep a queryable entry) is therefore not met by the code. Failure scenario: a runner transitions to stage=implement on a running session; the event is persisted as audit_only, the Lead is not told, and neither the Lead nor an operator can list it through any shipped interface — only raw SQL against lead_events / workflow_terminal_archive. Suggest adding a read surface (e.g. a `kind=auditedEvents` section on the new bootstrap router) before the canary.",
+      "failure_scenario": "Runner posts stage_changed{stage:'implement'} for a running, error-free session → lead_events row is stored with delivery_disposition='audit_only' and delivered_at NULL → the row is filtered out of all five undelivered/stat queries and out of getRecentDeliveredEvents, so GET /api/bootstrap/<lead>/sections?kind=recentEvents returns it nowhere; after the retention cutoff terminal-row-archive deletes the hot row, leaving no supported way to enumerate what was suppressed.",
+      "findingKey": "audit-only-events-have-no-read-surface"
+    },
+    {
+      "id": "fly2006-retention-engine-misses-audit-only",
+      "severity": "MEDIUM",
+      "file": "scripts/lib/fly-2006-retention-engine.mjs",
+      "line": 232,
+      "title": "Second lead_events retention consumer still keys on delivered_at IS NOT NULL",
+      "detail": "The consumer sweep updated terminal-row-archive.ts (both the keyset index predicate and the select) to treat delivery_disposition='audit_only' as archive-eligible without delivered_at, but scripts/lib/fly-2006-retention-engine.mjs's `leadEvents` policy still requires `t.delivered_at IS NOT NULL` (and `t.event_type IN (LEAD_EVENT_NARRATIVE_TYPES)`). That file is a registered consumer in scripts/fly-2006-retention-consumer-gate.config.json (relation lead_events, usage read) and the gate still passes because the change does not touch it. In practice the in-process archiver deletes audit-only rows so they do not accumulate, but the two retention owners now disagree about what 'settled' means for the same table — if the in-process archiver is disabled or its leadInactive guard holds a row, the offline engine will never reclaim it. Same class of gap the R1 follow-up `audit-only-delivered-at-consumers` was meant to close; its enumeration (listUndeliveredLeadEvents / getUndeliveredLeadEventsForReconcile / getDeliveryStats / terminal-row-archive) omitted this file.",
+      "failure_scenario": "Deployment runs the FLY-2006 offline retention engine while the in-process archiveTerminalRows loop is paused or its leadInactive predicate keeps a Lead active; audit_only stage_changed rows older than the 14-day cutoff are skipped forever by the offline policy because delivered_at is NULL, so lead_events grows without bound with rows no reader can see.",
+      "findingKey": "fly2006-retention-engine-misses-audit-only"
+    },
+    {
+      "id": "bootstrap-sections-page-regenerates-full-snapshot",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/bootstrap-route.ts",
+      "line": 110,
+      "title": "/sections paging rebuilds the whole bootstrap snapshot, including full question pagination, per request",
+      "detail": "The `sections` branch calls generateBootstrap() and then slices `rows.slice(offset, offset+limit)`. generateBootstrap now pages through every pending gate/ask/report for the Lead (bootstrap-generator.ts:360-378, `do { getBootstrapQuestionPage(... limit: 50 ...) } while (cursor)`), and getBootstrapQuestionPage re-opens and closes every project's CommDB on each page (CommDB.openReadonly / db.close per project per page). So a single GET for one page of `activeSessions` performs ceil(pending/50) × projects readonly opens plus the memory-recall-free snapshot build, and walking a section to completion is O(n²) in pending questions. With the inventory this issue documents (876 ASK + ~399 report) that is roughly 26 page round-trips per project per request. Not a correctness bug, but it makes the recovery surface the most expensive route on the Bridge exactly when a Lead is recovering with a large backlog.",
+      "failure_scenario": "A Lead with ~1,300 pending questions across 3 projects recovers and follows the pointers: each GET /api/bootstrap/<lead>/sections?kind=activeSessions&cursor=N re-runs generateBootstrap, which opens/closes 3 CommDBs ~26 times and re-reads every question row before discarding all of them to return 50 session rows.",
+      "findingKey": "bootstrap-sections-page-regenerates-full-snapshot"
+    },
+    {
+      "id": "rule-budget-test-depends-on-doc-evidence-path",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/__tests__/fly2567-rule-budget.test.ts",
+      "line": 10,
+      "title": "Unit test hard-codes a path into engineering/doc/, which the repo's doc lifecycle moves",
+      "detail": "The test readFileSync's `../../../../engineering/doc/FLY-2567-lead-token-savings/evidence/rules-inventory.json` at module scope, so the whole file throws at collection time if that artifact moves or is pruned. CLAUDE.md's documented lifecycle explicitly prescribes `git mv`-ing finished docs into `archive/` subdirectories, and this folder is a per-issue evidence dump, not a stable fixture. The assertion itself (bundle_chars + delta <= bundle_chars * 0.75) is a reasonable regression guard, but the baseline should live next to the test (e.g. under src/__tests__/fixtures/) rather than in a doc tree that is expected to be relocated.",
+      "failure_scenario": "Someone archives the FLY-2567 doc folder per the CLAUDE.md lifecycle (`git mv engineering/doc/FLY-2567-... .../archive/`); fly2567-rule-budget.test.ts throws ENOENT during collection and the flywheel-teamlead test job goes red with no code change.",
+      "findingKey": "rule-budget-test-depends-on-doc-evidence-path"
+    },
+    {
+      "id": "reconcile-ack-scan-unbounded-and-runs-on-runner-lane",
+      "severity": "LOW",
+      "file": "packages/flywheel-comm/src/mailbox-queue.ts",
+      "line": 2069,
+      "title": "pendingAck lookup loads every open ack_batch row per expired batch and can never match on the runner lane",
+      "detail": "Inside the reconcileExpiredLeases transaction, each expired batch runs a SELECT * over all QUEUED/LEASED bridge protocol ack_batch rows for that agent and then filters in JS with `.find(row => parseBatchAck(row.content) === batch.batch_id)` — no LIMIT, no batch_id predicate in SQL, and the full row (content included) is materialized. It runs up to maxBatches times per tick (100 for the Lead loop, maxPerTick for the runner lane). On the runner lane (runner-mailbox-lane.ts:257, recipientKind 'runner', no toAgent) `batch.to_agent` is an execution id and runners never insert ack_batch rows (only CommDB.insertBatchAckReceipt, called by inbox-mcp / lead-actions with the Lead id), so the scan is pure overhead there and executes for every expired runner batch. Correctness is fine (the transaction makes the two reads consistent, the NOT EXISTS member guard means ackBatchByRecipient can never hit its recipient-mismatch throw, and ack() accepts QUEUED or LEASED), but a batch_id predicate in SQL plus a LIMIT and a recipientKind==='lead' short-circuit would remove the cost entirely.",
+      "failure_scenario": "A Bridge tick reconciles 100 expired runner batches; each one runs a full scan of the bridge protocol lane that is guaranteed to return zero matching rows, inside the same write transaction that holds the mailbox lock.",
+      "findingKey": "reconcile-ack-scan-unbounded-and-runs-on-runner-lane"
+    },
+    {
+      "id": "heartbeat-passes-trustedbridge-unconditionally",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/HeartbeatService.ts",
+      "line": 2563,
+      "title": "appendAndDeliverRow asserts producer trust for every event type instead of deriving it",
+      "detail": "leadEventDeliveryDisposition's contract comment says 'Source trust is supplied by the validated producer, never by message content', and event-route.ts:3675 honours that by deriving it (`event.event_type === 'stage_changed' && Boolean(stageRecord)` — trust comes from a successfully validated, persisted stage row). HeartbeatService.appendAndDeliverRow instead hard-codes `true` for whatever eventType/payload it is handed. That is safe today because all four deliverHook call sites (onSessionOrphaned / onSessionStale / onSessionMonitoringLost / onSessionMonitoringReestablished) and the zombie path build the HookPayload in-process, but the trustedBridge flag is the only thing preventing an `event_type: 'session_monitoring_reestablished'` payload from being silently suppressed, and nothing in the function ties the flag to that fact. A narrower assertion (e.g. only pass true for the eventTypes this class constructs) would keep the gate closed if a future producer is routed through the shared append→deliver helper.",
+      "failure_scenario": "A later change routes an externally-sourced hook payload through appendAndDeliverRow; a payload declaring event_type='session_monitoring_reestablished' with status='running' is persisted as audit_only and never reaches the Lead, with no validation step having vouched for the producer.",
+      "findingKey": "heartbeat-passes-trustedbridge-unconditionally"
+    },
+    {
+      "id": "duplicate-disposition-predicate",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/StateStore.ts",
+      "line": 20839,
+      "title": "listUndeliveredLeadInboxEvents repeats the same predicate twice",
+      "detail": "`WHERE delivered_at IS NULL AND delivery_disposition = 'model' AND delivery_disposition = 'model'` — a copy-paste artifact. Semantically a no-op, but it is the kind of duplication that makes a future reader assume one of the two was meant to be a different column (e.g. a disposition on a joined row) and 'fix' it incorrectly.",
+      "failure_scenario": "No runtime impact; a later editor reading the doubled clause assumes one copy was meant to filter a different table/column and rewrites the query incorrectly.",
+      "findingKey": "duplicate-disposition-predicate"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "reviewedHeadSha": "863d4d2293e204b091be85ac941d772a54cbe019",
+  "deliveryNonce": "bfe22bad-23ec-4b23-81e5-904492f13bc1"
+}

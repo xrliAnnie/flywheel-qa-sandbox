@@ -1,0 +1,156 @@
+{
+  "headRefOid": "042c89ad7afcfc67abf117414f488106d5339ff5",
+  "isDraft": true,
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T04:51:19Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257230029",
+      "name": "Classify CI scope",
+      "startedAt": "2026-09-15T04:50:58Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T04:55:41Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257230237",
+      "name": "Quick Gate (build + typecheck + lint)",
+      "startedAt": "2026-09-15T04:50:58Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T05:00:20Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302813",
+      "name": "Unit (teamlead 1 of 4)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T05:01:18Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302827",
+      "name": "Unit (teamlead 2 of 4)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T05:00:37Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302837",
+      "name": "Unit (teamlead 3 of 4)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T04:59:29Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302826",
+      "name": "Unit (teamlead 4 of 4)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T04:59:40Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257303076",
+      "name": "Unit (heavy)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T04:55:18Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302843",
+      "name": "Unit (light)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T05:04:18Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302925",
+      "name": "Script Tests 1/5 — session/lifecycle (shell suites)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T05:05:04Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302784",
+      "name": "Script Tests 2/5 — fleet/setup/packaging A (shell suites)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T05:06:12Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302752",
+      "name": "Script Tests 3/5 — fleet/setup/packaging B (shell suites)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T04:59:40Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302774",
+      "name": "Script Tests 4/5 — cmux repair + Lead memory (shell suites)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T04:54:37Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302793",
+      "name": "Script Tests 5/5 — Lead memory remote sync",
+      "startedAt": "2026-09-15T04:51:20Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T04:54:36Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104257302824",
+      "name": "NPM payload distribution (endpoint + release pipeline)",
+      "startedAt": "2026-09-15T04:51:21Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-09-15T05:06:17Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/xrliAnnie/flywheel/actions/runs/34930383686/job/104260155466",
+      "name": "CI OK",
+      "startedAt": "2026-09-15T05:06:14Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    }
+  ]
+}

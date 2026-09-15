@@ -412,7 +412,54 @@ async function makeReconnectHarness(
 }
 
 describe("RegistryHeartbeatNotifier", () => {
-	it("still delivers the runtime re-entry advisory while suppressing its reconnect title write", async () => {
+	it("hot toggles monitoring re-entry on the same notifier", async () => {
+		const { registry, envelopes } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		try {
+			const notifier = new RegistryHeartbeatNotifier(
+				registry,
+				testProjects,
+				hbStore,
+			);
+			const session: Session = {
+				execution_id: "exec-reentry-toggle",
+				issue_id: "i-toggle",
+				project_name: "geo",
+				status: "running",
+				issue_identifier: "GEO-2567",
+			};
+			for (const [index, enabled] of [true, false, true].entries()) {
+				expect(
+					hbStore.applyScopedFlagValueChange({
+						name: "lead_token_savings",
+						scope: "geo",
+						op: "set",
+						rawTo: enabled ? "1" : "0",
+						expectedChangeSeq: hbStore.getFlagValueChangeSeq(
+							"lead_token_savings",
+							"geo",
+						),
+						actor: "fixture-lead",
+						reason: "hot rollback regression",
+					}).ok,
+				).toBe(true);
+				await notifier.onSessionMonitoringReestablished(session, 15, {
+					stampReconnectTitle: false,
+				});
+				expect(hbStore.getLeadEventBySeq(index + 1)?.delivery_disposition).toBe(
+					enabled ? "audit_only" : "model",
+				);
+			}
+			expect(envelopes).toHaveLength(1);
+			expect(hbStore.getLeadEventBySeq(2)?.payload).toBe(
+				hbStore.getLeadEventBySeq(1)?.payload,
+			);
+		} finally {
+			hbStore.close();
+		}
+	});
+
+	it("audits runtime re-entry without model delivery or a reconnect title write", async () => {
 		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
 		const notifier = new RegistryHeartbeatNotifier(
@@ -441,10 +488,12 @@ describe("RegistryHeartbeatNotifier", () => {
 		});
 
 		expect(stampReconnect).not.toHaveBeenCalled();
-		expect(envelopes).toHaveLength(1);
-		expect(envelopes[0]?.event.event_type).toBe(
-			"session_monitoring_reestablished",
-		);
+		expect(envelopes).toHaveLength(0);
+		expect(hbStore.getLeadEventBySeq(1)).toMatchObject({
+			event_type: "session_monitoring_reestablished",
+			delivery_disposition: "audit_only",
+			delivered_at: undefined,
+		});
 		hbStore.close();
 	});
 

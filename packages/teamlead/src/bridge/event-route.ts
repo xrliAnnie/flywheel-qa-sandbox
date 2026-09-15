@@ -65,7 +65,11 @@ import {
 	hasPendingCompleteMarker,
 	isDoneButRunning,
 } from "./done-running-reconciler.js";
-import type { EventFilter } from "./EventFilter.js";
+import {
+	type EventFilter,
+	leadEventDeliveryDisposition,
+} from "./EventFilter.js";
+import { storeLeadTokenSavingsEnabled } from "./flag-store-runtime.js";
 import {
 	evaluateFounderReviewAuthority,
 	type FounderReviewAuthorityResult,
@@ -3564,6 +3568,10 @@ export function createEventRouter(
 					labels,
 				);
 				const sessionKey = buildSessionKey(session);
+				const tokenSavingsEnabled = storeLeadTokenSavingsEnabled(
+					{ store },
+					event.project_name,
+				);
 				const hookPayload: HookPayload = {
 					event_type: event.event_type,
 					execution_id: event.execution_id,
@@ -3595,6 +3603,7 @@ export function createEventRouter(
 				// as a snapshot and tell the Lead to verify — never assert the
 				// negative. Live PR querying is FLY-210 scope.
 				if (event.event_type === "stage_changed") {
+					if (tokenSavingsEnabled) hookPayload.stage = asString(payload.stage);
 					const stage = asString(payload.stage);
 					if (stage === "completed") {
 						const stageLanding = payload.landing_status as
@@ -3655,14 +3664,26 @@ export function createEventRouter(
 						`[event-route] suppressing non-authoritative review-required Lead delivery for ${event.execution_id}`,
 					);
 				} else {
-					// FLY-47: Always deliver ALL events to Lead — Lead decides routing
-					// (mirrors Agent Team pattern: all teammate messages reach the lead)
+					// Persist every event after its domain side effects; routine trusted
+					// progress can remain audit-only without fabricating delivery.
 					const seq = store.appendLeadEvent(
 						lead.agentId,
 						event.event_id,
 						event.event_type,
 						JSON.stringify(hookPayload),
 						sessionKey,
+						tokenSavingsEnabled &&
+							[hookPayload, payload].every(
+								(part) =>
+									leadEventDeliveryDisposition(
+										event.event_type,
+										{ ...part },
+										event.event_type === "stage_changed" &&
+											Boolean(stageRecord),
+									) === "audit_only",
+							)
+							? "audit_only"
+							: "model",
 					);
 					const envelope: LeadEventEnvelope = {
 						eventId: event.event_id,
@@ -3680,35 +3701,37 @@ export function createEventRouter(
 					// the durable delivery-failure ledger would never see
 					// these rows. Pattern mirrors HeartbeatService.ts:416.
 					const isGuardrail = GUARDRAIL_EVENT_TYPES.has(event.event_type);
-					registry
-						.dispatchLeadEvent(envelope)
-						.then((result) => {
-							if (result.delivered) {
-								store.markLeadEventDelivered(seq);
-							} else if (result.queued) {
-								// The durable inbox loop owns receipt, audit, and consume.
-							} else if (isGuardrail) {
-								store.recordDeliveryFailure(
-									seq,
-									result.error ?? "deliver returned delivered=false",
-								);
-							} else {
-								// Non-guardrail: keep legacy best-effort behavior — mark
-								// delivered to clear the row even if Lead didn't actually
-								// see it (inbox-mcp poll is the safety net here).
-								store.markLeadEventDelivered(seq);
-							}
-						})
-						.catch((err) => {
-							if (isGuardrail) {
-								store.recordDeliveryFailure(seq, (err as Error).message);
-							} else {
-								console.warn(
-									`[event-route] Delivery failed for seq=${seq} to ${lead.agentId}:`,
-									(err as Error).message,
-								);
-							}
-						});
+					if (!store.isLeadEventAuditOnly(seq, lead.agentId)) {
+						registry
+							.dispatchLeadEvent(envelope)
+							.then((result) => {
+								if (result.delivered) {
+									store.markLeadEventDelivered(seq);
+								} else if (result.queued) {
+									// The durable inbox loop owns receipt, audit, and consume.
+								} else if (isGuardrail) {
+									store.recordDeliveryFailure(
+										seq,
+										result.error ?? "deliver returned delivered=false",
+									);
+								} else {
+									// Non-guardrail: keep legacy best-effort behavior — mark
+									// delivered to clear the row even if Lead didn't actually
+									// see it (inbox-mcp poll is the safety net here).
+									store.markLeadEventDelivered(seq);
+								}
+							})
+							.catch((err) => {
+								if (isGuardrail) {
+									store.recordDeliveryFailure(seq, (err as Error).message);
+								} else {
+									console.warn(
+										`[event-route] Delivery failed for seq=${seq} to ${lead.agentId}:`,
+										(err as Error).message,
+									);
+								}
+							});
+					}
 				} // end else (FLY-579 QA-held review-required suppression)
 			} catch (err) {
 				console.warn(

@@ -599,6 +599,8 @@ export class LeadInboxRuntime {
 		envelope: LeadEventEnvelope,
 		content: string,
 	): DurableQueueReceipt {
+		if (this.opts.store.isLeadEventAuditOnly(envelope.seq, envelope.leadId))
+			throw new Error("audit_only_lead_event");
 		const project = this.projectByLead.get(envelope.leadId);
 		if (!project) throw new Error(`unknown Lead queue: ${envelope.leadId}`);
 		const queue = this.queues.get(project.projectName);

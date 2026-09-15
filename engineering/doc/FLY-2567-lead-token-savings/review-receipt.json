@@ -1,0 +1,141 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "171e01af-da77-480f-a4b5-6137a598bf68",
+  "round": 2,
+  "findings": [
+    {
+      "id": "autocompact-cli-capability-probe",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 87,
+      "title": "`claude --autocompact W --version` 这个探测会误判：不支持该参数的 binary 也会返回 0",
+      "detail": "已在 2.1.272 上实测：`claude --no-such-flag-xyz 400000 --version` 返回 rc=0，说明 --version 会直接输出版本并退出，前面的未知参数不报错；但真实启动（`claude -p --no-such-flag-xyz 1`，或带子命令）会报 `error: unknown option` 并返回 rc=1。所以第 5 步的探测正好拦不住它要拦的情况：换成不认识 --autocompact 的 binary，探测照样通过，Lead 带着这个参数启动就会 crash-loop。目前真正起保护作用的是第 4 步的 claudeVersion 完全匹配。建议二选一：(a) 改用确实会解析参数、又不产生请求的形式，如 `claude -p --autocompact W </dev/null`：支持该参数时 stderr 是「Input must be provided…」，不支持时是「unknown option」或「is invalid」，按 stderr 区分（已实测这条命令不发请求）；(b) 在 plan 里写明版本匹配才是主保护，探测只是辅助，并补一个用「不认识该参数的 stub binary」验证会省略参数的 T2 用例。",
+      "findingKey": "autocompact-cli-capability-probe"
+    },
+    {
+      "id": "audit-only-delivered-at-consumers",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 134,
+      "title": "delivered_at 消费方检查只写在跟进清单里，T3 通过条件没有包含",
+      "detail": "表名已更正为 lead_events，第 180 行也列出了 listUndeliveredLeadEvents、getUndeliveredLeadEventsForReconcile、getDeliveryStats、terminal-row-archive 这几个消费方。但 §3 正文和 T3 的通过条件（第 134 行）仍只写「fresh/redrive」。建议把「audit_only 行可以正常归档（terminal-row-archive 目前要求 delivered_at IS NOT NULL）、不被计入待投递或失败统计」写进 T3 通过条件，避免实现时漏掉。",
+      "findingKey": "audit-only-delivered-at-consumers"
+    },
+    {
+      "id": "ack-reorder-protocol-failure-starves-expiry",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 135,
+      "title": "protocol 失败时仍要回收过期租约、claim fence 这两点没有进 T4 通过条件",
+      "detail": "§5 这次把 protocol 消费前移到 opts.admit 和租约回收之前，第 181 行的跟进也要求「protocol 失败不能跳过 expiry、不能盗用活跃 claim、错误 recipient 不回滚整个回收」。但 T4 的通过条件（第 135 行）只列了 ACK 前/中/后、重启、wrong recipient、重复 ACK、DB 异常。现在 lead-inbox-loop 里 protocol 非终态失败会直接 throw 出 tick；ackBatchByRecipient 遇到 recipient mismatch 也会 throw。建议在 T4 里加两个先红的用例：(1) 同一个 tick 里一条 protocol 行失败，过期 batch 仍要被回收或 requeue；(2) 事务内不会消费正被 claimBridgeProtocol 持有的 LEASED ACK 行，不出现 owner fence lost。",
+      "findingKey": "ack-reorder-protocol-failure-starves-expiry"
+    },
+    {
+      "id": "bootstrap-budget-nonquestion-sections",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 132,
+      "title": "被省略的 sessions/decisions/failures 取回方式、旧 pending CLI 的边界，都没有进 T1 验收",
+      "detail": "第 182 行的跟进要求「被省略的 active session、pending decision、recent failure 都要有可查询入口，规则里改用有界入口」。但 §1 第 69 行仍只给 gate/ask/report 三栏定义了 omittedCount，T1 通过条件也只写「义务 100% 可检索」。已有的 `flywheel-comm pending`（commands/pending.ts）仍会不分 kind、不设上限地返回全部正文。建议在 T1 里明确：12k 预算挤掉的非问题区段要写出 omittedCount 和对应的有界命令；并说明 pending CLI 是加上 kind/limit，还是在规则里停用。",
+      "findingKey": "bootstrap-budget-nonquestion-sections"
+    },
+    {
+      "id": "questions-route-auth-principal-nonexistent",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 70,
+      "title": "§1 正文仍写着不存在的「principal 作用域检查」，和第 183 行的跟进说法冲突",
+      "detail": "第 183 行已经正确说明：tokenAuthMiddleware 没有 Lead principal；这个路由要显式只允许 master token，排除 Gemini、external、companion；没配 token 时不返回正文。但第 70 行合同正文仍是「请求者若受限到某 Lead 须沿用认证 principal 作用域检查」。建议把第 70 行改成和第 183 行一致，实现以正文为准时就不会有歧义。",
+      "findingKey": "questions-route-auth-principal-nonexistent"
+    },
+    {
+      "id": "floor-fingerprint-omits-dynamic-prefix",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 85,
+      "title": "底线 F 的 baseline 指纹没覆盖会随时间变化的前缀来源",
+      "detail": "autoCompactBaseline 只记录 claudeVersion、model、rulesBodySha、toolsConfigSha、bootstrapPolicyVersion。上下文底线还包含 Lead 工作区的 auto-memory 索引、插件/skills/agent 列表、MCP server instructions 等，这些变了不会触发 hash 漂移检测。另外，rules bundle 最终文件头里的 GENERATED_AT、ROLE 等每次启动都会变；这不影响 RULES_BUNDLE_SHA（已核实 lead-rules-bundle.sh 只对正文算 sha，plan 的选择正确）。W≥max(2F,F+200k) 的余量足以吸收几万 token 的漂移，因此不阻断。建议在 D1/D7 复测里固定记录「每次压缩后的首请求总输入」，一旦超过 F 的某个比例就重测，或者把这部分记为 canary_not_applied。",
+      "findingKey": "floor-fingerprint-omits-dynamic-prefix"
+    },
+    {
+      "id": "roi-table-ordering",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 28,
+      "title": "Founder 表格行号顺序乱，2 和 2a 内容重复",
+      "detail": "表格行的顺序是 0、1、2、2b、3、4、2a、6：标着「窗口前置」的 2a 排在 4 后面，而第 2 行「先规则瘦身，再实测底线」和 2a「规则包瘦身」讲的基本是同一件事。建议按执行顺序排成 0、1、2a（规则瘦身）、2（测底线）、2b、3、4、6，或者把第 2 行并进 2b 的前置条件，免得 founder 读错顺序。",
+      "findingKey": "roi-table-ordering"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "autocompact-cli-capability-probe",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 87,
+      "title": "`claude --autocompact W --version` 这个探测会误判：不支持该参数的 binary 也会返回 0",
+      "detail": "已在 2.1.272 上实测：`claude --no-such-flag-xyz 400000 --version` 返回 rc=0，说明 --version 会直接输出版本并退出，前面的未知参数不报错；但真实启动（`claude -p --no-such-flag-xyz 1`，或带子命令）会报 `error: unknown option` 并返回 rc=1。所以第 5 步的探测正好拦不住它要拦的情况：换成不认识 --autocompact 的 binary，探测照样通过，Lead 带着这个参数启动就会 crash-loop。目前真正起保护作用的是第 4 步的 claudeVersion 完全匹配。建议二选一：(a) 改用确实会解析参数、又不产生请求的形式，如 `claude -p --autocompact W </dev/null`：支持该参数时 stderr 是「Input must be provided…」，不支持时是「unknown option」或「is invalid」，按 stderr 区分（已实测这条命令不发请求）；(b) 在 plan 里写明版本匹配才是主保护，探测只是辅助，并补一个用「不认识该参数的 stub binary」验证会省略参数的 T2 用例。",
+      "findingKey": "autocompact-cli-capability-probe"
+    },
+    {
+      "id": "audit-only-delivered-at-consumers",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 134,
+      "title": "delivered_at 消费方检查只写在跟进清单里，T3 通过条件没有包含",
+      "detail": "表名已更正为 lead_events，第 180 行也列出了 listUndeliveredLeadEvents、getUndeliveredLeadEventsForReconcile、getDeliveryStats、terminal-row-archive 这几个消费方。但 §3 正文和 T3 的通过条件（第 134 行）仍只写「fresh/redrive」。建议把「audit_only 行可以正常归档（terminal-row-archive 目前要求 delivered_at IS NOT NULL）、不被计入待投递或失败统计」写进 T3 通过条件，避免实现时漏掉。",
+      "findingKey": "audit-only-delivered-at-consumers"
+    },
+    {
+      "id": "ack-reorder-protocol-failure-starves-expiry",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 135,
+      "title": "protocol 失败时仍要回收过期租约、claim fence 这两点没有进 T4 通过条件",
+      "detail": "§5 这次把 protocol 消费前移到 opts.admit 和租约回收之前，第 181 行的跟进也要求「protocol 失败不能跳过 expiry、不能盗用活跃 claim、错误 recipient 不回滚整个回收」。但 T4 的通过条件（第 135 行）只列了 ACK 前/中/后、重启、wrong recipient、重复 ACK、DB 异常。现在 lead-inbox-loop 里 protocol 非终态失败会直接 throw 出 tick；ackBatchByRecipient 遇到 recipient mismatch 也会 throw。建议在 T4 里加两个先红的用例：(1) 同一个 tick 里一条 protocol 行失败，过期 batch 仍要被回收或 requeue；(2) 事务内不会消费正被 claimBridgeProtocol 持有的 LEASED ACK 行，不出现 owner fence lost。",
+      "findingKey": "ack-reorder-protocol-failure-starves-expiry"
+    },
+    {
+      "id": "bootstrap-budget-nonquestion-sections",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 132,
+      "title": "被省略的 sessions/decisions/failures 取回方式、旧 pending CLI 的边界，都没有进 T1 验收",
+      "detail": "第 182 行的跟进要求「被省略的 active session、pending decision、recent failure 都要有可查询入口，规则里改用有界入口」。但 §1 第 69 行仍只给 gate/ask/report 三栏定义了 omittedCount，T1 通过条件也只写「义务 100% 可检索」。已有的 `flywheel-comm pending`（commands/pending.ts）仍会不分 kind、不设上限地返回全部正文。建议在 T1 里明确：12k 预算挤掉的非问题区段要写出 omittedCount 和对应的有界命令；并说明 pending CLI 是加上 kind/limit，还是在规则里停用。",
+      "findingKey": "bootstrap-budget-nonquestion-sections"
+    },
+    {
+      "id": "questions-route-auth-principal-nonexistent",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 70,
+      "title": "§1 正文仍写着不存在的「principal 作用域检查」，和第 183 行的跟进说法冲突",
+      "detail": "第 183 行已经正确说明：tokenAuthMiddleware 没有 Lead principal；这个路由要显式只允许 master token，排除 Gemini、external、companion；没配 token 时不返回正文。但第 70 行合同正文仍是「请求者若受限到某 Lead 须沿用认证 principal 作用域检查」。建议把第 70 行改成和第 183 行一致，实现以正文为准时就不会有歧义。",
+      "findingKey": "questions-route-auth-principal-nonexistent"
+    },
+    {
+      "id": "floor-fingerprint-omits-dynamic-prefix",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 85,
+      "title": "底线 F 的 baseline 指纹没覆盖会随时间变化的前缀来源",
+      "detail": "autoCompactBaseline 只记录 claudeVersion、model、rulesBodySha、toolsConfigSha、bootstrapPolicyVersion。上下文底线还包含 Lead 工作区的 auto-memory 索引、插件/skills/agent 列表、MCP server instructions 等，这些变了不会触发 hash 漂移检测。另外，rules bundle 最终文件头里的 GENERATED_AT、ROLE 等每次启动都会变；这不影响 RULES_BUNDLE_SHA（已核实 lead-rules-bundle.sh 只对正文算 sha，plan 的选择正确）。W≥max(2F,F+200k) 的余量足以吸收几万 token 的漂移，因此不阻断。建议在 D1/D7 复测里固定记录「每次压缩后的首请求总输入」，一旦超过 F 的某个比例就重测，或者把这部分记为 canary_not_applied。",
+      "findingKey": "floor-fingerprint-omits-dynamic-prefix"
+    },
+    {
+      "id": "roi-table-ordering",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 28,
+      "title": "Founder 表格行号顺序乱，2 和 2a 内容重复",
+      "detail": "表格行的顺序是 0、1、2、2b、3、4、2a、6：标着「窗口前置」的 2a 排在 4 后面，而第 2 行「先规则瘦身，再实测底线」和 2a「规则包瘦身」讲的基本是同一件事。建议按执行顺序排成 0、1、2a（规则瘦身）、2（测底线）、2b、3、4、6，或者把第 2 行并进 2b 的前置条件，免得 founder 读错顺序。",
+      "findingKey": "roi-table-ordering"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "questionId": "aec71bb6-39e2-4700-89e0-d57c8a9f0c87",
+  "reviewed_content_commit": "88ec1479e",
+  "plan_sha256": "482dbc84b8361e7a348a88c01cc9ac70a15d4bcd86e697b1f9fd3415dc500df1"
+}

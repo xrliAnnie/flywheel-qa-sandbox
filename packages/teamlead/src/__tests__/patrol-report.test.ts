@@ -169,7 +169,7 @@ describe("patrol report closure", () => {
 		["unparsed record", (s) => `${s}\nMECHANISM_DEFECT`],
 	];
 	const rules = readFileSync(
-		join(__dirname, "../../lead-rules-base/runner-patrol-rules.md"),
+		join(__dirname, "../../lead-rules-base/runbooks/patrol-v1.md"),
 		"utf8",
 	);
 	const awk =
@@ -177,6 +177,7 @@ describe("patrol report closure", () => {
 			/# FLY-2080-FINDING-GATE-BEGIN\nawk '\n([\s\S]*?)\n' "\$REPORT_PATH"/,
 		)?.[1] ?? "";
 	it("executes original awk plus helper for three modes", () => {
+		expect(awk).toContain("mechanism_finding");
 		for (const mode of ["existing", "created", "no_issue"])
 			expect(
 				spawnSync("awk", [awk], { input: report(mode), encoding: "utf8" })

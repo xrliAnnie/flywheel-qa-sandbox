@@ -1,0 +1,147 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "08b28698-5235-4671-9762-0f1fe12899c2",
+  "round": 1,
+  "findings": [
+    {
+      "id": "legacy-snapshot-drift-unguarded",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 194,
+      "title": "OFF path freezes rules/formatter bytes at f022a0a7e with no guard against later upstream edits — the kill switch silently reverts unrelated rule changes",
+      "detail": "R4/R2 define the OFF path as a byte snapshot of nine sources taken at f022a0a7e (evidence/rework-legacy-sources.json), copied into lead-rules-base/legacy-token-savings/ and bootstrap-format-legacy.ts, and the acceptance test compares the copy against that same frozen oracle (the new red test 055b68d92 already does exactly this). Nothing ties the copies to the live ON files afterwards. Churn on those exact files is high: in the 30 days before the baseline, runner-patrol-rules.md had 18 commits, department-lead-rules.md 8, runner-messaging-rules.md 4, mailbox/commdb-lead-runtime.ts 4 each; rule-content guards (fly2141/2142/2143/2144, fly369) only assert the ON copies. Two concrete failures: (a) ship-time — a concurrent PR lands a rule edit on main before #1204 merges; the merge resolves only the ON file, the legacy copy stays at f022a0a7e, every byte oracle stays green, and OFF already ships missing a rule that is on main; (b) post-ship — every later edit to those four rule files, to runbooks/patrol-v1.md, or to the Bootstrap formatter/generator lands only on the ON side, so a founder flipping OFF weeks later (exactly the emergency the flag exists for: \"情况不对就关掉…不想因为想省 token 把你真正该做的事情 skip 了\") relaunches every Lead in every project with Sept-15 operating rules, dropping later authority/patrol/ship constraints — the opposite of the flag's purpose, and undetectable by CI. The plan must add: (1) at final head, prove the nine sources are unchanged between f022a0a7e and the final merge-base with origin/main (or re-derive the legacy bytes from that merge-base and re-capture the oracle); (2) a guard test pinning the sha256 pair (ON file ↔ legacy counterpart, incl. the runbook and the formatter/generator) so any future edit to an ON file fails until the author explicitly updates or waives the legacy counterpart; (3) a retirement horizon for lead_token_savings after which the frozen copies are deleted.",
+      "findingKey": "legacy-snapshot-drift-unguarded"
+    },
+    {
+      "id": "flag-description-effect-times-missing",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 191,
+      "title": "Lead ruling requires the two effect times in the flag description; R1 only asks for a registry entry, and the founder-facing render will say \"新 run 生效\"",
+      "detail": "The authoritative ruling (response e24f372e-22cc-441d-90df-f45eaf8c3e7f) says: \"Write the two effect times and the founder-facing 'what you lose when ON / how to tell it went wrong / how to turn it off' into the design doc AND the flag description.\" Contract item 1 / R1 only require \"project bool registry entry\" with name/default/toggle command; nothing binds description/whenOn/note content. Worse, feature-flag-render.ts:31 labels every source=project_config flag as \"新 run 生效\" and line 73 adds \"每个项目单独设,改后对新 run 生效。\" — wrong for the call-time half (immediate) and wrong for the launch-bound half (next Lead relaunch, not next run). Require concrete whenOn/note text covering both effect times plus the symptom list, and a render/report assertion that the founder-visible projection does not claim \"新 run 生效\" for this flag.",
+      "findingKey": "flag-description-effect-times-missing"
+    },
+    {
+      "id": "launch-reader-vs-store-policy-guard",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 191,
+      "title": "The launch reader is a second, undeclared flag resolver — store-policy.ts requires every readSite be delegated call_time through one named wrapper",
+      "detail": "packages/config/src/feature-flags/store-policy.ts:452-467 rejects any store-managed spec whose readSites are not all `pattern: delegated`, `timing: \"call_time\"`, resolverModule flag-store-runtime.ts, with exactly one resolver identity; drift-scan binds the resolver body to the flag name. R1 says lead-token-savings.ts \"opens canonical TEAMLEAD_DB_PATH read-only, uses the same codec/scope semantics\" — as written that re-implements readScopedBoolean's project→`*`→default precedence and codec parse in a second place that no drift guard covers, and that can diverge from the Bridge reader (they would then disagree about the same flag). Specify instead: the launch reader builds a minimal read-only `getFlagValueRow` adapter over better-sqlite3 (never StateStore.create, which would run migrations against the production DB from a Lead launcher) and calls the same `storeLeadTokenSavingsEnabled` wrapper, declares its readSite, and the plan records that ReadTiming has no launch-time value for project store flags so the declared `call_time` is a known registry limitation surfaced in the flag note.",
+      "findingKey": "launch-reader-vs-store-policy-guard"
+    },
+    {
+      "id": "off-bootstrap-under-active-autocompact-window",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 176,
+      "title": "Flipping OFF leaves the launch-bound compaction window in place while recovery payloads jump back to the full legacy size, breaking the §2 safety gate",
+      "detail": "§2 admits a native window only when W >= max(2F, F+200000), where F was measured with the bounded Bootstrap and slim rules, and the QA gate explicitly forbids \"压缩→Bootstrap→立即再压缩\". Under the two effect times, a Lead launched ON keeps W until relaunch while OFF immediately restores full recovery payloads (baseline: 5 recoveries totalling 345,808 chars on 9/14). That combination — higher post-compaction floor against a window sized for the slim floor — is reachable exactly when the founder is troubleshooting. No production Lead has autoCompactWindowTokens today, so this is not yet live, but the plan should either require the §2 gate to also measure F with savings OFF (F_off) and size W against it, or state that a Lead with an active compaction canary must be relaunched when the flag goes OFF, and add the corresponding QA row.",
+      "findingKey": "off-bootstrap-under-active-autocompact-window"
+    },
+    {
+      "id": "mixed-mode-and-missing-legacy-outcome-unspecified",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 194,
+      "title": "Two effect times create four mode combinations; the plan never states expected behavior for the mixed ones or for a missing legacy asset",
+      "detail": "R4 tests \"missing legacy assets\" and \"OFF→ON across launches\" without defining the expected outcome. Three cases need a written contract: (1) Lead launched OFF (legacy rules, which know nothing about the bounded preview, the /api/bootstrap/:leadId/questions pages, the patrol runbook, or audit-only stage routing) while the flag is ON at call time — the bounded payload must be fully self-describing (omittedCount + retrieval method) with zero dependence on the ON rules, and that must be asserted; (2) flag OFF but a legacy asset is missing/unreadable at launch — abort the launch, alert, or fall back to the ON bundle? Falling back is the suppression direction that R1 forbids, aborting takes the Lead down, so pick one explicitly; (3) launch read fails (missing dist/corrupt store) → OFF rules while Bridge call-time reads stay ON, i.e. permanent mixed mode until relaunch — say so in the founder limitations section.",
+      "findingKey": "mixed-mode-and-missing-legacy-outcome-unspecified"
+    },
+    {
+      "id": "bootstrap-generator-oracle-not-independent",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 183,
+      "title": "Only the historical renderer has an independent oracle; the OFF generator path would be validated against its own re-implementation",
+      "detail": "Contract item 2 requires comparing \"complete generated snapshots and payload bytes against independently captured pre-saving behavior\", but evidence/legacy-bootstrap-oracle.json states its own scope as \"Historical renderer bytes only; does not prove current generator, delivery, or runtime toggle behavior\", and the first red test (055b68d92, lead-token-savings-bootstrap.test.ts) only feeds a hand-written snapshot into formatBootstrap. The OFF generator differences are real and untested: legacy classified any `checkpoint != null` row as gate (including kind=report with a checkpoint) while ON adds `q.kind !== \"report\"`; legacy collected per project in `ORDER BY q.created_at ASC` without the global (created_at,id) re-sort; legacy had no pendingReports/kind/readAt/relayState fields. Specify how the generator oracle is captured independently — e.g. build and run f022a0a7e's generateBootstrap from a temp worktree against identical seeded CommDB/StateStore fixtures with frozen time, covering report-with-checkpoint, orphan from_agent, runner-stop-report and ref-backed content — before claiming byte-for-byte OFF restoration.",
+      "findingKey": "bootstrap-generator-oracle-not-independent"
+    },
+    {
+      "id": "on-window-audit-rows-not-replayed",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 178,
+      "title": "Events audited during the ON window are never delivered after OFF, and no explicit catch-up action is defined",
+      "detail": "Item 3 keeps existing audit-only rows classified as audit rows and the founder section says OFF restores \"subsequent\" delivery — accurate but easy to misread as full restoration of what was skipped. The original §3 promised \"必要单项补送需显式动作\" yet no such action exists. State plainly in the founder-facing limitations that stage/reestablished events suppressed during ON stay undelivered, and give the Lead a bounded procedure (audit read page filtered by time ≥ toggle timestamp) to review them after a kill-switch flip.",
+      "findingKey": "on-window-audit-rows-not-replayed"
+    },
+    {
+      "id": "stale-rollback-text-and-authority-attribution",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 174,
+      "title": "\"Supersedes the guidance below\" leaves contradicting rollback text above, and the founder requirement is paraphrased more strongly than the verbatim request",
+      "detail": "The superseded rollback guidance also sits above the new section (§2 line 90 \"仍保留生产回滚到原窗口\", §3 line 106 \"回滚停止赋audit_only … reader 兼容 commit 是回滚底线\"), and Part 1 still describes the pre-rework shape, so a reader can land on either contract. Also, workflow_rework_request records the founder verbatim as 「这个东西我觉得比较危险 需要加个feature flag 情况不对就关掉 主要我也不想因为想省token 把你真正该做的事情skip了」 — \"effective without release/restart\" is the Lead's goal restatement, later narrowed by the Lead ruling for launch-bound parts. Attribute it as the Lead's framing so the eventual founder report does not claim a founder-stated requirement was either met or overridden.",
+      "findingKey": "stale-rollback-text-and-authority-attribution"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "flag-description-effect-times-missing",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 191,
+      "title": "Lead ruling requires the two effect times in the flag description; R1 only asks for a registry entry, and the founder-facing render will say \"新 run 生效\"",
+      "detail": "The authoritative ruling (response e24f372e-22cc-441d-90df-f45eaf8c3e7f) says: \"Write the two effect times and the founder-facing 'what you lose when ON / how to tell it went wrong / how to turn it off' into the design doc AND the flag description.\" Contract item 1 / R1 only require \"project bool registry entry\" with name/default/toggle command; nothing binds description/whenOn/note content. Worse, feature-flag-render.ts:31 labels every source=project_config flag as \"新 run 生效\" and line 73 adds \"每个项目单独设,改后对新 run 生效。\" — wrong for the call-time half (immediate) and wrong for the launch-bound half (next Lead relaunch, not next run). Require concrete whenOn/note text covering both effect times plus the symptom list, and a render/report assertion that the founder-visible projection does not claim \"新 run 生效\" for this flag.",
+      "findingKey": "flag-description-effect-times-missing"
+    },
+    {
+      "id": "launch-reader-vs-store-policy-guard",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 191,
+      "title": "The launch reader is a second, undeclared flag resolver — store-policy.ts requires every readSite be delegated call_time through one named wrapper",
+      "detail": "packages/config/src/feature-flags/store-policy.ts:452-467 rejects any store-managed spec whose readSites are not all `pattern: delegated`, `timing: \"call_time\"`, resolverModule flag-store-runtime.ts, with exactly one resolver identity; drift-scan binds the resolver body to the flag name. R1 says lead-token-savings.ts \"opens canonical TEAMLEAD_DB_PATH read-only, uses the same codec/scope semantics\" — as written that re-implements readScopedBoolean's project→`*`→default precedence and codec parse in a second place that no drift guard covers, and that can diverge from the Bridge reader (they would then disagree about the same flag). Specify instead: the launch reader builds a minimal read-only `getFlagValueRow` adapter over better-sqlite3 (never StateStore.create, which would run migrations against the production DB from a Lead launcher) and calls the same `storeLeadTokenSavingsEnabled` wrapper, declares its readSite, and the plan records that ReadTiming has no launch-time value for project store flags so the declared `call_time` is a known registry limitation surfaced in the flag note.",
+      "findingKey": "launch-reader-vs-store-policy-guard"
+    },
+    {
+      "id": "off-bootstrap-under-active-autocompact-window",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 176,
+      "title": "Flipping OFF leaves the launch-bound compaction window in place while recovery payloads jump back to the full legacy size, breaking the §2 safety gate",
+      "detail": "§2 admits a native window only when W >= max(2F, F+200000), where F was measured with the bounded Bootstrap and slim rules, and the QA gate explicitly forbids \"压缩→Bootstrap→立即再压缩\". Under the two effect times, a Lead launched ON keeps W until relaunch while OFF immediately restores full recovery payloads (baseline: 5 recoveries totalling 345,808 chars on 9/14). That combination — higher post-compaction floor against a window sized for the slim floor — is reachable exactly when the founder is troubleshooting. No production Lead has autoCompactWindowTokens today, so this is not yet live, but the plan should either require the §2 gate to also measure F with savings OFF (F_off) and size W against it, or state that a Lead with an active compaction canary must be relaunched when the flag goes OFF, and add the corresponding QA row.",
+      "findingKey": "off-bootstrap-under-active-autocompact-window"
+    },
+    {
+      "id": "mixed-mode-and-missing-legacy-outcome-unspecified",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 194,
+      "title": "Two effect times create four mode combinations; the plan never states expected behavior for the mixed ones or for a missing legacy asset",
+      "detail": "R4 tests \"missing legacy assets\" and \"OFF→ON across launches\" without defining the expected outcome. Three cases need a written contract: (1) Lead launched OFF (legacy rules, which know nothing about the bounded preview, the /api/bootstrap/:leadId/questions pages, the patrol runbook, or audit-only stage routing) while the flag is ON at call time — the bounded payload must be fully self-describing (omittedCount + retrieval method) with zero dependence on the ON rules, and that must be asserted; (2) flag OFF but a legacy asset is missing/unreadable at launch — abort the launch, alert, or fall back to the ON bundle? Falling back is the suppression direction that R1 forbids, aborting takes the Lead down, so pick one explicitly; (3) launch read fails (missing dist/corrupt store) → OFF rules while Bridge call-time reads stay ON, i.e. permanent mixed mode until relaunch — say so in the founder limitations section.",
+      "findingKey": "mixed-mode-and-missing-legacy-outcome-unspecified"
+    },
+    {
+      "id": "bootstrap-generator-oracle-not-independent",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 183,
+      "title": "Only the historical renderer has an independent oracle; the OFF generator path would be validated against its own re-implementation",
+      "detail": "Contract item 2 requires comparing \"complete generated snapshots and payload bytes against independently captured pre-saving behavior\", but evidence/legacy-bootstrap-oracle.json states its own scope as \"Historical renderer bytes only; does not prove current generator, delivery, or runtime toggle behavior\", and the first red test (055b68d92, lead-token-savings-bootstrap.test.ts) only feeds a hand-written snapshot into formatBootstrap. The OFF generator differences are real and untested: legacy classified any `checkpoint != null` row as gate (including kind=report with a checkpoint) while ON adds `q.kind !== \"report\"`; legacy collected per project in `ORDER BY q.created_at ASC` without the global (created_at,id) re-sort; legacy had no pendingReports/kind/readAt/relayState fields. Specify how the generator oracle is captured independently — e.g. build and run f022a0a7e's generateBootstrap from a temp worktree against identical seeded CommDB/StateStore fixtures with frozen time, covering report-with-checkpoint, orphan from_agent, runner-stop-report and ref-backed content — before claiming byte-for-byte OFF restoration.",
+      "findingKey": "bootstrap-generator-oracle-not-independent"
+    },
+    {
+      "id": "on-window-audit-rows-not-replayed",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 178,
+      "title": "Events audited during the ON window are never delivered after OFF, and no explicit catch-up action is defined",
+      "detail": "Item 3 keeps existing audit-only rows classified as audit rows and the founder section says OFF restores \"subsequent\" delivery — accurate but easy to misread as full restoration of what was skipped. The original §3 promised \"必要单项补送需显式动作\" yet no such action exists. State plainly in the founder-facing limitations that stage/reestablished events suppressed during ON stay undelivered, and give the Lead a bounded procedure (audit read page filtered by time ≥ toggle timestamp) to review them after a kill-switch flip.",
+      "findingKey": "on-window-audit-rows-not-replayed"
+    },
+    {
+      "id": "stale-rollback-text-and-authority-attribution",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2567-lead-token-savings/plan.md",
+      "line": 174,
+      "title": "\"Supersedes the guidance below\" leaves contradicting rollback text above, and the founder requirement is paraphrased more strongly than the verbatim request",
+      "detail": "The superseded rollback guidance also sits above the new section (§2 line 90 \"仍保留生产回滚到原窗口\", §3 line 106 \"回滚停止赋audit_only … reader 兼容 commit 是回滚底线\"), and Part 1 still describes the pre-rework shape, so a reader can land on either contract. Also, workflow_rework_request records the founder verbatim as 「这个东西我觉得比较危险 需要加个feature flag 情况不对就关掉 主要我也不想因为想省token 把你真正该做的事情skip了」 — \"effective without release/restart\" is the Lead's goal restatement, later narrowed by the Lead ruling for launch-bound parts. Attribute it as the Lead's framing so the eventual founder report does not claim a founder-stated requirement was either met or overridden.",
+      "findingKey": "stale-rollback-text-and-authority-attribution"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

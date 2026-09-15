@@ -208,3 +208,55 @@ export class EventFilter {
 		);
 	}
 }
+
+/** Source trust is supplied by the validated producer, never by message content. */
+export function leadEventDeliveryDisposition(
+	eventType: string,
+	payload: Record<string, unknown>,
+	trustedBridge = false,
+): "model" | "audit_only" {
+	if (!trustedBridge) return "model";
+	if (
+		eventType !== "stage_changed" &&
+		eventType !== "session_monitoring_reestablished"
+	)
+		return "model";
+	if (
+		payload.status !== undefined &&
+		payload.status !== null &&
+		payload.status !== "running"
+	)
+		return "model";
+	for (const key of [
+		"last_error",
+		"error",
+		"failure_kind",
+		"failureKind",
+		"blocked",
+		"needs_action",
+		"requires_action",
+		"action_required",
+		"checkpoint",
+		"decision_route",
+		"review",
+		"ship",
+		"messages",
+		"founder_message",
+	]) {
+		const value = payload[key];
+		if (
+			value !== undefined &&
+			value !== null &&
+			value !== false &&
+			value !== ""
+		)
+			return "model";
+	}
+	if (eventType === "session_monitoring_reestablished") return "audit_only";
+	return typeof payload.stage === "string" &&
+		["onboard", "brainstorm", "research", "plan", "implement", "test"].includes(
+			payload.stage,
+		)
+		? "audit_only"
+		: "model";
+}

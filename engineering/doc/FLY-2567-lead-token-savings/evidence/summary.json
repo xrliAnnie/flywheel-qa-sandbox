@@ -1,0 +1,700 @@
+{
+  "source_file": "c0058bba-296f-4832-ac37-38b49a2cd30b.jsonl",
+  "prefix_bytes": 87544743,
+  "prefix_sha256": "8c7120badabebe8c1a6a77e08f241b0bab27319d6d06d3e2ce0f46a682457de8",
+  "since_utc": "2026-09-12",
+  "until_utc_inclusive": "2026-09-14",
+  "parse_errors": 0,
+  "usage_conflicts": 0,
+  "raw_by_day": {
+    "2026-09-12": {
+      "input_tokens": 34952,
+      "cache_creation_input_tokens": 13589544,
+      "cache_read_input_tokens": 839697801,
+      "output_tokens": 6168147,
+      "rows": 1431
+    },
+    "2026-09-13": {
+      "input_tokens": 47848,
+      "cache_creation_input_tokens": 10074822,
+      "cache_read_input_tokens": 1308540917,
+      "output_tokens": 3494413,
+      "rows": 2117
+    },
+    "2026-09-14": {
+      "input_tokens": 143374,
+      "cache_creation_input_tokens": 41373447,
+      "cache_read_input_tokens": 3974850298,
+      "output_tokens": 11274047,
+      "rows": 6668
+    }
+  },
+  "unique_by_day": {
+    "2026-09-12": {
+      "input_tokens": 7714,
+      "cache_creation_input_tokens": 2178336,
+      "cache_read_input_tokens": 170239545,
+      "output_tokens": 395024,
+      "requests": 418
+    },
+    "2026-09-13": {
+      "input_tokens": 19636,
+      "cache_creation_input_tokens": 3014948,
+      "cache_read_input_tokens": 496136391,
+      "output_tokens": 780764,
+      "requests": 812
+    },
+    "2026-09-14": {
+      "input_tokens": 60716,
+      "cache_creation_input_tokens": 9480456,
+      "cache_read_input_tokens": 1553141091,
+      "output_tokens": 2045664,
+      "requests": 2663
+    }
+  },
+  "model_requests_by_day": {
+    "2026-09-12": {
+      "input_tokens": 7714,
+      "cache_creation_input_tokens": 2178336,
+      "cache_read_input_tokens": 170239545,
+      "output_tokens": 395024,
+      "requests": 308
+    },
+    "2026-09-13": {
+      "input_tokens": 19636,
+      "cache_creation_input_tokens": 3014948,
+      "cache_read_input_tokens": 496136391,
+      "output_tokens": 780764,
+      "requests": 810
+    },
+    "2026-09-14": {
+      "input_tokens": 60716,
+      "cache_creation_input_tokens": 9480456,
+      "cache_read_input_tokens": 1553141091,
+      "output_tokens": 2045664,
+      "requests": 2662
+    }
+  },
+  "synthetic_by_day": {
+    "2026-09-12": 110,
+    "2026-09-13": 2,
+    "2026-09-14": 1
+  },
+  "daily": {
+    "2026-09-12": {
+      "source_usage": {
+        "compact_summary": {
+          "input_tokens": 966,
+          "cache_creation_input_tokens": 1049826,
+          "cache_read_input_tokens": 19851524,
+          "output_tokens": 116192,
+          "requests": 33
+        },
+        "mixed_without_founder": {
+          "input_tokens": 808,
+          "cache_creation_input_tokens": 115040,
+          "cache_read_input_tokens": 18413836,
+          "output_tokens": 35915,
+          "requests": 34
+        },
+        "stage_changed": {
+          "input_tokens": 108,
+          "cache_creation_input_tokens": 2993,
+          "cache_read_input_tokens": 3168191,
+          "output_tokens": 1475,
+          "requests": 6
+        },
+        "runner_ask": {
+          "input_tokens": 1664,
+          "cache_creation_input_tokens": 98188,
+          "cache_read_input_tokens": 30901373,
+          "output_tokens": 44216,
+          "requests": 66
+        },
+        "summary_due": {
+          "input_tokens": 68,
+          "cache_creation_input_tokens": 4206,
+          "cache_read_input_tokens": 1072991,
+          "output_tokens": 2478,
+          "requests": 3
+        },
+        "other_mailbox": {
+          "input_tokens": 2566,
+          "cache_creation_input_tokens": 256938,
+          "cache_read_input_tokens": 53117270,
+          "output_tokens": 137902,
+          "requests": 96
+        },
+        "runner_report": {
+          "input_tokens": 316,
+          "cache_creation_input_tokens": 13278,
+          "cache_read_input_tokens": 9937140,
+          "output_tokens": 7443,
+          "requests": 16
+        },
+        "gate_question": {
+          "input_tokens": 140,
+          "cache_creation_input_tokens": 6659,
+          "cache_read_input_tokens": 4242563,
+          "output_tokens": 3521,
+          "requests": 7
+        },
+        "other_input": {
+          "input_tokens": 240,
+          "cache_creation_input_tokens": 28691,
+          "cache_read_input_tokens": 8272671,
+          "output_tokens": 14666,
+          "requests": 12
+        },
+        "founder": {
+          "input_tokens": 394,
+          "cache_creation_input_tokens": 580216,
+          "cache_read_input_tokens": 7823716,
+          "output_tokens": 17653,
+          "requests": 15
+        },
+        "mixed_with_founder": {
+          "input_tokens": 164,
+          "cache_creation_input_tokens": 13219,
+          "cache_read_input_tokens": 3494580,
+          "output_tokens": 7391,
+          "requests": 6
+        },
+        "task_notification": {
+          "input_tokens": 244,
+          "cache_creation_input_tokens": 7851,
+          "cache_read_input_tokens": 8657865,
+          "output_tokens": 5798,
+          "requests": 12
+        },
+        "session_started": {
+          "input_tokens": 36,
+          "cache_creation_input_tokens": 1231,
+          "cache_read_input_tokens": 1285825,
+          "output_tokens": 374,
+          "requests": 2
+        }
+      },
+      "tool_usage": {
+        "other_tools": {
+          "input_tokens": 4546,
+          "cache_creation_input_tokens": 1851776,
+          "cache_read_input_tokens": 89051634,
+          "output_tokens": 235892,
+          "requests": 167
+        },
+        "ack_mixed": {
+          "input_tokens": 696,
+          "cache_creation_input_tokens": 164348,
+          "cache_read_input_tokens": 27335565,
+          "output_tokens": 124435,
+          "requests": 48
+        },
+        "no_tool": {
+          "input_tokens": 2244,
+          "cache_creation_input_tokens": 71952,
+          "cache_read_input_tokens": 41118181,
+          "output_tokens": 30886,
+          "requests": 71
+        },
+        "ack_only": {
+          "input_tokens": 228,
+          "cache_creation_input_tokens": 90260,
+          "cache_read_input_tokens": 12734165,
+          "output_tokens": 3811,
+          "requests": 22
+        }
+      },
+      "followups_usage": {
+        "2026-09-12": {
+          "input_tokens": 618,
+          "cache_creation_input_tokens": 59291,
+          "cache_read_input_tokens": 13398991,
+          "output_tokens": 48938,
+          "requests": 22
+        }
+      },
+      "inputs_by_kind": {
+        "summary_due": 13,
+        "session_started": 5,
+        "stage_changed": 11,
+        "runner_report": 19,
+        "runner_ask": 37,
+        "mixed_without_founder": 13,
+        "gate_question": 8,
+        "session_failed": 3,
+        "other_mailbox": 44,
+        "workflow_claim_recorded": 3,
+        "other_input": 13,
+        "founder": 7,
+        "compact_summary": 2,
+        "mixed_with_founder": 1,
+        "task_notification": 5
+      },
+      "event_occurrences": {
+        "summary_due": 13,
+        "session_started": 6,
+        "stage_changed": 16,
+        "runner_question": 68,
+        "workflow_claim_recorded": 7,
+        "gate_question": 13,
+        "session_failed": 3
+      },
+      "batch_occurrences": 201,
+      "unique_batches": 201,
+      "repeated_event_occurrences": 49,
+      "tool_calls": {
+        "Bash": 314,
+        "mcp__linear-api__save_issue": 7,
+        "mcp__plugin_discord_discord__reply": 27,
+        "mcp__flywheel-inbox__flywheel_inbox_ack_batch": 480,
+        "mcp__linear-api__save_comment": 3,
+        "mcp__flywheel-terminal__close_runner": 1,
+        "ToolSearch": 4,
+        "mcp__claude-in-chrome__tabs_context_mcp": 2,
+        "mcp__claude-in-chrome__navigate": 2,
+        "mcp__claude-in-chrome__computer": 7,
+        "mcp__plugin_discord_discord__fetch_messages": 13,
+        "mcp__linear-api__list_issues": 1,
+        "mcp__linear-api__get_issue": 5
+      }
+    },
+    "2026-09-13": {
+      "source_usage": {
+        "summary_due": {
+          "input_tokens": 304,
+          "cache_creation_input_tokens": 18196,
+          "cache_read_input_tokens": 8841192,
+          "output_tokens": 12777,
+          "requests": 13
+        },
+        "other_mailbox": {
+          "input_tokens": 5268,
+          "cache_creation_input_tokens": 694520,
+          "cache_read_input_tokens": 137758681,
+          "output_tokens": 324146,
+          "requests": 212
+        },
+        "compact_summary": {
+          "input_tokens": 2114,
+          "cache_creation_input_tokens": 762679,
+          "cache_read_input_tokens": 12127957,
+          "output_tokens": 55057,
+          "requests": 67
+        },
+        "mixed_without_founder": {
+          "input_tokens": 3632,
+          "cache_creation_input_tokens": 1052312,
+          "cache_read_input_tokens": 97134579,
+          "output_tokens": 159215,
+          "requests": 155
+        },
+        "other_input": {
+          "input_tokens": 1464,
+          "cache_creation_input_tokens": 66090,
+          "cache_read_input_tokens": 33034644,
+          "output_tokens": 45689,
+          "requests": 59
+        },
+        "founder": {
+          "input_tokens": 2082,
+          "cache_creation_input_tokens": 144783,
+          "cache_read_input_tokens": 52596561,
+          "output_tokens": 70048,
+          "requests": 82
+        },
+        "bootstrap": {
+          "input_tokens": 4,
+          "cache_creation_input_tokens": 38792,
+          "cache_read_input_tokens": 220605,
+          "output_tokens": 590,
+          "requests": 1
+        },
+        "mixed_with_founder": {
+          "input_tokens": 848,
+          "cache_creation_input_tokens": 87503,
+          "cache_read_input_tokens": 13294446,
+          "output_tokens": 34443,
+          "requests": 31
+        },
+        "self_schedule": {
+          "input_tokens": 168,
+          "cache_creation_input_tokens": 5763,
+          "cache_read_input_tokens": 3067932,
+          "output_tokens": 3239,
+          "requests": 7
+        },
+        "runner_ask": {
+          "input_tokens": 2028,
+          "cache_creation_input_tokens": 96312,
+          "cache_read_input_tokens": 72248653,
+          "output_tokens": 49495,
+          "requests": 95
+        },
+        "task_notification": {
+          "input_tokens": 340,
+          "cache_creation_input_tokens": 12395,
+          "cache_read_input_tokens": 11499374,
+          "output_tokens": 8558,
+          "requests": 15
+        },
+        "session_started": {
+          "input_tokens": 36,
+          "cache_creation_input_tokens": 1245,
+          "cache_read_input_tokens": 792441,
+          "output_tokens": 692,
+          "requests": 2
+        },
+        "stage_changed": {
+          "input_tokens": 540,
+          "cache_creation_input_tokens": 11608,
+          "cache_read_input_tokens": 19871799,
+          "output_tokens": 4694,
+          "requests": 30
+        },
+        "gate_question": {
+          "input_tokens": 172,
+          "cache_creation_input_tokens": 6235,
+          "cache_read_input_tokens": 6480001,
+          "output_tokens": 4003,
+          "requests": 8
+        },
+        "runner_report": {
+          "input_tokens": 568,
+          "cache_creation_input_tokens": 15036,
+          "cache_read_input_tokens": 24647052,
+          "output_tokens": 7086,
+          "requests": 30
+        },
+        "workflow_claim_recorded": {
+          "input_tokens": 68,
+          "cache_creation_input_tokens": 1479,
+          "cache_read_input_tokens": 2520474,
+          "output_tokens": 1032,
+          "requests": 3
+        }
+      },
+      "tool_usage": {
+        "ack_mixed": {
+          "input_tokens": 1094,
+          "cache_creation_input_tokens": 726422,
+          "cache_read_input_tokens": 88143999,
+          "output_tokens": 174887,
+          "requests": 127
+        },
+        "other_tools": {
+          "input_tokens": 11838,
+          "cache_creation_input_tokens": 1791037,
+          "cache_read_input_tokens": 223410327,
+          "output_tokens": 534954,
+          "requests": 419
+        },
+        "no_tool": {
+          "input_tokens": 6288,
+          "cache_creation_input_tokens": 308266,
+          "cache_read_input_tokens": 140848083,
+          "output_tokens": 62532,
+          "requests": 202
+        },
+        "ack_only": {
+          "input_tokens": 416,
+          "cache_creation_input_tokens": 189223,
+          "cache_read_input_tokens": 43733982,
+          "output_tokens": 8391,
+          "requests": 62
+        }
+      },
+      "followups_usage": {
+        "2026-09-13": {
+          "input_tokens": 4236,
+          "cache_creation_input_tokens": 777866,
+          "cache_read_input_tokens": 105777523,
+          "output_tokens": 256604,
+          "requests": 164
+        }
+      },
+      "inputs_by_kind": {
+        "summary_due": 4,
+        "other_mailbox": 52,
+        "compact_summary": 3,
+        "mixed_without_founder": 43,
+        "other_input": 16,
+        "founder": 14,
+        "bootstrap": 1,
+        "mixed_with_founder": 3,
+        "self_schedule": 2,
+        "runner_ask": 34,
+        "task_notification": 5,
+        "session_started": 1,
+        "stage_changed": 15,
+        "gate_question": 3,
+        "runner_report": 14,
+        "workflow_claim_recorded": 1
+      },
+      "event_occurrences": {
+        "summary_due": 4,
+        "session_monitoring_lost": 16,
+        "session_monitoring_reestablished": 20,
+        "session_started": 27,
+        "runner_question": 210,
+        "stage_changed": 133,
+        "gate_question": 34,
+        "workflow_claim_recorded": 8,
+        "workflow_replacement_eligibility": 2
+      },
+      "batch_occurrences": 533,
+      "unique_batches": 523,
+      "repeated_event_occurrences": 19,
+      "tool_calls": {
+        "Bash": 549,
+        "mcp__flywheel-inbox__flywheel_inbox_ack_batch": 526,
+        "mcp__plugin_discord_discord__reply": 63,
+        "mcp__plugin_discord_discord__fetch_messages": 3,
+        "mcp__linear-api__save_comment": 37,
+        "ToolSearch": 11,
+        "TaskStop": 1,
+        "mcp__linear-api__get_issue": 43,
+        "mcp__linear-api__save_issue": 30,
+        "CronList": 2,
+        "CronCreate": 14,
+        "mcp__linear-api__list_issues": 9,
+        "mcp__linear-api__list_comments": 1,
+        "mcp__plugin_discord_discord__download_attachment": 3,
+        "Read": 4,
+        "mcp__claude-in-chrome__tabs_context_mcp": 1,
+        "mcp__claude-in-chrome__navigate": 3,
+        "mcp__claude-in-chrome__get_page_text": 3,
+        "mcp__claude-in-chrome__tabs_close_mcp": 3,
+        "mcp__claude-in-chrome__computer": 14,
+        "mcp__claude-in-chrome__browser_batch": 2,
+        "mcp__claude-in-chrome__find": 1,
+        "mcp__claude-in-chrome__read_page": 2,
+        "mcp__claude-in-chrome__form_input": 1,
+        "mcp__claude-in-chrome__javascript_tool": 1,
+        "Monitor": 3
+      }
+    },
+    "2026-09-14": {
+      "source_usage": {
+        "runner_ask": {
+          "input_tokens": 18510,
+          "cache_creation_input_tokens": 2457105,
+          "cache_read_input_tokens": 503649810,
+          "output_tokens": 403788,
+          "requests": 891
+        },
+        "mixed_without_founder": {
+          "input_tokens": 11652,
+          "cache_creation_input_tokens": 2381527,
+          "cache_read_input_tokens": 312712692,
+          "output_tokens": 464790,
+          "requests": 514
+        },
+        "summary_due": {
+          "input_tokens": 236,
+          "cache_creation_input_tokens": 11956,
+          "cache_read_input_tokens": 4212985,
+          "output_tokens": 5313,
+          "requests": 10
+        },
+        "self_schedule": {
+          "input_tokens": 1136,
+          "cache_creation_input_tokens": 43737,
+          "cache_read_input_tokens": 29307942,
+          "output_tokens": 27534,
+          "requests": 53
+        },
+        "stage_changed": {
+          "input_tokens": 3336,
+          "cache_creation_input_tokens": 106872,
+          "cache_read_input_tokens": 99454118,
+          "output_tokens": 49515,
+          "requests": 169
+        },
+        "session_started": {
+          "input_tokens": 736,
+          "cache_creation_input_tokens": 24890,
+          "cache_read_input_tokens": 22803441,
+          "output_tokens": 15155,
+          "requests": 37
+        },
+        "workflow_claim_recorded": {
+          "input_tokens": 72,
+          "cache_creation_input_tokens": 1534,
+          "cache_read_input_tokens": 2516553,
+          "output_tokens": 682,
+          "requests": 4
+        },
+        "runner_report": {
+          "input_tokens": 3188,
+          "cache_creation_input_tokens": 91405,
+          "cache_read_input_tokens": 98617053,
+          "output_tokens": 38770,
+          "requests": 167
+        },
+        "other_mailbox": {
+          "input_tokens": 5118,
+          "cache_creation_input_tokens": 636557,
+          "cache_read_input_tokens": 111672236,
+          "output_tokens": 273508,
+          "requests": 195
+        },
+        "gate_question": {
+          "input_tokens": 1968,
+          "cache_creation_input_tokens": 98327,
+          "cache_read_input_tokens": 50445550,
+          "output_tokens": 59380,
+          "requests": 86
+        },
+        "founder": {
+          "input_tokens": 3328,
+          "cache_creation_input_tokens": 963323,
+          "cache_read_input_tokens": 89964744,
+          "output_tokens": 147036,
+          "requests": 121
+        },
+        "mixed_with_founder": {
+          "input_tokens": 5396,
+          "cache_creation_input_tokens": 1578830,
+          "cache_read_input_tokens": 120657753,
+          "output_tokens": 363098,
+          "requests": 198
+        },
+        "workflow_replacement_eligibility": {
+          "input_tokens": 824,
+          "cache_creation_input_tokens": 58957,
+          "cache_read_input_tokens": 23392819,
+          "output_tokens": 32301,
+          "requests": 31
+        },
+        "task_notification": {
+          "input_tokens": 1068,
+          "cache_creation_input_tokens": 43066,
+          "cache_read_input_tokens": 28009442,
+          "output_tokens": 24955,
+          "requests": 43
+        },
+        "compact_summary": {
+          "input_tokens": 2466,
+          "cache_creation_input_tokens": 835911,
+          "cache_read_input_tokens": 15401063,
+          "output_tokens": 82535,
+          "requests": 78
+        },
+        "bootstrap": {
+          "input_tokens": 36,
+          "cache_creation_input_tokens": 45389,
+          "cache_read_input_tokens": 386769,
+          "output_tokens": 1007,
+          "requests": 2
+        },
+        "other_input": {
+          "input_tokens": 1646,
+          "cache_creation_input_tokens": 101070,
+          "cache_read_input_tokens": 39936121,
+          "output_tokens": 56297,
+          "requests": 63
+        }
+      },
+      "tool_usage": {
+        "other_tools": {
+          "input_tokens": 29160,
+          "cache_creation_input_tokens": 5910246,
+          "cache_read_input_tokens": 564498669,
+          "output_tokens": 1167847,
+          "requests": 1008
+        },
+        "no_tool": {
+          "input_tokens": 26954,
+          "cache_creation_input_tokens": 664166,
+          "cache_read_input_tokens": 506080666,
+          "output_tokens": 289624,
+          "requests": 846
+        },
+        "ack_only": {
+          "input_tokens": 1984,
+          "cache_creation_input_tokens": 405700,
+          "cache_read_input_tokens": 241327898,
+          "output_tokens": 51394,
+          "requests": 412
+        },
+        "ack_mixed": {
+          "input_tokens": 2618,
+          "cache_creation_input_tokens": 2500344,
+          "cache_read_input_tokens": 241233858,
+          "output_tokens": 536799,
+          "requests": 396
+        }
+      },
+      "followups_usage": {
+        "2026-09-14": {
+          "input_tokens": 10170,
+          "cache_creation_input_tokens": 2551981,
+          "cache_read_input_tokens": 282716461,
+          "output_tokens": 656307,
+          "requests": 452
+        }
+      },
+      "inputs_by_kind": {
+        "mixed_without_founder": 167,
+        "summary_due": 3,
+        "runner_ask": 355,
+        "self_schedule": 20,
+        "stage_changed": 74,
+        "session_started": 16,
+        "workflow_claim_recorded": 2,
+        "runner_report": 77,
+        "other_mailbox": 39,
+        "gate_question": 28,
+        "founder": 13,
+        "mixed_with_founder": 25,
+        "workflow_replacement_eligibility": 6,
+        "task_notification": 11,
+        "compact_summary": 6,
+        "bootstrap": 1,
+        "other_input": 13
+      },
+      "event_occurrences": {
+        "runner_question": 1057,
+        "summary_due": 4,
+        "stage_changed": 423,
+        "gate_question": 154,
+        "session_started": 119,
+        "workflow_claim_recorded": 29,
+        "action_executed": 23,
+        "workflow_replacement_eligibility": 47,
+        "session_monitoring_reestablished": 18,
+        "session_monitoring_lost": 1
+      },
+      "batch_occurrences": 2002,
+      "unique_batches": 2002,
+      "repeated_event_occurrences": 10,
+      "tool_calls": {
+        "Bash": 1519,
+        "mcp__flywheel-inbox__flywheel_inbox_ack_batch": 2007,
+        "ToolSearch": 35,
+        "mcp__plugin_discord_discord__reply": 101,
+        "CronCreate": 24,
+        "Monitor": 1,
+        "mcp__plugin_discord_discord__download_attachment": 4,
+        "Read": 7,
+        "mcp__linear-api__get_issue": 46,
+        "mcp__linear-api__list_issues": 27,
+        "Write": 11,
+        "mcp__linear-api__save_comment": 32,
+        "mcp__linear-api__save_issue": 62,
+        "TaskStop": 3,
+        "TaskOutput": 1,
+        "mcp__linear-api__list_comments": 11,
+        "CronList": 2,
+        "mcp__plugin_discord_discord__fetch_messages": 4,
+        "mcp__flywheel-terminal__runner_terminal_input": 2,
+        "mcp__flywheel-terminal__runner_terminal_capture": 2,
+        "mcp__claude-in-chrome__tabs_context_mcp": 1,
+        "mcp__plugin_discord_discord__edit_message": 2,
+        "mcp__flywheel-terminal__close_runner": 14,
+        "CronDelete": 1
+      }
+    }
+  }
+}

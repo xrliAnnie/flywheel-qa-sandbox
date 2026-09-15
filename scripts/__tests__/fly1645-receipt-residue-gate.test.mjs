@@ -153,6 +153,12 @@ test("allows the audited Codex question consumer but still rejects unrelated rel
 		join(mainRoot, consumer),
 		'if (question.relay_state === "terminal_disposed") refuse();\n',
 	);
+	const bootstrap = "packages/teamlead/src/bridge/bootstrap-generator.ts";
+	mkdirSync(dirname(join(mainRoot, bootstrap)), { recursive: true });
+	writeFileSync(
+		join(mainRoot, bootstrap),
+		"const state = question.relay_state;\n",
+	);
 	assert.equal(scanReceiptResidue({ mainRoot, pluginRoot, config }).ok, true);
 	writeFileSync(join(mainRoot, other), "const state = delivery.relay_state;\n");
 	const outside = scanReceiptResidue({ mainRoot, pluginRoot, config });

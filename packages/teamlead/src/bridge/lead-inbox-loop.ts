@@ -246,6 +246,50 @@ export class LeadInboxLoop {
 			) {
 				throw new Error("owner lease unavailable");
 			}
+			let protocolFailed = false;
+			let protocolError: unknown;
+			try {
+				for (;;) {
+					const now = this.isoNow();
+					const row = this.opts.queue.claimBridgeProtocol({
+						fromAgent: this.opts.leadId,
+						ownerEpoch: this.opts.ownerEpoch,
+						now,
+						claimTtlMs: this.claimTtlMs,
+					});
+					if (!row) break;
+					if (
+						!this.opts.queue.isCurrentOwner(this.opts.ownerEpoch, this.isoNow())
+					) {
+						throw new Error("owner fence lost before protocol effect");
+					}
+					try {
+						await this.opts.handleProtocol(row);
+						if (!this.opts.queue.ack(row.id, this.isoNow()))
+							throw new Error("owner fence lost after protocol effect");
+						protocolConsumed++;
+					} catch (error) {
+						const failure = this.opts.queue.recordBridgeDeliveryFailure({
+							id: row.id,
+							ownerEpoch: this.opts.ownerEpoch,
+							error: describeError(error),
+							now: this.isoNow(),
+							nextRetryAt: this.nextRetryAt(row.retry_count),
+							maxAttempts: this.maxProtocolAttempts,
+						});
+						const terminal = failure.deadLettered;
+						if (terminal) {
+							await this.opts.onProtocolQuarantine?.(row, error as Error);
+							protocolConsumed++;
+							continue;
+						}
+						throw error;
+					}
+				}
+			} catch (error) {
+				protocolFailed = true;
+				protocolError = error;
+			}
 			await this.opts.admit?.();
 			const reconciliation = this.opts.queue.reconcileExpiredLeases({
 				ownerEpoch: this.opts.ownerEpoch,
@@ -278,43 +322,7 @@ export class LeadInboxLoop {
 				maxRows: 100,
 			});
 
-			for (;;) {
-				const now = this.isoNow();
-				const row = this.opts.queue.claimBridgeProtocol({
-					fromAgent: this.opts.leadId,
-					ownerEpoch: this.opts.ownerEpoch,
-					now,
-					claimTtlMs: this.claimTtlMs,
-				});
-				if (!row) break;
-				if (
-					!this.opts.queue.isCurrentOwner(this.opts.ownerEpoch, this.isoNow())
-				) {
-					throw new Error("owner fence lost before protocol effect");
-				}
-				try {
-					await this.opts.handleProtocol(row);
-					if (!this.opts.queue.ack(row.id, this.isoNow()))
-						throw new Error("owner fence lost after protocol effect");
-					protocolConsumed++;
-				} catch (error) {
-					const failure = this.opts.queue.recordBridgeDeliveryFailure({
-						id: row.id,
-						ownerEpoch: this.opts.ownerEpoch,
-						error: describeError(error),
-						now: this.isoNow(),
-						nextRetryAt: this.nextRetryAt(row.retry_count),
-						maxAttempts: this.maxProtocolAttempts,
-					});
-					const terminal = failure.deadLettered;
-					if (terminal) {
-						await this.opts.onProtocolQuarantine?.(row, error as Error);
-						protocolConsumed++;
-						continue;
-					}
-					throw error;
-				}
-			}
+			if (protocolFailed) throw protocolError;
 
 			const candidateBatchId = this.batchIdFactory();
 			const claimed = this.opts.queue.claimLeadBatchQueue({

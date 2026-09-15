@@ -403,6 +403,10 @@ if [ -z "$PROJECT_NAME" ]; then
   " "$PROJECT_DIR_LOGICAL" 2>/dev/null)
   PROJECT_NAME="${PROJECT_NAME:-$(basename "$PROJECT_DIR_LOGICAL")}"
 fi
+
+# Freeze one project flag read for this launch (rules and native window).
+lead_token_savings_read_launch "$PROJECT_NAME"
+
 export PROJECT_NAME
 
 # FLY-173: resolve THIS project's core channel (generalChannel) for the Discord
@@ -2245,6 +2249,42 @@ _launch_claude() {
     done < <(list_required_envs "$MCP_CONFIG_FILE")
     if [ "$_added_count" -gt 0 ]; then
       log "MCP env propagation: forwarded ${_added_count} required env var(s) to child"
+    fi
+  fi
+
+  # FLY-2567: optional optimization from the SAME frozen registry decision.
+  # Missing/stale evidence or an unsupported CLI leaves model launch intact.
+  if [ "$_LEAD_TOKEN_SAVINGS_LAUNCH" = 1 ] && jq -e '.decision.autoCompactWindowTokens != null' >/dev/null 2>&1 <<<"$_fly1496_result"; then
+    local _fly2567_override=false _fly2567_arg _fly2567_probe _fly2567_window
+    if [ -n "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}${DISABLE_AUTO_COMPACT:-}" ]; then
+      _fly2567_override=true
+    fi
+    for _fly2567_arg in "${launch_args[@]}"; do
+      case "$_fly2567_arg" in --autocompact|--autocompact=*) _fly2567_override=true ;; esac
+    done
+    _fly2567_probe="$(FLY2567_DECISION_JSON="$_fly1496_result" \
+      FLY2567_PROBE_ENTRY="${FLYWHEEL_ROOT}/packages/teamlead/dist/lead-auto-compact.js" \
+      FLY2567_BINARY="$(command -v claude || true)" \
+      FLY2567_RULES_SHA="${RULES_BUNDLE_SHA:-}" FLY2567_MCP="${MCP_CONFIG_FILE:-}" \
+      FLY2567_OVERRIDE="$_fly2567_override" \
+      node --input-type=module - "${launch_args[@]}" <<'NODE'
+try {
+  const {probeLeadAutoCompact} = await import(process.env.FLY2567_PROBE_ENTRY);
+  const {decision} = JSON.parse(process.env.FLY2567_DECISION_JSON);
+  process.stdout.write(JSON.stringify(probeLeadAutoCompact(decision, {
+    binary: process.env.FLY2567_BINARY, rulesBodySha: process.env.FLY2567_RULES_SHA,
+    mcpConfigPath: process.env.FLY2567_MCP, launchArgs: process.argv.slice(2),
+    environmentOverride: process.env.FLY2567_OVERRIDE === "true",
+  })));
+} catch { process.stdout.write(JSON.stringify({windowTokens:null,reason:"probe_unavailable"})); }
+NODE
+    )" || _fly2567_probe='{"windowTokens":null,"reason":"probe_unavailable"}'
+    _fly2567_window=$(jq -r '.windowTokens // empty' <<<"$_fly2567_probe" 2>/dev/null) || _fly2567_window=""
+    if [ -n "$_fly2567_window" ]; then
+      launch_args+=(--autocompact "$_fly2567_window")
+      log "autoCompact: native window ${_fly2567_window} (matching measured baseline)"
+    else
+      log "autoCompact canary_not_applied: $(jq -r '.reason // "probe_unavailable"' <<<"$_fly2567_probe" 2>/dev/null)"
     fi
   fi
 

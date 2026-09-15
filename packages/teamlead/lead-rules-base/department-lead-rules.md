@@ -8,124 +8,19 @@
 
 ## 🔒 Reply Discipline — Read This First (FLY-162)
 
-This is a **mechanical algorithm**, not a judgment call. You do NOT classify the message by topic, intent, tone, or "kind of question". You count issue tokens and execute. Semantic interpretation of the message body is **explicitly forbidden** as an input to the routing decision.
+For every inbound message, extract distinct issue tokens with `\b[A-Z]{2,}-\d+\b`.
+With N=0 use `discord.reply(chat_id=$CHAT_CHANNEL)`; with N≥1 make exactly N
+`POST /api/chat-threads/send` calls, one per issue with content split per issue.
+Topic, intent and tone never change routing. Do not pre-query sessions or threads:
+`/send` creates threads. A comparison of two issues requires two calls.
 
-### THE ALGORITHM (run this first, every inbound, no exceptions)
+On 400 fix parameters; on 403 fix identity/project. Only 404, 503, or 502 after
+one retry permits fallback for the failed issue to `$CHAT_CHANNEL`, prefixed with
+its issue identifier. For partial 502 retry only `remainingText`, never previously
+sent chunks; other issues' successful calls stand. N=0 chat needs no invented
+issue prefix. The canonical payload, status map and reverse lookup are in
+§Issue-Bound Reply below.
 
-```
-STEP 1. Extract all Linear issue tokens from the inbound message text.
-        Regex: \b[A-Z]{2,}-\d+\b   (e.g. FLY-159, GEO-374, FLY-161)
-        Let TOKENS = list of distinct matches in the inbound text.
-        Let N = |TOKENS|.
-
-STEP 2. Route by N:
-        if N == 0:
-            → mcp__plugin_discord_discord__reply(chat_id=$CHAT_CHANNEL, text=...)
-        if N == 1:
-            → POST /api/chat-threads/send  with issueIdentifier=TOKENS[0]
-        if N >= 2:
-            → POST /api/chat-threads/send  N separate times,
-              once per token in TOKENS, with response content split per issue.
-              You issue exactly N HTTP calls. Not 1. Not "1 with combined body".
-              Exactly N.
-
-STEP 3. Only on `/send` error (HTTP 4xx/5xx) per the status code map below:
-        → fall back to discord.reply($CHAT_CHANNEL) for that ONE token only,
-          prefixing the text with `[FLY-XXX]`.
-        Do NOT bundle other tokens into the fallback.
-```
-
-**Topic semantics is NOT an input to this algorithm.** It does not matter whether the inbound is a status question, a prioritization comparison, a "which one first" question, a "meta" question, a hypothetical, a vent, a celebration, or a design decision. If `N >= 1`, you call `/send` `N` times. Period.
-
-**Routine table — derived FROM the algorithm above (for reference only; the algorithm is authoritative):**
-
-| N (distinct issue tokens in inbound) | What you do |
-|--------------------------------------|-------------|
-| 0 | `discord.reply(chat_id=$CHAT_CHANNEL)` — pure chat, greeting, cross-Lead routing |
-| 1 | `POST /api/chat-threads/send` with that one `issueIdentifier` |
-| ≥ 2 | **`N` separate** `POST /api/chat-threads/send` calls, one per token, content split per issue. Not 1 call. Not 1 call with combined body. |
-
-**Negative prompt (do NOT do any of these):**
-- "This is a comparison question, so it belongs at top-level." → WRONG. Comparisons across N issues are N `/send` calls.
-- "This is a meta / prioritization question, so per-issue threads don't apply." → WRONG. Prioritization is issue-bound; route to each issue's thread.
-- "Annie probably wants to see the whole answer in one place." → WRONG. Annie wants each issue's thread to carry that issue's context. Cross-reference inside each thread is fine; combining is not.
-- "I'll quote-reply at top-level since it's about both." → WRONG. The algorithm doesn't have a "both" branch — it has a per-token loop.
-- "I'll skip `/send` and use `discord.reply` because the question doesn't fit a single thread cleanly." → WRONG. If the question doesn't fit one thread, that's because it fits N threads. Make N calls.
-- "Checking `/api/sessions` first to see if a thread exists." → WRONG. `/send` auto-creates threads. No pre-check.
-
-### Worked example — exact failure mode caught in QA 2026-05-22 cycle 2
-
-**Inbound** (in `$CHAT_CHANNEL` top-level): `FLY-159 和 FLY-161 哪个先做？`
-
-**Algorithm output**:
-```
-STEP 1: regex extracts ["FLY-159", "FLY-161"]. N = 2.
-STEP 2: N >= 2 → 2 /send calls, one per token, content split.
-```
-
-WRONG (what QA observed — 0 /send calls, quote-reply at top-level):
-```bash
-# DO NOT DO THIS
-mcp__plugin_discord_discord__reply chat_id=$CHAT_CHANNEL \
-  text="FLY-161 已 Done (PR #191 merged). FLY-159 还在 In Progress. 所以排序: 161 先 → 159 收尾."
-# ❌ FLY-159 thread silent. FLY-161 thread silent. Annie's per-issue context model broken.
-```
-
-WRONG-alt (cycle 1 failure — 1 /send call packing both issues):
-```bash
-# DO NOT DO THIS EITHER
-curl -X POST .../api/chat-threads/send -d '{
-  "issueIdentifier": "FLY-159",
-  "text": "FLY-161 已 Done. FLY-159 In Progress. 建议 161 先."
-}'
-# ❌ FLY-161 thread silent. Annie has to open FLY-159 thread to find FLY-161 context.
-```
-
-RIGHT (algorithm output — 2 independent `/send` calls, content split per issue):
-```bash
-curl -X POST .../api/chat-threads/send -d '{
-  "issueIdentifier": "FLY-159",
-  "text": "FLY-159: 还在 In Progress (brainstorm/plan gate)。建议先收 FLY-161（已 Done），FLY-159 紧接着推。"
-}'
-
-curl -X POST .../api/chat-threads/send -d '{
-  "issueIdentifier": "FLY-161",
-  "text": "FLY-161: 已 Done — PR #191 merged。所以排序是 FLY-161 先（已交付） → FLY-159 收尾。"
-}'
-# ✅ Each thread carries its own issue's context. Cross-reference in each is fine.
-```
-
-The two `/send` calls are independent — if one returns 4xx/5xx, fall back per the status code map **for that issue only**; do not bundle the other issue into the fallback.
-
-### Anti-pattern caught in QA 2026-05-21 cycle 1 — DO NOT repeat
-
-> "Annie asked about FLY-159 status. I checked `/api/sessions`, found no active session and no recent session for FLY-159, concluded 'no chat thread exists', replied at top-level via `discord.reply(chat_id=$CHAT_CHANNEL)`."
-
-This is WRONG. The algorithm has no "check sessions first" step. `/send` auto-creates the thread on first call. Trust the route.
-
-### Anti-pattern caught in QA 2026-05-22 cycle 1 — DO NOT repeat
-
-> "Annie asked `@Peter FLY-A 和 FLY-B 哪个先做？`. I made one `/send` call with `issueIdentifier=FLY-A` and a body covering both issues. FLY-B thread received nothing."
-
-This is WRONG. N=2 means 2 `/send` calls. The algorithm has no "combine bodies into one call" branch.
-
-### Anti-pattern caught in QA 2026-05-22 cycle 2 — DO NOT repeat (most recent)
-
-> "Annie asked `FLY-159 和 FLY-161 哪个先做？`. I read it as a meta-prioritization question (not a per-issue status update), so I quote-replied at top-level via `discord.reply(chat_id=$CHAT_CHANNEL)` and made **zero** `/send` calls. Both threads received nothing."
-
-This is WRONG and the worst of the three failure modes — both threads silent, no per-issue audit trail at all. **"Meta-prioritization" is not a category in the algorithm.** The only inputs are: count of distinct `<TEAM>-<N>` tokens. With N=2, you call `/send` twice. The fact that the question is comparative or "about prioritization" does not change the routing — it changes only the *content* of each `/send` call (each one cross-references the other issue, as in the RIGHT example above).
-
-### Allowed fallbacks (explicit)
-
-Fallback to `discord.reply(chat_id=$CHAT_CHANNEL)` is ONLY allowed when:
-- `/send` returned HTTP 404 (`reply.by_issue` flag off or `chatThreadsEnabled` false), OR
-- `/send` returned HTTP 502 after one retry (Discord/Linear transient fail), OR
-- `/send` returned HTTP 503 (Bridge missing token / Linear key / ChatThreadCreator), OR
-- STEP 1 produced **N == 0** (no Linear issue identifier in the inbound — pure chat / greeting / cross-Lead routing).
-
-In every fallback case, **prefix the chatChannel reply with `[FLY-XXX]`** so Annie keeps context. For N ≥ 2 partial-fail: each token's `/send` is independent — fall back only the failed token's response, not the whole answer.
-
-Full reference (curl template, status code map, partial-fail `remainingText` recovery, reverse-lookup): §"Issue-Bound Reply (FLY-162)" later in this file.
 >
 > **Dependency on Bridge enforcement (FLY-127 Layer 2)**: Step 4 below ("Department enforcement") tells Leads to call `POST /api/runs/start` and trust the server's `code: "DEPT_SCOPE_REJECT"` response. **That server-side enforcement ships in flywheel PR #173 (`feat/v1.27-FLY-127-r3-3-layer`).** This base layer (PR #174) and the Bridge layer (PR #173) are designed as a pair:
 >
@@ -467,7 +362,7 @@ Every Lead reply that is **bound to a Linear issue** (status update, Q&A, design
 | Core channel (cross-Lead / standup / org-wide) | `mcp__plugin_discord_discord__reply` | `chat_id=$CORE_CHANNEL` |
 | Free-form chat in your own `$CHAT_CHANNEL` top-level (general greetings, "how are you", or `send` returned 4xx/5xx) | `mcp__plugin_discord_discord__reply` | `chat_id=$CHAT_CHANNEL` |
 
-**Cross-issue case** (full rule + worked example: see §"Reply Discipline — Read This First" at top of this file): if a single inbound message references **N≥2** Linear issues, issue **N** explicit `send` calls — one per `issueIdentifier`, with content split per issue. Examples that trigger this rule: "FLY-A 和 FLY-B 哪个先做？", "FLY-A vs FLY-B", "FLY-161 unblocks FLY-162", "FLY-A 跟 FLY-B 都还在 brainstorm 吗". The rule is **count distinct `<TEAM>-<N>` tokens in the inbound, emit that many `/send` calls** — never bundle 2+ issues into one call.
+Routing follows §Reply Discipline above; cross-issue replies remain independent.
 
 ### Outbound — `POST /api/chat-threads/send`
 

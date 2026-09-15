@@ -36,6 +36,20 @@ const PROJECT_FLAG = {
 };
 
 describe("feature-flag renderer (Apple cards, read-only)", () => {
+	it("shows immediate versus next-Lead-launch timing for the savings kill-switch", () => {
+		const flag = FLAGS.find((row) => row.name === "lead_token_savings")!;
+		expect(flag).toBeDefined();
+		expect(effectLabel(flag)).toBe("即时 / 下次 Lead 启动");
+		const card = renderFlagCard(flag);
+		expect(card).not.toContain("新 run 生效");
+		expect(card).toContain("后续 Bootstrap 与事件投递立即恢复");
+		expect(card).toContain("下次 Lead 重启");
+		expect(card).toContain("待办漏处理");
+		const report = renderFlagReport([flag]);
+		expect(report).toContain("即时 / 下次 Lead 启动");
+		expect(report).toContain("已审计历史不会自动补投");
+	});
+
 	it("renders every flag as cards, grouped by category", () => {
 		const html = renderFeatureFlagsHtml(FLAGS);
 		expect(html).toContain("FLYWHEEL_LOOP_PROFILER");

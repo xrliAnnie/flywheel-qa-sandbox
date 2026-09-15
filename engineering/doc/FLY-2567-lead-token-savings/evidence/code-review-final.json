@@ -1,0 +1,248 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "4877fda1-f731-4ca2-b80a-884a65c71dd4",
+  "round": 4,
+  "findings": [
+    {
+      "id": "archive-digest-conflict-after-column-add",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/terminal-row-archive.ts",
+      "line": 601,
+      "title": "Adding delivery_disposition to lead_events makes a restored pre-migration archive row permanently wedge terminal archiving",
+      "detail": "NOT FIXED — HEAD is unchanged since the previous round (042c89ad7, clean tree, zero new commits), so this still reproduces exactly as before. `archiveTerminalRows` refuses to re-archive a row whose recomputed `JSON.stringify(SELECT *)` digest differs from an existing `workflow_terminal_archive` entry (`throw new Error('archive_digest_conflict:...')`), and the throw is inside the single `db.transaction(...).immediate()` covering the whole pass. This PR adds a new `lead_events` column (StateStore.ts:24524), so every lead_events row already archived by a pre-FLY-2567 build has a `row_json` lacking `delivery_disposition`. If an operator restores such a row (`StateStore.restoreTerminalRow` / `scripts/fly-2341-db-hygiene.mjs:188`), the hot row returns with the column defaulted to 'model' and `restoreTerminalRow` does NOT delete the archive entry, so the next archive pass recomputes a different digest and throws. Repro I ran against dist: append+deliver a `session_monitoring_reestablished` row, archive it under a simulated pre-migration schema (column dropped), reopen with the new build (migration re-adds the column), `restoreTerminalRow` -> outcome 'restored' / disposition 'model', then `archiveTerminalRows` -> `RE-ARCHIVE THREW: archive_digest_conflict:lead_events:1`. The offending row stays hot and eligible so every subsequent pass re-hits it, and `workflow_terminal_archive` is trigger-protected (`SQLITE_CONSTRAINT_TRIGGER: workflow_terminal_archive is immutable`), so an operator cannot repair the stored row_json. Suggest normalizing the archived row against the current `PRAGMA table_info` column set before comparing digests (columns absent from the archive but present with their DEFAULT are not a conflict), or having `restoreTerminalRow` delete the archive entry it restores.",
+      "findingKey": "archive-digest-conflict-after-column-add"
+    },
+    {
+      "id": "audit-only-rows-have-no-retention-or-health-signal",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/StateStore.ts",
+      "line": 20670,
+      "title": "Audit-only lead_events rows fall out of every health query AND out of the FLY-2006 retention policy, leaving the archiver as their only unmonitored reaper",
+      "detail": "NEW this round. Because `markLeadEventDelivered` now no-ops for audit-only rows (line 20670), their `delivered_at` stays NULL forever. The FLY-2006 `leadEvents` retention policy requires `AND t.delivered_at IS NOT NULL` (scripts/lib/fly-2006-retention-engine.mjs:232), so it can never delete an audit-only row. I verified the type lists: `session_monitoring_reestablished` IS in `LEAD_EVENT_NARRATIVE_TYPES`, so before this change those rows were best-effort marked delivered and were deletable after the cutoff — now they are not. `stage_changed` is in neither the narrative list nor the archiver's `LEAD_EVENT_TYPES` (19 entries, confirmed by parsing both files), so the new `OR e.delivery_disposition = 'audit_only'` clause in terminal-row-archive.ts is the ONLY reaper for audit-only stage rows. At the same time these rows are now invisible to `listUndeliveredLeadEvents`, `getUndeliveredLeadEventsForReconcile`, `getUndeliveredGuardrailEvents` and `getDeliveryStats` — all filtered to `delivery_disposition = 'model'` by this PR. Net: a single reaper with no second line of defence and no health signal, which compounds `archive-digest-conflict-after-column-add`: if the archiver wedges, hot audit-only rows accumulate silently with nothing reporting it. Retaining the audit history is clearly the intent, but consider a bounded retention (or at least a count/oldest-row gauge) for audit-only rows, given FLY-2351 already enforces a 20GB low-disk gate on the same volume.",
+      "findingKey": "audit-only-rows-have-no-retention-or-health-signal"
+    },
+    {
+      "id": "reconcile-pending-ack-unbounded-scan",
+      "severity": "MEDIUM",
+      "file": "packages/flywheel-comm/src/mailbox-queue.ts",
+      "line": 2067,
+      "title": "pendingAck lookup in reconcileExpiredLeases is unbounded, unindexed, and outside the FLY-2008 query-plan guard",
+      "detail": "NOT FIXED — bytes unchanged at this head. The pending-ACK short-circuit runs `SELECT * FROM mailbox WHERE recipient_kind='bridge' AND carrier='inbox' AND to_agent='bridge' AND from_agent=? AND msg_class='protocol' AND type='ack_batch' AND state IN ('QUEUED','LEASED') ... ORDER BY priority, seq` with no LIMIT, once per expired batch (maxBatches=100/tick), then filters in JS with `.find(row => parseBatchAck(row.content) === batch.batch_id)`. EXPLAIN QUERY PLAN against the shipped MAILBOX_SCHEMA: `SEARCH mailbox USING INDEX mailbox_live (to_agent=?)` plus `USE TEMP B-TREE FOR ORDER BY`. Because the predicate spans both QUEUED and LEASED, neither `mailbox_claim_bridge` (QUEUED-only partial) nor `mailbox_bridge_reclaim` (LEASED-only partial) is usable, so it walks and materializes every live row addressed to 'bridge' — including full `content` — for each expired batch. Steady state is zero cost; during a Lead stall with a bridge-protocol backlog it is O(expiredBatches x liveBridgeRows) inside the reconcile transaction. It is a per-tick mailbox statement and is not registered in `src/__tests__/mailbox-query-plans.fly2008.test.ts`, whose contract is that per-tick statements use bounded indexes and never `SCAN mailbox`. Correctness of the path is well covered (the new restart/rollback/late table test injects a trigger failure and proves atomicity plus no batch theft) — this is purely the access path.",
+      "findingKey": "reconcile-pending-ack-unbounded-scan"
+    },
+    {
+      "id": "sections-page-regenerates-full-snapshot",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/bootstrap-route.ts",
+      "line": 135,
+      "title": "Every /sections page request re-runs generateBootstrap, which fully drains all pending questions across all of the Lead's projects",
+      "detail": "NOT FIXED — bytes unchanged at this head. The `sections` branch calls `await generateBootstrap(leadId, deps.store, deps.projects, ...)` per request, and `generateBootstrap` (bootstrap-generator.ts:358-376) unconditionally pages `gate`, `ask` and `report` to exhaustion via `getBootstrapQuestionPage`, which opens/closes each project's CommDB once per page per kind, calls `store.getSession(q.from_agent)` per row, and `readContentRef` per ref-typed row. The PR's own new test seeds 201 pending reports, so the scale is realistic: a single `GET .../sections?kind=activeSessions&limit=50` performs ~7 CommDB open/close cycles and 200+ session lookups before slicing 50 rows it could read directly from `store.getActiveSessions()`. Paging that section in 3 requests triples the work. None of the question drain is needed for any `sections` kind, and the new runner-messaging-rules.md instructs the Lead to poll these endpoints. Suggest materializing only the requested section (memoryRecall is already correctly gated this way).",
+      "findingKey": "sections-page-regenerates-full-snapshot"
+    },
+    {
+      "id": "bootstrap-route-silent-error-swallow",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/bootstrap-route.ts",
+      "line": 64,
+      "title": "All three bootstrap read handlers convert any exception into a bare 500 with no logging",
+      "detail": "NOT FIXED — bytes unchanged at this head; `catch { res.status(500).json({ error: 'bootstrap_read_failed' }) }` at lines 64, 106 and 156. The errors it hides are exactly the ones an operator needs: `archive_digest_invalid` from `getLeadAuditEventPage` (the tamper/corruption canary this PR introduces and unit-tests), `pending_page_invalid` from `getPendingQuestions`, `terminal_archive_index_schema_drift`, and CommDB open/read failures. The sibling `POST /api/bootstrap/:leadId` logs via `console.error('[bootstrap] Failed for ...')`. `bootstrap-route.test.ts` covers 400/401/403/404/503 and the happy path but never a 500, so nothing forces a log line. A recovering Lead that follows the new pointers and repeatedly gets 500s leaves no trace in bridge.log. Add a console.error with leadId/section/kind and the error before responding.",
+      "findingKey": "bootstrap-route-silent-error-swallow"
+    },
+    {
+      "id": "bootstrap-preview-caps-gate-questions",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/bootstrap-format.ts",
+      "line": 33,
+      "title": "Crash-recovery bootstrap shows at most 10 gate questions; the remainder depends on the model voluntarily following an HTTP pointer",
+      "detail": "NOT FIXED — bytes unchanged at this head. I previously exercised `formatBootstrap` directly against an oversized snapshot (35 gates / 35 asks / 12 reports / 40 sessions / 60 events / 9000-char memoryRecall): 11963 code points, terminated in 5ms, caller's arrays unmutated, rendering exactly 10 gate lines, 10 ask lines, 3 report lines, 0 recentEvents, memoryRecall dropped, with accurate `omittedCount=25` pointers. The mechanism works; the finding is its blast radius. Previously `generateBootstrap` inlined every pending gate question; now a Lead recovering with >10 pending `approve_to_ship`-class gates has no identifier for the overflow in its resident prompt. Mitigations confirmed: GatePoller delivers each gate as its own durable mailbox event that survives Lead restart (gate-poller.ts:1744), its once-only guard is `isLeadEventDelivered` over 'model' rows so it is untouched by the audit-only change, and the Lead holds the master TEAMLEAD_API_TOKEN (config.ts:88) so the pointer is usable. Non-blocking, but the degradation is silent and model-compliance-dependent.",
+      "findingKey": "bootstrap-preview-caps-gate-questions"
+    },
+    {
+      "id": "audit-event-page-archive-json-scan",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/StateStore.ts",
+      "line": 20752,
+      "title": "getLeadAuditEventPage scans workflow_terminal_archive with json_extract predicates and json_extract ORDER BY, with no supporting index",
+      "detail": "NOT FIXED — bytes unchanged at this head. The cold half runs `SELECT row_json,row_sha256 FROM workflow_terminal_archive WHERE source_table='lead_events' AND json_extract(row_json,'$.lead_id')=? AND json_extract(row_json,'$.delivery_disposition')='audit_only' AND json_extract(row_json,'$.seq')<? ORDER BY json_extract(row_json,'$.seq') DESC LIMIT ?`. The only archive index for lead_events covers (lead_id, event_id) and cannot serve the disposition filter or the seq ordering, so each page re-extracts JSON across the whole lead_events partition, sorts it, and SHA-256s every returned row_json. The hot half is likewise uncovered — `lead_events` has no index for (lead_id, seq) filtered by audit_only; the new `idx_lead_events_model_pending` is explicitly model-only. `workflow_terminal_archive` sits in the FLY-2006 protected list (no deletion policy), so this partition grows monotonically and every audit-events page gets slower for the life of the deployment.",
+      "findingKey": "audit-event-page-archive-json-scan"
+    },
+    {
+      "id": "duplicate-disposition-predicate",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/StateStore.ts",
+      "line": 20890,
+      "title": "listUndeliveredLeadInboxEvents repeats the same predicate twice",
+      "detail": "NOT FIXED — still `WHERE delivered_at IS NULL AND delivery_disposition = 'model' AND delivery_disposition = 'model'`. Harmless to results, but it is a copy/paste slip in a load-bearing filter: without it, `LeadInboxRuntime.admit()` (lead-inbox-runtime.ts:387) would redrive an audit-only row into `enqueueLeadEvent`, which throws `audit_only_lead_event`, and since the rescue `catch` only tolerates `row.event_type === 'workflow_claim_recorded'` the throw would escape `admit()` and wedge the Lead inbox tick permanently.",
+      "findingKey": "duplicate-disposition-predicate"
+    },
+    {
+      "id": "disposition-ignores-eventfilter-priority",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/event-route.ts",
+      "line": 3672,
+      "title": "The audit-only classifier re-implements urgency as a key allowlist instead of consulting the EventFilter priority computed 36 lines earlier",
+      "detail": "NEW this round. `eventFilter.classify(...)` runs at event-route.ts:3636 and writes `hookPayload.filter_priority` / `hookPayload.notification_context` at 3640-3641, i.e. before `appendLeadEvent` computes the disposition at 3664-3680. Yet `leadEventDeliveryDisposition` consults neither field; it decides urgency from a hand-maintained 14-key allowlist (`last_error`, `blocked`, `checkpoint`, ...). I probed the compiled function: `{status:'running', stage:'test', filter_priority:'high'}` -> `audit_only`, and likewise for `notification_context:'urgent'`, `pr_number:42` and `stage_context:'verify PR'`. This is harmless today — EventFilter has no rule yielding `high` for `stage_changed`, and `session_monitoring_reestablished` is explicitly `priority: 'low'` — but adding such a rule later would not restore delivery, and the two urgency models can drift silently. Suggest short-circuiting to 'model' when `filter_priority === 'high'`.",
+      "findingKey": "disposition-ignores-eventfilter-priority"
+    },
+    {
+      "id": "monitoring-reestablished-branch-unreachable-from-event-route",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/EventFilter.ts",
+      "line": 255,
+      "title": "leadEventDeliveryDisposition's session_monitoring_reestablished branch can never fire from the event-route caller",
+      "detail": "NOT FIXED — bytes unchanged. `event-route.ts:3675` passes `trustedBridge = event.event_type === 'stage_changed' && Boolean(stageRecord)`, so any non-stage_changed type returns 'model' at the `if (!trustedBridge)` guard before reaching line 255. Only HeartbeatService, which passes `true` unconditionally, reaches it. That is correct today (HeartbeatService.ts:2349 is the sole producer) and suppression is safe — the once-per-episode guard is the in-memory `this.reconnecting` Set (HeartbeatService.ts:1462), not `delivered_at`, so there is no re-fire storm, and the reworked goldens assert the new no-transport behavior explicitly rather than loosening. The nit is that the same `trustedBridge` parameter carries two different meanings at the two call sites.",
+      "findingKey": "monitoring-reestablished-branch-unreachable-from-event-route"
+    },
+    {
+      "id": "format-bootstrap-throws-on-budget-exhaustion",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/bootstrap-format.ts",
+      "line": 62,
+      "title": "formatBootstrap throws instead of degrading when the budget cannot be met",
+      "detail": "NOT FIXED — bytes unchanged. `if (!removable) throw new Error('bootstrap identifiers exceed recovery budget')` propagates out of `CommDBLeadRuntime.sendBootstrap` / `MailboxLeadRuntime.sendBootstrap` to the POST /api/bootstrap handler, so the Lead gets no bootstrap at all rather than a truncated one. Practically unreachable (header plus 9 pointer lines is far under 12000 code points once every section is empty), but a hard throw in the crash-recovery path is the wrong failure mode; emitting the pointer-only text would be strictly better.",
+      "findingKey": "format-bootstrap-throws-on-budget-exhaustion"
+    },
+    {
+      "id": "patrol-rule-guard-reconstructed-from-slices",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/__tests__/fly369-patrol-rule.test.ts",
+      "line": 52,
+      "title": "The FLY-369 patrol contract test asserts against a synthetic string spliced from the resident rule and the relocated runbook",
+      "detail": "NOT FIXED — bytes unchanged. The test builds `patrol = resident.slice(0, resident.indexOf('## 0.')) + procedure.slice(procedure.indexOf('## 0.')) + resident.slice(resident.indexOf('### 0.9'))` and runs the pre-existing assertions against that concatenation, so it no longer distinguishes a clause living in the always-resident prompt from one living only in the on-demand runbook. The three `indexOf` calls are unguarded; a missing anchor yields -1 and `slice(-1)`/`slice(0,-1)` silently produces a truncated string (it fails closed today because the `toContain` assertions would then fail). Mitigations verified: the relocated `## 0.` .. `### 0.9` block is byte-identical to the merge-base original (1011 lines, `diff` returns zero), the only resident-tail deltas are an emphasis marker, a strengthened batch-ACK paragraph and a new Incremental FOLLOWUPS section, `fly2567-rule-budget.test.ts` pins an explicit resident safety floor, and `patrol-report.test.ts` was repointed at the runbook with an added anti-empty-match guard.",
+      "findingKey": "patrol-rule-guard-reconstructed-from-slices"
+    },
+    {
+      "id": "post-bootstrap-route-order-untested",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/plugin.ts",
+      "line": 4704,
+      "title": "No test covers that the new /api/bootstrap router mount does not shadow the legacy POST bootstrap route",
+      "detail": "NOT FIXED — still untested. `app.use('/api/bootstrap', createBootstrapReadRouter(...))` is registered immediately before `app.post('/api/bootstrap/:leadId', ...)`, and a mount-order regression would silently break Lead crash recovery; `bootstrap-route.test.ts` mounts the router standalone so the interaction is unasserted. I verified it manually by replicating the exact mount order with the real router: `POST /api/bootstrap/lead` -> 200 from the legacy handler (including for a leadId the router would 404), `GET .../questions` and `GET .../audit-events` -> 200, `GET .../bogus`, `GET .../lead` and `DELETE .../questions` -> 404, unauthenticated `GET .../audit-events` -> 401 with no body leak. I also proved this round that the now-always-on `getForLead` wrapper preserves the full LeadRuntime surface (keys: deliver, health, renderEnvelope, sendBootstrap, shutdown, type; omits renderEnvelope when the raw runtime lacks it; audit short-circuit returns `{delivered:false,auditOnly:true}` while non-audit passes through). No defect — add cases so both orderings stay pinned.",
+      "findingKey": "post-bootstrap-route-order-untested"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "archive-digest-conflict-after-column-add",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/terminal-row-archive.ts",
+      "line": 601,
+      "title": "Adding delivery_disposition to lead_events makes a restored pre-migration archive row permanently wedge terminal archiving",
+      "detail": "NOT FIXED — HEAD is unchanged since the previous round (042c89ad7, clean tree, zero new commits), so this still reproduces exactly as before. `archiveTerminalRows` refuses to re-archive a row whose recomputed `JSON.stringify(SELECT *)` digest differs from an existing `workflow_terminal_archive` entry (`throw new Error('archive_digest_conflict:...')`), and the throw is inside the single `db.transaction(...).immediate()` covering the whole pass. This PR adds a new `lead_events` column (StateStore.ts:24524), so every lead_events row already archived by a pre-FLY-2567 build has a `row_json` lacking `delivery_disposition`. If an operator restores such a row (`StateStore.restoreTerminalRow` / `scripts/fly-2341-db-hygiene.mjs:188`), the hot row returns with the column defaulted to 'model' and `restoreTerminalRow` does NOT delete the archive entry, so the next archive pass recomputes a different digest and throws. Repro I ran against dist: append+deliver a `session_monitoring_reestablished` row, archive it under a simulated pre-migration schema (column dropped), reopen with the new build (migration re-adds the column), `restoreTerminalRow` -> outcome 'restored' / disposition 'model', then `archiveTerminalRows` -> `RE-ARCHIVE THREW: archive_digest_conflict:lead_events:1`. The offending row stays hot and eligible so every subsequent pass re-hits it, and `workflow_terminal_archive` is trigger-protected (`SQLITE_CONSTRAINT_TRIGGER: workflow_terminal_archive is immutable`), so an operator cannot repair the stored row_json. Suggest normalizing the archived row against the current `PRAGMA table_info` column set before comparing digests (columns absent from the archive but present with their DEFAULT are not a conflict), or having `restoreTerminalRow` delete the archive entry it restores.",
+      "findingKey": "archive-digest-conflict-after-column-add"
+    },
+    {
+      "id": "audit-only-rows-have-no-retention-or-health-signal",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/StateStore.ts",
+      "line": 20670,
+      "title": "Audit-only lead_events rows fall out of every health query AND out of the FLY-2006 retention policy, leaving the archiver as their only unmonitored reaper",
+      "detail": "NEW this round. Because `markLeadEventDelivered` now no-ops for audit-only rows (line 20670), their `delivered_at` stays NULL forever. The FLY-2006 `leadEvents` retention policy requires `AND t.delivered_at IS NOT NULL` (scripts/lib/fly-2006-retention-engine.mjs:232), so it can never delete an audit-only row. I verified the type lists: `session_monitoring_reestablished` IS in `LEAD_EVENT_NARRATIVE_TYPES`, so before this change those rows were best-effort marked delivered and were deletable after the cutoff — now they are not. `stage_changed` is in neither the narrative list nor the archiver's `LEAD_EVENT_TYPES` (19 entries, confirmed by parsing both files), so the new `OR e.delivery_disposition = 'audit_only'` clause in terminal-row-archive.ts is the ONLY reaper for audit-only stage rows. At the same time these rows are now invisible to `listUndeliveredLeadEvents`, `getUndeliveredLeadEventsForReconcile`, `getUndeliveredGuardrailEvents` and `getDeliveryStats` — all filtered to `delivery_disposition = 'model'` by this PR. Net: a single reaper with no second line of defence and no health signal, which compounds `archive-digest-conflict-after-column-add`: if the archiver wedges, hot audit-only rows accumulate silently with nothing reporting it. Retaining the audit history is clearly the intent, but consider a bounded retention (or at least a count/oldest-row gauge) for audit-only rows, given FLY-2351 already enforces a 20GB low-disk gate on the same volume.",
+      "findingKey": "audit-only-rows-have-no-retention-or-health-signal"
+    },
+    {
+      "id": "reconcile-pending-ack-unbounded-scan",
+      "severity": "MEDIUM",
+      "file": "packages/flywheel-comm/src/mailbox-queue.ts",
+      "line": 2067,
+      "title": "pendingAck lookup in reconcileExpiredLeases is unbounded, unindexed, and outside the FLY-2008 query-plan guard",
+      "detail": "NOT FIXED — bytes unchanged at this head. The pending-ACK short-circuit runs `SELECT * FROM mailbox WHERE recipient_kind='bridge' AND carrier='inbox' AND to_agent='bridge' AND from_agent=? AND msg_class='protocol' AND type='ack_batch' AND state IN ('QUEUED','LEASED') ... ORDER BY priority, seq` with no LIMIT, once per expired batch (maxBatches=100/tick), then filters in JS with `.find(row => parseBatchAck(row.content) === batch.batch_id)`. EXPLAIN QUERY PLAN against the shipped MAILBOX_SCHEMA: `SEARCH mailbox USING INDEX mailbox_live (to_agent=?)` plus `USE TEMP B-TREE FOR ORDER BY`. Because the predicate spans both QUEUED and LEASED, neither `mailbox_claim_bridge` (QUEUED-only partial) nor `mailbox_bridge_reclaim` (LEASED-only partial) is usable, so it walks and materializes every live row addressed to 'bridge' — including full `content` — for each expired batch. Steady state is zero cost; during a Lead stall with a bridge-protocol backlog it is O(expiredBatches x liveBridgeRows) inside the reconcile transaction. It is a per-tick mailbox statement and is not registered in `src/__tests__/mailbox-query-plans.fly2008.test.ts`, whose contract is that per-tick statements use bounded indexes and never `SCAN mailbox`. Correctness of the path is well covered (the new restart/rollback/late table test injects a trigger failure and proves atomicity plus no batch theft) — this is purely the access path.",
+      "findingKey": "reconcile-pending-ack-unbounded-scan"
+    },
+    {
+      "id": "sections-page-regenerates-full-snapshot",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/bootstrap-route.ts",
+      "line": 135,
+      "title": "Every /sections page request re-runs generateBootstrap, which fully drains all pending questions across all of the Lead's projects",
+      "detail": "NOT FIXED — bytes unchanged at this head. The `sections` branch calls `await generateBootstrap(leadId, deps.store, deps.projects, ...)` per request, and `generateBootstrap` (bootstrap-generator.ts:358-376) unconditionally pages `gate`, `ask` and `report` to exhaustion via `getBootstrapQuestionPage`, which opens/closes each project's CommDB once per page per kind, calls `store.getSession(q.from_agent)` per row, and `readContentRef` per ref-typed row. The PR's own new test seeds 201 pending reports, so the scale is realistic: a single `GET .../sections?kind=activeSessions&limit=50` performs ~7 CommDB open/close cycles and 200+ session lookups before slicing 50 rows it could read directly from `store.getActiveSessions()`. Paging that section in 3 requests triples the work. None of the question drain is needed for any `sections` kind, and the new runner-messaging-rules.md instructs the Lead to poll these endpoints. Suggest materializing only the requested section (memoryRecall is already correctly gated this way).",
+      "findingKey": "sections-page-regenerates-full-snapshot"
+    },
+    {
+      "id": "bootstrap-route-silent-error-swallow",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/bootstrap-route.ts",
+      "line": 64,
+      "title": "All three bootstrap read handlers convert any exception into a bare 500 with no logging",
+      "detail": "NOT FIXED — bytes unchanged at this head; `catch { res.status(500).json({ error: 'bootstrap_read_failed' }) }` at lines 64, 106 and 156. The errors it hides are exactly the ones an operator needs: `archive_digest_invalid` from `getLeadAuditEventPage` (the tamper/corruption canary this PR introduces and unit-tests), `pending_page_invalid` from `getPendingQuestions`, `terminal_archive_index_schema_drift`, and CommDB open/read failures. The sibling `POST /api/bootstrap/:leadId` logs via `console.error('[bootstrap] Failed for ...')`. `bootstrap-route.test.ts` covers 400/401/403/404/503 and the happy path but never a 500, so nothing forces a log line. A recovering Lead that follows the new pointers and repeatedly gets 500s leaves no trace in bridge.log. Add a console.error with leadId/section/kind and the error before responding.",
+      "findingKey": "bootstrap-route-silent-error-swallow"
+    },
+    {
+      "id": "bootstrap-preview-caps-gate-questions",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/bridge/bootstrap-format.ts",
+      "line": 33,
+      "title": "Crash-recovery bootstrap shows at most 10 gate questions; the remainder depends on the model voluntarily following an HTTP pointer",
+      "detail": "NOT FIXED — bytes unchanged at this head. I previously exercised `formatBootstrap` directly against an oversized snapshot (35 gates / 35 asks / 12 reports / 40 sessions / 60 events / 9000-char memoryRecall): 11963 code points, terminated in 5ms, caller's arrays unmutated, rendering exactly 10 gate lines, 10 ask lines, 3 report lines, 0 recentEvents, memoryRecall dropped, with accurate `omittedCount=25` pointers. The mechanism works; the finding is its blast radius. Previously `generateBootstrap` inlined every pending gate question; now a Lead recovering with >10 pending `approve_to_ship`-class gates has no identifier for the overflow in its resident prompt. Mitigations confirmed: GatePoller delivers each gate as its own durable mailbox event that survives Lead restart (gate-poller.ts:1744), its once-only guard is `isLeadEventDelivered` over 'model' rows so it is untouched by the audit-only change, and the Lead holds the master TEAMLEAD_API_TOKEN (config.ts:88) so the pointer is usable. Non-blocking, but the degradation is silent and model-compliance-dependent.",
+      "findingKey": "bootstrap-preview-caps-gate-questions"
+    },
+    {
+      "id": "audit-event-page-archive-json-scan",
+      "severity": "MEDIUM",
+      "file": "packages/teamlead/src/StateStore.ts",
+      "line": 20752,
+      "title": "getLeadAuditEventPage scans workflow_terminal_archive with json_extract predicates and json_extract ORDER BY, with no supporting index",
+      "detail": "NOT FIXED — bytes unchanged at this head. The cold half runs `SELECT row_json,row_sha256 FROM workflow_terminal_archive WHERE source_table='lead_events' AND json_extract(row_json,'$.lead_id')=? AND json_extract(row_json,'$.delivery_disposition')='audit_only' AND json_extract(row_json,'$.seq')<? ORDER BY json_extract(row_json,'$.seq') DESC LIMIT ?`. The only archive index for lead_events covers (lead_id, event_id) and cannot serve the disposition filter or the seq ordering, so each page re-extracts JSON across the whole lead_events partition, sorts it, and SHA-256s every returned row_json. The hot half is likewise uncovered — `lead_events` has no index for (lead_id, seq) filtered by audit_only; the new `idx_lead_events_model_pending` is explicitly model-only. `workflow_terminal_archive` sits in the FLY-2006 protected list (no deletion policy), so this partition grows monotonically and every audit-events page gets slower for the life of the deployment.",
+      "findingKey": "audit-event-page-archive-json-scan"
+    },
+    {
+      "id": "duplicate-disposition-predicate",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/StateStore.ts",
+      "line": 20890,
+      "title": "listUndeliveredLeadInboxEvents repeats the same predicate twice",
+      "detail": "NOT FIXED — still `WHERE delivered_at IS NULL AND delivery_disposition = 'model' AND delivery_disposition = 'model'`. Harmless to results, but it is a copy/paste slip in a load-bearing filter: without it, `LeadInboxRuntime.admit()` (lead-inbox-runtime.ts:387) would redrive an audit-only row into `enqueueLeadEvent`, which throws `audit_only_lead_event`, and since the rescue `catch` only tolerates `row.event_type === 'workflow_claim_recorded'` the throw would escape `admit()` and wedge the Lead inbox tick permanently.",
+      "findingKey": "duplicate-disposition-predicate"
+    },
+    {
+      "id": "disposition-ignores-eventfilter-priority",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/event-route.ts",
+      "line": 3672,
+      "title": "The audit-only classifier re-implements urgency as a key allowlist instead of consulting the EventFilter priority computed 36 lines earlier",
+      "detail": "NEW this round. `eventFilter.classify(...)` runs at event-route.ts:3636 and writes `hookPayload.filter_priority` / `hookPayload.notification_context` at 3640-3641, i.e. before `appendLeadEvent` computes the disposition at 3664-3680. Yet `leadEventDeliveryDisposition` consults neither field; it decides urgency from a hand-maintained 14-key allowlist (`last_error`, `blocked`, `checkpoint`, ...). I probed the compiled function: `{status:'running', stage:'test', filter_priority:'high'}` -> `audit_only`, and likewise for `notification_context:'urgent'`, `pr_number:42` and `stage_context:'verify PR'`. This is harmless today — EventFilter has no rule yielding `high` for `stage_changed`, and `session_monitoring_reestablished` is explicitly `priority: 'low'` — but adding such a rule later would not restore delivery, and the two urgency models can drift silently. Suggest short-circuiting to 'model' when `filter_priority === 'high'`.",
+      "findingKey": "disposition-ignores-eventfilter-priority"
+    },
+    {
+      "id": "monitoring-reestablished-branch-unreachable-from-event-route",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/EventFilter.ts",
+      "line": 255,
+      "title": "leadEventDeliveryDisposition's session_monitoring_reestablished branch can never fire from the event-route caller",
+      "detail": "NOT FIXED — bytes unchanged. `event-route.ts:3675` passes `trustedBridge = event.event_type === 'stage_changed' && Boolean(stageRecord)`, so any non-stage_changed type returns 'model' at the `if (!trustedBridge)` guard before reaching line 255. Only HeartbeatService, which passes `true` unconditionally, reaches it. That is correct today (HeartbeatService.ts:2349 is the sole producer) and suppression is safe — the once-per-episode guard is the in-memory `this.reconnecting` Set (HeartbeatService.ts:1462), not `delivered_at`, so there is no re-fire storm, and the reworked goldens assert the new no-transport behavior explicitly rather than loosening. The nit is that the same `trustedBridge` parameter carries two different meanings at the two call sites.",
+      "findingKey": "monitoring-reestablished-branch-unreachable-from-event-route"
+    },
+    {
+      "id": "format-bootstrap-throws-on-budget-exhaustion",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/bootstrap-format.ts",
+      "line": 62,
+      "title": "formatBootstrap throws instead of degrading when the budget cannot be met",
+      "detail": "NOT FIXED — bytes unchanged. `if (!removable) throw new Error('bootstrap identifiers exceed recovery budget')` propagates out of `CommDBLeadRuntime.sendBootstrap` / `MailboxLeadRuntime.sendBootstrap` to the POST /api/bootstrap handler, so the Lead gets no bootstrap at all rather than a truncated one. Practically unreachable (header plus 9 pointer lines is far under 12000 code points once every section is empty), but a hard throw in the crash-recovery path is the wrong failure mode; emitting the pointer-only text would be strictly better.",
+      "findingKey": "format-bootstrap-throws-on-budget-exhaustion"
+    },
+    {
+      "id": "patrol-rule-guard-reconstructed-from-slices",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/__tests__/fly369-patrol-rule.test.ts",
+      "line": 52,
+      "title": "The FLY-369 patrol contract test asserts against a synthetic string spliced from the resident rule and the relocated runbook",
+      "detail": "NOT FIXED — bytes unchanged. The test builds `patrol = resident.slice(0, resident.indexOf('## 0.')) + procedure.slice(procedure.indexOf('## 0.')) + resident.slice(resident.indexOf('### 0.9'))` and runs the pre-existing assertions against that concatenation, so it no longer distinguishes a clause living in the always-resident prompt from one living only in the on-demand runbook. The three `indexOf` calls are unguarded; a missing anchor yields -1 and `slice(-1)`/`slice(0,-1)` silently produces a truncated string (it fails closed today because the `toContain` assertions would then fail). Mitigations verified: the relocated `## 0.` .. `### 0.9` block is byte-identical to the merge-base original (1011 lines, `diff` returns zero), the only resident-tail deltas are an emphasis marker, a strengthened batch-ACK paragraph and a new Incremental FOLLOWUPS section, `fly2567-rule-budget.test.ts` pins an explicit resident safety floor, and `patrol-report.test.ts` was repointed at the runbook with an added anti-empty-match guard.",
+      "findingKey": "patrol-rule-guard-reconstructed-from-slices"
+    },
+    {
+      "id": "post-bootstrap-route-order-untested",
+      "severity": "LOW",
+      "file": "packages/teamlead/src/bridge/plugin.ts",
+      "line": 4704,
+      "title": "No test covers that the new /api/bootstrap router mount does not shadow the legacy POST bootstrap route",
+      "detail": "NOT FIXED — still untested. `app.use('/api/bootstrap', createBootstrapReadRouter(...))` is registered immediately before `app.post('/api/bootstrap/:leadId', ...)`, and a mount-order regression would silently break Lead crash recovery; `bootstrap-route.test.ts` mounts the router standalone so the interaction is unasserted. I verified it manually by replicating the exact mount order with the real router: `POST /api/bootstrap/lead` -> 200 from the legacy handler (including for a leadId the router would 404), `GET .../questions` and `GET .../audit-events` -> 200, `GET .../bogus`, `GET .../lead` and `DELETE .../questions` -> 404, unauthenticated `GET .../audit-events` -> 401 with no body leak. I also proved this round that the now-always-on `getForLead` wrapper preserves the full LeadRuntime surface (keys: deliver, health, renderEnvelope, sendBootstrap, shutdown, type; omits renderEnvelope when the raw runtime lacks it; audit short-circuit returns `{delivered:false,auditOnly:true}` while non-audit passes through). No defect — add cases so both orderings stay pinned.",
+      "findingKey": "post-bootstrap-route-order-untested"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "reviewedHeadSha": "042c89ad7afcfc67abf117414f488106d5339ff5",
+  "deliveryNonce": "fac01924-25b6-4086-9fcf-7290a0d45210"
+}
