@@ -20,7 +20,7 @@ it("fits the 60-child E1 baseline before sibling note and attention integration"
 	expect(bytes).toBeLessThanOrEqual(491520);
 });
 
-it("fits the unchanged eight-root sixty-child scale with notes, judgments and twenty saturated history rows", async () => {
+it("fits the unchanged eight-root sixty-child scale with notes, judgments and a history footer", async () => {
 	const { pageForShipJudgmentBudget } = await import(
 		"./fixtures/founder-budget.js"
 	);
@@ -38,7 +38,8 @@ it("fits the unchanged eight-root sixty-child scale with notes, judgments and tw
 			(item) => Array.from(item.lead_note![0]!.value!).length === 280,
 		),
 	).toBe(true);
-	expect(bundle.html.match(/data-history-row/g)).toHaveLength(20);
+	expect(bundle.html).not.toContain("data-history-row");
+	expect(bundle.html.match(/查看近 30 天历史/g)).toHaveLength(1);
 	expect(bundle.html.match(/<div data-judgment>/g)).toHaveLength(60);
 	expect(Buffer.byteLength(bundle.html)).toBeLessThanOrEqual(491520);
 	expect(hostedBundleBytes(bundle)).toBeLessThanOrEqual(524288);

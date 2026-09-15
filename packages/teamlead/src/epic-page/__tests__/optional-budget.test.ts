@@ -55,7 +55,7 @@ it("shrinks only optional rows against hardened bytes and keeps all audit eviden
 	expect(impossible.html.match(/class="kid"/g)).toHaveLength(60);
 });
 
-it("shrinks history by whole rows before removing current opinions and uses the largest fitting preview", async () => {
+it("keeps the history footer independent of preview-row budgets and retains history audit evidence", async () => {
 	const { pageForShipJudgmentBudget } = await import(
 		"./fixtures/founder-budget.js"
 	);
@@ -64,21 +64,13 @@ it("shrinks history by whole rows before removing current opinions and uses the 
 	const noHistory = renderEpicPageBundle(page, EPIC_SHAPE_NOW, {
 		historyRows: 0,
 	});
-	const limit = Math.floor(
-		(hostedBundleBytes(full) + hostedBundleBytes(noHistory)) / 2,
-	);
+	expect(noHistory).toEqual(full);
+	const limit = hostedBundleBytes(full);
 	const fitted = renderEpicPageBudgetBundle(page, EPIC_SHAPE_NOW, limit);
-	const count = fitted.html.match(/data-history-row/g)?.length ?? 0;
-	expect(count).toBeGreaterThan(0);
-	expect(count).toBeLessThan(20);
+	expect(fitted.html).not.toContain("data-history-row");
+	expect(fitted.html.match(/查看近 30 天历史/g)).toHaveLength(1);
 	expect(fitted.html.match(/<div data-judgment>/g)).toHaveLength(60);
 	expect(hostedBundleBytes(fitted)).toBeLessThanOrEqual(limit);
-	expect(
-		hostedBundleBytes(
-			renderEpicPageBundle(page, EPIC_SHAPE_NOW, { historyRows: count + 1 }),
-		),
-	).toBeGreaterThan(limit);
-	expect(fitted.html).toContain(`最近 ${count} / 10000 条`);
 	expect(decodeAuditSidecar(fitted.audit.json)).toContainEqual(
 		page.ship_judgment_history,
 	);

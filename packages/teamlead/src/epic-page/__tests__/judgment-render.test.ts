@@ -1,7 +1,9 @@
+import { Window } from "happy-dom";
 import { expect, it } from "vitest";
 import { decodeAuditSidecar } from "../audit-sidecar.js";
 import { generateEpicPage } from "../generate.js";
 import { renderHistoryPreview } from "../history-preview.js";
+import { renderEpicPageBudgetBundle } from "../optional-budget.js";
 import { renderEpicPageBundle, renderEpicPageHtml } from "../render-html.js";
 import { renderEpicPageMarkdown } from "../render-markdown.js";
 import {
@@ -77,7 +79,7 @@ it("renders bounded judgment links with lossless sidecar and standalone audit ev
 	expect(markdown).toContain("missing_qa");
 });
 
-it("shows twenty bounded history rows and the old entry with explicit failure status", () => {
+it("keeps only one history footer link in HTML and preserves Markdown and audit history", () => {
 	const snapshot = epicShapeSnapshot();
 	const rows = Array.from({ length: 20 }, (_, i) => ({
 		questionId: `q${i}`,
@@ -113,18 +115,25 @@ it("shows twenty bounded history rows and the old entry with explicit failure st
 		shipJudgmentHistory: history,
 	});
 	const bundle = renderEpicPageBundle(page, EPIC_SHAPE_NOW);
-	const preview = bundle.html.match(
-		/<section data-judgment-history>[\s\S]*?<\/section>/,
-	)?.[0];
-	expect(preview).toBeDefined();
-	expect(preview!.match(/data-history-row/g)).toHaveLength(20);
-	expect(Buffer.byteLength(preview!)).toBeLessThanOrEqual(16384);
-	expect(preview).toContain("最近 20 / 150 条");
-	expect(preview).toContain("历史补录");
-	expect(preview).toContain("作者未核验");
-	expect(preview).toContain("更新失败，保留上次发布");
-	expect(preview).toContain('href="https://reports.example/r/old"');
-	expect(preview).not.toContain("<img");
+	for (const html of [
+		bundle.html,
+		renderEpicPageHtml(page, EPIC_SHAPE_NOW),
+		renderEpicPageBudgetBundle(page, EPIC_SHAPE_NOW).html,
+	]) {
+		expect(html).not.toContain("data-judgment-history");
+		expect(html).not.toContain("机器意见历史");
+		expect(html).not.toContain("data-history-row");
+		expect(html.match(/查看近 30 天历史/g)).toHaveLength(1);
+		const window = new Window({
+			settings: { disableJavaScriptEvaluation: true },
+		});
+		window.document.write(html);
+		const link = window.document.querySelector("footer[data-history-link] a");
+		expect(link?.getAttribute("href")).toBe(history.url);
+		expect(link?.closest("details")).toBeNull();
+		expect(link?.parentElement?.textContent).toBe("查看近 30 天历史");
+		window.close();
+	}
 	expect(decodeAuditSidecar(bundle.audit.json)).toContainEqual(
 		page.ship_judgment_history,
 	);
@@ -133,8 +142,27 @@ it("shows twenty bounded history rows and the old entry with explicit failure st
 	);
 	page.ship_judgment_history!.value!.readError = true;
 	const failed = renderEpicPageBundle(page, EPIC_SHAPE_NOW).html;
-	expect(failed).toContain("预览读取失败");
+	expect(failed).not.toContain("预览读取失败");
 	expect(failed).toContain('href="https://reports.example/r/old"');
+	page.ship_judgment_history!.value!.url =
+		'https://reports.example/r/old?x=1&y="quoted"';
+	expect(renderEpicPageHtml(page, EPIC_SHAPE_NOW)).toContain(
+		'href="https://reports.example/r/old?x=1&amp;y=&quot;quoted&quot;"',
+	);
+	for (const url of [null, "", "https://reports.example/" + "&".repeat(400)]) {
+		page.ship_judgment_history!.value!.url = url;
+		expect(renderEpicPageHtml(page, EPIC_SHAPE_NOW)).not.toContain(
+			"data-history-link",
+		);
+	}
+	page.ship_judgment_history!.value = null;
+	expect(renderEpicPageHtml(page, EPIC_SHAPE_NOW)).not.toContain(
+		"机器意见历史",
+	);
+	delete page.ship_judgment_history;
+	expect(renderEpicPageHtml(page, EPIC_SHAPE_NOW)).not.toContain(
+		"data-history-link",
+	);
 });
 
 it("bounds zero-row fallback and does not claim an unavailable prior publication", () => {

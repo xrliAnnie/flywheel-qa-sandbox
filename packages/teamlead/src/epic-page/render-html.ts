@@ -18,7 +18,6 @@ import {
 	type EpicView,
 	type ViewProvenance,
 } from "./founder-view.js";
-import { renderHistoryPreview } from "./history-preview.js";
 import { epicIntakeStatus } from "./intake.js";
 import { type LabelKey, label, leadNoteRoleLabel } from "./labels.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS, leadNoteAge } from "./lead-note.js";
@@ -337,7 +336,9 @@ function renderJudgmentHistory(
 	const cell = page.ship_judgment_history;
 	if (!cell) return "";
 	dictionary.sidecar?.add(cell);
-	return renderHistoryPreview(cell, dictionary.limits.historyRows);
+	const url = cell.value?.url;
+	if (!url || Buffer.byteLength(escapeHtml(url)) > 512) return "";
+	return `<footer data-history-link><a href="${escapeHtml(url)}" rel="noreferrer">查看近 30 天历史</a></footer>`;
 }
 function renderLeadNotes(
 	notes: Cell<string>[] | undefined,
@@ -641,7 +642,8 @@ function renderHtml(
 	</details>`
 	}
 <details class="lead-panel"><summary>出处与补充记录</summary>${dictionary.appendix.join("")}${renderLeadAttention(page, now)}
-${renderJudgmentHistory(page, dictionary)}</details>
+</details>
+${renderJudgmentHistory(page, dictionary)}
 ${dictionary.omittedJudgments ? "<p>机器意见摘要已缩减；完整依据见审计附件。</p>" : ""}
 ${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</div></main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");const update=()=>{document.querySelectorAll("[data-lead-written-at]").forEach(note=>{const written=Date.parse(note.getAttribute("data-lead-written-at")||"");const days=Number(note.getAttribute("data-lead-fade-days"));if(!Number.isFinite(written)||!Number.isFinite(days)||days<=0)return;const elapsed=Math.max(0,Date.now()-written);const hours=Math.floor(elapsed/3600000);const relative=note.querySelector("[data-lead-relative]");if(relative)relative.textContent=note.getAttribute("data-lead-role")+" · "+(hours<1?"刚写":hours+" 小时前写");const stale=elapsed>days*86400000;note.classList.toggle("lead-note-stale",stale);const badge=note.querySelector("[data-lead-stale]");if(badge)badge.hidden=!stale;});if(!root||!age)return;const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
 }
