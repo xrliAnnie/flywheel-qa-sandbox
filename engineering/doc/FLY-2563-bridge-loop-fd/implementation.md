@@ -141,3 +141,9 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - legacy runtime保留每Lead常驻连接；两个项目各一Lead、100轮共200次实际deliver的numeric fd保持不变，重复shutdown回基线。默认backend空闲/触发question检查的两个项目均满足≤6P。此为隔离进程numeric总fd增量，不能替代生产按comm.db分类的2小时证据或推断所有部署拓扑满足E。
 - GREEN：lifetime4 + admission33 + LeadInboxRuntime39 =76/76；teamlead typecheck通过。没有外部网络发送。lead-inbox-runtime主要diff为给原有项目初始化循环添加try/catch造成的缩进；`git diff -w`可核对功能范围。
 - 后续仍需T3全量owner矩阵，尤其MailboxQueue自身constructor失败的原生连接清理与其他factory/lease；T7性能/指定快照/全仓门/有效review/非draft PR。当前所有chunk尚未宣称完整通过。
+
+## T3 第五批：MailboxQueue 构造失败
+
+- 真实损坏schema复现owned MailboxQueue安装失败泄漏3个fd；注入pragma异常复现readonly与底层writable打开失败各泄漏1个fd。借用原生连接失败仍保持可用。
+- owned Queue在连接返回后的所有初始化异常关闭连接；openCommDbWritable的最外层清理覆盖计时安装/pragma与receipt rename等返回前失败，保持原异常与既有stale-receipt正常返回语义。
+- RED：4项中3项fd未回基线；GREEN：open-lifetime4、open-hardening4、queue-schema12共20/20，queue23+FLY2268 migration22共45/45；comm build通过。无GC/生产数据库操作。
