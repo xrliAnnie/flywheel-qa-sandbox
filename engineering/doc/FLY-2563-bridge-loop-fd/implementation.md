@@ -175,3 +175,6 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - 首次`pnpm lint` exit1：7个error均是本单文件import排序（config index/sql-timing测试、fd/health/resource/timer测试、plugin）。定向整理这些文件后`pnpm lint` exit0，保留19条warning，无生产语义改动。
 - `pnpm -r build` exit0，包含9份phase protocol projection检查和全部包构建。
 - 已启动`pnpm test:packages:run`；汇总结果尚未到达，日志`/tmp/fly2563-package-gate.log`，exec session26020。不可将启动/定向green记成aggregate green；继续轮询这个具体handle，不重复启动。
+- Lead对snapshot问题的正式答复（response `fcaf00dc-a633-4274-b69c-e654803816b5`）：runner不注入TEAMLEAD_API_TOKEN是最小权限设计，禁止绕过；Lead提供只读comm快照`~/.flywheel/patrol-repairs/FLY-2563__comm-flywheel__2026-09-15T07:27:01.539Z__5aa3e82a-8dbe-4d48-9a1f-52b01ca86886.db`。已用CommDB.openReadonly验证generation，listSessions返回50条后close；未写此文件。
+- 按Lead指示一次性请求teamlead上下文，question `b07d0b86-d375-4dab-b37a-9ed4e3fde5f4`：需指定9-14原事故备份的隔离可写副本/合规benchmark执行路线，原因是完整observer会安装索引并提交outcome/cursor。未用当前comm快照冒充事故teamlead验收。已用DONE report `778c21bf-586f-4375-93ef-c49d764a185a`回执Lead指令。
+- aggregate gate最近一次poll确认session26020仍运行，正在claude-runner测试；结果尚未到达。此turn分类为progress + verified wait，而非完成/blocked。
