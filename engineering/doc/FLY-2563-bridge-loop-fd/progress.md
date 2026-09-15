@@ -2,16 +2,14 @@
 issue: FLY-2563
 phase: implement
 phaseCursor: 0/7
-updated: 2026-09-15T07:07:06.638Z
-nextStep: "T3: founder scopes + GatePoller caller fixed (112/72 targeted green);
-  runtime init failure and admission scoped reads green76/76 + types. Next full
-  CommDB owner matrix incl MailboxQueue constructor failure; then T7 1.7M
-  performance/snapshot/full gates/code review/non-draft PR. No review running;
-  respect no-push-during-review."
+updated: 2026-09-15T07:10:50.067Z
+nextStep: MailboxQueue/open gate constructor leaks fixed RED3/GREEN20+45 and
+  comm build. Next T7 performance fixture while completing T3 ownership matrix;
+  full gates/code review/non-draft PR remain. No review running.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2563 progress
 **phase**: implement (0/7)
-**next**: T3: founder scopes + GatePoller caller fixed (112/72 targeted green); runtime init failure and admission scoped reads green76/76 + types. Next full CommDB owner matrix incl MailboxQueue constructor failure; then T7 1.7M performance/snapshot/full gates/code review/non-draft PR. No review running; respect no-push-during-review.
+**next**: MailboxQueue/open gate constructor leaks fixed RED3/GREEN20+45 and comm build. Next T7 performance fixture while completing T3 ownership matrix; full gates/code review/non-draft PR remain. No review running.
