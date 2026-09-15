@@ -1,14 +1,14 @@
 ---
 issue: FLY-2563
 phase: design
-phaseCursor: 3/7
-updated: 2026-09-15T01:24:44.123Z
-nextStep: Write bounded-page, cursor, connection-lifetime and QA implementation
-  contracts; request explicit design review
+phaseCursor: 4/7
+updated: 2026-09-15T01:30:38.349Z
+nextStep: Commit and push design, register review; prepare founder HTML while
+  awaiting verdict
 chunks: []
 pointers: {}
 ---
 
 # FLY-2563 progress
-**phase**: design (3/7)
-**next**: Write bounded-page, cursor, connection-lifetime and QA implementation contracts; request explicit design review
+**phase**: design (4/7)
+**next**: Commit and push design, register review; prepare founder HTML while awaiting verdict
