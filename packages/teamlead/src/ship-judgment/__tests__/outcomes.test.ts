@@ -5,6 +5,189 @@ import { refreshHistoryAt, ShipJudgmentOutcomes } from "../outcomes.js";
 import { ShipJudgmentRuntime } from "../runtime.js";
 import { bindingFixture, CHANNEL, HEAD, NOW } from "./binding-fixture.js";
 
+it("defers future and invalid timestamps without blocking later sources", async () => {
+	const { store, db } = await bindingFixture();
+	try {
+		db.prepare("UPDATE workflow_run SET created_at=?").run(NOW);
+		for (const [id, ts] of [
+			["future", "2026-09-12T00:00:00.000Z"],
+			["invalid", "bad-time"],
+			["current", NOW],
+		]) {
+			store.insertEvent({
+				event_id: id!,
+				execution_id: "closeout",
+				issue_id: "FLY-2399",
+				project_name: "flywheel",
+				event_type: "closeout_report",
+				source: "bridge.lifecycle-closeout",
+				payload: { disposition: "canceled" },
+			});
+			db.prepare("UPDATE session_events SET ts=? WHERE event_id=?").run(ts, id);
+		}
+		const observer = new ShipJudgmentOutcomes(db);
+		expect(observer.observeCancellations(NOW)).toBe(1);
+		expect(
+			db
+				.prepare(
+					"SELECT reason FROM ship_judgment_observation_pending ORDER BY reason",
+				)
+				.all(),
+		).toEqual([{ reason: "future" }, { reason: "invalid_source" }]);
+		expect(observer.observeCancellations(NOW)).toBe(0);
+		expect(observer.pageStats().holderCandidates).toBe(0);
+		expect(observer.observeCancellations("2026-09-12T00:00:00.000Z")).toBe(1);
+		expect(
+			db.prepare("SELECT reason FROM ship_judgment_observation_pending").all(),
+		).toEqual([{ reason: "invalid_source" }]);
+	} finally {
+		store.close();
+	}
+});
+
+it("uses rounded UTC milliseconds for equal SQLite and ISO cancellation evidence", async () => {
+	const { store, db } = await bindingFixture();
+	try {
+		const sqliteTime = "2026-09-11 00:00:00.123";
+		const isoTime = "2026-09-11T00:00:00.123Z";
+		db.prepare("UPDATE workflow_run SET created_at=?").run(sqliteTime);
+		db.prepare("UPDATE workflow_gate_holder SET created_at=?").run(sqliteTime);
+		db.prepare(
+			`INSERT INTO linear_state_observations(project,issue_uuid,last_state_type,last_linear_updated_at,observed_at,terminal_authorized) VALUES ('flywheel','FLY-2399','canceled',?,?,1)`,
+		).run(isoTime, isoTime);
+		store.insertEvent({
+			event_id: "utc-equality",
+			execution_id: "closeout",
+			issue_id: "FLY-2399",
+			project_name: "flywheel",
+			event_type: "closeout_report",
+			source: "bridge.lifecycle-closeout",
+			payload: { disposition: "canceled", rootKey: "FLY-2399" },
+		});
+		db.prepare("UPDATE session_events SET ts=?").run(sqliteTime);
+		expect(new ShipJudgmentOutcomes(db).observeCancellations(isoTime)).toBe(1);
+		expect(
+			db
+				.prepare("SELECT authorship,decided_at FROM ship_judgment_outcome")
+				.get(),
+		).toEqual({ authorship: "founder_verified", decided_at: isoTime });
+	} finally {
+		store.close();
+	}
+});
+
+it("advances unmatched closeout sources and never revisits holders without new input", async () => {
+	const { store, db } = await bindingFixture();
+	try {
+		for (let i = 0; i < 725; i++)
+			store.insertEvent({
+				event_id: `unmatched-${i}`,
+				execution_id: "closeout",
+				issue_id: "unrelated",
+				project_name: "flywheel",
+				event_type: "closeout_report",
+				source: "bridge.lifecycle-closeout",
+				payload: { disposition: "canceled" },
+			});
+		db.prepare("UPDATE session_events SET ts=?").run(NOW);
+		const observer = new ShipJudgmentOutcomes(db);
+		for (let i = 0; i < 100; i++) {
+			expect(observer.observeCancellations(NOW)).toBe(0);
+			if (observer.pageStats().sourceCandidates === 0) break;
+		}
+		expect(
+			db
+				.prepare(
+					"SELECT last_event_id FROM ship_judgment_observation_cursor WHERE source_kind='closeout'",
+				)
+				.get(),
+		).toEqual(
+			db.prepare("SELECT MAX(id) AS last_event_id FROM session_events").get(),
+		);
+		expect(
+			db
+				.prepare("SELECT COUNT(*) AS n FROM ship_judgment_observation_pending")
+				.get(),
+		).toEqual({ n: 0 });
+		for (let i = 0; i < 3; i++) {
+			observer.observeCancellations(NOW);
+			expect(observer.pageStats()).toMatchObject({
+				sourceCandidates: 0,
+				holderCandidates: 0,
+				outcomes: 0,
+			});
+		}
+	} finally {
+		store.close();
+	}
+});
+
+it("persists terminal-holder fanout across bounded pages and rolls back progress with outcomes", async () => {
+	const { store, db } = await bindingFixture();
+	try {
+		db.prepare("UPDATE workflow_run SET created_at=?").run(NOW);
+		db.exec("UPDATE workflow_gate_holder SET state='superseded'");
+		for (let i = 2; i <= 35; i++)
+			db.prepare(`INSERT INTO workflow_gate_holder(run_id,gate_node_id,attempt,head_sha,source_execution_id,question_id,state,created_at,updated_at)
+		 VALUES ('r','founder_gate',?,?,'execution',?,'superseded',?,?)`).run(
+				i,
+				HEAD,
+				`q-${i.toString().padStart(2, "0")}`,
+				NOW,
+				NOW,
+			);
+		store.insertEvent({
+			event_id: "fanout",
+			execution_id: "closeout",
+			issue_id: "FLY-2399",
+			project_name: "flywheel",
+			event_type: "closeout_report",
+			source: "bridge.lifecycle-closeout",
+			payload: { disposition: "canceled" },
+		});
+		db.prepare("UPDATE session_events SET ts=?").run(NOW);
+		db.exec(
+			"CREATE TRIGGER fail_outcome BEFORE INSERT ON ship_judgment_outcome BEGIN SELECT RAISE(ABORT,'fixture failure'); END",
+		);
+		expect(() =>
+			new ShipJudgmentOutcomes(db).observeCancellations(NOW),
+		).toThrow("fixture failure");
+		expect(
+			db
+				.prepare(
+					"SELECT last_event_id FROM ship_judgment_observation_cursor WHERE source_kind='closeout'",
+				)
+				.get(),
+		).toEqual({ last_event_id: 0 });
+		db.exec("DROP TRIGGER fail_outcome");
+		let total = 0;
+		for (let i = 0; i < 10; i++) {
+			// Reconstruct the observer each time: fanout state cannot live in JS.
+			const observer = new ShipJudgmentOutcomes(db);
+			total += observer.observeCancellations(NOW);
+			expect(observer.pageStats().holderCandidates).toBeLessThanOrEqual(16);
+		}
+		expect(total).toBe(35);
+		expect(
+			db.prepare("SELECT COUNT(*) AS n FROM ship_judgment_outcome").get(),
+		).toEqual({ n: 35 });
+		expect(
+			db
+				.prepare(
+					"SELECT COUNT(*) AS n FROM workflow_gate_holder WHERE state='superseded'",
+				)
+				.get(),
+		).toEqual({ n: 35 });
+		expect(
+			db
+				.prepare("SELECT COUNT(*) AS n FROM ship_judgment_observation_pending")
+				.get(),
+		).toEqual({ n: 0 });
+	} finally {
+		store.close();
+	}
+});
+
 for (const drift of [false, true]) {
 	it.each([
 		[

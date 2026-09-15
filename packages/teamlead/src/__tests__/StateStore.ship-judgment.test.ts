@@ -100,7 +100,7 @@ describe("ship judgment schema", () => {
 			store.close();
 		}
 	});
-	it("installs exactly eight classified tables and ten immutable guards", async () => {
+	it("installs ten classified tables and ten immutable guards", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
 			const db = raw(store);
@@ -117,6 +117,8 @@ describe("ship judgment schema", () => {
 					"evaluation",
 					"input",
 					"job",
+					"observation_cursor",
+					"observation_pending",
 					"opinion",
 					"outcome",
 					"project_state",
