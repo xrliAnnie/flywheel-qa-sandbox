@@ -7,7 +7,11 @@ Issue: FLY-2563 (https://linear.app/geoforge3d/issue/FLY-2563/bridge-ship-judgme
 
 StateStore.ts 的 session_events 为 `id INTEGER PRIMARY KEY AUTOINCREMENT`。closeout 时间格式含 SQLite datetime 与 ISO 字符串；不能以字面比较替代既有 julianday 的时间等价。closeout 原事件载有 rootKey/disposition，但不是一个可信的 run_id；必须保留项目、issue/alias、原 run/card 创建时间及 Linear observation 验证。
 
-workflow_founder_gate_verdict 为 `verdict_id TEXT PRIMARY KEY`，source_event_id UNIQUE，原记录不可更新/删除，有 run/question 外键。它没有可依赖的公开递增序号。选 `(recorded_at, verdict_id)` 作为稳定排序水位，另用插入触发器把晚到且排序位置已被水位越过的历史时间行放入**精确身份待办**，避免倒填时间永久遗漏。不能用隐藏 rowid 作为新合同（VACUUM 可重排未绑定 INTEGER PRIMARY KEY 的 rowid）。
+workflow_founder_gate_verdict为`verdict_id TEXT PRIMARY KEY`，source_event_id UNIQUE，原记录不可更新/删除，有run/question外键。它没有公开递增序号。正常增量用`(recorded_at,verdict_id)`稳定水位；晚到旧时间由每60秒≤16个源身份的持久化轮转核对捕获，已有outcome不再查holder。不得新增会使学习侧失败回滚权威verdict INSERT的trigger。隐藏rowid不用作新合同。
+
+R1后复核：本单指定备份共有725条flywheel canceled closeout，按既有项目/issue/alias关联匹配到run的数量为0。零匹配是正常“不适用”，不是restore丢依赖证据；普通扫描推进水位且无pending/outcome/告警。恢复回放只由显式source身份和成功restore回执安排，不能由观察器猜测。
+
+候选时间比较继续在PK点查SQL内用julianday，并输出UTC毫秒；不能把SQLite `YYYY-MM-DD HH:MM:SS`交给非UTC进程的Date.parse。后者会产生本地时区偏移；用非UTC TZ回归覆盖。
 
 已有 outcome 身份必须保持：B2 为 `canonicalDigest(['b2',verdict_id])`；取消为 `source_id='<event id>:<question id>'` 及 `canonicalDigest(['closeout',source_id])`。`source_kind,source_id` 已唯一。新进度表仅记录处理位置，不重复储存审批判断，也不成为授权来源。
 
@@ -17,7 +21,7 @@ clarifications.sweep 已有 learning_cursor + outcome rowid，50 条页在同一
 
 SQLite 可重排 JOIN；外层 LIMIT 50 不约束此前的 JSON、关联和排序。选择两次独立 prepared statements：先索引取得≤32个 source id，再逐 id 验证；不依靠一个可被 planner flatten 的普通 CTE 达成边界。
 
-新取消索引采用与已部署索引相同的 JSON 安全谓词，键顺序改成 `(project_name,source,id)` 支持向前查页。迁移采用新名字并保留可能存在的应急索引，不在启动时先 DROP 旧索引。索引存在不等于定义正确；检验 sqlite_master/index_info 和 EXPLAIN（无 holder 起始扫描、无全量排序）。建索引为一次迁移开销，不计入常态观察函数；必须另记迁移时间和失败行为。
+新取消索引采用同形JSON安全谓词，键顺序为`(project_name,source,id)`支持向前查页。指定备份实际旧索引为`(project_name,source,issue_id,ts)`，R1后的EXPLAIN验证其用于id页时仍需TEMP B-TREE；不能用仅`(project_name,source)`的假设索引推断现场不需新索引。保留旧索引，启动前预算一次构建成本。该学习侧迁移失败须在StateStore捕获、标记observation unavailable并禁用observer，继续HTTP初始化；归档保守保留closeout，其他权威schema失败保持原行为。
 
 SQLite 官方说明索引表达式匹配依赖同形表达式，部分索引需要查询谓词能推出索引谓词。来源：[partial indexes](https://www.sqlite.org/partialindex.html)、[expression indexes](https://www.sqlite.org/expridx.html)、[INDEXED BY](https://www.sqlite.org/lang_indexedby.html)。本设计推论：固定 SQL 标识和页获取测试比单看“新增索引”可靠。
 
@@ -25,17 +29,19 @@ SQLite 官方说明索引表达式匹配依赖同形表达式，部分索引需�
 
 `new CommDB(path,false)` 的 false 仅是不创建缺失文件；它仍可迁移和 purge，不代表只读。只读短查询用 `CommDB.openReadonly`，并在 finally 关闭。constructor 已在错误路径 closeAfterOpenFailure；不要重写成吞掉 generation/migration 错误。
 
-保留所有 mailbox/receipt 幂等身份。顺序应为：短同步读取→close→网络→重新 open 并重新证明 authority→短事务写入→close。不要拿跨 await 的陈旧授权快照直接写。确有 lease 的下游采用现有 `commDbLeaseFactory {db,release}` 合同；借用方不得关闭他人拥有的实例，所有权不能靠路径猜。
+保留所有mailbox/receipt幂等身份。短同步读取→close→网络→重新open并重新证明authority→短写入→close；不能拿旧授权快照写回。已有lease采用`commDbLeaseFactory {db,release}`，不关闭借用实例。两个裸new加finally关闭，notify保留createIfMissing=true；只读zombie对缺失库安静返回空。legacy每Lead常驻owner有界且shutdown关闭，保留它，不改成逐事件反复schema/migration/purge；其数量计入真实fd预算。
 
 已检查 event-route 的各独立 db 块、founder-routing-response-route 的 finally、gate-poller 的 ensureCommDbMigrated/getPendingQuestions、founder-reply-deliverer 的 lease factory。两处裸 new 已确认，其他 104 个文本入口须在实现台账中归类为同步短作用域、显式租借或常驻。每类必须有异常/挂起的计数证据；不能只靠 GC 或无限连接池。
 
 ## 4. fd 与健康状态
 
-wrapper/plist 目前都未声明 fd 软限。选择 wrapper 提升**软限**，不降低更高既有上限、不修改硬限；失败必须明确记录实际值。`ulimit -Sn 8192` 在启动新进程前生效，无法修复已运行进程。
+wrapper/plist目前未声明fd软限。但Node自身会在PlatformInit提升RLIMIT_NOFILE，不能把launchctl的256等同于Bridge进程限制。wrapper保留尽力提升软限到8192，不降低更高值/硬限；失败仅warn继续启动，不能为无效的诊断条件使Bridge重启循环。进程有效limit才是F验收依据。
 
-Node 的 diagnostic report 含 userLimits；本机 Node v25.6.1 的受限测试进程实际返回 `open_files:{soft:1048575,hard:'unlimited'}`，证明可取数，**不是 Bridge 上限**。只取该字段，不输出 report 中环境变量/路径等内容。启动时读取并缓存；health 不运行 report/lsof，也不 spawn。来源：[Node diagnostic report](https://nodejs.org/api/report.html)。
+R1后隔离验证：同一子shell先设`ulimit -Sn 256`再启动Node v25.6.1，report仍为`{soft:1048575,hard:'unlimited'}`；未制造fd耗尽。此前不能把这个值的来源归为沙箱。Node主源码PlatformInit也明确调整resource limit。来源：[Node PlatformInit](https://github.com/nodejs/node/blob/main/src/node.cc)、[Node diagnostic report](https://nodejs.org/api/report.html)。这些证明Node行为，不是对真实Bridge PID的测量。
 
-Darwin 以异步 `execFile('/usr/sbin/lsof',['-nP','-a','-p',String(pid),'-F','f'])` 得数字 fd；去重并排除 cwd/txt/mem 等非 fd，失败/超时写 unavailable，不能变 0。Linux 异步读取 `/proc/self/fd`。每 30 秒采样一次，single-flight，超时 2 秒，输出≤1MiB；关闭退出。上限/采样未知时使用 null 与原因。
+Darwin进程有效上限还受内核maxfilesperproc约束；取min(进程soft,kernel cap)，而不是仅用report.soft。Apple的[getdtablesize实现](https://github.com/apple/darwin-xnu/blob/main/bsd/kern/kern_descrip.c)体现该限制。reviewer报告宿主机kernel cap184320；本设计sandbox读取sysctl被拒绝，该现场值没有在本节点独立验证，不写成已确认Bridge状态。真实launchd Bridge的soft/cap/errno取证交给授权实施/QA，不能用237fd与256launchctl值确认历史EMFILE因果。ENFILE是系统全局文件名额问题，需独立记录kern.num_files/kern.maxfiles，不能混入进程分母。
+
+本节点验证Node异步readdir('/dev/fd')可用。Darwin以/dev/fd、Linux以/proc/self/fd计数字fd，每30秒single-flight；超时2秒标unknown但直到原任务settle才释放flight。lsof只用于QA按comm.db分类。内核cap异步固定sysctl读取，2秒/64KiB限额，5分钟刷新、10分钟过期；必需cap未知不退回过大soft当作effective。health仅读缓存，不运行report/readdir/sysctl/lsof；不泄露完整report中的环境和路径。
 
 现有 EventLoopAttribution 已用 monitorEventLoopDelay，单位转换纳秒→毫秒，30秒窗口，与 profiler 开关分离；复用它，增加窗口时间、采样状态与 lag_ms（最近完整窗口 max_ms 的别名）。来源：[Node perf_hooks](https://nodejs.org/api/perf_hooks.html)。health 既有字段保持兼容，不新增同步系统探测。
 

@@ -5,7 +5,7 @@ Issue: FLY-2563 (https://linear.app/geoforge3d/issue/FLY-2563/bridge-ship-judgme
 
 ## 问题与目标
 
-Bridge 是全舰队的请求入口。周期性查账占住主线程、数据库连接未及时关闭，各自都能使请求失去响应。本单同时修这两个必要条件；不把原先误归因的冷归档扫描当成主因。
+Bridge是全舰队的请求入口。周期性查账占住主线程已经确认；两处数据库连接未及时关闭也已定位。本单修慢查询与连接寿命，并补真实资源观测。R1校正：现有证据不足以确认事故的第二层就是“Bridge软限256耗尽”，不能把launchctl值代替Node实际限制；不把误归因的冷归档当主因。
 
 事件循环是 Node 接收请求和执行回调的主线程；同步 SQLite 调用完成前它无法接待下一位请求。fd（文件描述符）是进程持有文件或网络连接的系统名额；数据库未关闭也会占名额。
 
@@ -27,7 +27,7 @@ Bridge 是全舰队的请求入口。周期性查账占住主线程、数据库�
 | bridge/plugin.ts:13539 | notifyLeadInstruction 临时 new CommDB 后丢失对象，无 close | 每次通知可能残留连接，等待 GC 不算寿命管理 |
 | bridge/plugin.ts:13575 | scanZombiesWired 每项目 new CommDB.listSessions，无 close | 周期调用累计；确定的泄漏路径，不再仅猜测 HTTP 路由 |
 | bridge/gate-poller.ts | 部分句柄在 finally 关闭，但跨 await 网络/唤醒存活 | 必须测试挂起与异常，不能用“有 finally”代替有界寿命 |
-| bridge/commdb-lead-runtime.ts:48 | legacy runtime 每 Lead 常驻一连接，shutdown 才关闭 | 可关闭但可能超出按项目计的稳态指标；改为同步操作作用域 |
+| bridge/commdb-lead-runtime.ts:48 | legacy runtime 每 Lead 常驻一连接，shutdown关闭，是有界owner | 保留该寿命，纳入实测预算；不引入逐事件全量迁移 |
 | bridge/event-loop-attribution.ts | 已有 30 秒窗口 lag 与事件记录 | 扩展现有指标，不新建同名采样系统 |
 | terminal-row-archive.ts | 时间 keyset 与页预算存在；昂贵资格/JSON 判断仍在 LIMIT 前，游标 WeakMap | 次要风险：先限候选行，再过滤；持久化进度 |
 
