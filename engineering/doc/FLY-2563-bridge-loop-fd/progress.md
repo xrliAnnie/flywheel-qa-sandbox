@@ -1,14 +1,14 @@
 ---
 issue: FLY-2563
 phase: design
-phaseCursor: 5/7
-updated: 2026-09-15T01:57:44.275Z
-nextStep: Poll R2 8b68f7f7-65a6-44b4-b6aa-319babf09006 on eeb375e14; HTML
-  verified; publish only after APPROVED
+phaseCursor: 6/7
+updated: 2026-09-15T02:07:16.035Z
+nextStep: R2 APPROVED; local HTML verifier passes; publish committed HTML,
+  verify hosted content, report, complete and park
 chunks: []
 pointers: {}
 ---
 
 # FLY-2563 progress
-**phase**: design (5/7)
-**next**: Poll R2 8b68f7f7-65a6-44b4-b6aa-319babf09006 on eeb375e14; HTML verified; publish only after APPROVED
+**phase**: design (6/7)
+**next**: R2 APPROVED; local HTML verifier passes; publish committed HTML, verify hosted content, report, complete and park
