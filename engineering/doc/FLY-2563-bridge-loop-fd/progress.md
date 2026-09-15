@@ -1,18 +1,18 @@
 ---
 issue: FLY-2563
 phase: implement
-phaseCursor: 0/7
-updated: 2026-09-15T07:36:06.915Z
-nextStep: Incident observeCancellations receipt ready:1687121 events/536
-  holders,24pages max6.646ms, idle0.112–0.163ms; handles closed and Lead copy
-  reclaimable report4576626f. Package gate session26020 still LIVE;
-  log/tmp/fly2563-package-gate.log, do not restart. Finish ownership matrix,
-  diagnose original synthetic154.543ms red, full gates/review/non-draft PR.
-  Production health/fd and archive incident-copy QA pending. No review running.
+phaseCursor: 6/7
+updated: 2026-09-15T07:40:46.839Z
+nextStep: "T1–T6 source/focused proofs and owner/timer matrices ready. T7: five
+  synthetic runs retained (first154.543ms red unlocated; next4green); incident
+  max6.646ms; lint/build/four typechecks/new shell green. Aggregate session26020
+  LIVE, receipt directory flywheel-package-gate-0LRYIT. Prepare non-draft PR and
+  effective code review/exact-head CI; no completion until gates. Production and
+  archive incident QA pending."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2563 progress
-**phase**: implement (0/7)
-**next**: Incident observeCancellations receipt ready:1687121 events/536 holders,24pages max6.646ms, idle0.112–0.163ms; handles closed and Lead copy reclaimable report4576626f. Package gate session26020 still LIVE; log/tmp/fly2563-package-gate.log, do not restart. Finish ownership matrix, diagnose original synthetic154.543ms red, full gates/review/non-draft PR. Production health/fd and archive incident-copy QA pending. No review running.
+**phase**: implement (6/7)
+**next**: T1–T6 source/focused proofs and owner/timer matrices ready. T7: five synthetic runs retained (first154.543ms red unlocated; next4green); incident max6.646ms; lint/build/four typechecks/new shell green. Aggregate session26020 LIVE, receipt directory flywheel-package-gate-0LRYIT. Prepare non-draft PR and effective code review/exact-head CI; no completion until gates. Production and archive incident QA pending.
