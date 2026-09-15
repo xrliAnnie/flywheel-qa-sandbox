@@ -126,3 +126,9 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - RED：临时使用WIP之前的deliverer运行3个生命周期回归，全部失败：learning await时live=1，默认路径numeric fd=17 vs baseline14。随后恢复当前源码；红回执`/tmp/fly2563-founder-scope-red.log`。测试初稿误写reject结果为retry，按现有ThreadScanOutcome的process_failed合同更正，cursor不推进断言保留。
 - GREEN：founder deliverer49、ship handler29、factory5、fleet4、gate-poller-health10、lifecycle15，合计112/112；CommDB open-hardening含既有writer锁/缺失库/旧代拒绝；comm build与teamlead typecheck通过。仅本地定向证据，非全仓/CI/生产验收。
 - 待续：T3完整owner清单与默认/legacy多项目寿命夹具；T7 1.7M性能、指定备份、全仓门、code review、非draft PR及needs_review完成回执。未派发QA、未重启/部署。
+
+## T3 第三批：GatePoller 实际调用链释放
+
+- 调用方审计发现GatePoller原先保留每项目readonly/writer两个连接，并给deliverer注入release空操作。上一批默认deliverer局部证据不能证明此生产组合已释放。
+- 新回归在真实GatePoller pass的投递入口挂起；RED为numeric fd21、baseline16。现改为同步物化各Lead的pending数组并关闭两条项目连接，然后才yield/构造任务/异步投递；移除借用writer覆盖，deliverer使用上一批的既有库短作用域。保留每轮扫描预算、顺序、水位、逐Lead读取失败隔离和可信写回验证。
+- GREEN：扫描预算6、调度9、report排除3、ship grace5、deliverer49，共72/72；teamlead typecheck通过。未将此定向证据表述为全仓或生产验收。
