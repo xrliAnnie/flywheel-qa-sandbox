@@ -765,6 +765,7 @@ expected_shard_tests = {
         "Test — Discord adapter orphan reaper (FLY-183)",
         "Test — Lead rules single-bundle load chain (FLY-1402)",
         "Test — FLY-1496 model resolution + Lead derivation",
+        "Test — FLY-1948 slot Discord channel evidence",
         "Test — FLY-1830 non-Lead daemon convergence",
         "Test — FLY-1814 launchd fleet contracts",
         "Test — FLY-1929 voucher watch contracts",
@@ -1208,6 +1209,18 @@ require(
     fly1814_commands == expected_fly1814_commands,
     f"FLY-1814 CI command set/order drifted: {fly1814_commands}",
 )
+
+fly1948_steps = [step for step in script_steps if isinstance(step, dict) and step.get("name") == "Test — FLY-1948 slot Discord channel evidence"]
+require(len(fly1948_steps) == 1, "FLY-1948 channel evidence must run exactly once")
+fly1948_commands = [line.strip() for line in str(fly1948_steps[0].get("run", "")).splitlines() if line.strip()]
+require(fly1948_commands == [
+    "pnpm --filter flywheel-comm build",
+    "bash scripts/__tests__/qa-discord-liveness.test.sh",
+    "bash scripts/__tests__/qa-529-discord-liveness.test.sh",
+    "bash scripts/__tests__/qa-lead-coordinates.test.sh",
+    "bash scripts/__tests__/qa-room-env.test.sh",
+    "node --test scripts/__tests__/qa-529-discord-roundtrip.test.mjs",
+], "FLY-1948 must build canonical envelopes before running every channel/roundtrip suite")
 
 with open(os.environ["DISCORD_E2E"], encoding="utf-8") as handle:
     discord_e2e = handle.read()

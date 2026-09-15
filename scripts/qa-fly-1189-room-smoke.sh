@@ -132,16 +132,20 @@ jq -e '.[0].leads[0].match.labels == ["Product-Test"] and .[0].leads[1].match.la
 [[ -f "$LAUNCH_MANIFEST" ]] && ok "launch manifest present" || bad "launch manifest missing"
 [[ -f "$CAMPAIGN_MANIFEST" ]] && ok "campaign manifest present" || bad "campaign manifest missing"
 
-# 3. Two Lead procs alive (lease files).
-for aid in $(jq -r '.[0].leads[].agentId' "$PROJECTS_FILE"); do
-	proj=$(jq -r '.[0].projectName' "$PROJECTS_FILE")
-	lease="${HOME}/.flywheel/comm/${proj}/.inbox-ready-${aid}"
-	if [[ -f "$lease" ]] && kill -0 "$(jq -r '.pid' "$lease" 2>/dev/null)" 2>/dev/null; then
-		ok "Lead ${aid} alive (lease)"
-	else
-		bad "Lead ${aid} not alive"
-	fi
-done
+# 3. Every Lead needs current adapter, socket, and gateway evidence.
+CHANNEL_RC=0
+CHANNEL_JSON=$(bash "${SCRIPT_DIR}/qa-529-discord-liveness.sh" "$SLOT" --json) || CHANNEL_RC=$?
+if ! jq -e '.applicableCount > 0 and (.leads | type == "array")' <<<"$CHANNEL_JSON" >/dev/null 2>&1; then
+	bad "Lead channel census unavailable or not applicable (rc=${CHANNEL_RC})"
+else
+	for aid in $(jq -r '.[0].leads[].agentId' "$PROJECTS_FILE"); do
+		if jq -e --arg agent "$aid" '[.leads[] | select(.agentId == $agent)] | length == 1 and .[0].live == true' <<<"$CHANNEL_JSON" >/dev/null; then
+			ok "Lead ${aid} channel live"
+		else
+			bad "Lead ${aid} channel not live (rc=${CHANNEL_RC})"
+		fi
+	done
+fi
 
 # 4. Injector: verify-target against a PRODUCTION runner execId must REFUSE.
 #    Find any production runner execId (a claude proc NOT under any slot). We do

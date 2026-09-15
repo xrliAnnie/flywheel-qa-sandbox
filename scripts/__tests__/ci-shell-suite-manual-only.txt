@@ -11,7 +11,6 @@ scripts/__tests__/discord-plugin-ops.test.sh
 scripts/__tests__/fly1364-discord-e2e.test.sh
 scripts/__tests__/fly1364-live-e2e.test.sh
 scripts/__tests__/fly1686-gate-entry-audit.test.sh
-scripts/__tests__/qa-room-env.test.sh
 scripts/__tests__/setup-roundtable-config.test.sh
 scripts/__tests__/token-usage-daily-channel.test.sh
 scripts/__tests__/token-usage-daily-failloud.test.sh

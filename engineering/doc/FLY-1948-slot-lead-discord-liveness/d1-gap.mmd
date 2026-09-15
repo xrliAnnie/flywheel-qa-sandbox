@@ -1,0 +1,17 @@
+flowchart LR
+  subgraph room["529 房今天判「Lead 起来了」的依据"]
+    L1["launchd pid 与 manifest 一致"] --> L2["私有 tmux 里有 main 会话"]
+    L2 --> L3["inbox-mcp 写出 .inbox-ready lease<br/>且 pid 存活"]
+    L3 --> R["房间报 ready<br/>发 room-info.json"]
+  end
+  subgraph real["通道真正活着需要的三件事"]
+    E1["E1 适配器进程<br/>bun server.ts 是 claude 直接子进程"]
+    E2["E2 到 Discord 网关<br/>443 ESTABLISHED"]
+    E3["E3 gateway-health.log<br/>本代 shard ready"]
+  end
+  R -. 今天没有任何一条边 .-> E1
+  E1 --> E2 --> E3
+  style R fill:#fff3e0,stroke:#ff9500
+  style E1 fill:#e8f5e9,stroke:#34c759
+  style E2 fill:#e8f5e9,stroke:#34c759
+  style E3 fill:#e8f5e9,stroke:#34c759

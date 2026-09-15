@@ -572,6 +572,46 @@ def body_snapshot(
     }
 
 
+CHANNEL_REASONS = frozenset({
+    "not_applicable", "probe_unavailable", "claude_process_missing",
+    "claude_process_ambiguous", "dev_channels_dialog_parked", "adapter_missing",
+    "adapter_process_ambiguous", "adapter_orphaned", "gateway_socket_missing",
+    "gateway_ready_missing", "gateway_ready_stale", "gateway_degraded",
+})
+
+
+def channel_snapshot(manifest: Path) -> dict[str, Any]:
+    """Project validated fields from the manifest's own failure artifact."""
+    runtime = validate_runtime_path(str(manifest.parent), manifest_raw=str(manifest))
+    identity = load_json_object(manifest)["leadId"]
+    path = safe_path(str(runtime / "channel-liveness.json"), must_exist=True)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or not info.st_mode & stat.S_IRUSR or info.st_size > BODY_OUTPUT_LIMIT):
+            raise ValueError("invalid channel evidence file")
+        raw = stream.read(BODY_OUTPUT_LIMIT + 1)
+        if len(raw) > BODY_OUTPUT_LIMIT:
+            raise ValueError("oversized channel evidence")
+    value = json.loads(raw)
+    if (not isinstance(value, dict) or type(value.get("schemaVersion")) is not int
+            or value["schemaVersion"] != 1 or value.get("agentId") != identity
+            or value.get("live") is not False
+            or not isinstance(value.get("reason"), str)
+            or value["reason"] not in CHANNEL_REASONS):
+        raise ValueError("invalid channel evidence identity or verdict")
+    since = value.get("since")
+    effective = since.get("effective") if isinstance(since, dict) else None
+    if not isinstance(effective, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})", effective
+    ):
+        raise ValueError("invalid channel evidence timestamp")
+    datetime.fromisoformat(effective.replace("Z", "+00:00"))
+    return {"schemaVersion": 1, "agentId": identity, "live": False,
+            "reason": value["reason"], "since": {"effective": effective}}
+
+
 def snapshot(args: argparse.Namespace) -> int:
     if not LABEL_RE.fullmatch(args.label):
         raise ValueError("invalid label")
@@ -647,6 +687,14 @@ def snapshot(args: argparse.Namespace) -> int:
             and launchd["pid"] != last_launch_pid
         ),
     }
+    if args.phase == "channel":
+        try:
+            channel = channel_snapshot(manifest)
+            result["reason"] = "channel:" + channel["reason"]
+            result["channelLiveness"] = channel
+        except (OSError, ValueError, TypeError, KeyError):
+            result["reason"] = "channel:unknown"
+            result["checks"].append("channel_liveness_invalid:validation_failed")
     evidence = manifest.parent / f"{args.phase}-failure.json"
     atomic_json(evidence, result)
     print(
@@ -664,7 +712,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser()
     subcommands = result.add_subparsers(dest="command", required=True)
     command = subcommands.add_parser("snapshot")
-    command.add_argument("--phase", choices=("bootstrap", "topology"), required=True)
+    command.add_argument("--phase", choices=("bootstrap", "topology", "channel"), required=True)
     command.add_argument("--label", required=True)
     command.add_argument("--plist", required=True)
     command.add_argument("--manifest", required=True)

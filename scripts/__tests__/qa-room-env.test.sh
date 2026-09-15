@@ -145,5 +145,41 @@ OUT=$(qa_room_roundtable_allowbots "${ROOT}/slots3.json" "AAA" 1 1 "[2,3]" | jq 
 [[ "$OUT" == '["AAA","BBB","CCC"]' ]] && pass "allowBots host w/ members [2,3] → [AAA,BBB,CCC]" || fail "allowBots 3-slot" "$OUT"
 
 echo
+# FLY-1948: channel readiness has its own bounded budget, independent of lease.
+if declare -F qa_room_resolve_lead_channel_timeout >/dev/null; then
+  OUT=$(qa_room_resolve_lead_channel_timeout "" "")
+  [[ "$OUT" == 60 ]] && pass "channel timeout defaults to 60s" \
+    || fail "channel timeout default" "$OUT"
+  OUT=$(qa_room_resolve_lead_channel_timeout 7 19)
+  [[ "$OUT" == 7 ]] && pass "channel timeout flag overrides env" \
+    || fail "channel timeout precedence" "$OUT"
+  OUT=$(qa_room_resolve_lead_channel_timeout "" 19)
+  [[ "$OUT" == 19 ]] && pass "channel timeout accepts env" \
+    || fail "channel timeout env" "$OUT"
+  for VALID in 1 3600; do
+    OUT=$(qa_room_resolve_lead_channel_timeout "$VALID" "")
+    [[ "$OUT" == "$VALID" ]] && pass "channel timeout accepts boundary $VALID" \
+      || fail "channel timeout boundary $VALID" "$OUT"
+  done
+  for INVALID in 0 -1 3601 1.5 nope 999999999999999999999999; do
+    for SOURCE in flag env; do
+      if [[ "$SOURCE" == flag ]]; then
+        ARGS=("$INVALID" 19)
+      else
+        ARGS=("" "$INVALID")
+      fi
+      if qa_room_resolve_lead_channel_timeout "${ARGS[@]}" >"${ROOT}/timeout.out" 2>"${ROOT}/timeout.err"; then
+        fail "channel timeout rejects $SOURCE=$INVALID" "unexpected success"
+      elif [[ -s "${ROOT}/timeout.err" && ! -s "${ROOT}/timeout.out" ]]; then
+        pass "channel timeout rejects $SOURCE=$INVALID with diagnostic"
+      else
+        fail "channel timeout rejects $SOURCE=$INVALID" "missing diagnostic or leaked result"
+      fi
+    done
+  done
+else
+  fail "channel timeout resolver exists" "qa_room_resolve_lead_channel_timeout is missing"
+fi
+
 echo "[TEST] qa-room-env: ${PASSED} passed, ${FAILED} failed"
 [[ "$FAILED" -eq 0 ]]

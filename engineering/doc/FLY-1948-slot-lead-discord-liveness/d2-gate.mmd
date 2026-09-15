@@ -1,0 +1,11 @@
+flowchart TD
+  S["test-deploy.sh 起 slot Lead<br/>写 lead-coordinates.json<br/>记 since = 启动时刻"] --> W1{"lease 出现且 pid 存活?<br/>预算 120s"}
+  W1 -- 否 --> F1["phase=lease 失败<br/>停 registry · 释放锁 · exit 1"]
+  W1 -- 是 --> W2{"通道活连接三件证据<br/>绑当前 claude 代际 + 网关最新状态?<br/>预算 60s · 2s 轮询"}
+  W2 -- 全成立 --> OK["写 channel-liveness.json<br/>room-info.lead<br/>房间 ready"]
+  W2 -- 超时 --> F2["phase=channel 失败<br/>channel-failure.json 带分型 reason<br/>停 registry · 释放锁 · exit 1"]
+  F2 --> RS["reason(12 种)之一:<br/>dev_channels_dialog_parked<br/>adapter_missing / orphaned / ambiguous<br/>gateway_socket_missing<br/>gateway_ready_missing / stale / degraded<br/>claude_process_missing / ambiguous<br/>probe_unavailable · not_applicable"]
+  P["qa-529-discord-liveness.sh<br/>枚举坐标文件 · 逐 Lead 重判"] --> W2
+  style OK fill:#e8f5e9,stroke:#34c759
+  style F1 fill:#ffebee,stroke:#ff3b30
+  style F2 fill:#ffebee,stroke:#ff3b30

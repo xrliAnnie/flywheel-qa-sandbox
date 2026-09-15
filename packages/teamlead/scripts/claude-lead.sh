@@ -1649,6 +1649,8 @@ _dev_channels_dialog_present() {
 _poll_dev_channels_dialog_v2() {
   local timeout_sec="${1:-90}"
   local elapsed=0 socket pane pane_text send_rc verify capture_rc probe_rc probe_out send_out
+  local last_capture="" lines=0 blank=true match_warning=0 match_local_dev=0
+  local match_channels_hint=0 banner_channels=0 prompt_caret=0 pane_sha256=-
 
   # Address the private server explicitly. The shared Runner tmux socket override
   # must never retarget these Lead keystrokes.
@@ -1686,6 +1688,7 @@ _poll_dev_channels_dialog_v2() {
     # iteration remains the only authority on pane death.
     capture_rc=0
     pane_text="$(command tmux -S "$socket" capture-pane -t "$pane" -p 2>/dev/null)" || capture_rc=$?
+    if [ "$capture_rc" -eq 0 ]; then last_capture="$pane_text"; fi
     [ "$capture_rc" -eq 0 ] || pane_text=""
 
     if _dev_channels_dialog_present "$pane_text"; then
@@ -1733,6 +1736,20 @@ _poll_dev_channels_dialog_v2() {
   done
 
   _log_startup "dialog-poller-v2: DEV_CHANNELS_DIALOG_NOT_SEEN after ${timeout_sec}s" || true
+  # FLY-1948: this shared log may be world-readable. Record only shape and a
+  # digest of the last successful capture, never conversation or credentials.
+  if [ -n "$last_capture" ]; then
+    lines=$(printf '%s\n' "$last_capture" | wc -l | tr -d ' ') || lines=0
+  fi
+  if grep -q '[^[:space:]]' <<<"$last_capture"; then blank=false; fi
+  if grep -qF 'WARNING: Loading development channels' <<<"$last_capture"; then match_warning=1; fi
+  if grep -qF 'I am using this for local development' <<<"$last_capture"; then match_local_dev=1; fi
+  if grep -qF 'Please use --channels to run a list of approved channels.' <<<"$last_capture"; then match_channels_hint=1; fi
+  if grep -qF 'Channels (experimental)' <<<"$last_capture"; then banner_channels=1; fi
+  if grep -qF '❯' <<<"$last_capture"; then prompt_caret=1; fi
+  pane_sha256=$(printf '%s' "$last_capture" | shasum -a 256 2>/dev/null) || pane_sha256=-
+  pane_sha256="${pane_sha256%% *}"
+  _log_startup "dialog-poller-v2: NOT_SEEN classification: lines=${lines} blank=${blank} match_warning=${match_warning} match_local_dev=${match_local_dev} match_channels_hint=${match_channels_hint} banner_channels=${banner_channels} prompt_caret=${prompt_caret} pane_sha256=${pane_sha256}" || true
   return 0
 }
 

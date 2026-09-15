@@ -3594,12 +3594,6 @@
 		"classification": "qa-only"
 	},
 	{
-		"key": "scripts/qa-fly-1189-room-smoke.sh:if [[ -f \"$lease\" ]] && kill -0 \"$(jq -r '.pid' \"$lease\" 2>/dev/null)\" 2>/dev/null; then#1",
-		"path": "scripts/qa-fly-1189-room-smoke.sh",
-		"code": "if [[ -f \"$lease\" ]] && kill -0 \"$(jq -r '.pid' \"$lease\" 2>/dev/null)\" 2>/dev/null; then",
-		"classification": "qa-only"
-	},
-	{
 		"key": "scripts/qa-fly-1236-e2e.mjs:process.kill(Number(p), \"SIGKILL\");#1",
 		"path": "scripts/qa-fly-1236-e2e.mjs",
 		"code": "process.kill(Number(p), \"SIGKILL\");",

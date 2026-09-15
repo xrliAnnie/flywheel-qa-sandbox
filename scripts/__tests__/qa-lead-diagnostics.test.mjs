@@ -97,7 +97,7 @@ function runSnapshot(dir, overrides = {}) {
 			helper,
 			"snapshot",
 			"--phase",
-			"topology",
+			overrides.phase ?? "topology",
 			"--label",
 			"com.flywheel.qa.lead.slot-2.flywheel-test-2",
 			"--plist",
@@ -648,3 +648,80 @@ print(json.dumps({"elapsed": time.monotonic() - started, "unavailable": result i
 	assert.equal(receipt.unavailable, true);
 	assert.ok(receipt.elapsed < 3, JSON.stringify(receipt));
 });
+
+// FLY-1948: accept only the current slot manifest's bounded failure artifact.
+for (const variant of [
+	"valid",
+	"symlink",
+	"agent",
+	"live",
+	"reason",
+	"outside",
+	"missing",
+	"oversized",
+]) {
+	test(`channel snapshot validates liveness provenance: ${variant}`, () => {
+		const slotRoot = `/tmp/flywheel-test-slot-${process.pid}${Math.floor(Math.random() * 100000)}`;
+		const dir = join(slotRoot, "launchd");
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+		try {
+			const files = fixture(dir, {
+				manifestContent: JSON.stringify({
+					leadId: "runtime",
+					pid: 4242,
+					socketPath: "/tmp/private-qa.sock",
+				}),
+			});
+			const value = {
+				schemaVersion: 1,
+				agentId: "runtime",
+				live: false,
+				reason: "adapter_missing",
+				since: { effective: "2026-09-14T20:00:00.000Z" },
+				arbitrarySecret: "SHOULD_NOT_COPY",
+			};
+			if (variant === "agent") value.agentId = "other";
+			if (variant === "live") value.live = true;
+			if (variant === "reason") value.reason = "invented_reason";
+			const liveness = join(files.runtime, "channel-liveness.json");
+			if (variant === "symlink") {
+				const target = join(slotRoot, "other.json");
+				writeFileSync(target, JSON.stringify(value));
+				symlinkSync(target, liveness);
+			} else if (variant === "outside") {
+				writeFileSync(
+					join(slotRoot, "channel-liveness.json"),
+					JSON.stringify(value),
+				);
+			} else if (variant !== "missing") {
+				writeFileSync(
+					liveness,
+					variant === "oversized" ? "x".repeat(262145) : JSON.stringify(value),
+					{ mode: 0o600 },
+				);
+			}
+			const result = runSnapshot(dir, { phase: "channel" });
+			assert.equal(result.status, 0, result.stderr);
+			const content = readFileSync(
+				join(files.runtime, "channel-failure.json"),
+				"utf8",
+			);
+			const snapshot = JSON.parse(content);
+			assert.equal(
+				snapshot.reason,
+				variant === "valid" ? "channel:adapter_missing" : "channel:unknown",
+			);
+			assert.doesNotMatch(content, /SHOULD_NOT_COPY/);
+			if (variant === "valid")
+				assert.equal(snapshot.channelLiveness.agentId, "runtime");
+			else
+				assert.ok(
+					snapshot.checks.some((x) =>
+						x.startsWith("channel_liveness_invalid:"),
+					),
+				);
+		} finally {
+			rmSync(slotRoot, { recursive: true, force: true });
+		}
+	});
+}

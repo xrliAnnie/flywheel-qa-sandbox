@@ -1119,6 +1119,19 @@ assert_contains "$(<"$plan")" \
 	'不能用延长 900s timeout 代替证明' \
 	'implementation plan forbids timeout inflation as a replay fix'
 
+# FLY-1948: both carrier branches publish coordinates, and lease readiness
+# must flow through the shared channel gate before the final ready verdict.
+assert_contains "$test_deploy_source" 'qa_lead_write_coordinates' 'deployment writes per-Lead coordinates'
+assert_contains "$test_deploy_source" 'qa_slot_channel_ready "$AGENT_ID"' 'main Lead uses channel gate'
+assert_contains "$test_deploy_source" 'qa_slot_channel_ready "$XAGENT"' 'extra Lead uses channel gate'
+assert_contains "$test_deploy_source" 'qa_discord_liveness_wait' 'shared channel gate uses liveness library'
+assert_contains "$test_deploy_source" 'LEAD_NOT_READY_PHASE=channel' 'main channel failure has separate phase'
+assert_contains "$test_deploy_source" 'channel liveness skipped' 'Codex N/A is explicit'
+assert_contains "$test_deploy_source" 'qa_room_resolve_lead_channel_timeout' 'channel budget parsed during preflight'
+assert_contains "$test_deploy_source" 'pnpm --filter flywheel-comm build || exit 18' 'roundtrip parser built before room start'
+assert_contains "$test_deploy_source" 'lead:$lead' 'generalized room-info carries Lead coordinates'
+assert_contains "$test_deploy_source" 'leads:$leads' 'stdout carries every Lead coordinate path'
+
 if (( failures > 0 )); then
 	echo "${failures} generalized helper test(s) failed" >&2
 	exit 1

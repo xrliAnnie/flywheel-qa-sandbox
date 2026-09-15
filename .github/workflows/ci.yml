@@ -411,6 +411,17 @@ jobs:
           bash scripts/__tests__/fly1496-qa-acceptance.test.sh
           bash packages/teamlead/scripts/__tests__/fly1650-companion-effort.test.sh
 
+      # FLY-1948: all observations are injected; these suites use no live
+      # Discord channels, host Lead processes, or founder credentials.
+      - name: Test — FLY-1948 slot Discord channel evidence
+        run: |
+          pnpm --filter flywheel-comm build
+          bash scripts/__tests__/qa-discord-liveness.test.sh
+          bash scripts/__tests__/qa-529-discord-liveness.test.sh
+          bash scripts/__tests__/qa-lead-coordinates.test.sh
+          bash scripts/__tests__/qa-room-env.test.sh
+          node --test scripts/__tests__/qa-529-discord-roundtrip.test.mjs
+
       # FLY-1830: the non-Lead launchd daemons (quota-monitor, updater,
       # bridge-liveness-probe, daily-standup) had no owner — a label that left
       # the domain stayed gone with its plist still on disk. The restart wave now

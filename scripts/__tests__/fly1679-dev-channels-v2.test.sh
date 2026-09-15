@@ -280,6 +280,18 @@ else
   fail "T4 sends=$(sends_of) log=[$POLLER_LOG]"
 fi
 
+if grep -Eq 'NOT_SEEN classification: lines=[0-9]+ blank=false match_warning=1 match_local_dev=1 match_channels_hint=0 banner_channels=0 prompt_caret=1 pane_sha256=([a-f0-9]{64}|-)$' <<<"$POLLER_LOG"; then
+  pass "T4b timeout records classification without pane text"
+else
+  fail "T4b missing or incorrect NOT_SEEN classification"
+fi
+while IFS= read -r raw_line; do
+  [[ -n "$raw_line" ]] || continue
+  if grep -qF "$raw_line" <<<"$POLLER_LOG"; then
+    fail "T4c timeout log contains raw pane text"
+  fi
+done <<<"$TRANSCRIPT_A_PLUS_B"
+
 # T5 — an unrelated confirm dialog
 run_poller "$OTHER_DIALOG" "$OTHER_DIALOG"
 if [ "$(sends_of)" -eq 0 ]; then

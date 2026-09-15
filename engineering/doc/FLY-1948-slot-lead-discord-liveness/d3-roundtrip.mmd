@@ -1,0 +1,17 @@
+sequenceDiagram
+  participant F as founder(或 mirror 房的另一 slot bot)
+  participant D as Discord
+  participant A as 适配器 bun server.ts
+  participant M as slot comm.db mailbox
+  participant C as Lead 会话 claude
+  participant P as qa-529-discord-roundtrip.mjs
+  P->>P: 生成 nonce · 先跑通道活连接 probe(不活 exit 35)
+  F->>D: 发 [529-rt nonce] 请回复带 ack(T0)
+  P->>D: REST 只读轮询 找到 T0
+  D->>A: gateway messageCreate
+  A->>M: chat-ingest 写行(source_ref = chat:lead:msgId)
+  M->>C: 通知会话 notified_at(T2) / delivered_at(T3)
+  P->>M: 只读精确查询 ingestObservedAt · T2 notified_at · T3 delivered_at(Lead ACK)
+  C->>D: Lead 在 envelope 指定的频道/thread 回帖 带 529-rt-ack(T4)
+  P->>D: REST 只读 找到 T4
+  P->>P: 写 discord-roundtrip-nonce.json · 所有 deadline = T0+超时 · exit 0 / 30–34

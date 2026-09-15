@@ -86,6 +86,7 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-generalized.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-lead.sh" \
   "${SCRIPT_DIR}/lib/qa-lead-artifacts.sh" \
+  "${SCRIPT_DIR}/lib/qa-discord-liveness.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-env.py" \
   "${SCRIPT_DIR}/lib/qa-lead-diagnostics.py" \
   "${SCRIPT_DIR}/lib/qa-codex-home-provision.mjs" \
@@ -328,6 +329,46 @@ git clone -q --bare "$SRCREPO" "$BARE"
 # Stub bin: gh / pnpm / node / npx (fake Bridge = python http 200) / tmux.
 STUB_BIN="$SB/stub-bin"
 mkdir -p "$STUB_BIN"
+# Supply process/identity/socket observations for the simulated Claude carrier.
+# Never replace qa_discord_liveness_wait: deployment runs the real reducer.
+cat > "$STUB_BIN/channel-observe" <<'CHANNEL_OBSERVE'
+#!/usr/bin/env python3
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import sys
+op=Path(sys.argv[0]).name.removeprefix('channel-')
+entries=[]
+for path in sorted(Path(os.environ['FLY1389_CHANNEL_SLOT_DIR']).glob('launchd/*/lead-coordinates.json')):
+    c=json.loads(path.read_text())
+    if c['carrier']!='claude-code': continue
+    m=json.loads(Path(c['manifestPath']).read_text())
+    if not m.get('pid'): continue
+    entries.append((c,m['pid']+100000,m['pid']+100001))
+if op=='ps':
+    for c,claude,adapter in entries:
+        # The simulated adapter reports a current ready event. Keep lease
+        # publication independent; the real reducer owns its channel wait.
+        state=Path(c['discordStateDir']);state.mkdir(parents=True,exist_ok=True)
+        ready=dt.datetime.now(dt.timezone.utc).isoformat().replace('+00:00','Z')
+        (state/'gateway-health.log').write_text(f'{ready} gateway shard 0 ready\n')
+        print(f"{claude} 1 claude --agent {c['agentId']}")
+        print(f"{adapter} {claude} bun /fixture/plugins/cache/test/discord/0.0.7/server.ts")
+    sys.exit(0)
+for c,claude,adapter in entries:
+    if int(sys.argv[1]) not in (claude,adapter): continue
+    if op=='env': sys.exit(0 if sys.argv[2:] == ['DISCORD_STATE_DIR',c['discordStateDir']] else 1)
+    if op=='start':
+        stamp=dt.datetime.fromisoformat(c['startedAt'].replace('Z','+00:00'))-dt.timedelta(seconds=2)
+        print(stamp.strftime('%a %b %d %H:%M:%S %Y'));sys.exit(0)
+    if op=='lsof':
+        if os.environ.get('FLY1389_CHANNEL_NO_SOCKET')=='1': sys.exit(1)
+        print('bun 1 user TCP local:1234->fixture:443 (ESTABLISHED)');sys.exit(0)
+sys.exit(1)
+CHANNEL_OBSERVE
+chmod +x "$STUB_BIN/channel-observe"
+for op in ps env start lsof; do ln -s channel-observe "$STUB_BIN/channel-$op"; done
 cat > "$STUB_BIN/gh" <<'EOF'
 #!/bin/bash
 case "$1" in
@@ -827,16 +868,16 @@ make_slots_json() {  # slots 30..35 carry real fixture values
         })
         + [ { id: 30, bridgePort: ($leadPort + 2), botName: "flywheel-test-30",
               tokenEnvVar: "TEST_BOT_TOKEN_30", botAppId: "3030",
-              channelId: "chan-30", role: "ops", identitySource: "ops-lead" },
+              channelId: "30303030303030304", role: "ops", identitySource: "ops-lead" },
             { id: 31, bridgePort: $leadPort, botName: "flywheel-test-31",
               tokenEnvVar: "TEST_BOT_TOKEN_31", botAppId: "3131",
-              channelId: "chan-31", role: "lead", identitySource: "product-lead" },
+              channelId: "31313131313131314", role: "lead", identitySource: "product-lead" },
             { id: 32, bridgePort: $noLeadPort, botName: "flywheel-test-32",
               tokenEnvVar: "TEST_BOT_TOKEN_32", botAppId: "3232",
-              channelId: "chan-32", role: "lead", identitySource: "product-lead" },
+              channelId: "32323232323232324", role: "lead", identitySource: "product-lead" },
             { id: 33, bridgePort: ($leadPort + 3), botName: "flywheel-test-33",
               tokenEnvVar: "TEST_BOT_TOKEN_33", botAppId: "3333",
-              channelId: "chan-33", role: "lead", identitySource: "product-lead" },
+              channelId: "33333333333333334", role: "lead", identitySource: "product-lead" },
             { id: 34, bridgePort: ($leadPort + 4), botName: "flywheel-test-34",
               tokenEnvVar: "TEST_BOT_TOKEN_34", botAppId: "34343434343434343",
               channelId: "34343434343434344", role: "lead", identitySource: "product-lead",
@@ -878,6 +919,12 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       FLY1389_AUTH_LEDGER="$FLY1389_AUTH_LEDGER" \
       FLY1389_CODEX_RUNTIME="$repo_root/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
       FLY1389_PS_LOG="$SB/codex-ps.log" \
+      FLY1389_CHANNEL_SLOT_DIR="/tmp/flywheel-test-slot-$slot" \
+      FLY1389_CHANNEL_NO_SOCKET="${FLY1389_CHANNEL_NO_SOCKET:-}" \
+      FLYWHEEL_QA_PS_SNAPSHOT_CMD="$STUB_BIN/channel-ps" \
+      FLYWHEEL_QA_PS_LSTART_CMD="$STUB_BIN/channel-start" \
+      FLYWHEEL_QA_ENV_HAS_CMD="$STUB_BIN/channel-env" \
+      FLYWHEEL_QA_LSOF_CMD="$STUB_BIN/channel-lsof" \
       FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" \
       FLYWHEEL_QA_LEAD_WRAPPER="$repo_root/scripts/flywheel-lead-wrapper-v2.sh" \
       FLYWHEEL_QA_TMUX="${FLY1389_QA_TMUX:-$STUB_BIN/tmux}" \
@@ -1056,6 +1103,25 @@ else
   fi
   run_teardown "$FH1" "$LEAD_SLOT" || true
 fi
+
+# FLY-1948: a ready lease must not hide a missing Discord socket. The real
+# reducer and channel snapshot must fail before teardown removes the carrier.
+rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"
+D2_OUT="$SB/d2-out.json"; D2_ERR="$SB/d2-err.log"
+if FLY1389_CHANNEL_NO_SOCKET=1 run_deploy "$FH1" "$LEAD_SLOT" "$D2_OUT" "$D2_ERR" --lead-ready-timeout 10 --lead-channel-timeout 1; then
+  fail "D2: a ready lease accepted a missing Discord socket"
+else
+  D2_RUNTIME="/tmp/flywheel-test-slot-${LEAD_SLOT}/launchd/flywheel-test-31"
+  if jq -e '.live == false and .reason == "gateway_socket_missing"' "$D2_RUNTIME/channel-liveness.json" >/dev/null 2>&1 \
+      && jq -e '.phase == "channel" and .reason == "channel:gateway_socket_missing"' "$D2_RUNTIME/channel-failure.json" >/dev/null 2>&1 \
+      && [[ "$(mode_of "$D2_RUNTIME/channel-failure.json")" == "600" ]] \
+      && grep -qF 'phase=channel' "$D2_ERR"; then
+    pass "D2: missing socket rejects a ready lease and preserves private channel evidence"
+  else
+    fail "D2: channel failure lost its socket reason or evidence" "$(tail -20 "$D2_ERR")"
+  fi
+fi
+run_teardown "$FH1" "$LEAD_SLOT" || true
 
 # ── E: Lead-ful hermetic E2E (slot 31) ──────────────────────────────────────
 rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"

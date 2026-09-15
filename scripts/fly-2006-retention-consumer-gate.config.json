@@ -515,6 +515,13 @@
 			"disposition": "protect"
 		},
 		{
+			"file": "scripts/qa-529-discord-roundtrip.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
 			"file": "scripts/qa/fly2446-two-lead-run.mjs",
 			"relation": "mailbox",
 			"baseTable": "mailbox",

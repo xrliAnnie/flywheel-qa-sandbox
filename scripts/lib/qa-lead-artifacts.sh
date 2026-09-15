@@ -41,6 +41,52 @@ qa_lead_write_manifest() {
   chmod 600 "$manifest"
 }
 
+# FLY-1948: explicit, resolved inputs; never infer channel identity from env.
+# The coordinate artifact lives beside the carrier manifest, including for
+# extra Leads and Codex carriers. A null roundtrip channel means N/A.
+qa_lead_write_coordinates() {
+  local out="$1" slot="$2" agent="$3" carrier="$4" mode="$5"
+  local started="$6" discord_state="$7" socket="$8" primary="$9"
+  local mirror="${10}" roundtable="${11}" bot="${12}" project="${13}"
+  local comm_db="${14}" label="${15}" runtime tmp
+  runtime="${out%/*}"
+  [[ "$out" == /* && "$runtime" == */launchd/"$agent" \
+    && "${out##*/}" == lead-coordinates.json && ! -L "$runtime" \
+    && ! -L "$out" && "$agent" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ \
+    && "$slot" =~ ^[1-9][0-9]*$ ]] || return 1
+  tmp=$(mktemp "${runtime}/.lead-coordinates.XXXXXX") || return 1
+  if ! jq -en \
+    --argjson slot "$slot" --arg agent "$agent" --arg carrier "$carrier" \
+    --arg mode "$mode" --arg started "$started" --arg state "$discord_state" \
+    --arg socket "$socket" --arg primary "$primary" --arg mirror "$mirror" \
+    --arg roundtable "$roundtable" --arg bot "$bot" --arg project "$project" \
+    --arg comm "$comm_db" --arg label "$label" --arg runtime "$runtime" '
+      def nullable: if . == "" then null else . end;
+      if (($carrier == "claude-code" or $carrier == "codex-app-server")
+          and ($mode == "slot" or $mode == "mirror" or $mode == "roundtable")
+          and ($state | startswith("/")) and ($comm | startswith("/"))
+          and ($bot | test("^[0-9]+$"))) then
+        (if $carrier == "codex-app-server" then null
+         elif $mode == "mirror" then $mirror
+         elif $mode == "roundtable" then $roundtable else $primary end) as $channel
+        | if ($channel == null or ($channel | test("^[0-9]+$"))) then
+          {schemaVersion:1, slot:$slot, agentId:$agent, carrier:$carrier,
+           mode:$mode, startedAt:$started, discordStateDir:$state,
+           socketPath:(if $carrier == "claude-code" then ($socket|nullable) else null end),
+           primaryChatChannelId:($primary|nullable), mirrorChannelId:($mirror|nullable),
+           roundtableChannelId:($roundtable|nullable), roundtripChannelId:$channel,
+           botUserId:$bot, projectName:$project, commDbPath:$comm,
+           bodyStatusPath:(if $carrier == "claude-code" then $runtime+"/body-status.json" else null end),
+           manifestPath:($runtime+"/manifest.json"), launchdLabel:$label,
+           livenessPath:($runtime+"/channel-liveness.json")}
+          else error("invalid roundtrip channel") end
+      else error("invalid Lead coordinates") end' > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 600 "$tmp" && mv -f "$tmp" "$out" || { rm -f "$tmp"; return 1; }
+}
+
 qa_lead_write_launch_manifest() {
   local out="$1" bridge_pid="$2" dist_sha="$3" from_branch="$4" mode="$5"
   local campaign_id="$6" lead_label="$7" extra_leads_json="$8" carrier="$9"

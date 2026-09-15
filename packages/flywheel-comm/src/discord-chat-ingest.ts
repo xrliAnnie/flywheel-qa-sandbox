@@ -15,6 +15,11 @@ import {
 } from "./mailbox-queue.js";
 import { encodeSenderRef } from "./sender-ref.js";
 
+// 529 roundtrip probes consume the canonical envelope through this public
+// package entrypoint, including its thread reply route.
+export { parseChatDeliveryEnvelope };
+export type { ChatDeliveryEnvelopeV1 };
+
 export const DISCORD_WIRING_BROKEN_STALE_REASON = "discord_wiring_broken_stale";
 
 export interface IngestDiscordChatArgs {

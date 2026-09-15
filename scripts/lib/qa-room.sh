@@ -167,3 +167,28 @@ qa_room_resolve_lead_ready_timeout() {
 	fi
 	echo "$v"
 }
+
+# FLY-1948: the Discord gate gets a separate budget after inbox readiness.
+# Args: explicit flag value, environment value. Reject before shell arithmetic
+# so arbitrarily large input cannot overflow into an accepted timeout.
+qa_room_resolve_lead_channel_timeout() {
+	local v src
+	if [[ -n "${1:-}" ]]; then
+		v="$1"; src="--lead-channel-timeout"
+	elif [[ -n "${2:-}" ]]; then
+		v="$2"; src="FLYWHEEL_TEST_LEAD_CHANNEL_TIMEOUT_SEC"
+	else
+		echo 60
+		return 0
+	fi
+	if ! [[ "$v" =~ ^[0-9]+$ ]]; then
+		echo "ERROR: ${src} must be a positive integer number of seconds" >&2
+		return 1
+	fi
+	while [[ "${#v}" -gt 1 && "$v" == 0* ]]; do v="${v#0}"; done
+	if [[ "${#v}" -gt 4 ]] || (( 10#$v < 1 || 10#$v > 3600 )); then
+		echo "ERROR: ${src} must be between 1 and 3600 seconds" >&2
+		return 1
+	fi
+	echo "$((10#$v))"
+}

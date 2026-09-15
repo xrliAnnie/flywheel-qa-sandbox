@@ -47,6 +47,7 @@ QA_LEAD_REGISTRY=""
 # FLY-2301: byte-stable Lead artifact renderers shared with regression fixtures.
 # shellcheck source=lib/qa-lead-artifacts.sh
 source "${SCRIPT_DIR}/lib/qa-lead-artifacts.sh"
+source "${SCRIPT_DIR}/lib/qa-discord-liveness.sh"
 
 # ── Load environment ──────────────────────────────────
 ENV_FILE="${HOME}/.flywheel/.env"
@@ -176,6 +177,7 @@ EXTRA_LEAD_SPECS=()       # FLY-1189: --extra-lead <slotId>:<deptLabel> (repeata
                           # THIS slot's single Bridge (N-to-N routing topology).
 LEAD_LABEL=""             # FLY-1189: --lead-label <deptLabel> narrows the MAIN lead's
                           # match.labels from ["*"] to the explicit label.
+LEAD_CHANNEL_TIMEOUT_ARG=""
 LEAD_READY_TIMEOUT_ARG="" # FLY-1389 P2-a: --lead-ready-timeout <sec> overrides the
                           # 120s Lead inbox-ready wait (cold Lead on a loaded
                           # shared machine can legitimately exceed 120s). Env
@@ -212,6 +214,12 @@ while [[ $# -gt 0 ]]; do
       LEAD_LABEL="${2:?--lead-label requires a value}"; shift 2 ;;
     --lead-label=*)
       LEAD_LABEL="${1#*=}"; shift ;;
+    --lead-channel-timeout)
+      LEAD_CHANNEL_TIMEOUT_ARG="${2:?--lead-channel-timeout requires seconds}"; shift 2 ;;
+    --lead-channel-timeout=*)
+      LEAD_CHANNEL_TIMEOUT_ARG="${1#*=}"
+      [[ -n "$LEAD_CHANNEL_TIMEOUT_ARG" ]] || { echo "ERROR: --lead-channel-timeout requires seconds" >&2; exit 1; }
+      shift ;;
     --lead-ready-timeout)
       LEAD_READY_TIMEOUT_ARG="${2:?--lead-ready-timeout requires seconds}"; shift 2 ;;
     --lead-ready-timeout=*)
@@ -366,6 +374,7 @@ fi
 # instead of after gh/pnpm preflight (same discipline as mirror validation).
 LEAD_READY_TIMEOUT_SEC=$(qa_room_resolve_lead_ready_timeout \
   "$LEAD_READY_TIMEOUT_ARG" "${FLYWHEEL_TEST_LEAD_READY_TIMEOUT_SEC:-}") || exit 1
+LEAD_CHANNEL_TIMEOUT_SEC=$(qa_room_resolve_lead_channel_timeout   "$LEAD_CHANNEL_TIMEOUT_ARG" "${FLYWHEEL_TEST_LEAD_CHANNEL_TIMEOUT_SEC:-}") || exit 1
 # 2s poll cadence → ceil(timeout/2) iterations.
 LEAD_READY_POLL_ITERS=$(( (LEAD_READY_TIMEOUT_SEC + 1) / 2 ))
 if [[ "$NO_LEAD" == "1" && ${#EXTRA_LEAD_SPECS[@]} -gt 0 ]]; then
@@ -527,6 +536,7 @@ trap release_preflight_lock EXIT
   #    config.ts / plugin.ts (e.g. new POST /api/chat-threads/send route) are
   #    invisible to the running Bridge — it still serves the old dist. QA hit
   #    this exact trap on the first FLY-162 deploy ("404 not found" on /send).
+  pnpm --filter flywheel-comm build || exit 18
   pnpm --filter flywheel-teamlead build || exit 15
 
   # 6. Assert the env fallback actually landed in the built artifact. Cheaper
@@ -1563,7 +1573,8 @@ qa_slot_start_lead() {
   local pid_file="${runtime}/pid" label wrapper launch_env topology launch_pid socket
   local lead_row mcp_exclude backend codex_profile lead_chat_channel
   local codex_home codex_bin codex_state codex_wrapper codex_comm_db
-  local profile_assignments profile_assignment
+  local profile_assignments profile_assignment coordinate_bot coordinate_started
+  local coordinate_args=()
   local QA_CODEX_ENV_RENDERER="${REPO_ROOT}/scripts/lib/qa-launchd-env.py"
   local base_assignments=(
     "DISCORD_GUILD_ID=${GUILD_ID}"
@@ -1656,8 +1667,18 @@ qa_slot_start_lead() {
   chmod 700 "$runtime" "$state"
   printf '%s\n' "$FLYWHEEL_PROJECTS" > "$projects"
   chmod 600 "$projects"
+  coordinate_bot=$(jq -er --argjson slot "$carrier_slot" \
+    '.slots[] | select(.id == $slot) | .botAppId' "$SLOTS_FILE") || return 1
+  lead_chat_channel=$(jq -er '.chatChannel' <<<"$lead_row") || return 1
+  coordinate_started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  coordinate_args=("${runtime}/lead-coordinates.json" "$carrier_slot" "$agent" \
+    "$backend" "$MODE" "$coordinate_started" "$discord_state" "" \
+    "$lead_chat_channel" "$MIRROR_CHANNEL_ID" "${ROUNDTABLE_CHANNEL_ID:-}" \
+    "$coordinate_bot" "$TEST_PROJECT_NAME" \
+    "${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}/comm.db" "$label")
 
   if [[ "$backend" == codex-app-server ]]; then
+    qa_lead_write_coordinates "${coordinate_args[@]}" || return 1
     if ! printf '%s\0' "${env_assignments[@]}" \
         | python3 "$QA_CODEX_ENV_RENDERER" --output "$env_file"; then
       return 1
@@ -1687,6 +1708,7 @@ qa_slot_start_lead() {
   qa_lead_write_manifest "$manifest" "$agent" "$HOST_REPO" \
     "$TEST_PROJECT_NAME" "$projects" "$workspace" "$mcp_exclude" \
     "$launch_env" || return 1
+  qa_lead_write_coordinates "${coordinate_args[@]}" || return 1
   FLYWHEEL_DIR="$REPO_ROOT" qa_launchd_render_plist \
     "$plist" "$label" "$wrapper" "$manifest" "$HOME" "$state" \
     "$projects" "$env_file" "$lead_log" "$QA_SUMMARY_CONFIG_HOME" || return 1
@@ -1698,21 +1720,43 @@ qa_slot_start_lead() {
     qa_launchd_lead_verify "$label" "$manifest" "$plist" "$lead_log" "$wrapper") \
     || { qa_launchd_lead_stop "$label" || true; return 1; }
   IFS=$'\t' read -r launch_pid socket <<<"$topology"
+  coordinate_args[7]="$socket"
+  qa_lead_write_coordinates "${coordinate_args[@]}" || return 1
   printf '%s\n' "$launch_pid" > "$pid_file"
   printf '%s\t%s\t%s\t%s\t%s\n' \
     "$launch_pid" "$socket" "$label" "$manifest" "$pid_file"
 }
 
+qa_slot_channel_ready() {
+  local agent="$1" label="$2" lead_log="$3"
+  local runtime="${SLOT_DIR}/launchd/${agent}" coords since out reason
+  coords="${runtime}/lead-coordinates.json"
+  out="${runtime}/channel-liveness.json"
+  since=$(jq -er '.startedAt' "$coords") || return 1
+  if qa_discord_liveness_wait "$coords" "$since" "$out" "$LEAD_CHANNEL_TIMEOUT_SEC"; then
+    log "Lead ${agent} channel live $(jq -c '{adapter:.adapter.pid,gateway:.gateway.state,readyAt:.gateway.readyAt,established:.socket.established}' "$out")"
+    return 0
+  fi
+  reason=$(jq -r '.reason // "probe_unavailable"' "$out" 2>/dev/null || echo probe_unavailable)
+  log "ERROR: Lead ${agent} not ready: phase=channel reason=${reason}"
+  FLYWHEEL_QA_LEAD_DIAGNOSTICS_HELPER="${REPO_ROOT}/scripts/lib/qa-lead-diagnostics.py" \
+    qa_launchd_failure_snapshot channel "$label" "${runtime}/lead.plist" \
+      "${runtime}/manifest.json" "$lead_log" \
+      "${FLYWHEEL_QA_LEAD_WRAPPER:-${REPO_ROOT}/scripts/flywheel-lead-wrapper-v2.sh}" \
+      "${FLYWHEEL_QA_TMUX:-tmux}" "" "" "" "" "" || true
+  return 1
+}
+
 qa_slot_report_lead_start_failure() {
   local agent="$1" runtime="${SLOT_DIR}/launchd/${1}"
   local phase evidence reason label
-  for phase in topology bootstrap; do
+  for phase in channel topology bootstrap; do
     evidence="${runtime}/${phase}-failure.json"
     [[ -f "$evidence" && ! -L "$evidence" ]] || continue
     reason=$(jq -er --arg phase "$phase" '
       select(.schemaVersion == 1 and .phase == $phase)
       | .reason
-      | select(type == "string" and test("^[a-z_]+$"))
+      | select(type == "string" and test("^[a-z_]+(:[a-z_]+)?$"))
     ' "$evidence" 2>/dev/null || true)
     label=$(jq -er '
       .label | select(type == "string" and test("^[A-Za-z0-9._-]+$"))
@@ -1776,7 +1820,7 @@ confirm_dev_channels_prompt() {
   done
   [[ "$hit" == "true" ]] \
     && log "Confirmed dev-channels prompt for ${lead_name}" \
-    || log "No dev-channels prompt observed for ${lead_name}"
+    || log "dev-channels prompt not observed by room poller for ${lead_name} (launcher verdict recorded in channel-liveness.json)"
 }
 
 # ── Step 1: bootstrap isolated launchd-v2 Lead ─────────────
@@ -1810,7 +1854,9 @@ fi
 # knob resolved before preflight) — 2s poll → LEAD_READY_POLL_ITERS.
 LEASE_DIR="${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}"
 LEAD_READY=false
+LEAD_NOT_READY_PHASE=lease
 if [[ "$SLOT_BACKEND" == codex-app-server ]]; then
+  log "Lead ${AGENT_ID} carrier=codex-app-server: channel liveness skipped (Discord plugin not applicable)"
   LEAD_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"
   log "Waiting for Codex heartbeat + TUI window (budget ${LEAD_READY_TIMEOUT_SEC}s)"
   for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
@@ -1832,8 +1878,11 @@ else
     if [[ -f "$LEASE_FILE" ]]; then
       LEASE_PID=$(jq -r '.pid' "$LEASE_FILE" 2>/dev/null || echo "")
       if [[ -n "$LEASE_PID" ]] && kill -0 "$LEASE_PID" 2>/dev/null; then
-        log "Lead ${AGENT_ID} ready (lease alive, PID ${LEASE_PID})"
-        LEAD_READY=true
+        log "Lead ${AGENT_ID} lease alive (PID ${LEASE_PID}); waiting for channel"
+        LEAD_NOT_READY_PHASE=channel
+        if qa_slot_channel_ready "$AGENT_ID" "$LEAD_LAUNCHD_LABEL" "$LEAD_LOG"; then
+          LEAD_READY=true
+        fi
         break
       fi
     fi
@@ -1843,7 +1892,7 @@ else
 fi
 
 if [[ "$LEAD_READY" != "true" ]]; then
-  log "ERROR: Lead did not become ready within ${LEAD_READY_TIMEOUT_SEC} seconds"
+  log "ERROR: Lead did not become ready: phase=${LEAD_NOT_READY_PHASE} leaseBudget=${LEAD_READY_TIMEOUT_SEC}s channelBudget=${LEAD_CHANNEL_TIMEOUT_SEC}s"
   if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
     if qa_slot_evidence_allows_release; then
       QA_LEAD_REGISTRY=""
@@ -2000,6 +2049,7 @@ EOF
     log "$(qa_lead_log_extra_pid "$XAGENT" "$XLEAD_BG_PID")"
     XLEAD_READY=false
     if [[ "$XBACKEND" == codex-app-server ]]; then
+      log "Lead ${XAGENT} carrier=codex-app-server: channel liveness skipped (Discord plugin not applicable)"
       XLEAD_STATE_DIR="$_xlead_coordinate"
       XLEAD_CODEX_HOME="$_xlead_carrier_home"
       XLEAD_SOCKET=""
@@ -2030,7 +2080,9 @@ EOF
         if [[ -f "$XLEASE_FILE" ]]; then
           XLEASE_PID=$(jq -r '.pid' "$XLEASE_FILE" 2>/dev/null || echo "")
           if [[ -n "$XLEASE_PID" ]] && kill -0 "$XLEASE_PID" 2>/dev/null; then
-            XLEAD_READY=true
+            if qa_slot_channel_ready "$XAGENT" "$_xlead_label" "$XLEAD_LOG"; then
+              XLEAD_READY=true
+            fi
             break
           fi
         fi
@@ -2038,7 +2090,7 @@ EOF
       done
       [[ "$XLEAD_READY" == "true" ]] \
         || campaign_abort "extra Lead ${XAGENT} did not become ready within ${LEAD_READY_TIMEOUT_SEC}s (log: ${XLEAD_LOG})"
-      log "Extra Lead ${XAGENT} ready (lease alive)"
+      log "Extra Lead ${XAGENT} ready (lease and channel live)"
     fi
   done < <(jq -c '.[]' <<<"$EXTRA_LEADS_JSON")
 
@@ -2319,11 +2371,17 @@ if [[ "$GENERALIZED" == "1" ]]; then
   else
     GENERALIZED_RUNNER_MODE="real"
   fi
+  ROOM_LEAD_JSON=null
+  if [[ "$NO_LEAD" != "1" ]]; then
+    ROOM_LEAD_JSON=$(jq -c --arg coords "${SLOT_DIR}/launchd/${AGENT_ID}/lead-coordinates.json" \
+      '{agentId,carrier,coordinatesPath:$coords,livenessPath:(if .carrier == "claude-code" then .livenessPath else null end)}' \
+      "${SLOT_DIR}/launchd/${AGENT_ID}/lead-coordinates.json") || exit 1
+  fi
   _room_tmp="${GENERALIZED_ROOM_INFO}.tmp.$$"
   jq -n \
     --argjson slot "$SLOT" --argjson port "$SLOT_PORT" \
     --arg projectName "$TEST_PROJECT_NAME" --arg agentId "$AGENT_ID" \
-    --arg mode "$MODE" --arg runnerMode "$GENERALIZED_RUNNER_MODE" \
+    --arg mode "$MODE" --arg runnerMode "$GENERALIZED_RUNNER_MODE" --argjson lead "$ROOM_LEAD_JSON" \
     --arg bridgeUrl "http://localhost:${SLOT_PORT}" \
     --arg dbPath "${SLOT_DIR}/teamlead.db" --arg hostRepo "$HOST_REPO" \
     --arg flywheelProjectsFile "$FLYWHEEL_PROJECTS_FILE" \
@@ -2332,7 +2390,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --arg buildSha "$SCRIPT_REPO_HEAD" --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
     --arg bridgeLog "${SLOT_DIR}/bridge.log" \
     '{schemaVersion:1,slot:$slot,port:$port,projectName:$projectName,agentId:$agentId,
-      mode:$mode,generalized:true,runnerMode:$runnerMode,bridgeUrl:$bridgeUrl,
+      mode:$mode,generalized:true,runnerMode:$runnerMode,bridgeUrl:$bridgeUrl,lead:$lead,
       dbPath:$dbPath,hostRepo:$hostRepo,flywheelRepo:$flywheelRepo,buildSha:$buildSha,
       flywheelProjectsFile:$flywheelProjectsFile,
 	  summaryConfigHome:$summaryConfigHome,
@@ -2445,6 +2503,16 @@ if [[ "$LEAD_CARRIER" == launchd-codex-tui ]]; then
 EOF
 )"
 fi
+LEAD_COORDINATES_JSON='[]'
+if [[ "$NO_LEAD" != "1" ]]; then
+  for _lead_coords in "${SLOT_DIR}"/launchd/*/lead-coordinates.json; do
+    [[ -f "$_lead_coords" ]] || continue
+    _lead_coords_entry=$(jq -c --arg path "$_lead_coords" \
+      '{agentId,carrier,leadCoordinatesPath:$path}' "$_lead_coords") || exit 1
+    LEAD_COORDINATES_JSON=$(jq -c --argjson item "$_lead_coords_entry" '. + [$item]' \
+      <<<"$LEAD_COORDINATES_JSON") || exit 1
+  done
+fi
 qa_lead_render_stdout_json \
   "$SLOT" "$MODE" "$NO_LEAD_JSON" "$MIRROR_CHANNEL_ID" "$SLOT_PORT" \
   "$AGENT_ID" "$TEST_PROJECT_NAME" "$CHAT_CHANNEL_ID" "$BOT_TOKEN_ENV" \
@@ -2456,7 +2524,7 @@ qa_lead_render_stdout_json \
   "$REPORT_HOST_JSON" "$LEAD_LOG" "$FLYWHEEL_PROJECTS_FILE" \
   "${SLOT_DIR}/launch-manifest.json" "${CAMPAIGN_MANIFEST_FILE:-}" \
   "${CAMPAIGN_ID:-}" "$LEAD_LABEL" "$EXTRA_LEADS_JSON" \
-  "$GENERALIZED_OUTPUT_FIELDS"
+  "$GENERALIZED_OUTPUT_FIELDS" | jq --argjson leads "$LEAD_COORDINATES_JSON" ' . + {leads:$leads}'
 
 # Every fallible publication step is now complete. Only a successful deploy
 # may disarm the transaction that owns Bridge, Lead, credential-home, and lock

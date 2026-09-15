@@ -348,3 +348,129 @@ FLY-2456 的 Lead ruling `c7791d8e-0d58-44d2-af0f-28b371382737` 针对当前源�
 `maintenanceTicks=UNAVAILABLE(no_unconditional_tick_observable)`；必须保存起止时间并
 在报告披露，不能声称已观察两次维护。该限定例外不免除 terminate、拆房、fleet 与
 archive/ledger 的证据要求，也不推广为其他任务的默认豁免。
+
+## 8. Lead 通道活连接与整圈探针（FLY-1948）
+
+### 8.1 房间就绪合同
+
+Claude slot Lead 的 inbox lease 通过后，房间继续等 Discord 通道门。
+主 Lead 和 `--extra-lead` 各自必须同时满足：
+
+1. 精确 agentId、DISCORD_STATE_DIR 对应的 Claude，拥有唯一匹配插件 argv 的直接子适配器。
+2. 当前适配器持有至少一个 ESTABLISHED 的目标 443 TCP 连接。
+3. 当前适配器代际之后的最新网关生命周期是 ready/resumed，不能是 reconnecting、永久断开或重连过期。
+
+443 连接本身不能证明 Discord 网关 ready，横幅、inbox lease 也不能替代通道证据。
+独立预算 `--lead-channel-timeout <sec>`（或 `FLYWHEEL_TEST_LEAD_CHANNEL_TIMEOUT_SEC`）
+默认 60 秒，范围 1–3600；CLI 优先。它接在默认 120 秒的 lease 等待之后，
+两阶段配置预算合计 180 秒，另有观测命令执行时间。失败先写诊断，再走现有
+registry 清理和证据保留/锁释放合同，不把未就绪房间发布为可用。
+
+Codex carrier 没有本插件进程，日志明确标记 `channel liveness skipped`；
+这不是 Discord 整圈通过。`--no-lead` 不创建 Lead 坐标，generalized
+`room-info.json.lead` 为 null，stdout `leads` 为空。
+
+### 8.2 位置与代际
+
+每条 Lead 都有（普通房和 generalized 房一致）：
+
+- `SLOT_DIR/launchd/<agentId>/lead-coordinates.json`：mode、探针频道、botUserId、私有 socket、Discord state、CommDB、manifest 和 launchd label。
+- 同目录 `channel-liveness.json`：最近一次通道判定（0600，原子替换）。
+- 部署失败时同目录 `channel-failure.json`：从该 manifest 同目录的合法失败证据中投影字段；拒绝 symlink、越界、超大文件、不同 agent、live=true、未知 reason。
+- generalized 房另有 `room-info.json.lead`；普通房不会因此新增 room-info。部署 stdout 的 `leads[].leadCoordinatesPath` 指向每条 Lead 坐标。
+
+代际边界取请求 since、当前 Claude lstart、经 body/manifest/launchd 三方 PID
+核验的 body.startedAt，以及当前适配器 lstart。网关证据需晚于最终 cutoff
+至少一秒；落在 Claude/适配器启动的同一整秒里的记录不采信。
+同一个 Claude 下适配器重启，也不能借前一适配器的 ready 过门。
+日志先读 `.log.1`，再读当前文件，按时间、文件序、行序稳定合并；最新的
+reconnecting 会覆盖旧 ready。读期间持续轮转三次仍不稳定则报观测不可用。
+
+全机 ps 快照上限为 4MiB；单进程环境和其他单次观测仍为 64KiB。
+候选计数在环境过滤前，限本 agent 的 Claude 行加适配器形状行，共 32 条。
+不支持的 legacy `bun run --cwd … start` / `bun server.ts` 会留拒绝形状信息。
+生产 startup.log 只增加特征位和摘要，不写 pane 原文；slot evidence 的文本
+有行数/字节上限和整行脱敏。证据仍应按私有 QA 资料保管。
+
+### 8.3 独立重检
+
+```bash
+bash scripts/qa-529-discord-liveness.sh 2 --json
+bash scripts/qa-529-discord-liveness.sh 2 --agent flywheel-test-2 --timeout 60 --json
+```
+
+`--since <ISO>` 默认来自坐标 startedAt；重启后的实际进程代际仍参与 cutoff。
+该工具枚举所有 Lead（含 extra），不依赖 room-info。
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 至少一个适用 Lead，且全部 live |
+| `1` | 至少一个适用 Lead 未 live |
+| `2` | 观测不可用 |
+| `3` | 坐标缺失/非法，或指定 agent 不存在 |
+| `4` | 此 slot 没有任何 Lead 坐标 |
+| `5` | 只有 Codex 等不适用载体 |
+
+**重检前先复制现有 channel-liveness.json 和 channel-failure.json 到本次 QA
+证据目录**，再运行 C3 或整圈探针。两者都会更新最近一次 liveness，不能把
+后来的判定冒充部署失败当时的现场；channel-failure.json 保留了经校验的失败投影。
+
+### 8.4 founder → Lead → founder challenge/response
+
+```bash
+node scripts/qa-529-discord-roundtrip.mjs 2 --agent flywheel-test-2
+```
+
+工具先确认通道 live，再打印包含随机 nonce 的正文。QA 需让 founder 本人
+在打印的 slot 频道发送原文，并要求 Lead 回复 `529-rt-ack:<nonce>`。
+工具不使用 founder token，不自动代替 founder 发消息。
+人工作者必须等于 `~/.flywheel/.env` 的 DISCORD_OWNER_USER_ID；缺失即失败。
+
+只有 mirror/roundtable 房可显式用另一 slot bot 发送：
+
+```bash
+node scripts/qa-529-discord-roundtrip.mjs 2 --agent flywheel-test-2 --send-as TEST_BOT_TOKEN_1
+```
+
+发送身份必须是 test-slots.json 登记的另一 bot，同时在目标 access.json 的
+allowBots 中，且目标频道在 groups 中。slot 普通房禁止此模式；self bot 禁止。
+自动 bot 腿不能替代 founder 腿验收。QA 不得借真实生产 Discord 频道。
+
+探针频道来自坐标 `roundtripChannelId`：slot 为主频道，mirror 为镜像频道，
+roundtable 为圆桌父频道。回复目标由 mailbox 的 canonical envelope 解出；
+roundtable 通常为 thread。仅本 Lead bot、正确目标频道、正确 nonce ACK、
+晚于 T0 的回复才算 T4；普通聊天或别的 bot 回复不算。
+
+| 观测 | 默认绝对截止 | 参数 |
+| --- | --- | --- |
+| T0：Discord 入站 timestamp | 人工发送等待 600 秒（不计入消息 SLA） | `--author-timeout` |
+| ingestObservedAt：首次看到精确 mailbox 行的本机时间 | T0 + 10 秒 | `--ingest-timeout` |
+| T2：notified_at | T0 + 60 秒 | `--session-timeout` |
+| T3：delivered_at（Lead ACK） | T0 + 120 秒 | `--ack-timeout` |
+| T4：符合 challenge 的回复 timestamp | T0 + 180 秒 | `--reply-timeout` |
+
+默认 `--poll 2` 秒。前序阶段耗时不会重置后序 deadline；T4 可以早于 T3，
+但 T3 仍需按时出现。mailbox.created_at 记录 Discord 消息时间，**不是入箱时间**。
+ingestObservedAt 是轮询上界，报告误差 `[0, poll]`，不要将其包装成真实 ingest 时刻。
+
+证据原子写入 `SLOT_DIR/e2e-evidence/discord-roundtrip-<nonce>.json`（0600）。
+包括各时间戳、绝对 deadlines、作者、mailbox seq、回复目标、HTTP 状态和退出码；
+不保存 token、REST 错误 body 或聊天原文。CommDB 以 readonly + fileMustExist
+打开，busy_timeout 2000，退出前关闭。探针不复制/修改活数据库。
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 五段证据齐全并在各自 deadline 内 |
+| 30–34 | 依次为 T0 / ingest / T2 / T3 / T4 超时 |
+| `35` | channel_not_live |
+| 36 / 37 | slot 模式禁止 send-as / sender 为自身 bot |
+| `38` | mailbox 或 envelope 作者身份不符 |
+| `39` | Codex 等载体不适用（零 REST/SQLite） |
+| 40 / 41 | nonce 非法 / 坐标、agent 选择或参数非法 |
+| 42 / 43 | founder 身份缺失 / send-as 未获 allowlist 准入 |
+| `44` | REST、数据库或证据写入故障；检查 reason/httpStatus |
+
+首次真机成功需保存 T0、ingestObservedAt、T2、T3、T4，并报告各段相对 T0
+的时延。进程重启与 adapter 单独退出实验属于 QA 节点：先验证 channel 变红，
+再依据实际载体恢复行为验证新代 ready。不要仅凭假定 MCP 会自动重启无限等待。
+完整回滚为 revert 本 PR；坐标和证据随 slot teardown 移除，无 schema migration。
