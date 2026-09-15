@@ -1,0 +1,32 @@
+{
+  "baseline": "1e6a419cb",
+  "completeTestSteps": 97,
+  "beforeCounts": {
+    "script-tests": 24,
+    "script-tests-2": 34,
+    "script-tests-3": 35,
+    "script-tests-4": 2,
+    "script-tests-5": 2
+  },
+  "afterCounts": {
+    "script-tests": 22,
+    "script-tests-2": 34,
+    "script-tests-3": 35,
+    "script-tests-4": 2,
+    "script-tests-5": 4
+  },
+  "moves": [
+    [
+      "Test — FLY-2331 Bridge async-child guard regression",
+      "script-tests",
+      "script-tests-5"
+    ],
+    [
+      "Test — FLY-1663 launchd-native Lead lifecycle",
+      "script-tests",
+      "script-tests-5"
+    ]
+  ],
+  "completeStepMultisetEqual": true,
+  "allNonTestConfigurationEqual": true
+}

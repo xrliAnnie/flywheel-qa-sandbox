@@ -255,11 +255,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
-    # FLY-2245 rebalanced six 2026-09-01 runs against the unchanged FLY-1870
-    # 1020s tripwire budget. Per-step maxima + 149s setup project this shard at
-    # 624s (61.2%). Move only complete named steps; see the FLY-2245 research.
-    # FLY-2331 adds one ~150s real-time guard regression, projecting 774s
-    # (75.9%) while remaining below the unchanged 85% tripwire.
+    # FLY-2562 moves the intact FLY-2331/1663 steps to shard 5. Run
+    # 34889528445 measured 1034s here, including 174s + 152s for those steps:
+    # projected 708s (69.4% of the unchanged 1020s tripwire budget).
+    # See engineering/doc/FLY-2562-script-tests-rebalance/plan.md.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -300,13 +299,6 @@ jobs:
 
       - name: Test — FLY-2549 summary preflight with stale workspace dist
         run: bash scripts/__tests__/restart-summary-source-preflight.test.sh
-
-      # FLY-2331: run the real 70s nonblocking child arm and the same fixture's
-      # 61s sync mutant under the production EventLoopGuard. The harness owns
-      # isolated HOME/state/process groups and has independent hard deadlines.
-      - name: Test — FLY-2331 Bridge async-child guard regression
-        timeout-minutes: 4
-        run: bash scripts/__tests__/fly2331-bridge-async-child.test.sh
 
       - name: Test — FLY-1707 incident replay
         run: bash scripts/__tests__/qa-fly-1707-incident-replay.test.sh
@@ -414,30 +406,6 @@ jobs:
           bash packages/teamlead/scripts/__tests__/lead-model-authority-receipt.test.sh
           bash scripts/__tests__/fly1496-qa-acceptance.test.sh
           bash packages/teamlead/scripts/__tests__/fly1650-companion-effort.test.sh
-
-      # FLY-1663/FLY-2301: launchd-native lifecycle contracts are root shell
-      # suites and are not discovered by package Vitest jobs. Keep the carrier,
-      # artifact, topology, home, tmux-isolation, and Bridge seams explicit.
-      - name: Test — FLY-1663 launchd-native Lead lifecycle
-        run: |
-          bash scripts/__tests__/fly1663-launchd-foundation.test.sh
-          bash scripts/__tests__/fly1663-lead-v2-runtime.test.sh
-          bash scripts/__tests__/fly1663-cmux-v2.test.sh
-          bash scripts/__tests__/fly2266-cmux-lead-attach-health.test.sh
-          bash scripts/__tests__/fly1663-bridge-launchd.test.sh
-          bash scripts/__tests__/fly1663-qa-launchd.test.sh
-          node --test scripts/__tests__/qa-lead-diagnostics.test.mjs
-          bash scripts/__tests__/qa-lead-artifact-fixtures.test.sh
-          bash scripts/__tests__/fly1663-qa-launchd-mutants.test.sh
-          bash scripts/__tests__/codex-lead-state-root.test.sh
-          bash scripts/__tests__/qa-codex-lead-layers.test.sh
-          bash scripts/__tests__/qa-codex-tmux-isolation.test.sh
-          bash scripts/__tests__/qa-metadata-snapshot.test.sh
-          bash scripts/__tests__/qa-fly-2301-codex-lead-drill.test.sh
-          bash scripts/__tests__/fly1679-dev-channels-v2.test.sh
-          bash scripts/__tests__/fly1680-v1-extinction.test.sh
-          bash scripts/__tests__/flywheel-daemon-install-verify.test.sh
-          bash scripts/__tests__/materialize-lead-manifests.test.sh
 
       # FLY-1830: the non-Lead launchd daemons (quota-monitor, updater,
       # bridge-liveness-probe, daily-standup) had no owner — a label that left
@@ -1318,8 +1286,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
-    # FLY-2146 uses the FLY-2245 approved fifth-shard fallback. The five new
-    # suites run serially and keep the unchanged FLY-1870 20m/85% tripwire.
+    # FLY-2562 uses this existing fifth shard for the intact FLY-2331/1663
+    # steps. Run 34889528445 measured 191s + 174s + 152s = projected 517s
+    # (50.7% of the unchanged 1020s tripwire budget). Keep whole steps;
+    # remeasure family headroom before any further rebalance (see the plan).
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -1351,6 +1321,37 @@ jobs:
       - name: Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)
         timeout-minutes: 8
         run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
+
+      # FLY-2331: run the real 70s nonblocking child arm and the same fixture's
+      # 61s sync mutant under the production EventLoopGuard. The harness owns
+      # isolated HOME/state/process groups and has independent hard deadlines.
+      - name: Test — FLY-2331 Bridge async-child guard regression
+        timeout-minutes: 4
+        run: bash scripts/__tests__/fly2331-bridge-async-child.test.sh
+
+      # FLY-1663/FLY-2301: launchd-native lifecycle contracts are root shell
+      # suites and are not discovered by package Vitest jobs. Keep the carrier,
+      # artifact, topology, home, tmux-isolation, and Bridge seams explicit.
+      - name: Test — FLY-1663 launchd-native Lead lifecycle
+        run: |
+          bash scripts/__tests__/fly1663-launchd-foundation.test.sh
+          bash scripts/__tests__/fly1663-lead-v2-runtime.test.sh
+          bash scripts/__tests__/fly1663-cmux-v2.test.sh
+          bash scripts/__tests__/fly2266-cmux-lead-attach-health.test.sh
+          bash scripts/__tests__/fly1663-bridge-launchd.test.sh
+          bash scripts/__tests__/fly1663-qa-launchd.test.sh
+          node --test scripts/__tests__/qa-lead-diagnostics.test.mjs
+          bash scripts/__tests__/qa-lead-artifact-fixtures.test.sh
+          bash scripts/__tests__/fly1663-qa-launchd-mutants.test.sh
+          bash scripts/__tests__/codex-lead-state-root.test.sh
+          bash scripts/__tests__/qa-codex-lead-layers.test.sh
+          bash scripts/__tests__/qa-codex-tmux-isolation.test.sh
+          bash scripts/__tests__/qa-metadata-snapshot.test.sh
+          bash scripts/__tests__/qa-fly-2301-codex-lead-drill.test.sh
+          bash scripts/__tests__/fly1679-dev-channels-v2.test.sh
+          bash scripts/__tests__/fly1680-v1-extinction.test.sh
+          bash scripts/__tests__/flywheel-daemon-install-verify.test.sh
+          bash scripts/__tests__/materialize-lead-manifests.test.sh
 
       - name: Test — FLY-2146 Lead memory remote sync
         env:

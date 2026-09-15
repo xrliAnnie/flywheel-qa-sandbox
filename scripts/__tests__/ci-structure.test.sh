@@ -746,7 +746,6 @@ expected_setup = [
 expected_shard_tests = {
     "script-tests": [
         "Test — FLY-2549 summary preflight with stale workspace dist",
-        "Test — FLY-2331 Bridge async-child guard regression",
         "Test — FLY-1707 incident replay",
         "Test — FLY-1393 flag truth CLI",
         "Test — FLY-1436 work-kind cutover CLI",
@@ -762,7 +761,6 @@ expected_shard_tests = {
         "Test — Discord adapter orphan reaper (FLY-183)",
         "Test — Lead rules single-bundle load chain (FLY-1402)",
         "Test — FLY-1496 model resolution + Lead derivation",
-        "Test — FLY-1663 launchd-native Lead lifecycle",
         "Test — FLY-1830 non-Lead daemon convergence",
         "Test — FLY-1814 launchd fleet contracts",
         "Test — FLY-1929 voucher watch contracts",
@@ -849,6 +847,8 @@ expected_shard_tests = {
         "Test — FLY-1364 cmux sync repair",
     ],
     "script-tests-5": [
+        "Test — FLY-2331 Bridge async-child guard regression",
+        "Test — FLY-1663 launchd-native Lead lifecycle",
         "Test — FLY-2146 Lead memory remote sync",
         "Test — FLY-2134 artifact freshness monitor",
     ],
