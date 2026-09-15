@@ -32,8 +32,16 @@ Issue: FLY-2563 (https://linear.app/geoforge3d/issue/FLY-2563/bridge-ship-judgme
 
 按任务fallback：保留d1-flow.mmd/d2-model.mmd，HTML各显示`DIAGRAM PENDING LOCAL RENDER`；未伪造图、未使用远程渲染。文案修订只简化图中术语，未冒充已成功重新渲染。限制已报Lead，回执 `57e62232-01ae-4f7f-878a-adca655b6edd`。
 
-## 待完成
+## 发布与交付
 
-最终交付记录提交推送、publish-only、托管HTTP/nonce/CSP一致性验证、DESIGN-HTML ready回执、phase_design_complete与park。
+- 最终HTML与全部设计文档已提交推送；R2通过记录提交`8229372e9`，发布时分支头`347086fd0`。
+- 通过`publish-report --publish-only`发布，reportId=`7a92f7008478e0cfbec8de28f9432678`，publishOnly=true/messageId=null/delivered=false；按任务要求静默发布，无频道消息。
+- 托管地址：https://fw-reports-624a39.vercel.app/r/7a92f7008478e0cfbec8de28f9432678/
+- `node engineering/doc/FLY-2563-bridge-loop-fd/verify-founder-html.mjs '<hosted-url>'`通过：HTTP 200、占位nonce已替换、CSP与script nonce一致、脚本与提交源一致、预期内容存在、无外部资源或inline handler。仍不声称浏览器视觉/CSP运行验证。
+- R2四条非阻塞建议已通过ask --report回报Lead，持久回执`3c115519-48f0-46d2-90c2-932b3f1ed086`；该条即时doorbell超时但队列已保留。DESIGN-HTML ready回执`21d22785-19ae-4a56-82e4-b7a2e079239d`。
+
+## 设计边界与最终命令
+
+提交本交付记录、更新progress并推送后，执行注入的`complete --route phase_design_complete`，成功后`park`。实际完成/park回执以CommDB结构化记录为准；此段不是完成回执，不在失去TURN后回写工作树。
 
 产品实现、迁移与CI、15分钟HTTP/lag、2小时fd、真实副本修复后性能均由实施/QA完成，本节点未执行。
