@@ -206,7 +206,6 @@ import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-r
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
-import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
 import { safeCompare } from "./auth-compare.js";
 import { createAutoMergeShadowRouter } from "./auto-merge-shadow-route.js";
 import {
@@ -814,6 +813,7 @@ import {
 import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
+import { openVoiceCommDb } from "./voice-comm-scope.js";
 import { createVoiceRouter } from "./voice-routes.js";
 import { voiceSessionAuthMiddleware } from "./voice-session-auth.js";
 import { createVoiceSessionServices } from "./voice-session-services.js";
@@ -10265,7 +10265,7 @@ export async function startBridge(
 						canonical,
 					);
 					if (rel.startsWith("..") || pathIsAbsolute(rel)) return null;
-					return new CommDB(canonical, false) as unknown as GateResponseDb;
+					return openVoiceCommDb(canonical);
 				} catch {
 					return null;
 				}

@@ -157,3 +157,15 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - 诊断插入脚本首次匹配失败，run2实际为未改源码重复运行，已明确记账。性能assert始终为取消<50ms/modeTick<100ms，5次全部纳入max/p95。源码缺陷尚未由run1单点证明，不为追绿改变生产行为。
 - 初步AST owner discovery现有102处Bridge CommDB打开点，其中19处factory/常驻owner需跨函数追踪、31处包含await；该清点只是定位，不宣称完成完整owner audit（临时输出`/tmp/fly2563-owner-discovery.json`）。指定事故快照、全仓门、代码评审和PR仍pending。
 - 本批teamlead typecheck通过；shard/真实Vitest分区9/9通过（包含实际子进程分片约89秒）；CI枚举检查通过318项shell分类和61项Node登记。曾误调用不存在的`check-ci-shell-tests.mjs`，该调用exit1，不是有效门；随后运行仓库真实`ci-shell-suite-enumeration.test.sh`并通过。
+
+## T3 第六批：voice 工厂跨函数泄漏
+
+- 102点AST清单追到plugin的voice openCommDb factory；原factory返回新CommDB，voice-routes写入后无close，且跨异步post-write hook持有。新openVoiceCommDb先验证已有库并释放，再返回与founder文本路径相同的同步GateResponseDb包装；每次方法调用重新开/关，不保留裸句柄，原route绑定/可信writer/hook语义不变。
+- RED：用原factory等价实现测得17fd vs baseline14；GREEN：新scope2项 + 原voice routes26项=28/28，teamlead typecheck通过。覆盖异步间隙fd基线、下一轮读取看到另一连接的新response及缺库factory拒绝。没有向真实voice/Discord发送请求。
+- 跨函数追踪已核对review coordinator的inspect/respond（write之后close，后续hook在外）、terminal-commdb-sync（每项finally-close后yield）、commdb-probes调用者finally-close、account-switch-consumer每次wake的finally-close；其余factory/await清单仍需收束，不能以此宣称102点全部完成。
+
+## 指定快照前置状态
+
+- 事故备份仍存在，约1.6GB；原文件未写入。当前执行无managed snapshot目录。
+- 官方`node scripts/flywheel-snapshot-control.mjs runner --source ~/.flywheel/comm/flywheel/comm.db --kind comm --project flywheel`返回`{ok:false,reason:snapshot_owner_unavailable,retryable:true}`。只检查env键是否存在：exec与Bridge URL有，TEAMLEAD_API_TOKEN无。controller在owner HTTP之前即拒绝；未读取额外凭据、未覆盖identity、未伪造.owner.json。
+- 已发非阻塞Lead问题`c870e05f-1086-4107-badd-0bdec19e9fc3`，补充诊断report`fcaf00dc-a633-4274-b69c-e654803816b5`。等待提供合规owner获取能力或QA路线期间继续其它工作；不是整个任务blocked。
