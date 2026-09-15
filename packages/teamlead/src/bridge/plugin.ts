@@ -373,6 +373,10 @@ import {
 	type EventLoopHealthSnapshot,
 } from "./event-loop-attribution.js";
 import {
+	ProcessResourceMonitor,
+	type FdHealth,
+} from "./process-resource-monitor.js";
+import {
 	drainSynchronousPages,
 	runSequentialChunks,
 	yieldToEventLoop,
@@ -1449,6 +1453,7 @@ export class SseBroadcaster {
 
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
+	processResources?: { snapshot(): FdHealth };
 	codexQuota?: {
 		runtime?: CodexQuotaRuntime;
 		rootKey: string;
@@ -2399,6 +2404,9 @@ export function createBridgeApp(
 			},
 			...(liveness === undefined ? {} : { liveness }),
 			...(eventLoop === undefined ? {} : { event_loop: eventLoop }),
+			...(opts?.processResources
+				? { fd: opts.processResources.snapshot() }
+				: {}),
 		});
 	});
 
@@ -5441,6 +5449,8 @@ export async function startBridge(
 		profilerEnabled: () => storeLoopProfilerEnabled(flagStore),
 	});
 	await eventLoopAttribution.start();
+	const processResources = new ProcessResourceMonitor();
+	processResources.start();
 	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
 	// only StateStore-authoritative failed/blocked outcomes asynchronously. All
 	// SQLite work lives behind the queue; transition hooks remain enqueue-only.
@@ -8228,6 +8238,7 @@ export async function startBridge(
 			flagProjectNames,
 			flagProjectConfigPath,
 			eventLoopAttribution,
+			processResources,
 			admissionCrossingBarrier,
 			residueHarvester,
 			terminalCommDbSync,
@@ -14038,6 +14049,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		await processResources.stop();
 		await betaReleaseRuntime.stop();
 		voiceSessionServices.runtime.stop();
 		// FLY-1082 (Task 2.4): the clean-shutdown marker rides the SAME close

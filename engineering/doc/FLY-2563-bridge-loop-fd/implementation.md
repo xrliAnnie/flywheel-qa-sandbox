@@ -83,3 +83,12 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - 现有EventLoopAttribution缓存追加lag_ms（完整窗口max）、sampled_at、window_ms=30000、status；空/失败/不完整窗口不可用，超过60秒或停止后的有效样本标stale。沿用唯一采样器，profiler关闭仍采样，health仅取缓存。
 - RED：缺新字段2项失败；GREEN：event-loop 7/7、HTTP health/event-loop选择5/5（其余34未执行），teamlead类型检查通过。wrapper新测试通过，原preflight5/5及fail-loud18/18通过；新脚本已显式登记CI，shell枚举门通过。
 - T4尚未完成ProcessResourceMonitor、Darwin effective cap、fd使用率统一告警/恢复及实际Bridge接线证明；不把上述测试或隔离Node当生产验收。
+
+## T4 第二批：fd监测缓存及HTTP接线
+
+- 新ProcessResourceMonitor在startBridge生命周期单例，30秒异步数字fd去重采样，5分钟刷新进程report软限与Darwin固定sysctl子进程的kernel cap/system counters。effective取min；任一必要上限未知或超过10分钟不计算分母；fd超过60秒标stale。health仅读缓存，不fork。
+- 2秒观察超时保留flight到所有探针实际settle；使用allSettled，单探针拒绝也不能提前放锁。stop停止调度并等实际cleanup；超时/失败不把旧count标fresh，不把未知count置0。snapshot只保留数字、时间和静态状态，不泄露路径/完整report/error文本。
+- 核心压力状态机>80% warn、拒绝/异常回执下轮重试、<70%连续两次quiet resolve且拒绝则再试；unknown/失败打断低位连续计数。此批只完成可注入状态机，生产统一告警回调尚未接入，不能把warn当unified alert验收。
+- RED：新module缺失及HTTP缺fd字段。GREEN：最终8/8（资源7+真实HTTP1），teamlead类型检查通过。HTTP反复读取未触发新probe，shutdown的ok/shuttingDown保持。
+- 隔离原生Node探针输出used26、rlimit_soft1048575，但当前环境kernel_per_process_limit不可得，因此limit=null/status=unavailable。此为开发子进程，不是生产Bridge，不满足F；未修改主机配置或生产进程。
+- 下一步：给bridge_fd_pressure注册kind/owner并接routedAlertSink持久化回执、同启动episode身份及恢复；增加AlertChannelHub/路由合跑，再做T5 SQL计时、T3剩余lease审计、T7完整门及性能、review/PR。
