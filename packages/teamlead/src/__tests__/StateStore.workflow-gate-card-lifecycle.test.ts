@@ -335,6 +335,29 @@ describe("workflow gate card lifecycle", () => {
 		expect(directWriters).toHaveLength(1);
 	});
 
+	it.each([false, true])(
+		"FLY-2561 refreshes a durable void without delivery credentials; callback throws=%s",
+		async (throws) => {
+			const store = await createStore();
+			supersededPostedCard(store);
+			const log = vi.fn();
+			const onIssueDisplayRefresh = vi.fn(() => {
+				if (throws) throw new Error("display callback unavailable");
+			});
+			await voidSupersededWorkflowGateCards({
+				log,
+				store,
+				now: () => "2026-08-14T21:00:00.000Z",
+				resolveDelivery: () => undefined,
+				onIssueDisplayRefresh,
+			});
+			expect(onIssueDisplayRefresh).toHaveBeenCalledExactlyOnceWith("FLY-1772");
+			if (throws)
+				expect(log).toHaveBeenCalledWith(
+					expect.stringContaining("display callback unavailable"),
+				);
+		},
+	);
 	it("edits an exactly-bound superseded card before opening its fixed watch window", async () => {
 		const store = await createStore();
 		supersededPostedCard(store);
@@ -354,7 +377,9 @@ describe("workflow gate card lifecycle", () => {
 		);
 		const edits: Array<{ threadId: string; messageId: string; text: string }> =
 			[];
+		const onIssueDisplayRefresh = vi.fn();
 		await voidSupersededWorkflowGateCards({
+			onIssueDisplayRefresh,
 			store,
 			now: () => "2026-08-14T21:00:00.000Z",
 			resolveDelivery: () => ({
@@ -371,6 +396,7 @@ describe("workflow gate card lifecycle", () => {
 			},
 		});
 
+		expect(onIssueDisplayRefresh).toHaveBeenCalledExactlyOnceWith("FLY-1772");
 		expect(edits).toEqual([
 			expect.objectContaining({
 				threadId: "thread-1",

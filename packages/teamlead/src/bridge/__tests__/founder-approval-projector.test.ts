@@ -61,6 +61,112 @@ function harness(events = [EVENT]) {
 }
 
 describe("workflow source projector", () => {
+	it.each(["founder_approval", "founder_feedback"] as const)(
+		"FLY-2561: refreshes the authoritative issue after %s projection and replay",
+		async (kind) => {
+			const { db, store } = harness([{ ...EVENT, kind }]);
+			const onIssueDisplayRefresh = vi.fn(() => {
+				expect(store.applyWorkflowSourceEvent).toHaveBeenCalled();
+			});
+			await drainWorkflowSourceEvents({
+				projects: ["flywheel"],
+				openCommDb: () => db,
+				store,
+				onIssueDisplayRefresh,
+			});
+			expect(onIssueDisplayRefresh).toHaveBeenCalledExactlyOnceWith("FLY-1772");
+			store.getWorkflowSourceCursor.mockReturnValue(0);
+			store.applyWorkflowSourceEvent.mockReturnValue({ status: "replayed" });
+			await drainWorkflowSourceEvents({
+				projects: ["flywheel"],
+				openCommDb: () => db,
+				store,
+				onIssueDisplayRefresh,
+			});
+			expect(onIssueDisplayRefresh).toHaveBeenCalledTimes(2);
+		},
+	);
+
+	it("FLY-2561: does not refresh a rejected source or trust a mismatched issue", async () => {
+		const { db, store } = harness();
+		const onIssueDisplayRefresh = vi.fn();
+		store.applyWorkflowSourceEvent.mockImplementationOnce(() => {
+			throw new Error("temporary failure");
+		});
+		await drainWorkflowSourceEvents({
+			projects: ["flywheel"],
+			openCommDb: () => db,
+			store,
+			onIssueDisplayRefresh,
+		});
+		expect(onIssueDisplayRefresh).not.toHaveBeenCalled();
+		store.getWorkflowRun.mockReturnValue({
+			run_id: "run-1",
+			issue_id: "other",
+			project_name: "other",
+		});
+		await drainWorkflowSourceEvents({
+			projects: ["flywheel"],
+			openCommDb: () => db,
+			store,
+			onIssueDisplayRefresh,
+		});
+		expect(onIssueDisplayRefresh).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2561: a display callback failure does not poison a committed decision", async () => {
+		const { db, store } = harness();
+		const log = vi.fn();
+		const result = await drainWorkflowSourceEvents({
+			projects: ["flywheel"],
+			openCommDb: () => db,
+			store,
+			log,
+			onIssueDisplayRefresh: () => {
+				throw new Error("display unavailable");
+			},
+		});
+		expect(result).toMatchObject({ applied: 1, deadlettered: 0 });
+		expect(store.advanceWorkflowSourceCursor).toHaveBeenCalledWith(
+			"flywheel",
+			1,
+		);
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining("display unavailable"),
+		);
+	});
+
+	it("FLY-2561: unrelated source events do not request founder-title refresh", async () => {
+		const { db, store } = harness([{ ...EVENT, kind: "turn_grant" as const }]);
+		const onIssueDisplayRefresh = vi.fn();
+		await drainWorkflowSourceEvents({
+			projects: ["flywheel"],
+			openCommDb: () => db,
+			store,
+			onIssueDisplayRefresh,
+		});
+		expect(onIssueDisplayRefresh).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2561 startup drain delivers refresh before a later timer tick", async () => {
+		const { db, store } = harness();
+		const pending = new Set<string>();
+		const projector = startWorkflowSourceProjector({
+			projects: ["flywheel"],
+			openCommDb: () => db,
+			store,
+			onIssueDisplayRefresh: (issueId) => {
+				pending.add(issueId);
+			},
+		});
+		try {
+			await projector.whenIdle();
+			expect([...pending]).toEqual(["FLY-1772"]);
+		} finally {
+			projector.stop();
+		}
+	});
+
 	it("drains immutable source rows into the destination using frozen bytes", async () => {
 		const { db, store } = harness();
 		const result = await drainWorkflowSourceEvents({

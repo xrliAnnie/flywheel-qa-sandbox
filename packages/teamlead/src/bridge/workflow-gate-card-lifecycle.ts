@@ -23,6 +23,7 @@ export interface WorkflowGateCardDelivery {
 }
 
 export interface WorkflowGateCardVoidDeps {
+	onIssueDisplayRefresh?: (issueId: string) => void;
 	store: StateStore;
 	resolveAlertIdentity?(input: {
 		holder: WorkflowGateHolderRow;
@@ -201,12 +202,23 @@ export async function voidSupersededWorkflowGateCards(
 			);
 		}
 	};
+	const refreshedIssues = new Set<string>();
 	for (const holder of deps.store.listWorkflowGateHoldersForCardVoid(
 		observedAt,
 		deps.limit ?? 20,
 	)) {
 		result.attempted += 1;
 		const run = deps.store.getWorkflowRun(holder.run_id);
+		if (run && !refreshedIssues.has(run.issue_id)) {
+			refreshedIssues.add(run.issue_id);
+			try {
+				deps.onIssueDisplayRefresh?.(run.issue_id);
+			} catch (error) {
+				deps.log?.(
+					`[workflow-gate-card] display refresh failed for ${run.issue_id}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
 		const fallbackIdentity: WorkflowEngineAlertIdentity = {
 			leadId: "unassigned",
 			projectName: run?.project_name ?? "unknown",

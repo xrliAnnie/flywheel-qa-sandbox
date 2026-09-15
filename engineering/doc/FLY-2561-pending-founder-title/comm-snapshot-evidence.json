@@ -1,0 +1,29 @@
+[
+  {
+    "issue": "FLY-2553",
+    "id": "workflow-gate:427d7ff14e1c5d035224691acd357a829f7d43ed756d2f5cdf4995d5de021916",
+    "from_agent": "248f073d-d4f5-4604-b6f4-adf7f6bd1730",
+    "created_at": "2026-09-14T20:19:49.444Z",
+    "resolved_at": null,
+    "relay_state": "protected",
+    "has_response": 0
+  },
+  {
+    "issue": "FLY-2554",
+    "id": "workflow-gate:061d0adb53e908716d205cfdf3501b30ece6d6b62ea932e1319818ceadb53902",
+    "from_agent": "7821abed-48c0-42d4-b1a1-fc2330b05373",
+    "created_at": "2026-09-14T20:36:09.332Z",
+    "resolved_at": null,
+    "relay_state": "protected",
+    "has_response": 0
+  },
+  {
+    "issue": "FLY-2555",
+    "id": "workflow-gate:d2fe73ad27f903201c68be73f0f123b5d1b30b746f1b0f4feb9075e4432ebe92",
+    "from_agent": "2808a4e8-3a86-439c-92ed-14d8fff60e2d",
+    "created_at": "2026-09-14T20:28:37.315Z",
+    "resolved_at": null,
+    "relay_state": "protected",
+    "has_response": 0
+  }
+]

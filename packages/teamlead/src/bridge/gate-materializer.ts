@@ -22,6 +22,8 @@ const STAGE_ORDER: Record<WorkflowGateMaterializationStage, number> = {
 export interface GateMaterializerDeps {
 	store: StateStore;
 	commDbPath: string;
+	onIssueDisplayRefresh?: (issueId: string) => void;
+	log?: (message: string) => void;
 	leadId: string;
 	threadId: string;
 	preflight(
@@ -165,6 +167,15 @@ export async function materializeWorkflowGateHolder(
 	}
 	const run = deps.store.getWorkflowRun(holder.run_id);
 	if (!run) return { ok: false, reason: "workflow_gate_run_not_found" };
+	const refreshIssueDisplay = (): void => {
+		try {
+			deps.onIssueDisplayRefresh?.(run.issue_id);
+		} catch (error) {
+			(deps.log ?? console.warn)(
+				`[gate-materializer] display refresh failed for ${run.issue_id}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	};
 	if (
 		holder.materialization_stage === "completed" &&
 		holder.state === "awaiting_review" &&
@@ -182,6 +193,7 @@ export async function materializeWorkflowGateHolder(
 		) {
 			return { ok: false, reason: "workflow_gate_card_audit_conflict" };
 		}
+		refreshIssueDisplay();
 		return {
 			ok: true,
 			idempotentReplay: true,
@@ -282,11 +294,14 @@ export async function materializeWorkflowGateHolder(
 				});
 				holder = current(deps.store, questionId)!;
 			} else {
-				deps.store.markWorkflowGateCardPostOutcome({
+				const marked = deps.store.markWorkflowGateCardPostOutcome({
 					questionId,
 					sequence: intent.sequence,
 					outcome: posted.kind === "no_effect" ? "no_effect" : "ambiguous",
 				});
+				if (marked.ok && posted.kind === "posted_ambiguous") {
+					refreshIssueDisplay();
+				}
 				return {
 					ok: false,
 					reason:
@@ -427,6 +442,7 @@ export async function materializeWorkflowGateHolder(
 	) {
 		return { ok: false, reason: "workflow_gate_card_audit_conflict" };
 	}
+	refreshIssueDisplay();
 	return {
 		ok: true,
 		idempotentReplay: false,

@@ -9,6 +9,9 @@
  *   qa PASS / kill QA / operator-reset / finalize / attach cross-wire.
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { DesignBackend, WorkflowPhaseRole } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { insertHistoricalAutoQaRecord } from "../../__tests__/helpers/historical-qa.js";
@@ -17,6 +20,7 @@ import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
 import type { ChatThreadCreator } from "../ChatThreadCreator.js";
+import { materializeWorkflowGateHolder } from "../gate-materializer.js";
 import type { DisplayWriteResult, ParkProbe } from "../issue-display.js";
 import {
 	attachTargetMatchesIssue,
@@ -366,6 +370,80 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 	afterEach(() => {
 		store.close();
 		vi.restoreAllMocks();
+	});
+
+	it("FLY-2561: materializing a founder card refreshes QA to approve without a sweep", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2561-display-"));
+		try {
+			seedSession(store, {
+				exec: "design",
+				role: "design",
+				status: "design_done",
+			});
+			seedSession(store, {
+				exec: "implement",
+				role: "implement",
+				status: "ship_parked",
+			});
+			seedSession(store, { exec: "qa", role: "qa", status: "running" });
+			const { refresher, log } = makeRefresher(store, {
+				park: { design: "parked", implement: "parked" },
+			});
+			await refresher.refresh(ISSUE);
+			expect(log.title.at(-1)?.phaseBadge).toBe("🧪QA");
+			log.title.length = 0;
+			seedWorkflowRunAt(store, "founder_gate");
+			store.upsertWorkflowRunNode({
+				runId: "run-founder-title",
+				nodeId: "implement",
+				attempt: 1,
+				state: "done",
+				executionId: "implement",
+			});
+			testDb(store).run(
+				`INSERT INTO workflow_node_pr_binding
+				(run_id, node_id, attempt, pr_number, head_sha, target_repo_identity, probe_repo_slug, target_repo_path, worktree_binding_generation, receipt_id, bound_at)
+				VALUES ('run-founder-title', 'implement', 1, 2561, ?, '__main__', 'test/repo', '/tmp/proj', 'generation-1', 'receipt-2561', '2026-09-14T20:00:00Z')`,
+				["a".repeat(40)],
+			);
+			store.ensureWorkflowGateHolder({
+				runId: "run-founder-title",
+				gateNodeId: "founder_gate",
+				attempt: 1,
+				headSha: "a".repeat(40),
+				sourceExecutionId: "qa",
+				questionId: "gate-2561",
+				now: "2026-09-14T20:00:00Z",
+			});
+			const refresh = vi.spyOn(refresher, "refresh");
+			const sweep = vi.spyOn(refresher, "runSweep");
+			const deps = {
+				store,
+				commDbPath: join(root, "comm.db"),
+				leadId: "lead-1",
+				threadId: THREAD,
+				preflight: async () => ({ ok: true as const }),
+				postCard: async () => ({ messageId: "card-2561" }),
+				onIssueDisplayRefresh: (issueId: string) => refresher.enqueue(issueId),
+			};
+			expect(
+				await materializeWorkflowGateHolder(deps, "gate-2561"),
+			).toMatchObject({ ok: true });
+			expect(refresh).toHaveBeenCalledTimes(1);
+			await refresh.mock.results[0]!.value;
+			expect(log.title).toEqual([
+				{ via: "stage", stage: "", phaseBadge: "🔔 ⏳待批" },
+			]);
+			expect(sweep).not.toHaveBeenCalled();
+			refresh.mockClear();
+			expect(
+				await materializeWorkflowGateHolder(deps, "gate-2561"),
+			).toMatchObject({ ok: true, idempotentReplay: true });
+			expect(refresh).toHaveBeenCalledTimes(1);
+			await refresh.mock.results[0]!.value;
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("FLY-1709: archived thread writes no display face and persists a terminal fingerprint", async () => {

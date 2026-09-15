@@ -1,0 +1,131 @@
+[
+  {
+    "issue": "FLY-2553",
+    "runId": "6f79c0d0-d1c3-4117-acd9-21cbef332048",
+    "runStatus": "active",
+    "currentNode": "founder_gate",
+    "holder": [
+      {
+        "attempt": 1,
+        "state": "awaiting_review",
+        "materialization_stage": "completed",
+        "created_at": "2026-09-14T20:19:46.355Z",
+        "updated_at": "2026-09-14T20:19:49.841Z"
+      }
+    ],
+    "displayReconciledAt": "2026-09-14T20:34:23.069Z",
+    "reviewHeld": false,
+    "cases": [
+      {
+        "park": "unknown",
+        "badge": {
+          "kind": "stage",
+          "stage": "approve"
+        },
+        "founderGateAttention": true
+      },
+      {
+        "park": "parked",
+        "badge": {
+          "kind": "stage",
+          "stage": "approve"
+        },
+        "founderGateAttention": true
+      },
+      {
+        "park": "not_parked",
+        "badge": {
+          "kind": "stage",
+          "stage": "approve"
+        },
+        "founderGateAttention": true
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2554",
+    "runId": "fff384ea-14de-45b3-a671-3cf1fa328f13",
+    "runStatus": "active",
+    "currentNode": "founder_gate",
+    "holder": [
+      {
+        "attempt": 1,
+        "state": "awaiting_review",
+        "materialization_stage": "completed",
+        "created_at": "2026-09-14T20:36:07.721Z",
+        "updated_at": "2026-09-14T20:36:10.323Z"
+      }
+    ],
+    "displayReconciledAt": "2026-09-14T20:46:07.997Z",
+    "reviewHeld": false,
+    "cases": [
+      {
+        "park": "unknown",
+        "badge": {
+          "kind": "stage",
+          "stage": "approve"
+        },
+        "founderGateAttention": true
+      },
+      {
+        "park": "parked",
+        "badge": {
+          "kind": "stage",
+          "stage": "approve"
+        },
+        "founderGateAttention": true
+      },
+      {
+        "park": "not_parked",
+        "badge": {
+          "kind": "stage",
+          "stage": "approve"
+        },
+        "founderGateAttention": true
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2555",
+    "runId": "1bb66b99-910f-40e0-a454-972646e337df",
+    "runStatus": "active",
+    "currentNode": "founder_gate",
+    "holder": [
+      {
+        "attempt": 1,
+        "state": "awaiting_review",
+        "materialization_stage": "completed",
+        "created_at": "2026-09-14T20:28:34.742Z",
+        "updated_at": "2026-09-14T20:28:37.623Z"
+      }
+    ],
+    "displayReconciledAt": "2026-09-14T20:34:23.398Z",
+    "reviewHeld": false,
+    "cases": [
+      {
+        "park": "unknown",
+        "badge": {
+          "kind": "stage",
+          "stage": "approve"
+        },
+        "founderGateAttention": true
+      },
+      {
+        "park": "parked",
+        "badge": {
+          "kind": "stage",
+          "stage": "approve"
+        },
+        "founderGateAttention": true
+      },
+      {
+        "park": "not_parked",
+        "badge": {
+          "kind": "stage",
+          "stage": "approve"
+        },
+        "founderGateAttention": true
+      }
+    ]
+  }
+]

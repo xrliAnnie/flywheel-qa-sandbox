@@ -5473,7 +5473,23 @@ export async function startBridge(
 	const workflowSourceAlertFallback: {
 		current?: (payload: AlertPayload) => Promise<{ accepted: boolean }>;
 	} = {};
+	// FLY-907: unified issue-display refresh. The holder is threaded into every
+	// trigger surface NOW (they read `.current` at fire time); the refresher
+	// itself is built post-listen.
+	const issueDisplayRefreshHolder: IssueDisplayRefreshHolder = {};
+	const pendingIssueDisplayRefreshes = new Set<string>();
+	const enqueueIssueDisplayRefresh = (issueId: string): void => {
+		const refresher = issueDisplayRefreshHolder.current;
+		if (refresher) {
+			refresher.enqueue(issueId);
+		} else if (config.chatThreadsEnabled) {
+			// Startup status writes can precede the late-bound refresher. Preserve
+			// the exact write trigger and drain it as soon as the renderer exists.
+			pendingIssueDisplayRefreshes.add(issueId);
+		}
+	};
 	const workflowSourceProjector = startWorkflowSourceProjector({
+		onIssueDisplayRefresh: enqueueIssueDisplayRefresh,
 		projects: () => loadProjects().map((project) => project.projectName),
 		openCommDb: (project) => new CommDB(commDbPathForProject(project)),
 		store,
@@ -5653,21 +5669,6 @@ export async function startBridge(
 		);
 
 	let retryDispatcher = opts?.retryDispatcher;
-	// FLY-907: unified issue-display refresh. The holder is threaded into every
-	// trigger surface NOW (they read `.current` at fire time); the refresher
-	// itself is built post-listen.
-	const issueDisplayRefreshHolder: IssueDisplayRefreshHolder = {};
-	const pendingIssueDisplayRefreshes = new Set<string>();
-	const enqueueIssueDisplayRefresh = (issueId: string): void => {
-		const refresher = issueDisplayRefreshHolder.current;
-		if (refresher) {
-			refresher.enqueue(issueId);
-		} else if (chatThreadCreator) {
-			// Startup status writes can precede the late-bound refresher. Preserve
-			// the exact write trigger and drain it as soon as the renderer exists.
-			pendingIssueDisplayRefreshes.add(issueId);
-		}
-	};
 	// GEO-158: FSM instance + DirectiveExecutor for validated transitions
 	const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 	const executor = new DirectiveExecutor(store);
@@ -10473,6 +10474,8 @@ export async function startBridge(
 							const gateBotToken = lead.botToken ?? config.discordBotToken;
 							const result = await materializeWorkflowGateHolder(
 								{
+									onIssueDisplayRefresh: enqueueIssueDisplayRefresh,
+									log: (message) => console.warn(message),
 									store,
 									commDbPath: commDbPathForProject(run.project_name),
 									leadId: lead.agentId,
@@ -10590,6 +10593,7 @@ export async function startBridge(
 				});
 			}
 			await voidSupersededWorkflowGateCards({
+				onIssueDisplayRefresh: enqueueIssueDisplayRefresh,
 				store,
 				resolveAlertIdentity: ({ run }) =>
 					resolveWorkflowRunAlertIdentity({

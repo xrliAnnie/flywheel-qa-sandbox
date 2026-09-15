@@ -75,6 +75,7 @@ export interface WorkflowSourceProjectorArgs {
 	projects: readonly string[] | (() => readonly string[]);
 	openCommDb(project: string): WorkflowSourceDb;
 	store: WorkflowSourceStore;
+	onIssueDisplayRefresh?: (issueId: string) => void;
 	resolveAlertIdentity?(input: {
 		project: string;
 		issueId: string;
@@ -205,6 +206,33 @@ async function drainWorkflowSourceEventsAsync(
 					});
 					result[applied.status] += 1;
 					advance = true;
+					if (
+						args.onIssueDisplayRefresh &&
+						(event.kind === "founder_approval" ||
+							event.kind === "founder_feedback")
+					) {
+						try {
+							const payload = JSON.parse(event.payload) as Record<
+								string,
+								unknown
+							>;
+							const run =
+								typeof payload.run_id === "string"
+									? args.store.getWorkflowRun(payload.run_id)
+									: undefined;
+							if (
+								run &&
+								run.project_name === project &&
+								run.issue_id === payload.issue_id
+							) {
+								args.onIssueDisplayRefresh(run.issue_id);
+							}
+						} catch (error) {
+							args.log?.(
+								`[workflow-source-projector] display refresh failed for ${event.source_event_id}: ${errorMessage(error)}`,
+							);
+						}
+					}
 				} catch (error) {
 					const reason = errorMessage(error);
 					if (isTerminalSourceError(reason)) {

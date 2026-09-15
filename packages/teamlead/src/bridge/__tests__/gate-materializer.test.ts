@@ -46,7 +46,9 @@ describe("workflow gate materializer", () => {
 			})
 			.mockResolvedValue({ ok: true });
 		const postCard = vi.fn(async () => ({ messageId: "origin-card" }));
+		const onIssueDisplayRefresh = vi.fn();
 		const deps = {
+			onIssueDisplayRefresh,
 			store,
 			commDbPath: commPath,
 			leadId: "flywheel-eng-lead",
@@ -63,6 +65,7 @@ describe("workflow gate materializer", () => {
 			reason: "workflow_gate_origin_probe_head_mismatch",
 		});
 		expect(postCard).not.toHaveBeenCalled();
+		expect(onIssueDisplayRefresh).not.toHaveBeenCalled();
 		expect(
 			store.getCurrentWorkflowGateHolderByQuestionId("workflow-gate-origin"),
 		).toMatchObject({
@@ -75,6 +78,20 @@ describe("workflow gate materializer", () => {
 		expect(
 			await materializeWorkflowGateHolder(deps, "workflow-gate-origin"),
 		).toMatchObject({ ok: true, idempotentReplay: true });
+		expect(onIssueDisplayRefresh).toHaveBeenCalledTimes(2);
+		expect(onIssueDisplayRefresh).toHaveBeenCalledWith("FLY-1757");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		onIssueDisplayRefresh.mockImplementationOnce(() => {
+			throw new Error("display callback unavailable");
+		});
+		expect(
+			await materializeWorkflowGateHolder(deps, "workflow-gate-origin"),
+		).toMatchObject({ ok: true, idempotentReplay: true });
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("display callback unavailable"),
+		);
+		warn.mockRestore();
+
 		expect(preflight).toHaveBeenCalledTimes(2);
 		expect(postCard).toHaveBeenCalledTimes(1);
 		store.close();
@@ -252,7 +269,9 @@ describe("workflow gate materializer", () => {
 				marker: input.correlationMarker,
 			};
 		});
+		const onIssueDisplayRefresh = vi.fn();
 		const deps = {
+			onIssueDisplayRefresh,
 			store,
 			commDbPath: join(root, "comm.db"),
 			leadId: "flywheel-eng-lead",
@@ -268,6 +287,7 @@ describe("workflow gate materializer", () => {
 		expect(
 			await materializeWorkflowGateHolder(deps, "workflow-gate-ambiguous"),
 		).toMatchObject({ ok: false, reason: "workflow_gate_card_post_ambiguous" });
+		expect(onIssueDisplayRefresh).toHaveBeenCalledExactlyOnceWith("FLY-1832");
 		currentNow = "2026-08-17T00:00:01.000Z";
 		expect(
 			await materializeWorkflowGateHolder(deps, "workflow-gate-ambiguous"),
@@ -275,6 +295,7 @@ describe("workflow gate materializer", () => {
 			ok: true,
 			cardMessageId: "discord-reconciled-1",
 		});
+		expect(onIssueDisplayRefresh).toHaveBeenCalledTimes(2);
 		expect(postCard).toHaveBeenCalledTimes(1);
 		expect(deps.preflight).toHaveBeenCalledTimes(1);
 		expect(scanCard).toHaveBeenCalledTimes(1);
