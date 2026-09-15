@@ -5,9 +5,9 @@ Issue: FLY-2563 (https://linear.app/geoforge3d/issue/FLY-2563/bridge-ship-judgme
 
 ## 当前状态
 
-Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已批准设计，工作树干净。
+Implement TURN epoch=4，activation attempt=1。承接已保留实现继续补齐；下文按批次保留历史红/绿记录。
 实时 check `8b68f7f7-65a6-44b4-b6aa-319babf09006` 确认 R2 effective APPROVED。
-本记录不是完成回执。T1–T7 尚未全部实施，不宣称事件循环事故已修复。
+本记录不是完成回执。T1–T6代码与隔离验证已落地，T7聚合门、effective review、exact-head CI与独立QA仍待完成，不宣称生产事故已验收。
 
 ## T3 第一批：fleet 同步连接所有权
 
@@ -187,3 +187,9 @@ Lead question b07d0b86-d375-4dab-b37a-9ed4e3fde5f4 授权唯一 writable inciden
 24页从水位0推进至7982863，整轮最大6.646ms；随后5次idle为0.112–0.163ms，source/holder/outcome均为0且水位不动。全部原始页值见incident-observer-receipt.json。历史快照无匹配holder，不将其冒充非空写入证明；非空25,000 outcome由1.7M合成fixture另证。所有句柄已关闭，并已按完整instruction id报告copy可回收（未自行删除）。
 
 归档指定备份写操作及生产15分钟health/2小时fd仍留在独立QA矩阵；本次授权只用于取消观察器。最早synthetic尾部154.543ms红样本仍保留，原因未定位；后续绿色样本不抹除该限制。package aggregate session26020仍运行，尚无终态receipt；lint/build先前exit0不是aggregate通过。
+
+## Review candidate validation
+
+五轮synthetic原始结果全部保留在performance-runs.jsonl：首轮尾部154.543ms失败原因未定位，随后四轮通过原阈值；第4轮取消最大31.027ms、modeTick最大67.905ms，第5轮分别26.197ms/18.738ms。观测窗口CPU/GC仅从第3轮开始收集，不能反推第1轮原因。没有放宽阈值、skip或修改生产调度来隐藏失败。
+
+四包typecheck全部exit0；新增wrapper shell test再次exit0。CommDB源码分类见commdb-ownership-matrix.md；保留的异步owner/常驻owner明确列出，不声称所有await期间fd为0。Lint/build已通过，package gate仍运行，PR/CI/review是接下来的独立门。生产health15分钟/fd2小时/有效上限和指定备份archive推进与重启验证仍由QA证明。
