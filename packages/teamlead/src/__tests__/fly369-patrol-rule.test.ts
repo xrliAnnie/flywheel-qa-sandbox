@@ -7,6 +7,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -27,6 +28,20 @@ const RUNBOOK_PATH = join(
 	"FLY-2351-snapshot-disk-guard",
 	"runbook.md",
 );
+
+// Existing incident fixtures use the current report envelope; gate mutants below
+// deliberately run raw text to exercise malformed schema/identity rejection.
+function reportV2(text: string): string {
+	let ordinal = 0;
+	return (
+		"patrol_schema=2\nMECHANISM_REVIEW result=none count=0\n" +
+		text.replace(
+			/^FINDING /gm,
+			() =>
+				`FINDING id=${createHash("sha256").update(String(ordinal++)).digest("hex")} category=incident `,
+		)
+	);
+}
 
 describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 	const patrol = readFileSync(PATROL_PATH, "utf8");
@@ -179,7 +194,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"FINDING step=5 bridge_problem=no result=escalated-with-plan evidence=raya_checkout_overdue.aaaaaaaa.bbbbbbbb owner=agent:flywheel-eng-lead next=retry:raya-overdue-warning epic=n/a epic_marker=n/a",
 		]) {
 			const result = spawnSync("awk", [findingProgram ?? ""], {
-				input: `STEP 5: FINDING\n${finding}\n`,
+				input: reportV2(`STEP 5: FINDING\n${finding}\n`),
 				encoding: "utf8",
 			});
 			expect(result.status).toBe(0);
@@ -241,7 +256,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"STEP 6: FINDING",
 		].join("\n");
 		const result = spawnSync("grep", ["-Ec", pattern ?? ""], {
-			input: `${report}\n`,
+			input: reportV2(`${report}\n`),
 			encoding: "utf8",
 		});
 		expect(result.status).toBe(0);
@@ -304,11 +319,11 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"STEP 6: OK",
 		];
 		const completion = spawnSync("grep", ["-Ec", completionPattern ?? ""], {
-			input: `${finalized.join("\n")}\n`,
+			input: reportV2(`${finalized.join("\n")}\n`),
 			encoding: "utf8",
 		});
 		const finding = spawnSync("awk", [findingProgram ?? ""], {
-			input: `${finalized.join("\n")}\n`,
+			input: reportV2(`${finalized.join("\n")}\n`),
 			encoding: "utf8",
 		});
 		expect(completion.stdout.trim()).toBe("6");
@@ -321,7 +336,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		];
 		expect(
 			spawnSync("awk", [findingProgram ?? ""], {
-				input: `${mutant.join("\n")}\n`,
+				input: reportV2(`${mutant.join("\n")}\n`),
 				encoding: "utf8",
 			}).status,
 		).not.toBe(0);
@@ -421,7 +436,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		const secondAccountability = `FINDING step=DWELL bridge_problem=no result=advanced evidence=node_dwell:run-2 owner=n/a next=n/a epic=n/a epic_marker=n/a`;
 		const run = (lines: string[]) =>
 			spawnSync("awk", [findingProgram ?? ""], {
-				input: `${lines.join("\n")}\n`,
+				input: reportV2(`${lines.join("\n")}\n`),
 				encoding: "utf8",
 			});
 		const valid = [
@@ -431,11 +446,11 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			accountability,
 		];
 		const numeric = spawnSync("grep", ["-Ec", numericPattern ?? ""], {
-			input: `${valid.join("\n")}\n`,
+			input: reportV2(`${valid.join("\n")}\n`),
 			encoding: "utf8",
 		});
 		const dwell = spawnSync("grep", ["-Ec", dwellPattern ?? ""], {
-			input: `${valid.join("\n")}\n`,
+			input: reportV2(`${valid.join("\n")}\n`),
 			encoding: "utf8",
 		});
 		expect(numeric.stdout.trim()).toBe("6");
@@ -774,7 +789,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		const commentUuid = "123e4567-e89b-12d3-a456-426614174000";
 		const run = (lines: string[]) =>
 			spawnSync("awk", [program ?? ""], {
-				input: `${lines.join("\n")}\n`,
+				input: reportV2(`${lines.join("\n")}\n`),
 				encoding: "utf8",
 			});
 		const valid = [

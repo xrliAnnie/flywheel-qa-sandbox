@@ -646,6 +646,27 @@
 			"baseTable": "workflow_run_event",
 			"usage": "read",
 			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/patrol-continuity-collector.ts",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/patrol-continuity-collector.ts",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/patrol-continuity-collector.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
 		}
 	]
 }

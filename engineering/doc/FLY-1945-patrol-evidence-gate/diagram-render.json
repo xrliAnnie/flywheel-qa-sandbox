@@ -1,0 +1,16 @@
+{
+  "status": "DIAGRAM PENDING LOCAL RENDER",
+  "attemptsPerDiagram": 2,
+  "sources": [
+    "flow.mmd",
+    "model.mmd"
+  ],
+  "svgIds": [
+    "FLY-1945-d1",
+    "FLY-1945-d2"
+  ],
+  "retryFlags": "-w 1000 -b white --svgId <unique-id>",
+  "error": "Chromium MachPortRendezvousServer bootstrap_check_in Permission denied (1100)",
+  "externalRendererUsed": false,
+  "browserVisualValidation": false
+}

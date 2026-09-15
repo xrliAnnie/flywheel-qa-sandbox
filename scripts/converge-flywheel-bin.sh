@@ -292,6 +292,7 @@ symlink_source_for() {
     meta-alert.sh) echo "$REPO_ROOT/scripts/meta-alert.sh" ;;
     flywheel-patrol-snapshot) echo "$REPO_ROOT/scripts/lead-patrol-snapshot.sh" ;;
     flywheel-node-dwell-control) echo "$REPO_ROOT/scripts/flywheel-node-dwell-control.mjs" ;;
+    flywheel-patrol-continuity) echo "$REPO_ROOT/scripts/flywheel-patrol-continuity.mjs" ;;
     *) echo "" ;;
   esac
 }
@@ -312,7 +313,7 @@ symlink_source_for() {
 # verbatim (absence is the installer's business, and their rc contract is
 # unchanged) — widening the regime to them is a far larger blast radius than
 # this incident justifies.
-symlink_strict_name() { case "$1" in meta-alert.sh|flywheel-patrol-snapshot|flywheel-node-dwell-control) return 0 ;; *) return 1 ;; esac; }
+symlink_strict_name() { case "$1" in meta-alert.sh|flywheel-patrol-snapshot|flywheel-node-dwell-control|flywheel-patrol-continuity) return 0 ;; *) return 1 ;; esac; }
 
 # Keep every existing meta-alert.sh title/body byte-for-byte. The patrol
 # snapshot shares the strict mechanics but is a generic managed executable,
@@ -367,6 +368,7 @@ symlink_source_ready() { # <name> <source> — sane, shebang-bearing, executable
     # FLY-2210's wrapper is committed mode 100755. Converge must not mutate a
     # trusted checkout to disguise an index-mode regression.
     [ "$name" != "flywheel-node-dwell-control" ] || return 1
+    [ "$name" != "flywheel-patrol-continuity" ] || return 1
     if chmod 0755 "$src" 2>/dev/null; then
       echo "[converge-bin] chmod 0755 on repair source $src (exec bit was missing; tsc default 0644)" >&2
     else
@@ -377,7 +379,7 @@ symlink_source_ready() { # <name> <source> — sane, shebang-bearing, executable
 }
 
 if ! is_temp_or_worktree_root "$REPO_ROOT"; then
-  for name in agent-team-transport tmux-server-rescue flywheel-cmux-sync flywheel-cmux-autostart meta-alert.sh flywheel-patrol-snapshot flywheel-node-dwell-control; do
+  for name in agent-team-transport tmux-server-rescue flywheel-cmux-sync flywheel-cmux-autostart meta-alert.sh flywheel-patrol-snapshot flywheel-node-dwell-control flywheel-patrol-continuity; do
     link="$BIN_DIR/$name"
     src="$(symlink_source_for "$name")"
 

@@ -1002,6 +1002,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/teamlead/src/__tests__/patrol-continuity-store.test.ts:process.kill(pid!, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/__tests__/patrol-continuity-store.test.ts",
+		"code": "process.kill(pid!, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/__tests__/rules-bundle-truth-process.test.ts:for (const child of children) child.kill(\"SIGTERM\");#1",
 		"path": "packages/teamlead/src/__tests__/rules-bundle-truth-process.test.ts",
 		"code": "for (const child of children) child.kill(\"SIGTERM\");",

@@ -1,0 +1,45 @@
+{
+  "issue": "FLY-1945",
+  "phase": "design",
+  "executionId": "3f011ac5-8038-4be8-850e-0d04c022905a",
+  "activationId": "activation:3f011ac5-8038-4be8-850e-0d04c022905a:d5c6e020-4711-416d-8acb-54e140eefe90:eng_design:1",
+  "designReview": {
+    "questionId": "919671d9-769e-4ed6-bd8b-f20cf0238601",
+    "requestId": "ebe15afb-0277-44d6-a99b-a16f60e1cd96",
+    "reviewVerdict": "APPROVED",
+    "round": 2,
+    "receipt": "review-receipt.json"
+  },
+  "founderHtml": {
+    "url": "https://fw-reports-624a39.vercel.app/r/4d7ee41046d4bb36281f79f675cccf8a/",
+    "path": "engineering/doc/FLY-1945-patrol-evidence-gate/founder-design.html",
+    "artifactCommit": "fba169ad0",
+    "publishOnly": true,
+    "leadReportId": "9bc10eb1-22bd-4294-bae0-11f9bc4ae2a5",
+    "hostedVerification": "hosted-verification.json",
+    "interactionVerification": "html-validation.json"
+  },
+  "advisories": {
+    "cumulativeCount": 9,
+    "file": "follow-ups.md",
+    "leadReportId": "a604d0fe-5ecf-4e7a-958f-104c9f78d743",
+    "claimedResolved": false
+  },
+  "scopeAudit": {
+    "allChangesInIssueDocFolder": true,
+    "implementationPerformed": false,
+    "deploymentPerformed": false,
+    "successorDispatched": false,
+    "mergePerformed": false
+  },
+  "limitations": [
+    "Both Mermaid sources retained; local Chromium render failed twice per diagram; explicit DIAGRAM PENDING LOCAL RENDER fallback used",
+    "DOM/controller and hosted HTTP/CSP checks do not prove browser visual QA",
+    "Implementation and production validation remain downstream work"
+  ],
+  "epilogue": {
+    "completionRoute": "phase_design_complete",
+    "status": "delivery_verified_ready_for_completion_command",
+    "next": "complete exact route then park; do not write shared worktree after TURN transfer"
+  }
+}

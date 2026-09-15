@@ -1,0 +1,13 @@
+{
+  "artifact": "founder-design.html",
+  "scope": "static checks and happy-dom DOM/controller execution; not browser visual or CSP runtime QA",
+  "passed": [
+    "8 cards each have a comment; one nonced inline script; no inline handlers, own CSP, external assets, or unsafe DOM writes",
+    "autosave path isolation key, raw text safe aggregation, exact leading feedback marker",
+    "long feedback split into <=1800 character chunks with repeated marker",
+    "clipboard success, rejected-promise fallback, and absent-API fallback",
+    "same-path reload restored comments; different-path report does not inherit them",
+    "storage access exceptions do not break aggregation"
+  ],
+  "artifactSha256": "4f39ff402b546132933821f72553bf2664f7e0a12b0209aec0ad9feaae4a6a39"
+}

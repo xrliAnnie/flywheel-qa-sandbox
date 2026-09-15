@@ -114,6 +114,9 @@ if [ "${GH_EMPTY:-0}" = 1 ]; then
   exit 0
 fi
 case "$*" in
+  *'/git/ref/heads/'*)
+    printf '{"object":{"sha":"%s"}}\n' "${GH_REF_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+    ;;
   *'/pulls?state=open&per_page=50'*)
     printf '%s\n' '[{"number":12,"draft":false,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"updated_at":"2026-08-19T06:30:00Z"}]'
     ;;
@@ -741,7 +744,7 @@ SH
 chmod 0755 "$PANES/bin/tmux"
 sqlite3 "$PANES/comm/flywheel/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
- ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
+ ('19450000-0000-4000-8000-000000000001','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
  ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude'),
  ('exec-pane-7','runner-flywheel:@7','flywheel','FLY-207','honey-lemon-lead','running','claude');
 SQL
@@ -749,17 +752,22 @@ sqlite3 "$PANES/state/comm/tidal-echo/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
  ('exec-pane-3','runner-tidal-echo:@3','tidal-echo','TE-300','tidal-echo-content-lead','running','claude');
 SQL
+sqlite3 "$PANES/teamlead.db" <<SQL
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status,session_stage,worktree_binding_path,worktree_binding_branch,worktree_binding_generation) VALUES
+ ('19450000-0000-4000-8000-000000000001','FLY-200','FLY-200','patrol fixture','flywheel','running','implement','$PANES/worktree','feature/1945','generation-1');
+SQL
 mkdir -p "$PANES/state/patrol-reports/flywheel-eng-lead"
 mkdir -p "$PANES/state/patrol-continuity/flywheel-eng-lead"
 PANE_STATE_HASH="$(printf '%s' 'Awaiting review' | shasum -a 256 | awk '{print $1}')"
 cat > "$PANES/state/patrol-reports/flywheel-eng-lead/20260819T000000Z-tickNA.md" <<EOF
 pane_count=1
-PANE_EVIDENCE pane=%1 target=runner-flywheel:@1 owner=owned exec=exec-pane-1 capture_sha256=old lines=2 bytes=20 state_sha256=$PANE_STATE_HASH last_change_epoch=$(($(date +%s) - 3700)) findings=none action=none result=clear
+PANE_EVIDENCE pane=%1 target=runner-flywheel:@1 owner=owned exec=19450000-0000-4000-8000-000000000001 capture_sha256=old lines=2 bytes=20 state_sha256=$PANE_STATE_HASH last_change_epoch=$(($(date +%s) - 3700)) findings=none action=none result=clear
 EOF
 printf 'runner-flywheel:@1\t%s\t%s\n' "$PANE_STATE_HASH" "$(($(date +%s) - 3700))" \
   > "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv"
+LEGACY_CONTINUITY_SHA="$(shasum -a 256 "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" | awk '{print $1}')"
 PANES_OUT="$PANES/out.txt"
-TMUX_CALL_LOG="$PANES/tmux-calls.log" run_snapshot "$PANES" "$PANES_OUT" || fail "pane evidence snapshot exits zero"
+PATROL_NOW_EPOCH=2000000000 TMUX_CALL_LOG="$PANES/tmux-calls.log" run_snapshot "$PANES" "$PANES_OUT" || fail "pane evidence snapshot exits zero"
 contains "$PANES_OUT" "pane_count=2" "Lead pane count contains only its two owned panes"
 count_is "$PANES_OUT" "PANE_EVIDENCE " 2 "only owned panes have evidence rows"
 for pane in %1 %2; do
@@ -770,15 +778,58 @@ for pane in %3 %4 %5 %6 %7; do
 done
 not_contains "$PANES_OUT" "SECRET_PANE_TRANSCRIPT" "raw pane transcript is never persisted"
 contains "$PANES_OUT" "pane=%1 target=runner-flywheel:@1 owner=owned" "owned pane is mapped from current CommDB"
-contains "$PANES_OUT" "pane=%1 target=runner-flywheel:@1 owner=owned exec=exec-pane-1" "owned evidence includes execution id"
-contains "$PANES_OUT" "findings=STALLED_60M action=REQUIRED result=UNSET" "unchanged state for one hour is a required finding"
+contains "$PANES_OUT" "pane=%1 target=runner-flywheel:@1 owner=owned exec=19450000-0000-4000-8000-000000000001" "owned evidence includes execution id"
+not_contains "$PANES_OUT" "findings=STALLED_60M" "old rendered-row TSV cannot seed a v2 stall"
+contains "$PANES_OUT" "schema=2 activity=OBSERVING" "bound execution without PR establishes a real remote-ref baseline"
+contains "$PANES_OUT" "patrol_schema=2" "snapshot declares v2 report schema"
+contains "$PANES_OUT" "MECHANISM_REVIEW result=LEAD-JUDGMENT-REQUIRED" "mechanism judgment is never prefilled as none"
 contains "$PANES_OUT" "pane=%2 target=runner-flywheel:@2 owner=owned" "second owned pane is mapped"
 contains "$PANES_OUT" "findings=LIMIT_LIVE,INTERACTIVE_MENU action=REQUIRED result=UNSET" "live limit and menu are explicit findings"
 for hidden in 'runner-tidal-echo:@3' 'runner-test-slot-2:@5' 'runner-flywheel:@6' 'runner-flywheel:@7' 'exec-pane-3' 'exec-pane-7'; do
   not_contains "$PANES_OUT" "$hidden" "foreign/unclaimed fact $hidden is absent from this Lead report"
 done
-contains "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" "runner-flywheel:@1" "stall continuity is persisted outside the Lead-editable report"
+contains "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" "runner-flywheel:@1" "legacy sidecar is preserved for rollback"
 not_contains "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" "runner-flywheel:@6" "orphan continuity is no longer kept by department Leads"
+
+# Full collector -> sidecar -> snapshot path uses immutable binding and no PR.
+PANES_HOUR="$PANES/hour.txt"
+TMUX_CALL_LOG="$PANES/hour-calls.log" PATROL_NOW_EPOCH=2000003600 run_snapshot "$PANES" "$PANES_HOUR" || fail "v2 hour snapshot"
+contains "$PANES_HOUR" "schema=2 activity=STALLED_60M" "complete same ref for 3600 seconds yields a candidate"
+PANES_PUSH="$PANES/push.txt"
+TMUX_CALL_LOG="$PANES/push-calls.log" GH_REF_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb PATROL_NOW_EPOCH=2000003610 run_snapshot "$PANES" "$PANES_PUSH" || fail "v2 push snapshot"
+contains "$PANES_PUSH" "schema=2 activity=ACTIVE" "remote head change vetoes a candidate through snapshot wiring"
+contains "$PANES_PUSH" "last_change_basis=remote_head" "push observation drives last change"
+[ "$LEGACY_CONTINUITY_SHA" = "$(shasum -a 256 "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" | awk '{print $1}')" ] \
+ && pass "v2 leaves legacy rollback sidecar bytes unchanged" || fail "v2 changed legacy rollback sidecar"
+RECHECK_ID="$(awk '/^PANE_EVIDENCE / && /exec=19450000-0000-4000-8000-000000000001 / {for(i=1;i<=NF;i++)if($i~/^activity_evidence=/){sub(/^activity_evidence=/,"",$i);print $i;exit}}' "$PANES_HOUR")"
+if PATH="$PANES/bin:$PATH" GH_REF_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb PATROL_NOW_EPOCH=2000003610 \
+ "$ROOT/scripts/flywheel-patrol-continuity.mjs" --recheck --report "$PANES_HOUR" --evidence-id "$RECHECK_ID" \
+ --db "$PANES/teamlead.db" --comm-db "$PANES/comm/flywheel/comm.db" --projects "$PANES/state/projects.json" --state-dir "$PANES/state" \
+ > "$PANES/recheck.txt" 2>&1; then
+ contains "$PANES/recheck.txt" "result=stalled-falsified" "exact candidate recheck vetoes a stale nudge after observed head advancement"
+else
+ fail "exact candidate recheck failed"
+fi
+
+
+# FLY-1945 review: continuity failures coexist with other actionable findings.
+MIXED="$TMP/continuity-mixed"
+cp -R "$PANES" "$MIXED"
+sqlite3 "$MIXED/teamlead.db" "UPDATE sessions SET worktree_binding_generation=NULL WHERE execution_id='19450000-0000-4000-8000-000000000001';"
+TMUX_CALL_LOG="$MIXED/calls.log" PATROL_NOW_EPOCH=2000003620 run_snapshot "$MIXED" "$MIXED/out.txt" || fail "mixed continuity snapshot"
+contains "$MIXED/out.txt" "STEP 2: FINDING-CANDIDATE" "UNKNOWN does not suppress another pane finding"
+contains "$MIXED/out.txt" "activity=UNKNOWN" "mixed finding retains unknown evidence"
+contains "$MIXED/out.txt" "UNAVAILABLE_CAUSE step=2" "mixed finding retains unavailable cause"
+contains "$MIXED/out.txt" "findings=LIMIT_LIVE,INTERACTIVE_MENU action=REQUIRED result=UNSET" "mixed finding retains quota and menu disposition"
+# Restore exact binding before exercising complete-inventory retirement.
+sqlite3 "$MIXED/teamlead.db" "UPDATE sessions SET worktree_binding_generation='generation-1' WHERE execution_id='19450000-0000-4000-8000-000000000001';"
+sqlite3 "$MIXED/comm/flywheel/comm.db" "UPDATE sessions SET status='completed' WHERE execution_id='19450000-0000-4000-8000-000000000001';"
+TMUX_CALL_LOG="$MIXED/prune-calls.log" PATROL_NOW_EPOCH=2000003630 run_snapshot "$MIXED" "$MIXED/prune.txt" || fail "retired inventory snapshot"
+if jq -e '.entries | length == 0' "$MIXED/state/patrol-continuity/flywheel-eng-lead/flywheel.v2.json" >/dev/null; then
+ pass "complete owner inventory prunes retired v2 entries"
+else
+ fail "complete owner inventory prunes retired v2 entries"
+fi
 
 HONEY_OUT="$PANES/honey.txt"
 TMUX_CALL_LOG="$PANES/tmux-calls-honey.log" run_snapshot "$PANES" "$HONEY_OUT" honey-lemon-lead || fail "second Lead snapshot exits zero"
@@ -796,7 +847,7 @@ make_case "$PANE_FAIL"
 cp "$PANES/bin/tmux" "$PANE_FAIL/bin/tmux"
 sqlite3 "$PANE_FAIL/comm/flywheel/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
- ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
+ ('19450000-0000-4000-8000-000000000001','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
  ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude');
 SQL
 sqlite3 "$PANE_FAIL/state/comm/tidal-echo/comm.db" <<'SQL'
@@ -816,7 +867,7 @@ make_case "$HASH_FAIL"
 cp "$PANES/bin/tmux" "$HASH_FAIL/bin/tmux"
 sqlite3 "$HASH_FAIL/comm/flywheel/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
- ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
+ ('19450000-0000-4000-8000-000000000001','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
  ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude');
 SQL
 cat > "$HASH_FAIL/bin/shasum" <<'SH'
@@ -830,14 +881,14 @@ contains "$HASH_FAIL_OUT" "STEP 2: UNAVAILABLE(structural: hash_unavailable)" "h
 contains "$HASH_FAIL_OUT" "findings=HASH_UNAVAILABLE action=REQUIRED result=UNSET" "hash failure requires explicit disposition"
 contains "$HASH_FAIL_OUT" "capture_sha256=unavailable" "hash failure preserves a well-formed capture evidence field"
 contains "$HASH_FAIL_OUT" "state_sha256=unavailable" "hash failure preserves a well-formed state evidence field"
-not_contains "$HASH_FAIL/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" $'\t\t' "hash failure writes no empty continuity field"
+contains "$HASH_FAIL_OUT" "activity=UNKNOWN" "hash failure preserves explicit activity evidence"
 
 INDEX_FAIL="$TMP/index-fail"
 make_case "$INDEX_FAIL"
 cp "$PANES/bin/tmux" "$INDEX_FAIL/bin/tmux"
 sqlite3 "$INDEX_FAIL/comm/flywheel/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
- ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
+ ('19450000-0000-4000-8000-000000000001','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
  ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude');
 SQL
 sqlite3 "$INDEX_FAIL/state/comm/tidal-echo/comm.db" 'DROP TABLE sessions;'
@@ -866,7 +917,7 @@ make_case "$DUPLICATE"
 cp "$PANES/bin/tmux" "$DUPLICATE/bin/tmux"
 sqlite3 "$DUPLICATE/comm/flywheel/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
- ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude');
+ ('19450000-0000-4000-8000-000000000001','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude');
 SQL
 sqlite3 "$DUPLICATE/state/comm/tidal-echo/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES

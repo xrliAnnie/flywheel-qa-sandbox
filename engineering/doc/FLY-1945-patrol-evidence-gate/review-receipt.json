@@ -1,0 +1,68 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "ebe15afb-0277-44d6-a99b-a16f60e1cd96",
+  "round": 2,
+  "findings": [
+    {
+      "id": "repo-source-type-in-key-resets-timer",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 57,
+      "title": "新加入 key 的 repoSourceIdentity 含『来源类型』，同 repo 同 branch 的来源升级会白白重置停滞计时窗口",
+      "detail": "本轮修订把 repoSourceIdentity 放进 ContinuityKey，理由写的是『不把不同 repo 的 head 相互比较』——那只需要规范 repo identity + branch，不需要来源类型。但 §4.1 的三条来源是按数据存在性选择的（registry root → 有 PR binding 就改走 PR 路径），实测 gate-entry 会在同一个 execution 存活期内写入 PR binding（生产 running 集合里 FLY-2553 的 qa execution 已 pr_bound=1、PR 1194），此时 repo 与 branch 都没变，仅来源类型从 project_registry_root 切到 PR binding，key 却变了 ⇒ §3.3『首次 v2 建基线、标 coverage=baseline』+ §4.2 第 6 步 max(last_change, coverageSince) ⇒ 该 runner 平白获得最多 60 分钟的 STALLED 豁免。fork 场景下 head repo 本来就不同，identity 已能触发换 key，所以把来源类型放进 key 只带来额外重置。建议：key 只含 canonical repo identity + branch，source 类型作为非 key 字段写进 ACTIVITY_EVIDENCE，并补一条『同 repo 同 branch 的来源升级不重置 lastProgressObservedAtMs』的 reducer 用例。",
+      "findingKey": "repo-source-type-in-key-resets-timer"
+    },
+    {
+      "id": "unknown-escalates-whole-step2-under-probe-budget",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 128,
+      "title": "单个 identity 的远端探测超时就把整份报告的 STEP 2 拉成 UNAVAILABLE，与 §3.3 的 30 秒总预算在真实 pane 规模下容易常态化",
+      "detail": "本轮新增的 §4.2 段把『每条 activity=UNKNOWN』硬绑成 STEP 2 整步 UNAVAILABLE。§3.3 又规定远端探测合计 30 秒、并发 4、单次 5 秒，『超限按 affected identity unknown』。实测今天 flywheel 的 owner index 有 19 行、其中 18 行属 flywheel-eng-lead（~/.flywheel/comm/flywheel/comm.db 只读查询），registry-root 路径每 identity 至少 1 次 gh api、PR 路径 3–4 次；`gh` 每次是独立进程（进程启动 ~0.3–0.6s + 网络），并发 4 时正常 5–10 秒，GitHub 变慢或 auth 冷启动时越过 30 秒预算是现实事件。一旦越界，整步 UNAVAILABLE 会挡住 STEP 2: OK，并按既有规则把 Lead 拖进 UNAVAILABLE 搜重/建单流程（structural 首现即建单）。建议：把预算耗尽与 gh 超时明确归到 `transient:` 类并要求连续 2 tick 才升级；或规定当语义状态来源完整、仅远端探测降级时，pane 记 `activity=OBSERVING + ref=unavailable` 而不是把整步拉成 UNAVAILABLE；同时按真实 pane 规模（≥18）重新标定 30 秒预算。",
+      "findingKey": "unknown-escalates-whole-step2-under-probe-budget"
+    },
+    {
+      "id": "registry-root-branch-vs-pr-branch-mismatch",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 99,
+      "title": "registry root 成为默认来源后，worktree_binding_branch 与实际 PR 分支不同名的旧形态会退化成假 STALLED，缺少可区分的诊断标记",
+      "detail": "新默认来源是 registry projectRepo + set-once worktree_binding_branch。branch 来自 WorktreeManager.worktreeName（`<repoSlug>-<issueKey>`，WorktreeManager.ts:347-349），issueKey 历史上出现过带后缀形态（worktree/本地分支 `flywheel-FLY-1257-implement` 而 PR 分支是 `flywheel-FLY-1257`）。这种情况下 ref 存在但永远不动，probe 成功、head 不变 ⇒ 60 分钟后判 STALLED_60M，属于本设计要消灭的那一类假报的新变体（当前生产 17 个 running 的 branch 都是 `flywheel-FLY-<n>`，所以单测很可能碰不到）。建议：当同一 key 后来出现 PR binding 且其 head.ref 与 registry-root 观测的 branch 不一致时，输出一个明确的 `ref_binding_diverged` 诊断并撤销该区间的 STALLED，同时在 §7 矩阵补这条用例。",
+      "findingKey": "registry-root-branch-vs-pr-branch-mismatch"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "repo-source-type-in-key-resets-timer",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 57,
+      "title": "新加入 key 的 repoSourceIdentity 含『来源类型』，同 repo 同 branch 的来源升级会白白重置停滞计时窗口",
+      "detail": "本轮修订把 repoSourceIdentity 放进 ContinuityKey，理由写的是『不把不同 repo 的 head 相互比较』——那只需要规范 repo identity + branch，不需要来源类型。但 §4.1 的三条来源是按数据存在性选择的（registry root → 有 PR binding 就改走 PR 路径），实测 gate-entry 会在同一个 execution 存活期内写入 PR binding（生产 running 集合里 FLY-2553 的 qa execution 已 pr_bound=1、PR 1194），此时 repo 与 branch 都没变，仅来源类型从 project_registry_root 切到 PR binding，key 却变了 ⇒ §3.3『首次 v2 建基线、标 coverage=baseline』+ §4.2 第 6 步 max(last_change, coverageSince) ⇒ 该 runner 平白获得最多 60 分钟的 STALLED 豁免。fork 场景下 head repo 本来就不同，identity 已能触发换 key，所以把来源类型放进 key 只带来额外重置。建议：key 只含 canonical repo identity + branch，source 类型作为非 key 字段写进 ACTIVITY_EVIDENCE，并补一条『同 repo 同 branch 的来源升级不重置 lastProgressObservedAtMs』的 reducer 用例。",
+      "findingKey": "repo-source-type-in-key-resets-timer"
+    },
+    {
+      "id": "unknown-escalates-whole-step2-under-probe-budget",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 128,
+      "title": "单个 identity 的远端探测超时就把整份报告的 STEP 2 拉成 UNAVAILABLE，与 §3.3 的 30 秒总预算在真实 pane 规模下容易常态化",
+      "detail": "本轮新增的 §4.2 段把『每条 activity=UNKNOWN』硬绑成 STEP 2 整步 UNAVAILABLE。§3.3 又规定远端探测合计 30 秒、并发 4、单次 5 秒，『超限按 affected identity unknown』。实测今天 flywheel 的 owner index 有 19 行、其中 18 行属 flywheel-eng-lead（~/.flywheel/comm/flywheel/comm.db 只读查询），registry-root 路径每 identity 至少 1 次 gh api、PR 路径 3–4 次；`gh` 每次是独立进程（进程启动 ~0.3–0.6s + 网络），并发 4 时正常 5–10 秒，GitHub 变慢或 auth 冷启动时越过 30 秒预算是现实事件。一旦越界，整步 UNAVAILABLE 会挡住 STEP 2: OK，并按既有规则把 Lead 拖进 UNAVAILABLE 搜重/建单流程（structural 首现即建单）。建议：把预算耗尽与 gh 超时明确归到 `transient:` 类并要求连续 2 tick 才升级；或规定当语义状态来源完整、仅远端探测降级时，pane 记 `activity=OBSERVING + ref=unavailable` 而不是把整步拉成 UNAVAILABLE；同时按真实 pane 规模（≥18）重新标定 30 秒预算。",
+      "findingKey": "unknown-escalates-whole-step2-under-probe-budget"
+    },
+    {
+      "id": "registry-root-branch-vs-pr-branch-mismatch",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 99,
+      "title": "registry root 成为默认来源后，worktree_binding_branch 与实际 PR 分支不同名的旧形态会退化成假 STALLED，缺少可区分的诊断标记",
+      "detail": "新默认来源是 registry projectRepo + set-once worktree_binding_branch。branch 来自 WorktreeManager.worktreeName（`<repoSlug>-<issueKey>`，WorktreeManager.ts:347-349），issueKey 历史上出现过带后缀形态（worktree/本地分支 `flywheel-FLY-1257-implement` 而 PR 分支是 `flywheel-FLY-1257`）。这种情况下 ref 存在但永远不动，probe 成功、head 不变 ⇒ 60 分钟后判 STALLED_60M，属于本设计要消灭的那一类假报的新变体（当前生产 17 个 running 的 branch 都是 `flywheel-FLY-<n>`，所以单测很可能碰不到）。建议：当同一 key 后来出现 PR binding 且其 head.ref 与 registry-root 观测的 branch 不一致时，输出一个明确的 `ref_binding_diverged` 诊断并撤销该区间的 STALLED，同时在 §7 矩阵补这条用例。",
+      "findingKey": "registry-root-branch-vs-pr-branch-mismatch"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "questionId": "919671d9-769e-4ed6-bd8b-f20cf0238601",
+  "executionId": "3f011ac5-8038-4be8-850e-0d04c022905a"
+}

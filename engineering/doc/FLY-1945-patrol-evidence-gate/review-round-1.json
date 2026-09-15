@@ -1,0 +1,129 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "c51d966e-06c6-46ea-a747-6a647cca4b45",
+  "round": 1,
+  "findings": [
+    {
+      "id": "remote-ref-source-unreachable-in-prod",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 99,
+      "title": "§4.1 允许的两个 ref 来源在当前生产形态下对绝大多数 runner 都不存在，STALLED 将结构性永不成立，而 §6 的历史回放测试看不出来",
+      "detail": "§4.1 只允许两条精确 ref 路径：(a) repo_baseline_set_json 的 root remote + worktree_binding_branch；(b) workflow_node_pr_binding。两者在今天的 phase-DAG 生产形态都基本不可得：(1) baseline 只在 allow_no_code_completion 能力开启时才采集（packages/edge-worker/src/Blueprint.ts:1541-1547），只读查生产库 ~/.flywheel/teamlead.db：status='running' 的 16 个 session 里 worktree_binding_generation 16/16 有、repo_baseline_set_json 只有 1/16（近 30 天 1246 个 session 中仅 69 个有 baseline）；(2) workflow_node_pr_binding 只由 recordWorkflowNodePrBindingTx 在 gate-entry（StateStore.ts:54505）与 commitEnrolledCompletion（StateStore.ts:55734）写入，即实现工作做完之后；实测 running 的 4 个 implement 节点 execution 全部 pr_bound=0，workflow_declared_pr 全表 0 行。于是在『停滞最该被判定』的 implement 进行中窗口，ref 一律 unknown。按 §4.2 第 5 步与 §4.4『任一 STALLED 记录缺对应 interval/ref 完整性字段，完成门失败』，这些 runner 永远到不了 STALLED_60M：本次改动把『假 STALLED』换成了『对 ~94% runner 彻底失去卡死检测』，或（若 UNKNOWN 被计为 finding）每轮巡检产出十余条 action=REQUIRED 噪声——计划没有写明 activity=UNKNOWN 对 STEP 2 status/action 的影响，两种后果都没被评估。更危险的是验收无法暴露它：§6 步骤 1 的历史反例 execution fa7e14cf/7344a1a1（produce 节点）实测 has_baseline=1，纯 reducer 回放必然绿，生产却打不通。修法建议：允许把 projects.json 里已被 safe_repo_slug 校验、且非 runner 可写的 project repo slug 作为单仓 root remote identity（scripts/lead-patrol-snapshot.sh:186-192 已在用），与 set-once 的 worktree_binding_branch 组成精确 ref；或增加一条 set-once worktree_binding_path 的本地 HEAD 只读观测作为进展来源。并补一条针对『无 baseline、无 PR binding 的 implement 节点』的行为矩阵用例，否则验收仍是假绿。",
+      "findingKey": "remote-ref-source-unreachable-in-prod"
+    },
+    {
+      "id": "shared-branch-veto-attribution",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 110,
+      "title": "唯一 reducer 的第 2 步没有写入『谁是写者』谓词，同分支的兄弟 execution 推送会给真卡死的 runner 发 ACTIVE",
+      "detail": "§3.1 用散文说了『不能把当前 writer 的提交说成旧 parked runner 的活动』，§7 矩阵也列了『两 active execution 共享分支 → 不串归属』，但 §4.2 这个被声明为唯一规范的 reducer 第 2 步只写『exact same key 下任一远端 head 改变 → ACTIVE』。key 含 executionId，但两个 key 会观测到同一个 ref：实测生产 running 集合里 FLY-2554 同时有 implement 与 qa 两个 execution，worktree_binding_branch 都是 flywheel-FLY-2554；land engine 的 conflict rework、Lead 的 docs 提交同样会推同一分支。按字面实现，兄弟推送会给另一个真正卡住的 runner 盖 ACTIVE（假阴性），且这是实现者最可能采信的条文。请把『该 key 在整个比较区间是 TURN holder / 该 ref 的唯一合法写者』作为第 2 步的前置谓词写进 reducer，非持有者的 head 变化只输出 branch_activity，并把这条做成 reducer 单测而不是仅出现在矩阵里。",
+      "findingKey": "shared-branch-veto-attribution"
+    },
+    {
+      "id": "mechanism-dedup-unbounded-candidate-set",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 158,
+      "title": "非 Bridge 类机制单的 class_key 去重没有可枚举的候选集合，按字面执行会让含机制 finding 的巡检永远无法完成",
+      "detail": "Bridge 类有 parentId=FLY-2072 把候选集合收敛成子 issue 列表（runner-patrol-rules.md:344-350 已成文）。非 Bridge 类计划写的是『当前项目含 archived 的机制修复候选，完整分页 + 逐张读取完整 description』，但没有定义『候选』的机器判据：Flywheel project 的 issue 量级下这等于对整个 project（含 archived）逐张 get_issue，而 research.md 自己已确认 Bridge /api/linear/issues 无 continuation、limit≤250，MCP 逐张读取在一次巡检 tick 内不可执行。去重不完整按 §5.4 只能报 UNAVAILABLE，而 UNAVAILABLE 又不允许冒充 no_issue ⇒ 任何非 Bridge 机制 finding 都会把巡检完成门永久钉死。建议仿 FLY-2072 指定一个专属 parent issue（或专属 label）承载机制修复类别账，使候选集合可枚举、可分页到尽头，并在计划里写死这个收敛口径。",
+      "findingKey": "mechanism-dedup-unbounded-candidate-set"
+    },
+    {
+      "id": "coverage-gap-vs-head-veto-precedence",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 91,
+      "title": "90 分钟 coverage gap 与第 2 步 head 反证的优先级没写死，而历史反例本身就含 107 分钟采样间隔",
+      "detail": "§3.3 规定『超过 90 分钟未采样视为 coverage gap，恢复时重新建立 coverage』，§4.2 却把 head 变化（第 2 步）排在 coverage 缺口（第 5 步）之前。历史样本 17:51:17 → 19:38:02 相隔 6405 秒（>5400），正好落在这个歧义上：按『先反证』读，该区间的 head 变化计活动并写入 lastProgressObservedAtMs；按『先重建 coverage』读，跨缺口的 refs 被丢弃、只建基线。§6 步骤 1 的断言（%8 依赖 20:39:40 那次观测，21:37:49 距其 3489 秒 <3600 才 ACTIVE）在两种读法下恰好都成立，所以测试不会替你选，但生产语义会分叉。请显式写明：跨 coverage gap 的 head 差异是否可用作反证（建议可用，因为它只否定『整段无推进』），以及重建 coverage 时 refs 快照是保留还是丢弃。",
+      "findingKey": "coverage-gap-vs-head-veto-precedence"
+    },
+    {
+      "id": "git-ref-path-encoding-slashes",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 104,
+      "title": "GET git/ref/heads/<branch> 的『路径组件 encode』对含斜杠的分支名会失败",
+      "detail": "§4.1 用 `/repos/<owner>/<repo>/git/ref/heads/<encoded-branch>`，§4.1 末段又要求『路径组件 encode』。若实现者对整个 branch 做 encodeURIComponent，`feat/x` 会变成 `feat%2Fx`，GitHub 的 Get a reference 端点对此并不等价（ref 路径里的斜杠必须保持字面量）。本仓当前 worktree_binding_branch 形如 flywheel-FLY-1945 不含斜杠，所以单测很容易永远碰不到这条路径。请写明：按 `/` 分段 encode、斜杠保持字面量，并在行为矩阵里加一条含斜杠分支名的用例。",
+      "findingKey": "git-ref-path-encoding-slashes"
+    },
+    {
+      "id": "unknown-row-legacy-gate-field-shape",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 179,
+      "title": "helper 总失败时的 UNKNOWN 行没有写明仍须满足旧完成门的 last_change_epoch=[0-9]+ 形状",
+      "detail": "现行完成门的 WELL_FORMED_EVIDENCE awk 硬性要求每行 PANE_EVIDENCE 含 ` last_change_epoch=[0-9]+`（runner-patrol-rules.md 完成门段落），且 PANE_COUNT 必须等于 WELL_FORMED_EVIDENCE。§6 步骤 4 只说『helper 总失败为每条 pane 输出 UNKNOWN+action=REQUIRED，不少行』，没说这些行的 last_change_epoch 取什么值；若实现者写成 `last_change_epoch=unavailable`，行数够但 well-formed 计数不够，报告会以一个与 finding 无关的理由永久无法完成（fail-closed 但难诊断）。请指定退化值（例如采样时刻）并在 §7 矩阵里补一条断言。",
+      "findingKey": "unknown-row-legacy-gate-field-shape"
+    },
+    {
+      "id": "mechanism-id-ordinal-stability",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 133,
+      "title": "MECHANISM_DEFECT id 由『首次 ordinal』派生与『重排不能重新分配 id』自相矛盾，缺少 ordinal 的冻结载体",
+      "detail": "§5.1 同时要求 id 含『首次 ordinal』且『重排不能重新分配 id』。ordinal 是顺序派生量，报告由 Lead 手写编辑，若 ordinal 只存在于当前行序里，任何重排/插入都会改变它，validate-report 也无从判断 id 是否被重算。请写明 ordinal 在首次声明时冻结并随 MECHANISM_DEFECT 行显式落字段（例如 ordinal=<n>），由 validate-report 校验 id 与 (report identity, step, ordinal, class_key) 的一致性，否则这条稳定性约束不可执行。",
+      "findingKey": "mechanism-id-ordinal-stability"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "shared-branch-veto-attribution",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 110,
+      "title": "唯一 reducer 的第 2 步没有写入『谁是写者』谓词，同分支的兄弟 execution 推送会给真卡死的 runner 发 ACTIVE",
+      "detail": "§3.1 用散文说了『不能把当前 writer 的提交说成旧 parked runner 的活动』，§7 矩阵也列了『两 active execution 共享分支 → 不串归属』，但 §4.2 这个被声明为唯一规范的 reducer 第 2 步只写『exact same key 下任一远端 head 改变 → ACTIVE』。key 含 executionId，但两个 key 会观测到同一个 ref：实测生产 running 集合里 FLY-2554 同时有 implement 与 qa 两个 execution，worktree_binding_branch 都是 flywheel-FLY-2554；land engine 的 conflict rework、Lead 的 docs 提交同样会推同一分支。按字面实现，兄弟推送会给另一个真正卡住的 runner 盖 ACTIVE（假阴性），且这是实现者最可能采信的条文。请把『该 key 在整个比较区间是 TURN holder / 该 ref 的唯一合法写者』作为第 2 步的前置谓词写进 reducer，非持有者的 head 变化只输出 branch_activity，并把这条做成 reducer 单测而不是仅出现在矩阵里。",
+      "findingKey": "shared-branch-veto-attribution"
+    },
+    {
+      "id": "mechanism-dedup-unbounded-candidate-set",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 158,
+      "title": "非 Bridge 类机制单的 class_key 去重没有可枚举的候选集合，按字面执行会让含机制 finding 的巡检永远无法完成",
+      "detail": "Bridge 类有 parentId=FLY-2072 把候选集合收敛成子 issue 列表（runner-patrol-rules.md:344-350 已成文）。非 Bridge 类计划写的是『当前项目含 archived 的机制修复候选，完整分页 + 逐张读取完整 description』，但没有定义『候选』的机器判据：Flywheel project 的 issue 量级下这等于对整个 project（含 archived）逐张 get_issue，而 research.md 自己已确认 Bridge /api/linear/issues 无 continuation、limit≤250，MCP 逐张读取在一次巡检 tick 内不可执行。去重不完整按 §5.4 只能报 UNAVAILABLE，而 UNAVAILABLE 又不允许冒充 no_issue ⇒ 任何非 Bridge 机制 finding 都会把巡检完成门永久钉死。建议仿 FLY-2072 指定一个专属 parent issue（或专属 label）承载机制修复类别账，使候选集合可枚举、可分页到尽头，并在计划里写死这个收敛口径。",
+      "findingKey": "mechanism-dedup-unbounded-candidate-set"
+    },
+    {
+      "id": "coverage-gap-vs-head-veto-precedence",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 91,
+      "title": "90 分钟 coverage gap 与第 2 步 head 反证的优先级没写死，而历史反例本身就含 107 分钟采样间隔",
+      "detail": "§3.3 规定『超过 90 分钟未采样视为 coverage gap，恢复时重新建立 coverage』，§4.2 却把 head 变化（第 2 步）排在 coverage 缺口（第 5 步）之前。历史样本 17:51:17 → 19:38:02 相隔 6405 秒（>5400），正好落在这个歧义上：按『先反证』读，该区间的 head 变化计活动并写入 lastProgressObservedAtMs；按『先重建 coverage』读，跨缺口的 refs 被丢弃、只建基线。§6 步骤 1 的断言（%8 依赖 20:39:40 那次观测，21:37:49 距其 3489 秒 <3600 才 ACTIVE）在两种读法下恰好都成立，所以测试不会替你选，但生产语义会分叉。请显式写明：跨 coverage gap 的 head 差异是否可用作反证（建议可用，因为它只否定『整段无推进』），以及重建 coverage 时 refs 快照是保留还是丢弃。",
+      "findingKey": "coverage-gap-vs-head-veto-precedence"
+    },
+    {
+      "id": "git-ref-path-encoding-slashes",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 104,
+      "title": "GET git/ref/heads/<branch> 的『路径组件 encode』对含斜杠的分支名会失败",
+      "detail": "§4.1 用 `/repos/<owner>/<repo>/git/ref/heads/<encoded-branch>`，§4.1 末段又要求『路径组件 encode』。若实现者对整个 branch 做 encodeURIComponent，`feat/x` 会变成 `feat%2Fx`，GitHub 的 Get a reference 端点对此并不等价（ref 路径里的斜杠必须保持字面量）。本仓当前 worktree_binding_branch 形如 flywheel-FLY-1945 不含斜杠，所以单测很容易永远碰不到这条路径。请写明：按 `/` 分段 encode、斜杠保持字面量，并在行为矩阵里加一条含斜杠分支名的用例。",
+      "findingKey": "git-ref-path-encoding-slashes"
+    },
+    {
+      "id": "unknown-row-legacy-gate-field-shape",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 179,
+      "title": "helper 总失败时的 UNKNOWN 行没有写明仍须满足旧完成门的 last_change_epoch=[0-9]+ 形状",
+      "detail": "现行完成门的 WELL_FORMED_EVIDENCE awk 硬性要求每行 PANE_EVIDENCE 含 ` last_change_epoch=[0-9]+`（runner-patrol-rules.md 完成门段落），且 PANE_COUNT 必须等于 WELL_FORMED_EVIDENCE。§6 步骤 4 只说『helper 总失败为每条 pane 输出 UNKNOWN+action=REQUIRED，不少行』，没说这些行的 last_change_epoch 取什么值；若实现者写成 `last_change_epoch=unavailable`，行数够但 well-formed 计数不够，报告会以一个与 finding 无关的理由永久无法完成（fail-closed 但难诊断）。请指定退化值（例如采样时刻）并在 §7 矩阵里补一条断言。",
+      "findingKey": "unknown-row-legacy-gate-field-shape"
+    },
+    {
+      "id": "mechanism-id-ordinal-stability",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-1945-patrol-evidence-gate/plan.md",
+      "line": 133,
+      "title": "MECHANISM_DEFECT id 由『首次 ordinal』派生与『重排不能重新分配 id』自相矛盾，缺少 ordinal 的冻结载体",
+      "detail": "§5.1 同时要求 id 含『首次 ordinal』且『重排不能重新分配 id』。ordinal 是顺序派生量，报告由 Lead 手写编辑，若 ordinal 只存在于当前行序里，任何重排/插入都会改变它，validate-report 也无从判断 id 是否被重算。请写明 ordinal 在首次声明时冻结并随 MECHANISM_DEFECT 行显式落字段（例如 ordinal=<n>），由 validate-report 校验 id 与 (report identity, step, ordinal, class_key) 的一致性，否则这条稳定性约束不可执行。",
+      "findingKey": "mechanism-id-ordinal-stability"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

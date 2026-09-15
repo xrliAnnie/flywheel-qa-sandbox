@@ -1171,6 +1171,9 @@ jobs:
       - name: Test — FLY-1855 executable Lead patrol snapshot
         run: bash scripts/__tests__/lead-patrol-snapshot.test.sh
 
+      - name: Test — FLY-1945 trusted patrol helper closure
+        run: bash scripts/__tests__/patrol-continuity-launcher.test.sh
+
       # FLY-2403: the report boots the real StateStore schema, populates only
       # temporary tables, and proves the SQLite query does not mutate its input.
       - name: Test — FLY-2403 Astra/Fable design outcome report

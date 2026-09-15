@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-1945 · 巡检证据与机制缺陷</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font-family:-apple-system,system-ui,sans-serif;line-height:1.65}main{max-width:960px;margin:auto;padding:38px 20px 64px}header{margin:0 0 25px}h1{font-size:clamp(27px,5vw,40px);line-height:1.2;letter-spacing:-.03em}h2{font-size:22px;line-height:1.3;color:#1a365d;margin-top:0}.eyebrow,.muted{color:#66666b}.eyebrow{font-size:13px;letter-spacing:.09em}.card{background:white;border-radius:12px;border-left:4px solid #007aff;padding:26px;margin:18px 0;box-shadow:0 1px 3px #0000000f}.lede{font-size:25px;line-height:1.4;font-weight:650}.badge{display:inline-block;background:#eef5ff;padding:5px 12px;border-radius:20px;color:#155ca4;font-size:14px}.diagram-pending{border:1px dashed #bb7a1c;border-radius:10px;background:#fff8eb;padding:24px}.diagram-pending strong{font-size:14px;color:#7b4c0e}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;background:#f6f6f8;padding:15px}summary{cursor:pointer;color:#155ca4}label{display:block;margin-top:23px;padding-top:16px;border-top:1px solid #e8e8ed;font-size:14px;font-weight:600}textarea{display:block;width:100%;resize:vertical;min-height:88px;border:1px solid #b8b8bf;border-radius:8px;padding:12px;font:inherit;margin-top:8px;background:#fafafa;color:#1d1d1f}textarea:focus,button:focus-visible{outline:3px solid #007aff55;outline-offset:2px}button{border:0;border-radius:8px;background:#007aff;color:white;padding:10px 17px;font:inherit;cursor:pointer;margin-top:10px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}th,td{padding:12px 10px;border-bottom:1px solid #e8e8ed;vertical-align:top}th{color:#1a365d;background:#f5f7fb}li{margin:10px 0}.chunk-output{height:150px;font-size:14px}svg{max-width:100%;height:auto}#copy-status{min-height:24px;font-size:14px}@media(max-width:600px){main{padding:24px 12px}.card{padding:20px 16px}h2{font-size:20px}.lede{font-size:22px}th,td{padding:9px 6px}}</style></head><body><main><header><p class="eyebrow">FLY-1945 / ENGINEERING DESIGN / 2026-09-14</p><h1>巡检判断要有证据，<br>机制问题要有去向。</h1></header><section class="card" id="summary"><h2>01 · 一句话看懂</h2><p class="lede">让停滞判断经得起提交记录反证，让机制问题有明确去向，巡检才算完成。</p><p>Runner 是执行任务的代理；Lead 是负责巡检和处置的负责人。终端底栏不变，不再直接触发停滞判断。</p><p class="badge">设计评审：第 2 轮已通过 · 尚未实现</p><label for="note-summary">对「01 · 一句话看懂」的意见</label><textarea class="review-note" id="note-summary" data-section="01 · 一句话看懂" rows="3" placeholder="写下疑问或建议，输入后自动保存在本设备。"></textarea></section><section class="card" id="flow"><h2>02 · 巡检怎样得出结论</h2><div class="diagram-pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形进程权限阻止了两次渲染。Mermaid 是用文字描述流程的绘图语法；源文件已随设计保留。</p></div><details><summary>查看图的源文本</summary><pre>flowchart TD
+ A[确认本次任务身份] --&gt; B[读取真实状态与远端提交号]
+ B --&gt; C{证据是否完整?}
+ C --&gt;|否| U[标明未知和原因]
+ C --&gt;|是| D{状态或分支有推进?}
+ D --&gt;|有| E[活跃：撤销原停滞结论]
+ D --&gt;|无| F{正在有效等待?}
+ F --&gt;|是| W[等待：保留具体对象]
+ F --&gt;|否且满60分钟| S[候选停滞：行动前再核对提交]
+ U --&gt; R[逐条处理巡检发现]
+ E --&gt; R
+ W --&gt; R
+ S --&gt; R
+ R --&gt; M{机制缺陷有去向?}
+ M --&gt;|没有| N[报告完成门失败]
+ M --&gt;|已有单／新建单／不立原因| Y[再通过既有检查，报告才完成]
+</pre></details><p>先确认本次任务身份，再读取真实状态与远端分支。分支是保存这项工作提交的版本线；观察到提交号变化，就撤销该区间的停滞结论。</p><p>证据缺失时写明未知；有效等待时记录正在等什么；满 60 分钟仍无推进的候选停滞，在行动前再核对一次提交。</p><label for="note-flow">对「02 · 巡检怎样得出结论」的意见</label><textarea class="review-note" id="note-flow" data-section="02 · 巡检怎样得出结论" rows="3" placeholder="写下疑问或建议，输入后自动保存在本设备。"></textarea></section><section class="card" id="model"><h2>03 · 保存哪些事实</h2><div class="diagram-pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形进程权限阻止了两次渲染。Mermaid 是用文字描述流程的绘图语法；源文件已随设计保留。</p></div><details><summary>查看图的源文本</summary><pre>classDiagram
+ class TaskIdentity {
+  项目与负责人
+  本次执行与激活
+  工作区绑定代次
+ }
+ class Observation {
+  真实状态与等待对象
+  采样区间与提交号
+  最后变化与证据完整性
+ }
+ class MechanismFinding {
+  发现编号与根因类别
+  根因与验收反例
+ }
+ class Disposition {
+  已有单或新建单或不立原因
+  关联单与回读凭据
+ }
+ TaskIdentity &quot;1&quot; --&gt; &quot;many&quot; Observation : 绑定
+ MechanismFinding &quot;1&quot; --&gt; &quot;1&quot; Disposition : 逐条闭合
+ Observation --&gt; MechanismFinding : 支持判断
+</pre></details><div class="table-wrap"><table><thead><tr><th>记录</th><th>作用</th></tr></thead><tbody><tr><td>本次执行、激活与工作区绑定</td><td>区分同一终端里先后执行的任务，避免继承别人的计时。</td></tr><tr><td>状态、等待对象、采样区间、提交号</td><td>区分真实变化、轮询时间和单纯画面变化。</td></tr><tr><td>机制发现编号、根因、验收反例</td><td>一条问题一条去向，不能互相借单过关。</td></tr></tbody></table></div><p>旁存文件只保存仪器观测，不授予任何操作权限；报告正文与终端原文不会充当提交证据。</p><label for="note-model">对「03 · 保存哪些事实」的意见</label><textarea class="review-note" id="note-model" data-section="03 · 保存哪些事实" rows="3" placeholder="写下疑问或建议，输入后自动保存在本设备。"></textarea></section><section class="card" id="disposition"><h2>04 · 机制问题必须三选一</h2><p>机制缺陷，是规则或程序设计让同类问题反复发生。每条记录都要说明根因，以及什么反例能证明修好。</p><ol><li><strong>链接已有修复单：</strong>在 Linear 中查重并确认关联。Linear 是团队追踪任务的工单系统。</li><li><strong>新建修复单：</strong>完整查重后创建，带根因、验收反例，写完再读回来核对。</li><li><strong>解释不立单：</strong>留下具体原因；已有相关单时把原因写到该单。查询失败或“以后再说”不算原因。</li></ol><p>现有 Bridge 病根记账仍要完成。Bridge 是协调工作流的后台程序；同一病根子单可同时作为修复单，避免重复立单。立单不会自动派工。</p><label for="note-disposition">对「04 · 机制问题必须三选一」的意见</label><textarea class="review-note" id="note-disposition" data-section="04 · 机制问题必须三选一" rows="3" placeholder="写下疑问或建议，输入后自动保存在本设备。"></textarea></section><section class="card" id="tradeoffs"><h2>05 · 取舍与放弃的方案</h2><div class="table-wrap"><table><thead><tr><th>选择</th><th>原因与代价</th></tr></thead><tbody><tr><td>按状态变化和分支证据计时</td><td>放弃延长阈值、全屏文字变化和底栏不变判据；它们会继续误判。</td></tr><tr><td>精确分支轮询</td><td>能确定两个采样之间发生变化，不能还原每次推送的精确时刻。</td></tr><tr><td>沿用现有报告完成门</td><td>缺去向就返回失败；负责人仍负责判断根因与不立单理由是否合理。</td></tr><tr><td>写后再次查重</td><td>Linear 当前不能原子保证跨负责人首次创建不重复；发现重复时先处理重复记录，再允许报告完成。</td></tr></tbody></table></div><label for="note-tradeoffs">对「05 · 取舍与放弃的方案」的意见</label><textarea class="review-note" id="note-tradeoffs" data-section="05 · 取舍与放弃的方案" rows="3" placeholder="写下疑问或建议，输入后自动保存在本设备。"></textarea></section><section class="card" id="acceptance"><h2>06 · 用这两条历史记录验收</h2><p>原始报告中的冻结时间都是 <strong>2026-08-20 17:51:06 UTC</strong>。UTC 是统一的世界时间；下表各次采样都使用同一时区。</p><div class="table-wrap"><table><thead><tr><th>采样时刻</th><th>%7 · PR #891</th><th>%8 · PR #892</th></tr></thead><tbody><tr><td>17:51:17</td><td>d4cbcb6c</td><td>1f8d954c</td></tr><tr><td>19:38:02</td><td>10021cb4</td><td>bed47598</td></tr><tr><td>20:39:40</td><td>fbc1a3c2</td><td>6628c784</td></tr><tr><td>21:37:49</td><td>7529e403</td><td>6628c784</td></tr></tbody></table></div><p>PR 是提交给团队审阅的变更集合。表中提交号来自保存的巡检报告，已截短，仅用于历史回放。</p><p><strong>修复后必须：</strong>21:37 这一刻两条记录均有近期活动，旧停滞结论被反证；删去任一机制问题的去向，完成门必须失败。</p><p class="muted">当前证据：原始观测已恢复；旧校验器接收“机制缺陷无去向”的漏洞已复现。修复后功能测试由实施和 QA 阶段执行；QA 是独立验证实现是否满足要求的阶段。</p><label for="note-acceptance">对「06 · 用这两条历史记录验收」的意见</label><textarea class="review-note" id="note-acceptance" data-section="06 · 用这两条历史记录验收" rows="3" placeholder="写下疑问或建议，输入后自动保存在本设备。"></textarea></section><section class="card" id="boundary"><h2>07 · 交付与诚实边界</h2><p>本次交付探索、调研、实施计划、历史反例、评审回执和这份可评论报告。设计审批通过后由工作流接力到实施阶段。</p><p>本阶段没有修改业务代码、重启服务、部署、合并或派工。没有声称生产巡检已修复。评审中的非阻塞建议已交由 Lead 决定后续安排，未标为已解决。</p><p>两张图因本机图形权限未完成本地渲染；源文本已保留。页面会做结构与交互逻辑检查、托管 HTTP 与脚本安全策略检查，不能把这些说成浏览器视觉验收。</p><label for="note-boundary">对「07 · 交付与诚实边界」的意见</label><textarea class="review-note" id="note-boundary" data-section="07 · 交付与诚实边界" rows="3" placeholder="写下疑问或建议，输入后自动保存在本设备。"></textarea></section><section class="card" id="feedback"><h2>08 · 页面意见汇总</h2><p>下方自动汇总所有非空意见；超过约 1800 字时分段，每段均带固定反馈标记。这个标记是修改意见，不是审批信号。</p><div id="comment-chunks" aria-live="polite"></div><button type="button" id="copy-all">复制全部意见</button><p id="copy-status" role="status"></p><label for="note-feedback">对「08 · 页面意见汇总」的意见</label><textarea class="review-note" id="note-feedback" data-section="08 · 页面意见汇总" rows="3" placeholder="写下疑问或建议，输入后自动保存在本设备。"></textarea></section></main><script nonce="__CSP_NONCE__">(function () {
+'use strict';
+const marker = '【页面意见汇总】FLY-1945';
+const prefix = 'flywheel-review:' + location.pathname + ':';
+const notes = Array.from(document.querySelectorAll('.review-note'));
+const chunksRoot = document.getElementById('comment-chunks');
+const status = document.getElementById('copy-status');
+let chunks = [];
+function splitComments(body) {
+ const limit = 1800 - Array.from(marker).length - 1;
+ const chars = Array.from(body);
+ const out = [];
+ for (let i = 0; i < chars.length; i += limit) out.push(marker + '\n' + chars.slice(i, i + limit).join(''));
+ return out;
+}
+function fallbackCopy(text) {
+ const temp = document.createElement('textarea');
+ temp.value = text;
+ temp.setAttribute('aria-label', '复制内容');
+ temp.style.position = 'fixed'; temp.style.left = '-10000px';
+ document.body.appendChild(temp); temp.select();
+ let ok = false;
+ try { ok = document.execCommand('copy'); } finally { temp.remove(); }
+ if (!ok) throw new Error('copy unavailable');
+}
+async function copy(text) {
+ try {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+   try { await navigator.clipboard.writeText(text); } catch (_) { fallbackCopy(text); }
+  } else { fallbackCopy(text); }
+  status.textContent = '已复制意见。';
+ } catch (_) { status.textContent = '复制未成功，请选中上方文本手动复制。'; }
+}
+function aggregate() {
+ const lines = notes.filter(note => note.value.trim()).map(note => '【' + note.dataset.section + '】\n' + note.value.trim());
+ chunks = splitComments(lines.join('\n\n'));
+ chunksRoot.replaceChildren();
+ if (!chunks.length) { const empty = document.createElement('p'); empty.textContent = '还没有填写意见。'; chunksRoot.appendChild(empty); }
+ chunks.forEach((chunk, i) => {
+  const output = document.createElement('textarea'); output.className = 'chunk-output'; output.readOnly = true;
+  output.value = chunk; output.setAttribute('aria-label', '意见第 ' + (i + 1) + ' 段');
+  const button = document.createElement('button'); button.type = 'button'; button.textContent = '复制第 ' + (i + 1) + ' 段';
+  button.addEventListener('click', () => { void copy(chunk); });
+  chunksRoot.appendChild(output); chunksRoot.appendChild(button);
+ });
+}
+notes.forEach(note => {
+ try { note.value = localStorage.getItem(prefix + note.id) || ''; } catch (_) {}
+ note.addEventListener('input', () => {
+  try { localStorage.setItem(prefix + note.id, note.value); } catch (_) { status.textContent = '本设备无法保存；意见仍可复制。'; }
+  aggregate();
+ });
+});
+document.getElementById('copy-all').addEventListener('click', () => {
+ if (!chunks.length) { status.textContent = '请先填写意见。'; return; }
+ void copy(chunks.join('\n\n'));
+});
+aggregate();
+})();</script></body></html>

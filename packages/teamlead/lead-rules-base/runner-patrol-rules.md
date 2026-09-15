@@ -100,12 +100,28 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
      `LIMIT_LIVE`;reset 已过且 `owner=owned` 时 run:
      `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: usage/session limit reset has passed; resume now"`。
      reset 无法解析写 `UNAVAILABLE(structural: limit_reset_unparseable)`。
-   - 同 target 最后状态行逐字 hash 未变就继承脚本维护的 0600 machine-owned
-     `patrol-continuity/<lead>/<project>.tsv` 中的 `last_change_epoch`。Lead 不编辑该
-     sidecar,报告重排或修改 result 也不得重置停滞连续性。连续
-     ≥3600 秒标 `STALLED_60M`。名下 run:
-     `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: pane state has been unchanged for 60 minutes; report status and continue"`;
-     本报告没有跨 Lead pane。
+   - `patrol-continuity/<lead>/<project>.v2.json` 的 machine-owned 0600 sidecar
+     以 exact execution / activation / TURN episode / repo-source identity 为身份，
+     `last_change_epoch` 只锚真实状态跃迁或该身份的远端 head 推进；初次采样是 baseline。
+     渲染行 hash、spinner、poll、重复 stage、park 续期、报告重排或 result 修改均不刷新。
+     旧 TSV 不迁移 epoch。`state_sha256` 仅用于渲染诊断，不能判停滞。
+     任何 `STALLED_60M` 都是带完整 interval/ref 证据的待核候选：有效 gate/park/phase 等待或有未到期 expires_at 的 long_task 声明为 WAITING，
+     source 不完整为 UNKNOWN，只有完整连续观测满 3600 秒才可生成候选。
+     任何 exact 同期 push receipt 都能证伪：作者/committer 时间和 PR updated_at 不算 push。
+     当前 head 改变以及最近 3600 秒内已验证推进为 ACTIVE；保留活动的观察区间。
+     发送前 run `flywheel-patrol-continuity --recheck --report "$REPORT_PATH" --evidence-id "$ACTIVITY_EVIDENCE_ID"`
+     复查机器记录的同一 episode、interval 和 exact ref。`ACTIVITY_RECORD <JSON>`
+     保留原始 `{id,entry,sampledAtMs,activity,interval_start,interval_end}`；和
+     `ACTIVITY_EVIDENCE` 一样属于不可改写的机器记录，只能修改 pane action/result。
+     STALLED 必须关联同 exec 的完整 ref digest、semantic digest、coverage 和 ≥3600 秒 interval。`stalled-falsified` 不发继续指令；
+     `waiting-confirmed` 保留等待；仅有 UNKNOWN 时标 STEP 2 UNAVAILABLE，禁止由停滞触发 nudge。
+     只有复核后仍是同一 episode 的候选才能按名下既有 send 授权要求状态说明，
+     不是 terminate/restart 权限。本报告没有跨 Lead pane；跨 key 分支推进仅为 branch_activity。
+     UNKNOWN 每 pane 留原因，按 `(source,cause)` 聚合 `UNAVAILABLE_CAUSE` 和 affected count；
+     不把同一故障按 runner 重复立单。连续性 UNKNOWN 与 quota/menu/dead-pane finding 共存时，
+     STEP 2 保持 FINDING，缺失证据仍用 UNAVAILABLE_CAUSE 和逐 pane UNKNOWN 显式保留，不能清为 healthy。
+     仅 owner index 完整、无归属冲突且所有 owned targets 均进入本次采样清单时，允许清理已退役的 v2 entry；
+     清单不完整时保留旧 entry，不以 tmux/source 暂时失败推断退役。
    - live 区命中 `Press Enter to confirm` / `Press Enter to continue` / 已知 resume
      menu 时标 `INTERACTIVE_MENU`;只有名下且手册明确允许 Enter 才 run:
      `TMUX= tmux send-keys -t "$PANE_ID" Enter`,随后完整 capture 复核。未知 menu
@@ -424,6 +440,60 @@ STEP DWELL 多 cause 统一使用稳定 `node_dwell_incomplete` token，逐 caus
    非空则把 identifier 写进报告且禁止重复建单。只有空且满足 structural 首现或
    transient 连续 2 tick 时 run:
    `PAYLOAD="$(jq -n --arg title "$TITLE" --arg description "patrol report: $REPORT_PATH" '{title:$title, description:$description, team:"FLY", project:"Flywheel", labels:["Flywheel"]}')"; printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS -X POST -H 'Content-Type: application/json' "$BRIDGE_URL/api/linear/create-issue" -d "$PAYLOAD"`。
+### FLY-1945 机制缺陷 finding：声明后必须三选一
+
+机制设计不合理必须作为 `category=mechanism_defect` finding 声明，账落 Linear，不落 memory；
+立单不等于派工，禁止 create 后 activate/dispatch。普通故障用 `category=incident`，
+不能从 `bridge_problem` 推导类别。所有 FINDING 增加唯一 `id=<64hex> category=...`。
+
+报告必须唯一 `patrol_schema=2`，第 6 步先留
+`MECHANISM_REVIEW result=LEAD-JUDGMENT-REQUIRED`，Lead 判断后改为
+`MECHANISM_REVIEW result=none count=0` 或 `result=findings count=<声明数>`。
+每个机制项先声明：
+`MECHANISM_DEFECT id=<64hex> step=<1-6|DWELL> class_key=<64hex> root_cause_ref=<token> counterexample_ref=<token>`。
+id 为稳定 report identity + step + 首次 ordinal + class_key 的 digest，重排不得重新分配；
+class_key 用既有错误码/guard/结构形状，没有错误码则用 mechanism_design + 规则源码路径/symbol
++ 缺失转移形状，不按标题相似度归类。每条声明必须恰好一个同 id 的机制 FINDING。
+根因可注明有证据的假设；验收反例写具体输入、错误结果和应有结果。
+
+同一 FINDING 追加 `disposition=existing|created|no_issue repair_issue=<FLY-number|n/a>
+repair_receipt=<uuid|n/a> disposition_ref=<stable-token>`。报告内添加唯一
+`MECHANISM_DISPOSITION <JSON>`，其严格字段为：
+`{ref,findingId,mode,reason,issueIdentifier,issueUuid,issueUrl,receiptUuid,verifiedAt,rootCause,counterexample,dedupEvidence,linear_record}`。
+ref 与 disposition_ref、root_cause_ref、counterexample_ref 同值；findingId 与 id 同值。
+reason/rootCause/counterexample 是正常中文和空格的 JSON 字符串，各至少 10 个字符，禁止 TODO/TBD/UNSET。
+
+- existing：完整查重后 fresh read 已有单的 identifier/UUID/URL、scope、class_key、根因与反例，
+  补本次 marker comment/description 并回读 receipt；不能只填任意 ticket ID。
+- created：先完整查重为 0；通过人工 draft/backlog 路径建单，正文包含根因、反例、class_key、
+  finding marker，再 fresh read 完整字段和 marker。禁止把 API 不支持的 state 参数当成已生效。
+- no_issue：写具体不立原因、根因、反例；有相关 Linear 源 issue 时把原因以同 marker comment
+  记回该单，`linear_record=comment`，repair_issue=n/a，repair_receipt 为该 comment UUID。
+  没有相关 Linear 源 issue 时允许 `linear_record=not_applicable`，reason 明确说明没有相关
+  Linear 源 issue 及原因；issueIdentifier/issueUuid/issueUrl/receiptUuid/verifiedAt/dedupEvidence
+  均为 JSON null，repair_issue/repair_receipt=n/a。不得为了不立单而强制建修复单，
+  但 Linear 不可用、暂时没查、稍后处理或先记 memory 均不能冒充 no_issue。
+
+对有 Linear 记录的三条路径，verifiedAt 为回读 ISO 时间，issueUrl 为该 identifier 的
+https://linear.app/<workspace>/issue/<identifier> URL，UUID 必须完整；repair receipt 必须一致。
+dedupEvidence 严格为 `{complete:true,includeArchived:true,fullDescriptions:true,beforeCount:0|1,
+afterCount:1,markerVerified:true,classKey:<声明class_key>,findingId:<声明id>,scopeVerified:true}`。
+created 的 beforeCount=0，existing/no_issue-comment 为 1；no_issue-comment 查重对象是源 issue
+上的本 finding marker，写入前无 marker 时先写再回读唯一 marker，beforeCount 表示本次选择的源单数。
+该对象是 Lead 回读证据的记录，机械门验证闭合，不把自述 receipt 当服务端授权或语义正确性证明。
+
+查重必须分页到底，Bridge 查 FLY-2072 或明确关联单，非 Bridge 查当前项目含 archived 候选，
+逐张 get 完整 description；不能用 250 条无 continuation 列表伪装全集。0 命中新建，1 命中复用，
+>1 为 mechanism_class_duplicate 并停止封口。网络超时后先分页回读 comments 的本次 marker，
+不得盲重发。写后核对 identifier/UUID/project/parent（适用时）/class_key/marker/正文。
+同 Bridge 病根单可同时作为 repair issue，直接补反例，避免重复开单；exact lookup 只辅助 UUID，
+parent/team 仍用完整 get 复核。创建后再次全量查重；并发重复时 Lead 选择 canonical、留 duplicate
+关联并复读后才闭合，不能声称 Linear 创建原子唯一。只写自己报告的账，不派工。
+
+`bridge_problem=yes` 继续满足下方原 FLY-2080 病根单/occurrence gate，no_issue 不豁免；
+epic=unavailable 不能替代新的 disposition。工具不自动识别未声明的自然语言问题；Lead 必须先声明。
+删除 category、把 STEP 改 OK、同 STEP 只处理一项都不能隐藏已声明机制项。
+
    最后 run(完成门):
    `FINAL_STEP_COUNT="$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; DWELL_STEP_COUNT="$(grep -Ec '^STEP DWELL: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; PANE_COUNT="$(sed -n 's/^pane_count=//p' "$REPORT_PATH" | tail -1)"; EVIDENCE_COUNT="$(grep -c '^PANE_EVIDENCE ' "$REPORT_PATH")"; WELL_FORMED_EVIDENCE="$(awk '/^PANE_EVIDENCE / && / pane=[^ ]+/ && / target=[^ ]+/ && / capture_sha256=[^ ]+/ && / state_sha256=[^ ]+/ && / last_change_epoch=[0-9]+/ && / findings=[^ ]+/ && / action=[^ ]+/ && / result=[^ ]+/{n++} END{print n+0}' "$REPORT_PATH")"; case "$PANE_COUNT" in ''|*[!0-9]*) false;; esac && test "$FINAL_STEP_COUNT" -eq 6 && test "$DWELL_STEP_COUNT" -eq 1 && test "$PANE_COUNT" -eq "$EVIDENCE_COUNT" && test "$PANE_COUNT" -eq "$WELL_FORMED_EVIDENCE" && ! grep -Eq '^STEP (0|[7-9]|[1-9][0-9]+): |LEAD-JUDGMENT-REQUIRED|-CANDIDATE$|action=REQUIRED|result=UNSET' "$REPORT_PATH"`。
    再 run 磁盘一致性门；非零同样没有完成：
@@ -432,10 +502,27 @@ STEP DWELL 多 cause 统一使用稳定 `node_dwell_incomplete` token，逐 caus
 
 # FLY-2080-FINDING-GATE-BEGIN
 awk '
-function value(name,    i,prefix) {
-  prefix=name "="
-  for (i=1; i<=NF; i++) if (index($i,prefix)==1) return substr($i,length(prefix)+1)
-  return ""
+function parse(    i,n,k,v) {
+  for (k in fields) delete fields[k]
+  for (i=2; i<=NF; i++) {
+    n=index($i,"="); k=substr($i,1,n-1); v=substr($i,n+1)
+    if (!n || !length(v) || k in fields) bad=1
+    fields[k]=v
+  }
+}
+function value(name) { return fields[name] }
+/^patrol_schema/ { schema_seen++; if ($0!="patrol_schema=2") bad=1; next }
+/^(NODE_DWELL|UNAVAILABLE_CAUSE|FINDING|MECHANISM_REVIEW|MECHANISM_DEFECT)( |$)/ { parse() }
+/^MECHANISM_REVIEW( |$)/ {
+  review_seen++; review_result=value("result"); review_count=value("count")
+  for (k in fields) if (k!="result" && k!="count") bad=1
+  next
+}
+/^MECHANISM_DEFECT( |$)/ {
+  id=value("id"); declared[id]++; declaration_step[id]=value("step"); mechanism_count++
+  if (!hex64(id) || !hex64(value("class_key")) || value("step") !~ /^([1-6]|DWELL)$/ || value("root_cause_ref") !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ || value("counterexample_ref") !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/) bad=1
+  for (k in fields) if (k!="id" && k!="step" && k!="class_key" && k!="root_cause_ref" && k!="counterexample_ref") bad=1
+  next
 }
 function uuid(v,    body,n,a) {
   if (index(v,"FLY-2072#") != 1) return 0
@@ -473,7 +560,14 @@ function normalized_step(v) { sub(/:$/, "", v); return v }
   if (step=="6" && class=="transient" && token=="linear_epic_unavailable") linear_unavailable=1
   next
 }
-/^FINDING / {
+/^FINDING( |$)/ {
+  id=value("id"); category=value("category"); finding_ids[id]++
+  if (!hex64(id) || (category!="incident" && category!="mechanism_defect")) bad=1
+  for (k in fields) if (k !~ /^(id|category|step|bridge_problem|result|evidence|owner|next|epic|epic_marker|disposition|repair_issue|repair_receipt|disposition_ref)$/) bad=1
+  if (category=="mechanism_defect") {
+    mechanism_finding[id]++; mechanism_step[id]=value("step")
+    if (value("disposition") !~ /^(existing|created|no_issue)$/ || value("disposition_ref") !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/ || value("repair_issue")=="" || value("repair_receipt")=="") bad=1
+  }
   step=value("step"); bridge=value("bridge_problem"); result=value("result")
   evidence=value("evidence"); owner=value("owner"); next_action=value("next")
   epic=value("epic"); marker=value("epic_marker")
@@ -493,6 +587,10 @@ function normalized_step(v) { sub(/:$/, "", v); return v }
   } else if (epic!="n/a" || marker!="n/a") bad=1
 }
 END {
+  if (schema_seen!=1 || review_seen!=1 || review_count !~ /^(0|[1-9][0-9]*)$/ || review_count+0!=mechanism_count+0 || (mechanism_count==0 && review_result!="none") || (mechanism_count>0 && review_result!="findings")) bad=1
+  for (id in finding_ids) if (finding_ids[id]!=1) bad=1
+  for (id in declared) if (declared[id]!=1 || mechanism_finding[id]!=1 || declaration_step[id]!=mechanism_step[id]) bad=1
+  for (id in mechanism_finding) if (declared[id]!=1) bad=1
   for (step in status_seen) if (status_seen[step]!=1) bad=1
   for (step in required) if (!detail[step]) bad=1
   for (step in detail) if (!required[step] && !(step=="DWELL" && unavailable_cause[step]>0)) bad=1
@@ -503,6 +601,8 @@ END {
 }
 ' "$REPORT_PATH"
 # FLY-2080-FINDING-GATE-END
+
+   再执行 `flywheel-patrol-continuity validate-report --report "$REPORT_PATH"`。必须原基本完整性、磁盘、上述 awk 和 JSON helper 四层都成功，才能完成；helper 缺失或失败不能跳过。
 
    失败就没有完成;无法理解本段也必须记 UNAVAILABLE,禁止静默跳过。
 
