@@ -17,6 +17,8 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 		start: number;
 		end: number;
 		cpuMs: number;
+		involuntarySwitches?: number;
+		voluntarySwitches?: number;
 	}> = [];
 	const monitor = new PerformanceObserver((list) => {
 		for (const entry of list.getEntries())
@@ -60,14 +62,22 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 		const measure = (kind: string) => {
 			const started = performance.now();
 			const cpu = process.cpuUsage();
+			const resources = process.resourceUsage();
 			const changed = observer.observeCancellations(NOW);
 			const end = performance.now();
 			const usage = process.cpuUsage(cpu);
+			const afterResources = process.resourceUsage();
 			windows.push({
 				kind,
 				start: started,
 				end,
 				cpuMs: (usage.user + usage.system) / 1000,
+				involuntarySwitches:
+					afterResources.involuntaryContextSwitches -
+					resources.involuntaryContextSwitches,
+				voluntarySwitches:
+					afterResources.voluntaryContextSwitches -
+					resources.voluntaryContextSwitches,
 			});
 			samples[kind]!.push(end - started);
 			return changed;

@@ -205,3 +205,11 @@ Lead question b07d0b86-d375-4dab-b37a-9ed4e3fde5f4 授权唯一 writable inciden
 - modeTick已按批准计划只await本地页；投递测试改为等待delivered或owner缺失的真实状态，仍断言2条/下一轮3条及off零写入。runtime5/5通过。
 - CI performance原红为modeTick103.705ms。新本地run6尾部61.31ms与51.235ms GC重叠，已追加原始记录；不将GC证据反推为最早154.543ms尖峰的已证根因。夹具此前连续同步清空25,000 outcome而未返回事件循环；现每页调用后setImmediate交接，与生产周期之间可回收临时分配的前提一致，不强制GC、不mock观察器、不修改生产预算或50/100ms阈值。run7通过：取消最大18.111ms，modeTick最大21.329ms；继续四轮，所有结果保留。
 - wrapper fd test与shell/Node CI枚举通过。新package aggregate仍运行（/tmp/fly2563-resume-packages.log）；当前没有aggregate/effective-review/exact-head-CI完成声明，也未执行生产QA、重启、部署或派发QA。
+
+## 单 worker 分类与性能诊断续证
+
+- 页间yield后的run8/9/10/11分别FAIL/FAIL/PASS/FAIL，全部原始样本追加到performance-runs.jsonl，绝不筛掉红样本。run11取消126.630ms但CPU6.627ms/noGC，说明只用GC解释不足。
+- run12为额外真实statement计时诊断：取消115.641ms窗口与108.275ms GC重叠；另tail75.617ms、CPU25.639ms、225 involuntary/377 voluntary context switches，语句均≤5ms。该诊断的prepare spy可能额外保留调用历史，不能把它当作无扰动性能证明，已从最终测试移除，只保留低频每个样本的resourceUsage计数。该轮也按FAIL保存。
+- 同时本机loadavg约65–68、18个可用CPU、freeMemory约298MB；这是环境观察，不是豁免阈值或证明全部尖峰根因。聚合和本机多任务尚在执行，不并发启动更多性能重跑。
+- 查明常规CI helper把parallel项目强制升至2 forks，而新性能文件尚未登记耗时，被分入parallel。以独立CI34943318979/job104296927883实测37,703ms（命令至首文件完成，测试体33,066ms）写入既有cost表，并保存该条独立来源。现有≥2500ms规则因此把它纳入serial/1fork，专用性能lane也仍是1fork；没有排除测试或放宽阈值。分类断言先红后绿，完整shard测试仍运行。
+- 最新teamlead typecheck、pnpm lint exit0。全包聚合仍无终态receipt；这不是有效package gate或性能验收通过。后续必须核对最终HEAD CI、effective code review，最后才能needs_review交接。
