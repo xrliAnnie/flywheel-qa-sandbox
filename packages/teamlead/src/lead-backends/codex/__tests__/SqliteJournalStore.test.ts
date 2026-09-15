@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { JournalTransitionError, LeadJournal } from "../LeadJournal.js";
+import {
+	InMemoryJournalStore,
+	JournalTransitionError,
+	LeadJournal,
+} from "../LeadJournal.js";
 import { SqliteJournalStore } from "../SqliteJournalStore.js";
 
 function entry(
@@ -320,5 +324,70 @@ describe("SqliteJournalStore — persistence + LeadJournal integration", () => {
 		expect(store.getById(e.id)?.turnId).toBe("turn");
 		expect(journal.listUnfinished()).toHaveLength(0);
 		store.close();
+	});
+});
+
+describe("completed-since rotation eligibility", () => {
+	it.each(["memory", "sqlite"])(
+		"%s counts only completed entries created strictly after cutoff",
+		(backend) => {
+			const store =
+				backend === "memory"
+					? new InMemoryJournalStore()
+					: new SqliteJournalStore(":memory:");
+			try {
+				const journal = new LeadJournal({ store, now: () => 101 });
+				for (const [id, state, createdAt] of [
+					["before", "completed", 99],
+					["equal", "completed", 100],
+					["after", "completed", 101],
+					["accepted", "accepted", 102],
+					["ambiguous", "ambiguous", 102],
+				] as const) {
+					store.insertAccepted(
+						entry({ id, idempotencyKey: id, state, createdAt }),
+					);
+				}
+				journal.recordObservation({
+					idempotencyKey: "founder",
+					payload: "observed",
+				});
+				expect(store.countCompletedSince(100)).toBe(2);
+				expect(journal.countCompletedSince(100)).toBe(2);
+				expect(journal.countCompletedSince(101)).toBe(0);
+			} finally {
+				if (store instanceof SqliteJournalStore) store.close();
+			}
+		},
+	);
+	it("adds the count index idempotently on reopen and preserves existing rows", async () => {
+		const { default: Database } = await import("better-sqlite3");
+		const dir = mkdtempSync(join(tmpdir(), "fly2550-journal-"));
+		const path = join(dir, "journal.sqlite");
+		try {
+			const store = new SqliteJournalStore(path);
+			store.insertAccepted(entry({ state: "completed", createdAt: 101 }));
+			store.close();
+			const reopened = new SqliteJournalStore(path);
+			expect(reopened.countCompletedSince(100)).toBe(1);
+			reopened.close();
+			const db = new Database(path, { readonly: true });
+			try {
+				expect(
+					db
+						.prepare(
+							"SELECT name FROM sqlite_master WHERE type='index' AND name='journal_state_created_idx'",
+						)
+						.get(),
+				).toEqual({ name: "journal_state_created_idx" });
+				expect(
+					db.prepare("PRAGMA index_info(journal_state_created_idx)").all(),
+				).toMatchObject([{ name: "state" }, { name: "created_at" }]);
+			} finally {
+				db.close();
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

@@ -64,7 +64,7 @@ function assertShellSafe(name: string, value: string, re: RegExp): string {
 	return value;
 }
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/; // absolute paths, no quotes/spaces/metachars
-const SAFE_ID = /^[A-Za-z0-9-]+$/; // thread ids are UUID-shaped
+export const SAFE_ID = /^[A-Za-z0-9-]+$/; // thread ids are UUID-shaped
 const SAFE_BIN = /^[A-Za-z0-9_./-]+$/;
 const SAFE_CARRIER_ID = /^[A-Za-z0-9_-]+$/;
 
@@ -232,15 +232,20 @@ export function isTuiWindowAlive(
  */
 export function killTuiWindow(
 	spec: Pick<TuiWindowSpec, "projectName" | "leadId">,
-	deps: EnsureTuiWindowDeps = {},
-): void {
+	deps: EnsureTuiWindowDeps & {
+		execOut?: (cmd: string, args: string[]) => string | undefined;
+	} = {},
+): boolean {
 	const exec = deps.exec ?? defaultExec;
 	const log = deps.log ?? (() => {});
 	const windowName = `${spec.projectName}-${spec.leadId}`;
 	try {
 		exec("tmux", ["kill-window", "-t", `=${TUI_TMUX_SESSION}:=${windowName}`]);
+		if (isTuiWindowAlive(spec, { execOut: deps.execOut })) return false;
 		log(`tui-window: killed (${windowName})`);
+		return true;
 	} catch (err) {
 		log(`tui-window: kill failed (non-fatal): ${(err as Error).message}`);
+		return false;
 	}
 }

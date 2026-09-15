@@ -1362,6 +1362,12 @@
 		"classification": "out-of-scope"
 	},
 	{
+		"key": "packages/teamlead/src/lead-backends/codex/__tests__/codex-lead-tui-runtime.rotation.test.ts:mocks.kill();#1",
+		"path": "packages/teamlead/src/lead-backends/codex/__tests__/codex-lead-tui-runtime.rotation.test.ts",
+		"code": "mocks.kill();",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/teamlead/src/lead-backends/codex/__tests__/tui-window.test.ts:\"kill-window\",#1",
 		"path": "packages/teamlead/src/lead-backends/codex/__tests__/tui-window.test.ts",
 		"code": "\"kill-window\",",

@@ -152,6 +152,22 @@ export class DaemonConnectionSupervisor {
 		return this.rebuilding;
 	}
 
+	/** Caller has fenced inputs; reuse the single rebuild loop without its first delay. */
+	requestRebuild(reason: string): boolean {
+		if (
+			this.stopped ||
+			this.rebuilding ||
+			this.inflightBringUp ||
+			!this.current
+		)
+			return false;
+		this.log(`rebuild requested: ${reason}`);
+		void this.onLoss(true).catch((error) =>
+			this.log(`requested rebuild failed: ${(error as Error).message}`),
+		);
+		return true;
+	}
+
 	// ── internals ────────────────────────────────────────────────────────────
 
 	private fenceCurrent(): void {
@@ -192,7 +208,7 @@ export class DaemonConnectionSupervisor {
 		this.lastStartAt = this.now();
 	}
 
-	private async onLoss(): Promise<void> {
+	private async onLoss(immediate = false): Promise<void> {
 		// Step 3: exactly one rebuild loop. Duplicate close events of the same
 		// generation race here — the flag makes the second a no-op (the fence
 		// in fenceCurrent() additionally kills cross-generation stragglers).
@@ -214,14 +230,17 @@ export class DaemonConnectionSupervisor {
 			}
 			// Step 4 continued: bounded-backoff rebuild, forever (launchd-style).
 			while (!this.stopped) {
-				const wait = this.backoff[
-					Math.min(this.backoffIdx, this.backoff.length - 1)
-				] as number;
-				this.backoffIdx = Math.min(
-					this.backoffIdx + 1,
-					this.backoff.length - 1,
-				);
-				await this.sleep(wait);
+				if (!immediate) {
+					const wait = this.backoff[
+						Math.min(this.backoffIdx, this.backoff.length - 1)
+					] as number;
+					this.backoffIdx = Math.min(
+						this.backoffIdx + 1,
+						this.backoff.length - 1,
+					);
+					await this.sleep(wait);
+				}
+				immediate = false;
 				if (this.stopped) return;
 				try {
 					await this.o.ensureDaemon();

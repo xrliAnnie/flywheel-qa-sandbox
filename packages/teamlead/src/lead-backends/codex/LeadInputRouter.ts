@@ -169,6 +169,7 @@ export class LeadInputRouter {
 
 	private readonly queue: string[] = []; // entry ids awaiting processing
 	private processing = false;
+	private paused = false;
 	/** Resolves when the queue drains — for tests/shutdown to await quiescence. */
 	private idleWaiters: Array<() => void> = [];
 
@@ -233,9 +234,22 @@ export class LeadInputRouter {
 		return { status: result.status, entryId: result.entry.id };
 	}
 
-	/** Await the queue draining (no in-flight + empty). Test/shutdown helper. */
+	isIdle(): boolean {
+		return !this.processing && (this.paused || this.queue.length === 0);
+	}
+
+	pause(): void {
+		this.paused = true;
+	}
+
+	resume(): void {
+		this.paused = false;
+		void this.pump();
+	}
+
+	/** Await execution quiescence; paused entries remain durably accepted. */
 	whenIdle(): Promise<void> {
-		if (!this.processing && this.queue.length === 0) return Promise.resolve();
+		if (this.isIdle()) return Promise.resolve();
 		return new Promise((resolve) => this.idleWaiters.push(resolve));
 	}
 
@@ -264,17 +278,17 @@ export class LeadInputRouter {
 	// ── serial processing loop ──────────────────────────────────────────────
 
 	private async pump(): Promise<void> {
-		if (this.processing) return;
+		if (this.processing || this.paused) return;
 		this.processing = true;
 		try {
-			while (this.queue.length > 0) {
+			while (!this.paused && this.queue.length > 0) {
 				const id = this.queue.shift();
 				if (id === undefined) break;
 				await this.processEntry(id);
 			}
 		} finally {
 			this.processing = false;
-			if (this.queue.length === 0) {
+			if (this.isIdle()) {
 				const waiters = this.idleWaiters;
 				this.idleWaiters = [];
 				for (const w of waiters) w();

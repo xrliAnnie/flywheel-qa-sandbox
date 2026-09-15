@@ -12,6 +12,8 @@ import { RETIRED_CONFIG_PATHS, RETIRED_FLAGS } from "../feature-flags/truth.js";
 import { auditFly1981LegacyLedger } from "./fly1981-legacy-snapshot.js";
 
 const EXPECTED_WHEN_ON = {
+	codex_lead_thread_rotation:
+		"常驻 Codex Lead 在满足周期与空闲条件时开启新对话页，让旧页可进入原生记忆整理",
 	codex_memory_distill:
 		"让新 Codex 任务开工前整理同一岗位已有的任务经验，供后续任务回忆",
 	cmux_watcher_rebuild_disabled:
@@ -74,7 +76,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(28);
+		expect(FEATURE_FLAGS).toHaveLength(29);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);
@@ -744,6 +746,29 @@ it("FLY-2460 registers default-on managed project memory distillation without an
 		FeatureFlags.PROJECT_STORE_MANAGED_FLAGS.has("codex_memory_distill"),
 	).toBe(true);
 	const codec = FeatureFlags.getFlagStoreCodec("codex_memory_distill")!;
+	expect(codec.parse({ hasOverride: false, raw: null })).toBe(true);
+	expect(codec.parse({ hasOverride: true, raw: "0" })).toBe(false);
+	expect(codec.parse({ hasOverride: true, raw: "1" })).toBe(true);
+});
+
+it("FLY-2550 registers default-on managed project Lead thread rotation without an env switch", () => {
+	const spec = FEATURE_FLAGS.find(
+		(flag) => flag.name === "codex_lead_thread_rotation",
+	);
+	expect(spec).toMatchObject({
+		default: true,
+		polarity: "default_on",
+		scope: "project",
+		valueKind: "bool",
+	});
+	expect(spec?.envVar).toBeUndefined();
+	expect(
+		FeatureFlags.STORE_MANAGED_FLAGS.has("codex_lead_thread_rotation"),
+	).toBe(true);
+	expect(
+		FeatureFlags.PROJECT_STORE_MANAGED_FLAGS.has("codex_lead_thread_rotation"),
+	).toBe(true);
+	const codec = FeatureFlags.getFlagStoreCodec("codex_lead_thread_rotation")!;
 	expect(codec.parse({ hasOverride: false, raw: null })).toBe(true);
 	expect(codec.parse({ hasOverride: true, raw: "0" })).toBe(false);
 	expect(codec.parse({ hasOverride: true, raw: "1" })).toBe(true);

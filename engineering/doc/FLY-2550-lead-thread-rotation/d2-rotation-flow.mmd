@@ -1,0 +1,29 @@
+sequenceDiagram
+  autonumber
+  participant G as 旧代 generation
+  participant Rt as LeadInputRouter
+  participant W as TUI pane (tmux)
+  participant L as 账本 thread-rotation.json
+  participant S as DaemonConnectionSupervisor
+  participant N as 新代 ensureThread
+  participant D as Codex daemon
+  G->>G: 每 60s:到期(≥7天) ∧ 本页有真实对话 ∧ 空闲 ∧ 无 founder turn ∧ 30min 安静
+  G->>Rt: pause()(新消息只 durable 记账,不派发)
+  G->>W: killTuiWindow 并验证已死
+  G->>Rt: 等真空闲(≤60s)
+  G->>D: thread/turns/list 最后一轮非 inProgress(未知即忙)
+  G->>L: 写 pending {from: T_old, attemptStartedAt: null}(原子·读回)
+  G->>S: requestRebuild("thread_rotation")
+  S->>G: stop(): 先停 gateway 再停进程
+  S->>N: 起新代
+  N->>N: 严格读 thread-id(损坏 ⇒ fail-loud)· 对账
+  N->>D: thread/turns/list T_old 再确认非 inProgress
+  N->>L: pending.attemptStartedAt = now(先落盘,再 start)
+  N->>D: thread/start(developerInstructions = 固定文本,不含旧对话)
+  D-->>N: T_new
+  N->>N: 原子写 thread-id = T_new · history 追加
+  N->>L: currentThreadId=T_new, startedAt=now, pending=null
+  N->>N: 回执 rotated
+  N->>D: 既有 bootstrap turn(给 T_new 建 rollout)
+  N->>W: 重开 pane 并验证存活 · 回执 rotation_ready
+  Note over D: T_old 从 fence 起零 turn · 静置 ≥6h 后,下一次 turn/start 的记忆启动任务认领它
