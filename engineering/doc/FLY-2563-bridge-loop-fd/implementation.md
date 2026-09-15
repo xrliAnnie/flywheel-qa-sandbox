@@ -132,3 +132,12 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - 调用方审计发现GatePoller原先保留每项目readonly/writer两个连接，并给deliverer注入release空操作。上一批默认deliverer局部证据不能证明此生产组合已释放。
 - 新回归在真实GatePoller pass的投递入口挂起；RED为numeric fd21、baseline16。现改为同步物化各Lead的pending数组并关闭两条项目连接，然后才yield/构造任务/异步投递；移除借用writer覆盖，deliverer使用上一批的既有库短作用域。保留每轮扫描预算、顺序、水位、逐Lead读取失败隔离和可信写回验证。
 - GREEN：扫描预算6、调度9、report排除3、ship grace5、deliverer49，共72/72；teamlead typecheck通过。未将此定向证据表述为全仓或生产验收。
+
+## T3 第四批：多项目 runtime 初始化失败与 admission fd预算
+
+- 新真实SQLite `commdb-lifetime.test.ts`：两个项目后续transport构造失败，RED为numeric fd26 vs baseline16。LeadInboxRuntime现在在项目初始化失败时清理已登记的loop/admission/runner adapter/queue/lease reader，保留原异常；重复close路径仍可执行。
+- 空闲默认backend预算原本通过；触发question revalidate后RED为额外14fd>6×2=12。定位到QuestionAdmission每Lead惰性缓存CommDB。现为两次eager读取的同步短作用域，使用已迁移库`openExistingWriter`，关闭后仅保留question/是否pending；既有eligibility/materialization/receipt语义未改，无连接池。
+- 原FLY-1601防退化测试断言缓存实例，已改为直接证明两轮revalidate未调用migration或purge，且每个scope返回的连接已关闭。33项admission原语义覆盖通过；该变更不恢复每条消息全量migration或5秒锁等待。
+- legacy runtime保留每Lead常驻连接；两个项目各一Lead、100轮共200次实际deliver的numeric fd保持不变，重复shutdown回基线。默认backend空闲/触发question检查的两个项目均满足≤6P。此为隔离进程numeric总fd增量，不能替代生产按comm.db分类的2小时证据或推断所有部署拓扑满足E。
+- GREEN：lifetime4 + admission33 + LeadInboxRuntime39 =76/76；teamlead typecheck通过。没有外部网络发送。lead-inbox-runtime主要diff为给原有项目初始化循环添加try/catch造成的缩进；`git diff -w`可核对功能范围。
+- 后续仍需T3全量owner矩阵，尤其MailboxQueue自身constructor失败的原生连接清理与其他factory/lease；T7性能/指定快照/全仓门/有效review/非draft PR。当前所有chunk尚未宣称完整通过。
