@@ -2,14 +2,15 @@
 issue: FLY-2563
 phase: implement
 phaseCursor: 0/7
-updated: 2026-09-15T02:22:27.512Z
-nextStep: 00c002051 local/network isolation and clarification budget; 41/41
-  focused+types green. Next T1 observation-cursor migration and incremental
-  outcomes; T3 full lease audit, T4-T7 pending; see implementation.md
+updated: 2026-09-15T02:36:01.633Z
+nextStep: a78542fb4 migration + bounded cancellation cursor/fanout. Latest
+  payload guard tests41/41+types green; prior combined55/55; retention gate ok.
+  Next B2 incremental/reconciliation, restore replay and remaining T3-T7. No
+  phase completion.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2563 progress
 **phase**: implement (0/7)
-**next**: 00c002051 local/network isolation and clarification budget; 41/41 focused+types green. Next T1 observation-cursor migration and incremental outcomes; T3 full lease audit, T4-T7 pending; see implementation.md
+**next**: a78542fb4 migration + bounded cancellation cursor/fanout. Latest payload guard tests41/41+types green; prior combined55/55; retention gate ok. Next B2 incremental/reconciliation, restore replay and remaining T3-T7. No phase completion.
