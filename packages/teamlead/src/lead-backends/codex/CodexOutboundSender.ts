@@ -58,6 +58,9 @@ const defaultPost: HttpPost = async (req) => {
 };
 
 interface OutboxRow {
+	roundtable_engage: number;
+	engagement: string | null;
+	project_name: string | null;
 	outbox_id: string;
 	idempotency_key: string;
 	lead_id: string;
@@ -154,6 +157,14 @@ export class CodexOutboundSender implements OutboundSender {
 		const columns = this.db
 			.prepare("PRAGMA table_info(outbox)")
 			.all() as Array<{ name: string }>;
+		for (const [name, definition] of [
+			["roundtable_engage", "INTEGER NOT NULL DEFAULT 0"],
+			["engagement", "TEXT"],
+			["project_name", "TEXT"],
+		]) {
+			if (!columns.some((column) => column.name === name))
+				this.db.exec(`ALTER TABLE outbox ADD COLUMN ${name} ${definition}`);
+		}
 		if (!columns.some((column) => column.name === "message_id")) {
 			this.db.exec("ALTER TABLE outbox ADD COLUMN message_id TEXT");
 		}
@@ -194,10 +205,15 @@ export class CodexOutboundSender implements OutboundSender {
 			if (row) {
 				const idempotencyKey = `lead-action:${this.projectName}:${this.leadId}:${row.event_id}`;
 				const outbox = this.db
-					.prepare("SELECT status FROM outbox WHERE idempotency_key = ?")
-					.get(idempotencyKey) as { status: string } | undefined;
+					.prepare(
+						"SELECT status, roundtable_engage, engagement FROM outbox WHERE idempotency_key = ?",
+					)
+					.get(idempotencyKey) as
+					| Pick<OutboxRow, "status" | "roundtable_engage" | "engagement">
+					| undefined;
 				if (
 					outbox?.status !== "sent" ||
+					(outbox.roundtable_engage === 1 && outbox.engagement !== "ready") ||
 					now - row.created_at < this.proactiveEventIdTtlMs
 				) {
 					return row.event_id;
@@ -218,7 +234,10 @@ export class CodexOutboundSender implements OutboundSender {
 		})();
 	}
 
-	async probeAuthorization(channelId: string): Promise<ProbeResult> {
+	async probeAuthorization(
+		channelId: string,
+		roundtableEngage = false,
+	): Promise<ProbeResult> {
 		let res: { status: number; body: string };
 		try {
 			res = await this.post({
@@ -232,6 +251,7 @@ export class CodexOutboundSender implements OutboundSender {
 					leadId: this.leadId,
 					channelId,
 					probe: true,
+					...(roundtableEngage ? { roundtableEngage: true } : {}),
 				}),
 				signal: AbortSignal.timeout(this.probeTimeoutMs),
 			});
@@ -268,6 +288,7 @@ export class CodexOutboundSender implements OutboundSender {
 		text: string;
 		idempotencyKey: string;
 		channelId?: string;
+		roundtableEngage?: boolean;
 	}): Promise<string> {
 		if (!args.idempotencyKey)
 			throw new Error("CodexOutboundSender.enqueue: idempotencyKey required");
@@ -280,13 +301,16 @@ export class CodexOutboundSender implements OutboundSender {
 		this.db
 			.prepare(
 				`INSERT INTO outbox
-				 (outbox_id, idempotency_key, lead_id, text, nonce, channel_id, status, created_at, updated_at)
-				 VALUES (@outboxId, @idempotencyKey, @leadId, @text, @nonce, @channelId, 'pending', @ts, @ts)
+				 (outbox_id, idempotency_key, lead_id, text, nonce, channel_id, status, created_at, updated_at, roundtable_engage, engagement, project_name)
+				 VALUES (@outboxId, @idempotencyKey, @leadId, @text, @nonce, @channelId, 'pending', @ts, @ts, @roundtableEngage, @engagement, @projectName)
 				 ON CONFLICT(idempotency_key) DO NOTHING`,
 			)
 			.run({
 				outboxId,
 				idempotencyKey: args.idempotencyKey,
+				roundtableEngage: args.roundtableEngage === true ? 1 : 0,
+				engagement: args.roundtableEngage === true ? "pending" : null,
+				projectName: this.projectName,
 				leadId: args.leadId,
 				text: args.text,
 				nonce,
@@ -299,7 +323,9 @@ export class CodexOutboundSender implements OutboundSender {
 		if (
 			row.lead_id !== args.leadId ||
 			row.text !== args.text ||
-			row.channel_id !== channelId
+			row.channel_id !== channelId ||
+			row.roundtable_engage !== (args.roundtableEngage === true ? 1 : 0) ||
+			(args.roundtableEngage === true && row.project_name !== this.projectName)
 		) {
 			throw new Error(
 				`CodexOutboundSender.enqueue: idempotency key conflict for ${args.idempotencyKey}`,
@@ -315,6 +341,10 @@ export class CodexOutboundSender implements OutboundSender {
 	 */
 	async deliverWithResult(outboxId: string): Promise<{
 		messageId?: string;
+		status?: "sent" | "pending";
+		sendStatus?: "sent";
+		engagement?: "pending" | "ready";
+		threadId?: string;
 		deduped: boolean;
 	}> {
 		const row = this.db
@@ -322,10 +352,26 @@ export class CodexOutboundSender implements OutboundSender {
 			.get(outboxId) as OutboxRow | undefined;
 		if (!row)
 			throw new Error(`CodexOutboundSender.deliver: no outbox ${outboxId}`);
-		if (row.status === "sent") {
+		if (
+			row.roundtable_engage === 1 &&
+			(row.project_name !== this.projectName || row.lead_id !== this.leadId)
+		)
+			throw new Error("lead-outbound project/lead binding conflict");
+		if (
+			row.status === "sent" &&
+			(row.roundtable_engage !== 1 || row.engagement === "ready")
+		) {
 			return {
 				...(row.message_id ? { messageId: row.message_id } : {}),
 				deduped: true,
+				...(row.roundtable_engage === 1
+					? {
+							status: "sent" as const,
+							sendStatus: "sent" as const,
+							engagement: "ready" as const,
+							threadId: row.message_id!,
+						}
+					: {}),
 			};
 		}
 		if (row.status === "ambiguous") {
@@ -355,6 +401,7 @@ export class CodexOutboundSender implements OutboundSender {
 					idempotencyKey: row.idempotency_key,
 					// In-window guard only (Discord enforce_nonce); not the cross-crash one.
 					nonce: row.nonce,
+					...(row.roundtable_engage === 1 ? { roundtableEngage: true } : {}),
 				}),
 			});
 		} catch (error) {
@@ -367,8 +414,14 @@ export class CodexOutboundSender implements OutboundSender {
 				`lead-outbound/send transport ambiguous: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		let response: { status?: unknown; messageId?: unknown; reason?: unknown } =
-			{};
+		let response: {
+			status?: unknown;
+			messageId?: unknown;
+			reason?: unknown;
+			sendStatus?: unknown;
+			engagement?: unknown;
+			threadId?: unknown;
+		} = {};
 		try {
 			response = JSON.parse(res.body) as typeof response;
 		} catch {}
@@ -385,6 +438,48 @@ export class CodexOutboundSender implements OutboundSender {
 		if (res.status < 200 || res.status >= 300) {
 			// Leave pending so recovery can retry; surface for ambiguous handling.
 			throw new Error(`lead-outbound/send failed: HTTP ${res.status}`);
+		}
+		if (row.roundtable_engage === 1) {
+			if (
+				response.sendStatus !== "sent" ||
+				typeof response.messageId !== "string" ||
+				!/^\d{17,20}$/.test(response.messageId) ||
+				(response.engagement !== "pending" &&
+					response.engagement !== "ready") ||
+				(response.engagement === "pending"
+					? response.status !== "pending"
+					: response.status !== "sent" ||
+						response.threadId !== response.messageId) ||
+				(row.message_id && row.message_id !== response.messageId)
+			) {
+				this.db
+					.prepare(
+						"UPDATE outbox SET status='ambiguous', updated_at=? WHERE outbox_id=? AND status='pending'",
+					)
+					.run(this.now(), outboxId);
+				throw new Error("lead-outbound/send incompatible engagement receipt");
+			}
+			this.db
+				.prepare(
+					"UPDATE outbox SET status='sent', message_id=?, engagement=?, updated_at=? WHERE outbox_id=? AND (message_id IS NULL OR message_id=?)",
+				)
+				.run(
+					response.messageId,
+					response.engagement,
+					this.now(),
+					outboxId,
+					response.messageId,
+				);
+			return {
+				messageId: response.messageId,
+				deduped: row.status === "sent",
+				status: response.engagement === "ready" ? "sent" : "pending",
+				sendStatus: "sent",
+				engagement: response.engagement,
+				...(response.engagement === "ready"
+					? { threadId: response.messageId }
+					: {}),
+			};
 		}
 		if (
 			(response.status !== "sent" && response.status !== "deduped") ||

@@ -97,3 +97,18 @@ describe("parseLeadActionsConfig — effective roundtable flag", () => {
 		expect(on.roundtableAutoContinue).toBe(true);
 	});
 });
+
+it("pins the directory registry path from host configuration", () => {
+	expect(
+		parseLeadActionsConfig({
+			...baseEnv(),
+			FLYWHEEL_PROJECTS_FILE: "/registry/projects.json",
+		}).projectsFile,
+	).toBe("/registry/projects.json");
+	expect(() =>
+		parseLeadActionsConfig({
+			...baseEnv(),
+			FLYWHEEL_PROJECTS_FILE: "relative.json",
+		}),
+	).toThrow(/absolute/);
+});

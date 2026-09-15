@@ -31,6 +31,7 @@ export interface ChatDeliveryEnvelopeV1 {
 	heldSince?: string;
 	heldReason?: "discord_wiring_broken";
 	replyChannelId?: string;
+	replyTo?: { messageId: string; channelId: string; authorId?: string };
 	replyRoute?: {
 		kind: "roundtable_thread_from_message";
 		parentChannelId: string;
@@ -139,6 +140,24 @@ export function normalizeChatDeliveryEnvelope(
 		}
 		heldReason = value.heldReason;
 	}
+	let replyTo: ChatDeliveryEnvelopeV1["replyTo"];
+	if (value.replyTo !== undefined) {
+		if (
+			!value.replyTo ||
+			typeof value.replyTo !== "object" ||
+			Array.isArray(value.replyTo)
+		) {
+			throw new Error("replyTo must be an object");
+		}
+		const reference = value.replyTo as Record<string, unknown>;
+		replyTo = {
+			messageId: snowflake(reference.messageId, "replyTo.messageId"),
+			channelId: snowflake(reference.channelId, "replyTo.channelId"),
+			...(reference.authorId === undefined
+				? {}
+				: { authorId: snowflake(reference.authorId, "replyTo.authorId") }),
+		};
+	}
 	let replyRoute: ChatDeliveryEnvelopeV1["replyRoute"];
 	if (value.replyRoute !== undefined) {
 		if (
@@ -189,6 +208,7 @@ export function normalizeChatDeliveryEnvelope(
 		...(heldSince ? { heldSince, heldReason } : {}),
 		...(replyChannelId ? { replyChannelId } : {}),
 		...(replyRoute ? { replyRoute } : {}),
+		...(replyTo ? { replyTo } : {}),
 	};
 }
 

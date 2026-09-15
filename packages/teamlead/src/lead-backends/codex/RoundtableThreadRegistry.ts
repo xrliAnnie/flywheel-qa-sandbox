@@ -1,3 +1,14 @@
+export interface DurableThreadContinuation {
+	remaining: number;
+	admissions: Record<string, boolean>;
+}
+export interface ProactiveSubscription {
+	eventId: string;
+	payloadHash: string;
+	after: string;
+	through?: string;
+	engagement: "pending" | "ready";
+}
 export interface SubscriptionEntry {
 	threadId: string;
 	parentChannelId: string;
@@ -5,10 +16,16 @@ export interface SubscriptionEntry {
 	subscribedAt: string;
 	lastActivityAt: string;
 	expiresAt: string;
+	continuation?: DurableThreadContinuation;
+	proactive?: ProactiveSubscription;
 }
 export interface RegistrySnapshot {
 	version: 1;
 	entries: SubscriptionEntry[];
+	proactiveBindings?: Record<
+		string,
+		{ threadId: string; parentChannelId: string; payloadHash: string }
+	>;
 }
 export type SubscriptionInput = Partial<SubscriptionEntry> & {
 	threadId: string;
@@ -60,10 +77,10 @@ export class RoundtableThreadRegistry {
 			.map((e) => e.threadId);
 	}
 	entries(): SubscriptionEntry[] {
-		return this.state.entries.map((e) => ({ ...e }));
+		return this.state.entries.map((e) => structuredClone(e));
 	}
 	snapshot(): RegistrySnapshot {
-		return { version: 1, entries: this.entries() };
+		return { ...structuredClone(this.state), entries: this.entries() };
 	}
 	get size(): number {
 		return this.list().length;
@@ -72,7 +89,11 @@ export class RoundtableThreadRegistry {
 		return this.list()[0];
 	}
 	commit(next: RegistrySnapshot): void {
-		this.state = { version: 1, entries: next.entries.map((e) => ({ ...e })) };
+		this.state = {
+			...structuredClone(next),
+			version: 1,
+			entries: next.entries.map((e) => structuredClone(e)),
+		};
 	}
 	planAdd(input: SubscriptionInput): {
 		next: RegistrySnapshot;
@@ -92,6 +113,12 @@ export class RoundtableThreadRegistry {
 			subscribedAt: input.subscribedAt ?? new Date(now).toISOString(),
 			lastActivityAt: input.lastActivityAt ?? new Date(now).toISOString(),
 			expiresAt: input.expiresAt ?? this.deadline(now),
+			...(input.proactive
+				? { proactive: structuredClone(input.proactive) }
+				: {}),
+			...(input.continuation
+				? { continuation: structuredClone(input.continuation) }
+				: {}),
 		});
 		while (next.entries.length > this.cap) {
 			const entry = next.entries.shift();
@@ -119,6 +146,7 @@ export class RoundtableThreadRegistry {
 		const now = this.now();
 		return {
 			next: {
+				...this.snapshot(),
 				version: 1,
 				entries: entries.filter((e) => Date.parse(e.expiresAt) > now),
 			},
@@ -155,6 +183,10 @@ export class RoundtableThreadRegistry {
 			if (why !== "wrong_parent" && why !== "expired") seen.add(entry.threadId);
 		}
 		const restored = [...kept.values()].reverse();
-		return { next: { version: 1, entries: restored }, restored, dropped };
+		return {
+			next: { ...structuredClone(snapshot), version: 1, entries: restored },
+			restored,
+			dropped,
+		};
 	}
 }

@@ -1,0 +1,13 @@
+flowchart TB
+  A["你与其他 Lead 的对话"] --> C["标准 Raya Lead<br/>在同一轮理解与判断"]
+  B["summary 收件轮次<br/>每晚到期通知"] --> C
+  C --> D["Raya 仓：业务规则与记录"]
+  D --> E["读各仓 · 追问 · 目标与偏离"]
+  D --> F["已阅 summary · 日报 · 会议"]
+  E --> G["团队已有工具负责执行与回执"]
+  F --> G
+  G --> H["在圆桌沟通，在 Raya 频道与你讨论"]
+  classDef primary fill:#eef5ff,stroke:#007aff,color:#16324f
+  classDef business fill:#fff5eb,stroke:#cc7435,color:#4a3422
+  class C,G primary
+  class D business

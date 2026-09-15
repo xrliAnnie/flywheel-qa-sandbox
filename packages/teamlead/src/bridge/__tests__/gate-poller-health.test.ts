@@ -121,3 +121,13 @@ describe("FLY-1314 GatePoller issue-gate supersede piggyback", () => {
 		await expect(tick(asyncPoller, 2)).resolves.toBeUndefined();
 	});
 });
+
+it("runs business wake work on existing ticks and isolates failures", async () => {
+	const onBusinessWakeTick = vi
+		.fn()
+		.mockRejectedValue(new Error("schedule unavailable"));
+	await expect(
+		tick(makePoller({ onBusinessWakeTick }), 3),
+	).resolves.toBeUndefined();
+	expect(onBusinessWakeTick).toHaveBeenCalledTimes(3);
+});

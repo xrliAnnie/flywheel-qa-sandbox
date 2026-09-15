@@ -1,0 +1,88 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2447/packages/flywheel-comm
+
+ ❯ src/__tests__/discord-chat-ingest.test.ts (29 tests | 5 failed) 702ms
+   ✓ FLY-1574 Discord mailbox ingest > atomically awards one lane and keeps the visible payload separate 32ms
+   ✓ FLY-1574 Discord mailbox ingest > marks voice transcripts without changing the Discord mailbox route 56ms
+   ✓ FLY-1574 Discord mailbox ingest > rejects partial or unknown voice provenance before writing 20ms
+   ✓ FLY-1574 Discord mailbox ingest > uses an existing CommDB connection without racing itself 18ms
+   ✓ FLY-1574 Discord mailbox ingest > round-trips and renders held-message provenance 17ms
+   ✓ FLY-1574 Discord mailbox ingest > rejects partial or malformed held-message provenance 55ms
+   ✓ FLY-1574 Discord mailbox ingest > atomically records a stale held message as an alertable DEAD row 55ms
+   ✓ FLY-1574 Discord mailbox ingest > does not kill an existing live Discord row during stale replay 18ms
+   ✓ FLY-1574 Discord mailbox ingest > rolls back insertion if transactional dead-lettering fails 5ms
+   ✓ FLY-1574 Discord mailbox ingest > rejects invalid dead-letter requests before writing 19ms
+   ✓ FLY-1574 Discord mailbox ingest > uses a total partition key and isolates malformed Discord rows 0ms
+   ✓ FLY-1574 Discord mailbox ingest > partitions route-less Discord rows by chat 16ms
+   ✓ FLY-1574 Discord mailbox ingest > rejects a roundtable input without a reply route 16ms
+   ✓ FLY-1574 Discord mailbox ingest > freezes only one Discord route and respects a byte bound 35ms
+   ✓ FLY-1574 Discord mailbox ingest > batches held messages from one Discord chat across original send times 79ms
+   × FLY-2447 inbound reply reference > persists a reference through restart and replay independently of outbound routing 114ms
+     → replyTo differs from the original Discord delivery
+   × FLY-2447 inbound reply reference > keeps the first delivery immutable across producer/replay metadata differences (undefined -> {"messageId":"444","channelId":"555","authorId":"666"}) 32ms
+     → replyTo differs from the original Discord delivery
+   × FLY-2447 inbound reply reference > keeps the first delivery immutable across producer/replay metadata differences ({"messageId":"444","channelId":"555","authorId":"666"} -> undefined) 12ms
+     → replyTo differs from the original Discord delivery
+   × FLY-2447 inbound reply reference > keeps the first delivery immutable across producer/replay metadata differences ({"messageId":"444","channelId":"555"} -> {"messageId":"444","channelId":"555","authorId":"666"}) 10ms
+     → replyTo differs from the original Discord delivery
+   × FLY-2447 inbound reply reference > keeps the first delivery immutable across producer/replay metadata differences ({"messageId":"444","channelId":"555","authorId":"666"} -> {"messageId":"444","channelId":"555"}) 13ms
+     → replyTo differs from the original Discord delivery
+   ✓ FLY-2447 inbound reply reference > allows a deleted target without an author and never promotes body text to attributes 8ms
+   ✓ FLY-2447 inbound reply reference > rejects malformed reference null 9ms
+   ✓ FLY-2447 inbound reply reference > rejects malformed reference {} 11ms
+   ✓ FLY-2447 inbound reply reference > rejects malformed reference %j 9ms
+   ✓ FLY-2447 inbound reply reference > rejects malformed reference {"messageId":"1"} 10ms
+   ✓ FLY-2447 inbound reply reference > rejects malformed reference {"channelId":"2"} 11ms
+   ✓ FLY-2447 inbound reply reference > rejects malformed reference {"messageId":"bad","channelId":"2"} 11ms
+   ✓ FLY-2447 inbound reply reference > rejects malformed reference {"messageId":"1","channelId":"2","authorId":"bad"} 6ms
+   ✓ FLY-2447 inbound reply reference > keeps old v1, legacy, and voice encodings byte stable without replyTo 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/discord-chat-ingest.test.ts > FLY-2447 inbound reply reference > persists a reference through restart and replay independently of outbound routing
+Error: replyTo differs from the original Discord delivery
+ ❯ Object.validateExistingContent src/discord-chat-ingest.ts:179:11
+    177|     JSON.stringify(existing.replyTo) !== JSON.stringify(envelope.reply…
+    178|    ) {
+    179|     throw new Error("replyTo differs from the original Discord deliver…
+       |           ^
+    180|    }
+    181|   },
+ ❯ sqliteTransaction.<anonymous> src/mailbox-queue.ts:723:12
+ ❯ sqliteTransaction ../../node_modules/.pnpm/better-sqlite3@12.8.0/node_modules/better-sqlite3/lib/methods/transaction.js:65:24
+ ❯ MailboxQueue.claimDiscordLane src/mailbox-queue.ts:771:5
+ ❯ ingestDiscordChatOnQueue src/discord-chat-ingest.ts:166:15
+ ❯ src/__tests__/discord-chat-ingest.test.ts:497:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  src/__tests__/discord-chat-ingest.test.ts > FLY-2447 inbound reply reference > keeps the first delivery immutable across producer/replay metadata differences (undefined -> {"messageId":"444","channelId":"555","authorId":"666"})
+ FAIL  src/__tests__/discord-chat-ingest.test.ts > FLY-2447 inbound reply reference > keeps the first delivery immutable across producer/replay metadata differences ({"messageId":"444","channelId":"555","authorId":"666"} -> undefined)
+ FAIL  src/__tests__/discord-chat-ingest.test.ts > FLY-2447 inbound reply reference > keeps the first delivery immutable across producer/replay metadata differences ({"messageId":"444","channelId":"555"} -> {"messageId":"444","channelId":"555","authorId":"666"})
+ FAIL  src/__tests__/discord-chat-ingest.test.ts > FLY-2447 inbound reply reference > keeps the first delivery immutable across producer/replay metadata differences ({"messageId":"444","channelId":"555","authorId":"666"} -> {"messageId":"444","channelId":"555"})
+Error: replyTo differs from the original Discord delivery
+ ❯ Object.validateExistingContent src/discord-chat-ingest.ts:179:11
+    177|     JSON.stringify(existing.replyTo) !== JSON.stringify(envelope.reply…
+    178|    ) {
+    179|     throw new Error("replyTo differs from the original Discord deliver…
+       |           ^
+    180|    }
+    181|   },
+ ❯ sqliteTransaction.<anonymous> src/mailbox-queue.ts:723:12
+ ❯ sqliteTransaction ../../node_modules/.pnpm/better-sqlite3@12.8.0/node_modules/better-sqlite3/lib/methods/transaction.js:65:24
+ ❯ MailboxQueue.claimDiscordLane src/mailbox-queue.ts:771:5
+ ❯ ingestDiscordChatOnQueue src/discord-chat-ingest.ts:166:15
+ ❯ ingestDiscordChat src/discord-chat-ingest.ts:119:10
+ ❯ src/__tests__/discord-chat-ingest.test.ts:526:10
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed | 24 passed (29)
+   Start at  01:15:46
+   Duration  2.67s (transform 724ms, setup 20ms, collect 1.11s, tests 702ms, environment 0ms, prepare 139ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2447/packages/flywheel-comm:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/__tests__/discord-chat-ingest.test.ts

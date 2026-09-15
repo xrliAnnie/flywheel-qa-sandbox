@@ -1,0 +1,77 @@
+
+ RUN  v3.2.7 /Users/xiaorongli/.flywheel/worktrees/raya-FLY-2447/packages/cos
+
+HEAD is now at 9feab6d initial
+ ✓ src/portfolio/goal-store.test.ts (10 tests) 9638ms
+   ✓ GoalStore > records and withdraws goals through a path-scoped nested-repository transaction  2242ms
+   ✓ GoalStore > rejects secret-like text and a dirty goals path before writing  912ms
+   ✓ GoalStore > renames a corrupt goals file instead of overwriting it  426ms
+   ✓ GoalStore > restores the worktree preimage when compare-and-swap detects a moved head  564ms
+   ✓ GoalStore > keeps a verified commit after index sync failure and reconciles it on the next operation  2446ms
+   ✓ GoalStore > commits the generated blob while preserving an external post-rename write  793ms
+   ✓ GoalStore > restores the preimage after plumbing failure so the next operation can succeed  1002ms
+   ✓ GoalStore > rolls back the ref and worktree when post-commit blob verification fails  490ms
+   ✓ GoalStore > fails loudly for detached or non-repository memory directories  359ms
+   ✓ GoalStore > fails preflight when the memory repository has no local Git identity  402ms
+ ✓ src/daily-report/send-round.test.ts (4 tests) 1332ms
+   ✓ durable report chunk delivery > enforces four attempts in sixty seconds and respects platform retryAfterMs  350ms
+   ✓ durable report chunk delivery > does not mark posted until every chunk has a bound sent receipt  420ms
+   ✓ shares the reservation budget across catch-up dates and keeps internal budget out of status  368ms
+ ✓ src/portfolio/patrol-round.test.ts (8 tests) 926ms
+ ✓ src/meeting-round.test.ts (13 tests) 928ms
+ ✓ src/summary-memory.test.ts (9 tests) 859ms
+ ✓ src/daily-report/migration.test.ts (22 tests) 759ms
+ ✓ src/summary-workflow.test.ts (6 tests) 809ms
+ ✓ src/summary-round.test.ts (9 tests) 860ms
+ ✓ src/daily-report/reply-round.test.ts (3 tests) 685ms
+   ✓ report discussion association > uses only an unambiguous explicit date when no replyTo exists  323ms
+ ✓ src/daily-report/round.test.ts (7 tests) 578ms
+ ✓ src/question-round.test.ts (10 tests) 517ms
+ ✓ src/portfolio/sample-round.test.ts (6 tests) 390ms
+ ✓ src/daily-report/artifacts.test.ts (3 tests) 363ms
+ ✓ src/summary-report.test.ts (2 tests) 360ms
+ ✓ src/summary-reconciliation.test.ts (4 tests) 255ms
+ ✓ src/portfolio/goal-round.test.ts (4 tests) 210ms
+ ✓ src/business-round.test.ts (6 tests) 188ms
+ ✓ src/portfolio/snapshot-store.test.ts (4 tests) 1277ms
+   ✓ SnapshotStore > keeps the newest 50 snapshot files and reports each prune  1200ms
+ ✓ src/daily-report/failure-notice.test.ts (2 tests) 241ms
+ ✓ src/operation-store.test.ts (6 tests) 143ms
+ ✓ src/portfolio/coordinator.test.ts (4 tests) 132ms
+ ✓ src/cli.test.ts (6 tests) 68ms
+ ✓ src/daily-report/storage.test.ts (5 tests) 61ms
+ ✓ src/portfolio/sampler.test.ts (6 tests) 48ms
+ ✓ src/portfolio/patrol-state.test.ts (2 tests) 30ms
+ ✓ src/meeting-store.test.ts (1 test) 16ms
+ ✓ src/daily-report/repo-writer.test.ts (12 tests) 69ms
+ ✓ src/portfolio/render.test.ts (1 test) 4ms
+ ✓ src/question-store.test.ts (2 tests) 18ms
+ ✓ src/contracts/goals.test.ts (8 tests) 3ms
+ ✓ src/daily-report/collector.test.ts (21 tests) 34ms
+ ✓ src/capability-boundaries.test.ts (7 tests) 6ms
+ ✓ src/daily-report/business.test.ts (3 tests) 22ms
+ ✓ src/metrics.test.ts (1 test) 1ms
+ ✓ src/portfolio/transport-boundary.test.ts (2 tests) 4ms
+ ✓ src/meeting-record.test.ts (3 tests) 4ms
+ ✓ src/daily-report/options.test.ts (22 tests) 4ms
+ ✓ src/portfolio/patrol.test.ts (3 tests) 7ms
+ ✓ src/formatting/discord-text.test.ts (2 tests) 2ms
+ ✓ src/summary-absorption.test.ts (3 tests) 7ms
+ ✓ src/contracts/drift-envelope.test.ts (3 tests) 4ms
+ ✓ src/meeting-calendar.test.ts (1 test) 6ms
+ ✓ src/portfolio/evidence-gate.test.ts (5 tests) 3ms
+ ✓ src/contracts/scoped-drift.test.ts (2 tests) 4ms
+ ✓ src/daily-report/transport-boundary.test.ts (2 tests) 3ms
+ ✓ src/daily-report/generator.test.ts (2 tests) 2ms
+ ✓ src/contracts/portfolio-marks.test.ts (1 test) 2ms
+ ✓ src/action-policy.test.ts (2 tests) 2ms
+ ✓ src/contracts/lead-ask.test.ts (3 tests) 3ms
+ ✓ src/meeting-context.test.ts (1 test) 3ms
+ ✓ src/daily-report/controller.test.ts (8 tests) 3ms
+ ✓ src/daily-report/delivery.test.ts (1 test) 7ms
+
+ Test Files  52 passed (52)
+      Tests  283 passed (283)
+   Start at  23:32:55
+   Duration  39.19s (transform 843ms, setup 0ms, collect 2.08s, tests 21.90s, environment 8ms, prepare 3.54s)
+

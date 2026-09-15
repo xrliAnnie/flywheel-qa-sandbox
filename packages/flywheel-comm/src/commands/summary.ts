@@ -143,6 +143,7 @@ export async function runSummaryCommand(
 					repo: { type: "string" },
 					round: { type: "string" },
 					method: { type: "string" },
+					"expected-head": { type: "string" },
 					"dry-run": { type: "boolean", default: false },
 				},
 				allowPositionals: false,
@@ -152,6 +153,9 @@ export async function runSummaryCommand(
 				prNumber: Number(required(values.pr, "--pr")),
 				...(values.round ? { roundId: values.round } : {}),
 				...(values.method ? { method: values.method } : {}),
+				...(values["expected-head"] !== undefined
+					? { expectedHeadSha: values["expected-head"] }
+					: {}),
 				dryRun: values["dry-run"],
 			};
 			const result = await (deps.mergePullRequest ?? mergeSummaryPullRequest)(

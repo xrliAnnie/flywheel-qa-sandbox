@@ -1,0 +1,51 @@
+
+ RUN  v3.2.7 /Users/xiaorongli/Dev/flywheel-FLY-2447/paired/raya/packages/cos
+
+ ❯ src/daily-report/repo-writer.test.ts (13 tests | 1 failed) 74ms
+   ✓ ReportRepoWriter > probes an existing report without creating a missing one 4ms
+   ✓ ReportRepoWriter > rejects a malformed local document before any gh call 1ms
+   ✓ ReportRepoWriter > creates exactly one new report without an update sha 1ms
+   ✓ ReportRepoWriter > adopts an existing valid remote document without PUT 1ms
+   ✓ ReportRepoWriter > refuses an existing document whose internal date differs from its path 1ms
+   ✓ ReportRepoWriter > re-reads and adopts after a 422 create race 1ms
+   ✓ ReportRepoWriter > fails closed when gh --include does not return an HTTP status line 0ms
+   ✓ ReportRepoWriter > rejects report path date ../2026-09-06 0ms
+   ✓ ReportRepoWriter > rejects report path date 2026-9-06 0ms
+   ✓ ReportRepoWriter > rejects report path date 2026-09-06.md 0ms
+   ✓ ReportRepoWriter > propagates abort to gh and classifies it 1ms
+   × ReportRepoWriter > rejects buffered output resolved by the host after cancellation 5ms
+     → promise resolved "null" instead of rejecting
+   ✓ ReportRepoWriter > does not accept buffered HTTP output after aborting the injected host runner 57ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/daily-report/repo-writer.test.ts > ReportRepoWriter > rejects buffered output resolved by the host after cancellation
+AssertionError: promise resolved "null" instead of rejecting
+
+- Expected: 
+Error {
+  "message": "rejected promise",
+}
+
++ Received: 
+null
+
+ ❯ src/daily-report/repo-writer.test.ts:225:58
+    223|    return response(404, { message: "Not Found" });
+    224|   };
+    225|   await expect(writer(run).probe(date, controller.signal)).rejects.toM…
+       |                                                          ^
+    226|    category: "aborted",
+    227|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 12 passed (13)
+   Start at  00:35:01
+   Duration  1.59s (transform 434ms, setup 0ms, collect 509ms, tests 74ms, environment 0ms, prepare 105ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2447/paired/raya/packages/cos:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/daily-report/repo-writer.test.ts

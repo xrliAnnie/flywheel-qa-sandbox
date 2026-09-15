@@ -18,6 +18,19 @@ import {
 
 const OWNER = "123456789012345678";
 const THREAD = "223456789012345678";
+
+// Platform message references use Discord snowflakes, including wrong-target fixtures.
+const CARD_OLD = "423456789012345670";
+const CARD_NEW = "423456789012345671";
+const CARD_1 = "423456789012345672";
+const CARD_2 = "423456789012345673";
+const REVIEW_CARD = "423456789012345674";
+const REVIEW_CARD_1 = "423456789012345675";
+const REVIEW_CARD_2 = "423456789012345676";
+const SHIP_CARD = "423456789012345677";
+const WRONG_CARD = "423456789012345678";
+const WRONG_THREAD = "423456789012345679";
+
 const DISCORD_EPOCH = 1_420_070_400_000;
 
 function snowflakeAt(ms: number): string {
@@ -269,6 +282,59 @@ describe("FLY-1392 v2 founder ingress", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("advances past a quoted reply already ingested by a producer without reference metadata", async () => {
+		const first: RawMsg = {
+			id: snowflakeAt(Date.now() - 30_000),
+			content: "first reply",
+			author: { id: OWNER },
+			type: 19,
+			message_reference: { message_id: CARD_1, channel_id: THREAD },
+		};
+		const next: RawMsg = {
+			id: snowflakeAt(Date.now() - 20_000),
+			content: "following reply",
+			author: { id: OWNER },
+		};
+		const db = new CommDB(dbPath);
+		db.ingestDiscordChat({
+			leadId: "test-lead",
+			chatId: THREAD,
+			originChannelId: THREAD,
+			messageId: first.id,
+			authorId: OWNER,
+			authorName: "founder",
+			ts: new Date(Date.now() - 30_000).toISOString(),
+			msgKind: "guild",
+			attachments: [],
+			text: first.content!,
+			founderId: OWNER,
+		});
+		db.close();
+		const beforeQueue = new MailboxQueue(dbPath);
+		const before = beforeQueue.getById(`chat:test-lead:${first.id}`)!;
+		beforeQueue.close();
+		const handoff = vi.fn(async () => true);
+		const result = await emitFounderReplyDeliveryForThread(ctx(dbPath), [], {
+			store: founderReviewStore([]),
+			cursorStore: cursor,
+			fetchImpl: discordGet([next, first]),
+			deliverAmbiguousToLead: handoff,
+		});
+		expect(result).toEqual({ threadId: THREAD, result: "advanced" });
+		expect(cursor.load(THREAD)).toBe(next.id);
+		expect(handoff).toHaveBeenCalledTimes(2);
+		const afterQueue = new MailboxQueue(dbPath);
+		try {
+			expect(afterQueue.getById(before.id)?.content).toBe(before.content);
+			expect(afterQueue.getById(before.id)?.delivery_content).toBe(
+				before.delivery_content,
+			);
+			expect(afterQueue.getById(`chat:test-lead:${next.id}`)).toBeDefined();
+		} finally {
+			afterQueue.close();
+		}
+	});
+
 	it.each(["handled", "retry"] as const)(
 		"routes explicit learning replies before broad classification (%s)",
 		async (result) => {
@@ -310,6 +376,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 			content: "批准了，可以 merge 了 🆒",
 			author: { id: OWNER },
 			type: 19,
+			message_reference: { message_id: "444", channel_id: "555" },
 		};
 		const handoff = vi.fn(async () => true);
 		const ensureDecisionConvergence =
@@ -372,6 +439,9 @@ describe("FLY-1392 v2 founder ingress", () => {
 			priority: 1,
 		});
 		expect(row?.delivery_content).toContain(msg.content);
+		expect(row?.delivery_content).toContain(
+			'reply_to_message_id="444" reply_to_channel_id="555"',
+		);
 		queue.close();
 	});
 
@@ -421,7 +491,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 				type: 19,
 				message_reference: {
 					type: 0,
-					message_id: "card-old",
+					message_id: CARD_OLD,
 					channel_id: THREAD,
 				},
 			};
@@ -521,7 +591,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 						type: 19,
 						message_reference: {
 							type: 0,
-							message_id: "card-old",
+							message_id: CARD_OLD,
 							channel_id: THREAD,
 						},
 					},
@@ -572,7 +642,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 					type: 19,
 					message_reference: {
 						type: 0,
-						message_id: "card-old",
+						message_id: CARD_OLD,
 						channel_id: THREAD,
 					},
 				},
@@ -611,7 +681,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 				},
 			],
 			{
-				store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+				store: founderReviewStore([{ questionId, messageId: CARD_1 }]),
 				fetchImpl: discordGet([msg]),
 				cursorStore: cursor,
 				deliverAmbiguousToLead: handoff,
@@ -667,8 +737,8 @@ describe("FLY-1392 v2 founder ingress", () => {
 			],
 			{
 				store: founderReviewStore([
-					{ questionId: firstReviewId, messageId: "review-card-1" },
-					{ questionId: secondReviewId, messageId: "review-card-2" },
+					{ questionId: firstReviewId, messageId: REVIEW_CARD_1 },
+					{ questionId: secondReviewId, messageId: REVIEW_CARD_2 },
 				]),
 				fetchImpl: discordGet([
 					{
@@ -721,7 +791,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 				issueId: "FLY-1392",
 				prHeadSha: "b".repeat(40),
 				threadId: THREAD,
-				gateMessageId: "ship-card",
+				gateMessageId: SHIP_CARD,
 				checkpoint: "approve_to_ship",
 				postedAt: new Date().toISOString(),
 			}));
@@ -744,7 +814,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 				],
 				{
 					store: founderReviewStore([
-						{ questionId: reviewQuestionId, messageId: "review-card" },
+						{ questionId: reviewQuestionId, messageId: REVIEW_CARD },
 					]),
 					fetchImpl: discordGet([
 						{
@@ -754,7 +824,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 							type: 19,
 							message_reference: {
 								type: 0,
-								message_id: "ship-card",
+								message_id: SHIP_CARD,
 								channel_id: THREAD,
 							},
 						},
@@ -859,7 +929,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 				},
 			],
 			{
-				store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+				store: founderReviewStore([{ questionId, messageId: CARD_1 }]),
 				fetchImpl: discordGet([
 					{
 						id: secondId,
@@ -884,7 +954,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		const db = new CommDB(dbPath);
 		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
 		db.close();
-		const state = founderReviewStore([{ questionId, messageId: "card-1" }]);
+		const state = founderReviewStore([{ questionId, messageId: CARD_1 }]);
 		const cursorPath = join(dir, "cursor.json");
 		const durable = new FileInboundCursorStore(cursorPath);
 		durable.save(THREAD, cursor.load(THREAD)!);
@@ -960,14 +1030,14 @@ describe("FLY-1392 v2 founder ingress", () => {
 			content: "通过",
 			author: OWNER,
 			checkpoint: "founder_review",
-			reference: { channel_id: "wrong-thread", message_id: "card-1" },
+			reference: { channel_id: WRONG_THREAD, message_id: CARD_1 },
 			prompts: 1,
 		},
 		{
 			content: "通过",
 			author: OWNER,
 			checkpoint: "founder_review",
-			reference: { channel_id: THREAD, message_id: "wrong-card" },
+			reference: { channel_id: THREAD, message_id: WRONG_CARD },
 			prompts: 1,
 		},
 		{
@@ -1019,7 +1089,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 				ctx(dbPath),
 				[question(id, checkpoint)],
 				{
-					store: founderReviewStore([{ questionId: id, messageId: "card-1" }]),
+					store: founderReviewStore([{ questionId: id, messageId: CARD_1 }]),
 					fetchImpl: discordGet([
 						{
 							id: snowflakeAt(Date.now() - 20 * 60_000),
@@ -1048,13 +1118,13 @@ describe("FLY-1392 v2 founder ingress", () => {
 			const questionId = insertFounderReviewQuestion(db, "review-1", 2);
 			db.close();
 			const state = founderReviewStore([
-				{ questionId: oldId, messageId: "card-old" },
-				{ questionId, messageId: "card-1" },
+				{ questionId: oldId, messageId: CARD_OLD },
+				{ questionId, messageId: CARD_1 },
 			]);
 			if (failure === "superseded") {
 				Object.assign(state, {
 					getSupersededWorkflowGateHolderByCardMessageId: (id: string) =>
-						id === "card-old"
+						id === CARD_OLD
 							? { question_id: oldId, source_execution_id: "exec-review-old" }
 							: undefined,
 					recordVoidedWorkflowGateInput: vi.fn(() => ({ ok: true })),
@@ -1083,7 +1153,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 								? {
 										type: 19,
 										message_reference: {
-											message_id: "card-old",
+											message_id: CARD_OLD,
 											channel_id: THREAD,
 										},
 									}
@@ -1094,7 +1164,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 							content: "通过",
 							author: { id: OWNER },
 							type: 19,
-							message_reference: { message_id: "card-1", channel_id: THREAD },
+							message_reference: { message_id: CARD_1, channel_id: THREAD },
 						},
 					]),
 					cursorStore: cursor,
@@ -1123,7 +1193,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		const db = new CommDB(dbPath);
 		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
 		db.close();
-		const state = founderReviewStore([{ questionId, messageId: "card-1" }]);
+		const state = founderReviewStore([{ questionId, messageId: CARD_1 }]);
 		const postThreadReply = vi.fn(async () => true);
 		for (const [index, content] of ["通过", "approve", "通过！"].entries()) {
 			const id = snowflakeAt(Date.now() - 30_000 + index * 5_000);
@@ -1155,10 +1225,10 @@ describe("FLY-1392 v2 founder ingress", () => {
 			const statePath = join(dir, "state.db");
 			const postThreadReply = vi.fn(async () => true);
 			const cases = [
-				{ card: "card-1", thread: THREAD, posts: 1 },
-				{ card: "card-1", thread: THREAD, posts: 1 },
-				{ card: "card-2", thread: THREAD, posts: 2 },
-				{ card: "card-2", thread: "323456789012345678", posts: 3 },
+				{ card: CARD_1, thread: THREAD, posts: 1 },
+				{ card: CARD_1, thread: THREAD, posts: 1 },
+				{ card: CARD_2, thread: THREAD, posts: 2 },
+				{ card: CARD_2, thread: "323456789012345678", posts: 3 },
 			];
 			for (const item of cases) {
 				const durable = await StateStore.create(statePath);
@@ -1207,7 +1277,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		const db = new CommDB(dbPath);
 		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
 		db.close();
-		const state = founderReviewStore([{ questionId, messageId: "card-1" }]);
+		const state = founderReviewStore([{ questionId, messageId: CARD_1 }]);
 		const insertEvent = vi.mocked(state.insertEvent).getMockImplementation()!;
 		vi.mocked(state.insertEvent).mockImplementation((event) => {
 			if (event.event_type === "approval_anchor_feedback_claimed")
@@ -1236,7 +1306,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		const db = new CommDB(dbPath);
 		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
 		db.close();
-		const state = founderReviewStore([{ questionId, messageId: "card-1" }]);
+		const state = founderReviewStore([{ questionId, messageId: CARD_1 }]);
 		const insertEvent = vi.mocked(state.insertEvent).getMockImplementation()!;
 		vi.mocked(state.insertEvent).mockImplementation((event) => {
 			if (event.event_type === "approval_anchor_feedback_sent")
@@ -1283,7 +1353,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 				ctx(dbPath),
 				[question(questionId, "founder_review")],
 				{
-					store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+					store: founderReviewStore([{ questionId, messageId: CARD_1 }]),
 					fetchImpl: discordGet([
 						{ id: messageId, content, author: { id: OWNER } },
 					]),
@@ -1330,7 +1400,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 					},
 				],
 				{
-					store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+					store: founderReviewStore([{ questionId, messageId: CARD_1 }]),
 					fetchImpl: discordGet([
 						{
 							id: messageId,
@@ -1339,7 +1409,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 							type: 19,
 							message_reference: {
 								type: 0,
-								message_id: "card-1",
+								message_id: CARD_1,
 								channel_id: THREAD,
 							},
 						},
@@ -1382,7 +1452,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 				},
 			],
 			{
-				store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+				store: founderReviewStore([{ questionId, messageId: CARD_1 }]),
 				fetchImpl: discordGet([
 					{
 						id: secondId,
@@ -1391,7 +1461,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 						type: 19,
 						message_reference: {
 							type: 0,
-							message_id: "card-1",
+							message_id: CARD_1,
 							channel_id: THREAD,
 						},
 					},
@@ -1402,7 +1472,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 						type: 19,
 						message_reference: {
 							type: 0,
-							message_id: "card-1",
+							message_id: CARD_1,
 							channel_id: THREAD,
 						},
 					},
@@ -1437,7 +1507,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 				},
 			],
 			{
-				store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+				store: founderReviewStore([{ questionId, messageId: CARD_1 }]),
 				fetchImpl: discordGet([
 					{
 						id: snowflakeAt(Date.now() - 10_000),
@@ -1446,7 +1516,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 						type: 19,
 						message_reference: {
 							type: 0,
-							message_id: "card-1",
+							message_id: CARD_1,
 							channel_id: THREAD,
 						},
 					},
@@ -1487,7 +1557,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 				},
 			],
 			{
-				store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+				store: founderReviewStore([{ questionId, messageId: CARD_1 }]),
 				fetchImpl: discordGet([
 					{
 						id: snowflakeAt(Date.now() - 10_000),
@@ -1591,8 +1661,8 @@ describe("FLY-1392 v2 founder ingress", () => {
 			],
 			{
 				store: founderReviewStore([
-					{ questionId: oldId, messageId: "card-old" },
-					{ questionId: newId, messageId: "card-new" },
+					{ questionId: oldId, messageId: CARD_OLD },
+					{ questionId: newId, messageId: CARD_NEW },
 				]),
 				fetchImpl: discordGet([
 					{
@@ -1602,7 +1672,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 						type: 19,
 						message_reference: {
 							type: 0,
-							message_id: "card-old",
+							message_id: CARD_OLD,
 							channel_id: THREAD,
 						},
 					},

@@ -568,3 +568,152 @@ describe("RestPollDiscordInboundSource — FLY-898 referencedAuthorId mapping", 
 		expect(got[0].referencedMessageId).toBe("1");
 	});
 });
+
+it.each([
+	{
+		reference: { message_id: "444", channel_id: "555" },
+		expected: { messageId: "444", channelId: "555" },
+	},
+	{
+		reference: { message_id: "444" },
+		expected: { messageId: "444", channelId: "111" },
+	},
+	{
+		reference: { message_id: "444", channel_id: "555", type: 1 },
+		expected: undefined,
+	},
+])(
+	"copies only reply references, including deleted targets: %j",
+	async ({ reference, expected }) => {
+		const log = [msg("1", "111", "old")];
+		const { fetchImpl } = fakeDiscord({ "111": log });
+		const got: DiscordInboundMessage[] = [];
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: ["111"],
+			fetchImpl,
+			setTimer: () => ({ cancel() {} }),
+			logger: silent,
+		});
+		src.onMessage((m) => {
+			got.push(m);
+			return true;
+		});
+		await src.start();
+		log.push({
+			...msg("2", "111", "reply"),
+			message_reference: reference,
+			referenced_message: null,
+		} as RawMsg);
+		await src.pollOnce();
+		expect(got[0]?.replyTo).toEqual(expected);
+		src.stop();
+	},
+);
+
+describe("proactive root catchup", () => {
+	const root = "11111111111111111",
+		first = "11111111111111112",
+		second = "11111111111111113";
+	it("reads the first reply already present before subscription instead of baselining past it", async () => {
+		const fake = fakeDiscord({
+			[root]: [msg(root, root, "topic"), msg(first, root, "early reply")],
+		});
+		const cursors = new InMemoryInboundCursorStore();
+		const delivered: string[] = [];
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: [],
+			cursorStore: cursors,
+			fetchImpl: fake.fetchImpl,
+		});
+		src.onMessage((m) => {
+			delivered.push(m.id);
+			return true;
+		});
+		let saved = root;
+		expect(
+			await src.catchUpProactiveChannel(root, {
+				after: root,
+				saveProgress: (id) => {
+					saved = id;
+				},
+				assertCurrentOwner: () => {},
+			}),
+		).toBe("ready");
+		expect(delivered).toEqual([first]);
+		expect(saved).toBe(first);
+		expect(cursors.load(root)).toBe(first);
+		expect(src.isSubscribed(root)).toBe(true);
+		expect(fake.calls.every((c) => c.after !== undefined)).toBe(true);
+	});
+	it("persists an independent catchup cursor without rewinding the public cursor", async () => {
+		const fake = fakeDiscord({
+			[root]: [
+				msg(root, root, "topic"),
+				msg(first, root, "gap"),
+				msg(second, root, "known"),
+			],
+		});
+		const cursors = new InMemoryInboundCursorStore();
+		cursors.save(root, second);
+		const delivered: string[] = [];
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: [],
+			cursorStore: cursors,
+			fetchImpl: fake.fetchImpl,
+			limit: 1,
+		});
+		src.onMessage((m) => {
+			delivered.push(m.id);
+			return true;
+		});
+		let after = root;
+		const options = {
+			after,
+			through: second,
+			maxPages: 1,
+			saveProgress: (id: string) => {
+				after = id;
+			},
+			assertCurrentOwner: () => {},
+		};
+		expect(await src.catchUpProactiveChannel(root, options)).toBe("pending");
+		expect(after).toBe(first);
+		expect(cursors.load(root)).toBe(second);
+		expect(src.isSubscribed(root)).toBe(false);
+		expect(await src.catchUpProactiveChannel(root, { ...options, after })).toBe(
+			"ready",
+		);
+		expect(delivered).toEqual([first, second]);
+		expect(cursors.load(root)).toBe(second);
+	});
+	it("does not consume or activate after ownership changes during fetch", async () => {
+		let current = true;
+		const fake = fakeDiscord({ [root]: [msg(first, root, "reply")] });
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: [],
+			cursorStore: new InMemoryInboundCursorStore(),
+			fetchImpl: async (...args) => {
+				const result = await fake.fetchImpl(...args);
+				current = false;
+				return result;
+			},
+		});
+		const delivered = vi.fn(() => true);
+		src.onMessage(delivered);
+		await expect(
+			src.catchUpProactiveChannel(root, {
+				after: root,
+				saveProgress: () => {},
+				assertCurrentOwner: () => {
+					if (!current) throw Error("old owner");
+				},
+			}),
+		).rejects.toThrow("old owner");
+		expect(delivered).not.toHaveBeenCalled();
+		expect(src.isSubscribed(root)).toBe(false);
+	});
+});

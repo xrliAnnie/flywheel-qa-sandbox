@@ -1,4 +1,4 @@
-import { ingestDiscordChat } from "flywheel-comm/discord-chat-ingest";
+import { ingestDiscordChatOnQueue } from "flywheel-comm/discord-chat-ingest";
 import type { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import type { DiscordInboundMessage } from "./CodexDiscordGateway.js";
 import type { ExternalReceiptSaga } from "./ExternalReceiptSaga.js";
@@ -64,12 +64,13 @@ export class CodexDiscordMailboxStrategy {
 			if (
 				this.opts.queue.getIdentityCarrier(
 					`chat:${this.opts.leadId}:${message.id}`,
-				) !== undefined
+				) === undefined &&
+				this.opts.mailboxReady &&
+				!this.opts.mailboxReady()
 			) {
-				return "handled";
+				return "retry";
 			}
-			if (this.opts.mailboxReady && !this.opts.mailboxReady()) return "retry";
-			ingestDiscordChat({
+			ingestDiscordChatOnQueue(this.opts.queue, {
 				dbPath: this.opts.dbPath,
 				leadId: this.opts.leadId,
 				chatId: message.channelId,
@@ -81,6 +82,7 @@ export class CodexDiscordMailboxStrategy {
 				msgKind: input.replyRoute ? "roundtable" : "guild",
 				attachments: message.attachments ?? [],
 				text: input.payload,
+				...(message.replyTo !== undefined ? { replyTo: message.replyTo } : {}),
 				...(this.opts.founderId ? { founderId: this.opts.founderId } : {}),
 				...(input.replyChannelId
 					? { replyChannelId: input.replyChannelId }

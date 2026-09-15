@@ -1,0 +1,16 @@
+{
+  "url": "https://fw-reports-624a39.vercel.app/r/64fa525729997c3aebc9647a1e9b3fea/",
+  "httpStatus": 200,
+  "nonceReplaced": true,
+  "matchingCspScriptNonce": true,
+  "inlineScripts": 1,
+  "inlineDiagrams": 2,
+  "uniqueIds": true,
+  "externalAssets": [],
+  "approvedText": true,
+  "commentMarker": true,
+  "hostedControllerMatchesCommittedSource": true,
+  "localSha256": "181e356e7f2d2ee70b8dd2c40afb3465c32636bee79b55dba3f671cdac56d41e",
+  "hostedSha256": "4ee0e025d51d9c248e6ae1e6d76d1246510b3c00c981adc399f2fd4828c91901",
+  "visualQa": "not performed"
+}

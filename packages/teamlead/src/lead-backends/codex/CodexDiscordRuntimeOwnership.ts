@@ -111,6 +111,16 @@ export class CodexDiscordRuntimeOwnership {
 		return this.refreshPromise;
 	}
 
+	proactiveReady(): boolean {
+		return (
+			this.running &&
+			this.gatewayStarted &&
+			this.socketListening &&
+			this.socketLock !== undefined &&
+			this.ingressLock !== undefined
+		);
+	}
+
 	mailboxReady(): boolean {
 		return this.socketListening && this.ingressLock !== undefined;
 	}

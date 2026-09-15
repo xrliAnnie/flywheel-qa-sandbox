@@ -134,6 +134,7 @@ import { SqliteOutboundDedupStore } from "../lead-backends/codex/SqliteOutboundD
 import {
 	buildAuthorizeLeadChannel,
 	buildLeadOutboundExpressHandler,
+	buildPrepareProactiveEngagement,
 	buildResolveBotToken,
 } from "../lead-backends/codexLeadBridgeWiring.js";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
@@ -238,6 +239,7 @@ import {
 	writeRunningMarker,
 } from "./bridge-exit-marker.js";
 import { resolveBridgeBuildIdentity } from "./build-identity.js";
+import { createBusinessWakePass } from "./business-wake-pass.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { makeCanceledPrDisposal } from "./canceled-pr-close.js";
 import {
@@ -3318,6 +3320,15 @@ export function createBridgeApp(
 					resolveBotToken: resolveCodexLeadBotToken,
 				}),
 				expectedApiToken: config.apiToken,
+				prepareProactiveEngagement: buildPrepareProactiveEngagement(projects, {
+					resolveBotToken: resolveCodexLeadBotToken,
+					resolveStateDir: async (projectName, leadId) => {
+						const { resolveCodexLeadStateDir } = await import(
+							"./lead-inbox-runtime.js"
+						);
+						return resolveCodexLeadStateDir(projectName, leadId);
+					},
+				}),
 				// Anti-impersonation: a Lead may only post to its own channels (FLY-246).
 				authorizeLeadChannel: buildAuthorizeLeadChannel(projects, {
 					resolveBotToken: resolveCodexLeadBotToken,
@@ -11381,6 +11392,14 @@ export async function startBridge(
 		},
 		onLeadPatrolTick: leadPatrolTickPass,
 		onSummaryAbsorptionTick: summaryAbsorptionPass,
+		onBusinessWakeTick: createBusinessWakePass({
+			projects,
+			store,
+			enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
+			inspectDeliveryState: (projectName, deliveryId) =>
+				leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
+			log: (message) => console.warn(message),
+		}),
 		onPatrolOrphanSweepTick: patrolOrphanSweepPass,
 		...(cmuxWatcherPatrol
 			? {

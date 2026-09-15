@@ -16,9 +16,11 @@ import { installSqlTiming } from "flywheel-config";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import type {
-	DedupRecord,
-	OutboundDedupStore,
+import {
+	type DedupRecord,
+	engagementBindingKey,
+	type OutboundDedupStore,
+	type OutboundEngagementBinding,
 } from "./CodexLeadOutboundHandler.js";
 
 interface Row {
@@ -27,6 +29,8 @@ interface Row {
 	message_id: string | null;
 	created_at: number;
 	updated_at: number;
+	binding: string | null;
+	engagement: string | null;
 }
 
 export class SqliteOutboundDedupStore implements OutboundDedupStore {
@@ -47,6 +51,15 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
 				updated_at INTEGER NOT NULL
 			);
 		`);
+		this.db.transaction(() => {
+			const columns = this.db
+				.prepare("PRAGMA table_info(outbound_dedup)")
+				.all() as { name: string }[];
+			if (!columns.some((c) => c.name === "binding"))
+				this.db.exec("ALTER TABLE outbound_dedup ADD COLUMN binding TEXT");
+			if (!columns.some((c) => c.name === "engagement"))
+				this.db.exec("ALTER TABLE outbound_dedup ADD COLUMN engagement TEXT");
+		})();
 	}
 
 	close(): void {
@@ -63,38 +76,80 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
 			status: r.status === "sent" ? "sent" : "in_flight",
 		};
 		if (r.message_id != null) rec.messageId = r.message_id;
+		if (r.binding != null) {
+			const [projectName, leadId, parentChannelId, payloadHash] = JSON.parse(
+				r.binding,
+			) as unknown[];
+			if (
+				typeof projectName !== "string" ||
+				typeof leadId !== "string" ||
+				typeof parentChannelId !== "string" ||
+				typeof payloadHash !== "string"
+			)
+				throw new Error("outbound_binding_invalid");
+			rec.binding = { projectName, leadId, parentChannelId, payloadHash };
+			rec.engagement = r.engagement === "ready" ? "ready" : "pending";
+		}
 		return rec;
 	}
 
-	setInFlight(key: string): boolean {
-		const ts = this.now();
-		// ATOMIC CLAIM (HIGH-2): create the in_flight marker only if absent and report
-		// whether THIS statement inserted it. ON CONFLICT DO NOTHING + `changes` makes
-		// the claim race-safe at the DB level — two concurrent racers cannot both win.
+	setInFlight(key: string, binding?: OutboundEngagementBinding): boolean {
+		return this.db
+			.transaction(() => {
+				const existing = this.get(key);
+				if (existing) {
+					if (
+						engagementBindingKey(existing.binding) !==
+						engagementBindingKey(binding)
+					)
+						throw new Error("outbound_binding_conflict");
+					return false;
+				}
+				const ts = this.now();
+				this.db
+					.prepare(`INSERT INTO outbound_dedup (idempotency_key, status, created_at, updated_at, binding, engagement)
+    VALUES (?, 'in_flight', ?, ?, ?, ?)`)
+					.run(
+						key,
+						ts,
+						ts,
+						engagementBindingKey(binding),
+						binding ? "pending" : null,
+					);
+				return true;
+			})
+			.immediate();
+	}
+
+	markEngagementReady(
+		key: string,
+		binding: OutboundEngagementBinding,
+		messageId: string,
+	): void {
 		const result = this.db
-			.prepare(
-				`INSERT INTO outbound_dedup (idempotency_key, status, created_at, updated_at)
-				 VALUES (?, 'in_flight', ?, ?)
-				 ON CONFLICT(idempotency_key) DO NOTHING`,
-			)
-			.run(key, ts, ts);
-		return result.changes > 0;
+			.prepare(`UPDATE outbound_dedup SET engagement = 'ready', updated_at = ?
+   WHERE idempotency_key = ? AND binding = ? AND status = 'sent' AND message_id = ?`)
+			.run(this.now(), key, engagementBindingKey(binding), messageId);
+		if (result.changes !== 1)
+			throw new Error("outbound_engagement_receipt_invalid");
 	}
 
 	markSent(key: string, messageId: string): void {
 		const ts = this.now();
 		// Upsert to sent (handles both the normal in_flight→sent and a defensive
 		// create) — but never downgrade a row that is already sent.
-		this.db
+		const result = this.db
 			.prepare(
 				`INSERT INTO outbound_dedup (idempotency_key, status, message_id, created_at, updated_at)
 				 VALUES (@key, 'sent', @messageId, @ts, @ts)
 				 ON CONFLICT(idempotency_key) DO UPDATE SET
 				   status = 'sent',
 				   message_id = @messageId,
-				   updated_at = @ts`,
+				   updated_at = @ts
+     WHERE outbound_dedup.binding IS NULL OR outbound_dedup.message_id IS NULL OR outbound_dedup.message_id = @messageId`,
 			)
 			.run({ key, messageId, ts });
+		if (result.changes !== 1) throw new Error("outbound_receipt_conflict");
 	}
 
 	delete(key: string): void {

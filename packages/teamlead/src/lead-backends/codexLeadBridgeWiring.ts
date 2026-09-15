@@ -1,3 +1,9 @@
+import {
+	engageCodexLeadProactiveTopic,
+	probeCodexLeadInboxCapabilities,
+	resolveCodexLeadInboxSocketPath,
+} from "./codex/CodexLeadInboxSocket.js";
+import type { PrepareProactiveEngagement } from "./codex/CodexLeadOutboundHandler.js";
 /**
  * FLY-224 Phase 7 block 3a — codexLeadBridgeWiring: the Bridge-side wiring helpers
  * for a Codex Lead, kept OUT of plugin.ts so the logic is unit-tested and the
@@ -145,8 +151,74 @@ export function buildLeadOutboundExpressHandler(
 		);
 		res.status(outcome.httpStatus).json({
 			status: outcome.status,
+			...(outcome.engagement
+				? {
+						sendStatus: outcome.sendStatus,
+						engagement: outcome.engagement,
+						...(outcome.threadId ? { threadId: outcome.threadId } : {}),
+					}
+				: {}),
 			messageId: outcome.messageId,
 			reason: outcome.reason,
 		});
+	};
+}
+
+/** Host registry and authenticated socket authority for proactive roundtable sends. */
+export function buildPrepareProactiveEngagement(
+	projects: ProjectEntry[],
+	deps: {
+		resolveBotToken(projectName: string, leadId: string): string | undefined;
+		resolveStateDir(
+			projectName: string,
+			leadId: string,
+		): string | Promise<string>;
+		probe?: typeof probeCodexLeadInboxCapabilities;
+		engage?: typeof engageCodexLeadProactiveTopic;
+	},
+): PrepareProactiveEngagement {
+	return async (identity) => {
+		const project = projects.find(
+			(p) => p.projectName === identity.projectName,
+		);
+		const lead = project?.leads.find((l) => l.agentId === identity.leadId);
+		if (
+			!lead ||
+			lead.external === true ||
+			!lead.roundtableChannel ||
+			lead.roundtableChannel !== identity.channelId
+		)
+			throw new Error("proactive identity or parent rejected");
+		const authSecret = deps.resolveBotToken(
+			identity.projectName,
+			identity.leadId,
+		);
+		if (!authSecret) throw new Error("proactive credential unavailable");
+		const socketPath = resolveCodexLeadInboxSocketPath(
+			await deps.resolveStateDir(identity.projectName, identity.leadId),
+		);
+		const args = { socketPath, leadId: identity.leadId, authSecret };
+		const probe = deps.probe ?? probeCodexLeadInboxCapabilities;
+		const current = await probe(args);
+		if (
+			!current.socketOwnerId ||
+			!current.features.includes("roundtable_proactive_engage_v1")
+		)
+			throw new Error("proactive capability unavailable");
+		return async (receipt) => {
+			const owner = await probe(args);
+			if (
+				owner.socketOwnerId !== current.socketOwnerId ||
+				!owner.features.includes("roundtable_proactive_engage_v1")
+			)
+				throw new Error("proactive owner changed");
+			const result = await (deps.engage ?? engageCodexLeadProactiveTopic)({
+				...args,
+				...receipt,
+				socketOwnerId: current.socketOwnerId,
+				parentChannelId: identity.channelId,
+			});
+			return result.engagement;
+		};
 	};
 }

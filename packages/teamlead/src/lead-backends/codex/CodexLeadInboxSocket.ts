@@ -58,7 +58,22 @@ interface UnsubscribeThreadRequest {
 	auth: string;
 }
 
+export interface ProactiveTopicReceipt {
+	socketOwnerId: string;
+	parentChannelId: string;
+	messageId: string;
+	eventId: string;
+	payloadHash: string;
+}
+interface EngageProactiveTopicRequest extends ProactiveTopicReceipt {
+	version: 2;
+	method: "engageProactiveTopic";
+	leadId: string;
+	auth: string;
+}
+
 type InboxRequest =
+	| EngageProactiveTopicRequest
 	| SubmitBatchRequest
 	| CapabilitiesRequest
 	| ListSubscriptionsRequest
@@ -77,7 +92,7 @@ interface ErrorResponse {
 
 export interface CodexLeadInboxCapabilities {
 	protocolVersions: [1, 2];
-	features: ["discord_route_v2"];
+	features: ("discord_route_v2" | "roundtable_proactive_engage_v1")[];
 	socketOwnerId: string;
 	voiceMirrorIgnoredAuthorIds?: readonly string[];
 }
@@ -98,6 +113,16 @@ export interface CodexLeadInboxServerOptions {
 	subscriptions?: {
 		list(): SubscriptionEntry[];
 		remove(threadId: string, reason: string, actor: string): Promise<boolean>;
+	};
+	proactiveTopic?: {
+		parentChannelId: string;
+		/** Synchronous runtime lease check; must stay false after handoff. */
+		isCurrentOwner(): boolean;
+		/** Recheck the supplied guard after each await, before writes or activation. */
+		engage(
+			receipt: ProactiveTopicReceipt,
+			assertCurrentOwner: () => void,
+		): Promise<"pending" | "ready">;
 	};
 	/** Crash seam: throw after journal commit to simulate response loss. */
 	afterCommit?: () => void | Promise<void>;
@@ -209,6 +234,25 @@ export class CodexLeadInboxServer {
 		});
 	}
 
+	private proactiveOwnerCurrent(): boolean {
+		if (
+			!this.accepting ||
+			!this.boundIdentity ||
+			!this.opts.proactiveTopic?.isCurrentOwner()
+		)
+			return false;
+		try {
+			const stat = lstatSync(this.opts.socketPath);
+			return (
+				stat.isSocket() &&
+				stat.dev === this.boundIdentity.dev &&
+				stat.ino === this.boundIdentity.ino
+			);
+		} catch {
+			return false;
+		}
+	}
+
 	private async process(socket: Socket, raw: string): Promise<void> {
 		try {
 			const request = parseRequest(raw);
@@ -221,7 +265,12 @@ export class CodexLeadInboxServer {
 			if (request.method === "capabilities") {
 				const capabilities: CodexLeadInboxCapabilities = {
 					protocolVersions: [1, 2],
-					features: ["discord_route_v2"],
+					features: [
+						"discord_route_v2",
+						...(this.proactiveOwnerCurrent()
+							? ["roundtable_proactive_engage_v1" as const]
+							: []),
+					],
 					socketOwnerId: this.socketOwnerId,
 					...(this.opts.ignoredAuthorIds === undefined
 						? {}
@@ -230,6 +279,35 @@ export class CodexLeadInboxServer {
 							}),
 				};
 				socket.end(`${JSON.stringify({ ok: true, capabilities })}\n`);
+				return;
+			}
+			if (request.method === "engageProactiveTopic") {
+				const hook = this.opts.proactiveTopic;
+				if (!hook) throw new Error("proactive topic unavailable");
+				if (request.parentChannelId !== hook.parentChannelId)
+					throw new Error("proactive parent mismatch");
+				const assertCurrentOwner = () => {
+					if (
+						request.socketOwnerId !== this.socketOwnerId ||
+						!this.proactiveOwnerCurrent()
+					)
+						throw new Error("proactive owner mismatch");
+				};
+				assertCurrentOwner();
+				const receipt: ProactiveTopicReceipt = {
+					socketOwnerId: request.socketOwnerId,
+					parentChannelId: request.parentChannelId,
+					messageId: request.messageId,
+					eventId: request.eventId,
+					payloadHash: request.payloadHash,
+				};
+				const engagement = await hook.engage(receipt, assertCurrentOwner);
+				assertCurrentOwner();
+				if (engagement !== "pending" && engagement !== "ready")
+					throw new Error("invalid engagement result");
+				socket.end(
+					`${JSON.stringify({ ok: true, engagement, threadId: request.messageId })}\n`,
+				);
 				return;
 			}
 			if (
@@ -373,11 +451,37 @@ export async function unsubscribeCodexLeadThread(
 	return response.removed;
 }
 
+export async function engageCodexLeadProactiveTopic(
+	args: SubscriptionClientArgs & ProactiveTopicReceipt,
+): Promise<{ engagement: "pending" | "ready"; threadId: string }> {
+	const request = {
+		version: 2,
+		method: "engageProactiveTopic",
+		leadId: args.leadId,
+		socketOwnerId: args.socketOwnerId,
+		parentChannelId: args.parentChannelId,
+		messageId: args.messageId,
+		eventId: args.eventId,
+		payloadHash: args.payloadHash,
+	} as const;
+	const response = (await subscriptionRequest(args, request)) as {
+		engagement: unknown;
+		threadId: unknown;
+	};
+	if (
+		(response.engagement !== "pending" && response.engagement !== "ready") ||
+		response.threadId !== args.messageId
+	)
+		throw new Error("invalid proactive receipt response");
+	return { engagement: response.engagement, threadId: args.messageId };
+}
+
 async function subscriptionRequest(
 	args: SubscriptionClientArgs,
 	request:
 		| Omit<ListSubscriptionsRequest, "auth">
-		| Omit<UnsubscribeThreadRequest, "auth">,
+		| Omit<UnsubscribeThreadRequest, "auth">
+		| Omit<EngageProactiveTopicRequest, "auth">,
 ): Promise<unknown> {
 	const signed = { ...request, auth: signRequest(request, args.authSecret) };
 	const response = JSON.parse(
@@ -393,6 +497,39 @@ async function subscriptionRequest(
 
 function parseRequest(raw: string): InboxRequest {
 	const value = JSON.parse(raw.trim()) as Partial<InboxRequest>;
+	if (value?.method === "engageProactiveTopic") {
+		const keys = [
+			"version",
+			"method",
+			"leadId",
+			"auth",
+			"socketOwnerId",
+			"parentChannelId",
+			"messageId",
+			"eventId",
+			"payloadHash",
+		];
+		if (
+			value.version !== 2 ||
+			typeof value.leadId !== "string" ||
+			!value.leadId.trim() ||
+			typeof value.auth !== "string" ||
+			typeof value.socketOwnerId !== "string" ||
+			!value.socketOwnerId.trim() ||
+			typeof value.eventId !== "string" ||
+			!value.eventId.trim() ||
+			value.eventId.length > 512 ||
+			typeof value.payloadHash !== "string" ||
+			!/^[a-f0-9]{64}$/.test(value.payloadHash) ||
+			typeof value.parentChannelId !== "string" ||
+			!/^\d{17,20}$/.test(value.parentChannelId) ||
+			typeof value.messageId !== "string" ||
+			!/^\d{17,20}$/.test(value.messageId) ||
+			Object.keys(value).some((k) => !keys.includes(k))
+		)
+			throw new Error("malformed proactive topic request");
+		return value as EngageProactiveTopicRequest;
+	}
 	if (
 		value?.method === "listSubscriptions" ||
 		value?.method === "unsubscribeThread"
@@ -452,9 +589,21 @@ type UnsignedInboxRequest =
 	| Omit<SubmitBatchRequest, "auth">
 	| Omit<CapabilitiesRequest, "auth">
 	| Omit<ListSubscriptionsRequest, "auth">
-	| Omit<UnsubscribeThreadRequest, "auth">;
+	| Omit<UnsubscribeThreadRequest, "auth">
+	| Omit<EngageProactiveTopicRequest, "auth">;
 
 function canonicalRequest(request: UnsignedInboxRequest): string {
+	if (request.method === "engageProactiveTopic")
+		return JSON.stringify({
+			version: request.version,
+			method: request.method,
+			leadId: request.leadId,
+			socketOwnerId: request.socketOwnerId,
+			parentChannelId: request.parentChannelId,
+			messageId: request.messageId,
+			eventId: request.eventId,
+			payloadHash: request.payloadHash,
+		});
 	if (request.method === "unsubscribeThread")
 		return JSON.stringify({
 			version: request.version,

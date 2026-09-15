@@ -17,10 +17,19 @@ import {
 	type CapacitySnapshot,
 	canonicalCapacityToken,
 } from "./capacity-snapshot.js";
+import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { isCapacityUnavailableToken } from "./machine-free-pct.js";
 import type { PatrolLoopEntry } from "./patrol-loop-ledger.js";
 
 export interface HookPayload {
+	business_wake?: {
+		scheduleId: string;
+		revision: number;
+		configDigest: string;
+		localDate: string;
+		dueAt: string;
+		timezone: string;
+	};
 	event_type: string;
 	execution_id: string;
 	issue_id: string;
@@ -1563,4 +1572,11 @@ export function formatShipApprovalRequest(
 	];
 	lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);
 	return lines.join("\n");
+}
+
+/** Full frozen due identity; generic summary truncation would lose recovery fields. */
+export function formatBusinessWake(env: LeadEventEnvelope): string {
+	if (!env.event.business_wake)
+		throw new Error("business_wake payload missing");
+	return `[Event #${env.seq}] business_wake\nID: ${env.eventId}\nSchedule: ${JSON.stringify(env.event.business_wake)}\nResume durable business work for this schedule. The due identity remains unchanged if delivery was delayed.`;
 }

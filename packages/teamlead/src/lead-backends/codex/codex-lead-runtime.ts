@@ -73,6 +73,7 @@ import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
 
 export interface CodexLeadRuntimeConfig {
+	projectsFile?: string;
 	runnerActionContext?: RunnerActionMcpContext;
 	projectName: string;
 	leadId: string;
@@ -895,6 +896,9 @@ export function parseCodexLeadRuntimeConfig(
 		...(env.FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS !== undefined
 			? { runnerActionContext: resolveRunnerActionMcpContext(env) }
 			: {}),
+		...(env.FLYWHEEL_PROJECTS_FILE
+			? { projectsFile: env.FLYWHEEL_PROJECTS_FILE }
+			: {}),
 		projectName,
 		leadId,
 		leadKey,
@@ -1012,6 +1016,7 @@ function fullAccessLeadActionsMcpConfig(
 		| "commDbPath"
 		| "leadActionsChannelAliases"
 		| "runnerActionContext"
+		| "projectsFile"
 		| "outboundMode"
 	>,
 	entry: string,
@@ -1022,6 +1027,7 @@ function fullAccessLeadActionsMcpConfig(
 	roundtableAutoContinue: boolean,
 ): LeadActionsMcpConfig {
 	return buildFullAccessLeadActionsMcpServerConfig({
+		projectsFile: config.projectsFile,
 		nodeBin: process.execPath,
 		mainJsPath: entry,
 		leadId: config.leadId,
@@ -1783,6 +1789,15 @@ export function buildCodexLeadRuntime(
 				leadId: config.leadId,
 				router,
 				authSecret: config.botToken,
+				...(replyInThread?.autoContinue && config.replyInThread
+					? {
+							proactiveTopic: {
+								parentChannelId: config.replyInThread.parentChannelId,
+								isCurrentOwner: (): boolean => ownership.proactiveReady(),
+								engage: replyInThread.onProactiveTopicEngaged,
+							},
+						}
+					: {}),
 				...(replyInThread
 					? {
 							subscriptions: {

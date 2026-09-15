@@ -44,6 +44,24 @@ export function parseLedgerFile(path: string): LedgerParseResult {
 		!Array.isArray((raw as RegistrySnapshot).entries)
 	)
 		return { ok: false, reason: "corrupt" };
+	const bindings = (raw as RegistrySnapshot).proactiveBindings;
+	if (
+		bindings !== undefined &&
+		(!bindings ||
+			typeof bindings !== "object" ||
+			Array.isArray(bindings) ||
+			Object.entries(bindings).some(
+				([eventId, v]) =>
+					!eventId ||
+					eventId.length > 512 ||
+					!v ||
+					typeof v !== "object" ||
+					!/^\d{17,20}$/.test(v.threadId) ||
+					!/^\d{17,20}$/.test(v.parentChannelId) ||
+					!/^[a-f0-9]{64}$/.test(v.payloadHash),
+			))
+	)
+		return { ok: false, reason: "corrupt" };
 	const entries: SubscriptionEntry[] = [];
 	const dropped: Array<{ raw: unknown; why: string }> = [];
 	for (const item of (raw as RegistrySnapshot).entries) {
@@ -62,7 +80,32 @@ export function parseLedgerFile(path: string): LedgerParseResult {
 			!["mention", "discovery", "restore"].includes(e.source) ||
 			!validTime(e.subscribedAt) ||
 			!validTime(e.lastActivityAt) ||
-			!validTime(e.expiresAt)
+			!validTime(e.expiresAt) ||
+			(e.proactive !== undefined &&
+				(!e.proactive ||
+					typeof e.proactive !== "object" ||
+					typeof e.proactive.eventId !== "string" ||
+					!e.proactive.eventId ||
+					typeof e.proactive.payloadHash !== "string" ||
+					!/^[a-f0-9]{64}$/.test(e.proactive.payloadHash) ||
+					typeof e.proactive.after !== "string" ||
+					!/^\d{17,20}$/.test(e.proactive.after) ||
+					(e.proactive.through !== undefined &&
+						(typeof e.proactive.through !== "string" ||
+							!/^\d{17,20}$/.test(e.proactive.through))) ||
+					!["pending", "ready"].includes(e.proactive.engagement))) ||
+			(e.continuation !== undefined &&
+				(!e.continuation ||
+					typeof e.continuation !== "object" ||
+					!Number.isSafeInteger(e.continuation.remaining) ||
+					e.continuation.remaining < 0 ||
+					!e.continuation.admissions ||
+					typeof e.continuation.admissions !== "object" ||
+					Array.isArray(e.continuation.admissions) ||
+					Object.entries(e.continuation.admissions).some(
+						([id, admitted]) =>
+							!/^\d{17,20}$/.test(id) || typeof admitted !== "boolean",
+					)))
 		)
 			dropped.push({ raw: item, why: "invalid_entry" });
 		else
@@ -73,9 +116,21 @@ export function parseLedgerFile(path: string): LedgerParseResult {
 				subscribedAt: e.subscribedAt,
 				lastActivityAt: e.lastActivityAt,
 				expiresAt: e.expiresAt,
+				...(e.proactive ? { proactive: structuredClone(e.proactive) } : {}),
+				...(e.continuation
+					? { continuation: structuredClone(e.continuation) }
+					: {}),
 			});
 	}
-	return { ok: true, snapshot: { version: 1, entries }, dropped };
+	return {
+		ok: true,
+		snapshot: {
+			version: 1,
+			entries,
+			...(bindings ? { proactiveBindings: structuredClone(bindings) } : {}),
+		},
+		dropped,
+	};
 }
 export function persistSnapshot(
 	path: string,

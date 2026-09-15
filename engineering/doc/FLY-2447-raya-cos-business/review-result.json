@@ -1,0 +1,72 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "1e966c8d-75d2-4e74-9010-bd314e16da21",
+  "round": 3,
+  "findings": [
+    {
+      "id": "shared-path-rollback-blast-radius",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2447-raya-cos-business/plan.md",
+      "line": 181,
+      "title": "新增：§8 未随 B1/B2 更新 —— 共享消息通路的关停/回滚与跨 Lead 影响面没有交代",
+      "detail": "v2 新增的 §2.3(B1)/§2.4(B2) 改的是**所有 Codex Lead 共用**的消息面：`runDiscordSend`、`CodexOutboundSender` outbox、`SqliteOutboundDedupStore` 行、roundtable subscription ledger（新增持久预算）、`InboundCursorStore` 的使用方式、`mention-gate`，以及 `ChatDeliveryEnvelopeV1` + `renderDiscordChatContent`（后者改变**每个 Lead 每条入站消息**看到的 `<channel>` 属性）。但 §8「迁移、兼容与回滚」（line 175-181）整段未改，仍只讲 Raya 业务状态回滚（「回滚代码至最后已验证业务包、关闭新business wake」），对这两块共享增量既没有关停开关，也没有回滚后的数据兼容说明、更没有「影响面 = 全部 Codex Lead」的声明。\n本次复核了两处向后兼容并确认风险可控（可写进 §8 而不是留白）：`normalizeChatDeliveryEnvelope`（chat-delivery-envelope.ts:62-140）是逐字段构造、不拒未知键，旧版本读到带 replyTo 的新行只会丢字段；`parseLedgerFile`（roundtable-subscription-ledger.ts:27-60）要求 `version===1`，所以 ledger 扩展**必须**保持 version=1、只加可选键，一旦 bump 成 2，旧版本读到即 `corrupt`，会影响所有 Lead 的话题订阅恢复。\n建议 §8 补三句：(a) B1 的 de-facto kill-switch 就是 §2.3.1 的「不注入 `bridgeRoundtableEngage` hook ⇒ 回到原 guard」，写成显式关停路径；(b) ledger/dedup/outbox 扩展一律只加可选键、不 bump version，并给出旧版本读新行的行为；(c) 点名 B2 改的是全 Lead 共享的 render 面，回归范围不止 Raya。",
+      "failure_scenario": "B1/B2 合入后生产出问题需要回滚 Flywheel：运维按 §8 只找到「关闭 business wake / 回滚业务包」，没有任何一句说明主动 roundtable engage 怎么停、也没人检查 ledger 是否已 bump 到 version 2；若实现当初 bump 了版本，回滚后旧 Bridge 把所有 Codex Lead 的 `roundtable-subscriptions.json` 判为 corrupt，全员话题订阅在一次回滚里静默丢失。",
+      "findingKey": "shared-path-rollback-blast-radius"
+    },
+    {
+      "id": "stale-lock-halt-no-escalation",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2447-raya-cos-business/plan.md",
+      "line": 102,
+      "title": "新增：§3 换成 open(wx) 锁后不再自动释放，业务被卡住却没有定义告警/升级路径",
+      "detail": "为修 packaging 约束（零运行时依赖），§3 把 v1 的「OS advisory lock」改成 Node 内置 `open wx` 锁文件 + owner nonce，并诚实写明「崩溃遗留锁显式暂停该业务…不靠 TTL/PID 存在性猜测偷锁。这里不承诺进程崩溃后锁自动释放」。方向正确（失败保守、不偷锁），但引入一个新的可用性缺口：Codex Lead 的 turn 被 kill、CLI 中途崩溃、或宿主重启留下锁文件后，Raya 的该类业务会**无限期停摆**，而计划里唯一的下游动作只有 N11 的「明确停该业务并记录」——记录给谁看没有定义。日报/summary 吸收都是无人值守的定时业务，停摆的默认可见性就是「今晚没有日报」。\n建议在 §3 或 §6.7 明确：检测到遗留锁时，(a) 走已有 `#raya` 可见通报或 lead alert 通路发一次「业务暂停 + 锁文件路径 + 需要人工确认」的说明（与 §6.7 的同 date notice key 同一类做法），(b) 该状态进入 `status` 子命令输出，(c) 在批次 A/G 的必须证明里加一条「遗留锁 → 有可见上报且不自动偷锁」。",
+      "failure_scenario": "某晚 Lead 进程在 record 期间被 kill，锁文件留在 `state/cos/`。此后每次 business_wake、每轮 summary 吸收都在取锁处停住并只写本地记录；founder 只看到日报连续几天不来，没有任何一条消息说明原因，直到有人主动去翻 workspace 才发现是一枚孤儿锁。",
+      "findingKey": "stale-lock-halt-no-escalation"
+    },
+    {
+      "id": "founder-html-diagrams-renderable",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2447-raya-cos-business/validation.md",
+      "line": 44,
+      "title": "已部分修复：flow 图已内联且归因已更正；结构图仍是 PENDING，但同机同参数可渲染",
+      "detail": "v2 正确修正了归因（改为「本次执行环境」而非「本机」），把流程图落成本地 SVG 并记录了 provenance 与 SHA-256。本轮复核：`engineering/doc/FLY-2447-raya-cos-business/flow.svg` 与 reviewer 渲染产物字节一致（sha256 db8adbdc…48b6e），`node verify-founder-html.mjs` 仍 PASS，founder-design.html 37,509 bytes、1 张内联 SVG + 1 处 PENDING，托管 CSP（report-registry.ts:206 `style-src 'unsafe-inline'`）能容纳内联 style 与内联 SVG。\n剩余一点：`model.mmd`（结构图）本轮在同一台机器用计划里那条完全相同的命令渲染成功 —— `mmdc -i model.mmd -o /tmp/fly2447-model-test.svg -w 1000 -b white --svgId FLY-2447-d2` 退出 0、27,151 bytes、id 正确作用域。也就是说 founder 页上最后这处 `DIAGRAM PENDING LOCAL RENDER` 同样是可以消除的，只需换一个不受限的执行环境再跑一次 build-report.py。非阻塞。",
+      "failure_scenario": "founder 打开定稿页，§「资料只保留一份，结果有出处」一节仍只有一段英文 PENDING 和 Mermaid 源码；而这张结构图恰恰是解释「谁是身份来源、回执怎么对账」的那张，本可以在发布前一条命令补上。",
+      "findingKey": "founder-html-diagrams-renderable"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "shared-path-rollback-blast-radius",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2447-raya-cos-business/plan.md",
+      "line": 181,
+      "title": "新增：§8 未随 B1/B2 更新 —— 共享消息通路的关停/回滚与跨 Lead 影响面没有交代",
+      "detail": "v2 新增的 §2.3(B1)/§2.4(B2) 改的是**所有 Codex Lead 共用**的消息面：`runDiscordSend`、`CodexOutboundSender` outbox、`SqliteOutboundDedupStore` 行、roundtable subscription ledger（新增持久预算）、`InboundCursorStore` 的使用方式、`mention-gate`，以及 `ChatDeliveryEnvelopeV1` + `renderDiscordChatContent`（后者改变**每个 Lead 每条入站消息**看到的 `<channel>` 属性）。但 §8「迁移、兼容与回滚」（line 175-181）整段未改，仍只讲 Raya 业务状态回滚（「回滚代码至最后已验证业务包、关闭新business wake」），对这两块共享增量既没有关停开关，也没有回滚后的数据兼容说明、更没有「影响面 = 全部 Codex Lead」的声明。\n本次复核了两处向后兼容并确认风险可控（可写进 §8 而不是留白）：`normalizeChatDeliveryEnvelope`（chat-delivery-envelope.ts:62-140）是逐字段构造、不拒未知键，旧版本读到带 replyTo 的新行只会丢字段；`parseLedgerFile`（roundtable-subscription-ledger.ts:27-60）要求 `version===1`，所以 ledger 扩展**必须**保持 version=1、只加可选键，一旦 bump 成 2，旧版本读到即 `corrupt`，会影响所有 Lead 的话题订阅恢复。\n建议 §8 补三句：(a) B1 的 de-facto kill-switch 就是 §2.3.1 的「不注入 `bridgeRoundtableEngage` hook ⇒ 回到原 guard」，写成显式关停路径；(b) ledger/dedup/outbox 扩展一律只加可选键、不 bump version，并给出旧版本读新行的行为；(c) 点名 B2 改的是全 Lead 共享的 render 面，回归范围不止 Raya。",
+      "failure_scenario": "B1/B2 合入后生产出问题需要回滚 Flywheel：运维按 §8 只找到「关闭 business wake / 回滚业务包」，没有任何一句说明主动 roundtable engage 怎么停、也没人检查 ledger 是否已 bump 到 version 2；若实现当初 bump 了版本，回滚后旧 Bridge 把所有 Codex Lead 的 `roundtable-subscriptions.json` 判为 corrupt，全员话题订阅在一次回滚里静默丢失。",
+      "findingKey": "shared-path-rollback-blast-radius"
+    },
+    {
+      "id": "stale-lock-halt-no-escalation",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2447-raya-cos-business/plan.md",
+      "line": 102,
+      "title": "新增：§3 换成 open(wx) 锁后不再自动释放，业务被卡住却没有定义告警/升级路径",
+      "detail": "为修 packaging 约束（零运行时依赖），§3 把 v1 的「OS advisory lock」改成 Node 内置 `open wx` 锁文件 + owner nonce，并诚实写明「崩溃遗留锁显式暂停该业务…不靠 TTL/PID 存在性猜测偷锁。这里不承诺进程崩溃后锁自动释放」。方向正确（失败保守、不偷锁），但引入一个新的可用性缺口：Codex Lead 的 turn 被 kill、CLI 中途崩溃、或宿主重启留下锁文件后，Raya 的该类业务会**无限期停摆**，而计划里唯一的下游动作只有 N11 的「明确停该业务并记录」——记录给谁看没有定义。日报/summary 吸收都是无人值守的定时业务，停摆的默认可见性就是「今晚没有日报」。\n建议在 §3 或 §6.7 明确：检测到遗留锁时，(a) 走已有 `#raya` 可见通报或 lead alert 通路发一次「业务暂停 + 锁文件路径 + 需要人工确认」的说明（与 §6.7 的同 date notice key 同一类做法），(b) 该状态进入 `status` 子命令输出，(c) 在批次 A/G 的必须证明里加一条「遗留锁 → 有可见上报且不自动偷锁」。",
+      "failure_scenario": "某晚 Lead 进程在 record 期间被 kill，锁文件留在 `state/cos/`。此后每次 business_wake、每轮 summary 吸收都在取锁处停住并只写本地记录；founder 只看到日报连续几天不来，没有任何一条消息说明原因，直到有人主动去翻 workspace 才发现是一枚孤儿锁。",
+      "findingKey": "stale-lock-halt-no-escalation"
+    },
+    {
+      "id": "founder-html-diagrams-renderable",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2447-raya-cos-business/validation.md",
+      "line": 44,
+      "title": "已部分修复：flow 图已内联且归因已更正；结构图仍是 PENDING，但同机同参数可渲染",
+      "detail": "v2 正确修正了归因（改为「本次执行环境」而非「本机」），把流程图落成本地 SVG 并记录了 provenance 与 SHA-256。本轮复核：`engineering/doc/FLY-2447-raya-cos-business/flow.svg` 与 reviewer 渲染产物字节一致（sha256 db8adbdc…48b6e），`node verify-founder-html.mjs` 仍 PASS，founder-design.html 37,509 bytes、1 张内联 SVG + 1 处 PENDING，托管 CSP（report-registry.ts:206 `style-src 'unsafe-inline'`）能容纳内联 style 与内联 SVG。\n剩余一点：`model.mmd`（结构图）本轮在同一台机器用计划里那条完全相同的命令渲染成功 —— `mmdc -i model.mmd -o /tmp/fly2447-model-test.svg -w 1000 -b white --svgId FLY-2447-d2` 退出 0、27,151 bytes、id 正确作用域。也就是说 founder 页上最后这处 `DIAGRAM PENDING LOCAL RENDER` 同样是可以消除的，只需换一个不受限的执行环境再跑一次 build-report.py。非阻塞。",
+      "failure_scenario": "founder 打开定稿页，§「资料只保留一份，结果有出处」一节仍只有一段英文 PENDING 和 Mermaid 源码；而这张结构图恰恰是解释「谁是身份来源、回执怎么对账」的那张，本可以在发布前一条命令补上。",
+      "findingKey": "founder-html-diagrams-renderable"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

@@ -1,3 +1,4 @@
+import type { ProactiveTopicReceipt } from "./CodexLeadInboxSocket.js";
 /**
  * FLY-314 Phase 2 — buildReplyInThreadWiring: assembles the reply-in-thread parts
  * (registry + route resolver + ensure hook + active-thread discovery) into ONE object
@@ -35,7 +36,6 @@ import {
 import {
 	createThreadBudgetStore,
 	DEFAULT_ROUNDTABLE_THREAD_BUDGET,
-	seedThreadBudget,
 	type ThreadBudgetStore,
 } from "./roundtable-thread-budget.js";
 
@@ -75,6 +75,10 @@ export interface ReplyInThreadWiring {
 	/** Per-thread bot-only continuation budget. */
 	budgetN: number;
 	onTopicEngaged(route: RoundtableReplyRoute): Promise<void>;
+	onProactiveTopicEngaged(
+		receipt: ProactiveTopicReceipt,
+		assertCurrentOwner: () => void,
+	): Promise<"pending" | "ready">;
 	onInputAccepted(
 		entry: Pick<JournalEntry, "replyChannelId" | "replyRoute">,
 	): void;
@@ -144,6 +148,11 @@ export function buildReplyInThreadWiring(opts: {
 			return false;
 		}
 		registry.commit(plan.next);
+		for (const entry of plan.next.entries)
+			budgetStore.budgets.set(
+				entry.threadId,
+				entry.continuation?.remaining ?? 0,
+			);
 		const nextIds = new Set(plan.next.entries.map((e) => e.threadId));
 		const beforeIds = new Set(before.map((e) => e.threadId));
 		for (const entry of before)
@@ -193,6 +202,28 @@ export function buildReplyInThreadWiring(opts: {
 			? opts.cfg.budgetN
 			: DEFAULT_ROUNDTABLE_THREAD_BUDGET;
 	const autoContinue = opts.cfg.autoContinue === true;
+	budgetStore.admit = ({ threadId, sourceMessageId, authorBot }) => {
+		if (!/^\d{17,20}$/.test(sourceMessageId))
+			throw new Error("invalid continuation message id");
+		const next = registry.snapshot();
+		const entry = next.entries.find((e) => e.threadId === threadId);
+		if (!entry || !registry.has(threadId)) return false;
+		const continuation = entry.continuation ?? { remaining: 0, admissions: {} };
+		if (Object.hasOwn(continuation.admissions, sourceMessageId))
+			return continuation.admissions[sourceMessageId] === true;
+		const admitted = !authorBot || continuation.remaining > 0;
+		continuation.remaining = !authorBot
+			? budgetN
+			: admitted
+				? continuation.remaining - 1
+				: 0;
+		continuation.admissions[sourceMessageId] = admitted;
+		entry.continuation = continuation;
+		persist(ledger, next);
+		registry.commit(next);
+		budgetStore.budgets.set(threadId, continuation.remaining);
+		return admitted;
+	};
 	const parentChannelId = opts.cfg.parentChannelId;
 	const archiveDefaultProvider = makeChannelArchiveDefaultProvider({
 		channelId: parentChannelId,
@@ -258,7 +289,12 @@ export function buildReplyInThreadWiring(opts: {
 	};
 
 	const seedBudgetForRoute = (route: RoundtableReplyRoute): void => {
-		if (autoContinue) seedThreadBudget(budgetStore, route.threadId, budgetN);
+		// Membership creation persists the seed before source activation. Replayed routes never reset it.
+		const entry = registry.entries().find((e) => e.threadId === route.threadId);
+		budgetStore.budgets.set(
+			route.threadId,
+			entry?.continuation?.remaining ?? 0,
+		);
 	};
 
 	const onTopicEngaged = async (route: RoundtableReplyRoute): Promise<void> => {
@@ -274,10 +310,174 @@ export function buildReplyInThreadWiring(opts: {
 			threadId: route.threadId,
 			parentChannelId,
 			source: "mention",
+			...(autoContinue
+				? { continuation: { remaining: budgetN, admissions: {} } }
+				: {}),
 		});
 		if (plan.added && !(await applyPlan(plan, "add"))) return;
 		seedBudgetForRoute(route);
 	};
+	let proactiveQueue: Promise<unknown> = Promise.resolve();
+	const onProactiveTopicEngaged = (
+		receipt: ProactiveTopicReceipt,
+		assertCurrentOwner: () => void,
+	): Promise<"pending" | "ready"> => {
+		const run = async (): Promise<"pending" | "ready"> => {
+			assertCurrentOwner();
+			if (
+				!restored ||
+				!autoContinue ||
+				!opts.source.catchUpProactiveChannel ||
+				!opts.source.proactiveCursor
+			)
+				throw new Error("proactive subscription unavailable");
+			if (
+				receipt.parentChannelId !== parentChannelId ||
+				!/^\d{17,20}$/.test(receipt.messageId) ||
+				!/^[a-f0-9]{64}$/.test(receipt.payloadHash) ||
+				!receipt.eventId
+			)
+				throw new Error("proactive binding invalid");
+			const existing = registry
+				.entries()
+				.find((e) => e.threadId === receipt.messageId);
+			if (
+				existing?.proactive &&
+				(existing.proactive.eventId !== receipt.eventId ||
+					existing.proactive.payloadHash !== receipt.payloadHash)
+			)
+				throw new Error("proactive binding conflict");
+			if (
+				registry
+					.entries()
+					.some(
+						(e) =>
+							e.proactive?.eventId === receipt.eventId &&
+							e.threadId !== receipt.messageId,
+					)
+			)
+				throw new Error("proactive binding conflict");
+			const binding = registry.snapshot().proactiveBindings?.[receipt.eventId];
+			if (binding) {
+				if (
+					binding.threadId !== receipt.messageId ||
+					binding.parentChannelId !== parentChannelId ||
+					binding.payloadHash !== receipt.payloadHash
+				)
+					throw new Error("proactive binding conflict");
+				if (!existing?.proactive || !registry.has(receipt.messageId))
+					throw new Error("proactive subscription retired");
+			}
+			const ensured = await ensureThreadFromMessage(
+				parentChannelId,
+				receipt.messageId,
+				opts.botToken,
+				{
+					archiveDefaultProvider,
+					fetchImpl: async (...args) => {
+						assertCurrentOwner();
+						const response = await (opts.fetchImpl ?? fetch)(...args);
+						assertCurrentOwner();
+						return response;
+					},
+				},
+			);
+			assertCurrentOwner();
+			if (!ensured.ok || ensured.threadId !== receipt.messageId)
+				throw new Error("proactive thread ensure unavailable");
+			let current = registry
+				.entries()
+				.find((e) => e.threadId === receipt.messageId);
+			if (binding && (!current?.proactive || !registry.has(receipt.messageId)))
+				throw new Error("proactive subscription retired");
+			if (!current?.proactive) {
+				const through = opts.source.proactiveCursor(receipt.messageId);
+				const proactive = {
+					eventId: receipt.eventId,
+					payloadHash: receipt.payloadHash,
+					after: receipt.messageId,
+					...(through ? { through } : {}),
+					engagement: "pending" as const,
+				};
+				const plan = registry.planAdd({
+					threadId: receipt.messageId,
+					parentChannelId,
+					source: "mention",
+					proactive,
+					continuation: { remaining: budgetN, admissions: {} },
+				});
+				const entry = plan.next.entries.find(
+					(e) => e.threadId === receipt.messageId,
+				);
+				if (!entry) throw new Error("proactive membership unavailable");
+				plan.next.proactiveBindings = {
+					...plan.next.proactiveBindings,
+					[receipt.eventId]: {
+						threadId: receipt.messageId,
+						parentChannelId,
+						payloadHash: receipt.payloadHash,
+					},
+				};
+				entry.proactive = proactive;
+				entry.continuation ??= { remaining: 0, admissions: {} };
+				assertCurrentOwner();
+				persist(ledger, plan.next);
+				registry.commit(plan.next);
+				for (const evicted of plan.evicted)
+					opts.source.removeChannel(evicted.threadId);
+				current = registry
+					.entries()
+					.find((e) => e.threadId === receipt.messageId);
+			}
+			const state = current?.proactive;
+			if (!state) throw new Error("proactive binding missing");
+			const guard = () => {
+				assertCurrentOwner();
+				const entry = registry
+					.entries()
+					.find((e) => e.threadId === receipt.messageId);
+				if (
+					!registry.has(receipt.messageId) ||
+					entry?.proactive?.eventId !== receipt.eventId ||
+					entry.proactive.payloadHash !== receipt.payloadHash
+				)
+					throw new Error("proactive subscription retired");
+			};
+			const update = (after: string, engagement: "pending" | "ready") => {
+				guard();
+				const next = registry.snapshot();
+				const entry = next.entries.find(
+					(e) => e.threadId === receipt.messageId,
+				)!;
+				if (BigInt(after) < BigInt(entry.proactive!.after))
+					throw new Error("proactive cursor regression");
+				entry.proactive = { ...entry.proactive!, after, engagement };
+				persist(ledger, next);
+				registry.commit(next);
+			};
+			const result = await opts.source.catchUpProactiveChannel(
+				receipt.messageId,
+				{
+					after: state.after,
+					...(state.through ? { through: state.through } : {}),
+					saveProgress: (after) => update(after, "pending"),
+					assertCurrentOwner: guard,
+				},
+			);
+			guard();
+			if (result === "ready")
+				update(
+					registry.entries().find((e) => e.threadId === receipt.messageId)!
+						.proactive!.after,
+					"ready",
+				);
+			return result;
+		};
+		const pending = proactiveQueue.then(run);
+		proactiveQueue = pending.catch(() => {});
+		return pending;
+	};
+
 	const onInputAccepted = (
 		entry: Pick<JournalEntry, "replyChannelId" | "replyRoute">,
 	): void => {
@@ -307,6 +507,11 @@ export function buildReplyInThreadWiring(opts: {
 			return;
 		}
 		registry.commit(plan.next);
+		for (const entry of plan.next.entries)
+			budgetStore.budgets.set(
+				entry.threadId,
+				entry.continuation?.remaining ?? 0,
+			);
 		for (const drop of plan.dropped)
 			audit(drop.why === "expired" ? "expire" : "restore_failed", {
 				threadId: drop.entry.threadId,
@@ -332,7 +537,11 @@ export function buildReplyInThreadWiring(opts: {
 		active = true;
 		for (const entry of registry.entries()) {
 			// Earlier dynamic drains may accept an unsubscribe or expiry while awaited.
-			if (!registry.has(entry.threadId)) continue;
+			if (
+				!registry.has(entry.threadId) ||
+				entry.proactive?.engagement === "pending"
+			)
+				continue;
 			try {
 				await opts.source.addChannel(entry.threadId);
 			} catch (error) {
@@ -353,6 +562,7 @@ export function buildReplyInThreadWiring(opts: {
 		ensureReplyRoute,
 		seedBudgetForRoute,
 		onTopicEngaged,
+		onProactiveTopicEngaged,
 		onInputAccepted,
 		autoContinue,
 		budgetStore,

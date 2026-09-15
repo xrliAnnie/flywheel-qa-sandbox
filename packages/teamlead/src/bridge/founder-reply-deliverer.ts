@@ -63,6 +63,7 @@ interface RawDiscordMessage {
 	 * call needed; `referenced_message` (full object) is NOT relied on.
 	 */
 	type?: number;
+	referenced_message?: { author?: { id?: string } } | null;
 	message_reference?: {
 		/** 0/absent = DEFAULT reference; 1 = forward — only DEFAULT qualifies. */
 		type?: number;
@@ -473,6 +474,19 @@ export async function emitFounderReplyDeliveryForThread(
 							sizeKb: Math.max(0, (attachment.size ?? 0) / 1024),
 						})),
 						text: msg.content ?? "",
+						...(msg.message_reference?.message_id &&
+						(msg.message_reference.type === undefined ||
+							msg.message_reference.type === 0)
+							? {
+									replyTo: {
+										messageId: msg.message_reference.message_id,
+										channelId: msg.message_reference.channel_id ?? ctx.threadId,
+										...(msg.referenced_message?.author?.id
+											? { authorId: msg.referenced_message.author.id }
+											: {}),
+									},
+								}
+							: {}),
 						founderId: ctx.ownerUserId,
 					}),
 				);

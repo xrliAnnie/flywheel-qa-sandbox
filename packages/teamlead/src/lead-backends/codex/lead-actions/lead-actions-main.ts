@@ -30,6 +30,7 @@ import { appendRotatedLogSync } from "flywheel-config";
 import { CodexOutboundSender } from "../CodexOutboundSender.js";
 import { runDiscordSend } from "../discord-send-core.js";
 import { parseLeadActionsConfig } from "./config.js";
+import { readBusinessDirectory } from "./directory.js";
 import {
 	SendIdempotencyCache,
 	SlidingWindowRateLimiter,
@@ -146,6 +147,18 @@ export async function leadActionsMain(
 	});
 
 	server.tool(
+		"directory",
+		"Read the current central project and Lead directory. Includes unavailable and unstaffed projects. Paths are metadata, not filesystem authorization.",
+		{},
+		async () => {
+			const result = await readBusinessDirectory(cfg.projectsFile);
+			return {
+				...asText(JSON.stringify(result), result.status !== "available"),
+				structuredContent: result,
+			};
+		},
+	);
+	server.tool(
 		DISCORD_SEND_TOOL,
 		"Proactively post a message to one of YOUR allowlisted channels. `target` " +
 			'is an ALIAS ("chat" = your own channel, "roundtable" = the cross-' +
@@ -178,20 +191,26 @@ export async function leadActionsMain(
 				explicitAliases: cfg.explicitAliases,
 				...(outbound
 					? {
+							bridgeRoundtableEngage: async (channelId: string) =>
+								(await outbound.probeAuthorization(channelId, true)).state ===
+								"authorized",
 							bridgeSend: async ({
 								channelId,
 								text: outboundText,
 								idempotencyKey,
+								roundtableEngage,
 							}: {
 								channelId: string;
 								text: string;
 								idempotencyKey: string;
+								roundtableEngage?: boolean;
 							}) => {
 								const outboxId = await outbound.enqueue({
 									leadId: cfg.leadId,
 									text: outboundText,
 									idempotencyKey,
 									channelId,
+									...(roundtableEngage ? { roundtableEngage: true } : {}),
 								});
 								const result = await outbound.deliverWithResult(outboxId);
 								if (!result.messageId) {
@@ -199,7 +218,7 @@ export async function leadActionsMain(
 										`Bridge result for ${outboxId} has no durable messageId`,
 									);
 								}
-								return result as { messageId: string; deduped: boolean };
+								return { ...result, messageId: result.messageId };
 							},
 							allocateEventId: (
 								resolvedTarget: string,
@@ -224,10 +243,21 @@ export async function leadActionsMain(
 				projectName: cfg.projectName,
 				roundtableAutoContinue: cfg.roundtableAutoContinue,
 			});
-			return asText(
-				`${r.text}${effectiveEventId ? ` [eventId=${effectiveEventId}]` : ""}`,
-				r.isError,
-			);
+			return {
+				...asText(
+					`${r.text}${effectiveEventId ? ` [eventId=${effectiveEventId}]` : ""}`,
+					r.isError,
+				),
+				structuredContent: {
+					...r,
+					project: cfg.projectName,
+					leadId: cfg.leadId,
+					target,
+					status: r.status ?? (r.ok ? "sent" : "unavailable"),
+					deduped: r.deduped === true,
+					...(effectiveEventId ? { eventId: effectiveEventId } : {}),
+				},
+			};
 		},
 	);
 

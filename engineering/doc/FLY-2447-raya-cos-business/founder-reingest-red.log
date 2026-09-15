@@ -1,0 +1,80 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2447/packages/teamlead
+
+ ❯ |serial| src/bridge/__tests__/founder-reply-deliverer.test.ts (47 tests | 1 failed) 2679ms
+   × FLY-1392 v2 founder ingress > advances past a quoted reply already ingested by a producer without reference metadata 114ms
+     → expected 'process_failed' to be 'advanced' // Object.is equality
+   ✓ FLY-1392 v2 founder ingress > routes explicit learning replies before broad classification (handled) 20ms
+   ✓ FLY-1392 v2 founder ingress > routes explicit learning replies before broad classification (retry) 31ms
+   ✓ FLY-1392 v2 founder ingress > records one canonical row and forwards founder text unchanged to Lead 86ms
+   ✓ FLY-1392 v2 founder ingress > consumes superseded ship-card ship and guides approval to the latest card 21ms
+   ✓ FLY-1392 v2 founder ingress > consumes superseded ship-card 通过 and guides approval to the latest card 33ms
+   ✓ FLY-1392 v2 founder ingress > alerts on an approved-origin superseded-card reply without approving the current gate 39ms
+   ✓ FLY-1392 v2 founder ingress > pins an old-card reply when the durable Lead alert cannot be recorded 21ms
+   ✓ FLY-1392 v2 founder ingress > keeps founder review discussion open and relays it to Lead 82ms
+   ✓ FLY-1392 v2 founder ingress > keeps plain text out of ship handling while multiple review rounds are pending 57ms
+   ✓ FLY-1392 v2 founder ingress > still routes explicit ship-card approve after the learning observer declines it 49ms
+   ✓ FLY-1392 v2 founder ingress > still routes explicit ship-card reject after the learning observer declines it 38ms
+   ✓ FLY-1392 v2 founder ingress > never sends free thread speech through the ship verdict classifier 17ms
+   ✓ FLY-1392 v2 founder ingress > keeps legacy approval words and page summaries in free thread speech 64ms
+   ✓ FLY-1392 v2 founder ingress > does not retry guidance after default HTTP POST failure and resumes a persisted cursor 38ms
+   ✓ FLY-1392 v2 founder ingress > preserves ingress boundary '通过' '123456789012345678' 'approve_to_ship' undefined 163ms
+   ✓ FLY-1392 v2 founder ingress > preserves ingress boundary '通过' '123456789012345678' 'founder_review' { …(2) } 26ms
+   ✓ FLY-1392 v2 founder ingress > preserves ingress boundary '通过' '123456789012345678' 'founder_review' { …(2) } 47ms
+   ✓ FLY-1392 v2 founder ingress > preserves ingress boundary '通过' 'other' 'founder_review' undefined 42ms
+   ✓ FLY-1392 v2 founder ingress > preserves ingress boundary '通过？' '123456789012345678' 'founder_review' undefined 30ms
+   ✓ FLY-1392 v2 founder ingress > preserves ingress boundary '可以了' '123456789012345678' 'founder_review' undefined 102ms
+   ✓ FLY-1392 v2 founder ingress > preserves ingress boundary '普通讨论' '123456789012345678' 'founder_review' undefined 21ms
+   ✓ FLY-1392 v2 founder ingress > preserves ingress boundary '通过' '123456789012345678' null undefined 19ms
+   ✓ FLY-1392 v2 founder ingress > feedback false does not block a later anchored approval 53ms
+   ✓ FLY-1392 v2 founder ingress > feedback throw does not block a later anchored approval 22ms
+   ✓ FLY-1392 v2 founder ingress > feedback stale-review does not block a later anchored approval 111ms
+   ✓ FLY-1392 v2 founder ingress > feedback superseded does not block a later anchored approval 33ms
+   ✓ FLY-1392 v2 founder ingress > deduplicates bare approval guidance for the same thread and card across scans 28ms
+   ✓ FLY-1392 v2 founder ingress > persists founder_review guidance dedup across restart while allowing a new card or thread 237ms
+   ✓ FLY-1392 v2 founder ingress > persists approve_to_ship guidance dedup across restart while allowing a new card or thread  342ms
+   ✓ FLY-1392 v2 founder ingress > skips guidance without pinning ingress when its durable claim throws 14ms
+   ✓ FLY-1392 v2 founder ingress > does not pin or repost approval guidance when its audit write throws 18ms
+   ✓ FLY-1392 v2 founder ingress > explains unanchored approval 通过 without answering the gate 70ms
+   ✓ FLY-1392 v2 founder ingress > explains unanchored approval approve without answering the gate 71ms
+   ✓ FLY-1392 v2 founder ingress > binds fixed text "approve" only when it replies to the review card 32ms
+   ✓ FLY-1392 v2 founder ingress > binds fixed text "通过" only when it replies to the review card 45ms
+   ✓ FLY-1392 v2 founder ingress > explains a neither verdict at most once per review round 25ms
+   ✓ FLY-1392 v2 founder ingress > warns when an explicit kickback closes without page feedback 46ms
+   ✓ FLY-1392 v2 founder ingress > does not bind a page summary marker for a different issue 33ms
+   ✓ FLY-1392 v2 founder ingress > keeps a late page summary out of an open ship gate 25ms
+   ✓ FLY-1392 v2 founder ingress > does not let a reply to an older founder_review card decide the newer round 69ms
+   ✓ FLY-1392 v2 founder ingress > is category agnostic: a founder message with zero questions still enters the same path 21ms
+   ✓ FLY-1392 v2 founder ingress > ignores non-founder and bot-authored traffic 48ms
+   ✓ FLY-1392 v2 founder ingress > pins the cursor when the durable Lead handoff is absent or fails 70ms
+   ✓ FLY-1392 v2 founder ingress > retries an idempotent canonical row and advances after handoff recovery 31ms
+   ✓ FLY-1392 v2 founder ingress > does not advance on a Discord read failure 58ms
+   ✓ FLY-1392 v2 founder ingress > bootstraps an unseen thread at its current head without replaying history 14ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |serial| src/bridge/__tests__/founder-reply-deliverer.test.ts > FLY-1392 v2 founder ingress > advances past a quoted reply already ingested by a producer without reference metadata
+AssertionError: expected 'process_failed' to be 'advanced' // Object.is equality
+
+Expected: "advanced"
+Received: "process_failed"
+
+ ❯ src/bridge/__tests__/founder-reply-deliverer.test.ts:224:25
+    222|    deliverAmbiguousToLead: handoff,
+    223|   });
+    224|   expect(result.result).toBe("advanced");
+       |                         ^
+    225|   expect(cursor.load(THREAD)).toBe(next.id);
+    226|   expect(handoff).toHaveBeenCalledTimes(2);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 46 passed (47)
+   Start at  01:16:18
+   Duration  8.16s (transform 3.10s, setup 18ms, collect 4.84s, tests 2.68s, environment 0ms, prepare 56ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2447/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/bridge/__tests__/founder-reply-deliverer.test.ts

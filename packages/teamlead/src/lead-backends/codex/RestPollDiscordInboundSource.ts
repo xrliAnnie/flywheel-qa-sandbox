@@ -41,7 +41,11 @@ interface RawDiscordMessage {
 	/** FLY-267: Discord populates `mentions` with the @-mentioned user objects. */
 	mentions?: Array<{ id?: string }>;
 	/** FLY-314 fix: set on a Discord REPLY → the message this one replies to. */
-	message_reference?: { message_id?: string };
+	message_reference?: {
+		message_id?: string;
+		channel_id?: string;
+		type?: number;
+	};
 	/** FLY-898: Discord includes the FULL referenced message object on a reply (by
 	 * default). Its author id lets the gate recognize a reply to THIS bot's own
 	 * message as an explicit address (reply-to-self). Absent when the referenced
@@ -288,6 +292,95 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 		}
 	}
 
+	proactiveCursor(channelId: string): string | undefined {
+		const memory = this.lastSeen.get(channelId),
+			disk = this.cursorStore?.load(channelId);
+		return memory && disk
+			? BigInt(memory) > BigInt(disk)
+				? memory
+				: disk
+			: (memory ?? disk);
+	}
+
+	/** Resume a proactive root gap without the first-run baseline. Progress belongs
+	 * to the subscription ledger; the public cursor never moves backwards. */
+	async catchUpProactiveChannel(
+		channelId: string,
+		opts: {
+			after: string;
+			through?: string;
+			maxPages?: number;
+			saveProgress(after: string): void;
+			assertCurrentOwner(): void;
+		},
+	): Promise<"pending" | "ready"> {
+		const valid = (id: string) => /^\d{17,20}$/.test(id);
+		if (
+			!valid(channelId) ||
+			!valid(opts.after) ||
+			(opts.through !== undefined && !valid(opts.through))
+		)
+			throw new Error("invalid proactive cursor");
+		if (!this.cursorStore || !this.handler)
+			throw new Error("proactive intake unavailable");
+		opts.assertCurrentOwner();
+		if (!this.cursorStore.load(channelId))
+			this.cursorStore.save(channelId, opts.after);
+		let after = opts.after;
+		const finish = (): "ready" => {
+			opts.assertCurrentOwner();
+			const current =
+				this.lastSeen.get(channelId) ?? this.cursorStore!.load(channelId);
+			const next = current && BigInt(current) > BigInt(after) ? current : after;
+			this.cursorStore!.save(channelId, next);
+			this.lastSeen.set(channelId, next);
+			this.ready.add(channelId);
+			this.dynamicChannels.add(channelId);
+			return "ready";
+		};
+		const maxPages = Math.max(1, Math.min(20, opts.maxPages ?? 20));
+		for (let page = 0; page < maxPages; page++) {
+			opts.assertCurrentOwner();
+			if (opts.through && BigInt(after) >= BigInt(opts.through))
+				return finish();
+			const messages = await this.observedFetchMessages(channelId, after);
+			opts.assertCurrentOwner();
+			const ordered = [...messages].sort((a, b) =>
+				BigInt(a.id) < BigInt(b.id) ? -1 : 1,
+			);
+			for (const message of ordered) {
+				if (
+					!valid(message.id) ||
+					(message.channel_id && message.channel_id !== channelId)
+				)
+					throw new Error("invalid proactive message");
+				if (BigInt(message.id) <= BigInt(after))
+					throw new Error("proactive cursor did not advance");
+				if (opts.through && BigInt(message.id) > BigInt(opts.through)) {
+					opts.saveProgress(opts.through);
+					after = opts.through;
+					return finish();
+				}
+				opts.assertCurrentOwner();
+				if (!this.deliver({ ...message, channel_id: channelId }))
+					return "pending";
+				opts.assertCurrentOwner();
+				opts.saveProgress(message.id);
+				after = message.id;
+			}
+			if (opts.through && BigInt(after) >= BigInt(opts.through))
+				return finish();
+			if (messages.length === 0) {
+				if (opts.through) {
+					opts.saveProgress(opts.through);
+					after = opts.through;
+				}
+				return finish();
+			}
+		}
+		return "pending";
+	}
+
 	/**
 	 * FLY-314 Phase 2: stop polling a dynamic channel. KEEPS its cursor/lastSeen so a
 	 * re-add RESUMES (Codex review R1#10: cap eviction drops the active polling slot,
@@ -440,6 +533,19 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 				referencedMessageId: m.message_reference?.message_id,
 				// FLY-898: author of the replied-to message → reply-to-self address signal.
 				referencedAuthorId: m.referenced_message?.author?.id,
+				...(m.message_reference?.message_id &&
+				(m.message_reference.type === undefined ||
+					m.message_reference.type === 0)
+					? {
+							replyTo: {
+								messageId: m.message_reference.message_id,
+								channelId: m.message_reference.channel_id ?? m.channel_id ?? "",
+								...(m.referenced_message?.author?.id
+									? { authorId: m.referenced_message.author.id }
+									: {}),
+							},
+						}
+					: {}),
 			});
 		} catch (err) {
 			this.logger.warn("inbound handler threw (will retry)", {

@@ -254,3 +254,59 @@ describe("FLY-676 — proactive roundtable guard (Option B; FLY-680 owns the rea
 		});
 	});
 });
+
+it("uses the host capability for roundtable and leaves pending engagement retryable", async () => {
+	const bridgeSend = vi
+		.fn()
+		.mockResolvedValueOnce({
+			messageId: "22222222222222222",
+			engagement: "pending",
+		})
+		.mockResolvedValue({
+			messageId: "22222222222222222",
+			engagement: "ready",
+			threadId: "22222222222222222",
+		});
+	const { deps, post } = makeDeps({
+		roundtableAutoContinue: true,
+		bridgeSend,
+		bridgeRoundtableEngage: async () => true,
+		eventId: "event",
+	});
+	expect(await runDiscordSend("roundtable", "question", deps)).toMatchObject({
+		status: "pending",
+		sendStatus: "sent",
+		engagement: "pending",
+	});
+	expect(await runDiscordSend("roundtable", "question", deps)).toMatchObject({
+		status: "sent",
+		engagement: "ready",
+		threadId: "22222222222222222",
+	});
+	expect(bridgeSend).toHaveBeenCalledTimes(2);
+	expect(bridgeSend.mock.calls[0][0].roundtableEngage).toBe(true);
+	expect(post).not.toHaveBeenCalled();
+});
+it("refuses a missing live capability before allocating, sending or consuming rate capacity", async () => {
+	const bridgeSend = vi.fn(),
+		allocateEventId = vi.fn();
+	const { deps } = makeDeps({
+		roundtableAutoContinue: true,
+		bridgeSend,
+		bridgeRoundtableEngage: async () => false,
+		allocateEventId,
+	});
+	expect((await runDiscordSend("roundtable", "q", deps)).ok).toBe(false);
+	expect(bridgeSend).not.toHaveBeenCalled();
+	expect(allocateEventId).not.toHaveBeenCalled();
+});
+
+it("returns a precise retry delay for a rate-limited send", async () => {
+	const { deps } = makeDeps();
+	await runDiscordSend("chat", "one", deps);
+	await runDiscordSend("chat", "two", deps);
+	expect(await runDiscordSend("chat", "three", deps)).toMatchObject({
+		status: "rate_limited",
+		retryAfterMs: 60000,
+	});
+});

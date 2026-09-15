@@ -58,6 +58,8 @@ export interface DiscordInboundMessage {
 	 * doesn't carry the referenced message's author (deleted / not a reply / no
 	 * permission) → reply-to-self simply does not trigger (safe, strict). */
 	referencedAuthorId?: string;
+	/** Platform reply reference, independent of outbound thread routing. */
+	replyTo?: { messageId: string; channelId: string; authorId?: string };
 }
 
 /** The injected Discord connection (real impl wraps discord.js / the adapter).
@@ -206,10 +208,10 @@ export class CodexDiscordGateway {
 	 * exception, so the listener keeps running.
 	 */
 	handle(msg: DiscordInboundMessage): boolean {
-		// Filters are pure predicates (no I/O) — an intentional drop is terminal, so
-		// it is safe to advance past it.
-		if (!this.passesFilters(msg)) return true;
+		// A policy drop is terminal. Durable admission errors must reach the catch
+		// below so the source retains its cursor for retry.
 		try {
+			if (!this.passesFilters(msg)) return true;
 			// FLY-267 回 / FLY-314 Phase 2: tag the input with the reply channel + (when
 			// applicable) durable replyRoute metadata. resolveReplyRoute supersedes the
 			// legacy resolveReplyChannelId when wired (Codex R4 structured route).

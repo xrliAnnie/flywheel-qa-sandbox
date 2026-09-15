@@ -741,6 +741,7 @@ export class MailboxQueue {
 		input: EnqueueMailboxInput & {
 			carrier: "inbox" | "external";
 			deadLetter?: { reason: string; at: string };
+			validateExistingContent?: (content: string | undefined) => void;
 		},
 	): DiscordLaneVerdict {
 		return this.db
@@ -749,6 +750,10 @@ export class MailboxQueue {
 					input.id,
 					input.deliveryId ?? input.id,
 				);
+				if (identity)
+					input.validateExistingContent?.(
+						this.inspectDeliveryContent(identity.id),
+					);
 				if (identity?.archived_at !== null && identity !== undefined) {
 					return { lane: "archived" };
 				}

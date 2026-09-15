@@ -145,3 +145,31 @@ describe("CodexDiscordRuntimeOwnership", () => {
 		await owner.stop();
 	});
 });
+
+it("allows proactive engagement only after the gateway starts and revokes it before asynchronous shutdown finishes", async () => {
+	const h = harness({
+		acquire: async () => ({ status: "acquired", handle: handle() }),
+	});
+	let started!: () => void, finish!: () => void;
+	const waiting = new Promise<void>((r) => {
+		started = r;
+	});
+	const deferred = new Promise<void>((r) => {
+		finish = r;
+	});
+	h.gateway.start.mockImplementationOnce(async () => {
+		started();
+		await deferred;
+	});
+	expect(h.owner.proactiveReady()).toBe(false);
+	const start = h.owner.start();
+	await waiting;
+	expect(h.owner.mailboxReady()).toBe(true);
+	expect(h.owner.proactiveReady()).toBe(false);
+	finish();
+	await start;
+	expect(h.owner.proactiveReady()).toBe(true);
+	const stop = h.owner.stop();
+	expect(h.owner.proactiveReady()).toBe(false);
+	await stop;
+});

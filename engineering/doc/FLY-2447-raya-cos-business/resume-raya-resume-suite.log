@@ -1,0 +1,187 @@
+
+> @raya/cos@0.1.0 test /Users/xiaorongli/Dev/flywheel-FLY-2447/paired/raya/packages/cos
+> vitest run
+
+
+ RUN  v3.2.7 /Users/xiaorongli/Dev/flywheel-FLY-2447/paired/raya/packages/cos
+
+ ✓ src/portfolio/sampler.test.ts (6 tests) 133ms
+ ✓ src/daily-report/collector.test.ts (21 tests) 81ms
+ ✓ src/daily-report/repo-writer.test.ts (13 tests) 139ms
+ ✓ src/portfolio/coordinator.test.ts (4 tests) 299ms
+ ✓ src/capability-boundaries.test.ts (7 tests) 5ms
+ ✓ src/portfolio/render.test.ts (1 test) 45ms
+ ✓ src/contracts/drift-envelope.test.ts (3 tests) 4ms
+ ✓ src/cli.test.ts (6 tests) 654ms
+   ✓ durable business CLI > prepares, resumes, records and lists a real workspace operation  399ms
+ ✓ src/contracts/goals.test.ts (8 tests) 4ms
+ ✓ src/portfolio/goal-round.test.ts (4 tests) 1698ms
+   ✓ conversation goal updates > withdraws the prior goal and links a corrected successor while preserving the old text and identity  452ms
+   ✓ conversation goal updates > reconciles one frozen goal commit after an unknown result and preserves a failed push  708ms
+ ✓ src/business-round.test.ts (6 tests) 1698ms
+   ✓ business tool round > persists rate limit deadline and does not offer an early retry  357ms
+   ✓ business tool round > records call provenance while rejecting unversioned and unknown input fields  379ms
+ ✓ src/portfolio/sample-round.test.ts (6 tests) 3206ms
+   ✓ current-turn portfolio sampling > freezes the complete directory and retains explicit unavailable projects in a durable snapshot  605ms
+   ✓ current-turn portfolio sampling > derives aggregate availability from successful readings rather than accepting caller totals  628ms
+   ✓ current-turn portfolio sampling > closes expired collection on resume with deadline readings and never refreshes its observation time  686ms
+   ✓ current-turn portfolio sampling > resumes a failed snapshot projection from the frozen data and continues legacy sequence numbers  852ms
+ ✓ src/summary-report.test.ts (2 tests) 2550ms
+   ✓ summary round reporting > reports an empty round through the real announcement workflow without inventing a memory commit  1252ms
+   ✓ summary round reporting > refuses no-change closeout when memory is dirty or unknown  1297ms
+ ✓ src/legacy-meetings.test.ts (8 tests) 4599ms
+   ✓ backs up and imports original meeting identity while preserving trusted voice and transcript bytes  469ms
+   ✓ preserves cancelled archive and rejects corrupt, stale, conflicting or symlink inventory  425ms
+   ✓ adopts original revision and calendar into v2 without replaying an uncertain old notification  768ms
+   ✓ requires original metadata and refuses to replace an occupied trusted meeting slot  392ms
+   ✓ adopts an explicitly observed trusted live record and queries its existing public session  957ms
+   ✓ adopts a trusted terminal archive without touching a newer current meeting or transcript  615ms
+   ✓ prepares an originally unavailable notification once with the same meeting revision  770ms
+ ✓ src/legacy-questions.test.ts (6 tests) 4808ms
+   ✓ preserves source bytes and missing receipt uncertainty through import and replay  303ms
+   ✓ exposes plan and apply through the packaged CLI protocol  375ms
+   ✓ recovers original identity into ordinary question flow and resumes after restart without a second request  1016ms
+   ✓ requires original metadata and rejects ambiguous delivery or terminal requests  2830ms
+ ✓ src/question-round.test.ts (10 tests) 4907ms
+   ✓ directed business questions > prepares from durable round source without a founder message and waits for real engagement  312ms
+   ✓ directed business questions > binds replies to actual author and topic and rejects uncorrelated messages  375ms
+   ✓ directed business questions > records late replies without settling the expired question  415ms
+   ✓ directed business questions > accepts an exact request revision correlation within its topic  448ms
+   ✓ directed business questions > expires durably on resume and preserves a late reply without reopening  602ms
+   ✓ directed business questions > retains unassociated inbound messages and refuses guessed authors or altered replay bodies  502ms
+   ✓ directed business questions > recovers a reply association after the question was updated without duplicating its receipt  845ms
+   ✓ directed business questions > keeps a cancelled question cancelled when its genuine reply is associated later  832ms
+ ✓ src/daily-report/round.test.ts (7 tests) 4965ms
+   ✓ durable current-turn daily report > freezes an empty collection and sanitized generated document without external effects  521ms
+   ✓ accepts exact readable source citations and rejects omitted content  906ms
+   ✓ report repository reconciliation > creates only after absence and re-reads ambiguous creates  897ms
+   ✓ report repository reconciliation > adopts the actual existing document and validates its Git blob identity  1128ms
+   ✓ report repository reconciliation > rejects a foreign path and freezes exact created content  1059ms
+ ✓ src/migration-compatibility.test.ts (1 test) 2978ms
+   ✓ retains original goals, snapshots, summary receipts, historical patrol and memory Git history across migration and replay  2977ms
+ ✓ src/operation-store.test.ts (6 tests) 1403ms
+   ✓ OperationStore > reopens hashed identities and refuses stale revisions without losing material  373ms
+ ✓ src/daily-report/artifacts.test.ts (3 tests) 2677ms
+   ✓ durable report artifacts > writes hashed body before publication and freezes readable Unicode chunks in context  1145ms
+   ✓ durable report artifacts > does not overwrite a conflicting context and resumes after explicit artifact repair  927ms
+   ✓ durable report artifacts > rejects a body symlink on resume instead of following the target  604ms
+ ✓ src/meeting-record.test.ts (3 tests) 4ms
+ ✓ src/portfolio/patrol.test.ts (3 tests) 9ms
+ ✓ src/contracts/scoped-drift.test.ts (2 tests) 5ms
+ ✓ src/portfolio/patrol-state.test.ts (2 tests) 332ms
+ ✓ src/daily-report/storage.test.ts (5 tests) 685ms
+ ✓ src/summary-round.test.ts (9 tests) 6104ms
+   ✓ frozen summary round registration > writes the legacy round before exposing PR work and replay does not duplicate  593ms
+   ✓ frozen summary round registration > keeps empty rounds registered with the exact frozen report line  382ms
+   ✓ frozen summary round registration > preserves corrupt or symlinked legacy ledgers and does not authorize PR work  552ms
+   ✓ frozen summary round registration > recovers after legacy append but before the registered state commit  698ms
+   ✓ frozen summary round registration > requires clean canonical provenance reconciliation before new unread work  402ms
+   ✓ frozen summary round registration > writes legacy question intent before sending and projects only a real sent receipt  1527ms
+   ✓ frozen summary round registration > preserves a legacy posting with unknown delivery instead of offering a new send  900ms
+   ✓ frozen summary round registration > recovers registration after posting was appended but the prepared state failed  1008ms
+ ✓ src/contracts/lead-ask.test.ts (3 tests) 2ms
+ ✓ src/summary-absorption.test.ts (3 tests) 5ms
+ ✓ src/summary-workflow.test.ts (6 tests) 6376ms
+   ✓ summary understanding and merge workflow > requires understanding and a fresh head check before issuing expected-head merge  825ms
+   ✓ summary understanding and merge workflow > blocks changed heads and foreign evidence references  865ms
+   ✓ summary understanding and merge workflow > rejects incomplete or out-of-scope diff material  1721ms
+   ✓ summary understanding and merge workflow > keeps unclear material open and requires substantive understanding  777ms
+   ✓ summary understanding and merge workflow > reconciles an uncertain merge against canonical GitHub state after restart  1052ms
+   ✓ summary understanding and merge workflow > requires evidence for every reviewed file and rejects missing Judgment  1136ms
+ ✓ src/contracts/portfolio-marks.test.ts (1 test) 2ms
+ ✓ src/daily-report/options.test.ts (22 tests) 14ms
+ ✓ src/summary-reconciliation.test.ts (4 tests) 2073ms
+   ✓ canonical summary memory reconciliation > finds missing provenance in an empty unread round without treating merged material as unread  580ms
+   ✓ canonical summary memory reconciliation > requires exact path, PR, head and historical round provenance  584ms
+   ✓ canonical summary memory reconciliation > preserves unknown and dirty memory without authorizing updates  565ms
+   ✓ canonical summary memory reconciliation > rejects stale main and cross-project canonical file attribution  344ms
+ ✓ src/daily-report/failure-notice.test.ts (2 tests) 1295ms
+   ✓ daily failure notice > freezes one notice while preserving the failed stage for independent recovery  654ms
+   ✓ daily failure notice > only acknowledges a notice with an exact real announcement receipt  640ms
+ ✓ src/question-store.test.ts (2 tests) 219ms
+ ✓ src/portfolio/evidence-gate.test.ts (5 tests) 3ms
+ ✓ src/daily-report/business.test.ts (3 tests) 23ms
+ ✓ src/daily-report/reply-round.test.ts (3 tests) 5776ms
+   ✓ report discussion association > binds a real chunk reply, rereads the exact report, and preserves feedback once  1680ms
+   ✓ report discussion association > never falls back from a foreign replyTo to a guessed report and rejects a non-founder  1593ms
+   ✓ report discussion association > uses only an unambiguous explicit date when no replyTo exists  2502ms
+ ✓ src/summary-memory.test.ts (9 tests) 7021ms
+   ✓ summary memory draft > preserves existing content and freezes provenance and expected base before any write  521ms
+   ✓ summary memory draft > rejects stale bases, empty understanding and foreign provenance  508ms
+   ✓ summary memory draft > preserves a frozen base on replay and rejects replacing a prepared entry  838ms
+   ✓ summary memory draft > freezes finalization and reconciles an unknown commit without offering another write  1023ms
+   ✓ summary memory draft > rejects unrelated commit content and mismatched parent  822ms
+   ✓ summary memory draft > does not finalize while a frozen PR has no review outcome  600ms
+   ✓ summary memory draft > does not omit historical provenance gaps from the final commit  703ms
+   ✓ summary memory draft > admits unread work only after every historical gap has a frozen draft on the clean observed base  749ms
+   ✓ summary memory draft > keeps the original memory commit recoverable after reporting a failed push  1256ms
+ ✓ src/daily-report/generator.test.ts (2 tests) 3ms
+ ✓ src/portfolio/snapshot-store.test.ts (4 tests) 1692ms
+   ✓ SnapshotStore > does not let an out-of-order completion move latest backward  301ms
+   ✓ SnapshotStore > keeps the newest 50 snapshot files and reports each prune  1158ms
+ ✓ src/formatting/discord-text.test.ts (2 tests) 3ms
+ ✓ src/portfolio/transport-boundary.test.ts (2 tests) 3ms
+ ✓ src/meeting-context.test.ts (1 test) 4ms
+ ✓ src/daily-report/delivery.test.ts (1 test) 5ms
+ ✓ src/daily-report/transport-boundary.test.ts (2 tests) 3ms
+ ✓ src/meeting-store.test.ts (1 test) 112ms
+ ✓ src/daily-report/controller.test.ts (8 tests) 2ms
+ ✓ src/meeting-calendar.test.ts (1 test) 4ms
+ ✓ src/daily-report/migration.test.ts (25 tests) 8285ms
+   ✓ backs up exact legacy evidence before reserving its date and preserves replay identity  645ms
+   ✓ reserves uncertain delivery without offering a resend and keeps exact backup bytes  470ms
+   ✓ reconciles ingested from exact repository evidence without upgrading delivery  694ms
+   ✓ reconciles ingested_unknown from exact repository evidence without upgrading delivery  804ms
+   ✓ reconciles posting from exact repository evidence without upgrading delivery  1142ms
+   ✓ reconciles posted from exact repository evidence without upgrading delivery  880ms
+   ✓ recovers a generated draft only after absence evidence, preserving backed-up body  1208ms
+   ✓ resumes an ungenerated original date only after absence and a matching valid wake  596ms
+   ✓ preserves terminal failed state during import  415ms
+   ✓ settles an old failure notice only from its exact message evidence  420ms
+   ✓ finishes an unattempted legacy failure notice through the standard announcement receipt  549ms
+ ✓ src/action-policy.test.ts (2 tests) 3ms
+ ✓ src/meeting-round.test.ts (13 tests) 7749ms
+   ✓ durable meeting planning > applies a source change once and preserves old revisions across reschedule and cancellation  431ms
+   ✓ durable meeting planning > keeps calendar success independent from notification and rejects stale revision receipts  458ms
+   ✓ allows separate single-target UUIDs from one multi-target request  309ms
+   ✓ meeting roundtable notification > waits for sent and engagement-ready evidence without conflating calendar success  660ms
+   ✓ meeting roundtable notification > rejects old notification receipts after a new meeting revision  463ms
+   ✓ records unavailable contact data without discarding an already frozen notice  431ms
+   ✓ trusted meeting activation > persists starting for the public voice handoff  604ms
+   ✓ trusted meeting activation > resumes the frozen projection after an interrupted write without changing its version  601ms
+   ✓ public voice lifecycle receipts > reserves start once and treats accepted as starting until a bound live status  1038ms
+   ✓ public voice lifecycle receipts > rejects contradictory equal-time observations and reports uncertain calls  1059ms
+   ✓ public voice lifecycle receipts > requires a founder stop source and final bound status before closing the meeting  1262ms
+ ✓ src/metrics.test.ts (1 test) 51ms
+ ✓ src/portfolio/patrol-round.test.ts (8 tests) 7834ms
+   ✓ standard-turn durable patrol > validates observations before send and rechecks changed goals on resume  913ms
+   ✓ standard-turn durable patrol > expires a prepared send instead of issuing stale evidence on the next turn  800ms
+   ✓ standard-turn durable patrol > records a reasoned silent outcome without a sending intention  915ms
+   ✓ patrol outbound recovery > blocks a substituted latest snapshot and unsafe goals files  1107ms
+   ✓ patrol outbound recovery > retains ambiguous sends for reconciliation and records late confirmed facts  1221ms
+   ✓ patrol directed questions > allows questions about unavailable readings but completes only on confirmed sending  1314ms
+   ✓ patrol directed questions > records cancellation without claiming a question was sent  835ms
+   ✓ patrol directed questions > rejects unrelated questions and nonexistent or cross-target evidence  728ms
+ ✓ src/daily-report/send-round.test.ts (4 tests) 8112ms
+   ✓ durable report chunk delivery > reserves before sending and resumes unknown outcomes without issuing another send  1231ms
+   ✓ durable report chunk delivery > enforces four attempts in sixty seconds and respects platform retryAfterMs  3191ms
+   ✓ durable report chunk delivery > does not mark posted until every chunk has a bound sent receipt  2789ms
+   ✓ shares the reservation budget across catch-up dates and keeps internal budget out of status  901ms
+HEAD is now at 0369bf6 initial
+ ✓ src/portfolio/goal-store.test.ts (10 tests) 18420ms
+   ✓ GoalStore > records and withdraws goals through a path-scoped nested-repository transaction  5490ms
+   ✓ GoalStore > rejects secret-like text and a dirty goals path before writing  3297ms
+   ✓ GoalStore > renames a corrupt goals file instead of overwriting it  692ms
+   ✓ GoalStore > restores the worktree preimage when compare-and-swap detects a moved head  1040ms
+   ✓ GoalStore > keeps a verified commit after index sync failure and reconciles it on the next operation  3473ms
+   ✓ GoalStore > commits the generated blob while preserving an external post-rename write  1004ms
+   ✓ GoalStore > restores the preimage after plumbing failure so the next operation can succeed  1537ms
+   ✓ GoalStore > rolls back the ref and worktree when post-commit blob verification fails  971ms
+   ✓ GoalStore > fails loudly for detached or non-repository memory directories  459ms
+   ✓ GoalStore > fails preflight when the memory repository has no local Git identity  454ms
+
+ Test Files  55 passed (55)
+      Tests  302 passed (302)
+   Start at  00:36:06
+   Duration  19.59s (transform 3.19s, setup 0ms, collect 17.96s, tests 119.08s, environment 8ms, prepare 8.56s)
+

@@ -26,6 +26,7 @@ import type {
 import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import { MailboxTransport } from "../mailbox/MailboxTransport.js";
 import {
+	formatBusinessWake,
 	formatDetectionEscalation,
 	formatDetectionSuspicious,
 	formatDurationMs,
@@ -225,6 +226,7 @@ export class MailboxLeadRuntime implements LeadRuntime {
 		const e = env.event;
 		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
 		if (e.event_type === "summary_due") return formatSummaryDue(env);
+		if (e.event_type === "business_wake") return formatBusinessWake(env);
 		if (e.event_type === "workflow_replacement_eligibility") {
 			return formatWorkflowReplacementEligibility(env);
 		}

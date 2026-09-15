@@ -786,6 +786,14 @@ describe("FLY-350 full-access profile (= Claude-equal, opt-in)", () => {
 			'mcp_servers.lead_actions.env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES="roundtable:222"',
 		);
 	});
+	it("pins the wrapper-selected registry in the lead-actions child", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			fullAccessEnv({ FLYWHEEL_PROJECTS_FILE: "/registry/projects.json" }),
+		);
+		expect(dryRunReport(config).join("\n")).toContain(
+			'mcp_servers.lead_actions.env.FLYWHEEL_PROJECTS_FILE="/registry/projects.json"',
+		);
+	});
 
 	// R2#1: the boot log must reflect a valid pin (not say "ambiguous") so operator
 	// preflight evidence matches what the MCP child actually authorizes.

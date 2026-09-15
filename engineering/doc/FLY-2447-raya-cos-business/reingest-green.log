@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2447/packages/flywheel-comm
+
+ ✓ src/__tests__/discord-chat-ingest.test.ts (29 tests) 765ms
+
+ Test Files  1 passed (1)
+      Tests  29 passed (29)
+   Start at  01:16:52
+   Duration  2.86s (transform 758ms, setup 22ms, collect 1.09s, tests 765ms, environment 0ms, prepare 163ms)
+

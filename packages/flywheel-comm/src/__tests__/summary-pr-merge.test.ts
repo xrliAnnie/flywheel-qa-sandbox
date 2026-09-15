@@ -52,39 +52,95 @@ function deps(gh = github()) {
 }
 
 describe("summary merge safety fence", () => {
-	it("binds the only merge call to the exact verified head and records arrays", async () => {
-		const gh = github();
-		const d = deps(gh);
+	it.each([false, true])(
+		"rejects a head different from the understood head (merged=%s)",
+		async (merged) => {
+			const gh = github();
+			gh.readPullRequest.mockResolvedValue({
+				headSha: SHA,
+				state: "open",
+				merged,
+				baseRepo: "xrliAnnie/raya",
+				baseRef: "main",
+			});
+			const d = deps(gh);
+			await expect(
+				mergeSummaryPullRequest(
+					{ repo: "xrliAnnie/raya", prNumber: 7, expectedHeadSha: OTHER_SHA },
+					d,
+				),
+			).rejects.toThrow(/summary_merge_expected_head_mismatch/);
+			expect(gh.mergePullRequest).not.toHaveBeenCalled();
+			expect(d.appendLedgerRow).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["", "abc", "a".repeat(41), "g".repeat(40)])(
+		"rejects malformed expected head %s before transport",
+		async (expectedHeadSha) => {
+			const d = deps();
+			await expect(
+				mergeSummaryPullRequest(
+					{ repo: "xrliAnnie/raya", prNumber: 7, expectedHeadSha },
+					d,
+				),
+			).rejects.toThrow(/summary_merge_expected_head_invalid/);
+			expect(d.github.readPullRequest).not.toHaveBeenCalled();
+		},
+	);
+
+	it("retains the full mechanical diff guard with a matching understood head", async () => {
+		const gh = github({
+			listPullRequestFiles: vi.fn(async () => [
+				{ path: "scripts/pwn.sh", status: "added" },
+			]),
+		});
 		await expect(
 			mergeSummaryPullRequest(
-				{
-					repo: "xrliAnnie/raya",
-					prNumber: 7,
-					roundId: "round-7",
-				},
-				d,
+				{ repo: "xrliAnnie/raya", prNumber: 7, expectedHeadSha: SHA },
+				deps(gh),
 			),
-		).resolves.toMatchObject({ action: "merged", verifiedHeadSha: SHA });
-		expect(gh.mergePullRequest).toHaveBeenCalledExactlyOnceWith({
-			repo: "xrliAnnie/raya",
-			prNumber: 7,
-			verifiedHeadSha: SHA,
-			method: "merge",
-		});
-		expect(d.appendLedgerRow).toHaveBeenCalledExactlyOnceWith(
-			"/lead-workspace/state/summary-merge-receipts.jsonl",
-			expect.objectContaining({
-				type: "merge",
-				roundId: "round-7",
+		).rejects.toThrow(/summary_pr_path_unsafe/);
+		expect(gh.mergePullRequest).not.toHaveBeenCalled();
+	});
+
+	it.each([undefined, SHA, SHA.toUpperCase()])(
+		"binds the merge call to the verified head with expected head %s",
+		async (expectedHeadSha) => {
+			const gh = github();
+			const d = deps(gh);
+			await expect(
+				mergeSummaryPullRequest(
+					{
+						repo: "xrliAnnie/raya",
+						prNumber: 7,
+						roundId: "round-7",
+						expectedHeadSha,
+					},
+					d,
+				),
+			).resolves.toMatchObject({ action: "merged", verifiedHeadSha: SHA });
+			expect(gh.mergePullRequest).toHaveBeenCalledExactlyOnceWith({
 				repo: "xrliAnnie/raya",
-				pr: 7,
-				projects: ["flywheel"],
-				files: [PATH],
+				prNumber: 7,
 				verifiedHeadSha: SHA,
 				method: "merge",
-			}),
-		);
-	});
+			});
+			expect(d.appendLedgerRow).toHaveBeenCalledExactlyOnceWith(
+				"/lead-workspace/state/summary-merge-receipts.jsonl",
+				expect.objectContaining({
+					type: "merge",
+					roundId: "round-7",
+					repo: "xrliAnnie/raya",
+					pr: 7,
+					projects: ["flywheel"],
+					files: [PATH],
+					verifiedHeadSha: SHA,
+					method: "merge",
+				}),
+			);
+		},
+	);
 
 	it.each(["xrliAnnie/other", "geoforge3d/project"])(
 		"rejects forbidden repository %s before GitHub transport",

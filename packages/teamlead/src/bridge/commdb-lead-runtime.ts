@@ -13,6 +13,7 @@ import { formatBootstrap } from "./bootstrap-format.js";
 import { CommDB } from "flywheel-comm/db";
 import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import {
+	formatBusinessWake,
 	formatDetectionEscalation,
 	formatDetectionSuspicious,
 	formatDurationMs,
@@ -100,6 +101,7 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		const e = env.event;
 		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
 		if (e.event_type === "summary_due") return formatSummaryDue(env);
+		if (e.event_type === "business_wake") return formatBusinessWake(env);
 		if (e.event_type === "workflow_replacement_eligibility") {
 			return formatWorkflowReplacementEligibility(env);
 		}

@@ -1167,6 +1167,15 @@ export function buildTuiGeneration(
 							leadId: config.leadId,
 							router,
 							authSecret: config.botToken,
+							...(replyInThread?.autoContinue && config.replyInThread
+								? {
+										proactiveTopic: {
+											parentChannelId: config.replyInThread.parentChannelId,
+											isCurrentOwner: (): boolean => ownership.proactiveReady(),
+											engage: replyInThread.onProactiveTopicEngaged,
+										},
+									}
+								: {}),
 							...(replyInThread
 								? {
 										subscriptions: {
@@ -1507,6 +1516,7 @@ export async function main(
 			);
 		}
 		const expectedMcp = buildFullAccessLeadActionsMcpServerConfig({
+			projectsFile: env.FLYWHEEL_PROJECTS_FILE,
 			runnerContext: config.runnerActionContext,
 			nodeBin: env.FLYWHEEL_LEAD_ACTIONS_NODE_BIN?.trim() || "node",
 			mainJsPath,

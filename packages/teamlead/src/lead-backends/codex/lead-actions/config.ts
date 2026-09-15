@@ -7,9 +7,12 @@
  * by the entrypoint and never stored in this config object.
  */
 
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { parseExplicitAliases } from "./alias-allowlist.js";
 
 export interface LeadActionsConfig {
+	projectsFile: string;
 	leadId: string;
 	projectName: string;
 	/** The Lead's own chat channel (alias "chat"). */
@@ -58,6 +61,11 @@ export function parseLeadActionsConfig(
 		return v ?? "";
 	};
 	const leadId = req("FLYWHEEL_LEAD_ID");
+	const projectsFile =
+		env.FLYWHEEL_PROJECTS_FILE?.trim() ||
+		join(homedir(), ".flywheel", "projects.json");
+	if (!isAbsolute(projectsFile))
+		throw new Error("projectsFile must be absolute");
 	const projectName = req("FLYWHEEL_PROJECT_NAME");
 	const chatChannelId = req("FLYWHEEL_LEAD_CHAT_CHANNEL_ID");
 	const stateDir = req("FLYWHEEL_LEAD_ACTIONS_STATE_DIR");
@@ -81,6 +89,7 @@ export function parseLeadActionsConfig(
 		.map((s) => s.trim())
 		.filter((s) => s.length > 0);
 	return {
+		projectsFile,
 		leadId,
 		projectName,
 		chatChannelId,

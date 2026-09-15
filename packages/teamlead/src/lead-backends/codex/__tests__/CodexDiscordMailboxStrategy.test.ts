@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexDiscordMailboxStrategy } from "../CodexDiscordMailboxStrategy.js";
 import { ExternalReceiptSaga } from "../ExternalReceiptSaga.js";
 import { InMemoryJournalStore, LeadJournal } from "../LeadJournal.js";
+import { RestPollDiscordInboundSource } from "../RestPollDiscordInboundSource.js";
 
 const queues: MailboxQueue[] = [];
 afterEach(() => queues.splice(0).forEach((queue) => queue.close()));
@@ -40,10 +41,67 @@ function setup() {
 		payload: "hello",
 		createdAt: "2026-08-10T12:00:00.000Z",
 	};
-	return { queue, journal, submit, complete, saga, strategy, input };
+	return { dbPath, queue, journal, submit, complete, saga, strategy, input };
 }
 
 describe("CodexDiscordMailboxStrategy", () => {
+	it("carries a REST quote reply into the persisted rendered turn after reopening the mailbox", async () => {
+		const state = setup();
+		const channelId = state.input.message.channelId;
+		let messages = [
+			{
+				id: "100",
+				channel_id: channelId,
+				content: "root",
+				author: { id: "200", bot: false },
+			},
+		];
+		const source = new RestPollDiscordInboundSource({
+			botToken: "fixture",
+			channelIds: [channelId],
+			setTimer: () => ({ cancel() {} }),
+			fetchImpl: vi.fn(async () => ({
+				ok: true,
+				status: 200,
+				json: async () => messages,
+			})) as unknown as typeof fetch,
+		});
+		source.onMessage(
+			(message) =>
+				state.strategy.accept({
+					...state.input,
+					message,
+					payload: message.content,
+				}) === "handled",
+		);
+		try {
+			await source.start();
+			messages = [
+				{
+					id: "101",
+					channel_id: channelId,
+					content: "old report feedback",
+					author: { id: "200", bot: false },
+					message_reference: { message_id: "444", channel_id: "555" },
+					referenced_message: { author: { id: "666" } },
+				} as (typeof messages)[number],
+			];
+			await source.pollOnce();
+			state.queue.close();
+			queues.splice(queues.indexOf(state.queue), 1);
+			const reopened = new MailboxQueue(state.dbPath);
+			queues.push(reopened);
+			const row = reopened.getById("chat:lead-a:101");
+			expect(row?.delivery_content).toContain(
+				'reply_to_message_id="444" reply_to_channel_id="555" reply_to_user_id="666"',
+			);
+			expect(row?.content).toContain(
+				'"replyTo":{"messageId":"444","channelId":"555","authorId":"666"}',
+			);
+		} finally {
+			source.stop();
+		}
+	});
 	it("always enqueues Discord input through the mailbox", () => {
 		const state = setup();
 		expect(state.strategy.accept(state.input)).toBe("handled");
@@ -148,4 +206,25 @@ describe("CodexDiscordMailboxStrategy", () => {
 				?.state,
 		).toBe("ACKED");
 	});
+});
+
+it("handles duplicate reference observations without rewriting the canonical delivery", () => {
+	const state = setup();
+	const replyTo = { messageId: "444", channelId: "555", authorId: "666" };
+	const input = {
+		...state.input,
+		message: { ...state.input.message, replyTo },
+	};
+	expect(state.strategy.accept(input)).toBe("handled");
+	const original = state.queue.getById("chat:lead-a:323456789012345678");
+	expect(original?.delivery_content).toContain('reply_to_message_id="444"');
+	expect(
+		state.strategy.accept({
+			...input,
+			message: { ...input.message, replyTo: { ...replyTo, messageId: "777" } },
+		}),
+	).toBe("handled");
+	expect(state.queue.getById("chat:lead-a:323456789012345678")).toEqual(
+		original,
+	);
 });

@@ -1,0 +1,10 @@
+
+ RUN  v3.2.7 /Users/xiaorongli/Dev/flywheel-FLY-2447/paired/raya/packages/cos
+
+ ✓ src/daily-report/repo-writer.test.ts (13 tests) 94ms
+
+ Test Files  1 passed (1)
+      Tests  13 passed (13)
+   Start at  00:35:22
+   Duration  1.50s (transform 216ms, setup 0ms, collect 401ms, tests 94ms, environment 0ms, prepare 165ms)
+

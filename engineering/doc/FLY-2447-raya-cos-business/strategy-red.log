@@ -1,0 +1,40 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2447/packages/teamlead
+
+ ❯ |parallel| src/lead-backends/codex/__tests__/CodexDiscordMailboxStrategy.test.ts (7 tests | 1 failed) 270ms
+   ✓ CodexDiscordMailboxStrategy > carries a REST quote reply into the persisted rendered turn after reopening the mailbox 72ms
+   ✓ CodexDiscordMailboxStrategy > always enqueues Discord input through the mailbox 15ms
+   ✓ CodexDiscordMailboxStrategy > skips an existing inbox winner on replay 21ms
+   ✓ CodexDiscordMailboxStrategy > lets a journal-accepted winner fence a mailbox replay 18ms
+   ✓ CodexDiscordMailboxStrategy > pins the cursor until this runtime owns the ingress lock 42ms
+   ✓ CodexDiscordMailboxStrategy > repairs both cross-department crash seams without creating a second turn 88ms
+   × preserves replyTo and rejects a changed reference on duplicate delivery 14ms
+     → expected 'handled' to be 'retry' // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-backends/codex/__tests__/CodexDiscordMailboxStrategy.test.ts > preserves replyTo and rejects a changed reference on duplicate delivery
+AssertionError: expected 'handled' to be 'retry' // Object.is equality
+
+Expected: "retry"
+Received: "handled"
+
+ ❯ src/lead-backends/codex/__tests__/CodexDiscordMailboxStrategy.test.ts:227:4
+    225|    message: { ...input.message, replyTo: { ...replyTo, messageId: "777…
+    226|   }),
+    227|  ).toBe("retry");
+       |    ^
+    228| });
+    229| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 6 passed (7)
+   Start at  01:29:10
+   Duration  2.01s (transform 603ms, setup 21ms, collect 979ms, tests 270ms, environment 0ms, prepare 102ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2447/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-backends/codex/__tests__/CodexDiscordMailboxStrategy.test.ts

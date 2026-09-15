@@ -1144,6 +1144,46 @@ globalThis.fetch = async () => {
 	});
 
 	describe("chat-ingest", () => {
+		it("accepts a platform reply reference and preserves it in the mailbox", () => {
+			const replyTo = { messageId: "444", channelId: "555" };
+			const result = runCliWithInput(
+				[
+					"chat-ingest",
+					"--db",
+					dbPath,
+					"--lead",
+					"product-lead",
+					"--chat-id",
+					"123",
+					"--origin-channel-id",
+					"123",
+					"--message-id",
+					"223",
+					"--author-id",
+					"323",
+					"--author-name",
+					"Founder",
+					"--ts",
+					"2026-09-09T04:00:00.000Z",
+					"--msg-kind",
+					"guild",
+					"--reply-to-json",
+					JSON.stringify(replyTo),
+					"--content-stdin",
+				],
+				"Report feedback",
+				{ BRIDGE_URL: undefined, TEAMLEAD_API_TOKEN: undefined },
+			);
+			expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+			const db = new CommDB(dbPath);
+			try {
+				expect(
+					db.inspectMailboxDeliveryContent("chat:product-lead:223"),
+				).toContain(JSON.stringify(replyTo));
+			} finally {
+				db.close();
+			}
+		});
 		it("advertises v3 and accepts paired voice provenance flags", () => {
 			expect(
 				JSON.parse(runCli(["chat-ingest", "--version-probe"])),

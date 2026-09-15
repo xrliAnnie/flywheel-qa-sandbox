@@ -1,0 +1,12 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2447/packages/teamlead
+
+ ✓ |serial| src/bridge/__tests__/founder-reply-deliverer.test.ts (47 tests) 2690ms
+   ✓ FLY-1392 v2 founder ingress > persists founder_review guidance dedup across restart while allowing a new card or thread  322ms
+   ✓ FLY-1392 v2 founder ingress > persists approve_to_ship guidance dedup across restart while allowing a new card or thread  402ms
+
+ Test Files  1 passed (1)
+      Tests  47 passed (47)
+   Start at  01:18:23
+   Duration  9.69s (transform 3.83s, setup 23ms, collect 5.87s, tests 2.69s, environment 0ms, prepare 198ms)
+

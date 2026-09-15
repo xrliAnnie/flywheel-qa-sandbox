@@ -142,7 +142,7 @@ Commands:
   summary   Validate and deliver one Lead-authored summary PR; summary verify-pr
             validates a Raya PR's complete current-head diff and prints its verified SHA;
             summary merge --repo <owner/repo> --pr <n> [--round <id>]
-            [--method <merge|squash|rebase>] [--dry-run] atomically binds an
+            [--expected-head <sha>] [--method <merge|squash|rebase>] [--dry-run] atomically binds an
             allowed summary merge to that verified head
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
@@ -786,6 +786,7 @@ async function runChatIngest(args: string[]): Promise<void> {
 			"attachments-json": { type: "string" },
 			"reply-channel-id": { type: "string" },
 			"reply-route-json": { type: "string" },
+			"reply-to-json": { type: "string" },
 			"held-since": { type: "string" },
 			"held-reason": { type: "string" },
 			"dead-letter-reason": { type: "string" },
@@ -833,8 +834,13 @@ async function runChatIngest(args: string[]): Promise<void> {
 	};
 	let attachments: unknown;
 	let replyRoute: unknown;
+	let replyTo: unknown;
 	try {
 		attachments = JSON.parse(values["attachments-json"] ?? "[]");
+		replyTo =
+			values["reply-to-json"] === undefined
+				? undefined
+				: JSON.parse(values["reply-to-json"]);
 		replyRoute = values["reply-route-json"]
 			? JSON.parse(values["reply-route-json"])
 			: undefined;
@@ -860,6 +866,15 @@ async function runChatIngest(args: string[]): Promise<void> {
 			sizeKb: number;
 		}>,
 		text: readFileSync(0, "utf8"),
+		...(replyTo !== undefined
+			? {
+					replyTo: replyTo as {
+						messageId: string;
+						channelId: string;
+						authorId?: string;
+					},
+				}
+			: {}),
 		...(values.origin ? { origin: values.origin as "discord" | "voice" } : {}),
 		...(values["voice-session"]
 			? { voiceSessionId: values["voice-session"] }

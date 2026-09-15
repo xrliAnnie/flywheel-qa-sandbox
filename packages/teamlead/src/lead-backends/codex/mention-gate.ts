@@ -150,6 +150,12 @@ export function buildMentionGate(
 		const isShared = shared.has(msg.channelId) || isDynamicThread;
 		if (!isShared) return true; // chat/core: unchanged
 		if (isDynamicThread) {
+			if (opts.budgetStore?.admit && (!msg.authorBot || autoContinue))
+				return opts.budgetStore.admit({
+					threadId: msg.channelId,
+					sourceMessageId: msg.id,
+					authorBot: msg.authorBot,
+				});
 			// FLY-576: a NON-BOT human (founder/operator) in a registered topic thread —
 			// membership is implicit (the thread is in the registry only because THIS Lead
 			// joined it) — is handled WITHOUT an @ by DEFAULT. The human message also resets

@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2447/packages/teamlead
+
+ ✓ |parallel| src/lead-backends/codex/__tests__/CodexDiscordMailboxStrategy.test.ts (7 tests) 168ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  01:29:31
+   Duration  2.35s (transform 841ms, setup 58ms, collect 1.31s, tests 168ms, environment 0ms, prepare 145ms)
+

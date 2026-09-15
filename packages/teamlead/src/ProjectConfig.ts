@@ -58,6 +58,8 @@ export interface LeadConfig {
 	roundtableChannel?: string;
 	/** Registry-owned CoS business directory metadata; never a second identity roster. */
 	cosContext?: LeadCoSContext;
+	/** Optional declarative schedule within the registered project workspace. */
+	businessWakeFile?: "state/business-wakes.json";
 	/** Optional Discord user ID for severe follow-up DMs. */
 	alertDmUserId?: string;
 	/**
@@ -458,7 +460,10 @@ export function resolveLeadByAgentIdAcrossRegistry(
  * (canSpawnRunners normalization, deprecated-field strip, FLY-245 cross-field,
  * raw-botToken strip), MINUS the env-based bot-token resolution.
  */
-export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
+export function parseAndValidateProjects(
+	raw: unknown,
+	options: { allowEmptyLeads?: boolean } = {},
+): ProjectEntry[] {
 	if (!Array.isArray(raw)) {
 		throw new Error("FLYWHEEL_PROJECTS must be a JSON array");
 	}
@@ -507,7 +512,10 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 
 		// Validate leads config (GEO-152: 1:N multi-lead routing)
 		const leads = entry?.leads;
-		if (!Array.isArray(leads) || leads.length === 0) {
+		if (
+			!Array.isArray(leads) ||
+			(leads.length === 0 && !options.allowEmptyLeads)
+		) {
 			throw new Error(
 				`Project "${entry.projectName}" is missing "leads" config. Each project must have leads: [{ agentId, chatChannel, match: { labels: [...] } }]`,
 			);
@@ -518,6 +526,12 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}] is invalid: must be an object`,
 				);
+			}
+			if (
+				lead.businessWakeFile !== undefined &&
+				lead.businessWakeFile !== "state/business-wakes.json"
+			) {
+				throw new Error("businessWakeFile must be state/business-wakes.json");
 			}
 			if (typeof lead.agentId !== "string" || lead.agentId.length === 0) {
 				throw new Error(
@@ -1222,7 +1236,12 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 	// that the richer TeamLead schema cannot safely enforce one row at a time:
 	// bare Lead IDs, expected bot IDs, and effective state directories must all
 	// be globally unique; token-managed Leads require an independent botUserId.
-	compileLeadIdentityRegistry(raw);
+	// Read-only directories retain unstaffed projects; they have no identities to compile.
+	compileLeadIdentityRegistry(
+		options.allowEmptyLeads
+			? raw.filter((entry) => entry.leads.length > 0)
+			: raw,
+	);
 
 	return raw as ProjectEntry[];
 }

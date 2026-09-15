@@ -36,6 +36,7 @@ describe("runner-enabled full-access static MCP config", () => {
 		expect(cfg.enabledTools).toEqual([
 			"discord_send",
 			"ack_batch",
+			"directory",
 			...RUNNER_ACTION_TOOL_NAMES,
 		]);
 		expect(cfg.envVarNames).toEqual([

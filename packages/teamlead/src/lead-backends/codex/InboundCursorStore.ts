@@ -76,7 +76,7 @@ export class FileInboundCursorStore implements InboundCursorStore {
 	}
 
 	save(channelId: string, messageId: string): void {
-		const map = this.read();
+		const map = { ...this.read() };
 		if (map[channelId] === messageId) return;
 		map[channelId] = messageId;
 		mkdirSync(dirname(this.path), { recursive: true });
@@ -96,5 +96,6 @@ export class FileInboundCursorStore implements InboundCursorStore {
 			closeSync(fd);
 		}
 		renameSync(tmp, this.path);
+		this.cache = map;
 	}
 }

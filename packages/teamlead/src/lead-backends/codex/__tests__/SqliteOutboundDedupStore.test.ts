@@ -1,10 +1,12 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	CodexLeadOutboundHandler,
 	type DiscordSendFn,
+	InMemoryOutboundDedupStore,
 } from "../CodexLeadOutboundHandler.js";
 import { SqliteOutboundDedupStore } from "../SqliteOutboundDedupStore.js";
 
@@ -111,5 +113,104 @@ describe("SqliteOutboundDedupStore — durable across reopen + handler integrati
 		expect(r2).toMatchObject({ status: "deduped", messageId: "msg-1" });
 		expect(n).toBe(1); // sent exactly once
 		store.close();
+	});
+});
+
+describe("proactive roundtable dedup persistence", () => {
+	const binding = {
+		projectName: "p",
+		leadId: "l",
+		parentChannelId: "12345678901234567",
+		payloadHash: "a".repeat(64),
+	};
+	it("keeps sent and pending engagement separately through reopen and marks only the bound receipt ready", () => {
+		const dir = mkdtempSync(join(tmpdir(), "rt-dedup-"));
+		const path = join(dir, "dedup.db");
+		let store = new SqliteOutboundDedupStore(path);
+		try {
+			expect(store.setInFlight("key", binding)).toBe(true);
+			expect(() =>
+				store.markEngagementReady("key", binding, "12345678901234568"),
+			).toThrow();
+			store.markSent("key", "12345678901234568");
+			store.close();
+			store = new SqliteOutboundDedupStore(path);
+			expect(store.get("key")).toMatchObject({
+				status: "sent",
+				messageId: "12345678901234568",
+				binding,
+				engagement: "pending",
+			});
+			expect(() =>
+				store.setInFlight("key", { ...binding, leadId: "other" }),
+			).toThrow(/binding/);
+			expect(() =>
+				store.markEngagementReady("key", binding, "12345678901234569"),
+			).toThrow();
+			store.markEngagementReady("key", binding, "12345678901234568");
+			expect(store.setInFlight("key", binding)).toBe(false);
+			store.close();
+			store = new SqliteOutboundDedupStore(path);
+			expect(store.get("key")).toMatchObject({ engagement: "ready", binding });
+			const oldReader = new Database(path, { readonly: true });
+			try {
+				expect(
+					oldReader
+						.prepare(
+							"SELECT status, message_id FROM outbound_dedup WHERE idempotency_key = ?",
+						)
+						.get("key"),
+				).toEqual({ status: "sent", message_id: "12345678901234568" });
+			} finally {
+				oldReader.close();
+			}
+			expect(() => store.markSent("key", "12345678901234569")).toThrow();
+			expect(store.get("key")?.messageId).toBe("12345678901234568");
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	it("keeps the in-memory contract identical and prevents binding mutation by callers", () => {
+		const store = new InMemoryOutboundDedupStore();
+		const input = { ...binding };
+		store.setInFlight("k", input);
+		input.leadId = "changed";
+		const returned = store.get("k")!;
+		returned.binding!.leadId = "changed-again";
+		store.markSent("k", "12345678901234568");
+		store.markEngagementReady("k", binding, "12345678901234568");
+		expect(store.get("k")).toMatchObject({
+			binding,
+			engagement: "ready",
+			status: "sent",
+		});
+		expect(() => store.setInFlight("k")).toThrow(/binding/);
+	});
+
+	it("migrates old rows without granting them an engagement binding", () => {
+		const dir = mkdtempSync(join(tmpdir(), "rt-dedup-old-"));
+		const path = join(dir, "dedup.db");
+		const old = new Database(path);
+		old.exec(
+			"CREATE TABLE outbound_dedup (idempotency_key TEXT PRIMARY KEY, status TEXT NOT NULL, message_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); INSERT INTO outbound_dedup VALUES ('old', 'sent', 'old-message', 1, 1)",
+		);
+		old.close();
+		const store = new SqliteOutboundDedupStore(path);
+		try {
+			expect(store.get("old")).toEqual({
+				idempotencyKey: "old",
+				status: "sent",
+				messageId: "old-message",
+			});
+			expect(() => store.setInFlight("old", binding)).toThrow(/binding/);
+			expect(() =>
+				store.markEngagementReady("old", binding, "old-message"),
+			).toThrow();
+			expect(store.setInFlight("old")).toBe(false);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

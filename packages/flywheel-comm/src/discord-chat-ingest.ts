@@ -40,6 +40,7 @@ export interface IngestDiscordChatArgs {
 	founderId?: string;
 	replyChannelId?: string;
 	replyRoute?: ChatDeliveryEnvelopeV1["replyRoute"];
+	replyTo?: ChatDeliveryEnvelopeV1["replyTo"];
 }
 
 function escapeXml(value: string): string {
@@ -76,6 +77,15 @@ export function renderDiscordChatContent(
 		user_id: envelope.authorId,
 		ts: envelope.ts,
 		delivery_id: envelope.deliveryId,
+		...(envelope.replyTo
+			? {
+					reply_to_message_id: envelope.replyTo.messageId,
+					reply_to_channel_id: envelope.replyTo.channelId,
+					...(envelope.replyTo.authorId
+						? { reply_to_user_id: envelope.replyTo.authorId }
+						: {}),
+				}
+			: {}),
 		...(envelope.heldSince
 			? {
 					held_since: envelope.heldSince,
@@ -151,7 +161,11 @@ export function ingestDiscordChatOnQueue(
 		...(args.heldReason ? { heldReason: args.heldReason } : {}),
 		...(args.replyChannelId ? { replyChannelId: args.replyChannelId } : {}),
 		...(args.replyRoute ? { replyRoute: args.replyRoute } : {}),
+		...(args.replyTo !== undefined ? { replyTo: args.replyTo } : {}),
 	});
+	// The first delivery owns its immutable content. Gateway/REST producers and
+	// upgrade replays may carry different optional reference metadata. Returning
+	// the existing lane rejects any rewrite without poisoning their cursors.
 	return queue.claimDiscordLane({
 		id: envelope.deliveryId,
 		fromAgent: founder ? "founder" : `discord:${args.authorId}`,
@@ -184,6 +198,7 @@ export function discordBatchPartitionKey(row: {
 			chatId: envelope.chatId,
 			replyChannelId: envelope.replyChannelId ?? null,
 			replyRoute: envelope.replyRoute ?? null,
+			...(envelope.replyTo ? { replyTo: envelope.replyTo } : {}),
 		});
 		return `discord-route:${createHash("sha256").update(route).digest("hex")}`;
 	} catch {

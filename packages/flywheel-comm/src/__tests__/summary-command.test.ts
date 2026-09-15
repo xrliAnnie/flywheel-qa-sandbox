@@ -43,6 +43,33 @@ function deps(delivery: SummaryDelivery) {
 }
 
 describe("flywheel-comm summary", () => {
+	it("passes the understood head through the optional merge argument", async () => {
+		const mergePullRequest = vi.fn(async () => ({ ok: true }));
+		expect(
+			await runSummaryCommand(
+				[
+					"merge",
+					"--repo",
+					"xrliAnnie/raya",
+					"--pr",
+					"7",
+					"--expected-head",
+					"a".repeat(40),
+				],
+				{
+					env: rayaRecipientEnv,
+					mergePullRequest,
+					stdout: vi.fn(),
+					stderr: vi.fn(),
+				},
+			),
+		).toBe(0);
+		expect(mergePullRequest).toHaveBeenCalledWith(
+			expect.objectContaining({ expectedHeadSha: "a".repeat(40) }),
+			expect.anything(),
+		);
+	});
+
 	it("parses the merge subcommand as one atomic verify-and-merge operation", async () => {
 		const mergePullRequest = vi.fn(async () => ({
 			ok: true,
@@ -60,6 +87,8 @@ describe("flywheel-comm summary", () => {
 					"7",
 					"--round",
 					"round-7",
+					"--expected-head",
+					"b".repeat(40),
 					"--method",
 					"squash",
 					"--dry-run",
@@ -77,6 +106,7 @@ describe("flywheel-comm summary", () => {
 				repo: "xrliAnnie/raya",
 				prNumber: 7,
 				roundId: "round-7",
+				expectedHeadSha: "b".repeat(40),
 				method: "squash",
 				dryRun: true,
 			},

@@ -1,0 +1,31 @@
+classDiagram
+  class Directory["中央名册"] {
+    项目与Lead稳定编号
+    显示名与联系位置
+    只读投影
+  }
+  class Evidence["Raya 的业务证据"] {
+    summary编号与版本
+    项目真实读数
+    问答消息出处
+  }
+  class Knowledge["目标与阶段记忆"] {
+    founder承诺与推断分开
+    来源与修订记录
+    保留原有历史
+  }
+  class Report["日报与意见"] {
+    当地日期
+    来源清单与正文摘要
+    各片消息与回复编号
+  }
+  class Receipt["团队执行回执"] {
+    发送或合并事实
+    实际语音状态
+    运行版本证据
+  }
+  Directory --> Evidence : 确定对象
+  Evidence --> Knowledge : 理解与提炼
+  Evidence --> Report : 可核来源
+  Knowledge --> Report : 形成判断
+  Receipt --> Evidence : 核对效果

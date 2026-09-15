@@ -20559,6 +20559,17 @@ export class StateStore {
 		return row ? mapLeadEventRow(row) : null;
 	}
 
+	/** Live operational recovery only; terminal archived wakes must never be replayed. */
+	listPendingBusinessWakeEvents(): LeadEventRow[] {
+		return (
+			this.db.raw
+				.prepare(
+					"SELECT * FROM lead_events WHERE event_type = 'business_wake' AND delivered_at IS NULL ORDER BY seq",
+				)
+				.all() as Record<string, unknown>[]
+		).map(mapLeadEventRow);
+	}
+
 	/**
 	 * FLY-83: attempt to claim a (leadId, eventId) slot.
 	 * Returns true if this caller wrote the row, false if it already existed.

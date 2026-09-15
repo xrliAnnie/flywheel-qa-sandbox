@@ -37,6 +37,12 @@ import {
  * MCP tool-result envelope (`asText`). `isError` mirrors the MCP error flag. */
 export interface DiscordSendResult {
 	ok: boolean;
+	deduped?: boolean;
+	status?: "sent" | "pending" | "rate_limited";
+	sendStatus?: "sent";
+	engagement?: "pending" | "ready";
+	threadId?: string;
+	retryAfterMs?: number;
 	text: string;
 	isError?: boolean;
 	/** The resolved channel id (present once the alias resolved). */
@@ -52,11 +58,18 @@ export interface DiscordSendDeps extends ChannelAliasConfig {
 	botToken?: string;
 	/** Bridge-backed send seam used by full-access lead_actions. When present,
 	 * direct Discord is never attempted, including on failure. */
+	bridgeRoundtableEngage?: (channelId: string) => Promise<boolean>;
 	bridgeSend?: (args: {
 		channelId: string;
 		text: string;
 		idempotencyKey: string;
-	}) => Promise<{ messageId: string; deduped?: boolean }>;
+		roundtableEngage?: boolean;
+	}) => Promise<{
+		messageId: string;
+		deduped?: boolean;
+		engagement?: "pending" | "ready";
+		threadId?: string;
+	}>;
 	/** Stable caller-owned business event key. Required by Bridge-backed sends;
 	 * the trusted lead_actions server allocates and persists one when omitted by
 	 * the model-facing request. */
@@ -129,6 +142,15 @@ export async function runDiscordSend(
 		return { ok: false, isError: true, text: `REFUSED: ${msg}` };
 	}
 
+	const proactive =
+		target === "roundtable" && deps.roundtableAutoContinue === true;
+	let bridgeEngageAvailable = false;
+	if (proactive && deps.bridgeSend && deps.bridgeRoundtableEngage) {
+		try {
+			bridgeEngageAvailable = await deps.bridgeRoundtableEngage(channelId);
+		} catch {}
+	}
+
 	// FLY-676 guard (Codex R4#2): after the alias classifies as "roundtable" but BEFORE any
 	// side effect (idempotency record / rate-limit consume / Discord post / non-defer audit),
 	// fail-soft refuse a PROACTIVE roundtable send while reply-in-thread autoContinue is on.
@@ -138,6 +160,7 @@ export async function runDiscordSend(
 		shouldRefuseProactiveRoundtable({
 			target,
 			autoContinue: deps.roundtableAutoContinue === true,
+			bridgeEngageAvailable,
 		})
 	) {
 		audit({
@@ -154,7 +177,7 @@ export async function runDiscordSend(
 			channelId,
 			text:
 				"REFUSED: proactive roundtable posts are deferred while in-thread auto-continue is on " +
-				"(FLY-680 — cross-process subscribe+seed not yet wired). Reactive replies are unaffected.",
+				"(FLY-680 — live Bridge subscribe capability unavailable). Reactive replies are unaffected.",
 		};
 	}
 
@@ -181,6 +204,15 @@ export async function runDiscordSend(
 			ok: true,
 			channelId,
 			messageId: prior,
+			deduped: true,
+			status: "sent",
+			...(proactive
+				? {
+						sendStatus: "sent" as const,
+						engagement: "ready" as const,
+						threadId: prior,
+					}
+				: {}),
 			text: `Already sent (idempotent) to ${target} → message ${prior}`,
 		};
 	}
@@ -198,6 +230,8 @@ export async function runDiscordSend(
 			ok: false,
 			isError: true,
 			channelId,
+			status: "rate_limited",
+			retryAfterMs: deps.rateLimiter.retryAfterMs(channelId, now),
 			text: `REFUSED: per-channel rate limit reached for ${target} (loop-safety) — try again shortly`,
 		};
 	}
@@ -208,7 +242,22 @@ export async function runDiscordSend(
 				channelId,
 				text,
 				idempotencyKey: key,
+				...(proactive ? { roundtableEngage: true } : {}),
 			});
+			if (proactive && result.engagement !== "ready") {
+				if (result.engagement !== "pending")
+					throw new Error("proactive engagement receipt missing");
+				return {
+					ok: true,
+					status: "pending",
+					sendStatus: "sent",
+					engagement: "pending",
+					deduped: result.deduped === true,
+					channelId,
+					messageId: result.messageId,
+					text: `Sent to ${target}; subscription pending. Retry with the same eventId.`,
+				};
+			}
 			deps.idempotency.record(cacheKey, result.messageId, now);
 			audit({
 				ts: now,
@@ -224,6 +273,15 @@ export async function runDiscordSend(
 				ok: true,
 				channelId,
 				messageId: result.messageId,
+				deduped: result.deduped === true,
+				status: "sent",
+				...(proactive
+					? {
+							sendStatus: "sent" as const,
+							engagement: "ready" as const,
+							threadId: result.threadId ?? result.messageId,
+						}
+					: {}),
 				text: `${result.deduped ? "Already sent" : "Sent"} via Bridge to ${target} (${channelId}) → message ${result.messageId}`,
 			};
 		} catch (error) {

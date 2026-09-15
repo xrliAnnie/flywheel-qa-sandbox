@@ -1,0 +1,5 @@
+
+> @raya/cos@0.1.0 lint /Users/xiaorongli/.flywheel/worktrees/raya-FLY-2447/packages/cos
+> biome check src
+
+Checked 114 files in 293ms. No fixes applied.

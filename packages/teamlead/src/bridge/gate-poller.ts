@@ -145,6 +145,7 @@ export interface GatePollerConfig {
 	onReleaseReadinessTick?: () => void | Promise<void>;
 	/** FLY-2131: durable Raya summary-absorption producer on the same cadence. */
 	onSummaryAbsorptionTick?: () => void | Promise<void>;
+	onBusinessWakeTick?: () => void | Promise<void>;
 	/** FLY-2118: machine-wide orphan-pane fallback on the same 60s rider cadence. */
 	onPatrolOrphanSweepTick?: () => void | Promise<void>;
 	/** FLY-1944: cmux watcher liveness/recovery rider on the same 60s cadence. */
@@ -798,6 +799,17 @@ export class GatePoller {
 					);
 			}
 
+			if (this.config.onBusinessWakeTick) {
+				void Promise.resolve()
+					.then(() =>
+						this.withSpan("gate-poller.business-wake", () =>
+							this.config.onBusinessWakeTick?.(),
+						),
+					)
+					.catch(() =>
+						console.warn("[GatePoller] business wake tick unavailable"),
+					);
+			}
 			if (
 				this.config.onSummaryAbsorptionTick &&
 				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0

@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -51,4 +57,21 @@ describe("FileInboundCursorStore", () => {
 		const onDisk = JSON.parse(readFileSync(path, "utf8"));
 		expect(onDisk).toEqual({ c1: "m1", c2: "m2" });
 	});
+});
+
+it("keeps the durable cursor unchanged after a failed write so an identical retry persists", () => {
+	const dir = mkdtempSync(join(tmpdir(), "cursor-retry-"));
+	try {
+		const path = join(dir, "cursor.json"),
+			store = new FileInboundCursorStore(path);
+		store.save("thread", "root");
+		mkdirSync(`${path}.tmp`);
+		expect(() => store.save("thread", "reply")).toThrow();
+		expect(store.load("thread")).toBe("root");
+		rmSync(`${path}.tmp`, { recursive: true });
+		store.save("thread", "reply");
+		expect(new FileInboundCursorStore(path).load("thread")).toBe("reply");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });

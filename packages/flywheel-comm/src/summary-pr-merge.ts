@@ -76,6 +76,7 @@ export interface SummaryMergeDeps {
 export interface SummaryMergeInput {
 	repo: string;
 	prNumber: number;
+	expectedHeadSha?: string;
 	roundId?: string;
 	method?: string;
 	dryRun?: boolean;
@@ -335,9 +336,25 @@ export async function mergeSummaryPullRequest(
 	if (!Number.isInteger(input.prNumber) || input.prNumber < 1) {
 		throw new Error("summary_pr_invalid: PR number must be a positive integer");
 	}
+	if (
+		input.expectedHeadSha !== undefined &&
+		!SHA_PATTERN.test(input.expectedHeadSha)
+	) {
+		throw new Error(
+			"summary_merge_expected_head_invalid: expected a full commit SHA",
+		);
+	}
 	const granularity = readGranularity(deps.env ?? process.env);
 	const github = deps.github ?? createGitHubCliSummaryMergeGitHub();
 	const pullRequest = await github.readPullRequest(input.repo, input.prNumber);
+	if (
+		input.expectedHeadSha !== undefined &&
+		input.expectedHeadSha.toLowerCase() !== pullRequest.headSha.toLowerCase()
+	) {
+		throw new Error(
+			"summary_merge_expected_head_mismatch: understand the current head before merging or reconciling",
+		);
+	}
 	if (pullRequest.state === "closed" && !pullRequest.merged) {
 		throw new Error("summary_merge_pr_closed: PR is closed without merge");
 	}

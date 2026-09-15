@@ -49,8 +49,13 @@ export function deriveSendIdempotencyKey(
 export function shouldRefuseProactiveRoundtable(input: {
 	target: string;
 	autoContinue: boolean;
+	bridgeEngageAvailable?: boolean;
 }): boolean {
-	return input.autoContinue === true && input.target.trim() === "roundtable";
+	return (
+		input.autoContinue === true &&
+		input.target.trim() === "roundtable" &&
+		input.bridgeEngageAvailable !== true
+	);
 }
 
 export interface RateLimitOptions {
@@ -92,6 +97,12 @@ export class SlidingWindowRateLimiter {
 
 	/** True if a send to `channelId` is allowed at `nowMs` (and records it).
 	 * False if the channel is at the cap — the caller refuses the send. */
+	retryAfterMs(channelId: string, nowMs: number): number {
+		const kept = this.prune(channelId, nowMs);
+		return kept.length < this.maxPerWindow
+			? 0
+			: Math.max(0, (kept[0] ?? nowMs) + this.windowMs - nowMs);
+	}
 	tryAcquire(channelId: string, nowMs: number): boolean {
 		const kept = this.prune(channelId, nowMs);
 		if (kept.length >= this.maxPerWindow) return false;

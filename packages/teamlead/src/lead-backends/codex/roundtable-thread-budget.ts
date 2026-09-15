@@ -19,6 +19,12 @@
 
 export interface ThreadBudgetStore {
 	budgets: Map<string, number>;
+	/** Durable runtime policy commits admission and remaining budget together. Throws on persistence failure. */
+	admit?: (input: {
+		threadId: string;
+		sourceMessageId: string;
+		authorBot: boolean;
+	}) => boolean;
 }
 
 /** FLY-676 — default per-thread bot-only anti-loop budget. Raised from 2 → 12 so a natural

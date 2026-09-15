@@ -20,6 +20,7 @@ export const LEAD_ACTIONS_MCP_SERVER_NAME = "lead_actions";
 export const LEAD_ACTIONS_TOOLS: readonly string[] = [
 	"discord_send",
 	"ack_batch",
+	"directory",
 ];
 
 /** Keys that must NEVER appear as literal MCP-server env values. */
@@ -133,6 +134,7 @@ export const LEAD_ACTIONS_BRIDGE_ENV_VARS = [
 export const LEAD_ACTIONS_DIRECT_ENV_VARS = ["DISCORD_BOT_TOKEN"] as const;
 
 export interface BuildFullAccessLeadActionsMcpOptions {
+	projectsFile?: string;
 	runnerContext?: RunnerActionMcpContext;
 	nodeBin: string;
 	mainJsPath: string;
@@ -156,6 +158,7 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 	opts: BuildFullAccessLeadActionsMcpOptions,
 ): LeadActionsFullAccessMcpServerConfig {
 	const env: Record<string, string> = {
+		...(opts.projectsFile ? { FLYWHEEL_PROJECTS_FILE: opts.projectsFile } : {}),
 		FLYWHEEL_LEAD_ID: opts.leadId,
 		FLYWHEEL_PROJECT_NAME: opts.projectName,
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: opts.chatChannelId,
@@ -385,6 +388,7 @@ export function fullAccessLeadActionsConfigFromEnv(
 		return value;
 	};
 	return buildFullAccessLeadActionsMcpServerConfig({
+		projectsFile: env.FLYWHEEL_PROJECTS_FILE,
 		nodeBin: env.FLYWHEEL_LEAD_ACTIONS_NODE_BIN?.trim() || "node",
 		mainJsPath: required("FLYWHEEL_LEAD_ACTIONS_MAIN_JS"),
 		leadId: required("FLYWHEEL_LEAD_ID"),

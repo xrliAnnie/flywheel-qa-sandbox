@@ -16,6 +16,16 @@ export interface ChannelSubscriber {
 	addChannel(channelId: string): Promise<void>;
 	removeChannel(channelId: string): void;
 	isSubscribed(channelId: string): boolean;
+	proactiveCursor?(channelId: string): string | undefined;
+	catchUpProactiveChannel?(
+		channelId: string,
+		opts: {
+			after: string;
+			through?: string;
+			saveProgress(after: string): void;
+			assertCurrentOwner(): void;
+		},
+	): Promise<"pending" | "ready">;
 }
 
 export interface ThreadRegistryLike {

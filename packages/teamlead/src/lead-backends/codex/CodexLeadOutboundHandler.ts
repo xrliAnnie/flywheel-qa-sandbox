@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 /**
  * FLY-224 Phase 2b — CodexLeadOutboundHandler: the Bridge-side `/api/lead-outbound/
  * send` handler (plan §6.4, Phase 0A §4). This is the server piece paired with
@@ -35,12 +36,14 @@ export interface OutboundSendBody {
 	leadId?: unknown;
 	channelId?: unknown;
 	probe?: unknown;
+	roundtableEngage?: unknown;
 	text?: unknown;
 	idempotencyKey?: unknown;
 	nonce?: unknown;
 }
 
 export type OutboundSendStatus =
+	| "pending"
 	| "authorized"
 	| "sent"
 	| "deduped"
@@ -49,15 +52,40 @@ export type OutboundSendStatus =
 
 export interface OutboundSendOutcome {
 	httpStatus: number;
+	sendStatus?: "sent";
+	engagement?: "pending" | "ready";
+	threadId?: string;
 	status: OutboundSendStatus;
 	messageId?: string;
 	reason?: string;
+}
+
+export interface OutboundEngagementBinding {
+	projectName: string;
+	leadId: string;
+	parentChannelId: string;
+	payloadHash: string;
+}
+
+export function engagementBindingKey(
+	binding?: OutboundEngagementBinding,
+): string | null {
+	return binding
+		? JSON.stringify([
+				binding.projectName,
+				binding.leadId,
+				binding.parentChannelId,
+				binding.payloadHash,
+			])
+		: null;
 }
 
 export interface DedupRecord {
 	idempotencyKey: string;
 	status: "in_flight" | "sent";
 	messageId?: string;
+	binding?: OutboundEngagementBinding;
+	engagement?: "pending" | "ready";
 }
 
 export interface OutboundDedupStore {
@@ -66,7 +94,12 @@ export interface OutboundDedupStore {
 	 * marker (won the race); `false` if a record already existed (sent or in_flight).
 	 * This atomic claim — not the preceding get() — is the exactly-once authority that
 	 * closes the get→set TOCTOU (two concurrent racers cannot both win). */
-	setInFlight(key: string): boolean;
+	setInFlight(key: string, binding?: OutboundEngagementBinding): boolean;
+	markEngagementReady(
+		key: string,
+		binding: OutboundEngagementBinding,
+		messageId: string,
+	): void;
 	markSent(key: string, messageId: string): void;
 	delete(key: string): void;
 }
@@ -81,7 +114,19 @@ export type DiscordSendFn = (args: {
 	nonce: string;
 }) => Promise<string>;
 
+export type PrepareProactiveEngagement = (identity: {
+	projectName: string;
+	leadId: string;
+	channelId: string;
+}) => Promise<
+	(receipt: {
+		eventId: string;
+		messageId: string;
+		payloadHash: string;
+	}) => Promise<"pending" | "ready">
+>;
 export interface CodexLeadOutboundHandlerOptions {
+	prepareProactiveEngagement?: PrepareProactiveEngagement;
 	store: OutboundDedupStore;
 	send: DiscordSendFn;
 	/** The Bridge apiToken; the request must present it (fail-closed). */
@@ -101,6 +146,7 @@ export interface CodexLeadOutboundHandlerOptions {
 
 export class CodexLeadOutboundHandler {
 	private readonly store: OutboundDedupStore;
+	private readonly prepareProactiveEngagement?: PrepareProactiveEngagement;
 	private readonly send: DiscordSendFn;
 	private readonly expectedApiToken: string;
 	private readonly authorizeLeadChannel?: (
@@ -117,6 +163,7 @@ export class CodexLeadOutboundHandler {
 			);
 		}
 		this.store = opts.store;
+		this.prepareProactiveEngagement = opts.prepareProactiveEngagement;
 		this.send = opts.send;
 		this.expectedApiToken = opts.expectedApiToken;
 		this.authorizeLeadChannel = opts.authorizeLeadChannel;
@@ -168,11 +215,18 @@ export class CodexLeadOutboundHandler {
 				reason: "lead_channel_unauthorized",
 			};
 		}
+		if (req.body.roundtableEngage === true) return this.handleProactive(v);
 		if (v.probe) return { httpStatus: 200, status: "authorized" };
 		const { text, idempotencyKey, nonce } = v.value;
 
 		// 4. Durable dedup — fast path on an existing record.
 		const existing = this.store.get(idempotencyKey);
+		if (existing?.binding)
+			return {
+				httpStatus: 409,
+				status: "rejected",
+				reason: "outbound_binding_conflict",
+			};
 		if (existing?.status === "sent") {
 			return {
 				httpStatus: 200,
@@ -234,6 +288,119 @@ export class CodexLeadOutboundHandler {
 		this.store.markSent(idempotencyKey, messageId);
 		return { httpStatus: 200, status: "sent", messageId };
 	}
+	private async handleProactive(
+		v: Extract<ReturnType<typeof validateBody>, { ok: true }>,
+	): Promise<OutboundSendOutcome> {
+		const identity = {
+			projectName: v.value.projectName,
+			leadId: v.value.leadId,
+			channelId: v.value.channelId,
+		};
+		const pending = (messageId: string): OutboundSendOutcome => ({
+			httpStatus: 202,
+			status: "pending",
+			sendStatus: "sent",
+			messageId,
+			engagement: "pending",
+		});
+		const binding: OutboundEngagementBinding | undefined = v.probe
+			? undefined
+			: {
+					projectName: identity.projectName,
+					leadId: identity.leadId,
+					parentChannelId: identity.channelId,
+					payloadHash: createHash("sha256")
+						.update(JSON.stringify([v.value.text, v.value.nonce]))
+						.digest("hex"),
+				};
+		const existing = v.probe
+			? undefined
+			: this.store.get(v.value.idempotencyKey);
+		if (
+			existing &&
+			engagementBindingKey(existing.binding) !== engagementBindingKey(binding)
+		)
+			return {
+				httpStatus: 409,
+				status: "rejected",
+				reason: "outbound_binding_conflict",
+			};
+		let engage: Awaited<ReturnType<PrepareProactiveEngagement>>;
+		try {
+			if (!this.prepareProactiveEngagement) throw new Error("unavailable");
+			engage = await this.prepareProactiveEngagement(identity);
+		} catch {
+			return existing?.status === "sent" && existing.messageId
+				? pending(existing.messageId)
+				: {
+						httpStatus: 503,
+						status: "rejected",
+						reason: "proactive_engagement_unavailable",
+					};
+		}
+		if (v.probe) return { httpStatus: 200, status: "authorized" };
+		const { idempotencyKey, text, nonce } = v.value;
+		let messageId = existing?.messageId;
+		if (existing?.status === "in_flight")
+			return {
+				httpStatus: 409,
+				status: "ambiguous",
+				reason: "prior_attempt_unproven",
+			};
+		if (!existing) {
+			try {
+				if (!this.store.setInFlight(idempotencyKey, binding))
+					return this.handleProactive(v);
+			} catch {
+				return {
+					httpStatus: 409,
+					status: "rejected",
+					reason: "outbound_binding_conflict",
+				};
+			}
+			try {
+				messageId = await this.send({ ...identity, text, nonce });
+			} catch {
+				return {
+					httpStatus: 409,
+					status: "ambiguous",
+					reason: "send_threw_unproven",
+				};
+			}
+			if (!/^\d{17,20}$/.test(messageId))
+				return {
+					httpStatus: 409,
+					status: "ambiguous",
+					reason: "send_receipt_invalid",
+				};
+			this.store.markSent(idempotencyKey, messageId);
+		}
+		if (!messageId || !binding)
+			return {
+				httpStatus: 409,
+				status: "ambiguous",
+				reason: "send_receipt_missing",
+			};
+		try {
+			const state = await engage({
+				eventId: idempotencyKey,
+				messageId,
+				payloadHash: binding.payloadHash,
+			});
+			if (state !== "ready") return pending(messageId);
+			this.store.markEngagementReady(idempotencyKey, binding, messageId);
+			return {
+				httpStatus: 200,
+				status: "sent",
+				sendStatus: "sent",
+				messageId,
+				threadId: messageId,
+				engagement: "ready",
+			};
+		} catch {
+			return pending(messageId);
+		}
+	}
 }
 
 function validateBody(body: OutboundSendBody):
@@ -259,6 +426,11 @@ function validateBody(body: OutboundSendBody):
 			};
 	  }
 	| { ok: false; reason: string } {
+	if (
+		body.roundtableEngage !== undefined &&
+		typeof body.roundtableEngage !== "boolean"
+	)
+		return { ok: false, reason: "roundtableEngage_invalid" };
 	const projectName = body.projectName;
 	const leadId = body.leadId;
 	const channelId = body.channelId;
@@ -304,16 +476,58 @@ export class InMemoryOutboundDedupStore implements OutboundDedupStore {
 	private readonly m = new Map<string, DedupRecord>();
 	get(key: string): DedupRecord | undefined {
 		const r = this.m.get(key);
-		return r ? { ...r } : undefined;
+		return r
+			? { ...r, ...(r.binding ? { binding: { ...r.binding } } : {}) }
+			: undefined;
 	}
-	setInFlight(key: string): boolean {
-		// Atomic claim: only create the marker if absent — return whether we won.
-		if (this.m.has(key)) return false;
-		this.m.set(key, { idempotencyKey: key, status: "in_flight" });
+	setInFlight(key: string, binding?: OutboundEngagementBinding): boolean {
+		const existing = this.m.get(key);
+		if (existing) {
+			if (
+				engagementBindingKey(existing.binding) !== engagementBindingKey(binding)
+			)
+				throw new Error("outbound_binding_conflict");
+			return false;
+		}
+		this.m.set(key, {
+			idempotencyKey: key,
+			status: "in_flight",
+			...(binding
+				? { binding: { ...binding }, engagement: "pending" as const }
+				: {}),
+		});
 		return true;
 	}
 	markSent(key: string, messageId: string): void {
-		this.m.set(key, { idempotencyKey: key, status: "sent", messageId });
+		const existing = this.m.get(key);
+		if (
+			existing?.binding &&
+			existing.messageId &&
+			existing.messageId !== messageId
+		)
+			throw new Error("outbound_receipt_conflict");
+		this.m.set(key, {
+			...existing,
+			idempotencyKey: key,
+			status: "sent",
+			messageId,
+		});
+	}
+	markEngagementReady(
+		key: string,
+		binding: OutboundEngagementBinding,
+		messageId: string,
+	): void {
+		const existing = this.m.get(key);
+		if (
+			!existing?.binding ||
+			engagementBindingKey(existing.binding) !==
+				engagementBindingKey(binding) ||
+			existing.status !== "sent" ||
+			existing.messageId !== messageId
+		)
+			throw new Error("outbound_engagement_receipt_invalid");
+		existing.engagement = "ready";
 	}
 	delete(key: string): void {
 		this.m.delete(key);
