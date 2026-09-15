@@ -9,8 +9,8 @@
 #     stdout: a JSON object suitable for jq merge (`{name: cfg, ...}`).
 #     env: respects FLYWHEEL_LEAD_MCP_LOG_PREFIX (default: "[lead]") for log lines on stderr.
 #
-#   write_atomic_mcp_config <out_path> <user_mcp_json> <terminal_json> <inbox_json> <gbrain_json>
-#     Writes `{mcpServers: (user + terminal + inbox + gbrain)}` to <out_path>
+#   write_atomic_mcp_config <out_path> <user_mcp_json> <terminal_json> <inbox_json>
+#     Writes `{mcpServers: (user + terminal + inbox)}` to <out_path>
 #     atomically with mode 0600 (mktemp + chmod + mv + trap cleanup).
 #
 # Design rationale: documented in
@@ -214,8 +214,8 @@ build_user_mcp_fragment() {
   echo "$user_mcp"
 }
 
-# ── write_atomic_mcp_config <out_path> <user_json> <terminal_json> <inbox_json> <gbrain_json>
-# Writes `{mcpServers: (user + terminal + inbox + gbrain)}` to <out_path>
+# ── write_atomic_mcp_config <out_path> <user_json> <terminal_json> <inbox_json>
+# Writes `{mcpServers: (user + terminal + inbox)}` to <out_path>
 # with mode 0600. Uses mktemp + chmod + mv to avoid:
 #   - Inherited 0644 mode from a pre-existing file
 #   - Partial-read race during shell stdout redirect
@@ -224,7 +224,6 @@ write_atomic_mcp_config() {
   local user_json="$2"
   local terminal_json="$3"
   local inbox_json="$4"
-  local gbrain_json="$5"
 
   local out_dir
   out_dir=$(dirname "$out")
@@ -242,8 +241,7 @@ write_atomic_mcp_config() {
       --argjson user "$user_json" \
       --argjson terminal "$terminal_json" \
       --argjson inbox "$inbox_json" \
-      --argjson gbrain "$gbrain_json" \
-      '{mcpServers: ($user + $terminal + $inbox + $gbrain)}' \
+      '{mcpServers: ($user + $terminal + $inbox)}' \
       > "$tmp"
   )
   chmod 600 "$tmp" 2>/dev/null || true

@@ -9,7 +9,7 @@ This guide covers the MCP servers a Lead daemon (Peter / Oliver / Simba / test s
 
 A Lead session ends up with the union of three independent sources:
 
-1. **Flywheel-infra MCP** — written by `claude-lead.sh` into `<workspace>/.mcp.json`. Always 3 servers: `flywheel-terminal`, `flywheel-inbox`, `gbrain`. Same-name collisions with user-scope servers are won by these (see §"Reserved names" below).
+1. **Flywheel-infra MCP** — written by `claude-lead.sh` into `<workspace>/.mcp.json`. Up to 2 servers (when their packages are built): `flywheel-terminal`, `flywheel-inbox`. Same-name collisions with user-scope servers are won by these (see §"Reserved names" below).
 2. **Inherited user-scope MCP** — same `.mcp.json`, populated by FLY-143's helper from the **top-level** `~/.claude.json.mcpServers` (never `.projects[*].mcpServers`).
 3. **Plugin-bundled MCP + claude-in-chrome** — loaded by Claude Code itself based on installed plugins under `~/.claude/plugins/` and the `--chrome` CLI flag.
 
@@ -77,11 +77,10 @@ After editing, restart that Lead.
 
 ## Reserved names
 
-These three names always belong to Flywheel infra. Annie's user-scope MCP with the same name is **logged + skipped** (never silently overridden):
+These two names always belong to Flywheel infra. Annie's user-scope MCP with the same name is **logged + skipped** (never silently overridden):
 
 - `flywheel-terminal`
 - `flywheel-inbox`
-- `gbrain`
 
 You'll see a warning in the Lead startup log if there's a collision.
 
@@ -117,7 +116,7 @@ In the Lead's Discord channel:
 /mcp
 ```
 
-Expected: `flywheel-terminal`, `flywheel-inbox`, `gbrain`, plus inherited user-scope servers (depending on env + per-Lead exclude). Any server that failed env gate or got blacklisted shows up in the Lead daemon log under `[lead]` lines, not in `/mcp`.
+Expected: `flywheel-terminal`, `flywheel-inbox`, plus inherited user-scope servers (depending on env + per-Lead exclude). Any server that failed env gate or got blacklisted shows up in the Lead daemon log under `[lead]` lines, not in `/mcp`.
 
 To smoke-test Linear access:
 
@@ -135,5 +134,9 @@ The same broader-inherit story is needed for Runners. FLY-143 main PR ships Lead
 
 - **Lead `/mcp` shows fewer servers than expected** → tail `/tmp/flywheel-lead-<project>-<lead>.log` for `User MCP skipped (...)` and `WARNING: ... requires env ... — skip` lines.
 - **`.mcp.json` mode is not 0600** → confirm you're running the FLY-143 build (`grep "mode 0600, atomic" /tmp/flywheel-lead-*.log`); pre-FLY-143 the file was 0644.
-- **Collision warning unexpectedly** → Annie has a top-level `mcpServers` entry whose name matches `flywheel-terminal` / `flywheel-inbox` / `gbrain`. Rename hers in `~/.claude.json` to anything else.
+- **Collision warning unexpectedly** → Annie has a top-level `mcpServers` entry whose name matches `flywheel-terminal` / `flywheel-inbox`. Rename hers in `~/.claude.json` to anything else.
 - **Chrome flag unexpectedly active** → check `~/.flywheel/manifests/<...>.json` for `chromeEnabled: true` or the wrapper env. The launch log will say `Claude in Chrome: ENABLED`.
+
+## Retired integration (FLY-2588)
+
+The project Wiki integration has been removed. Deployment does not erase existing host configuration or old deployed scripts. The Lead must complete the [operator retirement runbook](../../../engineering/doc/FLY-2588-remove-gbrain/implementation.md#部署后-operator-退役-runbooklead-执行), including both global configuration sources, before considering host retirement complete.

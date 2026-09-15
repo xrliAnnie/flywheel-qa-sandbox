@@ -7,7 +7,7 @@
 # (Codex design review R3 BLOCKER-4 / R4 HIGH-4 / R5 / R6):
 #   - companion gets ONLY persona-friendly rules (companion-safety-contract +
 #     cross-dept) + --effort xhigh (FLY-583, was medium); NONE of the eng-governance rules; pane creds
-#     EMPTY (token unusable); no terminal/inbox/gbrain/user MCP; FLYWHEEL_LEAD_COMPANION set.
+#     EMPTY (token unusable); no terminal/inbox/user MCP; FLYWHEEL_LEAD_COMPANION set.
 #   - standard dept Lead is UNCHANGED (all eng rules + terminal/inbox MCP + creds
 #     SET; no companion items) — byte-compat by construction.
 #   - cos Lead unchanged (cos-lead-rules; no dept base rules).
@@ -114,7 +114,6 @@ printf '%s\n' "$PLAN" | has $'PANE_ENV\tBRIDGE_URL\tempty'             && ok "T1
 printf '%s\n' "$PLAN" | has $'PANE_ENV\tFLYWHEEL_LEAD_COMPANION\tset'  && ok "T1 companion marker set" || bad "T1 companion marker set"
 printf '%s\n' "$PLAN" | grep -qF $'MCP_SERVER\tflywheel-terminal'      && bad "T1 must NOT register terminal MCP" || ok "T1 no terminal MCP"
 printf '%s\n' "$PLAN" | grep -qF $'MCP_SERVER\tflywheel-inbox'         && bad "T1 must NOT register inbox MCP" || ok "T1 no inbox MCP"
-printf '%s\n' "$PLAN" | grep -qF $'MCP_SERVER\tgbrain'                 && bad "T1 must NOT register gbrain MCP" || ok "T1 no gbrain MCP"
 # secret-canary: full output (not just plan) must not contain the token VALUES
 printf '%s' "$OUT" | grep -qF "$CANARY_BOT" && bad "T1 SECRET LEAK (bot token)" || ok "T1 no bot-token leak"
 printf '%s' "$OUT" | grep -qF "$CANARY_TL"  && bad "T1 SECRET LEAK (teamlead token)" || ok "T1 no teamlead-token leak"
@@ -134,6 +133,10 @@ printf '%s\n' "$PLAN" | grep -qF 'department-lead-rules.md'           && ok "T2 
 printf '%s\n' "$PLAN" | grep -qF 'founder-only-authority.md'          && ok "T2 has founder-only-authority" || bad "T2 has founder-only-authority"
 printf '%s\n' "$PLAN" | grep -qF 'founder-local-time.md'              && ok "T2 has founder-local-time" || bad "T2 has founder-local-time"
 printf '%s\n' "$PLAN" | grep -qF $'MCP_SERVER\tflywheel-terminal'     && ok "T2 has terminal MCP" || bad "T2 has terminal MCP"
+MCP_NAMES=$(printf '%s\n' "$PLAN" | awk -F'\t' '$1 == "MCP_SERVER" {print $2}' | sort | paste -sd, -)
+[ "$MCP_NAMES" = "flywheel-inbox,flywheel-terminal" ] \
+  && ok "T2 exact infrastructure MCP set" || bad "T2 unexpected MCP set: $MCP_NAMES"
+
 printf '%s\n' "$PLAN" | has $'PANE_ENV\tTEAMLEAD_API_TOKEN\tset'      && ok "T2 token SET (unchanged)" || bad "T2 token set"
 printf '%s\n' "$PLAN" | has $'PANE_ENV\tUSER\tset'                    && ok "T2 v1 preserves OS USER" || bad "T2 v1 USER missing"
 printf '%s\n' "$PLAN" | has $'PANE_ENV\tLOGNAME\tset'                 && ok "T2 v1 preserves OS LOGNAME" || bad "T2 v1 LOGNAME missing"

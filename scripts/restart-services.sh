@@ -3437,9 +3437,4 @@ deploy_and_verify() {
 
 log "Starting full restart: ${DEPLOYED_SHA:0:7} → ${CURRENT_HEAD:0:7} (reason=$RESTART_REASON)"
 deploy_and_verify
-# FLY-90: Sync gbrain project Wiki (non-blocking, best-effort)
-if [[ -x "$HOME/.flywheel/bin/sync-gbrain-docs.sh" ]]; then
-    nohup "$HOME/.flywheel/bin/sync-gbrain-docs.sh" >/dev/null 2>&1 &
-    log "gbrain doc sync triggered (background PID $!)"
-fi
 log "Done."

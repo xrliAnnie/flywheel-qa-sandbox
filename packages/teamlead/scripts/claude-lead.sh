@@ -2366,7 +2366,6 @@ export PATH="$HOME/.bun/bin:$PATH"
 # `FLYWHEEL_BIN_DIR` mirrors the override used by `syncFlywheelCliBin` for
 # test slots; if unset, we use `~/.flywheel/bin` (the production default).
 export PATH="${FLYWHEEL_BIN_DIR:-$HOME/.flywheel/bin}:$PATH"
-GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
 
 # FLY-879: locked-role label for MCP-skip log lines (companion + external share
 # the "no internal MCP" surface). Empty for a standard Lead (this block is skipped).
@@ -2439,22 +2438,6 @@ else
   log "WARNING: inbox-mcp not built (${INBOX_MCP_DIR} missing), CommDB push disabled"
 fi
 
-# FLY-90: gbrain MCP for project Wiki.
-gbrain_server='{}'
-if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
-  # FLY-231/FLY-879: companion AND external have no project Wiki — reserved infra
-  # MCP stays empty.
-  log "${_LOCKED_ROLE_LABEL}: gbrain MCP NOT registered"
-elif [ -n "$GBRAIN_PATH" ] && [ -f "$HOME/.gbrain/config.json" ]; then
-  gbrain_server=$(jq -n --arg bin "$GBRAIN_PATH" \
-    '{"gbrain": {command: $bin, args: ["serve"]}}')
-  log "GBrain MCP: enabled (project Wiki)"
-elif [ -n "$GBRAIN_PATH" ]; then
-  log "GBrain MCP: skipped (installed but not configured — run 'gbrain init --supabase')"
-else
-  log "GBrain MCP: skipped (gbrain not installed)"
-fi
-
 MCP_CONFIG_FILE="${LEAD_WORKSPACE}/.mcp.json"
 
 # FLY-143: Inherit user-scope MCP servers (default-inherit + class blacklist
@@ -2472,7 +2455,7 @@ MCP_CONFIG_FILE="${LEAD_WORKSPACE}/.mcp.json"
 # Class blacklist: hardcoded "audible" today (personal media history).
 # Future personal/account/desktop-control MCPs default-deny via this list.
 LEAD_USER_MCP_BLACKLIST="${FLYWHEEL_LEAD_MCP_BLACKLIST:-audible}"
-RESERVED_INFRA_NAMES="flywheel-terminal,flywheel-inbox,gbrain"
+RESERVED_INFRA_NAMES="flywheel-terminal,flywheel-inbox"
 
 # shellcheck source=lib/mcp-inherit.sh
 source "${SCRIPT_DIR}/lib/mcp-inherit.sh"
@@ -2501,8 +2484,7 @@ fi
 write_atomic_mcp_config "$MCP_CONFIG_FILE" \
   "$USER_MCP_FRAGMENT" \
   "$terminal_server" \
-  "$inbox_server" \
-  "$gbrain_server"
+  "$inbox_server"
 log "MCP config: ${MCP_CONFIG_FILE} (mode 0600, atomic)"
 
 # FLY-109 (b): Pre-seed enableAllProjectMcpServers so project .mcp.json servers

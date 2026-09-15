@@ -33,7 +33,7 @@ build_mcp_config() {
   local token="$1"
   local out="$TMP_DIR/mcp-$$-$RANDOM.json"
 
-  local terminal_server inbox_server gbrain_server
+  local terminal_server inbox_server
   terminal_server=$(jq -n \
     --arg bin "/fake/path/terminal-mcp/index.js" \
     --arg projectName "flywheel" \
@@ -53,13 +53,11 @@ build_mcp_config() {
       }
     }')
   inbox_server='{}'
-  gbrain_server='{}'
 
   jq -n \
     --argjson terminal "$terminal_server" \
     --argjson inbox "$inbox_server" \
-    --argjson gbrain "$gbrain_server" \
-    '{mcpServers: ($terminal + $inbox + $gbrain)}' \
+    '{mcpServers: ($terminal + $inbox)}' \
     > "$out"
 
   echo "$out"

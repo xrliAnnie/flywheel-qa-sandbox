@@ -7,7 +7,7 @@
 #   - external gets EXACTLY ONE prompt file (external-agent-contract.md) — NONE of
 #     the eng-governance rules, NO project shared rules, NO cross-dept roundtable,
 #     NO discord-reply-contract, NO screencapture, NO inbox-ack, NO founder-*.
-#   - pane creds EMPTY (Bridge token unusable); NO terminal/inbox/gbrain/user MCP;
+#   - pane creds EMPTY (Bridge token unusable); NO terminal/inbox/user MCP;
 #     FLYWHEEL_LEAD_EXTERNAL=1 set; NO FLYWHEEL_LEAD_COMPANION.
 #   - role detection: external / exact-nonexternal→standard / notfound→fail-STOP /
 #     missing-contract→fail-STOP; secret-canary (no token value echoed).
@@ -131,7 +131,7 @@ printf '%s\n' "$PLAN" | has $'PANE_ENV\tFLYWHEEL_COMM_DB\tempty'          && ok 
 printf '%s\n' "$PLAN" | has $'PANE_ENV\tFLYWHEEL_LEAD_EXTERNAL\tset'      && ok "T1 external marker set" || bad "T1 external marker set"
 printf '%s\n' "$PLAN" | grep -qF 'FLYWHEEL_LEAD_COMPANION'               && bad "T1 must NOT have companion marker" || ok "T1 no companion marker"
 # No internal MCP.
-for mcp in flywheel-terminal flywheel-inbox gbrain; do
+for mcp in flywheel-terminal flywheel-inbox; do
   printf '%s\n' "$PLAN" | grep -qF $'MCP_SERVER\t'"$mcp" && bad "T1 must NOT register $mcp MCP" || ok "T1 no $mcp MCP"
 done
 # secret-canary: token VALUES never echoed.

@@ -7,7 +7,7 @@
 #   - missing LINEAR_API_KEY → linear-api skipped, others survive
 #   - blacklist (`audible`) → skipped
 #   - per-Lead exclude (`bambu-h2d,xiaohongshu-mcp`) with whitespace → both skipped
-#   - reserved-name collision (Annie's user-scope `gbrain`) → warn + skip user version
+#   - reserved-name collision (Annie's user-scope `flywheel-terminal`) → warn + skip user version
 #   - `~/.claude.json` missing → empty fragment, no abort
 #   - `~/.claude.json` malformed → empty fragment, no abort
 #   - `${VAR:-default}` env placeholder → not skipped when VAR unset
@@ -72,7 +72,7 @@ fixture "$FIX_1" <<'EOF'
 }
 EOF
 LINEAR_API_KEY=lin_api_dummy \
-OUT_1=$(build_user_mcp_fragment "$FIX_1" "flywheel-terminal,flywheel-inbox,gbrain" "audible" "")
+OUT_1=$(build_user_mcp_fragment "$FIX_1" "flywheel-terminal,flywheel-inbox" "audible" "")
 KEYS_1=$(echo "$OUT_1" | jq -r 'keys | sort | join(",")')
 if [ "$KEYS_1" = "bambu-h2d,linear-api,pencil,xiaohongshu-mcp" ]; then
   pass "happy path inherits 4 servers (audible blacklisted)"
@@ -100,7 +100,7 @@ fi
 # ════════════════════════════════════════════════════════════════
 log_test "Test 2: LINEAR_API_KEY unset → only linear-api skipped"
 unset LINEAR_API_KEY
-OUT_2=$(build_user_mcp_fragment "$FIX_1" "flywheel-terminal,flywheel-inbox,gbrain" "audible" "")
+OUT_2=$(build_user_mcp_fragment "$FIX_1" "flywheel-terminal,flywheel-inbox" "audible" "")
 KEYS_2=$(echo "$OUT_2" | jq -r 'keys | sort | join(",")')
 if [ "$KEYS_2" = "bambu-h2d,pencil,xiaohongshu-mcp" ]; then
   pass "linear-api skipped (env gate), other 3 survive"
@@ -113,7 +113,7 @@ fi
 # ════════════════════════════════════════════════════════════════
 log_test "Test 3: per-Lead exclude trims whitespace (Codex r4 nit)"
 LINEAR_API_KEY=lin_api_dummy \
-OUT_3=$(build_user_mcp_fragment "$FIX_1" "flywheel-terminal,flywheel-inbox,gbrain" "audible" "bambu-h2d, xiaohongshu-mcp ")
+OUT_3=$(build_user_mcp_fragment "$FIX_1" "flywheel-terminal,flywheel-inbox" "audible" "bambu-h2d, xiaohongshu-mcp ")
 KEYS_3=$(echo "$OUT_3" | jq -r 'keys | sort | join(",")')
 if [ "$KEYS_3" = "linear-api,pencil" ]; then
   pass "per-Lead exclude with spaces trims correctly"
@@ -124,21 +124,21 @@ fi
 # ════════════════════════════════════════════════════════════════
 # Test 4: reserved-name collision warn + skip user version
 # ════════════════════════════════════════════════════════════════
-log_test "Test 4: reserved-name collision (user has gbrain)"
+log_test "Test 4: reserved-name collision (user has flywheel-terminal)"
 FIX_4="${TMP_DIR}/claude-4.json"
 fixture "$FIX_4" <<'EOF'
 {
   "mcpServers": {
-    "gbrain": {"command": "/some/path/imposter-gbrain"},
+    "flywheel-terminal": {"command": "/some/path/imposter-flywheel-terminal"},
     "pencil": {"command": "/Applications/Pencil.app/mcp"}
   }
 }
 EOF
-WARN_4=$(build_user_mcp_fragment "$FIX_4" "flywheel-terminal,flywheel-inbox,gbrain" "" "" 2>&1 1>/dev/null || true)
-OUT_4=$(build_user_mcp_fragment "$FIX_4" "flywheel-terminal,flywheel-inbox,gbrain" "" "" 2>/dev/null)
+WARN_4=$(build_user_mcp_fragment "$FIX_4" "flywheel-terminal,flywheel-inbox" "" "" 2>&1 1>/dev/null || true)
+OUT_4=$(build_user_mcp_fragment "$FIX_4" "flywheel-terminal,flywheel-inbox" "" "" 2>/dev/null)
 KEYS_4=$(echo "$OUT_4" | jq -r 'keys | sort | join(",")')
 if [ "$KEYS_4" = "pencil" ]; then
-  pass "reserved-name collision: gbrain skipped, pencil survives"
+  pass "reserved-name collision: flywheel-terminal skipped, pencil survives"
 else
   fail "expected [pencil], got [$KEYS_4]"
 fi
@@ -161,8 +161,8 @@ fixture "$FIX_4B" <<'EOF'
   }
 }
 EOF
-WARN_4B=$(build_user_mcp_fragment "$FIX_4B" "flywheel-terminal,flywheel-inbox,gbrain" "" "" 2>&1 1>/dev/null || true)
-OUT_4B=$(build_user_mcp_fragment "$FIX_4B" "flywheel-terminal,flywheel-inbox,gbrain" "" "" 2>/dev/null)
+WARN_4B=$(build_user_mcp_fragment "$FIX_4B" "flywheel-terminal,flywheel-inbox" "" "" 2>&1 1>/dev/null || true)
+OUT_4B=$(build_user_mcp_fragment "$FIX_4B" "flywheel-terminal,flywheel-inbox" "" "" 2>/dev/null)
 KEYS_4B=$(echo "$OUT_4B" | jq -r 'keys | sort | join(",")')
 if [ "$KEYS_4B" = "linear-api" ]; then
   pass "reserved collision (flywheel-inbox): user version skipped, linear-api survives"
@@ -283,8 +283,7 @@ chmod 644 "$OUT_PATH"
 write_atomic_mcp_config "$OUT_PATH" \
   '{"linear-api":{"type":"http","url":"https://x"}}' \
   '{"flywheel-terminal":{"command":"node"}}' \
-  '{"flywheel-inbox":{"command":"node"}}' \
-  '{"gbrain":{"command":"gbrain"}}'
+  '{"flywheel-inbox":{"command":"node"}}'
 
 MODE=$(stat -f '%Lp' "$OUT_PATH" 2>/dev/null || stat -c '%a' "$OUT_PATH" 2>/dev/null)
 if [ "$MODE" = "600" ]; then
@@ -293,23 +292,22 @@ else
   fail "expected mode 600, got [$MODE]"
 fi
 KEYS_11=$(jq -r '.mcpServers | keys | sort | join(",")' "$OUT_PATH")
-if [ "$KEYS_11" = "flywheel-inbox,flywheel-terminal,gbrain,linear-api" ]; then
-  pass "atomic write merge: 4 servers present"
+if [ "$KEYS_11" = "flywheel-inbox,flywheel-terminal,linear-api" ]; then
+  pass "atomic write merge: 3 servers present"
 else
-  fail "expected 4 keys, got [$KEYS_11]"
+  fail "expected 3 keys, got [$KEYS_11]"
 fi
 
-# Test that infra wins on collision: pass user version of "gbrain" with a different command
+# Test that infra wins on collision: pass user version of "flywheel-terminal" with a different command
 write_atomic_mcp_config "$OUT_PATH" \
-  '{"gbrain":{"command":"/some/imposter"}}' \
+  '{"flywheel-terminal":{"command":"/some/imposter"}}' \
   '{"flywheel-terminal":{"command":"node"}}' \
-  '{"flywheel-inbox":{"command":"node"}}' \
-  '{"gbrain":{"command":"gbrain","args":["serve"]}}'
-WIN_CMD=$(jq -r '.mcpServers.gbrain.command' "$OUT_PATH")
-if [ "$WIN_CMD" = "gbrain" ]; then
+  '{"flywheel-inbox":{"command":"node"}}'
+WIN_CMD=$(jq -r '.mcpServers["flywheel-terminal"].command' "$OUT_PATH")
+if [ "$WIN_CMD" = "node" ]; then
   pass "infra wins on same-name collision (right-hand wins in jq +)"
 else
-  fail "expected infra command 'gbrain', got [$WIN_CMD]"
+  fail "expected infra command 'node', got [$WIN_CMD]"
 fi
 
 # ════════════════════════════════════════════════════════════════
