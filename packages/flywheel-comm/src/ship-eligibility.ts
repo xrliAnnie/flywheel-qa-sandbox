@@ -1,3 +1,4 @@
+import { installSqlTiming } from "flywheel-config";
 /**
  * FLY-869 — the SINGLE ship-eligibility predicate, shared by the CLI
  * (`verify-approval` command / MERGE AUTHORITY) and the Bridge completion +
@@ -203,7 +204,10 @@ export function evaluateQaShipGate(args: QaShipGateArgs): QaShipGateResult {
 	let row: QaSessionRow | undefined;
 	let qaPassedForHead = false;
 	try {
-		const db = new Database(statePath, { readonly: true, fileMustExist: true });
+		const db = installSqlTiming(
+			new Database(statePath, { readonly: true, fileMustExist: true }),
+			"teamlead",
+		);
 		try {
 			row = db
 				.prepare(

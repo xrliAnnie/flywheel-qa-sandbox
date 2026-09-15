@@ -47,6 +47,11 @@ include = workflow["jobs"]["unit-tests"]["strategy"]["matrix"]["include"]
 seen, rows = set(), []
 for entry in include:
     cmd = str(entry["cmd"])
+    # FLY-2563 deliberately repeats one test in a dedicated single-worker lane.
+    # It is supplemental evidence, never a substitute for package coverage.
+    # Pin both fields so arbitrary overlapping package rows still fail below.
+    if entry["name"] == "observation performance" and cmd == "pnpm --filter flywheel-teamlead exec vitest run src/ship-judgment/__tests__/observation-performance.test.ts":
+        continue
     # The bounded teamlead entrypoint executes the same package twice across
     # disjoint projects. Its executable partition contract is tested separately.
     if re.fullmatch(r"node scripts/teamlead-ci-shard\.mjs --shard=[1-4]/4", cmd):

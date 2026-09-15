@@ -1,3 +1,8 @@
+import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
+import {
+	type FounderReplyCommScope,
+	scopedGateResponseDb,
+} from "./founder-reply-comm-scope.js";
 /**
  * Founder issue-thread ingress. Bridge records one canonical Lead receipt and
  * forwards the original message to Lead without classifying, answering, or
@@ -217,7 +222,7 @@ export interface FounderReplyDeliverDeps {
 		msg: { id: string; content?: string; authorId?: string };
 		shipGates: PendingQuestionForThread[];
 		ctx: FounderReplyThreadCtx;
-		db: CommDB;
+		db: GateResponseDb;
 		replyToCard?: boolean;
 		founderMessage: {
 			msgId: string;
@@ -308,7 +313,7 @@ export async function emitFounderReplyDeliveryForThread(
 		fetchImpl = fetch,
 		cursorStore,
 		commDbLeaseFactory = (path) => {
-			const db = new CommDB(path, false);
+			const db = CommDB.openExistingWriter(path);
 			return { db, release: () => db.close() };
 		},
 	} = deps;
@@ -406,12 +411,18 @@ export async function emitFounderReplyDeliveryForThread(
 	// Discord returns newest-first; process oldest-first.
 	messages.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
 
-	const lease = commDbLeaseFactory(ctx.commDbPath);
-	const { db } = lease;
-	try {
+	const withCommDb: FounderReplyCommScope = (run) => {
+		const lease = commDbLeaseFactory(ctx.commDbPath);
+		try {
+			return run(lease.db);
+		} finally {
+			lease.release();
+		}
+	};
+	{
 		// Snapshot of still-pending qids (catch a Lead that just relayed).
 		const pendingNow = new Set(
-			db.getPendingQuestions(ctx.leadId).map((m) => m.id),
+			withCommDb((db) => db.getPendingQuestions(ctx.leadId).map((m) => m.id)),
 		);
 		const now = Date.now();
 		let advanceableUpTo: string | undefined = cursor;
@@ -440,29 +451,31 @@ export async function emitFounderReplyDeliveryForThread(
 				continue;
 			}
 			try {
-				db.ingestDiscordChat({
-					leadId: ctx.leadId,
-					chatId: ctx.threadId,
-					originChannelId: ctx.threadId,
-					messageId: msg.id,
-					authorId: msg.author?.id ?? ctx.ownerUserId,
-					authorName:
-						msg.author?.global_name ??
-						msg.author?.username ??
-						msg.author?.id ??
-						"founder",
-					ts: new Date(
-						msg.timestamp ?? snowflakeToMs(msg.id) ?? Date.now(),
-					).toISOString(),
-					msgKind: "guild",
-					attachments: (msg.attachments ?? []).map((attachment) => ({
-						name: attachment.filename ?? "attachment",
-						type: attachment.content_type ?? "application/octet-stream",
-						sizeKb: Math.max(0, (attachment.size ?? 0) / 1024),
-					})),
-					text: msg.content ?? "",
-					founderId: ctx.ownerUserId,
-				});
+				withCommDb((db) =>
+					db.ingestDiscordChat({
+						leadId: ctx.leadId,
+						chatId: ctx.threadId,
+						originChannelId: ctx.threadId,
+						messageId: msg.id,
+						authorId: msg.author?.id ?? ctx.ownerUserId,
+						authorName:
+							msg.author?.global_name ??
+							msg.author?.username ??
+							msg.author?.id ??
+							"founder",
+						ts: new Date(
+							msg.timestamp ?? snowflakeToMs(msg.id) ?? Date.now(),
+						).toISOString(),
+						msgKind: "guild",
+						attachments: (msg.attachments ?? []).map((attachment) => ({
+							name: attachment.filename ?? "attachment",
+							type: attachment.content_type ?? "application/octet-stream",
+							sizeKb: Math.max(0, (attachment.size ?? 0) / 1024),
+						})),
+						text: msg.content ?? "",
+						founderId: ctx.ownerUserId,
+					}),
+				);
 			} catch (error) {
 				brokeOn = {
 					msgId: msg.id,
@@ -495,7 +508,7 @@ export async function emitFounderReplyDeliveryForThread(
 			try {
 				outcome = await processFounderMessage(msg, matching, ctx, {
 					store,
-					db,
+					withCommDb,
 					deliverAmbiguousToLead: deps.deliverAmbiguousToLead,
 					tryFounderShipApproval: deps.tryFounderShipApproval,
 					observeShipJudgmentReply: deps.observeShipJudgmentReply,
@@ -594,8 +607,6 @@ export async function emitFounderReplyDeliveryForThread(
 					? "advanced"
 					: "noop",
 		};
-	} finally {
-		lease.release();
 	}
 }
 
@@ -610,7 +621,7 @@ async function processFounderMessage(
 	ctx: FounderReplyThreadCtx,
 	deps: {
 		store: StateStore;
-		db: CommDB;
+		withCommDb: FounderReplyCommScope;
 		deliverAmbiguousToLead?: FounderReplyDeliverDeps["deliverAmbiguousToLead"];
 		tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
 		observeShipJudgmentReply?: FounderReplyDeliverDeps["observeShipJudgmentReply"];
@@ -622,7 +633,7 @@ async function processFounderMessage(
 		reactToFounderMessage?: FounderReplyDeliverDeps["reactToFounderMessage"];
 	},
 ): Promise<ProcessOutcome> {
-	const { db } = deps;
+	const db = scopedGateResponseDb(deps.withCommDb);
 	const rawAnswer = msg.content ?? "";
 	const nowDate = new Date();
 	const now = nowDate.toISOString();
@@ -773,18 +784,20 @@ async function processFounderMessage(
 	if (founderReviewGate) {
 		const decision = classifyFounderReviewReply(rawAnswer);
 		if (decision.kind !== "neither") {
-			const written = writeTrustedFounderReviewResponse({
-				store: deps.store,
-				db,
-				questionId: founderReviewGate.questionId,
-				executionId: founderReviewGate.executionId,
-				fromAgent: "bridge",
-				founderId: ctx.ownerUserId,
-				passed: decision.kind === "pass",
-				...(decision.kind === "kickback" && decision.feedback !== undefined
-					? { feedback: decision.feedback }
-					: {}),
-			});
+			const written = deps.withCommDb((db) =>
+				writeTrustedFounderReviewResponse({
+					store: deps.store,
+					db,
+					questionId: founderReviewGate.questionId,
+					executionId: founderReviewGate.executionId,
+					fromAgent: "bridge",
+					founderId: ctx.ownerUserId,
+					passed: decision.kind === "pass",
+					...(decision.kind === "kickback" && decision.feedback !== undefined
+						? { feedback: decision.feedback }
+						: {}),
+				}),
+			);
 			if (written.written) {
 				if (decision.kind === "pass" && deps.reactToFounderMessage) {
 					const acknowledged = await deps.reactToFounderMessage(msg.id);

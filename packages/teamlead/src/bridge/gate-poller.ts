@@ -2340,19 +2340,14 @@ export class GatePoller {
 				`[GatePoller] learning reply thread scan failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		const resources = new Map<
-			string,
-			{ readonlyDb: CommDB; writerDb: CommDB }
-		>();
 		const tasks: Array<{
 			ctx: FounderReplyThreadCtx;
 			questions: PendingQuestionForThread[];
-			writerDb: CommDB;
 			deliverAmbiguousToLead: NonNullable<
 				FounderReplyDeliverDeps["deliverAmbiguousToLead"]
 			>;
 		}> = [];
-		try {
+		{
 			for (const project of this.config.projects) {
 				const dbPath = defaultGetCommDbPath(project.projectName);
 				let readonlyDb: CommDB;
@@ -2368,7 +2363,29 @@ export class GatePoller {
 				} catch {
 					continue; // CommDB not present yet
 				}
-				resources.set(project.projectName, { readonlyDb, writerDb });
+				// Materialize all read results before any yield or network work. The
+				// deliverer owns fresh synchronous write scopes, never this snapshot.
+				const pendingByLead = new Map<string, PendingQuestion[]>();
+				try {
+					for (const lead of project.leads) {
+						try {
+							pendingByLead.set(
+								lead.agentId,
+								readonlyDb.getPendingQuestions(
+									lead.agentId,
+								) as PendingQuestion[],
+							);
+						} catch {
+							// Preserve the existing per-Lead read failure isolation.
+						}
+					}
+				} finally {
+					try {
+						writerDb.close();
+					} finally {
+						readonlyDb.close();
+					}
+				}
 
 				for (const lead of project.leads) {
 					const botToken = lead.botToken ?? this.config.discordBotToken;
@@ -2377,14 +2394,10 @@ export class GatePoller {
 						continue;
 					}
 
-					let pending: PendingQuestion[];
-					try {
-						pending = readonlyDb.getPendingQuestions(
-							lead.agentId,
-						) as PendingQuestion[];
-					} catch {
+					const pending = pendingByLead.get(lead.agentId);
+					if (!pending) {
 						await yieldToEventLoop();
-						continue; // CommDB not present yet
+						continue;
 					}
 
 					// Build every live issue thread first, then attach pending questions as
@@ -2504,7 +2517,6 @@ export class GatePoller {
 						tasks.push({
 							ctx,
 							questions,
-							writerDb,
 							deliverAmbiguousToLead,
 						});
 					}
@@ -2540,13 +2552,12 @@ export class GatePoller {
 				...questioned.map((value) => ({ value, advancesScanCursor: false })),
 				...selectedScan.map((value) => ({ value, advancesScanCursor: true })),
 			]) {
-				const { ctx, questions, writerDb, deliverAmbiguousToLead } = task.value;
+				const { ctx, questions, deliverAmbiguousToLead } = task.value;
 				try {
 					await emitFounderReplyDeliveryForThread(ctx, questions, {
 						store: this.config.store,
 						fetchImpl: this.config.fetchImpl,
 						cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
-						commDbLeaseFactory: () => ({ db: writerDb, release: () => {} }),
 						deliverAmbiguousToLead,
 						tryFounderShipApproval: this.config.tryFounderShipApproval,
 						observeShipJudgmentReply: this.config.observeShipJudgmentReply,
@@ -2570,22 +2581,6 @@ export class GatePoller {
 						this.founderReplyScanCursor = ctx.threadId;
 					}
 					await yieldToEventLoop();
-				}
-			}
-		} finally {
-			for (const { readonlyDb, writerDb } of resources.values()) {
-				try {
-					writerDb.close();
-				} catch (err) {
-					console.warn("[GatePoller] founder-reply writer close failed:", err);
-				}
-				try {
-					readonlyDb.close();
-				} catch (err) {
-					console.warn(
-						"[GatePoller] founder-reply readonly close failed:",
-						err,
-					);
 				}
 			}
 		}

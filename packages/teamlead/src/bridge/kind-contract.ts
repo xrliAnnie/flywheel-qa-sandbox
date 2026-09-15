@@ -252,6 +252,18 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		remediationRef:
 			"launchd respawn + 复活后 boot 对账自检（ACK → 安静 resolve）(FLY-1082)",
 	},
+	bridge_fd_pressure: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef:
+			"Inspect fd ownership and effective process limit; no automatic restart (FLY-2563)",
+	},
+	ship_judgment_observation_unavailable: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef:
+			"Inspect observation migration diagnostics; recover only through authorized deployment (FLY-2563)",
+	},
 	infra_bot_down: {
 		owner: "cross_by_provider",
 		arc: "auto",

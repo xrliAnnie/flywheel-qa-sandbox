@@ -897,18 +897,25 @@ describe("QuestionAdmission mailbox claim service", () => {
 		});
 	});
 
-	it("reuses one CommDB connection across revalidation calls", async () => {
+	it("revalidates through closed short scopes without replaying migrations", async () => {
 		const h = harness();
 		h.db.insertQuestion("exec-1", "lead-a", "question");
 		const row = claim(h.queue);
-		const accessor = vi.spyOn(
-			h.admission as unknown as { commDb: () => CommDB },
-			"commDb",
+		const open = vi.spyOn(CommDB, "openExistingWriter");
+		const migrate = vi.spyOn(
+			CommDB.prototype as unknown as { applyMigrations(): void },
+			"applyMigrations",
 		);
+		const purge = vi.spyOn(CommDB.prototype, "purgeExpired");
 		await h.admission.revalidate(row);
 		await h.admission.revalidate(h.queue.getById(row.id)!);
-		expect(accessor.mock.results[1]?.value).toBe(
-			accessor.mock.results[0]?.value,
-		);
+		expect(open).toHaveBeenCalledTimes(2);
+		for (const result of open.mock.results) {
+			expect(() => (result.value as CommDB).getMessageById(row.id)).toThrow(
+				"not open",
+			);
+		}
+		expect(migrate).not.toHaveBeenCalled();
+		expect(purge).not.toHaveBeenCalled();
 	});
 });

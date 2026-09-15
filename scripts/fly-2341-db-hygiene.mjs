@@ -4,7 +4,9 @@ import { lstatSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installSqlTiming } from "../packages/config/dist/index.js";
 import { MailboxQueue } from "../packages/flywheel-comm/dist/mailbox-queue.js";
+import { enqueueRestoredObservation } from "../packages/teamlead/dist/ship-judgment/observation-cursor.js";
 import {
 	archiveTerminalRows,
 	installTerminalRowArchiveSchema,
@@ -38,7 +40,10 @@ function count(db, table) {
 }
 
 function inspect(path, hotTables, coldTable) {
-	const db = new Database(path, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(path, { readonly: true, fileMustExist: true }),
+		"hygiene",
+	);
 	try {
 		return {
 			bytes: statSync(path).size,
@@ -81,11 +86,12 @@ export async function executeFly2341Archive(input) {
 	const commDbPath = databasePath(input?.commDbPath, "comm-db");
 	if (!Number.isFinite(Date.parse(input?.now)))
 		throw new Error("now must be an ISO timestamp");
-	const teamlead = new Database(teamleadDbPath);
-	const comm = new Database(commDbPath);
+	const teamlead = installSqlTiming(new Database(teamleadDbPath), "teamlead");
+	const comm = installSqlTiming(new Database(commDbPath), "comm");
 	const queue = new MailboxQueue(comm);
 	const archived = { teamlead: 0, commFamilies: 0, commIdentities: 0 };
 	const commIdentityFailures = new Map();
+	const completedTables = new Set();
 	let batches = 0;
 	let maxBatchDurationMs = 0;
 	let consecutiveEmptyPasses = 0;
@@ -99,6 +105,7 @@ export async function executeFly2341Archive(input) {
 				.all();
 			let moved = 0;
 			for (const sourceTable of TEAMLEAD_TABLES) {
+				if (completedTables.has(sourceTable)) continue;
 				const started = performance.now();
 				const result = archiveTerminalRows(teamlead, {
 					now: input.now,
@@ -112,7 +119,15 @@ export async function executeFly2341Archive(input) {
 					performance.now() - started,
 				);
 				archived.teamlead += result.archived;
-				moved += result.archived;
+				moved += result.scanned;
+				const cursor = teamlead
+					.prepare(
+						"SELECT completed FROM workflow_terminal_archive_cursor WHERE source_table=?",
+					)
+					.get(sourceTable);
+				if (cursor?.completed === 1) completedTables.add(sourceTable);
+				else if (result.scanned === 0)
+					throw new Error(`archive_scan_no_progress: ${sourceTable}`);
 				batches++;
 				await immediate();
 			}
@@ -182,10 +197,13 @@ export function executeFly2341Restore(input) {
 		!sourceIdentity
 	)
 		throw new Error("teamlead key must be <source-table>:<source-identity>");
-	const db = new Database(dbPath);
+	const db = installSqlTiming(new Database(dbPath), "hygiene");
 	try {
 		installTerminalRowArchiveSchema(db);
-		return restoreTerminalRow(db, { sourceTable, sourceIdentity });
+		const input = { sourceTable, sourceIdentity };
+		const receipt = restoreTerminalRow(db, input);
+		const observationReplay = enqueueRestoredObservation(db, input);
+		return observationReplay ? { ...receipt, observationReplay } : receipt;
 	} finally {
 		db.close();
 	}
@@ -194,7 +212,7 @@ export function executeFly2341Restore(input) {
 export function executeFly2341Vacuum(input) {
 	const dbPath = databasePath(input?.dbPath, "db");
 	const before = statSync(dbPath).size;
-	const db = new Database(dbPath);
+	const db = installSqlTiming(new Database(dbPath), "hygiene");
 	try {
 		db.exec("VACUUM");
 	} finally {

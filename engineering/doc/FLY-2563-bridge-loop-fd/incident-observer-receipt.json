@@ -1,0 +1,317 @@
+{
+  "path": "/Users/xiaorongli/.flywheel/patrol-repairs/FLY-2563__teamlead-bench-writable-copy-of-9-14-incident__20260915T072847Z.db",
+  "originalUntouched": true,
+  "sqlite": {
+    "version": "3.51.3"
+  },
+  "migration": {
+    "elapsedMs": 4333.09275
+  },
+  "samples": [
+    {
+      "ms": 4.72925000000032,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 2.705374999999549,
+      "cursorBefore": 0,
+      "cursorAfter": 6349184,
+      "deferred": 0
+    },
+    {
+      "ms": 2.0708340000001044,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.5896670000001905,
+      "cursorBefore": 6349184,
+      "cursorAfter": 6351367,
+      "deferred": 0
+    },
+    {
+      "ms": 1.7591660000007323,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.5619999999998981,
+      "cursorBefore": 6351367,
+      "cursorAfter": 6353458,
+      "deferred": 0
+    },
+    {
+      "ms": 1.0733329999993657,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 0.8451660000000629,
+      "cursorBefore": 6353458,
+      "cursorAfter": 6357265,
+      "deferred": 0
+    },
+    {
+      "ms": 0.9546250000003056,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 0.8562499999998181,
+      "cursorBefore": 6357265,
+      "cursorAfter": 6362331,
+      "deferred": 0
+    },
+    {
+      "ms": 1.121791999999914,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.0112499999995634,
+      "cursorBefore": 6362331,
+      "cursorAfter": 6364827,
+      "deferred": 0
+    },
+    {
+      "ms": 1.749374999999418,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.6167500000001382,
+      "cursorBefore": 6364827,
+      "cursorAfter": 6366620,
+      "deferred": 0
+    },
+    {
+      "ms": 1.9373749999995198,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.7446250000002692,
+      "cursorBefore": 6366620,
+      "cursorAfter": 6370651,
+      "deferred": 0
+    },
+    {
+      "ms": 1.7554580000005444,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.5982500000000073,
+      "cursorBefore": 6370651,
+      "cursorAfter": 6441416,
+      "deferred": 0
+    },
+    {
+      "ms": 1.7102500000000873,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.5273340000003373,
+      "cursorBefore": 6441416,
+      "cursorAfter": 6528505,
+      "deferred": 0
+    },
+    {
+      "ms": 1.6070419999996375,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.44012500000008,
+      "cursorBefore": 6528505,
+      "cursorAfter": 6566395,
+      "deferred": 0
+    },
+    {
+      "ms": 1.639165999999932,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.4887920000001031,
+      "cursorBefore": 6566395,
+      "cursorAfter": 6660924,
+      "deferred": 0
+    },
+    {
+      "ms": 1.3140000000003056,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.0553749999999127,
+      "cursorBefore": 6660924,
+      "cursorAfter": 6665033,
+      "deferred": 0
+    },
+    {
+      "ms": 0.8638750000000073,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 0.7660419999992882,
+      "cursorBefore": 6665033,
+      "cursorAfter": 6666760,
+      "deferred": 0
+    },
+    {
+      "ms": 1.6570410000003903,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.5796250000003056,
+      "cursorBefore": 6666760,
+      "cursorAfter": 6668422,
+      "deferred": 0
+    },
+    {
+      "ms": 1.061083000000508,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 0.9364580000001297,
+      "cursorBefore": 6668422,
+      "cursorAfter": 6669847,
+      "deferred": 0
+    },
+    {
+      "ms": 3.6602499999999054,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 3.571375000000444,
+      "cursorBefore": 6669847,
+      "cursorAfter": 6671946,
+      "deferred": 0
+    },
+    {
+      "ms": 1.0429579999999987,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 0.9055830000006608,
+      "cursorBefore": 6671946,
+      "cursorAfter": 6677635,
+      "deferred": 0
+    },
+    {
+      "ms": 1.6809170000005906,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.5205830000004426,
+      "cursorBefore": 6677635,
+      "cursorAfter": 6740813,
+      "deferred": 0
+    },
+    {
+      "ms": 1.3492919999998776,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.1914170000000013,
+      "cursorBefore": 6740813,
+      "cursorAfter": 7021988,
+      "deferred": 0
+    },
+    {
+      "ms": 6.645166999999674,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 1.851332999999613,
+      "cursorBefore": 7021988,
+      "cursorAfter": 7309566,
+      "deferred": 0
+    },
+    {
+      "ms": 5.643458000000464,
+      "outcomes": 0,
+      "sourceCandidates": 32,
+      "holderCandidates": 0,
+      "elapsedMs": 5.4343330000001515,
+      "cursorBefore": 7309566,
+      "cursorAfter": 7733234,
+      "deferred": 0
+    },
+    {
+      "ms": 3.588292000000365,
+      "outcomes": 0,
+      "sourceCandidates": 21,
+      "holderCandidates": 0,
+      "elapsedMs": 3.4122919999999795,
+      "cursorBefore": 7733234,
+      "cursorAfter": 7982863,
+      "deferred": 0
+    },
+    {
+      "ms": 0.29662499999994907,
+      "outcomes": 0,
+      "sourceCandidates": 0,
+      "holderCandidates": 0,
+      "elapsedMs": 0.13533300000017334,
+      "cursorBefore": 7982863,
+      "cursorAfter": 7982863,
+      "deferred": 0
+    }
+  ],
+  "steady": [
+    {
+      "ms": 0.16225000000031287,
+      "outcomes": 0,
+      "sourceCandidates": 0,
+      "holderCandidates": 0,
+      "elapsedMs": 0.08916700000008859,
+      "cursorBefore": 7982863,
+      "cursorAfter": 7982863,
+      "deferred": 0
+    },
+    {
+      "ms": 0.14204100000006292,
+      "outcomes": 0,
+      "sourceCandidates": 0,
+      "holderCandidates": 0,
+      "elapsedMs": 0.08145799999965675,
+      "cursorBefore": 7982863,
+      "cursorAfter": 7982863,
+      "deferred": 0
+    },
+    {
+      "ms": 0.1355840000005628,
+      "outcomes": 0,
+      "sourceCandidates": 0,
+      "holderCandidates": 0,
+      "elapsedMs": 0.07175000000006548,
+      "cursorBefore": 7982863,
+      "cursorAfter": 7982863,
+      "deferred": 0
+    },
+    {
+      "ms": 0.11879200000021228,
+      "outcomes": 0,
+      "sourceCandidates": 0,
+      "holderCandidates": 0,
+      "elapsedMs": 0.06675000000086584,
+      "cursorBefore": 7982863,
+      "cursorAfter": 7982863,
+      "deferred": 0
+    },
+    {
+      "ms": 0.1114159999997355,
+      "outcomes": 0,
+      "sourceCandidates": 0,
+      "holderCandidates": 0,
+      "elapsedMs": 0.06454200000007404,
+      "cursorBefore": 7982863,
+      "cursorAfter": 7982863,
+      "deferred": 0
+    }
+  ],
+  "maxMs": 6.645166999999674,
+  "pass": true,
+  "closed": true,
+  "counts": {
+    "session_events": 1687121,
+    "workflow_gate_holder": 536
+  },
+  "authorityQuestion": "b07d0b86-d375-4dab-b37a-9ed4e3fde5f4",
+  "limitations": [
+    "Historical source rows have no matching holders; this receipt does not prove nonempty outcome writes. Synthetic performance fixture separately produces 25000 outcomes.",
+    "Migration time is startup work outside observer timing.",
+    "No production health/fd or archive mutation was run."
+  ]
+}

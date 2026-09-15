@@ -247,312 +247,335 @@ export class LeadInboxRuntime {
 					throw new Error("legacy ACK secret provider is not configured");
 				},
 			} satisfies DeliverySecretProvider);
-		for (const project of opts.projects) {
-			const dbPath = opts.commDbPathForProject(project.projectName);
-			let queue: MailboxQueue;
-			try {
-				const commDb = new CommDB(dbPath);
-				commDb.close();
-				queue = new MailboxQueue(dbPath);
-			} catch (error) {
-				if (error instanceof Error) {
-					error.message = `LeadInboxRuntime init failed for project=${project.projectName} db=${dbPath}: ${error.message}`;
-				}
-				throw error;
-			}
-			this.queues.set(project.projectName, queue);
-			const runnerAdapter = runnerAdapterForProject(project, dbPath);
-			this.runnerAdapters.push(runnerAdapter);
-			const resolveOwningLead = (executionId: string): string | undefined => {
-				const recipient = opts.store.resolveRunnerRecipientState(executionId);
-				if (!recipient.projectName) return undefined;
-				let labels: string[] = [];
-				if (recipient.issueLabels) {
-					try {
-						const parsed = JSON.parse(recipient.issueLabels) as unknown;
-						labels = Array.isArray(parsed)
-							? parsed.filter(
-									(value): value is string => typeof value === "string",
-								)
-							: [];
-					} catch {
-						labels = recipient.issueLabels
-							.split(",")
-							.map((value) => value.trim())
-							.filter(Boolean);
-					}
-				}
+		try {
+			for (const project of opts.projects) {
+				const dbPath = opts.commDbPathForProject(project.projectName);
+				let queue: MailboxQueue;
 				try {
-					return resolveLeadForIssue(
-						opts.projects,
-						recipient.projectName,
-						labels,
-					).lead.agentId;
-				} catch {
-					return undefined;
+					const commDb = new CommDB(dbPath);
+					commDb.close();
+					queue = new MailboxQueue(dbPath);
+				} catch (error) {
+					if (error instanceof Error) {
+						error.message = `LeadInboxRuntime init failed for project=${project.projectName} db=${dbPath}: ${error.message}`;
+					}
+					throw error;
 				}
-			};
-			const projectLeadIds = new Set(project.leads.map((lead) => lead.agentId));
-			const runnerLane = new RunnerMailboxLane({
-				queue,
-				ownerEpoch: this.ownerEpoch,
-				deliver: (envelope) => runnerAdapter.deliver(envelope),
-				resolveQuestion: (questionId) =>
-					runnerAdapter.resolveQuestion(questionId),
-				queueConfig: resolveMailboxQueueConfig,
-				recipientState: (executionId) =>
-					opts.store.resolveRunnerRecipientState(executionId).state,
-				isTerminalDeliveryObligation: (row) =>
-					isCurrentDesignReviewManifestInstruction(opts.store, row),
-				resolveOwningLead,
-				resolveSenderLead: (sender) =>
-					projectLeadIds.has(sender) ? sender : undefined,
-				...(project.leads[0]
-					? { fallbackLeadId: project.leads[0].agentId }
-					: {}),
-				probeFactsByRecipient: () => this.runnerProbeFacts(project.projectName),
-			});
-			for (const [leadIndex, lead] of project.leads.entries()) {
-				if (this.projectByLead.has(lead.agentId)) {
-					throw new Error(`duplicate Lead id across projects: ${lead.agentId}`);
-				}
-				this.projectByLead.set(lead.agentId, project);
-				const identity = identityByProjectLead.get(
-					this.key(project.projectName, lead.agentId),
+				this.queues.set(project.projectName, queue);
+				const runnerAdapter = runnerAdapterForProject(project, dbPath);
+				this.runnerAdapters.push(runnerAdapter);
+				const resolveOwningLead = (executionId: string): string | undefined => {
+					const recipient = opts.store.resolveRunnerRecipientState(executionId);
+					if (!recipient.projectName) return undefined;
+					let labels: string[] = [];
+					if (recipient.issueLabels) {
+						try {
+							const parsed = JSON.parse(recipient.issueLabels) as unknown;
+							labels = Array.isArray(parsed)
+								? parsed.filter(
+										(value): value is string => typeof value === "string",
+									)
+								: [];
+						} catch {
+							labels = recipient.issueLabels
+								.split(",")
+								.map((value) => value.trim())
+								.filter(Boolean);
+						}
+					}
+					try {
+						return resolveLeadForIssue(
+							opts.projects,
+							recipient.projectName,
+							labels,
+						).lead.agentId;
+					} catch {
+						return undefined;
+					}
+				};
+				const projectLeadIds = new Set(
+					project.leads.map((lead) => lead.agentId),
 				);
-				if (!identity) {
-					throw new Error(
-						`canonical Lead identity missing: ${project.projectName}/${lead.agentId}`,
-					);
-				}
-				const admission = new QuestionAdmission({
+				const runnerLane = new RunnerMailboxLane({
 					queue,
-					dbPath: opts.commDbPathForProject(project.projectName),
-					lead,
-					projects: opts.projects,
-					store: opts.store,
-					runtimeRegistry: opts.registry,
-					chatThreadsEnabled: opts.chatThreadsEnabled,
-				});
-				this.admissions.push(admission);
-				const protocol = new ProtocolIngress({
-					store: opts.store,
-					queue,
-					secretProvider,
-				});
-				const loop = new LeadInboxLoop({
-					queue,
-					leadId: lead.agentId,
 					ownerEpoch: this.ownerEpoch,
-					adapter: adapterForLead(project, lead),
+					deliver: (envelope) => runnerAdapter.deliver(envelope),
+					resolveQuestion: (questionId) =>
+						runnerAdapter.resolveQuestion(questionId),
 					queueConfig: resolveMailboxQueueConfig,
-					recipientState: () =>
-						readLeadRecipientState({
-							leadKey: identity.leadKey,
-							leaseReader: this.leadLeaseReader,
-							processTupleState: this.processLeadTupleState,
-						}),
-					ackInstruction:
-						effectiveLeadBackend(
-							lead.backend,
-							process.env.FLYWHEEL_LEAD_BACKEND,
-						).backend === "codex-app-server"
-							? "lead_actions.ack_batch"
-							: "flywheel_inbox_ack_batch",
-					hasLiveSession: () =>
-						opts.store.getActiveSessions().some((session) => {
-							try {
-								return matchesLead(session, lead.agentId, opts.projects);
-							} catch {
-								return false;
-							}
-						}),
-					hasAdditionalWork:
-						leadIndex === 0
-							? () => queue.countRunnerDeliverable() > 0
-							: undefined,
-					admit: async () => {
-						await this.ensureCutover();
-						const runtime = opts.registry.getRawForLead(lead.agentId);
-						if (runtime) {
-							for (const row of opts.store.listUndeliveredLeadInboxEvents({
-								leadId: lead.agentId,
-								projectName: project.projectName,
-							})) {
-								try {
-									const envelope = leadEventEnvelopeFromJournalRow(
-										row,
-										REDRIVABLE_LEAD_EVENT_PRIORITY,
-									);
-									this.enqueueLeadEvent(
-										envelope,
-										runtime.renderEnvelope?.(envelope) ??
-											JSON.stringify(envelope.event),
-									);
-								} catch (error) {
-									if (row.event_type !== "workflow_claim_recorded") throw error;
-									console.warn(
-										"[lead-inbox-runtime] lead event redrive failed",
-										{
-											leadId: lead.agentId,
-											projectName: project.projectName,
-											seq: row.seq,
-											eventType: row.event_type,
-											errorName:
-												error instanceof Error ? error.name : typeof error,
-										},
-									);
-								}
-							}
-						}
-						if (leadIndex === 0) {
-							await runnerLane.tick();
-							const queueConfig = resolveMailboxQueueConfig();
-							const maintenanceAtMs = Date.now();
-							const lastDeadAlertReconcileAtMs =
-								this.lastDeadAlertReconcileAtMs.get(project.projectName);
-							if (
-								lastDeadAlertReconcileAtMs === undefined ||
-								maintenanceAtMs - lastDeadAlertReconcileAtMs >=
-									queueConfig.deadLetterScanIntervalMs
-							) {
-								this.reconcileDeadLetterAlertIntents({
-									project,
-									queue,
-									resolveOwningLead,
-									windowMs: queueConfig.deadLetterWindowMs,
-								});
-								this.lastDeadAlertReconcileAtMs.set(
-									project.projectName,
-									maintenanceAtMs,
-								);
-							}
-							await this.drainDeadLetterAlerts(queueConfig.deadLetterWindowMs);
-							const lastArchiveAttemptAtMs = this.lastArchiveAttemptAtMs.get(
-								project.projectName,
-							);
-							if (
-								lastArchiveAttemptAtMs === undefined ||
-								maintenanceAtMs - lastArchiveAttemptAtMs >=
-									queueConfig.archiveIntervalMs
-							) {
-								// Attempt-level throttle: even a failed maintenance pass waits for
-								// the next interval instead of turning into a one-second error loop.
-								this.lastArchiveAttemptAtMs.set(
-									project.projectName,
-									maintenanceAtMs,
-								);
-								const archiveAt = new Date(maintenanceAtMs).toISOString();
-								try {
-									queue.archiveDueFamilies({
-										now: archiveAt,
-										maxFamilies: 5,
-									});
-									if (this.opts.archiveEnabled?.(project.projectName) ?? true) {
-										queue.compactArchivedIdentities({
-											now: archiveAt,
-											limit: 25,
-											onIdentityError: (id, error) =>
-												console.warn(
-													`[lead-inbox-runtime] mailbox identity archive failed for project=${project.projectName} id=${id}: ${error instanceof Error ? error.message : String(error)}`,
-												),
-										});
-									}
-									queue.drainContentRefGc({ now: archiveAt, limit: 1 });
-								} catch (error) {
-									console.warn(
-										`[lead-inbox-runtime] mailbox archive maintenance failed for project=${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,
-									);
-								}
-							}
-						}
-					},
-					handleProtocol: (row) => protocol.handle(row),
-					onProtocolQuarantine: (row, error) => {
-						queue.enqueue({
-							id: `protocol_alert:${lead.agentId}:${row.id}`,
-							fromAgent: "bridge",
-							toAgent: lead.agentId,
-							recipientKind: "lead",
-							sourceKind: "protocol_quarantine",
-							sourceRef: row.id,
-							type: "protocol_quarantined",
-							msgClass: "model",
-							priority: 2,
-							content:
-								`[protocol_quarantined] ${row.type} (${row.id}) was rejected after repeated failures: ` +
-								error.message,
-							senderRef: encodeSenderRef(),
-						});
-					},
-					revalidateModel: (row) => admission.revalidate(row),
-					markAuditDelivered: (row) => {
-						if (
-							(row.source_kind !== "lead_event" &&
-								row.source_kind !== "question") ||
-							!row.source_ref
-						)
-							return;
-						const seq = Number(row.source_ref);
-						if (Number.isSafeInteger(seq) && seq > 0)
-							opts.store.markLeadEventDelivered(seq);
-					},
-					...(opts.onModelTransportStall
-						? {
-								onModelTransportStall: (input) =>
-									opts.onModelTransportStall?.({
-										...input,
-										projectName: project.projectName,
-									}),
-							}
+					recipientState: (executionId) =>
+						opts.store.resolveRunnerRecipientState(executionId).state,
+					isTerminalDeliveryObligation: (row) =>
+						isCurrentDesignReviewManifestInstruction(opts.store, row),
+					resolveOwningLead,
+					resolveSenderLead: (sender) =>
+						projectLeadIds.has(sender) ? sender : undefined,
+					...(project.leads[0]
+						? { fallbackLeadId: project.leads[0].agentId }
 						: {}),
-					...(opts.onModelTransportRecovered
-						? {
-								onModelTransportRecovered: (input) =>
-									opts.onModelTransportRecovered?.({
-										...input,
-										projectName: project.projectName,
-									}),
-							}
-						: {}),
-					...(opts.onModelTransportExhausted
-						? {
-								onModelTransportExhausted: (input) =>
-									opts.onModelTransportExhausted?.({
-										...input,
-										projectName: project.projectName,
-									}),
-							}
-						: {}),
-					...(opts.onDiscordUndeliverable
-						? {
-								onDiscordUndeliverable: (input) =>
-									opts.onDiscordUndeliverable?.({
-										...input,
-										projectName: project.projectName,
-									}),
-							}
-						: {}),
-					...(opts.onDiscordDeliveryStall
-						? {
-								onDiscordDeliveryStall: (input) =>
-									opts.onDiscordDeliveryStall?.({
-										...input,
-										projectName: project.projectName,
-									}),
-							}
-						: {}),
-					logger: console,
-					afterTickStarted: opts.afterTickStartedForLead
-						? () =>
-								opts.afterTickStartedForLead?.(
-									project.projectName,
-									lead.agentId,
-								) ?? Promise.resolve()
-						: undefined,
+					probeFactsByRecipient: () =>
+						this.runnerProbeFacts(project.projectName),
 				});
-				this.loops.set(this.key(project.projectName, lead.agentId), loop);
+				for (const [leadIndex, lead] of project.leads.entries()) {
+					if (this.projectByLead.has(lead.agentId)) {
+						throw new Error(
+							`duplicate Lead id across projects: ${lead.agentId}`,
+						);
+					}
+					this.projectByLead.set(lead.agentId, project);
+					const identity = identityByProjectLead.get(
+						this.key(project.projectName, lead.agentId),
+					);
+					if (!identity) {
+						throw new Error(
+							`canonical Lead identity missing: ${project.projectName}/${lead.agentId}`,
+						);
+					}
+					const admission = new QuestionAdmission({
+						queue,
+						dbPath: opts.commDbPathForProject(project.projectName),
+						lead,
+						projects: opts.projects,
+						store: opts.store,
+						runtimeRegistry: opts.registry,
+						chatThreadsEnabled: opts.chatThreadsEnabled,
+					});
+					this.admissions.push(admission);
+					const protocol = new ProtocolIngress({
+						store: opts.store,
+						queue,
+						secretProvider,
+					});
+					const loop = new LeadInboxLoop({
+						queue,
+						leadId: lead.agentId,
+						ownerEpoch: this.ownerEpoch,
+						adapter: adapterForLead(project, lead),
+						queueConfig: resolveMailboxQueueConfig,
+						recipientState: () =>
+							readLeadRecipientState({
+								leadKey: identity.leadKey,
+								leaseReader: this.leadLeaseReader,
+								processTupleState: this.processLeadTupleState,
+							}),
+						ackInstruction:
+							effectiveLeadBackend(
+								lead.backend,
+								process.env.FLYWHEEL_LEAD_BACKEND,
+							).backend === "codex-app-server"
+								? "lead_actions.ack_batch"
+								: "flywheel_inbox_ack_batch",
+						hasLiveSession: () =>
+							opts.store.getActiveSessions().some((session) => {
+								try {
+									return matchesLead(session, lead.agentId, opts.projects);
+								} catch {
+									return false;
+								}
+							}),
+						hasAdditionalWork:
+							leadIndex === 0
+								? () => queue.countRunnerDeliverable() > 0
+								: undefined,
+						admit: async () => {
+							await this.ensureCutover();
+							const runtime = opts.registry.getRawForLead(lead.agentId);
+							if (runtime) {
+								for (const row of opts.store.listUndeliveredLeadInboxEvents({
+									leadId: lead.agentId,
+									projectName: project.projectName,
+								})) {
+									try {
+										const envelope = leadEventEnvelopeFromJournalRow(
+											row,
+											REDRIVABLE_LEAD_EVENT_PRIORITY,
+										);
+										this.enqueueLeadEvent(
+											envelope,
+											runtime.renderEnvelope?.(envelope) ??
+												JSON.stringify(envelope.event),
+										);
+									} catch (error) {
+										if (row.event_type !== "workflow_claim_recorded")
+											throw error;
+										console.warn(
+											"[lead-inbox-runtime] lead event redrive failed",
+											{
+												leadId: lead.agentId,
+												projectName: project.projectName,
+												seq: row.seq,
+												eventType: row.event_type,
+												errorName:
+													error instanceof Error ? error.name : typeof error,
+											},
+										);
+									}
+								}
+							}
+							if (leadIndex === 0) {
+								await runnerLane.tick();
+								const queueConfig = resolveMailboxQueueConfig();
+								const maintenanceAtMs = Date.now();
+								const lastDeadAlertReconcileAtMs =
+									this.lastDeadAlertReconcileAtMs.get(project.projectName);
+								if (
+									lastDeadAlertReconcileAtMs === undefined ||
+									maintenanceAtMs - lastDeadAlertReconcileAtMs >=
+										queueConfig.deadLetterScanIntervalMs
+								) {
+									this.reconcileDeadLetterAlertIntents({
+										project,
+										queue,
+										resolveOwningLead,
+										windowMs: queueConfig.deadLetterWindowMs,
+									});
+									this.lastDeadAlertReconcileAtMs.set(
+										project.projectName,
+										maintenanceAtMs,
+									);
+								}
+								await this.drainDeadLetterAlerts(
+									queueConfig.deadLetterWindowMs,
+								);
+								const lastArchiveAttemptAtMs = this.lastArchiveAttemptAtMs.get(
+									project.projectName,
+								);
+								if (
+									lastArchiveAttemptAtMs === undefined ||
+									maintenanceAtMs - lastArchiveAttemptAtMs >=
+										queueConfig.archiveIntervalMs
+								) {
+									// Attempt-level throttle: even a failed maintenance pass waits for
+									// the next interval instead of turning into a one-second error loop.
+									this.lastArchiveAttemptAtMs.set(
+										project.projectName,
+										maintenanceAtMs,
+									);
+									const archiveAt = new Date(maintenanceAtMs).toISOString();
+									try {
+										queue.archiveDueFamilies({
+											now: archiveAt,
+											maxFamilies: 5,
+										});
+										if (
+											this.opts.archiveEnabled?.(project.projectName) ??
+											true
+										) {
+											queue.compactArchivedIdentities({
+												now: archiveAt,
+												limit: 25,
+												onIdentityError: (id, error) =>
+													console.warn(
+														`[lead-inbox-runtime] mailbox identity archive failed for project=${project.projectName} id=${id}: ${error instanceof Error ? error.message : String(error)}`,
+													),
+											});
+										}
+										queue.drainContentRefGc({ now: archiveAt, limit: 1 });
+									} catch (error) {
+										console.warn(
+											`[lead-inbox-runtime] mailbox archive maintenance failed for project=${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,
+										);
+									}
+								}
+							}
+						},
+						handleProtocol: (row) => protocol.handle(row),
+						onProtocolQuarantine: (row, error) => {
+							queue.enqueue({
+								id: `protocol_alert:${lead.agentId}:${row.id}`,
+								fromAgent: "bridge",
+								toAgent: lead.agentId,
+								recipientKind: "lead",
+								sourceKind: "protocol_quarantine",
+								sourceRef: row.id,
+								type: "protocol_quarantined",
+								msgClass: "model",
+								priority: 2,
+								content:
+									`[protocol_quarantined] ${row.type} (${row.id}) was rejected after repeated failures: ` +
+									error.message,
+								senderRef: encodeSenderRef(),
+							});
+						},
+						revalidateModel: (row) => admission.revalidate(row),
+						markAuditDelivered: (row) => {
+							if (
+								(row.source_kind !== "lead_event" &&
+									row.source_kind !== "question") ||
+								!row.source_ref
+							)
+								return;
+							const seq = Number(row.source_ref);
+							if (Number.isSafeInteger(seq) && seq > 0)
+								opts.store.markLeadEventDelivered(seq);
+						},
+						...(opts.onModelTransportStall
+							? {
+									onModelTransportStall: (input) =>
+										opts.onModelTransportStall?.({
+											...input,
+											projectName: project.projectName,
+										}),
+								}
+							: {}),
+						...(opts.onModelTransportRecovered
+							? {
+									onModelTransportRecovered: (input) =>
+										opts.onModelTransportRecovered?.({
+											...input,
+											projectName: project.projectName,
+										}),
+								}
+							: {}),
+						...(opts.onModelTransportExhausted
+							? {
+									onModelTransportExhausted: (input) =>
+										opts.onModelTransportExhausted?.({
+											...input,
+											projectName: project.projectName,
+										}),
+								}
+							: {}),
+						...(opts.onDiscordUndeliverable
+							? {
+									onDiscordUndeliverable: (input) =>
+										opts.onDiscordUndeliverable?.({
+											...input,
+											projectName: project.projectName,
+										}),
+								}
+							: {}),
+						...(opts.onDiscordDeliveryStall
+							? {
+									onDiscordDeliveryStall: (input) =>
+										opts.onDiscordDeliveryStall?.({
+											...input,
+											projectName: project.projectName,
+										}),
+								}
+							: {}),
+						logger: console,
+						afterTickStarted: opts.afterTickStartedForLead
+							? () =>
+									opts.afterTickStartedForLead?.(
+										project.projectName,
+										lead.agentId,
+									) ?? Promise.resolve()
+							: undefined,
+					});
+					this.loops.set(this.key(project.projectName, lead.agentId), loop);
+				}
 			}
+		} catch (error) {
+			try {
+				this.close();
+			} catch (closeError) {
+				console.warn(
+					"[LeadInboxRuntime] failed initialization cleanup:",
+					closeError,
+				);
+			}
+			throw error;
 		}
 	}
 

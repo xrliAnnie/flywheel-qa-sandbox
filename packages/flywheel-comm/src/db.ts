@@ -13,6 +13,7 @@ import Database from "better-sqlite3";
 import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
+	installSqlTiming,
 } from "flywheel-config";
 import {
 	AUTO_NARROW_ACTOR,
@@ -1137,6 +1138,7 @@ export function openMailboxMaintenanceDatabase(
 	let db: Database.Database | undefined;
 	try {
 		db = new Database(dbPath, { fileMustExist: true });
+		installSqlTiming(db, "comm");
 		db.pragma("busy_timeout = 5000");
 		db.pragma("query_only = 1");
 		assertMailboxGeneration(db, dbPath);
@@ -1260,11 +1262,30 @@ export class CommDB {
 		let opened: Database.Database | undefined;
 		try {
 			opened = new Database(dbPath, { readonly: true });
+			installSqlTiming(opened, "comm");
 			instance.db = opened;
 			phase = "pragma";
 			instance.db.pragma("busy_timeout = 5000");
 			phase = "generation-assert";
 			assertMailboxGeneration(instance.db, dbPath);
+		} catch (error) {
+			closeAfterOpenFailure(opened);
+			augmentCommDbOpenError(error, dbPath, phase);
+		}
+		return instance;
+	}
+
+	/** A synchronous write scope after boot migration. Never create, migrate or wait on a lock. */
+	static openExistingWriter(dbPath: string): CommDB {
+		const instance = Object.create(CommDB.prototype) as CommDB;
+		let phase: CommDbOpenPhase = "database-open";
+		let opened: Database.Database | undefined;
+		try {
+			opened = new Database(dbPath, { fileMustExist: true, timeout: 0 });
+			installSqlTiming(opened, "comm");
+			instance.db = opened;
+			phase = "generation-assert";
+			assertMailboxGeneration(opened, dbPath);
 		} catch (error) {
 			closeAfterOpenFailure(opened);
 			augmentCommDbOpenError(error, dbPath, phase);

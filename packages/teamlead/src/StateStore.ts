@@ -8,6 +8,7 @@ import { ShipJudgmentReader } from "./ship-judgment/show.js";
 import { ShipJudgmentDelivery } from "./ship-judgment/delivery.js";
 import { ShipJudgmentStatistics } from "./ship-judgment/statistics.js";
 import { ShipJudgmentOutcomes } from "./ship-judgment/outcomes.js";
+import { installObservationStorage, ObservationSchemaDrift, enqueueRestoredObservation, type ObservationReplayReceipt, type ObservationStorageState } from "./ship-judgment/observation-cursor.js";
 import { ShipJudgmentClarifications, type ReplySource } from "./ship-judgment/clarifications.js";
 import { LearningDelivery } from "./ship-judgment/learning-delivery.js";
 import type { ReleaseSignalEvent, ReleasePublication, ReadinessInput, ReleaseHeartbeat, ReleaseSignalGap, ReleaseReadinessRecord } from "./bridge/release-readiness/evaluate.js";
@@ -60,6 +61,7 @@ import {
 	getFlagStoreCodec,
 	getModelConfigSnapshot,
 	getNodeTypeRegistryEntry,
+	installSqlTiming,
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
@@ -193,6 +195,7 @@ import {
 	findArchivedTerminalRow,
 	installTerminalRowArchiveSchema,
 	maxArchivedWorkflowRunEventSeq,
+	MAX_TERMINAL_ARCHIVE_DURATION_MS,
 	restoreTerminalRow as restoreTerminalRowInDatabase,
 	type TerminalArchiveInput,
 	type TerminalArchiveResult,
@@ -2671,6 +2674,8 @@ export type AttentionThreadBinding =
 	  };
 
 export class StateStore {
+	private observationStorage: ObservationStorageState = { status: "unavailable", reason: "not_initialized" };
+	private observationZeroProgress = { verdict: 0, closeout: 0, clarification: 0, archive: 0 };
 	get betaSchedules(): BetaReleaseStore {
 		return new BetaReleaseStore(this.db.raw);
 	}
@@ -3829,6 +3834,7 @@ export class StateStore {
 			fileMustExist: true,
 		});
 		try {
+			installSqlTiming(raw, "teamlead");
 			raw.pragma("busy_timeout = 5000");
 			if (!options.readonly) {
 				const journalMode = String(
@@ -4099,6 +4105,7 @@ export class StateStore {
 				fileMustExist: true,
 			});
 			try {
+				installSqlTiming(backup, "teamlead");
 				const quickCheck = backup.pragma("quick_check", { simple: true });
 				const observedForeignKeyBaseline = workflowCatalogForeignKeyBaseline(
 					backup.pragma("foreign_key_check") as unknown[],
@@ -4152,6 +4159,7 @@ export class StateStore {
 			mkdirSync(dirname(dbPath), { recursive: true });
 		}
 		const raw = new BetterSqlite3(dbPath);
+		installSqlTiming(raw, "teamlead");
 		// WAL: incremental writes (no full-DB export per write). synchronous=NORMAL
 		// is safe under WAL (at most the last txn lost on power-loss) and fast.
 		// busy_timeout: retry transient locks (e.g. a cross-process WAL reader /
@@ -5339,7 +5347,18 @@ export class StateStore {
 	}
 
 	getShipJudgmentOutcomes(): ShipJudgmentOutcomes {
+		if (this.observationStorage.status !== "ready") throw new Error("observation_storage_unavailable");
 		return new ShipJudgmentOutcomes(this.db.raw);
+	}
+	getShipJudgmentObservationStorage(): ObservationStorageState {
+		return { ...this.observationStorage };
+	}
+	getShipJudgmentObservationProgress() {
+		return { zero_progress_ticks: { ...this.observationZeroProgress }, starved: Object.values(this.observationZeroProgress).some(count => count >= 3) };
+	}
+	recordShipJudgmentObservationProgress(kind: "verdict" | "closeout" | "clarification" | "archive", inspected: number, elapsedMs: number, budgetMs: number): void {
+		this.observationZeroProgress[kind] = inspected === 0 && elapsedMs >= budgetMs
+			? Math.min(Number.MAX_SAFE_INTEGER, this.observationZeroProgress[kind] + 1) : 0;
 	}
 
 	getShipJudgmentClarifications(mode: () => string, source?:ReplySource): ShipJudgmentClarifications {
@@ -8152,14 +8171,19 @@ export class StateStore {
 	}
 
 	archiveTerminalRows(input: TerminalArchiveInput): TerminalArchiveResult {
-		return archiveTerminalRowsInDatabase(this.db.raw, input);
+		const started = performance.now();
+		const result = archiveTerminalRowsInDatabase(this.db.raw, { ...input, observationStorageReady: this.observationStorage.status === "ready" });
+		this.recordShipJudgmentObservationProgress("archive", result.scanned, performance.now() - started, MAX_TERMINAL_ARCHIVE_DURATION_MS);
+		return result;
 	}
 
 	restoreTerminalRow(input: {
 		sourceTable: "session_events" | "workflow_run_event" | "lead_events";
 		sourceIdentity: string;
-	}): { outcome: "restored" | "idempotent" } {
-		return restoreTerminalRowInDatabase(this.db.raw, input);
+	}): { outcome: "restored" | "idempotent"; observationReplay?: ObservationReplayReceipt } {
+		const receipt = restoreTerminalRowInDatabase(this.db.raw, input);
+		const observationReplay = enqueueRestoredObservation(this.db.raw, input);
+		return observationReplay ? { ...receipt, observationReplay } : receipt;
 	}
 
 	setLeadNote(input: {
@@ -28050,6 +28074,13 @@ export class StateStore {
 		this.migrateAutoMergeShadowLedger();
 		this.migrateAutoNarrowGateLedger();
 		this.migrateShipJudgmentLedger();
+		try {
+			installObservationStorage(this.db.raw);
+			this.observationStorage = { status: "ready", reason: null };
+		} catch (error) {
+			this.observationStorage = { status: "unavailable", reason: error instanceof ObservationSchemaDrift ? "schema_drift" : "migration_failed" };
+			console.warn("[ship-judgment] observation storage unavailable", this.observationStorage.reason);
+		}
 		migrateEvidenceLedger(this.db.raw);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_rework_route_revision (

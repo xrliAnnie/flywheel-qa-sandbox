@@ -82,6 +82,7 @@ export class ShipJudgmentClarifications {
 
 	/** Append-only outcomes retain their local row order; commit questions and cursor together. */
 	sweep(): number {
+		const deadline = performance.now() + 25;
 		return this.db
 			.transaction(() => {
 				if (this.readMode() !== "dry_run") return 0;
@@ -97,20 +98,26 @@ export class ShipJudgmentClarifications {
 					.get() as { learning_cursor: number };
 				const rows = this.db
 					.prepare(
-						"SELECT rowid AS ordinal,outcome_id FROM ship_judgment_outcome WHERE rowid>? ORDER BY rowid LIMIT 50",
+						"SELECT rowid AS ordinal,outcome_id FROM ship_judgment_outcome WHERE rowid>? ORDER BY rowid LIMIT 16",
 					)
 					.all(cursor.learning_cursor) as {
 					ordinal: number;
 					outcome_id: string;
 				}[];
-				for (const row of rows) this.ensure(row.outcome_id);
-				if (rows.length)
+				let inspected = 0;
+				for (const row of rows) {
+					if (performance.now() >= deadline || this.readMode() !== "dry_run")
+						break;
+					this.ensure(row.outcome_id);
+					inspected++;
+				}
+				if (inspected)
 					this.db
 						.prepare(
 							"UPDATE ship_judgment_project_state SET learning_cursor=? WHERE project_name='flywheel'",
 						)
-						.run(rows[rows.length - 1]!.ordinal);
-				return rows.length;
+						.run(rows[inspected - 1]!.ordinal);
+				return inspected;
 			})
 			.immediate();
 	}

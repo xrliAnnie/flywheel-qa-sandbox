@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 import {
 	discordJson,
 	discordMessage,
@@ -293,7 +294,10 @@ export function readSummaryEvidence(
 ): { roundId: string; deliveryId: string } {
 	const activated = Date.parse(activatedAt);
 	if (!Number.isFinite(activated)) throw new Error("activation-invalid");
-	const db = new Database(path, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(path, { readonly: true, fileMustExist: true }),
+		"teamlead",
+	);
 	try {
 		db.pragma("query_only = ON");
 		// enqueueLeadEvent persists the event type and derives this delivery id.

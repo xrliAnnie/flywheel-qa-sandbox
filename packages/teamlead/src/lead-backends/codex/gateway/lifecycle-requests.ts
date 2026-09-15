@@ -1,3 +1,4 @@
+import { installSqlTiming } from "flywheel-config";
 /**
  * FLY-245 Phase D-f — the PERSISTENT lifecycle request state machine + crash
  * recovery (plan §5.2, Codex R1#6).
@@ -142,7 +143,7 @@ export class LifecycleRequestStore {
 
 	constructor(dbPath: string, now: () => number = () => Date.now()) {
 		this.now = now;
-		this.db = new Database(dbPath);
+		this.db = installSqlTiming(new Database(dbPath), "bridge-local");
 		this.db.pragma("journal_mode = WAL");
 		this.db.exec(`
 			CREATE TABLE IF NOT EXISTS lifecycle_requests (

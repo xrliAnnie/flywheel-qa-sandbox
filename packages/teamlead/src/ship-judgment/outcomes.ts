@@ -9,9 +9,17 @@ import {
 	evidenceLedgerSchema,
 	evidenceTargetDigest,
 } from "./evidence-ledger.js";
+import {
+	type CloseoutPair,
+	type ObservationPageStats,
+	observeCloseoutPage,
+	observeVerdictPage,
+	type VerdictPageStats,
+} from "./observation-cursor.js";
 
 type Authorship = "founder_verified" | "lead_proxy" | "auto" | "unknown";
 interface VerdictRow {
+	recorded_ms: number;
 	verdict_id: string;
 	source_event_id: string;
 	run_id: string;
@@ -78,7 +86,7 @@ function attribution(row: VerdictRow, evidence: unknown): Authorship {
 			m.card_message_id === row.card_message_id &&
 			Date.parse(m.card_message_ts) <= Date.parse(m.message_ts) &&
 			Date.parse(m.message_ts) <= Date.parse(m.verified_at) &&
-			Date.parse(m.verified_at) <= Date.parse(row.recorded_at)
+			Date.parse(m.verified_at) <= row.recorded_ms
 		)
 			return "founder_verified";
 	}
@@ -112,144 +120,123 @@ export function refreshHistoryAt(
 /** Sole read-only B2 consumer added by FLY-2399: writes only append-only learning outcomes, never approval state. */
 export class ShipJudgmentOutcomes {
 	constructor(private readonly db: Database.Database) {}
-	/** Lead ruling 773e675b: Linear cancellation, closeout evidence and original issue/run mapping. */
+	private lastPage: ObservationPageStats = {
+		sourceCandidates: 0,
+		holderCandidates: 0,
+		outcomes: 0,
+		elapsedMs: 0,
+		cursorBefore: 0,
+		cursorAfter: 0,
+		deferred: 0,
+	};
+	pageStats(): ObservationPageStats {
+		return { ...this.lastPage };
+	}
+	/** Lead ruling: consume each source identity once, including terminal holders. */
 	observeCancellations(now: string): number {
 		z.string().datetime().parse(now);
-		return this.db
-			.transaction(() => {
-				const rows = this.db
-					.prepare(`SELECT e.id,e.event_id,e.issue_id,e.ts,e.payload,r.run_id,r.created_at AS run_created,
- h.question_id,h.card_message_id,h.created_at AS card_created
- FROM session_events e JOIN workflow_run r ON r.project_name=e.project_name
- AND (r.issue_id=e.issue_id OR EXISTS (SELECT 1 FROM workflow_run_issue_alias a WHERE a.run_id=r.run_id AND a.issue_alias=e.issue_id))
- JOIN workflow_gate_holder h ON h.run_id=r.run_id
- LEFT JOIN ship_judgment_outcome o ON o.source_kind='closeout' AND o.source_id=CAST(e.id AS TEXT)||':'||h.question_id
- WHERE e.project_name='flywheel' AND e.source='bridge.lifecycle-closeout' AND e.event_type='closeout_report'
- AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,'$.disposition')='canceled'
- AND julianday(e.ts)<=julianday(?) AND julianday(r.created_at)<=julianday(e.ts) AND julianday(h.created_at)<=julianday(e.ts)
- AND o.outcome_id IS NULL ORDER BY e.id,h.question_id LIMIT 50`)
-					.all(now) as {
-					id: number;
-					event_id: string;
-					issue_id: string;
-					ts: string;
-					payload: string;
-					run_id: string;
-					run_created: string;
-					question_id: string;
-					card_message_id: string | null;
-					card_created: string;
-				}[];
-				for (const row of rows) {
-					const sourceId = `${row.id}:${row.question_id}`;
-					const payload =
-						Buffer.byteLength(row.payload) <= 65536
-							? JSON.parse(row.payload)
-							: {};
-					const observations = this.db
-						.prepare(`SELECT l.* FROM linear_state_observations l JOIN workflow_run r ON r.run_id=?
+		this.lastPage = observeCloseoutPage(this.db, now, (row) =>
+			this.recordCancellation(row, now),
+		);
+		return this.lastPage.outcomes;
+	}
+	private recordCancellation(row: CloseoutPair, now: string): void {
+		const sourceId = `${row.id}:${row.question_id}`;
+		const payload =
+			Buffer.byteLength(row.payload) <= 65536 ? JSON.parse(row.payload) : {};
+		const observations = this.db
+			.prepare(`SELECT l.* FROM linear_state_observations l JOIN workflow_run r ON r.run_id=?
  WHERE l.project=r.project_name AND (l.issue_uuid=r.issue_id OR EXISTS (SELECT 1 FROM workflow_run_issue_alias a WHERE a.run_id=r.run_id AND a.issue_alias=l.issue_uuid)) LIMIT 2`)
-						.all(row.run_id) as {
-						issue_uuid: string;
-						last_state_type: string;
-						last_linear_updated_at: string;
-						observed_at: string;
-						terminal_authorized: number;
-					}[];
-					const observation =
-						observations.length === 1 ? observations[0] : undefined;
-					const rootMatches =
-						typeof payload.rootKey === "string" &&
-						this.db
-							.prepare(`SELECT 1 FROM workflow_run r WHERE r.run_id=?
+			.all(row.run_id) as {
+			issue_uuid: string;
+			last_state_type: string;
+			last_linear_updated_at: string;
+			observed_at: string;
+			terminal_authorized: number;
+		}[];
+		const observation = observations.length === 1 ? observations[0] : undefined;
+		const rootMatches =
+			typeof payload.rootKey === "string" &&
+			this.db
+				.prepare(`SELECT 1 FROM workflow_run r WHERE r.run_id=?
  AND (r.issue_id=? OR EXISTS (SELECT 1 FROM workflow_run_issue_alias a WHERE a.run_id=r.run_id AND a.issue_alias=?))`)
-							.get(row.run_id, payload.rootKey, payload.rootKey);
-					const closed = Date.parse(row.ts),
-						changed = Date.parse(observation?.last_linear_updated_at ?? ""),
-						observed = Date.parse(observation?.observed_at ?? "");
-					const matchingRuns = this.db
-						.prepare(`SELECT r.run_id FROM workflow_run r WHERE r.project_name='flywheel'
+				.get(row.run_id, payload.rootKey, payload.rootKey);
+		const closed = row.closed_ms,
+			changed = Date.parse(observation?.last_linear_updated_at ?? ""),
+			observed = Date.parse(observation?.observed_at ?? "");
+		const matchingRuns = this.db
+			.prepare(`SELECT r.run_id FROM workflow_run r WHERE r.project_name='flywheel'
  AND (r.issue_id=? OR EXISTS (SELECT 1 FROM workflow_run_issue_alias a WHERE a.run_id=r.run_id AND a.issue_alias=?))
  AND julianday(r.created_at)<=julianday(?) LIMIT 2`)
-						.all(row.issue_id, row.issue_id, row.ts);
+			.all(row.issue_id, row.issue_id, row.ts);
 
-					const verified =
-						!!rootMatches &&
-						matchingRuns.length === 1 &&
-						observation?.last_state_type === "canceled" &&
-						observation.terminal_authorized === 1 &&
-						Number.isFinite(changed) &&
-						Number.isFinite(observed) &&
-						Date.parse(row.run_created) <= changed &&
-						Date.parse(row.card_created) <= changed &&
-						changed <= observed &&
-						observed <= closed;
-					const decidedAt = new Date(verified ? changed : closed).toISOString();
-					const frozen = this.db
-						.prepare(
-							`SELECT mechanical_json FROM ship_judgment_opinion WHERE question_id=? AND created_at<=? ORDER BY created_at DESC,ordinal DESC LIMIT 1`,
-						)
-						.get(row.question_id, decidedAt) as
-						| { mechanical_json: string }
-						| undefined;
-					let context:
-						| { inputId: string | null; targetsDigest: string }
-						| undefined;
-					try {
-						const target = z
-							.object({
-								repo_identity: identity,
-								repo_slug: identity,
-								pr_number: z.number().int().positive(),
-								head_sha: z.string().regex(/^[a-f0-9]{40}$/),
-							})
-							.parse(
-								JSON.parse(frozen?.mechanical_json ?? "{}").binding
-									?.targets?.[0],
-							);
-						context = this.frozenTargetContext(
-							{ ...row, ...target },
-							decidedAt,
-						);
-					} catch {
-						/* No usable frozen target context remains explicitly unresolved. */
-					}
-					const delivery = this.db
-						.prepare(
-							"SELECT dirty_since,delivery_mode,presentation_state_changed_at FROM ship_judgment_delivery WHERE purpose='opinion' AND question_id=?",
-						)
-						.get(row.question_id) as Parameters<typeof refreshHistoryAt>[0];
-					this.db
-						.prepare(`INSERT INTO ship_judgment_outcome(outcome_id,source_kind,source_id,question_id,run_id,card_message_id,targets_digest,authorship,decision,decided_at,observed_at,evidence_json)
+		const verified =
+			!!rootMatches &&
+			matchingRuns.length === 1 &&
+			observation?.last_state_type === "canceled" &&
+			observation.terminal_authorized === 1 &&
+			Number.isFinite(changed) &&
+			Number.isFinite(observed) &&
+			row.run_ms <= changed &&
+			row.card_ms <= changed &&
+			changed <= observed &&
+			observed <= closed;
+		const decidedAt = new Date(verified ? changed : closed).toISOString();
+		const frozen = this.db
+			.prepare(
+				`SELECT mechanical_json FROM ship_judgment_opinion WHERE question_id=? AND created_at<=? ORDER BY created_at DESC,ordinal DESC LIMIT 1`,
+			)
+			.get(row.question_id, decidedAt) as
+			| { mechanical_json: string }
+			| undefined;
+		let context: { inputId: string | null; targetsDigest: string } | undefined;
+		try {
+			const target = z
+				.object({
+					repo_identity: identity,
+					repo_slug: identity,
+					pr_number: z.number().int().positive(),
+					head_sha: z.string().regex(/^[a-f0-9]{40}$/),
+				})
+				.parse(
+					JSON.parse(frozen?.mechanical_json ?? "{}").binding?.targets?.[0],
+				);
+			context = this.frozenTargetContext({ ...row, ...target }, decidedAt);
+		} catch {
+			/* No usable frozen target context remains explicitly unresolved. */
+		}
+		const delivery = this.db
+			.prepare(
+				"SELECT dirty_since,delivery_mode,presentation_state_changed_at FROM ship_judgment_delivery WHERE purpose='opinion' AND question_id=?",
+			)
+			.get(row.question_id) as Parameters<typeof refreshHistoryAt>[0];
+		this.db
+			.prepare(`INSERT INTO ship_judgment_outcome(outcome_id,source_kind,source_id,question_id,run_id,card_message_id,targets_digest,authorship,decision,decided_at,observed_at,evidence_json)
  VALUES (?,'closeout',?,?,?,?,?,?,'canceled',?,?,?)`)
-						.run(
-							canonicalDigest(["closeout", sourceId]),
-							sourceId,
-							row.question_id,
-							row.run_id,
-							row.card_message_id ?? "",
-							context?.targetsDigest ??
-								canonicalDigest({ unresolved: true, sourceId }),
-							verified ? "founder_verified" : "unknown",
-							decidedAt,
-							now,
-							JSON.stringify({
-								source_event_id: row.event_id,
-								source_recorded_at: row.ts,
-								linear_observation: observation ?? null,
-								closeout: payload,
-								attribution_policy: "linear-canceled-closeout-run-v1",
-								run_mapping_ambiguous: matchingRuns.length !== 1,
-								binding_status: context ? "resolved" : "unresolved",
-								input_id: context?.inputId ?? null,
-								delivery_at_observation: delivery,
-								refresh_history: refreshHistoryAt(delivery, decidedAt),
-							}),
-						);
-				}
-				return rows.length;
-			})
-			.immediate();
+			.run(
+				canonicalDigest(["closeout", sourceId]),
+				sourceId,
+				row.question_id,
+				row.run_id,
+				row.card_message_id ?? "",
+				context?.targetsDigest ??
+					canonicalDigest({ unresolved: true, sourceId }),
+				verified ? "founder_verified" : "unknown",
+				decidedAt,
+				now,
+				JSON.stringify({
+					source_event_id: row.event_id,
+					source_recorded_at: row.ts,
+					linear_observation: observation ?? null,
+					closeout: payload,
+					attribution_policy: "linear-canceled-closeout-run-v1",
+					run_mapping_ambiguous: matchingRuns.length !== 1,
+					binding_status: context ? "resolved" : "unresolved",
+					input_id: context?.inputId ?? null,
+					delivery_at_observation: delivery,
+					refresh_history: refreshHistoryAt(delivery, decidedAt),
+				}),
+			);
 	}
 
 	private frozenTargetContext(
@@ -437,91 +424,101 @@ export class ShipJudgmentOutcomes {
 			return undefined;
 		}
 	}
+	private lastVerdictPage: VerdictPageStats = {
+		sourceCandidates: 0,
+		holderCandidates: 0,
+		outcomes: 0,
+		elapsedMs: 0,
+		reconciled: 0,
+	};
+	verdictPageStats(): VerdictPageStats {
+		return { ...this.lastVerdictPage };
+	}
 	observeVerdicts(now: string): number {
 		z.string().datetime().parse(now);
-		return this.db
-			.transaction(() => {
-				const rows = this.db
+		this.lastVerdictPage = observeVerdictPage(
+			this.db,
+			now,
+			(id, recordedMs) => {
+				const row = this.db
 					.prepare(`SELECT v.*,h.card_message_id,h.run_id AS holder_run_id,h.attempt AS holder_attempt,h.gate_node_id AS holder_node_id
- FROM workflow_founder_gate_verdict v JOIN workflow_run r ON r.run_id=v.run_id
- JOIN workflow_gate_holder h ON h.question_id=v.question_id
- LEFT JOIN ship_judgment_outcome o ON o.source_kind='b2' AND o.source_id=v.verdict_id
- WHERE r.project_name='flywheel' AND o.outcome_id IS NULL AND v.recorded_at<=?
- ORDER BY v.recorded_at,v.verdict_id LIMIT 50`)
-					.all(now) as VerdictRow[];
-				for (const row of rows) {
-					const evidence =
-						Buffer.byteLength(row.author_evidence_json) <= 65536
-							? JSON.parse(row.author_evidence_json)
-							: {
-									kind: "oversize",
-									digest: canonicalDigest(row.author_evidence_json),
-								};
-					const consistent =
-						row.holder_run_id === row.run_id &&
-						row.holder_attempt === row.attempt &&
-						row.holder_node_id === row.gate_node_id;
-					const authorship = consistent
-						? attribution(row, evidence)
-						: "unknown";
-					const target = {
-						repo_identity: row.repo_identity,
-						repo_slug: row.repo_slug,
-						pr_number: row.pr_number,
-						head_sha: row.head_sha,
+ FROM workflow_founder_gate_verdict v JOIN workflow_gate_holder h ON h.question_id=v.question_id WHERE v.verdict_id=?`)
+					.get(id) as VerdictRow | undefined;
+				if (!row) return false;
+				row.recorded_ms = recordedMs;
+				this.recordVerdict(row, now);
+				return true;
+			},
+		);
+		return this.lastVerdictPage.outcomes;
+	}
+	private recordVerdict(row: VerdictRow, now: string): void {
+		const evidence =
+			Buffer.byteLength(row.author_evidence_json) <= 65536
+				? JSON.parse(row.author_evidence_json)
+				: {
+						kind: "oversize",
+						digest: canonicalDigest(row.author_evidence_json),
 					};
-					const original = founderMessage.safeParse(evidence);
-					const decidedAt =
-						authorship === "founder_verified" && original.success
-							? new Date(original.data.message_ts).toISOString()
-							: new Date(row.recorded_at).toISOString();
-					const context = consistent
-						? this.frozenTargetContext(row, decidedAt)
-						: undefined;
-					const targetsDigest =
-						context?.targetsDigest ??
-						canonicalDigest({ unresolved: true, source_target: target });
-					const delivery = this.db
-						.prepare(
-							"SELECT dirty_since,latest_candidate_digest,delivery_mode,presentation_state_changed_at FROM ship_judgment_delivery WHERE purpose='opinion' AND question_id=?",
-						)
-						.get(row.question_id) as
-						| {
-								dirty_since: string | null;
-								latest_candidate_digest: string | null;
-								delivery_mode: string;
-								presentation_state_changed_at: string | null;
-						  }
-						| undefined;
-					this.db
-						.prepare(`INSERT INTO ship_judgment_outcome(outcome_id,source_kind,source_id,question_id,run_id,card_message_id,targets_digest,authorship,decision,decided_at,observed_at,verdict_id,evidence_json)
+		const consistent =
+			row.holder_run_id === row.run_id &&
+			row.holder_attempt === row.attempt &&
+			row.holder_node_id === row.gate_node_id;
+		const authorship = consistent ? attribution(row, evidence) : "unknown";
+		const target = {
+			repo_identity: row.repo_identity,
+			repo_slug: row.repo_slug,
+			pr_number: row.pr_number,
+			head_sha: row.head_sha,
+		};
+		const original = founderMessage.safeParse(evidence);
+		const decidedAt =
+			authorship === "founder_verified" && original.success
+				? new Date(original.data.message_ts).toISOString()
+				: new Date(row.recorded_ms).toISOString();
+		const context = consistent
+			? this.frozenTargetContext(row, decidedAt)
+			: undefined;
+		const targetsDigest =
+			context?.targetsDigest ??
+			canonicalDigest({ unresolved: true, source_target: target });
+		const delivery = this.db
+			.prepare(
+				"SELECT dirty_since,latest_candidate_digest,delivery_mode,presentation_state_changed_at FROM ship_judgment_delivery WHERE purpose='opinion' AND question_id=?",
+			)
+			.get(row.question_id) as
+			| {
+					dirty_since: string | null;
+					latest_candidate_digest: string | null;
+					delivery_mode: string;
+					presentation_state_changed_at: string | null;
+			  }
+			| undefined;
+		this.db
+			.prepare(`INSERT INTO ship_judgment_outcome(outcome_id,source_kind,source_id,question_id,run_id,card_message_id,targets_digest,authorship,decision,decided_at,observed_at,verdict_id,evidence_json)
  VALUES (?,'b2',?,?,?,?,?,?,?,?,?,?,?)`)
-						.run(
-							canonicalDigest(["b2", row.verdict_id]),
-							row.verdict_id,
-							row.question_id,
-							row.run_id,
-							row.card_message_id ?? "",
-							targetsDigest,
-							authorship,
-							row.verdict,
-							decidedAt,
-							now,
-							row.verdict_id,
-							JSON.stringify({
-								source_event_id: row.source_event_id,
-								source_target: target,
-								source_evidence: evidence,
-								binding_status: context ? "resolved" : "unresolved",
-								input_id: context?.inputId ?? null,
-								delivery_at_observation: delivery,
-								refresh_history: refreshHistoryAt(delivery, decidedAt),
-								source_recorded_at: row.recorded_at,
-							}),
-						);
-				}
-				return rows.length;
-			})
-			.immediate();
+			.run(
+				canonicalDigest(["b2", row.verdict_id]),
+				row.verdict_id,
+				row.question_id,
+				row.run_id,
+				row.card_message_id ?? "",
+				targetsDigest,
+				authorship,
+				row.verdict,
+				decidedAt,
+				now,
+				row.verdict_id,
+				JSON.stringify({
+					source_event_id: row.source_event_id,
+					source_target: target,
+					source_evidence: evidence,
+					binding_status: context ? "resolved" : "unresolved",
+					input_id: context?.inputId ?? null,
+					delivery_at_observation: delivery,
+					refresh_history: refreshHistoryAt(delivery, decidedAt),
+					source_recorded_at: row.recorded_at,
+				}),
+			);
 	}
 }

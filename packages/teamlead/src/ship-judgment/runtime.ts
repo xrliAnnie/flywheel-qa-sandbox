@@ -1,3 +1,4 @@
+import { yieldToEventLoop } from "../bridge/event-loop-yield.js";
 import type { StateStore } from "../StateStore.js";
 import type { CollectionResult } from "./collect.js";
 import { canonicalDigest, type FrozenPacket } from "./contract.js";
@@ -31,7 +32,9 @@ export class ShipJudgmentRuntime {
 	private stopped = false;
 	private modeTimer?: ReturnType<typeof setInterval>;
 	private modeFlight: Promise<void> | null = null;
-	private readonly modeAbort = new AbortController();
+	private deliveryFlight: Promise<void> | null = null;
+	private deliveryAbort: AbortController | null = null;
+	private lastObservedMode: string | undefined;
 	private readonly now: () => number;
 	constructor(private readonly deps: JudgmentRuntimeDependencies) {
 		this.now = deps.now ?? Date.now;
@@ -82,62 +85,137 @@ export class ShipJudgmentRuntime {
 	}
 	modeTick(): Promise<void> {
 		if (this.stopped) return Promise.resolve();
+		if (this.modeFlight) return this.modeFlight;
+		// Install the latch before the first observer can execute or re-enter.
+		const flight = Promise.resolve()
+			.then(() => this.runLocalPages())
+			.finally(() => {
+				if (this.modeFlight === flight) this.modeFlight = null;
+			});
+		this.modeFlight = flight;
+		return flight;
+	}
+	private observationEnabled(): boolean {
+		if (this.stopped) return false;
 		try {
-			if (this.deps.mode() === "off") {
-				// Close existing opinion accounting locally; off must never run a transport sweep.
-				try {
-					this.deps.store.getShipJudgmentDelivery().setMode("off", this.now());
-				} catch {
-					this.deps.onError?.("mode_sweep_failed");
-				}
-				return Promise.resolve();
-			}
-			if (this.modeFlight) return this.modeFlight;
-			this.modeFlight = (async () => {
-				// Off is a full stop; retained decisions can be observed after re-enabling.
-				for (const [method, error] of [
-					["observeVerdicts", "verdict_observation_failed"],
-					["observeCancellations", "cancellation_observation_failed"],
-				] as const) {
+			const mode = this.deps.mode();
+			if (mode === "off") {
+				this.deliveryAbort?.abort();
+				for (const source of ["verdict", "closeout", "clarification"] as const)
+					this.deps.store.recordShipJudgmentObservationProgress?.(
+						source,
+						0,
+						0,
+						25,
+					);
+				if (this.lastObservedMode !== "off") {
 					try {
 						this.deps.store
-							.getShipJudgmentOutcomes()
-							[method](new Date(this.now()).toISOString());
+							.getShipJudgmentDelivery()
+							.setMode("off", this.now());
+					} catch {
+						this.deps.onError?.("mode_sweep_failed");
+						return false;
+					}
+				}
+			}
+			this.lastObservedMode = mode;
+			return mode !== "off";
+		} catch {
+			this.deps.onError?.("mode_read_failed");
+			return false;
+		}
+	}
+	private async runLocalPages(): Promise<void> {
+		for (const [method, error] of [
+			["observeVerdicts", "verdict_observation_failed"],
+			["observeCancellations", "cancellation_observation_failed"],
+		] as const) {
+			if (!this.observationEnabled()) return;
+			const started = performance.now();
+			let inspected = 0;
+			try {
+				const observer = this.deps.store.getShipJudgmentOutcomes();
+				observer[method](new Date(this.now()).toISOString());
+				const stats =
+					method === "observeVerdicts"
+						? observer.verdictPageStats()
+						: observer.pageStats();
+				inspected = stats.sourceCandidates + stats.holderCandidates;
+			} catch {
+				this.deps.onError?.(error);
+			} finally {
+				this.deps.store.recordShipJudgmentObservationProgress?.(
+					method === "observeVerdicts" ? "verdict" : "closeout",
+					inspected,
+					performance.now() - started,
+					25,
+				);
+			}
+			await yieldToEventLoop();
+		}
+		if (!this.observationEnabled()) return;
+		const started = performance.now();
+		let inspected = 0;
+		try {
+			inspected = this.deps.store
+				.getShipJudgmentClarifications(this.deps.mode)
+				.sweep();
+		} catch {
+			this.deps.onError?.("clarification_sweep_failed");
+		} finally {
+			this.deps.store.recordShipJudgmentObservationProgress?.(
+				"clarification",
+				inspected,
+				performance.now() - started,
+				25,
+			);
+		}
+		await yieldToEventLoop();
+		if (this.observationEnabled()) this.startDelivery();
+	}
+	private startDelivery(): void {
+		if (
+			this.deliveryFlight ||
+			(!this.deps.learningSweep && !this.deps.modeSweep)
+		)
+			return;
+		const controller = new AbortController();
+		this.deliveryAbort = controller;
+		const timer = setTimeout(() => controller.abort(), 15_000);
+		timer.unref();
+		// Keep the flight until the underlying operations settle after abort;
+		// observation timeouts must never admit a second overlapping transport.
+		const flight = Promise.resolve()
+			.then(async () => {
+				for (const [method, error] of [
+					["learningSweep", "learning_delivery_failed"],
+					["modeSweep", "mode_sweep_failed"],
+				] as const) {
+					if (controller.signal.aborted || !this.observationEnabled()) return;
+					try {
+						await this.deps[method]?.(controller.signal);
 					} catch {
 						this.deps.onError?.(error);
 					}
 				}
-				try {
-					this.deps.store.getShipJudgmentClarifications(this.deps.mode).sweep();
-				} catch {
-					this.deps.onError?.("clarification_sweep_failed");
+			})
+			.finally(() => {
+				clearTimeout(timer);
+				if (this.deliveryFlight === flight) {
+					this.deliveryFlight = null;
+					this.deliveryAbort = null;
 				}
-				try {
-					if (this.deps.learningSweep)
-						await this.deps.learningSweep(this.modeAbort.signal);
-				} catch {
-					this.deps.onError?.("learning_delivery_failed");
-				}
-				try {
-					await this.deps.modeSweep?.(this.modeAbort.signal);
-				} catch {
-					this.deps.onError?.("mode_sweep_failed");
-				} finally {
-					this.modeFlight = null;
-				}
-			})();
-			return this.modeFlight;
-		} catch {
-			this.deps.onError?.("mode_read_failed");
-			return Promise.resolve();
-		}
+			});
+		this.deliveryFlight = flight;
 	}
 	async stop(): Promise<void> {
 		this.stopped = true;
 		if (this.modeTimer) clearInterval(this.modeTimer);
-		this.modeAbort.abort();
+		this.deliveryAbort?.abort();
 		await Promise.all([
 			this.modeFlight,
+			this.deliveryFlight,
 			this.scanner.stop(),
 			this.worker.stop(),
 			this.deps.stopSources?.(),

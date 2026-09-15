@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
@@ -116,6 +116,37 @@ describe("FLY-2008 founder-reply scan budget", () => {
 		} as GatePollerConfig) as unknown as PrivatePoller;
 	}
 
+	it("releases project connections before thread delivery waits on transport", async () => {
+		seedQuestions(0);
+		sessions = [session(1)];
+		const fdDirectory =
+			process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";
+		const count = () =>
+			readdirSync(fdDirectory).filter((name) => /^\d+$/.test(name)).length;
+		const baseline = count();
+		let entered!: () => void;
+		let finish!: () => void;
+		const started = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		emitSpy.mockImplementationOnce(async (ctx) => {
+			entered();
+			await new Promise<void>((resolve) => {
+				finish = resolve;
+			});
+			return { threadId: ctx.threadId, result: "noop" as const };
+		});
+		const pass = poller(1).founderReplyDeliverPass();
+		await started;
+		try {
+			expect(count()).toBeLessThanOrEqual(baseline);
+		} finally {
+			finish();
+			await pass;
+		}
+		expect(count()).toBeLessThanOrEqual(baseline);
+	});
+
 	it("processes every questioned thread plus an independent rotating scan budget", async () => {
 		seedQuestions(3);
 		const value = poller(10);
@@ -133,7 +164,7 @@ describe("FLY-2008 founder-reply scan budget", () => {
 		]);
 		expect(store.listNonTerminalSessions).toHaveBeenCalledTimes(1);
 		expect(openReadonly).toHaveBeenCalledTimes(1);
-		expect(new Set(observedLeases.map(({ db }) => db)).size).toBe(1);
+		expect(observedLeases).toHaveLength(0); // Use the deliverer's owned short scopes.
 
 		delivered.length = 0;
 		await value.founderReplyDeliverPass();

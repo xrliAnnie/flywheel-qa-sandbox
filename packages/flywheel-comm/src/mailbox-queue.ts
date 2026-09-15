@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import { canonicalJsonString } from "flywheel-config";
+import { canonicalJsonString, installSqlTiming } from "flywheel-config";
 import { openCommDbWritable } from "./commdb-open-gate.js";
 import { formatDeadLetterNotice } from "./dead-letter-format.js";
 import {
@@ -512,6 +512,7 @@ export class MailboxQueue {
 	) {
 		if (typeof dbPathOrConnection !== "string") {
 			this.db = dbPathOrConnection;
+			installSqlTiming(this.db, "comm");
 			this.ownsConnection = false;
 			if (!options.readOnly) ensureMailboxQueueSchema(this.db);
 			return;
@@ -522,7 +523,17 @@ export class MailboxQueue {
 				fileMustExist: true,
 			});
 			this.ownsConnection = true;
-			this.db.pragma("busy_timeout = 5000");
+			try {
+				installSqlTiming(this.db, "comm");
+				this.db.pragma("busy_timeout = 5000");
+			} catch (error) {
+				try {
+					this.db.close();
+				} catch {
+					/* Preserve the setup failure. */
+				}
+				throw error;
+			}
 			return;
 		}
 		if (dbPathOrConnection !== ":memory:") {
@@ -530,13 +541,22 @@ export class MailboxQueue {
 		}
 		this.db = openCommDbWritable(dbPathOrConnection);
 		this.ownsConnection = true;
-		this.db.pragma("journal_mode = WAL");
-		this.db.pragma("busy_timeout = 5000");
-		installMailboxTerminalArchiveSchema(this.db);
-		this.db.exec(MAILBOX_SCHEMA);
-		ensureMailboxQueueSchema(this.db);
-		dropReceiptLedgerSchema(this.db);
-		installMailboxRelayInvariantTriggers(this.db);
+		try {
+			this.db.pragma("journal_mode = WAL");
+			this.db.pragma("busy_timeout = 5000");
+			installMailboxTerminalArchiveSchema(this.db);
+			this.db.exec(MAILBOX_SCHEMA);
+			ensureMailboxQueueSchema(this.db);
+			dropReceiptLedgerSchema(this.db);
+			installMailboxRelayInvariantTriggers(this.db);
+		} catch (error) {
+			try {
+				this.db.close();
+			} catch {
+				/* Preserve the setup failure. */
+			}
+			throw error;
+		}
 	}
 
 	private findIdentity(

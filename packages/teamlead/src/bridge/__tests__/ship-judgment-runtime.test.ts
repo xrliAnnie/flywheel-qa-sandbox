@@ -222,6 +222,16 @@ it.each([true, false])(
 			).toEqual({ n: 3 });
 			mode = "dry_run";
 			await runtime!.modeTick();
+			// modeTick awaits local pages; delivery now settles independently.
+			await vi.waitFor(() =>
+				expect(
+					db
+						.prepare(
+							"SELECT count(*) AS n FROM ship_judgment_delivery WHERE purpose='ack' AND (state='delivered' OR last_error='learning_owner_or_guild_missing')",
+						)
+						.get(),
+				).toEqual({ n: botConfigured ? 2 : 3 }),
+			);
 			expect(posts).toBe(botConfigured ? 2 : 0);
 			expect(
 				db
@@ -231,6 +241,15 @@ it.each([true, false])(
 					.get(),
 			).toEqual({ n: botConfigured ? 2 : 0 });
 			await runtime!.modeTick();
+			await vi.waitFor(() =>
+				expect(
+					db
+						.prepare(
+							"SELECT count(*) AS n FROM ship_judgment_delivery WHERE purpose='ack' AND (state='delivered' OR last_error='learning_owner_or_guild_missing')",
+						)
+						.get(),
+				).toEqual({ n: 3 }),
+			);
 			expect(posts).toBe(botConfigured ? 3 : 0);
 			if (!botConfigured) {
 				expect(network).not.toHaveBeenCalled();

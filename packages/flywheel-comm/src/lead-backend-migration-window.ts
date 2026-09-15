@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 /** Read-only admission fence. Caller separately proves the original authorized restart owner. */
 export function assertMigrationAdmissionWindow(
 	dbPath: string,
@@ -23,7 +24,10 @@ export function assertMigrationAdmissionWindow(
 	const stat = lstatSync(dbPath);
 	if (!stat.isFile() || stat.isSymbolicLink())
 		throw new Error("invalid migration state database");
-	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(dbPath, { readonly: true, fileMustExist: true }),
+		"teamlead",
+	);
 	try {
 		const row = db
 			.prepare(

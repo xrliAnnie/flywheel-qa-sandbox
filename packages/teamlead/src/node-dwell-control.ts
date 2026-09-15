@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
+import { installSqlTiming } from "flywheel-config";
 import {
 	type FlagStoreRuntime,
 	storeNodeDwellEnabled,
@@ -243,11 +244,17 @@ export async function writeNodeDwellReviewBatch(
 	let state: Database.Database | undefined;
 	let comm: Database.Database | undefined;
 	try {
-		state = new Database(input.dbPath, { fileMustExist: true });
-		comm = new Database(input.commDbPath, {
-			readonly: true,
-			fileMustExist: true,
-		});
+		state = installSqlTiming(
+			new Database(input.dbPath, { fileMustExist: true }),
+			"teamlead",
+		);
+		comm = installSqlTiming(
+			new Database(input.commDbPath, {
+				readonly: true,
+				fileMustExist: true,
+			}),
+			"comm",
+		);
 		state.pragma(`busy_timeout = ${input.busyTimeoutMs ?? 5000}`);
 		comm.pragma(`busy_timeout = ${input.busyTimeoutMs ?? 5000}`);
 		state.pragma("foreign_keys = ON");

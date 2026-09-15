@@ -235,15 +235,22 @@ describe("FLY-2341 mailbox terminal cold archive", () => {
 	});
 
 	it("stops the identity loop at its hard wall-time budget", () => {
-		const queue = new MailboxQueue(":memory:");
+		const db = new Database(":memory:");
+		db.exec(MAILBOX_SCHEMA);
+		const queue = new MailboxQueue(db);
 		try {
 			archiveInstruction(queue, "budget-a", { compact: false });
 			archiveInstruction(queue, "budget-b", { compact: false });
+			let elapsed = 0;
+			db.function("spend_archive_budget", () => {
+				elapsed = MAX_IDENTITY_ARCHIVE_DURATION_MS + 1;
+				return 0;
+			});
+			db.exec(`CREATE TEMP TRIGGER spend_budget AFTER DELETE ON mailbox_identity
+				BEGIN SELECT spend_archive_budget(); END`);
 			const clock = vi
 				.spyOn(performance, "now")
-				.mockReturnValueOnce(0)
-				.mockReturnValueOnce(0)
-				.mockReturnValue(MAX_IDENTITY_ARCHIVE_DURATION_MS + 1);
+				.mockImplementation(() => elapsed);
 			try {
 				expect(queue.compactArchivedIdentities({ now: NOW, limit: 25 })).toBe(
 					1,
@@ -253,6 +260,7 @@ describe("FLY-2341 mailbox terminal cold archive", () => {
 			}
 		} finally {
 			queue.close();
+			db.close();
 		}
 	});
 

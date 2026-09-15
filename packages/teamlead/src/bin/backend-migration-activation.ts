@@ -11,6 +11,7 @@ import {
 	processTupleStateWithStart,
 	readCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
+import { installSqlTiming } from "flywheel-config";
 import { deriveLeadSocketPath } from "../lead-address.js";
 import {
 	MigrationCarrierAbsentError,
@@ -84,7 +85,10 @@ export async function observeMigrationActivation(input: {
 	const dbPath = join(input.home, ".flywheel/lead-lease.db");
 	const stat = lstatSync(dbPath);
 	if (!stat.isFile() || stat.isSymbolicLink()) return fail();
-	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(dbPath, { readonly: true, fileMustExist: true }),
+		"teamlead",
+	);
 	try {
 		const query = db.prepare(
 			"SELECT lead_key, identity_digest, generation, holder_pid, holder_start, supervisor_pid, supervisor_start FROM lead_lease WHERE project = ? AND lead_id = ?",
@@ -210,7 +214,10 @@ export async function observeMigrationSource(input: {
 		stat = lstatSync(path);
 	if (!stat.isFile() || stat.isSymbolicLink())
 		throw Error("invalid migration source lease database");
-	const db = new Database(path, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(path, { readonly: true, fileMustExist: true }),
+		"teamlead",
+	);
 	try {
 		const query = db.prepare(
 			"SELECT lead_key, identity_digest, generation, holder_pid, holder_start, supervisor_pid, supervisor_start FROM lead_lease WHERE project = ? AND lead_id = ?",

@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 
 export interface InspectLeadOutboundDeps {
 	stdout?: (line: string) => void;
@@ -47,7 +48,10 @@ function inspectFailure(
 }
 
 function openReadOnly(path: string): Database.Database {
-	const db = new Database(path, { readonly: true, fileMustExist: true });
+	const db = installSqlTiming(
+		new Database(path, { readonly: true, fileMustExist: true }),
+		"teamlead",
+	);
 	db.pragma("query_only = ON");
 	return db;
 }

@@ -25,6 +25,38 @@ afterEach(() => {
 });
 
 describe("FLY-2341 database hygiene operator", () => {
+	it("drains past protected candidate pages instead of treating zero deletions as end of scan", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2563-operator-pages-"));
+		roots.push(root);
+		const teamleadDbPath = join(root, "teamlead.db"),
+			commDbPath = join(root, "comm.db");
+		const store = await StateStore.create(teamleadDbPath);
+		const db = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		try {
+			db.exec(
+				"INSERT INTO sessions(execution_id,issue_id,project_name,status) VALUES ('mass','mass-issue','flywheel','completed'),('protected','protected-issue','flywheel','running')",
+			);
+			const insert = db.prepare(
+				"INSERT INTO session_events(event_id,ts,execution_id,issue_id,project_name,event_type,payload,source) VALUES (?,?,'mass','mass-issue','flywheel','session_completed',?,'fixture')",
+			);
+			for (let i = 0; i < 301; i++)
+				insert.run(
+					`row-${i}`,
+					OLD,
+					JSON.stringify(i < 300 ? { reference: "protected" } : {}),
+				);
+		} finally {
+			store.close();
+		}
+		const comm = new CommDB(commDbPath);
+		comm.close();
+		const result = await executeFly2341Archive({
+			teamleadDbPath,
+			commDbPath,
+			now: NOW,
+		});
+		expect(result.archived.teamlead).toBe(1);
+	});
 	it("requires explicit paths and exposes no retention or batch knobs", () => {
 		expect(() => parseFly2341Args(["inventory"])).toThrow(/teamlead-db/);
 		expect(() =>
@@ -115,7 +147,8 @@ describe("FLY-2341 database hygiene operator", () => {
 		expect(second).toMatchObject({
 			archived: { teamlead: 0, commFamilies: 0, commIdentities: 0 },
 		});
-		expect(second.batches).toBe(8);
+		// Each source completes once; only the Comm lanes need two empty passes.
+		expect(second.batches).toBe(5);
 		expect(executeFly2341Vacuum({ dbPath: teamleadDbPath })).toMatchObject({
 			beforeBytes: expect.any(Number),
 			afterBytes: expect.any(Number),
@@ -224,7 +257,12 @@ describe("FLY-2341 database hygiene operator", () => {
 		}
 		store.close();
 		new CommDB(commDbPath).close();
+		let archivedBeforeActivation = 0;
 		setImmediate(() => {
+			archivedBeforeActivation = executeFly2341Inventory({
+				teamleadDbPath,
+				commDbPath,
+			}).teamlead.cold.workflow_terminal_archive;
 			const comm = new CommDB(commDbPath, false, false);
 			comm.registerSession(
 				"changing-exec",
@@ -236,12 +274,17 @@ describe("FLY-2341 database hygiene operator", () => {
 			comm.close();
 		});
 
-		expect(
-			await executeFly2341Archive({ teamleadDbPath, commDbPath, now: NOW }),
-		).toMatchObject({ archived: { teamlead: 100 } });
+		const result = await executeFly2341Archive({
+			teamleadDbPath,
+			commDbPath,
+			now: NOW,
+		});
+		expect(archivedBeforeActivation).toBeGreaterThan(0);
+		expect(archivedBeforeActivation).toBeLessThanOrEqual(100);
+		expect(result.archived.teamlead).toBe(archivedBeforeActivation);
 		expect(
 			executeFly2341Inventory({ teamleadDbPath, commDbPath }).teamlead.hot
 				.session_events,
-		).toBe(1);
+		).toBe(101 - archivedBeforeActivation);
 	});
 });

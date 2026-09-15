@@ -10,16 +10,49 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { performance } from "node:perf_hooks";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	clearSyncOp,
 	markSyncOp,
 	readSyncOpMarker,
 	sweepStaleSyncOpMarkers,
 	syncOpMarkerPath,
+	withSyncOpMarker,
 } from "../src/sync-op-marker.js";
 
 describe("bridge sync-op marker", () => {
+	it("warns only for synchronous work over250ms and preserves thrown errors", async () => {
+		let now = 0;
+		vi.stubEnv("FLYWHEEL_BRIDGE_SYNCOP_DIR", dir);
+		const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			withSyncOpMarker("test:boundary", () => {
+				now += 250;
+			});
+			expect(warn).not.toHaveBeenCalled();
+			expect(() =>
+				withSyncOpMarker("test:throw", () => {
+					now += 251;
+					throw new Error("original");
+				}),
+			).toThrow("original");
+			expect(warn).toHaveBeenCalledTimes(1);
+			const pending = withSyncOpMarker("test:async", () =>
+				Promise.resolve().then(() => {
+					now += 1000;
+				}),
+			);
+			await pending;
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(existsSync(syncOpMarkerPath(process.pid))).toBe(false);
+		} finally {
+			clock.mockRestore();
+			warn.mockRestore();
+			vi.unstubAllEnvs();
+		}
+	});
 	let dir: string;
 	let env: NodeJS.ProcessEnv;
 

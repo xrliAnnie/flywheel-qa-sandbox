@@ -35,7 +35,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { verifyApproval } from "flywheel-comm/verify-approval";
 import { verifyLifecycleConsent } from "flywheel-comm/verify-lifecycle-consent";
-import { appendRotatedLogSync } from "flywheel-config";
+import { appendRotatedLogSync, installSqlTiming } from "flywheel-config";
 import { markAutomatedDiscordText } from "../../../bridge/automated-message.js";
 import {
 	getActionClassMeta,
@@ -311,10 +311,13 @@ export function resolveLifecycleTarget(args: {
 			`StateStore not found at ${args.stateDbPath} (fail-closed)`,
 		);
 	}
-	const db = new Database(args.stateDbPath, {
-		readonly: true,
-		fileMustExist: true,
-	});
+	const db = installSqlTiming(
+		new Database(args.stateDbPath, {
+			readonly: true,
+			fileMustExist: true,
+		}),
+		"teamlead",
+	);
 	let rows: SessionRow[];
 	try {
 		rows = db
@@ -616,10 +619,13 @@ export async function gatewayMain(
 
 	const readRevision = (execId: string): number | undefined => {
 		try {
-			const db = new Database(cfg.stateDbPath, {
-				readonly: true,
-				fileMustExist: true,
-			});
+			const db = installSqlTiming(
+				new Database(cfg.stateDbPath, {
+					readonly: true,
+					fileMustExist: true,
+				}),
+				"teamlead",
+			);
 			try {
 				const row = db
 					.prepare(
@@ -639,10 +645,13 @@ export async function gatewayMain(
 	};
 	const readStatus = async (execId: string): Promise<string | undefined> => {
 		try {
-			const db = new Database(cfg.stateDbPath, {
-				readonly: true,
-				fileMustExist: true,
-			});
+			const db = installSqlTiming(
+				new Database(cfg.stateDbPath, {
+					readonly: true,
+					fileMustExist: true,
+				}),
+				"teamlead",
+			);
 			try {
 				const row = db
 					.prepare("SELECT status FROM sessions WHERE execution_id = ?")

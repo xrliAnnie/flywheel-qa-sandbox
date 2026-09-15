@@ -1,3 +1,4 @@
+import { installSqlTiming } from "flywheel-config";
 /**
  * FLY-224 Phase 4b(2/3) — CodexOutboundSender: the real `OutboundSender`
  * (plan §6.4, Phase 0A §4) that delivers a Codex Lead's replies through the
@@ -129,7 +130,7 @@ export class CodexOutboundSender implements OutboundSender {
 				"CodexOutboundSender: proactiveEventIdTtlMs must be a positive integer",
 			);
 		}
-		this.db = new Database(opts.dbPath);
+		this.db = installSqlTiming(new Database(opts.dbPath), "bridge-local");
 		this.db.pragma("journal_mode = WAL");
 		this.db.exec(`
 			CREATE TABLE IF NOT EXISTS outbox (

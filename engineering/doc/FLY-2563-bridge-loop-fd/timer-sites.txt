@@ -1,0 +1,41 @@
+packages/claude-runner/src/CodexTmuxAdapter.ts:2359: setInterval(tick, this.pollIntervalMs)
+packages/claude-runner/src/CodexTmuxAdapter.ts:612: setInterval(heartbeat, intervalMs)
+packages/claude-runner/src/TmuxAdapter.ts:1523: setInterval(() => { if (settled) return; // Heartbeat: report liveness each poll cycle ctx.onHeartbeat?.(ctx.executionId); // GEO-206 Phase 2: Dynamic timeout c
+packages/claude-runner/src/TmuxAdapter.ts:1561: setInterval(() => { graceChecks++; // Continue heartbeats during grace period ctx.onHeartbeat?.(ctx.executionId); try { const result = this.execFileFn("tmux", [
+packages/claude-runner/src/TmuxAdapter.ts:1629: setInterval(() => { if (settled) return; // Heartbeat: report liveness each poll cycle ctx.onHeartbeat?.(ctx.executionId); // GEO-206 Phase 2: Dynamic timeout c
+packages/claude-runner/src/codex-phase-lifecycle.ts:313: setInterval( () => this.pollShutdown(), this.shutdownPollIntervalMs, )
+packages/teamlead/src/HeartbeatService.ts:551: setInterval(() => { this.check().catch((err) => { console.error("[HeartbeatService] check error:", err); }); }, this.intervalMs)
+packages/teamlead/src/account-heal/switch-executor.ts:736: setInterval(() => { if (fence()) return; lost = true; controller.abort(new LockLeaseLostError(lockPath)); }, deps.heartbeatMs ?? 1_000)
+packages/teamlead/src/bridge/BridgeEventLoopGuard.ts:437: setInterval(() => { if (this.view) { Atomics.store(this.view, 0, BigInt(Math.trunc(this.now()))); } }, this.heartbeatIntervalMs)
+packages/teamlead/src/bridge/beta-release-scheduler.ts:85: setInterval(() => { void this.tick(); }, 60000)
+packages/teamlead/src/bridge/done-thread-reconcile.ts:1270: setInterval(() => { if (stopped) return; const cfg = resolveConfig(); // Disabled PAUSES consumption (items retained; resumes on re-enable // without restart —
+packages/teamlead/src/bridge/event-loop-attribution.ts:117: setInterval(() => { void this.rollWindow().catch((error) => this.markDegraded(error)); }, WINDOW_MS)
+packages/teamlead/src/bridge/fleet-data.ts:815: setInterval(() => void this.collectOnce(), this.intervalMs)
+packages/teamlead/src/bridge/founder-approval-projector.ts:376: setInterval(() => void drain(), args.intervalMs ?? 5_000)
+packages/teamlead/src/bridge/gate-poller.ts:511: setInterval(() => { void this.poll().catch((err) => { console.error( "[GatePoller] unexpected poll rejection (contained, Bridge stays up):", err instanceof Erro
+packages/teamlead/src/bridge/plugin.ts:12056: setInterval( () => void runDoaBackoffMaintenance(), 30_000, )
+packages/teamlead/src/bridge/plugin.ts:13990: setInterval(() => { if (leadAlertDraining) return; leadAlertDraining = true; leadAlertNotifier .drainQueue() .then(async (drainResult) => { const { sent, remain
+packages/teamlead/src/bridge/plugin.ts:1422: setInterval(() => { try { const payload = buildDashboardPayload( this.store, this.stuckThresholdMinutes, this.fleetSupplier?.(), ); const message = `event: stat
+packages/teamlead/src/bridge/plugin.ts:1438: setInterval(() => { this.broadcastToClients(": heartbeat\n\n"); }, 30000)
+packages/teamlead/src/bridge/plugin.ts:2769: setInterval(push, 1000)
+packages/teamlead/src/bridge/plugin.ts:6098: setInterval(() => { void fc.reconcileOnStartup().catch((e) => { console.warn( `[Bridge] fleet reconcile tick failed: ${e instanceof Error ? e.message : String(e
+packages/teamlead/src/bridge/plugin.ts:6376: setInterval(async () => { for (let i = unregisteredLeads.length - 1; i >= 0; i--) { const entry = unregisteredLeads[i]!; const { lead, projectName } = entry; tr
+packages/teamlead/src/bridge/plugin.ts:8539: setInterval( reconcileDesignReviewManifestOutbox, 30_000, )
+packages/teamlead/src/bridge/plugin.ts:9806: setInterval( () => void runChromeReap("periodic"), chromeIntervalMs, )
+packages/teamlead/src/bridge/process-resource-monitor.ts:116: setInterval(() => { void this.sample(); }, 30000)
+packages/teamlead/src/bridge/report-hosting-maintenance.ts:53: setInterval(() => void tick(), REPORT_BLOB_SWEEP_INTERVAL_MS)
+packages/teamlead/src/bridge/report-hosting-usage.ts:179: setInterval(() => void tick(), REPORT_HOSTING_USAGE_TICK_MS)
+packages/teamlead/src/bridge/voice-session-runtime.ts:138: setInterval(() => { void this.tick().catch((error) => console.warn( `[voice-session] runtime tick failed: ${(error as Error).message}`, ), ); }, this.deps.timin
+packages/teamlead/src/bridge/workflow-docs-materializer.ts:114: setInterval( () => void this.reconcile().catch((error) => this.reportReconciliationFailure(error), ), intervalMs, )
+packages/teamlead/src/bridge/workflow-engine-dispatcher.ts:334: setInterval(() => { void this.reconcile().catch((error) => { this.log( `workflow engine reconcile failed: ${error instanceof Error ? error.message : String(erro
+packages/teamlead/src/bridge/workflow-launch-outcome.ts:18: setInterval(() => { try { input.heartbeat(); } catch { // A lost heartbeat is observed by the generation fence at commit. } }, WORKFLOW_LAUNCH_HEARTBEAT_MS)
+packages/teamlead/src/lead-backends/codex/CodexDiscordRuntimeOwnership.ts:94: setInterval( () => void this.refresh().catch((error) => this.alert("codex_runtime_ownership_refresh_failed", error.message), ), 1_000, )
+packages/teamlead/src/lead-backends/codex/DiscordTypingNotifier.ts:110: this.setIntervalImpl(() => this.tick(ch), this.refreshMs)
+packages/teamlead/src/lead-backends/codex/DiscordTypingNotifier.ts:98: setInterval(cb, ms)
+packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts:919: setInterval( ensureTuiHealthy, TUI_LIVENESS_INTERVAL_MS, )
+packages/teamlead/src/lead-backends/codex/gateway/gateway-main.ts:1105: setInterval(() => { orchestrator.observeOnce().catch((err) => { process.stderr.write( `[gateway] WARN observe failed: ${(err as Error).message}\n`, ); }); }, cf
+packages/teamlead/src/ship-judgment/history-runtime.ts:45: setInterval(() => { void this.run(); }, 60000)
+packages/teamlead/src/ship-judgment/runtime.ts:78: setInterval(() => { void this.modeTick(); }, 3_000)
+packages/teamlead/src/ship-judgment/scanner.ts:24: setInterval(() => { void this.tick(); }, 30_000)
+packages/teamlead/src/ship-judgment/worker.ts:35: setInterval(() => { void this.tick(); }, 30_000)
+# Embedded browser/guard timers are classified separately in timer-sql-matrix.md.

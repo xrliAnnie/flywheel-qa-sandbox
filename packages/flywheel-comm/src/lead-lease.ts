@@ -16,7 +16,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import Database from "better-sqlite3";
-import { appendRotatedLogSync } from "flywheel-config";
+import { appendRotatedLogSync, installSqlTiming } from "flywheel-config";
 import {
 	effectiveLeadBackend,
 	readCanonicalLeadCatalog,
@@ -529,7 +529,7 @@ export class LeadLeaseStore {
 				: processTupleStateWithStart);
 		try {
 			mkdirSync(dirname(dbPath), { recursive: true });
-			this.db = new Database(dbPath);
+			this.db = installSqlTiming(new Database(dbPath), "lead-lease");
 			this.db.pragma("journal_mode = WAL");
 			this.db.pragma("busy_timeout = 5000");
 			this.db.exec(LEAD_LEASE_SCHEMA);
@@ -1768,7 +1768,7 @@ export class LeadLeaseEpisodeStore {
 
 	constructor(readonly path: string) {
 		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-		this.db = new Database(path);
+		this.db = installSqlTiming(new Database(path), "lead-lease");
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");
 		this.db.pragma("foreign_keys = ON");

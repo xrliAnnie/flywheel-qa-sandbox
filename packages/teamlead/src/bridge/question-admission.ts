@@ -43,31 +43,27 @@ export interface QuestionAdmissionOptions {
 }
 
 export class QuestionAdmission {
-	private db?: CommDB;
-
 	constructor(private readonly opts: QuestionAdmissionOptions) {}
 
-	/**
-	 * FLY-1601: one cached connection for this admission's lifetime. The old
-	 * code built a FRESH CommDB — whose constructor replays the entire
-	 * migration suite — on EVERY materializePending() (once per tick per Lead)
-	 * and every revalidate(). CPU-profiled on the wedged 2026-08-02 Bridge:
-	 * the #1 hotspot was exec → applyReceiptFoundationMigrations → CommDB ←
-	 * materializePending ← admit ← timers. Sixteen Leads × 1s active interval
-	 * × synchronous migration exec against a contended comm.db (5s
-	 * busy_timeout) pinned the event loop so hard that /health timed out for
-	 * 20s+ while the process stayed alive — the "passed health at boot, died
-	 * under adoption load" signature.
-	 */
-	private commDb(): CommDB {
-		this.db ??= new CommDB(this.opts.dbPath, false);
-		return this.db;
-	}
+	/** All reads are eager; no connection belongs to the admission lifetime. */
+	close(): void {}
 
-	/** Release the cached connection (tests / runtime teardown). */
-	close(): void {
-		this.db?.close();
-		this.db = undefined;
+	private readQuestionSnapshot(id: string) {
+		// Boot owns migration. Revalidation must neither replay migrations nor
+		// retain a per-Lead handle throughout subsequent asynchronous delivery.
+		const db = CommDB.openExistingWriter(this.opts.dbPath);
+		try {
+			const question = db.getMessageById(id);
+			const pending =
+				question && !question.superseded_at
+					? db
+							.getPendingQuestions(this.opts.lead.agentId)
+							.some((row) => row.id === id)
+					: false;
+			return { question, pending };
+		} finally {
+			db.close();
+		}
 	}
 
 	async revalidate(
@@ -96,8 +92,7 @@ export class QuestionAdmission {
 			!permanent &&
 			expiresAt - (this.opts.now?.().getTime() ?? Date.now()) >
 				RETRY_HORIZON_MS;
-		const db = this.commDb();
-		const question = db.getMessageById(row.id);
+		const { question, pending } = this.readQuestionSnapshot(row.id);
 		if (!question) {
 			return {
 				deliver: false,
@@ -112,11 +107,7 @@ export class QuestionAdmission {
 				retry: false,
 			};
 		}
-		if (
-			!db
-				.getPendingQuestions(this.opts.lead.agentId)
-				.some(({ id }) => id === question.id)
-		) {
+		if (!pending) {
 			return {
 				deliver: false,
 				disposition: "revoked_answered",

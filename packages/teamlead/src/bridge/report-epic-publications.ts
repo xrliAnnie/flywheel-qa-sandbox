@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 
 export interface EpicReportPublication {
 	projectName: string;
@@ -14,7 +15,10 @@ export function readEpicReportPublications(
 ): EpicReportPublication[] {
 	let db: InstanceType<typeof Database> | undefined;
 	try {
-		db = new Database(dbPath, { readonly: true, fileMustExist: true });
+		db = installSqlTiming(
+			new Database(dbPath, { readonly: true, fileMustExist: true }),
+			"teamlead",
+		);
 		db.pragma("busy_timeout = 5000");
 		const exists = db
 			.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")

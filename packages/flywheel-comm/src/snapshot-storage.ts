@@ -19,6 +19,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 
 export const DATA_VOLUME_PATH = "/System/Volumes/Data";
 export const GB_BYTES = 1_000_000_000;
@@ -281,7 +282,10 @@ function openReservedSource(path: string): {
 	}
 	let db: Database.Database;
 	try {
-		db = new Database(path, { readonly: true, fileMustExist: true });
+		db = installSqlTiming(
+			new Database(path, { readonly: true, fileMustExist: true }),
+			"snapshot",
+		);
 		db.exec("BEGIN");
 	} catch {
 		throw new SnapshotStorageError("invalid_source");
@@ -344,10 +348,13 @@ async function writeVerifiedSnapshot(
 		},
 	});
 	chmodSync(destination, 0o600);
-	const verified = new Database(destination, {
-		readonly: true,
-		fileMustExist: true,
-	});
+	const verified = installSqlTiming(
+		new Database(destination, {
+			readonly: true,
+			fileMustExist: true,
+		}),
+		"snapshot",
+	);
 	try {
 		if (verified.pragma("quick_check", { simple: true }) !== "ok") {
 			throw new SnapshotStorageError("snapshot_integrity_failed");

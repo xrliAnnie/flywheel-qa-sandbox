@@ -1,3 +1,4 @@
+import { installSqlTiming } from "flywheel-config";
 /**
  * FLY-247 inc2a (§2.2, R3 #5 / R4 #5): the fleet-admin audit table.
  *
@@ -78,7 +79,7 @@ export class FleetAdminAudit {
 	private getDb(): Database.Database {
 		if (this.db) return this.db;
 		mkdirSync(dirname(this.dbPath), { recursive: true });
-		const db = new Database(this.dbPath);
+		const db = installSqlTiming(new Database(this.dbPath), "bridge-local");
 		db.pragma("journal_mode = WAL");
 		db.pragma("busy_timeout = 5000");
 		db.exec(FLEET_ADMIN_AUDIT_SCHEMA);

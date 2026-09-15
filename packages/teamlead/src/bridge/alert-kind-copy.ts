@@ -420,6 +420,10 @@ export function titleFor(kind: AlertEventType): string {
 			return "tmux split brain";
 		case "bridge_abnormal_exit":
 			return "Bridge died without a clean shutdown";
+		case "bridge_fd_pressure":
+			return "Bridge file descriptor usage exceeds 80%";
+		case "ship_judgment_observation_unavailable":
+			return "Ship-judgment observation storage unavailable";
 		case "infra_bot_down":
 			return "Infra bot down";
 		case "zombie_session_backlog":
@@ -684,6 +688,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "Multiple tmux server generations appear to reference the canonical socket. The system will not choose or signal one automatically; a human must establish the authoritative generation.";
 		case "bridge_abnormal_exit":
 			return "The Bridge process exited without a clean shutdown (fatal exit / kill). launchd respawns it; the revived Bridge opens this ticket, runs boot reconcile, and resolves quietly when the self-check passes.";
+		case "bridge_fd_pressure":
+			return "Bridge file descriptor usage exceeds 80% of its effective process limit. Inspect connection ownership and process/kernel limits. Two fresh samples below 70% clear the alert; no automatic restart is performed.";
+		case "ship_judgment_observation_unavailable":
+			return "Observation storage failed startup validation and learning observers are disabled. Inspect migration diagnostics; the alert resolves only after the current Bridge reports ready observation storage.";
 		case "infra_bot_down":
 			return "An infra bot (claude/codex windowed Lead) is down. The OTHER side's bot owns this ticket (nobody rescues their own side); the auto-repair action is launchctl kickstart -k of the dead job.";
 		case "zombie_session_backlog":

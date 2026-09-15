@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 
 export const FLY2268_REBUILD_RECEIPT_SUFFIX = ".fly2268-rebuild-receipt.json";
 
@@ -67,6 +68,7 @@ function inspectRunnerShutdownSchema(dbPath: string): {
 		fileMustExist: true,
 	});
 	try {
+		installSqlTiming(probe, "comm");
 		const columns = probe
 			.prepare("PRAGMA table_info(runner_shutdown_controls)")
 			.all() as Array<{ name: string; pk: number }>;
@@ -178,6 +180,7 @@ function assertVerifiedReceiptBeforeLock(
 		fileMustExist: true,
 	});
 	try {
+		installSqlTiming(backup, "comm");
 		if (String(backup.pragma("quick_check", { simple: true })) !== "ok") {
 			throw new Error(
 				"commdb_schema_preflight_required: backup quick_check failed",
@@ -256,66 +259,76 @@ let warnedLegacyWithStaleReceipt = false;
 
 export function openCommDbWritable(dbPath: string): Database.Database {
 	const opened = new Database(dbPath);
-	opened.pragma("busy_timeout = 5000");
-	const receiptPath = `${dbPath}${FLY2268_REBUILD_RECEIPT_SUFFIX}`;
-	let consumed = false;
 	try {
-		if (!connectionHasLegacyRunnerShutdownPrimaryKey(opened)) {
-			return opened;
-		}
-		if (!existsSync(receiptPath)) {
-			if (!warnedLegacyWithoutReceipt) {
-				warnedLegacyWithoutReceipt = true;
-				console.warn(
-					`[FLY-2268] CommDB legacy shutdown key remains writable until Bridge preflight publishes ${receiptPath}`,
-				);
+		installSqlTiming(opened, "comm");
+		opened.pragma("busy_timeout = 5000");
+		const receiptPath = `${dbPath}${FLY2268_REBUILD_RECEIPT_SUFFIX}`;
+		let consumed = false;
+		try {
+			if (!connectionHasLegacyRunnerShutdownPrimaryKey(opened)) {
+				return opened;
 			}
-			return opened;
-		}
-		const dataVersionBeforeValidation = Number(
-			opened.pragma("data_version", { simple: true }),
-		);
-		const receipt = parseReceipt(dbPath, receiptPath);
-		// Whole-backup and source-binding validation happens without a write lock.
-		// data_version below closes the race between this work and BEGIN IMMEDIATE.
-		assertVerifiedReceiptBeforeLock(dbPath, opened, receipt);
-		opened.exec("BEGIN IMMEDIATE");
-		// A concurrent migration winner may have completed while this connection
-		// waited. The loser succeeds without trying to reuse the consumed receipt.
-		if (!connectionHasLegacyRunnerShutdownPrimaryKey(opened)) {
-			opened.exec("COMMIT");
-			return opened;
-		}
-		const dataVersionAfterLock = Number(
-			opened.pragma("data_version", { simple: true }),
-		);
-		if (dataVersionAfterLock !== dataVersionBeforeValidation) {
-			throw new CommDbPreflightStaleError(
-				"source changed before migration lock",
+			if (!existsSync(receiptPath)) {
+				if (!warnedLegacyWithoutReceipt) {
+					warnedLegacyWithoutReceipt = true;
+					console.warn(
+						`[FLY-2268] CommDB legacy shutdown key remains writable until Bridge preflight publishes ${receiptPath}`,
+					);
+				}
+				return opened;
+			}
+			const dataVersionBeforeValidation = Number(
+				opened.pragma("data_version", { simple: true }),
 			);
-		}
-		rebuildRunnerShutdownControls(opened);
-		opened.exec("COMMIT");
-		consumed = true;
-	} catch (error) {
-		if (opened.inTransaction) opened.exec("ROLLBACK");
-		if (error instanceof CommDbPreflightStaleError) {
-			if (!warnedLegacyWithStaleReceipt) {
-				warnedLegacyWithStaleReceipt = true;
-				console.warn(
-					`[FLY-2268] ${error.message}; legacy CommDB remains writable until Bridge refreshes ${receiptPath}`,
+			const receipt = parseReceipt(dbPath, receiptPath);
+			// Whole-backup and source-binding validation happens without a write lock.
+			// data_version below closes the race between this work and BEGIN IMMEDIATE.
+			assertVerifiedReceiptBeforeLock(dbPath, opened, receipt);
+			opened.exec("BEGIN IMMEDIATE");
+			// A concurrent migration winner may have completed while this connection
+			// waited. The loser succeeds without trying to reuse the consumed receipt.
+			if (!connectionHasLegacyRunnerShutdownPrimaryKey(opened)) {
+				opened.exec("COMMIT");
+				return opened;
+			}
+			const dataVersionAfterLock = Number(
+				opened.pragma("data_version", { simple: true }),
+			);
+			if (dataVersionAfterLock !== dataVersionBeforeValidation) {
+				throw new CommDbPreflightStaleError(
+					"source changed before migration lock",
 				);
 			}
-			return opened;
+			rebuildRunnerShutdownControls(opened);
+			opened.exec("COMMIT");
+			consumed = true;
+		} catch (error) {
+			if (opened.inTransaction) opened.exec("ROLLBACK");
+			if (error instanceof CommDbPreflightStaleError) {
+				if (!warnedLegacyWithStaleReceipt) {
+					warnedLegacyWithStaleReceipt = true;
+					console.warn(
+						`[FLY-2268] ${error.message}; legacy CommDB remains writable until Bridge refreshes ${receiptPath}`,
+					);
+				}
+				return opened;
+			}
+			opened.close();
+			throw error;
 		}
-		opened.close();
+		if (consumed) {
+			const consumedPath = `${receiptPath}.consumed-${new Date()
+				.toISOString()
+				.replaceAll(":", "-")}`;
+			renameSync(receiptPath, consumedPath);
+		}
+		return opened;
+	} catch (error) {
+		try {
+			if (opened.open) opened.close();
+		} catch {
+			/* Preserve the open failure. */
+		}
 		throw error;
 	}
-	if (consumed) {
-		const consumedPath = `${receiptPath}.consumed-${new Date()
-			.toISOString()
-			.replaceAll(":", "-")}`;
-		renameSync(receiptPath, consumedPath);
-	}
-	return opened;
 }

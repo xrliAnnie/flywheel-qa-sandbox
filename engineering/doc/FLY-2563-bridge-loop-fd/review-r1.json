@@ -1,0 +1,192 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "aec4ca61-1d09-4555-845c-8fcd597e4e70",
+  "round": 1,
+  "findings": [
+    {
+      "id": "closeout-zero-match-misclassified-as-dependency",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 131,
+      "title": "大多数正常 canceled closeout 会被当成 pending.dependency，导致永久隔离、告警和热行无法归档",
+      "detail": "§3.3 把「缺 holder/run」一律归为 pending.dependency（60s 退避，10 次后变隔离行并告警）。计划没有区分两种情况：事件发生时本来就没有 run（常态），和 restore 顺序导致暂时缺失。我对 /tmp/flywheel-snapshots/fb97eb44…/teamlead-*.db 做了 immutable 只读查询：flywheel 的 canceled closeout 共 725 条（2026-08-11 至 09-14），无论直连、alias 还是跨项目，能匹配到任何 workflow_run 的都是 0 条。原因是 closeout 的 issue_id 是 Linear UUID，run.issue_id 是 FLY-xxxx；alias 只在 run 创建时由 captureWorkflowRunIssueAliasesTx 捕获一次，不会晚到。按计划实现会有三个后果：(1) cursor=0 补读时 725 条全部进入 dependency，重试后变成永久隔离行并告警，以后每条新的 canceled closeout 都一样；(2) pending 表无界增长，每 tick 还要消耗一半 due 预算；(3) §3.3 规定归档必须保留 pending source，这些 closeout 热行永远归档不了，和本单的有界化目标相反。修改建议：观察时零匹配 run/holder 视为已消费（推进水位，不写 outcome，不进 pending）；restore 路径按精确 source id 单独入 pending；补测试断言零匹配时 pending=0、无告警、归档不受阻。",
+      "findingKey": "closeout-zero-match-misclassified-as-dependency"
+    },
+    {
+      "id": "fd-limit-source-ignores-node-rlimit-raise",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 187,
+      "title": "Node 启动时会自行抬高 RLIMIT_NOFILE：wrapper 提限不起作用，report.soft 不是实际上限，>80% 告警永远不会触发",
+      "detail": "§5.2/§6.1 假设 Bridge 进程软限是 256，并用 process.report 的 userLimits.open_files.soft 当分母。本机实测（launchctl maxfiles 256/unlimited，kern.maxfilesperproc=184320）：同一个 bash 执行 ulimit -Sn 256 后，python 读到 256；node 的 report 读到 soft=1048575；node 子进程里的 python 也读到 1048575。这说明 Node 在 PlatformInit 阶段自己把软限抬到了硬限。同一 node 进程实际打开 184309 个 fd 时报 EMFILE。research §4 其实已经看到 1048575，但把它归因成了测试沙箱。后果：(a) wrapper 里的 ulimit -Sn 8192 对 Node Bridge 不起作用，F 行「limit≥8192」必然通过，什么也证明不了；(b) usage_ratio=used/1048575，80% 阈值约 838,860，远高于内核实际上限 184,320，真实耗尽前告警永远不会响，而 QA 第 8 行用注入样本仍会通过，生产得到的是虚假保障；(c) 提限失败就拒绝启动，会为一个不起作用的条件让舰队入口面临 crash-loop。修改建议：先在真实 launchd 拉起的 Bridge PID 上取证实际软限和事故 EMFILE 的真实来源；Darwin 的有效上限取 min(getrlimit soft, kern.maxfilesperproc)，必要时同时监控 kern.num_files/kern.maxfiles；重新定义 F 行验收、wrapper 是否必要及其失败策略。",
+      "findingKey": "fd-limit-source-ignores-node-rlimit-raise"
+    },
+    {
+      "id": "js-time-filter-local-tz",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 117,
+      "title": "时间过滤从 SQL julianday 移到 JS，会把 SQLite datetime 按本地时区解析",
+      "detail": "§3.2 把 run/card 创建时间的过滤改成在 JS 里比较，§3.3 的 future/invalid 判定也要在 JS 里比较时间。快照实测：workflow_run.created_at 和 closeout 的 session_events.ts 都是 'YYYY-MM-DD HH:MM:SS'（UTC，不带时区），holder.created_at 是带 Z 的 ISO 格式。V8 的 Date.parse 会把前者当本地时间：本机 America/Los_Angeles 下 '2026-09-14 19:05:07' 被解析成 2026-09-15T02:05:07Z，偏差 7 小时。按 Date.parse 实现会有两个问题：closeout 之后 7 小时内创建的 holder 会被错误配对，而 outcome 写入后不可变，在 dry_run 下还会触发发给 founder 的 clarification；新 closeout 会被误判为 future，延迟 7 小时处理。现有 outcomes.test.ts 全部写入 ISO 时间，测试发现不了。修改建议：候选内的时间比较继续用 SQL julianday（按主键点查），或统一 UTC 解析器；补 SQLite datetime 格式加非 UTC 时区的回归测试。",
+      "findingKey": "js-time-filter-local-tz"
+    },
+    {
+      "id": "b2-trigger-couples-authoritative-verdict-insert",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 86,
+      "title": "在不可变的 founder 审批账本上加 AFTER INSERT 触发器，把审批写入和学习侧 schema 绑在一起，收益却很小",
+      "detail": "workflow_founder_gate_verdict 是审批权威表，已有 no_update/no_delete 触发器。计划新加的触发器会读 cursor 表和 workflow_run，再写 pending 表；它的任何异常都会让 founder verdict 的 INSERT 回滚，破坏 outcomes.ts 所说的「只读 B2 消费者、不碰审批状态」的隔离。而收益很小：快照里 verdict 只有 110 行，旧 observeVerdicts 冷缓存下 real 0.149s、user 8ms；真正耗时 3.36s 的热点是 closeout 那条联表查询。修改建议：B2 保留有界 anti-join，或者按 verdict 索引 keyset 加小重叠窗口重扫，靠 outcome 唯一键保证幂等，去掉触发器和 late_insert。如果坚持用触发器，需要证明它失败时不影响 verdict 写入，并补审批路径回归测试。",
+      "findingKey": "b2-trigger-couples-authoritative-verdict-insert"
+    },
+    {
+      "id": "migration-failure-not-isolated",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 88,
+      "title": "计划说迁移失败只影响 observer，但迁移放在 StateStore.migrate 里会让整个 Bridge 起不来",
+      "detail": "§2 要求迁移失败时「新 observer 不启动」。但文件映射把安装步骤放进了 StateStore 的迁移顺序，而 StateStore.create() 会同步执行 migrate()。锁忙、磁盘错误或同名异定义的 migration error 一旦抛出，plugin.ts:5348 的创建就会失败，整个 Bridge 起不来并被 launchd 反复重启。一个学习侧索引的问题会升级成舰队入口停摆。修改建议：写明隔离机制，例如捕获错误并记录失败回执、禁用 observer、归档保护退回保守保留、在 health 中暴露，并补测试。另外，1.7M 行上的 CREATE INDEX 会在 HTTP listen 之前同步执行，应把预估耗时列为部署窗口的前置条件。",
+      "findingKey": "migration-failure-not-isolated"
+    },
+    {
+      "id": "commdb-per-op-open-runs-full-constructor",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 173,
+      "title": "每次操作都 new CommDB 会重复跑 schema、迁移和 purge；legacy runtime 的常驻连接本身有界，不是泄漏",
+      "detail": "CommDB 的可写构造函数（flywheel-comm/src/db.ts:1199）每次都会：执行全量 SCHEMA、在 IMMEDIATE 事务里跑 applyMigrations、安装触发器、执行 purgeExpired（archiveDueFamilies 和 drainContentRefGc）。busy_timeout=5000，锁争用时事件循环最多同步等 5 秒。如果每次 Lead 事件投递都这样开关一次，会和目标 B（lag<100ms）冲突，还会加重和 Lead/runner 进程的写锁争用。CommDBLeadRuntime 只在 FLYWHEEL_COMM_BACKEND=commdb 的回滚路径使用，每个 Lead 一条常驻连接，数量有界。另外两个未声明的行为变化：notifyLead 目前用默认 createIfMissing=true，计划改成 false；zombie 扫描改用 openReadonly 后，没有 comm.db 的项目每轮都会打 warn。修改建议：legacy runtime 保持每 Lead 一条连接并计入 fd 预算，或者定义一个跳过 schema/迁移/purge 的轻量写入口；在计划里写明这些语义变化。",
+      "findingKey": "commdb-per-op-open-runs-full-constructor"
+    },
+    {
+      "id": "lag-acceptance-window-max",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 279,
+      "title": "lag 验收用 30s 窗口的 max，要求每个窗口 <100ms，容易因本单范围外的停顿失败",
+      "detail": "lag_ms=max_ms 会记下 GC、另外约 40 个 timer 中与本单无关的同步工作，以及 resolution=10ms 的量化误差，比 p99 严格得多。QA 很可能因为范围外的工作不通过，进而诱发放宽阈值或挑选窗口。修改建议：写明采用哪个统计量来对应 issue 原文的「event-loop lag<100ms」，并事先规定窗口不达标时的归因流程（结合 SQL >250ms 日志和 episode profile 判断是否属于本单）。",
+      "findingKey": "lag-acceptance-window-max"
+    },
+    {
+      "id": "duplicate-closeout-cursor-index",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 44,
+      "title": "新 closeout 游标索引与现场应急索引重复",
+      "detail": "id 是 rowid 别名，本来就是每个索引的隐式尾列。在 sqlite3 3.51 上对同形的 (project_name,source) 部分索引执行 EXPLAIN，得到 SEARCH (project_name=? AND source=? AND rowid>?)，没有 TEMP B-TREE。所以在已有应急索引的生产库上，新索引要在启动时同步重复构建一遍 1.7M 行。修改建议：把应急索引的定义收进仓库（同名同定义），或者至少不要用 INDEXED BY 绑死新索引名。",
+      "findingKey": "duplicate-closeout-cursor-index"
+    },
+    {
+      "id": "fd-sampling-prefers-dev-fd",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 187,
+      "title": "Darwin 上用 lsof 采样开销大，且在 fd 紧张时最容易失败",
+      "detail": "本机实测 lsof -p 一次约 94ms，还需要 fork 子进程和建管道，fd 紧张时恰恰最容易失败。macOS 上 fs.readdir('/dev/fd') 可用，约 0.15ms，计数与 lsof 的数字 fd 在同一量级。修改建议：Darwin 和 Linux 统一用 readdir（/dev/fd 与 /proc/self/fd），lsof 只留给 QA 对 comm.db 做专项取证。",
+      "findingKey": "fd-sampling-prefers-dev-fd"
+    },
+    {
+      "id": "mode-off-transition-first-tick",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 150,
+      "title": "setMode('off') 只在模式转换时执行，需要把启动后第一次 tick 也算作转换",
+      "detail": "进程重启后内存里没有上一次的模式，如果启动时已是 off，就永远不会触发结算。这条 UPDATE 带 delivery_mode<>? 条件，本身幂等且开销很小，保留每 tick 执行也可以接受。",
+      "findingKey": "mode-off-transition-first-tick"
+    },
+    {
+      "id": "sync-op-marker-test-path",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 256,
+      "title": "T5 引用的 sync-op-marker 测试路径不对",
+      "detail": "实际路径是 packages/claude-runner/test/sync-op-marker.test.ts。另外 packages/teamlead/src/__tests__/bridge-sync-op-marker-coverage.test.ts 覆盖 Bridge 侧的 marker，也应列入 T5。",
+      "findingKey": "sync-op-marker-test-path"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "js-time-filter-local-tz",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 117,
+      "title": "时间过滤从 SQL julianday 移到 JS，会把 SQLite datetime 按本地时区解析",
+      "detail": "§3.2 把 run/card 创建时间的过滤改成在 JS 里比较，§3.3 的 future/invalid 判定也要在 JS 里比较时间。快照实测：workflow_run.created_at 和 closeout 的 session_events.ts 都是 'YYYY-MM-DD HH:MM:SS'（UTC，不带时区），holder.created_at 是带 Z 的 ISO 格式。V8 的 Date.parse 会把前者当本地时间：本机 America/Los_Angeles 下 '2026-09-14 19:05:07' 被解析成 2026-09-15T02:05:07Z，偏差 7 小时。按 Date.parse 实现会有两个问题：closeout 之后 7 小时内创建的 holder 会被错误配对，而 outcome 写入后不可变，在 dry_run 下还会触发发给 founder 的 clarification；新 closeout 会被误判为 future，延迟 7 小时处理。现有 outcomes.test.ts 全部写入 ISO 时间，测试发现不了。修改建议：候选内的时间比较继续用 SQL julianday（按主键点查），或统一 UTC 解析器；补 SQLite datetime 格式加非 UTC 时区的回归测试。",
+      "findingKey": "js-time-filter-local-tz"
+    },
+    {
+      "id": "b2-trigger-couples-authoritative-verdict-insert",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 86,
+      "title": "在不可变的 founder 审批账本上加 AFTER INSERT 触发器，把审批写入和学习侧 schema 绑在一起，收益却很小",
+      "detail": "workflow_founder_gate_verdict 是审批权威表，已有 no_update/no_delete 触发器。计划新加的触发器会读 cursor 表和 workflow_run，再写 pending 表；它的任何异常都会让 founder verdict 的 INSERT 回滚，破坏 outcomes.ts 所说的「只读 B2 消费者、不碰审批状态」的隔离。而收益很小：快照里 verdict 只有 110 行，旧 observeVerdicts 冷缓存下 real 0.149s、user 8ms；真正耗时 3.36s 的热点是 closeout 那条联表查询。修改建议：B2 保留有界 anti-join，或者按 verdict 索引 keyset 加小重叠窗口重扫，靠 outcome 唯一键保证幂等，去掉触发器和 late_insert。如果坚持用触发器，需要证明它失败时不影响 verdict 写入，并补审批路径回归测试。",
+      "findingKey": "b2-trigger-couples-authoritative-verdict-insert"
+    },
+    {
+      "id": "migration-failure-not-isolated",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 88,
+      "title": "计划说迁移失败只影响 observer，但迁移放在 StateStore.migrate 里会让整个 Bridge 起不来",
+      "detail": "§2 要求迁移失败时「新 observer 不启动」。但文件映射把安装步骤放进了 StateStore 的迁移顺序，而 StateStore.create() 会同步执行 migrate()。锁忙、磁盘错误或同名异定义的 migration error 一旦抛出，plugin.ts:5348 的创建就会失败，整个 Bridge 起不来并被 launchd 反复重启。一个学习侧索引的问题会升级成舰队入口停摆。修改建议：写明隔离机制，例如捕获错误并记录失败回执、禁用 observer、归档保护退回保守保留、在 health 中暴露，并补测试。另外，1.7M 行上的 CREATE INDEX 会在 HTTP listen 之前同步执行，应把预估耗时列为部署窗口的前置条件。",
+      "findingKey": "migration-failure-not-isolated"
+    },
+    {
+      "id": "commdb-per-op-open-runs-full-constructor",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 173,
+      "title": "每次操作都 new CommDB 会重复跑 schema、迁移和 purge；legacy runtime 的常驻连接本身有界，不是泄漏",
+      "detail": "CommDB 的可写构造函数（flywheel-comm/src/db.ts:1199）每次都会：执行全量 SCHEMA、在 IMMEDIATE 事务里跑 applyMigrations、安装触发器、执行 purgeExpired（archiveDueFamilies 和 drainContentRefGc）。busy_timeout=5000，锁争用时事件循环最多同步等 5 秒。如果每次 Lead 事件投递都这样开关一次，会和目标 B（lag<100ms）冲突，还会加重和 Lead/runner 进程的写锁争用。CommDBLeadRuntime 只在 FLYWHEEL_COMM_BACKEND=commdb 的回滚路径使用，每个 Lead 一条常驻连接，数量有界。另外两个未声明的行为变化：notifyLead 目前用默认 createIfMissing=true，计划改成 false；zombie 扫描改用 openReadonly 后，没有 comm.db 的项目每轮都会打 warn。修改建议：legacy runtime 保持每 Lead 一条连接并计入 fd 预算，或者定义一个跳过 schema/迁移/purge 的轻量写入口；在计划里写明这些语义变化。",
+      "findingKey": "commdb-per-op-open-runs-full-constructor"
+    },
+    {
+      "id": "lag-acceptance-window-max",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 279,
+      "title": "lag 验收用 30s 窗口的 max，要求每个窗口 <100ms，容易因本单范围外的停顿失败",
+      "detail": "lag_ms=max_ms 会记下 GC、另外约 40 个 timer 中与本单无关的同步工作，以及 resolution=10ms 的量化误差，比 p99 严格得多。QA 很可能因为范围外的工作不通过，进而诱发放宽阈值或挑选窗口。修改建议：写明采用哪个统计量来对应 issue 原文的「event-loop lag<100ms」，并事先规定窗口不达标时的归因流程（结合 SQL >250ms 日志和 episode profile 判断是否属于本单）。",
+      "findingKey": "lag-acceptance-window-max"
+    },
+    {
+      "id": "duplicate-closeout-cursor-index",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 44,
+      "title": "新 closeout 游标索引与现场应急索引重复",
+      "detail": "id 是 rowid 别名，本来就是每个索引的隐式尾列。在 sqlite3 3.51 上对同形的 (project_name,source) 部分索引执行 EXPLAIN，得到 SEARCH (project_name=? AND source=? AND rowid>?)，没有 TEMP B-TREE。所以在已有应急索引的生产库上，新索引要在启动时同步重复构建一遍 1.7M 行。修改建议：把应急索引的定义收进仓库（同名同定义），或者至少不要用 INDEXED BY 绑死新索引名。",
+      "findingKey": "duplicate-closeout-cursor-index"
+    },
+    {
+      "id": "fd-sampling-prefers-dev-fd",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 187,
+      "title": "Darwin 上用 lsof 采样开销大，且在 fd 紧张时最容易失败",
+      "detail": "本机实测 lsof -p 一次约 94ms，还需要 fork 子进程和建管道，fd 紧张时恰恰最容易失败。macOS 上 fs.readdir('/dev/fd') 可用，约 0.15ms，计数与 lsof 的数字 fd 在同一量级。修改建议：Darwin 和 Linux 统一用 readdir（/dev/fd 与 /proc/self/fd），lsof 只留给 QA 对 comm.db 做专项取证。",
+      "findingKey": "fd-sampling-prefers-dev-fd"
+    },
+    {
+      "id": "mode-off-transition-first-tick",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 150,
+      "title": "setMode('off') 只在模式转换时执行，需要把启动后第一次 tick 也算作转换",
+      "detail": "进程重启后内存里没有上一次的模式，如果启动时已是 off，就永远不会触发结算。这条 UPDATE 带 delivery_mode<>? 条件，本身幂等且开销很小，保留每 tick 执行也可以接受。",
+      "findingKey": "mode-off-transition-first-tick"
+    },
+    {
+      "id": "sync-op-marker-test-path",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2563-bridge-loop-fd/plan.md",
+      "line": 256,
+      "title": "T5 引用的 sync-op-marker 测试路径不对",
+      "detail": "实际路径是 packages/claude-runner/test/sync-op-marker.test.ts。另外 packages/teamlead/src/__tests__/bridge-sync-op-marker-coverage.test.ts 覆盖 Bridge 侧的 marker，也应列入 T5。",
+      "findingKey": "sync-op-marker-test-path"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

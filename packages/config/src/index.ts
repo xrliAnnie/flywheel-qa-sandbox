@@ -463,6 +463,11 @@ export {
 	SUPERPOWERS_PLUGIN_KEY,
 	skillAssemblyBaseArm,
 } from "./skill-framework-mode.js";
+export {
+	installSqlTiming,
+	type SqlTimingOptions,
+	type SqlTimingRecord,
+} from "./sql-timing.js";
 export type {
 	AgentConfig,
 	AgentConfigSource,

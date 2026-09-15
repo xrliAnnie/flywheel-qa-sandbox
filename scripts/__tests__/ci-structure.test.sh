@@ -445,6 +445,10 @@ expected_matrix = [
         "cmd": "node scripts/teamlead-ci-shard.mjs --shard=4/4",
     },
     {
+        "name": "observation performance",
+        "cmd": "pnpm --filter flywheel-teamlead exec vitest run src/ship-judgment/__tests__/observation-performance.test.ts",
+    },
+    {
         "name": "heavy",
         "cmd": "pnpm --filter flywheel-claude-runner --filter flywheel-comm --filter flywheel-edge-worker test:run",
     },

@@ -4,12 +4,12 @@ import { StateStore } from "../../StateStore.js";
 export const HEAD = "a".repeat(40);
 export const NOW = "2026-09-11T00:00:00.000Z";
 export const CHANNEL = "123456789012345670";
-export async function bindingFixture(): Promise<{
+export async function bindingFixture(path = ":memory:"): Promise<{
 	store: StateStore;
 	db: Database.Database;
 	channel: string;
 }> {
-	const store = await StateStore.create(":memory:");
+	const store = await StateStore.create(path);
 	const db = (store as unknown as { db: { raw: Database.Database } }).db.raw;
 	store.createWorkflowRun({
 		runId: "r",

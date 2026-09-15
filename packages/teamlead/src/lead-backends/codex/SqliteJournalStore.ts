@@ -1,3 +1,4 @@
+import { installSqlTiming } from "flywheel-config";
 /**
  * FLY-224 Phase 3b — SqliteJournalStore: the durable better-sqlite3 backing for
  * the LeadJournal (plan §6.2/§6.10). One DB file per (project, lead), living in
@@ -80,7 +81,7 @@ export class SqliteJournalStore implements JournalStore {
 
 	/** @param dbPath file path, or ":memory:" for tests. */
 	constructor(dbPath: string) {
-		this.db = new Database(dbPath);
+		this.db = installSqlTiming(new Database(dbPath), "bridge-local");
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("foreign_keys = ON");
 		this.db.exec(`

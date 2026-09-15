@@ -22,6 +22,7 @@
 import { existsSync } from "node:fs";
 import Database from "better-sqlite3";
 import {
+	installSqlTiming,
 	isWorkflowPhaseRole,
 	modelDisplayName,
 	PHASE_ROLE_SEQUENCE,
@@ -682,7 +683,10 @@ export class IssueDisplayRefresher {
 		if (!existsSync(dbPath)) return "unknown";
 		let db: InstanceType<typeof Database> | undefined;
 		try {
-			db = new Database(dbPath, { readonly: true, fileMustExist: true });
+			db = installSqlTiming(
+				new Database(dbPath, { readonly: true, fileMustExist: true }),
+				"comm",
+			);
 			db.pragma("busy_timeout = 5000");
 			const row = db
 				.prepare(

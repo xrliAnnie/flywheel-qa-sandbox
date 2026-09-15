@@ -206,7 +206,6 @@ import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-r
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
-import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
 import { safeCompare } from "./auth-compare.js";
 import { createAutoMergeShadowRouter } from "./auto-merge-shadow-route.js";
 import {
@@ -383,6 +382,7 @@ import {
 	checkPrMergeViaGh,
 	createExternalMergeReconciler,
 } from "./external-merge-reconcile.js";
+import { FdPressureAlert } from "./fd-pressure-alert.js";
 import { ProjectConfigCache } from "./feature-flag-config-source.js";
 import { renderFlagReport } from "./feature-flag-report-html.js";
 import { buildFlagProvenance } from "./flag-provenance.js";
@@ -427,6 +427,10 @@ import {
 	storeXiaohongshuLearningEnabled,
 } from "./flag-store-runtime.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
+import {
+	insertLeadInstruction,
+	readZombieCandidates,
+} from "./fleet-comm-operations.js";
 import {
 	defaultFleetConsoleOptions,
 	FleetConsole,
@@ -590,6 +594,10 @@ import { receiptBackedMaterializedHeadAuthority } from "./materialized-head-auth
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
+import {
+	ObservationStorageAlert,
+	observationStorageHealth,
+} from "./observation-storage-alert.js";
 import { sweepOrphanFounderReviewGates } from "./orphan-founder-review-monitor.js";
 import { OutboundPressureMeter } from "./outbound-pressure.js";
 import { isTransientThrottlePane } from "./pane-blocked-classifier.js";
@@ -610,6 +618,10 @@ import {
 	makeFinalizeWorkflowPhaseRoles,
 	runResumablePostShipFinalization,
 } from "./post-ship-finalization.js";
+import {
+	type FdHealth,
+	ProcessResourceMonitor,
+} from "./process-resource-monitor.js";
 import {
 	buildCronModelViews,
 	buildProjectRunnerDefaults,
@@ -805,6 +817,7 @@ import {
 import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
+import { openVoiceCommDb } from "./voice-comm-scope.js";
 import { createVoiceRouter } from "./voice-routes.js";
 import { voiceSessionAuthMiddleware } from "./voice-session-auth.js";
 import { createVoiceSessionServices } from "./voice-session-services.js";
@@ -1445,6 +1458,7 @@ export class SseBroadcaster {
 
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
+	processResources?: { snapshot(): FdHealth };
 	codexQuota?: {
 		runtime?: CodexQuotaRuntime;
 		rootKey: string;
@@ -2350,7 +2364,15 @@ export function createBridgeApp(
 					"[health] event-loop diagnostics unavailable:",
 					error instanceof Error ? error.message : String(error),
 				);
-				eventLoop = { p99_ms: null, max_ms: null, episodes: 0 };
+				eventLoop = {
+					p99_ms: null,
+					max_ms: null,
+					episodes: 0,
+					lag_ms: null,
+					sampled_at: null,
+					window_ms: 30_000,
+					status: "unavailable",
+				};
 			}
 		}
 		if (opts?.livenessHealthProvider?.current) {
@@ -2387,6 +2409,10 @@ export function createBridgeApp(
 			},
 			...(liveness === undefined ? {} : { liveness }),
 			...(eventLoop === undefined ? {} : { event_loop: eventLoop }),
+			...(opts?.processResources
+				? { fd: opts.processResources.snapshot() }
+				: {}),
+			ship_judgment: { observation_storage: observationStorageHealth(store) },
 		});
 	});
 
@@ -5429,6 +5455,14 @@ export async function startBridge(
 		profilerEnabled: () => storeLoopProfilerEnabled(flagStore),
 	});
 	await eventLoopAttribution.start();
+	let fdPressureAlert: FdPressureAlert | undefined;
+	let observationStorageAlert: ObservationStorageAlert | undefined;
+	const fdBootId = `${process.pid}:${randomUUID()}`;
+	const processResources = new ProcessResourceMonitor({
+		alert: (sample) => fdPressureAlert?.alert(sample) ?? Promise.resolve(false),
+		resolve: () => fdPressureAlert?.resolve() ?? Promise.resolve(false),
+	});
+	processResources.start();
 	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
 	// only StateStore-authoritative failed/blocked outcomes asynchronously. All
 	// SQLite work lives behind the queue; transition hooks remain enqueue-only.
@@ -8216,6 +8250,7 @@ export async function startBridge(
 			flagProjectNames,
 			flagProjectConfigPath,
 			eventLoopAttribution,
+			processResources,
 			admissionCrossingBarrier,
 			residueHarvester,
 			terminalCommDbSync,
@@ -9302,9 +9337,9 @@ export async function startBridge(
 								activeIssueIds: [...activeCommIssueIds],
 							}),
 					);
-					if (archived.archived > 0) {
+					if (archived.scanned > 0) {
 						console.info(
-							`[database-hygiene] archived ${archived.archived} terminal narrative row(s)`,
+							`[database-hygiene] archived ${archived.archived} terminal narrative row(s); scanned=${archived.scanned} skipped=${archived.skipped}`,
 						);
 					}
 				} catch (error) {
@@ -10236,7 +10271,7 @@ export async function startBridge(
 						canonical,
 					);
 					if (rel.startsWith("..") || pathIsAbsolute(rel)) return null;
-					return new CommDB(canonical, false) as unknown as GateResponseDb;
+					return openVoiceCommDb(canonical);
 				} catch {
 					return null;
 				}
@@ -13333,7 +13368,12 @@ export async function startBridge(
 					// FLY-1082: fleet-kind recovery probe (watermark cleared / bot back
 					// alive / boot reconcile done) — holder-backed; null = cannot tell.
 					fleetRecovery: async (row) =>
-						(await fleetSensorsHolder.current?.recoveryProbe(row)) ?? null,
+						row.event_type === "bridge_fd_pressure"
+							? (fdPressureAlert?.recoveryProbe(row) ?? null)
+							: row.event_type === "ship_judgment_observation_unavailable"
+								? (observationStorageAlert?.recoveryProbe(row) ?? null)
+								: ((await fleetSensorsHolder.current?.recoveryProbe(row)) ??
+									null),
 				})
 			: undefined;
 	const founderEscalationConfigured = isDiscordSnowflake(
@@ -13406,6 +13446,28 @@ export async function startBridge(
 		},
 	};
 	routedAlertSinkHolder.current = routedAlertSink;
+	fdPressureAlert = new FdPressureAlert({
+		bootId: fdBootId,
+		store,
+		alert: (payload) => routedAlertSink.alert(payload),
+		resolve: async (key, eventId) => {
+			// An alert still queued to its owner may not have a Hub row yet. Its
+			// eventual thread is handled by the same fenced recovery probe.
+			if (alertHub && store.getActiveAlertThread(key)?.event_id === eventId)
+				await alertHub.resolve(key, eventId);
+		},
+	});
+	observationStorageAlert = new ObservationStorageAlert({
+		bootId: fdBootId,
+		store,
+		alert: (payload) => routedAlertSink.alert(payload),
+	});
+	const retryObservationStorageAlert = () => {
+		void observationStorageAlert!.tick().catch(() => {
+			console.warn("[Bridge] observation_storage_alert_delivery_failed");
+		});
+	};
+	retryObservationStorageAlert();
 	await reportFlagScanOwnerResolution(flagScanOwnerStatus, routedAlertSink);
 	workflowEngineAlertHolder.current = routedAlertSink;
 	paneLossNotifyHolder.current = async (
@@ -13536,11 +13598,11 @@ export async function startBridge(
 		const projectName = leadProjectByAgentId.get(leadId);
 		if (!projectName) return false;
 		try {
-			new CommDB(commDbPathForProject(projectName)).insertInstruction(
-				"bridge",
+			insertLeadInstruction(
+				commDbPathForProject(projectName),
 				leadId,
 				content,
-				dedupeId ? { dedupeId } : undefined,
+				dedupeId,
 			);
 			return true;
 		} catch (err) {
@@ -13572,9 +13634,10 @@ export async function startBridge(
 		const findings: import("./zombie-scan.js").ZombieFinding[] = [];
 		for (const p of projects) {
 			try {
-				const rows = new CommDB(
+				const rows = readZombieCandidates(
 					commDbPathForProject(p.projectName),
-				).listSessions(p.projectName, ["running"]);
+					p.projectName,
+				);
 				findings.push(
 					...(await scanZombies({
 						commRunning: rows.map((r) => ({
@@ -13944,6 +14007,7 @@ export async function startBridge(
 	let drainStuckCycles = 0;
 	let leadAlertDraining = false;
 	const leadAlertDrainTimer = setInterval(() => {
+		retryObservationStorageAlert();
 		if (leadAlertDraining) return;
 		leadAlertDraining = true;
 		leadAlertNotifier
@@ -14025,6 +14089,8 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		await observationStorageAlert?.stop();
+		await processResources.stop();
 		await betaReleaseRuntime.stop();
 		voiceSessionServices.runtime.stop();
 		// FLY-1082 (Task 2.4): the clean-shutdown marker rides the SAME close

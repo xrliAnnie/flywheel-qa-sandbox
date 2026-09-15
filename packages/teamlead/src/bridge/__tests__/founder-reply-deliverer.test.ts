@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
@@ -153,6 +153,105 @@ function insertFounderReviewQuestion(
 }
 
 describe("FLY-1392 v2 founder ingress", () => {
+	it("releases owned CommDB before a learning observer waits", async () => {
+		let live = 0;
+		let finish!: (result: "handled") => void;
+		let entered!: () => void;
+		const started = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const run = emitFounderReplyDeliveryForThread(ctx(dbPath), [], {
+			store: store(),
+			cursorStore: cursor,
+			fetchImpl: discordGet([
+				{
+					id: snowflakeAt(Date.now() - 30000),
+					content: "why",
+					author: { id: OWNER },
+					type: 19,
+					message_reference: {
+						message_id: "323456789012345678",
+						channel_id: THREAD,
+					},
+				},
+			]),
+			commDbLeaseFactory: () => {
+				const db = new CommDB(dbPath, false);
+				live++;
+				return {
+					db,
+					release: () => {
+						db.close();
+						live--;
+					},
+				};
+			},
+			observeShipJudgmentReply: () => {
+				entered();
+				return new Promise((resolve) => {
+					finish = resolve;
+				});
+			},
+		});
+		await started;
+		try {
+			expect(live).toBe(0);
+		} finally {
+			finish("handled");
+			await run;
+		}
+		expect(live).toBe(0);
+	});
+	it.each(["success", "reject"] as const)(
+		"default writer releases numeric fds while Lead handoff waits (%s)",
+		async (settlement) => {
+			const fdDirectory =
+				process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";
+			const count = () =>
+				readdirSync(fdDirectory).filter((name) => /^\d+$/.test(name)).length;
+			const baseline = count();
+			let resolveHandoff!: (value: boolean) => void;
+			let rejectHandoff!: (error: Error) => void;
+			let entered!: () => void;
+			const started = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			const handoff = new Promise<boolean>((resolve, reject) => {
+				resolveHandoff = resolve;
+				rejectHandoff = reject;
+			});
+			const before = cursor.load(THREAD);
+			const run = emitFounderReplyDeliveryForThread(ctx(dbPath), [], {
+				store: store(),
+				cursorStore: cursor,
+				fetchImpl: discordGet([
+					{
+						id: snowflakeAt(Date.now() - 30000),
+						content: "discussion",
+						author: { id: OWNER },
+					},
+				]),
+				deliverAmbiguousToLead: () => {
+					entered();
+					return handoff;
+				},
+			});
+			await started;
+			try {
+				expect(count()).toBeLessThanOrEqual(baseline);
+			} finally {
+				if (settlement === "success") resolveHandoff(true);
+				else rejectHandoff(new Error("transport failed"));
+			}
+			const result = await run;
+			expect(result.result).toBe(
+				settlement === "success" ? "advanced" : "process_failed",
+			);
+			if (settlement === "reject") expect(cursor.load(THREAD)).toBe(before);
+			expect(count()).toBeLessThanOrEqual(baseline);
+		},
+	);
+
 	let dir: string;
 	let dbPath: string;
 	let cursor: InMemoryInboundCursorStore;
@@ -608,6 +707,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 			db.close();
 			const borrowedDb = new CommDB(dbPath, false);
 			const release = vi.fn();
+			const acquire = vi.fn(() => ({ db: borrowedDb, release }));
 			const handoff = vi.fn(async () => true);
 			const observeShipJudgmentReply = vi.fn(async () => "ignored" as const);
 			const tryFounderShipApproval = vi.fn(async () => ({
@@ -660,7 +760,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 						},
 					]),
 					cursorStore: cursor,
-					commDbLeaseFactory: () => ({ db: borrowedDb, release }),
+					commDbLeaseFactory: acquire,
 					deliverAmbiguousToLead: handoff,
 					tryFounderShipApproval,
 					observeShipJudgmentReply,
@@ -675,8 +775,12 @@ describe("FLY-1392 v2 founder ingress", () => {
 				shipGates: [{ questionId: shipQuestionId }],
 				replyToCard: true,
 			});
-			expect(tryFounderShipApproval.mock.calls[0]?.[0].db).toBe(borrowedDb);
-			expect(release).toHaveBeenCalledOnce();
+			const scoped = tryFounderShipApproval.mock.calls[0]?.[0].db;
+			expect(scoped.getMessageById(shipQuestionId)).toEqual(
+				borrowedDb.getMessageById(shipQuestionId),
+			);
+			expect(acquire).toHaveBeenCalled();
+			expect(release).toHaveBeenCalledTimes(acquire.mock.calls.length);
 			expect(borrowedDb.getPendingQuestions("test-lead")).toHaveLength(2);
 			borrowedDb.close();
 			expect(handoff).not.toHaveBeenCalled();
@@ -1211,6 +1315,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 			db.close();
 			const borrowedDb = new CommDB(dbPath, false);
 			const release = vi.fn();
+			const acquire = vi.fn(() => ({ db: borrowedDb, release }));
 			const messageId = snowflakeAt(Date.now() - 10_000);
 			const reactToFounderMessage = vi.fn(async () => true);
 
@@ -1240,14 +1345,15 @@ describe("FLY-1392 v2 founder ingress", () => {
 						},
 					]),
 					cursorStore: cursor,
-					commDbLeaseFactory: () => ({ db: borrowedDb, release }),
+					commDbLeaseFactory: acquire,
 					deliverAmbiguousToLead: vi.fn(async () => true),
 					reactToFounderMessage,
 				},
 			);
 
 			expect(outcome.result).toBe("advanced");
-			expect(release).toHaveBeenCalledOnce();
+			expect(acquire).toHaveBeenCalled();
+			expect(release).toHaveBeenCalledTimes(acquire.mock.calls.length);
 			expect(reactToFounderMessage).toHaveBeenCalledWith(messageId);
 			expect(
 				JSON.parse(borrowedDb.getResponse(questionId)?.content ?? "{}"),

@@ -157,10 +157,6 @@ type ArchiveCursor = {
 	sourceIdentity: unknown;
 };
 
-const archiveCursors = new WeakMap<
-	BetterDb,
-	Partial<Record<TerminalArchiveTable, ArchiveCursor>>
->();
 const archiveStartTables = new WeakMap<BetterDb, TerminalArchiveTable>();
 
 type ArchivePolicy = {
@@ -180,6 +176,7 @@ type ActiveSnapshot = {
 };
 
 export type TerminalArchiveInput = {
+	observationStorageReady?: boolean;
 	now: string;
 	limit?: number;
 	activeExecutionIds?: readonly string[];
@@ -285,21 +282,29 @@ function sortedUnique(values: readonly unknown[]): string[] {
 function activeSnapshot(
 	db: BetterDb,
 	input: TerminalArchiveInput,
-): ActiveSnapshot {
+): ActiveSnapshot | null {
 	const sessions = db
 		.prepare(`SELECT execution_id,issue_id FROM sessions
-			WHERE status IN ('pending','running','ship_parked','awaiting_review','design_done','approved_to_ship')`)
+			WHERE status IN ('pending','running','ship_parked','awaiting_review','design_done','approved_to_ship') LIMIT 2001`)
 		.all() as Array<{ execution_id: string; issue_id: string }>;
 	const runs = db
 		.prepare(
-			"SELECT run_id,issue_id FROM workflow_run WHERE status IN ('active','held')",
+			"SELECT run_id,issue_id FROM workflow_run WHERE status IN ('active','held') LIMIT 2001",
 		)
 		.all() as Array<{ run_id: string; issue_id: string }>;
 	const nodes = db
 		.prepare(`SELECT node.execution_id FROM workflow_run_node node
 			JOIN workflow_run run ON run.run_id=node.run_id
-			WHERE run.status IN ('active','held') AND node.execution_id IS NOT NULL`)
+			WHERE run.status IN ('active','held') AND node.execution_id IS NOT NULL LIMIT 2001`)
 		.all() as Array<{ execution_id: string }>;
+	if (
+		sessions.length > 2000 ||
+		runs.length > 2000 ||
+		nodes.length > 2000 ||
+		(input.activeExecutionIds?.length ?? 0) > 2000 ||
+		(input.activeIssueIds?.length ?? 0) > 2000
+	)
+		return null;
 	const executionIds = sortedUnique([
 		...sessions.map(({ execution_id }) => execution_id),
 		...nodes.map(({ execution_id }) => execution_id),
@@ -310,6 +315,11 @@ function activeSnapshot(
 		...runs.map(({ issue_id }) => issue_id),
 		...(input.activeIssueIds ?? []),
 	]);
+	if (
+		new Set([...executionIds, ...issueIds, ...runs.map(({ run_id }) => run_id)])
+			.size > 2000
+	)
+		return null;
 	return {
 		executionIds,
 		issueIds,
@@ -353,6 +363,13 @@ function notActive(
 }
 
 export function installTerminalRowArchiveSchema(db: BetterDb): void {
+	db.exec(`CREATE TABLE IF NOT EXISTS workflow_terminal_archive_cursor (
+	 source_table TEXT PRIMARY KEY CHECK(source_table IN ('session_events','workflow_run_event','lead_events')),
+	 cycle_cutoff TEXT NOT NULL, source_time_jd REAL NOT NULL,
+	 source_identity INTEGER NOT NULL, cycle INTEGER NOT NULL CHECK(cycle>=1),
+	 completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)), updated_at TEXT NOT NULL
+	)`);
+
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS workflow_terminal_archive (
 			source_table TEXT NOT NULL CHECK(source_table IN ('session_events','workflow_run_event','lead_events')),
@@ -510,8 +527,18 @@ function policies(cutoff: string, active: ActiveSnapshot): ArchivePolicy[] {
 
 export type TerminalArchiveResult = {
 	archived: number;
+	scanned: number;
+	skipped: number;
 	byTable: Record<TerminalArchiveTable, number>;
 };
+
+interface PersistedArchiveCursor {
+	cycle_cutoff: string;
+	source_time_jd: number;
+	source_identity: number;
+	cycle: number;
+	completed: number;
+}
 
 export function archiveTerminalRows(
 	db: BetterDb,
@@ -523,76 +550,160 @@ export function archiveTerminalRows(
 		!Number.isSafeInteger(limit) ||
 		limit <= 0 ||
 		limit > MAX_TERMINAL_ARCHIVE_BATCH
-	) {
+	)
 		throw new Error("invalid_archive_limit");
-	}
 	const callDeadline = performance.now() + MAX_TERMINAL_ARCHIVE_DURATION_MS;
 	const cutoff = new Date(
 		Date.parse(input.now) - TERMINAL_ROW_RETENTION_MS,
 	).toISOString();
-	const nextCursors = { ...(archiveCursors.get(db) ?? {}) };
-	const eligiblePolicies = policies(cutoff, activeSnapshot(db, input)).filter(
-		(policy) => !input.sourceTable || policy.table === input.sourceTable,
+	const result: TerminalArchiveResult = {
+		archived: 0,
+		scanned: 0,
+		skipped: 0,
+		byTable: { session_events: 0, workflow_run_event: 0, lead_events: 0 },
+	};
+	const active = activeSnapshot(db, input);
+	if (!active) {
+		console.warn("[database-hygiene] active_snapshot_limit_exceeded");
+		return result;
+	}
+	const available = policies(cutoff, active).filter(
+		(p) => !input.sourceTable || p.table === input.sourceTable,
 	);
-	const startTable = !input.sourceTable
-		? archiveStartTables.get(db)
-		: undefined;
-	const startIndex = startTable
-		? eligiblePolicies.findIndex(({ table }) => table === startTable)
-		: 0;
-	const orderedPolicies =
-		startIndex > 0
-			? [
-					...eligiblePolicies.slice(startIndex),
-					...eligiblePolicies.slice(0, startIndex),
-				]
-			: eligiblePolicies;
-	let lastVisitedTable: TerminalArchiveTable | undefined;
-	const result = db
-		.transaction(() => {
-			let pages = 0;
-			const result: TerminalArchiveResult = {
-				archived: 0,
-				byTable: { session_events: 0, workflow_run_event: 0, lead_events: 0 },
-			};
-			archiveLoop: for (const policy of orderedPolicies) {
-				let cursor = nextCursors[policy.table];
-				while (result.archived < limit) {
-					const pageStartedAt = performance.now();
+	const start = input.sourceTable
+		? 0
+		: available.findIndex((p) => p.table === archiveStartTables.get(db));
+	const ordered =
+		start > 0
+			? [...available.slice(start), ...available.slice(0, start)]
+			: available;
+	let lastVisited: TerminalArchiveTable | undefined;
+	db.transaction(() => {
+		let pages = 0;
+		const observationTables =
+			input.observationStorageReady !== false &&
+			(
+				db
+					.prepare(
+						"SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('ship_judgment_observation_cursor','ship_judgment_observation_pending')",
+					)
+					.get() as { n: number }
+			).n === 2;
+		const observationCursor = observationTables
+			? (db
+					.prepare(
+						"SELECT last_event_id FROM ship_judgment_observation_cursor WHERE project_name='flywheel' AND source_kind='closeout'",
+					)
+					.get() as { last_event_id: number } | undefined)
+			: undefined;
+		const observationReady =
+			observationCursor !== undefined &&
+			Number.isSafeInteger(observationCursor.last_event_id) &&
+			observationCursor.last_event_id >= 0;
+		archiveLoop: for (const policy of ordered) {
+			let cursor = db
+				.prepare(
+					"SELECT * FROM workflow_terminal_archive_cursor WHERE source_table=?",
+				)
+				.get(policy.table) as PersistedArchiveCursor | undefined;
+			if (
+				cursor &&
+				(!Number.isFinite(cursor.source_time_jd) ||
+					!Number.isSafeInteger(cursor.source_identity) ||
+					!Number.isFinite(Date.parse(cursor.cycle_cutoff)) ||
+					!Number.isSafeInteger(cursor.cycle))
+			)
+				throw new Error("archive_cursor_invalid");
+			if (!cursor || cursor.completed)
+				cursor = {
+					cycle_cutoff: cutoff,
+					source_time_jd: -1e99,
+					source_identity: 0,
+					cycle: (cursor?.cycle ?? 0) + 1,
+					completed: 0,
+				};
+			while (result.archived < limit) {
+				const pageStarted = performance.now();
+				if (
+					pages >= MAX_TERMINAL_ARCHIVE_PAGES_PER_CALL ||
+					pageStarted + MAX_TERMINAL_ARCHIVE_PAGE_DURATION_MS > callDeadline
+				)
+					break archiveLoop;
+				pages++;
+				lastVisited = policy.table;
+				const deadline = pageStarted + MAX_TERMINAL_ARCHIVE_PAGE_DURATION_MS;
+				const types =
+					policy.table === "session_events"
+						? SESSION_EVENT_TYPES_SQL
+						: policy.table === "workflow_run_event"
+							? WORKFLOW_EVENT_TYPES_SQL
+							: LEAD_EVENT_TYPES_SQL;
+				const kind =
+					policy.table === "workflow_run_event" ? "kind" : "event_type";
+				const pageLimit = TERMINAL_ARCHIVE_SELECT_PAGE_SIZE;
+				const candidates = db
+					.prepare(`SELECT /* archive-candidates */ e.${policy.primaryKey} AS identity,julianday(e.${policy.timeColumn}) AS time_jd,length(CAST(e.payload AS BLOB)) AS payload_bytes
+ FROM ${policy.table} e INDEXED BY idx_${policy.table}_archive_keyset
+ WHERE e.${kind} IN (${types}) AND julianday(e.${policy.timeColumn})>=? AND julianday(e.${policy.timeColumn})<julianday(?)
+ AND (julianday(e.${policy.timeColumn}),e.${policy.primaryKey})>(?,?)
+ ORDER BY julianday(e.${policy.timeColumn}),e.${policy.primaryKey} LIMIT ?`)
+					.all(
+						cursor.source_time_jd,
+						cursor.cycle_cutoff,
+						cursor.source_time_jd,
+						cursor.source_identity,
+						pageLimit,
+					) as {
+					identity: number;
+					time_jd: number;
+					payload_bytes: number | null;
+				}[];
+				let inspected = 0,
+					bytes = 0;
+				for (const candidate of candidates) {
+					if (performance.now() >= deadline || result.archived >= limit) break;
+					const size = candidate.payload_bytes ?? 0;
+					if (size <= 65536 && bytes + size > 1024 * 1024) break;
+					let row: Record<string, unknown> | undefined;
+					if (size <= 65536) {
+						bytes += size;
+						const eligibility = policy.select(1);
+						const sql = eligibility.sql
+							.replace(/ INDEXED BY \w+/, "")
+							.replace(/WHERE /, `WHERE e.${policy.primaryKey}=? AND `);
+						row = db
+							.prepare(sql)
+							.get(
+								candidate.identity,
+								cursor.cycle_cutoff,
+								...eligibility.params.slice(1),
+							) as Record<string, unknown> | undefined;
+					}
 					if (
-						pages >= MAX_TERMINAL_ARCHIVE_PAGES_PER_CALL ||
-						pageStartedAt + MAX_TERMINAL_ARCHIVE_PAGE_DURATION_MS > callDeadline
+						row &&
+						policy.table === "session_events" &&
+						row.project_name === "flywheel" &&
+						row.source === "bridge.lifecycle-closeout" &&
+						row.event_type === "closeout_report"
 					) {
-						break archiveLoop;
+						if (
+							!observationReady ||
+							candidate.identity > observationCursor!.last_event_id ||
+							db
+								.prepare(
+									"SELECT 1 FROM ship_judgment_observation_pending WHERE project_name='flywheel' AND source_kind='closeout' AND source_id=?",
+								)
+								.get(String(candidate.identity))
+						)
+							row = undefined;
 					}
-					pages++;
-					lastVisitedTable = policy.table;
-					const pageDeadline =
-						pageStartedAt + MAX_TERMINAL_ARCHIVE_PAGE_DURATION_MS;
-					const pageLimit = Math.min(
-						TERMINAL_ARCHIVE_SELECT_PAGE_SIZE,
-						limit - result.archived,
-					);
-					const candidate = policy.select(pageLimit, cursor);
-					const rows = db
-						.prepare(candidate.sql)
-						.all(...candidate.params) as Array<Record<string, unknown>>;
-					if (rows.length === 0) {
-						if (cursor) {
-							cursor = undefined;
-							nextCursors[policy.table] = undefined;
-							if (performance.now() < pageDeadline) continue;
-						}
-						if (performance.now() >= pageDeadline) break archiveLoop;
-						break;
-					}
-					for (const row of rows) {
+					if (row) {
 						const sourceIdentity = String(row[policy.primaryKey]);
 						const rowJson = JSON.stringify(row);
 						const rowSha256 = digest(rowJson);
 						const existing = db
 							.prepare(`SELECT row_sha256 FROM workflow_terminal_archive
-							WHERE source_table=? AND source_identity=?`)
+				WHERE source_table=? AND source_identity=?`)
 							.get(policy.table, sourceIdentity) as
 							| { row_sha256: string }
 							| undefined;
@@ -603,8 +714,8 @@ export function archiveTerminalRows(
 						}
 						if (!existing) {
 							db.prepare(`INSERT INTO workflow_terminal_archive
-							(source_table,source_identity,source_created_at,archived_at,row_json,row_sha256)
-							VALUES(?,?,?,?,?,?)`).run(
+				(source_table,source_identity,source_created_at,archived_at,row_json,row_sha256)
+				VALUES(?,?,?,?,?,?)`).run(
 								policy.table,
 								sourceIdentity,
 								String(row[policy.timeColumn]),
@@ -625,34 +736,39 @@ export function archiveTerminalRows(
 						}
 						result.archived++;
 						result.byTable[policy.table]++;
-						cursor = {
-							sourceCreatedAt: String(row[policy.timeColumn]),
-							sourceIdentity: row[policy.primaryKey],
-						};
-						nextCursors[policy.table] = cursor;
 					}
-					if (
-						performance.now() >= pageDeadline ||
-						pages >= MAX_TERMINAL_ARCHIVE_PAGES_PER_CALL
-					) {
-						break archiveLoop;
-					}
-					if (rows.length < pageLimit) break;
+					result.scanned++;
+					if (!row) result.skipped++;
+					cursor.source_time_jd = candidate.time_jd;
+					cursor.source_identity = candidate.identity;
+					inspected++;
 				}
+				cursor.completed =
+					inspected === candidates.length && candidates.length < pageLimit
+						? 1
+						: 0;
+				db.prepare(`INSERT INTO workflow_terminal_archive_cursor(source_table,cycle_cutoff,source_time_jd,source_identity,cycle,completed,updated_at)
+ VALUES (?,?,?,?,?,?,?) ON CONFLICT(source_table) DO UPDATE SET cycle_cutoff=excluded.cycle_cutoff,source_time_jd=excluded.source_time_jd,source_identity=excluded.source_identity,cycle=excluded.cycle,completed=excluded.completed,updated_at=excluded.updated_at`).run(
+					policy.table,
+					cursor.cycle_cutoff,
+					cursor.source_time_jd,
+					cursor.source_identity,
+					cursor.cycle,
+					cursor.completed,
+					input.now,
+				);
+				if (cursor.completed || inspected < candidates.length) break;
 			}
-			return result;
-		})
-		.immediate();
-	archiveCursors.set(db, nextCursors);
-	if (!input.sourceTable && lastVisitedTable) {
-		const visitedIndex = TERMINAL_ARCHIVE_TABLES.indexOf(lastVisitedTable);
+		}
+	}).immediate();
+	if (!input.sourceTable && lastVisited)
 		archiveStartTables.set(
 			db,
 			TERMINAL_ARCHIVE_TABLES[
-				(visitedIndex + 1) % TERMINAL_ARCHIVE_TABLES.length
+				(TERMINAL_ARCHIVE_TABLES.indexOf(lastVisited) + 1) %
+					TERMINAL_ARCHIVE_TABLES.length
 			]!,
 		);
-	}
 	return result;
 }
 

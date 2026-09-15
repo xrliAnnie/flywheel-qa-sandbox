@@ -634,7 +634,7 @@
 			"disposition": "protect"
 		},
 		{
-			"file": "packages/teamlead/src/ship-judgment/outcomes.ts",
+			"file": "packages/teamlead/src/ship-judgment/observation-cursor.ts",
 			"relation": "session_events",
 			"baseTable": "session_events",
 			"usage": "read",

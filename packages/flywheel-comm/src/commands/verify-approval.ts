@@ -46,7 +46,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { crossFamilyReviewSatisfied } from "flywheel-config";
+import { crossFamilyReviewSatisfied, installSqlTiming } from "flywheel-config";
 import { CommDB } from "../db.js";
 import {
 	isTrustedApprovalAttribution,
@@ -154,10 +154,13 @@ export async function verifyApprovalWithBridgeHead(
 	const statePath = resolveStateDbPath(args.stateDbPath, env);
 	let approveQuestionId: string;
 	try {
-		const stateDb = new Database(statePath, {
-			readonly: true,
-			fileMustExist: true,
-		});
+		const stateDb = installSqlTiming(
+			new Database(statePath, {
+				readonly: true,
+				fileMustExist: true,
+			}),
+			"teamlead",
+		);
 		try {
 			const row = stateDb
 				.prepare(
@@ -329,10 +332,13 @@ function verifyBoundApproval(
 		| { required: true; runId: string }
 		| { required: true; invalid: true } = { required: false };
 	try {
-		const stateDb = new Database(statePath, {
-			readonly: true,
-			fileMustExist: true,
-		});
+		const stateDb = installSqlTiming(
+			new Database(statePath, {
+				readonly: true,
+				fileMustExist: true,
+			}),
+			"teamlead",
+		);
 		try {
 			row = stateDb
 				.prepare(

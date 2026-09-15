@@ -1033,6 +1033,15 @@
 		"src/lead-backends/codex/lead-actions/__tests__/send-guard.test.ts": 264,
 		"src/lead-backends/codex/lead-actions/__tests__/token-resolve.test.ts": 636,
 		"src/mailbox/__tests__/MailboxTransport.test.ts": 290,
-		"src/mailbox/__tests__/StructuredInboxRouter.test.ts": 3874
+		"src/mailbox/__tests__/StructuredInboxRouter.test.ts": 3874,
+		"src/ship-judgment/__tests__/observation-performance.test.ts": 37703
+	},
+	"additionalMeasurements": {
+		"src/ship-judgment/__tests__/observation-performance.test.ts": {
+			"sourceRun": 34943318979,
+			"sourceJob": 104296927883,
+			"sourceHead": "41965da9b6414d9a45bb45e47c0b9808aced31c6",
+			"measurement": "Single-fork step command 07:47:43.121 to first file completion 07:48:20.824 UTC; test execution 33066ms"
+		}
 	}
 }

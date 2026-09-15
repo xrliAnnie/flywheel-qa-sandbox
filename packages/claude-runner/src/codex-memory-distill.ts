@@ -1,3 +1,4 @@
+import { installSqlTiming } from "flywheel-config";
 /** FLY-2460: observe native memory without modifying Codex tables.
  * Read-only WAL connections may create SQLite -shm coordination files.
  */
@@ -48,11 +49,14 @@ function refreshReadBudget(
 }
 
 function openReadOnly(path: string, timeoutMs: number): Database.Database {
-	return new Database(path, {
-		readonly: true,
-		fileMustExist: true,
-		timeout: Math.min(5000, Math.max(0, Math.floor(timeoutMs))),
-	});
+	return installSqlTiming(
+		new Database(path, {
+			readonly: true,
+			fileMustExist: true,
+			timeout: Math.min(5000, Math.max(0, Math.floor(timeoutMs))),
+		}),
+		"codex-memory",
+	);
 }
 function exists(path: string): boolean {
 	try {
