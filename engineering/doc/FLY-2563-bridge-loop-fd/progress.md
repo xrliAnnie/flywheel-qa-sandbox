@@ -2,16 +2,16 @@
 issue: FLY-2563
 phase: implement
 phaseCursor: 0/7
-updated: 2026-09-15T03:16:46.494Z
-nextStep: "e0a5172f2 fd monitor/cache-only health: 8/8 and types green. Next
-  wire bridge_fd_pressure kind/owner/routedAlertSink durable receipts + boot
-  episode/recovery (core callbacks currently not bound), AlertChannelHub routing
-  tests. Native dev sample kernel unknown => F not passed. Then T5 timing, T3
-  remaining leases, T7 full/performance gates/review/PR."
+updated: 2026-09-15T03:22:46.935Z
+nextStep: "d986a3e17 fd unified routing/kind/owner/boot episode + fenced quiet
+  recovery: groups60/60 and65/65,types green. Next T5 installSqlTiming in
+  config, all StateStore/CommDB/raw/recovery opens and sync-op marker, timer
+  matrix; then T3 remaining leases and T7 full/performance gates/review/PR.
+  Production fd/health QA still pending."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2563 progress
 **phase**: implement (0/7)
-**next**: e0a5172f2 fd monitor/cache-only health: 8/8 and types green. Next wire bridge_fd_pressure kind/owner/routedAlertSink durable receipts + boot episode/recovery (core callbacks currently not bound), AlertChannelHub routing tests. Native dev sample kernel unknown => F not passed. Then T5 timing, T3 remaining leases, T7 full/performance gates/review/PR.
+**next**: d986a3e17 fd unified routing/kind/owner/boot episode + fenced quiet recovery: groups60/60 and65/65,types green. Next T5 installSqlTiming in config, all StateStore/CommDB/raw/recovery opens and sync-op marker, timer matrix; then T3 remaining leases and T7 full/performance gates/review/PR. Production fd/health QA still pending.
