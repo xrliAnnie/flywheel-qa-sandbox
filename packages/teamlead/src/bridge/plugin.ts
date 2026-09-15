@@ -428,6 +428,10 @@ import {
 } from "./flag-store-runtime.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
 import {
+	insertLeadInstruction,
+	readZombieCandidates,
+} from "./fleet-comm-operations.js";
+import {
 	defaultFleetConsoleOptions,
 	FleetConsole,
 	onlineFromPresentation,
@@ -13536,11 +13540,11 @@ export async function startBridge(
 		const projectName = leadProjectByAgentId.get(leadId);
 		if (!projectName) return false;
 		try {
-			new CommDB(commDbPathForProject(projectName)).insertInstruction(
-				"bridge",
+			insertLeadInstruction(
+				commDbPathForProject(projectName),
 				leadId,
 				content,
-				dedupeId ? { dedupeId } : undefined,
+				dedupeId,
 			);
 			return true;
 		} catch (err) {
@@ -13572,9 +13576,10 @@ export async function startBridge(
 		const findings: import("./zombie-scan.js").ZombieFinding[] = [];
 		for (const p of projects) {
 			try {
-				const rows = new CommDB(
+				const rows = readZombieCandidates(
 					commDbPathForProject(p.projectName),
-				).listSessions(p.projectName, ["running"]);
+					p.projectName,
+				);
 				findings.push(
 					...(await scanZombies({
 						commRunning: rows.map((r) => ({
