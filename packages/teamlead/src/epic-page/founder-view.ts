@@ -241,6 +241,11 @@ export function buildFounderView(page: EpicPage): FounderView {
 		const counts = countsCell.value?.counts ?? null;
 		const visible = members.filter(open).sort(childCompare);
 		if (
+			!(
+				root.state.type === "started" &&
+				root.intake?.value &&
+				root.intake.value.work_state !== "superseded"
+			) &&
 			(counts
 				? counts.live + counts.waiting + counts.free + counts.idle
 				: visible.length) === 0

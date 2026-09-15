@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2557 · Epic 自动入口设计</title><style>*{box-sizing:border-box}html{color-scheme:light}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}main{max-width:980px;padding:38px 20px 80px;margin:auto}.eyebrow{font-size:12px;letter-spacing:.12em;color:#687181;margin:0 8px 14px}h1{font-size:clamp(30px,5vw,46px);line-height:1.2;margin:0 8px 30px;letter-spacing:-.035em}h2{font-size:22px;line-height:1.35;margin:0 0 20px;color:#203553}.card{padding:30px;background:white;border:1px solid #e8e9ee;border-radius:18px;margin:18px 0;box-shadow:0 3px 14px #15203805}.lead{font-size:23px;line-height:1.55}.note,small{font-size:13px;color:#687181}p{margin:12px 0}.comment{border-top:1px solid #e8e9ee;margin-top:24px;padding-top:15px}label{font-size:13px;color:#687181;display:block;margin-bottom:7px}textarea{width:100%;min-height:75px;border:1px solid #d9dde5;border-radius:10px;background:#fbfbfd;padding:12px;font:inherit;resize:vertical}textarea:focus{outline:2px solid #87b8ff;outline-offset:2px}small{display:block;min-height:22px}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:15px}th,td{text-align:left;vertical-align:top;padding:12px 10px;border-bottom:1px solid #e8e9ee;overflow-wrap:anywhere}th:first-child{width:35%}th{font-size:13px;color:#687181}ol{padding-left:22px}li{padding:4px 0}.pending{border:1px dashed #cca154;background:#fffaf0;border-radius:12px;padding:22px;margin:12px 0}.pending strong{font-size:13px;letter-spacing:.04em;color:#835b15}.pending p{font-size:14px}summary{cursor:pointer;color:#315e96}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f7f8fa;border-radius:9px;padding:15px;font:13px/1.65 ui-monospace,monospace}svg{max-width:100%;height:auto}button{border:0;background:#0071e3;color:#fff;border-radius:9px;padding:11px 17px;font:inherit;font-size:14px;cursor:pointer;margin:7px 10px 4px 0}button:focus-visible{outline:3px solid #87b8ff;outline-offset:2px}#copy-status{font-size:13px;color:#687181}.chunk{margin:12px 0}@media(max-width:600px){main{padding:24px 12px 50px}.card{padding:20px 16px}h2{font-size:19px}.lead{font-size:20px}th,td{padding:9px 6px}table{font-size:14px}}</style></head><body><main><p class="eyebrow">FLYWHEEL / ENGINEERING DESIGN</p><h1>状态一改，工作就接起来。</h1><section class="card" id="summary"><h2>01 / 把 In Progress 变成真正的派工入口</h2><p class="lead">你把 Epic 放进 In Progress，Lead 就会收到、拆解、补依赖并按容量推进，不必再口头派一次。</p><p>Epic 是一组工作的父单。Lead 是该项目负责安排和推进工作的负责人。Bridge 是负责收集状态、保存通知并把它交给负责人的调度服务。</p><p class="note">设计说明 · FLY-2557 · 2026-09-14 · <span id="design-status">正式设计评审已通过 · R2 APPROVED</span></p><div class="comment"><label for="c-summary">对这一节的意见</label><textarea id="c-summary" data-comment="summary" data-title="01 / 把 In Progress 变成真正的派工入口" placeholder="写下你的意见，自动保存在此浏览器"></textarea><small data-save-for="summary" aria-live="polite"></small></div></section><section class="card" id="flow"><h2>02 / 从改状态，到工作开始</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形进程被系统权限限制，两次本地渲染均未成功。下方保留原始图稿，未使用远程绘图。</p></div><details><summary>查看 Mermaid 图稿（流程图的文字源文件）</summary><pre>flowchart TB
+  A[把 Epic 设为 In Progress] --&gt; B[现有时钟 每项目约30秒检查]
+  B --&gt; C{项目部门匹配 且有子单或未被系统派发}
+  C --&gt;|否| X[保留原因 不投错人]
+  C --&gt;|是| D[保存本次开始与待处理通知]
+  D --&gt; E[Lead 收件确认]
+  D --&gt; F[固定页立即显示待拆解]
+  E --&gt; G{已有子单或首次补收}
+  G --&gt;|是| H[核已有工作与依赖]
+  G --&gt;|否| I[Lead 判断并拆子单]
+  H --&gt; J[核第一批 回 Epic 对话串]
+  I --&gt; J
+  J --&gt; K[记录处理结果 按容量推进]
+</pre></details><p>入口每项目约 30 秒检查一次，复用已有时钟。只接收没有父单、项目与部门标签唯一匹配，而且已有子单或从未被本项目系统派发的 Epic。已有子单的 Epic 即使曾运行过单项任务，也仍会接收。保存通知的同时，固定页准备显示这张 Epic。</p><p>Lead 确认收件后，最迟下一巡检周期完成拆解或核对已有子单、补依赖关系、核第一批工作，再回到这张 Epic 的对话串说明结果。</p><div class="comment"><label for="c-flow">对这一节的意见</label><textarea id="c-flow" data-comment="flow" data-title="02 / 从改状态，到工作开始" placeholder="写下你的意见，自动保存在此浏览器"></textarea><small data-save-for="flow" aria-live="polite"></small></div></section><section class="card" id="data"><h2>03 / 一次开始，两种收据</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形进程被系统权限限制，两次本地渲染均未成功。下方保留原始图稿，未使用远程绘图。</p></div><details><summary>查看 Mermaid 图稿（流程图的文字源文件）</summary><pre>erDiagram
+  EPIC ||--o{ START_EPISODE : &quot;每次重新开始&quot;
+  START_EPISODE ||--|| NOTICE : &quot;固定一条通知&quot;
+  NOTICE ||--|| INBOX_RECEIPT : &quot;收件确认&quot;
+  START_EPISODE ||--|| WORK_RESULT : &quot;处理结果&quot;
+  EPIC ||--o{ CHILD_ISSUE : &quot;Lead拆成子单&quot;
+  EPIC {
+    string uuid &quot;不随标题变化的身份&quot;
+    string department &quot;归属部门&quot;
+  }
+  START_EPISODE {
+    string uid &quot;Epic身份加本次开始时间&quot;
+    string intakeAt &quot;首次收件时间&quot;
+    string owner &quot;固定负责Lead&quot;
+    boolean backfill &quot;是否首次补收&quot;
+  }
+  INBOX_RECEIPT {
+    string ackedAt &quot;Lead确认收到时间&quot;
+  }
+  WORK_RESULT {
+    string state &quot;待办或完成或待回答&quot;
+    string threadReceipt &quot;回帖凭据&quot;
+  }
+</pre></details><p><b>每次重新开始都有自己的编号：</b>父单的固定身份，加这次进入 In Progress 的时间。改标题、重扫或重启，都沿用原编号。</p><table><thead><tr><th>记录</th><th>能证明什么</th></tr></thead><tbody><tr><td>开始记录</td><td>这张 Epic 在这个时刻进入了本次工作阶段。</td></tr><tr><td>ACK（收件确认）</td><td>Lead 已处理通知；尚未完成的业务仍留在巡检待办。</td></tr><tr><td>处理结果和回帖凭据</td><td>Lead 已核子单、依赖与首批工作，并说明还有什么需要你决定。</td></tr></tbody></table><div class="comment"><label for="c-data">对这一节的意见</label><textarea id="c-data" data-comment="data" data-title="03 / 一次开始，两种收据" placeholder="写下你的意见，自动保存在此浏览器"></textarea><small data-save-for="data" aria-live="polite"></small></div></section><section class="card" id="states"><h2>04 / 重复、往返和首次上线</h2><table><thead><tr><th>你做的操作</th><th>系统怎么处理</th></tr></thead><tbody><tr><td>第一次进入 In Progress</td><td>保存一条通知；还没子单就显示「待拆解（intake 于 时间）」。intake 指这次正式收件。</td></tr><tr><td>再次设置同一个状态，或修改标题</td><td>不增加通知。</td></tr><tr><td>回 Backlog，再进 In Progress</td><td>新的一次开始，增加一条新通知。</td></tr><tr><td>没有部门标签、有父单、归属冲突，或没有子单但已经被系统派发过</td><td>不作为 Epic 投给 Lead，保留原因。</td></tr><tr><td>直接完成或取消</td><td>不生成入口通知。</td></tr><tr><td>功能首次上线时已经在做</td><td>补收一次；只核依赖并回帖，不重新拆已有工作。</td></tr></tbody></table><p>开始时间取 Linear 的逐次状态记录；不拿每轮扫描时间替代。项目或标签改变后，旧通知不会自动转投另一位负责人。</p><div class="comment"><label for="c-states">对这一节的意见</label><textarea id="c-states" data-comment="states" data-title="04 / 重复、往返和首次上线" placeholder="写下你的意见，自动保存在此浏览器"></textarea><small data-save-for="states" aria-live="polite"></small></div></section><section class="card" id="lead"><h2>05 / 收到之后，Lead 必须把账接起来</h2><ol><li>读 Epic 全文与子单，确认仍在本次工作阶段。</li><li>没有子单才判断如何拆；已有子单就补齐依赖账本。依赖账本写明哪些工作要先完成。</li><li>核对第一批可以开始的工作，回 Epic 对话串：「拆成 N 张，第一批 M 张，缺什么要你拍」。</li><li>保存处理结果，再按容量拉活；重启后从已创建的子单、依赖和回帖继续。</li></ol><p>首次补收的空 Epic 仍会显示待拆解，Lead 回一行并决定下一步；不会仅因零子单就自动向你提出待回答问题。通知已确认、工作未做完时，下一轮巡检仍会列出它。</p><div class="comment"><label for="c-lead">对这一节的意见</label><textarea id="c-lead" data-comment="lead" data-title="05 / 收到之后，Lead 必须把账接起来" placeholder="写下你的意见，自动保存在此浏览器"></textarea><small data-save-for="lead" aria-live="polite"></small></div></section><section class="card" id="choices"><h2>06 / 取舍与边界</h2><table><thead><tr><th>选择</th><th>理由</th></tr></thead><tbody><tr><td>已有时钟检查</td><td>Bridge 当前没有 Linear 状态推送绑定；不新增另一套定时器。</td></tr><tr><td>复用同一页面生成器</td><td>固定页与巡检对同一个 Epic 使用一致的来源。</td></tr><tr><td>空 Epic 单独列为待处理</td><td>不会把它算成已经可开工的子单，也不会因零子单而误报完成。</td></tr><tr><td>Lead 负责拆解判断</td><td>Bridge 只负责可靠入口，子单内容和顺序仍由负责人决定。</td></tr></tbody></table><p><b>本次不改变：</b>依赖账本的含义、其它单的 founder 审批、合并授权与部署流程。页面沿用 FLY-2553 的简洁卡片，不恢复旧的重复段落。</p><div class="comment"><label for="c-choices">对这一节的意见</label><textarea id="c-choices" data-comment="choices" data-title="06 / 取舍与边界" placeholder="写下你的意见，自动保存在此浏览器"></textarea><small data-save-for="choices" aria-live="polite"></small></div></section><section class="card" id="evidence"><h2>07 / 怎样知道它真的做到了</h2><p><b>功能验收：</b>用独立测试项目、测试频道和测试 Epic，改状态后 60 秒内产生恰一条通知并被 Lead 确认；再测重复状态、快速往返、错误标签与重启恢复。</p><p><b>可见结果：</b>没有子单的 Epic 立即入页；下一巡检周期有处理结果与对话串回帖；已有子单不重复创建。</p><p><b>目前证据：</b>仓库与 Linear 状态结构已只读核对。正式设计评审已通过，非阻塞建议已交 Lead 安排后续。本文交付技术设计；功能尚未实现，测试项目端到端和浏览器视觉验收留给实施、QA 阶段。图稿的本地渲染限制已在相应卡片明示。</p><div class="comment"><label for="c-evidence">对这一节的意见</label><textarea id="c-evidence" data-comment="evidence" data-title="07 / 怎样知道它真的做到了" placeholder="写下你的意见，自动保存在此浏览器"></textarea><small data-save-for="evidence" aria-live="polite"></small></div></section><section class="card" id="comments"><h2>08 / 复制页面意见</h2><p>每节意见会在下面实时汇总。长意见拆成每段不超过约 1800 字的内容，可以逐段复制；「复制全部」会包含所有段。</p><p class="note">「【页面意见汇总】FLY-2557」是修改意见标记，不是通过或批准信号。意见仅存于此浏览器，复制后发给 Lead。</p><div id="comment-chunks"></div><button type="button" id="copy-all">复制全部意见</button><span id="copy-status" role="status" aria-live="polite"></span><div class="comment"><label for="c-comments">对这一节的意见</label><textarea id="c-comments" data-comment="comments" data-title="08 / 复制页面意见" placeholder="写下你的意见，自动保存在此浏览器"></textarea><small data-save-for="comments" aria-live="polite"></small></div></section></main><script nonce="__CSP_NONCE__">(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2557';
+  const prefix = 'flywheel:FLY-2557:comments:' + location.pathname + ':';
+  const fields = Array.from(document.querySelectorAll('textarea[data-comment]'));
+  const box = document.getElementById('comment-chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  async function copy(text) {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(text);
+      status.textContent = '已复制';
+      return;
+    } catch (_) {
+      const temp = document.createElement('textarea');
+      temp.value = text;
+      temp.style.position = 'fixed';
+      temp.style.opacity = '0';
+      document.body.appendChild(temp);
+      temp.select();
+      try { status.textContent = document.execCommand('copy') ? '已复制' : '复制失败，请手动选取下方文字'; }
+      catch (_) { status.textContent = '复制失败，请手动选取下方文字'; }
+      finally { temp.remove(); }
+    }
+  }
+  function refresh() {
+    chunks = [];
+    for (const field of fields) {
+      const value = field.value.trim();
+      if (!value) continue;
+      const header = marker + '\n' + field.dataset.title + '\n';
+      let chunk = header;
+      for (const char of Array.from(value)) {
+        if (chunk.length + char.length > 1800) { chunks.push(chunk); chunk = header; }
+        chunk += char;
+      }
+      chunks.push(chunk);
+    }
+    if (!chunks.length) chunks = [marker + '\n（暂无意见）'];
+    box.replaceChildren();
+    chunks.forEach((text, index) => {
+      const div = document.createElement('div'); div.className = 'chunk';
+      const pre = document.createElement('pre'); pre.textContent = text;
+      const button = document.createElement('button'); button.type = 'button';
+      button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => copy(text));
+      div.appendChild(pre); div.appendChild(button); box.appendChild(div);
+    });
+  }
+  for (const field of fields) {
+    const saved = document.querySelector('[data-save-for="' + field.dataset.comment + '"]');
+    try { field.value = localStorage.getItem(prefix + field.dataset.comment) || ''; }
+    catch (_) { saved.textContent = '本地保存不可用，仍可复制'; }
+    field.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + field.dataset.comment, field.value); saved.textContent = '已保存在此浏览器'; }
+      catch (_) { saved.textContent = '本地保存不可用，仍可复制'; }
+      refresh();
+    });
+  }
+  document.getElementById('copy-all').addEventListener('click', () => copy(chunks.join('\n\n')));
+  refresh();
+})();</script></body></html>

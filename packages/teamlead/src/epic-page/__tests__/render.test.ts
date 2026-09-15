@@ -738,7 +738,7 @@ it("marks scope.v2 and counts.v1 as founder-decided, with HTML root counts", () 
 	const document = page();
 	for (const render of [renderEpicPageHtml, renderEpicPageMarkdown]) {
 		const output = render(document, EPIC_SHAPE_NOW);
-		expect(output).toContain("已获 founder 裁定的规则 scope.v2");
+		expect(output).toContain("已获 founder 裁定的规则 scope.v3");
 		expect(output).not.toContain("规则 scope.v1");
 		if (render === renderEpicPageHtml)
 			expect(output).toContain('data-cell="/header/root_counts/0"');

@@ -379,7 +379,8 @@ async function runLeadPatrolTickPass(
 					if (
 						!emptyRosterEpic ||
 						emptyRosterEpic.kind !== "available" ||
-						emptyRosterEpic.remainingForLead === 0
+						(emptyRosterEpic.remainingForLead === 0 &&
+							(emptyRosterEpic.pendingIntakeForLeadTotal ?? 0) === 0)
 					) {
 						emptySlotSeen.set(emptySlotKey, currentScheduledAt);
 						failures.succeeded(project.projectName, lead.agentId);

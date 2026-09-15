@@ -1,3 +1,4 @@
+import type { EpicIntakeRecord } from "../bridge/epic-intake-store.js";
 import type { LinearActiveScopeSnapshot } from "../bridge/linear-epic-query.js";
 import { type EpicPage, SIGNAL_KINDS, type SignalKind } from "./model.js";
 import { isSchedulable } from "./rules.js";
@@ -11,6 +12,14 @@ export interface EpicResidualOwner {
 }
 
 export interface EpicResidualAvailable {
+	pendingIntakeForLead?: Array<{
+		eventUid: string;
+		identifier: string;
+		intakeAt: string;
+		backfill: boolean;
+		workState: "pending" | "needs_founder";
+	}>;
+	pendingIntakeForLeadTotal?: number;
 	schemaVersion: 1;
 	kind: "available";
 	generatedAt: string;
@@ -119,6 +128,33 @@ export function assertEpicResidualFact(
 	if (value.rule !== "ready.v1") invalid("/rule");
 	if (!isTimestamp(value.generatedAt)) invalid("/generatedAt");
 	if (!isTimestamp(value.linearObservedAt)) invalid("/linearObservedAt");
+
+	const pending = value.pendingIntakeForLead ?? [];
+	const pendingTotal = value.pendingIntakeForLeadTotal ?? 0;
+	if (
+		!Array.isArray(pending) ||
+		!isNonNegativeSafeInteger(pendingTotal) ||
+		pending.length > 5 ||
+		pending.length > (pendingTotal as number)
+	)
+		invalid("/pendingIntakeForLead");
+	const intakeIds = new Set<string>();
+	for (const item of pending) {
+		if (
+			!isRecord(item) ||
+			typeof item.eventUid !== "string" ||
+			!/^epic_intake:[^:\s]+:\d{4}-/.test(item.eventUid) ||
+			!isTimestamp(item.eventUid.slice(item.eventUid.indexOf(":", 12) + 1)) ||
+			intakeIds.has(item.eventUid) ||
+			typeof item.identifier !== "string" ||
+			!/^[A-Za-z][A-Za-z0-9]*-\d+$/.test(item.identifier) ||
+			!isTimestamp(item.intakeAt) ||
+			typeof item.backfill !== "boolean" ||
+			!["pending", "needs_founder"].includes(String(item.workState))
+		)
+			invalid("/pendingIntakeForLead");
+		intakeIds.add(item.eventUid as string);
+	}
 
 	const countFields = [
 		"roots",
@@ -231,6 +267,7 @@ export class EpicResidualSessionUnreadableError extends Error {
 }
 
 export function summarizeEpicResidual(input: {
+	pendingIntakes?: EpicIntakeRecord[];
 	materialized: MaterializedEpicScope;
 	leadId: string;
 	resolveOwner: (labels: string[]) => EpicResidualOwner;
@@ -309,7 +346,39 @@ export function summarizeEpicResidual(input: {
 		});
 	}
 
+	const pending = (input.pendingIntakes ?? [])
+		.filter(
+			(row) =>
+				row.projectName === page.key.project_name &&
+				row.leadId === input.leadId &&
+				row.active &&
+				["pending", "needs_founder"].includes(row.workState) &&
+				snapshot.roots.some(
+					(root) =>
+						root.id === row.issueUuid &&
+						root.startedAt === row.startedAt &&
+						root.state.type === "started",
+				),
+		)
+		.sort(
+			(a, b) =>
+				a.intakeAt.localeCompare(b.intakeAt) ||
+				a.identifier.localeCompare(b.identifier),
+		);
+
 	const fact: EpicResidualAvailable = {
+		...(input.pendingIntakes !== undefined
+			? {
+					pendingIntakeForLeadTotal: pending.length,
+					pendingIntakeForLead: pending.slice(0, 5).map((row) => ({
+						eventUid: row.eventUid,
+						identifier: row.identifier,
+						intakeAt: row.intakeAt,
+						backfill: row.backfill,
+						workState: row.workState as "pending" | "needs_founder",
+					})),
+				}
+			: {}),
 		schemaVersion: 1,
 		kind: "available",
 		generatedAt: page.generated_at,

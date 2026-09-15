@@ -1,0 +1,23 @@
+erDiagram
+  EPIC ||--o{ START_EPISODE : "每次重新开始"
+  START_EPISODE ||--|| NOTICE : "固定一条通知"
+  NOTICE ||--|| INBOX_RECEIPT : "收件确认"
+  START_EPISODE ||--|| WORK_RESULT : "处理结果"
+  EPIC ||--o{ CHILD_ISSUE : "Lead拆成子单"
+  EPIC {
+    string uuid "不随标题变化的身份"
+    string department "归属部门"
+  }
+  START_EPISODE {
+    string uid "Epic身份加本次开始时间"
+    string intakeAt "首次收件时间"
+    string owner "固定负责Lead"
+    boolean backfill "是否首次补收"
+  }
+  INBOX_RECEIPT {
+    string ackedAt "Lead确认收到时间"
+  }
+  WORK_RESULT {
+    string state "待办或完成或待回答"
+    string threadReceipt "回帖凭据"
+  }

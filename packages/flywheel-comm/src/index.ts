@@ -27,6 +27,7 @@ import {
 	parseDuration,
 } from "./commands/declare-state.js";
 import { runDependency } from "./commands/dependency.js";
+import { runEpicIntake } from "./commands/epic-intake.js";
 import { runEpicPage } from "./commands/epic-page.js";
 import { runEvidenceRunCommand } from "./commands/evidence-run.js";
 import { runFeatureFlags } from "./commands/feature-flags.js";
@@ -446,6 +447,9 @@ async function main(): Promise<void> {
 			break;
 		case "dependency":
 			process.exitCode = await runDependency(commandArgs);
+			break;
+		case "epic-intake":
+			process.exitCode = await runEpicIntake(commandArgs);
 			break;
 		case "lead-note":
 			process.exitCode = await runLeadNote(commandArgs);

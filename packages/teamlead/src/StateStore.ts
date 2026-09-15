@@ -1,3 +1,5 @@
+import { epicIntakeResultSchema, type EpicIntakeResult } from "./bridge/epic-intake-result.js";
+import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import { assertPercentageModelAssignment } from "./workflow-model-assignment.js";
 import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
 import { migrateEvidenceLedger } from "./ship-judgment/evidence-migration.js";
@@ -2406,6 +2408,7 @@ export const EPIC_PAGE_REFRESH_OUTCOMES = [
 	"transient: publish_failed:credentials",
 	"transient: publish_failed:publication",
 	"structural: epic_html_too_large",
+	"structural: intake_not_refreshable",
 	"skipped: project_unbound",
 	"skipped: linear_not_configured",
 	...EPIC_RESIDUAL_UNAVAILABLE_TOKENS,
@@ -6655,6 +6658,7 @@ export class StateStore {
 		);
 
 		// GEO-195: Event journal for lead runtime delivery tracking
+		migrateEpicIntakes(this.db.raw);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS lead_events (
 				seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20443,6 +20447,67 @@ export class StateStore {
 
 	// --- GEO-195: Lead Event Journal ---
 
+	listEpicIntakes(projectName: string): EpicIntakeRecord[] {
+		return (this.db.raw.prepare("SELECT event_uid FROM epic_intakes WHERE project_name=? ORDER BY started_at,event_uid").all(projectName) as Array<{event_uid: string}>).map(row => readEpicIntake(this.db.raw, row.event_uid)!);
+	}
+
+	resolveEpicIntake(expected: EpicIntakeRecord, evidence: EpicIntakeResult, now: string): EpicIntakeRecord {
+		const result = epicIntakeResultSchema.parse(evidence);
+		if (!Number.isFinite(Date.parse(now))) throw new Error("Invalid intake resolution time");
+		return this.db.raw.transaction(() => {
+			const current = readEpicIntake(this.db.raw, expected.eventUid);
+			if (!current || current.projectName !== expected.projectName || current.leadId !== expected.leadId) throw new Error("intake_owner_conflict");
+			if (JSON.stringify(current.result) === JSON.stringify(result)) return current;
+			if (current.active !== expected.active || current.observedAt !== expected.observedAt || current.workState !== expected.workState ||
+				(current.workState !== "pending" && !(current.workState === "needs_founder" && result.outcome !== "needs_founder")) ||
+				(current.active === (result.outcome === "superseded"))) throw new Error("intake_resolution_conflict");
+			this.db.raw.prepare("UPDATE epic_intakes SET work_state=?,result_json=?,observed_at=?,page_dirty=1 WHERE event_uid=?")
+				.run(result.outcome, JSON.stringify(result), now, expected.eventUid);
+			return readEpicIntake(this.db.raw, expected.eventUid)!;
+		})();
+	}
+
+ getEpicIntakeRefreshState(projectName: string) {
+  return readEpicIntakeRefreshState(this.db.raw, projectName);
+ }
+ recordEpicIntakeRefreshResult(projectName: string, successful: boolean, at: string) {
+  return recordEpicIntakeRefreshResult(this.db.raw, projectName, successful, at);
+ }
+
+	clearPublishedEpicIntakes(records: EpicIntakeRecord[]): void {
+		this.db.raw.transaction(() => {
+			const update = this.db.raw.prepare("UPDATE epic_intakes SET page_dirty=0 WHERE event_uid=? AND project_name=? AND observed_at=? AND active=? AND work_state=? AND COALESCE(result_json,'null')=?");
+			for (const row of records) update.run(row.eventUid, row.projectName, row.observedAt, Number(row.active), row.workState, JSON.stringify(row.result));
+		})();
+	}
+
+
+ markEpicIntakePageDirty(eventUid: string, observedAt: string): void {
+  this.db.raw.prepare("UPDATE epic_intakes SET page_dirty=1,observed_at=? WHERE event_uid=? AND observed_at<=?").run(observedAt,eventUid,observedAt);
+ }
+
+	setEpicIntakeActive(eventUid: string, active: boolean, observedAt: string): void {
+		this.db.raw.prepare("UPDATE epic_intakes SET active=?,observed_at=?,page_dirty=1 WHERE event_uid=? AND active!=? AND observed_at<=? AND (?=0 OR work_state IN ('pending','needs_founder'))").run(Number(active),observedAt,eventUid,Number(active),observedAt,Number(active));
+	}
+
+	hasEpicDispatchRecord(projectName: string, issueUuid: string, identifier: string): boolean {
+		return hasEpicDispatchRecord(this.db.raw, projectName, issueUuid, identifier);
+	}
+
+	beginEpicIntakeScan(projectName: string, startedAt: string): EpicIntakeScan {
+		return beginEpicIntakeScan(this.db.raw, projectName, startedAt);
+	}
+
+	completeEpicIntakeScan(projectName: string, startedAt: string): void {
+		completeEpicIntakeScan(this.db.raw, projectName, startedAt);
+	}
+
+	recordEpicIntake(input: EpicIntakeInput): EpicIntakeRecord | null {
+		return recordEpicIntake(this.db.raw, input,
+			() => this.hasEpicDispatchRecord(input.projectName, input.issueUuid, input.identifier),
+			(...args) => this.appendLeadEvent(...args));
+	}
+
 	/** Append a lead event. Returns seq. Dedup on (lead_id, event_id). */
 	appendLeadEvent(
 		leadId: string,
@@ -20774,6 +20839,10 @@ export class StateStore {
 		return rows.length > 0 && (rows[0]?.values?.length ?? 0) > 0;
 	}
 
+	hasArchivedLeadEvent(leadId: string, eventId: string): boolean {
+		return Boolean(findArchivedTerminalRow(this.db.raw, "lead_events", [leadId, eventId]));
+	}
+
 	/** Delivery policy survives hot-row retention; an archive is not a fresh event. */
 	isLeadEventAuditOnly(seq: number, leadId: string): boolean {
 		let row: Record<string, unknown> | undefined = this.db.raw.prepare("SELECT lead_id,delivery_disposition FROM lead_events WHERE seq=?").get(seq) as Record<string, unknown> | undefined;
@@ -20947,8 +21016,10 @@ export class StateStore {
 				    AND lead_id = ?
 				    AND json_valid(payload) = 1
 				    AND json_extract(payload, '$.project_name') = ?
+				    AND NOT EXISTS (SELECT 1 FROM legacy_cutover_quarantine q WHERE q.seq=lead_events.seq)
 				    AND event_type IN (
 				      'workflow_replacement_eligibility',
+				      'epic_intake',
 				      'workflow_claim_recorded'
 				    )
 				  ORDER BY seq ASC LIMIT ?`,

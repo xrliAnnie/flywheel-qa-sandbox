@@ -26,6 +26,7 @@ import type { EpicPageItemSignals } from "./signals.js";
 export const MAX_EPIC_SCOPE_ITEMS = 500;
 
 export interface MaterializeEpicPageDeps {
+	readIntakes?: (projectName: string) => GenerateEpicPageInput["intakes"];
 	readChildThreads?: (
 		projectName: string,
 		items: LinearActiveScopeSnapshot["items"],
@@ -138,6 +139,7 @@ export async function materializeEpicPage(
 			generatedAt,
 		),
 		leadNotes,
+		intakes: deps.readIntakes?.(input.projectName),
 		leadNoteFadeDays: input.leadNoteFadeDays,
 		snapshot,
 		attention,

@@ -33,15 +33,15 @@
 		},
 		{
 			"id": "runner-patrol-rules.md",
-			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence.",
+			"rationale": "FLY-2557 section 0.11 is byte-identical in current ON and legacy OFF patrol sources. Lead ruling e1eff36e authorizes adding this shared intake duty to OFF while preserving every byte of its previous text. Both modes now contain intake identity, ACK versus pending, backfill, decomposition, dependency ledger, thread receipts and resolve, and both transports deliver the same intake event instructions. The savings switch continues selecting shortened versus historical patrol procedures; it no longer removes section 0.11. Capture command: python3 engineering/doc/FLY-2567-lead-token-savings/capture-legacy-bundle.py --intake-overlay engineering/doc/FLY-2557-epic-intake/approved-intake-section.txt. The script pins overlay SHA256 24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6; OFF patrol source evolves from a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c to f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc. Two captures produce byte-identical source and bundle goldens; an unapproved overlay is rejected before writes.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
-					"sha256": "4c2cf85f6101852572c67b4ac0d1e40be36e0682c096981b7732a1243a058b20"
+					"sha256": "e8ea07896184a149e642223adb4ec9fd86fd83f50d7f20dfa35e680950fec885"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c"
+					"sha256": "f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc"
 				}
 			]
 		},
@@ -61,7 +61,7 @@
 		},
 		{
 			"id": "patrol-runbook",
-			"rationale": "ON moves operational recipes to this runbook; OFF retains inline recipes. Shared procedure corrections require checking both copies.",
+			"rationale": "ON moves operational recipes to this runbook; OFF retains the prior inline recipes byte-for-byte. FLY-2557 adds only the identical approved section 0.11 intake duty to the OFF patrol source under ruling e1eff36e, matching current ON rules. The runbook recipes and existing OFF operational procedures are unchanged.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/runbooks/patrol-v1.md",
@@ -69,13 +69,13 @@
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c"
+					"sha256": "f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc"
 				}
 			]
 		},
 		{
 			"id": "bootstrap-generator",
-			"rationale": "ON pages and classifies pending work; OFF preserves historical unpaged ordering and payload. The independent historical fixture verifies OFF behavior. Fixture import order/whitespace is Biome-normalized; the independent oracle normalizes only imports before checking the historical digest, leaving implementation bytes exact.",
+			"rationale": "ON pages and classifies pending work; OFF preserves historical unpaged ordering and payload, checked by the independent generator oracle. Comparing db.ts baseline 4d266490b with the merged source shows SQL timing and openExistingWriter additions plus FLY-2553 attention selection: reports and ended ordinary asks are excluded before pagination, founder gates retained, and spilled/personal-recipient questions classified explicitly. These shared attention/database changes are not the token-savings switch; getPendingQuestions pagination and the ON/OFF bootstrap generator implementations are unchanged by that diff. The legacy generator fixture remains pinned; this refresh accepts only the reviewed shared db.ts dependency bytes.",
 			"members": [
 				{
 					"path": "packages/teamlead/src/bridge/bootstrap-generator.ts",
@@ -87,13 +87,13 @@
 				},
 				{
 					"path": "packages/flywheel-comm/src/db.ts",
-					"sha256": "bd8d421513642771535bfc3840092c3c1796c75674391c3e016c4b111c0e106e"
+					"sha256": "27860a89041cb05e8a96bced3bf4eeb38c7ec16b0446de9b1d1bfa87f4e3f606"
 				}
 			]
 		},
 		{
 			"id": "bootstrap-format",
-			"rationale": "ON bounds rendering; OFF preserves complete historical bytes. Both transports must retain the same selector.",
+			"rationale": "FLY-2557 adds an epic_intake branch to both MailboxLeadRuntime and CommDBLeadRuntime; each calls the same formatEpicIntake before other event branches, independently of the token-savings switch. Existing bootstrap-format ON bounds, historical OFF bytes and the shared bootstrap selector are unchanged. Both transports therefore receive the same new intake identity, backfill, ledger/thread and resolve instructions without changing bootstrap formatting. Syncing main 451812138 adds formatBusinessWake and its business_wake dispatch branch to both transports; this independent event branch preserves frozen schedule identity and does not modify bootstrap selection or formatting. The existing intake branches are retained alongside it.",
 			"members": [
 				{
 					"path": "packages/teamlead/src/bridge/bootstrap-format.ts",
@@ -105,11 +105,11 @@
 				},
 				{
 					"path": "packages/teamlead/src/bridge/mailbox-lead-runtime.ts",
-					"sha256": "68c704eacbe5ff1c3384b96d2c63bf0ebd818434210b5d317715b0b60f40ba61"
+					"sha256": "3aacc1881ef585e3275dfd622d31bca80504af1a26fd579641de9a176f6095f4"
 				},
 				{
 					"path": "packages/teamlead/src/bridge/commdb-lead-runtime.ts",
-					"sha256": "d04711f2edea47a4ce8094145787548c570f91bd0e3c12588b0d0e3f688ec378"
+					"sha256": "29289c1fc9a65396fbf3c70c4487f4a007501b48716db64400efcaa24f6908fe"
 				}
 			]
 		}

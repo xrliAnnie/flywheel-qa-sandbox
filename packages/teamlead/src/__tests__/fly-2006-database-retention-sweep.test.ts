@@ -540,7 +540,7 @@ describe("FLY-2006 retention registry", () => {
 		);
 		expect(
 			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
-		).toHaveLength(167); // main 156 + eight ship_judgment tables + three FLY-2563 cursor/pending tables
+		).toHaveLength(169); // main 156 + eight ship_judgment tables + three FLY-2563 cursor/pending tables + two Epic intake tables
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toEqual(
 			expect.arrayContaining([
 				"pre_adapter_failure_receipts",
@@ -610,13 +610,13 @@ describe("FLY-2006 retention registry", () => {
 
 		const teamleadNames = Object.values(TEAMLEAD_TABLE_CLASSIFICATION).flat();
 		const commNames = Object.values(COMM_TABLE_CLASSIFICATION).flat();
-		expect(new Set(teamleadNames).size).toBe(231);
+		expect(new Set(teamleadNames).size).toBe(233);
 		expect(TEAMLEAD_PRODUCTION_TABLES).toEqual([...teamleadNames].sort());
 		expect(new Set(commNames).size).toBe(29);
 		expect(
 			assertClassifiedSchema("teamlead", TEAMLEAD_PRODUCTION_TABLES),
 		).toMatchObject({
-			total: 231,
+			total: 233,
 		});
 		expect(
 			assertClassifiedSchema(
@@ -625,7 +625,7 @@ describe("FLY-2006 retention registry", () => {
 					(name) => !retiredNames.includes(name),
 				),
 			),
-		).toMatchObject({ total: 228 });
+		).toMatchObject({ total: 230 });
 		expect(assertClassifiedSchema("comm", commNames)).toMatchObject({
 			total: 29,
 		});

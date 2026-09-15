@@ -1,3 +1,4 @@
+import { LegacyRowPoisonError } from "./legacy-row-errors.js";
 /** FLY-1373 Bridge assembly for per-Lead inbox loops. */
 
 import { randomUUID } from "node:crypto";
@@ -396,6 +397,18 @@ export class LeadInboxRuntime {
 												JSON.stringify(envelope.event),
 										);
 									} catch (error) {
+										if (
+											row.event_type === "epic_intake" &&
+											error instanceof LegacyRowPoisonError
+										) {
+											opts.store.quarantineLegacyCutoverRow({
+												seq: row.seq,
+												leadId: row.lead_id,
+												reason: error.reason,
+												now: new Date().toISOString(),
+											});
+											continue;
+										}
 										if (row.event_type !== "workflow_claim_recorded")
 											throw error;
 										console.warn(

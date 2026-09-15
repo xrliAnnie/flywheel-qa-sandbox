@@ -355,6 +355,13 @@ import {
 } from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
 import {
+	createEpicIntakeScheduler,
+	resolveEpicIntakeOwner,
+	scanEpicIntakes,
+} from "./epic-intake.js";
+import { createEpicIntakeObserver } from "./epic-intake-observer.js";
+import { createEpicIntakeRouter } from "./epic-intake-route.js";
+import {
 	createEpicPagePublisher,
 	type EpicPagePublisher,
 } from "./epic-page-publisher.js";
@@ -537,6 +544,7 @@ import { createLeadNoteRouter } from "./lead-note-route.js";
 import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
+import { leadEventEnvelopeFromJournalRow } from "./legacy-lead-event-reconciler.js";
 import { reconcileLegacyPhaseThreads } from "./legacy-phase-thread-sweep.js";
 import { assertIssueNotLifecycleClosed } from "./lifecycle-admission.js";
 import {
@@ -4835,6 +4843,30 @@ export function createBridgeApp(
 		}),
 	);
 
+	app.use(
+		"/api/epic-intake",
+		reportsAuthMiddleware(config.apiToken),
+		createEpicIntakeRouter({
+			store,
+			ownsLead: (projectName, leadId) =>
+				projects.some(
+					(project) =>
+						project.projectName === projectName &&
+						project.leads.some(
+							(lead) =>
+								lead.agentId === leadId && lead.canSpawnRunners !== false,
+						),
+				),
+			observe: createEpicIntakeObserver({
+				store,
+				projects,
+				apiKey: config.linearApiKey,
+				fallbackBotToken: config.discordBotToken,
+			}),
+			onEpicChange: opts?.epicPageRefresher?.requestRefresh,
+		}),
+	);
+
 	const workflowRunCollector = transitionOpts
 		? createWorkflowRunCollector(store, transitionOpts)
 		: undefined;
@@ -6577,11 +6609,28 @@ export async function startBridge(
 			{
 				store,
 				serializer: epicPageSerializer,
+				intakeStore: store,
+				retryStore: store,
 				publisher: epicPagePublisher,
 				materialize: (attempt) =>
 					materializeEpicPage(
 						{
-							fetchSnapshot: fetchLinearActiveScopeSnapshot,
+							fetchSnapshot: (apiKey, binding) =>
+								fetchLinearActiveScopeSnapshot(apiKey, binding, {
+									hasProjectDispatch: (uuid, identifier) =>
+										store.hasEpicDispatchRecord(
+											attempt.projectName,
+											uuid,
+											identifier,
+										),
+									departmentMatches: (root) => {
+										const owner = resolveEpicIntakeOwner(projects, root);
+										return (
+											owner.ok && owner.projectName === attempt.projectName
+										);
+									},
+								}),
+							readIntakes: (projectName) => store.listEpicIntakes(projectName),
 							readAttention: (request, generatedAt) =>
 								readAttentionSources(
 									{ stateStore: store },
@@ -11247,7 +11296,45 @@ export async function startBridge(
 		onError: (code) => console.warn(`[ship-judgment] ${code}`),
 	});
 	let autoNarrowGateScanCursor: string | undefined;
+	const epicIntakeScheduler = createEpicIntakeScheduler({
+		projects: () =>
+			config.linearApiKey
+				? projects
+						.filter((project) => project.linear)
+						.map((project) => project.projectName)
+				: [],
+		run: async (projectName) => {
+			try {
+				await epicPageSerializer.run(projectName, () =>
+					scanEpicIntakes({
+						store,
+						projects,
+						projectName,
+						apiKey: config.linearApiKey!,
+						enqueue: (record) => {
+							const row = store.getLeadEventBySeq(record.leadEventSeq);
+							if (!row) {
+								if (store.hasArchivedLeadEvent(record.leadId, record.eventUid))
+									return;
+								throw new Error("Epic intake journal receipt missing");
+							}
+							registry.enqueueLeadEvent(leadEventEnvelopeFromJournalRow(row));
+						},
+					}),
+				);
+			} finally {
+				if (store.listEpicIntakes(projectName).some((row) => row.pageDirty))
+					epicPageRefresher.requestRefresh(projectName, "epic_intake");
+			}
+		},
+		onError: (projectName, error) =>
+			console.warn("[epic-intake] scan failed", {
+				projectName,
+				errorName: error instanceof Error ? error.name : typeof error,
+			}),
+	});
 	const gatePoller = new GatePoller({
+		onEpicIntakeTick: () => epicIntakeScheduler.tick(),
 		pollIntervalMs: 3_000,
 		recordSpan: (name, startMs, endMs) =>
 			eventLoopAttribution.recordSpan(name, startMs, endMs),

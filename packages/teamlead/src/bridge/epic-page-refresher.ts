@@ -68,6 +68,14 @@ export interface EpicPageAttemptDeps {
 		| "insertEpicPageRenderReceipt"
 		| "insertEpicPageRefresh"
 	>;
+	retryStore?: Pick<
+		StateStore,
+		"getEpicIntakeRefreshState" | "recordEpicIntakeRefreshResult"
+	>;
+	intakeStore?: Pick<
+		StateStore,
+		"listEpicIntakes" | "clearPublishedEpicIntakes"
+	>;
 	serializer: EpicPageSerializer;
 	materialize: (
 		input: MaterializeEpicPageInput,
@@ -89,15 +97,46 @@ function failureToken(error: unknown): string {
 	return "transient: epic_scan_failed";
 }
 
+function isHostedOutcome(outcome: string): boolean {
+	return (
+		outcome.startsWith("ok:") ||
+		/^ok_unpublished:\d+:unchanged_digest$/.test(outcome)
+	);
+}
+
 export function runEpicPageAttempt(
 	deps: EpicPageAttemptDeps,
 	input: EpicPageAttemptInput,
 ): Promise<EpicPageAttemptResult> {
 	return deps.serializer.run(input.projectName, async () => {
 		const attemptedAt = (deps.now ?? (() => new Date()))().toISOString();
+		const intakeOnly =
+			input.trigger === "event" &&
+			input.reasons?.length === 1 &&
+			input.reasons[0] === "epic_intake";
+		if (intakeOnly && deps.retryStore) {
+			const retry = deps.retryStore.getEpicIntakeRefreshState(
+				input.projectName,
+			);
+			const token = retry.notRefreshable
+				? "structural: intake_not_refreshable"
+				: retry.retryAt && retry.retryAt > attemptedAt
+					? "transient: intake_refresh_backoff"
+					: null;
+			if (token) return { kind: "unavailable", token, error: new Error(token) };
+		}
 		let settled = false;
 		const settle = (outcome: string): void => {
 			if (settled) throw new Error("epic_page_attempt_already_settled");
+			if (deps.retryStore && (intakeOnly || isHostedOutcome(outcome))) {
+				const retry = deps.retryStore.recordEpicIntakeRefreshResult(
+					input.projectName,
+					isHostedOutcome(outcome),
+					attemptedAt,
+				);
+				if (intakeOnly && retry.notRefreshable)
+					outcome = "structural: intake_not_refreshable";
+			}
 			deps.store.insertEpicPageRefresh({
 				projectName: input.projectName,
 				attemptedAt,
@@ -108,6 +147,10 @@ export function runEpicPageAttempt(
 			settled = true;
 		};
 
+		const dirtyIntakes =
+			deps.intakeStore
+				?.listEpicIntakes(input.projectName)
+				.filter((row) => row.pageDirty) ?? [];
 		const version = deps.store.getNextEpicPageVersion(input.projectName);
 		let materialized: MaterializedEpicPage;
 		try {
@@ -147,6 +190,12 @@ export function runEpicPageAttempt(
 			}
 		}
 		settle(outcome);
+		if (isHostedOutcome(outcome)) {
+			// A full published snapshot also proves intentional omission. The store's
+			// compare-and-set preserves rows changed after we captured these revisions.
+			deps.intakeStore?.clearPublishedEpicIntakes(dirtyIntakes);
+		}
+
 		return { kind: "materialized", materialized, inserted, outcome };
 	});
 }

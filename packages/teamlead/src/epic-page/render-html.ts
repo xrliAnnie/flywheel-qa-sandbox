@@ -19,6 +19,7 @@ import {
 	type ViewProvenance,
 } from "./founder-view.js";
 import { renderHistoryPreview } from "./history-preview.js";
+import { epicIntakeStatus } from "./intake.js";
 import { type LabelKey, label, leadNoteRoleLabel } from "./labels.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS, leadNoteAge } from "./lead-note.js";
 import type { Cell, EpicItem, EpicPage, Provenance } from "./model.js";
@@ -53,6 +54,7 @@ function auditFooter(audit: AuditSidecar): string {
 
 const FOUNDER_DECIDED_RULES = new Set([
 	"scope.v2",
+	"scope.v3",
 	"counts.v1",
 	"ready.v1",
 	"dependents.v1",
@@ -435,7 +437,7 @@ function renderEpic(
 	const judgment =
 		renderLeadNotes(notes, now, fadeDays) ||
 		`<div class="leadnote"><b>💬 判断</b><div class="ln-body">还没有人写过</div></div>`;
-	return `<details class="epic ${epic.counts?.live ? "e-live" : "e-idle"}" data-root="${escapeHtml(epic.identifier)}" data-state-type="${escapeHtml(epic.state.type)}"><summary><span class="e-st st-linear">${escapeHtml(epic.state.name)}</span><span class="e-id mono">${safeLinearLink(epic.url, epic.identifier)}</span><span class="e-n" title="${escapeHtml(epic.title)}">${escapeHtml(shortEpicTitle(epic.title))}</span><span class="e-c">${escapeHtml(countsText(epic))}</span></summary><div class="e-b">${judgment}${epic.children.map((c) => renderChild(page, c, dictionary, now)).join("")}${terminal ? `<p class="terminal-tail kid-tail">另有 ${escapeHtml(terminal)}(不展示)</p>` : ""}</div></details>`;
+	return `<details class="epic ${epic.counts?.live ? "e-live" : "e-idle"}" data-root="${escapeHtml(epic.identifier)}" data-state-type="${escapeHtml(epic.state.type)}"><summary><span class="e-st st-linear">${escapeHtml(epic.state.name)}</span><span class="e-id mono">${safeLinearLink(epic.url, epic.identifier)}</span><span class="e-n" title="${escapeHtml(epic.title)}">${escapeHtml(shortEpicTitle(epic.title))}</span>${epicIntakeStatus(page.header.roots.value![epic.rootIndex]!) ? `<span class="e-intake">${escapeHtml(epicIntakeStatus(page.header.roots.value![epic.rootIndex]!)!)}</span>` : ""}<span class="e-c">${escapeHtml(countsText(epic))}</span></summary><div class="e-b">${judgment}${epic.children.map((c) => renderChild(page, c, dictionary, now)).join("")}${terminal ? `<p class="terminal-tail kid-tail">另有 ${escapeHtml(terminal)}(不展示)</p>` : ""}</div></details>`;
 }
 
 function renderAttention(

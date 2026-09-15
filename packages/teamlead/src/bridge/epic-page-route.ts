@@ -25,6 +25,7 @@ import {
 	readEpicItemFacts,
 	type StateStore,
 } from "../StateStore.js";
+import { resolveEpicIntakeOwner } from "./epic-intake.js";
 import type { EpicPagePublisher } from "./epic-page-publisher.js";
 import {
 	createEpicPageSerializer,
@@ -199,7 +200,6 @@ export function createEpicPageStatusRouter(
 
 export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 	const router = express.Router();
-	const fetchSnapshot = deps.fetchSnapshot ?? fetchLinearActiveScopeSnapshot;
 	const generatePage = deps.generatePage ?? generateAttentionEpicPage;
 	const buildReceipt = deps.buildReceipt ?? buildEpicPageRenderReceipt;
 	const now = deps.now ?? (() => new Date());
@@ -241,7 +241,28 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 					materialize: (input) =>
 						materializeEpicPage(
 							{
-								fetchSnapshot,
+								fetchSnapshot:
+									deps.fetchSnapshot ??
+									((apiKey, binding) =>
+										fetchLinearActiveScopeSnapshot(apiKey, binding, {
+											hasProjectDispatch: (uuid, identifier) =>
+												deps.store.hasEpicDispatchRecord(
+													input.projectName,
+													uuid,
+													identifier,
+												),
+											departmentMatches: (root) => {
+												const owner = resolveEpicIntakeOwner(
+													deps.projects,
+													root,
+												);
+												return (
+													owner.ok && owner.projectName === input.projectName
+												);
+											},
+										})),
+								readIntakes: (projectName) =>
+									deps.store.listEpicIntakes(projectName),
 								readAttention:
 									deps.readAttention ??
 									((request, generatedAt, scopeSnapshot) =>

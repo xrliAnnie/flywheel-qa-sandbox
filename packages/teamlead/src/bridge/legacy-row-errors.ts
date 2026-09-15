@@ -32,6 +32,7 @@ import { InboxWriteValidationError } from "flywheel-comm/inbox-write-normalize";
 
 export type LegacyRowPoisonReason =
 	| "invalid_payload_json"
+	| "invalid_epic_intake"
 	/**
 	 * R2 HIGH-3 — this id already holds a row that genuinely differs. It will
 	 * differ identically on every future attempt, so it is deterministic; the

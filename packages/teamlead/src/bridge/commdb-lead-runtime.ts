@@ -17,6 +17,7 @@ import {
 	formatDetectionEscalation,
 	formatDetectionSuspicious,
 	formatDurationMs,
+	formatEpicIntake,
 	formatGateQuestion,
 	formatMisroutedReport,
 	formatPatrolTick,
@@ -99,6 +100,7 @@ export class CommDBLeadRuntime implements LeadRuntime {
 
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
+		if (e.event_type === "epic_intake") return formatEpicIntake(env);
 		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
 		if (e.event_type === "summary_due") return formatSummaryDue(env);
 		if (e.event_type === "business_wake") return formatBusinessWake(env);

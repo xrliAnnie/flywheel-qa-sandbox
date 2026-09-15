@@ -21,6 +21,7 @@ export const EPIC_PAGE_MAX_DOCUMENT_BYTES = 1_507_328;
 
 export const RULE_IDS = [
 	"scope.v2",
+	"scope.v3",
 	"counts.v1",
 	"ready.v1",
 	"dependents.v1",
@@ -87,6 +88,7 @@ export type Provenance =
 	| { kind: "derived"; rule: RuleId; from: string[] };
 
 export const REFRESH_REASONS = [
+	"epic_intake",
 	"session_started",
 	"session_completed",
 	"session_failed",
@@ -267,6 +269,14 @@ export interface FreshnessSection {
 	next_scan: Cell<{ expected_in_seconds: number }>;
 }
 
+export interface EpicIntakeValue {
+	event_uid: string;
+	started_at: string;
+	intake_at: string;
+	backfill: boolean;
+	work_state: "pending" | "complete" | "needs_founder" | "superseded";
+}
+
 interface EpicPageBase {
 	ship_judgment_history?: Cell<EpicHistory>;
 	lead_note_policy?: Cell<{ fade_after_days: number }>;
@@ -282,12 +292,14 @@ interface EpicPageBase {
 	header: {
 		scope_definition: Cell<{
 			root_state_type: "started";
-			daily_title_contains: "日常";
+			daily_title_contains: "日常" | null;
 			item_state_filter: "none";
 		}>;
 		roots: Cell<
 			Array<{
 				lead_note?: Cell<string>[];
+				has_child_issues?: boolean;
+				intake?: Cell<EpicIntakeValue>;
 				identifier: string;
 				title: string;
 				url: string;
@@ -391,7 +403,7 @@ function assertNoTimestampKeys(
 	path: string,
 	root: unknown,
 ): void {
-	if (/^\/header\/roots\/value\/\d+\/lead_note\/\d+$/.test(path)) {
+	if (/^\/header\/roots\/value\/\d+\/(?:lead_note\/\d+|intake)$/.test(path)) {
 		assertCell(value, path, root);
 		return;
 	}
@@ -403,7 +415,13 @@ function assertNoTimestampKeys(
 	}
 	if (!isRecord(value)) return;
 	for (const [key, child] of Object.entries(value)) {
-		if (key.endsWith("_at"))
+		if (
+			key.endsWith("_at") &&
+			!(
+				/^\/header\/roots\/value\/\d+\/intake\/value$/.test(path) &&
+				["started_at", "intake_at"].includes(key)
+			)
+		)
 			fail(`${path}/${key}`, "timestamp belongs on Cell");
 		assertNoTimestampKeys(child, `${path}/${key}`, root);
 	}
@@ -975,14 +993,16 @@ export function assertEpicPage(
 	if (
 		!scope ||
 		scope.root_state_type !== "started" ||
-		scope.daily_title_contains !== "日常" ||
+		(scope.daily_title_contains !== "日常" &&
+			scope.daily_title_contains !== null) ||
 		scope.item_state_filter !== "none"
 	)
 		fail("/header/scope_definition/value", "expected scope.v2 definition");
 	const scopeCell = header.scope_definition as Cell<unknown>;
 	if (
 		scopeCell.provenance.kind !== "derived" ||
-		scopeCell.provenance.rule !== "scope.v2"
+		scopeCell.provenance.rule !==
+			(scope.daily_title_contains === null ? "scope.v3" : "scope.v2")
 	)
 		fail("/header/scope_definition/provenance", "expected derived scope.v2");
 	const rawRoots = (header.roots as Cell<unknown>).value;
@@ -997,9 +1017,51 @@ export function assertEpicPage(
 		requireExactKeys(
 			value,
 			["identifier", "title", "url", "state"],
-			["lead_note"],
+			["lead_note", "has_child_issues", "intake"],
 			path,
 		);
+		if (
+			value.has_child_issues !== undefined &&
+			typeof value.has_child_issues !== "boolean"
+		)
+			fail(`${path}/has_child_issues`, "expected boolean");
+		if (value.intake !== undefined) {
+			assertCell(value.intake, `${path}/intake`, root);
+			const intakeCell = value.intake as Cell<EpicIntakeValue>;
+			if (
+				intakeCell.provenance.kind !== "statestore" ||
+				intakeCell.provenance.table !== "epic_intakes"
+			)
+				fail(`${path}/intake`, "expected intake StateStore source");
+			if (intakeCell.value !== null) {
+				const intake = requireRecord(intakeCell.value, `${path}/intake/value`);
+				requireExactKeys(
+					intake,
+					["event_uid", "started_at", "intake_at", "backfill", "work_state"],
+					[],
+					`${path}/intake/value`,
+				);
+				for (const key of ["started_at", "intake_at"]) {
+					requireTimestamp(intake[key], `${path}/intake/value/${key}`);
+					if (!Number.isFinite(Date.parse(String(intake[key]))))
+						fail(`${path}/intake`, "invalid intake date");
+				}
+				if (
+					typeof intake.event_uid !== "string" ||
+					!intake.event_uid.startsWith("epic_intake:") ||
+					!intake.event_uid.endsWith(`:${intake.started_at}`) ||
+					intakeCell.provenance.key.event_uid !== intake.event_uid
+				)
+					fail(`${path}/intake`, "intake identity mismatch");
+				if (
+					typeof intake.backfill !== "boolean" ||
+					!["pending", "complete", "needs_founder", "superseded"].includes(
+						String(intake.work_state),
+					)
+				)
+					fail(`${path}/intake`, "invalid intake state");
+			}
+		}
 		if (value.lead_note !== undefined)
 			assertLeadNotes(value.lead_note, `${path}/lead_note`, root);
 		for (const key of ["identifier", "title", "url"])
@@ -1190,7 +1252,8 @@ export function assertEpicPage(
 				fail("/done_definition", "expected completed");
 			if (
 				page.header.scope_definition.value?.root_state_type !== "started" ||
-				page.header.scope_definition.value.daily_title_contains !== "日常" ||
+				(page.header.scope_definition.value.daily_title_contains !== "日常" &&
+					page.header.scope_definition.value.daily_title_contains !== null) ||
 				page.header.scope_definition.value.item_state_filter !== "none"
 			)
 				fail("/header/scope_definition", "invalid scope rule");

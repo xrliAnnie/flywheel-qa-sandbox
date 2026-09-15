@@ -4,6 +4,33 @@ import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { StateStore } from "../StateStore.js";
 
 describe("FLY-1687 GatePoller patrol rider", () => {
+	it("runs intake on every existing poll without awaiting its network work", async () => {
+		let release!: () => void;
+		const onEpicIntakeTick = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+		const poller = new GatePoller({
+			pollIntervalMs: 3000,
+			projects: [],
+			store: {
+				recoverFromCorruption: vi.fn(),
+				listPendingFounderActions: () => [],
+				getActiveSessions: () => [],
+			} as unknown as StateStore,
+			runtimeRegistry: new RuntimeRegistry(),
+			onEpicIntakeTick,
+		});
+		await (poller as unknown as { poll: () => Promise<void> }).poll();
+		expect(onEpicIntakeTick).toHaveBeenCalledTimes(1);
+		release();
+		await (poller as unknown as { poll: () => Promise<void> }).poll();
+		expect(onEpicIntakeTick).toHaveBeenCalledTimes(2);
+		release();
+	});
+
 	it.each([0, -1, Number.NaN])(
 		"keeps the display sweep enabled when the test cadence is %s",
 		async (displayReconcileEveryNTicks) => {

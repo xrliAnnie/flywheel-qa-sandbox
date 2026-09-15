@@ -123,6 +123,12 @@ rm -rf "$H"
 # ───────────────────────────────────────────────────── T2: standard dept Lead
 H=$(make_home); P=$(fixture_projects "$H" true)
 PLAN=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d | plan_of)
+BUNDLE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$1 == "ARG" && previous == "--append-system-prompt-file" { print $2 } $1 == "ARG" { previous = $2 }')
+if [ -r "$BUNDLE" ] && grep -qF '### 0.11 Epic' "$BUNDLE" && grep -qF 'epic-intake resolve' "$BUNDLE"; then
+  ok "T2 FLY-2557 actual Claude bundle contains intake protocol"
+else
+  bad "T2 FLY-2557 actual Claude bundle missing intake protocol"
+fi
 printf '%s\n' "$PLAN" | has $'ROLE\tstandard'                         && ok "T2 standard role" || bad "T2 standard role"
 printf '%s\n' "$PLAN" | grep -qF 'department-lead-rules.md'           && ok "T2 has department-lead-rules" || bad "T2 has department-lead-rules"
 printf '%s\n' "$PLAN" | grep -qF 'founder-only-authority.md'          && ok "T2 has founder-only-authority" || bad "T2 has founder-only-authority"
@@ -139,6 +145,12 @@ rm -rf "$H"
 # ─────────────────────────────────────────────────────────────── T3: cos Lead
 H=$(make_home); P=$(fixture_projects "$H" true)
 PLAN=$(run_dry "$H" "$P" cos-lead "$H/proj-gf" geoforge3d | plan_of)
+BUNDLE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$1 == "ARG" && previous == "--append-system-prompt-file" { print $2 } $1 == "ARG" { previous = $2 }')
+if [ -r "$BUNDLE" ] && ! grep -qF '### 0.11 Epic' "$BUNDLE"; then
+  ok "T3 FLY-2557 actual CoS bundle excludes intake protocol"
+else
+  bad "T3 FLY-2557 CoS bundle missing or contains department intake protocol"
+fi
 printf '%s\n' "$PLAN" | has $'ROLE\tstandard'                        && ok "T3 cos role (standard, not companion)" || bad "T3 cos role"
 printf '%s\n' "$PLAN" | grep -qF 'cos-lead-rules.md'                 && ok "T3 has cos-lead-rules" || bad "T3 has cos-lead-rules"
 printf '%s\n' "$PLAN" | grep -qF 'department-lead-rules.md'          && bad "T3 cos must NOT have dept base rules" || ok "T3 no dept base rules"
@@ -238,6 +250,7 @@ env=DISCORD_BOT_TOKEN=set
 env=DISCORD_CORE_CHANNEL=empty
 env=DISCORD_EXPECTED_BOT_USER_ID=empty
 env=DISCORD_IDENTITY_MODE=empty
+env=DISCORD_OWN_CHAT_CHANNEL=set
 env=DISCORD_STATE_DIR=set
 env=FLYWHEEL_COMM_CLI=set
 env=FLYWHEEL_COMM_DB=set
@@ -302,6 +315,7 @@ env=DISCORD_BOT_TOKEN=set
 env=DISCORD_CORE_CHANNEL=empty
 env=DISCORD_EXPECTED_BOT_USER_ID=empty
 env=DISCORD_IDENTITY_MODE=empty
+env=DISCORD_OWN_CHAT_CHANNEL=set
 env=DISCORD_STATE_DIR=set
 env=FLYWHEEL_COMM_CLI=set
 env=FLYWHEEL_COMM_DB=set

@@ -1499,3 +1499,22 @@ it("does not render unexpected identity data in the sanitized capacity surface",
 	expect(body).not.toContain("邮箱暂时未读到");
 	expect(body).toContain("personal");
 });
+
+it("renders pending intake separately from ready children with the full count", () => {
+	const epic = {
+		...availableEpic(),
+		pendingIntakeForLeadTotal: 3,
+		pendingIntakeForLead: [
+			{
+				eventUid: "epic_intake:uuid:2026-08-13T11:59:00.000Z",
+				identifier: "TEST-1",
+				intakeAt: "2026-08-13T11:59:00.000Z",
+				backfill: false,
+				workState: "pending" as const,
+			},
+		],
+	};
+	const body = formatPatrolTick(withEpic(envelope([]), epic));
+	expect(body).toContain("待拆解/待核依赖 Epic：TEST-1");
+	expect(body).toContain("另 2 个");
+});

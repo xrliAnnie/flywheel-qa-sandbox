@@ -844,7 +844,8 @@ export type ReopenerClass =
 
 type DiscordThreadMessage = {
 	id?: unknown;
-	author?: { bot?: unknown };
+	channel_id?: unknown;
+	author?: { bot?: unknown; id?: unknown };
 };
 
 async function getThreadMessages(
@@ -1212,4 +1213,36 @@ export async function getChannelMessage(
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+/** Read-only receipt lookup; ownership is checked against the frozen Lead by the caller. */
+export async function readEpicIntakeThreadMessage(
+	threadId: string,
+	messageId: string,
+	botToken: string,
+	deps: DisplayRestDeps = {},
+): Promise<{ id: string; channelId: string; authorId: string }> {
+	if (
+		!/^\d{17,20}$/.test(threadId) ||
+		!/^\d{17,20}$/.test(messageId) ||
+		!botToken
+	)
+		throw new Error("intake_thread_lookup_invalid");
+	const response = await getThreadMessages(
+		`${DISCORD_API}/channels/${threadId}/messages?around=${messageId}&limit=3`,
+		botToken,
+		deps,
+	);
+	if (!response.ok) throw new Error("intake_thread_lookup_unavailable");
+	const matches = response.messages.filter((value) => value?.id === messageId);
+	const message = matches[0];
+	if (
+		matches.length !== 1 ||
+		!message ||
+		message.channel_id !== threadId ||
+		typeof message.author?.id !== "string" ||
+		!message.author.id
+	)
+		throw new Error("intake_thread_receipt_missing");
+	return { id: messageId, channelId: threadId, authorId: message.author.id };
 }

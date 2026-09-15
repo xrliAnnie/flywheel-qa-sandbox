@@ -644,7 +644,7 @@ export function archiveTerminalRows(
 				const candidates = db
 					.prepare(`SELECT /* archive-candidates */ e.${policy.primaryKey} AS identity,julianday(e.${policy.timeColumn}) AS time_jd,length(CAST(e.payload AS BLOB)) AS payload_bytes
  FROM ${policy.table} e INDEXED BY idx_${policy.table}_archive_keyset
- WHERE e.${kind} IN (${types}) AND julianday(e.${policy.timeColumn})>=? AND julianday(e.${policy.timeColumn})<julianday(?)
+ WHERE (e.${kind} IN (${types})${policy.table === "lead_events" ? " OR e.delivery_disposition = 'audit_only'" : ""}) AND julianday(e.${policy.timeColumn})>=? AND julianday(e.${policy.timeColumn})<julianday(?)
  AND (julianday(e.${policy.timeColumn}),e.${policy.primaryKey})>(?,?)
  ORDER BY julianday(e.${policy.timeColumn}),e.${policy.primaryKey} LIMIT ?`)
 					.all(

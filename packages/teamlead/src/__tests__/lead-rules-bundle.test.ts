@@ -572,6 +572,13 @@ exit 0
 			expect(dumped).toContain("founder-only-authority.md");
 			expect(dumped).toContain("department-lead-rules.md");
 			expect(dumped).toContain("cross-dept-channel-rules.md");
+			const assembledRules = dumped
+				.split(",")
+				.slice(1)
+				.map((path) => readFileSync(path, "utf8"))
+				.join("\n");
+			expect(assembledRules).toContain("### 0.11 Epic");
+			expect(assembledRules).toContain("epic-intake resolve");
 		});
 
 		it("a NON-full-access run leaves the prompt files untouched (byte-compat)", () => {

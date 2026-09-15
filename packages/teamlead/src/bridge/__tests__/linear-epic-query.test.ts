@@ -11,7 +11,29 @@ const { mockRawRequest } = vi.hoisted(() => ({
 
 vi.mock("@linear/sdk", () => ({
 	LinearClient: vi.fn().mockImplementation(() => ({
-		client: { rawRequest: mockRawRequest },
+		client: {
+			rawRequest: (query: string, variables: Record<string, unknown>) =>
+				query.includes("EpicStateHistory")
+					? Promise.resolve({
+							data: {
+								issue: {
+									stateHistory: {
+										nodes: [
+											{
+												id: "span",
+												stateId: "started",
+												startedAt: "2026-09-03T03:00:00.000Z",
+												endedAt: null,
+												state: { type: "started" },
+											},
+										],
+										pageInfo: { hasNextPage: false },
+									},
+								},
+							},
+						})
+					: mockRawRequest(query, variables),
+		},
 	})),
 }));
 
@@ -80,6 +102,10 @@ function child(
 function scopeRoot(identifier: string, title: string) {
 	return {
 		id: `${identifier}-uuid`,
+		parent: null,
+		team: { key: "EPX" },
+		project: { name: "Example" },
+		children: { nodes: [{ id: "child" }], pageInfo: { hasNextPage: false } },
 		identifier,
 		title,
 		url: `https://linear.app/example/issue/${identifier}`,
@@ -108,6 +134,64 @@ beforeEach(() => {
 });
 
 describe("fetchLinearActiveScopeSnapshot", () => {
+	it("reuses collected roots and admits a childless undispatched Epic without querying roots twice", async () => {
+		const candidate = {
+			id: "EPX-100-uuid",
+			identifier: "EPX-100",
+			title: "New",
+			url: "https://linear.app/example/issue/EPX-100",
+			updatedAt: now().toISOString(),
+			state: { name: "In Progress", type: "started" },
+			parent: null,
+			team: { key: "EPX" },
+			project: { name: "Example" },
+			labels: ["Example"],
+			hasChildIssues: false,
+			episodes: [
+				{
+					eventUid: `epic_intake:EPX-100-uuid:${now().toISOString()}`,
+					startedAt: now().toISOString(),
+					endedAt: null,
+					active: true,
+					sourceSpanIds: ["span"],
+				},
+			],
+		};
+		const collectedScope = {
+			fetchedAt: now().toISOString(),
+			candidates: [candidate],
+			missingIssueIds: [],
+		};
+		mockRawRequest.mockResolvedValue(childrenResponse([]));
+		const options = { now, collectedScope, hasProjectDispatch: () => false };
+		const snapshot = await fetchLinearActiveScopeSnapshot(
+			"token",
+			{ team: "EPX" },
+			options,
+		);
+		expect(snapshot.roots[0]).toMatchObject({
+			hasChildIssues: false,
+			startedAt: now().toISOString(),
+		});
+		expect(snapshot.descendantIds).toEqual([]);
+		expect(mockRawRequest.mock.calls).toHaveLength(1);
+		expect(mockRawRequest.mock.calls[0][0]).toContain("ActiveScopeChildren");
+		await expect(
+			fetchLinearActiveScopeSnapshot(
+				"token",
+				{ team: "EPX" },
+				{ ...options, hasProjectDispatch: () => true },
+			),
+		).rejects.toMatchObject({ reason: "no_active_roots" });
+		await expect(
+			fetchLinearActiveScopeSnapshot(
+				"token",
+				{ team: "EPX" },
+				{ ...options, hasProjectDispatch: undefined },
+			),
+		).rejects.toMatchObject({ reason: "no_active_roots" });
+	});
+
 	it("discovers started root subtrees, includes 日常, and keeps Backlog children", async () => {
 		mockRawRequest
 			.mockResolvedValueOnce(
@@ -169,7 +253,6 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 				labels: { name: { eq: "Example" } },
 				state: { type: { eq: "started" } },
 				parent: { null: true },
-				children: { length: { gt: 0 } },
 			},
 		});
 	});
@@ -310,18 +393,16 @@ describe("fetchLinearActiveScopeSnapshot", () => {
 		).rejects.toMatchObject({ reason: "no_active_roots" });
 	});
 
-	it("fails loud when the permanent 日常 parent declaration is absent", async () => {
-		mockRawRequest.mockResolvedValueOnce(
-			rootsResponse([scopeRoot("EPX-100", "Active Epic")]),
+	it("includes a root without a permanent 日常 declaration", async () => {
+		mockRawRequest
+			.mockResolvedValueOnce(rootsResponse([scopeRoot("EPX-100", "Epic")]))
+			.mockResolvedValueOnce(childrenResponse([]));
+		const snapshot = await fetchLinearActiveScopeSnapshot(
+			"token",
+			{ team: "EPX" },
+			{ now },
 		);
-
-		await expect(
-			fetchLinearActiveScopeSnapshot("token", { team: "EPX" }, { now }),
-		).rejects.toMatchObject({
-			name: "ActiveScopeNotFoundError",
-			reason: "missing_daily_root",
-		});
-		expect(mockRawRequest).toHaveBeenCalledTimes(1);
+		expect(snapshot.roots.map((root) => root.identifier)).toEqual(["EPX-100"]);
 	});
 
 	it("fails loud when a declared parent becomes unreadable", async () => {

@@ -1,6 +1,12 @@
 {
 	"revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-	"meaning": "Historical shared selector and materializer, dept mailbox with summary duty plus inbox launcher rule. Body only: host paths and timestamp in metadata intentionally excluded.",
-	"bodyBytes": 231221,
-	"sha256": "5d5820dc793a2d66021da3e8f49658e1c2fd087365deb213e173a3b549b4835c"
+	"meaning": "Historical shared selector and materializer, dept mailbox with summary duty plus inbox launcher rule. Body only: host paths and timestamp in metadata intentionally excluded. Additive FLY-2557 section 0.11 evolution; all other historical rule bytes preserved.",
+	"bodyBytes": 234489,
+	"sha256": "377c59fef2830389845c7cfe5b379123eaedac488e0b6678db4bdf4313b3da45",
+	"intakeOverlay": {
+		"approvedSectionSha256": "24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6",
+		"beforeSourceSha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c",
+		"afterSourceSha256": "f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc",
+		"meaning": "Historical source bytes preserved, with only the approved FLY-2557 section 0.11 added under Lead ruling dd6d00cc."
+	}
 }

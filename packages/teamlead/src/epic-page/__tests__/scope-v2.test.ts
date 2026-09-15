@@ -55,11 +55,11 @@ describe("scope.v2 projection and regression", () => {
 		const page = generate(snapshotV2());
 		expect(page.header.scope_definition.value).toEqual({
 			root_state_type: "started",
-			daily_title_contains: "日常",
+			daily_title_contains: null,
 			item_state_filter: "none",
 		});
 		expect(page.header.scope_definition.provenance).toMatchObject({
-			rule: "scope.v2",
+			rule: "scope.v3",
 		});
 		expect(page.header.items.provenance).toMatchObject({ field: "subtree" });
 		expect(page.header.root_counts.map((cell) => cell.value)).toEqual([

@@ -45,6 +45,8 @@
 	"doa_backoff",
 	"doa_backoff_participants",
 	"doa_backoff_reset_receipts",
+	"epic_intake_scan",
+	"epic_intakes",
 	"epic_page",
 	"epic_page_publication",
 	"epic_page_refresh",

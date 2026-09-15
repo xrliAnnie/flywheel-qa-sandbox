@@ -30,6 +30,7 @@ import {
 	resolveProjectLinearBinding,
 } from "../ProjectConfig.js";
 import { readEpicItemFacts, type StateStore } from "../StateStore.js";
+import { resolveEpicIntakeOwner } from "./epic-intake.js";
 import {
 	createEpicPageSerializer,
 	type EpicPageAttemptInput,
@@ -108,7 +109,27 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 						materializeEpicPage(
 							{
 								fetchSnapshot:
-									deps.fetchSnapshot ?? fetchLinearActiveScopeSnapshot,
+									deps.fetchSnapshot ??
+									((apiKey, binding) =>
+										fetchLinearActiveScopeSnapshot(apiKey, binding, {
+											hasProjectDispatch: (uuid, identifier) =>
+												deps.store.hasEpicDispatchRecord(
+													attempt.projectName,
+													uuid,
+													identifier,
+												),
+											departmentMatches: (root) => {
+												const owner = resolveEpicIntakeOwner(
+													deps.projects,
+													root,
+												);
+												return (
+													owner.ok && owner.projectName === attempt.projectName
+												);
+											},
+										})),
+								readIntakes: (projectName) =>
+									deps.store.listEpicIntakes(projectName),
 								readAttention: (request, generatedAt, scopeSnapshot) =>
 									readAttentionSources(
 										{ stateStore: deps.store },
@@ -222,6 +243,9 @@ export function createEpicResidualScan(deps: EpicResidualScanDeps): {
 			}
 			try {
 				return summarizeEpicResidual({
+					pendingIntakes: deps.store.listEpicIntakes?.(
+						materialized.materialized.page.key.project_name,
+					),
 					materialized: materialized.materialized,
 					leadId,
 					resolveOwner: (labels) =>

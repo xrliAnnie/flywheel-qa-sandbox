@@ -230,6 +230,15 @@ describe("Epic page router", () => {
 		expect(insert).not.toHaveBeenCalled();
 	});
 
+	it("passes durable intake records to manual page generation", async () => {
+		const readIntakes = vi.spyOn(store, "listEpicIntakes");
+		const response = await request(app(), {
+			token: "master",
+			body: { projectName: "example" },
+		});
+		expect(response.status).toBe(200);
+		expect(readIntakes).toHaveBeenCalledWith("example");
+	});
 	it("passes the configured Linear boundary into live scope discovery", async () => {
 		const fetchSnapshot = vi.fn(async () => epicShapeSnapshot());
 		const response = await request(app({ fetchSnapshot }), {

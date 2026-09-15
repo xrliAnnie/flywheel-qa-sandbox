@@ -240,6 +240,53 @@ describe("runEpicPageAttempt", () => {
 		return { store, materialize, publisher, page, receipt };
 	}
 
+	it.each([
+		"ok:4",
+		"ok_unpublished:4:unchanged_digest",
+		"transient: publish_failed:blob",
+		"ok_unpublished:4:skipped_hosting_not_configured",
+	])(
+		"settles intake dirty state only with hosted evidence: %s",
+		async (outcome) => {
+			const deps = base();
+			const row = {
+				eventUid: "intake",
+				active: true,
+				pageDirty: true,
+			} as never;
+			const intakeStore = {
+				listEpicIntakes: vi.fn(() => [row]),
+				clearPublishedEpicIntakes: vi.fn(),
+			};
+			Object.assign(deps.page, {
+				header: {
+					roots: { value: [{ intake: { value: { event_uid: "intake" } } }] },
+				},
+			});
+			deps.publisher.publishHosted.mockResolvedValue(outcome as "ok:4");
+			await runEpicPageAttempt(
+				{
+					...deps,
+					intakeStore,
+					materialize: deps.materialize as never,
+					serializer: createEpicPageSerializer(),
+				},
+				{
+					projectName: "example",
+					apiKey: "test",
+					binding: { team: "EPX" },
+					trigger: "event",
+					reasons: ["epic_intake"],
+				},
+			);
+			if (outcome === "ok:4" || outcome.endsWith(":unchanged_digest"))
+				expect(intakeStore.clearPublishedEpicIntakes).toHaveBeenCalledWith([
+					row,
+				]);
+			else expect(intakeStore.clearPublishedEpicIntakes).not.toHaveBeenCalled();
+		},
+	);
+
 	it("materializes once, writes one receipt, publishes, and settles once", async () => {
 		const deps = base();
 		const result = await runEpicPageAttempt(

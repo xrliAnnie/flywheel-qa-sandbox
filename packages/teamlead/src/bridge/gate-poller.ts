@@ -141,6 +141,8 @@ export interface GatePollerConfig {
 	onHealthTick?: () => void | Promise<void>;
 	/** FLY-1687: pure alarm producer on the existing 60s rider cadence. */
 	onLeadPatrolTick?: () => void | Promise<void>;
+	/** FLY-2557: cheap per-project due check on each existing 3s tick. */
+	onEpicIntakeTick?: () => void | Promise<void>;
 	/** FLY-2390: readiness ingestion on the existing 60s cadence. */
 	onReleaseReadinessTick?: () => void | Promise<void>;
 	/** FLY-2131: durable Raya summary-absorption producer on the same cadence. */
@@ -611,6 +613,16 @@ export class GatePoller {
 			// reports are a minutes-scale human-loop event; every Nth tick
 			// (default 20 ≈ 60s at the production 3s interval) is plenty.
 			this.tickCount++;
+			if (this.config.onEpicIntakeTick) {
+				void Promise.resolve()
+					.then(() => this.config.onEpicIntakeTick?.())
+					.catch((error) => {
+						console.warn(
+							"[GatePoller] Epic intake tick failed",
+							error instanceof Error ? error.name : typeof error,
+						);
+					});
+			}
 
 			if (
 				this.config.onReconcilePatrolTick &&

@@ -54,8 +54,8 @@
     {
       "path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
       "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-      "bytes": 88192,
-      "sha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c"
+      "bytes": 91460,
+      "sha256": "f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc"
     }
   ],
   "constraints": [
@@ -77,5 +77,11 @@
       "finding": "Read once into baseInstructions, re-passed on resume/restart; not a live flag consumer."
     }
   ],
-  "pendingQuestion": "fd187a87-6c43-4ec5-adc2-4179ccba0433"
+  "pendingQuestion": "fd187a87-6c43-4ec5-adc2-4179ccba0433",
+  "intakeOverlay": {
+    "approvedSectionSha256": "24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6",
+    "beforeSourceSha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c",
+    "afterSourceSha256": "f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc",
+    "meaning": "Historical source bytes preserved, with only the approved FLY-2557 section 0.11 added under Lead ruling dd6d00cc."
+  }
 }

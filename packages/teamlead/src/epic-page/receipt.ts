@@ -252,6 +252,8 @@ export function buildEpicPageRenderReceipt(
 			sources.push(source);
 			if (path === "/header/roots" && Array.isArray(value.value)) {
 				value.value.forEach((root, index) => {
+					if (isRecord(root) && root.intake !== undefined)
+						visit(root.intake, `${path}/value/${index}/intake`);
 					if (isRecord(root) && root.lead_note !== undefined)
 						visit(root.lead_note, `${path}/value/${index}/lead_note`);
 				});

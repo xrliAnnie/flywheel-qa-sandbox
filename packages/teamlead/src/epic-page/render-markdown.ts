@@ -9,6 +9,7 @@ import {
 import { judgmentSummary } from "./audit-dictionary.js";
 import { escapeMarkdownTableCell } from "./escape.js";
 import { renderHistoryPreview } from "./history-preview.js";
+import { epicIntakeStatus } from "./intake.js";
 import { type LabelKey, label, leadNoteRoleLabel } from "./labels.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS, leadNoteAge } from "./lead-note.js";
 import type {
@@ -23,6 +24,7 @@ import type {
 
 const FOUNDER_DECIDED_RULES = new Set([
 	"scope.v2",
+	"scope.v3",
 	"counts.v1",
 	"ready.v1",
 	"dependents.v1",
@@ -468,7 +470,7 @@ export function renderEpicPageMarkdown(
 	const roots = (page.header.roots.value ?? [])
 		.map(
 			(root) =>
-				`${markdownLink(root.url, `${root.identifier} · ${root.title}`)} · ${markdownText(root.state.name)}${renderLeadNotes(root.lead_note, now, fadeDays)}`,
+				`${markdownLink(root.url, `${root.identifier} · ${root.title}`)} · ${markdownText(root.state.name)}${epicIntakeStatus(root) ? ` · ${markdownText(epicIntakeStatus(root)!)}` : ""}${renderLeadNotes(root.lead_note, now, fadeDays)}`,
 		)
 		.join(", ");
 	return [

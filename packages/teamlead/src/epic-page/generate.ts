@@ -1,3 +1,4 @@
+import type { EpicIntakeRecord } from "../bridge/epic-intake-store.js";
 import type { LinearActiveScopeSnapshot } from "../bridge/linear-epic-query.js";
 import type { ProjectLinearBinding } from "../ProjectConfig.js";
 import type {
@@ -12,7 +13,7 @@ import type { EpicHistory } from "../ship-judgment/epic-history.js";
 import { type AttentionInput, buildAttention } from "./attention.js";
 import { buildFreshness } from "./freshness.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS } from "./lead-note.js";
-import type { EpicPageV1, EpicPageV2 } from "./model.js";
+import type { EpicIntakeValue, EpicPageV1, EpicPageV2 } from "./model.js";
 import {
 	assertEpicPage,
 	type Cell,
@@ -32,6 +33,7 @@ import {
 import type { EpicPageItemSignals } from "./signals.js";
 
 export interface GenerateEpicPageInput {
+	intakes?: EpicIntakeRecord[];
 	childThreads?: Map<string, Cell<string>>;
 	shipJudgmentHistory?: EpicHistory;
 	leadNotes?: LeadNoteRecord[];
@@ -405,7 +407,46 @@ function generatePage(
 					`/items/${itemIndex}/signal_sources/commdb`,
 				],
 	);
+	const intakeCells = new Map<string, Cell<EpicIntakeValue>>();
+	for (const root of snapshot.roots) {
+		const intake = input.intakes?.find(
+			(row) =>
+				row.projectName === input.projectName &&
+				row.issueUuid === root.id &&
+				row.startedAt === root.startedAt &&
+				row.active &&
+				row.workState !== "superseded" &&
+				root.state.type === "started",
+		);
+		if (!intake) continue;
+		intakeCells.set(root.id, {
+			value: {
+				event_uid: intake.eventUid,
+				started_at: intake.startedAt,
+				intake_at: intake.intakeAt,
+				backfill: intake.backfill,
+				work_state: intake.workState,
+			},
+			provenance: {
+				kind: "statestore",
+				table: "epic_intakes",
+				key: { event_uid: intake.eventUid },
+			},
+			observed_at: generatedAt,
+			source_updated_at: intake.observedAt,
+		});
+	}
 	const sourceCells = [
+		...snapshot.roots.flatMap((root, index) =>
+			intakeCells.has(root.id)
+				? [
+						{
+							path: `/header/roots/value/${index}/intake`,
+							observedAt: intakeCells.get(root.id)!.observed_at,
+						},
+					]
+				: [],
+		),
 		...snapshot.roots.flatMap((root, index) =>
 			(notesByIssue.get(root.id) ?? []).map((note, noteIndex) => ({
 				path: `/header/roots/value/${index}/lead_note/${noteIndex}`,
@@ -506,12 +547,12 @@ function generatePage(
 			scope_definition: {
 				value: {
 					root_state_type: "started",
-					daily_title_contains: "日常",
+					daily_title_contains: null,
 					item_state_filter: "none",
 				},
 				provenance: {
 					kind: "derived",
-					rule: "scope.v2",
+					rule: "scope.v3",
 					from: ["/header/roots", "/header/items"],
 				},
 				observed_at: generatedAt,
@@ -519,6 +560,12 @@ function generatePage(
 			roots: linearCell(
 				snapshot.roots.map((root) => ({
 					identifier: root.identifier,
+					...(root.hasChildIssues !== undefined
+						? { has_child_issues: root.hasChildIssues }
+						: {}),
+					...(intakeCells.has(root.id)
+						? { intake: intakeCells.get(root.id)! }
+						: {}),
 					title: root.title,
 					url: root.url,
 					state: root.state,
@@ -529,7 +576,8 @@ function generatePage(
 				{
 					entity: "issues",
 					id: snapshot.boundary.teamKey,
-					field: "state.type=started,parent=null,children!=null",
+					field:
+						"state.type=started,parent=null,department-bound,children-or-never-dispatched",
 					observedAt: linearObservedAt,
 				},
 			),

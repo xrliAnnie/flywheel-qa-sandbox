@@ -17,11 +17,16 @@ import {
 	type CapacitySnapshot,
 	canonicalCapacityToken,
 } from "./capacity-snapshot.js";
+import {
+	type EpicIntakeEvent,
+	epicIntakeEventSchema,
+} from "./epic-intake-store.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { isCapacityUnavailableToken } from "./machine-free-pct.js";
 import type { PatrolLoopEntry } from "./patrol-loop-ledger.js";
 
 export interface HookPayload {
+	epic_intake?: EpicIntakeEvent;
 	business_wake?: {
 		scheduleId: string;
 		revision: number;
@@ -665,6 +670,11 @@ function renderEpicResidualSection(epic: EpicResidualFact | undefined): {
 			factLines: [
 				`还剩什么(Bridge 按 Linear 扫 · 规则 ${epic.rule} 已获 founder 裁定 · 判断输入,不是派单;Linear 观测 ${linearObservedAt};生成 ${generatedAt};范围=${epic.roots} 个 active 父单):`,
 				`- 范围内 ${epic.remaining} 张未完成:现在可以开始的 ${epic.ready}(已剔除账面在跑)· 等前置的 ${epic.blocked} · 账面在跑的 ${epic.running} · 未命中 Lead label ${epic.generalCount}`,
+				...((epic.pendingIntakeForLeadTotal ?? 0) > 0
+					? [
+							`- 待拆解/待核依赖 Epic：${(epic.pendingIntakeForLead ?? []).map((item) => `${item.identifier}（intake于 ${item.intakeAt}）`).join("、")}${(epic.pendingIntakeForLeadTotal ?? 0) > (epic.pendingIntakeForLead?.length ?? 0) ? `；另 ${epic.pendingIntakeForLeadTotal! - (epic.pendingIntakeForLead?.length ?? 0)} 个` : ""}`,
+						]
+					: []),
 				readyLine,
 				...(stuckLine ? [stuckLine] : []),
 			],
@@ -1572,6 +1582,21 @@ export function formatShipApprovalRequest(
 	];
 	lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);
 	return lines.join("\n");
+}
+
+export function formatEpicIntake(env: StuckEscalationEnvelopeLike): string {
+	const intake = epicIntakeEventSchema.parse(env.event.epic_intake);
+	return [
+		`[Event #${env.seq}] epic_intake`,
+		`Stable Event: ${intake.eventUid}`,
+		`Epic: ${intake.identifier} | Project: ${intake.projectName} | Lead: ${intake.leadId}`,
+		`Started: ${intake.startedAt} | intake 于 ${intake.intakeAt} | backfill=${intake.backfill}`,
+		"读取 epic-intake show 核对本项目、本 Lead 和当前 started 段后，按批次规则 ACK；ACK 只确认收件，不结束 pending 工作。",
+		intake.backfill
+			? "下一巡检周期内补收：核依赖账本并在 Epic thread 回帖，不重新拆解。"
+			: "下一巡检周期内读全文、核已有子单；无子单才拆解，dependency add/show 核首批，在 Epic thread 回帖，再记录 resolve 并按容量推进。",
+		"若当前状态、部门或 Epic 判据已失效，不再拆单；按 superseded 收口。Epic 外派工与 ship 门禁保持原规则。",
+	].join("\n");
 }
 
 /** Full frozen due identity; generic summary truncation would lose recovery fields. */

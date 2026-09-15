@@ -1,6 +1,12 @@
-import type { LinearDocument } from "@linear/sdk";
+import { createHash } from "node:crypto";
+import { z } from "zod";
 import { extractAcceptance } from "../epic-page/rules.js";
 import type { ProjectLinearBinding } from "../ProjectConfig.js";
+import {
+	collectStartedEpisodes,
+	isIntakeEpic,
+	type StartedEpisode,
+} from "./epic-intake.js";
 import { LinearUpstreamError } from "./linear-query.js";
 
 export class EpicTooLargeError extends Error {
@@ -39,6 +45,8 @@ export interface LinearActiveScopeSnapshot {
 		label: string | null;
 	};
 	roots: Array<{
+		hasChildIssues?: boolean;
+		startedAt?: string;
 		id: string;
 		identifier: string;
 		title: string;
@@ -69,6 +77,13 @@ export interface LinearActiveScopeSnapshot {
 }
 
 export interface FetchLinearActiveScopeSnapshotOptions {
+	historyCache?: EpicHistoryCache;
+	collectedScope?: CollectedEpicScope;
+	hasProjectDispatch?: (
+		issueUuid: string,
+		identifier: string,
+	) => boolean | null;
+	departmentMatches?: (root: CollectedEpicRoot) => boolean;
 	deadlineMs?: number;
 	maxRootPages?: number;
 	maxChildPages?: number;
@@ -111,22 +126,6 @@ interface LinearScopeIssueNode {
 	children?: { nodes: Array<{ id: string }>; pageInfo: PageInfo };
 }
 
-interface LinearScopeRootNode {
-	id: string;
-	identifier: string;
-	title: string;
-	url: string;
-	updatedAt: string;
-	state: { name: string; type: string };
-	labels: { nodes: Array<{ name: string }>; pageInfo: PageInfo };
-}
-
-interface ActiveScopeRootsResponse {
-	data?: {
-		issues: { nodes: LinearScopeRootNode[]; pageInfo: PageInfo };
-	};
-}
-
 interface ActiveScopeChildrenResponse {
 	data?: {
 		issue: {
@@ -134,19 +133,6 @@ interface ActiveScopeChildrenResponse {
 		} | null;
 	};
 }
-
-const ACTIVE_SCOPE_ROOTS_QUERY = `
-	query ActiveScopeRoots($filter: IssueFilter!, $after: String) {
-		issues(filter: $filter, first: 50, after: $after, includeArchived: false) {
-			nodes {
-				id identifier title url updatedAt
-				state { name type }
-				labels(first: 50) { nodes { name } pageInfo { hasNextPage } }
-			}
-			pageInfo { hasNextPage endCursor }
-		}
-	}
-`;
 
 const ACTIVE_SCOPE_CHILDREN_QUERY = `
 	query ActiveScopeChildren($id: String!, $after: String) {
@@ -183,16 +169,379 @@ const ACTIVE_SCOPE_RELATIONS_QUERY = `
 	}
 `;
 
-function activeScopeFilter(
+const epicPageInfo = z.object({
+	hasNextPage: z.boolean(),
+	endCursor: z.string().nullable().optional(),
+});
+const epicRootSchema = z.object({
+	id: z.string().min(1),
+	identifier: z.string().regex(/^[A-Za-z][A-Za-z0-9]*-\d+$/),
+	title: z.string(),
+	url: z.string().url(),
+	updatedAt: z.string().datetime({ offset: true }),
+	parent: z.object({ id: z.string().min(1) }).nullable(),
+	team: z.object({ key: z.string().min(1) }),
+	project: z.object({ name: z.string() }).nullable(),
+	state: z.object({ name: z.string(), type: z.string().min(1) }),
+	labels: z.object({
+		nodes: z.array(z.object({ name: z.string() })),
+		pageInfo: epicPageInfo,
+	}),
+	children: z.object({
+		nodes: z.array(z.object({ id: z.string().min(1) })),
+		pageInfo: epicPageInfo,
+	}),
+});
+
+const EPIC_ROOT_FIELDS = `
+ id identifier title url updatedAt parent { id } team { key } project { name }
+ state { name type }
+ labels(first: 50) { nodes { name } pageInfo { hasNextPage endCursor } }
+ children(first: 1, includeArchived: true) { nodes { id } pageInfo { hasNextPage endCursor } }
+`;
+const EPIC_SCOPE_QUERY = `query EpicScope($filter: IssueFilter!, $after: String) {
+ issues(filter: $filter, first: 50, after: $after, includeArchived: false) {
+ nodes { ${EPIC_ROOT_FIELDS} } pageInfo { hasNextPage endCursor }
+ }
+}`;
+const EPIC_PENDING_ROOTS_QUERY = `query EpicPendingRoots($filter: IssueFilter!) {
+ issues(filter: $filter, first: 50, includeArchived: true) {
+ nodes { ${EPIC_ROOT_FIELDS} } pageInfo { hasNextPage endCursor }
+ }
+}`;
+const EPIC_ROOT_QUERY = `query EpicScopeRoot($id: String!) { issue(id: $id) { ${EPIC_ROOT_FIELDS} } }`;
+const EPIC_HISTORY_QUERY = `query EpicStateHistory($id: String!, $after: String) {
+ issue(id: $id) { stateHistory(first: 50, after: $after) {
+ nodes { id stateId startedAt endedAt state { type } } pageInfo { hasNextPage endCursor }
+ } }
+}`;
+
+export interface CollectedEpicRoot
+	extends Omit<z.infer<typeof epicRootSchema>, "labels" | "children"> {
+	labels: string[];
+	hasChildIssues: boolean;
+	episodes: StartedEpisode[];
+}
+
+export interface CollectedEpicScope {
+	fetchedAt: string;
+	candidates: CollectedEpicRoot[];
+	missingIssueIds: string[];
+	historyFailures?: Array<{
+		issueUuid: string;
+		identifier: string;
+		reason: "intake_history_unavailable";
+	}>;
+}
+
+/** Only validated histories are cached; current root metadata is always read again. */
+export type EpicHistoryCache = Map<
+	string,
+	{
+		revision: string;
+		expiresAt: number;
+		episodes: StartedEpisode[];
+	}
+>;
+const sharedHistoryCache: EpicHistoryCache = new Map();
+const HISTORY_CACHE_TTL_MS = 10 * 60_000;
+const HISTORY_CACHE_MAX_ROOTS = 512;
+
+type EpicRequest = <T>(
+	query: string,
+	variables: Record<string, unknown>,
+) => Promise<T>;
+
+async function createEpicRequest(
+	apiKey: string,
+	deadlineAt: number,
+	now: () => Date,
+): Promise<EpicRequest> {
+	const { LinearClient } = await import("@linear/sdk");
+	const client = new LinearClient({ apiKey });
+	return async <T>(
+		query: string,
+		variables: Record<string, unknown>,
+	): Promise<T> => {
+		const remainingMs = deadlineAt - now().getTime();
+		if (remainingMs <= 0)
+			throw new LinearUpstreamError("Linear API deadline exceeded");
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const result = await Promise.race([
+				client.client.rawRequest(query, variables),
+				new Promise<never>((_resolve, reject) => {
+					timer = setTimeout(
+						() => reject(new Error("Linear API deadline exceeded")),
+						remainingMs,
+					);
+				}),
+			]);
+			if (
+				result &&
+				typeof result === "object" &&
+				"errors" in result &&
+				Array.isArray(result.errors) &&
+				result.errors.length
+			) {
+				throw new Error("Linear GraphQL response contains errors");
+			}
+			return result as T;
+		} catch (error) {
+			throw new LinearUpstreamError(
+				error instanceof Error ? error.message : String(error),
+				error,
+			);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
+	};
+}
+
+function nextEpicCursor(
+	info: z.infer<typeof epicPageInfo>,
+	seen: Set<string>,
+	page: number,
+	maxPages: number,
+): string | null {
+	if (!info.hasNextPage) return null;
+	if (!info.endCursor || seen.has(info.endCursor))
+		throw new EpicSnapshotTruncatedError(
+			"Missing or repeated Epic page cursor",
+		);
+	if (page >= maxPages) throw new EpicTooLargeError("Epic page bound exceeded");
+	seen.add(info.endCursor);
+	return info.endCursor;
+}
+
+/** Root/history phase shared by intake and full page collection; no child traversal or writes. */
+export async function collectEpicScope(
+	apiKey: string,
 	binding: ProjectLinearBinding,
-): LinearDocument.IssueFilter {
-	return {
+	options: FetchLinearActiveScopeSnapshotOptions & {
+		lastSuccessfulScanStartedAt?: string;
+		pendingIssueIds?: string[];
+	} = {},
+): Promise<CollectedEpicScope> {
+	const now = options.now ?? (() => new Date());
+	const started = now();
+	const request = await createEpicRequest(
+		apiKey,
+		started.getTime() + (options.deadlineMs ?? 20_000),
+		now,
+	);
+	const filter: Record<string, unknown> = {
 		team: { key: { eq: binding.team } },
 		...(binding.project ? { project: { name: { eq: binding.project } } } : {}),
 		...(binding.label ? { labels: { name: { eq: binding.label } } } : {}),
-		state: { type: { eq: "started" } },
 		parent: { null: true },
-		children: { length: { gt: 0 } },
+		...(options.lastSuccessfulScanStartedAt
+			? {
+					updatedAt: {
+						gte: new Date(
+							new Date(
+								z
+									.string()
+									.datetime({ offset: true })
+									.parse(options.lastSuccessfulScanStartedAt),
+							).getTime() - 120_000,
+						).toISOString(),
+					},
+				}
+			: { state: { type: { eq: "started" } } }),
+	};
+	const roots = new Map<string, z.infer<typeof epicRootSchema>>();
+	let after: string | null = null;
+	const seen = new Set<string>();
+	for (let page = 1; ; page++) {
+		const response = z
+			.object({
+				data: z.object({
+					issues: z.object({
+						nodes: z.array(epicRootSchema),
+						pageInfo: epicPageInfo,
+					}),
+				}),
+			})
+			.parse(await request(EPIC_SCOPE_QUERY, { filter, after }));
+		for (const root of response.data.issues.nodes) {
+			const previous = roots.get(root.id);
+			if (previous && JSON.stringify(previous) !== JSON.stringify(root))
+				throw new EpicSnapshotTruncatedError(
+					"Epic metadata changed during pagination",
+				);
+			roots.set(root.id, root);
+		}
+		after = nextEpicCursor(
+			response.data.issues.pageInfo,
+			seen,
+			page,
+			options.maxRootPages ?? 10,
+		);
+		if (after === null) break;
+	}
+	const missingIssueIds: string[] = [];
+	const pendingIds = [...new Set(options.pendingIssueIds ?? [])].filter(
+		(id) => !roots.has(id),
+	);
+	if (pendingIds.length > (options.maxRootPages ?? 10) * 50)
+		throw new EpicTooLargeError("Pending Epic root bound exceeded");
+	// A full successful batch proves which IDs are absent; do not apply the
+	// project/label filter here because moved roots must still be invalidated.
+	if (pendingIds.length > 1) {
+		for (let offset = 0; offset < pendingIds.length; offset += 50) {
+			const ids = pendingIds.slice(offset, offset + 50);
+			const response = z
+				.object({
+					data: z.object({
+						issues: z.object({
+							nodes: z.array(epicRootSchema),
+							pageInfo: epicPageInfo,
+						}),
+					}),
+				})
+				.parse(
+					await request(EPIC_PENDING_ROOTS_QUERY, {
+						filter: { id: { in: ids } },
+					}),
+				);
+			if (response.data.issues.pageInfo.hasNextPage)
+				throw new EpicSnapshotTruncatedError(
+					"Pending Epic batch is incomplete",
+				);
+			const returned = new Set<string>();
+			for (const root of response.data.issues.nodes) {
+				if (!ids.includes(root.id) || returned.has(root.id))
+					throw new EpicSnapshotTruncatedError(
+						"Pending Epic batch identity mismatch",
+					);
+				returned.add(root.id);
+				roots.set(root.id, root);
+			}
+			missingIssueIds.push(...ids.filter((id) => !returned.has(id)));
+		}
+	}
+	for (const id of pendingIds.length === 1 ? pendingIds : []) {
+		try {
+			const response = z
+				.object({ data: z.object({ issue: epicRootSchema.nullable() }) })
+				.parse(await request(EPIC_ROOT_QUERY, { id }));
+			if (response.data.issue === null) missingIssueIds.push(id);
+			else {
+				if (response.data.issue.id !== id)
+					throw new EpicSnapshotTruncatedError(
+						"Pending Epic identity mismatch",
+					);
+				roots.set(id, response.data.issue);
+			}
+		} catch (error) {
+			// Match the existing FLY-967 single-issue lookup contract. Other
+			// upstream failures cannot prove absence and must remain retryable.
+			if (
+				error instanceof LinearUpstreamError &&
+				/entity not found|could not be found/i.test(error.message)
+			) {
+				missingIssueIds.push(id);
+			} else {
+				throw error;
+			}
+		}
+	}
+	const historyCache = options.historyCache ?? sharedHistoryCache;
+	const cacheNamespace = createHash("sha256")
+		.update(JSON.stringify([apiKey, binding]))
+		.digest("hex");
+	const candidates: CollectedEpicRoot[] = [];
+	const historyFailures: NonNullable<CollectedEpicScope["historyFailures"]> =
+		[];
+	for (const root of roots.values()) {
+		if (root.labels.pageInfo.hasNextPage)
+			throw new EpicSnapshotTruncatedError("Epic labels exceed bound");
+		if (root.children.pageInfo.hasNextPage && root.children.nodes.length === 0)
+			throw new EpicSnapshotTruncatedError("Epic child evidence is incomplete");
+		const cacheKey = `${cacheNamespace}:${root.id}`;
+		const revision = JSON.stringify(root);
+		const cached = historyCache.get(cacheKey);
+		let episodes: StartedEpisode[];
+		if (
+			cached &&
+			cached.revision === revision &&
+			cached.expiresAt > started.getTime()
+		) {
+			episodes = structuredClone(cached.episodes);
+		} else {
+			historyCache.delete(cacheKey);
+			try {
+				const history: unknown[] = [];
+				const historyCursors = new Set<string>();
+				after = null;
+				for (let page = 1; ; page++) {
+					const response = z
+						.object({
+							data: z.object({
+								issue: z.object({
+									stateHistory: z.object({
+										nodes: z.array(z.unknown()),
+										pageInfo: epicPageInfo,
+									}),
+								}),
+							}),
+						})
+						.parse(await request(EPIC_HISTORY_QUERY, { id: root.id, after }));
+					history.push(...response.data.issue.stateHistory.nodes);
+					after = nextEpicCursor(
+						response.data.issue.stateHistory.pageInfo,
+						historyCursors,
+						page,
+						options.maxNestedPages ?? 10,
+					);
+					if (after === null) break;
+				}
+				if (history.length === 0)
+					throw new EpicSnapshotTruncatedError("Epic stateHistory is empty");
+				episodes = collectStartedEpisodes(root.id, history);
+				const openSpans = history.filter(
+					(span) => (span as { endedAt: unknown }).endedAt === null,
+				) as Array<{ state: { type: string } }>;
+				if (
+					openSpans.length === 0 ||
+					openSpans.some((span) => span.state.type !== root.state.type)
+				)
+					throw new EpicSnapshotTruncatedError(
+						"Epic current state disagrees with history",
+					);
+			} catch {
+				// A root-local history defect must not invalidate healthy shared scope.
+				historyFailures.push({
+					issueUuid: root.id,
+					identifier: root.identifier,
+					reason: "intake_history_unavailable",
+				});
+				continue;
+			}
+
+			while (historyCache.size >= HISTORY_CACHE_MAX_ROOTS) {
+				historyCache.delete(historyCache.keys().next().value!);
+			}
+			historyCache.set(cacheKey, {
+				revision,
+				expiresAt: started.getTime() + HISTORY_CACHE_TTL_MS,
+				episodes: structuredClone(episodes),
+			});
+		}
+		const { children, labels, ...metadata } = root;
+		candidates.push({
+			...metadata,
+			labels: labels.nodes.map((label) => label.name),
+			hasChildIssues: children.nodes.length > 0,
+			episodes,
+		});
+	}
+	return {
+		fetchedAt: started.toISOString(),
+		candidates,
+		missingIssueIds,
+		historyFailures,
 	};
 }
 
@@ -204,84 +553,31 @@ export async function fetchLinearActiveScopeSnapshot(
 	const now = options.now ?? (() => new Date());
 	const fetchedAtDate = now();
 	const deadlineAt = fetchedAtDate.getTime() + (options.deadlineMs ?? 20_000);
-	const maxRootPages = options.maxRootPages ?? 10;
 	const maxChildPages = options.maxChildPages ?? 10;
 	const maxNestedPages = options.maxNestedPages ?? 10;
 	const maxItems = options.maxItems ?? 500;
-	const { LinearClient } = await import("@linear/sdk");
-	const client = new LinearClient({ apiKey });
+	const request = await createEpicRequest(apiKey, deadlineAt, now);
 
-	async function request<T>(
-		query: string,
-		variables: Record<string, unknown>,
-	): Promise<T> {
-		const remainingMs = deadlineAt - now().getTime();
-		if (remainingMs <= 0) {
-			throw new LinearUpstreamError("Linear API deadline exceeded");
-		}
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const timeout = new Promise<never>((_resolve, reject) => {
-			timer = setTimeout(
-				() => reject(new Error("Linear API deadline exceeded")),
-				remainingMs,
-			);
-		});
-		try {
-			return (await Promise.race([
-				client.client.rawRequest(query, variables),
-				timeout,
-			])) as T;
-		} catch (error) {
-			throw new LinearUpstreamError(
-				error instanceof Error ? error.message : String(error),
-				error,
-			);
-		} finally {
-			if (timer) clearTimeout(timer);
-		}
-	}
-
-	const roots: LinearScopeRootNode[] = [];
-	let rootAfter: string | null = null;
-	for (let page = 1; ; page += 1) {
-		const response: ActiveScopeRootsResponse =
-			await request<ActiveScopeRootsResponse>(ACTIVE_SCOPE_ROOTS_QUERY, {
-				filter: activeScopeFilter(binding),
-				after: rootAfter,
-			});
-		const connection:
-			| { nodes: LinearScopeRootNode[]; pageInfo: PageInfo }
-			| undefined = response.data?.issues;
-		if (!connection) {
-			throw new LinearUpstreamError(
-				"Linear active scope response is missing issues",
-			);
-		}
-		for (const root of connection.nodes) {
-			if (root.labels.pageInfo.hasNextPage) {
-				throw new EpicSnapshotTruncatedError(
-					`Active root labels exceed 50: ${root.identifier}`,
-				);
-			}
-			roots.push(root);
-		}
-		if (!connection.pageInfo.hasNextPage) break;
-		if (page >= maxRootPages)
-			throw new EpicTooLargeError("Too many active roots");
-		rootAfter = connection.pageInfo.endCursor ?? null;
-		if (!rootAfter) {
-			throw new EpicSnapshotTruncatedError(
-				"Active roots indicate more results without a cursor",
-			);
-		}
-	}
+	const scope =
+		options.collectedScope ??
+		(await collectEpicScope(apiKey, binding, options));
+	const roots = scope.candidates.filter((root) =>
+		isIntakeEpic({
+			hasParent: root.parent !== null,
+			departmentMatches:
+				options.departmentMatches?.(root) ??
+				(!binding.label ||
+					root.labels.some(
+						(label) => label.toLowerCase() === binding.label!.toLowerCase(),
+					)),
+			stateType: root.state.type,
+			hasChildIssues: root.hasChildIssues,
+			hasProjectDispatch: root.hasChildIssues
+				? null
+				: (options.hasProjectDispatch?.(root.id, root.identifier) ?? null),
+		}),
+	);
 	if (roots.length === 0) throw new ActiveScopeNotFoundError();
-	if (!roots.some((root) => root.title.includes("日常"))) {
-		throw new ActiveScopeNotFoundError(
-			"Permanent 日常 parent declaration was not found",
-			"missing_daily_root",
-		);
-	}
 
 	const rawItems: LinearScopeIssueNode[] = [];
 	const queuedParents = roots.map((root) => root.id);
@@ -414,7 +710,7 @@ export async function fetchLinearActiveScopeSnapshot(
 	}));
 
 	return {
-		fetchedAt: fetchedAtDate.toISOString(),
+		fetchedAt: scope.fetchedAt,
 		descendantIds: uniqueRawItems.map((item) => item.id),
 		boundary: {
 			teamKey: binding.team,
@@ -423,6 +719,8 @@ export async function fetchLinearActiveScopeSnapshot(
 		},
 		roots: roots.map((root) => ({
 			id: root.id,
+			hasChildIssues: root.hasChildIssues,
+			startedAt: root.episodes.find((episode) => episode.active)?.startedAt,
 			identifier: root.identifier,
 			title: root.title,
 			url: root.url,

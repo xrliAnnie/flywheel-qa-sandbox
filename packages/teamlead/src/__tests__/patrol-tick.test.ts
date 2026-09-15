@@ -554,6 +554,45 @@ describe("FLY-1687/FLY-1771 Lead patrol tick pass", () => {
 		expect(h.rows.map((row) => row.lead_id)).toEqual(["eng-lead"]);
 	});
 
+	it("mints the normal scope tick for an empty roster with pending intake and no ready children", async () => {
+		const h = harness({ roster: [] });
+		const fact = epicFact({
+			trigger: "scope",
+			remaining: 0,
+			remainingForLead: 0,
+			ready: 0,
+			readyForLead: [],
+			readyForLeadTotal: 0,
+			running: 0,
+			blocked: 0,
+			generalCount: 0,
+			stuckForLead: 0,
+			stuckForLeadItems: [],
+			pendingIntakeForLeadTotal: 1,
+			pendingIntakeForLead: [
+				{
+					eventUid: "epic_intake:uuid:2026-08-13T11:59:00.000Z",
+					identifier: "TEST-1",
+					intakeAt: "2026-08-13T11:59:00.000Z",
+					backfill: false,
+					workState: "pending",
+				},
+			],
+		});
+		await createLeadPatrolTickPass({
+			...h.deps,
+			epicResidual: {
+				materializeForScan: vi.fn(async () => ({})),
+				summarizeForLead: vi.fn(() => fact),
+			},
+		} as PatrolTickDeps)();
+		expect(h.rows).toHaveLength(1);
+		expect(payload(h.rows[0]!)).toMatchObject({
+			roster: [],
+			epic: { ready: 0, pendingIntakeForLeadTotal: 1 },
+		});
+	});
+
 	it("mints a scope tick with capacity when an empty roster still owns Epic work", async () => {
 		const h = harness({ roster: [] });
 		const materialized = { kind: "materialized" };
