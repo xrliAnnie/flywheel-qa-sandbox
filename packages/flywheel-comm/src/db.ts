@@ -58,10 +58,6 @@ import {
 	parseReworkWakeMetadata,
 	type ReworkWakeRetirementProof,
 } from "./rework-wake-identity.js";
-import {
-	isRunnerStopReport,
-	RUNNER_STOP_QUESTION_ID_RE,
-} from "./runner-stop-report.js";
 import { encodeSenderRef } from "./sender-ref.js";
 import type {
 	Message,
@@ -4004,7 +4000,7 @@ export class CommDB {
 			.all(leadId) as Message[];
 	}
 
-	/** Project database read: no Epic, session-liveness or age restriction. */
+	/** Project attention read: exclude reports and ended ordinary asks before pagination. */
 	listAttentionQuestions(input: {
 		limit: number;
 		cursor?: { created_at: string; id: string };
@@ -4033,6 +4029,15 @@ export class CommDB {
 			FROM mailbox q WHERE type = 'question'
 			AND relay_state != 'terminal_disposed' AND superseded_at IS NULL
 			AND COALESCE(checkpoint, '') NOT IN ('review_design', 'review_code')
+			AND (checkpoint IN ('approve_to_ship', 'founder_review', 'brainstorm')
+                 OR (COALESCE(kind, '') != 'report'
+			AND ltrim(content) NOT LIKE 'DONE:%'
+			AND ltrim(content) NOT LIKE 'ACK:%'
+			AND ltrim(content) NOT LIKE 'DESIGN-HTML ready:%'
+			AND ltrim(content) NOT LIKE 'RUNNER-STOPPED%'))
+			AND (checkpoint IN ('approve_to_ship', 'founder_review', 'brainstorm')
+			     OR NOT EXISTS (SELECT 1 FROM sessions s WHERE s.execution_id=q.from_agent
+			                    AND s.status NOT IN ('running', 'blocked')))
 			AND NOT EXISTS (SELECT 1 FROM mailbox r WHERE r.ref_id = q.id AND r.type = 'response')
 			AND (@cursor IS NULL OR (created_at, id) > (@cursor, @id))
 			ORDER BY created_at, id LIMIT @limit
@@ -4060,28 +4065,27 @@ export class CommDB {
 		};
 		const page = rows.slice(0, input.limit);
 		const last = page.at(-1);
-		const questions = page
-			.filter((row) => !isRunnerStopReport(row))
-			.filter(
-				(row) =>
-					!(
-						row.content_ref &&
-						row.kind === "report" &&
-						RUNNER_STOP_QUESTION_ID_RE.test(row.id)
-					),
-			)
-			.map(({ content: _content, content_ref: _ref, relay_state, ...row }) => ({
-				...row,
-				// Selection above establishes an unanswered, non-disposed question.
-				state: "pending" as const,
-				classification_unknown: Boolean(_ref && row.kind == null),
-				kind:
-					relay_state === "protected" &&
-					row.checkpoint &&
-					Object.hasOwn(founderKinds, row.checkpoint)
+		const questions = page.map(
+			({ content, content_ref, relay_state: _relayState, ...row }) => {
+				const founderKind =
+					row.checkpoint && Object.hasOwn(founderKinds, row.checkpoint)
 						? founderKinds[row.checkpoint]
-						: "question",
-			}));
+						: null;
+				return {
+					...row,
+					state: "pending" as const,
+					classification_unknown: Boolean(content_ref && !founderKind),
+					// Never read spilled files or infer a human recipient from a personal name.
+					kind:
+						founderKind ??
+						(content_ref
+							? "unknown"
+							: /(^|\s)@founder(?=$|[\s:：,，.!！?？])/i.test(content)
+								? "question"
+								: "lead_question"),
+				};
+			},
+		);
 		return {
 			questions,
 			rawCount: page.length,

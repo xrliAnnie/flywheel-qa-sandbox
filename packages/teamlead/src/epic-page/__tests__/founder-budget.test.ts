@@ -79,14 +79,27 @@ it("measures the combined child cap with the real attention warning and budgets 
 		Buffer.byteLength(renderEpicPageBundle(baseline, EPIC_SHAPE_NOW).html),
 	).toBeLessThanOrEqual(491520);
 	let cap = 59;
+	let documentLimited = false;
 	for (let n = 60; n <= 200; n++) {
-		if (Buffer.byteLength(render(await zero(n))) > 524288) break;
+		try {
+			if (Buffer.byteLength(render(await zero(n))) > 524288) break;
+		} catch (error) {
+			expect((error as Error).message).toContain(
+				"document exceeds 1507328 bytes",
+			);
+			documentLimited = true;
+			break;
+		}
 		cap = n;
 	}
 	expect(cap).toBeGreaterThanOrEqual(60);
 	const capBytes = Buffer.byteLength(render(await zero(cap)));
 	expect(capBytes).toBeLessThanOrEqual(524288);
-	if (cap < 200)
+	if (documentLimited)
+		await expect(zero(cap + 1)).rejects.toThrow(
+			"document exceeds 1507328 bytes",
+		);
+	else if (cap < 200)
 		expect(Buffer.byteLength(render(await zero(cap + 1)))).toBeGreaterThan(
 			524288,
 		);

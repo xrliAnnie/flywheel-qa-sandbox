@@ -82,7 +82,7 @@ describe("hosted Epic page publisher", () => {
 			"../epic-page/render-html.js"
 		);
 		const page = pageForShipJudgmentBudget();
-		page.items[0]!.title.value = "X".repeat(70000);
+		page.items[0]!.title.value = "X".repeat(300000);
 		expect(
 			Buffer.byteLength(renderEpicPageBundle(page, EPIC_SHAPE_NOW).html),
 		).toBeGreaterThan(524288);
@@ -92,9 +92,15 @@ describe("hosted Epic page publisher", () => {
 		expect(Buffer.byteLength(html) + 88).toBeLessThanOrEqual(524288);
 		expect(html.match(/class="kid"/g)).toHaveLength(60);
 		expect(html.match(/data-root=/g)).toHaveLength(8);
-		expect(html.match(/data-history-row/g)!.length).toBeLessThan(20);
+		expect(html.match(/data-history-row/g)?.length ?? 0).toBeLessThan(20);
+		const { decodeAuditSidecar } = await import(
+			"../epic-page/audit-sidecar.js"
+		);
+		expect(
+			decodeAuditSidecar(putEpicPage.mock.calls[0]?.[2].json),
+		).toContainEqual(page.ship_judgment_history);
 		expect(html).toContain("Content-Security-Policy");
-		page.items[0]!.title.value = "X".repeat(150000);
+		page.items[0]!.title.value = "X".repeat(600000);
 		expect(await publisher().publishHosted(page)).toBe(
 			"structural: epic_html_too_large",
 		);

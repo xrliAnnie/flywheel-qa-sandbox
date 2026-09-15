@@ -4,6 +4,7 @@ import {
 	type AttentionItem,
 	type AttentionSource,
 	attentionActions,
+	rebuildAttention,
 	validAttentionSince,
 	validDiscordId,
 } from "./attention.js";
@@ -14,7 +15,10 @@ export function attentionPublicKey(project: string, key: string): string {
 	return `a-${createHash("sha256").update(`attention.v1\0${project}\0${key}`).digest("hex")}`;
 }
 
-export function attentionSummary(page: EpicPageV2): string {
+export function attentionSummary(
+	page: EpicPageV2,
+	count = page.attention.length,
+): string {
 	const sources = page.attention_sources;
 	const identityIncomplete =
 		sources.identity.value === null || sources.identity.value.unresolved > 0;
@@ -33,13 +37,13 @@ export function attentionSummary(page: EpicPageV2): string {
 		if (page.attention_sources.budget.value === null)
 			reasons.push(label("attention.budget_incomplete"));
 		return (
-			label("attention.incomplete", { n: page.attention.length }) +
+			label("attention.incomplete", { n: count }) +
 			(reasons.length ? `（${reasons.join("；")}）` : "")
 		);
 	}
-	return page.attention.length === 0
+	return count === 0
 		? label("attention.empty")
-		: label("attention.count", { n: page.attention.length });
+		: label("attention.count", { n: count });
 }
 
 export function attentionWait(since: Cell<string>, now: Date): string {
@@ -165,4 +169,51 @@ export function attentionMissing(reason?: MissingReason): string {
 		statestore_error: "讨论串配置读取失败",
 	};
 	return labels[reason ?? "source_unavailable"] ?? "来源不可用";
+}
+
+// Display projection only: the canonical attention.v1 sources and derived Cells
+// remain unchanged, including older questions needed for counts and audit.
+export function isFounderAttention(source: AttentionSource): boolean {
+	return ["ship", "founder_gate", "question"].includes(
+		source.fact.value?.kind ?? "",
+	);
+}
+export function attentionAudience(page: EpicPageV2, founder: boolean) {
+	return page.attention.flatMap((item) => {
+		const sources = item.sources.filter(
+			(source) => isFounderAttention(source) === founder,
+		);
+		if (!sources.length) return [];
+		const questions = sources.filter((source) =>
+			["question", "lead_question"].includes(source.fact.value?.kind ?? ""),
+		);
+		const latest = [...questions].sort(
+			(a, b) =>
+				(validAttentionSince(b.since.value)
+					? Date.parse(b.since.value)
+					: -Infinity) -
+					(validAttentionSince(a.since.value)
+						? Date.parse(a.since.value)
+						: -Infinity) ||
+				(b.fact.value?.id ?? "").localeCompare(a.fact.value?.id ?? ""),
+		)[0];
+		const selected = sources.filter(
+			(source) => !questions.includes(source) || source === latest,
+		);
+		const projected =
+			selected.length === item.sources.length
+				? item
+				: {
+						...rebuildAttention(
+							page,
+							[{ ...item, sources: selected }],
+							page.generated_at,
+						).attention[0]!,
+						// Link validation must use the actual stored Cell, never repair it while rendering.
+						thread_url: item.thread_url,
+					};
+		return [
+			{ item: projected, olderQuestions: Math.max(0, questions.length - 1) },
+		];
+	});
 }

@@ -32,6 +32,7 @@ import {
 import type { EpicPageItemSignals } from "./signals.js";
 
 export interface GenerateEpicPageInput {
+	childThreads?: Map<string, Cell<string>>;
 	shipJudgmentHistory?: EpicHistory;
 	leadNotes?: LeadNoteRecord[];
 	leadNoteFadeDays?: number;
@@ -216,6 +217,9 @@ function generatePage(
 				: {}),
 			...(notesByIssue.has(child.id)
 				? { lead_note: notesByIssue.get(child.id)! }
+				: {}),
+			...(input.childThreads?.has(child.id)
+				? { thread_url: input.childThreads.get(child.id)! }
 				: {}),
 			parent: {
 				...linearCell(child.parent?.identifier ?? null, {

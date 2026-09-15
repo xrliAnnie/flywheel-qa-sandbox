@@ -2,13 +2,14 @@ import { runInNewContext } from "node:vm";
 import { Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
 import { escapeHtml } from "../../bridge/xhs-review-html.js";
+import { decodeAuditSidecar } from "../audit-sidecar.js";
 import { escapeMarkdownTableCell } from "../escape.js";
 import { generateEpicPage } from "../generate.js";
 import { label } from "../labels.js";
 import { leadNoteAge } from "../lead-note.js";
 import type { Cell, EpicPage, Signal } from "../model.js";
 import { buildEpicPageRenderReceipt } from "../receipt.js";
-import { renderEpicPageHtml } from "../render-html.js";
+import { renderEpicPageBundle, renderEpicPageHtml } from "../render-html.js";
 import { renderEpicPageMarkdown } from "../render-markdown.js";
 import {
 	EPIC_SHAPE_NOW,
@@ -78,16 +79,15 @@ it.each([2, 3, 4])(
 		try {
 			window.document.body.innerHTML = html;
 			const notes = window.document.querySelectorAll("[data-lead-written-at]");
-			expect(notes).toHaveLength(3);
+			expect(notes).toHaveLength(2);
 			for (const note of notes) {
 				expect(note.classList.contains("lead-note-stale")).toBe(days > 3);
 				expect(note.textContent).toContain(`工程 Lead · ${days * 24} 小时前写`);
 				expect(note.querySelector("time")?.textContent).toBe(written_at);
 				expect(note.querySelector("img")).toBeNull();
 			}
-			expect(
-				notes[2]?.previousElementSibling?.hasAttribute("data-machine-line"),
-			).toBe(true);
+			expect(notes[0]?.closest(".epic")).not.toBeNull();
+			expect(notes[1]?.closest("details.lead-panel")).not.toBeNull();
 			expect(window.document.body.textContent).toContain(
 				"角色为提交方声明，未核验具体作者",
 			);
@@ -329,9 +329,14 @@ function firstHtmlItemCard(html: string): string {
 	window.document.write(html);
 	const child = window.document.querySelector('[data-item="EPX-1"]');
 	expect(child).not.toBeNull();
+	const audit = window.document
+		.querySelector('[data-cell="/items/0/title"]')!
+		.closest("details.audit")!;
+	expect(audit.closest("details.lead-panel")).not.toBeNull();
 	return (
 		child!.outerHTML +
-		[...child!.querySelectorAll("[data-src]")]
+		audit.outerHTML +
+		[...audit.querySelectorAll("[data-src]")]
 			.map((e) => dictionaryText(html, e.getAttribute("data-src")!))
 			.join("")
 	);
@@ -381,7 +386,7 @@ describe("Epic page render parity", () => {
 		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
 		const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
 
-		for (const output of [html, markdown]) {
+		for (const output of [markdown]) {
 			expect(output).toContain(label("page.freshness"));
 			expect(output).toContain(label("section.stuck"));
 			expect(output).toContain(label("section.waiting_founder"));
@@ -396,9 +401,18 @@ describe("Epic page render parity", () => {
 			expect(output).not.toContain("FREE_TEXT_SENTINEL_MUST_NOT_RENDER");
 		}
 
-		const stuck = htmlBlock(html, "/stuck_items").split("</article>")[0]!;
-		expect(stuck).toContain(label("signal.kind.question_pending"));
-		expect(stuck).not.toContain(label("signal.kind.waiting_founder"));
+		const doc = new Window().document;
+		doc.write(html);
+		expect(doc.querySelector(".freshness-card,.overview-card")).toBeNull();
+		expect(doc.querySelector(".mock-bar")?.textContent).toContain(
+			document.generated_at,
+		);
+		const audit = decodeAuditSidecar(
+			renderEpicPageBundle(document, EPIC_SHAPE_NOW).audit.json,
+		);
+		expect(audit).toContainEqual(document.freshness);
+		expect(audit).toContainEqual(document.stuck_items);
+		expect(html).not.toContain("FREE_TEXT_SENTINEL_MUST_NOT_RENDER");
 	});
 
 	it("uses one inert nonce script for reader age and no self-supplied CSP", () => {
@@ -423,30 +437,22 @@ describe("Epic page render parity", () => {
 		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
 		const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
 
-		for (const output of [html, markdown]) {
+		expect(html).not.toContain(label("section.stuck"));
+		for (const output of [markdown]) {
 			expect(output).toContain(label("section.stuck"));
 			expect(output).toContain(label("section.waiting_founder"));
 			expect(output).toContain(label("page.signal_none"));
 		}
 	});
 
-	it("renders an explicit empty dependency review between ready and scope", () => {
+	it("omits an empty dependency heading in HTML while retaining its audit and Markdown diagnostic", () => {
 		const document = page();
 		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
-		const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
-		expect(markdown).toContain("## 依赖需要减法的地方");
-
-		for (const output of [html, markdown]) {
-			const ready = output.indexOf(label("section.ready"));
-			const review = output.indexOf(label("section.review"));
-			const scope = output.indexOf(label("section.scope"));
-			expect(review).toBeGreaterThan(ready);
-			expect(review).toBeLessThan(scope);
-			expect(output).toContain(label("review.none"));
-			expect(output).toContain(
-				label("page.default_rule_note", { rule: "subtraction.v1" }),
-			);
-		}
+		expect(html).not.toContain(label("section.review"));
+		expect(html).toContain('data-cell="/dependency_review"');
+		expect(renderEpicPageMarkdown(document, EPIC_SHAPE_NOW)).toContain(
+			"## 依赖需要减法的地方",
+		);
 	});
 
 	it("renders every dependency review shape and escapes its identifiers", () => {
@@ -475,7 +481,7 @@ describe("Epic page render parity", () => {
 
 		const html = renderEpicPageHtml(document, EPIC_SHAPE_NOW);
 		const markdown = renderEpicPageMarkdown(document, EPIC_SHAPE_NOW);
-		for (const output of [html, markdown]) {
+		for (const output of [markdown]) {
 			for (const marker of [
 				"EPX-1",
 				"EPX-2",
@@ -489,6 +495,14 @@ describe("Epic page render parity", () => {
 			expect(output).not.toContain("<script>alert(1)</script>");
 			expect(output).toContain("&lt;script&gt;alert");
 		}
+		expect(html).toContain('data-cell="/dependency_review"');
+		expect(html).toContain("&lt;script&gt;alert");
+		expect(html).not.toContain("<script>alert(1)</script>");
+		expect(
+			decodeAuditSidecar(
+				renderEpicPageBundle(document, EPIC_SHAPE_NOW).audit.json,
+			),
+		).toContainEqual(document.dependency_review);
 	});
 
 	it("keeps derived dependency review data out of the render receipt", () => {
@@ -507,7 +521,7 @@ describe("Epic page render parity", () => {
 		expect(html.match(/class="kid" data-item=/g)).toHaveLength(
 			document.items.length,
 		);
-		expect(html).toContain('class="epic" data-root="EPX-100"');
+		expect(html).toMatch(/class="epic [^"]*" data-root="EPX-100"/);
 		expect(html).not.toContain("<table");
 		expect(html).not.toMatch(/<details[^>]* open/);
 		expect(html).toContain("等 EPX-1");
@@ -530,12 +544,12 @@ describe("Epic page render parity", () => {
 
 	it("puts the Lead diagnostic panel after the Epic cards", () => {
 		const html = renderEpicPageHtml(page(), EPIC_SHAPE_NOW);
-		const epic = html.indexOf('<details class="epic"');
+		const epic = html.indexOf('<details class="epic ');
 		const lead = html.indexOf('<details class="lead-panel"');
 		expect(epic).toBeGreaterThan(0);
 		expect(lead).toBeGreaterThan(epic);
-		for (const key of ["section.ready", "section.scope"] as const)
-			expect(html.indexOf(label(key))).toBeGreaterThan(lead);
+		expect(html.indexOf('data-cell="/ready_items"')).toBeGreaterThan(lead);
+		expect(html).not.toContain(label("section.ready"));
 	});
 
 	it("keeps derived overview pointers inside the collapsed audit body", () => {
@@ -553,30 +567,19 @@ describe("Epic page render parity", () => {
 				throw new Error(`${path} must be derived`);
 			}
 			const block = htmlBlock(html, path);
-			const summaryStart = block.indexOf("<summary>");
-			const summaryEnd = block.indexOf("</summary>", summaryStart);
-			const summary = block.slice(
-				summaryStart,
-				summaryEnd + "</summary>".length,
-			);
+			const window = new Window();
+			window.document.write(html);
+			expect(
+				window.document
+					.querySelector(`[data-cell="${path}"]`)
+					?.closest("details")
+					?.hasAttribute("open"),
+			).toBe(false);
+			window.close();
+			expect(block, path).toContain(cell.provenance.rule);
 
-			expect(summary, path).toBe(
-				`<summary>${label("page.all_cells", { count: 1 })}</summary>`,
-			);
-			expect(summary, path).not.toContain("/items/");
-			expect(block.slice(summaryEnd), path).toContain(cell.provenance.rule);
-			expect(block.slice(summaryEnd), path).toContain(
-				label(
-					cell.provenance.rule === "ready.v1"
-						? "page.decided_rule_note"
-						: "page.default_rule_note",
-					{ rule: cell.provenance.rule },
-				),
-			);
 			for (const sourcePath of cell.provenance.from) {
-				expect(block.slice(summaryEnd), `${path} <- ${sourcePath}`).toContain(
-					sourcePath,
-				);
+				expect(block, `${path} <- ${sourcePath}`).toContain(sourcePath);
 			}
 		}
 	});

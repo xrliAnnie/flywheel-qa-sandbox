@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { escapeHtml } from "../bridge/xhs-review-html.js";
 import {
 	attentionActionText,
+	attentionAudience,
 	attentionLink,
 	attentionMissing,
 	attentionPublicKey,
@@ -20,21 +21,14 @@ import {
 import { renderHistoryPreview } from "./history-preview.js";
 import { type LabelKey, label, leadNoteRoleLabel } from "./labels.js";
 import { DEFAULT_LEAD_NOTE_FADE_DAYS, leadNoteAge } from "./lead-note.js";
-import type {
-	Cell,
-	DependencyReviewEntry,
-	EpicItem,
-	EpicPage,
-	Provenance,
-	Signal,
-	StuckItem,
-} from "./model.js";
+import type { Cell, EpicItem, EpicPage, Provenance } from "./model.js";
 
 export interface EpicOptionalRows {
 	judgmentRows?: number;
 	historyRows?: number;
 }
 class RenderAudit extends AuditDictionary {
+	appendix: string[] = [];
 	judgmentCount = 0;
 	omittedJudgments = 0;
 	constructor(
@@ -54,7 +48,7 @@ function compactAudit(
 function auditFooter(audit: AuditSidecar): string {
 	const json = audit.json();
 	const hash = createHash("sha256").update(json).digest("hex");
-	return `<footer>审计出处：<a href="${hash}/index.audit.json">${hash}/index.audit.json</a> · SHA-256 ${hash} · ${audit.count} 条 · ${Buffer.byteLength(json)} B</footer>`;
+	return `<footer id="epic-audit">审计出处：<a href="${hash}/index.audit.json">完整出处</a> · SHA-256 ${hash} · ${audit.count} 条 · ${Buffer.byteLength(json)} B</footer>`;
 }
 
 const FOUNDER_DECIDED_RULES = new Set([
@@ -85,8 +79,12 @@ function htmlValue(value: unknown): string {
 }
 
 function safeLinearLink(url: string, text: string): string {
-	return url.startsWith("https://linear.app/")
-		? `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`
+	const match =
+		/^https:\/\/linear\.app\/([^/?#]+)\/issue\/([A-Za-z]+-\d+)(?:[/?#]|$)/.exec(
+			url,
+		);
+	return match
+		? `<a href="https://linear.app/${escapeHtml(match[1]!)}/issue/${escapeHtml(match[2]!)}">${escapeHtml(text)}</a>`
 		: escapeHtml(text);
 }
 
@@ -214,183 +212,6 @@ function acceptanceSummary(item: EpicItem): string {
 		: compact;
 }
 
-function triggerLabel(trigger: EpicPage["generator"]["trigger"]): string {
-	return label(`freshness.trigger.${trigger}` as LabelKey);
-}
-
-function signalLabel(signal: Pick<Signal, "kind" | "reason">): string {
-	return signal.kind === "runner_stopped"
-		? label("signal.kind.runner_stopped", { reason: signal.reason ?? "error" })
-		: label(`signal.kind.${signal.kind}` as LabelKey);
-}
-
-function signalSummary(signal: Signal): string {
-	return `${signalLabel(signal)} · ${signal.execution_id8} · ${signal.since}`;
-}
-
-function signalList(signals: Signal[]): string {
-	return signals.length > 0
-		? signals
-				.map(
-					(signal) =>
-						`<span class="signal-pill">${escapeHtml(signalSummary(signal))}</span>`,
-				)
-				.join("")
-		: escapeHtml(label("page.signal_none"));
-}
-
-function stuckSignal(page: EpicPage, stuck: StuckItem): Signal | undefined {
-	return page.items
-		.find((item) => item.identifier === stuck.item)
-		?.signals.find(
-			(signal) =>
-				signal.kind === stuck.kind &&
-				signal.execution_id8 === stuck.execution_id8,
-		);
-}
-
-function stuckSummary(page: EpicPage): string {
-	const stuck = page.stuck_items.value ?? [];
-	return stuck.length > 0
-		? stuck
-				.map((entry) => {
-					const signal = stuckSignal(page, entry);
-					const kind = signal
-						? signalLabel(signal)
-						: label(`signal.kind.${entry.kind}` as LabelKey);
-					return `<span class="signal-pill">${escapeHtml(`${entry.item} · ${kind} · ${entry.execution_id8} · ${entry.since}`)}</span>`;
-				})
-				.join("")
-		: escapeHtml(label("page.signal_none"));
-}
-
-function waitingFounderSummary(page: EpicPage): string {
-	const waiting = page.items.flatMap((item) =>
-		item.signals
-			.filter((signal) => signal.kind === "waiting_founder")
-			.map((signal) => ({ item: item.identifier, signal })),
-	);
-	return waiting.length > 0
-		? waiting
-				.map(
-					({ item, signal }) =>
-						`<span class="signal-pill">${escapeHtml(`${item} · ${signalSummary(signal)}`)}</span>`,
-				)
-				.join("")
-		: escapeHtml(label("page.signal_none"));
-}
-
-function observedAtAtPath(page: EpicPage, path: string): string | undefined {
-	let cursor: unknown = page;
-	for (const part of path.split("/").filter(Boolean)) {
-		if (cursor === null || typeof cursor !== "object") return undefined;
-		cursor = Array.isArray(cursor)
-			? cursor[Number(part)]
-			: (cursor as Record<string, unknown>)[part];
-	}
-	if (cursor === null || typeof cursor !== "object") return undefined;
-	const observedAt = (cursor as Record<string, unknown>).observed_at;
-	return typeof observedAt === "string" ? observedAt : undefined;
-}
-
-function renderFreshness(page: EpicPage): string {
-	const freshness = page.freshness;
-	const current = freshness.current.value;
-	const lastGenerated = freshness.last_generated.value;
-	const lastPublished = freshness.last_published.value;
-	const failureCount = freshness.publish_failures.value?.count ?? 0;
-	const lastPublishFailure = freshness.last_publish_failure;
-	const hosted = freshness.hosted.value;
-	const oldestPath = freshness.oldest_source.value?.path;
-	const oldestObservedAt = oldestPath
-		? observedAtAtPath(page, oldestPath)
-		: undefined;
-	const rows: Array<[string, string]> = [
-		[
-			label("freshness.current"),
-			current
-				? `v${current.version} · ${triggerLabel(current.trigger)} · ${current.reasons.join(", ")}`
-				: label("page.none"),
-		],
-		[
-			label("freshness.last_generated"),
-			lastGenerated
-				? `v${lastGenerated.version} · ${triggerLabel(lastGenerated.trigger)} · ${freshness.last_generated.source_updated_at ?? label("page.none")}`
-				: label("page.none"),
-		],
-		[
-			label("freshness.last_published"),
-			lastPublished
-				? `v${lastPublished.version} · ${triggerLabel(lastPublished.trigger)} · ${freshness.last_published.source_updated_at ?? label("page.none")}`
-				: label("page.none"),
-		],
-		[
-			label("freshness.failures", {
-				n: failureCount,
-				token:
-					failureCount > 0
-						? (lastPublishFailure.value?.token ?? label("page.none"))
-						: label("page.none"),
-				at:
-					failureCount > 0
-						? (lastPublishFailure.source_updated_at ?? label("page.none"))
-						: label("page.none"),
-			}),
-			"",
-		],
-		[
-			label("freshness.hosted", {
-				token8: hosted?.token8 ?? label("page.none"),
-				at: freshness.hosted.source_updated_at ?? label("page.none"),
-			}),
-			"",
-		],
-		[
-			label("freshness.oldest_source"),
-			oldestPath
-				? `${oldestPath} @ ${oldestObservedAt ?? label("page.none")}`
-				: label("page.none"),
-		],
-		[
-			label("freshness.next_scan"),
-			freshness.next_scan.value
-				? `${freshness.next_scan.value.expected_in_seconds} 秒后`
-				: label("page.none"),
-		],
-	];
-	return `<section class="freshness-card">
-	<h2>${escapeHtml(label("page.freshness"))}</h2>
-	<div class="freshness-grid">${rows
-		.map(([name, value]) =>
-			value
-				? `<div><b>${escapeHtml(name)}</b><span>${escapeHtml(value)}</span></div>`
-				: `<div><span>${escapeHtml(name)}</span></div>`,
-		)
-		.join("")}</div>
-	<div class="freshness-age" data-opened-age>${escapeHtml(label("freshness.opened_age", { minutes: 0 }))}</div>
-</section>`;
-}
-
-function renderLeadNotes(
-	notes: Cell<string>[] | undefined,
-	now: Date,
-	fadeDays: number,
-	compact = false,
-): string {
-	return (notes ?? [])
-		.map((note) => {
-			if (note.provenance.kind !== "lead_note")
-				throw new Error("invalid lead-note provenance");
-			const { written_at, role } = note.provenance;
-			const age = leadNoteAge(written_at, now, fadeDays);
-			const roleLabel = leadNoteRoleLabel(role);
-			const tag = compact ? "span" : "aside";
-			const textTag = compact ? "span" : "p";
-			return `<${tag} class="lead-note${compact ? " lead-note-compact" : ""}${age.stale ? " lead-note-stale" : ""}" data-lead-written-at="${escapeHtml(written_at)}" data-lead-fade-days="${escapeHtml(String(fadeDays))}" data-lead-role="${escapeHtml(roleLabel)}"><b>${escapeHtml(label("lead_note.title"))}</b><${textTag} class="lead-note-text" title="${escapeHtml(note.value ?? "")}">${escapeHtml(note.value ?? "")}</${textTag}><span data-lead-relative>${escapeHtml(`${roleLabel} · ${age.relative}`)}</span><time datetime="${escapeHtml(written_at)}">${escapeHtml(written_at)}</time><span data-lead-stale${age.stale ? "" : " hidden"}>${escapeHtml(label("lead_note.stale"))}</span><small>${escapeHtml(label("lead_note.disclosure"))}</small></${tag}>`;
-		})
-		.join("");
-}
-
 function renderViewRule(view: ViewProvenance, dictionary: RenderAudit): string {
 	if (dictionary.sidecar)
 		return `<div class="view-rule" data-view-rule="${view.rule}" data-audit="${dictionary.sidecar.add(view)}">${escapeHtml(view.rule)} · ${compactAudit(dictionary.sidecar, view, view.observedAt)}</div>`;
@@ -415,6 +236,7 @@ function blockersText(child: ChildView): string {
 	);
 }
 function childBadge(child: ChildView): string {
+	if (child.cls === "free") return label("child.idle");
 	if (child.cls === "waiting")
 		return label("child.waiting", { blockers: blockersText(child) });
 	if (child.cls === null)
@@ -423,6 +245,7 @@ function childBadge(child: ChildView): string {
 	return label(`child.${child.cls}`);
 }
 function progressText(child: ChildView): string {
+	if (child.cls === "free") return label("progress.idle");
 	const value = child.progress;
 	if (value.kind === "live")
 		return label("progress.live", {
@@ -458,6 +281,14 @@ function renderChildAudit(
 	child: ChildView,
 	dictionary: RenderAudit,
 ): string {
+	if (dictionary.sidecar) {
+		const id = dictionary.sidecar.add(item);
+		const viewId = dictionary.sidecar.add({
+			progress: child.progress.view,
+			blockerScope: child.blockerScope,
+		});
+		return `<p class="audit" data-item-audit="${id}" data-view-audit="${viewId}"><a href="#epic-audit">${escapeHtml(label("cell.provenance"))} #${id}</a></p>`;
+	}
 	const cells = itemCells(item)
 		.map(([field, name, cell]) => {
 			if (dictionary.sidecar)
@@ -506,6 +337,23 @@ function renderJudgmentHistory(
 	dictionary.sidecar?.add(cell);
 	return renderHistoryPreview(cell, dictionary.limits.historyRows);
 }
+function renderLeadNotes(
+	notes: Cell<string>[] | undefined,
+	now: Date,
+	fadeDays: number,
+): string {
+	return (notes ?? [])
+		.map((note) => {
+			if (note.provenance.kind !== "lead_note")
+				throw new Error("invalid lead-note provenance");
+			const { role, written_at } = note.provenance;
+			const age = leadNoteAge(written_at, now, fadeDays);
+			const roleLabel = leadNoteRoleLabel(role);
+			return `<div class="leadnote${age.stale ? " lead-note-stale" : ""}" data-lead-written-at="${escapeHtml(written_at)}" data-lead-role="${escapeHtml(roleLabel)}" data-lead-fade-days="${fadeDays}"><b>💬 判断</b><div class="ln-body" title="${escapeHtml(note.value ?? "")}">${escapeHtml(note.value ?? "")}</div><div class="ln-meta"><span data-lead-relative>${escapeHtml(roleLabel)} · ${escapeHtml(age.relative)}</span><span data-lead-stale${age.stale ? "" : " hidden"}> · ${escapeHtml(label("lead_note.stale"))}</span><time hidden datetime="${escapeHtml(written_at)}">${escapeHtml(written_at)}</time><small hidden>${escapeHtml(label("lead_note.disclosure"))}</small></div></div>`;
+		})
+		.join("");
+}
+
 function renderChild(
 	page: EpicPage,
 	child: ChildView,
@@ -513,20 +361,39 @@ function renderChild(
 	now: Date,
 ): string {
 	const item = page.items[child.itemIndex]!;
-	const signals = item.signals.length
-		? `<div class="kid-signals">${item.signals.some((s) => s.kind !== "waiting_founder") ? signalList(item.signals.filter((s) => s.kind !== "waiting_founder")) : ""}${item.signals.some((s) => s.kind === "waiting_founder") ? signalList(item.signals.filter((s) => s.kind === "waiting_founder")) : ""}</div>`
-		: "";
-	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span><span class="kid-id">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span>${escapeHtml(child.title)}</span></div><div class="kid-a" data-machine-line>${escapeHtml(progressText(child))} <span class="src">${escapeHtml(label("progress.source"))}</span></div>${renderLeadNotes(item.lead_note, now, page.lead_note_policy?.value?.fade_after_days ?? DEFAULT_LEAD_NOTE_FADE_DAYS)}${renderJudgment(item, dictionary)}${signals}${renderChildAudit(item, child, dictionary)}</div>`;
+	dictionary.appendix.push(
+		renderChildAudit(item, child, dictionary) +
+			renderJudgment(item, dictionary) +
+			renderLeadNotes(
+				item.lead_note,
+				now,
+				page.lead_note_policy?.value?.fade_after_days ??
+					DEFAULT_LEAD_NOTE_FADE_DAYS,
+			),
+	);
+	const url = item.thread_url?.value;
+	const thread =
+		url &&
+		/^https:\/\/discord\.com\/channels\/[1-9][0-9]{0,19}\/[1-9][0-9]{0,19}$/.test(
+			url,
+		)
+			? `<a class="jump" href="${escapeHtml(url)}">跳 Discord ↗</a>`
+			: `<span class="jump-off">这张单还没有 thread</span>`;
+	return `<div class="kid" data-item="${escapeHtml(child.identifier)}" data-class="${child.cls ?? "unknown"}"><div class="kid-h"><span class="s s-${child.cls ?? "unknown"}">${escapeHtml(childBadge(child))}</span><span class="kid-id mono">${child.url ? safeLinearLink(child.url, child.identifier) : escapeHtml(child.identifier)}</span><span class="kid-t">${escapeHtml(child.title)}</span></div><div class="kid-a">↳ ${escapeHtml(progressText(child))} · ${thread}</div></div>`;
 }
+
+function shortEpicTitle(title: string): string {
+	const withoutPrefix = title.replace(/^\[[^\]]*\]\s*/, "").trim() || title;
+	const chars = [...withoutPrefix];
+	return chars.length > 32 ? `${chars.slice(0, 31).join("")}…` : withoutPrefix;
+}
+
 function countsText(epic: EpicView): string {
 	if (!epic.counts)
 		return label("counts.missing", {
 			type: epic.countsMissing?.detail ?? label("progress.unknown"),
 		});
-	return (["live", "waiting", "free", "idle", "total"] as const)
-		.filter((k) => k === "live" || k === "total" || epic.counts![k] > 0)
-		.map((k) => label(`counts.${k}`, { n: epic.counts![k] }))
-		.join(" · ");
+	return `${epic.counts.live} 在跑 · ${epic.counts.waiting + epic.counts.free + epic.counts.idle} 未开始 · 共 ${epic.counts.total}`;
 }
 function renderRootProjection(
 	page: EpicPage,
@@ -556,86 +423,69 @@ function renderEpic(
 	]
 		.filter(Boolean)
 		.join(" · ");
-	return `<details class="epic" data-root="${escapeHtml(epic.identifier)}" data-state-type="${escapeHtml(epic.state.type)}"><summary><span class="e-st">${escapeHtml(epic.state.name)}</span><span class="e-id">${escapeHtml(epic.identifier)}</span><span class="e-n">${escapeHtml(epic.title)}</span><span class="e-c">${escapeHtml(countsText(epic))}</span>${epic.allWaitingOn ? `<span class="e-wait">${escapeHtml(label("epic.all_waiting", { blockers: epic.allWaitingOn.blockers.join(" / ") }))}</span>` : ""}${renderLeadNotes(notes, now, fadeDays, true)}</summary><div class="e-b">${renderLeadNotes(notes, now, fadeDays)}${epic.children.map((c) => renderChild(page, c, dictionary, now)).join("")}${terminal ? `<p class="terminal-tail">${escapeHtml(label("epic.terminal_tail", { tail: terminal }))}</p>` : ""}<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderRootProjection(page, epic, dictionary)}${renderAuditCell(`/header/root_counts/${epic.rootIndex}`, "cell.header.root_counts", page.header.root_counts[epic.rootIndex]!, now, dictionary)}${epic.allWaitingOn ? renderViewRule(epic.allWaitingOn.view, dictionary) : ""}${epic.terminal.view ? renderViewRule(epic.terminal.view, dictionary) : ""}</details></div></details>`;
+	const rootAudit = dictionary.sidecar
+		? `<div class="audit" data-root-audit="${dictionary.sidecar.add({
+				root: page.header.roots.value?.[epic.rootIndex],
+				counts: page.header.root_counts[epic.rootIndex],
+				waiting: epic.allWaitingOn,
+				terminal: epic.terminal,
+			})}"><a href="#epic-audit">${escapeHtml(label("cell.provenance"))}</a></div>`
+		: `<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderRootProjection(page, epic, dictionary)}${renderAuditCell(`/header/root_counts/${epic.rootIndex}`, "cell.header.root_counts", page.header.root_counts[epic.rootIndex]!, now, dictionary)}${epic.allWaitingOn ? renderViewRule(epic.allWaitingOn.view, dictionary) : ""}${epic.terminal.view ? renderViewRule(epic.terminal.view, dictionary) : ""}</details>`;
+	dictionary.appendix.push(rootAudit);
+	const judgment =
+		renderLeadNotes(notes, now, fadeDays) ||
+		`<div class="leadnote"><b>💬 判断</b><div class="ln-body">还没有人写过</div></div>`;
+	return `<details class="epic ${epic.counts?.live ? "e-live" : "e-idle"}" data-root="${escapeHtml(epic.identifier)}" data-state-type="${escapeHtml(epic.state.type)}"><summary><span class="e-st st-linear">${escapeHtml(epic.state.name)}</span><span class="e-id mono">${safeLinearLink(epic.url, epic.identifier)}</span><span class="e-n" title="${escapeHtml(epic.title)}">${escapeHtml(shortEpicTitle(epic.title))}</span><span class="e-c">${escapeHtml(countsText(epic))}</span></summary><div class="e-b">${judgment}${epic.children.map((c) => renderChild(page, c, dictionary, now)).join("")}${terminal ? `<p class="terminal-tail kid-tail">另有 ${escapeHtml(terminal)}(不展示)</p>` : ""}</div></details>`;
 }
 
-function renderOverviewCell(
-	path: string,
-	title: string,
-	content: string,
-	cell: Cell<unknown>,
+function renderAttention(
+	page: EpicPage,
 	now: Date,
 	dictionary: RenderAudit,
-	className = "overview-card",
 ): string {
-	if (dictionary.sidecar)
-		return `<article class="${className}" data-cell="${escapeHtml(path)}" data-audit="${dictionary.sidecar.add(cell)}"><h2>${escapeHtml(title)}</h2><div class="overview-value">${content}</div>${compactAudit(dictionary.sidecar, cell, cell.observed_at)}</article>`;
-	return `<article class="${className}" data-cell="${escapeHtml(path)}">
-	<h2>${escapeHtml(title)}</h2>
-	<div class="overview-value">${content}</div>
-	<div class="overview-meta"><details class="audit"><summary>${escapeHtml(label("page.all_cells", { count: 1 }))}</summary><div class="audit-cell"><span>${htmlValue(rawCellValue(cell))}</span><span>${escapeHtml(label("cell.provenance"))}: ${htmlProvenance(cell.provenance)}</span><span>${escapeHtml(label("cell.observed_at"))}: ${escapeHtml(cell.observed_at)} (${escapeHtml(relativeTime(cell.observed_at, now))})</span>${cell.source_updated_at ? `<span>${escapeHtml(label("cell.source_updated_at"))}: ${escapeHtml(cell.source_updated_at)}</span>` : ""}${cell.provenance.kind === "derived" ? `<span class="rule-note">${derivedRuleNote(cell.provenance)}</span>` : ""}</div></details></div>
-</article>`;
-}
-
-function renderDependencyReview(entries: DependencyReviewEntry[]): string {
-	if (entries.length === 0) return escapeHtml(label("review.none"));
-	return entries
-		.map((entry) => {
-			if (entry.kind === "canceled_blocker") {
-				return `<p>${escapeHtml(
-					label("review.canceled_blocker", {
-						item: entry.item,
-						blocker: entry.blocker,
-					}),
-				)}</p>`;
-			}
-			if (entry.kind === "dependency_cycle") {
-				return `<p>${escapeHtml(
-					label("review.cycle", { members: entry.members.join(" ↔ ") }),
-				)}</p>`;
-			}
-			const edges = entry.blocking_edges
-				.map(
-					(edge) =>
-						`<li>${escapeHtml(
-							label("review.blocking_edge", {
-								blocked: edge.blocked,
-								blocker: edge.blocker,
-								state: edge.blocker_state_type,
-								scope: edge.in_scope ? "" : label("page.external_dependency"),
-							}),
-						)}</li>`,
-				)
-				.join("");
-			return `<p>${escapeHtml(
-				label("review.all_blocked", { n: entry.non_terminal }),
-			)}</p><ul>${edges}</ul>${
-				entry.blocking_edges_truncated
-					? `<p>${escapeHtml(label("review.blocking_edges_truncated"))}</p>`
-					: ""
-			}`;
-		})
-		.join("");
-}
-
-function renderAttention(page: EpicPage, now: Date): string {
-	const heading = `<h2>${escapeHtml(label("section.attention"))}</h2>`;
 	if (page.schema_version === 1)
-		return `<section class="attention-section" data-attention-section>${heading}<p>${escapeHtml(label("attention.legacy"))}</p></section>`;
-	return `<section class="attention-section" data-attention-section>${heading}<p class="attention-status">${escapeHtml(attentionSummary(page))}</p>${page.attention
-		.map((item) => {
+		return `<section data-attention-section><h2 class="sec">⚡ 现在要你看</h2><p>${escapeHtml(label("attention.legacy"))}</p></section>`;
+	const rows = attentionAudience(page, true);
+	return `<section data-attention-section><h2 class="sec">⚡ 现在要你看 · ${rows.length} 件</h2><div class="urgent">${rows
+		.map(({ item, olderQuestions }) => {
+			dictionary.appendix.push(
+				`<details class="attention-sources"><summary>${escapeHtml(label("attention.sources", { n: item.sources.length }))}</summary><ul>${item.sources.map((source) => `<li>${escapeHtml(attentionSourceText(source, now))}</li>`).join("")}</ul></details>`,
+			);
 			const link = attentionLink(page, item);
 			const where = link.url
-				? `<a href="${escapeHtml(link.url)}">${escapeHtml(label("attention.open_thread"))}</a>`
-				: `<span aria-disabled="true">${escapeHtml(label("attention.unknown"))}（${escapeHtml(attentionMissing(link.reason))}）</span>`;
-			return `<article class="attention-item" data-attention-key="${attentionPublicKey(page.key.project_name, item.key)}"><dl>
-		<div data-attention-part="what"><dt>① ${escapeHtml(label("attention.what"))}</dt><dd>${escapeHtml([item.kind.value ?? label("attention.unknown"), item.identifier.value ?? label("attention.unknown"), item.title.value ?? label("attention.unknown")].join(" · "))}</dd></div>
-		<div data-attention-part="action"><dt>② ${escapeHtml(label("attention.action"))}</dt><dd>${escapeHtml(attentionActionText(item))}</dd></div>
-		<div data-attention-part="wait"><dt>③ ${escapeHtml(label("attention.wait"))}</dt><dd>${escapeHtml(attentionWait(item.since, now))}</dd></div>
-		<div data-attention-part="where"><dt>④ ${escapeHtml(label("attention.where"))}</dt><dd>${where}</dd></div>
-		</dl><details class="attention-sources"><summary>${escapeHtml(label("attention.sources", { n: item.sources.length }))}</summary><ul>${item.sources.map((source) => `<li>${escapeHtml(attentionSourceText(source, now))}</li>`).join("")}</ul></details></article>`;
+				? `<a class="jump" href="${escapeHtml(link.url)}">跳 Discord ↗</a>`
+				: `<span class="jump-off" aria-disabled="true" title="${escapeHtml(attentionMissing(link.reason))}">这张单还没有 thread</span>`;
+			const question = item.sources.every(
+				(source) => source.fact.value?.kind === "question",
+			);
+			return `<article class="u-row" data-attention-key="${attentionPublicKey(page.key.project_name, item.key)}"><div class="u-l" data-attention-part="what"><span class="u-kind ${question ? "k-ask" : "k-gate"}">${escapeHtml(item.kind.value ?? label("attention.unknown"))}</span><span class="mono">${escapeHtml(item.identifier.value ?? label("attention.unknown"))}</span><span class="u-t">${escapeHtml(item.title.value ?? label("attention.unknown"))}</span></div><div class="u-act" data-attention-part="action">▶ ${escapeHtml(attentionActionText(item))}</div><div class="u-r"><span class="u-since" data-attention-part="wait">${escapeHtml(attentionWait(item.since, now))}</span><span data-attention-part="where">${where}</span></div>${olderQuestions ? `<span class="u-scope">${escapeHtml(label("attention.older_questions", { n: olderQuestions }))}</span>` : ""}</article>`;
 		})
-		.join("")}</section>`;
+		.join(
+			"",
+		)}</div><p class="note attention-status">${escapeHtml(attentionSummary(page, rows.length))}</p></section>`;
+}
+
+function renderLeadAttention(page: EpicPage, now: Date): string {
+	if (page.schema_version !== 2) return "";
+	const rows = attentionAudience(page, false);
+	if (!rows.length) return "";
+	return `<details class="lead-panel" data-lead-attention><summary>${escapeHtml(label("section.waiting_lead"))}（${rows.length}）</summary>${rows
+		.map(({ item, olderQuestions }) => {
+			const link = attentionLink(page, item);
+			const title = escapeHtml(
+				[
+					item.identifier.value ?? label("attention.unknown"),
+					item.title.value ?? label("attention.unknown"),
+				].join(" · "),
+			);
+			const diagnostic = item.sources.some(
+				(source) => source.fact.value?.kind !== "lead_question",
+			)
+				? ` · ${escapeHtml(item.kind.value ?? label("attention.unknown"))} · ${escapeHtml(item.action.value ?? label("attention.unknown"))}`
+				: "";
+			return `<p data-lead-question>${diagnostic}${link.url ? `<a href="${escapeHtml(link.url)}">${title}</a>` : title} · ${escapeHtml(attentionWait(item.since, now))}${olderQuestions ? ` · ${escapeHtml(label("attention.older_questions", { n: olderQuestions }))}` : ""}</p>`;
+		})
+		.join("")}</details>`;
 }
 
 /** Single-response diagnostic preview retains its inline audit for offline use. */
@@ -681,32 +531,15 @@ function renderHtml(
 	now: Date,
 	dictionary: RenderAudit,
 ): string {
+	if (dictionary.sidecar) {
+		dictionary.sidecar.add(page.freshness);
+		dictionary.sidecar.add(page.stuck_items);
+		dictionary.sidecar.add(page.dependency_review);
+		if (page.schema_version === 2) dictionary.sidecar.add(page.attention);
+	}
 	const scopeUnavailable =
 		page.schema_version === 2 && page.epic_scope.value === null;
 	const view = scopeUnavailable ? null : buildFounderView(page);
-	const ready = page.ready_items.value ?? [];
-	const founder = page.founder_items.value ?? [];
-	const itemById = new Map(page.items.map((item) => [item.identifier, item]));
-	const readyContent =
-		ready.length > 0
-			? ready
-					.map((identifier) => {
-						const item = itemById.get(identifier);
-						const text = item?.title.value
-							? `${identifier} · ${item.title.value}`
-							: identifier;
-						return item?.url.value
-							? `<span class="ready-pill">${safeLinearLink(item.url.value, text)}</span>`
-							: `<span class="ready-pill">${escapeHtml(text)}</span>`;
-					})
-					.join("")
-			: escapeHtml(label("page.none"));
-	const rootsContent = (page.header.roots.value ?? [])
-		.map(
-			(root) =>
-				`<span class="root-pill">${safeLinearLink(root.url, `${root.identifier} · ${root.title}`)} <small>${escapeHtml(root.state.name)}</small></span>`,
-		)
-		.join("");
 	const headerCells: Array<[string, LabelKey, Cell<unknown>]> = [
 		[
 			"scope_definition",
@@ -722,48 +555,91 @@ function renderHtml(
 	<meta name="viewport" content="width=device-width,initial-scale=1">
 	<title>${escapeHtml(label("page.title"))} · ${escapeHtml(page.key.project_name)}</title>
 	<style>
-		:root{color-scheme:light;--bg:#f3f4f6;--card:#fff;--ink:#182230;--muted:#667085;--line:#e4e7ec;--blue:#175cd3;--blue-soft:#eff4ff;--green:#067647;--green-soft:#ecfdf3;--amber:#93370d}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif}main{max-width:1020px;margin:0 auto;padding:28px 18px 72px}header,.freshness-card,.overview-card,.ready-card,.item-card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 3px rgba(16,24,40,.05)}header{padding:22px 24px;margin-bottom:12px}h1{margin:2px 0 8px;font-size:27px;letter-spacing:-.025em}h2{font-size:17px;margin:0}h3{margin:0;font-size:16px}.eyebrow{font-size:12px;font-weight:700;color:var(--blue);text-transform:uppercase;letter-spacing:.06em}.lede{display:flex;flex-wrap:wrap;gap:8px 14px;color:var(--muted)}a{color:var(--blue);text-decoration:none;overflow-wrap:anywhere}a:hover{text-decoration:underline}.freshness-card{padding:18px 22px;margin:12px 0}.freshness-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 18px;margin-top:9px}.freshness-grid div{display:grid;gap:1px}.freshness-grid b{color:var(--muted);font-size:12px}.freshness-age{color:var(--blue);font-weight:650;margin-top:9px}.ready-card{border:1px solid #abefc6;background:linear-gradient(135deg,#fff 0%,var(--green-soft) 100%);padding:20px 22px;margin:12px 0}.ready-card h2{color:var(--green)}.ready-card .overview-value{font-size:16px}.ready-pill,.root-pill,.signal-pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;margin:3px 5px 3px 0}.ready-pill{background:#fff;border:1px solid #abefc6}.root-pill{background:var(--blue-soft);border:1px solid #d1e0ff}.signal-pill{background:#fff7ed;border:1px solid #fed7aa}.root-pill small{color:var(--muted)}.overview-grid{display:grid;grid-template-columns:1.2fr .8fr .8fr;gap:10px;margin:10px 0 24px}.overview-card{padding:16px}.overview-value{font-size:15px;margin:8px 0}.overview-meta,.card-meta,.audit-cell{color:var(--muted);font-size:11px}.overview-meta{border-top:1px solid #ececef;padding-top:8px;overflow-wrap:anywhere}.section-title{display:flex;justify-content:space-between;align-items:baseline;margin:28px 2px 10px}.section-title span{color:var(--muted);font-size:12px}.item-card{border-left:5px solid var(--blue);padding:15px 17px;margin:10px 0}.card-head{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;margin-bottom:10px}.badges{display:flex;gap:5px;flex:0 0 auto}.badges span{font-size:11px;font-weight:650;padding:2px 7px;border-radius:999px;background:var(--blue-soft);color:#174a78}.card-rows{display:grid;gap:3px}.card-row{display:grid;grid-template-columns:112px 1fr;gap:10px;padding:3px 0}.card-row>b{color:var(--muted);font-weight:550}.card-row small{display:block;color:var(--muted);font-size:10.5px;margin-top:1px}.dependency-rows{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:7px 10px;margin:4px 0}.card-meta{border-top:1px solid #ececef;margin-top:11px;padding-top:8px;line-height:1.45;overflow-wrap:anywhere}.audit{display:inline-block;margin-left:6px}.audit summary{cursor:pointer;color:var(--blue)}.audit-list{display:grid;gap:6px;margin-top:8px}.audit-cell{display:grid;gap:2px;padding:7px;background:#fafafa;border-radius:8px}.audit-cell code{white-space:pre-wrap;overflow-wrap:anywhere;color:#344054}.rule-note{color:var(--amber)}@media(max-width:760px){main{padding:18px 10px 52px}.overview-grid,.freshness-grid{grid-template-columns:1fr}.card-head{display:block}.badges{margin-top:7px}.card-row{grid-template-columns:92px 1fr}header{padding:18px}.item-card{padding:13px 12px}}
-.epic{background:var(--card);border:1px solid var(--line);border-radius:12px;margin:12px 0;overflow:hidden}.epic>summary{cursor:pointer;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:16px}.epic>summary:before{content:"▸";color:var(--muted)}.epic[open]>summary:before{content:"▾"}.e-st,.s{font-size:12px;border-radius:6px;padding:3px 7px;background:#f2f4f7;color:#344054}.epic[data-state-type=started] .e-st,.s-live{background:#ecfdf3;color:#05603a}.e-id,.kid-id{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}.e-n{font-weight:650;flex:1;min-width:120px}.e-c{font-size:12px;color:var(--muted)}.e-wait{flex-basis:100%;margin-left:20px;color:var(--amber)}.e-b{padding:0 16px 16px}.kid{padding:14px 0;border-top:1px solid var(--line)}.kid-h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}.kid-a{margin:6px 0;color:#475467}.src{font-size:11px;color:var(--muted);margin-left:8px}.s-waiting{background:#fff4e5;color:#93370d}.s-free{background:#eff4ff;color:#174a78}.audit{display:block;margin:7px 0}.audit-head,.view-rule{font-size:11px;color:var(--muted);overflow-wrap:anywhere}.view-rule{padding:6px 0}.lead-panel{margin-top:28px}.lead-panel>summary{cursor:pointer;color:var(--muted);padding:12px 0}.terminal-tail,.epic-hidden{color:var(--muted);font-size:12px}.unattached{margin-top:24px}.order-audit>summary{font-size:11px;color:var(--muted)}summary:focus-visible,a:focus-visible{outline:2px solid var(--blue);outline-offset:4px}.kid,.epic{overflow-wrap:anywhere}@media(max-width:600px){.e-c{flex-basis:100%;margin-left:20px}.e-b{padding:0 12px 12px}.epic>summary{padding:14px 12px}.kid-h{gap:6px}}
+:root{color-scheme:light;--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--navy:#1a365d;--blue:#007aff;--green:#34c759;--line:#e5e5ea}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,system-ui,"PingFang SC","Helvetica Neue",Arial,sans-serif}main{max-width:960px;margin:0 auto;padding:26px 18px 80px}a{color:var(--blue);overflow-wrap:anywhere}summary:focus-visible,a:focus-visible{outline:2px solid var(--blue);outline-offset:3px}.note,.lead-panel{color:var(--dim);font-size:13px}.mono{font-family:"SF Mono",Menlo,monospace;font-size:12.5px;color:var(--navy);font-weight:600}.kid,.epic,.mock-bar,footer{overflow-wrap:anywhere}.e-n{flex:1;min-width:0}.audit-cell{display:grid;margin:8px 0}.audit-cell code{white-space:pre-wrap;overflow-wrap:anywhere}.audit,.view-rule,footer{font-size:11px;color:var(--dim)}.lead-panel{margin-top:16px}.lead-panel>summary{cursor:pointer}.e-st,.s{max-width:100%;white-space:normal!important}.s-waiting{background:#fff2dd;color:#a35c00}.s-free{background:#eeeef0;color:#6e6e73}.m-h h1{font-size:19px;margin:0 0 3px}.lead-note-stale{opacity:.75}.epic-hidden{font-size:12px;color:var(--dim)}@media(max-width:600px){main{padding:16px 10px 60px}.e-c{flex-basis:100%;margin-left:20px!important}}
+  .mock{background:#eef0f3;border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .mock-bar{font-size:12px;color:var(--dim);margin-bottom:10px;font-family:"SF Mono",Menlo,monospace}
+  .m-h{background:#fff;border-radius:10px;padding:13px 15px;border:1px solid var(--line)}
+  .m-t{font-size:19px;font-weight:700;color:var(--navy);margin:0 0 3px}
+  .sec{font-size:12.5px;font-weight:700;color:var(--dim);letter-spacing:.3px;margin:16px 0 8px}
+  .urgent{background:#fff;border-radius:10px;border-left:4px solid var(--red);border-top:1px solid var(--line);border-right:1px solid var(--line);border-bottom:1px solid var(--line);overflow:hidden}
+  .u-row{padding:11px 14px;border-bottom:1px solid var(--line)}
+  .u-row:last-child{border-bottom:none}
+  .u-l{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .u-kind{font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;white-space:nowrap}
+  .k-gate{background:#ffe9e7;color:#c92a20}.k-ask{background:#fff2dd;color:#a35c00}.k-named{background:#efe6ff;color:#6d33b8}
+  .u-t{color:var(--dim);font-size:12.5px}
+  .u-scope{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+  .u-act{font-size:13.5px;font-weight:600;color:var(--navy);margin:6px 0 4px}
+  .u-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .u-since{font-size:12px;color:var(--dim)}
+  .jump{font-size:12px;padding:3px 9px;border-radius:7px;border:1px solid var(--blue);color:var(--blue);text-decoration:none}
+  .jump-off{font-size:12px;padding:3px 9px;border-radius:7px;border:1px dashed #c7c7cc;color:#a1a1a6;background:#fafafa;cursor:not-allowed}
+  .epic{background:#fff;border-radius:10px;border:1px solid var(--line);border-left:4px solid var(--green);margin-bottom:8px;overflow:hidden}
+  .epic.e-idle{border-left-color:var(--dim)}
+  .epic summary{cursor:pointer;padding:12px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;list-style:none}
+  .epic summary::-webkit-details-marker{display:none}
+  .epic summary::before{content:"▸";color:var(--dim);font-size:12px}
+  .epic[open] summary::before{content:"▾"}
+  .e-st{font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .st-live{background:#e3f6e9;color:#1f7a37}.st-idle{background:#eeeef0;color:#6e6e73}
+  .st-linear{background:#e3f6e9;color:#1f7a37}
+  .e-n{font-weight:600}
+  .e-c{margin-left:auto;font-size:12px;color:var(--dim)}
+  .e-b{padding:2px 14px 12px;border-top:1px solid var(--line)}
+  .leadnote{background:#f6f9ff;border:1px dashed #c3d7f5;border-radius:9px;padding:9px 11px;margin:9px 0;font-size:13px}
+  .sample-tag{font-size:10.5px;font-weight:700;background:#fff4e5;color:#8a4b00;border-radius:20px;padding:2px 8px;margin-left:6px}
+  .ln-body{margin-top:5px;color:#4a4a4f}
+  .ln-meta{margin-top:5px;font-size:11px;color:var(--dim)}
+  .kid{padding:10px 0;border-bottom:1px solid var(--line)}
+  .kid:last-child{border-bottom:none}
+  .kid-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .kid-t{font-size:12.5px}
+  .s{font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;white-space:nowrap}
+  .s-live{background:#e3f6e9;color:#1f7a37}.s-idle{background:#eeeef0;color:#6e6e73}.s-wait{background:#fff2dd;color:#a35c00}
+  .kid-a{font-size:12.5px;color:#4a4a4f;margin-top:3px}
+  .kid-tail{font-size:12px;color:var(--dim);padding-top:9px}
+  .empty{color:var(--dim);font-size:13px;padding:10px 0}
+  @media(max-width:700px){main{padding:16px 10px 60px}.card{padding:15px 14px}}
 
-	footer{overflow-wrap:anywhere}
-		.attention-section{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--blue);border-radius:16px;padding:22px 24px;margin:0 0 18px;overflow-wrap:anywhere}.attention-section>h2{font-size:23px;line-height:1.3}.attention-status{color:var(--muted);margin:8px 0 14px}.attention-item{padding:16px 0;border-top:1px solid var(--line)}.attention-item:last-child{padding-bottom:0}.attention-item dl{display:grid;gap:9px;margin:0}.attention-item dl>div{display:grid;grid-template-columns:140px minmax(0,1fr);gap:12px}.attention-item dt{font-weight:600;color:var(--muted)}.attention-item dd{margin:0;max-width:74ch}.attention-item [aria-disabled="true"]{color:var(--muted)}.attention-sources{margin-top:12px;font-size:12px;color:var(--muted)}.attention-sources summary{cursor:pointer;width:fit-content}.attention-sources ul{padding-left:20px}.attention-sources li+li{margin-top:6px}.attention-section a:focus-visible,.attention-sources summary:focus-visible{outline:2px solid var(--blue);outline-offset:3px;border-radius:2px}@media(max-width:600px){.attention-section{padding:18px 16px}.attention-item dl>div{grid-template-columns:1fr;gap:2px}.attention-item dl{gap:12px}}
-		.lead-note{background:#eff6ff;border-left:3px solid #3b82f6;border-radius:6px;padding:10px 12px;margin:7px 0;overflow-wrap:anywhere;color:#1e3a5f}.lead-note p{margin:5px 0;font-size:14px}.lead-note time,.lead-note small{display:block;font-size:11px;color:#475467}.lead-note [data-lead-stale]{margin-left:8px;font-size:11px}.lead-note-stale{background:#f8fafc;border-left-color:#cbd5e1;color:#334155}.root-entry{min-width:0}
-.lead-note-compact{display:block;flex-basis:100%;min-width:0;max-width:100%;margin:0}.lead-note-compact .lead-note-text{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lead-note-compact time,.lead-note-compact small{display:block}
+.mock a.mono{color:inherit;text-decoration:none}.mock a.mono:hover{text-decoration:underline}
 </style>
 </head>
-<body><main>
-	${renderAttention(page, now)}
+<body><main><div class="mock">
+	<div class="mock-bar" data-generated-at="${escapeHtml(page.generated_at)}">🔒 一个固定链接 · 手机能开 · 系统自己刷新 · ${escapeHtml(page.generated_at)} · <span data-opened-age>${escapeHtml(relativeTime(page.generated_at, now))}</span></div>
+	<div class="m-h"><h1 class="m-t">${escapeHtml(page.key.project_name)} · 现在在做什么</h1><div class="note">全部默认收起,点开才展开</div></div>
+	${renderAttention(page, now, dictionary)}
 	${
 		view === null
 			? `<p class="scope-unavailable">${escapeHtml(label("attention.scope_unavailable"))}</p>`
 			: `
-	<header data-generated-at="${escapeHtml(page.generated_at)}">
-		<div class="eyebrow">${escapeHtml(label("page.overview"))}</div>
-		<h1>${escapeHtml(page.key.project_name)} · ${escapeHtml(label("page.title"))}</h1>
-		<div class="lede"><span>${page.header.roots.value?.length ?? 0} ${escapeHtml(label("page.roots_unit"))}</span><span>${page.items.length} ${escapeHtml(label("page.items_unit"))}</span><span>${escapeHtml(label("page.generated_at"))}: ${escapeHtml(page.generated_at)}</span><span>${escapeHtml(label("page.scope_rule_note"))}</span></div>
-	</header>
- <div class="section-title"><h2>${escapeHtml(label("section.epics"))}</h2><span>${escapeHtml(label("section.epics_count", { n: view.epics.length }))}</span></div>
- <details class="audit order-audit"><summary>${escapeHtml(label("view.order_desc"))}</summary>${view.order ? renderViewRule(view.order, dictionary) : ""}</details>
+ <div class="sec">在跑的 Epic(全做完的已拿掉;状态直接照抄 Linear)</div>
  ${view.epics.length ? view.epics.map((epic) => renderEpic(page, epic, now, dictionary)).join("") : `<p>${escapeHtml(label("epic.none"))}</p>`}
- ${view.hiddenDoneEpics && view.hiddenDoneEpics.count > 0 ? `<div class="epic-hidden">${escapeHtml(label("epic.hidden_done", { n: view.hiddenDoneEpics.count }))}<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderViewRule(view.hiddenDoneEpics.view, dictionary)}</details></div>` : ""}
- ${view.unattached.length ? `<section class="unattached"><h2>${escapeHtml(label("epic.unattached"))}</h2>${view.unattached.map((c) => renderChild(page, c, dictionary, now)).join("")}</section>` : ""}
- <details class="lead-panel"><summary>${escapeHtml(label("section.lead_panel"))}</summary>
- ${headerCells.map(([field, name, cell]) => renderAuditCell(`/header/${field}`, name, cell, now, dictionary)).join("")}
-
-	${renderFreshness(page)}
-	${renderOverviewCell("/ready_items", label("section.ready"), readyContent, page.ready_items, now, dictionary, "ready-card")}
-	${renderOverviewCell("/stuck_items", label("section.stuck"), stuckSummary(page), page.stuck_items, now, dictionary)}
-	<article class="overview-card"><h2>${escapeHtml(label("section.waiting_founder"))}</h2><div class="overview-value">${waitingFounderSummary(page)}</div></article>
-	${renderOverviewCell("/dependency_review", label("section.review"), renderDependencyReview(page.dependency_review.value ?? []), page.dependency_review, now, dictionary)}
-	${renderOverviewCell("/header/roots", label("section.scope"), rootsContent || escapeHtml(label("page.none")), page.header.roots, now, dictionary)}
-	<div class="overview-grid">
-		${renderOverviewCell("/founder_items", label("section.founder"), founder.length > 0 ? founder.map((id) => `<span class="root-pill">${escapeHtml(id)}</span>`).join("") : escapeHtml(label("founder.none")), page.founder_items, now, dictionary)}
-		${renderOverviewCell("/done_definition", label("section.done"), escapeHtml(`terminal_state=${page.done_definition.value?.terminal_state ?? label("page.none")}`), page.done_definition, now, dictionary)}
-		${renderOverviewCell("/gaps", label("section.gaps"), page.gaps.value?.length ? escapeHtml(`${page.gaps.value.length} ${label("page.gaps_unit")}`) : escapeHtml(label("page.none")), page.gaps, now, dictionary)}
-	</div>
- </details>`
+ ${view.hiddenDoneEpics && view.hiddenDoneEpics.count > 0 ? `<details class="lead-panel"><summary>已完成的 Epic</summary><div class="epic-hidden">${escapeHtml(label("epic.hidden_done", { n: view.hiddenDoneEpics.count }))}<details class="audit"><summary>${escapeHtml(label("cell.provenance"))}</summary>${renderViewRule(view.hiddenDoneEpics.view, dictionary)}</details></div></details>` : ""}
+ ${view.unattached.length ? `<details class="lead-panel"><summary>未挂 Epic 的子单</summary><section class="unattached"><h2>${escapeHtml(label("epic.unattached"))}</h2>${view.unattached.map((c) => renderChild(page, c, dictionary, now)).join("")}</section></details>` : ""}
+	<details class="lead-panel"><summary>${escapeHtml(label("cell.provenance"))}</summary>
+	${renderAuditCell("/dependency_review", "cell.provenance", page.dependency_review, now, dictionary)}
+	${headerCells.map(([field, name, cell]) => renderAuditCell(`/header/${field}`, name, cell, now, dictionary)).join("")}
+	${[
+		["/header/roots", "cell.header.roots", page.header.roots],
+		["/ready_items", "cell.provenance", page.ready_items],
+		["/founder_items", "cell.provenance", page.founder_items],
+		["/done_definition", "cell.provenance", page.done_definition],
+		["/gaps", "cell.provenance", page.gaps],
+	]
+		.map(([path, name, cell]) =>
+			renderAuditCell(
+				path as string,
+				name as LabelKey,
+				cell as Cell<unknown>,
+				now,
+				dictionary,
+			),
+		)
+		.join("")}
+	</details>`
 	}
-${renderJudgmentHistory(page, dictionary)}
+<details class="lead-panel"><summary>出处与补充记录</summary>${dictionary.appendix.join("")}${renderLeadAttention(page, now)}
+${renderJudgmentHistory(page, dictionary)}</details>
 ${dictionary.omittedJudgments ? "<p>机器意见摘要已缩减；完整依据见审计附件。</p>" : ""}
-${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");const update=()=>{document.querySelectorAll("[data-lead-written-at]").forEach(note=>{const written=Date.parse(note.getAttribute("data-lead-written-at")||"");const days=Number(note.getAttribute("data-lead-fade-days"));if(!Number.isFinite(written)||!Number.isFinite(days)||days<=0)return;const elapsed=Math.max(0,Date.now()-written);const hours=Math.floor(elapsed/3600000);const relative=note.querySelector("[data-lead-relative]");if(relative)relative.textContent=note.getAttribute("data-lead-role")+" · "+(hours<1?"刚写":hours+" 小时前写");const stale=elapsed>days*86400000;note.classList.toggle("lead-note-stale",stale);const badge=note.querySelector("[data-lead-stale]");if(badge)badge.hidden=!stale;});if(!root||!age)return;const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
+${dictionary.sidecar ? auditFooter(dictionary.sidecar) : ""}</div></main>${dictionary.sidecar ? "" : `<script type="application/json" id="epic-audit-data">${dictionary.json()}</script>`}<script nonce="__CSP_NONCE__">${dictionary.sidecar ? "" : '(()=>{const data=JSON.parse(document.getElementById("epic-audit-data").textContent);document.querySelectorAll("[data-fulltext]").forEach(e=>{e.title=data.texts[Number(e.getAttribute("data-fulltext"))];});document.querySelectorAll("[data-src]").forEach(cell=>{const [source,observed,updated]=data.cells[Number(cell.getAttribute("data-src"))];const p=data.sources[source];let text=p.kind==="linear"?p.entity+":"+p.id+" · "+p.field:p.kind==="derived"?p.rule+" · "+p.from.join(", "):p.table+" · "+JSON.stringify(p.key);text+=" · 看到 "+data.times[observed];if(updated!==undefined)text+=" · 源 "+data.times[updated];const span=document.createElement("span");span.className="cell-source";span.textContent=text;cell.append(span);});})();'}(()=>{const root=document.querySelector("[data-generated-at]");const age=document.querySelector("[data-opened-age]");const update=()=>{document.querySelectorAll("[data-lead-written-at]").forEach(note=>{const written=Date.parse(note.getAttribute("data-lead-written-at")||"");const days=Number(note.getAttribute("data-lead-fade-days"));if(!Number.isFinite(written)||!Number.isFinite(days)||days<=0)return;const elapsed=Math.max(0,Date.now()-written);const hours=Math.floor(elapsed/3600000);const relative=note.querySelector("[data-lead-relative]");if(relative)relative.textContent=note.getAttribute("data-lead-role")+" · "+(hours<1?"刚写":hours+" 小时前写");const stale=elapsed>days*86400000;note.classList.toggle("lead-note-stale",stale);const badge=note.querySelector("[data-lead-stale]");if(badge)badge.hidden=!stale;});if(!root||!age)return;const generated=Date.parse(root.getAttribute("data-generated-at")||"");if(Number.isFinite(generated)){const minutes=Math.max(0,Math.floor((Date.now()-generated)/60000));age.textContent="你打开时它已 "+minutes+" 分钟旧";}};update();setInterval(update,60000);})();</script></body></html>`;
 }

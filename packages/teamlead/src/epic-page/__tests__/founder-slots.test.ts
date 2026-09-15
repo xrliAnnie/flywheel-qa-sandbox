@@ -21,7 +21,7 @@ it("keeps empty upstream slots collapsed and preserves the baseline bytes", () =
 		Buffer.byteLength(bundle.html),
 	);
 });
-it("reserves attention first and notes beside machine progress within the 60-child budget", () => {
+it("reserves compact attention and root notes in expanded cards within the 60-child budget", () => {
 	const page = {
 		...pageForBudgetBase(60),
 		...buildAttention(attentionFixture(), EPIC_SHAPE_NOW.toISOString()),
@@ -48,25 +48,22 @@ it("reserves attention first and notes beside machine progress within the 60-chi
 	const html = renderEpicPageBundle(page, EPIC_SHAPE_NOW).html;
 	const doc = new Window().document;
 	doc.write(html);
-	expect(doc.querySelector("main")?.firstElementChild?.className).toBe(
-		"attention-section",
+	expect(doc.querySelector("main > .mock")?.firstElementChild?.className).toBe(
+		"mock-bar",
 	);
-	expect(doc.querySelectorAll("[data-attention-key]")).toHaveLength(3);
+	expect(doc.querySelectorAll("[data-attention-key]")).toHaveLength(2);
 	expect(
 		doc.querySelector("[data-attention-section]")?.closest("details"),
 	).toBeNull();
 	for (const body of doc.querySelectorAll(".e-b"))
-		expect(body.firstElementChild?.classList.contains("lead-note")).toBe(true);
-	for (const machine of doc.querySelectorAll("[data-machine-line]"))
-		expect(machine.nextElementSibling?.classList.contains("lead-note")).toBe(
-			true,
-		);
-	expect(doc.querySelectorAll(".lead-note")).toHaveLength(76);
-	expect(doc.querySelectorAll(".epic > summary > .lead-note")).toHaveLength(8);
+		expect(body.firstElementChild?.classList.contains("leadnote")).toBe(true);
+	expect(doc.querySelectorAll(".epic .leadnote")).toHaveLength(8);
+	expect(doc.querySelectorAll(".lead-panel .leadnote")).toHaveLength(60);
+	expect(doc.querySelectorAll(".epic > summary > .leadnote")).toHaveLength(0);
 	expect(doc.querySelectorAll("details[open]")).toHaveLength(0);
 	const bytes = Buffer.byteLength(html);
 	console.info({
-		integrated_note_displays: 76,
+		integrated_note_displays: 68,
 		chars_per_note: 280,
 		html_bytes: bytes,
 		upstream_renderers: "real attention and Lead notes",

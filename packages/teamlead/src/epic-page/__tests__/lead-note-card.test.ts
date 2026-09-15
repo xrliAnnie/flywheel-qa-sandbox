@@ -9,7 +9,7 @@ import {
 } from "./fixtures/epic-shape.js";
 
 it.each(["preview", "hosted"])(
-	"keeps every root judgment visible in collapsed card headers and full text in the body (%s)",
+	"keeps every root judgment once in the expanded card body (%s)",
 	(mode) => {
 		const snapshot = epicShapeSnapshot();
 		const text = `判断 <img src=x> </script> </textarea> " & ${"长句".repeat(80)}`;
@@ -39,7 +39,12 @@ it.each(["preview", "hosted"])(
 			expect(card!.hasAttribute("open")).toBe(false);
 			const summary = card!.querySelector(":scope > summary")!;
 			expect(summary.querySelector(".e-c")?.textContent).toBeTruthy();
-			const notes = summary.querySelectorAll("[data-lead-written-at]");
+			expect(summary.querySelectorAll("[data-lead-written-at]")).toHaveLength(
+				0,
+			);
+			const notes = card!.querySelectorAll(
+				":scope > .e-b > [data-lead-written-at]",
+			);
 			expect(notes).toHaveLength(2);
 			for (const note of notes) {
 				expect(note.querySelector("[title]")?.getAttribute("title")).toBe(text);
@@ -55,7 +60,7 @@ it.each(["preview", "hosted"])(
 			);
 			expect(full).toHaveLength(2);
 			for (const note of full)
-				expect(note.querySelector("p")?.textContent).toBe(text);
+				expect(note.querySelector(".ln-body")?.textContent).toBe(text);
 		} finally {
 			window.close();
 		}

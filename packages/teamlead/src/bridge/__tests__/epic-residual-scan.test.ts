@@ -8,7 +8,10 @@ import {
 } from "../../epic-page/__tests__/fixtures/epic-shape.js";
 import { generateEpicPage } from "../../epic-page/generate.js";
 
-vi.mock("../../epic-page/attention-sources.js", () => ({
+vi.mock("../../epic-page/attention-sources.js", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("../../epic-page/attention-sources.js")
+	>()),
 	readAttentionSources: async () => attentionFixture(),
 }));
 

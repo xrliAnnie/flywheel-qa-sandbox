@@ -5,12 +5,14 @@ import {
 	fetchLinearFounderReviewAttention,
 	type LinearAttentionResult,
 } from "../bridge/linear-attention-query.js";
+import type { LinearActiveScopeSnapshot } from "../bridge/linear-epic-query.js";
 import type { ProjectLinearBinding } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
-import type {
-	AttentionCandidate,
-	AttentionInput,
-	AttentionSource,
+import {
+	type AttentionCandidate,
+	type AttentionInput,
+	type AttentionSource,
+	validDiscordId,
 } from "./attention.js";
 import type { Cell, MissingReason, Provenance } from "./model.js";
 
@@ -30,6 +32,7 @@ export interface AttentionSourceDeps {
 	fetchIssueMetadata?: typeof fetchLinearAttentionIssueMetadata;
 }
 export interface AttentionSourceInput {
+	scopeSnapshot?: Promise<LinearActiveScopeSnapshot | null>;
 	projectName: string;
 	binding: ProjectLinearBinding;
 	apiKey: string;
@@ -157,6 +160,7 @@ export async function readAttentionSources(
 			result.truncated ? "source_truncated" : undefined,
 		);
 		for (const fact of result.facts) {
+			if (fact.node_id !== "founder_gate") continue;
 			const identity = resolveIdentity(fact.question_id, fact.execution_id);
 			const provenance = state("workflow_gate_holder", {
 				question_id: fact.question_id,
@@ -206,25 +210,28 @@ export async function readAttentionSources(
 				});
 				rawCount += page.rawCount;
 				for (const q of page.questions) {
-					let classificationFailed = false;
 					if (q.kind === "founder_gate" || q.kind === "ship") {
 						try {
 							if (
 								deps.stateStore.classifyAttentionMailboxGate(
 									input.projectName,
 									q.id,
-								) === "excluded"
+								) !== "legacy" ||
+								!["founder_review", "brainstorm"].includes(q.checkpoint ?? "")
 							)
 								continue;
 						} catch {
-							classificationFailed = true;
 							incomplete = "source_unavailable";
 							identityReads.statestore = cell<never>(
 								null,
 								identityStateKey,
 								"source_unavailable",
 							);
+							continue;
 						}
+						// Review/brainstorm rounds use their mailbox checkpoint rather
+						// than a gate holder. Current holders are already included above;
+						// unbound legacy ship asks do not establish a current ship card.
 					}
 					const provenance = comm(q.id);
 					const identity = resolveIdentity(q.id, q.execution_id);
@@ -244,9 +251,7 @@ export async function readAttentionSources(
 							fact: cell(
 								{
 									id: q.id,
-									kind: classificationFailed
-										? "unknown"
-										: (q.kind ?? "unknown"),
+									kind: q.kind ?? "unknown",
 									state: q.state,
 								},
 								provenance,
@@ -323,6 +328,30 @@ export async function readAttentionSources(
 			"source_unavailable",
 		);
 	}
+	// Descendants inherit the proven Epic scope; requiring each child to repeat
+	// its root's label would hide a valid gate and its Discord binding.
+	const scope = await input.scopeSnapshot?.catch(() => null);
+	if (
+		scope &&
+		scope.boundary.teamKey === input.binding.team &&
+		scope.boundary.project === (input.binding.project ?? null) &&
+		scope.boundary.label === (input.binding.label ?? null)
+	) {
+		for (const issue of [
+			...scope.roots.map((root) => ({ ...root, labels: [] as string[] })),
+			...scope.items,
+		]) {
+			if (!metadata.has(issue.id))
+				metadata.set(issue.id, {
+					id: issue.id,
+					identifier: issue.identifier,
+					title: issue.title,
+					url: issue.url,
+					stateType: issue.state.type,
+					labels: issue.labels,
+				});
+		}
+	}
 	const issueFor = (p: Pending) =>
 		p.issue
 			? (metadata.get(p.issue) ??
@@ -397,4 +426,77 @@ export async function readAttentionSources(
 		};
 	});
 	return { guildId, reads, candidates, identityReads };
+}
+
+/** Read row links with the same project/channel confinement as attention. */
+export function readChildThreads(
+	store: Pick<
+		StateStore,
+		"readDiscordConfig" | "resolveAttentionThreadBinding"
+	>,
+	projectName: string,
+	items: Array<{ id: string; identifier: string }>,
+	channelIds: string[],
+	now: Date,
+): Map<string, Cell<string>> {
+	const result = new Map<string, Cell<string>>();
+	for (const item of items) {
+		const base = {
+			provenance: {
+				kind: "statestore" as const,
+				table: "chat_threads",
+				key: { issue_id: item.id, issue_identifier: item.identifier },
+			},
+			observed_at: now.toISOString(),
+		};
+		try {
+			const guild = store.readDiscordConfig();
+			if (guild?.state !== "configured" || !validDiscordId(guild.guild_id)) {
+				result.set(item.id, {
+					...base,
+					value: null,
+					missing: {
+						reason:
+							guild?.state === "invalid" || guild?.state === "configured"
+								? "invalid_guild_config"
+								: "no_guild_configured",
+					},
+				});
+				continue;
+			}
+			const binding = store.resolveAttentionThreadBinding({
+				projectName,
+				aliases: [item.id, item.identifier],
+				channelIds,
+			});
+			if (
+				binding.status === "resolved" &&
+				(!validDiscordId(binding.thread_id) ||
+					!validDiscordId(binding.channel_id))
+			) {
+				result.set(item.id, {
+					...base,
+					value: null,
+					missing: { reason: "invalid_discord_id" },
+				});
+				continue;
+			}
+			result.set(
+				item.id,
+				binding.status === "resolved"
+					? {
+							...base,
+							value: `https://discord.com/channels/${guild.guild_id}/${binding.thread_id}`,
+						}
+					: { ...base, value: null, missing: { reason: binding.status } },
+			);
+		} catch {
+			result.set(item.id, {
+				...base,
+				value: null,
+				missing: { reason: "statestore_error" },
+			});
+		}
+	}
+	return result;
 }

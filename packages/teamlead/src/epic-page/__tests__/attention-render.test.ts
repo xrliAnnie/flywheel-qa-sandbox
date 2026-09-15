@@ -50,10 +50,10 @@ describe("attention rendering", () => {
 		const dom = new Window().document;
 		dom.write(renderEpicPageHtml(document, now));
 		const section = dom.querySelector("[data-attention-section]")!;
-		expect(dom.querySelector("main")?.firstElementChild).toBe(section);
+		expect(dom.querySelector("main > .mock")?.children[2]).toBe(section);
 		expect(section.closest("details")).toBeNull();
 		const items = section.querySelectorAll("[data-attention-key]");
-		expect(items).toHaveLength(3);
+		expect(items).toHaveLength(2);
 		for (const item of items) {
 			for (const part of item.querySelectorAll("[data-attention-part]"))
 				expect(part.closest("details")).toBeNull();
@@ -71,7 +71,11 @@ describe("attention rendering", () => {
 		document.attention_sources.identity.value = { resolved: 2, unresolved: 1 };
 		for (const render of [renderEpicPageHtml, renderEpicPageMarkdown]) {
 			const output = render(document, now);
-			expect(output.includes("已知 3 条记录，清单不完整")).toBe(true);
+			expect(
+				output.includes(
+					`已知 ${render === renderEpicPageHtml ? 2 : 3} 条记录，清单不完整`,
+				),
+			).toBe(true);
 			expect(output).toContain("身份尚未核齐，同一件事可能暂列多条");
 			expect(output).not.toContain("有 3 件等你处理的事");
 		}
@@ -93,7 +97,7 @@ describe("attention rendering", () => {
 			row.match(
 				new RegExp(`data-attention-part="${part}">([\\s\\S]*?)</div>`),
 			)?.[1],
-		).toContain("不知道");
+		).toContain(part === "where" ? "这张单还没有 thread" : "不知道");
 		const markdown = renderEpicPageMarkdown(document, now).split("- **①")[1]!;
 		expect(markdown).toContain("不知道");
 		for (const title of ["这是什么", "需要你做什么", "等了多久", "去哪儿做"])
@@ -115,7 +119,7 @@ describe("attention rendering", () => {
 					missing: { reason, detail: "PRIVATE_ERROR" },
 				};
 			const section = attentionHtml(renderEpicPageHtml(document, now));
-			expect([...section.matchAll(/aria-disabled="true"/g)]).toHaveLength(3);
+			expect([...section.matchAll(/aria-disabled="true"/g)]).toHaveLength(2);
 			expect(section).not.toContain("href=");
 			for (const output of [section, renderEpicPageMarkdown(document, now)]) {
 				expect(output).toContain(text);
@@ -132,7 +136,7 @@ describe("attention rendering", () => {
 		};
 		const section = attentionHtml(renderEpicPageHtml(document, now));
 		expect(section).not.toContain("href=");
-		expect([...section.matchAll(/aria-disabled="true"/g)]).toHaveLength(3);
+		expect([...section.matchAll(/aria-disabled="true"/g)]).toHaveLength(2);
 		for (const output of [section, renderEpicPageMarkdown(document, now)]) {
 			expect(output).toContain("未配置 Discord 服务器编号");
 			expect(output).not.toContain("https://discord.com/");
@@ -267,9 +271,15 @@ describe("attention rendering", () => {
 		item.sources.push(question, second);
 		for (const render of [renderEpicPageHtml, renderEpicPageMarkdown]) {
 			const output = render(document, now);
-			expect(output.includes("另有 2 条待回答记录")).toBe(true);
+			expect(output).toContain(
+				render === renderEpicPageHtml
+					? "另有 1 条较早问题"
+					: "另有 2 条待回答记录",
+			);
 			expect(output).toContain("去 thread 里回答它的问题。");
-			expect(output).toContain("全部 3 条来源");
+			expect(output).toContain(
+				render === renderEpicPageHtml ? "全部 2 条来源" : "全部 3 条来源",
+			);
 			expect(output).not.toContain("second-private-question");
 		}
 	});
@@ -293,7 +303,7 @@ describe("attention rendering", () => {
 			])
 				expect(output.includes(absent)).toBe(false);
 		}
-		expect(rows(renderEpicPageHtml(document, now))).toHaveLength(3);
+		expect(rows(renderEpicPageHtml(document, now))).toHaveLength(2);
 	});
 	it("distinguishes confirmed empty, incomplete reads, identity and budget failures, and legacy unknown", () => {
 		const document = page();
@@ -330,13 +340,13 @@ describe("attention rendering", () => {
 			expect(render(legacy, now)).not.toContain("现在没有等你的事");
 		}
 	});
-	it("puts exactly three source rows first with all four parts and shared actions in both outputs", () => {
+	it("puts actionable source rows first with compact parts and shared actions", () => {
 		const document = page();
 		const html = renderEpicPageHtml(document, now);
 		const markdown = renderEpicPageMarkdown(document, now);
-		expect(rows(html)).toHaveLength(3);
+		expect(rows(html)).toHaveLength(2);
 		expect(html.indexOf("现在要你看")).toBeLessThan(
-			html.indexOf("执行范围总览"),
+			html.indexOf("在跑的 Epic"),
 		);
 		for (const [index, row] of rows(html).entries()) {
 			expect(
@@ -345,7 +355,7 @@ describe("attention rendering", () => {
 				),
 			).toEqual(["what", "action", "wait", "where"]);
 			for (const title of ["这是什么", "需要你做什么", "等了多久", "去哪儿做"])
-				expect(row).toContain(title);
+				expect(row).not.toContain(title);
 			const item = document.attention[index]!;
 			expect(row).toContain(item.action.value);
 			expect(row).toContain(`href="${item.thread_url.value}"`);
@@ -359,10 +369,65 @@ describe("attention rendering", () => {
 		expect(rows(html)[0]).toContain("2026-09-09 UTC");
 		expect(rows(html)[1]).toContain("自 09:00 起,已等 3 小时");
 		expect(rows(html)[1]).toContain("记录收件方：Lead；当前在等 Lead 回复");
-		expect(rows(html)[2]).toContain("自 不知道 起,已等 不知道 小时");
+		expect(html).toContain("自 不知道 起,已等 不知道 小时");
 		expect(attentionHtml(html)).not.toContain("<table");
 		expect(markdown.indexOf("现在要你看")).toBeLessThan(
 			markdown.indexOf("现在可以开始的"),
 		);
 	});
+});
+
+it("shows only founder work at the top and only the latest Lead question per issue below", () => {
+	const document = page();
+	const input = attentionFixture();
+	input.candidates[1]!.sources[0]!.fact.value!.kind = "lead_question";
+	const old = structuredClone(input.candidates[1]!);
+	old.sources[0]!.fact.value!.id = "old-lead";
+	old.sources[0]!.since.value = "2026-09-09T08:00:00Z";
+	input.candidates[1]!.sources.push(old.sources[0]!);
+	Object.assign(document, buildAttention(input, now.toISOString()));
+	const window = new Window();
+	try {
+		window.document.write(renderEpicPageHtml(document, now));
+		const top = window.document.querySelector("[data-attention-section]")!;
+		expect(top.querySelectorAll("[data-attention-key]")).toHaveLength(1);
+		expect(top.textContent).not.toContain("FLY-2");
+		expect(top.querySelector(".attention-status")?.textContent).toContain("1");
+		const lead = window.document.querySelector("details[data-lead-attention]")!;
+		expect(lead).not.toBeNull();
+		expect(lead.hasAttribute("open")).toBe(false);
+		expect(lead.textContent).toContain("在等 Lead 的");
+		expect(lead.querySelectorAll("[data-lead-question]")).toHaveLength(2);
+		expect(lead.textContent).toContain("另有 1 条较早问题");
+		expect(lead.textContent).toContain("09:00");
+		expect(lead.textContent).not.toContain("08:00");
+	} finally {
+		window.close();
+	}
+});
+
+it("uses compact v5 attention rows with a count and real Discord jump", () => {
+	const dom = new Window().document;
+	dom.write(renderEpicPageHtml(page(), now));
+	expect(
+		dom.querySelector("[data-attention-section] .sec")?.textContent,
+	).toContain("⚡ 现在要你看 · 2 件");
+	const row = dom.querySelector("[data-attention-key]")!;
+	expect(row.querySelector(".u-l")).not.toBeNull();
+	expect(row.querySelector(".u-act")).not.toBeNull();
+	expect(row.querySelector(".u-r .jump")?.getAttribute("href")).toBe(
+		"https://discord.com/channels/123/456",
+	);
+	expect(row.querySelector("dl")).toBeNull();
+});
+
+it("keeps a nomination label alone out of the founder action list", () => {
+	const dom = new Window().document;
+	dom.write(renderEpicPageHtml(page(), now));
+	const section = dom.querySelector("[data-attention-section]")!;
+	expect(section.querySelectorAll("[data-attention-key]")).toHaveLength(2);
+	expect(section.textContent).not.toContain("FLY-3");
+	expect(dom.querySelector("[data-lead-attention]")?.textContent).toContain(
+		"FLY-3",
+	);
 });

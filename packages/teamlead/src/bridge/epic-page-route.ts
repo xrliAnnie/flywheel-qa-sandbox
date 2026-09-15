@@ -1,5 +1,8 @@
 import express from "express";
-import { readAttentionSources } from "../epic-page/attention-sources.js";
+import {
+	readAttentionSources,
+	readChildThreads,
+} from "../epic-page/attention-sources.js";
 import {
 	type GenerateAttentionEpicPageInput,
 	generateAttentionEpicPage,
@@ -241,11 +244,12 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 								fetchSnapshot,
 								readAttention:
 									deps.readAttention ??
-									((request, generatedAt) =>
+									((request, generatedAt, scopeSnapshot) =>
 										readAttentionSources(
 											{ stateStore: deps.store },
 											{
 												...request,
+												scopeSnapshot,
 												now: generatedAt,
 												channelIds:
 													deps.projects
@@ -253,6 +257,16 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 														?.leads.map((l) => l.chatChannel) ?? [],
 											},
 										)),
+								readChildThreads: (projectName, items, generatedAt) =>
+									readChildThreads(
+										deps.store,
+										projectName,
+										items,
+										deps.projects
+											.find((p) => p.projectName === projectName)
+											?.leads.map((l) => l.chatChannel) ?? [],
+										generatedAt,
+									),
 								readItemFacts: (projectName, item) =>
 									readEpicItemFacts(deps.store, projectName, item),
 								readSignals: (projectName, items, generatedAt) =>

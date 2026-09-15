@@ -315,3 +315,57 @@ describe("attention document byte budget", () => {
 		expect(() => assertEpicPage(result)).not.toThrow();
 	});
 });
+
+it("budgets founder work before Lead questions even when Lead identifiers sort first", () => {
+	const input = attentionFixture();
+	input.candidates = [
+		candidate(1, "lead_question", "commdb", "mailbox"),
+		candidate(9, "founder_gate", "statestore", "workflow_gate_holder"),
+	];
+	input.reads.founder_review.value = { count: 0 };
+	const page = generateAttentionEpicPage({
+		snapshot: null,
+		itemFacts: [],
+		now: new Date("2026-09-09T12:00:00Z"),
+		projectName: "example",
+		trigger: "manual",
+		scopeBinding: { team: "FLY" },
+		attention: input,
+	});
+	const selected = applyAttentionBudget(
+		page,
+		(p) => "x".repeat(p.attention.length * 100),
+		{ maxHtmlBytes: 100 },
+	);
+	expect(selected.attention).toHaveLength(1);
+	expect(selected.attention[0]!.identifier.value).toBe("FLY-9");
+	expect(() => assertEpicPage(selected)).not.toThrow();
+});
+
+it("selects the newest question by instant when timestamp precision differs", async () => {
+	const { attentionAudience } = await import("../attention-presentation.js");
+	const input = attentionFixture();
+	const older = candidate(1, "lead_question", "commdb", "mailbox");
+	const newer = candidate(2, "lead_question", "commdb", "mailbox");
+	newer.issue_id = older.issue_id;
+	newer.identifier = older.identifier;
+	newer.title = older.title;
+	older.sources[0]!.since.value = "2026-09-09T09:00:00Z";
+	newer.sources[0]!.since.value = "2026-09-09T09:00:00.999Z";
+	input.candidates = [older, newer];
+	input.reads.gates.value = { count: 0 };
+	input.reads.questions.value = { count: 2 };
+	input.reads.founder_review.value = { count: 0 };
+	const page = generateAttentionEpicPage({
+		snapshot: null,
+		itemFacts: [],
+		now: new Date("2026-09-09T12:00:00Z"),
+		projectName: "example",
+		trigger: "manual",
+		scopeBinding: { team: "FLY" },
+		attention: input,
+	});
+	const selected = attentionAudience(page, false)[0]!;
+	expect(selected.item.since.value).toBe("2026-09-09T09:00:00.999Z");
+	expect(selected.olderQuestions).toBe(1);
+});

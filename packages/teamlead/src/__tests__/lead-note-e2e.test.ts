@@ -260,9 +260,10 @@ it("real CLI writes and clears project-isolated role notes through the queue and
 				await invoke("clear", id!, r!);
 			await refresher.flushForTest();
 			expect(store.getEpicPagePublication(project!)!.token).toBe(token);
-			expect(blobs.get(token)).not.toMatch(/<(?:aside|span) class="lead-note/);
-			expect(blobs.get(token)).toContain("data-machine-line");
-			expect(blobs.get(token)).toContain("机器测的");
+			expect(blobs.get(token)).not.toMatch(/<[^>]+data-lead-written-at=/);
+			expect(blobs.get(token)).toContain("还没有人写过");
+			expect(blobs.get(token)).not.toContain("data-machine-line");
+			expect(blobs.get(token)).not.toContain("机器测的");
 			expect(await invoke("show", snapshot.items[0]!.id, role!)).toMatchObject({
 				ok: true,
 				notes: [],

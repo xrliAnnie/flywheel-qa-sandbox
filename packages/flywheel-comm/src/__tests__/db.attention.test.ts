@@ -19,6 +19,88 @@ describe("project attention questions", () => {
 		db.close();
 		rmSync(root, { recursive: true, force: true });
 	});
+	it("filters report noise before pagination so real questions cannot be starved", () => {
+		for (let i = 0; i < 1001; i++)
+			db.insertQuestion("exec", "lead", `DONE: progress ${i}`);
+		for (const text of [
+			"ACK: receipt",
+			"DESIGN-HTML ready: report",
+			"RUNNER-STOPPED reason=done",
+		])
+			db.insertQuestion("exec", "lead", text);
+		db.insertQuestion("exec", "lead", "ordinary report text", {
+			kind: "report",
+		});
+		const live = db.insertQuestion("exec", "lead", "Please decide");
+		const page = db.listAttentionQuestions({ limit: 1 });
+		expect(page.questions.map((q) => q.id)).toEqual([live]);
+		expect(page.rawCount).toBe(1);
+		expect(page.nextCursor).toBeNull();
+	});
+
+	it("excludes terminal asks but preserves unprotected founder gates from completed QA", () => {
+		raw
+			.prepare(
+				"INSERT INTO sessions(execution_id,tmux_window,project_name,status) VALUES(?,?,?,?)",
+			)
+			.run("ended", "window", "example", "completed");
+		db.insertQuestion("ended", "lead", "@founder old question");
+		const ship = db.insertQuestion("ended", "lead", "ship pending", {
+			checkpoint: "approve_to_ship",
+		});
+		const gate = db.insertQuestion("ended", "lead", "review pending", {
+			checkpoint: "founder_review",
+		});
+		expect(
+			db
+				.listAttentionQuestions({ limit: 50 })
+				.questions.map((q) => ({ id: q.id, kind: q.kind })),
+		).toEqual(
+			expect.arrayContaining([
+				{ id: ship, kind: "ship" },
+				{ id: gate, kind: "founder_gate" },
+			]),
+		);
+		expect(db.listAttentionQuestions({ limit: 50 }).questions).toHaveLength(2);
+	});
+
+	it("requires an explicit founder mention and keeps spilled body classification unknown", () => {
+		const founder = db.insertQuestion("exec", "lead", "@founder please decide");
+		const lead = db.insertQuestion("exec", "lead", "ask the Lead");
+		const notMention = db.insertQuestion(
+			"exec",
+			"lead",
+			"mail@example.com @founders",
+		);
+		const spill = db.insertQuestion("exec", "lead", "opaque");
+		raw
+			.prepare("UPDATE mailbox SET content_ref=? WHERE id=?")
+			.run("/must-not-read/body", spill);
+		const rows = db.listAttentionQuestions({ limit: 50 }).questions;
+		expect(rows.find((q) => q.id === founder)?.kind).toBe("question");
+		for (const id of [lead, notMention])
+			expect(rows.find((q) => q.id === id)?.kind).toBe("lead_question");
+		expect(rows.find((q) => q.id === spill)).toMatchObject({
+			kind: "unknown",
+			classification_unknown: true,
+		});
+	});
+
+	it("preserves founder checkpoints even when their request begins with a report prefix", () => {
+		const ids = ["approve_to_ship", "founder_review", "brainstorm"].map(
+			(checkpoint) =>
+				db.insertQuestion("exec", "lead", "DONE: QA passed; request approval", {
+					checkpoint,
+				}),
+		);
+		expect(
+			db
+				.listAttentionQuestions({ limit: 50 })
+				.questions.map((q) => q.id)
+				.sort(),
+		).toEqual(ids.sort());
+	});
+
 	it("reads every open question without an Epic or live session, preserves exact identity and hides content", () => {
 		const ids = [
 			db.insertQuestion("ended-execution", "lead", "SECRET_BODY"),
@@ -30,7 +112,7 @@ describe("project attention questions", () => {
 		expect(result.questions[0]).toMatchObject({
 			execution_id: "ended-execution",
 			since: "2026-01-01T09:00:00Z",
-			kind: "question",
+			kind: "lead_question",
 			recipient_role: "lead",
 		});
 		expect(JSON.stringify(result)).not.toContain("SECRET");
@@ -96,7 +178,7 @@ describe("project attention questions", () => {
 		});
 		expect(rows.find((q) => q.id === ship)?.kind).toBe("ship");
 		expect(rows.find((q) => q.id === unknown)).toMatchObject({
-			kind: "question",
+			kind: "lead_question",
 			recipient_role: "lead",
 		});
 	});
@@ -110,7 +192,7 @@ describe("project attention questions", () => {
 			expect(before).toHaveLength(1);
 			expect(before[0]).toMatchObject({
 				id,
-				kind: "question",
+				kind: "lead_question",
 				state: "pending",
 				recipient_role: "lead",
 			});
@@ -122,41 +204,30 @@ describe("project attention questions", () => {
 			expect(db.listAttentionQuestions({ limit: 50 }).questions).toEqual([]);
 		},
 	);
-	it("paginates by raw created_at and full id even when a page contains only excluded reports", () => {
-		db.insertQuestion(
-			"exec",
-			"lead",
-			"RUNNER-STOPPED kind=runner_stopped reason=done private",
-			{
-				id: `rstop-${"b".repeat(32)}`,
-				kind: "report",
-			},
-		);
-		const live = db.insertQuestion("exec", "lead", "question");
+	it("paginates eligible questions by timestamp and full id after excluding reports", () => {
+		db.insertQuestion("exec", "lead", "DONE: ignored");
+		const firstId = db.insertQuestion("exec", "lead", "first");
+		const secondId = db.insertQuestion("exec", "lead", "second");
 		raw
-			.prepare(
-				"UPDATE mailbox SET created_at = '2026-01-01 01:00:00' WHERE id LIKE 'rstop-%'",
-			)
-			.run();
+			.prepare("UPDATE mailbox SET created_at=? WHERE id=?")
+			.run("2026-01-01 01:00:00", firstId);
 		raw
-			.prepare(
-				"UPDATE mailbox SET created_at = '2026-01-01 02:00:00' WHERE id = ?",
-			)
-			.run(live);
+			.prepare("UPDATE mailbox SET created_at=? WHERE id=?")
+			.run("2026-01-01 02:00:00", secondId);
 		const first = db.listAttentionQuestions({ limit: 1 });
-		expect(first.questions).toEqual([]);
-		expect(first.rawCount).toBe(1);
+		expect(first.questions.map((q) => q.id)).toEqual([firstId]);
 		expect(first.nextCursor).toEqual({
 			created_at: "2026-01-01 01:00:00",
-			id: `rstop-${"b".repeat(32)}`,
+			id: firstId,
 		});
 		const second = db.listAttentionQuestions({
 			limit: 1,
 			cursor: first.nextCursor!,
 		});
-		expect(second.questions.map((q) => q.id)).toEqual([live]);
+		expect(second.questions.map((q) => q.id)).toEqual([secondId]);
 		expect(second.nextCursor).toBeNull();
 	});
+
 	it("rejects unbounded limits and invalid cursor inputs before SQL", () => {
 		for (const limit of [0, -1, 1.5, 1001, NaN]) {
 			expect(() => db.listAttentionQuestions({ limit })).toThrow();

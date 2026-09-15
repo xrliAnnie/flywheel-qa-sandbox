@@ -187,6 +187,7 @@ export interface RootCountsResult {
 }
 
 export interface EpicItem {
+	thread_url?: Cell<string>;
 	ship_judgment?: Cell<EpicJudgment | null>;
 	lead_note?: Cell<string>[];
 	parent: Cell<string>;
@@ -1021,10 +1022,27 @@ export function assertEpicPage(
 		requireExactKeys(
 			item,
 			["identifier", ...ITEM_CELLS, "signals", "signal_sources"],
-			["lead_note", "ship_judgment"],
+			["lead_note", "ship_judgment", "thread_url"],
 			itemPath,
 		);
 		requireNonEmptyString(item.identifier, `${itemPath}/identifier`);
+		if (item.thread_url !== undefined) {
+			const path = `${itemPath}/thread_url`;
+			assertCell(item.thread_url, path, root);
+			const thread = item.thread_url as Cell<string>;
+			if (
+				thread.provenance.kind !== "statestore" ||
+				thread.provenance.table !== "chat_threads"
+			)
+				fail(path, "expected thread source");
+			if (
+				thread.value !== null &&
+				!/^https:\/\/discord\.com\/channels\/[1-9][0-9]{0,19}\/[1-9][0-9]{0,19}$/.test(
+					thread.value,
+				)
+			)
+				fail(path, "invalid Discord link");
+		}
 		if (item.ship_judgment !== undefined) {
 			const path = `${itemPath}/ship_judgment`;
 			assertCell(item.ship_judgment, path, root);

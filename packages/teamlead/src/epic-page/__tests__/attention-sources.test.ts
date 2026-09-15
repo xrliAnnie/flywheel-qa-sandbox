@@ -1,5 +1,11 @@
+import { CommDB } from "flywheel-comm/db";
 import { describe, expect, it, vi } from "vitest";
-import { readAttentionSources } from "../attention-sources.js";
+import {
+	readAttentionSources,
+	readChildThreads,
+} from "../attention-sources.js";
+import { generateAttentionEpicPage } from "../generate.js";
+import { renderEpicPageHtml } from "../render-html.js";
 
 const now = new Date("2026-09-09T12:00:00Z");
 function setup() {
@@ -19,7 +25,7 @@ function setup() {
 					issue_id: "uuid-a",
 					execution_id: "exec-a",
 					run_id: "run-a",
-					node_id: "approve",
+					node_id: "founder_gate",
 					attempt: 1,
 					state: "awaiting_review",
 					authority_mode: "engine_terminal",
@@ -423,7 +429,7 @@ describe("independent attention sources", () => {
 			missing: { reason: "source_truncated" },
 		});
 	});
-	it("preserves an unreadable mailbox authority as unknown and closes its DB", async () => {
+	it("reports unreadable mailbox authority without promoting it and closes its DB", async () => {
 		const { deps, close } = setup();
 		deps.stateStore.classifyAttentionMailboxGate = () => {
 			throw new Error("read failure");
@@ -449,9 +455,8 @@ describe("independent attention sources", () => {
 			now,
 		});
 		expect(
-			result.candidates.find((c) => c.key === "question:question-b")?.sources[0]
-				.fact.value?.kind,
-		).toBe("unknown");
+			result.candidates.find((c) => c.key === "question:question-b"),
+		).toBeUndefined();
 		expect(result.reads.questions.missing?.reason).toBe("source_unavailable");
 		expect(result.identityReads.statestore.missing?.reason).toBe(
 			"source_unavailable",
@@ -459,3 +464,214 @@ describe("independent attention sources", () => {
 		expect(close).toHaveBeenCalledOnce();
 	});
 });
+
+it("does not promote an intermediate review holder to a founder card", async () => {
+	const { deps } = setup();
+	deps.stateStore.listAttentionGateFacts = () => ({
+		facts: [
+			{
+				holder_id: "review",
+				question_id: "review",
+				issue_id: "uuid-a",
+				execution_id: "exec-a",
+				run_id: "run-a",
+				node_id: "code_review",
+				attempt: 1,
+				state: "awaiting_review",
+				authority_mode: "engine_terminal",
+				kind: "founder_gate",
+				since: now.toISOString(),
+			},
+		],
+		truncated: false,
+		rawCount: 1,
+	});
+	const result = await readAttentionSources(deps as never, {
+		projectName: "example",
+		binding: { team: "EPX" },
+		apiKey: "test",
+		channelIds: ["789"],
+		now,
+	});
+	expect(
+		result.candidates.some((c) =>
+			c.sources.some((source) => source.fact.value?.id === "review"),
+		),
+	).toBe(false);
+});
+
+describe("child Discord links", () => {
+	it("uses UUID and identifier aliases within the configured project channels", () => {
+		const { deps } = setup();
+		const resolve = vi.spyOn(deps.stateStore, "resolveAttentionThreadBinding");
+		const links = readChildThreads(
+			deps.stateStore as never,
+			"example",
+			[{ id: "uuid-a", identifier: "EPX-1" }],
+			["789"],
+			now,
+		);
+		expect(resolve).toHaveBeenCalledWith({
+			projectName: "example",
+			aliases: ["uuid-a", "EPX-1"],
+			channelIds: ["789"],
+		});
+		expect(links.get("uuid-a")?.value).toBe(
+			"https://discord.com/channels/123/456",
+		);
+	});
+	it("rejects malformed IDs even when the store reports configured/resolved", () => {
+		const { deps } = setup();
+		deps.stateStore.readDiscordConfig = () => ({
+			guild_id: "123/evil",
+			state: "configured",
+			source_updated_at: now.toISOString(),
+		});
+		const links = readChildThreads(
+			deps.stateStore as never,
+			"example",
+			[{ id: "uuid-a", identifier: "EPX-1" }],
+			["789"],
+			now,
+		);
+		expect(links.get("uuid-a")?.value).toBeNull();
+		expect(links.get("uuid-a")?.missing?.reason).toBe("invalid_guild_config");
+	});
+});
+
+it("does not create a founder card from an unbound legacy mailbox gate", async () => {
+	const { deps } = setup();
+	const open = deps.openCommReadonly;
+	deps.openCommReadonly = () => {
+		const db = open();
+		const read = db.listAttentionQuestions;
+		db.listAttentionQuestions = () => ({
+			...read(),
+			questions: read().questions.map((q) => ({ ...q, kind: "ship" })),
+		});
+		return db;
+	};
+	const result = await readAttentionSources(deps as never, {
+		projectName: "example",
+		binding: { team: "EPX" },
+		apiKey: "test",
+		channelIds: ["789"],
+		now,
+	});
+	expect(result.candidates.some((c) => c.key === "question:question-b")).toBe(
+		false,
+	);
+	expect(result.candidates.some((c) => c.key === "holder:gate")).toBe(true);
+});
+
+it.each([
+	"no_thread_binding",
+	"thread_binding_conflict",
+	"thread_missing",
+	"statestore_error",
+] as const)(
+	"does not invent a child URL when thread resolution reports %s",
+	(status) => {
+		const { deps } = setup();
+		deps.stateStore.resolveAttentionThreadBinding = (() => {
+			if (status === "statestore_error")
+				throw new Error("private database error");
+			return { status };
+		}) as never;
+		const cell = readChildThreads(
+			deps.stateStore as never,
+			"example",
+			[{ id: "uuid-a", identifier: "EPX-1" }],
+			["789"],
+			now,
+		).get("uuid-a")!;
+		expect(cell.value).toBeNull();
+		expect(cell.missing?.reason).toBe(status);
+		expect(JSON.stringify(cell)).not.toContain("private database error");
+	},
+);
+
+it.each([true, false])(
+	"reuses child metadata only from the same proven scope (matching=%s)",
+	async (matching) => {
+		const { deps } = setup();
+		deps.fetchIssueMetadata.mockResolvedValue({
+			items: [],
+			rawCount: 0,
+			missing: null,
+			fetchedAt: now.toISOString(),
+		});
+		const { epicShapeSnapshot } = await import("./fixtures/epic-shape.js");
+		const scope = epicShapeSnapshot();
+		scope.items[0]!.id = "uuid-a";
+		if (!matching) scope.boundary.project = "Another project";
+		const result = await readAttentionSources(deps as never, {
+			projectName: "example",
+			binding: { team: "EPX", project: "Example", label: "Example" },
+			apiKey: "test",
+			channelIds: ["789"],
+			now,
+			scopeSnapshot: Promise.resolve(scope),
+		});
+		const gate = result.candidates.find((c) => c.key === "holder:gate")!;
+		expect(gate.identifier.value).toBe(matching ? "EPX-1" : null);
+		expect(gate.issue_id.value).toBe(matching ? "uuid-a" : null);
+		expect(gate.thread.value).toEqual(
+			matching ? { thread_id: "456", channel_id: "789" } : null,
+		);
+	},
+);
+
+it.each(["founder_review", "brainstorm"] as const)(
+	"shows an open %s round from real CommDB without a gate holder",
+	async (checkpoint) => {
+		const { deps } = setup();
+		deps.stateStore.listAttentionGateFacts = () => ({
+			facts: [],
+			rawCount: 0,
+			truncated: false,
+		});
+		deps.fetchFounderReview.mockResolvedValue({
+			items: [],
+			rawCount: 0,
+			missing: null,
+			fetchedAt: now.toISOString(),
+		});
+		const db = new CommDB(":memory:");
+		const questionId = db.insertQuestion(
+			"exec-b",
+			"lead",
+			"Please review this round",
+			{ checkpoint },
+		);
+		deps.openCommReadonly = (() => db) as never;
+		const attention = await readAttentionSources(deps as never, {
+			projectName: "example",
+			binding: { team: "EPX" },
+			apiKey: "test",
+			channelIds: ["789"],
+			now,
+		});
+		expect(attention.candidates.map((c) => c.key)).toEqual([
+			`question:${questionId}`,
+		]);
+		expect(attention.reads.questions.value).toEqual({ count: 1 });
+		const page = generateAttentionEpicPage({
+			snapshot: null,
+			scopeBinding: { team: "EPX" },
+			itemFacts: [],
+			attention,
+			projectName: "example",
+			trigger: "manual",
+			now,
+		});
+		const html = renderEpicPageHtml(page, now);
+		const top =
+			html.match(
+				/<section\b[^>]*data-attention-section[^>]*>[\s\S]*?<\/section>/,
+			)?.[0] ?? "";
+		expect(top).toContain("EPX-2");
+		expect(top).toContain("https://discord.com/channels/123/456");
+		expect(top).not.toContain("现在没有等你的事");
+	},
+);

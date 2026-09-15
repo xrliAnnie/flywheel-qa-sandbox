@@ -1,6 +1,7 @@
 import { canonicalJsonString } from "flywheel-config";
 import { EPIC_PAGE_MAX_HTML_BYTES } from "../bridge/epic-page-publisher.js";
 import { rebuildAttention } from "./attention.js";
+import { isFounderAttention } from "./attention-presentation.js";
 import {
 	assertEpicPage,
 	type Cell,
@@ -39,7 +40,13 @@ function prefix(page: EpicPageV2, count: number): EpicPageV2 {
 	const copy = structuredClone(page);
 	const extension = rebuildAttention(
 		copy,
-		copy.attention.slice(0, count),
+		[...copy.attention]
+			.sort(
+				(a, b) =>
+					Number(b.sources.some(isFounderAttention)) -
+					Number(a.sources.some(isFounderAttention)),
+			)
+			.slice(0, count),
 		copy.generated_at,
 		true,
 	);

@@ -26,12 +26,18 @@ import type { EpicPageItemSignals } from "./signals.js";
 export const MAX_EPIC_SCOPE_ITEMS = 500;
 
 export interface MaterializeEpicPageDeps {
+	readChildThreads?: (
+		projectName: string,
+		items: LinearActiveScopeSnapshot["items"],
+		now: Date,
+	) => NonNullable<GenerateEpicPageInput["childThreads"]>;
 	readShipJudgmentHistory?: (
 		asOf: string,
 	) => NonNullable<GenerateEpicPageInput["shipJudgmentHistory"]>;
 	readAttention: (
 		input: MaterializeEpicPageInput,
 		now: Date,
+		scopeSnapshot?: Promise<LinearActiveScopeSnapshot | null>,
 	) => Promise<AttentionInput>;
 	readLeadNotes: (
 		projectName: string,
@@ -78,8 +84,9 @@ export async function materializeEpicPage(
 	receipt: EpicPageRenderReceipt;
 }> {
 	const generatedAt = deps.now();
-	const [snapshot, attention] = await Promise.all([
-		deps.fetchSnapshot(input.apiKey, input.binding).catch((error) => {
+	const scopeSnapshot = deps
+		.fetchSnapshot(input.apiKey, input.binding)
+		.catch((error) => {
 			if (
 				error instanceof ActiveScopeNotFoundError &&
 				(error.reason === "no_active_roots" ||
@@ -87,8 +94,10 @@ export async function materializeEpicPage(
 			)
 				return null;
 			throw error;
-		}),
-		deps.readAttention(input, generatedAt),
+		});
+	const [snapshot, attention] = await Promise.all([
+		scopeSnapshot,
+		deps.readAttention(input, generatedAt, scopeSnapshot),
 	]);
 	if (snapshot && snapshot.items.length > MAX_EPIC_SCOPE_ITEMS) {
 		throw new EpicTooLargeError(
@@ -123,6 +132,11 @@ export async function materializeEpicPage(
 			: undefined;
 	const candidate = deps.generatePage({
 		...(shipJudgmentHistory ? { shipJudgmentHistory } : {}),
+		childThreads: deps.readChildThreads?.(
+			input.projectName,
+			snapshot?.items ?? [],
+			generatedAt,
+		),
 		leadNotes,
 		leadNoteFadeDays: input.leadNoteFadeDays,
 		snapshot,

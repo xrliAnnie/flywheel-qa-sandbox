@@ -62,7 +62,7 @@ describe("founder Epic HTML", () => {
 		);
 		expect(
 			doc.querySelector('[data-root="EPX-400"] > summary .e-wait')?.textContent,
-		).toBe("整块在等 EPX-20 / EPX-90");
+		).toBeUndefined();
 		expect(
 			doc.querySelector('[data-item="EPX-1"] .kid-a')?.textContent,
 		).toContain("到「实现」· 第 2 次 · 会话 running");
@@ -70,7 +70,7 @@ describe("founder Epic HTML", () => {
 		expect(doc.querySelector('[data-cell="/items/7/state"]')).toBeNull();
 		expect(
 			doc.querySelector('[data-root="EPX-100"] .terminal-tail')?.textContent,
-		).toBe("另有 1 张已完成 · 1 张已取消(不列)");
+		).toBe("另有 1 张已完成 · 1 张已取消(不展示)");
 	});
 	it("keeps every emitted cell unique and all projections auditable", () => {
 		const { page, doc } = fixture();
@@ -92,7 +92,7 @@ describe("founder Epic HTML", () => {
 		const rules = [...doc.querySelectorAll("[data-view-rule]")];
 		expect(
 			new Set(rules.map((e) => e.getAttribute("data-view-rule"))).size,
-		).toBe(6);
+		).toBe(5);
 		for (const element of rules)
 			for (const path of element.getAttribute("data-view-from")!.split(","))
 				expect(resolvePointer(page, path)).toMatchObject({
@@ -284,4 +284,96 @@ it("shows short dependency titles but retains the complete title in the shared d
 	expect(acceptance.querySelector("a")?.getAttribute("href")).toBe(
 		page.items[0]!.url.value,
 	);
+});
+
+it("matches the founder-approved v5 blocks without legacy overview furniture", () => {
+	const { doc } = fixture();
+	expect(doc.querySelector(".mock-bar")?.textContent).toContain("一个固定链接");
+	expect(doc.querySelector(".m-h .note")?.textContent).toBe(
+		"全部默认收起,点开才展开",
+	);
+	expect(
+		doc
+			.querySelector(".m-h")!
+			.compareDocumentPosition(doc.querySelector("[data-attention-section]")!) &
+			4,
+	).toBe(4);
+	expect(
+		doc.querySelectorAll(
+			".overview-card,.freshness-card,.e-wait,[data-machine-line],textarea",
+		),
+	).toHaveLength(0);
+	for (const card of doc.querySelectorAll("details.epic")) {
+		expect(card.hasAttribute("open")).toBe(false);
+		expect(card.querySelector("summary .lead-note")).toBeNull();
+		expect(card.querySelector(".e-b .leadnote")?.textContent).toContain(
+			"还没有人写过",
+		);
+	}
+	for (const child of doc.querySelectorAll(".kid")) {
+		expect(child.querySelector(".kid-a")?.textContent).toContain("↳");
+		expect(child.querySelector(".kid-a")?.textContent).toContain(
+			"这张单还没有 thread",
+		);
+	}
+});
+
+it("strips title slugs from public Linear links", () => {
+	const { page } = fixture();
+	page.items[0]!.url.value =
+		"https://linear.app/example/issue/EPX-1/private-person-name";
+	const window = new Window();
+	window.document.write(renderEpicPageHtml(page, EPIC_SHAPE_NOW));
+	expect(
+		window.document
+			.querySelector('[data-item="EPX-1"] a')
+			?.getAttribute("href"),
+	).toBe("https://linear.app/example/issue/EPX-1");
+});
+
+it("carries a validated child Discord binding through generation to the row", () => {
+	const snapshot = epicShapeSnapshotV3();
+	const input = {
+		snapshot,
+		itemFacts: v3ItemFacts(snapshot),
+		now: EPIC_SHAPE_NOW,
+		projectName: "example",
+		trigger: "manual" as const,
+		childThreads: new Map([
+			[
+				snapshot.items[0]!.id,
+				{
+					value: "https://discord.com/channels/123/456",
+					observed_at: EPIC_SHAPE_NOW.toISOString(),
+					provenance: {
+						kind: "statestore" as const,
+						table: "chat_threads",
+						key: { issue_id: snapshot.items[0]!.id },
+					},
+				},
+			],
+		]),
+	};
+	const page = generateEpicPage(input);
+	const window = new Window();
+	window.document.write(renderEpicPageHtml(page, EPIC_SHAPE_NOW));
+	expect(
+		window.document
+			.querySelector('[data-item="EPX-1"] .jump')
+			?.getAttribute("href"),
+	).toBe("https://discord.com/channels/123/456");
+});
+
+it("uses short Epic names and calls a ready child unstarted", () => {
+	const { page } = fixture();
+	page.header.roots.value![0]!.title = `[进度页·E5] ${"长标题".repeat(30)}`;
+	const doc = new Window().document;
+	doc.write(renderEpicPageHtml(page, EPIC_SHAPE_NOW));
+	const title = doc.querySelector('[data-root="EPX-100"] .e-n')!;
+	expect([...title.textContent].length).toBeLessThanOrEqual(32);
+	expect(title.textContent).not.toContain("[进度页");
+	const ready = doc.querySelector('.kid[data-class="free"]');
+	expect(ready).not.toBeNull();
+	expect(ready!.querySelector(".s")?.textContent).toBe("未开始");
+	expect(ready!.querySelector(".kid-a")?.textContent).toContain("还没起跑");
 });

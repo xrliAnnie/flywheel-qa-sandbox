@@ -64,7 +64,10 @@ describe("FLY-2143 Epic page materialization inputs", () => {
 		expect(result.page.items).toHaveLength(epicShapeSnapshot().items.length);
 		expect(
 			hostedBundleBytes(
-				renderEpicPageBudgetBundle(result.page, EPIC_SHAPE_NOW),
+				renderEpicPageBudgetBundle(
+					result.page,
+					new Date(result.page.generated_at),
+				),
 			),
 		).toBeLessThanOrEqual(512 * 1024);
 		expect(result.page.attention_sources.budget.missing?.reason).toBe(
@@ -284,3 +287,62 @@ it("budgets the hosted representation for full notes and judgment history withou
 		hostedBundleBytes(renderEpicPageBudgetBundle(result.page, EPIC_SHAPE_NOW)),
 	).toBeLessThanOrEqual(524288);
 }, 15_000);
+
+it("materializes child thread bindings with the same generation timestamp", async () => {
+	const snapshot = epicShapeSnapshot();
+	const readChildThreads = vi.fn(
+		() =>
+			new Map([
+				[
+					snapshot.items[0]!.id,
+					{
+						value: "https://discord.com/channels/123/456",
+						observed_at: EPIC_SHAPE_NOW.toISOString(),
+						provenance: {
+							kind: "statestore" as const,
+							table: "chat_threads",
+							key: { issue_id: snapshot.items[0]!.id },
+						},
+					},
+				],
+			]),
+	);
+	const deps = {
+		fetchSnapshot: async () => snapshot,
+		readAttention: async () => attentionFixture(),
+		readLeadNotes: () => [],
+		readChildThreads,
+		readItemFacts: () => emptyItemFacts(),
+		readSignals: () =>
+			generateEpicPage({
+				snapshot,
+				itemFacts: snapshot.items.map(() => emptyItemFacts()),
+				projectName: "example",
+				now: EPIC_SHAPE_NOW,
+				trigger: "manual",
+			}).items.map(({ signals, signal_sources }) => ({
+				signals,
+				signal_sources,
+			})),
+		readFreshness: () => ({}),
+		generatePage: generateAttentionEpicPage,
+		buildReceipt: buildEpicPageRenderReceipt,
+		now: () => EPIC_SHAPE_NOW,
+	};
+	const result = await materializeEpicPage(deps, {
+		projectName: "example",
+		binding: { team: "EPX" },
+		apiKey: "test",
+		trigger: "manual",
+		version: 1,
+		reasons: ["manual"],
+	});
+	expect(readChildThreads).toHaveBeenCalledWith(
+		"example",
+		snapshot.items,
+		EPIC_SHAPE_NOW,
+	);
+	expect(result.page.items[0]!.thread_url?.value).toBe(
+		"https://discord.com/channels/123/456",
+	);
+});
