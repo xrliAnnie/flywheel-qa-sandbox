@@ -196,7 +196,15 @@ describe("Bridge scaffold", () => {
 
 	it("FLY-1995 exposes stable event-loop health and fail-closed diagnostics auth", async () => {
 		const diagnostics = {
-			healthSnapshot: () => ({ p99_ms: null, max_ms: null, episodes: 0 }),
+			healthSnapshot: () => ({
+				p99_ms: null,
+				max_ms: null,
+				episodes: 0,
+				lag_ms: null,
+				sampled_at: null,
+				window_ms: 30_000,
+				status: "unavailable" as const,
+			}),
 			snapshot: () => ({
 				state: "disabled",
 				profiles: ["loop-profile-safe.cpuprofile"],
@@ -235,6 +243,10 @@ describe("Bridge scaffold", () => {
 			p99_ms: null,
 			max_ms: null,
 			episodes: 0,
+			lag_ms: null,
+			sampled_at: null,
+			window_ms: 30_000,
+			status: "unavailable",
 		});
 		tokenlessStore.close();
 

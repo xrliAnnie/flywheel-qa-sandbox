@@ -48,6 +48,18 @@ set -a
 source "$ENV_FILE"
 set +a
 
+# BEGIN bridge fd soft limit
+# Best effort for startup children. Node may raise this again; health must read
+# the running process limit and the Darwin kernel cap independently.
+BRIDGE_FD_SOFT="$(ulimit -Sn)"
+if [[ "$BRIDGE_FD_SOFT" != unlimited && "$BRIDGE_FD_SOFT" -lt 8192 ]]; then
+  if ! ulimit -Sn 8192 2>/dev/null; then
+    echo "[bridge-wrapper] WARN: could not raise fd soft limit to 8192 (soft=${BRIDGE_FD_SOFT}, hard=$(ulimit -Hn)); continuing startup" >&2
+  fi
+fi
+unset BRIDGE_FD_SOFT
+# END bridge fd soft limit
+
 # ── Expand PATH for launchd minimal env ────────────────────────
 # launchd provides only /usr/bin:/bin:/usr/sbin:/sbin.
 # tsx, npx, node, jq, brew tools live outside that.

@@ -29,6 +29,10 @@ export interface EventLoopHealthSnapshot {
 	p99_ms: number | null;
 	max_ms: number | null;
 	episodes: number;
+	lag_ms: number | null;
+	sampled_at: string | null;
+	window_ms: number;
+	status: "fresh" | "stale" | "unavailable";
 }
 
 interface WallSpan {
@@ -83,6 +87,10 @@ export class EventLoopAttribution {
 		p99_ms: null,
 		max_ms: null,
 		episodes: 0,
+		lag_ms: null,
+		sampled_at: null,
+		window_ms: WINDOW_MS,
+		status: "unavailable",
 	};
 	private state: "disabled" | "running" | "degraded" | "stopped" = "stopped";
 	private error: string | null = null;
@@ -200,7 +208,15 @@ export class EventLoopAttribution {
 	}
 
 	healthSnapshot(): EventLoopHealthSnapshot {
-		return { ...this.health };
+		return {
+			...this.health,
+			status:
+				this.health.status === "fresh" &&
+				(!this.started ||
+					Date.now() - Date.parse(this.health.sampled_at!) > 2 * WINDOW_MS)
+					? "stale"
+					: this.health.status,
+		};
 	}
 
 	snapshot(): {
@@ -228,7 +244,16 @@ export class EventLoopAttribution {
 
 	private async rollWindow(): Promise<void> {
 		if (this.rolling) return this.rolling;
-		const run = this.finishWindow();
+		const run = this.finishWindow().catch((error) => {
+			this.health = {
+				...this.health,
+				p99_ms: null,
+				max_ms: null,
+				lag_ms: null,
+				status: "unavailable",
+			};
+			throw error;
+		});
 		const guarded = run.finally(() => {
 			if (this.rolling === guarded) this.rolling = null;
 		});
@@ -246,10 +271,19 @@ export class EventLoopAttribution {
 		const utilization = performance.eventLoopUtilization(this.utilization);
 		this.utilization = performance.eventLoopUtilization();
 		this.delay.reset();
+		const valid =
+			windowEndedAt - windowStartedAt >= WINDOW_MS &&
+			Number.isFinite(maxMs) &&
+			maxMs > 0 &&
+			Number.isFinite(p99Ms);
 		this.health = {
-			p99_ms: maxMs > 0 ? p99Ms : null,
-			max_ms: maxMs > 0 ? maxMs : null,
+			p99_ms: valid ? p99Ms : null,
+			max_ms: valid ? maxMs : null,
 			episodes: this.episodeCount,
+			lag_ms: valid ? maxMs : null,
+			sampled_at: new Date(windowEndedAt).toISOString(),
+			window_ms: WINDOW_MS,
+			status: valid ? "fresh" : "unavailable",
 		};
 
 		const profilerControlEnabled = this.profilerEnabled();

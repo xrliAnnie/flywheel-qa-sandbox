@@ -2354,7 +2354,15 @@ export function createBridgeApp(
 					"[health] event-loop diagnostics unavailable:",
 					error instanceof Error ? error.message : String(error),
 				);
-				eventLoop = { p99_ms: null, max_ms: null, episodes: 0 };
+				eventLoop = {
+					p99_ms: null,
+					max_ms: null,
+					episodes: 0,
+					lag_ms: null,
+					sampled_at: null,
+					window_ms: 30_000,
+					status: "unavailable",
+				};
 			}
 		}
 		if (opts?.livenessHealthProvider?.current) {

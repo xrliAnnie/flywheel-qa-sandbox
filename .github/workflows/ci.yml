@@ -1105,6 +1105,7 @@ jobs:
           node scripts/verify-release-readiness-report.mjs
           bash scripts/__tests__/lead-alert-external-kind.test.sh
           bash scripts/__tests__/bridge-wrapper-fail-loud.test.sh
+          bash scripts/__tests__/bridge-wrapper-fd-limit.test.sh
 
       # FLY-957: record_deployed_range must never kill deploy finalization.
       # Hermetic — extracts the function from restart-services.sh, runs it under

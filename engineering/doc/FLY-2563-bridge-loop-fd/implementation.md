@@ -76,3 +76,10 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - closeout未越过观察水位、精确pending存在、观察存储缺失/不可用时保留热行。新增scanned/skipped日志；运维drain按扫描进度继续，单次命令不重启已完成源轮次，零扫描且未完成显式报错。
 - RED：缺持久化位置、误删未消费源、scanned字段缺失；另复现运维drain遇受保护前缀提前结束。GREEN：最终3文件35/35（归档26、运维5、restore replay4）；包含100k约1KiB payload稀疏候选夹具单调用<200ms与重建连接位置推进。既有lineage测试改为核对实际首批数及激活后零新增删除，适配逐候选预算。
 - teamlead构建通过；retention consumer gate通过。尚未完成指定备份性能、T4/T5、完整连接审计、1.7M观察夹具、全库门、code review和PR；生产QA不由本阶段执行。
+
+## T4 第一批：wrapper软限与现有lag缓存
+
+- wrapper在source env后尽力只提高soft fd limit至8192；unlimited/更高值不降低，hard不足只WARN并继续exec。四分支隔离测试通过；真实无负载Node子进程从shell soft256启动后report为1048575，因此wrapper结果不作为F证据。
+- 现有EventLoopAttribution缓存追加lag_ms（完整窗口max）、sampled_at、window_ms=30000、status；空/失败/不完整窗口不可用，超过60秒或停止后的有效样本标stale。沿用唯一采样器，profiler关闭仍采样，health仅取缓存。
+- RED：缺新字段2项失败；GREEN：event-loop 7/7、HTTP health/event-loop选择5/5（其余34未执行），teamlead类型检查通过。wrapper新测试通过，原preflight5/5及fail-loud18/18通过；新脚本已显式登记CI，shell枚举门通过。
+- T4尚未完成ProcessResourceMonitor、Darwin effective cap、fd使用率统一告警/恢复及实际Bridge接线证明；不把上述测试或隔离Node当生产验收。

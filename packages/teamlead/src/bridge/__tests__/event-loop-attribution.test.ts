@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	EventLoopAttribution,
 	nanosecondsToMilliseconds,
@@ -20,6 +20,7 @@ import {
 const roots: string[] = [];
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -32,6 +33,68 @@ function makeHome(label: string): string {
 }
 
 describe("FLY-1995 event-loop attribution", () => {
+	it("reports complete-window lag, cached freshness, and unavailable empty samples", async () => {
+		let now = 100_000;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		const monitor = new EventLoopAttribution({
+			diagnosticsDir: join(makeHome("lag"), "diagnostics"),
+			profilerEnabled: false,
+		});
+		await monitor.start();
+		const internal = monitor as unknown as {
+			delay: {
+				max: number;
+				percentile: (n: number) => number;
+				reset: () => void;
+				disable: () => void;
+			};
+			rollWindow: () => Promise<void>;
+		};
+		internal.delay.disable();
+		internal.delay = {
+			max: 42_000_000,
+			percentile: () => 20_000_000,
+			reset() {},
+			disable() {},
+		};
+		try {
+			expect(monitor.healthSnapshot()).toMatchObject({
+				lag_ms: null,
+				status: "unavailable",
+				window_ms: 30_000,
+			});
+			now += 30_000;
+			await internal.rollWindow();
+			expect(monitor.healthSnapshot()).toMatchObject({
+				lag_ms: 42,
+				max_ms: 42,
+				p99_ms: 20,
+				sampled_at: new Date(now).toISOString(),
+				status: "fresh",
+			});
+			now += 60_001;
+			expect(monitor.healthSnapshot()).toMatchObject({
+				lag_ms: 42,
+				status: "stale",
+			});
+			internal.delay.max = 0;
+			await internal.rollWindow();
+			expect(monitor.healthSnapshot()).toMatchObject({
+				lag_ms: null,
+				status: "unavailable",
+			});
+			internal.delay.percentile = () => {
+				throw new Error("sample failed");
+			};
+			await expect(internal.rollWindow()).rejects.toThrow("sample failed");
+			expect(monitor.healthSnapshot()).toMatchObject({
+				lag_ms: null,
+				status: "unavailable",
+			});
+		} finally {
+			await monitor.stop();
+		}
+	});
 	it("converts perf_hooks nanoseconds at the 1s episode boundary", () => {
 		expect(nanosecondsToMilliseconds(999_999_999)).toBeCloseTo(999.999999);
 		expect(nanosecondsToMilliseconds(1_000_000_000)).toBe(1000);
@@ -47,6 +110,10 @@ describe("FLY-1995 event-loop attribution", () => {
 			p99_ms: null,
 			max_ms: null,
 			episodes: 0,
+			lag_ms: null,
+			sampled_at: null,
+			window_ms: 30_000,
+			status: "unavailable",
 		});
 		expect(disabled.snapshot()).toMatchObject({ state: "disabled" });
 		await disabled.stop();
