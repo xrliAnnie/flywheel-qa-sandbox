@@ -641,6 +641,8 @@ it.each([
 
 it("bounds learning scans and resumes after excluded outcomes without consuming off-mode work", async () => {
 	const { store, db } = await bindingFixture();
+	// Exercise the row cap independently of the separate elapsed-budget test.
+	const clock = vi.spyOn(performance, "now").mockReturnValue(0);
 	try {
 		const insert =
 			db.prepare(`INSERT INTO ship_judgment_outcome(outcome_id,source_kind,source_id,question_id,run_id,card_message_id,targets_digest,authorship,decision,decided_at,observed_at,evidence_json)
@@ -662,6 +664,7 @@ it("bounds learning scans and resumes after excluded outcomes without consuming 
 			db.prepare("SELECT count(*) AS n FROM ship_judgment_clarification").get(),
 		).toEqual({ n: 0 });
 	} finally {
+		clock.mockRestore();
 		store.close();
 	}
 });

@@ -193,3 +193,15 @@ Lead question b07d0b86-d375-4dab-b37a-9ed4e3fde5f4 授权唯一 writable inciden
 五轮synthetic原始结果全部保留在performance-runs.jsonl：首轮尾部154.543ms失败原因未定位，随后四轮通过原阈值；第4轮取消最大31.027ms、modeTick最大67.905ms，第5轮分别26.197ms/18.738ms。观测窗口CPU/GC仅从第3轮开始收集，不能反推第1轮原因。没有放宽阈值、skip或修改生产调度来隐藏失败。
 
 四包typecheck全部exit0；新增wrapper shell test再次exit0。CommDB源码分类见commdb-ownership-matrix.md；保留的异步owner/常驻owner明确列出，不声称所有await期间fd为0。Lint/build已通过，package gate仍运行，PR/CI/review是接下来的独立门。生产health15分钟/fd2小时/有效上限和指定备份archive推进与重启验证仍由QA证明。
+
+## 接续验证与 CI 修复（2026-09-15，epoch=5）
+
+接续 Lead mailbox 4eea152f-5849-488a-9989-607301512d7a，确认 PR1207/head41965da9、工作树干净。该 head 的 CI34943318979 实际为红，不能沿用旧运行中状态；本轮 postmerge pnpm lint、pnpm -r build 均 exit0。
+
+- CI结构缺少新增 observation performance 行；package coverage脚本把单文件exec误当包过滤命令。同步精确行合同，并仅将精确名称/命令的额外性能验证排除于基础包集合计算，保留常规teamlead执行该文件。结构与真实pnpm覆盖均通过，23/23包、基础行无重叠。
+- 三张cursor/pending表已在生产分类中，静态schema fixture及数量尚旧；补入准确表名及231总数/167保护表断言。保留策略31/31通过。
+- observation-cursor是新增只读verdict消费者（只建索引与SELECT，不写verdict事实）；同步authorship引用清单。实际GatePoller/Admission连接寿命改变SELECT调用集，重新生成FLY2139同源query audit；两项定向文件通过，查询计划断言未放宽。
+- mailbox预算旧测试按performance.now调用次数跳时，被SQL计时消耗；改为真实SQLite删除trigger推进虚拟时间，原“一条后停止”断言保留。17/17通过。clarification条数测试固定时钟，独立25ms预算测试仍保留。
+- modeTick已按批准计划只await本地页；投递测试改为等待delivered或owner缺失的真实状态，仍断言2条/下一轮3条及off零写入。runtime5/5通过。
+- CI performance原红为modeTick103.705ms。新本地run6尾部61.31ms与51.235ms GC重叠，已追加原始记录；不将GC证据反推为最早154.543ms尖峰的已证根因。夹具此前连续同步清空25,000 outcome而未返回事件循环；现每页调用后setImmediate交接，与生产周期之间可回收临时分配的前提一致，不强制GC、不mock观察器、不修改生产预算或50/100ms阈值。run7通过：取消最大18.111ms，modeTick最大21.329ms；继续四轮，所有结果保留。
+- wrapper fd test与shell/Node CI枚举通过。新package aggregate仍运行（/tmp/fly2563-resume-packages.log）；当前没有aggregate/effective-review/exact-head-CI完成声明，也未执行生产QA、重启、部署或派发QA。

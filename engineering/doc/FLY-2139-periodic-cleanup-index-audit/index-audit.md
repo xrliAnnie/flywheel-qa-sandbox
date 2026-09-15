@@ -32,13 +32,13 @@ Issue: FLY-2139 (https://linear.app/geoforge3d/issue/FLY-2139/bridge-稳定全�
 <!-- FLY-2139 GENERATED QUERY-AUDIT EVIDENCE: BEGIN -->
 | tracing window | captures | unique SQL | named indexes | temp B-trees after indexed access |
 |---|---:|---:|---|---:|
-| gate-poller | 2 | 2 | idx_founder_action_status, idx_sessions_status_revision | 1 |
-| lead-inbox-admit | 32 | 21 | content_ref_gc_due, idx_sessions_status_revision, mailbox_archive_acked, mailbox_archive_dead, mailbox_bridge_reclaim, mailbox_claim_bridge, mailbox_claim_runner, mailbox_dead_scan, mailbox_deliverable_by_agent, mailbox_identity_terminal_archive, mailbox_identity_terminal_backfill, mailbox_lead_reclaim, mailbox_lease_expiry, mailbox_lease_expiry_order, mailbox_log_message_event, mailbox_runner_inflight_by_recipient, sqlite_autoindex_dead_letter_alerts_2 | 10 |
-| runner-mailbox | 18 | 13 | mailbox_batch_lookup, mailbox_claim_runner, mailbox_deliverable_by_agent, mailbox_lease_expiry, mailbox_lease_expiry_order, mailbox_runner_inflight_by_recipient, sqlite_autoindex_mailbox_1, sqlite_autoindex_mailbox_2, sqlite_autoindex_mailbox_identity_1, sqlite_autoindex_mailbox_identity_2, sqlite_autoindex_mailbox_terminal_archive_1, sqlite_autoindex_mailbox_terminal_archive_2 | 5 |
-| patrol-tick | 5 | 5 | idx_lead_events_patrol, idx_sessions_status_revision, idx_workflow_terminal_archive_lead_event_id | 0 |
-| workflow-transition | 3 | 3 | sqlite_autoindex_workflow_rework_delivery_1, sqlite_autoindex_workflow_rework_request_1, sqlite_autoindex_workflow_rework_route_revision_1 | 0 |
-| outbox-dead-letter | 2 | 2 | idx_dead_letter_alert_due, idx_workflow_alert_delivery, sqlite_autoindex_alert_delivery_receipts_1 | 2 |
-capture-set-sha256: `555c4418a2b2b07c35e37187a73d9d8a059f987771900d1faa5a236c28a4e7fb`
+| gate-poller | 4 | 2 | idx_founder_action_status, idx_sessions_status_revision | 2 |
+| lead-inbox-admit | 64 | 21 | content_ref_gc_due, idx_sessions_status_revision, mailbox_archive_acked, mailbox_archive_dead, mailbox_bridge_reclaim, mailbox_claim_bridge, mailbox_claim_runner, mailbox_dead_scan, mailbox_deliverable_by_agent, mailbox_identity_terminal_archive, mailbox_identity_terminal_backfill, mailbox_lead_reclaim, mailbox_lease_expiry, mailbox_lease_expiry_order, mailbox_log_message_event, mailbox_runner_inflight_by_recipient, sqlite_autoindex_dead_letter_alerts_2 | 20 |
+| runner-mailbox | 36 | 13 | mailbox_batch_lookup, mailbox_claim_runner, mailbox_deliverable_by_agent, mailbox_lease_expiry, mailbox_lease_expiry_order, mailbox_runner_inflight_by_recipient, sqlite_autoindex_mailbox_1, sqlite_autoindex_mailbox_2, sqlite_autoindex_mailbox_identity_1, sqlite_autoindex_mailbox_identity_2, sqlite_autoindex_mailbox_terminal_archive_1, sqlite_autoindex_mailbox_terminal_archive_2 | 10 |
+| patrol-tick | 10 | 5 | idx_lead_events_patrol, idx_sessions_status_revision, idx_workflow_terminal_archive_lead_event_id | 0 |
+| workflow-transition | 6 | 3 | sqlite_autoindex_workflow_rework_delivery_1, sqlite_autoindex_workflow_rework_request_1, sqlite_autoindex_workflow_rework_route_revision_1 | 0 |
+| outbox-dead-letter | 4 | 2 | idx_dead_letter_alert_due, idx_workflow_alert_delivery, sqlite_autoindex_alert_delivery_receipts_1 | 4 |
+capture-set-sha256: `b88142cf84ea83b3349a379af9c1ea8e021a4d1dd534d2e3bbba84bbde3adadd`
 <!-- FLY-2139 GENERATED QUERY-AUDIT EVIDENCE: END -->
 
 ## 防真空负控制

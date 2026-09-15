@@ -73,11 +73,20 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 			return changed;
 		};
 		let changed = 0;
-		for (let i = 0; i < 5; i++) changed += measure("backlog");
+		// Production returns to the event loop between 3s observations. Let
+		// completed pages release their transient allocations between calls too.
+		// Timing still includes the entire observer, including any in-call GC.
+		const betweenPages = () =>
+			new Promise<void>((resolve) => setImmediate(resolve));
+		for (let i = 0; i < 5; i++) {
+			changed += measure("backlog");
+			await betweenPages();
+		}
 		expect(changed).toBeGreaterThan(0);
 		let drained = false;
 		for (let i = 0; i < 10000; i++) {
 			observer.observeCancellations(NOW);
+			await betweenPages();
 			if (
 				observer.pageStats().sourceCandidates === 0 &&
 				(
@@ -126,6 +135,7 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 			);
 			measure("tail");
 			expect(observer.pageStats().outcomes).toBeGreaterThan(0);
+			await betweenPages();
 		}
 		for (const mode of ["auto_merge_narrow_gate", "dry_run"] as const) {
 			const onError = vi.fn();
@@ -143,8 +153,17 @@ it("bounds real observation and modeTick with 1.7M events and 500 holders", asyn
 			try {
 				for (let i = 0; i < 5; i++) {
 					const start = performance.now();
+					const cpu = process.cpuUsage();
 					await runtime.modeTick();
-					samples[mode]!.push(performance.now() - start);
+					const end = performance.now();
+					const usage = process.cpuUsage(cpu);
+					windows.push({
+						kind: mode,
+						start,
+						end,
+						cpuMs: (usage.user + usage.system) / 1000,
+					});
+					samples[mode]!.push(end - start);
 				}
 				expect(onError).not.toHaveBeenCalled();
 			} finally {

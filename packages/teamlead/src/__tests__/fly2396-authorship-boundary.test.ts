@@ -12,6 +12,7 @@ const ALLOWED = new Set([
 	"engineering/doc/FLY-2396-founder-gate-head-origin/retro-bind.sql",
 	"packages/teamlead/src/StateStore.ts",
 	"packages/teamlead/src/ship-judgment/outcomes.ts",
+	"packages/teamlead/src/ship-judgment/observation-cursor.ts",
 	"scripts/fly-2398-shadow-table.mjs",
 	"scripts/fly2396-retro-report.mjs",
 	"scripts/lib/fly-2006-retention-registry.mjs",
@@ -52,7 +53,7 @@ describe("FLY-2396 authorship fact isolation", () => {
 			.filter((file) => AUTHORITY_FACT.test(readFileSync(file, "utf8")))
 			.map((file) => relative(REPO_ROOT, file))
 			.sort();
-		expect(ALLOWED.size).toBe(6);
+		expect(ALLOWED.size).toBe(7);
 		expect(references).toEqual([...ALLOWED].sort());
 		for (const forbidden of [
 			"land-executor",

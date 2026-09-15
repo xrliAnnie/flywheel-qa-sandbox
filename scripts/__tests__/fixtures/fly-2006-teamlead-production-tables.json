@@ -132,6 +132,8 @@
 	"ship_judgment_evaluation",
 	"ship_judgment_input",
 	"ship_judgment_job",
+	"ship_judgment_observation_cursor",
+	"ship_judgment_observation_pending",
 	"ship_judgment_opinion",
 	"ship_judgment_outcome",
 	"ship_judgment_project_state",
@@ -225,6 +227,7 @@
 	"workflow_template_publication",
 	"workflow_template_revision",
 	"workflow_terminal_archive",
+	"workflow_terminal_archive_cursor",
 	"workflow_turn_divergence_episode",
 	"workflow_wake_send_claim"
 ]
