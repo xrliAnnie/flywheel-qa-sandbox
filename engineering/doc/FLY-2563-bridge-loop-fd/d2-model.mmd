@@ -1,0 +1,26 @@
+classDiagram
+  class Source["原始事件"] {
+    事件身份
+    原运行与原卡片
+    原时间与证据
+  }
+  class Cursor["处理进度"] {
+    项目与事件来源
+    最后处理位置
+    更新时间
+  }
+  class Pending["尚未处理完的事件"] {
+    精确事件身份
+    已处理到哪张卡
+    重试原因与时间
+  }
+  class Outcome["既有观察结果"] {
+    原事件与原卡片唯一组合
+    归因与原目标
+    观察时间
+  }
+  Source "1" --> "0..*" Outcome : 首次处理
+  Source "1" --> "0..1" Pending : 保留余项
+  Cursor --> Source : 标记已检查位置
+  Cursor .. Outcome : 一起保存
+  Cursor .. Pending : 一起保存
