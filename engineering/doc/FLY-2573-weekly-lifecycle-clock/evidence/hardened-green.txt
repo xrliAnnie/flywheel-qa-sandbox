@@ -1,0 +1,32 @@
+[db-maintenance] Case: restart window calls maintenance after Bridge stop and before start
+[db-maintenance] ✓ restart ordering exposes a stopped-service maintenance window
+[db-maintenance] ✓ restart turns a durable maintenance failure into a real severe alert
+[db-maintenance] Case: canonical databases get collision-safe backups, checked checkpoints, and weekly VACUUM receipts
+wal
+wal
+wal
+[db-maintenance] ✓ all canonical DBs finish backup/checkpoint/VACUUM with distinct project identities
+[db-maintenance] ✓ VACUUM records a real before/after reduction in bytes, pages, and freelist
+[db-maintenance] ✓ a complete weekly receipt suppresses repeat VACUUM while the shuttle still runs
+[db-maintenance] ✓ maintenance evidence keeps at most two sealed runs per database
+[db-maintenance] ✓ evidence rotation preserves history whose seal digest does not verify
+[db-maintenance] ✓ evidence rotation preserves a checkpoint-only interrupted run
+[db-maintenance] Case: a future marker does not suppress VACUUM
+wal
+[db-maintenance] ✓ a marker one second ahead of now is rejected by the production guard
+[db-maintenance] Case: weekly marker expires exactly at seven days
+wal
+[db-maintenance] ✓ a marker one second short of seven days still suppresses VACUUM
+wal
+[db-maintenance] ✓ a marker exactly seven days old no longer suppresses VACUUM
+[db-maintenance] Case: backup failure blocks checkpoint and VACUUM and leaves durable evidence
+wal
+[db-maintenance] ✓ backup failure is fail-closed before every later database mutation
+[db-maintenance] Case: a fully checkpointed WAL that could not truncate still proceeds to VACUUM
+wal
+[db-maintenance] ✓ checkpointed-but-not-truncated is observable without blocking VACUUM or escalating
+[db-maintenance] Case: a partially checkpointed busy tuple still fails closed
+wal
+[db-maintenance] ✓ checkpoint busy with unflushed pages stays a durable safe skip
+[db-maintenance] ✓ clock fixtures received every required environment variable
+[db-maintenance] 15 passed, 0 failed
