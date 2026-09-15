@@ -9306,9 +9306,9 @@ export async function startBridge(
 								activeIssueIds: [...activeCommIssueIds],
 							}),
 					);
-					if (archived.archived > 0) {
+					if (archived.scanned > 0) {
 						console.info(
-							`[database-hygiene] archived ${archived.archived} terminal narrative row(s)`,
+							`[database-hygiene] archived ${archived.archived} terminal narrative row(s); scanned=${archived.scanned} skipped=${archived.skipped}`,
 						);
 					}
 				} catch (error) {

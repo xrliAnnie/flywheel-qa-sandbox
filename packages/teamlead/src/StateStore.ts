@@ -8138,7 +8138,7 @@ export class StateStore {
 	}
 
 	archiveTerminalRows(input: TerminalArchiveInput): TerminalArchiveResult {
-		return archiveTerminalRowsInDatabase(this.db.raw, input);
+		return archiveTerminalRowsInDatabase(this.db.raw, { ...input, observationStorageReady: this.observationStorage.status === "ready" });
 	}
 
 	restoreTerminalRow(input: {

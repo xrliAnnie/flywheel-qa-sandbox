@@ -68,3 +68,11 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 | F 实际 Bridge fd.limit≥8192 | pending |
 | 告警、SQL计时、归档预算/重启 | pending |
 | Code review、PR、needs_review completion | pending |
+
+## T6：有界归档候选与持久化游标
+
+- 每页先按现有时间索引取最多64条元数据，再按主键执行原资格/JSON守卫；每调用最多2页，逐候选检查25ms页预算，保留50ms调用预算。payload上限64KiB、每页1MiB；active snapshot超过2000项整次保留并warn。
+- 新workflow_terminal_archive_cursor与cold写入/hot删除同事务提交；持久化冻结cutoff、时间/身份位置及cycle完成状态。跳过行仍推进，完成后下一轮重查，重建连接可续跑。
+- closeout未越过观察水位、精确pending存在、观察存储缺失/不可用时保留热行。新增scanned/skipped日志；运维drain按扫描进度继续，单次命令不重启已完成源轮次，零扫描且未完成显式报错。
+- RED：缺持久化位置、误删未消费源、scanned字段缺失；另复现运维drain遇受保护前缀提前结束。GREEN：最终3文件35/35（归档26、运维5、restore replay4）；包含100k约1KiB payload稀疏候选夹具单调用<200ms与重建连接位置推进。既有lineage测试改为核对实际首批数及激活后零新增删除，适配逐候选预算。
+- teamlead构建通过；retention consumer gate通过。尚未完成指定备份性能、T4/T5、完整连接审计、1.7M观察夹具、全库门、code review和PR；生产QA不由本阶段执行。

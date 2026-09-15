@@ -87,6 +87,7 @@ export async function executeFly2341Archive(input) {
 	const queue = new MailboxQueue(comm);
 	const archived = { teamlead: 0, commFamilies: 0, commIdentities: 0 };
 	const commIdentityFailures = new Map();
+	const completedTables = new Set();
 	let batches = 0;
 	let maxBatchDurationMs = 0;
 	let consecutiveEmptyPasses = 0;
@@ -100,6 +101,7 @@ export async function executeFly2341Archive(input) {
 				.all();
 			let moved = 0;
 			for (const sourceTable of TEAMLEAD_TABLES) {
+				if (completedTables.has(sourceTable)) continue;
 				const started = performance.now();
 				const result = archiveTerminalRows(teamlead, {
 					now: input.now,
@@ -113,7 +115,15 @@ export async function executeFly2341Archive(input) {
 					performance.now() - started,
 				);
 				archived.teamlead += result.archived;
-				moved += result.archived;
+				moved += result.scanned;
+				const cursor = teamlead
+					.prepare(
+						"SELECT completed FROM workflow_terminal_archive_cursor WHERE source_table=?",
+					)
+					.get(sourceTable);
+				if (cursor?.completed === 1) completedTables.add(sourceTable);
+				else if (result.scanned === 0)
+					throw new Error(`archive_scan_no_progress: ${sourceTable}`);
 				batches++;
 				await immediate();
 			}

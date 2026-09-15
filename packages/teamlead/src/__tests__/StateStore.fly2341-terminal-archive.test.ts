@@ -16,6 +16,167 @@ const NOW = "2026-09-04T20:00:00.000Z";
 const OLD = "2026-08-20T00:00:00.000Z";
 const RECENT = "2026-09-03T00:00:00.000Z";
 
+it("bounds a sparse 100k large-payload scan and persists skipped candidate progress across connections", () => {
+	let db = database();
+	try {
+		addSessionEvent(db, "mass", "completed", "session_completed");
+		const payload = JSON.stringify({
+			active: "live-execution",
+			note: "x".repeat(1024),
+		});
+		db.prepare(`WITH RECURSIVE rows(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM rows WHERE n<100000)
+		 INSERT INTO session_events(event_id,ts,execution_id,issue_id,project_name,event_type,payload,source)
+		 SELECT 'mass-'||n,?,'exec-mass','issue-mass','flywheel','session_completed',?,'fixture' FROM rows`).run(
+			OLD,
+			payload,
+		);
+		const started = performance.now();
+		const firstPage = archiveTerminalRows(db, {
+			now: NOW,
+			sourceTable: "session_events",
+			activeExecutionIds: ["live-execution"],
+		});
+		expect(performance.now() - started).toBeLessThan(200);
+		expect(firstPage.scanned).toBeLessThanOrEqual(128);
+		expect(firstPage.skipped).toBeGreaterThan(0);
+		const cursor = db
+			.prepare(
+				"SELECT source_identity FROM workflow_terminal_archive_cursor WHERE source_table='session_events'",
+			)
+			.get() as { source_identity: number };
+		expect(cursor.source_identity).toBeGreaterThan(0);
+		expect(cursor.source_identity).toBeLessThanOrEqual(128);
+		const bytes = db.serialize();
+		db.close();
+		db = new Database(bytes);
+		installTerminalRowArchiveSchema(db);
+		archiveTerminalRows(db, {
+			now: NOW,
+			sourceTable: "session_events",
+			activeExecutionIds: ["live-execution"],
+		});
+		const after = db
+			.prepare(
+				"SELECT source_identity FROM workflow_terminal_archive_cursor WHERE source_table='session_events'",
+			)
+			.get() as { source_identity: number };
+		expect(after.source_identity).toBeGreaterThan(cursor.source_identity);
+	} finally {
+		db.close();
+	}
+});
+
+it("preserves unconsumed closeout sources when observation storage is unavailable", () => {
+	const db = database();
+	try {
+		addSessionEvent(db, "closeout-protected", "completed", "closeout_report");
+		db.exec(
+			"UPDATE session_events SET source='bridge.lifecycle-closeout',project_name='flywheel'",
+		);
+		expect(
+			archiveTerminalRows(db, { now: NOW, sourceTable: "session_events" })
+				.archived,
+		).toBe(0);
+		expect(
+			db.prepare("SELECT COUNT(*) AS n FROM session_events").get(),
+		).toEqual({ n: 1 });
+	} finally {
+		db.close();
+	}
+});
+
+it("starts a new cycle only after completing the frozen scan and rechecks formerly active rows", () => {
+	const db = database();
+	try {
+		addSessionEvent(db, "later-eligible", "running", "session_completed");
+		expect(
+			archiveTerminalRows(db, { now: NOW, sourceTable: "session_events" })
+				.archived,
+		).toBe(0);
+		expect(
+			db
+				.prepare("SELECT cycle,completed FROM workflow_terminal_archive_cursor")
+				.get(),
+		).toEqual({ cycle: 1, completed: 1 });
+		db.exec("UPDATE sessions SET status='completed'");
+		expect(
+			archiveTerminalRows(db, { now: NOW, sourceTable: "session_events" })
+				.archived,
+		).toBe(1);
+		expect(
+			db.prepare("SELECT cycle FROM workflow_terminal_archive_cursor").get(),
+		).toEqual({ cycle: 2 });
+	} finally {
+		db.close();
+	}
+});
+
+it("protects closeout ids beyond the observation cursor and explicit pending identities", () => {
+	const db = database();
+	try {
+		addSessionEvent(db, "pending-closeout", "completed", "closeout_report");
+		db.exec(`UPDATE session_events SET source='bridge.lifecycle-closeout';
+ CREATE TABLE ship_judgment_observation_cursor(project_name TEXT,source_kind TEXT,last_event_id INTEGER);
+ INSERT INTO ship_judgment_observation_cursor VALUES ('flywheel','closeout',0);
+ CREATE TABLE ship_judgment_observation_pending(project_name TEXT,source_kind TEXT,source_id TEXT);`);
+		expect(
+			archiveTerminalRows(db, { now: NOW, sourceTable: "session_events" })
+				.archived,
+		).toBe(0);
+		db.exec(
+			"UPDATE ship_judgment_observation_cursor SET last_event_id=1; INSERT INTO ship_judgment_observation_pending VALUES ('flywheel','closeout','1')",
+		);
+		expect(
+			archiveTerminalRows(db, { now: NOW, sourceTable: "session_events" })
+				.archived,
+		).toBe(0);
+		db.exec("DELETE FROM ship_judgment_observation_pending");
+		expect(
+			archiveTerminalRows(db, {
+				now: NOW,
+				sourceTable: "session_events",
+				observationStorageReady: false,
+			}).archived,
+		).toBe(0);
+		expect(
+			archiveTerminalRows(db, { now: NOW, sourceTable: "session_events" })
+				.archived,
+		).toBe(1);
+	} finally {
+		db.close();
+	}
+});
+
+it("retains oversize payloads and fails safe on an oversized active snapshot", () => {
+	const db = database();
+	try {
+		addSessionEvent(db, "oversize", "completed", "session_completed");
+		addSessionEvent(db, "small", "completed", "session_completed");
+		db.prepare(
+			"UPDATE session_events SET payload=? WHERE event_id='oversize'",
+		).run(JSON.stringify({ note: "x".repeat(70000) }));
+		expect(
+			archiveTerminalRows(db, {
+				now: NOW,
+				sourceTable: "session_events",
+				activeExecutionIds: Array.from(
+					{ length: 2001 },
+					(_, i) => `active-${i}`,
+				),
+			}).archived,
+		).toBe(0);
+		expect(
+			archiveTerminalRows(db, { now: NOW, sourceTable: "session_events" })
+				.archived,
+		).toBe(1);
+		expect(db.prepare("SELECT event_id FROM session_events").all()).toEqual([
+			{ event_id: "oversize" },
+		]);
+	} finally {
+		db.close();
+	}
+});
+
 afterEach(() => {
 	vi.restoreAllMocks();
 });
@@ -194,6 +355,8 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 
 		expect(store.archiveTerminalRows({ now: NOW, limit: 1 })).toEqual({
 			archived: 1,
+			scanned: 1,
+			skipped: 0,
 			byTable: { session_events: 1, workflow_run_event: 0, lead_events: 0 },
 		});
 		store.close();
@@ -725,7 +888,7 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 		db.close();
 	});
 
-	it("stops after the current bounded page at its wall-time budget", () => {
+	it("does not start candidate validation after the page time budget expires", () => {
 		const db = database();
 		addSessionEvent(db, "budget-a", "completed", "session_completed");
 		addSessionEvent(db, "budget-b", "completed", "session_completed");
@@ -736,12 +899,12 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 			.mockReturnValueOnce(MAX_TERMINAL_ARCHIVE_PAGE_DURATION_MS + 1);
 		try {
 			expect(archiveTerminalRows(db, { now: NOW, limit: 100 }).archived).toBe(
-				2,
+				0,
 			);
 			expect(
 				db.prepare("SELECT count(*) AS n FROM session_events").get(),
 			).toEqual({
-				n: 0,
+				n: 2,
 			});
 		} finally {
 			clock.mockRestore();
@@ -752,7 +915,7 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 	it("caps a call at two pages and reserves its aggregate time budget", () => {
 		const candidateSelects: string[] = [];
 		const db = database((sql) => {
-			if (typeof sql === "string" && sql.includes("SELECT e.* FROM")) {
+			if (typeof sql === "string" && sql.includes("archive-candidates")) {
 				candidateSelects.push(sql);
 			}
 		});
@@ -780,7 +943,7 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 
 		const timedSelects: string[] = [];
 		const timedDb = database((sql) => {
-			if (typeof sql === "string" && sql.includes("SELECT e.* FROM")) {
+			if (typeof sql === "string" && sql.includes("archive-candidates")) {
 				timedSelects.push(sql);
 			}
 		});
@@ -819,7 +982,8 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 		const db = database((sql) => {
 			if (
 				typeof sql === "string" &&
-				sql.includes("SELECT e.* FROM session_events")
+				sql.includes("archive-candidates") &&
+				sql.includes("FROM session_events")
 			) {
 				expect(budgetStarted).toBe(true);
 				candidateSelects.push(sql);
@@ -846,8 +1010,8 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 				}).archived,
 			).toBe(65);
 			expect(candidateSelects).toHaveLength(2);
-			expect(candidateSelects[1]).toContain("julianday(e.ts) > julianday(");
-			expect(candidateSelects[1]).toContain("e.id > 64.0");
+			expect(candidateSelects[1]).toContain("(julianday(e.ts),e.id)>");
+			expect(candidateSelects[1]).toMatch(/,64(?:\.0)?\)/);
 			const plan = db
 				.prepare(`EXPLAIN QUERY PLAN ${candidateSelects[1]}`)
 				.all() as Array<{ detail: string }>;
@@ -860,7 +1024,7 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 		}
 	});
 
-	it("consumes paid keyset pages before yielding on a growing clock", () => {
+	it("stops between candidates on a growing clock", () => {
 		const db = database();
 		for (let index = 0; index < 100; index++) {
 			addSessionEvent(
@@ -870,11 +1034,12 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 				"session_completed",
 			);
 		}
-		const clock = vi
-			.spyOn(performance, "now")
-			.mockReturnValueOnce(0)
-			.mockReturnValueOnce(0)
-			.mockReturnValue(30);
+		let elapsed = 0;
+		const clock = vi.spyOn(performance, "now").mockImplementation(() => {
+			const value = elapsed;
+			elapsed += 2;
+			return value;
+		});
 		try {
 			expect(
 				archiveTerminalRows(db, {
@@ -882,7 +1047,7 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 					limit: 100,
 					sourceTable: "session_events",
 				}).archived,
-			).toBe(64);
+			).toBe(12);
 		} finally {
 			clock.mockRestore();
 			db.close();
@@ -894,7 +1059,8 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 		const db = database((sql) => {
 			if (
 				typeof sql === "string" &&
-				sql.includes("SELECT e.* FROM session_events")
+				sql.includes("archive-candidates") &&
+				sql.includes("FROM session_events")
 			) {
 				candidateSelects.push(sql);
 			}
@@ -911,6 +1077,7 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 			.spyOn(performance, "now")
 			.mockReturnValueOnce(0)
 			.mockReturnValueOnce(0)
+			.mockReturnValueOnce(0)
 			.mockReturnValue(30);
 		try {
 			expect(
@@ -919,7 +1086,7 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 					limit: 70,
 					sourceTable: "session_events",
 				}).archived,
-			).toBe(64);
+			).toBe(1);
 			candidateSelects.length = 0;
 			clock.mockReturnValue(0);
 			expect(
@@ -928,8 +1095,14 @@ describe("FLY-2341 TeamLead terminal archive", () => {
 					limit: 70,
 					sourceTable: "session_events",
 				}).archived,
-			).toBe(6);
-			expect(candidateSelects[0]).toContain("e.id > 64.0");
+			).toBe(69);
+			expect(
+				db
+					.prepare(
+						"SELECT source_identity FROM workflow_terminal_archive_cursor WHERE source_table='session_events'",
+					)
+					.get(),
+			).toEqual({ source_identity: 70 });
 		} finally {
 			clock.mockRestore();
 			db.close();
