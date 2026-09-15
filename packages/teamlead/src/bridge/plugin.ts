@@ -372,11 +372,6 @@ import {
 	type EventLoopHealthSnapshot,
 } from "./event-loop-attribution.js";
 import {
-	ProcessResourceMonitor,
-	type FdHealth,
-} from "./process-resource-monitor.js";
-import { FdPressureAlert } from "./fd-pressure-alert.js";
-import {
 	drainSynchronousPages,
 	runSequentialChunks,
 	yieldToEventLoop,
@@ -387,6 +382,7 @@ import {
 	checkPrMergeViaGh,
 	createExternalMergeReconciler,
 } from "./external-merge-reconcile.js";
+import { FdPressureAlert } from "./fd-pressure-alert.js";
 import { ProjectConfigCache } from "./feature-flag-config-source.js";
 import { renderFlagReport } from "./feature-flag-report-html.js";
 import { buildFlagProvenance } from "./flag-provenance.js";
@@ -618,6 +614,10 @@ import {
 	makeFinalizeWorkflowPhaseRoles,
 	runResumablePostShipFinalization,
 } from "./post-ship-finalization.js";
+import {
+	type FdHealth,
+	ProcessResourceMonitor,
+} from "./process-resource-monitor.js";
 import {
 	buildCronModelViews,
 	buildProjectRunnerDefaults,

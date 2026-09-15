@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { installSqlTiming } from "../sql-timing.js";
+
 function fixture() {
 	let time = 0;
 	const warn = vi.fn();

@@ -169,3 +169,9 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - 事故备份仍存在，约1.6GB；原文件未写入。当前执行无managed snapshot目录。
 - 官方`node scripts/flywheel-snapshot-control.mjs runner --source ~/.flywheel/comm/flywheel/comm.db --kind comm --project flywheel`返回`{ok:false,reason:snapshot_owner_unavailable,retryable:true}`。只检查env键是否存在：exec与Bridge URL有，TEAMLEAD_API_TOKEN无。controller在owner HTTP之前即拒绝；未读取额外凭据、未覆盖identity、未伪造.owner.json。
 - 已发非阻塞Lead问题`c870e05f-1086-4107-badd-0bdec19e9fc3`，补充诊断report`fcaf00dc-a633-4274-b69c-e654803816b5`。等待提供合规owner获取能力或QA路线期间继续其它工作；不是整个任务blocked。
+
+## 全仓门启动
+
+- 首次`pnpm lint` exit1：7个error均是本单文件import排序（config index/sql-timing测试、fd/health/resource/timer测试、plugin）。定向整理这些文件后`pnpm lint` exit0，保留19条warning，无生产语义改动。
+- `pnpm -r build` exit0，包含9份phase protocol projection检查和全部包构建。
+- 已启动`pnpm test:packages:run`；汇总结果尚未到达，日志`/tmp/fly2563-package-gate.log`，exec session26020。不可将启动/定向green记成aggregate green；继续轮询这个具体handle，不重复启动。

@@ -4,6 +4,7 @@ import { StateStore } from "../../StateStore.js";
 import { createBridgeApp } from "../plugin.js";
 import { ProcessResourceMonitor } from "../process-resource-monitor.js";
 import { RunnerAdmissionController } from "../runner-admission.js";
+
 it("serves cached fd data without starting a probe and preserves shutdown semantics", async () => {
 	const readFds = vi.fn(async () => ["0", "1", "2"]);
 	const readLimits = vi.fn(async () => ({

@@ -1,13 +1,14 @@
-import Database from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { installSqlTiming } from "flywheel-config";
 import { expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
+
 it("preserves native transaction aliases and iterator cleanup", () => {
 	const db = new Database(":memory:");
 	let now = 0;

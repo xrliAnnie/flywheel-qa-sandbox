@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProcessResourceMonitor } from "../process-resource-monitor.js";
+
 afterEach(() => vi.useRealTimers());
 function fixture(extra: object = {}) {
 	let now = 100000;

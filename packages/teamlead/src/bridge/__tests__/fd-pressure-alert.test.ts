@@ -3,6 +3,7 @@ import { StateStore } from "../../StateStore.js";
 import { AlertChannelHub, correlationKeyFor } from "../AlertChannelHub.js";
 import { FdPressureAlert } from "../fd-pressure-alert.js";
 import type { FdHealth } from "../process-resource-monitor.js";
+
 const stores: StateStore[] = [];
 afterEach(() => {
 	for (const s of stores.splice(0)) s.close();
