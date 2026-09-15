@@ -59,6 +59,7 @@ import {
 	getFlagStoreCodec,
 	getModelConfigSnapshot,
 	getNodeTypeRegistryEntry,
+	installSqlTiming,
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
@@ -3829,6 +3830,7 @@ export class StateStore {
 			fileMustExist: true,
 		});
 		try {
+			installSqlTiming(raw, "teamlead");
 			raw.pragma("busy_timeout = 5000");
 			if (!options.readonly) {
 				const journalMode = String(
@@ -4099,6 +4101,7 @@ export class StateStore {
 				fileMustExist: true,
 			});
 			try {
+				installSqlTiming(backup, "teamlead");
 				const quickCheck = backup.pragma("quick_check", { simple: true });
 				const observedForeignKeyBaseline = workflowCatalogForeignKeyBaseline(
 					backup.pragma("foreign_key_check") as unknown[],
@@ -4152,6 +4155,7 @@ export class StateStore {
 			mkdirSync(dirname(dbPath), { recursive: true });
 		}
 		const raw = new BetterSqlite3(dbPath);
+		installSqlTiming(raw, "teamlead");
 		// WAL: incremental writes (no full-DB export per write). synchronous=NORMAL
 		// is safe under WAL (at most the last txn lost on power-loss) and fast.
 		// busy_timeout: retry transient locks (e.g. a cross-process WAL reader /

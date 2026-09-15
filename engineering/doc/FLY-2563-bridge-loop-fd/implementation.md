@@ -100,3 +100,12 @@ Implement TURN epoch=2，activation attempt=1。工作开始时分支只有已�
 - 两个低位新鲜样本后按correlation+eventId安静resolve；失败保留原episode重试。Hub的fleet recovery纳入该kind，处理恢复之后才送达的同启动实例旧episode；其它启动实例或无效身份返回unknown，不跨实例误清。
 - RED：新helper缺失；回执夹具初用无效queued枚举触发CHECK，改用真实queued_durable格式；类型检查指出新增kind缺展示分支，补齐后green。验证：kind/路由/helper组60/60；文案/Hub/fleet身份/helper组65/65；teamlead类型检查通过。包含真实StateStore回执和延迟Hub送达后恢复测试，无外部通知。
 - 尚未宣告T4生产验收：当前开发探针kernel上限不可得，生产同PID/start identity、F及受控统一回执/恢复仍需部署后独立QA。剩余T5计时入口/计时器矩阵、T3完整lease审计、T7大夹具/指定快照/全库门、review/PR未完成。
+
+## T5 第一批：实例级同步SQL计时及主要入口
+
+- 新config.installSqlTiming以WeakSet限定连接实例，只输出databaseKind/sqlId哈希/method/durationMs，阈值严格>250ms。prepare/exec/pragma、statement run/get/all、iterator next/return/throw与事务执行均在finally计时；logger失败不替代原结果/异常。
+- 保留真实statement身份/链式调用和事务default/immediate/deferred/exclusive。事务别名使用描述符复制及缓存，避免native nonconfigurable属性的Proxy不变量冲突。事务内SQL和事务总体可各自记录，重复安装不翻倍。
+- 已接StateStore普通/maintenance/备份验证，CommDB writable gate/readonly/旧库adoption，CommDB恢复preflight/backup，MailboxQueue readonly及borrowed连接。withSyncOpMarker新增同阈值静态op耗时；不把Promise后续网络时间算为同步阻塞。
+- RED：入口测试4条预期慢日志为0；marker新增慢同步断言失败。GREEN：config3/3；marker4/4；真实SQLite与原marker覆盖合跑9/9，扩展MailboxQueue后真实连接3/3；CommDB打开/FLY2268迁移24/24。覆盖真实锁等待后SQLITE_BUSY、原始错误/日志异常、6条连接/访问路径、yield后执行、native事务别名和iterator cleanup。
+- config/comm/claude-runner构建通过，teamlead与config类型检查通过；新核心计时/marker文件Biome检查通过。测试中实际marker慢调用现已按静态标识输出日志，不隐去红/慢证据。
+- T5仍未完成：剩余原生DB旁路/恢复/独立进程入口分类和timer-sites完整矩阵、补相应入口及覆盖。当前搜索找到67条原生new Database/BetterSqlite3文本命中（包含独立CLI及bin测试），不能把该搜索当完整执行覆盖。下一批先审计这些入口，随后继续T3剩余lease审计与T7大夹具/指定快照/全库门/review/PR。

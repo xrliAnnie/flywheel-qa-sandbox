@@ -507,3 +507,8 @@ export {
 	XIAOHONGSHU_MAX_FETCH_CEILING,
 	XIAOHONGSHU_REVIEW_CHANNELS,
 } from "./types.js";
+export {
+	installSqlTiming,
+	type SqlTimingOptions,
+	type SqlTimingRecord,
+} from "./sql-timing.js";

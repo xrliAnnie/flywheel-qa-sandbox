@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
+import { installSqlTiming } from "flywheel-config";
 
 export const FLY2268_REBUILD_RECEIPT_SUFFIX = ".fly2268-rebuild-receipt.json";
 
@@ -67,6 +68,7 @@ function inspectRunnerShutdownSchema(dbPath: string): {
 		fileMustExist: true,
 	});
 	try {
+		installSqlTiming(probe, "comm");
 		const columns = probe
 			.prepare("PRAGMA table_info(runner_shutdown_controls)")
 			.all() as Array<{ name: string; pk: number }>;
@@ -178,6 +180,7 @@ function assertVerifiedReceiptBeforeLock(
 		fileMustExist: true,
 	});
 	try {
+		installSqlTiming(backup, "comm");
 		if (String(backup.pragma("quick_check", { simple: true })) !== "ok") {
 			throw new Error(
 				"commdb_schema_preflight_required: backup quick_check failed",
@@ -256,6 +259,7 @@ let warnedLegacyWithStaleReceipt = false;
 
 export function openCommDbWritable(dbPath: string): Database.Database {
 	const opened = new Database(dbPath);
+	installSqlTiming(opened, "comm");
 	opened.pragma("busy_timeout = 5000");
 	const receiptPath = `${dbPath}${FLY2268_REBUILD_RECEIPT_SUFFIX}`;
 	let consumed = false;

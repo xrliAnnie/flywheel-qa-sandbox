@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import { canonicalJsonString } from "flywheel-config";
+import { canonicalJsonString, installSqlTiming } from "flywheel-config";
 import {
 	CommDbPreflightStaleError,
 	commDbSourceBinding,
@@ -32,6 +32,7 @@ function sameBinding(
 function verifyBackup(path: string): void {
 	const db = new Database(path, { readonly: true, fileMustExist: true });
 	try {
+		installSqlTiming(db, "comm");
 		if (String(db.pragma("quick_check", { simple: true })) !== "ok") {
 			throw new Error(
 				"commdb_schema_preflight_required: backup quick_check failed",

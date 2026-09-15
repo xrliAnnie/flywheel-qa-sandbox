@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 
 const MAX_MARKER_BYTES = 4096;
 const MARKER_RE = /^bridge-syncop\.(\d+)\.json$/;
@@ -145,9 +146,20 @@ export function clearSyncOp(
 
 export function withSyncOpMarker<T>(label: string, fn: () => T): T {
 	const token = markSyncOp(label);
+	const started = performance.now();
 	try {
 		return fn();
 	} finally {
+		const durationMs = performance.now() - started;
+		if (durationMs > 250) {
+			try {
+				console.warn(
+					`[slow-sync-op] ${JSON.stringify({ op: label.slice(0, 256), durationMs })}`,
+				);
+			} catch {
+				/* diagnostic observers must not replace the operation result */
+			}
+		}
 		clearSyncOp(token);
 	}
 }
