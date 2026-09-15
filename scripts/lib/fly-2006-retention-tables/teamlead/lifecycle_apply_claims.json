@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "lifecycle_apply_claims",
+	"classification": "protectedCurrentOrReference"
+}

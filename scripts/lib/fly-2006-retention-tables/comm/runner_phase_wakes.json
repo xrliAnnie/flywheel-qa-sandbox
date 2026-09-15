@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "runner_phase_wakes",
+	"classification": "deleteTarget"
+}

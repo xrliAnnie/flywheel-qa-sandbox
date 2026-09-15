@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "server_loss_episode",
+	"classification": "protectedCurrentOrReference"
+}

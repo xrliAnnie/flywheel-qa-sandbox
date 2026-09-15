@@ -15,7 +15,7 @@ const ALLOWED = new Set([
 	"packages/teamlead/src/ship-judgment/observation-cursor.ts",
 	"scripts/fly-2398-shadow-table.mjs",
 	"scripts/fly2396-retro-report.mjs",
-	"scripts/lib/fly-2006-retention-registry.mjs",
+	"scripts/lib/fly-2006-retention-tables/teamlead/workflow_founder_gate_verdict.json",
 ]);
 const SOURCE_EXTENSIONS = new Set([".ts", ".js", ".mjs", ".cjs", ".sql"]);
 const IGNORED_DIRECTORIES = new Set([
@@ -34,7 +34,12 @@ function sourceFiles(path: string): string[] {
 		if (entry.isDirectory()) {
 			return IGNORED_DIRECTORIES.has(entry.name) ? [] : sourceFiles(entryPath);
 		}
-		return entry.isFile() && SOURCE_EXTENSIONS.has(extname(entry.name))
+		return entry.isFile() &&
+			(SOURCE_EXTENSIONS.has(extname(entry.name)) ||
+				(extname(entry.name) === ".json" &&
+					relative(REPO_ROOT, entryPath).startsWith(
+						"scripts/lib/fly-2006-retention-tables/",
+					)))
 			? [entryPath]
 			: [];
 	});

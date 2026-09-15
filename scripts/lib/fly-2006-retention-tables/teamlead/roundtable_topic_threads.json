@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "roundtable_topic_threads",
+	"classification": "deleteTarget"
+}

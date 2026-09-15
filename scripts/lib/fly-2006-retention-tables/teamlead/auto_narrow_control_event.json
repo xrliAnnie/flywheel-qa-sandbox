@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "auto_narrow_control_event",
+	"classification": "protectedCurrentOrReference"
+}

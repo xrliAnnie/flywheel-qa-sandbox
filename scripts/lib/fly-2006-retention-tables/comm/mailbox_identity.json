@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "mailbox_identity",
+	"classification": "protectedCurrentOrAuthority"
+}

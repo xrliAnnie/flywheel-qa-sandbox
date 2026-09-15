@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "doa_backoff_reset_receipts",
+	"classification": "protectedCurrentOrReference"
+}

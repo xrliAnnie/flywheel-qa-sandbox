@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_resident_hold",
+	"classification": "protectedCurrentOrReference"
+}

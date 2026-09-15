@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "cleanup_ref_observations",
+	"classification": "protectedCurrentOrReference"
+}

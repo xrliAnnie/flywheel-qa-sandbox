@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_divergence_check",
+	"classification": "protectedCurrentOrReference"
+}

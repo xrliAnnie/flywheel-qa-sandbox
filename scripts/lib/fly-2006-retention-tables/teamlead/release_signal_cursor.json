@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "release_signal_cursor",
+	"classification": "protectedCurrentOrReference"
+}

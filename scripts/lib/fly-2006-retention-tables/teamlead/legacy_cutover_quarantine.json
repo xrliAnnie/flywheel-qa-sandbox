@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "legacy_cutover_quarantine",
+	"classification": "deleteTarget"
+}

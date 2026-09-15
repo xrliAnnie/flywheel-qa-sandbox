@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_turn_divergence_episode",
+	"classification": "protectedAuthority"
+}

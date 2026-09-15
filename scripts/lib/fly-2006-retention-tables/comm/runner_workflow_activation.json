@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "runner_workflow_activation",
+	"classification": "protectedCurrentOrAuthority"
+}

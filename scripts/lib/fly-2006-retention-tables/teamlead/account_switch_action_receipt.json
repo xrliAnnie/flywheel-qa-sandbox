@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "account_switch_action_receipt",
+	"classification": "protectedCurrentOrReference"
+}

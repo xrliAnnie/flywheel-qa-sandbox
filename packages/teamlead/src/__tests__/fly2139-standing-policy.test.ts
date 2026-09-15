@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
@@ -10,8 +11,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
+import { copyRetentionModules } from "../../../../scripts/__tests__/fixtures/fly-2413-module-copy.mjs";
 import {
 	assertFly2139PolicyCaps,
 	executeFly2006Inventory,
@@ -356,4 +359,65 @@ function writeActivation(homeDir: string): string {
 	);
 	chmodSync(activationPath, 0o600);
 	return activationPath;
+}
+
+describe("FLY-2413 fragment evidence closure", () => {
+	it("rejects cached classifications after valid fragment edits", () => {
+		const root = copyRetentionModules();
+		try {
+			expect(probe(root, "cached").status).toBe(0);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+	it.each(["activation", "manifest"])(
+		"rejects old %s after a valid fragment edit in a fresh process",
+		(scenario) => {
+			const root = copyRetentionModules();
+			try {
+				expect(probe(root, scenario, "prepare").status).toBe(0);
+				expect(probe(root, scenario, "change").status).toBe(0);
+				const result = probe(root, scenario, "reject");
+				expect(result.stderr).toBe("");
+				expect(result.status).toBe(0);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+	it.each(["activation", "manifest"])(
+		"accepts unchanged %s evidence",
+		(scenario) => {
+			const root = copyRetentionModules();
+			try {
+				expect(probe(root, scenario, "prepare").status).toBe(0);
+				const result = probe(root, scenario, "accept");
+				expect(result.stderr).toBe("");
+				expect(result.status).toBe(0);
+				if (scenario === "manifest") {
+					expect(probe(root, scenario, "change").status).toBe(0);
+					expect(probe(root, scenario, "accept").status).toBe(0); // completed historical receipt replay
+				}
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+});
+function probe(root: string, scenario: string, action?: string) {
+	return spawnSync(
+		process.execPath,
+		[
+			fileURLToPath(
+				new URL(
+					"../../../../scripts/__tests__/fixtures/fly-2413-retention-probe.mjs",
+					import.meta.url,
+				),
+			),
+			root,
+			scenario,
+			...(action ? [action] : []),
+		],
+		{ encoding: "utf8", timeout: 30_000 },
+	);
 }

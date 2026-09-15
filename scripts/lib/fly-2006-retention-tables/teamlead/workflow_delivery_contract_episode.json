@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_delivery_contract_episode",
+	"classification": "protectedCurrentOrReference"
+}

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "receipt_resend_deliveries",
+	"classification": "protectedCurrentOrReference"
+}

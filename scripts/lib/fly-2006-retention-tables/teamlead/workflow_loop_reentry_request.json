@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_loop_reentry_request",
+	"classification": "protectedCurrentOrReference"
+}

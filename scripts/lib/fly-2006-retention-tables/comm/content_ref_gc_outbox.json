@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "content_ref_gc_outbox",
+	"classification": "deleteTarget"
+}

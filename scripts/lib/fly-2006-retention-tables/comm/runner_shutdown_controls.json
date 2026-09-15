@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "runner_shutdown_controls",
+	"classification": "deleteTarget"
+}

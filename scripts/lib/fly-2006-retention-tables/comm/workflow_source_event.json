@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "workflow_source_event",
+	"classification": "protectedCurrentOrAuthority"
+}

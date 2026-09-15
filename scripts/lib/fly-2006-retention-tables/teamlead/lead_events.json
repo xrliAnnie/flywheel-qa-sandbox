@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "lead_events",
+	"classification": "deleteTarget"
+}

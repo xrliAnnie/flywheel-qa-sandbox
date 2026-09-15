@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_wake_send_claim",
+	"classification": "protectedCurrentOrReference"
+}

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_node_completion",
+	"classification": "protectedCurrentOrReference"
+}

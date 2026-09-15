@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "turn_wake_outbox",
+	"classification": "protectedCurrentOrAuthority"
+}

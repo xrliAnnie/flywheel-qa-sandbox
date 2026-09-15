@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_route_reminder_outbox",
+	"classification": "protectedCurrentOrReference"
+}

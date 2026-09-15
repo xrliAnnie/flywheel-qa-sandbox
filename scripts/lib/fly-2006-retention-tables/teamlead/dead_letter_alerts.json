@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "dead_letter_alerts",
+	"classification": "protectedCurrentOrReference"
+}

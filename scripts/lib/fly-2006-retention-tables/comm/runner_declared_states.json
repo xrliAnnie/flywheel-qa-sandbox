@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "runner_declared_states",
+	"classification": "protectedCurrentOrAuthority"
+}

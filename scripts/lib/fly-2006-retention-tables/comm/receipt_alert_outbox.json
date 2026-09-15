@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "receipt_alert_outbox",
+	"classification": "deleteTarget"
+}

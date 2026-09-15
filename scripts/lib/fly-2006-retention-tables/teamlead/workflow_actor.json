@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_actor",
+	"classification": "protectedCurrentOrReference"
+}

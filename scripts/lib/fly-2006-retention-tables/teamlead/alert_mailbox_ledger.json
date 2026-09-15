@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "alert_mailbox_ledger",
+	"classification": "deleteTarget"
+}

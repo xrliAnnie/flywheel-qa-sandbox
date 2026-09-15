@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "runner_stop_declarations",
+	"classification": "protectedCurrentOrAuthority"
+}

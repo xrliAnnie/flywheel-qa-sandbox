@@ -39,8 +39,8 @@
 			"allows": [
 				{
 					"repo": "main",
-					"path": "scripts/lib/fly-2006-retention-registry.mjs",
-					"linePattern": "^land_cool_adjudication_receipt land_cool_attempt receipt_root_lineage$"
+					"path": "scripts/lib/fly-2006-retention-tables/teamlead/receipt_root_lineage.json",
+					"linePattern": "^\"table\": \"receipt_root_lineage\",$"
 				},
 				{
 					"repo": "main",
@@ -113,8 +113,8 @@
 			"allows": [
 				{
 					"repo": "main",
-					"path": "scripts/lib/fly-2006-retention-registry.mjs",
-					"linePattern": "^receipt_handle_requests receipt_resend_deliveries retry_dispatch_intents$"
+					"path": "scripts/lib/fly-2006-retention-tables/teamlead/receipt_handle_requests.json",
+					"linePattern": "^\"table\": \"receipt_handle_requests\",$"
 				},
 				{
 					"repo": "main",

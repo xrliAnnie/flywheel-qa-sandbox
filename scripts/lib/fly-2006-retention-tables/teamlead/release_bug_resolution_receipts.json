@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "release_bug_resolution_receipts",
+	"classification": "protectedCurrentOrReference"
+}

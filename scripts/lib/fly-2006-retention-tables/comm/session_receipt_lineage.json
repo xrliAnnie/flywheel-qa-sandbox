@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "session_receipt_lineage",
+	"classification": "protectedCurrentOrAuthority"
+}

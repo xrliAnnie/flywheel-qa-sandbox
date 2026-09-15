@@ -25,6 +25,7 @@ import {
 import {
 	assertClassifiedSchema,
 	RETENTION_MS,
+	retentionRegistryDigest,
 } from "./fly-2006-retention-registry.mjs";
 import {
 	FLY2139_STANDING_POLICY,
@@ -33,9 +34,6 @@ import {
 } from "./fly-2139-standing-policy.mjs";
 
 const enginePath = fileURLToPath(import.meta.url);
-const registryPath = fileURLToPath(
-	new URL("./fly-2006-retention-registry.mjs", import.meta.url),
-);
 const repoRoot = resolve(dirname(enginePath), "../..");
 const packageRequire = createRequire(
 	join(repoRoot, "packages/teamlead/package.json"),
@@ -405,6 +403,7 @@ function engineSourceDigest() {
 					? sha256File(enginePath)
 					: sha256File(join(dirname(enginePath), name)),
 			)
+			.concat(retentionRegistryDigest())
 			.join("\n"),
 	);
 }
@@ -415,7 +414,7 @@ export function fly2139ActivationRequirements() {
 		schemaVersion: 1,
 		issue: FLY2139_STANDING_POLICY.issue,
 		policySha256: sha256File(FLY2139_STANDING_POLICY_PATH),
-		registrySha256: sha256File(registryPath),
+		registrySha256: retentionRegistryDigest(),
 		engineSha256: engineSourceDigest(),
 		globalRowCap: FLY2139_STANDING_POLICY.globalRowCap,
 		perTableRowCap: FLY2139_STANDING_POLICY.perTableRowCap,

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_materialization_receipt",
+	"classification": "protectedCurrentOrReference"
+}

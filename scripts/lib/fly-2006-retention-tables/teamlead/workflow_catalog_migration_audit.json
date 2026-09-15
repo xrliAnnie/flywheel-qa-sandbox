@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_catalog_migration_audit",
+	"classification": "protectedCurrentOrReference"
+}

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "beta_schedule_lanes",
+	"classification": "protectedCurrentOrReference"
+}

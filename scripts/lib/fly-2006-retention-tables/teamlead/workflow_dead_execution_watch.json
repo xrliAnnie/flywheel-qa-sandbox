@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_dead_execution_watch",
+	"classification": "protectedCurrentOrReference"
+}

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "retry_dispatch_intents",
+	"classification": "protectedCurrentOrReference"
+}

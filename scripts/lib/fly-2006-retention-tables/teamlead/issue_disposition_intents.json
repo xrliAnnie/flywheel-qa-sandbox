@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "issue_disposition_intents",
+	"classification": "protectedAuthority"
+}

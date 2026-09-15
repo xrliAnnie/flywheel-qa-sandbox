@@ -31,8 +31,8 @@ allowed_hits=(
   'packages/flywheel-comm/src/__tests__/db.patrol-loop.test.ts|three_stage_turn'
   'packages/flywheel-comm/src/commands/turn.ts|three_stage_turn'
   'packages/flywheel-comm/src/db.ts|three_stage_turn'
-  'scripts/lib/fly-2006-retention-registry.mjs|three_stage_turn'
-  'scripts/__tests__/fixtures/fly-2006-teamlead-production-tables.json|three_stage_turn'
+  'scripts/lib/fly-2006-retention-tables/teamlead/three_stage_turn.json|three_stage_turn'
+  'scripts/lib/fly-2006-retention-tables/comm/three_stage_turn.json|three_stage_turn'
   'packages/teamlead/lead-rules-base/runbooks/patrol-v1.md|three_stage_turn'
   # FLY-2567 OFF keeps the same read-only TURN recipe inline (paired byte guard).
   'packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md|three_stage_turn'
@@ -213,13 +213,35 @@ path_hits="$(
     | grep -iE 'three[-_ ]?stage'
 )"
 path_rc=$?
-if [ "$path_rc" -eq 1 ]; then
-  pass "active file names contain no retired three-stage path"
-elif [ "$path_rc" -eq 0 ]; then
-  fail "active three-stage file names remain"
-  printf '%s\n' "$path_hits" | sed -n '1,120p' >&2
-else
+# The two retained database identities are data, with exact live path exceptions.
+allowed_paths=(
+  'scripts/lib/fly-2006-retention-tables/teamlead/three_stage_turn.json'
+  'scripts/lib/fly-2006-retention-tables/comm/three_stage_turn.json'
+)
+for allowed_path in "${allowed_paths[@]}"; do
+  if printf '%s\n' "$path_hits" | grep -Fxq "$allowed_path"; then
+    pass "retained table path exemption remains live: $allowed_path"
+  else
+    fail "dead retained table path exemption: $allowed_path"
+  fi
+done
+unexpected_paths="$TMP_ROOT/unexpected-paths"
+: > "$unexpected_paths"
+while IFS= read -r candidate_path; do
+  [ -n "$candidate_path" ] || continue
+  allowed=false
+  for allowed_path in "${allowed_paths[@]}"; do
+    [ "$candidate_path" != "$allowed_path" ] || allowed=true
+  done
+  $allowed || printf '%s\n' "$candidate_path" >> "$unexpected_paths"
+done <<< "$path_hits"
+if [ "$path_rc" -gt 1 ]; then
   fail "file-name residue scan failed (rc=$path_rc)"
+elif [ -s "$unexpected_paths" ]; then
+  fail "active three-stage file names remain"
+  sed -n '1,120p' "$unexpected_paths" >&2
+else
+  pass "active file names contain only exact retained table paths"
 fi
 
 forbidden_symbols='resolvePhaseDispatch|BUILTIN_PHASE_DISPATCH|DEFAULT_PHASE_DISPATCH|PhaseOrchestrator|resolveThreeStageEntry|WorkflowShadowWriter'

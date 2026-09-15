@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "voice_sessions",
+	"classification": "protectedCurrentOrReference"
+}

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "founder_reply_retry",
+	"classification": "protectedCurrentOrReference"
+}

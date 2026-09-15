@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "flag_departures",
+	"classification": "protectedCurrentOrReference"
+}

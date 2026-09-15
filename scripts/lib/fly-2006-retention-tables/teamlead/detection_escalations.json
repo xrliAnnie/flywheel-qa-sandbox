@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "detection_escalations",
+	"classification": "deleteTarget"
+}

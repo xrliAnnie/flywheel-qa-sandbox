@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "flag_scan_run_legs",
+	"classification": "protectedCurrentOrReference"
+}

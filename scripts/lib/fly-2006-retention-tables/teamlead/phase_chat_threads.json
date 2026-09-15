@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "phase_chat_threads",
+	"classification": "deleteTarget"
+}

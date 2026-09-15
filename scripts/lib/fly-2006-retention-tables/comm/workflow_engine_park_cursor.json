@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "workflow_engine_park_cursor",
+	"classification": "protectedCurrentOrAuthority"
+}

@@ -1,159 +1,71 @@
 export { READINESS_WINDOW_MS as RETENTION_MS } from "../../packages/teamlead/dist/bridge/release-readiness/evaluate.js";
 
-function words(value) {
-	return Object.freeze(value.trim().split(/\s+/));
+import { loadRetentionSnapshot } from "./fly-2006-retention-loader.mjs";
+
+const RETENTION_ROOT = new URL("./fly-2006-retention-tables/", import.meta.url);
+const SNAPSHOT = loadRetentionSnapshot(RETENTION_ROOT);
+const REGISTRIES = SNAPSHOT.classifications;
+export const TEAMLEAD_TABLE_CLASSIFICATION = REGISTRIES.teamlead;
+export const COMM_TABLE_CLASSIFICATION = REGISTRIES.comm;
+
+export function assertRetentionInputsUnchanged() {
+	if (loadRetentionSnapshot(RETENTION_ROOT).digest !== SNAPSHOT.digest)
+		throw new Error("registry_inputs_changed");
 }
 
-export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
-	deleteTarget: words(`
-		alert_mailbox_ledger alert_repair_attempts alert_threads chat_threads deployment_events
-		detection_escalations lead_event_delivery_attempts lead_events
-		legacy_cutover_quarantine legacy_render_fallback legacy_stock_suppressed
-		phase_chat_threads quiet_wake_notified roundtable_topic_threads session_events
-		tmux_hold workflow_completion_drain_challenge workflow_run_event
-		release_signal_events release_signal_heartbeat release_signal_gaps
-	`),
-	retiredOptional: words(`
-		founder_page_ledger runbook_issues ticket_escalations
-	`),
-	protectedAuthority: words(`
-		codex_review_job codex_review_record codex_review_reuse_binding
-		delivery_secret_state design_review_manifest
-		disposition_receipts founder_action_ledger founder_decision_convergence
-		founder_deferred_approval founder_review_card_binding issue_disposition_intents
-		land_cool_adjudication_receipt land_cool_attempt receipt_root_lineage
-		review_finding_ruling session_receipt_lineage ship_approval_requests
-		stuck_dispositions turn_source_history workflow_carryover_pr_binding
-		workflow_claim_revocation workflow_claims workflow_decision_capability
-		workflow_gate_carrier_rebind_receipt workflow_gate_holder
-		workflow_gate_holder_carryover_evidence workflow_gate_holder_evidence
-		workflow_gate_holder_recovery_evidence
-		workflow_founder_gate_verdict
-		workflow_head_carryover_receipt workflow_output_credential
-		workflow_ship_target_binding workflow_source_event workflow_source_receipt
-		workflow_start_reservation workflow_start_response workflow_start_stage
-		workflow_submission_credential workflow_turn_divergence_episode
-		workflow_terminal_archive
-	`),
-	// Quota tables retain current pause, recovery, install, and delivery references.
-	// No quota deletion policy is authorized by the fleet rotation change.
-	protectedCurrentOrReference: words(`
-		epic_intake_scan epic_intakes
-		ship_judgment_observation_cursor ship_judgment_observation_pending workflow_terminal_archive_cursor
-		ship_judgment_clarification ship_judgment_delivery ship_judgment_evaluation ship_judgment_input ship_judgment_job ship_judgment_opinion ship_judgment_outcome ship_judgment_project_state
-		beta_schedule_lanes beta_schedule_occurrences
-		codex_quota_admission_wait codex_quota_binding codex_quota_canonical_observation
-		codex_quota_execution_pause codex_quota_external_generation codex_quota_incident
-		codex_quota_install_material codex_quota_legacy_start codex_quota_observation
-		codex_quota_outbox codex_quota_outbox_attempt codex_quota_review_model
-		codex_quota_root codex_quota_switch_audit codex_quota_target
-		account_switch_action_receipt admission_pause alert_delivery_receipts auto_merge_shadow_declaration
-		auto_merge_shadow_observation auto_narrow_control_event auto_narrow_decision_audit
-		auto_narrow_opinion_delivery auto_narrow_opinion_snapshot auto_qa_record cleanup_ref_observations
-		commdb_finalize_failures dead_letter_alerts discord_config doa_backoff doa_backoff_participants
-		doa_backoff_reset_receipts epic_page epic_page_publication epic_page_refresh
-		flag_departures flag_keep_anchor flag_provenance
-		flag_scan_failure_alert_intents flag_scan_run_items flag_scan_run_legs flag_scan_runs
-		flag_scan_scope_state flag_scan_state flag_store_meta flag_value_changelog flag_values fleet_pressure_hold
-		founder_reply_retry land_alert_outbox land_operation land_operation_step
-		land_recovery_episode land_repo_admission lead_inbox lead_note lead_pending_escalation
-		lifecycle_apply_claims lifecycle_launch_claims linear_state_observations
-		loop_heartbeat loop_owner merged_gate_guard_failure messages
-		node_dwell_review patrol_orphan_watch pre_adapter_failure_receipts
-		receipt_activation_episodes receipt_alert_outbox receipt_exemption_audit
-		receipt_handle_requests receipt_resend_deliveries retry_dispatch_intents
-		recovery_claim
-		runner_declared_states runner_phase_wakes runner_shutdown_controls
-		runner_wake_failure_episode runner_workflow_activation server_loss_episode sessions
-		ship_relevant_declared_pr ship_relevant_diff_snapshot
-		release_signal_cursor release_deployment_anchors release_bug_reports release_bug_resolution_receipts
-		release_bug_source_health release_report_publications release_founder_verdicts release_readiness_verdicts
-		ship_relevant_pr_snapshot state_store_migration strength_two_evidence_record three_stage_turn
-		workflow_activation_turn workflow_actor workflow_alert_outbox
-		workflow_binding_cutover_claim workflow_carrier_delivery
-		workflow_catalog_migration_audit
-		workflow_carrier_redrive_receipt workflow_carryover_activation
-		workflow_category_binding workflow_dead_execution_watch workflow_declared_pr
-		workflow_delivery_attempt workflow_delivery_contract_episode
-		workflow_delivery_operation
-		workflow_divergence_check workflow_engine_park workflow_engine_park_cursor
-		workflow_engine_park_outbox workflow_execution_binding workflow_execution_runtime
-		workflow_launch_cancellation workflow_launch_owner workflow_loop_reentry_request
-		workflow_materialization_receipt workflow_node_completion workflow_node_output_current
-		workflow_node_outputs workflow_node_pr_binding workflow_operator_close_intent
-		workflow_pr_finalization workflow_pr_manifest workflow_resume_admission
-		workflow_resume_attachment workflow_resume_attachment_state workflow_resume_probe
-		workflow_resident_hold
-		workflow_resume_response workflow_rework_delivery workflow_rework_request
-		workflow_rework_route_revision workflow_rework_verification_path workflow_rework_wake_retirement
-		workflow_route_decision workflow_route_reminder_outbox workflow_run
-		workflow_run_collect_alias workflow_run_collect_receipt workflow_run_issue_alias workflow_run_node
-		workflow_side_effect_ledger workflow_source_cursor workflow_source_deadletter
-		workflow_template workflow_template_audit workflow_template_publication
-		voice_outbound voice_sessions workflow_template_revision workflow_wake_send_claim
-	`),
-});
-
-export const COMM_TABLE_CLASSIFICATION = Object.freeze({
-	deleteTarget: words(`
-		content_ref_gc_outbox mailbox mailbox_log receipt_alert_outbox runner_phase_wakes
-		runner_shutdown_controls runner_wake_failure_episode
-	`),
-	protectedCurrentOrAuthority: words(`
-		lead_inbox_fenced_root lead_inbox_freeze_install lead_inbox_sanitation_audit
-		loop_heartbeat loop_owner mailbox_archive mailbox_identity mailbox_migration_meta
-		mailbox_terminal_archive
-		runner_declared_states runner_stop_declarations runner_workflow_activation runner_rework_wake_retirement session_receipt_lineage sessions
-		three_stage_turn turn_source_history turn_wait_ledger turn_wake_outbox
-		workflow_engine_park workflow_engine_park_cursor workflow_source_event
-	`),
-});
-
-const REGISTRIES = Object.freeze({
-	teamlead: TEAMLEAD_TABLE_CLASSIFICATION,
-	comm: COMM_TABLE_CLASSIFICATION,
-});
-
-function registryNames(database) {
-	const registry = REGISTRIES[database];
-	if (!registry) throw new Error(`unknown_retention_database:${database}`);
-	const names = Object.values(registry).flat();
-	const unique = new Set(names);
-	if (unique.size !== names.length)
-		throw new Error(`schema_registry_overlap:${database}`);
-	return { registry, names, unique };
+export function retentionRegistryDigest() {
+	assertRetentionInputsUnchanged();
+	return SNAPSHOT.digest;
 }
 
-export function assertClassifiedSchema(database, actualNames) {
-	const { registry, names } = registryNames(database);
-	const actual = new Set(actualNames);
-	assertNoUnclassifiedSchema(database, actualNames);
-	const retiredOptional = new Set(registry.retiredOptional ?? []);
-	const missing = names
-		.filter((name) => !retiredOptional.has(name) && !actual.has(name))
-		.sort();
-	if (missing.length > 0)
-		throw new Error(`schema_missing:${database}:${missing.join(",")}`);
-	return {
-		database,
-		total: actual.size,
-		counts: Object.fromEntries(
-			Object.entries(registry).map(([classification, values]) => [
-				classification,
-				values.length,
-			]),
-		),
-	};
+export function createSchemaAssertions(registries) {
+	function registryNames(database) {
+		const registry = registries[database];
+		if (!Object.hasOwn(registries, database))
+			throw new Error(`unknown_retention_database:${database}`);
+		const names = Object.values(registry).flat();
+		const unique = new Set(names);
+		if (unique.size !== names.length)
+			throw new Error(`schema_registry_overlap:${database}`);
+		return { registry, names, unique };
+	}
+
+	function assertClassifiedSchema(database, actualNames) {
+		const { registry, names } = registryNames(database);
+		const actual = new Set(actualNames);
+		assertNoUnclassifiedSchema(database, actualNames);
+		const retiredOptional = new Set(registry.retiredOptional ?? []);
+		const missing = names
+			.filter((name) => !retiredOptional.has(name) && !actual.has(name))
+			.sort();
+		if (missing.length > 0)
+			throw new Error(`schema_missing:${database}:${missing.join(",")}`);
+		return {
+			database,
+			total: actual.size,
+			counts: Object.fromEntries(
+				Object.entries(registry).map(([classification, values]) => [
+					classification,
+					values.length,
+				]),
+			),
+		};
+	}
+
+	function assertNoUnclassifiedSchema(database, actualNames) {
+		const { unique } = registryNames(database);
+		const actual = new Set(actualNames);
+		const unknown = [...actual].filter((name) => !unique.has(name)).sort();
+		if (unknown.length > 0)
+			throw new Error(`schema_unclassified:${database}:${unknown.join(",")}`);
+		return { database, total: actual.size };
+	}
+
+	return Object.freeze({ assertClassifiedSchema, assertNoUnclassifiedSchema });
 }
 
-export function assertNoUnclassifiedSchema(database, actualNames) {
-	const { unique } = registryNames(database);
-	const actual = new Set(actualNames);
-	const unknown = [...actual].filter((name) => !unique.has(name)).sort();
-	if (unknown.length > 0)
-		throw new Error(`schema_unclassified:${database}:${unknown.join(",")}`);
-	return { database, total: actual.size };
-}
+export const { assertClassifiedSchema, assertNoUnclassifiedSchema } =
+	createSchemaAssertions(REGISTRIES);
 
 function timestampMs(value) {
 	if (value === null || value === undefined) return null;

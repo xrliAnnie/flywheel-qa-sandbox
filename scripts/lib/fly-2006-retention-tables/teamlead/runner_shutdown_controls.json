@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "runner_shutdown_controls",
+	"classification": "protectedCurrentOrReference"
+}

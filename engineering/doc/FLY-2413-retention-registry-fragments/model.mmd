@@ -1,0 +1,19 @@
+classDiagram
+  class TableIdentity {
+    database 数据库
+    table 表名
+  }
+  class ClassificationFile {
+    classification 保留类别
+  }
+  class FrozenSnapshot {
+    sortedFiles 有序文件集合
+    digest 内容摘要
+  }
+  class CleanupEvidence {
+    activation 激活凭证
+    manifest 待执行清理计划
+  }
+  TableIdentity "1" -- "1" ClassificationFile : 一表一文件
+  ClassificationFile "多" --> "1" FrozenSnapshot : 检查后合并
+  FrozenSnapshot --> CleanupEvidence : 内容改变则旧证据失效

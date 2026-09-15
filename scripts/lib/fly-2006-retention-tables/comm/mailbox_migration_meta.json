@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "mailbox_migration_meta",
+	"classification": "protectedCurrentOrAuthority"
+}

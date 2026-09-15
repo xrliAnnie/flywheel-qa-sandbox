@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_rework_wake_retirement",
+	"classification": "protectedCurrentOrReference"
+}

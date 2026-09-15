@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "turn_wait_ledger",
+	"classification": "protectedCurrentOrAuthority"
+}

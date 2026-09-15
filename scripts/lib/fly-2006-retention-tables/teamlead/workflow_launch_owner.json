@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_launch_owner",
+	"classification": "protectedCurrentOrReference"
+}

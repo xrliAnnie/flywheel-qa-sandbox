@@ -143,6 +143,7 @@ jobs:
           node --test scripts/__tests__/fly-2490-backfill-receipts.test.mjs
           node --test scripts/__tests__/fly1165-sweep-decision.test.mjs
           node --test scripts/__tests__/fly2074-founder-disclosure-guard.test.mjs
+          node --test scripts/__tests__/fly-2413-retention-mutations.test.mjs
 
       - name: Enforce FLY-2165 torn mailbox identity repair contracts
         run: bash scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh

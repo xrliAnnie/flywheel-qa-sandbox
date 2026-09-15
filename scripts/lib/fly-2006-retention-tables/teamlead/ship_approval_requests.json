@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "ship_approval_requests",
+	"classification": "protectedAuthority"
+}

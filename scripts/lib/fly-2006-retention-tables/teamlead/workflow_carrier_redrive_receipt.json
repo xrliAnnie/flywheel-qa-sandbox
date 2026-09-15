@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_carrier_redrive_receipt",
+	"classification": "protectedCurrentOrReference"
+}

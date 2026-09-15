@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "receipt_alert_outbox",
+	"classification": "protectedCurrentOrReference"
+}

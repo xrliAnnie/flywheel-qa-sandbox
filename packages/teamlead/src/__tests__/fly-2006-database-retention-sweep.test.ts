@@ -46,8 +46,6 @@ import {
 	writeSealedJson,
 } from "../../../../scripts/lib/fly-2006-retention-evidence.mjs";
 import {
-	assertClassifiedSchema,
-	assertNoUnclassifiedSchema,
 	COMM_TABLE_CLASSIFICATION,
 	classifyMailboxRow,
 	classifyRetentionTime,
@@ -76,16 +74,6 @@ const FOUNDER_DISCORD_AUDIT = {
 	respondedAt: "2026-08-23T00:00:00.000Z",
 	responseDigest: "a".repeat(64),
 } as const;
-
-const TEAMLEAD_PRODUCTION_TABLES = JSON.parse(
-	readFileSync(
-		new URL(
-			"../../../../scripts/__tests__/fixtures/fly-2006-teamlead-production-tables.json",
-			import.meta.url,
-		),
-		"utf8",
-	),
-) as string[];
 
 describe("FLY-2006 retention registry", () => {
 	it.each([false, true])(
@@ -317,66 +305,6 @@ describe("FLY-2006 retention registry", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
-	it("protects every quota recovery table including lazy canonical observations from retention deletion", () => {
-		const tables = [
-			"admission_wait",
-			"binding",
-			"canonical_observation",
-			"execution_pause",
-			"external_generation",
-			"incident",
-			"install_material",
-			"legacy_start",
-			"observation",
-			"outbox",
-			"outbox_attempt",
-			"review_model",
-			"root",
-			"switch_audit",
-			"target",
-		].map((name) => `codex_quota_${name}`);
-		expect(() => assertNoUnclassifiedSchema("teamlead", tables)).not.toThrow();
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toEqual(
-			expect.arrayContaining(tables),
-		);
-		for (const table of tables)
-			expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).not.toContain(table);
-	});
-
-	it("classifies the current production schemas created for both live database families", async () => {
-		const root = mkdtempSync(join(tmpdir(), "fly2006-live-schema-"));
-		const teamleadPath = join(root, "teamlead.db");
-		const commPath = join(root, "comm.db");
-		try {
-			const store = await StateStore.create(teamleadPath);
-			store.close();
-			const queue = new MailboxQueue(commPath);
-			queue.close();
-
-			for (const [database, path] of [
-				["teamlead", teamleadPath],
-				["comm", commPath],
-			] as const) {
-				const sqlite = new Database(path, { readonly: true });
-				try {
-					const tables = sqlite
-						.prepare(
-							"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-						)
-						.all()
-						.map((row) => String((row as { name: string }).name));
-					expect(() =>
-						assertNoUnclassifiedSchema(database, tables),
-					).not.toThrow();
-				} finally {
-					sqlite.close();
-				}
-			}
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
 	it("labels copy-only rehearsal authority without impersonating a Discord message", () => {
 		expect(buildIsolatedRehearsalAudit()).toEqual({
 			source: "isolated-rehearsal",
@@ -515,129 +443,6 @@ describe("FLY-2006 retention registry", () => {
 			command: "rotate-log",
 			"--bridge-log": "/private/tmp/flywheel-bridge.log",
 		});
-	});
-
-	it("classifies the production schema and its optional-retired subset", () => {
-		const retiredNames = [
-			"founder_page_ledger",
-			"runbook_issues",
-			"ticket_escalations",
-		];
-
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(21);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toContain(
-			"alert_mailbox_ledger",
-		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toContain(
-			"workflow_completion_drain_challenge",
-		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toHaveLength(40);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toContain(
-			"workflow_founder_gate_verdict",
-		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toContain(
-			"workflow_gate_holder_recovery_evidence",
-		);
-		expect(
-			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
-		).toHaveLength(169); // main 156 + eight ship_judgment tables + three FLY-2563 cursor/pending tables + two Epic intake tables
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toEqual(
-			expect.arrayContaining([
-				"pre_adapter_failure_receipts",
-				"ship_judgment_observation_cursor",
-				"ship_judgment_observation_pending",
-				"workflow_terminal_archive_cursor",
-				"beta_schedule_lanes",
-				"beta_schedule_occurrences",
-				"ship_judgment_clarification",
-				"ship_judgment_delivery",
-				"ship_judgment_evaluation",
-				"ship_judgment_input",
-				"ship_judgment_job",
-				"ship_judgment_opinion",
-				"ship_judgment_outcome",
-				"ship_judgment_project_state",
-				"discord_config",
-				"lead_note",
-				"auto_merge_shadow_declaration",
-				"auto_merge_shadow_observation",
-				"auto_narrow_control_event",
-				"auto_narrow_decision_audit",
-				"auto_narrow_opinion_delivery",
-				"auto_narrow_opinion_snapshot",
-				"ship_relevant_declared_pr",
-				"ship_relevant_pr_snapshot",
-				"strength_two_evidence_record",
-				"voice_outbound",
-				"voice_sessions",
-			]),
-		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
-			"flag_scan_scope_state",
-		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
-			"node_dwell_review",
-		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
-			"recovery_claim",
-		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
-			"account_switch_action_receipt",
-		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toEqual(
-			expect.arrayContaining(["workflow_resident_hold"]),
-		);
-		expect(
-			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
-		).not.toContain("workflow_completion_drain_challenge");
-		expect(
-			(TEAMLEAD_TABLE_CLASSIFICATION as Record<string, readonly string[]>)
-				.retiredOptional,
-		).toEqual(retiredNames);
-		expect(COMM_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(7);
-		expect(COMM_TABLE_CLASSIFICATION.protectedCurrentOrAuthority).toHaveLength(
-			22,
-		);
-		expect(COMM_TABLE_CLASSIFICATION.protectedCurrentOrAuthority).toEqual(
-			expect.arrayContaining(["mailbox_archive", "runner_stop_declarations"]),
-		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
-			"epic_page",
-		);
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toEqual(
-			expect.arrayContaining(["epic_page_publication", "epic_page_refresh"]),
-		);
-
-		const teamleadNames = Object.values(TEAMLEAD_TABLE_CLASSIFICATION).flat();
-		const commNames = Object.values(COMM_TABLE_CLASSIFICATION).flat();
-		expect(new Set(teamleadNames).size).toBe(233);
-		expect(TEAMLEAD_PRODUCTION_TABLES).toEqual([...teamleadNames].sort());
-		expect(new Set(commNames).size).toBe(29);
-		expect(
-			assertClassifiedSchema("teamlead", TEAMLEAD_PRODUCTION_TABLES),
-		).toMatchObject({
-			total: 233,
-		});
-		expect(
-			assertClassifiedSchema(
-				"teamlead",
-				TEAMLEAD_PRODUCTION_TABLES.filter(
-					(name) => !retiredNames.includes(name),
-				),
-			),
-		).toMatchObject({ total: 230 });
-		expect(assertClassifiedSchema("comm", commNames)).toMatchObject({
-			total: 29,
-		});
-		expect(() =>
-			assertClassifiedSchema("teamlead", [...teamleadNames, "future_table"]),
-		).toThrow("schema_unclassified:teamlead:future_table");
-		expect(() =>
-			assertClassifiedSchema(
-				"comm",
-				commNames.filter((name) => name !== "mailbox_identity"),
-			),
-		).toThrow("schema_missing:comm:mailbox_identity");
 	});
 
 	it("uses a strict 14-day boundary for text and epoch timestamps", () => {

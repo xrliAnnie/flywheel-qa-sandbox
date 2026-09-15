@@ -14,7 +14,8 @@ const ALLOWED = new Set([
 	"packages/teamlead/src/auto-merge-shadow/observation.ts",
 	"packages/teamlead/src/bridge/auto-merge-shadow-route.ts",
 	"scripts/fly-2398-shadow-table.mjs",
-	"scripts/lib/fly-2006-retention-registry.mjs",
+	"scripts/lib/fly-2006-retention-tables/teamlead/auto_merge_shadow_declaration.json",
+	"scripts/lib/fly-2006-retention-tables/teamlead/auto_merge_shadow_observation.json",
 ]);
 const SOURCE_EXTENSIONS = new Set([".ts", ".js", ".mjs", ".cjs", ".sql"]);
 const IGNORED_DIRECTORIES = new Set([
@@ -34,7 +35,12 @@ function sourceFiles(path: string): string[] {
 			return IGNORED_DIRECTORIES.has(entry.name) ? [] : sourceFiles(entryPath);
 		}
 		if (/\.(?:test|spec)\.[cm]?[jt]s$/.test(entry.name)) return [];
-		return entry.isFile() && SOURCE_EXTENSIONS.has(extname(entry.name))
+		return entry.isFile() &&
+			(SOURCE_EXTENSIONS.has(extname(entry.name)) ||
+				(extname(entry.name) === ".json" &&
+					relative(REPO_ROOT, entryPath).startsWith(
+						"scripts/lib/fly-2006-retention-tables/",
+					)))
 			? [entryPath]
 			: [];
 	});

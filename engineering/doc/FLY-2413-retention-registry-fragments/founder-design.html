@@ -1,0 +1,86 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2413 · 新表各自登记，守卫继续报错</title><style>
+:root{color-scheme:light;--ink:#1d1d1f;--muted:#6e6e73;--blue:#007aff}
+*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif;line-height:1.75}
+main{max-width:960px;margin:auto;padding:40px 22px 80px}header{padding:10px 6px 30px}h1{font-size:clamp(28px,5vw,42px);line-height:1.25;letter-spacing:-.04em;margin:8px 0 12px}h2{font-size:21px;letter-spacing:-.015em;margin:0 0 20px}.eyebrow{font-size:12px;letter-spacing:.15em;color:var(--blue);font-weight:650}.muted,.small{color:var(--muted);font-size:13px}.card{background:#fff;border:1px solid #e8e8ed;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:28px;margin-bottom:20px}.hero{font-size:24px;line-height:1.65;margin-top:0}p{margin:12px 0}.tag{display:inline-block;padding:5px 10px;background:#edf5ff;color:#145b9b;border-radius:6px;font-size:12px;margin:8px 8px 0 0}.diagram{overflow-x:auto}.diagram svg{display:block;max-width:100%;height:auto;margin:8px auto 24px}.pending{padding:20px;border:1px dashed #c58c33;border-radius:8px;background:#fffaf0;color:#725320;font-size:14px;margin:12px 0 22px}.pending strong{font-size:12px;letter-spacing:.06em}.pending p{margin:6px 0}dl{margin:18px 0}dt{font-weight:650;color:#15599c;margin-top:18px}dd{margin:5px 0 0}.sample{background:#f5f5f7;padding:18px;border-radius:8px}code{font:13px "SFMono-Regular",Consolas,monospace;background:#f5f5f7;padding:3px 6px;border-radius:4px}li{margin:7px 0}.comment{border-top:1px solid #ececf0;margin-top:24px;padding-top:18px}label{display:block;font-size:13px;color:var(--muted);margin-bottom:8px}label span{margin-left:12px;color:#237343}textarea{width:100%;min-height:76px;resize:vertical;border:1px solid #d2d2d7;border-radius:8px;padding:12px;font:inherit;font-size:14px;background:#fcfcfd}textarea:focus{outline:2px solid #7ab7ff;outline-offset:2px}button{background:var(--blue);color:#fff;border:0;border-radius:7px;padding:10px 16px;font:inherit;font-size:14px;cursor:pointer;margin:14px 12px 0 0}.secondary{background:#eaf3ff;color:#15599c}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui,sans-serif;background:#f5f5f7;padding:16px;border-radius:8px}.chunk{margin-top:18px}#copy-status{font-size:13px;color:var(--muted)}a{color:#0067d6;text-decoration:none}@media(max-width:600px){main{padding:22px 12px 50px}.card{padding:22px 18px;border-radius:12px}.hero{font-size:21px}h2{font-size:18px}}
+</style></head><body><main><header><div class="eyebrow">FLY-2413 · 设计说明 · 2026-09-14</div><h1>新表各自登记，<br>守卫继续报错。</h1><p class="muted">并行开发少一处冲突 · 不牺牲漏登记检查</p></header><section class="card" id="summary"><h2>01 / 一句话</h2><p class="hero">每张表各写自己的分类文件，<strong>共同检查仍能发现漏登记</strong>。</p><p>目前，几个并行功能只要新增数据库表，就会改同一份分类表、测试和总清单。方案将登记按表拆开，让不同表进入不同文件。</p><span class="tag">一表一文件</span><span class="tag">漏登记仍报错</span><span class="tag">保留现有清理规则</span><div class="comment"><label for="comment-summary">这一节的意见<span data-saved="summary" aria-live="polite"></span></label><textarea id="comment-summary" data-comment="summary" data-title="01 / 一句话" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="flow"><h2>02 / 核心流程</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>Mermaid（用文字描述图形的工具）源码已保留。本机浏览器启动被系统权限阻止，两次本地尝试均失败；这里保留文字说明，未使用远程绘图服务。</p></div><p>先收集每张表的独立登记，检查格式和重复身份，再和真实代码创建出的表核对。出现未登记表就报错，停止清理；没有未知表时，继续原有的严格检查。</p><p>测试还会故意新增一张未登记表，确认守卫能发现。之后故意关闭守卫，确认这条测试本身会失败。</p><div class="comment"><label for="comment-flow">这一节的意见<span data-saved="flow" aria-live="polite"></span></label><textarea id="comment-flow" data-comment="flow" data-title="02 / 核心流程" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="model"><h2>03 / 需要保存什么</h2><div class="pending" role="note"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>Mermaid（用文字描述图形的工具）源码已保留。本机浏览器启动被系统权限阻止，两次本地尝试均失败；这里保留文字说明，未使用远程绘图服务。</p></div><dl><dt>稳定身份：数据库名 + 表名</dt><dd>例如 comm 库的 mailbox_identity 表。不同数据库允许同名；同一数据库同一张表只能登记一次。</dd><dt>保留分类：人工审查的处理结论</dt><dd>每个小文件只写数据库、表名、保留类别。分类说明能否清理；文件本身不能新增删除规则。</dd><dt>摘要：文件内容的标识</dt><dd>固定顺序记录全部分类文件和加载代码。它绑定激活凭证与待执行清理计划；文件变化，旧证据不能继续授权删除。</dd></dl><div class="comment"><label for="comment-model">这一节的意见<span data-saved="model" aria-live="polite"></span></label><textarea id="comment-model" data-comment="model" data-title="03 / 需要保存什么" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="choice"><h2>04 / 为什么这样选</h2><dl><dt>选择：每张表一份 JSON 文件</dt><dd>JSON 是保存结构化数据的文本格式。文件由目录自动发现，不需要再维护一个集中导入清单；不同表可以分别追加。</dd><dt>不采用：从数据库自动批准分类</dt><dd>数据库只知道表存在，不知道哪些记录是授权依据。若实际状态同时生成期望答案，漏登记也可能一直绿。</dd><dt>不采用：每个模块一份大表</dt><dd>同一个模块里的并行工作仍会争抢同一份文件。按表划分才与这次冲突原因对应。</dd></dl><div class="comment"><label for="comment-choice">这一节的意见<span data-saved="choice" aria-live="polite"></span></label><textarea id="comment-choice" data-comment="choice" data-title="04 / 为什么这样选" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="proof"><h2>05 / 怎样证明防线还在</h2><p>变异体测试是故意破坏一项条件，确认测试会发现错误。本单要求保留正常通过、故意破坏后失败、恢复后通过的三段证据。</p><ul><li>两项独立变更各加一张表的登记，合并后得到完整并集，共同测试无需修改。</li><li>数据库多一张未登记表、登记重复、必需表缺失，分别报出明确错误。</li><li>故意关闭未知表检查或缺表检查，对应负向测试必须失败。</li><li>只改分类文件，旧激活凭证与未完成清理计划分别拒绝；待删记录仍在。</li></ul><p class="muted">这些是后续实现的验收要求，当前没有声称新实现已通过。</p><div class="comment"><label for="comment-proof">这一节的意见<span data-saved="proof" aria-live="polite"></span></label><textarea id="comment-proof" data-comment="proof" data-title="05 / 怎样证明防线还在" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="migration"><h2>06 / 迁移与回退</h2><p>一次性将现有分类拆成小文件，逐张核对分类完全一致；移除会反复冲突的总清单和总数量断言。原有专属保护测试继续存在。</p><p>新格式会使旧激活凭证和未完成清理计划失效。系统不得自动重新签发；需要继续清理时，沿用既有授权流程。已经完成的历史回执保持可读。</p><p>回退时成组回退分类文件、读取代码和摘要规则。数据库结构与历史证据不改写。</p><div class="comment"><label for="comment-migration">这一节的意见<span data-saved="migration" aria-live="polite"></span></label><textarea id="comment-migration" data-comment="migration" data-title="06 / 迁移与回退" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="boundary"><h2>07 / 当前交付的边界</h2><p>当前交付是设计文件、实施计划和这份说明页。没有修改清理实现，没有生产清理、数据库迁移、服务重启或合并操作；排期仍由 founder 决定。</p><p>设计评审已通过，并有八项非阻塞建议交给工程组长选择后续处置。它解决保留分类的共享文件冲突。两个功能若同时改同一段建表代码，仍可能产生冲突。</p><p>临时建库检查能发现实际创建表中的未登记项。延迟创建和历史表仍由专属测试与真实清理入口检查覆盖，不能把一次初始化当作完整生产证明。移除旧总清单后，单独多登记一张不存在的表可能直到真实清理入口才被发现；这项覆盖限制已列入评审建议。</p><p class="muted">图形本地渲染受限，页面明确保留占位说明；页面结构与评论控制逻辑会独立验证，不能替代浏览器视觉检查。</p><div class="comment"><label for="comment-boundary">这一节的意见<span data-saved="boundary" aria-live="polite"></span></label><textarea id="comment-boundary" data-comment="boundary" data-title="07 / 当前交付的边界" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div></section><section class="card" id="feedback"><h2>08 / 意见汇总</h2><p>每节留言在本浏览器自动保存，下方实时汇总。复制后交给工程组长才会送出；留言不跨设备同步，也不代表批准通过。</p><div class="comment"><label for="comment-feedback">这一节的意见<span data-saved="feedback" aria-live="polite"></span></label><textarea id="comment-feedback" data-comment="feedback" data-title="08 / 意见汇总" placeholder="自动保存到当前浏览器；复制给组长才会送出"></textarea></div><button type="button" id="copy-all">复制全部意见</button><span id="copy-status" role="status"></span><div id="comment-chunks"></div></section><script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2413';
+  const prefix = 'flywheel:design-comments:' + location.pathname + ':';
+  const inputs = Array.from(document.querySelectorAll('textarea[data-comment]'));
+  const chunksBox = document.getElementById('comment-chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  function splitText(text) {
+    const chars = Array.from(text);
+    const room = 1800 - Array.from(marker).length - 1;
+    if (!chars.length) return [marker + '\n（暂无意见）'];
+    const result = [];
+    let part = '';
+    for (const char of chars) {
+      if (part.length + char.length > room) {
+        result.push(marker + '\n' + part);
+        part = '';
+      }
+      part += char;
+    }
+    if (part) result.push(marker + '\n' + part);
+    return result;
+  }
+  function fallbackCopy(text) {
+    const helper = document.createElement('textarea');
+    helper.value = text;
+    helper.setAttribute('aria-label', '复制意见');
+    helper.style.position = 'fixed';
+    helper.style.left = '-10000px';
+    document.body.appendChild(helper);
+    helper.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    helper.remove();
+    return ok;
+  }
+  async function copyText(text) {
+    let ok = false;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try { await navigator.clipboard.writeText(text); ok = true; }
+      catch (_) { ok = fallbackCopy(text); }
+    } else { ok = fallbackCopy(text); }
+    status.textContent = ok ? '已复制' : '复制失败，请选中下方文字手动复制';
+  }
+  function updateSummary() {
+    const entries = inputs.filter(input => input.value.trim()).map(input =>
+      input.dataset.title + '\n' + input.value.trim());
+    chunks = splitText(entries.join('\n\n'));
+    chunksBox.replaceChildren();
+    chunks.forEach((chunk, index) => {
+      const block = document.createElement('div');
+      block.className = 'chunk';
+      const text = document.createElement('pre');
+      text.textContent = chunk;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => copyText(chunk));
+      block.appendChild(text);
+      block.appendChild(button);
+      chunksBox.appendChild(block);
+    });
+  }
+  inputs.forEach(input => {
+    const saved = document.querySelector('[data-saved="' + input.dataset.comment + '"]');
+    try { input.value = localStorage.getItem(prefix + input.dataset.comment) || ''; }
+    catch (_) { if (saved) saved.textContent = '无法读取本机保存'; }
+    input.addEventListener('input', () => {
+      try {
+        localStorage.setItem(prefix + input.dataset.comment, input.value);
+        if (saved) saved.textContent = '已保存';
+      } catch (_) { if (saved) saved.textContent = '未保存；仍可复制'; }
+      updateSummary();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => copyText(chunks.join('\n\n')));
+  updateSummary();
+})();
+</script></main></body></html>

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_template_revision",
+	"classification": "protectedCurrentOrReference"
+}

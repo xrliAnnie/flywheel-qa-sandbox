@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_terminal_archive_cursor",
+	"classification": "protectedCurrentOrReference"
+}

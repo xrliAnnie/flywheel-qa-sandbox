@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "ship_judgment_project_state",
+	"classification": "protectedCurrentOrReference"
+}

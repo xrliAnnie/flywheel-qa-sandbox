@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "lead_inbox_fenced_root",
+	"classification": "protectedCurrentOrAuthority"
+}

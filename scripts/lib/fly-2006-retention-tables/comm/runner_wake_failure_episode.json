@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "runner_wake_failure_episode",
+	"classification": "deleteTarget"
+}

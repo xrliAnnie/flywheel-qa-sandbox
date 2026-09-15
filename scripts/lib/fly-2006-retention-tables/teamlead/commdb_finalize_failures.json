@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "commdb_finalize_failures",
+	"classification": "protectedCurrentOrReference"
+}

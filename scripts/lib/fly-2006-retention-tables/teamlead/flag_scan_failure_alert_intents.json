@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "flag_scan_failure_alert_intents",
+	"classification": "protectedCurrentOrReference"
+}

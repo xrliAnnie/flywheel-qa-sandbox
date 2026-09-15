@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "founder_deferred_approval",
+	"classification": "protectedAuthority"
+}

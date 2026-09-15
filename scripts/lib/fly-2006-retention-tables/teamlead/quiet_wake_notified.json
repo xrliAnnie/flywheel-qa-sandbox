@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "quiet_wake_notified",
+	"classification": "deleteTarget"
+}

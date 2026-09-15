@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "lead_inbox_sanitation_audit",
+	"classification": "protectedCurrentOrAuthority"
+}

@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "three_stage_turn",
+	"classification": "protectedCurrentOrAuthority"
+}

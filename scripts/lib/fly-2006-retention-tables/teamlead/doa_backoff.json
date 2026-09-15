@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "doa_backoff",
+	"classification": "protectedCurrentOrReference"
+}

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "patrol_orphan_watch",
+	"classification": "protectedCurrentOrReference"
+}

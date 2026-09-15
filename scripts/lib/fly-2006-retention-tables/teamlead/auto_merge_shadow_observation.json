@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "auto_merge_shadow_observation",
+	"classification": "protectedCurrentOrReference"
+}

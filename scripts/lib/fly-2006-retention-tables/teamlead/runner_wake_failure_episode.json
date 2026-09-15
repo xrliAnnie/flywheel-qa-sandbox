@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "runner_wake_failure_episode",
+	"classification": "protectedCurrentOrReference"
+}

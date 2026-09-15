@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "alert_threads",
+	"classification": "deleteTarget"
+}

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "ship_relevant_pr_snapshot",
+	"classification": "protectedCurrentOrReference"
+}

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "merged_gate_guard_failure",
+	"classification": "protectedCurrentOrReference"
+}

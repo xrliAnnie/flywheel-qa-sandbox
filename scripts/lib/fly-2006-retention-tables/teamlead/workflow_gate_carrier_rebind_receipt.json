@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_gate_carrier_rebind_receipt",
+	"classification": "protectedAuthority"
+}

@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "epic_intake_scan",
+	"classification": "protectedCurrentOrReference"
+}

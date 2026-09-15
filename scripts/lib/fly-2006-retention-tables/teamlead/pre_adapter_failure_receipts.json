@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "pre_adapter_failure_receipts",
+	"classification": "protectedCurrentOrReference"
+}

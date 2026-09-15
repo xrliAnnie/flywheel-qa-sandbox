@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "sessions",
+	"classification": "protectedCurrentOrAuthority"
+}
