@@ -13,6 +13,20 @@ import {
  * for the real independent QA). Reverse-compat: old ⏳待批 titles still strip.
  */
 describe("stage-utils badges (FLY-795 pr_created split)", () => {
+	it("peels the needs-answer badge without consuming a hand-written bell", () => {
+		expect(splitStatusEmoji("🔔要你答 [FLY-2597] Decision")).toEqual({
+			emoji: "🔔",
+			word: "要你答",
+			base: "[FLY-2597] Decision",
+		});
+		expect(stripStatusEmojiPrefix("🔔 literal title")).toBe("🔔 literal title");
+		expect(stripStatusEmojiPrefix("🔔 ⏳待批 [FLY-2597] Decision")).toBe(
+			"[FLY-2597] Decision",
+		);
+		const once = stripStatusEmojiPrefix("🔔要你答 [FLY-2597] Decision");
+		expect(stripStatusEmojiPrefix(`🔔要你答 ${once}`)).toBe(once);
+	});
+
 	it("builds the founder-gate attention overlay without replacing the primary badge", () => {
 		expect(founderGateAttentionBadge("⏳待批")).toBe("🔔 ⏳待批");
 	});

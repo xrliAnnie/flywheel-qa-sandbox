@@ -64,6 +64,8 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 		db.close();
 
 		const store = {
+			listFounderAskMaintenance: vi.fn(() => []),
+			listFounderAskScanTargets: vi.fn(() => []),
 			listNonTerminalSessions: vi.fn(() => []),
 			getSession: vi.fn(() => ({
 				execution_id: "exec-1",
@@ -118,6 +120,8 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 		db.close();
 
 		const store = {
+			listFounderAskMaintenance: vi.fn(() => []),
+			listFounderAskScanTargets: vi.fn(() => []),
 			listNonTerminalSessions: vi.fn(() => []),
 			getSession: vi.fn(() => ({
 				execution_id: "exec-1",
@@ -161,6 +165,8 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 			issue_labels: "[]",
 		};
 		const store = {
+			listFounderAskMaintenance: vi.fn(() => []),
+			listFounderAskScanTargets: vi.fn(() => []),
 			listNonTerminalSessions: vi.fn(() => [session]),
 			getChatThreadByIssue: vi.fn(() => ({ thread_id: "T-empty" })),
 		} as unknown as GatePollerConfig["store"];

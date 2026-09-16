@@ -42,8 +42,8 @@
     {
       "path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
       "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-      "bytes": 40511,
-      "sha256": "757ba4427b0c4fe306542e89de4173f227ee5a42b2ab738b417716126bfeb548"
+      "bytes": 41606,
+      "sha256": "aa12792bd8d00307dbeb10a73ca9539bbc34a45e9fc4c7ce4abad8d1be9b6457"
     },
     {
       "path": "packages/teamlead/lead-rules-base/runner-messaging-rules.md",
@@ -54,8 +54,8 @@
     {
       "path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
       "revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-      "bytes": 91460,
-      "sha256": "f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc"
+      "bytes": 91817,
+      "sha256": "322eb79749dd27362e703961dc60782d607773be8fb33e398b0a6a3200335389"
     }
   ],
   "constraints": [
@@ -83,5 +83,12 @@
     "beforeSourceSha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c",
     "afterSourceSha256": "f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc",
     "meaning": "Historical source bytes preserved, with only the approved FLY-2557 section 0.11 added under Lead ruling dd6d00cc."
+  },
+  "attentionEvolution": {
+    "base": "6556b07518eec4323cef2067b73b5a27081329d0",
+    "patchSha256": "264fdb3fe18956ea507a190d65e55bef523adbb80da216664c1fc6bffa20499d",
+    "beforeBundleSha256": "377c59fef2830389845c7cfe5b379123eaedac488e0b6678db4bdf4313b3da45",
+    "afterBundleSha256": "6da8f967cc4d715ed7b4568b40f1bb6969227c31ab511ec89af6d4194e4be816",
+    "meaning": "FLY-2597 approved plan: identical explicit founder attention and quiet receipt duties in ON/OFF; all other historical bytes preserved."
   }
 }

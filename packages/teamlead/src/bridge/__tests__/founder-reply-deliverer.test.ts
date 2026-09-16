@@ -166,6 +166,91 @@ function insertFounderReviewQuestion(
 }
 
 describe("FLY-1392 v2 founder ingress", () => {
+	it("FLY-2597: only a real founder reply settles prior attention before classification", async () => {
+		const durable = await StateStore.create(":memory:");
+		try {
+			const asked = Date.now() - 60_000;
+			durable.insertFounderAsk({
+				ask_id: "ask",
+				project_name: "flywheel",
+				issue_id: "FLY-1392",
+				channel_id: "channel",
+				thread_id: THREAD,
+				lead_id: "test-lead",
+				question_id: null,
+				excerpt: "Decide",
+				asked_at: new Date(asked).toISOString(),
+			});
+			durable.backfillFounderAskMessage("ask", "message");
+			for (const author of [
+				{ id: "stranger" },
+				{ id: OWNER, bot: true },
+				{ id: OWNER },
+			]) {
+				await emitFounderReplyDeliveryForThread(
+					{ ...ctx(dbPath), attentionSinceMs: asked },
+					[],
+					{
+						store: durable,
+						onFounderThreadMessage: (input) => {
+							durable.recordFounderAttentionReply(input);
+						},
+						cursorStore: new InMemoryInboundCursorStore(),
+						fetchImpl: discordGet([
+							{
+								id: snowflakeAt(asked + 1000),
+								content: "unrelated reply",
+								author,
+							},
+						]),
+						deliverAmbiguousToLead: async () => true,
+					},
+				);
+				expect(durable.getFounderAsk("ask")?.settled_at !== null).toBe(
+					author.id === OWNER && !author.bot,
+				);
+			}
+			expect(
+				durable.hasFounderAttentionReplyAfter(
+					"flywheel",
+					"FLY-1392",
+					new Date(asked).toISOString(),
+				),
+			).toBe(true);
+		} finally {
+			durable.close();
+		}
+	});
+
+	it("FLY-2597: a settlement failure pins the cursor and enters the existing retry ledger", async () => {
+		const before = cursor.load(THREAD),
+			id = snowflakeAt(Date.now() - 1000);
+		const recordFailure = vi.fn(() => ({ deadLettered: false }));
+		const result = await emitFounderReplyDeliveryForThread(ctx(dbPath), [], {
+			store: store(),
+			cursorStore: cursor,
+			fetchImpl: discordGet([{ id, content: "reply", author: { id: OWNER } }]),
+			onFounderThreadMessage: () => {
+				throw new Error("settle failed");
+			},
+			retryLedger: {
+				isDeadLettered: () => false,
+				recordFailure,
+				clear: vi.fn(),
+				clearUpTo: vi.fn(),
+			} as unknown as FounderReplyDeliverDeps["retryLedger"],
+		});
+		expect(result).toMatchObject({
+			result: "process_failed",
+			stage: "founder_ask_settle_failed",
+			pinnedMsgId: id,
+		});
+		expect(cursor.load(THREAD)).toBe(before);
+		expect(recordFailure).toHaveBeenCalledWith(
+			expect.objectContaining({ stage: "founder_ask_settle_failed" }),
+		);
+	});
+
 	it("releases owned CommDB before a learning observer waits", async () => {
 		let live = 0;
 		let finish!: (result: "handled") => void;

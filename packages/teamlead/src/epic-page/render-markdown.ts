@@ -1,10 +1,12 @@
 import {
 	attentionActionText,
+	attentionAudience,
 	attentionLink,
 	attentionMissing,
 	attentionSourceText,
 	attentionSummary,
 	attentionWait,
+	isFounderAttention,
 } from "./attention-presentation.js";
 import { judgmentSummary } from "./audit-dictionary.js";
 import { escapeMarkdownTableCell } from "./escape.js";
@@ -327,6 +329,12 @@ function renderItem(
 		: label("page.no_dependents");
 	return [
 		`### ${markdownText(`${item.identifier} · ${title} · ${state}`)}`,
+		...(item.thread_url?.value &&
+		/^https:\/\/discord\.com\/channels\/[1-9][0-9]{0,19}\/[1-9][0-9]{0,19}$/.test(
+			item.thread_url.value,
+		)
+			? [`- [跳 Discord ↗](${item.thread_url.value})`]
+			: []),
 		`- **${label("page.what")}**: ${markdownText(title)}`,
 		`- **${label("page.why")}**: ${markdownText(why)}`,
 		`- **${label("page.done_outcome")}**: ${markdownText(acceptance)}`,
@@ -416,22 +424,39 @@ function renderAttention(page: EpicPage, now: Date): string {
 	const heading = `## ${label("section.attention")}`;
 	if (page.schema_version === 1)
 		return `${heading}\n\n${label("attention.legacy")}`;
+	const renderItem = (item: (typeof page.attention)[number]) => {
+		const link = attentionLink(page, item);
+		const where = link.url
+			? `[${label("attention.open_thread")}](${link.url})`
+			: `${label("attention.unknown")}（${attentionMissing(link.reason)}）`;
+		return [
+			`- **① ${label("attention.what")}**：${markdownText([item.kind.value ?? label("attention.unknown"), item.identifier.value ?? label("attention.unknown"), item.title.value ?? label("attention.unknown")].join(" · "))}`,
+			`- **② ${label("attention.action")}**：${markdownText(attentionActionText(item))}`,
+			`- **③ ${label("attention.wait")}**：${markdownText(attentionWait(item.since, now))}`,
+			`- **④ ${label("attention.where")}**：${where}`,
+			`\n<details><summary>${label("attention.sources", { n: item.sources.length })}</summary>\n\n${item.sources.map((source) => `- ${markdownText(attentionSourceText(source, now))}`).join("\n")}\n\n</details>`,
+		].join("\n");
+	};
+	const founder = attentionAudience(page, true).map(({ item }) => item);
+	const lead = attentionAudience(page, false);
+	const unlinked = page.attention.filter(
+		(item) =>
+			!attentionLink(page, item).url && item.sources.some(isFounderAttention),
+	);
 	return [
 		heading,
 		attentionSummary(page),
-		...page.attention.map((item) => {
-			const link = attentionLink(page, item);
-			const where = link.url
-				? `[${label("attention.open_thread")}](${link.url})`
-				: `${label("attention.unknown")}（${attentionMissing(link.reason)}）`;
-			return [
-				`- **① ${label("attention.what")}**：${markdownText([item.kind.value ?? label("attention.unknown"), item.identifier.value ?? label("attention.unknown"), item.title.value ?? label("attention.unknown")].join(" · "))}`,
-				`- **② ${label("attention.action")}**：${markdownText(attentionActionText(item))}`,
-				`- **③ ${label("attention.wait")}**：${markdownText(attentionWait(item.since, now))}`,
-				`- **④ ${label("attention.where")}**：${where}`,
-				`\n<details><summary>${label("attention.sources", { n: item.sources.length })}</summary>\n\n${item.sources.map((source) => `- ${markdownText(attentionSourceText(source, now))}`).join("\n")}\n\n</details>`,
-			].join("\n");
-		}),
+		...founder.map(renderItem),
+		...(lead.length
+			? [
+					`<details><summary>在等 Lead 的</summary>\n\n${lead.map(({ item, olderQuestions }) => [renderItem(item), ...(olderQuestions ? [`另有 ${olderQuestions} 条较早问题`] : [])].join("\n")).join("\n\n")}\n\n</details>`,
+				]
+			: []),
+		...(unlinked.length
+			? [
+					`<details><summary>缺少讨论串链接的记录</summary>\n\n${unlinked.map(renderItem).join("\n\n")}\n\n</details>`,
+				]
+			: []),
 	].join("\n\n");
 }
 

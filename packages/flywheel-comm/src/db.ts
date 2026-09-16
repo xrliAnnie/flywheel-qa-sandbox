@@ -4103,7 +4103,12 @@ export class CommDB {
 		const page = rows.slice(0, input.limit);
 		const last = page.at(-1);
 		const questions = page.map(
-			({ content, content_ref, relay_state: _relayState, ...row }) => {
+			({
+				content: _content,
+				content_ref: _contentRef,
+				relay_state: _relayState,
+				...row
+			}) => {
 				const founderKind =
 					row.checkpoint && Object.hasOwn(founderKinds, row.checkpoint)
 						? founderKinds[row.checkpoint]
@@ -4111,15 +4116,9 @@ export class CommDB {
 				return {
 					...row,
 					state: "pending" as const,
-					classification_unknown: Boolean(content_ref && !founderKind),
-					// Never read spilled files or infer a human recipient from a personal name.
-					kind:
-						founderKind ??
-						(content_ref
-							? "unknown"
-							: /(^|\s)@founder(?=$|[\s:：,，.!！?？])/i.test(content)
-								? "question"
-								: "lead_question"),
+					classification_unknown: false,
+					// Founder attention requires a checkpoint or a separately persisted Lead marker.
+					kind: founderKind ?? "lead_question",
 				};
 			},
 		);

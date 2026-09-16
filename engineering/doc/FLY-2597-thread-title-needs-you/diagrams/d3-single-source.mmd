@@ -1,0 +1,17 @@
+flowchart LR
+  classDef face fill:#fff,stroke:#1a365d,stroke-width:2px,color:#1d1d1f
+  classDef core fill:#f3e8ff,stroke:#af52de,stroke-width:2px,color:#1d1d1f
+  classDef src fill:#eef4ff,stroke:#007aff,color:#1d1d1f
+  H[(StateStore<br/>门持有者)]:::src
+  M[(CommDB<br/>未答的门)]:::src
+  F[(StateStore<br/>founder_ask)]:::src
+  R["readFounderAttentionFacts()<br/>同一份 SQL"]:::core
+  P["founderAttentionLevel()<br/>同一张 kind 表"]:::core
+  T["脸 A:thread 标题<br/>🔔 ⏳待批 / 🔔要你答"]:::face
+  E["脸 B:Epic 固定页<br/>「⚡ 现在要你看」列表"]:::face
+  H --> R
+  M --> R
+  F --> R
+  R --> P
+  P --> T
+  P --> E

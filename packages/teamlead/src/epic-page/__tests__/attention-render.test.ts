@@ -6,7 +6,11 @@ import { generateEpicPage } from "../generate.js";
 import type { EpicPageV2 } from "../model.js";
 import { renderEpicPageHtml } from "../render-html.js";
 import { renderEpicPageMarkdown } from "../render-markdown.js";
-import { attentionFixture, sourceCell } from "./fixtures/attention.js";
+import {
+	attentionFixture,
+	candidate,
+	sourceCell,
+} from "./fixtures/attention.js";
 import { emptyItemFacts, epicShapeSnapshot } from "./fixtures/epic-shape.js";
 
 const now = new Date("2026-09-09T12:00:00Z");
@@ -45,6 +49,20 @@ function rows(html: string): string[] {
 }
 
 describe("attention rendering", () => {
+	it.each(["guild", "thread", "thread_url"] as const)(
+		"marks a valid founder item without %s incomplete instead of empty",
+		(field) => {
+			const document = page();
+			if (field === "guild") document.discord.guild_id.value = null;
+			else document.attention[0]![field].value = null;
+			const section = attentionHtml(renderEpicPageHtml(document, now));
+			expect(rows(section)).toHaveLength(0);
+			expect(section).toContain("清单不完整");
+			expect(section).toContain("1 条记录缺少讨论串链接");
+			expect(section).not.toContain("现在没有等你的事");
+		},
+	);
+
 	it("keeps real attention expanded before collapsed Epic cards", () => {
 		const document = page();
 		const dom = new Window().document;
@@ -53,7 +71,7 @@ describe("attention rendering", () => {
 		expect(dom.querySelector("main > .mock")?.children[2]).toBe(section);
 		expect(section.closest("details")).toBeNull();
 		const items = section.querySelectorAll("[data-attention-key]");
-		expect(items).toHaveLength(2);
+		expect(items).toHaveLength(1);
 		for (const item of items) {
 			for (const part of item.querySelectorAll("[data-attention-part]"))
 				expect(part.closest("details")).toBeNull();
@@ -73,7 +91,7 @@ describe("attention rendering", () => {
 			const output = render(document, now);
 			expect(
 				output.includes(
-					`已知 ${render === renderEpicPageHtml ? 2 : 3} 条记录，清单不完整`,
+					`已知 ${render === renderEpicPageHtml ? 1 : 3} 条记录，清单不完整`,
 				),
 			).toBe(true);
 			expect(output).toContain("身份尚未核齐，同一件事可能暂列多条");
@@ -91,6 +109,11 @@ describe("attention rendering", () => {
 	] as const)("keeps all four parts when %s is missing", (field, part) => {
 		const document = page();
 		document.attention[0]![field].value = null;
+		if (field === "thread" || field === "thread_url") {
+			expect(rows(renderEpicPageHtml(document, now))).toHaveLength(0);
+			expect(renderEpicPageMarkdown(document, now)).toContain("不知道");
+			return;
+		}
 		const row = rows(renderEpicPageHtml(document, now))[0]!;
 		expect([...row.matchAll(/data-attention-part=/g)]).toHaveLength(4);
 		expect(
@@ -119,10 +142,10 @@ describe("attention rendering", () => {
 					missing: { reason, detail: "PRIVATE_ERROR" },
 				};
 			const section = attentionHtml(renderEpicPageHtml(document, now));
-			expect([...section.matchAll(/aria-disabled="true"/g)]).toHaveLength(2);
+			expect(rows(section)).toHaveLength(0);
 			expect(section).not.toContain("href=");
 			for (const output of [section, renderEpicPageMarkdown(document, now)]) {
-				expect(output).toContain(text);
+				if (output !== section) expect(output).toContain(text);
 				expect(output).not.toContain("PRIVATE_ERROR");
 			}
 		},
@@ -136,9 +159,10 @@ describe("attention rendering", () => {
 		};
 		const section = attentionHtml(renderEpicPageHtml(document, now));
 		expect(section).not.toContain("href=");
-		expect([...section.matchAll(/aria-disabled="true"/g)]).toHaveLength(2);
+		expect(rows(section)).toHaveLength(0);
 		for (const output of [section, renderEpicPageMarkdown(document, now)]) {
-			expect(output).toContain("未配置 Discord 服务器编号");
+			if (output !== section)
+				expect(output).toContain("未配置 Discord 服务器编号");
 			expect(output).not.toContain("https://discord.com/");
 		}
 	});
@@ -271,15 +295,9 @@ describe("attention rendering", () => {
 		item.sources.push(question, second);
 		for (const render of [renderEpicPageHtml, renderEpicPageMarkdown]) {
 			const output = render(document, now);
-			expect(output).toContain(
-				render === renderEpicPageHtml
-					? "另有 1 条较早问题"
-					: "另有 2 条待回答记录",
-			);
+			expect(output).toContain("另有 1 条较早问题");
 			expect(output).toContain("去 thread 里回答它的问题。");
-			expect(output).toContain(
-				render === renderEpicPageHtml ? "全部 2 条来源" : "全部 3 条来源",
-			);
+			expect(output).toContain("全部 1 条来源");
 			expect(output).not.toContain("second-private-question");
 		}
 	});
@@ -303,7 +321,7 @@ describe("attention rendering", () => {
 			])
 				expect(output.includes(absent)).toBe(false);
 		}
-		expect(rows(renderEpicPageHtml(document, now))).toHaveLength(2);
+		expect(rows(renderEpicPageHtml(document, now))).toHaveLength(1);
 	});
 	it("distinguishes confirmed empty, incomplete reads, identity and budget failures, and legacy unknown", () => {
 		const document = page();
@@ -344,7 +362,7 @@ describe("attention rendering", () => {
 		const document = page();
 		const html = renderEpicPageHtml(document, now);
 		const markdown = renderEpicPageMarkdown(document, now);
-		expect(rows(html)).toHaveLength(2);
+		expect(rows(html)).toHaveLength(1);
 		expect(html.indexOf("现在要你看")).toBeLessThan(
 			html.indexOf("在跑的 Epic"),
 		);
@@ -367,8 +385,8 @@ describe("attention rendering", () => {
 		}
 		expect(rows(html)[0]).toContain("自 10:00 起,已等 2 小时");
 		expect(rows(html)[0]).toContain("2026-09-09 UTC");
-		expect(rows(html)[1]).toContain("自 09:00 起,已等 3 小时");
-		expect(rows(html)[1]).toContain("记录收件方：Lead；当前在等 Lead 回复");
+		expect(markdown).toContain("自 09:00 起,已等 3 小时");
+		expect(markdown).toContain("记录收件方：Lead；当前在等 Lead 回复");
 		expect(html).toContain("自 不知道 起,已等 不知道 小时");
 		expect(attentionHtml(html)).not.toContain("<table");
 		expect(markdown.indexOf("现在要你看")).toBeLessThan(
@@ -411,7 +429,7 @@ it("uses compact v5 attention rows with a count and real Discord jump", () => {
 	dom.write(renderEpicPageHtml(page(), now));
 	expect(
 		dom.querySelector("[data-attention-section] .sec")?.textContent,
-	).toContain("⚡ 现在要你看 · 2 件");
+	).toContain("⚡ 现在要你看 · 1 件");
 	const row = dom.querySelector("[data-attention-key]")!;
 	expect(row.querySelector(".u-l")).not.toBeNull();
 	expect(row.querySelector(".u-act")).not.toBeNull();
@@ -425,9 +443,66 @@ it("keeps a nomination label alone out of the founder action list", () => {
 	const dom = new Window().document;
 	dom.write(renderEpicPageHtml(page(), now));
 	const section = dom.querySelector("[data-attention-section]")!;
-	expect(section.querySelectorAll("[data-attention-key]")).toHaveLength(2);
+	expect(section.querySelectorAll("[data-attention-key]")).toHaveLength(1);
 	expect(section.textContent).not.toContain("FLY-3");
 	expect(dom.querySelector("[data-lead-attention]")?.textContent).toContain(
 		"FLY-3",
 	);
 });
+
+it("FLY-2597: founder attention lists only actionable bound thread links", () => {
+	const document = page();
+	for (const item of document.attention) item.thread_url.value = null;
+	const window = new Window();
+	window.document.body.innerHTML = renderEpicPageHtml(document, now);
+	const dom = window.document;
+	expect(dom.querySelectorAll("[data-attention-section] .u-row")).toHaveLength(
+		0,
+	);
+});
+
+it("keeps 34 Lead-recipient questions outside founder attention in Markdown and HTML", () => {
+	const document = page();
+	const input = attentionFixture();
+	input.candidates = [
+		input.candidates[0]!,
+		...Array.from({ length: 34 }, (_, n) =>
+			candidate(n + 2, "lead_question", "commdb", "mailbox"),
+		),
+	];
+	input.reads.questions.value = { count: 34 };
+	input.reads.founder_review.value = { count: 0 };
+	Object.assign(document, buildAttention(input, now.toISOString()));
+	const markdown = renderEpicPageMarkdown(document, now);
+	const founderSection = markdown.split("<details><summary>在等 Lead 的")[0]!;
+	expect(founderSection).not.toContain("lead_question");
+	expect(founderSection).not.toContain("FLY-2 ·");
+	expect(founderSection).toContain("FLY-1");
+	expect(markdown).toContain("<details><summary>在等 Lead 的");
+	expect(markdown).toContain("FLY-35");
+	const html = attentionHtml(renderEpicPageHtml(document, now));
+	expect(html).not.toContain("FLY-2");
+	expect(html).toContain("FLY-1");
+});
+
+it.each([
+	[
+		"https://discord.com/channels/1485787271192907816/1549550796725690459",
+		true,
+	],
+	["javascript:alert(1)", false],
+	["https://discord.com/channels/123/456?untrusted=1", false],
+] as const)(
+	"renders only validated child thread links in Markdown: %s",
+	(url, valid) => {
+		const document = page();
+		document.items[0]!.thread_url = sourceCell(
+			url,
+			"statestore",
+			"chat_threads",
+		);
+		const markdown = renderEpicPageMarkdown(document, now);
+		if (valid) expect(markdown).toContain(`[跳 Discord ↗](${url})`);
+		else expect(markdown).not.toContain(url);
+	},
+);

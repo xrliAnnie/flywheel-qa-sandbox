@@ -1,12 +1,19 @@
 {
 	"revision": "f022a0a7ee5a4cf42f590cbd0c90b12b84e2c854",
-	"meaning": "Historical shared selector and materializer, dept mailbox with summary duty plus inbox launcher rule. Body only: host paths and timestamp in metadata intentionally excluded. Additive FLY-2557 section 0.11 evolution; all other historical rule bytes preserved.",
-	"bodyBytes": 234489,
-	"sha256": "377c59fef2830389845c7cfe5b379123eaedac488e0b6678db4bdf4313b3da45",
+	"meaning": "Historical shared selector and materializer, dept mailbox with summary duty plus inbox launcher rule. Body only: host paths and timestamp in metadata intentionally excluded. Additive FLY-2557 section 0.11 evolution; all other historical rule bytes preserved. FLY-2597 shared attention/quiet receipt patch replayed over that baseline.",
+	"bodyBytes": 235941,
+	"sha256": "6da8f967cc4d715ed7b4568b40f1bb6969227c31ab511ec89af6d4194e4be816",
 	"intakeOverlay": {
 		"approvedSectionSha256": "24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6",
 		"beforeSourceSha256": "a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c",
 		"afterSourceSha256": "f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc",
 		"meaning": "Historical source bytes preserved, with only the approved FLY-2557 section 0.11 added under Lead ruling dd6d00cc."
+	},
+	"attentionEvolution": {
+		"base": "6556b07518eec4323cef2067b73b5a27081329d0",
+		"patchSha256": "264fdb3fe18956ea507a190d65e55bef523adbb80da216664c1fc6bffa20499d",
+		"beforeBundleSha256": "377c59fef2830389845c7cfe5b379123eaedac488e0b6678db4bdf4313b3da45",
+		"afterBundleSha256": "6da8f967cc4d715ed7b4568b40f1bb6969227c31ab511ec89af6d4194e4be816",
+		"meaning": "FLY-2597 approved plan: identical explicit founder attention and quiet receipt duties in ON/OFF; all other historical bytes preserved."
 	}
 }

@@ -73,6 +73,7 @@ interface RawDiscordMessage {
 }
 
 export interface FounderReplyThreadCtx {
+	attentionSinceMs?: number;
 	issueId: string;
 	projectName: string;
 	threadId: string;
@@ -186,6 +187,13 @@ export interface FounderReplyRetryLedger {
 }
 
 export interface FounderReplyDeliverDeps {
+	onFounderThreadMessage?: (input: {
+		projectName: string;
+		issueId: string;
+		threadId: string;
+		messageId: string;
+		beforeMs: number;
+	}) => void;
 	store: StateStore;
 	/** Ref-only learning observer: handled means an explanation was durably received, never approved. */
 	observeShipJudgmentReply?: (reference: {
@@ -319,7 +327,9 @@ export async function emitFounderReplyDeliveryForThread(
 		},
 	} = deps;
 	// ── (A) READ THE THREAD ONCE ──
-	const cursor = cursorStore?.load(ctx.threadId);
+	let cursor = cursorStore?.load(ctx.threadId);
+	if (cursor === undefined && Number.isFinite(ctx.attentionSinceMs))
+		cursor = msToSnowflakeLowerBound(ctx.attentionSinceMs!);
 	if (cursor === undefined) {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), GET_TIMEOUT_MS);
@@ -519,7 +529,17 @@ export async function emitFounderReplyDeliveryForThread(
 			// exception bypasses the retry row / pin alert / dead-letter and the
 			// message can spin forever with zero durable trail (账本诚实性).
 			let outcome: ProcessOutcome;
+			let failureStage = "founder_ask_settle_failed";
 			try {
+				if (msgMs !== null)
+					deps.onFounderThreadMessage?.({
+						projectName: ctx.projectName,
+						issueId: ctx.issueId,
+						threadId: ctx.threadId,
+						messageId: msg.id,
+						beforeMs: msgMs,
+					});
+				failureStage = "process_exception";
 				outcome = await processFounderMessage(msg, matching, ctx, {
 					store,
 					withCommDb,
@@ -555,7 +575,7 @@ export async function emitFounderReplyDeliveryForThread(
 			} catch (err) {
 				outcome = {
 					ok: false,
-					stage: "process_exception",
+					stage: failureStage,
 					reason: (err as Error).message,
 				};
 			}

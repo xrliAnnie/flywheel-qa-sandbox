@@ -51,7 +51,7 @@ it("reserves compact attention and root notes in expanded cards within the 60-ch
 	expect(doc.querySelector("main > .mock")?.firstElementChild?.className).toBe(
 		"mock-bar",
 	);
-	expect(doc.querySelectorAll("[data-attention-key]")).toHaveLength(2);
+	expect(doc.querySelectorAll("[data-attention-key]")).toHaveLength(1);
 	expect(
 		doc.querySelector("[data-attention-section]")?.closest("details"),
 	).toBeNull();

@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2597 · thread 标题加「要你答」,固定页「待你看」同源 — 设计方案</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .meta .mono { font-family: 'SF Mono', monospace; }
+  .section { margin-bottom: 34px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; color: #1d1d1f; }
+  .card p, .card li { font-size: 14px; color: #3a3a3c; }
+  .card ul, .card ol { padding-left: 20px; margin-top: 6px; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 16px; font-weight: 600; color: #1d1d1f; }
+  .jargon { color: #86868b; font-size: 13px; }
+  .diagram { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 16px; margin-bottom: 14px; overflow-x: auto; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .diagram-caption { font-size: 13px; color: #86868b; margin-top: 8px; margin-bottom: 14px; text-align: center; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11.5px; font-weight: 600; margin-right: 6px; }
+  .badge.done { background: #e8f8ee; color: #1d8a43; }
+  .badge.pending { background: #fff3e0; color: #c77400; }
+  .badge.hard { background: #fdebea; color: #c62d23; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .title-demo { font-family: -apple-system, system-ui, sans-serif; font-size: 15px; background: #2b2d31; color: #f2f3f5; border-radius: 8px; padding: 8px 12px; margin: 6px 0; display: inline-block; }
+  .quote { background: #f5f5f7; border-radius: 10px; padding: 10px 14px; font-size: 13.5px; white-space: pre-wrap; color: #1d1d1f; margin-top: 8px; border-left: 3px solid #d2d2d7; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { display: block; font-size: 12.5px; color: #86868b; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 13.5px; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,0.15); }
+  .btn { display: inline-block; background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  .btn:hover { background: #0066d6; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  #summary-body { white-space: pre-wrap; font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin-top: 10px; min-height: 40px; color: #1d1d1f; }
+  .chunk { margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2597 · thread 标题加「要你答」,固定页「待你看」与它同源</h1>
+  <div class="meta">Issue <span class="mono">FLY-2597</span> · 设计阶段 · 2026-09-15 · 出自 Tadashi 的工程设计节点 · 方案 A(一份派生,两张脸)· 独立评审见文末「评审状态」</div>
+
+  <!-- S1 -->
+  <div class="section" data-section="一句话总结">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>一句话总结</div>
+    <div class="card">
+      <p class="lede">以后你扫一眼 Discord 的 thread 列表,只会看到两种「要你」的标题:<span class="title-demo">🔔 ⏳待批 [F] [FLY-2597] …</span> 是「ship report 出了,等你决定要不要 ship」;<span class="title-demo">🔔要你答 [F] [FLY-2597] …</span> 是「有人卡在你这儿,等你一个决定」。这两个词都由机器点亮、机器熄灭;Epic 固定页的「⚡ 现在要你看」列表就是此刻标题带这两个词的 thread,与标题读同一份状态,不会再各说各话。</p>
+      <p class="jargon" style="margin-top:8px;">thread = Discord 里每张 issue 单独的讨论串。thread 标题(title)= 讨论串名字,Bridge 会自动在前面盖一个状态词(如 🔨实现中、⏳待批)。Bridge = Flywheel 的中枢程序,一直在跑。Epic 固定页 = 每个项目一张自动生成的总览网页,链接固定不变。Lead = 管 Runner 的 AI 主管(如 Tadashi)。Runner = 干活的 AI 工人。</p>
+    </div>
+    <div class="card gray">
+      <h3>你 9 月 15 日的原话,我拆成三件事</h3>
+      <div class="quote">我只想点进去看两种 thread:一种是最后要 ship 了,我看 ship report 决定要不要 ship;另一种是它真的有问题需要我去决定。前者已经有「待批」title 了。后者怎么 highlight?最简单应该是在 thread title 上也 update 一个状态。放 HTML 里会 maintain two sources of truth,容易 out of sync。最后要 generic 一个 behavior 出来,所有 Lead 都这么做。</div>
+      <ol style="margin-top:10px;">
+        <li><b>标题多一个词「要你答」</b>:谁点亮、谁熄灭都是机器判,Lead 不手改标题。</li>
+        <li><b>一份状态,两张脸</b>:标题和固定页「待你看」读同一份派生结果;测试里伪造一个状态,两边一起变。</li>
+        <li><b>所有 Lead 通用</b>:规则文件不再要求任何 Lead 定时手写进展。</li>
+      </ol>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s1" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S2 -->
+  <div class="section" data-section="今天为什么会各说各话">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>今天为什么会各说各话(实核结果)</div>
+    <div class="card amber">
+      <p>标题和固定页今天是<b>两套独立的判断</b>。标题只在「ship 审批门」打开时点 🔔;固定页的「现在要你看」另外读三处来源,其中一处还靠猜——Runner 问题正文里写没写「@founder」。结果就是下面这张表:</p>
+      <table>
+        <tr><th>情形</th><th>标题今天显示</th><th>固定页今天列不列</th></tr>
+        <tr><td>ship 门打开(等你按 ship)</td><td>🔔 ⏳待批</td><td>列</td></tr>
+        <tr><td>Runner 开了要你答的门(如设计稿要你看)</td><td><b>不亮</b>,还是原阶段词</td><td>列</td></tr>
+        <tr><td>Runner 问题正文含「@founder」</td><td><b>不亮</b></td><td>列(靠文本猜)</td></tr>
+        <tr><td>Lead 在 thread 里问你一个决定</td><td><b>不亮</b></td><td><b>不列</b>(没有任何记录)</td></tr>
+        <tr><td>你回帖之后</td><td>不变</td><td>不变</td></tr>
+      </table>
+      <p class="jargon" style="margin-top:8px;">门(gate)= Runner 在某个节点停下来等一个人回答的机制。ship 门 = 「能不能上线」那一道;founder_review 门 = 「设计稿/交付物你看一眼」那一道;brainstorm 门 = 「方向对不对你拍一下」那一道。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s2" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S3 -->
+  <div class="section" data-section="核心流程:谁点亮、谁熄灭">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>核心流程:谁点亮、谁熄灭</div>
+    <div class="diagram"><!--DIAGRAM_1--></div>
+    <div class="diagram-caption">图 1 · 三条点亮条件汇到同一个派生器;两条熄灭条件;ship 门存在时「待批」压过「要你答」</div>
+    <div class="card green">
+      <h3>点亮的三种情况(任一即亮)</h3>
+      <ol>
+        <li><b>Runner 开了要你答的门</b>:founder_review 或 brainstorm 这两道门(ship 门不算,它归「待批」)。</li>
+        <li><b>Runner 问了一句,Lead 转进 thread 并标记「这要 founder 答」</b>:Lead 发消息时带一个机器可读的标记 founderAsk,并附上那个问题的编号。</li>
+        <li><b>Lead 自己在 thread 里向你要一个决定</b>:同一个标记,不附问题编号。</li>
+      </ol>
+      <p class="jargon">founderAsk = Lead 调用 Bridge 发消息接口时多带的一个字段;Bridge 收到就在自己的数据库记一行「谁、何时、哪条消息在等 founder」。它不是靠读消息正文猜出来的。</p>
+    </div>
+    <div class="card green">
+      <h3>熄灭的两种情况</h3>
+      <ul>
+        <li><b>你本人在该 thread 回帖</b>:Bridge 已有一个扫描器专门读每个 thread 里作者是你的消息(按你的 Discord 账号 id 判,不看内容);它读到你回了,就把这个 thread 上「在等你」的记录结掉。</li>
+        <li><b>那道门 / 那个问题已经被回答</b>:比如 Lead 替 Runner 答了那个问题,或门被裁定。派生器看到「问题已答」,标记自动失效。</li>
+      </ul>
+      <p><b>优先级</b>:🔴受阻 &gt; ✅完成 &gt; 🔔 ⏳待批 &gt; 🔔要你答 &gt; 其它阶段词。「待批」和「要你答」不会同时出现。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s3" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S4 -->
+  <div class="section" data-section="数据与结构模型">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>数据与结构模型</div>
+    <div class="diagram"><!--DIAGRAM_2--></div>
+    <div class="diagram-caption">图 2 · 三张已有/新增的事实表,汇成一个不落库的派生值 level;每次点亮/熄灭各记一条事件</div>
+    <div class="card purple">
+      <h3>只新增一张表:founder_ask</h3>
+      <p>记录 Lead 的每一次「这要 founder 答」:谁标的(lead_id)、何时(asked_at)、哪条消息(message_id)、关联哪个 Runner 问题(question_id,可空)、一句话摘要(excerpt)、什么时候被谁结掉(settled_at / settled_by)。这就是你要的「可审计」:每一次点亮都能回溯到一个人、一个时间、一条消息。</p>
+      <p style="margin-top:6px;">另外两处事实(ship 门的持有记录、Runner 开的门)都是<b>今天已经存在的表</b>,不新造。派生值「level」不落库——每次要显示时现算,所以没有第二份状态需要人维护。</p>
+      <p class="jargon">level = 派生器算出的三档:ship(→ 待批)、answer(→ 要你答)、无。它是函数返回值,不是数据库字段。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s4" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S5 -->
+  <div class="section" data-section="一份状态,两张脸">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>一份状态,两张脸(怎么保证不 out of sync)</div>
+    <div class="diagram"><!--DIAGRAM_3--></div>
+    <div class="diagram-caption">图 3 · 标题和固定页调用同一个读取函数、同一个判定函数;测试里伪造一条记录,断言两边同时变</div>
+    <div class="card">
+      <p>「同源」在代码里的可检验定义:两张脸<b>调用同一个函数、跑同一份 SQL、查同一张 kind 表</b>。固定页原来自己读三处来源的代码会下沉成这个共享函数,标题刷新器也改调它。会有一条专门的测试:伪造一条 founder_ask → 标题出现「🔔要你答」<b>且</b>固定页「现在要你看」出现这张单;结掉它 → 两边同时消失;再伪造一个 ship 门 → 两边同时变「待批」。</p>
+      <p style="margin-top:6px;">固定页的「Epic 级状态」(几个 Epic、各自跑完/在跑/没开始)保持不变;改的只有「现在要你看」这一块的来源。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s5" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S6 -->
+  <div class="section" data-section="一次完整往返">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>一次完整往返:Lead 标记 → 标题亮 → 你回帖 → 标题灭</div>
+    <div class="diagram"><!--DIAGRAM_4--></div>
+    <div class="diagram-caption">图 4 · 先写记录再发消息,发出去的每条「要你答」都有账;你回帖由已有扫描器识别并结账</div>
+    <div class="card">
+      <h3>几个刻意的顺序</h3>
+      <ul>
+        <li><b>先记账,再发消息</b>:Bridge 先在 founder_ask 写一行,再往 Discord 发;发失败就把这行标成「发送失败」不点亮。这样不会出现「消息发出去了、账上没有」。</li>
+        <li><b>你的回帖只结你回帖之前的标记</b>:按消息时间比较,避免你早先的一句话把之后才提的问题也熄了。</li>
+        <li><b>结账失败不会静默</b>:扫描器沿用已有的「没处理完就下轮重读」纪律,并有有界重试与死信账本。</li>
+      </ul>
+      <p class="jargon">扫描器 = Bridge 里一段已存在的代码,每隔几秒读一遍各 thread 的新消息,专门找你的回帖(今天它就负责识别你在 ship 卡上的批复)。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s6" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S7 -->
+  <div class="section" data-section="关键取舍与否决的方案">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>关键取舍与否决的方案</div>
+    <div class="card amber">
+      <h3>三条已由 Tadashi 裁定的取舍</h3>
+      <table>
+        <tr><th>问题</th><th>决定</th><th>为什么</th></tr>
+        <tr><td>「Lead 定时手写进展停用」落到哪条规则</td><td>规则文件里<b>没有</b>任何条款要求 Lead 定时手写 Epic 页判断;唯一定期手写的是 Raya 的 summary 回流(你定的机制),<b>不动</b>。只加一条负向规则:进度与「待你看」不手写,由机器派生。</td><td>不误删你定的机制;把「不许手写」写死。</td></tr>
+        <tr><td>非代码类工作流终点的「你看一眼交付物」门显示哪个词</td><td>维持今天的「待批」</td><td>你说不改「待批」语义;它本质也是终点审批。</td></tr>
+        <tr><td>正文含「@founder」的 Runner 问题还算不算「要你答」</td><td><b>不算</b>,去掉这个文本正则。Runner 的问题只有被 Lead 标记转进 thread 后才亮。</td><td>你的原话「机器可判、可审计,不靠文本猜测」。</td></tr>
+      </table>
+    </div>
+    <div class="card gray">
+      <h3>否决的三个方案</h3>
+      <ul>
+        <li><b>把 Lead 的标记写进 Runner 邮箱(CommDB)</b>:那张表的收件人只允许 lead / runner / bridge 三种,改约束要重建表,十几处读邮箱的代码都要逐个排除新类型;否决,改用 Bridge 自己的一张小表。</li>
+        <li><b>让 Lead 直接改 thread 名</b>:你在 issue 里明确不要;而且绕过合并写队列会撞 Discord「10 分钟只能改 2 次名」的限额。</li>
+        <li><b>保留两套判断,加一致性巡检</b>:还是两份真相,巡检只能事后报警。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s7" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S7b -->
+  <div class="section" data-section="补充:Epic 收件凭证不再进 thread">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>补充(你 22:45 的反馈):安静的 Epic thread 为什么被顶起来,以后怎么不顶</div>
+    <div class="card red">
+      <h3>原因</h3>
+      <p>Epic 收件(FLY-2557)要求 Lead 在每个 Epic 根 thread 里回一条「已收到、拆成 N 张」,并把这条消息的编号交给 Bridge 当凭证——凭证的本体就是那条回帖。Discord 一收到消息就把 thread 顶到最前并标未读,所以 6 个本来安静的 Epic 一起冒了出来。</p>
+      <h3 style="margin-top:10px;">决定:凭证改为 Bridge 自己的持久记录,不再回帖(方案 a)</h3>
+      <ul>
+        <li>「收到了、拆成 N 张」这类<b>纯记录</b>不进 Discord;Bridge 在自己的数据库记「谁、何时、怎么核过」,固定页每张 Epic 卡本来就显示收件到哪一步。</li>
+        <li>只有一种情况 Lead 仍会在 Epic 根 thread 发消息:<b>拆解真的需要你拍板</b>。那条消息带 founderAsk 标记,标题同时亮「🔔要你答」,固定页「现在要你看」同源出现,你回帖即熄——这时被顶起来是正当的。</li>
+        <li>规则加一条通用条款:所有 Lead、所有项目,「纯记录」回帖(收件凭证、ACK 回执、机器已经记下并在固定页/标题可见的状态转述)一律不进 thread;Epic 级状态只在固定页看。</li>
+      </ul>
+      <h3 style="margin-top:10px;">为什么不选「照旧回帖、回完自动归档」(方案 b)</h3>
+      <ul>
+        <li>顶起和未读在发消息那一刻就发生了,归档只是事后把它移走,你还是会先看到一次「这是什么」。</li>
+        <li>归档在这套系统里被定义为「真正收尾」;Epic 根 thread 后面拆子单、派工还要用,Discord 又会在下一条消息时自动解档,来回抖。</li>
+        <li>它推广不到其它纯记录回帖:一张正在干活的 issue 的 thread 不能因为一条回执就被归档。</li>
+      </ul>
+      <p class="jargon">不动的部分:Runner 干活中的生命周期转述(它发生在有活 Runner 的 thread 上,不是安静 thread)维持现状;若你也想收掉,加一条规则即可。细节在同文件夹 design-correction.md。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s7b" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S8 -->
+  <div class="section" data-section="诚实边界">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>诚实边界:这个设计做什么、不做什么</div>
+    <div class="card red">
+      <h3>做</h3>
+      <ul>
+        <li>标题新增「🔔要你答」;三条点亮、两条熄灭;「待批」优先。</li>
+        <li>固定页「现在要你看」改为与标题同源;Epic 级计数不动。</li>
+        <li>所有项目、所有 Lead 通用;规则加负向条款;每次点亮/熄灭写审计事件。</li>
+      </ul>
+      <h3 style="margin-top:10px;">不做 / 已知限制</h3>
+      <ul>
+        <li>不改「待批」的语义、不改标题刷新的节奏(最慢约一个轮转周期,默认 3 分钟 × 活跃单数÷10)。</li>
+        <li>Lead 用命令直接替 Runner 答完问题后,标题靠下一轮巡检熄灭(不是秒级),满足你写的「下一周期消失」。</li>
+        <li>如果一张单已经没有在跑的 Runner,Lead 仍在 thread 里问你,你的回帖不会被扫描器读到(它只扫有活人的 thread);这种情况 Lead 用撤回接口熄灭。</li>
+        <li>去掉「@founder」正则后,以前靠它露面的 Runner 问题不再自动进「现在要你看」,需要 Lead 主动标记;规则会写明。</li>
+        <li>不动 Raya summary 回流;不动 Linear 标签那一类「你点过名」的来源(它继续留在 Lead 面板)。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s8" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S9 -->
+  <div class="section" data-section="验收与真机验证">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>验收与真机验证怎么做</div>
+    <div class="card green">
+      <table>
+        <tr><th>你在 issue 里写的验收</th><th>对应证据</th></tr>
+        <tr><td>三种点亮条件各一条自动化测试</td><td>标题刷新器测试三条 + 读取函数真 SQL 测试</td></tr>
+        <tr><td>你回帖熄灭有测试</td><td>扫描器测试(你的消息触发结账;机器人消息不触发;结账失败不丢)</td></tr>
+        <tr><td>「待批」覆盖「要你答」有测试</td><td>纯函数矩阵 + 刷新器用例</td></tr>
+        <tr><td>固定页只来自同一状态源</td><td>专门的同源测试:伪造 → 两边同步</td></tr>
+        <tr><td>真机:标记后一周期内出现,回帖后下一周期消失</td><td>QA 在 529 测试台架自己的 thread 上做,用<b>两个测试机器人</b>分别扮演 Lead 与「founder 账号」,绝不用你本人账号;证据是 Discord 接口读回的标题 + 固定页两次快照</td></tr>
+      </table>
+      <p class="jargon" style="margin-top:8px;">529 台架 = 一套与生产隔离的测试 Bridge + 测试频道,专门给 QA 做真机验证。</p>
+    </div>
+    <div class="card gray">
+      <h3>评审状态</h3>
+      <p><!--REVIEW_STATUS--></p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s9" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- Summary card -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>页面意见汇总</div>
+    <div class="card" id="summary-card">
+      <p class="jargon">下面自动汇集你在各节写的意见;点按钮一键复制,贴回给 Tadashi 即可。这是修改意见,不是通过信号。</p>
+      <div id="summary-body">(还没有意见)</div>
+      <div id="chunks"></div>
+      <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2597";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly2597-comments:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly2597-comments:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitleFor(t) {
+    var sec = t.closest ? t.closest("[data-section]") : null;
+    return sec ? sec.getAttribute("data-section") : t.getAttribute("data-key");
+  }
+
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (t) {
+      var v = (t.value || "").trim();
+      if (v) parts.push("【" + sectionTitleFor(t) + "】\n" + v);
+    });
+    return parts;
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function doCopy(text, doneMsg) {
+    function done(ok) {
+      copyStatus.textContent = ok ? doneMsg : "复制失败,请手动全选复制上面的文字";
+      setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  function render() {
+    var parts = collect();
+    chunksDiv.textContent = "";
+    if (!parts.length) { summaryBody.textContent = "(还没有意见)"; return; }
+    var chunks = chunkText(parts);
+    if (chunks.length === 1) {
+      summaryBody.textContent = chunks[0];
+    } else {
+      summaryBody.textContent = "意见较长,已拆成 " + chunks.length + " 段,请逐段复制:";
+      chunks.forEach(function (c, i) {
+        var d = document.createElement("div");
+        d.className = "chunk";
+        var pre = document.createElement("div");
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.fontFamily = "'SF Mono', monospace";
+        pre.style.fontSize = "12.5px";
+        pre.style.background = "#f5f5f7";
+        pre.style.borderRadius = "10px";
+        pre.style.padding = "10px";
+        pre.textContent = c;
+        var b = document.createElement("button");
+        b.className = "btn";
+        b.textContent = "复制第 " + (i + 1) + " 段";
+        b.addEventListener("click", function () { doCopy(c, "第 " + (i + 1) + " 段已复制"); });
+        d.appendChild(pre);
+        d.appendChild(b);
+        chunksDiv.appendChild(d);
+      });
+    }
+  }
+
+  boxes.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-key"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-key"), t.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) { doCopy(MARKER + "\n\n(无意见)", "已复制(无意见)"); return; }
+    doCopy(chunkText(parts).join("\n\n"), "已复制全部意见");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

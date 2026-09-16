@@ -5,15 +5,15 @@
 	"pairs": [
 		{
 			"id": "department-lead-rules.md",
-			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence.",
+			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence. FLY-2597 adds the same explicit founderAsk, reply acknowledgement, shared title/page attention, no periodic prose and quiet-record duties to ON and OFF; existing historical duties outside that exact insertion are preserved. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
-					"sha256": "ca84299c54dc6def51d5ba902ca304098ed5d541663dd5e86fc69c5abaf2527c"
+					"sha256": "69c8d71009bb85bcbe9a9b76122b585ecf8e60fa8b33470530eb1dfda57813ce"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/department-lead-rules.md",
-					"sha256": "757ba4427b0c4fe306542e89de4173f227ee5a42b2ab738b417716126bfeb548"
+					"sha256": "aa12792bd8d00307dbeb10a73ca9539bbc34a45e9fc4c7ce4abad8d1be9b6457"
 				}
 			]
 		},
@@ -33,15 +33,15 @@
 		},
 		{
 			"id": "runner-patrol-rules.md",
-			"rationale": "FLY-2557 section 0.11 is byte-identical in current ON and legacy OFF patrol sources. Lead ruling e1eff36e authorizes adding this shared intake duty to OFF while preserving every byte of its previous text. Both modes now contain intake identity, ACK versus pending, backfill, decomposition, dependency ledger, thread receipts and resolve, and both transports deliver the same intake event instructions. The savings switch continues selecting shortened versus historical patrol procedures; it no longer removes section 0.11. Capture command: python3 engineering/doc/FLY-2567-lead-token-savings/capture-legacy-bundle.py --intake-overlay engineering/doc/FLY-2557-epic-intake/approved-intake-section.txt. The script pins overlay SHA256 24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6; OFF patrol source evolves from a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c to f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc. Two captures produce byte-identical source and bundle goldens; an unapproved overlay is rejected before writes.",
+			"rationale": "FLY-2557 section 0.11 is byte-identical in current ON and legacy OFF patrol sources. Lead ruling e1eff36e authorizes adding this shared intake duty to OFF while preserving every byte of its previous text. Both modes now contain intake identity, ACK versus pending, backfill, decomposition, dependency ledger, thread receipts and resolve, and both transports deliver the same intake event instructions. The savings switch continues selecting shortened versus historical patrol procedures; it no longer removes section 0.11. Capture command: python3 engineering/doc/FLY-2567-lead-token-savings/capture-legacy-bundle.py --intake-overlay engineering/doc/FLY-2557-epic-intake/approved-intake-section.txt. The script pins overlay SHA256 24d7b1928661a4952de3e721b684d703452c86dd25037bd9f1f6ea2631f902a6; OFF patrol source evolves from a48cb411861c7b3edd234d49e42efb3b5fd114b0e4b70872cffe2db4734bae1c to f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc. Two captures produce byte-identical source and bundle goldens; an unapproved overlay is rejected before writes. FLY-2597 replaces Discord record-only intake receipts with Bridge receipts in both ON and OFF section 0.11; needs_founder retains an actual marked question. Both modes gain identical no-periodic-prose and quiet-record rules. The prior FLY-2557 overlay is preserved except these approved quiet-receipt edits. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/runner-patrol-rules.md",
-					"sha256": "e8ea07896184a149e642223adb4ec9fd86fd83f50d7f20dfa35e680950fec885"
+					"sha256": "dad5c6d233c98307cf3c072942a14a22f35c755afd0d0062c860a277308216ad"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc"
+					"sha256": "322eb79749dd27362e703961dc60782d607773be8fb33e398b0a6a3200335389"
 				}
 			]
 		},
@@ -61,7 +61,7 @@
 		},
 		{
 			"id": "patrol-runbook",
-			"rationale": "ON moves operational recipes to this runbook; OFF retains the prior inline recipes byte-for-byte. FLY-2557 adds only the identical approved section 0.11 intake duty to the OFF patrol source under ruling e1eff36e, matching current ON rules. The runbook recipes and existing OFF operational procedures are unchanged.",
+			"rationale": "ON moves operational recipes to this runbook; OFF retains the prior inline recipes byte-for-byte. FLY-2557 adds only the identical approved section 0.11 intake duty to the OFF patrol source under ruling e1eff36e, matching current ON rules. The runbook recipes and existing OFF operational procedures are unchanged. FLY-2597 updates the OFF shared section 0.11 and adds the same attention/quiet-record duty as ON; runbook recipes remain unchanged. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/runbooks/patrol-v1.md",
@@ -69,13 +69,13 @@
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "f274a86e359454d6ed8a2b3b6fb5f1e941b39425df2028a8a3abe9c873888ffc"
+					"sha256": "322eb79749dd27362e703961dc60782d607773be8fb33e398b0a6a3200335389"
 				}
 			]
 		},
 		{
 			"id": "bootstrap-generator",
-			"rationale": "ON pages and classifies pending work; OFF preserves historical unpaged ordering and payload, checked by the independent generator oracle. Comparing db.ts baseline 4d266490b with the merged source shows SQL timing and openExistingWriter additions plus FLY-2553 attention selection: reports and ended ordinary asks are excluded before pagination, founder gates retained, and spilled/personal-recipient questions classified explicitly. These shared attention/database changes are not the token-savings switch; getPendingQuestions pagination and the ON/OFF bootstrap generator implementations are unchanged by that diff. The legacy generator fixture remains pinned; this refresh accepts only the reviewed shared db.ts dependency bytes.",
+			"rationale": "ON pages and classifies pending work; OFF preserves historical unpaged ordering and payload, checked by the independent generator oracle. Comparing db.ts baseline 4d266490b with the merged source shows SQL timing and openExistingWriter additions plus FLY-2553 attention selection: reports and ended ordinary asks are excluded before pagination, founder gates retained, and spilled/personal-recipient questions classified explicitly. These shared attention/database changes are not the token-savings switch; getPendingQuestions pagination and the ON/OFF bootstrap generator implementations are unchanged by that diff. The legacy generator fixture remains pinned; this refresh accepts only the reviewed shared db.ts dependency bytes. FLY-2597 removes @founder text inference in the shared db attention reader: only declared checkpoints or persisted Lead founderAsk markers supply founder attention. Bootstrap ordering, pagination and the independent legacy generator are unchanged. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch.",
 			"members": [
 				{
 					"path": "packages/teamlead/src/bridge/bootstrap-generator.ts",
@@ -87,7 +87,7 @@
 				},
 				{
 					"path": "packages/flywheel-comm/src/db.ts",
-					"sha256": "27860a89041cb05e8a96bced3bf4eeb38c7ec16b0446de9b1d1bfa87f4e3f606"
+					"sha256": "b09dcb5b7c3b502c0ca374e0e0ec5b4bd41dd469af66f148921172b6c8f225a4"
 				}
 			]
 		},

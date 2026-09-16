@@ -1,0 +1,40 @@
+classDiagram
+  direction LR
+  class founder_ask {
+    +ask_id : uuid
+    +project_name
+    +issue_id
+    +thread_id / channel_id
+    +lead_id  谁标的
+    +message_id  哪条消息
+    +question_id  关联的 Runner 问题(可空)
+    +excerpt  一句话
+    +asked_at  何时
+    +settled_at / settled_by
+  }
+  class workflow_gate_holder {
+    +question_id
+    +gate_node_id = founder_gate
+    +authority_mode  land / runner_ship / engine_terminal
+    +state = awaiting_review
+  }
+  class mailbox_question {
+    +id
+    +checkpoint  founder_review / brainstorm
+    +无 response 子行 = 未答
+  }
+  class session_events {
+    +founder_ask_lit
+    +founder_ask_settled
+  }
+  class FounderAttentionLevel {
+    <<派生,不落库>>
+    ship  = 🔔 ⏳待批
+    answer = 🔔要你答
+    null   = 原阶段词
+  }
+  founder_ask --> FounderAttentionLevel : answer
+  mailbox_question --> FounderAttentionLevel : answer(无 holder 时)
+  workflow_gate_holder --> FounderAttentionLevel : ship
+  founder_ask ..> session_events : 点亮 / 熄灭各记一条
+  founder_ask ..> mailbox_question : question_id 被答则失效

@@ -1,0 +1,23 @@
+flowchart TB
+  classDef lit fill:#fff3e0,stroke:#ff9500,stroke-width:2px,color:#1d1d1f
+  classDef off fill:#e8f8ee,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+  classDef src fill:#eef4ff,stroke:#007aff,color:#1d1d1f
+  A["条件 1<br/>Runner 开了要 founder 答的门<br/>(founder_review / brainstorm)"]:::src
+  B["条件 2<br/>Runner 的问题被 Lead 转进 thread<br/>并标记 founderAsk + questionId"]:::src
+  C["条件 3<br/>Lead 自己在 thread 里向 founder 要决定<br/>send 带 founderAsk"]:::src
+  D["派生器 founder-attention<br/>算出 level = answer"]
+  T["thread 标题<br/>🔔要你答"]:::lit
+  E1["founder 本人在该 thread 回帖"]:::src
+  E2["门 / 问题已被回答<br/>(Lead respond,或门被裁)"]:::src
+  O["标题回到原来的阶段词<br/>如 🔨实现中"]:::off
+  S["ship 门开着<br/>level = ship"]:::src
+  P["标题 🔔 ⏳待批<br/>(优先于 要你答)"]:::lit
+  A --> D
+  B --> D
+  C --> D
+  D --> T
+  E1 --> O
+  E2 --> O
+  T -. 熄灭 .-> O
+  S --> P
+  D -. 若同时有 ship .-> P

@@ -154,11 +154,20 @@ export const RECONNECTING_EMOJI = "⚠️";
 /** Word paired with ⚠️ (cross-cutting monitoring re-connecting marker). */
 export const RECONNECTING_WORD = "重连中";
 
+export const NEEDS_ANSWER_EMOJI = "🔔";
+export const NEEDS_ANSWER_WORD = "要你答";
+
+/** A bare bell is not a managed badge; emoji-only mode keeps its stage. */
+export function needsAnswerBadge(withWord: boolean): string | undefined {
+	return withWord ? `${NEEDS_ANSWER_EMOJI}${NEEDS_ANSWER_WORD}` : undefined;
+}
+
 /** All emoji the status-prefix logic may have placed at the front of a title. */
 const ALL_STATUS_EMOJI: ReadonlySet<string> = new Set([
 	...Object.values(STAGE_EMOJI),
 	BLOCKED_EMOJI,
 	RECONNECTING_EMOJI,
+	NEEDS_ANSWER_EMOJI,
 	// FLY-892 (Step 6): the DAG workflow badges (🎨设计/🔨实现/🧪QA) are
 	// stamped in place of the fine-grained stage badge on a DAG workflow issue, so
 	// strip/restamp must recognize their emoji (🎨 is new; 🔨/🧪 are shared).
@@ -184,6 +193,7 @@ const EMOJI_TO_WORDS: Readonly<Record<string, readonly string[]>> = (() => {
 		if (word) add(emoji, word);
 	}
 	add(BLOCKED_EMOJI, BLOCKED_WORD);
+	add(NEEDS_ANSWER_EMOJI, NEEDS_ANSWER_WORD);
 	add(RECONNECTING_EMOJI, RECONNECTING_WORD); // FLY-623
 	// FLY-892 (Step 6): register the phase badge words so a phase badge peels
 	// cleanly (🎨设计/🔨实现/🧪QA). 🔨实现 coexists with the FLY-560 🔨实现中 stage
@@ -266,6 +276,9 @@ function splitPrimaryStatusEmoji(name: string): StatusEmojiSplit | undefined {
 					rest = rest.slice(candidate.length);
 					break;
 				}
+			}
+			if (emoji === NEEDS_ANSWER_EMOJI && word !== NEEDS_ANSWER_WORD) {
+				return undefined;
 			}
 			const base = rest.replace(/^\s+/, "");
 			return word ? { emoji, word, base } : { emoji, base };

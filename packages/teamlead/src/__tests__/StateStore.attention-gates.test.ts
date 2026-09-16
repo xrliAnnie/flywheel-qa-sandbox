@@ -3,101 +3,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { StateStore } from "../StateStore.js";
+import { readFounderAttentionFacts } from "../bridge/founder-attention-facts.js";
+import { readAttentionSources } from "../epic-page/attention-sources.js";
+import type { StateStore } from "../StateStore.js";
 import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
 	parseWorkflowRunSnapshot,
 	resolveWorkflowGateAuthority,
 } from "../workflow-run-snapshot.js";
+import {
+	createAttentionGateStore,
+	landSnapshot,
+} from "./fixtures/attention-gate-store.js";
 import { legacyEngineeringManifest } from "./fixtures/legacy-workflow-manifests.js";
-
-function landSnapshot(): string {
-	return JSON.stringify(
-		buildWorkflowRunSnapshotV1({
-			template: { id: "tpl_eng_heavy_land_v1", revision: 1 },
-			manifest: {
-				schema_version: 1,
-				manifest_variant: "land_v1",
-				nodes: [
-					{
-						id: "design",
-						type: "design",
-						vendor: "claude",
-						model: "claude-fable-5",
-					},
-					{
-						id: "implement",
-						type: "implement",
-						vendor: "codex",
-						model: "gpt-5.6-sol",
-						effort: "xhigh",
-					},
-					{
-						id: "qa",
-						type: "qa",
-						vendor: "claude",
-						model: "claude-opus-5",
-					},
-					{ id: "founder_gate", type: "gate" },
-					{ id: "land", type: "land", execution: "engine" },
-				],
-				edges: [
-					{
-						id: "design_done",
-						from: "design",
-						to: "implement",
-						condition: "design_done",
-					},
-					{
-						id: "implement_done",
-						from: "implement",
-						to: "qa",
-						condition: "implement_done",
-					},
-					{
-						id: "qa_pass",
-						from: "qa",
-						to: "founder_gate",
-						condition: "qa_pass",
-					},
-					{
-						id: "founder_approved",
-						from: "founder_gate",
-						to: "land",
-						condition: "founder_approved",
-					},
-				],
-				loops: [
-					{
-						id: "qa_retry",
-						from: "qa",
-						to: "implement",
-						loop_when: "qa_fail",
-						exit_when: "qa_pass",
-						max_iterations: 3,
-						on_limit: "escalate",
-					},
-					{
-						id: "founder_feedback",
-						from: "founder_gate",
-						to: "implement",
-						loop_when: "founder_feedback_kickback",
-						exit_when: "founder_approved",
-						max_iterations: 3,
-						on_limit: "escalate",
-					},
-				],
-				approval_gate: {
-					node: "founder_gate",
-					predicate: "founder_approved",
-				},
-				terminal_node: { node: "land" },
-				ship_claims: ["qa_passed", "founder_approved"],
-			},
-		}),
-	);
-}
 
 const roots: string[] = [];
 const stores: StateStore[] = [];
@@ -110,40 +29,103 @@ function db(s: StateStore) {
 	return (s as unknown as { db: { raw: Database.Database } }).db.raw;
 }
 async function fixture() {
-	const s = await StateStore.create(":memory:");
+	const s = await createAttentionGateStore();
 	stores.push(s);
-	s.createWorkflowRun({
-		runId: "run",
-		issueId: "issue",
-		projectName: "flywheel",
-		snapshotJson: landSnapshot(),
-		claimsReadEnrolled: true,
-	});
-	db(s)
-		.prepare(
-			"UPDATE workflow_run SET engine_owned=1,current_node_id='founder_gate' WHERE run_id='run'",
-		)
-		.run();
-	s.upsertWorkflowRunNode({
-		runId: "run",
-		nodeId: "founder_gate",
-		attempt: 1,
-		state: "review",
-		executionId: "ended-execution",
-	});
-	db(s)
-		.prepare(
-			"INSERT INTO workflow_gate_holder(run_id,gate_node_id,attempt,head_sha,source_execution_id,question_id,state,created_at,updated_at) VALUES('run','founder_gate',1,?,'ended-execution','full-question-123456789','awaiting_review','2026-09-01 10:00:00','2026-09-01 10:00:00')",
-		)
-		.run("a".repeat(40));
-	db(s)
-		.prepare(
-			"UPDATE workflow_gate_holder SET state='awaiting_review', created_at='2026-09-01 10:00:00'",
-		)
-		.run();
 	return s;
 }
+
 describe("StateStore attention gate facts", () => {
+	it("excludes an intermediate code_review holder through real authority facts and the page", async () => {
+		const s = await fixture();
+		// Keep the pinned approval node founder_gate; only the current holder is intermediate.
+		db(s).exec(
+			"UPDATE workflow_run SET current_node_id='code_review'; UPDATE workflow_run_node SET node_id='code_review'; UPDATE workflow_gate_holder SET gate_node_id='code_review'",
+		);
+		expect(s.listAttentionGateFacts("flywheel")).toMatchObject({
+			rawCount: 1,
+			facts: [],
+		});
+		const now = new Date("2026-09-01T11:00:00Z");
+		const empty = {
+			items: [],
+			rawCount: 0,
+			missing: null,
+			fetchedAt: now.toISOString(),
+		};
+		const page = await readAttentionSources(
+			{
+				stateStore: s,
+				openCommReadonly: () => ({
+					listAttentionQuestions: () => ({
+						questions: [],
+						rawCount: 0,
+						nextCursor: null,
+					}),
+					isQuestionPending: () => true,
+					close: () => {},
+				}),
+				fetchFounderReview: async () => empty,
+				fetchIssueMetadata: async () => empty,
+			},
+			{
+				projectName: "flywheel",
+				binding: { team: "FLY" },
+				apiKey: "test",
+				channelIds: [],
+				now,
+			},
+		);
+		expect(page.reads.gates.value).toEqual({ count: 0 });
+		expect(page.candidates).toEqual([]);
+	});
+
+	it("projects a snapshot-defined approval node through the shared attention reader", async () => {
+		const s = await fixture();
+		const customSnapshot = JSON.stringify(
+			buildWorkflowRunSnapshotV1({
+				template: { id: "custom-approval", revision: 1 },
+				manifest: JSON.parse(
+					landSnapshot().replaceAll("founder_gate", "custom_approval"),
+				).manifest,
+			}),
+		);
+		db(s)
+			.prepare("UPDATE workflow_run SET snapshot=?,current_node_id=?")
+			.run(customSnapshot, "custom_approval");
+		db(s)
+			.prepare("UPDATE workflow_run_node SET node_id=?")
+			.run("custom_approval");
+		db(s)
+			.prepare("UPDATE workflow_gate_holder SET gate_node_id=?")
+			.run("custom_approval");
+		expect(s.listAttentionGateFacts("flywheel").facts).toMatchObject([
+			{ node_id: "custom_approval", kind: "ship" },
+		]);
+		const facts = readFounderAttentionFacts(
+			{
+				stateStore: s,
+				openCommReadonly: () => ({
+					listAttentionQuestions: () => ({
+						questions: [],
+						rawCount: 0,
+						nextCursor: null,
+					}),
+					isQuestionPending: () => true,
+					close: () => {},
+				}),
+			},
+			{ projectName: "flywheel", now: new Date("2026-09-01T11:00:00Z") },
+		);
+		expect(facts.available).toBe(true);
+		expect(facts.reads.gates.value).toEqual({ count: 1 });
+		expect(facts.pending).toMatchObject([
+			{
+				key: "holder:full-question-123456789",
+				issue: "issue",
+				source: { fact: { value: { kind: "ship" } } },
+			},
+		]);
+	});
 	it("reads a current pinned authority without requiring a live source session and normalizes UTC", async () => {
 		const s = await fixture();
 		expect(s.listAttentionGateFacts("flywheel")).toMatchObject({

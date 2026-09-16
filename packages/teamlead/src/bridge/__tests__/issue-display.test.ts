@@ -433,6 +433,42 @@ describe("deriveIssueTitleBadge (plan 1b aggregation)", () => {
 });
 
 describe("deriveFounderGateTitleState (FLY-2408)", () => {
+	it("shows needs-answer for a founder decision, beneath ship and terminal states", () => {
+		const input = {
+			phaseStates: new Map<WorkflowPhaseRole, PhaseDisplayState>(),
+			phaseStatuses: new Map<WorkflowPhaseRole, string>(),
+			shipFinalizationClaimed: false,
+			mainSessionStage: "implement",
+			mainSessionStatus: "running",
+			founderGateActive: false,
+			founderAttention: "answer" as const,
+		};
+		expect(deriveFounderGateTitleState(input)).toEqual({
+			badge: { kind: "needs_answer" },
+			founderGateAttention: false,
+		});
+		expect(
+			deriveFounderGateTitleState({ ...input, founderGateActive: true }),
+		).toEqual({
+			badge: { kind: "stage", stage: "approve" },
+			founderGateAttention: true,
+		});
+		expect(
+			deriveFounderGateTitleState({ ...input, mainSessionStatus: "blocked" })
+				.badge,
+		).toEqual({ kind: "blocked" });
+		expect(
+			deriveFounderGateTitleState({ ...input, mainSessionStatus: "completed" })
+				.badge,
+		).toEqual({ kind: "completed" });
+		expect(
+			deriveFounderGateTitleState({
+				...input,
+				mainSessionStatus: "approved_to_ship",
+			}).badge,
+		).toEqual({ kind: "stage", stage: "implement" });
+	});
+
 	it.each([
 		{
 			name: "active phase",

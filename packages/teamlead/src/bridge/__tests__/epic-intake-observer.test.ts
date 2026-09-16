@@ -131,3 +131,41 @@ it("observes current segment, project dispatch and canonical thread before readi
 	await expect(observe(row, evidence)).rejects.toThrow();
 	expect(readMessage).toHaveBeenCalledTimes(calls);
 });
+
+it("FLY-2597: verifies a quiet intake without Discord credentials, thread creation or message reads", async () => {
+	const quietProject = {
+		...project,
+		leads: project.leads.map((l) => ({
+			...l,
+			botToken: undefined,
+			botUserId: undefined,
+		})),
+	};
+	const readMessage = vi.fn();
+	const observe = createEpicIntakeObserver({
+		projects: [quietProject],
+		store: {
+			hasEpicDispatchRecord: () => false,
+			getChatThreadByIssue: () => undefined,
+		},
+		apiKey: "fixture",
+		collect: vi.fn().mockResolvedValue({
+			fetchedAt: at,
+			candidates: [root],
+			missingIssueIds: [],
+			historyFailures: [],
+		}),
+		snapshot: vi.fn().mockResolvedValue({ items: [] }),
+		readMessage,
+		patrolIntervalMs: () => 60000,
+		now: () => new Date(at),
+	});
+	const { threadId: _t, messageId: _m, ...quiet } = evidence;
+	const truth = await observe(row, quiet);
+	expect(truth).toMatchObject({
+		active: true,
+		message: null,
+		canonicalThreadId: null,
+	});
+	expect(readMessage).not.toHaveBeenCalled();
+});

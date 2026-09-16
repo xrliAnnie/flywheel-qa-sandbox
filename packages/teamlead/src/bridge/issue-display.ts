@@ -122,6 +122,7 @@ export type IssueTitleBadge =
 	| { kind: "stage"; stage?: string }
 	| { kind: "phase"; phase: WorkflowPhaseRole }
 	| { kind: "blocked" }
+	| { kind: "needs_answer" }
 	| { kind: "completed" };
 
 /** Main-session statuses that render the cross-cutting 🔴受阻 title badge. */
@@ -235,9 +236,37 @@ export interface FounderGateTitleState {
 	founderGateAttention: boolean;
 }
 
+/** Both founder surfaces consume this result, including the historical hold postprocessing. */
+export function deriveEffectiveFounderTitleState(
+	args: Parameters<typeof deriveFounderGateTitleState>[0] & {
+		qaHeld: boolean;
+		reviewHeld: boolean;
+	},
+): FounderGateTitleState & { level: "ship" | "answer" | null } {
+	let { badge, founderGateAttention } = deriveFounderGateTitleState(args);
+	if (founderGateAttention && (args.qaHeld || args.reviewHeld)) {
+		founderGateAttention = false;
+		badge = deriveIssueTitleBadge(args);
+	}
+	if (badge.kind === "stage" && args.qaHeld)
+		badge = { kind: "stage", stage: "test" };
+	return {
+		badge,
+		founderGateAttention,
+		level: founderGateAttention
+			? "ship"
+			: badge.kind === "needs_answer"
+				? "answer"
+				: null,
+	};
+}
+
 /** Overlay the founder-gate attention state without changing base derivation. */
 export function deriveFounderGateTitleState(
-	args: IssueTitleBadgeInput & { founderGateActive: boolean },
+	args: IssueTitleBadgeInput & {
+		founderGateActive: boolean;
+		founderAttention?: "ship" | "answer" | null;
+	},
 ): FounderGateTitleState {
 	const badge = deriveIssueTitleBadge(args);
 	if (badge.kind === "blocked") {
@@ -251,12 +280,16 @@ export function deriveFounderGateTitleState(
 	}
 	if (
 		args.founderGateActive ||
+		args.founderAttention === "ship" ||
 		(badge.kind === "stage" && badge.stage === "approve")
 	) {
 		return {
 			badge: { kind: "stage", stage: "approve" },
 			founderGateAttention: true,
 		};
+	}
+	if (args.founderAttention === "answer" && badge.kind !== "completed") {
+		return { badge: { kind: "needs_answer" }, founderGateAttention: false };
 	}
 	return { badge, founderGateAttention: false };
 }
