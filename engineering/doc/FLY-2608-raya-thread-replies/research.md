@@ -28,9 +28,9 @@ StateStore.getUnarchivedIssueChatThreads() 和 getUnarchivedPhaseChatThreads() �
 ## 最小修改选择
 复用 Bridge 当前扫描器，以注册表补足缺失线程。不要新加数据库、依赖、定时服务、Raya 专属收件系统或在 roundtable 中伪造订阅。StateStore 已有两个查询，优先直接组合；只有测试发现有查询边界缺失才修改查询，不复制表。
 
-新增注册线程模式第一次没有游标时从 threadId 开始（Discord thread 的创建雪花 id，即不包含根消息、包含之后消息）；每次只读现有页上限，按 oldest-first 成功推进，跨 tick 完整追上，不能跳到当前 HEAD。存量既有游标不后退；两条已报告线程如有过早推进游标，使用逐条审计后的标准补投，不全局重置。
+R1修订：新增注册线程模式从max(threadId,固定上线边界,已有cursor)开始，不自动回放上线前旧历史；每次只读现有页上限，按 oldest-first 成功推进，跨 tick 完整追上，不能跳到当前 HEAD。存量既有游标不后退；两条已报告线程如有过早推进游标，使用逐条审计后的标准补投，不全局重置。
 
-需要用官方 Discord 文档核实 REST 的 after 分页方向，实施测试必须 >100 条证明跨页连续性，不能只依赖源码注释。权限/429/5xx 保持游标，按既有轮转重试；未知 owner 暂不消费并给出诊断。
+需要用官方 Discord 文档核实 REST 的 after 分页方向，实施测试必须 >2×GET_LIMIT 条证明跨页连续性，不能只依赖源码注释。权限/429/5xx 保持游标，按既有轮转重试；未知 owner 暂不消费并给出诊断。
 
 ## 历史与上线边界
 FLY-2226 仅参考其注册表覆盖、游标初始化、首次载荷归属风险；当前分支没有其描述的独立对账器，不能把旧设计当成已部署能力。当前源码仍有审批解释路径，必须显式隔离。
@@ -65,3 +65,10 @@ Lead确认之前flywheel.mailbox各2和lead_events 1是本次问答/报告引用
 以完整 `chat:raya:1549573491060244602` / `chat:raya:1549573499914297409` 的delivery_id/source_ref核对：raya与flywheel的mailbox、mailbox_identity、mailbox_terminal_archive两条各0；flywheel.mailbox_archive亦0。此结果替代先前substring及mailbox_log失败查询。结论限定在已核查的raya/flywheel标准收件库：两条输入均无live、identity或archive收件记录，尚未恢复；结合真实源消息和线程无对应回答，支持本事故入站缺口。
 
 邻近主频道对照为 `chat:raya:1549573168706879539` (00:10:33Z)、`chat:raya:1549573538451562527` (00:12:01Z)、`chat:raya:1549574793370533941` (00:17:00Z)，均为discord_chat/to_agent=raya/state=ACKED。这是运输收件对照，不单凭ACK证明模型消费。上述Lead-provided证据满足设计选型；T4仍须上线前重读最新状态，避免并行恢复重复回答。
+
+
+## R1 评审修订的额外源码核对
+- `getChatThreadByThreadId`查询main/phase时没有archived过滤（StateStore.ts:18280），可与已有`listGuildActiveThreads`交集恢复Discord自动解档线程的扫描，不必修改归档治理。
+- `CodexLeadInboxSocket.listCodexLeadSubscriptions`已有owner认证请求，新增扫描用来排除已订阅thread；失败不能伪装成空集，父频道互斥是并发期间的准入约束。
+- `DiscordLaneVerdict`包含inserted/active/external/archived等状态（mailbox-queue.ts:234）；此前忽略返回值的扫描必须显式处置。
+- R1 reviewer提供生产盘点：72活跃候选、32无cursor，其中30属其他Lead，最老2026-04-12。此为reviewer-provided数据，充分说明全量历史回放风险；部署时仍须重新dry-run。方案改成固定上线边界，旧事故按两个原始id恢复。
